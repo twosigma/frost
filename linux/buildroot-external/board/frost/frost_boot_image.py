@@ -134,6 +134,11 @@ MEMORY_ERROR_APLIC_SOURCE = 5
 NIC_BASE = 0x4003_0000
 NIC_SIZE = 0x1000
 NIC_APLIC_SOURCE = 4
+# Secondary 1G SGMII NIC @ 0x4002_2000 (VCU118); unpopulated boards return 0
+# on ID read so frost_net10g skips the node quietly.
+NIC_1G_BASE = 0x4002_2000
+NIC_1G_SIZE = 0x1000
+NIC_1G_APLIC_SOURCE = 2
 # The default local-mac-address, as DT bytes: locally administered; the driver
 # honors it. --mac replaces it.
 NIC_MAC_ADDRESS = "02 11 22 33 44 55"
@@ -274,6 +279,11 @@ def gen_dts(
             f"\t\tlinux,initrd-end = <0x{end >> 32:08x} 0x{end & 0xFFFFFFFF:08x}>;"
         )
     chosen_body = "\n".join(chosen)
+    mac_octets = mac.split()
+    mac_1g_last = (int(mac_octets[-1], 16) + 1) & 0xFF
+    if mac_1g_last == 0 and all(int(o, 16) == 0 for o in mac_octets[:-1]):
+        mac_1g_last = 1
+    mac_1g = " ".join([*mac_octets[:-1], f"{mac_1g_last:02x}"])
     return f"""/dts-v1/;
 
 / {{
@@ -411,6 +421,15 @@ def gen_dts(
 \t\t\tinterrupts = <{NIC_APLIC_SOURCE} 4>;
 \t\t\tdma-coherent;
 \t\t\tlocal-mac-address = [{mac}];
+\t\t\tclock-frequency = <{clk_hz}>;
+\t\t}};
+\t\tethernet@{NIC_1G_BASE:x} {{
+\t\t\tcompatible = "frost,net10g";
+\t\t\treg = <0x{NIC_1G_BASE:08x} 0x{NIC_1G_SIZE:x}>;
+\t\t\tinterrupt-parent = <&aplic_s>;
+\t\t\tinterrupts = <{NIC_1G_APLIC_SOURCE} 4>;
+\t\t\tdma-coherent;
+\t\t\tlocal-mac-address = [{mac_1g}];
 \t\t\tclock-frequency = <{clk_hz}>;
 \t\t}};
 \t}};

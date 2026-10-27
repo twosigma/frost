@@ -53,24 +53,48 @@ module vcu118_frost #(
     inout  wire  [ 8:0] ddr4_sdram_c0_dqs_c,
     inout  wire  [ 8:0] ddr4_sdram_c0_dqs_t,
     output logic        ddr4_sdram_c0_odt,
-    output logic        ddr4_sdram_c0_reset_n
+    output logic        ddr4_sdram_c0_reset_n,
+
+    // 10G QSFP1 Lane 0 GTY transceiver (Quad 231, X1Y48) & cage control (Bank 64)
+    input  logic i_qsfp1_refclk_p,
+    input  logic i_qsfp1_refclk_n,
+    input  logic i_qsfp1_rx_p,
+    input  logic i_qsfp1_rx_n,
+    output logic o_qsfp1_tx_p,
+    output logic o_qsfp1_tx_n,
+    output logic o_qsfp1_modsell,
+    output logic o_qsfp1_resetl,
+    output logic o_qsfp1_lpmode,
+    input  logic i_qsfp1_modprsl,
+
+    // 1G RJ-45 SGMII-over-LVDS & TI DP83867 PHY management (Bank 64)
+    input  logic i_sgmii_clk_p,
+    input  logic i_sgmii_clk_n,
+    input  logic i_sgmii_rx_p,
+    input  logic i_sgmii_rx_n,
+    output logic o_sgmii_tx_p,
+    output logic o_sgmii_tx_n,
+    output logic o_phy_rst_n,
+    output logic o_phy_mdc,
+    inout  wire  io_phy_mdio
 );
 
   localparam int unsigned L2LineBytes = 64;
 
-  logic main_clock, divided_clock_by_4;
+  logic main_clock, divided_clock_by_4, freerun_clk_150;
   logic cpu_clock_locked;
 
   // Onboard MMCM in SLR2 generates CPU clock (200 MHz default, 240 MHz selectable) and clk_div4 from SYSCLK1_300
   vcu118_clock #(
       .CPU_CLK_HZ(CPU_CLK_HZ)
   ) u_clock_gen (
-      .i_sysclk_p (sysclk1_300_p),
-      .i_sysclk_n (sysclk1_300_n),
-      .i_rst      (cpu_reset),
-      .o_clk_cpu  (main_clock),
-      .o_clk_div4 (divided_clock_by_4),
-      .o_locked   (cpu_clock_locked)
+      .i_sysclk_p       (sysclk1_300_p),
+      .i_sysclk_n       (sysclk1_300_n),
+      .i_rst            (cpu_reset),
+      .o_clk_cpu        (main_clock),
+      .o_clk_div4       (divided_clock_by_4),
+      .o_clk_freerun_150(freerun_clk_150),
+      .o_locked         (cpu_clock_locked)
   );
 
   // Heartbeat counter for visual status
@@ -131,12 +155,85 @@ module vcu118_frost #(
   logic [1:0] ddr_axi_rresp;
   logic ddr_axi_rlast;
 
-  // 3. Shared Xilinx FROST Subsystem
+  // 3. 10G QSFP1 GTY Transceiver & 1G RJ-45 SGMII PCS/PMA Wrappers
+  /* verilator lint_off UNUSEDSIGNAL */
+  logic qsfp1_modprsl_unused;
+  /* verilator lint_on UNUSEDSIGNAL */
+  assign qsfp1_modprsl_unused = i_qsfp1_modprsl;
+  assign o_qsfp1_modsell      = 1'b0;
+  assign o_qsfp1_resetl       = 1'b1;
+  assign o_qsfp1_lpmode       = 1'b0;
+
+  logic        nic_tx_clk, nic_rx_clk, nic_tx_clk_ok, nic_rx_clk_ok;
+  logic [63:0] nic_tx_raw_data, nic_rx_raw_data;
+  logic        nic_tx_raw_valid, nic_rx_raw_valid, nic_rx_signal_ok;
+  logic [ 4:0] nic_phy_status;
+  logic [ 3:1] nic_phy_ctrl;
+  logic        nic_rx_block_lock;
+
+  vcu118_nic_gty u_nic_gty (
+      .i_freerun_clk  (freerun_clk_150),
+      .i_refclk_p     (i_qsfp1_refclk_p),
+      .i_refclk_n     (i_qsfp1_refclk_n),
+      .i_rxp          (i_qsfp1_rx_p),
+      .i_rxn          (i_qsfp1_rx_n),
+      .o_txp          (o_qsfp1_tx_p),
+      .o_txn          (o_qsfp1_tx_n),
+      .o_tx_clk       (nic_tx_clk),
+      .o_rx_clk       (nic_rx_clk),
+      .o_tx_clk_ok    (nic_tx_clk_ok),
+      .o_rx_clk_ok    (nic_rx_clk_ok),
+      .i_tx_raw_data  (nic_tx_raw_data),
+      .i_tx_raw_valid (nic_tx_raw_valid),
+      .o_rx_raw_data  (nic_rx_raw_data),
+      .o_rx_raw_valid (nic_rx_raw_valid),
+      .o_rx_signal_ok (nic_rx_signal_ok),
+      .i_phy_ctrl     (nic_phy_ctrl),
+      .o_phy_status   (nic_phy_status),
+      .i_rx_block_lock(nic_rx_block_lock)
+  );
+
+  logic        nic_1g_tx_clk, nic_1g_rx_clk, nic_1g_tx_clk_ok, nic_1g_rx_clk_ok;
+  logic [63:0] nic_1g_tx_raw_data, nic_1g_rx_raw_data;
+  logic        nic_1g_tx_raw_valid, nic_1g_rx_raw_valid, nic_1g_rx_signal_ok;
+  logic [ 4:0] nic_1g_phy_status;
+  logic [ 3:1] nic_1g_phy_ctrl;
+  logic        nic_1g_rx_block_lock;
+
+  vcu118_eth1g u_eth1g (
+      .i_clk_div4     (divided_clock_by_4),
+      .i_rst          (!cpu_clock_locked || cpu_reset),
+      .i_sgmii_clk_p  (i_sgmii_clk_p),
+      .i_sgmii_clk_n  (i_sgmii_clk_n),
+      .i_sgmii_rx_p   (i_sgmii_rx_p),
+      .i_sgmii_rx_n   (i_sgmii_rx_n),
+      .o_sgmii_tx_p   (o_sgmii_tx_p),
+      .o_sgmii_tx_n   (o_sgmii_tx_n),
+      .o_phy_rst_n    (o_phy_rst_n),
+      .o_phy_mdc      (o_phy_mdc),
+      .io_phy_mdio    (io_phy_mdio),
+      .o_tx_clk       (nic_1g_tx_clk),
+      .o_rx_clk       (nic_1g_rx_clk),
+      .o_tx_clk_ok    (nic_1g_tx_clk_ok),
+      .o_rx_clk_ok    (nic_1g_rx_clk_ok),
+      .i_tx_raw_data  (nic_1g_tx_raw_data),
+      .i_tx_raw_valid (nic_1g_tx_raw_valid),
+      .o_rx_raw_data  (nic_1g_rx_raw_data),
+      .o_rx_raw_valid (nic_1g_rx_raw_valid),
+      .o_rx_signal_ok (nic_1g_rx_signal_ok),
+      .i_phy_ctrl     (nic_1g_phy_ctrl),
+      .o_phy_status   (nic_1g_phy_status),
+      .i_rx_block_lock(nic_1g_rx_block_lock)
+  );
+
+  // 4. Shared Xilinx FROST Subsystem
   xilinx_frost_subsystem #(
       .CLK_FREQ_HZ       (CPU_CLK_HZ),
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
-      .PERF_COUNTERS     (PERF_COUNTERS)
+      .PERF_COUNTERS     (PERF_COUNTERS),
+      .RAW_LOOPBACK      (0),
+      .ENABLE_1G_ETH     (1)
   ) u_frost_subsystem (
       .i_clk              (main_clock),
       .i_clk_div4         (divided_clock_by_4),
@@ -184,7 +281,33 @@ module vcu118_frost #(
       .i_ecc_ce_addr      ('0),
       .i_ecc_ue_valid     (1'b0),
       .i_ecc_ue_addr_valid(1'b0),
-      .i_ecc_ue_addr      ('0)
+      .i_ecc_ue_addr      ('0),
+
+      .i_nic_tx_clk       (nic_tx_clk),
+      .i_nic_rx_clk       (nic_rx_clk),
+      .i_nic_tx_clk_ok    (nic_tx_clk_ok),
+      .i_nic_rx_clk_ok    (nic_rx_clk_ok),
+      .o_nic_tx_raw_data  (nic_tx_raw_data),
+      .o_nic_tx_raw_valid (nic_tx_raw_valid),
+      .i_nic_rx_raw_data  (nic_rx_raw_data),
+      .i_nic_rx_raw_valid (nic_rx_raw_valid),
+      .i_nic_rx_signal_ok (nic_rx_signal_ok),
+      .i_nic_phy_status   (nic_phy_status),
+      .o_nic_phy_ctrl     (nic_phy_ctrl),
+      .o_nic_rx_block_lock(nic_rx_block_lock),
+
+      .i_nic_1g_tx_clk       (nic_1g_tx_clk),
+      .i_nic_1g_rx_clk       (nic_1g_rx_clk),
+      .i_nic_1g_tx_clk_ok    (nic_1g_tx_clk_ok),
+      .i_nic_1g_rx_clk_ok    (nic_1g_rx_clk_ok),
+      .o_nic_1g_tx_raw_data  (nic_1g_tx_raw_data),
+      .o_nic_1g_tx_raw_valid (nic_1g_tx_raw_valid),
+      .i_nic_1g_rx_raw_data  (nic_1g_rx_raw_data),
+      .i_nic_1g_rx_raw_valid (nic_1g_rx_raw_valid),
+      .i_nic_1g_rx_signal_ok (nic_1g_rx_signal_ok),
+      .i_nic_1g_phy_status   (nic_1g_phy_status),
+      .o_nic_1g_phy_ctrl     (nic_1g_phy_ctrl),
+      .o_nic_1g_rx_block_lock(nic_1g_rx_block_lock)
   );
 
   // 4. DDR4 Initialization Engine (for valid ECC generation)

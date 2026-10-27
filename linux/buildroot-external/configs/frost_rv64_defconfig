@@ -56,3 +56,4 @@ BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_FROST_PATH)/board/frost/post-image-
 #     counters the hardware regression checks (../../README.md, "Counters and
 #     mcounteren"), so no perf is needed on the target ---
 BR2_PACKAGE_FROST_STRESS=y
+BR2_PACKAGE_DROPBEAR=y

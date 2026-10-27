@@ -46,7 +46,8 @@ module soc_top #(
     parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd322_265_625,
     parameter int unsigned DEBUG_JTAG_TAP = 1,
     parameter int unsigned CLK_FREQ_HZ = 322265625,
-    parameter int unsigned RAW_LOOPBACK = 1
+    parameter int unsigned RAW_LOOPBACK = 1,
+    parameter int unsigned ENABLE_1G_ETH = 0
 ) (
     input logic i_clk,
     input logic i_cpu_clk = 1'b0,
@@ -170,6 +171,19 @@ module soc_top #(
     input  logic                  [                        4:0] i_nic_phy_status,
     output logic                  [                        3:1] o_nic_phy_ctrl,
     output logic                                                o_nic_rx_block_lock,
+    // Optional 1G GMII NIC (ENABLE_1G_ETH=1, VCU118 only).
+    input  logic                                                i_nic_1g_tx_clk = 1'b0,
+    input  logic                                                i_nic_1g_rx_clk = 1'b0,
+    input  logic                                                i_nic_1g_tx_clk_ok = 1'b1,
+    input  logic                                                i_nic_1g_rx_clk_ok = 1'b1,
+    output logic                  [                       63:0] o_nic_1g_tx_raw_data,
+    output logic                                                o_nic_1g_tx_raw_valid,
+    input  logic                  [                       63:0] i_nic_1g_rx_raw_data = '0,
+    input  logic                                                i_nic_1g_rx_raw_valid = 1'b0,
+    input  logic                                                i_nic_1g_rx_signal_ok = 1'b0,
+    input  logic                  [                        4:0] i_nic_1g_phy_status = 5'b01111,
+    output logic                  [                        3:1] o_nic_1g_phy_ctrl,
+    output logic                                                o_nic_1g_rx_block_lock,
     output logic                                                o_cpu_rst,
     output logic                                                o_cpu_axi_rst,
     output riscv_pkg::interrupt_t                               o_cpu_interrupts,
@@ -367,6 +381,10 @@ module soc_top #(
   // the test engine through a line-port arbiter; its interrupt is APLIC
   // source 4.
   localparam int unsigned NicBase = 32'h4003_0000;
+  // Secondary 1G SGMII NIC @ 0x4002_2000 (when ENABLE_1G_ETH != 0), a 4 KiB
+  // window of 32-bit registers sharing the coherent DMA port; its interrupt
+  // shares APLIC source 2.
+  localparam int unsigned Nic1gBase = 32'h4002_2000;
   // Memory error unit @ 0x4002_1000, a 256-byte window of 32-bit registers
   // (memory_error_unit.sv): counts of DDR ECC errors and of the DDR bridge's
   // AXI error responses; its interrupt is APLIC source 5.
@@ -507,17 +525,18 @@ module soc_top #(
       ((data_memory_byte_write_enable_registered == 8'h0F) ||
        (data_memory_byte_write_enable_registered == 8'hF0));
   logic [63:0] aplic_rd_pair;
-  logic dma_engine_irq, nic_irq;
-  logic [1:0] reg_axil_awvalid, reg_axil_awready, reg_axil_wvalid, reg_axil_wready;
-  logic [1:0] reg_axil_bvalid, reg_axil_bready, reg_axil_arvalid, reg_axil_arready;
-  logic [1:0] reg_axil_rvalid, reg_axil_rready;
-  logic [1:0][1:0] reg_axil_bresp, reg_axil_rresp;
-  logic [1:0][63:0] reg_axil_rdata;
+  localparam int unsigned AxilPorts = (ENABLE_1G_ETH != 0) ? 3 : 2;
+  logic dma_engine_irq, nic_irq, nic_1g_irq;
+  logic [AxilPorts-1:0] reg_axil_awvalid, reg_axil_awready, reg_axil_wvalid, reg_axil_wready;
+  logic [AxilPorts-1:0] reg_axil_bvalid, reg_axil_bready, reg_axil_arvalid, reg_axil_arready;
+  logic [AxilPorts-1:0] reg_axil_rvalid, reg_axil_rready;
+  logic [AxilPorts-1:0][1:0] reg_axil_bresp, reg_axil_rresp;
+  logic [AxilPorts-1:0][63:0] reg_axil_rdata;
   logic [11:0] reg_axil_addr_q;
   logic [2:0] reg_axil_prot_q;
   logic [63:0] reg_axil_wdata_q;
   logic [7:0] reg_axil_wstrb_q;
-  logic reg_axil_port_q;
+  logic [$clog2(AxilPorts)-1:0] reg_axil_port_q;
   logic local_axil, reg_axil_done, reg_axil_read_capture;
 
 `ifndef SYNTHESIS
@@ -654,7 +673,11 @@ module soc_top #(
       // keeps an un-driven i_external_interrupt in simulation from
       // propagating X into the APLIC and mip.
       .i_src({
-        memerr_irq, nic_irq, dma_engine_irq, (i_external_interrupt === 1'b1), ns_irq_pending
+        memerr_irq,
+        nic_irq,
+        dma_engine_irq,
+        (i_external_interrupt === 1'b1) || nic_1g_irq,
+        ns_irq_pending
       }),
       .i_wr_en(aplic_wr_en),
       .i_wr_offset({data_memory_address_registered[21:3], aplic_wr_hi ? 3'b100 : 3'b000}),
@@ -1285,17 +1308,23 @@ module soc_top #(
       end
     end
   end
-  // Port 0 is the NIC; port 1 is the DMA test engine. Only their windows
-  // enter state 5. Request payloads and each channel VALID hold until the
-  // corresponding handshake, and completion waits for B or R.
+  // Port 0 is the NIC; port 1 is the DMA test engine; port 2 (when
+  // ENABLE_1G_ETH != 0) is the 1G SGMII NIC. Only their windows enter state 5.
+  // Request payloads and each channel VALID hold until the corresponding
+  // handshake, and completion waits for B or R.
   assign local_axil = ENABLE_CACHED_TIER != 0 && !rst_core && local_ok &&
       local_device && !local_instruction &&
       ((local_addr[31:12] == NicBase[31:12]) ||
-       (local_addr[31:8] == DmaEngineBase[31:8]));
+       (local_addr[31:8] == DmaEngineBase[31:8]) ||
+       ((ENABLE_1G_ETH != 0) && (local_addr[31:12] == Nic1gBase[31:12])));
+  wire [$clog2(AxilPorts)-1:0] local_axil_port =
+      (local_addr[31:12] == NicBase[31:12]) ? '0 :
+      ((ENABLE_1G_ETH != 0) && (local_addr[31:12] == Nic1gBase[31:12])) ?
+      $clog2(AxilPorts)'(2) : $clog2(AxilPorts)'(1);
   assign reg_axil_bready = (local_state_q == 5 && local_write && !rst_core &&
-      !soc_axi_rst) ? (2'b01 << reg_axil_port_q) : 2'b00;
+      !soc_axi_rst) ? (AxilPorts'(1) << reg_axil_port_q) : '0;
   assign reg_axil_rready = (local_state_q == 5 && !local_write && !rst_core &&
-      !soc_axi_rst) ? (2'b01 << reg_axil_port_q) : 2'b00;
+      !soc_axi_rst) ? (AxilPorts'(1) << reg_axil_port_q) : '0;
   assign reg_axil_done = local_state_q == 5 && !soc_axi_rst &&
       (rst_core || (|(reg_axil_bvalid & reg_axil_bready)) ||
        (|(reg_axil_rvalid & reg_axil_rready)));
@@ -1305,7 +1334,7 @@ module soc_top #(
       reg_axil_awvalid <= '0;
       reg_axil_wvalid  <= '0;
       reg_axil_arvalid <= '0;
-      reg_axil_port_q  <= 1'b0;
+      reg_axil_port_q  <= '0;
     end else begin
       reg_axil_awvalid <= reg_axil_awvalid & ~reg_axil_awready;
       reg_axil_wvalid  <= reg_axil_wvalid & ~reg_axil_wready;
@@ -1315,12 +1344,12 @@ module soc_top #(
         reg_axil_prot_q  <= local_prot;
         reg_axil_wdata_q <= data_memory_write_data;
         reg_axil_wstrb_q <= local_wstrb;
-        reg_axil_port_q  <= local_addr[31:12] != NicBase[31:12];
+        reg_axil_port_q  <= local_axil_port;
         if (local_write) begin
-          reg_axil_awvalid <= (local_addr[31:12] == NicBase[31:12]) ? 2'b01 : 2'b10;
-          reg_axil_wvalid  <= (local_addr[31:12] == NicBase[31:12]) ? 2'b01 : 2'b10;
+          reg_axil_awvalid <= AxilPorts'(1) << local_axil_port;
+          reg_axil_wvalid  <= AxilPorts'(1) << local_axil_port;
         end else begin
-          reg_axil_arvalid <= (local_addr[31:12] == NicBase[31:12]) ? 2'b01 : 2'b10;
+          reg_axil_arvalid <= AxilPorts'(1) << local_axil_port;
         end
       end
     end
@@ -1335,12 +1364,12 @@ module soc_top #(
     // hierarchy's stream prefetcher needs. The bridge uses the CPU clock
     // when ASYNC_CPU_CLOCK is set. Paired resets cover both DMA domains.
     // The common-clock profile resets all four blocks with rst_core.
-    localparam int unsigned DmaPorts = 2;
+    localparam int unsigned DmaPorts = (ENABLE_1G_ETH != 0) ? 3 : 2;
     localparam int unsigned DmaAxiAddrBits = 64;
     localparam int unsigned DmaAxiDataBits = 8 * L1LineBytes;
     // The NIC's ids, 3 bits; the engine's 2-bit ids are zero-extended.
     localparam int unsigned DmaUpIdBits = 3;
-    localparam int unsigned DmaDownIdBits = DmaUpIdBits + 1;
+    localparam int unsigned DmaDownIdBits = DmaUpIdBits + $clog2(DmaPorts);
     localparam int unsigned DmaLineIdBits = 3;
 
     logic [DmaPorts-1:0] up_awvalid, up_awready, up_awlock, up_wvalid, up_wready, up_wlast;
@@ -1518,6 +1547,98 @@ module soc_top #(
         .i_dma_axi_rresp(up_rresp[1]),
         .i_dma_axi_rlast(up_rlast[1])
     );
+
+    if (ENABLE_1G_ETH != 0) begin : gen_nic_1g
+      nic_top #(
+          .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
+          .LINE_BYTES(L1LineBytes),
+          .APERTURE_BASE(64'(CACHED_BASE)),
+          .APERTURE_BYTES(CACHED_SIZE_BYTES),
+          .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000),
+          .RAW_LOOPBACK(1),
+          .GMII_MODE(1'b1),
+          .DMA_AXI_ADDR_BITS(DmaAxiAddrBits),
+          .DMA_AXI_ID_BITS(DmaUpIdBits)
+      ) nic_1g (
+          .i_clk(i_clk),
+          .i_rst(rst_core_next),
+          .i_reg_axil_awvalid(reg_axil_awvalid[2]),
+          .o_reg_axil_awready(reg_axil_awready[2]),
+          .i_reg_axil_awaddr(reg_axil_addr_q[11:0]),
+          .i_reg_axil_awprot(reg_axil_prot_q),
+          .i_reg_axil_wvalid(reg_axil_wvalid[2]),
+          .o_reg_axil_wready(reg_axil_wready[2]),
+          .i_reg_axil_wdata(reg_axil_wdata_q),
+          .i_reg_axil_wstrb(reg_axil_wstrb_q),
+          .o_reg_axil_bvalid(reg_axil_bvalid[2]),
+          .i_reg_axil_bready(reg_axil_bready[2]),
+          .o_reg_axil_bresp(reg_axil_bresp[2]),
+          .i_reg_axil_arvalid(reg_axil_arvalid[2]),
+          .o_reg_axil_arready(reg_axil_arready[2]),
+          .i_reg_axil_araddr(reg_axil_addr_q[11:0]),
+          .i_reg_axil_arprot(reg_axil_prot_q),
+          .o_reg_axil_rvalid(reg_axil_rvalid[2]),
+          .i_reg_axil_rready(reg_axil_rready[2]),
+          .o_reg_axil_rdata(reg_axil_rdata[2]),
+          .o_reg_axil_rresp(reg_axil_rresp[2]),
+          .o_irq(nic_1g_irq),
+          .o_dma_axi_awvalid(up_awvalid[2]),
+          .o_dma_axi_awid(up_awid[2]),
+          .o_dma_axi_awaddr(up_awaddr[2]),
+          .o_dma_axi_awlen(up_awlen[2]),
+          .o_dma_axi_awsize(up_awsize[2]),
+          .o_dma_axi_awburst(up_awburst[2]),
+          .o_dma_axi_awlock(up_awlock[2]),
+          .o_dma_axi_awcache(up_awcache[2]),
+          .o_dma_axi_awprot(up_awprot[2]),
+          .o_dma_axi_awqos(up_awqos[2]),
+          .o_dma_axi_wvalid(up_wvalid[2]),
+          .o_dma_axi_wdata(up_wdata[2]),
+          .o_dma_axi_wstrb(up_wstrb[2]),
+          .o_dma_axi_wlast(up_wlast[2]),
+          .o_dma_axi_bready(up_bready[2]),
+          .o_dma_axi_arvalid(up_arvalid[2]),
+          .o_dma_axi_arid(up_arid[2]),
+          .o_dma_axi_araddr(up_araddr[2]),
+          .o_dma_axi_arlen(up_arlen[2]),
+          .o_dma_axi_arsize(up_arsize[2]),
+          .o_dma_axi_arburst(up_arburst[2]),
+          .o_dma_axi_arlock(up_arlock[2]),
+          .o_dma_axi_arcache(up_arcache[2]),
+          .o_dma_axi_arprot(up_arprot[2]),
+          .o_dma_axi_arqos(up_arqos[2]),
+          .o_dma_axi_rready(up_rready[2]),
+          .i_dma_axi_awready(up_awready[2]),
+          .i_dma_axi_wready(up_wready[2]),
+          .i_dma_axi_bvalid(up_bvalid[2]),
+          .i_dma_axi_bid(up_bid[2]),
+          .i_dma_axi_bresp(up_bresp[2]),
+          .i_dma_axi_arready(up_arready[2]),
+          .i_dma_axi_rvalid(up_rvalid[2]),
+          .i_dma_axi_rid(up_rid[2]),
+          .i_dma_axi_rdata(up_rdata[2]),
+          .i_dma_axi_rresp(up_rresp[2]),
+          .i_dma_axi_rlast(up_rlast[2]),
+          .i_tx_clk(i_nic_1g_tx_clk),
+          .i_rx_clk(i_nic_1g_rx_clk),
+          .i_tx_clk_ok(i_nic_1g_tx_clk_ok),
+          .i_rx_clk_ok(i_nic_1g_rx_clk_ok),
+          .o_tx_raw_data(o_nic_1g_tx_raw_data),
+          .o_tx_raw_valid(o_nic_1g_tx_raw_valid),
+          .i_rx_raw_data(i_nic_1g_rx_raw_data),
+          .i_rx_raw_valid(i_nic_1g_rx_raw_valid),
+          .i_rx_signal_ok(i_nic_1g_rx_signal_ok),
+          .i_phy_status(i_nic_1g_phy_status),
+          .o_phy_ctrl(o_nic_1g_phy_ctrl),
+          .o_rx_block_lock(o_nic_1g_rx_block_lock)
+      );
+    end else begin : gen_no_nic_1g
+      assign nic_1g_irq = 1'b0;
+      assign o_nic_1g_tx_raw_data = '0;
+      assign o_nic_1g_tx_raw_valid = 1'b0;
+      assign o_nic_1g_phy_ctrl = '0;
+      assign o_nic_1g_rx_block_lock = 1'b0;
+    end
 
     axi_mux #(
         .NUM_PORTS(DmaPorts),
@@ -1961,10 +2082,15 @@ module soc_top #(
     assign o_coherent_req_id = '0;
     assign dma_engine_irq = 1'b0;
     assign nic_irq = 1'b0;
+    assign nic_1g_irq = 1'b0;
     assign o_nic_tx_raw_data = '0;
     assign o_nic_tx_raw_valid = 1'b0;
     assign o_nic_phy_ctrl = '0;
     assign o_nic_rx_block_lock = 1'b0;
+    assign o_nic_1g_tx_raw_data = '0;
+    assign o_nic_1g_tx_raw_valid = 1'b0;
+    assign o_nic_1g_phy_ctrl = '0;
+    assign o_nic_1g_rx_block_lock = 1'b0;
   end
   logic axi_awvalid, axi_awready, axi_wvalid, axi_wready, axi_bvalid, axi_bready;
   logic axi_arvalid, axi_arready, axi_rvalid, axi_rready, axi_rlast, axi_wlast;

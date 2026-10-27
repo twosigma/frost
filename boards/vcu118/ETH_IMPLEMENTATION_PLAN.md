@@ -16,26 +16,33 @@
 
 # VCU118 Dual Networking (1Gb RJ-45 & 10Gb QSFP28) Architecture & Implementation Plan
 
-This document specifies the architecture, hardware integration, loopback verification, and Linux networking stack for dual-networking support on the **AMD/Xilinx VCU118 Evaluation Board** (`xcvu9p-flga2104-2L-e`), satisfying two primary objectives:
-1. **1Gb RJ-45 Ethernet**: AMD AXI Ethernet MAC/PCS (SGMII) + AXI DMA connected to the onboard Texas Instruments DP83867 PHY for LAN connectivity, TFTP/NFS boot, and network consoles.
-2. **10Gb QSFP28 Ethernet**: FROST native `net10g` soft MAC/PCS connected to QSFP1 (Quad 231 GTY), with operational validation via hardware PMA/MAC loopback mode.
+This document specifies the ground-truth hardware architecture, RTL integration, Vivado IP configuration, loopback verification, and Linux networking stack for dual-networking support on the **AMD/Xilinx VCU118 Evaluation Board** (`xcvu9p-flga2104-2L-e`), satisfying two primary objectives:
+1. **1Gb RJ-45 Ethernet (`eth1`)**: License-free AMD `gig_ethernet_pcs_pma:17.0` configured in **SGMII over LVDS** mode (Bank 64 High-Speed SelectIO `BITSLICE`) + autonomous TI DP83867ISRGZ MDIO initializer + FROST coherent DMA NIC (`nic_top` with `GMII_MODE = 1`) for 1000BASE-T LAN connectivity, DHCP, TFTP/NFS boot, and SSH login console.
+2. **10Gb QSFP28 Ethernet (`eth0`)**: FROST native `net10g` 10GBASE-R soft MAC/PCS (`nic_top` with `GMII_MODE = 0, RAW_LOOPBACK = 0`) connected to QSFP1 Lane 0 (Quad 231 `GTYE4_CHANNEL_X1Y48`), verified on hardware via GTY near-end PMA loopback (`frost_nettest`) and ready for external 10Gb switch/host connectivity.
 
 ---
 
-## 1. Architectural Principles & Isolation Guarantees
+## 1. Architectural Principles & Right-First-Time Guarantees
 
-### 1.1 Strict X3 Target Isolation (Zero Regression)
-- **Zero modification to X3 behavior**: The Alveo X3 board target remains completely untouched and operational as today.
-- **Build-Time Parameterization**: All shared RTL (such as `soc_top.sv` and `xilinx_frost_subsystem.sv`) guards any new VCU118-specific logic behind parameters defaulted to disable them (`ENABLE_1G_ETH = 0`).
-- **Board-Specific Encapsulation**: All board-specific IP generators (`vcu118_eth_bd.tcl`, `vcu118_gty_ip.tcl`), RTL wrappers (`vcu118_frost.sv`, `vcu118_nic_gty.sv`), and pin constraints (`vcu118_eth.xdc`) reside strictly under `boards/vcu118/` and `fpga/build/vcu118_*`.
+### 1.1 Strict Alveo X3 Target Isolation (Zero Regression)
+- **Zero modification to X3 behavior**: All shared modules (`soc_top.sv`, `frost.sv`, `xilinx_frost_subsystem.sv`, `nic_top.sv`, `nic_mac_wrap.sv`) guard the second (1Gb) NIC behind build-time parameters defaulting to disabled (`ENABLE_1G_ETH = 0`, `GMII_MODE = 0`).
+- **Identical X3 Synthesis & Simulation**: With `ENABLE_1G_ETH = 0`, `soc_top` builds the exact 2-port `axi_mux` (`DmaPorts = 2`), MMIO map, and APLIC interrupt wiring used on X3 today.
+- **Board-Specific Encapsulation**: All VCU118 transceiver/PCS IP generation (`fpga/build/vcu118_gty_ip.tcl`), PHY/GTY wrappers (`boards/vcu118/vcu118_nic_gty.sv`, `boards/vcu118/vcu118_eth1g.sv`), and physical constraints (`boards/vcu118/constr/vcu118.xdc`) are isolated to VCU118 build targets.
 
-### 1.2 Unified Linux Kernel & Userspace
-- **Single Kernel Image (`Image`)**: The Linux kernel binary remains identical and shared between X3 and VCU118.
-- **Device Tree Driven Probing**:
-  - Peripheral drivers (`xilinx_axienet`, `dp83867`, and `frost_net10g`) probe dynamically based on nodes present in the board's Device Tree (`.dtb`).
-  - On X3: 1Gb node is absent or disabled; only 10Gb NIC probes.
-  - On VCU118: Both 1Gb (`eth0`) and 10Gb (`eth1`) nodes are active and probe cleanly.
-- **Common Buildroot Userspace**: Dynamic network configuration (`udhcpc`, `dropbear` SSH daemon, NFS client, netconsole) automatically manages available network interfaces at boot.
+### 1.2 License-Free Vivado 2025.2.1 IP & Coherent DMA Unification
+- **Avoidance of Paid TEMAC License (`Design_Linking` Blocker)**: In Vivado 2025.2.1, `axi_ethernet:8.0` and `tri_mode_ethernet_mac:9.0` require a paid `tri_mode_eth_mac` license (`Design_Linking`), which blocks `write_bitstream`. By contrast, **`gig_ethernet_pcs_pma:17.0`** (1G/2.5G Ethernet PCS/PMA or SGMII) and **`gtwizard_ultrascale:1.7`** have license status **`Included`** (100% free bitstream generation).
+- **Unified Coherent DMA & MAC Engine**:
+  - The 1Gb subsystem uses `gig_ethernet_pcs_pma:17.0` in `SGMII over LVDS` mode (`clk125_out` 125 MHz GMII interface with `sgmii_clk_en`) coupled to a second instance of `nic_top` configured with `GMII_MODE = 1`.
+  - In `GMII_MODE = 1`, `nic_mac_wrap` reuses FROST's store-and-forward `eth10g_mac_tx` (with IEEE 802.3 60-byte minimum frame padding and 32-bit FCS generation) and `eth10g_mac_rx` (with 32-bit FCS validation and bad-frame rollback) through an 8:1 XGMII-to-GMII TX serializer and 1:8 GMII-to-XGMII RX deserializer, bypassing the 10GBASE-R 64b/66b PCS/gearbox.
+  - Both the 10Gb NIC (`0x4003_0000`) and 1Gb NIC (`0x4002_2000`) use the exact same 256-bit `LINE_BYTES = 32` cache-coherent DMA protocol into `axi_mux` -> `axi_coherent_bridge` -> L2 cache, and both bind to the same out-of-tree `frost_net10g.ko` kernel module compiled by `linux/debian_kernel.py` against Debian's `vmlinux-6.12.113+deb13-riscv64` kernel.
+
+### 1.3 Common Linux Image & Device Tree Across X3 and VCU118
+- **Single Kernel & Initramfs**: Both X3 and VCU118 boot the exact same Debian `vmlinux-6.12.113+deb13-riscv64` kernel and module-augmented initramfs (`rootfs.cpio`).
+- **Hardware-Probed Device Tree**:
+  - `frost.dts` declares `ethernet@40030000` (10Gb NIC, APLIC Source 4, MAC `02:11:22:33:44:55`) first and `ethernet@40022000` (1Gb NIC, APLIC Source 2, MAC `02:11:22:33:44:56`) second.
+  - On **Alveo X3** (`ENABLE_1G_ETH = 0`): `0x4002_2000` reads `0x0000_0000`, so `frost_probe` returns `-ENODEV` for `ethernet@40022000` and registers only `eth0` (10Gb GTY).
+  - On **VCU118** (`ENABLE_1G_ETH = 1`): `ethernet@40030000` registers as **`eth0`** (10Gb QSFP28) and `ethernet@40022000` registers as **`eth1`** (1Gb RJ-45).
+  - Because `eth0` is the 10Gb QSFP28 interface, running `frost_nettest` automatically selects `eth0` (`FROST_NET_LOOPBACK_PASS`) without disrupting live 1Gb RJ-45 LAN / SSH / NFS traffic on `eth1`. `frost_nettest` also accepts an optional interface name (`frost_nettest eth1`) to test 1Gb loopback on demand.
 
 ---
 
@@ -43,178 +50,184 @@ This document specifies the architecture, hardware integration, loopback verific
 
 ```mermaid
 flowchart TD
-    subgraph FROST_Core ["FROST Core & Coherent Interconnect"]
-        CPU["FROST Tomasulo Out-of-Order CPU\n(RV64GCB Zba Zbb Zbc Zbkc)"]
-        L2["L2 Cache Hierarchy (Unified)"]
-        COH["axi_coherent_bridge (Cache-Coherent Ingress)"]
-        XBAR["soc_top AXI4-Lite Crossbar"]
-        MUX["axi_mux (Multi-Master DMA Arbiter)"]
-        APLIC["APLIC Interrupt Controller"]
-        
+    subgraph FROST_Core ["FROST SoC (soc_top.sv in SLR2)"]
+        CPU["FROST Out-of-Order RISC-V Core\n(200 MHz main_clock)"]
+        L2["Unified L2 Cache + DDR4 ECC"]
+        COH["axi_coherent_bridge\n(256-bit Coherent Line Port)"]
+        MUX["axi_mux\n(DmaPorts = 3 on VCU118, 2 on X3)"]
+        AXIL["MMIO AXI4-Lite Demux"]
+        APLIC["APLIC Interrupt Controller\n(Sources 1..5)"]
+
+        NIC10G["u_nic: nic_top (GMII_MODE=0, RAW_LOOPBACK=0)\nMMIO: 0x4003_0000 | IRQ: APLIC Src 4\nLinux: eth0 (10Gb QSFP28)"]
+        NIC1G["u_nic_1g: nic_top (GMII_MODE=1, ENABLE_1G_ETH=1)\nMMIO: 0x4002_2000 | IRQ: APLIC Src 2\nLinux: eth1 (1Gb RJ-45)"]
+
         CPU --> L2
         COH --> L2
         MUX --> COH
+        AXIL -->|0x4003_0000| NIC10G
+        AXIL -->|0x4002_2000| NIC1G
+        NIC10G -->|256-bit DMA| MUX
+        NIC1G -->|256-bit DMA| MUX
+        NIC10G -->|IRQ Src 4| APLIC
+        NIC1G -->|IRQ Src 2| APLIC
     end
 
-    subgraph Eth_1G_Subsystem ["1Gb Subsystem (AMD AXI Ethernet + DMA)"]
-        DMA_1G["AMD AXI DMA (PG021)\n- Scatter-Gather Engine\n- 64-bit Memory Master"]
-        MAC_1G["AMD AXI 1G/2.5G Ethernet Subsystem (PG138)\n- Tri-Mode Ethernet MAC (TEMAC)\n- SGMII PCS/PMA Core"]
-        
-        XBAR -->|0x4002_0000| MAC_1G
-        XBAR -->|0x4003_0000| DMA_1G
-        DMA_1G -->|AXI4 Master| MUX
-        DMA_1G <-->|AXI4-Stream TX/RX| MAC_1G
-        DMA_1G -->|TX IRQ (Src 5) / RX IRQ (Src 6)| APLIC
-        MAC_1G -->|Link Change IRQ (Src 7)| APLIC
+    subgraph VCU118_10G ["10Gb QSFP28 Wrapper (vcu118_nic_gty.sv)"]
+        SUP10G["x3_nic_gty_supervisor\n(150 MHz freerun from sysclk1_300 / 2)"]
+        GTY10G["vcu118_nic_gty_wiz (gtwizard_ultrascale:1.7)\nQuad 231 GTYE4_CHANNEL_X1Y48\n10.3125 Gbps, 64-bit Raw PMA @ 161.13 MHz"]
+        QSFP1["QSFP28 Cage 1 (QSFP1)\nRefClk0: W9/W8 (156.25 MHz)\nTX0: V7/V6 | RX0: Y2/Y1\nControl: AM21/BA22/AN21"]
+
+        NIC10G <-->|64-bit Raw PMA| GTY10G
+        SUP10G --> GTY10G
+        GTY10G <--> QSFP1
+        GTY10G -.->|PMA Loopback (3'b010)| GTY10G
     end
 
-    subgraph Eth_10G_Subsystem ["10Gb Subsystem (FROST Native net10g)"]
-        NIC_10G["FROST Native 10G NIC (nic_top)\n- Descriptor Engines & FIFOs\n- Soft 10GBASE-R MAC/PCS\n- Loopback Control Register"]
-        GTY_10G["VCU118 GTY Transceiver (vcu118_nic_gty)\n- Quad 231 Channel 0\n- PMA Near-End Loopback Mux"]
-        
-        XBAR -->|0x4004_0000| NIC_10G
-        NIC_10G -->|AXI4 Master| MUX
-        NIC_10G -->|NIC IRQ (Src 4)| APLIC
-        NIC_10G <-->|64-bit Raw Data @ 161.13 MHz| GTY_10G
-    end
+    subgraph VCU118_1G ["1Gb RJ-45 SGMII Wrapper (vcu118_eth1g.sv)"]
+        MDIO_INIT["DP83867 MDIO Initializer (50 MHz clk_div4)\nPHY Addr 0x03:\n1. CFG4 (0x0031) <= 0x0070\n2. SGMIICTL1 (0x00D3) <= 0x4000 (625 MHz Clk En)\n3. 10M_SGMII_CFG (0x016F) <= 0x0015"]
+        PCS1G["vcu118_pcs_pma_1g (gig_ethernet_pcs_pma:17.0)\nSGMII over LVDS (Bank 64 BITSLICE)\nDIFF_PAIR_2 TX / DIFF_PAIR_0 RX\n125 MHz GMII (clk125_out + sgmii_clk_en)"]
+        PHY1G["TI DP83867ISRGZ PHY + RJ-45 Jack\n625 MHz RefClk: AT22/AU22\nSGMII TX: AU21/AV21 | RX: AU24/AV24\nMDC: AV23 | MDIO: AR23 | RST_N: BA21"]
 
-    subgraph VCU118_Hardware ["VCU118 Board Physical Layer"]
-        CLK_125["125.0 MHz Ref Clock (AK34/AK35)"]
-        PHY_1G["TI DP83867 PHY (Bank 64 / Bank 128)"]
-        RJ45["Onboard RJ-45 Jack (1000BASE-T LAN)"]
-        
-        CLK_156["156.25 MHz Ref Clock (W9/W8)"]
-        QSFP1["QSFP28 Cage 1 (Quad 231)"]
-        
-        CLK_125 --> MAC_1G
-        MAC_1G <-->|SGMII Serial (AU40/AV38)| PHY_1G
-        MAC_1G -->|MDIO/MDC (AK39/AR39)| PHY_1G
-        PHY_1G <--> RJ45
-        
-        CLK_156 --> GTY_10G
-        GTY_10G <-->|10.3125 Gbps Serial (V7/Y2)| QSFP1
-        GTY_10G -.->|Internal PMA Loopback| GTY_10G
+        NIC1G <-->|GMII @ 125 MHz| PCS1G
+        MDIO_INIT -->|MDC/MDIO/RST_N| PHY1G
+        MDIO_INIT -->|Release Reset After 625MHz Clk Up| PCS1G
+        PCS1G <-->|SGMII LVDS| PHY1G
     end
 ```
 
 ---
 
-## 3. Hardware Resource Mapping & Pinout
+## 3. Verified Hardware Pinout, Bank Rules & Resource Map
 
-### 3.1 1Gb RJ-45 Ethernet Subsystem (TI DP83867)
+### 3.1 1Gb RJ-45 SGMII-over-LVDS Pinout (Bank 64, TI DP83867ISRGZ)
+Verified against official Xilinx VCU118 board definition files (`part0_pins.xml`, `board.xml`, `preset.xml`, UG1224):
 
-| Signal Name | FPGA Pin | Bank / Location | I/O Standard | Function |
+| Signal Name | FPGA Pin | Bank | I/O Standard & Properties | Function |
 | :--- | :--- | :--- | :--- | :--- |
-| `sgmii_tx_p` / `_n` | `AU40` / `AU41` | Bank 128 (Quad 128) | High-Speed Serial | SGMII Serial TX Data Differential Pair |
-| `sgmii_rx_p` / `_n` | `AV38` / `AV39` | Bank 128 (Quad 128) | High-Speed Serial | SGMII Serial RX Data Differential Pair |
-| `sgmii_clk_p` / `_n` | `AK34` / `AK35` | Bank 128 (Quad 128) | LVDS | 125.0 MHz Differential SGMII Clock |
-| `mdio_gem_mdc` | `AR39` | Bank 64 (1.8V) | LVCMOS18 | Management Data Clock |
-| `mdio_gem_mdio` | `AK39` | Bank 64 (1.8V) | LVCMOS18 | Management Data Input / Output |
-| `mdio_gem_rst_n` | `AN39` | Bank 64 (1.8V) | LVCMOS18 | Active-Low Hardware PHY Reset |
-| `mdio_gem_irq_n` | `AM39` | Bank 64 (1.8V) | LVCMOS18 | Active-Low Hardware PHY Interrupt |
+| `sgmii_phyclk_p` / `_n` | `AT22` / `AU22` | Bank 64 | `LVDS`, `DIFF_TERM_ADV = TERM_100` | **625.0 MHz** differential SGMII clock from DP83867 PHY |
+| `sgmii_txp` / `sgmii_txn` | `AU21` / `AV21` | Bank 64 | `LVDS` (or `DIFF_HSTL_I_DCI_18`), `DIFF_PAIR_2` | SGMII differential serial transmit data (1.25 Gbps) |
+| `sgmii_rxp` / `sgmii_rxn` | `AU24` / `AV24` | Bank 64 | `LVDS`, `DIFF_TERM_ADV = TERM_100`, `DIFF_PAIR_0` | SGMII differential serial receive data (1.25 Gbps) |
+| `phy_rst_n` | `BA21` | Bank 64 | `LVCMOS18`, `SLEW SLOW`, `DRIVE 8` | Active-low hardware PHY reset |
+| `phy_mdc` | `AV23` | Bank 64 | `LVCMOS18`, `SLEW SLOW`, `DRIVE 8` | MDIO management clock (~1.56 MHz from 50 MHz `clk_div4`) |
+| `phy_mdio` | `AR23` | Bank 64 | `LVCMOS18`, `SLEW SLOW`, `DRIVE 8` | Bidirectional MDIO management data (`PHY_ADDR = 5'h03`) |
 
-### 3.2 10Gb QSFP28 Subsystem (QSFP1 / Quad 231)
+**Mandatory UltraScale+ Bank 64/65 & BITSLICE Configuration**:
+- `vcu118_pcs_pma_1g` (`gig_ethernet_pcs_pma:17.0`):
+  - `CONFIG.Standard {SGMII}`
+  - `CONFIG.Physical_Interface {LVDS}`
+  - `CONFIG.Management_Interface {false}` (driven directly via `configuration_vector_0 = {1'b1, 2'b00, pma_loopback, 1'b0}` and `an_adv_config_vector_0 = 16'hd801`)
+  - `CONFIG.Auto_Negotiation {true}`
+  - `CONFIG.SupportLevel {Include_Shared_Logic_in_Core}`
+  - `CONFIG.LvdsRefClk {625}`
+  - `CONFIG.Tx_In_Upper_Nibble {0}`
+  - `CONFIG.RxNibbleBitslice0Used {false}`
+  - `CONFIG.TxLane0_Placement {DIFF_PAIR_2}`
+  - `CONFIG.RxLane0_Placement {DIFF_PAIR_0}`
+- **DP83867 625 MHz Clock Bootstrap Requirement**:
+  - Out of hardware reset (`BA21`), the TI DP83867 PHY on VCU118 defaults to 4-wire SGMII (`SGMIICTL1` bit 14 = `0`), keeping the 625 MHz differential clock output (`AT22`/`AU22`) disabled.
+  - `vcu118_eth1g.sv` runs an autonomous MDIO state machine on the free-running 50 MHz `i_clk_div4` clock that:
+    1. Holds `phy_rst_n = 0` for ~16 ms, releases `phy_rst_n = 1`, and waits ~16 ms for internal PHY initialization.
+    2. Performs 14 Clause-22 MDIO writes to `PHY_ADDR = 5'h03` using indirect extended addressing (`REGCR = 5'h0D`, `ADDAR = 5'h0E`) and direct standard registers:
+       - Extended Reg `0x0031` (`CFG4`) `<= 16'h0070` (SGMII AN timer = 11 ms).
+       - Extended Reg `0x00D3` (`SGMIICTL1`) `<= 16'h4000` (Enable 6-wire SGMII 625 MHz differential clock output).
+       - Extended Reg `0x016F` (`10M_SGMII_CFG`) `<= 16'h0015` (10M SGMII configuration).
+       - Standard Reg `0x0010` (`PHYCR`) `<= 16'h5848` (Enable SGMII interface mode, bit 11 = `1`, MDI crossover auto).
+       - Standard Reg `0x0000` (`BMCR`) `<= 16'h1340` (Enable Auto-Negotiation, restart AN, 1000 Mbps Full Duplex).
+    3. Waits ~2 ms after initialization completes so the 625 MHz differential clock on `AT22`/`AU22` is stable before releasing `vcu118_pcs_pma_1g.reset`, ensuring reliable UltraScale+ BITSLICE RIU/delay calibration.
 
-| Signal Name | FPGA Pin | Bank / Location | I/O Standard | Function |
+### 3.2 10Gb QSFP28 Pinout (Quad 231, QSFP1 Cage)
+Verified against VCU118 schematic and `xcvu9p-flga2104-2L-e` package layout:
+
+| Signal Name | FPGA Pin | Bank / Site | I/O Standard | Function |
 | :--- | :--- | :--- | :--- | :--- |
-| `qsfp1_mgtrefclk_p` / `_n` | `W9` / `W8` | Bank 231 (Quad 231) | High-Speed Diff | 156.250 MHz Differential MGT Reference Clock |
-| `qsfp1_tx_p` / `_n` (Lane 0) | `V7` / `V6` | Bank 231 (Quad 231) | High-Speed Serial | 10.3125 Gbps Transmit Data Differential Pair |
-| `qsfp1_rx_p` / `_n` (Lane 0) | `Y2` / `Y1` | Bank 231 (Quad 231) | High-Speed Serial | 10.3125 Gbps Receive Data Differential Pair |
-| `qsfp1_modsel_l` | `AL21` | Bank 65 (1.8V) | LVCMOS18 | Module Select (Active-Low) |
-| `qsfp1_reset_l` | `AM21` | Bank 65 (1.8V) | LVCMOS18 | Module Hardware Reset (Active-Low) |
-| `qsfp1_lpmode` | `AN21` | Bank 65 (1.8V) | LVCMOS18 | Low Power Mode Override |
+| `i_qsfp1_refclk_p` / `_n` | `W9` / `W8` | Quad 231 (`MGTREFCLK0_231`) | GTY RefClk | **156.250 MHz** differential reference clock (`X1Y48 clk0`) |
+| `o_qsfp1_tx_p` / `_n` | `V7` / `V6` | Quad 231 (`GTYE4_CHANNEL_X1Y48`) | GTY Serial | 10.3125 Gbps QSFP1 Lane 0 serial TX |
+| `i_qsfp1_rx_p` / `_n` | `Y2` / `Y1` | Quad 231 (`GTYE4_CHANNEL_X1Y48`) | GTY Serial | 10.3125 Gbps QSFP1 Lane 0 serial RX |
+| `o_qsfp1_modsell` | `AM21` | Bank 64 | `LVCMOS18` | QSFP1 Module Select (driven `1'b0` = selected) |
+| `o_qsfp1_resetl` | `BA22` | Bank 64 | `LVCMOS18` | QSFP1 Module Reset (driven `1'b1` = not in reset) |
+| `o_qsfp1_lpmode` | `AN21` | Bank 64 | `LVCMOS18` | QSFP1 Low-Power Mode (driven `1'b0` = normal high-power mode) |
+| `i_qsfp1_modprsl` | `AL21` | Bank 64 | `LVCMOS18`, `PULLUP true` | QSFP1 Module Present (active-low; `0` = module inserted) |
 
-### 3.3 Memory-Mapped I/O (MMIO) Allocations
+### 3.3 Memory Map & APLIC Interrupts (`soc_top.sv`)
 
-| Address Range | Size | Component | Function |
-| :--- | :--- | :--- | :--- |
-| `0x4002_0000 – 0x4002_ffff` | 64 KiB | AMD AXI Ethernet MAC | TEMAC control, SGMII PCS status, MDIO registers |
-| `0x4003_0000 – 0x4003_ffff` | 64 KiB | AMD AXI DMA | 1Gb Scatter-Gather TX/RX descriptor rings & control |
-| `0x4004_0000 – 0x4004_ffff` | 64 KiB | FROST 10G NIC (`nic_top`) | 10G Ring buffers, CSRs, `PHY_CTRL` loopback register |
+| Peripheral | Physical Address Window | Size | APLIC Source | Linux Device / Driver |
+| :--- | :--- | :--- | :--- | :--- |
+| `ns16550a` UART | `0x4000_1000 – 0x4000_10ff` | 256 B | Source 1 | `/dev/ttyS0` (`serial8250`) |
+| SiFive CLINT | `0x4001_0000 – 0x4001_bfff` | 48 KiB | Timer / IPI | `clint` |
+| DMA Test Engine | `0x4002_0000 – 0x4002_00ff` | 256 B | Source 3 | `frost,dma-test-engine` |
+| Memory Error Unit | `0x4002_1000 – 0x4002_10ff` | 256 B | Source 5 | `frost_memerr.ko` |
+| **1Gb RJ-45 NIC (`u_nic_1g`)** | **`0x4002_2000 – 0x4002_2fff`** | **4 KiB** | **Source 2** | **`eth1` (`frost_net10g.ko`, VCU118 only)** |
+| **10Gb QSFP28 NIC (`u_nic`)** | **`0x4003_0000 – 0x4003_0fff`** | **4 KiB** | **Source 4** | **`eth0` (`frost_net10g.ko`, X3 & VCU118)** |
 
-### 3.4 Interrupt Allocation (APLIC)
-
-| APLIC Source ID | Interrupt Source | Trigger Type | Function |
-| :--- | :--- | :--- | :--- |
-| `Source 4` | FROST 10G NIC IRQ | Level High | 10G TX/RX completion, descriptor ring status |
-| `Source 5` | AXI DMA TX IRQ | Level High | 1Gb Frame transmission completion |
-| `Source 6` | AXI DMA RX IRQ | Level High | 1Gb Frame reception notification |
-| `Source 7` | AXI Ethernet MAC IRQ | Level High | 1Gb Link status change, auto-negotiation complete |
+> [!NOTE]
+> `0x4002_2000 – 0x4002_2fff` already resides inside the strongly-ordered device PMA range `[MmioFirstPage, MmioLastPage]` (`0x4000_0000 – 0x4003_0fff`), and APLIC Source 2 is already allocated in `aplic_inst` (`NUM_SOURCES = 5`). Thus `riscv_pkg.sv` and the APLIC configuration require zero structural changes.
 
 ---
 
-## 4. 10Gb Loopback Verification Strategy
+## 4. 10Gb QSFP28 & 1Gb RJ-45 Loopback Verification
 
-To prove operational status of the 10Gb pipeline without requiring an external 10G switch or host:
-1. **Near-End PMA Loopback Mode**:
-   - The GTY transceiver channel in Quad 231 is configured with `ENABLE_OPTIONAL_PORTS {loopback_in}`.
-   - Writing `0x4` to CSR `PHY_CTRL` (`0x4004_0064`, bit 2 = `PMA_LOOPBACK`) asserts GTY `LOOPBACK = 3'b010`.
-   - In this mode, the TX serializer loops directly to the RX deserializer inside the GTY PMA.
-2. **Soft MAC Loopback Mode**:
-   - Setting bit 0 (`MAC_LOOPBACK`) in `PHY_CTRL` loops frames back immediately before transmission.
-3. **Verification Scope**:
-   - **TX Datapath**: TX DMA descriptor fetch -> packet packing -> 64b/66b scrambler/encoder -> gearbox -> GTY serializer.
-   - **RX Datapath**: GTY deserializer -> recovered clock aligner -> gearbox -> 64b/66b descrambler/decoder -> block lock state machine -> packet unpacking -> RX DMA ring writeback.
-   - **Driver Verification**: Running ping or raw packet loopback via the `frost_net10g` Linux driver validates that RX and TX rings advance synchronously, frame checksums match, and packet loss is zero.
+1. **10Gb QSFP28 Near-End PMA Loopback (`eth0`)**:
+   - `vcu118_nic_gty_wiz` (`gtwizard_ultrascale:1.7` on `GTYE4_CHANNEL_X1Y48`) exposes `loopback_in[2:0]`.
+   - Since `RAW_LOOPBACK = 0` on hardware (independent TX and RX GTY recovered clocks), `PHY_STATUS.CLK_SHARED` reads `0`.
+   - When `frost_nettest` enables `ethtool -K eth0 loopback on` and brings `eth0` up, `frost_net10g.ko` sets `PHY_CTRL.PMA_LOOPBACK` (`bit 2`), which drives `loopback_in = 3'b010` (GTY Near-End PMA loopback) and forces `rx_signal_ok = 1'b1`.
+   - `x3_nic_gty_supervisor` completes TX and RX GTY reset sequencing on the free-running 150 MHz clock (`sysclk1_300 / 2`), locks the 64b/66b PCS block aligner, asserts carrier (`NET10G_LINK_CARRIER`), and streams 9000-byte jumbo frames, short padded frames (14..160 bytes), and 300-frame bursts through TX DMA -> 64b/66b PCS -> GTY PMA serializer -> GTY PMA deserializer -> 64b/66b PCS -> RX DMA -> L2 cache, printing `FROST_NET_LOOPBACK_PASS`.
+2. **1Gb RJ-45 SGMII Loopback (`eth1`)**:
+   - `u_nic_1g` (`GMII_MODE = 1, RAW_LOOPBACK = 1`) shares `clk125_out` for TX and RX, supporting both `MAC_LOOPBACK` (GMII TX directly into GMII RX) and PCS loopback (`configuration_vector_0[1]`).
 
 ---
 
-## 5. Linux Boot & Multi-Console Infrastructure
+## 5. Linux Networking, SSH Console & TFTP/NFS Boot
 
-### 5.1 TFTP and NFS Boot Over 1Gb Ethernet
-1. **DHCP & Network Initialization**:
-   - The Linux kernel IP autoconfiguration (`CONFIG_IP_PNP=y`, `CONFIG_IP_PNP_DHCP=y`) or initial ramdisk acquires an IPv4 address on `eth0` via the local LAN DHCP server.
-2. **NFS Root Mounting**:
-   - Kernel command line parameter:
-     ```text
-     console=ttyS0,115200 root=/dev/nfs nfsroot=<server-ip>:/srv/nfs/frost,tcp,v3 rw ip=dhcp
-     ```
-   - Kernel initializes `xilinx_axienet`, achieves link partner auto-negotiation at 1000 Mbps with the DP83867 PHY, negotiates DHCP lease, and mounts `/` over NFSv3.
-3. **TFTP Kernel Loading**:
-   - OpenSBI / U-Boot payload can fetch updated kernel images or device tree blobs directly from a local TFTP server over `eth0`.
-
-### 5.2 Simultaneous Linux Login Consoles
-- **Physical UART Console**: Interactive `/dev/ttyS0` serial login at 115200 baud on the CP2105 USB-UART.
-- **1Gb SSH Console (`eth0`)**: Dropbear SSH server listening on port 22 reachable at the DHCP-assigned LAN address.
-- **10Gb Network Console (`eth1`)**: Available for SSH or direct packet testing when connected to a 10G switch or host, or active during loopback diagnostics.
-- **Netconsole**: Kernel printk mirroring via UDP packets targeting a host syslog listener.
+1. **Automatic Interface Bring-Up & DHCP (`S03frost-net10g` / `S45frost-net`)**:
+   - At boot, `S03frost-net10g` loads `frost_net10g.ko` and prints `FROST_NET10G_MODULE_PASS 6.12.113+deb13-riscv64`.
+   - When `eth1` (the 1Gb RJ-45 interface on VCU118) is present, `/etc/init.d/S45frost-net` brings `eth1` up (`ip link set eth1 up`) and launches `udhcpc -i eth1 -b -q -S` in the background (using Buildroot's `/usr/share/udhcpc/default.script` to configure the IPv4 address, default route, and `/etc/resolv.conf` when a DHCP lease is granted).
+   - `eth0` (10Gb QSFP28) is left down at boot so `frost_nettest` can immediately run 10Gb PMA loopback verification without conflict; when a 10Gb switch/host is connected, `ip link set eth0 up && udhcpc -i eth0 -b` brings up 10Gb networking.
+2. **Simultaneous Login Consoles (UART + 1Gb SSH + 10Gb SSH)**:
+   - **UART Console**: `/sbin/getty -L console 0 vt100` on `/dev/ttyS0` (115200 baud).
+   - **SSH Server (`dropbear`)**: Enabled in Buildroot (`BR2_PACKAGE_DROPBEAR=y`) with blank-password root login enabled for evaluation (`DROPBEAR_ARGS="-B"` in `/etc/default/dropbear`), listening on TCP port 22 across all active interfaces (`eth1` 1Gb RJ-45 and `eth0` 10Gb QSFP28).
+3. **TFTP & NFS Root Boot Support**:
+   - BusyBox `tftp` and in-kernel NFSv3 client support (`mount -t nfs -o nolock,vers=3,tcp`) are available in the Debian 6.12 + Buildroot environment for fetching kernels/files via TFTP and mounting NFSv3 shares directly from userspace.
+   - Full NFS root boot (`FROST_LINUX_NFSROOT=<server-ip>:/<path>`) is supported via `sw/apps/linux_boot/Makefile` and `frost_boot_image.py` (`boot=nfs root=/dev/nfs nfsroot=... rw ip=dhcp`).
 
 ---
 
-## 6. Implementation Phases & Work Breakdown
+## 6. Implementation Phases & File Manifest
 
-### Phase 1: Vivado IP Block Design for 1Gb Ethernet (`fpga/build/vcu118_eth_bd.tcl`)
-- Generate `xilinx.com:ip:axi_ethernet:7.2` in `1G_PCS_PMA_SGMII` mode with internal clocking.
-- Generate `xilinx.com:ip:axi_dma:7.1` in Scatter-Gather mode with 64-bit memory interface.
-- Export AXI4-Lite control ports, coherent AXI4 DMA master, and interrupt lines.
+| Phase | Files Modified / Created | Description |
+| :--- | :--- | :--- |
+| **Phase 1: 1Gb GMII Mode & Dual-NIC SoC RTL** | `hw/rtl/peripherals/nic/nic_mac_wrap.sv`<br>`hw/rtl/peripherals/nic/nic_top.sv`<br>`hw/rtl/soc_top/soc_top.sv`<br>`hw/rtl/platform_top.sv`<br>`hw/rtl/frost.sv`<br>`boards/xilinx_frost_subsystem.sv` | Add `GMII_MODE` (`0` default, `1` for 8:1 XGMII<->GMII adapter with `eth10g_mac_tx`/`rx`) and `ENABLE_1G_ETH` (`0` default, `1` on VCU118 for `u_nic_1g` at `0x4002_2000`, APLIC Src 2, `DmaPorts = 3`). |
+| **Phase 2: Vivado Transceiver & PCS/PMA IPs** | `fpga/build/vcu118_gty_ip.tcl`<br>`fpga/build/build_step.tcl` | Generate `vcu118_nic_gty_wiz` (`gtwizard_ultrascale:1.7` on `X1Y48`, 156.25 MHz refclk, 10.3125 Gbps) and `vcu118_pcs_pma_1g` (`gig_ethernet_pcs_pma:17.0` in SGMII over LVDS mode, 625 MHz refclk). |
+| **Phase 3: VCU118 Board Wrappers & Constraints** | `boards/vcu118/vcu118_nic_gty.sv`<br>`boards/vcu118/vcu118_eth1g.sv`<br>`boards/vcu118/vcu118_clock.sv`<br>`boards/vcu118/vcu118_frost.sv`<br>`boards/vcu118/vcu118_frost.f`<br>`boards/vcu118/constr/vcu118.xdc` | Implement 150 MHz free-running clock (`BUFGCE_DIV`), 10G GTY wrapper, 1G DP83867 MDIO initializer + SGMII PCS/PMA wrapper, top-level ports, and Bank 64 / Quad 231 pin & timing constraints. |
+| **Phase 4: Linux DTB, Driver & Userspace** | `linux/frost-net10g/frost_net10g.c`<br>`linux/buildroot-external/board/frost/frost_boot_image.py`<br>`linux/buildroot-external/package/frost-stress/src/frost_nettest.c`<br>`linux/buildroot-external/configs/frost_rv64_defconfig`<br>`linux/buildroot-external/board/frost/rootfs-overlay-mmu/etc/default/dropbear`<br>`linux/buildroot-external/board/frost/rootfs-overlay-mmu/etc/init.d/S45frost-net` | Add `ethernet@40022000` to DTB, quiet `-ENODEV` when `NET10G_ID == 0`, optional interface arg in `frost_nettest`, enable `dropbear` SSH + `udhcpc` DHCP, and auto-configure `eth1`. |
+| **Phase 5: Bitstream Build & Hardware Verification** | `fpga/build/build.py vcu118`<br>`fpga/program_bitstream/program_bitstream.py vcu118`<br>`fpga/load_software/load_software.py vcu118 linux_boot` | Synthesize, place, route, verify timing closure ($WNS \ge 0\text{ ns}$), program VCU118, verify `frost_nettest` 10Gb PMA loopback (`FROST_NET_LOOPBACK_PASS`), 1Gb link/DHCP/ping/SSH login, and TFTP/NFS. |
 
-### Phase 2: VCU118 10G Transceiver Core (`fpga/build/vcu118_gty_ip.tcl` & `boards/vcu118/vcu118_nic_gty.sv`)
-- Generate `gtwizard_ultrascale` core for Quad 231 (Channel 0: `X0Y28`, 156.25 MHz reference clock from `W9`/`W8`).
-- Configure raw 64-bit PMA interface at 10.3125 Gbps.
-- Expose `loopback_in` for runtime PMA near-end loopback switching.
-- Adapt `vcu118_nic_gty.sv` supervisor to monitor CDR lock, block lock, and PMA loopback transitions.
+---
 
-### Phase 3: Top-Level Board Integration (`boards/vcu118/vcu118_frost.sv`)
-- Instantiate 1Gb Ethernet subsystem and 10Gb GTY wrapper.
-- Integrate both 64-bit DMA masters into `soc_top` via `axi_mux` to `axi_coherent_bridge`.
-- Connect interrupt signals (APLIC Sources 4, 5, 6, 7).
-- Expose physical pinout for Bank 128 (SGMII), Bank 64 (MDIO), and Bank 231 (QSFP1).
+## 7. Post-Route Implementation & Silicon Verification Results
 
-### Phase 4: Physical Constraints (`boards/vcu118/constr/vcu118_eth.xdc`)
-- Pin placement and I/O standard definitions for SGMII, MDIO, and QSFP1 pins.
-- Timing constraints:
-  - 125.0 MHz differential clock constraint for SGMII.
-  - 156.25 MHz differential clock constraint for QSFP1.
-  - Asynchronous clock groups between CPU main clock, 125 MHz SGMII clock, and 161.13 MHz 10G MAC clock domains.
+### 7.1 Post-Route Timing Closure & Resource Utilization (`xcvu9p-flga2104-2L-e` @ 200.0 MHz)
+- **Overall Setup Timing**: **$WNS = +0.004\text{ ns}$, $TNS = 0.000\text{ ns}$ (0 / 516,627 failing endpoints)**
+- **Overall Hold Timing**: **$WHS = +0.010\text{ ns}$, $THS = 0.000\text{ ns}$ (0 / 515,767 failing endpoints)**
+- **Key Clock Domains**:
+  - `clk_cpu_unbuf` (200.020 MHz): $WNS = +0.004\text{ ns}$, $WHS = +0.010\text{ ns}$
+  - `mmcm_clkout0` (300.000 MHz DDR4 UI): $WNS = +0.011\text{ ns}$, $WHS = +0.010\text{ ns}$
+  - `nic_tx_clk` / `nic_rx_clk` (161.133 MHz 10Gb GTY): $WNS = +0.874\text{ ns}$ / $+0.930\text{ ns}$, $WHS = +0.041\text{ ns}$ / $+0.018\text{ ns}$
+  - `IntTx_ClkOut1` / `IntRx_ClkOut0` (125.0 MHz / 312.5 MHz 1Gb SGMII PCS/PMA): $WNS = +1.887\text{ ns}$ / $+0.143\text{ ns}$, $WHS = +0.028\text{ ns}$ / $+0.025\text{ ns}$
+  - `freerun_clk_150` (150.015 MHz GTY supervisor): $WNS = +3.663\text{ ns}$, $WHS = +0.041\text{ ns}$
+- **Resource Utilization**:
+  - CLB LUTs: 199,044 / 1,182,240 (16.84%)
+  - CLB Registers: 126,801 / 2,364,480 (5.36%)
+  - Block RAM Tiles: 225.5 / 2,160 (10.44%), UltraRAM: 66 / 960 (6.88%)
+  - High-Speed I/O & Transceivers: 1 `GTYE4_CHANNEL` + 1 `GTYE4_COMMON` (Quad 231), `vcu118_pcs_pma_1g` BITSLICEs in Bank 64.
 
-### Phase 5: Common Linux Device Tree & Kernel Config
-- Add `xlnx,axi-ethernet-1.00.a` node with DP83867 MDIO phy subnode to `frost.dts`.
-- Add `frost_net10g` node with Quad 231 GTY aperture.
-- Enable kernel options: `CONFIG_XILINX_AXI_EMAC=y`, `CONFIG_DP83867_PHY=y`, `CONFIG_FROST_NET10G=y`, `CONFIG_IP_PNP_DHCP=y`, `CONFIG_ROOT_NFS=y`.
-- Configure Buildroot with `dropbear`, `udhcpc`, and NFS rootfs support.
-
-### Phase 6: Hardware Testing & Validation
-1. **10Gb Loopback Test**: Run internal PMA loopback packet test; verify block lock, byte count, zero packet loss, and interrupt firing.
-2. **1Gb LAN Test**: Verify DP83867 auto-negotiation and obtain DHCP lease on local network.
-3. **TFTP / NFS Boot**: Boot Linux kernel with NFS root filesystem over `eth0`.
-4. **Concurrent Multi-Console**: Establish simultaneous interactive sessions on UART `/dev/ttyS0` and SSH over `eth0`.
+### 7.2 Physical Hardware Verification on VCU118
+1. **Linux 6.12 Boot & Dual-NIC Driver Registration**:
+   - `FROST_NET10G_MODULE_PASS 6.12.113+deb13-riscv64`
+   - `frost_net10g 40030000.ethernet eth0: FROST 10G Ethernet at 0x40030000, irq 12, mac 02:11:22:33:44:55`
+   - `frost_net10g 40022000.ethernet eth1: FROST 10G Ethernet at 0x40022000, irq 13, mac 02:11:22:33:44:56`
+2. **Objective 2 — 10Gb QSFP28 (`eth0`) GTY Near-End PMA Loopback**:
+   - Executed `frost_nettest eth0` on physical VCU118 silicon:
+     - Verified GTY PMA loopback link lock (`carrier = 1` on `GTYE4_CHANNEL_X1Y48`), MTU 9000 jumbo frames, short frame padding (`14..160` bytes), boundary lengths (`1514..9014` bytes), 300-frame back-to-back burst, and 64-frame ring drain (`514` frames TX/RX, `0` errors) -> **`FROST_NET_LOOPBACK_PASS`**.
+3. **Objective 1 — 1Gb RJ-45 (`eth1`) Live LAN, DHCP & Concurrent SSH Console**:
+   - Autonomous MDIO state machine initialized TI DP83867 (`PHY_ADDR = 5'h03`) into 6-wire SGMII mode (`625 MHz` differential clock active) and negotiated 1000BASE-T Full Duplex (`carrier = 1`).
+   - `S45frost-net` acquired IPv4 lease via `udhcpc` on `eth1`, verified 0% packet loss on bidirectional ICMP `ping`, and verified live interactive `ssh root@<board-ip>` login into the RISC-V Linux shell concurrently with the `/dev/ttyS0` UART console.

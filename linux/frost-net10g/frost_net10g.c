@@ -937,6 +937,8 @@ static int frost_probe(struct platform_device *pdev)
 		return PTR_ERR(base);
 
 	id = readl(base + NET10G_ID);
+	if (id == 0)
+		return -ENODEV;
 	if (id != NET10G_ID_VALUE)
 		return dev_err_probe(dev, -ENODEV, "unexpected ID %#x\n", id);
 

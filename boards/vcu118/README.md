@@ -38,6 +38,8 @@ This directory provides the board wrapper, clocking infrastructure, pin constrai
     - **Channel 2 (C2)**: Physical Banks 40–42 (located in **SLR0**).
 - **Board Peripherals**:
   - Console: Silicon Labs CP2105 USB-UART (Bank 64: `BB21` TX, `AW25` RX, interface 1) at 115200 baud.
+  - 1Gb RJ-45 Ethernet (`eth1`): TI DP83867ISRGZ PHY (Bank 64 SGMII-over-LVDS: `AT22`/`AU22` 625 MHz clock, `AU21`/`AV21` TX, `AU24`/`AV24` RX, `AV23` MDC, `AR23` MDIO, `BA21` reset) with AMD `gig_ethernet_pcs_pma:17.0` + FROST coherent DMA NIC (`0x4002_2000`, APLIC Source 2).
+  - 10Gb QSFP28 Ethernet (`eth0`): QSFP1 Lane 0 (Quad 231 `GTYE4_CHANNEL_X1Y48`: `W9`/`W8` 156.25 MHz refclk, `V7`/`V6` TX, `Y2`/`Y1` RX) with FROST 10GBASE-R MAC/PCS + coherent DMA NIC (`0x4003_0000`, APLIC Source 4).
   - Pushbutton Reset: SW6 CPU reset (`L19`, Bank 65 in SLR2).
   - Status LEDs: Bank 67/68 (`AT32`, `AV34`, `AY30`, `BB32` in SLR2).
 
@@ -92,35 +94,37 @@ All active logic of the single-core FROST target is floorplanned inside **SLR2**
 
 ## 4. Post-Route Resource Utilization & Timing Summary
 
-### Resource Utilization Breakdown (xcvu9p-flga2104-2L-e @ 200.0 MHz)
+### Resource Utilization Breakdown (xcvu9p-flga2104-2L-e @ 200.0 MHz, Dual-NIC 10Gb + 1Gb)
 
 | Resource | Used | Available | Utilization |
 | :--- | :--- | :--- | :--- |
-| **CLB LUTs** | 182,626 | 1,182,240 | 15.45% |
-| - LUT as Logic | 157,887 | 1,182,240 | 13.35% |
-| - LUT as Distributed RAM | 24,002 | 591,840 | 4.06% |
-| - LUT as Shift Register | 737 | 591,840 | 0.12% |
-| **CLB Registers** | 114,420 | 2,364,480 | 4.84% |
-| **CARRY8** | 2,696 | 147,780 | 1.82% |
-| **F7 / F8 Muxes** | 2,893 | 886,680 | 0.33% |
-| **Block RAM Tile (36 Kb)** | 191.5 | 2,160 | 8.87% |
+| **CLB LUTs** | 199,044 | 1,182,240 | 16.84% |
+| - LUT as Logic | 173,649 | 1,182,240 | 14.69% |
+| - LUT as Distributed RAM | 24,648 | 591,840 | 4.16% |
+| - LUT as Shift Register | 747 | 591,840 | 0.13% |
+| **CLB Registers** | 126,801 | 2,364,480 | 5.36% |
+| **CARRY8** | 3,047 | 147,780 | 2.06% |
+| **F7 / F8 / F9 Muxes** | 2,905 | 1,034,460 | 0.28% |
+| **Block RAM Tile (36 Kb)** | 225.5 | 2,160 | 10.44% |
 | **UltraRAM (URAM)** | 66 | 960 | 6.88% |
 | **DSP48E2** | 27 | 6,840 | 0.39% |
-| **Bonded IOB** | 137 | 832 | 16.47% |
+| **Bonded IOB** | 149 | 832 | 17.91% |
+| **GTYE4_CHANNEL / COMMON** | 1 / 1 | 52 / 13 | 1.92% / 7.69% |
 | **MMCM** | 2 | 30 | 6.67% |
-| **PLL** | 3 | 60 | 5.00% |
-
-All active logic is contained in **SLR2** (`pblock_slr2`), utilizing ~46.3% of the 394k LUT capacity of SLR2.
+| **PLL** | 5 | 60 | 8.33% |
 
 ### Timing Closure Metrics
 
 | Clock Domain | Frequency | Worst Setup (WNS) | Total Negative (TNS) | Failing / Total Setup | Worst Hold (WHS) | Total Hold (THS) | Failing / Total Hold |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **CPU Main (`clk_cpu`)** | 200.020 MHz | **+0.012 ns** | 0.000 ns | 0 / 339,659 | **+0.010 ns** | 0.000 ns | 0 / 339,659 |
-| **JTAG / Loader (`clk_div4`)** | 50.005 MHz | **+10.699 ns** | 0.000 ns | 0 / 55,029 | **+0.011 ns** | 0.000 ns | 0 / 55,029 |
-| **DDR4 Reference** | 250.000 MHz | **+2.145 ns** | 0.000 ns | 0 / 23 | **+0.048 ns** | 0.000 ns | 0 / 23 |
-| **DDR4 Memory Controller** | 300.000 MHz | **+0.055 ns** | 0.000 ns | 0 / 71,913 | **+0.010 ns** | 0.000 ns | 0 / 71,913 |
-| **Overall Design** | — | **+0.012 ns** | **0.000 ns** | **0 / 482,634** | **+0.010 ns** | **0.000 ns** | **0 / 481,788** |
+| **CPU Main (`clk_cpu`)** | 200.020 MHz | **+0.004 ns** | 0.000 ns | 0 / 358,621 | **+0.010 ns** | 0.000 ns | 0 / 358,621 |
+| **JTAG / Loader (`clk_div4`)** | 50.005 MHz | **+11.430 ns** | 0.000 ns | 0 / 55,241 | **+0.010 ns** | 0.000 ns | 0 / 55,241 |
+| **10Gb GTY Supervisor (`freerun_clk_150`)** | 150.015 MHz | **+3.663 ns** | 0.000 ns | 0 / 587 | **+0.041 ns** | 0.000 ns | 0 / 587 |
+| **10Gb GTY PCS (`nic_tx_clk` / `nic_rx_clk`)** | 161.133 MHz | **+0.874 ns** | 0.000 ns | 0 / 6,772 | **+0.018 ns** | 0.000 ns | 0 / 6,772 |
+| **1Gb SGMII PCS (`IntTx_ClkOut1`)** | 125.000 MHz | **+1.887 ns** | 0.000 ns | 0 / 6,146 | **+0.028 ns** | 0.000 ns | 0 / 6,146 |
+| **DDR4 Reference** | 250.000 MHz | **+2.475 ns** | 0.000 ns | 0 / 23 | **+0.042 ns** | 0.000 ns | 0 / 23 |
+| **DDR4 Memory Controller** | 300.000 MHz | **+0.011 ns** | 0.000 ns | 0 / 71,937 | **+0.010 ns** | 0.000 ns | 0 / 71,937 |
+| **Overall Design** | — | **+0.004 ns** | **0.000 ns** | **0 / 516,627** | **+0.010 ns** | **0.000 ns** | **0 / 515,767** |
 
 ---
 
@@ -286,5 +290,7 @@ The timing-closed 200.0 MHz VCU118 bitstream was programmed and validated on phy
   5. **`linux_boot` (Debian Linux 6.12.113 SMP + Buildroot initramfs)**:
      - Booted Debian Linux 6.12.113 kernel with Sv39 virtual memory, AIA/IMSIC interrupt controller, and 2.0 GB memory aperture (`MemTotal: 1949 MB`).
      - Probed active ISA extensions including hardware carryless multiplier (`zbc`, `zbkc`).
-     - Loaded out-of-tree `frost_net10g` and `frost_memerr` modules (`FROST_NET10G_MODULE_PASS 6.12.113+deb13-riscv64`).
-     - Reached interactive `buildroot login:` prompt on `/dev/ttyS0` console and confirmed root shell commands.
+     - Loaded out-of-tree `frost_net10g` and `frost_memerr` modules (`FROST_NET10G_MODULE_PASS 6.12.113+deb13-riscv64`, `FROST_MEMERR_MODULE_PASS 6.12.113+deb13-riscv64`) and passed userspace stress (`FROST_USERSPACE_STRESS_PASS`).
+     - Registered both `eth0` (10Gb QSFP28 at `0x4003_0000`, IRQ 12, MAC `02:11:22:33:44:55`) and `eth1` (1Gb RJ-45 SGMII at `0x4002_2000`, IRQ 13, MAC `02:11:22:33:44:56`).
+     - **10Gb QSFP28 (`eth0`) GTY Near-End PMA Loopback**: Executed `frost_nettest eth0`, verifying 514 frames across MTU 9000 jumbo frames, short frame padding (14..160 B), boundary frames (1514..9014 B), and 300-frame bursts through the GTY transceiver PMA (`GTYE4_CHANNEL_X1Y48`) with 0 errors (`FROST_NET_LOOPBACK_PASS`).
+     - **1Gb RJ-45 (`eth1`) Live LAN, DHCP & SSH Console**: Linked at 1000BASE-T Full Duplex via TI DP83867 + AMD `gig_ethernet_pcs_pma`, acquired IPv4 address via `udhcpc` (`S45frost-net`), passed bidirectional ICMP `ping` (0% loss), and verified concurrent interactive `ssh root@<board-ip>` login (`dropbear`) alongside the `/dev/ttyS0` UART console.

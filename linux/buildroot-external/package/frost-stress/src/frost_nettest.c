@@ -157,12 +157,16 @@ static int ethtool_ioctl(const char *name, void *cmd)
     return ioctl(g_ctl, SIOCETHTOOL, &ifr);
 }
 
+static const char *g_requested_ifname;
+
 static int find_interface(void)
 {
     struct if_nameindex *names = if_nameindex();
     if (!names)
         return fail("if_nameindex: %s", strerror(errno));
     for (struct if_nameindex *p = names; p->if_index != 0; p++) {
+        if (g_requested_ifname && strcmp(p->if_name, g_requested_ifname) != 0)
+            continue;
         struct ethtool_drvinfo info;
         memset(&info, 0, sizeof(info));
         info.cmd = ETHTOOL_GDRVINFO;
@@ -821,10 +825,12 @@ static int restore(void)
     return set_loopback(0) != 0 ? -1 : 1;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     struct timespec ts;
     setvbuf(stdout, NULL, _IOLBF, 0);
+    if (argc > 1 && argv[1][0] != '\0')
+        g_requested_ifname = argv[1];
     clock_gettime(CLOCK_MONOTONIC, &ts);
     /* Every byte nonzero, so zero padding never reads as this run's tag. */
     g_run =

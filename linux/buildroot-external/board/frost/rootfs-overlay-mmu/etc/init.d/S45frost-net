@@ -1,0 +1,20 @@
+#!/bin/sh
+# Bring up loopback and, when the secondary 1G SGMII NIC (eth1) is present
+# (VCU118), bring it up and start a background DHCP client so the board is
+# reachable over the 1Gb RJ-45 LAN (ping, SSH via dropbear, TFTP/NFS).
+# Leave eth0 (10G) down by default so frost_nettest can test PMA loopback.
+
+case "$1" in
+start)
+	ip link set lo up 2>/dev/null || true
+	if [ -d /sys/class/net/eth1 ]; then
+		ip link set eth1 up 2>/dev/null || true
+		udhcpc -i eth1 -b -q >/dev/null 2>&1 || true
+	fi
+	;;
+stop)
+	killall udhcpc 2>/dev/null || true
+	;;
+esac
+exit 0
+

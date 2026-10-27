@@ -47,6 +47,7 @@ module nic_top #(
     parameter int MAX_FRAME_BYTES = 9216,
     parameter int unsigned STARVATION_LIMIT = 8,
     parameter int unsigned RAW_LOOPBACK = 1,
+    parameter bit GMII_MODE = 1'b0,
     // The DMA master's AXI address and id widths; addresses are zero-extended
     // from ADDR_WIDTH and ids from IdBits.
     parameter int unsigned DMA_AXI_ADDR_BITS = 64,
@@ -236,7 +237,8 @@ module nic_top #(
   nic_mac_wrap #(
       .FIFO_DEPTH(FIFO_DEPTH),
       .MAX_FRAME_BYTES(MAX_FRAME_BYTES),
-      .RAW_LOOPBACK(RAW_LOOPBACK)
+      .RAW_LOOPBACK(RAW_LOOPBACK),
+      .GMII_MODE(GMII_MODE)
   ) u_mac (
       .i_clk            (i_clk),
       .i_rst            (rst_q),
