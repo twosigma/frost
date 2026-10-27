@@ -2050,7 +2050,7 @@ module reservation_station #(
 `ifdef FROST_COHERENT_CLUSTER
       if (COHERENT_CLUSTER) begin : gen_coherent_second_selector
         wire [1:0] live_case = {issue_cdb_2_valid, issue_cdb_valid};
-        logic [Issue2Window-1:0] ready_choice[4];
+        (* keep = "true" *) logic [Issue2Window-1:0] ready_choice[4];
         (* keep = "true" *) logic [3:0] valid_choice;
         (* keep = "true" *) logic [$clog2(Issue2Window)-1:0] index_choice[4];
         (* keep = "true" *) logic [Issue2Window-1:0] onehot_choice[4];

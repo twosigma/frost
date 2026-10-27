@@ -25,13 +25,18 @@ module coherent_rs_issue2_selector #(
 );
   localparam int unsigned IdxWidth = $clog2(DEPTH);
   (* keep = "true" *) logic [DEPTH-1:0] eligible;
+  (* keep = "true" *) logic [DEPTH-1:0] earlier_ready, earlier_eligible;
   for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry
     if (entry == 0) begin : gen_first
+      assign earlier_ready[entry] = 1'b0;
+      assign earlier_eligible[entry] = 1'b0;
       assign eligible[entry] = 1'b0;
       assign o_issue_2_onehot[entry] = 1'b0;
     end else begin : gen_later
-      assign eligible[entry] = i_ready[entry] && !i_branch_class[entry] && (|i_ready[entry-1:0]);
-      assign o_issue_2_onehot[entry] = eligible[entry] && !(|eligible[entry-1:0]);
+      assign earlier_ready[entry] = |i_ready[entry-1:0];
+      assign earlier_eligible[entry] = |eligible[entry-1:0];
+      assign eligible[entry] = i_ready[entry] && !i_branch_class[entry] && earlier_ready[entry];
+      assign o_issue_2_onehot[entry] = eligible[entry] && !earlier_eligible[entry];
     end
   end
   assign o_issue_2_valid = |eligible;
