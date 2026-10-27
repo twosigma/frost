@@ -124,6 +124,8 @@ Staging captures misalignment with the address and size. Fault checks apply
 the live trap setting to that captured result. The first candidate mask determines which
 address source wins ring order. Candidate presence is independent of
 that ordering and the selected payload.
+The coherent L0 computes lookup permission from validity, memory type and
+invalidation independently of the tag comparison. A hit requires both.
 Coherent L0 valid bits and data writes share fill permission computed for
 each response source before the cached/uncached response selection. Valid-state
 updates are computed for every fill and store-update combination. Those two
