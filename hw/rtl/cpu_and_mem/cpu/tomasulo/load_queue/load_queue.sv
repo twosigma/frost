@@ -2008,7 +2008,7 @@ module load_queue #(
 `ifdef FROST_COHERENT_CLUSTER
   logic [3:0] coherent_stage_take;
   wire coherent_replace_without_update, coherent_replace_with_update;
-  wire coherent_stage_replace = COHERENT_CLUSTER ?
+  (* keep = "true" *) wire coherent_stage_replace = COHERENT_CLUSTER ?
       (sq_check_pending && sq_check_gate_early &&
        (i_addr_update.valid ? coherent_replace_with_update : coherent_replace_without_update)) :
       sq_check_replace;
@@ -2035,9 +2035,9 @@ module load_queue #(
     wire will_clear = stage_clear || (sq_check_pending && coherent_sector_hold);
     assign coherent_stage_clear_choice[state_case] = stage_clear;
     for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_copy
-      (* keep = "true" *) logic take;
-      assign take = ((!coherent_pending[copy_index] || will_clear) &&
-                     issue_mem_found && sq_check_gate_early) || coherent_stage_replace;
+      (* keep = "true" *) logic capture_allowed, take;
+      assign capture_allowed = (!coherent_pending[copy_index] || will_clear) && sq_check_gate_early;
+      assign take = (capture_allowed && issue_mem_found) || coherent_stage_replace;
       assign coherent_capture_choice[state_case][copy_index] = take;
     end
   end
@@ -3374,32 +3374,23 @@ module load_queue #(
 
 `ifdef FROST_COHERENT_CLUSTER
   if (COHERENT_CLUSTER) begin : gen_coherent_stage_control
-    logic [DEPTH+2:0] state_choice[8];
-    for (genvar state_case = 0; state_case < 8; state_case++) begin : gen_choice
-      localparam bit Held = (state_case & 2) != 0;
-      wire take = coherent_capture_choice[state_case][0];
-      wire stage_clear = coherent_stage_clear_choice[state_case];
-      wire probe = coherent_probe_ok && !Held && !i_flush_all && !i_flush_en &&
-          !drop_mem_response_pending && !sq_commit_check_block;
-      (* keep = "true" *) logic pending, no_older, phase2;
-      (* keep = "true" *) logic [DEPTH-1:0] in_flight;
-      assign pending = take || (sq_check_pending && !sq_check_flushed && !stage_clear);
-      assign no_older = (take && i_sq_empty) ||
-          (sq_check_no_older_store_q && !sq_check_flushed && !take);
-      assign phase2 = (take && i_sq_empty) ||
-          (!take && !sq_check_flushed &&
-           (sq_check_phase2 ||
-            (!stage_clear &&
-             ((sq_check_pending && i_sq_empty && !sq_commit_check_block) || probe))));
-      for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_mask
-        assign in_flight[entry] = (take && issue_mem_onehot[entry]) ||
-            (sq_check_in_flight_mask[entry] && !sq_check_flushed && !stage_clear && !take);
-      end
-      assign state_choice[state_case] = {pending, no_older, phase2, in_flight};
-    end
-    assign {sq_check_pending_next, sq_check_no_older_store_next,
-            sq_check_phase2_next, sq_check_in_flight_mask_next} =
-        state_choice[coherent_control_choice];
+    wire take = coherent_stage_take[0];
+    wire stage_clear = coherent_stage_clear_choice[coherent_control_choice];
+    wire probe = coherent_probe_ok && !coherent_local_hold && !i_flush_all && !i_flush_en &&
+        !drop_mem_response_pending && !sq_commit_check_block;
+    (* keep = "true" *) logic pending_hold, no_older_hold, phase2_hold;
+    (* keep = "true" *) logic [DEPTH-1:0] in_flight_hold;
+    assign pending_hold = sq_check_pending && !sq_check_flushed && !stage_clear;
+    assign no_older_hold = sq_check_no_older_store_q && !sq_check_flushed;
+    assign phase2_hold = !sq_check_flushed &&
+        (sq_check_phase2 ||
+         (!stage_clear &&
+          ((sq_check_pending && i_sq_empty && !sq_commit_check_block) || probe)));
+    assign in_flight_hold = sq_check_in_flight_mask & {DEPTH{!sq_check_flushed && !stage_clear}};
+    assign sq_check_pending_next = take || pending_hold;
+    assign sq_check_no_older_store_next = take ? i_sq_empty : no_older_hold;
+    assign sq_check_phase2_next = take ? i_sq_empty : phase2_hold;
+    assign sq_check_in_flight_mask_next = take ? issue_mem_onehot : in_flight_hold;
 
 `ifndef SYNTHESIS
     logic reference_pending, reference_no_older, reference_phase2;
