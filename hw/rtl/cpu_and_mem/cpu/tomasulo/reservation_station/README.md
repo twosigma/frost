@@ -34,7 +34,7 @@ dispatch never puts an FP compute op in slot 2.
 entry is free; dispatch checks it when both slots target the same station.
 The coherent INT station computes the full flags for all issue-count outcomes.
 Issue acceptance selects the result after dispatch-width decoding. Flush uses
-the count of surviving entries.
+a separate count of surviving entries, independent of issue acceptance.
 
 A flush has priority over dispatch: in a flush cycle the station accepts no
 dispatch and moves no new entry into stage 2.
@@ -158,7 +158,9 @@ own first ready entry. Merging pairs of subtrees gives the serial answer in
 log2(window) levels. The coherent INT selection uses
 `coherent_rs_issue2_selector`: a ready nonbranch entry is eligible when an earlier
 entry is ready, and a prefix reduction selects the first eligible entry.
-The index is encoded from that entry's one-hot mask.
+The index is encoded from that entry's one-hot mask. Readiness and selection
+are computed for all four CDB-valid combinations before the live valid bits
+select the result.
 
 Port 1's stage-2 register captures each operand's final value at issue (CDB
 lane 0, then lane 1, then the resident or repair value), so ALU2 reads its

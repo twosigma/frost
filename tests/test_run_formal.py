@@ -86,6 +86,15 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "coherent_rs_control.sby",
+        "Coherent second-issue readiness and flush-count equality.",
+        tasks=(
+            "coh_rs_control_prove",
+            "coh_rs_control_int_prove",
+            "coh_rs_control_window_prove",
+        ),
+    ),
+    FormalTarget(
         "coherent_rs_issue2_selector.sby",
         "Coherent second-issue selection equals the tree and serial references.",
         tasks=(
@@ -881,6 +890,15 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    (
+        "coh_rs_control_prove",
+        "Coherent issue and flush-count equality with three sources.",
+    ),
+    ("coh_rs_control_int_prove", "Coherent integer issue and flush-count equality."),
+    (
+        "coh_rs_control_window_prove",
+        "Coherent issue and flush count with a five-entry window.",
+    ),
     ("coh_rs_issue2_8_prove", "Coherent second-issue equality at eight entries."),
     ("coh_rs_issue2_16_prove", "Coherent second-issue equality at sixteen entries."),
     ("coh_rs_issue2_5_prove", "Coherent second-issue equality at five entries."),
