@@ -1691,11 +1691,15 @@ module load_queue #(
   end
 `ifndef SYNTHESIS
   if (COHERENT_CLUSTER) begin : gen_coherent_scan_checks
+    wire [DEPTH-1:0] reference_mem_onehot = head_mem_stored_found ? head_mem_stored_onehot :
+        (i_addr_update.valid && head_mem_update_found) ? head_mem_update_onehot :
+        update_scan_wins ? update_scan_onehot : stored_scan_found ? stored_scan_onehot : '0;
 `ifdef FORMAL
     always_comb begin
 `else
     always @(posedge i_clk) begin
 `endif
+      p_issue_mask_exact : assert (issue_mem_onehot == reference_mem_onehot);
       p_scan_order_exact : assert (update_scan_older_than_stored_scan ==
           (update_scan_issueable && (!stored_scan_found || (update_scan_pos < stored_scan_pos))));
       p_issue_found_exact : assert (issue_mem_found ==
@@ -1750,6 +1754,9 @@ module load_queue #(
     if (COHERENT_CLUSTER) begin
       issue_mem_found = head_mem_stored_found || stored_scan_found ||
           (i_addr_update.valid && (head_mem_update_found || update_scan_found));
+      issue_mem_onehot = head_mem_stored_found ? head_mem_stored_onehot :
+          (i_addr_update.valid && head_mem_update_found) ? head_mem_update_onehot :
+          i_addr_update.valid ? merged_scan_onehot : stored_scan_onehot;
     end
 `endif
   end
