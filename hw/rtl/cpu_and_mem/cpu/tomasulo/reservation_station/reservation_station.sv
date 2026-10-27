@@ -25,12 +25,13 @@
  * allocation-indexed repair avoids comparing repair tags against every
  * resident entry. Port 0 issues the lowest ready index; DUAL_ISSUE (INT_RS)
  * adds port 1, which issues the lowest ready non-branch entry other than port
- * 0's pick, with its own payload RAM copy and stage2 register. Optional src3
+ * 0's pick, with its own payload storage and stage2 register. Optional src3
  * supports FMA. Partial and full flushes clear validity.
  *
  * Control and source fields stay in FFs for parallel wakeup and flush scans.
- * Dispatch payloads use two-write-port distributed RAM and are read at issue;
- * the FF valid bits make stale RAM contents harmless. The INT instance keeps
+ * Dispatch payloads have two write ports and are read at issue. Coherent INT
+ * port 1 uses registers; other payload copies use distributed RAM. Valid
+ * bits qualify payload use. The INT instance keeps
  * the XLEN-wide pc, link address and predicted target in a ROB-tag-indexed
  * side RAM read behind its port-0 stage2 tag (TAG_INDEXED_BRANCH_PAYLOAD), so
  * the per-entry payload and both stage2 banks carry no XLEN branch words.
@@ -617,14 +618,14 @@ module reservation_station #(
   logic can_issue_to_stage2;  // Stage2 is empty or being consumed, so the RS may load it
 
   // ===========================================================================
-  // Storage: FF-based control, LUTRAM-based payload
+  // Storage: control fields and dispatch payloads
   // ===========================================================================
   //
   // Control fields (FFs): rs_valid, rs_src*_ready/tag/value, rs_use_imm,
   //   rs_rob_tag. These need parallel CDB tag compare/write and flush scan.
-  // Payload fields (LUTRAM): op, imm, rm, and the branch/prediction/mem/csr
-  //   fields. Written once at dispatch, read once at issue (one copy per
-  //   issue port).
+  // Payload fields: op, imm, rm, and the branch/prediction/mem/csr fields.
+  //   Written once at dispatch, read once at issue (one copy per issue port).
+  //   Coherent INT port 1 uses registers; other copies use distributed RAM.
 
   // 1-bit packed vectors (for bulk operations)
   logic [DEPTH-1:0] rs_valid;
@@ -643,7 +644,7 @@ module reservation_station #(
   assign dispatch_shift_controls_2 = riscv_pkg::projected_shift_controls(i_dispatch_2.op);
   logic [DEPTH-1:0] rs_writes_cdb_hint;
   // A parallel branch-class bit lets port 1 exclude branches before reading
-  // payload RAM.
+  // its payload.
   logic [DEPTH-1:0] rs_is_branch_class;
   // Integer divide pre-decode in FFs, for the DIVIDE_ISSUE_GATE ready scan.
   logic [DEPTH-1:0] rs_is_divide;
