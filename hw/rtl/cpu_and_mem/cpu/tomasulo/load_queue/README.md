@@ -381,9 +381,9 @@ reservation comes after the LR in program order. An older store to the other
 word of the LR's dword does not overlap the LR, so nothing else would hold the
 LR until that store writes.
 Devices hold no reservations, so an LR to the device quadrant faults instead
-(see [Completion](#completion)), with no read and no reservation. The
-reservation clears on any SC commit (`i_sc_clear_reservation`), a store or AMO
-write to the reserved dword (the SQ's write-launch snoop, or the AMO's write
+(see [Completion](#completion)), with no read and no reservation. In the
+line-port selection, the reservation clears on any SC commit
+(`i_sc_clear_reservation`), a store or AMO write to the reserved dword (the SQ's write-launch snoop, or the AMO's write
 completing), a DMA write to its 32-byte line, or a trap, xRET, or FENCE-class
 flush (`i_full_flush`). A branch recovered at commit, the other source of a
 full flush, keeps it: an LR launches only at the ROB head, so the LR that set
@@ -444,8 +444,11 @@ forward or hit the L0, and if it is staged it gives up the staging register
 `COHERENT_CLUSTER=1` supplies request kind, size and ROB tag to the coherent
 L1D. Cached AMOs require effective ROB-head protection before launch. LR
 records its exact physical address and W/D size with a 32-byte reservation
-set. A matching write or cut clears that reservation. The delayed-response
-suppression flag prevents an invalidated LR from recreating it.
+set. An ordinary store or AMO write to that set, or a matching cut, clears
+the reservation. A successful cached SC clears it when its tagged write
+completes. Other SCs clear it at commit (`i_sc_clear_reservation`). The
+delayed-response suppression flag prevents an invalidated LR from recreating
+it.
 
 The local cut hold blocks L0 hits, forwarding and memory-read launch during
 capture. Returned-load observations remain replayable after their LQ rows
