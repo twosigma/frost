@@ -90,10 +90,10 @@ decode from the selected ring mask. Head matches use the head selector's index
 and tag.
 The pre-issue selector registers a one-hot mask alongside the candidate matches.
 Staging capture uses candidate presence independently of ring ordering.
-The coherent selection computes capture permission and staged control state
-for all combinations of response bypass, local hold and cache hit. Those
-inputs select the
-result.
+The coherent selection computes capture permission for all combinations of
+response bypass, local hold and cache hit. Those inputs select the result.
+Vacancy and release eligibility are computed before candidate presence.
+Staged control fields select capture values or separately computed hold values.
 Replacement selects stored and arriving age predicates with ROB-head priority.
 Stored, arriving and head candidate predicates are computed per row before
 its validity bit qualifies the candidate masks.
