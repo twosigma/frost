@@ -280,8 +280,25 @@ module lq_l0_cache #(
   logic lookup_line_invalidated;
   assign lookup_line_invalidated = i_invalidate_line_valid &&
       (i_invalidate_line_addr[5+:(IndexWidth-2)] == lookup_index[IndexWidth-1:2]);
+`ifdef FROST_COHERENT_CLUSTER
+  if (COHERENT_CLUSTER) begin : gen_coherent_lookup_permission
+    (* keep = "true" *) wire permitted = !lookup_mmio && valid[lookup_index] &&
+        !lookup_invalidated && !lookup_line_invalidated;
+    assign o_lookup_hit = permitted && (&lookup_tag_groups);
+`ifndef SYNTHESIS
+    always @(posedge i_clk) begin
+      p_lookup_permission_exact : assert (o_lookup_hit ==
+          (!lookup_mmio && lookup_hit_array && !lookup_invalidated &&
+           !lookup_line_invalidated));
+    end
+`endif
+  end else begin : gen_line_lookup_permission
+`endif
   assign o_lookup_hit =
       !lookup_mmio && lookup_hit_array && !lookup_invalidated && !lookup_line_invalidated;
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`endif
   assign o_lookup_data = data_lookup_rd;
 
   // ===========================================================================
