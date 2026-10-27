@@ -134,9 +134,9 @@ entries, so a station full of divides stops dispatch.
 
 ## Dual issue (INT_RS)
 
-INT_RS is built with `DUAL_ISSUE=1`, which adds a second issue port
-(`o_issue_2`, `i_fu_ready_2`) with its own selector, a second copy of the
-payload RAM, and a second stage-2 register. Port 1 feeds ALU2.
+INT_RS uses `DUAL_ISSUE=1`. Its second issue port
+(`o_issue_2`, `i_fu_ready_2`) has its own selector, payload storage and
+stage-2 register. Port 1 feeds ALU2.
 
 - Port 1 issues the lowest-index ready entry that is not a branch and is not
   port 0's pick. It excludes port 0's pick even when port 0 is stalled, so the
@@ -179,7 +179,11 @@ the port-1 selector and shift amount need. Fields written once at dispatch and
 read once at issue live in a distributed-RAM payload with one write port per
 dispatch slot: the operation, immediate, JALR offset, rounding mode,
 prediction bits, memory-op flags, CSR address and immediate, checkpoint ID,
-compressed flag, and a branch-class predecode. Port 1 reads its own copy, and
+compressed flag, and a branch-class predecode. The coherent INT selection
+stores port 1's payload in a two-write register bank. The issue winner's
+one-hot mask selects its row. Write port index 1, corresponding to dispatch
+slot 2, wins a same-row write collision.
+Other selections read port 1's payload from a separate distributed-RAM copy.
 INT_RS splits port 0's copy into groups of four entries that follow the
 two-level issue select. The valid bits gate every read, so stale payload
 behind a free entry is never used.

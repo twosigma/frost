@@ -19,6 +19,7 @@ $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_c_payload.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
 $(ROOT)/hw/rtl/lib/cache/coherent_hart_cache.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/coherent_atomic_guard.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/coherent_atomic_select.sv

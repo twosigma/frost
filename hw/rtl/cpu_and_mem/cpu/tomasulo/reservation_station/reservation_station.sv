@@ -85,7 +85,7 @@ module reservation_station #(
     // occupancy. Zero uses exact count_next; nonzero values permit
     // conservative registered status without current dispatch inputs.
     parameter int unsigned DISPATCH_STATUS_RESERVE = 0,
-    // INT only: add an independent selector, payload RAM and stage2 bank for
+    // INT only: an independent selector, payload copy and stage2 bank serve
     // the lowest ready nonbranch entry other than port 0's pick. Branches
     // stay on port 0, which has the branch-resolution path.
     parameter bit DUAL_ISSUE = 1'b0,
@@ -807,9 +807,9 @@ module reservation_station #(
   (* max_fanout = 32 *) logic dispatch_fire_2;
 
   // ===========================================================================
-  // Payload LUTRAM: dispatch-only fields, read at issue
+  // Payload storage: dispatch-only fields, read at issue
   // ===========================================================================
-  // Each issue port reads a RAM copy with common dispatch writes. rs_valid
+  // Each issue port reads a payload copy with common dispatch writes. rs_valid
   // qualifies all uses, making stale payloads harmless.
 
   localparam int unsigned PayloadWidth =
@@ -2164,9 +2164,50 @@ module reservation_station #(
         issue_sel_2_ohread[DEPTH-1:0] = issue_sel_2;
       end
 
+      logic [PayloadWidth-1:0] payload_rd_data_b;
+`ifdef FROST_COHERENT_CLUSTER
+      if (COHERENT_CLUSTER) begin : gen_coherent_second_payload
+        localparam int unsigned PayloadRows = 2 ** $clog2(DEPTH);
+        coherent_rs_payload_store #(
+            .ADDR_WIDTH($clog2(DEPTH)),
+            .DATA_WIDTH(PayloadWidth)
+        ) payload_store (
+            .i_clk,
+            .i_write_enable({dispatch_fire_2, dispatch_fire}),
+            .i_write_address({alloc_idx_2, free_idx}),
+            .i_write_data({payload_wr_data_2, payload_wr_data}),
+            .i_read_onehot(issue_sel_2_ohread),
+            .o_read_data(payload_rd_data_b)
+        );
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        logic [PayloadWidth-1:0] reference_payload;
+        mwp_dist_ram_ohread #(
+            .ADDR_WIDTH($clog2(DEPTH)),
+            .DATA_WIDTH(PayloadWidth),
+            .NUM_WRITE_PORTS(2)
+        ) reference_store (
+            .i_clk,
+            .i_write_enable({dispatch_fire_2, dispatch_fire}),
+            .i_write_address({alloc_idx_2, free_idx}),
+            .i_read_address(issue_idx_2),
+            .i_read_onehot(issue_sel_2_ohread),
+            .i_write_data({payload_wr_data_2, payload_wr_data}),
+            .o_read_data(reference_payload)
+        );
+        always @(posedge i_clk) begin
+          if (i_rst_n && issue_fire_2) begin
+            p_second_payload_mask : assert (
+                issue_sel_2_ohread == (PayloadRows'(1) << issue_idx_2));
+            p_second_payload_exact : assert (payload_rd_data_b == reference_payload);
+          end
+        end
+`endif
+`endif
+      end else begin : gen_direct_second_payload
+`endif
       // The second RAM copy shares dispatch writes and uses port 1's one-hot
       // winner for its LVT read.
-      logic [PayloadWidth-1:0] payload_rd_data_b;
       mwp_dist_ram_ohread #(
           .ADDR_WIDTH     ($clog2(DEPTH)),
           .DATA_WIDTH     (PayloadWidth),
@@ -2180,6 +2221,10 @@ module reservation_station #(
           .i_write_data   ({payload_wr_data_2, payload_wr_data}),
           .o_read_data    (payload_rd_data_b)
       );
+
+`ifdef FROST_COHERENT_CLUSTER
+      end
+`endif
 
       logic [riscv_pkg::InstrOpWidth-1:0] pl2_op_bits;
       logic [                   XLEN-1:0] pl2_imm;
