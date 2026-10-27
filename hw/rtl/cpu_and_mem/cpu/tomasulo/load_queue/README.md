@@ -90,6 +90,8 @@ decode from the selected ring mask. Head matches use the head selector's index
 and tag.
 The pre-issue selector registers a one-hot mask alongside the candidate matches.
 Staging capture uses candidate presence independently of ring ordering.
+The coherent selection computes capture permission for both local hold
+outcomes before the cut and sector holds select the result.
 Replacement selects stored and arriving age predicates with ROB-head priority.
 Capture, replacement and clear controls directly determine the staged state. Sector
 blocking supplies capture permission separately from the condition that clears

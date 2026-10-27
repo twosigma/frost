@@ -1453,7 +1453,7 @@ module load_queue #(
   logic coherent_local_hold, coherent_sector_hold, coherent_holder_changed;
   logic coherent_address_fault;
   logic coherent_staged_at_head;
-  logic [1:0] coherent_probe_choice, coherent_issue_choice;
+  logic [1:0] coherent_probe_choice, coherent_issue_choice, coherent_eligible_choice;
   (* keep = "true" *) logic coherent_probe_ok, coherent_issue_ok, coherent_forward_ok;
   if (COHERENT_CLUSTER) begin : gen_coherent_park
     logic [1:0] holder_valid_q;
@@ -2011,6 +2011,27 @@ module load_queue #(
        (i_addr_update.valid ? coherent_replace_with_update : coherent_replace_without_update)) :
       sq_check_replace;
   wire [3:0] coherent_pending = {sq_check_pending_copy, sq_check_pending};
+  logic [3:0] coherent_capture_choice[2];
+  wire coherent_entry_eligible = coherent_staged_at_head ?
+      coherent_eligible_choice[1] : coherent_eligible_choice[0];
+  wire coherent_clear_memory = !i_flush_all && !i_flush_en && coherent_issue_ok &&
+      ((!i_mem_bus_busy && !cached_launch_hold_q) ||
+       (ENABLE_L0_FAST_PATH && sq_check_cacheable && !l0_lookup_busy && cache_lookup_hit &&
+        !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q));
+  wire coherent_clear_fault = cdb_stage_slot_available && !issue_cdb_fire &&
+      !resp_bypass_ok && coherent_entry_eligible && coherent_address_fault && !i_flush_en;
+  for (genvar hold_case = 0; hold_case < 2; hold_case++) begin : gen_coherent_capture_choice
+    localparam bit Held = hold_case != 0;
+    wire will_clear = sq_check_pending &&
+        (!sq_check_entry_valid || older_amo_write_pending || coherent_sector_hold ||
+         (!Held && (coherent_clear_memory || coherent_forward_ok || coherent_clear_fault)));
+    for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_copy
+      (* keep = "true" *) logic take;
+      assign take = ((!coherent_pending[copy_index] || will_clear) &&
+                     issue_mem_found && sq_check_gate_early) || coherent_stage_replace;
+      assign coherent_capture_choice[hold_case][copy_index] = take;
+    end
+  end
 `ifndef SYNTHESIS
 `ifdef FORMAL
   always_comb begin
@@ -2023,8 +2044,10 @@ module load_queue #(
   end
 `endif
   for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_coherent_stage_take
-    assign coherent_stage_take[copy_index] =
-        sq_check_capture_on(coherent_pending[copy_index]) || coherent_stage_replace;
+    assign coherent_stage_take[copy_index] = COHERENT_CLUSTER ?
+        (coherent_local_hold ? coherent_capture_choice[1][copy_index] :
+         coherent_capture_choice[0][copy_index]) :
+        (sq_check_capture_on(coherent_pending[copy_index]) || coherent_stage_replace);
 `ifndef SYNTHESIS
     wire [DEPTH-1:0] permitted =
         {DEPTH{!coherent_pending[copy_index] || sq_check_will_clear}} |
@@ -2149,6 +2172,7 @@ module load_queue #(
         !sq_commit_interlock && !older_amo_write_pending &&
         (sq_no_older_store || (sq_check_is_amo_q && AtHead && i_sq_committed_empty) ||
          (i_sq_all_older_addrs_known && !i_sq_forward.match));
+    assign coherent_eligible_choice[head_case] = eligible;
     assign coherent_probe_choice[head_case] = probe;
     assign coherent_issue_choice[head_case] = issue;
   end
