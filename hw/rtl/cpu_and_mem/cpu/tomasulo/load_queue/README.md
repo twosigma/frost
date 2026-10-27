@@ -82,7 +82,9 @@ drain flag selects between those results. Both cases use the same ring
 order and ROB-head priority. Each entry has a cyclic precedence mask derived
 from the queue head. An eligible entry wins when none of its predecessors
 is eligible. Scan indices and tags decode from the winning-entry masks.
-Selection is combinational.
+Selection is combinational. The coherent memory identity uses the merged ring
+mask when an address update is valid and the stored mask otherwise. Eligible
+ROB-head entries precede the ring scan.
 The pre-issue selector registers a one-hot mask alongside the candidate matches.
 Staging capture uses candidate presence independently of ring ordering.
 Replacement uses the selected candidate's age. Staging capture and next state
