@@ -33,6 +33,10 @@ module coherent_lq_issue_selector #(
     input logic [(DEPTH*riscv_pkg::ReorderBufferTagWidth)-1:0] lq_rob_tag_flat,
     input logic [$clog2(DEPTH)-1:0] head_idx,
     input logic i_sq_committed_empty,
+    input logic [DEPTH-1:0] i_staged_younger,
+
+    output logic o_replace_without_update,
+    output logic o_replace_with_update,
 
     output logic o_issue_cdb_found,
     output logic [$clog2(DEPTH)-1:0] o_issue_cdb_idx,
@@ -57,6 +61,8 @@ module coherent_lq_issue_selector #(
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_head_mem_update_rob_tag
 );
   typedef struct packed {
+    logic replace_without_update;
+    logic replace_with_update;
     logic issue_cdb_found;
     logic [$clog2(DEPTH)-1:0] issue_cdb_idx;
     logic [DEPTH-1:0] merged_scan_onehot;
@@ -156,6 +162,11 @@ module coherent_lq_issue_selector #(
       choice.head_mem_stored_onehot = head_stored;
       choice.head_mem_update_found = |head_update;
       choice.head_mem_update_onehot = head_update;
+      choice.replace_without_update = choice.head_mem_stored_found ?
+          (|(i_staged_younger & head_stored)) : (|(i_staged_younger & first[0]));
+      choice.replace_with_update = choice.head_mem_stored_found ?
+          (|(i_staged_younger & head_stored)) : choice.head_mem_update_found ?
+              (|(i_staged_younger & head_update)) : (|(i_staged_younger & first[2]));
       for (int index = 0; index < DEPTH; index++) begin
         choice.issue_cdb_idx |= IdxWidth'(index) & {IdxWidth{first[3][index]}};
         choice.stored_scan_idx |= IdxWidth'(index) & {IdxWidth{first[0][index]}};
@@ -177,6 +188,8 @@ module coherent_lq_issue_selector #(
     end
   end
   assign selected = i_sq_committed_empty ? choices[1] : choices[0];
+  assign o_replace_without_update = selected.replace_without_update;
+  assign o_replace_with_update = selected.replace_with_update;
   assign o_issue_cdb_found = selected.issue_cdb_found;
   assign o_issue_cdb_idx = selected.issue_cdb_idx;
   assign o_merged_scan_onehot = selected.merged_scan_onehot;
@@ -240,6 +253,13 @@ module coherent_lq_issue_selector #(
       .o_head_mem_update_onehot(reference.head_mem_update_onehot),
       .o_head_mem_update_rob_tag(reference.head_mem_update_rob_tag)
   );
+  assign reference.replace_without_update = reference.head_mem_stored_found ?
+      (|(i_staged_younger & reference.head_mem_stored_onehot)) :
+      (|(i_staged_younger & reference.stored_scan_onehot));
+  assign reference.replace_with_update = reference.head_mem_stored_found ?
+      (|(i_staged_younger & reference.head_mem_stored_onehot)) : reference.head_mem_update_found ?
+          (|(i_staged_younger & reference.head_mem_update_onehot)) :
+          (|(i_staged_younger & reference.merged_scan_onehot));
 `ifdef FORMAL
   always_comb begin
 `else
