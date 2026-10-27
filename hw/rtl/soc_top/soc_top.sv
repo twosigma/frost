@@ -1054,6 +1054,9 @@ module soc_top #(
   assign slice_req_data = (ENABLE_1G_ETH == 0 || dm_soc_valid) ? dm_soc_data : boot_sram_wdata_q;
 
   debug_module #(
+`ifdef FROST_COHERENT_CLUSTER
+      .COHERENT_CLUSTER(COHERENT_CLUSTER),
+`endif
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth)
   ) u_debug_module (
       .i_power_on_rst(power_on_rst_core),
