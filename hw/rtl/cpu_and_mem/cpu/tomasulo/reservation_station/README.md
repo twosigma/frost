@@ -163,6 +163,11 @@ one-hot mask isolates the lowest eligible entry. Each isolation computes
 mask. Readiness and selection are computed for all four CDB-valid combinations
 before the live valid bits select the result.
 
+The coherent selection computes the shift amount for each entry before
+winner selection. The entry chooses its immediate or effective second operand.
+The occupancy count selects among the four issue outcomes after dispatch
+arithmetic; flush selects the surviving-entry count.
+
 Port 1's stage-2 register captures each operand's final value at issue (CDB
 lane 0, then lane 1, then the resident or repair value), so ALU2 reads its
 operands straight from flip-flops. Port 1 also registers a six-bit shift
@@ -261,7 +266,7 @@ issued while another entry was also ready; the wrapper exports it for MEM_RS.
 | Parameter | Default | Wrapper setting | Effect |
 |-----------|---------|-----------------|--------|
 | `DEPTH` | 8 | Per instance (table above) | Number of entries |
-| `COHERENT_CLUSTER` | 0 | 1 on coherent INT | Select full flags from issue outcomes and the arithmetic selector for port 1; available with the coherent source selection |
+| `COHERENT_CLUSTER` | 0 | 1 on coherent INT | Select count and full flags from issue outcomes, arithmetic winners and per-entry shift values for port 1; available with the coherent source selection |
 | `HAS_SRC3` | 1 | 1 on FP, 0 elsewhere | Third source operand, for FMA |
 | `DUAL_ISSUE` | 0 | 1 on INT | Second issue port |
 | `ISSUE2_WINDOW` | 0 (all entries) | 8 on INT | Port 1 considers only entries below this index |
@@ -296,8 +301,9 @@ station does:
 - The `reservation_station` cocotb bench builds an eight-entry station with
   dual issue, indexed repair, speculative and broadcast writes, the tag
   shadow, and the branch side RAM, and covers dispatch, deferred delivery,
-  repair, wakeup, issue, stalls, flushes, and tag reuse. It holds port 1 idle
-  and leaves `TRUST_DISPATCH_VALID` and `ISSUE_CDB_META_ANCHORS` off.
+  repair, wakeup, issue, stalls, flushes, and tag reuse. The capacity case
+  exercises port 1 alone and both ports together. The bench leaves
+  `TRUST_DISPATCH_VALID` and `ISSUE_CDB_META_ANCHORS` off.
 - `rs_issue2_selector` (cocotb and formal) checks port 1's selector against a
   serial reference, and `rs_issue2_shamt` checks its shift amount.
 - The `reservation_station` formal target checks the module defaults and the

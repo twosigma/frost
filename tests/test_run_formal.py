@@ -97,7 +97,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherent_rs_control.sby",
-        "Coherent second-issue readiness and flush-count equality.",
+        "Coherent second-issue readiness, shift and count equality.",
         tasks=(
             "coh_rs_control_prove",
             "coh_rs_control_int_prove",
@@ -120,7 +120,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherent_rs_capacity.sby",
-        "Coherent reservation-station full flags match issue and dispatch arithmetic.",
+        "Coherent reservation-station count and full flags match issue/dispatch arithmetic.",
         tasks=(
             "coh_rs_capacity4_prove",
             "coh_rs_capacity8_prove",
@@ -906,12 +906,12 @@ SBY_TASKS = [
     ("coh_rs_payload_wide_prove", "Coherent payload storage equality at 125 bits."),
     (
         "coh_rs_control_prove",
-        "Coherent issue and flush-count equality with three sources.",
+        "Coherent issue, shift and count equality with three sources.",
     ),
-    ("coh_rs_control_int_prove", "Coherent integer issue and flush-count equality."),
+    ("coh_rs_control_int_prove", "Coherent integer issue, shift and count equality."),
     (
         "coh_rs_control_window_prove",
-        "Coherent issue and flush count with a five-entry window.",
+        "Coherent issue, shift and count equality with a five-entry window.",
     ),
     ("coh_rs_issue2_8_prove", "Coherent second-issue equality at eight entries."),
     ("coh_rs_issue2_16_prove", "Coherent second-issue equality at sixteen entries."),

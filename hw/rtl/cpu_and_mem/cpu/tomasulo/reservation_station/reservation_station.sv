@@ -1056,6 +1056,7 @@ module reservation_station #(
   logic dispatch_full_for_2_next;
 `ifdef FROST_COHERENT_CLUSTER
   logic coherent_full, coherent_full_for_2;
+  logic [CountWidth-1:0] coherent_count_next;
   if (COHERENT_CLUSTER) begin : gen_coherent_capacity
     logic [CountWidth-1:0] flush_count;
     always_comb begin
@@ -1072,6 +1073,7 @@ module reservation_station #(
 `ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
     always_comb begin
       p_flush_count_exact : assert (!(i_flush_all || i_flush_en) || flush_count == count_next);
+      p_coherent_count_exact : assert (coherent_count_next == count_next);
     end
 `endif
     coherent_rs_capacity #(
@@ -1082,6 +1084,7 @@ module reservation_station #(
         .i_dispatch({dispatch_fire_2, dispatch_fire}),
         .i_flush(i_flush_all || i_flush_en),
         .i_flush_count(flush_count),
+        .o_count_next(coherent_count_next),
         .o_full(coherent_full),
         .o_full_for_2(coherent_full_for_2)
     );
@@ -2396,9 +2399,47 @@ module reservation_station #(
         end
       end
 
-      // issue2_src2_value_effective feeds both the wide src2 operand FFs and
-      // the six shift-amount FFs, so both see the same live CDB selection and
-      // capture/hold lifetime.
+      // The shift amount and second operand use the same live CDB priority
+      // and capture/hold lifetime.
+`ifdef FROST_COHERENT_CLUSTER
+      logic [5:0] coherent_shift_amount;
+      if (COHERENT_CLUSTER) begin : gen_coherent_shift_amount
+        logic [5:0] shift_choice[DEPTH];
+        for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry
+          logic [FLEN-1:0] operand;
+          assign operand = src2_cdb_bypass[entry] ? i_cdb.value :
+              src2_cdb_bypass_l1[entry] ? i_cdb_2.value :
+              (src2_repair_sel[entry] != 3'd0) ? repair_value_for_sel(
+                  src2_repair_sel[entry]) : rs_src2_value[entry];
+          assign shift_choice[entry] = rs_shift_uses_imm[entry] ?
+              rs_shift_imm[entry] : operand[5:0];
+        end
+        always_comb begin
+          coherent_shift_amount = '0;
+          for (int entry = 0; entry < DEPTH; entry++) begin
+            coherent_shift_amount |= shift_choice[entry] & {6{issue_sel_2[entry]}};
+          end
+        end
+`ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
+        always_comb begin
+          p_shift_choice_exact : assert (coherent_shift_amount ==
+              (issue2_shift_uses_imm_selected ? issue2_shift_imm_selected :
+               issue2_src2_value_effective[5:0]));
+        end
+`endif
+`ifndef SYNTHESIS
+        always @(posedge i_clk) begin
+          if (i_rst_n && issue_fire_2) begin
+            p_shift_capture_exact : assert (coherent_shift_amount ==
+                (issue2_shift_uses_imm_selected ? issue2_shift_imm_selected :
+                 issue2_src2_value_effective[5:0]));
+          end
+        end
+`endif
+      end else begin : gen_no_coherent_shift_amount
+        assign coherent_shift_amount = '0;
+      end
+`endif
 
       assign stage2b_should_flush = stage2b_valid &&
           (i_flush_all || (i_flush_en && should_flush_entry(
@@ -2422,6 +2463,10 @@ module reservation_station #(
           // allow at most one live match.
           stage2b_src1_value <= issue2_src1_value_effective;
           stage2b_src2_value <= issue2_src2_value_effective;
+`ifdef FROST_COHERENT_CLUSTER
+          if (COHERENT_CLUSTER) stage2b_shift_amount <= coherent_shift_amount;
+          else
+`endif
           stage2b_shift_amount <= issue2_shift_uses_imm_selected ? issue2_shift_imm_selected :
               issue2_src2_value_effective[5:0];
           if (HAS_SRC3) begin
@@ -2686,6 +2731,10 @@ module reservation_station #(
       dispatch_full_q       <= 1'b0;
       dispatch_full_for_2_q <= 1'b0;
     end else begin
+`ifdef FROST_COHERENT_CLUSTER
+      if (COHERENT_CLUSTER) count <= coherent_count_next;
+      else
+`endif
       count <= count_next;
       if (DISPATCH_STATUS_RESERVE == 0) begin
         dispatch_full_q       <= dispatch_full_next;
