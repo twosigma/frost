@@ -250,18 +250,27 @@ module cpu_memory_fabric #(
   assign o_fetch_resp_error = read_resp_status[1];
 
 `ifndef SYNTHESIS
+  // Response ownership and lane metadata require both reset histories.
+  logic reset_seen_q = 1'b0;
+  logic axi_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) reset_seen_q <= 1'b1;
+    if (i_axi_rst) axi_reset_seen_q <= 1'b1;
+  end
   always_comb begin
-    p_fetch_response_valid_exact :
-    assert (o_fetch_resp_valid ==
-            (resp_valid && (resp_id == ID_BITS'(34) || resp_id == ID_BITS'(35))));
-    if (o_fetch_resp_valid) begin
-      p_fetch_response_is_read : assert (!resp_write);
-      p_fetch_response_id_exact : assert (o_fetch_resp_id == resp_id[0]);
-      p_fetch_response_lane_exact : assert (fetch_resp_dword_q == fetch_dword_q[resp_id[0]]);
-      p_fetch_response_data_exact :
-      assert (o_fetch_resp_data == (FETCH_BYTES * 8)'(resp_data >>
-              {fetch_dword_q[resp_id[0]], 6'b0}));
-      p_fetch_response_error_exact : assert (o_fetch_resp_error == resp_status[1]);
+    if (i_rst || i_axi_rst || (reset_seen_q && axi_reset_seen_q)) begin
+      p_fetch_response_valid_exact :
+      assert (o_fetch_resp_valid ==
+              (resp_valid && (resp_id == ID_BITS'(34) || resp_id == ID_BITS'(35))));
+      if (o_fetch_resp_valid) begin
+        p_fetch_response_is_read : assert (!resp_write);
+        p_fetch_response_id_exact : assert (o_fetch_resp_id == resp_id[0]);
+        p_fetch_response_lane_exact : assert (fetch_resp_dword_q == fetch_dword_q[resp_id[0]]);
+        p_fetch_response_data_exact :
+        assert (o_fetch_resp_data == (FETCH_BYTES * 8)'(resp_data >>
+                {fetch_dword_q[resp_id[0]], 6'b0}));
+        p_fetch_response_error_exact : assert (o_fetch_resp_error == resp_status[1]);
+      end
     end
   end
 `endif
