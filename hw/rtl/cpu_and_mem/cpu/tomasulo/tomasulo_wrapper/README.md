@@ -284,6 +284,10 @@ does not complete at issue. It waits in `sc_pending_unit`. Selection requires:
 With `COHERENT_CLUSTER=0`, the DMA coherence port can hold SC fires around a
 DMA write.
 
+Coherent atomic candidate selection compares each source tag with the ROB head
+before selection. SC has priority over AMO. A qualified candidate carries the
+head tag; an invalid candidate's tag is unqualified.
+
 The coherent SC table classifies aligned power-of-two cached regions with an
 address mask. Empty, unaligned, non-power-of-two or wrapping regions use the
 unsigned range comparison.

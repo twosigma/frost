@@ -2172,8 +2172,32 @@ module tomasulo_wrapper #(
 `ifdef FROST_COHERENT_CLUSTER
   logic coherent_sc_arm, coherent_amo_arm;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_sc_arm_tag, coherent_amo_arm_tag;
-  assign o_coherent_arm_valid = coherent_sc_arm || coherent_amo_arm;
-  assign o_coherent_arm_tag   = coherent_sc_arm ? coherent_sc_arm_tag : coherent_amo_arm_tag;
+  if (COHERENT_CLUSTER) begin : gen_coherent_arm_select
+    coherent_atomic_select #(
+        .TAG_BITS(riscv_pkg::ReorderBufferTagWidth)
+    ) arm_select (
+        .i_sc_valid(coherent_sc_arm),
+        .i_sc_tag(coherent_sc_arm_tag),
+        .i_amo_valid(coherent_amo_arm),
+        .i_amo_tag(coherent_amo_arm_tag),
+        .i_head_tag(head_tag),
+        .o_arm_valid(o_coherent_arm_valid),
+        .o_arm_tag(o_coherent_arm_tag)
+    );
+`ifndef SYNTHESIS
+    wire reference_valid = coherent_sc_arm || coherent_amo_arm;
+    wire [riscv_pkg::ReorderBufferTagWidth-1:0] reference_tag =
+        coherent_sc_arm ? coherent_sc_arm_tag : coherent_amo_arm_tag;
+    always @(posedge i_clk) begin
+      p_arm_qualification_exact :
+      assert (o_coherent_arm_valid == (reference_valid && reference_tag == head_tag));
+      if (o_coherent_arm_valid) p_arm_tag_exact : assert (o_coherent_arm_tag == reference_tag);
+    end
+`endif
+  end else begin : gen_direct_arm_select
+    assign o_coherent_arm_valid = coherent_sc_arm || coherent_amo_arm;
+    assign o_coherent_arm_tag = coherent_sc_arm ? coherent_sc_arm_tag : coherent_amo_arm_tag;
+  end
 `endif
 
   lq_coherence_port #(

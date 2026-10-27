@@ -1,4 +1,8 @@
 [tasks]
+coh_atomic_select_prove arm_select
+coh_atomic_select_wide_prove arm_select arm_select_wide
+coh_atomic_pair_prove arm_pair
+coh_atomic_pair_wide_prove arm_pair arm_pair_wide
 coh_c_payload_prove payload
 coh_c_payload_wide_prove payload payload_wide
 coh_arbiter_prove arbiter
@@ -11,6 +15,10 @@ coh_read_select64_prove select wide
 
 [options]
 mode prove
+arm_select: depth 1
+arm_pair: depth 4
+arm_select: timeout 180
+arm_pair: timeout 180
 arbiter: depth 12
 reader: depth 12
 guard: depth 12
@@ -23,7 +31,13 @@ select: timeout 180
 smtbmc boolector
 
 [script]
+arm_select: read -formal -sv coherent_atomic_select.sv
+arm_pair: read -formal -sv coherent_atomic_select.sv coherent_atomic_select_formal.sv
+arm_select_wide: chparam -set TAG_BITS 9 coherent_atomic_select
+arm_pair_wide: chparam -set TAG_BITS 9 coherent_atomic_select_formal
 read -formal -sv coherence_c_payload.sv coherence_pkg.sv coherence_d_arbiter.sv coherence_line_bridge.sv coherent_atomic_guard.sv coherence_read_flags.sv coherence_read_select.sv
+arm_select: prep -top coherent_atomic_select
+arm_pair: prep -flatten -top coherent_atomic_select_formal
 payload_wide: chparam -set WIDTH 74 coherence_c_payload
 payload: prep -top coherence_c_payload
 arbiter: chparam -set WIDTH 12 -set PORTS 3 coherence_d_arbiter
@@ -36,6 +50,8 @@ wide: chparam -set ADDR_WIDTH 64 coherence_read_select
 select: prep -top coherence_read_select
 
 [files]
+coherent_atomic_select_formal.sv
+../hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/coherent_atomic_select.sv
 ../hw/rtl/lib/cache/coherence_c_payload.sv
 ../hw/rtl/lib/cache/coherence_pkg.sv
 ../hw/rtl/lib/cache/coherence_types.svh
