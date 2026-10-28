@@ -200,6 +200,7 @@ counters. With `patrol_seconds=10`, it requires patrol progress and a full
 pass within 150 one-second waits, then reloads the module at the daily default.
 `FROST_MEMERR_MODULE` names a prebuilt module instead.
 
+Stage selection follows `--board`; `bootrom` is available only on VCU118.
 The interactive `debug_target` and `nic_echo` applications are not run.
 `perf_off_test` checks that the profiling counters are absent, so it fails
 against a bitstream built with `--perf-counters`. `--timeout` covers build,

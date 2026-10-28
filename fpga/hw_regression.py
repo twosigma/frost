@@ -69,8 +69,8 @@ from hw_defaults import (  # noqa: E402
 from load_software import (  # noqa: E402
     BOARD_CONFIG,
     CPU_CLK_ENV,
-    VALID_APPS,
     board_clock_freq,
+    valid_apps_for_board,
 )
 from software_registry import COREMARK_PRO_APP_NAMES  # noqa: E402
 from sweep_coremark_pro import (  # noqa: E402
@@ -1586,15 +1586,16 @@ DEBUGGER_DRIVEN_APPS = frozenset({"debug_target"})
 EXTERNAL_LINK_APPS = frozenset({"nic_echo"})
 
 
-def regression_stages() -> list[str]:
-    """Return stages in order: hello_world, other apps, PRO, Linux, then ECC.
+def regression_stages(board: str) -> list[str]:
+    """Return board stages: hello_world, other apps, PRO, Linux, then ECC.
 
-    Exclude debugger-driven apps and those needing an external link partner.
+    Exclude apps for other boards, debugger-driven apps and those needing an
+    external link partner.
     Keep ECC last so it covers all earlier traffic.
     """
     phase1 = [
         app
-        for app in VALID_APPS
+        for app in valid_apps_for_board(board)
         if app != LINUX_STAGE
         and app not in COREMARK_PRO_APP_NAMES
         and app not in DEBUGGER_DRIVEN_APPS
@@ -1695,7 +1696,7 @@ def main() -> int:
     serial = args.serial if args.serial else DEFAULT_SERIALS[board]
     timeout = args.timeout if args.timeout is not None else DEFAULT_TIMEOUTS[board]
 
-    all_stages = regression_stages()
+    all_stages = regression_stages(board)
 
     if args.stages:
         requested = set(args.stages)

@@ -67,7 +67,7 @@ CoreMark-PRO workloads share the `sw/apps/coremark_pro` build directory.
 | Command | Purpose |
 | --- | --- |
 | FROST: Configure Target | Save the cable, Vivado target, and application choices. |
-| FROST: Load Software | Build any application the repository loader accepts, with its normal build profile, and run it. |
+| FROST: Load Software | Build any X3 application the repository loader accepts, with its normal build profile, and run it. |
 | FROST: Attach Debugger | Attach `cppdbg` to the application that is already loaded. |
 | FROST: Load Software and Debug | Choose and save a debug application, build and load it, then debug it. |
 | FROST: Program Bitstream | Program the FPGA's volatile configuration. |
@@ -82,8 +82,8 @@ CoreMark-PRO workloads share the `sw/apps/coremark_pro` build directory.
 
 ## Loading software
 
-**FROST: Load Software** offers every application the repository loader
-accepts, including Linux and the benchmarks, and leaves the CPU running. It
+FROST: Load Software offers every application the repository loader accepts
+for X3, including Linux and the benchmarks, and leaves the CPU running. It
 does not change the application the debug commands remember. It asks for a
 placement:
 

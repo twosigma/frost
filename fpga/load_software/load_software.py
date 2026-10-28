@@ -103,6 +103,8 @@ VALID_APPS = [
     "vm_test",
 ]
 
+BOARD_SPECIFIC_APPS = {"bootrom": frozenset({"vcu118"})}
+
 # Clock frequency in Hz; CoreMark iterations target about 10 seconds.
 BOARD_CONFIG = {
     # ``has_ddr``: the bitstream provides the JTAG DDR-load master and the
@@ -133,6 +135,17 @@ FORCED_DDR_APPS = frozenset(
         "tick_torture",
     }
 )
+
+
+def valid_apps_for_board(board: str) -> list[str]:
+    """Return JTAG applications supported by the selected board."""
+    if board not in BOARD_CONFIG:
+        raise ValueError(f"Unknown board: {board}")
+    return [
+        app
+        for app in VALID_APPS
+        if app not in BOARD_SPECIFIC_APPS or board in BOARD_SPECIFIC_APPS[app]
+    ]
 
 
 def board_clock_freq(
@@ -727,7 +740,11 @@ def main() -> None:
     add_target_args(parser, managed=True)
     args = parser.parse_args()
     validate_target_args(parser, args)
-    if args.software_app == "bootrom" and (args.board != "vcu118" or args.ddr):
+    if args.software_app is not None and args.software_app not in valid_apps_for_board(
+        args.board
+    ):
+        parser.error(f"{args.software_app} is not supported on {args.board}")
+    if args.software_app == "bootrom" and args.ddr:
         parser.error("bootrom requires VCU118 and BRAM execution")
     if args.expected_build_config_sha256 is not None:
         if not args.skip_build:

@@ -1528,19 +1528,125 @@ def test_console_text_keeps_what_the_stage_reads() -> None:
 # --- Stages and other apps ---------------------------------------------------
 
 
-def test_default_stages_skip_debugger_driven_apps() -> None:
-    """debug_target stays loadable but cannot pass unattended, so it is no stage."""
-    stages = hw.regression_stages()
-    assert "debug_target" in hw.VALID_APPS
+@pytest.mark.parametrize("board,board_apps", [("x3", []), ("vcu118", ["bootrom"])])
+def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
+    """Stage lists contain supported apps, with hello_world first and ECC last."""
+    stages = hw.regression_stages(board)
+    assert stages == [
+        "hello_world",
+        *board_apps,
+        "amo_irq_torture",
+        "branch_pred_test",
+        "c_ext_test",
+        "call_stress",
+        "cf_ext_test",
+        "coremark",
+        "csr_test",
+        "imsic_csr_test",
+        "imsic_msi_test",
+        "imsic_aplic_coexist_test",
+        "ddr_exec_test",
+        "ddr_atomic_test",
+        "ddr_bench",
+        "ddr_heap_test",
+        "ddr_smc_test",
+        "ddr_test",
+        "dma_torture",
+        "freertos_demo",
+        "fpu_assembly_test",
+        "fpu_test",
+        "isa_test",
+        "itlb_test",
+        "linux_irq_active_ddr_test",
+        "linux_irq_ddr_test",
+        "linux_irq_stack_slot_test",
+        "lq_stale_slot_probe",
+        "memerr_readback",
+        "memory_test",
+        "nic_loopback",
+        "opensbi_smoke",
+        "packet_parser",
+        "pde_return_hazard",
+        "perf_off_test",
+        "print_clock_speed",
+        "ptw_coherence_test",
+        "ras_stress_test",
+        "ras_test",
+        "smode_test",
+        "spanning_test",
+        "sprintf_test",
+        "strings_test",
+        "tick_torture",
+        "tomasulo_perf",
+        "tomasulo_test",
+        "uart_echo",
+        "umode_test",
+        "vm_test",
+        "coremark_pro",
+        "linux_boot",
+        "ddr_ecc",
+    ]
+    assert "debug_target" in hw.valid_apps_for_board(board)
     assert "debug_target" not in stages
     # nic_echo needs a link partner sending the cocotb wire peer's frames.
-    assert "nic_echo" in hw.VALID_APPS
+    assert "nic_echo" in hw.valid_apps_for_board(board)
     assert "nic_echo" not in stages
-    assert "nic_loopback" in stages
-    assert stages[0] == "hello_world"
-    assert stages[-3:] == [hw.SWEEP_STAGE, hw.LINUX_STAGE, hw.ECC_STAGE]
+    assert "fsbl" not in hw.valid_apps_for_board(board)
     assert not set(hw.COREMARK_PRO_APP_NAMES) & set(stages)
     assert len(stages) == len(set(stages))
+
+
+@pytest.mark.parametrize("board", ["x3", "vcu118"])
+def test_default_stage_dispatch_uses_selected_board(
+    monkeypatch: pytest.MonkeyPatch, board: str
+) -> None:
+    """The CLI dispatches exactly the selected board's default stage list."""
+    seen = _stub_board(monkeypatch)
+    monkeypatch.setattr(hw, "linux_root_from_env", lambda: ROOT)
+    monkeypatch.setattr(hw, "linux_root_preflight", lambda *args: [])
+
+    def finish(stage: str) -> dict[str, Any]:
+        seen[stage] = {}
+        return {"stage": stage, "status": "PASS", "elapsed": 0.0, "note": ""}
+
+    monkeypatch.setattr(hw, "run_sweep_stage", lambda *args: finish(hw.SWEEP_STAGE))
+    monkeypatch.setattr(hw, "run_ecc_stage", lambda *args: finish(hw.ECC_STAGE))
+    monkeypatch.setattr(hw.sys, "argv", ["runner", "--board", board])
+    assert hw.main() == 0
+    assert list(seen) == hw.regression_stages(board)
+
+
+@pytest.mark.parametrize(
+    "board,app", [("x3", "bootrom"), ("x3", "fsbl"), ("vcu118", "fsbl")]
+)
+def test_unsupported_stage_is_rejected_before_board_access(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    board: str,
+    app: str,
+) -> None:
+    """An explicit stage request must belong to the selected board's list."""
+    monkeypatch.setattr(hw.sys, "argv", ["runner", "--board", board, app])
+    monkeypatch.setattr(
+        hw, "serial_holders", lambda *args: pytest.fail("serial preflight started")
+    )
+    monkeypatch.setattr(
+        hw, "linux_root_from_env", lambda: pytest.fail("Linux preflight started")
+    )
+    with pytest.raises(SystemExit) as rejected:
+        hw.main()
+    assert rejected.value.code == 2
+    error = capsys.readouterr().err
+    assert f"unknown stage(s): {app}\n" in error
+    assert app not in error.split("valid stages:", 1)[1]
+
+
+def test_vcu118_accepts_explicit_bootrom_stage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The VCU118 selector accepts bootrom as a standalone stage."""
+    seen = _stub_board(monkeypatch)
+    monkeypatch.setattr(hw.sys, "argv", ["runner", "--board", "vcu118", "bootrom"])
+    assert hw.main() == 0
+    assert list(seen) == ["bootrom"]
 
 
 def test_ecc_stage_verdict_follows_the_script_exit(monkeypatch: Any) -> None:
@@ -1633,8 +1739,8 @@ def test_counters_absent_stage_runs_at_every_clock(
     Profiling counters default off at every clock. An unknown stage alongside
     perf_off_test must be the only rejected name.
     """
-    assert "perf_off_test" in hw.VALID_APPS
-    assert "perf_off_test" in hw.regression_stages()
+    assert "perf_off_test" in hw.valid_apps_for_board("x3")
+    assert "perf_off_test" in hw.regression_stages("x3")
     monkeypatch.setenv("FROST_CPU_CLK_HZ", "161132812")
     monkeypatch.setattr(
         hw.sys,

@@ -1303,7 +1303,12 @@ def test_coremark_pro_zip_timeout_preserves_board_and_caller_budgets(
 
 @pytest.mark.parametrize(
     "board,app,options",
-    [("x3", "bootrom", []), ("vcu118", "bootrom", ["--ddr"]), ("vcu118", "fsbl", [])],
+    [
+        ("x3", "bootrom", []),
+        ("vcu118", "bootrom", ["--ddr"]),
+        ("x3", "fsbl", []),
+        ("vcu118", "fsbl", []),
+    ],
 )
 def test_flash_stage_loader_rejects_invalid_execution(
     monkeypatch: pytest.MonkeyPatch, board: str, app: str, options: list[str]
@@ -1319,3 +1324,22 @@ def test_flash_stage_loader_rejects_invalid_execution(
     with pytest.raises(SystemExit) as error:
         loader.main()
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize("board", ["x3", "vcu118"])
+def test_loader_lists_targets_without_an_application(
+    monkeypatch: pytest.MonkeyPatch, board: str
+) -> None:
+    """Board application filtering permits target discovery without an app."""
+    monkeypatch.setattr(sys, "argv", ["loader", board, "--list-targets"])
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        loader, "select_target", lambda *args, **kwargs: calls.append(kwargs)
+    )
+    monkeypatch.setattr(
+        loader, "compile_app_for_board", lambda *a, **kw: pytest.fail("build started")
+    )
+    loader.main()
+    assert len(calls) == 1
+    assert calls[0]["list_only"] is True
+    assert calls[0]["board"] == board

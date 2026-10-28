@@ -119,6 +119,22 @@ def repository_metadata(repo_root: Path) -> dict[str, Any]:
     ):
         raise ValueError("DEFAULT_SERIALS must contain an X3 UART device")
 
+    board_apps = loader.get("valid_apps_for_board")
+    if board_apps is not None:
+        if not callable(board_apps):
+            raise ValueError("Loader valid_apps_for_board must be callable")
+        selected_apps = board_apps("x3")
+        if (
+            not isinstance(selected_apps, list | tuple)
+            or not selected_apps
+            or any(not isinstance(app, str) or app not in apps for app in selected_apps)
+            or len(set(selected_apps)) != len(selected_apps)
+        ):
+            raise ValueError(
+                "Loader board applications must be a nonempty registry subset"
+            )
+        apps = selected_apps
+
     return {
         "apps": list(apps),
         "defaultSerial": serial,
@@ -126,8 +142,10 @@ def repository_metadata(repo_root: Path) -> dict[str, Any]:
         "ddrApps": [app for app in apps if app in ddr_apps],
         "hasDdr": has_ddr,
         "debugApps": [app for app in apps if app in debug_apps],
-        "debugUnsupported": debug_unsupported,
-        "appBuildDirectories": directories,
+        "debugUnsupported": {
+            app: reason for app, reason in debug_unsupported.items() if app in apps
+        },
+        "appBuildDirectories": {app: directories[app] for app in apps},
     }
 
 
