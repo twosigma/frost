@@ -76,7 +76,7 @@ The board and simulation share one physical map.
 | `[0x4001_0000, +0xC000)` | SiFive CLINT alias: `msip` at `+0`, `mtimecmp` at `+0x4000`, `mtime` at `+0xBFF8` |
 | `[0x4002_1000, +0x100)` | Memory error unit, APLIC source 5, bound by the `frost_memerr` driver ([device-tree binding](buildroot-external/board/frost/frost,memory-error.yaml)) |
 | `[0x4003_0000, +4 KiB)` | DMA-coherent NIC, bound by the `frost_net10g` driver ([device-tree binding](buildroot-external/board/frost/frost,net10g.yaml)) |
-| `[0x4400_0000, +4 MiB)` | AIA APLIC with direct and MSI delivery, with M and S domains at `0x4400_0000` and `0x4400_8000`, each 32 KiB and each with one IDC for hart 0. Sources 1 to 5 are the UART, external pin, DMA test engine, NIC, and memory error unit. OpenSBI delegates all sources to S mode and disables the M-domain node in Linux's DT. |
+| `[0x4400_0000, +4 MiB)` | AIA APLIC with direct and MSI delivery, with M and S domains at `0x4400_0000` and `0x4400_8000`, each 32 KiB and each with one IDC for hart 0. Sources 1 to 5 are the UART, external pin (RJ-45 NIC on VCU118), DMA test engine, QSFP NIC, and memory error unit. OpenSBI delegates all sources to S mode and disables the M-domain node in Linux's DT. |
 | `[0x4800_0000, +2 MiB)` | IMSIC device window. Machine files start at `0x4800_0000` and supervisor files at `0x4810_0000`, with 4 KiB per hart and 63 identities per file. |
 | `[0x8000_0000, +1 GiB)` | Cached DDR. The DTB advertises the board's DDR size: 1 GiB on X3. |
 

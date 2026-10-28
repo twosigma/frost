@@ -116,7 +116,8 @@ revisions have BPI flash. The configuration flash holds the FPGA image at offset
 stages below. Each software stage has a 32-byte header with its load address,
 length, entry address and CRC-32. The boot stages reject invalid bounds and
 checksums. The ROM loads the FSBL at reset; the FSBL enters OpenSBI, which
-starts U-Boot in supervisor mode. No JTAG software load is needed for this path.
+starts U-Boot in supervisor mode. No JTAG software load is needed for this path. The FSBL is a flash stage,
+not a standalone JTAG application.
 
 | Stage | Flash offset | Load address | Maximum payload |
 |---|---|---|---|

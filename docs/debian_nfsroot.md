@@ -7,6 +7,10 @@ initramfs with OpenSBI and a device tree; the initramfs loads the FROST NIC
 module and mounts the export as `/`. The [Linux reference](../linux/README.md)
 describes the boot interface.
 
+The VCU118 uses the same kernel, driver and NFS setup through its RJ-45
+or QSFP1 interface. Its [board guide](../boards/vcu118/README.md#debian-over-nfs)
+gives the loader and interface selections. The commands below select X3.
+
 Examples use server `192.0.2.1`, board `192.0.2.2`, and export
 `/srv/nfs/debian`; substitute your own. The loader assumes the 322.265625 MHz
 CPU clock. A divided-clock bitstream boots roughly proportionally slower.

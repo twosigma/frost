@@ -257,6 +257,7 @@ def gen_dts(
     model: str,
     mac: str = NIC_MAC_ADDRESS,
     mem_size: int = MEM_SIZE,
+    board: str = "x3",
 ) -> str:
     """Return the FROST device tree source for the OpenSBI + Sv39 boot.
 
@@ -284,6 +285,20 @@ def gen_dts(
     if mac_1g_last == 0 and all(int(o, 16) == 0 for o in mac_octets[:-1]):
         mac_1g_last = 1
     mac_1g = " ".join([*mac_octets[:-1], f"{mac_1g_last:02x}"])
+    secondary_nic = (
+        f"""\t\tethernet@{NIC_1G_BASE:x} {{
+\t\t\tcompatible = "frost,net10g";
+\t\t\treg = <0x{NIC_1G_BASE:08x} 0x{NIC_1G_SIZE:x}>;
+\t\t\tinterrupt-parent = <&aplic_s>;
+\t\t\tinterrupts = <{NIC_1G_APLIC_SOURCE} 4>;
+\t\t\tdma-coherent;
+\t\t\tlocal-mac-address = [{mac_1g}];
+\t\t\tclock-frequency = <{clk_hz}>;
+\t\t}};
+"""
+        if board == "vcu118"
+        else ""
+    )
     return f"""/dts-v1/;
 
 / {{
@@ -423,16 +438,7 @@ def gen_dts(
 \t\t\tlocal-mac-address = [{mac}];
 \t\t\tclock-frequency = <{clk_hz}>;
 \t\t}};
-\t\tethernet@{NIC_1G_BASE:x} {{
-\t\t\tcompatible = "frost,net10g";
-\t\t\treg = <0x{NIC_1G_BASE:08x} 0x{NIC_1G_SIZE:x}>;
-\t\t\tinterrupt-parent = <&aplic_s>;
-\t\t\tinterrupts = <{NIC_1G_APLIC_SOURCE} 4>;
-\t\t\tdma-coherent;
-\t\t\tlocal-mac-address = [{mac_1g}];
-\t\t\tclock-frequency = <{clk_hz}>;
-\t\t}};
-\t}};
+{secondary_nic}\t}};
 }};
 """
 
@@ -481,6 +487,7 @@ def check_layout(
     dtb: bytes,
     initrd: bytes | None,
     mem_size: int = MEM_SIZE,
+    board: str = "x3",
 ) -> None:
     """Assert every region is ordered, fits its slot and ends inside memory.
 
@@ -590,6 +597,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="bytes of memory to advertise at the DDR base, a multiple of 2 MiB "
         f"(default: 0x{MEM_SIZE:x}, the simulation DDR model's size)",
     )
+    parser.add_argument("--board", choices=("x3", "vcu118"), default="x3")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
         "--shim-march", default=env("FROST_SHIM_MARCH", DEFAULT_SHIM_MARCH)
@@ -634,6 +642,7 @@ def main(argv: list[str] | None = None) -> int:
             model=args.model,
             mac=args.mac or NIC_MAC_ADDRESS,
             mem_size=args.mem_size,
+            board=args.board,
         ),
         out_dir,
         args.dtc,

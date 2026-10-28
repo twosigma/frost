@@ -44,7 +44,7 @@ set coremark_pro_apps [list coremark_pro_core coremark_pro_cjpeg \
                             coremark_pro_zip]
 
 # Mirrors load_software.py VALID_APPS.
-set valid_apps [list bootrom fsbl amo_irq_torture branch_pred_test c_ext_test call_stress cf_ext_test coremark \
+set valid_apps [list bootrom amo_irq_torture branch_pred_test c_ext_test call_stress cf_ext_test coremark \
                      {*}$coremark_pro_apps csr_test imsic_csr_test imsic_msi_test imsic_aplic_coexist_test debug_target ddr_atomic_test ddr_bench ddr_exec_test ddr_heap_test \
                      ddr_smc_test ddr_test dma_torture freertos_demo fpu_assembly_test fpu_test \
                      hello_world isa_test itlb_test linux_irq_active_ddr_test linux_boot linux_irq_ddr_test linux_irq_stack_slot_test lq_stale_slot_probe memerr_readback \

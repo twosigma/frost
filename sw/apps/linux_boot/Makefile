@@ -21,7 +21,7 @@
 # Stage 1b fetches Debian's kernel and adds the matching FROST NIC module and
 # loader script to the initramfs; Debian's kernel lacks this driver.
 # Stage 2 repacks the images and DTB for FPGA_CPU_CLK_FREQ (timer and UART)
-# and FROST_LINUX_MEM_SIZE. The loader cleans Stage 2 before each load while
+# FROST_LINUX_BOARD and FROST_LINUX_MEM_SIZE. The loader cleans Stage 2 before each load while
 # reusing the Buildroot build and linux/debian-kernel cache.
 # Kernel and initramfs overrides are described below.
 
@@ -94,6 +94,7 @@ PACK_INITRD := $(or $(FROST_LINUX_INITRD),$(INITRD_IMG))
 PACK_ARGS := --initrd "$(PACK_INITRD)"
 endif
 PACK_ARGS += $(if $(FROST_LINUX_IP),--ip "$(FROST_LINUX_IP)")
+PACK_ARGS += --board "$(or $(FROST_LINUX_BOARD),x3)"
 PACK_ARGS += $(if $(FROST_LINUX_MAC),--mac "$(FROST_LINUX_MAC)")
 # The packer takes FROST_INITRD from the environment as its --initrd default,
 # which would give an NFS root an initramfs; only the variables above choose it.

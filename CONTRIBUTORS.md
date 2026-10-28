@@ -56,6 +56,8 @@
   configurable PMA, and explicit interrupt, debug, boot, and reset interfaces
 - Implemented the VCU118 board port, including clocking, DDR4, pin constraints,
   and build and software-loading integration
+- Implemented VCU118 RJ-45 and QSFP1 Ethernet, the GMII MAC path, SPI flash
+  boot stages, and U-Boot console and network support
 - Proposed the open ASIC flow on FreePDK45
 - Proposed an L1-level coherence unit for SMP
 - Built the architectural performance model in `perf-modeling/`, a

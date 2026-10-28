@@ -1,19 +1,38 @@
 #!/bin/sh
-# Bring up loopback and, when the secondary 1G SGMII NIC (eth1) is present
-# (VCU118), bring it up and start a background DHCP client so the board is
-# reachable over the 1Gb RJ-45 LAN (ping, SSH via dropbear, TFTP/NFS).
-# Leave eth0 (10G) down by default so frost_nettest can test PMA loopback.
+#    Copyright 2026 Two Sigma Open Source, LLC
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
 
+# Copyright 2026 John Goodacre
+
+# Configure the RJ-45 NIC identified by its platform device address.
 case "$1" in
 start)
-	ip link set lo up 2>/dev/null || true
-	if [ -d /sys/class/net/eth1 ]; then
-		ip link set eth1 up 2>/dev/null || true
-		udhcpc -i eth1 -b -q >/dev/null 2>&1 || true
-	fi
-	;;
+    for interface in /sys/class/net/*; do
+        case "$(readlink -f "$interface/device")" in
+        */40022000.ethernet)
+            name=${interface##*/}
+            ip link set "$name" up || exit 1
+            ip -4 addr show dev "$name" | grep -q 'inet ' && continue
+            udhcpc -i "$name" -b -p /run/udhcpc-frost.pid
+            ;;
+        esac
+    done
+    ;;
 stop)
-	killall udhcpc 2>/dev/null || true
-	;;
+    if [ -f /run/udhcpc-frost.pid ]; then
+        kill "$(cat /run/udhcpc-frost.pid)" 2>/dev/null || true
+        rm -f /run/udhcpc-frost.pid
+    fi
+    ;;
 esac
-exit 0
