@@ -18,7 +18,7 @@
 # -----------------------------------------------------------------------------
 # 1. System Clocks & Reset
 # -----------------------------------------------------------------------------
-# SYSCLK1_300: 300 MHz differential clock (SI5335A) on G31/F31 in Bank 65 (SLR2)
+# SYSCLK1_300 differential clock on G31/F31 in Bank 47 (SLR1)
 set_property PACKAGE_PIN G31 [get_ports sysclk1_300_p]
 set_property PACKAGE_PIN F31 [get_ports sysclk1_300_n]
 set_property IOSTANDARD DIFF_HSTL_I_12 [get_ports sysclk1_300_p]
@@ -29,12 +29,12 @@ create_clock -period 3.333 -name sysclk1_300 [get_ports sysclk1_300_p]
 # Center the CPU clock distribution buffer in SLR2 to minimize clock skew
 set_property USER_CLOCK_ROOT X2Y12 [get_nets -quiet {main_clock divided_clock_by_4}]
 
-# CPU Reset Pushbutton (SW6, active-high, Bank 65 in SLR2)
+# CPU Reset Pushbutton (SW5, active-high, Bank 73 in SLR2)
 set_property PACKAGE_PIN L19 [get_ports cpu_reset]
 set_property IOSTANDARD LVCMOS12 [get_ports cpu_reset]
 
 # -----------------------------------------------------------------------------
-# 2. USB-UART Console (Silicon Labs CP2105 on Bank 64 in SLR2)
+# 2. USB-UART Console (Silicon Labs CP2105 on Bank 64 in SLR1)
 # -----------------------------------------------------------------------------
 # FPGA TX connects to CP2105 RXD (BB21)
 # FPGA RX connects to CP2105 TXD (AW25)
@@ -45,7 +45,7 @@ set_property PACKAGE_PIN AW25 [get_ports i_uart_rx]
 set_property IOSTANDARD LVCMOS18 [get_ports i_uart_rx]
 
 # -----------------------------------------------------------------------------
-# 3. Status LEDs (GPIO_LED_0 .. GPIO_LED_3 on Bank 68/67 in SLR2)
+# 3. Status LEDs (GPIO_LED_0 .. GPIO_LED_3 on Bank 40 in SLR0)
 # -----------------------------------------------------------------------------
 set_property PACKAGE_PIN AT32 [get_ports {gpio_led[0]}]
 set_property PACKAGE_PIN AV34 [get_ports {gpio_led[1]}]
@@ -56,7 +56,7 @@ set_property IOSTANDARD LVCMOS12 [get_ports {gpio_led[*]}]
 # -----------------------------------------------------------------------------
 # 4. DDR4 Channel 0 Component Memory (Banks 71-73 in SLR2, 72-bit native ECC)
 # -----------------------------------------------------------------------------
-# 250 MHz Differential Reference Clock (Bank 71 in SLR2)
+# Differential Reference Clock (Bank 71 in SLR2)
 set_property PACKAGE_PIN E12 [get_ports default_250mhz_clk_clk_p]
 set_property PACKAGE_PIN D12 [get_ports default_250mhz_clk_clk_n]
 set_property IOSTANDARD DIFF_SSTL12 [get_ports default_250mhz_clk_clk_p]
@@ -284,15 +284,11 @@ set_false_path -to [get_cells -quiet -hierarchical -filter {NAME =~ "*u_startup*
 set_false_path -from [get_cells -quiet -hierarchical -filter {NAME =~ "*u_startup*"}]
 
 # -----------------------------------------------------------------------------
-# 10. Floorplanning: Pure Single-SLR Assignment (100% in SLR2)
+# 10. Floorplanning
 # -----------------------------------------------------------------------------
-# Confine the entire FROST system (CPU core, caches, BRAM, UART, MMCM, DDR4
-# memory subsystem, and initialization engine) to SLR2.
-# SLR2 has 394k LUTs. The full design requires ~175k LUTs (~44% of SLR2).
-# Co-locating all components in SLR2 routes all paths via local intra-die
-# interconnect, maintaining maximum timing margin and Fmax.
+# The subsystem, clock generator, DDR controller and initializer use SLR2.
 if {[get_pblocks -quiet pblock_slr2] eq ""} {
     create_pblock pblock_slr2
 }
 resize_pblock pblock_slr2 -add {SLR2}
-add_cells_to_pblock [get_pblocks pblock_slr2] [get_cells -quiet {u_frost_subsystem u_clock_gen gen_real_ddr.ddr_subsystem u_ddr_init}]
+add_cells_to_pblock [get_pblocks pblock_slr2] [get_cells -quiet {u_frost_subsystem u_clock_gen gen_real_ddr.ddr_subsystem gen_real_ddr.u_ddr_init}]

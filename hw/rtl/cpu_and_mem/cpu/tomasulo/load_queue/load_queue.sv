@@ -1188,7 +1188,7 @@ module load_queue #(
       end
 `ifndef SYNTHESIS
       always @(posedge i_clk) begin
-        if (i_rst_n && i_pre_issue_needs_lq) begin
+        if (reset_seen_q && i_rst_n && i_pre_issue_needs_lq) begin
           assert (candidate_match[i_pre_issue_sel] == addr_update_pre_match);
         end
       end
@@ -1253,7 +1253,7 @@ module load_queue #(
     assign addr_update_pre_match_tags_q = select_tree[1];
 `ifndef SYNTHESIS
     always @(posedge i_clk) begin
-      if (i_rst_n && i_pre_issue_needs_lq) begin
+      if (reset_seen_q && i_rst_n && i_pre_issue_needs_lq) begin
         assert (i_pre_issue_rob_tag ==
                 i_pre_issue_rob_tags[i_pre_issue_sel*ReorderBufferTagWidth +:
                                     ReorderBufferTagWidth]);
@@ -1909,7 +1909,7 @@ module load_queue #(
   // two invalidation sources are mutually exclusive.
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  assert property (@(posedge i_clk) disable iff (!i_rst_n)
+  assert property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       !(i_cache_invalidate_valid && amo_cache_inv))
   else $error("BUG: SQ and AMO cache invalidation fired simultaneously");
 `endif
@@ -2724,11 +2724,11 @@ module load_queue #(
     else sq_check_pending_copy <= {3{sq_check_pending_next}};
   end
 `ifndef SYNTHESIS
-  // The copies share next state and agree after the first edge.
-  logic sq_check_pending_copies_armed_q = 1'b0;
+  // The copies share next state; sequential checks start after local reset.
+  logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    sq_check_pending_copies_armed_q <= 1'b1;
-    if (sq_check_pending_copies_armed_q) begin
+    if (!i_rst_n) reset_seen_q <= 1'b1;
+    if (reset_seen_q) begin
       p_sq_check_pending_copies_match : assert (sq_check_pending_copy == {3{sq_check_pending}});
       p_sq_check_payload_en_copies_match :
       assert ({sq_check_payload_en_b, sq_check_payload_en_c, sq_check_payload_en_d} ==
@@ -3693,7 +3693,7 @@ module load_queue #(
     end
   end
   always_ff @(posedge i_clk) begin
-    if (i_rst_n && !$isunknown({lq_valid, lq_data_valid, head_idx})) begin
+    if (reset_seen_q && i_rst_n && !$isunknown({lq_valid, lq_data_valid, head_idx})) begin
       p_issue_cdb_physical_select_exact :
       assert (issue_cdb_found == sim_issue_cdb_found_ref && issue_cdb_idx == sim_issue_cdb_idx_ref);
     end
@@ -3717,7 +3717,7 @@ module load_queue #(
   end
 
   always @(posedge i_clk) begin
-    if (i_rst_n) begin
+    if (reset_seen_q && i_rst_n) begin
       if (i_alloc.valid && full) $warning("LQ: allocation attempted when full");
       if (sq_check_pending &&
           ((sq_check_addr_q[SqCheckCopyMsb:3] !== sq_check_addr_q_b) ||
@@ -3864,7 +3864,7 @@ module load_queue #(
   // A memory-side stall must not alter any part of the active write request.
   // This also catches an accidental dependency on the newer issued_* snapshot
   // while another response/launch sequence is being prepared.
-  assert property (@(posedge i_clk) disable iff (!i_rst_n || i_flush_all)
+  assert property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n || i_flush_all)
       (amo_state == AMO_WRITE_ACTIVE && !i_amo_mem_write_done) |=> (
           i_amo_mem_write_done ||
           ($stable(
@@ -3908,7 +3908,7 @@ module load_queue #(
   // the address presented beside it. Idle forces it low with the address; the
   // check is enable-qualified so a cached region that starts at address zero
   // cannot trip it.
-  assert property (@(posedge i_clk) disable iff (!i_rst_n)
+  assert property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       o_amo_mem_write_en |-> (o_amo_mem_write_is_cached == is_cached_addr(
       o_amo_mem_write_addr
   )))
@@ -3916,7 +3916,7 @@ module load_queue #(
 
   // The staged PMA check faults an AMO outside BRAM and the cached tier, so
   // no AMO write reaches a device.
-  assert property (@(posedge i_clk) disable iff (!i_rst_n)
+  assert property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       o_amo_mem_write_en |-> riscv_pkg::pma_atomic_ok(
       o_amo_mem_write_addr
   ))
@@ -3924,21 +3924,21 @@ module load_queue #(
 
   // MIN/MAX keep next-cycle write activation; normal AMOs spend exactly one
   // intervening COMPUTE cycle with no write, completion, or dependency release.
-  assert property (@(posedge i_clk) disable iff (!i_rst_n || i_flush_all)
+  assert property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n || i_flush_all)
       (amo_response_capture && amo_response_is_minmax)
       |=> (amo_state == AMO_WRITE_ACTIVE && o_amo_mem_write_en))
   else $error("LQ: MIN/MAX response-to-write latency changed");
-  assert property (@(posedge i_clk) disable iff (!i_rst_n || i_flush_all)
+  assert property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n || i_flush_all)
       (amo_response_capture && !amo_response_is_minmax)
       |=> (amo_state == AMO_COMPUTE && !o_amo_mem_write_en))
   else $error("LQ: normal AMO did not capture before computing");
-  assert property (@(posedge i_clk) disable iff (!i_rst_n || i_flush_all)
+  assert property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n || i_flush_all)
       amo_compute_commit |=> (amo_state == AMO_WRITE_ACTIVE &&
                              amo_write_data_q == $past(
       amo_compute_result
   )))
   else $error("LQ: normal AMO compute/result boundary changed");
-  assert property (@(posedge i_clk) disable iff (!i_rst_n || i_flush_all)
+  assert property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n || i_flush_all)
       (amo_state == AMO_COMPUTE && amo_compute_owner_killed) |=> (amo_state == AMO_IDLE))
   else $error("LQ: killed compute owner launched an AMO write");
 `endif
@@ -4813,39 +4813,41 @@ module load_queue #(
   // ===========================================================================
   // A DMA write to the reserved line cancels the LR reservation.
   cover_dma_write_clears_reservation :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n) coh_reservation_inval);
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n) coh_reservation_inval);
   // A DMA write to the line of an LR in flight: the LR sets no reservation.
   cover_dma_write_hits_lr_in_flight :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n) |(cs_coh_inval_now & cs_is_lr));
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
+      |(cs_coh_inval_now & cs_is_lr));
   // A DMA write to the line of a cached load in flight: its data must not fill the L0.
   cover_dma_write_hits_load_in_flight :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       |(cs_coh_inval_now & ~cs_is_lr & ~cs_is_amo));
   // The ROB-head load takes the staging register from a younger staged load.
   cover_head_load_evicts_staged_load :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       sq_check_replace &&
       (head_mem_stored_found || (i_addr_update.valid && head_mem_update_found)));
   // A staged load gives up the staging register to an older AMO that has not written.
   cover_staged_load_yields_to_amo :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       sq_check_pending && sq_check_entry_valid && older_amo_write_pending);
   // A load overlaps an older store that cannot forward to it, so it waits.
   cover_load_waits_for_unforwardable_store :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       sq_check_phase2 && sq_check_entry_issueable && !sq_check_misaligned &&
       !sq_no_older_store && i_sq_all_older_addrs_known && i_sq_forward.match &&
       !(ENABLE_SQ_FORWARD_FAST_PATH && i_sq_forward.can_forward) &&
       !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q);
   // Every cached-load slot is busy, so no load launches.
   cover_cached_load_slots_full :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n) &cs_valid);
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n) &cs_valid);
   // The response of a flushed cached load arrives and is drained.
   cover_flushed_cached_load_drained :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n) resp_from_slot && cs_drop[resp_slot]);
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
+      resp_from_slot && cs_drop[resp_slot]);
   // The router holds a cached response behind a low-BRAM or device response.
   cover_cached_response_held :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n) i_cached_resp_held);
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n) i_cached_resp_held);
 `endif
 `endif
 

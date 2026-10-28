@@ -396,6 +396,8 @@ module dmmu (
   end
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
   // Reference payload loaded only when an op slips in behind a held S1. Both
   // hold the same op whenever the skid is valid.
   iss_payload_t s0_ref_q;
@@ -403,7 +405,7 @@ module dmmu (
     if (i_rst_n && !i_flush_all && !s1_can_load && i_iss_valid && i_active && !s0_valid_q &&
         !iss_killed)
       s0_ref_q <= iss_in;
-    if (i_rst_n && s0_valid_q) begin
+    if (reset_seen_q && i_rst_n && s0_valid_q) begin
       p_s0_payload_matches_slip_in : assert (s0_q == s0_ref_q);
     end
   end
@@ -506,7 +508,7 @@ module dmmu (
       ref_s2_store_data_q <= s1_q.store_data;
       ref_s2_amo_rs2_q <= s1_q.amo_rs2;
     end
-    if (i_rst_n && s2_valid_q) begin
+    if (reset_seen_q && i_rst_n && s2_valid_q) begin
       p_s2_payload_exact :
       assert ({s2_tag_q, o_iss_out_addr, s2_fault_q, s2_needs_sq_q, s2_is_sc_q, s2_store_data_q,
                s2_amo_rs2_q} ==
@@ -689,17 +691,18 @@ module dmmu (
 `ifdef FROST_COVERAGE
   // A cached translation takes priority over a matching walker response.
   cover_tlb_hit_with_walk_response :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       s1_move && tlb_hit[0] && walk_resp_for_s1 &&
       !s1_noncanonical && !(i_trap_misaligned && s1_misaligned));
   // A late fault from a discarded operation cannot fault a different VPN.
   cover_stale_walk_fault_with_live_op :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       s1_valid_q && !s1_killed && i_walk_resp_valid && !walk_resp_for_s1 &&
       (i_walk_resp.fault_kind != riscv_pkg::DFAULT_NONE));
   // Recovery discards an operation on its matching walk-response edge.
   cover_flush_on_walk_response :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n) s1_killed && walk_resp_for_s1);
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
+      s1_killed && walk_resp_for_s1);
 `endif
 `endif
 

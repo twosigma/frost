@@ -222,6 +222,7 @@ class LQInterface:
         self.dut.i_pre_issue_needs_lq.value = 0
         self.dut.i_sq_all_older_addrs_known.value = 0
         self.dut.i_sq_forward.value = 0
+        self.dut.i_sq_commit_pending.value = 0
         self.dut.i_mem_read_data.value = 0
         self.dut.i_mem_read_valid.value = 0
         self.dut.i_mem_read_error.value = 0

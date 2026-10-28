@@ -517,7 +517,7 @@ module misprediction_flush_controller #(
     end
   end
   always_ff @(posedge i_clk) begin
-    if (!i_rst && !$isunknown(
+    if (restore_flush_copy_armed_q && !i_rst && !$isunknown(
             {flush_all, ref_flush_all, flush_en, ref_flush_en, flush_tag, flush_tag_q,
              ref_flush_tag, flush_pipeline, ref_flush_pipeline, frontend_state_flush,
              ref_frontend_state_flush,
@@ -540,8 +540,8 @@ module misprediction_flush_controller #(
 
   logic restore_flush_copy_armed_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    restore_flush_copy_armed_q <= 1'b1;
-    if (restore_flush_copy_armed_q) begin
+    if (i_rst) restore_flush_copy_armed_q <= 1'b1;
+    if (restore_flush_copy_armed_q && !i_rst) begin
       p_restore_flush_copy_matches : assert (restore_flush_all_q == full_flush_side_effect_kill_q);
       p_frontend_flush_copy_matches :
       assert (frontend_flush_all_q == full_flush_side_effect_kill_q);

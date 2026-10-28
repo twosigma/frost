@@ -26,7 +26,8 @@
  * The caller must hold i_read_onehot == (1 << i_read_address) in every cycle
  * where o_read_data is consumed; o_read_data then equals the base module's.
  * An all-zero i_read_onehot reads bank 0. A simulation-only check below
- * fires on any other mismatch.
+ * fires on any other mismatch when i_read_check_enable is set. Registered
+ * address producers enable the check after their first completed reset.
  *
  * The ROB supplies registered head masks; reservation stations supply their
  * second-issue winner mask.
@@ -42,6 +43,11 @@ module mwp_dist_ram_ohread #(
     parameter int unsigned NARROW_DATA_WIDTH      = DATA_WIDTH
 ) (
     input logic i_clk,
+`ifndef SYNTHESIS
+`ifndef FORMAL
+    input logic i_read_check_enable = 1'b1,
+`endif
+`endif
 
     // Write ports (active-high enables, independent addresses and data)
     input logic [NUM_WRITE_PORTS-1:0]                 i_write_enable,
@@ -91,11 +97,27 @@ module mwp_dist_ram_ohread #(
   // ---------------------------------------------------------------------------
   logic [SelWidth-1:0] lvt[RamDepth];
 
+  // Rows are unspecified until written. A startup staged write can only
+  // affect an unowned row; allocation establishes its bank before a live read.
+`ifdef FROST_RANDOM_START
+  initial begin
+    for (int row = 0; row < RamDepth; row++)
+    for (int chunk = 0; chunk < (SelWidth + 31) / 32; chunk++)
+    lvt[row] = (lvt[row] << 32) | SelWidth'($urandom);
+  end
+`else
   initial for (int i = 0; i < RamDepth; ++i) lvt[i] = '0;
+`endif
 
   // Declaration initialization is allowed for always_ff state by IEEE 1800
   // 9.2.2.4; a separate initial process would be another writer.
-  logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
+`ifdef FROST_RANDOM_START
+  localparam bit RandomStart = 1'b1;
+`else
+  localparam bit RandomStart = 1'b0;
+`endif
+
+  logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = RandomStart ? 'x : '0;
   // Limit address fanout to the read-port compares.
   (* max_fanout = 48 *) logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
 
@@ -191,7 +213,7 @@ module mwp_dist_ram_ohread #(
   // port. FORMAL excludes this check because Yosys cannot elaborate a clocked
   // $error.
   always @(posedge i_clk) begin
-    if (!$isunknown(
+    if (i_read_check_enable && !$isunknown(
             i_read_address
         ) && !$isunknown(
             i_read_onehot

@@ -88,6 +88,9 @@ module frost_sram_2rw #(
   assign o_port_a_read_data = port_a_row_data[port_a_row_q*DATA_WIDTH+:DATA_WIDTH];
   assign o_port_b_read_data = port_b_row_data[port_b_row_q*DATA_WIDTH+:DATA_WIDTH];
 
+`ifndef SYNTHESIS
+  logic sim_load_image = 1'b0;
+`endif
   for (genvar row = 0; row < int'(Rows); row++) begin : gen_row
     // A port selects the row it addresses, to read or to write.
     logic port_a_select, port_b_select;
@@ -113,10 +116,31 @@ module frost_sram_2rw #(
     );
 
 `ifndef SYNTHESIS
+    always @(posedge sim_load_image) begin
+      logic [DATA_WIDTH-1:0] image[2**ADDR_WIDTH];
+      if (USE_INIT_FILE) begin
+        $readmemh(INIT_FILE, image);
+        for (int i = 0; i < 2 ** TileAddrWidth; i++)
+        u_macro.mem[i] = image[row*(2**TileAddrWidth)+i];
+      end
+    end
     initial begin
       logic [DATA_WIDTH-1:0] image[2**ADDR_WIDTH];
-      if (USE_INIT_FILE) $readmemh(INIT_FILE, image);
-      else for (int i = 0; i < 2 ** ADDR_WIDTH; i++) image[i] = DATA_WIDTH'(i);
+      if (USE_INIT_FILE) begin
+        // The loaded image has no writes pending before either port's first
+        // rising edge, including when its clock starts high.
+        u_macro.csb0_reg = 1'b1;
+        u_macro.csb1_reg = 1'b1;
+        $readmemh(INIT_FILE, image);
+      end else begin
+`ifdef FROST_RANDOM_START
+        for (int i = 0; i < 2 ** ADDR_WIDTH; i++)
+        for (int chunk = 0; chunk < (DATA_WIDTH + 31) / 32; chunk++)
+        image[i] = (image[i] << 32) | DATA_WIDTH'($urandom);
+`else
+        for (int i = 0; i < 2 ** ADDR_WIDTH; i++) image[i] = DATA_WIDTH'(i);
+`endif
+      end
       for (int i = 0; i < 2 ** TileAddrWidth; i++) u_macro.mem[i] = image[row*(2**TileAddrWidth)+i];
     end
 `endif

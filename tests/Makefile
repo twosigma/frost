@@ -132,7 +132,8 @@ COMPILE_ARGS := \
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),data_mem_response_mux_tb)
 # Data-memory response mux bench: a request router fed the mux's merged payload,
-# compared every cycle with a reference router fed the separate inputs
+# compared with a reference router fed the separate inputs on every cycle
+# after two startup reset edges
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv \
@@ -435,6 +436,9 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/axi/axil_checker.sv \
         $(ROOT)/hw/rtl/lib/axi/axil_reg_bridge.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),axi_checker)
+VERILOG_SOURCES := $(ROOT)/hw/rtl/lib/axi/axi_checker.sv
+
 else ifeq ($(TOPLEVEL),axi_coherent_bridge)
 # AXI4 to coherent line-port bridge unit bench
 COMPILE_ARGS := \
@@ -485,6 +489,10 @@ else ifeq ($(TOPLEVEL),x3_ddr_init)
 # X3 power-up DDR4 region writer unit bench (AXI write master only)
 COMPILE_ARGS := \
 	$(ROOT)/boards/x3/x3_ddr_init.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),vcu118_ddr_init)
+COMPILE_ARGS := \
+	$(ROOT)/boards/vcu118/vcu118_ddr_init.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),x3_ecc_reader)
 # X3 DDR4 ECC register poller unit bench (AXI4-Lite master only)
@@ -557,15 +565,26 @@ endif
 # A test that defines FROST_SRAM_MACROS builds the RAM wrappers from the ASIC
 # flow's SRAM macros (asic/sram). Their OpenRAM models use delays, so
 # Verilator schedules timing. An X that the design assigns, such as a macro's
-# read data where the macros leave it undefined, becomes a pseudo-random value
-# from a fixed seed; variables still start at zero, as in the other tests.
+# read data where the macros leave it undefined, becomes a pseudo-random value.
+# Ordinary mode uses a fixed seed and zero variable initialization. The
+# random-start settings below also apply to these models.
 ifneq ($(findstring +define+FROST_SRAM_MACROS,$(FROST_VERILATOR_EXTRA_ARGS)),)
 COMPILE_ARGS += \
         $(ROOT)/asic/sram/frost_sram_1w1r.sv \
         $(ROOT)/asic/sram/frost_sram_2rw.sv \
         $(sort $(wildcard $(ROOT)/asic/sram/macros/*/*.v))
-COMPILE_ARGS += --timing --x-assign unique --x-initial 0
+COMPILE_ARGS += --timing
+ifneq ($(FROST_RANDOM_START),1)
+COMPILE_ARGS += --x-assign unique --x-initial 0
 COCOTB_PLUSARGS += +verilator+rand+reset+2 +verilator+seed+1
+endif
+endif
+
+# ASIC power-up: uninitialized state and hardware declaration initializers
+# take seeded random values. Image loading and verification state are separate.
+ifeq ($(FROST_RANDOM_START),1)
+COMPILE_ARGS += --x-assign unique --x-initial unique --x-initial-edge +define+FROST_RANDOM_START
+COCOTB_PLUSARGS += +verilator+rand+reset+2 +verilator+seed+$(FROST_RANDOM_START_VERILATOR_SEED)
 endif
 
 export VERILOG_SOURCES

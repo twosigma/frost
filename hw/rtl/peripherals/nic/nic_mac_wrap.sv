@@ -241,8 +241,8 @@ module nic_mac_wrap #(
     logic [ 2:0] gmii_tx_lane_q;
     logic        gmii_tx_clk_en;
     logic        tx_xgmii_en;
-    logic [ 7:0] cur_tx_byte, gmii_txd_q;
-    logic        cur_tx_ctrl, gmii_tx_en_q, gmii_tx_er_q;
+    logic [7:0] cur_tx_byte, gmii_txd_q;
+    logic cur_tx_ctrl, gmii_tx_en_q, gmii_tx_er_q;
 
     assign gmii_tx_clk_en = i_rx_raw_valid;
     assign tx_xgmii_en    = gmii_tx_clk_en && (gmii_tx_lane_q == 3'd7);
@@ -307,17 +307,17 @@ module nic_mac_wrap #(
     } gmii_rx_state_e;
 
     gmii_rx_state_e gmii_rx_state_q;
-    logic [2:0]  gmii_rx_lane_q;
+    logic [2:0] gmii_rx_lane_q;
     logic [63:0] rx_accum_data_q, xgmii_rx_data_q;
-    logic [ 7:0] rx_accum_ctrl_q, xgmii_rx_ctrl_q;
-    logic        xgmii_rx_en_q;
+    logic [7:0] rx_accum_ctrl_q, xgmii_rx_ctrl_q;
+    logic       xgmii_rx_en_q;
 
-    wire [7:0] gmii_rxd       = rx_raw_data[7:0];
-    wire       gmii_rx_dv     = rx_raw_data[8];
-    wire       gmii_rx_er     = rx_raw_data[9];
-    wire       gmii_rx_clk_en = rx_raw_valid;
+    wire  [7:0] gmii_rxd = rx_raw_data[7:0];
+    wire        gmii_rx_dv = rx_raw_data[8];
+    wire        gmii_rx_er = rx_raw_data[9];
+    wire        gmii_rx_clk_en = rx_raw_valid;
     /* verilator lint_off UNUSEDSIGNAL */
-    wire       rx_raw_unused  = |rx_raw_data[63:10];
+    wire        rx_raw_unused = |rx_raw_data[63:10];
     /* verilator lint_on UNUSEDSIGNAL */
 
     always_ff @(posedge i_rx_clk) begin
@@ -366,9 +366,7 @@ module nic_mac_wrap #(
             GMII_RX_DATA: begin
               if (gmii_rx_dv) begin
                 if (gmii_rx_lane_q == 3'd7) begin
-                  xgmii_rx_data_q <= {
-                    gmii_rx_er ? 8'hfe : gmii_rxd, rx_accum_data_q[55:0]
-                  };
+                  xgmii_rx_data_q <= {gmii_rx_er ? 8'hfe : gmii_rxd, rx_accum_data_q[55:0]};
                   xgmii_rx_ctrl_q <= {gmii_rx_er, rx_accum_ctrl_q[6:0]};
                   xgmii_rx_en_q   <= 1'b1;
                   gmii_rx_lane_q  <= 3'd0;

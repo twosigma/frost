@@ -302,8 +302,10 @@ module dma_test_engine_axi #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       if (i_dma_axi_bvalid && !(busy_q && write_q && !aw_valid_q && !w_valid_q))
         $error("dma_test_engine_axi: B with no write awaiting one");
       if (i_dma_axi_rvalid && !(busy_q && !write_q && !ar_valid_q))

@@ -43,12 +43,15 @@ def _failed_simulation() -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_riscv_nonzero_simulator_exit_is_a_failure() -> None:
+def test_riscv_nonzero_simulator_exit_is_a_failure(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """A broken simulator invocation must turn the standalone CI job red."""
     status, message = test_riscv_tests.check_pass_fail(_failed_simulation())
 
     assert status == "FAIL"
     assert "exit code 2" in message
+    assert "Verilator build failed" in capsys.readouterr().out
 
 
 def test_arch_timeout_is_a_failure(
@@ -459,6 +462,37 @@ def _soc_runner(
     )
 
 
+@pytest.mark.parametrize("toplevel", ("frost", "dtm_core"))
+def test_random_start_seed_and_build_reuse(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    toplevel: str,
+) -> None:
+    """Power-up seeds replay on SoC and unit tops without rebuilding per seed."""
+    monkeypatch.delenv("FROST_RANDOM_START_SEED", raising=False)
+    runner = test_run_cocotb.CocotbRunner(
+        python_test_module="unused", hdl_toplevel_module=toplevel
+    )
+    ordinary_signature = runner._verilator_build_signature()
+    assert "FROST_RANDOM_START" not in runner.setup_environment()
+
+    monkeypatch.setenv("FROST_RANDOM_START_SEED", "job-123")
+    environment = runner.setup_environment()
+    signature = runner._verilator_build_signature()
+    assert signature != ordinary_signature
+    assert environment["FROST_RANDOM_START"] == "1"
+    seed = environment["FROST_RANDOM_START_VERILATOR_SEED"]
+    assert 1 <= int(seed) < 2**31
+    assert runner.setup_environment()["FROST_RANDOM_START_VERILATOR_SEED"] == seed
+    assert "FROST_RANDOM_START_SEED=job-123" in capsys.readouterr().out
+
+    monkeypatch.setenv("FROST_RANDOM_START_SEED", "job-456")
+    assert runner.setup_environment()["FROST_RANDOM_START_VERILATOR_SEED"] != seed
+    assert runner._verilator_build_signature() == signature
+    monkeypatch.delenv("FROST_RANDOM_START_SEED")
+    assert runner._verilator_build_signature() == ordinary_signature
+
+
 def test_ddr_model_seed_draws_repeatable_timing(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -518,8 +552,12 @@ def test_ddr_model_timing_needs_a_seed_and_the_soc(
     assert unit_bench.verilator_extra_args == ()
 
 
-def test_arch_simulation_tells_the_bench_where_the_signature_is(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("outcome", ("pass", "exit", "timeout"))
+def test_arch_simulation_signature_and_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    outcome: str,
 ) -> None:
     """Arch runs name the signature's low-BRAM bytes and its file, and run once.
 
@@ -554,11 +592,27 @@ def test_arch_simulation_tells_the_bench_where_the_signature_is(
         _command: list[str], *, env: dict[str, str], timeout: float
     ) -> subprocess.CompletedProcess[str]:
         environments.append(env)
-        return subprocess.CompletedProcess(args=["make"], returncode=0)
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(
+                ["make"], timeout, output=b"boot progress\n", stderr=b"worker stalled\n"
+            )
+        return subprocess.CompletedProcess(
+            args=["make"],
+            returncode=0 if outcome == "pass" else 2,
+            stdout="boot progress\n",
+            stderr="worker stalled\n",
+        )
 
     monkeypatch.setattr(test_arch_compliance, "run_in_process_group", simulation_run)
 
-    test_arch_compliance.run_simulation()
+    result = test_arch_compliance.run_simulation()
+    assert (result is None) == (outcome == "timeout")
+    if result is not None:
+        assert result.returncode == (0 if outcome == "pass" else 2)
+    output = capsys.readouterr().out
+    if outcome != "pass":
+        assert "boot progress" in output
+        assert "worker stalled" in output
 
     assert elves == [tmp_path / "app" / "sw.elf"]
     assert not signature_file.exists()
@@ -581,6 +635,41 @@ def test_run_in_process_group_returns_output() -> None:
     assert result.returncode == 3
     assert result.stdout == "out\n"
     assert result.stderr == "err\n"
+
+
+@pytest.mark.parametrize("binary_output", (False, True))
+def test_riscv_timeout_keeps_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    binary_output: bool,
+) -> None:
+    """A simulator timeout prints partial output and removes image links."""
+    monkeypatch.setenv("SIM", "verilator")
+    monkeypatch.setattr(test_riscv_tests, "TESTS_DIR", tmp_path)
+    monkeypatch.setattr(test_riscv_tests, "RISCV_TESTS_APP_DIR", tmp_path / "app")
+    runner_class = test_run_cocotb.CocotbRunner
+    monkeypatch.setattr(runner_class, "setup_environment", lambda _: {})
+    monkeypatch.setattr(runner_class, "_verilator_needs_rebuild", lambda *_: False)
+
+    def timeout(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        stdout = "boot progress\n"
+        stderr = "worker stalled\n"
+        raise subprocess.TimeoutExpired(
+            ["make"],
+            7200,
+            output=stdout.encode() if binary_output else stdout,
+            stderr=stderr.encode() if binary_output else stderr,
+        )
+
+    monkeypatch.setattr(test_riscv_tests, "run_in_process_group", timeout)
+    original_directory = Path.cwd()
+    assert test_riscv_tests.run_simulation("verilator") is None
+    output = capsys.readouterr().out
+    assert "boot progress" in output
+    assert "worker stalled" in output
+    assert Path.cwd() == original_directory
+    assert not any(tmp_path.iterdir())
 
 
 def test_run_in_process_group_kills_grandchildren_on_timeout(tmp_path: Path) -> None:

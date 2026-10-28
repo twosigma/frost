@@ -20,7 +20,9 @@ import glob
 def _get_vcu118_serial() -> str:
     # Match VCU118 onboard Silicon Labs CP2105 dual-UART bridge.
     # On VCU118, the FPGA UART console (pins BB21/AW25) connects to interface 1 (if01).
-    matches_if01 = sorted(glob.glob("/dev/serial/by-id/usb-Silicon_Labs_CP2105*-if01-port0"))
+    matches_if01 = sorted(
+        glob.glob("/dev/serial/by-id/usb-Silicon_Labs_CP2105*-if01-port0")
+    )
     if matches_if01:
         return matches_if01[0]
     matches = sorted(glob.glob("/dev/serial/by-id/usb-Silicon_Labs_CP2105*-port0"))
@@ -30,7 +32,6 @@ def _get_vcu118_serial() -> str:
 
 
 class _BoardSerials(dict):
-
     def __getitem__(self, key: str) -> str:
         if key == "vcu118":
             return _get_vcu118_serial()
@@ -46,10 +47,12 @@ DEFAULT_TARGETS = {
 
 # Default UART device per board (override with --serial, or --uart in
 # linux_boot_soak.py). Resolves by-id for VCU118 to select CP2105 interface 1.
-DEFAULT_SERIALS = _BoardSerials({
-    "x3": "/dev/ttyUSB3",
-    "vcu118": "/dev/ttyUSB0",
-})
+DEFAULT_SERIALS = _BoardSerials(
+    {
+        "x3": "/dev/ttyUSB3",
+        "vcu118": "/dev/ttyUSB0",
+    }
+)
 
 # Default per-application timeout per board, in seconds, including build and
 # load time. --timeout replaces it; the CoreMark-PRO sweep raises either value

@@ -81,6 +81,7 @@ from cocotb_tests.test_real_program import (
     start_clocks,
     start_cpu_clock,
     takes_last_edge,
+    wait_for_power_on_reset,
 )
 
 BANNER_START = "debug_target: start"
@@ -132,6 +133,7 @@ async def _reset(dut: Any) -> None:
     dut.i_external_interrupt.value = 0
     for _ in range(RESET_CYCLES):
         await RisingEdge(dut.i_clk)
+    await wait_for_power_on_reset(dut)
     dut.i_rst_n.value = 1
 
 

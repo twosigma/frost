@@ -137,8 +137,8 @@ clock: both MAC clocks absent and their clock-OK levels low, so the NIC keeps
 its MAC domains in reset ([NIC](../hw/rtl/peripherals/nic/README.md#reset-and-clock-domains)),
 and the simulation saves the evaluations of the MAC clocks' edges. Application
 entries using this setting never touch the NIC's registers, DMA, interrupt,
-or link status. The SoC's simulation-only NIC-window selector detects register
-accesses with or without the cached tier, and a run fails if such an
+or link status. The SoC's simulation-only NIC-access monitor detects register
+transactions after local reset, with or without the cached tier. A run fails if such an
 application loads or stores in the NIC's register window. The NIC programs,
 `opensbi_smoke`, and
 `pma_fault_test`, which loads from the NIC's window to check a PMA boundary,
@@ -156,6 +156,65 @@ session also requires `${RISCV_PREFIX}gdb` and checks registers, memory,
 software breakpoints, and single stepping through OpenOCD. The
 [memory-response tests](../verif/cocotb_tests/cpu_ooo/memory/README.md) cover
 the portable and Xilinx builds of the load-data mux.
+
+#### Random power-up state
+
+`FROST_RANDOM_START_SEED` enables random power-up state for SoC and unit
+simulations. Its value is a seed string; each run prints that string and the
+derived Verilator seed. Repeating the string reproduces the power-up draw
+for the same compiled design. The DDR timing seed and cocotb's stimulus seed
+are independent.
+
+```bash
+FROST_RANDOM_START_SEED=1 ./scripts/frost.py cocotb hello_world
+FROST_RANDOM_START_SEED=1 FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb hello_world
+```
+
+The mode uses `--x-initial unique`, `--x-assign unique`, `--x-initial-edge`,
+and Verilator's seeded random reset. Initial edges let an asynchronous reset
+that starts asserted trigger its consumers while their clock is stopped.
+`FROST_RANDOM_START` selects unknown values for hardware
+declaration initializers. Verilator turns those unknowns into random bits.
+RAM wrappers, live-value tables, and the store queue forwarding array fill
+each row with seeded random words, including every bit of wide entries.
+Assertion-history initializers and program image loads execute normally,
+including instruction predecode metadata. Arrays loaded by their parent
+skip random fill as well as arrays with their own image file.
+Instruction-image padding is zero in every packed copy, matching the
+generated bank images. The benches establish idle programming clocks
+before HDL initialization, then assert power-on reset at time zero after the
+first HDL evaluation. This supplies an assertion edge to asynchronous reset
+logic even when the input's arbitrary initial value was high. Both modes use
+this pulse alongside the ordinary system-reset sequence. Warm resets leave
+the transport handshake intact. Changing only the seed reuses the compiled
+model; enabling or disabling the mode rebuilds it.
+
+The shared bench holds power-on reset for eight SoC clock edges and at least
+four CPU clock edges. Divided-clock generation continues while it waits for
+a slow or delayed CPU clock. System reset stays asserted through that wait.
+The FPGA wrapper's system and programming reset pipelines start asserted in
+both modes. They supply reset at the `platform_top` boundary and are outside
+the ASIC design. Random-start mode seeds the registers and memories inside
+that boundary, including its reset pipelines.
+
+The shared SoC bench loads program images after eighteen SoC clock edges,
+while system reset is held. The memory controllers have completed cold reset
+and programming writes have drained. Instruction programming enables must
+be idle during the load. The load covers instruction words, predecode
+metadata, data BRAM, data SRAM and behavioral DDR. Instruction banks use the
+packing functions in `sw/common/generate_imem_predecode_init.py`, including
+the scalar metadata copies and the SRAM tiles. The image load does not repeat
+on warm reset.
+
+Consistency checks that depend on reset state and functional cover points
+arm after their local reset completes. They remain active in ordinary and
+random-start simulations. Full-board simulation with power-on reset tied
+inactive uses configuration initializers and does not arm the DTM ownership
+assertions. Transport verification requires a power-on reset pulse.
+
+This is a two-state power-up test. It does not model metastability, reset
+recovery or removal timing, SRAM analog behavior, or power-domain sequencing.
+Sparse external-memory models return their defined default for absent keys.
 
 #### Adding a target
 
@@ -385,6 +444,7 @@ which have 90 minutes each. `--verbose` prints solver output.
 | `COCOTB_TEST_FILTER` | Test-function regex (set by `--testcase`) |
 | `COCOTB_RANDOM_SEED` | Random seed (set by `--random-seed`) |
 | `FROST_COCOTB_MEM_CONFIG` | Application memory tier (`bram` default, or `ddr`) |
+| `FROST_RANDOM_START_SEED` | Seed string enabling random register and memory power-up state; each run prints the string and Verilator seed |
 | `FROST_DDR_MODEL_SEED` | Draws the DDR model's latency (1 to 80 cycles), latency jitter, and out-of-order completion for whole-SoC builds from this string, and prints the draw. A setting the target pins, in its registry entry, in `FROST_VERILATOR_EXTRA_ARGS`, or with `DDR_MODEL_LATENCY`, keeps its value |
 | `WAVES=1` | Write `dump.fst` waveforms |
 | `FROST_COVERAGE=1` | Build with line coverage and the cover points (see [Coverage](#coverage)) |
@@ -423,8 +483,10 @@ reset cancellation and reset release with a stopped clock. The explicit
 targets check register mapping, subsystem reset and fabric reset across the
 CPU boundary at those CPU periods in ps, with a SoC period of 3000 ps. The
 7000 ps configuration runs in the unit-test CI job.
-`soc_async_reset` and `frost_async_reset` targets check retained writes,
-interrupted debug mirrors and external reset with a stopped SoC clock.
+`soc_async_reset` checks retained writes and interrupted debug mirrors.
+`frost_async_reset` checks paired system reset with a stopped CPU or SoC
+clock and power-on reset with a stopped SoC clock. Both targets check that
+cold reset waits for a delayed CPU clock while programming clocks continue.
 
 ## Coverage
 
@@ -602,10 +664,14 @@ The AXI bridge unit tests cover all eight power-of-two capacities in CI.
 The standalone `test_ddr_width_config.sv` and `test_ptw_high_addr.sv`
 harnesses are not registered with the test runners or invoked by CI.
 
-Every job that simulates the whole SoC draws its own DDR model timing:
-the workflow sets `FROST_DDR_MODEL_SEED` from the run ID, the job, and its
-matrix index. A failing test's output names the draw, and rerunning the job
-repeats it.
+Every job that simulates the whole SoC draws DDR model timing and power-up
+state. The workflow sets `FROST_DDR_MODEL_SEED` and
+`FROST_RANDOM_START_SEED` from the run ID, the job, and its matrix index.
+A failing test's output names both draws, and rerunning the job repeats
+them. These checks run in the pull-request and merge jobs. Each program runs
+once per configured reset sequence; random power-up adds no simulation runs.
+Standalone unit jobs use ordinary power-up. Unit benches can select random
+power-up with `FROST_RANDOM_START_SEED`.
 
 In the BRAM job of the CoreMark shard, the `coremark` test also records a
 calibration trace of CoreMark's timed region for the performance model in

@@ -315,6 +315,9 @@ module pc_controller #(
   pc_increment_calculator #(
       .XLEN(XLEN)
   ) pc_increment_calculator_inst (
+`ifndef SYNTHESIS
+      .i_advance_check_valid(pending_rel_check_armed_q && !i_reset),
+`endif
       // Current PC values
       .i_pc(o_pc),
       .i_pc_reg(o_pc_reg),
@@ -654,6 +657,23 @@ module pc_controller #(
               (i_window_cannot_serve_raw ? o_pending_prediction_holdoff_wcs :
                                            o_pending_prediction_holdoff_wcs0));
     end
+    if (!$isunknown(
+            {
+              i_window_cannot_serve_raw,
+              o_pending_prediction_fetch_holdoff,
+              o_pending_prediction_fetch_holdoff_wcs0,
+              o_pending_prediction_fetch_holdoff_wcs
+            }
+        )) begin
+      p_pending_fetch_holdoff_wcs0_cofactor_exact :
+      assert (i_window_cannot_serve_raw ||
+              o_pending_prediction_fetch_holdoff_wcs0 ==
+              o_pending_prediction_fetch_holdoff);
+      p_pending_fetch_holdoff_wcs_cofactor_exact :
+      assert (!i_window_cannot_serve_raw ||
+              o_pending_prediction_fetch_holdoff_wcs ==
+              o_pending_prediction_fetch_holdoff);
+    end
   end
 `endif
   assign o_pending_prediction_target_handoff = pending_prediction_target_handoff_applies;
@@ -780,13 +800,14 @@ module pc_controller #(
   // separately). These checks catch a priority change that would consume a
   // handoff without applying it.
   always_comb begin
-    if (PENDING_HANDOFF_EXCLUDES_SLOT2 && !$isunknown(
+    if (pending_rel_check_armed_q && !i_reset && PENDING_HANDOFF_EXCLUDES_SLOT2 && !$isunknown(
             {pending_prediction_target_handoff, i_slot2_prediction_used_for_pc}
         )) begin
       p_integrated_pending_handoff_excludes_slot2 :
       assert (!(pending_prediction_target_handoff && i_slot2_prediction_used_for_pc));
     end
-    if (pending_prediction_target_handoff && !fetch_stall && !i_reset && !$isunknown(
+    if (pending_rel_check_armed_q && pending_prediction_target_handoff &&
+        !fetch_stall && !i_reset && !$isunknown(
             {i_window_cannot_serve, i_slot2_prediction_used_for_pc,
                      o_pending_prediction_target_holdoff}
         )) begin
@@ -795,8 +816,8 @@ module pc_controller #(
               (!i_window_cannot_serve && !i_slot2_prediction_used_for_pc &&
                !o_pending_prediction_target_holdoff));
     end
-    if (pending_prediction_effective && pc_reg_at_pending && i_prediction_holdoff &&
-        !fetch_stall && !$isunknown(
+    if (pending_rel_check_armed_q && !i_reset && pending_prediction_effective &&
+        pc_reg_at_pending && i_prediction_holdoff && !fetch_stall && !$isunknown(
             {i_window_cannot_serve, i_slot2_prediction_used_for_pc,
              o_pending_prediction_target_holdoff}
         )) begin
@@ -1149,7 +1170,7 @@ module pc_controller #(
     end
   end
   always_comb begin
-    if (!$isunknown(
+    if (pending_rel_check_armed_q && !i_reset && !$isunknown(
             {
               npc_cond_without_prediction,
               pending_mux_consume_is_seq,
@@ -1226,7 +1247,7 @@ module pc_controller #(
       i_fetch_progress && !i_window_cannot_serve;
 `ifndef SYNTHESIS
   always_comb begin
-    if (!$isunknown(
+    if (pending_rel_check_armed_q && !i_reset && !$isunknown(
             {
               npc_fetch_mux_permission,
               npc_prediction_permission,
@@ -1375,7 +1396,7 @@ module pc_controller #(
       !o_pending_prediction_target_holdoff && !pc_reg_land_on_pending_ref &&
       !pending_mux_cross && !pending_mux_target && !sel_prediction_r;
   always_comb begin
-    if (!$isunknown(
+    if (pending_rel_check_armed_q && !i_reset && !$isunknown(
             {
               pc_reg_seq_candidate,
               pc_reg_seq_candidate_ref,
@@ -1729,7 +1750,7 @@ module pc_controller #(
   end
 
   always_comb begin
-    if (!$isunknown(
+    if ((i_reset || pending_rel_check_armed_q) && !$isunknown(
             {pc_update_en, pc_reg_load_en, o_pc_reg, next_pc_reg, next_pc_reg_priority_ref}
         )) begin
       p_pc_reg_clock_enable_factoring_exact :
@@ -1740,8 +1761,10 @@ module pc_controller #(
     end
   end
 
-  always_comb begin
-    if (!$isunknown({o_pc_reg[1], o_pc_reg_high_for_coverage})) begin
+  always_ff @(posedge i_clk) begin
+    if (pending_rel_check_armed_q && !i_reset && !$isunknown(
+            {o_pc_reg[1], o_pc_reg_high_for_coverage}
+        )) begin
       p_pc_reg_high_coverage_replica_exact : assert (o_pc_reg_high_for_coverage == o_pc_reg[1]);
     end
   end
@@ -1749,8 +1772,10 @@ module pc_controller #(
   // lower_parcel_window_resteer_q stands in for a full-width same-word
   // compare. Check that it means exactly that, and that the catch-up arm
   // brings next_pc back to next_pc_reg.
-  always_comb begin
-    if (!$isunknown({lower_parcel_window_resteer_q, o_pc, o_pc_reg})) begin
+  always_ff @(posedge i_clk) begin
+    if (pending_rel_check_armed_q && !i_reset && !$isunknown(
+            {lower_parcel_window_resteer_q, o_pc, o_pc_reg}
+        )) begin
       p_lower_parcel_resteer_state_remains_public :
       assert (!lower_parcel_window_resteer_q || o_fetch_lookup_is_lower_parcel);
       p_lower_parcel_resteer_state_is_exact_predecessor :
@@ -1761,7 +1786,8 @@ module pc_controller #(
               (!o_pc[1] && o_pc_reg[1] &&
                o_pc[XLEN-1:2] == o_pc_reg[XLEN-1:2]));
     end
-    if (npc_sel[11] && same_word_lower_parcel_catchup && !$isunknown(
+    if (pending_rel_check_armed_q && !i_reset && npc_sel[11] &&
+        same_word_lower_parcel_catchup && !$isunknown(
             {next_pc, next_pc_reg, sel_prediction_r}
         )) begin
       p_lower_parcel_catchup_has_no_stale_registered_handoff : assert (!sel_prediction_r);
@@ -1774,7 +1800,7 @@ module pc_controller #(
   // holds, stalls, and redirect kill cycles, and comparing pc_reg with a tag
   // equals comparing pc_reg + 2 or + 4 with the branch PC.
   always_ff @(posedge i_clk) begin
-    if (!i_reset && pending_prediction_valid) begin
+    if (pending_rel_check_armed_q && !i_reset && pending_prediction_valid) begin
       p_pending_prediction_prev_pc_matches_capture :
       assert (pending_prediction_prev_pc ==
               (pending_prediction_pc - riscv_pkg::PcIncrementCompressed));
@@ -1798,7 +1824,7 @@ module pc_controller #(
   // Compare the precomputed miss with full PC equality when a word-aligned
   // prediction needs handoff and no stall, bubble, or slot-2 prediction masks it.
   always_ff @(posedge i_clk) begin
-    if (!i_reset && !fetch_stall && !o_any_holdoff_safe && !sel_nop &&
+    if (pending_rel_check_armed_q && !i_reset && !fetch_stall && !o_any_holdoff_safe && !sel_nop &&
         i_prediction_used && !i_slot2_prediction_used && !o_pc[1] && !i_predicted_target[1] &&
         (o_pc_reg != o_pc) &&
         i_prediction_requires_pc_reg_handoff) begin
@@ -1809,10 +1835,9 @@ module pc_controller #(
 `endif
 
 `ifndef SYNTHESIS
-  // Reference pending-handoff equations in serial form. The synthesized
-  // equations above rely on the before/at/after PC relations being mutually
-  // exclusive; these checks compare them with the reference for every fully
-  // known input.
+  // Reference pending-handoff equations in serial form. The before/at/after
+  // PC relations are mutually exclusive after reset and capture establish
+  // the saved state. Reset history qualifies checks of those relations.
   logic pending_crossing_ref;
   logic pending_cross_handoff_ref;
   logic pending_target_handoff_ref;
@@ -1874,7 +1899,7 @@ module pc_controller #(
   end
 
   always_comb begin
-    if (!$isunknown(
+    if (pending_rel_check_armed_q && !i_reset && !$isunknown(
             {
               pending_prediction_effective,
               pending_prediction_allow_cross,
@@ -1902,14 +1927,6 @@ module pc_controller #(
       p_pending_emit_reduction_exact : assert (pending_imm_pred_emit == pending_emit_ref);
       p_pending_hold_reduction_exact :
       assert (hold_pending_prediction_fetch == pending_hold_fetch_ref);
-      p_pending_fetch_holdoff_wcs0_cofactor_exact :
-      assert (i_window_cannot_serve_raw ||
-              o_pending_prediction_fetch_holdoff_wcs0 ==
-              o_pending_prediction_fetch_holdoff);
-      p_pending_fetch_holdoff_wcs_cofactor_exact :
-      assert (!i_window_cannot_serve_raw ||
-              o_pending_prediction_fetch_holdoff_wcs ==
-              o_pending_prediction_fetch_holdoff);
       p_pending_consume_reduction_exact :
       assert (hold_pending_prediction_consume_fetch == pending_hold_consume_ref);
       p_pending_cross_pc_mux_reduction_exact :
@@ -1952,14 +1969,15 @@ module pc_controller #(
     if (i_reset) begin
       fence_i_flush_q <= 1'b0;
     end else begin
-      if (fence_i_flush_q) begin
+      if (pending_rel_check_armed_q && fence_i_flush_q) begin
         p_fence_clears_carve_latch : assert (!carve_out_engaged_q);
       end
       fence_i_flush_q <= i_fence_i_flush;
     end
   end
 
-  // Check the fetch-PC mux against a serial priority chain every cycle.
+  // Compare the fetch-PC mux with a serial priority chain. Reset selects are
+  // valid immediately; pending-state comparisons require reset history.
   logic [XLEN-1:0] npc_ref;
   always_comb begin
     if (i_reset) npc_ref = i_boot_addr;
@@ -1984,13 +2002,15 @@ module pc_controller #(
 
   always_comb begin
     p_next_pc_onehot : assert ($onehot(npc_sel));
-    p_next_pc_matches_priority : assert (next_pc == npc_ref);
+    if (i_reset || pending_rel_check_armed_q) begin
+      p_next_pc_matches_priority : assert (next_pc == npc_ref);
+    end
   end
 
   // Arm-observation contract: a sequential arm is o_pc + d, 0 <= d < 16;
   // every other arm's early operand is its value.
   always_ff @(posedge i_clk) begin
-    if (!i_reset && !$isunknown({o_pc, npc_seq, npc_cmp_val})) begin
+    if (pending_rel_check_armed_q && !i_reset && !$isunknown({o_pc, npc_seq, npc_cmp_val})) begin
       for (int unsigned k = 0; k < NPcArms; k++) begin
         if (npc_seq[k]) begin
           p_npc_seq_arm_is_pc_plus_small : assert ((npc_val[k] - o_pc) < 64'd16);

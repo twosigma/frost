@@ -533,8 +533,10 @@ module int_muldiv_shim #(
   // output valid, and a divide may only be presented while the divider is
   // idle. The RS retires its entry on the issue cycle, so a divide presented
   // while the divider is busy would be lost.
+  logic reset_seen_q = 1'b0;
   always @(posedge i_clk) begin
-    if (i_rst_n) begin
+    if (!i_rst_n) reset_seen_q <= 1'b1;
+    if (reset_seen_q && i_rst_n) begin
       if (mul_completing && !(mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_CL ? cl_valid :
           SHORT_WORD_OPS &&
           mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_SEXT_W ?

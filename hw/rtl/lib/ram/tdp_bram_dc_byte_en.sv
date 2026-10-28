@@ -65,11 +65,23 @@ module tdp_bram_dc_byte_en #(
   (* ram_style = "block" *) logic [DATA_WIDTH-1:0] memory[MemDepthInWords];
   /* verilator lint_on MULTIDRIVEN */
 
-  initial
+  initial begin
     if (USE_INIT_FILE) $readmemh(INIT_FILE, memory);
-    // The non-zero fill catches code that assumes zero-initialized memory.
-    else
+    else begin
+`ifdef FROST_RANDOM_START
+      for (int row = 0; row < MemDepthInWords; row++)
+      for (int chunk = 0; chunk < (DATA_WIDTH + 31) / 32; chunk++)
+      memory[row] = (memory[row] << 32) | DATA_WIDTH'($urandom);
+`else
+      // The non-zero fill catches code that assumes zero-initialized memory.
       for (int i = 0; i < MemDepthInWords; ++i) memory[i] = DATA_WIDTH'(i);
+`endif
+    end
+  end
+`ifndef SYNTHESIS
+  logic sim_load_image = 1'b0;
+  always @(posedge sim_load_image) if (USE_INIT_FILE) $readmemh(INIT_FILE, memory);
+`endif
 `endif
 
   // Byte address to word address: drop the low ByteAddrBits byte-offset bits.

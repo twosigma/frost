@@ -328,7 +328,15 @@ module store_queue #(
   logic [FLEN-1:0] sq_data_fwd_entry[DEPTH];
   logic [(DEPTH*FLEN)-1:0] sq_data_fwd_flat;
 
+`ifdef FROST_RANDOM_START
+  initial begin
+    for (int row = 0; row < DEPTH; row++)
+    for (int chunk = 0; chunk < (FLEN + 31) / 32; chunk++)
+    sq_data_fwd_entry[row] = (sq_data_fwd_entry[row] << 32) | FLEN'($urandom);
+  end
+`else
   initial for (int i = 0; i < DEPTH; i++) sq_data_fwd_entry[i] = '0;
+`endif
 
   always_ff @(posedge i_clk) begin
     if (sq_data_we) begin
@@ -475,10 +483,13 @@ module store_queue #(
   assign slot2_alloc_en = i_alloc_2.valid && (i_alloc.valid ? alloc_room_2 : alloc_room_1);
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
+
   // Check trusted allocation against the room-qualified form to prevent live
   // slot overwrites. Sample at the edge, where all allocation consumers act.
   always_ff @(posedge i_clk) begin
-    if (TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
+    if (reset_seen_q && TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
             {i_alloc.valid, i_alloc_2.valid, full, full_for_2, alloc_flush_ok}
         )) begin
       p_trusted_sq_alloc_exact :
@@ -492,7 +503,7 @@ module store_queue #(
     // The registered dispatch back-pressure must stay conservative w.r.t.
     // the live window (no same-cycle reclaim ever shrinks it early); the
     // trusted alloc enables depend on this invariant.
-    if (TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
+    if (reset_seen_q && TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
             {full, full_for_2, dispatch_full_q, dispatch_full_for_2_q}
         )) begin
       p_trusted_sq_status_conservative : assert (!full || dispatch_full_q);
@@ -1365,7 +1376,7 @@ module store_queue #(
 `ifndef SYNTHESIS
 `ifndef FORMAL
   always_ff @(posedge i_clk) begin
-    if (i_rst_n) begin
+    if (reset_seen_q && i_rst_n) begin
       assert (!(i_flush_en && (i_commit_valid_comb || i_commit_valid_comb_2)))
       else $error("store_queue: combinational store commit in a partial-flush cycle");
     end
@@ -1487,7 +1498,7 @@ module store_queue #(
 `ifndef SYNTHESIS
 `ifndef FORMAL
   always @(posedge i_clk) begin
-    if (i_rst_n) begin
+    if (reset_seen_q && i_rst_n) begin
       if (i_alloc.valid && full) $warning("SQ: allocation attempted when full");
       // Flush-cycle requests are legal; allocation gates reject them like the ROB.
       if (i_alloc_2.valid && i_alloc.valid && full_for_2)
@@ -1854,7 +1865,7 @@ module store_queue #(
   // deferred pullback. Yosys does not parse assert-else actions; formal checks
   // flush rejection and free slots above, and assumes dispatch idle at pullback.
   always_ff @(posedge i_clk) begin
-    if (i_rst_n && !i_flush_all) begin
+    if (reset_seen_q && i_rst_n && !i_flush_all) begin
       a_no_alloc_during_flush :
       assert (!(i_flush_en && (slot1_alloc_en || slot2_alloc_en)))
       else $error("SQ allocation during partial flush conflicts with tail pullback");

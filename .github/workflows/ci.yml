@@ -249,6 +249,7 @@ jobs:
           # (tests/README.md); a failing test's output names the draw, and a
           # rerun of the job repeats it.
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
+          FROST_RANDOM_START_SEED: ${{ matrix.shard.name != 'Unit Tests' && format('{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) || '' }}
           # Every shard but the CoreMark-PRO workloads collects line coverage
           # and the cover points, and the unit benches also toggle coverage
           # (tests/README.md#coverage).
@@ -365,6 +366,7 @@ jobs:
           PA_TESTS: ${{ matrix.shard.tests }}
           FROST_COVERAGE: "1"
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
+          FROST_RANDOM_START_SEED: ${{ matrix.shard.name != 'Unit boundaries' && format('{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) || '' }}
         run: |
           tests="$PA_TESTS"
           for program in $PA_PROGRAMS; do
@@ -498,12 +500,13 @@ jobs:
       - name: Run arch compliance tests (${{ matrix.extensions }} / ${{ matrix.mem_config }}${{ matrix.shard && format(' / {0}', matrix.shard) || '' }})
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
+          FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           # Line coverage and the cover points (tests/README.md#coverage).
           FROST_COVERAGE: ${{ matrix.coverage }}
           # Fail a hung test after 20 minutes, well before the job timeout.
           FROST_ARCH_SIM_TIMEOUT_SEC: "1200"
         run: |
-          docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_COVERAGE -e FROST_ARCH_SIM_TIMEOUT_SEC \
+          docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE -e FROST_ARCH_SIM_TIMEOUT_SEC \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_arch_compliance.py --extensions ${{ matrix.extensions }} \
               --mem-config ${{ matrix.mem_config }} \
@@ -572,10 +575,11 @@ jobs:
       - name: Run riscv-tests ISA suites (${{ matrix.label || matrix.suites }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
+          FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           # Line coverage and the cover points (tests/README.md#coverage).
           FROST_COVERAGE: "1"
         run: |
-          docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_COVERAGE \
+          docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_tests.py --suites ${{ matrix.suites }} \
               --mem-config ${{ matrix.mem_config }} --env ${{ matrix.env }}
@@ -634,8 +638,9 @@ jobs:
       - name: Run riscv-tests benchmarks (${{ matrix.benchmarks }} / ${{ matrix.mem_config }})
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
+          FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
         run: |
-          docker run --rm -e FROST_DDR_MODEL_SEED \
+          docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_tests.py --benchmarks ${{ matrix.benchmarks }} \
               --mem-config ${{ matrix.mem_config }}
@@ -673,10 +678,11 @@ jobs:
       - name: Run riscv-torture tests (${{ matrix.mem_config }}${{ matrix.paged && ' / paged' || '' }})
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
+          FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           # Line coverage and the cover points (tests/README.md#coverage).
           FROST_COVERAGE: "1"
         run: |
-          docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_COVERAGE \
+          docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_torture.py --all \
               --mem-config ${{ matrix.mem_config }} ${{ matrix.paged && '--paged' || '' }}
@@ -717,6 +723,7 @@ jobs:
     env:
       FROST_SKIP_SUBMODULE_INIT: "1"
       FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
+      FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
       # Line coverage and the cover points (tests/README.md#coverage).
       FROST_COVERAGE: "1"
     steps:

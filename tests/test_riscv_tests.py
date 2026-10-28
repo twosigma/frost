@@ -313,7 +313,14 @@ def run_simulation(
 
         return result
 
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
+        for output in (error.stdout, error.stderr):
+            print(
+                output.decode(errors="replace")
+                if isinstance(output, bytes)
+                else output or "",
+                flush=True,
+            )
         return None
     finally:
         for mem_name in ("sw.mem", "sw64.mem", "sw_ddr.mem"):
@@ -335,6 +342,7 @@ def check_pass_fail(sim_result: subprocess.CompletedProcess[str]) -> tuple[str, 
     # Check returncode first: when cocotb hits max cycles, its error message
     # may contain the literal '<<PASS>>' string, causing a false positive.
     if sim_result.returncode != 0:
+        print(combined_output, flush=True)
         if "<<FAIL>>" in combined_output:
             # Report the <<FAIL>> line, which carries the failing test number.
             for line in combined_output.splitlines():

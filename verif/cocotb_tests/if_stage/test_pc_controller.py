@@ -18,6 +18,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
+from cocotb.handle import Immediate
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 
@@ -36,7 +37,8 @@ PC_ADV_PLUS6 = 2
 
 
 def _clear_inputs(dut: Any) -> None:
-    """Drive all inputs except reset to idle values."""
+    """Drive control and target inputs to their test defaults."""
+    dut.i_boot_addr.value = 0
     dut.i_stall.value = 0
     dut.i_fetch_progress.value = 1
     dut.i_flush.value = 0
@@ -212,6 +214,73 @@ def _assert_pending_predecessor_relation(dut: Any) -> None:
     assert (pc_reg == native_predecessor_pc) == (
         pending_pc == ((pc_reg + 4) & width_mask)
     )
+
+
+@cocotb.test()
+async def test_pending_relations_wait_for_reset(dut: Any) -> None:
+    """Saved PC relations are arbitrary until reset clears pending validity."""
+    for handle in dut:
+        if handle._name.startswith("i_"):
+            handle.value = Immediate(0)
+    _clear_inputs(dut)
+    dut.i_prediction_holdoff.value = 1
+    for name, value in {
+        "o_pc": BASE_PC,
+        "o_pc_reg": BASE_PC,
+        "pending_prediction_pc": BASE_PC,
+        "pending_prediction_prev_pc": BASE_PC - 2,
+        "pending_prediction_prev_native_pc": BASE_PC - 4,
+        "pending_prediction_target": PRED_TARGET,
+        "pending_prediction_valid": 1,
+        "pending_prediction_pc_ready_q": 1,
+        "pending_prediction_target_holdoff_q": 0,
+        "pending_prediction_target_holdoff_prev_q": 0,
+        "redirect_kill_pending_q": 0,
+        "lower_parcel_window_resteer_q": 0,
+        "carve_out_engaged_q": 0,
+    }.items():
+        getattr(dut, name).value = Immediate(value)
+
+    for relation in range(32):
+        for crossing in range(4):
+            for reaches in range(2):
+                for raw_window_miss in range(2):
+                    dut.pending_rel_q.value = relation
+                    dut.pending_prediction_allow_cross.value = crossing & 1
+                    dut.pending_prediction_allow_cross_pc_mux_q.value = crossing >> 1
+                    dut.seq_reaches_q.value = reaches
+                    dut.i_window_cannot_serve_raw.value = raw_window_miss
+                    await _settle()
+                    assert int(dut.pending_rel_q.value) == relation
+                    assert not dut.pending_rel_check_armed_q.value
+
+    _clear_inputs(dut)
+    dut.i_boot_addr.value = BASE_PC
+    dut.i_reset.value = 1
+    await _settle()
+    assert int(dut.next_pc.value) == BASE_PC
+    assert int(dut.next_pc_reg.value) == BASE_PC
+    dut.i_clk.value = 1
+    await _settle()
+    assert dut.pending_rel_check_armed_q.value
+    assert not dut.pending_prediction_valid.value
+    _assert_pc(dut, pc=BASE_PC, pc_reg=BASE_PC)
+    dut.i_clk.value = 0
+    dut.i_boot_addr.value = BRANCH_TARGET
+    dut.pending_prediction_valid.value = 1
+    dut.pending_rel_q.value = 12
+    dut.pending_prediction_allow_cross.value = 1
+    dut.seq_reaches_q.value = 1
+    await _settle()
+    assert int(dut.next_pc.value) == BRANCH_TARGET
+    assert int(dut.next_pc_reg.value) == BRANCH_TARGET
+    dut.i_clk.value = 1
+    await _settle()
+    assert not dut.pending_prediction_valid.value
+    _assert_pc(dut, pc=BRANCH_TARGET, pc_reg=BRANCH_TARGET)
+    dut.i_clk.value = 0
+    dut.i_reset.value = 0
+    await _settle()
 
 
 @cocotb.test()

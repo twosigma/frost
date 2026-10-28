@@ -47,8 +47,7 @@ WINDOW_LINES = 1024
 
 # Per-test regions 256 KiB apart; tests that share a region use different
 # lines. The behavioral DDR persists across the in-run resets between cocotb
-# tests (like real DDR), so a fresh zero-default reference model is only valid
-# in untouched address space.
+# tests (like real DDR). Each reference starts from untouched backing memory.
 SMOKE_BASE = BASE_ADDR + 0x00000
 PARTIAL_BASE = BASE_ADDR + 0x40000
 EVICT_BASE = BASE_ADDR + 0x80000
@@ -570,23 +569,44 @@ async def _line_transaction(
 
 
 class ReferenceModel:
-    """Byte-granular reference: backing memory defaults to zero."""
+    """Byte reference with zero defaults or snapshots of a supplied backing array."""
 
-    def __init__(self) -> None:
-        """Start with an empty (all-zero) backing store."""
+    def __init__(self, dut: Any | None = None) -> None:
+        """Use the supplied backing array for each line's first access."""
+        self._memory = dut.main_memory.memory if dut is not None else None
         self._bytes: dict[int, int] = {}
+
+    def _snapshot_line(self, addr: int) -> None:
+        """Capture a line before its first modeled read or write."""
+        if addr in self._bytes:
+            return
+        for offset in range(0, LINE_BYTES, 4):
+            word = 0
+            if self._memory is not None:
+                index = ((addr + offset) >> 2) % len(self._memory)
+                word = int(self._memory[index].value)
+            for byte in range(4):
+                self._bytes[addr + offset + byte] = (word >> (8 * byte)) & 0xFF
 
     def write_line(self, addr: int, wdata: int, wstrb: int) -> None:
         """Apply a strobed 32-byte line write at addr."""
+        self._snapshot_line(addr)
         for b in range(LINE_BYTES):
             if (wstrb >> b) & 1:
                 self._bytes[addr + b] = (wdata >> (8 * b)) & 0xFF
 
+    def capture_region(self, addr: int, size: int) -> None:
+        """Capture every line in a region before traffic can change its bytes."""
+        assert addr % LINE_BYTES == 0 and size % LINE_BYTES == 0
+        for offset in range(0, size, LINE_BYTES):
+            self._snapshot_line(addr + offset)
+
     def read_line(self, addr: int) -> int:
         """Return the 32-byte line at addr as a little-endian integer."""
+        self._snapshot_line(addr)
         value = 0
         for b in range(LINE_BYTES):
-            value |= self._bytes.get(addr + b, 0) << (8 * b)
+            value |= self._bytes[addr + b] << (8 * b)
         return value
 
 
@@ -649,8 +669,8 @@ def _perf_field(dut: Any, level: str, field: str) -> int:
 
 
 async def _check_read(dut: Any, model: ReferenceModel, addr: int) -> None:
-    got = await _line_transaction(dut, write=False, addr=addr)
     expected = model.read_line(addr)
+    got = await _line_transaction(dut, write=False, addr=addr)
     assert got == expected, (
         f"read mismatch @0x{addr:08x}: got 0x{got:064x} expected 0x{expected:064x}"
     )
@@ -660,7 +680,7 @@ async def _check_read(dut: Any, model: ReferenceModel, addr: int) -> None:
 async def test_smoke_write_read(dut: Any) -> None:
     """Whole-line write then read back (allocate-without-fetch + read hit)."""
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     addr = SMOKE_BASE + 0x40
     wdata = _line_int(bytes(range(32)))
     model.write_line(addr, wdata, (1 << LINE_BYTES) - 1)
@@ -709,7 +729,7 @@ async def _read_cycles(dut: Any, port: str, addr: int) -> int:
 async def test_l1_read_hits_answer_in_three_cycles(dut: Any) -> None:
     """An L1D or L1I read hit answers as a direct-mapped cache's would."""
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     addr = LATENCY_BASE + 0x40
     wdata = _line_int(bytes(range(64, 96)))
     model.write_line(addr, wdata, (1 << LINE_BYTES) - 1)
@@ -729,9 +749,9 @@ async def test_l1_read_hits_answer_in_three_cycles(dut: Any) -> None:
 
 @cocotb.test()
 async def test_partial_write_merges_on_miss(dut: Any) -> None:
-    """A sparse-strobe write miss must fetch and merge (unwritten bytes = 0)."""
+    """A sparse-strobe write miss must fetch and preserve untouched bytes."""
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     addr = PARTIAL_BASE + 5 * LINE_BYTES
     wdata = _line_int(bytes([0xAB] * 32))
     wstrb = 0x0000_F00F  # bytes 0-3 and 12-15
@@ -744,7 +764,7 @@ async def test_partial_write_merges_on_miss(dut: Any) -> None:
 async def test_dirty_eviction_roundtrip(dut: Any) -> None:
     """Lines sharing one L1 set: every dirty victim must survive eviction."""
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     full = (1 << LINE_BYTES) - 1
     # Lines 1 KiB (the L1 size) apart share a set at any number of ways; 12
     # tags overflow it.
@@ -761,7 +781,7 @@ async def test_dirty_eviction_roundtrip(dut: Any) -> None:
 async def test_word_strobe_writes(dut: Any) -> None:
     """4-byte strobe groups in every word lane (cached_tier_adapter's word-store pattern)."""
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     addr = STROBE_BASE + 64 * LINE_BYTES
     for lane in range(8):
         word = 0x1111_0000 * 0 + (0xC0DE_0000 | lane)
@@ -776,7 +796,9 @@ async def test_word_strobe_writes(dut: Any) -> None:
 async def test_random_traffic_vs_model(dut: Any) -> None:
     """Randomized reads/writes over a window far larger than both caches."""
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
+    # Capture untouched bytes before traffic can alter another line.
+    model.capture_region(RANDOM_BASE, WINDOW_LINES * LINE_BYTES)
     rng = random.Random(random.getrandbits(32))
     full = (1 << LINE_BYTES) - 1
 
@@ -810,7 +832,7 @@ async def test_random_traffic_vs_model(dut: Any) -> None:
 async def test_thrash_same_index(dut: Any) -> None:
     """Six tags on one L1 set, more than it holds: continuous evict/fill."""
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     full = (1 << LINE_BYTES) - 1
     index_addr = THRASH_BASE + 9 * LINE_BYTES
     tags = [index_addr + t * 1024 for t in range(6)]
@@ -844,7 +866,7 @@ async def _force_l1d_writeback(dut: Any, addr: int) -> None:
 async def test_iport_reads_written_back_data(dut: Any) -> None:
     """The I-side reads D-side data once it reaches the shared level."""
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     full = (1 << LINE_BYTES) - 1
     addr = IFETCH_BASE + 5 * LINE_BYTES
     wdata = _line_int(bytes([(0x42 + b) & 0xFF for b in range(32)]))
@@ -869,21 +891,24 @@ async def test_iport_does_not_snoop_l1d_dirty(dut: Any) -> None:
     """
     await _setup(dut)
     addr = ISTALE_BASE + 9 * LINE_BYTES
+    initial_data = ReferenceModel(dut).read_line(addr)
     full = (1 << LINE_BYTES) - 1
     wdata = _line_int(bytes([0xAA] * 32))
     await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
 
     # The line is dirty in L1D and has never been written back: the I-side
-    # fill comes from the shared level, which still holds zeros.
+    # fill comes from the shared level's initial contents.
     got = await _port_transaction(dut, "iup", write=False, addr=addr)
-    assert got == 0, f"iup unexpectedly observed dirty L1D data @0x{addr:08x}"
+    assert got == initial_data, (
+        f"iup unexpectedly observed dirty L1D data @0x{addr:08x}"
+    )
 
 
 @cocotb.test()
 async def test_mixed_id_traffic(dut: Any) -> None:
     """Concurrent D-side write/read traffic and I-side reads stay isolated."""
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     full = (1 << LINE_BYTES) - 1
     rng = random.Random(random.getrandbits(32))
 
@@ -941,7 +966,7 @@ async def test_ports_overlap_below_arbiter(dut: Any) -> None:
     the requested data and id.
     """
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     full = (1 << LINE_BYTES) - 1
     d_addr = OVERLAP_BASE + 3 * LINE_BYTES
     i_addr = OVERLAP_BASE + 9 * LINE_BYTES
@@ -1005,7 +1030,7 @@ async def test_walker_port_reads_shared_level(dut: Any) -> None:
     route their responses home by id alone).
     """
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     full = (1 << LINE_BYTES) - 1
     addr = WALK_BASE + 5 * LINE_BYTES
     wdata = _line_int(bytes([(0x9A + b) & 0xFF for b in range(32)]))
@@ -1027,7 +1052,7 @@ async def test_three_ports_overlap_below_arbiters(dut: Any) -> None:
     the requested data and id.
     """
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     full = (1 << LINE_BYTES) - 1
     d_addr = WALK2_BASE + 3 * LINE_BYTES
     i_addr = WALK2_BASE + 9 * LINE_BYTES
@@ -1085,7 +1110,7 @@ async def test_three_ports_overlap_below_arbiters(dut: Any) -> None:
 async def test_walker_mixed_id_traffic(dut: Any) -> None:
     """All three masters hammer concurrently; ids route every response home."""
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     full = (1 << LINE_BYTES) - 1
     rng = random.Random(random.getrandbits(32))
 
@@ -1158,7 +1183,7 @@ async def test_fence_sync_publishes_dirty_lines(dut: Any) -> None:
     valid and clean on the D-side.
     """
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     full = (1 << LINE_BYTES) - 1
 
     addrs = [FENCE_BASE + line * LINE_BYTES for line in (0, 3, 17)]
@@ -1187,13 +1212,14 @@ async def test_fence_sync_publishes_dirty_lines(dut: Any) -> None:
 async def test_fence_sync_invalidates_stale_l1i(dut: Any) -> None:
     """A line already cached in the L1I is refetched fresh after a fence."""
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     full = (1 << LINE_BYTES) - 1
     addr = FENCE2_BASE + 7 * LINE_BYTES
 
-    # Prime the L1I with the line's pre-write contents (zeros).
+    # Prime the L1I with the line's pre-write contents.
+    initial_data = model.read_line(addr)
     got = await _port_transaction(dut, "iup", write=False, addr=addr)
-    assert got == 0
+    assert got == initial_data
 
     # D-side writes new "code"; without a fence the L1I would keep hitting
     # on the stale line.
@@ -1221,7 +1247,7 @@ async def test_walker_sees_dirty_l1d_lines(dut: Any) -> None:
     wait for the writeback-all.
     """
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     full = (1 << LINE_BYTES) - 1
     addr = WALK_BASE + 0x20000 + 11 * LINE_BYTES
 
@@ -1376,7 +1402,7 @@ async def test_store_after_walker_probe_then_evict(dut: Any) -> None:
     """
     await _setup(dut)
     mon = _WritebackHazardMonitor(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     full = (1 << LINE_BYTES) - 1
     base = WALK_BASE + 0x30000
     hold_base = base + 0x8000
@@ -1432,7 +1458,7 @@ async def test_no_fetch_refill_waits_for_own_writeback(dut: Any) -> None:
     """
     await _setup(dut)
     mon = _WritebackHazardMonitor(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     full = (1 << LINE_BYTES) - 1
     base = WALK3_BASE + 0x20000
     hold_base = base + 0x8000
@@ -1500,7 +1526,7 @@ async def test_fence_request_raised_again_mid_sequence(dut: Any) -> None:
     the store.
     """
     await _setup(dut)
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     full = (1 << LINE_BYTES) - 1
     hart_cache = dut.cache_hierarchy.hart_cache
     code = FENCE2_BASE + 0x20000 + 5 * LINE_BYTES
@@ -1554,10 +1580,11 @@ async def test_fence_request_raised_again_mid_sequence(dut: Any) -> None:
 async def test_fence_sync_idle_cache(dut: Any) -> None:
     """A fence with nothing dirty completes and disturbs nothing."""
     await _setup(dut)
+    initial_data = ReferenceModel(dut).read_line(FENCE2_BASE)
     await _fence_sync(dut)
     await _fence_sync(dut)  # back-to-back syncs from idle
     got = await _port_transaction(dut, "iup", write=False, addr=FENCE2_BASE)
-    assert got == 0
+    assert got == initial_data
 
 
 @cocotb.test()
@@ -1574,10 +1601,13 @@ async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
     # 1 miss partition. Keep the addresses on distinct L1 sets.
     d_addr = PERF_BASE + 1 * LINE_BYTES
     i_addr = PERF_BASE + 2 * LINE_BYTES
-    assert await _line_transaction(dut, write=False, addr=d_addr) == 0
-    assert await _line_transaction(dut, write=False, addr=d_addr) == 0
-    assert await _port_transaction(dut, "iup", write=False, addr=i_addr) == 0
-    assert await _port_transaction(dut, "iup", write=False, addr=i_addr) == 0
+    model = ReferenceModel(dut)
+    d_initial = model.read_line(d_addr)
+    i_initial = model.read_line(i_addr)
+    assert await _line_transaction(dut, write=False, addr=d_addr) == d_initial
+    assert await _line_transaction(dut, write=False, addr=d_addr) == d_initial
+    assert await _port_transaction(dut, "iup", write=False, addr=i_addr) == i_initial
+    assert await _port_transaction(dut, "iup", write=False, addr=i_addr) == i_initial
 
     # Whole-line writes of new lines that share both an L1D set and an L2 set
     # (one L2 way apart, a multiple of the L1D way). The first L1D_WAYS fill

@@ -23,6 +23,7 @@ from pathlib import Path
 
 import cocotb
 from cocotb.clock import Clock
+from cocotb.handle import Immediate
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
 from config import XLEN
 from cocotb_tests.cpu_structs import (
@@ -396,6 +397,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_walk_resp.value = 0
     _drive_pipeline_ctrl(dut, {})
     _drive_trap_ctrl(dut, {})
+    dut.i_flush_all.value = 0
     dut.i_frontend_state_flush.value = 0
     dut.i_fence_i_flush.value = 0
     dut.i_fence_i_target.value = 0
@@ -403,7 +405,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pd_redirect.value = 0
     dut.i_pd_redirect_taken.value = 1
     dut.i_pd_redirect_target.value = 0
-    # The tagged predictor's tables stay empty: nothing trains them.
+    # Tagged prediction is disabled and its training port is idle.
     dut.i_tage_hist.value = 0
     dut.i_tage_train_valid.value = 0
     dut.i_tage_train_lookup.value = 0
@@ -459,6 +461,33 @@ async def _redirect_to(dut: Any, target: int) -> None:
     _drive_from_ex(dut, {})
     await _advance_cycle(dut)
     assert int(dut.o_pc.value) == target + 4
+
+
+@cocotb.test()
+async def test_candidate_history_starts_at_reset(dut: Any) -> None:
+    """Independent saved operands may disagree before the first reset."""
+    for signal in dut:
+        if signal._name.startswith("i_"):
+            signal.value = Immediate(0)
+    _clear_inputs(dut)
+    _drive_pipeline_ctrl(dut, {"stall_registered": True})
+    dut.c_ext_state_inst.saved_values_valid.value = 1
+    dut.sel_nop_saved.value = 0
+    dut.u_instruction_pc_sc.saved.value = 0
+    dut.u_assembled_instr_sc.saved.value = NOP_INSTR
+    dut.pd_target_pc_low_saved_q.value = 0
+    dut.pd_target_native_imm_saved_q.value = 2
+    await _settle()
+    assert int(dut.coverage_reset_seen_q.value) == 0
+    assert int(dut.replay_saved_if_outputs.value) == 1
+    assert int(dut.pd_target_native_low.value) == 2
+    packet = _read_if_packet(dut)
+    assert packet["program_counter"] == 0
+    assert packet["effective_instr"] == NOP_INSTR
+
+    await _setup_test(dut)
+    assert int(dut.coverage_reset_seen_q.value) == 1
+    assert int(dut.replay_saved_if_outputs.value) == 0
 
 
 @cocotb.test()
@@ -2085,8 +2114,13 @@ async def test_no_lead_btb_miss_uses_and_replays_live_direction_metadata(
         compressed_control_lo=True,
     )
 
-    # Train only this direction entry into taken; leave the BTB empty so the
-    # packet's direction metadata is what can later trigger the PD redirect.
+    # Give the next lookup a different direction from the branch's entry.
+    # The BTB stays empty so only direction metadata can trigger PD redirect.
+    dut.i_dir_update_idx.value = next_idx
+    dut.i_dir_update_taken.value = 0
+    dut.i_dir_update_valid.value = 1
+    await _advance_cycle(dut)
+    await _advance_cycle(dut)
     dut.i_dir_update_idx.value = branch_idx
     dut.i_dir_update_taken.value = 1
     dut.i_dir_update_valid.value = 1
@@ -3479,3 +3513,37 @@ async def test_fetch_window_lead_parity_plus2_desync(dut: Any) -> None:
         f"pc_reg landed mid-32-bit-instruction at {pc2:#x} "
         "(F=W+1 fetch-window-lead parity hole; is_compressed_fast read the wrong word)"
     )
+
+
+@cocotb.test()
+async def test_fetch_fault_preserves_tags_with_arbitrary_metadata(dut: Any) -> None:
+    """Fault responses carry their tags independently of undefined metadata."""
+    await _setup_test(dut)
+    await _redirect_to(dut, BASE_PC)
+    for _ in range(4):
+        await _advance_cycle(dut)
+
+    dut.i_instr_fault0.value = 1
+    dut.i_instr_fault1.value = 1
+    _drive_fetch(dut, current_word=ADD_INSTR_A, next_word=ADD_INSTR_B)
+    # A fault response need not encode exclusive pairing candidates or
+    # matching replicas. Its bytes do not describe an executable instruction.
+    dut.i_instr_pc_metadata.value = 0xFF
+    dut.i_instr_pc_metadata_by_provider_parity.value = 0xFFFF
+    dut.i_pc_pairability_by_provider_parity.value = 0xFF
+    dut.i_slot2_start_valid_lo_by_provider_parity.value = 0xF
+    await _settle()
+    for slot2 in (False, True):
+        packet = _read_if_packet(dut, slot2=slot2)
+        assert packet["fetch_fault"]
+        assert not packet["fetch_fault_page"]
+    await _advance_cycle(dut)
+    assert _read_if_packet(dut)["fetch_fault"]
+    assert not int(dut.prediction_used.value)
+    assert not int(dut.slot2_prediction_used.value)
+
+    _drive_fetch(dut, current_word=NOP_INSTR, next_word=NOP_INSTR)
+    dut.i_instr_fault0.value = 0
+    dut.i_instr_fault1.value = 0
+    await _settle()
+    assert not _read_if_packet(dut)["fetch_fault"]

@@ -1,5 +1,5 @@
 /*
- *    Copyright 2026 John Goodacre
+ *    Copyright 2026 Two Sigma Open Source, LLC
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
  *    you may not use this file except in compliance with the License.
@@ -13,6 +13,8 @@
  *    See the License for the specific language governing permissions and
  *    limitations under the License.
  */
+
+// Copyright (c) 2026 John Goodacre.
 
 /*
  * vcu118_nic_gty_supervisor: transceiver supervisor for vcu118_nic_gty.
@@ -29,8 +31,8 @@ module vcu118_nic_gty_supervisor #(
     parameter int unsigned RESET_TIMEOUT_MS = 500,
     parameter int unsigned PULSE_CYCLES = 16
 ) (
-    input logic i_clk,     // 150 MHz free-running
-    input logic i_rx_clk,  // RX USRCLK2 (recovered)
+    input logic i_clk,    // 150 MHz free-running
+    input logic i_rx_clk, // RX USRCLK2 (recovered)
 
     // Transceiver and helper levels (asynchronous to i_clk)
     input logic i_power_good,
@@ -481,4 +483,3 @@ module vcu118_nic_gty (
     o_phy_status[nic_pkg::PhyStatusBitLos] = 1'b0;
   end
 endmodule : vcu118_nic_gty
-

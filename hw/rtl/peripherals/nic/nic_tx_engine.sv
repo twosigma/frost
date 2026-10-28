@@ -379,12 +379,14 @@ module nic_tx_engine #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  bit reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    if (!i_rst && data_resp && (outstanding_q == 3'd0) && !rd_fire)
+    if (i_rst) reset_seen_q <= 1'b1;
+    if (reset_seen_q && !i_rst && data_resp && (outstanding_q == 3'd0) && !rd_fire)
       $error("nic_tx_engine: data response with nothing outstanding");
-    if (!i_rst && data_resp && !rob_busy_q[resp_slot] && !(state_q == S_DRAIN))
+    if (reset_seen_q && !i_rst && data_resp && !rob_busy_q[resp_slot] && !(state_q == S_DRAIN))
       $error("nic_tx_engine: data response for a free reorder slot %0d", resp_slot);
-    if (!i_rst && status_resp && !dd_inflight_q)
+    if (reset_seen_q && !i_rst && status_resp && !dd_inflight_q)
       $error("nic_tx_engine: status response with no status write in flight");
   end
 `endif

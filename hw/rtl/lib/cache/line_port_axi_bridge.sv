@@ -140,6 +140,13 @@ module line_port_axi_bridge #(
     output logic [AXI_ID_BITS-1:0] o_wr_err_id
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+  logic axi_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_axi_rst) axi_reset_seen_q <= 1'b1;
+`endif
+
   localparam int unsigned NumIds = 1 << ID_BITS;
 
   initial begin
@@ -151,11 +158,17 @@ module line_port_axi_bridge #(
   // ---- Issue registers ------------------------------------------------------
   // The valids clear on their handshakes and on i_axi_rst, never on i_rst
   // (see the header); the initializers are the power-up state.
-  logic                      ar_valid_q = 1'b0;
+`ifdef FROST_RANDOM_START
+  localparam bit RandomStart = 1'b1;
+`else
+  localparam bit RandomStart = 1'b0;
+`endif
+
+  logic                      ar_valid_q = RandomStart ? 'x : 1'b0;
   logic [AXI_ADDR_WIDTH-1:0] ar_addr_q;
   logic [       ID_BITS-1:0] ar_id_q;
-  logic                      aw_valid_q = 1'b0;
-  logic                      w_valid_q = 1'b0;
+  logic                      aw_valid_q = RandomStart ? 'x : 1'b0;
+  logic                      w_valid_q = RandomStart ? 'x : 1'b0;
   logic [AXI_ADDR_WIDTH-1:0] aw_addr_q;
   logic [       ID_BITS-1:0] aw_id_q;
   logic [  LINE_BYTES*8-1:0] w_data_q;
@@ -164,7 +177,7 @@ module line_port_axi_bridge #(
   // Set while a transaction accepted before the last i_rst still owes its
   // response (the stale bitmap below). Registered, so ready gains no logic
   // depth.
-  logic                      stale_any_q = 1'b0;
+  logic                      stale_any_q = RandomStart ? 'x : 1'b0;
 
   // A write is issuable when both its channels are free; a read when AR is.
   logic write_slot_free, read_slot_free;
@@ -227,7 +240,7 @@ module line_port_axi_bridge #(
   // toward the line port. A response for a clear id is stale (see header).
   // The initializer matters: the first reset moves these bits into the stale
   // bitmap below, which only responses clear.
-  logic [NumIds-1:0] inflight_q = '0;
+  logic [NumIds-1:0] inflight_q = RandomStart ? 'x : '0;
 
   logic r_accept, b_accept;
   logic r_known, b_known;
@@ -294,7 +307,7 @@ module line_port_axi_bridge #(
   // clears its bit, and i_axi_rst, which discards the slave's work, clears
   // them all. No request is accepted while any bit is set, so no id is ever
   // owed both from before a reset and from after it.
-  logic [NumIds-1:0] stale_q = '0;
+  logic [NumIds-1:0] stale_q = RandomStart ? 'x : '0;
   logic [NumIds-1:0] stale_d;
   always_comb begin
     stale_d = stale_q;
@@ -328,7 +341,7 @@ module line_port_axi_bridge #(
   int axi_error_check;
   initial if (!$value$plusargs("axi_error_check=%d", axi_error_check)) axi_error_check = 1;
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && axi_reset_seen_q && !i_rst) begin
       if (req_fire && inflight_q[i_req_id])
         $error("line_port_axi_bridge: request reuses in-flight id %0d", i_req_id);
       if (r_accept && r_known && b_accept && b_known &&
@@ -357,7 +370,7 @@ module line_port_axi_bridge #(
   // initial counter could trigger the watchdog spuriously.
   int unsigned req_stall_cnt;
   always_ff @(posedge i_clk) begin
-    if (i_rst || !(i_req_valid && !o_req_ready)) begin
+    if (!reset_seen_q || !axi_reset_seen_q || i_rst || !(i_req_valid && !o_req_ready)) begin
       req_stall_cnt <= 0;
     end else begin
       req_stall_cnt <= req_stall_cnt + 1;

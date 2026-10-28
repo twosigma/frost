@@ -184,8 +184,10 @@ module walker_coherence_sequencer #(
   end
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (i_rst) reset_seen_q <= 1'b1;
+    if (reset_seen_q && !i_rst) begin
       // Registered outputs must agree with the state.
       if (busy_q != (state_q != S_IDLE))
         $error("walker_coherence_sequencer: busy flop disagrees with the state");

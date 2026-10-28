@@ -45,6 +45,7 @@ module soc_top #(
     parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd900_000_000,
     parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd322_265_625,
     parameter int unsigned DEBUG_JTAG_TAP = 1,
+    parameter int unsigned POWER_ON_RESET_ENABLE = 1,
     parameter int unsigned CLK_FREQ_HZ = 322265625,
     parameter int unsigned RAW_LOOPBACK = 1,
     parameter int unsigned ENABLE_1G_ETH = 0
@@ -53,6 +54,7 @@ module soc_top #(
     input logic i_cpu_clk = 1'b0,
     input logic i_clk_div4,  // Divided clock for the low-BRAM programming port
     input logic i_rst,
+    input logic i_power_on_rst,
 
     // Low-BRAM programming interface (div4 clock domain); writes go to both the
     // instruction and data copies
@@ -554,10 +556,14 @@ module soc_top #(
 
 `ifndef SYNTHESIS
   // Observe NIC-window accesses in both cached-tier configurations.
+  logic nic_access_armed_q = 1'b0;
   logic nic_access_q;
   always_ff @(posedge i_clk) begin
-    nic_access_q <= riscv_pkg::pma_device_quadrant(riscv_pkg::XLEN'(data_memory_address)) &&
-        (data_memory_address[31:12] == NicBase[31:12]);
+    if (soc_axi_rst) nic_access_armed_q <= 1'b1;
+    nic_access_q <= nic_access_armed_q && !soc_axi_rst && local_fire &&
+        riscv_pkg::pma_device_quadrant(
+        riscv_pkg::XLEN'(data_memory_address)
+    ) && (data_memory_address[31:12] == NicBase[31:12]);
   end
 `endif
   logic mmio_response_capture;
@@ -647,8 +653,10 @@ module soc_top #(
         .i_ready(1'b1)
     );
 `ifndef SYNTHESIS
+    bit reset_seen_q = 1'b0;
     always_ff @(posedge i_clk) begin
-      if (!soc_cpu_rst) assert (!imsic_write || msi_ready);
+      if (soc_cpu_rst) reset_seen_q <= 1'b1;
+      if (reset_seen_q && !soc_cpu_rst) assert (!imsic_write || msi_ready);
     end
 `endif
   end else begin : gen_msi_direct
@@ -837,12 +845,36 @@ module soc_top #(
   // ===========================================================================
   logic dtm_tck, dtm_tdi, dtm_tlr, dtm_capture, dtm_shift, dtm_update;
   logic dtm_sel_dtmcs, dtm_sel_dmi, dtm_tdo_dtmcs, dtm_tdo_dmi;
+  logic power_on_rst_core, power_on_rst_tck, power_on_rst_div4;
+  if (POWER_ON_RESET_ENABLE != 0) begin : gen_power_on_reset
+    // The core clock runs throughout power-on reset. System reset is separate.
+    cdc_sync u_power_on_core (
+        .i_clk  (core_clk),
+        .i_rst  (1'b0),
+        .i_async(i_power_on_rst),
+        .o_sync (power_on_rst_core)
+    );
+    cdc_reset_sync u_power_on_div4 (
+        .i_clk (i_clk_div4),
+        .i_arst(i_power_on_rst),
+        .o_rst (power_on_rst_div4)
+    );
+    cdc_reset_sync u_power_on_tck (
+        .i_clk (dtm_tck),
+        .i_arst(i_power_on_rst),
+        .o_rst (power_on_rst_tck)
+    );
+  end else begin : gen_no_power_on_reset
+    assign power_on_rst_core = 1'b0;
+    assign power_on_rst_tck  = 1'b0;
+    assign power_on_rst_div4 = 1'b0;
+  end
   if (DEBUG_JTAG_TAP != 0) begin : gen_jtag_tap
     jtag_tap u_jtag_tap (
         .i_tck(i_jtag_tck),
         .i_tms(i_jtag_tms),
         .i_tdi(i_jtag_tdi),
-        .i_trst_n(i_jtag_trst_n),
+        .i_trst_n(i_jtag_trst_n && !power_on_rst_tck),
         .o_tdo(o_jtag_tdo),
         .o_tlr(dtm_tlr),
         .o_capture(dtm_capture),
@@ -876,6 +908,8 @@ module soc_top #(
   logic [6:0] dmi_req_addr;
   logic [31:0] dmi_req_data, dmi_resp_data;
   dtm_core u_dtm (
+      .i_power_on_rst(power_on_rst_core),
+      .i_tck_power_on_rst(power_on_rst_tck),
       .i_tck(dtm_tck),
       .i_tlr(dtm_tlr),
       .i_capture(dtm_capture),
@@ -994,6 +1028,7 @@ module soc_top #(
   debug_module #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth)
   ) u_debug_module (
+      .i_power_on_rst(power_on_rst_core),
       .i_clk(core_clk),
       .i_rst(debug_cpu_rst),
       .i_dmi_req_valid(dmi_req_valid),
@@ -1081,6 +1116,8 @@ module soc_top #(
       .INIT_FILE("sw.mem"),
       .INIT_ADDR_WIDTH(MemWordAddrWidth)
   ) instruction_memory (
+      .i_port_a_rst(power_on_rst_div4),
+      .i_port_b_rst(rst_core),
       .i_port_a_clk(i_clk_div4),
       .i_port_a_enable(1'b1),
       // Port A: Instruction programming (div4 clock, write only)
@@ -1339,10 +1376,14 @@ module soc_top #(
       ((local_addr[31:12] == NicBase[31:12]) ||
        (local_addr[31:8] == DmaEngineBase[31:8]) ||
        ((ENABLE_1G_ETH != 0) && (local_addr[31:12] == Nic1gBase[31:12])));
-  wire [$clog2(AxilPorts)-1:0] local_axil_port =
-      (local_addr[31:12] == NicBase[31:12]) ? '0 :
-      ((ENABLE_1G_ETH != 0) && (local_addr[31:12] == Nic1gBase[31:12])) ?
-      $clog2(AxilPorts)'(2) : $clog2(AxilPorts)'(1);
+  wire [$clog2(
+AxilPorts
+)-1:0] local_axil_port = (local_addr[31:12] == NicBase[31:12]) ?
+      '0 : ((ENABLE_1G_ETH != 0) && (local_addr[31:12] == Nic1gBase[31:12])) ? $clog2(
+      AxilPorts
+  )'(2) : $clog2(
+      AxilPorts
+  )'(1);
   assign reg_axil_bready = (local_state_q == 5 && local_write && !rst_core &&
       !soc_axi_rst) ? (AxilPorts'(1) << reg_axil_port_q) : '0;
   assign reg_axil_rready = (local_state_q == 5 && !local_write && !rst_core &&
@@ -2893,12 +2934,12 @@ module soc_top #(
     end
 
     wire sram_wr_busy = boot_sram_wr_req_q || !slice_req_ready || !slice_all_done;
-    assign boot_spi_ctrl_word   = {16'b0, spi_clk_div_q, 7'b0, spi_cs_n_q};
+    assign boot_spi_ctrl_word = {16'b0, spi_clk_div_q, 7'b0, spi_cs_n_q};
     assign boot_sys_status_word = {
       16'h4652, 6'b0, i_ddr_status[1:0], 6'b0, sram_wr_busy, spi_busy_q
     };
     assign boot_spi_rx_byte_word = {24'b0, spi_rx_shreg_q[7:0]};
-    assign boot_spi_rx_word_le   = {
+    assign boot_spi_rx_word_le = {
       spi_rx_shreg_q[7:0], spi_rx_shreg_q[15:8], spi_rx_shreg_q[23:16], spi_rx_shreg_q[31:24]
     };
     assign boot_sram_addr_word = 32'({boot_sram_word_addr_q, 2'b00});

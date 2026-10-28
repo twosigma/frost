@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import cocotb
+from cocotb.handle import Immediate
 from cocotb.triggers import Timer
 from cocotb_tests.cpu_structs import (
     BRANCH_UPDATE_FIELDS,
@@ -125,7 +126,10 @@ def _clear_inputs(dut: Any) -> None:
 
 async def _setup_test(dut: Any) -> None:
     """Initialize combinational inputs."""
+    dut.i_check_enable.value = Immediate(0)
     _clear_inputs(dut)
+    await _settle()
+    dut.i_check_enable.value = 1
     await _settle()
 
 

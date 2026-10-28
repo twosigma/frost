@@ -52,13 +52,15 @@
  * and it resets this module too, dmactive included. Debug Spec 0.13.2
  * section 3.2 resets the module only at power-up and while dmactive is 0; on
  * an FPGA these resets serve as power-up. ndmreset resets only the core and
- * leaves the module's state.
+ * leaves the module's state. i_power_on_rst synchronously clears the DMI
+ * pending-request bit, which must survive system reset.
  */
 module debug_module #(
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 18
 ) (
     input logic i_clk,
     input logic i_rst,
+    input logic i_power_on_rst,
 
     // DMI (from dtm_core)
     input  logic        i_dmi_req_valid,
@@ -176,10 +178,19 @@ module debug_module #(
   // ---------------------------------------------------------------------------
   // Retain a request across reset and answer it once reset ends, with
   // dmactive=0. dtm_core stays busy and holds the payload until the answer.
-  logic dmi_req_pending_q = 1'b0;
+`ifdef FROST_RANDOM_START
+  localparam bit RandomStart = 1'b1;
+`else
+  localparam bit RandomStart = 1'b0;
+`endif
+
+  logic dmi_req_pending_q = RandomStart ? 'x : 1'b0;
   logic dmi_req_valid;
-  assign dmi_req_valid = (i_dmi_req_valid || dmi_req_pending_q) && !i_rst;
-  always_ff @(posedge i_clk) dmi_req_pending_q <= (i_dmi_req_valid || dmi_req_pending_q) && i_rst;
+  assign dmi_req_valid = (i_dmi_req_valid || dmi_req_pending_q) && !i_rst && !i_power_on_rst;
+  always_ff @(posedge i_clk) begin
+    if (i_power_on_rst) dmi_req_pending_q <= 1'b0;
+    else dmi_req_pending_q <= (i_dmi_req_valid || dmi_req_pending_q) && i_rst;
+  end
 
   logic dmi_read, dmi_write;
   assign dmi_read  = dmi_req_valid && (i_dmi_req_op == 2'd1);
@@ -503,8 +514,10 @@ module debug_module #(
   assign o_ndmreset = ndmreset_q;
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    if (!dm_rst) begin
+    if (dm_rst) reset_seen_q <= 1'b1;
+    if (reset_seen_q && !dm_rst) begin
       if ((cmd_state_q == CmdGo) && (res_state_q == ResGo))
         $error("debug_module: command and resume go requests overlap");
       if (o_go && !i_debug_mode) $error("debug_module: go requested outside Debug Mode");

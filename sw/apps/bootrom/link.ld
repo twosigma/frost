@@ -126,4 +126,3 @@ ASSERT(LOADADDR(.sdata) + SIZEOF(.sdata) <= ORIGIN(ROM) + LENGTH(ROM),
        "Boot ROM overflow: code + rodata + data exceeds 12 KiB")
 ASSERT(__bss_end <= _end_of_stack - __stack_reserve,
        "Boot ROM RAM overflow: data + bss exceeds 2 KiB")
-

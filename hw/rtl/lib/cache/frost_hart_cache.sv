@@ -199,6 +199,11 @@ module frost_hart_cache #(
     output cache_perf_pkg::cache_instance_perf_events_t o_l1i_perf_events
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+`endif
+
   // Walker and L1I downstream id width: one bit fewer than the L1D's, which
   // the shared level's walker/L1I sub-arbiter adds back as its port index.
   localparam int unsigned WalkIdBits = UP_ID_BITS - 1;
@@ -495,13 +500,13 @@ module frost_hart_cache #(
   // The walker port is read-only; the sequencer in front of it has no write
   // path, so a write here would be silently turned into a read.
   always_ff @(posedge i_clk) begin
-    if (!i_rst && i_wup_req_valid && i_wup_req_write)
+    if (reset_seen_q && !i_rst && i_wup_req_valid && i_wup_req_write)
       $error(
           "frost_hart_cache: write on the walker port (addr=0x%0h, wstrb=0x%0h)",
           i_wup_req_addr,
           i_wup_req_wstrb
       );
-    if (!i_rst && walk_probe_release_valid && walk_release_hold_q)
+    if (reset_seen_q && !i_rst && walk_probe_release_valid && walk_release_hold_q)
       $error("frost_hart_cache: walker probe release while one is still held");
   end
 `endif

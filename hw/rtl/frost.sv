@@ -110,6 +110,10 @@ module frost #(
     input logic i_cpu_clk = 1'b0,
     input logic i_clk_div4,
     input logic i_rst_n,
+`ifndef SYNTHESIS
+    // FPGA configuration supplies the power-up values; benches pulse this.
+    input logic i_power_on_rst,
+`endif
 
     input logic        i_instr_mem_en,
     input logic [ 3:0] i_instr_mem_we,
@@ -362,6 +366,11 @@ module frost #(
       .HANG_TRIAGE_QUIET_CYCLES(HANG_TRIAGE_QUIET_CYCLES),
       .HANG_TRIAGE_REEMIT_CYCLES(HANG_TRIAGE_REEMIT_CYCLES),
       .DEBUG_JTAG_TAP(DEBUG_JTAG_TAP),
+`ifdef SYNTHESIS
+      .POWER_ON_RESET_ENABLE(0),
+`else
+      .POWER_ON_RESET_ENABLE(1),
+`endif
       .PERF_COUNTERS(PERF_COUNTERS),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
@@ -372,6 +381,11 @@ module frost #(
       .RAW_LOOPBACK(RAW_LOOPBACK),
       .ENABLE_1G_ETH(ENABLE_1G_ETH)
   ) cpu_and_memory_subsystem (
+`ifdef SYNTHESIS
+      .i_power_on_rst(1'b0),
+`else
+      .i_power_on_rst(i_power_on_rst),
+`endif
       .i_clk,
 `ifndef FROST_RVFI_DII
       .i_cpu_clk,
@@ -558,12 +572,15 @@ module frost #(
   // Report lost TX bytes. +uart_tx_drop_check=0 disables this for unpaced
   // output that a bench captures before the FIFO.
   int unsigned uart_tx_drop_check;
+  bit uart_reset_seen_q = 1'b0;
   initial if (!$value$plusargs("uart_tx_drop_check=%d", uart_tx_drop_check)) uart_tx_drop_check = 1;
   always_ff @(posedge i_clk)
-    if (uart_tx_drop_check != 0 &&
+    if (ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized)
+      uart_reset_seen_q <= 1'b1;
+  always_ff @(posedge i_clk)
+    if (uart_reset_seen_q && uart_tx_drop_check != 0 &&
         !(ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized) &&
-        uart_write_enable_from_cpu &&
-        !uart_fifo_input_ready)
+        uart_write_enable_from_cpu && !uart_fifo_input_ready)
       $error("frost: UART TX byte dropped: the transmit FIFO was full");
 `endif
 

@@ -23,4 +23,3 @@ LINKER_SCRIPT := link.ld
 SRC_C         := ../../lib/src/uart.c fsbl.c
 GENERATE_IMEM_INIT := 0
 include ../../common/common.mk
-

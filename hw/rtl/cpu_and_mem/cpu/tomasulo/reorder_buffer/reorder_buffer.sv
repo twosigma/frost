@@ -1186,6 +1186,11 @@ module reorder_buffer #(
       .DATA_WIDTH(AllocHeadWidth),
       .NUM_WRITE_PORTS(2)
   ) u_rob_alloc_head (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
       .i_clk,
       .i_write_enable({alloc_en_2, alloc_en}),
       .i_write_address({tail_idx_2, tail_idx}),
@@ -1230,6 +1235,11 @@ module reorder_buffer #(
       .DATA_WIDTH(AllocNextWidth),
       .NUM_WRITE_PORTS(2)
   ) u_rob_alloc_head_next (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
       .i_clk,
       .i_write_enable({alloc_en_2, alloc_en}),
       .i_write_address({tail_idx_2, tail_idx}),
@@ -1293,6 +1303,11 @@ module reorder_buffer #(
         .NUM_NARROW_WRITE_PORTS(2),
         .NARROW_DATA_WIDTH     (XLEN)
     ) u_rob_value_head (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
         .i_clk,
         .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
         .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
@@ -1313,6 +1328,11 @@ module reorder_buffer #(
         .NUM_NARROW_WRITE_PORTS(2),
         .NARROW_DATA_WIDTH     (XLEN)
     ) u_rob_value_head_next (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
         .i_clk,
         .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
         .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
@@ -1443,6 +1463,11 @@ module reorder_buffer #(
         .LINK_WIDTH (XLEN),
         .ONEHOT_READ(1'b1)
     ) u_rob_value_head (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable (dbg_mask_seen_reset && i_rst_n),
+`endif
+`endif
         .i_clk,
         .i_alloc_enable ({alloc_en_2, alloc_en}),
         .i_alloc_address({tail_idx_2, tail_idx}),
@@ -1463,6 +1488,11 @@ module reorder_buffer #(
         .LINK_WIDTH (XLEN),
         .ONEHOT_READ(1'b1)
     ) u_rob_value_head_next (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable (dbg_mask_seen_reset && i_rst_n),
+`endif
+`endif
         .i_clk,
         .i_alloc_enable ({alloc_en_2, alloc_en}),
         .i_alloc_address({tail_idx_2, tail_idx}),
@@ -1483,6 +1513,11 @@ module reorder_buffer #(
         .LINK_WIDTH (XLEN),
         .ONEHOT_READ(1'b0)
     ) u_rob_value_bypass_1 (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable (dbg_mask_seen_reset && i_rst_n),
+`endif
+`endif
         .i_clk,
         .i_alloc_enable ({alloc_en_2, alloc_en}),
         .i_alloc_address({tail_idx_2, tail_idx}),
@@ -1502,6 +1537,11 @@ module reorder_buffer #(
         .LINK_WIDTH (XLEN),
         .ONEHOT_READ(1'b0)
     ) u_rob_value_bypass_2 (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable (dbg_mask_seen_reset && i_rst_n),
+`endif
+`endif
         .i_clk,
         .i_alloc_enable ({alloc_en_2, alloc_en}),
         .i_alloc_address({tail_idx_2, tail_idx}),
@@ -1521,6 +1561,11 @@ module reorder_buffer #(
         .LINK_WIDTH (XLEN),
         .ONEHOT_READ(1'b0)
     ) u_rob_value_bypass_3 (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable (dbg_mask_seen_reset && i_rst_n),
+`endif
+`endif
         .i_clk,
         .i_alloc_enable ({alloc_en_2, alloc_en}),
         .i_alloc_address({tail_idx_2, tail_idx}),
@@ -1541,6 +1586,11 @@ module reorder_buffer #(
         .LINK_WIDTH (XLEN),
         .ONEHOT_READ(1'b0)
     ) u_rob_value_bypass_4 (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable (dbg_mask_seen_reset && i_rst_n),
+`endif
+`endif
         .i_clk,
         .i_alloc_enable ({alloc_en_2, alloc_en}),
         .i_alloc_address({tail_idx_2, tail_idx}),
@@ -1560,6 +1610,11 @@ module reorder_buffer #(
         .LINK_WIDTH (XLEN),
         .ONEHOT_READ(1'b0)
     ) u_rob_value_bypass_5 (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable (dbg_mask_seen_reset && i_rst_n),
+`endif
+`endif
         .i_clk,
         .i_alloc_enable ({alloc_en_2, alloc_en}),
         .i_alloc_address({tail_idx_2, tail_idx}),
@@ -1579,6 +1634,11 @@ module reorder_buffer #(
         .LINK_WIDTH (XLEN),
         .ONEHOT_READ(1'b0)
     ) u_rob_value_bypass_6 (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_check_enable (dbg_mask_seen_reset && i_rst_n),
+`endif
+`endif
         .i_clk,
         .i_alloc_enable ({alloc_en_2, alloc_en}),
         .i_alloc_address({tail_idx_2, tail_idx}),
@@ -1600,6 +1660,11 @@ module reorder_buffer #(
       .DATA_WIDTH     (ExcCauseWidth),
       .NUM_WRITE_PORTS(4)
   ) u_rob_exc_cause (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
       .i_clk,
       .i_write_enable({cdb_exc_cause_wr_en_2, cdb_exc_cause_wr_en, alloc_en_2, alloc_en}),
       .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
@@ -1620,6 +1685,11 @@ module reorder_buffer #(
       .DATA_WIDTH     (FpFlagsWidth),
       .NUM_WRITE_PORTS(4)
   ) u_rob_fp_flags (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
       .i_clk,
       .i_write_enable({alloc_en_2, alloc_en, cdb_ram_wr_en_2, cdb_ram_wr_en}),
       .i_write_address({tail_idx_2, tail_idx, i_cdb_write_2.tag, i_cdb_write.tag}),
@@ -1637,6 +1707,11 @@ module reorder_buffer #(
       .DATA_WIDTH     (FpFlagsWidth),
       .NUM_WRITE_PORTS(4)
   ) u_rob_fp_flags_next (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
       .i_clk,
       .i_write_enable({alloc_en_2, alloc_en, cdb_ram_wr_en_2, cdb_ram_wr_en}),
       .i_write_address({tail_idx_2, tail_idx, i_cdb_write_2.tag, i_cdb_write.tag}),
@@ -1655,13 +1730,18 @@ module reorder_buffer #(
       .DATA_WIDTH     (XLEN),
       .NUM_WRITE_PORTS(2)
   ) u_rob_branch_target_jal (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
       .i_clk,
-      .i_write_enable ({alloc_en_2 && i_alloc_req_2.is_jal, alloc_en && i_alloc_req.is_jal}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({alloc_branch_target_data_2, alloc_branch_target_data}),
-      .i_read_address (head_idx),
-      .i_read_onehot  (head_clear_mask),
-      .o_read_data    (head_branch_target_jal)
+      .i_write_enable     ({alloc_en_2 && i_alloc_req_2.is_jal, alloc_en && i_alloc_req.is_jal}),
+      .i_write_address    ({tail_idx_2, tail_idx}),
+      .i_write_data       ({alloc_branch_target_data_2, alloc_branch_target_data}),
+      .i_read_address     (head_idx),
+      .i_read_onehot      (head_clear_mask),
+      .o_read_data        (head_branch_target_jal)
   );
 
   // Widen-commit replica: head+1 read port for branch_target_jal.
@@ -1670,13 +1750,18 @@ module reorder_buffer #(
       .DATA_WIDTH     (XLEN),
       .NUM_WRITE_PORTS(2)
   ) u_rob_branch_target_jal_next (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_read_check_enable(dbg_mask_seen_reset),
+`endif
+`endif
       .i_clk,
-      .i_write_enable ({alloc_en_2 && i_alloc_req_2.is_jal, alloc_en && i_alloc_req.is_jal}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({alloc_branch_target_data_2, alloc_branch_target_data}),
-      .i_read_address (head_next_idx),
-      .i_read_onehot  (head_next_clear_mask),
-      .o_read_data    (head_next_branch_target_jal)
+      .i_write_enable     ({alloc_en_2 && i_alloc_req_2.is_jal, alloc_en && i_alloc_req.is_jal}),
+      .i_write_address    ({tail_idx_2, tail_idx}),
+      .i_write_data       ({alloc_branch_target_data_2, alloc_branch_target_data}),
+      .i_read_address     (head_next_idx),
+      .i_read_onehot      (head_next_clear_mask),
+      .o_read_data        (head_next_branch_target_jal)
   );
 
   sdp_dist_ram #(
@@ -2485,7 +2570,7 @@ module reorder_buffer #(
 `ifndef FORMAL
   // A retired branch's link must equal pc + (is_compressed ? 2 : 4).
   always @(posedge i_clk) begin
-    if (i_rst_n && o_commit_comb.valid && head_is_branch) begin
+    if (dbg_mask_seen_reset && i_rst_n && o_commit_comb.valid && head_is_branch) begin
       if ((head_value[XLEN-1:0] == (head_pc + 64'd2)) != head_is_compressed)
         $error(
             "reorder_buffer: stored is_compressed diverged from link view (pc=%h val=%h q=%b)",
@@ -2505,7 +2590,7 @@ module reorder_buffer #(
   endfunction
 
   always @(posedge i_clk) begin
-    if (i_rst_n) begin
+    if (dbg_mask_seen_reset && i_rst_n) begin
       if (alloc_en && i_alloc_req.link_addr != expected_fallthrough(
               i_alloc_req.pc, i_alloc_req.is_compressed
           ))
@@ -2804,7 +2889,7 @@ module reorder_buffer #(
   // head_ready forms.
 `ifndef SYNTHESIS
   always @(posedge i_clk) begin
-    if (i_rst_n) begin
+    if (i_rst_n && dbg_mask_seen_reset) begin
       p_start_class_excludes_bypass :
       assert ((rob_valid & rob_f_cdb_bypass_ok & (rob_f_is_csr | rob_f_is_mret)) == '0);
       p_branch_class_excludes_bypass :
@@ -2932,16 +3017,15 @@ module reorder_buffer #(
   // ===========================================================================
 
 `ifndef SYNTHESIS
-`ifndef FORMAL
-
   // The registered masks must mirror the binary pointers for FF and LVT
   // one-hot reads. Wait until reset has been observed: full-core simulation
   // may begin with i_rst_n high and uninitialized masks.
   logic dbg_mask_seen_reset;
   initial dbg_mask_seen_reset = 1'b0;
+  always @(posedge i_clk) if (!i_rst_n) dbg_mask_seen_reset <= 1'b1;
+`ifndef FORMAL
   always @(posedge i_clk) begin
-    if (!i_rst_n) dbg_mask_seen_reset <= 1'b1;
-    if (i_rst_n && dbg_mask_seen_reset) begin
+    if (dbg_mask_seen_reset && i_rst_n) begin
       if (head_clear_mask != (ReorderBufferDepth'(1) << head_idx)) begin
         $error("Reorder Buffer: head_clear_mask (0x%08x) != 1 << head_idx (%0d)", head_clear_mask,
                head_idx);
@@ -3005,7 +3089,7 @@ module reorder_buffer #(
     retire_trace_fd = $fopen("retire_trace.log", "w");
   end
   always @(posedge i_clk) begin
-    if (i_rst_n && commit_en) begin
+    if (dbg_mask_seen_reset && i_rst_n && commit_en) begin
       if (head_dest_valid && !head_dest_rf && head_dest_reg != 5'd0) begin
         $fwrite(retire_trace_fd, "%0t pc=%016x rd=x%0d val=%016x\n", $time, head_pc, head_dest_reg,
                 head_value_eff[riscv_pkg::XLEN-1:0]);
@@ -3013,7 +3097,7 @@ module reorder_buffer #(
         $fwrite(retire_trace_fd, "%0t pc=%016x\n", $time, head_pc);
       end
     end
-    if (i_rst_n && commit_2_fire) begin
+    if (dbg_mask_seen_reset && i_rst_n && commit_2_fire) begin
       if (head_next_dest_valid && !head_next_dest_rf && head_next_dest_reg != 5'd0) begin
         $fwrite(retire_trace_fd, "%0t pc=%016x rd=x%0d val=%016x\n", $time, head_next_pc,
                 head_next_dest_reg, head_next_value_eff[riscv_pkg::XLEN-1:0]);
@@ -3025,19 +3109,20 @@ module reorder_buffer #(
 
   // Dispatch must not allocate when full.
   always @(posedge i_clk) begin
-    if (i_rst_n && i_alloc_req.alloc_valid && full) begin
+    if (dbg_mask_seen_reset && i_rst_n && i_alloc_req.alloc_valid && full) begin
       $error("Reorder Buffer: Allocation attempted when full!");
     end
   end
 
   // Slot-2 must respect the "slot-1 also valid" contract and the full_for_2 gate.
   always @(posedge i_clk) begin
-    if (i_rst_n && i_alloc_req_2.alloc_valid && !i_alloc_req.alloc_valid) begin
+    if (dbg_mask_seen_reset && i_rst_n &&
+        i_alloc_req_2.alloc_valid && !i_alloc_req.alloc_valid) begin
       $error("Reorder Buffer: Slot-2 alloc valid without slot-1!");
     end
   end
   always @(posedge i_clk) begin
-    if (i_rst_n && i_alloc_req_2.alloc_valid && full_for_2) begin
+    if (dbg_mask_seen_reset && i_rst_n && i_alloc_req_2.alloc_valid && full_for_2) begin
       $error("Reorder Buffer: Slot-2 alloc attempted when full_for_2!");
     end
   end
@@ -3046,13 +3131,13 @@ module reorder_buffer #(
   // and SRET/DRET are subtypes of is_fence_i and is_mret respectively, so the
   // subtype bits sit outside this one-hot contract.
   always @(posedge i_clk) begin
-    if (i_rst_n && i_alloc_req.alloc_valid && !$onehot0(
+    if (dbg_mask_seen_reset && i_rst_n && i_alloc_req.alloc_valid && !$onehot0(
             {i_alloc_req.is_wfi, i_alloc_req.is_csr, i_alloc_req.is_fence,
                    i_alloc_req.is_fence_i, i_alloc_req.is_mret}
         )) begin
       $error("Reorder Buffer: slot-1 allocation has conflicting serializer classes");
     end
-    if (i_rst_n && i_alloc_req_2.alloc_valid && !$onehot0(
+    if (dbg_mask_seen_reset && i_rst_n && i_alloc_req_2.alloc_valid && !$onehot0(
             {i_alloc_req_2.is_wfi, i_alloc_req_2.is_csr, i_alloc_req_2.is_fence,
                    i_alloc_req_2.is_fence_i, i_alloc_req_2.is_mret}
         )) begin
@@ -3063,12 +3148,14 @@ module reorder_buffer #(
   // Dispatch must not allocate during a flush. alloc_ready also deasserts
   // then, but dispatch is required to stall on its own.
   always @(posedge i_clk) begin
-    if (i_rst_n && i_alloc_req.alloc_valid && (i_flush_en || i_flush_all)) begin
+    if (dbg_mask_seen_reset && i_rst_n &&
+        i_alloc_req.alloc_valid && (i_flush_en || i_flush_all)) begin
       $error("Reorder Buffer: Allocation attempted during flush!");
     end
   end
   always @(posedge i_clk) begin
-    if (i_rst_n && i_alloc_req_2.alloc_valid && (i_flush_en || i_flush_all)) begin
+    if (dbg_mask_seen_reset && i_rst_n &&
+        i_alloc_req_2.alloc_valid && (i_flush_en || i_flush_all)) begin
       $error("Reorder Buffer: Slot-2 alloc attempted during flush!");
     end
   end
@@ -3109,7 +3196,7 @@ module reorder_buffer #(
 
   if (DrainWindowCheck) begin : g_drain_window_check
     always @(posedge i_clk) begin
-      if (i_rst_n) begin
+      if (dbg_mask_seen_reset && i_rst_n) begin
         for (int lane = 0; lane < 2; lane++) begin
           if (dbg_prev_alloc_valid_q[lane]) begin
             if (cdb_ram_wr_en && (i_cdb_write.tag == dbg_prev_alloc_idx_q[lane])) begin
@@ -3130,8 +3217,8 @@ module reorder_buffer #(
   // entries, so at most one may be a branch. Rejected requests do not count.
   if (SharedLinkBank) begin : g_shared_link_bank_check
     always @(posedge i_clk) begin
-      if (alloc_en && alloc_en_2 && i_alloc_req.is_branch && i_alloc_req_2.is_branch &&
-          (tail_idx != tail_idx_2)) begin
+      if (dbg_mask_seen_reset && i_rst_n && alloc_en && alloc_en_2 &&
+          i_alloc_req.is_branch && i_alloc_req_2.is_branch && (tail_idx != tail_idx_2)) begin
         $error("Reorder Buffer: branch allocations at entries %0d and %0d in one cycle", tail_idx,
                tail_idx_2);
       end
@@ -3170,7 +3257,7 @@ module reorder_buffer #(
     end
   endfunction
   always @(posedge i_clk) begin
-    if (i_rst_n && dbg_stale_cdb_logged < 8) begin
+    if (dbg_mask_seen_reset && i_rst_n && dbg_stale_cdb_logged < 8) begin
       if (i_cdb_write.valid && !rob_valid[i_cdb_write.tag] && !dbg_recently_committed(
               i_cdb_write.tag
           )) begin
@@ -3191,7 +3278,8 @@ module reorder_buffer #(
 
   // Check that branch updates target valid entries
   always @(posedge i_clk) begin
-    if (i_rst_n && i_branch_update.valid && !rob_valid[i_branch_update.tag] &&
+    if (dbg_mask_seen_reset && i_rst_n &&
+        i_branch_update.valid && !rob_valid[i_branch_update.tag] &&
         !dbg_flush_prev_cycle && !i_flush_all && !i_flush_en) begin
       $warning("Reorder Buffer: Branch update to invalid entry tag=%0d (ignored)",
                i_branch_update.tag);
@@ -3203,10 +3291,11 @@ module reorder_buffer #(
   // CDB completion (CSR), or has none. No producer may rewrite it on state
   // entry or while held. Head-independent retirement events rely on this.
   always @(posedge i_clk) begin
-    if (i_rst_n && i_flush_after_head_commit && !(i_flush_en || i_flush_all)) begin
+    if (dbg_mask_seen_reset && i_rst_n &&
+        i_flush_after_head_commit && !(i_flush_en || i_flush_all)) begin
       $error("Reorder Buffer: flush-after-head arrived without a recovery flush");
     end
-    if (i_rst_n && serial_state != riscv_pkg::SERIAL_IDLE) begin
+    if (dbg_mask_seen_reset && i_rst_n && serial_state != riscv_pkg::SERIAL_IDLE) begin
       if (!head_ready) begin
         $error("Reorder Buffer: serialization state %0d but head not ready", serial_state);
       end
@@ -3225,7 +3314,7 @@ module reorder_buffer #(
         $error("Reorder Buffer: non-trap serializer owner acquired an exception");
       end
     end
-    if (i_rst_n && head_ready &&
+    if (dbg_mask_seen_reset && i_rst_n && head_ready &&
         (head_f_is_csr || head_f_is_fence || head_f_is_fence_i ||
          head_f_is_wfi || head_f_is_mret)) begin
       if (i_cdb_write.valid && (i_cdb_write.tag == head_idx)) begin

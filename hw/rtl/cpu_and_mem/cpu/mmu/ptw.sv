@@ -92,6 +92,11 @@ module ptw #(
     input  logic [           LINE_BYTES*8-1:0] i_line_resp_rdata
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+`endif
+
   // ---------------------------------------------------------------------------
   // Walk state
   // ---------------------------------------------------------------------------
@@ -319,7 +324,7 @@ module ptw #(
   // Check the registered valid against its state-derived reference, including
   // a cycle in which a live discard coincides with a legal final request fire.
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       p_line_req_valid_twin_exact :
       assert (o_line_req_valid == ((state_q == PTW_ISSUE) && ptr_addr_ok_q && !discard_q));
     end
@@ -331,7 +336,7 @@ module ptw #(
   // ptr_addr_ok_q equals the live address check in every cycle the FSM uses it
   // (PTW_ISSUE).
   always_ff @(posedge i_clk) begin
-    if (!i_rst && (state_q == PTW_ISSUE)) begin
+    if (reset_seen_q && !i_rst && (state_q == PTW_ISSUE)) begin
       p_ptr_addr_ok_twin_exact : assert (ptr_addr_ok_q == pte_addr_ok);
     end
   end
@@ -343,7 +348,7 @@ module ptw #(
   // A response while idle, or a second response mid-walk, means the port
   // delivered something this walker never asked for.
   always_ff @(posedge i_clk) begin
-    if (!i_rst && i_line_resp_valid && (state_q != PTW_WAIT))
+    if (reset_seen_q && !i_rst && i_line_resp_valid && (state_q != PTW_WAIT))
       $error("ptw: line response in state %0d (id=%0d)", state_q, i_line_resp_id);
   end
 `endif
@@ -459,15 +464,15 @@ module ptw #(
 `ifdef FROST_COVERAGE
   // Discard cannot withdraw a registered read accepted on this edge.
   cover_discard_on_read_accept :
-  cover property (@(posedge i_clk) disable iff (i_rst)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
       i_discard && o_line_req_valid && i_line_req_ready);
   // A response on the discard edge must drain without installing a leaf.
   cover_discard_on_read_response :
-  cover property (@(posedge i_clk) disable iff (i_rst)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
       i_discard && (state_q == PTW_WAIT) && i_line_resp_valid);
   // A valid parent PTE can lead to a bus error at an interior table.
   cover_interior_pte_read_error :
-  cover property (@(posedge i_clk) disable iff (i_rst)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
       ENABLE_RESPONSE_ERRORS && (state_q == PTW_WAIT) && (level_q != 2) &&
       i_line_resp_valid && i_line_resp_error && !discard_q && !i_discard);
 `endif

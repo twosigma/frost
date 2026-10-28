@@ -87,13 +87,13 @@ def _bank_word(lookup_word: int, bank: int) -> int:
     return lookup_word if (lookup_word & 1) == bank else (lookup_word + 1) & WORD_MASK
 
 
-# The tables have no reset, so entries persist from one test to the next.
-# Each test looks up with a history whose entries no earlier test reached.
+# Tables have no reset and may power up occupied. Tests that require empty
+# allocation candidates prepare only their own rows; other entries stay arbitrary.
 _used_entries: set[tuple[int, int, int]] = set()
 
 
-def _fresh_hist(pc: int) -> int:
-    """Return a history whose lookup at pc reaches only unused entries."""
+def _fresh_hist(dut: Any, pc: int) -> int:
+    """Reserve fresh rows and make their valid/useful bits empty for the case."""
     word = _word(pc)
     for seed in range(1, 1 << 16):
         hist = (seed * 0x9E37_79B9_7F4A_7C15) & HIST_MASK
@@ -105,6 +105,12 @@ def _fresh_hist(pc: int) -> int:
                 entries.add((2, bank, keys["index2"]))
         if entries.isdisjoint(_used_entries):
             _used_entries.update(entries)
+            for table, bank, index in entries:
+                storage = dut.gen_bank[bank].gen_table[table - 1]
+                for copy in (storage.u_lookup_copy, storage.u_train_copy):
+                    row = copy.ram[index]
+                    payload_mask = ((1 << (len(row) - 1)) - 1) & ~1
+                    row.value = int(row.value) & payload_mask
             return hist
     raise AssertionError("no history reaches unused entries")
 
@@ -134,7 +140,7 @@ async def _cycle(dut: Any) -> None:
 
 
 async def _setup_test(dut: Any) -> None:
-    """Start the clock and clear inputs. The tables start empty."""
+    """Start the clock and let the idle training input reach its write stage."""
     Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _clear_inputs(dut)
     await FallingEdge(dut.i_clk)
@@ -200,12 +206,12 @@ async def _train(
 
 
 @cocotb.test()
-async def test_cold_lookup_misses_and_reports_keys_for_both_words(dut: Any) -> None:
+async def test_empty_lookup_misses_and_reports_keys_for_both_words(dut: Any) -> None:
     """An empty table misses; each bank reports the hashed keys of its word."""
     await _setup_test(dut)
 
     for pc in (PC_A, PC_B):
-        hist = _fresh_hist(pc)
+        hist = _fresh_hist(dut, pc)
         banks = await _lookup(dut, pc, hist)
         word = _word(pc)
         assert int(dut.o_lookup_word.value) == word
@@ -225,7 +231,7 @@ async def test_t1_hashes_only_the_newest_history_bits(dut: Any) -> None:
     """History above T1_HIST_BITS changes T2's keys but not T1's."""
     await _setup_test(dut)
 
-    hist = _fresh_hist(PC_A)
+    hist = _fresh_hist(dut, PC_A)
     base = await _lookup_word(dut, PC_A, hist)
     changed = await _lookup_word(dut, PC_A, hist ^ (1 << (T1_HIST_BITS + 3)))
 
@@ -239,7 +245,7 @@ async def test_capture_low_holds_the_registered_lookup(dut: Any) -> None:
     """With i_lookup_capture low, new lookup inputs do not reach the outputs."""
     await _setup_test(dut)
 
-    hist = _fresh_hist(PC_A)
+    hist = _fresh_hist(dut, PC_A)
     held = await _lookup(dut, PC_A, hist)
     dut.i_lookup_word.value = _word(PC_B)
     dut.i_lookup_hist.value = hist ^ HIST_MASK
@@ -255,7 +261,7 @@ async def test_capture_low_holds_the_registered_lookup(dut: Any) -> None:
 async def test_mispredict_without_provider_allocates_weak_t1_entry(dut: Any) -> None:
     """A miss that mispredicts allocates T1 weakly in the outcome's direction."""
     await _setup_test(dut)
-    hist = _fresh_hist(PC_A)
+    hist = _fresh_hist(dut, PC_A)
 
     cold = await _lookup_word(dut, PC_A, hist)
     await _train(dut, cold, 0, taken=True, mispredicted=True)
@@ -276,7 +282,7 @@ async def test_mispredict_without_provider_allocates_weak_t1_entry(dut: Any) -> 
 async def test_correct_prediction_without_provider_does_not_allocate(dut: Any) -> None:
     """Only a misprediction allocates."""
     await _setup_test(dut)
-    hist = _fresh_hist(PC_A)
+    hist = _fresh_hist(dut, PC_A)
 
     cold = await _lookup_word(dut, PC_A, hist)
     await _train(dut, cold, 0, taken=True, mispredicted=False)
@@ -292,7 +298,7 @@ async def test_t1_provider_mispredict_allocates_t2_which_then_provides(
 ) -> None:
     """A T1 provider's misprediction allocates T2; T2 provides with T1 as alternate."""
     await _setup_test(dut)
-    hist = _fresh_hist(PC_A)
+    hist = _fresh_hist(dut, PC_A)
 
     cold = await _lookup_word(dut, PC_A, hist)
     await _train(dut, cold, 0, taken=True, mispredicted=True)
@@ -316,7 +322,7 @@ async def test_t2_provider_mispredict_updates_counter_without_allocating(
 ) -> None:
     """With T2 providing, a misprediction only moves T2's counter."""
     await _setup_test(dut)
-    hist = _fresh_hist(PC_A)
+    hist = _fresh_hist(dut, PC_A)
 
     cold = await _lookup_word(dut, PC_A, hist)
     await _train(dut, cold, 0, taken=True, mispredicted=True)
@@ -339,7 +345,7 @@ async def test_t2_provider_mispredict_updates_counter_without_allocating(
 async def test_counters_saturate_in_both_directions(dut: Any) -> None:
     """Three-bit counters saturate; leaving saturation takes four updates."""
     await _setup_test(dut)
-    hist = _fresh_hist(PC_A)
+    hist = _fresh_hist(dut, PC_A)
 
     cold = await _lookup_word(dut, PC_A, hist)
     await _train(dut, cold, 0, taken=True, mispredicted=True)
@@ -371,7 +377,7 @@ async def test_banks_follow_word_parity(dut: Any) -> None:
     assert _word(odd_pc) & 1 and not _word(even_pc) & 1
 
     # A lookup at the odd word reads it in bank 1 and the next word in bank 0.
-    hist = _fresh_hist(odd_pc)
+    hist = _fresh_hist(dut, odd_pc)
     banks = await _lookup(dut, odd_pc, hist)
     await _train(dut, banks[0], 0, taken=True, mispredicted=True)
 
@@ -389,7 +395,7 @@ async def test_banks_follow_word_parity(dut: Any) -> None:
 async def test_provider_replaced_since_lookup_is_not_updated(dut: Any) -> None:
     """Training skips a provider entry whose tag changed after the lookup."""
     await _setup_test(dut)
-    hist = _fresh_hist(PC_A)
+    hist = _fresh_hist(dut, PC_A)
 
     cold = await _lookup_word(dut, PC_A, hist)
     await _train(dut, cold, 0, taken=True, mispredicted=True)
@@ -409,7 +415,7 @@ async def test_provider_replaced_since_lookup_is_not_updated(dut: Any) -> None:
 async def test_useful_entries_block_allocation_until_cleared(dut: Any) -> None:
     """Useful candidates are not replaced; a blocked allocation clears them."""
     await _setup_test(dut)
-    hist = _fresh_hist(PC_A)
+    hist = _fresh_hist(dut, PC_A)
 
     # Branch A: a T1 entry that is useful (right when the alternate was wrong).
     cold = await _lookup_word(dut, PC_A, hist)
@@ -448,7 +454,7 @@ async def test_useful_entries_block_allocation_until_cleared(dut: Any) -> None:
 async def test_lookup_in_the_write_cycle_reads_the_old_entry(dut: Any) -> None:
     """A training writes the cycle after its request; a lookup then sees the old entry."""
     await _setup_test(dut)
-    hist = _fresh_hist(PC_A)
+    hist = _fresh_hist(dut, PC_A)
 
     cold = await _lookup_word(dut, PC_A, hist)
     _drive_train(dut, cold, 0, taken=True, mispredicted=True)
@@ -470,7 +476,7 @@ async def test_lookup_in_the_write_cycle_reads_the_old_entry(dut: Any) -> None:
 async def test_back_to_back_trainings_of_one_entry_see_each_other(dut: Any) -> None:
     """A read of the entry being written takes the written value."""
     await _setup_test(dut)
-    hist = _fresh_hist(PC_A)
+    hist = _fresh_hist(dut, PC_A)
 
     cold = await _lookup_word(dut, PC_A, hist)
     # The first allocates weakly taken; the second, the next cycle, finds the

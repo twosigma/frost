@@ -191,8 +191,10 @@ module nic_top #(
     nic_rst_q <= i_rst || core_rst_next;
   end
 `ifndef SYNTHESIS
+  bit reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    if (!$isunknown({rst_q, soft_rst, nic_rst_q})) begin
+    if (rst_q) reset_seen_q <= 1'b1;
+    if (reset_seen_q && !$isunknown({rst_q, soft_rst, nic_rst_q})) begin
       assert (nic_rst_q == (rst_q || soft_rst))
       else $error("nic_rst_q is not the registered reset OR the RESET pulse");
     end

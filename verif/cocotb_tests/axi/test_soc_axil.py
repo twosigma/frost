@@ -20,7 +20,8 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, Timer, with_timeout
+from cocotb.handle import Immediate
+from cocotb.triggers import FallingEdge, ReadWrite, Timer, with_timeout
 
 from cocotb_tests.test_real_program import fail_on_nic_access
 
@@ -64,16 +65,18 @@ class Bench:
         """Reset both the subsystem and CPU-facing AXI bus."""
         for signal in self.dut:
             if signal._name.startswith("i_"):
-                signal.value = 0
+                signal.value = Immediate(0)
+        await ReadWrite()
         if self.cpu_period:
             Clock(self.dut.i_clk, 3000, unit="ps").start()
             await Timer(700, unit="ps")
         for _ in range(20 if self.cpu_period else 5):
-            await self.step(rst=1, ddr_axi_rst=1)
+            await self.step(rst=1, ddr_axi_rst=1, power_on_rst=1)
         for _ in range(30 if self.cpu_period else 4):
             await self.step(
                 rst=0,
                 ddr_axi_rst=0,
+                power_on_rst=0,
                 axi_awburst=1,
                 axi_arburst=1,
                 axi_wlast=1,
@@ -390,12 +393,16 @@ async def nic_access_guard(dut: Any) -> None:
         else:
             raise AssertionError("NIC access did not fail the guard")
 
-    for write in (False, True):
+    for _ in range(5):
+        await b.step(axi_araddr=0x40030000, axi_awaddr=0x4003000C)
+        assert not dut.nic_access_q.value
+
+    for write, size in ((False, 2), (True, 0), (True, 2), (True, 3)):
         await b.read(0x40001008)
         guard = cocotb.start_soon(expect_access())
         try:
             if write:
-                await b.write(0x4003000C, 1)
+                await b.write(0x40030070, 1, size)
             else:
                 await b.read(0x40030000)
             await with_timeout(guard, 100, "ns")

@@ -1,5 +1,5 @@
 /*
- *    Copyright 2026 John Goodacre
+ *    Copyright 2026 Two Sigma Open Source, LLC
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
  *    you may not use this file except in compliance with the License.
@@ -14,17 +14,19 @@
  *    limitations under the License.
  */
 
+// Copyright (c) 2026 John Goodacre.
+
 // Initialize mapped DDR4 on VCU118 after calibration and before CPU access.
 // Initializes mapped memory with 512-bit single-beat AXI writes to establish
 // valid ECC across the accessible address range.
 module vcu118_ddr_init #(
-    parameter int unsigned ADDR_BITS = 31,       // 2 GiB address space
-    parameter int unsigned DATA_BITS = 512,      // 512-bit controller word
-    parameter int unsigned ID_BITS = 5,
-    parameter int unsigned BEATS_PER_BURST = 1,
-    parameter int unsigned MAX_OUTSTANDING = 16,
-    parameter int unsigned REGION_BYTES = 1 << 30, // 1 GiB default active region
-    parameter logic [ID_BITS-1:0] WRITE_ID = '0
+    parameter int unsigned               ADDR_BITS       = 31,       // 2 GiB address space
+    parameter int unsigned               DATA_BITS       = 512,      // 512-bit controller word
+    parameter int unsigned               ID_BITS         = 5,
+    parameter int unsigned               BEATS_PER_BURST = 1,
+    parameter int unsigned               MAX_OUTSTANDING = 16,
+    parameter int unsigned               REGION_BYTES    = 1 << 30,  // 1 GiB default active region
+    parameter logic        [ID_BITS-1:0] WRITE_ID        = '0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -41,15 +43,15 @@ module vcu118_ddr_init #(
     output logic [          2:0] o_awsize,
     output logic [          1:0] o_awburst,
 
-    output logic                 o_wvalid,
-    input  logic                 i_wready,
-    output logic [DATA_BITS-1:0] o_wdata,
+    output logic                   o_wvalid,
+    input  logic                   i_wready,
+    output logic [  DATA_BITS-1:0] o_wdata,
     output logic [DATA_BITS/8-1:0] o_wstrb,
-    output logic                 o_wlast,
+    output logic                   o_wlast,
 
-    input  logic                 i_bvalid,
-    output logic                 o_bready,
-    input  logic [          1:0] i_bresp
+    input  logic       i_bvalid,
+    output logic       o_bready,
+    input  logic [1:0] i_bresp
 );
 
   localparam int unsigned BytesPerBeat = DATA_BITS / 8;

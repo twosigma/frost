@@ -126,4 +126,3 @@ ASSERT(LOADADDR(.sdata) + SIZEOF(.sdata) <= ORIGIN(ROM) + LENGTH(ROM),
        "FSBL ROM overflow: loaded image exceeds 79 KiB executable SRAM")
 ASSERT(__bss_end <= _end_of_stack - __stack_reserve,
        "FSBL RAM overflow: data + bss exceeds SRAM allocation")
-

@@ -20,6 +20,7 @@ READ_WORDS entries holding its address; a write updates the masked words of
 the group holding its address.
 """
 
+import hashlib
 import os
 from typing import Any
 
@@ -105,8 +106,27 @@ def _slots_per_row(data_width: int) -> int:
 @cocotb.test()
 async def test_packed_tag_uram(dut: Any) -> None:
     """Check packed tags against a model across writes and delayed reads."""
-    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _drive_idle(dut)
+    dut.i_clk.value = 0
+    await Timer(1, unit="ps")
+    if os.environ.get("FROST_RANDOM_START_SEED"):
+        branch = (
+            "gen_clearable_storage"
+            if os.environ["PACKED_TAG_TEST_BULK_CLEAR"] == "1"
+            else "gen_hardware_storage"
+        )
+        memory = getattr(dut.gen_bank[0], branch).memory
+        rows = [int(word.value) for word in memory]
+        # The bulk-clear model can clear on the first evaluation edge before
+        # bench inputs settle. Check startup entropy on the hardware model.
+        if os.environ["PACKED_TAG_TEST_BULK_CLEAR"] != "1":
+            assert len(set(rows)) > 1, "power-up rows share one random word"
+            assert len({word >> 32 for word in rows}) > 1, (
+                "wide rows lack random high bits"
+            )
+        digest = hashlib.sha256(repr(rows).encode()).hexdigest()
+        dut._log.info("Power-up memory digest: %s", digest)
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     await _tick(dut)
 
     data_width = len(dut.i_write_data)

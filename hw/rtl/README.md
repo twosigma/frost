@@ -341,6 +341,45 @@ For OpenOCD, GDB, and VS Code use, see the
 
 ## Build and Simulation
 
+Synchronous resets establish pipeline validity, queue ownership, control
+state, and architectural control registers. Cache reset walks clear tags
+and replacement state before accepting requests; cache data arrays do not
+need clearing. The BTB clears its valid bits, and the return-address stack
+clears its occupancy. Direction and TAGE tables provide speculative hints;
+their contents affect prediction accuracy rather than architectural state.
+Payload RAMs are qualified by ownership or validity, or written before use.
+Integer consumers substitute zero for x0; the unwritten register-file row
+has an unspecified read value. Software initializes the other integer and
+floating-point registers it uses. Program images supply the
+instruction and data memories independently of reset.
+
+`platform_top.i_power_on_rst` is an asynchronous power-on request, separate
+from system reset. Hold both resets at power-up with the selected CPU clock
+running: `i_cpu_clk` when `ASYNC_CPU_CLOCK=1`, otherwise `i_clk`.
+The core synchronizes the power-on request before synchronously resetting
+the debug transport handshake and the debug module's pending DMI request.
+These survive system reset. TCK reset asserts asynchronously, releases after
+two TCK edges, and resets the TAP and transport handshake even if TCK is
+stopped. TRST_N resets the TAP alone. Either transport domain may release
+first: a held TCK produces no request, and a request launched while the core
+is held waits for its answer after core reset releases.
+
+The programming-clock domain also synchronizes power-on reset. It clears
+instruction-memory staged write enables and blocks writes on the first
+reset edge. System reset leaves this programming path available for image
+loading. Fetch reset clears metadata readiness and repeated-address history.
+FPGA tops tie the power-on request inactive, select `POWER_ON_RESET_ENABLE=0`
+to omit its synchronizers, and use configuration-loaded initial values.
+`platform_top` enables power-on reset by default. Simulation pulses it
+independently of system reset in both ordinary and [random power-up mode](../../tests/README.md#random-power-up-state).
+The random mode checks dependencies on initializers and uninitialized storage.
+
+Full-board simulation with power-on reset tied inactive uses configuration
+initializers. The DTM ownership assertions arm only after power-on reset in
+their respective clock domains, so that configuration does not check DTM
+ownership. Transport verification uses a bench that enables and pulses
+power-on reset with the core clock running.
+
 Use the [test guide](../../tests/README.md) for simulation, formal, and Yosys
 runs in the pinned container, the [FPGA guide](../../fpga/README.md) for
 native Vivado builds, and the [ASIC guide](../../asic/README.md) for the
@@ -363,8 +402,9 @@ evictions are cheap to reach.
 `CLK_FREQ_HZ` describes `i_clk`, including the NIC tick and UART divisors.
 The machine timer increments on `i_clk`; the CPU reads coherent snapshots
 through its time CSR. The boot address is a static parameter. Reset release
-waits for both clocks. The [SoC guide](soc_top/README.md) describes the
-crossings and reset ownership.
+waits for both clocks. Power-on reset leaves these paired system and fabric
+resets separate; they establish ownership in the CPU/SoC crossings.
+The [SoC guide](soc_top/README.md) describes the crossings and reset ownership.
 
 ## Parameters
 

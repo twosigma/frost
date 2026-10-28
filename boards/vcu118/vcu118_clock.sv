@@ -14,22 +14,27 @@
  *    limitations under the License.
  */
 
-// Clock generator for the AMD/Xilinx VCU118 Evaluation Board.
-// Takes the 300 MHz differential SYSCLK1_300 input (G31/F31) and generates:
-//   - Main CPU clock (100 MHz, 200 MHz, 240 MHz, 250 MHz, or 280 MHz; default 200 MHz)
-//   - Divided clock by 4 for UART / JTAG loader (exact 1/4 of CPU clock)
+// The board MMCM generates CPU and CPU/4 clocks from SYSCLK1_300.
 module vcu118_clock #(
     parameter int unsigned CPU_CLK_HZ = 200_000_000
 ) (
-    input  logic i_sysclk_p,
-    input  logic i_sysclk_n,
-    input  logic i_rst,
+    input logic i_sysclk_p,
+    input logic i_sysclk_n,
+    input logic i_rst,
 
     output logic o_clk_cpu,
     output logic o_clk_div4,
     output logic o_clk_freerun_150,
     output logic o_locked
 );
+
+  initial begin
+    case (CPU_CLK_HZ)
+      100_000_000, 200_000_000, 240_000_000, 250_000_000, 280_000_000: begin
+      end
+      default: $fatal(1, "vcu118_clock: unsupported CPU_CLK_HZ");
+    endcase
+  end
 
   logic sysclk_300_ibuf, sysclk_300_bufg;
 
@@ -62,38 +67,32 @@ module vcu118_clock #(
   logic clkfb_mmcm, clkfb_mmcm_buf;
   logic clk_cpu_unbuf, clk_div4_unbuf;
 
-  // MMCM Parameter Calculation from 300 MHz input:
-  // 100 MHz: Fin=300, D=1, M=4.000 -> FVCO=1200 MHz. Out0=12.000 (100 MHz), Out1=48 (25 MHz)
-  // 200 MHz: Fin=300, D=1, M=4.000 -> FVCO=1200 MHz. Out0=6.000  (200 MHz), Out1=24 (50 MHz)
-  // 240 MHz: Fin=300, D=1, M=4.000 -> FVCO=1200 MHz. Out0=5.000  (240 MHz), Out1=20 (60 MHz)
-  // 250 MHz: Fin=300, D=3, M=10.000 -> FVCO=1000 MHz. Out0=4.000  (250 MHz), Out1=16 (62.5 MHz)
-  // 280 MHz: Fin=300, D=3, M=14.000 -> FVCO=1400 MHz. Out0=5.000  (280 MHz), Out1=20 (70 MHz)
-  localparam int unsigned DIVCLK_DIV = (CPU_CLK_HZ == 280_000_000) ? 3 :
+  localparam int unsigned DivclkDiv = (CPU_CLK_HZ == 280_000_000) ? 3 :
                                        (CPU_CLK_HZ == 250_000_000) ? 3 :
                                        (CPU_CLK_HZ == 240_000_000) ? 1 : 1;
-  localparam real CLKFBOUT_MULT      = (CPU_CLK_HZ == 280_000_000) ? 14.000 :
+  localparam real ClkfboutMult      = (CPU_CLK_HZ == 280_000_000) ? 14.000 :
                                        (CPU_CLK_HZ == 250_000_000) ? 10.000 :
                                        (CPU_CLK_HZ == 240_000_000) ? 4.000  :
                                        (CPU_CLK_HZ == 200_000_000) ? 4.000  : 4.000;
-  localparam real CLKOUT0_DIV        = (CPU_CLK_HZ == 280_000_000) ? 5.000 :
+  localparam real Clkout0Div        = (CPU_CLK_HZ == 280_000_000) ? 5.000 :
                                        (CPU_CLK_HZ == 250_000_000) ? 4.000 :
                                        (CPU_CLK_HZ == 240_000_000) ? 5.000 :
                                        (CPU_CLK_HZ == 200_000_000) ? 6.000 : 12.000;
-  localparam int unsigned CLKOUT1_DIV = (CPU_CLK_HZ == 280_000_000) ? 20 :
+  localparam int unsigned Clkout1Div = (CPU_CLK_HZ == 280_000_000) ? 20 :
                                         (CPU_CLK_HZ == 250_000_000) ? 16 :
                                         (CPU_CLK_HZ == 240_000_000) ? 20 :
                                         (CPU_CLK_HZ == 200_000_000) ? 24 : 48;
 
   MMCME4_ADV #(
       .BANDWIDTH         ("OPTIMIZED"),
-      .CLKIN1_PERIOD     (3.333),           // 300 MHz input
-      .DIVCLK_DIVIDE     (DIVCLK_DIV),
-      .CLKFBOUT_MULT_F   (CLKFBOUT_MULT),
+      .CLKIN1_PERIOD     (3.333),
+      .DIVCLK_DIVIDE     (DivclkDiv),
+      .CLKFBOUT_MULT_F   (ClkfboutMult),
       .CLKFBOUT_PHASE    (0.0),
-      .CLKOUT0_DIVIDE_F  (CLKOUT0_DIV),     // clk_cpu
+      .CLKOUT0_DIVIDE_F  (Clkout0Div),    // clk_cpu
       .CLKOUT0_PHASE     (0.0),
       .CLKOUT0_DUTY_CYCLE(0.5),
-      .CLKOUT1_DIVIDE    (CLKOUT1_DIV),     // clk_div4 (CPU/4)
+      .CLKOUT1_DIVIDE    (Clkout1Div),    // clk_div4 (CPU/4)
       .CLKOUT1_PHASE     (0.0),
       .CLKOUT1_DUTY_CYCLE(0.5),
       .STARTUP_WAIT      ("FALSE")
@@ -122,8 +121,17 @@ module vcu118_clock #(
       .CDDCDONE ()
   );
 
-  BUFG u_bufg_fb   (.I(clkfb_mmcm),     .O(clkfb_mmcm_buf));
-  BUFG u_bufg_cpu  (.I(clk_cpu_unbuf),  .O(o_clk_cpu));
-  BUFG u_bufg_div4 (.I(clk_div4_unbuf), .O(o_clk_div4));
+  BUFG u_bufg_fb (
+      .I(clkfb_mmcm),
+      .O(clkfb_mmcm_buf)
+  );
+  BUFG u_bufg_cpu (
+      .I(clk_cpu_unbuf),
+      .O(o_clk_cpu)
+  );
+  BUFG u_bufg_div4 (
+      .I(clk_div4_unbuf),
+      .O(o_clk_div4)
+  );
 
 endmodule

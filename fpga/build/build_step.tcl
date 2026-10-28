@@ -984,7 +984,7 @@ if {$step eq "synth"} {
         exit 1
     }
     open_checkpoint $checkpoint_path
-    if {[file exists $constraints_file]} {
+    if {$board_name eq "vcu118" && [file exists $constraints_file]} {
         read_xdc $constraints_file
     }
 
@@ -1020,7 +1020,7 @@ if {$step eq "synth"} {
     file delete $work_directory/post_place_pin_swap_audit.txt
     file delete $work_directory/post_place_flush_guidance_audit.tcldict
     open_checkpoint $checkpoint_path
-    if {[file exists $constraints_file]} {
+    if {$board_name eq "vcu118" && [file exists $constraints_file]} {
         read_xdc $constraints_file
     }
 

@@ -48,6 +48,7 @@ def _dir_idx(pc: int) -> int:
 
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs except reset to idle values."""
+    dut.i_metadata_check_valid.value = 1
     dut.i_stall.value = 0
     dut.i_stall_registered.value = 0
     dut.i_fetch_progress.value = 1
@@ -240,6 +241,8 @@ async def test_direction_slot1_snapshot_holds_during_stall(dut: Any) -> None:
     """The registered slot-1 direction metadata holds while IF is stalled."""
     await _setup_test(dut)
 
+    await _dir_update(dut, idx=_dir_idx(PC_B), taken=False)
+    await _dir_update(dut, idx=_dir_idx(PC_B), taken=False)
     await _dir_update(dut, idx=_dir_idx(PC_A), taken=True)
     await _dir_update(dut, idx=_dir_idx(PC_A), taken=True)
 

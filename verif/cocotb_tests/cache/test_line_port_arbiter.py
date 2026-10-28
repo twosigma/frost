@@ -37,8 +37,8 @@ NUM_IDS = 1 << UP_ID_BITS
 MEM_LATENCY_CYCLES = 12  # harness default
 
 # Disjoint per-test, per-port regions: the behavioral memory (1 MiB) persists
-# across the in-run resets between cocotb tests, so a fresh zero-default
-# reference model is only valid in untouched address space.
+# across the in-run resets between cocotb tests. Each reference model
+# snapshots untouched backing lines before reads or partial writes.
 SMOKE_BASE = (BASE_ADDR + 0x00000, BASE_ADDR + 0x10000)
 SIMUL_BASE = (BASE_ADDR + 0x20000, BASE_ADDR + 0x30000)
 NOLOCK_BASE = (BASE_ADDR + 0x40000, BASE_ADDR + 0x50000)
@@ -197,8 +197,8 @@ def _line_int(data: bytes) -> int:
 async def _check_read(
     dut: Any, port: int, collector: _ResponseCollector, model: ReferenceModel, addr: int
 ) -> None:
-    got = await _line_transaction(dut, port, collector, write=False, addr=addr)
     expected = model.read_line(addr)
+    got = await _line_transaction(dut, port, collector, write=False, addr=addr)
     assert got == expected, (
         f"port {port} read mismatch @0x{addr:08x}: "
         f"got 0x{got:064x} expected 0x{expected:064x}"
@@ -212,7 +212,7 @@ async def test_each_port_smoke(dut: Any) -> None:
     collectors = [_ResponseCollector(dut, port) for port in (0, 1)]
 
     for port in (0, 1):
-        model = ReferenceModel()
+        model = ReferenceModel(dut)
         addr = SMOKE_BASE[port] + 2 * LINE_BYTES
         wdata = _line_int(bytes((port * 64 + b) & 0xFF for b in range(32)))
         model.write_line(addr, wdata, FULL_STRB)
@@ -244,7 +244,7 @@ async def test_priority_simultaneous(dut: Any) -> None:
     await _setup(dut)
     collectors = [_ResponseCollector(dut, port) for port in (0, 1)]
     fire_order: list[int] = []
-    models = (ReferenceModel(), ReferenceModel())
+    models = (ReferenceModel(dut), ReferenceModel(dut))
 
     async def _one_port(port: int) -> None:
         addr = SIMUL_BASE[port] + 7 * LINE_BYTES
@@ -284,7 +284,9 @@ async def test_no_grant_lock(dut: Any) -> None:
     """Port 0 arriving mid-flight fires at once instead of waiting for port 1's response."""
     await _setup(dut)
     collectors = [_ResponseCollector(dut, port) for port in (0, 1)]
-    models = (ReferenceModel(), ReferenceModel())
+    models = (ReferenceModel(dut), ReferenceModel(dut))
+    for port in (0, 1):
+        models[port].read_line(NOLOCK_BASE[port] + 3 * LINE_BYTES)
     cycle = [0]
 
     async def _count_cycles() -> None:
@@ -326,7 +328,7 @@ async def test_multiple_outstanding_per_port(dut: Any) -> None:
     """One port keeps several tagged reads in flight; responses are matched by id."""
     await _setup(dut)
     collectors = [_ResponseCollector(dut, port) for port in (0, 1)]
-    model = ReferenceModel()
+    model = ReferenceModel(dut)
     lines = [1, 5, 9, 13, 17, 21]
     for line in lines:
         addr = BURST_BASE[0] + line * LINE_BYTES
@@ -369,7 +371,9 @@ async def test_random_interleaved_traffic(dut: Any) -> None:
     rng = random.Random(random.getrandbits(32))
     collectors = [_ResponseCollector(dut, port) for port in (0, 1)]
     transactions_per_port = 200
-    models = (ReferenceModel(), ReferenceModel())
+    models = (ReferenceModel(dut), ReferenceModel(dut))
+    for port in (0, 1):
+        models[port].capture_region(RANDOM_BASE[port], WINDOW_LINES * LINE_BYTES)
 
     async def _master(port: int) -> None:
         # Port-local RNG so the two coroutines don't share draw order.
@@ -437,7 +441,9 @@ async def test_random_outstanding_traffic(dut: Any) -> None:
     await _setup(dut)
     rng = random.Random(random.getrandbits(32))
     collectors = [_ResponseCollector(dut, port) for port in (0, 1)]
-    models = (ReferenceModel(), ReferenceModel())
+    models = (ReferenceModel(dut), ReferenceModel(dut))
+    for port in (0, 1):
+        models[port].capture_region(RANDOM_OUT_BASE[port], WINDOW_LINES * LINE_BYTES)
     bursts_per_port = 60
 
     async def _master(port: int) -> None:
@@ -445,7 +451,7 @@ async def test_random_outstanding_traffic(dut: Any) -> None:
         for _ in range(bursts_per_port):
             burst = local_rng.randrange(1, NUM_IDS + 1)
             lines = local_rng.sample(range(WINDOW_LINES), burst)
-            issued: list[tuple[int, int | None]] = []
+            issued: list[tuple[int, int | None, int]] = []
             for line in lines:
                 addr = RANDOM_OUT_BASE[port] + line * LINE_BYTES
                 req_id = _ids.take(port)
@@ -466,16 +472,16 @@ async def test_random_outstanding_traffic(dut: Any) -> None:
                         wdata=wdata,
                         wstrb=wstrb,
                     )
-                    issued.append((req_id, None))
+                    issued.append((req_id, None, 0))
                 else:
+                    expected = models[port].read_line(addr)
                     await _fire_request(
                         dut, port, write=False, addr=addr, req_id=req_id
                     )
-                    issued.append((req_id, addr))
-            for req_id, read_addr in issued:
+                    issued.append((req_id, addr, expected))
+            for req_id, read_addr, expected in issued:
                 got = await collectors[port].wait_for(req_id)
                 if read_addr is not None:
-                    expected = models[port].read_line(read_addr)
                     assert got == expected, (
                         f"port {port} id {req_id} @0x{read_addr:08x}: "
                         f"got 0x{got:064x} expected 0x{expected:064x}"

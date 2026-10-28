@@ -177,9 +177,14 @@ class Bscan:
 
 
 async def _setup(dut: Any) -> tuple[Bscan, DebugModuleModel]:
+    dut.i_power_on_rst.value = 1
+    dut.i_tck_power_on_rst.value = 1
     Clock(dut.i_clk, CLK_NS, unit="ns").start()
     jtag = Bscan(dut)
     model = DebugModuleModel(dut)
+    await jtag.idle(4)
+    dut.i_power_on_rst.value = 0
+    dut.i_tck_power_on_rst.value = 0
     await jtag.idle(4)
     return jtag, model
 
@@ -340,3 +345,55 @@ async def test_failed_response_replaces_sticky_busy(dut: Any) -> None:
     await jtag.dtmcs(DTMCS_DMIRESET)
     await jtag.dmi(OP_READ, 0x04)
     assert await jtag.result() == (STATUS_OK, 0)
+
+
+async def _power_on_release_order(dut: Any, *, core_first: bool) -> None:
+    jtag, model = await _setup(dut)
+    for tck_running in (False, True):
+        # Leave nonzero toggle history before asserting the independent resets.
+        await jtag.dmi(OP_WRITE, 0x04, 0x12345678)
+        assert await jtag.result() == (STATUS_OK, 0)
+        count = len(model.requests)
+        dut.i_tck_power_on_rst.value = 1
+        dut.i_power_on_rst.value = 1
+        await Timer(4 * CLK_NS, unit="ns")
+        # No TCK edge has occurred: its handshake must already be clear.
+        assert int(dut.busy.value) == 0
+        assert int(dut.req_toggle_q.value) == 0
+        assert int(dut.ack_seen_q.value) == 0
+        assert int(dut.sticky_q.value) == 0
+        if tck_running:
+            await jtag.idle(4)
+        if core_first:
+            dut.i_power_on_rst.value = 0
+            if tck_running:
+                await jtag.idle(8)
+            else:
+                await Timer(8 * TCK_HALF_NS, unit="ns")
+            assert len(model.requests) == count
+            assert int(dut.busy.value) == 0
+            dut.i_tck_power_on_rst.value = 0
+            await jtag.dmi(OP_WRITE, 0x04, 0x87654321)
+        else:
+            dut.i_tck_power_on_rst.value = 0
+            await jtag.dmi(OP_WRITE, 0x04, 0x87654321)
+            assert int(dut.busy.value) == 1
+            assert len(model.requests) == count
+            dut.i_power_on_rst.value = 0
+        assert await jtag.result() == (STATUS_OK, 0)
+        assert model.requests[count:] == [(OP_WRITE, 0x04, 0x87654321)]
+        await jtag.dmi(OP_READ, 0x04)
+        assert await jtag.result() == (STATUS_OK, 0x87654321)
+        assert len(model.requests) == count + 2
+
+
+@cocotb.test()
+async def test_power_on_core_releases_first(dut: Any) -> None:
+    """A running core sees no phantom request while TCK remains in reset."""
+    await _power_on_release_order(dut, core_first=True)
+
+
+@cocotb.test()
+async def test_power_on_tck_releases_first(dut: Any) -> None:
+    """TCK can launch a request while the core is held, then receive one answer."""
+    await _power_on_release_order(dut, core_first=False)

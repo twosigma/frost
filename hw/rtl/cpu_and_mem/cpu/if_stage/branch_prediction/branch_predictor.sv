@@ -722,7 +722,7 @@ module branch_predictor #(
   // The slot-2 payload drops target bit 0, so every trained target must have
   // it clear.
   always_ff @(posedge i_clk) begin
-    if (!i_rst && i_update && !$isunknown(i_update_target[0])) begin
+    if (update_reset_seen_q && !i_rst && i_update && !$isunknown(i_update_target[0])) begin
       p_update_target_is_halfword_aligned : assert (!i_update_target[0]);
     end
   end
@@ -772,6 +772,7 @@ module branch_predictor #(
   // late RAM copies both match it, and that next_counter follows the
   // saturating-counter rule. The model computes its own next counter and never
   // reads next_counter.
+  logic update_reset_seen_q = 1'b0;
   logic reference_update_valid[BtbEntries];
   logic [TagBits-1:0] reference_update_tag[BtbEntries];
   logic [1:0] reference_update_counter[BtbEntries];
@@ -805,6 +806,7 @@ module branch_predictor #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
+      update_reset_seen_q <= 1'b1;
       for (int i = 0; i < BtbEntries; i++) begin
         reference_update_valid[i] <= 1'b0;
       end
@@ -819,25 +821,32 @@ module branch_predictor #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (!$isunknown({late_update_index, early_update_index})) begin
+    // Invalid BTB rows have arbitrary payloads until trained.
+    if (update_reset_seen_q && reference_update_valid[late_update_index] && !$isunknown(
+            late_update_index
+        )) begin
       p_late_update_tag_state_equivalent :
       assert (btb_tag_update_late == reference_update_tag[late_update_index]);
       p_late_update_counter_state_equivalent :
       assert (btb_counter_update_late == reference_update_counter[late_update_index]);
+    end
+    if (update_reset_seen_q && reference_update_valid[early_update_index] && !$isunknown(
+            early_update_index
+        )) begin
       p_early_update_tag_state_equivalent :
       assert (btb_tag_update_early == reference_update_tag[early_update_index]);
       p_early_update_counter_state_equivalent :
       assert (btb_counter_update_early == reference_update_counter[early_update_index]);
     end
 
-    if (!i_rst && i_update && !$isunknown(
+    if (update_reset_seen_q && !i_rst && i_update && !$isunknown(
             {update_index, update_tag, i_update_taken,
                      reference_selected_next_counter, next_counter}
         )) begin
       p_selected_counter_matches_legacy : assert (next_counter == reference_selected_next_counter);
     end
 
-    if (!i_rst && i_early_update_active && !$isunknown(
+    if (update_reset_seen_q && !i_rst && i_early_update_active && !$isunknown(
             {i_update, i_update_pc, i_update_taken, i_early_update_pc, i_early_update_taken}
         )) begin
       p_early_update_is_selected : assert (i_update);
@@ -845,7 +854,7 @@ module branch_predictor #(
       p_early_update_outcome_is_selected : assert (i_update_taken == i_early_update_taken);
     end
 
-    if (!i_rst && i_update && !i_early_update_active && !$isunknown(
+    if (update_reset_seen_q && !i_rst && i_update && !i_early_update_active && !$isunknown(
             {i_update_pc, i_update_taken, i_late_update_pc, i_late_update_taken}
         )) begin
       p_late_update_pc_is_selected : assert (i_update_pc == i_late_update_pc);
@@ -906,7 +915,9 @@ module branch_predictor #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst && !$isunknown({i_pc_2_base, slot2_lookup_index_q, slot2_lookup_index_next_q})) begin
+    if (update_reset_seen_q && !i_rst && !$isunknown(
+            {i_pc_2_base, slot2_lookup_index_q, slot2_lookup_index_next_q}
+        )) begin
       p_slot2_valid_capture_exact :
       assert (slot2_valid_2_q == shifted_reference_valid_2[slot2_lookup_index_q]);
       p_slot2_alt_valid_capture_exact :

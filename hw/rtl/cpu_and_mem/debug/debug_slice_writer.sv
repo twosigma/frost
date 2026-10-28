@@ -226,8 +226,16 @@ module debug_slice_writer #(
 `ifndef SYNTHESIS
   // The counters may never run more than the stage, DEPTH and the engine
   // depth apart.
+  logic div4_reset_seen_q = 1'b0;
+  logic [1:0] div4_reset_seen_core_q = '0;
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk_div4) if (i_rst_div4) div4_reset_seen_q <= 1'b1;
   always_ff @(posedge i_clk) begin
-    if (!i_rst && ((req_count_q - done_count_core) > CountBits'(DEPTH + 5)))
+    if (i_rst) reset_seen_q <= 1'b1;
+    // Match the completion counter's synchronizer before comparing counts.
+    div4_reset_seen_core_q <= {div4_reset_seen_core_q[0], div4_reset_seen_q};
+    if (reset_seen_q && div4_reset_seen_core_q[1] && !i_rst && !i_rst_div4 &&
+        ((req_count_q - done_count_core) > CountBits'(DEPTH + 5)))
       $error("debug_slice_writer: request/done counters diverged");
   end
 `endif

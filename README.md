@@ -324,9 +324,9 @@ the image.
 
 ## Status and Roadmap
 
-FROST supports one board, the Alveo X3522PV, and a single hart. Planned work
-includes a two-hart SMP configuration and 5 CoreMark/MHz; see
-[ROADMAP.md](ROADMAP.md).
+FROST supports two boards, the Alveo X3522PV and the VCU118 evaluation
+board, and a single hart. Planned work includes a two-hart SMP configuration
+and 5 CoreMark/MHz; see [ROADMAP.md](ROADMAP.md).
 
 ## Contributors and License
 

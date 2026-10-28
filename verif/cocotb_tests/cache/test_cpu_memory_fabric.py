@@ -18,6 +18,7 @@ from typing import Any
 
 import cocotb
 from cocotb.triggers import Timer
+from cocotb.handle import Immediate
 
 
 class Bench:
@@ -123,6 +124,35 @@ class Bench:
         await self.step(**inputs)
         await self.step()
         assert (await self.step(rst=0, axi_rst=0))["idle"]
+
+
+@cocotb.test()
+async def startup_response_state_waits_for_reset(dut: Any) -> None:
+    """Response ownership and lane state are arbitrary before cold reset."""
+    for handle in dut:
+        if handle._name.startswith("i_"):
+            handle.value = Immediate(0)
+    await Timer(1, unit="ns")
+    master = dut.master
+    for name, value in {
+        "r_valid_q": 0,
+        "b_valid_q": 1,
+        "b_id_q": 34,
+        "response_held_q": 0,
+        "prefer_b_q": 1,
+    }.items():
+        getattr(master, name).value = Immediate(value)
+    await Timer(1, unit="ns")
+    master.b_valid_q.value = 0
+    master.r_valid_q.value = 1
+    master.r_id_q.value = 34
+    dut.fetch_dword_q[0].value = 0
+    dut.fetch_resp_dword_q.value = 1
+    await Timer(1, unit="ns")
+    b = Bench(dut)
+    await b.reset()
+    assert dut.reset_seen_q.value
+    assert dut.axi_reset_seen_q.value
 
 
 @cocotb.test()

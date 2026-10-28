@@ -67,7 +67,15 @@ module sdp_block_ram_dc #(
 `else
   (* ram_style = "block" *) logic [DATA_WIDTH-1:0] ram[RamDepth];
 
+`ifdef FROST_RANDOM_START
+  initial begin
+    for (int row = 0; row < RamDepth; row++)
+    for (int chunk = 0; chunk < (DATA_WIDTH + 31) / 32; chunk++)
+    ram[row] = (ram[row] << 32) | DATA_WIDTH'($urandom);
+  end
+`else
   initial for (int i = 0; i < RamDepth; ++i) ram[i] = '0;
+`endif
 
   always_ff @(posedge i_write_clock) if (i_write_enable) ram[i_write_address] <= i_write_data;
 

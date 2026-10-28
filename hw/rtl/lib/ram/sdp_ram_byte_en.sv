@@ -69,6 +69,10 @@ module sdp_ram_byte_en #(
     // READ_LATENCY cycles (see the header).
     parameter bit REGISTER_READ_OUTPUT = 1'b0
 ) (
+`ifndef SYNTHESIS
+    // The caller enables consistency checks after its reset.
+    input logic i_check_enable = 1'b1,
+`endif
     input logic i_clk,
 
     // Write port (port A): byte-granular, row-addressed.
@@ -239,6 +243,14 @@ module sdp_ram_byte_en #(
   // without the ultra hint, Yosys attempts to decompose large arrays into BRAM.
   if (MEMORY_PRIMITIVE == "ultra") begin : gen_ultra_storage
     (* ram_style = "ultra" *) logic [DATA_WIDTH-1:0] memory[Depth];
+
+`ifdef FROST_RANDOM_START
+    initial begin
+      for (int row = 0; row < Depth; row++)
+      for (int chunk = 0; chunk < (DATA_WIDTH + 31) / 32; chunk++)
+      memory[row] = (memory[row] << 32) | DATA_WIDTH'($urandom);
+    end
+`endif
     for (genvar byte_index = 0; byte_index < int'(NumBytes); byte_index++) begin : gen_write_byte
       always_ff @(posedge i_clk)
         if (wbyte_en_q[byte_index])
@@ -252,6 +264,14 @@ module sdp_ram_byte_en #(
     assign row_dout = rd_pipe[XpmReadLatency-1];
   end else begin : gen_block_storage
     (* ram_style = "block" *) logic [DATA_WIDTH-1:0] memory[Depth];
+
+`ifdef FROST_RANDOM_START
+    initial begin
+      for (int row = 0; row < Depth; row++)
+      for (int chunk = 0; chunk < (DATA_WIDTH + 31) / 32; chunk++)
+      memory[row] = (memory[row] << 32) | DATA_WIDTH'($urandom);
+    end
+`endif
     for (genvar byte_index = 0; byte_index < int'(NumBytes); byte_index++) begin : gen_write_byte
       always_ff @(posedge i_clk)
         if (wbyte_en_q[byte_index])
@@ -292,8 +312,19 @@ module sdp_ram_byte_en #(
     assign check_re    = i_re;
     assign check_raddr = i_raddr;
   end
+  localparam int CheckHistoryCycles = WriteRegStages > int'(REGISTER_READ_INPUT) ?
+      WriteRegStages : int'(REGISTER_READ_INPUT);
+  wire check_history_ready;
+  if (CheckHistoryCycles > 0) begin : gen_check_history
+    logic [CheckHistoryCycles-1:0] valid_q = '0;
+    always_ff @(posedge i_clk) valid_q <= (valid_q << 1) | CheckHistoryCycles'(1);
+    assign check_history_ready = valid_q[CheckHistoryCycles-1];
+  end else begin : gen_check_no_history
+    assign check_history_ready = 1'b1;
+  end
   always @(posedge i_clk) begin
-    if (check_re && row_write_en && (check_raddr == waddr_q)) begin
+    if (i_check_enable && check_history_ready && check_re && row_write_en &&
+        (check_raddr == waddr_q)) begin
       $error("sdp_ram_byte_en: row %0d read and written at the same edge", check_raddr);
     end
   end

@@ -189,9 +189,10 @@ module frontend_validity_tracker (
   assign if_has_control_flow = i_if_has_control_flow;
   assign if_has_indirect_control_flow = !from_if_to_pd.sel_nop && i_if_is_indirect;
 `ifndef SYNTHESIS
-  // Sampled at the clock so the check sees settled values.
+  // Fault payloads need not match their predecode. Sample defined bytes at
+  // the clock so the check sees settled values.
   always_ff @(posedge i_clk) begin
-    if (!i_rst && !$isunknown(
+    if (reset_seen_q && !i_rst && !from_if_to_pd.fetch_fault && !$isunknown(
             {from_if_to_pd.sel_nop, from_if_to_pd.raw_parcel, i_if_is_indirect}
         )) begin
       p_if_indirect_predecode_exact :
@@ -240,12 +241,16 @@ module frontend_validity_tracker (
   // Reference: the whole predicate in one register, compared with the split
   // form on every edge.
   logic if_unpredicted_indirect_reference_q;
+  logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
+    if (i_rst) reset_seen_q <= 1'b1;
     if (i_rst || flush_pipeline) if_unpredicted_indirect_reference_q <= 1'b0;
     else
       if_unpredicted_indirect_reference_q <= if_has_control_flow && if_has_indirect_control_flow &&
           !from_if_to_pd.btb_predicted_taken;
-    if (!$isunknown({if_unpredicted_indirect_q, if_unpredicted_indirect_reference_q})) begin
+    if (reset_seen_q && !$isunknown(
+            {if_unpredicted_indirect_q, if_unpredicted_indirect_reference_q}
+        )) begin
       p_split_if_unpredicted_indirect_matches_reference :
       assert (if_unpredicted_indirect_q == if_unpredicted_indirect_reference_q);
     end

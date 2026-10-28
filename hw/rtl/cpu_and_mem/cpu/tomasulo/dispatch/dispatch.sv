@@ -860,8 +860,12 @@ module dispatch #(
   assign dispatch_fire = bundle_fire_ok;
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
   always @(posedge i_clk) begin
-    if (!$isunknown({dispatch_valid, dispatch_valid_2, slot2_present_for_admission})) begin
+    if (reset_seen_q && !$isunknown(
+            {dispatch_valid, dispatch_valid_2, slot2_present_for_admission}
+        )) begin
       p_queued_slot2_valid_contract :
       assert (!SLOT2_VALID_FROM_BUNDLE || !dispatch_valid ||
               (dispatch_valid_2 == slot2_present_for_admission));
@@ -1062,7 +1066,7 @@ module dispatch #(
 `ifndef SYNTHESIS
   // The tie-off above is exact: a firing slot 2 never reads FP source 3.
   always_ff @(posedge i_clk) begin
-    if (i_rst_n)
+    if (reset_seen_q && i_rst_n)
       assert (!(slot2_can_fire && uses_fp_rs3_flag_2))
       else $error("dispatch: slot 2 fired with an FP source 3");
   end
@@ -1744,7 +1748,8 @@ module dispatch #(
   // Reject memory ops that fall through to the default word size. Queue
   // needs qualify this check because FENCE and other sizeless ops use no slot.
   always_comb begin
-    if (dispatch_valid && rs_type == riscv_pkg::RS_MEM && (need_lq || need_sq) && !$isunknown(
+    if (reset_seen_q && dispatch_valid && rs_type == riscv_pkg::RS_MEM &&
+        (need_lq || need_sq) && !$isunknown(
             op
         )) begin
       p_slot1_mem_size_resolved :
@@ -1754,8 +1759,8 @@ module dispatch #(
             "slot1 mem op %0d (lq=%b sq=%b) missing from mem_size lists", int'(op), need_lq, need_sq
         );
     end
-    if (dispatch_valid_2 && rs_type_2 == riscv_pkg::RS_MEM && (need_lq_2 || need_sq_2) &&
-        !$isunknown(
+    if (reset_seen_q && dispatch_valid_2 && rs_type_2 == riscv_pkg::RS_MEM &&
+        (need_lq_2 || need_sq_2) && !$isunknown(
             op_2
         )) begin
       p_slot2_mem_size_resolved :
@@ -1825,7 +1830,7 @@ module dispatch #(
 `ifndef SYNTHESIS
   // Fetch faults must wait for their exception completion on CDB.
   always_ff @(posedge i_clk) begin
-    if (i_rst_n) begin
+    if (reset_seen_q && i_rst_n) begin
       p_fetch_fault_not_done_at_alloc :
       assert (!i_from_id_to_ex.is_fetch_fault ||
               !(o_rob_alloc_req.is_jal || o_rob_alloc_req.is_jalr ||
@@ -1844,11 +1849,12 @@ module dispatch #(
   // For a dispatched conditional branch predicted taken, the predecoded
   // target check must equal the full XLEN comparison.
   always_ff @(posedge i_clk) begin
-    if (i_rst_n && int_rs_dispatch_fire && is_branch_flag && !is_jalr_flag && predicted_taken) begin
+    if (reset_seen_q && i_rst_n && int_rs_dispatch_fire && is_branch_flag &&
+        !is_jalr_flag && predicted_taken) begin
       assert (predicted_target_ok == (predicted_target == branch_target))
       else $error("dispatch: slot-1 predicted_target_ok disagrees with the target compare");
     end
-    if (i_rst_n && int_rs_dispatch_fire_2 && is_branch_flag_2 && !is_jalr_flag_2 &&
+    if (reset_seen_q && i_rst_n && int_rs_dispatch_fire_2 && is_branch_flag_2 && !is_jalr_flag_2 &&
         predicted_taken_2) begin
       assert (predicted_target_ok_2 == (predicted_target_2 == branch_target_2))
       else $error("dispatch: slot-2 predicted_target_ok disagrees with the target compare");
@@ -1860,7 +1866,7 @@ module dispatch #(
   // Each packet must match its source-use-masked RAT values. Unready
   // operands must also carry the RAT tag; ready operands ignore it.
   always_ff @(posedge i_clk) begin
-    if (i_rst_n) begin
+    if (reset_seen_q && i_rst_n) begin
       p_int_rs_src1_value_exact :
       assert (o_int_rs_dispatch.src1_value == (uses_int_rs1 ? int_src1_value : '0));
       p_int_rs_src2_value_exact :
@@ -1924,10 +1930,10 @@ module dispatch #(
   // dispatch, in either slot, because the store queue is full, and a load
   // because the load queue is full.
   cover_store_waits_for_full_sq :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       o_status.sq_full || (slot2_only_block && need_sq_2 && sq_full_for_slot2));
   cover_load_waits_for_full_lq :
-  cover property (@(posedge i_clk) disable iff (!i_rst_n)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       o_status.lq_full || (slot2_only_block && need_lq_2 && lq_full_for_slot2));
 `endif
 `endif

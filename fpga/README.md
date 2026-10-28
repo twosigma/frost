@@ -61,9 +61,11 @@ Vivado connection does not stop the server or release the cable.
 ```
 
 Run with `--help` for the list of applications. CoreMark-PRO needs `-v1`
-(validation) or `-v0` (performance, with board-calibrated iterations). The
-loader holds the CPU in reset while it loads DDR, then loads low BRAM; the
-CPU starts about 1.7 seconds after the last write (see the
+(validation) or `-v0` (performance, with registry-configured iterations).
+VCU118 iteration budgets are estimates derived from the X3 settings. The
+sweep checks each run's reported duration against the score-rule minimum.
+The loader holds the CPU in reset while it loads DDR, then loads low BRAM;
+the CPU starts when the board's image-reset timer expires (see the
 [board guide](../boards/README.md#jtag-based-software-loading)).
 
 | Option | Behavior |

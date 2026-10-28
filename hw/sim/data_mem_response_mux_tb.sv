@@ -18,9 +18,9 @@
 // side by side. The reference gets the plain selection (MMIO data while MMIO
 // is valid, otherwise BRAM data) and the cached data on separate inputs; the
 // candidate gets the mux's merged payload on both. Every other input is
-// shared, and the test compares every router output on every cycle. The
-// standalone 32- and 64-bit instances take their cached select from
-// i_helper_cached_read_ready.
+// shared. After two startup reset edges, the test compares every router
+// output on every cycle. The standalone 32- and 64-bit instances take their
+// cached select from i_helper_cached_read_ready.
 module data_mem_response_mux_tb #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (

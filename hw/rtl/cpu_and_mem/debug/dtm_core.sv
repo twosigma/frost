@@ -48,24 +48,36 @@
  * changes it only after the response has returned; the core domain likewise
  * holds the response payload until the next request. Only a new request
  * moves the request toggle, so the core side never sees a request twice.
- * Neither toggle is ever reset (both domains initialize to 0), so a
- * core-side reset cannot desynchronize the pair.
+ * System reset and TRST_N leave the handshake intact. Power-on reset clears
+ * both toggles, both synchronizers, and their consumed-toggle state to zero.
+ * The core clock runs while power-on reset is held; TCK may be stopped, so
+ * its reset asserts asynchronously and releases synchronized to TCK.
+ * Either domain may release first. With TCK held, the request toggle stays
+ * zero and the running core sees no request. With the core held, TCK can
+ * launch one request and hold its payload until the core releases and
+ * answers it. Thus release creates no phantom request and cannot strand a
+ * busy transport. A stopped TCK holds reset until its clock resumes.
+ * Payloads are stable before the receiving domain sees their toggle.
+ * DMI captures before the first completed request have unspecified address
+ * and data; these payload registers need no power-on reset.
  */
 module dtm_core (
     // JTAG side (TCK domain, BSCAN-style bundle)
     input  logic i_tck,
-    input  logic i_tlr,        // TAP in Test-Logic-Reset
-    input  logic i_capture,    // TAP in Capture-DR
-    input  logic i_shift,      // TAP in Shift-DR
-    input  logic i_update,     // TAP in Update-DR
+    input  logic i_tck_power_on_rst,
+    input  logic i_tlr,               // TAP in Test-Logic-Reset
+    input  logic i_capture,           // TAP in Capture-DR
+    input  logic i_shift,             // TAP in Shift-DR
+    input  logic i_update,            // TAP in Update-DR
     input  logic i_sel_dtmcs,
     input  logic i_sel_dmi,
     input  logic i_tdi,
-    output logic o_tdo_dtmcs,  // LSB of the dtmcs shift register
-    output logic o_tdo_dmi,    // LSB of the dmi shift register
+    output logic o_tdo_dtmcs,         // LSB of the dtmcs shift register
+    output logic o_tdo_dmi,           // LSB of the dmi shift register
 
     // Core side: one DMI request at a time, answered by the debug module
     input  logic        i_clk,
+    input  logic        i_power_on_rst,
     output logic        o_dmi_req_valid,   // one-cycle pulse
     output logic [ 1:0] o_dmi_req_op,      // 1 = read, 2 = write
     output logic [ 6:0] o_dmi_req_addr,
@@ -86,36 +98,47 @@ module dtm_core (
   // TCK domain
   logic [        31:0] dtmcs_shift;
   logic [DmiWidth-1:0] dmi_shift;
-  logic [         1:0] sticky_q = 2'd0;  // 0 none, 2 failed, 3 busy
-  logic                req_toggle_q = 1'b0;
-  logic [         1:0] req_op_q = 2'd0;
-  logic [   Abits-1:0] req_addr_q = '0;
-  logic [        31:0] req_data_q = '0;
-  (* ASYNC_REG = "TRUE" *)logic                ack_sync1 = 1'b0;
-  (* ASYNC_REG = "TRUE" *)logic                ack_sync2 = 1'b0;
-  logic                ack_seen_q = 1'b0;  // last ack consumed
-  logic                resp_arrived;
-  logic [        31:0] resp_data_tck = '0;
-  logic                drop_q = 1'b0;  // the response owed belongs to an abandoned request
-  logic                hardreset;
-  logic                resp_keep;
-  logic                busy;
-  logic [         1:0] dmi_status;
-  logic [        31:0] dtmcs_value;
+`ifdef FROST_RANDOM_START
+  localparam bit RandomStart = 1'b1;
+`else
+  localparam bit RandomStart = 1'b0;
+`endif
+
+  logic [1:0] sticky_q = RandomStart ? 'x : 2'd0;  // 0 none, 2 failed, 3 busy
+  logic req_toggle_q = RandomStart ? 'x : 1'b0;
+  logic [1:0] req_op_q = RandomStart ? 'x : 2'd0;
+  logic [Abits-1:0] req_addr_q = RandomStart ? 'x : '0;
+  logic [31:0] req_data_q = RandomStart ? 'x : '0;
+  (* ASYNC_REG = "TRUE" *) logic ack_sync1 = RandomStart ? 'x : 1'b0;
+  (* ASYNC_REG = "TRUE" *) logic ack_sync2 = RandomStart ? 'x : 1'b0;
+  logic ack_seen_q = RandomStart ? 'x : 1'b0;  // last ack consumed
+  logic resp_arrived;
+  logic [31:0] resp_data_tck = RandomStart ? 'x : '0;
+  logic drop_q = RandomStart ? 'x : 1'b0;  // the response owed belongs to an abandoned request
+  logic hardreset;
+  logic resp_keep;
+  logic busy;
+  logic [1:0] dmi_status;
+  logic [31:0] dtmcs_value;
   // Core domain
-  (* ASYNC_REG = "TRUE" *)logic                req_sync1 = 1'b0;
-  (* ASYNC_REG = "TRUE" *)logic                req_sync2 = 1'b0;
-  logic                req_seen_q = 1'b0;  // last request toggle serviced
-  logic                ack_toggle_q = 1'b0;
-  logic [        31:0] resp_data_q = '0;
-  logic [         1:0] resp_op_q = 2'd0;
+  (* ASYNC_REG = "TRUE" *) logic req_sync1 = RandomStart ? 'x : 1'b0;
+  (* ASYNC_REG = "TRUE" *) logic req_sync2 = RandomStart ? 'x : 1'b0;
+  logic req_seen_q = RandomStart ? 'x : 1'b0;  // last request toggle serviced
+  logic ack_toggle_q = RandomStart ? 'x : 1'b0;
+  logic [31:0] resp_data_q = RandomStart ? 'x : '0;
+  logic [1:0] resp_op_q = RandomStart ? 'x : 2'd0;
 
   // ---------------------------------------------------------------------------
   // TCK domain
   // ---------------------------------------------------------------------------
-  always_ff @(posedge i_tck) begin
-    ack_sync1 <= ack_toggle_q;
-    ack_sync2 <= ack_sync1;
+  always_ff @(posedge i_tck or posedge i_tck_power_on_rst) begin
+    if (i_tck_power_on_rst) begin
+      ack_sync1 <= 1'b0;
+      ack_sync2 <= 1'b0;
+    end else begin
+      ack_sync1 <= ack_toggle_q;
+      ack_sync2 <= ack_sync1;
+    end
   end
   // Clear busy when the response is latched, so Capture-DR with busy=0
   // sees the completed response.
@@ -131,15 +154,23 @@ module dtm_core (
   assign resp_arrived = (ack_sync2 != ack_seen_q);
   assign hardreset = !i_tlr && i_sel_dtmcs && !i_capture && !i_shift && i_update && dtmcs_shift[17];
   assign resp_keep = resp_arrived && !drop_q && !hardreset;
-  always_ff @(posedge i_tck) begin
-    if (resp_arrived) ack_seen_q <= ack_sync2;
-    if (resp_keep) resp_data_tck <= resp_data_q;
-    if (resp_arrived) drop_q <= 1'b0;
-    else if (hardreset && busy) drop_q <= 1'b1;
+  always_ff @(posedge i_tck or posedge i_tck_power_on_rst) begin
+    if (i_tck_power_on_rst) begin
+      ack_seen_q <= 1'b0;
+      drop_q <= 1'b0;
+    end else begin
+      if (resp_arrived) ack_seen_q <= ack_sync2;
+      if (resp_arrived) drop_q <= 1'b0;
+      else if (hardreset && busy) drop_q <= 1'b1;
+    end
   end
+  always_ff @(posedge i_tck) if (!i_tck_power_on_rst && resp_keep) resp_data_tck <= resp_data_q;
 
-  always_ff @(posedge i_tck) begin
-    if (i_tlr) begin
+  always_ff @(posedge i_tck or posedge i_tck_power_on_rst) begin
+    if (i_tck_power_on_rst) begin
+      sticky_q <= 2'd0;
+      req_toggle_q <= 1'b0;
+    end else if (i_tlr) begin
       sticky_q <= 2'd0;
     end else begin
       // dtmcs
@@ -183,35 +214,51 @@ module dtm_core (
   // Core domain
   // ---------------------------------------------------------------------------
   always_ff @(posedge i_clk) begin
-    req_sync1 <= req_toggle_q;
-    req_sync2 <= req_sync1;
+    if (i_power_on_rst) begin
+      req_sync1 <= 1'b0;
+      req_sync2 <= 1'b0;
+    end else begin
+      req_sync1 <= req_toggle_q;
+      req_sync2 <= req_sync1;
+    end
   end
 
   // One request pulse per toggle; the payload is stable by construction.
-  assign o_dmi_req_valid = (req_sync2 != req_seen_q);
+  assign o_dmi_req_valid = !i_power_on_rst && (req_sync2 != req_seen_q);
   assign o_dmi_req_op = req_op_q;
   assign o_dmi_req_addr = req_addr_q;
   assign o_dmi_req_data = req_data_q;
 
   always_ff @(posedge i_clk) begin
-    if (o_dmi_req_valid) req_seen_q <= req_sync2;
-    if (i_dmi_resp_valid) begin
-      resp_data_q  <= i_dmi_resp_data;
-      resp_op_q    <= i_dmi_resp_op;
-      ack_toggle_q <= ~ack_toggle_q;
+    if (i_power_on_rst) begin
+      req_seen_q   <= 1'b0;
+      ack_toggle_q <= 1'b0;
+    end else begin
+      if (o_dmi_req_valid) req_seen_q <= req_sync2;
+      if (i_dmi_resp_valid) ack_toggle_q <= ~ack_toggle_q;
+    end
+    if (!i_power_on_rst && i_dmi_resp_valid) begin
+      resp_data_q <= i_dmi_resp_data;
+      resp_op_q   <= i_dmi_resp_op;
     end
   end
 
 `ifndef SYNTHESIS
   // Every request must be answered exactly once before the next one starts.
   logic dmi_outstanding_q = 1'b0;
+  logic power_on_reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    if (o_dmi_req_valid && dmi_outstanding_q && !i_dmi_resp_valid)
-      $error("dtm_core: DMI request issued while one is outstanding");
-    if (i_dmi_resp_valid && !dmi_outstanding_q && !o_dmi_req_valid)
-      $error("dtm_core: DMI response without a request");
-    if (o_dmi_req_valid) dmi_outstanding_q <= 1'b1;
-    else if (i_dmi_resp_valid) dmi_outstanding_q <= 1'b0;
+    if (i_power_on_rst) begin
+      power_on_reset_seen_q <= 1'b1;
+      dmi_outstanding_q <= 1'b0;
+    end else if (power_on_reset_seen_q) begin
+      if (o_dmi_req_valid && dmi_outstanding_q && !i_dmi_resp_valid)
+        $error("dtm_core: DMI request issued while one is outstanding");
+      if (i_dmi_resp_valid && !dmi_outstanding_q && !o_dmi_req_valid)
+        $error("dtm_core: DMI response without a request");
+      if (o_dmi_req_valid) dmi_outstanding_q <= 1'b1;
+      else if (i_dmi_resp_valid) dmi_outstanding_q <= 1'b0;
+    end
   end
 `endif
 

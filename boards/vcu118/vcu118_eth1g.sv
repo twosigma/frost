@@ -47,9 +47,9 @@ module vcu118_eth1g (
     output logic o_sgmii_tx_n,   // AV21
 
     // Bank 64 TI DP83867 PHY management pins
-    output logic o_phy_rst_n,    // BA21
-    output logic o_phy_mdc,      // AV23
-    inout  wire  io_phy_mdio,    // AR23
+    output logic o_phy_rst_n,  // BA21
+    output logic o_phy_mdc,    // AV23
+    inout  wire  io_phy_mdio,  // AR23
 
     // Secondary 1G NIC PHY-side interface (frost.sv)
     output logic        o_tx_clk,
@@ -79,18 +79,19 @@ module vcu118_eth1g (
   cdc_sync #(
       .WIDTH(2)
   ) u_ctrl_div4_sync (
-      .i_clk  (i_clk_div4),
-      .i_rst  (1'b0),
-      .i_async({i_phy_ctrl[nic_pkg::PhyCtrlBitPhyReset],
-                i_phy_ctrl[nic_pkg::PhyCtrlBitPmaLoopback]}),
-      .o_sync ({phy_reset_div4, pma_loopback_div4})
+      .i_clk(i_clk_div4),
+      .i_rst(1'b0),
+      .i_async({
+        i_phy_ctrl[nic_pkg::PhyCtrlBitPhyReset], i_phy_ctrl[nic_pkg::PhyCtrlBitPmaLoopback]
+      }),
+      .o_sync({phy_reset_div4, pma_loopback_div4})
   );
 
   // ---------------------------------------------------------------------------
   // 1. Clause-22 MDIO Master & TI DP83867 Bootstrap Sequencer (i_clk_div4)
   // ---------------------------------------------------------------------------
-  localparam logic [4:0] PhyAddr  = 5'h03;
-  localparam logic [4:0] RegBmcr  = 5'h00;
+  localparam logic [4:0] PhyAddr = 5'h03;
+  localparam logic [4:0] RegBmcr = 5'h00;
   localparam logic [4:0] RegRegcr = 5'h0D;
   localparam logic [4:0] RegAddar = 5'h0E;
   localparam logic [4:0] RegPhycr = 5'h10;
@@ -99,18 +100,18 @@ module vcu118_eth1g (
   function automatic logic [20:0] get_init_cmd(input logic [3:0] idx);
     unique case (idx)
       // 0..3: Extended write 0x0031 (CFG4) <= 0x0070 (SGMII AN timer = 11 ms)
-      4'd0:  return {RegRegcr, 16'h001F};
-      4'd1:  return {RegAddar, 16'h0031};
-      4'd2:  return {RegRegcr, 16'h401F};
-      4'd3:  return {RegAddar, 16'h0070};
+      4'd0: return {RegRegcr, 16'h001F};
+      4'd1: return {RegAddar, 16'h0031};
+      4'd2: return {RegRegcr, 16'h401F};
+      4'd3: return {RegAddar, 16'h0070};
       // 4..7: Extended write 0x00D3 (SGMIICTL1) <= 0x4000 (6-wire SGMII 625 MHz clk)
-      4'd4:  return {RegRegcr, 16'h001F};
-      4'd5:  return {RegAddar, 16'h00D3};
-      4'd6:  return {RegRegcr, 16'h401F};
-      4'd7:  return {RegAddar, 16'h4000};
+      4'd4: return {RegRegcr, 16'h001F};
+      4'd5: return {RegAddar, 16'h00D3};
+      4'd6: return {RegRegcr, 16'h401F};
+      4'd7: return {RegAddar, 16'h4000};
       // 8..11: Extended write 0x016F (10M_SGMII_CFG) <= 0x0015
-      4'd8:  return {RegRegcr, 16'h001F};
-      4'd9:  return {RegAddar, 16'h016F};
+      4'd8: return {RegRegcr, 16'h001F};
+      4'd9: return {RegAddar, 16'h016F};
       4'd10: return {RegRegcr, 16'h401F};
       4'd11: return {RegAddar, 16'h0015};
       // 12: Direct write 0x0010 (PHYCR) <= 0x5848 (SGMII enable, auto MDIX)
@@ -129,17 +130,20 @@ module vcu118_eth1g (
     ST_DONE       = 3'd5
   } init_state_e;
 
-  init_state_e state_q = ST_RST_ASSERT;
-  logic [20:0] wait_cnt_q = '0;
-  logic [3:0]  cmd_idx_q = '0;
-  logic [6:0]  bit_cnt_q = '0;
-  logic [4:0]  clk_div_q = '0;
-  logic [63:0] shift_reg_q = '1;
-  logic        phy_rst_n_q = 1'b0;
-  logic        mdc_q = 1'b0;
-  logic        mdio_o_q = 1'b1;
-  logic        mdio_t_q = 1'b1;
-  logic        phy_init_done_q = 1'b0;
+  init_state_e        state_q = ST_RST_ASSERT;
+  logic        [20:0] wait_cnt_q = '0;
+  logic        [ 3:0] cmd_idx_q = '0;
+  logic        [ 6:0] bit_cnt_q = '0;
+  logic        [ 4:0] clk_div_q = '0;
+  logic        [63:0] shift_reg_q = '1;
+  logic               phy_rst_n_q = 1'b0;
+  logic               mdc_q = 1'b0;
+  logic               mdio_o_q = 1'b1;
+  logic               mdio_t_q = 1'b1;
+  logic               phy_init_done_q = 1'b0;
+
+  logic        [20:0] init_cmd;
+  assign init_cmd = get_init_cmd(cmd_idx_q);
 
   always_ff @(posedge i_clk_div4) begin
     if (i_rst) begin
@@ -182,16 +186,16 @@ module vcu118_eth1g (
         end
 
         ST_MDIO_LOAD: begin
-          logic [20:0] cmd;
-          cmd = get_init_cmd(cmd_idx_q);
           // 32-bit preamble (all 1s) + ST(01) + OP(01) + PA(5) + RA(5) + TA(10) + DATA(16)
-          shift_reg_q <= {32'hFFFF_FFFF, 2'b01, 2'b01, PhyAddr, cmd[20:16], 2'b10, cmd[15:0]};
-          bit_cnt_q   <= 7'd64;
-          clk_div_q   <= '0;
-          mdc_q       <= 1'b0;
-          mdio_o_q    <= 1'b1;
-          mdio_t_q    <= 1'b0;
-          state_q     <= ST_MDIO_SHIFT;
+          shift_reg_q <= {
+            32'hFFFF_FFFF, 2'b01, 2'b01, PhyAddr, init_cmd[20:16], 2'b10, init_cmd[15:0]
+          };
+          bit_cnt_q <= 7'd64;
+          clk_div_q <= '0;
+          mdc_q <= 1'b0;
+          mdio_o_q <= 1'b1;
+          mdio_t_q <= 1'b0;
+          state_q <= ST_MDIO_SHIFT;
         end
 
         ST_MDIO_SHIFT: begin
@@ -262,7 +266,7 @@ module vcu118_eth1g (
   logic sgmii_clk_en_0;
   logic tx_locked, rx_locked;
   logic [7:0] gmii_rxd;
-  logic       gmii_rx_dv, gmii_rx_er;
+  logic gmii_rx_dv, gmii_rx_er;
   logic [15:0] status_vector_0;
 
   vcu118_pcs_pma_1g u_pcs_pma_1g (
@@ -363,18 +367,18 @@ module vcu118_eth1g (
   end
 
   logic clk_ok;
-  assign clk_ok = phy_init_done_q && !rst_125_out && tx_locked && rx_locked;
+  assign clk_ok         = phy_init_done_q && !rst_125_out && tx_locked && rx_locked;
 
-  assign o_tx_clk        = clk125_out;
-  assign o_rx_clk        = clk125_out;
-  assign o_tx_clk_ok     = clk_ok;
-  assign o_rx_clk_ok     = clk_ok;
-  assign o_rx_raw_data   = {54'b0, gmii_rx_er, gmii_rx_dv, gmii_rxd};
-  assign o_rx_raw_valid  = sgmii_clk_en_0;
-  assign o_rx_signal_ok  = rx_signal_ok_q;
+  assign o_tx_clk       = clk125_out;
+  assign o_rx_clk       = clk125_out;
+  assign o_tx_clk_ok    = clk_ok;
+  assign o_rx_clk_ok    = clk_ok;
+  assign o_rx_raw_data  = {54'b0, gmii_rx_er, gmii_rx_dv, gmii_rxd};
+  assign o_rx_raw_valid = sgmii_clk_en_0;
+  assign o_rx_signal_ok = rx_signal_ok_q;
 
   always_comb begin
-    o_phy_status = '0;
+    o_phy_status                                     = '0;
     o_phy_status[nic_pkg::PhyStatusBitClkShared]     = 1'b1;
     o_phy_status[nic_pkg::PhyStatusBitGtResetDone]   = clk_ok;
     o_phy_status[nic_pkg::PhyStatusBitCdrLock]       = rx_locked;
@@ -382,4 +386,3 @@ module vcu118_eth1g (
     o_phy_status[nic_pkg::PhyStatusBitLos]           = !status_vector_0[1];
   end
 endmodule : vcu118_eth1g
-

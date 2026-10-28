@@ -563,6 +563,9 @@ module frost_cache #(
           .REGISTER_READ_INPUT(1'b0),
           .REGISTER_READ_OUTPUT(1'b0)
       ) data_bank (
+`ifndef SYNTHESIS
+          .i_check_enable(reset_seen_q && !i_rst),
+`endif
           .i_clk(i_clk),
           .i_waddr(data_wset),
           .i_wdata(data_wdata),
@@ -599,6 +602,9 @@ module frost_cache #(
         .REGISTER_READ_INPUT(!DataReadDirect),
         .REGISTER_READ_OUTPUT(DataReadOutputReg)
     ) data_array (
+`ifndef SYNTHESIS
+        .i_check_enable(reset_seen_q && !i_rst),
+`endif
         .i_clk(i_clk),
         .i_waddr(data_waddr),
         .i_wdata(data_wdata),
@@ -2200,6 +2206,9 @@ module frost_cache #(
   assign o_write_perf_events = write_perf_events_q;
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+
   // ---- Compare visible captures with references written only when enabled.
   localparam int unsigned WPayloadBits = SetBits + TagBits + LineAddrBits + 1 + LineBits +
       LINE_BYTES + UP_ID_BITS + 1 + 1 + MshrBits + WbBits + WayBits + 1 + 1 + TagBits +
@@ -2330,7 +2339,7 @@ module frost_cache #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       p_t_done_factored : assert (t_done == (decide && !t_stall));
       p_ack_push_is_write_decode :
       assert (ack_push == (t_done && (t_is_write_hit || (t_is_alloc && t_write_q) || t_is_merge)));
@@ -2368,7 +2377,7 @@ module frost_cache #(
 
   // Protocol checks (simulation only).
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       if (up_req_fire && i_up_req_write && i_up_req_wstrb == '0)
         $error("frost_cache: write request with empty strobes");
       if (up_req_fire && i_up_req_probe && (NUM_PROBE == 0))
@@ -2488,7 +2497,7 @@ module frost_cache #(
   int unsigned wb_pend_cycles[NUM_WB];
   always_ff @(posedge i_clk) begin
     for (int j = 0; j < int'(NUM_WB); j++) begin
-      if (i_rst || (wb_state_q[j] != WB_PEND)) begin
+      if (!reset_seen_q || i_rst || (wb_state_q[j] != WB_PEND)) begin
         wb_pend_loads[j]  <= 0;
         wb_pend_cycles[j] <= 0;
       end else begin
@@ -2509,7 +2518,7 @@ module frost_cache #(
   int unsigned fill_passed[NUM_MSHR];
   always_ff @(posedge i_clk) begin
     for (int i = 0; i < int'(NUM_MSHR); i++) begin
-      if (i_rst || !fill_req_mask[i]) begin
+      if (!reset_seen_q || i_rst || !fill_req_mask[i]) begin
         fill_passed[i] <= 0;
       end else if (dq_load && !dq_load_is_wb && (fill_req_sel != MshrBits'(i))) begin
         fill_passed[i] <= fill_passed[i] + 1;
@@ -2526,7 +2535,7 @@ module frost_cache #(
   // A waiter or merge must land on an MSHR fetching its own line; a
   // cross-line attach silently serves one line's data for another's address.
   always_ff @(posedge i_clk) begin
-    if (!i_rst && w_valid_q && ((w_op_q == W_WAITER) || (w_op_q == W_MERGE))) begin
+    if (reset_seen_q && !i_rst && w_valid_q && ((w_op_q == W_WAITER) || (w_op_q == W_MERGE))) begin
       p_secondary_targets_own_line : assert (mshr_line_q[w_mshr_q] == w_line_q);
     end
   end
@@ -2537,7 +2546,7 @@ module frost_cache #(
   // in T that has not retired (decide/re-read loop).
   assign wedge_live = (in_valid && !t_accept) || (t_valid_q && !t_done);
   always_ff @(posedge i_clk) begin
-    if (i_rst || !wedge_live) begin
+    if (!reset_seen_q || i_rst || !wedge_live) begin
       wedge_cnt <= 0;
     end else begin
       wedge_cnt <= wedge_cnt + 1;
@@ -2593,63 +2602,65 @@ module frost_cache #(
   // two waiter seats, and only the L1D takes probes.
   // A read of a line with a pending miss takes a waiter seat.
   cover_read_takes_waiter_seat :
-  cover property (@(posedge i_clk) disable iff (i_rst) w_valid_q && (w_op_q == W_WAITER));
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
+      w_valid_q && (w_op_q == W_WAITER));
   // A read waits because every seat of its line's miss slot is taken.
   cover_read_waits_for_waiter_seat :
-  cover property (@(posedge i_clk) disable iff (i_rst)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
       decide && t_plain && same_line && !t_write_q && mshr_seats_full[match_mshr] &&
       ((mshr_state_q[match_mshr] == MS_PEND) || (mshr_state_q[match_mshr] == MS_SENT)));
   // A miss waits because a miss slot owns every way of its set.
   cover_miss_waits_for_way :
-  cover property (@(posedge i_clk) disable iff (i_rst) stall_ways);
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst) stall_ways);
   // A write merges into the pending write-allocate miss of its line.
   cover_write_merges_into_miss :
-  cover property (@(posedge i_clk) disable iff (i_rst) w_valid_q && (w_op_q == W_MERGE));
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
+      w_valid_q && (w_op_q == W_MERGE));
   // Store bytes win when a merge and its miss's fill arrive together.
   cover_write_merge_on_fill :
-  cover property (@(posedge i_clk) disable iff (i_rst)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
       w_valid_q && (w_op_q == W_MERGE) && resp_is_fill &&
       (resp_fill_slot == w_mshr_q) && !response_error);
   // A reader attaches on the edge that captures its miss's fill.
   cover_waiter_on_fill :
-  cover property (@(posedge i_clk) disable iff (i_rst)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
       w_valid_q && (w_op_q == W_WAITER) && resp_is_fill &&
       (resp_fill_slot == w_mshr_q) && !response_error);
   // A fill installation crosses a delayed tag lookup of the same set.
   cover_fill_retries_tag_lookup :
-  cover property (@(posedge i_clk) disable iff (i_rst)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
       t_tag_retry && mshr_write_fire && (fw_set_q == t_set));
   // A failed read fill owes an error to attached readers as well as its owner.
   cover_read_error_with_waiter :
-  cover property (@(posedge i_clk) disable iff (i_rst)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
       resp_is_fill && response_error && mshr_has_waiter[resp_fill_slot]);
   // A writeback takes the request register from a pending fill on its
   // starvation turn.
   cover_writeback_takes_starvation_turn :
-  cover property (@(posedge i_clk) disable iff (i_rst)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
       dq_load && dq_load_is_wb && wb_turn_q && fill_req_any);
   for (genvar i = 0; i < int'(NUM_MSHR); i++) begin : gen_mshr_cover
     // A miss waits to fetch until a writeback of its own line is acknowledged.
     cover_fill_waits_for_writeback :
-    cover property (@(posedge i_clk) disable iff (i_rst)
+    cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
         (mshr_state_q[i] == MS_PEND) && (mshr_wb_wait_q[i] != '0));
   end
   if (NUM_WAITERS > 1) begin : gen_seat_cover
     // A second read joins a miss slot that already has a waiter.
     cover_read_takes_later_waiter_seat :
-    cover property (@(posedge i_clk) disable iff (i_rst)
+    cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
         w_valid_q && (w_op_q == W_WAITER) && (w_seat != '0));
   end
   if (NUM_PROBE > 0) begin : gen_probe_cover
     for (genvar i = 0; i < int'(NUM_MSHR); i++) begin : gen_mshr
       // A held PROBE_INVAL withholds the fill of a miss on its line.
       cover_fill_withheld_by_probe :
-      cover property (@(posedge i_clk) disable iff (i_rst)
+      cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
           (mshr_state_q[i] == MS_PEND) && mshr_fill_held[i]);
     end
     // A probe waits for a writeback of its line.
     cover_probe_waits_for_writeback :
-    cover property (@(posedge i_clk) disable iff (i_rst)
+    cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
         decide && t_probe_q && !same_line && t_wb_pending);
   end
 `endif

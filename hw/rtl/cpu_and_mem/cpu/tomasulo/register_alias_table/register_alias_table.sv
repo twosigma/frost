@@ -561,9 +561,12 @@ module register_alias_table (
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
+
   // Check dispatch's rename/save candidate contract; formal assumes it.
   always_ff @(posedge i_clk) begin
-    if (i_rst_n) begin
+    if (reset_seen_q && i_rst_n) begin
       p_alloc_candidates_contract :
       assert ((i_alloc_valid == (i_alloc_fire && i_alloc_has_dest)) &&
               (i_alloc_valid_2 == (i_alloc_fire && i_alloc_has_dest_2)) &&
@@ -704,69 +707,72 @@ module register_alias_table (
 `ifndef FORMAL
   // No rename during flush_all
   always @(posedge i_clk) begin
-    if (i_rst_n && i_alloc_valid && i_flush_all) begin
+    if (reset_seen_q && i_rst_n && i_alloc_valid && i_flush_all) begin
       $error("RAT: Rename attempted during flush_all!");
     end
   end
 
   // No rename during checkpoint_restore
   always @(posedge i_clk) begin
-    if (i_rst_n && i_alloc_valid && i_checkpoint_restore) begin
+    if (reset_seen_q && i_rst_n && i_alloc_valid && i_checkpoint_restore) begin
       $error("RAT: Rename attempted during checkpoint restore!");
     end
   end
 
   // No slot-2 rename during flush_all
   always @(posedge i_clk) begin
-    if (i_rst_n && i_alloc_valid_2 && i_flush_all) begin
+    if (reset_seen_q && i_rst_n && i_alloc_valid_2 && i_flush_all) begin
       $error("RAT: Slot-2 rename attempted during flush_all!");
     end
   end
 
   // No slot-2 rename during checkpoint_restore
   always @(posedge i_clk) begin
-    if (i_rst_n && i_alloc_valid_2 && i_checkpoint_restore) begin
+    if (reset_seen_q && i_rst_n && i_alloc_valid_2 && i_checkpoint_restore) begin
       $error("RAT: Slot-2 rename attempted during checkpoint restore!");
     end
   end
 
   // Checkpoint save should target a free slot
   always @(posedge i_clk) begin
-    if (i_rst_n && i_checkpoint_save && checkpoint_valid[i_checkpoint_id]) begin
+    if (reset_seen_q && i_rst_n && i_checkpoint_save && checkpoint_valid[i_checkpoint_id]) begin
       $error("RAT: Checkpoint save to already-valid slot %0d!", i_checkpoint_id);
     end
   end
 
   // Checkpoint restore should target a valid slot
   always @(posedge i_clk) begin
-    if (i_rst_n && i_checkpoint_restore && !checkpoint_valid[i_checkpoint_restore_id]) begin
+    if (reset_seen_q && i_rst_n && i_checkpoint_restore &&
+        !checkpoint_valid[i_checkpoint_restore_id]) begin
       $error("RAT: Checkpoint restore from invalid slot %0d!", i_checkpoint_restore_id);
     end
   end
 
   // No INT rename to x0 (slot 1)
   always @(posedge i_clk) begin
-    if (i_rst_n && i_alloc_valid && !i_alloc_dest_rf && i_alloc_dest_reg == '0) begin
+    if (reset_seen_q && i_rst_n && i_alloc_valid && !i_alloc_dest_rf &&
+        i_alloc_dest_reg == '0) begin
       $error("RAT: Rename write to INT x0 attempted (slot 1)!");
     end
   end
 
   // No INT rename to x0 (slot 2)
   always @(posedge i_clk) begin
-    if (i_rst_n && i_alloc_valid_2 && !i_alloc_dest_rf_2 && i_alloc_dest_reg_2 == '0) begin
+    if (reset_seen_q && i_rst_n && i_alloc_valid_2 && !i_alloc_dest_rf_2 &&
+        i_alloc_dest_reg_2 == '0) begin
       $error("RAT: Rename write to INT x0 attempted (slot 2)!");
     end
   end
 
   // Checkpoint save and restore should not happen simultaneously
   always @(posedge i_clk) begin
-    if (i_rst_n && i_checkpoint_save && i_checkpoint_restore) begin
+    if (reset_seen_q && i_rst_n && i_checkpoint_save && i_checkpoint_restore) begin
       $error("RAT: Simultaneous checkpoint save and restore!");
     end
   end
 
   always @(posedge i_clk) begin
-    if (i_rst_n && i_checkpoint_restore_reclaim_all && !i_checkpoint_restore) begin
+    if (reset_seen_q && i_rst_n && i_checkpoint_restore_reclaim_all && !i_checkpoint_restore) begin
       $error("RAT: reclaim_all asserted without checkpoint restore!");
     end
   end

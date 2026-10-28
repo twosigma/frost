@@ -218,7 +218,15 @@ module sdp_packed_tag_uram #(
     // Bulk clear is a simulation acceleration. Selecting it elaborates a
     // portable array, which keeps the clear loop out of the hardware XPM.
     if (SUPPORT_BULK_CLEAR != 0) begin : gen_clearable_storage
-      (* ram_style = "ultra" *)logic [PhysicalRowWidth-1:0] memory [ PhysicalDepth];
+      (* ram_style = "ultra" *) logic [PhysicalRowWidth-1:0] memory[PhysicalDepth];
+
+`ifdef FROST_RANDOM_START
+      initial begin
+        for (int row = 0; row < PhysicalDepth; row++)
+        for (int chunk = 0; chunk < (PhysicalRowWidth + 31) / 32; chunk++)
+        memory[row] = (memory[row] << 32) | PhysicalRowWidth'($urandom);
+      end
+`endif
       logic [PhysicalRowWidth-1:0] rd_pipe[XpmReadLatency];
 
       always_ff @(posedge i_clk) begin
@@ -285,7 +293,15 @@ module sdp_packed_tag_uram #(
           .injectdbiterra(1'b0)
       );
 `else
-      (* ram_style = "ultra" *)logic [PhysicalRowWidth-1:0] memory [ PhysicalDepth];
+      (* ram_style = "ultra" *) logic [PhysicalRowWidth-1:0] memory[PhysicalDepth];
+
+`ifdef FROST_RANDOM_START
+      initial begin
+        for (int row = 0; row < PhysicalDepth; row++)
+        for (int chunk = 0; chunk < (PhysicalRowWidth + 31) / 32; chunk++)
+        memory[row] = (memory[row] << 32) | PhysicalRowWidth'($urandom);
+      end
+`endif
       logic [PhysicalRowWidth-1:0] rd_pipe[XpmReadLatency];
 
       for (genvar granule = 0; granule < int'(GranulesPerRow); granule++) begin : gen_write_granule

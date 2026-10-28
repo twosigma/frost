@@ -280,13 +280,11 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
 
 ## Possible future work
 
-- Support for the AMD VCU118 (Virtex UltraScale+ VU9P, -2L speed grade) as a
-  second board: constraints, clocking, the DDR4 controller, and the UART and
-  Ethernet connections, with its own clock target and no core RTL changes.
-  Its RJ-45 port needs a 1 Gb/s MAC as an option behind the NIC, which keeps
-  the NIC's registers, descriptors, driver, and coherent DMA, and its QSFP
-  ports could add 10 and 40 Gb/s later. Its two DDR4 interfaces could each
-  have a memory controller, where the X3 has one DDR4 channel. Contributors
+- Ethernet and the second DDR4 interface on the VCU118. Its RJ-45 port needs
+  a 1 Gb/s MAC as an option behind the NIC, which keeps the NIC's registers,
+  descriptors, driver, and coherent DMA, and its QSFP ports could add 10 and
+  40 Gb/s later. The VCU118 target uses one of the board's two DDR4
+  interfaces; the other could have its own memory controller. Contributors
   with the board would run its hardware tests.
 - A PCIe Gen3 x4 root complex between `soc_top` and PIPE, the PHY interface
   that ASIC PCIe PHYs also use, with a small wrapper for the FPGA's

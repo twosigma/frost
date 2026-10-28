@@ -180,6 +180,13 @@ module trap_unit #(
     output logic o_stall_for_wfi  // Stall pipeline for WFI
 );
 
+`ifndef SYNTHESIS
+`ifdef FROST_COVERAGE
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+`endif
+`endif
+
   logic mstatus_mie;
   assign mstatus_mie = i_mstatus_mie_direct;
   logic sstatus_sie;
@@ -1046,23 +1053,24 @@ module trap_unit #(
   // Cover points for simulation coverage (tests/README.md).
   // A memory-order replay restarts the load at the ROB head.
   cover_memory_order_replay_taken :
-  cover property (@(posedge i_clk) disable iff (i_rst) exception_take && exception_replay);
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
+      exception_take && exception_replay);
   // An armed interrupt waits while a device read is at the ROB head.
   cover_interrupt_waits_for_device_read :
-  cover property (@(posedge i_clk) disable iff (i_rst)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
       i_device_read_at_head &&
       ((m_int_eligible && m_take_armed_q) || (s_int_eligible && s_take_armed_q)));
   // An armed interrupt waits while an AMO is at the ROB head.
   cover_interrupt_waits_for_amo :
-  cover property (@(posedge i_clk) disable iff (i_rst)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
       i_amo_at_head && ((m_int_eligible && m_take_armed_q) || (s_int_eligible && s_take_armed_q)));
   // An interrupt wins over a pending memory-order replay and saves its CSRs.
   cover_interrupt_over_memory_replay :
-  cover property (@(posedge i_clk) disable iff (i_rst)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
       exception_replay && (take_trap_m || take_trap_s));
   // WFI wakes from a raw pending source with neither interrupt class latched.
   cover_wfi_wakes_without_enabled_interrupt :
-  cover property (@(posedge i_clk) disable iff (i_rst)
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_rst)
       wfi_active && any_int_pending_raw && !m_int_pending && !s_int_pending &&
       !(i_wfi_start && !i_pipeline_stall));
 `endif

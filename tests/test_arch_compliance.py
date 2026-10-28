@@ -287,6 +287,7 @@ def run_simulation(
     When the test passes, the bench reads its signature from the data BRAM
     and writes it to SIGNATURE_FILE, a line of words per run.
     coverage_label names the run's coverage file under FROST_COVERAGE=1.
+    Simulator errors and timeouts print their captured diagnostics.
     """
     runner = CocotbRunner(
         python_test_module="cocotb_tests.test_real_program",
@@ -339,10 +340,19 @@ def run_simulation(
 
         if result.returncode == 0:
             runner._update_verilator_toplevel_marker(sim_build_dir)
+        else:
+            print((result.stdout or "") + (result.stderr or ""), flush=True)
 
         return result
 
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
+        for output in (error.stdout, error.stderr):
+            print(
+                output.decode(errors="replace")
+                if isinstance(output, bytes)
+                else output or "",
+                flush=True,
+            )
         return None
     finally:
         for mem_name in ("sw.mem", "sw64.mem", "sw_ddr.mem"):
@@ -418,7 +428,7 @@ def run_single_test(
         # In the bram and icache tiers, a linker region overflow means the test
         # does not fit in low BRAM (95 KiB of code, 1 KiB reserved for debug,
         # and 160 KiB of data and stack), assuming icache code fits its 64 MiB
-        # DDR region. Report SKIP: the ddr tier, with 64 MiB, runs the test.
+        # DDR region. Report SKIP and identify the tier with enough space.
         if mem_config != "ddr" and (
             "will not fit in region" in compile_out or "overflowed by" in compile_out
         ):
@@ -426,7 +436,7 @@ def run_single_test(
                 test_name,
                 extension,
                 "SKIP",
-                f"exceeds low-BRAM capacity ({mem_config}); covered by the ddr tier",
+                f"exceeds low-BRAM capacity ({mem_config}); run with --mem-config ddr",
             )
         return TestResult(test_name, extension, "FAIL", "Compilation failed")
 

@@ -116,7 +116,7 @@ set port_clocks {
   o_jtag_tdo jtag_tck
 }
 # Asynchronous levels, synchronized inside the design.
-set async_ports {i_jtag_trst_n i_nic_tx_clk_ok i_nic_rx_clk_ok i_nic_phy_status*}
+set async_ports {i_power_on_rst i_jtag_trst_n i_nic_tx_clk_ok i_nic_rx_clk_ok i_nic_phy_status*}
 
 proc port_clock { port_name } {
   foreach {pattern clock} $::port_clocks {

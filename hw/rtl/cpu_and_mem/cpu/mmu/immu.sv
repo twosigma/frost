@@ -78,6 +78,11 @@ module immu #(
     input riscv_pkg::ptw_resp_t i_walk_resp
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+`endif
+
   localparam int unsigned VpnBits = riscv_pkg::Sv39VpnBits;
   localparam int unsigned PpnBits = riscv_pkg::PhysAddrBits - 12;
   localparam int unsigned NpBits  = XLEN - riscv_pkg::Sv39PageOffsetBits;
@@ -610,7 +615,9 @@ module immu #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst && !$isunknown({i_pc, i_priv_u, np_va_q, o_walk_req_valid, o_walk_vpn})) begin
+    if (reset_seen_q && !i_rst && !$isunknown(
+            {i_pc, i_priv_u, np_va_q, o_walk_req_valid, o_walk_vpn}
+        )) begin
       if (translated_visible) begin
         p_visible_pa0_exact : assert (o_pa0 == pa0_q);
         p_visible_pa1_exact : assert (o_pa1 == pa1_q);

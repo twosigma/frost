@@ -300,6 +300,9 @@ module prediction_metadata_tracker #(
   end
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_reset) reset_seen_q <= 1'b1;
+
   // Compare with a validity-qualified mux and stall-saved target. Validity
   // must match; targets and types need match only for taken predictions.
   logic [XLEN-1:0] prediction_target_saved_legacy;
@@ -353,12 +356,14 @@ module prediction_metadata_tracker #(
   // Compare at the clock boundary: pending validity, PC, and payload update
   // in separate nonblocking assignments and can disagree during delta cycles.
   always_ff @(posedge i_clk) begin
-    if (!$isunknown({o_btb_predicted_taken, btb_predicted_taken_legacy})) begin
+    if (reset_seen_q && !i_reset && !$isunknown(
+            {o_btb_predicted_taken, btb_predicted_taken_legacy}
+        )) begin
       p_prediction_validity_matches_legacy :
       assert (o_btb_predicted_taken == btb_predicted_taken_legacy);
     end
 
-    if (!$isunknown(
+    if (reset_seen_q && !i_reset && !$isunknown(
             {
               o_btb_predicted_taken,
               o_btb_predicted_target,
@@ -370,7 +375,7 @@ module prediction_metadata_tracker #(
       assert (!btb_predicted_taken_legacy ||
               (o_btb_predicted_target == btb_predicted_target_legacy));
     end
-    if (!$isunknown(
+    if (reset_seen_q && !i_reset && !$isunknown(
             {
               btb_predicted_taken_legacy,
               o_btb_predicted_is_call,
@@ -383,7 +388,7 @@ module prediction_metadata_tracker #(
               ({o_btb_predicted_is_call, o_btb_predicted_is_return} ==
                btb_predicted_kind_legacy));
     end
-    if (!$isunknown(
+    if (reset_seen_q && !i_reset && !$isunknown(
             {
               o_btb_predicted_taken,
               o_btb_predicted_target,
@@ -398,7 +403,7 @@ module prediction_metadata_tracker #(
   end
 
   always_comb begin
-    if (!$isunknown(
+    if (reset_seen_q && !i_reset && !$isunknown(
             {
               i_live_prediction_for_output,
               i_live_target_aligned_with_output,
@@ -423,7 +428,7 @@ module prediction_metadata_tracker #(
   // Check PC matching and consumption at capture, after the independent
   // combinational selections settle.
   always_ff @(posedge i_clk) begin
-    if (!$isunknown(
+    if (reset_seen_q && !i_reset && !$isunknown(
             {
               prediction_pending_saved_valid,
               effective_pending_prediction_replay,

@@ -95,6 +95,7 @@ module frost_rvfi_platform #(
     // board's BSCANE2 primitives on the FPGA's own TAP (boards/) and the
     // i_jtag_* pins are ignored.
     parameter int unsigned DEBUG_JTAG_TAP = 1,
+    parameter int unsigned POWER_ON_RESET_ENABLE = 1,
     // CPU profiling counters (see cpu_ooo); disabled in production.
     parameter int unsigned PERF_COUNTERS = 0,
     // Core clock frequency; sets the NIC's default TICK (cycles per
@@ -107,6 +108,7 @@ module frost_rvfi_platform #(
     input logic i_clk,
     input logic i_clk_div4,  // Divided clock for the low-BRAM programming port
     input logic i_rst,
+    input logic i_power_on_rst,
 
     // Low-BRAM programming interface (div4 clock domain); writes go to both the
     // instruction and data copies
@@ -237,6 +239,10 @@ module frost_rvfi_platform #(
   // Limit reset fanout per replica.
   (* max_fanout = 256 *) logic rst_core;
   always_ff @(posedge i_clk) rst_core <= rst_core_next;
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (rst_core) reset_seen_q <= 1'b1;
+`endif
 
   // Memory addressing parameters
   localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);
@@ -1112,7 +1118,7 @@ module frost_rvfi_platform #(
     // Timing replicas that select payload-derived metadata must remain
     // cycle-identical to the served-provider selector.
     always_ff @(posedge i_clk) begin
-      if (!rst_core) begin
+      if (reset_seen_q && !rst_core) begin
         p_cached_fetch_valid_timing_twin_exact :
         assert (cached_fetch_valid_local_q == cached_fetch_valid);
         p_fetch_high_pc_metadata_select_aligned :
@@ -1301,13 +1307,13 @@ module frost_rvfi_platform #(
         };
   end
   always_ff @(posedge i_clk) begin
-    if (!rst_core && instruction_valid && !$isunknown(
+    if (reset_seen_q && !rst_core && instruction_valid && !$isunknown(
             {instruction_pc_metadata, instruction_pc_metadata_canonical}
         )) begin
       p_selected_pc_metadata_matches_canonical :
       assert (instruction_pc_metadata == instruction_pc_metadata_canonical);
     end
-    if (!rst_core && instruction_valid && !instruction_served_high && !$isunknown(
+    if (reset_seen_q && !rst_core && instruction_valid && !instruction_served_high && !$isunknown(
             {
               bram_fetch_pc_metadata_by_parity,
               bram_pc_metadata_by_parity_canonical,
@@ -1340,7 +1346,7 @@ module frost_rvfi_platform #(
   end
 
   always_comb begin
-    if (served_contract_check_valid_q && !$isunknown(
+    if (reset_seen_q && !rst_core && served_contract_check_valid_q && !$isunknown(
             {instruction_served_word_low,
              instruction_served_last_word_low,
              instruction_served_prev_word_low,
@@ -1372,12 +1378,36 @@ module frost_rvfi_platform #(
   // ===========================================================================
   logic dtm_tck, dtm_tdi, dtm_tlr, dtm_capture, dtm_shift, dtm_update;
   logic dtm_sel_dtmcs, dtm_sel_dmi, dtm_tdo_dtmcs, dtm_tdo_dmi;
+  logic power_on_rst_core, power_on_rst_tck, power_on_rst_div4;
+  if (POWER_ON_RESET_ENABLE != 0) begin : gen_power_on_reset
+    // The core clock runs throughout power-on reset. System reset is separate.
+    cdc_sync u_power_on_core (
+        .i_clk  (i_clk),
+        .i_rst  (1'b0),
+        .i_async(i_power_on_rst),
+        .o_sync (power_on_rst_core)
+    );
+    cdc_reset_sync u_power_on_div4 (
+        .i_clk (i_clk_div4),
+        .i_arst(i_power_on_rst),
+        .o_rst (power_on_rst_div4)
+    );
+    cdc_reset_sync u_power_on_tck (
+        .i_clk (dtm_tck),
+        .i_arst(i_power_on_rst),
+        .o_rst (power_on_rst_tck)
+    );
+  end else begin : gen_no_power_on_reset
+    assign power_on_rst_core = 1'b0;
+    assign power_on_rst_tck  = 1'b0;
+    assign power_on_rst_div4 = 1'b0;
+  end
   if (DEBUG_JTAG_TAP != 0) begin : gen_jtag_tap
     jtag_tap u_jtag_tap (
         .i_tck(i_jtag_tck),
         .i_tms(i_jtag_tms),
         .i_tdi(i_jtag_tdi),
-        .i_trst_n(i_jtag_trst_n),
+        .i_trst_n(i_jtag_trst_n && !power_on_rst_tck),
         .o_tdo(o_jtag_tdo),
         .o_tlr(dtm_tlr),
         .o_capture(dtm_capture),
@@ -1411,6 +1441,8 @@ module frost_rvfi_platform #(
   logic [6:0] dmi_req_addr;
   logic [31:0] dmi_req_data, dmi_resp_data;
   dtm_core u_dtm (
+      .i_power_on_rst(power_on_rst_core),
+      .i_tck_power_on_rst(power_on_rst_tck),
       .i_tck(dtm_tck),
       .i_tlr(dtm_tlr),
       .i_capture(dtm_capture),
@@ -1487,6 +1519,7 @@ module frost_rvfi_platform #(
   debug_module #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth)
   ) u_debug_module (
+      .i_power_on_rst(power_on_rst_core),
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_dmi_req_valid(dmi_req_valid),
@@ -1652,6 +1685,8 @@ module frost_rvfi_platform #(
       .INIT_FILE("sw.mem"),
       .INIT_ADDR_WIDTH(MemWordAddrWidth)
   ) instruction_memory (
+      .i_port_a_rst(power_on_rst_div4),
+      .i_port_b_rst(rst_core),
       .i_port_a_clk(i_clk_div4),
       .i_port_a_enable(1'b1),
       // Port A: Instruction programming (div4 clock, write only)
@@ -1712,7 +1747,7 @@ module frost_rvfi_platform #(
     if (rst_core) begin
       bram_fetch_bank_sel_compare_valid <= 1'b0;
     end else begin
-      if (bram_fetch_bank_sel_compare_valid) begin
+      if (reset_seen_q && bram_fetch_bank_sel_compare_valid) begin
         assert (bram_fetch_bank_sel_cpu_r == bram_fetch_bank_sel_r)
         else $error("BRAM fetch bank-select CPU copy diverged from imem_predecode");
       end

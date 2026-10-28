@@ -828,9 +828,11 @@ module axi_coherent_bridge #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
   // Simulation-only checks of the masters and the ingress.
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       if (w_fire && (i_axi_wlast != w_last_q))
         $error(
             "axi_coherent_bridge: WLAST %0d on beat %0d of %0d",

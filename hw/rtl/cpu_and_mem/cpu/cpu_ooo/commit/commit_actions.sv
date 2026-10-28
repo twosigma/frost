@@ -152,14 +152,16 @@ module commit_actions #(
   end
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    if (!i_rst && csr_wb_pending) begin
+    if (i_rst) reset_seen_q <= 1'b1;
+    if (reset_seen_q && !i_rst && csr_wb_pending) begin
       assert (!rob_commit.valid && !rob_commit_2.valid)
       else $error("CSR delayed writeback overlapped a commit write port");
     end
     // Retirement without a registered commit raises a full flush, masking the
     // commit bus when i_retired_without_commit arrives.
-    if (!i_rst && i_retired_without_commit) begin
+    if (reset_seen_q && !i_rst && i_retired_without_commit) begin
       assert (!rob_commit_valid)
       else $error("a retirement without commit overlapped a registered commit");
     end

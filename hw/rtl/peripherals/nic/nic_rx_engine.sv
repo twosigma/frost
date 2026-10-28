@@ -402,10 +402,12 @@ module nic_rx_engine #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  bit reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    if (!i_rst && data_resp && (outstanding_q == 3'd0) && !data_fire)
+    if (i_rst) reset_seen_q <= 1'b1;
+    if (reset_seen_q && !i_rst && data_resp && (outstanding_q == 3'd0) && !data_fire)
       $error("nic_rx_engine: data response with nothing outstanding");
-    if (!i_rst && status_resp && !dd_inflight_q)
+    if (reset_seen_q && !i_rst && status_resp && !dd_inflight_q)
       $error("nic_rx_engine: status response with no status write in flight");
   end
 `endif

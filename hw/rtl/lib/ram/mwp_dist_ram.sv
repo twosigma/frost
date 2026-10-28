@@ -92,12 +92,28 @@ module mwp_dist_ram #(
   // ---------------------------------------------------------------------------
   logic [SelWidth-1:0] lvt[RamDepth];
 
+  // Rows are unspecified until written. A startup staged write can only
+  // affect an unowned row; allocation establishes its bank before a live read.
+`ifdef FROST_RANDOM_START
+  initial begin
+    for (int row = 0; row < RamDepth; row++)
+    for (int chunk = 0; chunk < (SelWidth + 31) / 32; chunk++)
+    lvt[row] = (lvt[row] << 32) | SelWidth'($urandom);
+  end
+`else
   initial for (int i = 0; i < RamDepth; ++i) lvt[i] = '0;
+`endif
 
   // Holds staged writes for one cycle; unused bits stay zero.
   // Declaration initialization is allowed for always_ff state by IEEE 1800
   // 9.2.2.4; a separate initial process would be another writer.
-  logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
+`ifdef FROST_RANDOM_START
+  localparam bit RandomStart = 1'b1;
+`else
+  localparam bit RandomStart = 1'b0;
+`endif
+
+  logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = RandomStart ? 'x : '0;
   // Limit address fanout to the read-port compares.
   (* max_fanout = 48 *) logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
 

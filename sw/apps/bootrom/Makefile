@@ -21,4 +21,3 @@ LINKER_SCRIPT := link.ld
 SRC_C         := ../../lib/src/uart.c bootrom.c
 GENERATE_IMEM_INIT := 1
 include ../../common/common.mk
-

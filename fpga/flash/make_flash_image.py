@@ -67,7 +67,10 @@ PARTITIONS = [
 ]
 
 
-def make_header(load_addr: int, entry_addr: int, payload_len: int, crc32: int, flags: int = 0) -> bytes:
+def make_header(
+    load_addr: int, entry_addr: int, payload_len: int, crc32: int, flags: int = 0
+) -> bytes:
+    """Encode the boot-stage image header."""
     return struct.pack(
         "<IIIIIIII",
         IMAGE_MAGIC_FROST,
@@ -82,15 +85,21 @@ def make_header(load_addr: int, entry_addr: int, payload_len: int, crc32: int, f
 
 
 def build_flash_image(repo_root: Path, output_path: Path):
+    """Pack the stage payloads at their flash offsets."""
     # Total image size spans from 0x0100_0000 to end of U-Boot (~0x0138_0000 -> 4 MiB buffer)
-    max_offset = max(p["flash_abs_offset"] for p in PARTITIONS) - FLASH_BASE_OFFSET + 0x0010_0000
+    max_offset = (
+        max(p["flash_abs_offset"] for p in PARTITIONS) - FLASH_BASE_OFFSET + 0x0010_0000
+    )
     image_buf = bytearray([0xFF] * max_offset)
 
     print(f"Building SPI flash image (base offset 0x{FLASH_BASE_OFFSET:08X})...")
     for part in PARTITIONS:
         file_path = repo_root / part["default_file"]
         if not file_path.is_file():
-            print(f"ERROR: Component {part['name']} not found at {file_path}", file=sys.stderr)
+            print(
+                f"ERROR: Component {part['name']} not found at {file_path}",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
         payload = file_path.read_bytes()
@@ -107,21 +116,35 @@ def build_flash_image(repo_root: Path, output_path: Path):
         image_buf[rel_offset : rel_offset + HEADER_SIZE] = hdr
         image_buf[rel_offset + HEADER_SIZE : part_end] = payload
 
-        print(f"  [{part['name']:7s}] Abs: 0x{part['flash_abs_offset']:08X} (rel +0x{rel_offset:06X}) | "
-              f"Load: 0x{part['load_addr']:08X} | Size: {len(payload):7d} B | CRC: 0x{crc:08X}")
+        print(
+            f"  [{part['name']:7s}] Abs: 0x{part['flash_abs_offset']:08X} (rel +0x{rel_offset:06X}) | "
+            f"Load: 0x{part['load_addr']:08X} | Size: {len(payload):7d} B | CRC: 0x{crc:08X}"
+        )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(image_buf)
-    print(f"\nSuccessfully created flash image: {output_path} ({len(image_buf)} bytes / {len(image_buf)/1024/1024:.2f} MiB)")
-    print(f"To program to VCU118 SPI NOR Flash:")
-    print(f"  openFPGALoader -c digilent_hs2 --fpga-part xcvu9p-flga2104 --write-flash --offset 0x{FLASH_BASE_OFFSET:08X} {output_path}")
+    print(
+        f"\nSuccessfully created flash image: {output_path} ({len(image_buf)} bytes / {len(image_buf) / 1024 / 1024:.2f} MiB)"
+    )
+    print("To program to VCU118 SPI NOR Flash:")
+    print(
+        f"  openFPGALoader -c digilent_hs2 --fpga-part xcvu9p-flga2104 --write-flash --offset 0x{FLASH_BASE_OFFSET:08X} {output_path}"
+    )
 
 
 def main():
+    """Build the image selected by command-line options."""
     repo_root = Path(__file__).resolve().parent.parent.parent
-    parser = argparse.ArgumentParser(description="Build VCU118 SPI NOR Flash Boot Image")
-    parser.add_argument("-o", "--output", default="/tmp/frost_flash.bin", type=Path,
-                        help="Output binary file path (default: /tmp/frost_flash.bin)")
+    parser = argparse.ArgumentParser(
+        description="Build VCU118 SPI NOR Flash Boot Image"
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        default="/tmp/frost_flash.bin",
+        type=Path,
+        help="Output binary file path (default: /tmp/frost_flash.bin)",
+    )
     args = parser.parse_args()
 
     build_flash_image(repo_root, args.output)
@@ -129,4 +152,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -1,5 +1,5 @@
 /*
- *    Copyright 2026 John Goodacre
+ *    Copyright 2026 Two Sigma Open Source, LLC
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
  *    you may not use this file except in compliance with the License.
@@ -14,6 +14,8 @@
  *    limitations under the License.
  */
 
+// Copyright (c) 2026 John Goodacre.
+
 // VCU118 board wrapper: CPU clocking (MMCM), USB-UART, status LEDs, and FROST subsystem.
 module vcu118_frost #(
     parameter int unsigned CPU_CLK_HZ = 200_000_000,
@@ -21,21 +23,21 @@ module vcu118_frost #(
     parameter int unsigned ENABLE_CACHED_TIER = 1,
     parameter int unsigned USE_BEHAVIORAL_DDR = 0
 ) (
-    // 300 MHz differential system clock SYSCLK1_300 (G31 / F31, Bank 65 in SLR2)
+    // Differential system clock SYSCLK1_300 (G31 / F31, Bank 47 in SLR1)
     input logic sysclk1_300_p,
     input logic sysclk1_300_n,
 
-    // Active-high CPU reset pushbutton (SW6 on L19)
+    // Active-high CPU reset pushbutton (SW5 on L19)
     input logic cpu_reset,
 
     // Silicon Labs CP2105 USB-UART console (Bank 64: BB21 TX, AW25 RX)
     output logic o_uart_tx,
     input  logic i_uart_rx,
 
-    // Diagnostic LEDs (Bank 68/67: AT32, AV34, AY30, BB32)
+    // Diagnostic LEDs (Bank 40: AT32, AV34, AY30, BB32)
     output logic [3:0] gpio_led,
 
-    // Dedicated DDR4 250 MHz differential reference clock (Bank 71: E12/D12 in SLR2)
+    // Dedicated DDR4 differential reference clock (Bank 71: E12/D12 in SLR2)
     input logic default_250mhz_clk_clk_p,
     input logic default_250mhz_clk_clk_n,
 
@@ -84,7 +86,7 @@ module vcu118_frost #(
   logic main_clock, divided_clock_by_4, freerun_clk_150;
   logic cpu_clock_locked;
 
-  // Onboard MMCM in SLR2 generates CPU clock (200 MHz default, 240 MHz selectable) and clk_div4 from SYSCLK1_300
+  // MMCM generates the CPU and CPU/4 clocks from SYSCLK1_300.
   vcu118_clock #(
       .CPU_CLK_HZ(CPU_CLK_HZ)
   ) u_clock_gen (
@@ -164,12 +166,12 @@ module vcu118_frost #(
   assign o_qsfp1_resetl       = 1'b1;
   assign o_qsfp1_lpmode       = 1'b0;
 
-  logic        nic_tx_clk, nic_rx_clk, nic_tx_clk_ok, nic_rx_clk_ok;
+  logic nic_tx_clk, nic_rx_clk, nic_tx_clk_ok, nic_rx_clk_ok;
   logic [63:0] nic_tx_raw_data, nic_rx_raw_data;
-  logic        nic_tx_raw_valid, nic_rx_raw_valid, nic_rx_signal_ok;
-  logic [ 4:0] nic_phy_status;
-  logic [ 3:1] nic_phy_ctrl;
-  logic        nic_rx_block_lock;
+  logic nic_tx_raw_valid, nic_rx_raw_valid, nic_rx_signal_ok;
+  logic [4:0] nic_phy_status;
+  logic [3:1] nic_phy_ctrl;
+  logic       nic_rx_block_lock;
 
   vcu118_nic_gty u_nic_gty (
       .i_freerun_clk  (freerun_clk_150),
@@ -193,12 +195,12 @@ module vcu118_frost #(
       .i_rx_block_lock(nic_rx_block_lock)
   );
 
-  logic        nic_1g_tx_clk, nic_1g_rx_clk, nic_1g_tx_clk_ok, nic_1g_rx_clk_ok;
+  logic nic_1g_tx_clk, nic_1g_rx_clk, nic_1g_tx_clk_ok, nic_1g_rx_clk_ok;
   logic [63:0] nic_1g_tx_raw_data, nic_1g_rx_raw_data;
-  logic        nic_1g_tx_raw_valid, nic_1g_rx_raw_valid, nic_1g_rx_signal_ok;
-  logic [ 4:0] nic_1g_phy_status;
-  logic [ 3:1] nic_1g_phy_ctrl;
-  logic        nic_1g_rx_block_lock;
+  logic nic_1g_tx_raw_valid, nic_1g_rx_raw_valid, nic_1g_rx_signal_ok;
+  logic [4:0] nic_1g_phy_status;
+  logic [3:1] nic_1g_phy_ctrl;
+  logic       nic_1g_rx_block_lock;
 
   vcu118_eth1g u_eth1g (
       .i_clk_div4     (divided_clock_by_4),
@@ -227,10 +229,10 @@ module vcu118_frost #(
   );
 
   // 4. Shared Xilinx FROST Subsystem & STARTUPE3 SPI NOR Flash Bridge
-  logic       spi_cs_n, spi_sck, spi_mosi, spi_miso;
+  logic spi_cs_n, spi_sck, spi_mosi, spi_miso;
   logic [3:0] startup_di;
   logic       mem_ok;
-  (* ASYNC_REG = "TRUE" *) logic [1:0] mem_ok_synchronizer;
+  (* ASYNC_REG = "TRUE" *)logic [1:0] mem_ok_synchronizer;
   always_ff @(posedge main_clock) begin
     mem_ok_synchronizer <= {mem_ok_synchronizer[0], mem_ok};
   end
@@ -270,43 +272,57 @@ module vcu118_frost #(
       .RAW_LOOPBACK      (0),
       .ENABLE_1G_ETH     (1)
   ) u_frost_subsystem (
-      .i_clk              (main_clock),
-      .i_clk_div4         (divided_clock_by_4),
-      .i_rst_n            (frost_rst_n),
+      .i_clk     (main_clock),
+      .i_clk_div4(divided_clock_by_4),
+      .i_rst_n   (frost_rst_n),
 
-      .o_uart_tx          (o_uart_tx),
-      .i_uart_rx          (i_uart_rx),
+      .o_uart_tx(o_uart_tx),
+      .i_uart_rx(i_uart_rx),
 
-      .i_ddr_axi_rst_n    (ddr_axi_rst_n),
-      .o_ddr_axi_awvalid  (ddr_axi_awvalid),
-      .i_ddr_axi_awready  (ddr_axi_awready),
-      .o_ddr_axi_awid     (ddr_axi_awid),
-      .o_ddr_axi_awaddr   (ddr_axi_awaddr),
-      .o_ddr_axi_awlen    (ddr_axi_awlen),
-      .o_ddr_axi_awsize   (ddr_axi_awsize),
-      .o_ddr_axi_awburst  (ddr_axi_awburst),
-      .o_ddr_axi_wvalid   (ddr_axi_wvalid),
-      .i_ddr_axi_wready   (ddr_axi_wready),
-      .o_ddr_axi_wdata    (ddr_axi_wdata),
-      .o_ddr_axi_wstrb    (ddr_axi_wstrb),
-      .o_ddr_axi_wlast    (ddr_axi_wlast),
-      .i_ddr_axi_bvalid   (ddr_axi_bvalid),
-      .o_ddr_axi_bready   (ddr_axi_bready),
-      .i_ddr_axi_bid      (ddr_axi_bid),
-      .i_ddr_axi_bresp    (ddr_axi_bresp),
-      .o_ddr_axi_arvalid  (ddr_axi_arvalid),
-      .i_ddr_axi_arready  (ddr_axi_arready),
-      .o_ddr_axi_arid     (ddr_axi_arid),
-      .o_ddr_axi_araddr   (ddr_axi_araddr),
-      .o_ddr_axi_arlen    (ddr_axi_arlen),
-      .o_ddr_axi_arsize   (ddr_axi_arsize),
-      .o_ddr_axi_arburst  (ddr_axi_arburst),
-      .i_ddr_axi_rvalid   (ddr_axi_rvalid),
-      .o_ddr_axi_rready   (ddr_axi_rready),
-      .i_ddr_axi_rid      (ddr_axi_rid),
-      .i_ddr_axi_rdata    (ddr_axi_rdata),
-      .i_ddr_axi_rresp    (ddr_axi_rresp),
-      .i_ddr_axi_rlast    (ddr_axi_rlast),
+      .i_ddr_axi_rst_n  (ddr_axi_rst_n),
+      .o_ddr_axi_awvalid(ddr_axi_awvalid),
+      .i_ddr_axi_awready(ddr_axi_awready),
+      .o_ddr_axi_awid   (ddr_axi_awid),
+      .o_ddr_axi_awaddr (ddr_axi_awaddr),
+      .o_ddr_axi_awlen  (ddr_axi_awlen),
+      .o_ddr_axi_awsize (ddr_axi_awsize),
+      .o_ddr_axi_awburst(ddr_axi_awburst),
+      .o_ddr_axi_wvalid (ddr_axi_wvalid),
+      .i_ddr_axi_wready (ddr_axi_wready),
+      .o_ddr_axi_wdata  (ddr_axi_wdata),
+      .o_ddr_axi_wstrb  (ddr_axi_wstrb),
+      .o_ddr_axi_wlast  (ddr_axi_wlast),
+      .i_ddr_axi_bvalid (ddr_axi_bvalid),
+      .o_ddr_axi_bready (ddr_axi_bready),
+      .i_ddr_axi_bid    (ddr_axi_bid),
+      .i_ddr_axi_bresp  (ddr_axi_bresp),
+      .o_ddr_axi_arvalid(ddr_axi_arvalid),
+      .i_ddr_axi_arready(ddr_axi_arready),
+      .o_ddr_axi_arid   (ddr_axi_arid),
+      .o_ddr_axi_araddr (ddr_axi_araddr),
+      .o_ddr_axi_arlen  (ddr_axi_arlen),
+      .o_ddr_axi_arsize (ddr_axi_arsize),
+      .o_ddr_axi_arburst(ddr_axi_arburst),
+      .i_ddr_axi_rvalid (ddr_axi_rvalid),
+      .o_ddr_axi_rready (ddr_axi_rready),
+      .i_ddr_axi_rid    (ddr_axi_rid),
+      .i_ddr_axi_rdata  (ddr_axi_rdata),
+      .i_ddr_axi_rresp  (ddr_axi_rresp),
+      .i_ddr_axi_rlast  (ddr_axi_rlast),
+
+      // No external Ethernet interface or CPU-visible ECC telemetry.
+      .i_nic_tx_clk       (1'b0),
+      .i_nic_rx_clk       (1'b0),
+      .i_nic_tx_clk_ok    (1'b0),
+      .i_nic_rx_clk_ok    (1'b0),
+      .i_nic_rx_raw_data  ('0),
+      .i_nic_rx_raw_valid (1'b0),
+      .i_nic_rx_signal_ok (1'b0),
+      .i_nic_phy_status   ('0),
+      .o_nic_tx_raw_data  (),
+      .o_nic_tx_raw_valid (),
+      .o_nic_phy_ctrl     (),
+      .o_nic_rx_block_lock(),
 
       .i_ecc_present      (1'b0),
       .i_ecc_poll         (1'b0),
@@ -344,11 +360,11 @@ module vcu118_frost #(
       .o_nic_1g_phy_ctrl     (nic_1g_phy_ctrl),
       .o_nic_1g_rx_block_lock(nic_1g_rx_block_lock),
 
-      .o_spi_cs_n            (spi_cs_n),
-      .o_spi_sck             (spi_sck),
-      .o_spi_mosi            (spi_mosi),
-      .i_spi_miso            (spi_miso),
-      .i_ddr_status          ({ddr_init_done, mem_ok_synced})
+      .o_spi_cs_n  (spi_cs_n),
+      .o_spi_sck   (spi_sck),
+      .o_spi_mosi  (spi_mosi),
+      .i_spi_miso  (spi_miso),
+      .i_ddr_status({ddr_init_done, mem_ok_synced})
   );
 
   // 5. DDR4 Initialization Engine (for valid ECC generation)
@@ -398,21 +414,21 @@ module vcu118_frost #(
   // DDR subsystem integration: tie off if in BRAM-only mode, or instantiate ddr_subsys
   generate
     if (USE_BEHAVIORAL_DDR || !ENABLE_CACHED_TIER) begin : gen_tieoff_ddr
-      assign mem_ok          = 1'b1;
-      assign ddr_init_done   = 1'b1;
-      assign init_busy       = 1'b0;
-      assign ddr_axi_rst_n   = cpu_clock_locked;
-      assign ddr_axi_awready = 1'b0;
-      assign ddr_axi_wready  = 1'b0;
-      assign ddr_axi_bvalid  = 1'b0;
-      assign ddr_axi_bid     = '0;
-      assign ddr_axi_bresp   = 2'b00;
-      assign ddr_axi_arready = 1'b0;
-      assign ddr_axi_rvalid  = 1'b0;
-      assign ddr_axi_rid     = '0;
-      assign ddr_axi_rdata   = '0;
-      assign ddr_axi_rresp   = 2'b00;
-      assign ddr_axi_rlast   = 1'b0;
+      assign mem_ok                = 1'b1;
+      assign ddr_init_done         = 1'b1;
+      assign init_busy             = 1'b0;
+      assign ddr_axi_rst_n         = cpu_clock_locked;
+      assign ddr_axi_awready       = 1'b0;
+      assign ddr_axi_wready        = 1'b0;
+      assign ddr_axi_bvalid        = 1'b0;
+      assign ddr_axi_bid           = '0;
+      assign ddr_axi_bresp         = 2'b00;
+      assign ddr_axi_arready       = 1'b0;
+      assign ddr_axi_rvalid        = 1'b0;
+      assign ddr_axi_rid           = '0;
+      assign ddr_axi_rdata         = '0;
+      assign ddr_axi_rresp         = 2'b00;
+      assign ddr_axi_rlast         = 1'b0;
 
       assign ddr4_sdram_c0_adr     = '0;
       assign ddr4_sdram_c0_act_n   = 1'b1;
@@ -428,10 +444,10 @@ module vcu118_frost #(
       assign ddr_axi_rst_n = mem_ok_synced;
 
       vcu118_ddr_init #(
-          .ADDR_BITS      (31),
-          .DATA_BITS      (512),
-          .ID_BITS        (5),
-          .REGION_BYTES   (32'h8000_0000)
+          .ADDR_BITS   (31),
+          .DATA_BITS   (512),
+          .ID_BITS     (5),
+          .REGION_BYTES(32'h8000_0000)
       ) u_ddr_init (
           .i_clk    (main_clock),
           .i_rst_n  (cpu_clock_locked),
@@ -456,60 +472,60 @@ module vcu118_frost #(
       );
 
       ddr_subsys_wrapper ddr_subsystem (
-          .cpu_clk                   (main_clock),
-          .jtag_clk                  (divided_clock_by_4),
-          .default_250mhz_clk_clk_p  (default_250mhz_clk_clk_p),
-          .default_250mhz_clk_clk_n  (default_250mhz_clk_clk_n),
-          .sys_reset                 (cpu_reset || !cpu_clock_locked),
-          .cpu_aresetn               (cpu_side_aresetn),
-          .jtag_aresetn              (jtag_aresetn_synchronizer[1]),
-          .mem_ok                    (mem_ok),
+          .cpu_clk                 (main_clock),
+          .jtag_clk                (divided_clock_by_4),
+          .default_250mhz_clk_clk_p(default_250mhz_clk_clk_p),
+          .default_250mhz_clk_clk_n(default_250mhz_clk_clk_n),
+          .sys_reset               (cpu_reset || !cpu_clock_locked),
+          .cpu_aresetn             (cpu_side_aresetn),
+          .jtag_aresetn            (jtag_aresetn_synchronizer[1]),
+          .mem_ok                  (mem_ok),
 
-          .S00_AXI_awvalid           (s00_awvalid),
-          .S00_AXI_awready           (ddr_axi_awready),
-          .S00_AXI_awid              (s00_awid),
-          .S00_AXI_awaddr            (s00_awaddr),
-          .S00_AXI_awlen             (s00_awlen),
-          .S00_AXI_awsize            (s00_awsize),
-          .S00_AXI_awburst           (s00_awburst),
-          .S00_AXI_wvalid            (s00_wvalid),
-          .S00_AXI_wready            (ddr_axi_wready),
-          .S00_AXI_wdata             (s00_wdata),
-          .S00_AXI_wstrb             (s00_wstrb),
-          .S00_AXI_wlast             (s00_wlast),
-          .S00_AXI_bvalid            (ddr_axi_bvalid),
-          .S00_AXI_bready            (s00_bready),
-          .S00_AXI_bid               (ddr_axi_bid),
-          .S00_AXI_bresp             (ddr_axi_bresp),
+          .S00_AXI_awvalid(s00_awvalid),
+          .S00_AXI_awready(ddr_axi_awready),
+          .S00_AXI_awid   (s00_awid),
+          .S00_AXI_awaddr (s00_awaddr),
+          .S00_AXI_awlen  (s00_awlen),
+          .S00_AXI_awsize (s00_awsize),
+          .S00_AXI_awburst(s00_awburst),
+          .S00_AXI_wvalid (s00_wvalid),
+          .S00_AXI_wready (ddr_axi_wready),
+          .S00_AXI_wdata  (s00_wdata),
+          .S00_AXI_wstrb  (s00_wstrb),
+          .S00_AXI_wlast  (s00_wlast),
+          .S00_AXI_bvalid (ddr_axi_bvalid),
+          .S00_AXI_bready (s00_bready),
+          .S00_AXI_bid    (ddr_axi_bid),
+          .S00_AXI_bresp  (ddr_axi_bresp),
 
-          .S00_AXI_arvalid           (ddr_axi_arvalid),
-          .S00_AXI_arready           (ddr_axi_arready),
-          .S00_AXI_arid              (ddr_axi_arid),
-          .S00_AXI_araddr            (ddr_axi_araddr),
-          .S00_AXI_arlen             (ddr_axi_arlen),
-          .S00_AXI_arsize            (ddr_axi_arsize),
-          .S00_AXI_arburst           (ddr_axi_arburst),
-          .S00_AXI_rvalid            (ddr_axi_rvalid),
-          .S00_AXI_rready            (ddr_axi_rready),
-          .S00_AXI_rid               (ddr_axi_rid),
-          .S00_AXI_rdata             (ddr_axi_rdata),
-          .S00_AXI_rresp             (ddr_axi_rresp),
-          .S00_AXI_rlast             (ddr_axi_rlast),
+          .S00_AXI_arvalid(ddr_axi_arvalid),
+          .S00_AXI_arready(ddr_axi_arready),
+          .S00_AXI_arid   (ddr_axi_arid),
+          .S00_AXI_araddr (ddr_axi_araddr),
+          .S00_AXI_arlen  (ddr_axi_arlen),
+          .S00_AXI_arsize (ddr_axi_arsize),
+          .S00_AXI_arburst(ddr_axi_arburst),
+          .S00_AXI_rvalid (ddr_axi_rvalid),
+          .S00_AXI_rready (ddr_axi_rready),
+          .S00_AXI_rid    (ddr_axi_rid),
+          .S00_AXI_rdata  (ddr_axi_rdata),
+          .S00_AXI_rresp  (ddr_axi_rresp),
+          .S00_AXI_rlast  (ddr_axi_rlast),
 
-          .ddr4_sdram_c0_act_n       (ddr4_sdram_c0_act_n),
-          .ddr4_sdram_c0_adr         (ddr4_sdram_c0_adr),
-          .ddr4_sdram_c0_ba          (ddr4_sdram_c0_ba),
-          .ddr4_sdram_c0_bg          (ddr4_sdram_c0_bg),
-          .ddr4_sdram_c0_ck_c        (ddr4_sdram_c0_ck_c),
-          .ddr4_sdram_c0_ck_t        (ddr4_sdram_c0_ck_t),
-          .ddr4_sdram_c0_cke         (ddr4_sdram_c0_cke),
-          .ddr4_sdram_c0_cs_n        (ddr4_sdram_c0_cs_n),
-          .ddr4_sdram_c0_dm_n        (ddr4_sdram_c0_dm_n),
-          .ddr4_sdram_c0_dq          (ddr4_sdram_c0_dq),
-          .ddr4_sdram_c0_dqs_c       (ddr4_sdram_c0_dqs_c),
-          .ddr4_sdram_c0_dqs_t       (ddr4_sdram_c0_dqs_t),
-          .ddr4_sdram_c0_odt         (ddr4_sdram_c0_odt),
-          .ddr4_sdram_c0_reset_n     (ddr4_sdram_c0_reset_n)
+          .ddr4_sdram_c0_act_n  (ddr4_sdram_c0_act_n),
+          .ddr4_sdram_c0_adr    (ddr4_sdram_c0_adr),
+          .ddr4_sdram_c0_ba     (ddr4_sdram_c0_ba),
+          .ddr4_sdram_c0_bg     (ddr4_sdram_c0_bg),
+          .ddr4_sdram_c0_ck_c   (ddr4_sdram_c0_ck_c),
+          .ddr4_sdram_c0_ck_t   (ddr4_sdram_c0_ck_t),
+          .ddr4_sdram_c0_cke    (ddr4_sdram_c0_cke),
+          .ddr4_sdram_c0_cs_n   (ddr4_sdram_c0_cs_n),
+          .ddr4_sdram_c0_dm_n   (ddr4_sdram_c0_dm_n),
+          .ddr4_sdram_c0_dq     (ddr4_sdram_c0_dq),
+          .ddr4_sdram_c0_dqs_c  (ddr4_sdram_c0_dqs_c),
+          .ddr4_sdram_c0_dqs_t  (ddr4_sdram_c0_dqs_t),
+          .ddr4_sdram_c0_odt    (ddr4_sdram_c0_odt),
+          .ddr4_sdram_c0_reset_n(ddr4_sdram_c0_reset_n)
       );
     end
   endgenerate

@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check x3_ddr_init's power-up DDR4 initialization.
+"""Check the X3 and VCU118 DDR4 initializers.
 
 Every location must be written before an ECC-checked read. Writes cover full
 controller words to avoid read-modify-write of uninitialized data, and o_done
@@ -20,7 +20,7 @@ must wait for every write response. A refused write must withhold o_done.
 The write channels stay idle before i_start and after o_done, when the board
 hands them to the CPU.
 
-The registry reduces REGION_BYTES for simulation; the board initializes 1 GiB.
+The registry reduces REGION_BYTES for simulation; each board sets its full map.
 """
 
 import os

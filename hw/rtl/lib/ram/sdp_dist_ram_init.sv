@@ -25,6 +25,8 @@ module sdp_dist_ram_init #(
     parameter int unsigned ADDR_WIDTH = 5,  // Address width in bits
     parameter int unsigned DATA_WIDTH = 32,  // Data width in bits
     parameter bit USE_INIT_FILE = 1'b0,
+    // The caller loads ram directly during simulation.
+    parameter bit SIM_EXTERNAL_INIT = 1'b0,
     // Hex image name, at most 40 characters to fit these 320 bits.
     parameter bit [319:0] INIT_FILE = ""
 ) (
@@ -43,7 +45,15 @@ module sdp_dist_ram_init #(
   (* ram_style = "distributed" *) logic [DATA_WIDTH-1:0] ram[RamDepth];
   /* verilator lint_on MULTIDRIVEN */
 
-  initial if (USE_INIT_FILE) $readmemh(INIT_FILE, ram, 0, RamDepth - 1);
+  initial begin
+    if (USE_INIT_FILE) $readmemh(INIT_FILE, ram, 0, RamDepth - 1);
+`ifdef FROST_RANDOM_START
+    if (!USE_INIT_FILE && !SIM_EXTERNAL_INIT)
+      for (int row = 0; row < RamDepth; row++)
+      for (int chunk = 0; chunk < (DATA_WIDTH + 31) / 32; chunk++)
+      ram[row] = (ram[row] << 32) | DATA_WIDTH'($urandom);
+`endif
+  end
 
   always_ff @(posedge i_clk) if (i_write_enable) ram[i_write_address] <= i_write_data;
 

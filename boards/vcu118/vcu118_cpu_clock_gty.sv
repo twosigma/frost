@@ -1,5 +1,5 @@
 /*
- *    Copyright 2026 John Goodacre
+ *    Copyright 2026 Two Sigma Open Source, LLC
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
  *    you may not use this file except in compliance with the License.
@@ -14,19 +14,20 @@
  *    limitations under the License.
  */
 
-// VCU118 CPU Clock Generator using GTY Transceiver CPLL (Quad 231, SLR1).
-// Provides an ultra-low jitter, low-insertion-delay clock tree for the CPU
-// within SLR1 with dedicated clock routing.
+// Copyright (c) 2026 John Goodacre.
+
+// Optional GTY CPU clock source on quad 231 in SLR2.
+// The board file list selects vcu118_clock instead.
 module vcu118_cpu_clock_gty #(
     parameter int unsigned CPU_CLK_DIV = 1,
-    // Free-running clock cycles per millisecond (150 MHz).
+    // Free-running clock cycles per millisecond.
     parameter int unsigned MS_CYCLES = 150_000,
     parameter int unsigned START_TIMEOUT_MS = 100,
     // Width of a reset-all request.
     parameter int unsigned PULSE_CYCLES = 16
 ) (
-    input  logic i_refclk,      // Quad 231 MGTREFCLK0 (IBUFDS_GTE4 O on W9/W8)
-    input  logic i_freerun_clk, // 150 MHz free-running supervisor clock
+    input logic i_refclk,      // Quad 231 MGTREFCLK0 (IBUFDS_GTE4 O on W9/W8)
+    input logic i_freerun_clk, // Free-running supervisor clock
 
     // Board transceiver pins for Quad 231 Channel 0 (V7/V6, Y2/Y1)
     input  logic i_rxp,
@@ -43,7 +44,8 @@ module vcu118_cpu_clock_gty #(
   localparam int unsigned TimerBits = $clog2(StartTimeoutCycles + 1);
 
   initial begin
-    if (CPU_CLK_DIV < 1 || CPU_CLK_DIV > 4) $fatal(1, "vcu118_cpu_clock_gty: CPU_CLK_DIV must be 1..4");
+    if (CPU_CLK_DIV < 1 || CPU_CLK_DIV > 4)
+      $fatal(1, "vcu118_cpu_clock_gty: CPU_CLK_DIV must be 1..4");
     if (PULSE_CYCLES < 1 || PULSE_CYCLES > StartTimeoutCycles) begin
       $fatal(1, "vcu118_cpu_clock_gty: PULSE_CYCLES out of range");
     end

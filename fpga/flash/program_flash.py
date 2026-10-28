@@ -24,6 +24,7 @@ from make_flash_image import build_flash_image
 
 
 def main():
+    """Program the selected flash image."""
     parser = argparse.ArgumentParser(description="Program VCU118 SPI NOR Flash")
     parser.add_argument(
         "--full",
@@ -57,9 +58,9 @@ def main():
     win_cfg_prm = f"{wsl_prefix}{cfg_prm}"
 
     if args.boot_only or not bitstream_file.is_file():
-        loaddata_spec = f'up 0x03000000 {win_raw_bin}'
+        loaddata_spec = f"up 0x03000000 {win_raw_bin}"
     else:
-        loaddata_spec = f'up 0x00000000 {win_bitstream} up 0x03000000 {win_raw_bin}'
+        loaddata_spec = f"up 0x00000000 {win_bitstream} up 0x03000000 {win_raw_bin}"
 
     tcl_content = f"""# Vivado Flash Programming Script for VCU118
 # Step 1: Create config memory file
@@ -105,10 +106,21 @@ disconnect_hw_server
     tcl_script.write_text(tcl_content)
 
     print(">>> Step 2: Running Vivado flash programming over JTAG...")
-    cmd = ["vivado", "-mode", "batch", "-source", str(tcl_script), "-nolog", "-nojournal"]
+    cmd = [
+        "vivado",
+        "-mode",
+        "batch",
+        "-source",
+        str(tcl_script),
+        "-nolog",
+        "-nojournal",
+    ]
     result = subprocess.run(cmd)
     if result.returncode != 0:
-        print(f"ERROR: Vivado flash programming failed with code {result.returncode}", file=sys.stderr)
+        print(
+            f"ERROR: Vivado flash programming failed with code {result.returncode}",
+            file=sys.stderr,
+        )
         sys.exit(result.returncode)
 
     print(">>> SPI NOR Flash successfully programmed!")
@@ -116,4 +128,3 @@ disconnect_hw_server
 
 if __name__ == "__main__":
     main()
-

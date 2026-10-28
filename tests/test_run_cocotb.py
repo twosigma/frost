@@ -146,6 +146,7 @@ def coverage_file(label: str) -> Path:
 # in its registry entry, in FROST_VERILATOR_EXTRA_ARGS, or with the
 # DDR_MODEL_LATENCY variable, keeps the pinned value.
 DDR_MODEL_SEED_VARIABLE = "FROST_DDR_MODEL_SEED"
+RANDOM_START_SEED_VARIABLE = "FROST_RANDOM_START_SEED"
 # FROST_CALIBRATION_TEST limits the performance model's calibration capture
 # (verif/cocotb_tests/calibration_trace.py) to the registry test it names:
 # the other tests run without the capture's output files.
@@ -242,7 +243,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="hello_world",
         include_in_pytest=False,
-        description="External reset assertion while the SoC clock is stopped",
+        description="Power-on reset and paired reset with stopped CPU or SoC clocks",
         extra_env=(("FROST_CPU_PERIOD_PS", "7000"),),
         verilator_extra_args=("-GENABLE_CACHED_TIER=0",),
     ),
@@ -2853,6 +2854,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="axil_reg_bridge",
         description="AXI4-Lite independent channels, register mapping, stalls and reset",
     ),
+    "axi_checker": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_axi_checker",
+        hdl_toplevel_module="axi_checker",
+        description="AXI checker reset history and held channel payloads",
+    ),
     "axi_mux": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_axi_mux",
         hdl_toplevel_module="axi_mux_test_harness",
@@ -2868,6 +2874,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "X3 DDR initialization writes the full region and waits for completion "
             "under stalls"
         ),
+        verilator_extra_args=("-GREGION_BYTES=4096", "-GMAX_OUTSTANDING=4"),
+        extra_env=(
+            ("DDR_INIT_REGION_BYTES", "4096"),
+            ("DDR_INIT_MAX_OUTSTANDING", "4"),
+        ),
+    ),
+    "vcu118_ddr_init": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_x3_ddr_init",
+        hdl_toplevel_module="vcu118_ddr_init",
+        description="VCU118 DDR initialization coverage, stalls and error responses",
         verilator_extra_args=("-GREGION_BYTES=4096", "-GMAX_OUTSTANDING=4"),
         extra_env=(
             ("DDR_INIT_REGION_BYTES", "4096"),
@@ -3649,6 +3665,8 @@ class CocotbRunner:
     def _verilator_build_signature(self) -> str:
         """Return the build-affecting signature tracked by the rebuild marker."""
         signature = self._verilator_extra_args_string()
+        if os.environ.get(RANDOM_START_SEED_VARIABLE, "").strip():
+            signature = f"{signature} FROST_RANDOM_START=1".strip()
         # Include external build overrides to prevent reusing a stale Vtop.
         external_verilator_args = os.environ.get("FROST_VERILATOR_EXTRA_ARGS", "")
         if external_verilator_args:
@@ -3714,6 +3732,19 @@ class CocotbRunner:
     def setup_environment(self) -> dict[str, str]:
         """Return a copy of os.environ with the simulation settings applied."""
         environment_variables = os.environ.copy()
+
+        seed = os.environ.get(RANDOM_START_SEED_VARIABLE, "").strip()
+        if seed:
+            verilator_seed = random.Random(seed).randint(1, 2**31 - 1)
+            environment_variables["FROST_RANDOM_START"] = "1"
+            environment_variables["FROST_RANDOM_START_VERILATOR_SEED"] = str(
+                verilator_seed
+            )
+            print(
+                f"Random start from {RANDOM_START_SEED_VARIABLE}={seed}: "
+                f"Verilator seed={verilator_seed}",
+                flush=True,
+            )
 
         environment_variables["SIM"] = "verilator"
         environment_variables["ROOT"] = str(self.repository_root_directory)

@@ -39,6 +39,7 @@ from cocotb.triggers import (
     ClockCycles,
     FallingEdge,
     ReadOnly,
+    ReadWrite,
     RisingEdge,
     Timer,
 )
@@ -255,16 +256,157 @@ def takes_last_edge(
     return run
 
 
-async def generate_divided_clock(dut: Any) -> None:
+async def _assert_power_on_reset(dut: Any, core_clock: Any) -> None:
+    """Assert cold reset after HDL initialization and clock its CPU consumers."""
+    await ReadWrite()
+    dut.i_power_on_rst.value = 1
+    for _ in range(4):
+        await RisingEdge(core_clock)
+
+
+async def _release_power_on_reset(dut: Any, cpu_reset: Any) -> None:
+    """Release cold reset after the CPU has sampled its request."""
+    await cpu_reset
+    await ReadWrite()
+    dut.i_power_on_rst.value = 0
+
+
+async def wait_for_power_on_reset(dut: Any) -> None:
+    """Keep system reset held through a slow or delayed CPU's cold reset."""
+    while int(dut.i_power_on_rst.value):
+        await RisingEdge(dut.i_clk)
+
+
+def _write_instruction_bank(bank: Any, words: list[int]) -> None:
+    """Load a packed instruction bank through its simulation array or SRAM tiles."""
+    if hasattr(bank, "ram"):
+        bank.ram.value = Immediate(words)
+    elif hasattr(bank.u_sram, "gen_array"):
+        bank.u_sram.gen_array.memory.value = Immediate(words)
+    else:
+        for row_index, row in enumerate(bank.u_sram.gen_macros.gen_row):
+            for column_index, column in enumerate(row.gen_column):
+                array = column.gen_macro.u_macro.mem
+                width = len(array[0])
+                mask = (1 << width) - 1
+                start = row_index * len(array)
+                array.value = Immediate(
+                    [
+                        (word >> (column_index * width)) & mask
+                        for word in words[start : start + len(array)]
+                    ]
+                )
+
+
+def _load_instruction_image(memory: Any) -> None:
+    """Load instruction words and metadata while programming writes are idle."""
+    assert not int(memory.i_port_a_write_enable.value)
+    assert not int(memory.port_a_write_even.value)
+    assert not int(memory.port_a_write_odd.value)
+    model = _load_imem_predecode_model()
+    words = model.parse_verilog_hex(Path("sw.mem"))
+    banks = model.split_words(
+        words,
+        1 << int(memory.ADDR_WIDTH.value),
+        1 << int(memory.INIT_ADDR_WIDTH.value),
+    )
+    sidebands = {
+        word: model.make_sideband(word) for bank in banks for word in set(bank)
+    }
+    for parity, bank_words in zip(("even", "odd"), banks):
+        packed = {
+            "cold": [model.pack_cold_data(word) for word in bank_words],
+            "frontend_hot": [model.pack_frontend_hot(word) for word in bank_words],
+            "sideband": [sidebands[word] for word in bank_words],
+            "compressed": [
+                model.make_fast_replica(word, sidebands[word]) for word in bank_words
+            ],
+        }
+        for name, values in packed.items():
+            _write_instruction_bank(getattr(memory, f"u_{parity}_{name}"), values)
+        for name, bit in model.SCALAR_REPLICA_BITS:
+            array = getattr(memory, f"u_{parity}_{name}_bank").u_ram.ram
+            array.value = Immediate(
+                [(sidebands[word] >> bit) & 1 for word in bank_words[: len(array)]]
+            )
+
+
+def load_program_images(dut: Any) -> None:
+    """Load program images once the memory controllers have completed cold reset."""
+    platform = getattr(dut, "cpu_and_memory_subsystem", dut)
+    soc = platform.soc if hasattr(platform, "soc") else platform
+    if hasattr(dut, "i_rst"):
+        system_reset = dut.i_rst
+    elif os.environ.get("FROST_CPU_PERIOD_PS"):
+        system_reset = dut.async_soc_reset
+    else:
+        system_reset = dut.reset_synchronized
+    assert int(system_reset.value), "program image load requires system reset"
+    assert int(soc.rst_core.value), "program image load requires core reset"
+    assert int(soc.rst_div4.value), "program image load requires programming reset"
+    # TestRIG fetches instructions from its injected stream.
+    if hasattr(soc, "instruction_memory"):
+        _load_instruction_image(soc.instruction_memory)
+    memory = soc.data_memory
+    if hasattr(memory, "u_sram"):
+        memory = memory.u_sram
+    memory.sim_load_image.value = 1
+    if hasattr(soc, "gen_behavioral_ddr"):
+        model = soc.gen_behavioral_ddr.ddr_model
+    elif hasattr(soc, "gen_cached_tier") and hasattr(
+        soc.gen_cached_tier, "gen_behavioral_ddr"
+    ):
+        model = soc.gen_cached_tier.gen_behavioral_ddr.ddr_model
+    else:
+        return
+    if hasattr(model, "sim_load_image") and Path("sw_ddr.mem").is_file():
+        model.sim_load_image.value = 1
+
+
+async def generate_divided_clock(dut: Any, *, core_clock: Any | None = None) -> None:
     """Generate i_clk_div4 with four times i_clk's period and aligned rising edges.
 
     The dc_fifo crosses binary pointers without Gray coding and requires
     related clocks. Toggle i_clk_div4 on every second i_clk rising edge.
+    Hold power-on reset for eight SoC edges and at least four CPU edges.
     """
     clock_edge = RisingEdge(dut.i_clk)
     divided = dut.i_clk_div4
     level = 0
-    divided.value = level
+    # The FPGA wrapper supplies an asserted reset at the platform boundary.
+    # Its reset pipeline is outside the ASIC design's randomized state.
+    if hasattr(dut, "reset_synchronizer_shift_register"):
+        for name in (
+            "reset_synchronizer_shift_register",
+            "reset_synchronized",
+            "reset_div4_synchronizer_shift_register",
+        ):
+            signal = getattr(dut, name)
+            signal.value = Immediate((1 << len(signal)) - 1)
+    # Establish idle inputs before HDL evaluates a possible startup clock edge.
+    dut.i_power_on_rst.value = Immediate(0)
+    divided.value = Immediate(level)
+    cpu_reset = cocotb.start_soon(
+        _assert_power_on_reset(
+            dut, cpu_clock(dut) if core_clock is None else core_clock
+        )
+    )
+    for _ in range(4):
+        await clock_edge
+        await clock_edge
+        level ^= 1
+        divided.value = level
+    if cpu_reset.done():
+        await _release_power_on_reset(dut, cpu_reset)
+    else:
+        cocotb.start_soon(_release_power_on_reset(dut, cpu_reset))
+    for _ in range(5):
+        await clock_edge
+        await clock_edge
+        level ^= 1
+        divided.value = level
+    await ReadWrite()
+    load_program_images(dut)
     while True:
         await clock_edge
         await clock_edge
@@ -315,9 +457,9 @@ def hold_nic_without_mac_clocks(dut: Any, access_signals: tuple[Any, ...]) -> No
     Both MAC clocks stay low and their clock-OK levels are low, so the NIC's
     reset controller keeps the MAC domains in reset and neither direction
     READY (hw/rtl/peripherals/nic/README.md). FROST_NIC_MAC_CLOCKS=0 selects
-    this mode. Each access signal triggers fail_on_nic_access: the SoC's
-    register-window select for applications. TestRIG passes no access signals
-    because its device requests use the harness RAM.
+    this mode. Each access signal triggers fail_on_nic_access. The SoC's
+    nic_access_q records register transactions after local reset. TestRIG
+    ties off the NIC register port and supplies no access signals.
     """
     dut.i_nic_tx_clk.value = 0
     dut.i_nic_rx_clk.value = 0
@@ -604,8 +746,9 @@ def _first_signal(dut: Any, paths: list[str]) -> Any | None:
     return None
 
 
-def _load_rvc_expand() -> Callable[[int], tuple[int, bool]]:
-    """Load the RVC expansion model from sw/common/generate_imem_predecode_init.py."""
+@functools.cache
+def _load_imem_predecode_model() -> Any:
+    """Load the instruction image packer and RVC expansion model."""
     path = (
         Path(__file__).resolve().parents[2]
         / "sw"
@@ -616,7 +759,14 @@ def _load_rvc_expand() -> Callable[[int], tuple[int, bool]]:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    rvc_expand: Callable[[int], tuple[int, bool]] = module.rvc_expand
+    return module
+
+
+def _load_rvc_expand() -> Callable[[int], tuple[int, bool]]:
+    """Read the RVC expansion function from the instruction image model."""
+    rvc_expand: Callable[[int], tuple[int, bool]] = (
+        _load_imem_predecode_model().rvc_expand
+    )
     return rvc_expand
 
 
@@ -1617,6 +1767,8 @@ class EccReportDriver:
     corrected errors with an address, an uncorrectable error, four polls,
     then 2 more corrected errors. For memerr_readback, only poll, every
     POLL_GAP cycles, as a reader of a controller without errors does.
+    Error reports start after the bench completes its first reset, when
+    IRQ_EN reflects software writes rather than arbitrary power-up bits.
     """
 
     POLL_GAP = 2000
@@ -4645,9 +4797,8 @@ async def test_real_program(dut: Any) -> None:
         # UART RX byte unread; the bench sends it (0x5A) once per run.
         uart_driver = UartRxDriver(dut)
     nic_peer = NicEchoPeer(dut, uart_monitor) if app_name == "nic_echo" else None
-    if app_name == "memerr_test":
-        cocotb.start_soon(EccReportDriver(dut).run())
-    elif app_name == "memerr_readback":
+    ecc_driver = EccReportDriver(dut) if app_name == "memerr_test" else None
+    if app_name == "memerr_readback":
         cocotb.start_soon(EccReportDriver(dut).poll())
     wfi_watch = WfiRecoveryWatch(dut) if app_name == "wfi_seed_recovery" else None
     if wfi_watch is not None:
@@ -4688,7 +4839,15 @@ async def test_real_program(dut: Any) -> None:
                 dut.i_external_interrupt.value = 0
             for _ in range(RESET_CYCLES):
                 await RisingEdge(dut.i_clk)
+            await wait_for_power_on_reset(dut)
+            # Output qualifiers are arbitrary before the first completed reset.
+            uart_monitor.clear()
+            if line_monitor is not None:
+                line_monitor.clear()
             dut.i_rst_n.value = 1
+
+            if ecc_driver is not None:
+                cocotb.start_soon(ecc_driver.run())
 
         cocotb.log.info(f"=== Starting run {run_number} of {NUM_RUNS} ===")
 

@@ -16,13 +16,14 @@
 
 /*
   Register file with combinational reads and shared write ports. Each read
-  port has its own RAM. Integer instances hardwire x0; FP instances do not.
+  port has its own RAM. With HARDWIRE_ZERO, row 0 is never written and its
+  read value is unspecified. Integer consumers substitute zero for x0.
 
   Parameters:
     DATA_WIDTH      - Register width in bits
     NUM_READ_PORTS  - Number of simultaneous reads
     NUM_WRITE_PORTS - Number of simultaneous writes
-    HARDWIRE_ZERO   - Block writes to register 0, which initializes to zero
+    HARDWIRE_ZERO   - Block writes to register 0
     DEPTH           - Number of registers
 */
 module generic_regfile #(
@@ -45,7 +46,7 @@ module generic_regfile #(
 );
 
   // Per-port write enables: gated by stall, and also by nonzero write
-  // address when HARDWIRE_ZERO is set (RISC-V x0 always reads zero).
+  // address when HARDWIRE_ZERO is set.
   logic [NUM_WRITE_PORTS-1:0] write_enable;
 
   for (genvar wp = 0; wp < NUM_WRITE_PORTS; wp++) begin : gen_write_enable

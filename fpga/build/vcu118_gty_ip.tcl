@@ -1,4 +1,4 @@
-#    Copyright 2026 John Goodacre
+#    Copyright 2026 Two Sigma Open Source, LLC
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -12,15 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# VCU118 (XCVU9P, UltraScale+) networking IP cores:
-# 1. vcu118_nic_gty_wiz (gtwizard_ultrascale:1.7):
-#    One 10GBASE-R GTY channel on QSFP1 Lane 0 (Quad 231, GTYE4_CHANNEL_X1Y48,
-#    TX V7/V6, RX Y2/Y1) clocked by MGTREFCLK0_231 (W9/W8, 156.25 MHz Si570 U38)
-#    used as a raw 64-bit PMA under the soft 10GBASE-R PCS/MAC in hw/rtl/net10g.
-# 2. vcu118_pcs_pma_1g (gig_ethernet_pcs_pma:17.0):
-#    License-free 1G/2.5G Ethernet PCS/PMA in SGMII over LVDS mode on Bank 64
-#    (TX AU21/AV21, RX AU24/AV24, 625 MHz clock AT22/AU22) connected to the
-#    onboard TI DP83867ISRGZ RJ-45 PHY.
+# Copyright (c) 2026 John Goodacre.
+
+# VCU118 networking IP: a raw GTY channel on QSFP1 lane 0 in quad 231,
+# and the SGMII PCS/PMA for the bank 64 LVDS interface.
 
 proc create_vcu118_gty_ip {{rx_eq_mode LPM}} {
   if {$rx_eq_mode ni {LPM DFE}} {

@@ -89,6 +89,11 @@ module sc_pending_unit #(
     output riscv_pkg::fu_complete_t o_sc_fu_complete
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
+`endif
+
   // ---------------------------------------------------------------------------
   // Alias input ports back to the wrapper's local names.
   // ---------------------------------------------------------------------------
@@ -348,7 +353,7 @@ module sc_pending_unit #(
 `ifndef SYNTHESIS
 `ifndef FORMAL
   always_ff @(posedge i_clk) begin
-    if (i_rst_n && sct_alloc && !sct_has_free)
+    if (reset_seen_q && i_rst_n && sct_alloc && !sct_has_free)
       $error(
           "sc_pending_unit: SC tag %0d issued with the table full; it would never fire",
           o_mem_rs_issue.rob_tag
@@ -356,7 +361,7 @@ module sc_pending_unit #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (i_rst_n && sct_payload_alloc && !$isunknown(
+    if (reset_seen_q && i_rst_n && sct_payload_alloc && !$isunknown(
             {o_mem_rs_issue.imm, o_mem_rs_issue.src1_value, sq_effective_addr}
         )) begin
       p_sc_effective_addr_is_src1 :

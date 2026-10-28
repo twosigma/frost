@@ -851,7 +851,7 @@ module fetch_provider #(
   // edge.
   logic grp_copies_armed_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    grp_copies_armed_q <= 1'b1;
+    if (i_rst) grp_copies_armed_q <= 1'b1;
     if (grp_copies_armed_q) begin
       for (int p = 0; p < 2; p++) begin
         p_group_busy_copies_match : assert (grp_busy_q[p] == {SlotGroups{fill_busy_q[p]}});
@@ -987,7 +987,7 @@ module fetch_provider #(
       publishability_oracle_valid_q <= 1'b1;
     end
 
-    if (!i_rst && publishability_oracle_valid_q) begin
+    if (ask_line_next_armed_q && !i_rst && publishability_oracle_valid_q) begin
       p_folded_publishability_matches_live_tags :
       assert (window_ready_q == (window_ready_reference_q && (served_addr_q == ask_q)));
     end
@@ -995,7 +995,7 @@ module fetch_provider #(
 
   // Protocol checks (simulation only).
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (ask_line_next_armed_q && !i_rst) begin
       if (i_line_resp_valid && (i_line_resp_id >> 1) != '0)
         $error("fetch_provider: line response id %0d (expected 0 or 1)", i_line_resp_id);
       if (i_line_resp_valid && !(fill_busy_q[resp_slot] && fill_sent_q[resp_slot]))
@@ -1020,7 +1020,7 @@ module fetch_provider #(
     end
   end
   always_ff @(posedge i_clk) begin
-    if (!i_rst && !i_invalidate && ev_write && (VICTIM_LINES > 0)) begin
+    if (ask_line_next_armed_q && !i_rst && !i_invalidate && ev_write && (VICTIM_LINES > 0)) begin
       p_victim_store_write_is_unique : assert (!vs_write_line_stored);
     end
   end

@@ -71,6 +71,11 @@ module cpu_uncached_adapter #(
     // i_resp_valid with an OKAY status, decoded before the response mux.
     input logic i_resp_ok
 );
+
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
+`endif
   localparam int unsigned OffsetBits = $clog2(DATA_BYTES);
   initial begin
     if (DATA_BYTES < 16 || DATA_BYTES > 128 || (DATA_BYTES & (DATA_BYTES - 1)) != 0)
@@ -242,7 +247,7 @@ module cpu_uncached_adapter #(
                             (request_has_write || read_pending_q)));
   end
   always @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (reset_seen_q && !i_rst) begin
       assert (!i_read_enable || o_read_ready)
       else $error("cpu_uncached_adapter: more than one outstanding uncached read");
       assert (!i_write_enable || o_write_ready)

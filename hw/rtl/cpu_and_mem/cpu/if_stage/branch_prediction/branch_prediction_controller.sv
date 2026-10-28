@@ -30,6 +30,10 @@ module branch_prediction_controller #(
     // Set only when i_pc_2/alt are structurally i_pc_2_base + 2/+4.
     parameter bit SLOT2_PC_FROM_BASE = 1'b0
 ) (
+`ifndef SYNTHESIS
+    // Fault responses have undefined candidate metadata.
+    input logic i_metadata_check_valid = 1'b1,
+`endif
     input logic i_clk,
     input logic i_reset,
     input logic i_stall,
@@ -68,10 +72,10 @@ module branch_prediction_controller #(
     // is attached to slot 2 only with i_slot2_valid.
     input logic                       i_lookup_lead_collapsed,
     // Early candidate valids, which may stay high while IF's full packet-valid
-    // gate suppresses slot 2.  They are still enough to identify a live lookup
-    // that belongs to the slot-2 position; an actual slot-2 redirect or
-    // fallback also needs i_slot2_valid.  At most one is high, and exactly one
-    // while i_slot2_valid is high (asserted below).
+    // gate suppresses slot 2. They identify a live lookup belonging to the
+    // slot-2 position; a slot-2 redirect or fallback also needs i_slot2_valid.
+    // At most one is high when a served window is consumed, and exactly one
+    // while i_slot2_valid is high (asserted below). Idle metadata is unspecified.
     input logic                       i_slot2_plus2_candidate_valid,
     input logic                       i_slot2_plus4_candidate_valid,
     input logic                       i_slot2_valid,
@@ -265,9 +269,8 @@ module branch_prediction_controller #(
   logic            btb_entry_is_return_2_plus4;
 
   // Target, hit, bimodal index, and the other selected metadata all follow
-  // the same candidate.  The +4 candidate valid is already qualified, and
-  // since at most one candidate valid is high (asserted below), selecting +2
-  // is the safe default when neither is.
+  // the same candidate. For a consumed window, at most one candidate valid
+  // is high (asserted below), so selecting +2 is safe when neither is.
   logic            slot2_pc_use_alt;
   assign slot2_pc_use_alt = i_slot2_plus4_candidate_valid;
 
@@ -1100,8 +1103,10 @@ module branch_prediction_controller #(
       dir_predicted_taken_2;
 
   // The registered restore a cycle later, for the stack-operation check below.
+  logic reset_seen_q = 1'b0;
   logic ras_restore_prev_q;
   always_ff @(posedge i_clk) begin
+    if (i_reset) reset_seen_q <= 1'b1;
     ras_restore_prev_q <= !i_reset && ras_misprediction_r;
   end
 
@@ -1110,14 +1115,18 @@ module branch_prediction_controller #(
   // never use a prediction while either holdoff or registered slot-1
   // metadata is live.
   always_ff @(posedge i_clk) begin
-    if (!i_reset) begin
+    if (reset_seen_q && !i_reset) begin
       if (!$isunknown(
               {i_slot2_valid, i_slot2_plus2_candidate_valid, i_slot2_plus4_candidate_valid}
           )) begin
-        p_slot2_candidate_valids_are_onehot :
-        assert ($onehot0({i_slot2_plus4_candidate_valid, i_slot2_plus2_candidate_valid}));
+        // Idle and fault payloads do not describe executable instructions.
+        if (i_metadata_check_valid &&
+            (i_slot2_valid || (prediction_common && i_fetch_progress))) begin
+          p_slot2_candidate_valids_are_onehot :
+          assert ($onehot0({i_slot2_plus4_candidate_valid, i_slot2_plus2_candidate_valid}));
+        end
         p_live_slot2_has_exactly_one_candidate :
-        assert (!i_slot2_valid || $onehot(
+        assert (!i_metadata_check_valid || !i_slot2_valid || $onehot(
             {i_slot2_plus4_candidate_valid, i_slot2_plus2_candidate_valid}
         ));
         p_slot2_target_selector_uses_plus4_valid :
