@@ -225,6 +225,20 @@ UART_LINE_CHECK: dict[str, Any] = {
 
 # Single source of truth for every runnable test, keyed by test name.
 TEST_REGISTRY: dict[str, CocotbRunConfig] = {
+    **{
+        f"ddr_reset_distribution{suffix}": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_ddr_reset_distribution",
+            hdl_toplevel_module="frost",
+            app_name="hello_world",
+            description=f"DDR reset assertion and release with {clock_mode} CPU clocks",
+            extra_env=clock_env,
+            verilator_extra_args=("-GENABLE_CACHED_TIER=0", "-GUSE_BEHAVIORAL_DDR=0"),
+        )
+        for suffix, clock_mode, clock_env in (
+            ("", "common", ()),
+            ("_async", "independent", (("FROST_CPU_PERIOD_PS", "7000"),)),
+        )
+    },
     "soc_async_reset": CocotbRunConfig(
         python_test_module="cocotb_tests.test_async_boundary",
         hdl_toplevel_module="soc_top",
