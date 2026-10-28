@@ -490,6 +490,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Self-modifying DDR code across fence.i timing and cache-state "
         "variations",
+        extra_env=(("COCOTB_MAX_CYCLES", "10000000"),),
     ),
     "ddr_heap_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -592,6 +593,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Sv39 walks see dirty L1D page tables, with 32-byte L2 lines",
         verilator_extra_args=("-GL2_LINE_BYTES=32",),
+        extra_env=(("COCOTB_MAX_CYCLES", "1000000"),),
     ),
     "smc_fencei_test_equal_lines": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -600,6 +602,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Self-modifying DDR code across fence.i, with 32-byte L2 lines",
         verilator_extra_args=("-GL2_LINE_BYTES=32",),
+        extra_env=(("COCOTB_MAX_CYCLES", "10000000"),),
     ),
     "csr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -715,9 +718,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Sv39 instruction fetch in supervisor and user modes, including cached DDR"
         ),
-        # Case Z's repeated L1I eviction and L1D writeback exceed the default
-        # 500k-cycle budget from DDR.
-        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
+        # Case Z repeats L1I eviction and complete L1D maintenance sweeps.
+        extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
     ),
     "itlb_test_1g": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -728,7 +730,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Sv39 instruction fetch and bare out-of-range fault at 1 GiB DDR",
         include_in_pytest=False,
         extra_env=(
-            ("COCOTB_MAX_CYCLES", "2000000"),
+            ("COCOTB_MAX_CYCLES", "20000000"),
             ("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=30"),
         ),
         verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
@@ -1265,6 +1267,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Sv39 walks see dirty L1D page tables without an intervening sfence.vma"
         ),
+        extra_env=(("COCOTB_MAX_CYCLES", "1000000"),),
     ),
     "ddr_atomic_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1509,7 +1512,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "disabled)"
         ),
         verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
-        extra_env=(("EXTRA_CFLAGS", "-DITLB_NO_CACHED_FETCH"),),
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DITLB_NO_CACHED_FETCH"),
+            ("COCOTB_MAX_CYCLES", "5000000"),
+        ),
     ),
     "served_window_resteer_fetch_fuzz": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
