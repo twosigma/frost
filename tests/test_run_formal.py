@@ -97,7 +97,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherent_rs_control.sby",
-        "Coherent second-issue control, immediate-use, shift and count equality.",
+        "Coherent allocation masks, issue controls, shift and count equality.",
         tasks=(
             "coh_rs_control_prove",
             "coh_rs_control_int_prove",
@@ -909,15 +909,15 @@ SBY_TASKS = [
     ("coh_rs_payload_wide_prove", "Coherent payload storage equality at 125 bits."),
     (
         "coh_rs_control_prove",
-        "Coherent issue controls, immediate use, shift and count with three sources.",
+        "Coherent allocation masks and issue, immediate, shift and count controls with three sources.",
     ),
     (
         "coh_rs_control_int_prove",
-        "Coherent integer issue controls, immediate use, shift and count equality.",
+        "Coherent integer allocation masks and issue, immediate, shift and count equality.",
     ),
     (
         "coh_rs_control_window_prove",
-        "Coherent issue controls, immediate use, shift and count with a five-entry window.",
+        "Coherent allocation masks and issue controls with a five-entry window.",
     ),
     ("coh_rs_issue2_8_prove", "Coherent second-issue equality at eight entries."),
     ("coh_rs_issue2_16_prove", "Coherent second-issue equality at sixteen entries."),

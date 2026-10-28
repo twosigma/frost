@@ -1257,6 +1257,34 @@ module reservation_station #(
     end
   end
 
+`ifdef FROST_COHERENT_CLUSTER
+  logic [DEPTH-1:0] coherent_alloc1_target, coherent_alloc2_target;
+  if (COHERENT_CLUSTER) begin : gen_coherent_allocation_targets
+    (* keep = "true" *) logic [DEPTH-1:0] first_target, second_target;
+    assign first_target[DEPTH-1:1] = none_free_below[DEPTH-1:1];
+    assign first_target[0] = !(|none_free_below[DEPTH-1:1]);
+    assign second_target[DEPTH-1:1] = one_free_below[DEPTH-1:1];
+    assign second_target[0] = !(|one_free_below[DEPTH-1:1]);
+    assign coherent_alloc1_target = first_target;
+    assign coherent_alloc2_target = i_intent_1 ? second_target : first_target;
+`ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
+    always_comb begin
+      p_alloc1_target_exact : assert (coherent_alloc1_target == index_to_onehot(free_idx));
+      p_alloc2_target_exact : assert (coherent_alloc2_target == index_to_onehot(alloc_idx_2));
+    end
+`endif
+`ifndef SYNTHESIS
+    always @(posedge i_clk) begin
+      p_alloc1_target_exact : assert (coherent_alloc1_target == index_to_onehot(free_idx));
+      p_alloc2_target_exact : assert (coherent_alloc2_target == index_to_onehot(alloc_idx_2));
+    end
+`endif
+  end else begin : gen_line_allocation_targets
+    assign coherent_alloc1_target = '0;
+    assign coherent_alloc2_target = '0;
+  end
+`endif
+
   always_comb begin
     free_idx   = '0;
     free_idx_2 = '0;
@@ -2698,12 +2726,23 @@ module reservation_station #(
       repair_slot1_target_q <= '0;
       repair_slot2_target_q <= '0;
     end else begin
+`ifdef FROST_COHERENT_CLUSTER
+      if (COHERENT_CLUSTER) begin
+        repair_slot1_target_q <= {DEPTH{ALLOC_INDEXED_REPAIR && dispatch_fire}} &
+            coherent_alloc1_target;
+        repair_slot2_target_q <= {DEPTH{ALLOC_INDEXED_REPAIR && dispatch_fire_2}} &
+            coherent_alloc2_target;
+      end else begin
+`endif
       repair_slot1_target_q <= (ALLOC_INDEXED_REPAIR && dispatch_fire) ? index_to_onehot(
           free_idx
       ) : '0;
       repair_slot2_target_q <= (ALLOC_INDEXED_REPAIR && dispatch_fire_2) ? index_to_onehot(
           alloc_idx_2
       ) : '0;
+`ifdef FROST_COHERENT_CLUSTER
+      end
+`endif
     end
   end
 
@@ -2812,6 +2851,62 @@ module reservation_station #(
           if (issue_fire) rs_valid[issue_idx] <= 1'b0;
         end
 
+`ifdef FROST_COHERENT_CLUSTER
+        if (COHERENT_CLUSTER) begin
+          for (int entry = 0; entry < DEPTH; entry++) begin
+            if (dispatch_fire && coherent_alloc1_target[entry]) begin
+              rs_valid[entry] <= 1'b1;
+              if (TRACK_INT_WRITEBACK_HINT)
+                rs_writes_cdb_hint[entry] <= int_rs_writes_cdb(dispatch_op);
+
+              // Capture dispatch readiness, including repair bypass when enabled.
+              // Indexed repair and deferred CDB matches set ready one cycle later.
+              rs_src1_ready[entry] <= dispatch_src1_ready || dispatch_src1_repair_match;
+              rs_src2_ready[entry] <= dispatch_src2_ready || dispatch_src2_repair_match;
+              if (HAS_SRC3) begin
+                rs_src3_ready_q[entry] <= dispatch_src3_ready || dispatch_src3_repair_match;
+              end
+              rs_use_imm[entry] <= dispatch_use_imm;
+              rs_shift_uses_imm[entry] <= dispatch_shift_controls[0];
+              rs_shift_imm[entry] <= dispatch_imm[5:0];
+              // Write pending flags on every dispatch, including zero when unmatched,
+              // so reallocation cannot inherit a stale delivery.
+              src1_cdb_pend[entry] <= dispatch_src1_cdb_defer;
+              src1_cdb_pend_lane[entry] <= dispatch_src1_cdb_defer_lane;
+              src2_cdb_pend[entry] <= dispatch_src2_cdb_defer;
+              src2_cdb_pend_lane[entry] <= dispatch_src2_cdb_defer_lane;
+              if (HAS_SRC3) begin
+                src3_cdb_pend[entry] <= dispatch_src3_cdb_defer;
+                src3_cdb_pend_lane[entry] <= dispatch_src3_cdb_defer_lane;
+              end
+            end
+
+            // Slot 2 takes priority when both allocation targets name this entry.
+            if (dispatch_fire_2 && coherent_alloc2_target[entry]) begin
+              rs_valid[entry] <= 1'b1;
+              if (TRACK_INT_WRITEBACK_HINT)
+                rs_writes_cdb_hint[entry] <= int_rs_writes_cdb(dispatch_op_2);
+
+              rs_src1_ready[entry] <= dispatch_src1_ready_2 || dispatch_src1_repair_match_2;
+              rs_src2_ready[entry] <= dispatch_src2_ready_2 || dispatch_src2_repair_match_2;
+              if (HAS_SRC3) begin
+                rs_src3_ready_q[entry] <= dispatch_src3_ready_2 || dispatch_src3_repair_match_2;
+              end
+              rs_use_imm[entry] <= dispatch_use_imm_2;
+              rs_shift_uses_imm[entry] <= dispatch_shift_controls_2[0];
+              rs_shift_imm[entry] <= dispatch_imm_2[5:0];
+              src1_cdb_pend[entry] <= dispatch_src1_cdb_defer_2;
+              src1_cdb_pend_lane[entry] <= dispatch_src1_cdb_defer_lane_2;
+              src2_cdb_pend[entry] <= dispatch_src2_cdb_defer_2;
+              src2_cdb_pend_lane[entry] <= dispatch_src2_cdb_defer_lane_2;
+              if (HAS_SRC3) begin
+                src3_cdb_pend[entry] <= dispatch_src3_cdb_defer_2;
+                src3_cdb_pend_lane[entry] <= dispatch_src3_cdb_defer_lane_2;
+              end
+            end
+          end
+        end else begin
+`endif
         if (dispatch_fire) begin
           rs_valid[free_idx] <= 1'b1;
           if (TRACK_INT_WRITEBACK_HINT)
@@ -2862,6 +2957,9 @@ module reservation_station #(
             src3_cdb_pend_lane[alloc_idx_2] <= dispatch_src3_cdb_defer_lane_2;
           end
         end
+`ifdef FROST_COHERENT_CLUSTER
+        end
+`endif
       end
 
       // CDB and repair wakeup: ready bits.
