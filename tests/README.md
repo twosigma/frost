@@ -503,7 +503,8 @@ clock and power-on reset with a stopped SoC clock. Both targets check that
 cold reset waits for a delayed CPU clock while programming clocks continue.
 
 `ddr_reset_distribution` and `ddr_reset_distribution_async` check the external
-DDR reset with common and independent CPU clocks. They check asynchronous
+DDR reset with common and independent CPU clocks. Both entries enable RTL
+assertions. They check asynchronous
 assertion from released state, held release with a stopped SoC clock, and
 repeated requests during release. The CPU stays in system reset during
 these checks, so the AXI ports are idle. The master and bridge unit benches

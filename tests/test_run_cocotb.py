@@ -232,7 +232,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             app_name="hello_world",
             description=f"DDR reset assertion and release with {clock_mode} CPU clocks",
             extra_env=clock_env,
-            verilator_extra_args=("-GENABLE_CACHED_TIER=0", "-GUSE_BEHAVIORAL_DDR=0"),
+            verilator_extra_args=(
+                "--assert",
+                "-GENABLE_CACHED_TIER=0",
+                "-GUSE_BEHAVIORAL_DDR=0",
+            ),
         )
         for suffix, clock_mode, clock_env in (
             ("", "common", ()),
