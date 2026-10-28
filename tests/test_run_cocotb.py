@@ -1168,7 +1168,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
     # Fixed simulation scales for CLINT re-arm and AMO/IRQ flush tests.
     # extra_env overrides external EXTRA_CFLAGS; use the base entries for
-    # custom scales. The bench's app_name-based budgets still apply.
+    # custom scales. The registry and benchmark runner supply cycle budgets.
     "amo_irq_torture_sim": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1178,7 +1178,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Timer interrupts preserve DDR atomic effects (simulation-scale workload)"
         ),
-        extra_env=(("EXTRA_CFLAGS", "-DAMO_TORTURE_ITERS=256"),),
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DAMO_TORTURE_ITERS=256"),
+            ("COCOTB_AMO_TORTURE_MAX_CYCLES", "12000000"),
+        ),
     ),
     "tick_torture_sim": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

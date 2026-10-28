@@ -510,6 +510,7 @@ which have 90 minutes each. `--verbose` prints solver output.
 | `NUMBER_OF_CPU_CORES` | Parallel Verilator build jobs (default: every core; a seed sweep divides them among its workers) |
 | `COCOTB_MAX_CYCLES` | Cycle budget per application run (default 500,000); some targets set their own |
 | `COCOTB_COREMARK_MAX_CYCLES` | CoreMark and CoreMark-PRO cycle budget (default 15,000,000; the registry sets 20,000,000 for `coremark_pro_loops`) |
+| `COCOTB_AMO_TORTURE_MAX_CYCLES` | AMO interrupt workload cycle budget (default 6,000,000; the registry sets 12,000,000 for `amo_irq_torture_sim`) |
 | `COCOTB_COREMARK_PROGRESS_INTERVAL` | CoreMark progress diagnostics interval in cycles (default 500,000); `0` disables the optional per-cycle Python observer, as CI does for CoreMark-PRO |
 | `COCOTB_NUM_RUNS` | Runs per application, with a reset between them (default 2; 1 in the DDR tier and for entries with `rerun_after_reset=False`) |
 | `FROST_CALIBRATION_TRACE_PATH` | Records a calibration trace of one run for the [performance model](../perf-modeling/README.md); the other `FROST_CALIBRATION_*` variables choose the run, the window, and more output files |
