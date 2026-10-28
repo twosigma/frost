@@ -323,19 +323,15 @@ benches. Their default sizes and storage are:
 
 | Instance | Size | Line | Ways x sets | Tags | Data | Miss slots | Waiter seats per miss slot | Writeback slots | Probe slots |
 |----------|------|------|-------------|------|------|------------|----------------------------|-----------------|-------------|
-| L1D | 128 KiB | 32 B | 4 x 1024 | Block RAM per way, 1-cycle read | Block RAM, a bank per way | 8 | 1 | 2 | 4 |
+| L1D | 128 KiB | 32 B | 4 x 1024 | Block RAM per way, 1-cycle read | Block RAM, a bank per way | 4 | 1 | 2 | 4 |
 | L1I | 16 KiB | 32 B | 4 x 128 | Block RAM per way, 1-cycle read | Block RAM, a bank per way | 2 | 1 | 2 (unused) | 0 |
 | L2 | 2 MiB | 64 B | 4 x 8192 | UltraRAM, a set's four ways in one 72-bit row, 3-cycle read | UltraRAM | 4 | 2 | 2 | 0 |
 
-The X3 overrides the L2 miss-slot count and prefetch request limit to eight.
-The table describes the generic CPU defaults.
-
 The ways are the hierarchy's `L1D_WAYS`, `L1I_WAYS`, and `L2_WAYS`
-parameters, which `frost` and `cpu_top` take too. The L1D's miss slots
-are the hierarchy's `L1D_NUM_MSHR` parameter and the L2's counts its
-`L2_NUM_MSHR`, `L2_NUM_WAITERS`, and `L2_NUM_WB` parameters, which
-`cpu_top` sets as in the table. Its downstream ids, `L2_DOWN_ID_BITS` wide
-(5 on the X3), hold up to 16 slots of each type.
+parameters. `L1D_NUM_MSHR` sets its L1D miss slots. `L2_NUM_MSHR`,
+`L2_NUM_WAITERS`, and `L2_NUM_WB` set its L2 capacities.
+The downstream IDs are `L2_DOWN_ID_BITS` wide. The default width of 5
+holds up to 16 slots of each type.
 
 ### Sets and ways
 
@@ -561,7 +557,7 @@ Each arbiter prefixes its port index to the ids it forwards, so ids stay
 unique across all upstream masters without a global plan. The tree yields a
 prefix-free code in `UP_ID_BITS + 2` bits:
 
-| Master | Id below the top arbiter | Local id bits (`UP_ID_BITS=4`, as `cpu_top` sets) |
+| Master | Id below the top arbiter | Local id bits (`UP_ID_BITS=4`) |
 |--------|--------------------------|--------------------------------|
 | L1D | `{2'b00, id}` | 4 |
 | Walker | `{2'b01, 1'b0, id}` | 3 |
@@ -569,14 +565,13 @@ prefix-free code in `UP_ID_BITS + 2` bits:
 | DMA port | `{2'b10, id}`; with the prefetcher `{2'b10, 1'b0, id}` | 4; with the prefetcher 3 |
 | Prefetcher | `{2'b10, 1'b1, id}` | 3 |
 
-The L2 sees those 6 bits. Its own downstream requests carry `{type, slot}`
-ids, `L2_DOWN_ID_BITS` wide: 5 on the X3, the AXI id width its DDR block
-design provides (`fpga/build/x3_ddr_bd.tcl`). The L1D spends one of its 4
-bits on the fill/writeback type and 3 on its 8 miss slots. The L1I has 2 miss
-slots, all its master, the two-line fetch buffer, ever uses. The walker keeps
-one walk in flight and uses id 0. `axi_coherent_bridge`, the DMA port's one
-agent in FROST, uses 3 bits of its ids. The prefetcher has 3 local id bits
-for its eight outstanding reads on the X3. Its generic limit is four reads.
+The L2 sees those 6 bits. Its downstream requests carry `{type, slot}`
+IDs, `L2_DOWN_ID_BITS` wide. With `UP_ID_BITS=4`, the L1D spends one
+bit on the fill/writeback type and has 3 bits available for miss slots.
+The L1I has 2 miss slots. The walker keeps one walk in flight and uses
+ID 0. `axi_coherent_bridge` uses 3 bits of its IDs. The prefetcher's
+3 local ID bits support up to eight outstanding reads; its default
+limit is four reads.
 
 The bridge drops any response whose id is not in flight. That is how a
 transaction interrupted by an image-load CPU reset drains harmlessly on
@@ -608,9 +603,10 @@ fatal address and stop CPU retirement. They cannot be made precise after a
 buffered store has retired. FROST's SoC also counts board DDR error responses
 in `memory_error_unit`; `memerr_test` checks the read exception, ECC/APLIC
 reporting and final fatal writeback stop. Coherent responses carry errors
-through the DMA sequencer and arbiter to `axi_coherent_bridge`, which answers
+through the home and DMA ingress to `axi_coherent_bridge`, which answers
 SLVERR to the NIC or the DMA test engine. `ENABLE_RESPONSE_ERRORS`
-defaults to 0 in the library modules; `cpu_top` sets it to 1.
+defaults to 0 in the generic line-cache modules. The CPU enables response
+errors on its instruction cache and propagates coherent data errors.
 
 The behavioral DDR model accepts `+axi_rd_error_addr=<hex>` and
 `+axi_wr_error_addr=<hex>` for region-relative failed lines. `line_port_axi_bridge`
@@ -635,9 +631,9 @@ so each instruction sequence starts with empty storage.
 
 ## The L2 line size
 
-The L1s, the walker, and the DMA port use 32-byte lines, and so does
-everything above the L2: the arbiters, both coherence sequencers, and the
-L1D's probes. The L2 uses 64-byte lines, each holding two 32-byte lines as
+In the generic line-cache hierarchy, the L1s, walker and DMA port use
+32-byte lines. The arbiters, both coherence sequencers and L1D probes
+use the same line size. The L2 uses 64-byte lines, each holding two 32-byte lines as
 its lower and upper halves, so every DDR transfer is one 512-bit beat, the
 width of the X3 DDR4 controller's word. The controller runs ECC without a
 data mask, so a write of less than a whole word makes it read the word,
@@ -699,17 +695,16 @@ every cache event, they leave out `fence.i` writebacks.
 
 Reset clears the L2's 8,192 sets, one set per cycle on hardware.
 
-DMA coherence and atomics work the same with either line size. DMA is
-coherent through the DMA port (see The DMA port and coherence); a master
-that reaches DDR below the L2 sees neither cache level. AMOs, LR, and SC
-execute in the load queue, on low BRAM and cached DDR, and reach the
-hierarchy as ordinary reads and writes. An atomic to any other address
-faults.
+DMA coherence works with either line size through the DMA port
+(see The DMA port and coherence). A master that reaches DDR below the L2
+sees neither cache level. The generic line-cache interface carries ordinary
+reads and writes. The CPU's cached atomic operations use the home protocol
+described above.
 
 ## The stream prefetcher
 
 `l2_stream_prefetcher` reads ahead of ascending L1D miss streams into the L2.
-`cpu_top` turns it on (`L2_PREFETCH`); 0 removes it. It watches the
+`frost_cache_hierarchy` enables it with `L2_PREFETCH=1`. It watches the
 L1D's read requests as the top arbiter takes them, which are its misses,
 store misses included. A table of 4 streams holds the last L2 line each
 stream missed on. A miss on the line after a stream's confirms the stream
@@ -720,7 +715,7 @@ ahead and never past the 4 KiB page of that miss, so it reads only memory
 that a demand access in the same page showed to exist.
 
 The reads are ordinary line reads on the prefetcher's side of the DMA port,
-at most `L2_PREFETCH_INFLIGHT` outstanding (4 by default, 8 on the X3).
+at most `L2_PREFETCH_INFLIGHT` outstanding (4 by default).
 Their responses only
 free the prefetcher's ids: the point is the L2 fill, which takes a way and
 touches the set's replacement state like a demand fill. A demand read that
@@ -870,7 +865,7 @@ to answer.
 | `*_equal_lines` | The data-integrity, concurrency, and DMA suites with 32-byte L2 lines, equal to the L1s', as a control; also DDR load and store, fetch, atomic, DMA, page-table-walk, and `fence.i` programs on the whole system with 32-byte L2 lines and a 256-bit DDR port |
 | `*_16x4` | The L2-line, concurrency, and DMA suites with 16 L2 miss slots and 4 writeback slots |
 | `frost_cache_l2_lines_waiters2` | The L2-line suite with two waiter seats per L2 miss slot |
-| `*_prefetch` | The concurrency and DMA suites with the X3's ids, L1D and L2 miss slots, L2 waiter seats, and prefetch request limit |
+| `*_prefetch` | The concurrency and DMA suites with eight L1D miss slots, eight L2 miss slots, two waiter seats per L2 miss slot, and eight prefetch requests |
 | `*_ways1` | The data-integrity, concurrency, DMA, and L2-line suites with direct-mapped caches |
 | `l2_stream_prefetcher*` | Stream confirmation, read distance, page bounds, response ID reuse, and four- and eight-request caps under excess demand |
 | `line_port_arbiter*` | Arbitration and tagged responses |

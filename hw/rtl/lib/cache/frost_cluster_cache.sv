@@ -15,8 +15,8 @@
  */
 
 /*
- * frost_cluster_cache: the shared level of the cache hierarchy, below a
- * hart's private caches (hw/rtl/lib/cache/README.md, "The hierarchy").
+ * frost_cluster_cache: the shared level of the generic line-cache hierarchy
+ * (hw/rtl/lib/cache/README.md, "The line cache").
  *
  * Four upstream line-port slaves share one downstream master:
  *   l1d_down   the L1D's misses and writebacks (frost_hart_cache);
@@ -49,12 +49,11 @@
  *   DMA        {2'b10, 1'b0, (UP_ID_BITS-1)-bit DMA-port id}
  *   prefetcher {2'b10, 1'b1, (UP_ID_BITS-1)-bit local id}
  * The l1d_down and dma ports carry UP_ID_BITS; the walk_down and l1i_down
- * ports carry UP_ID_BITS-1. With the default UP_ID_BITS=3, DownIdBits is 5;
- * cpu_top uses UP_ID_BITS=4, so DownIdBits is 6 there.
+ * ports carry UP_ID_BITS-1. With the default UP_ID_BITS=3, DownIdBits is 5.
+ * UP_ID_BITS=4 gives DownIdBits=6.
  * The L2 takes DownIdBits ids and gives its own downstream requests
- * {type, slot} ids, L2_DOWN_ID_BITS wide: 5 on the X3, the AXI id width of
- * its DDR block design (fpga/build/x3_ddr_bd.tcl), enough for 16 slots of
- * each type.
+ * {type, slot} ids, L2_DOWN_ID_BITS wide. The default width of 5 supports
+ * 16 slots of each type.
  *
  * The L2 exports two registered performance-event bundles: its traffic and
  * stalls, and the costs of writes narrower than its lines. The L1D's
@@ -76,7 +75,7 @@ module frost_cluster_cache #(
     parameter int unsigned L2_WAYS = 4,
     // Bimodal insertion in the L2 (frost_cache BIMODAL_INSERT).
     parameter bit L2_BIMODAL_INSERT = 1'b0,
-    // Total logical latency of the X3 L2's packed URAM tag lookup.
+    // Total logical latency of the packed URAM tag lookup.
     parameter int unsigned L2_TAG_READ_LATENCY = 3,
     parameter int unsigned L2_DATA_READ_LATENCY = 6,
     parameter int unsigned L2_DATA_WRITE_LATENCY = 2,
@@ -375,8 +374,8 @@ module frost_cluster_cache #(
   // It shares the top arbiter's DMA port through a 2:1 arbiter, DMA first,
   // which splits the DMA port's ids: {1'b0, DMA id} and {1'b1, prefetch id},
   // each UP_ID_BITS-1 bits, so DMA ids keep their top bit clear. The top
-  // arbiter keeps three ports (and its explicit-LUT grant on the X3), and
-  // the ids below it keep their width. The prefetcher's responses only free
+  // arbiter has three ports; FROST_XILINX_PRIMS selects its explicit LUT grant.
+  // The ids below it keep their width. The prefetcher's responses only free
   // its ids.
   // ---------------------------------------------------------------------------
   logic dp_down_req_valid, dp_down_req_ready, dp_down_req_write;

@@ -2321,12 +2321,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="DMA coherence with 16 L2 miss and 4 writeback slots",
         verilator_extra_args=("-GL2_NUM_MSHR=16", "-GL2_NUM_WB=4"),
     ),
-    # The concurrency and DMA suites with the X3's ids, L1D miss slots, L2
-    # waiter seats, and stream prefetcher, whose reads add L2 traffic.
+    # The concurrency and DMA suites use eight L1D and L2 miss slots, two
+    # L2 waiter seats, and eight stream prefetch requests.
     "frost_cache_concurrency_prefetch": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache_concurrency",
         hdl_toplevel_module="frost_cache_test_harness",
-        description="Overlapping cache requests with the X3's slots and the L2 prefetcher",
+        description="Overlapping cache requests with eight miss slots and the L2 prefetcher",
         verilator_extra_args=(
             "-GUP_ID_BITS=4",
             "-GL1D_NUM_MSHR=8",
@@ -2340,7 +2340,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "frost_cache_dma_prefetch": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache_dma",
         hdl_toplevel_module="frost_cache_test_harness",
-        description="DMA coherence with the X3's slots and the L2 prefetcher",
+        description="DMA coherence with eight miss slots and the L2 prefetcher",
         verilator_extra_args=(
             "-GUP_ID_BITS=4",
             "-GL1D_NUM_MSHR=8",
@@ -2382,15 +2382,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GL2_WAYS=1",
         ),
     ),
-    # fence.i maintenance cycle-count measurement at the production cache
-    # geometry (128 KiB L1D, 16 KiB L1I, 2 MiB L2). Two builds, slow
+    # Generic line-cache fence.i maintenance cycle-count measurement at the
+    # full cache geometry (128 KiB L1D, 16 KiB L1I, 2 MiB L2). Two builds, slow
     # (FPGA-path FSM) and fast, so the speedup is readable from the logs. Not
     # part of the pytest sweep.
     "fence_speed_slow": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_fence_speed",
         hdl_toplevel_module="frost_cache_test_harness",
         description=(
-            "fence.i maintenance cost at production cache sizes with the hardware FSM"
+            "Generic line-cache fence.i maintenance cost at full cache sizes with the hardware FSM"
         ),
         verilator_extra_args=(
             "-GL1_CACHE_BYTES=131072",
@@ -2404,7 +2404,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cache.test_fence_speed",
         hdl_toplevel_module="frost_cache_test_harness",
         description=(
-            "fence.i maintenance cost at production cache sizes with fast simulation "
+            "Generic line-cache fence.i maintenance cost at full cache sizes with fast simulation "
             "maintenance"
         ),
         verilator_extra_args=(
@@ -2418,7 +2418,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     # DMA-port service envelope measurement: one build per candidate lock
     # count so producer depth can be swept against the sequencer's capacity,
     # plus one at the full-system DDR model latency and one with the
-    # production L2, which the write_l2_only scenario needs. Measurement
+    # 2 MiB L2, which the write_l2_only scenario needs. Measurement
     # only, not part of the pytest sweep.
     "dma_envelope_lock3": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_dma_envelope",

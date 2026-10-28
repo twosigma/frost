@@ -72,12 +72,18 @@ def _present_admit(dut_if: TomasuloInterface, addr: int = LINE) -> None:
     dut_if.coherence_admit_requested = True
     dut_if.dut.i_coh_admit_slot.value = SLOT
     dut_if.dut.i_coh_admit_addr.value = addr
-    dut_if._drive_coherent_cache()
+    if dut_if.model_coherent_cache:
+        dut_if._drive_coherent_cache()
+    else:
+        dut_if.dut.i_coh_admit_valid.value = 1
 
 
 def _drop_admit(dut_if: TomasuloInterface) -> None:
     dut_if.coherence_admit_requested = False
-    dut_if._drive_coherent_cache()
+    if dut_if.model_coherent_cache:
+        dut_if._drive_coherent_cache()
+    else:
+        dut_if.dut.i_coh_admit_valid.value = 0
 
 
 async def _release(dut: Any, dut_if: TomasuloInterface) -> None:
@@ -118,14 +124,24 @@ async def _admit_now(dut: Any, dut_if: TomasuloInterface, max_cycles: int = 16) 
 
 
 async def _invalidate_now(
-    dut: Any, dut_if: TomasuloInterface, max_cycles: int = 16
+    dut: Any,
+    dut_if: TomasuloInterface,
+    max_cycles: int = 16,
+    *,
+    require_cut_hold: bool = False,
 ) -> None:
     dut.i_coh_inval_valid.value = 1
     dut.i_coh_inval_slot.value = SLOT
     for _ in range(max_cycles):
+        if require_cut_hold:
+            assert int(dut.i_coherent_cut_hold.value)
         await dut_if.step()
+        if require_cut_hold:
+            assert int(dut.i_coherent_cut_hold.value)
         if int(dut.o_coh_inval_done.value):
             await dut_if.step()
+            if require_cut_hold:
+                assert int(dut.i_coherent_cut_hold.value)
             dut.i_coh_inval_valid.value = 0
             return
     raise AssertionError("invalidation never done")

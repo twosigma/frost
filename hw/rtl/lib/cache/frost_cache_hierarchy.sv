@@ -15,8 +15,8 @@
  */
 
 /*
- * frost_cache_hierarchy: the cache hierarchy as one module
- * (hw/rtl/lib/cache/README.md, "The hierarchy").
+ * frost_cache_hierarchy: the generic line-cache hierarchy for component
+ * benches (hw/rtl/lib/cache/README.md, "The line cache").
  *
  * Four upstream line-port slaves share one downstream master:
  *   up   the data side, through the L1D;
@@ -34,9 +34,7 @@
  * adapter, and the L2). The two connect by wires: the L1D's, the L1I's, and
  * the walker sequencer's line ports, and the DMA sequencer's probes into the
  * L1D with their acknowledgements and releases. Each documents its ids and
- * line sizes. The cache unit benches and the TestRIG platform use this
- * module; cpu_top instantiates the two parts itself, in frost_hart and
- * frost_cluster_memory.
+ * line sizes. The cache unit benches use this module.
  */
 module frost_cache_hierarchy #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -66,7 +64,7 @@ module frost_cache_hierarchy #(
     parameter bit L1D_BIMODAL_INSERT = 1'b1,
     parameter bit L1I_BIMODAL_INSERT = 1'b0,
     parameter bit L2_BIMODAL_INSERT = 1'b0,
-    // Total logical latency of the X3 L2's packed URAM tag lookup.
+    // Total logical latency of the packed URAM tag lookup.
     parameter int unsigned L2_TAG_READ_LATENCY = 3,
     parameter int unsigned L2_DATA_READ_LATENCY = 6,
     parameter int unsigned L2_DATA_WRITE_LATENCY = 2,

@@ -323,9 +323,9 @@ to 3, one for each way.
 | Instance | Wrapper | Memory | Macros |
 | --- | --- | --- | --- |
 | `cpu.cluster_memory.gen_coherent_tier.home.array.data_array` | `sdp_ram_byte_en` | 4,096 x 512, byte lanes | 1 row of 8 `sram_1w1r_4096x64_m8` |
-| `cpu.cluster_memory.gen_coherent_tier.home.array.gen_tag_ultra.tag_array` | `sdp_packed_tag_uram` | 4,096 tags of 18 bits, read four at a time | 1 row of 4 `sram_1w1r_1024x18` |
+| `cpu.cluster_memory.gen_coherent_tier.home.array.gen_tag_ultra.tags` | `sdp_packed_tag_uram` | 4,096 tags of 18 bits, read four at a time | 1 row of 4 `sram_1w1r_1024x18` |
 | `cpu.hart.gen_coherent_tier.hart_cache.l1d.array.data_array` | `sdp_ram_byte_en` | 4,096 x 256, byte lanes | 1 row of 4 `sram_1w1r_4096x64_m8` |
-| `cpu.hart.gen_coherent_tier.hart_cache.l1d.array.gen_tag_block.gen_way[w].tag_array` | `sdp_block_ram` | 1,024 x 19 | 1 `sram_1w1r_1024x19` each |
+| `cpu.hart.gen_coherent_tier.hart_cache.l1d.array.gen_tag_block.gen_way[w].tags` | `sdp_block_ram` | 1,024 x 19 | 1 `sram_1w1r_1024x19` each |
 | `cpu.hart.gen_coherent_tier.hart_cache.l1i.gen_data_banks.gen_bank[w].data_bank` | `sdp_ram_byte_en` | 128 x 256, byte lanes | 1 row of 4 `sram_1w1r_128x64_m8` each |
 | `cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.branch_predictor_inst.btb_payload_ram_lookup_2`, `_alt`, and `_rot` | `sdp_block_ram` | 256 x 36 | 1 `sram_1w1r_256x36` each |
 | `soc.data_memory` | `tdp_bram_dc_byte_en` | 16,384 x 64, byte lanes, two ports | 4 rows of 1 `sram_2rw_4096x64_m8` |
