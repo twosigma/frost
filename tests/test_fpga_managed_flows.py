@@ -1079,6 +1079,10 @@ def test_coremark_pro_modes_build_for_each_board(
     else:
         run_args = make_vars["COREMARK_PRO_RUN_ARGS"].split()
         assert run_args[0] == "-v0" and int(run_args[1][2:]) > 0
+        if board == "vcu118":
+            reference = loader.coremark_pro_make_vars(app, hardware=True, board="x3")
+            reference_args = reference["COREMARK_PRO_RUN_ARGS"].split()
+            assert int(run_args[1][2:]) == 2 * int(reference_args[1][2:])
     assert options["ddr_bytes"] == (1 << 30 if board == "x3" else 1 << 31)
 
 
@@ -1170,7 +1174,7 @@ proc open_hw_target {} {}
 proc get_hw_devices {} {return device0}
 proc refresh_hw_device {device} {}
 proc reset_hw_axi {axi} {}
-proc set_property {key value device} {error "Unexpected property mutation $key"}
+proc set_property {key value device} {puts "PROPERTY:$key:$value:$device"}
 proc get_hw_axis {args} {
     if {[llength $args] == 1} {return [lindex $args 0]}
     return [expr {$::env(TEST_FIRST) eq "ddr" ? "ddr bram" : "bram ddr"}]
@@ -1218,6 +1222,7 @@ source $actual_script
         timeout=10,
     )
     assert result.stdout.endswith("CLOSE_TARGET\nDISCONNECT_SERVER\nCLOSE_MANAGER\n")
+    assert "PROPERTY:PROBES.FILE:" not in result.stdout
     assert result.stdout.count("DELETE:probe_wr") == 2
     assert result.stdout.count("DELETE:probe_rd") == 2
     writes = [
@@ -1280,3 +1285,15 @@ def test_coremark_pro_missing_budget_is_an_argument_error(
         loader.main()
     assert stopped.value.code == 2
     assert "missing iteration budget" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("board,floor", (("x3", 600.0), ("vcu118", 1200.0)))
+@pytest.mark.parametrize("requested", (300.0, 1800.0))
+def test_coremark_pro_zip_timeout_preserves_board_and_caller_budgets(
+    board: str, floor: float, requested: float
+) -> None:
+    """ZIP's setup budget raises short timeouts without lowering explicit ones."""
+    registry = sys.modules[loader.coremark_pro_make_vars.__module__]
+    assert registry.coremark_pro_hardware_timeout(
+        "coremark_pro_zip", board, requested
+    ) == max(floor, requested)
