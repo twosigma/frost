@@ -2233,8 +2233,7 @@ module load_queue #(
         !coherent_address_fault &&
         (sq_no_older_store || (i_sq_all_older_addrs_known && !i_sq_forward.match));
     (* keep = "true" *) wire head_drained_eligible = !coh_launch_hold_q &&
-        !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
-        !(sq_check_is_amo_q && sq_check_is_cached_region && !i_coherent_atomic_protected);
+        !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q));
     (* keep = "true" *) wire head_drained_issue = head_drained_eligible && sq_check_phase2 &&
         !coherent_address_fault &&
         (sq_no_older_store || sq_check_is_amo_q ||
@@ -2300,16 +2299,18 @@ module load_queue #(
 `else
         always @(posedge i_clk) begin
 `endif
-          assert (eligible_choice[head_case] == reference_eligible);
-          assert (issue_choice[head_case] ==
+          assert ((eligible_choice[head_case] && coherent_release_protected) == reference_eligible);
+          assert ((issue_choice[head_case] && coherent_release_protected) ==
               (sq_check_phase2 && reference_eligible && !coherent_address_fault &&
                (sq_no_older_store || (sq_check_is_amo_q && AtHead && Drained) ||
                 (i_sq_all_older_addrs_known && !i_sq_forward.match))));
         end
 `endif
       end
-      assign coherent_eligible_by_drain[drain_case] = eligible_choice[coherent_staged_at_head];
-      assign coherent_issue_by_drain[drain_case] = issue_choice[coherent_staged_at_head];
+      assign coherent_eligible_by_drain[drain_case] =
+          coherent_release_protected && eligible_choice[coherent_staged_at_head];
+      assign coherent_issue_by_drain[drain_case] =
+          coherent_release_protected && issue_choice[coherent_staged_at_head];
     end
     for (genvar head_case = 0; head_case < 2; head_case++) begin : gen_coherent_head_choice
       localparam bit AtHead = head_case != 0;
@@ -2334,9 +2335,25 @@ module load_queue #(
         coherent_issue_choice[1] : coherent_issue_choice[0];
     assign probe_ok = coherent_staged_at_head ?
         coherent_probe_choice[1] : coherent_probe_choice[0];
-    assign coherent_probe_ok = probe_ok;
-    assign coherent_issue_ok = issue_ok;
+    assign coherent_probe_ok = coherent_release_protected && probe_ok;
+    assign coherent_issue_ok = coherent_release_protected && issue_ok;
     assign sq_can_issue = coherent_issue_ok && !coherent_local_hold;
+`ifndef SYNTHESIS
+`ifdef FORMAL
+    always_comb begin
+`else
+    always @(posedge i_clk) begin
+`endif
+      p_issue_permission_exact : assert (sq_can_issue ==
+          (sq_check_phase2 && sq_check_entry_issueable && !coherent_address_fault &&
+           !sq_commit_interlock && !older_amo_write_pending &&
+           (sq_no_older_store || sq_head_amo_clear ||
+            (i_sq_all_older_addrs_known && !i_sq_forward.match))));
+      p_probe_permission_exact : assert ((coherent_probe_ok && !coherent_local_hold) ==
+          (sq_check_entry_issueable && !coherent_address_fault && !l0_lookup_busy &&
+           !(sq_check_no_older_store_q || i_sq_empty)));
+    end
+`endif
   end else begin : gen_line_issue_gate
     assign coherent_probe_choice = '0;
     assign coherent_issue_choice = '0;

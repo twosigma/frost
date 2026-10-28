@@ -123,7 +123,8 @@ the cut and same-sector holds. The coherent memory launch computes permission
 before applying the L0-hit result. Issue and SQ-probe permission are computed for both
 head-match outcomes. Separate expressions cover non-atomic loads and the ROB
 head with an empty committed SQ. The head comparison and committed-store drain
-select between them.
+select between them. Cached-AMO protection qualifies issue and SQ-probe permission
+after this selection.
 Forwarding
 requires an ordinary load and has no head-match dependency.
 Each coherent address slot stores PMA permission, Normal-memory classification
