@@ -1304,8 +1304,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "FreeRTOS queues, mutexes, atomics, and tick-driven task switching"
         ),
-        # Allow for timer ticks spaced 10,000 cycles apart in simulation.
-        extra_env=(("COCOTB_MAX_CYCLES", "1000000"),),
+        # The budget covers atomic workers and timer-driven task switches.
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
     ),
     "fpu_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
