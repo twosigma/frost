@@ -353,39 +353,46 @@ async def amo_holds_home_until_exact_write(dut: Any) -> None:
 
 @cocotb.test()
 async def full_read_queue_yields_to_probe_and_responses_rotate(dut: Any) -> None:
-    """Check dirty replies and bounded response service with a full CPU queue."""
-    b = Cluster(dut)
-    await b.reset()
-    address = 0x80000000
-    await b.store(address, 0x1234)
-    await b.wait("o_pending_store", 0)
-    for slot in range(8):
-        await b.set(
-            i_read_valid=1,
-            i_read_id=slot,
-            i_read_kind=0,
-            i_read_size=3,
-            i_address=address,
-        )
-        await b.tick()
-    await b.set(i_read_valid=0)
-    await b.tick(150)
-    assert b.get("o_read_valid")
-    assert await b.dma(address) & ((1 << 64) - 1) == 0x1234
-    seen = []
-    for _ in range(8):
-        await b.wait("o_read_valid")
-        seen.append(b.get("o_read_id"))
-        assert b.get("o_read_data") == 0x1234
-        await b.set(i_read_ready=1)
-        await b.tick()
-        await b.set(i_read_ready=0)
-        if seen[-1] < 2:
-            await b.set(i_read_valid=1, i_read_id=seen[-1])
+    """Check dirty shared/invalidation replies with all CPU read IDs occupied."""
+    for write in (False, True):
+        b = Cluster(dut)
+        await b.reset()
+        address = 0x80000000
+        await b.store(address, 0x1234)
+        await b.wait("o_pending_store", 0)
+        for slot in range(8):
+            await b.set(
+                i_read_valid=1,
+                i_read_id=slot,
+                i_read_kind=0,
+                i_read_size=3,
+                i_address=address,
+            )
             await b.tick()
-            await b.set(i_read_valid=0)
-        await b.tick(17)
-    assert sorted(seen) == list(range(8))
+        await b.set(i_read_valid=0)
+        await b.tick(150)
+        assert b.get("o_read_valid")
+        if write:
+            await b.dma(address, 0xCD, mask=1)
+            assert address in b.cuts
+        else:
+            assert await b.dma(address) & ((1 << 64) - 1) == 0x1234
+        seen = []
+        for _ in range(8):
+            await b.wait("o_read_valid")
+            seen.append(b.get("o_read_id"))
+            assert b.get("o_read_data") == 0x1234
+            await b.set(i_read_ready=1)
+            await b.tick()
+            await b.set(i_read_ready=0)
+            if seen[-1] < 2:
+                await b.set(i_read_valid=1, i_read_id=seen[-1])
+                await b.tick()
+                await b.set(i_read_valid=0)
+            await b.tick(17)
+        assert sorted(seen) == list(range(8))
+        if write:
+            assert await b.dma(address) & ((1 << 64) - 1) == 0x12CD
 
 
 @cocotb.test()

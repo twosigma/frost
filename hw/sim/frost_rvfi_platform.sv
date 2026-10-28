@@ -575,8 +575,8 @@ module frost_rvfi_platform #(
   logic [riscv_pkg::MemStrbBits-1:0] data_memory_bram_byte_write_enable;
   logic data_memory_read_enable;
   // Cached tier (high-address region). The router drives these tier-routed
-  // requests (already qualified by is_cached); the cached_tier_adapter
-  // completes them with handshake pulses.
+  // requests, qualified by is_cached, to coherent_hart_cache. Completion
+  // arrives on its response and write acknowledgement signals.
   logic [riscv_pkg::MemStrbBits-1:0] data_memory_cached_byte_write_enable;
   logic data_memory_cached_read_enable;
   logic data_memory_cached_read_sel;
