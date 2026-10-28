@@ -108,10 +108,14 @@ the fixture's MMIO path; unused request outputs are left open.
 The [CPU boundary tests](../../hw/rtl/cpu_top/README.md#verification) cover
 the production AXI interface separately.
 
-Cached data, instruction fetches, page-table walks, and FENCE.I use the
-coherent hart cache and shared home. Cached LR/SC and AMO operations use
+Cacheable data requests and page-table walks use the coherent hart cache and
+shared home. FENCE.I performs L1D maintenance and L1I invalidation.
+Cached LR/SC and AMO operations use
 the CPU's protected atomic interface. The home serves the DMA ingress
 through the same probe and completion channels.
+The fixture has four-way 4 KiB L1D and L1I caches and a four-way 16 KiB L2.
+L1D maintenance visits every set and way through the controller state machine.
+Whole-SoC program jobs also exercise the production cache capacities.
 The retirement timeout allows a full L1D maintenance sweep and its dirty
 replies. `FROST_RVFI_DII_HANG_CYCLES` sets the bound, which defaults to
 100,000 cycles.
