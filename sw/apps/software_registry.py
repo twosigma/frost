@@ -29,8 +29,8 @@ class CoremarkProProgram:
     workload: str
     description: str
     # -v0 iteration count per board (keys match BOARD_CONFIG in load_software.py).
-    # Calibrate each board above the 10 s score-rule minimum, with about 0.1 s
-    # margin where possible. fpga/sweep_coremark_pro.py warns on short runs.
+    # VCU118 budgets are estimates at twice the X3 iteration counts.
+    # The sweep checks measured duration against the score-rule minimum.
     hardware_iterations: dict[str, int]
     # Per-board timeout floors include building, loading, and untimed setup.
     hardware_timeout_minimums: dict[str, float] = field(default_factory=dict)
@@ -38,12 +38,12 @@ class CoremarkProProgram:
     hardware_unsupported_reason: str = ""
 
     def iterations_for(self, board: str) -> int:
-        """Return the calibrated -v0 iteration count for board."""
+        """Return the configured -v0 iteration budget for board."""
         try:
             return self.hardware_iterations[board]
         except KeyError:
             raise ValueError(
-                f"{self.app_name}: no CoreMark-PRO iteration count calibrated for "
+                f"{self.app_name}: no CoreMark-PRO iteration budget configured for "
                 f"board '{board}'; add it to hardware_iterations."
             ) from None
 
@@ -67,32 +67,32 @@ COREMARK_PRO_PROGRAMS = (
         app_name="coremark_pro_core",
         workload="core",
         description="CoreMark-PRO core workload",
-        hardware_iterations={"x3": 1},
+        hardware_iterations={"x3": 1, "vcu118": 2},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_cjpeg",
         workload="cjpeg-rose7-preset",
         description="CoreMark-PRO JPEG compression workload",
-        hardware_iterations={"x3": 62},
+        hardware_iterations={"x3": 62, "vcu118": 124},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_linear_alg",
         workload="linear_alg-mid-100x100-sp",
         description="CoreMark-PRO LINPACK single-precision workload",
-        hardware_iterations={"x3": 34},
+        hardware_iterations={"x3": 34, "vcu118": 68},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_loops",
         workload="loops-all-mid-10k-sp",
         description="CoreMark-PRO Livermore loops single-precision workload",
         # ~6 MiB heap, satisfied by the DDR-backed cached region (heap ~1 GiB).
-        hardware_iterations={"x3": 2},
+        hardware_iterations={"x3": 2, "vcu118": 4},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_nnet",
         workload="nnet_test",
         description="CoreMark-PRO neural net workload",
-        hardware_iterations={"x3": 2},
+        hardware_iterations={"x3": 2, "vcu118": 4},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_parser",
@@ -100,7 +100,7 @@ COREMARK_PRO_PROGRAMS = (
         description="CoreMark-PRO XML parser workload",
         # Parser run time is sensitive to heap size and not constant per
         # iteration, so this count keeps extra margin above the minimum.
-        hardware_iterations={"x3": 21},
+        hardware_iterations={"x3": 21, "vcu118": 42},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_radix2",
@@ -109,13 +109,13 @@ COREMARK_PRO_PROGRAMS = (
         # The 768 KiB FFT reference table (data3_big.c) goes in the cached
         # region (.ddr_rodata in sw/common/link.ld) and loads through the
         # sw_ddr.mem image.
-        hardware_iterations={"x3": 148},
+        hardware_iterations={"x3": 148, "vcu118": 296},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_sha",
         workload="sha-test",
         description="CoreMark-PRO SHA-256 workload",
-        hardware_iterations={"x3": 110},
+        hardware_iterations={"x3": 110, "vcu118": 220},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_zip",
@@ -125,8 +125,8 @@ COREMARK_PRO_PROGRAMS = (
         # The official 1 MiB input generator uses repeated strcat calls.
         # Allow time for its quadratic untimed setup without changing the
         # conforming source.
-        hardware_iterations={"x3": 27},
-        hardware_timeout_minimums={"x3": 600.0},
+        hardware_iterations={"x3": 27, "vcu118": 54},
+        hardware_timeout_minimums={"x3": 600.0, "vcu118": 1200.0},
     ),
 )
 

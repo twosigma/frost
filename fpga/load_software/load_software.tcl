@@ -78,13 +78,6 @@ source ${script_dir}/file_to_ddr.tcl
 source ${script_dir}/../common/hw_session.tcl
 frost_hw_session [lindex $argv 3] [lindex $argv 5] $hw_target {
 
-set probes_files [glob -nocomplain [file join $project_root fpga build * work *_frost.ltx]]
-foreach pfile $probes_files {
-    if {[file exists $pfile]} {
-        catch {set_property PROBES.FILE $pfile [lindex [get_hw_devices] 0]}
-        break
-    }
-}
 refresh_hw_device [lindex [get_hw_devices] 0]
 reset_hw_axi [get_hw_axis -of_objects [lindex [get_hw_devices] 0]]
 
@@ -119,23 +112,21 @@ proc probe_hw_axi_echoes {axi_name} {
     # (the BRAM controller, whose read data is tied off).
     catch {delete_hw_axi_txn probe_wr}
     catch {delete_hw_axi_txn probe_rd}
-    create_hw_axi_txn probe_wr [get_hw_axis $axi_name] \
-        -type write -address 0x00000000 -len 1 -data {A5A5A5A5}
-    if {[catch {run_hw_axi [get_hw_axi_txns probe_wr]}]} {
-        catch {delete_hw_axi_txn probe_wr}
-        return 0
-    }
-    create_hw_axi_txn probe_rd [get_hw_axis $axi_name] \
-        -type read -address 0x00000000 -len 1
-    if {[catch {run_hw_axi [get_hw_axi_txns probe_rd]}]} {
+    try {
+        create_hw_axi_txn probe_wr [get_hw_axis $axi_name] \
+            -type write -address 0x00000000 -len 1 -data {A5A5A5A5}
+        run_hw_axi [get_hw_axi_txns probe_wr]
+        create_hw_axi_txn probe_rd [get_hw_axis $axi_name] \
+            -type read -address 0x00000000 -len 1
+        run_hw_axi [get_hw_axi_txns probe_rd]
+        set data [string trim [get_property DATA [get_hw_axi_txns probe_rd]]]
+        if {[regexp -nocase {^(0x)?0*a5a5a5a5$} $data]} {return 1}
+        if {[regexp -nocase {^(0x)?0+$} $data]} {return 0}
+        error "Unexpected AXI probe data from $axi_name: $data"
+    } finally {
         catch {delete_hw_axi_txn probe_wr}
         catch {delete_hw_axi_txn probe_rd}
-        return 0
     }
-    set data [get_property DATA [get_hw_axi_txns probe_rd]]
-    delete_hw_axi_txn probe_wr
-    delete_hw_axi_txn probe_rd
-    return [expr {[string match -nocase "*a5a5a5a5*" $data] ? 1 : 0}]
 }
 
 set all_hw_axis [get_hw_axis]
@@ -152,6 +143,9 @@ if {[llength $all_hw_axis] == 1} {
     set bram_axi [find_hw_axi_by_cell "*jtag_to_axi_bridge*"]
     set ddr_axi [find_hw_axi_by_cell "*jtag_axi_ddr*"]
     if {$bram_axi eq "" || $ddr_axi eq ""} {
+        if {[llength $all_hw_axis] != 2} {
+            error "Expected two JTAG-AXI masters for memory identification"
+        }
         puts "CELL_NAME unavailable; probing JTAG-AXI masters to identify them..."
         # With two masters, one probe identifies both by elimination.
         set first_name [get_property NAME [lindex $all_hw_axis 0]]
@@ -182,7 +176,7 @@ if {$has_ddr && [file exists $ddr_text_file] && [file size $ddr_text_file] > 12 
 }
 
 # Load DDR first, with the CPU held in reset. The rst_assert write starts the
-# image reset, which releases about 1.67 s (at full rate) after the last
+# image reset, which releases after the last
 # low-BRAM write. A multi-MB DDR load takes longer, so file2ddr keeps re-arming
 # it with BRAM writes and the CPU never runs a partial image. The BRAM load
 # that follows extends the reset, and reset invalidates the caches, so the new

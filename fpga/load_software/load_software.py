@@ -254,7 +254,7 @@ def compile_app_for_board(
     """Compile an app with board settings and optional Make overrides.
 
     ddr_bytes sets the application's physical aperture from board_ddr_bytes.
-    linux_boot also advertises that size in its device tree.
+    linux_boot advertises that size or a smaller FROST_LINUX_MEM_SIZE override.
     """
     env = os.environ.copy()
     if "RISCV_PREFIX" not in env:
@@ -282,8 +282,22 @@ def compile_app_for_board(
             )
             return False
         env["FROST_DDR_CAPACITY_LOG2_BYTES"] = capacity_log2
-        if app_name == "linux_boot" and "FROST_LINUX_MEM_SIZE" not in env:
-            env["FROST_LINUX_MEM_SIZE"] = str(ddr_bytes)
+        if app_name == "linux_boot":
+            memory_text = (make_vars or {}).get(
+                "FROST_LINUX_MEM_SIZE", env.get("FROST_LINUX_MEM_SIZE", str(ddr_bytes))
+            )
+            try:
+                memory_bytes = int(memory_text, 0)
+            except ValueError:
+                print("Error: FROST_LINUX_MEM_SIZE must be an integer byte count")
+                return False
+            if not 0 < memory_bytes <= ddr_bytes or memory_bytes % (2 << 20):
+                print(
+                    "Error: FROST_LINUX_MEM_SIZE must be a positive multiple of "
+                    "2 MiB within the board DDR map"
+                )
+                return False
+            env["FROST_LINUX_MEM_SIZE"] = str(memory_bytes)
     if app_name == "coremark":
         env["ITERATIONS"] = str(coremark_iterations)
     # MEM_CONFIG relinks any app from the default BRAM into cached DDR; the
@@ -828,12 +842,16 @@ def main() -> None:
         print(f"  CoreMark iterations: {coremark_iterations}")
     if board_memory:
         print(f"  Board DDR: {board_memory['ddr_bytes'] >> 20} MiB")
-    make_vars = coremark_pro_make_vars(
-        args.software_app,
-        hardware=True,
-        hardware_mode=args.coremark_pro_mode or "performance",
-        board=args.board,
-    )
+    try:
+        make_vars = coremark_pro_make_vars(
+            args.software_app,
+            hardware=True,
+            hardware_mode=args.coremark_pro_mode or "performance",
+            board=args.board,
+        )
+    except ValueError as error:
+        parser.error(str(error))
+
     if args.coremark_pro_parser_gen_ref or args.coremark_pro_parser_size is not None:
         if args.coremark_pro_parser_size is None:
             parser_dataset_args = "-g1"
