@@ -610,3 +610,57 @@ def test_place_arm_has_no_second_placement_or_post_place_edit_commands() -> None
         "phys_opt_design",
     ):
         assert command not in after
+
+
+@pytest.mark.parametrize("board", ("x3", "vcu118"))
+@pytest.mark.parametrize("step", ("opt", "place"))
+def test_checkpoint_constraint_reload_is_board_scoped(
+    tmp_path: Path, board: str, step: str
+) -> None:
+    """X3 preserves checkpoint roots while VCU118 reloads its board constraints."""
+    source = HOOK_MODEL.replace(
+        "open_checkpoint - close_design - read_checkpoint - set_param -",
+        "read_xdc - opt_design - open_checkpoint - close_design - read_checkpoint - set_param -",
+    ).replace(
+        "set argv [list x3 place ExtraNetDelay_high fresh_post_opt.dcp 0]",
+        f"set argv [list {board} {step} Explore checkpoint.dcp 0]",
+    )
+    script = tmp_path / "hook.tcl"
+    script.write_text(source)
+    trace = tmp_path / "trace.txt"
+    trace.touch()
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("FROST_")
+    }
+    environment.update(
+        HOOK_TRACE=str(trace), HOOK_SOURCE=str(REPO_ROOT / "fpga/build/build_step.tcl")
+    )
+    result = subprocess.run(
+        ["tclsh", str(script)],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    commands = trace.read_text().splitlines()
+    reloads = [
+        i for i, command in enumerate(commands) if command.startswith("read_xdc ")
+    ]
+    if board == "x3":
+        assert not reloads
+    else:
+        assert len(reloads) == 1
+        assert commands[reloads[0]].endswith("boards/vcu118/constr/vcu118.xdc")
+        opened = next(
+            i
+            for i, command in enumerate(commands)
+            if command.startswith("open_checkpoint ")
+        )
+        transformed = next(
+            i
+            for i, command in enumerate(commands)
+            if command.startswith(f"{step}_design ")
+        )
+        assert opened < reloads[0] < transformed

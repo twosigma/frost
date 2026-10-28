@@ -682,7 +682,12 @@ def test_normal_coremark_pro_load_preserves_inherited_diagnostics(
 
 
 @pytest.mark.parametrize("failure", [False, True])
-def test_tcl_program_connection_cleanup(tmp_path: Path, failure: bool) -> None:
+@pytest.mark.parametrize(
+    "board,part", [("x3", "xcux35"), ("vcu118", "xcvu9p"), ("vcu118", "xcux35")]
+)
+def test_tcl_program_connection_cleanup(
+    tmp_path: Path, failure: bool, board: str, part: str
+) -> None:
     """program_bitstream.tcl uses the given server and disconnects, pass or fail.
 
     Stub Vivado commands stand in for the hardware manager.
@@ -700,6 +705,11 @@ proc get_hw_targets {} {return {localhost:3219/xilinx_tcf/Xilinx/cable-1}}
 proc current_hw_target {target} {puts "TARGET:$target"}
 proc open_hw_target {} {puts OPEN_TARGET}
 proc get_hw_devices {} {return device0}
+proc get_property {key object} {
+    if {$::env(TEST_BOARD) eq "x3"} {error "X3 must not query the device part"}
+    if {$key ne "PART"} {error "Unexpected property $key"}
+    return $::env(TEST_PART)
+}
 proc set_property {key value device} {puts "PROPERTY:$key:$value:$device"}
 proc program_hw_devices {device} {
     puts PROGRAM
@@ -712,13 +722,15 @@ source $actual_script
 """)
     env = os.environ.copy()
     env["TEST_PROGRAM_FAIL"] = str(int(failure))
+    env["TEST_BOARD"] = board
+    env["TEST_PART"] = part
     result = subprocess.run(
         [
             "tclsh",
             str(harness),
             str(ROOT / "fpga/program_bitstream/program_bitstream.tcl"),
             str(ROOT),
-            "x3",
+            board,
             TARGET,
             "",
             str(bitstream),
@@ -729,10 +741,16 @@ source $actual_script
         env=env,
         timeout=10,
     )
-    assert result.returncode == int(failure), result.stderr
+    wrong_part = board == "vcu118" and part != "xcvu9p"
+    failed = failure or wrong_part
+    assert result.returncode == int(failed), result.stderr
+    if wrong_part:
+        assert "PROGRAM\n" not in result.stdout
+        assert "PROPERTY:PROGRAM.FILE" not in result.stdout
+        assert "Expected xcvu9p" in result.stderr
     assert "CONNECT:-url 127.0.0.1:3219" in result.stdout
     assert result.stdout.endswith("CLOSE_TARGET\nDISCONNECT_SERVER\nCLOSE_MANAGER\n")
-    assert ("FROST_PROGRAM_COMPLETE" in result.stdout) is not failure
+    assert ("FROST_PROGRAM_COMPLETE" in result.stdout) is not failed
 
 
 @pytest.mark.parametrize("failure", [False, True])

@@ -47,10 +47,11 @@ if {![file isfile $bitstream_file] || ![file readable $bitstream_file] ||
 source [file join [file dirname [info script]] .. common hw_session.tcl]
 frost_hw_session [lindex $argv 3] [lindex $argv 5] $hw_target {
     set device [lindex [get_hw_devices] 0]
-    set dev_part [get_property PART $device]
-    if {$board_name eq "vcu118" && ![string match "xcvu9p*" $dev_part]} {
-        puts stderr "Error: Expected xcvu9p for board vcu118, but found $dev_part. Aborting."
-        exit 1
+    if {$board_name eq "vcu118"} {
+        set dev_part [get_property PART $device]
+        if {![string match "xcvu9p*" $dev_part]} {
+            error "Expected xcvu9p for board vcu118, but found $dev_part"
+        }
     }
     set_property PROGRAM.FILE $bitstream_file $device
     program_hw_devices $device
