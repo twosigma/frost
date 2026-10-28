@@ -89,8 +89,12 @@ class Op:
 
 
 def _device_ok(pa: int) -> bool:
-    """Return whether a PA is in a device window (MMIO registers or APLIC)."""
-    return 0x4000_0000 <= pa < 0x4003_1000 or 0x4400_0000 <= pa < 0x4440_0000
+    """Return whether a PA is in the MMIO, APLIC, or IMSIC device windows."""
+    return (
+        0x4000_0000 <= pa < 0x4003_1000
+        or 0x4400_0000 <= pa < 0x4440_0000
+        or 0x4800_0000 <= pa < 0x4820_0000
+    )
 
 
 def _expected(op: Op, leaf: Leaf) -> tuple[int, int, int]:
@@ -279,15 +283,30 @@ async def test_hit_and_walk_resolution_matrix(dut: Any) -> None:
         (replace(base_op, va=0x0123_4568), replace(base_leaf, level=1, ppn=0x80200)),
         (replace(base_op, va=0x1234_5678), replace(base_leaf, level=2)),
         # Device windows: loads and stores only, whole pages.
+        (base_op, replace(base_leaf, ppn=0x3FFFF)),
         (base_op, replace(base_leaf, ppn=0x40030)),
         (base_op, replace(base_leaf, ppn=0x40031)),
         (base_op, replace(base_leaf, ppn=0x43FFF)),
         (base_op, replace(base_leaf, ppn=0x44000)),
         (base_op, replace(base_leaf, ppn=0x443FF)),
         (base_op, replace(base_leaf, ppn=0x44400)),
+        (base_op, replace(base_leaf, ppn=0x47FFF)),
+        (base_op, replace(base_leaf, ppn=0x48000)),
+        (base_op, replace(base_leaf, ppn=0x480FF)),
+        (base_op, replace(base_leaf, ppn=0x48100)),
+        (base_op, replace(base_leaf, ppn=0x481FF)),
+        (base_op, replace(base_leaf, ppn=0x48200)),
+        (replace(base_op, needs_sq=1, store=1), replace(base_leaf, ppn=0x48000)),
+        (replace(base_op, needs_sq=1, store=1), replace(base_leaf, ppn=0x481FF)),
         (replace(base_op, store=1), replace(base_leaf, ppn=0x7FFFF)),
         (replace(base_op, atomic=1), replace(base_leaf, ppn=0x40000)),
         (replace(base_op, store=1, atomic=1), replace(base_leaf, ppn=0x44000)),
+        (replace(base_op, atomic=1), replace(base_leaf, ppn=0x48000)),
+        (replace(base_op, store=1, atomic=1), replace(base_leaf, ppn=0x48100)),
+        (
+            replace(base_op, needs_sq=1, store=1, is_sc=1, atomic=1),
+            replace(base_leaf, ppn=0x481FF),
+        ),
         (
             replace(base_op, needs_sq=1, store=1, is_sc=1, atomic=1),
             replace(base_leaf, ppn=0x40030),
@@ -297,8 +316,14 @@ async def test_hit_and_walk_resolution_matrix(dut: Any) -> None:
         (replace(base_op, va=0x0120_0010), replace(base_leaf, level=1, ppn=0x40000)),
         (replace(base_op, va=0x0123_1000), replace(base_leaf, level=1, ppn=0x40000)),
         (replace(base_op, va=0x0121_0000), replace(base_leaf, level=1, ppn=0x44200)),
+        (replace(base_op, va=0x0120_0008), replace(base_leaf, level=1, ppn=0x48000)),
+        (replace(base_op, va=0x013F_F008), replace(base_leaf, level=1, ppn=0x48000)),
+        (replace(base_op, va=0x0120_0008), replace(base_leaf, level=1, ppn=0x48200)),
         (replace(base_op, va=0xC400_0008), replace(base_leaf, level=2, ppn=0x40000)),
         (replace(base_op, va=0xC440_0000), replace(base_leaf, level=2, ppn=0x40000)),
+        (replace(base_op, va=0xC800_0008), replace(base_leaf, level=2, ppn=0x40000)),
+        (replace(base_op, va=0xC81F_FFF8), replace(base_leaf, level=2, ppn=0x40000)),
+        (replace(base_op, va=0xC820_0000), replace(base_leaf, level=2, ppn=0x40000)),
         (
             replace(base_op, va=0xC000_0018, store=1, atomic=1),
             replace(base_leaf, level=2, ppn=0x40000),
@@ -486,11 +511,17 @@ async def test_early_port_needs_store_permission_and_a_data_page(dut: Any) -> No
         (0x80000, 1, 1, True),
         (0x40000, 1, 1, True),
         (0x443FF, 1, 1, True),
+        (0x48000, 1, 1, True),
+        (0x481FF, 1, 1, True),
         (0x40031, 1, 1, False),
+        (0x47FFF, 1, 1, False),
+        (0x48200, 1, 1, False),
         (0x7FFFF, 1, 1, False),
         (0xC0000, 1, 1, DDR_LIMIT > 0xC000_0000),
         (0x80000, 1, 0, False),
         (0x80000, 0, 1, False),
+        (0x48000, 1, 0, False),
+        (0x48100, 0, 1, False),
     ]
     for ppn, w, d, expected_ok in cases:
         await _clear(dut)

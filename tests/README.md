@@ -164,6 +164,11 @@ software breakpoints, and single stepping through OpenOCD. The
 [memory-response tests](../verif/cocotb_tests/cpu_ooo/memory/README.md) cover
 the portable and Xilinx builds of the load-data mux.
 
+The `dmmu` and `dmmu_1g` benches check translated hits, walk responses and
+early store lookups against an independent memory-map reference. Device
+cases cover the MMIO, APLIC and full IMSIC windows, their boundary pages,
+permissions, atomic-access faults and superpage offsets.
+
 #### Random power-up state
 
 `FROST_RANDOM_START_SEED` enables random power-up state for SoC and unit
