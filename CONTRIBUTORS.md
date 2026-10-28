@@ -54,6 +54,8 @@
 - Proposed the reusable `cpu_top` integration boundary and
   `platform_top = cpu_top + soc_top` separation, with a unified AXI4 master,
   configurable PMA, and explicit interrupt, debug, boot, and reset interfaces
+- Implemented the VCU118 board port, including clocking, DDR4, pin constraints,
+  and build and software-loading integration
 - Proposed the open ASIC flow on FreePDK45
 - Proposed an L1-level coherence unit for SMP
 - Built the architectural performance model in `perf-modeling/`, a

@@ -1,4 +1,4 @@
-#    Copyright 2026 John Goodacre
+#    Copyright 2026 Two Sigma Open Source, LLC
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -12,6 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
+# Copyright (c) 2026 John Goodacre.
+
 # VCU118 (XCVU9P, UltraScale+) DDR4 subsystem block design.
 # Connects the 512-bit AXI master to the onboard Micron MT40A256M16GE-083E
 # component memory via AXI SmartConnect.
@@ -19,11 +21,10 @@
 proc create_vcu118_ddr_bd {} {
   create_bd_design "ddr_subsys"
 
-  set cpu_clk_div 1
-  if {[info exists ::env(FROST_CPU_CLK_DIV)] && $::env(FROST_CPU_CLK_DIV) ne ""} {
-    set cpu_clk_div $::env(FROST_CPU_CLK_DIV)
+  if {[info exists ::env(FROST_CPU_CLK_DIV)] && $::env(FROST_CPU_CLK_DIV) ni {"" 1}} {
+    error "VCU118 uses a fixed CPU clock; FROST_CPU_CLK_DIV must be 1"
   }
-  set cpu_clk_hz [expr {250000000 / $cpu_clk_div}]
+  set cpu_clk_hz 200000000
   set cpu_clk [create_bd_port -dir I -type clk -freq_hz $cpu_clk_hz cpu_clk]
   set jtag_clk [create_bd_port -dir I -type clk -freq_hz [expr {$cpu_clk_hz / 4}] jtag_clk]
 
@@ -56,7 +57,7 @@ proc create_vcu118_ddr_bd {} {
 
   set_property CONFIG.ASSOCIATED_BUSIF {S00_AXI} [get_bd_ports cpu_clk]
 
-  # Dedicated 250 MHz differential DDR clock (Bank 71: E12/D12 in SLR2)
+  # Dedicated DDR reference clock (Bank 71: E12/D12 in SLR2)
   set sys_clk [create_bd_intf_port -mode Slave \
       -vlnv xilinx.com:interface:diff_clock_rtl:1.0 default_250mhz_clk]
   set_property CONFIG.FREQ_HZ {250000000} $sys_clk

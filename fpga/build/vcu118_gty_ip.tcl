@@ -1,4 +1,4 @@
-#    Copyright 2026 John Goodacre
+#    Copyright 2026 Two Sigma Open Source, LLC
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -12,8 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
+# Copyright (c) 2026 John Goodacre.
+
 # VCU118 (XCVU9P, UltraScale+) GTY transceiver configuration.
-# Provides CPU clock generation from Quad 231 (QSFP1) CPLL in SLR1.
+# Optional CPU clock IP for quad 231 in SLR2; the board build uses an MMCM.
 
 proc create_vcu118_gty_ip {{rx_eq_mode LPM}} {
   create_vcu118_cpu_clock_gty_ip

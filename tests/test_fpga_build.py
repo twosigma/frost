@@ -5082,3 +5082,76 @@ def test_placement_sweep_rejects_changed_post_opt(
         tmp_path, "place", ["Explore"], "placer", "unused", max_jobs=1
     )[0]
     assert not (work / "post_place_gate_binding.json").exists()
+
+
+@pytest.mark.parametrize("divider", ("1", "2"))
+def test_vcu118_ddr_clock_and_capacity_contract(tmp_path: Path, divider: str) -> None:
+    """Execute the BD script and compare its clocks and aperture with the build."""
+    harness = tmp_path / "bd.tcl"
+    harness.write_text(r"""
+proc create_bd_port {args} {
+    set index [lsearch -exact $args -freq_hz]
+    if {$index >= 0} {puts "CLOCK [lindex $args end] [lindex $args [expr {$index+1}]]"}
+    return [lindex $args end]
+}
+proc assign_bd_address {args} {
+    set index [lsearch -exact $args -target_address_space]
+    if {[lindex $args [expr {$index+1}]] eq "S00_AXI"} {
+        set index [lsearch -exact $args -range]
+        puts "CAPACITY [lindex $args [expr {$index+1}]]"
+    }
+}
+proc unknown {cmd args} {
+    switch -- $cmd {
+        create_bd_design - create_bd_cell - create_bd_intf_port -
+        get_bd_ports - get_bd_pins - get_bd_intf_ports - get_bd_intf_pins -
+        get_bd_addr_spaces - get_bd_addr_segs {return [lindex $args end]}
+        set_property - connect_bd_net - connect_bd_intf_net -
+        exclude_bd_addr_seg - validate_bd_design - save_bd_design {return}
+        default {error "Unexpected command $cmd $args"}
+    }
+}
+source [lindex $argv 0]
+create_vcu118_ddr_bd
+""")
+    design = REPO_ROOT / "fpga/build/vcu118_ddr_bd.tcl"
+    result = subprocess.run(
+        ["tclsh", str(harness), str(design)],
+        env={**os.environ, "FROST_CPU_CLK_DIV": divider},
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    if divider != "1":
+        assert result.returncode != 0
+        assert "fixed CPU clock" in result.stderr
+        return
+    assert result.returncode == 0, result.stderr
+    clock = fpga_build.BOARD_CONFIG["vcu118"]["clock_freq"]
+    assert f"CLOCK cpu_clk {clock}\n" in result.stdout
+    assert f"CLOCK jtag_clk {clock // 4}\n" in result.stdout
+    capacity = fpga_build.board_ddr_capacity_log2_bytes(design)
+    assert capacity == 31
+    assert f"CAPACITY 0x{1 << capacity:08x}\n" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "options", (["--cpu-clock-div", "2"], ["--clock-freq", "240000000"])
+)
+def test_vcu118_rejects_unsupported_clock_options(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    options: list[str],
+) -> None:
+    """Unsupported clock selections fail before starting Vivado."""
+    monkeypatch.delenv("FROST_DDR_CAPACITY_LOG2_BYTES", raising=False)
+    monkeypatch.setattr(sys, "argv", ["build.py", "vcu118", *options])
+    with pytest.raises(SystemExit) as stopped:
+        fpga_build.main()
+    assert stopped.value.code == 2
+    expected = (
+        "only supported for x3"
+        if options[0] == "--cpu-clock-div"
+        else "unrecognized arguments"
+    )
+    assert expected in capsys.readouterr().err

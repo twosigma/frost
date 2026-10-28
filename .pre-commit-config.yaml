@@ -109,8 +109,7 @@ repos:
           )$
 
   # Copyright header check/insert
-  # New contributor-owned PA tests carry their own Apache-2.0 notices; do not
-  # prepend the project's Two Sigma template to those files.
+  # Contributor-owned files carry their own Apache-2.0 notices.
   - repo: https://github.com/Lucas-C/pre-commit-hooks
     rev: v1.5.6
     hooks:
@@ -157,6 +156,7 @@ repos:
           (?x)^(
             hw/third_party/.*|
             tests/test_(ddr_width_config|ptw_high_addr)\.sv|
+            boards/vcu118/vcu118_clock\.sv|
             perf-modeling/rtl/frost_perf_probe\.sv|
             asic/sram/macros/.*
           )$

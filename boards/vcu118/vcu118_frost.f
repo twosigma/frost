@@ -20,7 +20,7 @@
 # Common Xilinx FROST subsystem (JTAG, BRAM controller, CPU)
 $(ROOT)/boards/xilinx_frost_subsystem.sv
 
-# VCU118 clock generator (MMCM from 300 MHz SYSCLK1_300)
+# VCU118 clock generator (MMCM from SYSCLK1_300)
 $(ROOT)/boards/vcu118/vcu118_clock.sv
 
 # VCU118 DDR4 memory region initializer (valid ECC setup)

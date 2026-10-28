@@ -991,3 +991,39 @@ def test_ecc_verdict_named_every_way_the_board_can_be_dirty() -> None:
     # A register the controller did not return is not a clean report.
     clean, problems = ecc.verdict({"ECC_STATUS": 0, "ECC_ON_OFF": 1})
     assert not clean and problems == ["CE_CNT was not read"]
+
+
+@pytest.mark.parametrize(
+    "board,capacity,clock", [("x3", 1 << 30, 322265625), ("vcu118", 1 << 31, 200000000)]
+)
+def test_board_loader_configuration(board: str, capacity: int, clock: int) -> None:
+    """Loader clocks and DDR capacity agree with the selected hardware target."""
+    assert loader.board_ddr_bytes(board) == capacity
+    assert loader.board_clock_freq(board, {}) == (
+        clock,
+        False,
+    )
+    if board == "vcu118":
+        with pytest.raises(ValueError, match="fixed CPU clock"):
+            loader.board_clock_freq(board, {"FROST_CPU_CLK_HZ": "250000000"})
+
+
+@pytest.mark.parametrize("interface_one", [False, True])
+def test_vcu118_serial_prefers_console_interface(
+    monkeypatch: pytest.MonkeyPatch, interface_one: bool
+) -> None:
+    """Console discovery prefers the FPGA's CP2105 interface and leaves X3 alone."""
+    defaults = load_module("managed_defaults", "fpga/common/hw_defaults.py")
+    console = "/dev/serial/by-id/usb-Silicon_Labs_CP2105-console-if01-port0"
+    system = "/dev/serial/by-id/usb-Silicon_Labs_CP2105-system-if00-port0"
+    monkeypatch.setattr(
+        defaults.glob,
+        "glob",
+        lambda pattern: (
+            ([console] if interface_one else []) if "if01" in pattern else [system]
+        ),
+    )
+    assert defaults.DEFAULT_SERIALS["vcu118"] == (console if interface_one else system)
+    assert defaults.DEFAULT_SERIALS["x3"] == "/dev/ttyUSB3"
+    monkeypatch.setattr(defaults.glob, "glob", lambda pattern: [])
+    assert defaults.DEFAULT_SERIALS["vcu118"] == "/dev/ttyUSB0"

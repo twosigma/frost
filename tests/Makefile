@@ -490,6 +490,10 @@ else ifeq ($(TOPLEVEL),x3_ddr_init)
 COMPILE_ARGS := \
 	$(ROOT)/boards/x3/x3_ddr_init.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),vcu118_ddr_init)
+COMPILE_ARGS := \
+	$(ROOT)/boards/vcu118/vcu118_ddr_init.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),x3_ecc_reader)
 # X3 DDR4 ECC register poller unit bench (AXI4-Lite master only)
 COMPILE_ARGS := \
