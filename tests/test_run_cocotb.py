@@ -984,6 +984,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         # Small L2 and slow memory stress store drain and dirty writeback.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
+        extra_env=(("COCOTB_MAX_CYCLES", "1000000"),),
     ),
     "mret_timer_resume_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1006,6 +1007,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         # Small L2 and slow memory extend cold SC/load and store-drain windows.
         # These settings detect a stale interrupt resume PC during restoration.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
     ),
     "mtimer_stress": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1241,6 +1243,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Timer interrupts preserve DDR return-address slots in a "
         "find-next-bit loop",
+        extra_env=(("COCOTB_MAX_CYCLES", "1000000"),),
     ),
     "lq_stale_slot_probe": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1291,6 +1294,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         # The app forces MEM_CONFIG=ddr. Use a small L2 and slow DDR for misses.
         # This variant does not exercise window_cannot_serve resteering.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
+        extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
     ),
     "freertos_demo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

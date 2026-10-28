@@ -569,14 +569,13 @@ NIC_LOOPBACK_MAX_CYCLES = int(os.environ.get("COCOTB_NIC_LOOPBACK_MAX_CYCLES", 4
 SPRINTF_TEST_MAX_CYCLES = 2000000
 
 # Cover the complete lookup/cache-churn and store-forwarding sweep.
-PDE_RETURN_HAZARD_MAX_CYCLES = 2000000
+PDE_RETURN_HAZARD_MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 2000000))
 
 # Cover 3,000 idle iterations across the 24..535-cycle deadline sweep.
 # Normal read caching takes about 1.38M cycles with the CI DDR timing seed.
 WFI_LOST_TICK_MAX_CYCLES = 2000000
 
-# All 800 cold-DDR frame-eviction/restore iterations take about 1.03M
-# cycles in BRAM and 0.77M in DDR with the slow-DDR CI configuration.
+# Cover all 800 cold-DDR frame-eviction and restore iterations.
 RESTORE_WINDOW_STRESS_MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 1500000))
 
 # DDR boot and BSS clearing exceed the generic budget before the first banner.

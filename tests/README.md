@@ -199,6 +199,8 @@ Without OpenOCD installed those targets log a warning and pass; set
 `FROST_REQUIRE_OPENOCD=1`, as CI does, to make them fail instead. The GDB
 session also requires `${RISCV_PREFIX}gdb` and checks registers, memory,
 software breakpoints, and single stepping through OpenOCD. The
+simulation configuration uses a 60-second RISC-V command deadline for
+program-buffer cache maintenance. The
 [memory-response tests](../verif/cocotb_tests/cpu_ooo/memory/README.md) cover
 the portable and Xilinx builds of the load-data mux.
 
@@ -530,6 +532,12 @@ failures. Before running a runner any way other than the `cocotb` and
 tool or a version that differs from the Dockerfile, rebuild the image. If a
 long program runs out of cycles, first measure a complete passing run with
 an extended limit, then set its budget with headroom.
+
+The small-L2 stress entries set per-run cycle budgets of 1,000,000 for
+`drain_trapframe_test`, 3,000,000 for `restore_window_stress`, and 4,000,000
+for `pde_return_hazard` through `COCOTB_MAX_CYCLES`.
+`linux_irq_find_next_slot_test` sets a 1,000,000-cycle budget through the
+same variable.
 
 The `async_hello_world`, `async_nic_loopback` and `async_dma_torture`
 program configurations exercise equal periods with a phase offset, a
