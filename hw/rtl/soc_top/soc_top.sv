@@ -184,6 +184,12 @@ module soc_top #(
     input  logic                  [                        4:0] i_nic_1g_phy_status = 5'b01111,
     output logic                  [                        3:1] o_nic_1g_phy_ctrl,
     output logic                                                o_nic_1g_rx_block_lock,
+    // Optional VCU118 SPI flash & boot status (ENABLE_1G_ETH=1).
+    output logic                                                o_spi_cs_n,
+    output logic                                                o_spi_sck,
+    output logic                                                o_spi_mosi,
+    input  logic                                                i_spi_miso = 1'b0,
+    input  logic                  [                        1:0] i_ddr_status = 2'b11,
     output logic                                                o_cpu_rst,
     output logic                                                o_cpu_axi_rst,
     output riscv_pkg::interrupt_t                               o_cpu_interrupts,
@@ -385,6 +391,13 @@ module soc_top #(
   // window of 32-bit registers sharing the coherent DMA port; its interrupt
   // shares APLIC source 2.
   localparam int unsigned Nic1gBase = 32'h4002_2000;
+  // VCU118 boot/SPI flash controller @ 0x4002_3000 (when ENABLE_1G_ETH != 0).
+  localparam int unsigned BootSpiCtrlAddr = 32'h4002_3000;
+  localparam int unsigned BootSysStatusAddr = 32'h4002_3004;
+  localparam int unsigned BootSpiXferByteAddr = 32'h4002_3008;
+  localparam int unsigned BootSpiXferWordAddr = 32'h4002_300C;
+  localparam int unsigned BootSramAddrReg = 32'h4002_3010;
+  localparam int unsigned BootSramDataReg = 32'h4002_3014;
   // Memory error unit @ 0x4002_1000, a 256-byte window of 32-bit registers
   // (memory_error_unit.sv): counts of DDR ECC errors and of the DDR bridge's
   // AXI error responses; its interrupt is APLIC source 5.
@@ -549,6 +562,9 @@ module soc_top #(
 `endif
   logic mmio_response_capture;
   logic [63:0] mmio_response_data;
+  logic [31:0] boot_spi_ctrl_word, boot_sys_status_word;
+  logic [31:0] boot_spi_rx_byte_word, boot_spi_rx_word_le;
+  logic [31:0] boot_sram_addr_word, boot_sram_data_word;
   // Memory error unit register bus (same shape) and interrupt. The DDR
   // bridge's error pulses come from the cached tier below, or stay low
   // without it.
@@ -964,10 +980,16 @@ module soc_top #(
     assign dm_soc_addr = dm_slice_word_addr;
     assign dm_soc_data = dm_slice_data;
   end
-  assign slice_req_valid = mirror_now_valid || dm_soc_valid;
+  logic boot_sram_wr_req_q;
+  logic [MemByteAddrWidth-1:2] boot_sram_word_addr_q;
+  logic [31:0] boot_sram_wdata_q;
+  wire boot_sram_slice_valid = (ENABLE_1G_ETH != 0) &&
+      boot_sram_wr_req_q && !mirror_now_valid && !dm_soc_valid;
+  assign slice_req_valid = mirror_now_valid || dm_soc_valid || boot_sram_slice_valid;
   assign slice_req_mirror = mirror_now_valid;
-  assign slice_req_word_addr = mirror_now_valid ? mirror_now_addr : dm_soc_addr;
-  assign slice_req_data = dm_soc_data;
+  assign slice_req_word_addr = mirror_now_valid ? mirror_now_addr :
+      dm_soc_valid ? dm_soc_addr : boot_sram_word_addr_q;
+  assign slice_req_data = dm_soc_valid ? dm_soc_data : boot_sram_wdata_q;
 
   debug_module #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth)
@@ -2582,6 +2604,19 @@ module soc_top #(
       {ClintMsip[31:3], 3'b000} : mmio_read_data_comb = {32'b0, {31'b0, msip}};
       {ClintMtimecmpLo[31:3], 3'b000} : mmio_read_data_comb = mtimecmp;
       {ClintMtimeLo[31:3], 3'b000} : mmio_read_data_comb = mtime;
+      // VCU118 SPI flash & boot SRAM controller (0 when ENABLE_1G_ETH == 0).
+      {
+        BootSpiCtrlAddr[31:3], 3'b000
+      } :
+      mmio_read_data_comb = {boot_sys_status_word, boot_spi_ctrl_word};
+      {
+        BootSpiXferByteAddr[31:3], 3'b000
+      } :
+      mmio_read_data_comb = {boot_spi_rx_word_le, boot_spi_rx_byte_word};
+      {
+        BootSramAddrReg[31:3], 3'b000
+      } :
+      mmio_read_data_comb = {boot_sram_data_word, boot_sram_addr_word};
       default: ;
     endcase
     // APLIC window: range-decoded outside the exact-address case; the
@@ -2756,6 +2791,135 @@ module soc_top #(
   assign o_fifo1_wr_data = data_memory_write_data_registered[31:0];
   assign o_fifo1_wr_en   = |data_memory_byte_write_enable_registered &&
                             data_memory_address_registered == Fifo1PhysAddr;
+
+  if (ENABLE_1G_ETH != 0) begin : gen_boot_spi
+    (* ASYNC_REG = "TRUE" *) logic [1:0] spi_miso_sync_q;
+    always_ff @(posedge i_clk) begin
+      if (rst_core) spi_miso_sync_q <= 2'b11;
+      else spi_miso_sync_q <= {spi_miso_sync_q[0], i_spi_miso};
+    end
+
+    logic        spi_cs_n_q;
+    logic [ 7:0] spi_clk_div_q;
+    logic [ 7:0] spi_clk_cnt_q;
+    logic        spi_sck_q;
+    logic        spi_busy_q;
+    logic [ 5:0] spi_bits_rem_q;
+    logic [31:0] spi_tx_shreg_q;
+    logic [31:0] spi_rx_shreg_q;
+
+    assign o_spi_cs_n = spi_cs_n_q;
+    assign o_spi_sck  = spi_sck_q;
+    assign o_spi_mosi = spi_tx_shreg_q[31];
+
+    wire boot_reg_wr = |data_memory_byte_write_enable_registered;
+
+    always_ff @(posedge i_clk) begin
+      if (rst_core) begin
+        spi_cs_n_q            <= 1'b1;
+        spi_clk_div_q         <= 8'd8;
+        spi_clk_cnt_q         <= '0;
+        spi_sck_q             <= 1'b0;
+        spi_busy_q            <= 1'b0;
+        spi_bits_rem_q        <= '0;
+        spi_tx_shreg_q        <= 32'hFFFF_FFFF;
+        spi_rx_shreg_q        <= '0;
+        boot_sram_wr_req_q    <= 1'b0;
+        boot_sram_word_addr_q <= '0;
+        boot_sram_wdata_q     <= '0;
+      end else begin
+        if (boot_sram_slice_valid && slice_req_ready) begin
+          boot_sram_wr_req_q    <= 1'b0;
+          boot_sram_word_addr_q <= boot_sram_word_addr_q + 1'b1;
+        end
+
+        if (spi_busy_q) begin
+          if (spi_clk_cnt_q >= (spi_clk_div_q - 8'd1)) begin
+            spi_clk_cnt_q <= '0;
+            if (!spi_sck_q) begin
+              spi_sck_q      <= 1'b1;
+              spi_rx_shreg_q <= {spi_rx_shreg_q[30:0], spi_miso_sync_q[1]};
+            end else begin
+              spi_sck_q <= 1'b0;
+              if (spi_bits_rem_q == 6'd1) begin
+                spi_busy_q     <= 1'b0;
+                spi_bits_rem_q <= '0;
+              end else begin
+                spi_bits_rem_q <= spi_bits_rem_q - 6'd1;
+                spi_tx_shreg_q <= {spi_tx_shreg_q[30:0], 1'b1};
+              end
+            end
+          end else begin
+            spi_clk_cnt_q <= spi_clk_cnt_q + 8'd1;
+          end
+        end
+
+        if (boot_reg_wr) begin
+          unique case (data_memory_address_registered)
+            riscv_pkg::PhysAddrBits'(BootSpiCtrlAddr): begin
+              spi_cs_n_q <= data_memory_write_data_registered[0];
+              if (data_memory_write_data_registered[15:8] != 8'd0)
+                spi_clk_div_q <= data_memory_write_data_registered[15:8];
+            end
+            riscv_pkg::PhysAddrBits'(BootSpiXferByteAddr): begin
+              if (!spi_busy_q) begin
+                spi_tx_shreg_q <= {data_memory_write_data_registered[7:0], 24'hFF_FFFF};
+                spi_bits_rem_q <= 6'd8;
+                spi_clk_cnt_q  <= '0;
+                spi_sck_q      <= 1'b0;
+                spi_busy_q     <= 1'b1;
+              end
+            end
+            riscv_pkg::PhysAddrBits'(BootSpiXferWordAddr): begin
+              if (!spi_busy_q) begin
+                spi_tx_shreg_q <= data_memory_write_data_registered[31:0];
+                spi_bits_rem_q <= 6'd32;
+                spi_clk_cnt_q  <= '0;
+                spi_sck_q      <= 1'b0;
+                spi_busy_q     <= 1'b1;
+              end
+            end
+            riscv_pkg::PhysAddrBits'(BootSramAddrReg): begin
+              boot_sram_word_addr_q <= data_memory_write_data_registered[MemByteAddrWidth-1:2];
+            end
+            riscv_pkg::PhysAddrBits'(BootSramDataReg): begin
+              boot_sram_wdata_q  <= data_memory_write_data_registered[31:0];
+              boot_sram_wr_req_q <= 1'b1;
+            end
+            default: ;
+          endcase
+        end
+      end
+    end
+
+    wire sram_wr_busy = boot_sram_wr_req_q || !slice_req_ready || !slice_all_done;
+    assign boot_spi_ctrl_word   = {16'b0, spi_clk_div_q, 7'b0, spi_cs_n_q};
+    assign boot_sys_status_word = {
+      16'h4652, 6'b0, i_ddr_status[1:0], 6'b0, sram_wr_busy, spi_busy_q
+    };
+    assign boot_spi_rx_byte_word = {24'b0, spi_rx_shreg_q[7:0]};
+    assign boot_spi_rx_word_le   = {
+      spi_rx_shreg_q[7:0], spi_rx_shreg_q[15:8], spi_rx_shreg_q[23:16], spi_rx_shreg_q[31:24]
+    };
+    assign boot_sram_addr_word = 32'({boot_sram_word_addr_q, 2'b00});
+    assign boot_sram_data_word = boot_sram_wdata_q;
+  end else begin : gen_no_boot_spi
+    /* verilator lint_off UNUSEDSIGNAL */
+    wire boot_spi_unused = i_spi_miso ^ (|i_ddr_status);
+    /* verilator lint_on UNUSEDSIGNAL */
+    assign o_spi_cs_n            = 1'b1;
+    assign o_spi_sck             = 1'b0;
+    assign o_spi_mosi            = 1'b0;
+    assign boot_sram_wr_req_q    = 1'b0;
+    assign boot_sram_word_addr_q = '0;
+    assign boot_sram_wdata_q     = '0;
+    assign boot_spi_ctrl_word    = '0;
+    assign boot_sys_status_word  = '0;
+    assign boot_spi_rx_byte_word = '0;
+    assign boot_spi_rx_word_le   = '0;
+    assign boot_sram_addr_word   = '0;
+    assign boot_sram_data_word   = '0;
+  end
 
   // Linux reads received bytes through the ns16550 RBR alias. That read must
   // consume the shared UART RX FIFO as the native FROST RX-data address does,

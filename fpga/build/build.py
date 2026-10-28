@@ -871,9 +871,14 @@ def setup_timing_met(
     )
 
 
-def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -> bool:
-    """Compile hello_world application for initial BRAM contents."""
-    app_dir = project_root / "sw" / "apps" / "hello_world"
+def compile_hello_world(
+    project_root: Path,
+    output_dir: Path,
+    clock_freq: int,
+    app_name: str = "hello_world",
+) -> bool:
+    """Compile initial BRAM application (hello_world or bootrom) for synthesis."""
+    app_dir = project_root / "sw" / "apps" / app_name
 
     if not app_dir.exists():
         print(f"Error: Application directory not found: {app_dir}", file=sys.stderr)
@@ -919,7 +924,7 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
     env["FPGA_CPU_CLK_FREQ"] = str(clock_freq)
 
     try:
-        print(f"Compiling hello_world with FPGA_CPU_CLK_FREQ={clock_freq}...")
+        print(f"Compiling {app_name} with FPGA_CPU_CLK_FREQ={clock_freq}...")
         make_args = [
             "make",
             f"FPGA_CPU_CLK_FREQ={clock_freq}",
@@ -3685,9 +3690,12 @@ Examples:
     software_mem_dir = main_work / "hello_world"
 
     # A synthesis start needs fresh board-local BRAM contents.
+    bram_app_name = "bootrom" if board_name == "vcu118" else "hello_world"
     if args.start_at == "synth":
-        if not compile_hello_world(project_root, software_mem_dir, clock_freq):
-            print("Error: Failed to compile hello_world", file=sys.stderr)
+        if not compile_hello_world(
+            project_root, software_mem_dir, clock_freq, app_name=bram_app_name
+        ):
+            print(f"Error: Failed to compile {bram_app_name}", file=sys.stderr)
             sys.exit(1)
     else:
         print(

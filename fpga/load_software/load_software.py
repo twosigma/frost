@@ -48,6 +48,8 @@ from software_registry import (  # noqa: E402
 
 # Applications accepted by the JTAG loader.
 VALID_APPS = [
+    "bootrom",
+    "fsbl",
     "amo_irq_torture",
     "branch_pred_test",
     "c_ext_test",

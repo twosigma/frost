@@ -218,7 +218,14 @@ module frost #(
     input  logic        i_nic_1g_rx_signal_ok = 1'b0,
     input  logic [ 4:0] i_nic_1g_phy_status = '0,
     output logic [ 3:1] o_nic_1g_phy_ctrl,
-    output logic        o_nic_1g_rx_block_lock
+    output logic        o_nic_1g_rx_block_lock,
+
+    // Optional VCU118 SPI flash & boot status (ENABLE_1G_ETH != 0)
+    output logic       o_spi_cs_n,
+    output logic       o_spi_sck,
+    output logic       o_spi_mosi,
+    input  logic       i_spi_miso = 1'b0,
+    input  logic [1:0] i_ddr_status = 2'b11
 );
 
   /*
@@ -477,7 +484,13 @@ module frost #(
       .i_nic_1g_rx_signal_ok,
       .i_nic_1g_phy_status,
       .o_nic_1g_phy_ctrl,
-      .o_nic_1g_rx_block_lock
+      .o_nic_1g_rx_block_lock,
+      // VCU118 SPI flash & boot status
+      .o_spi_cs_n,
+      .o_spi_sck,
+      .o_spi_mosi,
+      .i_spi_miso,
+      .i_ddr_status
   );
 
   // Memory-mapped I/O FIFO 0 - used for general-purpose data buffering

@@ -240,7 +240,14 @@ module platform_top #(
     input  logic        i_nic_1g_rx_signal_ok = 1'b0,
     input  logic [ 4:0] i_nic_1g_phy_status = '0,
     output logic [ 3:1] o_nic_1g_phy_ctrl,
-    output logic        o_nic_1g_rx_block_lock
+    output logic        o_nic_1g_rx_block_lock,
+
+    // Optional VCU118 SPI flash & boot status (ENABLE_1G_ETH != 0)
+    output logic       o_spi_cs_n,
+    output logic       o_spi_sck,
+    output logic       o_spi_mosi,
+    input  logic       i_spi_miso = 1'b0,
+    input  logic [1:0] i_ddr_status = 2'b11
 );
 
   wire cpu_clk = ASYNC_CPU_CLOCK ? i_cpu_clk : i_clk;
@@ -575,6 +582,11 @@ module platform_top #(
       .i_nic_1g_phy_status(i_nic_1g_phy_status),
       .o_nic_1g_phy_ctrl(o_nic_1g_phy_ctrl),
       .o_nic_1g_rx_block_lock(o_nic_1g_rx_block_lock),
+      .o_spi_cs_n(o_spi_cs_n),
+      .o_spi_sck(o_spi_sck),
+      .o_spi_mosi(o_spi_mosi),
+      .i_spi_miso(i_spi_miso),
+      .i_ddr_status(i_ddr_status),
       .o_cpu_rst(cpu_rst),
       .o_cpu_axi_rst(cpu_axi_rst),
       .o_cpu_interrupts(cpu_interrupts),

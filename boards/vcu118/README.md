@@ -220,16 +220,75 @@ When booting Linux over network interfaces via U-Boot or Ethernet, the target en
      ```
      *(The `insecure` option permits connection requests originating on unprivileged ports $> 1024$, required when traffic is routed across subnets).*
 
-4. **U-Boot Network Boot Sequence**:
-   ```text
-   setenv autoload no
-   dhcp
-   setenv serverip <server-ip>
-   tftpboot 0x84000000 Image
-   tftpboot 0x88000000 frost-vcu118.dtb
-   setenv bootargs "console=ttyS0,115200 root=/dev/nfs nfsroot=<server-ip>:<export-directory>,vers=3,tcp,nolock ip=dhcp rw"
-   booti 0x84000000 - 0x88000000
-   ```
+4. **U-Boot Multi-Mode Boot Flows & Flash Management**:
+   The VCU118 platform integrates an interactive U-Boot Proper bootloader in DRAM with support for network booting, onboard SPI NOR flash operations, and autonomous cold-start:
+
+   - **Autoboot Countdown & Console Interrupt**:
+     U-Boot initiates a 3-second pause upon boot (`CONFIG_BOOTDELAY=3`):
+     ```text
+     Hit any key to stop autoboot:  3     2     1     0
+     ```
+     Sending any key over the UART console (`/dev/ttyUSB4` @ 115200 8N1) interrupts the autoboot process and drops directly to the interactive `frost=> ` prompt.
+
+   - **Redirecting Default Flash Boot to TFTP Boot**:
+     If U-Boot is configured to boot from flash by default, you can interrupt autoboot during the 3-second countdown and redirect execution to TFTP network boot:
+     ```text
+     # One-time manual network boot:
+     frost=> dhcp
+     frost=> setenv serverip 192.168.1.159
+     frost=> tftpboot 0x84000000 Image
+     frost=> tftpboot 0x88000000 frost.dtb
+     frost=> booti 0x84000000 - 0x88000000
+
+     # Or persistently redirect default bootcmd to TFTP:
+     frost=> setenv bootcmd "dhcp; setenv serverip 192.168.1.159; tftpboot 0x84000000 Image; tftpboot 0x88000000 frost.dtb; booti 0x84000000 - 0x88000000"
+     ```
+
+   - **Boot Option 1: Autonomous Flash Boot (Default Production Mode)**:
+     Boots the production Linux kernel and device tree directly from the onboard Micron MT25QU01G SPI NOR flash into DRAM:
+     ```text
+     sf probe
+     sf read 0x84000000 0x04000000 0x02000000
+     booti 0x84000000 - 0x82200000
+     ```
+
+   - **Boot Option 2: Trial TFTP Network Boot (Development & Validation Mode)**:
+     Downloads a trial kernel over the network via TFTP without modifying flash, testing new kernels safely:
+     ```text
+     dhcp
+     setenv serverip <server-ip>
+     tftpboot 0x84000000 Image.trial
+     booti 0x84000000 - 0x82200000
+     ```
+
+   - **Boot Option 3: Flash Kernel Update via TFTP (In-System Upgrade Flow)**:
+     Once a trial kernel is validated, writes it into the dedicated 32 MiB flash kernel partition (`0x0400_0000` .. `0x05FF_FFFF`) and establishes flash boot as default:
+     ```text
+     # 1. Download validated kernel into DRAM buffer
+     dhcp
+     setenv serverip <server-ip>
+     tftpboot 0x84000000 Image
+
+     # 2. Erase the kernel sector in SPI NOR flash
+     sf probe
+     sf erase 0x04000000 0x02000000
+
+     # 3. Commit new kernel from DRAM into flash
+     sf write 0x84000000 0x04000000 ${filesize}
+
+     # 4. Set persistent autoboot command to load from flash
+     setenv bootcmd "sf probe; sf read 0x84000000 0x04000000 0x02000000; booti 0x84000000 - 0x82200000"
+     ```
+
+   - **Flash Memory Map**:
+     The 128 MiB MT25QU01G SPI NOR flash partition table is structured as follows:
+     - `0x0000_0000` .. `0x026F_FFFF`: FPGA Configuration Bitstream (`vcu118_frost.bit`, ~38.5 MiB).
+     - `0x0300_0000` .. `0x030F_FFFF`: First-Stage Bootloader (`fsbl.bin`, loaded into SRAM `0x0000_4000`).
+     - `0x0310_0000` .. `0x031F_FFFF`: OpenSBI Supervisor Firmware (`fw_jump.bin`, loaded into DRAM `0x8000_0000`).
+     - `0x0320_0000` .. `0x032F_FFFF`: Device Tree Blob (`frost.dtb`, loaded into DRAM `0x8220_0000`).
+     - `0x0330_0000` .. `0x03FF_FFFF`: U-Boot Proper (`u-boot.bin`, loaded into DRAM `0x8020_0000`).
+     - `0x0400_0000` .. `0x05FF_FFFF`: Production Linux Kernel Partition (32 MiB aperture for `Image`).
+     - `0x0600_0000` .. `0x07FF_FFFF`: Reserved for Root Filesystem Overlay / Flash Storage (32 MiB).
 
 ---
 

@@ -280,6 +280,8 @@ set_clock_groups -asynchronous \
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg[0]/D"}]
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/stage_q_reg[0]*/D"}]
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/chain_q_reg*/PRE"}]
+set_false_path -to [get_cells -quiet -hierarchical -filter {NAME =~ "*u_startup*"}]
+set_false_path -from [get_cells -quiet -hierarchical -filter {NAME =~ "*u_startup*"}]
 
 # -----------------------------------------------------------------------------
 # 10. Floorplanning: Pure Single-SLR Assignment (100% in SLR2)

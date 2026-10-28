@@ -226,7 +226,42 @@ module vcu118_frost #(
       .i_rx_block_lock(nic_1g_rx_block_lock)
   );
 
-  // 4. Shared Xilinx FROST Subsystem
+  // 4. Shared Xilinx FROST Subsystem & STARTUPE3 SPI NOR Flash Bridge
+  logic       spi_cs_n, spi_sck, spi_mosi, spi_miso;
+  logic [3:0] startup_di;
+  logic       mem_ok;
+  (* ASYNC_REG = "TRUE" *) logic [1:0] mem_ok_synchronizer;
+  always_ff @(posedge main_clock) begin
+    mem_ok_synchronizer <= {mem_ok_synchronizer[0], mem_ok};
+  end
+  logic mem_ok_synced;
+  assign mem_ok_synced = mem_ok_synchronizer[1];
+
+  assign spi_miso = startup_di[1];
+
+  STARTUPE3 #(
+      .PROG_USR     ("FALSE"),
+      .SIM_CCLK_FREQ(0.0)
+  ) u_startup (
+      .CFGCLK   (),
+      .CFGMCLK  (),
+      .DI       (startup_di),
+      .EOS      (),
+      .PREQ     (),
+      .DO       ({3'b111, spi_mosi}),
+      .DTS      (4'b0010),
+      .FCSBO    (spi_cs_n),
+      .FCSBTS   (1'b0),
+      .GSR      (1'b0),
+      .GTS      (1'b0),
+      .KEYCLEARB(1'b1),
+      .PACK     (1'b0),
+      .USRCCLKO (spi_sck),
+      .USRCCLKTS(1'b0),
+      .USRDONEO (1'b1),
+      .USRDONETS(1'b0)
+  );
+
   xilinx_frost_subsystem #(
       .CLK_FREQ_HZ       (CPU_CLK_HZ),
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
@@ -307,17 +342,16 @@ module vcu118_frost #(
       .i_nic_1g_rx_signal_ok (nic_1g_rx_signal_ok),
       .i_nic_1g_phy_status   (nic_1g_phy_status),
       .o_nic_1g_phy_ctrl     (nic_1g_phy_ctrl),
-      .o_nic_1g_rx_block_lock(nic_1g_rx_block_lock)
+      .o_nic_1g_rx_block_lock(nic_1g_rx_block_lock),
+
+      .o_spi_cs_n            (spi_cs_n),
+      .o_spi_sck             (spi_sck),
+      .o_spi_mosi            (spi_mosi),
+      .i_spi_miso            (spi_miso),
+      .i_ddr_status          ({ddr_init_done, mem_ok_synced})
   );
 
-  // 4. DDR4 Initialization Engine (for valid ECC generation)
-  logic mem_ok;
-  (* ASYNC_REG = "TRUE" *) logic [1:0] mem_ok_synchronizer;
-  always_ff @(posedge main_clock) begin
-    mem_ok_synchronizer <= {mem_ok_synchronizer[0], mem_ok};
-  end
-  logic mem_ok_synced;
-  assign mem_ok_synced = mem_ok_synchronizer[1];
+  // 5. DDR4 Initialization Engine (for valid ECC generation)
 
   logic init_busy;
   logic init_awvalid;

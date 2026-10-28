@@ -1,0 +1,178 @@
+// SPDX-License-Identifier: Apache-2.0
+/*
+ * Copyright 2026 John Goodacre
+ *
+ * Device Tree Source for FROST on AMD VCU118 Evaluation Board
+ * Target: rv64imafdc, OpenSBI, U-Boot, Linux
+ */
+
+/dts-v1/;
+
+/ {
+	#address-cells = <0x02>;
+	#size-cells = <0x02>;
+	compatible = "frost,rv64", "frost";
+	model = "FROST RV64 VCU118 (Sv39, OpenSBI, U-Boot)";
+
+	chosen {
+		stdout-path = "/soc@0/serial@40001000:115200";
+		bootargs = "console=ttyS0,115200 root=/dev/nfs nfsroot=192.168.1.159:/srv/nfs/frost,tcp,v3 ip=dhcp rw earlycon";
+	};
+
+	cpus {
+		#address-cells = <0x01>;
+		#size-cells = <0x00>;
+		timebase-frequency = <200000000>;
+
+		cpu@0 {
+			device_type = "cpu";
+			reg = <0x00>;
+			status = "okay";
+			compatible = "riscv";
+			mmu-type = "riscv,sv39";
+			riscv,isa-base = "rv64i";
+			riscv,isa = "rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbc_zbs_zbkb_zbkc_zicond_zihintpause_smaia_ssaia_sstc_svade";
+			riscv,isa-extensions = "i", "m", "a", "f", "d", "c",
+				"zicsr", "zifencei", "zicntr", "zba", "zbb", "zbc",
+				"zbs", "zbkb", "zbkc", "zicond", "zihintpause", "smaia",
+				"ssaia", "sstc", "svade";
+
+			cpu0_intc: interrupt-controller {
+				#interrupt-cells = <0x01>;
+				interrupt-controller;
+				compatible = "riscv,cpu-intc";
+				phandle = <0x01>;
+			};
+		};
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x00000000 0x80000000
+		       0x00000000 0x80000000>; /* 2 GiB DDR4 */
+	};
+
+	pmu {
+		compatible = "riscv,pmu";
+		riscv,event-to-mhpmcounters = <0x00000001 0x00000001 0x00000001>,
+				      <0x00000002 0x00000002 0x00000004>;
+	};
+
+	soc@0 {
+		#address-cells = <0x01>;
+		#size-cells = <0x01>;
+		compatible = "simple-bus";
+		ranges = <0x00000000 0x00000000 0x00000000 0x80000000>;
+
+		serial@40001000 {
+			compatible = "ns16550a";
+			reg = <0x40001000 0x100>;
+			reg-shift = <0x02>;
+			reg-io-width = <0x04>;
+			clock-frequency = <200000000>;
+			interrupt-parent = <&aplic_s>;
+			interrupts = <1 4>;
+		};
+
+		clint@40010000 {
+			compatible = "sifive,clint0", "riscv,clint0";
+			reg = <0x40010000 0xc000>;
+			interrupts-extended = <&cpu0_intc 3 &cpu0_intc 7>;
+		};
+
+		imsic_m: interrupt-controller@48000000 {
+			compatible = "frost,imsics", "riscv,imsics";
+			reg = <0x48000000 0x00001000>;
+			interrupt-controller;
+			#interrupt-cells = <0>;
+			msi-controller;
+			#msi-cells = <0>;
+			interrupts-extended = <&cpu0_intc 11>;
+			riscv,num-ids = <63>;
+		};
+
+		imsic_s: interrupt-controller@48100000 {
+			compatible = "frost,imsics", "riscv,imsics";
+			reg = <0x48100000 0x00001000>;
+			interrupt-controller;
+			#interrupt-cells = <0>;
+			msi-controller;
+			#msi-cells = <0>;
+			interrupts-extended = <&cpu0_intc 9>;
+			riscv,num-ids = <63>;
+		};
+
+		aplic_m: interrupt-controller@44000000 {
+			compatible = "frost,aplic", "riscv,aplic";
+			reg = <0x44000000 0x00008000>;
+			#interrupt-cells = <0x02>;
+			#address-cells = <0x00>;
+			interrupt-controller;
+			riscv,num-sources = <5>;
+			msi-parent = <&imsic_m>;
+			riscv,children = <&aplic_s>;
+			riscv,delegation = <&aplic_s 1 5>;
+		};
+
+		aplic_s: interrupt-controller@44008000 {
+			compatible = "frost,aplic", "riscv,aplic";
+			reg = <0x44008000 0x00008000>;
+			#interrupt-cells = <0x02>;
+			#address-cells = <0x00>;
+			interrupt-controller;
+			riscv,num-sources = <5>;
+			msi-parent = <&imsic_s>;
+		};
+
+		dma-test-engine@40020000 {
+			compatible = "frost,dma-test-engine";
+			reg = <0x40020000 0x1000>;
+			interrupt-parent = <&aplic_s>;
+			interrupts = <3 4>;
+		};
+
+		memory-controller@40021000 {
+			compatible = "frost,memory-error";
+			reg = <0x40021000 0x100>;
+			interrupt-parent = <&aplic_s>;
+			interrupts = <5 4>;
+		};
+
+		/* 1Gb SGMII Ethernet MAC (RJ-45) */
+		ethernet@40022000 {
+			compatible = "frost,net10g";
+			reg = <0x40022000 0x1000>;
+			interrupt-parent = <&aplic_s>;
+			interrupts = <2 4>;
+			dma-coherent;
+			local-mac-address = [02 11 22 33 44 56];
+			clock-frequency = <200000000>;
+		};
+
+		/* 10Gb Ethernet MAC (QSFP28 Cage) */
+		ethernet@40030000 {
+			compatible = "frost,net10g";
+			reg = <0x40030000 0x1000>;
+			interrupt-parent = <&aplic_s>;
+			interrupts = <4 4>;
+			dma-coherent;
+			local-mac-address = [02 11 22 33 44 55];
+			clock-frequency = <200000000>;
+		};
+
+		/* SPI NOR Flash Controller (Micron MT25QU01G via STARTUPE3) */
+		spi@40023000 {
+			compatible = "frost,boot-spi";
+			reg = <0x40023000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			flash@0 {
+				compatible = "micron,mt25qu01g", "jedec,spi-nor";
+				reg = <0>;
+				spi-max-frequency = <20000000>;
+			};
+		};
+	};
+};
+
