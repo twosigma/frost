@@ -73,6 +73,9 @@ and CPU observation cuts. They run in the unit shard. The program shards
 exercise the coherent hierarchy in both memory configurations. Whole-L1D
 maintenance is active in simulation. Synthesis checks cover both line sizes
 at 32-bit and 56-bit physical widths.
+The cluster bench holds all eight CPU read identities occupied during dirty
+DMA reads and writes. Its invalidation case delays cut completion and checks
+response rotation and byte-write preservation.
 
 `debug_test` exercises JTAG control, memory access and BRAM instruction
 mirroring. The debugger executes both words of an aligned doubleword patch.
@@ -89,6 +92,10 @@ exact selected write and release. Single-step cases execute LR before SC or
 AMO in cached and private uncached memory. They check the retired instruction,
 debug PC, absence of following atomic ownership and unchanged memory. A
 subsequent debug command reports DPC through a Device write and parks again.
+DMA reads and byte writes check dirty-line service during debug halt and WFI.
+A reset case delays a victim write response and checks ownership at request
+and AW acceptance. The stale response cannot complete a post-reset victim,
+and the case checks data after reset.
 The Tomasulo coherence fixture models CPU atomic protection and home SC
 results through tagged write completion. Admission races cover both probe-first
 and atomic-first ordering. The CPU and cache benches exercise the guard and

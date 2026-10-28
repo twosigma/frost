@@ -19,6 +19,7 @@ from typing import Any
 import os
 
 from collections import Counter, deque
+from collections.abc import Callable
 
 import cocotb
 from cocotb.triggers import Timer
@@ -52,10 +53,14 @@ def store(rs: int, base: int, offset: int, size: int) -> int:
 class System:
     """Drive the public interfaces and track external transactions."""
 
-    def __init__(self, dut: Any, boot: int = 0x1000) -> None:
+    def __init__(self, dut: Any, boot: int = 0x1000, coherence: bool = False) -> None:
         """Initialize the interface and scoreboard."""
         self.dut = dut
         self.boot = boot
+        self.coherence = coherence
+        self.coherent_requests: list[tuple[int, int]] = []
+        self.coherent_responses: list[tuple[int, int, int]] = []
+        self.before_edge: Callable[[], None] | None = None
         self.cycle = 0
         self.memory: dict[int, int] = {}
         self.aw: deque[tuple[int, int, int, int]] = deque()
@@ -96,7 +101,7 @@ class System:
             dbg_go=0,
             dbg_go_addr=0,
             dbg_data=0,
-            coherent_req_valid=1,
+            coherent_req_valid=int(not self.coherence),
             coherent_req_write=1,
             coherent_req_addr=0x80004000,
             coherent_req_wdata=123,
@@ -154,9 +159,25 @@ class System:
             d.i_axi_bid.value = ident
             d.i_axi_bresp.value = status
         await Timer(5, unit="ns")
-        assert not int(d.o_coherent_req_ready.value)
-        assert not int(d.o_coherent_resp_valid.value)
-        assert not int(d.o_coherent_resp_error.value)
+        if self.before_edge:
+            self.before_edge()
+        if not self.coherence:
+            assert not int(d.o_coherent_req_ready.value)
+            assert not int(d.o_coherent_resp_valid.value)
+            assert not int(d.o_coherent_resp_error.value)
+        elif not reset:
+            if int(d.i_coherent_req_valid.value) and int(d.o_coherent_req_ready.value):
+                self.coherent_requests.append(
+                    (int(d.i_coherent_req_id.value), int(d.i_coherent_req_addr.value))
+                )
+            if int(d.o_coherent_resp_valid.value):
+                self.coherent_responses.append(
+                    (
+                        int(d.o_coherent_resp_id.value),
+                        int(d.o_coherent_resp_rdata.value),
+                        int(d.o_coherent_resp_error.value),
+                    )
+                )
         if not reset:
             assert self.allow_fatal or not int(d.o_fatal_error.value)
         for channel, fields in (
