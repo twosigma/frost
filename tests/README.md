@@ -521,7 +521,7 @@ which have 90 minutes each. `--verbose` prints solver output.
 | `FROST_CPU_PHASE_PS` | Initial CPU clock phase in ps when the independent clock is selected; default 700 |
 | `FROST_ASYNC_CPU_CLOCK` | `1` enables the independent CPU boundary in Yosys synthesis tests |
 | `FROST_NIC_MAC_CLOCKS` | For the whole-SoC program and TestRIG benches, overrides the registry or runner default: `0` holds both NIC MAC clocks and their clock-OK inputs low with an access guard; `1` starts the clocks. The ISA, torture, and TestRIG runners default to `0` |
-| `SIM_FAST_MAINT` | Fast `fence.i` cache maintenance in whole-SoC simulation (default 1; hardware uses the full sweeps, as `0` does) |
+| `SIM_FAST_MAINT` | Enables fast L1I invalidation in whole-SoC simulation (default 1). L1D clean-all visits every set and way |
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to
 `tests/results.xml`. A `test_run_cocotb.py` run passes only if the simulator
