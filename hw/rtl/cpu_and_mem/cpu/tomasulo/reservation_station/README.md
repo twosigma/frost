@@ -170,6 +170,10 @@ Each combination also selects the immediate-use bit before live CDB validity.
 The secondary clear mask applies port permission to the winner mask. A zero
 winner mask clears no entry.
 
+The coherent selection uses first-free and second-free one-hot masks for
+allocation controls and repair targets. Index zero is the fallback when the
+requested free entry is absent. Slot 2 selects its mask from dispatch intent.
+
 The coherent selection computes the shift amount for each entry before
 winner selection. The entry chooses its immediate or effective second operand.
 The occupancy count selects among the four issue outcomes after dispatch

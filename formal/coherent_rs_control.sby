@@ -21,7 +21,7 @@ window: chparam -set DEPTH 8 -set ISSUE2_WINDOW 5 -set LANE1_ISSUE_BYPASS 1 rese
 prep -top reservation_station
 select -assert-none t:$assume
 select -assert-none t:$check r:FLAVOR=assume %i
-select -assert-count 10 t:$check r:FLAVOR=assert %i
+select -assert-count 12 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
