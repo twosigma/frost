@@ -163,6 +163,7 @@ two runs.
 
 `freertos_demo` runs twice in BRAM to check that its private linker script
 and startup code reinitialize the kernel, heap, and application state.
+Its simulation budget is three million cycles.
 
 | Entries that run once | Reason |
 | --- | --- |
