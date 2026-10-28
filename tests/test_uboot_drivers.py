@@ -182,12 +182,14 @@ int main(void) {
     )
 
 
-def test_documented_boot_chain_has_hush_support() -> None:
-    """The documented conditional transfer chain needs U-Boot's shell parser."""
+def test_documented_boot_chain_has_required_support() -> None:
+    """Conditional transfers and a raw initramfs require both U-Boot options."""
     guide = (ROOT / "boards/vcu118/README.md").read_text()
     config = (ROOT / "sw/uboot/configs/frost_vcu118_defconfig").read_text()
     assert "dhcp && tftpboot" in guide
+    assert "rootfs.cpio && booti" in guide
     assert "CONFIG_HUSH_PARSER=y" in config.splitlines()
+    assert "CONFIG_SUPPORT_RAW_INITRD=y" in config.splitlines()
 
 
 def test_unknown_or_changed_kconfig_is_rejected(tmp_path: Path) -> None:
