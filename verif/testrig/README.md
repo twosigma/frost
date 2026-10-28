@@ -150,6 +150,9 @@ simulation only:
 - loads and stores to the MMIO, APLIC and IMSIC windows read and write a RAM
   instead of the devices; the PMA admits loads throughout all three windows,
   including the full 2 MiB IMSIC window, and rejects atomics and reservations;
+- the secondary Ethernet and SPI outputs stay idle, with flash chip select
+  inactive; `ENABLE_1G_ETH` does not instantiate board peripherals in this
+  fixture;
 - the DDR model, the low BRAM data copy, and the device RAM clear on every
   reset.
 
