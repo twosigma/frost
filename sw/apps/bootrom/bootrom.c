@@ -20,7 +20,7 @@
  * Executes at reset from on-chip BRAM at 0x0000_0000:
  *   1. Initializes console UART and checks VCU118 Boot/SPI controller status.
  *   2. Initializes onboard Micron MT25QU01G SPI NOR flash via STARTUPE3 bridge.
- *   3. Reads and validates the 32-byte FSBL image header at flash offset 0x0100_0000.
+ *   3. Reads and validates the 32-byte FSBL image header at flash offset 0x0300_0000.
  *   4. Streams the FSBL payload into on-chip executable SRAM at 0x0000_4000
  *      (updating both imem_predecode and data_memory via u_slice_writer).
  *   5. Verifies the IEEE 802.3 CRC-32 over the loaded SRAM image, executes

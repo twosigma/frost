@@ -19,7 +19,7 @@
 /*
  * vcu118_nic_gty_supervisor: transceiver supervisor for vcu118_nic_gty.
  *
- * Runs on the 150 MHz free-running clock and sequences GTY power-up, full
+ * Runs on the free-running clock and sequences GTY power-up, full
  * resets, RX datapath resets (for near-end PMA loopback transitions), and
  * RX PCS/datapath lock retries while providing stretched clock-OK and
  * synchronized receive signal-OK levels to the FROST 10G NIC.
@@ -31,7 +31,7 @@ module vcu118_nic_gty_supervisor #(
     parameter int unsigned RESET_TIMEOUT_MS = 500,
     parameter int unsigned PULSE_CYCLES = 16
 ) (
-    input logic i_clk,    // 150 MHz free-running
+    input logic i_clk,    // Free-running
     input logic i_rx_clk, // RX USRCLK2 (recovered)
 
     // Transceiver and helper levels (asynchronous to i_clk)
@@ -346,14 +346,14 @@ endmodule : vcu118_nic_gty_supervisor
  * vcu118_nic_gty: VCU118 QSFP1 Lane 0 (Quad 231, GTYE4_CHANNEL_X1Y48) GTY
  * transceiver wrapper for FROST's 10GBASE-R NIC (hw/rtl/net10g).
  *
- * Clocked by MGTREFCLK0_231 (W9/W8, 156.25 MHz Si570 U38). Supports both
+ * Clocked by MGTREFCLK0_231 (W9/W8, Si570 U38). Supports both
  * physical QSFP28 optical/DAC cabling on Lane 0 (TX V7/V6, RX Y2/Y1) and
  * internal near-end PMA loopback (3'b010) for self-contained board verification.
  */
 module vcu118_nic_gty (
-    input logic i_freerun_clk,  // 150 MHz free-running clock
-    input logic i_refclk_p,     // Quad 231 MGTREFCLK0_P (W9, 156.25 MHz)
-    input logic i_refclk_n,     // Quad 231 MGTREFCLK0_N (W8, 156.25 MHz)
+    input logic i_freerun_clk,  // Free-running clock
+    input logic i_refclk_p,     // Quad 231 MGTREFCLK0_P (W9)
+    input logic i_refclk_n,     // Quad 231 MGTREFCLK0_N (W8)
 
     // QSFP1 Lane 0 serial pins (Quad 231, X1Y48)
     input  logic i_rxp,

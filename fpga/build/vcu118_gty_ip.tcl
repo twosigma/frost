@@ -40,7 +40,7 @@ proc create_vcu118_gty_ip {{rx_eq_mode LPM}} {
       CONFIG.TX_REFCLK_FREQUENCY {156.25} \
       CONFIG.RX_REFCLK_FREQUENCY {156.25} \
   ] $ip
-  # MGTREFCLK0 of Quad 231 holding X1Y48 (W9/W8, 156.25 MHz).
+  # MGTREFCLK0 of Quad 231 holding X1Y48 (W9/W8).
   set_property -dict [list \
       CONFIG.TX_REFCLK_SOURCE {X1Y48 clk0} \
       CONFIG.RX_REFCLK_SOURCE {X1Y48 clk0} \

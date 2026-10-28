@@ -180,3 +180,69 @@ int main(void) {
 }
 """,
     )
+
+
+def test_documented_boot_chain_has_hush_support() -> None:
+    """The documented conditional transfer chain needs U-Boot's shell parser."""
+    guide = (ROOT / "boards/vcu118/README.md").read_text()
+    config = (ROOT / "sw/uboot/configs/frost_vcu118_defconfig").read_text()
+    assert "dhcp && tftpboot" in guide
+    assert "CONFIG_HUSH_PARSER=y" in config.splitlines()
+
+
+def test_unknown_or_changed_kconfig_is_rejected(tmp_path: Path) -> None:
+    """Obsolete and dependency-disabled selections fail before compilation."""
+    from test_fpga_managed_flows import load_module
+
+    import pytest
+
+    checker = load_module("uboot_config_check", "sw/uboot/check_config.py")
+    requested = tmp_path / "requested"
+    generated = tmp_path / "generated"
+    requested.write_text("CONFIG_FLASH=y\nCONFIG_VALUE=42\n# CONFIG_BAR is not set\n")
+    for actual in (
+        "CONFIG_VALUE=42\n",
+        "CONFIG_FLASH=y\nCONFIG_VALUE=43\n",
+        "CONFIG_FLASH=y\nCONFIG_VALUE=42\nCONFIG_BAR=y\n",
+    ):
+        generated.write_text(actual)
+        with pytest.raises(ValueError, match="did not apply"):
+            checker.validate_config(requested, generated)
+    generated.write_text(requested.read_text())
+    checker.validate_config(requested, generated)
+    generated.write_text("CONFIG_FLASH=y\nCONFIG_VALUE=42\n")
+    checker.validate_config(requested, generated)
+
+
+def test_firmware_forwards_the_compiler(tmp_path: Path) -> None:
+    """The aggregate build uses one prefix for U-Boot, ROM, FSBL and OpenSBI."""
+    import os
+
+    work = tmp_path / "sw/uboot"
+    work.mkdir(parents=True)
+    log = tmp_path / "calls"
+    capture = tmp_path / "capture"
+    capture.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{log}"\n')
+    capture.chmod(0o755)
+    (tmp_path / "python3").symlink_to(capture)
+    subprocess.run(
+        [
+            "make",
+            "-f",
+            str(ROOT / "sw/uboot/Makefile"),
+            "firmware",
+            "-o",
+            "all",
+            "-o",
+            "dtb",
+            "CROSS_COMPILE=selected-",
+            "MAKE=" + str(capture),
+        ],
+        cwd=work,
+        check=True,
+        env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"]},
+    )
+    calls = log.read_text().splitlines()
+    assert calls[0] == "-C ../apps/bootrom RISCV_PREFIX=selected-"
+    assert calls[1] == "-C ../apps/fsbl RISCV_PREFIX=selected-"
+    assert "--cross selected-" in calls[2]

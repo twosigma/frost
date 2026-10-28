@@ -4,7 +4,8 @@ The supported boards are Alveo X3522PV (X3) and VCU118. Both have 256 KiB
 BRAM, 16 KiB L1I, 128 KiB L1D and 2 MiB URAM L2. X3 exposes 1 GiB of DDR4;
 VCU118 exposes 2 GiB. X3 has 10GBASE-R Ethernet; VCU118 has a 1 Gb/s
 RJ-45 interface and 10GBASE-R on QSFP1 lane 0. Both NIC interfaces use
-coherent DMA. VCU118 also has SPI flash boot into OpenSBI and U-Boot. See the [FPGA guide](../fpga/README.md) for X3 usage
+coherent DMA. VCU118 also has SPI flash boot into OpenSBI and U-Boot. See the
+[FPGA guide](../fpga/README.md) for X3 usage
 and the [VCU118 guide](vcu118/README.md) for its board integration and usage.
 
 The X3 has eight L2 miss slots, eight L1D miss slots, and eight load queue

@@ -24,9 +24,9 @@ BRAM, a 16 KiB instruction cache, a 128 KiB data cache, and a 2 MiB L2 cache.
 ## Board integration
 
 `vcu118_clock.sv` generates the CPU and CPU/4 clocks with an MMCM driven by
-`SYSCLK1_300`. The build and software loader use a fixed clock configuration. The DDR controller uses its
-independent reference input. The optional GTY CPU clock wrapper is outside
-the active board file list.
+`SYSCLK1_300`. The build and software loader use a fixed clock configuration.
+The DDR controller uses its independent reference input. The optional GTY
+CPU clock wrapper is outside the active board file list.
 The networking build generates the GTY and SGMII PCS/PMA cores.
 
 The board's clock-source jumpers must select the SYSCLK1_300 source. The
@@ -67,8 +67,9 @@ telemetry to the CPU memory error unit.
 ## Ethernet and boot controller
 
 The RJ-45 port uses the DP83867 PHY and an SGMII PCS/PMA connected to the
-NIC's GMII adapter in full-duplex mode. Its registers occupy `0x40022000` and use APLIC source 2.
-The PHY reports the negotiated copper link through SGMII. QSFP1 lane 0 uses a GTY channel and the shared 10GBASE-R MAC/PCS. Its NIC
+NIC's GMII adapter in full-duplex mode. Its registers occupy `0x40022000`
+and use APLIC source 2. The PHY reports the negotiated copper link through
+SGMII. QSFP1 lane 0 uses a GTY channel and the shared 10GBASE-R MAC/PCS. Its NIC
 registers occupy `0x40030000` and use APLIC source 4. Both NICs use coherent
 DMA through the shared memory hierarchy.
 
@@ -108,16 +109,16 @@ python3 fpga/load_software/load_software.py vcu118 linux_boot
 Use the serial console to interact with Linux. U-Boot provides an interactive
 console, SPI flash commands and network loading through the Ethernet NICs.
 
-
 ## Flash boot and U-Boot
 
 Flash boot requires a Rev 2.0 board with QSPI configuration memory; earlier
-revisions have BPI flash. The configuration flash holds the FPGA image at offset zero and the software
-stages below. Each software stage has a 32-byte header with its load address,
-length, entry address and CRC-32. The boot stages reject invalid bounds and
+revisions have BPI flash. The configuration flash holds the FPGA image at
+offset zero and the software stages below. Each software stage has a
+32-byte header with its load address, length, entry address and CRC-32.
+The boot stages reject invalid bounds and
 checksums. The ROM loads the FSBL at reset; the FSBL enters OpenSBI, which
-starts U-Boot in supervisor mode. No JTAG software load is needed for this path. The FSBL is a flash stage,
-not a standalone JTAG application.
+starts U-Boot in supervisor mode. No JTAG software load is needed for this
+path. The FSBL is a flash stage, not a standalone JTAG application.
 
 | Stage | Flash offset | Load address | Maximum payload |
 |---|---|---|---|
@@ -132,7 +133,7 @@ Build the firmware and pack the software image from the repository root:
 ./scripts/frost.py run make -C sw/uboot firmware
 python3 fpga/flash/make_flash_image.py --output /path/to/boot.bin
 python3 fpga/flash/program_flash.py --boot-image /path/to/boot.bin \
-  --bitstream /path/to/vcu118_frost.bit --output-dir /path/to/flash-output \
+  --fpga-image /path/to/vcu118_frost.bit --output-dir /path/to/flash-output \
   --prepare-only
 ```
 
@@ -143,7 +144,7 @@ on the packer are `--fsbl`, `--opensbi`, `--dtb`, and `--uboot`.
 
 Remove `--prepare-only` to program the selected VCU118 configuration flash.
 Use `--target-exact` and `--hw-server-url` to select a cable and server.
-`--boot-only` replaces `--bitstream` when updating the four software
+`--boot-only` replaces `--fpga-image` when updating the four software
 partitions. Select the board's SPI configuration boot mode for startup
 from flash. The programmer erases and verifies the ranges in its generated
 configuration-memory file.

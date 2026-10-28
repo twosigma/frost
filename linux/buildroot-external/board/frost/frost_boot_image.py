@@ -134,8 +134,7 @@ MEMORY_ERROR_APLIC_SOURCE = 5
 NIC_BASE = 0x4003_0000
 NIC_SIZE = 0x1000
 NIC_APLIC_SOURCE = 4
-# Secondary 1G SGMII NIC @ 0x4002_2000 (VCU118); unpopulated boards return 0
-# on ID read so frost_net10g skips the node quietly.
+# Secondary 1G SGMII NIC @ 0x4002_2000, included only in the VCU118 tree.
 NIC_1G_BASE = 0x4002_2000
 NIC_1G_SIZE = 0x1000
 NIC_1G_APLIC_SOURCE = 2

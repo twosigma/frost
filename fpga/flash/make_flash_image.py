@@ -16,7 +16,7 @@
 """Pack multi-stage boot components into a single SPI NOR flash image for VCU118.
 
 SPI Flash Layout:
-  Offset 0x0000_0000 .. 0x0270_0000: FPGA Bitstream (vcu118_frost.bit)
+  Offsets below 0x0300_0000: FPGA configuration image
   Offset 0x0300_0000 (Rel +0x000000): FSBL       (load 0x0000_4000, entry 0x0000_4000)
   Offset 0x0310_0000 (Rel +0x100000): OpenSBI    (load 0x8000_0000, entry 0x8000_0000)
   Offset 0x0320_0000 (Rel +0x200000): DTB        (load 0x8220_0000, entry 0x8220_0000)

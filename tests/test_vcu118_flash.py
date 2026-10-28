@@ -147,7 +147,7 @@ def test_flash_prepare_does_not_discover_hardware(
             "program_flash.py",
             "--boot-image",
             str(boot),
-            "--bitstream",
+            "--fpga-image",
             str(bit),
             "--output-dir",
             str(tmp_path / "out"),
@@ -248,3 +248,15 @@ source $script
     assert result.stdout.endswith("CLOSE_TARGET\nDISCONNECT_SERVER\nCLOSE_MANAGER\n")
     assert ("PROGRAM_FLASH" in result.stdout) == (part == "xcvu9p")
     assert "TARGET:cable1" in result.stdout
+
+
+def test_flash_listing_needs_no_images(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Listing cables never prepares configuration data or requires image files."""
+    calls = []
+    monkeypatch.setattr(sys, "argv", ["program_flash.py", "--list-targets"])
+    monkeypatch.setattr(programmer, "select_target", lambda *a, **kw: calls.append(kw))
+    monkeypatch.setattr(
+        programmer.subprocess, "run", lambda *a, **kw: pytest.fail("Vivado preparation")
+    )
+    programmer.main()
+    assert len(calls) == 1 and calls[0]["list_only"] is True

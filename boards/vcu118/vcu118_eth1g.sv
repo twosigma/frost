@@ -19,15 +19,15 @@
  * TI DP83867ISRGZ PHY bootstrap wrapper.
  *
  * On VCU118, the onboard TI DP83867ISRGZ PHY (Bank 64, PHY_ADDR = 5'h03)
- * defaults out of reset to 4-wire SGMII mode with its 625 MHz differential
+ * defaults out of reset to 4-wire SGMII mode with its differential
  * SGMII clock output (AT22/AU22) disabled. Because UltraScale+ native HSSIO
- * BITSLICE in vcu118_pcs_pma_1g requires the 625 MHz clock to be present and
+ * BITSLICE in vcu118_pcs_pma_1g requires the SGMII clock to be present and
  * stable before releasing reset, this module sequences:
  *   1. Hardware PHY reset assertion (o_phy_rst_n = 0) for ~21 ms.
  *   2. Post-reset wait (~21 ms) for DP83867 internal POR and strap latch.
  *   3. Clause-22 MDIO indirect/direct register writes to PHY_ADDR = 5'h03:
  *      - CFG4 (0x0031) <= 0x0070 (SGMII auto-negotiation timer = 11 ms)
- *      - SGMIICTL1 (0x00D3) <= 0x4000 (enable 6-wire SGMII 625 MHz clock)
+ *      - SGMIICTL1 (0x00D3) <= 0x4000 (enable 6-wire SGMII clock)
  *      - 10M_SGMII_CFG (0x016F) <= 0x0015 (10M SGMII configuration)
  *      - PHYCR (0x0010) <= 0x5848 (SGMII enable, auto MDI/MDIX)
  *      - BMCR (0x0000) <= 0x1340 (1000M full-duplex, enable & restart AN)
@@ -35,11 +35,11 @@
  *      out of reset.
  */
 module vcu118_eth1g (
-    input logic i_clk_div4,  // Free-running divided clock (~50-70 MHz)
+    input logic i_clk_div4,  // Free-running CPU/4 clock
     input logic i_rst,       // Active-high board reset
 
     // Bank 64 SGMII-over-LVDS pins
-    input  logic i_sgmii_clk_p,  // AT22 (625 MHz from DP83867)
+    input  logic i_sgmii_clk_p,  // AT22 (from DP83867)
     input  logic i_sgmii_clk_n,  // AU22
     input  logic i_sgmii_rx_p,   // AU24
     input  logic i_sgmii_rx_n,   // AV24
@@ -104,7 +104,7 @@ module vcu118_eth1g (
       4'd1: return {RegAddar, 16'h0031};
       4'd2: return {RegRegcr, 16'h401F};
       4'd3: return {RegAddar, 16'h0070};
-      // 4..7: Extended write 0x00D3 (SGMIICTL1) <= 0x4000 (6-wire SGMII 625 MHz clk)
+      // 4..7: Extended write 0x00D3 (SGMIICTL1) <= 0x4000 (6-wire SGMII clock)
       4'd4: return {RegRegcr, 16'h001F};
       4'd5: return {RegAddar, 16'h00D3};
       4'd6: return {RegRegcr, 16'h401F};

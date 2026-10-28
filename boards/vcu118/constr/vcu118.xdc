@@ -199,7 +199,7 @@ set_property PACKAGE_PIN A21  [get_ports {ddr4_sdram_c0_dq[71]}]
 # -----------------------------------------------------------------------------
 # 5. 10G QSFP1 Lane 0 GTY Transceiver (Quad 231, X1Y48) & Cage Control (Bank 64)
 # -----------------------------------------------------------------------------
-# 156.25 MHz Si570 (U38) MGTREFCLK0 of Quad 231
+# Si570 (U38) MGTREFCLK0 of Quad 231
 set_property PACKAGE_PIN W9  [get_ports i_qsfp1_refclk_p]
 set_property PACKAGE_PIN W8  [get_ports i_qsfp1_refclk_n]
 create_clock -period 6.400 -name qsfp1_gty_refclk [get_ports i_qsfp1_refclk_p]
@@ -221,7 +221,7 @@ set_property PULLUP true [get_ports i_qsfp1_modprsl]
 # -----------------------------------------------------------------------------
 # 6. 1G RJ-45 SGMII-over-LVDS & TI DP83867ISRGZ PHY Management (Bank 64)
 # -----------------------------------------------------------------------------
-# 625 MHz Differential SGMII Clock from TI DP83867 (U3)
+# Differential SGMII Clock from TI DP83867 (U3)
 set_property PACKAGE_PIN AT22 [get_ports i_sgmii_clk_p]
 set_property PACKAGE_PIN AU22 [get_ports i_sgmii_clk_n]
 set_property IOSTANDARD LVDS [get_ports {i_sgmii_clk_p i_sgmii_clk_n}]
@@ -249,7 +249,7 @@ set_property IOSTANDARD LVCMOS18 [get_ports {o_phy_rst_n o_phy_mdc io_phy_mdio}]
 set_property PULLUP true [get_ports io_phy_mdio]
 
 # -----------------------------------------------------------------------------
-# 7. Bitstream Configuration Properties
+# 7. FPGA Configuration Properties
 # -----------------------------------------------------------------------------
 set_property CONFIG_VOLTAGE 1.8 [current_design]
 set_property CFGBVS GND [current_design]
@@ -267,8 +267,8 @@ set_property CASCADE_HEIGHT 1 [get_cells -quiet -hierarchical -filter {PRIMITIVE
 # -----------------------------------------------------------------------------
 # 9. Asynchronous Clock Domain Crossings
 # -----------------------------------------------------------------------------
-# Cut paths between independent clock trees (CPU/div4 MMCM, 150 MHz freerun,
-# DDR4 250 MHz, 10G QSFP1 GTY 156.25 MHz, and 1G SGMII 625 MHz)
+# Cut paths between independent clock trees (CPU/div4 MMCM, freerun,
+# DDR4, QSFP1 GTY, and SGMII).
 set_clock_groups -asynchronous \
     -group [get_clocks -include_generated_clocks -of_objects [get_pins -quiet u_clock_gen/u_mmcm/CLKOUT*]] \
     -group [get_clocks -include_generated_clocks -of_objects [get_pins -quiet u_clock_gen/u_bufg_freerun_150/O]] \

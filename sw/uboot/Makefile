@@ -30,7 +30,7 @@ $(SOURCE_DIR)/.frost-source:
 	git -C "$(SOURCE_DIR)" checkout --detach $(UBOOT_REV)
 	touch "$@"
 
-u-boot.bin: $(SOURCE_DIR)/.frost-source frost_net10g_uboot.c frost_spi.c configs/frost_vcu118_defconfig Makefile
+u-boot.bin: $(SOURCE_DIR)/.frost-source frost_net10g_uboot.c frost_spi.c configs/frost_vcu118_defconfig Makefile check_config.py
 	cp frost_net10g_uboot.c "$(SOURCE_DIR)/drivers/net/frost_net10g.c"
 	cp frost_spi.c "$(SOURCE_DIR)/drivers/spi/frost_spi.c"
 	cp configs/frost_vcu118_defconfig "$(SOURCE_DIR)/configs/"
@@ -43,6 +43,7 @@ u-boot.bin: $(SOURCE_DIR)/.frost-source frost_net10g_uboot.c frost_spi.c configs
 		printf '\nconfig FROST_SPI\n\tbool "FROST SPI controller"\n\tdepends on DM_SPI\n' >> "$(SOURCE_DIR)/drivers/spi/Kconfig"; \
 	fi
 	$(MAKE) -C "$(SOURCE_DIR)" O="$(OUTPUT_DIR)" CROSS_COMPILE="$(CROSS_COMPILE)" frost_vcu118_defconfig
+	python3 check_config.py configs/frost_vcu118_defconfig "$(OUTPUT_DIR)/.config"
 	$(MAKE) -C "$(SOURCE_DIR)" O="$(OUTPUT_DIR)" CROSS_COMPILE="$(CROSS_COMPILE)" -j$(JOBS)
 	cp "$(OUTPUT_DIR)/u-boot.bin" "$@"
 	cp "$(OUTPUT_DIR)/u-boot" u-boot.elf
@@ -52,8 +53,8 @@ clean:
 
 .PHONY: firmware dtb
 firmware: all dtb
-	$(MAKE) -C ../apps/bootrom
-	$(MAKE) -C ../apps/fsbl
+	$(MAKE) -C ../apps/bootrom RISCV_PREFIX="$(CROSS_COMPILE)"
+	$(MAKE) -C ../apps/fsbl RISCV_PREFIX="$(CROSS_COMPILE)"
 	python3 ../../linux/opensbi_build.py --out "$(BUILD_DIR)/opensbi" \
 	  --cross "$(CROSS_COMPILE)" --jobs $(JOBS)
 
