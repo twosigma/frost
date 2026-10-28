@@ -107,6 +107,7 @@ module coherence_l1d #(
     input logic i_u_valid,
     output logic o_u_ready,
     input logic [ADDR_WIDTH+14:0] i_u,
+    output cache_perf_pkg::cache_instance_perf_events_t o_perf_events,
     output logic o_fatal,
     output logic [ADDR_WIDTH-1:0] o_fatal_addr
 );
@@ -263,6 +264,72 @@ module coherence_l1d #(
   assign active = !i_rst && !i_fatal_stop && !o_fatal;
   assign probe_in = i_p;
   assign ack = i_wa;
+  // Each CPU request contributes one lookup decision. Retries, probe traffic
+  // and maintenance do not contribute demand events.
+  logic [7:0] perf_read_seen_q, perf_read_miss_q;
+  logic perf_lookup, perf_access, perf_hit, perf_sc;
+  logic [cache_perf_pkg::MissOutstandingBits-1:0] perf_outstanding;
+  assign perf_lookup = active && phase_q == LookupWait && array_valid &&
+      ((operation_q == ReadOp && !perf_read_seen_q[selected_read_q]) ||
+       (operation_q == StoreOp && !pending_miss_q));
+  assign perf_sc = i_sc_valid && o_sc_ready;
+  assign perf_access = perf_lookup || perf_sc;
+  assign perf_hit = perf_lookup && array_hit &&
+      (operation_q == StoreOp ? array_state == coherence_pkg::Modified :
+       rd_kind_q[selected_read_q] != ReadAMO);
+  always_comb begin
+    perf_outstanding = cache_perf_pkg::MissOutstandingBits'(pending_q && pending_miss_q);
+    for (int slot = 0; slot < 8; slot++)
+      perf_outstanding += cache_perf_pkg::MissOutstandingBits'(
+          rd_valid_q[slot] && !rd_ready_q[slot] && perf_read_miss_q[slot]);
+    perf_outstanding += cache_perf_pkg::MissOutstandingBits'(
+        atomic_q && atomic_sc_q && !atomic_granted_q && !o_sc_result_valid);
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      perf_read_seen_q <= '0;
+      perf_read_miss_q <= '0;
+      o_perf_events <= '0;
+    end else begin
+      if (perf_lookup && operation_q == ReadOp) begin
+        perf_read_seen_q[selected_read_q] <= 1'b1;
+        perf_read_miss_q[selected_read_q] <= !perf_hit;
+      end
+      if (i_read_valid) begin
+        perf_read_seen_q[i_read_id] <= 1'b0;
+        perf_read_miss_q[i_read_id] <= 1'b0;
+      end
+      o_perf_events <= '0;
+      o_perf_events.access <= perf_access;
+      o_perf_events.hit <= perf_hit;
+      o_perf_events.miss <= perf_access && !perf_hit;
+      o_perf_events.miss_outstanding <= perf_outstanding;
+      o_perf_events.hit_under_miss <= perf_hit && perf_outstanding != 0;
+      o_perf_events.writeback <= active && phase_q == Freeze &&
+          wb_freeze_ready[freeze_slot_q] && !freeze_maintenance_q;
+      o_perf_events.slot_full_stall <= active && phase_q == LookupWait && array_valid &&
+          (operation_q == StoreOp || operation_q == ReadOp) && !array_hit &&
+          (request_live || !wb_free);
+      o_perf_events.conflict_stall <= active && phase_q == Idle &&
+          !probe_valid_q && !i_p_valid && !grant_valid && !atomic_write_q &&
+          pending_q && pending_blocked;
+    end
+  end
+`ifdef FORMAL
+  always @(posedge i_clk) begin
+    if (f_past_valid) begin
+      assert (o_perf_events.access == (o_perf_events.hit || o_perf_events.miss));
+      assert (!(o_perf_events.hit && o_perf_events.miss));
+      assert (o_perf_events.miss_outstanding <= 10);
+      if ($past(i_rst)) assert (o_perf_events == '0);
+      if (o_perf_events.hit_under_miss) begin
+        assert (o_perf_events.hit);
+        assert (o_perf_events.miss_outstanding != 0);
+      end
+    end
+  end
+`endif
+
   assign maint_eligible = maint_q && !pending_q && !atomic_q && !request_live && wb_free;
   assign o_pending_store = pending_q;
   assign o_atomic_live = atomic_q;
@@ -284,10 +351,11 @@ module coherence_l1d #(
       (probe_valid_q && probe_q.opcode == coherence_pkg::ProbeInvalidate && phase_q != ProbeReply);
 `ifndef SYNTHESIS
 `ifdef FORMAL
-  always_comb begin
+  always_comb
 `else
-  always @(posedge i_clk) begin
+  always @(posedge i_clk)
 `endif
+  begin
     p_cut_hold_exact : assert (o_cut_hold ==
         ((i_p_valid && o_p_ready && probe_in.opcode == coherence_pkg::ProbeInvalidate) ||
          (probe_valid_q && probe_q.opcode == coherence_pkg::ProbeInvalidate &&

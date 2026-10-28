@@ -1,22 +1,21 @@
 # Cache library
 
-In the default configuration, the cached memory tier uses one set-associative,
-write-back, non-blocking line cache three times (L1D, L1I, and L2), the arbiters
-that merge line ports, two sequencers that make DMA and page-table walks
-coherent with the L1D, an adapter between the L1s' 32-byte lines and the
-L2's 64-byte lines, a prefetcher that reads ahead of L1D miss streams into
-the L2, the bridge to the DDR controller's AXI port, and a simulation-only
-DDR model. Production cache ports carry tagged line requests, so
-levels stack freely and each level can have several transactions in flight.
-Coherence is handled in hardware: DMA and page-table walks see data that is
-still dirty in the L1D, and software never flushes a cache for them.
+The CPU cache hierarchy has a private S/M L1D and L1I above a shared L2
+home. The home serializes acquisitions, probes the L1D, merges dirty
+replies through L2 and orders DMA against CPU accesses. Page-table walks
+use the same home. FENCE.I writes private dirty data to L2 before
+invalidating the instruction cache and fetch buffers.
+
+The library also contains a generic nonblocking line cache, line arbiters,
+size adapters, an AXI bridge and a behavioral memory model. Component
+benches compose these modules independently of the CPU hierarchy.
 
 | File | Role |
 |------|------|
-| `frost_cache.sv` | The line cache, used at every level; the L1D instance also takes per-line coherence probes |
+| `frost_cache.sv` | Generic line cache, used by the CPU L1I and the component hierarchy benches |
 | `frost_hart_cache.sv` | One hart's private caches: the L1D and the L1I, the walker port's coherence sequencer, the probe injection register that the walker and DMA probes share into the L1D, and `fence.i` sequencing |
 | `frost_cluster_cache.sv` | The shared level: the L1D, walker, L1I, and DMA ports and the stream prefetcher over the arbiter tree, the DMA coherence sequencer, the line-size adapter, and the L2 |
-| `frost_cache_hierarchy.sv` | The two above as one module, for the unit benches and the TestRIG platform; `cpu_top` places them in `frost_hart` and `frost_cluster_memory` |
+| `frost_cache_hierarchy.sv` | Component hierarchy for the line-cache unit benches |
 | `line_size_adapter.sv` | Places each L1-line request in its sector of a wider L2 line and returns that sector of the response; an outstanding-transaction table holds each request's sector by id |
 | `line_port_arbiter.sv` | N:1 tagged arbiter: fixed priority by port index, optional starvation bound, port index prefixed to ids |
 | `dma_coherence_sequencer.sv` | Takes each DMA request through the L1D, and each DMA write through the load queue as well, before it reaches the L2 |
@@ -78,13 +77,11 @@ must take no action on a request until it fires.
 
 ## Coherent endpoint library
 
-`coherence.f` selects the channel endpoints and their programmable harness.
-`cache.f` supplies the line-port cache path. `cpu_top/coherent_cluster.f`
-supplies the coherent controllers and CPU ownership guard. The coherent
-endpoints provide transport and ownership bookkeeping for the controllers
-selected by `COHERENT_CLUSTER=1` with the `FROST_COHERENT_CLUSTER` compile
-definition. The definition enables coherent interfaces in the shared CPU
-modules. Without it, those ports and their logic are absent.
+`coherence.f` supplies the channel endpoints and their programmable harness.
+`cache.f` supplies the coherent controllers and line-cache components.
+The CPU filelists include their ownership and issue-control dependencies.
+The endpoints provide transport and ownership bookkeeping for the home
+and hart controllers.
 
 `coherence_pkg` defines opcodes, request identity, and home identity ranges.
 `FROST_COHERENCE_TYPES(P)` in `coherence_types.svh` declares packed payloads
@@ -228,10 +225,20 @@ makes each allocation visible on the allocation edge. Each slot keeps its
 allocated payload until reset or another allocation to that slot.
 Allocation marks an empty slot valid. Read eligibility compares each physical slot with pending, atomic and frozen
 writeback sectors. Circular priority selects a qualified slot and its address.
-There are no E grants, silent upgrades, sharer hints or stream prefetches in
-this selection. `L2_NUM_MSHR` and the prefetch parameters configure the
-line-port selection; the coherent home has one fill and `L2_NUM_WB` victim
-write slots.
+There are no E grants, silent upgrades, sharer hints or stream prefetches.
+The L1D has eight read slots. The home has one fill and `L2_NUM_WB` victim
+write slots. `L1D_NUM_MSHR`, `L2_NUM_MSHR`, `L2_NUM_WAITERS` and the prefetch
+parameters have no effect on the CPU hierarchy.
+
+L1D performance events count the first permission lookup of each CPU read
+or ordinary store. Cached SC selection counts as a permission miss. A store
+to S and an AMO require permission and count as misses. Repeated lookups,
+probes and maintenance do not add demand events. Outstanding misses include
+unresolved read slots, the pending store and the selected SC. L2 events
+count shared demand lookups and non-maintenance PutM lookups. Its fill count
+is at most one. A DMA write miss contributes a write-fill event; probe data
+merges do not contribute another demand. Events are registered at their
+source and use the cache-counter ABI.
 
 The hart uses source 0 and classes 0, 1 and 2 for data, instruction and walker
 requests. Each class has one request identity. Source 2 and class 3 identify
@@ -298,8 +305,8 @@ bytes to reach external memory.
 
 The unit benches `coherence_home`, `coherence_home_equal`, `coherence_cluster`
 and `coherent_cut` cover controller ownership, inclusion, cuts, atomics and
-probe service. `coherent_*` program configurations select this path in the
-whole SoC. Formal targets `coherence_control`, `coherence_array`,
+probe service. The whole-SoC program configurations use this hierarchy.
+Formal targets `coherence_control`, `coherence_array`,
 `coherence_home`, `coherence_l1d` and `coherent_cpu` check endpoint service,
 representative byte values, bounded controller transitions and CPU ownership.
 Detached victim validity, address and a watched byte are checked by induction
@@ -310,9 +317,9 @@ acknowledgement; they do not bound external memory response latency.
 
 ## The line cache
 
-The following sections describe the line-port configuration.
-`frost_cache` supplies each level of its line-port hierarchy. The
-instances differ in size, line size, storage, and slot counts:
+The following sections describe the generic line-cache components.
+`frost_cache_hierarchy` connects three `frost_cache` instances for unit
+benches. Their default sizes and storage are:
 
 | Instance | Size | Line | Ways x sets | Tags | Data | Miss slots | Waiter seats per miss slot | Writeback slots | Probe slots |
 |----------|------|------|-------------|------|------|------------|----------------------------|-----------------|-------------|
@@ -509,9 +516,9 @@ stale lines instead of writing them back. `SIM_FAST_MAINT=1` (simulation
 only) makes the sweep a one-cycle clear and makes writeback-all visit only
 sets with dirty lines, with the same functional effect.
 
-## The hierarchy
+## Component hierarchy
 
-The hierarchy has two parts. `frost_hart_cache` holds one hart's private
+The line-cache component hierarchy has two parts. `frost_hart_cache` holds one hart's private
 caches: the L1D, the L1I, the walker port's coherence sequencer, and the
 probe injection register in front of the L1D. `frost_cluster_cache` holds
 the shared level, which puts the L1D's, the walker's, the L1I's, and the DMA
@@ -522,15 +529,13 @@ the L1D's, the L1I's, and the walker sequencer's line ports and the DMA
 sequencer's probes into the L1D. Requests and responses pass through the
 arbiters and the adapter without a register stage, so the boundary between
 the parts adds no cycle.
-`frost_cache_hierarchy` composes the two parts as one module for the cache
-unit benches and the TestRIG platform. `cpu_top` instantiates
-`frost_hart_cache` in its hart (`frost_hart`) and `frost_cluster_cache` in
-the memory side the hart shares (`frost_cluster_memory`).
+`frost_cache_hierarchy` composes the two parts for component benches.
+The CPU hierarchy uses `coherent_hart_cache` and `coherence_home`.
 
 [![FROST cache hierarchy: L1D, walker, L1I and DMA arbitration through the line-size adapter into the L2 and DDR, each of the walker and DMA ports entering through its own coherence sequencer](../../../../docs/diagrams/cache-hierarchy.svg)](../../../../docs/diagrams/cache-hierarchy.svg)
 
-The diagram shows the X3 configuration. Arrows follow requests; responses
-return by id prefix.
+The diagram shows the line-cache component hierarchy. Arrows follow
+requests; responses return by id prefix.
 
 The arbiter tree is a 2:1 `line_port_arbiter` (walker over L1I) under a 3:1
 one (L1D over that pair over DMA). With the stream prefetcher

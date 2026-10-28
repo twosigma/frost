@@ -20,6 +20,7 @@ smtbmc boolector
 [script]
 read -formal -sv riscv_pkg.sv
 read -formal -sv sdp_dist_ram.sv
+read -sv coherent_l0_flags.sv
 read -formal -sv lq_l0_cache.sv
 bmc: chparam -set DEPTH 128 lq_l0_cache
 cover: chparam -set DEPTH 128 lq_l0_cache
@@ -31,3 +32,4 @@ prep -top lq_l0_cache
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv

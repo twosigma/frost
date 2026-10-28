@@ -24,8 +24,9 @@
  *
  * Check the sum, final pointer, and sampled stores. Passing requires misses
  * on at least half the independent loads, overlapping misses in the
- * independent-load and store passes, and fewer cycles for independent loads
- * than for the chase. Full-cache mode also checks aggregate L2 miss traffic.
+ * independent-load pass, and misses on at least half the stores. The home
+ * serializes acquisitions and the L1D holds one pending store. Full-cache
+ * mode also checks aggregate L2 miss traffic.
  * Report each pass's cache-counter deltas; the chase is the serialized
  * control.
  */
@@ -233,12 +234,8 @@ int main(void)
         uart_printf("ERROR: no overlapped demand misses in the independent pass\n");
         failures++;
     }
-    if (ind_elapsed >= chase_elapsed) {
-        uart_printf("ERROR: independent loads were no faster than the serialized chase\n");
-        failures++;
-    }
-    if (store_overlap == 0u) {
-        uart_printf("ERROR: no overlapped store misses\n");
+    if (store_miss < NUM_LINES / 2u) {
+        uart_printf("ERROR: the store pass did not miss (%lu)\n", (unsigned long) store_miss);
         failures++;
     }
     if (DDR_MLP_FULL_CACHE && (ind_l2_miss < NUM_LINES / 2u || chase_l2_miss < NUM_LINES / 2u ||

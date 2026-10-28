@@ -47,6 +47,37 @@ def literal(register: int, value: int) -> list[int]:
 
 
 @cocotb.test()
+async def sc_matches_cached_address_and_size(dut: Any) -> None:
+    """Check exact cached LR/SC matching and uncached doubleword matching."""
+    initial = 0x1122334455667788
+    for cached in (False, True):
+        for lr_size, sc_size, offset in ((2, 2, 4), (2, 3, 0), (3, 2, 0), (2, 2, 0)):
+            system = System(dut)
+            address = 0x80000000 if cached else 0x3000
+            body = literal(4, address) + [addi(7, 0, 0x99), addi(9, 4, offset)]
+            body += [(2 << 27) | (4 << 15) | (lr_size << 12) | (5 << 7) | 0x2F]
+            body += [
+                (3 << 27) | (7 << 20) | (9 << 15) | (sc_size << 12) | (6 << 7) | 0x2F
+            ]
+            body += [load(8, 4, 0, 3), 0x400005B7]
+            body += [store(6, 11, 0x10, 3), store(8, 11, 0x18, 3), 0x0000006F]
+            system.program(body)
+            for byte in range(8):
+                system.memory[address + byte] = (initial >> (8 * byte)) & 255
+            await system.reset()
+            observed = await system.until_write(0x40000018)
+            effects = {addr: value for _, addr, value in system.effects}
+            success = not cached or (lr_size == sc_size and offset == 0)
+            mask = ((1 << (8 * (1 << sc_size))) - 1) << (8 * offset)
+            expected = (
+                (initial & ~mask) | (0x99 << (8 * offset)) if success else initial
+            )
+            context = (cached, lr_size, sc_size, offset)
+            assert effects[0x40000010] == int(not success), context
+            assert observed == expected, context
+
+
+@cocotb.test()
 async def sc_refill_fault_preserves_virtual_address(dut: Any) -> None:
     """Check SC cause, EPC, virtual fault address and completion disposal."""
     for translated in (False, True):

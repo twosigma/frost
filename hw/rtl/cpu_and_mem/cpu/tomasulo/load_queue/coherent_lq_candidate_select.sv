@@ -51,10 +51,11 @@ module coherent_lq_candidate_select #(
     initialized <= 1'b1;
   end
 `ifdef FORMAL
-  always_comb begin
+  always_comb
 `else
-  always @(posedge i_clk) begin
+  always @(posedge i_clk)
 `endif
+  begin
     if (initialized)
       p_candidate_select_exact : assert (
           o_selected == i_candidates[reference_select_q*WIDTH+:WIDTH]);

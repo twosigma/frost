@@ -12,8 +12,12 @@ $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv
 
 # L0 data cache (instantiated by load_queue)
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
 
 # Issue selector and the load queue itself
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv

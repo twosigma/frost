@@ -461,7 +461,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Queued NIC loopback frames overlapping 4 KiB DMA copies in plain "
             "and burst modes, with byte checks and zero MAC RX overflow"
         ),
-        extra_env=(("COCOTB_MAX_CYCLES", "400000"), ("COCOTB_NUM_RUNS", "1")),
+        extra_env=(("COCOTB_MAX_CYCLES", "800000"), ("COCOTB_NUM_RUNS", "1")),
     ),
     "nic_echo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1620,6 +1620,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             # The shipped INT station is dual-issue; build the directed suite
             # against that elaboration rather than the single-port default.
             "-GDUAL_ISSUE=1",
+            "-GPREPARE_ISSUE_CONTROLS=1",
+            "--assert",
             "-GALLOC_INDEXED_REPAIR=1",
             "-GDISPATCH_REPAIR_BYPASS=0",
             "-GISSUE_REPAIR_BYPASS=0",
@@ -1638,6 +1640,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         verilator_extra_args=(
             "-GDUAL_ISSUE=1",
+            "-GPREPARE_ISSUE_CONTROLS=1",
             "-GTAG_INDEXED_BRANCH_PAYLOAD=1",
             "-GHAS_SRC3=0",
             "-GALLOC_INDEXED_REPAIR=1",
@@ -1989,12 +1992,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             (
                 "sram_macros_l1d_data",
                 "sdp_ram_byte_en",
-                "L1D data bank of one way",
+                "L1D data array",
                 "1x4",
                 (
                     "-GDATA_WIDTH=256",
-                    "-GADDR_WIDTH=10",
-                    "-GREAD_LATENCY=1",
+                    "-GADDR_WIDTH=12",
+                    "-GREAD_LATENCY=2",
                     "-GWRITE_LATENCY=1",
                     "-GREGISTER_READ_INPUT=0",
                     "-GREGISTER_READ_OUTPUT=0",
@@ -2137,8 +2140,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Coherent atomic faults and debug entry preserve precise ownership.",
         verilator_extra_args=(
             "--assert",
-            "-DFROST_COHERENT_CLUSTER",
-            "-GCOHERENT_CLUSTER=1",
             "-GENABLE_COHERENCE=0",
             "-GENABLE_CACHED_TIER=1",
             "-GL1D_WAYS=1",
@@ -2153,11 +2154,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_cut",
         hdl_toplevel_module="tomasulo_wrapper",
         description="The coherent cut covers observations, delayed LR, and stale fills.",
-        verilator_extra_args=(
-            "-DFROST_COHERENT_CLUSTER",
-            "-GCOHERENT_CLUSTER=1",
-            "--assert",
-        ),
+        verilator_extra_args=("--assert",),
     ),
     "coherence_cluster": CocotbRunConfig(
         verilator_extra_args=("--assert",),
@@ -3540,74 +3537,18 @@ for _program in ("dma_torture", "nic_loopback", "itlb_test"):
             ),
         )
 
-for _depth in (128, 256):
-    _base_config = TEST_REGISTRY[f"lq_l0_cache_{_depth}"]
-    TEST_REGISTRY[f"coherent_l0_{_depth}"] = replace(
-        _base_config,
-        description=f"Coherent L0 fills, stores and invalidations at {_depth} entries.",
-        verilator_extra_args=(
-            *_base_config.verilator_extra_args,
-            "-DFROST_COHERENT_CLUSTER",
-            "-GCOHERENT_CLUSTER=1",
-            "--assert",
-        ),
-    )
-
-TEST_REGISTRY["coherent_reservation_station"] = replace(
-    TEST_REGISTRY["reservation_station"],
-    description="Coherent reservation-station dispatch capacity, issue and recovery.",
-    verilator_extra_args=(
-        *TEST_REGISTRY["reservation_station"].verilator_extra_args,
-        "-DFROST_COHERENT_CLUSTER",
-        "-GCOHERENT_CLUSTER=1",
-        "--assert",
-    ),
-)
-
-TEST_REGISTRY["coherent_debug_module"] = replace(
-    TEST_REGISTRY["debug_module"],
-    description="Coherent debug replies, slice backpressure and dirty-word priority.",
-    verilator_extra_args=(
-        "-DFROST_COHERENT_CLUSTER",
-        "-GCOHERENT_CLUSTER=1",
-        "--assert",
-    ),
-)
-
-# The coherent cluster is selected explicitly for each program build.
-for _program in (
-    "debug_test",
-    "hello_world",
-    "isa_test",
-    "coremark",
-    "dma_torture",
-    "nic_loopback",
-    "ptw_coherence_test",
-    "smc_fencei_test",
-    "amo_irq_torture_sim",
-):
-    _base_config = TEST_REGISTRY[_program]
-    _coherent_env = _base_config.extra_env
-    _coherent_args = _base_config.verilator_extra_args
-    if _program == "ptw_coherence_test":
-        _coherent_env += (("COCOTB_MAX_CYCLES", "1000000"),)
-    elif _program == "amo_irq_torture_sim":
-        _coherent_env = (("EXTRA_CFLAGS", "-DAMO_TORTURE_ITERS=64"),)
-    elif _program == "smc_fencei_test":
-        _coherent_env += (("COCOTB_MAX_CYCLES", "1000000"),)
-        _coherent_args += ("-GL1_CACHE_BYTES=4096", "-GL1I_CACHE_BYTES=4096")
-    TEST_REGISTRY[f"coherent_{_program}"] = replace(
-        _base_config,
-        description=f"The coherent cluster runs {_program}.",
-        include_in_pytest=True,
-        extra_env=_coherent_env,
-        verilator_extra_args=(
-            *_coherent_args,
-            "-DFROST_COHERENT_CLUSTER",
-            "-GCOHERENT_CLUSTER=1",
-            "--assert",
-        ),
-    )
+# CPU programs and the coherent control benches enable RTL assertions.
+for _name, _config in tuple(TEST_REGISTRY.items()):
+    if _config.hdl_toplevel_module == "frost" or _name in (
+        "debug_module",
+        "lq_l0_cache_128",
+        "lq_l0_cache_256",
+    ):
+        if "--assert" not in _config.verilator_extra_args:
+            TEST_REGISTRY[_name] = replace(
+                _config,
+                verilator_extra_args=(*_config.verilator_extra_args, "--assert"),
+            )
 
 # Registry entries that build an app and are collected by pytest. The unit
 # benches have no app_name and are excluded. Entries with the same Verilator

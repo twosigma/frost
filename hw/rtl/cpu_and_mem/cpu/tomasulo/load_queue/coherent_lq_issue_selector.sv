@@ -268,10 +268,11 @@ module coherent_lq_issue_selector #(
           (|(i_staged_younger & reference.head_mem_update_onehot)) :
           (|(i_staged_younger & reference.merged_scan_onehot));
 `ifdef FORMAL
-  always_comb begin
+  always_comb
 `else
-  always @(posedge i_clk) begin
+  always @(posedge i_clk)
 `endif
+  begin
     p_selection_exact : assert (selected == reference);
   end
 `endif

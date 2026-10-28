@@ -21,9 +21,6 @@
 */
 module platform_top #(
     parameter bit ASYNC_CPU_CLOCK = 1'b0,
-`ifdef FROST_COHERENT_CLUSTER
-    parameter bit COHERENT_CLUSTER = 1'b0,
-`endif
     parameter bit CACHE_NORMAL_MEMORY = 1'b1,
     parameter logic [63:0] BOOT_ADDR = 64'd0,
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 17,
@@ -42,30 +39,23 @@ module platform_top #(
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
-    // Ways per set of the L1D, L1I, and L2 (see frost_hart_cache and
-    // frost_cluster_cache).
+    // Ways per set in the private caches and shared array.
     parameter int unsigned L1D_WAYS = 4,
     parameter int unsigned L1I_WAYS = 4,
     parameter int unsigned L2_WAYS = 4,
-    // L1D miss-status slots, and L2 miss-status and writeback slots (see
-    // frost_hart_cache and frost_cluster_cache).
+    // The L1D has eight read slots and the home has one acquisition.
+    // L1D_NUM_MSHR and L2_NUM_MSHR do not change those capacities.
     parameter int unsigned L1D_NUM_MSHR = 8,
     parameter int unsigned L2_NUM_MSHR = 4,
     parameter int unsigned L2_NUM_WB = 2,
-    // Read waiter seats per L2 miss slot (see frost_cluster_cache). A
-    // stream prefetch holds its slot's primary seat, so the L1D's reads of
-    // both halves of the line need two.
+    // Waiter and prefetch settings have no effect on the coherent home.
     parameter int unsigned L2_NUM_WAITERS = 2,
-    // The L2 stream prefetcher (see frost_cluster_cache): 0 turns it off.
     parameter int unsigned L2_PREFETCH = 1,
     parameter int unsigned L2_PREFETCH_DISTANCE = 8,
     parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
-    // L2 line size: 64 bytes, as on the X3, or 32, the L1s' line size, which
-    // leaves out the line-size adapter. Every DDR AXI transfer carries one L2
-    // line in a single beat.
+    // L2 line size is 32 or 64 bytes. Each AXI beat carries one L2 line.
     parameter int unsigned L2_LINE_BYTES = 64,
-    // Simulation-only fast cache maintenance for fence.i (see frost_cache).
-    // 0 = FPGA (cycle-accurate maintenance FSM); non-zero = sim fast path.
+    // Simulation-only L1I maintenance acceleration. L1D sweeps visit every set.
     parameter int unsigned SIM_FAST_MAINT = 0,
     // Behavioral main-memory model (simulation only; hardware integration
     // replaces it with the DDR controller behind the same AXI port).
@@ -346,9 +336,6 @@ module platform_top #(
   end
 
   cpu_top #(
-`ifdef FROST_COHERENT_CLUSTER
-      .COHERENT_CLUSTER(COHERENT_CLUSTER),
-`endif
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
@@ -462,9 +449,6 @@ module platform_top #(
   );
 
   soc_top #(
-`ifdef FROST_COHERENT_CLUSTER
-      .COHERENT_CLUSTER(COHERENT_CLUSTER),
-`endif
       .ASYNC_CPU_CLOCK(ASYNC_CPU_CLOCK),
       .MEM_SIZE_BYTES(MEM_SIZE_BYTES),
       .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP),

@@ -20,6 +20,7 @@ wb: smtbmc boolector
 covers: smtbmc boolector
 
 [script]
+read -sv cache_perf_pkg.sv
 error: verilog_defines -D COHERENCE_HOME_COVER_ERROR
 read -sv coherence_pkg.sv coherence_home_endpoint.sv
 bmc: read -formal -sv coherence_home.sv
@@ -43,3 +44,4 @@ opt
 ../hw/rtl/lib/cache/coherence_home_endpoint.sv
 ../hw/rtl/lib/cache/coherence_home.sv
 coherence_home_harness.sv
+../hw/rtl/lib/cache/cache_perf_pkg.sv

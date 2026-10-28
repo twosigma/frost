@@ -42,9 +42,6 @@
  */
 
 module lq_l0_cache #(
-`ifdef FROST_COHERENT_CLUSTER
-    parameter bit COHERENT_CLUSTER = 1'b0,
-`endif
     parameter int unsigned DEPTH = riscv_pkg::LqL0Depth,
     parameter int unsigned XLEN  = riscv_pkg::XLEN
 ) (
@@ -280,34 +277,30 @@ module lq_l0_cache #(
   logic lookup_line_invalidated;
   assign lookup_line_invalidated = i_invalidate_line_valid &&
       (i_invalidate_line_addr[5+:(IndexWidth-2)] == lookup_index[IndexWidth-1:2]);
-`ifdef FROST_COHERENT_CLUSTER
-  if (COHERENT_CLUSTER) begin : gen_coherent_lookup_permission
+  if (1'b1) begin : gen_coherent_lookup_permission
     (* keep = "true" *) wire permitted = !lookup_mmio && valid[lookup_index] &&
         !lookup_invalidated && !lookup_line_invalidated;
     assign o_lookup_hit = permitted && (&lookup_tag_groups);
 `ifndef SYNTHESIS
     always @(posedge i_clk) begin
-      p_lookup_permission_exact : assert (o_lookup_hit ==
+      p_lookup_permission_exact :
+      assert (o_lookup_hit ==
           (!lookup_mmio && lookup_hit_array && !lookup_invalidated &&
            !lookup_line_invalidated));
     end
 `endif
-  end else begin : gen_line_lookup_permission
-`endif
-  assign o_lookup_hit =
-      !lookup_mmio && lookup_hit_array && !lookup_invalidated && !lookup_line_invalidated;
-`ifdef FROST_COHERENT_CLUSTER
   end
-`endif
   assign o_lookup_data = data_lookup_rd;
 
   // ===========================================================================
   // Sequential: Fill, Invalidate, Flush
   // ===========================================================================
-`ifdef FROST_COHERENT_CLUSTER
-  if (COHERENT_CLUSTER) begin : gen_coherent_valid
+  if (1'b1) begin : gen_coherent_valid
     logic [DEPTH-1:0] next_valid;
-    coherent_l0_flags #(.DEPTH(DEPTH), .TAG_WIDTH(TagWidth)) flags (
+    coherent_l0_flags #(
+        .DEPTH(DEPTH),
+        .TAG_WIDTH(TagWidth)
+    ) flags (
         .i_clk,
         .i_valid(valid),
         .i_fill(i_fill_valid),
@@ -330,39 +323,7 @@ module lq_l0_cache #(
       if (!i_rst_n || i_flush_all) valid <= '0;
       else valid <= next_valid;
     end
-  end else begin : gen_direct_valid
-`endif
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      valid <= '0;
-    end else if (i_flush_all) begin
-      valid <= '0;
-    end else begin
-      if (ram_write) begin
-        valid[ram_index] <= 1'b1;
-      end
-
-      // A fill at the invalidated index wins only if it has a different tag.
-      // For matching tags, invalidation wins to prevent stale response data
-      // from refilling a dword written by a concurrent store.
-      if (invalidate_fill_entry || invalidate_existing_entry) begin
-        valid[inv_index] <= 1'b0;
-      end
-      if (invalidate2_fill_entry || invalidate2_existing_entry) begin
-        valid[inv2_index] <= 1'b0;
-      end
-      // Line invalidate: tag-blind clear of the line's four dword entries,
-      // after the fill so it wins a same-cycle fill of any of them.
-      if (i_invalidate_line_valid) begin
-        for (int k = 0; k < 4; k++) begin
-          valid[{i_invalidate_line_addr[5+:(IndexWidth-2)], 2'(k)}] <= 1'b0;
-        end
-      end
-    end
   end
-`ifdef FROST_COHERENT_CLUSTER
-  end
-`endif
 
 
   // ===========================================================================

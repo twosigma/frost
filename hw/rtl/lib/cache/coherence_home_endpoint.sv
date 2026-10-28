@@ -190,10 +190,11 @@ module coherence_home_endpoint #(
   end
 `ifndef SYNTHESIS
 `ifdef FORMAL
-  always_comb begin
+  always_comb
 `else
-  always @(posedge i_clk) begin
+  always @(posedge i_clk)
 `endif
+  begin
     p_completion_key_exact : assert (completion_matches ==
         (completion_in.q == demand_q.q && completion_in.tid == 6'(TID) &&
          completion_in.addr == demand_q.addr));

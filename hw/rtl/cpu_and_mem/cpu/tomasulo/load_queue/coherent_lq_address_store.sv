@@ -49,10 +49,11 @@ module coherent_lq_address_store #(
   always_ff @(posedge i_clk)
     if (i_write_enable) reference[i_write_address] <= i_write_data;
 `ifdef FORMAL
-  always_comb begin
+  always_comb
 `else
-  always @(posedge i_clk) begin
+  always @(posedge i_clk)
 `endif
+  begin
     assert (o_read_data == reference[i_read_address]);
     assert (o_read_class == classify(o_read_data));
     for (int i = 0; i < DEPTH; i++) begin

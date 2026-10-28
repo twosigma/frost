@@ -259,7 +259,7 @@ can be debugged and where each one first stops.
 | `arch_test/` | riscv-arch-test cases, whose signatures the bench reads from low BRAM and compares with committed Spike references; built per test with `TEST_SRC`; see the [architecture-test runner](../tests/README.md#test_arch_compliancepy) |
 | `branch_pred_test/` | Self-checking branch, loop, call, and indirect-jump cases in assembly |
 | `c_ext_test/` | Calls and returns through mixed 16- and 32-bit code, plus value checks of the RV64C-only encodings |
-| `cache_counter_target/` | Makes L2 write fills, prints the cache counters from its own snapshot, then sleeps in `wfi` without touching the caches until a UART byte starts a second run, which the JTAG reader (`fpga/debug/cache_counters.py`) measures; runs from low BRAM in either memory configuration |
+| `cache_counter_target/` | Makes L2 write fills with DMA, prints the cache counters from its own snapshot, then sleeps in `wfi` without touching the caches until a UART byte starts a second run, which the JTAG reader (`fpga/debug/cache_counters.py`) measures; runs from low BRAM in either memory configuration |
 | `call_stress/` | Repeated and nested calls and returns, built with compressed instructions |
 | `cf_ext_test/` | Compressed double-precision FP loads and stores (Zcd) |
 | `clint_test/` | SiFive CLINT alias: writes reach the native timer registers, and a timer interrupt armed through the alias fires |

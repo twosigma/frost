@@ -59,24 +59,12 @@ def test_endpoint_synthesis(address: int, harts: int, fills: int) -> None:
     assert f"Eval result: \\o_layout = 28'{layout:028b}." in result.stdout
 
 
-def test_coherent_sources_are_available() -> None:
-    """Select coherent sources independently of the production filelist."""
+def test_cluster_sources_are_available() -> None:
+    """Resolve the coherent hart and home from the CPU filelist."""
     runner = YosysRunner(memory_images=False)
     sources = runner.parse_filelist(runner.filelist)
     names = {Path(source).name for source in sources}
-    assert "frost_hart_cache.sv" in names
-    assert "debug_store_mirror_hold.sv" not in names
-    assert "coherence_c_payload.sv" not in names
-    assert "coherent_atomic_select.sv" not in names
-    assert "coherent_rs_capacity.sv" not in names
-    assert "coherent_rs_issue2_selector.sv" not in names
-    assert "coherent_rs_payload_store.sv" not in names
-    assert "debug_dirty_next.sv" not in names
-    assert not any(name.startswith(("coherence_", "coherent_")) for name in names)
-    sources = runner.parse_filelist(runner.filelist, coherent_cluster=True)
-    names = {Path(source).name for source in sources}
     assert {
-        "frost_hart_cache.sv",
         "coherent_hart_cache.sv",
         "coherence_home.sv",
         "debug_store_mirror_hold.sv",
@@ -124,7 +112,7 @@ def test_reject_endpoint_configuration(module: str, parameter: str, value: int) 
 
 @pytest.mark.synthesis
 @pytest.mark.parametrize("cached,dma", [(1, 1), (1, 0), (0, 0)])
-def test_coherent_cpu_configuration(cached: int, dma: int) -> None:
+def test_cpu_cache_configuration(cached: int, dma: int) -> None:
     """The coherent CPU elaborates with optional caches and DMA ingress."""
     runner = YosysRunner()
     checks = "select -assert-any *load_queue*/w:*; "
@@ -138,16 +126,15 @@ def test_coherent_cpu_configuration(cached: int, dma: int) -> None:
         "*load_queue*/w:gen_coherent_issue_gate.*",
     )
     for control in controls:
-        checks += f"select -assert-{'any' if cached else 'none'} {control}; "
+        checks += f"select -assert-any {control}; "
     if not cached:
-        checks += "select -assert-none *load_queue*/w:coherent_* a:keep %i; "
+        checks += "select -assert-none t:*coherence_home* t:*coherence_l1d*; "
     result = runner.run_synthesis(
         synth_command="synth -top cpu_top -run begin:begin; "
         + checks
         + "synth -top cpu_top -run coarse",
         top_module="cpu_top",
         parameters={
-            "COHERENT_CLUSTER": 1,
             "ENABLE_CACHED_TIER": cached,
             "ENABLE_COHERENCE": dma,
         },
@@ -156,13 +143,12 @@ def test_coherent_cpu_configuration(cached: int, dma: int) -> None:
 
 
 @pytest.mark.synthesis
-def test_coherent_soc_configuration() -> None:
+def test_soc_cache_configuration() -> None:
     """The coherent SoC elaborates its selected debug storage and controls."""
     runner = YosysRunner()
     result = runner.run_synthesis(
         synth_command="synth -top soc_top -run coarse",
         top_module="soc_top",
-        parameters={"COHERENT_CLUSTER": 1},
     )
     assert result.returncode == 0, result.stdout + result.stderr
 

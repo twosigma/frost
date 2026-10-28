@@ -26,6 +26,9 @@ read -sv mwp_dist_ram.sv
 # The second issue port's payload bank (DUAL_ISSUE, tag_indexed tasks).
 read -sv mwp_dist_ram_ohread.sv
 read -formal -sv rs_issue2_selector.sv
+read -sv coherent_rs_capacity.sv
+read -sv coherent_rs_issue2_selector.sv
+read -sv coherent_rs_payload_store.sv
 read -formal -sv reservation_station.sv
 # Use u_int_rs's parameter overrides at eight entries, with both issue ports
 # scanning the whole station. LANE1_ISSUE_BYPASS and DISPATCH_STATUS_RESERVE
@@ -35,7 +38,7 @@ read -formal -sv reservation_station.sv
 #
 # The plain tasks retain the defaults, including src3, the repair-tag CAM,
 # and single issue, which the INT configuration does not exercise.
-tag_indexed: chparam -set TAG_INDEXED_BRANCH_PAYLOAD 1 -set DUAL_ISSUE 1 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set TRACK_INT_WRITEBACK_HINT 1 -set SPECULATIVE_DATA_WRITES 1 -set BROADCAST_FREE_SOURCE_VALUES 1 -set ISSUE_CDB_TAG_SHADOW 1 -set ISSUE_CDB_META_ANCHORS 1 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 -set BRANCH_PREDICATE_TAG_ANCHOR 1 -set TRUST_DISPATCH_VALID 1 reservation_station
+tag_indexed: chparam -set PREPARE_ISSUE_CONTROLS 1 -set TAG_INDEXED_BRANCH_PAYLOAD 1 -set DUAL_ISSUE 1 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set TRACK_INT_WRITEBACK_HINT 1 -set SPECULATIVE_DATA_WRITES 1 -set BROADCAST_FREE_SOURCE_VALUES 1 -set ISSUE_CDB_TAG_SHADOW 1 -set ISSUE_CDB_META_ANCHORS 1 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 -set BRANCH_PREDICATE_TAG_ANCHOR 1 -set TRUST_DISPATCH_VALID 1 reservation_station
 prep -top reservation_station
 
 [files]
@@ -45,3 +48,6 @@ prep -top reservation_station
 ../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv

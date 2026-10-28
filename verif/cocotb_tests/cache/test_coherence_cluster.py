@@ -38,6 +38,11 @@ class Cluster:
         self.cuts: list[int] = []
         self.sc_writes: list[int] = []
         self.reply_states: list[int] = []
+        self.perf: dict[str, list[int]] = {
+            "l1d": [0] * 8,
+            "l2": [0] * 8,
+            "l2_write": [0] * 4,
+        }
 
     def get(self, name: str) -> int:
         """Read an interface signal."""
@@ -94,6 +99,15 @@ class Cluster:
             await self.set(i_clk=1)
             await self.set(i_clk=0)
             self.cycle += 1
+            if not self.get("i_rst"):
+                for name in self.perf:
+                    widths = (
+                        (1, 5, 1, 1) if name == "l2_write" else (1, 1, 1, 1, 5, 1, 1, 1)
+                    )
+                    events = unpack(self.get(f"o_{name}_perf"), widths)
+                    self.perf[name] = [
+                        a + b for a, b in zip(self.perf[name], events, strict=True)
+                    ]
             if self.get("o_sc_write_done"):
                 self.sc_writes.append(self.get("o_sc_write_tag"))
             assert not self.get("o_fatal"), f"fatal at {self.get('o_fatal_addr'):x}"
@@ -422,7 +436,7 @@ async def maintenance_yields_with_unprotected_amo_and_read_traffic(dut: Any) -> 
 
 @cocotb.test()
 async def sc_permissions_sizes_and_repeated_progress(dut: Any) -> None:
-    """Check SC from I/S/M, exact reservation size, and repeated uncontended writes."""
+    """Check SC from I/S/M, exact reservation matching, and repeated writes."""
     for initial in (0, 2, 3):
         b = Cluster(dut)
         await b.reset()
@@ -455,13 +469,23 @@ async def sc_permissions_sizes_and_repeated_progress(dut: Any) -> None:
             await b.wait("o_atomic_live", 0)
             assert b.sc_writes == [7] * (iteration + 1)
         assert await b.dma(address) & ((1 << 64) - 1) == 94
-        await b.set(i_reservation_valid=1, i_reservation_size=2, i_sc_valid=1)
-        await b.wait("o_sc_ready")
-        await b.tick()
-        await b.set(i_sc_valid=0)
-        await b.wait("o_sc_result_valid")
-        assert not b.get("o_sc_success") and not b.get("o_sc_error")
-        assert b.sc_writes == [7] * 3
+        for reserved_address, reserved_size in ((address, 2), (address + 8, 3)):
+            await b.set(
+                i_reservation_valid=1,
+                i_reservation_addr=reserved_address,
+                i_reservation_size=reserved_size,
+                i_sc_valid=1,
+            )
+            await b.wait("o_sc_ready")
+            await b.tick()
+            await b.set(i_sc_valid=0)
+            await b.wait("o_sc_result_valid")
+            assert not b.get("o_sc_success") and not b.get("o_sc_error")
+            assert b.sc_writes == [7] * 3
+            await b.set(i_sc_result_ready=1)
+            await b.tick()
+            await b.set(i_sc_result_ready=0)
+            await b.wait("o_atomic_live", 0)
 
 
 @cocotb.test()
@@ -492,3 +516,45 @@ async def registered_store_survives_maintenance_entry(dut: Any) -> None:
     await b.set(i_maint_valid=0)
     await b.tick()
     assert await b.dma(address) & ((1 << 64) - 1) == 99
+
+
+@cocotb.test()
+async def test_demand_counters_exclude_probe_and_maintenance(dut: Any) -> None:
+    """Count one demand decision across retries and private dirty probes."""
+    cluster = Cluster(dut)
+    await cluster.reset()
+    assert await cluster.read(0x8000) == 0
+    await cluster.tick(10)
+    assert cluster.perf["l1d"][:3] == [1, 0, 1]
+    assert cluster.perf["l2"][:3] == [1, 0, 1]
+    assert cluster.perf["l1d"][4] > 0 and cluster.perf["l2"][4] > 0
+    assert await cluster.read(0x8000) == 0
+    await cluster.tick(10)
+    assert cluster.perf["l1d"][:3] == [2, 1, 1]
+    assert cluster.perf["l2"][:3] == [1, 0, 1]
+    await cluster.store(0x8000, 0x12345678)
+    await cluster.wait("o_pending_store", 0)
+    await cluster.tick(10)
+    assert cluster.perf["l1d"][:3] == [3, 1, 2]
+    assert cluster.perf["l2"][:3] == [2, 1, 1]
+    before = cluster.perf["l1d"][:4]
+    assert (await cluster.dma(0x8000)) & ((1 << 64) - 1) == 0x12345678
+    await cluster.tick(10)
+    assert cluster.perf["l1d"][:4] == before
+    assert cluster.perf["l2"][:3] == [3, 2, 1]
+    await cluster.dma(0xA000, data=0xABCDEF, mask=255)
+    await cluster.tick(10)
+    assert cluster.perf["l2_write"][0] == 1
+    assert cluster.perf["l2_write"][1] > 0
+    assert cluster.perf["l1d"][:4] == before
+    await cluster.store(0x8000, 0x98765432)
+    await cluster.wait("o_pending_store", 0)
+    await cluster.tick(10)
+    before_l1d = cluster.perf["l1d"][:4]
+    before_l2 = cluster.perf["l2"][:4]
+    await cluster.set(i_maint_valid=1, i_maint_line=0)
+    await cluster.wait("o_maint_done")
+    await cluster.set(i_maint_valid=0)
+    await cluster.tick(10)
+    assert cluster.perf["l1d"][:4] == before_l1d
+    assert cluster.perf["l2"][:4] == before_l2

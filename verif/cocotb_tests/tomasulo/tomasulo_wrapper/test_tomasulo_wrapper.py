@@ -294,6 +294,12 @@ def check_rat_lookup(result: LookupResult, expected: LookupResult, label: str) -
 async def wait_for_commit(dut_if: TomasuloInterface, max_cycles: int = 20) -> dict:
     """Wait for a valid commit, raising TimeoutError if not seen."""
     for _ in range(max_cycles):
+        if dut_if.model_coherent_cache:
+            await dut_if.step()
+            commit = dut_if.coherence_sampled_commit
+            if commit["valid"]:
+                return commit
+            continue
         await RisingEdge(dut_if.clock)
         commit = dut_if.read_commit()
         if commit["valid"]:
@@ -305,8 +311,11 @@ async def wait_for_commit(dut_if: TomasuloInterface, max_cycles: int = 20) -> di
 async def wait_for_cdb(dut_if: TomasuloInterface, max_cycles: int = 30) -> CdbBroadcast:
     """Wait for a valid CDB broadcast, raising TimeoutError if not seen."""
     for _ in range(max_cycles):
-        await RisingEdge(dut_if.clock)
-        await FallingEdge(dut_if.clock)
+        if dut_if.model_coherent_cache:
+            await dut_if.step()
+        else:
+            await RisingEdge(dut_if.clock)
+            await FallingEdge(dut_if.clock)
         cdb = dut_if.read_cdb_output()
         if cdb.valid:
             return cdb
@@ -7670,7 +7679,11 @@ async def test_sc_fire_yields_to_colliding_store_fault(dut: Any) -> None:
                     sc_value = cdb.value
                     sc_at = idx if sc_at is None else sc_at
 
+        # Hold the completed blocker until the fault wakeup can reach MEM.
+        dut_if.set_commit_hold(True)
         for idx in range(28):
+            if idx == 3:
+                dut_if.set_commit_hold(False)
             if idx == 0:
                 dut_if.drive_fu_complete(FU_FP_ADD, tag=blocker_tag, value=0x2000)
             elif idx == 1:
@@ -7860,7 +7873,11 @@ async def test_sc_completion_release_under_cdb_contention(dut: Any) -> None:
                     if lanes[1 - lane].valid:
                         sc_had_lane_partner = True
 
+        # Hold the completed blocker until the fault wakeup can reach MEM.
+        dut_if.set_commit_hold(True)
         for idx in range(28):
+            if idx == 3:
+                dut_if.set_commit_hold(False)
             if idx == 0:
                 dut_if.drive_fu_complete(FU_FP_ADD, tag=blocker_tag, value=0x2000)
             elif idx == 1:

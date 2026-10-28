@@ -76,10 +76,7 @@ load if it is ready for memory, which wins. A device load may be staged before
 it reaches the ROB head, but device loads, LRs and AMOs neither probe the SQ
 nor leave the LQ until they are at the head.
 
-Coherent capture, issue and forwarding control banks elaborate only when
-`COHERENT_CLUSTER` is enabled.
-
-The coherent selection computes memory candidates for both SQ drain states
+The capture, issue and forwarding control banks compute memory candidates for both SQ drain states
 in [`coherent_lq_issue_selector.sv`](coherent_lq_issue_selector.sv). The live
 drain flag selects between those results. Each case also computes staged
 replacement from its winning masks and the per-entry age predicates. Both
@@ -93,7 +90,7 @@ decode from the selected ring mask. Head matches use the head selector's index
 and tag.
 The pre-issue selector registers a one-hot mask alongside the candidate matches.
 Staging capture uses candidate presence independently of ring ordering.
-The coherent selection prepares release permission for all combinations of
+The LQ prepares release permission for all combinations of
 cache hit, SQ-empty, committed-store presence, memory-busy and L0-hit permission.
 The live controls select a release outcome. The cut hold qualifies that outcome
 at the final selection. Fault release computes permission separately; CDB
@@ -161,7 +158,7 @@ committed-store queue is empty.
 
 ### Staging and the SQ check
 
-The coherent selection prepares release permission and memory launch
+The LQ prepares release permission and memory launch
 controls for both committed-store drain states. The live drain flag selects
 those outcomes. Local holds qualify memory launch after drain selection.
 Release permission also accounts for both commit-pending states before the
@@ -392,21 +389,14 @@ reservation comes after the LR in program order. An older store to the other
 word of the LR's dword does not overlap the LR, so nothing else would hold the
 LR until that store writes.
 Devices hold no reservations, so an LR to the device quadrant faults instead
-(see [Completion](#completion)), with no read and no reservation. In the
-line-port selection, the reservation clears on any SC commit
-(`i_sc_clear_reservation`), a store or AMO write to the reserved dword (the SQ's write-launch snoop, or the AMO's write
-completing), a DMA write to its 32-byte line, or a trap, xRET, or FENCE-class
-flush (`i_full_flush`). A branch recovered at commit, the other source of a
-full flush, keeps it: an LR launches only at the ROB head, so the LR that set
-the reservation retired before the branch, and the flush removes only
-instructions after the branch. For DMA writes the reservation set is the
-32-byte line, and an SC to another dword of it fails, which the specification
-allows. An LR in flight when a DMA write hits its line, or whose response
-lands on the invalidation edge, sets no reservation. The SC goes through the
-SQ;
-[`sc_pending_unit`](../tomasulo_wrapper/atomics/sc_pending_unit.sv) decides
-success when the SC fires at the ROB head, from the reservation and the SC's
-dword.
+(see [Completion](#completion)), with no read and no reservation.
+The reservation records the exact physical address and W/D size. Its set
+covers the aligned 32-byte sector. Writes and invalidations to that sector
+clear it. An invalidation that crosses an LR response suppresses the
+reservation. A trap, xRET or FENCE-class flush clears the reservation; a
+branch recovered at commit preserves it. The SC goes through the SQ and
+[`sc_pending_unit`](../tomasulo_wrapper/atomics/sc_pending_unit.sv).
+Cached SC selection and its home check use the exact LR address and size.
 
 ### AMO sequence
 
@@ -450,10 +440,9 @@ it, so no stale dependency reaches a new load. A fenced load cannot launch,
 forward or hit the L0, and if it is staged it gives up the staging register
 (`older_amo_write_pending`) so the AMO can reach the memory port.
 
-## Coherent cluster selection
+## Coherent memory interface
 
-`COHERENT_CLUSTER=1` supplies request kind, size and ROB tag to the coherent
-L1D. Cached AMOs require effective ROB-head protection before launch. LR
+The LQ supplies request kind, size and ROB tag to the coherent L1D. Cached AMOs require effective ROB-head protection before launch. LR
 records its exact physical address and W/D size with a 32-byte reservation
 set. An ordinary store or AMO write to that set, or a matching cut, clears
 the reservation. A successful cached SC clears it when its tagged write
@@ -526,13 +515,13 @@ data RAM, and nothing enters `cdb_stage` on a partial-flush cycle. When
 several results are ready, `cdb_stage` takes a queued completion first, then
 a memory response, a fault, an SQ forward, and an L0 hit.
 
-The coherent selection compares completion indices with each entry before
+The LQ compares completion indices with each entry before
 selecting the free mask. Allocation has priority over freeing, and reset and
 full flush clear every valid bit.
 Cached response slots each qualify their live entry and AMO kind before
 response selection. The uncached tracker supplies its own qualification.
 
-In the coherent selection, bypass payloads use the staged address-fault and
+Bypass payloads use the staged address-fault and
 forwarding predicates before cut and sector holds. Staged-load capture applies
 those holds; responses and queued completions use their own eligibility.
 Value, exception and cause match the qualified selections whenever the

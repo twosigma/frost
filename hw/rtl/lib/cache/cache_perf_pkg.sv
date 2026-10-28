@@ -15,8 +15,8 @@
  */
 
 /*
- * Cache performance events, independent of riscv_pkg. frost_cache registers
- * each instance's events; the hierarchy carries them to the CPU.
+ * Cache performance events, independent of riscv_pkg. Cache controllers
+ * register their events; the hierarchy carries them to the CPU.
  */
 package cache_perf_pkg;
 

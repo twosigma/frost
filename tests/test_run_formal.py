@@ -146,14 +146,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherent_l0.sby",
-        "Coherent L0 valid masks, data, and invalidation at two cache depths.",
+        "L0 validity and invalidation masks at two cache depths.",
         tasks=(
             "coh_l0_flags_prove",
             "coh_l0_flags256_prove",
-            "coh_l0_bmc",
-            "coh_l0256_bmc",
-            "coh_l0_cover",
-            "coh_l0256_cover",
         ),
     ),
     FormalTarget(
@@ -947,10 +943,6 @@ SBY_TASKS = [
     ("coh_read_payload64_prove", "Coherent read payload storage at 64 address bits."),
     ("coh_l0_flags_prove", "Coherent L0 next-state equality at 128 entries."),
     ("coh_l0_flags256_prove", "Coherent L0 next-state equality at 256 entries."),
-    ("coh_l0_bmc", "Coherent L0 data and invalidation at 128 entries."),
-    ("coh_l0256_bmc", "Coherent L0 data and invalidation at 256 entries."),
-    ("coh_l0_cover", "Coherent L0 hit and invalidation covers at 128 entries."),
-    ("coh_l0256_cover", "Coherent L0 hit and invalidation covers at 256 entries."),
     (
         "coh_sc_selected_prove",
         "Selected SC payload survives flushes through its result.",

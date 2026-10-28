@@ -20,9 +20,6 @@
   The cached tier connects to DDR through the cache hierarchy and AXI bridge.
 */
 module soc_top #(
-`ifdef FROST_COHERENT_CLUSTER
-    parameter bit COHERENT_CLUSTER = 1'b0,
-`endif
     parameter bit ASYNC_CPU_CLOCK = 1'b0,
     parameter int unsigned NUM_HARTS = 1,
     parameter int unsigned AXI_ID_BITS = 6,
@@ -979,33 +976,19 @@ module soc_top #(
     if (debug_soc_rst) mirror_overflow_q <= 1'b0;
     else mirror_overflow_q <= mirror_overflow;
   end
-`ifdef FROST_COHERENT_CLUSTER
-  if (COHERENT_CLUSTER) begin : gen_coherent_mirror_hold
-  debug_store_mirror_hold #(.ADDR_WIDTH(MemWordAddrWidth)) mirror_hold (
-      .i_clk,
-      .i_rst(debug_soc_rst),
-      .i_push(mirror_lo && mirror_hi && slice_req_ready),
-      .i_pop(slice_req_ready),
-      .i_addr({dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b1}),
-      .o_valid(mirror_hold_valid_q),
-      .o_addr(mirror_hold_addr_q)
-  );
-  end else begin : gen_direct_mirror_hold
-`endif
-  always_ff @(posedge i_clk) begin
-    if (debug_soc_rst) begin
-      mirror_hold_valid_q <= 1'b0;
-      mirror_hold_addr_q  <= '0;
-    end else if (mirror_hold_valid_q) begin
-      if (slice_req_ready) mirror_hold_valid_q <= 1'b0;
-    end else if (mirror_lo && mirror_hi && slice_req_ready) begin
-      mirror_hold_valid_q <= 1'b1;
-      mirror_hold_addr_q  <= {dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b1};
-    end
+  if (1'b1) begin : gen_coherent_mirror_hold
+    debug_store_mirror_hold #(
+        .ADDR_WIDTH(MemWordAddrWidth)
+    ) mirror_hold (
+        .i_clk,
+        .i_rst  (debug_soc_rst),
+        .i_push (mirror_lo && mirror_hi && slice_req_ready),
+        .i_pop  (slice_req_ready),
+        .i_addr ({dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b1}),
+        .o_valid(mirror_hold_valid_q),
+        .o_addr (mirror_hold_addr_q)
+    );
   end
-`ifdef FROST_COHERENT_CLUSTER
-  end
-`endif
   logic dm_request_ready, dm_all_done;
   logic dm_soc_valid;
   logic [MemByteAddrWidth-1:2] dm_soc_addr;
@@ -1054,9 +1037,6 @@ module soc_top #(
   assign slice_req_data = (ENABLE_1G_ETH == 0 || dm_soc_valid) ? dm_soc_data : boot_sram_wdata_q;
 
   debug_module #(
-`ifdef FROST_COHERENT_CLUSTER
-      .COHERENT_CLUSTER(COHERENT_CLUSTER),
-`endif
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth)
   ) u_debug_module (
       .i_power_on_rst(power_on_rst_core),
@@ -1101,9 +1081,6 @@ module soc_top #(
   logic slice_imem_we, slice_dmem_we;
   logic [63:0] dmem_port_a_rd_data;
   debug_slice_writer #(
-`ifdef FROST_COHERENT_CLUSTER
-      .COHERENT_CLUSTER(COHERENT_CLUSTER),
-`endif
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth)
   ) u_slice_writer (
       .i_clk(i_clk),
@@ -1456,9 +1433,8 @@ AxilPorts
     // DMA: the NIC (port 0) and the DMA test engine (port 1) are AXI4 masters
     // on dma_interconnect, whose one master enters the hierarchy's coherent
     // DMA port through dma_bridge (hw/rtl/lib/axi/README.md). The bus is 256
-    // bits, one beat per line. The bridge's line ids fill the low bits of
-    // the port's LineIdBits-bit ids, so bit 3 stays clear, which the
-    // hierarchy's stream prefetcher needs. The bridge uses the CPU clock
+    // bits, one beat per line. The bridge's three-bit line ids are
+    // zero-extended at the ingress. The bridge uses the CPU clock
     // when ASYNC_CPU_CLOCK is set. Paired resets cover both DMA domains.
     // The common-clock profile resets all four blocks with rst_core.
     localparam int unsigned DmaPorts = (ENABLE_1G_ETH != 0) ? 3 : 2;

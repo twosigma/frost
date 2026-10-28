@@ -119,6 +119,7 @@ module coherent_hart_cache #(
     input logic i_fence_sync,
     output logic o_fence_done,
     output cache_perf_pkg::cache_instance_perf_events_t o_l1i_perf_events,
+    output cache_perf_pkg::cache_instance_perf_events_t o_l1d_perf_events,
     output logic o_fatal,
     output logic [ADDR_WIDTH-1:0] o_fatal_addr
 );
@@ -264,6 +265,7 @@ module coherent_hart_cache #(
       .i_u_valid(i_u_valid && release_message.q[6:5] == 0),
       .o_u_ready(u_ready[0]),
       .i_u(i_u),
+      .o_perf_events(o_l1d_perf_events),
       .o_fatal(l1d_fatal),
       .o_fatal_addr(l1d_fatal_addr)
   );

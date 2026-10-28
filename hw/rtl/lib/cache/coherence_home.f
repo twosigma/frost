@@ -1,3 +1,4 @@
+$(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv
 -f $(ROOT)/hw/rtl/lib/ram/ram.f
 -f $(ROOT)/hw/rtl/lib/cache/coherence.f
 $(ROOT)/hw/rtl/lib/cache/coherence_array.sv

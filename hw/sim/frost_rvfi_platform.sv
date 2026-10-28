@@ -14,13 +14,15 @@
  *    limitations under the License.
  */
 
+`include "coherence_types.svh"
+
 /*
   CPU, memory, debug, and peripheral integration. Low-BRAM programming uses
   port A on i_clk_div4; runtime fetch and data access use port B on i_clk.
   The cached tier connects to DDR through the cache hierarchy and AXI bridge.
 */
 // Simulation-only TestRIG platform. The instruction stream is injected by
-// retirement position, so this fixture intentionally retains the pipeline's
+// retirement position, so this fixture uses the pipeline's
 // fixed-latency test interface. Device accesses use shadow RAM and the
 // NIC and DMA engine AXI4-Lite ports are idle. Production builds use platform_top;
 // cpu_top's public AXI protocol is checked by the standalone integration bench.
@@ -40,21 +42,16 @@ module frost_rvfi_platform #(
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
-    // Ways per set of the L1D, L1I, and L2 (see frost_hart_cache and
-    // frost_cluster_cache).
+    // Ways per set of the L1D, L1I, and L2.
     parameter int unsigned L1D_WAYS = 4,
     parameter int unsigned L1I_WAYS = 4,
     parameter int unsigned L2_WAYS = 4,
-    // L1D miss-status slots, and L2 miss-status and writeback slots (see
-    // frost_hart_cache and frost_cluster_cache).
+    // Compatibility geometry: the L1D holds eight reads; the home serializes acquisition.
     parameter int unsigned L1D_NUM_MSHR = 8,
     parameter int unsigned L2_NUM_MSHR = 4,
     parameter int unsigned L2_NUM_WB = 2,
-    // Read waiter seats per L2 miss slot (see frost_cluster_cache). A
-    // stream prefetch holds its slot's primary seat, so the L1D's reads of
-    // both halves of the line need two.
+    // Compatibility parameters; the home has no read waiter or prefetch queue.
     parameter int unsigned L2_NUM_WAITERS = 2,
-    // The L2 stream prefetcher (see frost_cluster_cache): 0 turns it off.
     parameter int unsigned L2_PREFETCH = 1,
     parameter int unsigned L2_PREFETCH_DISTANCE = 8,
     parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
@@ -268,6 +265,8 @@ module frost_rvfi_platform #(
   // Limit reset fanout per replica.
   (* max_fanout = 256 *) logic rst_core;
   always_ff @(posedge i_clk) rst_core <= rst_core_next;
+  // CPU and cache ownership reset on the first asserted reset edge.
+  wire cpu_cache_rst = rst_core || rst_core_next;
 `ifndef SYNTHESIS
   logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (rst_core) reset_seen_q <= 1'b1;
@@ -498,10 +497,42 @@ module frost_rvfi_platform #(
   localparam int unsigned L2MaxSlots = (L2_NUM_MSHR > L2_NUM_WB) ? L2_NUM_MSHR : L2_NUM_WB;
   localparam int unsigned DdrModelSlots = (L2MaxSlots > 8) ? L2MaxSlots : 8;
 
-  // DMA coherence handshake between the hierarchy's sequencer and the core.
-  logic coh_admit_valid, coh_admit_ready, coh_inval_valid, coh_inval_done, coh_release_valid;
-  logic [riscv_pkg::DmaCoherenceLockBits-1:0] coh_admit_slot, coh_inval_slot, coh_release_slot;
-  logic [riscv_pkg::PhysAddrBits-1:0] coh_admit_addr;
+  logic coherent_store_pending;
+  logic coherent_store_ready;
+  logic coherent_sc_pending;
+  logic coherent_atomic_live;
+  logic [1:0] coherent_block_valid;
+  logic [1:0][riscv_pkg::XLEN-1:0] coherent_block_addr;
+  logic coherent_cut_hold;
+  logic coherent_sc_valid;
+  logic coherent_sc_ready;
+  logic [riscv_pkg::XLEN-1:0] coherent_sc_addr;
+  logic [2:0] coherent_sc_size;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_sc_tag;
+  logic coherent_sc_result_valid;
+  logic coherent_sc_result_ready;
+  logic coherent_sc_success;
+  logic coherent_sc_error;
+  logic coherent_sc_write_done;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_sc_write_tag;
+  logic coherent_reservation_valid;
+  logic [riscv_pkg::XLEN-1:0] coherent_reservation_addr;
+  logic [2:0] coherent_reservation_size;
+  logic [1:0] coherent_read_kind;
+  logic [2:0] coherent_read_size;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_read_tag;
+  logic coherent_write_atomic;
+  logic coherent_write_sc;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_write_tag;
+  logic coherent_atomic_protected;
+  logic coherent_sc_commit;
+  logic cut_admit, cut_admit_ready, cut_inval, cut_inval_done, cut_release;
+  logic [riscv_pkg::PhysAddrBits-1:0] cut_addr;
+  logic [1:0][riscv_pkg::PhysAddrBits-1:0] block_addr;
+  assign coherent_block_addr = {riscv_pkg::XLEN'(block_addr[1]), riscv_pkg::XLEN'(block_addr[0])};
+  logic data_memory_cached_read_error, walk_line_resp_error, iup_resp_error;
+  logic hart_fatal, home_fatal;
+  wire cache_fatal = hart_fatal || home_fatal;
 
   logic iup_req_valid, iup_req_ready, iup_req_write;
   logic [riscv_pkg::PhysAddrBits-1:0] iup_req_addr;
@@ -758,6 +789,36 @@ module frost_rvfi_platform #(
       .INT_RS_DEPTH(INT_RS_DEPTH),
       .DECODED_QUEUE_DEPTH(DECODED_QUEUE_DEPTH)
   ) cpu_inst (
+      .i_coherent_store_pending(coherent_store_pending),
+      .i_coherent_store_ready(coherent_store_ready),
+      .i_coherent_sc_pending(coherent_sc_pending),
+      .i_coherent_atomic_live(coherent_atomic_live),
+      .i_coherent_block_valid(coherent_block_valid),
+      .i_coherent_block_addr(coherent_block_addr),
+      .i_coherent_cut_hold(coherent_cut_hold),
+      .o_coherent_sc_valid(coherent_sc_valid),
+      .i_coherent_sc_ready(coherent_sc_ready),
+      .o_coherent_sc_addr(coherent_sc_addr),
+      .o_coherent_sc_size(coherent_sc_size),
+      .o_coherent_sc_tag(coherent_sc_tag),
+      .i_coherent_sc_result_valid(coherent_sc_result_valid),
+      .o_coherent_sc_result_ready(coherent_sc_result_ready),
+      .i_coherent_sc_success(coherent_sc_success),
+      .i_coherent_sc_error(coherent_sc_error),
+      .i_coherent_sc_write_done(coherent_sc_write_done),
+      .i_coherent_sc_write_tag(coherent_sc_write_tag),
+      .o_coherent_reservation_valid(coherent_reservation_valid),
+      .o_coherent_reservation_addr(coherent_reservation_addr),
+      .o_coherent_reservation_size(coherent_reservation_size),
+      .o_coherent_read_kind(coherent_read_kind),
+      .o_coherent_read_size(coherent_read_size),
+      .o_coherent_read_tag(coherent_read_tag),
+      .o_coherent_write_atomic(coherent_write_atomic),
+      .o_coherent_write_sc(coherent_write_sc),
+      .o_coherent_write_tag(coherent_write_tag),
+      .o_coherent_atomic_protected(coherent_atomic_protected),
+      .o_coherent_sc_commit(coherent_sc_commit),
+      .i_fatal_stop(cache_fatal),
       .o_uncached_read_enable(),
       .o_uncached_read_size(mmio_load_size),
       .o_uncached_read_ready(),
@@ -765,7 +826,7 @@ module frost_rvfi_platform #(
       .o_uncached_write_size(),
       .o_uncached_write_buffered(),
       .i_clk,
-      .i_rst(rst_core),
+      .i_rst(cpu_cache_rst),
       .o_pc(cpu_pc_xlen),
       .i_instr(instruction),
       .i_instr_low_by_parity(bram_fetch_instr_by_parity),
@@ -814,6 +875,7 @@ module frost_rvfi_platform #(
       .o_walk_line_req_addr(walk_line_req_addr),
       .o_walk_line_req_id(ptw_line_req_id),
       .i_walk_line_resp_valid(walk_line_resp_valid),
+      .i_walk_line_resp_error(walk_line_resp_error),
       .i_walk_line_resp_id(walk_line_resp_id[1:0]),
       .i_walk_line_resp_rdata(walk_line_resp_rdata),
       .o_fence_i_flush(fence_i_flush),
@@ -834,19 +896,20 @@ module frost_rvfi_platform #(
       .i_cached_read_data(data_memory_response_data),
       .i_cached_read_id(data_memory_cached_resp_id),
       .i_cached_read_valid(data_memory_cached_read_valid),
+      .i_cached_read_error(data_memory_cached_read_error),
       .o_cached_read_ready(data_memory_cached_read_ready),
       .i_cached_write_done(data_memory_cached_write_done),
       .i_cached_write_inflight(data_memory_cached_write_inflight),
       // DMA coherence handshake
-      .i_coh_admit_valid(coh_admit_valid),
-      .i_coh_admit_slot(coh_admit_slot),
-      .i_coh_admit_addr(riscv_pkg::XLEN'(coh_admit_addr)),
-      .o_coh_admit_ready(coh_admit_ready),
-      .i_coh_inval_valid(coh_inval_valid),
-      .i_coh_inval_slot(coh_inval_slot),
-      .o_coh_inval_done(coh_inval_done),
-      .i_coh_release_valid(coh_release_valid),
-      .i_coh_release_slot(coh_release_slot),
+      .i_coh_admit_valid(cut_admit),
+      .i_coh_admit_slot('0),
+      .i_coh_admit_addr(riscv_pkg::XLEN'(cut_addr)),
+      .o_coh_admit_ready(cut_admit_ready),
+      .i_coh_inval_valid(cut_inval),
+      .i_coh_inval_slot('0),
+      .o_coh_inval_done(cut_inval_done),
+      .i_coh_release_valid(cut_release),
+      .i_coh_release_slot('0),
       .i_cache_perf_events(cache_perf_events),
       .o_mmio_read_pulse(mmio_read_pulse),
       .o_mmio_load_addr(cpu_mmio_load_addr_xlen),
@@ -1202,6 +1265,7 @@ module frost_rvfi_platform #(
         .o_line_req_wstrb(iup_req_wstrb),
         .o_line_req_id(iup_req_id),
         .i_line_resp_valid(iup_resp_valid),
+        .i_line_resp_error(iup_resp_error),
         .i_line_resp_id(iup_resp_id),
         .i_line_resp_rdata(iup_resp_rdata),
         // FENCE-class retirement: drop both buffer lines, the victim store,
@@ -1827,11 +1891,8 @@ module frost_rvfi_platform #(
   // behavioral DDR model initializes from sw_ddr.mem and retains data across
   // CPU resets. Hardware exports AXI to the board's DDR controller.
   if (ENABLE_CACHED_TIER != 0) begin : gen_cached_tier
-    // The hierarchy's DMA port: the NIC (port 0) and the DMA test engine
-    // (port 1) are AXI4 masters on dma_interconnect, whose master enters the
-    // port through dma_bridge, as in soc_top. The bridge's 3-bit line ids
-    // fill the low bits of the port's LineIdBits-bit ids, so bit 3 stays
-    // clear, which the hierarchy's stream prefetcher needs.
+    // NIC and DMA engine AXI4 requests enter the shared home through
+    // dma_bridge. The ingress bridge zero-extends its line transaction IDs.
     localparam int unsigned DmaPorts = 2;
     localparam int unsigned DmaAxiAddrBits = 64;
     localparam int unsigned DmaAxiDataBits = 8 * L1LineBytes;
@@ -1875,157 +1936,259 @@ module frost_rvfi_platform #(
     logic [DmaAxiDataBits-1:0] dn_wdata, dn_rdata;
     logic [DmaAxiDataBits/8-1:0] dn_wstrb;
 
-    logic line_req_valid, line_req_ready, line_req_write;
-    logic [riscv_pkg::PhysAddrBits-1:0] line_req_addr;
-    logic [L1LineBytes*8-1:0] line_req_wdata;
-    logic [L1LineBytes-1:0] line_req_wstrb;
-    logic [LineIdBits-1:0] line_req_id;
-    logic line_resp_valid;
-    logic [LineIdBits-1:0] line_resp_id;
-    logic [L1LineBytes*8-1:0] line_resp_rdata;
-
-    cached_tier_adapter #(
-        .XLEN(riscv_pkg::PhysAddrBits),
-        .LINE_BYTES(L1LineBytes),
-        .LINE_ID_BITS(LineIdBits),
-        .SPLIT_READ_REQ(1'b1)
-    ) cached_adapter (
-        .o_read_error(),
-
-        .i_clk(i_clk),
-        .i_rst(rst_core),
-        .i_read_req(data_memory_cached_read_enable),
-        .i_read_req_sel(data_memory_cached_read_sel),
-        .i_read_req_if_sel(data_memory_cached_read_if_sel),
-        .i_read_req_if_clear(data_memory_cached_read_if_clear),
-        .i_read_id(data_memory_cached_read_id),
-        .i_read_no_merge(data_memory_cached_read_no_merge),
-        .i_req_addr(data_memory_address),
-        .i_write_byte_en(data_memory_cached_byte_write_enable),
-        .i_write_data(data_memory_cached_write_data),
-        .o_read_data(data_memory_cached_read_data),
-        .o_read_id(data_memory_cached_resp_id),
-        .o_read_valid(data_memory_cached_read_valid),
-        .i_read_ready(data_memory_cached_read_ready),
-        .o_write_done(data_memory_cached_write_done),
-        .o_write_inflight(data_memory_cached_write_inflight),
-        .o_line_req_valid(line_req_valid),
-        .i_line_req_ready(line_req_ready),
-        .o_line_req_write(line_req_write),
-        .o_line_req_addr(line_req_addr),
-        .o_line_req_wdata(line_req_wdata),
-        .o_line_req_wstrb(line_req_wstrb),
-        .o_line_req_id(line_req_id),
-        .i_line_resp_valid(line_resp_valid),
-        .i_line_resp_id(line_resp_id),
-        .i_line_resp_rdata(line_resp_rdata)
-    );
-
     logic down_req_valid, down_req_ready, down_req_write;
     logic [riscv_pkg::PhysAddrBits-1:0] down_req_addr;
     logic [L2_LINE_BYTES*8-1:0] down_req_wdata;
     logic [L2_LINE_BYTES-1:0] down_req_wstrb;
     logic [DdrAxiIdBits-1:0] down_req_id;
-    logic down_resp_valid;
+    logic down_resp_valid, down_resp_error;
     logic [DdrAxiIdBits-1:0] down_resp_id;
     logic [L2_LINE_BYTES*8-1:0] down_resp_rdata;
 
-    frost_cache_hierarchy #(
+    `FROST_COHERENCE_TYPES(riscv_pkg::PhysAddrBits)
+    coh_d_t hart_d;
+    logic hart_d_valid, hart_d_ready;
+    coh_p_t hart_p;
+    logic hart_p_valid, hart_p_ready;
+    coh_r_t hart_r;
+    logic hart_r_valid, hart_r_ready;
+    coh_w_t hart_w;
+    logic hart_w_valid, hart_w_ready;
+    coh_wa_t hart_wa;
+    logic hart_wa_valid, hart_wa_ready;
+    coh_g_t hart_g;
+    logic hart_g_valid, hart_g_ready;
+    coh_c_t hart_c;
+    logic hart_c_valid, hart_c_ready;
+    coh_u_t hart_u;
+    logic hart_u_valid, hart_u_ready;
+    coherent_hart_cache #(
         .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
-        .L1_LINE_BYTES(L1LineBytes),
-        .L2_LINE_BYTES(L2_LINE_BYTES),
-        .UP_ID_BITS(LineIdBits),
-        .L1_CACHE_BYTES(L1_CACHE_BYTES),
+        .CACHE_BYTES(L1_CACHE_BYTES),
+        .WAYS(L1D_WAYS),
+        .TAG_BITS(riscv_pkg::ReorderBufferTagWidth),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
-        .L2_CACHE_BYTES(L2_CACHE_BYTES),
-        .L1D_WAYS(L1D_WAYS),
         .L1I_WAYS(L1I_WAYS),
-        .L2_WAYS(L2_WAYS),
-        .L1D_NUM_MSHR(L1D_NUM_MSHR),
-        .L2_NUM_MSHR(L2_NUM_MSHR),
-        .L2_NUM_WAITERS(L2_NUM_WAITERS),
-        .L2_PREFETCH(L2_PREFETCH),
-        .L2_PREFETCH_DISTANCE(L2_PREFETCH_DISTANCE),
-        .L2_PREFETCH_INFLIGHT(L2_PREFETCH_INFLIGHT),
-        .L2_NUM_WB(L2_NUM_WB),
-        .L2_DOWN_ID_BITS(DdrAxiIdBits),
-        .SIM_FAST_MAINT(SIM_FAST_MAINT),
-        .NUM_DMA_LOCK(riscv_pkg::DmaCoherenceLocks)
-    ) cache_hierarchy (
-        .o_up_resp_error(),
-        .o_iup_resp_error(),
-        .o_wup_resp_error(),
-        .o_dma_resp_error(dma_resp_error),
-        .o_fatal_error(),
-        .o_fatal_addr(),
-
+        .SIM_FAST_MAINT(SIM_FAST_MAINT)
+    ) hart_cache (
         .i_clk(i_clk),
-        .i_rst(rst_core),
-        .i_up_req_valid(line_req_valid),
-        .o_up_req_ready(line_req_ready),
-        .i_up_req_write(line_req_write),
-        .i_up_req_addr(line_req_addr),
-        .i_up_req_wdata(line_req_wdata),
-        .i_up_req_wstrb(line_req_wstrb),
-        .i_up_req_id(line_req_id),
-        .o_up_resp_valid(line_resp_valid),
-        .o_up_resp_id(line_resp_id),
-        .o_up_resp_rdata(line_resp_rdata),
+        .i_rst(cpu_cache_rst),
+        .i_fatal_stop(cache_fatal),
+        .i_read_valid(data_memory_cached_read_enable),
+        .i_read_id(data_memory_cached_read_id),
+        .i_read_kind(coherent_read_kind),
+        .i_read_size(coherent_read_size),
+        .i_read_tag(coherent_read_tag),
+        .i_address(data_memory_address),
+        .o_read_valid(data_memory_cached_read_valid),
+        .i_read_ready(data_memory_cached_read_ready),
+        .o_read_id(data_memory_cached_resp_id),
+        .o_read_data(data_memory_cached_read_data),
+        .o_read_error(data_memory_cached_read_error),
+        .i_write_mask(data_memory_cached_byte_write_enable),
+        .i_write_data(data_memory_cached_write_data),
+        .i_write_atomic(coherent_write_atomic),
+        .i_write_sc(coherent_write_sc),
+        .i_write_tag(coherent_write_tag),
+        .o_write_done(data_memory_cached_write_done),
+        .o_write_inflight(data_memory_cached_write_inflight),
+        .o_store_ready(coherent_store_ready),
+        .o_pending_store(coherent_store_pending),
+        .o_sc_write_pending(coherent_sc_pending),
+        .o_atomic_live(coherent_atomic_live),
+        .o_block_valid(coherent_block_valid),
+        .o_block_addr(block_addr),
+        .i_atomic_protected(coherent_atomic_protected),
+        .i_sc_valid(coherent_sc_valid),
+        .o_sc_ready(coherent_sc_ready),
+        .i_sc_address(coherent_sc_addr[riscv_pkg::PhysAddrBits-1:0]),
+        .i_sc_size(coherent_sc_size),
+        .i_sc_tag(coherent_sc_tag),
+        .i_sc_commit(coherent_sc_commit),
+        .o_sc_result_valid(coherent_sc_result_valid),
+        .i_sc_result_ready(coherent_sc_result_ready),
+        .o_sc_success(coherent_sc_success),
+        .o_sc_error(coherent_sc_error),
+        .o_sc_write_done(coherent_sc_write_done),
+        .o_sc_write_tag(coherent_sc_write_tag),
+        .i_reservation_valid(coherent_reservation_valid),
+        .i_reservation_addr(coherent_reservation_addr[riscv_pkg::PhysAddrBits-1:0]),
+        .i_reservation_size(coherent_reservation_size),
+        .o_cut_hold(coherent_cut_hold),
+        .o_cut_admit_valid(cut_admit),
+        .i_cut_admit_ready(cut_admit_ready),
+        .o_cut_address(cut_addr),
+        .o_cut_inval_valid(cut_inval),
+        .i_cut_inval_done(cut_inval_done),
+        .o_cut_release(cut_release),
+        .o_d_valid(hart_d_valid),
+        .i_d_ready(hart_d_ready),
+        .o_d(hart_d),
+        .i_p_valid(hart_p_valid),
+        .o_p_ready(hart_p_ready),
+        .i_p(hart_p),
+        .o_r_valid(hart_r_valid),
+        .i_r_ready(hart_r_ready),
+        .o_r(hart_r),
+        .o_w_valid(hart_w_valid),
+        .i_w_ready(hart_w_ready),
+        .o_w(hart_w),
+        .i_wa_valid(hart_wa_valid),
+        .o_wa_ready(hart_wa_ready),
+        .i_wa(hart_wa),
+        .i_g_valid(hart_g_valid),
+        .o_g_ready(hart_g_ready),
+        .i_g(hart_g),
+        .o_c_valid(hart_c_valid),
+        .i_c_ready(hart_c_ready),
+        .o_c(hart_c),
+        .i_u_valid(hart_u_valid),
+        .o_u_ready(hart_u_ready),
+        .i_u(hart_u),
         .i_iup_req_valid(iup_req_valid),
         .o_iup_req_ready(iup_req_ready),
-        .i_iup_req_write(iup_req_write),
         .i_iup_req_addr(iup_req_addr),
-        .i_iup_req_wdata(iup_req_wdata),
-        .i_iup_req_wstrb(iup_req_wstrb),
         .i_iup_req_id(iup_req_id),
         .o_iup_resp_valid(iup_resp_valid),
         .o_iup_resp_id(iup_resp_id),
-        .o_iup_resp_rdata(iup_resp_rdata),
-        // Page-table walker port: the core's ptw line master (read-only).
-        .i_wup_req_valid(walk_line_req_valid),
-        .o_wup_req_ready(walk_line_req_ready),
-        .i_wup_req_write(1'b0),
-        .i_wup_req_addr(walk_line_req_addr),
-        .i_wup_req_wdata('0),
-        .i_wup_req_wstrb('0),
-        .i_wup_req_id(walk_line_req_id),
-        .o_wup_resp_valid(walk_line_resp_valid),
-        .o_wup_resp_id(walk_line_resp_id),
-        .o_wup_resp_rdata(walk_line_resp_rdata),
-        // DMA port: the NIC and the DMA test engine through dma_bridge below.
-        // The coherence handshake runs to the core's lq_coherence_port.
-        .i_dma_req_valid(dma_req_valid),
-        .o_dma_req_ready(dma_req_ready),
-        .i_dma_req_write(dma_req_write),
-        .i_dma_req_addr(dma_req_addr),
-        .i_dma_req_wdata(dma_req_wdata),
-        .i_dma_req_wstrb(dma_req_wstrb),
-        .i_dma_req_id(dma_req_id),
-        .o_dma_resp_valid(dma_resp_valid),
-        .o_dma_resp_id(dma_resp_id),
-        .o_dma_resp_rdata(dma_resp_rdata),
-        .o_coh_admit_valid(coh_admit_valid),
-        .o_coh_admit_slot(coh_admit_slot),
-        .o_coh_admit_addr(coh_admit_addr),
-        .i_coh_admit_ready(coh_admit_ready),
-        .o_coh_inval_valid(coh_inval_valid),
-        .o_coh_inval_slot(coh_inval_slot),
-        .i_coh_inval_done(coh_inval_done),
-        .o_coh_release_valid(coh_release_valid),
-        .o_coh_release_slot(coh_release_slot),
+        .o_iup_resp_data(iup_resp_rdata),
+        .o_iup_resp_error(iup_resp_error),
+        .i_walk_req_valid(walk_line_req_valid),
+        .o_walk_req_ready(walk_line_req_ready),
+        .i_walk_req_addr(walk_line_req_addr),
+        .i_walk_req_id(walk_line_req_id),
+        .o_walk_resp_valid(walk_line_resp_valid),
+        .o_walk_resp_id(walk_line_resp_id),
+        .o_walk_resp_data(walk_line_resp_rdata),
+        .o_walk_resp_error(walk_line_resp_error),
         .i_fence_sync(fence_i_sync_req),
         .o_fence_done(fence_i_sync_done),
-        .o_perf_events(cache_hierarchy_perf_events),
-        .o_down_req_valid(down_req_valid),
-        .i_down_req_ready(down_req_ready),
-        .o_down_req_write(down_req_write),
-        .o_down_req_addr(down_req_addr),
-        .o_down_req_wdata(down_req_wdata),
-        .o_down_req_wstrb(down_req_wstrb),
-        .o_down_req_id(down_req_id),
-        .i_down_resp_valid(down_resp_valid),
-        .i_down_resp_id(down_resp_id),
-        .i_down_resp_rdata(down_resp_rdata)
+        .o_l1i_perf_events(cache_hierarchy_perf_events.l1i),
+        .o_l1d_perf_events(cache_hierarchy_perf_events.l1d),
+        .o_fatal(hart_fatal),
+        .o_fatal_addr()
+    );
+
+    coh_d_t dma_d, home_d;
+    coh_g_t grant;
+    coh_c_t dma_c, home_c;
+    coh_u_t release_message;
+    logic dma_d_valid, dma_d_ready, home_d_valid, home_d_ready;
+    logic g_valid, g_ready, dma_g_ready, dma_c_valid, dma_c_ready;
+    logic home_c_valid, home_c_ready, u_valid, u_ready, dma_u_ready, dma_owner_q;
+    coherence_line_bridge #(
+        .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
+        .ID_BITS(4),
+        .SOURCE(2),
+        .PORT_CLASS(3)
+    ) ingress (
+        .i_clk(i_clk),
+        .i_rst(cpu_cache_rst),
+        .i_fatal_stop(cache_fatal),
+        .i_req_valid(dma_req_valid),
+        .o_req_ready(dma_req_ready),
+        .i_req_write(dma_req_write),
+        .i_req_addr(dma_req_addr),
+        .i_req_data(dma_req_wdata),
+        .i_req_mask(dma_req_wstrb),
+        .i_req_id(dma_req_id),
+        .o_resp_valid(dma_resp_valid),
+        .o_resp_id(dma_resp_id),
+        .o_resp_data(dma_resp_rdata),
+        .o_resp_error(dma_resp_error),
+        .o_clean_valid(),
+        .o_clean_addr(),
+        .i_clean_done(1'b0),
+        .o_d_valid(dma_d_valid),
+        .i_d_ready(dma_d_ready),
+        .o_d(dma_d),
+        .i_g_valid(g_valid && dma_owner_q),
+        .o_g_ready(dma_g_ready),
+        .i_g(grant),
+        .o_c_valid(dma_c_valid),
+        .o_c_selected(),
+        .i_c_ready(dma_c_ready),
+        .o_c(dma_c),
+        .i_u_valid(u_valid && dma_owner_q),
+        .o_u_ready(dma_u_ready),
+        .i_u(release_message)
+    );
+    coherence_d_arbiter #(
+        .WIDTH((riscv_pkg::PhysAddrBits + 312)),
+        .PORTS(2)
+    ) demands (
+        .i_clk(i_clk),
+        .i_rst(cpu_cache_rst),
+        .i_valid({dma_d_valid, hart_d_valid}),
+        .o_ready({dma_d_ready, hart_d_ready}),
+        .i_payload({dma_d, hart_d}),
+        .o_valid(home_d_valid),
+        .i_ready(home_d_ready),
+        .o_payload(home_d)
+    );
+    always_ff @(posedge i_clk) begin
+      if (cpu_cache_rst) dma_owner_q <= 1'b0;
+      else if (home_d_valid && home_d_ready) dma_owner_q <= home_d.q[8:7] == 2;
+    end
+    assign hart_g_valid = g_valid && !dma_owner_q;
+    assign hart_g = grant;
+    assign g_ready = dma_owner_q ? dma_g_ready : hart_g_ready;
+    assign home_c_valid = dma_owner_q ? dma_c_valid : hart_c_valid;
+    assign home_c = dma_owner_q ? dma_c : hart_c;
+    assign dma_c_ready = home_c_ready && dma_owner_q;
+    assign hart_c_ready = home_c_ready && !dma_owner_q;
+    assign hart_u_valid = u_valid && !dma_owner_q;
+    assign hart_u = release_message;
+    assign u_ready = dma_owner_q ? dma_u_ready : hart_u_ready;
+    coherence_home #(
+        .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
+        .LINE_BYTES(L2_LINE_BYTES),
+        .CACHE_BYTES(L2_CACHE_BYTES),
+        .WAYS(L2_WAYS),
+        .NUM_WB(L2_NUM_WB)
+    ) home (
+        .i_clk(i_clk),
+        .i_rst(cpu_cache_rst),
+        .i_fatal_stop(cache_fatal),
+        .i_d_valid(home_d_valid),
+        .o_d_ready(home_d_ready),
+        .i_d(home_d),
+        .o_p_valid(hart_p_valid),
+        .i_p_ready(hart_p_ready),
+        .o_p(hart_p),
+        .i_r_valid(hart_r_valid),
+        .o_r_ready(hart_r_ready),
+        .i_r(hart_r),
+        .i_w_valid(hart_w_valid),
+        .o_w_ready(hart_w_ready),
+        .i_w(hart_w),
+        .o_wa_valid(hart_wa_valid),
+        .i_wa_ready(hart_wa_ready),
+        .o_wa(hart_wa),
+        .o_g_valid(g_valid),
+        .i_g_ready(g_ready),
+        .o_g(grant),
+        .i_c_valid(home_c_valid),
+        .o_c_ready(home_c_ready),
+        .i_c(home_c),
+        .o_u_valid(u_valid),
+        .i_u_ready(u_ready),
+        .o_u(release_message),
+        .o_mem_req_valid(down_req_valid),
+        .i_mem_req_ready(down_req_ready),
+        .o_mem_req_write(down_req_write),
+        .o_mem_req_addr(down_req_addr),
+        .o_mem_req_data(down_req_wdata),
+        .o_mem_req_mask(down_req_wstrb),
+        .o_mem_req_id(down_req_id),
+        .i_mem_resp_valid(down_resp_valid),
+        .i_mem_resp_id(down_resp_id),
+        .i_mem_resp_data(down_resp_rdata),
+        .i_mem_resp_error(down_resp_error),
+        .o_perf_events(cache_hierarchy_perf_events.l2),
+        .o_write_perf_events(cache_hierarchy_perf_events.l2_write),
+        .o_fatal(home_fatal),
+        .o_fatal_addr()
     );
 
     nic_top #(
@@ -2439,7 +2602,7 @@ module frost_rvfi_platform #(
         .BASE_ADDR(riscv_pkg::PhysAddrBits'(CACHED_BASE))
     ) ddr_bridge (
         .i_clk(i_clk),
-        .i_rst(rst_core),
+        .i_rst(cpu_cache_rst),
         .i_axi_rst(ddr_axi_rst),
         .i_req_valid(down_req_valid),
         .o_req_ready(down_req_ready),
@@ -2451,7 +2614,7 @@ module frost_rvfi_platform #(
         .o_resp_valid(down_resp_valid),
         .o_resp_id(down_resp_id),
         .o_resp_rdata(down_resp_rdata),
-        .o_resp_error(),
+        .o_resp_error(down_resp_error),
         .o_axi_awvalid(axi_awvalid),
         .i_axi_awready(axi_awready),
         .o_axi_awid(axi_awid),
@@ -2583,14 +2746,28 @@ module frost_rvfi_platform #(
       assign axi_rlast = i_ddr_axi_rlast;
     end
   end else begin : gen_no_cached_tier
-    // No cached tier: no DMA agent, so the coherence handshake stays idle.
-    assign coh_admit_valid = 1'b0;
-    assign coh_admit_slot = '0;
-    assign coh_admit_addr = '0;
-    assign coh_inval_valid = 1'b0;
-    assign coh_inval_slot = '0;
-    assign coh_release_valid = 1'b0;
-    assign coh_release_slot = '0;
+    assign coherent_store_pending = '0;
+    assign coherent_store_ready = 1;
+    assign coherent_sc_pending = '0;
+    assign coherent_atomic_live = '0;
+    assign coherent_block_valid = '0;
+    assign coherent_cut_hold = '0;
+    assign coherent_sc_ready = '0;
+    assign coherent_sc_result_valid = '0;
+    assign coherent_sc_success = '0;
+    assign coherent_sc_error = '0;
+    assign coherent_sc_write_done = '0;
+    assign coherent_sc_write_tag = '0;
+    assign block_addr = '0;
+    assign cut_admit = '0;
+    assign cut_inval = '0;
+    assign cut_release = '0;
+    assign cut_addr = '0;
+    assign data_memory_cached_read_error = 1'b0;
+    assign walk_line_resp_error = 1'b0;
+    assign iup_resp_error = 1'b0;
+    assign hart_fatal = 1'b0;
+    assign home_fatal = 1'b0;
     // No cached tier: the DMA test engine has no memory to move, so its
     // window reads as zero and it never interrupts; likewise the NIC.
     assign dma_engine_irq = 1'b0;

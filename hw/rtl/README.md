@@ -77,7 +77,7 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | `cpu_and_mem/cpu/csr/`, `control/trap_unit.sv` | Privileged state, exceptions, and interrupts |
 | `cpu_and_mem/cpu/wb_stage/generic_regfile.sv` | Integer and FP register files |
 | `cpu_and_mem/cpu/ex_stage/` | ALU, multiply/divide, FPU, and branch execution |
-| [lib/cache/](lib/cache/README.md) | Cache hierarchy (a hart's L1s in `frost_hart_cache.sv`, the shared L2 level in `frost_cluster_cache.sv`), coherence, DDR bridge, and simulation DDR model |
+| [lib/cache/](lib/cache/README.md) | Coherent L1 caches in `coherent_hart_cache.sv`, the shared L2 home in `coherence_home.sv`, DDR bridge, and simulation DDR model |
 | [lib/axi/](lib/axi/README.md) | AXI4 DMA interconnect, coherent ingress bridge and AXI4-Lite register bridge |
 | `lib/` | RAM, FIFO, and clock-domain-crossing primitives |
 | [peripherals/imsic/](peripherals/imsic/README.md) | AIA IMSIC with machine and supervisor interrupt files in each CPU, with SoC MSI store decode |

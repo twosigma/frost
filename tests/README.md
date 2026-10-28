@@ -63,40 +63,38 @@ identity reuse, independent probe queues, keyed PutAck cancellation, errors,
 and cluster reset. The wide case uses 56-bit physical addresses and 16 fill
 identities. `test_coherence_endpoint_build.py` elaborates and synthesizes these
 geometries, checks the six-bit home-ID capacity boundary, rejects invalid
-parameters, and checks that the default elaboration excludes coherent instances.
-Coherent CPU configurations supply `FROST_COHERENT_CLUSTER` and the
-`coherent_cluster.f` sources along with `COHERENT_CLUSTER=1`. Default builds
-omit the coherent sources and interface declarations.
+parameters, and checks cached, cache-disabled and DMA-disabled CPU builds.
+All CPU configurations use the coherent interfaces and their ordinary source
+filelists.
 
 `coherence_home`, `coherence_home_equal`, `coherence_cluster` and `coherent_cut`
 check the one-hart S/M controller, inclusion, pending writes, atomic bridges
-and CPU observation cuts. They run in the unit shard. The DMA/NIC program
-shard also selects `COHERENT_CLUSTER=1` for `coherent_hello_world`,
-`coherent_isa_test`, `coherent_coremark`, `coherent_dma_torture`,
-`coherent_nic_loopback`, `coherent_ptw_coherence_test`,
-`coherent_smc_fencei_test` and `coherent_amo_irq_torture_sim` in both memory
-configurations. The coherent selection leaves whole-L1D maintenance active in simulation. The synthesis
-checks include cached, cache-disabled and DMA-disabled coherent CPU builds,
-and both line sizes at 32-bit and 56-bit physical widths.
+and CPU observation cuts. They run in the unit shard. The program shards
+exercise the coherent hierarchy in both memory configurations. Whole-L1D
+maintenance is active in simulation. Synthesis checks cover both line sizes
+at 32-bit and 56-bit physical widths.
 
-The `coherent_debug_test` program exercises JTAG control, memory access and
-BRAM instruction mirroring with the coherent cluster selected. The debugger
-executes both words of an aligned doubleword instruction patch.
+`debug_test` exercises JTAG control, memory access and BRAM instruction
+mirroring. The debugger executes both words of an aligned doubleword patch.
 The debug-module unit bench checks stalled slice requests and overlapping
-program-buffer writes in the direct and coherent selections.
-The reservation-station unit checks capacity after second-port issue, dual
-issue, simultaneous dispatch and issue, and flush in both selections.
+program-buffer writes. The reservation-station unit checks capacity after
+second-port issue, dual issue, simultaneous dispatch and issue, and flush.
 
 The `coherent_cpu_faults` bench injects SC refill errors after clean replacement.
+It checks exact address and W/D size matching for cached SC and doubleword
+matching for uncached SC, including the stored value after each operation.
 It checks architectural trap cause, EPC and virtual fault address with and without
 translation. A delayed SC refill also checks that debug entry follows the
 exact selected write and release. Single-step cases execute LR before SC or
 AMO in cached and private uncached memory. They check the retired instruction,
 debug PC, absence of following atomic ownership and unchanged memory. A
 subsequent debug command reports DPC through a Device write and parks again.
-The coherent FENCE.I program uses 4 KiB
-private caches and full L1D maintenance sweeps. The coherent AMO interrupt
-workload uses 64 bursts of 64 AMOs, covering two rotations of its counters.
+The Tomasulo coherence fixture models CPU atomic protection and home SC
+results through tagged write completion. Admission races cover both probe-first
+and atomic-first ordering. The CPU and cache benches exercise the guard and
+home hardware that implement those fixture handshakes.
+The FENCE.I program uses full L1D maintenance sweeps. The AMO interrupt
+workload uses 256 bursts of 64 AMOs.
 
 ```bash
 ./scripts/frost.py cocotb --list-tests                                        # every target, with a description
@@ -161,7 +159,7 @@ and startup code reinitialize the kernel, heap, and application state.
 
 | Entries that run once | Reason |
 | --- | --- |
-| `coherent_amo_irq_torture_sim`, `coherent_coremark`, `coremark_pro_loops`, `coremark_pro_nnet`, `lq_stale_slot_probe` | Run time |
+| `coremark_pro_loops`, `coremark_pro_nnet`, `lq_stale_slot_probe` | Run time |
 | `opensbi_smoke` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
 | `amo_irq_torture_sim`, `coremark`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |
 
