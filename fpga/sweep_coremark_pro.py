@@ -43,7 +43,7 @@ Examples (from the repo root):
     # -v1 validation sweep of every hardware-supported workload on X3
     ./fpga/sweep_coremark_pro.py --board x3 -v1
 
-    # -v0 performance sweep on X3 (registry-calibrated iteration counts)
+    # -v0 performance sweep on X3 (registry-configured iteration counts)
     ./fpga/sweep_coremark_pro.py --board x3 -v0
 
     # Sweep a subset on X3
@@ -471,7 +471,7 @@ def main() -> int:
         action="store_const",
         const="-v0",
         help=(
-            "longer performance/score sweep: runs the registry-calibrated "
+            "longer performance/score sweep: runs the registry-configured "
             "iteration counts and computes the official CoreMark-PRO score"
         ),
     )
@@ -540,7 +540,7 @@ def main() -> int:
     if args.mode is None:
         parser.error(
             "a run mode is required: -v0 for the longer performance/score sweep "
-            "(registry-calibrated iterations), or -v1 for the quick validation "
+            "(registry-configured iterations), or -v1 for the quick validation "
             "sweep (official result checking)"
         )
 

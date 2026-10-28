@@ -1045,3 +1045,238 @@ def test_vcu118_serial_prefers_console_interface(
     assert defaults.DEFAULT_SERIALS["x3"] == "/dev/ttyUSB3"
     monkeypatch.setattr(defaults.glob, "glob", lambda pattern: [])
     assert defaults.DEFAULT_SERIALS["vcu118"] == "/dev/ttyUSB0"
+
+
+@pytest.mark.parametrize("board", ("x3", "vcu118"))
+@pytest.mark.parametrize("mode", ("-v0", "-v1"))
+@pytest.mark.parametrize("app", loader.COREMARK_PRO_APP_NAMES)
+def test_coremark_pro_modes_build_for_each_board(
+    monkeypatch: pytest.MonkeyPatch, board: str, mode: str, app: str
+) -> None:
+    """Every registered workload reaches compilation with explicit mode settings."""
+    monkeypatch.delenv("FROST_CPU_CLK_HZ", raising=False)
+    monkeypatch.setattr(
+        sys, "argv", ["load_software.py", board, app, mode, "--build-only"]
+    )
+    builds = []
+
+    def compile_app(*args: Any, **kwargs: Any) -> bool:
+        builds.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(loader, "compile_app_for_board", compile_app)
+    monkeypatch.setattr(loader, "validate_prebuilt_app", lambda *a, **k: None)
+    monkeypatch.setattr(
+        loader, "select_target", lambda *a, **k: pytest.fail("cable touched")
+    )
+    loader.main()
+    assert len(builds) == 1
+    arguments, options = builds[0]
+    make_vars = arguments[4]
+    assert make_vars["COREMARK_PRO_OFFICIAL"] == "1"
+    if mode == "-v1":
+        assert make_vars["COREMARK_PRO_RUN_ARGS"] == "-v1"
+    else:
+        run_args = make_vars["COREMARK_PRO_RUN_ARGS"].split()
+        assert run_args[0] == "-v0" and int(run_args[1][2:]) > 0
+    assert options["ddr_bytes"] == (1 << 30 if board == "x3" else 1 << 31)
+
+
+@pytest.mark.parametrize("capacity", (1 << 30, 1 << 31))
+@pytest.mark.parametrize(
+    "value",
+    (
+        None,
+        "0x20000000",
+        "0x40000000",
+        "2147483648",
+        "0",
+        "-1",
+        "garbage",
+        "",
+        "1",
+        "0x100000000",
+    ),
+)
+@pytest.mark.parametrize("source", ("environment", "make"))
+def test_linux_memory_override_stays_within_board(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capacity: int,
+    value: str | None,
+    source: str,
+) -> None:
+    """Invalid memory nodes fail before make; supported smaller allocations survive."""
+    monkeypatch.delenv("FROST_DDR_CAPACITY_LOG2_BYTES", raising=False)
+    monkeypatch.delenv("FROST_LINUX_MEM_SIZE", raising=False)
+    make_vars = {}
+    if value is not None:
+        if source == "environment":
+            monkeypatch.setenv("FROST_LINUX_MEM_SIZE", value)
+        else:
+            make_vars["FROST_LINUX_MEM_SIZE"] = value
+    commands = []
+
+    def run(command: list[str], **kwargs: Any) -> Any:
+        commands.append((command, kwargs["env"]))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(loader.subprocess, "run", run)
+    for name in ("sw.mem", "sw.txt"):
+        (tmp_path / name).write_text("00000013\n")
+    accepted = loader.compile_app_for_board(
+        "linux_boot", tmp_path, 1, 1, make_vars, ddr_bytes=capacity
+    )
+    valid = value in (None, "0x20000000", "0x40000000") or (
+        value == "2147483648" and capacity == 1 << 31
+    )
+    assert accepted is valid
+    if valid:
+        assert len(commands) == 2
+        expected = capacity if value is None else int(value, 0)
+        assert all(int(env["FROST_LINUX_MEM_SIZE"]) == expected for _, env in commands)
+        assert all(
+            int(env["FROST_DDR_CAPACITY_LOG2_BYTES"]) == capacity.bit_length() - 1
+            for _, env in commands
+        )
+    else:
+        assert commands == []
+
+
+@pytest.mark.parametrize("first", ("bram", "ddr"))
+@pytest.mark.parametrize("fault", ("none", "probe_wr", "probe_rd", "bad_data"))
+def test_loader_probe_failure_never_selects_memory(
+    tmp_path: Path, first: str, fault: str
+) -> None:
+    """Transport errors and corrupt replies abort before reset or image writes."""
+    app_dir = tmp_path / "sw/apps/hello_world"
+    app_dir.mkdir(parents=True)
+    for name in ("sw.txt", "sw_ddr.txt"):
+        (app_dir / name).write_text("00000013\n00000013\n")
+    # An unrelated build's probes must not replace the programmed image's metadata.
+    probes = tmp_path / "fpga/build/vcu118/work/vcu118_frost.ltx"
+    probes.parent.mkdir(parents=True)
+    probes.write_text("stale probes")
+    harness = tmp_path / "probe.tcl"
+    harness.write_text(r"""
+set actual_script [lindex $argv 0]
+set argv [lrange $argv 1 end]
+set argc [llength $argv]
+proc open_hw_manager {} {puts OPEN_MANAGER}
+proc connect_hw_server {args} {}
+proc get_hw_targets {} {return {localhost:3219/xilinx_tcf/Xilinx/cable-1}}
+proc current_hw_target {target} {}
+proc open_hw_target {} {}
+proc get_hw_devices {} {return device0}
+proc refresh_hw_device {device} {}
+proc reset_hw_axi {axi} {}
+proc set_property {key value device} {error "Unexpected property mutation $key"}
+proc get_hw_axis {args} {
+    if {[llength $args] == 1} {return [lindex $args 0]}
+    return [expr {$::env(TEST_FIRST) eq "ddr" ? "ddr bram" : "bram ddr"}]
+}
+proc get_property {key object} {
+    if {$key eq "CELL_NAME"} {return {}}
+    if {$key eq "DATA"} {
+        if {$::env(TEST_FAULT) eq "bad_data"} {return DEADBEEF}
+        return [expr {$::env(TEST_FIRST) eq "ddr" ? "A5A5A5A5" : "00000000"}]
+    }
+    return $object
+}
+proc create_hw_axi_txn {name axi args} {puts "CREATE:$name:$axi"}
+proc get_hw_axi_txns {name} {return $name}
+proc delete_hw_axi_txn {name} {puts "DELETE:$name"}
+proc run_hw_axi {name} {
+    if {$name eq $::env(TEST_FAULT)} {error "injected $name failure"}
+}
+proc close_hw_target {} {puts CLOSE_TARGET}
+proc disconnect_hw_server {} {puts DISCONNECT_SERVER}
+proc close_hw_manager {} {puts CLOSE_MANAGER}
+source $actual_script
+""")
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("FROST_ILA_")
+    }
+    env.update(TEST_FIRST=first, TEST_FAULT=fault)
+    result = subprocess.run(
+        [
+            "tclsh",
+            str(harness),
+            str(ROOT / "fpga/load_software/load_software.tcl"),
+            str(tmp_path),
+            "hello_world",
+            TARGET,
+            "",
+            "1",
+            "127.0.0.1:3219",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.stdout.endswith("CLOSE_TARGET\nDISCONNECT_SERVER\nCLOSE_MANAGER\n")
+    assert result.stdout.count("DELETE:probe_wr") == 2
+    assert result.stdout.count("DELETE:probe_rd") == 2
+    writes = [
+        line
+        for line in result.stdout.splitlines()
+        if line.startswith("CREATE:") and not line.startswith("CREATE:probe_")
+    ]
+    if fault != "none":
+        assert result.returncode == 1
+        assert not writes
+        assert "FROST_LOAD_COMPLETE" not in result.stdout
+        assert (
+            "injected" if fault != "bad_data" else "Unexpected AXI probe data"
+        ) in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "CREATE:rst_assert:bram" in writes
+        assert any(
+            line.startswith("CREATE:ddrwr") and line.endswith(":ddr") for line in writes
+        )
+        assert any(
+            line.startswith("CREATE:bramwr") and line.endswith(":bram")
+            for line in writes
+        )
+        assert "FROST_LOAD_COMPLETE" in result.stdout
+
+
+@pytest.mark.parametrize("board,vendor", (("x3", "Xilinx"), ("vcu118", "Digilent")))
+def test_board_target_vendor_selection(
+    monkeypatch: pytest.MonkeyPatch, board: str, vendor: str
+) -> None:
+    """Board selection isolates cables by vendor before choosing a target."""
+    cables = [
+        f"localhost:3121/xilinx_tcf/{name}/cable" for name in ("Xilinx", "Digilent")
+    ]
+    monkeypatch.setattr(target, "get_available_targets", lambda *a, **k: cables)
+    selected = target.select_target("vivado", board=board, non_interactive=True)
+    assert selected == f"localhost:3121/xilinx_tcf/{vendor}/cable"
+
+
+def test_coremark_pro_missing_budget_is_an_argument_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Incomplete board registration fails before compilation or hardware access."""
+    monkeypatch.delenv("FROST_CPU_CLK_HZ", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["load_software.py", "vcu118", "coremark_pro_core", "-v0", "--build-only"],
+    )
+
+    def missing(*args: Any, **kwargs: Any) -> Any:
+        raise ValueError("missing iteration budget")
+
+    monkeypatch.setattr(loader, "coremark_pro_make_vars", missing)
+    monkeypatch.setattr(
+        loader, "compile_app_for_board", lambda *a, **k: pytest.fail("make ran")
+    )
+    with pytest.raises(SystemExit) as stopped:
+        loader.main()
+    assert stopped.value.code == 2
+    assert "missing iteration budget" in capsys.readouterr().err
