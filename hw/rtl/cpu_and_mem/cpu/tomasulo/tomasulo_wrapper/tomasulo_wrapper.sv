@@ -2795,6 +2795,9 @@ module tomasulo_wrapper #(
 
   reservation_station #(
       .DEPTH(riscv_pkg::MulRsDepth),
+      .PREPARE_ISSUE_CONTROLS(1'b1),
+      // Dispatch checks capacity for both slots before asserting valid.
+      .TRUST_DISPATCH_VALID(1'b1),
       .HAS_SRC3(1'b0),
       // Repair already-done operands through the indexed response one cycle
       // after allocation, for timing.

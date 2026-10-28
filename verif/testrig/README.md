@@ -246,10 +246,9 @@ The model matches SC by reservation set; the cached CPU interface requires
 an exact address and width match. Differing SC widths and offsets within a
 reserved line are covered by the cache and full-CPU atomic benches.
 An LR outside such a window always faults, so no reservation is open where
-a trap can happen. Base
-registers hold fixed addresses in DDR, low BRAM, the device quadrant, and
-unmapped space, and only their setup writes them. Each window and each setup
-is a `.noshrink` strand, which QuickCheckVEngine's shrinking leaves whole, so
+a trap can happen. Base registers hold fixed addresses in DDR, low BRAM,
+the device quadrant, and unmapped space, and only their setup writes them.
+Each window and each setup is a `.noshrink` strand, which QuickCheckVEngine's shrinking leaves whole, so
 a shrunk counterexample follows the same rules. The memory permissions come
 from `sail_frost.json`.
 
@@ -258,18 +257,18 @@ picks one and prints it. They are written to `tests/testrig_logs/atomics/`.
 
 ## Saved counterexamples
 
-`traces/` holds sequences that once exposed a bug, one per file. The first of
+`traces/` holds directed regression sequences, one per file. The first of
 CI's TestRIG jobs replays all of them before its random run.
 
 | Trace | Checks |
 |-------|--------|
 | [`clint_window_load.S`](traces/clint_window_load.S) | A load just below 2^35 faults at the 1 GiB default and reaches DDR with a 64 GiB configuration; Sail disables its CLINT in both configurations |
 | [`envcfg_fiom.S`](traces/envcfg_fiom.S) | `menvcfg.FIOM` and `senvcfg.FIOM` are writable |
-| [`fence_r0.S`](traces/fence_r0.S) | `fence r,0` retires (it was decoded as PAUSE and hung the core) |
+| [`fence_r0.S`](traces/fence_r0.S) | `fence r,0` retires |
 | [`hpm_counters.S`](traces/hpm_counters.S) | `mhpmcounter3..31` and `mhpmevent3..31` read zero |
 | [`imsic_window_load.S`](traces/imsic_window_load.S) | An aligned doubleword load in the IMSIC window reaches the TestRIG device RAM without an access fault |
 | [`instret_nops.S`](traces/instret_nops.S) | NOP and C.NOP count in `minstret` |
 | [`lrsc_amo.S`](traces/lrsc_amo.S) | AMOs to the first two doublewords of the reserved line cancel the reservation; an AMO to the next line preserves it |
 | [`lrsc_jump.S`](traces/lrsc_jump.S) | A JAL, JALR, or taken branch between LR and SC keeps the reservation |
-| [`lrsc_older_store.S`](traces/lrsc_older_store.S) | A store older than the LR, to the other word of the reserved doubleword, keeps the reservation when it writes after the LR reads |
+| [`lrsc_older_store.S`](traces/lrsc_older_store.S) | An older store to the other word of the reserved doubleword drains before LR and permits the following SC |
 | [`pte_nonleaf_dau.S`](traces/pte_nonleaf_dau.S) | A non-leaf PTE with D, A, or U set raises a page fault |

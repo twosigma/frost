@@ -219,8 +219,9 @@ An L1D grant belongs to a live request endpoint. SC acceptance requires that
 endpoint to be idle, so grant processing and SC acceptance are mutually
 exclusive. Probe capture and service precede both in the local arbitration.
 Read-slot payload writes pass through a one-record buffer. The buffer
-captures the payload and slot mask each cycle. A separate valid bit qualifies
-forwarding and writes to the slot storage. Its forwarding mux
+captures the payload and a slot mask each cycle. The mask identifies the
+allocated slot and is zero without an allocation. It qualifies forwarding
+and writes to the slot storage. The forwarding mux
 makes each allocation visible on the allocation edge. Each slot keeps its
 allocated payload until reset or another allocation to that slot.
 Allocation marks an empty slot valid. Read eligibility compares each physical slot with pending, atomic and frozen

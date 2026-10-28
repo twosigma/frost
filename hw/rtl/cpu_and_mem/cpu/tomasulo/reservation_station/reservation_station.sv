@@ -1436,6 +1436,51 @@ module reservation_station #(
     end
   end
 
+  // Prepare readiness for both CDB validity bits before choosing a payload.
+  wire [1:0] issue_valid_case = {issue_cdb_2_valid, issue_cdb_valid};
+  (* keep = "true" *) logic [DEPTH-1:0] issue_ready_choice[4];
+  if (PREPARE_ISSUE_CONTROLS) begin : gen_issue_ready_choices
+    for (genvar valids = 0; valids < 4; valids++) begin : gen_valid_choice
+      localparam bit Valid0 = (valids & 1) != 0;
+      localparam bit Valid1 = (valids & 2) != 0;
+      for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_ready
+        assign issue_ready_choice[valids][entry] = rs_valid[entry] &&
+          !(rs_is_divide[entry] && divide_blocked) &&
+          (rs_src1_ready[entry] || (src1_repair_sel[entry] != 3'd0) ||
+           (Valid0 && !rs_src1_ready[entry] && !src1_cdb_pend[entry] &&
+            (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[entry] : rs_src1_tag[entry]) ==
+                issue_cdb_tag) ||
+           (LANE1_ISSUE_BYPASS && Valid1 &&
+            !rs_src1_ready[entry] && !src1_cdb_pend[entry] &&
+            (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[entry] : rs_src1_tag[entry]) ==
+                issue_cdb_2_tag)) &&
+          (rs_src2_ready[entry] || (src2_repair_sel[entry] != 3'd0) ||
+           (Valid0 && !rs_src2_ready[entry] && !src2_cdb_pend[entry] &&
+            (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[entry] : rs_src2_tag[entry]) ==
+                issue_cdb_tag) ||
+           (LANE1_ISSUE_BYPASS && Valid1 &&
+            !rs_src2_ready[entry] && !src2_cdb_pend[entry] &&
+            (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[entry] : rs_src2_tag[entry]) ==
+                issue_cdb_2_tag)) &&
+          (rs_src3_ready[entry] || (src3_repair_sel[entry] != 3'd0) ||
+           (HAS_SRC3 && Valid0 && !rs_src3_ready[entry] && !src3_cdb_pend[entry] &&
+            rs_src3_tag[entry] == issue_cdb_tag) ||
+           (HAS_SRC3 && LANE1_ISSUE_BYPASS && Valid1 &&
+            !rs_src3_ready[entry] && !src3_cdb_pend[entry] &&
+            rs_src3_tag[entry] == issue_cdb_2_tag));
+      end
+    end
+`ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
+    always_comb begin
+      p_primary_readiness_exact : assert (issue_ready_choice[issue_valid_case] == entry_ready);
+    end
+`endif
+  end else begin : gen_issue_ready_direct
+    for (genvar valids = 0; valids < 4; valids++) begin : gen_valid_choice
+      assign issue_ready_choice[valids] = entry_ready;
+    end
+  end
+
   // --- Issue selection (priority encoder: lowest ready index) ---
   // With CAPTURE_PRIMARY_EFFECTIVE_OPERANDS, issue_idx comes from the grouped
   // select below, which equals this scan for every ready vector.
@@ -1487,6 +1532,32 @@ module reservation_station #(
     for (genvar g = 0; g < int'(PayloadGroups); g++) begin : gen_payload_pick
       assign payload_group_pick[g] = group_pick[g];
     end
+    for (genvar g = 0; g < NumGroupSlots; g++) begin : gen_group_pick
+      if (PREPARE_ISSUE_CONTROLS) begin : gen_valid_choices
+        (* keep = "true" *) logic [1:0] pick_choice[4];
+        for (genvar valids = 0; valids < 4; valids++) begin : gen_valid_choice
+          logic [3:0] ready_bits;
+          for (genvar entry = 0; entry < 4; entry++) begin : gen_entry
+            if (4 * g + entry < DEPTH)
+              assign ready_bits[entry] = issue_ready_choice[valids][4*g+entry];
+            else assign ready_bits[entry] = 1'b0;
+          end
+          assign pick_choice[valids] = ready_bits[0] ? 2'd0 : ready_bits[1] ? 2'd1 :
+              ready_bits[2] ? 2'd2 : ready_bits[3] ? 2'd3 : 2'd0;
+        end
+        assign group_pick[g] = pick_choice[issue_valid_case];
+      end else begin : gen_direct
+        assign group_pick[g] = group_ready[g][0] ? 2'd0 : group_ready[g][1] ? 2'd1 :
+            group_ready[g][2] ? 2'd2 : group_ready[g][3] ? 2'd3 : 2'd0;
+      end
+`ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
+      always_comb begin
+        assert (group_pick[g] ==
+            (group_ready[g][0] ? 2'd0 : group_ready[g][1] ? 2'd1 :
+             group_ready[g][2] ? 2'd2 : group_ready[g][3] ? 2'd3 : 2'd0));
+      end
+`endif
+    end
     (* keep = "true" *) logic src1_bypass, src1_bypass_l1, src2_bypass, src2_bypass_l1;
     always_comb begin
       for (int g = 0; g < int'(NumGroupSlots); g++) begin
@@ -1500,8 +1571,6 @@ module reservation_station #(
         group_any[g] = |group_ready[g];
         // Zero when the group has no ready entry, so the issue index below
         // is zero with no entry ready, like the scan.
-        group_pick[g] = group_ready[g][0] ? 2'd0 : group_ready[g][1] ? 2'd1 :
-            group_ready[g][2] ? 2'd2 : group_ready[g][3] ? 2'd3 : 2'd0;
         for (int j = 0; j < 4; j++) begin
           if (((4 * g + j) < int'(DEPTH)) && (group_pick[g] == 2'(j))) begin
             group_metadata[g] = {
@@ -2081,34 +2150,7 @@ module reservation_station #(
         (* keep = "true" *) logic [$clog2(Issue2Window)-1:0] index_choice[4];
         (* keep = "true" *) logic [Issue2Window-1:0] onehot_choice[4];
         for (genvar valids = 0; valids < 4; valids++) begin : gen_valid_choice
-          localparam bit Valid0 = (valids & 1) != 0;
-          localparam bit Valid1 = (valids & 2) != 0;
-          for (genvar entry = 0; entry < Issue2Window; entry++) begin : gen_ready
-            assign ready_choice[valids][entry] = rs_valid[entry] &&
-                !(rs_is_divide[entry] && divide_blocked) &&
-                (rs_src1_ready[entry] || (src1_repair_sel[entry] != 3'd0) ||
-                 (Valid0 && !rs_src1_ready[entry] && !src1_cdb_pend[entry] &&
-                  (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[entry] : rs_src1_tag[entry]) ==
-                      issue_cdb_tag) ||
-                 (LANE1_ISSUE_BYPASS && Valid1 &&
-                  !rs_src1_ready[entry] && !src1_cdb_pend[entry] &&
-                  (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[entry] : rs_src1_tag[entry]) ==
-                      issue_cdb_2_tag)) &&
-                (rs_src2_ready[entry] || (src2_repair_sel[entry] != 3'd0) ||
-                 (Valid0 && !rs_src2_ready[entry] && !src2_cdb_pend[entry] &&
-                  (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[entry] : rs_src2_tag[entry]) ==
-                      issue_cdb_tag) ||
-                 (LANE1_ISSUE_BYPASS && Valid1 &&
-                  !rs_src2_ready[entry] && !src2_cdb_pend[entry] &&
-                  (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[entry] : rs_src2_tag[entry]) ==
-                      issue_cdb_2_tag)) &&
-                (rs_src3_ready[entry] || (src3_repair_sel[entry] != 3'd0) ||
-                 (HAS_SRC3 && Valid0 && !rs_src3_ready[entry] && !src3_cdb_pend[entry] &&
-                  rs_src3_tag[entry] == issue_cdb_tag) ||
-                 (HAS_SRC3 && LANE1_ISSUE_BYPASS && Valid1 &&
-                  !rs_src3_ready[entry] && !src3_cdb_pend[entry] &&
-                  rs_src3_tag[entry] == issue_cdb_2_tag));
-          end
+          assign ready_choice[valids]   = issue_ready_choice[valids][Issue2Window-1:0];
           assign use_imm_choice[valids] = |(rs_use_imm[Issue2Window-1:0] & onehot_choice[valids]);
           coherent_rs_issue2_selector #(
               .DEPTH(Issue2Window)

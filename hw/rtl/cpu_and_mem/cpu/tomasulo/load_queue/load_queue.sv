@@ -1394,6 +1394,7 @@ module load_queue #(
   logic [1:0] coherent_probe_choice, coherent_issue_choice;
   logic [1:0] coherent_issue_by_drain, coherent_eligible_by_drain;
   logic [1:0][1:0] coherent_release_by_drain_empty;
+  logic [1:0][1:0][1:0] coherent_release_cases;
   logic coherent_release_eligible, coherent_release_protected;
   logic [1:0] coherent_forward_unblocked_empty;
   logic coherent_forward_unblocked;
@@ -1692,12 +1693,15 @@ module load_queue #(
   // not overlap the LR, so without the wait it could write after the LR's
   // response, and its write-launch snoop would cancel the reservation.
   assign coherent_local_hold = i_coherent_cut_hold || coherent_sector_hold;
-  assign sq_check_entry_issueable = sq_check_entry_valid &&
+  // Address faults complete without arming atomic ownership.
+  logic sq_check_fault_eligible;
+  assign sq_check_fault_eligible = sq_check_entry_valid &&
       (!(sq_check_is_lr_q || sq_check_is_amo_q)
        || (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty)) &&
       (!sq_check_is_mmio_q || (sq_check_rob_tag_q == i_rob_head_tag)) &&
       !coh_launch_hold_q && !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
-      !(coherent_local_hold) &&
+      !(coherent_local_hold);
+  assign sq_check_entry_issueable = sq_check_fault_eligible &&
       !(sq_check_is_amo_q && sq_check_is_cached_region &&
         !i_coherent_atomic_protected);
 
@@ -1715,7 +1719,7 @@ module load_queue #(
   assign coherent_staged_at_head = sq_check_rob_tag_q == i_rob_head_tag;
   assign o_coherent_arm_valid = sq_check_entry_valid && sq_check_is_amo_q &&
       sq_check_is_cached_region && sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty &&
-      sq_check_pma_ok && !sq_check_misaligned && !i_flush_all && !i_flush_en;
+      !coherent_address_fault && !i_flush_all && !i_flush_en;
   assign o_coherent_arm_tag = sq_check_rob_tag_q;
   assign o_coherent_read_kind = sq_check_is_amo_q ? 2'd2 : sq_check_is_lr_q ? 2'd1 : 2'd0;
   assign o_coherent_read_tag = sq_check_rob_tag_q;
@@ -1741,7 +1745,7 @@ module load_queue #(
   // A parked translation fault outranks PMA and alignment checks: the saved
   // address is a VA for xtval. Use the saved kind to select its cause.
   logic sq_check_parked_fault;
-  assign sq_check_parked_fault = sq_check_entry_valid && sq_check_entry_issueable &&
+  assign sq_check_parked_fault = sq_check_fault_eligible &&
       (riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q) != riscv_pkg::DFAULT_NONE);
   logic sq_check_pma_ok;
   logic coherent_staged_normal;
@@ -1814,10 +1818,10 @@ module load_queue #(
 `endif
   end
   assign sq_check_pma_fault = !sq_check_parked_fault &&
-      sq_check_entry_valid && sq_check_entry_issueable && !sq_check_pma_ok;
+      sq_check_fault_eligible && !sq_check_pma_ok;
   assign sq_check_misaligned = sq_check_parked_fault || sq_check_pma_fault ||
       (i_trap_misaligned_accesses &&
-       sq_check_entry_valid && sq_check_entry_issueable &&
+       sq_check_fault_eligible &&
        coherent_staged_misaligned);
   assign sq_commit_check_block =
       i_sq_commit_pending && sq_check_entry_valid && sq_check_is_cached_region;
@@ -1886,39 +1890,46 @@ module load_queue #(
   logic coherent_stage_clear;
   wire [1:0] coherent_commit_choice = {i_sq_commit_pending, i_sq_committed_empty};
   if (1'b1) begin : gen_coherent_capture_choices
-    (* keep = "true" *) logic [1:0] clear_by_hit;
-    for (genvar hit_case = 0; hit_case < 2; hit_case++) begin : gen_hit_choice
-      localparam bit Hit = hit_case != 0;
-      (* keep = "true" *) logic [1:0] clear_by_empty;
-      for (genvar empty_case = 0; empty_case < 2; empty_case++) begin : gen_empty_choice
-        (* keep = "true" *) logic [3:0] clear_by_bus;
-        wire [1:0] bus_choice = {i_mem_bus_busy, i_l0_hit_allowed};
-        for (genvar bus_case = 0; bus_case < 4; bus_case++) begin : gen_bus_choice
-          localparam bit Busy = (bus_case & 2) != 0;
-          localparam bit L0Allowed = (bus_case & 1) != 0;
-          (* keep = "true" *) logic [3:0] clear_by_commit;
-          for (genvar commit_case = 0; commit_case < 4; commit_case++) begin : gen_commit_choice
-            localparam bit CommitPending = (commit_case & 2) != 0;
-            localparam int unsigned Drained = commit_case & 1;
-            wire interlock = CommitPending && sq_check_is_cached_region && sq_check_phase2;
-            wire clear_memory = !i_flush_all && !i_flush_en &&
-                coherent_release_by_drain_empty[empty_case][Drained] && !interlock &&
-                ((!Busy && !cached_launch_hold_q) ||
-                 (ENABLE_L0_FAST_PATH && sq_check_cacheable && (!Busy || L0Allowed) && Hit &&
-                  !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q));
-            assign clear_by_commit[commit_case] = clear_memory ||
-                (coherent_forward_unblocked_empty[empty_case] && !interlock);
+    (* keep = "true" *) logic [1:0] clear_by_head;
+    for (genvar head_case = 0; head_case < 2; head_case++) begin : gen_head_choice
+      (* keep = "true" *) logic [1:0] clear_by_hit;
+      for (genvar hit_case = 0; hit_case < 2; hit_case++) begin : gen_hit_choice
+        localparam bit Hit = hit_case != 0;
+        (* keep = "true" *) logic [1:0] clear_by_empty;
+        for (genvar empty_case = 0; empty_case < 2; empty_case++) begin : gen_empty_choice
+          (* keep = "true" *) logic [3:0] clear_by_bus;
+          wire [1:0] bus_choice = {i_mem_bus_busy, i_l0_hit_allowed};
+          for (genvar bus_case = 0; bus_case < 4; bus_case++) begin : gen_bus_choice
+            localparam bit Busy = (bus_case & 2) != 0;
+            localparam bit L0Allowed = (bus_case & 1) != 0;
+            (* keep = "true" *) logic [3:0] clear_by_commit;
+            for (genvar commit_case = 0; commit_case < 4; commit_case++) begin : gen_commit_choice
+              localparam bit CommitPending = (commit_case & 2) != 0;
+              localparam int unsigned Drained = commit_case & 1;
+              wire interlock = CommitPending && sq_check_is_cached_region && sq_check_phase2;
+              wire clear_memory = !i_flush_all && !i_flush_en &&
+                  coherent_release_cases[empty_case][Drained][head_case] && !interlock &&
+                  ((!Busy && !cached_launch_hold_q) ||
+                   (ENABLE_L0_FAST_PATH && sq_check_cacheable && (!Busy || L0Allowed) && Hit &&
+                    !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q));
+              assign clear_by_commit[commit_case] = clear_memory ||
+                  (coherent_forward_unblocked_empty[empty_case] && !interlock);
+            end
+            assign clear_by_bus[bus_case] = clear_by_commit[coherent_commit_choice];
           end
-          assign clear_by_bus[bus_case] = clear_by_commit[coherent_commit_choice];
+          assign clear_by_empty[empty_case] = clear_by_bus[bus_choice];
         end
-        assign clear_by_empty[empty_case] = clear_by_bus[bus_choice];
+        assign clear_by_hit[hit_case] = clear_by_empty[i_sq_empty];
       end
-      assign clear_by_hit[hit_case] = clear_by_empty[i_sq_empty];
+      assign clear_by_head[head_case] = clear_by_hit[cache_lookup_hit];
     end
-    (* keep = "true" *) wire release_ready =
-        coherent_release_protected && !i_coherent_cut_hold && clear_by_hit[cache_lookup_hit];
+    // Head identity selects between complete release cofactors. Phase and
+    // address faults qualify that selected release condition.
+    (* keep = "true" *) wire release_ready = sq_check_phase2 && !coherent_address_fault &&
+        coherent_release_protected && !i_coherent_cut_hold &&
+        clear_by_head[coherent_staged_at_head];
     (* keep = "true" *) wire fault_clear_ready =
-        coherent_release_protected && !coherent_local_hold && !resp_bypass_ok &&
+        !coherent_local_hold && !resp_bypass_ok &&
         coherent_release_eligible && coherent_address_fault && !i_flush_en;
     wire fault_granted = cdb_stage_slot_available && !issue_cdb_fire;
     (* keep = "true" *) wire release_for_take = release_ready || coherent_sector_hold ||
@@ -2056,7 +2067,7 @@ module load_queue #(
 
   if (1'b1) begin : gen_coherent_issue_gate
     (* keep = "true" *) logic probe_ok, issue_ok;
-    (* keep = "true" *) wire ordinary_eligible =
+    wire ordinary_eligible =
         !sq_check_is_lr_q && !sq_check_is_amo_q && !coh_launch_hold_q;
     (* keep = "true" *) wire ordinary_issue = ordinary_eligible && sq_check_phase2 &&
         !coherent_address_fault &&
@@ -2076,18 +2087,17 @@ module load_queue #(
         (ordinary_eligible && !sq_check_is_mmio_q);
     for (genvar empty_case = 0; empty_case < 2; empty_case++) begin : gen_empty_issue
       localparam bit Empty = empty_case != 0;
-      (* keep = "true" *) wire ordinary = ordinary_eligible && sq_check_phase2 &&
-          !coherent_address_fault &&
+      (* keep = "true" *) wire ordinary = ordinary_eligible &&
           (sq_check_no_older_store_q || Empty ||
            (i_sq_all_older_addrs_known && !i_sq_forward.match));
-      (* keep = "true" *) wire head_drained = head_release_eligible && sq_check_phase2 &&
-          !coherent_address_fault &&
+      (* keep = "true" *) wire head_drained = head_release_eligible &&
           (sq_check_no_older_store_q || Empty || sq_check_is_amo_q ||
            (i_sq_all_older_addrs_known && !i_sq_forward.match));
       for (genvar drain_case = 0; drain_case < 2; drain_case++) begin : gen_drain
         (* keep = "true" *) wire [1:0] by_head = {
           (drain_case != 0 ? head_drained : ordinary), ordinary && !sq_check_is_mmio_q
         };
+        assign coherent_release_cases[empty_case][drain_case] = by_head;
         assign coherent_release_by_drain_empty[empty_case][drain_case] =
             by_head[coherent_staged_at_head];
       end
@@ -2100,7 +2110,8 @@ module load_queue #(
 `endif
     begin
       p_empty_issue_exact : assert (!sq_check_pending ||
-          (coherent_release_by_drain_empty[i_sq_empty] & {2{coherent_release_protected}}) ==
+          (coherent_release_by_drain_empty[i_sq_empty] &
+           {2{sq_check_phase2 && !coherent_address_fault && coherent_release_protected}}) ==
           coherent_issue_by_drain);
       p_release_eligible_exact : assert (!sq_check_pending ||
           (coherent_release_eligible && coherent_release_protected) ==
@@ -2200,7 +2211,7 @@ module load_queue #(
     assign forward_ok = forward_clear_eligible && sq_check_entry_valid &&
         !older_amo_write_pending;
     assign coherent_forward_unblocked_empty[0] = ENABLE_SQ_FORWARD_FAST_PATH &&
-        sq_check_phase2 && !coh_launch_hold_q && !coherent_address_fault &&
+        !coh_launch_hold_q &&
         !sq_check_no_older_store_q && i_sq_all_older_addrs_known &&
         i_sq_forward.can_forward && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
     assign coherent_forward_unblocked_empty[1] = 1'b0;
@@ -2212,7 +2223,8 @@ module load_queue #(
 `endif
     begin
       p_empty_forward_exact : assert (
-          coherent_forward_unblocked_empty[i_sq_empty] == forward_unblocked);
+          (sq_check_phase2 && !coherent_address_fault &&
+           coherent_forward_unblocked_empty[i_sq_empty]) == forward_unblocked);
     end
 `endif
     assign coherent_forward_unblocked = forward_unblocked;
@@ -2433,19 +2445,20 @@ module load_queue #(
   // consumers keep launch_mem_issue.
   (* keep = "true" *) logic launch_if_miss, launch_if_hit;
   if (1'b1) begin : gen_coherent_launch_gate
+    // Bus availability qualifies the port after committed-store selection.
     (* keep = "true" *) logic [1:0] launch_choice;
     for (genvar drain_case = 0; drain_case < 2; drain_case++) begin : gen_drain_choice
-      assign launch_choice[drain_case] = !i_flush_en && !i_flush_all && !i_mem_bus_busy &&
+      assign launch_choice[drain_case] = !i_flush_en && !i_flush_all &&
           coherent_issue_by_drain[drain_case] && !cached_launch_hold_q &&
           sq_check_entry_valid && !older_amo_write_pending && !sq_commit_interlock;
     end
     (* keep = "true" *) wire permitted =
         !coherent_local_hold && launch_choice[i_sq_committed_empty];
     (* keep = "true" *) wire hit_blocks = ENABLE_L0_FAST_PATH && sq_check_cacheable &&
-        !l0_lookup_busy && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
+        !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
     assign launch_if_miss = 1'b0;
     assign launch_if_hit = 1'b0;
-    assign o_mem_read_en = permitted && !(cache_lookup_hit && hit_blocks);
+    assign o_mem_read_en = !i_mem_bus_busy && permitted && !(cache_lookup_hit && hit_blocks);
   end
 `ifndef SYNTHESIS
   always_comb begin
@@ -5502,6 +5515,19 @@ module load_queue #(
     end
     if (mem_read_en && sq_check_is_amo_q && sq_check_is_cached_region)
       assert (i_coherent_atomic_protected);
+    if (o_coherent_arm_valid) begin
+      p_atomic_arm_checks_address : assert (
+          riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q) == riscv_pkg::DFAULT_NONE &&
+          sq_check_pma_ok && !(i_trap_misaligned_accesses && coherent_staged_misaligned));
+      p_atomic_arm_owns_head : assert (
+          sq_check_entry_valid && sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty);
+    end
+    if (sq_check_fault_eligible && coherent_address_fault && cdb_stage_slot_available &&
+        !issue_cdb_fire && !resp_bypass_fire && !i_flush_en)
+      p_address_fault_progress : assert (misalign_bypass_fire);
+    if (misalign_bypass_fire)
+      p_address_fault_has_no_memory_effect : assert (
+          !mem_read_en && !cache_hit_fast_path && !sq_do_forward);
     if (f_coherent_past[1] && $past(!i_rst_n || i_flush_all || coherent_holder_changed))
       assert (coherent_parked_q == '0);
     if (f_coherent_past[1] && i_rst_n && $past(i_rst_n)) begin

@@ -47,6 +47,70 @@ def literal(register: int, value: int) -> list[int]:
 
 
 @cocotb.test()
+async def misaligned_amo_does_not_arm(dut: Any) -> None:
+    """Check an address fault precedes atomic ownership and memory effects."""
+    for size, offset in ((2, 2), (3, 2), (3, 4)):
+        system = System(dut)
+        address = 0x80000000 + offset
+        body = literal(4, address) + [addi(7, 0, 99)]
+        fault_index = len(body)
+        body += [(7 << 20) | (4 << 15) | (size << 12) | (6 << 7) | 0x2F]
+        fault_pc = trap_program(system, body) + 4 * fault_index
+        await system.reset()
+        for _ in range(20000):
+            await system.step()
+            assert not int(dut.hart.cpu_inst.o_coherent_atomic_protected.value)
+            effects = {addr: value for _, addr, value in system.effects}
+            if 0x40000020 in effects:
+                break
+        else:
+            raise AssertionError("Misaligned AMO did not report its exception")
+        assert effects[0x40000010] == 6
+        assert effects[0x40000018] == fault_pc
+        assert effects[0x40000020] == address
+        assert 0x40000008 not in effects
+        assert not any(
+            0x80000000 <= addr < 0x80000020 for _, _, addr, *_ in system.transactions
+        )
+
+
+@cocotb.test()
+async def amo_refill_fault_releases_selected_owner(dut: Any) -> None:
+    """Check a selected AMO reports its own clean fault without a write."""
+    for size in (2, 3):
+        system = System(dut)
+        address = 0x80000000
+        body = literal(4, address) + [addi(7, 0, 99)]
+        fault_index = len(body)
+        body += [(7 << 20) | (4 << 15) | (size << 12) | (6 << 7) | 0x2F]
+        fault_pc = trap_program(system, body) + 4 * fault_index
+        system.memory[address] = 123
+        system.error_reads.add(address)
+        await system.reset()
+        protected = False
+        for _ in range(20000):
+            await system.step()
+            protected |= bool(dut.hart.cpu_inst.o_coherent_atomic_protected.value)
+            effects = {addr: value for _, addr, value in system.effects}
+            if 0x40000020 in effects:
+                break
+        else:
+            raise AssertionError("AMO refill fault did not report its exception")
+        assert protected
+        assert effects[0x40000010] == 7
+        assert effects[0x40000018] == fault_pc
+        assert effects[0x40000020] == 0
+        assert 0x40000008 not in effects
+        assert system.memory[address] == 123
+        assert not int(dut.hart.coherent_atomic_live.value)
+        assert not int(dut.hart.cpu_inst.o_coherent_atomic_protected.value)
+        assert not any(
+            kind == "write" and 0x80000000 <= addr < 0x80000020
+            for _, kind, addr, *_ in system.transactions
+        )
+
+
+@cocotb.test()
 async def sc_matches_cached_address_and_size(dut: Any) -> None:
     """Check exact cached LR/SC matching and uncached doubleword matching."""
     initial = 0x1122334455667788

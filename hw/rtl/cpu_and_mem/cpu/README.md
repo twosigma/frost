@@ -160,16 +160,17 @@ word address with the newest 16 bits of the global path history, T2 with all
 words of the fetch window; the lookup registers and is compared with the tags
 the next cycle. The longer-history table whose tag matches provides the
 direction. Every taken control-flow instruction shifts bits [3:2] of its
-target into the history. The lookup history follows fetch:
-`tage_history` pushes the target the cycle after `pc_controller` loads a
-predicted one, and each redirect restores the history to its point in the
-program. A trap, xRET, FENCE-class flush, or commit-time recovery takes the
-history of the retired instructions. Early recovery or a PD redirect takes the
-branch's own lookup history, plus its target if it is now taken. A
-served-window resteer, which only variable-latency fetch produces, leaves the
-history unchanged, so when one returns fetch to a branch already predicted
-taken, the branch is looked up again with its own target in the history.
-That costs accuracy, not correctness.
+target into the history. The lookup history follows fetch: `tage_history`
+pushes the target the cycle after `pc_controller` loads a predicted one, and
+each redirect restores the history to its point in the program. The
+controller captures push and restore events with the PC load and captures
+zero for a held PC. A trap, xRET, FENCE-class flush, or commit-time recovery
+takes the history of the retired instructions. Early recovery or a PD
+redirect takes the branch's own lookup history, plus its target when taken.
+A served-window resteer, which only variable-latency fetch produces,
+leaves the history unchanged, so when one returns fetch to a branch already
+predicted taken, the branch is looked up again with its own target in the
+history. That costs accuracy, not correctness.
 
 When PD passes a conditional branch to ID, its lookup (indices, tags, which
 tables matched, the alternate direction, and the history) goes to a 64-entry

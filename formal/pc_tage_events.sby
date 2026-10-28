@@ -1,0 +1,27 @@
+[tasks]
+pc_tage_events_prove
+pc_tage_events_cover
+
+[options]
+pc_tage_events_prove: mode prove
+pc_tage_events_cover: mode cover
+depth 3
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read_verilog -formal -D SYNTHESIS -D PC_HOLDOFF_LOCAL_PROOF -D PC_TAGE_EVENTS_LOCAL_PROOF -sv pc_controller.sv
+delete t:control_flow_tracker t:pc_increment_calculator
+proc
+setundef -undriven -anyseq
+opt
+prep -top pc_controller
+select -assert-count 12 t:$check
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
