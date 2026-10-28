@@ -1,4 +1,4 @@
-# AMOs to either doubleword in the reserved line cancel the reservation.
+# AMOs to the first two doublewords in the reserved line cancel the reservation.
 # An AMO to the next line preserves it. The first two SCs fail; the third succeeds.
 .4byte 0x80200a37 # lui x20, 0x80200
 .4byte 0x020a1a13 # slli x20, x20, 32

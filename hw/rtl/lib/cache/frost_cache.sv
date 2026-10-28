@@ -80,9 +80,8 @@
  * type 0 is an MSHR's fill, type 1 a writeback slot's write.
  *
  * Each line is one data-array row (sdp_ram_byte_en), in its way's bank in
- * the L1s. Tags use one block RAM per way with a one-cycle read, or for the
- * X3 L2 packed UltraRAM, one set per row, with a TAG_READ_LATENCY-cycle
- * lookup.
+ * the L1s. Tags use one block RAM per way with a one-cycle read, or packed
+ * UltraRAM with one set per row and a TAG_READ_LATENCY-cycle lookup.
  *
  * Reset runs a sweep that clears every set's tags and replacement state
  * (NumSets cycles) before ready rises, so every reset, including an image
@@ -138,7 +137,7 @@ module frost_cache #(
     // removes the probe machinery; only the L1D takes probes.
     parameter int unsigned NUM_PROBE = 0,
     // Data-array primitive + latencies (see sdp_ram_byte_en). "block" for L1,
-    // "ultra" for the X3 L2. Simulation behaviour is primitive-agnostic.
+    // "ultra" for L2. Simulation behaviour is primitive-agnostic.
     // Untyped because Vivado fails to resolve string-typed parameters
     // propagated into the XPM macro (see sdp_ram_byte_en). The read latency
     // counts from the read: T's decision in the L1s, W in the L2 (see the
@@ -150,8 +149,7 @@ module frost_cache #(
     parameter int unsigned DATA_WRITE_LATENCY = 1,
     // Tag-array primitive and total logical read latency: "block" (one-cycle
     // block RAM per way) for the L1s, "ultra" (the packed UltraRAM wrapper)
-    // for the X3 L2. Untyped for the same Vivado/XPM parameter-propagation
-    // reason as the data primitive above.
+    // for L2. The untyped parameter follows the data primitive above.
     // verilog_lint: waive explicit-parameter-storage-type
     parameter TAG_MEMORY_PRIMITIVE = "block",
     parameter int unsigned TAG_READ_LATENCY = 1,

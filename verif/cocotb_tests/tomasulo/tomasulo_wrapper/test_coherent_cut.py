@@ -63,7 +63,8 @@ async def cut(dut: Any, dut_if: TomasuloInterface) -> None:
     """Capture hold precedes admission and remains asserted through invalidation."""
     dut.i_coherent_cut_hold.value = 1
     await _admit_now(dut, dut_if)
-    await _invalidate_now(dut, dut_if)
+    assert int(dut.i_coherent_cut_hold.value)
+    await _invalidate_now(dut, dut_if, require_cut_hold=True)
     dut.i_coherent_cut_hold.value = 0
     await _release(dut, dut_if)
 
