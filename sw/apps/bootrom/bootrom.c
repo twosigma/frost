@@ -27,6 +27,7 @@
  *      fence.i, and jumps to the FSBL entry point at 0x0000_4000.
  */
 
+#include "flash_boot.h"
 #include "uart.h"
 #include <stdint.h>
 
@@ -63,23 +64,11 @@
 #define FSBL_SRAM_MAX_ADDR 0x00017C00u
 
 /* Image header magic value ("FRST") */
-#define IMAGE_MAGIC_FROST 0x54535246u
-#define IMAGE_VERSION 1u
 
-typedef struct {
-    uint32_t magic;
-    uint32_t version;
-    uint32_t load_addr;
-    uint32_t length;
-    uint32_t crc32;
-    uint32_t entry_addr;
-    uint32_t flags;
-    uint32_t reserved;
-} __attribute__((packed)) flash_image_hdr_t;
 
 static inline void spi_cs_select(void)
 {
-    /* Assert CS# (active low), clock divider = 6 (~16.7 MHz SCK) */
+    /* Assert CS# with the board SPI divider. */
     BOOT_SPI_CTRL_REG = SPI_CTRL_CLK_DIV(6);
 }
 
@@ -230,9 +219,7 @@ int main(void)
         boot_halt("Waiting for JTAG or SPI flash programming");
     }
 
-    if (hdr.length == 0 || hdr.load_addr < FSBL_SRAM_MIN_ADDR ||
-        hdr.load_addr >= FSBL_SRAM_MAX_ADDR || (hdr.load_addr + hdr.length) > FSBL_SRAM_MAX_ADDR ||
-        hdr.entry_addr < hdr.load_addr || hdr.entry_addr >= (hdr.load_addr + hdr.length)) {
+    if (!flash_image_valid(&hdr, FSBL_SRAM_MIN_ADDR, FSBL_SRAM_MAX_ADDR - FSBL_SRAM_MIN_ADDR)) {
         uart_printf("[BOOTROM] Invalid FSBL bounds: load=0x%08x len=%u entry=0x%08x\n",
                     hdr.load_addr,
                     hdr.length,

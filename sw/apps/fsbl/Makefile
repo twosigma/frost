@@ -17,6 +17,8 @@
 # loads OpenSBI (fw_jump.bin), Device Tree (frost.dtb), and U-Boot Proper
 # (u-boot.bin) from SPI NOR flash into DRAM, verifies CRC-32 checksums, and
 # enters OpenSBI -> U-Boot Proper in DRAM.
+FPGA_CPU_CLK_FREQ ?= 200000000
+
 OPT_LEVEL     := -O2
 UNROLL_LOOPS  :=
 LINKER_SCRIPT := link.ld

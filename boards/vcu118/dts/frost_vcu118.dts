@@ -16,7 +16,7 @@
 
 	chosen {
 		stdout-path = "/soc@0/serial@40001000:115200";
-		bootargs = "console=ttyS0,115200 root=/dev/nfs nfsroot=192.168.1.159:/srv/nfs/frost,tcp,v3 ip=dhcp rw earlycon";
+		bootargs = "console=ttyS0,115200 earlycon";
 	};
 
 	cpus {
@@ -138,17 +138,6 @@
 			interrupts = <5 4>;
 		};
 
-		/* 1Gb SGMII Ethernet MAC (RJ-45) */
-		ethernet@40022000 {
-			compatible = "frost,net10g";
-			reg = <0x40022000 0x1000>;
-			interrupt-parent = <&aplic_s>;
-			interrupts = <2 4>;
-			dma-coherent;
-			local-mac-address = [02 11 22 33 44 56];
-			clock-frequency = <200000000>;
-		};
-
 		/* 10Gb Ethernet MAC (QSFP28 Cage) */
 		ethernet@40030000 {
 			compatible = "frost,net10g";
@@ -160,10 +149,22 @@
 			clock-frequency = <200000000>;
 		};
 
+		/* 1Gb SGMII Ethernet MAC (RJ-45) */
+		ethernet@40022000 {
+			compatible = "frost,net10g";
+			reg = <0x40022000 0x1000>;
+			interrupt-parent = <&aplic_s>;
+			interrupts = <2 4>;
+			dma-coherent;
+			local-mac-address = [02 11 22 33 44 56];
+			clock-frequency = <200000000>;
+		};
+
 		/* SPI NOR Flash Controller (Micron MT25QU01G via STARTUPE3) */
 		spi@40023000 {
 			compatible = "frost,boot-spi";
 			reg = <0x40023000 0x1000>;
+			clock-frequency = <200000000>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 

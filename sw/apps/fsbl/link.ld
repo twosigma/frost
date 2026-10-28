@@ -1,4 +1,5 @@
 /*
+ *    Copyright 2026 Two Sigma Open Source, LLC
  *    Copyright 2026 John Goodacre
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,7 +27,7 @@ MEMORY
     ROM   (rx)  : ORIGIN = 0x00004000, LENGTH = 79K
     DEBUG (rx)  : ORIGIN = 0x00017C00, LENGTH = 1K
     RAM   (rwx) : ORIGIN = 0x00018000, LENGTH = 160K
-    DDR   (rwx) : ORIGIN = 0x80000000, LENGTH = 1024M
+    DDR   (rwx) : ORIGIN = 0x80000000, LENGTH = 2048M
     MMIO  (rw)  : ORIGIN = 0x40000000, LENGTH = 44
 }
 

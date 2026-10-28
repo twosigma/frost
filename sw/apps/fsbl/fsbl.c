@@ -17,21 +17,22 @@
 /*
  * FROST 2nd-Stage Bootloader (FSBL)
  *
- * Loaded by the Core Boot ROM (0x0000_0000) from SPI NOR flash (0x0100_0000)
+ * Loaded by the Core Boot ROM (0x0000_0000) from SPI NOR flash (0x0300_0000)
  * into on-chip executable SRAM at 0x0000_4000:
  *   1. Polls the DDR4 controller status for PHY calibration and hardware ECC
  *      scrub completion, then performs a DRAM address/data verification pass
  *      and zero-scrubs the boot payload apertures in DRAM.
  *   2. Reads and validates the SPI NOR flash image headers for:
- *        - OpenSBI (fw_jump.bin) @ flash 0x0110_0000 -> DRAM 0x8000_0000
- *        - Device Tree (frost.dtb) @ flash 0x0120_0000 -> DRAM 0x8220_0000
- *        - U-Boot Proper (u-boot.bin) @ flash 0x0130_0000 -> DRAM 0x8020_0000
+ *        - OpenSBI (fw_jump.bin) @ flash 0x0310_0000 -> DRAM 0x8000_0000
+ *        - Device Tree (frost.dtb) @ flash 0x0320_0000 -> DRAM 0x8220_0000
+ *        - U-Boot Proper (u-boot.bin) @ flash 0x0330_0000 -> DRAM 0x8020_0000
  *   3. Verifies IEEE 802.3 CRC-32 checksums on each loaded DRAM payload.
  *   4. Executes fence + fence.i and jumps to OpenSBI (0x8000_0000) with
  *      a0 = 0 (hartid) and a1 = 0x8220_0000 (DTB), which transitions to
  *      S-mode and enters U-Boot Proper at 0x8020_0000.
  */
 
+#include "flash_boot.h"
 #include "uart.h"
 #include <stdint.h>
 
@@ -65,23 +66,10 @@
 #define DRAM_UBOOT_ADDR 0x80200000UL
 #define DRAM_DTB_ADDR 0x82200000UL
 
-#define IMAGE_MAGIC_FROST 0x54535246u /* "FRST" */
-#define IMAGE_VERSION 1u
-
-typedef struct {
-    uint32_t magic;
-    uint32_t version;
-    uint32_t load_addr;
-    uint32_t length;
-    uint32_t crc32;
-    uint32_t entry_addr;
-    uint32_t flags;
-    uint32_t reserved;
-} __attribute__((packed)) flash_image_hdr_t;
 
 static inline void spi_cs_select(void)
 {
-    /* Use clock divider = 6 (~16.7 MHz SPI SCK at 200 MHz CPU clock) */
+    /* Use the board SPI divider. */
     BOOT_SPI_CTRL_REG = SPI_CTRL_CLK_DIV(6);
 }
 
@@ -242,14 +230,10 @@ load_and_verify_flash_image(const char *name, uint32_t flash_offset, uintptr_t d
         fsbl_halt("Missing or invalid stage-3 image in SPI flash");
     }
 
-    uintptr_t load_addr = (hdr.load_addr != 0) ? (uintptr_t) hdr.load_addr : default_load_addr;
-    if (load_addr < DRAM_BASE_ADDR ||
-        (load_addr + hdr.length) > (DRAM_BASE_ADDR + DRAM_SIZE_BYTES)) {
-        uart_printf("[FSBL] %s load address 0x%08x (len %u) outside DRAM\n",
-                    name,
-                    (uint32_t) load_addr,
-                    hdr.length);
-        fsbl_halt("Image load address out of DRAM bounds");
+    uintptr_t load_addr = default_load_addr;
+    uint32_t capacity = (flash_offset == FLASH_DTB_OFFSET) ? 0x20000u : FLASH_STAGE_CAPACITY;
+    if (!flash_image_valid(&hdr, (uint32_t) load_addr, capacity)) {
+        fsbl_halt("Image header does not match its boot partition");
     }
 
     uart_printf("[FSBL] Loading %-12s (%7u bytes) flash 0x%08x -> DRAM 0x%08x...",
@@ -268,7 +252,7 @@ load_and_verify_flash_image(const char *name, uint32_t flash_offset, uintptr_t d
     }
     uart_printf(" CRC OK (0x%08x)\n", calc_crc);
 
-    return (hdr.entry_addr != 0) ? (uintptr_t) hdr.entry_addr : load_addr;
+    return load_addr;
 }
 
 int main(void)

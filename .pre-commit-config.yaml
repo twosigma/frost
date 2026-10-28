@@ -43,7 +43,8 @@ repos:
         # env_v/ and riscv_test.h retain upstream style and licensing.
         # linux/frost-net10g/ and linux/frost-memerr/ follow
         # scripts/checkpatch.pl and use GPL-2.0-only OR BSD-2-Clause; the
-        # license hooks also skip them.
+        # license hooks also skip them. U-Boot uses its upstream style and GPL
+        # license; its drivers compile in the U-Boot build context.
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|

@@ -12,41 +12,52 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Build U-Boot Proper (u-boot.bin) for FROST VCU118
-UBOOT_SRC ?= /home/john_/build/u-boot-frost
-CROSS_COMPILE ?= /home/john_/frost/linux/build-mmu/host/bin/riscv64-linux-
+# U-Boot v2026.10, built with the FROST drivers in a private source tree.
+UBOOT_REV := 5508406582f6f7120dce0c4b3059819a41788db2
+CROSS_COMPILE ?= riscv64-linux-
 BUILD_DIR ?= $(CURDIR)/build
+SOURCE_DIR := $(BUILD_DIR)/source
+OUTPUT_DIR := $(BUILD_DIR)/out
+JOBS ?= 8
 
 .PHONY: all clean
-
 all: u-boot.bin
 
-u-boot.bin:
-	@if [ ! -d "$(UBOOT_SRC)" ]; then \
-		echo "ERROR: U-Boot source tree not found at $(UBOOT_SRC)"; \
-		exit 1; \
+$(SOURCE_DIR)/.frost-source:
+	mkdir -p "$(SOURCE_DIR)"
+	git -C "$(SOURCE_DIR)" init
+	git -C "$(SOURCE_DIR)" fetch --depth 1 https://github.com/u-boot/u-boot.git $(UBOOT_REV)
+	git -C "$(SOURCE_DIR)" checkout --detach $(UBOOT_REV)
+	touch "$@"
+
+u-boot.bin: $(SOURCE_DIR)/.frost-source frost_net10g_uboot.c frost_spi.c configs/frost_vcu118_defconfig Makefile
+	cp frost_net10g_uboot.c "$(SOURCE_DIR)/drivers/net/frost_net10g.c"
+	cp frost_spi.c "$(SOURCE_DIR)/drivers/spi/frost_spi.c"
+	cp configs/frost_vcu118_defconfig "$(SOURCE_DIR)/configs/"
+	@if ! grep -q CONFIG_FROST_NET10G "$(SOURCE_DIR)/drivers/net/Makefile"; then \
+		printf '\nobj-$$(CONFIG_FROST_NET10G) += frost_net10g.o\n' >> "$(SOURCE_DIR)/drivers/net/Makefile"; \
+		printf '\nconfig FROST_NET10G\n\tbool "FROST Ethernet MAC"\n\tdepends on DM_ETH\n' >> "$(SOURCE_DIR)/drivers/net/Kconfig"; \
 	fi
-	@mkdir -p "$(BUILD_DIR)"
-	@cp -f "$(CURDIR)/frost_net10g_uboot.c" "$(UBOOT_SRC)/drivers/net/frost_net10g.c"
-	@cp -f "$(CURDIR)/frost_spi.c" "$(UBOOT_SRC)/drivers/spi/frost_spi.c"
-	@if ! grep -q "CONFIG_FROST_NET10G" "$(UBOOT_SRC)/drivers/net/Makefile"; then \
-		echo 'obj-$$(CONFIG_FROST_NET10G) += frost_net10g.o' >> "$(UBOOT_SRC)/drivers/net/Makefile"; \
+	@if ! grep -q CONFIG_FROST_SPI "$(SOURCE_DIR)/drivers/spi/Makefile"; then \
+		printf '\nobj-$$(CONFIG_FROST_SPI) += frost_spi.o\n' >> "$(SOURCE_DIR)/drivers/spi/Makefile"; \
+		printf '\nconfig FROST_SPI\n\tbool "FROST SPI controller"\n\tdepends on DM_SPI\n' >> "$(SOURCE_DIR)/drivers/spi/Kconfig"; \
 	fi
-	@if ! grep -q "FROST_NET10G" "$(UBOOT_SRC)/drivers/net/Kconfig"; then \
-		printf '\nconfig FROST_NET10G\n\tbool "FROST 10G/1G Ethernet MAC support"\n\tdepends on DM_ETH\n\thelp\n\t  Support for FROST coherent-DMA Ethernet MAC.\n' >> "$(UBOOT_SRC)/drivers/net/Kconfig"; \
-	fi
-	@if ! grep -q "CONFIG_FROST_SPI" "$(UBOOT_SRC)/drivers/spi/Makefile"; then \
-		echo 'obj-$$(CONFIG_FROST_SPI) += frost_spi.o' >> "$(UBOOT_SRC)/drivers/spi/Makefile"; \
-	fi
-	@if ! grep -q "FROST_SPI" "$(UBOOT_SRC)/drivers/spi/Kconfig"; then \
-		printf '\nconfig FROST_SPI\n\tbool "FROST SPI controller support"\n\tdepends on DM_SPI\n\thelp\n\t  Support for FROST SPI flash controller.\n' >> "$(UBOOT_SRC)/drivers/spi/Kconfig"; \
-	fi
-	@cp -f "$(CURDIR)/configs/frost_vcu118_defconfig" "$(UBOOT_SRC)/configs/frost_vcu118_defconfig"
-	$(MAKE) -C "$(UBOOT_SRC)" O="$(BUILD_DIR)" CROSS_COMPILE="$(CROSS_COMPILE)" frost_vcu118_defconfig
-	$(MAKE) -C "$(UBOOT_SRC)" O="$(BUILD_DIR)" CROSS_COMPILE="$(CROSS_COMPILE)" -j$$(nproc)
-	@cp -f "$(BUILD_DIR)/u-boot.bin" "$(CURDIR)/u-boot.bin"
-	@cp -f "$(BUILD_DIR)/u-boot" "$(CURDIR)/u-boot.elf"
-	@echo ">>> U-Boot build complete: $(CURDIR)/u-boot.bin"
+	$(MAKE) -C "$(SOURCE_DIR)" O="$(OUTPUT_DIR)" CROSS_COMPILE="$(CROSS_COMPILE)" frost_vcu118_defconfig
+	$(MAKE) -C "$(SOURCE_DIR)" O="$(OUTPUT_DIR)" CROSS_COMPILE="$(CROSS_COMPILE)" -j$(JOBS)
+	cp "$(OUTPUT_DIR)/u-boot.bin" "$@"
+	cp "$(OUTPUT_DIR)/u-boot" u-boot.elf
 
 clean:
-	rm -rf "$(BUILD_DIR)" u-boot.bin u-boot.elf
+	rm -rf "$(BUILD_DIR)/out" u-boot.bin u-boot.elf
+
+.PHONY: firmware dtb
+firmware: all dtb
+	$(MAKE) -C ../apps/bootrom
+	$(MAKE) -C ../apps/fsbl
+	python3 ../../linux/opensbi_build.py --out "$(BUILD_DIR)/opensbi" \
+	  --cross "$(CROSS_COMPILE)" --jobs $(JOBS)
+
+
+dtb: ../../boards/vcu118/frost.dtb
+../../boards/vcu118/frost.dtb: ../../boards/vcu118/dts/frost_vcu118.dts
+	dtc -I dts -O dtb -o "$@" "$<"

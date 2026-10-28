@@ -8,7 +8,8 @@
  * mapped at 0x40023000 (connected to Micron MT25QU01G SPI NOR flash).
  */
 
-#include <common.h>
+#include <errno.h>
+#include <linux/kernel.h>
 #include <dm.h>
 #include <spi.h>
 #include <asm/io.h>
@@ -30,15 +31,15 @@ struct frost_spi_plat {
 
 struct frost_spi_priv {
 	void __iomem *regs;
-	u32 clk_div;
+	u32 clk_div;	u32 clock_hz;
 };
 
 static int frost_spi_claim_bus(struct udevice *dev)
 {
 	struct frost_spi_priv *priv = dev_get_priv(dev->parent);
 
-	/* Assert CS# (active low: write 0 to CS_N bit) */
-	writel(SPI_CTRL_CLK_DIV(priv->clk_div) | 0, priv->regs + SPI_CTRL_REG);
+	/* Keep the flash deselected until SPI_XFER_BEGIN. */
+	writel(SPI_CTRL_CLK_DIV(priv->clk_div) | SPI_CTRL_CS_N, priv->regs + SPI_CTRL_REG);
 	return 0;
 }
 
@@ -65,7 +66,7 @@ static int frost_spi_xfer(struct udevice *dev, unsigned int bitlen,
 		return -EINVAL;
 
 	if (flags & SPI_XFER_BEGIN)
-		frost_spi_claim_bus(dev);
+		writel(SPI_CTRL_CLK_DIV(priv->clk_div), priv->regs + SPI_CTRL_REG);
 
 	for (unsigned int i = 0; i < bytes; i++) {
 		u8 b_out = tx ? tx[i] : 0xFF;
@@ -75,8 +76,10 @@ static int frost_spi_xfer(struct udevice *dev, unsigned int bitlen,
 		/* Wait for SPI transfer to finish */
 		ret = readl_poll_timeout(priv->regs + SYS_STATUS_REG, status,
 					 !(status & SYS_STATUS_SPI_BUSY), 100000);
-		if (ret)
+		if (ret) {
+			frost_spi_release_bus(dev);
 			return ret;
+		}
 
 		if (rx)
 			rx[i] = (u8)readl(priv->regs + SPI_XFER_BYTE_REG);
@@ -90,12 +93,24 @@ static int frost_spi_xfer(struct udevice *dev, unsigned int bitlen,
 
 static int frost_spi_set_speed(struct udevice *bus, uint speed)
 {
+	struct frost_spi_priv *priv = dev_get_priv(bus);
+	u64 div;
+
+	if (!speed)
+		return -EINVAL;
+	div = ((u64)priv->clock_hz + 2ULL * speed - 1) / (2ULL * speed);
+	/* Allow the input synchronizer to settle before each sample. */
+	div = max_t(u64, 6, div);
+	if (div > 255)
+		return -EINVAL;
+	priv->clk_div = div;
+	writel(SPI_CTRL_CLK_DIV(priv->clk_div) | SPI_CTRL_CS_N, priv->regs + SPI_CTRL_REG);
 	return 0;
 }
 
 static int frost_spi_set_mode(struct udevice *bus, uint mode)
 {
-	return 0;
+	return mode ? -EINVAL : 0;
 }
 
 static const struct dm_spi_ops frost_spi_ops = {
@@ -112,7 +127,9 @@ static int frost_spi_probe(struct udevice *bus)
 	struct frost_spi_priv *priv = dev_get_priv(bus);
 
 	priv->regs = plat->regs;
-	/* Divider 6 gives ~16.7 MHz SCK at 200 MHz core clock */
+	priv->clock_hz = dev_read_u32_default(bus, "clock-frequency", 0);
+	if (!priv->clock_hz)
+		return -EINVAL;
 	priv->clk_div = 6;
 
 	/* Deassert CS# initially */

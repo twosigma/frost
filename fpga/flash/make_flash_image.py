@@ -26,7 +26,6 @@ SPI Flash Layout:
 import argparse
 from pathlib import Path
 import struct
-import sys
 import zlib
 
 IMAGE_MAGIC_FROST = 0x54535246  # "FRST"
@@ -48,7 +47,7 @@ PARTITIONS = [
         "flash_abs_offset": 0x0310_0000,
         "load_addr": 0x8000_0000,
         "entry_addr": 0x8000_0000,
-        "default_file": "linux/build-mmu/images/fw_jump.bin",
+        "default_file": "sw/uboot/build/opensbi/platform/generic/firmware/fw_jump.bin",
     },
     {
         "name": "DTB",
@@ -67,87 +66,73 @@ PARTITIONS = [
 ]
 
 
-def make_header(
-    load_addr: int, entry_addr: int, payload_len: int, crc32: int, flags: int = 0
-) -> bytes:
-    """Encode the boot-stage image header."""
+def make_header(load_addr: int, entry_addr: int, payload_len: int, crc32: int) -> bytes:
+    """Encode the fixed boot-stage image header."""
     return struct.pack(
-        "<IIIIIIII",
+        "<8I",
         IMAGE_MAGIC_FROST,
         IMAGE_VERSION,
-        load_addr & 0xFFFFFFFF,
-        payload_len & 0xFFFFFFFF,
-        crc32 & 0xFFFFFFFF,
-        entry_addr & 0xFFFFFFFF,
-        flags & 0xFFFFFFFF,
-        0,  # reserved
+        load_addr,
+        payload_len,
+        crc32,
+        entry_addr,
+        0,
+        0,
     )
 
 
-def build_flash_image(repo_root: Path, output_path: Path):
-    """Pack the stage payloads at their flash offsets."""
-    # Total image size spans from 0x0100_0000 to end of U-Boot (~0x0138_0000 -> 4 MiB buffer)
-    max_offset = (
-        max(p["flash_abs_offset"] for p in PARTITIONS) - FLASH_BASE_OFFSET + 0x0010_0000
-    )
-    image_buf = bytearray([0xFF] * max_offset)
-
-    print(f"Building SPI flash image (base offset 0x{FLASH_BASE_OFFSET:08X})...")
+def build_flash_image(
+    repo_root: Path, output_path: Path, components: dict[str, Path] | None = None
+) -> None:
+    """Pack validated payloads into four nonoverlapping flash partitions."""
+    image = bytearray(b"\xff" * 0x400000)
     for part in PARTITIONS:
-        file_path = repo_root / part["default_file"]
-        if not file_path.is_file():
-            print(
-                f"ERROR: Component {part['name']} not found at {file_path}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        payload = file_path.read_bytes()
-        crc = zlib.crc32(payload) & 0xFFFFFFFF
-        hdr = make_header(part["load_addr"], part["entry_addr"], len(payload), crc)
-
-        rel_offset = part["flash_abs_offset"] - FLASH_BASE_OFFSET
-        part_end = rel_offset + HEADER_SIZE + len(payload)
-
-        if part_end > len(image_buf):
-            # Extend buffer
-            image_buf.extend([0xFF] * (part_end - len(image_buf)))
-
-        image_buf[rel_offset : rel_offset + HEADER_SIZE] = hdr
-        image_buf[rel_offset + HEADER_SIZE : part_end] = payload
-
-        print(
-            f"  [{part['name']:7s}] Abs: 0x{part['flash_abs_offset']:08X} (rel +0x{rel_offset:06X}) | "
-            f"Load: 0x{part['load_addr']:08X} | Size: {len(payload):7d} B | CRC: 0x{crc:08X}"
+        name = str(part["name"])
+        source = (components or {}).get(name, repo_root / str(part["default_file"]))
+        payload = source.read_bytes()
+        capacity = {"FSBL": 0x13C00, "DTB": 0x20000}.get(name, 0x100000 - HEADER_SIZE)
+        if not 0 < len(payload) <= capacity:
+            raise ValueError(f"{name}: payload must contain 1..{capacity} bytes")
+        if name == "DTB":
+            if len(payload) < 40 or payload[:4] != b"\xd0\x0d\xfe\xed":
+                raise ValueError("DTB: expected a flattened device tree")
+            if int.from_bytes(payload[4:8], "big") != len(payload):
+                raise ValueError("DTB: total size does not match the payload")
+        header = make_header(
+            int(part["load_addr"]),
+            int(part["entry_addr"]),
+            len(payload),
+            zlib.crc32(payload),
         )
-
+        offset = int(part["flash_abs_offset"]) - FLASH_BASE_OFFSET
+        image[offset : offset + HEADER_SIZE + len(payload)] = header + payload
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(image_buf)
-    print(
-        f"\nSuccessfully created flash image: {output_path} ({len(image_buf)} bytes / {len(image_buf) / 1024 / 1024:.2f} MiB)"
-    )
-    print("To program to VCU118 SPI NOR Flash:")
-    print(
-        f"  openFPGALoader -c digilent_hs2 --fpga-part xcvu9p-flga2104 --write-flash --offset 0x{FLASH_BASE_OFFSET:08X} {output_path}"
-    )
+    output_path.write_bytes(image)
 
 
-def main():
-    """Build the image selected by command-line options."""
-    repo_root = Path(__file__).resolve().parent.parent.parent
-    parser = argparse.ArgumentParser(
-        description="Build VCU118 SPI NOR Flash Boot Image"
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        default="/tmp/frost_flash.bin",
-        type=Path,
-        help="Output binary file path (default: /tmp/frost_flash.bin)",
-    )
+def main() -> None:
+    """Build a boot image from the selected component files."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("-o", "--output", required=True, type=Path)
+    parser.add_argument("--fsbl", type=Path)
+    parser.add_argument("--opensbi", type=Path)
+    parser.add_argument("--dtb", type=Path)
+    parser.add_argument("--uboot", type=Path)
     args = parser.parse_args()
-
-    build_flash_image(repo_root, args.output)
+    components = {
+        name: path
+        for name, path in (
+            ("FSBL", args.fsbl),
+            ("OpenSBI", args.opensbi),
+            ("DTB", args.dtb),
+            ("U-Boot", args.uboot),
+        )
+        if path is not None
+    }
+    try:
+        build_flash_image(Path(__file__).resolve().parents[2], args.output, components)
+    except (ValueError, OSError) as error:
+        parser.error(str(error))
 
 
 if __name__ == "__main__":

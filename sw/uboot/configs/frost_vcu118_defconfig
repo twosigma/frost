@@ -25,7 +25,7 @@ CONFIG_DM_SERIAL=y
 CONFIG_SYS_NS16550=y
 CONFIG_BAUDRATE=115200
 
-# Timer (RISC-V rdtime @ 200 MHz)
+# RISC-V architectural timer
 CONFIG_TIMER=y
 CONFIG_RISCV_TIMER=y
 
@@ -51,9 +51,7 @@ CONFIG_CMD_MEMORY=y
 CONFIG_CMD_RUN=y
 CONFIG_BOOTDELAY=3
 
-# Default TFTP Boot Command
-CONFIG_USE_BOOTCOMMAND=y
-CONFIG_BOOTCOMMAND="dhcp; setenv serverip 192.168.1.159; tftpboot 0x84000000 Image; tftpboot 0x88000000 frost.dtb; tftpboot 0x88100000 rootfs.cpio; booti 0x84000000 0x88100000:${filesize} 0x88000000"
+# Interactive prompt; boot commands use the selected local or network images.
 
 # SPI and SPI NOR Flash
 CONFIG_SPI=y
@@ -64,3 +62,7 @@ CONFIG_SPI_FLASH_MICRON=y
 CONFIG_SPI_FLASH_BAR=y
 CONFIG_CMD_SF=y
 CONFIG_FROST_SPI=y
+
+# CONFIG_TOOLS_MKEFICAPSULE is not set
+# CONFIG_USE_BOOTCOMMAND is not set
+CONFIG_ENV_IS_NOWHERE=y

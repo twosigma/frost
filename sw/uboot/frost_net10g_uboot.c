@@ -12,6 +12,7 @@
 #include <net.h>
 #include <malloc.h>
 #include <asm/io.h>
+#include <asm/barrier.h>
 #include <linux/delay.h>
 #include <linux/iopoll.h>
 
@@ -75,7 +76,7 @@ struct frost_net10g_priv {
 
 static inline void frost_sync(void)
 {
-	__asm__ volatile("fence rw, rw" ::: "memory");
+	mb();
 }
 
 static int frost_net10g_write_hwaddr(struct udevice *dev)
@@ -120,7 +121,7 @@ static int frost_net10g_start(struct udevice *dev)
 
 	frost_net10g_write_hwaddr(dev);
 
-	/* Set 32-bit legacy descriptor mode */
+	/* Select 32-bit descriptors. */
 	writel(0, priv->base + NET10G_ABI_CTRL);
 
 	/* Initialize ring descriptors and pointers */
@@ -204,25 +205,6 @@ static int frost_net10g_send(struct udevice *dev, void *packet, int length)
 	return 0;
 }
 
-static int frost_net10g_recv(struct udevice *dev, int flags, uchar **packetp)
-{
-	struct frost_net10g_priv *priv = dev_get_priv(dev);
-	u32 slot = priv->rx_clean;
-	u32 status = priv->rx_ring[slot].word2;
-
-	if (!(status & NET10G_DESC_DD))
-		return -EAGAIN;
-
-	frost_sync();
-	u32 len = status & 0xFFFF;
-	*packetp = (uchar *)(uintptr_t)priv->rx_ring[slot].word0;
-
-	if (status & (NET10G_DESC_TRUNC | NET10G_DESC_ERR | NET10G_DESC_ABORT))
-		return -EIO;
-
-	return (int)len;
-}
-
 static int frost_net10g_free_pkt(struct udevice *dev, uchar *packet, int length)
 {
 	struct frost_net10g_priv *priv = dev_get_priv(dev);
@@ -240,6 +222,28 @@ static int frost_net10g_free_pkt(struct udevice *dev, uchar *packet, int length)
 	frost_sync();
 	writel(priv->rx_tail, priv->base + NET10G_RX_TAIL);
 	return 0;
+}
+
+static int frost_net10g_recv(struct udevice *dev, int flags, uchar **packetp)
+{
+	struct frost_net10g_priv *priv = dev_get_priv(dev);
+	u32 slot = priv->rx_clean;
+	u32 status = priv->rx_ring[slot].word2;
+
+	if (!(status & NET10G_DESC_DD))
+		return -EAGAIN;
+
+	frost_sync();
+	u32 len = status & 0xFFFF;
+	*packetp = (uchar *)(uintptr_t)priv->rx_ring[slot].word0;
+
+	if (!len || len > PKT_BUF_SZ ||
+	    (status & (NET10G_DESC_TRUNC | NET10G_DESC_ERR | NET10G_DESC_ABORT))) {
+		frost_net10g_free_pkt(dev, *packetp, len);
+		return -EAGAIN;
+	}
+
+	return (int)len;
 }
 
 static const struct eth_ops frost_net10g_ops = {
@@ -269,8 +273,13 @@ static int frost_net10g_probe(struct udevice *dev)
 	priv->rx_buffers = memalign(64, FROST_RING_ENTRIES * PKT_BUF_SZ);
 	priv->tx_buffers = memalign(64, FROST_RING_ENTRIES * PKT_BUF_SZ);
 
-	if (!priv->rx_ring || !priv->tx_ring || !priv->rx_buffers || !priv->tx_buffers)
+	if (!priv->rx_ring || !priv->tx_ring || !priv->rx_buffers || !priv->tx_buffers) {
+		free(priv->rx_ring);
+		free(priv->tx_ring);
+		free(priv->rx_buffers);
+		free(priv->tx_buffers);
 		return -ENOMEM;
+	}
 
 	return 0;
 }

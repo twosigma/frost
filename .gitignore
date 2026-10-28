@@ -115,3 +115,7 @@ tools/vscode-frost/*.vsix
 
 # Site-specific hardware-regression values (NFS root, board address).
 fpga/site.env
+
+# VCU118 boot firmware sources and device tree output.
+/sw/uboot/build/
+/boards/vcu118/frost.dtb
