@@ -150,6 +150,8 @@ def board_clock_freq(
         ) from exc
     if override <= 0:
         raise ValueError(f"{CPU_CLK_ENV} must be positive, got {override}")
+    if board == "vcu118" and override != rated:
+        raise ValueError(f"VCU118 uses a fixed CPU clock; unset {CPU_CLK_ENV}")
     return override, True
 
 

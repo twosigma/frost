@@ -2880,6 +2880,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("DDR_INIT_MAX_OUTSTANDING", "4"),
         ),
     ),
+    "vcu118_ddr_init": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_x3_ddr_init",
+        hdl_toplevel_module="vcu118_ddr_init",
+        description="VCU118 DDR initialization coverage, stalls and error responses",
+        verilator_extra_args=("-GREGION_BYTES=4096", "-GMAX_OUTSTANDING=4"),
+        extra_env=(
+            ("DDR_INIT_REGION_BYTES", "4096"),
+            ("DDR_INIT_MAX_OUTSTANDING", "4"),
+        ),
+    ),
     "x3_ddr_init_two_beats": CocotbRunConfig(
         python_test_module="cocotb_tests.test_x3_ddr_init",
         hdl_toplevel_module="x3_ddr_init",
