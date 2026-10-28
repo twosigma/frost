@@ -14,7 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Test the Linux stage's NFS-root preflight, console parsing, and commands.
+"""Test console stages, Linux NFS-root preflight, and commands.
 
 Synthetic Debian 13 transcripts follow docs/debian_nfsroot.md and retain
 console CRLF pairs. Counter and findmnt output is constructed; captured board
@@ -1526,6 +1526,343 @@ def test_console_text_keeps_what_the_stage_reads() -> None:
 
 
 # --- Stages and other apps ---------------------------------------------------
+
+
+# Synthetic output follows bootrom.c, fsbl.c and the U-Boot configuration.
+ROM_VERIFIED = "[BOOTROM] FSBL CRC-32 verified (0x1234abcd). Jumping to 0x00004000...\n"
+FSBL_READY = (
+    "[FSBL] Boot chain ready: OpenSBI @ 0x80000000 -> U-Boot @ 0x80200000 "
+    "(DTB @ 0x82200000)\n"
+)
+FSBL_HANDOFF = "[FSBL] Handing off to OpenSBI + U-Boot Proper in DRAM...\n"
+UBOOT_BANNER = "U-Boot 2026.10-g5508406582f6-dirty (Oct 28 2026 - 12:00:00 +0000)\n"
+UBOOT_PROMPT = "frost=> "
+FLASH_BOOT_TRANSCRIPT = (
+    "FROST Core Boot ROM v1.0 (On-Chip BRAM @ 0x00000000)\n"
+    "[BOOTROM] SYS_STATUS=0x46520300  SPI Flash JEDEC ID=0x20bb21\n"
+    "[BOOTROM] Loading FSBL (4568 bytes) from flash 0x03000020 -> SRAM 0x00004000...\n"
+    + ROM_VERIFIED
+    + "FROST 2nd-Stage Bootloader (FSBL) v1.0 (SRAM @ 0x00004000)\n"
+    "[FSBL] Waiting for DDR4 MIG calibration and hardware ECC scrub...\n"
+    "[FSBL] DDR4 controller ready (SYS_STATUS=0x46520300)\n"
+    "[FSBL] DDR4 2 GiB @ 0x80000000 verified and boot regions scrubbed.\n"
+    "[FSBL] Loading      OpenSBI ( 267864 bytes) flash 0x03100020 -> DRAM 0x80000000..."
+    " CRC OK (0x01234567)\n"
+    "[FSBL] Loading   DeviceTree (   3416 bytes) flash 0x03200020 -> DRAM 0x82200000..."
+    " CRC OK (0x12345678)\n"
+    "[FSBL] Loading       U-Boot ( 582824 bytes) flash 0x03300020 -> DRAM 0x80200000..."
+    " CRC OK (0x23456789)\n"
+    + FSBL_READY
+    + FSBL_HANDOFF
+    + "\nOpenSBI v1.8\n\n"
+    + UBOOT_BANNER
+    + "\nDRAM:  2 GiB\nIn:    serial@40001000\nOut:   serial@40001000\n"
+    + UBOOT_PROMPT
+)
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r\r\n"])
+@pytest.mark.parametrize("ansi_prompt", [False, True])
+def test_flash_boot_requires_the_complete_prompt(
+    newline: str, ansi_prompt: bool
+) -> None:
+    """Verified ROM/FSBL progress and the U-Boot prompt prove the boot chain."""
+    bootrom = hw.build_stage("bootrom", "vcu118", 1.0)
+    transcript = FLASH_BOOT_TRANSCRIPT.replace("\n", newline)
+    if ansi_prompt:
+        transcript = transcript.replace(UBOOT_PROMPT, "\x1b[0m" + UBOOT_PROMPT)
+    assert "<<PASS>>" not in transcript
+    for end in range(len(transcript)):
+        assert not bootrom.success_done(transcript[:end]), end
+        assert not bootrom.failure_done(transcript[:end]), end
+    assert bootrom.success_done(transcript)
+    assert not bootrom.failure_done(transcript)
+    ok, note = bootrom.judge(transcript)
+    assert ok and "U-Boot prompt reached" in note
+    assert bootrom.stimuli == ()
+
+
+@pytest.mark.parametrize(
+    "missing", [ROM_VERIFIED, FSBL_READY, FSBL_HANDOFF, UBOOT_BANNER, UBOOT_PROMPT]
+)
+def test_flash_boot_needs_every_handoff(missing: str) -> None:
+    """Neither an early handoff nor a prompt alone proves the complete chain."""
+    bootrom = hw.build_stage("bootrom", "vcu118", 1.0)
+    transcript = FLASH_BOOT_TRANSCRIPT.replace(missing, "")
+    assert not bootrom.success_done(transcript)
+    assert not bootrom.failure_done(transcript)
+    ok, note = bootrom.judge(transcript)
+    assert not ok and note.startswith("missing ")
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "<<PASS>>\n",
+        UBOOT_BANNER + UBOOT_PROMPT,
+        UBOOT_PROMPT + "\n" + FLASH_BOOT_TRANSCRIPT.removesuffix(UBOOT_PROMPT),
+        FLASH_BOOT_TRANSCRIPT.replace(ROM_VERIFIED, "").replace(
+            FSBL_READY, FSBL_READY + ROM_VERIFIED
+        ),
+        FLASH_BOOT_TRANSCRIPT.replace(FSBL_HANDOFF, "").replace(
+            UBOOT_BANNER, UBOOT_BANNER + FSBL_HANDOFF
+        ),
+        FLASH_BOOT_TRANSCRIPT.replace("0x82200000)", "0x82000000)"),
+        FLASH_BOOT_TRANSCRIPT.replace(UBOOT_PROMPT, "example prompt: frost=> "),
+        FLASH_BOOT_TRANSCRIPT.replace(UBOOT_PROMPT, "frost=> help"),
+    ],
+)
+def test_flash_boot_rejects_unrelated_or_unordered_success(transcript: str) -> None:
+    """Generic pass tokens and prompts outside the verified sequence cannot pass."""
+    bootrom = hw.build_stage("bootrom", "vcu118", 1.0)
+    assert not bootrom.success_done(transcript)
+    assert not bootrom.judge(transcript)[0]
+
+
+def test_flash_boot_uses_the_latest_rom_attempt() -> None:
+    """A restart must supply its own verified handoffs and prompt."""
+    bootrom = hw.build_stage("bootrom", "vcu118", 1.0)
+    restarted = (
+        FLASH_BOOT_TRANSCRIPT + "\n" + FLASH_BOOT_TRANSCRIPT.splitlines()[0] + "\n"
+    )
+    assert not bootrom.success_done(restarted)
+    assert not bootrom.success_done(restarted + UBOOT_BANNER + UBOOT_PROMPT)
+    assert not bootrom.judge(restarted + UBOOT_BANNER + UBOOT_PROMPT)[0]
+    assert bootrom.success_done(FLASH_BOOT_TRANSCRIPT + "\n" + FLASH_BOOT_TRANSCRIPT)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "[BOOTROM] HALT: Boot/SPI controller not present on this platform",
+        "[BOOTROM] HALT: Waiting for JTAG or SPI flash programming",
+        "[BOOTROM] HALT: FSBL image header out of on-chip SRAM bounds",
+        "[BOOTROM] HALT: FSBL CRC verification failed",
+        "[BOOTROM] HALT: FSBL returned unexpectedly",
+        "[FSBL] HALT: DDR4 memory verification failed",
+        "[FSBL] HALT: Missing or invalid stage-3 image in SPI flash",
+        "[FSBL] HALT: Image header does not match its boot partition",
+        "[FSBL] HALT: DRAM image CRC-32 mismatch",
+        "[FSBL] HALT: OpenSBI returned unexpectedly",
+        "[BOOTROM] No valid FSBL header @ flash 0x03000000 (magic=0xffffffff ver=4294967295)",
+        "[BOOTROM] Invalid FSBL bounds: load=0x00000000 len=4096 entry=0x00000000",
+        "[BOOTROM] FSBL CRC-32 mismatch! expected=0x12345678 actual=0x87654321",
+        "[FSBL] DRAM verify failed @ 0x80000000: exp=0xa5a55a5a700dcafe got=0x0000000000000000",
+        "[FSBL] Invalid OpenSBI header @ flash 0x03100000 (magic=0x00000000 ver=0 len=0)",
+        "[FSBL] Invalid DeviceTree header @ flash 0x03200000 (magic=0x00000000 ver=0 len=0)",
+        "[FSBL] Invalid U-Boot header @ flash 0x03300000 (magic=0x00000000 ver=0 len=0)",
+        "[FSBL] Loading      OpenSBI ( 267864 bytes) flash 0x03100020 -> DRAM 0x80000000..."
+        " FAIL (exp=0x12345678 got=0x87654321)",
+        "[FSBL] Loading %-12s (  20480 bytes) flash 0x00041658 -> DRAM 0x03100020..."
+        " FAIL (exp=0x12345678 got=0x87654321)",
+        "<<FAIL>>",
+        "<<TRAP>>",
+        "sbi_trap_error: hart0: trap handler failed (error -2)",
+        "Unhandled exception: Load access fault",
+        "Unhandled exception code: 99",
+        "### ERROR ### Please RESET the board ###",
+        "init_coldboot: pmu init failed (error -2)",
+        "init_coldboot: irqchip init failed (error -2)",
+        "init_coldboot: ipi init failed (error -2)",
+        "init_coldboot: tlb init failed (error -2)",
+        "init_coldboot: fwft init failed (error -2)",
+        "init_coldboot: mpxy init failed (error -2)",
+        "init_coldboot: domain finalize failed (error -2)",
+        "init_coldboot: platform final init failed (error -2)",
+        "init_coldboot: sse init failed (error -2)",
+        "init_coldboot: ecall init failed (error -2)",
+        "Error 0 getting MISA XLEN",
+    ],
+)
+def test_flash_boot_failure_overrides_progress_and_prompt(failure: str) -> None:
+    """Firmware failures terminate capture and override any successful progress."""
+    bootrom = hw.build_stage("bootrom", "vcu118", 1.0)
+    for transcript in (
+        failure,
+        ROM_VERIFIED + failure,
+        failure + "\n" + FLASH_BOOT_TRANSCRIPT,
+        FLASH_BOOT_TRANSCRIPT + "\n" + failure,
+    ):
+        assert bootrom.failure_done(transcript)
+        assert not bootrom.success_done(transcript)
+        ok, note = bootrom.judge(transcript)
+        assert not ok and failure in note
+
+
+@pytest.mark.parametrize(
+    "board,before_load,uart,tail,flush_delay,status",
+    [
+        ("vcu118", "", FLASH_BOOT_TRANSCRIPT, "", 0.0, "PASS"),
+        ("vcu118", "", "[FSBL] HALT: DRAM image CRC-32 mismatch\n", "", 0.0, "FAIL"),
+        (
+            "vcu118",
+            "",
+            FLASH_BOOT_TRANSCRIPT.removesuffix(UBOOT_PROMPT),
+            "",
+            0.0,
+            "TIMEOUT",
+        ),
+        ("vcu118", FLASH_BOOT_TRANSCRIPT, "", "", 0.0, "TIMEOUT"),
+        ("vcu118", "", FLASH_BOOT_TRANSCRIPT, "\n<<TRAP>>\n", 0.0, "FAIL"),
+        ("vcu118", "", FLASH_BOOT_TRANSCRIPT, "help", 0.0, "TIMEOUT"),
+        (
+            "vcu118",
+            "",
+            FLASH_BOOT_TRANSCRIPT,
+            "\n" + FLASH_BOOT_TRANSCRIPT.splitlines()[0] + "\n",
+            0.0,
+            "TIMEOUT",
+        ),
+        ("x3", "", "<<PASS>>\n", "", 0.0, "PASS"),
+        ("x3", "", "<<PASS>>\n", "\n<<TRAP>>\n", 0.0, "PASS"),
+        ("vcu118", "", FLASH_BOOT_TRANSCRIPT, "\n<<TRAP>>\n", 2.0, "FAIL"),
+        ("vcu118", "", FLASH_BOOT_TRANSCRIPT, "", 2.0, "PASS"),
+    ],
+)
+@pytest.mark.parametrize("read_interval", [0.25, 3.0])
+def test_flash_boot_capture_reports_pass_failure_and_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    board: str,
+    before_load: str,
+    uart: str,
+    tail: str,
+    flush_delay: float,
+    status: str,
+    read_interval: float,
+) -> None:
+    """Capture uses post-load UART evidence and stops on failure or its deadline."""
+    loader_fd, loader_write = os.pipe()
+    serial_fd, serial_write = os.pipe()
+    pending = {
+        loader_fd: [f"{hw.LOAD_COMPLETE_SENTINEL}\n".encode()],
+        serial_fd: ([before_load.encode()] if before_load else [])
+        + (
+            [uart[: len(uart) // 2].encode(), uart[len(uart) // 2 :].encode()]
+            if uart
+            else []
+        )
+        + ([tail.encode()] if tail and not flush_delay else []),
+    }
+    now = 0.0
+    console = hw.sys.stdout
+
+    class SlowConsole:
+        delay_pending = False
+
+        def write(self, text: str) -> Any:
+            self.delay_pending = text.endswith(UBOOT_PROMPT)
+            return console.write(text)
+
+        def flush(self) -> None:
+            nonlocal now
+            if self.delay_pending:
+                now += flush_delay
+                if flush_delay and tail:
+                    pending[serial_fd].append(tail.encode())
+                self.delay_pending = False
+            console.flush()
+
+    class FinishedLoader:
+        returncode = 0
+
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            self.stdout = SimpleNamespace(fileno=lambda: loader_fd)
+
+        def poll(self) -> int:
+            return 0
+
+    def select(
+        readable: list[int], _write: list[int], _error: list[int], _timeout: float
+    ) -> tuple[list[int], list[int], list[int]]:
+        nonlocal now
+        if _timeout:
+            now += read_interval
+        if loader_fd in readable:
+            return ([serial_fd] if before_load else []), [], []
+        return ([serial_fd] if pending[serial_fd] else []), [], []
+
+    monkeypatch.setattr(hw, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(hw, "select", SimpleNamespace(select=select))
+    monkeypatch.setattr(hw, "sys", SimpleNamespace(stdout=SlowConsole()))
+    monkeypatch.setattr(hw, "drain", lambda _fd: None)
+    monkeypatch.setattr(
+        hw, "read_available", lambda fd: pending[fd].pop(0) if pending[fd] else b""
+    )
+    monkeypatch.setattr(hw.subprocess, "Popen", FinishedLoader)
+    monkeypatch.setattr(
+        hw, "send_uart_probe", lambda *args: pytest.fail("flash boot typed UART input")
+    )
+    try:
+        result = hw.run_uart_stage(
+            tmp_path,
+            serial_fd,
+            board,
+            hw.build_stage(
+                "bootrom" if board == "vcu118" else "memory_test", board, 1.0
+            ),
+            7.0,
+            [],
+            "fixture-target",
+        )
+    finally:
+        for fd in (loader_fd, loader_write, serial_fd, serial_write):
+            os.close(fd)
+    if board == "vcu118" and read_interval == 3.0 and status == "PASS":
+        status = "TIMEOUT"
+    if board == "vcu118" and read_interval == 3.0 and tail:
+        status = "TIMEOUT"
+    assert result["status"] == status
+    if status == "TIMEOUT":
+        assert result["elapsed"] >= 7.0
+        assert "no terminal UART output" in result["note"]
+    elif board == "x3":
+        assert result["elapsed"] == 3 * read_interval
+    else:
+        assert result["elapsed"] < 7.0
+
+
+@pytest.mark.parametrize("requested", [None, 1.0, 1800.0])
+@pytest.mark.parametrize("board", ["x3", "vcu118"])
+def test_flash_boot_timeout_preserves_other_apps_and_longer_budgets(
+    monkeypatch: pytest.MonkeyPatch, requested: float | None, board: str
+) -> None:
+    """Only VCU118 bootrom raises the base timeout to its flash-boot minimum."""
+    seen = _stub_board(monkeypatch)
+    argv = ["runner", "--board", board]
+    if requested is not None:
+        argv += ["--timeout", str(requested)]
+    argv += ["hello_world"]
+    if board == "vcu118":
+        argv += ["bootrom"]
+    monkeypatch.setattr(hw.sys, "argv", argv)
+    assert hw.main() == 0
+    base = hw.DEFAULT_TIMEOUTS[board] if requested is None else requested
+    assert seen["hello_world"]["timeout"] == base
+    if board == "vcu118":
+        assert seen["bootrom"]["timeout"] == max(base, 600.0)
+    else:
+        assert "bootrom" not in seen
+
+
+def test_x3_app_verdicts_use_their_application_markers() -> None:
+    """Flash progress cannot stand in for an X3 application's pass marker."""
+    special = {
+        "hello_world",
+        "uart_echo",
+        "coremark",
+        "coremark_pro",
+        "linux_boot",
+        "ddr_ecc",
+    }
+    for app in hw.regression_stages("x3"):
+        if app in special:
+            continue
+        stage = hw.build_stage(app, "x3", 1.0)
+        assert stage.success_quiet_s == 0.0
+        assert stage.judge("<<PASS>>\n") == (True, "")
+        assert not stage.judge(FLASH_BOOT_TRANSCRIPT)[0]
+        assert stage.failure_done("<<FAIL>>\n")
 
 
 @pytest.mark.parametrize("board,board_apps", [("x3", []), ("vcu118", ["bootrom"])])

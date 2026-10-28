@@ -236,7 +236,7 @@ load_and_verify_flash_image(const char *name, uint32_t flash_offset, uintptr_t d
         fsbl_halt("Image header does not match its boot partition");
     }
 
-    uart_printf("[FSBL] Loading %-12s (%7u bytes) flash 0x%08x -> DRAM 0x%08x...",
+    uart_printf("[FSBL] Loading %12s (%7u bytes) flash 0x%08x -> DRAM 0x%08x...",
                 name,
                 hdr.length,
                 flash_offset + (uint32_t) sizeof(hdr),
