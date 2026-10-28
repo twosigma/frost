@@ -1588,6 +1588,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=(
             "+define+FROST_RVFI_DII",
             "-DFROST_WIDE_DDR_TEST",
+            "-GL1_CACHE_BYTES=4096",
+            "-GL1I_CACHE_BYTES=4096",
+            "-GL2_CACHE_BYTES=16384",
             str(RVFI_DII_HARNESS),
             str(RVFI_DII_HARNESS.with_name("frost_rvfi_platform.sv")),
             # Sparse wide-DDR mode keeps full-width keys; this parameter is
