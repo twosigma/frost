@@ -2534,6 +2534,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "NIC transmit descriptors produce the right frame bytes and completions"
         ),
     ),
+    "nic_mac_gmii": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_mac_gmii",
+        hdl_toplevel_module="nic_mac_wrap",
+        verilator_extra_args=("-GGMII_MODE=1",),
+        description="GMII framing, rate enables, CRC errors and receive backpressure",
+    ),
     "nic_top": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_top",
         hdl_toplevel_module="nic_top",
@@ -2723,6 +2729,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="ptw",
         description="Page-table bus errors at every level, discard and successful retry",
         verilator_extra_args=("-GENABLE_RESPONSE_ERRORS=1",),
+    ),
+    "soc_vcu118": CocotbRunConfig(
+        python_test_module="cocotb_tests.axi.test_soc_vcu118",
+        hdl_toplevel_module="soc_top",
+        verilator_extra_args=(
+            "-GENABLE_CACHED_TIER=1",
+            "-GUSE_BEHAVIORAL_DDR=0",
+            "-GENABLE_1G_ETH=1",
+        ),
+        description="VCU118 NIC, SPI flash and executable SRAM peripherals",
     ),
     "soc_axil": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_soc_axil",

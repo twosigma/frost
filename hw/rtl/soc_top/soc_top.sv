@@ -1022,8 +1022,8 @@ module soc_top #(
   assign slice_req_valid = mirror_now_valid || dm_soc_valid || boot_sram_slice_valid;
   assign slice_req_mirror = mirror_now_valid;
   assign slice_req_word_addr = mirror_now_valid ? mirror_now_addr :
-      dm_soc_valid ? dm_soc_addr : boot_sram_word_addr_q;
-  assign slice_req_data = dm_soc_valid ? dm_soc_data : boot_sram_wdata_q;
+      (ENABLE_1G_ETH == 0 || dm_soc_valid) ? dm_soc_addr : boot_sram_word_addr_q;
+  assign slice_req_data = (ENABLE_1G_ETH == 0 || dm_soc_valid) ? dm_soc_data : boot_sram_wdata_q;
 
   debug_module #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth)
