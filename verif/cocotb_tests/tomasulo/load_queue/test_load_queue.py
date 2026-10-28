@@ -2787,6 +2787,7 @@ async def set_reservation(dut_if: LQInterface, model: LQModel, address: int) -> 
     dut_if.drive_sq_committed_empty(True)
     mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "LR should issue"
+    assert model.issue_to_memory(True, SQForwardResult()) is not None
     await dut_if.step()
 
     dut_if.drive_mem_response(0x1234)
@@ -2796,8 +2797,11 @@ async def set_reservation(dut_if: LQInterface, model: LQModel, address: int) -> 
 
     result = await wait_for_fu_complete(dut_if)
     assert result.valid and result.tag == 0, "LR result should reach the CDB"
+    assert model.get_fu_complete() == result
     await accept_fu_complete(dut_if)
+    model.free_cdb_entry()
     assert dut_if.read_reservation_valid(), "Reservation should be set"
+    assert model.reservation_valid
     assert dut_if.read_reservation_addr() == address
 
 
@@ -2828,17 +2832,23 @@ async def test_lr_reservation_kept_by_commit_recovery_flush(dut: Any) -> None:
 
 
 # ============================================================================
-# AMO write to the reserved doubleword
+# AMO write to the reserved line
 # ============================================================================
 @cocotb.test()
-async def test_amo_write_cancels_reservation_on_its_doubleword(dut: Any) -> None:
-    """An AMO write cancels the reservation only within the reserved doubleword."""
+async def test_amo_write_cancels_reservation_on_its_line(dut: Any) -> None:
+    """An AMO write cancels the reservation within its 32-byte line."""
     dut_if, model = await setup(dut)
 
     from .lq_interface import AMOADD_W
 
     await set_reservation(dut_if, model, 0x5000)
-    for rob_tag, address, kept in ((1, 0x5008, True), (2, 0x5004, False)):
+    for rob_tag, address, kept in ((1, 0x5020, True), (2, 0x5008, False)):
+        assert model.alloc(
+            rob_tag, False, MEM_SIZE_WORD, False, is_amo=True, amo_op=AMOADD_W
+        )
+        model.addr_update(rob_tag, address, amo_rs2=1)
+        request = model.issue_to_memory(True, SQForwardResult(), rob_head_tag=rob_tag)
+        assert request is not None and request["addr"] == address
         dut_if.drive_alloc(
             rob_tag=rob_tag, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOADD_W
         )
@@ -2855,7 +2865,13 @@ async def test_amo_write_cancels_reservation_on_its_doubleword(dut: Any) -> None
             expected_write=0x41,
             description=f"AMOADD.W at 0x{address:x}",
         )
-        assert dut_if.read_reservation_valid() == kept, (
+        model.mem_response(wbeat(0x40))
+        model.amo_compute_complete()
+        model.amo_write_done()
+        result = model.get_fu_complete()
+        assert result.valid and result.tag == rob_tag and result.value == 0x40
+        model.free_cdb_entry()
+        assert dut_if.read_reservation_valid() == model.reservation_valid == kept, (
             f"AMO at 0x{address:x}: reservation valid should be {kept}"
         )
 

@@ -58,9 +58,6 @@
  * pending-request bit, which must survive system reset.
  */
 module debug_module #(
-`ifdef FROST_COHERENT_CLUSTER
-    parameter bit COHERENT_CLUSTER = 1'b0,
-`endif
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 18
 ) (
     input logic i_clk,
@@ -384,25 +381,12 @@ module debug_module #(
       cmd_state_q <= CmdIdle;
       res_state_q <= ResIdle;
     end else begin
-`ifdef FROST_COHERENT_CLUSTER
-      if (COHERENT_CLUSTER) dirty_q <= coherent_dirty_next;
-`endif
+      dirty_q <= coherent_dirty_next;
       // The hart was (or is being) reset: sticky until acknowledged.
       if (i_core_in_reset) havereset_q <= 1'b1;
 
       // dmactive rise: (re)initialize the slice. A parked hart is fetching
       // words 0/1 continuously, so those two are left alone in that case.
-      if (dmactive_rise) begin
-`ifdef FROST_COHERENT_CLUSTER
-        if (!COHERENT_CLUSTER)
-`endif
-        dirty_q <= i_debug_mode ? {SliceWords{1'b1}} & ~16'h0003 : {SliceWords{1'b1}};
-      end
-
-`ifdef FROST_COHERENT_CLUSTER
-      if (!COHERENT_CLUSTER)
-`endif
-      if (sync_fire) dirty_q[sync_idx] <= 1'b0;
 
       // ---- DMI writes ----
       if (dmi_write) begin
@@ -448,10 +432,6 @@ module debug_module #(
                 if (cmderr_q == CmderrNone) cmderr_q <= CmderrBusy;
               end else begin
                 progbuf_q[progbuf_idx] <= wdata;
-`ifdef FROST_COHERENT_CLUSTER
-                if (!COHERENT_CLUSTER)
-`endif
-                dirty_q[IdxProgbuf+32'(progbuf_idx)] <= 1'b1;
               end
             end
           end
@@ -478,15 +458,11 @@ module debug_module #(
         end
       end
       if (cmd_accept) begin
-        abs_word_q[0]     <= cmd_transfer ? insn_xfer : InsnNop;
-        abs_word_q[1]     <= cmd_postexec ? InsnNop : InsnEbreak;
-        abs_word_q[2]     <= cmd_postexec ? InsnNop : InsnEbreak;
-`ifdef FROST_COHERENT_CLUSTER
-        if (!COHERENT_CLUSTER)
-`endif
-        dirty_q[IdxA0+:3] <= 3'b111;
-        overflow_seen_q   <= 1'b0;
-        cmd_state_q       <= CmdSync;
+        abs_word_q[0]   <= cmd_transfer ? insn_xfer : InsnNop;
+        abs_word_q[1]   <= cmd_postexec ? InsnNop : InsnEbreak;
+        abs_word_q[2]   <= cmd_postexec ? InsnNop : InsnEbreak;
+        overflow_seen_q <= 1'b0;
+        cmd_state_q     <= CmdSync;
       end
       if (i_slice_overflow) overflow_seen_q <= 1'b1;
 
@@ -523,9 +499,8 @@ module debug_module #(
     end
   end
 
-`ifdef FROST_COHERENT_CLUSTER
   logic [SliceWords-1:0] coherent_dirty_next;
-  if (COHERENT_CLUSTER) begin : gen_coherent_dirty
+  if (1'b1) begin : gen_coherent_dirty
     logic [SliceWords-1:0] set_words;
     always_comb begin
       set_words = '0;
@@ -573,7 +548,6 @@ module debug_module #(
     end
 `endif
   end
-`endif
 
   // ---------------------------------------------------------------------------
   // Hart-facing outputs

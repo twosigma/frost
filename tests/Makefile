@@ -345,6 +345,8 @@ else ifeq ($(TOPLEVEL),debug_module)
 # Debug module unit bench (the DMI face)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/debug/debug_dirty_next.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/debug/coherent_debug_request_count.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/debug/debug_module.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),debug_fetch_barrier_tb)
@@ -685,9 +687,7 @@ endif
 # appended after the defaults above because Verilator takes the last -G given
 # for a parameter, so registry-specific diagnostic sizing overrides win.
 FROST_VERILATOR_EXTRA_ARGS ?=
-ifneq ($(findstring -DFROST_COHERENT_CLUSTER,$(FROST_VERILATOR_EXTRA_ARGS)),)
-	COMPILE_ARGS := -f $(ROOT)/hw/rtl/cpu_top/coherent_cluster.f $(COMPILE_ARGS)
-endif
+
 ifneq ($(strip $(FROST_VERILATOR_EXTRA_ARGS)),)
 	EXTRA_ARGS += $(FROST_VERILATOR_EXTRA_ARGS)
 endif

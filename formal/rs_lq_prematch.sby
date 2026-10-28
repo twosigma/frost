@@ -18,9 +18,16 @@ smtbmc boolector
 [script]
 read -formal -sv riscv_pkg.sv
 read -sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rs_issue2_selector.sv
+read -sv coherent_l0_flags.sv
 read -sv load_unit.sv lq_l0_cache.sv lq_issue_selector.sv
 read -sv -D SYNTHESIS mem_wakeup_merge.sv
+read -sv coherent_rs_capacity.sv
+read -sv coherent_rs_issue2_selector.sv
+read -sv coherent_rs_payload_store.sv
 read -formal -D SYNTHESIS -D RS_PRETAG_LOCAL_PROOF -sv reservation_station.sv
+read -sv coherent_lq_issue_selector.sv
+read -sv coherent_lq_candidate_select.sv
+read -sv coherent_lq_address_store.sv
 read -formal -D F_LQ_PREMATCH_ONLY -D SYNTHESIS -D F_LQ_PREMATCH_PAIR -sv load_queue.sv
 read -formal -sv rs_lq_prematch_equiv.sv
 hierarchy -top rs_lq_prematch_equiv
@@ -45,3 +52,10 @@ select -assert-count 76 t:$check
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
 rs_lq_prematch_equiv.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv

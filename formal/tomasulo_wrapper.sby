@@ -32,14 +32,21 @@ read -formal -sv rs_issue2_selector.sv
 # FORMAL_STANDALONE_ENV=0 retains station assertions without standalone
 # assumptions or covers. The real allocator exercises the branch-payload
 # RAM's rule against reusing a live ROB tag.
+read -sv coherent_rs_capacity.sv
+read -sv coherent_rs_issue2_selector.sv
+read -sv coherent_rs_payload_store.sv
 read -formal -sv reservation_station.sv
 read -sv cdb_arbiter.sv
 read -sv fu_cdb_adapter.sv
 read -sv int_alu_shim.sv
 read -sv int_muldiv_shim.sv
 read -sv load_unit.sv
+read -sv coherent_l0_flags.sv
 read -sv lq_l0_cache.sv
 read -sv lq_issue_selector.sv
+read -sv coherent_lq_issue_selector.sv
+read -sv coherent_lq_candidate_select.sv
+read -sv coherent_lq_address_store.sv
 read -sv -DFROST_YOSYS load_queue.sv
 read -sv sq_forwarding_unit.sv
 read -sv store_queue.sv
@@ -50,6 +57,7 @@ read -sv sq_early_addr_pipeline.sv
 read -sv commit_bus_pipeline.sv
 read -sv dispatch_rs_router.sv
 read -sv sc_pending_unit.sv
+read -sv coherent_atomic_select.sv
 read -formal -sv mem_wakeup_merge.sv
 read -sv lq_coherence_port.sv
 read -sv divider.sv
@@ -89,6 +97,7 @@ prep -top tomasulo_wrapper
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/commit_bus/commit_bus_pipeline.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/dispatch_routing/dispatch_rs_router.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/atomics/sc_pending_unit.sv
+../hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/coherent_atomic_select.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/wakeup/mem_wakeup_merge.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/coherence/lq_coherence_port.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv
@@ -99,3 +108,10 @@ prep -top tomasulo_wrapper
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_engine.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_shim.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv

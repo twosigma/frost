@@ -26,9 +26,6 @@
  */
 
 module load_queue #(
-`ifdef FROST_COHERENT_CLUSTER
-    parameter bit COHERENT_CLUSTER = 1'b0,
-`endif
     parameter bit CACHE_NORMAL_MEMORY = 1'b0,
     parameter int unsigned DEPTH = riscv_pkg::LqDepth,  // 8
     parameter bit ENABLE_L0_FAST_PATH = 1'b1,
@@ -56,7 +53,6 @@ module load_queue #(
     parameter longint unsigned CACHED_BASE = riscv_pkg::DdrBase,
     parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
 ) (
-`ifdef FROST_COHERENT_CLUSTER
     input logic i_coherent_cut_hold = 1'b0,
     input logic [1:0] i_coherent_block_valid = '0,
     input logic [1:0][riscv_pkg::XLEN-1:0] i_coherent_block_addr = '0,
@@ -67,7 +63,6 @@ module load_queue #(
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_read_tag,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_write_tag,
     output logic [2:0] o_reservation_size,
-`endif
     input logic i_clk,
     input logic i_rst_n,
 
@@ -544,14 +539,10 @@ module load_queue #(
   // Reservation register (LR/SC)
   logic reservation_valid;
   logic [XLEN-1:0] reservation_addr;
-`ifdef FROST_COHERENT_CLUSTER
   logic [2:0] reservation_size;
-`endif
   assign o_reservation_valid = reservation_valid;
   assign o_reservation_addr  = reservation_addr;
-`ifdef FROST_COHERENT_CLUSTER
   assign o_reservation_size  = reservation_size;
-`endif
 
   // AMO FSM
   typedef enum logic [1:0] {
@@ -790,9 +781,8 @@ module load_queue #(
 
   // lq_address and lq_amo_rs2 are only written once the address CAM resolves.
   // Valid bits stay in FFs; stale RAM contents are don't-care until addr_valid.
-`ifdef FROST_COHERENT_CLUSTER
   logic [3:0] coherent_stored_class, coherent_update_class;
-  if (COHERENT_CLUSTER) begin : gen_coherent_address_store
+  if (1'b1) begin : gen_coherent_address_store
     coherent_lq_address_store #(
         .ADDR_WIDTH(IdxWidth),
         .CACHED_BASE(CACHED_BASE),
@@ -807,24 +797,7 @@ module load_queue #(
         .o_read_class(coherent_stored_class),
         .o_write_class(coherent_update_class)
     );
-  end else begin : gen_direct_address_store
-`endif
-  sdp_dist_ram #(
-      .ADDR_WIDTH(IdxWidth),
-      .DATA_WIDTH(XLEN)
-  ) u_lq_address_issue_mem (
-      .i_clk,
-      .i_write_enable (lq_addr_update_we),
-      .i_write_address(lq_addr_update_idx),
-      .i_write_data   (i_addr_update.address),
-      .i_read_address (issue_mem_stored_idx),
-      .o_read_data    (lq_address_issue_mem_rd)
-  );
-`ifdef FROST_COHERENT_CLUSTER
-    assign coherent_stored_class = '0;
-    assign coherent_update_class = '0;
   end
-`endif
 
 
   sdp_dist_ram #(
@@ -963,30 +936,15 @@ module load_queue #(
   end
   assign coh_reservation_inval = i_coh_inval_valid && reservation_valid &&
       (i_coh_inval_addr[XLEN-1:CohLineLsb] == reservation_addr[XLEN-1:CohLineLsb]);
-`ifdef FROST_COHERENT_CLUSTER
   // The hart's AMO write cancels a reservation in its reservation set,
   // as a store does through i_reservation_snoop_invalidate.
-`else
-  // The hart's own AMO write to the reserved doubleword cancels the
-  // reservation, as a store there does (i_reservation_snoop_invalidate).
-`endif
   logic amo_reservation_inval;
   assign amo_reservation_inval = amo_cache_inv && reservation_valid &&
-`ifdef FROST_COHERENT_CLUSTER
-      (COHERENT_CLUSTER ?
-       (amo_write_addr_q[XLEN-1:5] == reservation_addr[XLEN-1:5]) :
-       (amo_write_addr_q[XLEN-1:3] == reservation_addr[XLEN-1:3]));
-`else
-      (amo_write_addr_q[XLEN-1:3] == reservation_addr[XLEN-1:3]);
-`endif
+      ((amo_write_addr_q[XLEN-1:5] == reservation_addr[XLEN-1:5]));
   logic reservation_clear;
   assign reservation_clear = i_sc_clear_reservation || i_reservation_snoop_invalidate ||
-`ifdef FROST_COHERENT_CLUSTER
       coh_reservation_inval || amo_reservation_inval ||
-      (COHERENT_CLUSTER && mem_read_en && sq_check_is_lr_q);
-`else
-      coh_reservation_inval || amo_reservation_inval;
-`endif
+      (mem_read_en && sq_check_is_lr_q);
   // The hold is a registered compare of the staged atomic's line against the
   // mirror. A newly captured or replaced atomic has no compare of its own
   // yet, so it waits one cycle before its first launch (coh_hold_valid_q);
@@ -998,12 +956,8 @@ module load_queue #(
       coh_hold_valid_q  <= 1'b0;
     end else begin
       coh_launch_hold_q <= coh_staged_amo_lr && coh_block_hit;
-`ifdef FROST_COHERENT_CLUSTER
       coh_hold_valid_q <= coh_staged_amo_lr &&
-          !(COHERENT_CLUSTER ? coherent_stage_take[0] : (sq_check_capture || sq_check_replace));
-`else
-      coh_hold_valid_q  <= coh_staged_amo_lr && !sq_check_capture && !sq_check_replace;
-`endif
+          !(coherent_stage_take[0]);
     end
   end
 
@@ -1307,8 +1261,7 @@ module load_queue #(
     end
     // Select among registered candidates for timing. Reset and full flush
     // zero every candidate, so the selector is then irrelevant.
-`ifdef FROST_COHERENT_CLUSTER
-    if (COHERENT_CLUSTER) begin : gen_coherent_candidate_select
+    if (1'b1) begin : gen_coherent_candidate_select
       wire [DEPTH*NumCandidates-1:0] candidates_flat;
       for (genvar candidate = 0; candidate < NumCandidates; candidate++) begin : gen_flat
         assign candidates_flat[candidate*DEPTH+:DEPTH] = candidate_match_q[candidate];
@@ -1322,22 +1275,7 @@ module load_queue #(
           .i_candidates(candidates_flat),
           .o_selected(addr_update_pre_match_tags_q)
       );
-    end else begin : gen_direct_candidate_select
-`endif
-    wire [DEPTH-1:0] select_tree[2*NumCandidates];
-    for (genvar leaf = 0; leaf < NumCandidates; leaf++) begin : gen_leaf
-      assign select_tree[NumCandidates+leaf] = candidate_match_q[leaf];
     end
-    for (genvar level = 0; level < PREISSUE_SEL_WIDTH; level++) begin : gen_level
-      for (genvar node = (1 << level); node < (2 << level); node++) begin : gen_node
-        assign select_tree[node] = select_q[PREISSUE_SEL_WIDTH-1-level] ?
-            select_tree[2*node+1] : select_tree[2*node];
-      end
-    end
-    assign addr_update_pre_match_tags_q = select_tree[1];
-`ifdef FROST_COHERENT_CLUSTER
-    end
-`endif
 `ifndef SYNTHESIS
     always @(posedge i_clk) begin
       if (reset_seen_q && i_rst_n && i_pre_issue_needs_lq) begin
@@ -1448,7 +1386,6 @@ module load_queue #(
         lq_rob_tag[g_lq_tag];
   end
 
-`ifdef FROST_COHERENT_CLUSTER
   logic [DEPTH-1:0] coherent_parked_q;
   logic coherent_local_hold, coherent_sector_hold, coherent_holder_changed;
   logic coherent_address_fault;
@@ -1462,7 +1399,7 @@ module load_queue #(
   logic coherent_forward_unblocked;
   logic coherent_forward_clear_eligible;
   logic coherent_probe_ok, coherent_issue_ok, coherent_forward_ok;
-  if (COHERENT_CLUSTER) begin : gen_coherent_park
+  if (1'b1) begin : gen_coherent_park
     logic [1:0] holder_valid_q;
     logic [2*XLEN-1:0] holder_addr_q;
     assign coherent_holder_changed = holder_valid_q != i_coherent_block_valid ||
@@ -1476,14 +1413,9 @@ module load_queue #(
         if (sq_check_pending && coherent_sector_hold) coherent_parked_q[sq_check_idx] <= 1'b1;
       end
     end
-  end else begin : gen_no_coherent_park
-    assign coherent_parked_q = '0;
-    assign coherent_holder_changed = 1'b0;
   end
 
-`endif
-`ifdef FROST_COHERENT_CLUSTER
-  if (COHERENT_CLUSTER) begin : gen_coherent_issue_selector
+  if (1'b1) begin : gen_coherent_issue_selector
     coherent_lq_issue_selector #(
         .DEPTH(DEPTH)
     ) selector (
@@ -1527,56 +1459,7 @@ module load_queue #(
         .o_head_mem_update_onehot(head_mem_update_onehot),
         .o_head_mem_update_rob_tag(head_mem_update_rob_tag)
     );
-  end else begin : gen_line_issue_selector
-    assign coherent_replace_without_update = replace_without_update;
-    assign coherent_replace_with_update = replace_with_update;
-`endif
-  lq_issue_selector #(
-      .DEPTH(DEPTH)
-  ) lq_issue_selector_inst (
-      .lq_valid(lq_valid),
-      .lq_addr_valid(lq_addr_valid),
-      .lq_is_mmio(lq_is_mmio),
-      .lq_issued(lq_issued),
-      .lq_data_valid(lq_data_valid),
-      .lq_is_lr(lq_is_lr),
-      .lq_is_amo(lq_is_amo),
-`ifdef FROST_COHERENT_CLUSTER
-      .sq_check_in_flight_mask(sq_check_in_flight_mask | coherent_parked_q),
-`else
-      .sq_check_in_flight_mask(sq_check_in_flight_mask),
-`endif
-      .addr_update_pre_match_q(addr_update_pre_match_q),
-      .rob_head_match_q(rob_head_match_q),
-      .lq_rob_tag_flat(lq_rob_tag_flat),
-      .blocked_by_amo_phys_q(older_amo_block_q),
-      .head_idx(head_idx),
-      .i_sq_committed_empty(i_sq_committed_empty),
-      .o_issue_cdb_found(issue_cdb_found),
-      .o_issue_cdb_idx(issue_cdb_idx),
-      .o_merged_scan_onehot(merged_scan_onehot),
-      .o_stored_scan_found(stored_scan_found),
-      .o_stored_scan_idx(stored_scan_idx),
-      .o_stored_scan_pos(stored_scan_pos),
-      .o_stored_scan_onehot(stored_scan_onehot),
-      .o_stored_scan_rob_tag(stored_scan_rob_tag),
-      .o_update_scan_found(update_scan_found),
-      .o_update_scan_idx(update_scan_idx),
-      .o_update_scan_pos(update_scan_pos),
-      .o_update_scan_onehot(update_scan_onehot),
-      .o_update_scan_rob_tag(update_scan_rob_tag),
-      .o_head_mem_stored_found(head_mem_stored_found),
-      .o_head_mem_stored_idx(head_mem_stored_idx),
-      .o_head_mem_stored_onehot(head_mem_stored_onehot),
-      .o_head_mem_stored_rob_tag(head_mem_stored_rob_tag),
-      .o_head_mem_update_found(head_mem_update_found),
-      .o_head_mem_update_idx(head_mem_update_idx),
-      .o_head_mem_update_onehot(head_mem_update_onehot),
-      .o_head_mem_update_rob_tag(head_mem_update_rob_tag)
-  );
-`ifdef FROST_COHERENT_CLUSTER
   end
-`endif
 
   // ===========================================================================
   // Head-load sub-bucket diagnostics
@@ -1691,18 +1574,12 @@ module load_queue #(
   // An arriving MMIO address may stage before ROB head. sq_check_is_mmio_q
   // blocks its SQ probe and memory issue until it reaches head.
   assign update_scan_issueable = update_scan_found;
-`ifdef FROST_COHERENT_CLUSTER
-  if (COHERENT_CLUSTER) begin : gen_coherent_scan_order
+  if (1'b1) begin : gen_coherent_scan_order
     assign update_scan_older_than_stored_scan =
         |(merged_scan_onehot & update_scan_onehot & ~stored_scan_onehot);
-  end else begin : gen_line_scan_order
-`endif
-  assign update_scan_older_than_stored_scan =
-      update_scan_issueable && (!stored_scan_found || (update_scan_pos < stored_scan_pos));
-`ifdef FROST_COHERENT_CLUSTER
   end
 `ifndef SYNTHESIS
-  if (COHERENT_CLUSTER) begin : gen_coherent_scan_checks
+  if (1'b1) begin : gen_coherent_scan_checks
     wire [DEPTH-1:0] reference_mem_onehot = head_mem_stored_found ? head_mem_stored_onehot :
         (i_addr_update.valid && head_mem_update_found) ? head_mem_update_onehot :
         update_scan_wins ? update_scan_onehot : stored_scan_found ? stored_scan_onehot : '0;
@@ -1714,10 +1591,11 @@ module load_queue #(
         (i_addr_update.valid && head_mem_update_found) ? update_issue_rob_tag :
         update_scan_wins ? update_scan_rob_tag : stored_scan_found ? stored_scan_rob_tag : '0;
 `ifdef FORMAL
-    always_comb begin
+    always_comb
 `else
-    always @(posedge i_clk) begin
+    always @(posedge i_clk)
 `endif
+    begin
       p_issue_mask_exact : assert (issue_mem_onehot == reference_mem_onehot);
       p_issue_idx_exact : assert (issue_mem_idx == reference_mem_idx);
       p_issue_tag_exact : assert (issue_mem_rob_tag == reference_mem_tag);
@@ -1729,10 +1607,8 @@ module load_queue #(
     end
   end
 `endif
-`endif
   assign update_scan_wins = i_addr_update.valid && update_scan_older_than_stored_scan;
 
-`ifdef FROST_COHERENT_CLUSTER
   wire [DEPTH-1:0] coherent_ring_mask =
       i_addr_update.valid ? merged_scan_onehot : stored_scan_onehot;
   logic [IdxWidth-1:0] coherent_ring_idx;
@@ -1745,7 +1621,6 @@ module load_queue #(
       coherent_ring_tag |= {ReorderBufferTagWidth{coherent_ring_mask[entry]}} & lq_rob_tag[entry];
     end
   end
-`endif
 
   // Phase B: prefer an eligible ROB-head load, then ring order. Select stored
   // and arriving-address candidates separately for address RAM timing.
@@ -1786,8 +1661,7 @@ module load_queue #(
       issue_mem_rob_tag = stored_scan_rob_tag;
       issue_mem_onehot  = stored_scan_onehot;
     end
-`ifdef FROST_COHERENT_CLUSTER
-    if (COHERENT_CLUSTER) begin
+    begin
       issue_mem_found = head_mem_stored_found || stored_scan_found ||
           (i_addr_update.valid && (head_mem_update_found || update_scan_found));
       issue_mem_onehot = head_mem_stored_found ? head_mem_stored_onehot :
@@ -1799,7 +1673,6 @@ module load_queue #(
           (i_addr_update.valid && head_mem_update_found) ?
               head_mem_update_rob_tag : coherent_ring_tag;
     end
-`endif
   end
 
   // ===========================================================================
@@ -1818,17 +1691,14 @@ module load_queue #(
   // to write. A store older than an LR, to the other word of its dword, does
   // not overlap the LR, so without the wait it could write after the LR's
   // response, and its write-launch snoop would cancel the reservation.
-`ifdef FROST_COHERENT_CLUSTER
   assign coherent_local_hold = i_coherent_cut_hold || coherent_sector_hold;
-`endif
   assign sq_check_entry_issueable = sq_check_entry_valid &&
       (!(sq_check_is_lr_q || sq_check_is_amo_q)
        || (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty)) &&
       (!sq_check_is_mmio_q || (sq_check_rob_tag_q == i_rob_head_tag)) &&
-`ifdef FROST_COHERENT_CLUSTER
       !coh_launch_hold_q && !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
-      !(COHERENT_CLUSTER && coherent_local_hold) &&
-      !(COHERENT_CLUSTER && sq_check_is_amo_q && sq_check_is_cached_region &&
+      !(coherent_local_hold) &&
+      !(sq_check_is_amo_q && sq_check_is_cached_region &&
         !i_coherent_atomic_protected);
 
   always_comb begin
@@ -1843,17 +1713,13 @@ module load_queue #(
       !sq_check_pma_ok ||
       (i_trap_misaligned_accesses && coherent_staged_misaligned);
   assign coherent_staged_at_head = sq_check_rob_tag_q == i_rob_head_tag;
-  assign o_coherent_arm_valid = COHERENT_CLUSTER && sq_check_entry_valid && sq_check_is_amo_q &&
+  assign o_coherent_arm_valid = sq_check_entry_valid && sq_check_is_amo_q &&
       sq_check_is_cached_region && sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty &&
       sq_check_pma_ok && !sq_check_misaligned && !i_flush_all && !i_flush_en;
-  assign o_coherent_arm_tag = COHERENT_CLUSTER ? sq_check_rob_tag_q : '0;
-  assign o_coherent_read_kind = !COHERENT_CLUSTER ? 2'd0 :
-      sq_check_is_amo_q ? 2'd2 : sq_check_is_lr_q ? 2'd1 : 2'd0;
-  assign o_coherent_read_tag = COHERENT_CLUSTER ? sq_check_rob_tag_q : '0;
-  assign o_coherent_write_tag = COHERENT_CLUSTER ? lq_rob_tag[amo_entry_idx] : '0;
-`else
-      !coh_launch_hold_q && !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q));
-`endif
+  assign o_coherent_arm_tag = sq_check_rob_tag_q;
+  assign o_coherent_read_kind = sq_check_is_amo_q ? 2'd2 : sq_check_is_lr_q ? 2'd1 : 2'd0;
+  assign o_coherent_read_tag = sq_check_rob_tag_q;
+  assign o_coherent_write_tag = lq_rob_tag[amo_entry_idx];
 
   // A departing staged load permits same-cycle capture of its replacement.
   // Keep this predicate aligned with sq_check_stage_clears below.
@@ -1878,9 +1744,8 @@ module load_queue #(
   assign sq_check_parked_fault = sq_check_entry_valid && sq_check_entry_issueable &&
       (riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q) != riscv_pkg::DFAULT_NONE);
   logic sq_check_pma_ok;
-`ifdef FROST_COHERENT_CLUSTER
   logic coherent_staged_normal;
-  if (COHERENT_CLUSTER) begin : gen_coherent_staged_class
+  if (1'b1) begin : gen_coherent_staged_class
     logic pma_ok_q, cached_q, misaligned_q, normal_q;
     wire stored_atomic = lq_is_amo[issue_mem_stored_idx] || lq_is_lr[issue_mem_stored_idx];
     wire update_atomic = lq_is_amo[update_issue_payload_idx] || lq_is_lr[update_issue_payload_idx];
@@ -1911,10 +1776,11 @@ module load_queue #(
     assign coherent_staged_normal = normal_q;
 `ifndef SYNTHESIS
 `ifdef FORMAL
-    always_comb begin
+    always_comb
 `else
-    always @(posedge i_clk) begin
+    always @(posedge i_clk)
 `endif
+    begin
       p_stage_class_choice_exact : assert (selected_permission ==
           ((sq_check_is_amo_next || sq_check_is_lr_next) ? selected_class[2] : selected_class[1]));
       p_stage_alignment_choice_exact : assert (selected_misaligned ==
@@ -1946,35 +1812,13 @@ module load_queue #(
       end
     end
 `endif
-  end else begin : gen_direct_staged_class
-    assign coherent_staged_normal = riscv_pkg::pma_writethrough_ok(sq_check_addr_q);
-    assign coherent_staged_misaligned = is_load_misaligned(sq_check_size_q, sq_check_addr_q);
-    assign sq_check_pma_ok = (sq_check_is_amo_q || sq_check_is_lr_q) ?
-        riscv_pkg::pma_atomic_ok(sq_check_addr_q) : riscv_pkg::pma_data_ok(sq_check_addr_q);
-    assign sq_check_is_cached_region = is_cached_addr(sq_check_addr_q);
   end
-`else
-  assign sq_check_pma_ok = (sq_check_is_amo_q || sq_check_is_lr_q) ? riscv_pkg::pma_atomic_ok(
-      sq_check_addr_q
-  ) : riscv_pkg::pma_data_ok(
-      sq_check_addr_q
-  );
-`endif
   assign sq_check_pma_fault = !sq_check_parked_fault &&
       sq_check_entry_valid && sq_check_entry_issueable && !sq_check_pma_ok;
   assign sq_check_misaligned = sq_check_parked_fault || sq_check_pma_fault ||
       (i_trap_misaligned_accesses &&
        sq_check_entry_valid && sq_check_entry_issueable &&
-`ifdef FROST_COHERENT_CLUSTER
        coherent_staged_misaligned);
-`else
-       is_load_misaligned(
-      sq_check_size_q, sq_check_addr_q
-  ));
-`endif
-`ifndef FROST_COHERENT_CLUSTER
-  assign sq_check_is_cached_region = is_cached_addr(sq_check_addr_q);
-`endif
   assign sq_commit_check_block =
       i_sq_commit_pending && sq_check_entry_valid && sq_check_is_cached_region;
   // older_amo_write_pending releases the staged entry: a load fenced behind
@@ -1984,12 +1828,8 @@ module load_queue #(
   // eligible it is at the ROB head, so head priority selects it.
   assign sq_check_will_clear = sq_check_pending &&
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
-`ifdef FROST_COHERENT_CLUSTER
        launch_mem_issue || misalign_bypass_fire || older_amo_write_pending ||
-       (COHERENT_CLUSTER && coherent_sector_hold));
-`else
-       launch_mem_issue || misalign_bypass_fire || older_amo_write_pending);
-`endif
+       (coherent_sector_hold));
 
   // Stored MMIO at ROB head is eligible in both scans; head priority wins.
   // The router enforces committed-store drain before device acceptance.
@@ -2034,21 +1874,18 @@ module load_queue #(
       (head_mem_update_found ? replace_update_head : replace_merged_scan);
   assign sq_check_replace = sq_check_pending && sq_check_gate_early &&
       (i_addr_update.valid ? replace_with_update : replace_without_update);
-`ifdef FROST_COHERENT_CLUSTER
   logic [3:0] coherent_stage_take;
   wire coherent_replace_without_update, coherent_replace_with_update;
   wire coherent_stage_replace;
-  if (COHERENT_CLUSTER) begin : gen_coherent_replace_gate
+  if (1'b1) begin : gen_coherent_replace_gate
     (* keep = "true" *) wire stage_replace = sq_check_pending && sq_check_gate_early &&
         (i_addr_update.valid ? coherent_replace_with_update : coherent_replace_without_update);
     assign coherent_stage_replace = stage_replace;
-  end else begin : gen_direct_replace_gate
-    assign coherent_stage_replace = sq_check_replace;
   end
   wire [3:0] coherent_pending = {sq_check_pending_copy, sq_check_pending};
   logic coherent_stage_clear;
   wire [1:0] coherent_commit_choice = {i_sq_commit_pending, i_sq_committed_empty};
-  if (COHERENT_CLUSTER) begin : gen_coherent_capture_choices
+  if (1'b1) begin : gen_coherent_capture_choices
     (* keep = "true" *) logic [1:0] clear_by_hit;
     for (genvar hit_case = 0; hit_case < 2; hit_case++) begin : gen_hit_choice
       localparam bit Hit = hit_case != 0;
@@ -2096,20 +1933,15 @@ module load_queue #(
            (sq_check_pending && ((release_for_take && issue_mem_found) || replacement)));
     end
     assign coherent_stage_clear = sq_check_pending && release_for_clear;
-  end else begin : gen_no_coherent_capture_choices
-    for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_take
-      assign coherent_stage_take[copy_index] =
-          sq_check_capture_on(coherent_pending[copy_index]) || coherent_stage_replace;
-    end
-    assign coherent_stage_clear = 1'b0;
   end
 
 `ifndef SYNTHESIS
 `ifdef FORMAL
-  always_comb begin
+  always_comb
 `else
-  always @(posedge i_clk) begin
+  always @(posedge i_clk)
 `endif
+  begin
     p_stage_replace_exact : assert (coherent_stage_replace ==
         (sq_check_pending && sq_check_gate_early &&
          (|(staged_younger_than_entry & issue_mem_onehot))));
@@ -2130,15 +1962,15 @@ module load_queue #(
     wire reference_take = sq_check_gate_early &&
         (i_addr_update.valid ? with_update : without_update);
 `ifdef FORMAL
-    always_comb begin
+    always_comb
 `else
-    always @(posedge i_clk) begin
+    always @(posedge i_clk)
 `endif
+    begin
       assert (coherent_stage_take[copy_index] == reference_take);
     end
 `endif
   end
-`endif
 `ifdef F_LQ_MERGED_REPLACE_LOCAL_PROOF
   always_comb
     assert (sq_check_replace ==
@@ -2180,14 +2012,12 @@ module load_queue #(
         !(sq_check_no_older_store_q || i_sq_empty)) begin
       o_sq_check_capture_valid = 1'b1;
     end
-`ifdef FROST_COHERENT_CLUSTER
-    if (COHERENT_CLUSTER) begin
+    begin
       o_sq_check_valid = coherent_probe_ok && !coherent_local_hold &&
           !i_flush_all && !i_flush_en && !drop_mem_response_pending && !sq_commit_check_block;
       o_sq_check_capture_valid = coherent_probe_ok && !coherent_local_hold &&
           !drop_mem_response_pending;
     end
-`endif
   end
 
   // ===========================================================================
@@ -2224,8 +2054,7 @@ module load_queue #(
   assign sq_head_amo_clear = sq_check_is_amo_q &&
       (sq_check_rob_tag_q == i_rob_head_tag) && i_sq_committed_empty;
 
-`ifdef FROST_COHERENT_CLUSTER
-  if (COHERENT_CLUSTER) begin : gen_coherent_issue_gate
+  if (1'b1) begin : gen_coherent_issue_gate
     (* keep = "true" *) logic probe_ok, issue_ok;
     (* keep = "true" *) wire ordinary_eligible =
         !sq_check_is_lr_q && !sq_check_is_amo_q && !coh_launch_hold_q;
@@ -2265,10 +2094,11 @@ module load_queue #(
     end
 `ifndef SYNTHESIS
 `ifdef FORMAL
-    always_comb begin
+    always_comb
 `else
-    always @(posedge i_clk) begin
+    always @(posedge i_clk)
 `endif
+    begin
       p_empty_issue_exact : assert (!sq_check_pending ||
           (coherent_release_by_drain_empty[i_sq_empty] & {2{coherent_release_protected}}) ==
           coherent_issue_by_drain);
@@ -2295,10 +2125,11 @@ module load_queue #(
             !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
             !(sq_check_is_amo_q && sq_check_is_cached_region && !i_coherent_atomic_protected);
 `ifdef FORMAL
-        always_comb begin
+        always_comb
 `else
-        always @(posedge i_clk) begin
+        always @(posedge i_clk)
 `endif
+        begin
           assert ((eligible_choice[head_case] && coherent_release_protected) == reference_eligible);
           assert ((issue_choice[head_case] && coherent_release_protected) ==
               (sq_check_phase2 && reference_eligible && !coherent_address_fault &&
@@ -2340,10 +2171,11 @@ module load_queue #(
     assign sq_can_issue = coherent_issue_ok && !coherent_local_hold;
 `ifndef SYNTHESIS
 `ifdef FORMAL
-    always_comb begin
+    always_comb
 `else
-    always @(posedge i_clk) begin
+    always @(posedge i_clk)
 `endif
+    begin
       p_issue_permission_exact : assert (sq_can_issue ==
           (sq_check_phase2 && sq_check_entry_issueable && !coherent_address_fault &&
            !sq_commit_interlock && !older_amo_write_pending &&
@@ -2354,31 +2186,11 @@ module load_queue #(
            !(sq_check_no_older_store_q || i_sq_empty)));
     end
 `endif
-  end else begin : gen_line_issue_gate
-    assign coherent_probe_choice = '0;
-    assign coherent_issue_choice = '0;
-    assign coherent_eligible_by_drain = '0;
-    assign coherent_issue_by_drain = '0;
-    assign coherent_release_by_drain_empty = '0;
-    assign coherent_release_eligible = 1'b0;
-    assign coherent_release_protected = 1'b0;
-    assign coherent_probe_ok = 1'b0;
-    assign coherent_issue_ok = 1'b0;
-`endif
-  assign sq_can_issue = sq_check_phase2 && sq_check_entry_issueable &&
-      !sq_check_misaligned &&
-      !sq_commit_interlock &&
-      !older_amo_write_pending &&
-      (sq_no_older_store || sq_head_amo_clear ||
-       (i_sq_all_older_addrs_known && !i_sq_forward.match));
-`ifdef FROST_COHERENT_CLUSTER
   end
-`endif
   // Forwarding also requires all older addresses known: an unresolved store
   // could overlap the load and be newer than the selected store, making its
   // data stale. Address-known and forwarding results come from the same scan.
-`ifdef FROST_COHERENT_CLUSTER
-  if (COHERENT_CLUSTER) begin : gen_coherent_forward_gate
+  if (1'b1) begin : gen_coherent_forward_gate
     (* keep = "true" *) logic forward_unblocked, forward_clear_eligible, forward_ok;
     assign forward_unblocked = ENABLE_SQ_FORWARD_FAST_PATH && sq_check_phase2 &&
         !coh_launch_hold_q && !coherent_address_fault && !sq_no_older_store &&
@@ -2394,10 +2206,11 @@ module load_queue #(
     assign coherent_forward_unblocked_empty[1] = 1'b0;
 `ifndef SYNTHESIS
 `ifdef FORMAL
-    always_comb begin
+    always_comb
 `else
-    always @(posedge i_clk) begin
+    always @(posedge i_clk)
 `endif
+    begin
       p_empty_forward_exact : assert (
           coherent_forward_unblocked_empty[i_sq_empty] == forward_unblocked);
     end
@@ -2406,24 +2219,9 @@ module load_queue #(
     assign coherent_forward_clear_eligible = forward_clear_eligible;
     assign coherent_forward_ok = forward_ok;
     assign sq_do_forward = coherent_forward_ok && !coherent_local_hold;
-  end else begin : gen_line_forward_gate
-    assign coherent_forward_unblocked = 1'b0;
-    assign coherent_forward_unblocked_empty = '0;
-    assign coherent_forward_clear_eligible = 1'b0;
-    assign coherent_forward_ok = 1'b0;
-`endif
-  assign sq_do_forward = ENABLE_SQ_FORWARD_FAST_PATH
-      && sq_check_phase2 && sq_check_entry_issueable && !sq_no_older_store &&
-      !sq_check_misaligned &&
-      !sq_commit_interlock &&
-      !older_amo_write_pending &&
-      i_sq_all_older_addrs_known &&
-      i_sq_forward.can_forward
-      && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
-`ifdef FROST_COHERENT_CLUSTER
   end
 `ifndef SYNTHESIS
-  if (COHERENT_CLUSTER) begin : gen_coherent_gate_checks
+  if (1'b1) begin : gen_coherent_gate_checks
     always_comb begin
       p_issue_gate_exact : assert (sq_can_issue ==
           (sq_check_phase2 && sq_check_entry_issueable && !sq_check_misaligned &&
@@ -2444,7 +2242,6 @@ module load_queue #(
            !sq_check_misaligned && !(sq_check_no_older_store_q || i_sq_empty)));
     end
   end
-`endif
 `endif
 
 
@@ -2543,9 +2340,6 @@ module load_queue #(
   logic [riscv_pkg::MemDataBits-1:0] cache_fill_data;
 
   lq_l0_cache #(
-`ifdef FROST_COHERENT_CLUSTER
-      .COHERENT_CLUSTER(COHERENT_CLUSTER),
-`endif
       .DEPTH(L0_CACHE_DEPTH),
       .XLEN (XLEN)
   ) u_l0_cache (
@@ -2558,11 +2352,7 @@ module load_queue #(
       .o_lookup_data(cache_lookup_data),
 
       // Fill: on memory response
-`ifdef FROST_COHERENT_CLUSTER
-      .i_fill_valid(COHERENT_CLUSTER ? cache_fill_write : cache_fill_valid),
-`else
-      .i_fill_valid(cache_fill_valid),
-`endif
+      .i_fill_valid(cache_fill_write),
       .i_fill_write(cache_fill_write),
       .i_fill_addr (cache_fill_addr),
       .i_fill_data (cache_fill_data),
@@ -2606,15 +2396,8 @@ module load_queue #(
   // may permit an unrelated hit during a buffered Normal store or older
   // Normal read. Same-dword stores, AMOs, precise writes and pending Device
   // handoffs still block it through disambiguation/invalidation or permission.
-`ifdef FROST_COHERENT_CLUSTER
   wire sq_check_cacheable = CACHE_UNCACHED_DATA || sq_check_is_cached_region ||
       (CACHE_NORMAL_MEMORY && coherent_staged_normal);
-`else
-  wire sq_check_cacheable = CACHE_UNCACHED_DATA || sq_check_is_cached_region ||
-      (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
-      sq_check_addr_q
-  ));
-`endif
   assign cache_hit_fast_path = ENABLE_L0_FAST_PATH && sq_check_cacheable &&
       !i_flush_all && !i_flush_en && !l0_lookup_busy && sq_can_issue && cache_lookup_hit &&
       !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
@@ -2649,8 +2432,7 @@ module load_queue #(
   // since the miss value already holds the flush and issue terms. Internal
   // consumers keep launch_mem_issue.
   (* keep = "true" *) logic launch_if_miss, launch_if_hit;
-`ifdef FROST_COHERENT_CLUSTER
-  if (COHERENT_CLUSTER) begin : gen_coherent_launch_gate
+  if (1'b1) begin : gen_coherent_launch_gate
     (* keep = "true" *) logic [1:0] launch_choice;
     for (genvar drain_case = 0; drain_case < 2; drain_case++) begin : gen_drain_choice
       assign launch_choice[drain_case] = !i_flush_en && !i_flush_all && !i_mem_bus_busy &&
@@ -2664,16 +2446,7 @@ module load_queue #(
     assign launch_if_miss = 1'b0;
     assign launch_if_hit = 1'b0;
     assign o_mem_read_en = permitted && !(cache_lookup_hit && hit_blocks);
-  end else begin : gen_line_launch_gate
-`endif
-  assign launch_if_miss = !i_flush_en && !i_flush_all && !i_mem_bus_busy && sq_can_issue &&
-      !cached_launch_hold_q;
-  assign launch_if_hit = launch_if_miss && !(ENABLE_L0_FAST_PATH && sq_check_cacheable &&
-      !l0_lookup_busy && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q);
-  assign o_mem_read_en = cache_lookup_hit ? launch_if_hit : launch_if_miss;
-`ifdef FROST_COHERENT_CLUSTER
   end
-`endif
 `ifndef SYNTHESIS
   always_comb begin
     p_mem_read_en_exact : assert (o_mem_read_en == launch_mem_issue);
@@ -2915,9 +2688,8 @@ module load_queue #(
   // Never fill on full flush or from a previously drop-marked response. MMIO,
   // LR, AMO, and cached responses invalidated by a store or DMA also cannot
   // fill. Use the launch-time issued_addr snapshot.
-`ifdef FROST_COHERENT_CLUSTER
   logic coherent_response_bypass;
-  if (COHERENT_CLUSTER) begin : gen_coherent_response_qualification
+  if (1'b1) begin : gen_coherent_response_qualification
     (* keep = "true" *) logic [CachedSlots-1:0] slot_live, slot_bypass;
     (* keep = "true" *) logic fast_live, fast_bypass;
     for (genvar slot = 0; slot < CachedSlots; slot++) begin : gen_slot
@@ -2932,10 +2704,11 @@ module load_queue #(
         (i_mem_read_is_cached ? slot_bypass[resp_slot] : fast_bypass);
 `ifndef SYNTHESIS
 `ifdef FORMAL
-    always_comb begin
+    always_comb
 `else
-    always @(posedge i_clk) begin
+    always @(posedge i_clk)
 `endif
+    begin
       p_response_live_exact : assert (cache_fill_response_valid ==
           (i_mem_read_valid && resp_outstanding && !i_flush_all && !resp_drop &&
            lq_valid[issued_idx]));
@@ -2944,14 +2717,7 @@ module load_queue #(
            !issued_is_amo && !mem_response_error));
     end
 `endif
-  end else begin : gen_direct_response_qualification
-    assign coherent_response_bypass = 1'b0;
-`endif
-  assign cache_fill_response_valid = i_mem_read_valid && resp_outstanding &&
-      !i_flush_all && !resp_drop && lq_valid[issued_idx];
-`ifdef FROST_COHERENT_CLUSTER
   end
-`endif
   // Only the uncached response needs Normal-PMA qualification. Classify
   // its retained address before the late cached/uncached response select,
   // rather than putting that select ahead of the full-width range checks.
@@ -2962,8 +2728,7 @@ module load_queue #(
   // Per-source fill qualification supplies the L0 RAM write enables and
   // coherent valid bits. The default valid-bit path uses cache_fill_valid.
   (* keep = "true" *) logic cache_fill_if_slot, cache_fill_if_fast;
-`ifdef FROST_COHERENT_CLUSTER
-  if (COHERENT_CLUSTER) begin : gen_coherent_fill_slot_permission
+  if (1'b1) begin : gen_coherent_fill_slot_permission
     (* keep = "true" *) logic [CachedSlots-1:0] slot_permission;
     for (genvar slot = 0; slot < CachedSlots; slot++) begin : gen_slot
       assign slot_permission[slot] = cs_valid[slot] && !cs_drop[slot] &&
@@ -2973,24 +2738,18 @@ module load_queue #(
     assign cache_fill_if_slot = !i_flush_all && slot_permission[resp_slot];
 `ifndef SYNTHESIS
 `ifdef FORMAL
-    always_comb begin
+    always_comb
 `else
-    always @(posedge i_clk) begin
+    always @(posedge i_clk)
 `endif
+    begin
       p_fill_slot_select_exact : assert (cache_fill_if_slot ==
           (cs_valid[resp_slot] && !i_flush_all && !cs_drop[resp_slot] &&
            lq_valid[cs_idx[resp_slot]] && !cs_is_lr[resp_slot] && !cs_is_amo[resp_slot] &&
            !(cs_inval[resp_slot] || cs_inval_now[resp_slot] || cs_coh_inval_now[resp_slot])));
     end
 `endif
-  end else begin : gen_direct_fill_slot_permission
-`endif
-  assign cache_fill_if_slot = cs_valid[resp_slot] && !i_flush_all && !cs_drop[resp_slot] &&
-      lq_valid[cs_idx[resp_slot]] && !cs_is_lr[resp_slot] && !cs_is_amo[resp_slot] &&
-      !(cs_inval[resp_slot] || cs_inval_now[resp_slot] || cs_coh_inval_now[resp_slot]);
-`ifdef FROST_COHERENT_CLUSTER
   end
-`endif
   assign cache_fill_if_fast = mem_outstanding && !i_flush_all && !drop_mem_response_pending &&
       lq_valid[fast_idx] && !fast_is_mmio && !fast_is_lr && !fast_is_amo &&
       (CACHE_UNCACHED_DATA || (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
@@ -3150,15 +2909,9 @@ module load_queue #(
   // therefore does not need the age-dependent issued_entry_flushed term,
   // which itself implies i_flush_en. Full-flush, stale-response and live-tracker
   // checks remain in cache_fill_response_valid, exactly as in acceptance.
-`ifdef FROST_COHERENT_CLUSTER
-  if (COHERENT_CLUSTER) begin : gen_coherent_response_bypass
+  if (1'b1) begin : gen_coherent_response_bypass
     assign resp_bypass_ok = !i_flush_all && coherent_response_bypass;
-  end else begin : gen_direct_response_bypass
-`endif
-  assign resp_bypass_ok = cache_fill_response_valid && !issued_is_amo && !mem_response_error;
-`ifdef FROST_COHERENT_CLUSTER
   end
-`endif
 
   assign resp_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
                             resp_bypass_ok && !i_flush_en;
@@ -3182,25 +2935,12 @@ module load_queue #(
   // State transitions still use fully qualified fires.
   logic resp_bypass_data_sel;
   logic misalign_bypass_data_sel;
-`ifdef FROST_COHERENT_CLUSTER
-  if (COHERENT_CLUSTER) begin : gen_coherent_response_data_select
+  if (1'b1) begin : gen_coherent_response_data_select
     assign resp_bypass_data_sel = coherent_response_bypass;
-  end else begin : gen_direct_response_data_select
-`endif
-  assign resp_bypass_data_sel = i_mem_read_valid && resp_outstanding &&
-      !resp_drop && lq_valid[issued_idx] && !issued_is_amo && !mem_response_error;
-`ifdef FROST_COHERENT_CLUSTER
   end
-`endif
-`ifdef FROST_COHERENT_CLUSTER
-  if (COHERENT_CLUSTER) begin : gen_coherent_bypass_payload
+  if (1'b1) begin : gen_coherent_bypass_payload
     assign misalign_bypass_data_sel = !resp_bypass_data_sel && coherent_address_fault;
-  end else begin : gen_direct_bypass_payload
-`endif
-  assign misalign_bypass_data_sel = !resp_bypass_data_sel && sq_check_misaligned;
-`ifdef FROST_COHERENT_CLUSTER
   end
-`endif
 
   // cache_hit_fast_path is already flush-gated at its own assign.
   assign cache_hit_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
@@ -3286,19 +3026,14 @@ module load_queue #(
   logic [FLEN-1:0] cdb_value_next;
   assign cdb_value_nonresponse = issue_cdb_found ? issue_cdb_result.value :
       misalign_bypass_data_sel ? {{(FLEN - XLEN) {1'b0}}, sq_check_addr_q} :
-`ifdef FROST_COHERENT_CLUSTER
-      (COHERENT_CLUSTER ? coherent_forward_ok : sq_do_forward) ?
+      (coherent_forward_ok) ?
       fwd_bypass_value : cache_hit_bypass_value;
-`else
-      sq_do_forward ? fwd_bypass_value : cache_hit_bypass_value;
-`endif
   assign cdb_value_select_response = !issue_cdb_found &&
       !misalign_bypass_data_sel && resp_bypass_data_sel;
   assign cdb_value_next = cdb_value_select_response ? resp_bypass_value : cdb_value_nonresponse;
 
-`ifdef FROST_COHERENT_CLUSTER
 `ifndef SYNTHESIS
-  if (COHERENT_CLUSTER) begin : gen_coherent_bypass_payload_check
+  if (1'b1) begin : gen_coherent_bypass_payload_check
     always_ff @(posedge i_clk) begin
       if (issue_cdb_fire || bypass_fire) begin
         p_coherent_cdb_value_exact : assert (cdb_value_next ==
@@ -3322,12 +3057,9 @@ module load_queue #(
     end
   end
 `endif
-`endif
 `ifdef F_LQ_RESPONSE_FINAL_PROOF
   always_comb begin
-`ifdef FROST_COHERENT_CLUSTER
-    if (!COHERENT_CLUSTER || issue_cdb_fire || bypass_fire)
-`endif
+    if (issue_cdb_fire || bypass_fire)
     p_response_final_mux_exact :
     assert (cdb_value_next == (issue_cdb_found ? issue_cdb_result.value : bypass_value));
   end
@@ -3338,7 +3070,6 @@ module load_queue #(
   assign free_entry_en  = issue_cdb_fire || bypass_fire;
   assign free_entry_idx = issue_cdb_fire ? issue_cdb_idx : bypass_idx;
 
-`ifdef FROST_COHERENT_CLUSTER
   logic [DEPTH-1:0] coherent_free_entry;
   for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_coherent_free_entry
     wire issue_match = issue_cdb_idx == IdxWidth'(entry);
@@ -3349,14 +3080,14 @@ module load_queue #(
   end
 `ifndef SYNTHESIS
 `ifdef FORMAL
-  always_comb begin
+  always_comb
 `else
-  always @(posedge i_clk) begin
+  always @(posedge i_clk)
 `endif
+  begin
     p_free_mask_exact : assert (coherent_free_entry ==
         (free_entry_en ? (DEPTH'(1) << free_entry_idx) : '0));
   end
-`endif
 `endif
 
   // ===========================================================================
@@ -3603,8 +3334,7 @@ module load_queue #(
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
        launch_mem_issue || misalign_bypass_fire || older_amo_write_pending);
 
-`ifdef FROST_COHERENT_CLUSTER
-  if (COHERENT_CLUSTER) begin : gen_coherent_stage_control
+  if (1'b1) begin : gen_coherent_stage_control
     wire take = coherent_stage_take[0];
     wire stage_clear = coherent_stage_clear;
     wire probe = coherent_probe_ok && !coherent_local_hold && !i_flush_all && !i_flush_en &&
@@ -3644,45 +3374,18 @@ module load_queue #(
       end
     end
 `ifdef FORMAL
-    always_comb begin
+    always_comb
 `else
-    always @(posedge i_clk) begin
+    always @(posedge i_clk)
 `endif
+    begin
       p_stage_state_exact : assert (
           {sq_check_pending_next, sq_check_no_older_store_next,
            sq_check_phase2_next, sq_check_in_flight_mask_next} ==
           {reference_pending, reference_no_older, reference_phase2, reference_mask});
     end
 `endif
-  end else begin : gen_direct_stage_control
-`endif
-  always_comb begin
-    // U = capture/replace (disjoint from sq_check_flushed, see above).
-    // Clear branch: launch_mem_issue remains low through bus_busy stalls.
-    sq_check_pending_next = sq_check_capture || sq_check_replace ||
-        (sq_check_pending && !sq_check_flushed && !sq_check_stage_clears);
-
-    sq_check_no_older_store_next = ((sq_check_capture || sq_check_replace) && i_sq_empty) ||
-        (sq_check_no_older_store_q && !sq_check_flushed &&
-         !(sq_check_capture || sq_check_replace));
-
-    sq_check_phase2_next = ((sq_check_capture || sq_check_replace) && i_sq_empty) ||
-        (!(sq_check_capture || sq_check_replace) && !sq_check_flushed &&
-         (sq_check_phase2 ||
-          (!sq_check_stage_clears &&
-           ((sq_check_pending && i_sq_empty && !sq_commit_check_block) || o_sq_check_valid))));
-
-    for (int i = 0; i < DEPTH; i++) begin
-      sq_check_in_flight_mask_next[i] =
-          ((sq_check_capture || sq_check_replace) && issue_mem_onehot[i]) ||
-          (sq_check_in_flight_mask[i] && !sq_check_flushed && !sq_check_stage_clears &&
-           !(sq_check_capture || sq_check_replace));
-    end
   end
-
-`ifdef FROST_COHERENT_CLUSTER
-  end
-`endif
 
   // ===========================================================================
   // Sequential Logic
@@ -4029,19 +3732,11 @@ module load_queue #(
       // -----------------------------------------------------------------
       // Entry Freeing + Head Advancement
       // -----------------------------------------------------------------
-`ifdef FROST_COHERENT_CLUSTER
-      if (COHERENT_CLUSTER) begin
+      begin
         for (int entry = 0; entry < DEPTH; entry++) begin
           if (coherent_free_entry[entry]) lq_valid[entry] <= 1'b0;
         end
-      end else begin
-`endif
-      if (free_entry_en) begin
-        lq_valid[free_entry_idx] <= 1'b0;
       end
-`ifdef FROST_COHERENT_CLUSTER
-      end
-`endif
 
       // -----------------------------------------------------------------
       // Allocation: initialize a new physical generation (control signals
@@ -4163,29 +3858,15 @@ module load_queue #(
   logic sq_check_is_lr_next;
   logic sq_check_is_amo_next;
   logic [1:0] sq_check_fault_kind_next;
-`ifdef FROST_COHERENT_CLUSTER
-  assign sq_check_payload_en = COHERENT_CLUSTER ? coherent_stage_take[0] :
-      (sq_check_capture || sq_check_replace);
-`else
-  assign sq_check_payload_en = sq_check_capture || sq_check_replace;
-`endif
+  assign sq_check_payload_en = coherent_stage_take[0];
   // sq_check_capture with the pending bit taken from one copy.
   function automatic logic sq_check_capture_on(input logic pending);
     sq_check_capture_on = (!pending || sq_check_will_clear) && issue_mem_found &&
         sq_check_gate_early;
   endfunction
-`ifdef FROST_COHERENT_CLUSTER
-  assign sq_check_payload_en_b = COHERENT_CLUSTER ? coherent_stage_take[1] :
-      (sq_check_capture_on(sq_check_pending_copy[0]) || sq_check_replace);
-  assign sq_check_payload_en_c = COHERENT_CLUSTER ? coherent_stage_take[2] :
-      (sq_check_capture_on(sq_check_pending_copy[1]) || sq_check_replace);
-  assign sq_check_payload_en_d = COHERENT_CLUSTER ? coherent_stage_take[3] :
-      (sq_check_capture_on(sq_check_pending_copy[2]) || sq_check_replace);
-`else
-  assign sq_check_payload_en_b = sq_check_capture_on(sq_check_pending_copy[0]) || sq_check_replace;
-  assign sq_check_payload_en_c = sq_check_capture_on(sq_check_pending_copy[1]) || sq_check_replace;
-  assign sq_check_payload_en_d = sq_check_capture_on(sq_check_pending_copy[2]) || sq_check_replace;
-`endif
+  assign sq_check_payload_en_b = coherent_stage_take[1];
+  assign sq_check_payload_en_c = coherent_stage_take[2];
+  assign sq_check_payload_en_d = coherent_stage_take[3];
   assign issue_mem_uses_addr_update = issue_mem_from_update;
   assign issue_mem_addr = issue_mem_uses_addr_update ? i_addr_update.address
                                                      : lq_address_issue_mem_rd;
@@ -4567,17 +4248,13 @@ module load_queue #(
     end
   end
 
-`ifdef FROST_COHERENT_CLUSTER
-  if (COHERENT_CLUSTER) begin : gen_coherent_reservation_size
+  if (1'b1) begin : gen_coherent_reservation_size
     always_ff @(posedge i_clk) begin
       if (accept_mem_response && issued_is_lr && !mem_response_error)
         reservation_size <= 3'(issued_size);
     end
-  end else begin : gen_no_coherent_reservation_size
-    assign reservation_size = '0;
   end
 
-`endif
   // -----------------------------------------------------------------
   // Internal data: CDB completion stage result
   // -----------------------------------------------------------------
@@ -4591,9 +4268,8 @@ module load_queue #(
     end
   end
 
-`ifdef FROST_COHERENT_CLUSTER
   wire [riscv_pkg::ExcCauseWidth-1:0] coherent_cdb_cause_next;
-  if (COHERENT_CLUSTER) begin : gen_coherent_cdb_cause
+  if (1'b1) begin : gen_coherent_cdb_cause
     (* keep = "true" *) riscv_pkg::exc_cause_t cause;
     always_comb begin
       cause = !misalign_bypass_data_sel ? riscv_pkg::exc_cause_t'('0) :
@@ -4618,10 +4294,7 @@ module load_queue #(
       end
     end
 `endif
-  end else begin : gen_direct_cdb_cause
-    assign coherent_cdb_cause_next = '0;
   end
-`endif
 
   // Capture implies an available slot and no partial flush, so issue_cdb_found
   // equals issue_cdb_fire. The reduced bypass selects are likewise equivalent
@@ -4629,16 +4302,10 @@ module load_queue #(
   always_ff @(posedge i_clk) begin
     if (issue_cdb_fire || bypass_fire) begin
       cdb_stage_data.value <= cdb_value_next;
-`ifdef FROST_COHERENT_CLUSTER
-      if (COHERENT_CLUSTER) cdb_stage_data.exc_cause <= coherent_cdb_cause_next;
-`endif
+      cdb_stage_data.exc_cause <= coherent_cdb_cause_next;
       if (issue_cdb_found) begin
         cdb_stage_data.tag       <= issue_cdb_result.tag;
         cdb_stage_data.exception <= issue_cdb_result.exception;
-`ifdef FROST_COHERENT_CLUSTER
-        if (!COHERENT_CLUSTER)
-`endif
-        cdb_stage_data.exc_cause <= issue_cdb_result.exc_cause;
         cdb_stage_data.fp_flags  <= issue_cdb_result.fp_flags;
       end else begin
         cdb_stage_data.tag <= bypass_tag;
@@ -4646,19 +4313,6 @@ module load_queue #(
         // Parked MISALIGN/PAGE/ACCESS select load causes 4/13/5 or AMO causes 6/15/7
         // (Spike and the privileged spec). Otherwise PMA access faults outrank
         // misalignment; see lq_bypass_cause.
-`ifdef FROST_COHERENT_CLUSTER
-        if (!COHERENT_CLUSTER)
-`endif
-        cdb_stage_data.exc_cause <= !misalign_bypass_data_sel ? riscv_pkg::exc_cause_t'('0) :
-            lq_bypass_cause(
-            riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q),
-`ifdef FROST_COHERENT_CLUSTER
-            COHERENT_CLUSTER ? !sq_check_pma_ok : sq_check_pma_fault,
-`else
-            sq_check_pma_fault,
-`endif
-            sq_check_is_amo_q
-        );
         cdb_stage_data.fp_flags <= '0;
       end
     end
@@ -5839,7 +5493,6 @@ module load_queue #(
 `endif
 `endif
 
-`ifdef FROST_COHERENT_CLUSTER
 `ifdef COHERENT_LQ_LOCAL_PROOF
   logic [1:0] f_coherent_past = '0;
   always_ff @(posedge i_clk) begin
@@ -5861,5 +5514,4 @@ module load_queue #(
   end
 `endif
 
-`endif
 endmodule : load_queue

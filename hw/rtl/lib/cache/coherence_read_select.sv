@@ -112,10 +112,11 @@ module coherence_read_select #(
     ref_selected_address = i_addr[ref_index*ADDR_WIDTH+:ADDR_WIDTH];
   end
 `ifdef FORMAL
-  always_comb begin
+  always_comb
 `else
-  always @(posedge i_clk) begin
+  always @(posedge i_clk)
 `endif
+  begin
     p_read_select_exact : assert (o_found == ref_found && o_index == ref_index);
     if (o_found) p_read_address_exact : assert (o_address == ref_selected_address);
   end

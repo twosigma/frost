@@ -29,9 +29,6 @@
  */
 
 module store_queue #(
-`ifdef FROST_COHERENT_CLUSTER
-    parameter bit COHERENT_CLUSTER = 1'b0,
-`endif
     parameter bit CACHE_NORMAL_MEMORY = 1'b0,
     parameter int unsigned DEPTH = riscv_pkg::SqDepth,  // 8
     // Rely on dispatch to check SQ room. Its conservative registered full flags
@@ -47,14 +44,12 @@ module store_queue #(
     parameter longint unsigned CACHED_BASE = riscv_pkg::DdrBase,
     parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
 ) (
-`ifdef FROST_COHERENT_CLUSTER
     input logic i_coherent_store_pending = 1'b0,
     input logic i_coherent_store_ready = 1'b1,
     input logic i_coherent_sc_pending = 1'b0,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_coherent_sc_tag = '0,
     output logic o_coherent_write_sc,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_write_tag,
-`endif
     input logic i_clk,
     input logic i_rst_n,
 
@@ -629,8 +624,7 @@ module store_queue #(
   end
 `endif
 
-`ifdef FROST_COHERENT_CLUSTER
-  if (COHERENT_CLUSTER) begin : gen_coherent_drain
+  if (1'b1) begin : gen_coherent_drain
     logic drain_pending;
     assign drain_pending = i_coherent_store_pending || i_coherent_sc_pending ||
         (o_mem_write_en && o_mem_write_is_cached);
@@ -638,18 +632,7 @@ module store_queue #(
     assign o_committed_empty_rob = committed_empty_rob_q && !drain_pending;
     assign o_committed_empty_trap = committed_empty_trap_q && !drain_pending;
     assign o_committed_empty_lq = committed_empty_lq_q && !drain_pending;
-  end else begin : gen_line_drain
-    assign o_committed_empty = committed_empty_q;
-    assign o_committed_empty_rob = committed_empty_rob_q;
-    assign o_committed_empty_trap = committed_empty_trap_q;
-    assign o_committed_empty_lq = committed_empty_lq_q;
   end
-`else
-  assign o_committed_empty = committed_empty_q;
-  assign o_committed_empty_rob = committed_empty_rob_q;
-  assign o_committed_empty_trap = committed_empty_trap_q;
-  assign o_committed_empty_lq = committed_empty_lq_q;
-`endif
 
   logic [DEPTH*ReorderBufferTagWidth-1:0] sq_rob_tag_flat;
   logic [DEPTH*XLEN-1:0] sq_address_flat;
@@ -910,22 +893,16 @@ module store_queue #(
     end
   end
 
-`ifdef FROST_COHERENT_CLUSTER
   logic coherent_selected_sc, coherent_launch_ok;
   assign coherent_selected_sc = i_coherent_sc_pending && sq_is_sc[drain_idx_q] &&
       sq_rob_tag[drain_idx_q] == i_coherent_sc_tag;
   assign coherent_launch_ok = !i_coherent_store_pending &&
       (!i_coherent_sc_pending || coherent_selected_sc) &&
       (!mem_write_addr_cached_for_plain_next || i_coherent_store_ready || coherent_selected_sc);
-`endif
   assign drain_ready = sq_valid[drain_idx_q] &&
                        (sq_committed[drain_idx_q] || uncached_precommit_ready) &&
                        sq_addr_valid[drain_idx_q] && sq_data_valid[drain_idx_q] &&
-`ifdef FROST_COHERENT_CLUSTER
-                       !sq_sent[drain_idx_q] && (!COHERENT_CLUSTER || coherent_launch_ok);
-`else
-                       !sq_sent[drain_idx_q];
-`endif
+                       !sq_sent[drain_idx_q] && (coherent_launch_ok);
 
   logic [       riscv_pkg::XLEN-1:0] mem_write_addr_next;
   logic [riscv_pkg::MemDataBits-1:0] mem_write_data_next;
@@ -1010,18 +987,13 @@ module store_queue #(
       mem_write_entry_idx_stg <= drain_idx_q;
       mem_write_completes_stg <= mem_write_completes_next;
     end
-`ifdef FROST_COHERENT_CLUSTER
   end
 
-  if (COHERENT_CLUSTER) begin : gen_coherent_write_metadata
+  if (1'b1) begin : gen_coherent_write_metadata
     always_ff @(posedge i_clk) begin
       o_coherent_write_sc  <= sq_is_sc[drain_idx_q];
       o_coherent_write_tag <= sq_rob_tag[drain_idx_q];
     end
-  end else begin : gen_no_coherent_write_metadata
-    assign o_coherent_write_sc  = 1'b0;
-    assign o_coherent_write_tag = '0;
-`endif
   end
 
   // ===========================================================================
@@ -1859,11 +1831,7 @@ module store_queue #(
         p_flush_all_empties : assert (o_empty && o_count == '0);
         p_flush_all_clears_visibility :
         assert (sq_valid == '0 && sq_addr_valid == '0 && sq_data_valid == '0 &&
-`ifdef FROST_COHERENT_CLUSTER
                 sq_committed == '0 && sq_sent == '0 && committed_empty_q);
-`else
-                sq_committed == '0 && sq_sent == '0 && o_committed_empty);
-`endif
         p_flush_all_suppresses_memory_write :
         assert (!o_mem_write_en && !o_cache_invalidate_valid && write_inflight_cnt == '0);
       end

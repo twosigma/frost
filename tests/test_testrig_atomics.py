@@ -154,12 +154,21 @@ def test_windows_hold_no_trap_or_flush(seed: int) -> None:
                 windows += 1
                 assert texts[-1].startswith("sc.")
                 assert not any(text.startswith("sc.") for text in texts[:-1])
+                last_lr = None
                 for text in texts:
                     access = _access(text, bases)
                     if access is None:
                         assert text.split()[0] in SAFE, text
                     else:
                         assert atomics.allows(regions, *access), text
+                        address, width, kind = access
+                        if kind == "lr":
+                            last_lr = address, width
+                        elif kind == "sc":
+                            assert last_lr is not None
+                            assert (address, width) == last_lr or (
+                                address >> 5 != last_lr[0] >> 5
+                            ), text
             else:
                 for text in texts:
                     access = _access(text, bases)

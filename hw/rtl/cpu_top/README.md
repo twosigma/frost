@@ -5,14 +5,19 @@
 ## Internal structure
 
 `cpu_top` composes one `frost_hart` with one `frost_cluster_memory`.
-The following table describes the default line-port configuration:
+The hart and shared memory communicate through coherent channels and the
+uncached data and instruction ports.
 
 | Module | Contents |
 | --- | --- |
-| `frost_hart` | `cpu_ooo` with its MMUs, walker, L0 and IMSIC files; the cached and uncached instruction fetch providers; the L1D and L1I in `frost_hart_cache` with the walker's coherence sequencer, the L1D's probe injection and the `fence.i` sequence; `cached_tier_adapter`; and `cpu_uncached_adapter` |
-| `frost_cluster_memory` | The coherent ingress register; the shared level in `frost_cluster_cache`, with the line arbiters, the DMA coherence sequencer, the stream prefetcher, the line-size adapter and the L2; and `cpu_memory_fabric` with its AXI master |
+| `frost_hart` | `cpu_ooo` with its MMUs, walker, L0 and IMSIC files; the instruction fetch providers; `coherent_hart_cache` with the S/M L1D, L1I, walker bridge and FENCE.I sequencing; and `cpu_uncached_adapter` |
+| `frost_cluster_memory` | The DMA ingress register; `coherence_home` with serialized acquisitions, the L2 array and victim ownership; and `cpu_memory_fabric` with its AXI master |
 
-They connect through the L1D's, the L1I's and the walker's line ports, the DMA sequencer's probes into the L1D with their acknowledgements and releases, its load-queue handshake, and the uncached data and instruction requests. Requests and responses on these memory ports pass through the line arbiters and the line-size adapter without a register stage. `cpu_top` itself latches the fatal indication and address from the hart's caches, the L2 and the uncached adapter, and assembles the caches' performance events for the hart's counters. Each parameter passes through to the module that uses it. With `ENABLE_CACHED_TIER=0`, neither module builds its caches, and each ties off its side of the line and coherence ports.
+The D/P/R/W/WA/G/C/U channels carry requests, probes, dirty data, grants
+and completion ownership. Dirty data merges through L2. `cpu_top` latches
+fatal indications and addresses from the hart, shared cache and uncached
+adapter. It supplies cache performance events to the hart's counters.
+`ENABLE_CACHED_TIER=0` omits the L1 and L2 caches and ties off their channels.
 
 ## Clock, reset and boot
 
@@ -181,7 +186,7 @@ An integration without debug ties the input controls/data low and supplies ordin
 
 `ENABLE_COHERENCE=0` is the supported default for an independent CPU. All coherent inputs may be tied low. Regardless of those input values, request-ready, response-valid, response-error, response-ID and response-data remain zero; no inbound traffic enters the hierarchy.
 
-With `ENABLE_COHERENCE=1`, `i_coherent_req_*` / `o_coherent_resp_*` expose the FROST 32-byte line protocol. This is a separate **incoming** interface, not another outgoing CPU memory master and not ACE/CHI. Requests carry full physical addresses, 256-bit data, 32 byte strobes, write/read selection and a 4-bit ID. Hold a request until valid/ready acceptance. Each accepted request produces one response pulse with the same ID, data and an error flag; there is no response-ready signal, so the agent must always be able to consume responses. With L2 prefetch enabled, agents must leave ID bit 3 clear. IDs cannot be reused while outstanding.
+With `ENABLE_COHERENCE=1`, `i_coherent_req_*` / `o_coherent_resp_*` expose the FROST 32-byte line protocol. This is a separate **incoming** interface, not another outgoing CPU memory master and not ACE/CHI. Requests carry full physical addresses, 256-bit data, 32 byte strobes, write/read selection and a 4-bit ID. Hold a request until valid/ready acceptance. Each accepted request produces one response pulse with the same ID, data and an error flag; there is no response-ready signal, so the agent must always be able to consume responses. IDs cannot be reused while outstanding.
 
 The ingress registers each accepted request before cache admission. It holds the payload through hierarchy backpressure and can accept a replacement on the edge that admits the previous request. CPU reset clears this request register and cancels inbound coherence requests and responses. Reset or reinitialize each connected agent's outstanding-request ownership at the same time; pre-reset ingress requests are not guaranteed a response. Outgoing AXI transactions already presented still drain as described above.
 
@@ -190,28 +195,14 @@ Requests must be aligned to 32 bytes and remain within the configured cached mem
 L2 is inside this single-hart `cpu_top`. The outgoing AXI master does not
 provide coherence between separate CPU instances.
 
-The `FROST_COHERENT_CLUSTER` compile definition enables the coherent ports
-and parameters. Its sources are in `coherent_cluster.f`, which precedes
-`cpu_top.f` or `frost.f` in that configuration. `COHERENT_CLUSTER=1` selects
-the [coherent one-hart cache path](../lib/cache/README.md#coherent-one-hart-cache-path).
 `frost_hart` contains `coherent_hart_cache`, and `frost_cluster_memory`
-contains `coherence_home`. Their D/P/R/W/WA/G/C/U channels carry permission,
-probe, dirty-data and completion ownership. The uncached ports and memory
-fabric use the same interfaces in both selections. The coherent queues and
-atomic ownership registers belong only to the selected generate branches.
-Without the compile definition, the modules expose only the line-port
-interfaces and contain the line-port hierarchy.
-`ENABLE_COHERENCE` controls DMA ingress independently of this selection.
-`ENABLE_CACHED_TIER=0` builds neither cache path.
+contains `coherence_home`. The [cache interface](../lib/cache/README.md#coherent-one-hart-cache-path)
+uses S/M permissions for one hart and one serialized home acquisition.
+There is no E permission or second hart. `ENABLE_COHERENCE` controls DMA
+ingress. `ENABLE_CACHED_TIER=0` omits the cache hierarchy.
 
-The coherent selection has one hart with S/M permissions and one serialized
-home acquisition. It does not provide a second hart or E permission.
 Reset and fatal handling cover the whole cluster. Debug halt and WFI leave
-cache, probe and completion service running. The X3 build accepts
-`--coherent-cluster`, supplies the compile definition and parameter, and
-records the selection as `coherent_cluster` in its
-netlist configuration. The option defaults to false, and checkpoint reuse
-requires the recorded selection to match.
+cache, probe and completion service running.
 
 ## BRAM-only profile
 
@@ -258,7 +249,7 @@ The standalone bench executes real instructions while an external AXI model vari
 | Ordering and fences | `cpu_top_boundary`, `data_mem_request_router_axi`, and `tomasulo_wrapper_axi` check store draining, delayed B responses, and store-conditional completion |
 | Interrupts | `cpu_top_boundary` asserts an interrupt during side-effecting reads and writes and checks that it waits for completion without replaying the access |
 | Reset and boot address | `cpu_top_boundary`, `cpu_axi_master`, and `cpu_memory_fabric` distinguish queued cancellation from draining presented transactions, check retained external RAM, and boot at a new address |
-| Inactive coherence | `cpu_top_boundary` checks that the disabled ingress remains inactive while outgoing traffic runs |
+| Disabled DMA ingress | `cpu_top_boundary` checks that the disabled ingress remains inactive while outgoing traffic runs |
 | Configurable PMA | `cpu_top_custom_map` and `cpu_top_strict_map` check relocated regions and rejection outside the configured device windows |
 | Optional Normal read caching | `cpu_top_writethrough` repeats the standalone boundary cases and checks FENCE.I, read faults, precise SC/AMO errors, and fatal buffered writes; `cpu_top_writethrough_custom_map` relocates the regions above 4 GiB |
 | Read-cache coherence and fills | `load_queue_writethrough` prevents stale responses from replacing newer store data; `lq_l0_cache_128` / `256` check byte updates and invalidation priority; `fetch_provider_direct` checks hits, conflicts, straddles, late fills and executable-region limits |

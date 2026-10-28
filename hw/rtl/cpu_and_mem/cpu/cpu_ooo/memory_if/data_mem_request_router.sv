@@ -47,9 +47,6 @@
  */
 
 module data_mem_request_router #(
-`ifdef FROST_COHERENT_CLUSTER
-    parameter bit COHERENT_CLUSTER = 1'b0,
-`endif
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     // MMIO register window base, by default the PMA's (riscv_pkg). The UART
     // RX data and FIFO pop registers are fixed offsets from it.
@@ -63,7 +60,6 @@ module data_mem_request_router #(
     // The legacy local-memory wrapper retains its one-cycle path at zero.
     parameter bit VARIABLE_UNCACHED = 1'b0
 ) (
-`ifdef FROST_COHERENT_CLUSTER
     input logic [1:0] i_coherent_read_kind = '0,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_coherent_read_tag = '0,
     input logic i_coherent_sq_sc = 1'b0,
@@ -75,7 +71,6 @@ module data_mem_request_router #(
     output logic o_coherent_write_atomic,
     output logic o_coherent_write_sc,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_write_tag,
-`endif
     input logic i_clk,
     input logic i_rst,
     // Fatal-stop gate for new accesses. Payload selection stays independent
@@ -253,7 +248,6 @@ module data_mem_request_router #(
   localparam logic [XLEN-1:0] Fifo0MmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'h8);
   localparam logic [XLEN-1:0] Fifo1MmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'hC);
 
-`ifdef FROST_COHERENT_CLUSTER
   logic                                                        sq_write_done_fast;
   logic                                                        write_port_busy;
   logic                                                        amo_mem_write_done;
@@ -279,31 +273,6 @@ module data_mem_request_router #(
   logic                                                        device_accept_armed_q;
   logic                                                        lq_pending_mmio_read_accepted;
   logic                                                        lq_mem_read_accepted;
-`else
-  logic                                                     sq_write_done_fast;
-  logic                                                     write_port_busy;
-  logic                                                     amo_mem_write_done;
-  logic                                                     lq_mem_request_valid;
-  logic                 [                         XLEN-1:0] lq_mem_request_addr;
-  logic                 [riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_request_id;
-  logic                 [riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_request_id_eff;
-  logic                                                     lq_mem_request_no_merge;
-  riscv_pkg::mem_size_e                                     lq_mem_request_size;
-  logic                                                     lq_mem_request_no_merge_eff;
-  logic                 [                         XLEN-1:0] lq_mem_request_addr_eff;
-  logic                 [       riscv_pkg::MemDataBits-1:0] lq_mem_read_data;
-  logic                                                     lq_mem_read_valid;
-  logic                                                     lq_live_request_requires_park;
-  logic                                                     lq_pending_request_requires_drain;
-  logic                                                     lq_live_read_accepted;
-  logic                                                     lq_pending_read_candidate;
-  logic                                                     lq_pending_read_accepted;
-  logic                                                     lq_pending_read_shielded;
-  logic                                                     device_request_pending_q;
-  logic                                                     device_accept_armed_q;
-  logic                                                     lq_pending_mmio_read_accepted;
-  logic                                                     lq_mem_read_accepted;
-`endif
 
   // Effective queued-load address: held copy if a request is pending, else the
   // live LQ read address.
@@ -314,8 +283,7 @@ module data_mem_request_router #(
   assign lq_mem_request_id_eff = lq_mem_request_valid ? lq_mem_request_id : i_lq_mem_read_id;
   assign lq_mem_request_no_merge_eff =
       lq_mem_request_valid ? lq_mem_request_no_merge : i_lq_mem_read_no_merge;
-`ifdef FROST_COHERENT_CLUSTER
-  if (COHERENT_CLUSTER) begin : gen_coherent_metadata
+  if (1'b1) begin : gen_coherent_metadata
     always_ff @(posedge i_clk) begin
       if (!lq_mem_request_valid) begin
         coherent_kind_q <= i_coherent_read_kind;
@@ -330,17 +298,7 @@ module data_mem_request_router #(
     assign o_coherent_write_sc = sq_mem_write_en && sq_mem_write_is_cached && i_coherent_sq_sc;
     assign o_coherent_write_atomic = o_coherent_write_sc || amo_cached_write_launch;
     assign o_coherent_write_tag = sq_mem_write_en ? i_coherent_sq_tag : i_coherent_amo_tag;
-  end else begin : gen_no_coherent_metadata
-    assign coherent_kind_q = '0;
-    assign coherent_tag_q = '0;
-    assign o_coherent_read_kind = '0;
-    assign o_coherent_read_tag = '0;
-    assign o_coherent_read_size = '0;
-    assign o_coherent_write_sc = 1'b0;
-    assign o_coherent_write_atomic = 1'b0;
-    assign o_coherent_write_tag = '0;
   end
-`endif
   // The live device-quadrant decode forces capture. Acceptance and MMIO
   // effects use only the held address.
   assign lq_live_request_requires_park = riscv_pkg::pma_device_quadrant(lq_mem_read_addr);

@@ -66,6 +66,8 @@ module coherence_home #(
     input logic [4:0] i_mem_resp_id,
     input logic [8*LINE_BYTES-1:0] i_mem_resp_data,
     input logic i_mem_resp_error,
+    output cache_perf_pkg::cache_instance_perf_events_t o_perf_events,
+    output cache_perf_pkg::cache_write_perf_events_t o_write_perf_events,
     output logic o_fatal,
     output logic [ADDR_WIDTH-1:0] o_fatal_addr
 );
@@ -126,6 +128,63 @@ module coherence_home #(
   logic [5:0] active_tid;
   logic probe_matches;
   wire lookup_fire = active && phase_q == Lookup && !address_locked && array_req_ready;
+
+  // Shared L2 events count demand and non-maintenance PutM lookups.
+  // Probe replies merge into the selected line without another access event.
+  logic perf_lookup, perf_miss_q, perf_write_fill_q, perf_maintenance;
+  assign perf_maintenance = put_active_q ? put_q.maintenance : demand.maintenance;
+  assign perf_lookup = active && phase_q == LookupWait && array_resp_valid &&
+      !perf_maintenance;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      perf_miss_q <= 1'b0;
+      perf_write_fill_q <= 1'b0;
+      o_perf_events <= '0;
+      o_write_perf_events <= '0;
+    end else begin
+      if (perf_lookup) begin
+        perf_miss_q <= !array_hit;
+        perf_write_fill_q <= !array_hit && !put_active_q &&
+            demand.opcode == coherence_pkg::DMAWrite;
+      end
+      if ((phase_q == UpdateWait && array_req_ready) || phase_q == Result) begin
+        perf_miss_q <= 1'b0;
+        perf_write_fill_q <= 1'b0;
+      end
+      o_perf_events <= '0;
+      o_perf_events.access <= perf_lookup;
+      o_perf_events.hit <= perf_lookup && array_hit;
+      o_perf_events.miss <= perf_lookup && !array_hit;
+      o_perf_events.miss_outstanding <= cache_perf_pkg::MissOutstandingBits'(perf_miss_q);
+      o_perf_events.writeback <= active && phase_q == Detach && wb_free &&
+          line_state_q == coherence_pkg::Modified && !perf_maintenance;
+      o_perf_events.slot_full_stall <= active && !perf_maintenance &&
+          (phase_q == Recall || phase_q == Detach) &&
+          line_state_q == coherence_pkg::Modified && !wb_free;
+      o_perf_events.conflict_stall <= active && !perf_maintenance &&
+          phase_q == Lookup && address_locked;
+      o_write_perf_events <= '0;
+      o_write_perf_events.write_fill <= perf_lookup && !array_hit && !put_active_q &&
+          demand.opcode == coherence_pkg::DMAWrite;
+      o_write_perf_events.write_fill_outstanding <=
+          cache_perf_pkg::MissOutstandingBits'(perf_write_fill_q);
+    end
+  end
+`ifdef FORMAL
+  always @(posedge i_clk) begin
+    if (f_past_valid) begin
+      assert (o_perf_events.access == (o_perf_events.hit || o_perf_events.miss));
+      assert (!(o_perf_events.hit && o_perf_events.miss));
+      assert (o_perf_events.miss_outstanding <= 1);
+      assert (o_write_perf_events.write_fill_outstanding <= o_perf_events.miss_outstanding);
+      if (o_write_perf_events.write_fill) assert (o_perf_events.miss);
+      if ($past(i_rst)) begin
+        assert (o_perf_events == '0);
+        assert (o_write_perf_events == '0);
+      end
+    end
+  end
+`endif
 
   assign demand_in = i_d;
   assign put_in = i_w;
@@ -540,10 +599,11 @@ module coherence_home #(
   end
 `ifndef SYNTHESIS
 `ifdef FORMAL
-  always_comb begin
+  always_comb
 `else
-  always @(posedge i_clk) begin
+  always @(posedge i_clk)
 `endif
+  begin
     p_probe_valid_exact : assert (o_p_valid == (active && phase_q == ProbeSend));
   end
   always_ff @(posedge i_clk) begin

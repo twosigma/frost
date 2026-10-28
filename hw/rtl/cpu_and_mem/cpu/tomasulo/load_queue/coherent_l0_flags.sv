@@ -89,10 +89,11 @@ module coherent_l0_flags #(
       for (int k = 0; k < 4; k++) reference[{i_line_index, 2'(k)}] = 1'b0;
   end
 `ifdef FORMAL
-  always_comb begin
+  always_comb
 `else
-  always @(posedge i_clk) begin
+  always @(posedge i_clk)
 `endif
+  begin
     p_valid_exact : assert (o_next == reference);
   end
 `endif

@@ -54,5 +54,6 @@ $(ROOT)/hw/rtl/cpu_top/frost_hart.sv
 $(ROOT)/hw/rtl/cpu_top/frost_cluster_memory.sv
 $(ROOT)/hw/rtl/cpu_top/cpu_top.sv
 $(ROOT)/hw/rtl/soc_top/soc_axi_slave.sv
+$(ROOT)/hw/rtl/cpu_and_mem/debug/debug_store_mirror_hold.sv
 $(ROOT)/hw/rtl/soc_top/soc_top.sv
 $(ROOT)/hw/rtl/platform_top.sv

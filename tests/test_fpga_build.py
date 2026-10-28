@@ -305,7 +305,7 @@ def test_build_main_refreshes_actual_completed_report_stage(
     (work_dir / fpga_build.X3_NETLIST_CONFIG_NAME).write_text(
         json.dumps(
             {
-                "schema": "x3_netlist_config_v4",
+                "schema": "x3_netlist_config_v5",
                 "cpu_base_clock_hz": 322265625,
                 "cpu_clock_div": 1,
                 "ddr_capacity_log2_bytes": 30,
@@ -2691,7 +2691,7 @@ def _sweep_input(script_dir: Path, step: str) -> Path:
     (work_dir / fpga_build.X3_NETLIST_CONFIG_NAME).write_text(
         json.dumps(
             {
-                "schema": "x3_netlist_config_v4",
+                "schema": "x3_netlist_config_v5",
                 "cpu_base_clock_hz": 322265625,
                 "cpu_clock_div": 1,
                 "ddr_capacity_log2_bytes": 30,
@@ -4291,9 +4291,8 @@ def test_post_synth_promotion_stamps_the_netlist_perf_counters(
     fpga_build.copy_results_to_main_work(source, dest, "post_synth.dcp", "post_synth")
     stamp = dest / fpga_build.X3_NETLIST_CONFIG_NAME
     assert json.loads(stamp.read_text()) == {
-        "schema": "x3_netlist_config_v4",
+        "schema": "x3_netlist_config_v5",
         "perf_counters": int(perf_counters),
-        "coherent_cluster": False,
         "cpu_base_clock_hz": 322265625,
         "cpu_clock_div": int(divider),
         "ddr_capacity_log2_bytes": 30,
@@ -4663,6 +4662,7 @@ def test_single_core_performance_flag_is_not_an_option(
     "overrides, publish",
     [
         ({}, True),
+        ({"schema": "x3_netlist_config_v4"}, False),
         ({"schema": "x3_netlist_config_v2", "single_core_performance": 0}, False),
         ({"schema": "x3_netlist_config_v2", "single_core_performance": 1}, False),
         ({"cpu_base_clock_hz": 300000000}, False),
@@ -4686,7 +4686,7 @@ def test_resumed_build_uses_recorded_configuration_for_readme(
     work = _sweep_input(tmp_path, "place")
     if overrides is not None:
         config = {
-            "schema": "x3_netlist_config_v4",
+            "schema": "x3_netlist_config_v5",
             "cpu_base_clock_hz": 322265625,
             "cpu_clock_div": 1,
             "ddr_capacity_log2_bytes": 30,
@@ -5170,68 +5170,3 @@ def test_vcu118_rejects_unsupported_clock_options(
         else "unrecognized arguments"
     )
     assert expected in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("selected", [False, True])
-def test_coherent_cluster_manifest(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selected: bool
-) -> None:
-    """The cluster selection survives checkpoint promotion and gates resume."""
-    monkeypatch.setenv("FROST_COHERENT_CLUSTER", str(int(selected)))
-    monkeypatch.setenv("FROST_DDR_CAPACITY_LOG2_BYTES", "30")
-    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
-    source, dest = tmp_path / "source", tmp_path / "dest"
-    source.mkdir()
-    dest.mkdir()
-    (source / "post_synth.dcp").write_bytes(b"checkpoint")
-    fpga_build.copy_results_to_main_work(source, dest, "post_synth.dcp", "post_synth")
-    config = json.loads((dest / fpga_build.X3_NETLIST_CONFIG_NAME).read_text())
-    assert config["coherent_cluster"] == selected
-    assert fpga_build.require_x3_netlist_configuration(dest, 1, 30, selected)
-    assert not fpga_build.require_x3_netlist_configuration(dest, 1, 30, not selected)
-    assert fpga_build.is_reference_x3_netlist(dest) == (not selected)
-
-
-@pytest.mark.parametrize("stored", [False, True])
-@pytest.mark.parametrize("requested", [False, True])
-def test_coherent_configuration_on_final_resume(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    stored: bool,
-    requested: bool,
-) -> None:
-    """Check the cluster selection before using a completed checkpoint."""
-    work = _sweep_input(tmp_path, "post_second_route_physopt")
-    _write_qualified_descendant(work, "post_second_route_physopt", final=True)
-    manifest = work / fpga_build.X3_NETLIST_CONFIG_NAME
-    config = json.loads(manifest.read_text())
-    config["coherent_cluster"] = stored
-    manifest.write_text(json.dumps(config))
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "build.py",
-            "x3",
-            "--start-at",
-            "bitstream",
-            "--build-dir",
-            str(work.parent),
-            "--coherent-cluster" if requested else "--no-coherent-cluster",
-        ],
-    )
-    calls = []
-
-    def resume(*_args: Any, **_kwargs: Any) -> bool:
-        calls.append(True)
-        return True
-
-    monkeypatch.setattr(fpga_build, "generate_bitstream", resume)
-    if requested == stored:
-        fpga_build.main()
-        assert calls == [True]
-    else:
-        with pytest.raises(SystemExit) as error:
-            fpga_build.main()
-        assert error.value.code == 1
-        assert not calls

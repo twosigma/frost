@@ -257,6 +257,11 @@ class LQInterface:
         self.dut.i_coh_block_addr.value = 0
         self.dut.i_coh_query_addr.value = 0
         self.dut.i_coh_admit_pulse.value = 0
+        self.dut.i_coherent_cut_hold.value = 0
+        self.dut.i_coherent_block_valid.value = 0
+        self.dut.i_coherent_block_addr.value = 0
+        # This unit fixture grants protection before presenting an atomic read.
+        self.dut.i_coherent_atomic_protected.value = 1
 
     # =========================================================================
     # Allocation

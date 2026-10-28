@@ -96,6 +96,11 @@ def test_sail_ddr_capacity_matches_frost(
     assert len(ddr) == 1
     assert int(ddr[0]["size"]["value"], 16) == 1 << capacity_log2_bytes
     assert len(regions) == len(test_testrig.atomics.load_regions())
+    assert config["platform"]["reservation"] == {
+        "reservation_set_size_exp": 5,
+        "require_exact_reservation_addr": False,
+        "invalidate_on_same_hart_store": True,
+    }
 
 
 def test_dii_packet_wire_layout() -> None:

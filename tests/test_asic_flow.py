@@ -291,6 +291,7 @@ def test_sources_makefile_is_independent_of_the_mount_point(tmp_path: Path) -> N
     makefile = orfs.sources_makefile(
         [converted, str(rtl / "frost.sv"), str(rtl / "lib" / "cdc" / "cdc_sync.sv")],
         converted,
+        [str(rtl / "lib/cache")],
     )
 
     assert makefile.splitlines()[1:] == [
@@ -298,9 +299,12 @@ def test_sources_makefile_is_independent_of_the_mount_point(tmp_path: Path) -> N
         "  $(WORK_HOME)/src/nic.v \\",
         "  $(FROST_ROOT)/hw/rtl/frost.sv \\",
         "  $(FROST_ROOT)/hw/rtl/lib/cdc/cdc_sync.sv",
+        "export VERILOG_INCLUDE_DIRS = $(FROST_ROOT)/hw/rtl/lib/cache",
     ]
     with pytest.raises(ValueError, match="outside the repository"):
         orfs.sources_makefile([converted, "/elsewhere/top.sv"], converted)
+    with pytest.raises(ValueError, match="include directory outside"):
+        orfs.sources_makefile([converted], converted, ["/elsewhere/headers"])
 
 
 # Stand-ins for the OpenSTA commands that asic/constraint.sdc calls. Each

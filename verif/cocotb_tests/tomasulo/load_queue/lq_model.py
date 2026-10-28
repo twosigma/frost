@@ -409,8 +409,8 @@ class LQModel:
         e.data = self.amo_old_value & MASK64
         e.data_valid = True
         self.amo_state = 0
-        # The write cancels a reservation on its doubleword, as a store does.
-        if self.reservation_valid and (e.address >> 3) == (self.reservation_addr >> 3):
+        # The write cancels a reservation on its 32-byte line.
+        if self.reservation_valid and (e.address >> 5) == (self.reservation_addr >> 5):
             self.reservation_valid = False
 
     def sc_clear_reservation(self) -> None:

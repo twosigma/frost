@@ -25,9 +25,6 @@ module cpu_top #(
     // stores. Device accesses retain precise, narrow AXI completion.
     parameter bit CACHE_NORMAL_MEMORY = 1'b0,
     parameter int unsigned NORMAL_FETCH_LINES = 256,
-`ifdef FROST_COHERENT_CLUSTER
-    parameter bit COHERENT_CLUSTER = 1'b0,
-`endif
     parameter int unsigned ENABLE_CACHED_TIER = 1,
     parameter int unsigned L0_CACHE_DEPTH = CACHE_NORMAL_MEMORY ?
         riscv_pkg::NormalLqL0Depth : riscv_pkg::LqL0Depth,
@@ -236,43 +233,8 @@ module cpu_top #(
       $fatal(1, "cpu_top: executable uncached prefix exceeds the memory region");
   end
 
-  localparam int unsigned LineIdBits = 4;
-  localparam int unsigned L1LineBytes = 32;
   localparam int unsigned NormalFetchBytes = CACHE_NORMAL_MEMORY ? 32 : 8;
-  // Width of the L1D's upstream ids, which carry the DMA probes (see
-  // frost_hart_cache).
-  localparam int unsigned ProbeIdxBitsMin = $clog2(riscv_pkg::DmaCoherenceLocks + 1);
-  localparam int unsigned ProbeIdxBits =
-      (LineIdBits > ProbeIdxBitsMin) ? LineIdBits : ProbeIdxBitsMin;
-  localparam int unsigned L1dIdBits = ProbeIdxBits + 1;
 
-  // The hart's L1D, L1I, and walker line ports into the cluster memory.
-  logic l1d_down_req_valid, l1d_down_req_ready, l1d_down_req_write, l1d_down_req_maintenance;
-  logic [riscv_pkg::PhysAddrBits-1:0] l1d_down_req_addr;
-  logic [L1LineBytes*8-1:0] l1d_down_req_wdata, l1d_down_resp_rdata;
-  logic [L1LineBytes-1:0] l1d_down_req_wstrb;
-  logic [LineIdBits-1:0] l1d_down_req_id, l1d_down_resp_id;
-  logic l1d_down_resp_valid, l1d_down_resp_error;
-  logic l1i_down_req_valid, l1i_down_req_ready, l1i_down_req_write;
-  logic [riscv_pkg::PhysAddrBits-1:0] l1i_down_req_addr;
-  logic [L1LineBytes*8-1:0] l1i_down_req_wdata, l1i_down_resp_rdata;
-  logic [L1LineBytes-1:0] l1i_down_req_wstrb;
-  logic [LineIdBits-2:0] l1i_down_req_id, l1i_down_resp_id;
-  logic l1i_down_resp_valid, l1i_down_resp_error;
-  logic walk_down_req_valid, walk_down_req_ready;
-  logic [riscv_pkg::PhysAddrBits-1:0] walk_down_req_addr;
-  logic [LineIdBits-2:0] walk_down_req_id, walk_down_resp_id;
-  logic [L1LineBytes*8-1:0] walk_down_resp_rdata;
-  logic walk_down_resp_valid, walk_down_resp_error;
-  // The cluster's DMA sequencer: probes into the L1D and the load-queue
-  // handshake.
-  logic dma_probe_req_valid, dma_probe_req_ready, dma_probe_req_inval;
-  logic [riscv_pkg::PhysAddrBits-1:0] dma_probe_req_addr;
-  logic [L1dIdBits-1:0] dma_probe_req_id, dma_probe_ack_id, dma_probe_release_id;
-  logic dma_probe_ack_valid, dma_probe_release_valid;
-  logic coh_admit_valid, coh_admit_ready, coh_inval_valid, coh_inval_done, coh_release_valid;
-  logic [riscv_pkg::DmaCoherenceLockBits-1:0] coh_admit_slot, coh_inval_slot, coh_release_slot;
-  logic [riscv_pkg::PhysAddrBits-1:0] coh_admit_addr;
   // The hart's uncached data and instruction requests.
   logic data_req_valid, data_req_ready, data_req_write;
   logic [riscv_pkg::PhysAddrBits-1:0] data_req_addr;
@@ -322,7 +284,6 @@ module cpu_top #(
   assign cache_perf_events.hierarchy = cache_hierarchy_perf_events;
   assign cache_perf_events.l1i_fetch_miss_stall = l1i_fetch_miss_stall;
 
-`ifdef FROST_COHERENT_CLUSTER
   logic coherent_d_valid;
   logic coherent_d_ready;
   logic [riscv_pkg::PhysAddrBits+311:0] coherent_d;
@@ -348,11 +309,7 @@ module cpu_top #(
   logic coherent_u_ready;
   logic [riscv_pkg::PhysAddrBits+14:0] coherent_u;
 
-`endif
   frost_hart #(
-`ifdef FROST_COHERENT_CLUSTER
-      .COHERENT_CLUSTER(COHERENT_CLUSTER),
-`endif
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .NORMAL_FETCH_LINES(NORMAL_FETCH_LINES),
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
@@ -371,7 +328,6 @@ module cpu_top #(
       .DATA_BYTES(L2_LINE_BYTES),
       .DATA_PROT(AXI_MEMORY_PROT)
   ) hart (
-`ifdef FROST_COHERENT_CLUSTER
       .o_coherent_d_valid(coherent_d_valid),
       .i_coherent_d_ready(coherent_d_ready),
       .o_coherent_d(coherent_d),
@@ -396,7 +352,6 @@ module cpu_top #(
       .i_coherent_u_valid(coherent_u_valid),
       .o_coherent_u_ready(coherent_u_ready),
       .i_coherent_u(coherent_u),
-`endif
       .i_clk,
       .i_rst,
       .i_boot_addr,
@@ -433,55 +388,6 @@ module cpu_top #(
       .o_l1i_perf_events(l1i_perf_events),
       .o_l1i_fetch_miss_stall(l1i_fetch_miss_stall),
       .i_cache_perf_events(cache_perf_events),
-      .o_l1d_down_req_valid(l1d_down_req_valid),
-      .i_l1d_down_req_ready(l1d_down_req_ready),
-      .o_l1d_down_req_write(l1d_down_req_write),
-      .o_l1d_down_req_maintenance(l1d_down_req_maintenance),
-      .o_l1d_down_req_addr(l1d_down_req_addr),
-      .o_l1d_down_req_wdata(l1d_down_req_wdata),
-      .o_l1d_down_req_wstrb(l1d_down_req_wstrb),
-      .o_l1d_down_req_id(l1d_down_req_id),
-      .i_l1d_down_resp_valid(l1d_down_resp_valid),
-      .i_l1d_down_resp_id(l1d_down_resp_id),
-      .i_l1d_down_resp_rdata(l1d_down_resp_rdata),
-      .i_l1d_down_resp_error(l1d_down_resp_error),
-      .o_l1i_down_req_valid(l1i_down_req_valid),
-      .i_l1i_down_req_ready(l1i_down_req_ready),
-      .o_l1i_down_req_write(l1i_down_req_write),
-      .o_l1i_down_req_addr(l1i_down_req_addr),
-      .o_l1i_down_req_wdata(l1i_down_req_wdata),
-      .o_l1i_down_req_wstrb(l1i_down_req_wstrb),
-      .o_l1i_down_req_id(l1i_down_req_id),
-      .i_l1i_down_resp_valid(l1i_down_resp_valid),
-      .i_l1i_down_resp_id(l1i_down_resp_id),
-      .i_l1i_down_resp_rdata(l1i_down_resp_rdata),
-      .i_l1i_down_resp_error(l1i_down_resp_error),
-      .o_walk_down_req_valid(walk_down_req_valid),
-      .i_walk_down_req_ready(walk_down_req_ready),
-      .o_walk_down_req_addr(walk_down_req_addr),
-      .o_walk_down_req_id(walk_down_req_id),
-      .i_walk_down_resp_valid(walk_down_resp_valid),
-      .i_walk_down_resp_id(walk_down_resp_id),
-      .i_walk_down_resp_rdata(walk_down_resp_rdata),
-      .i_walk_down_resp_error(walk_down_resp_error),
-      .i_dma_probe_req_valid(dma_probe_req_valid),
-      .o_dma_probe_req_ready(dma_probe_req_ready),
-      .i_dma_probe_req_addr(dma_probe_req_addr),
-      .i_dma_probe_req_inval(dma_probe_req_inval),
-      .i_dma_probe_req_id(dma_probe_req_id),
-      .o_dma_probe_ack_valid(dma_probe_ack_valid),
-      .o_dma_probe_ack_id(dma_probe_ack_id),
-      .i_dma_probe_release_valid(dma_probe_release_valid),
-      .i_dma_probe_release_id(dma_probe_release_id),
-      .i_coh_admit_valid(coh_admit_valid),
-      .i_coh_admit_slot(coh_admit_slot),
-      .i_coh_admit_addr(coh_admit_addr),
-      .o_coh_admit_ready(coh_admit_ready),
-      .i_coh_inval_valid(coh_inval_valid),
-      .i_coh_inval_slot(coh_inval_slot),
-      .o_coh_inval_done(coh_inval_done),
-      .i_coh_release_valid(coh_release_valid),
-      .i_coh_release_slot(coh_release_slot),
       .o_data_req_valid(data_req_valid),
       .i_data_req_ready(data_req_ready),
       .o_data_req_write(data_req_write),
@@ -506,9 +412,6 @@ module cpu_top #(
   );
 
   frost_cluster_memory #(
-`ifdef FROST_COHERENT_CLUSTER
-      .COHERENT_CLUSTER(COHERENT_CLUSTER),
-`endif
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
       .ENABLE_COHERENCE(ENABLE_COHERENCE),
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
@@ -526,7 +429,6 @@ module cpu_top #(
       .AXI_USER_BITS(AXI_USER_BITS),
       .AXI_MEMORY_PROT(AXI_MEMORY_PROT)
   ) cluster_memory (
-`ifdef FROST_COHERENT_CLUSTER
       .i_coherent_d_valid(coherent_d_valid),
       .o_coherent_d_ready(coherent_d_ready),
       .i_coherent_d(coherent_d),
@@ -551,7 +453,6 @@ module cpu_top #(
       .o_coherent_u_valid(coherent_u_valid),
       .i_coherent_u_ready(coherent_u_ready),
       .o_coherent_u(coherent_u),
-`endif
       .i_clk,
       .i_rst,
       .i_axi_rst,
@@ -567,55 +468,6 @@ module cpu_top #(
       .o_coherent_resp_id,
       .o_coherent_resp_rdata,
       .o_coherent_resp_error,
-      .i_l1d_down_req_valid(l1d_down_req_valid),
-      .o_l1d_down_req_ready(l1d_down_req_ready),
-      .i_l1d_down_req_write(l1d_down_req_write),
-      .i_l1d_down_req_maintenance(l1d_down_req_maintenance),
-      .i_l1d_down_req_addr(l1d_down_req_addr),
-      .i_l1d_down_req_wdata(l1d_down_req_wdata),
-      .i_l1d_down_req_wstrb(l1d_down_req_wstrb),
-      .i_l1d_down_req_id(l1d_down_req_id),
-      .o_l1d_down_resp_valid(l1d_down_resp_valid),
-      .o_l1d_down_resp_id(l1d_down_resp_id),
-      .o_l1d_down_resp_rdata(l1d_down_resp_rdata),
-      .o_l1d_down_resp_error(l1d_down_resp_error),
-      .i_l1i_down_req_valid(l1i_down_req_valid),
-      .o_l1i_down_req_ready(l1i_down_req_ready),
-      .i_l1i_down_req_write(l1i_down_req_write),
-      .i_l1i_down_req_addr(l1i_down_req_addr),
-      .i_l1i_down_req_wdata(l1i_down_req_wdata),
-      .i_l1i_down_req_wstrb(l1i_down_req_wstrb),
-      .i_l1i_down_req_id(l1i_down_req_id),
-      .o_l1i_down_resp_valid(l1i_down_resp_valid),
-      .o_l1i_down_resp_id(l1i_down_resp_id),
-      .o_l1i_down_resp_rdata(l1i_down_resp_rdata),
-      .o_l1i_down_resp_error(l1i_down_resp_error),
-      .i_walk_down_req_valid(walk_down_req_valid),
-      .o_walk_down_req_ready(walk_down_req_ready),
-      .i_walk_down_req_addr(walk_down_req_addr),
-      .i_walk_down_req_id(walk_down_req_id),
-      .o_walk_down_resp_valid(walk_down_resp_valid),
-      .o_walk_down_resp_id(walk_down_resp_id),
-      .o_walk_down_resp_rdata(walk_down_resp_rdata),
-      .o_walk_down_resp_error(walk_down_resp_error),
-      .o_dma_probe_req_valid(dma_probe_req_valid),
-      .i_dma_probe_req_ready(dma_probe_req_ready),
-      .o_dma_probe_req_addr(dma_probe_req_addr),
-      .o_dma_probe_req_inval(dma_probe_req_inval),
-      .o_dma_probe_req_id(dma_probe_req_id),
-      .i_dma_probe_ack_valid(dma_probe_ack_valid),
-      .i_dma_probe_ack_id(dma_probe_ack_id),
-      .o_dma_probe_release_valid(dma_probe_release_valid),
-      .o_dma_probe_release_id(dma_probe_release_id),
-      .o_coh_admit_valid(coh_admit_valid),
-      .o_coh_admit_slot(coh_admit_slot),
-      .o_coh_admit_addr(coh_admit_addr),
-      .i_coh_admit_ready(coh_admit_ready),
-      .o_coh_inval_valid(coh_inval_valid),
-      .o_coh_inval_slot(coh_inval_slot),
-      .i_coh_inval_done(coh_inval_done),
-      .o_coh_release_valid(coh_release_valid),
-      .o_coh_release_slot(coh_release_slot),
       .i_data_req_valid(data_req_valid),
       .o_data_req_ready(data_req_ready),
       .i_data_req_write(data_req_write),

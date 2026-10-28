@@ -11,6 +11,7 @@ aigsmt boolector
 abc bmc3
 
 [script]
+read -sv cache_perf_pkg.sv
 read -sv coherence_pkg.sv coherence_request_endpoint.sv coherence_put_endpoint.sv coherence_read_flags.sv coherence_read_select.sv
 read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
@@ -32,3 +33,4 @@ opt
 ../hw/rtl/lib/cache/coherence_read_flags.sv
 ../hw/rtl/lib/cache/coherence_read_select.sv
 ../hw/rtl/lib/cache/coherence_read_payload.sv
+../hw/rtl/lib/cache/cache_perf_pkg.sv

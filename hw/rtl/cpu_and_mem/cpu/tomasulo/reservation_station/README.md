@@ -155,7 +155,7 @@ window holds a ready entry; when it holds none, port 1 has nothing to issue.
 balanced tree. Each subtree reports whether it holds a ready entry, its first
 ready non-branch entry, and its first ready non-branch entry other than its
 own first ready entry. Merging pairs of subtrees gives the serial answer in
-log2(window) levels. The coherent INT selection uses
+log2(window) levels. The INT station uses
 `coherent_rs_issue2_selector`. An entry is eligible when it is ready, has no
 branch class and has a ready entry at a lower index. A one-hot mask isolates
 the lowest eligible entry with `mask & (~mask + 1)` at the window width.
@@ -170,11 +170,11 @@ Each combination also selects the immediate-use bit before live CDB validity.
 The secondary clear mask applies port permission to the winner mask. A zero
 winner mask clears no entry.
 
-The coherent selection uses first-free and second-free one-hot masks for
+With `PREPARE_ISSUE_CONTROLS=1`, the station uses first-free and second-free one-hot masks for
 allocation controls and repair targets. Index zero is the fallback when the
 requested free entry is absent. Slot 2 selects its mask from dispatch intent.
 
-The coherent selection computes the shift amount for each entry before
+With `PREPARE_ISSUE_CONTROLS=1`, the station computes the shift amount for each entry before
 winner selection. The entry chooses its immediate or effective second operand.
 The occupancy count selects among the four issue outcomes after dispatch
 arithmetic; flush selects the surviving-entry count.
@@ -196,11 +196,11 @@ read once at issue live in payload storage with one write port per
 dispatch slot: the operation, immediate, JALR offset, rounding mode,
 prediction bits, memory-op flags, CSR address and immediate, checkpoint ID,
 compressed flag, and a branch-class predecode. Port 0 uses distributed RAM.
-The coherent INT selection
+The INT station
 stores port 1's payload in a two-write register bank. The issue winner's
 one-hot mask selects its row. Write port index 1, corresponding to dispatch
 slot 2, wins a same-row write collision.
-Other selections read port 1's payload from a separate distributed-RAM copy.
+Stations with `PREPARE_ISSUE_CONTROLS=0` read port 1's payload from a separate distributed-RAM copy.
 INT_RS splits port 0's copy into groups of four entries that follow the
 two-level issue select. The valid bits gate every read, so stale payload
 behind a free entry is never used.
@@ -277,7 +277,7 @@ issued while another entry was also ready; the wrapper exports it for MEM_RS.
 | Parameter | Default | Wrapper setting | Effect |
 |-----------|---------|-----------------|--------|
 | `DEPTH` | 8 | Per instance (table above) | Number of entries |
-| `COHERENT_CLUSTER` | 0 | 1 on coherent INT | Select coherent issue controls, count and full flags from prepared outcomes; use prefix eligibility, arithmetic selection and per-entry shift values for port 1 |
+| `PREPARE_ISSUE_CONTROLS` | 0 | 1 on INT | Compute issue controls, count and full flags from prepared outcomes; use prefix eligibility, arithmetic selection and per-entry shift values for port 1 |
 | `HAS_SRC3` | 1 | 1 on FP, 0 elsewhere | Third source operand, for FMA |
 | `DUAL_ISSUE` | 0 | 1 on INT | Second issue port |
 | `ISSUE2_WINDOW` | 0 (all entries) | 8 on INT | Port 1 considers only entries below this index |

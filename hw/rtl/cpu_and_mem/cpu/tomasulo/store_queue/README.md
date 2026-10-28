@@ -101,7 +101,7 @@ launches only when no other write is in flight, and nothing else launches until
 it completes. A cached write completes once the L1D has ordered it, so a store
 miss does not hold up the drain for the line fill.
 
-With `COHERENT_CLUSTER=1`, cached ordinary stores may complete into one
+Cached ordinary stores may complete into one
 pending L1D record. That record participates in committed-empty and fence,
 Device and serializer drains. It blocks subsequent ordinary SQ launches
 until its bytes reach M. Cached SC writes carry their selected ROB tag and
@@ -119,7 +119,7 @@ commit slot. Precise uncached stores report completion before retirement
 and free their SQ owner after B. Slot 2 retires only
 plain stores; the ROB keeps SCs and AMOs on slot 1. The committed-empty
 base status is a register, with copies for its distant consumers (the ROB,
-the trap unit, and the LQ). The coherent selection qualifies each output with
+the trap unit, and the LQ). Each output is qualified with
 pending ordinary stores, the selected SC write and the registered cached
 write strobe. Each commit port has a combinational copy
 (`i_commit_valid_comb*`) that feeds it directly, so the status turns

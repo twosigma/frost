@@ -16,7 +16,8 @@
 
 Drive the cache sequencer's admit, invalidate, and release handshakes against
 coherence/lq_coherence_port.sv, the LQ, and the SC pending unit. Sweep cycle
-alignments to check ordering with memory operations and flushes.
+alignments to check ordering with memory operations and flushes. The fixture
+models CPU atomic protection and home result and write-completion handshakes.
 """
 
 from typing import Any
@@ -67,14 +68,16 @@ def _mem_rs(tag: int, op: int, addr: int, value: int = 0) -> dict[str, Any]:
     )
 
 
-def _present_admit(dut: Any, addr: int = LINE) -> None:
-    dut.i_coh_admit_valid.value = 1
-    dut.i_coh_admit_slot.value = SLOT
-    dut.i_coh_admit_addr.value = addr
+def _present_admit(dut_if: TomasuloInterface, addr: int = LINE) -> None:
+    dut_if.coherence_admit_requested = True
+    dut_if.dut.i_coh_admit_slot.value = SLOT
+    dut_if.dut.i_coh_admit_addr.value = addr
+    dut_if._drive_coherent_cache()
 
 
-def _drop_admit(dut: Any) -> None:
-    dut.i_coh_admit_valid.value = 0
+def _drop_admit(dut_if: TomasuloInterface) -> None:
+    dut_if.coherence_admit_requested = False
+    dut_if._drive_coherent_cache()
 
 
 async def _release(dut: Any, dut_if: TomasuloInterface) -> None:
@@ -97,11 +100,11 @@ async def _wait_admitted(
     """
     for _ in range(max_cycles):
         if _mirror_holds(dut):
-            _drop_admit(dut)
+            _drop_admit(dut_if)
             return
-        if int(dut.o_coh_admit_ready.value):
+        if dut_if.coherence_admit_ready():
             await dut_if.step()  # the fire edge
-            _drop_admit(dut)
+            _drop_admit(dut_if)
             return
         await dut_if.step()
     raise AssertionError("line never admitted")
@@ -109,7 +112,7 @@ async def _wait_admitted(
 
 async def _admit_now(dut: Any, dut_if: TomasuloInterface, max_cycles: int = 16) -> None:
     """Present an admission for LINE and return in the cycle after it fired."""
-    _present_admit(dut)
+    _present_admit(dut_if)
     await dut_if.step()
     await _wait_admitted(dut, dut_if, max_cycles)
 
@@ -144,14 +147,14 @@ async def _serve_amo(
     dut_if.drive_lq_mem_response(0x0)
     for label in ("before the AMO's response", "in the AMO's response cycle"):
         if admit_presented:
-            assert not (int(dut.o_coh_admit_ready.value) or _mirror_holds(dut)), (
+            assert not (dut_if.coherence_admit_ready() or _mirror_holds(dut)), (
                 f"admitted {label}"
             )
         await dut_if.step()
     dut_if.clear_lq_mem_response()
     for _ in range(12):
         if admit_presented:
-            assert not (int(dut.o_coh_admit_ready.value) or _mirror_holds(dut)), (
+            assert not (dut_if.coherence_admit_ready() or _mirror_holds(dut)), (
                 "admitted with the AMO in flight"
             )
         if dut_if.read_amo_mem_write()["en"]:
@@ -162,7 +165,7 @@ async def _serve_amo(
     for _ in range(3):  # the write phase also refuses the admission
         await dut_if.step()
         if admit_presented:
-            assert not (int(dut.o_coh_admit_ready.value) or _mirror_holds(dut)), (
+            assert not (dut_if.coherence_admit_ready() or _mirror_holds(dut)), (
                 "admitted in the AMO's write phase"
             )
     dut_if.drive_amo_mem_write_done()
@@ -199,18 +202,18 @@ async def _amo_admission_trial(dut: Any, dut_if: TomasuloInterface, offset: int)
     )
     for cyc in range(OBSERVE_CYCLES):
         if cyc == offset:
-            _present_admit(dut)
+            _present_admit(dut_if)
             presented = True
         await dut_if.step()
         if presented and admit_seen is None:
             if _mirror_holds(dut):  # fired on this step's edge
                 admit_seen = cyc
-                _drop_admit(dut)
+                _drop_admit(dut_if)
                 dropped = True
-            elif int(dut.o_coh_admit_ready.value):
+            elif dut_if.coherence_admit_ready():
                 admit_seen = cyc  # fires on the next edge
         elif admit_seen is not None and not dropped:
-            _drop_admit(dut)  # the fire edge has passed: present nothing further
+            _drop_admit(dut_if)  # the fire edge has passed: present nothing further
             dropped = True
         if launched_at is None and dut_if.read_lq_mem_request()["en"]:
             launched_at = cyc
@@ -225,7 +228,7 @@ async def _amo_admission_trial(dut: Any, dut_if: TomasuloInterface, offset: int)
             )
         await _serve_amo(dut, dut_if, admit_presented=presented)
         if not presented:
-            _present_admit(dut)
+            _present_admit(dut_if)
             await dut_if.step()
         # The write has completed: the admission may fire any cycle now, and
         # the AMO's completion may pass on the CDB meanwhile.
@@ -233,7 +236,7 @@ async def _amo_admission_trial(dut: Any, dut_if: TomasuloInterface, offset: int)
         for _ in range(16):
             cdb = dut_if.read_cdb_output()
             seen_cdb = seen_cdb or (cdb.valid and cdb.tag == tag)
-            if _mirror_holds(dut) or int(dut.o_coh_admit_ready.value):
+            if _mirror_holds(dut) or dut_if.coherence_admit_ready():
                 break
             await dut_if.step()
         else:
@@ -255,7 +258,7 @@ async def _amo_admission_trial(dut: Any, dut_if: TomasuloInterface, offset: int)
     # Admitted first: the AMO stays staged until the release.
     if not dropped:
         await dut_if.step()  # the fire edge
-        _drop_admit(dut)
+        _drop_admit(dut_if)
     for _ in range(OBSERVE_CYCLES):
         await dut_if.step()
         assert not dut_if.read_lq_mem_request()["en"], (
@@ -277,6 +280,8 @@ async def _amo_admission_trial(dut: Any, dut_if: TomasuloInterface, offset: int)
 async def test_amo_never_splits_across_admission(dut: Any) -> None:
     """Sweep the admission across the AMO's dispatch-to-launch window."""
     dut_if, _ = await setup_test(dut)
+    dut_if.model_coherent_cache = True
+    await dut_if.reset_dut()
     outcomes = []
     for offset in range(0, 10):
         outcomes.append(await _amo_admission_trial(dut, dut_if, offset))
@@ -311,7 +316,7 @@ async def _lr_then_sc(
     commit = await wait_for_commit(dut_if)
     assert commit["tag"] == tag_lr
     if admit_before:
-        _present_admit(dut)
+        _present_admit(dut_if)
         for _ in range(admit_before):
             await dut_if.step()
 
@@ -367,22 +372,22 @@ async def _sc_admission_trial(dut: Any, dut_if: TomasuloInterface, offset: int) 
     )
     if presented and _mirror_holds(dut):
         admit_seen = -1  # admitted before the SC was even dispatched
-        _drop_admit(dut)
+        _drop_admit(dut_if)
         dropped = True
     for cyc in range(OBSERVE_CYCLES):
         if cyc == offset:
-            _present_admit(dut)
+            _present_admit(dut_if)
             presented = True
         await dut_if.step()
         if presented and admit_seen is None:
             if _mirror_holds(dut):
                 admit_seen = cyc
-                _drop_admit(dut)
+                _drop_admit(dut_if)
                 dropped = True
-            elif int(dut.o_coh_admit_ready.value):
+            elif dut_if.coherence_admit_ready():
                 admit_seen = cyc
         elif admit_seen is not None and not dropped:
-            _drop_admit(dut)
+            _drop_admit(dut_if)
             dropped = True
         cdb = dut_if.read_cdb_output()
         if fired_at is None and cdb.valid and cdb.tag == tag_sc:
@@ -399,10 +404,10 @@ async def _sc_admission_trial(dut: Any, dut_if: TomasuloInterface, offset: int) 
         commit = await wait_for_commit(dut_if)
         assert commit["tag"] == tag_sc
         if not presented:
-            _present_admit(dut)
+            _present_admit(dut_if)
         for _ in range(4):
             await dut_if.step()
-            assert not int(dut.o_coh_admit_ready.value), (
+            assert not dut_if.coherence_admit_ready(), (
                 f"offset {offset}: admitted before the SC's store drained"
             )
         await _drain_one_store(dut, dut_if)
@@ -417,7 +422,7 @@ async def _sc_admission_trial(dut: Any, dut_if: TomasuloInterface, offset: int) 
     )
     if not dropped:
         await dut_if.step()  # the fire edge
-        _drop_admit(dut)
+        _drop_admit(dut_if)
     for _ in range(OBSERVE_CYCLES):
         await dut_if.step()
         cdb = dut_if.read_cdb_output()
@@ -439,6 +444,8 @@ async def _sc_admission_trial(dut: Any, dut_if: TomasuloInterface, offset: int) 
 async def test_sc_never_fires_across_admission(dut: Any) -> None:
     """Sweep the admission across the SC's dispatch-to-fire window."""
     dut_if, _ = await setup_test(dut)
+    dut_if.model_coherent_cache = True
+    await dut_if.reset_dut()
     outcomes = []
     for offset in range(-4, 12):
         outcomes.append(await _sc_admission_trial(dut, dut_if, offset))
@@ -448,8 +455,10 @@ async def test_sc_never_fires_across_admission(dut: Any) -> None:
 
 @cocotb.test()
 async def test_flushed_sc_leaves_line_admittable(dut: Any) -> None:
-    """A full flush at any cycle around an SC's fire never leaves its window stuck open."""
+    """Defer a requested flush through protected SC completion and admit a probe."""
     dut_if, _ = await setup_test(dut)
+    dut_if.model_coherent_cache = True
+    await dut_if.reset_dut()
     for delay in range(0, 12):
         await dut_if.reset_dut()
         tag_sc = await _lr_then_sc(dut, dut_if)
@@ -458,6 +467,18 @@ async def test_flushed_sc_leaves_line_admittable(dut: Any) -> None:
             await dut_if.step()
             if dut_if.read_commit()["valid"] and dut_if.read_commit()["tag"] == tag_sc:
                 committed = True
+        # CPU protection defers unrelated flushes through selected SC completion.
+        for _ in range(40):
+            if not dut_if.coherence_atomic_active:
+                break
+            if dut_if.read_sq_mem_write()["en"] or int(
+                dut.u_sq.write_inflight_cnt.value
+            ):
+                await _drain_one_store(dut, dut_if)
+            else:
+                await dut_if.step()
+        else:
+            raise AssertionError(f"flush delay {delay}: protected SC never completed")
         dut_if.drive_flush_all()
         await dut_if.step()
         dut_if.clear_flush_all()
@@ -465,7 +486,7 @@ async def test_flushed_sc_leaves_line_admittable(dut: Any) -> None:
 
         # Drain any store committed before the flush; a squashed SC has none.
         # In either case, the line must become admittable.
-        _present_admit(dut)
+        _present_admit(dut_if)
         for _ in range(40):
             if (
                 dut_if.read_sq_mem_write()["en"]
@@ -475,7 +496,7 @@ async def test_flushed_sc_leaves_line_admittable(dut: Any) -> None:
                 dut_if.drive_sq_mem_write_done()
                 await dut_if.step()
                 dut_if.clear_sq_mem_write_done()
-            if _mirror_holds(dut) or int(dut.o_coh_admit_ready.value):
+            if _mirror_holds(dut) or dut_if.coherence_admit_ready():
                 break
             await dut_if.step()
         else:
@@ -490,6 +511,8 @@ async def test_flushed_sc_leaves_line_admittable(dut: Any) -> None:
 async def test_forwarded_load_is_validated(dut: Any) -> None:
     """A load that took its value from the store queue is replayed by a DMA write to its line."""
     dut_if, _ = await setup_test(dut)
+    dut_if.model_coherent_cache = True
+    await dut_if.reset_dut()
     dut_if.set_fu_ready(RS_MEM, True)
 
     # Hold an SW to WORD uncommitted in the store queue.
@@ -559,6 +582,8 @@ async def test_flushed_forward_is_not_observed(dut: Any) -> None:
     flush across the forwarding cycle.
     """
     dut_if, _ = await setup_test(dut)
+    dut_if.model_coherent_cache = True
+    await dut_if.reset_dut()
     for offset in range(0, 5):
         await dut_if.reset_dut()
         dut_if.set_fu_ready(RS_MEM, True)
@@ -620,6 +645,8 @@ async def test_surviving_forward_is_observed(dut: Any) -> None:
     must flag L whichever cycle the flush landed in.
     """
     dut_if, _ = await setup_test(dut)
+    dut_if.model_coherent_cache = True
+    await dut_if.reset_dut()
     for offset in range(0, 5):
         await dut_if.reset_dut()
         dut_if.set_fu_ready(RS_MEM, True)

@@ -99,6 +99,9 @@ module coherence_cluster_test_harness #(
     input logic [4:0] i_mem_resp_id,
     input logic [8*LINE_BYTES-1:0] i_mem_resp_data,
     input logic i_mem_resp_error,
+    output cache_perf_pkg::cache_instance_perf_events_t o_l1d_perf,
+    output cache_perf_pkg::cache_instance_perf_events_t o_l2_perf,
+    output cache_perf_pkg::cache_write_perf_events_t o_l2_write_perf,
     output logic o_fatal,
     output logic [ADDR_WIDTH-1:0] o_fatal_addr
 );
@@ -203,6 +206,7 @@ module coherence_cluster_test_harness #(
       .i_u_valid(u_valid && !agent_q),
       .o_u_ready(hart_u_ready),
       .i_u(release_message),
+      .o_perf_events(o_l1d_perf),
       .o_fatal(hart_fatal),
       .o_fatal_addr(hart_fatal_addr)
   );
@@ -276,6 +280,8 @@ module coherence_cluster_test_harness #(
       .i_mem_resp_id(i_mem_resp_id),
       .i_mem_resp_data(i_mem_resp_data),
       .i_mem_resp_error(i_mem_resp_error),
+      .o_perf_events(o_l2_perf),
+      .o_write_perf_events(o_l2_write_perf),
       .o_fatal(home_fatal),
       .o_fatal_addr(home_fatal_addr)
   );

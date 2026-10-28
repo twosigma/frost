@@ -25,16 +25,10 @@
 // at the ROB head can always fire and a younger SC never blocks it.
 //
 // Rules:
-`ifdef FROST_COHERENT_CLUSTER
 //   * SC selection requires a matching ROB head, a physical address, an
 //     empty committed SQ and available completion resources.
 //   * A selected coherent SC completes independently of SQ drain status.
 //     Its held context survives flushes through result consumption.
-`else
-//   * An SC fires when head_tag matches a valid entry whose physical address
-//     is known and the SQ is committed-empty, unless the MEM adapter slot is
-//     busy or the coherence port holds SC fires (sc_fire_now).
-`endif
 //   * A partial flush clears only entries younger than the flush tag
 //     (is_younger); a full flush clears the table.
 //   * The table must not be smaller than the SQ (see ScTableDepth).
@@ -43,13 +37,9 @@
 // live in the wrapper.
 // =============================================================================
 module sc_pending_unit #(
-`ifdef FROST_COHERENT_CLUSTER
-    parameter bit COHERENT_CLUSTER = 1'b0,
-`endif
     parameter longint unsigned CACHED_BASE = riscv_pkg::DdrBase,
     parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
 ) (
-`ifdef FROST_COHERENT_CLUSTER
     input logic i_atomic_protected = 1'b0,
     input logic [2:0] i_reservation_size = '0,
     output logic o_coherent_arm_valid,
@@ -64,7 +54,6 @@ module sc_pending_unit #(
     input logic i_coherent_success = 1'b0,
     input logic i_coherent_error = 1'b0,
     output logic o_sc_value_zero,
-`endif
     input logic i_clk,
     input logic i_rst_n,
     input logic i_flush_en,
@@ -157,9 +146,7 @@ module sc_pending_unit #(
   logic [ScTableDepth-1:0] sct_addr_valid;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sct_tag[ScTableDepth];
   logic [riscv_pkg::XLEN-1:0] sct_addr[ScTableDepth];
-`ifdef FROST_COHERENT_CLUSTER
   logic [2:0] sct_size[ScTableDepth];
-`endif
   // Classify each stored PA in parallel with the ROB-head lookup. Selecting
   // one class bit avoids a wide address mux followed by range comparisons
   // on the uncached SC completion path.
@@ -168,7 +155,6 @@ module sc_pending_unit #(
     addr_is_cached = (addr >= riscv_pkg::XLEN'(CACHED_BASE)) &&
         (addr < riscv_pkg::XLEN'(CACHED_BASE) + riscv_pkg::XLEN'(CACHED_SIZE_BYTES));
   endfunction
-`ifdef FROST_COHERENT_CLUSTER
   localparam logic [riscv_pkg::XLEN-1:0] CachedBase = riscv_pkg::XLEN'(CACHED_BASE);
   localparam logic [riscv_pkg::XLEN-1:0] CachedSize = riscv_pkg::XLEN'(CACHED_SIZE_BYTES);
   localparam logic [riscv_pkg::XLEN-1:0] CachedLimit = CachedBase + CachedSize;
@@ -176,19 +162,17 @@ module sc_pending_unit #(
   localparam bit CachedRegionAligned = CachedSize != 0 &&
       (CachedSize & CachedMask) == 0 && (CachedBase & CachedMask) == 0 &&
       CachedLimit > CachedBase;
-  if (COHERENT_CLUSTER && CachedRegionAligned) begin : gen_coherent_cached_class
+  if (CachedRegionAligned) begin : gen_coherent_cached_class
     for (genvar i = 0; i < ScTableDepth; i++) begin : gen_slot
       assign sct_is_cached[i] = (sct_addr[i] & ~CachedMask) == CachedBase;
     end
   end else begin : gen_range_cached_class
-`endif
   for (genvar i = 0; i < ScTableDepth; i++) begin : gen_cached_class
     assign sct_is_cached[i] = addr_is_cached(sct_addr[i]);
   end
-`ifdef FROST_COHERENT_CLUSTER
   end
 `ifndef SYNTHESIS
-  if (COHERENT_CLUSTER) begin : gen_cached_class_check
+  if (1'b1) begin : gen_cached_class_check
     for (genvar i = 0; i < ScTableDepth; i++) begin : gen_slot
 `ifdef FORMAL
       always_comb begin
@@ -200,7 +184,6 @@ module sc_pending_unit #(
       end
     end
   end
-`endif
 `endif
 
   // Compare ROB ages relative to the head for partial flushes.
@@ -221,14 +204,9 @@ module sc_pending_unit #(
   logic [ScTableDepth-1:0] sct_resv_match;
   always_comb begin
     for (int i = 0; i < ScTableDepth; i++) begin
-`ifdef FROST_COHERENT_CLUSTER
-      sct_resv_match[i] = COHERENT_CLUSTER && sct_is_cached[i] ?
+      sct_resv_match[i] = sct_is_cached[i] ?
           (lq_reservation_addr == sct_addr[i] && i_reservation_size == sct_size[i]) :
           (lq_reservation_addr[riscv_pkg::XLEN-1:3] == sct_addr[i][riscv_pkg::XLEN-1:3]);
-`else
-      sct_resv_match[i] = (lq_reservation_addr[riscv_pkg::XLEN-1:3] ==
-                           sct_addr[i][riscv_pkg::XLEN-1:3]);
-`endif
     end
   end
 
@@ -237,9 +215,7 @@ module sc_pending_unit #(
   logic                       sct_hit_addr_valid;
   logic [riscv_pkg::XLEN-1:0] sct_hit_addr;
   logic                       sct_hit_resv_match;
-`ifdef FROST_COHERENT_CLUSTER
   logic [                2:0] sct_hit_size;
-`endif
   logic [   ScTableDepth-1:0] sct_hit_oh;
   always_comb begin
     sct_hit               = 1'b0;
@@ -247,9 +223,7 @@ module sc_pending_unit #(
     sct_hit_addr          = '0;
     sct_hit_resv_match    = (lq_reservation_addr[riscv_pkg::XLEN-1:3] == '0);
     sct_hit_oh            = '0;
-`ifdef FROST_COHERENT_CLUSTER
     sct_hit_size          = '0;
-`endif
     o_sc_head_query_match = 1'b0;
     o_sc_head_is_cached   = addr_is_cached('0);
     for (int i = 0; i < ScTableDepth; i++) begin
@@ -257,18 +231,12 @@ module sc_pending_unit #(
         sct_hit = 1'b1;
         sct_hit_addr_valid = sct_addr_valid[i];
         sct_hit_addr = sct_addr[i];
-`ifdef FROST_COHERENT_CLUSTER
         sct_hit_size = sct_size[i];
-`endif
         o_sc_head_is_cached = sct_is_cached[i];
         sct_hit_resv_match = sct_resv_match[i];
         sct_hit_oh[i] = 1'b1;
         // Use sct_hit_addr's highest-index priority, even if its address is invalid.
-`ifdef FROST_COHERENT_CLUSTER
         // Coherence queries compare complete DMA sectors.
-`else
-        // Coherence compares DMA lines, not the LR/SC doubleword granule.
-`endif
         o_sc_head_query_match = sct_addr_valid[i] &&
             (sct_addr[i][riscv_pkg::XLEN-1:riscv_pkg::DmaCoherenceLineLsb] ==
              i_coh_query_addr[riscv_pkg::XLEN-1:riscv_pkg::DmaCoherenceLineLsb]);
@@ -313,14 +281,13 @@ module sc_pending_unit #(
   logic sc_can_fire;
   logic sc_success;
   logic sc_fire_now;
-`ifdef FROST_COHERENT_CLUSTER
   logic sc_slot_ready, coherent_head;
   logic coherent_selected_q, coherent_sent_q;
   logic [riscv_pkg::XLEN-1:0] coherent_addr_q, coherent_vaddr_q, coherent_hit_vaddr;
   logic [2:0] coherent_size_q;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_tag_q;
 
-  if (COHERENT_CLUSTER) begin : gen_coherent_fault_address
+  if (1'b1) begin : gen_coherent_fault_address
     logic [riscv_pkg::XLEN-1:0] virtual_address_q[ScTableDepth];
     always_ff @(posedge i_clk) begin
       for (int slot = 0; slot < ScTableDepth; slot++) begin
@@ -336,40 +303,26 @@ module sc_pending_unit #(
         if (sct_hit_oh[slot]) coherent_hit_vaddr = virtual_address_q[slot];
       end
     end
-  end else begin : gen_no_coherent_fault_address
-    assign coherent_hit_vaddr = '0;
-    for (genvar slot = 0; slot < ScTableDepth; slot++) begin : gen_size
-      assign sct_size[slot] = '0;
-    end
   end
-`endif
 
   // The fire also waits for the entry's PA (i_sct_addr_fill_* under active
   // translation). Firing at the issue cycle would compare the VA against the
   // PA-domain reservation, and it would beat the MMU's fault delivery for an
   // SC whose translation is refused.
   assign sc_can_fire = sct_hit && sct_hit_addr_valid && sq_committed_empty;
-`ifdef FROST_COHERENT_CLUSTER
   // Coherent cached SC matches the exact physical address and W/D size.
   // Other SCs match the reserved doubleword by comparing address[XLEN-1:3].
   assign sc_success  = lq_reservation_valid && sct_hit_resv_match;
-`else
-  // The SC matches a reservation anywhere in the reserved doubleword
-  // (FROST's reservation granule): sct_hit_resv_match is
-  // lq_reservation_addr[XLEN-1:3] == sct_hit_addr[XLEN-1:3].
-  assign sc_success = lq_reservation_valid && sct_hit_resv_match;
-`endif
   // Wait for coherence permission and an idle MEM adapter input. A live store
   // fault is registered first; next cycle it takes priority over the SC result,
   // which the wrapper holds until the adapter is free.
-`ifdef FROST_COHERENT_CLUSTER
   riscv_pkg::fu_complete_t sc_fu_complete;
-  if (COHERENT_CLUSTER) begin : gen_coherent_completion
+  if (1'b1) begin : gen_coherent_completion
     assign sc_slot_ready = !mem_adapter_result_pending &&
                          !lq_fu_complete.valid &&
                          !sc_completion_pending &&
                          !store_misalign_fu_complete_reg.valid;
-    assign coherent_head = COHERENT_CLUSTER && o_sc_head_is_cached;
+    assign coherent_head = o_sc_head_is_cached;
     assign sc_fire_now = coherent_selected_q ?
         (coherent_sent_q && i_coherent_result_valid && sc_slot_ready) :
         (sc_can_fire && !i_coh_sc_hold && sc_slot_ready && (!coherent_head || !sc_success));
@@ -381,15 +334,7 @@ module sc_pending_unit #(
     assign o_coherent_size = coherent_size_q;
     assign o_coherent_tag = coherent_tag_q;
     assign o_coherent_result_ready = coherent_selected_q && coherent_sent_q && sc_slot_ready;
-`else
-  assign sc_fire_now = sc_can_fire && !i_coh_sc_hold &&
-                       !mem_adapter_result_pending &&
-                       !lq_fu_complete.valid &&
-                       !sc_completion_pending &&
-                       !store_misalign_fu_complete_reg.valid;
-`endif
 
-`ifdef FROST_COHERENT_CLUSTER
     always_ff @(posedge i_clk) begin
       if (!i_rst_n) begin
         coherent_selected_q <= 1'b0;
@@ -430,44 +375,6 @@ module sc_pending_unit #(
     end
     assign o_sc_fire_success = sc_fire_now &&
         (coherent_selected_q ? i_coherent_success && !i_coherent_error : sc_success);
-  end else begin : gen_line_completion
-    assign o_sc_value_zero = sc_success;
-    assign sc_slot_ready = 1'b0;
-    assign coherent_head = 1'b0;
-    assign coherent_selected_q = 1'b0;
-    assign coherent_sent_q = 1'b0;
-    assign coherent_addr_q = '0;
-    assign coherent_vaddr_q = '0;
-    assign coherent_size_q = '0;
-    assign coherent_tag_q = '0;
-    assign o_coherent_arm_valid = 1'b0;
-    assign o_coherent_arm_tag = '0;
-    assign o_coherent_valid = 1'b0;
-    assign o_coherent_addr = '0;
-    assign o_coherent_size = '0;
-    assign o_coherent_tag = '0;
-    assign o_coherent_result_ready = 1'b0;
-    assign sc_fire_now = sc_can_fire && !i_coh_sc_hold &&
-                         !mem_adapter_result_pending &&
-                         !lq_fu_complete.valid &&
-                         !sc_completion_pending &&
-                         !store_misalign_fu_complete_reg.valid;
-    always_comb begin
-      sc_fu_complete       = '0;
-      sc_fu_complete.valid = sc_fire_now;
-      sc_fu_complete.tag   = head_tag;
-      sc_fu_complete.value = {{(riscv_pkg::FLEN - 1) {1'b0}}, ~sc_success};
-    end
-    assign o_sc_fire_success = sc_fire_now && sc_success;
-`else
-  // SC fu_complete generation: the firing SC matched head_tag, so that is its tag.
-  riscv_pkg::fu_complete_t sc_fu_complete;
-  always_comb begin
-    sc_fu_complete       = '0;
-    sc_fu_complete.valid = sc_fire_now;
-    sc_fu_complete.tag   = head_tag;
-    sc_fu_complete.value = {{(riscv_pkg::FLEN - 1) {1'b0}}, ~sc_success};
-`endif
   end
   assign o_sc_head_addr_valid = sct_hit && sct_hit_addr_valid;
   assign o_sc_head_addr = sct_hit_addr;
@@ -482,9 +389,6 @@ module sc_pending_unit #(
               i_coh_query_addr[riscv_pkg::XLEN-1:riscv_pkg::DmaCoherenceLineLsb])));
   end
 `endif
-`endif
-`ifndef FROST_COHERENT_CLUSTER
-  assign o_sc_fire_success = sc_fire_now && sc_success;
 `endif
 
   // Table valid bits: allocate on SC issue, free on fire, flush younger entries.
@@ -586,7 +490,6 @@ module sc_pending_unit #(
 
   assign o_sc_pending     = |sct_valid;
   assign o_sc_fu_complete = sc_fu_complete;
-`ifdef FROST_COHERENT_CLUSTER
 `ifndef SYNTHESIS
 `ifdef FORMAL
   always_comb begin
@@ -597,9 +500,7 @@ module sc_pending_unit #(
       p_sc_value_zero_exact : assert (o_sc_value_zero == (sc_fu_complete.value == '0));
   end
 `endif
-`endif
 
-`ifdef FROST_COHERENT_CLUSTER
 `ifdef COHERENT_SC_LOCAL_PROOF
   logic [1:0] f_selected_past = '0;
   always_ff @(posedge i_clk) begin
@@ -628,5 +529,4 @@ module sc_pending_unit #(
   end
 `endif
 
-`endif
 endmodule

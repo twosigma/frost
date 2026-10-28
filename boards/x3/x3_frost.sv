@@ -16,9 +16,6 @@
 
 // X3 board wrapper: CPU clocks, DDR4, NIC transceiver, and FROST subsystem.
 module x3_frost #(
-`ifdef FROST_COHERENT_CLUSTER
-    parameter bit COHERENT_CLUSTER = 1'b0,
-`endif
     // CPU clock divider for functional-testing builds (build.py
     // --cpu-clock-div exports it as FROST_CPU_CLK_DIV and synthesis passes
     // it as a generic). It divides the 322.265625 MHz CPU clock and its /4
@@ -469,9 +466,6 @@ module x3_frost #(
       .L2_LINE_BYTES(L2LineBytes),
       .L2_NUM_MSHR(8),
       .L2_PREFETCH_INFLIGHT(8),
-`ifdef FROST_COHERENT_CLUSTER
-      .COHERENT_CLUSTER(COHERENT_CLUSTER),
-`endif
       .PERF_COUNTERS(PERF_COUNTERS),
       // The transceiver's TX and RX clocks are independent, so the NIC has no
       // raw loopback; its self-test loopback is the transceiver's PMA
