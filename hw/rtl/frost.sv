@@ -258,8 +258,10 @@ module frost #(
     if (!i_ddr_axi_rst_n) ddr_axi_reset_synchronizer_n <= '0;
     else
       ddr_axi_reset_synchronizer_n <= {ddr_axi_reset_synchronizer_n[NumResetSyncStages-2:0], 1'b1};
-  logic ddr_axi_reset;
-  assign ddr_axi_reset = !ddr_axi_reset_synchronizer_n[NumResetSyncStages-1];
+  (* MAX_FANOUT = 256 *) logic ddr_axi_reset;
+  always_ff @(posedge i_clk or negedge i_ddr_axi_rst_n)
+    if (!i_ddr_axi_rst_n) ddr_axi_reset <= 1'b1;
+    else ddr_axi_reset <= !ddr_axi_reset_synchronizer_n[NumResetSyncStages-1];
 
   // Reset synchronization for divided clock domain (JTAG/UART clock)
   (* ASYNC_REG = "TRUE" *)

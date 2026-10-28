@@ -147,6 +147,13 @@ without them. Registry entries default to keeping the clocks.
 `FROST_NIC_MAC_CLOCKS=1` overrides a clock-free default for comparisons;
 `FROST_NIC_MAC_CLOCKS=0` selects the guarded clock-free mode explicitly.
 
+`debug_fetch_barrier` checks invalidation before GO, retained targets, request
+withdrawal, acknowledgement without replay, and reset in each request phase.
+Its fetch-provider composition checks cached windows and old responses arriving
+on or after the invalidation edge.
+`debug_module` checks DMI replies and registered command/resume GO requests,
+including waiting for slice completion, stable targets, acknowledgement, reset and
+module deactivation.
 `debug_test` drives the JTAG debug module directly; `debug_openocd_test` runs
 OpenOCD and GDB sessions through `remote_bitbang`, and `cache_counters_openocd`
 reads the cache profiling counters that way with `fpga/debug/cache_counters.py`.
@@ -487,6 +494,13 @@ CPU boundary at those CPU periods in ps, with a SoC period of 3000 ps. The
 `frost_async_reset` checks paired system reset with a stopped CPU or SoC
 clock and power-on reset with a stopped SoC clock. Both targets check that
 cold reset waits for a delayed CPU clock while programming clocks continue.
+
+`ddr_reset_distribution` and `ddr_reset_distribution_async` check the external
+DDR reset with common and independent CPU clocks. They check asynchronous
+assertion from released state, held release with a stopped SoC clock, and
+repeated requests during release. The CPU stays in system reset during
+these checks, so the AXI ports are idle. The master and bridge unit benches
+check active transactions across CPU-only and fabric reset.
 
 ## Coverage
 

@@ -321,6 +321,11 @@ low-BRAM debug slice. The module supports abstract GPR access and an 8-word
 program buffer. Debugger memory accesses run through that buffer; there is no
 system bus access.
 
+The Debug Module registers GO and its target after the instruction slice is
+visible. GO stays asserted with a stable target until the hart acknowledges
+it. Acknowledgement or module reset clears GO on that clock edge. Command
+and resume sequencing waits for the hart's response to this request.
+
 The system reset (the board-level reset, which on X3 follows the clock lock
 and DDR readiness, and the image-load reset) also resets the debug module, so
 `dmactive`, a pending halt request, and the program buffer do not survive it.
@@ -340,6 +345,13 @@ For OpenOCD, GDB, and VS Code use, see the
 [FPGA guide](../../fpga/README.md#vs-code-debugging).
 
 ## Build and Simulation
+
+The `frost` DDR interconnect reset asserts asynchronously. Its three-stage
+release synchronizer feeds a separate register for reset distribution. That
+register also asserts asynchronously and releases one clock edge after the
+synchronizer. A stopped SoC clock keeps the reset asserted. CPU owners and
+the fabric share this reset; CPU-only reset leaves presented AXI requests
+to drain through the fabric.
 
 Synchronous resets establish pipeline validity, queue ownership, control
 state, and architectural control registers. Cache reset walks clear tags

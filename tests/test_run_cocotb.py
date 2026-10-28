@@ -225,6 +225,20 @@ UART_LINE_CHECK: dict[str, Any] = {
 
 # Single source of truth for every runnable test, keyed by test name.
 TEST_REGISTRY: dict[str, CocotbRunConfig] = {
+    **{
+        f"ddr_reset_distribution{suffix}": CocotbRunConfig(
+            python_test_module="cocotb_tests.test_ddr_reset_distribution",
+            hdl_toplevel_module="frost",
+            app_name="hello_world",
+            description=f"DDR reset assertion and release with {clock_mode} CPU clocks",
+            extra_env=clock_env,
+            verilator_extra_args=("-GENABLE_CACHED_TIER=0", "-GUSE_BEHAVIORAL_DDR=0"),
+        )
+        for suffix, clock_mode, clock_env in (
+            ("", "common", ()),
+            ("_async", "independent", (("FROST_CPU_PERIOD_PS", "7000"),)),
+        )
+    },
     "soc_async_reset": CocotbRunConfig(
         python_test_module="cocotb_tests.test_async_boundary",
         hdl_toplevel_module="soc_top",
@@ -2448,12 +2462,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Debug transport requests, sticky status, and reset during a request"
         ),
     ),
+    "debug_fetch_barrier": CocotbRunConfig(
+        python_test_module="cocotb_tests.debug.test_debug_fetch_barrier",
+        hdl_toplevel_module="debug_fetch_barrier_tb",
+        description="Debug go ordering, cancellation and stale fetch response rejection",
+        verilator_extra_args=("--assert",),
+    ),
     "debug_module": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug_module",
         hdl_toplevel_module="debug_module",
         description=(
-            "Each DMI request gets one reply, including requests held across reset"
+            "DMI replies across reset and registered command/resume GO handshakes"
         ),
+        verilator_extra_args=("--assert",),
     ),
     "hang_triage": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_hang_triage",

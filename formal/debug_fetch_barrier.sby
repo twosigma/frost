@@ -1,0 +1,18 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+cover: mode cover
+depth 12
+
+[engines]
+smtbmc boolector
+
+[script]
+read_verilog -formal -sv debug_fetch_barrier.sv
+prep -top debug_fetch_barrier
+
+[files]
+../hw/rtl/cpu_top/debug_fetch_barrier.sv

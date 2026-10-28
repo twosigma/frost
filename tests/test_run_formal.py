@@ -63,6 +63,18 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "debug_go_pipeline.sby",
+        "Registered debug GO keeps its command or resume target, holds until "
+        "acknowledgement, and clears on acknowledgement or module reset",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "debug_fetch_barrier.sby",
+        "Debug go follows fetch invalidation, preserves its target, and handles "
+        "withdrawal and reset without replay",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "coherence_endpoints.sby",
         "Coherent endpoint payloads, identities and cancellation lifetimes",
         tasks=(

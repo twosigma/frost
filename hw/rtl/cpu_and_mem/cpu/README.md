@@ -233,8 +233,10 @@ FROST low BRAM sits behind the SoC AXI slave. Both providers generate their
 predecode metadata from returned instruction bytes. A bus error creates an
 instruction access fault and never installs a victim entry. Device regions
 cannot be fetched. FROST enables the optional Normal cache; its entries survive
-branches and invalidate on FENCE.I, reset, and accepted debug GO. Next-line
-prefetches must remain executable under the configured PMA. The standalone
+branches and invalidate on FENCE.I, reset, and debug GO requests. The
+[debug GO contract](../../cpu_top/README.md#optional-normal-read-caching-and-write-through-stores)
+orders invalidation before CPU acceptance. Next-line prefetches must remain
+executable under the configured PMA. The standalone
 CPU defaults to strict uncached access. The fixed-latency `low_bram_fetch_presenter`
 serves only the positional TestRIG fixture and component tests.
 
