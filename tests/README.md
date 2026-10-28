@@ -495,6 +495,13 @@ CPU boundary at those CPU periods in ps, with a SoC period of 3000 ps. The
 clock and power-on reset with a stopped SoC clock. Both targets check that
 cold reset waits for a delayed CPU clock while programming clocks continue.
 
+`ddr_reset_distribution` and `ddr_reset_distribution_async` check the external
+DDR reset with common and independent CPU clocks. They check asynchronous
+assertion from released state, held release with a stopped SoC clock, and
+repeated requests during release. The CPU stays in system reset during
+these checks, so the AXI ports are idle. The master and bridge unit benches
+check active transactions across CPU-only and fabric reset.
+
 ## Coverage
 
 `FROST_COVERAGE=1` builds each simulation with Verilator line coverage, which

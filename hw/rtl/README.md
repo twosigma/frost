@@ -346,6 +346,13 @@ For OpenOCD, GDB, and VS Code use, see the
 
 ## Build and Simulation
 
+The `frost` DDR interconnect reset asserts asynchronously. Its three-stage
+release synchronizer feeds a separate register for reset distribution. That
+register also asserts asynchronously and releases one clock edge after the
+synchronizer. A stopped SoC clock keeps the reset asserted. CPU owners and
+the fabric share this reset; CPU-only reset leaves presented AXI requests
+to drain through the fabric.
+
 Synchronous resets establish pipeline validity, queue ownership, control
 state, and architectural control registers. Cache reset walks clear tags
 and replacement state before accepting requests; cache data arrays do not
