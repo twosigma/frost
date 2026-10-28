@@ -534,8 +534,7 @@ jobs:
 
   # riscv-tests: p runs physically without a kernel; v runs user suites on DDR
   # under env_v's Sv39 supervisor, with delegated page faults and Svade A/D handling.
-  # Each job runs a group of suites on one Verilator build, at most about an
-  # hour of tests.
+  # Each job runs a group of suites on one Verilator build.
   test-riscv-tests:
     name: riscv-tests (${{ matrix.label || matrix.suites }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
     runs-on: ubuntu-26.04
