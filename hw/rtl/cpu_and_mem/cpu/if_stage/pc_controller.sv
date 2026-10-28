@@ -1487,26 +1487,50 @@ module pc_controller #(
     end
   end
 
-  // Tagged-predictor copy of o_pc and its history events. pc_update_en is
-  // late, so these registers sample every cycle without it, and one register
-  // keeps whether the edge loaded o_pc: the copy is the fresh next_pc after a
-  // load and otherwise the copy held from the cycle before, which tracks o_pc
-  // exactly; the events count only after a load.
+  // Tagged-predictor copy of o_pc and its history events. The word registers
+  // sample every cycle, and tage_update_q selects the loaded or held word.
+  // History events include the PC load qualification at their capture edge.
   logic tage_update_q;
   logic [riscv_pkg::TageLookupHiBit:2] tage_word_fresh_q;
   logic [riscv_pkg::TageLookupHiBit:2] tage_word_held_q;
-  logic [1:0] tage_push_sel_q;
+  logic tage_push_q;
+  (* keep = "true" *) logic tage_push_enable;
   logic [4:0] tage_restore_sel_q;
+  assign tage_push_enable = !i_stall && !(|npc_cond[6:0]);
   always_ff @(posedge i_clk) begin
     tage_update_q      <= pc_update_en;
     tage_word_fresh_q  <= next_pc[riscv_pkg::TageLookupHiBit:2];
     tage_word_held_q   <= o_pc_tage_lookup;
-    tage_push_sel_q    <= npc_sel[8:7];
-    tage_restore_sel_q <= npc_sel[4:0];
+    tage_push_q        <= tage_push_enable && (|npc_cond[8:7]);
+    tage_restore_sel_q <= pc_update_en ? npc_sel[4:0] : 5'd0;
   end
   assign o_pc_tage_lookup = tage_update_q ? tage_word_fresh_q : tage_word_held_q;
-  assign o_tage_hist_push = tage_update_q && (tage_push_sel_q != 2'b00);
-  assign o_tage_hist_restore_arm = tage_update_q ? tage_restore_sel_q : 5'd0;
+  assign o_tage_hist_push = tage_push_q;
+  assign o_tage_hist_restore_arm = tage_restore_sel_q;
+
+`ifdef PC_TAGE_EVENTS_LOCAL_PROOF
+  logic tage_event_reference_valid_q = 1'b0;
+  logic [4:0] tage_restore_unqualified_reference_q;
+  logic [1:0] tage_push_unqualified_reference_q;
+  always_ff @(posedge i_clk) begin
+    tage_event_reference_valid_q <= 1'b1;
+    tage_restore_unqualified_reference_q <= npc_sel[4:0];
+    tage_push_unqualified_reference_q <= npc_sel[8:7];
+    if (tage_event_reference_valid_q) begin
+      p_tage_restore_event_matches_registered_qualification :
+      assert (o_tage_hist_restore_arm ==
+              (tage_update_q ? tage_restore_unqualified_reference_q : 5'd0));
+      cover_tage_restore_event : cover (o_tage_hist_restore_arm != 5'd0);
+      cover_tage_restore_suppressed :
+      cover (!tage_update_q && tage_restore_unqualified_reference_q != 5'd0);
+      p_tage_push_event_matches_registered_qualification :
+      assert (o_tage_hist_push == (tage_update_q && tage_push_unqualified_reference_q != 2'b00));
+      cover_tage_push_event : cover (o_tage_hist_push);
+      cover_tage_push_suppressed :
+      cover (!tage_update_q && tage_push_unqualified_reference_q != 2'b00);
+    end
+  end
+`endif
 
 `ifndef SYNTHESIS
   // Arm after the first reset, which loads both.

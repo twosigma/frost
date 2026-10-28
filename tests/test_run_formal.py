@@ -102,6 +102,8 @@ FORMAL_TARGETS = [
             "coh_rs_control_prove",
             "coh_rs_control_int_prove",
             "coh_rs_control_window_prove",
+            "coh_rs_control_partial_prove",
+            "coh_rs_control_mul_prove",
         ),
     ),
     FormalTarget(
@@ -778,6 +780,11 @@ FORMAL_TARGETS = [
         tasks=("prove",),
     ),
     FormalTarget(
+        "pc_tage_events.sby",
+        "Registered history events match PC-load qualification",
+        tasks=("pc_tage_events_prove", "pc_tage_events_cover"),
+    ),
+    FormalTarget(
         "pc_register_mux.sby",
         "Architectural PC and pending-relation selection match reference priority",
         tasks=("bmc", "bmc_integrated", "bmc_xilinx", "bmc_integrated_xilinx"),
@@ -899,6 +906,8 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("pc_tage_events_prove", "Unbounded history event equivalence"),
+    ("pc_tage_events_cover", "History event and suppression reachability"),
     ("coh_rs_payload4_prove", "Coherent payload storage equality at four entries."),
     ("coh_rs_payload8_prove", "Coherent payload storage equality at eight entries."),
     ("coh_rs_payload16_prove", "Coherent payload storage equality at sixteen entries."),
@@ -914,6 +923,14 @@ SBY_TASKS = [
     (
         "coh_rs_control_window_prove",
         "Coherent allocation masks and issue controls with a five-entry window.",
+    ),
+    (
+        "coh_rs_control_partial_prove",
+        "Coherent issue controls with a partial primary payload group.",
+    ),
+    (
+        "coh_rs_control_mul_prove",
+        "Coherent allocation and count controls in the multiply station.",
     ),
     ("coh_rs_issue2_8_prove", "Coherent second-issue equality at eight entries."),
     ("coh_rs_issue2_16_prove", "Coherent second-issue equality at sixteen entries."),

@@ -27,17 +27,14 @@ module coherence_read_payload #(
 );
   logic [WIDTH-1:0] write_payload_q;
   logic [7:0] write_mask_q;
-  logic write_valid_q;
-  wire [7:0] write_mask = write_mask_q & {8{write_valid_q}};
+  wire [7:0] write_mask = write_mask_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       write_payload_q <= '0;
       write_mask_q <= '0;
-      write_valid_q <= 1'b0;
     end else begin
       write_payload_q <= i_payload;
-      write_mask_q <= 8'h01 << i_allocate_id;
-      write_valid_q <= i_allocate;
+      write_mask_q <= i_allocate ? (8'h01 << i_allocate_id) : 8'b0;
     end
   end
   for (genvar slot = 0; slot < 8; slot++) begin : gen_slot

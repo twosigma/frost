@@ -2032,6 +2032,7 @@ module cpu_ooo #(
   logic csr_mtvec_traps_misaligned;  // |mtvec[XLEN-1:2], registered in csr_file
 
   logic coherent_arm_valid, coherent_atomic_active, coherent_atomic_retired;
+  logic coherent_exception_valid;
   logic coherent_head_protected, coherent_retire_hold;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_arm_tag, coherent_atomic_tag;
   logic [1:0] coherent_lq_kind;
@@ -2043,6 +2044,8 @@ module cpu_ooo #(
   assign coherent_retire_hold = coherent_atomic_active && coherent_atomic_retired &&
       i_coherent_atomic_live;
   assign o_coherent_atomic_protected = coherent_atomic_active;
+  assign coherent_exception_valid = trap_pending && !fence_class_quiesce &&
+      (!coherent_atomic_active || !i_coherent_atomic_live);
   assign o_coherent_sc_commit = coherent_atomic_active &&
       rob_commit_valid_raw && rob_commit_comb.tag == coherent_atomic_tag &&
       rob_commit_comb.is_sc && !rob_commit_comb.value[0];
@@ -2068,11 +2071,24 @@ module cpu_ooo #(
         .o_tag(coherent_atomic_tag)
     );
 `ifndef SYNTHESIS
+    // The trap unit captures the exception before its entry edge.
+    logic exception_pending_q, trap_taken_q;
+    logic [riscv_pkg::ReorderBufferTagWidth-1:0] exception_tag_q;
     always_ff @(posedge i_clk) begin
+      trap_taken_q <= !i_rst && trap_taken;
+      if (i_rst || trap_taken || trap_taken_q) begin
+        exception_pending_q <= 1'b0;
+      end else if (coherent_exception_valid) begin
+        exception_pending_q <= 1'b1;
+        exception_tag_q <= head_tag;
+      end
       if (!i_rst && coherent_atomic_active && !i_fatal_stop) begin
         if (!coherent_atomic_retired) assert (head_valid && head_tag == coherent_atomic_tag);
-        if (trap_taken) assert (trap_pending && !i_coherent_atomic_live);
-        if (lq_router_flush_all) assert (trap_taken && trap_pending && !i_coherent_atomic_live);
+        if (trap_taken) begin
+          assert (exception_pending_q && exception_tag_q == coherent_atomic_tag);
+          assert (!coherent_atomic_retired && !i_coherent_atomic_live);
+        end
+        if (lq_router_flush_all) assert (trap_taken);
       end
     end
 `endif
@@ -2786,8 +2802,8 @@ module cpu_ooo #(
   // LQ bus-busy includes router write-port terms and pending valid, so a
   // handoff cannot meet a busy write port or an occupied hold. Device reads
   // use the hold for staging; full flush cancels them before acceptance.
-  // The legacy profile returns accepted MMIO reads next cycle; cpu_top
-  // uses the explicit variable-latency response handshake.
+  // The fixed-latency profile returns accepted MMIO reads next cycle;
+  // cpu_top uses the explicit variable-latency response handshake.
   //
   // Use explicit one-cycle histories below; Verilator rejects $past outside
   // assertions.
@@ -2843,16 +2859,32 @@ module cpu_ooo #(
   // While the device shield defers interrupts, trap_drain_wait must not block
   // commit. The load must commit and release the shield; detect a stuck shield.
   localparam int unsigned DeviceShieldWatchdogCycles = 4096;
+  localparam int unsigned DeviceShieldDrainWatchdogCycles = 65536;
   int unsigned device_shield_stuck_cnt;
+  int unsigned device_shield_drain_cnt;
   always @(posedge i_clk) begin
+    // A parked Device read waits for older committed writes, including cache
+    // initialization and external memory. Its service bound starts after drain.
     if (!reset_seen_q || i_rst || !device_read_shield_q) begin
       device_shield_stuck_cnt <= 0;
-    end else begin
+    end else if (!(lq_device_request_pending && !sq_committed_empty)) begin
       device_shield_stuck_cnt <= device_shield_stuck_cnt + 1;
       if (device_shield_stuck_cnt == DeviceShieldWatchdogCycles)
         $error(
             "cpu_ooo: device-read interrupt shield held for %0d cycles (forward progress lost)",
             DeviceShieldWatchdogCycles
+        );
+    end
+  end
+  always @(posedge i_clk) begin
+    if (!reset_seen_q || i_rst || !device_read_shield_q) begin
+      device_shield_drain_cnt <= 0;
+    end else if (lq_device_request_pending && !sq_committed_empty) begin
+      device_shield_drain_cnt <= device_shield_drain_cnt + 1;
+      if (device_shield_drain_cnt == DeviceShieldDrainWatchdogCycles)
+        $error(
+            "cpu_ooo: device-read interrupt shield waited for older writes for %0d cycles",
+            DeviceShieldDrainWatchdogCycles
         );
     end
   end
@@ -4134,8 +4166,7 @@ module cpu_ooo #(
       // unit's exception latch, so mask the exception over the same T+1/T+2
       // window; otherwise a stale younger exception could survive the full
       // flush and be taken at T+3.
-      .i_exception_valid(trap_pending && !fence_class_quiesce &&
-          (!coherent_atomic_active || !i_coherent_atomic_live)),
+      .i_exception_valid(coherent_exception_valid),
       .i_exception_cause({
         {(XLEN - $bits(rob_trap_cause_remapped)) {1'b0}}, rob_trap_cause_remapped
       }),

@@ -32,7 +32,7 @@ dispatch never puts an FP compute op in slot 2.
 
 `o_full` and `o_full_for_2` are registered. `o_full_for_2` means at most one
 entry is free; dispatch checks it when both slots target the same station.
-The coherent INT station computes the full flags for all issue-count outcomes.
+The INT and MUL stations compute the full flags for all issue-count outcomes.
 Issue acceptance selects the result after dispatch-width decoding. Flush uses
 a separate count of surviving entries, independent of issue acceptance.
 
@@ -166,18 +166,21 @@ contributes readiness and non-branch presence; padding contributes zero.
 Each merge combines pairs within either child and pairs across the children.
 Readiness and selection are computed for all four CDB-valid
 combinations before the live valid bits select the result.
+The primary port computes each four-entry group's payload index from these
+same readiness combinations. Live CDB validity selects the prepared index.
 Each combination also selects the immediate-use bit before live CDB validity.
 The secondary clear mask applies port permission to the winner mask. A zero
 winner mask clears no entry.
 
-With `PREPARE_ISSUE_CONTROLS=1`, the station uses first-free and second-free one-hot masks for
-allocation controls and repair targets. Index zero is the fallback when the
-requested free entry is absent. Slot 2 selects its mask from dispatch intent.
+With `PREPARE_ISSUE_CONTROLS=1`, the station uses first-free and second-free
+one-hot masks for allocation controls and repair targets. Index zero is the
+fallback when the requested free entry is absent. Slot 2 selects its mask from
+dispatch intent. The integer and multiply stations use these controls.
 
-With `PREPARE_ISSUE_CONTROLS=1`, the station computes the shift amount for each entry before
-winner selection. The entry chooses its immediate or effective second operand.
-The occupancy count selects among the four issue outcomes after dispatch
-arithmetic; flush selects the surviving-entry count.
+With `PREPARE_ISSUE_CONTROLS=1`, the station computes the shift amount for
+each entry before winner selection. The entry chooses its immediate or
+effective second operand. The occupancy count selects among the four issue
+outcomes after dispatch arithmetic; flush selects the surviving-entry count.
 
 Port 1's stage-2 register captures each operand's final value at issue (CDB
 lane 0, then lane 1, then the resident or repair value), so ALU2 reads its
@@ -200,7 +203,8 @@ The INT station
 stores port 1's payload in a two-write register bank. The issue winner's
 one-hot mask selects its row. Write port index 1, corresponding to dispatch
 slot 2, wins a same-row write collision.
-Stations with `PREPARE_ISSUE_CONTROLS=0` read port 1's payload from a separate distributed-RAM copy.
+Stations with `PREPARE_ISSUE_CONTROLS=0` read port 1's payload from a
+separate distributed-RAM copy.
 INT_RS splits port 0's copy into groups of four entries that follow the
 two-level issue select. The valid bits gate every read, so stale payload
 behind a free entry is never used.
@@ -277,7 +281,7 @@ issued while another entry was also ready; the wrapper exports it for MEM_RS.
 | Parameter | Default | Wrapper setting | Effect |
 |-----------|---------|-----------------|--------|
 | `DEPTH` | 8 | Per instance (table above) | Number of entries |
-| `PREPARE_ISSUE_CONTROLS` | 0 | 1 on INT | Compute issue controls, count and full flags from prepared outcomes; use prefix eligibility, arithmetic selection and per-entry shift values for port 1 |
+| `PREPARE_ISSUE_CONTROLS` | 0 | 1 on INT, MUL | Compute issue controls, count and full flags from prepared outcomes; use prefix eligibility, arithmetic selection and per-entry shift values for port 1 |
 | `HAS_SRC3` | 1 | 1 on FP, 0 elsewhere | Third source operand, for FMA |
 | `DUAL_ISSUE` | 0 | 1 on INT | Second issue port |
 | `ISSUE2_WINDOW` | 0 (all entries) | 8 on INT | Port 1 considers only entries below this index |
@@ -299,7 +303,7 @@ station does:
 
 | Parameter | Default | Wrapper setting | Effect |
 |-----------|---------|-----------------|--------|
-| `TRUST_DISPATCH_VALID` | 0 | 1 on INT, MEM | Skip the local room check; dispatch valids already include it (simulation asserts the two agree) |
+| `TRUST_DISPATCH_VALID` | 0 | 1 on INT, MUL, MEM | Skip the local room check; dispatch valids already include it (simulation asserts the two agree) |
 | `SPECULATIVE_DATA_WRITES` | 0 | 1 on INT, MUL, MEM | Write tags and values into the target free entry before dispatch is confirmed; only `rs_valid` commits the entry |
 | `BROADCAST_FREE_SOURCE_VALUES` | 0 | 1 on INT | Write slot 1's source values into every free entry and slot 2's into its target; requires speculative writes |
 | `ISSUE_CDB_TAG_SHADOW` | 0 | 1 on INT | A second src1/src2 tag bank used only by the same-cycle bypass; equal to the main tags for every valid entry |

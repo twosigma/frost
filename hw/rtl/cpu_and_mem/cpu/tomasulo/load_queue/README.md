@@ -76,43 +76,45 @@ load if it is ready for memory, which wins. A device load may be staged before
 it reaches the ROB head, but device loads, LRs and AMOs neither probe the SQ
 nor leave the LQ until they are at the head.
 
-The capture, issue and forwarding control banks compute memory candidates for both SQ drain states
-in [`coherent_lq_issue_selector.sv`](coherent_lq_issue_selector.sv). The live
+The capture, issue and forwarding control banks compute memory candidates for
+both SQ drain states in
+[`coherent_lq_issue_selector.sv`](coherent_lq_issue_selector.sv). The live
 drain flag selects between those results. Each case also computes staged
 replacement from its winning masks and the per-entry age predicates. Both
-cases use the same ring order and ROB-head priority. Each entry has a cyclic precedence mask derived
-from the queue head. An eligible entry wins when none of its predecessors
-is eligible. Scan indices and tags decode from the winning-entry masks.
-Selection is combinational. The coherent memory identity uses the merged ring
-mask when an address update is valid and the stored mask otherwise. Eligible
-ROB-head entries precede the ring scan. The coherent ring index and ROB tag
-decode from the selected ring mask. Head matches use the head selector's index
-and tag.
-The pre-issue selector registers a one-hot mask alongside the candidate matches.
-Staging capture uses candidate presence independently of ring ordering.
-The LQ prepares release permission for all combinations of
-cache hit, SQ-empty, committed-store presence, memory-busy and L0-hit permission.
-The live controls select a release outcome. The cut hold qualifies that outcome
-at the final selection. Fault release computes permission separately; CDB
-availability and completion priority qualify it. The pending bit qualifies
-release and replacement after selection. Each pending copy supplies vacancy
-independently. Candidate presence and the capture gate qualify capture.
-Staged control fields select capture values or separately computed hold values.
-Replacement selects stored and arriving age predicates with ROB-head priority.
-Stored, arriving and head candidate predicates are computed per row before
-its validity bit qualifies the candidate masks.
-Alignment is evaluated separately for stored and arriving candidates before
-the selected result enters the staging register.
-The coherent clear calculation applies staging validity outside its issue,
-forwarding and fault eligibility terms. An older pending AMO clears the pending
-stage independently of the prepared outcomes. Sector blocking permits capture
-and vetoes memory or forwarding release. Fault release requires both cut and
-sector permission. Release predicates omit pending validity from their atomic
-admission and committed-store interlocks; the final pending gate qualifies
-those predicates. Cached-AMO protection qualifies the selected memory,
-forwarding and fault release outcomes. Sector and older-AMO capture permission
-remain independent of that protection. Issue, forwarding and probes require staging validity;
-issue and forwarding also apply the older-AMO veto.
+cases use the same ring order and ROB-head priority. Each entry has a cyclic
+precedence mask derived from the queue head. An eligible entry wins when none
+of its predecessors is eligible. Scan indices and tags decode from the
+winning-entry masks. Selection is combinational. The coherent memory identity
+uses the merged ring mask when an address update is valid and the stored mask
+otherwise. Eligible ROB-head entries precede the ring scan. The coherent ring
+index and ROB tag decode from the selected ring mask. Head matches use the
+head selector's index and tag. The pre-issue selector registers a one-hot mask
+alongside the candidate matches. Staging capture uses candidate presence
+independently of ring ordering. The LQ prepares release permission for both
+staged-head matches and all combinations of cache hit, SQ-empty,
+committed-store presence, memory-busy and L0-hit permission. The head match
+selects between complete release outcomes. The cut hold,
+SQ check phase and address fault result qualify that outcome at the final
+selection. Fault release computes permission separately; CDB availability and
+completion priority qualify it. The pending bit qualifies release and
+replacement after selection. Each pending copy supplies vacancy independently.
+Candidate presence and the capture gate qualify capture. Staged control fields
+select capture values or separately computed hold values. Replacement selects
+stored and arriving age predicates with ROB-head priority. Stored, arriving
+and head candidate predicates are computed per row before its validity bit
+qualifies the candidate masks. Alignment is evaluated separately for stored
+and arriving candidates before the selected result enters the staging
+register. The coherent clear calculation applies staging validity outside its
+issue, forwarding and fault eligibility terms. An older pending AMO clears the
+pending stage independently of the prepared outcomes. Sector blocking permits
+capture and vetoes memory or forwarding release. Fault release requires both
+cut and sector permission. Release predicates omit pending validity from their
+atomic admission and committed-store interlocks; the final pending gate
+qualifies those predicates. Cached-AMO protection qualifies the selected
+memory and forwarding release outcomes. Address faults, sector blocking and
+older-AMO capture permission remain independent of that protection. Issue,
+forwarding and probes require staging validity; issue and forwarding also
+apply the older-AMO veto.
 
 Coherent issue,
 forwarding and SQ-probe predicates decode address faults before applying
@@ -313,11 +315,13 @@ cancels the request with no response owed. From N+2 until the load commits,
 interrupts wait; exceptions stay enabled. Arming only adds a precondition: the
 flush, write-port and drain conditions are checked again at accept.
 
-The shield cannot hang the core: while it defers an interrupt, the trap unit
-holds commit only while that interrupt arms (arming the read already required
-an empty committed-store queue), so the load commits and the interrupt
-follows. A simulation watchdog in cpu_ooo reports a shield held for 4096
-cycles.
+While the shield defers an interrupt, the trap unit holds commit only while
+that interrupt arms. A parked Device read waits for older committed stores
+to complete before arming. Progress requires those stores and the read's
+memory response to complete. The simulation watchdog in `cpu_ooo` allows
+65,536 cycles for the older-store drain, including cache initialization,
+and 4,096 cycles for read service and commit after drain. Each counter
+accumulates its phase's cycles until reset or shield release.
 
 ## L0 cache
 
@@ -442,13 +446,17 @@ forward or hit the L0, and if it is staged it gives up the staging register
 
 ## Coherent memory interface
 
-The LQ supplies request kind, size and ROB tag to the coherent L1D. Cached AMOs require effective ROB-head protection before launch. LR
-records its exact physical address and W/D size with a 32-byte reservation
-set. An ordinary store or AMO write to that set, or a matching cut, clears
-the reservation. A successful cached SC clears it when its tagged write
-completes. Other SCs clear it at commit (`i_sc_clear_reservation`). The
-delayed-response suppression flag prevents an invalidated LR from recreating
-it.
+The LQ supplies request kind, size and ROB tag to the coherent L1D. Cached
+AMOs require effective ROB-head protection before launch. Arming checks the
+staged translation, PMA and alignment results independently of that protection.
+Address faults complete through the exception path without arming ownership.
+Simulation assertions check the captured exception's ROB tag at trap entry.
+An atomic fault can release its context only after home ownership ends. LR
+records its exact physical address and W/D size with a 32-byte reservation set. An ordinary
+store or AMO write to that set, or a matching cut, clears the reservation. A
+successful cached SC clears it when its tagged write completes. Other SCs
+clear it at commit (`i_sc_clear_reservation`). The delayed-response
+suppression flag prevents an invalidated LR from recreating it.
 
 The local cut hold blocks L0 hits, forwarding and memory-read launch during
 capture. Returned-load observations remain replayable after their LQ rows
