@@ -112,7 +112,9 @@ stage independently of the prepared outcomes. Sector blocking permits capture
 and vetoes memory or forwarding release. Fault release requires both cut and
 sector permission. Release predicates omit pending validity from their atomic
 admission and committed-store interlocks; the final pending gate qualifies
-those predicates. Issue, forwarding and probes require staging validity;
+those predicates. Cached-AMO protection qualifies the selected memory,
+forwarding and fault release outcomes. Sector and older-AMO capture permission
+remain independent of that protection. Issue, forwarding and probes require staging validity;
 issue and forwarding also apply the older-AMO veto.
 
 Coherent issue,

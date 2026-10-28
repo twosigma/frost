@@ -1457,7 +1457,7 @@ module load_queue #(
   logic [1:0] coherent_probe_choice, coherent_issue_choice;
   logic [1:0] coherent_issue_by_drain, coherent_eligible_by_drain;
   logic [1:0][1:0] coherent_release_by_drain_empty;
-  logic coherent_release_eligible;
+  logic coherent_release_eligible, coherent_release_protected;
   logic [1:0] coherent_forward_unblocked_empty;
   logic coherent_forward_unblocked;
   logic coherent_forward_clear_eligible;
@@ -2079,9 +2079,10 @@ module load_queue #(
       assign clear_by_hit[hit_case] = clear_by_empty[i_sq_empty];
     end
     (* keep = "true" *) wire release_ready =
-        !i_coherent_cut_hold && clear_by_hit[cache_lookup_hit];
-    (* keep = "true" *) wire fault_clear_ready = !coherent_local_hold &&
-        !resp_bypass_ok && coherent_release_eligible && coherent_address_fault && !i_flush_en;
+        coherent_release_protected && !i_coherent_cut_hold && clear_by_hit[cache_lookup_hit];
+    (* keep = "true" *) wire fault_clear_ready =
+        coherent_release_protected && !coherent_local_hold && !resp_bypass_ok &&
+        coherent_release_eligible && coherent_address_fault && !i_flush_en;
     wire fault_granted = cdb_stage_slot_available && !issue_cdb_fire;
     (* keep = "true" *) wire release_for_take = release_ready || coherent_sector_hold ||
         older_amo_write_pending || (fault_clear_ready && fault_granted);
@@ -2239,8 +2240,9 @@ module load_queue #(
         (sq_no_older_store || sq_check_is_amo_q ||
          (i_sq_all_older_addrs_known && !i_sq_forward.match));
     (* keep = "true" *) wire head_release_eligible = !coh_launch_hold_q &&
-        !((sq_check_is_amo_q || sq_check_is_lr_q) && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
-        !(sq_check_is_amo_q && sq_check_is_cached_region && !i_coherent_atomic_protected);
+        !((sq_check_is_amo_q || sq_check_is_lr_q) && (i_coh_admit_pulse || !coh_hold_valid_q));
+    assign coherent_release_protected =
+        !sq_check_is_amo_q || !sq_check_is_cached_region || i_coherent_atomic_protected;
     assign coherent_release_eligible = coherent_staged_at_head ?
         (i_sq_committed_empty ? head_release_eligible : ordinary_eligible) :
         (ordinary_eligible && !sq_check_is_mmio_q);
@@ -2269,9 +2271,11 @@ module load_queue #(
     always @(posedge i_clk) begin
 `endif
       p_empty_issue_exact : assert (!sq_check_pending ||
-          coherent_release_by_drain_empty[i_sq_empty] == coherent_issue_by_drain);
+          (coherent_release_by_drain_empty[i_sq_empty] & {2{coherent_release_protected}}) ==
+          coherent_issue_by_drain);
       p_release_eligible_exact : assert (!sq_check_pending ||
-          coherent_release_eligible == coherent_eligible_by_drain[i_sq_committed_empty]);
+          (coherent_release_eligible && coherent_release_protected) ==
+          coherent_eligible_by_drain[i_sq_committed_empty]);
     end
 `endif
     for (genvar drain_case = 0; drain_case < 2; drain_case++) begin : gen_coherent_drain_choice
@@ -2340,6 +2344,7 @@ module load_queue #(
     assign coherent_issue_by_drain = '0;
     assign coherent_release_by_drain_empty = '0;
     assign coherent_release_eligible = 1'b0;
+    assign coherent_release_protected = 1'b0;
     assign coherent_probe_ok = 1'b0;
     assign coherent_issue_ok = 1'b0;
 `endif
