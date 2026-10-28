@@ -2945,9 +2945,35 @@ module load_queue #(
   // Per-source fill qualification supplies the L0 RAM write enables and
   // coherent valid bits. The default valid-bit path uses cache_fill_valid.
   (* keep = "true" *) logic cache_fill_if_slot, cache_fill_if_fast;
+`ifdef FROST_COHERENT_CLUSTER
+  if (COHERENT_CLUSTER) begin : gen_coherent_fill_slot_permission
+    (* keep = "true" *) logic [CachedSlots-1:0] slot_permission;
+    for (genvar slot = 0; slot < CachedSlots; slot++) begin : gen_slot
+      assign slot_permission[slot] = cs_valid[slot] && !cs_drop[slot] &&
+          lq_valid[cs_idx[slot]] && !cs_is_lr[slot] && !cs_is_amo[slot] &&
+          !(cs_inval[slot] || cs_inval_now[slot] || cs_coh_inval_now[slot]);
+    end
+    assign cache_fill_if_slot = !i_flush_all && slot_permission[resp_slot];
+`ifndef SYNTHESIS
+`ifdef FORMAL
+    always_comb begin
+`else
+    always @(posedge i_clk) begin
+`endif
+      p_fill_slot_select_exact : assert (cache_fill_if_slot ==
+          (cs_valid[resp_slot] && !i_flush_all && !cs_drop[resp_slot] &&
+           lq_valid[cs_idx[resp_slot]] && !cs_is_lr[resp_slot] && !cs_is_amo[resp_slot] &&
+           !(cs_inval[resp_slot] || cs_inval_now[resp_slot] || cs_coh_inval_now[resp_slot])));
+    end
+`endif
+  end else begin : gen_direct_fill_slot_permission
+`endif
   assign cache_fill_if_slot = cs_valid[resp_slot] && !i_flush_all && !cs_drop[resp_slot] &&
       lq_valid[cs_idx[resp_slot]] && !cs_is_lr[resp_slot] && !cs_is_amo[resp_slot] &&
       !(cs_inval[resp_slot] || cs_inval_now[resp_slot] || cs_coh_inval_now[resp_slot]);
+`ifdef FROST_COHERENT_CLUSTER
+  end
+`endif
   assign cache_fill_if_fast = mem_outstanding && !i_flush_all && !drop_mem_response_pending &&
       lq_valid[fast_idx] && !fast_is_mmio && !fast_is_lr && !fast_is_amo &&
       (CACHE_UNCACHED_DATA || (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(

@@ -138,7 +138,9 @@ that ordering and the selected payload.
 The coherent L0 computes lookup permission from validity, memory type and
 invalidation independently of the tag comparison. A hit requires both.
 Coherent L0 valid bits and data writes share fill permission computed for
-each response source before the cached/uncached response selection. Valid-state
+each response source before the cached/uncached response selection. Each cached
+response slot computes fill permission before the response ID selects a slot.
+Valid-state
 updates are computed for every fill and store-update combination. Those two
 flags select the resulting valid bits.
 
