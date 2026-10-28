@@ -166,6 +166,26 @@ The kernel and initramfs must support the FROST NIC and the selected root
 filesystem. The software flash image contains firmware and a DTB, without a
 kernel or root filesystem.
 
+The Linux build can compose the test initramfs with the driver modules and
+startup scripts for its pinned Debian kernel, then wrap it as `rootfs.uimg`:
+
+```bash
+./scripts/frost.py run make -C sw/apps/linux_boot rootfs.uimg
+```
+
+The target uses `mkimage` from `PATH` or the built U-Boot host tools;
+`MKIMAGE` selects another executable. Serve the matching kernel `Image`,
+the VCU118 DTB and `rootfs.uimg` over TFTP. Use this command chain after
+selecting the interface and server as above:
+
+```text
+dhcp && tftpboot 0x84000000 Image && tftpboot 0x88000000 frost.dtb && tftpboot 0x88100000 rootfs.uimg && booti 0x84000000 0x88100000 0x88000000
+```
+
+The wrapped image supplies its length to U-Boot. The composed test
+initramfs includes the NIC loader; RJ-45 DHCP and SSH key setup are
+described below.
+
 ## Debian over NFS
 
 Both Ethernet interfaces support the shared Linux NIC driver and NFS boot.

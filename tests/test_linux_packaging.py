@@ -1035,6 +1035,39 @@ def _output_digests(app: Path) -> dict[str, str]:
     }
 
 
+def test_uboot_ramdisk_wraps_the_composed_modules(tmp_path: Path) -> None:
+    """The ramdisk target passes the composed archive and RISC-V image type."""
+    helper = _load_module(DEBIAN_KERNEL)
+    app = _linux_boot_tree(tmp_path)
+    mkimage = tmp_path / "image tool"
+    mkimage.write_text(
+        "#!/usr/bin/env python3\n"
+        "from pathlib import Path\nimport sys\n"
+        "assert sys.argv[1:10] == ['-A', 'riscv', '-O', 'linux', '-T', 'ramdisk', '-C', 'none', '-d']\n"
+        "Path(sys.argv[-1]).write_bytes(Path(sys.argv[-2]).read_bytes())\n"
+    )
+    mkimage.chmod(0o755)
+    result = subprocess.run(
+        ["make", "-C", str(app), "rootfs.uimg", f"MKIMAGE={mkimage}"],
+        env=_linux_boot_env(app),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    members = {
+        name: data
+        for name, _, data in helper.cpio_members((app / "rootfs.uimg").read_bytes())
+    }
+    for driver in helper.DRIVERS:
+        assert f"lib/modules/{helper.KERNEL_RELEASE}/{driver.name}.ko" in members
+        assert driver.init_script in members
+    subprocess.run(
+        ["make", "-C", str(app), "clean"], env=_linux_boot_env(app), check=True
+    )
+    assert not (app / "rootfs.uimg").exists()
+
+
 def test_linux_boot_make_substitutes_the_kernel_and_initramfs(tmp_path: Path) -> None:
     """Pass FROST_LINUX_KERNEL and FROST_LINUX_INITRD through to the packer.
 

@@ -73,6 +73,7 @@ sw/apps/arch_test/test_src_repaired.S
 # Buildroot's test initramfs with the NIC module appended, rebuilt by
 # sw/apps/linux_boot/Makefile.
 /sw/apps/linux_boot/rootfs.cpio
+/sw/apps/linux_boot/rootfs.uimg
 
 # Buildroot firmware, test userspace, and caches. Regenerate with
 # `make -C sw/apps/linux_boot`; the kernel comes from Debian packages.
