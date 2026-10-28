@@ -280,6 +280,21 @@ When booting Linux over network interfaces via U-Boot or Ethernet, the target en
      setenv bootcmd "sf probe; sf read 0x84000000 0x04000000 0x02000000; booti 0x84000000 - 0x82200000"
      ```
 
+   - **Boot Option 4: TFTP Network Boot with Composed Ramdisk (`rootfs.uimg`)**:
+     Downloads `Image`, `frost.dtb`, and the composed ramdisk (`rootfs.uimg`) over TFTP to execute entirely in memory. The composed ramdisk embeds the `frost_net10g.ko` network module and automatic DHCP startup, enabling interactive SSH sessions (`dropbear`) immediately upon boot:
+     ```text
+     # 1. Acquire network lease and download kernel, ramdisk, and DTB
+     dhcp
+     setenv serverip <server-ip>
+     tftpboot 0x84000000 Image
+     tftpboot 0x88000000 frost.dtb
+     tftpboot 0x88100000 rootfs.uimg
+
+     # 2. Boot Linux with in-memory ramdisk
+     booti 0x84000000 0x88100000 0x88000000
+     ```
+     *(Build the composed U-Boot ramdisk containing the network module via `make -C sw/apps/linux_boot rootfs.uimg`).*
+
    - **Flash Memory Map**:
      The 128 MiB MT25QU01G SPI NOR flash partition table is structured as follows:
      - `0x0000_0000` .. `0x026F_FFFF`: FPGA Configuration Bitstream (`vcu118_frost.bit`, ~38.5 MiB).

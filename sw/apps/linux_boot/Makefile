@@ -222,6 +222,10 @@ $(INITRD_IMG): $(BR2_INITRD) $(DEBIAN_KERNEL) $(DRIVER_DIR)/frost_net10g.c \
 	python3 "$(DEBIAN_KERNEL)" $(MODULE_CROSS) initramfs \
 	  --base "$(BR2_INITRD)" --out "$@"
 
+# U-Boot RAMDisk Image wrapping the composed initramfs (containing driver modules)
+rootfs.uimg: $(INITRD_IMG)
+	mkimage -A riscv -O linux -T ramdisk -C none -d $< $@
+
 # Stage 2: pack for this board's clock. The firmware that Buildroot's
 # post-image hook built (images/fw_jump.bin) is packed with frost_boot_image.py.
 # Grouped target (&:): one packer run writes all four files, so make -j must
@@ -236,7 +240,7 @@ sw_ddr.mem sw.mem sw_ddr.txt sw.txt &: $(PAYLOAD) $(PACK_INITRD) $(FW_JUMP) \
 # Clean the board images and composed initramfs before each load. Keep the
 # Buildroot build and Debian kernel cache for repacking on another board.
 clean:
-	rm -f sw.mem sw64.mem sw.txt sw_ddr.mem sw_ddr.txt rootfs.cpio \
+	rm -f sw.mem sw64.mem sw.txt sw_ddr.mem sw_ddr.txt rootfs.cpio rootfs.uimg \
 	      shim.elf shim.bin frost_boot_shim.S \
 	      frost.dts frost.dtb
 
