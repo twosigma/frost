@@ -44,7 +44,7 @@ import pytest
 import cocotb
 
 SW_APPS_DIR = Path(__file__).resolve().parent.parent / "sw" / "apps"
-# Simulation-only TestRIG harness, compiled into the rvfi_dii build only.
+# Simulation-only TestRIG harness and its recorder unit bench.
 RVFI_DII_HARNESS = (
     Path(__file__).resolve().parent.parent / "hw" / "sim" / "frost_rvfi_dii.sv"
 )
@@ -1594,6 +1594,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             # unused for the sparse address range but keeps the old budget.
             "-GDDR_MODEL_BYTES=1073741824",
         ),
+    ),
+    "rvfi_recorder": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_rvfi_recorder",
+        hdl_toplevel_module="frost_rvfi_dii",
+        description="Retirement record capacity, delayed store and CSR data, and drain timeout",
+        verilator_extra_args=(str(RVFI_DII_HARNESS), "-GMaxInsns=16", "-GMaxEvents=32"),
     ),
     # Unit benches (no application), starting with the Tomasulo back end
     "reorder_buffer": CocotbRunConfig(

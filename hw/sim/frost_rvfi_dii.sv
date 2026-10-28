@@ -60,9 +60,7 @@ module frost_rvfi_dii #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     // Stream words, including the FROST-only reset preamble.
     parameter int unsigned MaxInsns = 8192,
-    // Recorded events (retirements and traps): every stream word, the event
-    // after the last one, and the events that retire while completion is
-    // detected.
+    // Requested records include the event after the last stream word.
     parameter int unsigned MaxEvents = MaxInsns + 16,
     localparam int unsigned TagW = riscv_pkg::ReorderBufferTagWidth
 ) (
@@ -152,12 +150,11 @@ module frost_rvfi_dii #(
   logic [31:0] dii_insn[MaxInsns];
   int unsigned dii_count;
   // Stop condition: event_target events recorded and every record complete,
-  // or no event for hang_limit cycles.
+  // or no requested retirement or data completion for hang_limit cycles.
   int unsigned event_target;
   int unsigned hang_limit;
 
-  // One record per event (field offsets in rvfi_record_t below, decoded by
-  // the cocotb test).
+  // One record per requested event. The cocotb test decodes rvfi_record_t.
   typedef struct packed {
     logic [137:0] reserved;
     logic         csr_pending;    // waiting for the CSR read value
@@ -399,7 +396,7 @@ module frost_rvfi_dii #(
       end
 
       if (event_commit) begin
-        if (n < MaxEvents) begin
+        if (n < event_target && n < MaxEvents) begin
           rvfi_record_t r;
           r = commit_record(i_commit, n, i_priv);
           if (i_commit.is_amo && !i_commit.is_lr && !i_commit.is_sc) begin
@@ -421,12 +418,13 @@ module frost_rvfi_dii #(
         n++;
       end
       if (event_commit_2) begin
-        if (n < MaxEvents) rvfi_record[n] <= commit_record(i_commit_2, n, i_priv);
+        if (n < event_target && n < MaxEvents)
+          rvfi_record[n] <= commit_record(i_commit_2, n, i_priv);
         prev_commit_2_index <= n;
         n++;
       end
       if (i_xret_taken) begin
-        if (n < MaxEvents) begin
+        if (n < event_target && n < MaxEvents) begin
           rvfi_record_t r;
           r = '0;
           r.valid = 1'b1;
@@ -439,7 +437,7 @@ module frost_rvfi_dii #(
         n++;
       end
       if (event_exception) begin
-        if (n < MaxEvents) begin
+        if (n < event_target && n < MaxEvents) begin
           rvfi_record_t r;
           r = '0;
           r.valid = 1'b1;
@@ -453,7 +451,7 @@ module frost_rvfi_dii #(
         n++;
       end
       if (i_trap_taken && i_trap_cause[XLEN-1]) error_flags[0] <= 1'b1;
-      if (n > MaxEvents) error_flags[1] <= 1'b1;
+      if (event_target > MaxEvents) error_flags[1] <= 1'b1;
       if (int'(i_xret_taken) + int'(event_exception) + int'(event_commit) > 1)
         error_flags[7] <= 1'b1;
       event_count <= n;
@@ -510,7 +508,9 @@ module frost_rvfi_dii #(
       // Completion and hang detection. Events counted at the start of this
       // cycle have had their SQ acceptance checked above.
       store_checked_count <= event_count;
-      idle_cycles <= (events_this_cycle != 0) ? 0 : idle_cycles + 1;
+      // Filler retirement does not advance a requested record's completion.
+      idle_cycles <= ((event_count < event_target && events_this_cycle != 0) ||
+                      i_sq_write_en || i_csr_wb_pending) ? 0 : idle_cycles + 1;
       if (!done) begin
         if (idle_cycles > hang_limit) begin
           hung <= 1'b1;

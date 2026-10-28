@@ -135,8 +135,8 @@ path between redirects and every instruction in the front end belongs to the
 current layout. A window is computed from the layout current when it is
 presented, so a window presented after a redirect belongs to the new path.
 
-Each retirement, xRET, or exception produces one record: PC, next PC, trap,
-privilege, the integer destination and its value (FP destinations are not
+Each requested retirement, xRET, or exception produces one record: PC, next
+PC, trap, privilege, the integer destination and its value (FP destinations are not
 reported, as in Sail), and for a store or AMO its physical address, size
 mask, and data. Store data comes from the store queue's in-order memory
 writes; a CSR's read value from the delayed CSR write-back. The record's
@@ -144,6 +144,14 @@ instruction word is the stream word the event consumed, not one read back
 from the core, so an injection error shows up in the other fields. The
 harness also checks its own assumptions and reports a violation as a
 simulation failure.
+
+The recorder stores the requested trace and one following event for its final
+next PC. Filler retirement advances the instruction layout without consuming
+record capacity. Completion waits for the requested stores and CSR read
+values. The hang bound counts cycles without a requested retirement or a
+store or CSR completion, including cycles that retire filler. The
+`rvfi_recorder` unit bench checks delayed data, two-store retirement at the
+capacity boundary, missing store completion, and excessive capacity requests.
 
 The build differs from the production core in these ways, all for
 simulation only:
