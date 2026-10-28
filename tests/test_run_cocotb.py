@@ -1786,7 +1786,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "early_misprediction_recovery": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.recovery.test_early_misprediction_recovery",
         hdl_toplevel_module="early_misprediction_recovery",
-        description="Early branch-misprediction recovery control",
+        description="Early recovery and sampled fatal-stop hold, including reset and flush overlaps",
+        verilator_extra_args=("--assert",),
     ),
     "misprediction_flush_controller": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.recovery.test_misprediction_flush_controller",

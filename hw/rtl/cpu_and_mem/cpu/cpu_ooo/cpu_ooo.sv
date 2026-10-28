@@ -251,17 +251,6 @@ module cpu_ooo #(
   logic rst_n;
   assign rst_n = ~i_rst;
 
-  // Fatal errors block retirement and new memory requests immediately.
-  // Internal execution quiesces on the following edge: none of its results
-  // can retire or create a new side effect during that cycle. Registering
-  // this execution-only control keeps fatal aggregation off the branch
-  // completion path through the reservation stations and ROB.
-  logic fatal_backend_hold_q;
-  always_ff @(posedge i_clk) begin
-    if (i_rst) fatal_backend_hold_q <= 1'b0;
-    else fatal_backend_hold_q <= i_fatal_stop;
-  end
-
   // ===========================================================================
   // Pipeline Control
   // ===========================================================================
@@ -699,6 +688,7 @@ module cpu_ooo #(
   logic early_recovery_en;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_recovery_tag;
   logic early_backend_recovery_hold;
+  logic backend_recovery_hold;
   (* keep = "true", dont_touch = "true", max_fanout = 16 *)
   logic early_recovery_trap_taken_reg;
   (* keep = "true", dont_touch = "true", max_fanout = 16 *)
@@ -2152,7 +2142,7 @@ module cpu_ooo #(
       .i_flush_tag(flush_tag),
       .i_flush_all(flush_all),
       .i_flush_after_head_commit(commit_recovery_flush_after_head),
-      .i_backend_recovery_hold(early_backend_recovery_hold || fatal_backend_hold_q),
+      .i_backend_recovery_hold(backend_recovery_hold),
       .i_slow_write_inflight(slow_write_inflight),
       .i_uncached_read_busy(VARIABLE_UNCACHED && !i_uncached_read_request_ready),
       .i_coh_admit_valid(i_coh_admit_valid),
@@ -2789,6 +2779,7 @@ module cpu_ooo #(
   ) early_misprediction_recovery_inst (
       .i_clk,
       .i_rst,
+      .i_fatal_stop,
       .i_branch_update(branch_update),
       .i_rs_issue_int(rs_issue_int),
       .i_is_jalr_issue(is_jalr_issue),
@@ -2819,7 +2810,8 @@ module cpu_ooo #(
       .o_early_mispredict_branch_taken(early_mispredict_branch_taken),
       .o_early_recovery_en(early_recovery_en),
       .o_early_recovery_tag(early_recovery_tag),
-      .o_early_backend_recovery_hold(early_backend_recovery_hold)
+      .o_early_backend_recovery_hold(early_backend_recovery_hold),
+      .o_backend_recovery_hold(backend_recovery_hold)
   );
 
   // ===========================================================================

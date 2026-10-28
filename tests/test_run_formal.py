@@ -63,6 +63,12 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "early_backend_hold.sby",
+        "Combined backend hold equals early recovery or independently sampled fatal "
+        "stop through reset and flush",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "debug_go_pipeline.sby",
         "Registered debug GO keeps its command or resume target, holds until "
         "acknowledgement, and clears on acknowledgement or module reset",
