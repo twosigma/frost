@@ -15,6 +15,7 @@
 """Unit tests for the CPU OOO early misprediction recovery FSM."""
 
 from collections.abc import Mapping
+from random import Random
 from typing import Any
 
 import cocotb
@@ -50,6 +51,7 @@ def _pack_rs_issue(fields: Mapping[str, int | bool]) -> int:
 
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to their idle values."""
+    dut.i_fatal_stop.value = 0
     dut.i_branch_update.value = 0
     dut.i_rs_issue_int.value = 0
     dut.i_is_jalr_issue.value = 0
@@ -151,6 +153,55 @@ def _assert_idle(dut: Any) -> None:
     assert not dut.o_early_backend_recovery_pending_next.value
     assert not dut.o_early_recovery_en.value
     assert not dut.o_early_backend_recovery_hold.value
+    assert not dut.o_backend_recovery_hold.value
+
+
+@cocotb.test()
+async def test_backend_hold_preserves_fatal_recovery_reset_priority(dut: Any) -> None:
+    """The sampled fatal hold and early hold combine on the same edge."""
+    await _setup_test(dut)
+    # (branch resolution, fatal request, full flush, reset)
+    cases = [
+        (False, True, False, False),
+        (False, False, False, False),
+        (True, False, False, False),
+        (False, True, True, False),
+        (False, True, True, False),
+        (True, True, False, True),
+        (True, True, False, False),
+        (False, False, False, True),
+        (False, False, False, False),
+    ]
+    rng = Random(0xBA_CE)
+    cases += [
+        (
+            bool(rng.getrandbits(1)),
+            bool(rng.getrandbits(1)),
+            bool(rng.getrandbits(1)),
+            bool(rng.getrandbits(1)),
+        )
+        for _ in range(256)
+    ]
+    sampled_fatal = False
+    previous_hold = False
+    for branch, fatal, flush, reset in cases:
+        await FallingEdge(dut.i_clk)
+        _clear_inputs(dut)
+        if branch:
+            _drive_mispredict(dut)
+        dut.i_fatal_stop.value = fatal
+        dut.i_flush_all.value = flush
+        dut.i_rst.value = reset
+        await Timer(1, unit="ns")
+        # Changing requests between edges must not change the sampled hold.
+        assert bool(dut.o_backend_recovery_hold.value) == previous_hold
+        await _settle_after_edge(dut)
+        sampled_fatal = fatal and not reset
+        early_hold = bool(dut.o_early_backend_recovery_hold.value)
+        if reset or flush:
+            assert not early_hold
+        previous_hold = early_hold or sampled_fatal
+        assert bool(dut.o_backend_recovery_hold.value) == previous_hold
 
 
 @cocotb.test()

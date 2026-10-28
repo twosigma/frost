@@ -35,6 +35,7 @@ module early_misprediction_recovery #(
 ) (
     input logic i_clk,
     input logic i_rst,
+    input logic i_fatal_stop,
 
     input riscv_pkg::reorder_buffer_branch_update_t i_branch_update,
     input riscv_pkg::rs_issue_t i_rs_issue_int,
@@ -69,7 +70,8 @@ module early_misprediction_recovery #(
     output logic                                        o_early_mispredict_branch_taken,
     output logic                                        o_early_recovery_en,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_early_recovery_tag,
-    output logic                                        o_early_backend_recovery_hold
+    output logic                                        o_early_backend_recovery_hold,
+    output logic                                        o_backend_recovery_hold
 );
 
   // Port aliases.
@@ -141,6 +143,14 @@ module early_misprediction_recovery #(
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_all) early_mispredict_pending <= 1'b0;
     else early_mispredict_pending <= early_mispredict_fire;
+  end
+
+  // The wrapper samples fatal stop on the same edge as early recovery.
+  // A flush cancels early recovery; it does not cancel a fatal hold.
+  logic backend_recovery_hold_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) backend_recovery_hold_q <= 1'b0;
+    else backend_recovery_hold_q <= i_fatal_stop || (!flush_all && early_mispredict_fire);
   end
 
   assign early_mispredict_active = early_mispredict_pending &&
@@ -219,8 +229,34 @@ module early_misprediction_recovery #(
   assign o_early_recovery_en = early_recovery_en;
   assign o_early_recovery_tag = early_recovery_tag;
   assign o_early_backend_recovery_hold = early_backend_recovery_hold;
+  assign o_backend_recovery_hold = backend_recovery_hold_q;
 
 `ifndef SYNTHESIS
+  // Compare the combined hold with independently sampled fatal stop and
+  // the early-only hold. The first edge establishes the register relation.
+  logic backend_hold_reference_valid_q = 1'b0;
+  logic fatal_hold_reference_q;
+  always_ff @(posedge i_clk) begin
+    backend_hold_reference_valid_q <= 1'b1;
+    if (i_rst) fatal_hold_reference_q <= 1'b0;
+    else fatal_hold_reference_q <= i_fatal_stop;
+    if (backend_hold_reference_valid_q) begin
+      p_backend_hold_exact :
+      assert (o_backend_recovery_hold == (o_early_backend_recovery_hold || fatal_hold_reference_q));
+    end
+  end
+
+`ifdef EARLY_BACKEND_HOLD_PROOF
+  always_ff @(posedge i_clk) begin
+    if (backend_hold_reference_valid_q) begin
+      cover_fatal_only : cover (fatal_hold_reference_q && !early_mispredict_pending);
+      cover_recovery_only : cover (!fatal_hold_reference_q && early_mispredict_pending);
+      cover_fatal_and_recovery : cover (fatal_hold_reference_q && early_mispredict_pending);
+      cover_flush_and_fatal : cover (flush_all && i_fatal_stop && o_backend_recovery_hold);
+      cover_reset_during_hold : cover (i_rst && o_backend_recovery_hold);
+    end
+  end
+`else
   // Compare against the full misprediction flag and qualified JALR bit.
   // A misprediction requires a valid branch update, where the raw and
   // qualified JALR bits agree.
@@ -250,6 +286,7 @@ module early_misprediction_recovery #(
       assert (!early_mispredict_fire || early_mispredict_payload_capture);
     end
   end
+`endif
 `endif
 
 endmodule : early_misprediction_recovery

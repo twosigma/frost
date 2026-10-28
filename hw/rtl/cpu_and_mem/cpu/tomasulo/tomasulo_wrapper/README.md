@@ -116,6 +116,9 @@ admission, and new memory requests. Its execution-only hold reaches the
 wrapper one clock later, keeping the fatal aggregation out of the branch
 completion path; results produced in that interval cannot retire or launch
 new side effects.
+The early-recovery controller registers the combined execution hold on the
+same edge as its early-recovery pending bit. A full flush cancels the early
+request but leaves a sampled fatal request asserted. Reset clears both.
 
 Some wide payload registers are written even when the write will be
 discarded. The SQ writes a store's address and data payload even if the store

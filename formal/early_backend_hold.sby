@@ -1,0 +1,25 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+prove: depth 3
+cover: mode cover
+cover: depth 6
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read -formal -D EARLY_BACKEND_HOLD_PROOF -sv early_misprediction_recovery.sv
+prep -top early_misprediction_recovery -flatten
+select -assert-count 1 t:$check r:FLAVOR=assert %i
+select -assert-count 5 t:$check r:FLAVOR=cover %i
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/early_misprediction_recovery.sv
