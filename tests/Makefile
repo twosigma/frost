@@ -408,6 +408,10 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/peripherals/nic/nic_byte_unpack.sv \
         $(ROOT)/hw/rtl/peripherals/nic/nic_tx_engine.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),vcu118_sgmii_link)
+COMPILE_ARGS := $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
+        $(ROOT)/boards/vcu118/vcu118_eth1g.sv
+VERILOG_SOURCES :=
 else ifneq ($(filter $(TOPLEVEL),nic_top nic_mac_wrap),)
 # The whole NIC: MAC/PCS in its domains, FIFOs, engines, registers
 COMPILE_ARGS := \

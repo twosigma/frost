@@ -2534,6 +2534,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "NIC transmit descriptors produce the right frame bytes and completions"
         ),
     ),
+    "vcu118_sgmii_link": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_vcu118_sgmii_link",
+        hdl_toplevel_module="vcu118_sgmii_link",
+        description="SGMII copper link, duplex, loopback and reset qualification",
+    ),
     "nic_mac_gmii": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_mac_gmii",
         hdl_toplevel_module="nic_mac_wrap",

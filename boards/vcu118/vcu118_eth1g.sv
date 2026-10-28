@@ -358,13 +358,13 @@ module vcu118_eth1g (
   );
 
   logic rx_signal_ok_q = 1'b0;
-  always_ff @(posedge clk125_out) begin
-    if (rst_125_out) begin
-      rx_signal_ok_q <= 1'b0;
-    end else begin
-      rx_signal_ok_q <= (status_vector_0[0] && status_vector_0[1]) || pma_loopback_125;
-    end
-  end
+  vcu118_sgmii_link u_link (
+      .i_clk(clk125_out),
+      .i_rst(rst_125_out),
+      .i_status(status_vector_0),
+      .i_loopback(pma_loopback_125),
+      .o_ready(rx_signal_ok_q)
+  );
 
   logic clk_ok;
   assign clk_ok         = phy_init_done_q && !rst_125_out && tx_locked && rx_locked;
@@ -386,3 +386,17 @@ module vcu118_eth1g (
     o_phy_status[nic_pkg::PhyStatusBitLos]           = !status_vector_0[1];
   end
 endmodule : vcu118_eth1g
+
+// Decode the negotiated SGMII status for the full-duplex GMII MAC.
+module vcu118_sgmii_link (
+    input logic i_clk,
+    input logic i_rst,
+    input logic [15:0] i_status,
+    input logic i_loopback,
+    output logic o_ready = 1'b0
+);
+  always_ff @(posedge i_clk) begin
+    if (i_rst) o_ready <= 1'b0;
+    else o_ready <= (i_status[0] && i_status[1] && i_status[7] && i_status[12]) || i_loopback;
+  end
+endmodule : vcu118_sgmii_link
