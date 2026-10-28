@@ -70,8 +70,8 @@ if {[info exists ::env(FROST_CPU_CLOCK_PERIOD)] && $::env(FROST_CPU_CLOCK_PERIOD
 set io_references {
   core_clk i_clk {cpu.cluster_memory.memory_fabric.master.ar_valid_q$*/CK}
   core_clk_div4 i_clk_div4 {soc.data_memory.u_sram.gen_row[0].u_macro/clk0}
-  nic_tx_clk i_nic_tx_clk {soc.gen_cached_tier.nic.u_mac.u_mac.tx_gearbox.reservoir[0]$*/CK}
-  nic_rx_clk i_nic_rx_clk {soc.gen_cached_tier.nic.u_mac.u_mac.rx_gearbox.reservoir[0]$*/CK}
+  nic_tx_clk i_nic_tx_clk {soc.gen_cached_tier.nic.u_mac.gen_10g_pcs.u_mac.tx_gearbox.reservoir[0]$*/CK}
+  nic_rx_clk i_nic_rx_clk {soc.gen_cached_tier.nic.u_mac.gen_10g_pcs.u_mac.rx_gearbox.reservoir[0]$*/CK}
   jtag_tck i_jtag_tck {soc.gen_jtag_tap.u_jtag_tap.bypass_shift$*/CK}
 }
 if {$cpu_boundary} {
