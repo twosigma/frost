@@ -93,14 +93,13 @@ decode from the selected ring mask. Head matches use the head selector's index
 and tag.
 The pre-issue selector registers a one-hot mask alongside the candidate matches.
 Staging capture uses candidate presence independently of ring ordering.
-The coherent selection computes capture permission for all combinations of
-local hold, cache hit and committed-store presence. Each cache hit case computes
-both local hold values. Local hold and committed-store presence select each
-memory permission case. The live cache hit value selects the complete capture
-and clear outcomes. Fault release computes clear and capture permission
-separately. CDB availability and completion priority qualify that fault
-permission at the final selection.
-Vacancy and release eligibility are computed before candidate presence.
+The coherent selection prepares release permission for all combinations of
+cache hit, SQ-empty, committed-store presence, memory-busy and L0-hit permission.
+The live controls select a release outcome. The cut hold qualifies that outcome
+at the final selection. Fault release computes permission separately; CDB
+availability and completion priority qualify it. The pending bit qualifies
+release and replacement after selection. Each pending copy supplies vacancy
+independently. Candidate presence and the capture gate qualify capture.
 Staged control fields select capture values or separately computed hold values.
 Replacement selects stored and arriving age predicates with ROB-head priority.
 Stored, arriving and head candidate predicates are computed per row before
@@ -109,18 +108,13 @@ Alignment is evaluated separately for stored and arriving candidates before
 the selected result enters the staging register.
 The coherent clear calculation applies staging validity outside its issue,
 forwarding and fault eligibility terms. An older pending AMO clears the pending
-stage independently of the prepared outcomes. That release supplies capture
-permission at the final selection when a candidate is present and the capture
-gate is open. Issue, forwarding and probes require staging validity;
+stage independently of the prepared outcomes. Sector blocking permits capture
+and vetoes memory or forwarding release. Fault release requires both cut and
+sector permission. Release predicates omit pending validity from their atomic
+admission and committed-store interlocks; the final pending gate qualifies
+those predicates. Issue, forwarding and probes require staging validity;
 issue and forwarding also apply the older-AMO veto.
 
-Capture and clear outcomes are computed for both SQ-empty values and each
-combination of memory-busy and L0-hit permission. Each SQ-empty case uses
-its own memory-issue and forwarding permission. The live SQ-empty flag selects
-an outcome within each cache hit case. The cache hit result selects between
-those outcomes before the separate fault grant is applied. Capture, replacement
-and clear controls directly determine the staged state. Sector blocking supplies
-capture permission separately from the condition that clears the stage.
 Coherent issue,
 forwarding and SQ-probe predicates decode address faults before applying
 the cut and same-sector holds. The coherent memory launch computes permission
@@ -162,12 +156,14 @@ committed-store queue is empty.
 
 ### Staging and the SQ check
 
-The coherent selection prepares staging capture, clear and memory launch
+The coherent selection prepares release permission and memory launch
 controls for both committed-store drain states. The live drain flag selects
-the completed controls. Local holds qualify memory launch after drain selection.
-Capture and clear also account for both commit-pending
-states before the live commit flag selects them. Candidate presence qualifies
-the selected capture permission, and replacement independently permits capture.
+those outcomes. Local holds qualify memory launch after drain selection.
+Release permission also accounts for both commit-pending states before the
+live commit flag selects the outcome. Capture combines that permission with
+pending validity, per-copy vacancy, candidate presence and replacement.
+The capture gate qualifies the combined result. Clear combines release
+permission with its hold and fault conditions before applying pending validity.
 
 The staging register (`sq_check_*`) holds the selected load while the SQ
 checks it. Disambiguation is conservative: a load reads memory only when every
