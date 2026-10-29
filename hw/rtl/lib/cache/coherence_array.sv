@@ -43,6 +43,7 @@ module coherence_array #(
     // A maintenance visit reads this way regardless of the address tag.
     input logic i_req_visit,
     input logic [WayBits-1:0] i_req_way,
+    input logic i_req_skip_data_on_hit,
     output logic o_resp_valid,
     input logic i_resp_ready,
     output logic o_resp_hit,
@@ -50,6 +51,7 @@ module coherence_array #(
     output logic [WayBits-1:0] o_resp_way,
     output logic [ADDR_WIDTH-1:0] o_resp_addr,
     output logic [1:0] o_resp_state,
+    output logic o_resp_data_valid,
     output logic [8*LINE_BYTES-1:0] o_resp_data,
     // An update names a complete tag and row. Writes finish before another
     // lookup can read either port, including the RAM's input registers.
@@ -82,7 +84,7 @@ module coherence_array #(
   logic [CountBits-1:0] count_q;
   logic [SetBits-1:0] init_set_q, set_q;
   logic [TagBits-1:0] tag_q;
-  logic visit_q;
+  logic visit_q, skip_data_q;
   logic [WayBits-1:0] visit_way_q;
   logic [WAYS-1:0] exclude_q;
   logic [PlruBits-1:0] plru_read, plru_q, plru_write;
@@ -250,6 +252,7 @@ module coherence_array #(
       set_q <= '0;
       tag_q <= '0;
       visit_q <= 1'b0;
+      skip_data_q <= 1'b0;
       visit_way_q <= '0;
       exclude_q <= '0;
       plru_q <= '0;
@@ -260,6 +263,7 @@ module coherence_array #(
       o_resp_addr <= '0;
       o_resp_state <= '0;
       o_resp_data <= '0;
+      o_resp_data_valid <= 1'b0;
       for (int way = 0; way < WAYS; way++) tags_q[way] <= '0;
     end else begin
       insert_lfsr_q <= {
@@ -283,6 +287,7 @@ module coherence_array #(
             set_q <= i_req_addr[OffsetBits+:SetBits];
             tag_q <= i_req_addr[ADDR_WIDTH-1:OffsetBits+SetBits];
             visit_q <= i_req_visit;
+            skip_data_q <= i_req_skip_data_on_hit;
             visit_way_q <= i_req_way;
             exclude_q <= i_req_exclude;
             count_q <= CountBits'(TAG_READ_LATENCY);
@@ -302,7 +307,11 @@ module coherence_array #(
           o_resp_way <= selected;
           o_resp_addr <= {tags_q[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
           o_resp_state <= tags_q[selected][TagBits+:2];
-          phase_q <= ReadData;
+          o_resp_data_valid <= !(hit && !visit_q && skip_data_q);
+          if (hit && !visit_q && skip_data_q) begin
+            o_resp_data <= '0;
+            phase_q <= Reply;
+          end else phase_q <= ReadData;
         end
         ReadData: begin
           count_q <= CountBits'(DATA_READ_LATENCY);
@@ -343,7 +352,7 @@ module coherence_array #(
       f_byte_known <= 1'b1;
       f_byte_value <= i_update_data[8*f_byte+:8];
     end
-    if (!i_rst && o_resp_valid &&
+    if (!i_rst && o_resp_valid && o_resp_data_valid &&
         ((RowBits'(o_resp_way) << SetBits) | RowBits'(set_q)) == f_row && f_byte_known)
       assert (o_resp_data[8*f_byte+:8] == f_byte_value);
   end
@@ -359,11 +368,13 @@ module coherence_array #(
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
       if ($past(o_resp_valid && !i_resp_ready)) begin
         assert (o_resp_valid);
+        assert (o_resp_data_valid == $past(o_resp_data_valid));
         assert (f_response_signature == $past(f_response_signature));
       end
       assert (!(request_fire && update_fire));
       assert (!(o_resp_valid && (o_req_ready || o_update_ready)));
       if (phase_q == Select) assert (selected < WAYS);
+      if (o_resp_valid && !o_resp_data_valid) assert (o_resp_hit && skip_data_q && !visit_q);
     end
   end
 `endif

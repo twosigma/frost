@@ -114,7 +114,8 @@ module coherence_home #(
   logic [1:0] array_state, line_state_q;
   logic [8*LINE_BYTES-1:0] array_data, image_q;
   logic victim_q, sector_q, check_done_q, sc_failed_q, grant_error_q;
-  logic probe_data_q;
+  logic probe_data_q, partial_update_q;
+  logic [LINE_BYTES-1:0] update_mask;
   logic fill_valid_q, fill_sent_q, fill_done_q, fill_error_q;
   logic [8*LINE_BYTES-1:0] fill_data_q;
   logic [NUM_WB-1:0] wb_valid_q, wb_sent_q;
@@ -248,6 +249,7 @@ module coherence_home #(
       .i_req_exclude('0),
       .i_req_visit(1'b0),
       .i_req_way('0),
+      .i_req_skip_data_on_hit(!put_active_q && demand.opcode == coherence_pkg::DMAWrite),
       .o_resp_valid(array_resp_valid),
       .i_resp_ready(phase_q == LookupWait),
       .o_resp_hit(array_hit),
@@ -255,6 +257,7 @@ module coherence_home #(
       .o_resp_way(array_way),
       .o_resp_addr(array_addr),
       .o_resp_state(array_state),
+      .o_resp_data_valid(),
       .o_resp_data(array_data),
       .i_update_valid(active && (phase_q == Update || phase_q == InvalidateVictim)),
       .o_update_ready(array_update_ready),
@@ -262,9 +265,19 @@ module coherence_home #(
       .i_update_way(way_q),
       .i_update_state(phase_q == InvalidateVictim ? 2'b00 : line_state_q),
       .i_update_insert(fill_valid_q && phase_q == Update),
-      .i_update_mask({LINE_BYTES{phase_q == Update}}),
+      .i_update_mask(update_mask),
       .i_update_data(image_q)
   );
+
+  always_comb begin
+    update_mask = '0;
+    if (phase_q == Update) begin
+      if (partial_update_q)
+        update_mask = LINE_BYTES'(sector_mask | {32{probe_data_q}}) <<
+            (LINE_BYTES == 64 && address_q[5] ? 32 : 0);
+      else update_mask = '1;
+    end
+  end
 
   always_comb begin
     wb_free = 1'b0;
@@ -343,7 +356,10 @@ module coherence_home #(
       coherence_pkg::GetM, coherence_pkg::Atomic: result.opcode = coherence_pkg::GrantM;
       coherence_pkg::StoreConditional:
       result.opcode = sc_failed_q ? coherence_pkg::GrantFail : coherence_pkg::GrantM;
-      coherence_pkg::DMAWrite, coherence_pkg::Prefetch: result.opcode = coherence_pkg::GrantAck;
+      coherence_pkg::DMAWrite, coherence_pkg::Prefetch: begin
+        result.opcode = coherence_pkg::GrantAck;
+        result.data = '0;
+      end
       default: begin
       end
     endcase
@@ -371,6 +387,7 @@ module coherence_home #(
       sc_failed_q <= 1'b0;
       grant_error_q <= 1'b0;
       probe_data_q <= 1'b0;
+      partial_update_q <= 1'b0;
       probe_q <= '0;
       ack_q <= '0;
       fill_valid_q <= 1'b0;
@@ -432,6 +449,8 @@ module coherence_home #(
             way_q <= array_way;
             line_state_q <= array_state;
             image_q <= array_data;
+            partial_update_q <= array_hit && !put_active_q &&
+                demand.opcode == coherence_pkg::DMAWrite;
             victim_addr_q <= array_addr;
             sector_q <= 1'b0;
             if (!array_hit && put_active_q) begin

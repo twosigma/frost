@@ -342,6 +342,51 @@ async def dma_read_fill_and_dirty_residency(dut: Any) -> None:
 
 
 @cocotb.test()
+async def masked_dma_writes_preserve_dirty_and_sibling_bytes(dut: Any) -> None:
+    """Masked writes preserve private dirty bytes and the other shared sector."""
+    b = Home(dut)
+    await b.reset()
+    base = 0x80000000
+    expected = {}
+    for sector in range(2):
+        address = base + 32 * sector
+        expected[address] = b.expected(address)
+        assert await b.read(address, 7) == expected[address]
+    for dirty in (False, True):
+        for sector in range(2):
+            address = base + 32 * sector
+            if dirty:
+                grant = await b.start(1, address)
+                expected[address] = int.from_bytes(
+                    bytes((17 * index + sector + 41) & 255 for index in range(32)),
+                    "little",
+                )
+                b.private[address] = (3, expected[address])
+                await b.finish(grant, written=True)
+            for mask in (1, 0x80000000, 0xA5A55A5A, 0xFFFFFFFF):
+                payload = int.from_bytes(
+                    bytes((index * 13 + mask) & 255 for index in range(32)), "little"
+                )
+                grant = await b.start(8, address, payload, mask)
+                assert grant[0] == 4 and grant[4] == 0
+                await b.finish(grant, delay=3, completion_delay=2, release_delay=3)
+                merged = bytearray(expected[address].to_bytes(32, "little"))
+                for index in range(32):
+                    if mask & (1 << index):
+                        merged[index] = (payload >> (8 * index)) & 255
+                expected[address] = int.from_bytes(merged, "little")
+                for target, value in expected.items():
+                    assert await b.read(target, 7) == value
+    for row in sorted({address & -b.line for address in expected}):
+        for index in range(1, 9):
+            await b.read(row + index * 4096, 7)
+    await b.tick(b.write_delay + 2)
+    for target, value in expected.items():
+        assert b.expected(target) == value
+        assert await b.read(target, 7) == value
+
+
+@cocotb.test()
 async def recall_all_sectors_and_keep_victim_lock(dut: Any) -> None:
     """Check all-sector recall and refetch ordering through B."""
     b = Home(dut)
