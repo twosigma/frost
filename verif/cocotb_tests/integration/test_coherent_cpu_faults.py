@@ -27,6 +27,7 @@ from cocotb_tests.integration.test_cpu_top import (
     store,
     trap_program,
 )
+from cocotb_tests.cache.test_coherence_home import unpack
 
 
 class System(MemorySystem):
@@ -413,11 +414,43 @@ async def parked_hart_serves_dirty_dma(dut: Any) -> None:
                 assert int(dut.hart.cpu_inst.wfi_waiting_q.value)
                 assert not int(dut.o_debug_mode.value)
 
+        l1d = dut.hart.gen_coherent_tier.hart_cache.l1d
+        wrapper = dut.hart.cpu_inst.u_tomasulo
+        cut_phases: set[int] = set()
+        cut_captured = False
+        cuts_completed = 0
+
+        def check_cut_edges() -> None:
+            """Follow the actual probe through capture, invalidation and reply."""
+            nonlocal cut_captured, cuts_completed
+            probe = unpack(
+                int(l1d.i_p.value), (2, 6, 1, len(l1d.i_address), 2, 2, 9, 5, 3)
+            )
+            if int(l1d.i_p_valid.value) and int(l1d.o_p_ready.value) and probe[0] == 1:
+                assert not cut_captured
+                assert int(dut.hart.coherent_cut_hold.value)
+                assert int(dut.hart.cut_addr.value) == probe[3]
+                assert int(wrapper.u_lq.i_coherent_cut_addr.value) == probe[3]
+                cut_captured = True
+                cut_phases.clear()
+            if cut_captured:
+                phase = int(wrapper.u_coherence_port.inval_phase_q.value)
+                if phase:
+                    cut_phases.add(phase)
+                if int(l1d.o_r_valid.value) and int(l1d.i_r_ready.value):
+                    assert cut_phases == {1, 2, 3}
+                    assert not int(dut.hart.coherent_cut_hold.value)
+                    cut_captured = False
+                    cuts_completed += 1
+
+        s.before_edge = check_cut_edges
         assert all(s.memory.get(address + offset, 0) == 0 for offset in range(64))
         assert await s.dma(address, check=check_parked) & ((1 << 64) - 1) == 0x155
         await s.dma(address + 32, 0x99, check=check_parked)
         assert await s.dma(address + 32, check=check_parked) & ((1 << 64) - 1) == 0x199
         assert await s.dma(address, check=check_parked) & ((1 << 64) - 1) == 0x155
+        assert cuts_completed == 1 and not cut_captured
+        s.before_edge = None
 
 
 @cocotb.test()

@@ -169,6 +169,31 @@ async def delayed_lr_cannot_reserve_or_fill_after_cut(dut: Any) -> None:
 
 
 @cocotb.test()
+async def unrelated_capture_preserves_lr_eligibility(dut: Any) -> None:
+    """Keep an LR response eligible during a cut of another sector."""
+    dut_if, _ = await setup_test(dut)
+    dut.i_coherent_store_ready.value = 1
+    dut_if.set_fu_ready(RS_MEM, True)
+    dut_if.set_commit_hold(True)
+    tag = await dut_if.dispatch(
+        AllocationRequest(pc=0x5700, dest_reg=5, dest_valid=True, is_lr=True)
+    )
+    await issue(dut_if, tag, OP_LR_W, WORD)
+    req = await request(dut_if)
+    await dut_if.step()
+    dut.i_coh_admit_addr.value = LINE + 32
+    dut.i_coherent_cut_hold.value = 1
+    dut_if.drive_lq_mem_response(0x12345678, cached=True, slot=req["id"])
+    await dut_if.step()
+    dut_if.clear_lq_mem_response()
+    assert int(dut.o_coherent_reservation_valid.value)
+    dut.i_coherent_cut_hold.value = 0
+    for _ in range(8):
+        await dut_if.step()
+        assert int(dut.o_coherent_reservation_valid.value)
+
+
+@cocotb.test()
 async def responses_cross_each_cut_edge(dut: Any) -> None:
     """Responses at capture, invalidation, compare and replay cannot escape poison."""
     dut_if, _ = await setup_test(dut)
@@ -185,11 +210,14 @@ async def responses_cross_each_cut_edge(dut: Any) -> None:
             await issue(dut_if, tag, OP_LR_W if is_lr else OP_LW, WORD)
             req = await request(dut_if)
             await dut_if.step()
+            dut.i_coh_admit_addr.value = LINE
             dut.i_coherent_cut_hold.value = 1
             if response_phase == 0:
                 dut_if.drive_lq_mem_response(0x12345678, cached=True, slot=req["id"])
             await dut_if.step()
             dut_if.clear_lq_mem_response()
+            if response_phase == 0 and is_lr:
+                assert not int(dut.o_coherent_reservation_valid.value)
             await _admit_now(dut, dut_if)
             dut.i_coh_inval_valid.value = 1
             dut.i_coh_inval_slot.value = SLOT

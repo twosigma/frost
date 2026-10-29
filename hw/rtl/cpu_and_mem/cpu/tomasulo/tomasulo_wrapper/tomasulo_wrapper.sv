@@ -3592,6 +3592,7 @@ module tomasulo_wrapper #(
       .ENABLE_SQ_FORWARD_FAST_PATH(1'b1)
   ) u_lq (
       .i_coherent_cut_hold(i_coherent_cut_hold),
+      .i_coherent_cut_addr(i_coh_admit_addr),
       .i_coherent_block_valid(i_coherent_block_valid),
       .i_coherent_block_addr(i_coherent_block_addr),
       .i_coherent_atomic_protected(i_coherent_atomic_protected),

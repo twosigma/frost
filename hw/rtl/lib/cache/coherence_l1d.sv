@@ -366,7 +366,7 @@ module coherence_l1d #(
          (cut_phase_q != CutIdle && cut_phase_q != CutDone)));
   end
 `endif
-  assign o_cut_address = probe_q.addr;
+  assign o_cut_address = probe_valid_q ? probe_q.addr : probe_in.addr;
   assign o_cut_admit_valid = active && cut_phase_q == CutAdmit;
   assign o_cut_inval_valid = active && cut_phase_q == CutInvalidate;
   always_ff @(posedge i_clk) begin

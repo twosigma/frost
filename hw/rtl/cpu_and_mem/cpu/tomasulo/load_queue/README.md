@@ -396,8 +396,10 @@ Devices hold no reservations, so an LR to the device quadrant faults instead
 (see [Completion](#completion)), with no read and no reservation.
 The reservation records the exact physical address and W/D size. Its set
 covers the aligned 32-byte sector. Writes and invalidations to that sector
-clear it. An invalidation that crosses an LR response suppresses the
-reservation. A trap, xRET or FENCE-class flush clears the reservation; a
+clear it. An invalidation probe supplies its sector address at capture.
+Matching response slots suppress LR reservations and L0 fills on that edge
+and throughout the cut. Responses on other sectors keep their eligibility.
+A trap, xRET or FENCE-class flush clears the reservation; a
 branch recovered at commit preserves it. The SC goes through the SQ and
 [`sc_pending_unit`](../tomasulo_wrapper/atomics/sc_pending_unit.sv).
 Cached SC selection and its home check use the exact LR address and size.
