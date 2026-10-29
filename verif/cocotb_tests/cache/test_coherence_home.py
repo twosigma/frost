@@ -779,20 +779,25 @@ async def fatal_and_reset_with_held_results_and_dirty_victim(dut: Any) -> None:
 async def parked_fills_release_engines_and_reenter_under_miss_pressure(
     dut: Any,
 ) -> None:
-    """Four memory waits leave resident service and returned fills eligible."""
+    """Four parked fills and eight retries leave resident service eligible."""
     b = Home(dut)
     await b.reset()
     base = 0x80000000
     first = await b.start(0, base)
     await b.finish(first)
-    b.read_delay = 400
-    addresses = [base + (index + 1) * b.line for index in range(8)]
+    b.read_delay = 1200
+    addresses = [base + (index + 1) * b.line for index in range(12)]
     for index, address in enumerate(addresses):
-        await b.submit(0, address, slot=index)
-    for _ in range(160):
-        if len([t for t in b.transactions if not t[1]]) >= 5:
-            break
+        await b.submit(0 if index < 8 else 7, address, slot=index % 8)
+    retried = set()
+    for _ in range(500):
+        if b.get("retry_valid") and not b.get("retry_park"):
+            retried.add(b.get("decision_tid"))
         await b.tick()
+        if len(retried) == 8:
+            break
+    assert len(retried) == 8
+    assert int(dut.completions.parked_q.value).bit_count() == 4
     assert len([t for t in b.transactions if not t[1]]) == 5
     assert not b.get("o_g_valid")
     await b.submit(5, base)
