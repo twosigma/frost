@@ -199,7 +199,9 @@ must not stop those resources in an integration.
 bridges, and maintenance arbitration. `coherence_home` contains the shared
 L2 controller and `coherence_home_array`, whose tag, data-read and masked-update
 ports have independent service. The L1D's `coherence_array` serializes its
-lookup, read and update operations in block RAM.
+lookup, read and update operations in block RAM. The final tag-read edge
+selects the private way and starts any required data read. Replacement state
+uses the tag request's matching PLRU response.
 The L1D uses 32-byte sectors; the L2 supports 32-byte or 64-byte lines.
 
 The L1D has I, S and M states. Reads use S or M. A store hit in M writes its
