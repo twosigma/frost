@@ -218,7 +218,8 @@ with and without allocation. The allocation pulse selects the outcome.
 An L1D grant belongs to a live request endpoint. SC acceptance requires that
 endpoint to be idle, so grant processing and SC acceptance are mutually
 exclusive. Probe capture and service own local arbitration through R
-acceptance. Ready grants, writes and maintenance request one local selection
+acceptance. Invalidation admission starts on P capture and keeps the captured
+address until the CPU accepts admission. Ready grants, writes and maintenance request one local selection
 edge after R acceptance. An eligible read requests a turn after four completed
 probe replies. Grants and writes take priority within that turn. A selected
 local operation completes its bounded array service before P is accepted. Waiting for an operand, permission or retirement does not hold

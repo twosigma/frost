@@ -385,7 +385,8 @@ module coherence_l1d #(
   end
 `endif
   assign o_cut_address = probe_valid_q ? probe_q.addr : probe_in.addr;
-  assign o_cut_admit_valid = active && cut_phase_q == CutAdmit;
+  assign o_cut_admit_valid = active && (cut_phase_q == CutAdmit ||
+      (probe_capture && probe_in.opcode == coherence_pkg::ProbeInvalidate));
   assign o_cut_inval_valid = active && cut_phase_q == CutInvalidate;
   always_ff @(posedge i_clk) begin
     if (i_rst) cut_phase_q <= CutIdle;
@@ -1157,14 +1158,10 @@ module coherence_l1d #(
   assign f_grant = i_g;
   logic [5:0] f_probe_age;
   logic [2:0] f_admit_age, f_inval_age;
-  wire [ADDR_WIDTH+19:0] f_reply_signature = {
-    reply_q.opcode,
-    reply_q.tid,
-    reply_q.addr,
-    reply_q.state,
-    reply_q.absorbed,
-    reply_q.put_id,
-    reply_q.data[7:0]
+  wire [ADDR_WIDTH+26:0] f_reply_signature = {
+    reply_q.opcode, reply_q.tid, reply_q.epoch, reply_q.hart, reply_q.addr,
+    reply_q.state, reply_q.sc_valid, reply_q.data_valid, reply_q.data[7:0],
+    reply_q.absorbed, reply_q.put_id, reply_q.put_epoch, reply_q.clear, reply_q.error
   };
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
@@ -1230,7 +1227,8 @@ module coherence_l1d #(
         assert (f_reply_signature == $past(f_reply_signature));
       end
       if (o_cut_admit_valid || o_cut_inval_valid)
-        assert (probe_valid_q && probe_q.opcode == coherence_pkg::ProbeInvalidate);
+        assert (probe_valid_q ? probe_q.opcode == coherence_pkg::ProbeInvalidate :
+            probe_capture && probe_in.opcode == coherence_pkg::ProbeInvalidate);
       if (cut_phase_q != CutIdle)
         assert (probe_valid_q && probe_q.opcode == coherence_pkg::ProbeInvalidate);
       if (o_r_valid && probe_q.opcode == coherence_pkg::ProbeInvalidate)

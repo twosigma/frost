@@ -207,6 +207,7 @@ async def probe_reply_waits_for_cut_and_preserves_dirty_bytes(dut: Any) -> None:
         await b.wait("o_p_ready")
         if opcode == 1:
             assert b.get("o_cut_hold") and b.get("o_cut_address") == address
+            assert b.get("o_cut_admit_valid")
         await b.tick()
         await b.set(i_p_valid=0)
         if opcode == 1:
