@@ -264,7 +264,8 @@ through a stalled presentation.
 
 The home admits nineteen requests with distinct identities. Eight engines
 share their image storage with the result credits. An engine hands its image
-to completion ownership before G. G acceptance returns that image credit;
+to completion ownership before G. An idle grant register captures an accepted
+result directly when no older result awaits selection. G acceptance returns that image credit;
 the identity and physical way pin last through U. Each request waits for U
 from earlier requests to the same 32-byte sector.
 
