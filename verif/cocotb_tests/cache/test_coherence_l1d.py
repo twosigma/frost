@@ -154,3 +154,86 @@ async def held_probe_reply_defers_grant_application(dut: Any) -> None:
             await b.wait("o_read_valid")
             assert b.get("o_read_data") == 0x99887766
         assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def probe_reply_waits_for_cut_and_preserves_dirty_bytes(dut: Any) -> None:
+    """Finish state updates and the observation cut before exposing a held reply."""
+    b = Private(dut)
+    await b.reset()
+    address = 0x80000000
+    pattern = int.from_bytes(bytes(range(32)), "little")
+    stored = 0xFEDCBA9876543210
+    await b.set(i_address=address, i_write_mask=255, i_write_data=stored)
+    await b.tick()
+    await b.set(i_write_mask=0)
+    await b.wait("o_d_valid")
+    demand = unpack(b.get("o_d"), (4, 9, b.p, 5, 3, 32, 1, 1, 1, 256))
+    await b.set(i_d_ready=1)
+    await b.tick()
+    await b.set(
+        i_d_ready=0,
+        i_g_valid=1,
+        i_g=pack(
+            (3, 2), (9, demand[1]), (6, 0), (b.p, address), (256, pattern), (1, 0)
+        ),
+    )
+    await b.wait("o_g_ready")
+    await b.tick()
+    await b.set(i_g_valid=0)
+    await b.wait("o_c_valid")
+    await b.set(i_c_ready=1)
+    await b.tick()
+    await b.set(
+        i_c_ready=0, i_u_valid=1, i_u=pack((9, demand[1]), (6, 0), (b.p, address))
+    )
+    await b.wait("o_u_ready")
+    await b.tick()
+    await b.set(i_u_valid=0)
+    expected = (pattern & ~((1 << 64) - 1)) | stored
+    for tid, opcode in enumerate((0, 0, 1, 0), start=1):
+        probe = pack(
+            (2, opcode),
+            (6, tid),
+            (1, 0),
+            (b.p, address),
+            (2, 2),
+            (2, int(opcode == 1)),
+            (9, 0),
+            (5, 0),
+            (3, 0),
+        )
+        await b.set(i_p_valid=1, i_p=probe)
+        await b.wait("o_p_ready")
+        if opcode == 1:
+            assert b.get("o_cut_hold") and b.get("o_cut_address") == address
+        await b.tick()
+        await b.set(i_p_valid=0)
+        if opcode == 1:
+            for _ in range(8):
+                assert b.get("o_cut_hold") and not b.get("o_r_valid")
+                await b.tick()
+            await b.set(i_cut_admit_ready=1)
+            await b.wait("o_cut_inval_valid")
+            for _ in range(8):
+                assert b.get("o_cut_hold") and not b.get("o_r_valid")
+                await b.tick()
+            await b.set(i_cut_inval_done=1)
+        await b.wait("o_r_valid")
+        held = b.get("o_r")
+        reply = unpack(held, (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1))
+        assert reply[1] == tid and reply[4] == address and not reply[-1]
+        assert reply[7] == int(tid == 1)
+        if tid == 1:
+            assert reply[8] == expected and reply[5] == 2
+        if opcode == 1 or tid == 4:
+            assert reply[5] == 0
+        for _ in range(8):
+            assert b.get("o_r_valid") and b.get("o_r") == held
+            assert not b.get("o_p_ready")
+            await b.tick()
+        await b.set(i_r_ready=1)
+        await b.tick()
+        assert b.get("o_cut_release") == int(opcode == 1)
+        await b.set(i_r_ready=0, i_cut_admit_ready=0, i_cut_inval_done=0)
+    assert not b.get("o_fatal")
