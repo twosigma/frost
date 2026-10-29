@@ -29,6 +29,16 @@ class Completions(Bench):
         """Record the interface geometry."""
         self.dut = dut
         self.p = len(dut.i_d) - 312
+        self.images: dict[int, int] = {}
+        self.buffers: dict[int, int] = {}
+
+    async def tick(self, count: int = 1) -> None:
+        """Supply the selected image bank before each clock edge."""
+        for _ in range(count):
+            await self.set(i_clk=0)
+            await self.set(i_image_data=self.images.get(self.get("o_image_index"), 0))
+            await self.set(i_clk=1)
+            await self.set(i_clk=0)
 
     async def reset(self, epoch: int = 0) -> None:
         """Reset every ownership record together."""
@@ -71,6 +81,7 @@ class Completions(Bench):
         await self.wait("o_work_valid")
         fields = unpack(self.get("o_work"), (4, 9, self.p, 5, 3, 32, 1, 1, 1, 256))
         item = (fields[1], self.get("o_work_tid"), fields[2])
+        self.buffers[item[1]] = self.get("o_work_buffer")
         await self.set(i_work_ready=1)
         await self.tick()
         await self.set(i_work_ready=0)
@@ -79,6 +90,7 @@ class Completions(Bench):
     async def result(self, item: tuple[int, int, int], data: int) -> None:
         """Transfer an execution image into its reserved result credit."""
         q, tid, address = item
+        self.images[self.buffers[tid]] = data
         packet = pack((3, 0), (9, q), (6, tid), (self.p, address), (256, data), (1, 0))
         await self.set(i_result_valid=1, i_result=packet)
         await self.wait("o_result_ready")

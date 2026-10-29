@@ -345,3 +345,40 @@ async def continuous_row_contention_services_both_ports(dut: Any) -> None:
     await b.set(i_read_valid=0, i_update_valid=0)
     await b.tick(16)
     assert reads >= 8 and writes >= 8 and not b.reads
+
+
+@cocotb.test()
+async def pending_tag_update_interrupts_repeated_lookups(dut: Any) -> None:
+    """Give a pending packed-row update a bounded opportunity to commit."""
+    b = Array(dut)
+    await b.reset()
+    await b.set(
+        i_req_valid=1, i_req_addr=0, i_req_token=1, i_resp_ready=1, i_resp_claim=0
+    )
+    for _ in range(30):
+        if b.get("o_resp_valid"):
+            break
+        await b.tick()
+    else:
+        raise AssertionError("lookup did not reach its response")
+    await b.set(
+        i_update_valid=1,
+        i_update_addr=0,
+        i_update_way=0,
+        i_update_tag=1,
+        i_update_state=2,
+        i_update_mask=0,
+        i_update_data=0,
+        i_update_token=2,
+    )
+    for _ in range(12):
+        fired = b.get("o_update_ready")
+        await b.tick()
+        if fired:
+            break
+    else:
+        raise AssertionError("continuous lookups starved the tag update")
+    await b.set(i_update_valid=0, i_req_valid=0)
+    await b.tick(12)
+    tag = await b.lookup(0, 3)
+    assert tag[1]

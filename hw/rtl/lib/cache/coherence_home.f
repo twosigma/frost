@@ -4,6 +4,7 @@ $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_array.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_home_array.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_home_completions.sv
+$(ROOT)/hw/rtl/lib/cache/coherence_home_engine.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_home.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_d_arbiter.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_read_flags.sv

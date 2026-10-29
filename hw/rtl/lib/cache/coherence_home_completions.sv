@@ -38,6 +38,19 @@ module coherence_home_completions #(
     input logic i_work_ready,
     output logic [ADDR_WIDTH+311:0] o_work,
     output logic [5:0] o_work_tid,
+    output logic [ResultBits-1:0] o_work_buffer,
+    output logic o_work_error,
+    output logic o_work_counted,
+    input logic i_count_valid,
+    input logic [5:0] i_count_tid,
+    output logic [SLOTS-1:0] o_waiting,
+    output logic [SLOTS-1:0][ADDR_WIDTH+311:0] o_waiting_request,
+    input logic [SLOTS-1:0] i_park,
+    input logic [SLOTS-1:0] i_wake,
+    input logic [SLOTS-1:0] i_wake_error,
+    input logic i_retry_park,
+    output logic [ResultBits-1:0] o_image_index,
+    input logic [255:0] i_image_data,
     input logic i_retry_valid,
     input logic [5:0] i_retry_tid,
     input logic i_pin_valid,
@@ -58,6 +71,16 @@ module coherence_home_completions #(
     input logic [ADDR_WIDTH+17:0] i_c,
     output logic o_u_valid,
     input logic i_u_ready,
+`ifdef COHERENCE_HOME_CONTROL
+    input logic [SLOTS-1:0] i_fill_waiting,
+    input logic [SLOTS-1:0] i_fill_seated,
+    input logic [RESULT_SLOTS-1:0] i_engine_busy,
+    input logic [RESULT_SLOTS-1:0] i_engine_unpinned,
+    input logic [RESULT_SLOTS-1:0] i_engine_pinned,
+    input logic [RESULT_SLOTS-1:0] i_engine_initial_error,
+    input logic [RESULT_SLOTS-1:0][5:0] i_engine_tid,
+    input logic [RESULT_SLOTS-1:0][ADDR_WIDTH-1:0] i_engine_addr,
+`endif
     output logic [ADDR_WIDTH+14:0] o_u
 );
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
@@ -68,6 +91,9 @@ module coherence_home_completions #(
   logic [SLOTS-1:0] release_valid, release_ready, release_fire;
   logic [SLOTS-1:0] issued_q, buffer_owned_q, result_valid_q, pin_valid_q, error_q;
   logic [SLOTS-1:0] predecessors_q[SLOTS];
+  logic [SLOTS-1:0] parked_q, ready_q, wake_error_q, counted_q;
+  logic [ResultBits-1:0] work_buffer_q;
+  logic ready_work_found;
   logic [SLOTS-1:0][ADDR_WIDTH+311:0] work;
   logic [SLOTS-1:0][ADDR_WIDTH+14:0] releases;
   logic [SLOTS-1:0][8:0] work_identity;
@@ -89,6 +115,9 @@ module coherence_home_completions #(
   logic [SlotBits-1:0] result_slot;
   logic accept_request, accept_work, accept_result, accept_grant;
 
+  function automatic logic [2:0] grant_opcode(input coh_g_t packet);
+    grant_opcode = packet.opcode;
+  endfunction
   function automatic logic [8:0] request_q(input coh_d_t packet);
     request_q = packet.q;
   endfunction
@@ -145,15 +174,29 @@ module coherence_home_completions #(
 
   assign o_d_ready = !i_rst && !i_fatal_stop && free_slot && !duplicate &&
       request_ready[free_slot_index];
-  assign o_work_valid = !i_rst && !i_fatal_stop && work_selected_q && free_buffer;
+  assign o_work_valid = !i_rst && !i_fatal_stop && work_selected_q;
   assign o_work = work[work_slot_q];
   assign o_work_tid = 6'(work_slot_q);
+  assign o_work_buffer = work_buffer_q;
+  assign o_work_error = wake_error_q[work_slot_q];
+  assign o_work_counted = counted_q[work_slot_q];
+  assign o_image_index = buffer_index_q[grant_pick];
+  assign o_waiting_request = work;
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_waiting
+    assign o_waiting[slot] = work_valid[slot] && !issued_q[slot] &&
+        !parked_q[slot] && !ready_q[slot] &&
+        !(work_selected_q && work_slot_q == SlotBits'(slot));
+  end
   assign o_result_ready = !i_rst && result_matches;
   assign o_g_valid = |grant_valid;
   assign o_g = grant_q;
   assign o_c_ready = |completion_ready;
 
   always_comb begin
+    ready_work_found = 1'b0;
+    for (int slot = 0; slot < SLOTS; slot++)
+    ready_work_found |= work_valid[slot] && !issued_q[slot] && !parked_q[slot] &&
+          !i_park[slot] && predecessors_q[slot] == 0 && ready_q[slot];
     work_found  = 1'b0;
     work_after  = 1'b0;
     work_first  = '0;
@@ -163,7 +206,8 @@ module coherence_home_completions #(
     grant_first = '0;
     grant_pick  = '0;
     for (int slot = SLOTS - 1; slot >= 0; slot--) begin
-      if (work_valid[slot] && !issued_q[slot] && predecessors_q[slot] == 0) begin
+      if (work_valid[slot] && !issued_q[slot] && !parked_q[slot] && !i_park[slot] &&
+          predecessors_q[slot] == 0 && (!ready_work_found || ready_q[slot])) begin
         work_found = 1'b1;
         work_first = SlotBits'(slot);
         if (slot >= int'(work_next_q)) begin
@@ -231,11 +275,14 @@ module coherence_home_completions #(
   ) release_arbiter (
       .i_clk,
       .i_rst,
-      .i_valid  (release_valid),
-      .o_ready  (release_ready),
+      .i_valid(release_valid),
+      .o_ready(release_ready),
       .i_payload(releases),
-      .o_valid  (o_u_valid),
-      .i_ready  (i_u_ready),
+      .o_valid(o_u_valid),
+      .i_ready(i_u_ready),
+`ifdef COHERENCE_HOME_CONTROL
+      .i_service_stop(1'b0),
+`endif
       .o_payload(o_u)
   );
 
@@ -246,6 +293,11 @@ module coherence_home_completions #(
       result_valid_q <= '0;
       pin_valid_q <= '0;
       error_q <= '0;
+      parked_q <= '0;
+      counted_q <= '0;
+      ready_q <= '0;
+      wake_error_q <= '0;
+      work_buffer_q <= '0;
       buffer_live_q <= '0;
       work_selected_q <= 1'b0;
       work_slot_q <= '0;
@@ -261,27 +313,34 @@ module coherence_home_completions #(
       end
       for (int index = 0; index < RESULT_SLOTS; index++) buffer_q[index] <= '0;
     end else begin
-      if (!work_selected_q && work_found) begin
+      if (!work_selected_q && work_found && free_buffer) begin
         work_selected_q <= 1'b1;
         work_slot_q <= work_pick;
+        work_buffer_q <= free_buffer_index;
       end
       if (accept_work) begin
         work_selected_q <= 1'b0;
         work_next_q <= work_slot_q == SlotBits'(SLOTS - 1) ? '0 : work_slot_q + 1'b1;
         issued_q[work_slot_q] <= 1'b1;
         buffer_owned_q[work_slot_q] <= 1'b1;
-        buffer_index_q[work_slot_q] <= free_buffer_index;
-        buffer_live_q[free_buffer_index] <= 1'b1;
+        buffer_index_q[work_slot_q] <= work_buffer_q;
+        buffer_live_q[work_buffer_q] <= 1'b1;
+        ready_q[work_slot_q] <= 1'b0;
       end
       if (accept_result) begin
         result_valid_q[result_slot] <= 1'b1;
         error_q[result_slot] <= result.error;
-        buffer_q[buffer_index_q[result_slot]] <= i_result;
+        buffer_q[buffer_index_q[result_slot]] <= {
+          result.opcode, result.q, result.tid, result.addr, 256'b0, result.error
+        };
       end
       if (!grant_selected_q && grant_found) begin
         grant_selected_q <= 1'b1;
         grant_slot_q <= grant_pick;
         grant_q <= buffer_q[buffer_index_q[grant_pick]];
+        grant_q.data <= error_q[grant_pick] || grant_opcode(
+            buffer_q[buffer_index_q[grant_pick]]
+        ) == coherence_pkg::GrantAck ? 256'b0 : i_image_data;
       end
       if (accept_grant) begin
         grant_selected_q <= 1'b0;
@@ -296,6 +355,9 @@ module coherence_home_completions #(
           issued_q[slot] <= 1'b0;
           pin_valid_q[slot] <= 1'b0;
           error_q[slot] <= 1'b0;
+          wake_error_q[slot] <= 1'b0;
+          counted_q[slot] <= 1'b0;
+          ready_q[slot] <= 1'b0;
         end
         if (accept_request && free_slot_index == SlotBits'(slot)) begin
           for (int older = 0; older < SLOTS; older++) begin
@@ -303,12 +365,20 @@ module coherence_home_completions #(
                 (work_address[older] >> 5) == (incoming.addr >> 5);
           end
         end
+        if (i_count_valid && i_count_tid == 6'(slot)) counted_q[slot] <= 1'b1;
+        if (i_park[slot]) parked_q[slot] <= 1'b1;
+        if (i_wake[slot]) begin
+          parked_q[slot] <= 1'b0;
+          ready_q[slot] <= 1'b1;
+          wake_error_q[slot] <= i_wake_error[slot];
+        end
         if (i_pin_valid && i_pin_tid == 6'(slot)) begin
           pin_valid_q[slot] <= 1'b1;
           way_q[slot] <= i_pin_way;
         end
         if (i_retry_valid && i_retry_tid == 6'(slot)) begin
           issued_q[slot] <= 1'b0;
+          parked_q[slot] <= i_retry_park;
           buffer_owned_q[slot] <= 1'b0;
           buffer_live_q[buffer_index_q[slot]] <= 1'b0;
         end
@@ -327,12 +397,18 @@ module coherence_home_completions #(
       assert ($onehot0(grant_valid));
       assert ($onehot0(completion_ready));
       assert ($countones(buffer_live_q) == $countones(buffer_owned_q));
-      if (accept_work) assert (predecessors_q[work_slot_q] == 0);
+      if (accept_work) begin
+        assert (predecessors_q[work_slot_q] == 0);
+        assert (!buffer_live_q[work_buffer_q] && !parked_q[work_slot_q]);
+      end
       for (int slot = 0; slot < SLOTS; slot++) begin
         assert (!predecessors_q[slot][slot]);
+        if (i_park[slot]) assert (o_waiting[slot]);
+        if (i_wake[slot]) assert (parked_q[slot]);
+        if (parked_q[slot]) assert (work_valid[slot] && !issued_q[slot]);
         assert ((predecessors_q[slot] & ~live) == 0);
         if (buffer_owned_q[slot]) begin
-          assert (issued_q[slot] && live[slot]);
+          assert (issued_q[slot] && work_valid[slot]);
           assert (buffer_live_q[buffer_index_q[slot]]);
           for (int other = slot + 1; other < SLOTS; other++)
           if (buffer_owned_q[other]) assert (buffer_index_q[slot] != buffer_index_q[other]);
@@ -350,6 +426,35 @@ module coherence_home_completions #(
     end
   end
 `endif
+`ifdef COHERENCE_HOME_CONTROL
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      assert (int'(work_slot_q) < SLOTS && int'(work_buffer_q) < RESULT_SLOTS);
+      assert ((i_fill_waiting & ~parked_q) == 0);
+      assert ((i_fill_seated & (~work_valid | pin_valid_q | result_valid_q)) == 0);
+      assert ((i_fill_seated & wake_error_q) == 0);
+      assert ((wake_error_q & ~(ready_q | issued_q)) == 0);
+      if (grant_selected_q) assert (result_valid_q[grant_slot_q] && buffer_owned_q[grant_slot_q]);
+      if (work_selected_q) begin
+        assert (work_valid[work_slot_q] && !issued_q[work_slot_q] && !parked_q[work_slot_q]);
+        assert (!buffer_live_q[work_buffer_q]);
+      end
+      for (int engine = 0; engine < RESULT_SLOTS; engine++) begin
+        if (i_engine_busy[engine]) begin
+          assert (int'(i_engine_tid[engine]) < SLOTS);
+          assert (issued_q[SlotBits'(i_engine_tid[engine])]);
+          assert (buffer_owned_q[SlotBits'(i_engine_tid[engine])]);
+          assert (!result_valid_q[SlotBits'(i_engine_tid[engine])]);
+          if (i_engine_unpinned[engine]) assert (!pin_valid_q[SlotBits'(i_engine_tid[engine])]);
+          if (i_engine_pinned[engine]) assert (pin_valid_q[SlotBits'(i_engine_tid[engine])]);
+          assert (i_engine_initial_error[engine] == wake_error_q[SlotBits'(i_engine_tid[engine])]);
+          assert (buffer_index_q[SlotBits'(i_engine_tid[engine])] == ResultBits'(engine));
+          assert (work_address[SlotBits'(i_engine_tid[engine])] == i_engine_addr[engine]);
+        end
+      end
+    end
+  end
+`else
 `ifdef FORMAL
   logic f_past_valid = 1'b0;
   logic [SLOTS-1:0] f_granted_q;
@@ -365,6 +470,13 @@ module coherence_home_completions #(
       end
     end
     if (!i_rst) begin
+      if (i_count_valid) begin
+        assume (int'(i_count_tid) < SLOTS);
+        assume (issued_q[SlotBits'(i_count_tid)]);
+      end
+      assume ((i_park & ~o_waiting) == 0);
+      assume ((i_wake & ~parked_q) == 0);
+      assume ((i_park & i_wake) == 0);
       if (i_pin_valid) begin
         assume (int'(i_pin_tid) < SLOTS && int'(i_pin_way) < WAYS);
         assume (issued_q[SlotBits'(i_pin_tid)] && buffer_owned_q[SlotBits'(i_pin_tid)]);
@@ -401,11 +513,14 @@ module coherence_home_completions #(
       if ($past(o_work_valid && !i_work_ready) && !i_fatal_stop) begin
         assert (o_work_valid && o_work == $past(o_work));
         assert (o_work_tid == $past(o_work_tid));
+        assert (o_work_buffer == $past(o_work_buffer));
+        assert (o_work_error == $past(o_work_error));
       end
       cover ($countones(live) == SLOTS && $countones(buffer_owned_q) == RESULT_SLOTS);
       cover (accept_work && |f_granted_q);
       cover (o_u_valid && |result_valid_q && i_u_ready);
     end
   end
+`endif
 `endif
 endmodule

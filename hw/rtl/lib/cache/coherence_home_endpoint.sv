@@ -189,6 +189,9 @@ module coherence_home_endpoint #(
     initial $fatal(1, "coherence_home_endpoint: invalid parameters");
   end
 `ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) assert (phase_q <= SendU);
+  end
 `ifdef FORMAL
   always_comb
 `else
@@ -201,6 +204,7 @@ module coherence_home_endpoint #(
   end
 `endif
 `ifdef FORMAL
+`ifndef COHERENCE_HOME_CONTROL
   logic f_past_valid = 1'b0;
   logic f_granted, f_completed, f_early_cancel;
   always_ff @(posedge i_clk) begin
@@ -260,5 +264,6 @@ module coherence_home_endpoint #(
       cover (o_u_valid && i_u_ready && seen_q != 0 && f_early_cancel);
     end
   end
+`endif
 `endif
 endmodule
