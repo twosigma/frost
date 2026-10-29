@@ -40,7 +40,7 @@ if {$mode eq "prepare" && $argc == 4} {
         if {![string match "xcvu9p*" [get_property PART $device]]} {
             error "Expected xcvu9p on the selected target"
         }
-        set part [get_cfgmem_parts mt25qu01g-spi-x1_x2_x4]
+        set part [lsort -unique [get_cfgmem_parts mt25qu01g-spi-x1_x2_x4]]
         if {[llength $part] != 1} {error "Expected the VCU118 configuration flash part"}
         create_hw_cfgmem -hw_device $device $part
         set memory [get_property PROGRAM.HW_CFGMEM $device]
