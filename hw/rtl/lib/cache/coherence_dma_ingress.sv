@@ -241,8 +241,123 @@ module coherence_dma_ingress #(
   logic [15:0] f_occupied;
   logic [3:0] f_queued, f_sent, f_granted, f_completed, f_released;
   logic [3:0] f_queue_live;
-  (* anyconst *) logic [3:0] f_id;
-  coh_d_t f_payload;
+  (* anyconst *)logic [3:0] f_id;
+  coh_d_t f_payload, f_reference_request, f_presented_request;
+  coh_g_t f_presented_grant;
+  coh_c_t f_presented_completion;
+  coh_u_t f_presented_release;
+  logic [3:0] f_issue_id_q[4];
+  logic [1:0] f_issue_head_q, f_issue_tail_q;
+  logic [  2:0] f_issue_count_q;
+  logic [255:0] f_reference_data_q;
+  logic [  5:0] f_reference_tid_q;
+  logic f_reference_error_q, f_reference_sent_q, f_reference_granted_q;
+  logic f_reference_completed_q, f_reference_released_q;
+  assign f_presented_request = o_d;
+  assign f_presented_grant = i_g;
+  assign f_presented_completion = o_c;
+  assign f_presented_release = i_u;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_issue_head_q <= '0;
+      f_issue_tail_q <= '0;
+      f_issue_count_q <= '0;
+      f_reference_sent_q <= 1'b0;
+      f_reference_granted_q <= 1'b0;
+      f_reference_completed_q <= 1'b0;
+      f_reference_released_q <= 1'b0;
+    end else begin
+      case ({
+        accept_request, accept_demand
+      })
+        2'b10: f_issue_count_q <= f_issue_count_q + 1'b1;
+        2'b01: f_issue_count_q <= f_issue_count_q - 1'b1;
+        default: begin
+        end
+      endcase
+      if (accept_request) begin
+        f_issue_id_q[f_issue_tail_q] <= i_req_id;
+        f_issue_tail_q <= f_issue_tail_q + 1'b1;
+        if (i_req_id == f_id) begin
+          f_reference_request <= '0;
+          f_reference_request.opcode <= i_req_write ? coherence_pkg::DMAWrite :
+              coherence_pkg::DMARead;
+          f_reference_request.q.src <= 2;
+          f_reference_request.q.port_class <= 3;
+          f_reference_request.q.id <= i_req_id;
+          f_reference_request.addr <= i_req_addr;
+          f_reference_request.size <= 5;
+          f_reference_request.mask <= i_req_mask;
+          f_reference_request.wdata <= i_req_data;
+          f_reference_sent_q <= 1'b0;
+          f_reference_granted_q <= 1'b0;
+          f_reference_completed_q <= 1'b0;
+          f_reference_released_q <= 1'b0;
+        end
+      end
+      if (accept_demand) begin
+        assert (f_issue_count_q != 0);
+        assert (f_presented_request.q.id == f_issue_id_q[f_issue_head_q]);
+        f_issue_head_q <= f_issue_head_q + 1'b1;
+        if (f_issue_id_q[f_issue_head_q] == f_id) begin
+          assert (o_d == f_reference_request);
+          f_reference_sent_q <= 1'b1;
+        end
+      end
+      if (i_g_valid && o_g_ready && f_presented_grant.q.id == f_id) begin
+        assert (f_reference_sent_q && !f_reference_granted_q);
+        assert (f_presented_grant.q == f_reference_request.q);
+        assert (f_presented_grant.addr == f_reference_request.addr);
+        assert (f_presented_grant.opcode ==
+            (f_reference_request.opcode == coherence_pkg::DMAWrite ?
+             coherence_pkg::GrantAck : coherence_pkg::GrantData));
+        f_reference_data_q <= f_presented_grant.data;
+        f_reference_error_q <= f_presented_grant.error;
+        f_reference_tid_q <= f_presented_grant.tid;
+        f_reference_granted_q <= 1'b1;
+      end
+      if (o_c_valid && i_c_ready && f_presented_completion.q.id == f_id) begin
+        assert (f_reference_granted_q && !f_reference_completed_q);
+        assert (f_presented_completion.q == f_reference_request.q);
+        assert (f_presented_completion.addr == f_reference_request.addr);
+        assert (f_presented_completion.tid == f_reference_tid_q);
+        assert (f_presented_completion.status ==
+            (f_reference_error_q ? coherence_pkg::Error : coherence_pkg::Consumed));
+        assert (f_presented_completion.write_done);
+        f_reference_completed_q <= 1'b1;
+      end
+      if (i_u_valid && o_u_ready && f_presented_release.q.id == f_id) begin
+        assert (f_reference_completed_q && !f_reference_released_q);
+        assert (f_presented_release.q == f_reference_request.q);
+        assert (f_presented_release.addr == f_reference_request.addr);
+        assert (f_presented_release.tid == f_reference_tid_q);
+        f_reference_released_q <= 1'b1;
+      end
+      if (o_resp_valid && o_resp_id == f_id) begin
+        assert (f_reference_released_q);
+        assert (o_resp_data == f_reference_data_q);
+        assert (o_resp_error == f_reference_error_q);
+      end
+      assert (f_issue_count_q == queued_q);
+      assert (f_issue_head_q == head_q && f_issue_tail_q == tail_q);
+      for (int index = 0; index < 4; index++)
+      if (f_queue_live[index]) assert (f_issue_id_q[index] == packet_id(packet_q[queue_q[index]]));
+      for (int slot = 0; slot < 4; slot++) begin
+        if (phase_q[slot] != Free && packet_id(packet_q[slot]) == f_id) begin
+          assert (packet_q[slot] == f_reference_request);
+          assert (f_sent[slot] == f_reference_sent_q);
+          assert (f_granted[slot] == f_reference_granted_q);
+          assert (f_completed[slot] == f_reference_completed_q);
+          assert (f_released[slot] == f_reference_released_q);
+          if (f_granted[slot]) begin
+            assert (data_q[slot] == f_reference_data_q);
+            assert (error_q[slot] == f_reference_error_q);
+            assert (tid_q[slot] == f_reference_tid_q);
+          end
+        end
+      end
+    end
+  end
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
     if (!f_past_valid) assume (i_rst);

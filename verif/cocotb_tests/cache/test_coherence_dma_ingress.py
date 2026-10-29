@@ -316,3 +316,26 @@ async def issue_all_credits_and_complete_out_of_order(dut: Any) -> None:
         await b.enqueue(ident)
     for ident in ids:
         await b.demand(ident)
+
+
+@cocotb.test()
+async def younger_response_reuses_credit_before_oldest_grant(dut: Any) -> None:
+    """Complete and reuse a younger ID while the oldest request waits for G."""
+    b = Ingress(dut)
+    await b.reset()
+    for ident in (0, 4, 8, 12):
+        await b.enqueue(ident)
+    for ident in (0, 4, 8, 12):
+        await b.demand(ident)
+    await b.grant(4, error=1)
+    await b.complete(4, error=1)
+    assert [response[0] for response in b.responses] == [4]
+    await b.enqueue(4)
+    await b.demand(4)
+    await b.grant(4)
+    await b.complete(4)
+    assert [response[0] for response in b.responses] == [4, 4]
+    for ident in (8, 12, 0):
+        await b.grant(ident)
+        await b.complete(ident)
+    assert [response[0] for response in b.responses] == [4, 4, 8, 12, 0]
