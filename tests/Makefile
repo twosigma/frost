@@ -33,6 +33,10 @@ ifeq ($(TOPLEVEL),coherence_endpoints_test_harness)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/cache/coherence.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),coherence_home_completions)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/cache/coherence_home.f
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),coherence_home)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/cache/coherence_home.f

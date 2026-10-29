@@ -29,17 +29,24 @@ module coherence_d_arbiter #(
     input logic i_ready,
     output logic [WIDTH-1:0] o_payload
 );
-  logic selected_q, found;
-  logic [PortBits-1:0] selected_port_q, next_q, pick;
+  logic selected_q, found, after_next;
+  logic [PortBits-1:0] selected_port_q, next_q, pick, first;
   always_comb begin
     found = 1'b0;
-    pick  = '0;
-    for (int offset = PORTS - 1; offset >= 0; offset--) begin
-      if (i_valid[(int'(next_q)+offset)%PORTS]) begin
+    after_next = 1'b0;
+    first = '0;
+    pick = '0;
+    for (int port_idx = PORTS - 1; port_idx >= 0; port_idx--) begin
+      if (i_valid[port_idx]) begin
         found = 1'b1;
-        pick  = PortBits'((int'(next_q) + offset) % PORTS);
+        first = PortBits'(port_idx);
+        if (port_idx >= int'(next_q)) begin
+          after_next = 1'b1;
+          pick = PortBits'(port_idx);
+        end
       end
     end
+    if (!after_next) pick = first;
     o_ready = '0;
     if (!i_rst && selected_q) o_ready[selected_port_q] = i_ready;
   end
@@ -65,6 +72,13 @@ module coherence_d_arbiter #(
   end
 `ifdef FORMAL
   logic f_past_valid = 1'b0;
+  logic [PortBits-1:0] f_pick;
+  always_comb begin
+    f_pick = '0;
+    for (int offset = PORTS - 1; offset >= 0; offset--)
+    if (i_valid[(int'(next_q)+offset)%PORTS]) f_pick = PortBits'((int'(next_q) + offset) % PORTS);
+    if (next_q < PORTS) assert (pick == f_pick);
+  end
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
     if (!f_past_valid) assume (i_rst);

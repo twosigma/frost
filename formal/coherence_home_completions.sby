@@ -1,0 +1,33 @@
+[tasks]
+coh_completions_prove proof
+coh_completions_cover covers
+
+[options]
+proof: mode prove
+proof: depth 8
+proof: aigsmt boolector
+covers: mode cover
+covers: depth 40
+timeout 180
+
+[engines]
+proof: abc pdr
+covers: smtbmc boolector
+
+[script]
+read -sv coherence_pkg.sv coherence_home_endpoint.sv coherence_d_arbiter.sv
+read -formal -sv coherence_home_completions.sv
+chparam -set SLOTS 3 -set RESULT_SLOTS 2 -set CACHE_BYTES 256 -set WAYS 2 coherence_home_completions
+prep -top coherence_home_completions -flatten
+memory_map
+opt
+proof: techmap
+proof: opt
+proof: setundef -undriven -anyseq
+
+[files]
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_home_endpoint.sv
+../hw/rtl/lib/cache/coherence_d_arbiter.sv
+../hw/rtl/lib/cache/coherence_home_completions.sv

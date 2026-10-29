@@ -117,7 +117,7 @@ module coherence_cluster_test_harness #(
   logic hart_d_valid, hart_d_ready, home_d_valid, home_d_ready;
   logic p_valid, p_ready, r_valid, r_ready, w_valid, w_ready, wa_valid, wa_ready;
   logic g_valid, g_ready, hart_g_ready, hart_c_valid, hart_c_ready, home_c_valid, home_c_ready;
-  logic u_valid, u_ready, hart_u_ready, agent_q;
+  logic u_valid, u_ready, hart_u_ready;
   logic hart_fatal, home_fatal;
   logic [ADDR_WIDTH-1:0] hart_fatal_addr, home_fatal_addr;
   assign o_fatal = hart_fatal || home_fatal;
@@ -196,14 +196,14 @@ module coherence_cluster_test_harness #(
       .i_wa_valid(wa_valid),
       .o_wa_ready(wa_ready),
       .i_wa(ack),
-      .i_g_valid(g_valid && !agent_q && !i_hold_grant),
+      .i_g_valid(g_valid && grant.q.src == 0 && !i_hold_grant),
       .o_g_ready(hart_g_ready),
       .i_g(grant),
       .o_c_valid(hart_c_valid),
       .o_c_selected(),
       .i_c_ready(hart_c_ready),
       .o_c(hart_c),
-      .i_u_valid(u_valid && !agent_q),
+      .i_u_valid(u_valid && release_message.q.src == 0),
       .o_u_ready(hart_u_ready),
       .i_u(release_message),
       .o_perf_events(o_l1d_perf),
@@ -223,20 +223,25 @@ module coherence_cluster_test_harness #(
       .i_ready(home_d_ready),
       .o_payload(home_d)
   );
-  always_ff @(posedge i_clk) begin
-    if (i_rst) agent_q <= 1'b0;
-    else if (home_d_valid && home_d_ready) agent_q <= home_d.q.src == 2;
-  end
-  assign o_agent_g_valid = g_valid && agent_q;
+  assign o_agent_g_valid = g_valid && grant.q.src == 2;
   assign o_agent_g = grant;
-  assign g_ready = agent_q ? i_agent_g_ready : hart_g_ready && !i_hold_grant;
-  assign home_c_valid = agent_q ? i_agent_c_valid : hart_c_valid;
-  assign home_c = agent_q ? i_agent_c : hart_c;
-  assign o_agent_c_ready = home_c_ready && agent_q;
-  assign hart_c_ready = home_c_ready && !agent_q;
-  assign o_agent_u_valid = u_valid && agent_q;
+  assign g_ready = grant.q.src == 2 ? i_agent_g_ready : hart_g_ready && !i_hold_grant;
+  assign o_agent_u_valid = u_valid && release_message.q.src == 2;
   assign o_agent_u = release_message;
-  assign u_ready = agent_q ? i_agent_u_ready : hart_u_ready;
+  assign u_ready = release_message.q.src == 2 ? i_agent_u_ready : hart_u_ready;
+  coherence_d_arbiter #(
+      .WIDTH(ADDR_WIDTH + 18),
+      .PORTS(2)
+  ) completions (
+      .i_clk,
+      .i_rst,
+      .i_valid  ({i_agent_c_valid, hart_c_valid}),
+      .o_ready  ({o_agent_c_ready, hart_c_ready}),
+      .i_payload({i_agent_c, hart_c}),
+      .o_valid  (home_c_valid),
+      .i_ready  (home_c_ready),
+      .o_payload(home_c)
+  );
   coherence_home #(
       .ADDR_WIDTH (ADDR_WIDTH),
       .CACHE_BYTES(512),

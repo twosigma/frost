@@ -48,6 +48,8 @@ module coherence_home_harness #(
     response_error = !read_pending && FAIL_B;
   end
   coherence_home #(
+      .COMPLETIONS(2),
+      .RESULTS(2),
       .CACHE_BYTES(128),
       .WAYS(1),
       .ULTRA(0)

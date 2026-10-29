@@ -67,8 +67,8 @@ parameters, and checks cached, cache-disabled and DMA-disabled CPU builds.
 All CPU configurations use the coherent interfaces and their ordinary source
 filelists.
 
-`coherence_home`, `coherence_home_equal`, `coherence_cluster` and `coherent_cut`
-check the one-hart S/M controller, inclusion, pending writes, atomic bridges
+`coherence_home_completions`, `coherence_home`, `coherence_home_equal`,
+`coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
 and CPU observation cuts. They run in the unit shard. The program shards
 exercise the coherent hierarchy in both memory configurations. Whole-L1D
 maintenance is active in simulation. Synthesis checks cover both line sizes
