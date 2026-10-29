@@ -44,6 +44,7 @@ module coherence_array #(
     input logic i_req_visit,
     input logic [WayBits-1:0] i_req_way,
     input logic i_req_skip_data_on_hit,
+    input logic i_req_data_if_modified,
     output logic o_resp_valid,
     input logic i_resp_ready,
     output logic o_resp_hit,
@@ -84,7 +85,7 @@ module coherence_array #(
   logic [CountBits-1:0] count_q;
   logic [SetBits-1:0] init_set_q, set_q;
   logic [TagBits-1:0] tag_q;
-  logic visit_q, skip_data_q;
+  logic visit_q, skip_data_q, modified_data_q;
   logic [WayBits-1:0] visit_way_q;
   logic [WAYS-1:0] exclude_q;
   logic [PlruBits-1:0] plru_read, plru_q, plru_write;
@@ -253,6 +254,7 @@ module coherence_array #(
       tag_q <= '0;
       visit_q <= 1'b0;
       skip_data_q <= 1'b0;
+      modified_data_q <= 1'b0;
       visit_way_q <= '0;
       exclude_q <= '0;
       plru_q <= '0;
@@ -288,6 +290,7 @@ module coherence_array #(
             tag_q <= i_req_addr[ADDR_WIDTH-1:OffsetBits+SetBits];
             visit_q <= i_req_visit;
             skip_data_q <= i_req_skip_data_on_hit;
+            modified_data_q <= i_req_data_if_modified;
             visit_way_q <= i_req_way;
             exclude_q <= i_req_exclude;
             count_q <= CountBits'(TAG_READ_LATENCY);
@@ -307,8 +310,10 @@ module coherence_array #(
           o_resp_way <= selected;
           o_resp_addr <= {tags_q[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
           o_resp_state <= tags_q[selected][TagBits+:2];
-          o_resp_data_valid <= !(hit && !visit_q && skip_data_q);
-          if (hit && !visit_q && skip_data_q) begin
+          o_resp_data_valid <= visit_q || !((hit && skip_data_q) ||
+              (modified_data_q && (!hit || tags_q[selected][TagBits+:2] != 2'b11)));
+          if (!visit_q && ((hit && skip_data_q) ||
+              (modified_data_q && (!hit || tags_q[selected][TagBits+:2] != 2'b11)))) begin
             o_resp_data <= '0;
             phase_q <= Reply;
           end else phase_q <= ReadData;
@@ -374,7 +379,11 @@ module coherence_array #(
       assert (!(request_fire && update_fire));
       assert (!(o_resp_valid && (o_req_ready || o_update_ready)));
       if (phase_q == Select) assert (selected < WAYS);
-      if (o_resp_valid && !o_resp_data_valid) assert (o_resp_hit && skip_data_q && !visit_q);
+      if (o_resp_valid && !o_resp_data_valid) begin
+        assert (!visit_q);
+        assert ((o_resp_hit && skip_data_q) ||
+                (modified_data_q && (!o_resp_hit || o_resp_state != 2'b11)));
+      end
     end
   end
 `endif

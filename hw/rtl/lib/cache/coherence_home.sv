@@ -250,6 +250,7 @@ module coherence_home #(
       .i_req_visit(1'b0),
       .i_req_way('0),
       .i_req_skip_data_on_hit(!put_active_q && demand.opcode == coherence_pkg::DMAWrite),
+      .i_req_data_if_modified(1'b0),
       .o_resp_valid(array_resp_valid),
       .i_resp_ready(phase_q == LookupWait),
       .o_resp_hit(array_hit),

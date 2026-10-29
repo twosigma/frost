@@ -562,6 +562,7 @@ module coherence_l1d #(
       .i_req_visit(operation_q == MaintOp && !maint_line_q),
       .i_req_way(maint_way_q),
       .i_req_skip_data_on_hit(1'b0),
+      .i_req_data_if_modified(operation_q == ProbeOp),
       .o_resp_valid(array_valid),
       .i_resp_ready(phase_q == LookupWait),
       .o_resp_hit(array_hit),
@@ -577,7 +578,7 @@ module coherence_l1d #(
       .i_update_way(way_q),
       .i_update_state(state_q),
       .i_update_insert(operation_q == GrantOp),
-      .i_update_mask('1),
+      .i_update_mask({32{operation_q != ProbeOp}}),
       .i_update_data(image_q)
   );
 
@@ -841,7 +842,8 @@ module coherence_l1d #(
                 reply_q.absorbed <= probe_absorbed_q;
                 reply_q.put_id <= probe_put_q;
                 reply_q.put_epoch <= probe_q.epoch;
-                if (array_hit) begin
+                if (array_hit && !(array_state == coherence_pkg::Shared &&
+                    probe_q.opcode == coherence_pkg::ProbeRead)) begin
                   state_q <= probe_q.opcode == coherence_pkg::ProbeInvalidate ?
                       coherence_pkg::Invalid : coherence_pkg::Shared;
                   phase_q <= Update;

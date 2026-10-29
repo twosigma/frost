@@ -252,6 +252,9 @@ requesters, read responses and individual PutM slots. Probe replies have
 separate ownership from CPU reads, pending stores and PutM presentation.
 A ProbeRead of M merges dirty bytes and leaves S. ProbeInvalidate leaves I
 after the CPU cut. CheckSC returns the selected reservation result.
+Probe lookups read private data only for an M hit. A clean read probe leaves
+the tag and bytes untouched. A downgrade or invalidation updates the tag
+without writing the data row.
 
 Every M sector has a resident L2 merge destination. Clean S and L0 copies
 may outlive an L2 replacement. Replacement recalls every victim sector
