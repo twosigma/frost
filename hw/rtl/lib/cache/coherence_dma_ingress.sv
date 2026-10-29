@@ -116,12 +116,14 @@ module coherence_dma_ingress #(
     assign release_match[slot] = phase_q[slot] == WaitRelease &&
         release_in.q == request_packet.q && release_in.addr == request_packet.addr &&
         release_in.tid == tid_q[slot];
-    assign c_valid[slot] = !i_rst && phase_q[slot] == HaveGrant;
+    assign c_valid[slot] = !i_rst &&
+        (phase_q[slot] == HaveGrant || (i_g_valid && grant_match[slot]));
     assign completions[slot] = {
       request_packet.q,
-      tid_q[slot],
+      phase_q[slot] == Sent ? grant_in.tid : tid_q[slot],
       request_packet.addr,
-      error_q[slot] ? coherence_pkg::Error : coherence_pkg::Consumed,
+      (phase_q[slot] == Sent ? grant_in.error : error_q[slot]) ?
+          coherence_pkg::Error : coherence_pkg::Consumed,
       1'b1
     };
   end
