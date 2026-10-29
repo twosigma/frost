@@ -20,6 +20,7 @@ wb: smtbmc boolector
 covers: smtbmc boolector
 
 [script]
+read -formal -sv coherence_seat_select.sv coherence_work_select.sv
 read -sv cache_perf_pkg.sv
 error: verilog_defines -D COHERENCE_HOME_COVER_ERROR
 read -sv coherence_pkg.sv
@@ -52,6 +53,8 @@ memory_map
 opt
 
 [files]
+../hw/rtl/lib/cache/coherence_seat_select.sv
+../hw/rtl/lib/cache/coherence_work_select.sv
 ../hw/rtl/lib/ram/sdp_block_ram.sv
 ../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
 ../hw/rtl/lib/ram/sdp_ram_byte_en.sv

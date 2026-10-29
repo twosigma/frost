@@ -618,12 +618,13 @@ module coherence_home #(
     decision_tid = '0;
     decision_opcode = '0;
     if (decision_engine) begin
-      decision_addr = engine_addr[ResultBits'(array_token)];
+      if (LINE_BYTES == 64) decision_addr[5] = engine_addr[ResultBits'(array_token)][5];
       decision_tid = engine_tid[ResultBits'(array_token)];
       decision_opcode = engine_opcode[ResultBits'(array_token)];
     end
     for (int put = 0; put < Puts; put++)
-    if (array_token == TokenBits'(RESULTS + FILLS + put)) decision_addr = put_addr[put];
+    if (LINE_BYTES == 64 && array_token == TokenBits'(RESULTS + FILLS + put))
+      decision_addr[5] = put_addr[put][5];
     decision_blocked = 1'b0;
     victim_blocked = 1'b0;
     fill_match = 1'b0;
@@ -689,30 +690,36 @@ module coherence_home #(
   end
 
   // Parked readers own metadata seats, including readers with predecessors.
+  for (genvar fill = 0; fill < FILLS; fill++) begin : gen_seats
+    logic [COMPLETIONS-1:0] eligible;
+    logic enabled, joining;
+    assign enabled = active && fill_phase_q[fill] != FillFree &&
+        fill_phase_q[fill] != FillReady && fill_phase_q[fill] != FillInstallWait &&
+        !fill_error_q[fill];
+    assign joining = active && array_response && decision_join &&
+        fill_match_index == FillBits'(fill);
+    for (genvar slot = 0; slot < COMPLETIONS; slot++) begin : gen_eligible
+      assign eligible[slot] = enabled && waiting[slot] && same_block(
+          waiting_addr[slot], fill_addr_q[fill]
+      ) && read_waiter(
+          waiting_opcode[slot]
+      );
+    end
+    coherence_seat_select #(
+        .SLOTS(COMPLETIONS)
+    ) selector (
+        .i_eligible(eligible),
+        .i_occupied(fill_seats_q[fill]),
+        .i_join(joining),
+        .o_selected(fill_add_seats[fill])
+    );
+  end
   always_comb begin
     park = '0;
     wake = '0;
     wake_error = '0;
     for (int fill = 0; fill < FILLS; fill++) begin
-      int seats;
-      seats = $countones(fill_seats_q[fill]);
-      fill_add_seats[fill] = '0;
-      if (active && array_response && decision_join && fill_match_index == FillBits'(fill)) seats++;
-      if (active && fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady &&
-          fill_phase_q[fill] != FillInstallWait &&
-          !fill_error_q[fill]) begin
-        for (int slot = 0; slot < COMPLETIONS; slot++) begin
-          if (waiting[slot] && same_block(
-                  waiting_addr[slot], fill_addr_q[fill]
-              ) && read_waiter(
-                  waiting_opcode[slot]
-              ) && seats < 3) begin
-            fill_add_seats[fill][slot] = 1'b1;
-            park[slot] = 1'b1;
-            seats++;
-          end
-        end
-      end
+      park |= fill_add_seats[fill];
       if (fill_wake[fill]) begin
         wake |= fill_seats_q[fill];
         if (fill_error_q[fill]) wake_error |= fill_seats_q[fill];
@@ -1130,6 +1137,11 @@ module coherence_home #(
       assert ($onehot0({engine_r_ready, fill_r_ready}));
       assert ((park & wake) == 0);
       if (work_valid && active) assert (engine_idle[work_buffer]);
+      if (array_response && decision_engine)
+        assert (same_block(array_query, engine_addr[ResultBits'(array_token)]));
+      for (int put = 0; put < Puts; put++)
+      if (array_response && array_token == TokenBits'(RESULTS + FILLS + put))
+        assert (same_block(array_query, put_addr[put]));
       if (i_w_valid && o_w_ready) assert (incoming_put.hart == 0 && incoming_put.epoch == 0);
       if (i_mem_resp_valid) begin
         if (i_mem_resp_id[4]) begin

@@ -93,7 +93,6 @@ module coherence_home_completions #(
   logic [SLOTS-1:0] predecessors_q[SLOTS];
   logic [SLOTS-1:0] parked_q, ready_q, wake_error_q, counted_q;
   logic [ResultBits-1:0] work_buffer_q;
-  logic ready_work_found;
   logic [SLOTS-1:0][ADDR_WIDTH+311:0] work;
   logic [SLOTS-1:0][ADDR_WIDTH+14:0] releases;
   logic [SLOTS-1:0][8:0] work_identity;
@@ -105,8 +104,9 @@ module coherence_home_completions #(
   logic free_slot, duplicate, free_buffer;
   logic [  SlotBits-1:0] free_slot_index;
   logic [ResultBits-1:0] free_buffer_index;
-  logic work_selected_q, work_found, work_after;
-  logic [SlotBits-1:0] work_slot_q, work_next_q, work_pick, work_first;
+  logic work_selected_q, work_found;
+  logic [SLOTS-1:0] work_eligible;
+  logic [SlotBits-1:0] work_slot_q, work_next_q, work_pick;
   logic grant_selected_q, grant_found, grant_after;
   logic [SlotBits-1:0] grant_slot_q, grant_next_q, grant_pick, grant_first;
   coh_g_t grant_q, result;
@@ -192,29 +192,25 @@ module coherence_home_completions #(
   assign o_g = grant_q;
   assign o_c_ready = |completion_ready;
 
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_work_eligible
+    assign work_eligible[slot] = work_valid[slot] && !issued_q[slot] && !parked_q[slot] &&
+        !i_park[slot] && predecessors_q[slot] == 0;
+  end
+  coherence_work_select #(
+      .SLOTS(SLOTS)
+  ) work_selector (
+      .i_eligible(work_eligible),
+      .i_ready(ready_q),
+      .i_next(work_next_q),
+      .o_found(work_found),
+      .o_pick(work_pick)
+  );
   always_comb begin
-    ready_work_found = 1'b0;
-    for (int slot = 0; slot < SLOTS; slot++)
-    ready_work_found |= work_valid[slot] && !issued_q[slot] && !parked_q[slot] &&
-          !i_park[slot] && predecessors_q[slot] == 0 && ready_q[slot];
-    work_found  = 1'b0;
-    work_after  = 1'b0;
-    work_first  = '0;
-    work_pick   = '0;
     grant_found = 1'b0;
     grant_after = 1'b0;
     grant_first = '0;
     grant_pick  = '0;
     for (int slot = SLOTS - 1; slot >= 0; slot--) begin
-      if (work_valid[slot] && !issued_q[slot] && !parked_q[slot] && !i_park[slot] &&
-          predecessors_q[slot] == 0 && (!ready_work_found || ready_q[slot])) begin
-        work_found = 1'b1;
-        work_first = SlotBits'(slot);
-        if (slot >= int'(work_next_q)) begin
-          work_after = 1'b1;
-          work_pick  = SlotBits'(slot);
-        end
-      end
       if (result_valid_q[slot]) begin
         grant_found = 1'b1;
         grant_first = SlotBits'(slot);
@@ -224,7 +220,6 @@ module coherence_home_completions #(
         end
       end
     end
-    if (!work_after) work_pick = work_first;
     if (!grant_after) grant_pick = grant_first;
   end
 
