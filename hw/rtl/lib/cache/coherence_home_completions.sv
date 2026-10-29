@@ -118,6 +118,9 @@ module coherence_home_completions #(
   function automatic logic [2:0] grant_opcode(input coh_g_t packet);
     grant_opcode = packet.opcode;
   endfunction
+  function automatic logic [ADDR_WIDTH+15:0] result_identity(input coh_g_t packet);
+    result_identity = {packet.q, packet.tid, packet.addr, packet.error};
+  endfunction
   function automatic logic [8:0] request_q(input coh_d_t packet);
     request_q = packet.q;
   endfunction
@@ -329,6 +332,13 @@ module coherence_home_completions #(
           result.opcode, result.q, result.tid, result.addr, 256'b0, result.error
         };
       end
+      if (!grant_selected_q && !grant_found && accept_result) begin
+        grant_selected_q <= 1'b1;
+        grant_slot_q <= result_slot;
+        grant_q <= result;
+        grant_q.data <= result.error || result.opcode == coherence_pkg::GrantAck ?
+            256'b0 : result.data;
+      end
       if (!grant_selected_q && grant_found) begin
         grant_selected_q <= 1'b1;
         grant_slot_q <= grant_pick;
@@ -390,6 +400,12 @@ module coherence_home_completions #(
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
       assert ($onehot0(grant_valid));
+      if (grant_selected_q) begin
+        assert (grant_q.q == work_identity[grant_slot_q]);
+        assert (grant_q.tid == 6'(grant_slot_q));
+        assert (grant_q.addr == work_address[grant_slot_q]);
+        assert (grant_q.error == error_q[grant_slot_q]);
+      end
       assert ($onehot0(completion_ready));
       assert ($countones(buffer_live_q) == $countones(buffer_owned_q));
       if (accept_work) begin
@@ -408,7 +424,12 @@ module coherence_home_completions #(
           for (int other = slot + 1; other < SLOTS; other++)
           if (buffer_owned_q[other]) assert (buffer_index_q[slot] != buffer_index_q[other]);
         end
-        if (result_valid_q[slot]) assert (buffer_owned_q[slot] && work_valid[slot]);
+        if (result_valid_q[slot]) begin
+          assert (buffer_owned_q[slot] && work_valid[slot]);
+          assert (result_identity(
+              buffer_q[buffer_index_q[slot]]
+          ) == {work_identity[slot], 6'(slot), work_address[slot], error_q[slot]});
+        end
         if (pin_valid_q[slot]) assert (issued_q[slot] && live[slot]);
         if (release_fire[slot]) assert (!buffer_owned_q[slot]);
         if (i_retry_valid && i_retry_tid == 6'(slot))

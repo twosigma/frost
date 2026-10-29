@@ -260,3 +260,51 @@ async def predecessor_release_and_slot_reuse_do_not_alias(dut: Any) -> None:
         await b.grant(item, data)
         await b.complete(item)
         await b.release(item)
+
+
+@cocotb.test()
+async def idle_grant_captures_result_edge(dut: Any) -> None:
+    """Capture an unopposed result into G and hold its full packet through stalls."""
+    b = Completions(dut)
+    for opcode, error in ((0, 0), (4, 0), (0, 1)):
+        await b.reset()
+        q = pack((2, 2), (2, 3), (4, 9), (1, 0))
+        address = 0x80000000
+        await b.admit(q, address, op=8 if opcode == 4 else 7)
+        item = await b.dispatch()
+        data = int.from_bytes(bytes((i * 37) & 255 for i in range(32)), "little")
+        b.images[b.buffers[item[1]]] = data
+        packet = pack(
+            (3, opcode), (9, q), (6, item[1]), (b.p, address), (256, data), (1, error)
+        )
+        await b.set(i_result_valid=1, i_result=packet)
+        await b.wait("o_result_ready")
+        await b.tick()
+        await b.set(i_result_valid=0, i_result=0)
+        assert b.get("o_g_valid"), "idle G selection missed the result capture edge"
+        held = b.get("o_g")
+        fields = unpack(held, (3, 9, 6, b.p, 256, 1))
+        assert fields == (
+            opcode,
+            q,
+            item[1],
+            address,
+            0 if error or opcode == 4 else data,
+            error,
+        )
+        for _ in range(16):
+            assert b.get("o_g_valid") and b.get("o_g") == held
+            await b.tick()
+        await b.set(i_g_ready=1)
+        await b.tick()
+        await b.set(
+            i_g_ready=0,
+            i_c_valid=1,
+            i_c=pack(
+                (9, q), (6, item[1]), (b.p, address), (2, 2 if error else 0), (1, 0)
+            ),
+        )
+        await b.wait("o_c_ready")
+        await b.tick()
+        await b.set(i_c_valid=0)
+        await b.release(item)
