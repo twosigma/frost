@@ -172,7 +172,7 @@ module coherence_home_endpoint #(
           grant_error_q <= result_in.error;
           phase_q <= WaitC;
         end
-        WaitC:   if (i_c_valid && o_c_ready) phase_q <= Cancel;
+        WaitC:   if (i_c_valid && o_c_ready) phase_q <= pending_q == 0 ? SendU : Cancel;
         Cancel:  if (pending_q == 0) phase_q <= SendU;
         SendU:   if (i_u_ready) phase_q <= Idle;
         default: phase_q <= Idle;
@@ -242,6 +242,7 @@ module coherence_home_endpoint #(
         assert (pending_q == 0);
         assert (f_granted && f_completed);
       end
+      if ($past(i_c_valid && o_c_ready && pending_q == 0)) assert (o_u_valid);
       for (int slot = 0; slot < 4; slot++) begin
         if ($past(pending_q[slot]) && !pending_q[slot]) begin
           assert ($past(i_cancel_valid && cancel_in.absorbed && !cancel_in.error));
