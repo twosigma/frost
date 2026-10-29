@@ -296,6 +296,12 @@ module fetch_provider #(
   assign win_line1 = win_addr1[riscv_pkg::PhysAddrBits-1:OffsetBits];
 
   localparam int unsigned DirectIndexBits = VICTIM_LINES > 1 ? $clog2(VICTIM_LINES) : 1;
+  // A valid direct-cache entry's low line bits are its write index.
+  function automatic logic direct_tag_match(input logic [LineAddrBits-1:0] stored_line,
+                                            input logic [LineAddrBits-1:0] query_line);
+    direct_tag_match = (stored_line >> DirectIndexBits) == (query_line >> DirectIndexBits);
+  endfunction
+
   logic present0, present1, error_present0, error_present1;
   wire [DirectIndexBits-1:0] direct_idx0 = win_line0[DirectIndexBits-1:0];
   wire [DirectIndexBits-1:0] direct_idx1 = win_line1[DirectIndexBits-1:0];
@@ -303,12 +309,12 @@ module fetch_provider #(
       slot_line_q[win_line0[0]] == win_line0;
   assign error_present1 = slot_valid_q[win_line1[0]] && slot_error_q[win_line1[0]] &&
       slot_line_q[win_line1[0]] == win_line1;
-  assign present0 = DIRECT_LOOKUP ? error_present0 ||
-      (vs_valid_q[direct_idx0] && vs_line_q[direct_idx0] == win_line0) :
-      slot_valid_q[win_line0[0]] && slot_line_q[win_line0[0]] == win_line0;
-  assign present1 = DIRECT_LOOKUP ? error_present1 ||
-      (vs_valid_q[direct_idx1] && vs_line_q[direct_idx1] == win_line1) :
-      slot_valid_q[win_line1[0]] && slot_line_q[win_line1[0]] == win_line1;
+  assign present0 = DIRECT_LOOKUP ? error_present0 || (vs_valid_q[direct_idx0] && direct_tag_match(
+      vs_line_q[direct_idx0], win_line0
+  )) : slot_valid_q[win_line0[0]] && slot_line_q[win_line0[0]] == win_line0;
+  assign present1 = DIRECT_LOOKUP ? error_present1 || (vs_valid_q[direct_idx1] && direct_tag_match(
+      vs_line_q[direct_idx1], win_line1
+  )) : slot_valid_q[win_line1[0]] && slot_line_q[win_line1[0]] == win_line1;
 
   // Positions are {line parity, word index}. IMMU preserves page offsets:
   // fetch_pa1[OffsetBits:2] is fetch_pa0[OffsetBits:2] + 1, including across
@@ -552,8 +558,8 @@ module fetch_provider #(
       // Include validity in the tag comparison, for timing.
       cand_present[p] = DIRECT_LOOKUP ?
           ((vs_valid_q[cand_line_q[p][DirectIndexBits-1:0]] &&
-            vs_line_q[cand_line_q[p][DirectIndexBits-1:0]] == cand_line_q[p]) ||
-           (slot_valid_q[p] && slot_error_q[p] && slot_line_q[p] == cand_line_q[p])) :
+            direct_tag_match(vs_line_q[cand_line_q[p][DirectIndexBits-1:0]], cand_line_q[p])) ||
+          (slot_valid_q[p] && slot_error_q[p] && slot_line_q[p] == cand_line_q[p])) :
           ({slot_valid_q[p], slot_line_q[p]} == {1'b1, cand_line_q[p]});
     end
   end
@@ -614,7 +620,9 @@ module fetch_provider #(
     end
     for (genvar p = 0; p < 2; p++) begin : gen_lookup
       assign vs_hit_idx[p] = cand_line_q[p][VictimPtrBits-1:0];
-      assign vs_hit[p] = vs_valid_q[vs_hit_idx[p]] && vs_line_q[vs_hit_idx[p]] == cand_line_q[p];
+      assign vs_hit[p] = vs_valid_q[vs_hit_idx[p]] && direct_tag_match(
+          vs_line_q[vs_hit_idx[p]], cand_line_q[p]
+      );
       // A whole-slice driver avoids partial packed-array processes and
       // keeps the one-hot vector combinational in both synthesis flows.
       assign vs_hit_vec[p] = VictimLines'(vs_hit[p]) << vs_hit_idx[p];
@@ -1113,6 +1121,26 @@ module fetch_provider #(
     end
     if (f_direct_past_valid) begin
       assert (vs_valid_q[f_direct_index] == f_direct_ref_valid);
+      // Full stored tags are the lookup reference. A valid entry's low
+      // line bits identify its write index.
+      for (int entry = 0; entry < int'(VictimLines); entry++) begin
+        if (vs_valid_q[entry])
+          assert (vs_line_q[entry][DirectIndexBits-1:0] == DirectIndexBits'(entry));
+      end
+      assert (present0 == (error_present0 ||
+          (vs_valid_q[direct_idx0] && vs_line_q[direct_idx0] == win_line0)));
+      assert (present1 == (error_present1 ||
+          (vs_valid_q[direct_idx1] && vs_line_q[direct_idx1] == win_line1)));
+      for (int p = 0; p < 2; p++) begin
+        assert (vs_hit[p] == (vs_valid_q[vs_hit_idx[p]] &&
+            vs_line_q[vs_hit_idx[p]] == cand_line_q[p]));
+        assert (cand_present[p] ==
+            ((vs_valid_q[cand_line_q[p][DirectIndexBits-1:0]] &&
+              vs_line_q[cand_line_q[p][DirectIndexBits-1:0]] == cand_line_q[p]) ||
+             (slot_valid_q[p] && slot_error_q[p] && slot_line_q[p] == cand_line_q[p])));
+      end
+      cover (vs_valid_q[direct_idx0] && !error_present0 && !present0 &&
+             vs_line_q[direct_idx0] != win_line0);
       assert (direct_install == {SlotGroups{!i_rst && !i_invalidate && direct_fill}});
       if (f_direct_ref_written)
         assert ({vs_line_q[f_direct_index], f_direct_entry_data,

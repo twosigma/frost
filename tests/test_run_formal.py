@@ -120,7 +120,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "fetch_shadow_capture.sby",
-        "Fetch shadows and grouped direct-cache writes match qualified response captures",
+        "Fetch shadows and grouped direct-cache writes match qualified captures; "
+        "indexed hits match complete tags",
         tasks=(
             "prove",
             "cover",
