@@ -901,7 +901,6 @@ FORMAL_TARGETS = [
         "withdrawal and reset without replay",
         tasks=("prove", "cover"),
     ),
-
 ]
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
