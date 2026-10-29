@@ -101,3 +101,42 @@ async def reset_cancels_each_coherent_stage(dut: Any) -> None:
         await _wait(dut, [read])
         b.check_read(read)
         b.check_clean()
+
+
+@cocotb.test()
+async def independent_results_preserve_axi_burst_order(dut: Any) -> None:
+    """Hold four coherent results and reorder line replies inside one AXI burst."""
+    b = await _start(dut, seed=33, master_ready=0.0)
+    assert isinstance(b.ingress, CoherentHome)
+    b.ingress.pause = "c"
+    beats = 4 * 32 // b.bus
+    write = b.write(REGION_BASE + 0x8000, beats - 1, b.max_size, INCR, strobe_bias=1.0)
+    for _ in range(500):
+        await RisingEdge(dut.i_clk)
+        assert not int(dut.o_axi_bvalid.value)
+        if len(b.ingress.grant_order) == 4:
+            break
+    else:
+        raise AssertionError("four grants did not arrive while C was blocked")
+    assert b.ingress.max_active == 4 and b.ingress.completions == 0
+    assert b.ingress.grant_order != sorted(b.ingress.grant_order)
+    for _ in range(20):
+        await RisingEdge(dut.i_clk)
+        assert not int(dut.o_axi_bvalid.value)
+    b.ingress.pause = None
+    for _ in range(500):
+        await RisingEdge(dut.i_clk)
+        if int(dut.o_axi_bvalid.value):
+            assert b.ingress.completions == 4 and len(b.ingress.release_order) == 4
+            break
+    else:
+        raise AssertionError("released write did not complete")
+    b.master.ready_bias = 0.3
+    await _wait(dut, [write])
+    assert write.resp == OKAY
+    read = b.read(write.addr, beats - 1, b.max_size, INCR)
+    await _wait(dut, [read])
+    b.check_read(read)
+    assert b.ingress.grant_order[4:] != sorted(b.ingress.grant_order[4:])
+    b.check_memory()
+    b.check_clean()

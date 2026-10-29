@@ -14,7 +14,7 @@
  *    limitations under the License.
  */
 
-// Selection stays fixed throughout a stalled presentation.
+// Selection and payload stay fixed throughout a stalled presentation.
 module coherence_d_arbiter #(
     parameter int unsigned WIDTH = 344,
     parameter int unsigned PORTS = 2,
@@ -31,6 +31,7 @@ module coherence_d_arbiter #(
 );
   logic selected_q, found, after_next;
   logic [PortBits-1:0] selected_port_q, next_q, pick, first;
+  logic [WIDTH-1:0] payload_q;
   always_comb begin
     found = 1'b0;
     after_next = 1'b0;
@@ -51,7 +52,7 @@ module coherence_d_arbiter #(
     if (!i_rst && selected_q) o_ready[selected_port_q] = i_ready;
   end
   assign o_valid   = !i_rst && selected_q && i_valid[selected_port_q];
-  assign o_payload = i_payload[selected_port_q];
+  assign o_payload = payload_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       selected_q <= 1'b0;
@@ -61,6 +62,7 @@ module coherence_d_arbiter #(
       if (found) begin
         selected_q <= 1'b1;
         selected_port_q <= pick;
+        payload_q <= i_payload[pick];
       end
     end else if (o_valid && i_ready) begin
       selected_q <= 1'b0;
@@ -70,6 +72,12 @@ module coherence_d_arbiter #(
   if (PORTS < 1 || WIDTH < 1) begin : gen_invalid
     initial $fatal(1, "coherence_d_arbiter: invalid parameters");
   end
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && selected_q && i_valid[selected_port_q])
+      assert (o_payload == i_payload[selected_port_q]);
+  end
+`endif
 `ifdef FORMAL
   logic f_past_valid = 1'b0;
   logic [PortBits-1:0] f_pick;
@@ -79,21 +87,33 @@ module coherence_d_arbiter #(
     if (i_valid[(int'(next_q)+offset)%PORTS]) f_pick = PortBits'((int'(next_q) + offset) % PORTS);
     if (next_q < PORTS) assert (pick == f_pick);
   end
+  for (genvar port_idx = 0; port_idx < PORTS; port_idx++) begin : gen_hold_contract
+    wire [WIDTH-1:0] payload = i_payload[port_idx];
+    wire stalled = i_valid[port_idx] && !o_ready[port_idx];
+    always_ff @(posedge i_clk) begin
+      if (f_past_valid && !i_rst && !$past(i_rst) && $past(stalled)) begin
+`ifdef COHERENCE_ARBITER_COMPOSED
+        assert (i_valid[port_idx]);
+        assert (payload == $past(payload));
+`else
+        assume (i_valid[port_idx]);
+        assume (payload == $past(payload));
+`endif
+      end
+    end
+  end
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
     if (!f_past_valid) assume (i_rst);
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
-      for (int port_idx = 0; port_idx < PORTS; port_idx++) begin
-        if ($past(i_valid[port_idx] && !o_ready[port_idx])) begin
-          assume (i_valid[port_idx]);
-          assume (i_payload[port_idx] == $past(i_payload[port_idx]));
-        end
-      end
       if ($past(o_valid && !i_ready)) begin
         assert (o_valid);
         assert (o_payload == $past(o_payload));
       end
-      if (selected_q) assert (i_valid[selected_port_q]);
+      if (selected_q) begin
+        assert (i_valid[selected_port_q]);
+        assert (o_payload == i_payload[selected_port_q]);
+      end
       assert (selected_port_q < PORTS);
       assert (next_q < PORTS);
       if ($past(selected_q) && selected_q) assert (selected_port_q == $past(selected_port_q));

@@ -198,7 +198,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_dma_ingress.sby",
-        "DMA admission credits, opaque identities, ordered release, and reset ownership.",
+        "DMA issue order, opaque identities, independent completion, and reset ownership.",
         tasks=("coh_dma_ingress_prove", "coh_dma_ingress_cover"),
     ),
     FormalTarget(
