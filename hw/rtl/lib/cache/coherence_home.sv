@@ -26,6 +26,7 @@ module coherence_home #(
     parameter int unsigned NUM_WB = 2,
     parameter int unsigned COMPLETIONS = 19,
     parameter int unsigned RESULTS = 8,
+    parameter int unsigned FILLS = 4,
     parameter bit ULTRA = 1'b1,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
     localparam int unsigned WbBits = NUM_WB > 1 ? $clog2(NUM_WB) : 1
@@ -75,135 +76,231 @@ module coherence_home #(
 );
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
   localparam int unsigned OffsetBits = $clog2(LINE_BYTES);
-  localparam int unsigned Sectors = LINE_BYTES / 32;
+  localparam int unsigned Sets = CACHE_BYTES / (LINE_BYTES * WAYS);
+  localparam int unsigned SetBits = $clog2(Sets);
+  localparam int unsigned CompletionBits = COMPLETIONS > 1 ? $clog2(COMPLETIONS) : 1;
+  localparam int unsigned ResultBits = RESULTS > 1 ? $clog2(RESULTS) : 1;
+  localparam int unsigned FillBits = FILLS > 1 ? $clog2(FILLS) : 1;
+  localparam int unsigned Puts = 2;
+  localparam int unsigned Clients = RESULTS + FILLS + Puts;
+  localparam int unsigned TokenBits = $clog2(Clients);
+  localparam int unsigned TagPacketBits = TokenBits + ADDR_WIDTH;
+  localparam int unsigned ReadPacketBits = TagPacketBits + WayBits;
+  localparam int unsigned UpdatePacketBits = ReadPacketBits + 3 + 9 * LINE_BYTES;
   localparam logic [5:0] FillTid = 6'(coherence_pkg::fill_base(1));
   localparam logic [5:0] PutTid = 6'(coherence_pkg::put_base(1, 4));
-  typedef enum logic [4:0] {
-    Idle,
-    Lookup,
-    LookupWait,
-    Recall,
-    ProbeSend,
-    ProbeWait,
-    AbsorbAck,
-    ProbeNext,
-    Detach,
-    InvalidateVictim,
-    InvalidateWait,
-    FillWait,
-    Check,
-    Apply,
-    Update,
-    UpdateWait,
-    Result,
+  typedef struct packed {
+    logic [TokenBits-1:0]  token;
+    logic [ADDR_WIDTH-1:0] addr;
+  } tag_packet_t;
+  typedef struct packed {
+    logic [TokenBits-1:0] token;
+    logic [WayBits-1:0] way;
+    logic [ADDR_WIDTH-1:0] addr;
+  } read_packet_t;
+  typedef struct packed {
+    logic [TokenBits-1:0] token;
+    logic [WayBits-1:0] way;
+    logic [ADDR_WIDTH-1:0] addr;
+    logic tag_write;
+    logic [1:0] state;
+    logic [LINE_BYTES-1:0] mask;
+    logic [8*LINE_BYTES-1:0] data;
+  } update_packet_t;
+  typedef enum logic [3:0] {
+    FillFree,
+    FillRecall,
+    FillDetach,
+    FillInvalidate,
+    FillInvalidateWait,
+    FillMemory,
+    FillInstall,
+    FillInstallWait,
+    FillReady,
+    FillFatal
+  } fill_phase_t;
+  typedef enum logic [2:0] {
+    RecallOffer,
+    RecallWait,
+    RecallAck,
+    RecallDone
+  } recall_phase_t;
+  typedef enum logic [2:0] {
+    PutFree,
+    PutLookup,
+    PutDecision,
+    PutUpdate,
+    PutUpdateWait,
     PutAck,
-    Fatal
-  } phase_t;
-  phase_t phase_q;
-  coh_d_t work, demand;
+    PutFatal
+  } put_phase_t;
+  fill_phase_t fill_phase_q[FILLS];
+  recall_phase_t recall_phase_q[FILLS];
+  put_phase_t put_phase_q[Puts];
+  logic active, work_valid, work_error;
+  coh_d_t work;
+  logic [5:0] work_tid;
+  logic [ResultBits-1:0] work_buffer, image_index;
+  logic [255:0] image_data;
+  logic [COMPLETIONS-1:0] waiting, park, wake, wake_error;
+  logic [COMPLETIONS-1:0][ADDR_WIDTH+311:0] waiting_request;
+  logic [COMPLETIONS-1:0][ADDR_WIDTH-1:0] waiting_addr;
+  logic [COMPLETIONS-1:0][3:0] waiting_opcode;
+  logic retry_valid, retry_park, pin_valid;
+  logic [5:0] decision_tid;
+  logic [WAYS-1:0] completion_exclude, array_exclude;
+  logic put_busy;
+  coh_w_t incoming_put, selected_put_q;
+  logic put_selected_q, put_key_match, put_blocked;
   coh_r_t reply;
-  coh_w_t put_in, put_q;
-  coh_p_t  probe_q;
-  coh_wa_t ack_q;
-  coh_g_t  result;
-  logic work_valid, work_ready, result_ready, put_busy, retry_valid, pin_valid;
-  logic [5:0] work_tid, demand_tid_q;
-  logic [WAYS-1:0] exclude;
-  logic put_active_q, write_turn_q;
-  logic array_req_ready, array_resp_valid, array_hit, array_available;
-  logic array_update_ready;
-  logic [WayBits-1:0] array_way, way_q;
-  logic [ADDR_WIDTH-1:0] array_addr, address_q, victim_addr_q;
-  logic [1:0] array_state, line_state_q;
-  logic [8*LINE_BYTES-1:0] array_data, image_q;
-  logic victim_q, sector_q, check_done_q, sc_failed_q, grant_error_q;
-  logic probe_data_q, partial_update_q;
-  logic [LINE_BYTES-1:0] update_mask;
-  logic fill_valid_q, fill_sent_q, fill_done_q, fill_error_q;
-  logic [8*LINE_BYTES-1:0] fill_data_q;
-  logic [NUM_WB-1:0] wb_valid_q, wb_sent_q;
-  logic [  ADDR_WIDTH-1:0] wb_addr_q[NUM_WB];
+  logic [RESULTS-1:0] engine_idle, engine_lookup;
+  logic [RESULTS-1:0] engine_read;
+  logic [RESULTS-1:0] engine_r_ready;
+  logic [RESULTS-1:0] engine_update;
+  logic [RESULTS-1:0] engine_result, engine_result_ready, engine_fatal;
+  logic [RESULTS-1:0][ADDR_WIDTH-1:0] engine_addr;
+  logic [RESULTS-1:0][5:0] engine_tid;
+  logic [RESULTS-1:0][3:0] engine_opcode;
+  logic [RESULTS-1:0] engine_maintenance, engine_counted_q;
+  logic work_counted;
+  logic [RESULTS-1:0][WayBits-1:0] engine_way;
+  logic [RESULTS-1:0][255:0] engine_image;
+  logic [RESULTS-1:0][ADDR_WIDTH+274:0] engine_result_payload;
+  logic [RESULTS-1:0][LINE_BYTES-1:0] engine_update_mask;
+  logic [RESULTS-1:0][8*LINE_BYTES-1:0] engine_update_data;
+  logic [Clients-1:0] tag_valid, tag_ready, read_valid, read_ready;
+  logic [Clients-1:0] update_valid, update_ready, probe_valid, probe_ready;
+  logic [Clients-1:0] ack_valid, ack_ready;
+  logic [Clients-1:0][TagPacketBits-1:0] tag_payload;
+  logic [Clients-1:0][ReadPacketBits-1:0] read_payload;
+  logic [Clients-1:0][UpdatePacketBits-1:0] update_payload;
+  logic [Clients-1:0][ADDR_WIDTH+29:0] probe_payload;
+  logic [Clients-1:0][ADDR_WIDTH+10:0] ack_payload;
+  tag_packet_t tag_request;
+  read_packet_t row_request;
+  update_packet_t update_request;
+  logic tag_request_valid, tag_request_ready, row_request_valid, row_request_ready;
+  logic update_request_valid, update_request_ready;
+  logic probe_out_valid, ack_out_valid, result_valid, result_ready;
+  logic [ADDR_WIDTH+29:0] probe_out;
+  logic [ADDR_WIDTH+10:0] ack_out;
+  coh_g_t result;
+  logic array_response, array_hit, array_available, array_claim;
+  logic [TokenBits-1:0] array_token, array_data_token, array_updated_token;
+  logic [ADDR_WIDTH-1:0] array_query, array_addr;
+  logic [WayBits-1:0] array_way;
+  logic [1:0] array_state;
+  logic array_data_valid, array_updated;
+  logic [8*LINE_BYTES-1:0] array_data;
+  logic decision_engine, decision_put, decision_blocked, victim_blocked;
+  logic decision_hit, decision_fill, decision_join, decision_retry;
+  logic [FillBits-1:0] fill_free_index, fill_match_index;
+  logic fill_free, fill_match, fill_joinable, wb_free;
+  logic [WbBits-1:0] wb_free_index;
+  logic [ADDR_WIDTH-1:0] decision_addr;
+  logic [3:0] decision_opcode;
+  logic [FILLS-1:0][ADDR_WIDTH-1:0] fill_addr_q, fill_old_addr_q;
+  logic [FILLS-1:0][WayBits-1:0] fill_way_q;
+  logic [FILLS-1:0][WbBits-1:0] fill_wb_q;
+  logic [FILLS-1:0][8*LINE_BYTES-1:0] fill_image_q;
+  logic [FILLS-1:0] fill_victim_q, fill_sent_q, fill_done_q, fill_error_q;
+  logic [FILLS-1:0] fill_read_sent_q, fill_read_done_q, fill_sector_q;
+  logic [FILLS-1:0] fill_dirty_q, fill_r_ready;
+  logic [FILLS-1:0][LINE_BYTES/32-1:0] fill_dirty_sectors_q;
+  logic [COMPLETIONS-1:0] fill_seats_q[FILLS], fill_add_seats[FILLS];
+  logic [FILLS-1:0] fill_wake;
+  logic [FILLS-1:0][ADDR_WIDTH+29:0] fill_probe;
+  coh_wa_t fill_ack_q[FILLS];
+  logic [NUM_WB-1:0] wb_valid_q, wb_frozen_q, wb_sent_q;
+  logic [ADDR_WIDTH-1:0] wb_addr_q[NUM_WB];
   logic [8*LINE_BYTES-1:0] wb_data_q[NUM_WB];
-  logic wb_free, wb_pending, address_locked;
-  logic [WbBits-1:0] wb_free_slot, wb_pending_slot;
-  logic [  1:0] result_state;
-  logic [ 31:0] sector_mask;
-  logic [255:0] sector_data;
-  logic select_put, active;
-  logic [5:0] active_tid;
-  logic probe_matches;
-  wire lookup_fire = active && phase_q == Lookup && !address_locked && array_req_ready;
-
-  // Shared L2 events count demand and non-maintenance PutM lookups.
-  // Probe replies merge into the selected line without another access event.
-  logic perf_lookup, perf_miss_q, perf_write_fill_q, perf_maintenance;
-  assign perf_maintenance = put_active_q ? put_q.maintenance : demand.maintenance;
-  assign perf_lookup = active && phase_q == LookupWait && array_resp_valid &&
-      !perf_maintenance;
-  always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      perf_miss_q <= 1'b0;
-      perf_write_fill_q <= 1'b0;
-      o_perf_events <= '0;
-      o_write_perf_events <= '0;
-    end else begin
-      if (perf_lookup) begin
-        perf_miss_q <= !array_hit;
-        perf_write_fill_q <= !array_hit && !put_active_q &&
-            demand.opcode == coherence_pkg::DMAWrite;
-      end
-      if ((phase_q == UpdateWait && array_req_ready) || phase_q == Result) begin
-        perf_miss_q <= 1'b0;
-        perf_write_fill_q <= 1'b0;
-      end
-      o_perf_events <= '0;
-      o_perf_events.access <= perf_lookup;
-      o_perf_events.hit <= perf_lookup && array_hit;
-      o_perf_events.miss <= perf_lookup && !array_hit;
-      o_perf_events.miss_outstanding <= cache_perf_pkg::MissOutstandingBits'(perf_miss_q);
-      o_perf_events.writeback <= active && phase_q == Detach && wb_free &&
-          line_state_q == coherence_pkg::Modified && !perf_maintenance;
-      o_perf_events.slot_full_stall <= active && !perf_maintenance &&
-          (phase_q == Recall || phase_q == Detach) &&
-          line_state_q == coherence_pkg::Modified && !wb_free;
-      o_perf_events.conflict_stall <= active && !perf_maintenance &&
-          phase_q == Lookup && address_locked;
-      o_write_perf_events <= '0;
-      o_write_perf_events.write_fill <= perf_lookup && !array_hit && !put_active_q &&
-          demand.opcode == coherence_pkg::DMAWrite;
-      o_write_perf_events.write_fill_outstanding <=
-          cache_perf_pkg::MissOutstandingBits'(perf_write_fill_q);
-    end
+  coh_w_t put_q[Puts];
+  logic [Puts-1:0] put_maintenance;
+  logic [Puts-1:0][ADDR_WIDTH-1:0] put_addr;
+  logic [Puts-1:0][WayBits-1:0] put_way_q;
+  logic [FILLS+NUM_WB-1:0] memory_valid, memory_ready;
+  localparam int unsigned MemoryBits = 1 + ADDR_WIDTH + 8 * LINE_BYTES + 5;
+  logic [FILLS+NUM_WB-1:0][MemoryBits-1:0] memory_payload;
+  logic memory_out_valid;
+  logic [MemoryBits-1:0] memory_out;
+  logic perf_lookup, perf_maintenance;
+  logic [FILLS-1:0] fill_write_q, filling, write_filling;
+  localparam int unsigned MemorySources = FILLS + NUM_WB;
+  localparam int unsigned MemorySelectBits = $clog2(MemorySources);
+  logic [MemorySelectBits-1:0] memory_next_q, memory_pick, memory_first;
+  logic memory_found, memory_after;
+`ifdef COHERENCE_HOME_CONTROL
+  logic [(1<<TokenBits)-1:0] f_tag_owner, f_read_owner, f_update_owner;
+  logic [(1<<TokenBits)-1:0][ADDR_WIDTH-1:0] f_tag_address;
+  logic [RESULTS-1:0] f_engine_unpinned;
+  logic [RESULTS-1:0] f_engine_pinned, f_engine_initial_error;
+  logic f_local_fatal;
+  logic [COMPLETIONS-1:0] f_fill_waiting, f_fill_seated;
+  always_comb begin
+    f_fill_waiting = '0;
+    f_fill_seated  = '0;
+    f_local_fatal  = |engine_fatal;
+    f_tag_address  = '0;
+    for (int engine = 0; engine < RESULTS; engine++) f_tag_address[engine] = engine_addr[engine];
+    for (int put = 0; put < Puts; put++) f_tag_address[RESULTS+FILLS+put] = put_addr[put];
+    for (int fill = 0; fill < FILLS; fill++) f_local_fatal |= fill_phase_q[fill] == FillFatal;
+    for (int put = 0; put < Puts; put++) f_local_fatal |= put_phase_q[put] == PutFatal;
+    for (int fill = 0; fill < FILLS; fill++)
+    if (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady)
+      f_fill_waiting |= fill_seats_q[fill];
+    for (int fill = 0; fill < FILLS; fill++)
+    if (fill_phase_q[fill] != FillFree) f_fill_seated |= fill_seats_q[fill];
   end
-`ifdef FORMAL
-  always @(posedge i_clk) begin
-    if (f_past_valid) begin
-      assert (o_perf_events.access == (o_perf_events.hit || o_perf_events.miss));
-      assert (!(o_perf_events.hit && o_perf_events.miss));
-      assert (o_perf_events.miss_outstanding <= 1);
-      assert (o_write_perf_events.write_fill_outstanding <= o_perf_events.miss_outstanding);
-      if (o_write_perf_events.write_fill) assert (o_perf_events.miss);
-      if ($past(i_rst)) begin
-        assert (o_perf_events == '0);
-        assert (o_write_perf_events == '0);
-      end
-    end
+  for (genvar client = Clients; client < (1 << TokenBits); client++) begin : gen_unused_owner
+    assign f_tag_owner[client] = 1'b0;
+    assign f_read_owner[client] = 1'b0;
+    assign f_update_owner[client] = 1'b0;
+  end
+  for (genvar fill = 0; fill < FILLS; fill++) begin : gen_fill_owner
+    assign f_tag_owner[RESULTS+fill] = 1'b0;
+    assign f_read_owner[RESULTS+fill] =
+        (fill_phase_q[fill] == FillRecall || fill_phase_q[fill] == FillFatal) &&
+        fill_read_sent_q[fill] && !fill_read_done_q[fill];
+    assign f_update_owner[RESULTS+fill] =
+        fill_phase_q[fill] == FillInvalidateWait || fill_phase_q[fill] == FillInstallWait;
+  end
+  for (genvar put = 0; put < Puts; put++) begin : gen_put_owner
+    assign f_tag_owner[RESULTS+FILLS+put] = put_phase_q[put] == PutDecision;
+    assign f_read_owner[RESULTS+FILLS+put] = 1'b0;
+    assign f_update_owner[RESULTS+FILLS+put] = put_phase_q[put] == PutUpdateWait;
   end
 `endif
 
-  assign put_in = i_w;
-  assign reply = i_r;
+  function automatic logic [ADDR_WIDTH-1:0] request_addr(input coh_d_t packet);
+    request_addr = packet.addr;
+  endfunction
+  function automatic logic [3:0] request_opcode(input coh_d_t packet);
+    request_opcode = packet.opcode;
+  endfunction
+  for (genvar slot = 0; slot < COMPLETIONS; slot++) begin : gen_waiter_fields
+    assign waiting_addr[slot]   = request_addr(waiting_request[slot]);
+    assign waiting_opcode[slot] = request_opcode(waiting_request[slot]);
+  end
+  function automatic logic same_block(input logic [ADDR_WIDTH-1:0] a,
+                                      input logic [ADDR_WIDTH-1:0] b);
+    same_block = a[ADDR_WIDTH-1:OffsetBits] == b[ADDR_WIDTH-1:OffsetBits];
+  endfunction
+  function automatic logic same_sector(input logic [ADDR_WIDTH-1:0] a,
+                                       input logic [ADDR_WIDTH-1:0] b);
+    same_sector = a[ADDR_WIDTH-1:5] == b[ADDR_WIDTH-1:5];
+  endfunction
+  function automatic logic same_set(input logic [ADDR_WIDTH-1:0] a, input logic [ADDR_WIDTH-1:0] b);
+    same_set = a[OffsetBits+:SetBits] == b[OffsetBits+:SetBits];
+  endfunction
+  function automatic logic read_waiter(input logic [3:0] opcode);
+    read_waiter = opcode == coherence_pkg::GetS || opcode == coherence_pkg::LoadReserved ||
+        opcode == coherence_pkg::ReadOnceIF || opcode == coherence_pkg::ReadOncePTW ||
+        opcode == coherence_pkg::DMARead || opcode == coherence_pkg::Prefetch;
+  endfunction
   assign active = !i_rst && !i_fatal_stop && !o_fatal;
-  assign select_put = i_w_valid && !put_busy && (!work_valid || write_turn_q);
-  assign work_ready = active && phase_q == Idle && !select_put;
-  assign o_w_ready = active && phase_q == Idle && select_put;
-  assign active_tid = put_active_q ? PutTid : demand_tid_q;
-  assign retry_valid = active && !put_active_q &&
-      ((phase_q == Lookup && address_locked) ||
-       (phase_q == LookupWait && array_resp_valid && !array_available));
-  assign pin_valid = active && !put_active_q && phase_q == LookupWait &&
-      array_resp_valid && array_available;
-
+  assign incoming_put = i_w;
+  assign reply = i_r;
+  assign image_data = engine_image[image_index];
   coherence_home_completions #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .LINE_BYTES(LINE_BYTES),
@@ -212,585 +309,1006 @@ module coherence_home #(
       .SLOTS(COMPLETIONS),
       .RESULT_SLOTS(RESULTS)
   ) completions (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
+      .i_clk,
+      .i_rst,
       .i_fatal_stop(i_fatal_stop || o_fatal),
-      .i_d_valid(i_d_valid),
-      .o_d_ready(o_d_ready),
-      .i_d(i_d),
+      .i_d_valid,
+      .o_d_ready,
+      .i_d,
       .o_work_valid(work_valid),
-      .i_work_ready(work_ready),
+      .i_work_ready(active),
       .o_work(work),
       .o_work_tid(work_tid),
+      .o_work_buffer(work_buffer),
+      .o_work_error(work_error),
+      .o_work_counted(work_counted),
+      .i_count_valid(active && array_response && decision_engine),
+      .i_count_tid(decision_tid),
+      .o_waiting(waiting),
+      .o_waiting_request(waiting_request),
+      .i_park(park),
+      .i_wake(wake),
+      .i_wake_error(wake_error),
+      .i_retry_park(retry_park),
+      .o_image_index(image_index),
+      .i_image_data(image_data),
       .i_retry_valid(retry_valid),
-      .i_retry_tid(demand_tid_q),
+      .i_retry_tid(decision_tid),
       .i_pin_valid(pin_valid),
-      .i_pin_tid(demand_tid_q),
+      .i_pin_tid(decision_tid),
       .i_pin_way(array_way),
-      .i_query_addr(address_q),
-      .o_exclude(exclude),
-      .i_put_addr(put_in.addr),
+      .i_query_addr(array_query),
+      .o_exclude(completion_exclude),
+      .i_put_addr(selected_put_q.addr),
       .o_put_busy(put_busy),
-      .i_result_valid(active && phase_q == Result),
+      .i_result_valid(result_valid && active),
       .o_result_ready(result_ready),
       .i_result(result),
-      .o_g_valid(o_g_valid),
-      .i_g_ready(i_g_ready),
-      .o_g(o_g),
-      .i_c_valid(i_c_valid),
-      .o_c_ready(o_c_ready),
-      .i_c(i_c),
-      .o_u_valid(o_u_valid),
-      .i_u_ready(i_u_ready),
-      .o_u(o_u)
+      .o_g_valid,
+      .i_g_ready,
+      .o_g,
+      .i_c_valid,
+      .o_c_ready,
+      .i_c,
+      .o_u_valid,
+      .i_u_ready,
+`ifdef COHERENCE_HOME_CONTROL
+      .i_fill_waiting(f_fill_waiting),
+      .i_fill_seated(f_fill_seated),
+      .i_engine_busy(~engine_idle),
+      .i_engine_unpinned(f_engine_unpinned),
+      .i_engine_pinned(f_engine_pinned),
+      .i_engine_initial_error(f_engine_initial_error),
+      .i_engine_tid(engine_tid),
+      .i_engine_addr(engine_addr),
+`endif
+      .o_u
   );
 
-  coherence_array #(
+  for (genvar engine = 0; engine < RESULTS; engine++) begin : gen_engine
+    coherence_home_engine #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .LINE_BYTES(LINE_BYTES),
+        .WAYS(WAYS)
+    ) service (
+        .i_clk,
+        .i_rst,
+        .i_stop(!active),
+        .i_work_valid(work_valid && active && work_buffer == ResultBits'(engine)),
+        .i_work(work),
+        .i_tid(work_tid),
+        .i_work_error(work_error),
+        .o_idle(engine_idle[engine]),
+        .o_lookup_valid(engine_lookup[engine]),
+        .i_lookup_ready(tag_ready[engine]),
+        .o_addr(engine_addr[engine]),
+        .o_tid(engine_tid[engine]),
+        .o_opcode(engine_opcode[engine]),
+        .o_maintenance(engine_maintenance[engine]),
+        .i_decision_valid(array_response && active && array_token == TokenBits'(engine)),
+        .i_decision_resident(decision_hit),
+        .i_decision_way(array_way),
+        .i_decision_state(array_state),
+        .o_read_valid(engine_read[engine]),
+        .i_read_ready(read_ready[engine]),
+        .o_way(engine_way[engine]),
+        .i_data_valid(array_data_valid && array_data_token == TokenBits'(engine)),
+        .i_data(array_data),
+        .o_p_valid(probe_valid[engine]),
+        .i_p_ready(probe_ready[engine]),
+        .o_p(probe_payload[engine]),
+        .i_r_valid,
+        .o_r_ready(engine_r_ready[engine]),
+        .i_r,
+        .o_wa_valid(ack_valid[engine]),
+        .i_wa_ready(ack_ready[engine]),
+        .o_wa(ack_payload[engine]),
+        .o_update_valid(engine_update[engine]),
+        .i_update_ready(update_ready[engine]),
+        .o_update_mask(engine_update_mask[engine]),
+        .o_update_data(engine_update_data[engine]),
+        .i_updated(array_updated && array_updated_token == TokenBits'(engine)),
+        .o_result_valid(engine_result[engine]),
+        .i_result_ready(engine_result_ready[engine]),
+        .o_result(engine_result_payload[engine]),
+        .o_image(engine_image[engine]),
+`ifdef COHERENCE_HOME_CONTROL
+        .o_tag_owner(f_tag_owner[engine]),
+        .o_unpinned_owner(f_engine_unpinned[engine]),
+        .o_pin_owner(f_engine_pinned[engine]),
+        .o_initial_error(f_engine_initial_error[engine]),
+        .o_read_owner(f_read_owner[engine]),
+        .o_update_owner(f_update_owner[engine]),
+`endif
+        .o_fatal(engine_fatal[engine])
+    );
+    always_ff @(posedge i_clk) begin
+      if (i_rst) engine_counted_q[engine] <= 1'b0;
+      else if (work_valid && active && work_buffer == ResultBits'(engine))
+        engine_counted_q[engine] <= work_counted;
+    end
+    assign tag_valid[engine] = engine_lookup[engine];
+    assign tag_payload[engine] = {TokenBits'(engine), engine_addr[engine]};
+    assign read_valid[engine] = engine_read[engine];
+    assign read_payload[engine] = {TokenBits'(engine), engine_way[engine], engine_addr[engine]};
+    assign update_valid[engine] = engine_update[engine];
+    assign update_payload[engine] = {
+      TokenBits'(engine),
+      engine_way[engine],
+      engine_addr[engine],
+      1'b1,
+      2'(coherence_pkg::Modified),
+      engine_update_mask[engine],
+      engine_update_data[engine]
+    };
+  end
+  coherence_d_arbiter #(
+      .WIDTH(ADDR_WIDTH + 275),
+      .PORTS(RESULTS)
+  ) result_arbiter (
+      .i_clk,
+      .i_rst,
+      .i_valid(engine_result),
+      .o_ready(engine_result_ready),
+      .i_payload(engine_result_payload),
+      .o_valid(result_valid),
+      .i_ready(result_ready && active),
+`ifdef COHERENCE_HOME_CONTROL
+      .i_service_stop(!active || f_local_fatal),
+`endif
+      .o_payload(result)
+  );
+  coherence_d_arbiter #(
+      .WIDTH(TagPacketBits),
+      .PORTS(Clients)
+  ) tag_arbiter (
+      .i_clk,
+      .i_rst,
+      .i_valid(tag_valid),
+      .o_ready(tag_ready),
+      .i_payload(tag_payload),
+      .o_valid(tag_request_valid),
+      .i_ready(tag_request_ready && active),
+`ifdef COHERENCE_HOME_CONTROL
+      .i_service_stop(!active || f_local_fatal),
+`endif
+      .o_payload(tag_request)
+  );
+  coherence_d_arbiter #(
+      .WIDTH(ReadPacketBits),
+      .PORTS(Clients)
+  ) read_arbiter (
+      .i_clk,
+      .i_rst,
+      .i_valid(read_valid),
+      .o_ready(read_ready),
+      .i_payload(read_payload),
+      .o_valid(row_request_valid),
+      .i_ready(row_request_ready && active),
+`ifdef COHERENCE_HOME_CONTROL
+      .i_service_stop(!active || f_local_fatal),
+`endif
+      .o_payload(row_request)
+  );
+  coherence_d_arbiter #(
+      .WIDTH(UpdatePacketBits),
+      .PORTS(Clients)
+  ) update_arbiter (
+      .i_clk,
+      .i_rst,
+      .i_valid(update_valid),
+      .o_ready(update_ready),
+      .i_payload(update_payload),
+      .o_valid(update_request_valid),
+      .i_ready(update_request_ready && active),
+`ifdef COHERENCE_HOME_CONTROL
+      .i_service_stop(!active || f_local_fatal),
+`endif
+      .o_payload(update_request)
+  );
+  coherence_d_arbiter #(
+      .WIDTH(ADDR_WIDTH + 30),
+      .PORTS(Clients)
+  ) probe_arbiter (
+      .i_clk,
+      .i_rst,
+      .i_valid(probe_valid),
+      .o_ready(probe_ready),
+      .i_payload(probe_payload),
+      .o_valid(probe_out_valid),
+      .i_ready(i_p_ready && active),
+`ifdef COHERENCE_HOME_CONTROL
+      .i_service_stop(!active || f_local_fatal),
+`endif
+      .o_payload(probe_out)
+  );
+  coherence_d_arbiter #(
+      .WIDTH(ADDR_WIDTH + 11),
+      .PORTS(Clients)
+  ) ack_arbiter (
+      .i_clk,
+      .i_rst,
+      .i_valid(ack_valid),
+      .o_ready(ack_ready),
+      .i_payload(ack_payload),
+      .o_valid(ack_out_valid),
+      .i_ready(i_wa_ready && active),
+`ifdef COHERENCE_HOME_CONTROL
+      .i_service_stop(!active || f_local_fatal),
+`endif
+      .o_payload(ack_out)
+  );
+  assign o_p_valid = active && probe_out_valid;
+  assign o_p = probe_out;
+  assign o_r_ready = active && (|engine_r_ready || |fill_r_ready);
+  assign o_wa_valid = active && ack_out_valid;
+  assign o_wa = ack_out;
+
+  coherence_home_array #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .LINE_BYTES(LINE_BYTES),
       .CACHE_BYTES(CACHE_BYTES),
       .WAYS(WAYS),
+      .TOKEN_BITS(TokenBits),
       .ULTRA(ULTRA)
   ) array (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
+      .i_clk,
+      .i_rst,
       .o_init_done(),
-      .i_req_valid(active && phase_q == Lookup && !address_locked),
-      .o_req_ready(array_req_ready),
-      .i_req_addr(address_q),
-      .i_req_exclude(exclude),
-      .i_req_visit(1'b0),
-      .i_req_way('0),
-      .i_req_skip_data_on_hit(!put_active_q && demand.opcode == coherence_pkg::DMAWrite),
-      .i_req_data_if_modified(1'b0),
-      .o_resp_valid(array_resp_valid),
-      .i_resp_ready(phase_q == LookupWait),
+      .i_req_valid(tag_request_valid && active),
+      .o_req_ready(tag_request_ready),
+      .i_req_addr(tag_request.addr),
+      .i_req_token(tag_request.token),
+      .o_query_addr(array_query),
+      .i_exclude(array_exclude),
+      .o_resp_valid(array_response),
+      .i_resp_ready(active),
+      .i_resp_claim(array_claim),
+      .o_resp_token(array_token),
       .o_resp_hit(array_hit),
       .o_resp_available(array_available),
       .o_resp_way(array_way),
       .o_resp_addr(array_addr),
       .o_resp_state(array_state),
-      .o_resp_data_valid(),
-      .o_resp_data(array_data),
-      .i_update_valid(active && (phase_q == Update || phase_q == InvalidateVictim)),
-      .o_update_ready(array_update_ready),
-      .i_update_addr(phase_q == InvalidateVictim ? victim_addr_q : address_q),
-      .i_update_way(way_q),
-      .i_update_state(phase_q == InvalidateVictim ? 2'b00 : line_state_q),
-      .i_update_insert(fill_valid_q && phase_q == Update),
-      .i_update_mask(update_mask),
-      .i_update_data(image_q)
+      .i_read_valid(row_request_valid && active),
+      .o_read_ready(row_request_ready),
+      .i_read_addr(row_request.addr),
+      .i_read_way(row_request.way),
+      .i_read_token(row_request.token),
+      .o_read_valid(array_data_valid),
+      .o_read_token(array_data_token),
+      .o_read_data(array_data),
+      .i_update_valid(update_request_valid && active),
+      .o_update_ready(update_request_ready),
+      .i_update_addr(update_request.addr),
+      .i_update_way(update_request.way),
+      .i_update_tag(update_request.tag_write),
+      .i_update_state(update_request.state),
+      .i_update_mask(update_request.mask),
+      .i_update_data(update_request.data),
+      .i_update_token(update_request.token),
+      .o_updated(array_updated),
+`ifdef COHERENCE_HOME_CONTROL
+      .i_tag_owner(f_tag_owner),
+      .i_tag_address(f_tag_address),
+      .i_read_owner(f_read_owner),
+      .i_update_owner(f_update_owner),
+`endif
+      .o_updated_token(array_updated_token)
   );
 
   always_comb begin
-    update_mask = '0;
-    if (phase_q == Update) begin
-      if (partial_update_q)
-        update_mask = LINE_BYTES'(sector_mask | {32{probe_data_q}}) <<
-            (LINE_BYTES == 64 && address_q[5] ? 32 : 0);
-      else update_mask = '1;
+    array_exclude = completion_exclude;
+    for (int fill = 0; fill < FILLS; fill++) begin
+      if (fill_phase_q[fill] != FillFree && same_set(fill_addr_q[fill], array_query))
+        array_exclude[fill_way_q[fill]] = 1'b1;
+    end
+    for (int put = 0; put < Puts; put++) begin
+      if ((put_phase_q[put] == PutUpdate || put_phase_q[put] == PutUpdateWait ||
+          put_phase_q[put] == PutAck) && same_set(
+              put_addr[put], array_query
+          ))
+        array_exclude[put_way_q[put]] = 1'b1;
     end
   end
-
   always_comb begin
+    decision_engine = int'(array_token) < RESULTS;
+    decision_put = int'(array_token) >= RESULTS + FILLS;
+    decision_addr = array_query;
+    decision_tid = '0;
+    decision_opcode = '0;
+    if (decision_engine) begin
+      decision_addr = engine_addr[ResultBits'(array_token)];
+      decision_tid = engine_tid[ResultBits'(array_token)];
+      decision_opcode = engine_opcode[ResultBits'(array_token)];
+    end
+    for (int put = 0; put < Puts; put++)
+    if (array_token == TokenBits'(RESULTS + FILLS + put)) decision_addr = put_addr[put];
+    decision_blocked = 1'b0;
+    victim_blocked = 1'b0;
+    fill_match = 1'b0;
+    fill_match_index = '0;
+    fill_joinable = 1'b0;
+    fill_free = 1'b0;
+    fill_free_index = '0;
     wb_free = 1'b0;
-    wb_free_slot = '0;
-    wb_pending = 1'b0;
-    wb_pending_slot = '0;
-    address_locked = 1'b0;
-    for (int slot = NUM_WB - 1; slot >= 0; slot--) begin
-      if (!wb_valid_q[slot]) begin
+    wb_free_index = '0;
+    for (int wb = NUM_WB - 1; wb >= 0; wb--) begin
+      if (!wb_valid_q[wb] && !wb_frozen_q[wb]) begin
         wb_free = 1'b1;
-        wb_free_slot = WbBits'(slot);
+        wb_free_index = WbBits'(wb);
       end
-      if (wb_valid_q[slot] && !wb_sent_q[slot]) begin
-        wb_pending = 1'b1;
-        wb_pending_slot = WbBits'(slot);
+      if (wb_valid_q[wb]) begin
+        if (same_block(wb_addr_q[wb], decision_addr)) decision_blocked = 1'b1;
+        if (same_block(wb_addr_q[wb], array_addr)) victim_blocked = 1'b1;
       end
-      if (wb_valid_q[slot] &&
-          wb_addr_q[slot][ADDR_WIDTH-1:OffsetBits] == address_q[ADDR_WIDTH-1:OffsetBits])
-        address_locked = 1'b1;
+    end
+    for (int fill = FILLS - 1; fill >= 0; fill--) begin
+      if (fill_phase_q[fill] == FillFree) begin
+        fill_free = 1'b1;
+        fill_free_index = FillBits'(fill);
+      end else begin
+        if (same_set(fill_addr_q[fill], array_query) && fill_way_q[fill] == array_way)
+          victim_blocked = 1'b1;
+        if (fill_phase_q[fill] != FillReady) begin
+          if (same_block(fill_addr_q[fill], decision_addr)) begin
+            decision_blocked = 1'b1;
+            fill_match = 1'b1;
+            fill_match_index = FillBits'(fill);
+            fill_joinable = fill_phase_q[fill] != FillInstallWait &&
+                !fill_error_q[fill] && $countones(fill_seats_q[fill]) < 3;
+          end
+          if (fill_victim_q[fill] && same_block(fill_old_addr_q[fill], decision_addr))
+            decision_blocked = 1'b1;
+        end
+      end
+    end
+    for (int put = 0; put < Puts; put++) begin
+      if (put_phase_q[put] != PutFree &&
+          (!decision_put || array_token != TokenBits'(RESULTS + FILLS + put))) begin
+        if (same_sector(put_addr[put], decision_addr)) decision_blocked = 1'b1;
+        if (same_block(put_addr[put], array_addr)) victim_blocked = 1'b1;
+      end
+    end
+    for (int engine = 0; engine < RESULTS; engine++) begin
+      if (!engine_idle[engine] && array_token != TokenBits'(engine) && same_block(
+              engine_addr[engine], array_addr
+          ))
+        victim_blocked = 1'b1;
+    end
+    decision_hit = array_hit && array_available && !decision_blocked;
+    decision_fill = decision_engine && !array_hit && array_available && !decision_blocked &&
+        !victim_blocked && !array_exclude[array_way] && fill_free &&
+        (array_state == coherence_pkg::Invalid || wb_free);
+    decision_join = decision_engine && fill_match && fill_joinable && read_waiter(decision_opcode);
+    decision_retry = decision_engine && !decision_hit;
+    array_claim = active && array_response && (decision_hit || decision_fill);
+    retry_valid = active && array_response && decision_retry;
+    retry_park = decision_fill || decision_join;
+    pin_valid = active && array_response && decision_engine && decision_hit;
+  end
+
+  // Parked readers own metadata seats, including readers with predecessors.
+  always_comb begin
+    park = '0;
+    wake = '0;
+    wake_error = '0;
+    for (int fill = 0; fill < FILLS; fill++) begin
+      int seats;
+      seats = $countones(fill_seats_q[fill]);
+      fill_add_seats[fill] = '0;
+      if (active && array_response && decision_join && fill_match_index == FillBits'(fill)) seats++;
+      if (active && fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady &&
+          fill_phase_q[fill] != FillInstallWait &&
+          !fill_error_q[fill]) begin
+        for (int slot = 0; slot < COMPLETIONS; slot++) begin
+          if (waiting[slot] && same_block(
+                  waiting_addr[slot], fill_addr_q[fill]
+              ) && read_waiter(
+                  waiting_opcode[slot]
+              ) && seats < 3) begin
+            fill_add_seats[fill][slot] = 1'b1;
+            park[slot] = 1'b1;
+            seats++;
+          end
+        end
+      end
+      if (fill_wake[fill]) begin
+        wake |= fill_seats_q[fill];
+        if (fill_error_q[fill]) wake_error |= fill_seats_q[fill];
+      end
     end
   end
 
-  // The memory presentation is frozen independently of the home FSM.
+  assign put_key_match = incoming_put.hart == selected_put_q.hart &&
+      incoming_put.put_id == selected_put_q.put_id && incoming_put.epoch == selected_put_q.epoch &&
+      incoming_put.addr == selected_put_q.addr;
+  always_comb begin
+    put_blocked = 1'b0;
+    if (array_response && decision_fill && array_state != coherence_pkg::Invalid && same_block(
+            array_addr, selected_put_q.addr
+        ))
+      put_blocked = 1'b1;
+    for (int fill = 0; fill < FILLS; fill++)
+    if (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady && (same_block(
+            fill_addr_q[fill], selected_put_q.addr
+        ) || (fill_victim_q[fill] && same_block(
+            fill_old_addr_q[fill], selected_put_q.addr
+        ))))
+      put_blocked = 1'b1;
+    for (int wb = 0; wb < NUM_WB; wb++)
+    if (wb_valid_q[wb] && same_block(wb_addr_q[wb], selected_put_q.addr)) put_blocked = 1'b1;
+  end
+  assign o_w_ready = active && put_selected_q && put_key_match && !put_busy && !put_blocked &&
+      put_phase_q[selected_put_q.put_id] == PutFree;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      o_mem_req_valid <= 1'b0;
-      o_mem_req_write <= 1'b0;
-      o_mem_req_addr <= '0;
-      o_mem_req_data <= '0;
-      o_mem_req_mask <= '0;
-      o_mem_req_id <= '0;
-    end else begin
-      if (o_mem_req_valid && i_mem_req_ready) o_mem_req_valid <= 1'b0;
-      if (!o_mem_req_valid && !o_fatal && !i_fatal_stop) begin
-        if (fill_valid_q && !fill_sent_q) begin
-          o_mem_req_valid <= 1'b1;
-          o_mem_req_write <= 1'b0;
-          o_mem_req_addr <= {address_q[ADDR_WIDTH-1:OffsetBits], {OffsetBits{1'b0}}};
-          o_mem_req_data <= '0;
-          o_mem_req_mask <= '0;
-          o_mem_req_id <= '0;
-        end else if (wb_pending) begin
-          o_mem_req_valid <= 1'b1;
-          o_mem_req_write <= 1'b1;
-          o_mem_req_addr <= wb_addr_q[wb_pending_slot];
-          o_mem_req_data <= wb_data_q[wb_pending_slot];
-          o_mem_req_mask <= '1;
-          o_mem_req_id <= 5'd16 | 5'(wb_pending_slot);
+      put_selected_q <= 1'b0;
+      selected_put_q <= '0;
+    end else if (active) begin
+      if (!put_selected_q && i_w_valid) begin
+        selected_put_q <= incoming_put;
+        put_selected_q <= 1'b1;
+      end
+      if (put_selected_q && (!i_w_valid || !put_key_match || o_w_ready)) put_selected_q <= 1'b0;
+    end
+  end
+
+  for (genvar put = 0; put < Puts; put++) begin : gen_put
+    localparam int unsigned Client = RESULTS + FILLS + put;
+    coh_w_t  packet;
+    coh_wa_t ack;
+    assign packet = put_q[put];
+    assign put_maintenance[put] = packet.maintenance;
+    wire upper = LINE_BYTES == 64 && packet.addr[5];
+    assign put_addr[put] = packet.addr;
+    assign tag_valid[Client] = active && put_phase_q[put] == PutLookup;
+    assign tag_payload[Client] = {TokenBits'(Client), put_addr[put]};
+    assign read_valid[Client] = 1'b0;
+    assign read_payload[Client] = '0;
+    assign probe_valid[Client] = 1'b0;
+    assign probe_payload[Client] = '0;
+    assign update_valid[Client] = active && put_phase_q[put] == PutUpdate;
+    assign update_payload[Client] = {
+      TokenBits'(Client),
+      put_way_q[put],
+      put_addr[put],
+      1'b1,
+      2'(coherence_pkg::Modified),
+      LINE_BYTES'(32'hffff_ffff) << (upper ? 32 : 0),
+      (8 * LINE_BYTES)'(packet.data) << (upper ? 256 : 0)
+    };
+    assign ack_valid[Client] = active && put_phase_q[put] == PutAck;
+    assign ack_payload[Client] = ack;
+    always_comb begin
+      ack = '0;
+      ack.hart = packet.hart;
+      ack.put_id = packet.put_id;
+      ack.epoch = packet.epoch;
+      ack.addr = packet.addr;
+      ack.tid = PutTid + 6'(put);
+    end
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        put_phase_q[put] <= PutFree;
+        put_q[put] <= '0;
+        put_way_q[put] <= '0;
+      end else if (active) begin
+        if (i_w_valid && o_w_ready && incoming_put.put_id == 1'(put)) begin
+          put_q[put] <= incoming_put;
+          put_phase_q[put] <= PutLookup;
+        end
+        if (tag_valid[Client] && tag_ready[Client]) put_phase_q[put] <= PutDecision;
+        if (array_response && array_token == TokenBits'(Client)) begin
+          if (!array_hit) put_phase_q[put] <= PutFatal;
+          else if (decision_blocked) put_phase_q[put] <= PutLookup;
+          else begin
+            put_way_q[put]   <= array_way;
+            put_phase_q[put] <= PutUpdate;
+          end
+        end
+        if (update_valid[Client] && update_ready[Client]) put_phase_q[put] <= PutUpdateWait;
+        if (array_updated && array_updated_token == TokenBits'(Client)) put_phase_q[put] <= PutAck;
+        if (ack_valid[Client] && ack_ready[Client]) put_phase_q[put] <= PutFree;
+      end
+    end
+  end
+
+  for (genvar fill = 0; fill < FILLS; fill++) begin : gen_fill
+    localparam int unsigned Client = RESULTS + fill;
+    coh_p_t probe;
+    coh_wa_t absorbed_ack;
+    wire probe_matches = reply.tid == FillTid + 6'(fill) && reply.addr == probe.addr &&
+        reply.epoch == 0 && reply.hart == 0 &&
+        (reply.opcode == coherence_pkg::ProbeAck || reply.opcode == coherence_pkg::ProbeData);
+    wire allocate = active && array_response && decision_fill && fill_free_index == FillBits'(fill);
+    assign tag_valid[Client] = 1'b0;
+    assign tag_payload[Client] = '0;
+    assign read_valid[Client] = active && fill_phase_q[fill] == FillRecall &&
+        !fill_read_sent_q[fill];
+    assign read_payload[Client] = {TokenBits'(Client), fill_way_q[fill], fill_old_addr_q[fill]};
+    assign probe_valid[Client] = active && fill_phase_q[fill] == FillRecall &&
+        recall_phase_q[fill] == RecallOffer;
+    assign probe_payload[Client] = probe;
+    assign fill_probe[fill] = probe;
+    assign fill_r_ready[fill] = active && fill_phase_q[fill] == FillRecall &&
+        recall_phase_q[fill] == RecallWait && probe_matches;
+    assign ack_valid[Client] = active && fill_phase_q[fill] == FillRecall &&
+        recall_phase_q[fill] == RecallAck;
+    assign ack_payload[Client] = fill_ack_q[fill];
+    assign update_valid[Client] = active &&
+        (fill_phase_q[fill] == FillInvalidate || fill_phase_q[fill] == FillInstall);
+    assign update_payload[Client] = {
+      TokenBits'(Client),
+      fill_way_q[fill],
+      fill_phase_q[fill] == FillInvalidate ? fill_old_addr_q[fill] : fill_addr_q[fill],
+      1'b1,
+      fill_phase_q[fill] == FillInvalidate ? 2'(coherence_pkg::Invalid) : 2'(coherence_pkg::Shared),
+      {LINE_BYTES{fill_phase_q[fill] == FillInstall}},
+      fill_phase_q[fill] == FillInstall ? fill_image_q[fill] : {(8 * LINE_BYTES) {1'b0}}
+    };
+    assign fill_wake[fill] = active &&
+        ((fill_phase_q[fill] == FillInstallWait && array_updated &&
+          array_updated_token == TokenBits'(Client)) ||
+         (fill_phase_q[fill] == FillMemory && fill_done_q[fill] && fill_error_q[fill]));
+    always_comb begin
+      probe = '0;
+      probe.opcode = coherence_pkg::ProbeRead;
+      probe.tid = FillTid + 6'(fill);
+      probe.addr = fill_old_addr_q[fill] | ADDR_WIDTH'(int'(fill_sector_q[fill]) * 32);
+      probe.reason = coherence_pkg::Replace;
+      absorbed_ack = '0;
+      absorbed_ack.hart = reply.hart;
+      absorbed_ack.put_id = reply.put_id;
+      absorbed_ack.epoch = reply.put_epoch;
+      absorbed_ack.addr = reply.addr;
+      absorbed_ack.absorbed = 1'b1;
+      absorbed_ack.tid = reply.tid;
+    end
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        fill_phase_q[fill] <= FillFree;
+        recall_phase_q[fill] <= RecallDone;
+        fill_addr_q[fill] <= '0;
+        fill_old_addr_q[fill] <= '0;
+        fill_way_q[fill] <= '0;
+        fill_wb_q[fill] <= '0;
+        fill_sent_q[fill] <= 1'b0;
+        fill_done_q[fill] <= 1'b0;
+        fill_error_q[fill] <= 1'b0;
+        fill_victim_q[fill] <= 1'b0;
+        fill_read_sent_q[fill] <= 1'b0;
+        fill_read_done_q[fill] <= 1'b0;
+        fill_sector_q[fill] <= 1'b0;
+        fill_dirty_q[fill] <= 1'b0;
+        fill_dirty_sectors_q[fill] <= '0;
+        fill_seats_q[fill] <= '0;
+        fill_write_q[fill] <= 1'b0;
+        fill_ack_q[fill] <= '0;
+      end else begin
+        if (o_mem_req_valid && i_mem_req_ready && o_mem_req_id == 5'(fill))
+          fill_sent_q[fill] <= 1'b1;
+        if (i_mem_resp_valid && i_mem_resp_id == 5'(fill)) begin
+          fill_image_q[fill] <= i_mem_resp_data;
+          fill_done_q[fill]  <= 1'b1;
+          fill_error_q[fill] <= i_mem_resp_error;
+        end
+        if (active) begin
+          fill_seats_q[fill] <= fill_seats_q[fill] | fill_add_seats[fill];
+          if (allocate) begin
+            fill_addr_q[fill] <= {decision_addr[ADDR_WIDTH-1:OffsetBits], {OffsetBits{1'b0}}};
+            fill_old_addr_q[fill] <= array_addr;
+            fill_way_q[fill] <= array_way;
+            fill_wb_q[fill] <= wb_free_index;
+            fill_victim_q[fill] <= array_state != coherence_pkg::Invalid;
+            fill_sent_q[fill] <= 1'b0;
+            fill_done_q[fill] <= 1'b0;
+            fill_error_q[fill] <= 1'b0;
+            fill_read_sent_q[fill] <= array_state == coherence_pkg::Invalid;
+            fill_read_done_q[fill] <= array_state == coherence_pkg::Invalid;
+            fill_sector_q[fill] <= 1'b0;
+            fill_dirty_q[fill] <= array_state == coherence_pkg::Modified;
+            fill_dirty_sectors_q[fill] <= '0;
+            fill_seats_q[fill] <= COMPLETIONS'(1) << decision_tid;
+            fill_write_q[fill] <= decision_opcode == coherence_pkg::DMAWrite;
+            fill_phase_q[fill] <= array_state == coherence_pkg::Invalid ? FillMemory : FillRecall;
+            recall_phase_q[fill] <= RecallOffer;
+          end
+          if (active && array_response && decision_join && fill_match_index == FillBits'(fill))
+            fill_seats_q[fill][CompletionBits'(decision_tid)] <= 1'b1;
+          if (fill_phase_q[fill] == FillReady && pin_valid &&
+              fill_seats_q[fill][CompletionBits'(decision_tid)])
+            fill_seats_q[fill][CompletionBits'(decision_tid)] <= 1'b0;
+          if (fill_phase_q[fill] == FillReady && fill_seats_q[fill] == 0)
+            fill_phase_q[fill] <= FillFree;
+          if (read_valid[Client] && read_ready[Client]) fill_read_sent_q[fill] <= 1'b1;
+          if (array_data_valid && array_data_token == TokenBits'(Client))
+            fill_read_done_q[fill] <= 1'b1;
+          if (probe_valid[Client] && probe_ready[Client]) recall_phase_q[fill] <= RecallWait;
+          if (i_r_valid && fill_r_ready[fill]) begin
+            if (reply.data_valid) begin
+              fill_dirty_q[fill] <= 1'b1;
+              for (int sector = 0; sector < LINE_BYTES / 32; sector++)
+              if ((LINE_BYTES == 64 && reply.addr[5]) == 1'(sector))
+                fill_dirty_sectors_q[fill][sector] <= 1'b1;
+            end
+            if (reply.error) fill_phase_q[fill] <= FillFatal;
+            else begin
+              if (reply.absorbed) begin
+                fill_ack_q[fill] <= absorbed_ack;
+                recall_phase_q[fill] <= RecallAck;
+              end else recall_phase_q[fill] <= RecallDone;
+            end
+          end
+          if (ack_valid[Client] && ack_ready[Client]) recall_phase_q[fill] <= RecallDone;
+          if (fill_phase_q[fill] == FillRecall && recall_phase_q[fill] == RecallDone) begin
+            if (LINE_BYTES == 64 && !fill_sector_q[fill]) begin
+              fill_sector_q[fill]  <= 1'b1;
+              recall_phase_q[fill] <= RecallOffer;
+            end else if (fill_read_done_q[fill]) fill_phase_q[fill] <= FillDetach;
+          end
+          if (fill_phase_q[fill] == FillDetach) fill_phase_q[fill] <= FillInvalidate;
+          if (fill_phase_q[fill] == FillInvalidate && update_ready[Client])
+            fill_phase_q[fill] <= FillInvalidateWait;
+          if (fill_phase_q[fill] == FillInvalidateWait && array_updated &&
+              array_updated_token == TokenBits'(Client))
+            fill_phase_q[fill] <= FillMemory;
+          if (fill_phase_q[fill] == FillMemory && fill_done_q[fill]) begin
+            fill_phase_q[fill] <= fill_error_q[fill] ? FillFree : FillInstall;
+            if (fill_error_q[fill]) fill_seats_q[fill] <= '0;
+          end
+          if (fill_phase_q[fill] == FillInstall && update_ready[Client])
+            fill_phase_q[fill] <= FillInstallWait;
+          if (fill_phase_q[fill] == FillInstallWait && array_updated &&
+              array_updated_token == TokenBits'(Client))
+            fill_phase_q[fill] <= FillReady;
         end
       end
     end
   end
 
-  (* keep = "true" *) wire probe_eligible = !i_fatal_stop && !o_fatal && phase_q == ProbeSend;
-  assign o_p_valid = !i_rst && probe_eligible;
-  assign o_p = probe_q;
-  assign probe_matches = reply.tid == probe_q.tid && reply.epoch == probe_q.epoch &&
-      reply.hart == 0 && reply.addr == probe_q.addr &&
-      ((probe_q.opcode == coherence_pkg::CheckSC && reply.opcode == coherence_pkg::CheckAck) ||
-       (probe_q.opcode != coherence_pkg::CheckSC &&
-        (reply.opcode == coherence_pkg::ProbeAck || reply.opcode == coherence_pkg::ProbeData)));
-  assign o_r_ready = active && phase_q == ProbeWait && probe_matches;
-  assign o_wa_valid = active && (phase_q == AbsorbAck || phase_q == PutAck);
-  assign o_wa = ack_q;
-
-  always_comb begin
-    result = '0;
-    result.q = demand.q;
-    result.addr = demand.addr;
-    result.tid = demand_tid_q;
-    result.data = image_q[(LINE_BYTES == 64 && demand.addr[5] ? 256 : 0)+:256];
-    result.error = grant_error_q;
-    result.opcode = coherence_pkg::GrantData;
-    case (demand.opcode)
-      coherence_pkg::GetS, coherence_pkg::LoadReserved: result.opcode = coherence_pkg::GrantS;
-      coherence_pkg::GetM, coherence_pkg::Atomic: result.opcode = coherence_pkg::GrantM;
-      coherence_pkg::StoreConditional:
-      result.opcode = sc_failed_q ? coherence_pkg::GrantFail : coherence_pkg::GrantM;
-      coherence_pkg::DMAWrite, coherence_pkg::Prefetch: begin
-        result.opcode = coherence_pkg::GrantAck;
-        result.data = '0;
-      end
-      default: begin
-      end
-    endcase
-    sector_mask  = put_active_q ? '1 : demand.mask;
-    sector_data  = put_active_q ? put_q.data : demand.wdata;
-    result_state = line_state_q;
-    if (put_active_q || demand.opcode == coherence_pkg::DMAWrite)
-      result_state = coherence_pkg::Modified;
+  for (genvar fill = 0; fill < FILLS; fill++) begin : gen_fill_memory
+    assign memory_valid[fill]   = active && fill_phase_q[fill] != FillFree && !fill_sent_q[fill];
+    assign memory_payload[fill] = {1'b0, fill_addr_q[fill], {(8 * LINE_BYTES) {1'b0}}, 5'(fill)};
   end
-
+  for (genvar wb = 0; wb < NUM_WB; wb++) begin : gen_wb_memory
+    assign memory_valid[FILLS+wb]   = active && wb_valid_q[wb] && wb_frozen_q[wb] && !wb_sent_q[wb];
+    assign memory_payload[FILLS+wb] = {1'b1, wb_addr_q[wb], wb_data_q[wb], 5'(16 + wb)};
+  end
+  always_comb begin
+    memory_pick  = '0;
+    memory_first = '0;
+    memory_found = 1'b0;
+    memory_after = 1'b0;
+    memory_ready = '0;
+    for (int source_idx = MemorySources - 1; source_idx >= 0; source_idx--) begin
+      if (memory_valid[source_idx]) begin
+        memory_found = 1'b1;
+        memory_first = MemorySelectBits'(source_idx);
+        if (source_idx >= int'(memory_next_q)) begin
+          memory_after = 1'b1;
+          memory_pick  = MemorySelectBits'(source_idx);
+        end
+      end
+      if (o_mem_req_valid && i_mem_req_ready &&
+          o_mem_req_id == (source_idx < FILLS ? 5'(source_idx) : 5'(16+source_idx-FILLS)))
+        memory_ready[source_idx] = 1'b1;
+    end
+    if (!memory_after) memory_pick = memory_first;
+  end
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      phase_q <= Idle;
-      put_active_q <= 1'b0;
-      put_q <= '0;
-      demand <= '0;
-      demand_tid_q <= '0;
-      write_turn_q <= 1'b1;
-      address_q <= '0;
-      victim_addr_q <= '0;
-      way_q <= '0;
-      line_state_q <= '0;
-      image_q <= '0;
-      victim_q <= 1'b0;
-      sector_q <= 1'b0;
-      check_done_q <= 1'b0;
-      sc_failed_q <= 1'b0;
-      grant_error_q <= 1'b0;
-      probe_data_q <= 1'b0;
-      partial_update_q <= 1'b0;
-      probe_q <= '0;
-      ack_q <= '0;
-      fill_valid_q <= 1'b0;
-      fill_sent_q <= 1'b0;
-      fill_done_q <= 1'b0;
-      fill_error_q <= 1'b0;
-      fill_data_q <= '0;
-      wb_valid_q <= '0;
-      wb_sent_q <= '0;
-      o_fatal <= 1'b0;
-      o_fatal_addr <= '0;
-      for (int slot = 0; slot < NUM_WB; slot++) begin
-        wb_addr_q[slot] <= '0;
-        wb_data_q[slot] <= '0;
-      end
+      memory_out_valid <= 1'b0;
+      memory_out <= '0;
+      memory_next_q <= '0;
     end else begin
-      if (o_mem_req_valid && i_mem_req_ready) begin
-        if (o_mem_req_write) wb_sent_q[WbBits'(o_mem_req_id)] <= 1'b1;
-        else fill_sent_q <= 1'b1;
+      if (o_mem_req_valid && i_mem_req_ready) memory_out_valid <= 1'b0;
+      if (!memory_out_valid && active && memory_found) begin
+        memory_out_valid <= 1'b1;
+        memory_out <= memory_payload[memory_pick];
+        if (memory_pick == MemorySelectBits'(MemorySources - 1)) memory_next_q <= '0;
+        else memory_next_q <= memory_pick + 1'b1;
       end
-      if (i_mem_resp_valid) begin
-        if (i_mem_resp_id[4]) begin
-          if (i_mem_resp_error) begin
-            o_fatal <= 1'b1;
-            o_fatal_addr <= wb_addr_q[WbBits'(i_mem_resp_id)];
-          end else begin
-            wb_valid_q[WbBits'(i_mem_resp_id)] <= 1'b0;
-            wb_sent_q[WbBits'(i_mem_resp_id)]  <= 1'b0;
-          end
-        end else begin
-          fill_data_q  <= i_mem_resp_data;
-          fill_error_q <= i_mem_resp_error;
-          fill_done_q  <= 1'b1;
+    end
+  end
+  assign o_mem_req_valid = memory_out_valid && !i_rst;
+  assign {o_mem_req_write, o_mem_req_addr, o_mem_req_data, o_mem_req_id} = memory_out;
+  assign o_mem_req_mask = {LINE_BYTES{o_mem_req_write}};
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      wb_valid_q  <= '0;
+      wb_frozen_q <= '0;
+      wb_sent_q   <= '0;
+      for (int wb = 0; wb < NUM_WB; wb++) wb_addr_q[wb] <= '0;
+    end else begin
+      for (int wb = 0; wb < NUM_WB; wb++) begin
+        if (o_mem_req_valid && i_mem_req_ready && o_mem_req_id == 5'(16 + wb))
+          wb_sent_q[wb] <= 1'b1;
+        if (i_mem_resp_valid && i_mem_resp_id == 5'(16 + wb) && !i_mem_resp_error) begin
+          wb_valid_q[wb]  <= 1'b0;
+          wb_frozen_q[wb] <= 1'b0;
+          wb_sent_q[wb]   <= 1'b0;
         end
       end
       if (active) begin
-        case (phase_q)
-          Idle: begin
-            if (work_valid && work_ready || i_w_valid && o_w_ready) begin
-              put_active_q <= i_w_valid && o_w_ready;
-              put_q <= put_in;
-              demand <= work;
-              demand_tid_q <= work_tid;
-              address_q <= o_w_ready ? put_in.addr : work.addr;
-              write_turn_q <= !o_w_ready;
-              fill_valid_q <= 1'b0;
-              fill_sent_q <= 1'b0;
-              fill_done_q <= 1'b0;
-              fill_error_q <= 1'b0;
-              check_done_q <= 1'b0;
-              sc_failed_q <= 1'b0;
-              grant_error_q <= 1'b0;
-              probe_data_q <= 1'b0;
-              victim_q <= 1'b0;
-              phase_q <= Lookup;
+        if (array_response && decision_fill && array_state != coherence_pkg::Invalid) begin
+          wb_valid_q[wb_free_index]  <= 1'b1;
+          wb_frozen_q[wb_free_index] <= 1'b0;
+          wb_sent_q[wb_free_index]   <= 1'b0;
+          wb_addr_q[wb_free_index]   <= array_addr;
+        end
+        for (int fill = 0; fill < FILLS; fill++) begin
+          for (int wb = 0; wb < NUM_WB; wb++)
+          if (fill_wb_q[fill] == WbBits'(wb) && wb_valid_q[wb] && !wb_frozen_q[wb]) begin
+            if (array_data_valid && array_data_token == TokenBits'(RESULTS + fill)) begin
+              for (int sector = 0; sector < LINE_BYTES / 32; sector++)
+              if (!fill_dirty_sectors_q[fill][sector])
+                wb_data_q[wb][sector*256+:256] <= array_data[sector*256+:256];
             end
+            for (int sector = 0; sector < LINE_BYTES / 32; sector++)
+            if (i_r_valid && fill_r_ready[fill] && reply.data_valid &&
+                  (LINE_BYTES == 64 && reply.addr[5]) == 1'(sector))
+              wb_data_q[wb][sector*256+:256] <= reply.data;
           end
-          Lookup: begin
-            if (retry_valid) phase_q <= Idle;
-            else if (!address_locked && array_req_ready) phase_q <= LookupWait;
+          if (fill_phase_q[fill] == FillDetach && wb_valid_q[fill_wb_q[fill]] &&
+              !wb_frozen_q[fill_wb_q[fill]]) begin
+            if (fill_dirty_q[fill]) wb_frozen_q[fill_wb_q[fill]] <= 1'b1;
+            else wb_valid_q[fill_wb_q[fill]] <= 1'b0;
           end
-          LookupWait:
-          if (array_resp_valid) begin
-            way_q <= array_way;
-            line_state_q <= array_state;
-            image_q <= array_data;
-            partial_update_q <= array_hit && !put_active_q &&
-                demand.opcode == coherence_pkg::DMAWrite;
-            victim_addr_q <= array_addr;
-            sector_q <= 1'b0;
-            if (retry_valid) begin
-              phase_q <= Idle;
-            end else if (!array_hit && put_active_q) begin
-              o_fatal <= 1'b1;
-              o_fatal_addr <= address_q;
-              phase_q <= Fatal;
-            end else if (array_hit) begin
-              phase_q <= Check;
-            end else begin
-              victim_q <= array_state != coherence_pkg::Invalid;
-              phase_q  <= Recall;
-            end
-          end
-          Recall: begin
-            // Dirty victims reserve credit before their first recall. A
-            // clean victim may acquire dirty data from its private owner.
-            if (line_state_q != coherence_pkg::Modified || wb_free) begin
-              fill_valid_q <= 1'b1;
-              if (!victim_q) phase_q <= FillWait;
-              else begin
-                probe_q <= '0;
-                probe_q.opcode <= coherence_pkg::ProbeRead;
-                probe_q.tid <= FillTid;
-                probe_q.addr <= victim_addr_q | ADDR_WIDTH'(int'(sector_q) * 32);
-                probe_q.reason <= coherence_pkg::Replace;
-                phase_q <= ProbeSend;
-              end
-            end
-          end
-          ProbeSend: if (i_p_ready) phase_q <= ProbeWait;
-          ProbeWait:
-          if (i_r_valid && o_r_ready) begin
-            if (reply.error) begin
-              if (!victim_q && !put_active_q && !reply.data_valid && !reply.absorbed &&
-                  reply.state != coherence_pkg::Modified &&
-                      line_state_q != coherence_pkg::Modified &&
-                  demand.opcode != coherence_pkg::GetM) begin
-                grant_error_q <= 1'b1;
-                phase_q <= Result;
-              end else begin
-                o_fatal <= 1'b1;
-                o_fatal_addr <= reply.addr;
-                phase_q <= Fatal;
-              end
-            end else begin
-              if (probe_q.opcode == coherence_pkg::CheckSC) begin
-                check_done_q <= 1'b1;
-                sc_failed_q  <= !reply.sc_valid;
-              end
-              if (reply.data_valid) begin
-                probe_data_q <= 1'b1;
-                image_q[(LINE_BYTES == 64 && reply.addr[5] ? 256 : 0)+:256] <= reply.data;
-                line_state_q <= coherence_pkg::Modified;
-              end
-              if (reply.absorbed) begin
-                ack_q.hart <= reply.hart;
-                ack_q.put_id <= reply.put_id;
-                ack_q.epoch <= reply.put_epoch;
-                ack_q.addr <= reply.addr;
-                ack_q.absorbed <= 1'b1;
-                ack_q.tid <= reply.tid;
-                ack_q.error <= 1'b0;
-                phase_q <= AbsorbAck;
-              end else phase_q <= ProbeNext;
-            end
-          end
-          AbsorbAck: if (i_wa_ready) phase_q <= ProbeNext;
-          ProbeNext: begin
-            if (victim_q) begin
-              if (Sectors == 2 && !sector_q) begin
-                sector_q <= 1'b1;
-                phase_q  <= Recall;
-              end else phase_q <= Detach;
-            end else if (probe_q.opcode == coherence_pkg::CheckSC) phase_q <= Check;
-            else if (demand.opcode == coherence_pkg::DMARead && !fill_valid_q && !probe_data_q)
-              phase_q <= Result;
-            else phase_q <= Apply;
-          end
-          Detach: begin
-            if (line_state_q != coherence_pkg::Modified || wb_free) begin
-              if (line_state_q == coherence_pkg::Modified) begin
-                wb_valid_q[wb_free_slot] <= 1'b1;
-                wb_sent_q[wb_free_slot]  <= 1'b0;
-                wb_addr_q[wb_free_slot]  <= victim_addr_q;
-                wb_data_q[wb_free_slot]  <= image_q;
-              end
-              victim_q <= 1'b0;
-              phase_q  <= InvalidateVictim;
-            end
-          end
-          InvalidateVictim: if (array_update_ready) phase_q <= InvalidateWait;
-          InvalidateWait: if (array_req_ready) phase_q <= FillWait;
-          FillWait:
-          if (fill_done_q) begin
-            if (fill_error_q && demand.opcode == coherence_pkg::GetM) begin
-              o_fatal <= 1'b1;
-              o_fatal_addr <= address_q;
-              phase_q <= Fatal;
-            end else if (fill_error_q) begin
-              grant_error_q <= 1'b1;
-              phase_q <= Result;
-            end else begin
-              image_q <= fill_data_q;
-              line_state_q <= coherence_pkg::Shared;
-              phase_q <= Check;
-            end
-          end
-          Check: begin
-            probe_q <= '0;
-            probe_q.tid <= active_tid;
-            probe_q.addr <= address_q;
-            probe_q.requester <= demand.q.src;
-            if (!put_active_q && demand.opcode == coherence_pkg::StoreConditional &&
-                !check_done_q) begin
-              probe_q.opcode <= coherence_pkg::CheckSC;
-              probe_q.reason <= coherence_pkg::Check;
-              probe_q.check_q <= demand.q;
-              probe_q.offset <= demand.offset;
-              probe_q.size <= demand.size;
-              phase_q <= ProbeSend;
-            end else if (put_active_q || sc_failed_q || demand.opcode == coherence_pkg::GetS ||
-                demand.opcode == coherence_pkg::LoadReserved || demand.opcode ==
-                    coherence_pkg::GetM ||
-                demand.opcode == coherence_pkg::Prefetch) begin
-              phase_q <= Apply;
-            end else begin
-              probe_q.opcode <= demand.opcode == coherence_pkg::DMAWrite ?
-                  coherence_pkg::ProbeInvalidate : coherence_pkg::ProbeRead;
-              probe_q.reason <= demand.opcode == coherence_pkg::DMAWrite ?
-                  coherence_pkg::Write : coherence_pkg::Read;
-              probe_q.check_q <= demand.q;
-              phase_q <= ProbeSend;
-            end
-          end
-          Apply: begin
-            if (put_active_q || demand.opcode == coherence_pkg::DMAWrite) begin
-              for (int byte_idx = 0; byte_idx < 32; byte_idx++) begin
-                if (sector_mask[byte_idx])
-                  image_q[(LINE_BYTES == 64 && address_q[5] ? 256 : 0)+8*byte_idx+:8] <=
-                      sector_data[8*byte_idx+:8];
-              end
-            end
-            line_state_q <= result_state;
-            phase_q <= Update;
-          end
-          Update: if (array_update_ready) phase_q <= UpdateWait;
-          UpdateWait:
-          if (array_req_ready) begin
-            if (put_active_q) begin
-              ack_q <= '0;
-              ack_q.hart <= put_q.hart;
-              ack_q.put_id <= put_q.put_id;
-              ack_q.epoch <= put_q.epoch;
-              ack_q.addr <= put_q.addr;
-              ack_q.tid <= PutTid;
-              phase_q <= PutAck;
-            end else phase_q <= Result;
-          end
-          Result: if (result_ready) phase_q <= Idle;
-          PutAck: if (i_wa_ready) phase_q <= Idle;
-          default: begin
-          end
-        endcase
+        end
       end
     end
   end
 
-  if (NUM_WB < 1 || NUM_WB > 16) begin : gen_invalid
-    initial $fatal(1, "coherence_home: invalid writeback capacity");
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      o_fatal <= 1'b0;
+      o_fatal_addr <= '0;
+    end else begin
+      for (int engine = 0; engine < RESULTS; engine++)
+      if (engine_fatal[engine]) begin
+        o_fatal <= 1'b1;
+        o_fatal_addr <= engine_addr[engine];
+      end
+      for (int put = 0; put < Puts; put++)
+      if (put_phase_q[put] == PutFatal) begin
+        o_fatal <= 1'b1;
+        o_fatal_addr <= put_addr[put];
+      end
+      for (int fill = 0; fill < FILLS; fill++)
+      if (fill_phase_q[fill] == FillFatal) begin
+        o_fatal <= 1'b1;
+        o_fatal_addr <= fill_old_addr_q[fill];
+      end
+      if (work_valid && active && work_error && work.opcode == coherence_pkg::GetM) begin
+        o_fatal <= 1'b1;
+        o_fatal_addr <= work.addr;
+      end
+      if (i_mem_resp_valid && i_mem_resp_id[4] && i_mem_resp_error) begin
+        o_fatal <= 1'b1;
+        o_fatal_addr <= wb_addr_q[WbBits'(i_mem_resp_id)];
+      end
+    end
+  end
+
+  for (genvar fill = 0; fill < FILLS; fill++) begin : gen_perf
+    assign filling[fill] = fill_phase_q[fill] != FillFree;
+    assign write_filling[fill] = filling[fill] && fill_write_q[fill];
+  end
+  always_comb begin
+    perf_maintenance = decision_engine ? engine_maintenance[ResultBits'(array_token)] : 1'b0;
+    for (int put = 0; put < Puts; put++)
+    if (array_token == TokenBits'(RESULTS + FILLS + put)) perf_maintenance = put_maintenance[put];
+    perf_lookup = active && array_response && !perf_maintenance &&
+        (!decision_engine || !engine_counted_q[ResultBits'(array_token)]);
+  end
+  always_ff @(posedge i_clk) begin
+    o_perf_events <= '0;
+    o_write_perf_events <= '0;
+    if (!i_rst) begin
+      o_perf_events.access <= perf_lookup;
+      o_perf_events.hit <= perf_lookup && array_hit;
+      o_perf_events.miss <= perf_lookup && !array_hit;
+      o_perf_events.miss_outstanding <= cache_perf_pkg::MissOutstandingBits'($countones(filling));
+      o_write_perf_events.write_fill_outstanding <= cache_perf_pkg::MissOutstandingBits'($countones(
+          write_filling
+      ));
+      o_perf_events.writeback <= |(memory_valid[FILLS+:NUM_WB] & memory_ready[FILLS+:NUM_WB]);
+      o_perf_events.slot_full_stall <= active && array_response && decision_retry && !retry_park;
+      o_perf_events.conflict_stall <= active && array_response && decision_blocked;
+      o_write_perf_events.write_fill <= active && array_response && decision_fill &&
+          decision_opcode == coherence_pkg::DMAWrite;
+    end
+  end
+
+  if (NUM_WB < 1 || NUM_WB > 16 || FILLS < 1 || FILLS > 4) begin : gen_invalid
+    initial $fatal(1, "coherence_home: invalid capacity");
   end
 `ifndef SYNTHESIS
-`ifdef FORMAL
-  always_comb
-`else
-  always @(posedge i_clk)
-`endif
-  begin
-    p_probe_valid_exact : assert (o_p_valid == (active && phase_q == ProbeSend));
-  end
-  always_ff @(posedge i_clk) begin
+  always_ff @(posedge i_clk)
     if (!i_rst) begin
-      if (i_r_valid && phase_q == ProbeWait) assert (probe_matches);
-      if (i_w_valid && o_w_ready) assert (put_in.hart == 0 && put_in.epoch == 0);
-      if (i_mem_resp_valid && i_mem_resp_id[4])
-        assert (wb_valid_q[WbBits'(i_mem_resp_id)] && wb_sent_q[WbBits'(i_mem_resp_id)]);
-      if (i_mem_resp_valid && !i_mem_resp_id[4])
-        assert (fill_valid_q && fill_sent_q && !fill_done_q && i_mem_resp_id == 0);
-      if (phase_q == Result) assert (!victim_q && !put_active_q);
-    end
-  end
-`endif
-`ifdef FORMAL
-`ifdef COHERENCE_HOME_WB_PROOF
-  logic f_past_valid = 1'b0;
-  (* anyconst *) logic [$clog2(LINE_BYTES)-1:0] f_byte;
-  always_ff @(posedge i_clk) begin
-    f_past_valid <= 1'b1;
-    if (!f_past_valid) assume (i_rst);
-    if (!i_rst && i_mem_resp_valid && i_mem_resp_id[4]) assume (int'(i_mem_resp_id[3:0]) < NUM_WB);
-    if (f_past_valid && !i_rst && !$past(i_rst)) begin
-      for (int slot = 0; slot < NUM_WB; slot++) begin
-        if ($past(
-                wb_valid_q[slot]
-            ) && !$past(
-                i_mem_resp_valid && i_mem_resp_id == (5'd16 | 5'(slot)) && !i_mem_resp_error
-            )) begin
-          assert (wb_valid_q[slot]);
-          assert (wb_addr_q[slot] == $past(wb_addr_q[slot]));
-          assert (wb_data_q[slot][8*f_byte+:8] == $past(wb_data_q[slot][8*f_byte+:8]));
-        end
-      end
-      if (address_locked && phase_q == Lookup) assert (!lookup_fire);
-    end
-  end
-`else
-  logic f_past_valid = 1'b0;
-  wire [7:0] f_reply_byte = reply.data[7:0];
-  wire f_reply_upper = LINE_BYTES == 64 && reply.addr[5];
-  logic f_read_install_needed, f_read_updated;
-  always_ff @(posedge i_clk) begin
-    if (i_rst || (work_valid && work_ready)) begin
-      f_read_install_needed <= 1'b0;
-      f_read_updated <= 1'b0;
-    end else begin
-      if (active && phase_q == LookupWait && array_resp_valid && !array_hit)
-        f_read_install_needed <= 1'b1;
-      if (active && i_r_valid && o_r_ready && reply.data_valid)
-        f_read_install_needed <= 1'b1;
-      if (active && phase_q == Update && array_update_ready) f_read_updated <= 1'b1;
-    end
-    if (f_past_valid && !i_rst && phase_q == Result && !grant_error_q &&
-        demand.opcode == coherence_pkg::DMARead && f_read_install_needed)
-      assert (f_read_updated);
-  end
-  always_ff @(posedge i_clk) begin
-    f_past_valid <= 1'b1;
-    if (!f_past_valid) assume (i_rst);
-    if (!i_rst) begin
-      if (i_w_valid) assume (put_in.hart == 0 && put_in.epoch == 0 && put_in.addr[4:0] == 0);
-      if (i_r_valid && phase_q == ProbeWait) assume (probe_matches);
+      assert ($onehot0({engine_r_ready, fill_r_ready}));
+      assert ((park & wake) == 0);
+      if (work_valid && active) assert (engine_idle[work_buffer]);
+      if (i_w_valid && o_w_ready) assert (incoming_put.hart == 0 && incoming_put.epoch == 0);
       if (i_mem_resp_valid) begin
         if (i_mem_resp_id[4]) begin
-          assume (int'(i_mem_resp_id[3:0]) < NUM_WB);
-          assume (wb_valid_q[WbBits'(i_mem_resp_id)] && wb_sent_q[WbBits'(i_mem_resp_id)]);
-        end else assume (fill_valid_q && fill_sent_q && !fill_done_q && i_mem_resp_id == 0);
+          assert (int'(i_mem_resp_id[3:0]) < NUM_WB);
+          assert (wb_valid_q[WbBits'(i_mem_resp_id)] && wb_sent_q[WbBits'(i_mem_resp_id)]);
+        end else begin
+          assert (int'(i_mem_resp_id) < FILLS);
+          assert (fill_phase_q[FillBits'(i_mem_resp_id)] != FillFree &&
+            fill_sent_q[FillBits'(i_mem_resp_id)] && !fill_done_q[FillBits'(i_mem_resp_id)]);
+        end
+      end
+      if (array_response && active && decision_fill) begin
+        assert (!array_exclude[array_way] && !decision_blocked && !victim_blocked);
+        if (array_state != coherence_pkg::Invalid) assert (wb_free);
+      end
+      for (int put = 0; put < Puts; put++) begin
+        if (array_response && array_token == TokenBits'(RESULTS + FILLS + put))
+          assert (put_phase_q[put] == PutDecision);
+        if (array_updated && array_updated_token == TokenBits'(RESULTS + FILLS + put))
+          assert (put_phase_q[put] == PutUpdateWait);
+      end
+      for (int fill = 0; fill < FILLS; fill++) begin
+        assert ($countones(fill_seats_q[fill]) <= 3);
+        if (array_data_valid && array_data_token == TokenBits'(RESULTS + fill)) begin
+          assert (fill_phase_q[fill] == FillRecall || fill_phase_q[fill] == FillFatal);
+          assert (wb_valid_q[fill_wb_q[fill]] && !wb_frozen_q[fill_wb_q[fill]]);
+        end
+        if (fill_phase_q[fill] == FillRecall || fill_phase_q[fill] == FillDetach)
+          assert (wb_valid_q[fill_wb_q[fill]] && !wb_frozen_q[fill_wb_q[fill]]);
+        for (int other = fill + 1; other < FILLS; other++)
+        if (fill_phase_q[fill] != FillFree && fill_phase_q[other] != FillFree) begin
+          assert (!same_block(fill_addr_q[fill], fill_addr_q[other]));
+          assert (!(same_set(
+              fill_addr_q[fill], fill_addr_q[other]
+          ) && fill_way_q[fill] == fill_way_q[other]));
+        end
       end
     end
+`endif
+`ifdef FORMAL
+  logic f_past_valid = 1'b0;
+  logic [31:0] f_memory_pending_q;
+  (* anyconst *) logic [OffsetBits-1:0] f_byte;
+`ifdef COHERENCE_HOME_COVER
+  logic [2:0] f_seen_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) f_seen_q <= '0;
+    else
+      f_seen_q <= f_seen_q | {(|wb_frozen_q), (|wb_sent_q),
+        (active && array_response && decision_blocked)};
+  end
+`endif
+  always_ff @(posedge i_clk) begin
+    f_past_valid <= 1'b1;
+    if (!f_past_valid) assume (i_rst);
+    if (f_past_valid && !$past(i_rst) && $past(i_fatal_stop)) assume (i_fatal_stop || i_rst);
+    if (!i_rst && i_w_valid)
+      assume (incoming_put.hart == 0 && incoming_put.epoch == 0 && incoming_put.addr[4:0] == 0);
+    if (i_rst) f_memory_pending_q <= '0;
+    else begin
+      if (o_mem_req_valid && i_mem_req_ready) begin
+        assert (!f_memory_pending_q[o_mem_req_id]);
+        f_memory_pending_q[o_mem_req_id] <= 1'b1;
+      end
+      if (i_mem_resp_valid) begin
+        assume (f_memory_pending_q[i_mem_resp_id]);
+        f_memory_pending_q[i_mem_resp_id] <= 1'b0;
+      end
+      for (int id = 0; id < 32; id++) begin
+        if (id < FILLS) begin
+          if (f_memory_pending_q[id])
+            assert (fill_phase_q[id] != FillFree && fill_sent_q[id] && !fill_done_q[id]);
+        end else if (id >= 16 && id < 16 + NUM_WB) begin
+          if (f_memory_pending_q[id])
+            assert (wb_valid_q[id-16] && wb_sent_q[id-16] && wb_frozen_q[id-16]);
+        end else assert (!f_memory_pending_q[id]);
+      end
+    end
+    if (!i_rst) begin
+      assert ((wb_frozen_q & ~wb_valid_q) == 0);
+      assert ((wb_sent_q & ~wb_frozen_q) == 0);
+      assert ((fill_done_q & ~fill_sent_q) == 0);
+`ifdef COHERENCE_HOME_CONTROL
+      assert ((fill_read_done_q & ~fill_read_sent_q) == 0);
+`endif
+      if (o_mem_req_valid) assert (o_mem_req_write == o_mem_req_id[4]);
+      if (o_mem_req_valid && o_mem_req_write) begin
+        assert (int'(o_mem_req_id[3:0]) < NUM_WB);
+        assert (wb_valid_q[WbBits'(o_mem_req_id)] && wb_frozen_q[WbBits'(o_mem_req_id)] &&
+            !wb_sent_q[WbBits'(o_mem_req_id)]);
+      end
+      if (o_mem_req_valid && !o_mem_req_write) begin
+        assert (int'(o_mem_req_id) < FILLS);
+        assert (fill_phase_q[FillBits'(o_mem_req_id)] != FillFree &&
+            !fill_sent_q[FillBits'(o_mem_req_id)] && !fill_done_q[FillBits'(o_mem_req_id)]);
+      end
+      for (int fill = 0; fill < FILLS; fill++) begin
+        if (fill_phase_q[fill] == FillInstall || fill_phase_q[fill] == FillInstallWait ||
+            fill_phase_q[fill] == FillReady)
+          assert (fill_sent_q[fill] && fill_done_q[fill] && !fill_error_q[fill]);
+        if (fill_phase_q[fill] == FillRecall || fill_phase_q[fill] == FillDetach ||
+            fill_phase_q[fill] == FillFatal) begin
+          assert (wb_valid_q[fill_wb_q[fill]] && !wb_frozen_q[fill_wb_q[fill]]);
+          for (int other = fill + 1; other < FILLS; other++)
+          if (fill_phase_q[other] == FillRecall || fill_phase_q[other] == FillDetach ||
+              fill_phase_q[other] == FillFatal)
+            assert (fill_wb_q[fill] != fill_wb_q[other]);
+        end
+      end
+    end
+    if (!i_rst) begin
+`ifndef COHERENCE_HOME_WB_PROOF
+      if (pin_valid) assert (array_hit && !decision_blocked);
+      if (array_claim && !array_hit) assert (!array_exclude[array_way]);
+      if (retry_valid) assert (!pin_valid);
+      if (result_valid && active && result_ready) assert (int'(result.tid) < COMPLETIONS);
+      for (int engine = 0; engine < RESULTS; engine++) begin
+        assert (int'(engine_tid[engine]) < COMPLETIONS);
+        for (int other = engine + 1; other < RESULTS; other++)
+        if (!engine_idle[engine] && !engine_idle[other])
+          assert (engine_tid[engine] != engine_tid[other]);
+      end
+      for (int fill = 0; fill < FILLS; fill++) begin
+        if (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady)
+          assert (fill_seats_q[fill] != 0);
+        for (int slot = 0; slot < COMPLETIONS; slot++)
+        if (fill_phase_q[fill] != FillFree && fill_seats_q[fill][slot])
+          assert (same_block(fill_addr_q[fill], waiting_addr[slot]));
+        for (int other = fill + 1; other < FILLS; other++)
+        if (fill_phase_q[fill] != FillFree && fill_phase_q[other] != FillFree)
+          assert ((fill_seats_q[fill] & fill_seats_q[other]) == 0);
+        if (fill_wake[fill]) assert (fill_seats_q[fill] != 0);
+        if (fill_phase_q[fill] == FillReady) assert (fill_add_seats[fill] == 0);
+      end
+      assert (o_perf_events.access == (o_perf_events.hit || o_perf_events.miss));
+      assert (!(o_perf_events.hit && o_perf_events.miss));
+      assert (o_perf_events.miss_outstanding <= FILLS);
+      assert (o_write_perf_events.write_fill_outstanding <= o_perf_events.miss_outstanding);
+`endif
+    end
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
-      if ($past(active && put_active_q && phase_q == LookupWait &&
-          array_resp_valid && !array_hit)) begin
-        assert (o_fatal && o_fatal_addr == $past(address_q));
+`ifdef COHERENCE_HOME_CONTROL
+      if ($past(f_local_fatal)) assert (o_fatal);
+`endif
+      for (int wb = 0; wb < NUM_WB; wb++) begin
+        if ($past(
+                wb_frozen_q[wb]
+            ) && !$past(
+                i_mem_resp_valid && i_mem_resp_id == 5'(16 + wb) && !i_mem_resp_error
+            )) begin
+          assert (wb_valid_q[wb] && wb_frozen_q[wb]);
+          assert (wb_addr_q[wb] == $past(wb_addr_q[wb]));
+`ifndef COHERENCE_HOME_CONTROL
+          assert (wb_data_q[wb][8*f_byte+:8] == $past(wb_data_q[wb][8*f_byte+:8]));
+`endif
+        end
       end
       if ($past(o_mem_req_valid && !i_mem_req_ready)) begin
         assert (o_mem_req_valid);
-        assert ({o_mem_req_addr, o_mem_req_id, o_mem_req_write} == $past(
-            {o_mem_req_addr, o_mem_req_id, o_mem_req_write}
+        assert ({o_mem_req_write, o_mem_req_addr, o_mem_req_id, o_mem_req_mask} == $past(
+            {o_mem_req_write, o_mem_req_addr, o_mem_req_id, o_mem_req_mask}
         ));
-      end
-      if (address_locked && phase_q == Lookup) assert (!lookup_fire);
-      for (int slot = 0; slot < NUM_WB; slot++) begin
-        if ($past(
-                wb_valid_q[slot]
-            ) && !$past(
-                i_mem_resp_valid && i_mem_resp_id == (5'd16 | 5'(slot)) && !i_mem_resp_error
-            )) begin
-          assert (wb_valid_q[slot]);
-          assert (wb_addr_q[slot] == $past(wb_addr_q[slot]));
-          assert (wb_data_q[slot][7:0] == $past(wb_data_q[slot][7:0]));
-        end
-      end
-      if ($past(active && phase_q == Apply)) begin
-        if ($past((put_active_q || demand.opcode == coherence_pkg::DMAWrite) && sector_mask[0]))
-          assert (image_q[($past(
-              LINE_BYTES == 64 && address_q[5]
-          ) ? 256 : 0)+:8] == $past(
-              sector_data[7:0]
-          ));
-          else assert (image_q[7:0] == $past(image_q[7:0]));
-      end
-      if ($past(
-              active && phase_q == ProbeWait && i_r_valid && o_r_ready &&
-          !reply.error && reply.data_valid
-          ))
-        assert (image_q[($past(f_reply_upper) ? 256 : 0)+:8] == $past(f_reply_byte));
-      if (o_wa_valid && ack_q.absorbed) begin
-        assert (phase_q == AbsorbAck);
-        assert (ack_q.tid == probe_q.tid && ack_q.addr == probe_q.addr);
-      end
-      if ($past(active && o_p_valid && !i_p_ready) && active) begin
-        assert (o_p_valid);
-        assert (o_p == $past(o_p));
-      end
-      if ($past(active && o_wa_valid && !i_wa_ready) && active) begin
-        assert (o_wa_valid);
-        assert (o_wa == $past(o_wa));
-      end
-      cover (phase_q == Result && result_ready && result.opcode == coherence_pkg::GrantM);
-      cover (o_wa_valid && ack_q.absorbed && i_wa_ready);
-    end
-  end
+`ifndef COHERENCE_HOME_CONTROL
+        assert (o_mem_req_data == $past(o_mem_req_data));
 `endif
+      end
+    end
 `ifdef COHERENCE_HOME_COVER
-  logic [6:0] f_wb_age = 0;
-  always_ff @(posedge i_clk) begin
-    if (i_rst || !wb_sent_q[0]) f_wb_age <= 0;
-    else if (f_wb_age != 127) f_wb_age <= f_wb_age + 1'b1;
     if (!i_rst) begin
-      cover (wb_valid_q[0]);
-      cover (wb_sent_q[0] && f_wb_age >= 3);
-      cover (address_locked && phase_q == Lookup && !lookup_fire);
 `ifdef COHERENCE_HOME_COVER_ERROR
-      cover (o_fatal && wb_valid_q[0] && wb_sent_q[0]);
+      cover (o_fatal && |wb_sent_q && &f_seen_q);
 `else
-      cover (f_past_valid && $past(!i_rst && wb_valid_q[0] && wb_sent_q[0] &&
-          i_mem_resp_valid && i_mem_resp_id == 16 && !i_mem_resp_error) && !wb_valid_q[0]);
+      cover (&f_seen_q && f_past_valid && $past(!i_rst && wb_sent_q[0] && i_mem_resp_valid &&
+                                                i_mem_resp_id == 16 && !i_mem_resp_error) &&
+             !wb_valid_q[0]);
 `endif
     end
+`endif
   end
 `endif
-`endif
+
 endmodule

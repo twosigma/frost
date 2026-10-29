@@ -227,7 +227,7 @@ allocated payload until reset or another allocation to that slot.
 Allocation marks an empty slot valid. Read eligibility compares each physical slot with pending, atomic and frozen
 writeback sectors. Circular priority selects a qualified slot and its address.
 There are no E grants, silent upgrades, sharer hints or stream prefetches.
-The L1D has eight read slots. The home has one fill and `L2_NUM_WB` victim
+The L1D has eight read slots. The home has four fills and `L2_NUM_WB` victim
 write slots. `L1D_NUM_MSHR`, `L2_NUM_MSHR`, `L2_NUM_WAITERS` and the prefetch
 parameters have no effect on the CPU hierarchy.
 
@@ -237,7 +237,7 @@ to S and an AMO require permission and count as misses. Repeated lookups,
 probes and maintenance do not add demand events. Outstanding misses include
 unresolved read slots, the pending store and the selected SC. L2 events
 count shared demand lookups and non-maintenance PutM lookups. Its fill count
-is at most one. A DMA write miss contributes a write-fill event; probe data
+is at most four. A DMA write miss contributes a write-fill event; probe data
 merges do not contribute another demand. Events are registered at their
 source and use the cache-counter ABI.
 
@@ -255,22 +255,34 @@ by ID and presents AXI read beats and write responses in burst order.
 Channel arbiters capture the payload with the selected input and hold both
 through a stalled presentation.
 
-The home admits nineteen requests with distinct identities. Eight
-result credits separate execution from grant delivery. A result credit returns
-on G acceptance; its identity and physical way pin last through U. Each
-request waits for U from earlier requests to the same 32-byte sector.
+The home admits nineteen requests with distinct identities. Eight engines
+share their image storage with the result credits. An engine hands its image
+to completion ownership before G. G acceptance returns that image credit;
+the identity and physical way pin last through U. Each request waits for U
+from earlier requests to the same 32-byte sector.
 
 `coherence_home_array` has separate tag-decision, data-read and masked-update
 ports. Each request carries a response token. Replacement state changes when
 the consumer claims a tag decision. Tag updates exclude an unresolved lookup
-of the same physical packed row. Data hazards cover the read sample and the
+of the same physical packed row. A pending tag update blocks further lookups
+to that row until the update is accepted. Data hazards cover the read sample and the
 write input registers through completion. Contending reads and writes alternate
 service while prior operations drain. Masked updates preserve sibling sectors.
 
-A request waiting for an available way releases its execution credit and retries.
-One array/probe worker executes eligible demands and ordinary PutM operations.
-PutM payload storage is independent of the result credits. Round-robin arbitration rotates eligible
-requesters, read responses and individual PutM slots. Probe replies have
+Four fill controls own memory-read IDs 0 through 3. Each fill has a primary
+request and two read waiter seats. Parked requests release their engine and
+image credit. A request waiting for a way or resource retries from completion
+metadata. Returned fills wake their waiters after installation. Waiters reenter
+array and probe service in sector order and sample the current resident bytes.
+A successful fill's way pin lasts until its final waiter takes a completion
+pin. A failed fill transfers its error to completion metadata and releases
+its control before the waiters dispatch in sector order.
+
+Two ordinary PutM controls have frozen payload storage and independent array
+service. Round-robin arbitration rotates tag decisions, row reads, masked
+updates, probes, acknowledgements and results. Resident data reads overlap
+probes. Dirty probe bytes override the resident snapshot regardless of arrival
+order; DMA byte enables apply after that merge. Probe replies have
 separate ownership from CPU reads, pending stores and PutM presentation.
 A pending probe reply prevents local grant selection until R acceptance.
 Grant application requires the private request endpoint to accept the grant.
@@ -283,13 +295,15 @@ without writing the data row.
 Every M sector has a resident L2 merge destination. Clean S and L0 copies
 may outlive an L2 replacement. Replacement recalls every victim sector
 without a directory hint, merges dirty replies, and freezes the complete
-victim image before reusing its row. Its physical address stays locked until
+victim image before reusing its row. A valid victim reserves one of two
+writeback slots before its first recall. Detached writes use memory IDs 16
+and 17. The physical address stays locked until
 a successful memory B response. A failed fill cannot expose the detached
 victim tag. Grants pin their destination through C and U. An absorbed PutM
 keeps its exact slot and epoch until WA cancellation. A completion with no
 pending cancellations becomes eligible for U on the following cycle. A fair
 arbiter holds each U presentation through acceptance. An ordinary PutM
-keeps the array/probe worker busy through WA. DMA reads collect dirty private data; DMA
+owns its control through WA. DMA reads collect dirty private data; DMA
 writes merge only their selected bytes after invalidation.
 An L2-resident DMA read with no dirty probe data returns the resident image
 without a data-array write. Fills and dirty replies reach the array before
@@ -300,8 +314,8 @@ before those byte enables apply. The update preserves bytes outside its mask
 and every byte in the sibling sector. A miss reads the victim and fills the
 requested row before applying the write. GrantAck has zero data.
 
-The home computes probe eligibility from its phase and fatal status before
-reset qualifies the probe-valid output. The L1D computes incoming invalidate
+The home arbitrates held probe packets from engines and fill controls.
+Reset and fatal status qualify probe service. The L1D computes incoming invalidate
 eligibility from its phase, probe occupancy, reply occupancy, opcode and fatal
 status. Probe validity and reset qualify that eligibility before it combines
 with the resident invalidation hold.

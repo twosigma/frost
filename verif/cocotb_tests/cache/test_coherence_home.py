@@ -44,6 +44,7 @@ class Home:
         self.memory: dict[int, int] = {}
         self.private: dict[int, tuple[int, int]] = {}
         self.frozen: dict[int, tuple[int, int]] = {}
+        self.accepted_puts: set[int] = set()
         self.probes: list[tuple[int, int, int, int]] = []
         self.transactions: list[tuple[int, int, int]] = []
         self.acks: list[tuple[int, ...]] = []
@@ -55,6 +56,8 @@ class Home:
         self.probe_errors: set[int] = set()
         self.responses: list[tuple[int, int, int, int, int, bool]] = []
         self.replies: list[tuple[int, int]] = []
+        self.arrivals: list[tuple[int, str, int]] = []
+        self.write_fills = 0
 
     def get(self, name: str) -> int:
         """Read a signal."""
@@ -80,6 +83,7 @@ class Home:
 
     async def reset(self) -> None:
         """Reset all ownership and wait for tag initialization."""
+        self.accepted_puts.clear()
         for signal in self.dut:
             if signal._name.startswith("i_"):
                 signal.value = 0
@@ -112,7 +116,20 @@ class Home:
                 self.responses.remove(memory)
                 if memory[5] and not memory[3]:
                     self.memory[memory[4]] = memory[2]
+            if self.get("array_data_valid"):
+                token = self.get("array_data_token")
+                engines = len(self.dut.engine_idle)
+                tid = (
+                    (self.get("engine_tid") >> (6 * token)) & 63
+                    if token < engines
+                    else 19 + token - engines
+                )
+                self.arrivals.append((self.cycle, "data", tid))
             if reply and self.get("o_r_ready"):
+                tid = unpack(
+                    reply[1], (2, 6, 1, 1, self.p, 2, 1, 1, 256, 1, 1, 1, 1, 1)
+                )[1]
+                self.arrivals.append((self.cycle, "reply", tid))
                 self.replies.pop(0)
             if self.get("o_p_valid") and self.get("i_p_ready"):
                 op, tid, epoch, address, requester, reason, q, offset, size = unpack(
@@ -124,6 +141,10 @@ class Home:
                     (s for s, item in self.frozen.items() if item[0] == address), None
                 )
                 absorbed = slot is not None and op != 2
+                if absorbed:
+                    assert slot not in self.accepted_puts, (
+                        "probe crossed an accepted Put"
+                    )
                 dirty = (state == 3 or absorbed) and op != 2
                 if absorbed:
                     assert slot is not None
@@ -157,6 +178,7 @@ class Home:
                 if ack[1] in self.frozen:
                     assert self.frozen[ack[1]][0] == ack[3]
                     del self.frozen[ack[1]]
+                self.accepted_puts.discard(ack[1])
                 if ack[4]:
                     if self.frozen:
                         slot, (address, data) = next(iter(self.frozen.items()))
@@ -171,6 +193,8 @@ class Home:
                     else:
                         drop_put = True
             if self.get("i_w_valid") and self.get("o_w_ready"):
+                packet = unpack(self.get("i_w"), (1, 1, 1, self.p, 256, 1))
+                self.accepted_puts.add(packet[1])
                 drop_put = True
             if self.get("o_mem_req_valid") and self.get("i_mem_req_ready"):
                 address = self.get("o_mem_req_addr")
@@ -194,6 +218,8 @@ class Home:
                 )
             await self.set(i_clk=1)
             await self.set(i_clk=0)
+            if not self.get("i_rst"):
+                self.write_fills += (self.get("o_write_perf_events") >> 7) & 1
             if next_put is not None:
                 await self.set(i_w_valid=1, i_w=next_put)
             elif drop_put:
@@ -204,7 +230,12 @@ class Home:
         self, op: int, address: int, data: int = 0, mask: int = 0, slot: int = 0
     ) -> tuple[int, int]:
         """Encode hart or agent requests with disjoint source identities."""
-        q = pack((2, 2), (2, 3), (4, 9), (1, 0)) if op in (7, 8) else slot << 1
+        if op in (7, 8):
+            q = pack((2, 2), (2, 3), (4, 9 + slot), (1, 0))
+        elif op in (5, 6):
+            q = pack((2, 0), (2, op - 4), (4, slot), (1, 0))
+        else:
+            q = slot << 1
         return q, pack(
             (4, op),
             (9, q),
@@ -608,7 +639,7 @@ async def missing_put_destination_preserves_dirty_ownership(dut: Any) -> None:
     for _ in range(10):
         await b.tick()
         assert not b.get("o_wa_valid") and not b.get("o_w_ready")
-        assert int(dut.put_q.value) == payload
+        assert int(dut.put_q[0].value) == payload
 
 
 @cocotb.test()
@@ -635,6 +666,7 @@ async def full_result_pool_keeps_both_put_slots_moving(dut: Any) -> None:
         raise AssertionError("eight result images did not fill")
     assert b.get("o_g_valid")
     held = b.get("o_g")
+    await b.set(i_wa_ready=0)
     for slot, (address, data) in enumerate(puts):
         await b.set(
             i_w_valid=1,
@@ -642,6 +674,15 @@ async def full_result_pool_keeps_both_put_slots_moving(dut: Any) -> None:
         )
         await b.wait("o_w_ready")
         await b.tick()
+    assert b.accepted_puts == {0, 1}
+    await b.wait("o_wa_valid")
+    held_ack = b.get("o_wa")
+    for _ in range(20):
+        await b.tick()
+        assert b.get("o_wa_valid") and b.get("o_wa") == held_ack
+        assert b.get("o_g_valid") and b.get("o_g") == held
+    await b.set(i_wa_ready=1)
+    for slot, (address, data) in enumerate(puts):
         for _ in range(100):
             if any(
                 ack[1] == slot and ack[3] == address and not ack[4] for ack in b.acks
@@ -732,3 +773,348 @@ async def fatal_and_reset_with_held_results_and_dirty_victim(dut: Any) -> None:
     assert not b.get("o_g_valid") and not b.get("o_u_valid")
     assert not int(dut.wb_valid_q.value)
     assert await b.read(base + b.line) == b.expected(base + b.line)
+
+
+@cocotb.test()
+async def parked_fills_release_engines_and_reenter_under_miss_pressure(
+    dut: Any,
+) -> None:
+    """Four memory waits leave resident service and returned fills eligible."""
+    b = Home(dut)
+    await b.reset()
+    base = 0x80000000
+    first = await b.start(0, base)
+    await b.finish(first)
+    b.read_delay = 400
+    addresses = [base + (index + 1) * b.line for index in range(8)]
+    for index, address in enumerate(addresses):
+        await b.submit(0, address, slot=index)
+    for _ in range(160):
+        if len([t for t in b.transactions if not t[1]]) >= 5:
+            break
+        await b.tick()
+    assert len([t for t in b.transactions if not t[1]]) == 5
+    assert not b.get("o_g_valid")
+    await b.submit(5, base)
+    resident = await b.take_grant()
+    assert resident[3] == base and resident[4] == b.expected(base)
+    await b.complete(resident)
+    received = set()
+    for _ in addresses:
+        grant = await b.take_grant()
+        assert grant[3] in addresses and grant[3] not in received
+        assert grant[4] == b.expected(grant[3]) and not grant[5]
+        received.add(grant[3])
+        await b.complete(grant)
+    assert received == set(addresses)
+
+
+@cocotb.test()
+async def ready_reader_samples_after_older_unseated_writer(dut: Any) -> None:
+    """Reenter a seated reader after the earlier writer releases its sector."""
+    b = Home(dut)
+    await b.reset()
+    base = 0x80000000
+    b.read_delay = 150
+    await b.submit(0, base, slot=0)
+    await b.tick(25)
+    await b.submit(1, base, slot=1)
+    await b.submit(5, base)
+    await b.tick(15)
+    assert any(int(seats.value).bit_count() == 2 for seats in dut.fill_seats_q)
+    reader = await b.take_grant()
+    assert reader[0] == 0 and reader[4] == b.expected(base)
+    await b.complete(reader)
+    writer = await b.take_grant()
+    assert writer[0] == 2
+    changed = int.from_bytes(
+        bytes((index * 29 + 7) & 255 for index in range(32)), "little"
+    )
+    b.private[base] = (3, changed)
+    await b.tick(20)
+    assert not b.get("o_g_valid")
+    await b.complete(writer, written=True)
+    successor = await b.take_grant()
+    assert successor[0] == 3 and successor[4] == changed
+    await b.complete(successor)
+
+
+@cocotb.test()
+async def dirty_reply_overrides_each_baseline_arrival_order(dut: Any) -> None:
+    """Dirty bytes win before, after and on the resident data-response edge."""
+    observed = set()
+    for delay in range(12):
+        b = Home(dut)
+        await b.reset()
+        address = 0x80000000 + (32 if b.line == 64 else 0)
+        warm = await b.start(0, address)
+        await b.finish(warm)
+        changed = int.from_bytes(
+            bytes((index * 31 + delay) & 255 for index in range(32)), "little"
+        )
+        b.private[address] = (3, changed)
+        b.probe_delay = delay
+        b.arrivals.clear()
+        grant = await b.start(7, address)
+        assert grant[4] == changed and not grant[5]
+        events = {kind: cycle for cycle, kind, tid in b.arrivals if tid == grant[2]}
+        assert "data" in events and "reply" in events
+        observed.add(
+            (events["reply"] > events["data"]) - (events["reply"] < events["data"])
+        )
+        await b.finish(grant)
+    assert observed == {-1, 0, 1}
+
+
+@cocotb.test()
+async def dirty_probe_error_preserves_accepted_image(dut: Any) -> None:
+    """Fatal handling owns returned dirty bytes while the baseline read drains."""
+    b = Home(dut)
+    await b.reset()
+    address = 0x80000000
+    warm = await b.start(0, address)
+    await b.finish(warm)
+    changed = int.from_bytes(
+        bytes((index * 13 + 9) & 255 for index in range(32)), "little"
+    )
+    b.private[address] = (3, changed)
+    b.probe_errors.add(address)
+    b.probe_delay = 0
+    await b.submit(7, address)
+    await b.wait("o_fatal")
+    assert b.get("o_fatal_addr") == address
+    owners = b.get("engine_fatal")
+    assert owners.bit_count() == 1
+    engine = owners.bit_length() - 1
+    for _ in range(20):
+        assert (b.get("engine_image") >> (256 * engine)) & ((1 << 256) - 1) == changed
+        assert not b.get("o_g_valid")
+        await b.tick()
+
+
+@cocotb.test()
+async def returned_fills_install_during_same_set_retries(dut: Any) -> None:
+    """Install returned fills while misses repeatedly contest the same set."""
+    b = Home(dut)
+    await b.reset()
+    base = 0x80000000
+    stride = 4 * b.line
+    b.read_delay = 500
+    addresses = [base + i * stride for i in range(4)]
+    for i, address in enumerate(addresses):
+        await b.submit(7, address, slot=i)
+    await b.tick(150)
+    assert len(b.transactions) == 4
+    extras = [base + i * stride for i in range(4, 7)]
+    for op, address in zip((0, 5, 6), extras, strict=True):
+        await b.submit(op, address)
+    grants = set()
+    for _ in addresses + extras:
+        grant = await b.take_grant()
+        assert grant[3] not in grants and grant[4] == b.expected(grant[3])
+        grants.add(grant[3])
+        await b.complete(grant)
+    assert grants == set(addresses + extras)
+
+
+@cocotb.test()
+async def victim_claim_and_ordinary_put_are_exclusive(dut: Any) -> None:
+    """Resolve a victim claim against a Put on either sector of that block."""
+    for sector in range(len(dut.i_mem_resp_data) // 256):
+        b = Home(dut)
+        await b.reset()
+        base = 0x80000000
+        for i in range(4):
+            await b.read(base + i * 4 * b.line)
+        target = base + 16 * b.line
+        await b.submit(0, target)
+        for _ in range(100):
+            if int(dut.array.phase_q.value) == 4:
+                break
+            await b.tick()
+        else:
+            raise AssertionError("no pre-claim victim decision")
+        way = int(dut.array.selected.value)
+        entry = int(dut.array.tags_q[way].value)
+        low_bits = (b.line.bit_length() - 1) + len(dut.array.set_q)
+        address = ((entry & ((1 << (b.p - low_bits)) - 1)) << low_bits) + 32 * sector
+        changed = (1 << 255) | 0x13579
+        b.frozen[0] = (address, changed)
+        await b.set(
+            i_w_valid=1,
+            i_w=pack((1, 0), (1, 0), (1, 0), (b.p, address), (256, changed), (1, 0)),
+        )
+        # Capture the W key before the array's claim edge.
+        await b.tick()
+        assert b.get("array_response") and b.get("put_selected_q")
+        assert not (b.get("decision_fill") and b.get("o_w_ready"))
+        grant = await b.take_grant()
+        assert grant[3] == target and not grant[5]
+        await b.complete(grant)
+        for _ in range(200):
+            if not b.frozen:
+                break
+            await b.tick()
+        assert not b.frozen
+        assert await b.read(address) == changed
+
+
+@cocotb.test()
+async def failed_fills_release_resources_before_ordered_error_waiters(dut: Any) -> None:
+    """Release failed fills while younger error completions await older writers."""
+    b = Home(dut)
+    await b.reset()
+    addresses = [0x80000000 + i * b.line for i in range(4)]
+    b.read_delay = 300
+    b.errors.update(addresses)
+    for i, address in enumerate(addresses):
+        await b.submit(0, address, slot=2 * i)
+        await b.tick(25)
+        await b.submit(8, address, data=0x7654321 + i, mask=0xF, slot=i)
+        await b.submit(0, address, slot=2 * i + 1)
+    await b.tick(100)
+    assert sum(int(seats.value).bit_count() for seats in dut.fill_seats_q) == 8
+    b.errors.clear()
+    received: set[int] = set()
+    for _ in range(12):
+        grant = await b.take_grant()
+        assert grant[1] not in received
+        received.add(grant[1])
+        if grant[0] == 4:
+            assert not grant[5]
+        else:
+            assert grant[5]
+        await b.complete(grant)
+    for i, address in enumerate(addresses):
+        assert await b.read(address) & 0xFFFFFFFF == 0x7654321 + i
+
+
+@cocotb.test()
+async def dirty_victim_error_preserves_accepted_image(dut: Any) -> None:
+    """Keep a failed dirty recall's bytes while the victim baseline drains."""
+    b = Home(dut)
+    await b.reset()
+    base = 0x80000000
+    changed = (1 << 255) | 0x2468ABCD
+    for i in range(4):
+        address = base + i * 4 * b.line
+        await b.read(address)
+        b.private[address] = (3, changed)
+        b.probe_errors.add(address)
+    b.probe_delay = 0
+    await b.submit(0, base + 16 * b.line)
+    await b.wait("o_fatal")
+    victim = b.get("o_fatal_addr")
+    slot = next(
+        i
+        for i, addr in enumerate(dut.wb_addr_q)
+        if b.get("wb_valid_q") & (1 << i) and int(addr.value) == victim
+    )
+    for _ in range(24):
+        assert int(dut.wb_data_q[slot].value) & ((1 << 256) - 1) == changed
+        assert not b.get("o_g_valid")
+        await b.tick()
+
+
+@cocotb.test()
+async def retried_dma_write_counts_its_fill_allocation(dut: Any) -> None:
+    """Count a write fill after read misses occupy every fill control."""
+    b = Home(dut)
+    await b.reset()
+    base = 0x80000000
+    b.read_delay = 500
+    for slot in range(3):
+        await b.submit(7, base + slot * b.line, slot=slot)
+    await b.submit(0, base + 3 * b.line)
+    for _ in range(150):
+        if len(b.transactions) == 4:
+            break
+        await b.tick()
+    assert len(b.transactions) == 4
+    address = base + 4 * b.line
+    await b.submit(8, address, 0xAABBCCDD, 15, slot=3)
+    await b.tick(100)
+    assert len(b.transactions) == 4 and b.write_fills == 0
+    seen = set()
+    for _ in range(5):
+        grant = await b.take_grant()
+        assert not grant[5] and grant[3] not in seen
+        seen.add(grant[3])
+        await b.complete(grant)
+    assert b.write_fills == 1
+    expected = (b.expected(address) & ~0xFFFFFFFF) | 0xAABBCCDD
+    assert await b.read(address, 7) == expected
+
+
+@cocotb.test()
+async def fill_response_crosses_captured_victim_invalidation(dut: Any) -> None:
+    """Hold a tag-only invalidation payload across the memory response."""
+    b = Home(dut)
+    await b.reset()
+    base = 0x80000000
+    stride = 4 * b.line
+    for index in range(4):
+        grant = await b.start(0, base + index * stride)
+        await b.finish(grant)
+    b.read_delay = 10000
+    address = base + 4 * stride
+    await b.submit(0, address)
+    for _ in range(200):
+        if (
+            any(int(phase.value) == 3 for phase in dut.fill_phase_q)
+            and not int(dut.update_arbiter.selected_q.value)
+            and b.responses
+        ):
+            break
+        await b.tick()
+    else:
+        raise AssertionError("victim invalidation capture was not reached")
+    response = next(r for r in b.responses if not r[5] and r[4] == address)
+    b.responses.remove(response)
+    b.responses.append((b.cycle, *response[1:]))
+    await b.tick()
+    assert int(dut.update_arbiter.selected_q.value)
+    grant = await b.take_grant()
+    assert not grant[5] and grant[4] == b.expected(address)
+    await b.complete(grant)
+
+
+@cocotb.test()
+async def concurrent_sibling_updates_survive_replacement(dut: Any) -> None:
+    """Merge both dirty sectors while their independent completion pins overlap."""
+    b = Home(dut)
+    if b.line != 64:
+        return
+    await b.reset()
+    base = 0x80000000
+    changed = [
+        int.from_bytes(bytes((i * 19 + sector * 61) & 255 for i in range(32)), "little")
+        for sector in range(2)
+    ]
+    for sector in range(2):
+        grant = await b.start(1, base + sector * 32)
+        b.private[base + sector * 32] = (3, changed[sector])
+        await b.finish(grant, written=True)
+    b.probe_delay = 9
+    masks = (0x0000FFFF, 0xFF0000FF)
+    values = (int.from_bytes(bytes(range(32)), "little"), (1 << 256) - 1)
+    for sector in range(2):
+        await b.submit(
+            8, base + sector * 32, values[sector], masks[sector], slot=sector
+        )
+        for byte in range(32):
+            if masks[sector] & (1 << byte):
+                changed[sector] &= ~(255 << (byte * 8))
+                changed[sector] |= ((values[sector] >> (byte * 8)) & 255) << (byte * 8)
+    grants = [await b.take_grant(), await b.take_grant()]
+    assert {g[3] for g in grants} == {base, base + 32}
+    assert not any(g[5] for g in grants)
+    assert int(dut.completions.pin_valid_q.value).bit_count() == 2
+    await b.complete(grants[1])
+    await b.tick(20)
+    await b.complete(grants[0])
+    for index in range(1, 13):
+        grant = await b.start(0, base + index * b.line * 4)
+        await b.finish(grant)
+    await b.tick(b.write_delay + 10)
+    assert b.memory[base] == changed[0] | (changed[1] << 256)

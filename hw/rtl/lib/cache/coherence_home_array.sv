@@ -68,6 +68,12 @@ module coherence_home_array #(
     input logic [8*LINE_BYTES-1:0] i_update_data,
     input logic [TOKEN_BITS-1:0] i_update_token,
     output logic o_updated,
+`ifdef COHERENCE_HOME_CONTROL
+    input logic [(1<<TOKEN_BITS)-1:0] i_tag_owner,
+    input logic [(1<<TOKEN_BITS)-1:0][ADDR_WIDTH-1:0] i_tag_address,
+    input logic [(1<<TOKEN_BITS)-1:0] i_read_owner,
+    input logic [(1<<TOKEN_BITS)-1:0] i_update_owner,
+`endif
     output logic [TOKEN_BITS-1:0] o_updated_token
 );
   localparam int unsigned TagBits = ADDR_WIDTH - SetBits - OffsetBits;
@@ -162,7 +168,7 @@ module coherence_home_array #(
   assign o_req_ready = !i_rst && (phase_q == Idle ||
       (phase_q == Reply && i_resp_ready &&
        !(i_resp_claim && set_q == tag_raddr))) &&
-      !(update_fire && i_update_tag &&
+      !(i_update_valid && i_update_tag &&
         (tag_waddr >> TagGroupBits) == (tag_raddr >> TagGroupBits));
   assign request_fire = i_req_valid && o_req_ready;
   assign o_resp_valid = !i_rst && phase_q == Reply;
@@ -371,6 +377,33 @@ module coherence_home_array #(
     end
   end
 `endif
+`ifdef COHERENCE_HOME_CONTROL
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      if (phase_q == Tags || phase_q == Select || phase_q == Reply) begin
+        assert (i_tag_owner[token_q]);
+        assert ((o_query_addr >> OffsetBits) == (i_tag_address[token_q] >> OffsetBits));
+      end
+      if (request_fire) assert (!i_tag_owner[i_req_token]);
+      if (read_fire) assert (!i_read_owner[i_read_token]);
+      if (update_fire) assert (!i_update_owner[i_update_token]);
+      for (int stage = 0; stage <= DATA_READ_LATENCY; stage++) begin
+        if (read_valid_q[stage]) begin
+          assert (i_read_owner[read_token_q[stage]]);
+          for (int other = stage + 1; other <= DATA_READ_LATENCY; other++)
+          if (read_valid_q[other]) assert (read_token_q[stage] != read_token_q[other]);
+        end
+      end
+      for (int stage = 0; stage <= DATA_WRITE_LATENCY; stage++) begin
+        if (write_valid_q[stage]) begin
+          assert (i_update_owner[write_token_q[stage]]);
+          for (int other = stage + 1; other <= DATA_WRITE_LATENCY; other++)
+          if (write_valid_q[other]) assert (write_token_q[stage] != write_token_q[other]);
+        end
+      end
+    end
+  end
+`else
 `ifdef FORMAL
   logic f_past_valid = 1'b0;
   (* anyconst *) logic [RowBits-1:0] f_row;
@@ -385,6 +418,8 @@ module coherence_home_array #(
   logic [7:0] f_expected_q[DATA_READ_LATENCY+1];
   localparam int unsigned ServiceBound = DATA_READ_LATENCY + DATA_WRITE_LATENCY + 5;
   logic [$clog2(ServiceBound+1)-1:0] f_read_wait_q, f_write_wait_q;
+  localparam int unsigned TagServiceBound = TAG_READ_LATENCY + 4;
+  logic [$clog2(TagServiceBound+1)-1:0] f_tag_wait_q;
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
     if (!f_past_valid) assume (i_rst);
@@ -419,6 +454,16 @@ module coherence_home_array #(
       assert (int'(f_read_wait_q) < ServiceBound);
       assert (int'(f_write_wait_q) < ServiceBound);
     end
+    if (i_rst || !o_init_done || !i_update_valid || !i_update_tag ||
+        |i_update_mask || !i_resp_ready ||
+        (f_past_valid && i_update_addr != $past(
+            i_update_addr
+        )))
+      f_tag_wait_q <= '0;
+    else begin
+      f_tag_wait_q <= update_fire ? '0 : f_tag_wait_q + 1'b1;
+      assert (int'(f_tag_wait_q) < TagServiceBound);
+    end
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
       if ($past(o_resp_valid && !i_resp_ready)) begin
         assert (o_resp_valid);
@@ -431,5 +476,6 @@ module coherence_home_array #(
       cover (o_read_valid && o_updated && o_resp_valid);
     end
   end
+`endif
 `endif
 endmodule

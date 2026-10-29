@@ -27,6 +27,9 @@ module coherence_d_arbiter #(
     input logic [PORTS-1:0][WIDTH-1:0] i_payload,
     output logic o_valid,
     input logic i_ready,
+`ifdef COHERENCE_HOME_CONTROL
+    input logic i_service_stop,
+`endif
     output logic [WIDTH-1:0] o_payload
 );
   logic selected_q, found, after_next;
@@ -78,7 +81,16 @@ module coherence_d_arbiter #(
       assert (o_payload == i_payload[selected_port_q]);
   end
 `endif
+`ifdef COHERENCE_HOME_CONTROL
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      assert (int'(selected_port_q) < PORTS && int'(next_q) < PORTS);
+      if (!i_service_stop && selected_q) assert (i_valid[selected_port_q]);
+    end
+  end
+`endif
 `ifdef FORMAL
+`ifndef COHERENCE_HOME_CONTROL
   logic f_past_valid = 1'b0;
   logic [PortBits-1:0] f_pick;
   always_comb begin
@@ -121,5 +133,6 @@ module coherence_d_arbiter #(
       assert ((|(i_valid & o_ready)) == (o_valid && i_ready));
     end
   end
+`endif
 `endif
 endmodule

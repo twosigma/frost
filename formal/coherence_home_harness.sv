@@ -33,7 +33,7 @@ module coherence_home_harness #(
   coh_g_t grant;
   coh_c_t completion;
   logic mem_valid, mem_write, read_pending, b_pending, response_valid;
-  logic [4:0] mem_id, b_id, response_id;
+  logic [4:0] mem_id, b_id, response_id, read_id;
   logic [6:0] b_age;
   logic response_error;
   always_comb begin
@@ -44,13 +44,15 @@ module coherence_home_harness #(
     demand.addr = number_q == 1 ? 32'd128 : 32'd0;
     demand.mask = '1;
     response_valid = read_pending || b_pending && b_age == 50;
-    response_id = read_pending ? 5'd0 : b_id;
+    response_id = read_pending ? read_id : b_id;
     response_error = !read_pending && FAIL_B;
   end
   coherence_home #(
       .COMPLETIONS(2),
       .RESULTS(2),
-      .CACHE_BYTES(128),
+      .FILLS(2),
+      .LINE_BYTES(32),
+      .CACHE_BYTES(64),
       .WAYS(1),
       .ULTRA(0)
   ) home (
@@ -90,7 +92,7 @@ module coherence_home_harness #(
       .o_mem_req_id(mem_id),
       .i_mem_resp_valid(response_valid),
       .i_mem_resp_id(response_id),
-      .i_mem_resp_data(512'b0),
+      .i_mem_resp_data('0),
       .i_mem_resp_error(response_error),
       .o_fatal(),
       .o_fatal_addr()
@@ -135,6 +137,7 @@ module coherence_home_harness #(
       end
       if (c_valid && c_ready) c_valid <= 0;
       read_pending <= mem_valid && !mem_write;
+      if (mem_valid && !mem_write) read_id <= mem_id;
       if (mem_valid && mem_write) begin
         b_pending <= 1;
         b_id <= mem_id;

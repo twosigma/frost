@@ -190,7 +190,7 @@ FORMAL_TARGETS = [
         "coherence_home.sby",
         "The coherent home preserves pins, dirty replies, and victim ownership.",
         tasks=(
-            "coh_home_bmc",
+            "coh_home_control_prove",
             "coh_home_wb_prove",
             "coh_home_victim_cover",
             "coh_home_error_cover",
@@ -200,6 +200,15 @@ FORMAL_TARGETS = [
         "coherence_dma_ingress.sby",
         "DMA issue order, opaque identities, independent completion, and reset ownership.",
         tasks=("coh_dma_ingress_prove", "coh_dma_ingress_cover"),
+    ),
+    FormalTarget(
+        "coherence_home_engine.sby",
+        "Resident image merges, independent probe/data arrival, and held service payloads.",
+        tasks=(
+            "coh_home_engine_prove",
+            "coh_home_engine64_prove",
+            "coh_home_engine_cover",
+        ),
     ),
     FormalTarget(
         "coherence_home_array.sby",
@@ -925,6 +934,9 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("coh_home_engine_prove", "Resident image values and held service payloads."),
+    ("coh_home_engine64_prove", "Sector image values in a two-sector resident line."),
+    ("coh_home_engine_cover", "Coincident dirty reply/data and failed SC completion."),
     ("coh_dma_ingress_prove", "DMA credits, payloads, and identity conservation."),
     ("coh_dma_ingress_cover", "Full DMA admission and delayed error completion."),
     ("pc_tage_events_prove", "Unbounded history event equivalence"),
@@ -1032,7 +1044,7 @@ SBY_TASKS = [
         "Completion identity, pin lifetime, and predecessor order.",
     ),
     ("coh_completions_cover", "Concurrent results and independent release."),
-    ("coh_home_bmc", "Coherent home completion, merge, and victim locks."),
+    ("coh_home_control_prove", "Composed home ownership and independent memory debt."),
     ("coh_home_array_prove", "Independent L2 ports preserve watched bytes."),
     *[
         (
