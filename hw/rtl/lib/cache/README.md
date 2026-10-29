@@ -259,6 +259,9 @@ victim tag. Grants pin their destination through C and U. An absorbed PutM
 keeps its exact slot and epoch until WA cancellation, and an ordinary PutM
 keeps the home busy through WA. DMA reads collect dirty private data; DMA
 writes merge only their selected bytes after invalidation.
+An L2-resident DMA read with no dirty probe data returns the resident image
+without a data-array write. Fills and dirty replies reach the array before
+the home grants the read.
 
 The home computes probe eligibility from its phase and fatal status before
 reset qualifies the probe-valid output. The L1D computes incoming invalidate

@@ -114,6 +114,7 @@ module coherence_home #(
   logic [1:0] array_state, line_state_q;
   logic [8*LINE_BYTES-1:0] array_data, image_q;
   logic victim_q, sector_q, check_done_q, sc_failed_q, grant_error_q;
+  logic probe_data_q;
   logic fill_valid_q, fill_sent_q, fill_done_q, fill_error_q;
   logic [8*LINE_BYTES-1:0] fill_data_q;
   logic [NUM_WB-1:0] wb_valid_q, wb_sent_q;
@@ -369,6 +370,7 @@ module coherence_home #(
       check_done_q <= 1'b0;
       sc_failed_q <= 1'b0;
       grant_error_q <= 1'b0;
+      probe_data_q <= 1'b0;
       probe_q <= '0;
       ack_q <= '0;
       fill_valid_q <= 1'b0;
@@ -419,6 +421,7 @@ module coherence_home #(
               check_done_q <= 1'b0;
               sc_failed_q <= 1'b0;
               grant_error_q <= 1'b0;
+              probe_data_q <= 1'b0;
               victim_q <= 1'b0;
               phase_q <= Lookup;
             end
@@ -479,6 +482,7 @@ module coherence_home #(
                 sc_failed_q  <= !reply.sc_valid;
               end
               if (reply.data_valid) begin
+                probe_data_q <= 1'b1;
                 image_q[(LINE_BYTES == 64 && reply.addr[5] ? 256 : 0)+:256] <= reply.data;
                 line_state_q <= coherence_pkg::Modified;
               end
@@ -502,6 +506,8 @@ module coherence_home #(
                 phase_q  <= Recall;
               end else phase_q <= Detach;
             end else if (probe_q.opcode == coherence_pkg::CheckSC) phase_q <= Check;
+            else if (demand.opcode == coherence_pkg::DMARead && !fill_valid_q && !probe_data_q)
+              phase_q <= Result;
             else phase_q <= Apply;
           end
           Detach: begin
@@ -646,6 +652,22 @@ module coherence_home #(
   logic f_past_valid = 1'b0;
   wire [7:0] f_reply_byte = reply.data[7:0];
   wire f_reply_upper = LINE_BYTES == 64 && reply.addr[5];
+  logic f_read_install_needed, f_read_updated;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || (i_d_valid && o_d_ready)) begin
+      f_read_install_needed <= 1'b0;
+      f_read_updated <= 1'b0;
+    end else begin
+      if (active && phase_q == LookupWait && array_resp_valid && !array_hit)
+        f_read_install_needed <= 1'b1;
+      if (active && i_r_valid && o_r_ready && reply.data_valid)
+        f_read_install_needed <= 1'b1;
+      if (active && phase_q == Update && array_update_ready) f_read_updated <= 1'b1;
+    end
+    if (f_past_valid && !i_rst && o_g_valid && !grant_error_q &&
+        demand.opcode == coherence_pkg::DMARead && f_read_install_needed)
+      assert (f_read_updated);
+  end
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
     if (!f_past_valid) assume (i_rst);
