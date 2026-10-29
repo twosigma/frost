@@ -282,7 +282,10 @@ status. Probe validity and reset qualify that eligibility before it combines
 with the resident invalidation hold.
 
 The CPU cut stops local load launches at invalidation-probe capture. No read merging
-crosses the cut. Invalidation covers L1D, L0, live read slots, reservations
+crosses the cut. The capture address marks matching response owners before
+that edge, preventing an L0 fill or LR reservation from a crossing response.
+An unrelated LR keeps its reservation eligibility.
+Invalidation covers L1D, L0, live read slots, reservations
 and returned-load observations held until retirement. Delayed invalidated
 LR responses cannot establish a reservation, and stale responses cannot
 refill L0. Loads blocked by a pending store or selected atomic are parked so

@@ -54,6 +54,7 @@ module load_queue #(
     parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
 ) (
     input logic i_coherent_cut_hold = 1'b0,
+    input logic [riscv_pkg::XLEN-1:0] i_coherent_cut_addr = '0,
     input logic [1:0] i_coherent_block_valid = '0,
     input logic [1:0][riscv_pkg::XLEN-1:0] i_coherent_block_addr = '0,
     input logic i_coherent_atomic_protected = 1'b0,
@@ -911,8 +912,11 @@ module load_queue #(
   assign coh_staged_amo_lr = sq_check_pending && (sq_check_is_amo_q || sq_check_is_lr_q);
   always_comb begin
     for (int sl = 0; sl < int'(CachedSlots); sl++) begin
-      cs_coh_inval_now[sl] = cs_valid[sl] && i_coh_inval_valid &&
-          (i_coh_inval_addr[XLEN-1:CohLineLsb] == cs_addr[sl][XLEN-1:CohLineLsb]);
+      cs_coh_inval_now[sl] = cs_valid[sl] &&
+          ((i_coh_inval_valid &&
+            i_coh_inval_addr[XLEN-1:CohLineLsb] == cs_addr[sl][XLEN-1:CohLineLsb]) ||
+           (i_coherent_cut_hold &&
+            i_coherent_cut_addr[XLEN-1:CohLineLsb] == cs_addr[sl][XLEN-1:CohLineLsb]));
     end
     coh_block_hit = 1'b0;
     for (int k = 0; k < int'(riscv_pkg::DmaCoherenceLocks); k++) begin
@@ -5512,6 +5516,11 @@ module load_queue #(
     f_coherent_past <= {f_coherent_past[0], 1'b1};
     if (coherent_local_hold) begin
       assert (!mem_read_en && !cache_hit_fast_path && !sq_do_forward);
+    end
+    if (i_coherent_cut_hold && resp_from_slot && cs_valid[resp_slot] &&
+        i_coherent_cut_addr[XLEN-1:CohLineLsb] == cs_addr[resp_slot][XLEN-1:CohLineLsb]) begin
+      assert (!cache_fill_if_slot);
+      assert (issued_lr_suppressed);
     end
     if (mem_read_en && sq_check_is_amo_q && sq_check_is_cached_region)
       assert (i_coherent_atomic_protected);
