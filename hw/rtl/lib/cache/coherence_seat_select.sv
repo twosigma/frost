@@ -19,18 +19,16 @@ module coherence_seat_select #(
     parameter int unsigned SLOTS = 19
 ) (
     input logic [SLOTS-1:0] i_eligible,
-    input logic [SLOTS-1:0] i_occupied,
+    input logic [1:0] i_occupied_count,
     input logic i_join,
-    output logic [SLOTS-1:0] o_selected
+    output logic [SLOTS-1:0] o_selected,
+    output logic [1:0] o_selected_count
 );
-  localparam int unsigned CountBits = $clog2(SLOTS + 1);
-  logic [CountBits-1:0] occupied;
   logic [2:0] allow_rank;
   logic [2:0][SLOTS-1:0] ranked;
-  assign occupied = CountBits'($countones(i_occupied));
-  assign allow_rank[0] = occupied < 3 && !(i_join && occupied == 2);
-  assign allow_rank[1] = occupied < 2 && !(i_join && occupied == 1);
-  assign allow_rank[2] = occupied == 0 && !i_join;
+  assign allow_rank[0] = i_occupied_count < 3 && !(i_join && i_occupied_count == 2);
+  assign allow_rank[1] = i_occupied_count < 2 && !(i_join && i_occupied_count == 1);
+  assign allow_rank[2] = i_occupied_count == 0 && !i_join;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_rank
     if (slot == 0) begin : gen_first
       assign ranked[0][slot] = i_eligible[slot];
@@ -47,11 +45,13 @@ module coherence_seat_select #(
   end
   assign o_selected = ({SLOTS{allow_rank[0]}} & ranked[0]) |
       ({SLOTS{allow_rank[1]}} & ranked[1]) | ({SLOTS{allow_rank[2]}} & ranked[2]);
+  assign o_selected_count = 2'(allow_rank[0] && |ranked[0]) +
+      2'(allow_rank[1] && |ranked[1]) + 2'(allow_rank[2] && |ranked[2]);
 `ifndef SYNTHESIS
   logic [SLOTS-1:0] reference_selected;
   integer seats;
   always_comb begin
-    seats = $countones(i_occupied) + int'(i_join);
+    seats = int'(i_occupied_count) + int'(i_join);
     reference_selected = '0;
     for (int slot = 0; slot < SLOTS; slot++) begin
       if (i_eligible[slot] && seats < 3) begin
@@ -60,6 +60,7 @@ module coherence_seat_select #(
       end
     end
     assert (o_selected == reference_selected);
+    assert (int'(o_selected_count) == $countones(o_selected));
   end
 `endif
 endmodule

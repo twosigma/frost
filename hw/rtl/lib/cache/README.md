@@ -283,11 +283,13 @@ A successful fill's way pin lasts until its final waiter takes a completion
 pin. A failed fill transfers its error to completion metadata and releases
 its control before the waiters dispatch in sector order.
 
-Fill waiter ranks are independent of the available-seat count. A joining
+Fill waiter ranks are independent of the available-seat count. Each fill
+stores its occupied seat count beside the seat mask. Allocation, joining
+readers, handoff and error cleanup update both on the same edge. A joining
 engine uses one seat before the queued waiters. Ready work precedes other
-eligible work, and a circular selector chooses the first candidate at or
-after its rotation index. The tag decision carries its captured query
-address through conflict and replacement checks.
+eligible work. Both classes compute their circular priorities independently
+before selecting an encoded winner. The tag decision carries its captured
+query address through conflict and replacement checks.
 
 Two ordinary PutM controls have frozen payload storage and independent array
 service. Round-robin arbitration rotates tag decisions, row reads, masked
