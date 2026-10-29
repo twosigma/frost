@@ -161,6 +161,14 @@ application once, because its first run changes its image in DDR. Entries
 with `rerun_after_reset=False` run once in both tiers; a new entry keeps the
 two runs.
 
+`vm_test` and its aperture configurations use a three-million-cycle
+budget. `ptw_recovery_test` uses twelve million cycles for its complete
+branch-delay and walker-discard matrix. Their SFENCE.VMA operations use
+full L1D maintenance.
+
+`opensbi_smoke` uses a twenty-million-cycle budget for firmware boot and
+its S-mode payload.
+
 `freertos_demo` runs twice in BRAM to check that its private linker script
 and startup code reinitialize the kernel, heap, and application state.
 Its simulation budget is three million cycles.

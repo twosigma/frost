@@ -683,6 +683,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Sv39 data translation, permissions, and precise faults through MPRV"
         ),
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
     ),
     **{
         f"vm_test_{1 << (bits - 30)}g": CocotbRunConfig(
@@ -694,7 +695,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
                 f"Sv39 final-word access and DDR-end walker fault at {1 << (bits - 30)} GiB"
             ),
             include_in_pytest=False,
-            extra_env=(("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),),
+            extra_env=(
+                ("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),
+                ("COCOTB_MAX_CYCLES", "3000000"),
+            ),
             verilator_extra_args=(
                 "-DFROST_WIDE_DDR_TEST",
                 f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}",
@@ -833,6 +837,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Wrong-path translation faults drain through branch and SFENCE recovery; "
             "replacement loads preserve their data"
         ),
+        extra_env=(("COCOTB_MAX_CYCLES", "12000000"),),
     ),
     "ptw_bus_fault_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1125,7 +1130,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "OpenSBI boot, SBI services and delegated APLIC interrupts (fixed memory layout)"
         ),
-        extra_env=(("COCOTB_MAX_CYCLES", "10000000"),),
+        extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
     ),
     "linux_irq_ddr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
