@@ -84,6 +84,8 @@ and CPU observation cuts. They run in the unit shard. The program shards
 exercise the coherent hierarchy in both memory configurations. Whole-L1D
 maintenance is active in simulation. Synthesis checks cover both line sizes
 at 32-bit and 56-bit physical widths.
+`coherence_l1d` holds a probe reply across a grant and checks single grant
+application, ordered read errors and completion of the following store.
 The cluster bench holds all eight CPU read identities occupied during dirty
 DMA reads and writes. Its invalidation case delays cut completion and checks
 response rotation and byte-write preservation.

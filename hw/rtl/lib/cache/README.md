@@ -272,6 +272,8 @@ One array/probe worker executes eligible demands and ordinary PutM operations.
 PutM payload storage is independent of the result credits. Round-robin arbitration rotates eligible
 requesters, read responses and individual PutM slots. Probe replies have
 separate ownership from CPU reads, pending stores and PutM presentation.
+A pending probe reply prevents local grant selection until R acceptance.
+Grant application requires the private request endpoint to accept the grant.
 A ProbeRead of M merges dirty bytes and leaves S. ProbeInvalidate leaves I
 after the CPU cut. CheckSC returns the selected reservation result.
 Probe lookups read private data only for an M hit. A clean read probe leaves
