@@ -353,6 +353,10 @@ synchronizer. A stopped SoC clock keeps the reset asserted. CPU owners and
 the fabric share this reset; CPU-only reset leaves presented AXI requests
 to drain through the fabric.
 
+With common CPU and SoC clocks, a separate CPU reset register asserts
+asynchronously with fabric reset or the registered core reset. CPU reset
+releases on the SoC clock edge after both requests clear.
+
 Synchronous resets establish pipeline validity, queue ownership, control
 state, and architectural control registers. Cache reset walks clear tags
 and replacement state before accepting requests; cache data arrays do not

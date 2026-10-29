@@ -33,8 +33,8 @@
  *
  * i_rst carries the next-cycle value of the caller's registered subsystem
  * reset (the D input of soc_top's rst_core). nic_top registers it
- * (rst_q) and so resets in the same cycle as the rest of the subsystem; the
- * core-domain reset nic_rst_q, the OR of that reset and the RESET sequence's
+ * as rst_q, which follows soc_top's rst_core. The core-domain reset
+ * nic_rst_q, the OR of that reset and the RESET sequence's
  * pulse, is likewise a register computed one cycle ahead.
  */
 module nic_top #(
