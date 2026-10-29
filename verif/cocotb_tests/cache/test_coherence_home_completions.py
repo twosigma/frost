@@ -308,3 +308,29 @@ async def idle_grant_captures_result_edge(dut: Any) -> None:
         await b.tick()
         await b.set(i_c_valid=0)
         await b.release(item)
+
+
+@cocotb.test()
+async def selection_crossing_park_allocates_no_image(dut: Any) -> None:
+    """Cancel a selected waiter when the same edge transfers it to a fill."""
+    b = Completions(dut)
+    await b.reset()
+    await b.admit(0, 0x80000000)
+    assert b.get("o_waiting") == 1
+    await b.set(i_park=1, i_work_ready=1)
+    await b.tick()
+    await b.set(i_park=0)
+    for _ in range(8):
+        assert not b.get("o_work_valid")
+        assert b.get("buffer_live_q") == 0
+        assert b.get("buffer_owned_q") == 0
+        await b.tick()
+    await b.set(i_work_ready=0, i_wake=1)
+    await b.tick()
+    await b.set(i_wake=0)
+    item = await b.dispatch()
+    assert item == (0, 0, 0x80000000)
+    await b.result(item, 0xBADCAFE)
+    await b.grant(item, 0xBADCAFE)
+    await b.complete(item)
+    await b.release(item)
