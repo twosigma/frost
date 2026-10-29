@@ -191,6 +191,7 @@ FORMAL_TARGETS = [
         "The coherent home preserves pins, dirty replies, and victim ownership.",
         tasks=(
             "coh_home_control_prove",
+            "coh_home_control64_prove",
             "coh_home_wb_prove",
             "coh_home_victim_cover",
             "coh_home_error_cover",
@@ -1045,6 +1046,7 @@ SBY_TASKS = [
     ),
     ("coh_completions_cover", "Concurrent results and independent release."),
     ("coh_home_control_prove", "Composed home ownership and independent memory debt."),
+    ("coh_home_control64_prove", "Composed home ownership across sibling sectors."),
     ("coh_home_array_prove", "Independent L2 ports preserve watched bytes."),
     *[
         (
