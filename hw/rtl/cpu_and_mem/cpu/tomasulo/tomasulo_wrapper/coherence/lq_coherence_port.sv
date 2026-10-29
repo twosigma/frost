@@ -39,10 +39,10 @@
  *   release  The DMA write has been ordered at the shared level: the mirror
  *            entry is dropped and the launch holds lift.
  *
- * The coherent hierarchy completes CPU invalidation before the L1D tag
- * lookup and permission update.
- * Mirror ownership survives speculative flushes until the hierarchy releases
- * it after ordering the write at the shared level.
+ * The coherent hierarchy overlaps CPU invalidation with the L1D lookup and
+ * permission update. Its probe reply waits until replay marking is effective.
+ * Mirror ownership survives speculative flushes through probe reply acceptance.
+ * The home holds the sector until the writer completes.
  */
 module lq_coherence_port #(
     parameter int unsigned NUM_LOCK = riscv_pkg::DmaCoherenceLocks,

@@ -321,8 +321,9 @@ representative byte values, bounded controller transitions and CPU ownership.
 Detached victim validity, address and a watched byte are checked by induction
 through B. Cover tasks reach allocation, a delayed B, a blocked refetch,
 successful disposal and a failed B with preserved dirty ownership.
-The controller bounds assume legal channel peers and immediate local cut
-acknowledgement; they do not bound external memory response latency.
+The controller bounds assume legal channel peers, cut admission within four
+cycles and invalidation acknowledgement within five cycles. They do not bound
+external memory response latency.
 
 ## The line cache
 

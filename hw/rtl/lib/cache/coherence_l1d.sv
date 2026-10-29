@@ -1100,6 +1100,7 @@ module coherence_l1d #(
   coh_g_t f_grant;
   assign f_grant = i_g;
   logic [5:0] f_probe_age;
+  logic [2:0] f_admit_age, f_inval_age;
   wire [ADDR_WIDTH+19:0] f_reply_signature = {
     reply_q.opcode,
     reply_q.tid,
@@ -1114,8 +1115,13 @@ module coherence_l1d #(
     if (!f_past_valid) assume (i_rst);
     if (!active || !probe_valid_q || o_r_valid) f_probe_age <= '0;
     else f_probe_age <= f_probe_age + 1'b1;
+    if (!active || cut_phase_q != CutAdmit) f_admit_age <= '0;
+    else f_admit_age <= f_admit_age + 1'b1;
+    if (!active || cut_phase_q != CutInvalidate) f_inval_age <= '0;
+    else f_inval_age <= f_inval_age + 1'b1;
     if (!i_rst) begin
-      assume (i_cut_admit_ready && i_cut_inval_done);
+      if (f_admit_age >= 3) assume (i_cut_admit_ready);
+      if (f_inval_age >= 4) assume (i_cut_inval_done);
       if (i_read_valid) begin
         assume (!rd_valid_q[i_read_id]);
         assume (!o_read_valid || o_read_id != i_read_id);

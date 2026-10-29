@@ -21,6 +21,7 @@ import cocotb
 from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_model import AllocationRequest
 from cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_coherence import (
     LINE,
+    SLOT,
     WORD,
     _mem_rs,
     _admit_now,
@@ -165,6 +166,66 @@ async def delayed_lr_cannot_reserve_or_fill_after_cut(dut: Any) -> None:
         dut_if.drive_lq_mem_response(0xCAFEBABE, cached=True, slot=fresh["id"])
         await wait_for_cdb(dut_if)
         dut_if.clear_lq_mem_response()
+
+
+@cocotb.test()
+async def responses_cross_each_cut_edge(dut: Any) -> None:
+    """Responses at capture, invalidation, compare and replay cannot escape poison."""
+    dut_if, _ = await setup_test(dut)
+    for is_lr in (False, True):
+        for response_phase in (0, 1, 2, 3):
+            await dut_if.reset_dut()
+            dut.i_coherent_store_ready.value = 1
+            dut.i_coherent_cut_hold.value = 0
+            dut_if.set_fu_ready(RS_MEM, True)
+            dut_if.set_commit_hold(True)
+            tag = await dut_if.dispatch(
+                AllocationRequest(pc=0x5800, dest_reg=5, dest_valid=True, is_lr=is_lr)
+            )
+            await issue(dut_if, tag, OP_LR_W if is_lr else OP_LW, WORD)
+            req = await request(dut_if)
+            await dut_if.step()
+            dut.i_coherent_cut_hold.value = 1
+            if response_phase == 0:
+                dut_if.drive_lq_mem_response(0x12345678, cached=True, slot=req["id"])
+            await dut_if.step()
+            dut_if.clear_lq_mem_response()
+            await _admit_now(dut, dut_if)
+            dut.i_coh_inval_valid.value = 1
+            dut.i_coh_inval_slot.value = SLOT
+            returned = response_phase == 0
+            for _ in range(12):
+                phase = int(dut.u_coherence_port.inval_phase_q.value)
+                if response_phase != 0 and phase == response_phase:
+                    dut_if.drive_lq_mem_response(
+                        0x12345678, cached=True, slot=req["id"]
+                    )
+                    returned = True
+                await dut_if.step()
+                dut_if.clear_lq_mem_response()
+                if phase == 3:
+                    break
+            else:
+                raise AssertionError("invalidation did not reach the replay edge")
+            dut.i_coh_inval_valid.value = 0
+            await dut_if.step()
+            assert returned
+            assert int(dut.u_rob.rob_replay.value) & (1 << tag)
+            dut.i_coherent_cut_hold.value = 0
+            await _release(dut, dut_if)
+            for _ in range(8):
+                await dut_if.step()
+                assert not int(dut.o_coherent_reservation_valid.value)
+                assert int(dut.u_rob.rob_replay.value) & (1 << tag)
+            following = await dut_if.dispatch(make_int_req(pc=0x5804, rd=6))
+            await issue(dut_if, following, OP_LW, WORD)
+            fresh = await request(dut_if)
+            assert fresh["addr"] == WORD
+            await dut_if.step()
+            dut_if.drive_lq_mem_response(0xCAFEBABE, cached=True, slot=fresh["id"])
+            cdb = await wait_for_cdb(dut_if)
+            assert cdb.tag == following and cdb.value == 0xCAFEBABE
+            dut_if.clear_lq_mem_response()
 
 
 @cocotb.test()
