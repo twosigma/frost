@@ -466,6 +466,14 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
         $(ROOT)/hw/rtl/lib/axi/axi_coherent_bridge.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),coherent_axi_test_harness)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/cache/coherence.f \
+        $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
+        $(ROOT)/hw/rtl/lib/cache/coherence_dma_ingress.sv \
+        $(ROOT)/hw/rtl/lib/axi/axi_coherent_bridge.sv \
+        $(ROOT)/hw/rtl/lib/axi/coherent_axi_test_harness.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),axi_mux_test_harness)
 # AXI4 N:1 mux unit bench (three ports, each named separately)
 COMPILE_ARGS := \
