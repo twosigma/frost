@@ -266,6 +266,11 @@ writes merge only their selected bytes after invalidation.
 An L2-resident DMA read with no dirty probe data returns the resident image
 without a data-array write. Fills and dirty replies reach the array before
 the home grants the read.
+A resident DMA write reads the L2 tag and writes its byte enables without
+reading the data array. A dirty probe supplies the complete private sector
+before those byte enables apply. The update preserves bytes outside its mask
+and every byte in the sibling sector. A miss reads the victim and fills the
+requested row before applying the write. GrantAck has zero data.
 
 The home computes probe eligibility from its phase and fatal status before
 reset qualifies the probe-valid output. The L1D computes incoming invalidate
