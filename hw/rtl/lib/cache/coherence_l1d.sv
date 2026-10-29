@@ -215,7 +215,7 @@ module coherence_l1d #(
   logic pending_blocked;
 
   assign read_failure = active && phase_q == Idle &&
-      !(probe_valid_q && !o_r_valid) && !i_p_valid &&
+      !probe_valid_q && !i_p_valid &&
       grant_valid && (grant.error || grant.opcode == coherence_pkg::GrantFail) &&
       !acquisition_sc_q && !acquisition_store_q;
   assign read_hit = active && phase_q == LookupWait && array_valid &&
@@ -765,8 +765,8 @@ module coherence_l1d #(
                 sc_tid_q <= probe_q.tid;
                 phase_q <= ProbeReply;
               end else phase_q <= Lookup;
-            end else if (i_p_valid) begin
-              // Probe capture owns this arbitration edge.
+            end else if (i_p_valid || probe_valid_q) begin
+              // Probe ownership excludes local selection through R acceptance.
             end else if (grant_valid) begin
               grant_q <= grant;
               operation_q <= GrantOp;
@@ -1028,7 +1028,7 @@ module coherence_l1d #(
         Idle: begin
           if (probe_valid_q && !o_r_valid) begin
           end else
-          if (i_p_valid) begin
+          if (i_p_valid || probe_valid_q) begin
           end else
           if (i_sc_valid && o_sc_ready) begin
           end else if (grant_valid) begin
@@ -1186,6 +1186,8 @@ module coherence_l1d #(
       if (o_sc_write_pending) assert (atomic_q && atomic_sc_q && !atomic_written_q);
       if (pending_q && pending_reported_q) assert (o_block_valid[0]);
       if ($past(active && grant_valid && grant_ready)) assert (operation_q == GrantOp);
+      if ($past(active && phase_q == Idle) && phase_q == Lookup && operation_q == GrantOp)
+        assert ($past(grant_valid && grant_ready));
       if (active && phase_q == LookupWait && array_valid && operation_q == GrantOp)
         assert (array_available);
       if (o_r_valid && probe_q.opcode == coherence_pkg::ProbeInvalidate)
