@@ -25,27 +25,40 @@ module coherence_work_select #(
     output logic o_found,
     output logic [SlotBits-1:0] o_pick
 );
-  logic [SLOTS-1:0] ready_work, candidates, after_next, ordered;
-  (* keep = "true" *) logic [SLOTS-1:0] selected;
-  assign ready_work = i_eligible & i_ready;
-  assign candidates = |ready_work ? ready_work : i_eligible;
-  assign ordered = |after_next ? after_next : candidates;
+  logic [3:0][SLOTS-1:0] candidates;
+  (* keep = "true" *) logic [3:0][SLOTS-1:0] class_selected;
+  logic [3:0] class_found;
+  logic [3:0][SlotBits-1:0] class_pick;
+  logic [SLOTS-1:0] selected;
   assign o_found = |i_eligible;
-  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_priority
-    assign after_next[slot] = candidates[slot] && slot >= int'(i_next);
-    if (slot == 0) begin : gen_first
-      assign selected[slot] = ordered[slot];
-    end else begin : gen_later
-      assign selected[slot] = ordered[slot] && !(|ordered[slot-1:0]);
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_candidates
+    assign candidates[0][slot] = i_eligible[slot] && i_ready[slot] && slot >= int'(i_next);
+    assign candidates[1][slot] = i_eligible[slot] && i_ready[slot];
+    assign candidates[2][slot] = i_eligible[slot] && slot >= int'(i_next);
+    assign candidates[3][slot] = i_eligible[slot];
+  end
+  for (genvar choice = 0; choice < 4; choice++) begin : gen_class
+    assign class_found[choice] = |candidates[choice];
+    for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_priority
+      if (slot == 0) begin : gen_first
+        assign class_selected[choice][slot] = candidates[choice][slot];
+      end else begin : gen_later
+        assign class_selected[choice][slot] = candidates[choice][slot] &&
+            !(|candidates[choice][slot-1:0]);
+      end
+    end
+    for (genvar bit_index = 0; bit_index < SlotBits; bit_index++) begin : gen_encode
+      logic [SLOTS-1:0] contributors;
+      for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_contributor
+        assign contributors[slot] = class_selected[choice][slot] && ((slot >> bit_index) & 1) != 0;
+      end
+      assign class_pick[choice][bit_index] = |contributors;
     end
   end
-  for (genvar bit_index = 0; bit_index < SlotBits; bit_index++) begin : gen_encode
-    logic [SLOTS-1:0] contributors;
-    for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_contributor
-      assign contributors[slot] = selected[slot] && ((slot >> bit_index) & 1) != 0;
-    end
-    assign o_pick[bit_index] = |contributors;
-  end
+  assign selected = class_found[0] ? class_selected[0] : class_found[1] ? class_selected[1] :
+      class_found[2] ? class_selected[2] : class_selected[3];
+  assign o_pick = class_found[0] ? class_pick[0] : class_found[1] ? class_pick[1] :
+      class_found[2] ? class_pick[2] : class_pick[3];
 `ifndef SYNTHESIS
   logic [SlotBits-1:0] reference_pick, reference_first;
   logic reference_after, ready_found;

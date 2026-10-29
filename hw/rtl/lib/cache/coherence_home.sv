@@ -208,6 +208,7 @@ module coherence_home #(
   logic [FILLS-1:0] fill_dirty_q, fill_r_ready;
   logic [FILLS-1:0][LINE_BYTES/32-1:0] fill_dirty_sectors_q;
   logic [COMPLETIONS-1:0] fill_seats_q[FILLS], fill_add_seats[FILLS];
+  logic [1:0] fill_seat_count_q[FILLS], fill_add_count[FILLS];
   logic [FILLS-1:0] fill_wake;
   logic [FILLS-1:0][ADDR_WIDTH+29:0] fill_probe;
   coh_wa_t fill_ack_q[FILLS];
@@ -657,7 +658,7 @@ module coherence_home #(
             fill_match = 1'b1;
             fill_match_index = FillBits'(fill);
             fill_joinable = fill_phase_q[fill] != FillInstallWait &&
-                !fill_error_q[fill] && $countones(fill_seats_q[fill]) < 3;
+                !fill_error_q[fill] && fill_seat_count_q[fill] < 3;
           end
           if (fill_victim_q[fill] && same_block(fill_old_addr_q[fill], decision_addr))
             decision_blocked = 1'b1;
@@ -709,9 +710,10 @@ module coherence_home #(
         .SLOTS(COMPLETIONS)
     ) selector (
         .i_eligible(eligible),
-        .i_occupied(fill_seats_q[fill]),
+        .i_occupied_count(fill_seat_count_q[fill]),
         .i_join(joining),
-        .o_selected(fill_add_seats[fill])
+        .o_selected(fill_add_seats[fill]),
+        .o_selected_count(fill_add_count[fill])
     );
   end
   always_comb begin
@@ -890,6 +892,7 @@ module coherence_home #(
         fill_dirty_q[fill] <= 1'b0;
         fill_dirty_sectors_q[fill] <= '0;
         fill_seats_q[fill] <= '0;
+        fill_seat_count_q[fill] <= '0;
         fill_write_q[fill] <= 1'b0;
         fill_ack_q[fill] <= '0;
       end else begin
@@ -902,6 +905,7 @@ module coherence_home #(
         end
         if (active) begin
           fill_seats_q[fill] <= fill_seats_q[fill] | fill_add_seats[fill];
+          fill_seat_count_q[fill] <= fill_seat_count_q[fill] + fill_add_count[fill];
           if (allocate) begin
             fill_addr_q[fill] <= {decision_addr[ADDR_WIDTH-1:OffsetBits], {OffsetBits{1'b0}}};
             fill_old_addr_q[fill] <= array_addr;
@@ -917,15 +921,21 @@ module coherence_home #(
             fill_dirty_q[fill] <= array_state == coherence_pkg::Modified;
             fill_dirty_sectors_q[fill] <= '0;
             fill_seats_q[fill] <= COMPLETIONS'(1) << decision_tid;
+            fill_seat_count_q[fill] <= 1;
             fill_write_q[fill] <= decision_opcode == coherence_pkg::DMAWrite;
             fill_phase_q[fill] <= array_state == coherence_pkg::Invalid ? FillMemory : FillRecall;
             recall_phase_q[fill] <= RecallOffer;
           end
-          if (active && array_response && decision_join && fill_match_index == FillBits'(fill))
+          if (active && array_response && decision_join &&
+              fill_match_index == FillBits'(fill)) begin
             fill_seats_q[fill][CompletionBits'(decision_tid)] <= 1'b1;
+            fill_seat_count_q[fill] <= fill_seat_count_q[fill] + fill_add_count[fill] + 1'b1;
+          end
           if (fill_phase_q[fill] == FillReady && pin_valid &&
-              fill_seats_q[fill][CompletionBits'(decision_tid)])
+              fill_seats_q[fill][CompletionBits'(decision_tid)]) begin
             fill_seats_q[fill][CompletionBits'(decision_tid)] <= 1'b0;
+            fill_seat_count_q[fill] <= fill_seat_count_q[fill] - 1'b1;
+          end
           if (fill_phase_q[fill] == FillReady && fill_seats_q[fill] == 0)
             fill_phase_q[fill] <= FillFree;
           if (read_valid[Client] && read_ready[Client]) fill_read_sent_q[fill] <= 1'b1;
@@ -962,7 +972,10 @@ module coherence_home #(
             fill_phase_q[fill] <= FillMemory;
           if (fill_phase_q[fill] == FillMemory && fill_done_q[fill]) begin
             fill_phase_q[fill] <= fill_error_q[fill] ? FillFree : FillInstall;
-            if (fill_error_q[fill]) fill_seats_q[fill] <= '0;
+            if (fill_error_q[fill]) begin
+              fill_seats_q[fill] <= '0;
+              fill_seat_count_q[fill] <= '0;
+            end
           end
           if (fill_phase_q[fill] == FillInstall && update_ready[Client])
             fill_phase_q[fill] <= FillInstallWait;
@@ -1165,6 +1178,7 @@ module coherence_home #(
       end
       for (int fill = 0; fill < FILLS; fill++) begin
         assert ($countones(fill_seats_q[fill]) <= 3);
+        assert (int'(fill_seat_count_q[fill]) == $countones(fill_seats_q[fill]));
         if (array_data_valid && array_data_token == TokenBits'(RESULTS + fill)) begin
           assert (fill_phase_q[fill] == FillRecall || fill_phase_q[fill] == FillFatal);
           assert (wb_valid_q[fill_wb_q[fill]] && !wb_frozen_q[fill_wb_q[fill]]);
