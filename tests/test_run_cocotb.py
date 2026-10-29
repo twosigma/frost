@@ -2979,6 +2979,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("_32", " on a 32-bit bus", ("-GDATA_WIDTH=32", "-GID_WIDTH=2")),
         )
     },
+    **{
+        f"coherent_axi_ingress{suffix}": CocotbRunConfig(
+            python_test_module=(
+                "cocotb_tests.axi.test_axi_coherent_bridge,"
+                "cocotb_tests.axi.test_coherent_axi_ingress"
+            ),
+            hdl_toplevel_module="coherent_axi_test_harness",
+            description="AXI bursts through four coherent credits, completion delay, and reset",
+            verilator_extra_args=("--assert", *args),
+        )
+        for suffix, args in (("", ()), ("_64", ("-GDATA_WIDTH=64",)))
+    },
     "axil_reg_bridge": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_axil_reg_bridge",
         hdl_toplevel_module="axil_reg_bridge",

@@ -97,6 +97,12 @@ response has a place in the read buffer. Writes take the line port first,
 and a read waits for at most `STARVATION_LIMIT` write grants. The choice is
 held while the presented request waits, as the ingress requires.
 
+The cluster ingress admits four line requests and preserves every bit of
+the bridge's line ID. The bridge's three-bit IDs occupy the low bits of
+the four-bit coherent request ID. Each line response follows the matching
+home Release, after its data operation and completion acknowledgement.
+An ID remains occupied through that external response edge.
+
 Every AXI READY and every B and R output comes from registered state, and
 the line request is presented from registers. A one-beat read takes five
 cycles from its AR handshake to its R beat when the ingress answers in the
@@ -139,6 +145,7 @@ Its body is empty in synthesis and formal builds.
 | Target | Coverage |
 | --- | --- |
 | `axi_coherent_bridge`, `axi_coherent_bridge_64`, `axi_coherent_bridge_32` | Random bursts of every type and size against a byte reference at 256, 64 and 32 bits, error bursts, ingress errors, out-of-order line responses with stalls, exhausted ids and tables, read starvation under writes, and reset with bursts in flight |
+| `coherent_axi_ingress`, `coherent_axi_ingress_64` | The bridge connected to the four-entry ingress, delayed coherent channels, full credits, B after every line release, and shared reset at each coherent stage |
 | `axi_cdc` | All channel fields, independent backpressure, full FIFOs, wraparound, reset cancellation, equal periods with phase offset and unequal periods in both directions |
 | `axi_mux` | Three masters sharing id values against a reordering slave, late write data, and reset mid-traffic |
 

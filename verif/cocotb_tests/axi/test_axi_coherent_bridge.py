@@ -66,7 +66,12 @@ class _Bench:
         self.ids = 1 << len(dut.i_axi_awid)
         self.mem: dict[int, int] = {}
         self.ref: dict[int, int] = {}
-        self.ingress = LineIngress(
+        ingress_type = LineIngress
+        if hasattr(dut, "o_d_valid"):
+            from cocotb_tests.axi.coherent_axi_home import CoherentHome
+
+            ingress_type = CoherentHome
+        self.ingress = ingress_type(
             dut,
             dut.i_clk,
             self.mem,
