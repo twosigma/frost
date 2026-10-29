@@ -673,7 +673,8 @@ module coherence_home #(
       end
     end
     for (int engine = 0; engine < RESULTS; engine++) begin
-      if (!engine_idle[engine] && array_token != TokenBits'(engine) && same_block(
+      if (array_state != coherence_pkg::Invalid && !engine_idle[engine] &&
+          array_token != TokenBits'(engine) && same_block(
               engine_addr[engine], array_addr
           ))
         victim_blocked = 1'b1;

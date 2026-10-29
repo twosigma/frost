@@ -1118,3 +1118,38 @@ async def concurrent_sibling_updates_survive_replacement(dut: Any) -> None:
         await b.finish(grant)
     await b.tick(b.write_delay + 10)
     assert b.memory[base] == changed[0] | (changed[1] << 256)
+
+
+@cocotb.test()
+async def sibling_misses_reuse_invalidated_clean_victim(dut: Any) -> None:
+    """Drain concurrent siblings after a failed clean replacement leaves an invalid tag."""
+    b = Home(dut)
+    if b.line != 64:
+        return
+    await b.reset()
+    base = 0x80000000
+    for index in range(4):
+        address = base + index * b.line * 4
+        assert await b.read(address, 7) == b.expected(address)
+    failed = base + 4 * b.line * 4
+    b.errors.add(failed)
+    before = len(b.probes)
+    grant = await b.start(7, failed)
+    assert grant[5]
+    await b.finish(grant)
+    recalled = [p[1] for p in b.probes[before:] if p[2] == 2]
+    assert len(recalled) == 2
+    victim = recalled[0] & -b.line
+    assert set(recalled) == {victim, victim + 32}
+    b.errors.clear()
+    transactions = len(b.transactions)
+    await b.submit(7, victim, slot=0)
+    await b.submit(7, victim + 32, slot=1)
+    grants = [await b.take_grant(), await b.take_grant()]
+    assert {g[3] for g in grants} == {victim, victim + 32}
+    assert not any(g[5] for g in grants)
+    for response in grants:
+        assert response[4] == b.expected(response[3])
+        await b.complete(response)
+    assert any(t[1] == 0 and t[2] == victim for t in b.transactions[transactions:])
+    assert not b.get("o_fatal")
