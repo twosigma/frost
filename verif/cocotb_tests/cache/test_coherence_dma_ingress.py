@@ -147,7 +147,7 @@ class Ingress:
         assert self.get("o_g_ready")
         await self.tick()
         await self.set(i_g_valid=0)
-        await self.wait("o_c_valid")
+        assert self.get("o_c_valid")
         expected = (
             self.q(ident),
             ident + 19,
