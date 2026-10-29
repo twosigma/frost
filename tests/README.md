@@ -67,6 +67,12 @@ parameters, and checks cached, cache-disabled and DMA-disabled CPU builds.
 All CPU configurations use the coherent interfaces and their ordinary source
 filelists.
 
+`coherence_dma_ingress` issues all four credits before G and checks reordered
+G/C/U, full identities and reset at response presentation. The
+`coherent_axi_ingress` benches connect the AXI bridge to that ingress with
+independent home peers. They hold four results behind C, reorder line replies,
+and check AXI burst order, byte masks, errors and reset on both bus widths.
+
 `coherence_home_completions`, `coherence_home`, `coherence_home_equal`,
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
 and CPU observation cuts. They run in the unit shard. The program shards

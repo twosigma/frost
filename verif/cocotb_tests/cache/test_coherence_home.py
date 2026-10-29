@@ -228,17 +228,32 @@ class Home:
             f"{signal} timed out at {self.cycle}; fatal={self.get('o_fatal')}"
         )
 
-    async def start(
-        self, op: int, address: int, data: int = 0, mask: int = 0
-    ) -> tuple[int, ...]:
-        """Accept one request and leave its grant held at the home."""
-        _, request = self.demand(op, address, data, mask)
+    async def submit(
+        self, op: int, address: int, data: int = 0, mask: int = 0, slot: int = 0
+    ) -> None:
+        """Admit a request without waiting for grant service."""
+        _, request = self.demand(op, address, data, mask, slot)
         await self.set(i_d_valid=1, i_d=request)
         await self.wait("o_d_ready")
         await self.tick()
         await self.set(i_d_valid=0)
+
+    async def start(
+        self, op: int, address: int, data: int = 0, mask: int = 0, slot: int = 0
+    ) -> tuple[int, ...]:
+        """Accept one request and leave its grant held at the home."""
+        await self.submit(op, address, data, mask, slot)
         await self.wait("o_g_valid")
         return unpack(self.get("o_g"), (3, 9, 6, self.p, 256, 1))
+
+    async def take_grant(self) -> tuple[int, ...]:
+        """Consume one grant while keeping its completion outstanding."""
+        await self.wait("o_g_valid")
+        grant = unpack(self.get("o_g"), (3, 9, 6, self.p, 256, 1))
+        await self.set(i_g_ready=1)
+        await self.tick()
+        await self.set(i_g_ready=0)
+        return grant
 
     async def finish(
         self,
@@ -256,6 +271,16 @@ class Home:
         await self.set(i_g_ready=1)
         await self.tick()
         await self.set(i_g_ready=0)
+        await self.complete(grant, written, completion_delay, release_delay)
+
+    async def complete(
+        self,
+        grant: tuple[int, ...],
+        written: bool = False,
+        completion_delay: int = 0,
+        release_delay: int = 0,
+    ) -> None:
+        """Complete an accepted grant and return its exact identity."""
         for _ in range(completion_delay):
             await self.tick()
             assert not self.get("o_d_ready")
@@ -584,3 +609,126 @@ async def missing_put_destination_preserves_dirty_ownership(dut: Any) -> None:
         await b.tick()
         assert not b.get("o_wa_valid") and not b.get("o_w_ready")
         assert int(dut.put_q.value) == payload
+
+
+@cocotb.test()
+async def full_result_pool_keeps_both_put_slots_moving(dut: Any) -> None:
+    """Drain two dirty PutM identities while all eight result images wait for G."""
+    b = Home(dut)
+    await b.reset()
+    base = 0x80000000
+    puts = [(base + 0x1000, 0x123456), (base + 0x2000, 0x987654)]
+    for address, data in puts:
+        grant = await b.start(1, address)
+        b.private[address] = (3, data)
+        await b.finish(grant, written=True)
+    for slot, (address, data) in enumerate(puts):
+        b.frozen[slot] = (address, data)
+        del b.private[address]
+    for slot in range(8):
+        await b.submit(0, base + 32 * slot, slot=slot)
+    for _ in range(2000):
+        if int(dut.completions.result_valid_q.value).bit_count() == 8:
+            break
+        await b.tick()
+    else:
+        raise AssertionError("eight result images did not fill")
+    assert b.get("o_g_valid")
+    held = b.get("o_g")
+    for slot, (address, data) in enumerate(puts):
+        await b.set(
+            i_w_valid=1,
+            i_w=pack((1, 0), (1, slot), (1, 0), (b.p, address), (256, data), (1, 0)),
+        )
+        await b.wait("o_w_ready")
+        await b.tick()
+        for _ in range(100):
+            if any(
+                ack[1] == slot and ack[3] == address and not ack[4] for ack in b.acks
+            ):
+                break
+            await b.tick()
+        else:
+            raise AssertionError("PutM did not drain behind full G storage")
+        assert b.get("o_g_valid") and b.get("o_g") == held
+        assert int(dut.completions.result_valid_q.value).bit_count() == 8
+    returned = set()
+    for _ in range(8):
+        grant = await b.take_grant()
+        returned.add(grant[3])
+        assert grant[4] == b.expected(grant[3])
+        await b.complete(grant)
+    assert returned == {base + 32 * slot for slot in range(8)}
+    for address, data in puts:
+        assert await b.read(address, 7) == data
+
+
+@cocotb.test()
+async def sibling_completion_pins_share_a_way_until_both_releases(dut: Any) -> None:
+    """Keep a shared physical way excluded after only one sector releases it."""
+    b = Home(dut)
+    if b.line != 64:
+        return
+    await b.reset()
+    base = 0x80000000
+    await b.submit(0, base, slot=0)
+    lower = await b.take_grant()
+    await b.submit(0, base + 32, slot=1)
+    upper = await b.take_grant()
+    await b.complete(lower)
+    for index in range(1, 9):
+        grant = await b.start(0, base + index * b.line * 4, slot=2)
+        await b.finish(grant)
+    assert not any(
+        addr in (base, base + 32) and reason == 2 for _, addr, reason, _ in b.probes
+    )
+    await b.complete(upper)
+    for index in range(9, 17):
+        grant = await b.start(0, base + index * b.line * 4, slot=2)
+        await b.finish(grant)
+    assert any(addr == base and reason == 2 for _, addr, reason, _ in b.probes)
+
+
+@cocotb.test()
+async def fatal_and_reset_with_held_results_and_dirty_victim(dut: Any) -> None:
+    """Preserve held ownership at fatal stop and cancel all debt at common reset."""
+    b = Home(dut)
+    await b.reset()
+    base = 0x80000000
+    for index in range(4):
+        address = base + index * b.line * 4
+        grant = await b.start(1, address)
+        b.private[address] = (3, 0xDEAD0000 + index)
+        await b.finish(grant, written=True)
+    b.write_delay = 50000
+    await b.submit(0, base + 4 * b.line * 4, slot=0)
+    first = await b.take_grant()
+    await b.set(
+        i_c_valid=1,
+        i_c=pack((9, first[1]), (6, first[2]), (b.p, first[3]), (2, 0), (1, 0)),
+    )
+    await b.wait("o_c_ready")
+    await b.tick()
+    await b.set(i_c_valid=0)
+    await b.wait("o_u_valid")
+    await b.submit(0, base + b.line, slot=1)
+    await b.wait("o_g_valid")
+    assert any(response[5] for response in b.responses)
+    held_grant, release = b.get("o_g"), b.get("o_u")
+    victims = int(dut.wb_valid_q.value)
+    assert victims
+    await b.set(i_fatal_stop=1)
+    for _ in range(12):
+        await b.tick()
+        assert b.get("o_g_valid") and b.get("o_g") == held_grant
+        assert b.get("o_u_valid") and b.get("o_u") == release
+        assert int(dut.wb_valid_q.value) == victims
+        assert not b.get("o_d_ready") and not b.get("o_w_ready")
+    b.responses.clear()
+    b.replies.clear()
+    b.private.clear()
+    b.frozen.clear()
+    await b.reset()
+    assert not b.get("o_g_valid") and not b.get("o_u_valid")
+    assert not int(dut.wb_valid_q.value)
+    assert await b.read(base + b.line) == b.expected(base + b.line)

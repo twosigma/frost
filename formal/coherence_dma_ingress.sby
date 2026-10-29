@@ -13,7 +13,9 @@ timeout 180
 smtbmc boolector
 
 [script]
-read -formal -sv coherence_pkg.sv coherence_dma_ingress.sv
+read -sv coherence_pkg.sv
+read -formal -sv -D COHERENCE_ARBITER_COMPOSED coherence_d_arbiter.sv
+read -formal -sv coherence_dma_ingress.sv
 prep -top coherence_dma_ingress
 memory_map
 opt
@@ -22,3 +24,4 @@ opt
 ../hw/rtl/lib/cache/coherence_pkg.sv
 ../hw/rtl/lib/cache/coherence_types.svh
 ../hw/rtl/lib/cache/coherence_dma_ingress.sv
+../hw/rtl/lib/cache/coherence_d_arbiter.sv

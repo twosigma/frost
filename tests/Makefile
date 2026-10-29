@@ -474,6 +474,7 @@ else ifeq ($(TOPLEVEL),coherent_axi_test_harness)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/cache/coherence.f \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
+        $(ROOT)/hw/rtl/lib/cache/coherence_d_arbiter.sv \
         $(ROOT)/hw/rtl/lib/cache/coherence_dma_ingress.sv \
         $(ROOT)/hw/rtl/lib/axi/axi_coherent_bridge.sv \
         $(ROOT)/hw/rtl/lib/axi/coherent_axi_test_harness.sv

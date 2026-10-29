@@ -201,3 +201,50 @@ async def result_pool_backpressure_and_retry(dut: Any) -> None:
     await b.reset()
     await b.set(i_d=0)
     assert b.get("o_d_ready") and not b.get("o_g_valid") and not b.get("o_u_valid")
+
+
+@cocotb.test()
+async def predecessor_release_and_slot_reuse_do_not_alias(dut: Any) -> None:
+    """Clear a predecessor on U while admitting a successor and reusing its slot."""
+    b = Completions(dut)
+    await b.reset()
+    address = 0x80000000
+    await b.admit(0, address)
+    first = await b.dispatch()
+    await b.admit(2, address)
+    await b.admit(4, address)
+    await b.result(first, 11)
+    await b.grant(first, 11)
+    await b.complete(first)
+    await b.wait("o_u_valid")
+    await b.set(i_u_ready=1)
+    await b.admit(6, address)
+    await b.set(i_u_ready=0)
+    await b.admit(0, address + 64)
+    second = await b.dispatch()
+    reused = await b.dispatch()
+    assert second[0] == 2 and reused[0] == 0 and reused[1] == first[1]
+    await b.result(reused, 22)
+    await b.grant(reused, 22)
+    await b.set(
+        i_c_valid=1,
+        i_c=pack((9, first[0]), (6, first[1]), (b.p, first[2]), (2, 0), (1, 0)),
+    )
+    assert not b.get("o_c_ready")
+    await b.tick()
+    await b.set(i_c_valid=0)
+    await b.complete(reused)
+    await b.release(reused)
+    await b.tick(5)
+    assert not b.get("o_work_valid")
+    await b.result(second, 33)
+    await b.grant(second, 33)
+    await b.complete(second)
+    await b.release(second)
+    for q, data in ((4, 44), (6, 55)):
+        item = await b.dispatch()
+        assert item[0] == q
+        await b.result(item, data)
+        await b.grant(item, data)
+        await b.complete(item)
+        await b.release(item)
