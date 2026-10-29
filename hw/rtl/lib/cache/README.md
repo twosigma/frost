@@ -290,7 +290,9 @@ readers, handoff and error cleanup update both on the same edge. A joining
 engine uses one seat before the queued waiters. Ready work precedes other
 eligible work. Both classes compute their circular priorities independently
 before selecting an encoded winner. The tag decision carries its captured
-query address through conflict and replacement checks.
+query address through conflict and replacement checks. Engine address pins
+exclude valid victim lines. An invalid way's stored tag does not create an
+address conflict; physical way pins and fill claims govern its reuse.
 
 Two ordinary PutM controls have frozen payload storage and independent array
 service. Round-robin arbitration rotates tag decisions, row reads, masked
