@@ -2,6 +2,7 @@ $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv
 -f $(ROOT)/hw/rtl/lib/ram/ram.f
 -f $(ROOT)/hw/rtl/lib/cache/coherence.f
 $(ROOT)/hw/rtl/lib/cache/coherence_array.sv
+$(ROOT)/hw/rtl/lib/cache/coherence_home_array.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_home_completions.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_home.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_d_arbiter.sv

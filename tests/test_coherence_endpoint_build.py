@@ -173,3 +173,28 @@ def test_coherent_cache_geometry(address: int, line: int) -> None:
         cwd=runner.test_dir,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.synthesis
+@pytest.mark.parametrize(
+    "address,line,ways,ultra", [(32, 64, 4, 1), (56, 32, 4, 0), (32, 32, 1, 1)]
+)
+def test_home_array_geometry(address: int, line: int, ways: int, ultra: int) -> None:
+    """Independent array ports elaborate both RAM forms and packed tag groups."""
+    runner = YosysRunner(memory_images=False)
+    cache = runner.root_dir / "hw/rtl/lib/cache"
+    sources = runner.parse_filelist(cache / "coherence_home.f")
+    top = "coherence_home_array"
+    script = f"read_verilog -sv -DSYNTHESIS -I{cache} " + " ".join(sources)
+    script += f"; chparam -set ADDR_WIDTH {address} -set LINE_BYTES {line} "
+    script += f"-set CACHE_BYTES 1024 -set WAYS {ways} -set ULTRA {ultra} {top}; "
+    script += f"hierarchy -check -top {top}; synth -top {top} -flatten -run coarse; "
+    script += "opt; check -assert; select -assert-none t:$dlatch* t:$adlatch*"
+    result = subprocess.run(
+        ["yosys", "-p", script],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        cwd=runner.test_dir,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

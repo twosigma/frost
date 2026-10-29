@@ -202,6 +202,15 @@ FORMAL_TARGETS = [
         tasks=("coh_dma_ingress_prove", "coh_dma_ingress_cover"),
     ),
     FormalTarget(
+        "coherence_home_array.sby",
+        "Independent L2 ports preserve byte values, tokens and physical-row exclusions.",
+        tasks=(
+            "coh_home_array_prove",
+            *(f"coh_home_array_uram_byte{lane}_prove" for lane in range(64)),
+            "coh_home_array_cover",
+        ),
+    ),
+    FormalTarget(
         "coherence_array.sby",
         "A watched byte preserves masked updates across serialized array operations.",
         tasks=("coh_array_bmc", "coh_array_uram_bmc"),
@@ -1024,6 +1033,15 @@ SBY_TASKS = [
     ),
     ("coh_completions_cover", "Concurrent results and independent release."),
     ("coh_home_bmc", "Coherent home completion, merge, and victim locks."),
+    ("coh_home_array_prove", "Independent L2 ports preserve watched bytes."),
+    *[
+        (
+            f"coh_home_array_uram_byte{lane}_prove",
+            f"Registered L2 ports preserve byte {lane} and exclude row collisions.",
+        )
+        for lane in range(64)
+    ],
+    ("coh_home_array_cover", "Tag, read and update ports operate concurrently."),
     ("coh_array_bmc", "Coherent array byte values and held responses."),
     ("coh_array_uram_bmc", "Coherent array byte values through registered RAM ports."),
     (

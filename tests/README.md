@@ -73,6 +73,11 @@ G/C/U, full identities and reset at response presentation. The
 independent home peers. They hold four results behind C, reorder line replies,
 and check AXI burst order, byte masks, errors and reset on both bus widths.
 
+`coherence_home_array` and its BRAM and packed-tag variants check concurrent
+tag decisions, data reads and masked updates. They exercise physical-row
+aliases, live victim exclusions, continuous read/write contention and reset
+with responses in flight.
+
 `coherence_home_completions`, `coherence_home`, `coherence_home_equal`,
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
 and CPU observation cuts. They run in the unit shard. The program shards
