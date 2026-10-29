@@ -165,6 +165,9 @@ two runs.
 and startup code reinitialize the kernel, heap, and application state.
 Its simulation budget is three million cycles.
 
+The `mtimer_stress` budget is two million cycles for all 20,000 iterations
+of its memory and ALU loop.
+
 | Entries that run once | Reason |
 | --- | --- |
 | `coremark_pro_loops`, `coremark_pro_nnet`, `lq_stale_slot_probe` | Run time |

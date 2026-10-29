@@ -1018,6 +1018,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Machine-timer interrupts and MRET keep making progress across timer phases "
             "through all 20,000 memory/ALU loop iterations"
         ),
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
     ),
     "mret_drain_deadlock": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
