@@ -2190,6 +2190,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="coherence_cluster_test_harness",
         description="One hart, DMA, pending stores, recalls, and atomic ownership",
     ),
+    "coherence_dma_ingress": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_dma_ingress",
+        hdl_toplevel_module="coherence_dma_ingress",
+        description="Four DMA credits, opaque identities, completion delay, and reset",
+        verilator_extra_args=("--assert", "-GADDR_WIDTH=56"),
+    ),
     "coherence_home": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home",
         hdl_toplevel_module="coherence_home",

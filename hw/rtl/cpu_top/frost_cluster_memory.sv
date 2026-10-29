@@ -175,33 +175,9 @@ module frost_cluster_memory #(
   wire coherent_address_ok = riscv_pkg::pma_cached_ok(
       riscv_pkg::XLEN'(i_coherent_req_addr)
   ) && i_coherent_req_addr[4:0] == 0;
-  // Register ingress ownership before the shared level's same-line checks.
-  // This separates a wrapper's arbitration/address mux from the cache
-  // admission path, while permitting dequeue and replacement on one edge.
-  logic coherent_pending_q;
-  logic dma_req_write;
-  logic [riscv_pkg::PhysAddrBits-1:0] dma_req_addr;
-  logic [L1LineBytes*8-1:0] dma_req_wdata;
-  logic [L1LineBytes-1:0] dma_req_wstrb;
-  logic [LineIdBits-1:0] dma_req_id;
-  wire dma_req_valid = ENABLE_COHERENCE && !i_rst && !i_fatal_error && coherent_pending_q;
+  wire dma_req_valid = ENABLE_COHERENCE && coherent_address_ok && i_coherent_req_valid;
   assign o_coherent_req_ready = ENABLE_COHERENCE && (ENABLE_CACHED_TIER != 0) &&
-      !i_rst && !i_fatal_error && coherent_address_ok &&
-      (!coherent_pending_q || dma_req_ready);
-  always_ff @(posedge i_clk) begin
-    if (i_rst) coherent_pending_q <= 1'b0;
-    else begin
-      if (dma_req_valid && dma_req_ready) coherent_pending_q <= 1'b0;
-      if (i_coherent_req_valid && o_coherent_req_ready) begin
-        coherent_pending_q <= 1'b1;
-        dma_req_write <= i_coherent_req_write;
-        dma_req_addr <= i_coherent_req_addr;
-        dma_req_wdata <= i_coherent_req_wdata;
-        dma_req_wstrb <= i_coherent_req_wstrb;
-        dma_req_id <= i_coherent_req_id;
-      end
-    end
-  end
+      coherent_address_ok && dma_req_ready;
   assign o_coherent_resp_valid = ENABLE_COHERENCE && dma_resp_valid;
   assign o_coherent_resp_id = ENABLE_COHERENCE ? dma_resp_id : '0;
   assign o_coherent_resp_rdata = ENABLE_COHERENCE ? dma_resp_rdata : '0;
@@ -224,43 +200,50 @@ module frost_cluster_memory #(
     logic dma_d_valid, dma_d_ready, home_d_valid, home_d_ready;
     logic g_valid, g_ready, dma_g_ready, dma_c_valid, dma_c_ready;
     logic home_c_valid, home_c_ready, u_valid, u_ready, dma_u_ready, dma_owner_q;
-    coherence_line_bridge #(
-        .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
-        .ID_BITS(4),
-        .SOURCE(2),
-        .PORT_CLASS(3)
-    ) ingress (
-        .i_clk(i_clk),
-        .i_rst(i_rst),
-        .i_fatal_stop(i_fatal_error),
-        .i_req_valid(dma_req_valid),
-        .o_req_ready(dma_req_ready),
-        .i_req_write(dma_req_write),
-        .i_req_addr(dma_req_addr),
-        .i_req_data(dma_req_wdata),
-        .i_req_mask(dma_req_wstrb),
-        .i_req_id(dma_req_id),
-        .o_resp_valid(dma_resp_valid),
-        .o_resp_id(dma_resp_id),
-        .o_resp_data(dma_resp_rdata),
-        .o_resp_error(dma_resp_error),
-        .o_clean_valid(),
-        .o_clean_addr(),
-        .i_clean_done(1'b0),
-        .o_d_valid(dma_d_valid),
-        .i_d_ready(dma_d_ready),
-        .o_d(dma_d),
-        .i_g_valid(g_valid && dma_owner_q),
-        .o_g_ready(dma_g_ready),
-        .i_g(grant),
-        .o_c_valid(dma_c_valid),
-        .o_c_selected(),
-        .i_c_ready(dma_c_ready),
-        .o_c(dma_c),
-        .i_u_valid(u_valid && dma_owner_q),
-        .o_u_ready(dma_u_ready),
-        .i_u(release_message)
-    );
+    if (ENABLE_COHERENCE) begin : gen_dma_ingress
+      coherence_dma_ingress #(
+          .ADDR_WIDTH(riscv_pkg::PhysAddrBits)
+      ) ingress (
+          .i_clk(i_clk),
+          .i_rst(i_rst),
+          .i_fatal_stop(i_fatal_error),
+          .i_req_valid(dma_req_valid),
+          .o_req_ready(dma_req_ready),
+          .i_req_write(i_coherent_req_write),
+          .i_req_addr(i_coherent_req_addr),
+          .i_req_data(i_coherent_req_wdata),
+          .i_req_mask(i_coherent_req_wstrb),
+          .i_req_id(i_coherent_req_id),
+          .o_resp_valid(dma_resp_valid),
+          .o_resp_id(dma_resp_id),
+          .o_resp_data(dma_resp_rdata),
+          .o_resp_error(dma_resp_error),
+          .o_d_valid(dma_d_valid),
+          .i_d_ready(dma_d_ready),
+          .o_d(dma_d),
+          .i_g_valid(g_valid && dma_owner_q),
+          .o_g_ready(dma_g_ready),
+          .i_g(grant),
+          .o_c_valid(dma_c_valid),
+          .i_c_ready(dma_c_ready),
+          .o_c(dma_c),
+          .i_u_valid(u_valid && dma_owner_q),
+          .o_u_ready(dma_u_ready),
+          .i_u(release_message)
+      );
+    end else begin : gen_no_dma_ingress
+      assign dma_req_ready = 1'b0;
+      assign dma_resp_valid = 1'b0;
+      assign dma_resp_id = '0;
+      assign dma_resp_rdata = '0;
+      assign dma_resp_error = 1'b0;
+      assign dma_d_valid = 1'b0;
+      assign dma_d = '0;
+      assign dma_g_ready = 1'b0;
+      assign dma_c_valid = 1'b0;
+      assign dma_c = '0;
+      assign dma_u_ready = 1'b0;
+    end
     coherence_d_arbiter #(
         .WIDTH((riscv_pkg::PhysAddrBits + 312)),
         .PORTS(2)

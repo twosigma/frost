@@ -1,0 +1,24 @@
+[tasks]
+coh_dma_ingress_prove
+coh_dma_ingress_cover
+
+[options]
+coh_dma_ingress_prove: mode prove
+coh_dma_ingress_cover: mode cover
+coh_dma_ingress_prove: depth 6
+coh_dma_ingress_cover: depth 16
+timeout 180
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv coherence_pkg.sv coherence_dma_ingress.sv
+prep -top coherence_dma_ingress
+memory_map
+opt
+
+[files]
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_dma_ingress.sv
