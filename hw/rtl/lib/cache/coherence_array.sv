@@ -75,8 +75,6 @@ module coherence_array #(
     Init,
     Idle,
     Tags,
-    Select,
-    ReadData,
     Data,
     Reply,
     WriteWait
@@ -95,12 +93,14 @@ module coherence_array #(
   logic [SetBits-1:0] tag_raddr, tag_waddr;
   logic [TagEntryBits-1:0] tag_wdata;
   logic [TagEntryBits-1:0] tag_rdata[WAYS];
-  logic [TagEntryBits-1:0] tags_q[WAYS];
+
   logic hit;
+  logic select_valid;
+  logic [PlruBits-1:0] select_plru;
   logic [WayBits-1:0] selected;
   logic [RowBits-1:0] data_raddr, data_waddr;
   logic [8*LINE_BYTES-1:0] data_rdata;
-  logic update_fire, request_fire;
+  logic update_fire, request_fire, select_data;
 
   function automatic logic [WayBits-1:0] victim(input logic [PlruBits-1:0] state,
                                                 input logic [WAYS-1:0] eligible);
@@ -152,11 +152,14 @@ module coherence_array #(
         (update_fire && i_update_way == WayBits'(way)));
   end
 
+  assign select_valid = phase_q == Tags && count_q == 1;
+  assign select_plru = phase_q == Tags && count_q == CountBits'(TAG_READ_LATENCY) ?
+      plru_read : plru_q;
   assign plru_we = !i_rst && (phase_q == Init ||
       (update_fire && i_update_insert && (!BIMODAL_INSERT || insert_lfsr_q[4:0] == 0)) ||
-      (phase_q == Select && hit && !visit_q));
+      (select_valid && hit && !visit_q));
   assign plru_write = phase_q == Init ? '0 : touch(
-      plru_q, phase_q == Select ? selected : i_update_way
+      select_plru, select_valid ? selected : i_update_way
   );
   sdp_block_ram #(
       .ADDR_WIDTH(SetBits),
@@ -209,7 +212,9 @@ module coherence_array #(
     end
   end
 
-  assign data_raddr = (RowBits'(o_resp_way) << SetBits) | RowBits'(set_q);
+  assign data_raddr = (RowBits'(selected) << SetBits) | RowBits'(set_q);
+  assign select_data = visit_q || !((hit && skip_data_q) ||
+      (modified_data_q && (!hit || tag_rdata[selected][TagBits+:2] != 2'b11)));
   assign data_waddr = (RowBits'(i_update_way) << SetBits) |
       RowBits'(i_update_addr[OffsetBits+:SetBits]);
   sdp_ram_byte_en #(
@@ -225,19 +230,19 @@ module coherence_array #(
       .i_waddr(data_waddr),
       .i_wdata(i_update_data),
       .i_wbyte_en(i_update_mask & {LINE_BYTES{update_fire}}),
-      .i_re(phase_q == ReadData),
+      .i_re(select_valid && select_data),
       .i_raddr(data_raddr),
       .o_rdata(data_rdata)
   );
 
   always_comb begin
-    selected = victim(plru_q, ~exclude_q);
+    selected = victim(select_plru, ~exclude_q);
     hit = 1'b0;
     for (int way = WAYS - 1; way >= 0; way--) begin
-      if (tags_q[way][TagBits+:2] == 0 && !exclude_q[way]) selected = WayBits'(way);
+      if (tag_rdata[way][TagBits+:2] == 0 && !exclude_q[way]) selected = WayBits'(way);
     end
     for (int way = 0; way < WAYS; way++) begin
-      if (tags_q[way][TagBits+:2] != 0 && tags_q[way][TagBits-1:0] == tag_q) begin
+      if (tag_rdata[way][TagBits+:2] != 0 && tag_rdata[way][TagBits-1:0] == tag_q) begin
         hit = 1'b1;
         selected = WayBits'(way);
       end
@@ -266,7 +271,6 @@ module coherence_array #(
       o_resp_state <= '0;
       o_resp_data <= '0;
       o_resp_data_valid <= 1'b0;
-      for (int way = 0; way < WAYS; way++) tags_q[way] <= '0;
     end else begin
       insert_lfsr_q <= {
         insert_lfsr_q[14:0],
@@ -300,27 +304,20 @@ module coherence_array #(
         Tags: begin
           count_q <= count_q - 1'b1;
           if (count_q == 1) begin
-            for (int way = 0; way < WAYS; way++) tags_q[way] <= tag_rdata[way];
-            phase_q <= Select;
+            o_resp_hit <= hit && !visit_q;
+            o_resp_available <= hit || visit_q || !(&exclude_q);
+            o_resp_way <= selected;
+            o_resp_addr <= {tag_rdata[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
+            o_resp_state <= tag_rdata[selected][TagBits+:2];
+            o_resp_data_valid <= select_data;
+            if (!select_data) begin
+              o_resp_data <= '0;
+              phase_q <= Reply;
+            end else begin
+              count_q <= CountBits'(DATA_READ_LATENCY);
+              phase_q <= Data;
+            end
           end
-        end
-        Select: begin
-          o_resp_hit <= hit && !visit_q;
-          o_resp_available <= hit || visit_q || !(&exclude_q);
-          o_resp_way <= selected;
-          o_resp_addr <= {tags_q[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
-          o_resp_state <= tags_q[selected][TagBits+:2];
-          o_resp_data_valid <= visit_q || !((hit && skip_data_q) ||
-              (modified_data_q && (!hit || tags_q[selected][TagBits+:2] != 2'b11)));
-          if (!visit_q && ((hit && skip_data_q) ||
-              (modified_data_q && (!hit || tags_q[selected][TagBits+:2] != 2'b11)))) begin
-            o_resp_data <= '0;
-            phase_q <= Reply;
-          end else phase_q <= ReadData;
-        end
-        ReadData: begin
-          count_q <= CountBits'(DATA_READ_LATENCY);
-          phase_q <= Data;
         end
         Data: begin
           count_q <= count_q - 1'b1;
@@ -378,7 +375,7 @@ module coherence_array #(
       end
       assert (!(request_fire && update_fire));
       assert (!(o_resp_valid && (o_req_ready || o_update_ready)));
-      if (phase_q == Select) assert (selected < WAYS);
+      if (select_valid) assert (selected < WAYS);
       if (o_resp_valid && !o_resp_data_valid) begin
         assert (!visit_q);
         assert ((o_resp_hit && skip_data_q) ||
