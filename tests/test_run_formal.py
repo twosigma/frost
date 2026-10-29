@@ -182,6 +182,11 @@ FORMAL_TARGETS = [
         tasks=("coh_l1d_bmc",),
     ),
     FormalTarget(
+        "coherence_home_select.sby",
+        "Seat admission and circular work selection match serial priority.",
+        tasks=("coh_seat_select_prove", "coh_work_select_prove"),
+    ),
+    FormalTarget(
         "coherence_home_completions.sby",
         "Independent completion identities, predecessor order, and result ownership.",
         tasks=("coh_completions_prove", "coh_completions_cover"),
@@ -1045,6 +1050,11 @@ SBY_TASKS = [
         "Completion identity, pin lifetime, and predecessor order.",
     ),
     ("coh_completions_cover", "Concurrent results and independent release."),
+    ("coh_seat_select_prove", "Fill waiter ranks match serial seat allocation."),
+    (
+        "coh_work_select_prove",
+        "Ready work and circular priority match serial selection.",
+    ),
     ("coh_home_control_prove", "Composed home ownership and independent memory debt."),
     ("coh_home_control64_prove", "Composed home ownership across sibling sectors."),
     ("coh_home_array_prove", "Independent L2 ports preserve watched bytes."),

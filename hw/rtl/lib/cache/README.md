@@ -1,7 +1,7 @@
 # Cache library
 
 The CPU cache hierarchy has a private S/M L1D and L1I above a shared L2
-home. The home serializes acquisitions, probes the L1D, merges dirty
+home. The home orders acquisitions by sector, probes the L1D, merges dirty
 replies through L2 and orders DMA against CPU accesses. Page-table walks
 use the same home. FENCE.I writes private dirty data to L2 before
 invalidating the instruction cache and fetch buffers.
@@ -282,6 +282,12 @@ array and probe service in sector order and sample the current resident bytes.
 A successful fill's way pin lasts until its final waiter takes a completion
 pin. A failed fill transfers its error to completion metadata and releases
 its control before the waiters dispatch in sector order.
+
+Fill waiter ranks are independent of the available-seat count. A joining
+engine uses one seat before the queued waiters. Ready work precedes other
+eligible work, and a circular selector chooses the first candidate at or
+after its rotation index. The tag decision carries its captured query
+address through conflict and replacement checks.
 
 Two ordinary PutM controls have frozen payload storage and independent array
 service. Round-robin arbitration rotates tag decisions, row reads, masked
