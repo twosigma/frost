@@ -361,8 +361,11 @@ async def amo_holds_home_until_exact_write(dut: Any) -> None:
             (256, 0),
         ),
     )
+    await b.wait("o_agent_ready")
+    await b.tick()
+    await b.set(i_agent_valid=0)
     await b.tick(20)
-    assert not b.get("o_agent_ready") and not b.get("o_agent_g_valid")
+    assert not b.get("o_agent_g_valid")
     await b.set(
         i_write_atomic=1,
         i_write_sc=0,
@@ -375,9 +378,6 @@ async def amo_holds_home_until_exact_write(dut: Any) -> None:
     await b.set(i_write_mask=0)
     await b.wait("o_write_done")
     assert not b.get("o_sc_write_done")
-    await b.wait("o_agent_ready")
-    await b.tick()
-    await b.set(i_agent_valid=0)
     await b.wait("o_agent_g_valid")
     grant = unpack(b.get("o_agent_g"), (3, 9, 6, b.p, 256, 1))
     assert grant[4] & ((1 << 64) - 1) == 18

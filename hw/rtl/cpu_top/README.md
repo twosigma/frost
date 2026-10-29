@@ -11,7 +11,7 @@ uncached data and instruction ports.
 | Module | Contents |
 | --- | --- |
 | `frost_hart` | `cpu_ooo` with its MMUs, walker, L0 and IMSIC files; the instruction fetch providers; `coherent_hart_cache` with the S/M L1D, L1I, walker bridge and FENCE.I sequencing; and `cpu_uncached_adapter` |
-| `frost_cluster_memory` | The DMA ingress queue; `coherence_home` with serialized acquisitions, the L2 array and victim ownership; and `cpu_memory_fabric` with its AXI master |
+| `frost_cluster_memory` | The DMA ingress queue; `coherence_home` with independent completions, the L2 array and victim ownership; and `cpu_memory_fabric` with its AXI master |
 
 The D/P/R/W/WA/G/C/U channels carry requests, probes, dirty data, grants
 and completion ownership. Dirty data merges through L2. `cpu_top` latches
@@ -206,7 +206,9 @@ provide coherence between separate CPU instances.
 
 `frost_hart` contains `coherent_hart_cache`, and `frost_cluster_memory`
 contains `coherence_home`. The [cache interface](../lib/cache/README.md#coherent-one-hart-cache-path)
-uses S/M permissions for one hart and one serialized home acquisition.
+uses S/M permissions for one hart. The home admits nineteen requests and
+executes them through one array/probe worker. Eight result credits separate
+execution from grant delivery. Identities and way pins last through Release.
 There is no E permission or second hart. `ENABLE_COHERENCE` controls DMA
 ingress. `ENABLE_CACHED_TIER=0` omits the cache hierarchy.
 

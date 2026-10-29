@@ -246,8 +246,13 @@ requests. Each class has one request identity. Source 2 and class 3 identify
 DMA, whose four-bit ingress ID occupies q.id. `coherence_dma_ingress` has
 four admission credits and holds each opaque ID through external response
 delivery. It presents requests in acceptance order and returns data or errors
-after U. The home accepts one D or
-ordinary W operation at a time. Round-robin arbitration rotates eligible
+after U. The home admits nineteen requests with distinct identities. Eight
+result credits separate execution from grant delivery. A result credit returns
+on G acceptance; its identity and physical way pin last through U. Each
+request waits for U from earlier requests to the same 32-byte sector.
+A request waiting for an available way releases its execution credit and retries.
+One array/probe worker executes eligible demands and ordinary PutM operations.
+PutM payload storage is independent of the result credits. Round-robin arbitration rotates eligible
 requesters, read responses and individual PutM slots. Probe replies have
 separate ownership from CPU reads, pending stores and PutM presentation.
 A ProbeRead of M merges dirty bytes and leaves S. ProbeInvalidate leaves I
@@ -263,8 +268,9 @@ victim image before reusing its row. Its physical address stays locked until
 a successful memory B response. A failed fill cannot expose the detached
 victim tag. Grants pin their destination through C and U. An absorbed PutM
 keeps its exact slot and epoch until WA cancellation. A completion with no
-pending cancellations presents U on the following cycle. An ordinary PutM
-keeps the home busy through WA. DMA reads collect dirty private data; DMA
+pending cancellations becomes eligible for U on the following cycle. A fair
+arbiter holds each U presentation through acceptance. An ordinary PutM
+keeps the array/probe worker busy through WA. DMA reads collect dirty private data; DMA
 writes merge only their selected bytes after invalidation.
 An L2-resident DMA read with no dirty probe data returns the resident image
 without a data-array write. Fills and dirty replies reach the array before
@@ -324,10 +330,14 @@ reads. FENCE, Device publication and serializer drains include pending
 committed stores and the selected SC write. They do not require all dirty L2
 bytes to reach external memory.
 
-The unit benches `coherence_home`, `coherence_home_equal`, `coherence_cluster`
+The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_equal`, `coherence_cluster`
 and `coherent_cut` cover controller ownership, inclusion, cuts, atomics and
 probe service. The whole-SoC program configurations use this hierarchy.
-Formal targets `coherence_control`, `coherence_array`,
+G and U route by their message source identity. Fair C arbiters select the
+hart and DMA inputs and the hart's data, instruction and walker inputs. Each
+arbiter holds its selection during backpressure and acknowledges only that input.
+
+Formal targets `coherence_home_completions`, `coherence_control`, `coherence_array`,
 `coherence_home`, `coherence_l1d` and `coherent_cpu` check endpoint service,
 representative byte values, bounded controller transitions and CPU ownership.
 Detached victim validity, address and a watched byte are checked by induction

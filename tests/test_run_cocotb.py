@@ -2196,10 +2196,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Four DMA credits, opaque identities, completion delay, and reset",
         verilator_extra_args=("--assert", "-GADDR_WIDTH=56"),
     ),
+    "coherence_home_completions": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home_completions",
+        hdl_toplevel_module="coherence_home_completions",
+        description="Independent results, completion pins, and same-sector predecessors",
+        verilator_extra_args=("--assert", "-GCACHE_BYTES=1024"),
+    ),
     "coherence_home": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home",
         hdl_toplevel_module="coherence_home",
-        description="Serialized acquisitions, dirty recalls, completion pins, and victim locks",
+        description="Independent completions, dirty recalls, way pins, and victim locks",
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=1024",

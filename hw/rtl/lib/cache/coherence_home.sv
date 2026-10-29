@@ -16,14 +16,16 @@
 
 `include "coherence_types.svh"
 
-// One acquisition owns its L2 block through completion and release. A fill
-// overlaps victim recalls. Detached dirty blocks own their addresses until B.
+// Independent completions pin their L2 ways through Release. A fill overlaps
+// victim recalls. Detached dirty blocks own their addresses until B.
 module coherence_home #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 64,
     parameter int unsigned CACHE_BYTES = 2 * 1024 * 1024,
     parameter int unsigned WAYS = 4,
     parameter int unsigned NUM_WB = 2,
+    parameter int unsigned COMPLETIONS = 19,
+    parameter int unsigned RESULTS = 8,
     parameter bit ULTRA = 1'b1,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
     localparam int unsigned WbBits = NUM_WB > 1 ? $clog2(NUM_WB) : 1
@@ -75,7 +77,7 @@ module coherence_home #(
   localparam int unsigned OffsetBits = $clog2(LINE_BYTES);
   localparam int unsigned Sectors = LINE_BYTES / 32;
   localparam logic [5:0] FillTid = 6'(coherence_pkg::fill_base(1));
-  localparam logic [5:0] PutTid = 6'(coherence_pkg::put_base(1, 1));
+  localparam logic [5:0] PutTid = 6'(coherence_pkg::put_base(1, 4));
   typedef enum logic [4:0] {
     Idle,
     Lookup,
@@ -94,18 +96,19 @@ module coherence_home #(
     Update,
     UpdateWait,
     Result,
-    Complete,
     PutAck,
     Fatal
   } phase_t;
   phase_t phase_q;
-  coh_d_t demand_in, demand;
+  coh_d_t work, demand;
   coh_r_t reply;
   coh_w_t put_in, put_q;
   coh_p_t  probe_q;
   coh_wa_t ack_q;
   coh_g_t  result;
-  logic endpoint_ready, endpoint_live, work_valid, result_ready;
+  logic work_valid, work_ready, result_ready, put_busy, retry_valid, pin_valid;
+  logic [5:0] work_tid, demand_tid_q;
+  logic [WAYS-1:0] exclude;
   logic put_active_q, write_turn_q;
   logic array_req_ready, array_resp_valid, array_hit, array_available;
   logic array_update_ready;
@@ -188,49 +191,58 @@ module coherence_home #(
   end
 `endif
 
-  assign demand_in = i_d;
   assign put_in = i_w;
   assign reply = i_r;
   assign active = !i_rst && !i_fatal_stop && !o_fatal;
-  assign select_put = i_w_valid && (!i_d_valid || write_turn_q);
-  assign o_d_ready = active && phase_q == Idle && !select_put && endpoint_ready;
-  assign o_w_ready = active && phase_q == Idle && select_put && !endpoint_live;
-  assign active_tid = put_active_q ? PutTid : 6'd0;
+  assign select_put = i_w_valid && !put_busy && (!work_valid || write_turn_q);
+  assign work_ready = active && phase_q == Idle && !select_put;
+  assign o_w_ready = active && phase_q == Idle && select_put;
+  assign active_tid = put_active_q ? PutTid : demand_tid_q;
+  assign retry_valid = active && !put_active_q &&
+      ((phase_q == Lookup && address_locked) ||
+       (phase_q == LookupWait && array_resp_valid && !array_available));
+  assign pin_valid = active && !put_active_q && phase_q == LookupWait &&
+      array_resp_valid && array_available;
 
-  coherence_home_endpoint #(
+  coherence_home_completions #(
       .ADDR_WIDTH(ADDR_WIDTH),
-      .NUM_HARTS(1),
-      .L2_NUM_MSHR(1),
-      .TID(0)
-  ) endpoint (
+      .LINE_BYTES(LINE_BYTES),
+      .CACHE_BYTES(CACHE_BYTES),
+      .WAYS(WAYS),
+      .SLOTS(COMPLETIONS),
+      .RESULT_SLOTS(RESULTS)
+  ) completions (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_epoch(1'b0),
-      .i_d_valid(i_d_valid && active && phase_q == Idle && !select_put),
-      .o_d_ready(endpoint_ready),
+      .i_fatal_stop(i_fatal_stop || o_fatal),
+      .i_d_valid(i_d_valid),
+      .o_d_ready(o_d_ready),
       .i_d(i_d),
       .o_work_valid(work_valid),
-      .o_work(demand),
+      .i_work_ready(work_ready),
+      .o_work(work),
+      .o_work_tid(work_tid),
+      .i_retry_valid(retry_valid),
+      .i_retry_tid(demand_tid_q),
+      .i_pin_valid(pin_valid),
+      .i_pin_tid(demand_tid_q),
+      .i_pin_way(array_way),
+      .i_query_addr(address_q),
+      .o_exclude(exclude),
+      .i_put_addr(put_in.addr),
+      .o_put_busy(put_busy),
       .i_result_valid(active && phase_q == Result),
       .o_result_ready(result_ready),
       .i_result(result),
       .o_g_valid(o_g_valid),
       .i_g_ready(i_g_ready),
       .o_g(o_g),
-      .i_c_valid(i_c_valid && active),
-      .i_error_disposed(grant_error_q),
+      .i_c_valid(i_c_valid),
       .o_c_ready(o_c_ready),
       .i_c(i_c),
-      .i_absorb_valid(1'b0),
-      .o_absorb_ready(),
-      .i_absorb('0),
-      .i_cancel_valid(1'b0),
-      .i_cancel('0),
       .o_u_valid(o_u_valid),
       .i_u_ready(i_u_ready),
-      .o_u(o_u),
-      .o_live(endpoint_live),
-      .o_pending()
+      .o_u(o_u)
   );
 
   coherence_array #(
@@ -246,7 +258,7 @@ module coherence_home #(
       .i_req_valid(active && phase_q == Lookup && !address_locked),
       .o_req_ready(array_req_ready),
       .i_req_addr(address_q),
-      .i_req_exclude('0),
+      .i_req_exclude(exclude),
       .i_req_visit(1'b0),
       .i_req_way('0),
       .i_req_skip_data_on_hit(!put_active_q && demand.opcode == coherence_pkg::DMAWrite),
@@ -348,7 +360,7 @@ module coherence_home #(
     result = '0;
     result.q = demand.q;
     result.addr = demand.addr;
-    result.tid = 0;
+    result.tid = demand_tid_q;
     result.data = image_q[(LINE_BYTES == 64 && demand.addr[5] ? 256 : 0)+:256];
     result.error = grant_error_q;
     result.opcode = coherence_pkg::GrantData;
@@ -376,6 +388,8 @@ module coherence_home #(
       phase_q <= Idle;
       put_active_q <= 1'b0;
       put_q <= '0;
+      demand <= '0;
+      demand_tid_q <= '0;
       write_turn_q <= 1'b1;
       address_q <= '0;
       victim_addr_q <= '0;
@@ -427,10 +441,12 @@ module coherence_home #(
       if (active) begin
         case (phase_q)
           Idle: begin
-            if (i_d_valid && o_d_ready || i_w_valid && o_w_ready) begin
+            if (work_valid && work_ready || i_w_valid && o_w_ready) begin
               put_active_q <= i_w_valid && o_w_ready;
               put_q <= put_in;
-              address_q <= o_w_ready ? put_in.addr : demand_in.addr;
+              demand <= work;
+              demand_tid_q <= work_tid;
+              address_q <= o_w_ready ? put_in.addr : work.addr;
               write_turn_q <= !o_w_ready;
               fill_valid_q <= 1'b0;
               fill_sent_q <= 1'b0;
@@ -444,7 +460,10 @@ module coherence_home #(
               phase_q <= Lookup;
             end
           end
-          Lookup: if (!address_locked && array_req_ready) phase_q <= LookupWait;
+          Lookup: begin
+            if (retry_valid) phase_q <= Idle;
+            else if (!address_locked && array_req_ready) phase_q <= LookupWait;
+          end
           LookupWait:
           if (array_resp_valid) begin
             way_q <= array_way;
@@ -454,7 +473,9 @@ module coherence_home #(
                 demand.opcode == coherence_pkg::DMAWrite;
             victim_addr_q <= array_addr;
             sector_q <= 1'b0;
-            if (!array_hit && put_active_q) begin
+            if (retry_valid) begin
+              phase_q <= Idle;
+            end else if (!array_hit && put_active_q) begin
               o_fatal <= 1'b1;
               o_fatal_addr <= address_q;
               phase_q <= Fatal;
@@ -610,8 +631,7 @@ module coherence_home #(
               phase_q <= PutAck;
             end else phase_q <= Result;
           end
-          Result: if (result_ready) phase_q <= Complete;
-          Complete: if (o_u_valid && i_u_ready) phase_q <= Idle;
+          Result: if (result_ready) phase_q <= Idle;
           PutAck: if (i_wa_ready) phase_q <= Idle;
           default: begin
           end
@@ -636,12 +656,11 @@ module coherence_home #(
     if (!i_rst) begin
       if (i_r_valid && phase_q == ProbeWait) assert (probe_matches);
       if (i_w_valid && o_w_ready) assert (put_in.hart == 0 && put_in.epoch == 0);
-      if (phase_q == LookupWait && array_resp_valid) assert (array_available);
       if (i_mem_resp_valid && i_mem_resp_id[4])
         assert (wb_valid_q[WbBits'(i_mem_resp_id)] && wb_sent_q[WbBits'(i_mem_resp_id)]);
       if (i_mem_resp_valid && !i_mem_resp_id[4])
         assert (fill_valid_q && fill_sent_q && !fill_done_q && i_mem_resp_id == 0);
-      if (o_g_valid) assert (!victim_q && endpoint_live && phase_q == Result);
+      if (phase_q == Result) assert (!victim_q && !put_active_q);
     end
   end
 `endif
@@ -674,7 +693,7 @@ module coherence_home #(
   wire f_reply_upper = LINE_BYTES == 64 && reply.addr[5];
   logic f_read_install_needed, f_read_updated;
   always_ff @(posedge i_clk) begin
-    if (i_rst || (i_d_valid && o_d_ready)) begin
+    if (i_rst || (work_valid && work_ready)) begin
       f_read_install_needed <= 1'b0;
       f_read_updated <= 1'b0;
     end else begin
@@ -684,7 +703,7 @@ module coherence_home #(
         f_read_install_needed <= 1'b1;
       if (active && phase_q == Update && array_update_ready) f_read_updated <= 1'b1;
     end
-    if (f_past_valid && !i_rst && o_g_valid && !grant_error_q &&
+    if (f_past_valid && !i_rst && phase_q == Result && !grant_error_q &&
         demand.opcode == coherence_pkg::DMARead && f_read_install_needed)
       assert (f_read_updated);
   end
@@ -702,13 +721,16 @@ module coherence_home #(
       end
     end
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
+      if ($past(active && put_active_q && phase_q == LookupWait &&
+          array_resp_valid && !array_hit)) begin
+        assert (o_fatal && o_fatal_addr == $past(address_q));
+      end
       if ($past(o_mem_req_valid && !i_mem_req_ready)) begin
         assert (o_mem_req_valid);
         assert ({o_mem_req_addr, o_mem_req_id, o_mem_req_write} == $past(
             {o_mem_req_addr, o_mem_req_id, o_mem_req_write}
         ));
       end
-      if (o_g_valid || o_u_valid) assert (!o_d_ready && !o_w_ready);
       if (address_locked && phase_q == Lookup) assert (!lookup_fire);
       for (int slot = 0; slot < NUM_WB; slot++) begin
         if ($past(
@@ -747,7 +769,7 @@ module coherence_home #(
         assert (o_wa_valid);
         assert (o_wa == $past(o_wa));
       end
-      cover (o_g_valid && i_g_ready && result.opcode == coherence_pkg::GrantM);
+      cover (phase_q == Result && result_ready && result.opcode == coherence_pkg::GrantM);
       cover (o_wa_valid && ack_q.absorbed && i_wa_ready);
     end
   end

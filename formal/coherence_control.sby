@@ -6,6 +6,7 @@ coh_atomic_pair_wide_prove arm_pair arm_pair_wide
 coh_c_payload_prove payload
 coh_c_payload_wide_prove payload payload_wide
 coh_arbiter_prove arbiter
+coh_arbiter19_prove arbiter large_arbiter
 coh_reader_prove reader
 coh_ingress_prove reader dma
 coh_atomic_guard_prove guard
@@ -20,6 +21,7 @@ arm_pair: depth 4
 arm_select: timeout 180
 arm_pair: timeout 180
 arbiter: depth 12
+large_arbiter: timeout 180
 reader: depth 12
 guard: depth 12
 flags: depth 12
@@ -41,6 +43,7 @@ arm_pair: prep -flatten -top coherent_atomic_select_formal
 payload_wide: chparam -set WIDTH 74 coherence_c_payload
 payload: prep -top coherence_c_payload
 arbiter: chparam -set WIDTH 12 -set PORTS 3 coherence_d_arbiter
+large_arbiter: chparam -set PORTS 19 coherence_d_arbiter
 arbiter: prep -top coherence_d_arbiter
 dma: chparam -set SOURCE 2 -set PORT_CLASS 3 -set ID_BITS 4 coherence_line_bridge
 reader: prep -top coherence_line_bridge

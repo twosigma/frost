@@ -201,10 +201,10 @@ class Home:
             self.cycle += 1
 
     def demand(
-        self, op: int, address: int, data: int = 0, mask: int = 0
+        self, op: int, address: int, data: int = 0, mask: int = 0, slot: int = 0
     ) -> tuple[int, int]:
         """Encode hart or agent requests with disjoint source identities."""
-        q = pack((2, 2), (2, 3), (4, 9), (1, 0)) if op in (7, 8) else 0
+        q = pack((2, 2), (2, 3), (4, 9), (1, 0)) if op in (7, 8) else slot << 1
         return q, pack(
             (4, op),
             (9, q),
@@ -258,7 +258,7 @@ class Home:
         await self.set(i_g_ready=0)
         for _ in range(completion_delay):
             await self.tick()
-            assert not self.get("o_d_ready") and not self.get("o_w_ready")
+            assert not self.get("o_d_ready")
         await self.set(
             i_c_valid=1,
             i_c=pack(
@@ -277,7 +277,7 @@ class Home:
         for _ in range(release_delay):
             await self.tick()
             assert self.get("o_u_valid") and self.get("o_u") == release
-            assert not self.get("o_d_ready") and not self.get("o_w_ready")
+            assert not self.get("o_d_ready")
         await self.set(i_u_ready=1)
         await self.tick()
         await self.set(i_u_ready=0)
@@ -450,9 +450,15 @@ async def absorbed_put_cancellation_and_sc_entitlement(dut: Any) -> None:
     await b.wait("o_g_valid")
     grant = unpack(b.get("o_g"), (3, 9, 6, b.p, 256, 1))
     assert grant[4] == 0x9876543210
-    assert b.get("i_w_valid")
-    assert unpack(b.get("i_w"), (1, 1, 1, b.p, 256, 1))[1] == 0
+    # The other PutM drains while this grant waits for its requester.
+    for _ in range(100):
+        if any(ack[1] == 0 and not ack[4] for ack in b.acks):
+            break
+        await b.tick()
+    assert any(ack[1] == 0 and ack[3] == address + 32 and not ack[4] for ack in b.acks)
+    assert b.get("o_g_valid")
     await b.finish(grant)
+    assert await b.read(address + 32, 7) == 0xFEED0001
     count = len(b.probes)
     grant = await b.start(4, address)
     assert grant[0] == 5
@@ -500,3 +506,81 @@ async def clean_probe_error_disposes_identity(dut: Any) -> None:
     await b.finish(grant)
     b.probe_errors.clear()
     assert await b.read(address, 7) == b.expected(address)
+
+
+@cocotb.test()
+async def completion_pins_retry_without_blocking_unrelated_work(dut: Any) -> None:
+    """All pinned ways prevent replacement while another set makes progress."""
+    b = Home(dut)
+    await b.reset()
+    base = 0x80000000
+    stride = b.line * 4
+    grants = []
+
+    async def admit(slot: int, address: int) -> None:
+        _, request = b.demand(0, address, slot=slot)
+        await b.set(i_d_valid=1, i_d=request)
+        await b.wait("o_d_ready")
+        await b.tick()
+        await b.set(i_d_valid=0)
+
+    async def take_grant(slot: int) -> tuple[int, ...]:
+        await b.wait("o_g_valid")
+        grant = unpack(b.get("o_g"), (3, 9, 6, b.p, 256, 1))
+        assert grant[1] == slot << 1 and not grant[5]
+        await b.set(i_g_ready=1)
+        await b.tick()
+        await b.set(i_g_ready=0)
+        return grant
+
+    async def done(grant: tuple[int, ...], release_delay: int = 0) -> None:
+        await b.set(
+            i_c_valid=1,
+            i_c=pack((9, grant[1]), (6, grant[2]), (b.p, grant[3]), (2, 0), (1, 0)),
+        )
+        await b.wait("o_c_ready")
+        await b.tick()
+        await b.set(i_c_valid=0)
+        await b.wait("o_u_valid")
+        assert unpack(b.get("o_u"), (9, 6, b.p)) == grant[1:4]
+        for _ in range(release_delay):
+            await b.tick()
+            assert not b.get("o_g_valid")
+        await b.set(i_u_ready=1)
+        await b.tick()
+        await b.set(i_u_ready=0)
+
+    for slot in range(4):
+        await admit(slot, base + slot * stride)
+        grants.append(await take_grant(slot))
+    transaction_count = len(b.transactions)
+    await admit(4, base + 4 * stride)
+    await b.tick(100)
+    assert len(b.transactions) == transaction_count and not b.get("o_g_valid")
+    await admit(5, base + b.line)
+    unrelated = await take_grant(5)
+    await done(unrelated)
+    await done(grants[0], release_delay=20)
+    fifth = await take_grant(4)
+    assert fifth[4] == b.expected(base + 4 * stride)
+    await done(fifth)
+    for grant in grants[1:]:
+        await done(grant)
+
+
+@cocotb.test()
+async def missing_put_destination_preserves_dirty_ownership(dut: Any) -> None:
+    """Check fatal handling and dirty retention for a nonresident PutM."""
+    b = Home(dut)
+    await b.reset()
+    address = 0x80000000
+    payload = pack((1, 0), (1, 0), (1, 0), (b.p, address), (256, 0xDEADBEEF), (1, 0))
+    await b.set(i_w_valid=1, i_w=payload)
+    await b.wait("o_w_ready")
+    await b.tick()
+    await b.wait("o_fatal")
+    assert b.get("o_fatal_addr") == address
+    for _ in range(10):
+        await b.tick()
+        assert not b.get("o_wa_valid") and not b.get("o_w_ready")
+        assert int(dut.put_q.value) == payload

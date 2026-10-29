@@ -182,6 +182,11 @@ FORMAL_TARGETS = [
         tasks=("coh_l1d_bmc",),
     ),
     FormalTarget(
+        "coherence_home_completions.sby",
+        "Independent completion identities, predecessor order, and result ownership.",
+        tasks=("coh_completions_prove", "coh_completions_cover"),
+    ),
+    FormalTarget(
         "coherence_home.sby",
         "The coherent home preserves pins, dirty replies, and victim ownership.",
         tasks=(
@@ -208,6 +213,7 @@ FORMAL_TARGETS = [
             "coh_c_payload_prove",
             "coh_c_payload_wide_prove",
             "coh_arbiter_prove",
+            "coh_arbiter19_prove",
             "coh_reader_prove",
             "coh_ingress_prove",
             "coh_atomic_guard_prove",
@@ -1012,9 +1018,18 @@ SBY_TASKS = [
     ("coh_home_wb_prove", "Detached victim ownership through successful B."),
     ("coh_home_victim_cover", "Victim allocation, delayed B, and blocked refetch."),
     ("coh_home_error_cover", "Failed B preserves dirty victim ownership."),
+    (
+        "coh_completions_prove",
+        "Completion identity, pin lifetime, and predecessor order.",
+    ),
+    ("coh_completions_cover", "Concurrent results and independent release."),
     ("coh_home_bmc", "Coherent home completion, merge, and victim locks."),
     ("coh_array_bmc", "Coherent array byte values and held responses."),
     ("coh_array_uram_bmc", "Coherent array byte values through registered RAM ports."),
+    (
+        "coh_arbiter19_prove",
+        "Nineteen-way held arbitration and circular selection equality.",
+    ),
     ("coh_arbiter_prove", "Coherent arbitration preserves held payloads."),
     ("coh_reader_prove", "Read identities survive through release."),
     ("coh_ingress_prove", "DMA identities survive through release."),
