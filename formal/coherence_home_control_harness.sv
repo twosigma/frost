@@ -16,8 +16,12 @@
 
 `include "coherence_types.svh"
 
-// Control interleavings span eight sectors and three completion identities.
-module coherence_home_control_harness (
+// Control interleavings span four cache capacities and three completion identities.
+module coherence_home_control_harness #(
+    parameter int unsigned LINE_BYTES = 32,
+    parameter int unsigned WAYS = 1,
+    localparam int unsigned AddressBits = $clog2(8 * LINE_BYTES * WAYS)
+) (
     input logic i_clk,
     input logic i_rst,
     input logic i_stop,
@@ -45,24 +49,24 @@ module coherence_home_control_harness (
   coh_c_t completion;
   always_comb begin
     demand = i_d;
-    demand.addr[31:8] = '0;
+    demand.addr[31:AddressBits] = '0;
     demand.wdata = '0;
     reply = i_r;
-    reply.addr[31:8] = '0;
+    reply.addr[31:AddressBits] = '0;
     reply.data = '0;
     put = i_w;
-    put.addr[31:8] = '0;
+    put.addr[31:AddressBits] = '0;
     put.data = '0;
     completion = i_c;
-    completion.addr[31:8] = '0;
+    completion.addr[31:AddressBits] = '0;
   end
   coherence_home #(
       .COMPLETIONS(3),
       .RESULTS(2),
       .FILLS(2),
-      .LINE_BYTES(32),
-      .CACHE_BYTES(64),
-      .WAYS(1),
+      .LINE_BYTES(LINE_BYTES),
+      .CACHE_BYTES(2 * LINE_BYTES * WAYS),
+      .WAYS(WAYS),
       .ULTRA(0)
   ) home (
       .i_clk,
