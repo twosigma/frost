@@ -179,6 +179,7 @@ module coherence_l1d #(
   logic maint_last_q;
   logic probe_valid_q, probe_absorbed_q, probe_put_q;
   logic probe_capture, probe_launch, probe_reply_eligible;
+  logic local_ready, local_turn_q, probe_priority;
   logic [ADDR_WIDTH-1:0] array_request_addr;
   coh_p_t probe_in, probe_q;
   coh_r_t  reply_q;
@@ -217,7 +218,7 @@ module coherence_l1d #(
   logic pending_blocked;
 
   assign read_failure = active && phase_q == Idle &&
-      !probe_valid_q && !i_p_valid &&
+      !probe_valid_q && !probe_priority &&
       grant_valid && (grant.error || grant.opcode == coherence_pkg::GrantFail) &&
       !acquisition_sc_q && !acquisition_store_q;
   assign read_hit = active && phase_q == LookupWait && array_valid &&
@@ -318,7 +319,7 @@ module coherence_l1d #(
           (operation_q == StoreOp || operation_q == ReadOp) && !array_hit &&
           (request_live || !wb_free);
       o_perf_events.conflict_stall <= active && phase_q == Idle &&
-          !probe_valid_q && !i_p_valid && !grant_valid && !atomic_write_q &&
+          !probe_valid_q && !probe_priority && !grant_valid && !atomic_write_q &&
           pending_q && pending_blocked;
     end
   end
@@ -348,16 +349,24 @@ module coherence_l1d #(
   assign o_block_addr = {atomic_addr_q, pending_addr_q};
   assign o_sc_ready = active && !atomic_q && !pending_q && !request_live &&
       !o_sc_result_valid && i_atomic_protected && phase_q == Idle && wb_free &&
-      !probe_valid_q && !i_p_valid;
+      !probe_valid_q && !probe_priority;
   assign o_sc_write_tag = atomic_tag_q;
-  assign o_p_ready = active && phase_q == Idle && !probe_valid_q && !o_r_valid;
+  assign local_ready = grant_valid || atomic_write_q ||
+      (atomic_q && atomic_sc_q && !request_live) ||
+      (pending_q && !pending_blocked &&
+       (!pending_miss_q || (!request_live && wb_free)) &&
+       !(request_live && acquisition_store_q)) || rd_candidate || maint_eligible ||
+      (i_sc_valid && !atomic_q && !pending_q && !request_live &&
+       !o_sc_result_valid && i_atomic_protected && wb_free);
+  assign probe_priority = i_p_valid && !local_turn_q;
+  assign o_p_ready = active && phase_q == Idle && !probe_valid_q && !o_r_valid && !local_turn_q;
   assign probe_capture = i_p_valid && o_p_ready;
   assign probe_launch = probe_capture && probe_in.opcode != coherence_pkg::CheckSC && array_ready;
   assign array_request_addr = probe_launch ? probe_in.addr : lookup_addr_q;
   assign probe_reply_eligible = probe_q.opcode != coherence_pkg::ProbeInvalidate ||
       cut_phase_q == CutDone;
   (* keep = "true" *) wire invalidate_eligible = !i_fatal_stop && !o_fatal &&
-      phase_q == Idle && !probe_valid_q && !o_r_valid &&
+      phase_q == Idle && !probe_valid_q && !o_r_valid && !local_turn_q &&
       probe_in.opcode == coherence_pkg::ProbeInvalidate;
   assign o_cut_hold = (i_p_valid && !i_rst && invalidate_eligible) ||
       (cut_phase_q != CutIdle && cut_phase_q != CutDone);
@@ -394,7 +403,7 @@ module coherence_l1d #(
     end
   end
   assign o_r = reply_q;
-  assign grant_ready = active && phase_q == Idle && !probe_valid_q && !i_p_valid;
+  assign grant_ready = active && phase_q == Idle && !probe_valid_q && !probe_priority;
   assign request_valid = active && phase_q == Acquire;
 
   coherence_request_endpoint #(
@@ -638,6 +647,7 @@ module coherence_l1d #(
       maint_last_q <= 1'b0;
       o_maint_done <= 1'b0;
       probe_valid_q <= 1'b0;
+      local_turn_q <= 1'b0;
       probe_absorbed_q <= 1'b0;
       probe_put_q <= 1'b0;
       probe_q <= '0;
@@ -736,7 +746,9 @@ module coherence_l1d #(
         probe_valid_q <= 1'b1;
         probe_q <= probe_in;
       end
+      if (phase_q == Idle && !probe_valid_q) local_turn_q <= 1'b0;
       if (o_r_valid && i_r_ready) begin
+        local_turn_q <= local_ready;
         o_r_valid <= 1'b0;
         probe_valid_q <= 1'b0;
         if (probe_q.opcode == coherence_pkg::ProbeInvalidate) o_cut_release <= 1'b1;
@@ -782,7 +794,7 @@ module coherence_l1d #(
                 sc_tid_q <= probe_q.tid;
                 phase_q <= ProbeReply;
               end else phase_q <= Lookup;
-            end else if (i_p_valid || probe_valid_q) begin
+            end else if (probe_priority || probe_valid_q) begin
               // Probe ownership excludes local selection through R acceptance.
             end else if (grant_valid) begin
               grant_q <= grant;
@@ -1061,7 +1073,7 @@ module coherence_l1d #(
         Idle: begin
           if (probe_valid_q && !o_r_valid) begin
           end else
-          if (i_p_valid || probe_valid_q) begin
+          if (probe_priority || probe_valid_q) begin
           end else
           if (i_sc_valid && o_sc_ready) begin
           end else if (grant_valid) begin
@@ -1199,6 +1211,12 @@ module coherence_l1d #(
     end
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
       if (active) assert (f_probe_age < 32);
+      if (local_turn_q) assert (phase_q == Idle && !probe_valid_q && !o_r_valid);
+      if ($past(o_r_valid && i_r_ready)) assert (local_turn_q == $past(local_ready));
+      if ($past(local_turn_q)) assert (!local_turn_q);
+      if (local_turn_q && grant_valid && active) assert (grant_ready);
+      if ($past(local_turn_q && active && !grant_valid && atomic_write_q))
+        assert (phase_q == Lookup && operation_q == AtomicWriteOp);
       if ($past(active && o_r_valid && !i_r_ready) && active) begin
         assert (o_r_valid);
         assert (f_reply_signature == $past(f_reply_signature));

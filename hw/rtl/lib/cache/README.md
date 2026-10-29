@@ -217,7 +217,11 @@ with and without allocation. The allocation pulse selects the outcome.
 
 An L1D grant belongs to a live request endpoint. SC acceptance requires that
 endpoint to be idle, so grant processing and SC acceptance are mutually
-exclusive. Probe capture and service precede both in the local arbitration.
+exclusive. Probe capture and service own local arbitration through R
+acceptance. A ready local operation at that edge receives one selection
+edge before the next probe. Its bounded array operation completes before P
+is accepted. Waiting for an operand, permission or retirement does not hold
+the probe port. A withdrawn local offer releases its turn after one edge.
 Read-slot payload writes pass through a one-record buffer. The buffer
 captures the payload and a slot mask each cycle. The mask identifies the
 allocated slot and is zero without an allocation. It qualifies forwarding
