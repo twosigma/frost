@@ -414,3 +414,12 @@ top-level and cache counter blocks. See the
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
+
+The `coherent_cut_fabric` bench connects the private cache's probe and cut
+channels to the wrapper. It exercises dirty invalidation, held replies,
+returned L1 and L0 observations, SQ forwarding, delayed load and LR responses,
+flush and tag reuse, and both retirement lanes. CPU read responses have
+independent timing controls at the wrapper boundary. The private cache's
+modified line is installed through D/G/C/U before its probe response is
+checked. The bench controls cut admission and invalidation delays at their
+handshake boundary.

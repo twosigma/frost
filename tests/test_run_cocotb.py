@@ -2178,6 +2178,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GL2_CACHE_BYTES=128",
         ),
     ),
+    "coherent_cut_fabric": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_cut_fabric",
+        hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
+        description="Actual probe replies wait for observation replay and reservation cuts.",
+        verilator_extra_args=("--assert",),
+    ),
     "coherent_cut": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_cut",
         hdl_toplevel_module="tomasulo_wrapper",
