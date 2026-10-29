@@ -102,6 +102,8 @@ Executable Normal memory uses a direct-mapped instruction cache with `NORMAL_FET
 
 With Normal instruction caching enabled, `debug_fetch_barrier` captures each debug GO target and issues a registered invalidation pulse before releasing GO to the CPU. The requester makes debug instruction writes visible before asserting GO and holds the request until the CPU acknowledges it. Withdrawal cancels a pending GO; its invalidation may already have occurred. A held request cannot replay after acknowledgement and must drop for a clock edge before another request. CPU reset clears the barrier. The uncached profile connects GO directly to the CPU.
 
+Direct-cache tag comparisons use the line bits above the entry index. A valid entry's low line bits equal that index because each fill writes the entry selected by its own line address. Error records compare their complete line identities.
+
 Each direct-cache word uses local busy and discard copies to qualify its data and predecode write; the tag uses a separate copy. These registers take the fill engine's next state on the same edge as the engine. Reset, invalidation, discarded responses and failed responses suppress every payload write, including writes to invalid entries.
 
 Data and predecode are stored in one bank per word position within a line. The two words of a fetch window have opposite parity, so each bank reads the line index of the word with matching parity. This also applies to windows crossing a line or translated page boundary. Each bank has one asynchronous read address, and a fill writes every bank on the same edge.
