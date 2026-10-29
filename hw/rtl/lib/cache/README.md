@@ -293,7 +293,9 @@ Two ordinary PutM controls have frozen payload storage and independent array
 service. Round-robin arbitration rotates tag decisions, row reads, masked
 updates, probes, acknowledgements and results. Resident data reads overlap
 probes. Dirty probe bytes override the resident snapshot regardless of arrival
-order; DMA byte enables apply after that merge. Probe replies have
+order; DMA byte enables apply after that merge. The final service edge
+combines every completed input before the masked update or result becomes
+eligible. Error replies preserve dirty ownership. Probe replies have
 separate ownership from CPU reads, pending stores and PutM presentation.
 A pending probe reply prevents local grant selection until R acceptance.
 Grant application requires the private request endpoint to accept the grant.

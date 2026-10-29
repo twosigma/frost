@@ -80,7 +80,6 @@ module coherence_home_engine #(
     Lookup,
     Decision,
     Service,
-    Merge,
     Update,
     UpdateWait,
     Result,
@@ -105,6 +104,8 @@ module coherence_home_engine #(
   logic [1:0] state_q;
   logic read_sent_q, read_done_q, dirty_q, failed_q, error_q;
   logic probe_matches, upper, active, needs_probe, needs_data;
+  logic reply_fire, reply_fatal, service_error, service_dirty, service_complete;
+  logic data_complete, probe_complete;
   assign active = !i_rst && !i_stop;
   assign reply = i_r;
   assign upper = LINE_BYTES == 64 && request_q.addr[5];
@@ -119,7 +120,7 @@ module coherence_home_engine #(
 `ifdef COHERENCE_HOME_CONTROL
   assign o_tag_owner = phase_q == Decision;
   assign o_unpinned_owner = phase_q == Lookup || phase_q == Decision;
-  assign o_pin_owner = phase_q == Service || phase_q == Merge || phase_q == Update ||
+  assign o_pin_owner = phase_q == Service || phase_q == Update ||
       phase_q == UpdateWait || phase_q == Fatal || (phase_q == Result && read_sent_q);
   always_ff @(posedge i_clk) begin
     if (i_rst) o_initial_error <= 1'b0;
@@ -145,6 +146,18 @@ module coherence_home_engine #(
       (probe_q.opcode == coherence_pkg::CheckSC ? reply.opcode == coherence_pkg::CheckAck :
        reply.opcode == coherence_pkg::ProbeAck || reply.opcode == coherence_pkg::ProbeData);
   assign o_r_ready = active && phase_q == Service && probe_phase_q == ProbeWait && probe_matches;
+  assign reply_fire = i_r_valid && o_r_ready;
+  assign reply_fatal = reply_fire && reply.error &&
+      (reply.data_valid || reply.absorbed || reply.state == coherence_pkg::Modified ||
+       state_q == coherence_pkg::Modified || request_q.opcode == coherence_pkg::GetM);
+  assign data_complete = read_done_q || i_data_valid;
+  assign probe_complete = probe_phase_q == ProbeDone ||
+      (probe_phase_q == ProbeAck && i_wa_ready) ||
+      (reply_fire && (reply.error || (!reply.absorbed &&
+       (probe_q.opcode != coherence_pkg::CheckSC || !reply.sc_valid))));
+  assign service_error = error_q || (reply_fire && reply.error);
+  assign service_dirty = dirty_q || (reply_fire && reply.data_valid);
+  assign service_complete = phase_q == Service && data_complete && probe_complete && !reply_fatal;
   assign o_wa_valid = active && phase_q == Service && probe_phase_q == ProbeAck;
   assign o_wa = ack_q;
   assign o_update_valid = active && phase_q == Update;
@@ -267,15 +280,14 @@ module coherence_home_engine #(
         end
       end
       if (o_wa_valid && i_wa_ready) probe_phase_q <= ProbeDone;
-      if (phase_q == Service && read_done_q && probe_phase_q == ProbeDone) phase_q <= Merge;
-      if (phase_q == Merge) begin
-        if (request_q.opcode == coherence_pkg::DMAWrite && !error_q) begin
+      if (service_complete) begin
+        if (request_q.opcode == coherence_pkg::DMAWrite && !service_error) begin
           for (int byte_idx = 0; byte_idx < 32; byte_idx++)
           if (request_q.mask[byte_idx])
             image_q[(upper ? 256 : 0)+8*byte_idx+:8] <= request_q.wdata[8*byte_idx+:8];
         end
-        phase_q <= !error_q && (dirty_q || request_q.opcode == coherence_pkg::DMAWrite) ?
-            Update : Result;
+        phase_q <= !service_error &&
+            (service_dirty || request_q.opcode == coherence_pkg::DMAWrite) ? Update : Result;
       end
       if (o_update_valid && i_update_ready) phase_q <= UpdateWait;
       if (phase_q == UpdateWait && i_updated) phase_q <= Result;
@@ -286,7 +298,7 @@ module coherence_home_engine #(
   always_ff @(posedge i_clk)
     if (!i_rst) begin
       assert (!read_done_q || read_sent_q);
-      if (phase_q == Merge || phase_q == Update || phase_q == UpdateWait)
+      if (phase_q == Update || phase_q == UpdateWait)
         assert (read_done_q && probe_phase_q == ProbeDone);
       if (i_work_valid) assert (o_idle);
       if (i_decision_valid) assert (phase_q == Decision);
@@ -296,7 +308,7 @@ module coherence_home_engine #(
       if (o_r_ready) assert (probe_matches);
       if (phase_q == Lookup || phase_q == Decision)
         assert (!read_sent_q && !read_done_q && !dirty_q);
-      if (phase_q == Merge || phase_q == Update || phase_q == UpdateWait || phase_q == Result)
+      if (phase_q == Update || phase_q == UpdateWait || phase_q == Result)
         if (!error_q) assert (read_done_q && probe_phase_q == ProbeDone);
     end
 `endif
@@ -342,7 +354,7 @@ module coherence_home_engine #(
         assert (!read_sent_q && !read_done_q && !dirty_q);
         assert (!f_baseline_valid_q && !f_dirty_valid_q);
       end
-      if (phase_q == Service || phase_q == Merge || phase_q == Fatal) begin
+      if (phase_q == Service || phase_q == Fatal) begin
         assert (dirty_q == f_dirty_valid_q);
         if (needs_data && read_done_q) assert (f_baseline_valid_q);
         if (f_dirty_valid_q)
@@ -357,7 +369,7 @@ module coherence_home_engine #(
             assert (f_image_byte == f_dirty_value_q);
             else if (!error_q && f_baseline_valid_q) assert (f_image_byte == f_baseline_q);
       end
-      if (phase_q == Merge || phase_q == Update || phase_q == UpdateWait || phase_q == Result)
+      if (phase_q == Update || phase_q == UpdateWait || phase_q == Result)
         if (!error_q) assert (read_done_q && probe_phase_q == ProbeDone);
       if (phase_q == Result) assert (probe_phase_q == ProbeDone || error_q);
       if (o_update_valid)
