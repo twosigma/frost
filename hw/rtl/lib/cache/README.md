@@ -197,9 +197,9 @@ must not stop those resources in an integration.
 
 `coherent_hart_cache` contains the L1D, read-only L1I, instruction and walker
 bridges, and maintenance arbitration. `coherence_home` contains the shared
-L2 controller and array. `coherence_array` serializes tag lookup, data read
-and masked updates. It uses block RAM for L1D and the registered RAM
-configuration for L2.
+L2 controller and `coherence_home_array`, whose tag, data-read and masked-update
+ports have independent service. The L1D's `coherence_array` serializes its
+lookup, read and update operations in block RAM.
 The L1D uses 32-byte sectors; the L2 supports 32-byte or 64-byte lines.
 
 The L1D has I, S and M states. Reads use S or M. A store hit in M writes its
@@ -218,9 +218,10 @@ with and without allocation. The allocation pulse selects the outcome.
 An L1D grant belongs to a live request endpoint. SC acceptance requires that
 endpoint to be idle, so grant processing and SC acceptance are mutually
 exclusive. Probe capture and service own local arbitration through R
-acceptance. A ready local operation at that edge receives one selection
-edge before the next probe. Its bounded array operation completes before P
-is accepted. Waiting for an operand, permission or retirement does not hold
+acceptance. Ready grants, writes and maintenance request one local selection
+edge after R acceptance. An eligible read requests a turn after four completed
+probe replies. Grants and writes take priority within that turn. A selected
+local operation completes its bounded array service before P is accepted. Waiting for an operand, permission or retirement does not hold
 the probe port. A withdrawn local offer releases its turn after one edge.
 Read-slot payload writes pass through a one-record buffer. The buffer
 captures the payload and a slot mask each cycle. The mask identifies the
