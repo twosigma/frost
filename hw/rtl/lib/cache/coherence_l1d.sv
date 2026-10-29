@@ -178,6 +178,8 @@ module coherence_l1d #(
   logic [WayBits-1:0] maint_way_q;
   logic maint_last_q;
   logic probe_valid_q, probe_absorbed_q, probe_put_q;
+  logic probe_capture, probe_launch, probe_reply_eligible;
+  logic [ADDR_WIDTH-1:0] array_request_addr;
   coh_p_t probe_in, probe_q;
   coh_r_t  reply_q;
   coh_wa_t ack;
@@ -349,6 +351,11 @@ module coherence_l1d #(
       !probe_valid_q && !i_p_valid;
   assign o_sc_write_tag = atomic_tag_q;
   assign o_p_ready = active && phase_q == Idle && !probe_valid_q && !o_r_valid;
+  assign probe_capture = i_p_valid && o_p_ready;
+  assign probe_launch = probe_capture && probe_in.opcode != coherence_pkg::CheckSC && array_ready;
+  assign array_request_addr = probe_launch ? probe_in.addr : lookup_addr_q;
+  assign probe_reply_eligible = probe_q.opcode != coherence_pkg::ProbeInvalidate ||
+      cut_phase_q == CutDone;
   (* keep = "true" *) wire invalidate_eligible = !i_fatal_stop && !o_fatal &&
       phase_q == Idle && !probe_valid_q && !o_r_valid &&
       probe_in.opcode == coherence_pkg::ProbeInvalidate;
@@ -509,7 +516,7 @@ module coherence_l1d #(
         wb_free = 1'b1;
         wb_free_slot = 1'(slot);
       end
-      if (wb_live[slot] && wb_addr[slot] == probe_q.addr) begin
+      if (wb_live[slot] && wb_addr[slot] == (probe_capture ? probe_in.addr : probe_q.addr)) begin
         wb_match = 1'b1;
         wb_match_slot = 1'(slot);
       end
@@ -525,7 +532,7 @@ module coherence_l1d #(
       end
     end
     exclude = '0;
-    if (atomic_q && atomic_granted_q && lookup_addr_q[5+:SetBits] == atomic_addr_q[5+:SetBits])
+    if (atomic_q && atomic_granted_q && array_request_addr[5+:SetBits] == atomic_addr_q[5+:SetBits])
       exclude[atomic_way_q] = 1'b1;
     acquisition = '0;
     acquisition.size = 3'd3;
@@ -555,14 +562,14 @@ module coherence_l1d #(
       .i_clk(i_clk),
       .i_rst(i_rst),
       .o_init_done(),
-      .i_req_valid(active && phase_q == Lookup),
+      .i_req_valid((active && phase_q == Lookup) || probe_launch),
       .o_req_ready(array_ready),
-      .i_req_addr(lookup_addr_q),
+      .i_req_addr(array_request_addr),
       .i_req_exclude(exclude),
-      .i_req_visit(operation_q == MaintOp && !maint_line_q),
+      .i_req_visit(!probe_launch && operation_q == MaintOp && !maint_line_q),
       .i_req_way(maint_way_q),
       .i_req_skip_data_on_hit(1'b0),
-      .i_req_data_if_modified(operation_q == ProbeOp),
+      .i_req_data_if_modified(probe_launch || operation_q == ProbeOp),
       .o_resp_valid(array_valid),
       .i_resp_ready(phase_q == LookupWait),
       .o_resp_hit(array_hit),
@@ -746,7 +753,17 @@ module coherence_l1d #(
       if (active) begin
         case (phase_q)
           Idle: begin
-            if (probe_valid_q && !o_r_valid) begin
+            if (probe_capture && probe_in.opcode != coherence_pkg::CheckSC) begin
+              reply_q <= '0;
+              reply_q.tid <= probe_in.tid;
+              reply_q.epoch <= probe_in.epoch;
+              reply_q.addr <= probe_in.addr;
+              probe_absorbed_q <= wb_match;
+              probe_put_q <= wb_match_slot;
+              lookup_addr_q <= probe_in.addr;
+              operation_q <= ProbeOp;
+              phase_q <= probe_launch ? LookupWait : Lookup;
+            end else if (probe_valid_q && !o_r_valid) begin
               reply_q <= '0;
               reply_q.tid <= probe_q.tid;
               reply_q.epoch <= probe_q.epoch;
@@ -847,7 +864,11 @@ module coherence_l1d #(
                   state_q <= probe_q.opcode == coherence_pkg::ProbeInvalidate ?
                       coherence_pkg::Invalid : coherence_pkg::Shared;
                   phase_q <= Update;
-                end else phase_q <= probe_absorbed_q ? ProbeAbsorb : ProbeReply;
+                end else if (probe_absorbed_q) phase_q <= ProbeAbsorb;
+                else if (probe_reply_eligible) begin
+                  o_r_valid <= 1'b1;
+                  phase_q <= Idle;
+                end else phase_q <= ProbeReply;
               end
               GrantOp: begin
                 if (array_available) begin
@@ -942,7 +963,13 @@ module coherence_l1d #(
           UpdateWait:
           if (array_ready) begin
             case (operation_q)
-              ProbeOp: phase_q <= probe_absorbed_q ? ProbeAbsorb : ProbeReply;
+              ProbeOp: begin
+                if (probe_absorbed_q) phase_q <= ProbeAbsorb;
+                else if (probe_reply_eligible) begin
+                  o_r_valid <= 1'b1;
+                  phase_q <= Idle;
+                end else phase_q <= ProbeReply;
+              end
               GrantOp: begin
                 if (acquisition_store_q) begin
                   pending_q <= 1'b0;
@@ -990,9 +1017,15 @@ module coherence_l1d #(
               default: phase_q <= Idle;
             endcase
           end
-          ProbeAbsorb: if (wb_absorb_ready[probe_put_q]) phase_q <= ProbeReply;
+          ProbeAbsorb:
+          if (wb_absorb_ready[probe_put_q]) begin
+            if (probe_reply_eligible) begin
+              o_r_valid <= 1'b1;
+              phase_q <= Idle;
+            end else phase_q <= ProbeReply;
+          end
           ProbeReply: begin
-            if (probe_q.opcode != coherence_pkg::ProbeInvalidate || cut_phase_q == CutDone) begin
+            if (probe_reply_eligible) begin
               o_r_valid <= 1'b1;
               phase_q   <= Idle;
             end
