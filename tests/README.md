@@ -511,9 +511,11 @@ cold reset waits for a delayed CPU clock while programming clocks continue.
 DDR reset with common and independent CPU clocks. Both entries enable RTL
 assertions. They check asynchronous
 assertion from released state, held release with a stopped SoC clock, and
-repeated requests during release. The CPU stays in system reset during
-these checks, so the AXI ports are idle. The master and bridge unit benches
-check active transactions across CPU-only and fabric reset.
+repeated requests during release. The common-clock case checks CPU reset
+release after fabric reset, assertion with the registered core reset, and
+release one edge after the core reset clears.
+These checks use idle external DDR AXI ports. The master and bridge unit
+benches check active transactions across CPU-only and fabric reset.
 
 ## Coverage
 

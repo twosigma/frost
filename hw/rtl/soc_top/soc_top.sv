@@ -276,7 +276,8 @@ module soc_top #(
   // resets. Cache tags are swept on core reset.
   wire  core_clk = ASYNC_CPU_CLOCK ? i_cpu_clk : i_clk;
   logic dbg_ndmreset;
-  logic soc_cpu_rst, soc_axi_rst;
+  (* max_fanout = 256 *)logic soc_cpu_rst;
+  logic soc_axi_rst;
   logic debug_cpu_rst, debug_soc_rst;
   logic reset_request_soc;
   wire  fabric_reset_request = (USE_BEHAVIORAL_DDR != 0) ? i_rst : i_ddr_axi_rst;
@@ -751,8 +752,14 @@ module soc_top #(
   logic [31:0] dbg_bram_store_addr;
   logic [7:0] dbg_bram_store_strb;
   // A fabric reset discards transport ownership, so reset CPU owners too.
-  // This also covers the first edge before rst_core has registered i_rst.
-  assign soc_cpu_rst = rst_core || soc_axi_rst;
+  if (ASYNC_CPU_CLOCK) begin : gen_soc_cpu_reset_async
+    assign soc_cpu_rst = rst_core || soc_axi_rst;
+  end else begin : gen_soc_cpu_reset_common
+    wire reset_request = rst_core || soc_axi_rst;
+    always_ff @(posedge i_clk or posedge reset_request)
+      if (reset_request) soc_cpu_rst <= 1'b1;
+      else soc_cpu_rst <= 1'b0;
+  end
   if (ASYNC_CPU_CLOCK) begin : gen_cpu_controls
     cdc_sync #(
         .WIDTH(4)
