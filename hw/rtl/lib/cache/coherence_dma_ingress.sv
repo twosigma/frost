@@ -54,7 +54,6 @@ module coherence_dma_ingress #(
     Sent,
     HaveGrant,
     WaitRelease,
-    HaveRelease,
     Respond
   } phase_t;
   phase_t phase_q[4];
@@ -67,11 +66,8 @@ module coherence_dma_ingress #(
   logic [2:0] count_q, queued_q;
   logic [15:0] occupied_q;
   logic available;
-  logic [3:0] grant_match, release_match, c_valid, c_ready, response_valid, response_ready;
+  logic [3:0] grant_match, release_match, c_valid, c_ready;
   logic [3:0][ADDR_WIDTH+17:0] completions;
-  logic [3:0][262:0] responses;
-  logic response_selected;
-  logic [262:0] response;
   coh_d_t incoming, demand;
   coh_g_t grant_in;
   coh_u_t release_in;
@@ -128,8 +124,6 @@ module coherence_dma_ingress #(
       error_q[slot] ? coherence_pkg::Error : coherence_pkg::Consumed,
       1'b1
     };
-    assign response_valid[slot] = !i_rst && phase_q[slot] == HaveRelease;
-    assign responses[slot] = {2'(slot), request_packet.q.id, error_q[slot], data_q[slot]};
   end
 
   coherence_d_arbiter #(
@@ -145,20 +139,6 @@ module coherence_dma_ingress #(
       .i_ready  (i_c_ready),
       .o_payload(o_c)
   );
-  coherence_d_arbiter #(
-      .WIDTH(263),
-      .PORTS(4)
-  ) response_arbiter (
-      .i_clk,
-      .i_rst,
-      .i_valid  (response_valid),
-      .o_ready  (response_ready),
-      .i_payload(responses),
-      .o_valid  (response_selected),
-      .i_ready  (1'b1),
-      .o_payload(response)
-  );
-
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       head_q <= '0;
@@ -177,8 +157,7 @@ module coherence_dma_ingress #(
         tid_q[slot]   <= '0;
       end
     end else begin
-      o_resp_valid <= response_selected;
-      if (response_selected) {response_slot_q, o_resp_id, o_resp_error, o_resp_data} <= response;
+      o_resp_valid <= release_request;
       if (o_resp_valid) begin
         occupied_q[o_resp_id] <= 1'b0;
         phase_q[response_slot_q] <= Free;
@@ -218,8 +197,13 @@ module coherence_dma_ingress #(
           phase_q[slot] <= HaveGrant;
         end
         if (c_valid[slot] && c_ready[slot]) phase_q[slot] <= WaitRelease;
-        if (i_u_valid && release_match[slot]) phase_q[slot] <= HaveRelease;
-        if (response_valid[slot] && response_ready[slot]) phase_q[slot] <= Respond;
+        if (i_u_valid && release_match[slot]) begin
+          phase_q[slot] <= Respond;
+          response_slot_q <= 2'(slot);
+          o_resp_id <= packet_id(packet_q[slot]);
+          o_resp_data <= data_q[slot];
+          o_resp_error <= error_q[slot];
+        end
       end
     end
   end
@@ -420,7 +404,7 @@ module coherence_dma_ingress #(
         assert (f_sent[slot] == (phase_q[slot] >= Sent));
         assert (f_granted[slot] == (phase_q[slot] >= HaveGrant));
         assert (f_completed[slot] == (phase_q[slot] >= WaitRelease));
-        assert (f_released[slot] == (phase_q[slot] >= HaveRelease));
+        assert (f_released[slot] == (phase_q[slot] == Respond));
         if (f_queued[slot]) begin
           assert (occupied_q[packet_id(packet_q[slot])]);
           if (packet_id(packet_q[slot]) == f_id) assert (packet_q[slot] == f_payload);
@@ -444,7 +428,7 @@ module coherence_dma_ingress #(
         assert (o_c_valid);
         assert (o_c == $past(o_c));
       end
-      if (o_resp_valid) assert ($past(response_selected));
+      assert (o_resp_valid == $past(release_request));
       cover (count_q == 4 && queued_q == 0);
       cover (o_resp_valid && o_resp_error && count_q != 0);
       cover (o_resp_valid && accept_request && accept_demand && release_request);
