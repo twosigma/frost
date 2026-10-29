@@ -149,6 +149,14 @@ partitions. Select the board's SPI configuration boot mode for startup
 from flash. The programmer erases and verifies the ranges in its generated
 configuration-memory file.
 
+The mode switch is SW16. Positions 2, 3 and 4 are M2, M1 and M0 (ON = 1);
+position 1 is not a mode bit. Set **ON / OFF / OFF / ON** for Master SPI
+(M[2:0] = 001). With M[2:0] = 101 (JTAG) the FPGA ignores the flash, the user
+LEDs stay dark, and `boot_hw_device` fails. Read the pins from an unconfigured
+device with `list_property` on `REGISTER.CONFIG_STATUS.SLR0.*` after
+`refresh_hw_device`; they update as the switch moves. A configured design
+lights one user LED steadily and blinks another.
+
 U-Boot stops at `frost=>`. Its environment is volatile; `saveenv` is not
 supported. It provides `sf` commands for flash access and DHCP, ping and TFTP
 through either NIC. For RJ-45 network loading, set the server address and use
@@ -185,6 +193,13 @@ dhcp && tftpboot 0x84000000 Image && tftpboot 0x88000000 frost.dtb && tftpboot 0
 The wrapped image supplies its length to U-Boot. The composed test
 initramfs includes the NIC loader; RJ-45 DHCP and SSH key setup are
 described below.
+
+The initramfs runs a key-only SSH server (password logins are disabled). Add
+your public key by appending a second newc cpio archive that holds
+`root/.ssh/authorized_keys` (mode 600, directory mode 700) to
+`sw/apps/linux_boot/rootfs.cpio`, then wrap it again with `mkimage -A riscv -O
+linux -T ramdisk -C none` and copy it to the TFTP directory. Keep the keys
+outside the repository.
 
 ## Debian over NFS
 
