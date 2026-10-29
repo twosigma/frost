@@ -321,6 +321,10 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/id_stage/id_stage.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),tomasulo_coherent_cut_test_harness)
+VERILOG_SOURCES += $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_coherent_cut_test_harness.sv
+COMPILE_ARGS += -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.f \
+        -f $(ROOT)/hw/rtl/lib/cache/coherence_home.f
 else ifeq ($(TOPLEVEL),tomasulo_wrapper)
 # Tomasulo integration wrapper block test (ROB + RAT + RS + CDB arbiter)
 COMPILE_ARGS := \
