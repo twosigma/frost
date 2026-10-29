@@ -63,6 +63,11 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "cpu_axi_payload.sby",
+        "Occupied read-buffer payload equals owned-response capture through reset and backpressure",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "early_backend_hold.sby",
         "Combined backend hold equals early recovery or independently sampled fatal "
         "stop through reset and flush",

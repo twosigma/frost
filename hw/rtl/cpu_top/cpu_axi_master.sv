@@ -299,7 +299,6 @@ module cpu_axi_master #(
         pending_q[i_axi_rid] <= 1'b0;
         r_valid_q <= 1'b1;
         r_id_q <= i_axi_rid;
-        r_data_q <= i_axi_rdata;
         r_status_q <= i_axi_rresp;
       end
       if (b_fire && b_known) begin
@@ -309,6 +308,14 @@ module cpu_axi_master #(
         b_status_q <= i_axi_bresp;
       end
     end
+  end
+
+  // Payload writes use buffer vacancy or selected-read readiness. Ownership
+  // and reset qualify the valid flag and response publication.
+  logic r_payload_write;
+  assign r_payload_write = i_axi_rvalid && (!r_valid_q || (i_resp_ready && !select_b));
+  always_ff @(posedge i_clk) begin
+    if (r_payload_write) r_data_q <= i_axi_rdata;
   end
 
   always_comb begin
@@ -327,6 +334,25 @@ module cpu_axi_master #(
   // RRESP/BRESP; incoming USER bits cannot change the CPU's memory semantics.
   logic unused_user;
   assign unused_user = ^{i_axi_ruser, i_axi_buser};
+
+`ifdef CPU_AXI_PAYLOAD_PROOF
+  logic f_payload_reset_seen_q = 1'b0;
+  logic [DATA_BYTES*8-1:0] f_owned_payload_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || i_axi_rst) f_payload_reset_seen_q <= 1'b1;
+    if (!i_rst && !i_axi_rst && r_fire && r_known) f_owned_payload_q <= i_axi_rdata;
+    if (f_payload_reset_seen_q) begin
+      if (r_valid_q) begin
+        p_owned_read_payload : assert (r_data_q == f_owned_payload_q);
+      end
+      cover_stalled_read : cover (r_valid_q && o_resp_valid && !select_b && !i_resp_ready);
+      cover_owned_replacement : cover (r_valid_q && resp_fire && !select_b && r_fire && r_known);
+      cover_b_before_read : cover (r_valid_q && b_valid_q && select_b && resp_fire && i_axi_rvalid);
+      cover_unowned_read : cover (!i_rst && !i_axi_rst && !r_valid_q && r_fire && !r_known);
+      cover_reset_with_read : cover (i_rst && r_valid_q);
+    end
+  end
+`endif
 
 `ifndef SYNTHESIS
   always_comb begin

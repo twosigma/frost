@@ -58,7 +58,12 @@ The cache is a unified physical memory domain below its private levels: a downst
 
 ID 33 and IDs above 35 are unused. An ID stays owned until its CPU-side response is consumed. Different IDs may complete out of order; each response is matched to its owner. ID values do not select cacheability, device behavior, ordering or address routing.
 
-Instruction-fetch IDs belong only to reads. Their ID, data and error status use the master's registered R payload directly. The fabric captures the word-lane selection on the same edge as that R payload; this metadata holds with the buffered response. Shared R/B arbitration produces a read-publication flag before fetch-ID decoding. The fetch payload is consumed only when that arbitration publishes its ID.
+Instruction-fetch IDs belong only to reads. Their ID, data and error status use the master's registered R payload directly. For an accepted owned R response, the fabric captures the word-lane selection with the R payload; this metadata holds with the buffered response. Shared R/B arbitration produces a read-publication flag before fetch-ID decoding. The fetch payload is consumed only when that arbitration publishes its ID.
+
+The R-data payload write condition uses incoming RVALID and either buffer
+vacancy or selected-read readiness. Captures during reset or for unowned
+responses cannot set read validity. A buffered read holds its data under
+backpressure.
 
 An internal request register separates client arbitration from the master's ID and channel availability checks. It holds the complete address, attributes, ID, data and strobes under backpressure and permits simultaneous dequeue and replacement. CPU reset discards this request if it has not reached the master; already presented AXI traffic still drains. `o_axi_idle` includes this register.
 
