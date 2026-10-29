@@ -185,10 +185,10 @@ part works.
 
 ## Supported FPGA Boards
 
-| Board              | FPGA                 | CPU Clock  | Cache hierarchy → main memory               |
-|--------------------|----------------------|------------|---------------------------------------------|
-| Alveo X3522PV      | UltraScale+ (xcux35) | 322.27 MHz | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
-| VCU118 Evaluation Board | Virtex UltraScale+ (xcvu9p) | 200.00 MHz | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 2 GiB DDR4 |
+| Board | FPGA | Ethernet | Cache hierarchy → main memory |
+|---|---|---|---|
+| Alveo X3522PV | UltraScale+ (xcux35) | 10GBASE-R | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
+| VCU118 Evaluation Board | Virtex UltraScale+ (xcvu9p) | 1 Gb/s RJ-45 and 10GBASE-R on QSFP1 lane 0 | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 2 GiB DDR4 |
 
 See the [board guide](boards/README.md) for pinouts, clocking, and adding a board.
 
@@ -324,13 +324,16 @@ the image.
 
 ## Status and Roadmap
 
-FROST supports two boards, the Alveo X3522PV and the VCU118 evaluation
-board, and a single hart. Planned work includes a two-hart SMP configuration
-and 5 CoreMark/MHz; see [ROADMAP.md](ROADMAP.md).
+FROST supports one hart on the Alveo X3522PV and VCU118 evaluation boards.
+Both provide coherent Ethernet DMA and the JTAG/OpenSBI boot path for Debian
+with an NFS root. The VCU118 has RJ-45 and QSFP1 Ethernet interfaces and can
+start OpenSBI and an interactive U-Boot console from SPI flash. See the
+[VCU118 guide](boards/vcu118/README.md) for its boot paths and
+[ROADMAP.md](ROADMAP.md) for project work.
 
 ## Contributors and License
 
 [CONTRIBUTORS.md](CONTRIBUTORS.md) lists contributors. FROST is licensed under
 the [Apache License 2.0](LICENSE). The Linux drivers are dual-licensed under
-GPL-2.0-only or BSD-2-Clause, and third-party code in submodules keeps its own
-license.
+GPL-2.0-only or BSD-2-Clause. The U-Boot drivers use GPL-2.0-or-later,
+and third-party code in submodules keeps its own license.

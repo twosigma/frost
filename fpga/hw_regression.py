@@ -69,8 +69,8 @@ from hw_defaults import (  # noqa: E402
 from load_software import (  # noqa: E402
     BOARD_CONFIG,
     CPU_CLK_ENV,
-    VALID_APPS,
     board_clock_freq,
+    valid_apps_for_board,
 )
 from software_registry import COREMARK_PRO_APP_NAMES  # noqa: E402
 from sweep_coremark_pro import (  # noqa: E402
@@ -113,6 +113,48 @@ HELLO_MIN_GREETINGS = 2
 ECHO_PROMPT = "frost> "
 ECHO_PROBE = "FROST_HW_REGRESSION_ECHO_PROBE"
 ECHO_EXPECTED = f'You typed: "{ECHO_PROBE}" ({len(ECHO_PROBE)} chars)'
+
+# Include building/loading the ROM, DDR preparation, flash reads and CRC checks.
+BOOTROM_TIMEOUT_S = 600.0
+BOOTROM_START = "FROST Core Boot ROM v1.0 (On-Chip BRAM @ 0x00000000)"
+BOOTROM_MILESTONES = (
+    (
+        "ROM FSBL CRC verification",
+        re.compile(
+            r"^\[BOOTROM\] FSBL CRC-32 verified \(0x[0-9a-fA-F]{8}\)\. "
+            r"Jumping to 0x00004000\.\.\.\n",
+            re.MULTILINE,
+        ),
+    ),
+    (
+        "FSBL verified boot chain",
+        re.compile(
+            r"^\[FSBL\] Boot chain ready: OpenSBI @ 0x80000000 -> "
+            r"U-Boot @ 0x80200000 \(DTB @ 0x82200000\)\n",
+            re.MULTILINE,
+        ),
+    ),
+    (
+        "FSBL handoff",
+        re.compile(
+            r"^\[FSBL\] Handing off to OpenSBI \+ U-Boot Proper in DRAM\.\.\.\n",
+            re.MULTILINE,
+        ),
+    ),
+    ("U-Boot banner", re.compile(r"^U-Boot \d{4}\.\d{2}[^\n]*\n", re.MULTILINE)),
+    ("U-Boot prompt", re.compile(r"^frost=> \Z", re.MULTILINE)),
+)
+BOOTROM_FAILURE_RE = re.compile(
+    r"(?:\[(?:BOOTROM|FSBL)\] HALT:"
+    r"|\[BOOTROM\] (?:No valid FSBL header|Invalid FSBL bounds|FSBL CRC-32 mismatch!)"
+    r"|\[FSBL\] (?:DRAM verify failed|Invalid (?:OpenSBI|DeviceTree|U-Boot) header)"
+    r"|\[FSBL\] Loading [^\r\n]* FAIL \(exp="
+    r"|<<FAIL>>|<<TRAP>>|### ERROR ### Please RESET the board ###"
+    r"|\bsbi_trap_error:|Unhandled exception(?: code)?:"
+    r"|\binit_coldboot: [^\r\n]* failed \(error "
+    r"|\bError -?\d+ getting MISA XLEN)"
+    r"[^\r\n]*"
+)
 
 # --- Linux stage: Debian 13 on its NFS root over the NIC ---------------------
 #
@@ -407,6 +449,7 @@ class UartStage:
     """UART completion predicates, result checks, and optional stimuli.
 
     Done predicates end capture; ``judge`` checks all post-sentinel output.
+    ``success_quiet_s`` requires UART silence after successful output.
     Send each ``(trigger, text)`` stimulus once, in order, searching after the
     previous trigger's end.
     """
@@ -416,6 +459,7 @@ class UartStage:
     failure_done: Callable[[str], bool]
     judge: Callable[[str], tuple[bool, str]]
     stimuli: tuple[tuple[str, str], ...] = ()
+    success_quiet_s: float = 0.0
 
 
 def next_stimulus(
@@ -438,6 +482,35 @@ def next_stimulus(
 
 def build_stage(app: str, board: str, tolerance_pct: float) -> UartStage:
     """Build the UART rules for one app stage."""
+    if board == "vcu118" and app == "bootrom":
+
+        def bootrom_judge(serial_buf: str) -> tuple[bool, str]:
+            """Require verified flash stages and the interactive U-Boot prompt."""
+            text = console_text(serial_buf).replace("\r", "")
+            failure = BOOTROM_FAILURE_RE.search(text)
+            if failure:
+                return False, failure.group(0)
+            latest_start = text.rfind(BOOTROM_START)
+            if latest_start >= 0:
+                text = text[latest_start:]
+            after = 0
+            for name, pattern in BOOTROM_MILESTONES:
+                match = pattern.search(text, after)
+                if match is None:
+                    return False, f"missing {name} in boot order"
+                after = match.end()
+            return True, "ROM and FSBL verified flash images; U-Boot prompt reached"
+
+        return UartStage(
+            app,
+            success_done=lambda buf: bootrom_judge(buf)[0],
+            failure_done=lambda buf: (
+                BOOTROM_FAILURE_RE.search(console_text(buf)) is not None
+            ),
+            judge=bootrom_judge,
+            success_quiet_s=1.0,
+        )
+
     if app == "hello_world":
 
         def hello_judge(serial_buf: str) -> tuple[bool, str]:
@@ -1403,6 +1476,18 @@ def run_uart_stage(
     stimulus_from = 0
     start = time.monotonic()
     deadline = start + timeout_s
+    last_uart_at = start
+
+    def success_ready() -> bool:
+        """Require the stage's success predicate and optional quiet interval."""
+        if not stage.success_done(serial_buf):
+            return False
+        if stage.success_quiet_s:
+            if min(time.monotonic(), deadline) - last_uart_at < stage.success_quiet_s:
+                return False
+            # Console writes can block while UART bytes accumulate.
+            return not select.select([serial_fd], [], [], 0)[0]
+        return True
 
     def consume_loader(text: str) -> None:
         """Split loader stdout into lines; reset capture at the load sentinel."""
@@ -1427,6 +1512,8 @@ def run_uart_stage(
                 if data:
                     text = data.decode("utf-8", errors="replace")
                     serial_buf += text
+                    if stage.success_quiet_s:
+                        last_uart_at = time.monotonic()
                     sys.stdout.write(text)
                     sys.stdout.flush()
             else:
@@ -1466,7 +1553,7 @@ def run_uart_stage(
         if (
             loader_done
             and program_started
-            and (stage.success_done(serial_buf) or stage.failure_done(serial_buf))
+            and (success_ready() or stage.failure_done(serial_buf))
         ):
             break
 
@@ -1484,7 +1571,7 @@ def run_uart_stage(
     if not program_started:
         status = "TIMEOUT"
         note = f"loader never reached {LOAD_COMPLETE_SENTINEL} within {timeout_s:.0f}s"
-    elif stage.success_done(serial_buf) or stage.failure_done(serial_buf):
+    elif success_ready() or stage.failure_done(serial_buf):
         ok, note = stage.judge(serial_buf)
         status = "PASS" if ok else "FAIL"
         if killed_loader:
@@ -1586,15 +1673,16 @@ DEBUGGER_DRIVEN_APPS = frozenset({"debug_target"})
 EXTERNAL_LINK_APPS = frozenset({"nic_echo"})
 
 
-def regression_stages() -> list[str]:
-    """Return stages in order: hello_world, other apps, PRO, Linux, then ECC.
+def regression_stages(board: str) -> list[str]:
+    """Return board stages: hello_world, other apps, PRO, Linux, then ECC.
 
-    Exclude debugger-driven apps and those needing an external link partner.
+    Exclude apps for other boards, debugger-driven apps and those needing an
+    external link partner.
     Keep ECC last so it covers all earlier traffic.
     """
     phase1 = [
         app
-        for app in VALID_APPS
+        for app in valid_apps_for_board(board)
         if app != LINUX_STAGE
         and app not in COREMARK_PRO_APP_NAMES
         and app not in DEBUGGER_DRIVEN_APPS
@@ -1638,9 +1726,8 @@ def main() -> int:
         type=float,
         default=None,
         help=(
-            "Base per-app timeout in seconds, build included; also forwarded "
-            "to the sweep, where a workload minimum may raise it (default: "
-            "per --board)"
+            "Base per-app timeout in seconds, build included; bootrom and the "
+            "sweep apply application-specific minimums (default: per --board)"
         ),
     )
     parser.add_argument(
@@ -1695,7 +1782,7 @@ def main() -> int:
     serial = args.serial if args.serial else DEFAULT_SERIALS[board]
     timeout = args.timeout if args.timeout is not None else DEFAULT_TIMEOUTS[board]
 
-    all_stages = regression_stages()
+    all_stages = regression_stages(board)
 
     if args.stages:
         requested = set(args.stages)
@@ -1791,6 +1878,8 @@ def main() -> int:
                 else:
                     stage = build_stage(stage_name, board, args.score_tolerance)
                     stage_timeout = timeout
+                    if board == "vcu118" and stage_name == "bootrom":
+                        stage_timeout = max(timeout, BOOTROM_TIMEOUT_S)
                 result = run_uart_stage(
                     args.repo,
                     serial_fd,

@@ -102,7 +102,9 @@ module frost #(
     parameter int unsigned DEBUG_JTAG_TAP = 1,
     // Build PHY_CTRL MAC_LOOPBACK (nic_mac_wrap). Requires one shared MAC
     // clock; use 0 with independent transceiver TX and RX clocks.
-    parameter int unsigned RAW_LOOPBACK = 1
+    parameter int unsigned RAW_LOOPBACK = 1,
+    // Optional secondary 1G SGMII NIC @ 0x4002_2000 (VCU118); 0 omits it.
+    parameter int unsigned ENABLE_1G_ETH = 0
 ) (
     input logic i_clk,
     input logic i_cpu_clk = 1'b0,
@@ -206,7 +208,28 @@ module frost #(
     input  logic        i_nic_rx_signal_ok = 1'b0,
     input  logic [ 4:0] i_nic_phy_status = 5'b01111,
     output logic [ 3:1] o_nic_phy_ctrl,
-    output logic        o_nic_rx_block_lock
+    output logic        o_nic_rx_block_lock,
+
+    // Secondary 1G SGMII NIC (active when ENABLE_1G_ETH != 0)
+    input  logic        i_nic_1g_tx_clk = 1'b0,
+    input  logic        i_nic_1g_rx_clk = 1'b0,
+    input  logic        i_nic_1g_tx_clk_ok = 1'b0,
+    input  logic        i_nic_1g_rx_clk_ok = 1'b0,
+    output logic [63:0] o_nic_1g_tx_raw_data,
+    output logic        o_nic_1g_tx_raw_valid,
+    input  logic [63:0] i_nic_1g_rx_raw_data = '0,
+    input  logic        i_nic_1g_rx_raw_valid = 1'b0,
+    input  logic        i_nic_1g_rx_signal_ok = 1'b0,
+    input  logic [ 4:0] i_nic_1g_phy_status = '0,
+    output logic [ 3:1] o_nic_1g_phy_ctrl,
+    output logic        o_nic_1g_rx_block_lock,
+
+    // Optional VCU118 SPI flash & boot status (ENABLE_1G_ETH != 0)
+    output logic       o_spi_cs_n,
+    output logic       o_spi_sck,
+    output logic       o_spi_mosi,
+    input  logic       i_spi_miso = 1'b0,
+    input  logic [1:0] i_ddr_status = 2'b11
 );
 
   /*
@@ -357,7 +380,8 @@ module frost #(
       .INT_RS_DEPTH(INT_RS_DEPTH),
       .DECODED_QUEUE_DEPTH(DECODED_QUEUE_DEPTH),
       .CLK_FREQ_HZ(CLK_FREQ_HZ),
-      .RAW_LOOPBACK(RAW_LOOPBACK)
+      .RAW_LOOPBACK(RAW_LOOPBACK),
+      .ENABLE_1G_ETH(ENABLE_1G_ETH)
   ) cpu_and_memory_subsystem (
 `ifdef SYNTHESIS
       .i_power_on_rst(1'b0),
@@ -463,7 +487,26 @@ module frost #(
       .i_nic_rx_signal_ok,
       .i_nic_phy_status,
       .o_nic_phy_ctrl,
-      .o_nic_rx_block_lock
+      .o_nic_rx_block_lock,
+      // Secondary 1G SGMII NIC
+      .i_nic_1g_tx_clk,
+      .i_nic_1g_rx_clk,
+      .i_nic_1g_tx_clk_ok,
+      .i_nic_1g_rx_clk_ok,
+      .o_nic_1g_tx_raw_data,
+      .o_nic_1g_tx_raw_valid,
+      .i_nic_1g_rx_raw_data,
+      .i_nic_1g_rx_raw_valid,
+      .i_nic_1g_rx_signal_ok,
+      .i_nic_1g_phy_status,
+      .o_nic_1g_phy_ctrl,
+      .o_nic_1g_rx_block_lock,
+      // VCU118 SPI flash & boot status
+      .o_spi_cs_n,
+      .o_spi_sck,
+      .o_spi_mosi,
+      .i_spi_miso,
+      .i_ddr_status
   );
 
   // Memory-mapped I/O FIFO 0 - used for general-purpose data buffering

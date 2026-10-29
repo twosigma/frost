@@ -21,7 +21,7 @@
 # Stage 1b fetches Debian's kernel and adds the matching FROST NIC module and
 # loader script to the initramfs; Debian's kernel lacks this driver.
 # Stage 2 repacks the images and DTB for FPGA_CPU_CLK_FREQ (timer and UART)
-# and FROST_LINUX_MEM_SIZE. The loader cleans Stage 2 before each load while
+# FROST_LINUX_BOARD and FROST_LINUX_MEM_SIZE. The loader cleans Stage 2 before each load while
 # reusing the Buildroot build and linux/debian-kernel cache.
 # Kernel and initramfs overrides are described below.
 
@@ -49,6 +49,7 @@ DEBIAN_IMAGE  := $(shell python3 "$(DEBIAN_KERNEL)" image --no-fetch)
 DRIVER_DIR    := $(FROST_ROOT)/linux/frost-net10g
 MEMERR_DIR    := $(FROST_ROOT)/linux/frost-memerr
 INITRD_IMG    := $(CURDIR)/rootfs.cpio
+MKIMAGE ?= $(or $(shell command -v mkimage 2>/dev/null),$(FROST_ROOT)/sw/uboot/build/out/tools/mkimage)
 # Prefer Buildroot's Linux-target toolchain, available when the recipe runs.
 # The helper falls back to FROST_LINUX_CROSS_COMPILE, set by the Docker image.
 BR2_CROSS      = $(BR2_OUT)/host/bin/riscv64-linux-
@@ -94,6 +95,7 @@ PACK_INITRD := $(or $(FROST_LINUX_INITRD),$(INITRD_IMG))
 PACK_ARGS := --initrd "$(PACK_INITRD)"
 endif
 PACK_ARGS += $(if $(FROST_LINUX_IP),--ip "$(FROST_LINUX_IP)")
+PACK_ARGS += --board "$(or $(FROST_LINUX_BOARD),x3)"
 PACK_ARGS += $(if $(FROST_LINUX_MAC),--mac "$(FROST_LINUX_MAC)")
 # The packer takes FROST_INITRD from the environment as its --initrd default,
 # which would give an NFS root an initramfs; only the variables above choose it.
@@ -222,6 +224,10 @@ $(INITRD_IMG): $(BR2_INITRD) $(DEBIAN_KERNEL) $(DRIVER_DIR)/frost_net10g.c \
 	python3 "$(DEBIAN_KERNEL)" $(MODULE_CROSS) initramfs \
 	  --base "$(BR2_INITRD)" --out "$@"
 
+# U-Boot ramdisk containing the composed initramfs and driver modules.
+rootfs.uimg: $(INITRD_IMG)
+	"$(MKIMAGE)" -A riscv -O linux -T ramdisk -C none -d "$<" "$@"
+
 # Stage 2: pack for this board's clock. The firmware that Buildroot's
 # post-image hook built (images/fw_jump.bin) is packed with frost_boot_image.py.
 # Grouped target (&:): one packer run writes all four files, so make -j must
@@ -236,7 +242,7 @@ sw_ddr.mem sw.mem sw_ddr.txt sw.txt &: $(PAYLOAD) $(PACK_INITRD) $(FW_JUMP) \
 # Clean the board images and composed initramfs before each load. Keep the
 # Buildroot build and Debian kernel cache for repacking on another board.
 clean:
-	rm -f sw.mem sw64.mem sw.txt sw_ddr.mem sw_ddr.txt rootfs.cpio \
+	rm -f sw.mem sw64.mem sw.txt sw_ddr.mem sw_ddr.txt rootfs.cpio rootfs.uimg \
 	      shim.elf shim.bin frost_boot_shim.S \
 	      frost.dts frost.dtb
 

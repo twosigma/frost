@@ -103,7 +103,9 @@ module frost_rvfi_platform #(
     parameter int unsigned CLK_FREQ_HZ = 322265625,
     // The NIC's raw TX-to-RX loopback (see frost.sv): 1 for one MAC clock
     // shared by both directions, 0 for independent TX and RX clocks.
-    parameter int unsigned RAW_LOOPBACK = 1
+    parameter int unsigned RAW_LOOPBACK = 1,
+    // Board peripherals use shadow RAM in this fixture.
+    parameter int unsigned ENABLE_1G_ETH = 0
 ) (
     input logic i_clk,
     input logic i_clk_div4,  // Divided clock for the low-BRAM programming port
@@ -226,8 +228,35 @@ module frost_rvfi_platform #(
     input  logic        i_nic_rx_signal_ok,
     input  logic [ 4:0] i_nic_phy_status,
     output logic [ 3:1] o_nic_phy_ctrl,
-    output logic        o_nic_rx_block_lock
+    output logic        o_nic_rx_block_lock,
+
+    // Board peripheral ports are idle in the TestRIG platform.
+    input  logic        i_nic_1g_tx_clk = 1'b0,
+    input  logic        i_nic_1g_rx_clk = 1'b0,
+    input  logic        i_nic_1g_tx_clk_ok = 1'b0,
+    input  logic        i_nic_1g_rx_clk_ok = 1'b0,
+    output logic [63:0] o_nic_1g_tx_raw_data,
+    output logic        o_nic_1g_tx_raw_valid,
+    input  logic [63:0] i_nic_1g_rx_raw_data = '0,
+    input  logic        i_nic_1g_rx_raw_valid = 1'b0,
+    input  logic        i_nic_1g_rx_signal_ok = 1'b0,
+    input  logic [ 4:0] i_nic_1g_phy_status = '0,
+    output logic [ 3:1] o_nic_1g_phy_ctrl,
+    output logic        o_nic_1g_rx_block_lock,
+    output logic        o_spi_cs_n,
+    output logic        o_spi_sck,
+    output logic        o_spi_mosi,
+    input  logic        i_spi_miso = 1'b0,
+    input  logic [ 1:0] i_ddr_status = 2'b11
 );
+
+  assign o_nic_1g_tx_raw_data = '0;
+  assign o_nic_1g_tx_raw_valid = 1'b0;
+  assign o_nic_1g_phy_ctrl = '0;
+  assign o_nic_1g_rx_block_lock = 1'b0;
+  assign o_spi_cs_n = 1'b1;
+  assign o_spi_sck = 1'b0;
+  assign o_spi_mosi = 1'b0;
 
   // Registered core reset combines external reset and ndmreset, for fanout.
   // Debug logic uses external reset alone so it survives debugger-requested

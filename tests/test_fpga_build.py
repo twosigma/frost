@@ -2471,7 +2471,10 @@ def test_perf_counters_cli_default_overrides_stale_environment(
     monkeypatch.setattr(sys, "argv", ["build.py", "x3", "--stop-after", "place"])
     observed = []
 
-    def compile_firmware(_root: Path, _output: Path, clock: int) -> bool:
+    def compile_firmware(
+        _root: Path, _output: Path, clock: int, app_name: str = "hello_world"
+    ) -> bool:
+        assert app_name == "hello_world"
         observed.append((clock, fpga_build.os.environ["FROST_PERF_COUNTERS"]))
         return False
 
@@ -3342,7 +3345,10 @@ def test_cpu_cli_controls_clock_before_software_build(
     monkeypatch.setattr(sys, "argv", arguments)
     observed = []
 
-    def compile_firmware(_root: Path, _output: Path, clock: int) -> bool:
+    def compile_firmware(
+        _root: Path, _output: Path, clock: int, app_name: str = "hello_world"
+    ) -> bool:
+        assert app_name == "hello_world"
         observed.append((clock, fpga_build.os.environ["FROST_CPU_CLK_DIV"]))
         return False
 

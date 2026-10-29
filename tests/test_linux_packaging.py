@@ -798,14 +798,15 @@ def test_load_software_takes_each_board_ddr_from_its_block_design(
         loader.board_ddr_bytes("none")
 
 
+@pytest.mark.parametrize("board,capacity", [("x3", 1 << 30), ("vcu118", 1 << 31)])
 def test_load_software_packs_linux_boot_for_the_board_ddr(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, board: str, capacity: int
 ) -> None:
     """load_software hands linux_boot the board's DDR size as FROST_LINUX_MEM_SIZE."""
     loader = _load_script("linux_packaging_loader", LOADER)
     compile_app_for_board = loader.compile_app_for_board
     monkeypatch.setattr(
-        sys, "argv", ["load_software.py", "x3", "linux_boot", "--build-only"]
+        sys, "argv", ["load_software.py", board, "linux_boot", "--build-only"]
     )
     monkeypatch.setattr(loader, "_linux_boot_preflight", lambda: None)
     monkeypatch.setattr(
@@ -819,7 +820,7 @@ def test_load_software_packs_linux_boot_for_the_board_ddr(
 
     monkeypatch.setattr(loader, "compile_app_for_board", build)
     loader.main()
-    assert [kwargs["ddr_bytes"] for kwargs in builds] == [1 << 30]
+    assert [kwargs["ddr_bytes"] for kwargs in builds] == [capacity]
 
     monkeypatch.delenv("FROST_LINUX_MEM_SIZE", raising=False)
     environments: list[dict[str, str]] = []
@@ -831,11 +832,20 @@ def test_load_software_packs_linux_boot_for_the_board_ddr(
     monkeypatch.setattr(loader.subprocess, "run", run)
     (tmp_path / "sw.mem").write_text("")
     (tmp_path / "sw.txt").write_text("")
-    assert compile_app_for_board("linux_boot", tmp_path, 1, 1, ddr_bytes=1 << 30)
+    assert compile_app_for_board(
+        "linux_boot", tmp_path, 1, 1, ddr_bytes=capacity, board=board
+    )
     assert compile_app_for_board("hello_world", tmp_path, 1, 1)
     assert [env.get("FROST_LINUX_MEM_SIZE") for env in environments] == [
-        str(1 << 30),
-        str(1 << 30),
+        str(capacity),
+        str(capacity),
+        None,
+        None,
+    ]
+
+    assert [env.get("FROST_LINUX_BOARD") for env in environments] == [
+        board,
+        board,
         None,
         None,
     ]
@@ -1023,6 +1033,39 @@ def _output_digests(app: Path) -> dict[str, str]:
         name: hashlib.sha256((app / name).read_bytes()).hexdigest()
         for name in LINUX_BOOT_OUTPUTS
     }
+
+
+def test_uboot_ramdisk_wraps_the_composed_modules(tmp_path: Path) -> None:
+    """The ramdisk target passes the composed archive and RISC-V image type."""
+    helper = _load_module(DEBIAN_KERNEL)
+    app = _linux_boot_tree(tmp_path)
+    mkimage = tmp_path / "image tool"
+    mkimage.write_text(
+        "#!/usr/bin/env python3\n"
+        "from pathlib import Path\nimport sys\n"
+        "assert sys.argv[1:10] == ['-A', 'riscv', '-O', 'linux', '-T', 'ramdisk', '-C', 'none', '-d']\n"
+        "Path(sys.argv[-1]).write_bytes(Path(sys.argv[-2]).read_bytes())\n"
+    )
+    mkimage.chmod(0o755)
+    result = subprocess.run(
+        ["make", "-C", str(app), "rootfs.uimg", f"MKIMAGE={mkimage}"],
+        env=_linux_boot_env(app),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    members = {
+        name: data
+        for name, _, data in helper.cpio_members((app / "rootfs.uimg").read_bytes())
+    }
+    for driver in helper.DRIVERS:
+        assert f"lib/modules/{helper.KERNEL_RELEASE}/{driver.name}.ko" in members
+        assert driver.init_script in members
+    subprocess.run(
+        ["make", "-C", str(app), "clean"], env=_linux_boot_env(app), check=True
+    )
+    assert not (app / "rootfs.uimg").exists()
 
 
 def test_linux_boot_make_substitutes_the_kernel_and_initramfs(tmp_path: Path) -> None:
@@ -2057,3 +2100,64 @@ def test_debian_kernel_rejects_missing_builtin_irqchips(
     with pytest.raises(RuntimeError, match=missing):
         helper.fetch(tmp_path)
     assert len(fetched) == len(helper.PACKAGES)
+
+
+@pytest.mark.parametrize("board", ["x3", "vcu118"])
+def test_board_nics_in_boot_tree(tmp_path: Path, board: str) -> None:
+    """Only the VCU118 tree advertises the RJ-45 NIC and its separate interrupt."""
+    packer = _load_module(SBI_PACKER)
+    dts = packer.gen_dts(
+        clk_hz=200_000_000, initrd_range=None, bootargs="", model="t", board=board
+    )
+    packer.compile_dtb(dts, tmp_path, "dtc")
+    node = "/soc@0/ethernet@40022000"
+    result = subprocess.run(
+        ["fdtget", str(tmp_path / "frost.dtb"), node, "interrupts"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == (0 if board == "vcu118" else 1)
+    if board == "vcu118":
+        assert result.stdout.strip() == "2 4"
+    assert dts.count('compatible = "frost,net10g"') == (2 if board == "vcu118" else 1)
+
+
+@pytest.mark.parametrize(
+    "present,configured", [(False, False), (True, False), (True, True)]
+)
+def test_rj45_dhcp_uses_device_identity(
+    tmp_path: Path, present: bool, configured: bool
+) -> None:
+    """Interface numbering and a configured NFS address do not redirect DHCP."""
+    net = tmp_path / "net"
+    net.mkdir()
+    (net / "eth0").mkdir()
+    (net / "renamed").mkdir()
+    commands = tmp_path / "commands"
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    for name, code in {
+        "readlink": 'case "$2" in */renamed/device) echo /devices/40022000.ethernet;; *) echo /devices/40030000.ethernet;; esac'
+        if present
+        else "echo /devices/40030000.ethernet",
+        "ip": f'echo "ip $*" >> "{commands}"\n'
+        + ('[ "$1" != -4 ] || echo "inet 192.0.2.2"' if configured else "exit 0"),
+        "udhcpc": f'echo "udhcpc $*" >> "{commands}"',
+    }.items():
+        executable = binaries / name
+        executable.write_text("#!/bin/sh\n" + code + "\n")
+        executable.chmod(0o755)
+    source = (
+        REPO_ROOT
+        / "linux/buildroot-external/board/frost/rootfs-overlay-mmu/etc/init.d/S45frost-net"
+    )
+    script = tmp_path / "init"
+    script.write_text(source.read_text().replace("/sys/class/net", str(net)))
+    subprocess.run(
+        ["sh", str(script), "start"],
+        check=True,
+        env={**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"]},
+    )
+    calls = commands.read_text() if commands.exists() else ""
+    assert ("udhcpc -i renamed" in calls) == (present and not configured)
+    assert "eth0" not in calls

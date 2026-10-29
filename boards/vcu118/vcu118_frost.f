@@ -26,5 +26,11 @@ $(ROOT)/boards/vcu118/vcu118_clock.sv
 # VCU118 DDR4 memory region initializer (valid ECC setup)
 $(ROOT)/boards/vcu118/vcu118_ddr_init.sv
 
+# VCU118 10G QSFP1 GTY transceiver wrapper
+$(ROOT)/boards/vcu118/vcu118_nic_gty.sv
+
+# VCU118 1G RJ-45 SGMII LVDS PCS/PMA and DP83867 PHY bootstrap wrapper
+$(ROOT)/boards/vcu118/vcu118_eth1g.sv
+
 # VCU118 board top-level wrapper
 $(ROOT)/boards/vcu118/vcu118_frost.sv

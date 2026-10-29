@@ -189,7 +189,7 @@ including instruction predecode metadata. Arrays loaded by their parent
 skip random fill as well as arrays with their own image file.
 Instruction-image padding is zero in every packed copy, matching the
 generated bank images. The benches establish idle programming clocks
-before HDL initialization, then assert power-on reset at time zero after the
+before HDL initialization, then assert power-on reset after the
 first HDL evaluation. This supplies an assertion edge to asynchronous reset
 logic even when the input's arbitrary initial value was high. Both modes use
 this pulse alongside the ordinary system-reset sequence. Warm resets leave
@@ -218,6 +218,13 @@ arm after their local reset completes. They remain active in ordinary and
 random-start simulations. Full-board simulation with power-on reset tied
 inactive uses configuration initializers and does not arm the DTM ownership
 assertions. Transport verification requires a power-on reset pulse.
+
+The whole-SoC program bench holds clocks low through the initial HDL
+evaluation. Before starting clocks, it clears NIC response-checker history
+that a synthetic startup event can arm from arbitrary reset state. System
+reset must be asserted at that boundary, and the checker must observe a
+driven reset before the program starts. Production registers keep their
+seeded state. Warm resets do not clear the checker's history.
 
 This is a two-state power-up test. It does not model metastability, reset
 recovery or removal timing, SRAM analog behavior, or power-domain sequencing.

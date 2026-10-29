@@ -43,7 +43,8 @@ repos:
         # env_v/ and riscv_test.h retain upstream style and licensing.
         # linux/frost-net10g/ and linux/frost-memerr/ follow
         # scripts/checkpatch.pl and use GPL-2.0-only OR BSD-2-Clause; the
-        # license hooks also skip them.
+        # license hooks also skip them. U-Boot uses its upstream style and GPL
+        # license; its drivers compile in the U-Boot build context.
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
@@ -51,7 +52,8 @@ repos:
             sw/apps/riscv_tests/riscv_test\.h|
             sw/apps/riscv_tests/env_v/.*|
             linux/frost-net10g/.*|
-            linux/frost-memerr/.*
+            linux/frost-memerr/.*|
+            sw/uboot/.*
           )$
 
   # C/C++ - clang-tidy with RISC-V flags. Compiler diagnostics are errors;
@@ -78,7 +80,8 @@ repos:
             sw/apps/riscv_tests/env_v/.*|
             linux/buildroot-external/package/.*/src/.*|
             linux/frost-net10g/.*|
-            linux/frost-memerr/.*
+            linux/frost-memerr/.*|
+            sw/uboot/.*
           )$
 
   # SystemVerilog/Verilog - Verible formatter and linter
@@ -122,7 +125,8 @@ repos:
             sw/apps/coremark/coremark/.*|
             verif/cocotb_tests/cache/test_(dma_test_engine|frost_cache)_wide\.py|
             perf-modeling/(frost_perf_model|calibration/trace_contract|tools/run_calibration|tests/test_trace_contract)\.py|
-            tests/test_pa_bridge_mutation\.py
+            tests/test_pa_bridge_mutation\.py|
+            fpga/flash/(make_flash_image|program_flash)\.py
           )$
         args:
           - --license-filepath=.license-header.txt
@@ -142,8 +146,10 @@ repos:
             sw/apps/pa_dma_test/main\.c|
             sw/apps/pa_nic_mmio_test/main\.c|
             sw/apps/pa_nic_packet_test/main\.c|
+            sw/apps/(bootrom/bootrom|fsbl/fsbl)\.c|
             linux/frost-net10g/.*|
-            linux/frost-memerr/.*
+            linux/frost-memerr/.*|
+            sw/uboot/.*
           )$
         args:
           - --license-filepath=.license-header.txt
@@ -156,7 +162,7 @@ repos:
           (?x)^(
             hw/third_party/.*|
             tests/test_(ddr_width_config|ptw_high_addr)\.sv|
-            boards/vcu118/vcu118_clock\.sv|
+            boards/vcu118/vcu118_(clock|eth1g)\.sv|
             perf-modeling/rtl/frost_perf_probe\.sv|
             asic/sram/macros/.*
           )$
@@ -167,7 +173,7 @@ repos:
       - id: insert-license
         name: insert-license (Tcl/Makefile/Shell)
         files: (\.tcl$|Makefile$|\.mk$|\.sh$)
-        exclude: ^(linux/frost-(net10g|memerr)/|sw/apps/pa_(width|vm_fetch|dma|nic_mmio|nic_packet)_test/Makefile$)
+        exclude: ^(linux/frost-(net10g|memerr)/|sw/apps/pa_(width|vm_fetch|dma|nic_mmio|nic_packet)_test/Makefile$|sw/apps/(bootrom|fsbl)/Makefile$|sw/uboot/Makefile$)
         args:
           - --license-filepath=.license-header.txt
           - --comment-style=#

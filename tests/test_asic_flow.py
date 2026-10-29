@@ -496,6 +496,15 @@ def test_each_clock_has_an_io_copy_at_one_pin(tmp_path: Path) -> None:
         assert divisor == "1", name
         assert len(pins) == 1 and pins[0].endswith(("/CK", "/clk0")), name
 
+    wrapper = (
+        orfs.REPOSITORY_ROOT / "hw/rtl/peripherals/nic/nic_mac_wrap.sv"
+    ).read_text()
+    pcs_branch = re.search(r"if\s*\(!GMII_MODE\)\s*begin\s*:\s*(\w+)", wrapper)
+    assert pcs_branch, "the default NIC branch must have a stable hierarchy name"
+    for direction in ("tx", "rx"):
+        expected = f".u_mac.{pcs_branch[1]}.u_mac.{direction}_gearbox.reservoir[0]"
+        assert expected in generated[f"nic_{direction}_clk_io"][2][0]
+
     missing = _evaluate_sdc(tmp_path, find_pins=False)
     assert missing.returncode != 0
     assert "the I/O reference for core_clk" in missing.stderr

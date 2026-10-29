@@ -197,7 +197,59 @@ set_property PACKAGE_PIN B21  [get_ports {ddr4_sdram_c0_dq[70]}]
 set_property PACKAGE_PIN A21  [get_ports {ddr4_sdram_c0_dq[71]}]
 
 # -----------------------------------------------------------------------------
-# 5. Bitstream Configuration Properties
+# 5. 10G QSFP1 Lane 0 GTY Transceiver (Quad 231, X1Y48) & Cage Control (Bank 64)
+# -----------------------------------------------------------------------------
+# Si570 (U38) MGTREFCLK0 of Quad 231
+set_property PACKAGE_PIN W9  [get_ports i_qsfp1_refclk_p]
+set_property PACKAGE_PIN W8  [get_ports i_qsfp1_refclk_n]
+create_clock -period 6.400 -name qsfp1_gty_refclk [get_ports i_qsfp1_refclk_p]
+
+# QSFP1 Channel 0 (GTYE4_CHANNEL_X1Y48)
+set_property PACKAGE_PIN V7  [get_ports o_qsfp1_tx_p]
+set_property PACKAGE_PIN V6  [get_ports o_qsfp1_tx_n]
+set_property PACKAGE_PIN Y2  [get_ports i_qsfp1_rx_p]
+set_property PACKAGE_PIN Y1  [get_ports i_qsfp1_rx_n]
+
+# QSFP1 Sideband Control Signals (Bank 64, 1.8V LVCMOS18)
+set_property PACKAGE_PIN AM21 [get_ports o_qsfp1_modsell]
+set_property PACKAGE_PIN BA22 [get_ports o_qsfp1_resetl]
+set_property PACKAGE_PIN AN21 [get_ports o_qsfp1_lpmode]
+set_property PACKAGE_PIN AL21 [get_ports i_qsfp1_modprsl]
+set_property IOSTANDARD LVCMOS18 [get_ports {o_qsfp1_modsell o_qsfp1_resetl o_qsfp1_lpmode i_qsfp1_modprsl}]
+set_property PULLUP true [get_ports i_qsfp1_modprsl]
+
+# -----------------------------------------------------------------------------
+# 6. 1G RJ-45 SGMII-over-LVDS & TI DP83867ISRGZ PHY Management (Bank 64)
+# -----------------------------------------------------------------------------
+# Differential SGMII Clock from TI DP83867 (U3)
+set_property PACKAGE_PIN AT22 [get_ports i_sgmii_clk_p]
+set_property PACKAGE_PIN AU22 [get_ports i_sgmii_clk_n]
+set_property IOSTANDARD LVDS [get_ports {i_sgmii_clk_p i_sgmii_clk_n}]
+set_property DIFF_TERM_ADV TERM_100 [get_ports {i_sgmii_clk_p i_sgmii_clk_n}]
+if {[llength [get_clocks -quiet -of_objects [get_ports i_sgmii_clk_p]]] == 0} {
+    create_clock -period 1.600 -name sgmii_clk625 [get_ports i_sgmii_clk_p]
+}
+
+# SGMII Differential RX (DIFF_PAIR_0 in Bank 64 Lower Nibble)
+set_property PACKAGE_PIN AU24 [get_ports i_sgmii_rx_p]
+set_property PACKAGE_PIN AV24 [get_ports i_sgmii_rx_n]
+set_property IOSTANDARD LVDS [get_ports {i_sgmii_rx_p i_sgmii_rx_n}]
+set_property DIFF_TERM_ADV TERM_100 [get_ports {i_sgmii_rx_p i_sgmii_rx_n}]
+
+# SGMII Differential TX (DIFF_PAIR_2 in Bank 64 Lower Nibble)
+set_property PACKAGE_PIN AU21 [get_ports o_sgmii_tx_p]
+set_property PACKAGE_PIN AV21 [get_ports o_sgmii_tx_n]
+set_property IOSTANDARD LVDS [get_ports {o_sgmii_tx_p o_sgmii_tx_n}]
+
+# TI DP83867 Hardware Reset & Clause-22 MDIO (Bank 64, 1.8V LVCMOS18)
+set_property PACKAGE_PIN BA21 [get_ports o_phy_rst_n]
+set_property PACKAGE_PIN AV23 [get_ports o_phy_mdc]
+set_property PACKAGE_PIN AR23 [get_ports io_phy_mdio]
+set_property IOSTANDARD LVCMOS18 [get_ports {o_phy_rst_n o_phy_mdc io_phy_mdio}]
+set_property PULLUP true [get_ports io_phy_mdio]
+
+# -----------------------------------------------------------------------------
+# 7. FPGA Configuration Properties
 # -----------------------------------------------------------------------------
 set_property CONFIG_VOLTAGE 1.8 [current_design]
 set_property CFGBVS GND [current_design]
@@ -206,25 +258,33 @@ set_property BITSTREAM.CONFIG.CONFIGRATE 51.0 [current_design]
 set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
 
 # -----------------------------------------------------------------------------
-# 6. Timing Optimizations (BRAM Cascade Height)
+# 8. Timing Optimizations (BRAM Cascade Height)
 # -----------------------------------------------------------------------------
 # Limit BRAM cascade depth to 1 to avoid multi-cycle deep RAMB36E2 cascades
 # in the low-BRAM tier that constrain core clock paths.
 set_property CASCADE_HEIGHT 1 [get_cells -quiet -hierarchical -filter {PRIMITIVE_TYPE =~ BMEM.*.*}]
 
 # -----------------------------------------------------------------------------
-# 7. Asynchronous Clock Domain Crossings
+# 9. Asynchronous Clock Domain Crossings
 # -----------------------------------------------------------------------------
-# Cut paths between SI5335A CPU clock tree and DDR4 memory clock tree
+# Cut paths between independent clock trees (CPU/div4 MMCM, freerun,
+# DDR4, QSFP1 GTY, and SGMII).
 set_clock_groups -asynchronous \
-    -group [get_clocks -include_generated_clocks -of_objects [get_ports sysclk1_300_p]] \
-    -group [get_clocks -include_generated_clocks -of_objects [get_ports default_250mhz_clk_clk_p]]
+    -group [get_clocks -include_generated_clocks -of_objects [get_pins -quiet u_clock_gen/u_mmcm/CLKOUT*]] \
+    -group [get_clocks -include_generated_clocks -of_objects [get_pins -quiet u_clock_gen/u_bufg_freerun_150/O]] \
+    -group [get_clocks -include_generated_clocks -of_objects [get_ports default_250mhz_clk_clk_p]] \
+    -group [get_clocks -include_generated_clocks -of_objects [get_ports i_qsfp1_refclk_p]] \
+    -group [get_clocks -include_generated_clocks -of_objects [get_ports i_sgmii_clk_p]]
 
-# False path for DDR4 calibration done synchronizer
+# Explicit CDC synchronizer and reset-synchronizer false paths (covers TXUSRCLK2 <-> RXUSRCLK2 as well)
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg[0]/D"}]
+set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/stage_q_reg[0]*/D"}]
+set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/chain_q_reg*/PRE"}]
+set_false_path -to [get_cells -quiet -hierarchical -filter {NAME =~ "*u_startup*"}]
+set_false_path -from [get_cells -quiet -hierarchical -filter {NAME =~ "*u_startup*"}]
 
 # -----------------------------------------------------------------------------
-# 8. Floorplanning
+# 10. Floorplanning
 # -----------------------------------------------------------------------------
 # The subsystem, clock generator, DDR controller and initializer use SLR2.
 if {[get_pblocks -quiet pblock_slr2] eq ""} {

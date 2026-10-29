@@ -38,6 +38,52 @@ test_testrig = importlib.import_module("test_testrig")
 SAIL_CONFIG = VERIF_DIR / "testrig" / "sail_frost.json"
 
 
+@pytest.mark.parametrize(
+    ("kind", "pattern", "production_only"),
+    (
+        (
+            "parameter",
+            r"\bparameter\s+((?:int unsigned|longint unsigned|bit|logic)"
+            r"(?:\s*\[[^\]]+\])?)\s+(\w+)",
+            {"ASYNC_CPU_CLOCK", "CACHE_NORMAL_MEMORY", "BOOT_ADDR"},
+        ),
+        (
+            "port",
+            r"\b((?:input|output|inout)\s+logic(?:\s*\[[^\]]+\])?)\s+(\w+)",
+            {"i_cpu_clk"},
+        ),
+    ),
+)
+def test_platform_interface_matches_testrig_fixture(
+    kind: str, pattern: str, production_only: set[str]
+) -> None:
+    """The TestRIG replacement accepts the platform's shared interface."""
+    interfaces = []
+    for path in ("hw/rtl/platform_top.sv", "hw/sim/frost_rvfi_platform.sv"):
+        source = (REPO_ROOT / path).read_text(encoding="utf-8")
+        source = re.sub(r"//[^\n]*|/\*.*?\*/", "", source, flags=re.S)
+        header = re.search(
+            r"\bmodule\s+\w+\s*#\((.*?)\)\s*\((.*?)\)\s*;", source, flags=re.S
+        )
+        assert header is not None, path
+        interface = {}
+        for declaration in header[1 if kind == "parameter" else 2].split(","):
+            match = re.fullmatch(
+                pattern + r"(?:\s*=\s*.+)?", declaration.strip(), flags=re.S
+            )
+            assert match is not None, (path, declaration)
+            datatype, name = match.groups()
+            assert name not in interface, (path, name)
+            interface[name] = re.sub(r"\s+", "", datatype)
+        interfaces.append(interface)
+    production, fixture = interfaces
+    # TestRIG injects instructions at reset and uses a single CPU clock with
+    # fixed-latency Normal memory. These controls belong to platform_top.
+    for name in production_only:
+        production.pop(name)
+    assert fixture == production
+
+
 @pytest.mark.parametrize("capacity_log2_bytes", (30, 36, 37))
 def test_sail_ddr_capacity_matches_frost(
     tmp_path: Path, capacity_log2_bytes: int

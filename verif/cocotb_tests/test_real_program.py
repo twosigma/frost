@@ -178,7 +178,7 @@ def _load_symbol_ranges(
 
 
 def start_clocks(signals: tuple[Any, ...], period_ps: int) -> None:
-    """Drive 50% clocks that rise together at time 0 and once every period.
+    """Drive 50% clocks that rise together at the call time and every period.
 
     cocotb's own clocks deposit their edges, and Verilator applies a deposit
     only after the evaluation that opens the time step, which sees unchanged
@@ -186,7 +186,7 @@ def start_clocks(signals: tuple[Any, ...], period_ps: int) -> None:
     the step's first evaluation takes the edge and each edge costs one
     evaluation less. Edge callbacks still read the values from before the
     edge, and the deposits they make still apply after it. The first edge is
-    a deposit, so that edge triggers awaited at time 0 see it.
+    a deposit, so that edge triggers awaited before its evaluation see it.
 
     The simulation is the same as with cocotb's clocks while no combinational
     logic reads the simulation time or a sampled value, which the dropped
@@ -363,16 +363,8 @@ def load_program_images(dut: Any) -> None:
         model.sim_load_image.value = 1
 
 
-async def generate_divided_clock(dut: Any, *, core_clock: Any | None = None) -> None:
-    """Generate i_clk_div4 with four times i_clk's period and aligned rising edges.
-
-    The dc_fifo crosses binary pointers without Gray coding and requires
-    related clocks. Toggle i_clk_div4 on every second i_clk rising edge.
-    Hold power-on reset for eight SoC edges and at least four CPU edges.
-    """
-    clock_edge = RisingEdge(dut.i_clk)
-    divided = dut.i_clk_div4
-    level = 0
+def initialize_wrapper_resets(dut: Any) -> None:
+    """Supply asserted reset from the FPGA wrapper at startup."""
     # The FPGA wrapper supplies an asserted reset at the platform boundary.
     # Its reset pipeline is outside the ASIC design's randomized state.
     if hasattr(dut, "reset_synchronizer_shift_register"):
@@ -383,6 +375,56 @@ async def generate_divided_clock(dut: Any, *, core_clock: Any | None = None) -> 
         ):
             signal = getattr(dut, name)
             signal.value = Immediate((1 << len(signal)) - 1)
+
+
+async def prepare_program_start(dut: Any) -> tuple[Any, ...]:
+    """Settle startup events before initializing verification history and clocks."""
+    for name in (
+        "i_clk",
+        "i_cpu_clk",
+        "i_clk_div4",
+        "i_jtag_tck",
+        "i_nic_tx_clk",
+        "i_nic_rx_clk",
+        "i_nic_1g_tx_clk",
+        "i_nic_1g_rx_clk",
+    ):
+        if hasattr(dut, name):
+            getattr(dut, name).value = Immediate(0)
+    dut.i_rst_n.value = Immediate(0)
+    dut.i_instr_mem_en.value = Immediate(0)
+    if hasattr(dut, "i_power_on_rst"):
+        dut.i_power_on_rst.value = Immediate(0)
+    initialize_wrapper_resets(dut)
+    await Timer(1, unit="ps")
+    if not hasattr(dut, "cpu_and_memory_subsystem"):
+        return ()
+    soc = dut.cpu_and_memory_subsystem.soc
+    if not hasattr(soc, "gen_cached_tier"):
+        return ()
+    assert int(soc.reset_request_soc.value), "NIC startup requires system reset"
+    # Initial simulator edges can arm this history from an arbitrary local
+    # reset. The checker starts unarmed before the first driven clock edge.
+    nic_fronts = [soc.gen_cached_tier.nic.u_front]
+    if hasattr(soc.gen_cached_tier, "gen_nic_1g"):
+        nic_fronts.append(soc.gen_cached_tier.gen_nic_1g.nic_1g.u_front)
+    history = tuple(front.reset_seen_q for front in nic_fronts)
+    for seen in history:
+        seen.value = Immediate(0)
+    return history
+
+
+async def generate_divided_clock(dut: Any, *, core_clock: Any | None = None) -> None:
+    """Generate i_clk_div4 with four times i_clk's period and aligned rising edges.
+
+    The dc_fifo crosses binary pointers without Gray coding and requires
+    related clocks. Toggle i_clk_div4 on every second i_clk rising edge.
+    Hold power-on reset for eight SoC edges and at least four CPU edges.
+    """
+    clock_edge = RisingEdge(dut.i_clk)
+    divided = dut.i_clk_div4
+    level = 0
+    initialize_wrapper_resets(dut)
     # Establish idle inputs before HDL evaluates a possible startup clock edge.
     dut.i_power_on_rst.value = Immediate(0)
     divided.value = Immediate(level)
@@ -4702,6 +4744,7 @@ async def run_uart_echo_interaction(
 @takes_last_edge
 async def test_real_program(dut: Any) -> None:
     """Reset and run the loaded program NUM_RUNS times, checking UART each run."""
+    reset_history = await prepare_program_start(dut)
     start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
     start_cpu_clock(dut)
     # i_clk_div4 exists only in frost.sv, not in the cpu_tb.sv testbench. It is
@@ -4840,6 +4883,8 @@ async def test_real_program(dut: Any) -> None:
             for _ in range(RESET_CYCLES):
                 await RisingEdge(dut.i_clk)
             await wait_for_power_on_reset(dut)
+            for seen in reset_history:
+                assert int(seen.value), "NIC response checker did not observe reset"
             # Output qualifiers are arbitrary before the first completed reset.
             uart_monitor.clear()
             if line_monitor is not None:

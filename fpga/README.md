@@ -200,6 +200,16 @@ counters. With `patrol_seconds=10`, it requires patrol progress and a full
 pass within 150 one-second waits, then reloads the module at the daily default.
 `FROST_MEMERR_MODULE` names a prebuilt module instead.
 
+Stage selection follows `--board`; `bootrom` is available only on VCU118.
+The `bootrom` stage requires FSBL, OpenSBI, a device tree and U-Boot in flash.
+It requires the ROM's FSBL CRC verification, the FSBL's verified boot chain
+and handoff, then the U-Boot banner and `frost=> ` prompt, in that order.
+The prompt must remain at the end of the capture for one second of UART
+silence. Progress belongs to the most recent ROM startup.
+HALT messages, validation failures and trap diagnostics fail the stage.
+Its timeout is at least 600 seconds, including compilation, loading, DDR
+preparation and flash reads. A larger `--timeout` extends that budget.
+
 The interactive `debug_target` and `nic_echo` applications are not run.
 `perf_off_test` checks that the profiling counters are absent, so it fails
 against a bitstream built with `--perf-counters`. `--timeout` covers build,

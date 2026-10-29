@@ -781,7 +781,7 @@ if {$x3_place_mode ne "" && ($board_name ne "x3" || $step ne "place" ||
 # create_<board>_gty_ip procedure.
 set board_build_configs [dict create \
     x3 [dict create part_number xcux35-vsva1365-3-e has_ddr 1 has_gty 1] \
-    vcu118 [dict create part_number xcvu9p-flga2104-2L-e has_ddr 1 has_gty 0] \
+    vcu118 [dict create part_number xcvu9p-flga2104-2L-e has_ddr 1 has_gty 1] \
 ]
 if {![dict exists $board_build_configs $board_name]} {
     puts "Error: Invalid board name '$board_name'"

@@ -24,6 +24,7 @@ module vcu118_clock #(
 
     output logic o_clk_cpu,
     output logic o_clk_div4,
+    output logic o_clk_freerun_150,
     output logic o_locked
 );
 
@@ -49,6 +50,18 @@ module vcu118_clock #(
   BUFG u_bufg_in (
       .I(sysclk_300_ibuf),
       .O(sysclk_300_bufg)
+  );
+
+  BUFGCE_DIV #(
+      .BUFGCE_DIVIDE  (2),
+      .IS_CE_INVERTED (1'b0),
+      .IS_CLR_INVERTED(1'b0),
+      .IS_I_INVERTED  (1'b0)
+  ) u_bufg_freerun_150 (
+      .O  (o_clk_freerun_150),
+      .CE (1'b1),
+      .CLR(1'b0),
+      .I  (sysclk_300_ibuf)
   );
 
   logic clkfb_mmcm, clkfb_mmcm_buf;

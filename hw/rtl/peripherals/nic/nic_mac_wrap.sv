@@ -37,7 +37,10 @@ module nic_mac_wrap #(
     parameter int MAX_FRAME_BYTES = 9216,
     // 1 = the raw TX-to-RX loopback behind MAC_LOOPBACK (a shared MAC clock);
     // 0 = no loopback path (independent TX and RX clocks).
-    parameter int unsigned RAW_LOOPBACK = 1
+    parameter int unsigned RAW_LOOPBACK = 1,
+    // 0 = 10GBASE-R 64b/66b PCS + gearbox; 1 = 8-bit GMII serializer/deserializer
+    // for 10/100/1000BASE-T SGMII PCS/PMA cores.
+    parameter bit GMII_MODE = 1'b0
 ) (
     // Core domain.
     input  logic       i_clk,
@@ -191,42 +194,243 @@ module nic_mac_wrap #(
   logic rx_locked, rx_high_ber, rx_local_fault, rx_remote_fault, tx_link_ready;
   logic tx_drop, rx_bad_frame, rx_bad_fcs, rx_overflow, tx_bad_block, rx_bad_block;
   logic m_user;
-  eth10g_mac_pcs #(
-      .MAX_FRAME_BYTES(MAX_FRAME_BYTES)
-  ) u_mac (
-      .i_tx_clk         (i_tx_clk),
-      .i_tx_rst         (tx_rst),
-      .i_rx_clk         (i_rx_clk),
-      .i_rx_rst         (rx_rst),
-      .s_axis_tdata     (t_word[63:0]),
-      .s_axis_tkeep     (t_keep),
-      .s_axis_tvalid    (t_valid),
-      .s_axis_tready    (t_ready),
-      .s_axis_tlast     (t_word[67]),
-      .s_axis_tuser     (1'b0),
-      .m_axis_tdata     (m_data),
-      .m_axis_tkeep     (m_keep),
-      .m_axis_tvalid    (m_valid),
-      .m_axis_tready    (m_ready),
-      .m_axis_tlast     (m_last),
-      .m_axis_tuser     (m_user),
-      .o_tx_raw_data    (o_tx_raw_data),
-      .o_tx_raw_valid   (o_tx_raw_valid),
-      .o_tx_link_ready  (tx_link_ready),
-      .i_rx_raw_data    (rx_raw_data),
-      .i_rx_raw_valid   (rx_raw_valid),
-      .i_rx_signal_ok   (rx_signal_ok),
-      .o_rx_locked      (rx_locked),
-      .o_rx_high_ber    (rx_high_ber),
-      .o_rx_local_fault (rx_local_fault),
-      .o_rx_remote_fault(rx_remote_fault),
-      .o_tx_drop        (tx_drop),
-      .o_rx_bad_frame   (rx_bad_frame),
-      .o_rx_bad_fcs     (rx_bad_fcs),
-      .o_rx_overflow    (rx_overflow),
-      .o_tx_bad_block   (tx_bad_block),
-      .o_rx_bad_block   (rx_bad_block)
-  );
+  if (!GMII_MODE) begin : gen_10g_pcs
+    eth10g_mac_pcs #(
+        .MAX_FRAME_BYTES(MAX_FRAME_BYTES)
+    ) u_mac (
+        .i_tx_clk         (i_tx_clk),
+        .i_tx_rst         (tx_rst),
+        .i_rx_clk         (i_rx_clk),
+        .i_rx_rst         (rx_rst),
+        .s_axis_tdata     (t_word[63:0]),
+        .s_axis_tkeep     (t_keep),
+        .s_axis_tvalid    (t_valid),
+        .s_axis_tready    (t_ready),
+        .s_axis_tlast     (t_word[67]),
+        .s_axis_tuser     (1'b0),
+        .m_axis_tdata     (m_data),
+        .m_axis_tkeep     (m_keep),
+        .m_axis_tvalid    (m_valid),
+        .m_axis_tready    (m_ready),
+        .m_axis_tlast     (m_last),
+        .m_axis_tuser     (m_user),
+        .o_tx_raw_data    (o_tx_raw_data),
+        .o_tx_raw_valid   (o_tx_raw_valid),
+        .o_tx_link_ready  (tx_link_ready),
+        .i_rx_raw_data    (rx_raw_data),
+        .i_rx_raw_valid   (rx_raw_valid),
+        .i_rx_signal_ok   (rx_signal_ok),
+        .o_rx_locked      (rx_locked),
+        .o_rx_high_ber    (rx_high_ber),
+        .o_rx_local_fault (rx_local_fault),
+        .o_rx_remote_fault(rx_remote_fault),
+        .o_tx_drop        (tx_drop),
+        .o_rx_bad_frame   (rx_bad_frame),
+        .o_rx_bad_fcs     (rx_bad_fcs),
+        .o_rx_overflow    (rx_overflow),
+        .o_tx_bad_block   (tx_bad_block),
+        .o_rx_bad_block   (rx_bad_block)
+    );
+  end else begin : gen_1g_gmii
+    // 1G GMII adapter around eth10g_mac_tx and eth10g_mac_rx.
+    // o_tx_raw_data[9:0] = {gmii_tx_er, gmii_tx_en, gmii_txd[7:0]}, o_tx_raw_valid = sgmii_clk_en
+    // rx_raw_data[9:0]   = {gmii_rx_er, gmii_rx_dv, gmii_rxd[7:0]}, rx_raw_valid   = sgmii_clk_en
+    logic [63:0] xgmii_tx_data;
+    logic [ 7:0] xgmii_tx_ctrl;
+    logic        mac_tx_ready;
+    logic [ 2:0] gmii_tx_lane_q;
+    logic        gmii_tx_clk_en;
+    logic        tx_xgmii_en;
+    logic [7:0] cur_tx_byte, gmii_txd_q;
+    logic cur_tx_ctrl, gmii_tx_en_q, gmii_tx_er_q;
+
+    assign gmii_tx_clk_en = i_rx_raw_valid;
+    assign tx_xgmii_en    = gmii_tx_clk_en && (gmii_tx_lane_q == 3'd7);
+    assign tx_link_ready  = rx_signal_ok;
+    assign t_ready        = mac_tx_ready && tx_link_ready;
+
+    eth10g_mac_tx #(
+        .MAX_FRAME_BYTES(MAX_FRAME_BYTES)
+    ) u_mac_tx (
+        .i_clk        (i_tx_clk),
+        .i_rst        (tx_rst),
+        .i_enable     (tx_xgmii_en),
+        .s_axis_tdata (t_word[63:0]),
+        .s_axis_tkeep (t_keep),
+        .s_axis_tvalid(t_valid && tx_link_ready),
+        .s_axis_tready(mac_tx_ready),
+        .s_axis_tlast (t_word[67]),
+        .s_axis_tuser (1'b0),
+        .o_xgmii_data (xgmii_tx_data),
+        .o_xgmii_ctrl (xgmii_tx_ctrl),
+        .o_drop       (tx_drop)
+    );
+
+    assign cur_tx_byte = xgmii_tx_data[gmii_tx_lane_q*8+:8];
+    assign cur_tx_ctrl = xgmii_tx_ctrl[gmii_tx_lane_q];
+
+    always_ff @(posedge i_tx_clk) begin
+      if (tx_rst) begin
+        gmii_tx_lane_q <= 3'd0;
+        gmii_txd_q     <= 8'h00;
+        gmii_tx_en_q   <= 1'b0;
+        gmii_tx_er_q   <= 1'b0;
+      end else if (gmii_tx_clk_en) begin
+        gmii_tx_lane_q <= gmii_tx_lane_q + 3'd1;
+        if (!cur_tx_ctrl) begin
+          gmii_txd_q   <= cur_tx_byte;
+          gmii_tx_en_q <= 1'b1;
+          gmii_tx_er_q <= 1'b0;
+        end else if (cur_tx_byte == 8'hfb) begin
+          // XGMII /S/ (0xFB) on lane 0 becomes the first 0x55 preamble byte in GMII
+          gmii_txd_q   <= 8'h55;
+          gmii_tx_en_q <= 1'b1;
+          gmii_tx_er_q <= 1'b0;
+        end else begin
+          // XGMII /T/ (0xFD) or /I/ (0x07) becomes GMII idle
+          gmii_txd_q   <= 8'h00;
+          gmii_tx_en_q <= 1'b0;
+          gmii_tx_er_q <= 1'b0;
+        end
+      end
+    end
+
+    assign o_tx_raw_data  = {54'b0, gmii_tx_er_q, gmii_tx_en_q, gmii_txd_q};
+    assign o_tx_raw_valid = gmii_tx_clk_en;
+
+    // GMII to XGMII RX deserializer
+    typedef enum logic [1:0] {
+      GMII_RX_IDLE,
+      GMII_RX_PREAMBLE,
+      GMII_RX_DATA,
+      GMII_RX_WAIT_END
+    } gmii_rx_state_e;
+
+    gmii_rx_state_e gmii_rx_state_q;
+    logic [2:0] gmii_rx_lane_q;
+    logic [63:0] rx_accum_data_q, xgmii_rx_data_q;
+    logic [7:0] rx_accum_ctrl_q, xgmii_rx_ctrl_q;
+    logic       xgmii_rx_en_q;
+
+    wire  [7:0] gmii_rxd = rx_raw_data[7:0];
+    wire        gmii_rx_dv = rx_raw_data[8];
+    wire        gmii_rx_er = rx_raw_data[9];
+    wire        gmii_rx_clk_en = rx_raw_valid;
+    /* verilator lint_off UNUSEDSIGNAL */
+    wire        rx_raw_unused = |rx_raw_data[63:10];
+    /* verilator lint_on UNUSEDSIGNAL */
+
+    always_ff @(posedge i_rx_clk) begin
+      if (rx_rst || !rx_signal_ok) begin
+        gmii_rx_state_q <= GMII_RX_IDLE;
+        gmii_rx_lane_q  <= 3'd0;
+        rx_accum_data_q <= 64'h0707_0707_0707_0707;
+        rx_accum_ctrl_q <= 8'hff;
+        xgmii_rx_data_q <= 64'h0707_0707_0707_0707;
+        xgmii_rx_ctrl_q <= 8'hff;
+        xgmii_rx_en_q   <= 1'b0;
+      end else begin
+        xgmii_rx_en_q <= 1'b0;
+        if (gmii_rx_clk_en) begin
+          unique case (gmii_rx_state_q)
+            GMII_RX_IDLE: begin
+              if (gmii_rx_dv) begin
+                if (!gmii_rx_er && (gmii_rxd == 8'hd5)) begin
+                  xgmii_rx_data_q <= 64'hd555_5555_5555_55fb;
+                  xgmii_rx_ctrl_q <= 8'h01;
+                  xgmii_rx_en_q   <= 1'b1;
+                  gmii_rx_lane_q  <= 3'd0;
+                  gmii_rx_state_q <= GMII_RX_DATA;
+                end else if (!gmii_rx_er && (gmii_rxd == 8'h55)) begin
+                  gmii_rx_state_q <= GMII_RX_PREAMBLE;
+                end else begin
+                  gmii_rx_state_q <= GMII_RX_WAIT_END;
+                end
+              end
+            end
+
+            GMII_RX_PREAMBLE: begin
+              if (!gmii_rx_dv) begin
+                gmii_rx_state_q <= GMII_RX_IDLE;
+              end else if (!gmii_rx_er && (gmii_rxd == 8'hd5)) begin
+                xgmii_rx_data_q <= 64'hd555_5555_5555_55fb;
+                xgmii_rx_ctrl_q <= 8'h01;
+                xgmii_rx_en_q   <= 1'b1;
+                gmii_rx_lane_q  <= 3'd0;
+                gmii_rx_state_q <= GMII_RX_DATA;
+              end else if (gmii_rx_er || (gmii_rxd != 8'h55)) begin
+                gmii_rx_state_q <= GMII_RX_WAIT_END;
+              end
+            end
+
+            GMII_RX_DATA: begin
+              if (gmii_rx_dv) begin
+                if (gmii_rx_lane_q == 3'd7) begin
+                  xgmii_rx_data_q <= {gmii_rx_er ? 8'hfe : gmii_rxd, rx_accum_data_q[55:0]};
+                  xgmii_rx_ctrl_q <= {gmii_rx_er, rx_accum_ctrl_q[6:0]};
+                  xgmii_rx_en_q   <= 1'b1;
+                  gmii_rx_lane_q  <= 3'd0;
+                end else begin
+                  rx_accum_data_q[gmii_rx_lane_q*8+:8] <= gmii_rx_er ? 8'hfe : gmii_rxd;
+                  rx_accum_ctrl_q[gmii_rx_lane_q]      <= gmii_rx_er;
+                  gmii_rx_lane_q                       <= gmii_rx_lane_q + 3'd1;
+                end
+              end else begin
+                // End of frame: insert /T/ (0xFD) at gmii_rx_lane_q and /I/ (0x07) after
+                for (int b = 0; b < 8; b++) begin
+                  if (b < int'(gmii_rx_lane_q)) begin
+                    xgmii_rx_data_q[b*8+:8] <= rx_accum_data_q[b*8+:8];
+                    xgmii_rx_ctrl_q[b]      <= rx_accum_ctrl_q[b];
+                  end else if (b == int'(gmii_rx_lane_q)) begin
+                    xgmii_rx_data_q[b*8+:8] <= 8'hfd;
+                    xgmii_rx_ctrl_q[b]      <= 1'b1;
+                  end else begin
+                    xgmii_rx_data_q[b*8+:8] <= 8'h07;
+                    xgmii_rx_ctrl_q[b]      <= 1'b1;
+                  end
+                end
+                xgmii_rx_en_q   <= 1'b1;
+                gmii_rx_lane_q  <= 3'd0;
+                gmii_rx_state_q <= GMII_RX_IDLE;
+              end
+            end
+
+            GMII_RX_WAIT_END: begin
+              if (!gmii_rx_dv) begin
+                gmii_rx_state_q <= GMII_RX_IDLE;
+              end
+            end
+          endcase
+        end
+      end
+    end
+
+    eth10g_mac_rx #(
+        .MAX_FRAME_BYTES(MAX_FRAME_BYTES)
+    ) u_mac_rx (
+        .i_clk        (i_rx_clk),
+        .i_rst        (rx_rst),
+        .i_enable     (xgmii_rx_en_q),
+        .i_xgmii_data (xgmii_rx_data_q),
+        .i_xgmii_ctrl (xgmii_rx_ctrl_q),
+        .m_axis_tdata (m_data),
+        .m_axis_tkeep (m_keep),
+        .m_axis_tvalid(m_valid),
+        .m_axis_tready(m_ready),
+        .m_axis_tlast (m_last),
+        .m_axis_tuser (m_user),
+        .o_bad_frame  (rx_bad_frame),
+        .o_bad_fcs    (rx_bad_fcs),
+        .o_overflow   (rx_overflow)
+    );
+
+    assign rx_locked       = rx_signal_ok;
+    assign rx_high_ber     = 1'b0;
+    assign rx_local_fault  = !rx_signal_ok;
+    assign rx_remote_fault = 1'b0;
+    assign tx_bad_block    = 1'b0;
+    assign rx_bad_block    = 1'b0;
+  end
   /* verilator lint_off UNUSEDSIGNAL */  // the RX MAC publishes complete frames only: tuser is 0
   logic m_user_unused;
   /* verilator lint_on UNUSEDSIGNAL */

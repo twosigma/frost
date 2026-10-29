@@ -144,6 +144,17 @@ class FrostRvfiDii:
         await RisingEdge(harness.done)
         await RisingEdge(dut.i_clk)
 
+        for name, expected in (
+            ("o_nic_1g_tx_raw_data", 0),
+            ("o_nic_1g_tx_raw_valid", 0),
+            ("o_nic_1g_phy_ctrl", 0),
+            ("o_nic_1g_rx_block_lock", 0),
+            ("o_spi_cs_n", 1),
+            ("o_spi_sck", 0),
+            ("o_spi_mosi", 0),
+        ):
+            assert int(getattr(dut, name).value) == expected, name
+
         error_flags = int(harness.error_flags.value)
         for bit, meaning in HARNESS_ERRORS.items():
             if error_flags & (1 << bit):

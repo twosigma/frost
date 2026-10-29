@@ -45,7 +45,7 @@ def query_metadata(root: Path) -> dict[str, Any]:
 
 
 def test_metadata_matches_current_loader_and_uart_default() -> None:
-    """The UI sees the complete current loader registry, including Linux."""
+    """The UI offers X3 applications, including Linux, with matching metadata."""
     original_paths = sys.path.copy()
     try:
         loader = runpy.run_path(str(ROOT / "fpga/load_software/load_software.py"))
@@ -53,19 +53,22 @@ def test_metadata_matches_current_loader_and_uart_default() -> None:
     finally:
         sys.path[:] = original_paths
     metadata = query_metadata(ROOT)
-    assert metadata["apps"] == loader["VALID_APPS"]
+    x3_apps = loader["valid_apps_for_board"]("x3")
+    assert metadata["apps"] == x3_apps
+    assert "bootrom" in loader["valid_apps_for_board"]("vcu118")
+    assert {"bootrom", "fsbl"}.isdisjoint(metadata["apps"])
     assert "linux_boot" in metadata["apps"]
     assert "uart_echo" in metadata["apps"]
     assert metadata["defaultSerial"] == defaults["DEFAULT_SERIALS"]["x3"]
     assert set(metadata["coremarkProApps"]) == set(loader["COREMARK_PRO_APP_NAMES"])
     assert set(metadata["ddrApps"]) == set(loader["DDR_APPS"])
     assert metadata["hasDdr"] == loader["BOARD_CONFIG"]["x3"]["has_ddr"]
-    assert set(metadata["debugApps"]) == loader["DEBUG_APPS"]
+    assert set(metadata["debugApps"]) == loader["DEBUG_APPS"] & set(x3_apps)
     assert metadata["debugUnsupported"] == loader["DEBUG_UNSUPPORTED"]
     assert set(metadata["debugUnsupported"]) == {"linux_boot", "opensbi_smoke"}
     assert len(metadata["debugApps"]) == len(metadata["apps"]) - 2
     assert metadata["appBuildDirectories"] == {
-        app: loader["app_build_directory_name"](app) for app in loader["VALID_APPS"]
+        app: loader["app_build_directory_name"](app) for app in x3_apps
     }
     assert metadata["appBuildDirectories"]["coremark_pro_core"] == "coremark_pro"
 
@@ -122,6 +125,11 @@ def test_registry_changes_are_discovered_without_running_cli(tmp_path: Path) -> 
         "DEBUG_APPS = set(); DEBUG_UNSUPPORTED = {'fixture': ''}",
         "app_build_directory_name = None",
         "def app_build_directory_name(app): return '../outside'",
+        "valid_apps_for_board = []",
+        "def valid_apps_for_board(board): return []",
+        "def valid_apps_for_board(board): return 'fixture'",
+        "def valid_apps_for_board(board): return ['missing_app']",
+        "def valid_apps_for_board(board): return ['fixture', 'fixture']",
     ],
 )
 def test_invalid_debug_contract_is_rejected(tmp_path: Path, override: str) -> None:

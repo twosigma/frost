@@ -147,6 +147,7 @@ def compile_app(
         # DDR_MODEL_BYTES when it is set, else the packer's default, which is
         # the model's default size.
         env.pop(LINUX_MEM_SIZE_VAR, None)
+        env["FROST_LINUX_BOARD"] = "x3"
         if os.environ.get("DDR_MODEL_BYTES"):
             env[LINUX_MEM_SIZE_VAR] = os.environ["DDR_MODEL_BYTES"]
 

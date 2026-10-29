@@ -48,6 +48,7 @@ from software_registry import (  # noqa: E402
 
 # Applications accepted by the JTAG loader.
 VALID_APPS = [
+    "bootrom",
     "amo_irq_torture",
     "branch_pred_test",
     "c_ext_test",
@@ -102,6 +103,8 @@ VALID_APPS = [
     "vm_test",
 ]
 
+BOARD_SPECIFIC_APPS = {"bootrom": frozenset({"vcu118"})}
+
 # Clock frequency in Hz; CoreMark iterations target about 10 seconds.
 BOARD_CONFIG = {
     # ``has_ddr``: the bitstream provides the JTAG DDR-load master and the
@@ -132,6 +135,17 @@ FORCED_DDR_APPS = frozenset(
         "tick_torture",
     }
 )
+
+
+def valid_apps_for_board(board: str) -> list[str]:
+    """Return JTAG applications supported by the selected board."""
+    if board not in BOARD_CONFIG:
+        raise ValueError(f"Unknown board: {board}")
+    return [
+        app
+        for app in VALID_APPS
+        if app not in BOARD_SPECIFIC_APPS or board in BOARD_SPECIFIC_APPS[app]
+    ]
 
 
 def board_clock_freq(
@@ -250,6 +264,7 @@ def compile_app_for_board(
     mem_config: str | None = None,
     debug: bool = False,
     ddr_bytes: int | None = None,
+    board: str = "x3",
 ) -> bool:
     """Compile an app with board settings and optional Make overrides.
 
@@ -261,6 +276,8 @@ def compile_app_for_board(
         env["RISCV_PREFIX"] = default_riscv_prefix(PROJECT_ROOT)
 
     env["FPGA_CPU_CLK_FREQ"] = str(clock_freq)
+    if app_name == "linux_boot":
+        env["FROST_LINUX_BOARD"] = board
     if ddr_bytes is not None:
         if not (1 << 30 <= ddr_bytes <= 1 << 37) or ddr_bytes & (ddr_bytes - 1):
             print("Error: board DDR capacity must be a power of two from 1 to 128 GiB")
@@ -723,6 +740,12 @@ def main() -> None:
     add_target_args(parser, managed=True)
     args = parser.parse_args()
     validate_target_args(parser, args)
+    if args.software_app is not None and args.software_app not in valid_apps_for_board(
+        args.board
+    ):
+        parser.error(f"{args.software_app} is not supported on {args.board}")
+    if args.software_app == "bootrom" and args.ddr:
+        parser.error("bootrom requires VCU118 and BRAM execution")
     if args.expected_build_config_sha256 is not None:
         if not args.skip_build:
             parser.error("--expected-build-config-sha256 requires --skip-build")
@@ -905,6 +928,7 @@ def main() -> None:
         mem_config="ddr" if args.ddr else None,
         debug=args.debug,
         **board_memory,
+        board=args.board,
     ):
         print(f"Error: Failed to compile {args.software_app}", file=sys.stderr)
         sys.exit(1)

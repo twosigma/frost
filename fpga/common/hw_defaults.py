@@ -55,8 +55,8 @@ DEFAULT_SERIALS = _BoardSerials(
 )
 
 # Default per-application timeout per board, in seconds, including build and
-# load time. --timeout replaces it; the CoreMark-PRO sweep raises either value
-# to a workload's hardware_timeout_minimums entry (sw/apps/software_registry.py).
+# load time. --timeout replaces it; bootrom and the CoreMark-PRO sweep apply
+# application-specific minimums. Sweep budgets are in sw/apps/software_registry.py.
 DEFAULT_TIMEOUTS = {
     "x3": 300.0,
     "vcu118": 300.0,

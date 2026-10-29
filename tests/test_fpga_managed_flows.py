@@ -183,7 +183,9 @@ def test_loader_build_only_never_discovers(
     descriptor = {"app": "hello_world", "startStrategy": "main"}
     monkeypatch.setattr(loader, "validate_prebuilt_app", lambda *a, **k: descriptor)
     loader.main()
-    assert calls == [{"mem_config": None, "debug": True, "ddr_bytes": 1 << 30}]
+    assert calls == [
+        {"mem_config": None, "debug": True, "ddr_bytes": 1 << 30, "board": "x3"}
+    ]
     records = [
         line
         for line in capsys.readouterr().out.splitlines()
@@ -1297,3 +1299,47 @@ def test_coremark_pro_zip_timeout_preserves_board_and_caller_budgets(
     assert registry.coremark_pro_hardware_timeout(
         "coremark_pro_zip", board, requested
     ) == max(floor, requested)
+
+
+@pytest.mark.parametrize(
+    "board,app,options",
+    [
+        ("x3", "bootrom", []),
+        ("vcu118", "bootrom", ["--ddr"]),
+        ("x3", "fsbl", []),
+        ("vcu118", "fsbl", []),
+    ],
+)
+def test_flash_stage_loader_rejects_invalid_execution(
+    monkeypatch: pytest.MonkeyPatch, board: str, app: str, options: list[str]
+) -> None:
+    """A flash-stage address must not be relocated to the JTAG reset vector."""
+    monkeypatch.setattr(sys, "argv", ["load_software.py", board, app, *options])
+    monkeypatch.setattr(
+        loader, "select_target", lambda *a, **kw: pytest.fail("cable touched")
+    )
+    monkeypatch.setattr(
+        loader, "compile_app_for_board", lambda *a, **kw: pytest.fail("build started")
+    )
+    with pytest.raises(SystemExit) as error:
+        loader.main()
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("board", ["x3", "vcu118"])
+def test_loader_lists_targets_without_an_application(
+    monkeypatch: pytest.MonkeyPatch, board: str
+) -> None:
+    """Board application filtering permits target discovery without an app."""
+    monkeypatch.setattr(sys, "argv", ["loader", board, "--list-targets"])
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        loader, "select_target", lambda *args, **kwargs: calls.append(kwargs)
+    )
+    monkeypatch.setattr(
+        loader, "compile_app_for_board", lambda *a, **kw: pytest.fail("build started")
+    )
+    loader.main()
+    assert len(calls) == 1
+    assert calls[0]["list_only"] is True
+    assert calls[0]["board"] == board

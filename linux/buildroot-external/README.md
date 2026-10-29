@@ -137,7 +137,7 @@ OpenSBI. RTL simulation does not boot Linux.
 | `frost_stress` | Boot-time stress of signals, process and memory operations, futexes, and atomics; prints `FROST_USERSPACE_STRESS_PASS` or `FROST_USERSPACE_STRESS_FAIL` |
 | `frost_stress --counters` | Runs a fixed workload in a child process and reports its cycles and instructions (counted through `perf_event_open` from the child's exec to its exit), the elapsed time, and IPC; replaces `perf stat` in this image |
 | `frost_sigprobe` | vDSO signal-return probe |
-| `frost_nettest` | Driver loopback test; prints `FROST_NET_LOOPBACK_PASS` or `FROST_NET_LOOPBACK_FAIL <reason>` and leaves the interface down with loopback disabled |
+| `frost_nettest` | Driver loopback test; an optional interface argument selects the NIC. Prints `FROST_NET_LOOPBACK_PASS` or `FROST_NET_LOOPBACK_FAIL <reason>` and leaves the interface down with loopback disabled |
 
 `fpga/linux_boot_soak.py` fails a boot that passes the stress test but
 reports `counters=unavailable`; see
@@ -146,7 +146,8 @@ reports `counters=unavailable`; see
 ## Notes
 
 - Customize userspace in `busybox-mmu.fragment` and `rootfs-overlay-mmu/`.
-  The test initramfs does no IP networking; `frost_nettest` uses packet
+  The test initramfs starts DHCP on the VCU118 RJ-45 NIC when it has no IPv4
+  address. The QSFP NIC is available for loopback checks. `frost_nettest` uses packet
   sockets.
 - Buildroot does not notice an edited package source. After changing
   `package/frost-stress/src/`, rebuild with `frost-stress-rebuild` and

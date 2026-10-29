@@ -280,12 +280,10 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
 
 ## Possible future work
 
-- Ethernet and the second DDR4 interface on the VCU118. Its RJ-45 port needs
-  a 1 Gb/s MAC as an option behind the NIC, which keeps the NIC's registers,
-  descriptors, driver, and coherent DMA, and its QSFP ports could add 10 and
-  40 Gb/s later. The VCU118 target uses one of the board's two DDR4
-  interfaces; the other could have its own memory controller. Contributors
-  with the board would run its hardware tests.
+- The second DDR4 interface on the VCU118. The target has RJ-45 SGMII
+  Ethernet and 10GBASE-R on QSFP1 lane 0, using the NIC's registers,
+  descriptors, driver, and coherent DMA. It uses one DDR4 interface; the
+  other could have its own memory controller.
 - A PCIe Gen3 x4 root complex between `soc_top` and PIPE, the PHY interface
   that ASIC PCIe PHYs also use, with a small wrapper for the FPGA's
   transceivers, so that Linux finds NVMe drives and other devices with its
