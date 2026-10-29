@@ -2530,7 +2530,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.nic.test_nic_dma_front",
         hdl_toplevel_module="nic_dma_front",
         description=(
-            "NIC DMA request arbitration and response steering under backpressure"
+            "NIC DMA reset history, request arbitration and response steering under backpressure"
         ),
     ),
     "nic_byte_pack": CocotbRunConfig(

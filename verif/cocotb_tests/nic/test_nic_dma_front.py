@@ -26,6 +26,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
+from cocotb.handle import Immediate
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 BASE = 0x8000_0000
@@ -218,6 +219,24 @@ async def _idle(dut: Any, limit: int = 2000) -> None:
         if int(dut.o_idle.value) == 1:
             return
     raise AssertionError("front-end never idle")
+
+
+@cocotb.test()
+async def test_clocked_reset_at_time_zero(dut: Any) -> None:
+    """A driven clocked reset arms the checker even at time zero."""
+    for signal in dut:
+        if signal._name.startswith("i_"):
+            signal.value = Immediate(0)
+    dut.i_rst.value = Immediate(1)
+    dut.i_clk.value = 1
+    await Timer(1, unit="ns")
+    assert int(dut.reset_seen_q.value) == 1
+    dut.i_rst.value = 0
+    dut.i_clk.value = 0
+    await Timer(1, unit="ns")
+    dut.i_clk.value = 1
+    await Timer(1, unit="ns")
+    assert int(dut.reset_seen_q.value) == 1
 
 
 @cocotb.test()

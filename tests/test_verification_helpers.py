@@ -15,6 +15,7 @@
 """Fast regression tests for Python-side verification helpers."""
 
 import importlib
+import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,6 +42,85 @@ rob_interface = importlib.import_module(
     "cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_interface"
 )
 config = importlib.import_module("config")
+
+
+@pytest.mark.parametrize("nics", (0, 1, 2))
+@pytest.mark.parametrize("reset_asserted", (False, True))
+def test_program_start_initializes_only_checker_history(
+    monkeypatch: pytest.MonkeyPatch, nics: int, reset_asserted: bool
+) -> None:
+    """Startup settles without clocks and preserves arbitrary production state."""
+    real_program = importlib.import_module("cocotb_tests.test_real_program")
+
+    class Signal:
+        def __init__(self, value: int, width: int = 1) -> None:
+            self.value = value
+            self.width = width
+
+        def __len__(self) -> int:
+            return self.width
+
+    monkeypatch.setattr(real_program, "Immediate", int)
+    clocks = {
+        name: Signal(1)
+        for name in (
+            "i_clk",
+            "i_cpu_clk",
+            "i_clk_div4",
+            "i_jtag_tck",
+            "i_nic_tx_clk",
+            "i_nic_rx_clk",
+            "i_nic_1g_tx_clk",
+            "i_nic_1g_rx_clk",
+        )
+    }
+    fronts = [SimpleNamespace(reset_seen_q=Signal(0)) for _ in range(nics)]
+    soc = SimpleNamespace(
+        reset_request_soc=Signal(int(reset_asserted)),
+        rst_core=Signal(0),
+        production_state=Signal(0xA5),
+    )
+    if nics:
+        soc.gen_cached_tier = SimpleNamespace(nic=SimpleNamespace(u_front=fronts[0]))
+        if nics == 2:
+            soc.gen_cached_tier.gen_nic_1g = SimpleNamespace(
+                nic_1g=SimpleNamespace(u_front=fronts[1])
+            )
+    dut = SimpleNamespace(
+        **clocks,
+        i_rst_n=Signal(1),
+        i_instr_mem_en=Signal(1),
+        i_power_on_rst=Signal(1),
+        reset_synchronizer_shift_register=Signal(0, 3),
+        reset_synchronized=Signal(0),
+        reset_div4_synchronizer_shift_register=Signal(0, 3),
+        cpu_and_memory_subsystem=SimpleNamespace(soc=soc),
+    )
+    settled = False
+
+    async def initial_evaluation(delay: int, *, unit: str) -> None:
+        nonlocal settled
+        assert (delay, unit) == (1, "ps")
+        assert all(clock.value == 0 for clock in clocks.values())
+        assert dut.i_rst_n.value == dut.i_instr_mem_en.value == 0
+        assert dut.i_power_on_rst.value == 0
+        assert dut.reset_synchronized.value == 1
+        for front in fronts:
+            front.reset_seen_q.value = 1
+        settled = True
+
+    monkeypatch.setattr(real_program, "Timer", initial_evaluation)
+    if nics and not reset_asserted:
+        with pytest.raises(AssertionError, match="requires system reset"):
+            asyncio.run(real_program.prepare_program_start(dut))
+        assert all(front.reset_seen_q.value == 1 for front in fronts)
+    else:
+        history = asyncio.run(real_program.prepare_program_start(dut))
+        assert history == tuple(front.reset_seen_q for front in fronts)
+        assert all(seen.value == 0 for seen in history)
+    assert settled
+    assert soc.rst_core.value == 0
+    assert soc.production_state.value == 0xA5
 
 
 def test_pack_struct_keeps_declaration_order_and_wide_values() -> None:
