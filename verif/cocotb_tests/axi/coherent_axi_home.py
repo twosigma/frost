@@ -68,6 +68,7 @@ class CoherentHome(LineIngress):
         self.released: dict[int, tuple[int, int, int]] = {}
         self.cycle = self.max_occupied = self.completions = 0
         self.pending: dict[int, HomeRequest] = {}
+        self.issue_order: list[tuple[int, int]] = []
         self.grant_order: list[int] = []
         self.release_order: list[int] = []
         self.max_active = 0
@@ -134,6 +135,7 @@ class CoherentHome(LineIngress):
                 self.accepted.clear()
                 self.released.clear()
                 self.pending.clear()
+                self.issue_order.clear()
                 grant_slot = release_slot = None
                 continue
             if int(dut.i_line_resp_valid.value):
@@ -159,6 +161,8 @@ class CoherentHome(LineIngress):
                 assert not write or mask
                 self.outstanding[rid] = address
                 self.accepted[rid] = (write, address, mask, payload)
+                self.issue_order.append((rid, order))
+                order += 1
                 self.log.append(
                     (self.cycle, bool(write), address, mask if write else 0, rid)
                 )
@@ -170,6 +174,8 @@ class CoherentHome(LineIngress):
                 )
                 rid = (q >> 1) & 15
                 assert q >> 5 == 0b1011 and q & 1 == 0 and rid not in self.pending
+                expected_id, accepted_order = self.issue_order.pop(0)
+                assert rid == expected_id, "D issue reordered external acceptance"
                 assert self.accepted[rid] == (int(op == 8), addr, mask, value)
                 assert (
                     op in (7, 8)
@@ -184,8 +190,9 @@ class CoherentHome(LineIngress):
                     for step in range(1, 20)
                     if (tid + step) % 19 not in live_tids
                 )
-                self.pending[rid] = HomeRequest(op, q, tid, addr, mask, value, order)
-                order += 1
+                self.pending[rid] = HomeRequest(
+                    op, q, tid, addr, mask, value, accepted_order
+                )
                 self.max_active = max(self.max_active, len(self.pending))
             if int(dut.i_g_valid.value) and int(dut.o_g_ready.value):
                 assert grant_slot is not None

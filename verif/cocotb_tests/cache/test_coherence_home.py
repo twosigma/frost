@@ -691,7 +691,7 @@ async def sibling_completion_pins_share_a_way_until_both_releases(dut: Any) -> N
 
 @cocotb.test()
 async def fatal_and_reset_with_held_results_and_dirty_victim(dut: Any) -> None:
-    """Preserve held ownership at fatal stop and cancel all debt at common reset."""
+    """Preserve held ownership at fatal stop and reset the home ownership records."""
     b = Home(dut)
     await b.reset()
     base = 0x80000000
