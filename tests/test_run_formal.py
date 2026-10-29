@@ -192,6 +192,11 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "coherence_dma_ingress.sby",
+        "DMA admission credits, opaque identities, ordered release, and reset ownership.",
+        tasks=("coh_dma_ingress_prove", "coh_dma_ingress_cover"),
+    ),
+    FormalTarget(
         "coherence_array.sby",
         "A watched byte preserves masked updates across serialized array operations.",
         tasks=("coh_array_bmc", "coh_array_uram_bmc"),
@@ -905,6 +910,8 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("coh_dma_ingress_prove", "DMA credits, payloads, and identity conservation."),
+    ("coh_dma_ingress_cover", "Full DMA admission and delayed error completion."),
     ("pc_tage_events_prove", "Unbounded history event equivalence"),
     ("pc_tage_events_cover", "History event and suppression reachability"),
     ("coh_rs_payload4_prove", "Coherent payload storage equality at four entries."),

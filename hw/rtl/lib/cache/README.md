@@ -243,7 +243,10 @@ source and use the cache-counter ABI.
 
 The hart uses source 0 and classes 0, 1 and 2 for data, instruction and walker
 requests. Each class has one request identity. Source 2 and class 3 identify
-DMA, whose four-bit ingress ID occupies q.id. The home accepts one D or
+DMA, whose four-bit ingress ID occupies q.id. `coherence_dma_ingress` has
+four admission credits and holds each opaque ID through external response
+delivery. It presents requests in acceptance order and returns data or errors
+after U. The home accepts one D or
 ordinary W operation at a time. Round-robin arbitration rotates eligible
 requesters, read responses and individual PutM slots. Probe replies have
 separate ownership from CPU reads, pending stores and PutM presentation.

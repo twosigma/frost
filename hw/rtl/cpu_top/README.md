@@ -11,7 +11,7 @@ uncached data and instruction ports.
 | Module | Contents |
 | --- | --- |
 | `frost_hart` | `cpu_ooo` with its MMUs, walker, L0 and IMSIC files; the instruction fetch providers; `coherent_hart_cache` with the S/M L1D, L1I, walker bridge and FENCE.I sequencing; and `cpu_uncached_adapter` |
-| `frost_cluster_memory` | The DMA ingress register; `coherence_home` with serialized acquisitions, the L2 array and victim ownership; and `cpu_memory_fabric` with its AXI master |
+| `frost_cluster_memory` | The DMA ingress queue; `coherence_home` with serialized acquisitions, the L2 array and victim ownership; and `cpu_memory_fabric` with its AXI master |
 
 The D/P/R/W/WA/G/C/U channels carry requests, probes, dirty data, grants
 and completion ownership. Dirty data merges through L2. `cpu_top` latches
@@ -188,7 +188,16 @@ An integration without debug ties the input controls/data low and supplies ordin
 
 With `ENABLE_COHERENCE=1`, `i_coherent_req_*` / `o_coherent_resp_*` expose the FROST 32-byte line protocol. This is a separate **incoming** interface, not another outgoing CPU memory master and not ACE/CHI. Requests carry full physical addresses, 256-bit data, 32 byte strobes, write/read selection and a 4-bit ID. Hold a request until valid/ready acceptance. Each accepted request produces one response pulse with the same ID, data and an error flag; there is no response-ready signal, so the agent must always be able to consume responses. IDs cannot be reused while outstanding.
 
-The ingress registers each accepted request before cache admission. It holds the payload through hierarchy backpressure and can accept a replacement on the edge that admits the previous request. CPU reset clears this request register and cancels inbound coherence requests and responses. Reset or reinitialize each connected agent's outstanding-request ownership at the same time; pre-reset ingress requests are not guaranteed a response. Outgoing AXI transactions already presented still drain as described above.
+The ingress holds four accepted requests, including the request executing at
+the home. It preserves all four ID bits and services requests in acceptance
+order. Each response follows the home's completion release. An ID remains
+occupied through its external response edge. The queue holds payloads through
+backpressure and permits admission while another request executes.
+
+CPU reset clears the ingress queue and cancels inbound requests and responses.
+The AXI bridge, mux and both connected masters reset with that ownership.
+Requests accepted before reset are not guaranteed a response. Outgoing AXI
+transactions already presented drain as described above.
 
 Requests must be aligned to 32 bytes and remain within the configured cached memory region. An invalid address is not accepted and triggers a simulation assertion. Its sequencer probes dirty L1D lines, orders traffic at L2, and coordinates writes with the load queue and reservation/SC windows. FROST connects its NIC and DMA test engine, both AXI4 masters, through `axi_mux` and `axi_coherent_bridge` in `soc_top` ([AXI library](../lib/axi/README.md)). External masters accessing cached memory must use this path; bypassing it on the external AXI fabric is noncoherent. AMOs use CPU serialization and this coherence protocol, not AXI exclusives. Uncached atomic memory must be private to the hart or protected by the integrating system from competing noncoherent masters.
 
