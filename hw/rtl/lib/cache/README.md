@@ -248,8 +248,8 @@ four admission credits and holds each opaque ID through external response
 delivery. It presents requests in acceptance order without waiting for earlier
 grants or releases. Each slot independently owns its request, grant, completion,
 release and external response. G matches the full q and address; U also matches
-the granted tid. Fair arbiters hold C presentations and select external response
-pulses. A slot and its opaque ID return only at the external response edge.
+the granted tid. A fair arbiter holds C presentations. Each accepted U
+produces its external response on the following cycle. A slot and its opaque ID return only at the external response edge.
 Different sectors can complete out of order. The AXI bridge buffers read lines
 by ID and presents AXI read beats and write responses in burst order.
 Channel arbiters capture the payload with the selected input and hold both

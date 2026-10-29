@@ -181,7 +181,6 @@ class Ingress:
         assert self.get("o_u_ready")
         await self.tick()
         await self.set(i_u_valid=0)
-        await self.wait("o_resp_valid")
         assert self.get("o_resp_valid")
         assert self.get("o_resp_id") == ident
         assert self.get("o_resp_data") == (1 << (ident * 16)) | 0xA55A
@@ -302,6 +301,7 @@ async def issue_all_credits_and_complete_out_of_order(dut: Any) -> None:
         )
         assert b.get("o_u_ready")
         await b.tick()
+        assert b.get("o_resp_valid") and b.get("o_resp_id") == ident
         await b.set(i_u_valid=0)
     for _ in range(30):
         if len(b.responses) == 4:
