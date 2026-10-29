@@ -3832,7 +3832,9 @@ Examples:
     print("# BUILD COMPLETE!")
     print(f"{'#' * 70}")
     wall = int(time.monotonic() - build_start)
-    print(f"\nBuild wall time: {wall // 3600}h {wall % 3600 // 60:02d}m {wall % 60:02d}s")
+    print(
+        f"\nBuild wall time: {wall // 3600}h {wall % 3600 // 60:02d}m {wall % 60:02d}s"
+    )
 
     if last_report_prefix:
         last_timing_rpt = main_work / f"{last_report_prefix}_timing.rpt"
