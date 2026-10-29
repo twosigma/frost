@@ -338,6 +338,30 @@ async def home_grant_and_absorbed_cancellation(dut: Any) -> None:
 
 
 @cocotb.test()
+async def home_release_after_completed_cleanup(dut: Any) -> None:
+    """C presents U on the following cycle when no cancellation is pending."""
+    b = Bench(dut)
+    await b.reset()
+    await b.set(i_home_d_valid=1, i_home_d=b.d())
+    await b.tick()
+    await b.set(i_home_d_valid=0, i_home_result_valid=1, i_home_result=b.g())
+    assert b.get("o_home_g_valid")
+    await b.tick(4)
+    assert not b.get("o_home_u_valid")
+    await b.set(i_home_g_ready=1)
+    await b.tick()
+    await b.set(i_home_result_valid=0, i_home_c_valid=1, i_home_c=b.c())
+    assert b.get("o_home_c_ready")
+    await b.tick()
+    await b.set(i_home_c_valid=0)
+    assert b.get("o_home_u_valid")
+    await b.held("o_home_u_valid", "o_home_u", b.u(), 5)
+    await b.set(i_home_u_ready=1)
+    await b.tick()
+    assert not b.get("o_home_live")
+
+
+@cocotb.test()
 async def put_selection_error_and_reset(dut: Any) -> None:
     """Arbitrate selection against absorption and preserve failed dirty data."""
     b = Bench(dut)

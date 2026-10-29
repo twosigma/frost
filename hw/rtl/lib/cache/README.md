@@ -259,7 +259,8 @@ without a directory hint, merges dirty replies, and freezes the complete
 victim image before reusing its row. Its physical address stays locked until
 a successful memory B response. A failed fill cannot expose the detached
 victim tag. Grants pin their destination through C and U. An absorbed PutM
-keeps its exact slot and epoch until WA cancellation, and an ordinary PutM
+keeps its exact slot and epoch until WA cancellation. A completion with no
+pending cancellations presents U on the following cycle. An ordinary PutM
 keeps the home busy through WA. DMA reads collect dirty private data; DMA
 writes merge only their selected bytes after invalidation.
 An L2-resident DMA read with no dirty probe data returns the resident image
