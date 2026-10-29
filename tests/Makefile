@@ -37,6 +37,11 @@ else ifeq ($(TOPLEVEL),coherence_home_completions)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/cache/coherence_home.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),coherence_home_array)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/ram/ram.f \
+        $(ROOT)/hw/rtl/lib/cache/coherence_home_array.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),coherence_home)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/cache/coherence_home.f

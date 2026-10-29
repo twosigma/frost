@@ -259,6 +259,14 @@ The home admits nineteen requests with distinct identities. Eight
 result credits separate execution from grant delivery. A result credit returns
 on G acceptance; its identity and physical way pin last through U. Each
 request waits for U from earlier requests to the same 32-byte sector.
+
+`coherence_home_array` has separate tag-decision, data-read and masked-update
+ports. Each request carries a response token. Replacement state changes when
+the consumer claims a tag decision. Tag updates exclude an unresolved lookup
+of the same physical packed row. Data hazards cover the read sample and the
+write input registers through completion. Contending reads and writes alternate
+service while prior operations drain. Masked updates preserve sibling sectors.
+
 A request waiting for an available way releases its execution credit and retries.
 One array/probe worker executes eligible demands and ordinary PutM operations.
 PutM payload storage is independent of the result credits. Round-robin arbitration rotates eligible

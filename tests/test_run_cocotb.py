@@ -2202,6 +2202,34 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Independent results, completion pins, and same-sector predecessors",
         verilator_extra_args=("--assert", "-GCACHE_BYTES=1024"),
     ),
+    "coherence_home_array": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home_array",
+        hdl_toplevel_module="coherence_home_array",
+        description="Independent tag and data ports with physical-row hazards",
+        verilator_extra_args=("--assert", "-GCACHE_BYTES=1024"),
+    ),
+    "coherence_home_array_bram": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home_array",
+        hdl_toplevel_module="coherence_home_array",
+        description="Independent tag and data ports with physical-row hazards",
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GLINE_BYTES=32",
+            "-GULTRA=0",
+        ),
+    ),
+    "coherence_home_array_packed": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home_array",
+        hdl_toplevel_module="coherence_home_array",
+        description="Independent tag and data ports with physical-row hazards",
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=256",
+            "-GLINE_BYTES=32",
+            "-GWAYS=1",
+        ),
+    ),
     "coherence_home": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home",
         hdl_toplevel_module="coherence_home",
