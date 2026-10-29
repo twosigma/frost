@@ -177,7 +177,7 @@ module coherence_home_completions #(
 
   assign o_d_ready = !i_rst && !i_fatal_stop && free_slot && !duplicate &&
       request_ready[free_slot_index];
-  assign o_work_valid = !i_rst && !i_fatal_stop && work_selected_q;
+  assign o_work_valid = !i_rst && !i_fatal_stop && work_selected_q && !parked_q[work_slot_q];
   assign o_work = work[work_slot_q];
   assign o_work_tid = 6'(work_slot_q);
   assign o_work_buffer = work_buffer_q;
@@ -197,7 +197,7 @@ module coherence_home_completions #(
 
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_work_eligible
     assign work_eligible[slot] = work_valid[slot] && !issued_q[slot] && !parked_q[slot] &&
-        !i_park[slot] && predecessors_q[slot] == 0;
+        predecessors_q[slot] == 0;
   end
   coherence_work_select #(
       .SLOTS(SLOTS)
@@ -316,6 +316,7 @@ module coherence_home_completions #(
         work_slot_q <= work_pick;
         work_buffer_q <= free_buffer_index;
       end
+      if (work_selected_q && parked_q[work_slot_q]) work_selected_q <= 1'b0;
       if (accept_work) begin
         work_selected_q <= 1'b0;
         work_next_q <= work_slot_q == SlotBits'(SLOTS - 1) ? '0 : work_slot_q + 1'b1;
@@ -452,7 +453,8 @@ module coherence_home_completions #(
       assert ((wake_error_q & ~(ready_q | issued_q)) == 0);
       if (grant_selected_q) assert (result_valid_q[grant_slot_q] && buffer_owned_q[grant_slot_q]);
       if (work_selected_q) begin
-        assert (work_valid[work_slot_q] && !issued_q[work_slot_q] && !parked_q[work_slot_q]);
+        assert (work_valid[work_slot_q] && !issued_q[work_slot_q]);
+        assert (!buffer_owned_q[work_slot_q]);
         assert (!buffer_live_q[work_buffer_q]);
       end
       for (int engine = 0; engine < RESULT_SLOTS; engine++) begin

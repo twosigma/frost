@@ -29,18 +29,35 @@ module coherence_seat_select #(
   assign allow_rank[0] = i_occupied_count < 3 && !(i_join && i_occupied_count == 2);
   assign allow_rank[1] = i_occupied_count < 2 && !(i_join && i_occupied_count == 1);
   assign allow_rank[2] = i_occupied_count == 0 && !i_join;
+  localparam int unsigned Levels = $clog2(SLOTS);
+  (* keep = "true" *) logic [Levels:0][SLOTS-1:0][2:0] prefix_count;
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_leaf
+    assign prefix_count[0][slot] = {2'b0, i_eligible[slot]};
+  end
+  for (genvar level = 0; level < Levels; level++) begin : gen_level
+    for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_slot
+      if (slot < (1 << level)) begin : gen_copy
+        assign prefix_count[level+1][slot] = prefix_count[level][slot];
+      end else begin : gen_merge
+        wire [2:0] a = prefix_count[level][slot];
+        wire [2:0] b = prefix_count[level][slot-(1<<level)];
+        assign prefix_count[level+1][slot][0] = a[0] || b[0];
+        assign prefix_count[level+1][slot][1] = a[1] || b[1] || (a[0] && b[0]);
+        assign prefix_count[level+1][slot][2] = a[2] || b[2] || (a[1] && b[0]) || (a[0] && b[1]);
+      end
+    end
+  end
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_rank
     if (slot == 0) begin : gen_first
       assign ranked[0][slot] = i_eligible[slot];
       assign ranked[1][slot] = 1'b0;
       assign ranked[2][slot] = 1'b0;
     end else begin : gen_later
-      localparam int unsigned PrefixBits = $clog2(slot + 1);
-      logic [PrefixBits-1:0] earlier;
-      assign earlier = PrefixBits'($countones(i_eligible[slot-1:0]));
-      for (genvar rank_index = 0; rank_index < 3; rank_index++) begin : gen_compare
-        assign ranked[rank_index][slot] = i_eligible[slot] && int'(earlier) == rank_index;
-      end
+      assign ranked[0][slot] = i_eligible[slot] && !prefix_count[Levels][slot-1][0];
+      assign ranked[1][slot] = i_eligible[slot] && prefix_count[Levels][slot-1][0] &&
+          !prefix_count[Levels][slot-1][1];
+      assign ranked[2][slot] = i_eligible[slot] && prefix_count[Levels][slot-1][1] &&
+          !prefix_count[Levels][slot-1][2];
     end
   end
   assign o_selected = ({SLOTS{allow_rank[0]}} & ranked[0]) |

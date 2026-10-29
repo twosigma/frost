@@ -286,12 +286,15 @@ A successful fill's way pin lasts until its final waiter takes a completion
 pin. A failed fill transfers its error to completion metadata and releases
 its control before the waiters dispatch in sector order.
 
-Fill waiter ranks are independent of the available-seat count. Each fill
+Fill waiter ranks are independent of the available-seat count. A balanced
+prefix network counts up to three eligible entries before each candidate. Each fill
 stores its occupied seat count beside the seat mask. Allocation, joining
 readers, handoff and error cleanup update both on the same edge. A joining
 engine uses one seat before the queued waiters. Ready work precedes other
 eligible work. Both classes compute their circular priorities independently
-before selecting an encoded winner. The tag decision carries its captured
+before selecting an encoded winner. Work selection uses registered parking
+state. A selection captured with a simultaneous fill park is canceled before
+allocating an engine or image credit. The tag decision carries its captured
 query address through conflict and replacement checks. Engine address pins
 exclude valid victim lines. An invalid way's stored tag does not create an
 address conflict; physical way pins and fill claims govern its reuse.
