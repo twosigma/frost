@@ -30,10 +30,10 @@
  * presents a second request while one is held. See also "Device loads" in the
  * load queue README.
  *
- * Cached-tier accesses go through cached_tier_adapter and complete by
+ * Cached-tier accesses go through coherence_l1d and complete by
  * handshake: reads return tagged with their LQ slot id, one outstanding per
  * slot. The uncached response takes the LQ response port first while the
- * cached adapter holds its response (o_cached_read_ready). With
+ * cache holds its response (o_cached_read_ready). With
  * VARIABLE_UNCACHED=1, uncached requests use ready/valid and complete only on
  * their external R/B response. The zero setting retains the fixed-latency
  * interface for pipeline component tests. While a

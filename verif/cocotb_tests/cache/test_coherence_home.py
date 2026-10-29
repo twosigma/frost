@@ -303,6 +303,7 @@ async def dirty_data_and_dma_masks(dut: Any) -> None:
     await b.finish(grant, written=True, delay=9, completion_delay=11, release_delay=13)
     assert await b.read(address, 7) == dirty
     assert b.private[address][0] == 2
+    assert await b.read(address, 7) == dirty
     payload = (1 << 256) - 1
     mask = 0x80000181
     grant = await b.start(8, address, payload, mask)
@@ -314,6 +315,30 @@ async def dirty_data_and_dma_masks(dut: Any) -> None:
             expected[index] = 255
     assert await b.read(address) == int.from_bytes(expected, "little")
     assert b.private[address][0] == 0
+    assert await b.read(address, 7) == int.from_bytes(expected, "little")
+
+
+@cocotb.test()
+async def dma_read_fill_and_dirty_residency(dut: Any) -> None:
+    """Read fills and dirty recalls survive clean reads and later eviction."""
+    b = Home(dut)
+    await b.reset()
+    address = 0x80000000
+    initial = b.expected(address)
+    assert await b.read(address, 7) == initial
+    assert await b.read(address, 7) == initial
+    dirty = int.from_bytes(
+        bytes((index * 29 + 3) & 255 for index in range(32)), "little"
+    )
+    b.private[address] = (3, dirty)
+    assert await b.read(address, 7) == dirty
+    assert b.private[address][0] == 2
+    assert await b.read(address, 7) == dirty
+    for index in range(1, 9):
+        await b.read(address + index * 4096, 7)
+    await b.tick(b.write_delay + 2)
+    assert b.expected(address) == dirty
+    assert await b.read(address, 7) == dirty
 
 
 @cocotb.test()
