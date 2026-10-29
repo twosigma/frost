@@ -237,3 +237,154 @@ async def probe_reply_waits_for_cut_and_preserves_dirty_bytes(dut: Any) -> None:
         assert b.get("o_cut_release") == int(opcode == 1)
         await b.set(i_r_ready=0, i_cut_admit_ready=0, i_cut_inval_done=0)
     assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def continuous_probes_yield_to_ready_local_work(dut: Any) -> None:
+    """Install grants and finish committed writes while unrelated probes stay offered."""
+    for kind in ("store", "amo", "sc"):
+        b = Private(dut)
+        await b.reset()
+        address = 0x80000000
+        await b.set(i_atomic_protected=1, i_address=address)
+        if kind == "sc":
+            await b.set(
+                i_sc_valid=1,
+                i_sc_address=address,
+                i_sc_size=3,
+                i_sc_tag=3,
+                i_reservation_valid=1,
+                i_reservation_addr=address,
+                i_reservation_size=3,
+            )
+            await b.wait("o_sc_ready")
+            await b.tick()
+            await b.set(i_sc_valid=0)
+        else:
+            await b.set(
+                i_read_valid=int(kind == "amo"),
+                i_read_kind=2,
+                i_read_size=3,
+                i_read_tag=3,
+                i_write_mask=255 if kind == "store" else 0,
+                i_write_data=0x12345678,
+            )
+            await b.tick()
+            await b.set(i_read_valid=0, i_write_mask=0)
+        await b.wait("o_d_valid")
+        demand = unpack(b.get("o_d"), (4, 9, b.p, 5, 3, 32, 1, 1, 1, 256))
+        await b.set(i_d_ready=1)
+        await b.tick()
+        await b.set(i_d_ready=0, i_r_ready=1)
+        accepted = 0
+        replied = 0
+
+        async def offer() -> None:
+            await b.set(
+                i_p_valid=1,
+                i_p=pack(
+                    (2, 0),
+                    (6, accepted % 64),
+                    (1, 0),
+                    (b.p, address + 128),
+                    (2, 2),
+                    (2, 0),
+                    (9, 0),
+                    (5, 0),
+                    (3, 0),
+                ),
+            )
+
+        async def step() -> None:
+            nonlocal accepted, replied
+            take = b.get("o_p_ready") and b.get("i_p_valid")
+            replied += b.get("o_r_valid")
+            await b.tick()
+            if take:
+                accepted += 1
+                await offer()
+            assert not b.get("o_fatal")
+
+        await offer()
+        for _ in range(20):
+            if accepted:
+                break
+            await step()
+        assert accepted
+        await b.set(
+            i_g_valid=1,
+            i_g=pack(
+                (3, 2),
+                (9, demand[1]),
+                (6, 0),
+                (b.p, address),
+                (256, 0xAABBCCDD),
+                (1, 0),
+            ),
+        )
+        await b.wait("o_g_ready")
+        await step()
+        await b.set(i_g_valid=0)
+        for _ in range(100):
+            installed = (
+                not b.get("o_pending_store")
+                if kind == "store"
+                else (
+                    b.get("o_sc_result_valid")
+                    if kind == "sc"
+                    else b.get("o_read_valid")
+                )
+            )
+            if installed:
+                break
+            await step()
+        else:
+            raise AssertionError(f"{kind} grant starved behind probes")
+        before = replied
+        for _ in range(40):
+            await step()
+        assert replied >= before + 3
+        if kind == "sc":
+            assert b.get("o_sc_success") and not b.get("o_sc_error")
+            await b.set(i_sc_commit=1)
+            await step()
+            await b.set(i_sc_commit=0)
+        if kind == "store":
+            await b.set(i_c_ready=1)
+            for _ in range(20):
+                if b.get("o_c_valid"):
+                    await step()
+                    break
+                await step()
+            else:
+                raise AssertionError("store completion did not progress")
+            await b.set(
+                i_c_ready=0,
+                i_u_valid=1,
+                i_u=pack((9, demand[1]), (6, 0), (b.p, address)),
+            )
+            assert b.get("o_u_ready")
+            await step()
+            await b.set(i_u_valid=0)
+            assert b.get("o_store_ready")
+        await b.set(
+            i_write_mask=255,
+            i_write_data=0xFEDCBA9876543210,
+            i_write_atomic=int(kind != "store"),
+            i_write_sc=int(kind == "sc"),
+            i_write_tag=3,
+        )
+        await step()
+        await b.set(i_write_mask=0)
+        for _ in range(100):
+            if b.get("o_write_done"):
+                break
+            await step()
+        else:
+            raise AssertionError(f"{kind} write starved behind probes")
+        assert b.get("o_sc_write_done") == int(kind == "sc")
+        before = replied
+        for _ in range(40):
+            await step()
+        assert replied >= before + 3
+        assert accepted - replied <= 1
