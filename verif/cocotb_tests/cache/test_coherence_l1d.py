@@ -276,6 +276,33 @@ async def continuous_probes_yield_to_ready_local_work(dut: Any) -> None:
         await b.set(i_d_ready=1)
         await b.tick()
         await b.set(i_d_ready=0, i_r_ready=1)
+        if kind == "sc":
+            for opcode in (2, 0):
+                await b.set(
+                    i_p_valid=1,
+                    i_p=pack(
+                        (2, opcode),
+                        (6, 0),
+                        (1, 0),
+                        (b.p, address),
+                        (2, 0),
+                        (2, 3 if opcode == 2 else 0),
+                        (9, demand[1]),
+                        (5, 0),
+                        (3, 3),
+                    ),
+                )
+                await b.wait("o_p_ready")
+                await b.tick()
+                await b.set(i_p_valid=0)
+                await b.wait("o_r_valid")
+                fields = unpack(
+                    b.get("o_r"), (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1)
+                )
+                assert not fields[-1]
+                if opcode == 2:
+                    assert fields[0] == 2 and fields[12]
+                await b.tick()
         accepted = 0
         replied = 0
 
@@ -388,3 +415,111 @@ async def continuous_probes_yield_to_ready_local_work(dut: Any) -> None:
             await step()
         assert replied >= before + 3
         assert accepted - replied <= 1
+
+
+@cocotb.test()
+async def check_sc_samples_after_capture(dut: Any) -> None:
+    """Sample the reservation on the edge after P and preserve the complete held R."""
+    b = Private(dut)
+    address = 0x80000000
+    for before, sampled in ((0, 1), (1, 0)):
+        await b.reset()
+        await b.set(
+            i_atomic_protected=1,
+            i_sc_valid=1,
+            i_sc_address=address,
+            i_sc_size=3,
+            i_sc_tag=3,
+            i_reservation_valid=before,
+            i_reservation_addr=address,
+            i_reservation_size=3,
+        )
+        await b.wait("o_sc_ready")
+        await b.tick()
+        await b.set(i_sc_valid=0)
+        await b.wait("o_d_valid")
+        demand = unpack(b.get("o_d"), (4, 9, b.p, 5, 3, 32, 1, 1, 1, 256))
+        await b.set(i_d_ready=1)
+        await b.tick()
+        await b.set(
+            i_d_ready=0,
+            i_p_valid=1,
+            i_p=pack(
+                (2, 2),
+                (6, 9),
+                (1, 0),
+                (b.p, address),
+                (2, 0),
+                (2, 3),
+                (9, demand[1]),
+                (5, 0),
+                (3, 3),
+            ),
+        )
+        await b.wait("o_p_ready")
+        await b.tick()
+        assert not b.get("o_r_valid")
+        await b.set(i_p_valid=0, i_reservation_valid=sampled)
+        await b.tick()
+        await b.set(i_reservation_valid=before)
+        await b.wait("o_r_valid")
+        held = b.get("o_r")
+        fields = unpack(held, (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1))
+        assert fields[0] == 2 and fields[12] == sampled and not fields[-1]
+        for _ in range(12):
+            assert b.get("o_r_valid") and b.get("o_r") == held
+            await b.tick()
+
+
+@cocotb.test()
+async def continuous_probes_allow_read_acquisition(dut: Any) -> None:
+    """Reserve a read turn within four completed probes and apply its grant."""
+    b = Private(dut)
+    await b.reset()
+    address = 0x80000000
+    await b.set(
+        i_p_valid=1,
+        i_r_ready=1,
+        i_p=pack(
+            (2, 0),
+            (6, 8),
+            (1, 0),
+            (b.p, address + 128),
+            (2, 2),
+            (2, 0),
+            (9, 0),
+            (5, 0),
+            (3, 0),
+        ),
+        i_read_valid=1,
+        i_address=address,
+    )
+    await b.tick()
+    await b.set(i_read_valid=0)
+    replies = 0
+    for _ in range(100):
+        if b.get("o_d_valid"):
+            break
+        replies += b.get("o_r_valid")
+        await b.tick()
+    else:
+        raise AssertionError("read acquisition starved behind probes")
+    assert 1 <= replies <= 5
+    demand = unpack(b.get("o_d"), (4, 9, b.p, 5, 3, 32, 1, 1, 1, 256))
+    await b.set(i_d_ready=1)
+    await b.tick()
+    await b.set(
+        i_d_ready=0,
+        i_g_valid=1,
+        i_g=pack(
+            (3, 1), (9, demand[1]), (6, 0), (b.p, address), (256, 0x12345678), (1, 0)
+        ),
+    )
+    await b.wait("o_g_ready")
+    await b.tick()
+    await b.set(i_g_valid=0)
+    await b.wait("o_read_valid")
+    assert b.get("o_read_data") == 0x12345678 and not b.get("o_read_error")
+    for _ in range(12):
+        assert b.get("o_read_valid") and b.get("o_read_data") == 0x12345678
+        await b.tick()

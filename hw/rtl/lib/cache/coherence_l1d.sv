@@ -180,6 +180,7 @@ module coherence_l1d #(
   logic probe_valid_q, probe_absorbed_q, probe_put_q;
   logic probe_capture, probe_launch, probe_reply_eligible;
   logic local_ready, local_turn_q, probe_priority;
+  logic [1:0] read_probe_count_q;
   logic [ADDR_WIDTH-1:0] array_request_addr;
   coh_p_t probe_in, probe_q;
   coh_r_t  reply_q;
@@ -355,7 +356,8 @@ module coherence_l1d #(
       (atomic_q && atomic_sc_q && !request_live) ||
       (pending_q && !pending_blocked &&
        (!pending_miss_q || (!request_live && wb_free)) &&
-       !(request_live && acquisition_store_q)) || rd_candidate || maint_eligible ||
+       !(request_live && acquisition_store_q)) ||
+      (rd_candidate && &read_probe_count_q) || maint_eligible ||
       (i_sc_valid && !atomic_q && !pending_q && !request_live &&
        !o_sc_result_valid && i_atomic_protected && wb_free);
   assign probe_priority = i_p_valid && !local_turn_q;
@@ -648,6 +650,7 @@ module coherence_l1d #(
       o_maint_done <= 1'b0;
       probe_valid_q <= 1'b0;
       local_turn_q <= 1'b0;
+      read_probe_count_q <= '0;
       probe_absorbed_q <= 1'b0;
       probe_put_q <= 1'b0;
       probe_q <= '0;
@@ -746,6 +749,10 @@ module coherence_l1d #(
         probe_valid_q <= 1'b1;
         probe_q <= probe_in;
       end
+      if (!rd_candidate || (phase_q == Lookup && operation_q == ReadOp))
+        read_probe_count_q <= '0;
+      else if (o_r_valid && i_r_ready && !(&read_probe_count_q))
+        read_probe_count_q <= read_probe_count_q + 1'b1;
       if (phase_q == Idle && !probe_valid_q) local_turn_q <= 1'b0;
       if (o_r_valid && i_r_ready) begin
         local_turn_q <= local_ready;
@@ -1215,6 +1222,7 @@ module coherence_l1d #(
       if ($past(o_r_valid && i_r_ready)) assert (local_turn_q == $past(local_ready));
       if ($past(local_turn_q)) assert (!local_turn_q);
       if (local_turn_q && grant_valid && active) assert (grant_ready);
+      if (rd_candidate && &read_probe_count_q) assert (local_ready);
       if ($past(local_turn_q && active && !grant_valid && atomic_write_q))
         assert (phase_q == Lookup && operation_q == AtomicWriteOp);
       if ($past(active && o_r_valid && !i_r_ready) && active) begin
