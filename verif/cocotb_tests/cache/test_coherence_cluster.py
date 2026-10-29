@@ -35,6 +35,10 @@ class Cluster:
         self.memory: dict[int, int] = {}
         self.responses: list[tuple[int, int, int, int]] = []
         self.cut_age = 0
+        self.cut_admit_age = 0
+        self.cut_admit_delay = 0
+        self.cut_inval_delay = 3
+        self.cut_lookup_overlap = 0
         self.cuts: list[int] = []
         self.sc_writes: list[int] = []
         self.reply_states: list[int] = []
@@ -59,23 +63,30 @@ class Cluster:
         for _ in range(count):
             response = next((r for r in self.responses if r[0] <= self.cycle), None)
             self.cut_age = self.cut_age + 1 if self.get("o_cut_inval_valid") else 0
+            self.cut_admit_age = (
+                self.cut_admit_age + 1 if self.get("o_cut_admit_valid") else 0
+            )
             await self.set(
                 i_clk=0,
                 i_mem_resp_valid=int(response is not None),
                 i_mem_resp_id=response[1] if response else 0,
                 i_mem_resp_data=response[2] if response else 0,
-                i_cut_admit_ready=1,
-                i_cut_inval_done=int(self.cut_age >= 3),
+                i_cut_admit_ready=int(self.cut_admit_age >= self.cut_admit_delay),
+                i_cut_inval_done=int(self.cut_age >= self.cut_inval_delay),
             )
             if response:
                 self.responses.remove(response)
                 if response[1] & 16:
                     self.memory[response[3]] = response[2]
-            if self.cut_age == 3:
+            if self.cut_age == self.cut_inval_delay:
                 address = self.get("o_cut_address")
                 self.cuts.append(address)
                 if self.get("i_reservation_addr") & -32 == address:
                     await self.set(i_reservation_valid=0)
+            if self.get("o_cut_hold"):
+                assert not int(self.dut.r_valid.value)
+                if int(self.dut.hart.phase_q.value) == 8:
+                    self.cut_lookup_overlap += 1
             if int(self.dut.r_valid.value) and int(self.dut.r_ready.value):
                 reply = unpack(
                     int(self.dut.reply.value),
@@ -231,6 +242,27 @@ async def yielding_store_and_dma(dut: Any) -> None:
     assert b.reply_states[-1] == 0
     assert a in b.cuts
     assert await b.read(a) == 0xDEADBEA5
+
+
+@cocotb.test()
+async def cut_and_snapshot_overlap(dut: Any) -> None:
+    """Snapshot data while admission and replay marking are backpressured."""
+    b = Cluster(dut)
+    await b.reset()
+    a = 0x80000000
+    await b.store(a, 0xFEDCBA9876543210)
+    await b.wait("o_pending_store", 0)
+    b.cut_admit_delay = 24
+    b.cut_inval_delay = 19
+    await b.set(i_reservation_valid=1, i_reservation_addr=a, i_reservation_size=3)
+    await b.dma(a, 0xA5, 1)
+    assert b.cut_lookup_overlap >= 20
+    assert b.cuts == [a] and not b.get("i_reservation_valid")
+    assert await b.read(a) == 0xFEDCBA98765432A5
+    before = b.cut_lookup_overlap
+    await b.dma(a + 32, 0x1234, 3)
+    assert b.cut_lookup_overlap > before
+    assert await b.read(a + 32) == 0x1234
 
 
 @cocotb.test()

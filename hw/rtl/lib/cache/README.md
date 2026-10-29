@@ -274,8 +274,10 @@ crosses the cut. Invalidation covers L1D, L0, live read slots, reservations
 and returned-load observations held until retirement. Delayed invalidated
 LR responses cannot establish a reservation, and stale responses cannot
 refill L0. Loads blocked by a pending store or selected atomic are parked so
-that unrelated rows can issue. Cut admission and replay acknowledgement
-precede the probe reply.
+that unrelated rows can issue. Cut admission and replay marking run in
+parallel with the probe's array lookup and state update. The probe reply
+waits for both operations. The global issue gate ends after replay marking
+is effective; the matching-sector gate lasts through reply acceptance.
 
 The atomic guard computes active and retired state for permitted and blocked
 arming. Candidate validity and the entry veto select between those results.

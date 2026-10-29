@@ -122,11 +122,15 @@ module coherence_l1d #(
     Update,
     UpdateWait,
     ProbeAbsorb,
-    ProbeReply,
+    ProbeReply
+  } phase_t;
+  typedef enum logic [2:0] {
+    CutIdle,
     CutAdmit,
     CutInvalidate,
-    CutWait
-  } phase_t;
+    CutWait,
+    CutDone
+  } cut_phase_t;
   typedef enum logic [2:0] {
     ReadOp,
     StoreOp,
@@ -136,6 +140,7 @@ module coherence_l1d #(
     AtomicWriteOp
   } operation_t;
   phase_t phase_q;
+  cut_phase_t cut_phase_q;
   operation_t operation_q;
   logic active;
   logic [7:0] rd_valid_q, rd_ready_q, rd_miss_q;
@@ -348,7 +353,7 @@ module coherence_l1d #(
       phase_q == Idle && !probe_valid_q && !o_r_valid &&
       probe_in.opcode == coherence_pkg::ProbeInvalidate;
   assign o_cut_hold = (i_p_valid && !i_rst && invalidate_eligible) ||
-      (probe_valid_q && probe_q.opcode == coherence_pkg::ProbeInvalidate && phase_q != ProbeReply);
+      (cut_phase_q != CutIdle && cut_phase_q != CutDone);
 `ifndef SYNTHESIS
 `ifdef FORMAL
   always_comb
@@ -358,13 +363,29 @@ module coherence_l1d #(
   begin
     p_cut_hold_exact : assert (o_cut_hold ==
         ((i_p_valid && o_p_ready && probe_in.opcode == coherence_pkg::ProbeInvalidate) ||
-         (probe_valid_q && probe_q.opcode == coherence_pkg::ProbeInvalidate &&
-          phase_q != ProbeReply)));
+         (cut_phase_q != CutIdle && cut_phase_q != CutDone)));
   end
 `endif
   assign o_cut_address = probe_q.addr;
-  assign o_cut_admit_valid = active && phase_q == CutAdmit;
-  assign o_cut_inval_valid = active && phase_q == CutInvalidate;
+  assign o_cut_admit_valid = active && cut_phase_q == CutAdmit;
+  assign o_cut_inval_valid = active && cut_phase_q == CutInvalidate;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) cut_phase_q <= CutIdle;
+    else if (cut_phase_q == CutDone && o_r_valid && i_r_ready) cut_phase_q <= CutIdle;
+    else if (active) begin
+      case (cut_phase_q)
+        CutIdle:
+        if (i_p_valid && o_p_ready && probe_in.opcode == coherence_pkg::ProbeInvalidate)
+          cut_phase_q <= CutAdmit;
+        CutAdmit: if (i_cut_admit_ready) cut_phase_q <= CutInvalidate;
+        CutInvalidate: if (i_cut_inval_done) cut_phase_q <= CutWait;
+        CutWait: cut_phase_q <= CutDone;
+        CutDone: begin
+        end
+        default: cut_phase_q <= CutIdle;
+      endcase
+    end
+  end
   assign o_r = reply_q;
   assign grant_ready = active && phase_q == Idle && !probe_valid_q && !i_p_valid;
   assign request_valid = active && phase_q == Acquire;
@@ -740,8 +761,7 @@ module coherence_l1d #(
                 sc_checked_q <= 1'b1;
                 sc_tid_q <= probe_q.tid;
                 phase_q <= ProbeReply;
-              end else if (probe_q.opcode == coherence_pkg::ProbeInvalidate) phase_q <= CutAdmit;
-              else phase_q <= Lookup;
+              end else phase_q <= Lookup;
             end else if (i_p_valid) begin
               // Probe capture owns this arbitration edge.
             end else if (grant_valid) begin
@@ -799,9 +819,6 @@ module coherence_l1d #(
               end
             end
           end
-          CutAdmit: if (i_cut_admit_ready) phase_q <= CutInvalidate;
-          CutInvalidate: if (i_cut_inval_done) phase_q <= CutWait;
-          CutWait: phase_q <= Lookup;
           Lookup: if (array_ready) phase_q <= LookupWait;
           LookupWait:
           if (array_valid) begin
@@ -971,8 +988,10 @@ module coherence_l1d #(
           end
           ProbeAbsorb: if (wb_absorb_ready[probe_put_q]) phase_q <= ProbeReply;
           ProbeReply: begin
-            o_r_valid <= 1'b1;
-            phase_q   <= Idle;
+            if (probe_q.opcode != coherence_pkg::ProbeInvalidate || cut_phase_q == CutDone) begin
+              o_r_valid <= 1'b1;
+              phase_q   <= Idle;
+            end
           end
           default: phase_q <= Idle;
         endcase
@@ -1143,6 +1162,11 @@ module coherence_l1d #(
       end
       if (o_cut_admit_valid || o_cut_inval_valid)
         assert (probe_valid_q && probe_q.opcode == coherence_pkg::ProbeInvalidate);
+      if (cut_phase_q != CutIdle)
+        assert (probe_valid_q && probe_q.opcode == coherence_pkg::ProbeInvalidate);
+      if (o_r_valid && probe_q.opcode == coherence_pkg::ProbeInvalidate)
+        assert (cut_phase_q == CutDone);
+      if ($past(active && cut_phase_q == CutWait)) assert (cut_phase_q == CutDone);
       if (o_cut_release)
         assert ($past(o_r_valid && i_r_ready && probe_q.opcode == coherence_pkg::ProbeInvalidate));
       if (o_sc_write_done) begin
