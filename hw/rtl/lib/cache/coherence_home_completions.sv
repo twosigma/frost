@@ -183,7 +183,6 @@ module coherence_home_completions #(
   always_comb begin
     free_slot = 1'b0;
     free_slot_index = '0;
-    duplicate = 1'b0;
     free_buffer = 1'b0;
     free_buffer_index = '0;
     o_exclude = '0;
@@ -192,7 +191,6 @@ module coherence_home_completions #(
         free_slot = 1'b1;
         free_slot_index = SlotBits'(slot);
       end
-      if (live[slot]) duplicate |= work_identity[slot] == incoming.q;
       for (int way = 0; way < WAYS; way++) begin
         if (pin_valid_q[slot] && way_q[slot] == WayBits'(way) && query_set_q[slot])
           o_exclude[way] = 1'b1;
@@ -206,6 +204,13 @@ module coherence_home_completions #(
     end
   end
 
+  // A request whose identity matches a live slot waits. The per-slot terms
+  // reduce in a balanced tree, apart from the free-slot search.
+  logic [SLOTS-1:0] duplicates;
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_duplicate
+    assign duplicates[slot] = live[slot] && work_identity[slot] == incoming.q;
+  end
+  assign duplicate = |duplicates;
   // Every idle endpoint applies the same admission checks to the request, so
   // any idle endpoint's readiness stands for the free slot's.
   assign o_d_ready = !i_rst && !i_fatal_stop && !duplicate && |(request_ready & ~live);

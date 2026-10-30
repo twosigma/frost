@@ -89,7 +89,9 @@ module coherence_home_endpoint #(
   assign o_work = demand_q;
   assign o_work_offer = phase_q == Work;
   assign o_work_valid = !i_rst && o_work_offer;
-  assign o_d_ready = !i_rst && phase_q == Idle && coherence_pkg::legal_q(
+  // Reset clears the endpoint, so D readiness leaves reset to the table's
+  // readiness, which applies it once.
+  assign o_d_ready = phase_q == Idle && coherence_pkg::legal_q(
       demand_in.q
   ) && demand_in.q.epoch == i_epoch &&
       (int'(demand_in.q.src) < NUM_HARTS || demand_in.q.src >= 2) && coherence_pkg::legal_opcode(
