@@ -365,6 +365,12 @@ module coherence_l1d #(
   assign probe_capture = i_p_valid && o_p_ready;
   assign probe_launch = probe_capture && probe_in.opcode != coherence_pkg::CheckSC && array_ready;
   assign array_request_addr = probe_launch ? probe_in.addr : lookup_addr_q;
+  // Both candidate request addresses are compared with the atomic's set, so
+  // a probe launch selects a finished comparison.
+  (* keep = "true" *) wire probe_atomic_set =
+      probe_in.addr[5+:SetBits] == atomic_addr_q[5+:SetBits];
+  (* keep = "true" *) wire lookup_atomic_set =
+      lookup_addr_q[5+:SetBits] == atomic_addr_q[5+:SetBits];
   assign probe_reply_eligible = probe_q.opcode != coherence_pkg::ProbeInvalidate ||
       cut_phase_q == CutDone;
   (* keep = "true" *) wire invalidate_eligible = !i_fatal_stop && !o_fatal &&
@@ -544,7 +550,7 @@ module coherence_l1d #(
       end
     end
     exclude = '0;
-    if (atomic_q && atomic_granted_q && array_request_addr[5+:SetBits] == atomic_addr_q[5+:SetBits])
+    if (atomic_q && atomic_granted_q && (probe_launch ? probe_atomic_set : lookup_atomic_set))
       exclude[atomic_way_q] = 1'b1;
     acquisition = '0;
     acquisition.size = 3'd3;
