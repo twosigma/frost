@@ -26,7 +26,9 @@ module coherence_read_payload #(
     output logic [8*WIDTH-1:0] o_payload
 );
   logic [WIDTH-1:0] write_payload_q;
-  logic [7:0] write_mask_q;
+  // The allocation arrives late; keep it in the data input rather than a
+  // synchronous reset pin.
+  (* extract_reset = "no" *) logic [7:0] write_mask_q;
   wire [7:0] write_mask = write_mask_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
