@@ -454,8 +454,9 @@ module load_queue #(
   // Per-entry 1-bit flags (packed vectors for bulk operations)
   logic [DEPTH-1:0] lq_valid;
   // The memory issue launch as the LQ's own logic reads it; o_mem_read_en
-  // drives the same value to the router.
-  logic mem_read_en;
+  // drives the same value to the router. fast_capture is a launch into the
+  // fast snapshot.
+  logic mem_read_en, fast_capture;
   logic [DEPTH-1:0] lq_is_fp;
   logic [DEPTH-1:0] lq_addr_valid;
   logic [DEPTH-1:0] lq_sign_ext;
@@ -709,7 +710,7 @@ module load_queue #(
       i_cache_invalidate_addr[XLEN-1:3] == fast_addr[XLEN-1:3];
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) fast_line_invalidated <= 1'b0;
-    else if (mem_read_en && !launching_is_cached)
+    else if (fast_capture)
       fast_line_invalidated <= i_cache_invalidate_valid &&
           i_cache_invalidate_addr[XLEN-1:3] == launch_mem_issue_addr[XLEN-1:3];
     else if (mem_outstanding && fast_line_invalidate_now) fast_line_invalidated <= 1'b1;
@@ -2440,9 +2441,11 @@ module load_queue #(
   // The memory issue port carries the same launch with the L0 hit selecting
   // between values prepared without it, so the hit reaches the router
   // through one LUT. The hit value adds only the fast path's own conditions,
-  // since the miss value already holds the flush and issue terms. Internal
-  // consumers keep launch_mem_issue.
+  // since the miss value already holds the flush and issue terms. The LQ's
+  // own launch (mem_read_en) and its snapshot captures take the hit last the
+  // same way; other internal consumers keep launch_mem_issue.
   (* keep = "true" *) logic launch_if_miss, launch_if_hit;
+  (* keep = "true" *) logic launch_permitted, launch_hit_blocks;
   if (1'b1) begin : gen_coherent_launch_gate
     // Bus availability qualifies the port after committed-store selection.
     (* keep = "true" *) logic [1:0] launch_choice;
@@ -2451,17 +2454,18 @@ module load_queue #(
           coherent_issue_by_drain[drain_case] && !cached_launch_hold_q &&
           sq_check_entry_valid && !older_amo_write_pending && !sq_commit_interlock;
     end
-    (* keep = "true" *) wire permitted =
-        !coherent_local_hold && launch_choice[i_sq_committed_empty];
-    (* keep = "true" *) wire hit_blocks = ENABLE_L0_FAST_PATH && sq_check_cacheable &&
+    assign launch_permitted = !coherent_local_hold && launch_choice[i_sq_committed_empty];
+    assign launch_hit_blocks = ENABLE_L0_FAST_PATH && sq_check_cacheable &&
         !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
     assign launch_if_miss = 1'b0;
     assign launch_if_hit = 1'b0;
-    assign o_mem_read_en = !i_mem_bus_busy && permitted && !(cache_lookup_hit && hit_blocks);
+    assign o_mem_read_en = !i_mem_bus_busy && launch_permitted &&
+        !(cache_lookup_hit && launch_hit_blocks);
   end
 `ifndef SYNTHESIS
   always_comb begin
     p_mem_read_en_exact : assert (o_mem_read_en == launch_mem_issue);
+    p_launch_hit_last_exact : assert (mem_read_en == launch_mem_issue);
   end
 `endif
   assign launch_mem_issue_idx  = sq_check_idx;
@@ -2514,9 +2518,32 @@ module load_queue #(
     for (int sl = int'(CachedSlots) - 1; sl >= 0; sl--) begin
       if (!cs_valid[sl]) cs_alloc_idx = CachedSlotBits'(sl);
     end
+  end
+  // Launch captures into the fast snapshot or a cached slot take the L0 hit
+  // last: each enable is prepared without it, and a hit the fast path takes
+  // cancels it.
+  (* keep = "true" *) logic fast_capture_without_hit;
+  (* keep = "true" *) logic [CachedSlots-1:0] cs_capture_without_hit;
+  logic [CachedSlots-1:0] cs_capture;
+  assign fast_capture_without_hit = !i_mem_bus_busy && launch_permitted && !launching_is_cached;
+  assign fast_capture = fast_capture_without_hit && !(cache_lookup_hit && launch_hit_blocks);
+  for (genvar sl = 0; sl < CachedSlots; sl++) begin : gen_cs_capture
+    assign cs_capture_without_hit[sl] = !i_mem_bus_busy && launch_permitted &&
+        launching_is_cached && cs_alloc_idx == CachedSlotBits'(sl);
+    assign cs_capture[sl] = cs_capture_without_hit[sl] &&
+        !(cache_lookup_hit && launch_hit_blocks);
+  end
+`ifndef SYNTHESIS
+  always_comb begin
+    p_fast_capture_exact : assert (fast_capture == (mem_read_en && !launching_is_cached));
+    p_cs_capture_exact : assert (cs_capture == ({CachedSlots{mem_read_en && launching_is_cached}} &
+        (CachedSlots'(1) << cs_alloc_idx)));
+  end
+`endif
+  always_comb begin
     cs_valid_next = cs_valid;
     if (i_mem_read_valid && i_mem_read_is_cached) cs_valid_next[resp_slot] = 1'b0;
-    if (mem_read_en && launching_is_cached) cs_valid_next[cs_alloc_idx] = 1'b1;
+    cs_valid_next = cs_valid_next | cs_capture;
     if (i_flush_all) begin
       cs_valid_next = cs_valid & ~(resp_from_slot ? (CachedSlots'(1) << resp_slot) : '0) &
           ~cs_router_canceled;
@@ -2544,7 +2571,7 @@ module load_queue #(
   // Memory issue port: driven straight from the launch terms (no second-deep
   // staging register, see above).
   always_comb begin
-    mem_read_en = launch_mem_issue;
+    mem_read_en = !i_mem_bus_busy && launch_permitted && !(cache_lookup_hit && launch_hit_blocks);
     o_mem_read_addr = launch_mem_issue_addr;
     o_mem_read_size = launch_mem_issue_size;
     o_mem_read_id = cs_alloc_idx;
@@ -4060,9 +4087,7 @@ module load_queue #(
   // which clears them. Keep launch on D for timing.
   logic [CachedSlots-1:0] cs_inval_next, cs_lr_suppress_next;
   for (genvar sl = 0; sl < CachedSlots; sl++) begin : gen_cached_inval
-    logic launch_slot;
-    assign launch_slot = mem_read_en && launching_is_cached &&
-        (cs_alloc_idx == CachedSlotBits'(sl));
+    wire launch_slot = cs_capture[sl];
     assign cs_inval_next[sl] = !launch_slot &&
         (cs_inval[sl] || cs_inval_now[sl] || cs_coh_inval_now[sl]);
     assign cs_lr_suppress_next[sl] = !launch_slot &&
@@ -4127,7 +4152,7 @@ module load_queue #(
     // An MMIO handoff keeps the fast snapshot to itself: the router's pending
     // bit, part of the wrapper's i_mem_bus_busy, blocks every later launch
     // through the router's accept cycle.
-    if (mem_read_en && !launching_is_cached) begin
+    if (fast_capture) begin
       fast_idx      <= launch_mem_issue_idx;
       fast_addr     <= launch_mem_issue_addr;
       fast_size     <= launch_mem_issue_size;
@@ -4142,15 +4167,17 @@ module load_queue #(
       fast_amo_kind <= lq_amo_kind[launch_mem_issue_idx];
       fast_amo_rs2  <= lq_amo_rs2_rd;
     end
-    if (mem_read_en && launching_is_cached) begin
-      cs_idx[cs_alloc_idx]      <= launch_mem_issue_idx;
-      cs_addr[cs_alloc_idx]     <= launch_mem_issue_addr;
-      cs_size[cs_alloc_idx]     <= launch_mem_issue_size;
-      cs_is_fp[cs_alloc_idx]    <= sq_check_is_fp_q;
-      cs_is_lr[cs_alloc_idx]    <= sq_check_is_lr_q;
-      cs_is_amo[cs_alloc_idx]   <= sq_check_is_amo_q;
-      cs_sign_ext[cs_alloc_idx] <= sq_check_sign_ext_q;
-      cs_rob_tag[cs_alloc_idx]  <= sq_check_rob_tag_q;
+    for (int sl = 0; sl < CachedSlots; sl++) begin
+      if (cs_capture[sl]) begin
+        cs_idx[sl]      <= launch_mem_issue_idx;
+        cs_addr[sl]     <= launch_mem_issue_addr;
+        cs_size[sl]     <= launch_mem_issue_size;
+        cs_is_fp[sl]    <= sq_check_is_fp_q;
+        cs_is_lr[sl]    <= sq_check_is_lr_q;
+        cs_is_amo[sl]   <= sq_check_is_amo_q;
+        cs_sign_ext[sl] <= sq_check_sign_ext_q;
+        cs_rob_tag[sl]  <= sq_check_rob_tag_q;
+      end
     end
     if (amo_launch && launching_is_cached) begin
       cs_amo_kind[cs_alloc_idx] <= lq_amo_kind[launch_mem_issue_idx];
