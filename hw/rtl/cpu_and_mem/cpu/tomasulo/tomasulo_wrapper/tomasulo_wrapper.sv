@@ -4064,6 +4064,18 @@ module tomasulo_wrapper #(
   // never commits or drains.
   riscv_pkg::sq_addr_update_t sq_addr_update;
   logic sq_addr_update_capture_valid;
+  // Untranslated address and data updates take the PMA check last: the
+  // issue and alignment terms are prepared first. This equals the issue
+  // without store_misalign_issue.
+  (* keep = "true" *) logic store_update_without_pma;
+  assign store_update_without_pma = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
+      (!i_trap_misaligned_accesses || !store_addr_misaligned);
+`ifndef SYNTHESIS
+  always_comb
+    if (!i_translation_active)
+      assert ((store_update_without_pma && store_addr_pma_ok) ==
+          (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq && !store_misalign_issue));
+`endif
   always_comb begin
     if (i_translation_active) begin
       sq_addr_update.valid   = dmmu_store_ok;
@@ -4071,8 +4083,7 @@ module tomasulo_wrapper #(
       sq_addr_update.address = dmmu_out_addr;
       sq_addr_update.is_mmio = dmmu_out_is_mmio;
     end else begin
-      sq_addr_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
-                               !store_misalign_issue;
+      sq_addr_update.valid   = store_update_without_pma && store_addr_pma_ok;
       sq_addr_update.rob_tag = o_mem_rs_issue.rob_tag;
       sq_addr_update.address = sq_effective_addr;
       sq_addr_update.is_mmio = sq_addr_is_mmio;
@@ -4096,8 +4107,7 @@ module tomasulo_wrapper #(
       sq_data_update.rob_tag = dmmu_out_tag;
       sq_data_update.data    = dmmu_out_store_data;
     end else begin
-      sq_data_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
-                               !store_misalign_issue;
+      sq_data_update.valid = store_update_without_pma && store_addr_pma_ok;
       sq_data_update.rob_tag = o_mem_rs_issue.rob_tag;
       sq_data_update.data = o_mem_rs_issue.src2_value;
     end
