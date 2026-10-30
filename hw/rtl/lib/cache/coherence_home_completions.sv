@@ -322,7 +322,9 @@ module coherence_home_completions #(
         .o_result_ready(),
         .i_result(grant_q),
         .o_g_valid(grant_valid[slot]),
-        .i_g_ready(i_g_ready && grant_selected_q && grant_slot_q == SlotBits'(slot)),
+        // Only the selected endpoint sees a valid result; G readiness needs
+        // no further qualification.
+        .i_g_ready(i_g_ready),
         .o_g(),
         .i_c_valid,
         .i_error_disposed(error_q[slot]),
