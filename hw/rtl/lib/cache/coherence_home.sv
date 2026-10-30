@@ -194,8 +194,10 @@ module coherence_home #(
   logic [8*LINE_BYTES-1:0] array_data;
   logic decision_engine, decision_put, decision_blocked, victim_blocked;
   logic decision_hit, decision_fill, decision_join, decision_retry;
-  logic [FillBits-1:0] fill_free_index, fill_match_index;
-  logic fill_free, fill_match, fill_joinable, wb_free;
+  logic [FillBits-1:0] fill_free_index;
+  logic [FILLS-1:0] join_fill;
+  logic decision_reader;
+  logic fill_free, wb_free;
   logic [WbBits-1:0] wb_free_index;
   logic [ADDR_WIDTH-1:0] decision_addr;
   logic [3:0] decision_opcode;
@@ -391,6 +393,7 @@ module coherence_home #(
         .i_decision_way(array_way),
         .i_decision_state(array_state),
         .o_read_valid(engine_read[engine]),
+        .o_read_offer(read_valid[engine]),
         .i_read_ready(read_ready[engine]),
         .o_way(engine_way[engine]),
         .i_data_valid(array_data_valid && array_data_token == TokenBits'(engine)),
@@ -430,7 +433,6 @@ module coherence_home #(
     end
     assign tag_valid[engine] = engine_lookup[engine];
     assign tag_payload[engine] = {TokenBits'(engine), engine_addr[engine]};
-    assign read_valid[engine] = engine_read[engine];
     assign read_payload[engine] = {TokenBits'(engine), engine_way[engine], engine_addr[engine]};
     assign update_valid[engine] = engine_update[engine];
     assign update_payload[engine] = {
@@ -445,7 +447,8 @@ module coherence_home #(
   end
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 275),
-      .PORTS(RESULTS)
+      .PORTS(RESULTS),
+      .HOLD_VALID(1)
   ) result_arbiter (
       .i_clk,
       .i_rst,
@@ -455,13 +458,14 @@ module coherence_home #(
       .o_valid(result_valid),
       .i_ready(result_ready && active),
 `ifdef COHERENCE_HOME_CONTROL
-      .i_service_stop(!active || f_local_fatal),
+      .i_service_stop(!active),
 `endif
       .o_payload(result)
   );
   coherence_d_arbiter #(
       .WIDTH(TagPacketBits),
-      .PORTS(Clients)
+      .PORTS(Clients),
+      .HOLD_VALID(1)
   ) tag_arbiter (
       .i_clk,
       .i_rst,
@@ -471,7 +475,7 @@ module coherence_home #(
       .o_valid(tag_request_valid),
       .i_ready(tag_request_ready && active),
 `ifdef COHERENCE_HOME_CONTROL
-      .i_service_stop(!active || f_local_fatal),
+      .i_service_stop(!active),
 `endif
       .o_payload(tag_request)
   );
@@ -480,7 +484,7 @@ module coherence_home #(
       .PORTS(Clients)
   ) read_arbiter (
       .i_clk,
-      .i_rst,
+      .i_rst(!active),
       .i_valid(read_valid),
       .o_ready(read_ready),
       .i_payload(read_payload),
@@ -493,7 +497,8 @@ module coherence_home #(
   );
   coherence_d_arbiter #(
       .WIDTH(UpdatePacketBits),
-      .PORTS(Clients)
+      .PORTS(Clients),
+      .HOLD_VALID(1)
   ) update_arbiter (
       .i_clk,
       .i_rst,
@@ -503,13 +508,14 @@ module coherence_home #(
       .o_valid(update_request_valid),
       .i_ready(update_request_ready && active),
 `ifdef COHERENCE_HOME_CONTROL
-      .i_service_stop(!active || f_local_fatal),
+      .i_service_stop(!active),
 `endif
       .o_payload(update_request)
   );
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 30),
-      .PORTS(Clients)
+      .PORTS(Clients),
+      .HOLD_VALID(1)
   ) probe_arbiter (
       .i_clk,
       .i_rst,
@@ -519,13 +525,14 @@ module coherence_home #(
       .o_valid(probe_out_valid),
       .i_ready(i_p_ready && active),
 `ifdef COHERENCE_HOME_CONTROL
-      .i_service_stop(!active || f_local_fatal),
+      .i_service_stop(!active),
 `endif
       .o_payload(probe_out)
   );
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 11),
-      .PORTS(Clients)
+      .PORTS(Clients),
+      .HOLD_VALID(1)
   ) ack_arbiter (
       .i_clk,
       .i_rst,
@@ -535,7 +542,7 @@ module coherence_home #(
       .o_valid(ack_out_valid),
       .i_ready(i_wa_ready && active),
 `ifdef COHERENCE_HOME_CONTROL
-      .i_service_stop(!active || f_local_fatal),
+      .i_service_stop(!active),
 `endif
       .o_payload(ack_out)
   );
@@ -613,6 +620,9 @@ module coherence_home #(
     end
   end
   always_comb begin
+    decision_reader = 1'b0;
+    for (int engine = 0; engine < RESULTS; engine++)
+    decision_reader |= array_token == TokenBits'(engine) && read_waiter(engine_opcode[engine]);
     decision_engine = int'(array_token) < RESULTS;
     decision_put = int'(array_token) >= RESULTS + FILLS;
     decision_addr = array_query;
@@ -628,9 +638,6 @@ module coherence_home #(
       decision_addr[5] = put_addr[put][5];
     decision_blocked = 1'b0;
     victim_blocked = 1'b0;
-    fill_match = 1'b0;
-    fill_match_index = '0;
-    fill_joinable = 1'b0;
     fill_free = 1'b0;
     fill_free_index = '0;
     wb_free = 1'b0;
@@ -655,10 +662,6 @@ module coherence_home #(
         if (fill_phase_q[fill] != FillReady) begin
           if (same_block(fill_addr_q[fill], decision_addr)) begin
             decision_blocked = 1'b1;
-            fill_match = 1'b1;
-            fill_match_index = FillBits'(fill);
-            fill_joinable = fill_phase_q[fill] != FillInstallWait &&
-                !fill_error_q[fill] && fill_seat_count_q[fill] < 3;
           end
           if (fill_victim_q[fill] && same_block(fill_old_addr_q[fill], decision_addr))
             decision_blocked = 1'b1;
@@ -681,9 +684,9 @@ module coherence_home #(
     end
     decision_hit = array_hit && array_available && !decision_blocked;
     decision_fill = decision_engine && !array_hit && array_available && !decision_blocked &&
-        !victim_blocked && !array_exclude[array_way] && fill_free &&
+        !victim_blocked && fill_free &&
         (array_state == coherence_pkg::Invalid || wb_free);
-    decision_join = decision_engine && fill_match && fill_joinable && read_waiter(decision_opcode);
+    decision_join = |join_fill;
     decision_retry = decision_engine && !decision_hit;
     array_claim = active && array_response && (decision_hit || decision_fill);
     retry_valid = active && array_response && decision_retry;
@@ -698,8 +701,13 @@ module coherence_home #(
     assign enabled = active && fill_phase_q[fill] != FillFree &&
         fill_phase_q[fill] != FillReady && fill_phase_q[fill] != FillInstallWait &&
         !fill_error_q[fill];
-    assign joining = active && array_response && decision_join &&
-        fill_match_index == FillBits'(fill);
+    assign join_fill[fill] = fill_phase_q[fill] != FillFree &&
+        fill_phase_q[fill] != FillReady && fill_phase_q[fill] != FillInstallWait &&
+        !fill_error_q[fill] && fill_seat_count_q[fill] < 3 &&
+        same_block(
+        fill_addr_q[fill], decision_addr
+    ) && decision_reader;
+    assign joining = active && array_response && join_fill[fill];
     for (genvar slot = 0; slot < COMPLETIONS; slot++) begin : gen_eligible
       assign eligible[slot] = enabled && waiting[slot] && same_block(
           waiting_addr[slot], fill_addr_q[fill]
@@ -834,8 +842,7 @@ module coherence_home #(
     wire allocate = active && array_response && decision_fill && fill_free_index == FillBits'(fill);
     assign tag_valid[Client] = 1'b0;
     assign tag_payload[Client] = '0;
-    assign read_valid[Client] = active && fill_phase_q[fill] == FillRecall &&
-        !fill_read_sent_q[fill];
+    assign read_valid[Client] = fill_phase_q[fill] == FillRecall && !fill_read_sent_q[fill];
     assign read_payload[Client] = {TokenBits'(Client), fill_way_q[fill], fill_old_addr_q[fill]};
     assign probe_valid[Client] = active && fill_phase_q[fill] == FillRecall &&
         recall_phase_q[fill] == RecallOffer;
@@ -927,8 +934,7 @@ module coherence_home #(
             fill_phase_q[fill] <= array_state == coherence_pkg::Invalid ? FillMemory : FillRecall;
             recall_phase_q[fill] <= RecallOffer;
           end
-          if (active && array_response && decision_join &&
-              fill_match_index == FillBits'(fill)) begin
+          if (active && array_response && join_fill[fill]) begin
             fill_seats_q[fill][CompletionBits'(decision_tid)] <= 1'b1;
             fill_seat_count_q[fill] <= fill_seat_count_q[fill] + fill_add_count[fill] + 1'b1;
           end
@@ -1146,13 +1152,32 @@ module coherence_home #(
     initial $fatal(1, "coherence_home: invalid capacity");
   end
 `ifndef SYNTHESIS
+  logic reference_join;
+  logic [FillBits-1:0] reference_join_index;
+  always_comb begin
+    reference_join = 1'b0;
+    reference_join_index = '0;
+    for (int fill = FILLS - 1; fill >= 0; fill--)
+    if (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady && same_block(
+            fill_addr_q[fill], decision_addr
+        )) begin
+      reference_join = fill_phase_q[fill] != FillInstallWait &&
+          !fill_error_q[fill] && fill_seat_count_q[fill] < 3 &&
+          decision_engine && read_waiter(decision_opcode);
+      reference_join_index = FillBits'(fill);
+    end
+  end
   always_ff @(posedge i_clk)
     if (!i_rst) begin
+      assert (join_fill == (reference_join ? FILLS'(1) << reference_join_index : FILLS'(0)));
       assert ($onehot0({engine_r_ready, fill_r_ready}));
       assert ((park & wake) == 0);
       if (work_valid && active) assert (engine_idle[work_buffer]);
       if (array_response && decision_engine)
         assert (same_block(array_query, engine_addr[ResultBits'(array_token)]));
+      for (int engine = 0; engine < RESULTS; engine++)
+      if (active) assert (engine_read[engine] == read_valid[engine]);
+      if (active) assert ((row_request_valid && row_request_ready) == (|(read_valid & read_ready)));
       for (int put = 0; put < Puts; put++)
       if (array_response && array_token == TokenBits'(RESULTS + FILLS + put))
         assert (same_block(array_query, put_addr[put]));
@@ -1171,6 +1196,8 @@ module coherence_home #(
         assert (!array_exclude[array_way] && !decision_blocked && !victim_blocked);
         if (array_state != coherence_pkg::Invalid) assert (wb_free);
       end
+      if (array_response && active && !array_hit && array_available)
+        assert (!array_exclude[array_way]);
       for (int put = 0; put < Puts; put++) begin
         if (array_response && array_token == TokenBits'(RESULTS + FILLS + put))
           assert (put_phase_q[put] == PutDecision);

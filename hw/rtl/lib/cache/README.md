@@ -263,6 +263,12 @@ Different sectors can complete out of order. The AXI bridge buffers read lines
 by ID and presents AXI read beats and write responses in burst order.
 Channel arbiters capture the payload with the selected input and hold both
 through a stalled presentation.
+The home's probe, tag, update, result and PutAck arbiters use their captured
+selection for validity. Each selected source holds its offer through acceptance.
+Reset and fatal state suppress probe and PutAck validity and further array
+requests. Read arbitration uses pending read offers. Home stop clears its
+unaccepted selection. Accepted reads keep their tokens through physical
+completion. A local fatal transition cancels an unaccepted read.
 
 The home admits nineteen requests with distinct identities. Eight engines
 share their image storage with the result credits. An engine hands its image
@@ -273,7 +279,9 @@ from earlier requests to the same 32-byte sector.
 
 `coherence_home_array` has separate tag-decision, data-read and masked-update
 ports. Each request carries a response token. Replacement state changes when
-the consumer claims a tag decision. Tag updates exclude an unresolved lookup
+the consumer claims a tag decision. An available miss response selects an
+unpinned way. Way claims enter through the tag response port. Put and writeback address
+hazards are checked at response acceptance. Tag updates exclude an unresolved lookup
 of the same physical packed row. A pending tag update blocks further lookups
 to that row until the update is accepted. Data hazards cover the read sample and the
 write input registers through completion. Contending reads and writes alternate

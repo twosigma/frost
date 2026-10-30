@@ -380,6 +380,7 @@ module coherence_home_array #(
 `ifdef COHERENCE_HOME_CONTROL
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
+      if (phase_q == Reply && !o_resp_hit && o_resp_available) assert (!i_exclude[o_resp_way]);
       if (phase_q == Tags || phase_q == Select || phase_q == Reply) begin
         assert (i_tag_owner[token_q]);
         assert ((o_query_addr >> OffsetBits) == (i_tag_address[token_q] >> OffsetBits));
