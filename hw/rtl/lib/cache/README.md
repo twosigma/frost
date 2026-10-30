@@ -300,8 +300,9 @@ A successful fill's way pin lasts until its final waiter takes a completion
 pin. A failed fill transfers its error to completion metadata and releases
 its control before the waiters dispatch in sector order.
 
-Fill waiter ranks are independent of the available-seat count. A balanced
-prefix network counts up to three eligible entries before each candidate. Each fill
+Fill waiter ranks are independent of the available-seat count. Each
+candidate's rank counts the eligible entries before it, up to three, from
+six-entry group counts and a count within its own group. Each fill
 stores its occupied seat count beside the seat mask. Allocation, joining
 readers, handoff and error cleanup update both on the same edge. A joining
 engine uses one seat before the queued waiters. Ready work precedes other
