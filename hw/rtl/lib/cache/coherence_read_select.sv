@@ -16,7 +16,10 @@
 
 // Physical entries qualify before circular read selection.
 module coherence_read_select #(
-    parameter int unsigned ADDR_WIDTH = 32
+    parameter int unsigned ADDR_WIDTH = 32,
+    // A standalone proof assumes i_addr is the forwarded address; the L1D
+    // asserts it.
+    parameter bit FORMAL_STANDALONE_ENV = 1'b1
 ) (
     input logic i_clk,
     input logic [7:0] i_valid,
@@ -24,6 +27,9 @@ module coherence_read_select #(
     input logic [7:0] i_miss,
     input logic [15:0] i_kind,
     input logic [8*ADDR_WIDTH-1:0] i_addr,
+    input logic [8*ADDR_WIDTH-1:0] i_stored_addr,
+    input logic [ADDR_WIDTH-1:0] i_write_addr,
+    input logic [7:0] i_write_mask,
     input logic [2:0] i_round_robin,
     input logic i_pending,
     input logic [ADDR_WIDTH-1:0] i_pending_addr,
@@ -43,16 +49,29 @@ module coherence_read_select #(
 );
   logic [7:0] eligible, upper, first;
   (* keep = "true" *) logic [7:0] first_upper, first_any;
+  // i_addr is each slot's address after the buffered write forwards to it.
+  // The comparisons use the stored addresses and the buffered write's address
+  // separately, so the forwarding selection follows them.
+  logic write_blocked;
+  always_comb begin
+    write_blocked = (i_pending && i_write_addr[ADDR_WIDTH-1:5] == i_pending_addr[ADDR_WIDTH-1:5]) ||
+        (i_atomic && i_write_addr[ADDR_WIDTH-1:5] == i_atomic_addr[ADDR_WIDTH-1:5]);
+    for (int slot = 0; slot < 2; slot++)
+      write_blocked |= i_wb_live[slot] && i_write_addr[ADDR_WIDTH-1:5] ==
+          i_wb_addr[slot*ADDR_WIDTH+5+:ADDR_WIDTH-5];
+  end
   for (genvar index = 0; index < 8; index++) begin : gen_entry
-    wire [ADDR_WIDTH-1:0] address = i_addr[index*ADDR_WIDTH+:ADDR_WIDTH];
-    logic blocked;
+    wire [ADDR_WIDTH-1:0] address = i_stored_addr[index*ADDR_WIDTH+:ADDR_WIDTH];
+    logic stored_blocked, blocked;
     always_comb begin
-      blocked = (i_pending && address[ADDR_WIDTH-1:5] == i_pending_addr[ADDR_WIDTH-1:5]) ||
+      stored_blocked = (i_pending &&
+          address[ADDR_WIDTH-1:5] == i_pending_addr[ADDR_WIDTH-1:5]) ||
           (i_atomic && address[ADDR_WIDTH-1:5] == i_atomic_addr[ADDR_WIDTH-1:5]);
       for (int slot = 0; slot < 2; slot++)
-        blocked |= i_wb_live[slot] && address[ADDR_WIDTH-1:5] ==
+        stored_blocked |= i_wb_live[slot] && address[ADDR_WIDTH-1:5] ==
             i_wb_addr[slot*ADDR_WIDTH+5+:ADDR_WIDTH-5];
     end
+    assign blocked = i_write_mask[index] ? write_blocked : stored_blocked;
     assign eligible[index] = i_valid[index] && !i_ready[index] && !blocked &&
         (i_kind[2*index+:2] != 2'd2 || i_atomic_protected) &&
         !(i_request_live && !i_acquisition_store && !i_acquisition_sc &&
@@ -113,12 +132,22 @@ module coherence_read_select #(
   end
 `ifdef FORMAL
   always_comb
+    if (FORMAL_STANDALONE_ENV)
+      for (int index = 0; index < 8; index++)
+      assume (i_addr[index*ADDR_WIDTH+:ADDR_WIDTH] == (i_write_mask[index] ? i_write_addr :
+          i_stored_addr[index*ADDR_WIDTH+:ADDR_WIDTH]));
+  always_comb
 `else
   always @(posedge i_clk)
 `endif
   begin
     p_read_select_exact : assert (o_found == ref_found && o_index == ref_index);
     if (o_found) p_read_address_exact : assert (o_address == ref_selected_address);
+    // The forwarded addresses the reference uses match the compared ones.
+    if (!FORMAL_STANDALONE_ENV)
+      for (int index = 0; index < 8; index++)
+      assert (i_addr[index*ADDR_WIDTH+:ADDR_WIDTH] == (i_write_mask[index] ? i_write_addr :
+          i_stored_addr[index*ADDR_WIDTH+:ADDR_WIDTH]));
   end
 `endif
 endmodule

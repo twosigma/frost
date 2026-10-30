@@ -233,7 +233,9 @@ and writes to the slot storage. The forwarding mux
 makes each allocation visible on the allocation edge. Each slot keeps its
 allocated payload until reset or another allocation to that slot.
 Allocation marks an empty slot valid. Read eligibility compares each physical slot with pending, atomic and frozen
-writeback sectors. Circular priority selects a qualified slot and its address.
+writeback sectors. The comparisons use the stored slot addresses and the
+buffered allocation's address, and the slot mask selects between their
+results. Circular priority selects a qualified slot and its address.
 There are no E grants, silent upgrades, sharer hints or stream prefetches.
 The L1D has eight read slots. The home has four fills and `L2_NUM_WB` victim
 write slots. `L1D_NUM_MSHR`, `L2_NUM_MSHR`, `L2_NUM_WAITERS` and the prefetch
@@ -300,9 +302,8 @@ A successful fill's way pin lasts until its final waiter takes a completion
 pin. A failed fill transfers its error to completion metadata and releases
 its control before the waiters dispatch in sector order.
 
-Fill waiter ranks are independent of the available-seat count. Each
-candidate's rank counts the eligible entries before it, up to three, from
-six-entry group counts and a count within its own group. Each fill
+Fill waiter ranks are independent of the available-seat count. A balanced
+prefix network counts up to three eligible entries before each candidate. Each fill
 stores its occupied seat count beside the seat mask. Allocation, joining
 readers, handoff and error cleanup update both on the same edge. A joining
 engine uses one seat before the queued waiters. Ready work precedes other
