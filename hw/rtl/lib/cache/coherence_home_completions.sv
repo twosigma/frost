@@ -230,15 +230,18 @@ module coherence_home_completions #(
         !(work_selected_q && work_slot_q == SlotBits'(slot));
     assign o_waiting[slot] = !i_rst && o_waiting_offer[slot];
   end
-  // A presented result matches at most one slot: the one its tid names.
-  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_result_hit
-    assign result_hit[slot] = result.tid == 6'(slot) && issued_q[slot] &&
-        buffer_owned_q[slot] && !result_valid_q[slot] &&
-        result.opcode <= coherence_pkg::GrantFail && result.q == work_identity[slot] &&
-        result.addr == work_address[slot];
-  end
-  assign result_matches = |result_hit;
+  // A presented result matches at most one slot, the one its tid names:
+  // that slot's identity, address and state are selected by the tid and
+  // compared once.
   assign result_slot = SlotBits'(result.tid);
+  wire result_tid_valid = int'(result.tid) < SLOTS;
+  assign result_matches = result_tid_valid && issued_q[result_slot] &&
+      buffer_owned_q[result_slot] && !result_valid_q[result_slot] &&
+      result.opcode <= coherence_pkg::GrantFail && result.q == work_identity[result_slot] &&
+      result.addr == work_address[result_slot];
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_result_hit
+    assign result_hit[slot] = result_matches && result_slot == SlotBits'(slot);
+  end
   assign o_result_ready = !i_rst && result_matches;
   // The selected grant's endpoint is in Work with a matching result, so the
   // grant register alone presents G. Every G consumer applies the same reset.
@@ -575,6 +578,11 @@ module coherence_home_completions #(
         assert (work_later_q[slot] == (slot >= int'(work_next_q)));
       end
       if (accept_result) assert (result_hit == SLOTS'(1) << result_slot);
+      for (int slot = 0; slot < SLOTS; slot++)
+      assert (result_hit[slot] == (result.tid == 6'(slot) && issued_q[slot] &&
+          buffer_owned_q[slot] && !result_valid_q[slot] &&
+          result.opcode <= coherence_pkg::GrantFail && result.q == work_identity[slot] &&
+          result.addr == work_address[slot]));
       assert (int'(grant_next_q) < SLOTS);
       for (int slot = 0; slot < SLOTS; slot++) begin
         assert (grant_later_q[slot] == (slot >= int'(grant_next_q)));
