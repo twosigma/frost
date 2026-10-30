@@ -157,17 +157,20 @@ module coherence_home_completions #(
   assign accept_grant = o_g_valid && i_g_ready;
 
   // Sector comparisons with the next put address are registered. A slot
-  // live across the edge keeps its address; a slot admitted on the edge
-  // takes the accepted request's address; a released slot is not live.
-  logic [SLOTS-1:0] put_sector_live_q;
+  // live across the edge keeps its address unless its release was accepted
+  // on the edge; a slot admitted on the edge takes the accepted request's
+  // address. o_put_busy therefore reads registers only.
+  logic [SLOTS-1:0] put_sector_live_q, released_q;
   logic put_incoming_sector_q, request_accepted_q;
   always_ff @(posedge i_clk) begin
     put_incoming_sector_q <= (incoming.addr >> 5) == (i_next_put_addr >> 5);
     request_accepted_q <= accept_request;
+    released_q <= release_fire;
     for (int slot = 0; slot < SLOTS; slot++)
     put_sector_live_q[slot] <= live[slot] && (work_address[slot] >> 5) == (i_next_put_addr >> 5);
   end
-  assign o_put_busy = |(live & put_sector_live_q) || (request_accepted_q && put_incoming_sector_q);
+  assign o_put_busy = |(put_sector_live_q & ~released_q) ||
+      (request_accepted_q && put_incoming_sector_q);
   // Each slot's set comparison with the query is registered. A pinned slot
   // keeps its address across the edge, so o_exclude is exact whenever the
   // query's set is unchanged, as it is from tag selection through response.
