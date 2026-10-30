@@ -253,6 +253,10 @@ set_property PULLUP true [get_ports io_phy_mdio]
 # -----------------------------------------------------------------------------
 set_property CONFIG_VOLTAGE 1.8 [current_design]
 set_property CFGBVS GND [current_design]
+# The bitstream exceeds 16 MiB, so the configuration engine needs 4-byte
+# addresses to read it from the 128 MiB flash.
+set_property CONFIG_MODE SPIx4 [current_design]
+set_property BITSTREAM.CONFIG.SPI_32BIT_ADDR Yes [current_design]
 set_property BITSTREAM.CONFIG.SPI_BUSWIDTH 4 [current_design]
 set_property BITSTREAM.CONFIG.CONFIGRATE 51.0 [current_design]
 set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]

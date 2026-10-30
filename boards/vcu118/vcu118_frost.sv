@@ -310,20 +310,7 @@ module vcu118_frost #(
       .i_ddr_axi_rresp  (ddr_axi_rresp),
       .i_ddr_axi_rlast  (ddr_axi_rlast),
 
-      // No external Ethernet interface or CPU-visible ECC telemetry.
-      .i_nic_tx_clk       (1'b0),
-      .i_nic_rx_clk       (1'b0),
-      .i_nic_tx_clk_ok    (1'b0),
-      .i_nic_rx_clk_ok    (1'b0),
-      .i_nic_rx_raw_data  ('0),
-      .i_nic_rx_raw_valid (1'b0),
-      .i_nic_rx_signal_ok (1'b0),
-      .i_nic_phy_status   ('0),
-      .o_nic_tx_raw_data  (),
-      .o_nic_tx_raw_valid (),
-      .o_nic_phy_ctrl     (),
-      .o_nic_rx_block_lock(),
-
+      // No CPU-visible ECC telemetry.
       .i_ecc_present      (1'b0),
       .i_ecc_poll         (1'b0),
       .i_ecc_ce_valid     (1'b0),
