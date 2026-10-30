@@ -1889,7 +1889,14 @@ module load_queue #(
   logic coherent_stage_clear;
   wire [1:0] coherent_commit_choice = {i_sq_commit_pending, i_sq_committed_empty};
   if (1'b1) begin : gen_coherent_capture_choices
+    // A flush leaves only the forwarding release, which depends on neither
+    // the head, hit nor bus case, so the flush selects it at the head choice
+    // rather than gating every memory release case.
     (* keep = "true" *) logic [1:0] clear_by_head;
+    (* keep = "true" *) logic flushed_clear;
+    wire flushing = i_flush_all || i_flush_en;
+    assign flushed_clear = coherent_forward_unblocked_empty[i_sq_empty] &&
+        !(i_sq_commit_pending && sq_check_is_cached_region && sq_check_phase2);
     for (genvar head_case = 0; head_case < 2; head_case++) begin : gen_head_choice
       (* keep = "true" *) logic [1:0] clear_by_hit;
       for (genvar hit_case = 0; hit_case < 2; hit_case++) begin : gen_hit_choice
@@ -1906,7 +1913,7 @@ module load_queue #(
               localparam bit CommitPending = (commit_case & 2) != 0;
               localparam int unsigned Drained = commit_case & 1;
               wire interlock = CommitPending && sq_check_is_cached_region && sq_check_phase2;
-              wire clear_memory = !i_flush_all && !i_flush_en &&
+              wire clear_memory =
                   coherent_release_cases[empty_case][Drained][head_case] && !interlock &&
                   ((!Busy && !cached_launch_hold_q) ||
                    (ENABLE_L0_FAST_PATH && sq_check_cacheable && (!Busy || L0Allowed) && Hit &&
@@ -1920,7 +1927,7 @@ module load_queue #(
         end
         assign clear_by_hit[hit_case] = clear_by_empty[i_sq_empty];
       end
-      assign clear_by_head[head_case] = clear_by_hit[cache_lookup_hit];
+      assign clear_by_head[head_case] = flushing ? flushed_clear : clear_by_hit[cache_lookup_hit];
     end
     // Head identity selects between complete release cofactors. Phase and
     // address faults qualify that selected release condition.
