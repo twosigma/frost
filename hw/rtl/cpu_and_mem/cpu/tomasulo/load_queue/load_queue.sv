@@ -2746,13 +2746,16 @@ module load_queue #(
   // coherent valid bits. The default valid-bit path uses cache_fill_valid.
   (* keep = "true" *) logic cache_fill_if_slot, cache_fill_if_fast;
   if (1'b1) begin : gen_coherent_fill_slot_permission
+    // The coherent invalidation, which arrives last, is selected for the
+    // response slot apart from the slot's other permission terms.
     (* keep = "true" *) logic [CachedSlots-1:0] slot_permission;
     for (genvar slot = 0; slot < CachedSlots; slot++) begin : gen_slot
       assign slot_permission[slot] = cs_valid[slot] && !cs_drop[slot] &&
           lq_valid[cs_idx[slot]] && !cs_is_lr[slot] && !cs_is_amo[slot] &&
-          !(cs_inval[slot] || cs_inval_now[slot] || cs_coh_inval_now[slot]);
+          !(cs_inval[slot] || cs_inval_now[slot]);
     end
-    assign cache_fill_if_slot = !i_flush_all && slot_permission[resp_slot];
+    assign cache_fill_if_slot = !i_flush_all && slot_permission[resp_slot] &&
+        !cs_coh_inval_now[resp_slot];
 `ifndef SYNTHESIS
 `ifdef FORMAL
     always_comb

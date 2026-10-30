@@ -177,7 +177,10 @@ module coherence_l1d #(
   logic [SetBits-1:0] maint_set_q;
   logic [WayBits-1:0] maint_way_q;
   logic maint_last_q;
-  logic probe_valid_q, probe_absorbed_q, probe_put_q;
+  // probe_valid_q selects the cut address on its way to the load queue's
+  // fill checks; replicas keep each copy's load small.
+  (* max_fanout = 32 *) logic probe_valid_q;
+  logic probe_absorbed_q, probe_put_q;
   logic probe_capture, probe_launch, probe_reply_eligible;
   logic local_ready, local_turn_q, probe_priority;
   logic [1:0] read_probe_count_q;
