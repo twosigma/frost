@@ -45,6 +45,8 @@ module coherence_home_array #(
     input logic i_resp_ready,
     input logic i_resp_claim,
     output logic [TOKEN_BITS-1:0] o_resp_token,
+    // The response token decoded one-hot, registered with o_resp_token.
+    output logic [(1 << TOKEN_BITS)-1:0] o_resp_token_onehot,
     output logic o_resp_hit,
     output logic o_resp_available,
     output logic [WayBits-1:0] o_resp_way,
@@ -71,6 +73,9 @@ module coherence_home_array #(
     input logic [WayBits-1:0] i_update_way,
     input logic i_update_tag,
     input logic [1:0] i_update_state,
+    // Equals |i_update_mask whenever i_update_valid; the caller forms it ahead
+    // of its own registers, so readiness does not reduce the mask.
+    input logic i_update_has_data,
     input logic [LINE_BYTES-1:0] i_update_mask,
     input logic [8*LINE_BYTES-1:0] i_update_data,
     input logic [TOKEN_BITS-1:0] i_update_token,
@@ -106,6 +111,7 @@ module coherence_home_array #(
   logic [SetBits-1:0] init_set_q, set_q;
   logic [TagBits-1:0] tag_q;
   logic [TOKEN_BITS-1:0] token_q;
+  logic [(1 << TOKEN_BITS)-1:0] token_onehot_q;
   logic [PlruBits-1:0] plru_read, plru_q;
   logic plru_we;
   logic [WAYS-1:0] tag_we;
@@ -170,8 +176,9 @@ module coherence_home_array #(
       {i_update_state, i_update_addr[ADDR_WIDTH-1:OffsetBits+SetBits]};
   assign tag_hazard = (phase_q == Tags || phase_q == Select || phase_q == Reply) &&
       (set_q >> TagGroupBits) == (tag_waddr >> TagGroupBits);
-  assign row_contended = i_read_valid && i_update_valid && |i_update_mask && read_row == write_row;
-  wire update_contended = i_read_offer && |i_update_mask && read_row == write_row;
+  assign row_contended = i_read_valid && i_update_valid && i_update_has_data &&
+      read_row == write_row;
+  wire update_contended = i_read_offer && i_update_has_data && read_row == write_row;
   assign o_update_ready = !i_rst && o_init_done && !write_hazard &&
       !(update_contended && read_turn_q) &&
       !(i_update_tag && tag_hazard);
@@ -190,6 +197,17 @@ module coherence_home_array #(
     assign o_resp_tags[way] = tags_q[way][TagBits-1:0];
   end
   assign o_resp_token = token_q;
+  assign o_resp_token_onehot = token_onehot_q;
+`ifndef SYNTHESIS
+  // Reset and every request capture write both, so they agree after reset.
+`ifdef FORMAL
+  wire token_reset_seen = !i_rst;
+`else
+  logic token_reset_seen = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) token_reset_seen <= 1'b1;
+`endif
+  always_comb if (token_reset_seen) assert (token_onehot_q == (1 << TOKEN_BITS)'(1) << token_q);
+`endif
   assign plru_we = !i_rst && (phase_q == Init || (o_resp_valid && i_resp_ready && i_resp_claim));
   sdp_block_ram #(
       .ADDR_WIDTH(SetBits),
@@ -252,11 +270,11 @@ module coherence_home_array #(
     write_hazard = 1'b0;
     read_hazard  = 1'b0;
     for (int stage = 0; stage <= DATA_READ_LATENCY; stage++)
-    if (read_valid_q[stage] && read_row_q[stage] == write_row && |i_update_mask)
+    if (read_valid_q[stage] && read_row_q[stage] == write_row && i_update_has_data)
       write_hazard = 1'b1;
     for (int stage = 0; stage <= DATA_WRITE_LATENCY; stage++) begin
       if (write_valid_q[stage] && write_data_q[stage]) begin
-        if (write_row_q[stage] == write_row && |i_update_mask) write_hazard = 1'b1;
+        if (write_row_q[stage] == write_row && i_update_has_data) write_hazard = 1'b1;
         if (write_row_q[stage] == read_row) read_hazard = 1'b1;
       end
     end
@@ -291,7 +309,7 @@ module coherence_home_array #(
       write_data_q  <= '0;
       read_turn_q   <= 1'b0;
     end else begin
-      if (read_fire || (update_fire && |i_update_mask)) read_turn_q <= !read_fire;
+      if (read_fire || (update_fire && i_update_has_data)) read_turn_q <= !read_fire;
       read_valid_q[0] <= read_fire;
       read_token_q[0] <= i_read_token;
       read_row_q[0]   <= read_row;
@@ -302,7 +320,7 @@ module coherence_home_array #(
       end
       if (read_valid_q[DATA_READ_LATENCY-1]) o_read_data <= data_rdata;
       write_valid_q[0] <= update_fire;
-      write_data_q[0]  <= |i_update_mask;
+      write_data_q[0]  <= i_update_has_data;
       write_token_q[0] <= i_update_token;
       write_row_q[0]   <= write_row;
       for (int stage = 1; stage <= DATA_WRITE_LATENCY; stage++) begin
@@ -333,6 +351,7 @@ module coherence_home_array #(
       set_q <= '0;
       tag_q <= '0;
       token_q <= '0;
+      token_onehot_q <= (1 << TOKEN_BITS)'(1);
       count_q <= '0;
       plru_q <= '0;
       o_resp_hit <= 1'b0;
@@ -368,9 +387,10 @@ module coherence_home_array #(
         end
       endcase
       if (request_fire) begin
-        set_q   <= i_req_addr[OffsetBits+:SetBits];
-        tag_q   <= i_req_addr[ADDR_WIDTH-1:OffsetBits+SetBits];
+        set_q <= i_req_addr[OffsetBits+:SetBits];
+        tag_q <= i_req_addr[ADDR_WIDTH-1:OffsetBits+SetBits];
         token_q <= i_req_token;
+        token_onehot_q <= (1 << TOKEN_BITS)'(1) << i_req_token;
         count_q <= CountBits'(TAG_READ_LATENCY);
         phase_q <= Tags;
       end
@@ -448,6 +468,7 @@ module coherence_home_array #(
     if (i_read_valid) assume (int'(i_read_way) < WAYS);
     if (i_update_valid) assume (int'(i_update_way) < WAYS);
     if (i_update_valid) assume (i_read_offer == i_read_valid);
+    if (i_update_valid) assume (i_update_has_data == |i_update_mask);
     if (o_resp_valid && i_resp_ready && i_resp_claim) assume (o_resp_available);
     if (i_rst) begin
       f_known_q <= 1'b0;
