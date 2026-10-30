@@ -188,7 +188,7 @@ module coherence_l1d #(
   coh_p_t probe_in, probe_q;
   coh_r_t  reply_q;
   coh_wa_t ack;
-  logic [1:0] wb_live, wb_valid, wb_ready, wb_freeze_ready, wb_absorb_ready;
+  logic [1:0] wb_live, wb_valid, wb_ready, wb_freeze_ready, wb_absorb_ready, wb_absorb_offer;
   logic [1:0] wb_wa_ready, wb_fatal, wb_absorbed;
   logic [1:0][ADDR_WIDTH+259:0] wb;
   logic [1:0][  ADDR_WIDTH-1:0] wb_addr;
@@ -381,6 +381,12 @@ module coherence_l1d #(
       probe_in.opcode == coherence_pkg::ProbeInvalidate;
   assign o_cut_hold = (i_p_valid && !i_rst && invalidate_eligible) ||
       (cut_phase_q != CutIdle && cut_phase_q != CutDone);
+  // The absorption claim for the probed slot, with a simultaneous W
+  // acceptance of that slot applied last: W acceptance wins.
+  (* keep = "true" *) logic absorb_take;
+  logic absorb_go;
+  assign absorb_take = wb_absorb_offer[probe_put_q];
+  assign absorb_go = absorb_take && !(wb_selected_q && wb_select_q == probe_put_q && i_w_ready);
 `ifndef SYNTHESIS
 `ifdef FORMAL
   always_comb
@@ -388,6 +394,7 @@ module coherence_l1d #(
   always @(posedge i_clk)
 `endif
   begin
+    p_absorb_go_exact : assert (absorb_go == wb_absorb_ready[probe_put_q]);
     p_cut_hold_exact : assert (o_cut_hold ==
         ((i_p_valid && o_p_ready && probe_in.opcode == coherence_pkg::ProbeInvalidate) ||
          (cut_phase_q != CutIdle && cut_phase_q != CutDone)));
@@ -474,6 +481,7 @@ module coherence_l1d #(
         .o_w(wb[slot]),
         .i_absorb_valid(active && phase_q == ProbeAbsorb && probe_put_q == 1'(slot)),
         .o_absorb_ready(wb_absorb_ready[slot]),
+        .o_absorb_offer(wb_absorb_offer[slot]),
         .i_absorb_tid(probe_q.tid),
         .i_absorb_addr(probe_q.addr),
         .i_absorb_epoch(probe_q.epoch),
@@ -1047,7 +1055,7 @@ module coherence_l1d #(
             endcase
           end
           ProbeAbsorb:
-          if (wb_absorb_ready[probe_put_q]) begin
+          if (absorb_go) begin
             if (probe_reply_eligible) begin
               o_r_valid <= 1'b1;
               phase_q <= Idle;
