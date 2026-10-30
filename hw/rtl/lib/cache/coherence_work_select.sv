@@ -21,7 +21,8 @@ module coherence_work_select #(
 ) (
     input logic [SLOTS-1:0] i_eligible,
     input logic [SLOTS-1:0] i_ready,
-    input logic [SlotBits-1:0] i_next,
+    // i_later[slot]: the slot is at or after the rotation point.
+    input logic [SLOTS-1:0] i_later,
     output logic o_found,
     output logic [SlotBits-1:0] o_pick
 );
@@ -37,9 +38,9 @@ module coherence_work_select #(
   logic [SLOTS-1:0] selected;
   assign o_found = |i_eligible;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_candidates
-    assign candidates[0][slot] = i_eligible[slot] && i_ready[slot] && slot >= int'(i_next);
+    assign candidates[0][slot] = i_eligible[slot] && i_ready[slot] && i_later[slot];
     assign candidates[1][slot] = i_eligible[slot] && i_ready[slot];
-    assign candidates[2][slot] = i_eligible[slot] && slot >= int'(i_next);
+    assign candidates[2][slot] = i_eligible[slot] && i_later[slot];
     assign candidates[3][slot] = i_eligible[slot];
   end
   for (genvar choice = 0; choice < 4; choice++) begin : gen_class
@@ -85,7 +86,7 @@ module coherence_work_select #(
     for (int slot = SLOTS - 1; slot >= 0; slot--) begin
       if (i_eligible[slot] && (!ready_found || i_ready[slot])) begin
         reference_first = SlotBits'(slot);
-        if (slot >= int'(i_next)) begin
+        if (i_later[slot]) begin
           reference_after = 1'b1;
           reference_pick  = SlotBits'(slot);
         end
