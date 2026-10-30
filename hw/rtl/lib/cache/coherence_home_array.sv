@@ -76,6 +76,9 @@ module coherence_home_array #(
     input logic [(1<<TOKEN_BITS)-1:0][ADDR_WIDTH-1:0] i_tag_address,
     input logic [(1<<TOKEN_BITS)-1:0] i_read_owner,
     input logic [(1<<TOKEN_BITS)-1:0] i_update_owner,
+    // Selection and response cycles, when the query has held since the edge
+    // before.
+    output logic o_query_held,
 `endif
     output logic [TOKEN_BITS-1:0] o_updated_token
 );
@@ -389,6 +392,7 @@ module coherence_home_array #(
   end
 `endif
 `ifdef COHERENCE_HOME_CONTROL
+  assign o_query_held = !i_rst && (phase_q == Select || phase_q == Reply);
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
       if (phase_q == Reply && !o_resp_hit && o_resp_available) assert (!i_exclude[o_resp_way]);

@@ -89,6 +89,7 @@ module coherence_home_completions #(
     input logic [RESULT_SLOTS-1:0] i_engine_initial_error,
     input logic [RESULT_SLOTS-1:0][5:0] i_engine_tid,
     input logic [RESULT_SLOTS-1:0][ADDR_WIDTH-1:0] i_engine_addr,
+    input logic i_query_held,
 `endif
     output logic [ADDR_WIDTH+14:0] o_u
 );
@@ -167,6 +168,15 @@ module coherence_home_completions #(
     put_sector_live_q[slot] <= live[slot] && (work_address[slot] >> 5) == (i_next_put_addr >> 5);
   end
   assign o_put_busy = |(live & put_sector_live_q) || (request_accepted_q && put_incoming_sector_q);
+  // Each slot's set comparison with the query is registered. A pinned slot
+  // keeps its address across the edge, so o_exclude is exact whenever the
+  // query's set is unchanged, as it is from tag selection through response.
+  logic [SLOTS-1:0] query_set_q;
+  always_ff @(posedge i_clk) begin
+    for (int slot = 0; slot < SLOTS; slot++)
+    query_set_q[slot] <= work_address[slot][OffsetBits+:SetBits] ==
+        i_query_addr[OffsetBits+:SetBits];
+  end
   always_comb begin
     free_slot = 1'b0;
     free_slot_index = '0;
@@ -181,8 +191,7 @@ module coherence_home_completions #(
       end
       if (live[slot]) duplicate |= work_identity[slot] == incoming.q;
       for (int way = 0; way < WAYS; way++) begin
-        if (pin_valid_q[slot] && way_q[slot] == WayBits'(way) &&
-            work_address[slot][OffsetBits+:SetBits] == i_query_addr[OffsetBits+:SetBits])
+        if (pin_valid_q[slot] && way_q[slot] == WayBits'(way) && query_set_q[slot])
           o_exclude[way] = 1'b1;
       end
     end
@@ -512,6 +521,23 @@ module coherence_home_completions #(
         (work_address[slot] >> 5) == (reference_put_addr_q >> 5);
   end
 `endif
+  logic [SetBits-1:0] reference_query_set_q;
+  logic [WAYS-1:0] reference_exclude;
+  always_comb begin
+    reference_exclude = '0;
+    for (int slot = 0; slot < SLOTS; slot++)
+    if (pin_valid_q[slot] &&
+        work_address[slot][OffsetBits+:SetBits] == i_query_addr[OffsetBits+:SetBits])
+      reference_exclude[way_q[slot]] = 1'b1;
+  end
+  always_ff @(posedge i_clk) begin
+    reference_query_set_q <= i_query_addr[OffsetBits+:SetBits];
+    if (!i_rst && reference_query_set_q == i_query_addr[OffsetBits+:SetBits])
+      assert (o_exclude == reference_exclude);
+`ifdef COHERENCE_HOME_CONTROL
+    if (!i_rst && i_query_held) assert (o_exclude == reference_exclude);
+`endif
+  end
   logic [SlotBits-1:0] reference_grant_pick;
   always_comb begin
     reference_grant_pick = '0;
