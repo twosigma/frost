@@ -168,11 +168,14 @@ module coherence_home_array #(
       !(row_contended && read_turn_q) &&
       !(i_update_tag && tag_hazard);
   assign update_fire = i_update_valid && o_update_ready;
-  assign o_req_ready = !i_rst && (phase_q == Idle ||
-      (phase_q == Reply && i_resp_ready &&
-       !(i_resp_claim && set_q == tag_raddr))) &&
+  // A claim reaches readiness through the last term only: the other terms
+  // and the same-set comparison form beside the consumer's decision.
+  (* keep = "true" *) logic req_ready_unclaimed, req_claim_conflict;
+  assign req_ready_unclaimed = !i_rst && (phase_q == Idle || (phase_q == Reply && i_resp_ready)) &&
       !(i_update_valid && i_update_tag &&
         (tag_waddr >> TagGroupBits) == (tag_raddr >> TagGroupBits));
+  assign req_claim_conflict = phase_q == Reply && set_q == tag_raddr;
+  assign o_req_ready = req_ready_unclaimed && !(i_resp_claim && req_claim_conflict);
   assign request_fire = i_req_valid && o_req_ready;
   assign o_resp_valid = !i_rst && phase_q == Reply;
   for (genvar way = 0; way < WAYS; way++) begin : gen_resp_tags

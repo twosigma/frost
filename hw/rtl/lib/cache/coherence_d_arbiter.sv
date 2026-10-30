@@ -38,6 +38,9 @@ module coherence_d_arbiter #(
 );
   logic selected_q, found, after_next;
   logic [PortBits-1:0] selected_port_q, next_q, pick, first;
+  // One-hot copy of the held selection, zero while none is held, so each
+  // port's ready is one term of the downstream ready.
+  logic [PORTS-1:0] selected_ports_q;
   logic [WIDTH-1:0] payload_q;
   always_comb begin
     found = 1'b0;
@@ -55,9 +58,8 @@ module coherence_d_arbiter #(
       end
     end
     if (!after_next) pick = first;
-    o_ready = '0;
-    if (!i_rst && selected_q) o_ready[selected_port_q] = i_ready;
   end
+  assign o_ready   = {PORTS{!i_rst && i_ready}} & selected_ports_q;
   assign o_offer   = selected_q && (HOLD_VALID || i_valid[selected_port_q]);
   assign o_valid   = !i_rst && o_offer;
   assign o_payload = payload_q;
@@ -65,15 +67,18 @@ module coherence_d_arbiter #(
     if (i_rst) begin
       selected_q <= 1'b0;
       selected_port_q <= '0;
+      selected_ports_q <= '0;
       next_q <= '0;
     end else if (!selected_q) begin
       if (found) begin
         selected_q <= 1'b1;
         selected_port_q <= pick;
+        selected_ports_q <= PORTS'(1) << pick;
         payload_q <= i_payload[pick];
       end
     end else if (o_valid && i_ready) begin
       selected_q <= 1'b0;
+      selected_ports_q <= '0;
       next_q <= selected_port_q == PortBits'(PORTS - 1) ? '0 : selected_port_q + 1'b1;
     end
   end
@@ -84,6 +89,8 @@ module coherence_d_arbiter #(
   always_ff @(posedge i_clk) begin
     if (!i_rst && selected_q && i_valid[selected_port_q])
       assert (o_payload == i_payload[selected_port_q]);
+    if (!i_rst)
+      assert (selected_ports_q == (selected_q ? PORTS'(1) << selected_port_q : PORTS'(0)));
   end
 `endif
 `ifdef COHERENCE_HOME_CONTROL
