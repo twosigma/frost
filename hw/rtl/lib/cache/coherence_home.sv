@@ -492,6 +492,7 @@ module coherence_home #(
       .i_payload(engine_result_payload),
       .o_valid(result_valid),
       .o_offer(),
+      .o_selected(),
       .i_ready(result_ready && run),
 `ifdef COHERENCE_HOME_CONTROL
       .i_service_stop(!active),
@@ -510,6 +511,7 @@ module coherence_home #(
       .i_payload(tag_payload),
       .o_valid(tag_request_valid),
       .o_offer(),
+      .o_selected(),
       .i_ready(tag_request_ready && run),
 `ifdef COHERENCE_HOME_CONTROL
       .i_service_stop(!active),
@@ -527,6 +529,7 @@ module coherence_home #(
       .i_payload(read_payload),
       .o_valid(row_request_valid),
       .o_offer(row_request_offer),
+      .o_selected(),
       .i_ready(row_request_ready && active),
 `ifdef COHERENCE_HOME_CONTROL
       .i_service_stop(!active || f_local_fatal),
@@ -545,6 +548,7 @@ module coherence_home #(
       .i_payload(update_payload),
       .o_valid(update_request_valid),
       .o_offer(),
+      .o_selected(),
       .i_ready(update_request_ready && run),
 `ifdef COHERENCE_HOME_CONTROL
       .i_service_stop(!active),
@@ -563,6 +567,7 @@ module coherence_home #(
       .i_payload(probe_payload),
       .o_valid(probe_out_valid),
       .o_offer(probe_out_offer),
+      .o_selected(),
       .i_ready(i_p_ready && run),
 `ifdef COHERENCE_HOME_CONTROL
       .i_service_stop(!active),
@@ -581,6 +586,7 @@ module coherence_home #(
       .i_payload(ack_payload),
       .o_valid(ack_out_valid),
       .o_offer(),
+      .o_selected(),
       .i_ready(i_wa_ready && run),
 `ifdef COHERENCE_HOME_CONTROL
       .i_service_stop(!active),
