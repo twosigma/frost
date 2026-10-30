@@ -86,7 +86,7 @@ module coherence_home #(
   localparam int unsigned TokenBits = $clog2(Clients);
   localparam int unsigned TagPacketBits = TokenBits + ADDR_WIDTH;
   localparam int unsigned ReadPacketBits = TagPacketBits + WayBits;
-  localparam int unsigned UpdatePacketBits = ReadPacketBits + 3 + 9 * LINE_BYTES;
+  localparam int unsigned UpdatePacketBits = ReadPacketBits + 4 + 9 * LINE_BYTES;
   localparam int unsigned TagBits = ADDR_WIDTH - SetBits - OffsetBits;
   localparam logic [5:0] FillTid = 6'(coherence_pkg::fill_base(1));
   localparam logic [5:0] PutTid = 6'(coherence_pkg::put_base(1, 4));
@@ -105,6 +105,7 @@ module coherence_home #(
     logic [ADDR_WIDTH-1:0] addr;
     logic tag_write;
     logic [1:0] state;
+    logic has_data;  // |mask, formed before the update arbiter registers it
     logic [LINE_BYTES-1:0] mask;
     logic [8*LINE_BYTES-1:0] data;
   } update_packet_t;
@@ -136,6 +137,11 @@ module coherence_home #(
     PutFatal
   } put_phase_t;
   fill_phase_t fill_phase_q[FILLS];
+  // Registered phase flags for the tag decision. They change only where their
+  // decoded phase value changes, so the decision reads one flop per owner and
+  // the flags' inputs stay shallow.
+  logic [FILLS-1:0] fill_live_q, fill_blocking_q;
+  logic [Puts-1:0] put_busy_q;
   recall_phase_t recall_phase_q[FILLS];
   put_phase_t put_phase_q[Puts];
   (* max_fanout = 64 *) logic run;
@@ -191,18 +197,23 @@ module coherence_home #(
   coh_g_t result;
   logic array_response, array_hit, array_available, array_claim;
   logic [TokenBits-1:0] array_token, array_data_token, array_updated_token;
+  logic [(1 << TokenBits)-1:0] array_token_onehot;
   logic [ADDR_WIDTH-1:0] array_query, array_addr;
   logic [WayBits-1:0] array_way;
   logic [WAYS-1:0][TagBits-1:0] array_tags;
   logic [ADDR_WIDTH-1:0] held_put_next, work_addr;
-  logic [NUM_WB-1:0] wb_block_q, wb_set_q, wb_blocks, wb_victims;
+  logic [NUM_WB-1:0] wb_block_q, wb_set_q;
+  (* keep = "true" *) logic [NUM_WB-1:0] wb_blocks, wb_victims;
   logic [NUM_WB-1:0][WAYS-1:0] wb_tag_q;
-  logic [FILLS-1:0] fill_block_q, fill_old_block_q, fill_set_q, fill_blocks, fill_victims;
-  logic [Puts-1:0] put_sector_q, put_set_q, put_accepted_q, put_blocks, put_victims;
+  logic [FILLS-1:0] fill_block_q, fill_old_block_q, fill_set_q;
+  (* keep = "true" *) logic [FILLS-1:0] fill_blocks, fill_victims;
+  logic [Puts-1:0] put_sector_q, put_set_q, put_accepted_q;
+  (* keep = "true" *) logic [Puts-1:0] put_blocks, put_victims;
   logic [Puts-1:0][WAYS-1:0] put_tag_q;
   logic held_put_sector_q, held_put_set_q;
   logic [WAYS-1:0] held_put_tag_q;
-  logic [RESULTS-1:0] engine_set_q, engine_accepted_q, engine_victims;
+  logic [RESULTS-1:0] engine_set_q, engine_accepted_q;
+  (* keep = "true" *) logic [RESULTS-1:0] engine_victims;
   logic [RESULTS-1:0][WAYS-1:0] engine_tag_q;
   logic work_set_q;
   logic [WAYS-1:0] work_tag_q;
@@ -212,8 +223,10 @@ module coherence_home #(
   logic [1:0] array_state;
   logic array_data_valid, array_updated;
   logic [8*LINE_BYTES-1:0] array_data;
-  logic decision_engine, decision_put, decision_blocked, victim_blocked;
-  logic decision_hit, decision_fill, decision_join, decision_retry;
+  logic decision_engine, decision_put;
+  (* keep = "true" *) logic decision_blocked, victim_blocked;
+  logic decision_hit, decision_join, decision_retry;
+  (* keep = "true" *) logic decision_fill;
   logic [FillBits-1:0] fill_free_index;
   logic [FILLS-1:0] join_fill;
   logic decision_reader;
@@ -476,6 +489,7 @@ module coherence_home #(
       engine_addr[engine],
       1'b1,
       2'(coherence_pkg::Modified),
+      |engine_update_mask[engine],
       engine_update_mask[engine],
       engine_update_data[engine]
     };
@@ -621,6 +635,7 @@ module coherence_home #(
       .i_resp_ready(run),
       .i_resp_claim(array_claim),
       .o_resp_token(array_token),
+      .o_resp_token_onehot(array_token_onehot),
       .o_resp_hit(array_hit),
       .o_resp_available(array_available),
       .o_resp_way(array_way),
@@ -642,6 +657,7 @@ module coherence_home #(
       .i_update_way(update_request.way),
       .i_update_tag(update_request.tag_write),
       .i_update_state(update_request.state),
+      .i_update_has_data(update_request.has_data),
       .i_update_mask(update_request.mask),
       .i_update_data(update_request.data),
       .i_update_token(update_request.token),
@@ -716,33 +732,113 @@ module coherence_home #(
       selected_put_q.addr;
   assign work_addr = request_addr(work);
   // One blocking term per owner: blocks a same-sector query, victims a
-  // victim block that the owner holds.
+  // victim block that the owner holds. The decision and the W readiness that
+  // follows it are built from kept nodes, each a function of at most six kept
+  // signals or registers. Each node is one LUT and every reduction is a tree,
+  // so their depth does not depend on how synthesis treats nearby logic:
+  //   1. way selects of the registered tag compares, owner phase decodes;
+  //   2. one blocking and one victim term per owner;
+  //   3. reduction nodes of at most six terms and the fill precondition;
+  //   4. decision_blocked and victim_blocked;
+  //   5. the decisions and the W readiness.
+  (* keep = "true" *) logic work_tag_sel, held_put_tag_sel;
+  (* keep = "true" *) logic [RESULTS-1:0] engine_tag_sel, engine_other;
+  (* keep = "true" *) logic [NUM_WB-1:0] wb_tag_sel;
+  (* keep = "true" *) logic [Puts-1:0] put_tag_sel, put_live;
+  (* keep = "true" *) logic [FILLS-1:0] fill_live, fill_blocking, fill_way_match;
+  (* keep = "true" *) logic decision_from_engine, wb_free_any, fill_free_any, state_allows_fill;
+  (* keep = "true" *) logic fill_pre;
+  assign work_tag_sel = work_tag_q[array_way];
+  assign held_put_tag_sel = held_put_tag_q[array_way];
   for (genvar wb = 0; wb < NUM_WB; wb++) begin : gen_wb_terms
+    assign wb_tag_sel[wb] = wb_tag_q[wb][array_way];
     assign wb_blocks[wb]  = wb_valid_q[wb] && wb_block_q[wb];
-    assign wb_victims[wb] = wb_valid_q[wb] && wb_set_q[wb] && wb_tag_q[wb][array_way];
+    assign wb_victims[wb] = wb_valid_q[wb] && wb_set_q[wb] && wb_tag_sel[wb];
   end
   for (genvar fill = 0; fill < FILLS; fill++) begin : gen_fill_terms
-    wire live = fill_phase_q[fill] != FillFree;
-    assign fill_victims[fill] = live && fill_set_q[fill] && fill_way_q[fill] == array_way;
-    assign fill_blocks[fill] = live && fill_phase_q[fill] != FillReady &&
+    assign fill_live[fill] = fill_live_q[fill];
+    assign fill_blocking[fill] = fill_blocking_q[fill];
+    assign fill_way_match[fill] = fill_way_q[fill] == array_way;
+    assign fill_victims[fill] = fill_live[fill] && fill_set_q[fill] && fill_way_match[fill];
+    assign fill_blocks[fill] = fill_blocking[fill] &&
         (fill_block_q[fill] || (fill_victim_q[fill] && fill_old_block_q[fill]));
   end
   for (genvar put = 0; put < Puts; put++) begin : gen_put_terms
-    wire live = put_phase_q[put] != PutFree && array_token != TokenBits'(RESULTS + FILLS + put);
-    assign put_blocks[put] = live && (put_accepted_q[put] ? held_put_sector_q : put_sector_q[put]);
-    assign put_victims[put] = live && (put_accepted_q[put] ?
-        held_put_set_q && held_put_tag_q[array_way] :
-        put_set_q[put] && put_tag_q[put][array_way]);
+    assign put_tag_sel[put] = put_tag_q[put][array_way];
+    assign put_live[put] = put_busy_q[put] && !array_token_onehot[RESULTS+FILLS+put];
+    assign put_blocks[put] = put_live[put] &&
+        (put_accepted_q[put] ? held_put_sector_q : put_sector_q[put]);
+    assign put_victims[put] = put_live[put] && (put_accepted_q[put] ?
+        held_put_set_q && held_put_tag_sel : put_set_q[put] && put_tag_sel[put]);
   end
   for (genvar engine = 0; engine < RESULTS; engine++) begin : gen_engine_terms
-    assign engine_victims[engine] = !engine_idle[engine] &&
-        array_token != TokenBits'(engine) && (engine_accepted_q[engine] ?
-        work_set_q && work_tag_q[array_way] :
-        engine_set_q[engine] && engine_tag_q[engine][array_way]);
+    assign engine_tag_sel[engine] = engine_tag_q[engine][array_way];
+    assign engine_other[engine] = !engine_idle[engine] && !array_token_onehot[engine];
+    assign engine_victims[engine] = engine_other[engine] && (engine_accepted_q[engine] ?
+        work_set_q && work_tag_sel : engine_set_q[engine] && engine_tag_sel[engine]);
   end
-  assign decision_blocked = |{wb_blocks, fill_blocks, put_blocks};
-  assign victim_blocked = |{wb_victims, fill_victims, put_victims} ||
-      (array_state != coherence_pkg::Invalid && |engine_victims);
+  // Reduction nodes of at most six terms each.
+  localparam int unsigned OwnerTerms  = NUM_WB + FILLS + Puts;
+  localparam int unsigned OwnerNodes  = (OwnerTerms + 5) / 6;
+  localparam int unsigned EngineNodes = (RESULTS + 5) / 6;
+  wire [OwnerTerms-1:0] owner_blocks = {wb_blocks, fill_blocks, put_blocks};
+  wire [OwnerTerms-1:0] owner_victims = {wb_victims, fill_victims, put_victims};
+  (* keep = "true" *) logic [OwnerNodes-1:0] block_nodes, victim_nodes;
+  (* keep = "true" *) logic [EngineNodes-1:0] engine_victim_nodes;
+  for (genvar node = 0; node < OwnerNodes; node++) begin : gen_owner_nodes
+    localparam int unsigned Bits = OwnerTerms - 6 * node < 6 ? OwnerTerms - 6 * node : 6;
+    assign block_nodes[node]  = |owner_blocks[6*node+:Bits];
+    assign victim_nodes[node] = |owner_victims[6*node+:Bits];
+  end
+  for (genvar node = 0; node < EngineNodes; node++) begin : gen_engine_nodes
+    localparam int unsigned Bits = RESULTS - 6 * node < 6 ? RESULTS - 6 * node : 6;
+    assign engine_victim_nodes[node] = |engine_victims[6*node+:Bits];
+  end
+  assign decision_blocked = |block_nodes;
+  assign victim_blocked = |victim_nodes ||
+      (array_state != coherence_pkg::Invalid && |engine_victim_nodes);
+  // The fill precondition: an engine's miss with a fill and, for a valid
+  // victim, a write-back slot available.
+  assign decision_from_engine = int'(array_token) < RESULTS;
+  always_comb begin
+    wb_free_any = 1'b0;
+    for (int wb = 0; wb < NUM_WB; wb++) wb_free_any |= !wb_valid_q[wb] && !wb_frozen_q[wb];
+  end
+  assign fill_free_any = !(&fill_live);
+  assign state_allows_fill = array_state == coherence_pkg::Invalid || wb_free_any;
+  assign fill_pre = decision_from_engine && !array_hit && array_available && fill_free_any &&
+      state_allows_fill;
+  // The registered phase flags and the one-hot response token match their
+  // encodings outside reset. Every formal task checks this, including those
+  // read with SYNTHESIS defined, which makes the checks inductive; simulation
+  // checks them once a reset has been seen.
+`ifdef FORMAL
+  `define HOME_DECISION_CHECKS
+  wire decision_reset_seen = !i_rst;
+`elsif SYNTHESIS
+`else
+  `define HOME_DECISION_CHECKS
+  logic decision_reset_seen = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) decision_reset_seen <= 1'b1;
+`endif
+`ifdef HOME_DECISION_CHECKS
+  always_comb
+    if (decision_reset_seen) begin
+      assert (fill_pre == (decision_engine && !array_hit && array_available && fill_free &&
+          (array_state == coherence_pkg::Invalid || wb_free)));
+      for (int token = 0; token < (1 << TokenBits); token++)
+      assert (array_token_onehot[token] == (int'(array_token) == token));
+      for (int fill = 0; fill < FILLS; fill++) begin
+        assert (fill_live_q[fill] == (fill_phase_q[fill] != FillFree));
+        assert (fill_blocking_q[fill] ==
+            (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady));
+      end
+      for (int put = 0; put < Puts; put++)
+      assert (put_busy_q[put] == (put_phase_q[put] != PutFree));
+      if (update_request_valid) assert (update_request.has_data == |update_request.mask);
+    end
+  `undef HOME_DECISION_CHECKS
+`endif
   always_comb begin
     decision_reader = 1'b0;
     for (int engine = 0; engine < RESULTS; engine++)
@@ -777,9 +873,7 @@ module coherence_home #(
       end
     end
     decision_hit = array_hit && array_available && !decision_blocked;
-    decision_fill = decision_engine && !array_hit && array_available && !decision_blocked &&
-        !victim_blocked && fill_free &&
-        (array_state == coherence_pkg::Invalid || wb_free);
+    decision_fill = fill_pre && !decision_blocked && !victim_blocked;
     decision_join = |join_fill;
     decision_retry = decision_engine && !decision_hit;
     array_claim = run && array_response && (decision_hit || decision_fill);
@@ -854,23 +948,29 @@ module coherence_home #(
   // The fill decision arrives last: the selected put waits on it only when
   // its block is this response's valid victim.
   (* keep = "true" *) logic put_held_blocked, put_victim_match, w_ready_early;
-  always_comb begin
-    put_victim_match = array_response && array_state != coherence_pkg::Invalid &&
-        held_put_set_q && held_put_tag_q[array_way];
-    put_held_blocked = 1'b0;
-    for (int fill = 0; fill < FILLS; fill++)
-    if (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady &&
-        ((fill_allocated_q[fill] ? put_query_q : put_fill_q[fill]) ||
-         (fill_victim_q[fill] && (fill_allocated_q[fill] ? put_victim_q : put_fill_old_q[fill]))))
-      put_held_blocked = 1'b1;
-    for (int wb = 0; wb < NUM_WB; wb++)
-    if (wb_valid_q[wb] && (wb_allocated_q[wb] ? put_victim_q : put_wb_q[wb]))
-      put_held_blocked = 1'b1;
+  assign put_victim_match = array_response && array_state != coherence_pkg::Invalid &&
+      held_put_set_q && held_put_tag_sel;
+  // The held put's blocking terms are kept per owner from registered flags and
+  // compares, then reduced in one node, so W readiness also has a fixed depth.
+  (* keep = "true" *) logic [FILLS-1:0] fill_put_match, fill_put_blocks;
+  (* keep = "true" *) logic [NUM_WB-1:0] wb_put_blocks;
+  for (genvar fill = 0; fill < FILLS; fill++) begin : gen_fill_put_terms
+    assign fill_put_match[fill] = fill_allocated_q[fill] ? put_query_q : put_fill_q[fill];
+    assign fill_put_blocks[fill] = fill_blocking_q[fill] && (fill_put_match[fill] ||
+        (fill_victim_q[fill] && (fill_allocated_q[fill] ? put_victim_q : put_fill_old_q[fill])));
   end
+  for (genvar wb = 0; wb < NUM_WB; wb++) begin : gen_wb_put_terms
+    assign wb_put_blocks[wb] = wb_valid_q[wb] && (wb_allocated_q[wb] ? put_victim_q : put_wb_q[wb]);
+  end
+  assign put_held_blocked = |{fill_put_blocks, wb_put_blocks};
   assign put_blocked = put_held_blocked || (put_victim_match && decision_fill);
   assign w_ready_early = active && put_selected_q && !put_busy && !put_held_blocked &&
-      put_phase_q[selected_put_q.put_id] == PutFree;
-  assign o_w_ready = w_ready_early && put_key_match && !(put_victim_match && decision_fill);
+      !put_busy_q[selected_put_q.put_id];
+  // One kept LUT of six kept signals, with decision_fill written out, so the
+  // readiness reaches the L1D from a fixed depth.
+  (* keep = "true" *) logic w_ready_final;
+  assign w_ready_final = w_ready_early && put_key_match && !(put_victim_match && decision_fill);
+  assign o_w_ready = w_ready_final;
 `ifndef SYNTHESIS
   always_comb
     if (!i_rst)
@@ -911,6 +1011,7 @@ module coherence_home #(
       put_addr[put],
       1'b1,
       2'(coherence_pkg::Modified),
+      1'b1,
       LINE_BYTES'(32'hffff_ffff) << (upper ? 32 : 0),
       (8 * LINE_BYTES)'(packet.data) << (upper ? 256 : 0)
     };
@@ -927,15 +1028,20 @@ module coherence_home #(
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
         put_phase_q[put] <= PutFree;
+        put_busy_q[put] <= 1'b0;
         put_q[put] <= '0;
         put_way_q[put] <= '0;
       end else if (run) begin
         if (i_w_valid && o_w_ready && incoming_put.put_id == 1'(put)) begin
           put_q[put] <= incoming_put;
+          put_busy_q[put] <= 1'b1;
           put_phase_q[put] <= PutLookup;
         end
         if (tag_valid[Client] && tag_ready[Client]) put_phase_q[put] <= PutDecision;
-        if (array_response && array_token == TokenBits'(Client)) begin
+        // The busy flag follows every write that can leave PutFree; the tag
+        // and update offers already require a busy phase.
+        if (array_response && array_token_onehot[Client]) begin
+          put_busy_q[put] <= 1'b1;
           if (!array_hit) put_phase_q[put] <= PutFatal;
           else if (decision_blocked) put_phase_q[put] <= PutLookup;
           else begin
@@ -944,8 +1050,14 @@ module coherence_home #(
           end
         end
         if (update_valid[Client] && update_ready[Client]) put_phase_q[put] <= PutUpdateWait;
-        if (array_updated && array_updated_token == TokenBits'(Client)) put_phase_q[put] <= PutAck;
-        if (ack_valid[Client] && ack_ready[Client]) put_phase_q[put] <= PutFree;
+        if (array_updated && array_updated_token == TokenBits'(Client)) begin
+          put_phase_q[put] <= PutAck;
+          put_busy_q[put]  <= 1'b1;
+        end
+        if (ack_valid[Client] && ack_ready[Client]) begin
+          put_phase_q[put] <= PutFree;
+          put_busy_q[put]  <= 1'b0;
+        end
       end
     end
   end
@@ -979,6 +1091,7 @@ module coherence_home #(
       fill_phase_q[fill] == FillInvalidate ? fill_old_addr_q[fill] : fill_addr_q[fill],
       1'b1,
       fill_phase_q[fill] == FillInvalidate ? 2'(coherence_pkg::Invalid) : 2'(coherence_pkg::Shared),
+      fill_phase_q[fill] == FillInstall,
       {LINE_BYTES{fill_phase_q[fill] == FillInstall}},
       fill_phase_q[fill] == FillInstall ? fill_image_q[fill] : {(8 * LINE_BYTES) {1'b0}}
     };
@@ -1003,6 +1116,8 @@ module coherence_home #(
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
         fill_phase_q[fill] <= FillFree;
+        fill_live_q[fill] <= 1'b0;
+        fill_blocking_q[fill] <= 1'b0;
         recall_phase_q[fill] <= RecallDone;
         fill_addr_q[fill] <= '0;
         fill_old_addr_q[fill] <= '0;
@@ -1049,8 +1164,6 @@ module coherence_home #(
             fill_seats_q[fill] <= COMPLETIONS'(1) << decision_tid;
             fill_seat_count_q[fill] <= 1;
             fill_write_q[fill] <= decision_opcode == coherence_pkg::DMAWrite;
-            fill_phase_q[fill] <= array_state == coherence_pkg::Invalid ? FillMemory : FillRecall;
-            recall_phase_q[fill] <= RecallOffer;
           end
           if (array_response && join_fill[fill]) begin
             fill_seats_q[fill][CompletionBits'(decision_tid)] <= 1'b1;
@@ -1061,8 +1174,10 @@ module coherence_home #(
             fill_seats_q[fill][CompletionBits'(decision_tid)] <= 1'b0;
             fill_seat_count_q[fill] <= fill_seat_count_q[fill] - 1'b1;
           end
-          if (fill_phase_q[fill] == FillReady && fill_seats_q[fill] == 0)
+          if (fill_phase_q[fill] == FillReady && fill_seats_q[fill] == 0) begin
             fill_phase_q[fill] <= FillFree;
+            fill_live_q[fill]  <= 1'b0;
+          end
           if (read_valid[Client] && read_ready[Client]) fill_read_sent_q[fill] <= 1'b1;
           if (array_data_valid && array_data_token == TokenBits'(Client))
             fill_read_done_q[fill] <= 1'b1;
@@ -1090,23 +1205,38 @@ module coherence_home #(
             end else if (fill_read_done_q[fill]) fill_phase_q[fill] <= FillDetach;
           end
           if (fill_phase_q[fill] == FillDetach) fill_phase_q[fill] <= FillInvalidate;
-          if (fill_phase_q[fill] == FillInvalidate && update_ready[Client])
-            fill_phase_q[fill] <= FillInvalidateWait;
           if (fill_phase_q[fill] == FillInvalidateWait && array_updated &&
               array_updated_token == TokenBits'(Client))
             fill_phase_q[fill] <= FillMemory;
           if (fill_phase_q[fill] == FillMemory && fill_done_q[fill]) begin
             fill_phase_q[fill] <= fill_error_q[fill] ? FillFree : FillInstall;
             if (fill_error_q[fill]) begin
+              fill_live_q[fill] <= 1'b0;
+              fill_blocking_q[fill] <= 1'b0;
               fill_seats_q[fill] <= '0;
               fill_seat_count_q[fill] <= '0;
             end
           end
+          if (fill_phase_q[fill] == FillInstallWait && array_updated &&
+              array_updated_token == TokenBits'(Client)) begin
+            fill_phase_q[fill] <= FillReady;
+            fill_blocking_q[fill] <= 1'b0;
+          end
+          // Allocation finds the fill free, where no update above applies, so
+          // its phase writes come last and the late decision selects them last.
+          if (allocate) begin
+            fill_phase_q[fill] <= array_state == coherence_pkg::Invalid ? FillMemory : FillRecall;
+            fill_live_q[fill] <= 1'b1;
+            fill_blocking_q[fill] <= 1'b1;
+            recall_phase_q[fill] <= RecallOffer;
+          end
+          // Update acceptance only applies in FillInvalidate or FillInstall,
+          // where no other phase write applies, so the late array readiness
+          // selects the phase last as well.
+          if (fill_phase_q[fill] == FillInvalidate && update_ready[Client])
+            fill_phase_q[fill] <= FillInvalidateWait;
           if (fill_phase_q[fill] == FillInstall && update_ready[Client])
             fill_phase_q[fill] <= FillInstallWait;
-          if (fill_phase_q[fill] == FillInstallWait && array_updated &&
-              array_updated_token == TokenBits'(Client))
-            fill_phase_q[fill] <= FillReady;
         end
       end
     end

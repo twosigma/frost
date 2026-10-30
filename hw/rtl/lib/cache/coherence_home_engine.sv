@@ -93,7 +93,8 @@ module coherence_home_engine #(
     ProbeWait,
     ProbeAck
   } probe_phase_t;
-  phase_t phase_q;
+  // One-hot, so the home's decision reads the idle state as one flop.
+  (* fsm_encoding = "one_hot" *) phase_t phase_q;
   probe_phase_t probe_phase_q;
   coh_d_t request_q;
   coh_p_t probe_q;

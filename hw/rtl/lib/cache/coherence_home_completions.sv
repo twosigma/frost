@@ -97,7 +97,8 @@ module coherence_home_completions #(
   localparam int unsigned OffsetBits = $clog2(LINE_BYTES);
   localparam int unsigned Sets = CACHE_BYTES / (LINE_BYTES * WAYS);
   localparam int unsigned SetBits = $clog2(Sets);
-  logic [SLOTS-1:0] live, request_ready, work_valid, work_offer, grant_valid, completion_ready;
+  logic [SLOTS-1:0] live, request_ready, work_valid, work_offer, grant_valid;
+  (* keep = "true" *) logic [SLOTS-1:0] completion_ready;
   logic [SLOTS-1:0] release_valid, release_offer, release_ready, release_fire;
   logic [SLOTS-1:0] issued_q, buffer_owned_q, result_valid_q, pin_valid_q, error_q;
   logic [SLOTS-1:0] predecessors_q[SLOTS];
@@ -206,13 +207,27 @@ module coherence_home_completions #(
     end
   end
 
-  // A request whose identity matches a live slot waits. The per-slot terms
-  // reduce in a balanced tree, apart from the free-slot search.
-  logic [SLOTS-1:0] duplicates;
+  // A request whose identity matches a live slot waits. Each slot compares
+  // the nine identity bits in three-bit chunks, and the slot terms reduce
+  // through kept nodes of at most six inputs, so the check is a fixed tree:
+  // chunk compares, slot terms, nodes, then the duplicate.
+  (* keep = "true" *) logic [SLOTS-1:0] duplicates;
+  (* keep = "true" *) logic [SLOTS-1:0][2:0] identity_chunk_match;
+  localparam int unsigned DuplicateNodes = (SLOTS + 5) / 6;
+  (* keep = "true" *) logic [DuplicateNodes-1:0] duplicate_nodes;
+  wire [8:0] incoming_identity = incoming.q;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_duplicate
-    assign duplicates[slot] = live[slot] && work_identity[slot] == incoming.q;
+    for (genvar chunk = 0; chunk < 3; chunk++) begin : gen_chunk
+      assign identity_chunk_match[slot][chunk] =
+          work_identity[slot][3*chunk+:3] == incoming_identity[3*chunk+:3];
+    end
+    assign duplicates[slot] = live[slot] && &identity_chunk_match[slot];
   end
-  assign duplicate = |duplicates;
+  for (genvar node = 0; node < DuplicateNodes; node++) begin : gen_duplicate_node
+    localparam int unsigned Bits = SLOTS - 6 * node < 6 ? SLOTS - 6 * node : 6;
+    assign duplicate_nodes[node] = |duplicates[6*node+:Bits];
+  end
+  assign duplicate = |duplicate_nodes;
   // Every idle endpoint applies the same admission checks to the request, so
   // any idle endpoint's readiness stands for the free slot's.
   assign o_d_ready = !i_rst && !i_fatal_stop && !duplicate && |(request_ready & ~live);
@@ -247,7 +262,17 @@ module coherence_home_completions #(
   // grant register alone presents G. Every G consumer applies the same reset.
   assign o_g_valid = grant_selected_q;
   assign o_g = grant_q;
-  assign o_c_ready = |completion_ready;
+  // Each endpoint's C readiness is kept, and the readiness reduces through
+  // kept nodes of at most six slots, so C acceptance has a fixed depth.
+  localparam int unsigned CompletionNodes = (SLOTS + 5) / 6;
+  (* keep = "true" *) logic [CompletionNodes-1:0] completion_nodes;
+  (* keep = "true" *) logic c_ready_final;
+  for (genvar node = 0; node < CompletionNodes; node++) begin : gen_completion_node
+    localparam int unsigned Bits = SLOTS - 6 * node < 6 ? SLOTS - 6 * node : 6;
+    assign completion_nodes[node] = |completion_ready[6*node+:Bits];
+  end
+  assign c_ready_final = |completion_nodes;
+  assign o_c_ready = c_ready_final;
 
   // pred_clear_q[slot] holds predecessors_q[slot] == 0, registered from the
   // predecessors' next state, so eligibility reads one flag per slot.
