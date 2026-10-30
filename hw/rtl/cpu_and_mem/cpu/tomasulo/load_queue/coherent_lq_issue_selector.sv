@@ -195,10 +195,14 @@ module coherent_lq_issue_selector #(
     end
   end
   assign selected = i_sq_committed_empty ? choices[1] : choices[0];
+  // The result scan does not depend on the drain case, so its outputs come
+  // from the first choice without the drain select.
+  selection_t undrained;
+  assign undrained = choices[0];
   assign o_replace_without_update = selected.replace_without_update;
   assign o_replace_with_update = selected.replace_with_update;
-  assign o_issue_cdb_found = selected.issue_cdb_found;
-  assign o_issue_cdb_idx = selected.issue_cdb_idx;
+  assign o_issue_cdb_found = undrained.issue_cdb_found;
+  assign o_issue_cdb_idx = undrained.issue_cdb_idx;
   assign o_merged_scan_onehot = selected.merged_scan_onehot;
   assign o_stored_scan_found = selected.stored_scan_found;
   assign o_stored_scan_idx = selected.stored_scan_idx;
@@ -274,6 +278,9 @@ module coherent_lq_issue_selector #(
 `endif
   begin
     p_selection_exact : assert (selected == reference);
+    p_result_scan_undrained :
+    assert (o_issue_cdb_found == selected.issue_cdb_found &&
+            o_issue_cdb_idx == selected.issue_cdb_idx);
   end
 `endif
 endmodule
