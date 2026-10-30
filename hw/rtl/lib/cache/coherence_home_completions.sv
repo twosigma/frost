@@ -117,6 +117,8 @@ module coherence_home_completions #(
   logic work_selected_q, work_found;
   logic [SLOTS-1:0] work_eligible;
   logic [SlotBits-1:0] work_slot_q, work_next_q, work_pick;
+  // work_later_q[slot] holds slot >= work_next_q.
+  logic [SLOTS-1:0] work_later_q;
   localparam int unsigned GrantGroupBits = 6;
   localparam int unsigned GrantGroups = (SLOTS + GrantGroupBits - 1) / GrantGroupBits;
   logic grant_selected_q, grant_found, grant_after, grant_zero;
@@ -257,7 +259,7 @@ module coherence_home_completions #(
   ) work_selector (
       .i_eligible(work_eligible),
       .i_ready(ready_q),
-      .i_next(work_next_q),
+      .i_later(work_later_q),
       .o_found(work_found),
       .o_pick(work_pick)
   );
@@ -401,6 +403,7 @@ module coherence_home_completions #(
       work_selected_q <= 1'b0;
       work_slot_q <= '0;
       work_next_q <= '0;
+      work_later_q <= '1;
       grant_selected_q <= 1'b0;
       grant_slot_q <= '0;
       grant_next_q <= '0;
@@ -425,6 +428,8 @@ module coherence_home_completions #(
       if (accept_work) begin
         work_selected_q <= 1'b0;
         work_next_q <= work_slot_q == SlotBits'(SLOTS - 1) ? '0 : work_slot_q + 1'b1;
+        for (int slot = 0; slot < SLOTS; slot++)
+        work_later_q[slot] <= work_slot_q == SlotBits'(SLOTS - 1) || slot > int'(work_slot_q);
         issued_q[work_slot_q] <= 1'b1;
         buffer_owned_q[work_slot_q] <= 1'b1;
         buffer_index_q[work_slot_q] <= work_buffer_q;
@@ -565,8 +570,10 @@ module coherence_home_completions #(
   end
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
-      for (int slot = 0; slot < SLOTS; slot++)
-      assert (pred_clear_q[slot] == (predecessors_q[slot] == 0));
+      for (int slot = 0; slot < SLOTS; slot++) begin
+        assert (pred_clear_q[slot] == (predecessors_q[slot] == 0));
+        assert (work_later_q[slot] == (slot >= int'(work_next_q)));
+      end
       if (accept_result) assert (result_hit == SLOTS'(1) << result_slot);
       assert (int'(grant_next_q) < SLOTS);
       for (int slot = 0; slot < SLOTS; slot++) begin
