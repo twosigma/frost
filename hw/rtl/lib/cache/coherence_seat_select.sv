@@ -14,7 +14,10 @@
  *    limitations under the License.
  */
 
-// Rank candidates before applying the available-seat limit.
+// Select the first eligible candidates that fit in the free seats. Each
+// candidate's rank is the eligible count below it, saturated at three: six-bit
+// group counts and a partial count within the candidate's own group add up in
+// two levels of six-input functions.
 module coherence_seat_select #(
     parameter int unsigned SLOTS = 19
 ) (
@@ -24,46 +27,47 @@ module coherence_seat_select #(
     output logic [SLOTS-1:0] o_selected,
     output logic [1:0] o_selected_count
 );
-  logic [2:0] allow_rank;
-  logic [2:0][SLOTS-1:0] ranked;
-  assign allow_rank[0] = i_occupied_count < 3 && !(i_join && i_occupied_count == 2);
-  assign allow_rank[1] = i_occupied_count < 2 && !(i_join && i_occupied_count == 1);
-  assign allow_rank[2] = i_occupied_count == 0 && !i_join;
-  localparam int unsigned Levels = $clog2(SLOTS);
-  (* keep = "true" *) logic [Levels:0][SLOTS-1:0][2:0] prefix_count;
-  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_leaf
-    assign prefix_count[0][slot] = {2'b0, i_eligible[slot]};
-  end
-  for (genvar level = 0; level < Levels; level++) begin : gen_level
-    for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_slot
-      if (slot < (1 << level)) begin : gen_copy
-        assign prefix_count[level+1][slot] = prefix_count[level][slot];
-      end else begin : gen_merge
-        wire [2:0] a = prefix_count[level][slot];
-        wire [2:0] b = prefix_count[level][slot-(1<<level)];
-        assign prefix_count[level+1][slot][0] = a[0] || b[0];
-        assign prefix_count[level+1][slot][1] = a[1] || b[1] || (a[0] && b[0]);
-        assign prefix_count[level+1][slot][2] = a[2] || b[2] || (a[1] && b[0]) || (a[0] && b[1]);
-      end
-    end
+  localparam int unsigned GroupBits = 6;
+  localparam int unsigned Groups = (SLOTS + GroupBits - 1) / GroupBits;
+  // Counts saturate at three, the most seats a fill holds.
+  function automatic logic [1:0] saturate(input int unsigned count);
+    saturate = count > 3 ? 2'd3 : 2'(count);
+  endfunction
+  logic [1:0] room, total;
+  logic [Groups-1:0][1:0] group_count;
+  logic [SLOTS-1:0][1:0] rank;
+  int unsigned group_sum;
+  // Free seats: three less the occupied seats and a joining reader.
+  assign room = int'(i_occupied_count) + int'(i_join) >= 3 ? 2'd0 :
+      2'(3 - int'(i_occupied_count) - int'(i_join));
+  for (genvar group_index = 0; group_index < Groups; group_index++) begin : gen_group
+    localparam int unsigned Base  = group_index * GroupBits;
+    localparam int unsigned Width = SLOTS - Base < GroupBits ? SLOTS - Base : GroupBits;
+    assign group_count[group_index] = saturate($countones(i_eligible[Base+:Width]));
   end
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_rank
-    if (slot == 0) begin : gen_first
-      assign ranked[0][slot] = i_eligible[slot];
-      assign ranked[1][slot] = 1'b0;
-      assign ranked[2][slot] = 1'b0;
-    end else begin : gen_later
-      assign ranked[0][slot] = i_eligible[slot] && !prefix_count[Levels][slot-1][0];
-      assign ranked[1][slot] = i_eligible[slot] && prefix_count[Levels][slot-1][0] &&
-          !prefix_count[Levels][slot-1][1];
-      assign ranked[2][slot] = i_eligible[slot] && prefix_count[Levels][slot-1][1] &&
-          !prefix_count[Levels][slot-1][2];
+    localparam int unsigned Group  = slot / GroupBits;
+    localparam int unsigned Offset = slot % GroupBits;
+    logic [1:0] partial;
+    int unsigned below;
+    if (Offset == 0) begin : gen_group_start
+      assign partial = 2'd0;
+    end else begin : gen_group_inner
+      assign partial = saturate($countones(i_eligible[Group*GroupBits+:Offset]));
     end
+    always_comb begin
+      below = int'(partial);
+      for (int index = 0; index < int'(Group); index++) below += int'(group_count[index]);
+      rank[slot] = saturate(below);
+    end
+    assign o_selected[slot] = i_eligible[slot] && rank[slot] < room;
   end
-  assign o_selected = ({SLOTS{allow_rank[0]}} & ranked[0]) |
-      ({SLOTS{allow_rank[1]}} & ranked[1]) | ({SLOTS{allow_rank[2]}} & ranked[2]);
-  assign o_selected_count = 2'(allow_rank[0] && |ranked[0]) +
-      2'(allow_rank[1] && |ranked[1]) + 2'(allow_rank[2] && |ranked[2]);
+  always_comb begin
+    group_sum = 0;
+    for (int index = 0; index < int'(Groups); index++) group_sum += int'(group_count[index]);
+    total = saturate(group_sum);
+  end
+  assign o_selected_count = total < room ? total : room;
 `ifndef SYNTHESIS
   logic [SLOTS-1:0] reference_selected;
   integer seats;
