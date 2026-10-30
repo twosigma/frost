@@ -290,6 +290,7 @@ module coherence_endpoints_test_harness #(
       .i_cancel_valid(i_home_cancel_valid),
       .i_cancel(i_home_cancel),
       .o_u_valid(o_home_u_valid),
+      .o_u_offer(),
       .i_u_ready(i_home_u_ready),
       .o_u(o_home_u),
       .o_live(o_home_live),

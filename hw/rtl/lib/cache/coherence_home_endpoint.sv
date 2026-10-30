@@ -49,6 +49,8 @@ module coherence_home_endpoint #(
     input logic i_cancel_valid,
     input logic [ADDR_WIDTH+10:0] i_cancel,
     output logic o_u_valid,
+    // o_u_valid without the reset term, for a consumer that applies reset.
+    output logic o_u_offer,
     input logic i_u_ready,
     output logic [ADDR_WIDTH+14:0] o_u,
     output logic o_live,
@@ -147,7 +149,8 @@ module coherence_home_endpoint #(
       absorb_in.tid == 6'(TID) && absorb_in.epoch == demand_q.q.epoch &&
       absorb_in.put_epoch == demand_q.q.epoch && absorb_in.addr == demand_q.addr &&
       int'(absorb_in.hart) < NUM_HARTS && !seen_q[absorb_slot];
-  assign o_u_valid = !i_rst && phase_q == SendU;
+  assign o_u_offer = phase_q == SendU;
+  assign o_u_valid = !i_rst && o_u_offer;
   assign o_u = {demand_q.q, 6'(TID), demand_q.addr};
 
   always_ff @(posedge i_clk) begin
