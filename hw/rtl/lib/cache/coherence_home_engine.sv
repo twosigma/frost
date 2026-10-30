@@ -76,10 +76,11 @@ module coherence_home_engine #(
     output logic o_fatal
 );
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
+  // Lookup lasts from work acceptance through the tag decision;
+  // lookup_sent_q records that the tag port accepted the lookup.
   typedef enum logic [3:0] {
     Free,
     Lookup,
-    Decision,
     Service,
     Update,
     UpdateWait,
@@ -103,10 +104,10 @@ module coherence_home_engine #(
   logic [WayBits-1:0] way_q;
   logic [8*LINE_BYTES-1:0] image_q;
   logic [1:0] state_q;
-  logic read_sent_q, read_done_q, dirty_q, failed_q, error_q;
+  logic read_sent_q, read_done_q, dirty_q, failed_q, error_q, lookup_sent_q;
   logic probe_matches, upper, run, active, needs_probe, needs_data;
   logic reply_fire, reply_fatal, service_error, service_dirty, service_complete;
-  logic data_complete, probe_complete;
+  logic data_complete, probe_complete, deciding;
   // Reset clears every register below and the home's arbiters, so internal
   // work and the offers to those arbiters are qualified by the stop alone.
   assign run = !i_stop;
@@ -121,9 +122,10 @@ module coherence_home_engine #(
   assign needs_data = request_q.opcode != coherence_pkg::DMAWrite &&
       request_q.opcode != coherence_pkg::Prefetch;
   assign o_idle = phase_q == Free;
+  assign deciding = phase_q == Lookup && lookup_sent_q;
 `ifdef COHERENCE_HOME_CONTROL
-  assign o_tag_owner = phase_q == Decision;
-  assign o_unpinned_owner = phase_q == Lookup || phase_q == Decision;
+  assign o_tag_owner = deciding;
+  assign o_unpinned_owner = phase_q == Lookup;
   assign o_pin_owner = phase_q == Service || phase_q == Update ||
       phase_q == UpdateWait || phase_q == Fatal || (phase_q == Result && read_sent_q);
   always_ff @(posedge i_clk) begin
@@ -136,7 +138,7 @@ module coherence_home_engine #(
   assign o_read_owner   = (phase_q == Service || phase_q == Fatal) && read_sent_q && !read_done_q;
   assign o_update_owner = phase_q == UpdateWait;
 `endif
-  assign o_lookup_valid = run && phase_q == Lookup;
+  assign o_lookup_valid = run && phase_q == Lookup && !lookup_sent_q;
   assign o_addr = request_q.addr;
   assign o_tid = tid_q;
   assign o_opcode = request_q.opcode;
@@ -208,6 +210,7 @@ module coherence_home_engine #(
       dirty_q <= 1'b0;
       failed_q <= 1'b0;
       error_q <= 1'b0;
+      lookup_sent_q <= 1'b0;
     end else if (run) begin
       if (i_work_valid) begin
         request_q <= i_work;
@@ -217,10 +220,11 @@ module coherence_home_engine #(
         dirty_q <= 1'b0;
         read_sent_q <= 1'b0;
         read_done_q <= 1'b0;
+        lookup_sent_q <= 1'b0;
         phase_q <= i_work_error ? Result : Lookup;
       end
-      if (o_lookup_valid && i_lookup_ready) phase_q <= Decision;
-      if (phase_q == Decision && i_decision_valid) begin
+      if (o_lookup_valid && i_lookup_ready) lookup_sent_q <= 1'b1;
+      if (deciding && i_decision_valid) begin
         if (!i_decision_resident) phase_q <= Free;
         else begin
           way_q <= i_decision_way;
@@ -306,13 +310,12 @@ module coherence_home_engine #(
       if (phase_q == Update || phase_q == UpdateWait)
         assert (read_done_q && probe_phase_q == ProbeDone);
       if (i_work_valid) assert (o_idle);
-      if (i_decision_valid) assert (phase_q == Decision);
+      if (i_decision_valid) assert (deciding);
       if (i_data_valid)
         assert ((phase_q == Service || phase_q == Fatal) && read_sent_q && !read_done_q);
       if (i_updated) assert (phase_q == UpdateWait);
       if (o_r_ready) assert (probe_matches);
-      if (phase_q == Lookup || phase_q == Decision)
-        assert (!read_sent_q && !read_done_q && !dirty_q);
+      if (phase_q == Lookup) assert (!read_sent_q && !read_done_q && !dirty_q);
       if (phase_q == Update || phase_q == UpdateWait || phase_q == Result)
         if (!error_q) assert (read_done_q && probe_phase_q == ProbeDone);
     end
@@ -333,7 +336,7 @@ module coherence_home_engine #(
     if (!f_past_valid) assume (i_rst);
     if (i_work_valid) assume (o_idle && active);
     if (i_decision_valid) begin
-      assume (phase_q == Decision && active);
+      assume (deciding && active);
       assume (int'(i_decision_way) < WAYS);
     end
     if (i_data_valid)
@@ -355,7 +358,7 @@ module coherence_home_engine #(
         f_dirty_value_q <= f_reply_byte;
         f_dirty_valid_q <= 1'b1;
       end
-      if (phase_q == Lookup || phase_q == Decision) begin
+      if (phase_q == Lookup) begin
         assert (!read_sent_q && !read_done_q && !dirty_q);
         assert (!f_baseline_valid_q && !f_dirty_valid_q);
       end

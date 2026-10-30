@@ -50,6 +50,9 @@ module coherence_home_array #(
     output logic [WayBits-1:0] o_resp_way,
     output logic [ADDR_WIDTH-1:0] o_resp_addr,
     output logic [1:0] o_resp_state,
+    // The selection's tag fields for every way, held from selection through
+    // the response; o_resp_addr's tag is o_resp_tags[o_resp_way].
+    output logic [WAYS-1:0][ADDR_WIDTH-SetBits-OffsetBits-1:0] o_resp_tags,
     input logic i_read_valid,
     output logic o_read_ready,
     input logic [ADDR_WIDTH-1:0] i_read_addr,
@@ -172,6 +175,9 @@ module coherence_home_array #(
         (tag_waddr >> TagGroupBits) == (tag_raddr >> TagGroupBits));
   assign request_fire = i_req_valid && o_req_ready;
   assign o_resp_valid = !i_rst && phase_q == Reply;
+  for (genvar way = 0; way < WAYS; way++) begin : gen_resp_tags
+    assign o_resp_tags[way] = tags_q[way][TagBits-1:0];
+  end
   assign o_resp_token = token_q;
   assign plru_we = !i_rst && (phase_q == Init || (o_resp_valid && i_resp_ready && i_resp_claim));
   sdp_block_ram #(
@@ -372,6 +378,8 @@ module coherence_home_array #(
       if (read_fire) assert (int'(i_read_way) < WAYS);
       if (update_fire) assert (int'(i_update_way) < WAYS);
       if (o_resp_valid && i_resp_ready && i_resp_claim) assert (o_resp_available);
+      if (o_resp_valid)
+        assert (o_resp_addr == {o_resp_tags[o_resp_way], set_q, {OffsetBits{1'b0}}});
       assert (!(read_fire && update_fire && |i_update_mask && read_row == write_row));
       if (update_fire && i_update_tag) assert (!tag_hazard);
     end
