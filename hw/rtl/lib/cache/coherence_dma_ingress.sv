@@ -100,6 +100,10 @@ module coherence_dma_ingress #(
   assign o_req_ready = !i_rst && !i_fatal_stop && available && !occupied_q[i_req_id];
   assign accept_request = i_req_valid && o_req_ready;
   assign accept_demand = o_d_valid && i_d_ready;
+  logic [3:0] head_slot;
+  for (genvar slot = 0; slot < 4; slot++) begin : gen_head_slot
+    assign head_slot[slot] = queue_q[head_q] == 2'(slot);
+  end
   assign release_request = i_u_valid && o_u_ready;
   assign o_d_valid = !i_rst && !i_fatal_stop && queued_q != 0;
   assign o_d = demand;
@@ -190,10 +194,7 @@ module coherence_dma_ingress #(
         default: begin
         end
       endcase
-      if (accept_demand) begin
-        phase_q[queue_q[head_q]] <= Sent;
-        head_q <= head_q + 1'b1;
-      end
+      if (accept_demand) head_q <= head_q + 1'b1;
       for (int slot = 0; slot < 4; slot++) begin
         if (i_g_valid && grant_match[slot]) begin
           data_q[slot]  <= grant_in.data;
@@ -209,6 +210,9 @@ module coherence_dma_ingress #(
           o_resp_data <= data_q[slot];
           o_resp_error <= error_q[slot];
         end
+        // The queue head is Queued, so no other transition applies to it;
+        // D acceptance, which arrives last, selects its next phase last.
+        if (head_slot[slot] && accept_demand) phase_q[slot] <= Sent;
       end
     end
   end
