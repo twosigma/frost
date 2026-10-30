@@ -42,6 +42,7 @@ module coherence_home_engine #(
     input logic [WayBits-1:0] i_decision_way,
     input logic [1:0] i_decision_state,
     output logic o_read_valid,
+    output logic o_read_offer,
     input logic i_read_ready,
     output logic [WayBits-1:0] o_way,
     input logic i_data_valid,
@@ -138,7 +139,8 @@ module coherence_home_engine #(
   assign o_opcode = request_q.opcode;
   assign o_maintenance = request_q.maintenance;
   assign o_way = way_q;
-  assign o_read_valid = active && phase_q == Service && !read_sent_q;
+  assign o_read_offer = phase_q == Service && !read_sent_q;
+  assign o_read_valid = active && o_read_offer;
   assign o_p_valid = active && phase_q == Service && probe_phase_q == ProbeOffer;
   assign o_p = probe_q;
   assign probe_matches = reply.tid == tid_q && reply.addr == probe_q.addr &&

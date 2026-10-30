@@ -898,6 +898,49 @@ async def dirty_probe_error_preserves_accepted_image(dut: Any) -> None:
 
 
 @cocotb.test()
+async def held_probe_survives_another_engine_fatal(dut: Any) -> None:
+    """Hold a captured probe through another engine's local fatal transition."""
+    for accept in (False, True):
+        b = Home(dut)
+        await b.reset()
+        failed = 0x80000000
+        held = failed + b.line
+        for address in (failed, held):
+            grant = await b.start(0, address)
+            await b.finish(grant)
+        b.private[failed] = (3, b.expected(failed) ^ 0x1234)
+        b.probe_errors.add(failed)
+        b.probe_delay = 1000
+        before = len(b.probes)
+        await b.submit(7, failed, slot=0)
+        for _ in range(200):
+            if len(b.probes) > before:
+                break
+            await b.tick()
+        else:
+            raise AssertionError("the failing probe was not accepted")
+        assert b.probes[-1][1] == failed
+        await b.set(i_p_ready=0)
+        await b.submit(7, held, slot=1)
+        await b.wait("o_p_valid")
+        payload = b.get("o_p")
+        assert unpack(payload, (2, 6, 1, b.p, 2, 2, 9, 5, 3))[3] == held
+        assert len(b.replies) == 1
+        b.replies[0] = (b.cycle, b.replies[0][1])
+        await b.tick()
+        assert b.get("engine_fatal") and not b.get("o_fatal")
+        assert b.get("o_p_valid") and b.get("o_p") == payload
+        assert not b.replies
+        await b.set(i_p_ready=int(accept))
+        before = len(b.probes)
+        await b.tick()
+        assert len(b.probes) == before + int(accept)
+        assert b.get("o_fatal") and not b.get("o_p_valid")
+        await b.tick(3)
+        assert not b.get("o_p_valid")
+
+
+@cocotb.test()
 async def returned_fills_install_during_same_set_retries(dut: Any) -> None:
     """Install returned fills while misses repeatedly contest the same set."""
     b = Home(dut)

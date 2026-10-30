@@ -18,6 +18,7 @@
 module coherence_d_arbiter #(
     parameter int unsigned WIDTH = 344,
     parameter int unsigned PORTS = 2,
+    parameter bit HOLD_VALID = 0,
     localparam int unsigned PortBits = PORTS > 1 ? $clog2(PORTS) : 1
 ) (
     input logic i_clk,
@@ -54,7 +55,7 @@ module coherence_d_arbiter #(
     o_ready = '0;
     if (!i_rst && selected_q) o_ready[selected_port_q] = i_ready;
   end
-  assign o_valid   = !i_rst && selected_q && i_valid[selected_port_q];
+  assign o_valid   = !i_rst && selected_q && (HOLD_VALID || i_valid[selected_port_q]);
   assign o_payload = payload_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin

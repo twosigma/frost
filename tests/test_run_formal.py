@@ -238,6 +238,7 @@ FORMAL_TARGETS = [
             "coh_c_payload_wide_prove",
             "coh_arbiter_prove",
             "coh_arbiter19_prove",
+            "coh_arbiter_held_prove",
             "coh_reader_prove",
             "coh_ingress_prove",
             "coh_atomic_guard_prove",
@@ -1073,6 +1074,10 @@ SBY_TASKS = [
         "Nineteen-way held arbitration and circular selection equality.",
     ),
     ("coh_arbiter_prove", "Coherent arbitration preserves held payloads."),
+    (
+        "coh_arbiter_held_prove",
+        "Captured arbitration validity matches held source offers.",
+    ),
     ("coh_reader_prove", "Read identities survive through release."),
     ("coh_ingress_prove", "DMA identities survive through release."),
     ("coh_atomic_guard_prove", "Atomic protection covers retirement and release."),

@@ -216,6 +216,66 @@ async def result_pool_backpressure_and_retry(dut: Any) -> None:
 
 
 @cocotb.test()
+async def simultaneous_work_grant_and_retry_use_distinct_credits(dut: Any) -> None:
+    """Allocate one image and release two images on the same acceptance edge."""
+    for reserved in (0, 5):
+        b = Completions(dut)
+        await b.reset()
+        prefix = []
+        for index in range(reserved):
+            await b.admit(2 * index, 0x80000000 + 64 * index)
+            prefix.append(await b.dispatch())
+        for index in range(reserved, reserved + 3):
+            await b.admit(2 * index, 0x80000000 + 64 * index)
+        granted = await b.dispatch()
+        retried = await b.dispatch()
+        await b.result(granted, 0xA123)
+        await b.wait("o_g_valid")
+        await b.wait("o_work_valid")
+        fields = unpack(b.get("o_work"), (4, 9, b.p, 5, 3, 32, 1, 1, 1, 256))
+        allocated = (fields[1], b.get("o_work_tid"), fields[2])
+        b.buffers[allocated[1]] = b.get("o_work_buffer")
+        credits = [b.buffers[item[1]] for item in (granted, retried, allocated)]
+        assert len(set(credits)) == 3
+        before = b.get("buffer_live_q")
+        assert before & (1 << credits[0]) and before & (1 << credits[1])
+        assert not before & (1 << credits[2])
+        assert unpack(b.get("o_g"), (3, 9, 6, b.p, 256, 1))[1:4] == granted
+        await b.set(
+            i_work_ready=1, i_g_ready=1, i_retry_valid=1, i_retry_tid=retried[1]
+        )
+        assert b.get("accept_work") and b.get("accept_grant")
+        assert b.get("i_retry_valid")
+        await b.tick()
+        await b.set(i_work_ready=0, i_g_ready=0, i_retry_valid=0)
+        expected = (before | (1 << credits[2])) & ~(
+            (1 << credits[0]) | (1 << credits[1])
+        )
+        assert b.get("buffer_live_q") == expected
+        owned = b.get("buffer_owned_q")
+        assert owned & (1 << allocated[1])
+        assert not owned & ((1 << granted[1]) | (1 << retried[1]))
+        await b.complete(granted)
+        await b.release(granted)
+        await b.result(allocated, 0xC345)
+        await b.grant(allocated, 0xC345)
+        await b.complete(allocated)
+        await b.release(allocated)
+        retry = await b.dispatch()
+        assert retry == retried
+        await b.result(retry, 0xB234)
+        await b.grant(retry, 0xB234)
+        await b.complete(retry)
+        await b.release(retry)
+        for item in prefix:
+            await b.result(item, item[1] + 1)
+            await b.grant(item, item[1] + 1)
+            await b.complete(item)
+            await b.release(item)
+        assert b.get("buffer_live_q") == 0
+
+
+@cocotb.test()
 async def predecessor_release_and_slot_reuse_do_not_alias(dut: Any) -> None:
     """Clear a predecessor on U while admitting a successor and reusing its slot."""
     b = Completions(dut)
