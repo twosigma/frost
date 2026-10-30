@@ -40,7 +40,15 @@ class Array:
         return int(getattr(self.dut, name).value)
 
     async def set(self, **values: int) -> None:
-        """Drive the falling phase."""
+        """Drive the falling phase.
+
+        The read offer follows the read request and the update data bit
+        follows the mask, as the home drives them.
+        """
+        if "i_read_valid" in values:
+            values["i_read_offer"] = values["i_read_valid"]
+        if "i_update_mask" in values:
+            values["i_update_has_data"] = int(values["i_update_mask"] != 0)
         for name, value in values.items():
             getattr(self.dut, name).value = value
         await Timer(1, unit="ns")
