@@ -205,6 +205,9 @@ module coherence_home #(
   logic [RESULTS-1:0][WAYS-1:0] engine_tag_q;
   logic work_set_q;
   logic [WAYS-1:0] work_tag_q;
+  logic put_query_q, put_victim_q;
+  logic [FILLS-1:0] put_fill_q, put_fill_old_q, fill_allocated_q;
+  logic [NUM_WB-1:0] put_wb_q, wb_allocated_q;
   logic [1:0] array_state;
   logic array_data_valid, array_updated;
   logic [8*LINE_BYTES-1:0] array_data;
@@ -372,7 +375,7 @@ module coherence_home #(
       .i_pin_way(array_way),
       .i_query_addr(array_query),
       .o_exclude(completion_exclude),
-      .i_put_addr(selected_put_q.addr),
+      .i_next_put_addr(held_put_next),
       .o_put_busy(put_busy),
       .i_result_valid(result_valid && run),
       .o_result_ready(result_ready),
@@ -818,20 +821,36 @@ module coherence_home #(
   assign put_key_match = incoming_put.hart == selected_put_q.hart &&
       incoming_put.put_id == selected_put_q.put_id && incoming_put.epoch == selected_put_q.epoch &&
       incoming_put.addr == selected_put_q.addr;
+  // The selected put's block is compared with the fill and write-back blocks
+  // one cycle ahead, from its next address. A fill or write-back allocated
+  // this cycle takes the query or victim block next cycle.
+  always_ff @(posedge i_clk) begin
+    put_query_q  <= same_block(array_query, held_put_next);
+    put_victim_q <= same_block(array_addr, held_put_next);
+    for (int fill = 0; fill < FILLS; fill++) begin
+      put_fill_q[fill] <= same_block(fill_addr_q[fill], held_put_next);
+      put_fill_old_q[fill] <= same_block(fill_old_addr_q[fill], held_put_next);
+      fill_allocated_q[fill] <= run && array_response && decision_fill &&
+          fill_free_index == FillBits'(fill);
+    end
+    for (int wb = 0; wb < NUM_WB; wb++) begin
+      put_wb_q[wb] <= same_block(wb_addr_q[wb], held_put_next);
+      wb_allocated_q[wb] <= run && array_response && decision_fill &&
+          array_state != coherence_pkg::Invalid && wb_free_index == WbBits'(wb);
+    end
+  end
   always_comb begin
     put_blocked = 1'b0;
     if (array_response && decision_fill && array_state != coherence_pkg::Invalid &&
         held_put_set_q && held_put_tag_q[array_way])
       put_blocked = 1'b1;
     for (int fill = 0; fill < FILLS; fill++)
-    if (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady && (same_block(
-            fill_addr_q[fill], selected_put_q.addr
-        ) || (fill_victim_q[fill] && same_block(
-            fill_old_addr_q[fill], selected_put_q.addr
-        ))))
+    if (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady &&
+        ((fill_allocated_q[fill] ? put_query_q : put_fill_q[fill]) ||
+         (fill_victim_q[fill] && (fill_allocated_q[fill] ? put_victim_q : put_fill_old_q[fill]))))
       put_blocked = 1'b1;
     for (int wb = 0; wb < NUM_WB; wb++)
-    if (wb_valid_q[wb] && same_block(wb_addr_q[wb], selected_put_q.addr)) put_blocked = 1'b1;
+    if (wb_valid_q[wb] && (wb_allocated_q[wb] ? put_victim_q : put_wb_q[wb])) put_blocked = 1'b1;
   end
   assign o_w_ready = active && put_selected_q && put_key_match && !put_busy && !put_blocked &&
       put_phase_q[selected_put_q.put_id] == PutFree;
@@ -1276,8 +1295,31 @@ module coherence_home #(
         ))
       reference_victim = 1'b1;
   end
+  logic reference_put_blocked, reference_ready_q;
+  always_comb begin
+    reference_put_blocked = array_response && decision_fill &&
+        array_state != coherence_pkg::Invalid && same_block(array_addr, selected_put_q.addr);
+    for (int fill = 0; fill < FILLS; fill++)
+    if (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady && (same_block(
+            fill_addr_q[fill], selected_put_q.addr
+        ) || (fill_victim_q[fill] && same_block(
+            fill_old_addr_q[fill], selected_put_q.addr
+        ))))
+      reference_put_blocked = 1'b1;
+    for (int wb = 0; wb < NUM_WB; wb++)
+    if (wb_valid_q[wb] && same_block(wb_addr_q[wb], selected_put_q.addr))
+      reference_put_blocked = 1'b1;
+  end
+  logic [ADDR_WIDTH-1:0] reference_held_put_q;
+  always_ff @(posedge i_clk) begin
+    reference_ready_q <= !i_rst;
+    reference_held_put_q <= held_put_next;
+    // The completion table compares live sectors with held_put_next.
+    if (!i_rst && reference_ready_q) assert (selected_put_q.addr == reference_held_put_q);
+  end
   always_ff @(posedge i_clk)
     if (!i_rst) begin
+      if (reference_ready_q) assert (put_blocked == reference_put_blocked);
       if (array_response) begin
         for (int wb = 0; wb < NUM_WB; wb++) begin
           assert (wb_blocks[wb] == (wb_valid_q[wb] && same_block(wb_addr_q[wb], decision_addr)));
