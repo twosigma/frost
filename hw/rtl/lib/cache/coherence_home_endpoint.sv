@@ -123,16 +123,18 @@ module coherence_home_endpoint #(
     assign completion_groups[group_index] = &completion_parts[6*group_index+:Parts];
   end
   assign completion_matches = &completion_groups;
-  assign o_c_ready = !i_rst && phase_q == WaitC && completion_matches &&
-      completion_in.status <= coherence_pkg::Error &&
+  // The status check depends on the C status bits and this endpoint's
+  // registers only, so it forms beside the key comparison.
+  wire irrevocable_demand = coherence_pkg::irrevocable(demand_q.opcode);
+  wire completion_status_ok = completion_in.status <= coherence_pkg::Error &&
       ((completion_in.status != coherence_pkg::Error && !grant_error_q) || i_error_disposed) &&
       !(grant_error_q && completion_in.status == coherence_pkg::Consumed) &&
-      !(coherence_pkg::irrevocable(
-      demand_q.opcode
-  ) && completion_in.status == coherence_pkg::Killed) && !(coherence_pkg::irrevocable(
-      demand_q.opcode
-  ) && completion_in.status == coherence_pkg::Consumed && !grant_error_q &&
-      grant_opcode_q != coherence_pkg::GrantFail && !completion_in.write_done);
+      !(irrevocable_demand && completion_in.status == coherence_pkg::Killed) &&
+      !(irrevocable_demand && completion_in.status == coherence_pkg::Consumed &&
+        !grant_error_q && grant_opcode_q != coherence_pkg::GrantFail &&
+        !completion_in.write_done);
+  wire waiting_completion = phase_q == WaitC;
+  assign o_c_ready = !i_rst && waiting_completion && completion_matches && completion_status_ok;
   assign o_absorb_ready = !i_rst && phase_q == Work && absorb_in.absorbed &&
       absorb_in.opcode == coherence_pkg::ProbeData && absorb_in.data_valid && !absorb_in.error &&
       absorb_in.tid == 6'(TID) && absorb_in.epoch == demand_q.q.epoch &&
