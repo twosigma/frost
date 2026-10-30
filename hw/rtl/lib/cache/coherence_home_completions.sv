@@ -54,6 +54,8 @@ module coherence_home_completions #(
     input logic [SLOTS-1:0] i_wake_error,
     input logic i_retry_park,
     output logic [ResultBits-1:0] o_image_index,
+    // One-hot form of o_image_index, all zero when no result awaits G.
+    output logic [RESULT_SLOTS-1:0] o_image_select,
     input logic [255:0] i_image_data,
     input logic i_retry_valid,
     input logic [5:0] i_retry_tid,
@@ -111,9 +113,18 @@ module coherence_home_completions #(
   logic work_selected_q, work_found;
   logic [SLOTS-1:0] work_eligible;
   logic [SlotBits-1:0] work_slot_q, work_next_q, work_pick;
-  logic grant_selected_q, grant_found, grant_after;
-  logic [SlotBits-1:0] grant_slot_q, grant_next_q, grant_pick, grant_first;
-  coh_g_t grant_q, result;
+  localparam int unsigned GrantGroupBits = 6;
+  localparam int unsigned GrantGroups = (SLOTS + GrantGroupBits - 1) / GrantGroupBits;
+  logic grant_selected_q, grant_found, grant_after, grant_zero;
+  logic [SlotBits-1:0] grant_slot_q, grant_next_q, grant_pick;
+  // grant_later_q[slot] holds slot >= grant_next_q. buffer_select_q is the
+  // one-hot form of buffer_index_q. grant_zero_q marks a ready result whose
+  // grant carries zero data: an error or a GrantAck.
+  logic [SLOTS-1:0] grant_later_q, grant_zero_q, grant_later_first, grant_ready_first;
+  logic [SLOTS-1:0][RESULT_SLOTS-1:0] buffer_select_q;
+  (* keep = "true" *) logic [SLOTS-1:0] grant_later, grant_select;
+  (* keep = "true" *) logic [GrantGroups-1:0] grant_later_groups, grant_ready_groups;
+  coh_g_t grant_q, result, grant_payload;
   coh_d_t incoming;
   logic result_matches;
   logic [SlotBits-1:0] result_slot;
@@ -188,7 +199,6 @@ module coherence_home_completions #(
   assign o_work_buffer = work_buffer_q;
   assign o_work_error = wake_error_q[work_slot_q];
   assign o_work_counted = counted_q[work_slot_q];
-  assign o_image_index = buffer_index_q[grant_pick];
   assign o_waiting_request = work;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_waiting
     assign o_waiting_offer[slot] = work_offer[slot] && !issued_q[slot] &&
@@ -216,22 +226,54 @@ module coherence_home_completions #(
       .o_found(work_found),
       .o_pick(work_pick)
   );
-  always_comb begin
-    grant_found = 1'b0;
-    grant_after = 1'b0;
-    grant_first = '0;
-    grant_pick  = '0;
-    for (int slot = SLOTS - 1; slot >= 0; slot--) begin
-      if (result_valid_q[slot]) begin
-        grant_found = 1'b1;
-        grant_first = SlotBits'(slot);
-        if (slot >= int'(grant_next_q)) begin
-          grant_after = 1'b1;
-          grant_pick  = SlotBits'(slot);
-        end
+  // Grants rotate among ready results: the lowest ready slot at or after
+  // grant_next_q, else the lowest ready slot. Each slot's priority comes from
+  // six-slot group summaries and its own group's lower slots; the pick, its
+  // result buffer, its zero-data condition and its payload are one-hot.
+  assign grant_later = result_valid_q & grant_later_q;
+  for (genvar group_index = 0; group_index < GrantGroups; group_index++) begin : gen_grant_group
+    localparam int unsigned Base  = group_index * GrantGroupBits;
+    localparam int unsigned Width = SLOTS - Base < GrantGroupBits ? SLOTS - Base : GrantGroupBits;
+    assign grant_later_groups[group_index] = |grant_later[Base+:Width];
+    assign grant_ready_groups[group_index] = |result_valid_q[Base+:Width];
+  end
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_grant_first
+    localparam int unsigned Group  = slot / GrantGroupBits;
+    localparam int unsigned Offset = slot % GrantGroupBits;
+    logic later_below, ready_below;
+    always_comb begin
+      later_below = 1'b0;
+      ready_below = 1'b0;
+      for (int group_index = 0; group_index < int'(Group); group_index++) begin
+        later_below |= grant_later_groups[group_index];
+        ready_below |= grant_ready_groups[group_index];
+      end
+      for (int lower = 0; lower < int'(Offset); lower++) begin
+        later_below |= grant_later[Group*GrantGroupBits+lower];
+        ready_below |= result_valid_q[Group*GrantGroupBits+lower];
       end
     end
-    if (!grant_after) grant_pick = grant_first;
+    assign grant_later_first[slot] = grant_later[slot] && !later_below;
+    assign grant_ready_first[slot] = result_valid_q[slot] && !ready_below;
+  end
+  assign grant_after  = |grant_later_groups;
+  assign grant_found  = |grant_ready_groups;
+  assign grant_select = grant_after ? grant_later_first : grant_ready_first;
+  always_comb begin
+    grant_pick = '0;
+    grant_zero = |(grant_select & grant_zero_q);
+    for (int slot = 0; slot < SLOTS; slot++) if (grant_select[slot]) grant_pick |= SlotBits'(slot);
+    for (int index = 0; index < RESULT_SLOTS; index++) begin
+      o_image_select[index] = 1'b0;
+      for (int slot = 0; slot < SLOTS; slot++)
+      if (grant_select[slot] && buffer_select_q[slot][index]) o_image_select[index] = 1'b1;
+    end
+    grant_payload = '0;
+    o_image_index = '0;
+    for (int index = 0; index < RESULT_SLOTS; index++) begin
+      grant_payload |= {(ADDR_WIDTH + 275) {o_image_select[index]}} & buffer_q[index];
+      if (o_image_select[index]) o_image_index |= ResultBits'(index);
+    end
   end
 
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_endpoint
@@ -325,10 +367,13 @@ module coherence_home_completions #(
       grant_selected_q <= 1'b0;
       grant_slot_q <= '0;
       grant_next_q <= '0;
+      grant_later_q <= '1;
+      grant_zero_q <= '0;
       grant_q <= '0;
       for (int slot = 0; slot < SLOTS; slot++) begin
         predecessors_q[slot] <= '0;
         buffer_index_q[slot] <= '0;
+        buffer_select_q[slot] <= RESULT_SLOTS'(1);
         way_q[slot] <= '0;
       end
       for (int index = 0; index < RESULT_SLOTS; index++) buffer_q[index] <= '0;
@@ -345,11 +390,13 @@ module coherence_home_completions #(
         issued_q[work_slot_q] <= 1'b1;
         buffer_owned_q[work_slot_q] <= 1'b1;
         buffer_index_q[work_slot_q] <= work_buffer_q;
+        buffer_select_q[work_slot_q] <= RESULT_SLOTS'(1) << work_buffer_q;
         ready_q[work_slot_q] <= 1'b0;
       end
       if (accept_result) begin
         result_valid_q[result_slot] <= 1'b1;
         error_q[result_slot] <= result.error;
+        grant_zero_q[result_slot] <= result.error || result.opcode == coherence_pkg::GrantAck;
         buffer_q[buffer_index_q[result_slot]] <= {
           result.opcode, result.q, result.tid, result.addr, 256'b0, result.error
         };
@@ -364,14 +411,14 @@ module coherence_home_completions #(
       if (!grant_selected_q && grant_found) begin
         grant_selected_q <= 1'b1;
         grant_slot_q <= grant_pick;
-        grant_q <= buffer_q[buffer_index_q[grant_pick]];
-        grant_q.data <= error_q[grant_pick] || grant_opcode(
-            buffer_q[buffer_index_q[grant_pick]]
-        ) == coherence_pkg::GrantAck ? 256'b0 : i_image_data;
+        grant_q <= grant_payload;
+        grant_q.data <= grant_zero ? 256'b0 : i_image_data;
       end
       if (accept_grant) begin
         grant_selected_q <= 1'b0;
         grant_next_q <= grant_slot_q == SlotBits'(SLOTS - 1) ? '0 : grant_slot_q + 1'b1;
+        for (int slot = 0; slot < SLOTS; slot++)
+        grant_later_q[slot] <= grant_slot_q == SlotBits'(SLOTS - 1) || slot > int'(grant_slot_q);
         result_valid_q[grant_slot_q] <= 1'b0;
         buffer_owned_q[grant_slot_q] <= 1'b0;
       end
@@ -427,8 +474,37 @@ module coherence_home_completions #(
       reference_buffer_live[buffer_index_q[slot]] = 1'b0;
     assert (buffer_live_next == reference_buffer_live);
   end
+  logic [SlotBits-1:0] reference_grant_pick;
+  always_comb begin
+    reference_grant_pick = '0;
+    for (int offset = SLOTS - 1; offset >= 0; offset--)
+    if (result_valid_q[(int'(grant_next_q)+offset)%SLOTS])
+      reference_grant_pick = SlotBits'((int'(grant_next_q) + offset) % SLOTS);
+  end
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
+      assert (int'(grant_next_q) < SLOTS);
+      for (int slot = 0; slot < SLOTS; slot++) begin
+        assert (grant_later_q[slot] == (slot >= int'(grant_next_q)));
+        assert (buffer_select_q[slot] == RESULT_SLOTS'(1) << buffer_index_q[slot]);
+        if (result_valid_q[slot])
+          assert (grant_zero_q[slot] == (error_q[slot] || grant_opcode(
+              buffer_q[buffer_index_q[slot]]
+          ) == coherence_pkg::GrantAck));
+      end
+      assert (grant_found == (|result_valid_q));
+      if (grant_found) begin
+        assert (grant_pick == reference_grant_pick);
+        assert (grant_select == SLOTS'(1) << grant_pick);
+        assert (o_image_select == RESULT_SLOTS'(1) << buffer_index_q[grant_pick]);
+        assert (o_image_index == buffer_index_q[grant_pick]);
+        assert (grant_payload == buffer_q[buffer_index_q[grant_pick]]);
+        assert (grant_zero == (error_q[grant_pick] || grant_opcode(
+            buffer_q[buffer_index_q[grant_pick]]
+        ) == coherence_pkg::GrantAck));
+      end else begin
+        assert (grant_select == '0 && o_image_select == '0);
+      end
       assert ($onehot0(grant_valid));
       assert (o_g_valid == (|grant_valid));
       if (grant_selected_q) begin

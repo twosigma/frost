@@ -142,6 +142,7 @@ module coherence_home #(
   coh_d_t work;
   logic [5:0] work_tid;
   logic [ResultBits-1:0] work_buffer, image_index;
+  logic [RESULTS-1:0] image_select;
   logic [255:0] image_data;
   logic [COMPLETIONS-1:0] waiting, waiting_offer, park, wake, wake_error;
   logic [COMPLETIONS-1:0][ADDR_WIDTH+311:0] waiting_request;
@@ -308,7 +309,11 @@ module coherence_home #(
   assign active = !i_rst && run;
   assign incoming_put = i_w;
   assign reply = i_r;
-  assign image_data = engine_image[image_index];
+  always_comb begin
+    image_data = '0;
+    for (int engine = 0; engine < RESULTS; engine++)
+    image_data |= {256{image_select[engine]}} & engine_image[engine];
+  end
   coherence_home_completions #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .LINE_BYTES(LINE_BYTES),
@@ -341,6 +346,7 @@ module coherence_home #(
       .i_wake_error(wake_error),
       .i_retry_park(retry_park),
       .o_image_index(image_index),
+      .o_image_select(image_select),
       .i_image_data(image_data),
       .i_retry_valid(retry_valid),
       .i_retry_tid(decision_tid),
@@ -1186,6 +1192,7 @@ module coherence_home #(
       assert (join_fill == (reference_join ? FILLS'(1) << reference_join_index : FILLS'(0)));
       assert ($onehot0({engine_r_ready, fill_r_ready}));
       assert ((park & wake) == 0);
+      if (|image_select) assert (image_data == engine_image[image_index]);
       if (work_valid && active) assert (engine_idle[work_buffer]);
       if (array_response && decision_engine)
         assert (same_block(array_query, engine_addr[ResultBits'(array_token)]));
