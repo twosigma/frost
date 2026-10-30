@@ -98,7 +98,7 @@ module coherence_home_completions #(
   localparam int unsigned Sets = CACHE_BYTES / (LINE_BYTES * WAYS);
   localparam int unsigned SetBits = $clog2(Sets);
   logic [SLOTS-1:0] live, request_ready, work_valid, work_offer, grant_valid, completion_ready;
-  logic [SLOTS-1:0] release_valid, release_ready, release_fire;
+  logic [SLOTS-1:0] release_valid, release_offer, release_ready, release_fire;
   logic [SLOTS-1:0] issued_q, buffer_owned_q, result_valid_q, pin_valid_q, error_q;
   logic [SLOTS-1:0] predecessors_q[SLOTS];
   logic [SLOTS-1:0] parked_q, ready_q, wake_error_q, counted_q;
@@ -353,6 +353,7 @@ module coherence_home_completions #(
         .i_cancel_valid(1'b0),
         .i_cancel('0),
         .o_u_valid(release_valid[slot]),
+        .o_u_offer(release_offer[slot]),
         .i_u_ready(release_ready[slot]),
         .o_u(releases[slot]),
         .o_live(live[slot]),
@@ -366,7 +367,8 @@ module coherence_home_completions #(
   ) release_arbiter (
       .i_clk,
       .i_rst,
-      .i_valid(release_valid),
+      // The release arbiter applies reset to its selection and handshake.
+      .i_valid(release_offer),
       .o_ready(release_ready),
       .i_payload(releases),
       .o_valid(o_u_valid),
