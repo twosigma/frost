@@ -2808,6 +2808,68 @@ module reservation_station #(
   end
 `endif
 
+  // Entry valid state: a full flush clears every entry, a partial flush
+  // clears younger entries, and otherwise allocations set entries and both
+  // issue clears clear them. The issue clears follow the issue selection and
+  // apply last, to entries that neither flush nor allocate.
+  logic [DEPTH-1:0] rs_valid_alloc, rs_valid_issue_clear, rs_valid_next;
+  (* keep = "true" *) logic [DEPTH-1:0] rs_valid_hold, rs_valid_clearable;
+  always_comb begin
+    for (int entry = 0; entry < DEPTH; entry++) begin
+      rs_valid_alloc[entry] = PREPARE_ISSUE_CONTROLS ?
+          ((dispatch_fire && coherent_alloc1_target[entry]) ||
+           (dispatch_fire_2 && coherent_alloc2_target[entry])) :
+          ((dispatch_fire && int'(free_idx) == entry) ||
+           (dispatch_fire_2 && int'(alloc_idx_2) == entry));
+      rs_valid_hold[entry] = i_flush_all ? 1'b0 :
+          i_flush_en ? (rs_valid[entry] &&
+                        !should_flush_entry(rs_rob_tag[entry], i_flush_tag, i_rob_head_tag)) :
+          (rs_valid_alloc[entry] || rs_valid[entry]);
+      rs_valid_clearable[entry] = !i_flush_all && !i_flush_en && !rs_valid_alloc[entry];
+      rs_valid_issue_clear[entry] = issue2_clear_mask[entry] ||
+          (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS ? issue1_clear_mask[entry] :
+           (issue_fire && int'(issue_idx) == entry));
+    end
+    rs_valid_next = rs_valid_hold & ~(rs_valid_clearable & rs_valid_issue_clear);
+  end
+`ifndef SYNTHESIS
+  // The prioritized form rs_valid_next replaces.
+  logic [DEPTH-1:0] reference_valid_next;
+  always_comb begin
+    reference_valid_next = rs_valid;
+    if (i_flush_all) reference_valid_next = '0;
+    else if (i_flush_en) begin
+      for (int i = 0; i < DEPTH; i++)
+      if (rs_valid[i] && should_flush_entry(rs_rob_tag[i], i_flush_tag, i_rob_head_tag))
+        reference_valid_next[i] = 1'b0;
+    end else begin
+      if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS)
+        reference_valid_next = rs_valid & ~issue2_clear_mask & ~issue1_clear_mask;
+      else begin
+        reference_valid_next = rs_valid & ~issue2_clear_mask;
+        if (issue_fire) reference_valid_next[issue_idx] = 1'b0;
+      end
+      if (PREPARE_ISSUE_CONTROLS) begin
+        for (int entry = 0; entry < DEPTH; entry++) begin
+          if (dispatch_fire && coherent_alloc1_target[entry]) reference_valid_next[entry] = 1'b1;
+          if (dispatch_fire_2 && coherent_alloc2_target[entry]) reference_valid_next[entry] = 1'b1;
+        end
+      end else begin
+        if (dispatch_fire) reference_valid_next[free_idx] = 1'b1;
+        if (dispatch_fire_2) reference_valid_next[alloc_idx_2] = 1'b1;
+      end
+    end
+  end
+`ifdef FORMAL
+  always_comb
+`else
+  always @(posedge i_clk)
+`endif
+  begin
+    if (i_rst_n) p_valid_next_exact : assert (rs_valid_next == reference_valid_next);
+  end
+`endif
+
   // --- Control signals (with reset) ---
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
@@ -2834,32 +2896,12 @@ module reservation_station #(
         dispatch_full_for_2_q <= count >= CountWidth'(DispatchFullFor2Threshold);
       end
 
-      // Flush logic (highest priority for rs_valid)
-      if (i_flush_all) begin
-        rs_valid <= '0;
-      end else if (i_flush_en) begin
-        // Partial flush: invalidate entries younger than flush_tag. When the
-        // flush tag has already retired (head == flush_tag + 1, commit-time
-        // recovery) this compare clears nothing, so the wrapper sends that
-        // case as i_flush_all (its speculative_flush_all).
-        for (int i = 0; i < DEPTH; i++) begin
-          if (rs_valid[i] && should_flush_entry(rs_rob_tag[i], i_flush_tag, i_rob_head_tag)) begin
-            rs_valid[i] <= 1'b0;
-          end
-        end
-      end else begin
-        // Both issue clears commute; later allocation writes take priority.
-        if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin
-          rs_valid <= rs_valid & ~issue2_clear_mask & ~issue1_clear_mask;
-        end else begin
-          rs_valid <= rs_valid & ~issue2_clear_mask;
-          if (issue_fire) rs_valid[issue_idx] <= 1'b0;
-        end
-
+      // rs_valid_next applies flushes, issue clears and allocations.
+      rs_valid <= rs_valid_next;
+      if (!i_flush_all && !i_flush_en) begin
         if (PREPARE_ISSUE_CONTROLS) begin
           for (int entry = 0; entry < DEPTH; entry++) begin
             if (dispatch_fire && coherent_alloc1_target[entry]) begin
-              rs_valid[entry] <= 1'b1;
               if (TRACK_INT_WRITEBACK_HINT)
                 rs_writes_cdb_hint[entry] <= int_rs_writes_cdb(dispatch_op);
 
@@ -2887,7 +2929,6 @@ module reservation_station #(
 
             // Slot 2 takes priority when both allocation targets name this entry.
             if (dispatch_fire_2 && coherent_alloc2_target[entry]) begin
-              rs_valid[entry] <= 1'b1;
               if (TRACK_INT_WRITEBACK_HINT)
                 rs_writes_cdb_hint[entry] <= int_rs_writes_cdb(dispatch_op_2);
 
@@ -2911,7 +2952,6 @@ module reservation_station #(
           end
         end else begin
           if (dispatch_fire) begin
-            rs_valid[free_idx] <= 1'b1;
             if (TRACK_INT_WRITEBACK_HINT)
               rs_writes_cdb_hint[free_idx] <= int_rs_writes_cdb(dispatch_op);
 
@@ -2939,7 +2979,6 @@ module reservation_station #(
 
           // Slot 2 writes a distinct entry, so the allocation writes cannot collide.
           if (dispatch_fire_2) begin
-            rs_valid[alloc_idx_2] <= 1'b1;
             if (TRACK_INT_WRITEBACK_HINT)
               rs_writes_cdb_hint[alloc_idx_2] <= int_rs_writes_cdb(dispatch_op_2);
 
