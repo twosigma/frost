@@ -2161,8 +2161,9 @@ module load_queue #(
     for (genvar head_case = 0; head_case < 2; head_case++) begin : gen_coherent_head_choice
       localparam bit AtHead = head_case != 0;
       logic eligible;
-      (* keep = "true" *) logic eligible_without_valid, probe, issue, issue_for_clear;
-      (* keep = "true" *) logic issue_unblocked;
+      (* keep = "true" *) logic eligible_without_valid, probe;
+      // The issue terms after the SQ-dependent choice merge into one function.
+      logic issue, issue_for_clear, issue_unblocked;
       assign eligible_without_valid = AtHead ?
           (i_sq_committed_empty ? head_drained_eligible : ordinary_eligible) :
           (ordinary_eligible && !sq_check_is_mmio_q);
