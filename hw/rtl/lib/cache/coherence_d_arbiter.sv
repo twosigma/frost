@@ -36,30 +36,58 @@ module coherence_d_arbiter #(
 `endif
     output logic [WIDTH-1:0] o_payload
 );
+  localparam int unsigned GroupBits = 4;
+  localparam int unsigned Groups = (PORTS + GroupBits - 1) / GroupBits;
   logic selected_q, found, after_next;
-  logic [PortBits-1:0] next_q, pick, first;
+  logic [PortBits-1:0] next_q, pick;
   // The selected port is a register of the selection, not a state machine.
   (* fsm_encoding = "none" *) logic [PortBits-1:0] selected_port_q;
   // One-hot copy of the held selection, zero while none is held, so each
   // port's ready is one term of the downstream ready.
   logic [PORTS-1:0] selected_ports_q;
-  logic [WIDTH-1:0] payload_q;
-  always_comb begin
-    found = 1'b0;
-    after_next = 1'b0;
-    first = '0;
-    pick = '0;
-    for (int port_idx = PORTS - 1; port_idx >= 0; port_idx--) begin
-      if (i_valid[port_idx]) begin
-        found = 1'b1;
-        first = PortBits'(port_idx);
-        if (port_idx >= int'(next_q)) begin
-          after_next = 1'b1;
-          pick = PortBits'(port_idx);
-        end
+  // later_q[port] holds port >= next_q.
+  logic [PORTS-1:0] later_q, later, later_first, valid_first, pick_ports;
+  logic [Groups-1:0] later_groups, valid_groups;
+  logic [WIDTH-1:0] payload_q, pick_payload;
+  // The pick is the first valid port at or after next_q, else the first
+  // valid port. Each port's priority comes from four-port group summaries
+  // and its own group's lower ports; the pick and its payload are one-hot.
+  assign later = i_valid & later_q;
+  for (genvar group_index = 0; group_index < Groups; group_index++) begin : gen_group
+    localparam int unsigned Base  = group_index * GroupBits;
+    localparam int unsigned Width = PORTS - Base < GroupBits ? PORTS - Base : GroupBits;
+    assign later_groups[group_index] = |later[Base+:Width];
+    assign valid_groups[group_index] = |i_valid[Base+:Width];
+  end
+  for (genvar port_idx = 0; port_idx < PORTS; port_idx++) begin : gen_first
+    localparam int unsigned Group  = port_idx / GroupBits;
+    localparam int unsigned Offset = port_idx % GroupBits;
+    logic later_below, valid_below;
+    always_comb begin
+      later_below = 1'b0;
+      valid_below = 1'b0;
+      for (int group_index = 0; group_index < int'(Group); group_index++) begin
+        later_below |= later_groups[group_index];
+        valid_below |= valid_groups[group_index];
+      end
+      for (int lower = 0; lower < int'(Offset); lower++) begin
+        later_below |= later[Group*GroupBits+lower];
+        valid_below |= i_valid[Group*GroupBits+lower];
       end
     end
-    if (!after_next) pick = first;
+    assign later_first[port_idx] = later[port_idx] && !later_below;
+    assign valid_first[port_idx] = i_valid[port_idx] && !valid_below;
+  end
+  assign after_next = |later_groups;
+  assign found = |valid_groups;
+  assign pick_ports = after_next ? later_first : valid_first;
+  always_comb begin
+    pick = '0;
+    pick_payload = '0;
+    for (int port_idx = 0; port_idx < PORTS; port_idx++) begin
+      if (pick_ports[port_idx]) pick |= PortBits'(port_idx);
+      pick_payload |= {WIDTH{pick_ports[port_idx]}} & i_payload[port_idx];
+    end
   end
   assign o_ready   = {PORTS{!i_rst && i_ready}} & selected_ports_q;
   assign o_offer   = selected_q && (HOLD_VALID || i_valid[selected_port_q]);
@@ -71,17 +99,21 @@ module coherence_d_arbiter #(
       selected_port_q <= '0;
       selected_ports_q <= '0;
       next_q <= '0;
+      later_q <= '1;
     end else if (!selected_q) begin
       if (found) begin
         selected_q <= 1'b1;
         selected_port_q <= pick;
-        selected_ports_q <= PORTS'(1) << pick;
-        payload_q <= i_payload[pick];
+        selected_ports_q <= pick_ports;
+        payload_q <= pick_payload;
       end
     end else if (o_valid && i_ready) begin
       selected_q <= 1'b0;
       selected_ports_q <= '0;
       next_q <= selected_port_q == PortBits'(PORTS - 1) ? '0 : selected_port_q + 1'b1;
+      for (int port_idx = 0; port_idx < PORTS; port_idx++)
+      later_q[port_idx] <= selected_port_q == PortBits'(PORTS - 1) ||
+          port_idx > int'(selected_port_q);
     end
   end
   if (PORTS < 1 || WIDTH < 1) begin : gen_invalid
@@ -91,8 +123,14 @@ module coherence_d_arbiter #(
   always_ff @(posedge i_clk) begin
     if (!i_rst && selected_q && i_valid[selected_port_q])
       assert (o_payload == i_payload[selected_port_q]);
-    if (!i_rst)
+    if (!i_rst) begin
       assert (selected_ports_q == (selected_q ? PORTS'(1) << selected_port_q : PORTS'(0)));
+      for (int port_idx = 0; port_idx < PORTS; port_idx++)
+      assert (later_q[port_idx] == (port_idx >= int'(next_q)));
+      if (found)
+        assert (pick_ports == PORTS'(1) << pick && pick_payload == i_payload[pick]);
+        else assert (pick_ports == '0);
+    end
   end
 `endif
 `ifdef COHERENCE_HOME_CONTROL
@@ -111,7 +149,7 @@ module coherence_d_arbiter #(
     f_pick = '0;
     for (int offset = PORTS - 1; offset >= 0; offset--)
     if (i_valid[(int'(next_q)+offset)%PORTS]) f_pick = PortBits'((int'(next_q) + offset) % PORTS);
-    if (next_q < PORTS) assert (pick == f_pick);
+    if (!i_rst && next_q < PORTS) assert (pick == f_pick);
   end
   for (genvar port_idx = 0; port_idx < PORTS; port_idx++) begin : gen_hold_contract
     wire [WIDTH-1:0] payload = i_payload[port_idx];
