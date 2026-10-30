@@ -1139,6 +1139,24 @@ module coherence_home #(
       end
     end
   end
+  logic [NUM_WB-1:0][LINE_BYTES/32-1:0] wb_take_array, wb_take_reply;
+  logic [NUM_WB-1:0][FILLS-1:0] wb_owner;
+  always_comb begin
+    wb_take_array = '0;
+    wb_take_reply = '0;
+    for (int wb = 0; wb < NUM_WB; wb++)
+    for (int fill = 0; fill < FILLS; fill++) begin
+      wb_owner[wb][fill] = fill_wb_q[fill] == WbBits'(wb) && wb_valid_q[wb] && !wb_frozen_q[wb];
+      for (int sector = 0; sector < LINE_BYTES / 32; sector++) begin
+        if (wb_owner[wb][fill] && array_data_valid &&
+            array_data_token == TokenBits'(RESULTS + fill) && !fill_dirty_sectors_q[fill][sector])
+          wb_take_array[wb][sector] = 1'b1;
+        if (wb_owner[wb][fill] && i_r_valid && fill_r_ready[fill] && reply.data_valid &&
+            (LINE_BYTES == 64 && reply.addr[5]) == 1'(sector))
+          wb_take_reply[wb][sector] = 1'b1;
+      end
+    end
+  end
   assign o_mem_req_valid = memory_out_valid && !i_rst;
   assign {o_mem_req_write, o_mem_req_addr, o_mem_req_data, o_mem_req_id} = memory_out;
   assign o_mem_req_mask = {LINE_BYTES{o_mem_req_write}};
@@ -1165,19 +1183,16 @@ module coherence_home #(
           wb_sent_q[wb_free_index]   <= 1'b0;
           wb_addr_q[wb_free_index]   <= array_addr;
         end
+        // At most one fill reads or recalls into a write-back slot at a time,
+        // so each sector takes the resident row or the dirty reply directly;
+        // the reply, which arrives last, wins and is selected last.
+        for (int wb = 0; wb < NUM_WB; wb++)
+        for (int sector = 0; sector < LINE_BYTES / 32; sector++) begin
+          if (wb_take_array[wb][sector])
+            wb_data_q[wb][sector*256+:256] <= array_data[sector*256+:256];
+          if (wb_take_reply[wb][sector]) wb_data_q[wb][sector*256+:256] <= reply.data;
+        end
         for (int fill = 0; fill < FILLS; fill++) begin
-          for (int wb = 0; wb < NUM_WB; wb++)
-          if (fill_wb_q[fill] == WbBits'(wb) && wb_valid_q[wb] && !wb_frozen_q[wb]) begin
-            if (array_data_valid && array_data_token == TokenBits'(RESULTS + fill)) begin
-              for (int sector = 0; sector < LINE_BYTES / 32; sector++)
-              if (!fill_dirty_sectors_q[fill][sector])
-                wb_data_q[wb][sector*256+:256] <= array_data[sector*256+:256];
-            end
-            for (int sector = 0; sector < LINE_BYTES / 32; sector++)
-            if (i_r_valid && fill_r_ready[fill] && reply.data_valid &&
-                  (LINE_BYTES == 64 && reply.addr[5]) == 1'(sector))
-              wb_data_q[wb][sector*256+:256] <= reply.data;
-          end
           if (fill_phase_q[fill] == FillDetach && wb_valid_q[fill_wb_q[fill]] &&
               !wb_frozen_q[fill_wb_q[fill]]) begin
             if (fill_dirty_q[fill]) wb_frozen_q[fill_wb_q[fill]] <= 1'b1;
@@ -1323,6 +1338,18 @@ module coherence_home #(
     // The completion table compares live sectors with held_put_next.
     if (!i_rst && reference_ready_q) assert (selected_put_q.addr == reference_held_put_q);
   end
+  // At most one fill reads or recalls into a write-back slot in a cycle.
+  logic [NUM_WB-1:0][FILLS-1:0] reference_wb_writers;
+  always_comb begin
+    for (int wb = 0; wb < NUM_WB; wb++)
+    for (int fill = 0; fill < FILLS; fill++)
+    reference_wb_writers[wb][fill] = wb_owner[wb][fill] &&
+        ((array_data_valid && array_data_token == TokenBits'(RESULTS + fill)) ||
+         (i_r_valid && fill_r_ready[fill] && reply.data_valid));
+  end
+  always_ff @(posedge i_clk)
+    if (!i_rst && run)
+      for (int wb = 0; wb < NUM_WB; wb++) assert ($onehot0(reference_wb_writers[wb]));
   logic [WAYS-1:0] reference_exclude;
   logic exclude_matched_q;
   always_comb begin
