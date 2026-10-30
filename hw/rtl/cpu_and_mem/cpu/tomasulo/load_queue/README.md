@@ -61,8 +61,9 @@ MEM_RS (or the data MMU, under address translation) sends each load's address
 with its ROB tag (`i_addr_update`), and a CAM on the entries' ROB tags finds
 the entry. The look-ahead arrives exactly one cycle earlier, so the LQ
 registers the match and selects the load in the cycle its address arrives.
-The scalar mode compares `i_pre_issue_rob_tag`; the candidate mode registers
-all candidate matches and selects one after the edge. In the core
+The scalar mode compares `i_pre_issue_rob_tag`; the candidate mode compares
+every candidate and registers the match of the one `i_pre_issue_sel` names,
+which arrives early in the cycle. In the core
 (`PREISSUE_READY_PICK=1`) the LQ compares its tags against every MEM_RS entry
 tag, and each candidate's ready vector picks the compare result of that
 candidate's winner (entry 0 when nothing is ready). Under translation it

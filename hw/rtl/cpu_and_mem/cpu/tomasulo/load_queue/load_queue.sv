@@ -1165,7 +1165,6 @@ module load_queue #(
   if (PREISSUE_CANDIDATES) begin : gen_pre_match_candidates
     localparam int NumCandidates = 1 << PREISSUE_SEL_WIDTH;
     logic [DEPTH-1:0] candidate_match[NumCandidates];
-    logic [DEPTH-1:0] candidate_match_q[NumCandidates];
     logic [PREISSUE_SEL_WIDTH-1:0] select_q;
     if (PREISSUE_READY_PICK) begin : gen_ready_pick
       // Compare LQ tags with each MEM_RS tag before selection for timing. Picking
@@ -1254,27 +1253,22 @@ module load_queue #(
         end
       end
     end
-    for (genvar candidate = 0; candidate < NumCandidates; candidate++) begin : gen_candidate_q
-      always_ff @(posedge i_clk) begin
-        if (!i_rst_n || i_flush_all) candidate_match_q[candidate] <= '0;
-        else candidate_match_q[candidate] <= candidate_match[candidate];
-      end
-    end
     always_ff @(posedge i_clk) begin
       select_q <= i_pre_issue_sel;
     end
-    // Select among registered candidates for timing. Reset and full flush
-    // zero every candidate, so the selector is then irrelevant.
+    // The select arrives early, so the named candidate's match is chosen
+    // before the edge and registered; reset and full flush zero it.
     if (1'b1) begin : gen_coherent_candidate_select
       wire [DEPTH*NumCandidates-1:0] candidates_flat;
       for (genvar candidate = 0; candidate < NumCandidates; candidate++) begin : gen_flat
-        assign candidates_flat[candidate*DEPTH+:DEPTH] = candidate_match_q[candidate];
+        assign candidates_flat[candidate*DEPTH+:DEPTH] = candidate_match[candidate];
       end
       coherent_lq_candidate_select #(
           .WIDTH(DEPTH),
           .SELECT_WIDTH(PREISSUE_SEL_WIDTH)
       ) candidate_select (
           .i_clk,
+          .i_clear(!i_rst_n || i_flush_all),
           .i_select(i_pre_issue_sel),
           .i_candidates(candidates_flat),
           .o_selected(addr_update_pre_match_tags_q)
