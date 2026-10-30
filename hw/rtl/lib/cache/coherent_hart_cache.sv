@@ -126,9 +126,10 @@ module coherent_hart_cache #(
 
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
   logic [2:0] d_valid, d_ready, g_ready, c_valid, c_ready, c_selected, u_ready;
-  coh_d_t demand[3];
+  // Per-requester packets are plain vectors, read whole by the arbiters.
+  logic [ADDR_WIDTH+311:0] demand[3];
   coh_g_t grant;
-  coh_c_t completion[3];
+  logic [ADDR_WIDTH+17:0] completion[3];
   coh_u_t release_message;
   logic l1d_fatal, l1i_fatal;
   logic [ADDR_WIDTH-1:0] l1d_fatal_addr, l1i_fatal_addr;
