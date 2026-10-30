@@ -13,6 +13,7 @@ wb: depth 4
 covers: mode cover
 covers: depth 180
 timeout 180
+control: timeout 600
 
 [engines]
 control: smtbmc boolector

@@ -232,7 +232,8 @@ module coherence_cluster_test_harness #(
   assign u_ready = release_message.q.src == 2 ? i_agent_u_ready : hart_u_ready;
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 18),
-      .PORTS(2)
+      .PORTS(2),
+      .HOLD_VALID(1)
   ) completions (
       .i_clk,
       .i_rst,

@@ -264,9 +264,11 @@ module frost_cluster_memory #(
     assign o_coherent_u_valid = u_valid && release_message.q.src == 0;
     assign o_coherent_u = release_message;
     assign u_ready = release_message.q.src == 2 ? dma_u_ready : i_coherent_u_ready;
+    // Both C sources hold their offers until acceptance.
     coherence_d_arbiter #(
         .WIDTH(riscv_pkg::PhysAddrBits + 18),
-        .PORTS(2)
+        .PORTS(2),
+        .HOLD_VALID(1)
     ) completions (
         .i_clk,
         .i_rst,
@@ -278,6 +280,14 @@ module frost_cluster_memory #(
         .i_ready  (home_c_ready),
         .o_payload(home_c)
     );
+`ifndef SYNTHESIS
+    logic [1:0] c_stalled_q;
+    always_ff @(posedge i_clk) begin
+      c_stalled_q <= i_rst ? 2'b00 :
+          {dma_c_valid, i_coherent_c_valid} & ~{dma_c_ready, o_coherent_c_ready};
+      if (!i_rst) assert ((c_stalled_q & ~{dma_c_valid, i_coherent_c_valid}) == 0);
+    end
+`endif
     coherence_home #(
         .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
         .LINE_BYTES(L2_LINE_BYTES),

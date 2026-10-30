@@ -197,7 +197,9 @@ module coherence_home_completions #(
     assign o_waiting[slot] = !i_rst && o_waiting_offer[slot];
   end
   assign o_result_ready = !i_rst && result_matches;
-  assign o_g_valid = |grant_valid;
+  // The selected grant's endpoint is in Work with a matching result, so the
+  // grant register alone presents G. Every G consumer applies the same reset.
+  assign o_g_valid = grant_selected_q;
   assign o_g = grant_q;
   assign o_c_ready = |completion_ready;
 
@@ -428,7 +430,9 @@ module coherence_home_completions #(
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
       assert ($onehot0(grant_valid));
+      assert (o_g_valid == (|grant_valid));
       if (grant_selected_q) begin
+        assert (grant_q.opcode <= coherence_pkg::GrantFail);
         assert (grant_q.q == work_identity[grant_slot_q]);
         assert (grant_q.tid == 6'(grant_slot_q));
         assert (grant_q.addr == work_address[grant_slot_q]);
@@ -453,6 +457,7 @@ module coherence_home_completions #(
           if (buffer_owned_q[other]) assert (buffer_index_q[slot] != buffer_index_q[other]);
         end
         if (result_valid_q[slot]) begin
+          assert (grant_opcode(buffer_q[buffer_index_q[slot]]) <= coherence_pkg::GrantFail);
           assert (buffer_owned_q[slot] && work_valid[slot]);
           assert (result_identity(
               buffer_q[buffer_index_q[slot]]
