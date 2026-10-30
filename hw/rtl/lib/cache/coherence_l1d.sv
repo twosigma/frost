@@ -383,7 +383,12 @@ module coherence_l1d #(
       lookup_addr_q[5+:SetBits] == atomic_addr_q[5+:SetBits];
   assign probe_reply_eligible = probe_q.opcode != coherence_pkg::ProbeInvalidate ||
       cut_phase_q == CutDone;
-  (* keep = "true" *) wire invalidate_eligible = !i_fatal_stop && !o_fatal &&
+  // The early cut hold reads the stop condition one cycle late. Both stop
+  // inputs stay set until reset, so the late copy only adds a hold in the
+  // stop's first cycle, when no probe can be captured.
+  logic cut_stop_q;
+  always_ff @(posedge i_clk) cut_stop_q <= !i_rst && (i_fatal_stop || o_fatal);
+  (* keep = "true" *) wire invalidate_eligible = !cut_stop_q &&
       phase_q == Idle && !probe_valid_q && !o_r_valid && !local_turn_q &&
       probe_in.opcode == coherence_pkg::ProbeInvalidate;
   assign o_cut_hold = (i_p_valid && !i_rst && invalidate_eligible) ||
@@ -402,9 +407,15 @@ module coherence_l1d #(
 `endif
   begin
     p_absorb_go_exact : assert (absorb_go == wb_absorb_ready[probe_put_q]);
+    // The hold covers every invalidating capture and active cut. It is exact
+    // except in the stop's first cycle, when it may also hold for an offer.
+    p_cut_hold_covers : assert (o_cut_hold || !(
+        (i_p_valid && o_p_ready && probe_in.opcode == coherence_pkg::ProbeInvalidate) ||
+        (cut_phase_q != CutIdle && cut_phase_q != CutDone)));
     p_cut_hold_exact : assert (o_cut_hold ==
         ((i_p_valid && o_p_ready && probe_in.opcode == coherence_pkg::ProbeInvalidate) ||
-         (cut_phase_q != CutIdle && cut_phase_q != CutDone)));
+         (cut_phase_q != CutIdle && cut_phase_q != CutDone)) ||
+        ((i_fatal_stop || o_fatal) && !cut_stop_q));
   end
 `endif
   assign o_cut_address = probe_valid_q ? probe_q.addr : probe_in.addr;
@@ -1196,6 +1207,8 @@ module coherence_l1d #(
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
     if (!f_past_valid) assume (i_rst);
+    // The hart's stop input stays set until reset, as cpu_top forms it.
+    if (f_past_valid && !i_rst && $past(i_fatal_stop && !i_rst)) assume (i_fatal_stop);
     if (!active || !probe_valid_q || o_r_valid) f_probe_age <= '0;
     else f_probe_age <= f_probe_age + 1'b1;
     if (!active || cut_phase_q != CutAdmit) f_admit_age <= '0;

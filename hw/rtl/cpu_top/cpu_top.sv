@@ -269,6 +269,15 @@ module cpu_top #(
       o_fatal_addr  <= uncached_fatal ? uncached_fatal_addr : cache_fatal_addr;
     end
   end
+`ifndef SYNTHESIS
+  // The caches read the stop with a register of delay in places, which
+  // relies on the stop staying set until reset once it is set.
+  logic fatal_stop_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    fatal_stop_q <= !i_rst && fatal_stop;
+    if (!i_rst && fatal_stop_q) assert (fatal_stop);
+  end
+`endif
 
   // The caches' source-registered events and the fetch-provider stall event
   // for the hart's performance counters.
