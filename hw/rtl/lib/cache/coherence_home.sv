@@ -183,6 +183,7 @@ module coherence_home #(
   read_packet_t row_request;
   update_packet_t update_request;
   logic tag_request_valid, tag_request_ready, row_request_valid, row_request_ready;
+  logic row_request_offer;
   logic update_request_valid, update_request_ready;
   logic probe_out_valid, probe_out_offer, ack_out_valid, result_valid, result_ready;
   logic [ADDR_WIDTH+29:0] probe_out;
@@ -525,7 +526,7 @@ module coherence_home #(
       .o_ready(read_ready),
       .i_payload(read_payload),
       .o_valid(row_request_valid),
-      .o_offer(),
+      .o_offer(row_request_offer),
       .i_ready(row_request_ready && active),
 `ifdef COHERENCE_HOME_CONTROL
       .i_service_stop(!active || f_local_fatal),
@@ -621,6 +622,7 @@ module coherence_home #(
       .o_resp_state(array_state),
       .o_resp_tags(array_tags),
       .i_read_valid(row_request_valid && active),
+      .i_read_offer(row_request_offer),
       .o_read_ready(row_request_ready),
       .i_read_addr(row_request.addr),
       .i_read_way(row_request.way),

@@ -54,6 +54,10 @@ module coherence_home_array #(
     // the response; o_resp_addr's tag is o_resp_tags[o_resp_way].
     output logic [WAYS-1:0][ADDR_WIDTH-SetBits-OffsetBits-1:0] o_resp_tags,
     input logic i_read_valid,
+    // i_read_valid before the consumer's stop qualification. It decides the
+    // update side of row contention, which matters only while an update is
+    // valid, and then equals i_read_valid.
+    input logic i_read_offer,
     output logic o_read_ready,
     input logic [ADDR_WIDTH-1:0] i_read_addr,
     input logic [WayBits-1:0] i_read_way,
@@ -167,8 +171,9 @@ module coherence_home_array #(
   assign tag_hazard = (phase_q == Tags || phase_q == Select || phase_q == Reply) &&
       (set_q >> TagGroupBits) == (tag_waddr >> TagGroupBits);
   assign row_contended = i_read_valid && i_update_valid && |i_update_mask && read_row == write_row;
+  wire update_contended = i_read_offer && |i_update_mask && read_row == write_row;
   assign o_update_ready = !i_rst && o_init_done && !write_hazard &&
-      !(row_contended && read_turn_q) &&
+      !(update_contended && read_turn_q) &&
       !(i_update_tag && tag_hazard);
   assign update_fire = i_update_valid && o_update_ready;
   // A claim reaches readiness through the last term only: the other terms
@@ -388,6 +393,7 @@ module coherence_home_array #(
         assert (o_resp_addr == {o_resp_tags[o_resp_way], set_q, {OffsetBits{1'b0}}});
       assert (!(read_fire && update_fire && |i_update_mask && read_row == write_row));
       if (update_fire && i_update_tag) assert (!tag_hazard);
+      if (i_update_valid) assert (i_read_offer == i_read_valid);
     end
   end
 `endif
@@ -441,6 +447,7 @@ module coherence_home_array #(
     if (!f_past_valid) assume (i_rst);
     if (i_read_valid) assume (int'(i_read_way) < WAYS);
     if (i_update_valid) assume (int'(i_update_way) < WAYS);
+    if (i_update_valid) assume (i_read_offer == i_read_valid);
     if (o_resp_valid && i_resp_ready && i_resp_claim) assume (o_resp_available);
     if (i_rst) begin
       f_known_q <= 1'b0;
