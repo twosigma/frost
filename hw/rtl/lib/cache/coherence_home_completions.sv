@@ -130,6 +130,7 @@ module coherence_home_completions #(
   coh_g_t grant_q, result, grant_payload;
   coh_d_t incoming;
   logic result_matches;
+  logic [SLOTS-1:0] result_hit;
   logic [SlotBits-1:0] result_slot;
   logic accept_request, accept_work, accept_result, accept_grant;
 
@@ -173,8 +174,6 @@ module coherence_home_completions #(
     free_buffer = 1'b0;
     free_buffer_index = '0;
     o_exclude = '0;
-    result_matches = 1'b0;
-    result_slot = '0;
     for (int slot = SLOTS - 1; slot >= 0; slot--) begin
       if (!live[slot]) begin
         free_slot = 1'b1;
@@ -185,12 +184,6 @@ module coherence_home_completions #(
         if (pin_valid_q[slot] && way_q[slot] == WayBits'(way) &&
             work_address[slot][OffsetBits+:SetBits] == i_query_addr[OffsetBits+:SetBits])
           o_exclude[way] = 1'b1;
-      end
-      if (result.tid == 6'(slot) && issued_q[slot] && buffer_owned_q[slot] &&
-          !result_valid_q[slot] && result.opcode <= coherence_pkg::GrantFail &&
-          result.q == work_identity[slot] && result.addr == work_address[slot]) begin
-        result_matches = 1'b1;
-        result_slot = SlotBits'(slot);
       end
     end
     for (int index = RESULT_SLOTS - 1; index >= 0; index--) begin
@@ -218,6 +211,15 @@ module coherence_home_completions #(
         !(work_selected_q && work_slot_q == SlotBits'(slot));
     assign o_waiting[slot] = !i_rst && o_waiting_offer[slot];
   end
+  // A presented result matches at most one slot: the one its tid names.
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_result_hit
+    assign result_hit[slot] = result.tid == 6'(slot) && issued_q[slot] &&
+        buffer_owned_q[slot] && !result_valid_q[slot] &&
+        result.opcode <= coherence_pkg::GrantFail && result.q == work_identity[slot] &&
+        result.addr == work_address[slot];
+  end
+  assign result_matches = |result_hit;
+  assign result_slot = SlotBits'(result.tid);
   assign o_result_ready = !i_rst && result_matches;
   // The selected grant's endpoint is in Work with a matching result, so the
   // grant register alone presents G. Every G consumer applies the same reset.
@@ -405,10 +407,13 @@ module coherence_home_completions #(
         buffer_select_q[work_slot_q] <= RESULT_SLOTS'(1) << work_buffer_q;
         ready_q[work_slot_q] <= 1'b0;
       end
+      for (int slot = 0; slot < SLOTS; slot++)
+      if (i_result_valid && result_hit[slot]) begin
+        result_valid_q[slot] <= 1'b1;
+        error_q[slot] <= result.error;
+        grant_zero_q[slot] <= result.error || result.opcode == coherence_pkg::GrantAck;
+      end
       if (accept_result) begin
-        result_valid_q[result_slot] <= 1'b1;
-        error_q[result_slot] <= result.error;
-        grant_zero_q[result_slot] <= result.error || result.opcode == coherence_pkg::GrantAck;
         buffer_q[buffer_index_q[result_slot]] <= {
           result.opcode, result.q, result.tid, result.addr, 256'b0, result.error
         };
@@ -516,6 +521,7 @@ module coherence_home_completions #(
   end
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
+      if (accept_result) assert (result_hit == SLOTS'(1) << result_slot);
       assert (int'(grant_next_q) < SLOTS);
       for (int slot = 0; slot < SLOTS; slot++) begin
         assert (grant_later_q[slot] == (slot >= int'(grant_next_q)));
