@@ -151,7 +151,9 @@ module coherence_l1d #(
   logic [2:0] rd_size_q[8];
   logic [TAG_BITS-1:0] rd_tag_q[8];
   localparam int unsigned ReadPayloadWidth = ADDR_WIDTH + TAG_BITS + 5;
-  logic [8*ReadPayloadWidth-1:0] rd_payload_flat;
+  logic [8*ReadPayloadWidth-1:0] rd_payload_flat, rd_stored_payload_flat;
+  logic [ReadPayloadWidth-1:0] rd_write_payload;
+  logic [7:0] rd_write_mask;
   logic [63:0] rd_data_q[8];
   logic [7:0] rd_error_q, rd_ready_next, rd_error_next, rd_valid_next, rd_miss_next;
   logic read_miss;
@@ -268,7 +270,10 @@ module coherence_l1d #(
       .i_allocate(i_read_valid),
       .i_allocate_id(i_read_id),
       .i_payload({i_address, i_read_kind, i_read_size, i_read_tag}),
-      .o_payload(rd_payload_flat)
+      .o_payload(rd_payload_flat),
+      .o_stored_payload(rd_stored_payload_flat),
+      .o_write_payload(rd_write_payload),
+      .o_write_mask(rd_write_mask)
   );
   for (genvar slot = 0; slot < 8; slot++) begin : gen_unpack_read_payload
     assign {rd_addr_q[slot], rd_kind_q[slot], rd_size_q[slot], rd_tag_q[slot]} =
@@ -502,15 +507,18 @@ module coherence_l1d #(
   assign o_wa_ready = |wb_wa_ready;
   assign freeze = {1'b0, freeze_slot_q, 1'b0, freeze_addr_q, freeze_data_q, freeze_maintenance_q};
 
-  logic [8*ADDR_WIDTH-1:0] rd_addr_flat;
+  logic [8*ADDR_WIDTH-1:0] rd_addr_flat, rd_stored_addr_flat;
   logic [15:0] rd_kind_flat;
   logic [ADDR_WIDTH-1:0] rd_selected_addr;
   for (genvar read_slot = 0; read_slot < 8; read_slot++) begin : gen_read_payload
     assign rd_addr_flat[read_slot*ADDR_WIDTH+:ADDR_WIDTH] = rd_addr_q[read_slot];
+    assign rd_stored_addr_flat[read_slot*ADDR_WIDTH+:ADDR_WIDTH] =
+        rd_stored_payload_flat[read_slot*ReadPayloadWidth+ReadPayloadWidth-ADDR_WIDTH+:ADDR_WIDTH];
     assign rd_kind_flat[read_slot*2+:2] = rd_kind_q[read_slot];
   end
   coherence_read_select #(
-      .ADDR_WIDTH(ADDR_WIDTH)
+      .ADDR_WIDTH(ADDR_WIDTH),
+      .FORMAL_STANDALONE_ENV(1'b0)
   ) read_select (
       .i_clk(i_clk),
       .i_valid(rd_valid_q),
@@ -518,6 +526,9 @@ module coherence_l1d #(
       .i_miss(rd_miss_q),
       .i_kind(rd_kind_flat),
       .i_addr(rd_addr_flat),
+      .i_stored_addr(rd_stored_addr_flat),
+      .i_write_addr(rd_write_payload[ReadPayloadWidth-ADDR_WIDTH+:ADDR_WIDTH]),
+      .i_write_mask(rd_write_mask),
       .i_round_robin(rd_rr_q),
       .i_pending(pending_q),
       .i_pending_addr(pending_addr_q),

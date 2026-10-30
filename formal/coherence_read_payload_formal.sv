@@ -36,6 +36,9 @@ module coherence_read_payload_formal #(
       .i_allocate,
       .i_allocate_id,
       .i_payload,
-      .o_payload()
+      .o_payload(),
+      .o_stored_payload(),
+      .o_write_payload(),
+      .o_write_mask()
   );
 endmodule

@@ -14,7 +14,9 @@
  *    limitations under the License.
  */
 
-// A buffered write forwards its payload to the addressed read slot.
+// A buffered write forwards its payload to the addressed read slot. The
+// stored payloads, the buffered write and its slot mask are also exported so
+// a consumer can compare them before the forwarding selection.
 module coherence_read_payload #(
     parameter int unsigned WIDTH = 42
 ) (
@@ -23,13 +25,18 @@ module coherence_read_payload #(
     input logic i_allocate,
     input logic [2:0] i_allocate_id,
     input logic [WIDTH-1:0] i_payload,
-    output logic [8*WIDTH-1:0] o_payload
+    output logic [8*WIDTH-1:0] o_payload,
+    output logic [8*WIDTH-1:0] o_stored_payload,
+    output logic [WIDTH-1:0] o_write_payload,
+    output logic [7:0] o_write_mask
 );
   logic [WIDTH-1:0] write_payload_q;
   // The allocation arrives late; keep it in the data input rather than a
   // synchronous reset pin.
   (* extract_reset = "no" *) logic [7:0] write_mask_q;
   wire [7:0] write_mask = write_mask_q;
+  assign o_write_payload = write_payload_q;
+  assign o_write_mask = write_mask_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       write_payload_q <= '0;
@@ -45,6 +52,7 @@ module coherence_read_payload #(
       if (i_rst) payload_q <= '0;
       else if (write_mask[slot]) payload_q <= write_payload_q;
     end
+    assign o_stored_payload[slot*WIDTH+:WIDTH] = payload_q;
     assign o_payload[slot*WIDTH+:WIDTH] = write_mask[slot] ? write_payload_q : payload_q;
 `ifndef SYNTHESIS
     logic [WIDTH-1:0] reference_payload;
