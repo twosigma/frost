@@ -265,8 +265,11 @@ Channel arbiters capture the payload with the selected input and hold both
 through a stalled presentation.
 The home's probe, tag, update, result and PutAck arbiters use their captured
 selection for validity. Each selected source holds its offer through acceptance.
-Reset and fatal state suppress probe and PutAck validity and further array
-requests. Read arbitration uses pending read offers. Home stop clears its
+Fatal state suppresses probe validity, and the L1D applies reset to an
+offered probe. Reset and fatal state suppress PutAck validity and further array
+requests. Internal home and engine state changes are qualified by the stop
+condition alone, because reset clears every register they update.
+Read arbitration uses pending read offers. Home stop clears its
 unaccepted selection. Accepted reads keep their tokens through physical
 completion. A local fatal transition cancels an unaccepted read.
 

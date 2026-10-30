@@ -27,6 +27,9 @@ module coherence_d_arbiter #(
     output logic [PORTS-1:0] o_ready,
     input logic [PORTS-1:0][WIDTH-1:0] i_payload,
     output logic o_valid,
+    // o_valid without the reset term, for a consumer that applies the same
+    // reset itself.
+    output logic o_offer,
     input logic i_ready,
 `ifdef COHERENCE_HOME_CONTROL
     input logic i_service_stop,
@@ -55,7 +58,8 @@ module coherence_d_arbiter #(
     o_ready = '0;
     if (!i_rst && selected_q) o_ready[selected_port_q] = i_ready;
   end
-  assign o_valid   = !i_rst && selected_q && (HOLD_VALID || i_valid[selected_port_q]);
+  assign o_offer   = selected_q && (HOLD_VALID || i_valid[selected_port_q]);
+  assign o_valid   = !i_rst && o_offer;
   assign o_payload = payload_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin

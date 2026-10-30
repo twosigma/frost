@@ -104,10 +104,13 @@ module coherence_home_engine #(
   logic [8*LINE_BYTES-1:0] image_q;
   logic [1:0] state_q;
   logic read_sent_q, read_done_q, dirty_q, failed_q, error_q;
-  logic probe_matches, upper, active, needs_probe, needs_data;
+  logic probe_matches, upper, run, active, needs_probe, needs_data;
   logic reply_fire, reply_fatal, service_error, service_dirty, service_complete;
   logic data_complete, probe_complete;
-  assign active = !i_rst && !i_stop;
+  // Reset clears every register below and the home's arbiters, so internal
+  // work and the offers to those arbiters are qualified by the stop alone.
+  assign run = !i_stop;
+  assign active = !i_rst && run;
   assign reply = i_r;
   assign upper = LINE_BYTES == 64 && request_q.addr[5];
   assign needs_probe = request_q.opcode == coherence_pkg::Atomic ||
@@ -133,21 +136,21 @@ module coherence_home_engine #(
   assign o_read_owner   = (phase_q == Service || phase_q == Fatal) && read_sent_q && !read_done_q;
   assign o_update_owner = phase_q == UpdateWait;
 `endif
-  assign o_lookup_valid = active && phase_q == Lookup;
+  assign o_lookup_valid = run && phase_q == Lookup;
   assign o_addr = request_q.addr;
   assign o_tid = tid_q;
   assign o_opcode = request_q.opcode;
   assign o_maintenance = request_q.maintenance;
   assign o_way = way_q;
   assign o_read_offer = phase_q == Service && !read_sent_q;
-  assign o_read_valid = active && o_read_offer;
-  assign o_p_valid = active && phase_q == Service && probe_phase_q == ProbeOffer;
+  assign o_read_valid = run && o_read_offer;
+  assign o_p_valid = run && phase_q == Service && probe_phase_q == ProbeOffer;
   assign o_p = probe_q;
   assign probe_matches = reply.tid == tid_q && reply.addr == probe_q.addr &&
       reply.epoch == probe_q.epoch && reply.hart == 0 &&
       (probe_q.opcode == coherence_pkg::CheckSC ? reply.opcode == coherence_pkg::CheckAck :
        reply.opcode == coherence_pkg::ProbeAck || reply.opcode == coherence_pkg::ProbeData);
-  assign o_r_ready = active && phase_q == Service && probe_phase_q == ProbeWait && probe_matches;
+  assign o_r_ready = run && phase_q == Service && probe_phase_q == ProbeWait && probe_matches;
   assign reply_fire = i_r_valid && o_r_ready;
   assign reply_fatal = reply_fire && reply.error &&
       (reply.data_valid || reply.absorbed || reply.state == coherence_pkg::Modified ||
@@ -160,12 +163,12 @@ module coherence_home_engine #(
   assign service_error = error_q || (reply_fire && reply.error);
   assign service_dirty = dirty_q || (reply_fire && reply.data_valid);
   assign service_complete = phase_q == Service && data_complete && probe_complete && !reply_fatal;
-  assign o_wa_valid = active && phase_q == Service && probe_phase_q == ProbeAck;
+  assign o_wa_valid = run && phase_q == Service && probe_phase_q == ProbeAck;
   assign o_wa = ack_q;
-  assign o_update_valid = active && phase_q == Update;
+  assign o_update_valid = run && phase_q == Update;
   assign o_update_data = image_q;
   assign o_update_mask = LINE_BYTES'(dirty_q ? 32'hffff_ffff : request_q.mask) << (upper ? 32 : 0);
-  assign o_result_valid = active && phase_q == Result;
+  assign o_result_valid = run && phase_q == Result;
   assign o_result = result;
   assign o_image = image_q[(upper ? 256 : 0)+:256];
   assign o_fatal = phase_q == Fatal;
@@ -205,7 +208,7 @@ module coherence_home_engine #(
       dirty_q <= 1'b0;
       failed_q <= 1'b0;
       error_q <= 1'b0;
-    end else if (active) begin
+    end else if (run) begin
       if (i_work_valid) begin
         request_q <= i_work;
         tid_q <= i_tid;
