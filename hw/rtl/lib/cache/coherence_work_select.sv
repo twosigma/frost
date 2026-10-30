@@ -25,8 +25,13 @@ module coherence_work_select #(
     output logic o_found,
     output logic [SlotBits-1:0] o_pick
 );
+  localparam int unsigned GroupBits = 6;
+  localparam int unsigned Groups = (SLOTS + GroupBits - 1) / GroupBits;
   logic [3:0][SLOTS-1:0] candidates;
   (* keep = "true" *) logic [3:0][SLOTS-1:0] class_selected;
+  // Six-slot candidate summaries; each slot's priority comes from the lower
+  // groups' summaries and its own group's lower slots.
+  (* keep = "true" *) logic [3:0][Groups-1:0] class_groups;
   logic [3:0] class_found;
   logic [3:0][SlotBits-1:0] class_pick;
   logic [SLOTS-1:0] selected;
@@ -38,14 +43,24 @@ module coherence_work_select #(
     assign candidates[3][slot] = i_eligible[slot];
   end
   for (genvar choice = 0; choice < 4; choice++) begin : gen_class
-    assign class_found[choice] = |candidates[choice];
+    for (genvar group_index = 0; group_index < Groups; group_index++) begin : gen_group
+      localparam int unsigned Base  = group_index * GroupBits;
+      localparam int unsigned Width = SLOTS - Base < GroupBits ? SLOTS - Base : GroupBits;
+      assign class_groups[choice][group_index] = |candidates[choice][Base+:Width];
+    end
+    assign class_found[choice] = |class_groups[choice];
     for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_priority
-      if (slot == 0) begin : gen_first
-        assign class_selected[choice][slot] = candidates[choice][slot];
-      end else begin : gen_later
-        assign class_selected[choice][slot] = candidates[choice][slot] &&
-            !(|candidates[choice][slot-1:0]);
+      localparam int unsigned Group  = slot / GroupBits;
+      localparam int unsigned Offset = slot % GroupBits;
+      logic below;
+      always_comb begin
+        below = 1'b0;
+        for (int group_index = 0; group_index < int'(Group); group_index++)
+        below |= class_groups[choice][group_index];
+        for (int lower = 0; lower < int'(Offset); lower++)
+        below |= candidates[choice][Group*GroupBits+lower];
       end
+      assign class_selected[choice][slot] = candidates[choice][slot] && !below;
     end
     for (genvar bit_index = 0; bit_index < SlotBits; bit_index++) begin : gen_encode
       logic [SLOTS-1:0] contributors;
