@@ -29,6 +29,9 @@ module coherence_home_endpoint #(
     output logic o_d_ready,
     input logic [ADDR_WIDTH+311:0] i_d,
     output logic o_work_valid,
+    // o_work_valid without the reset term, for selection logic whose state
+    // is cleared by the same reset.
+    output logic o_work_offer,
     output logic [ADDR_WIDTH+311:0] o_work,
     input logic i_result_valid,
     output logic o_result_ready,
@@ -82,7 +85,8 @@ module coherence_home_endpoint #(
   assign o_live = phase_q != Idle;
   assign o_pending = pending_q;
   assign o_work = demand_q;
-  assign o_work_valid = !i_rst && phase_q == Work;
+  assign o_work_offer = phase_q == Work;
+  assign o_work_valid = !i_rst && o_work_offer;
   assign o_d_ready = !i_rst && phase_q == Idle && coherence_pkg::legal_q(
       demand_in.q
   ) && demand_in.q.epoch == i_epoch &&

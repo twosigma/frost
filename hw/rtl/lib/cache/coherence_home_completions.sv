@@ -35,6 +35,9 @@ module coherence_home_completions #(
     output logic o_d_ready,
     input logic [ADDR_WIDTH+311:0] i_d,
     output logic o_work_valid,
+    // o_work_valid and o_waiting without the reset term, for consumers whose
+    // state is cleared by the same reset.
+    output logic o_work_offer,
     input logic i_work_ready,
     output logic [ADDR_WIDTH+311:0] o_work,
     output logic [5:0] o_work_tid,
@@ -44,6 +47,7 @@ module coherence_home_completions #(
     input logic i_count_valid,
     input logic [5:0] i_count_tid,
     output logic [SLOTS-1:0] o_waiting,
+    output logic [SLOTS-1:0] o_waiting_offer,
     output logic [SLOTS-1:0][ADDR_WIDTH+311:0] o_waiting_request,
     input logic [SLOTS-1:0] i_park,
     input logic [SLOTS-1:0] i_wake,
@@ -87,7 +91,7 @@ module coherence_home_completions #(
   localparam int unsigned OffsetBits = $clog2(LINE_BYTES);
   localparam int unsigned Sets = CACHE_BYTES / (LINE_BYTES * WAYS);
   localparam int unsigned SetBits = $clog2(Sets);
-  logic [SLOTS-1:0] live, request_ready, work_valid, grant_valid, completion_ready;
+  logic [SLOTS-1:0] live, request_ready, work_valid, work_offer, grant_valid, completion_ready;
   logic [SLOTS-1:0] release_valid, release_ready, release_fire;
   logic [SLOTS-1:0] issued_q, buffer_owned_q, result_valid_q, pin_valid_q, error_q;
   logic [SLOTS-1:0] predecessors_q[SLOTS];
@@ -132,7 +136,7 @@ module coherence_home_completions #(
   assign result = i_result;
   assign release_fire = release_valid & release_ready;
   assign accept_request = i_d_valid && o_d_ready;
-  assign accept_work = o_work_valid && i_work_ready;
+  assign accept_work = o_work_offer && i_work_ready;
   assign accept_result = i_result_valid && o_result_ready;
   assign accept_grant = o_g_valid && i_g_ready;
 
@@ -177,7 +181,8 @@ module coherence_home_completions #(
 
   assign o_d_ready = !i_rst && !i_fatal_stop && free_slot && !duplicate &&
       request_ready[free_slot_index];
-  assign o_work_valid = !i_rst && !i_fatal_stop && work_selected_q && !parked_q[work_slot_q];
+  assign o_work_offer = !i_fatal_stop && work_selected_q && !parked_q[work_slot_q];
+  assign o_work_valid = !i_rst && o_work_offer;
   assign o_work = work[work_slot_q];
   assign o_work_tid = 6'(work_slot_q);
   assign o_work_buffer = work_buffer_q;
@@ -186,9 +191,10 @@ module coherence_home_completions #(
   assign o_image_index = buffer_index_q[grant_pick];
   assign o_waiting_request = work;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_waiting
-    assign o_waiting[slot] = work_valid[slot] && !issued_q[slot] &&
+    assign o_waiting_offer[slot] = work_offer[slot] && !issued_q[slot] &&
         !parked_q[slot] && !ready_q[slot] &&
         !(work_selected_q && work_slot_q == SlotBits'(slot));
+    assign o_waiting[slot] = !i_rst && o_waiting_offer[slot];
   end
   assign o_result_ready = !i_rst && result_matches;
   assign o_g_valid = |grant_valid;
@@ -196,7 +202,7 @@ module coherence_home_completions #(
   assign o_c_ready = |completion_ready;
 
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_work_eligible
-    assign work_eligible[slot] = work_valid[slot] && !issued_q[slot] && !parked_q[slot] &&
+    assign work_eligible[slot] = work_offer[slot] && !issued_q[slot] && !parked_q[slot] &&
         predecessors_q[slot] == 0;
   end
   coherence_work_select #(
@@ -243,6 +249,7 @@ module coherence_home_completions #(
         .o_d_ready(request_ready[slot]),
         .i_d,
         .o_work_valid(work_valid[slot]),
+        .o_work_offer(work_offer[slot]),
         .o_work(work[slot]),
         .i_result_valid(grant_selected_q && grant_slot_q == SlotBits'(slot)),
         .o_result_ready(),
@@ -277,6 +284,7 @@ module coherence_home_completions #(
       .o_ready(release_ready),
       .i_payload(releases),
       .o_valid(o_u_valid),
+      .o_offer(),
       .i_ready(i_u_ready),
 `ifdef COHERENCE_HOME_CONTROL
       .i_service_stop(1'b0),

@@ -168,6 +168,7 @@ module coherent_hart_cache #(
       .o_ready  (c_ready),
       .i_payload({completion[2], completion[1], completion[0]}),
       .o_valid  (o_c_valid),
+      .o_offer  (),
       .i_ready  (i_c_ready),
       .o_payload(o_c)
   );
@@ -181,6 +182,7 @@ module coherent_hart_cache #(
       .o_ready(d_ready),
       .i_payload({demand[2], demand[1], demand[0]}),
       .o_valid(o_d_valid),
+      .o_offer(),
       .i_ready(i_d_ready),
       .o_payload(o_d)
   );

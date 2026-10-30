@@ -273,6 +273,7 @@ module coherence_endpoints_test_harness #(
       .o_d_ready(o_home_d_ready),
       .i_d(i_home_d),
       .o_work_valid(o_home_work_valid),
+      .o_work_offer(),
       .o_work(o_home_work),
       .i_result_valid(i_home_result_valid),
       .o_result_ready(o_home_result_ready),

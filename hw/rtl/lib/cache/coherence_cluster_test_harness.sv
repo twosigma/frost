@@ -220,6 +220,7 @@ module coherence_cluster_test_harness #(
       .o_ready({o_agent_ready, hart_d_ready}),
       .i_payload({i_agent_d, hart_d}),
       .o_valid(home_d_valid),
+      .o_offer(),
       .i_ready(home_d_ready),
       .o_payload(home_d)
   );
@@ -239,6 +240,7 @@ module coherence_cluster_test_harness #(
       .o_ready  ({o_agent_c_ready, hart_c_ready}),
       .i_payload({i_agent_c, hart_c}),
       .o_valid  (home_c_valid),
+      .o_offer  (),
       .i_ready  (home_c_ready),
       .o_payload(home_c)
   );
