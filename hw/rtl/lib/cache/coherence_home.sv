@@ -214,11 +214,12 @@ module coherence_home #(
   logic [1:0] fill_seat_count_q[FILLS], fill_add_count[FILLS];
   logic [FILLS-1:0] fill_wake;
   logic [FILLS-1:0][ADDR_WIDTH+29:0] fill_probe;
-  coh_wa_t fill_ack_q[FILLS];
+  // Held packets are stored as plain vectors and read through typed views.
+  logic [ADDR_WIDTH+10:0] fill_ack_q[FILLS];
   logic [NUM_WB-1:0] wb_valid_q, wb_frozen_q, wb_sent_q;
   logic [ADDR_WIDTH-1:0] wb_addr_q[NUM_WB];
   logic [8*LINE_BYTES-1:0] wb_data_q[NUM_WB];
-  coh_w_t put_q[Puts];
+  logic [ADDR_WIDTH+259:0] put_q[Puts];
   logic [Puts-1:0] put_maintenance;
   logic [Puts-1:0][ADDR_WIDTH-1:0] put_addr;
   logic [Puts-1:0][WayBits-1:0] put_way_q;
