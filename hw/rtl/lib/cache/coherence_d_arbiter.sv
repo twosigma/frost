@@ -37,7 +37,9 @@ module coherence_d_arbiter #(
     output logic [WIDTH-1:0] o_payload
 );
   logic selected_q, found, after_next;
-  logic [PortBits-1:0] selected_port_q, next_q, pick, first;
+  logic [PortBits-1:0] next_q, pick, first;
+  // The selected port is a register of the selection, not a state machine.
+  (* fsm_encoding = "none" *) logic [PortBits-1:0] selected_port_q;
   // One-hot copy of the held selection, zero while none is held, so each
   // port's ready is one term of the downstream ready.
   logic [PORTS-1:0] selected_ports_q;
