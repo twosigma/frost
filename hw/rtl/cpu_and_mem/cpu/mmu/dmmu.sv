@@ -446,29 +446,29 @@ module dmmu (
   end
   assign s2_mmio_next = tlb_is_mmio ? s2_mmio_cases[1] : s2_mmio_cases[0];
 
-  // The per-entry device-page verdict arrives after VPN matching and winner
-  // selection. Resolve fault priority for both values in advance, leaving
-  // one select between that late verdict and the S2 fault register.
-  (* keep = "true" *) logic [1:0][1:0] s2_fault_cases;
+  // The TLB verdicts (hit, permission, high PPN, atomic and device page)
+  // arrive together after VPN matching and winner selection. The fault
+  // without the TLB leaf and the condition that applies the leaf are
+  // prepared first, and the leaf, a function of those verdicts alone, is
+  // applied last.
+  (* keep = "true" *) logic s2_leaf_applies;
+  (* keep = "true" *) riscv_pkg::data_fault_kind_e s2_fault_without_leaf;
+  riscv_pkg::data_fault_kind_e s2_leaf_fault;
   logic [1:0] s2_fault_next;
-  for (genvar device = 0; device < 2; device++) begin : gen_s2_fault_cases
-    riscv_pkg::data_fault_kind_e leaf_fault, resolved_fault;
-    always_comb begin
-      leaf_fault = riscv_pkg::DFAULT_NONE;
-      if (!tlb_perm_ok[0]) leaf_fault = riscv_pkg::DFAULT_PAGE;
-      else if (tlb_hi_nonzero[0] || !(tlb_atomic_page[0] || ((device != 0) && !s1_q.atomic)))
-        leaf_fault = riscv_pkg::DFAULT_ACCESS;
-      resolved_fault = riscv_pkg::DFAULT_NONE;
-      if (s1_valid_q) begin
-        if (i_trap_misaligned && s1_misaligned) resolved_fault = riscv_pkg::DFAULT_MISALIGN;
-        else if (s1_noncanonical) resolved_fault = riscv_pkg::DFAULT_PAGE;
-        else if (tlb_hit[0]) resolved_fault = leaf_fault;
-        else if (walk_resp_for_s1) resolved_fault = walk_fault;
-      end
+  always_comb begin
+    s2_fault_without_leaf = riscv_pkg::DFAULT_NONE;
+    if (s1_valid_q) begin
+      if (i_trap_misaligned && s1_misaligned) s2_fault_without_leaf = riscv_pkg::DFAULT_MISALIGN;
+      else if (s1_noncanonical) s2_fault_without_leaf = riscv_pkg::DFAULT_PAGE;
+      else if (walk_resp_for_s1) s2_fault_without_leaf = walk_fault;
     end
-    assign s2_fault_cases[device] = resolved_fault;
+    s2_leaf_fault = riscv_pkg::DFAULT_NONE;
+    if (!tlb_perm_ok[0]) s2_leaf_fault = riscv_pkg::DFAULT_PAGE;
+    else if (tlb_hi_nonzero[0] || !(tlb_atomic_page[0] || (tlb_device_page[0] && !s1_q.atomic)))
+      s2_leaf_fault = riscv_pkg::DFAULT_ACCESS;
   end
-  assign s2_fault_next = tlb_device_page[0] ? s2_fault_cases[1] : s2_fault_cases[0];
+  assign s2_leaf_applies = s1_valid_q && !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical;
+  assign s2_fault_next   = s2_leaf_applies && tlb_hit[0] ? s2_leaf_fault : s2_fault_without_leaf;
 
   always_ff @(posedge i_clk) begin
     s2_is_mmio_q <= s2_mmio_next;
