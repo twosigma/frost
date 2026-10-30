@@ -244,9 +244,13 @@ module coherence_home_completions #(
   assign o_g = grant_q;
   assign o_c_ready = |completion_ready;
 
+  // pred_clear_q[slot] holds predecessors_q[slot] == 0, registered from the
+  // predecessors' next state, so eligibility reads one flag per slot.
+  logic [SLOTS-1:0] pred_clear_q, incoming_sectors;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_work_eligible
+    assign incoming_sectors[slot] = (work_address[slot] >> 5) == (incoming.addr >> 5);
     assign work_eligible[slot] = work_offer[slot] && !issued_q[slot] && !parked_q[slot] &&
-        predecessors_q[slot] == 0;
+        pred_clear_q[slot];
   end
   coherence_work_select #(
       .SLOTS(SLOTS)
@@ -403,6 +407,7 @@ module coherence_home_completions #(
       grant_later_q <= '1;
       grant_zero_q <= '0;
       grant_q <= '0;
+      pred_clear_q <= '1;
       for (int slot = 0; slot < SLOTS; slot++) begin
         predecessors_q[slot] <= '0;
         buffer_index_q[slot] <= '0;
@@ -471,9 +476,12 @@ module coherence_home_completions #(
         if (accept_request && free_slot_index == SlotBits'(slot)) begin
           for (int older = 0; older < SLOTS; older++) begin
             predecessors_q[slot][older] <= live[older] && !release_fire[older] &&
-                (work_address[older] >> 5) == (incoming.addr >> 5);
+                incoming_sectors[older];
           end
         end
+        pred_clear_q[slot] <= accept_request && free_slot_index == SlotBits'(slot) ?
+            !(|(live & ~release_fire & incoming_sectors)) :
+            (predecessors_q[slot] & ~release_fire) == 0;
         if (i_count_valid && i_count_tid == 6'(slot)) counted_q[slot] <= 1'b1;
         if (i_park[slot]) parked_q[slot] <= 1'b1;
         if (i_wake[slot]) begin
@@ -557,6 +565,8 @@ module coherence_home_completions #(
   end
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
+      for (int slot = 0; slot < SLOTS; slot++)
+      assert (pred_clear_q[slot] == (predecessors_q[slot] == 0));
       if (accept_result) assert (result_hit == SLOTS'(1) << result_slot);
       assert (int'(grant_next_q) < SLOTS);
       for (int slot = 0; slot < SLOTS; slot++) begin
