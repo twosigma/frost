@@ -64,7 +64,10 @@ module coherence_home_completions #(
     input logic [WayBits-1:0] i_pin_way,
     input logic [ADDR_WIDTH-1:0] i_query_addr,
     output logic [WAYS-1:0] o_exclude,
-    input logic [ADDR_WIDTH-1:0] i_put_addr,
+    // o_put_busy reports a live slot in the same 32-byte sector as the put
+    // address. i_next_put_addr is the put address of the next cycle; its
+    // sector comparisons are registered, so o_put_busy answers for it then.
+    input logic [ADDR_WIDTH-1:0] i_next_put_addr,
     output logic o_put_busy,
     input logic i_result_valid,
     output logic o_result_ready,
@@ -151,13 +154,24 @@ module coherence_home_completions #(
   assign accept_result = i_result_valid && o_result_ready;
   assign accept_grant = o_g_valid && i_g_ready;
 
+  // Sector comparisons with the next put address are registered. A slot
+  // live across the edge keeps its address; a slot admitted on the edge
+  // takes the accepted request's address; a released slot is not live.
+  logic [SLOTS-1:0] put_sector_live_q;
+  logic put_incoming_sector_q, request_accepted_q;
+  always_ff @(posedge i_clk) begin
+    put_incoming_sector_q <= (incoming.addr >> 5) == (i_next_put_addr >> 5);
+    request_accepted_q <= accept_request;
+    for (int slot = 0; slot < SLOTS; slot++)
+    put_sector_live_q[slot] <= live[slot] && (work_address[slot] >> 5) == (i_next_put_addr >> 5);
+  end
+  assign o_put_busy = |(live & put_sector_live_q) || (request_accepted_q && put_incoming_sector_q);
   always_comb begin
     free_slot = 1'b0;
     free_slot_index = '0;
     duplicate = 1'b0;
     free_buffer = 1'b0;
     free_buffer_index = '0;
-    o_put_busy = 1'b0;
     o_exclude = '0;
     result_matches = 1'b0;
     result_slot = '0;
@@ -166,10 +180,7 @@ module coherence_home_completions #(
         free_slot = 1'b1;
         free_slot_index = SlotBits'(slot);
       end
-      if (live[slot]) begin
-        duplicate |= work_identity[slot] == incoming.q;
-        o_put_busy |= (work_address[slot] >> 5) == (i_put_addr >> 5);
-      end
+      if (live[slot]) duplicate |= work_identity[slot] == incoming.q;
       for (int way = 0; way < WAYS; way++) begin
         if (pin_valid_q[slot] && way_q[slot] == WayBits'(way) &&
             work_address[slot][OffsetBits+:SetBits] == i_query_addr[OffsetBits+:SetBits])
@@ -474,6 +485,22 @@ module coherence_home_completions #(
       reference_buffer_live[buffer_index_q[slot]] = 1'b0;
     assert (buffer_live_next == reference_buffer_live);
   end
+`ifndef FORMAL
+  // Simulation checks o_put_busy against the direct comparison. The proof
+  // leaves this check out: its engine does not close the address relation.
+  logic [ADDR_WIDTH-1:0] reference_put_addr_q;
+  logic reference_put_valid_q;
+  logic [SLOTS-1:0] reference_put_conflicts;
+  always_ff @(posedge i_clk) begin
+    reference_put_addr_q  <= i_next_put_addr;
+    reference_put_valid_q <= !i_rst;
+    if (!i_rst && reference_put_valid_q) assert (o_put_busy == (|reference_put_conflicts));
+  end
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_reference_put_conflict
+    assign reference_put_conflicts[slot] = live[slot] &&
+        (work_address[slot] >> 5) == (reference_put_addr_q >> 5);
+  end
+`endif
   logic [SlotBits-1:0] reference_grant_pick;
   always_comb begin
     reference_grant_pick = '0;
