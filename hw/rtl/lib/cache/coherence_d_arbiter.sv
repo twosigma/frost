@@ -30,6 +30,9 @@ module coherence_d_arbiter #(
     // o_valid without the reset term, for a consumer that applies the same
     // reset itself.
     output logic o_offer,
+    // The held one-hot selection, which o_ready qualifies with reset and
+    // i_ready, for a consumer that applies i_ready itself.
+    output logic [PORTS-1:0] o_selected,
     input logic i_ready,
 `ifdef COHERENCE_HOME_CONTROL
     input logic i_service_stop,
@@ -89,9 +92,10 @@ module coherence_d_arbiter #(
       pick_payload |= {WIDTH{pick_ports[port_idx]}} & i_payload[port_idx];
     end
   end
-  assign o_ready   = {PORTS{!i_rst && i_ready}} & selected_ports_q;
-  assign o_offer   = selected_q && (HOLD_VALID || i_valid[selected_port_q]);
-  assign o_valid   = !i_rst && o_offer;
+  assign o_ready = {PORTS{!i_rst && i_ready}} & selected_ports_q;
+  assign o_selected = selected_ports_q;
+  assign o_offer = selected_q && (HOLD_VALID || i_valid[selected_port_q]);
+  assign o_valid = !i_rst && o_offer;
   assign o_payload = payload_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin

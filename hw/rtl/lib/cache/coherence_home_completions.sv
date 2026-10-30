@@ -252,6 +252,23 @@ module coherence_home_completions #(
   // pred_clear_q[slot] holds predecessors_q[slot] == 0, registered from the
   // predecessors' next state, so eligibility reads one flag per slot.
   logic [SLOTS-1:0] pred_clear_q, incoming_sectors;
+  // A release fires for the arbiter's selected offering slot when the U
+  // channel is ready. The clear flags are prepared for both outcomes, with
+  // and without an accepted request, and the U ready selects last.
+  logic [SLOTS-1:0] release_selected, release_candidate;
+  (* keep = "true" *) logic [SLOTS-1:0] clear_if_hold, clear_if_release;
+  (* keep = "true" *) logic accepted_clear_if_hold, accepted_clear_if_release;
+  wire release_go = !i_rst && i_u_ready;
+  assign release_candidate = release_valid & release_selected;
+  assign accepted_clear_if_hold = !(|(live & incoming_sectors));
+  assign accepted_clear_if_release = !(|(live & ~release_candidate & incoming_sectors));
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_clear_choice
+    assign clear_if_hold[slot] = predecessors_q[slot] == 0;
+    assign clear_if_release[slot] = (predecessors_q[slot] & ~release_candidate) == 0;
+  end
+`ifndef SYNTHESIS
+  always_comb assert (release_fire == (release_candidate & {SLOTS{release_go}}));
+`endif
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_work_eligible
     assign incoming_sectors[slot] = (work_address[slot] >> 5) == (incoming.addr >> 5);
     assign work_eligible[slot] = work_offer[slot] && !issued_q[slot] && !parked_q[slot] &&
@@ -373,6 +390,7 @@ module coherence_home_completions #(
       .i_payload(releases),
       .o_valid(o_u_valid),
       .o_offer(),
+      .o_selected(release_selected),
       .i_ready(i_u_ready),
 `ifdef COHERENCE_HOME_CONTROL
       .i_service_stop(1'b0),
@@ -490,8 +508,8 @@ module coherence_home_completions #(
           end
         end
         pred_clear_q[slot] <= accept_request && free_slot_index == SlotBits'(slot) ?
-            !(|(live & ~release_fire & incoming_sectors)) :
-            (predecessors_q[slot] & ~release_fire) == 0;
+            (release_go ? accepted_clear_if_release : accepted_clear_if_hold) :
+            (release_go ? clear_if_release[slot] : clear_if_hold[slot]);
         if (i_count_valid && i_count_tid == 6'(slot)) counted_q[slot] <= 1'b1;
         if (i_park[slot]) parked_q[slot] <= 1'b1;
         if (i_wake[slot]) begin

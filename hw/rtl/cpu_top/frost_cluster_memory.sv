@@ -255,6 +255,7 @@ module frost_cluster_memory #(
         .i_payload({dma_d, i_coherent_d}),
         .o_valid(home_d_valid),
         .o_offer(),
+        .o_selected(),
         .i_ready(home_d_ready),
         .o_payload(home_d)
     );
@@ -272,12 +273,13 @@ module frost_cluster_memory #(
     ) completions (
         .i_clk,
         .i_rst,
-        .i_valid  ({dma_c_valid, i_coherent_c_valid}),
-        .o_ready  ({dma_c_ready, o_coherent_c_ready}),
+        .i_valid({dma_c_valid, i_coherent_c_valid}),
+        .o_ready({dma_c_ready, o_coherent_c_ready}),
         .i_payload({dma_c, i_coherent_c}),
-        .o_valid  (home_c_valid),
-        .o_offer  (),
-        .i_ready  (home_c_ready),
+        .o_valid(home_c_valid),
+        .o_offer(),
+        .o_selected(),
+        .i_ready(home_c_ready),
         .o_payload(home_c)
     );
 `ifndef SYNTHESIS

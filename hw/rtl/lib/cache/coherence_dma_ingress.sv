@@ -140,12 +140,13 @@ module coherence_dma_ingress #(
   ) completion_arbiter (
       .i_clk,
       .i_rst,
-      .i_valid  (c_valid),
-      .o_ready  (c_ready),
+      .i_valid(c_valid),
+      .o_ready(c_ready),
       .i_payload(completions),
-      .o_valid  (o_c_valid),
-      .o_offer  (),
-      .i_ready  (i_c_ready),
+      .o_valid(o_c_valid),
+      .o_offer(),
+      .o_selected(),
+      .i_ready(i_c_ready),
       .o_payload(o_c)
   );
   always_ff @(posedge i_clk) begin
