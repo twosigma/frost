@@ -87,6 +87,7 @@ module coherence_home #(
   localparam int unsigned TagPacketBits = TokenBits + ADDR_WIDTH;
   localparam int unsigned ReadPacketBits = TagPacketBits + WayBits;
   localparam int unsigned UpdatePacketBits = ReadPacketBits + 3 + 9 * LINE_BYTES;
+  localparam int unsigned TagBits = ADDR_WIDTH - SetBits - OffsetBits;
   localparam logic [5:0] FillTid = 6'(coherence_pkg::fill_base(1));
   localparam logic [5:0] PutTid = 6'(coherence_pkg::put_base(1, 4));
   typedef struct packed {
@@ -191,6 +192,19 @@ module coherence_home #(
   logic [TokenBits-1:0] array_token, array_data_token, array_updated_token;
   logic [ADDR_WIDTH-1:0] array_query, array_addr;
   logic [WayBits-1:0] array_way;
+  logic [WAYS-1:0][TagBits-1:0] array_tags;
+  logic [ADDR_WIDTH-1:0] held_put_next, work_addr;
+  logic [NUM_WB-1:0] wb_block_q, wb_set_q, wb_blocks, wb_victims;
+  logic [NUM_WB-1:0][WAYS-1:0] wb_tag_q;
+  logic [FILLS-1:0] fill_block_q, fill_old_block_q, fill_set_q, fill_blocks, fill_victims;
+  logic [Puts-1:0] put_sector_q, put_set_q, put_accepted_q, put_blocks, put_victims;
+  logic [Puts-1:0][WAYS-1:0] put_tag_q;
+  logic held_put_sector_q, held_put_set_q;
+  logic [WAYS-1:0] held_put_tag_q;
+  logic [RESULTS-1:0] engine_set_q, engine_accepted_q, engine_victims;
+  logic [RESULTS-1:0][WAYS-1:0] engine_tag_q;
+  logic work_set_q;
+  logic [WAYS-1:0] work_tag_q;
   logic [1:0] array_state;
   logic array_data_valid, array_updated;
   logic [8*LINE_BYTES-1:0] array_data;
@@ -297,6 +311,9 @@ module coherence_home #(
   endfunction
   function automatic logic same_set(input logic [ADDR_WIDTH-1:0] a, input logic [ADDR_WIDTH-1:0] b);
     same_set = a[OffsetBits+:SetBits] == b[OffsetBits+:SetBits];
+  endfunction
+  function automatic logic [TagBits-1:0] block_tag(input logic [ADDR_WIDTH-1:0] addr);
+    block_tag = addr[ADDR_WIDTH-1:OffsetBits+SetBits];
   endfunction
   function automatic logic read_waiter(input logic [3:0] opcode);
     read_waiter = opcode == coherence_pkg::GetS || opcode == coherence_pkg::LoadReserved ||
@@ -598,6 +615,7 @@ module coherence_home #(
       .o_resp_way(array_way),
       .o_resp_addr(array_addr),
       .o_resp_state(array_state),
+      .o_resp_tags(array_tags),
       .i_read_valid(row_request_valid && active),
       .o_read_ready(row_request_ready),
       .i_read_addr(row_request.addr),
@@ -639,6 +657,77 @@ module coherence_home #(
         array_exclude[put_way_q[put]] = 1'b1;
     end
   end
+  // The response-cycle decision compares the query block and the victim block
+  // with every owner's address. Those comparisons are registered from the
+  // cycle before: a response follows the selection cycle, and the query, the
+  // way tags and the write-back and fill addresses hold from selection
+  // through the response. A put or an engine can take a new address on the
+  // cycle before a response, so the comparisons with the arriving address
+  // and the acceptance itself are registered as well.
+  always_ff @(posedge i_clk) begin
+    for (int wb = 0; wb < NUM_WB; wb++) begin
+      wb_block_q[wb] <= same_block(wb_addr_q[wb], array_query);
+      wb_set_q[wb]   <= same_set(wb_addr_q[wb], array_query);
+      for (int way = 0; way < WAYS; way++)
+      wb_tag_q[wb][way] <= block_tag(wb_addr_q[wb]) == array_tags[way];
+    end
+    for (int fill = 0; fill < FILLS; fill++) begin
+      fill_block_q[fill] <= same_block(fill_addr_q[fill], array_query);
+      fill_old_block_q[fill] <= same_block(fill_old_addr_q[fill], array_query);
+      fill_set_q[fill] <= same_set(fill_addr_q[fill], array_query);
+    end
+    for (int put = 0; put < Puts; put++) begin
+      put_sector_q[put] <= same_sector(put_addr[put], decision_addr);
+      put_set_q[put] <= same_set(put_addr[put], array_query);
+      for (int way = 0; way < WAYS; way++)
+      put_tag_q[put][way] <= block_tag(put_addr[put]) == array_tags[way];
+      put_accepted_q[put] <= i_w_valid && o_w_ready && incoming_put.put_id == 1'(put);
+    end
+    held_put_sector_q <= same_sector(held_put_next, decision_addr);
+    held_put_set_q <= same_set(held_put_next, array_query);
+    for (int way = 0; way < WAYS; way++)
+    held_put_tag_q[way] <= block_tag(held_put_next) == array_tags[way];
+    for (int engine = 0; engine < RESULTS; engine++) begin
+      engine_set_q[engine] <= same_set(engine_addr[engine], array_query);
+      for (int way = 0; way < WAYS; way++)
+      engine_tag_q[engine][way] <= block_tag(engine_addr[engine]) == array_tags[way];
+      engine_accepted_q[engine] <= run && work_offer && work_buffer == ResultBits'(engine);
+    end
+    work_set_q <= same_set(work_addr, array_query);
+    for (int way = 0; way < WAYS; way++) work_tag_q[way] <= block_tag(work_addr) == array_tags[way];
+  end
+  // The selected put's address on the next cycle, and the selected work's.
+  assign held_put_next = run && !put_selected_q && i_w_valid ? incoming_put.addr :
+      selected_put_q.addr;
+  assign work_addr = request_addr(work);
+  // One blocking term per owner: blocks a same-sector query, victims a
+  // victim block that the owner holds.
+  for (genvar wb = 0; wb < NUM_WB; wb++) begin : gen_wb_terms
+    assign wb_blocks[wb]  = wb_valid_q[wb] && wb_block_q[wb];
+    assign wb_victims[wb] = wb_valid_q[wb] && wb_set_q[wb] && wb_tag_q[wb][array_way];
+  end
+  for (genvar fill = 0; fill < FILLS; fill++) begin : gen_fill_terms
+    wire live = fill_phase_q[fill] != FillFree;
+    assign fill_victims[fill] = live && fill_set_q[fill] && fill_way_q[fill] == array_way;
+    assign fill_blocks[fill] = live && fill_phase_q[fill] != FillReady &&
+        (fill_block_q[fill] || (fill_victim_q[fill] && fill_old_block_q[fill]));
+  end
+  for (genvar put = 0; put < Puts; put++) begin : gen_put_terms
+    wire live = put_phase_q[put] != PutFree && array_token != TokenBits'(RESULTS + FILLS + put);
+    assign put_blocks[put] = live && (put_accepted_q[put] ? held_put_sector_q : put_sector_q[put]);
+    assign put_victims[put] = live && (put_accepted_q[put] ?
+        held_put_set_q && held_put_tag_q[array_way] :
+        put_set_q[put] && put_tag_q[put][array_way]);
+  end
+  for (genvar engine = 0; engine < RESULTS; engine++) begin : gen_engine_terms
+    assign engine_victims[engine] = !engine_idle[engine] &&
+        array_token != TokenBits'(engine) && (engine_accepted_q[engine] ?
+        work_set_q && work_tag_q[array_way] :
+        engine_set_q[engine] && engine_tag_q[engine][array_way]);
+  end
+  assign decision_blocked = |{wb_blocks, fill_blocks, put_blocks};
+  assign victim_blocked = |{wb_victims, fill_victims, put_victims} ||
+      (array_state != coherence_pkg::Invalid && |engine_victims);
   always_comb begin
     decision_reader = 1'b0;
     for (int engine = 0; engine < RESULTS; engine++)
@@ -656,8 +745,6 @@ module coherence_home #(
     for (int put = 0; put < Puts; put++)
     if (LINE_BYTES == 64 && array_token == TokenBits'(RESULTS + FILLS + put))
       decision_addr[5] = put_addr[put][5];
-    decision_blocked = 1'b0;
-    victim_blocked = 1'b0;
     fill_free = 1'b0;
     fill_free_index = '0;
     wb_free = 1'b0;
@@ -667,40 +754,12 @@ module coherence_home #(
         wb_free = 1'b1;
         wb_free_index = WbBits'(wb);
       end
-      if (wb_valid_q[wb]) begin
-        if (same_block(wb_addr_q[wb], decision_addr)) decision_blocked = 1'b1;
-        if (same_block(wb_addr_q[wb], array_addr)) victim_blocked = 1'b1;
-      end
     end
     for (int fill = FILLS - 1; fill >= 0; fill--) begin
       if (fill_phase_q[fill] == FillFree) begin
         fill_free = 1'b1;
         fill_free_index = FillBits'(fill);
-      end else begin
-        if (same_set(fill_addr_q[fill], array_query) && fill_way_q[fill] == array_way)
-          victim_blocked = 1'b1;
-        if (fill_phase_q[fill] != FillReady) begin
-          if (same_block(fill_addr_q[fill], decision_addr)) begin
-            decision_blocked = 1'b1;
-          end
-          if (fill_victim_q[fill] && same_block(fill_old_addr_q[fill], decision_addr))
-            decision_blocked = 1'b1;
-        end
       end
-    end
-    for (int put = 0; put < Puts; put++) begin
-      if (put_phase_q[put] != PutFree &&
-          (!decision_put || array_token != TokenBits'(RESULTS + FILLS + put))) begin
-        if (same_sector(put_addr[put], decision_addr)) decision_blocked = 1'b1;
-        if (same_block(put_addr[put], array_addr)) victim_blocked = 1'b1;
-      end
-    end
-    for (int engine = 0; engine < RESULTS; engine++) begin
-      if (array_state != coherence_pkg::Invalid && !engine_idle[engine] &&
-          array_token != TokenBits'(engine) && same_block(
-              engine_addr[engine], array_addr
-          ))
-        victim_blocked = 1'b1;
     end
     decision_hit = array_hit && array_available && !decision_blocked;
     decision_fill = decision_engine && !array_hit && array_available && !decision_blocked &&
@@ -721,12 +780,10 @@ module coherence_home #(
     assign enabled = run && fill_phase_q[fill] != FillFree &&
         fill_phase_q[fill] != FillReady && fill_phase_q[fill] != FillInstallWait &&
         !fill_error_q[fill];
-    assign join_fill[fill] = fill_phase_q[fill] != FillFree &&
+    assign join_fill[fill] = array_response && fill_phase_q[fill] != FillFree &&
         fill_phase_q[fill] != FillReady && fill_phase_q[fill] != FillInstallWait &&
-        !fill_error_q[fill] && fill_seat_count_q[fill] < 3 &&
-        same_block(
-        fill_addr_q[fill], decision_addr
-    ) && decision_reader;
+        !fill_error_q[fill] && fill_seat_count_q[fill] < 3 && fill_block_q[fill] &&
+        decision_reader;
     assign joining = run && array_response && join_fill[fill];
     for (genvar slot = 0; slot < COMPLETIONS; slot++) begin : gen_eligible
       assign eligible[slot] = enabled && waiting_offer[slot] && same_block(
@@ -763,9 +820,8 @@ module coherence_home #(
       incoming_put.addr == selected_put_q.addr;
   always_comb begin
     put_blocked = 1'b0;
-    if (array_response && decision_fill && array_state != coherence_pkg::Invalid && same_block(
-            array_addr, selected_put_q.addr
-        ))
+    if (array_response && decision_fill && array_state != coherence_pkg::Invalid &&
+        held_put_set_q && held_put_tag_q[array_way])
       put_blocked = 1'b1;
     for (int fill = 0; fill < FILLS; fill++)
     if (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady && (same_block(
@@ -1187,9 +1243,74 @@ module coherence_home #(
       reference_join_index = FillBits'(fill);
     end
   end
+  // Direct comparisons that the registered response-cycle terms replace.
+  logic reference_blocked, reference_victim;
+  always_comb begin
+    reference_blocked = 1'b0;
+    reference_victim  = 1'b0;
+    for (int wb = 0; wb < NUM_WB; wb++)
+    if (wb_valid_q[wb]) begin
+      if (same_block(wb_addr_q[wb], decision_addr)) reference_blocked = 1'b1;
+      if (same_block(wb_addr_q[wb], array_addr)) reference_victim = 1'b1;
+    end
+    for (int fill = 0; fill < FILLS; fill++)
+    if (fill_phase_q[fill] != FillFree) begin
+      if (same_set(fill_addr_q[fill], array_query) && fill_way_q[fill] == array_way)
+        reference_victim = 1'b1;
+      if (fill_phase_q[fill] != FillReady && (same_block(
+              fill_addr_q[fill], decision_addr
+          ) || (fill_victim_q[fill] && same_block(
+              fill_old_addr_q[fill], decision_addr
+          ))))
+        reference_blocked = 1'b1;
+    end
+    for (int put = 0; put < Puts; put++)
+    if (put_phase_q[put] != PutFree && array_token != TokenBits'(RESULTS + FILLS + put)) begin
+      if (same_sector(put_addr[put], decision_addr)) reference_blocked = 1'b1;
+      if (same_block(put_addr[put], array_addr)) reference_victim = 1'b1;
+    end
+    for (int engine = 0; engine < RESULTS; engine++)
+    if (array_state != coherence_pkg::Invalid && !engine_idle[engine] &&
+        array_token != TokenBits'(engine) && same_block(
+            engine_addr[engine], array_addr
+        ))
+      reference_victim = 1'b1;
+  end
   always_ff @(posedge i_clk)
     if (!i_rst) begin
-      assert (join_fill == (reference_join ? FILLS'(1) << reference_join_index : FILLS'(0)));
+      if (array_response) begin
+        for (int wb = 0; wb < NUM_WB; wb++) begin
+          assert (wb_blocks[wb] == (wb_valid_q[wb] && same_block(wb_addr_q[wb], decision_addr)));
+          assert (wb_victims[wb] == (wb_valid_q[wb] && same_block(wb_addr_q[wb], array_addr)));
+        end
+        for (int fill = 0; fill < FILLS; fill++) begin
+          assert (fill_block_q[fill] == same_block(fill_addr_q[fill], decision_addr));
+          assert (fill_victims[fill] == (fill_phase_q[fill] != FillFree && same_set(
+              fill_addr_q[fill], array_query
+          ) && fill_way_q[fill] == array_way));
+          assert (fill_blocks[fill] == (fill_phase_q[fill] != FillFree &&
+              fill_phase_q[fill] != FillReady && (same_block(
+              fill_addr_q[fill], decision_addr
+          ) || (fill_victim_q[fill] && same_block(
+              fill_old_addr_q[fill], decision_addr
+          )))));
+        end
+        for (int put = 0; put < Puts; put++)
+        if (put_phase_q[put] != PutFree && array_token != TokenBits'(RESULTS + FILLS + put)) begin
+          assert (put_blocks[put] == same_sector(put_addr[put], decision_addr));
+          assert (put_victims[put] == same_block(put_addr[put], array_addr));
+        end
+        for (int engine = 0; engine < RESULTS; engine++)
+        if (!engine_idle[engine] && array_token != TokenBits'(engine))
+          assert (engine_victims[engine] == same_block(engine_addr[engine], array_addr));
+        assert ((held_put_set_q && held_put_tag_q[array_way]) == same_block(
+            array_addr, selected_put_q.addr
+        ));
+        assert (decision_blocked == reference_blocked);
+        assert (victim_blocked == reference_victim);
+      end
+      assert (join_fill == (array_response && reference_join ?
+          FILLS'(1) << reference_join_index : FILLS'(0)));
       assert ($onehot0({engine_r_ready, fill_r_ready}));
       assert ((park & wake) == 0);
       if (|image_select) assert (image_data == engine_image[image_index]);
