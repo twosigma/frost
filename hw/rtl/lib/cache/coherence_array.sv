@@ -286,9 +286,13 @@ module coherence_array #(
           end
         end
         Idle: begin
+          // Tag and PLRU updates are visible to every later lookup, since no
+          // request shares an update's cycle; only a data write waits.
           if (update_fire) begin
-            count_q <= CountBits'(DATA_WRITE_LATENCY);
-            phase_q <= WriteWait;
+            if (|i_update_mask) begin
+              count_q <= CountBits'(DATA_WRITE_LATENCY);
+              phase_q <= WriteWait;
+            end
           end else if (request_fire) begin
             set_q <= i_req_addr[OffsetBits+:SetBits];
             tag_q <= i_req_addr[ADDR_WIDTH-1:OffsetBits+SetBits];

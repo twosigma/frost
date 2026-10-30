@@ -1020,17 +1020,20 @@ module coherence_l1d #(
             phase_q <= Idle;
           end
           Freeze: if (wb_freeze_ready[freeze_slot_q]) phase_q <= Update;
-          Update: if (update_ready) phase_q <= UpdateWait;
+          // A probe's update changes only tag state, which every later
+          // lookup sees, so its reply forms on the update edge itself.
+          Update:
+          if (update_ready) begin
+            if (operation_q != ProbeOp) phase_q <= UpdateWait;
+            else if (probe_absorbed_q) phase_q <= ProbeAbsorb;
+            else if (probe_reply_eligible) begin
+              o_r_valid <= 1'b1;
+              phase_q <= Idle;
+            end else phase_q <= ProbeReply;
+          end
           UpdateWait:
           if (array_ready) begin
             case (operation_q)
-              ProbeOp: begin
-                if (probe_absorbed_q) phase_q <= ProbeAbsorb;
-                else if (probe_reply_eligible) begin
-                  o_r_valid <= 1'b1;
-                  phase_q <= Idle;
-                end else phase_q <= ProbeReply;
-              end
               GrantOp: begin
                 if (acquisition_store_q) begin
                   pending_q <= 1'b0;

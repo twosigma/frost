@@ -328,8 +328,10 @@ Grant application requires the private request endpoint to accept the grant.
 A ProbeRead of M merges dirty bytes and leaves S. ProbeInvalidate leaves I
 after the CPU cut. CheckSC returns the selected reservation result.
 An ordinary probe starts its tag request on P capture when the array is ready.
-Its reply becomes valid after the final data or state-update edge and the
-required cut. A held R preserves its payload and prevents another P capture.
+Its reply forms on the edge that applies its state update, or on the lookup
+edge when no state changes, once the required cut is done. A state-only array
+update needs no data-write wait. A held R preserves its payload and prevents
+another P capture.
 CheckSC samples the reservation after capture.
 Probe lookups read private data only for an M hit. A clean read probe leaves
 the tag and bytes untouched. A downgrade or invalidation updates the tag
