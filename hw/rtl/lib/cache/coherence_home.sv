@@ -845,21 +845,32 @@ module coherence_home #(
           array_state != coherence_pkg::Invalid && wb_free_index == WbBits'(wb);
     end
   end
+  // The fill decision arrives last: the selected put waits on it only when
+  // its block is this response's valid victim.
+  (* keep = "true" *) logic put_held_blocked, put_victim_match, w_ready_early;
   always_comb begin
-    put_blocked = 1'b0;
-    if (array_response && decision_fill && array_state != coherence_pkg::Invalid &&
-        held_put_set_q && held_put_tag_q[array_way])
-      put_blocked = 1'b1;
+    put_victim_match = array_response && array_state != coherence_pkg::Invalid &&
+        held_put_set_q && held_put_tag_q[array_way];
+    put_held_blocked = 1'b0;
     for (int fill = 0; fill < FILLS; fill++)
     if (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady &&
         ((fill_allocated_q[fill] ? put_query_q : put_fill_q[fill]) ||
          (fill_victim_q[fill] && (fill_allocated_q[fill] ? put_victim_q : put_fill_old_q[fill]))))
-      put_blocked = 1'b1;
+      put_held_blocked = 1'b1;
     for (int wb = 0; wb < NUM_WB; wb++)
-    if (wb_valid_q[wb] && (wb_allocated_q[wb] ? put_victim_q : put_wb_q[wb])) put_blocked = 1'b1;
+    if (wb_valid_q[wb] && (wb_allocated_q[wb] ? put_victim_q : put_wb_q[wb]))
+      put_held_blocked = 1'b1;
   end
-  assign o_w_ready = active && put_selected_q && put_key_match && !put_busy && !put_blocked &&
+  assign put_blocked = put_held_blocked || (put_victim_match && decision_fill);
+  assign w_ready_early = active && put_selected_q && !put_busy && !put_held_blocked &&
       put_phase_q[selected_put_q.put_id] == PutFree;
+  assign o_w_ready = w_ready_early && put_key_match && !(put_victim_match && decision_fill);
+`ifndef SYNTHESIS
+  always_comb
+    if (!i_rst)
+      assert (o_w_ready == (active && put_selected_q && put_key_match && !put_busy &&
+          !put_blocked && put_phase_q[selected_put_q.put_id] == PutFree));
+`endif
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       put_selected_q <= 1'b0;
