@@ -201,8 +201,9 @@ module coherence_home_completions #(
     end
   end
 
-  assign o_d_ready = !i_rst && !i_fatal_stop && free_slot && !duplicate &&
-      request_ready[free_slot_index];
+  // Every idle endpoint applies the same admission checks to the request, so
+  // any idle endpoint's readiness stands for the free slot's.
+  assign o_d_ready = !i_rst && !i_fatal_stop && !duplicate && |(request_ready & ~live);
   assign o_work_offer = !i_fatal_stop && work_selected_q && !parked_q[work_slot_q];
   assign o_work_valid = !i_rst && o_work_offer;
   assign o_work = work[work_slot_q];
@@ -484,6 +485,11 @@ module coherence_home_completions #(
     if (i_retry_valid && i_retry_tid == 6'(slot))
       reference_buffer_live[buffer_index_q[slot]] = 1'b0;
     assert (buffer_live_next == reference_buffer_live);
+  end
+  always_ff @(posedge i_clk) begin
+    if (!i_rst)
+      assert (o_d_ready == (!i_fatal_stop && free_slot && !duplicate &&
+          request_ready[free_slot_index]));
   end
 `ifndef FORMAL
   // Simulation checks o_put_busy against the direct comparison. The proof
