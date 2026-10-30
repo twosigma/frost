@@ -159,9 +159,11 @@ module coherent_hart_cache #(
   assign o_fatal_addr = l1d_fatal ? l1d_fatal_addr : l1i_fatal_addr;
   assign o_g_ready = g_ready[grant.q[6:5]];
   assign o_u_ready = u_ready[release_message.q[6:5]];
+  // Each C source holds its offer from SendC or Complete until acceptance.
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 18),
-      .PORTS(3)
+      .PORTS(3),
+      .HOLD_VALID(1)
   ) completions (
       .i_clk,
       .i_rst,
@@ -435,9 +437,12 @@ module coherent_hart_cache #(
     end
   end
 `ifndef SYNTHESIS
+  logic [2:0] c_stalled_q;
   always_ff @(posedge i_clk) begin
+    c_stalled_q <= i_rst ? 3'b000 : c_valid & ~c_ready;
     assert (c_valid == (c_selected & {3{!i_rst}}));
     if (!i_rst) begin
+      assert ((c_stalled_q & ~c_valid) == 0);
       assert ($onehot0(c_ready));
       for (int port_idx = 0; port_idx < 3; port_idx++) begin
         if (c_valid[port_idx] && c_ready[port_idx])

@@ -128,9 +128,11 @@ module coherence_dma_ingress #(
     };
   end
 
+  // A slot offering C stays in HaveGrant until its C is accepted.
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 18),
-      .PORTS(4)
+      .PORTS(4),
+      .HOLD_VALID(1)
   ) completion_arbiter (
       .i_clk,
       .i_rst,

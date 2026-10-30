@@ -276,7 +276,8 @@ completion. A local fatal transition cancels an unaccepted read.
 The home admits nineteen requests with distinct identities. Eight engines
 share their image storage with the result credits. An engine hands its image
 to completion ownership before G. An idle grant register captures an accepted
-result directly when no older result awaits selection. G acceptance returns that image credit;
+result directly when no older result awaits selection. The grant register
+presents G while it holds a grant. G acceptance returns that image credit;
 the identity and physical way pin last through U. Each request waits for U
 from earlier requests to the same 32-byte sector.
 
@@ -409,6 +410,8 @@ probe service. The whole-SoC program configurations use this hierarchy.
 G and U route by their message source identity. Fair C arbiters select the
 hart and DMA inputs and the hart's data, instruction and walker inputs. Each
 arbiter holds its selection during backpressure and acknowledges only that input.
+Every C source, including each DMA ingress slot, holds its offer until
+acceptance, so these arbiters present their captured selection as C validity.
 
 Formal targets `coherence_home_completions`, `coherence_control`, `coherence_array`,
 `coherence_home`, `coherence_l1d` and `coherent_cpu` check endpoint service,
