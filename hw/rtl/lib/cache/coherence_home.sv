@@ -257,7 +257,7 @@ module coherence_home #(
   logic [(1<<TokenBits)-1:0][ADDR_WIDTH-1:0] f_tag_address;
   logic [RESULTS-1:0] f_engine_unpinned;
   logic [RESULTS-1:0] f_engine_pinned, f_engine_initial_error;
-  logic f_local_fatal;
+  logic f_local_fatal, f_query_held;
   logic [COMPLETIONS-1:0] f_fill_waiting, f_fill_seated;
   always_comb begin
     f_fill_waiting = '0;
@@ -397,6 +397,7 @@ module coherence_home #(
       .i_engine_initial_error(f_engine_initial_error),
       .i_engine_tid(engine_tid),
       .i_engine_addr(engine_addr),
+      .i_query_held(f_query_held),
 `endif
       .o_u
   );
@@ -642,21 +643,24 @@ module coherence_home #(
       .i_tag_address(f_tag_address),
       .i_read_owner(f_read_owner),
       .i_update_owner(f_update_owner),
+      .o_query_held(f_query_held),
 `endif
       .o_updated_token(array_updated_token)
   );
 
+  // Way exclusion uses the registered set comparisons below. The array reads
+  // it in selection and response cycles, when the query has held since the
+  // edge before, and no fill is allocated and no put accepted on that edge
+  // for an owner that excludes a way.
   always_comb begin
     array_exclude = completion_exclude;
     for (int fill = 0; fill < FILLS; fill++) begin
-      if (fill_phase_q[fill] != FillFree && same_set(fill_addr_q[fill], array_query))
+      if (fill_phase_q[fill] != FillFree && fill_set_q[fill])
         array_exclude[fill_way_q[fill]] = 1'b1;
     end
     for (int put = 0; put < Puts; put++) begin
       if ((put_phase_q[put] == PutUpdate || put_phase_q[put] == PutUpdateWait ||
-          put_phase_q[put] == PutAck) && same_set(
-              put_addr[put], array_query
-          ))
+          put_phase_q[put] == PutAck) && put_set_q[put])
         array_exclude[put_way_q[put]] = 1'b1;
     end
   end
@@ -1316,6 +1320,42 @@ module coherence_home #(
     reference_held_put_q <= held_put_next;
     // The completion table compares live sectors with held_put_next.
     if (!i_rst && reference_ready_q) assert (selected_put_q.addr == reference_held_put_q);
+  end
+  logic [WAYS-1:0] reference_exclude;
+  logic exclude_matched_q;
+  always_comb begin
+    reference_exclude = '0;
+    for (int fill = 0; fill < FILLS; fill++)
+    if (fill_phase_q[fill] != FillFree && same_set(fill_addr_q[fill], array_query))
+      reference_exclude[fill_way_q[fill]] = 1'b1;
+    for (int put = 0; put < Puts; put++)
+    if ((put_phase_q[put] == PutUpdate || put_phase_q[put] == PutUpdateWait ||
+         put_phase_q[put] == PutAck) && same_set(
+            put_addr[put], array_query
+        ))
+      reference_exclude[put_way_q[put]] = 1'b1;
+  end
+`ifdef COHERENCE_HOME_CONTROL
+  // While the array selects or responds, the query has held since the edge
+  // before and no excluding owner changed its address on that edge.
+  always_ff @(posedge i_clk)
+    if (!i_rst && f_query_held) begin
+      for (int fill = 0; fill < FILLS; fill++)
+      if (fill_phase_q[fill] != FillFree)
+        assert (fill_set_q[fill] == same_set(fill_addr_q[fill], array_query));
+      for (int put = 0; put < Puts; put++)
+      if (put_phase_q[put] == PutUpdate || put_phase_q[put] == PutUpdateWait ||
+          put_phase_q[put] == PutAck)
+        assert (put_set_q[put] == same_set(put_addr[put], array_query));
+    end
+`endif
+  always_ff @(posedge i_clk) begin
+    // Checked on each response for the response and selection cycles.
+    exclude_matched_q <= array_exclude == (completion_exclude | reference_exclude);
+    if (!i_rst && array_response && reference_ready_q) begin
+      assert (exclude_matched_q);
+      assert (array_exclude == (completion_exclude | reference_exclude));
+    end
   end
   always_ff @(posedge i_clk)
     if (!i_rst) begin
