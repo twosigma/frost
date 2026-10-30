@@ -62,7 +62,9 @@ module coherence_home_endpoint #(
     Cancel,
     SendU
   } phase_t;
-  phase_t phase_q;
+  // One-hot state keeps each transition, including G acceptance, to a
+  // single term of its next state.
+  (* fsm_encoding = "one_hot" *) phase_t phase_q;
   coh_d_t demand_in, demand_q;
   coh_g_t result_in;
   logic [2:0] grant_opcode_q;
@@ -97,7 +99,10 @@ module coherence_home_endpoint #(
       result_in.tid == 6'(TID) && result_in.addr == demand_q.addr &&
       result_in.opcode <= coherence_pkg::GrantFail;
   assign o_g_valid = !i_rst && phase_q == Work && i_result_valid && result_matches;
-  assign o_result_ready = !i_rst && phase_q == Work && result_matches && i_g_ready;
+  // G readiness is the last term of result acceptance.
+  (* keep = "true" *) logic result_take;
+  assign result_take = !i_rst && phase_q == Work && result_matches;
+  assign o_result_ready = result_take && i_g_ready;
   assign o_g = result_in;
   localparam int unsigned CompletionKeyWidth = ADDR_WIDTH + 15;
   localparam int unsigned CompletionParts = (CompletionKeyWidth + 2) / 3;
