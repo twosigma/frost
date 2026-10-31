@@ -259,10 +259,8 @@ engine hands it gets exactly one response.
   cannot hold it forever.
 - It presents RX before TX, but a TX request that has watched
   `STARVATION_LIMIT` (8) RX grants goes first.
-- When the port refuses a request (for example, because the DMA sequencer
-  holds its line), the other engine's request is presented the next cycle,
-  so a locked line never blocks the other engine's traffic to a different
-  line.
+- After the port refuses a request, the other engine's request is presented
+  next if that engine was already eligible and remains eligible.
 - It refuses an address outside cached DDR with an error response instead of
   a port request.
 - During the RESET drain it answers its registered requests with error

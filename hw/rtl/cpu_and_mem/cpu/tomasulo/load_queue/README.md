@@ -238,9 +238,9 @@ only their requested bytes (see the
 Uncached Normal and device loads share one in-flight tracker (`mem_outstanding` and
 the `fast_*` registers); each cached load holds a `cs_*` slot whose id travels
 with the request (`o_mem_read_id`) and the response (`i_mem_read_is_cached`,
-`i_mem_read_id`). An LR or AMO also sets `o_mem_read_no_merge`, so the
-cached-tier adapter never serves it from another load's line request. A
-launch copies the load's attributes into its tracker or slot, so the response
+`i_mem_read_id`). The coherent L1D also receives the request kind, size and
+ROB tag; the kind distinguishes ordinary loads, LRs and AMOs. A launch
+copies the load's attributes into its tracker or slot, so the response
 path does not read the entry's fields. While every slot is busy, or for a
 cycle after the router held a cached response behind a fast one
 (`i_cached_resp_held`), a registered hold stops every launch, low-BRAM and
@@ -428,7 +428,8 @@ therefore holds interrupts while an AMO occupies the ROB head
 before it touches memory. A simulation check reports any full flush that
 reaches an active AMO write. A flush that arrives earlier, including in
 `AMO_COMPUTE`, cancels the AMO cleanly. `AMO_COMPUTE` has already freed the
-response slot but still keeps the line busy for DMA admission.
+response slot. For a cached AMO, the home blocks later requests to the same
+sector until the AMO's write completes and its completion is released.
 
 ### Older-AMO fence
 
@@ -470,20 +471,22 @@ until its holder changes. Other rows remain eligible for issue.
 
 A DMA agent below the L1D can write memory the core is reading. The wrapper's
 [`lq_coherence_port.sv`](../tomasulo_wrapper/coherence/lq_coherence_port.sv)
-mirrors the lines the cache hierarchy has admitted for DMA writes (up to
-three, `riscv_pkg::DmaCoherenceLocks`), and the
+has three reusable entries (`riscv_pkg::DmaCoherenceLocks`), but the current
+hart uses slot 0 for one coordinated invalidation at a time: the L1D's
+invalidation cut clears L0 copies and reservations and marks affected loads
+for replay before the L1D acknowledges the home. The
 [cache library](../../../../lib/cache/README.md) describes the whole write
 sequence. The LQ's part, all on 32-byte lines:
 
-- Admission. The LQ answers busy (`o_coh_query_busy`) for the queried line
-  while an AMO or LR on it is staged, holds a cached slot, or is in
-  `AMO_COMPUTE` or `AMO_WRITE_ACTIVE`. The port handles SCs.
+- Admission. The port records the L1D's invalidation cut. The wrapper ties
+  the port's LQ busy-query and SC-window inputs low; the home orders DMA
+  with LR, AMO and SC requests by sector.
 - Launch hold. A staged AMO or LR on an admitted line does not launch until
-  the line is released (`i_coh_block_*`). Admission is decided a cycle behind
-  the queue, so a newly staged AMO or LR also waits a cycle for its own
-  compare, and `i_coh_admit_pulse` holds every staged AMO or LR while an
-  admission answer is presented and for a cycle after it fires. No DMA write
-  can land between an atomic's read and its write.
+  the line is released (`i_coh_block_*`). The admitted-line comparison is
+  registered, so a newly staged AMO or LR also waits a cycle for its own
+  compare. `i_coh_admit_pulse` holds every staged AMO or LR while an admission
+  answer is presented and for a cycle after it fires. The home orders a DMA
+  write to the same sector before or after the atomic.
 - Invalidation (`i_coh_inval_*`). The LQ clears the line's four L0 entries,
   stops in-flight cached loads of the line from filling and in-flight LRs from
   setting a reservation, and clears a matching reservation. It does not

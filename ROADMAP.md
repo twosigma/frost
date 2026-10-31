@@ -12,33 +12,34 @@ shared memory do not form an SMP system. Its coherent ingress gives DMA and
 the NIC access to one tile's caches; it is not a protocol between tiles (see
 the [CPU boundary](hw/rtl/cpu_top/README.md)). Inside `cpu_top`, the
 per-hart block `frost_hart` holds the core with its MMUs and its L0 and L1
-caches, and `frost_cluster_memory` holds the shared L2, the DMA coherence
-sequencer, and the memory master, which stays plain AXI4. The single-hart
-`cpu_top` keeps its integration interface by composing one of each. The link
-between them carries the single-hart protocol: the L1s' line ports and the
-DMA sequencer's probes into the one L1D. The coherent interface inside the
-cluster, which a second hart needs, comes first. An L2 in every hart instead
+caches, and `frost_cluster_memory` holds the DMA ingress queue, the shared
+L2 with its coherence home, and the memory master, which stays plain AXI4.
+The single-hart `cpu_top` keeps its integration interface by composing one of
+each. They communicate through coherent request, probe, grant and completion
+channels, which a second hart would also use. An L2 in every hart instead
 would need its own coherence design between the private L2s.
 
 Coherence is ordered at the shared L2, the ordering point for all traffic
-below the L1s. A sequencer in front of it takes the requests for each line in
-turn and probes both harts' L1Ds, as the existing sequencer probes the L1D for
-every DMA request. The L1Ds hold lines in MESI states, and dirty data passes
-through the L2 rather than directly between the L1Ds. A coherence unit at the
-L1 level can follow if measurements show that the probes or the trip through
-the L2 limit performance: it would keep a copy of each L1D's tags, so that a
-request probes only the caches that hold the line, and move lines directly
-between the L1Ds.
+below the L1s. Its home takes the requests for each 32-byte sector in turn.
+It probes the L1D for instruction reads, page-table walks, DMA, atomic and SC
+operations, and replacement victims; the L1D's own reads, store upgrades and
+LRs need no probe while it is the only L1D. The L1D holds sectors in I, S or
+M states and sends one miss at a time to the home. With a second hart, the
+home would probe both L1Ds, and dirty data would still pass through the L2
+rather than directly between the L1Ds. A coherence unit at the L1 level can
+follow if measurements show that the probes or the trip through the L2 limit
+performance: it would keep a copy of each L1D's tags, so that a request probes
+only the caches that hold the line, and move lines directly between the L1Ds.
 
-The coherence design has to cover everything a hart can hold: L0 data,
+The coherence design covers everything a hart can hold: L0 data,
 outstanding fills, executed but unretired loads, AMOs, LR/SC reservations,
 and DMA. Snooping live load-queue entries is not enough, because an entry is
 freed as soon as its result is staged for the common data bus, before the
-load retires. The DMA observation table, which tracks loads until they
-retire, is the starting point. Stores need write permission: today the L1D
-writes a line it hits without checking for other copies, and completes a
-write miss before its fill arrives. Probe data and acknowledgements must keep
-making progress when every queue is full. The single-hart queue sizes and
+load retires, so returned loads stay observable until they retire. A store
+acquires M before it writes. Probe data and acknowledgements must keep making
+progress when every queue is full. In simulation, DMA and NIC transfers are
+slower through the home than they were through the earlier DMA sequencer,
+and recovering that throughput is planned. The single-hart queue sizes and
 lane choices will need revisiting against the timing and memory-traffic cost
 of the second hart.
 
@@ -69,16 +70,15 @@ The L1D, L1I, and L2 are 4-way set-associative with tree pseudo-LRU
 replacement, one design for every target. The L1D inserts lines bimodally: a
 fill becomes its set's most recently used only one time in 32, so a working
 set somewhat larger than the L1D keeps part of itself resident instead of
-evicting each line just before its next use. The L1s read every way's data at
-the tag decision, which keeps their hit latency at that of a direct-mapped
-cache. The L2 reads its data after the tag compare picks the way, one cycle
-more than a parallel read.
+evicting each line just before its next use. The L1I reads every way's data
+at the tag decision, which keeps its hit latency at that of a direct-mapped
+cache. The L1D and the L2 read the selected way after the tag lookup.
 
-The L2 uses 64-byte lines, following John Goodacre's design. An adapter maps
+The L2 uses 64-byte lines, following John Goodacre's design. The home maps
 each 32-byte request from the L1 caches, the page-table walker, and the DMA
 port onto its half of a line. The L2 writes back only whole lines, each as a
 single 512-bit AXI transfer that the X3's ECC DDR4 controller takes without
-a read-modify-write, and a 32-byte write that misses fetches its line and
+a read-modify-write, and a 32-byte DMA write that misses fetches its line and
 merges into it.
 
 The physical address width follows the configured DDR aperture, from 1 GiB,
@@ -100,25 +100,32 @@ writes the corrected data back to DDR with fresh ECC, and a background patrol
 reads all of memory, once a day by default, to find errors in data that
 nothing else reads.
 
-Profiling counters measure the L2's two write costs on the X3. A 32-byte
-write to a line the L2 lacks reads the line from DDR first, and a write to
-the other half of a line with a read in flight waits for that read and holds
-up the L2. Writes held behind reads are rare: at most three in any run
-measured. Write fills are negligible for programs running from DDR: none in
-`ddr_bench`, at most 0.02% of the L2's misses in any CoreMark-PRO workload,
-and about 0.3% under Linux. NIC receive raises them to about 6% of the L2's
-misses and of the cycles its miss slots are held in a 512 MiB NFS read, and
-to about 4.5% in a UDP stream. The counters leave out maintenance traffic,
-so the Linux figures do not include write fills from the L1D writebacks that
-`sfence.vma` triggers.
+Profiling of the previous cache hierarchy measured the L2's two write costs
+on the X3. A 32-byte write to a line the L2 lacked read the line from DDR
+first, and a write to the other half of a line with a read in flight waited
+for that read and held up the L2. Writes held behind reads were rare: at most
+three in any run measured. Write fills were negligible for programs running
+from DDR: none in `ddr_bench`, at most 0.02% of the L2's misses in any
+CoreMark-PRO workload, and about 0.3% under Linux. NIC receive raised them to
+about 6% of the L2's misses and of the cycles its miss slots were held in a
+512 MiB NFS read, and to about 4.5% in a UDP stream. Those counters excluded
+maintenance traffic, so the Linux figures did not include write fills from
+the L1D writebacks that `sfence.vma` triggered.
+
+In the coherent home only DMA writes allocate write fills, because the L1D's
+dirty-sector writebacks (PutM messages) update resident L2 lines. Its
+write-fill counters count those fills and the cycles they occupy; the
+write-read wait counters are not implemented and read zero.
 
 The [performance model](perf-modeling/README.md) is a cycle-approximate
 model of `cpu_top` and `soc_top` that CI compares with a CoreMark trace from
-the RTL. Its sweep of the memory system shows that a second memory channel
-needs about 16 reads in flight to use its bandwidth, where the L2 tracks 4
-misses today. Next is to measure 8, 12 and 16 L2 misses in flight, with the
-L1D miss slots and prefetch depth that feed them, in the model and in the
-RTL.
+the RTL. Its sweep of the previous hierarchy showed that a second memory
+channel needs about 16 reads in flight to use its bandwidth. The coherent
+path sends one L1D miss at a time to a home with four fills, and
+`L2_NUM_MSHR`, `L1D_NUM_MSHR` and the L2 prefetch parameters have no effect
+on the CPU. Measuring 8, 12 and 16 L2 misses in flight in the RTL therefore
+needs more fills in the home and enough concurrent requests to use them,
+which more L1D misses in flight or a prefetcher in the home would supply.
 
 ## Verification
 

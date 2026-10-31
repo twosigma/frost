@@ -132,18 +132,18 @@ backpressure; see the [CPU interface](cpu_top/README.md).
 Instruction fetch and data accesses both reach the cached region. The
 hierarchy has a 128 KiB L1D, a 16 KiB L1I, and a shared 2 MiB L2. All three
 are 4-way set-associative with tree pseudo-LRU replacement (the L1D with
-bimodal insertion), write-back, and write-allocate, on every target. The L1s
-use 32-byte lines; the L2 uses 64-byte lines, each holding two of them, and
-moves whole lines to and from DDR as single 512-bit AXI transfers. With
+bimodal insertion). The L1I is read-only. The L1D and L2 write back dirty
+data; L1D stores acquire M before changing their sector. The L1s use 32-byte
+lines; the L2 uses 64-byte lines, each holding two of them, and moves whole
+lines to and from DDR as single 512-bit AXI transfers. With
 `L2_LINE_BYTES=32` the L2 uses the L1s' line size and the DDR port is 256
-bits wide. Cached accesses
-have variable latency, and L1 hits proceed while misses are pending. The L1D,
-the page-table walker, the L1I, and DMA share the hierarchy in that priority
-order, with a bound on DMA starvation, and below them a stream prefetcher
-reads ahead of ascending L1D miss streams into the L2. DMA and page-table
-walks see dirty L1D data without software cache maintenance. Code fetched from DDR passes through
-a buffer of two active lines and six victim lines in front of the L1I. See
-the [cache guide](lib/cache/README.md).
+bits wide. Cached accesses have variable latency, and L1 hits proceed while
+misses are pending. The L1D, the page-table walker, the L1I, and DMA send
+their requests to the L2's coherence home, which orders them by 32-byte
+sector. DMA and page-table walks see dirty L1D data without software cache
+maintenance. Code fetched from DDR passes through a buffer of two active
+lines and six victim lines in front of the L1I. See the
+[cache guide](lib/cache/README.md).
 
 `fence.i` drains stores, writes back dirty L1D lines, invalidates the L1I,
 and flushes the fetch buffer before refetch. Reset invalidates the caches.
@@ -257,9 +257,8 @@ byte offset *i*. Producers position data by
 - Cached loads are tagged. The load queue names one of its
   `riscv_pkg::CachedLoadSlots` slots on each cached launch, and the response
   returns it beside the beat, so several cached loads can be in flight and
-  complete in any order. Loads of one line share a line request in the
-  cached-tier adapter, except LRs and AMOs, and a store closes that sharing
-  for every line.
+  complete in any order. The coherent L1D tracks each load in its own read
+  slot, and its misses go to the home one at a time.
   Uncached Normal and Device reads share one response owner until AXI R is
   consumed. The router arbitrates their completed response with cached beats;
   no later uncached read may overwrite that owner. The outgoing 256/512-bit
@@ -407,7 +406,7 @@ and the fixed-latency pipeline test interface.
 Simulation sets parameters with Verilator `-G` overrides. For the `frost`
 top, `tests/Makefile` sets the low BRAM to its 256 KiB hardware size
 (`SIM_MEM_SIZE_BYTES`), enables the cached tier with the X3 hierarchy, sets
-the DDR model's size and latency, and turns on fast cache maintenance
+the DDR model's size and latency, and turns on fast L1I maintenance
 (`SIM_FAST_MAINT=1`). Individual entries in `tests/test_run_cocotb.py` add
 their own overrides, such as `-GFETCH_VALID_FUZZ=1` for the fetch-fuzz runs
 and DDR latency jitter or reordering for stress runs. The cache unit benches
@@ -437,11 +436,11 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `CACHED_SIZE_BYTES` | `riscv_pkg::DdrCapacityBytes` | Cached-region aperture; keep equal to the package setting so PMA, caches, DMA and AXI agree |
 | `frost.sv` | `ENABLE_CACHED_TIER` | `0` | 1 builds the cache hierarchy; simulation sets it with `-G`, and boards with a DDR controller pass 1 |
 | `frost.sv` | `L1_CACHE_BYTES` / `L1I_CACHE_BYTES` / `L2_CACHE_BYTES` | `128 KiB` / `16 KiB` / `2 MiB` | L1D, L1I, and L2 sizes |
-| `frost.sv` | `L2_PREFETCH` | `1` | 1 builds the L2 stream prefetcher |
+| `frost.sv` | `L2_PREFETCH` | `1` | No effect: the L2 coherence home has no stream prefetcher |
 | `frost.sv` | `USE_BEHAVIORAL_DDR` | `1` | 1 ends the tier in the simulation DDR model; 0 exports the bridge's AXI master on `o_ddr_axi_*` |
 | `frost.sv` | `DDR_MODEL_BYTES` / `DDR_MODEL_LATENCY` | `64 MiB` / `30` | DDR model size and access latency in cycles (simulation) |
 | `frost.sv` | `DDR_MODEL_LATENCY_JITTER` / `DDR_MODEL_REORDER` | `0` / `0` | DDR model per-transaction latency jitter, and out-of-order completion across ids (simulation); `FROST_DDR_MODEL_SEED` draws these and the latency for a test run ([tests/README.md](../../tests/README.md#environment-and-output)) |
-| `frost.sv` | `SIM_FAST_MAINT` | `0` | Simulation only: 1 selects fast `fence.i` cache maintenance with the same functional effect |
+| `frost.sv` | `SIM_FAST_MAINT` | `0` | Simulation only: 1 accelerates L1I maintenance; L1D sweeps still visit every set |
 | `frost.sv` | `FETCH_VALID_FUZZ` | `0` | Simulation only: 1 delays local instruction AXI responses to exercise variable fetch latency |
 | `frost.sv` | `PERF_COUNTERS` | `0` | 1 builds the `mperf*` profiling counters |
 | `frost.sv` | `DEBUG_JTAG_TAP` | `1` | 1 uses the generic TAP on `i_jtag_*`; 0 takes the BSCAN bundle from the board |
