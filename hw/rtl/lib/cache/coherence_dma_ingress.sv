@@ -16,11 +16,14 @@
 
 `include "coherence_types.svh"
 
-// Accepted line identities remain occupied through the external response edge.
+// Accepted line identities remain occupied until their slot frees: at the
+// later of the external response edge and the home's U. A read responds from
+// the cycle after its G, which carries its final data; a write responds after
+// its U.
 module coherence_dma_ingress #(
     parameter int unsigned ADDR_WIDTH = 32,
-    // Admission credits: line slots held from acceptance through the external
-    // response. A power of two, 2 to 16.
+    // Admission credits: line slots held from acceptance through the later of
+    // the external response and U. A power of two, 2 to 16.
     parameter int unsigned SLOTS = 4
 ) (
     input logic i_clk,
@@ -69,6 +72,8 @@ module coherence_dma_ingress #(
   logic [255:0] data_q[SLOTS];
   logic [5:0] tid_q[SLOTS];
   logic [SLOTS-1:0] error_q;
+  // The slot's response is in the response register or has been sent.
+  logic [SLOTS-1:0] responded_q;
   logic [SlotBits-1:0] queue_q[SLOTS];
   logic [SlotBits-1:0] head_q, tail_q, free_slot, response_slot_q;
   logic [CountBits-1:0] count_q, queued_q;
@@ -80,9 +85,18 @@ module coherence_dma_ingress #(
   coh_g_t grant_in;
   coh_u_t release_in;
   logic accept_request, accept_demand, release_request;
+  logic [SLOTS-1:0] early_due, release_due, release_free, early_first, pick_onehot;
+  logic pick_valid, pulse_free;
+  logic [SlotBits-1:0] pick_slot;
+  logic [255:0] pick_data;
+  logic [3:0] pick_id;
+  logic pick_error;
 
   function automatic logic [3:0] packet_id(input coh_d_t packet);
     packet_id = packet.q.id;
+  endfunction
+  function automatic logic packet_write(input coh_d_t packet);
+    packet_write = packet.opcode == coherence_pkg::DMAWrite;
   endfunction
 
   always_comb begin
@@ -128,18 +142,69 @@ module coherence_dma_ingress #(
     assign release_match[slot] = phase_q[slot] == WaitRelease &&
         release_in.q == request_packet.q && release_in.addr == request_packet.addr &&
         release_in.tid == tid_q[slot];
-    assign c_valid[slot] = !i_rst &&
-        (phase_q[slot] == HaveGrant || (i_g_valid && grant_match[slot]));
+    // A read may respond once its G data is held; the U's slot responds next
+    // when it has not responded, and frees now when it has.
+    assign early_due[slot] = request_packet.opcode != coherence_pkg::DMAWrite &&
+        (phase_q[slot] == HaveGrant || phase_q[slot] == WaitRelease) && !responded_q[slot];
+    assign release_due[slot] = release_request && release_match[slot] && !responded_q[slot];
+    assign release_free[slot] = release_request && release_match[slot] && responded_q[slot];
+    // A slot offers C from the cycle after its G, from registered state, so
+    // the G comparison does not reach the C arbiter.
+    assign c_valid[slot] = !i_rst && phase_q[slot] == HaveGrant;
     assign completions[slot] = {
       request_packet.q,
-      phase_q[slot] == Sent ? grant_in.tid : tid_q[slot],
+      tid_q[slot],
       request_packet.addr,
-      (phase_q[slot] == Sent ? grant_in.error : error_q[slot]) ?
-          coherence_pkg::Error : coherence_pkg::Consumed,
+      error_q[slot] ? coherence_pkg::Error : coherence_pkg::Consumed,
       1'b1
     };
   end
 
+  // One response per cycle: the U's slot first, so no response is later than
+  // the cycle after its U; otherwise the lowest-numbered early read. The U's
+  // slot and the early read each select their own payload, and the U's
+  // presence chooses between the two selections last.
+  logic release_pick;
+  logic [SlotBits-1:0] release_slot, early_slot;
+  logic [255:0] release_data, early_data;
+  logic [3:0] release_id, early_id;
+  logic release_error, early_error;
+  always_comb begin
+    early_first = '0;
+    for (int slot = SLOTS - 1; slot >= 0; slot--) begin
+      if (early_due[slot]) begin
+        early_first = '0;
+        early_first[slot] = 1'b1;
+      end
+    end
+    release_pick = |release_due;
+    release_slot = '0;
+    release_data = '0;
+    release_id = '0;
+    release_error = 1'b0;
+    early_slot = '0;
+    early_data = '0;
+    early_id = '0;
+    early_error = 1'b0;
+    for (int slot = 0; slot < SLOTS; slot++) begin
+      release_slot |= SlotBits'(slot) & {SlotBits{release_due[slot]}};
+      release_data |= data_q[slot] & {256{release_due[slot]}};
+      release_id |= packet_id(packet_q[slot]) & {4{release_due[slot]}};
+      release_error |= error_q[slot] && release_due[slot];
+      early_slot |= SlotBits'(slot) & {SlotBits{early_first[slot]}};
+      early_data |= data_q[slot] & {256{early_first[slot]}};
+      early_id |= packet_id(packet_q[slot]) & {4{early_first[slot]}};
+      early_error |= error_q[slot] && early_first[slot];
+    end
+    pick_onehot = release_pick ? release_due : early_first;
+    pick_valid = release_pick || |early_first;
+    pick_slot = release_pick ? release_slot : early_slot;
+    pick_data = release_pick ? release_data : early_data;
+    pick_id = release_pick ? release_id : early_id;
+    pick_error = release_pick ? release_error : early_error;
+  end
+  // The response pulse frees a slot whose U has already been accepted.
+  assign pulse_free = o_resp_valid && phase_q[response_slot_q] == Respond;
   // A slot offering C stays in HaveGrant until its C is accepted.
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 18),
@@ -165,6 +230,7 @@ module coherence_dma_ingress #(
       queued_q <= '0;
       occupied_q <= '0;
       error_q <= '0;
+      responded_q <= '0;
       response_slot_q <= '0;
       o_resp_valid <= 1'b0;
       o_resp_id <= '0;
@@ -175,10 +241,18 @@ module coherence_dma_ingress #(
         tid_q[slot]   <= '0;
       end
     end else begin
-      o_resp_valid <= release_request;
-      if (o_resp_valid) begin
+      o_resp_valid <= pick_valid;
+      if (pick_valid) response_slot_q <= pick_slot;
+      for (int slot = 0; slot < SLOTS; slot++) begin
+        if (release_due[slot] || (early_first[slot] && !release_pick)) responded_q[slot] <= 1'b1;
+      end
+      o_resp_id <= pick_id;
+      o_resp_data <= pick_data;
+      o_resp_error <= pick_error;
+      if (pulse_free) begin
         occupied_q[o_resp_id] <= 1'b0;
         phase_q[response_slot_q] <= Free;
+        responded_q[response_slot_q] <= 1'b0;
       end
       if (accept_request) begin
         packet_q[free_slot] <= incoming;
@@ -187,14 +261,8 @@ module coherence_dma_ingress #(
         tail_q <= tail_q + 1'b1;
         occupied_q[i_req_id] <= 1'b1;
       end
-      case ({
-        accept_request, o_resp_valid
-      })
-        2'b10: count_q <= count_q + 1'b1;
-        2'b01: count_q <= count_q - 1'b1;
-        default: begin
-        end
-      endcase
+      count_q <= count_q + CountBits'(accept_request) - CountBits'(pulse_free) -
+          CountBits'(|release_free);
       case ({
         accept_request, accept_demand
       })
@@ -212,12 +280,11 @@ module coherence_dma_ingress #(
           phase_q[slot] <= HaveGrant;
         end
         if (c_valid[slot] && c_ready[slot]) phase_q[slot] <= WaitRelease;
-        if (i_u_valid && release_match[slot]) begin
-          phase_q[slot] <= Respond;
-          response_slot_q <= SlotBits'(slot);
-          o_resp_id <= packet_id(packet_q[slot]);
-          o_resp_data <= data_q[slot];
-          o_resp_error <= error_q[slot];
+        if (release_due[slot]) phase_q[slot] <= Respond;
+        if (release_free[slot]) begin
+          phase_q[slot] <= Free;
+          occupied_q[packet_id(packet_q[slot])] <= 1'b0;
+          responded_q[slot] <= 1'b0;
         end
         // The queue head is Queued, so no other transition applies to it;
         // D acceptance, which arrives last, selects its next phase last.
@@ -233,7 +300,14 @@ module coherence_dma_ingress #(
       assert ($onehot0(grant_match));
       assert ($onehot0(release_match));
       if (accept_demand) assert (phase_q[queue_q[head_q]] == Queued);
-      if (o_resp_valid) assert (phase_q[response_slot_q] == Respond);
+      if (o_resp_valid) assert (phase_q[response_slot_q] != Free && responded_q[response_slot_q]);
+      assert ($onehot0(pick_onehot));
+      for (int slot = 0; slot < SLOTS; slot++) begin
+        if (phase_q[slot] == Respond) assert (responded_q[slot]);
+        if (responded_q[slot])
+          assert (phase_q[slot] == Respond || phase_q[slot] == HaveGrant ||
+            phase_q[slot] == WaitRelease);
+      end
     end
   end
 `endif
@@ -254,7 +328,8 @@ module coherence_dma_ingress #(
   logic [255:0] f_reference_data_q;
   logic [5:0] f_reference_tid_q;
   logic f_reference_error_q, f_reference_sent_q, f_reference_granted_q;
-  logic f_reference_completed_q, f_reference_released_q;
+  logic f_reference_completed_q, f_reference_released_q, f_reference_responded_q;
+  logic f_reference_live_q;
   assign f_presented_request = o_d;
   assign f_presented_grant = i_g;
   assign f_presented_completion = o_c;
@@ -268,6 +343,8 @@ module coherence_dma_ingress #(
       f_reference_granted_q <= 1'b0;
       f_reference_completed_q <= 1'b0;
       f_reference_released_q <= 1'b0;
+      f_reference_responded_q <= 1'b0;
+      f_reference_live_q <= 1'b0;
     end else begin
       case ({
         accept_request, accept_demand
@@ -295,6 +372,8 @@ module coherence_dma_ingress #(
           f_reference_granted_q <= 1'b0;
           f_reference_completed_q <= 1'b0;
           f_reference_released_q <= 1'b0;
+          f_reference_responded_q <= 1'b0;
+          f_reference_live_q <= 1'b1;
         end
       end
       if (accept_demand) begin
@@ -336,10 +415,18 @@ module coherence_dma_ingress #(
         f_reference_released_q <= 1'b1;
       end
       if (o_resp_valid && o_resp_id == f_id) begin
-        assert (f_reference_released_q);
+        // A write responds after its U; a read once its G data is held.
+        assert (f_reference_request.opcode == coherence_pkg::DMAWrite ?
+            f_reference_released_q : f_reference_granted_q);
+        assert (!f_reference_responded_q);
         assert (o_resp_data == f_reference_data_q);
         assert (o_resp_error == f_reference_error_q);
+        f_reference_responded_q <= 1'b1;
       end
+      // The watched ID stays held from acceptance until both its response and
+      // its U have been seen at the interfaces.
+      assert (occupied_q[f_id] ==
+          (f_reference_live_q && !(f_reference_responded_q && f_reference_released_q)));
       assert (f_issue_count_q == queued_q);
       assert (f_issue_head_q == head_q && f_issue_tail_q == tail_q);
       for (int index = 0; index < SLOTS; index++)
@@ -351,6 +438,10 @@ module coherence_dma_ingress #(
           assert (f_granted[slot] == f_reference_granted_q);
           assert (f_completed[slot] == f_reference_completed_q);
           assert (f_released[slot] == f_reference_released_q);
+          // The response register is loaded one edge before its pulse.
+          assert (responded_q[slot] == (f_reference_responded_q ||
+              (o_resp_valid && response_slot_q == SlotBits'(slot))));
+          if (f_reference_responded_q) assert (f_reference_granted_q);
           if (f_granted[slot]) begin
             assert (data_q[slot] == f_reference_data_q);
             assert (error_q[slot] == f_reference_error_q);
@@ -374,15 +465,9 @@ module coherence_dma_ingress #(
       f_released <= '0;
     end else begin
       if (accept_request) assume (i_req_addr[4:0] == 0);
-      case ({
-        accept_request, o_resp_valid
-      })
-        2'b10: f_outstanding <= f_outstanding + 1'b1;
-        2'b01: f_outstanding <= f_outstanding - 1'b1;
-        default: begin
-        end
-      endcase
-      if (o_resp_valid) begin
+      f_outstanding <= f_outstanding + CountBits'(accept_request) - CountBits'(pulse_free) -
+          CountBits'(|release_free);
+      if (pulse_free) begin
         f_occupied[o_resp_id] <= 1'b0;
         f_queued[response_slot_q] <= 1'b0;
         f_sent[response_slot_q] <= 1'b0;
@@ -417,7 +502,14 @@ module coherence_dma_ingress #(
       for (int slot = 0; slot < SLOTS; slot++) begin
         if (i_g_valid && grant_match[slot]) f_granted[slot] <= 1'b1;
         if (c_valid[slot] && c_ready[slot]) f_completed[slot] <= 1'b1;
-        if (i_u_valid && release_match[slot]) f_released[slot] <= 1'b1;
+        if (release_due[slot]) f_released[slot] <= 1'b1;
+        if (release_free[slot]) begin
+          f_occupied[packet_id(packet_q[slot])] <= 1'b0;
+          f_queued[slot] <= 1'b0;
+          f_sent[slot] <= 1'b0;
+          f_granted[slot] <= 1'b0;
+          f_completed[slot] <= 1'b0;
+        end
         assert (f_queued[slot] == (phase_q[slot] != Free));
         assert (f_sent[slot] == (phase_q[slot] >= Sent));
         assert (f_granted[slot] == (phase_q[slot] >= HaveGrant));
@@ -431,7 +523,10 @@ module coherence_dma_ingress #(
         end
       end
       if (o_resp_valid) begin
-        assert (occupied_q[o_resp_id] && f_released[response_slot_q]);
+        assert (occupied_q[o_resp_id] && (f_released[response_slot_q] ||
+            (f_granted[response_slot_q] && !packet_write(
+            packet_q[response_slot_q]
+        ))));
         assert (o_resp_id == packet_id(packet_q[response_slot_q]));
         assert (o_resp_data == data_q[response_slot_q]);
         assert (o_resp_error == error_q[response_slot_q]);
@@ -446,7 +541,12 @@ module coherence_dma_ingress #(
         assert (o_c_valid);
         assert (o_c == $past(o_c));
       end
-      assert (o_resp_valid == $past(release_request));
+      assert (o_resp_valid == $past(pick_valid));
+      // A slot whose U arrives before its response responds the next cycle.
+      if ($past(|release_due))
+        assert (o_resp_valid && $past(release_due) == (SLOTS'(1) << response_slot_q));
+      cover (o_resp_valid && phase_q[response_slot_q] != Respond);
+      cover (pulse_free && |release_free);
       cover (count_q == CountBits'(SLOTS) && queued_q == 0);
       cover (o_resp_valid && o_resp_error && count_q != 0);
       cover (o_resp_valid && accept_request && accept_demand && release_request);

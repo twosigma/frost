@@ -66,7 +66,7 @@ async def four_credits_and_release_before_b(dut: Any) -> None:
     await _wait(dut, [read])
     b.check_read(read)
     b.check_memory()
-    b.check_clean()
+    await b.check_clean()
 
 
 @cocotb.test()
@@ -103,7 +103,7 @@ async def reset_cancels_each_coherent_stage(dut: Any) -> None:
         read = b.read(fresh.addr, 3, b.max_size, INCR)
         await _wait(dut, [read])
         b.check_read(read)
-        b.check_clean()
+        await b.check_clean()
 
 
 @cocotb.test()
@@ -142,4 +142,4 @@ async def independent_results_preserve_axi_burst_order(dut: Any) -> None:
     b.check_read(read)
     assert b.ingress.grant_order[4:] != sorted(b.ingress.grant_order[4:])
     b.check_memory()
-    b.check_clean()
+    await b.check_clean()

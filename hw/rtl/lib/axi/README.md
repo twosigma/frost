@@ -93,16 +93,20 @@ four each by default, counting the input registers.
 Writes use line ids `{0, n}` and reads `{1, n}`, n below
 `2^(LINE_ID_BITS - 1)`. A write id is held from the segment's seal to its
 line response; a read id until its segment's last R beat, so every line
-response has a place in the read buffer. Writes take the line port first,
+response has a place in the read buffer. A write takes the lowest free id. A
+read takes the first free id after the last read's, so a retired read id is
+reused last: the coherent ingress answers a read at its grant and holds its
+id until the home's release. Writes take the line port first,
 and a read waits for at most `STARVATION_LIMIT` write grants. The choice is
 held while the presented request waits, as the ingress requires.
 
 The cluster ingress admits eight line requests and preserves every bit of
 the bridge's line ID. In soc_top the bridge's line IDs are four bits wide,
 the full coherent request ID, so it has eight read and eight write IDs, and
-its tables hold eight bursts per direction. Each line response follows the matching
-home Release, after its data operation and completion acknowledgement.
-An ID remains occupied through that external response edge.
+its tables hold eight bursts per direction. A write's line response follows the
+matching home Release, after its data operation and completion acknowledgement;
+a read's follows its grant, which carries its final data. The ingress holds an
+ID until both the response and the Release.
 
 Every AXI READY and every B and R output comes from registered state, and
 the line request is presented from registers. A one-beat read takes five

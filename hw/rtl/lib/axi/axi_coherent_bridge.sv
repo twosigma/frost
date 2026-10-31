@@ -258,6 +258,15 @@ module axi_coherent_bridge #(
     for (int k = int'(NumSubIds) - 1; k >= 0; k--) if (!busy[k]) lowest_free = SubIdBits'(k);
   endfunction
 
+  // First clear bit of a busy mask at or after start, wrapping.
+  function automatic logic [SubIdBits-1:0] next_free(input logic [NumSubIds-1:0] busy,
+                                                     input logic [SubIdBits-1:0] start);
+    next_free = start;
+    for (int k = int'(NumSubIds) - 1; k >= 0; k--) begin
+      if (!busy[SubIdBits'(int'(start)+k)]) next_free = SubIdBits'(int'(start) + k);
+    end
+  endfunction
+
   // ---------------------------------------------------------------------------
   // Line port: the write and read request registers and their merge
   // ---------------------------------------------------------------------------
@@ -556,8 +565,10 @@ module axi_coherent_bridge #(
   assign i_issue = i_have && !i_err_q && i_seg_start_q && !rreq_valid_q && r_id_free && seg_room;
   assign i_advance = i_have && (i_err_q ? seg_room : (!i_seg_start_q || i_issue));
   assign i_burst_end = i_advance && (i_err_q || i_last_q);
-  logic [SubIdBits-1:0] r_new_sub;
-  assign r_new_sub = lowest_free(r_id_busy_q);
+  // Read IDs rotate, so a retired ID is reused last: a line ingress may hold a
+  // read's ID after its last beat until its own release.
+  logic [SubIdBits-1:0] r_new_sub, r_next_sub_q;
+  assign r_new_sub = next_free(r_id_busy_q, r_next_sub_q);
 
   logic i_load, i_load_from_ar;
   logic [RbtBits-1:0] i_next_idx;
@@ -682,6 +693,7 @@ module axi_coherent_bridge #(
       seg_tail_q    <= '0;
       rreq_valid_q  <= 1'b0;
       r_id_busy_q   <= '0;
+      r_next_sub_q  <= '0;
       rbuf_valid_q  <= '0;
       r_err_q       <= 1'b0;
       r_last_q      <= 1'b0;
@@ -749,6 +761,7 @@ module axi_coherent_bridge #(
         rreq_valid_q <= 1'b1;
         rreq_line_q <= i_addr_q[LINE_ADDR_WIDTH-1:OffsetBits];
         rreq_sub_q <= r_new_sub;
+        r_next_sub_q <= r_new_sub + 1'b1;
         r_id_busy_q[r_new_sub] <= 1'b1;
       end
       if (resp_read) rbuf_valid_q[resp_sub] <= 1'b1;

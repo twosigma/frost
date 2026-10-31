@@ -68,6 +68,9 @@ class CoherentHome(LineIngress):
         self.slots = len(dut.ingress.c_valid)
         self.accepted: dict[int, tuple[int, int, int, int]] = {}
         self.released: dict[int, tuple[int, int, int]] = {}
+        # A read may respond after its G, before its Release; a record retires
+        # at the later of the two.
+        self.responded: set[int] = set()
         self.cycle = self.max_occupied = self.completions = 0
         self.pending: dict[int, HomeRequest] = {}
         self.issue_order: list[tuple[int, int]] = []
@@ -77,6 +80,13 @@ class CoherentHome(LineIngress):
         self.phase = "d"
         self.pause: str | None = None
         self._task = cocotb.start_soon(self._run())
+
+    def _retire(self, rid: int) -> None:
+        del self.outstanding[rid]
+        del self.accepted[rid]
+        del self.pending[rid]
+        del self.released[rid]
+        self.responded.discard(rid)
 
     async def _run(self) -> None:
         dut = self._dut
@@ -136,21 +146,29 @@ class CoherentHome(LineIngress):
                 self.outstanding.clear()
                 self.accepted.clear()
                 self.released.clear()
+                self.responded.clear()
                 self.pending.clear()
                 self.issue_order.clear()
                 grant_slot = release_slot = None
                 continue
             if int(dut.i_line_resp_valid.value):
                 rid = int(dut.i_line_resp_id.value)
-                assert rid in self.released, "external response preceded Release"
-                value, fault, released_at = self.released.pop(rid)
-                assert self.cycle > released_at
-                assert int(dut.i_line_resp_rdata.value) == value
-                assert int(dut.i_line_resp_error.value) == fault
-                del self.outstanding[rid]
-                del self.accepted[rid]
-                del self.pending[rid]
+                req = self.pending[rid]
+                assert rid not in self.responded, "second external response"
+                if req.opcode == 8:
+                    assert rid in self.released, "write response preceded Release"
+                else:
+                    assert req.phase in ("c", "u", "released"), (
+                        "read response preceded G"
+                    )
+                if rid in self.released:
+                    assert self.cycle > self.released[rid][2]
+                assert int(dut.i_line_resp_rdata.value) == req.data
+                assert int(dut.i_line_resp_error.value) == req.error
+                self.responded.add(rid)
                 self.completions += 1
+                if rid in self.released:
+                    self._retire(rid)
             if int(dut.o_line_req_valid.value) and int(dut.i_line_req_ready.value):
                 rid = int(dut.o_line_req_id.value)
                 address = int(dut.o_line_req_addr.value)
@@ -224,6 +242,8 @@ class CoherentHome(LineIngress):
                 req.phase = "released"
                 self.released[release_slot] = (req.data, req.error, self.cycle)
                 self.release_order.append(req.order)
+                if release_slot in self.responded:
+                    self._retire(release_slot)
                 release_slot = None
             for req in self.pending.values():
                 if req.phase != "queued":
