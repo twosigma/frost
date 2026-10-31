@@ -147,6 +147,9 @@ class Ingress:
         assert self.get("o_g_ready")
         await self.tick()
         await self.set(i_g_valid=0)
+        # The slot offers C from the cycle after its G.
+        assert not self.get("o_c_valid") and not self.get("o_resp_valid")
+        await self.tick()
         assert self.get("o_c_valid")
         expected = (
             self.q(ident),
@@ -155,14 +158,24 @@ class Ingress:
             2 if error else 0,
             1,
         )
-        for _ in range(4):
+        for cycle in range(4):
             assert self.get("o_c_valid")
             assert unpack(self.get("o_c"), (9, 6, self.p, 2, 1)) == expected
-            assert not self.get("o_resp_valid")
+            # A read responds once its G data is held; a write waits for U.
+            early = cycle == 0 and not ident & 1
+            assert self.get("o_resp_valid") == int(early)
+            if early:
+                self.check_response(ident, error)
             await self.tick()
 
+    def check_response(self, ident: int, error: int) -> None:
+        """Match the response register to the request's G."""
+        assert self.get("o_resp_id") == ident
+        assert self.get("o_resp_data") == (1 << (ident * 16)) | 0xA55A
+        assert self.get("o_resp_error") == error
+
     async def complete(self, ident: int, error: int = 0) -> None:
-        """Require matching release before external completion and ID reuse."""
+        """Require matching release before a write's response and any ID reuse."""
         await self.set(i_c_ready=1)
         await self.tick()
         await self.set(i_c_ready=0)
@@ -181,10 +194,12 @@ class Ingress:
         assert self.get("o_u_ready")
         await self.tick()
         await self.set(i_u_valid=0)
+        if not ident & 1:
+            # The read has responded, so its U frees the slot and its ID.
+            assert self.get("o_req_ready") and not self.get("o_resp_valid")
+            return
         assert self.get("o_resp_valid")
-        assert self.get("o_resp_id") == ident
-        assert self.get("o_resp_data") == (1 << (ident * 16)) | 0xA55A
-        assert self.get("o_resp_error") == error
+        self.check_response(ident, error)
         assert not self.get("o_req_ready")
         await self.tick()
         assert self.get("o_req_ready") and not self.get("o_resp_valid")
@@ -249,7 +264,10 @@ async def reset_at_each_home_stage(dut: Any) -> None:
 
 @cocotb.test()
 async def issue_all_credits_and_complete_out_of_order(dut: Any) -> None:
-    """Issue four requests before any grant and match reordered G/C/U by full identity."""
+    """Issue four requests before any grant and match reordered G/C/U by full identity.
+
+    Reads respond after G and writes after U.
+    """
     b = Ingress(dut)
     await b.reset()
     ids = (0, 1, 8, 15)
@@ -277,7 +295,7 @@ async def issue_all_credits_and_complete_out_of_order(dut: Any) -> None:
             held = b.get("o_c")
         assert b.get("o_c") == held
     await b.tick(10)
-    assert b.get("o_c") == held and not b.responses
+    assert b.get("o_c") == held and [r[0] for r in b.responses] == [8, 0]
     await b.set(i_c_ready=1)
     for _ in range(30):
         if len(b.completions) == 4:
@@ -294,7 +312,7 @@ async def issue_all_credits_and_complete_out_of_order(dut: Any) -> None:
             2 if ident == 15 else 0,
             1,
         )
-    assert not b.responses
+    assert [r[0] for r in b.responses] == [8, 0]
     for ident in (1, 0, 15, 8):
         await b.set(
             i_u_valid=1,
@@ -302,7 +320,9 @@ async def issue_all_credits_and_complete_out_of_order(dut: Any) -> None:
         )
         assert b.get("o_u_ready")
         await b.tick()
-        assert b.get("o_resp_valid") and b.get("o_resp_id") == ident
+        assert b.get("o_resp_valid") == ident & 1
+        if ident & 1:
+            assert b.get("o_resp_id") == ident
         await b.set(i_u_valid=0)
     for _ in range(30):
         if len(b.responses) == 4:
@@ -340,3 +360,78 @@ async def younger_response_reuses_credit_before_oldest_grant(dut: Any) -> None:
         await b.grant(ident)
         await b.complete(ident)
     assert [response[0] for response in b.responses] == [4, 4, 8, 12, 0]
+
+
+@cocotb.test()
+async def read_responses_contend_with_releases(dut: Any) -> None:
+    """Give a U's slot the response first, and reset reads before and after responding."""
+    b = Ingress(dut)
+
+    def grant(ident: int) -> int:
+        return pack(
+            (3, 4 if ident & 1 else 3),
+            (9, b.q(ident)),
+            (6, ident + 19),
+            (b.p, b.address(ident)),
+            (256, (1 << (ident * 16)) | 0xA55A),
+            (1, 0),
+        )
+
+    def release(ident: int) -> int:
+        return pack((9, b.q(ident)), (6, ident + 19), (b.p, b.address(ident)))
+
+    await b.reset()
+    for ident in (1, 3, 4):
+        await b.enqueue(ident)
+    for ident in (1, 3, 4):
+        await b.demand(ident)
+    # Writes 1 and 3 reach WaitRelease.
+    for ident in (1, 3):
+        await b.set(i_g_valid=1, i_g=grant(ident))
+        await b.tick()
+        await b.set(i_g_valid=0)
+        await b.wait("o_c_valid")
+        await b.set(i_c_ready=1)
+        await b.tick()
+        await b.set(i_c_ready=0)
+    assert not b.get("o_c_valid") and not b.responses
+    # Read 4 holds its G data while the writes' U arrive: each U's slot wins.
+    await b.set(i_g_valid=1, i_g=grant(4))
+    await b.tick()
+    await b.set(i_g_valid=0, i_u_valid=1, i_u=release(1))
+    assert b.get("o_u_ready") and not b.get("o_resp_valid")
+    await b.tick()
+    await b.set(i_u=release(3), i_c_ready=1)
+    assert b.get("o_u_ready") and b.get("o_c_valid")
+    assert b.get("o_resp_valid") and b.get("o_resp_id") == 1
+    await b.tick()
+    # Read 4's own U arrives before it was picked, so it responds next.
+    await b.set(i_c_ready=0, i_u=release(4))
+    assert b.get("o_u_ready")
+    assert b.get("o_resp_valid") and b.get("o_resp_id") == 3
+    await b.tick()
+    await b.set(i_u_valid=0)
+    assert b.get("o_resp_valid")
+    b.check_response(4, 0)
+    await b.tick()
+    assert not b.get("o_resp_valid")
+    assert [r[0] for r in b.responses] == [1, 3, 4]
+    # Reset with a read's response loaded, and again after it responded
+    # while its C and U were outstanding.
+    for wait in (0, 2):
+        await b.reset()
+        await b.enqueue(6)
+        await b.demand(6)
+        await b.set(i_g_valid=1, i_g=grant(6))
+        await b.tick()
+        await b.set(i_g_valid=0)
+        await b.tick(1 + wait)
+        assert bool(b.responses) == bool(wait)
+        await b.reset()
+        assert not b.get("o_resp_valid") and not b.get("o_c_valid")
+        await b.tick(3)
+        assert not b.responses
+        await b.enqueue(6)
+        await b.demand(6)
+        await b.grant(6)
+        await b.complete(6)

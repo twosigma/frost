@@ -270,12 +270,15 @@ requests. The data class has one request identity per L1D endpoint, IDs 0
 to `L1D_NUM_MSHR - 1`; the instruction and walker classes have one each. Source 2 and class 3 identify
 DMA, whose four-bit ingress ID occupies q.id. `coherence_dma_ingress` has
 `SLOTS` admission credits, eight in the cluster, and holds each opaque ID
-through external response delivery. It presents requests in acceptance order without waiting for earlier
+until its slot frees. It presents requests in acceptance order without waiting for earlier
 grants or releases. Each slot independently owns its request, grant, completion,
 release and external response. G matches the full q and address; U also matches
-the granted tid. A fair arbiter captures C metadata from an accepted G
-or a queued completion and holds its presentation. Each accepted U
-produces its external response on the following cycle. A slot and its opaque ID return only at the external response edge.
+the granted tid. A slot offers C from the cycle after its G, and a fair
+arbiter captures the selected slot's C metadata and holds its presentation. A read's G carries its
+final data, so the read responds from the cycle after its G; a write responds
+on the cycle after its U. One response goes out per cycle, the U's slot first,
+so no response comes later than the cycle after its U. A slot and its opaque ID
+return at the later of the response edge and the U.
 Different sectors can complete out of order. The AXI bridge buffers read lines
 by ID and presents AXI read beats and write responses in burst order.
 Channel arbiters capture the payload with the selected input and hold both

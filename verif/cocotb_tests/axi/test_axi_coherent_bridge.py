@@ -161,8 +161,18 @@ class _Bench:
             length = rng.randint(0, min(255, room - 1, rng.choice((3, 15, 63, 255))))
         return addr, length, size, burst
 
-    def check_clean(self) -> None:
-        """Fail on any protocol violation either model saw."""
+    async def check_clean(self, limit: int = 400) -> None:
+        """Fail on any protocol violation either model saw, or a home record left live.
+
+        A coherent home retires a read after both its response and its
+        Release, which can follow the read's last beat.
+        """
+        records = getattr(self.ingress, "pending", None)
+        for _ in range(limit):
+            if not records:
+                break
+            await RisingEdge(self.dut.i_clk)
+        assert not records, f"{len(records)} home records did not retire"
         assert not self.master.violations, self.master.violations[:5]
         assert not self.ingress.violations, self.ingress.violations[:5]
 
@@ -231,7 +241,7 @@ async def test_line_transfers(dut: Any) -> None:
     for txn in reads:
         bench.check_read(txn)
     bench.check_memory()
-    bench.check_clean()
+    await bench.check_clean()
 
 
 @cocotb.test()
@@ -253,7 +263,7 @@ async def test_random_bursts(dut: Any) -> None:
             bench.check_read(txn)
         dut._log.info(f"round {round_}: {len(bench.ingress.log)} line requests so far")
     bench.check_memory()
-    bench.check_clean()
+    await bench.check_clean()
 
 
 @cocotb.test()
@@ -289,7 +299,7 @@ async def test_error_bursts(dut: Any) -> None:
     ok = bench.write(page, 0, top, INCR)
     await _wait(dut, [ok])
     assert ok.resp == OKAY
-    bench.check_clean()
+    await bench.check_clean()
 
 
 @cocotb.test()
@@ -312,7 +322,7 @@ async def test_ingress_errors(dut: Any) -> None:
     ):
         want = SLVERR if beat_addr - beat_addr % 32 == bad else OKAY
         assert resp == want, f"beat at {beat_addr:#x}: resp {resp}, want {want}"
-    bench.check_clean()
+    await bench.check_clean()
 
 
 @cocotb.test()
@@ -338,7 +348,7 @@ async def test_order_under_backpressure(dut: Any) -> None:
     # Line writes left in AW and beat order.
     write_lines = [entry for entry in bench.ingress.log if entry[1]]
     assert write_lines, "no line writes"
-    bench.check_clean()
+    await bench.check_clean()
 
 
 @cocotb.test()
@@ -358,7 +368,7 @@ async def test_reads_progress_under_writes(dut: Any) -> None:
         f"the read waited for {reads_at} write grants"
     )
     await _wait(dut, flood)
-    bench.check_clean()
+    await bench.check_clean()
 
 
 @cocotb.test()
@@ -392,4 +402,4 @@ async def test_reset_mid_traffic(dut: Any) -> None:
     await _wait(dut, reads)
     for txn in reads:
         bench.check_read(txn)
-    bench.check_clean()
+    await bench.check_clean()
