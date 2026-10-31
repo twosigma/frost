@@ -2202,6 +2202,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="coherence_cluster_test_harness",
         description="One hart, DMA, pending stores, recalls, and atomic ownership",
     ),
+    "coherence_cluster_misses": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GL1D_MISSES=3"),
+        python_test_module="cocotb_tests.cache.test_coherence_cluster",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="The cluster with three L1D request endpoints: loads in flight beside "
+        "stores, probes and DMA",
+    ),
     "coherence_dma_ingress": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_dma_ingress",
         hdl_toplevel_module="coherence_dma_ingress",

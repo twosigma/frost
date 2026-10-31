@@ -139,8 +139,9 @@ describe messages; the endpoint library does not implement MESI transitions.
 `coherence_request_endpoint` reserves one request identity, a grant register,
 and completion storage at local request acceptance. SOURCE, PORT_CLASS, and
 SLOT select that identity. Separate instances provide independent D, IF, and
-PTW credits. The local caller reserves installation and dirty-victim storage
-before presenting a request. The endpoint holds D through acceptance and
+PTW credits. The local caller reserves installation storage before
+presenting a request. The L1D's endpoint 0 also reserves a dirty-victim slot
+then; a load endpoint's grant installs only while a slot is free. The endpoint holds D through acceptance and
 captures a matching G by q and address. The local grant consumer then sends
 Done. The endpoint keeps its identity through C and the matching U, including
 killed reads. GetM, Atomic, and StoreConditional reject killed completion and
@@ -210,15 +211,26 @@ and a dirty-eviction slot before acquiring M. The pending record owns the
 address, bytes and mask after the SQ completion. It blocks local accesses to
 its sector and yields probes while unrelated reads proceed. SQ launch readiness reserves the next cycle's registered write even when
 line maintenance starts on that edge. There are eight
-unmerged CPU read slots, two frozen PutM slots and one acquisition endpoint.
+unmerged CPU read slots, two frozen PutM slots and `MISSES` request
+endpoints, set by `L1D_NUM_MSHR` and eight on X3. Endpoint 0 carries the
+pending store's GetM, LR, AMO and SC acquisitions, and ordinary loads only
+when it is the only endpoint; the others carry ordinary load misses. No two
+live endpoints hold the same sector. A load that misses on a sector a live
+endpoint holds waits for that endpoint's installation, or for its release if
+the sector was installed and already replaced, and then looks up again.
+Grants install one at a time, endpoint 0's first and then the lowest-numbered
+load endpoint's. A load grant installs only while a WB slot is free, and
+endpoint 0 does not take the last free slot while a load grant waits. New
+load acquisitions stop while an atomic is active or an AMO, SC or maintenance
+operation waits for every endpoint to be idle.
 Read status uses per-slot masks for allocation, response transfer, lookup
 results and grant completion. Completion and miss sets dominate allocation
 clears. Allocation sets dominate response clears of valid bits. A failed
 grant supplies the selected read's error bit. Status outcomes are computed
 with and without allocation. The allocation pulse selects the outcome.
 
-An L1D grant belongs to a live request endpoint. SC acceptance requires that
-endpoint to be idle, so grant processing and SC acceptance are mutually
+An L1D grant belongs to a live request endpoint. SC acceptance requires
+every endpoint to be idle, so grant processing and SC acceptance are mutually
 exclusive. Probe capture and service own local arbitration through R
 acceptance. Invalidation admission starts on P capture and keeps the captured
 address until the CPU accepts admission. Ready grants, writes and maintenance request one local selection
@@ -237,9 +249,10 @@ writeback sectors. The comparisons use the stored slot addresses and the
 buffered allocation's address, and the slot mask selects between their
 results. Circular priority selects a qualified slot and its address.
 There are no E grants, silent upgrades, sharer hints or stream prefetches.
-The L1D has eight read slots. The home has four fills and `L2_NUM_WB` victim
-write slots. `L1D_NUM_MSHR`, `L2_NUM_MSHR`, `L2_NUM_WAITERS` and the prefetch
-parameters have no effect on the CPU hierarchy.
+The L1D has eight read slots and `L1D_NUM_MSHR` request endpoints. The home
+has four fills and `L2_NUM_WB` victim write slots. `L2_NUM_MSHR`,
+`L2_NUM_WAITERS` and the prefetch parameters have no effect on the CPU
+hierarchy.
 
 L1D performance events count the first permission lookup of each CPU read
 or ordinary store. Cached SC selection counts as a permission miss. A store
@@ -252,7 +265,8 @@ merges do not contribute another demand. Events are registered at their
 source and use the cache-counter ABI.
 
 The hart uses source 0 and classes 0, 1 and 2 for data, instruction and walker
-requests. Each class has one request identity. Source 2 and class 3 identify
+requests. The data class has one request identity per L1D endpoint, IDs 0
+to `L1D_NUM_MSHR - 1`; the instruction and walker classes have one each. Source 2 and class 3 identify
 DMA, whose four-bit ingress ID occupies q.id. `coherence_dma_ingress` has
 four admission credits and holds each opaque ID through external response
 delivery. It presents requests in acceptance order without waiting for earlier
@@ -410,7 +424,8 @@ bytes to reach external memory.
 
 The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_equal`, `coherence_cluster`
 and `coherent_cut` cover controller ownership, inclusion, cuts, atomics and
-probe service. The whole-SoC program configurations use this hierarchy.
+probe service. `coherence_cluster_misses` repeats the cluster cases with three
+L1D request endpoints, including several loads in flight. The whole-SoC program configurations use this hierarchy.
 G and U route by their message source identity. Fair C arbiters select the
 hart and DMA inputs and the hart's data, instruction and walker inputs. Each
 arbiter holds its selection during backpressure and acknowledges only that input.
@@ -420,6 +435,10 @@ acceptance, so these arbiters present their captured selection as C validity.
 Formal targets `coherence_home_completions`, `coherence_control`, `coherence_array`,
 `coherence_home`, `coherence_l1d` and `coherent_cpu` check endpoint service,
 representative byte values, bounded controller transitions and CPU ownership.
+The `coherence_l1d` target also runs the L1D with three request endpoints and
+checks that no two live endpoints hold one sector, that no load endpoint is
+live beside a granted atomic, and that a load grant installs with a free WB
+slot.
 Detached victim validity, address and a watched byte are checked by induction
 through B. Cover tasks reach allocation, a delayed B, a blocked refetch,
 successful disposal and a failed B with preserved dirty ownership.

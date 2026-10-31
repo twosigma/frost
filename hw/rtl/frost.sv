@@ -53,8 +53,9 @@ module frost #(
     parameter int unsigned L1D_WAYS = 4,
     parameter int unsigned L1I_WAYS = 4,
     parameter int unsigned L2_WAYS = 4,
-    // The L1D has eight read slots and the home has one acquisition.
-    // L1D_NUM_MSHR and L2_NUM_MSHR do not change those capacities.
+    // L1D_NUM_MSHR sets the L1D's request endpoints, 1 to 8: one for stores,
+    // LR and atomics, and the rest for load misses in flight. The home has
+    // four fills; L2_NUM_MSHR does not change that.
     parameter int unsigned L1D_NUM_MSHR = 8,
     parameter int unsigned L2_NUM_MSHR = 4,
     parameter int unsigned L2_NUM_WB = 2,

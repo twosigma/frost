@@ -38,11 +38,11 @@ module coherence_read_select #(
     input logic [1:0] i_wb_live,
     input logic [2*ADDR_WIDTH-1:0] i_wb_addr,
     input logic i_atomic_protected,
-    input logic i_request_live,
-    input logic i_acquisition_store,
-    input logic i_acquisition_sc,
-    input logic [2:0] i_acquisition_read,
-    input logic i_wb_free,
+    // Slots an acquisition owns, slots waiting for another slot's acquisition
+    // of their line, and, per slot, whether a missed slot may look up again.
+    input logic [7:0] i_owned,
+    input logic [7:0] i_waiting,
+    input logic [7:0] i_miss_retry,
     output logic o_found,
     output logic [2:0] o_index,
     output logic [ADDR_WIDTH-1:0] o_address
@@ -74,9 +74,7 @@ module coherence_read_select #(
     assign blocked = i_write_mask[index] ? write_blocked : stored_blocked;
     assign eligible[index] = i_valid[index] && !i_ready[index] && !blocked &&
         (i_kind[2*index+:2] != 2'd2 || i_atomic_protected) &&
-        !(i_request_live && !i_acquisition_store && !i_acquisition_sc &&
-        i_acquisition_read == 3'(index)) &&
-        (!i_miss[index] || (!i_request_live && i_wb_free));
+        !i_owned[index] && !i_waiting[index] && (!i_miss[index] || i_miss_retry[index]);
     if (index == 7) begin : gen_last
       assign upper[index] = eligible[index];
     end else begin : gen_before_last
@@ -121,9 +119,8 @@ module coherence_read_select #(
             ref_address[ADDR_WIDTH-1:5];
       if (i_valid[ref_scan] && !i_ready[ref_scan] && !ref_blocked &&
           (i_kind[ref_scan*2+:2] != 2'd2 || i_atomic_protected) &&
-          !(i_request_live && !i_acquisition_store && !i_acquisition_sc &&
-          i_acquisition_read == ref_scan) &&
-          (!i_miss[ref_scan] || (!i_request_live && i_wb_free))) begin
+          !i_owned[ref_scan] && !i_waiting[ref_scan] &&
+          (!i_miss[ref_scan] || i_miss_retry[ref_scan])) begin
         ref_found = 1'b1;
         ref_index = ref_scan;
       end

@@ -19,7 +19,9 @@
 module coherence_cluster_test_harness #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 64,
-    parameter int unsigned TAG_BITS   = 7
+    parameter int unsigned TAG_BITS   = 7,
+    // L1D request endpoints.
+    parameter int unsigned L1D_MISSES = 1
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -106,17 +108,20 @@ module coherence_cluster_test_harness #(
     output logic [ADDR_WIDTH-1:0] o_fatal_addr
 );
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
-  coh_d_t hart_d, home_d;
-  coh_p_t  probe;
-  coh_r_t  reply;
-  coh_w_t  put;
+  coh_d_t home_d;
+  logic [L1D_MISSES-1:0][ADDR_WIDTH+311:0] hart_d;
+  logic [L1D_MISSES-1:0][ADDR_WIDTH+17:0] hart_c;
+  coh_p_t probe;
+  coh_r_t reply;
+  coh_w_t put;
   coh_wa_t ack;
-  coh_g_t  grant;
-  coh_c_t hart_c, home_c;
+  coh_g_t grant;
+  coh_c_t home_c;
   coh_u_t release_message;
-  logic hart_d_valid, hart_d_ready, home_d_valid, home_d_ready;
+  logic [L1D_MISSES-1:0] hart_d_valid, hart_d_ready, hart_c_valid, hart_c_ready;
+  logic home_d_valid, home_d_ready;
   logic p_valid, p_ready, r_valid, r_ready, w_valid, w_ready, wa_valid, wa_ready;
-  logic g_valid, g_ready, hart_g_ready, hart_c_valid, hart_c_ready, home_c_valid, home_c_ready;
+  logic g_valid, g_ready, hart_g_ready, home_c_valid, home_c_ready;
   logic u_valid, u_ready, hart_u_ready;
   logic hart_fatal, home_fatal;
   logic [ADDR_WIDTH-1:0] hart_fatal_addr, home_fatal_addr;
@@ -125,7 +130,8 @@ module coherence_cluster_test_harness #(
   coherence_l1d #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_BYTES(1024),
-      .TAG_BITS(TAG_BITS)
+      .TAG_BITS(TAG_BITS),
+      .MISSES(L1D_MISSES)
   ) hart (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -212,7 +218,7 @@ module coherence_cluster_test_harness #(
   );
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 312),
-      .PORTS(2)
+      .PORTS(L1D_MISSES + 1)
   ) arbiter (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -233,7 +239,7 @@ module coherence_cluster_test_harness #(
   assign u_ready = release_message.q.src == 2 ? i_agent_u_ready : hart_u_ready;
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 18),
-      .PORTS(2),
+      .PORTS(L1D_MISSES + 1),
       .HOLD_VALID(1)
   ) completions (
       .i_clk,

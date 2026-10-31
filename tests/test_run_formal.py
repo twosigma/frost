@@ -179,7 +179,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "coherence_l1d.sby",
         "The coherent L1 preserves pending stores, cuts, and exact atomic writes.",
-        tasks=("coh_l1d_bmc",),
+        tasks=("coh_l1d_bmc", "coh_l1d_multi_bmc"),
     ),
     FormalTarget(
         "coherence_home_select.sby",
@@ -1043,6 +1043,10 @@ SBY_TASKS = [
     ),
     ("coh_read_select64_prove", "Coherent read selection covers full-width addresses."),
     ("coh_l1d_bmc", "Coherent L1 pending ownership and independent probes."),
+    (
+        "coh_l1d_multi_bmc",
+        "Coherent L1 with three request endpoints: line exclusion and waiters.",
+    ),
     ("coh_home_wb_prove", "Detached victim ownership through successful B."),
     ("coh_home_victim_cover", "Victim allocation, delayed B, and blocked refetch."),
     ("coh_home_error_cover", "Failed B preserves dirty victim ownership."),

@@ -21,6 +21,9 @@ module coherent_hart_cache #(
     parameter int unsigned CACHE_BYTES = 128 * 1024,
     parameter int unsigned WAYS = 4,
     parameter int unsigned TAG_BITS = 5,
+    // L1D request endpoints, 1 to 8: endpoint 0 serves stores, LR, AMO and
+    // SC; with two or more, the others carry ordinary load misses.
+    parameter int unsigned L1D_MISSES = 8,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L1I_WAYS = 4,
     parameter int unsigned SIM_FAST_MAINT = 0
@@ -125,11 +128,17 @@ module coherent_hart_cache #(
 );
 
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
-  logic [2:0] d_valid, d_ready, g_ready, c_valid, c_ready, c_selected, u_ready;
+  // D and C ports: the L1D's endpoints first, then IF and PTW. G and U route
+  // by port class.
+  localparam int unsigned Ports   = L1D_MISSES + 2;
+  localparam int unsigned IfPort  = L1D_MISSES;
+  localparam int unsigned PtwPort = L1D_MISSES + 1;
+  logic [Ports-1:0] d_valid, d_ready, c_valid, c_ready, c_selected;
+  logic [2:0] g_ready, u_ready;
   // Per-requester packets are plain vectors, read whole by the arbiters.
-  logic [ADDR_WIDTH+311:0] demand[3];
+  logic [Ports-1:0][ADDR_WIDTH+311:0] demand;
   coh_g_t grant;
-  logic [ADDR_WIDTH+17:0] completion[3];
+  logic [Ports-1:0][ADDR_WIDTH+17:0] completion;
   coh_u_t release_message;
   logic l1d_fatal, l1i_fatal;
   logic [ADDR_WIDTH-1:0] l1d_fatal_addr, l1i_fatal_addr;
@@ -162,14 +171,14 @@ module coherent_hart_cache #(
   // Each C source holds its offer from SendC or Complete until acceptance.
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 18),
-      .PORTS(3),
+      .PORTS(Ports),
       .HOLD_VALID(1)
   ) completions (
       .i_clk,
       .i_rst,
       .i_valid(c_valid),
       .o_ready(c_ready),
-      .i_payload({completion[2], completion[1], completion[0]}),
+      .i_payload(completion),
       .o_valid(o_c_valid),
       .o_offer(),
       .o_selected(),
@@ -178,13 +187,13 @@ module coherent_hart_cache #(
   );
   coherence_d_arbiter #(
       .WIDTH((ADDR_WIDTH + 312)),
-      .PORTS(3)
+      .PORTS(Ports)
   ) demands (
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_valid(d_valid),
       .o_ready(d_ready),
-      .i_payload({demand[2], demand[1], demand[0]}),
+      .i_payload(demand),
       .o_valid(o_d_valid),
       .o_offer(),
       .o_selected(),
@@ -195,7 +204,8 @@ module coherent_hart_cache #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_BYTES(CACHE_BYTES),
       .WAYS(WAYS),
-      .TAG_BITS(TAG_BITS)
+      .TAG_BITS(TAG_BITS),
+      .MISSES(L1D_MISSES)
   ) l1d (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -251,9 +261,9 @@ module coherent_hart_cache #(
       .o_cut_inval_valid(o_cut_inval_valid),
       .i_cut_inval_done(i_cut_inval_done),
       .o_cut_release(o_cut_release),
-      .o_d_valid(d_valid[0]),
-      .i_d_ready(d_ready[0]),
-      .o_d(demand[0]),
+      .o_d_valid(d_valid[L1D_MISSES-1:0]),
+      .i_d_ready(d_ready[L1D_MISSES-1:0]),
+      .o_d(demand[L1D_MISSES-1:0]),
       .i_p_valid(i_p_valid),
       .o_p_ready(o_p_ready),
       .i_p(i_p),
@@ -269,10 +279,10 @@ module coherent_hart_cache #(
       .i_g_valid(i_g_valid && grant.q[6:5] == 0),
       .o_g_ready(g_ready[0]),
       .i_g(i_g),
-      .o_c_valid(c_valid[0]),
-      .o_c_selected(c_selected[0]),
-      .i_c_ready(c_ready[0]),
-      .o_c(completion[0]),
+      .o_c_valid(c_valid[L1D_MISSES-1:0]),
+      .o_c_selected(c_selected[L1D_MISSES-1:0]),
+      .i_c_ready(c_ready[L1D_MISSES-1:0]),
+      .o_c(completion[L1D_MISSES-1:0]),
       .i_u_valid(i_u_valid && release_message.q[6:5] == 0),
       .o_u_ready(u_ready[0]),
       .i_u(i_u),
@@ -358,16 +368,16 @@ module coherent_hart_cache #(
       .o_clean_valid(),
       .o_clean_addr(),
       .i_clean_done(1'b0),
-      .o_d_valid(d_valid[1]),
-      .i_d_ready(d_ready[1]),
-      .o_d(demand[1]),
+      .o_d_valid(d_valid[IfPort]),
+      .i_d_ready(d_ready[IfPort]),
+      .o_d(demand[IfPort]),
       .i_g_valid(i_g_valid && grant.q[6:5] == 1),
       .o_g_ready(g_ready[1]),
       .i_g(i_g),
-      .o_c_valid(c_valid[1]),
-      .o_c_selected(c_selected[1]),
-      .i_c_ready(c_ready[1]),
-      .o_c(completion[1]),
+      .o_c_valid(c_valid[IfPort]),
+      .o_c_selected(c_selected[IfPort]),
+      .i_c_ready(c_ready[IfPort]),
+      .o_c(completion[IfPort]),
       .i_u_valid(i_u_valid && release_message.q[6:5] == 1),
       .o_u_ready(u_ready[1]),
       .i_u(i_u)
@@ -394,16 +404,16 @@ module coherent_hart_cache #(
       .o_clean_valid(clean_valid),
       .o_clean_addr(clean_addr),
       .i_clean_done(clean_done),
-      .o_d_valid(d_valid[2]),
-      .i_d_ready(d_ready[2]),
-      .o_d(demand[2]),
+      .o_d_valid(d_valid[PtwPort]),
+      .i_d_ready(d_ready[PtwPort]),
+      .o_d(demand[PtwPort]),
       .i_g_valid(i_g_valid && grant.q[6:5] == 2),
       .o_g_ready(g_ready[2]),
       .i_g(i_g),
-      .o_c_valid(c_valid[2]),
-      .o_c_selected(c_selected[2]),
-      .i_c_ready(c_ready[2]),
-      .o_c(completion[2]),
+      .o_c_valid(c_valid[PtwPort]),
+      .o_c_selected(c_selected[PtwPort]),
+      .i_c_ready(c_ready[PtwPort]),
+      .o_c(completion[PtwPort]),
       .i_u_valid(i_u_valid && release_message.q[6:5] == 2),
       .o_u_ready(u_ready[2]),
       .i_u(i_u)
@@ -439,14 +449,14 @@ module coherent_hart_cache #(
     end
   end
 `ifndef SYNTHESIS
-  logic [2:0] c_stalled_q;
+  logic [Ports-1:0] c_stalled_q;
   always_ff @(posedge i_clk) begin
-    c_stalled_q <= i_rst ? 3'b000 : c_valid & ~c_ready;
-    assert (c_valid == (c_selected & {3{!i_rst}}));
+    c_stalled_q <= i_rst ? '0 : c_valid & ~c_ready;
+    assert (c_valid == (c_selected & {Ports{!i_rst}}));
     if (!i_rst) begin
       assert ((c_stalled_q & ~c_valid) == 0);
       assert ($onehot0(c_ready));
-      for (int port_idx = 0; port_idx < 3; port_idx++) begin
+      for (int port_idx = 0; port_idx < Ports; port_idx++) begin
         if (c_valid[port_idx] && c_ready[port_idx])
           assert (o_c_valid && i_c_ready && o_c == completion[port_idx]);
       end

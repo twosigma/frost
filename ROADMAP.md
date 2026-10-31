@@ -24,7 +24,8 @@ below the L1s. Its home takes the requests for each 32-byte sector in turn.
 It probes the L1D for instruction reads, page-table walks, DMA, atomic and SC
 operations, and replacement victims; the L1D's own reads, store upgrades and
 LRs need no probe while it is the only L1D. The L1D holds sectors in I, S or
-M states and sends one miss at a time to the home. With a second hart, the
+M states and has up to eight requests in flight to the home, seven of them
+for loads. With a second hart, the
 home would probe both L1Ds, and dirty data would still pass through the L2
 rather than directly between the L1Ds. A coherence unit at the L1 level can
 follow if measurements show that the probes or the trip through the L2 limit
@@ -120,12 +121,12 @@ write-read wait counters are not implemented and read zero.
 The [performance model](perf-modeling/README.md) is a cycle-approximate
 model of `cpu_top` and `soc_top` that CI compares with a CoreMark trace from
 the RTL. Its sweep of the previous hierarchy showed that a second memory
-channel needs about 16 reads in flight to use its bandwidth. The coherent
-path sends one L1D miss at a time to a home with four fills, and
-`L2_NUM_MSHR`, `L1D_NUM_MSHR` and the L2 prefetch parameters have no effect
-on the CPU. Measuring 8, 12 and 16 L2 misses in flight in the RTL therefore
-needs more fills in the home and enough concurrent requests to use them,
-which more L1D misses in flight or a prefetcher in the home would supply.
+channel needs about 16 reads in flight to use its bandwidth. In the coherent
+path, `L1D_NUM_MSHR` sets the L1D's request endpoints, eight on X3, so up to
+seven load misses go to a home with four fills; `L2_NUM_MSHR` and the L2
+prefetch parameters have no effect on the CPU. Measuring 8, 12 and 16 L2
+misses in flight in the RTL therefore needs more fills in the home, and a
+prefetcher in the home could supply further concurrent requests.
 
 ## Verification
 

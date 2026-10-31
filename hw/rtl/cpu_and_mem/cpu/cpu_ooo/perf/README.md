@@ -404,7 +404,7 @@ PutMs are excluded from the L2 access, hit and miss counts as well.
 L1D `miss_outstanding` counts unresolved logical misses: read slots whose
 first lookup missed and whose result is not ready, a pending store that
 missed, and a selected SC still waiting for its grant or result. Read misses
-count even while waiting for the L1D's single acquisition endpoint. Counter
+count even while waiting for an L1D request endpoint. Counter
 119 sums this count; 128 counts cycles with at least two such misses.
 
 L2 `miss_outstanding` counts occupied home fill controls, from allocation
