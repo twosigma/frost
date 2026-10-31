@@ -370,7 +370,7 @@ increment register. Totals and snapshot deltas are unaffected.
 | 121 | 15 | `L1I_HIT_UNDER_MISS` | event | An L1I hit resolved while at least one L1I miss was outstanding |
 | 122 | 16 | `L1D_HIT_UNDER_MISS` | event | Same, L1D |
 | 123 | 17 | `L2_HIT_UNDER_MISS` | event | Always 0: the L2 coherence home does not report hits under a miss |
-| 124 | 18 | `L1D_SLOT_FULL_STALL` | cycle | An L1D read or store lookup had a tag miss while the L1D's request was still live or neither writeback slot was free. Counted per lookup, not per cycle of the wait |
+| 124 | 18 | `L1D_SLOT_FULL_STALL` | cycle | An L1D read or store tag miss cannot acquire its required endpoint or writeback capacity, waits for an acquisition of the same line, or is blocked by atomic or drain work. With multiple endpoints, ordinary loads count when endpoints 1 through `MISSES-1` are full, even if endpoint 0 and both writeback slots are free. Counted per lookup, not per cycle of the wait |
 | 125 | 19 | `L2_SLOT_FULL_STALL` | cycle | A demand lookup cannot proceed and neither allocates nor joins a fill. Blocked tag hits count, and this can overlap `L2_CONFLICT_STALL` |
 | 126 | 20 | `L1D_CONFLICT_STALL` | cycle | The L1D is idle with no probe, grant or atomic write to serve, and its pending store waits because the store's sector is still in a writeback slot |
 | 127 | 21 | `L2_CONFLICT_STALL` | cycle | An L2 home lookup is blocked by work already in progress |
