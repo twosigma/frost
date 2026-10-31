@@ -217,6 +217,19 @@ module frost_cache #(
     output cache_perf_pkg::cache_instance_perf_events_t o_perf_events,
     output cache_perf_pkg::cache_write_perf_events_t o_write_perf_events
 );
+`ifndef SYNTHESIS
+  // Registers power up arbitrary and the reset can reach this module a few
+  // cycles after the first edge, so the simulation checks begin at the first
+  // reset.
+`ifdef FORMAL
+  // Formal tasks start from a reset or from an induction state; the checks
+  // apply in both.
+  wire sim_reset_seen_q = 1'b1;
+`else
+  logic sim_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) sim_reset_seen_q <= 1'b1;
+`endif
+`endif
 
   localparam int unsigned LineBits = LINE_BYTES * 8;
   localparam int unsigned NumLines = CACHE_SIZE_BYTES / LINE_BYTES;
@@ -2217,7 +2230,7 @@ module frost_cache #(
   logic [UP_ID_BITS-1:0] ref_probe_id_q[ProbeSlots];
   logic [UP_ID_BITS-1:0] ref_ack_id_q[AckDepth];
   always_ff @(posedge i_clk) begin
-    if (!i_rst && t_done) begin
+    if (sim_reset_seen_q && !i_rst && t_done) begin
       ref_w_payload_q <= {
         t_set,
         t_tag,
@@ -2240,12 +2253,12 @@ module frost_cache #(
         (t_wb_match_q & wb_valid)
       };
     end
-    if (!i_rst && t_done && t_probe_q) begin
+    if (sim_reset_seen_q && !i_rst && t_done && t_probe_q) begin
       ref_probe_inval_q[probe_free_idx] <= t_probe_inval_q;
       ref_probe_line_q[probe_free_idx]  <= t_line;
       ref_probe_id_q[probe_free_idx]    <= t_id_q;
     end
-    if (!i_rst && ack_push) ref_ack_id_q[ack_wr_q[UP_ID_BITS-1:0]] <= t_id_q;
+    if (sim_reset_seen_q && !i_rst && ack_push) ref_ack_id_q[ack_wr_q[UP_ID_BITS-1:0]] <= t_id_q;
   end
 
   // MSHR payload with the fill captured on its response.
@@ -2283,7 +2296,7 @@ module frost_cache #(
       end
     end
     always_ff @(posedge i_clk) begin
-      if (!i_rst) begin
+      if (sim_reset_seen_q && !i_rst) begin
         ref_mshr_data_q[gm]  <= ref_data_d;
         ref_mshr_wstrb_q[gm] <= ref_wstrb_d;
       end

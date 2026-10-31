@@ -141,6 +141,19 @@ module cpu_top #(
     input logic i_axi_rlast,
     input logic [AXI_USER_BITS-1:0] i_axi_ruser
 );
+`ifndef SYNTHESIS
+  // Registers power up arbitrary and the reset can reach this module a few
+  // cycles after the first edge, so the simulation checks begin at the first
+  // reset.
+`ifdef FORMAL
+  // Formal tasks start from a reset or from an induction state; the checks
+  // apply in both.
+  wire sim_reset_seen_q = 1'b1;
+`else
+  logic sim_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) sim_reset_seen_q <= 1'b1;
+`endif
+`endif
   function automatic logic regions_overlap(
       input longint unsigned base_a, input longint unsigned size_a, input longint unsigned base_b,
       input longint unsigned size_b);
@@ -275,7 +288,7 @@ module cpu_top #(
   logic fatal_stop_q = 1'b0;
   always_ff @(posedge i_clk) begin
     fatal_stop_q <= !i_rst && fatal_stop;
-    if (!i_rst && fatal_stop_q) assert (fatal_stop);
+    if (sim_reset_seen_q && !i_rst && fatal_stop_q) assert (fatal_stop);
   end
 `endif
 

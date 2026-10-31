@@ -55,6 +55,19 @@ module coherence_line_bridge #(
     output logic o_u_ready,
     input logic [ADDR_WIDTH+14:0] i_u
 );
+`ifndef SYNTHESIS
+  // Registers power up arbitrary and the reset can reach this module a few
+  // cycles after the first edge, so the simulation checks begin at the first
+  // reset.
+`ifdef FORMAL
+  // Formal tasks start from a reset or from an induction state; the checks
+  // apply in both.
+  wire sim_reset_seen_q = 1'b1;
+`else
+  logic sim_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) sim_reset_seen_q <= 1'b1;
+`endif
+`endif
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
   typedef enum logic [2:0] {
     Idle,
@@ -143,7 +156,7 @@ module coherence_line_bridge #(
   end
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
-    if (!i_rst && i_req_valid && o_req_ready) begin
+    if (sim_reset_seen_q && !i_rst && i_req_valid && o_req_ready) begin
       assert (i_req_addr[4:0] == 0);
       assert (SOURCE == 2 || !i_req_write);
     end

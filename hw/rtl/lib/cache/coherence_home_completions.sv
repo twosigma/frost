@@ -93,6 +93,19 @@ module coherence_home_completions #(
 `endif
     output logic [ADDR_WIDTH+14:0] o_u
 );
+`ifndef SYNTHESIS
+  // Registers power up arbitrary and the reset can reach this module a few
+  // cycles after the first edge, so the simulation checks begin at the first
+  // reset.
+`ifdef FORMAL
+  // Formal tasks start from a reset or from an induction state; the checks
+  // apply in both.
+  wire sim_reset_seen_q = 1'b1;
+`else
+  logic sim_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) sim_reset_seen_q <= 1'b1;
+`endif
+`endif
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
   localparam int unsigned OffsetBits = $clog2(LINE_BYTES);
   localparam int unsigned Sets = CACHE_BYTES / (LINE_BYTES * WAYS);
@@ -581,7 +594,7 @@ module coherence_home_completions #(
     assert (buffer_live_next == reference_buffer_live);
   end
   always_ff @(posedge i_clk) begin
-    if (!i_rst)
+    if (sim_reset_seen_q && !i_rst)
       assert (o_d_ready == (!i_fatal_stop && free_slot && !duplicate &&
           request_ready[free_slot_index]));
   end
@@ -594,7 +607,8 @@ module coherence_home_completions #(
   always_ff @(posedge i_clk) begin
     reference_put_addr_q  <= i_next_put_addr;
     reference_put_valid_q <= !i_rst;
-    if (!i_rst && reference_put_valid_q) assert (o_put_busy == (|reference_put_conflicts));
+    if (sim_reset_seen_q && !i_rst && reference_put_valid_q)
+      assert (o_put_busy == (|reference_put_conflicts));
   end
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_reference_put_conflict
     assign reference_put_conflicts[slot] = live[slot] &&
@@ -612,7 +626,7 @@ module coherence_home_completions #(
   end
   always_ff @(posedge i_clk) begin
     reference_query_set_q <= i_query_addr[OffsetBits+:SetBits];
-    if (!i_rst && reference_query_set_q == i_query_addr[OffsetBits+:SetBits])
+    if (sim_reset_seen_q && !i_rst && reference_query_set_q == i_query_addr[OffsetBits+:SetBits])
       assert (o_exclude == reference_exclude);
 `ifdef COHERENCE_HOME_CONTROL
     if (!i_rst && i_query_held) assert (o_exclude == reference_exclude);
@@ -626,7 +640,7 @@ module coherence_home_completions #(
       reference_grant_pick = SlotBits'((int'(grant_next_q) + offset) % SLOTS);
   end
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (sim_reset_seen_q && !i_rst) begin
       for (int slot = 0; slot < SLOTS; slot++) begin
         assert (pred_clear_q[slot] == (predecessors_q[slot] == 0));
         // Only a live DMA request hands its sector to younger requests early.

@@ -167,6 +167,19 @@ module frost_cluster_memory #(
     input logic i_axi_rlast,
     input logic [AXI_USER_BITS-1:0] i_axi_ruser
 );
+`ifndef SYNTHESIS
+  // Registers power up arbitrary and the reset can reach this module a few
+  // cycles after the first edge, so the simulation checks begin at the first
+  // reset.
+`ifdef FORMAL
+  // Formal tasks start from a reset or from an induction state; the checks
+  // apply in both.
+  wire sim_reset_seen_q = 1'b1;
+`else
+  logic sim_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) sim_reset_seen_q <= 1'b1;
+`endif
+`endif
   localparam int unsigned DdrAxiIdBits = 5;
 
   logic dma_req_ready, dma_resp_valid, dma_resp_error;
@@ -289,7 +302,8 @@ module frost_cluster_memory #(
     always_ff @(posedge i_clk) begin
       c_stalled_q <= i_rst ? 2'b00 :
           {dma_c_valid, i_coherent_c_valid} & ~{dma_c_ready, o_coherent_c_ready};
-      if (!i_rst) assert ((c_stalled_q & ~{dma_c_valid, i_coherent_c_valid}) == 0);
+      if (sim_reset_seen_q && !i_rst)
+        assert ((c_stalled_q & ~{dma_c_valid, i_coherent_c_valid}) == 0);
     end
 `endif
     coherence_home #(

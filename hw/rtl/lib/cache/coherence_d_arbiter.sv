@@ -124,10 +124,21 @@ module coherence_d_arbiter #(
     initial $fatal(1, "coherence_d_arbiter: invalid parameters");
   end
 `ifndef SYNTHESIS
+  // Registers power up arbitrary and the reset can reach this module a few
+  // cycles after the first edge, so the simulation checks begin at the first
+  // reset.
+`ifdef FORMAL
+  // Formal tasks start from a reset or from an induction state; the checks
+  // apply in both.
+  wire sim_reset_seen_q = 1'b1;
+`else
+  logic sim_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) sim_reset_seen_q <= 1'b1;
+`endif
   always_ff @(posedge i_clk) begin
-    if (!i_rst && selected_q && i_valid[selected_port_q])
+    if (sim_reset_seen_q && !i_rst && selected_q && i_valid[selected_port_q])
       assert (o_payload == i_payload[selected_port_q]);
-    if (!i_rst) begin
+    if (sim_reset_seen_q && !i_rst) begin
       assert (selected_ports_q == (selected_q ? PORTS'(1) << selected_port_q : PORTS'(0)));
       for (int port_idx = 0; port_idx < PORTS; port_idx++)
       assert (later_q[port_idx] == (port_idx >= int'(next_q)));

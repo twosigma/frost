@@ -119,6 +119,19 @@ module coherence_l1d #(
     output logic o_fatal,
     output logic [ADDR_WIDTH-1:0] o_fatal_addr
 );
+`ifndef SYNTHESIS
+  // Registers power up arbitrary and the reset can reach this module a few
+  // cycles after the first edge, so the simulation checks begin at the first
+  // reset.
+`ifdef FORMAL
+  // Formal tasks start from a reset or from an induction state; the checks
+  // apply in both.
+  wire sim_reset_seen_q = 1'b1;
+`else
+  logic sim_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) sim_reset_seen_q <= 1'b1;
+`endif
+`endif
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
   localparam logic [1:0] ReadLoad = 0, ReadLR = 1, ReadAMO = 2;
   typedef enum logic [3:0] {
@@ -679,7 +692,7 @@ module coherence_l1d #(
   // At most one live endpoint holds a line; no load endpoint lives beside an
   // atomic; a load grant installs with a free WB slot.
   always_ff @(posedge i_clk)
-    if (!i_rst && Multi) begin
+    if (sim_reset_seen_q && !i_rst && Multi) begin
       for (int ep = 0; ep < MISSES; ep++)
       for (int other = 0; other < MISSES; other++)
       if (ep < other && live[ep] && live[other])
@@ -1409,7 +1422,7 @@ module coherence_l1d #(
     store_launch_ready_q <= !i_rst && o_store_ready;
   end
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (sim_reset_seen_q && !i_rst) begin
       if (i_read_valid) assert (!rd_valid_q[i_read_id]);
       if (|i_write_mask) begin
         if (i_write_atomic) begin
