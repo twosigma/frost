@@ -1684,6 +1684,90 @@ module axi_coherent_bridge #(
     end
   end
 
+`ifdef AXI_COHERENT_SOC_COVER
+  // The cover driver fills a direction, returns lines in reverse ID order,
+  // drains its AXI responses, and fills it again. Proof tasks use only
+  // the interface assumptions.
+  (* anyconst *) logic f_cover_write, f_cover_overlap;
+  logic f_read_stalled_q, f_read_full_q, f_read_ooo_q, f_read_drained_q;
+  logic f_read_presented_q, f_read_live_reused_q;
+  logic [NumSubIds-1:0] f_read_old_q;
+  logic [NumSubIds-1:0] f_read_reused_q;
+  logic f_write_full_q, f_write_drained_q;
+  logic [NumSubIds-1:0] f_write_reused_q;
+  logic [LINE_ID_BITS-1:0] f_cover_resp_id;
+  always_comb begin
+    f_cover_resp_id = '0;
+    for (int n = 0; n < int'(NumLineIds); n++) if (f_out_q[n]) f_cover_resp_id = LINE_ID_BITS'(n);
+    assume (i_rst == !f_past_valid);
+    if (!i_rst) begin
+      assume (i_axi_awlen == 0 && i_axi_awsize == BusSize && i_axi_awburst == BurstIncr);
+      assume (i_axi_arlen == 0 && i_axi_arsize == BusSize && i_axi_arburst == BurstIncr);
+      assume (i_axi_awaddr == ADDR_WIDTH'(REGION_BASE));
+      assume (i_axi_araddr == ADDR_WIDTH'(REGION_BASE));
+      assume (i_axi_wlast && (&i_axi_wstrb));
+      assume (i_line_req_ready);
+      assume (i_line_resp_id == f_cover_resp_id);
+      assume (i_axi_awvalid == (f_cover_write && f_aw_count < WRITE_BURSTS &&
+          (!f_write_full_q || f_write_drained_q)));
+      assume (i_axi_wvalid == f_cover_write);
+      assume (i_axi_bready == f_write_full_q);
+      assume (i_axi_arvalid == (!f_cover_write && f_ar_count < READ_BURSTS &&
+          (!f_read_full_q || f_read_drained_q || (f_cover_overlap && f_read_presented_q))));
+      assume (i_axi_rready == f_read_presented_q);
+      assume (i_line_resp_valid == ((|f_out_q) && (f_cover_write ?
+          (f_write_full_q && !f_write_drained_q) : (f_read_full_q && !f_read_drained_q))));
+    end
+  end
+  always @(posedge i_clk) begin
+    if (i_rst) begin
+      f_read_stalled_q <= 1'b1;
+      f_read_presented_q <= 1'b0;
+      f_read_live_reused_q <= 1'b0;
+      f_read_old_q <= '0;
+      f_read_full_q <= 1'b0;
+      f_read_ooo_q <= 1'b0;
+      f_read_drained_q <= 1'b0;
+      f_read_reused_q <= '0;
+      f_write_full_q <= 1'b0;
+      f_write_drained_q <= 1'b0;
+      f_write_reused_q <= '0;
+    end else begin
+      if (i_axi_rready) f_read_stalled_q <= 1'b0;
+      if (f_read_full_q && o_axi_rvalid && !i_axi_rready) f_read_presented_q <= 1'b1;
+      if (f_read_full_q && r_seg_done) f_read_old_q[r_seg_sub] <= 1'b0;
+      if (f_read_stalled_q && !i_axi_rready && (&r_id_busy_q) &&
+          (&f_out_q[NumLineIds-1:NumSubIds]) && rbt_count_q == READ_BURSTS) begin
+        f_read_full_q <= 1'b1;
+        f_read_old_q  <= '1;
+      end
+      // The last allocated line responds while the first is outstanding.
+      if (f_read_full_q && f_read_stalled_q && !i_axi_rready && resp_read &&
+          (&resp_sub) && f_out_q[NumSubIds])
+        f_read_ooo_q <= 1'b1;
+      if (f_read_ooo_q && f_read_presented_q && r_id_busy_q == '0 && f_ar_count == 0)
+        f_read_drained_q <= 1'b1;
+      if (f_read_drained_q && rreq_fire) f_read_reused_q[rreq_sub_q] <= 1'b1;
+      if ((&w_id_busy_q) && (&f_out_q[NumSubIds-1:0]) && wbt_count_q == WRITE_BURSTS)
+        f_write_full_q <= 1'b1;
+      if (f_write_full_q && w_id_busy_q == '0 && f_aw_count == 0) f_write_drained_q <= 1'b1;
+      if (f_write_drained_q && wreq_fire) f_write_reused_q[wreq_sub_q] <= 1'b1;
+      c_soc_read_full : cover (f_read_full_q);
+      c_soc_read_wrap : cover (f_read_full_q && r_next_sub_q == 0);
+      c_soc_read_ooo : cover (f_read_ooo_q);
+      c_soc_read_backpressure : cover (f_read_presented_q);
+      if (f_read_ooo_q && f_read_presented_q && rreq_fire &&
+          !f_read_old_q[rreq_sub_q] && (|f_read_old_q))
+        f_read_live_reused_q <= 1'b1;
+      c_soc_read_live_reuse : cover (f_read_live_reused_q);
+      c_soc_read_drain : cover (f_read_drained_q);
+      c_soc_read_reuse : cover (&f_read_reused_q);
+      c_soc_write_full : cover (f_write_full_q);
+      c_soc_write_table_wrap : cover (f_write_full_q && wbt_tail_q == 0);
+      c_soc_write_reuse : cover (&f_write_reused_q);
+    end
+  end
+`else
   always @(posedge i_clk) begin
     if (!i_rst) begin
       c_wrap_write :
@@ -1714,6 +1798,7 @@ module axi_coherent_bridge #(
       cover (r_fire && (o_axi_rresp == RespSlvErr) && (f_ar_code[f_ar_head] == RespOkay));
     end
   end
+`endif
 `endif
 
 endmodule : axi_coherent_bridge
