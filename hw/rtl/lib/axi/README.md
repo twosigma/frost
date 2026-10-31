@@ -154,13 +154,14 @@ Its body is empty in synthesis and formal builds.
 | `axi_cdc` | All channel fields, independent backpressure, full FIFOs, wraparound, reset cancellation, equal periods with phase offset and unequal periods in both directions |
 | `axi_mux` | Three masters sharing id values against a reordering slave, late write data, and reset mid-traffic |
 
-Unbounded formal safety proofs cover the bridge (`axi_coherent_bridge`: AXI4 slave
+Unbounded formal safety tasks check the bridge (`axi_coherent_bridge`: AXI4 slave
 rules, B and R order and codes, each line write carrying exactly the bytes
 of its segment, R data for an arbitrary byte, and the ingress's request
-rules, with 8-byte lines on a 16-bit and a 64-bit bus and in `soc_top`'s
-configuration) and the mux (`axi_mux`: AXI4 rules on every port, W in
-AW-grant order, and B and R reaching the port their id names); see the
-[formal guide](../../../../formal/README.md). These proofs establish response
+rules, with 8-byte lines on a 16-bit and a 64-bit bus, and with `soc_top`'s
+256-bit bus and 32-byte lines at four and eight bursts and line IDs per
+direction; addresses are reduced to 16 bits) and the mux (`axi_mux`: AXI4
+rules on every port, W in AW-grant order, and B and R reaching the port their
+id names); see the [formal guide](../../../../formal/README.md). The assertions cover response
 ordering, no duplicate responses and conservation of outstanding requests;
 they do not establish eventual completion or starvation freedom. The three
 bridge cocotb benches and the mux bench check completion with timeouts,

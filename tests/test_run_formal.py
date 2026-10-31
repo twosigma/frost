@@ -750,9 +750,20 @@ FORMAL_TARGETS = [
         "axi_coherent_bridge.sby",
         "AXI4 safety: response ordering and conservation, burst bytes to line "
         "requests and back, error bursts, and "
-        "the coherent ingress's request rules, unbounded on narrow, line-wide and "
-        "soc_top buses",
-        tasks=("prove", "prove_full_width", "prove_soc", "bmc_soc", "cover"),
+        "the coherent ingress's request rules, unbounded on narrow and line-wide "
+        "buses with up to eight bursts and eight line IDs per direction",
+        tasks=(
+            "prove",
+            "prove_full_width",
+            "prove_soc",
+            "prove_soc8_0",
+            "prove_soc8_1",
+            "prove_soc8_2",
+            "prove_soc8_3",
+            "bmc_soc",
+            "cover",
+            "cover_soc",
+        ),
     ),
     FormalTarget(
         "axil_reg_bridge.sby",
@@ -1227,8 +1238,31 @@ SBY_TASKS = [
     ("bmc32", "Bounded local equivalence at depth 32"),
     ("bmc_1g", "Bounded physical-address check at a 1 GiB DDR capacity"),
     ("prove_full_width", "Unbounded proof with a bus as wide as a line"),
-    ("prove_soc", "Unbounded proof in soc_top's configuration"),
-    ("bmc_soc", "Bounded check in soc_top's configuration"),
+    (
+        "prove_soc",
+        "Unbounded proof at SoC bus widths; AXI bridge uses four bursts and IDs per direction",
+    ),
+    ("bmc_soc", "Bounded check with SoC burst and line-ID capacities"),
+    (
+        "prove_soc8_0",
+        "Eight-burst AXI bridge safety, assertion partition 0 of four",
+    ),
+    (
+        "prove_soc8_1",
+        "Eight-burst AXI bridge safety, assertion partition 1 of four",
+    ),
+    (
+        "prove_soc8_2",
+        "Eight-burst AXI bridge safety, assertion partition 2 of four",
+    ),
+    (
+        "prove_soc8_3",
+        "Eight-burst AXI bridge safety, assertion partition 3 of four",
+    ),
+    (
+        "cover_soc",
+        "SoC burst and ID capacity, allocator wrap, reordered replies, drain, and reuse",
+    ),
     ("bmc_64g", "Bounded physical-address check at a 64 GiB DDR capacity"),
     ("bmc_128g", "Bounded physical-address check at a 128 GiB DDR capacity"),
     ("cover_64g", "Physical-address reachability at a 64 GiB DDR capacity"),
