@@ -681,6 +681,8 @@ module soc_top #(
       .o_msi_id(o_cpu_msi_id)
   );
 
+  // The local request's size (registered below) qualifies the APLIC read.
+  logic [2:0] local_size;
   aplic #(
       .NUM_SOURCES(5),
       .NUM_HARTS(NUM_HARTS),
@@ -1205,9 +1207,9 @@ module soc_top #(
   logic [63:0] local_req_wdata;
   logic [7:0] local_req_wstrb;
   logic [riscv_pkg::PhysAddrBits-1:0] local_addr;
-  logic [2:0] local_size, local_prot;
+  logic [2:0] local_prot;
   logic [63:0] local_wdata;
-  logic [ 7:0] local_wstrb;
+  logic [7:0] local_wstrb;
   logic local_resp_valid, local_resp_ready;
   logic [L2_LINE_BYTES*8-1:0] local_resp_data;
   logic [1:0] local_resp_status;
