@@ -64,6 +64,8 @@ class CoherentHome(LineIngress):
         self.log: list[tuple[int, bool, int, int, int]] = []
         self.violations: list[str] = []
         self.outstanding: dict[int, int] = {}
+        # The ingress's credit count bounds what the home can hold.
+        self.slots = len(dut.ingress.c_valid)
         self.accepted: dict[int, tuple[int, int, int, int]] = {}
         self.released: dict[int, tuple[int, int, int]] = {}
         self.cycle = self.max_occupied = self.completions = 0
@@ -105,7 +107,7 @@ class CoherentHome(LineIngress):
             dut.i_d_ready.value = int(
                 not reset
                 and self.pause != "d"
-                and len(self.pending) < 4
+                and len(self.pending) < self.slots
                 and self.rng.random() < self.ready_bias
             )
             dut.i_c_ready.value = int(
@@ -167,7 +169,7 @@ class CoherentHome(LineIngress):
                     (self.cycle, bool(write), address, mask if write else 0, rid)
                 )
                 self.max_occupied = max(self.max_occupied, len(self.outstanding))
-                assert len(self.outstanding) <= 4
+                assert len(self.outstanding) <= self.slots
             if int(dut.o_d_valid.value) and int(dut.i_d_ready.value):
                 op, q, addr, offset, size, mask, aq, rl, maintenance, value = unpack(
                     int(dut.o_d.value), (4, 9, width, 5, 3, 32, 1, 1, 1, 256)

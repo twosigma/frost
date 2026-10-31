@@ -2215,6 +2215,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Four DMA credits, opaque identities, completion delay, and reset",
         verilator_extra_args=("--assert", "-GADDR_WIDTH=56"),
     ),
+    "coherence_dma_ingress_8": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_dma_ingress",
+        hdl_toplevel_module="coherence_dma_ingress",
+        description="Eight DMA credits, as the cluster builds them",
+        verilator_extra_args=("--assert", "-GADDR_WIDTH=56", "-GSLOTS=8"),
+    ),
     "coherence_home_completions": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home_completions",
         hdl_toplevel_module="coherence_home_completions",
@@ -3042,7 +3048,20 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             description="AXI bursts through four coherent credits, completion delay, and reset",
             verilator_extra_args=("--assert", *args),
         )
-        for suffix, args in (("", ()), ("_64", ("-GDATA_WIDTH=64",)))
+        for suffix, args in (
+            ("", ()),
+            ("_64", ("-GDATA_WIDTH=64",)),
+            # The SoC's widths: eight line IDs per direction and eight credits.
+            (
+                "_8",
+                (
+                    "-GLINE_ID_BITS=4",
+                    "-GWRITE_BURSTS=8",
+                    "-GREAD_BURSTS=8",
+                    "-GINGRESS_SLOTS=8",
+                ),
+            ),
+        )
     },
     "axil_reg_bridge": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_axil_reg_bridge",

@@ -80,7 +80,10 @@ async def reset_cancels_each_coherent_stage(dut: Any) -> None:
         b.read(REGION_BASE + 0x4000, 63, b.max_size, INCR)
         for _ in range(500):
             await RisingEdge(dut.i_clk)
-            if b.ingress.phase == stage and len(b.ingress.outstanding) == 4:
+            if (
+                b.ingress.phase == stage
+                and len(b.ingress.outstanding) == b.ingress.slots
+            ):
                 break
         else:
             raise AssertionError(f"requests did not reach {stage}")

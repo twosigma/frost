@@ -97,9 +97,10 @@ response has a place in the read buffer. Writes take the line port first,
 and a read waits for at most `STARVATION_LIMIT` write grants. The choice is
 held while the presented request waits, as the ingress requires.
 
-The cluster ingress admits four line requests and preserves every bit of
-the bridge's line ID. The bridge's three-bit IDs occupy the low bits of
-the four-bit coherent request ID. Each line response follows the matching
+The cluster ingress admits eight line requests and preserves every bit of
+the bridge's line ID. In soc_top the bridge's line IDs are four bits wide,
+the full coherent request ID, so it has eight read and eight write IDs, and
+its tables hold eight bursts per direction. Each line response follows the matching
 home Release, after its data operation and completion acknowledgement.
 An ID remains occupied through that external response edge.
 
@@ -145,7 +146,7 @@ Its body is empty in synthesis and formal builds.
 | Target | Coverage |
 | --- | --- |
 | `axi_coherent_bridge`, `axi_coherent_bridge_64`, `axi_coherent_bridge_32` | Random bursts of every type and size against a byte reference at 256, 64 and 32 bits, error bursts, ingress errors, out-of-order line responses with stalls, exhausted ids and tables, read starvation under writes, and reset with bursts in flight |
-| `coherent_axi_ingress`, `coherent_axi_ingress_64` | The bridge connected to the four-entry ingress, delayed coherent channels, full credits, B after every line release, and shared reset at each coherent stage |
+| `coherent_axi_ingress`, `coherent_axi_ingress_64`, `coherent_axi_ingress_8` | The bridge connected to the ingress (four entries; eight, with soc_top's eight line IDs and bursts per direction, in `_8`), delayed coherent channels, full credits, B after every line release, and shared reset at each coherent stage |
 | `axi_cdc` | All channel fields, independent backpressure, full FIFOs, wraparound, reset cancellation, equal periods with phase offset and unequal periods in both directions |
 | `axi_mux` | Three masters sharing id values against a reordering slave, late write data, and reset mid-traffic |
 

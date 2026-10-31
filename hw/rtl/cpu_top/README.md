@@ -188,7 +188,7 @@ An integration without debug ties the input controls/data low and supplies ordin
 
 With `ENABLE_COHERENCE=1`, `i_coherent_req_*` / `o_coherent_resp_*` expose the FROST 32-byte line protocol. This is a separate **incoming** interface, not another outgoing CPU memory master and not ACE/CHI. Requests carry full physical addresses, 256-bit data, 32 byte strobes, write/read selection and a 4-bit ID. Hold a request until valid/ready acceptance. Each accepted request produces one response pulse with the same ID, data and an error flag; there is no response-ready signal, so the agent must always be able to consume responses. IDs cannot be reused while outstanding.
 
-The ingress holds four accepted requests with independent completion.
+The ingress holds eight accepted requests with independent completion.
 It preserves all four ID bits and presents requests to the home in acceptance
 order. Different sectors may complete out of order. Each response follows the home's completion release. An ID remains
 occupied through its external response edge. The queue holds payloads through

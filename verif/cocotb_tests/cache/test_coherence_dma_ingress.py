@@ -192,17 +192,18 @@ class Ingress:
 
 @cocotb.test()
 async def all_ids_and_completion_delay(dut: Any) -> None:
-    """Four credits hold all sixteen identities across ordered reads and writes."""
+    """Every credit in use holds back the next ID across all sixteen identities."""
     b = Ingress(dut)
     await b.reset()
-    for start in range(0, 16, 4):
-        for ident in range(start, start + 4):
+    slots = len(dut.c_valid)
+    for start in range(0, 16, slots):
+        for ident in range(start, start + slots):
             await b.enqueue(ident)
-        await b.set(i_req_valid=1, i_req_id=(start + 4) % 16)
+        await b.set(i_req_valid=1, i_req_id=(start + slots) % 16)
         assert not b.get("o_req_ready")
         await b.tick(3)
         await b.set(i_req_valid=0)
-        for ident in range(start, start + 4):
+        for ident in range(start, start + slots):
             await b.demand(ident)
             await b.grant(ident, error=ident % 3 == 0)
             await b.complete(ident, error=ident % 3 == 0)
