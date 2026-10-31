@@ -43,7 +43,10 @@ Each dispatch slot takes the next free entry at or after `tail_ptr`.
 Completed and flushed entries leave holes that allocation refills, so
 physical order is not program order: age always comes from ROB tags, and
 `tail_ptr` only marks where the free-entry search starts. An entry frees when
-its result enters `cdb_stage`, before the CDB broadcast.
+its result enters `cdb_stage`, before the CDB broadcast. The next valid bits
+are the bits kept through the cycle's flushes and frees, ORed with the new
+allocations, so the allocation enable, which arrives last from dispatch, meets
+them in the final term.
 
 Allocation requests on a flush cycle are dropped, as the ROB drops them.
 Dispatch can present one on a trap, xRET, or FENCE-class flush, because the
@@ -81,7 +84,9 @@ The capture, issue and forwarding control banks compute memory candidates for
 both SQ drain states in
 [`coherent_lq_issue_selector.sv`](coherent_lq_issue_selector.sv). The live
 drain flag selects between those results. Each case also computes staged
-replacement from its winning masks and the per-entry age predicates. Both
+replacement from its winning masks and the per-entry age predicates, in
+three-entry groups; the ROB-head entry's age is compared directly from its
+tag, since at most one entry matches the head. Both
 cases use the same ring order and ROB-head priority. Each entry has a cyclic
 precedence mask derived from the queue head. An eligible entry wins when none
 of its predecessors is eligible. Scan indices and tags decode from the
@@ -101,9 +106,10 @@ completion priority qualify it. The pending bit qualifies release and
 replacement after selection. Each pending copy supplies vacancy independently.
 Candidate presence and the capture gate qualify capture. Staged control fields
 select capture values or separately computed hold values. Replacement selects
-stored and arriving age predicates with ROB-head priority. Stored, arriving
-and head candidate predicates are computed per row before its validity bit
-qualifies the candidate masks. Alignment is evaluated separately for stored
+stored and arriving age predicates with ROB-head priority. Each row's
+availability (not issued, no data, not staged or parked) is one term, and the
+row's other stored, arriving and head conditions, validity included, join it
+in the next, so each scan input is two levels from those registers. Alignment is evaluated separately for stored
 and arriving candidates before the selected result enters the staging
 register. The coherent clear calculation applies staging validity outside its
 issue, forwarding and fault eligibility terms. An older pending AMO clears the
@@ -166,7 +172,8 @@ controls for both committed-store drain states. The live drain flag selects
 those outcomes. Local holds qualify memory launch after drain selection.
 Release permission also accounts for both commit-pending states before the
 live commit flag selects the outcome. Capture combines that permission with
-pending validity, per-copy vacancy, candidate presence and replacement.
+pending validity, per-copy vacancy, candidate presence and replacement;
+replacement joins the other capture terms last.
 The capture gate qualifies the combined result. Clear combines release
 permission with its hold and fault conditions before applying pending validity.
 

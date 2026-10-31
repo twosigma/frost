@@ -34,6 +34,8 @@ module coherent_lq_issue_selector #(
     input logic [$clog2(DEPTH)-1:0] head_idx,
     input logic i_sq_committed_empty,
     input logic [DEPTH-1:0] i_staged_younger,
+    // i_staged_younger at the ROB-head entry, when rob_head_match_q is set.
+    input logic i_staged_younger_head,
 
     output logic o_replace_without_update,
     output logic o_replace_with_update,
@@ -120,29 +122,33 @@ module coherent_lq_issue_selector #(
     logic [DEPTH-1:0] head_stored, head_update;
     assign choices[drained] = choice;
     for (genvar index = 0; index < DEPTH; index++) begin : gen_eligible
-      wire available_without_valid = !lq_issued[index] && !lq_data_valid[index] &&
+      // The entry's issue and data state changes late in the cycle. It meets
+      // the conditions that do not depend on it in one term, so each scan
+      // input is two levels from those registers.
+      (* keep = "true" *) wire available = !lq_issued[index] && !lq_data_valid[index] &&
           !sq_check_in_flight_mask[index];
       wire atomic_ok = !(lq_is_lr[index] || lq_is_amo[index]) ||
           (rob_head_match_q[index] && 1'(drained));
-      (* keep = "true" *) logic stored_ready, update_ready, merged_ready;
-      (* keep = "true" *) logic head_stored_ready, head_update_ready;
-      assign stored_ready = available_without_valid && lq_addr_valid[index] &&
+      wire stored_ok = lq_valid[index] && lq_addr_valid[index] &&
           (!lq_is_mmio[index] || rob_head_match_q[index]) && atomic_ok &&
           !blocked_by_amo_phys_q[index];
-      assign update_ready = available_without_valid && addr_update_pre_match_q[index] &&
-          atomic_ok && !blocked_by_amo_phys_q[index];
-      assign merged_ready = stored_ready || update_ready;
-      assign head_stored_ready = available_without_valid && rob_head_match_q[index] &&
-          lq_addr_valid[index] && (!(lq_is_lr[index] || lq_is_amo[index]) || 1'(drained));
-      assign head_update_ready = available_without_valid && rob_head_match_q[index] &&
-          addr_update_pre_match_q[index] &&
+      wire update_ok = lq_valid[index] && addr_update_pre_match_q[index] && atomic_ok &&
+          !blocked_by_amo_phys_q[index];
+      wire head_ok = lq_valid[index] && rob_head_match_q[index] &&
           (!(lq_is_lr[index] || lq_is_amo[index]) || 1'(drained));
-      assign eligible[0][index] = lq_valid[index] && stored_ready;
-      assign eligible[1][index] = lq_valid[index] && update_ready;
-      assign eligible[2][index] = lq_valid[index] && merged_ready;
+      (* keep = "true" *) wire stored_eligible = available && stored_ok;
+      (* keep = "true" *) wire update_eligible = available && update_ok;
+      (* keep = "true" *) wire merged_eligible = available && (stored_ok || update_ok);
+      (* keep = "true" *) wire head_stored_eligible =
+          available && head_ok && lq_addr_valid[index];
+      (* keep = "true" *) wire head_update_eligible =
+          available && head_ok && addr_update_pre_match_q[index];
+      assign eligible[0][index] = stored_eligible;
+      assign eligible[1][index] = update_eligible;
+      assign eligible[2][index] = merged_eligible;
       assign eligible[3][index] = lq_valid[index] && lq_data_valid[index];
-      assign head_stored[index] = lq_valid[index] && head_stored_ready;
-      assign head_update[index] = lq_valid[index] && head_update_ready;
+      assign head_stored[index] = head_stored_eligible;
+      assign head_update[index] = head_update_eligible;
     end
     for (genvar source = 0; source < 4; source++) begin : gen_ring
       for (genvar index = 0; index < DEPTH; index++) begin : gen_first
@@ -157,6 +163,20 @@ module coherent_lq_issue_selector #(
         assign first[source][index] = eligible[source][index] && !(|earlier_group);
       end
     end
+    // Replacement reads the staged load's age at the scan winner in kept
+    // three-entry groups, or at the ROB-head entry, whose match is at most
+    // one-hot, so each replacement bit is one term over kept inputs.
+    localparam int unsigned AgeGroups = (DEPTH + 2) / 3;
+    (* keep = "true" *) logic [AgeGroups-1:0] merged_older, stored_older;
+    for (genvar group_index = 0; group_index < AgeGroups; group_index++) begin : gen_age_group
+      localparam int unsigned Bits = DEPTH - 3 * group_index < 3 ? DEPTH - 3 * group_index : 3;
+      assign merged_older[group_index] =
+          |(i_staged_younger[3*group_index+:Bits] & first[2][3*group_index+:Bits]);
+      assign stored_older[group_index] =
+          |(i_staged_younger[3*group_index+:Bits] & first[0][3*group_index+:Bits]);
+    end
+    (* keep = "true" *) wire head_stored_found = |head_stored;
+    (* keep = "true" *) wire head_found = |head_stored || |head_update;
     always_comb begin
       choice = '0;
       choice.issue_cdb_found = |eligible[3];
@@ -169,11 +189,8 @@ module coherent_lq_issue_selector #(
       choice.head_mem_stored_onehot = head_stored;
       choice.head_mem_update_found = |head_update;
       choice.head_mem_update_onehot = head_update;
-      choice.replace_without_update = choice.head_mem_stored_found ?
-          (|(i_staged_younger & head_stored)) : (|(i_staged_younger & first[0]));
-      choice.replace_with_update = choice.head_mem_stored_found ?
-          (|(i_staged_younger & head_stored)) : choice.head_mem_update_found ?
-              (|(i_staged_younger & head_update)) : (|(i_staged_younger & first[2]));
+      choice.replace_without_update = head_stored_found ? i_staged_younger_head : |stored_older;
+      choice.replace_with_update = head_found ? i_staged_younger_head : |merged_older;
       for (int index = 0; index < DEPTH; index++) begin
         choice.issue_cdb_idx |= IdxWidth'(index) & {IdxWidth{first[3][index]}};
         choice.stored_scan_idx |= IdxWidth'(index) & {IdxWidth{first[0][index]}};
@@ -271,6 +288,15 @@ module coherent_lq_issue_selector #(
       (|(i_staged_younger & reference.head_mem_stored_onehot)) : reference.head_mem_update_found ?
           (|(i_staged_younger & reference.head_mem_update_onehot)) :
           (|(i_staged_younger & reference.merged_scan_onehot));
+`ifdef FORMAL
+  // The load queue asserts both: unique live ROB tags keep the head match at
+  // most one-hot, and its direct head comparison equals the matched entry's.
+  always_comb begin
+    assume ($onehot0(rob_head_match_q));
+    if (|rob_head_match_q)
+      assume (i_staged_younger_head == |(i_staged_younger & rob_head_match_q));
+  end
+`endif
 `ifdef FORMAL
   always_comb
 `else
