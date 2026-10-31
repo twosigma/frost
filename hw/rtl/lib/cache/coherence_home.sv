@@ -74,6 +74,19 @@ module coherence_home #(
     output logic o_fatal,
     output logic [ADDR_WIDTH-1:0] o_fatal_addr
 );
+`ifndef SYNTHESIS
+  // Registers power up arbitrary and the reset can reach this module a few
+  // cycles after the first edge, so the simulation checks begin at the first
+  // reset.
+`ifdef FORMAL
+  // Formal tasks start from a reset or from an induction state; the checks
+  // apply in both.
+  wire sim_reset_seen_q = 1'b1;
+`else
+  logic sim_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) sim_reset_seen_q <= 1'b1;
+`endif
+`endif
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
   localparam int unsigned OffsetBits = $clog2(LINE_BYTES);
   localparam int unsigned Sets = CACHE_BYTES / (LINE_BYTES * WAYS);
@@ -973,7 +986,7 @@ module coherence_home #(
   assign o_w_ready = w_ready_final;
 `ifndef SYNTHESIS
   always_comb
-    if (!i_rst)
+    if (sim_reset_seen_q && !i_rst)
       assert (o_w_ready == (active && put_selected_q && put_key_match && !put_busy &&
           !put_blocked && put_phase_q[selected_put_q.put_id] == PutFree));
 `endif
@@ -1483,7 +1496,8 @@ module coherence_home #(
     reference_ready_q <= !i_rst;
     reference_held_put_q <= held_put_next;
     // The completion table compares live sectors with held_put_next.
-    if (!i_rst && reference_ready_q) assert (selected_put_q.addr == reference_held_put_q);
+    if (sim_reset_seen_q && !i_rst && reference_ready_q)
+      assert (selected_put_q.addr == reference_held_put_q);
   end
   // At most one fill reads or recalls into a write-back slot in a cycle.
   logic [NUM_WB-1:0][FILLS-1:0] reference_wb_writers;
@@ -1495,7 +1509,7 @@ module coherence_home #(
          (i_r_valid && fill_r_ready[fill] && reply.data_valid));
   end
   always_ff @(posedge i_clk)
-    if (!i_rst && run)
+    if (sim_reset_seen_q && !i_rst && run)
       for (int wb = 0; wb < NUM_WB; wb++) assert ($onehot0(reference_wb_writers[wb]));
   logic [WAYS-1:0] reference_exclude;
   logic exclude_matched_q;
@@ -1528,13 +1542,13 @@ module coherence_home #(
   always_ff @(posedge i_clk) begin
     // Checked on each response for the response and selection cycles.
     exclude_matched_q <= array_exclude == (completion_exclude | reference_exclude);
-    if (!i_rst && array_response && reference_ready_q) begin
+    if (sim_reset_seen_q && !i_rst && array_response && reference_ready_q) begin
       assert (exclude_matched_q);
       assert (array_exclude == (completion_exclude | reference_exclude));
     end
   end
   always_ff @(posedge i_clk)
-    if (!i_rst) begin
+    if (sim_reset_seen_q && !i_rst) begin
       if (reference_ready_q) assert (put_blocked == reference_put_blocked);
       if (array_response) begin
         for (int wb = 0; wb < NUM_WB; wb++) begin

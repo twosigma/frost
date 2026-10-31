@@ -91,6 +91,19 @@ module coherence_home_array #(
 `endif
     output logic [TOKEN_BITS-1:0] o_updated_token
 );
+`ifndef SYNTHESIS
+  // Registers power up arbitrary and the reset can reach this module a few
+  // cycles after the first edge, so the simulation checks begin at the first
+  // reset.
+`ifdef FORMAL
+  // Formal tasks start from a reset or from an induction state; the checks
+  // apply in both.
+  wire sim_reset_seen_q = 1'b1;
+`else
+  logic sim_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) sim_reset_seen_q <= 1'b1;
+`endif
+`endif
   localparam int unsigned TagBits = ADDR_WIDTH - SetBits - OffsetBits;
   localparam int unsigned TagEntryBits = TagBits + 2;
   localparam int unsigned PlruBits = WAYS > 1 ? WAYS - 1 : 1;
@@ -405,7 +418,7 @@ module coherence_home_array #(
   end
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (sim_reset_seen_q && !i_rst) begin
       if (read_fire) assert (int'(i_read_way) < WAYS);
       if (update_fire) assert (int'(i_update_way) < WAYS);
       if (o_resp_valid && i_resp_ready && i_resp_claim) assert (o_resp_available);
