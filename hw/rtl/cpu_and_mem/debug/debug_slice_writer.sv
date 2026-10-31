@@ -89,9 +89,16 @@ module debug_slice_writer #(
   end
 
   logic [CountBits-1:0] req_count_q;
-  always_ff @(posedge i_clk) begin
-    if (i_rst) req_count_q <= '0;
-    else if (accept) req_count_q <= req_count_q + 1'b1;
+  if (1'b1) begin : gen_coherent_request_count
+    coherent_debug_request_count #(
+        .WIDTH(CountBits)
+    ) counter (
+        .i_clk,
+        .i_rst,
+        .i_valid(i_req_valid),
+        .i_ready(o_req_ready),
+        .o_count(req_count_q)
+    );
   end
 
   logic [ReqBits-1:0] fifo_out;

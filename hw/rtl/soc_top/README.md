@@ -6,6 +6,17 @@
 
 Local instruction reads select the instruction BRAM copy using AxPROT[2]; data reads select the data copy. Programming writes both copies through the div4 interface, and debug stores use the slice writer to mirror data into instruction memory. The CPU performs fetch predecode after the AXI response. Normal CPU stores do not silently rewrite the separate instruction copy.
 
+Coherent builds capture the debug mirror address while its hold slot is empty.
+An occupied slot holds its address until the slice writer accepts it. The held
+address is selected only while the slot is valid. The coherent debug module
+computes dirty-word updates for both debug-request acceptance outcomes. Request
+readiness selects the result after reseeding, word clearing and command writes.
+Writes to program-buffer and abstract-command words take priority over clearing.
+The coherent slice writer counts accepted requests with per-bit carry predicates.
+An accepted request toggles each bit whose lower bits are all ones.
+Request readiness qualifies the carry predicates. Request validity selects
+between the prepared count and the held count.
+
 When an address slot is empty, an accepted AXI address can pass directly to the local port; a stalled request waits in that slot with its owner and payload. Device requests are then registered before address decoding and execution, separating AXI arbitration from peripheral side-effect controls. Completions wait until the memory access or peripheral write/read-consume pulse has executed. Narrow transfers keep their byte enables; the boundary rebuilds the register files' replicated-word write view from AXI's addressed lanes. Device response data is captured before a destructive read consumes UART/FIFO/APLIC state, and holding RVALID does not consume a second item.
 
 The NIC and DMA test engine expose 64-bit AXI4-Lite register slaves.

@@ -1,0 +1,32 @@
+[tasks]
+coh_rs_payload4_prove d4
+coh_rs_payload8_prove d8
+coh_rs_payload16_prove d16
+coh_rs_payload_wide_prove d16 wide
+
+[options]
+mode prove
+depth 4
+timeout 120
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv sdp_dist_ram.sv mwp_dist_ram.sv coherent_rs_payload_store.sv
+read -formal -sv coherent_rs_payload_formal.sv
+d4: chparam -set ADDR_WIDTH 2 coherent_rs_payload_formal
+d8: chparam -set ADDR_WIDTH 3 coherent_rs_payload_formal
+wide: chparam -set DATA_WIDTH 125 coherent_rs_payload_formal
+prep -flatten -top coherent_rs_payload_formal
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
+d4: select -assert-count 4 t:$check r:FLAVOR=assert %i
+d8: select -assert-count 8 t:$check r:FLAVOR=assert %i
+d16: select -assert-count 16 t:$check r:FLAVOR=assert %i
+
+[files]
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
+coherent_rs_payload_formal.sv

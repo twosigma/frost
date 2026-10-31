@@ -53,6 +53,17 @@ module load_queue #(
     parameter longint unsigned CACHED_BASE = riscv_pkg::DdrBase,
     parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
 ) (
+    input logic i_coherent_cut_hold = 1'b0,
+    input logic [riscv_pkg::XLEN-1:0] i_coherent_cut_addr = '0,
+    input logic [1:0] i_coherent_block_valid = '0,
+    input logic [1:0][riscv_pkg::XLEN-1:0] i_coherent_block_addr = '0,
+    input logic i_coherent_atomic_protected = 1'b0,
+    output logic o_coherent_arm_valid,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_arm_tag,
+    output logic [1:0] o_coherent_read_kind,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_read_tag,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_write_tag,
+    output logic [2:0] o_reservation_size,
     input logic i_clk,
     input logic i_rst_n,
 
@@ -237,6 +248,11 @@ module load_queue #(
     // in its write phase, so the line cannot be admitted yet.
     input logic [riscv_pkg::XLEN-1:0] i_coh_query_addr,
     output logic o_coh_query_busy,
+    // The CPU may hold the query line: an L0 entry at one of its dword
+    // indices, a cached slot on it, or a reservation on it. An in-flight AMO
+    // or LR holds a cached slot; the CPU invalidation changes nothing for
+    // one that is only staged.
+    output logic o_coh_query_held,
     // Memory observation: a cached-region load hit the L0, forwarded from the
     // SQ, or launched this cycle (the validation table's write; AMOs
     // excluded).
@@ -443,8 +459,9 @@ module load_queue #(
   // Per-entry 1-bit flags (packed vectors for bulk operations)
   logic [DEPTH-1:0] lq_valid;
   // The memory issue launch as the LQ's own logic reads it; o_mem_read_en
-  // drives the same value to the router.
-  logic mem_read_en;
+  // drives the same value to the router. fast_capture is a launch into the
+  // fast snapshot.
+  logic mem_read_en, fast_capture;
   logic [DEPTH-1:0] lq_is_fp;
   logic [DEPTH-1:0] lq_addr_valid;
   logic [DEPTH-1:0] lq_sign_ext;
@@ -529,8 +546,10 @@ module load_queue #(
   // Reservation register (LR/SC)
   logic reservation_valid;
   logic [XLEN-1:0] reservation_addr;
+  logic [2:0] reservation_size;
   assign o_reservation_valid = reservation_valid;
   assign o_reservation_addr  = reservation_addr;
+  assign o_reservation_size  = reservation_size;
 
   // AMO FSM
   typedef enum logic [1:0] {
@@ -696,7 +715,7 @@ module load_queue #(
       i_cache_invalidate_addr[XLEN-1:3] == fast_addr[XLEN-1:3];
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) fast_line_invalidated <= 1'b0;
-    else if (mem_read_en && !launching_is_cached)
+    else if (fast_capture)
       fast_line_invalidated <= i_cache_invalidate_valid &&
           i_cache_invalidate_addr[XLEN-1:3] == launch_mem_issue_addr[XLEN-1:3];
     else if (mem_outstanding && fast_line_invalidate_now) fast_line_invalidated <= 1'b1;
@@ -769,17 +788,24 @@ module load_queue #(
 
   // lq_address and lq_amo_rs2 are only written once the address CAM resolves.
   // Valid bits stay in FFs; stale RAM contents are don't-care until addr_valid.
-  sdp_dist_ram #(
-      .ADDR_WIDTH(IdxWidth),
-      .DATA_WIDTH(XLEN)
-  ) u_lq_address_issue_mem (
-      .i_clk,
-      .i_write_enable (lq_addr_update_we),
-      .i_write_address(lq_addr_update_idx),
-      .i_write_data   (i_addr_update.address),
-      .i_read_address (issue_mem_stored_idx),
-      .o_read_data    (lq_address_issue_mem_rd)
-  );
+  logic [3:0] coherent_stored_class, coherent_update_class;
+  if (1'b1) begin : gen_coherent_address_store
+    coherent_lq_address_store #(
+        .ADDR_WIDTH(IdxWidth),
+        .CACHED_BASE(CACHED_BASE),
+        .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
+    ) address_store (
+        .i_clk,
+        .i_write_enable(lq_addr_update_we),
+        .i_write_address(lq_addr_update_idx),
+        .i_write_data(i_addr_update.address),
+        .i_read_address(issue_mem_stored_idx),
+        .o_read_data(lq_address_issue_mem_rd),
+        .o_read_class(coherent_stored_class),
+        .o_write_class(coherent_update_class)
+    );
+  end
+
 
   sdp_dist_ram #(
       .ADDR_WIDTH(IdxWidth),
@@ -892,8 +918,11 @@ module load_queue #(
   assign coh_staged_amo_lr = sq_check_pending && (sq_check_is_amo_q || sq_check_is_lr_q);
   always_comb begin
     for (int sl = 0; sl < int'(CachedSlots); sl++) begin
-      cs_coh_inval_now[sl] = cs_valid[sl] && i_coh_inval_valid &&
-          (i_coh_inval_addr[XLEN-1:CohLineLsb] == cs_addr[sl][XLEN-1:CohLineLsb]);
+      cs_coh_inval_now[sl] = cs_valid[sl] &&
+          ((i_coh_inval_valid &&
+            i_coh_inval_addr[XLEN-1:CohLineLsb] == cs_addr[sl][XLEN-1:CohLineLsb]) ||
+           (i_coherent_cut_hold &&
+            i_coherent_cut_addr[XLEN-1:CohLineLsb] == cs_addr[sl][XLEN-1:CohLineLsb]));
     end
     coh_block_hit = 1'b0;
     for (int k = 0; k < int'(riscv_pkg::DmaCoherenceLocks); k++) begin
@@ -915,16 +944,27 @@ module load_queue #(
       o_coh_query_busy = 1'b1;
     end
   end
+  logic l0_query_line_valid;
+  always_comb begin
+    o_coh_query_held = l0_query_line_valid || (reservation_valid &&
+        reservation_addr[XLEN-1:CohLineLsb] == i_coh_query_addr[XLEN-1:CohLineLsb]);
+    for (int sl = 0; sl < int'(CachedSlots); sl++) begin
+      if (cs_valid[sl] &&
+          (cs_addr[sl][XLEN-1:CohLineLsb] == i_coh_query_addr[XLEN-1:CohLineLsb]))
+        o_coh_query_held = 1'b1;
+    end
+  end
   assign coh_reservation_inval = i_coh_inval_valid && reservation_valid &&
       (i_coh_inval_addr[XLEN-1:CohLineLsb] == reservation_addr[XLEN-1:CohLineLsb]);
-  // The hart's own AMO write to the reserved doubleword cancels the
-  // reservation, as a store there does (i_reservation_snoop_invalidate).
+  // The hart's AMO write cancels a reservation in its reservation set,
+  // as a store does through i_reservation_snoop_invalidate.
   logic amo_reservation_inval;
   assign amo_reservation_inval = amo_cache_inv && reservation_valid &&
-      (amo_write_addr_q[XLEN-1:3] == reservation_addr[XLEN-1:3]);
+      ((amo_write_addr_q[XLEN-1:5] == reservation_addr[XLEN-1:5]));
   logic reservation_clear;
   assign reservation_clear = i_sc_clear_reservation || i_reservation_snoop_invalidate ||
-      coh_reservation_inval || amo_reservation_inval;
+      coh_reservation_inval || amo_reservation_inval ||
+      (mem_read_en && sq_check_is_lr_q);
   // The hold is a registered compare of the staged atomic's line against the
   // mirror. A newly captured or replaced atomic has no compare of its own
   // yet, so it waits one cycle before its first launch (coh_hold_valid_q);
@@ -936,7 +976,8 @@ module load_queue #(
       coh_hold_valid_q  <= 1'b0;
     end else begin
       coh_launch_hold_q <= coh_staged_amo_lr && coh_block_hit;
-      coh_hold_valid_q  <= coh_staged_amo_lr && !sq_check_capture && !sq_check_replace;
+      coh_hold_valid_q <= coh_staged_amo_lr &&
+          !(coherent_stage_take[0]);
     end
   end
 
@@ -1140,7 +1181,6 @@ module load_queue #(
   if (PREISSUE_CANDIDATES) begin : gen_pre_match_candidates
     localparam int NumCandidates = 1 << PREISSUE_SEL_WIDTH;
     logic [DEPTH-1:0] candidate_match[NumCandidates];
-    logic [DEPTH-1:0] candidate_match_q[NumCandidates];
     logic [PREISSUE_SEL_WIDTH-1:0] select_q;
     if (PREISSUE_READY_PICK) begin : gen_ready_pick
       // Compare LQ tags with each MEM_RS tag before selection for timing. Picking
@@ -1229,28 +1269,27 @@ module load_queue #(
         end
       end
     end
-    for (genvar candidate = 0; candidate < NumCandidates; candidate++) begin : gen_candidate_q
-      always_ff @(posedge i_clk) begin
-        if (!i_rst_n || i_flush_all) candidate_match_q[candidate] <= '0;
-        else candidate_match_q[candidate] <= candidate_match[candidate];
-      end
-    end
     always_ff @(posedge i_clk) begin
       select_q <= i_pre_issue_sel;
     end
-    // Select among registered candidates for timing. Reset and full flush
-    // zero every candidate, so the selector is then irrelevant.
-    wire [DEPTH-1:0] select_tree[2*NumCandidates];
-    for (genvar leaf = 0; leaf < NumCandidates; leaf++) begin : gen_leaf
-      assign select_tree[NumCandidates+leaf] = candidate_match_q[leaf];
-    end
-    for (genvar level = 0; level < PREISSUE_SEL_WIDTH; level++) begin : gen_level
-      for (genvar node = (1 << level); node < (2 << level); node++) begin : gen_node
-        assign select_tree[node] = select_q[PREISSUE_SEL_WIDTH-1-level] ?
-            select_tree[2*node+1] : select_tree[2*node];
+    // The select arrives early, so the named candidate's match is chosen
+    // before the edge and registered; reset and full flush zero it.
+    if (1'b1) begin : gen_coherent_candidate_select
+      wire [DEPTH*NumCandidates-1:0] candidates_flat;
+      for (genvar candidate = 0; candidate < NumCandidates; candidate++) begin : gen_flat
+        assign candidates_flat[candidate*DEPTH+:DEPTH] = candidate_match[candidate];
       end
+      coherent_lq_candidate_select #(
+          .WIDTH(DEPTH),
+          .SELECT_WIDTH(PREISSUE_SEL_WIDTH)
+      ) candidate_select (
+          .i_clk,
+          .i_clear(!i_rst_n || i_flush_all),
+          .i_select(i_pre_issue_sel),
+          .i_candidates(candidates_flat),
+          .o_selected(addr_update_pre_match_tags_q)
+      );
     end
-    assign addr_update_pre_match_tags_q = select_tree[1];
 `ifndef SYNTHESIS
     always @(posedge i_clk) begin
       if (reset_seen_q && i_rst_n && i_pre_issue_needs_lq) begin
@@ -1361,45 +1400,97 @@ module load_queue #(
         lq_rob_tag[g_lq_tag];
   end
 
-  lq_issue_selector #(
-      .DEPTH(DEPTH)
-  ) lq_issue_selector_inst (
-      .lq_valid(lq_valid),
-      .lq_addr_valid(lq_addr_valid),
-      .lq_is_mmio(lq_is_mmio),
-      .lq_issued(lq_issued),
-      .lq_data_valid(lq_data_valid),
-      .lq_is_lr(lq_is_lr),
-      .lq_is_amo(lq_is_amo),
-      .sq_check_in_flight_mask(sq_check_in_flight_mask),
-      .addr_update_pre_match_q(addr_update_pre_match_q),
-      .rob_head_match_q(rob_head_match_q),
-      .lq_rob_tag_flat(lq_rob_tag_flat),
-      .blocked_by_amo_phys_q(older_amo_block_q),
-      .head_idx(head_idx),
-      .i_sq_committed_empty(i_sq_committed_empty),
-      .o_issue_cdb_found(issue_cdb_found),
-      .o_issue_cdb_idx(issue_cdb_idx),
-      .o_merged_scan_onehot(merged_scan_onehot),
-      .o_stored_scan_found(stored_scan_found),
-      .o_stored_scan_idx(stored_scan_idx),
-      .o_stored_scan_pos(stored_scan_pos),
-      .o_stored_scan_onehot(stored_scan_onehot),
-      .o_stored_scan_rob_tag(stored_scan_rob_tag),
-      .o_update_scan_found(update_scan_found),
-      .o_update_scan_idx(update_scan_idx),
-      .o_update_scan_pos(update_scan_pos),
-      .o_update_scan_onehot(update_scan_onehot),
-      .o_update_scan_rob_tag(update_scan_rob_tag),
-      .o_head_mem_stored_found(head_mem_stored_found),
-      .o_head_mem_stored_idx(head_mem_stored_idx),
-      .o_head_mem_stored_onehot(head_mem_stored_onehot),
-      .o_head_mem_stored_rob_tag(head_mem_stored_rob_tag),
-      .o_head_mem_update_found(head_mem_update_found),
-      .o_head_mem_update_idx(head_mem_update_idx),
-      .o_head_mem_update_onehot(head_mem_update_onehot),
-      .o_head_mem_update_rob_tag(head_mem_update_rob_tag)
-  );
+  logic [DEPTH-1:0] coherent_parked_q;
+  logic coherent_local_hold, coherent_sector_hold, coherent_holder_changed;
+  logic coherent_address_fault;
+  logic coherent_staged_misaligned;
+  logic coherent_staged_at_head;
+  logic [1:0] coherent_probe_choice, coherent_issue_choice;
+  logic [1:0] coherent_issue_by_drain, coherent_eligible_by_drain;
+  logic [1:0][1:0] coherent_release_by_drain_empty;
+  logic [1:0][1:0][1:0] coherent_release_cases;
+  logic coherent_release_eligible, coherent_release_protected;
+  logic [1:0] coherent_forward_unblocked_empty;
+  logic coherent_forward_unblocked;
+  logic coherent_forward_clear_eligible;
+  logic coherent_probe_ok, coherent_issue_ok, coherent_forward_ok;
+  if (1'b1) begin : gen_coherent_park
+    logic [1:0] holder_valid_q;
+    logic [2*XLEN-1:0] holder_addr_q;
+    assign coherent_holder_changed = holder_valid_q != i_coherent_block_valid ||
+        holder_addr_q != i_coherent_block_addr;
+    always_ff @(posedge i_clk) begin
+      holder_valid_q <= i_coherent_block_valid;
+      holder_addr_q  <= i_coherent_block_addr;
+      if (!i_rst_n || i_flush_all || coherent_holder_changed) coherent_parked_q <= '0;
+      else begin
+        coherent_parked_q <= coherent_parked_q & lq_valid & ~dep_replaced_oh;
+        if (sq_check_pending && coherent_sector_hold) coherent_parked_q[sq_check_idx] <= 1'b1;
+      end
+    end
+  end
+
+  // Declared before the selector: Vivado binds a port connection to a later
+  // module-level declaration as a separate, undriven implicit net.
+  logic [DEPTH-1:0] staged_younger_than_entry;
+  wire coherent_replace_without_update, coherent_replace_with_update;
+  // The staged load's age against the ROB-head entry, compared directly from
+  // that entry's tag so it is as early as the per-entry comparisons.
+  logic [ReorderBufferTagWidth-1:0] rob_head_entry_tag;
+  always_comb begin
+    rob_head_entry_tag = '0;
+    for (int i = 0; i < DEPTH; i++)
+      rob_head_entry_tag |= lq_rob_tag[i] & {ReorderBufferTagWidth{rob_head_match_q[i]}};
+  end
+  wire staged_younger_than_head = is_younger(sq_check_rob_tag_q, rob_head_entry_tag,
+                                             i_rob_head_tag);
+
+  if (1'b1) begin : gen_coherent_issue_selector
+    coherent_lq_issue_selector #(
+        .DEPTH(DEPTH)
+    ) selector (
+        .i_clk,
+        .lq_valid(lq_valid),
+        .lq_addr_valid(lq_addr_valid),
+        .lq_is_mmio(lq_is_mmio),
+        .lq_issued(lq_issued),
+        .lq_data_valid(lq_data_valid),
+        .lq_is_lr(lq_is_lr),
+        .lq_is_amo(lq_is_amo),
+        .sq_check_in_flight_mask(sq_check_in_flight_mask | coherent_parked_q),
+        .addr_update_pre_match_q(addr_update_pre_match_q),
+        .rob_head_match_q(rob_head_match_q),
+        .lq_rob_tag_flat(lq_rob_tag_flat),
+        .blocked_by_amo_phys_q(older_amo_block_q),
+        .head_idx(head_idx),
+        .i_sq_committed_empty(i_sq_committed_empty),
+        .i_staged_younger(staged_younger_than_entry),
+        .i_staged_younger_head(staged_younger_than_head),
+        .o_replace_without_update(coherent_replace_without_update),
+        .o_replace_with_update(coherent_replace_with_update),
+        .o_issue_cdb_found(issue_cdb_found),
+        .o_issue_cdb_idx(issue_cdb_idx),
+        .o_merged_scan_onehot(merged_scan_onehot),
+        .o_stored_scan_found(stored_scan_found),
+        .o_stored_scan_idx(stored_scan_idx),
+        .o_stored_scan_pos(stored_scan_pos),
+        .o_stored_scan_onehot(stored_scan_onehot),
+        .o_stored_scan_rob_tag(stored_scan_rob_tag),
+        .o_update_scan_found(update_scan_found),
+        .o_update_scan_idx(update_scan_idx),
+        .o_update_scan_pos(update_scan_pos),
+        .o_update_scan_onehot(update_scan_onehot),
+        .o_update_scan_rob_tag(update_scan_rob_tag),
+        .o_head_mem_stored_found(head_mem_stored_found),
+        .o_head_mem_stored_idx(head_mem_stored_idx),
+        .o_head_mem_stored_onehot(head_mem_stored_onehot),
+        .o_head_mem_stored_rob_tag(head_mem_stored_rob_tag),
+        .o_head_mem_update_found(head_mem_update_found),
+        .o_head_mem_update_idx(head_mem_update_idx),
+        .o_head_mem_update_onehot(head_mem_update_onehot),
+        .o_head_mem_update_rob_tag(head_mem_update_rob_tag)
+    );
+  end
 
   // ===========================================================================
   // Head-load sub-bucket diagnostics
@@ -1514,9 +1605,53 @@ module load_queue #(
   // An arriving MMIO address may stage before ROB head. sq_check_is_mmio_q
   // blocks its SQ probe and memory issue until it reaches head.
   assign update_scan_issueable = update_scan_found;
-  assign update_scan_older_than_stored_scan =
-      update_scan_issueable && (!stored_scan_found || (update_scan_pos < stored_scan_pos));
+  if (1'b1) begin : gen_coherent_scan_order
+    assign update_scan_older_than_stored_scan =
+        |(merged_scan_onehot & update_scan_onehot & ~stored_scan_onehot);
+  end
+`ifndef SYNTHESIS
+  if (1'b1) begin : gen_coherent_scan_checks
+    wire [DEPTH-1:0] reference_mem_onehot = head_mem_stored_found ? head_mem_stored_onehot :
+        (i_addr_update.valid && head_mem_update_found) ? head_mem_update_onehot :
+        update_scan_wins ? update_scan_onehot : stored_scan_found ? stored_scan_onehot : '0;
+    wire [IdxWidth-1:0] reference_mem_idx = head_mem_stored_found ? head_mem_stored_idx :
+        (i_addr_update.valid && head_mem_update_found) ? head_mem_update_idx :
+        update_scan_wins ? update_scan_idx : stored_scan_found ? stored_scan_idx : '0;
+    wire [ReorderBufferTagWidth-1:0] reference_mem_tag;
+    assign reference_mem_tag = head_mem_stored_found ? stored_issue_rob_tag :
+        (i_addr_update.valid && head_mem_update_found) ? update_issue_rob_tag :
+        update_scan_wins ? update_scan_rob_tag : stored_scan_found ? stored_scan_rob_tag : '0;
+`ifdef FORMAL
+    always_comb
+`else
+    always @(posedge i_clk)
+`endif
+    begin
+      p_issue_mask_exact : assert (issue_mem_onehot == reference_mem_onehot);
+      p_issue_idx_exact : assert (issue_mem_idx == reference_mem_idx);
+      p_issue_tag_exact : assert (issue_mem_rob_tag == reference_mem_tag);
+      p_scan_order_exact : assert (update_scan_older_than_stored_scan ==
+          (update_scan_issueable && (!stored_scan_found || (update_scan_pos < stored_scan_pos))));
+      p_issue_found_exact : assert (issue_mem_found ==
+          (head_mem_stored_found || (i_addr_update.valid && head_mem_update_found) ||
+           update_scan_wins || stored_scan_found));
+    end
+  end
+`endif
   assign update_scan_wins = i_addr_update.valid && update_scan_older_than_stored_scan;
+
+  wire [DEPTH-1:0] coherent_ring_mask =
+      i_addr_update.valid ? merged_scan_onehot : stored_scan_onehot;
+  logic [IdxWidth-1:0] coherent_ring_idx;
+  logic [ReorderBufferTagWidth-1:0] coherent_ring_tag;
+  always_comb begin
+    coherent_ring_idx = '0;
+    coherent_ring_tag = '0;
+    for (int entry = 0; entry < DEPTH; entry++) begin
+      coherent_ring_idx |= {IdxWidth{coherent_ring_mask[entry]}} & IdxWidth'(entry);
+      coherent_ring_tag |= {ReorderBufferTagWidth{coherent_ring_mask[entry]}} & lq_rob_tag[entry];
+    end
+  end
 
   // Phase B: prefer an eligible ROB-head load, then ring order. Select stored
   // and arriving-address candidates separately for address RAM timing.
@@ -1557,6 +1692,18 @@ module load_queue #(
       issue_mem_rob_tag = stored_scan_rob_tag;
       issue_mem_onehot  = stored_scan_onehot;
     end
+    begin
+      issue_mem_found = head_mem_stored_found || stored_scan_found ||
+          (i_addr_update.valid && (head_mem_update_found || update_scan_found));
+      issue_mem_onehot = head_mem_stored_found ? head_mem_stored_onehot :
+          (i_addr_update.valid && head_mem_update_found) ? head_mem_update_onehot :
+          i_addr_update.valid ? merged_scan_onehot : stored_scan_onehot;
+      issue_mem_idx = head_mem_stored_found ? head_mem_stored_idx :
+          (i_addr_update.valid && head_mem_update_found) ? head_mem_update_idx : coherent_ring_idx;
+      issue_mem_rob_tag = head_mem_stored_found ? head_mem_stored_rob_tag :
+          (i_addr_update.valid && head_mem_update_found) ?
+              head_mem_update_rob_tag : coherent_ring_tag;
+    end
   end
 
   // ===========================================================================
@@ -1575,11 +1722,38 @@ module load_queue #(
   // to write. A store older than an LR, to the other word of its dword, does
   // not overlap the LR, so without the wait it could write after the LR's
   // response, and its write-launch snoop would cancel the reservation.
-  assign sq_check_entry_issueable = sq_check_entry_valid &&
+  assign coherent_local_hold = i_coherent_cut_hold || coherent_sector_hold;
+  // Address faults complete without arming atomic ownership.
+  logic sq_check_fault_eligible;
+  assign sq_check_fault_eligible = sq_check_entry_valid &&
       (!(sq_check_is_lr_q || sq_check_is_amo_q)
        || (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty)) &&
       (!sq_check_is_mmio_q || (sq_check_rob_tag_q == i_rob_head_tag)) &&
-      !coh_launch_hold_q && !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q));
+      !coh_launch_hold_q && !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
+      !(coherent_local_hold);
+  assign sq_check_entry_issueable = sq_check_fault_eligible &&
+      !(sq_check_is_amo_q && sq_check_is_cached_region &&
+        !i_coherent_atomic_protected);
+
+  always_comb begin
+    coherent_sector_hold = 1'b0;
+    for (int holder = 0; holder < 2; holder++)
+    coherent_sector_hold |= i_coherent_block_valid[holder] &&
+          sq_check_addr_q[XLEN-1:5] == i_coherent_block_addr[holder][XLEN-1:5];
+  end
+  // Address faults are independent of the cut and same-sector holds.
+  assign coherent_address_fault =
+      riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q) != riscv_pkg::DFAULT_NONE ||
+      !sq_check_pma_ok ||
+      (i_trap_misaligned_accesses && coherent_staged_misaligned);
+  assign coherent_staged_at_head = sq_check_rob_tag_q == i_rob_head_tag;
+  assign o_coherent_arm_valid = sq_check_entry_valid && sq_check_is_amo_q &&
+      sq_check_is_cached_region && sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty &&
+      !coherent_address_fault && !i_flush_all && !i_flush_en;
+  assign o_coherent_arm_tag = sq_check_rob_tag_q;
+  assign o_coherent_read_kind = sq_check_is_amo_q ? 2'd2 : sq_check_is_lr_q ? 2'd1 : 2'd0;
+  assign o_coherent_read_tag = sq_check_rob_tag_q;
+  assign o_coherent_write_tag = lq_rob_tag[amo_entry_idx];
 
   // A departing staged load permits same-cycle capture of its replacement.
   // Keep this predicate aligned with sq_check_stage_clears below.
@@ -1601,23 +1775,84 @@ module load_queue #(
   // A parked translation fault outranks PMA and alignment checks: the saved
   // address is a VA for xtval. Use the saved kind to select its cause.
   logic sq_check_parked_fault;
-  assign sq_check_parked_fault = sq_check_entry_valid && sq_check_entry_issueable &&
+  assign sq_check_parked_fault = sq_check_fault_eligible &&
       (riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q) != riscv_pkg::DFAULT_NONE);
   logic sq_check_pma_ok;
-  assign sq_check_pma_ok = (sq_check_is_amo_q || sq_check_is_lr_q) ? riscv_pkg::pma_atomic_ok(
-      sq_check_addr_q
-  ) : riscv_pkg::pma_data_ok(
-      sq_check_addr_q
-  );
+  logic coherent_staged_normal;
+  if (1'b1) begin : gen_coherent_staged_class
+    logic pma_ok_q, cached_q, misaligned_q, normal_q;
+    wire stored_atomic = lq_is_amo[issue_mem_stored_idx] || lq_is_lr[issue_mem_stored_idx];
+    wire update_atomic = lq_is_amo[update_issue_payload_idx] || lq_is_lr[update_issue_payload_idx];
+    (* keep = "true" *) wire stored_permission =
+        stored_atomic ? coherent_stored_class[2] : coherent_stored_class[1];
+    (* keep = "true" *) wire update_permission =
+        update_atomic ? coherent_update_class[2] : coherent_update_class[1];
+    wire selected_permission = issue_mem_uses_addr_update ? update_permission : stored_permission;
+    wire [3:0] selected_class = issue_mem_uses_addr_update ?
+        coherent_update_class : coherent_stored_class;
+    (* keep = "true" *) wire stored_misaligned = is_load_misaligned(
+        riscv_pkg::mem_size_e'(lq_size[issue_mem_stored_idx]), lq_address_issue_mem_rd);
+    (* keep = "true" *) wire update_misaligned = is_load_misaligned(
+        riscv_pkg::mem_size_e'(lq_size[update_issue_payload_idx]), i_addr_update.address);
+    wire selected_misaligned = issue_mem_uses_addr_update ?
+        update_misaligned : stored_misaligned;
+    always_ff @(posedge i_clk) begin
+      if (sq_check_payload_en) begin
+        pma_ok_q <= selected_permission;
+        cached_q <= selected_class[0];
+        normal_q <= selected_class[3];
+        misaligned_q <= selected_misaligned;
+      end
+    end
+    assign sq_check_pma_ok = pma_ok_q;
+    assign sq_check_is_cached_region = cached_q;
+    assign coherent_staged_misaligned = misaligned_q;
+    assign coherent_staged_normal = normal_q;
+`ifndef SYNTHESIS
+`ifdef FORMAL
+    always_comb
+`else
+    always @(posedge i_clk)
+`endif
+    begin
+      p_stage_class_choice_exact : assert (selected_permission ==
+          ((sq_check_is_amo_next || sq_check_is_lr_next) ? selected_class[2] : selected_class[1]));
+      p_stage_alignment_choice_exact : assert (selected_misaligned ==
+          is_load_misaligned(sq_check_size_next, sq_check_addr_next));
+    end
+    logic payload_seen = 1'b0;
+    logic pending_payload_seen = 1'b0;
+    logic reset_seen = 1'b0;
+    always_ff @(posedge i_clk) begin
+      if (!i_rst_n) begin
+        reset_seen <= 1'b1;
+        pending_payload_seen <= 1'b0;
+      end else if (sq_check_payload_en) pending_payload_seen <= 1'b1;
+      if (sq_check_payload_en) payload_seen <= 1'b1;
+      if (reset_seen && i_rst_n && sq_check_pending)
+        p_staged_payload_seen : assert (pending_payload_seen);
+      if (payload_seen) begin
+        p_staged_pma_exact : assert (pma_ok_q ==
+            ((sq_check_is_amo_q || sq_check_is_lr_q) ?
+             riscv_pkg::pma_atomic_ok(sq_check_addr_q) : riscv_pkg::pma_data_ok(sq_check_addr_q)));
+        p_staged_cached_exact : assert (cached_q == is_cached_addr(sq_check_addr_q));
+        p_staged_normal_exact : assert (normal_q ==
+            riscv_pkg::pma_writethrough_ok(sq_check_addr_q));
+        p_staged_cacheable_exact : assert (sq_check_cacheable ==
+            (CACHE_UNCACHED_DATA || is_cached_addr(sq_check_addr_q) ||
+             (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(sq_check_addr_q))));
+        p_staged_misaligned_exact : assert (misaligned_q ==
+            is_load_misaligned(sq_check_size_q, sq_check_addr_q));
+      end
+    end
+`endif
+  end
   assign sq_check_pma_fault = !sq_check_parked_fault &&
-      sq_check_entry_valid && sq_check_entry_issueable && !sq_check_pma_ok;
+      sq_check_fault_eligible && !sq_check_pma_ok;
   assign sq_check_misaligned = sq_check_parked_fault || sq_check_pma_fault ||
       (i_trap_misaligned_accesses &&
-       sq_check_entry_valid && sq_check_entry_issueable &&
-       is_load_misaligned(
-      sq_check_size_q, sq_check_addr_q
-  ));
-  assign sq_check_is_cached_region = is_cached_addr(sq_check_addr_q);
+       sq_check_fault_eligible &&
+       coherent_staged_misaligned);
   assign sq_commit_check_block =
       i_sq_commit_pending && sq_check_entry_valid && sq_check_is_cached_region;
   // older_amo_write_pending releases the staged entry: a load fenced behind
@@ -1627,7 +1862,8 @@ module load_queue #(
   // eligible it is at the ROB head, so head priority selects it.
   assign sq_check_will_clear = sq_check_pending &&
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
-       launch_mem_issue || misalign_bypass_fire || older_amo_write_pending);
+       launch_mem_issue || misalign_bypass_fire || older_amo_write_pending ||
+       (coherent_sector_hold));
 
   // Stored MMIO at ROB head is eligible in both scans; head priority wins.
   // The router enforces committed-store drain before device acceptance.
@@ -1648,7 +1884,6 @@ module load_queue #(
   // Compare the staged tag with each entry before selection for timing.
   // issue_mem_onehot selects exactly one age result, or zero when no
   // candidate exists.
-  logic [DEPTH-1:0] staged_younger_than_entry;
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
       staged_younger_than_entry[i] = is_younger(sq_check_rob_tag_q, lq_rob_tag[i], i_rob_head_tag);
@@ -1656,6 +1891,13 @@ module load_queue #(
   end
   logic staged_younger_than_candidate;
   assign staged_younger_than_candidate = |(staged_younger_than_entry & issue_mem_onehot);
+`ifndef SYNTHESIS
+  // The selector reads the head entry's staged age from this direct
+  // comparison; the head match is at most one-hot.
+  always @(posedge i_clk)
+    if (reset_seen_q && i_rst_n && |rob_head_match_q)
+      assert (staged_younger_than_head == |(staged_younger_than_entry & rob_head_match_q));
+`endif
 
   // Precompute replacement with and without an address update for timing.
   // The first entry in the union is the earlier scan winner. Preserve head
@@ -1672,6 +1914,132 @@ module load_queue #(
       (head_mem_update_found ? replace_update_head : replace_merged_scan);
   assign sq_check_replace = sq_check_pending && sq_check_gate_early &&
       (i_addr_update.valid ? replace_with_update : replace_without_update);
+  logic [3:0] coherent_stage_take;
+  wire coherent_stage_replace;
+  if (1'b1) begin : gen_coherent_replace_gate
+    (* keep = "true" *) wire stage_replace = sq_check_pending && sq_check_gate_early &&
+        (i_addr_update.valid ? coherent_replace_with_update : coherent_replace_without_update);
+    assign coherent_stage_replace = stage_replace;
+  end
+  wire [3:0] coherent_pending = {sq_check_pending_copy, sq_check_pending};
+  logic coherent_stage_clear;
+  wire [1:0] coherent_commit_choice = {i_sq_commit_pending, i_sq_committed_empty};
+  if (1'b1) begin : gen_coherent_capture_choices
+    // A flush leaves only the forwarding release, which depends on neither
+    // the head, hit nor bus case, so the flush selects it at the head choice
+    // rather than gating every memory release case.
+    (* keep = "true" *) logic [1:0] clear_by_head;
+    (* keep = "true" *) logic flushed_clear;
+    wire flushing = i_flush_all || i_flush_en;
+    assign flushed_clear = coherent_forward_unblocked_empty[i_sq_empty] &&
+        !(i_sq_commit_pending && sq_check_is_cached_region && sq_check_phase2);
+    for (genvar head_case = 0; head_case < 2; head_case++) begin : gen_head_choice
+      (* keep = "true" *) logic [1:0] clear_by_hit;
+      for (genvar hit_case = 0; hit_case < 2; hit_case++) begin : gen_hit_choice
+        localparam bit Hit = hit_case != 0;
+        (* keep = "true" *) logic [1:0] clear_by_empty;
+        for (genvar empty_case = 0; empty_case < 2; empty_case++) begin : gen_empty_choice
+          (* keep = "true" *) logic [3:0] clear_by_bus;
+          wire [1:0] bus_choice = {i_mem_bus_busy, i_l0_hit_allowed};
+          for (genvar bus_case = 0; bus_case < 4; bus_case++) begin : gen_bus_choice
+            localparam bit Busy = (bus_case & 2) != 0;
+            localparam bit L0Allowed = (bus_case & 1) != 0;
+            (* keep = "true" *) logic [3:0] clear_by_commit;
+            for (genvar commit_case = 0; commit_case < 4; commit_case++) begin : gen_commit_choice
+              localparam bit CommitPending = (commit_case & 2) != 0;
+              localparam int unsigned Drained = commit_case & 1;
+              wire interlock = CommitPending && sq_check_is_cached_region && sq_check_phase2;
+              wire clear_memory =
+                  coherent_release_cases[empty_case][Drained][head_case] && !interlock &&
+                  ((!Busy && !cached_launch_hold_q) ||
+                   (ENABLE_L0_FAST_PATH && sq_check_cacheable && (!Busy || L0Allowed) && Hit &&
+                    !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q));
+              assign clear_by_commit[commit_case] = clear_memory ||
+                  (coherent_forward_unblocked_empty[empty_case] && !interlock);
+            end
+            assign clear_by_bus[bus_case] = clear_by_commit[coherent_commit_choice];
+          end
+          assign clear_by_empty[empty_case] = clear_by_bus[bus_choice];
+        end
+        assign clear_by_hit[hit_case] = clear_by_empty[i_sq_empty];
+      end
+      assign clear_by_head[head_case] = flushing ? flushed_clear : clear_by_hit[cache_lookup_hit];
+    end
+    // Head identity selects between complete release cofactors. Phase and
+    // address faults qualify that selected release condition.
+    (* keep = "true" *) wire release_ready = sq_check_phase2 && !coherent_address_fault &&
+        coherent_release_protected && !i_coherent_cut_hold &&
+        clear_by_head[coherent_staged_at_head];
+    (* keep = "true" *) wire fault_clear_ready =
+        !coherent_local_hold && !resp_bypass_ok &&
+        coherent_release_eligible && coherent_address_fault && !i_flush_en;
+    wire fault_granted = cdb_stage_slot_available && !issue_cdb_fire;
+    (* keep = "true" *) wire release_for_take = release_ready || coherent_sector_hold ||
+        older_amo_write_pending || (fault_clear_ready && fault_granted);
+    (* keep = "true" *) wire release_for_clear = (!coherent_sector_hold && release_ready) ||
+        older_amo_write_pending || (fault_clear_ready && fault_granted);
+    // Each take is its terms without replacement, or the staged load giving
+    // way to an older candidate. The two parts are kept, so the replacement
+    // choice meets them in the last term.
+    (* keep = "true" *) wire take_replaceable = sq_check_gate_early && sq_check_pending;
+    for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_take
+      (* keep = "true" *) wire take_without_replacement = sq_check_gate_early &&
+          ((!coherent_pending[copy_index] && issue_mem_found) ||
+           (sq_check_pending && release_for_take && issue_mem_found));
+      assign coherent_stage_take[copy_index] = take_without_replacement ||
+          (take_replaceable && (i_addr_update.valid ? coherent_replace_with_update :
+           coherent_replace_without_update));
+    end
+    assign coherent_stage_clear = sq_check_pending && release_for_clear;
+  end
+
+  // The selector's head term relies on the head match being at most one-hot,
+  // so these equalities are checked where it is. Formal proves the one-hot
+  // match (p_rob_head_match_onehot) and simulation checks it every cycle, so
+  // no multi-hot cycle passes unchecked.
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  always @(posedge i_clk)
+    if (reset_seen_q && i_rst_n)
+      p_rob_head_match_onehot_sim : assert ($onehot0(rob_head_match_q));
+`endif
+`endif
+`ifndef SYNTHESIS
+`ifdef FORMAL
+  always_comb
+`else
+  always @(posedge i_clk)
+`endif
+  if ($onehot0(rob_head_match_q)) begin
+    p_stage_replace_exact : assert (coherent_stage_replace ==
+        (sq_check_pending && sq_check_gate_early &&
+         (|(staged_younger_than_entry & issue_mem_onehot))));
+  end
+`endif
+  for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_coherent_stage_take
+`ifndef SYNTHESIS
+    wire [DEPTH-1:0] permitted =
+        {DEPTH{!coherent_pending[copy_index] || sq_check_will_clear}} |
+        (staged_younger_than_entry & {DEPTH{sq_check_pending}});
+    wire stored_head = |(permitted & head_mem_stored_onehot);
+    wire update_head = |(permitted & head_mem_update_onehot);
+    wire stored_scan = |(permitted & stored_scan_onehot);
+    wire merged_scan = |(permitted & merged_scan_onehot);
+    wire without_update = head_mem_stored_found ? stored_head : stored_scan;
+    wire with_update = head_mem_stored_found ? stored_head :
+        head_mem_update_found ? update_head : merged_scan;
+    wire reference_take = sq_check_gate_early &&
+        (i_addr_update.valid ? with_update : without_update);
+`ifdef FORMAL
+    always_comb
+`else
+    always @(posedge i_clk)
+`endif
+    if ($onehot0(rob_head_match_q)) begin
+      assert (coherent_stage_take[copy_index] == reference_take);
+    end
+`endif
+  end
 `ifdef F_LQ_MERGED_REPLACE_LOCAL_PROOF
   always_comb
     assert (sq_check_replace ==
@@ -1713,6 +2081,12 @@ module load_queue #(
         !(sq_check_no_older_store_q || i_sq_empty)) begin
       o_sq_check_capture_valid = 1'b1;
     end
+    begin
+      o_sq_check_valid = coherent_probe_ok && !coherent_local_hold &&
+          !i_flush_all && !i_flush_en && !drop_mem_response_pending && !sq_commit_check_block;
+      o_sq_check_capture_valid = coherent_probe_ok && !coherent_local_hold &&
+          !drop_mem_response_pending;
+    end
   end
 
   // ===========================================================================
@@ -1749,23 +2123,197 @@ module load_queue #(
   assign sq_head_amo_clear = sq_check_is_amo_q &&
       (sq_check_rob_tag_q == i_rob_head_tag) && i_sq_committed_empty;
 
-  assign sq_can_issue = sq_check_phase2 && sq_check_entry_issueable &&
-      !sq_check_misaligned &&
-      !sq_commit_interlock &&
-      !older_amo_write_pending &&
-      (sq_no_older_store || sq_head_amo_clear ||
-       (i_sq_all_older_addrs_known && !i_sq_forward.match));
+  if (1'b1) begin : gen_coherent_issue_gate
+    (* keep = "true" *) logic probe_ok, issue_ok;
+    wire ordinary_eligible =
+        !sq_check_is_lr_q && !sq_check_is_amo_q && !coh_launch_hold_q;
+    (* keep = "true" *) wire ordinary_issue = ordinary_eligible && sq_check_phase2 &&
+        !coherent_address_fault &&
+        (sq_no_older_store || (i_sq_all_older_addrs_known && !i_sq_forward.match));
+    (* keep = "true" *) wire head_drained_eligible = !coh_launch_hold_q &&
+        !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q));
+    (* keep = "true" *) wire head_drained_issue = head_drained_eligible && sq_check_phase2 &&
+        !coherent_address_fault &&
+        (sq_no_older_store || sq_check_is_amo_q ||
+         (i_sq_all_older_addrs_known && !i_sq_forward.match));
+    (* keep = "true" *) wire head_release_eligible = !coh_launch_hold_q &&
+        !((sq_check_is_amo_q || sq_check_is_lr_q) && (i_coh_admit_pulse || !coh_hold_valid_q));
+    assign coherent_release_protected =
+        !sq_check_is_amo_q || !sq_check_is_cached_region || i_coherent_atomic_protected;
+    assign coherent_release_eligible = coherent_staged_at_head ?
+        (i_sq_committed_empty ? head_release_eligible : ordinary_eligible) :
+        (ordinary_eligible && !sq_check_is_mmio_q);
+    for (genvar empty_case = 0; empty_case < 2; empty_case++) begin : gen_empty_issue
+      localparam bit Empty = empty_case != 0;
+      (* keep = "true" *) wire ordinary = ordinary_eligible &&
+          (sq_check_no_older_store_q || Empty ||
+           (i_sq_all_older_addrs_known && !i_sq_forward.match));
+      (* keep = "true" *) wire head_drained = head_release_eligible &&
+          (sq_check_no_older_store_q || Empty || sq_check_is_amo_q ||
+           (i_sq_all_older_addrs_known && !i_sq_forward.match));
+      for (genvar drain_case = 0; drain_case < 2; drain_case++) begin : gen_drain
+        (* keep = "true" *) wire [1:0] by_head = {
+          (drain_case != 0 ? head_drained : ordinary), ordinary && !sq_check_is_mmio_q
+        };
+        assign coherent_release_cases[empty_case][drain_case] = by_head;
+        assign coherent_release_by_drain_empty[empty_case][drain_case] =
+            by_head[coherent_staged_at_head];
+      end
+    end
+`ifndef SYNTHESIS
+`ifdef FORMAL
+    always_comb
+`else
+    always @(posedge i_clk)
+`endif
+    begin
+      p_empty_issue_exact : assert (!sq_check_pending ||
+          (coherent_release_by_drain_empty[i_sq_empty] &
+           {2{sq_check_phase2 && !coherent_address_fault && coherent_release_protected}}) ==
+          coherent_issue_by_drain);
+      p_release_eligible_exact : assert (!sq_check_pending ||
+          (coherent_release_eligible && coherent_release_protected) ==
+          coherent_eligible_by_drain[i_sq_committed_empty]);
+    end
+`endif
+    for (genvar drain_case = 0; drain_case < 2; drain_case++) begin : gen_coherent_drain_choice
+      localparam bit Drained = drain_case != 0;
+      (* keep = "true" *) logic [1:0] eligible_choice, issue_choice;
+      for (genvar head_case = 0; head_case < 2; head_case++) begin : gen_head_choice
+        localparam bit AtHead = head_case != 0;
+        assign eligible_choice[head_case] = AtHead ?
+            (Drained ? head_drained_eligible : ordinary_eligible) :
+            (ordinary_eligible && !sq_check_is_mmio_q);
+        assign issue_choice[head_case] = AtHead ?
+            (Drained ? head_drained_issue : ordinary_issue) :
+            (ordinary_issue && !sq_check_is_mmio_q);
+`ifndef SYNTHESIS
+        wire reference_eligible =
+            (!(sq_check_is_lr_q || sq_check_is_amo_q) || (AtHead && Drained)) &&
+            (!sq_check_is_mmio_q || AtHead) && !coh_launch_hold_q &&
+            !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
+            !(sq_check_is_amo_q && sq_check_is_cached_region && !i_coherent_atomic_protected);
+`ifdef FORMAL
+        always_comb
+`else
+        always @(posedge i_clk)
+`endif
+        begin
+          assert ((eligible_choice[head_case] && coherent_release_protected) == reference_eligible);
+          assert ((issue_choice[head_case] && coherent_release_protected) ==
+              (sq_check_phase2 && reference_eligible && !coherent_address_fault &&
+               (sq_no_older_store || (sq_check_is_amo_q && AtHead && Drained) ||
+                (i_sq_all_older_addrs_known && !i_sq_forward.match))));
+        end
+`endif
+      end
+      assign coherent_eligible_by_drain[drain_case] =
+          coherent_release_protected && eligible_choice[coherent_staged_at_head];
+      assign coherent_issue_by_drain[drain_case] =
+          coherent_release_protected && issue_choice[coherent_staged_at_head];
+    end
+    for (genvar head_case = 0; head_case < 2; head_case++) begin : gen_coherent_head_choice
+      localparam bit AtHead = head_case != 0;
+      logic eligible;
+      (* keep = "true" *) logic eligible_without_valid, probe;
+      // The issue terms after the SQ-dependent choice merge into one function.
+      logic issue, issue_for_clear, issue_unblocked;
+      assign eligible_without_valid = AtHead ?
+          (i_sq_committed_empty ? head_drained_eligible : ordinary_eligible) :
+          (ordinary_eligible && !sq_check_is_mmio_q);
+      assign eligible = sq_check_entry_valid && eligible_without_valid;
+      assign probe = eligible && !coherent_address_fault &&
+          !l0_lookup_busy && !(sq_check_no_older_store_q || i_sq_empty);
+      assign issue_unblocked = AtHead ?
+          (i_sq_committed_empty ? head_drained_issue : ordinary_issue) :
+          (ordinary_issue && !sq_check_is_mmio_q);
+      assign coherent_probe_choice[head_case] = probe;
+      assign issue = issue_for_clear && sq_check_entry_valid && !older_amo_write_pending;
+      assign coherent_issue_choice[head_case] = issue;
+      assign issue_for_clear = issue_unblocked && !sq_commit_interlock;
+    end
+    assign issue_ok = coherent_staged_at_head ?
+        coherent_issue_choice[1] : coherent_issue_choice[0];
+    assign probe_ok = coherent_staged_at_head ?
+        coherent_probe_choice[1] : coherent_probe_choice[0];
+    assign coherent_probe_ok = coherent_release_protected && probe_ok;
+    assign coherent_issue_ok = coherent_release_protected && issue_ok;
+    assign sq_can_issue = coherent_issue_ok && !coherent_local_hold;
+`ifndef SYNTHESIS
+`ifdef FORMAL
+    always_comb
+`else
+    always @(posedge i_clk)
+`endif
+    begin
+      p_issue_permission_exact : assert (sq_can_issue ==
+          (sq_check_phase2 && sq_check_entry_issueable && !coherent_address_fault &&
+           !sq_commit_interlock && !older_amo_write_pending &&
+           (sq_no_older_store || sq_head_amo_clear ||
+            (i_sq_all_older_addrs_known && !i_sq_forward.match))));
+      p_probe_permission_exact : assert ((coherent_probe_ok && !coherent_local_hold) ==
+          (sq_check_entry_issueable && !coherent_address_fault && !l0_lookup_busy &&
+           !(sq_check_no_older_store_q || i_sq_empty)));
+    end
+`endif
+  end
   // Forwarding also requires all older addresses known: an unresolved store
   // could overlap the load and be newer than the selected store, making its
   // data stale. Address-known and forwarding results come from the same scan.
-  assign sq_do_forward = ENABLE_SQ_FORWARD_FAST_PATH
-      && sq_check_phase2 && sq_check_entry_issueable && !sq_no_older_store &&
-      !sq_check_misaligned &&
-      !sq_commit_interlock &&
-      !older_amo_write_pending &&
-      i_sq_all_older_addrs_known &&
-      i_sq_forward.can_forward
-      && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
+  if (1'b1) begin : gen_coherent_forward_gate
+    (* keep = "true" *) logic forward_unblocked, forward_clear_eligible, forward_ok;
+    assign forward_unblocked = ENABLE_SQ_FORWARD_FAST_PATH && sq_check_phase2 &&
+        !coh_launch_hold_q && !coherent_address_fault && !sq_no_older_store &&
+        i_sq_all_older_addrs_known &&
+        i_sq_forward.can_forward && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
+    assign forward_clear_eligible = forward_unblocked && !sq_commit_interlock;
+    assign forward_ok = forward_clear_eligible && sq_check_entry_valid &&
+        !older_amo_write_pending;
+    assign coherent_forward_unblocked_empty[0] = ENABLE_SQ_FORWARD_FAST_PATH &&
+        !coh_launch_hold_q &&
+        !sq_check_no_older_store_q && i_sq_all_older_addrs_known &&
+        i_sq_forward.can_forward && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
+    assign coherent_forward_unblocked_empty[1] = 1'b0;
+`ifndef SYNTHESIS
+`ifdef FORMAL
+    always_comb
+`else
+    always @(posedge i_clk)
+`endif
+    begin
+      p_empty_forward_exact : assert (
+          (sq_check_phase2 && !coherent_address_fault &&
+           coherent_forward_unblocked_empty[i_sq_empty]) == forward_unblocked);
+    end
+`endif
+    assign coherent_forward_unblocked = forward_unblocked;
+    assign coherent_forward_clear_eligible = forward_clear_eligible;
+    assign coherent_forward_ok = forward_ok;
+    assign sq_do_forward = coherent_forward_ok && !coherent_local_hold;
+  end
+`ifndef SYNTHESIS
+  if (1'b1) begin : gen_coherent_gate_checks
+    always_comb begin
+      p_issue_gate_exact : assert (sq_can_issue ==
+          (sq_check_phase2 && sq_check_entry_issueable && !sq_check_misaligned &&
+           !sq_commit_interlock && !older_amo_write_pending &&
+           (sq_no_older_store || sq_head_amo_clear ||
+            (i_sq_all_older_addrs_known && !i_sq_forward.match))));
+      p_forward_gate_exact : assert (sq_do_forward ==
+          (ENABLE_SQ_FORWARD_FAST_PATH && sq_check_phase2 && sq_check_entry_issueable &&
+           !sq_no_older_store && !sq_check_misaligned && !sq_commit_interlock &&
+           !older_amo_write_pending && i_sq_all_older_addrs_known && i_sq_forward.can_forward &&
+           !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q));
+      p_probe_gate_exact : assert (o_sq_check_valid ==
+          (!i_flush_all && !i_flush_en && !drop_mem_response_pending && !l0_lookup_busy &&
+           !sq_commit_check_block && sq_check_entry_issueable && !sq_check_misaligned &&
+           !(sq_check_no_older_store_q || i_sq_empty)));
+      p_probe_capture_gate_exact : assert (o_sq_check_capture_valid ==
+          (!drop_mem_response_pending && !l0_lookup_busy && sq_check_entry_issueable &&
+           !sq_check_misaligned && !(sq_check_no_older_store_q || i_sq_empty)));
+    end
+  end
+`endif
 
 
   assign flush_all_entries = i_flush_en && !i_early_recovery_flush &&
@@ -1875,7 +2423,7 @@ module load_queue #(
       .o_lookup_data(cache_lookup_data),
 
       // Fill: on memory response
-      .i_fill_valid(cache_fill_valid),
+      .i_fill_valid(cache_fill_write),
       .i_fill_write(cache_fill_write),
       .i_fill_addr (cache_fill_addr),
       .i_fill_data (cache_fill_data),
@@ -1898,6 +2446,8 @@ module load_queue #(
 
       // L0 survives pipeline flushes. Stores and DMA invalidate stale lines,
       // and response filtering prevents stale fills.
+      .i_query_line_addr(i_coh_query_addr),
+      .o_query_line_valid(l0_query_line_valid),
       .i_flush_all(1'b0),
 
       // Line invalidate: a DMA write to the line (lq_coherence_port).
@@ -1920,9 +2470,7 @@ module load_queue #(
   // Normal read. Same-dword stores, AMOs, precise writes and pending Device
   // handoffs still block it through disambiguation/invalidation or permission.
   wire sq_check_cacheable = CACHE_UNCACHED_DATA || sq_check_is_cached_region ||
-      (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
-      sq_check_addr_q
-  ));
+      (CACHE_NORMAL_MEMORY && coherent_staged_normal);
   assign cache_hit_fast_path = ENABLE_L0_FAST_PATH && sq_check_cacheable &&
       !i_flush_all && !i_flush_en && !l0_lookup_busy && sq_can_issue && cache_lookup_hit &&
       !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
@@ -1954,17 +2502,31 @@ module load_queue #(
   // The memory issue port carries the same launch with the L0 hit selecting
   // between values prepared without it, so the hit reaches the router
   // through one LUT. The hit value adds only the fast path's own conditions,
-  // since the miss value already holds the flush and issue terms. Internal
-  // consumers keep launch_mem_issue.
+  // since the miss value already holds the flush and issue terms. The LQ's
+  // own launch (mem_read_en) and its snapshot captures take the hit last the
+  // same way; other internal consumers keep launch_mem_issue.
   (* keep = "true" *) logic launch_if_miss, launch_if_hit;
-  assign launch_if_miss = !i_flush_en && !i_flush_all && !i_mem_bus_busy && sq_can_issue &&
-      !cached_launch_hold_q;
-  assign launch_if_hit = launch_if_miss && !(ENABLE_L0_FAST_PATH && sq_check_cacheable &&
-      !l0_lookup_busy && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q);
-  assign o_mem_read_en = cache_lookup_hit ? launch_if_hit : launch_if_miss;
+  (* keep = "true" *) logic launch_permitted, launch_hit_blocks;
+  if (1'b1) begin : gen_coherent_launch_gate
+    // Bus availability qualifies the port after committed-store selection.
+    (* keep = "true" *) logic [1:0] launch_choice;
+    for (genvar drain_case = 0; drain_case < 2; drain_case++) begin : gen_drain_choice
+      assign launch_choice[drain_case] = !i_flush_en && !i_flush_all &&
+          coherent_issue_by_drain[drain_case] && !cached_launch_hold_q &&
+          sq_check_entry_valid && !older_amo_write_pending && !sq_commit_interlock;
+    end
+    assign launch_permitted = !coherent_local_hold && launch_choice[i_sq_committed_empty];
+    assign launch_hit_blocks = ENABLE_L0_FAST_PATH && sq_check_cacheable &&
+        !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
+    assign launch_if_miss = 1'b0;
+    assign launch_if_hit = 1'b0;
+    assign o_mem_read_en = !i_mem_bus_busy && launch_permitted &&
+        !(cache_lookup_hit && launch_hit_blocks);
+  end
 `ifndef SYNTHESIS
   always_comb begin
     p_mem_read_en_exact : assert (o_mem_read_en == launch_mem_issue);
+    p_launch_hit_last_exact : assert (mem_read_en == launch_mem_issue);
   end
 `endif
   assign launch_mem_issue_idx  = sq_check_idx;
@@ -2017,9 +2579,32 @@ module load_queue #(
     for (int sl = int'(CachedSlots) - 1; sl >= 0; sl--) begin
       if (!cs_valid[sl]) cs_alloc_idx = CachedSlotBits'(sl);
     end
+  end
+  // Launch captures into the fast snapshot or a cached slot take the L0 hit
+  // last: each enable is prepared without it, and a hit the fast path takes
+  // cancels it.
+  (* keep = "true" *) logic fast_capture_without_hit;
+  (* keep = "true" *) logic [CachedSlots-1:0] cs_capture_without_hit;
+  logic [CachedSlots-1:0] cs_capture;
+  assign fast_capture_without_hit = !i_mem_bus_busy && launch_permitted && !launching_is_cached;
+  assign fast_capture = fast_capture_without_hit && !(cache_lookup_hit && launch_hit_blocks);
+  for (genvar sl = 0; sl < CachedSlots; sl++) begin : gen_cs_capture
+    assign cs_capture_without_hit[sl] = !i_mem_bus_busy && launch_permitted &&
+        launching_is_cached && cs_alloc_idx == CachedSlotBits'(sl);
+    assign cs_capture[sl] = cs_capture_without_hit[sl] &&
+        !(cache_lookup_hit && launch_hit_blocks);
+  end
+`ifndef SYNTHESIS
+  always_comb begin
+    p_fast_capture_exact : assert (fast_capture == (mem_read_en && !launching_is_cached));
+    p_cs_capture_exact : assert (cs_capture == ({CachedSlots{mem_read_en && launching_is_cached}} &
+        (CachedSlots'(1) << cs_alloc_idx)));
+  end
+`endif
+  always_comb begin
     cs_valid_next = cs_valid;
     if (i_mem_read_valid && i_mem_read_is_cached) cs_valid_next[resp_slot] = 1'b0;
-    if (mem_read_en && launching_is_cached) cs_valid_next[cs_alloc_idx] = 1'b1;
+    cs_valid_next = cs_valid_next | cs_capture;
     if (i_flush_all) begin
       cs_valid_next = cs_valid & ~(resp_from_slot ? (CachedSlots'(1) << resp_slot) : '0) &
           ~cs_router_canceled;
@@ -2047,7 +2632,7 @@ module load_queue #(
   // Memory issue port: driven straight from the launch terms (no second-deep
   // staging register, see above).
   always_comb begin
-    mem_read_en = launch_mem_issue;
+    mem_read_en = !i_mem_bus_busy && launch_permitted && !(cache_lookup_hit && launch_hit_blocks);
     o_mem_read_addr = launch_mem_issue_addr;
     o_mem_read_size = launch_mem_issue_size;
     o_mem_read_id = cs_alloc_idx;
@@ -2203,8 +2788,36 @@ module load_queue #(
   // Never fill on full flush or from a previously drop-marked response. MMIO,
   // LR, AMO, and cached responses invalidated by a store or DMA also cannot
   // fill. Use the launch-time issued_addr snapshot.
-  assign cache_fill_response_valid = i_mem_read_valid && resp_outstanding &&
-      !i_flush_all && !resp_drop && lq_valid[issued_idx];
+  logic coherent_response_bypass;
+  if (1'b1) begin : gen_coherent_response_qualification
+    (* keep = "true" *) logic [CachedSlots-1:0] slot_live, slot_bypass;
+    (* keep = "true" *) logic fast_live, fast_bypass;
+    for (genvar slot = 0; slot < CachedSlots; slot++) begin : gen_slot
+      assign slot_live[slot] = cs_valid[slot] && !cs_drop[slot] && lq_valid[cs_idx[slot]];
+      assign slot_bypass[slot] = slot_live[slot] && !cs_is_amo[slot];
+    end
+    assign fast_live = mem_outstanding && !drop_mem_response_pending && lq_valid[fast_idx];
+    assign fast_bypass = fast_live && !fast_is_amo;
+    assign cache_fill_response_valid = i_mem_read_valid && !i_flush_all &&
+        (i_mem_read_is_cached ? slot_live[resp_slot] : fast_live);
+    assign coherent_response_bypass = i_mem_read_valid && !mem_response_error &&
+        (i_mem_read_is_cached ? slot_bypass[resp_slot] : fast_bypass);
+`ifndef SYNTHESIS
+`ifdef FORMAL
+    always_comb
+`else
+    always @(posedge i_clk)
+`endif
+    begin
+      p_response_live_exact : assert (cache_fill_response_valid ==
+          (i_mem_read_valid && resp_outstanding && !i_flush_all && !resp_drop &&
+           lq_valid[issued_idx]));
+      p_response_bypass_select_exact : assert (coherent_response_bypass ==
+          (i_mem_read_valid && resp_outstanding && !resp_drop && lq_valid[issued_idx] &&
+           !issued_is_amo && !mem_response_error));
+    end
+`endif
+  end
   // Only the uncached response needs Normal-PMA qualification. Classify
   // its retained address before the late cached/uncached response select,
   // rather than putting that select ahead of the full-width range checks.
@@ -2212,14 +2825,34 @@ module load_queue #(
       (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
       fast_addr
   ) && !fast_line_invalidated && !fast_line_invalidate_now);
-  // The fill qualification once more for the L0 RAM write enables, prepared
-  // for each response source so the response valid and its tier arrive at
-  // the last gate. cache_fill_valid keeps the shared response selects above
-  // for the valid bits and every other consumer.
+  // Per-source fill qualification supplies the L0 RAM write enables and
+  // coherent valid bits. The default valid-bit path uses cache_fill_valid.
   (* keep = "true" *) logic cache_fill_if_slot, cache_fill_if_fast;
-  assign cache_fill_if_slot = cs_valid[resp_slot] && !i_flush_all && !cs_drop[resp_slot] &&
-      lq_valid[cs_idx[resp_slot]] && !cs_is_lr[resp_slot] && !cs_is_amo[resp_slot] &&
-      !(cs_inval[resp_slot] || cs_inval_now[resp_slot] || cs_coh_inval_now[resp_slot]);
+  if (1'b1) begin : gen_coherent_fill_slot_permission
+    // The coherent invalidation, which arrives last, is selected for the
+    // response slot apart from the slot's other permission terms.
+    (* keep = "true" *) logic [CachedSlots-1:0] slot_permission;
+    for (genvar slot = 0; slot < CachedSlots; slot++) begin : gen_slot
+      assign slot_permission[slot] = cs_valid[slot] && !cs_drop[slot] &&
+          lq_valid[cs_idx[slot]] && !cs_is_lr[slot] && !cs_is_amo[slot] &&
+          !(cs_inval[slot] || cs_inval_now[slot]);
+    end
+    assign cache_fill_if_slot = !i_flush_all && slot_permission[resp_slot] &&
+        !cs_coh_inval_now[resp_slot];
+`ifndef SYNTHESIS
+`ifdef FORMAL
+    always_comb
+`else
+    always @(posedge i_clk)
+`endif
+    begin
+      p_fill_slot_select_exact : assert (cache_fill_if_slot ==
+          (cs_valid[resp_slot] && !i_flush_all && !cs_drop[resp_slot] &&
+           lq_valid[cs_idx[resp_slot]] && !cs_is_lr[resp_slot] && !cs_is_amo[resp_slot] &&
+           !(cs_inval[resp_slot] || cs_inval_now[resp_slot] || cs_coh_inval_now[resp_slot])));
+    end
+`endif
+  end
   assign cache_fill_if_fast = mem_outstanding && !i_flush_all && !drop_mem_response_pending &&
       lq_valid[fast_idx] && !fast_is_mmio && !fast_is_lr && !fast_is_amo &&
       (CACHE_UNCACHED_DATA || (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
@@ -2379,7 +3012,9 @@ module load_queue #(
   // therefore does not need the age-dependent issued_entry_flushed term,
   // which itself implies i_flush_en. Full-flush, stale-response and live-tracker
   // checks remain in cache_fill_response_valid, exactly as in acceptance.
-  assign resp_bypass_ok = cache_fill_response_valid && !issued_is_amo && !mem_response_error;
+  if (1'b1) begin : gen_coherent_response_bypass
+    assign resp_bypass_ok = !i_flush_all && coherent_response_bypass;
+  end
 
   assign resp_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
                             resp_bypass_ok && !i_flush_en;
@@ -2403,9 +3038,12 @@ module load_queue #(
   // State transitions still use fully qualified fires.
   logic resp_bypass_data_sel;
   logic misalign_bypass_data_sel;
-  assign resp_bypass_data_sel = i_mem_read_valid && resp_outstanding &&
-      !resp_drop && lq_valid[issued_idx] && !issued_is_amo && !mem_response_error;
-  assign misalign_bypass_data_sel = !resp_bypass_data_sel && sq_check_misaligned;
+  if (1'b1) begin : gen_coherent_response_data_select
+    assign resp_bypass_data_sel = coherent_response_bypass;
+  end
+  if (1'b1) begin : gen_coherent_bypass_payload
+    assign misalign_bypass_data_sel = !resp_bypass_data_sel && coherent_address_fault;
+  end
 
   // cache_hit_fast_path is already flush-gated at its own assign.
   assign cache_hit_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
@@ -2491,13 +3129,40 @@ module load_queue #(
   logic [FLEN-1:0] cdb_value_next;
   assign cdb_value_nonresponse = issue_cdb_found ? issue_cdb_result.value :
       misalign_bypass_data_sel ? {{(FLEN - XLEN) {1'b0}}, sq_check_addr_q} :
-      sq_do_forward ? fwd_bypass_value : cache_hit_bypass_value;
+      (coherent_forward_ok) ?
+      fwd_bypass_value : cache_hit_bypass_value;
   assign cdb_value_select_response = !issue_cdb_found &&
       !misalign_bypass_data_sel && resp_bypass_data_sel;
   assign cdb_value_next = cdb_value_select_response ? resp_bypass_value : cdb_value_nonresponse;
 
+`ifndef SYNTHESIS
+  if (1'b1) begin : gen_coherent_bypass_payload_check
+    always_ff @(posedge i_clk) begin
+      if (issue_cdb_fire || bypass_fire) begin
+        p_coherent_cdb_value_exact : assert (cdb_value_next ==
+            (issue_cdb_found ? issue_cdb_result.value :
+             (!resp_bypass_data_sel && sq_check_misaligned) ?
+             {{(FLEN - XLEN) {1'b0}}, sq_check_addr_q} :
+             resp_bypass_data_sel ? resp_bypass_value :
+             sq_do_forward ? fwd_bypass_value : cache_hit_bypass_value));
+        if (!issue_cdb_found) begin
+          p_coherent_cdb_fault_exact : assert (misalign_bypass_data_sel ==
+              (!resp_bypass_data_sel && sq_check_misaligned));
+          if (misalign_bypass_data_sel) begin
+            p_coherent_cdb_cause_exact : assert (
+                lq_bypass_cause(riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q),
+                    !sq_check_pma_ok, sq_check_is_amo_q) ==
+                lq_bypass_cause(riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q),
+                    sq_check_pma_fault, sq_check_is_amo_q));
+          end
+        end
+      end
+    end
+  end
+`endif
 `ifdef F_LQ_RESPONSE_FINAL_PROOF
   always_comb begin
+    if (issue_cdb_fire || bypass_fire)
     p_response_final_mux_exact :
     assert (cdb_value_next == (issue_cdb_found ? issue_cdb_result.value : bypass_value));
   end
@@ -2507,6 +3172,26 @@ module load_queue #(
   // an intervening data_valid cycle.
   assign free_entry_en  = issue_cdb_fire || bypass_fire;
   assign free_entry_idx = issue_cdb_fire ? issue_cdb_idx : bypass_idx;
+
+  logic [DEPTH-1:0] coherent_free_entry;
+  for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_coherent_free_entry
+    wire issue_match = issue_cdb_idx == IdxWidth'(entry);
+    wire response_match = issued_idx == IdxWidth'(entry);
+    wire staged_match = sq_check_idx == IdxWidth'(entry);
+    assign coherent_free_entry[entry] = issue_cdb_fire ? issue_match :
+        (bypass_fire && (resp_bypass_data_sel ? response_match : staged_match));
+  end
+`ifndef SYNTHESIS
+`ifdef FORMAL
+  always_comb
+`else
+  always @(posedge i_clk)
+`endif
+  begin
+    p_free_mask_exact : assert (coherent_free_entry ==
+        (free_entry_en ? (DEPTH'(1) << free_entry_idx) : '0));
+  end
+`endif
 
   // ===========================================================================
   // Allocation Search
@@ -2752,28 +3437,57 @@ module load_queue #(
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
        launch_mem_issue || misalign_bypass_fire || older_amo_write_pending);
 
-  always_comb begin
-    // U = capture/replace (disjoint from sq_check_flushed, see above).
-    // Clear branch: launch_mem_issue remains low through bus_busy stalls.
-    sq_check_pending_next = sq_check_capture || sq_check_replace ||
-        (sq_check_pending && !sq_check_flushed && !sq_check_stage_clears);
+  if (1'b1) begin : gen_coherent_stage_control
+    wire take = coherent_stage_take[0];
+    wire stage_clear = coherent_stage_clear;
+    wire probe = coherent_probe_ok && !coherent_local_hold && !i_flush_all && !i_flush_en &&
+        !drop_mem_response_pending && !sq_commit_check_block;
+    (* keep = "true" *) logic pending_hold, no_older_hold, phase2_hold;
+    (* keep = "true" *) logic [DEPTH-1:0] in_flight_hold;
+    assign pending_hold = sq_check_pending && !sq_check_flushed && !stage_clear;
+    assign no_older_hold = sq_check_no_older_store_q && !sq_check_flushed;
+    assign phase2_hold = !sq_check_flushed &&
+        (sq_check_phase2 ||
+         (!stage_clear &&
+          ((sq_check_pending && i_sq_empty && !sq_commit_check_block) || probe)));
+    assign in_flight_hold = sq_check_in_flight_mask & {DEPTH{!sq_check_flushed && !stage_clear}};
+    assign sq_check_pending_next = take || pending_hold;
+    assign sq_check_no_older_store_next = take ? i_sq_empty : no_older_hold;
+    assign sq_check_phase2_next = take ? i_sq_empty : phase2_hold;
+    assign sq_check_in_flight_mask_next = take ? issue_mem_onehot : in_flight_hold;
 
-    sq_check_no_older_store_next = ((sq_check_capture || sq_check_replace) && i_sq_empty) ||
-        (sq_check_no_older_store_q && !sq_check_flushed &&
-         !(sq_check_capture || sq_check_replace));
-
-    sq_check_phase2_next = ((sq_check_capture || sq_check_replace) && i_sq_empty) ||
-        (!(sq_check_capture || sq_check_replace) && !sq_check_flushed &&
-         (sq_check_phase2 ||
-          (!sq_check_stage_clears &&
-           ((sq_check_pending && i_sq_empty && !sq_commit_check_block) || o_sq_check_valid))));
-
-    for (int i = 0; i < DEPTH; i++) begin
-      sq_check_in_flight_mask_next[i] =
-          ((sq_check_capture || sq_check_replace) && issue_mem_onehot[i]) ||
-          (sq_check_in_flight_mask[i] && !sq_check_flushed && !sq_check_stage_clears &&
+`ifndef SYNTHESIS
+    logic reference_pending, reference_no_older, reference_phase2;
+    logic [DEPTH-1:0] reference_mask;
+    always_comb begin
+      reference_pending = sq_check_capture || sq_check_replace ||
+          (sq_check_pending && !sq_check_flushed && !sq_check_stage_clears);
+      reference_no_older = ((sq_check_capture || sq_check_replace) && i_sq_empty) ||
+          (sq_check_no_older_store_q && !sq_check_flushed &&
            !(sq_check_capture || sq_check_replace));
+      reference_phase2 = ((sq_check_capture || sq_check_replace) && i_sq_empty) ||
+          (!(sq_check_capture || sq_check_replace) && !sq_check_flushed &&
+           (sq_check_phase2 ||
+            (!sq_check_stage_clears &&
+             ((sq_check_pending && i_sq_empty && !sq_commit_check_block) || o_sq_check_valid))));
+      for (int i = 0; i < DEPTH; i++) begin
+        reference_mask[i] = ((sq_check_capture || sq_check_replace) && issue_mem_onehot[i]) ||
+            (sq_check_in_flight_mask[i] && !sq_check_flushed && !sq_check_stage_clears &&
+             !(sq_check_capture || sq_check_replace));
+      end
     end
+`ifdef FORMAL
+    always_comb
+`else
+    always @(posedge i_clk)
+`endif
+    if ($onehot0(rob_head_match_q)) begin
+      p_stage_state_exact : assert (
+          {sq_check_pending_next, sq_check_no_older_store_next,
+           sq_check_phase2_next, sq_check_in_flight_mask_next} ==
+          {reference_pending, reference_no_older, reference_phase2, reference_mask});
+    end
+`endif
   end
 
   // ===========================================================================
@@ -2913,6 +3627,14 @@ module load_queue #(
   end
 
 
+  // Valid bits kept through this edge's partial flush and frees. Allocation,
+  // whose enable arrives last from dispatch, ORs its new entries in after.
+  (* keep = "true" *) wire [DEPTH-1:0] lq_valid_kept;
+  for (genvar i = 0; i < DEPTH; i++) begin : gen_lq_valid_kept
+    assign lq_valid_kept[i] = lq_valid[i] && !coherent_free_entry[i] && !(i_flush_en &&
+        (flush_all_entries || is_younger(lq_rob_tag[i], i_flush_tag, i_rob_head_tag)));
+  end
+
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       head_ptr                  <= '0;
@@ -2966,15 +3688,7 @@ module load_queue #(
       // Partial flush: invalidate entries younger than flush_tag
       // -----------------------------------------------------------------
       if (i_flush_en) begin
-        if (flush_all_entries) begin
-          lq_valid <= '0;
-        end else begin
-          for (int i = 0; i < DEPTH; i++) begin
-            if (lq_valid[i] && is_younger(lq_rob_tag[i], i_flush_tag, i_rob_head_tag)) begin
-              lq_valid[i] <= 1'b0;
-            end
-          end
-        end
+        // lq_valid_kept clears the flushed entries' valid bits.
         // If the outstanding fast-tier load was flushed, drop the next memory
         // response so the recycled slot cannot see stale data.
         if (fast_entry_flushed) begin
@@ -3121,9 +3835,7 @@ module load_queue #(
       // -----------------------------------------------------------------
       // Entry Freeing + Head Advancement
       // -----------------------------------------------------------------
-      if (free_entry_en) begin
-        lq_valid[free_entry_idx] <= 1'b0;
-      end
+      // lq_valid_kept clears the freed entries' valid bits.
 
       // -----------------------------------------------------------------
       // Allocation: initialize a new physical generation (control signals
@@ -3132,9 +3844,9 @@ module load_queue #(
       // Initialize after old-entry updates so allocation has final priority.
       // Legal allocations cannot overlap a completing entry, and the two slot
       // vectors are disjoint.
+      lq_valid <= alloc_oh | lq_valid_kept;
       for (int unsigned i = 0; i < DEPTH; i++) begin
         if (alloc_oh[i]) begin
-          lq_valid[i]          <= 1'b1;
           lq_addr_valid[i]     <= 1'b0;
           lq_issued[i]         <= 1'b0;
           lq_data_valid[i]     <= 1'b0;
@@ -3245,15 +3957,15 @@ module load_queue #(
   logic sq_check_is_lr_next;
   logic sq_check_is_amo_next;
   logic [1:0] sq_check_fault_kind_next;
-  assign sq_check_payload_en = sq_check_capture || sq_check_replace;
+  assign sq_check_payload_en = coherent_stage_take[0];
   // sq_check_capture with the pending bit taken from one copy.
   function automatic logic sq_check_capture_on(input logic pending);
     sq_check_capture_on = (!pending || sq_check_will_clear) && issue_mem_found &&
         sq_check_gate_early;
   endfunction
-  assign sq_check_payload_en_b = sq_check_capture_on(sq_check_pending_copy[0]) || sq_check_replace;
-  assign sq_check_payload_en_c = sq_check_capture_on(sq_check_pending_copy[1]) || sq_check_replace;
-  assign sq_check_payload_en_d = sq_check_capture_on(sq_check_pending_copy[2]) || sq_check_replace;
+  assign sq_check_payload_en_b = coherent_stage_take[1];
+  assign sq_check_payload_en_c = coherent_stage_take[2];
+  assign sq_check_payload_en_d = coherent_stage_take[3];
   assign issue_mem_uses_addr_update = issue_mem_from_update;
   assign issue_mem_addr = issue_mem_uses_addr_update ? i_addr_update.address
                                                      : lq_address_issue_mem_rd;
@@ -3432,9 +4144,7 @@ module load_queue #(
   // which clears them. Keep launch on D for timing.
   logic [CachedSlots-1:0] cs_inval_next, cs_lr_suppress_next;
   for (genvar sl = 0; sl < CachedSlots; sl++) begin : gen_cached_inval
-    logic launch_slot;
-    assign launch_slot = mem_read_en && launching_is_cached &&
-        (cs_alloc_idx == CachedSlotBits'(sl));
+    wire launch_slot = cs_capture[sl];
     assign cs_inval_next[sl] = !launch_slot &&
         (cs_inval[sl] || cs_inval_now[sl] || cs_coh_inval_now[sl]);
     assign cs_lr_suppress_next[sl] = !launch_slot &&
@@ -3499,7 +4209,7 @@ module load_queue #(
     // An MMIO handoff keeps the fast snapshot to itself: the router's pending
     // bit, part of the wrapper's i_mem_bus_busy, blocks every later launch
     // through the router's accept cycle.
-    if (mem_read_en && !launching_is_cached) begin
+    if (fast_capture) begin
       fast_idx      <= launch_mem_issue_idx;
       fast_addr     <= launch_mem_issue_addr;
       fast_size     <= launch_mem_issue_size;
@@ -3514,15 +4224,17 @@ module load_queue #(
       fast_amo_kind <= lq_amo_kind[launch_mem_issue_idx];
       fast_amo_rs2  <= lq_amo_rs2_rd;
     end
-    if (mem_read_en && launching_is_cached) begin
-      cs_idx[cs_alloc_idx]      <= launch_mem_issue_idx;
-      cs_addr[cs_alloc_idx]     <= launch_mem_issue_addr;
-      cs_size[cs_alloc_idx]     <= launch_mem_issue_size;
-      cs_is_fp[cs_alloc_idx]    <= sq_check_is_fp_q;
-      cs_is_lr[cs_alloc_idx]    <= sq_check_is_lr_q;
-      cs_is_amo[cs_alloc_idx]   <= sq_check_is_amo_q;
-      cs_sign_ext[cs_alloc_idx] <= sq_check_sign_ext_q;
-      cs_rob_tag[cs_alloc_idx]  <= sq_check_rob_tag_q;
+    for (int sl = 0; sl < CachedSlots; sl++) begin
+      if (cs_capture[sl]) begin
+        cs_idx[sl]      <= launch_mem_issue_idx;
+        cs_addr[sl]     <= launch_mem_issue_addr;
+        cs_size[sl]     <= launch_mem_issue_size;
+        cs_is_fp[sl]    <= sq_check_is_fp_q;
+        cs_is_lr[sl]    <= sq_check_is_lr_q;
+        cs_is_amo[sl]   <= sq_check_is_amo_q;
+        cs_sign_ext[sl] <= sq_check_sign_ext_q;
+        cs_rob_tag[sl]  <= sq_check_rob_tag_q;
+      end
     end
     if (amo_launch && launching_is_cached) begin
       cs_amo_kind[cs_alloc_idx] <= lq_amo_kind[launch_mem_issue_idx];
@@ -3635,6 +4347,13 @@ module load_queue #(
     end
   end
 
+  if (1'b1) begin : gen_coherent_reservation_size
+    always_ff @(posedge i_clk) begin
+      if (accept_mem_response && issued_is_lr && !mem_response_error)
+        reservation_size <= 3'(issued_size);
+    end
+  end
+
   // -----------------------------------------------------------------
   // Internal data: CDB completion stage result
   // -----------------------------------------------------------------
@@ -3648,16 +4367,44 @@ module load_queue #(
     end
   end
 
+  wire [riscv_pkg::ExcCauseWidth-1:0] coherent_cdb_cause_next;
+  if (1'b1) begin : gen_coherent_cdb_cause
+    (* keep = "true" *) riscv_pkg::exc_cause_t cause;
+    always_comb begin
+      cause = !misalign_bypass_data_sel ? riscv_pkg::exc_cause_t'('0) :
+          lq_bypass_cause(riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q),
+              !sq_check_pma_ok, sq_check_is_amo_q);
+      if (issue_cdb_found) cause = issue_cdb_result.exc_cause;
+    end
+    assign coherent_cdb_cause_next = cause;
+`ifndef SYNTHESIS
+    riscv_pkg::exc_cause_t reference_cause;
+    logic reference_seen = 1'b0;
+    always_ff @(posedge i_clk) begin
+      if (issue_cdb_fire || bypass_fire) begin
+        reference_seen <= 1'b1;
+        if (issue_cdb_found) reference_cause <= issue_cdb_result.exc_cause;
+        else reference_cause <= !misalign_bypass_data_sel ? riscv_pkg::exc_cause_t'('0) :
+            lq_bypass_cause(riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q),
+                !sq_check_pma_ok, sq_check_is_amo_q);
+      end
+      if (reference_seen) begin
+        p_cdb_cause_capture_exact : assert (cdb_stage_data.exc_cause === reference_cause);
+      end
+    end
+`endif
+  end
+
   // Capture implies an available slot and no partial flush, so issue_cdb_found
   // equals issue_cdb_fire. The reduced bypass selects are likewise equivalent
   // under capture; omit flush and grant from payload selection for timing.
   always_ff @(posedge i_clk) begin
     if (issue_cdb_fire || bypass_fire) begin
       cdb_stage_data.value <= cdb_value_next;
+      cdb_stage_data.exc_cause <= coherent_cdb_cause_next;
       if (issue_cdb_found) begin
         cdb_stage_data.tag       <= issue_cdb_result.tag;
         cdb_stage_data.exception <= issue_cdb_result.exception;
-        cdb_stage_data.exc_cause <= issue_cdb_result.exc_cause;
         cdb_stage_data.fp_flags  <= issue_cdb_result.fp_flags;
       end else begin
         cdb_stage_data.tag <= bypass_tag;
@@ -3665,12 +4412,6 @@ module load_queue #(
         // Parked MISALIGN/PAGE/ACCESS select load causes 4/13/5 or AMO causes 6/15/7
         // (Spike and the privileged spec). Otherwise PMA access faults outrank
         // misalignment; see lq_bypass_cause.
-        cdb_stage_data.exc_cause <= !misalign_bypass_data_sel ? riscv_pkg::exc_cause_t'('0) :
-            lq_bypass_cause(
-            riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q),
-            sq_check_pma_fault,
-            sq_check_is_amo_q
-        );
         cdb_stage_data.fp_flags <= '0;
       end
     end
@@ -4849,6 +5590,45 @@ module load_queue #(
   cover_cached_response_held :
   cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n) i_cached_resp_held);
 `endif
+`endif
+
+`ifdef COHERENT_LQ_LOCAL_PROOF
+  logic [1:0] f_coherent_past = '0;
+  always_ff @(posedge i_clk) begin
+    f_coherent_past <= {f_coherent_past[0], 1'b1};
+    if (coherent_local_hold) begin
+      assert (!mem_read_en && !cache_hit_fast_path && !sq_do_forward);
+    end
+    if (i_coherent_cut_hold && resp_from_slot && cs_valid[resp_slot] &&
+        i_coherent_cut_addr[XLEN-1:CohLineLsb] == cs_addr[resp_slot][XLEN-1:CohLineLsb]) begin
+      assert (!cache_fill_if_slot);
+      assert (issued_lr_suppressed);
+    end
+    if (mem_read_en && sq_check_is_amo_q && sq_check_is_cached_region)
+      assert (i_coherent_atomic_protected);
+    if (o_coherent_arm_valid) begin
+      p_atomic_arm_checks_address : assert (
+          riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q) == riscv_pkg::DFAULT_NONE &&
+          sq_check_pma_ok && !(i_trap_misaligned_accesses && coherent_staged_misaligned));
+      p_atomic_arm_owns_head : assert (
+          sq_check_entry_valid && sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty);
+    end
+    if (sq_check_fault_eligible && coherent_address_fault && cdb_stage_slot_available &&
+        !issue_cdb_fire && !resp_bypass_fire && !i_flush_en)
+      p_address_fault_progress : assert (misalign_bypass_fire);
+    if (misalign_bypass_fire)
+      p_address_fault_has_no_memory_effect : assert (
+          !mem_read_en && !cache_hit_fast_path && !sq_do_forward);
+    if (f_coherent_past[1] && $past(!i_rst_n || i_flush_all || coherent_holder_changed))
+      assert (coherent_parked_q == '0);
+    if (f_coherent_past[1] && i_rst_n && $past(i_rst_n)) begin
+      if ($past(reservation_clear)) assert (!reservation_valid);
+      if (!$past(reservation_valid) && reservation_valid)
+        assert ($past(
+            accept_mem_response && !mem_response_error && issued_is_lr && !issued_lr_suppressed
+        ));
+    end
+  end
 `endif
 
 endmodule : load_queue

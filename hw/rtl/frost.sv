@@ -49,27 +49,24 @@ module frost #(
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
-    // Ways per set of the L1D, L1I, and L2 (see frost_cache): 4-way
-    // set-associative on every target; 1 is direct-mapped.
+    // Ways per set in the private caches and shared array.
     parameter int unsigned L1D_WAYS = 4,
     parameter int unsigned L1I_WAYS = 4,
     parameter int unsigned L2_WAYS = 4,
-    // L1D miss-status slots, up to 8, and L2 miss-status and writeback slots,
-    // up to 16 of each.
+    // L1D_NUM_MSHR sets the L1D's request endpoints, 1 to 8: one for stores,
+    // LR and atomics, and the rest for load misses in flight. The home has
+    // four fills; L2_NUM_MSHR does not change that.
     parameter int unsigned L1D_NUM_MSHR = 8,
     parameter int unsigned L2_NUM_MSHR = 4,
     parameter int unsigned L2_NUM_WB = 2,
-    // Read waiter seats per L2 miss slot, and the L2 stream prefetcher (see
-    // frost_cluster_cache): 0 turns the prefetcher off.
+    // Waiter and prefetch settings have no effect on the coherent home.
     parameter int unsigned L2_NUM_WAITERS = 2,
     parameter int unsigned L2_PREFETCH = 1,
     parameter int unsigned L2_PREFETCH_DISTANCE = 8,
     parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
-    // L2 line size: 64 bytes, or 32 with no line-size adapter (see
-    // cpu_top). One L2 line is one beat of the DDR AXI port.
+    // L2 line size is 32 or 64 bytes. Each AXI beat carries one L2 line.
     parameter int unsigned L2_LINE_BYTES = 64,
-    // Simulation-only fast cache maintenance for fence.i: 0 selects the FPGA
-    // cycle-accurate path; non-zero selects the sim fast path (see frost_cache).
+    // Simulation-only L1I maintenance acceleration. L1D sweeps visit every set.
     // Set to 1 only by the cocotb sim build, never for boards.
     parameter int unsigned SIM_FAST_MAINT = 0,
     // Behavioral main-memory model knobs (simulation only).

@@ -874,7 +874,16 @@ if {$step eq "synth"} {
         add_files -norecurse $ddr_subsys_wrapper
     }
 
-    set rtl_source_files [flatten_rtl_file_list $rtl_file_list $project_root_directory]
+    set rtl_source_files [list]
+    set rtl_include_dirs [get_property include_dirs [current_fileset]]
+    foreach item [flatten_rtl_file_list $rtl_file_list $project_root_directory] {
+        if {[string match {+incdir+*} $item]} {
+            lappend rtl_include_dirs [string range $item 8 end]
+        } elseif {[lsearch -exact $rtl_source_files $item] < 0} {
+            lappend rtl_source_files $item
+        }
+    }
+    set_property include_dirs [lsort -unique $rtl_include_dirs] [current_fileset]
 
     # Enable Xilinx primitives and Vivado initialization only in this flow.
     set current_verilog_defines [get_property verilog_define [current_fileset]]

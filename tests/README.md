@@ -63,7 +63,60 @@ identity reuse, independent probe queues, keyed PutAck cancellation, errors,
 and cluster reset. The wide case uses 56-bit physical addresses and 16 fill
 identities. `test_coherence_endpoint_build.py` elaborates and synthesizes these
 geometries, checks the six-bit home-ID capacity boundary, rejects invalid
-parameters, and checks that the production filelist excludes the endpoints.
+parameters, and checks cached, cache-disabled and DMA-disabled CPU builds.
+All CPU configurations use the coherent interfaces and their ordinary source
+filelists.
+
+`coherence_dma_ingress` and `coherence_dma_ingress_8` issue all four or eight credits before G and check reordered
+G/C/U, full identities and reset at response presentation. The
+`coherent_axi_ingress` benches connect the AXI bridge to that ingress with
+independent home peers. They hold four results behind C, reorder line replies,
+and check AXI burst order, byte masks, errors and reset on both bus widths.
+
+`coherence_home_array` and its BRAM and packed-tag variants check concurrent
+tag decisions, data reads and masked updates. They exercise physical-row
+aliases, live victim exclusions, continuous read/write contention and reset
+with responses in flight.
+
+`coherence_home_completions`, `coherence_home`, `coherence_home_equal`,
+`coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
+and CPU observation cuts; `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. Home cases hold four memory fills while resident
+requests execute, preserve waiter order across an older writer, and check
+current data on waiter reentry. They run in the unit shard. The program shards
+exercise the coherent hierarchy in both memory configurations. Whole-L1D
+maintenance is active in simulation. Synthesis checks cover both line sizes
+at 32-bit and 56-bit physical widths.
+`coherence_l1d` holds a probe reply across a grant and checks single grant
+application, ordered read errors and completion of the following store.
+The cluster bench holds all eight CPU read identities occupied during dirty
+DMA reads and writes. Its invalidation case delays cut completion and checks
+response rotation and byte-write preservation.
+
+`debug_test` exercises JTAG control, memory access and BRAM instruction
+mirroring. The debugger executes both words of an aligned doubleword patch.
+The debug-module unit bench checks stalled slice requests and overlapping
+program-buffer writes. The reservation-station unit checks capacity after
+second-port issue, dual issue, simultaneous dispatch and issue, and flush.
+
+The `coherent_cpu_faults` bench injects SC refill errors after clean replacement.
+It checks exact address and W/D size matching for cached SC and doubleword
+matching for uncached SC, including the stored value after each operation.
+It checks architectural trap cause, EPC and virtual fault address with and without
+translation. A delayed SC refill also checks that debug entry follows the
+exact selected write and release. Single-step cases execute LR before SC or
+AMO in cached and private uncached memory. They check the retired instruction,
+debug PC, absence of following atomic ownership and unchanged memory. A
+subsequent debug command reports DPC through a Device write and parks again.
+DMA reads and byte writes check dirty-line service during debug halt and WFI.
+A reset case delays a victim write response and checks ownership at request
+and AW acceptance. The stale response cannot complete a post-reset victim,
+and the case checks data after reset.
+The Tomasulo coherence fixture models CPU atomic protection and home SC
+results through tagged write completion. Admission races cover both probe-first
+and atomic-first ordering. The CPU and cache benches exercise the guard and
+home hardware that implement those fixture handshakes.
+The FENCE.I program uses full L1D maintenance sweeps. The AMO interrupt
+workload uses 256 bursts of 64 AMOs.
 
 ```bash
 ./scripts/frost.py cocotb --list-tests                                        # every target, with a description
@@ -123,8 +176,20 @@ application once, because its first run changes its image in DDR. Entries
 with `rerun_after_reset=False` run once in both tiers; a new entry keeps the
 two runs.
 
+`vm_test` and its aperture configurations use a three-million-cycle
+budget. `ptw_recovery_test` uses twelve million cycles for its complete
+branch-delay and walker-discard matrix. Their SFENCE.VMA operations use
+full L1D maintenance.
+
+`opensbi_smoke` uses a twenty-million-cycle budget for firmware boot and
+its S-mode payload.
+
 `freertos_demo` runs twice in BRAM to check that its private linker script
 and startup code reinitialize the kernel, heap, and application state.
+Its simulation budget is three million cycles.
+
+The `mtimer_stress` budget is two million cycles for all 20,000 iterations
+of its memory and ALU loop.
 
 | Entries that run once | Reason |
 | --- | --- |
@@ -161,6 +226,8 @@ Without OpenOCD installed those targets log a warning and pass; set
 `FROST_REQUIRE_OPENOCD=1`, as CI does, to make them fail instead. The GDB
 session also requires `${RISCV_PREFIX}gdb` and checks registers, memory,
 software breakpoints, and single stepping through OpenOCD. The
+simulation configuration uses a 60-second RISC-V command deadline for
+program-buffer cache maintenance. The
 [memory-response tests](../verif/cocotb_tests/cpu_ooo/memory/README.md) cover
 the portable and Xilinx builds of the load-data mux.
 
@@ -472,6 +539,7 @@ which have 90 minutes each. `--verbose` prints solver output.
 | `NUMBER_OF_CPU_CORES` | Parallel Verilator build jobs (default: every core; a seed sweep divides them among its workers) |
 | `COCOTB_MAX_CYCLES` | Cycle budget per application run (default 500,000); some targets set their own |
 | `COCOTB_COREMARK_MAX_CYCLES` | CoreMark and CoreMark-PRO cycle budget (default 15,000,000; the registry sets 20,000,000 for `coremark_pro_loops`) |
+| `COCOTB_AMO_TORTURE_MAX_CYCLES` | AMO interrupt workload cycle budget (default 6,000,000; the registry sets 12,000,000 for `amo_irq_torture_sim`) |
 | `COCOTB_COREMARK_PROGRESS_INTERVAL` | CoreMark progress diagnostics interval in cycles (default 500,000); `0` disables the optional per-cycle Python observer, as CI does for CoreMark-PRO |
 | `COCOTB_NUM_RUNS` | Runs per application, with a reset between them (default 2; 1 in the DDR tier and for entries with `rerun_after_reset=False`) |
 | `FROST_CALIBRATION_TRACE_PATH` | Records a calibration trace of one run for the [performance model](../perf-modeling/README.md); the other `FROST_CALIBRATION_*` variables choose the run, the window, and more output files |
@@ -480,7 +548,7 @@ which have 90 minutes each. `--verbose` prints solver output.
 | `FROST_CPU_PHASE_PS` | Initial CPU clock phase in ps when the independent clock is selected; default 700 |
 | `FROST_ASYNC_CPU_CLOCK` | `1` enables the independent CPU boundary in Yosys synthesis tests |
 | `FROST_NIC_MAC_CLOCKS` | For the whole-SoC program and TestRIG benches, overrides the registry or runner default: `0` holds both NIC MAC clocks and their clock-OK inputs low with an access guard; `1` starts the clocks. The ISA, torture, and TestRIG runners default to `0` |
-| `SIM_FAST_MAINT` | Fast `fence.i` cache maintenance in whole-SoC simulation (default 1; hardware uses the full sweeps, as `0` does) |
+| `SIM_FAST_MAINT` | Enables fast L1I invalidation in whole-SoC simulation (default 1). L1D clean-all visits every set and way |
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to
 `tests/results.xml`. A `test_run_cocotb.py` run passes only if the simulator
@@ -491,6 +559,12 @@ failures. Before running a runner any way other than the `cocotb` and
 tool or a version that differs from the Dockerfile, rebuild the image. If a
 long program runs out of cycles, first measure a complete passing run with
 an extended limit, then set its budget with headroom.
+
+The small-L2 stress entries set per-run cycle budgets of 1,000,000 for
+`drain_trapframe_test`, 3,000,000 for `restore_window_stress`, and 4,000,000
+for `pde_return_hazard` through `COCOTB_MAX_CYCLES`.
+`linux_irq_find_next_slot_test` sets a 1,000,000-cycle budget through the
+same variable.
 
 The `async_hello_world`, `async_nic_loopback` and `async_dma_torture`
 program configurations exercise equal periods with a phase offset, a

@@ -14,7 +14,7 @@
 
 """fence.i maintenance cycle-count measurement (frost_cache_test_harness DUT).
 
-Drives the cache hierarchy at the production geometry (128 KiB L1D, 16 KiB
+Drives the generic line-cache hierarchy at full sizes (128 KiB L1D, 16 KiB
 L1I, 2 MiB L2, set via -G in the registry), dirties a handful of D-side lines,
 then issues one fence.i cache-sync handshake and counts the cycles from
 sync-assert to done. The L1D's writebacks complete at the L2. Compare the two

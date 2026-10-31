@@ -15,28 +15,16 @@
  */
 
 /*
- * A program whose cache profiling counters a debugger reads
- * (verif/cocotb_tests/debug/test_cache_counters_openocd.py, through
- * fpga/debug/cache_counters.py).
+ * The debugger reads this program's cache counters through the profiling ABI.
+ * Each pass dirties private lines, reads conflicting DDR regions and uses
+ * DMA to fill a separate region. The shared home recalls dirty victims;
+ * partial DMA writes to absent L2 lines supply write-fill events.
  *
- * Its workload stores twice to each line of a cached-DDR region, so the lines
- * are dirty and recently used in the L1D, reads a larger region once, which
- * the L2 does not hold together with the dirty lines, and then reads each line
- * of a third region twice, which moves the dirty lines out of the L1D. Their
- * writebacks find their L2 lines gone and fetch them (L2 write fills) when the
- * caches are as small as the bench builds them (4 KiB each).
- *
- * The program runs the workload, waits for the last writebacks and prefetches
- * to finish, takes a profiling-counter snapshot, prints the cache counters
- * from it, and says it is ready. When a byte arrives on the UART it runs the
- * workload again on regions of its own, has the DMA test engine fill a fresh
- * region and write a status word, as a NIC's receive path does, waits again,
- * and says it is done, without a snapshot. Every 32-byte DMA write covers half
- * an L2 line, so each fresh line's first write is an L2 write fill. When
- * another byte arrives, the program says it has resumed. Otherwise it sleeps
- * in wfi, as an idle Linux does, waking on the machine timer with interrupts
- * disabled to check the UART, and it runs from low BRAM and touches no cache,
- * so a debugger's snapshots around the second run see only that run's events.
+ * The first pass prints a counter snapshot. A UART byte starts the second
+ * pass on separate addresses. The program reports completion without taking
+ * another snapshot, so the debugger measures that pass. A second UART byte
+ * ends the measurement window. Between passes the program sleeps in WFI,
+ * wakes on the machine timer to poll the UART, and accesses only low BRAM.
  */
 
 #include <stdint.h>
@@ -57,7 +45,7 @@
 #define STREAM_BASE 0x80200000u
 #define EVICT_BASE 0x80400000u
 #define RUN_STRIDE 0x00800000u
-/* The second run's DMA fill and status word, in lines nothing else touches. */
+/* Each pass uses separate DMA fill and status lines. */
 #define DMA_FILL_BASE 0x80D00000u
 #define DMA_FILL_BYTES 4096u
 #define DMA_STATUS_ADDR 0x80D10000u
@@ -93,14 +81,14 @@ static void settle(void)
 }
 
 /* Fill the DMA region and write the status word; returns the engine status. */
-static uint32_t dma_fill(void)
+static uint32_t dma_fill(uint32_t offset)
 {
     dma_engine_setup(0u,
-                     DMA_FILL_BASE,
+                     DMA_FILL_BASE + offset,
                      DMA_FILL_BYTES,
                      DMA_ENGINE_MODE_FILL | DMA_ENGINE_MODE_STATUS,
                      0x5A5A0000u,
-                     DMA_STATUS_ADDR,
+                     DMA_STATUS_ADDR + offset,
                      1u);
     dma_engine_start();
     return dma_engine_wait();
@@ -126,6 +114,11 @@ int main(void)
 
     uart_printf("cache_counter_target: start\n");
     run_workload(0u);
+    status = dma_fill(0u);
+    if (!(status & DMA_ENGINE_STATUS_DONE) || (status & DMA_ENGINE_STATUS_ERROR)) {
+        uart_printf("cache_counter_target: DMA status 0x%x\n", (unsigned) status);
+        return 1;
+    }
     settle();
 
     csr_write_imm(CSR_MPERFCTL, 1U);
@@ -141,7 +134,7 @@ int main(void)
 
     (void) wait_for_uart();
     run_workload(RUN_STRIDE);
-    status = dma_fill();
+    status = dma_fill(RUN_STRIDE);
     settle();
     if (!(status & DMA_ENGINE_STATUS_DONE) || (status & DMA_ENGINE_STATUS_ERROR)) {
         uart_printf("cache_counter_target: DMA status 0x%x\n", (unsigned) status);

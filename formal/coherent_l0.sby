@@ -1,0 +1,22 @@
+[tasks]
+coh_l0_flags_prove flags flags_small
+coh_l0_flags256_prove flags
+
+[options]
+timeout 180
+flags: mode prove
+flags: depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv sdp_dist_ram.sv
+flags: read -formal -sv coherent_l0_flags.sv
+flags_small: chparam -set DEPTH 128 coherent_l0_flags
+flags: prep -top coherent_l0_flags
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv

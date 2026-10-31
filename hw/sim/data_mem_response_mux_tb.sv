@@ -159,6 +159,12 @@ module data_mem_response_mux_tb #(
   data_mem_request_router #(
       .XLEN(XLEN)
   ) u_reference (
+      .o_coherent_read_kind(),
+      .o_coherent_read_size(),
+      .o_coherent_read_tag(),
+      .o_coherent_write_atomic(),
+      .o_coherent_write_sc(),
+      .o_coherent_write_tag(),
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_block_new_requests(1'b0),
@@ -241,6 +247,12 @@ module data_mem_response_mux_tb #(
   data_mem_request_router #(
       .XLEN(XLEN)
   ) u_candidate (
+      .o_coherent_read_kind(),
+      .o_coherent_read_size(),
+      .o_coherent_read_tag(),
+      .o_coherent_write_atomic(),
+      .o_coherent_write_sc(),
+      .o_coherent_write_tag(),
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_block_new_requests(1'b0),

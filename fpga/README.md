@@ -28,6 +28,10 @@ slice that could alias a high request into low DDR. Resume from an older
 netlist checkpoint is rejected unless its capacity is recorded and matches
 the board; restart at synthesis after changing the DDR map.
 
+The cache hierarchy uses one coherent hart and an S/M home.
+`netlist_config.json` uses schema `x3_netlist_config_v5`. Checkpoint reuse
+requires this schema and matching memory, reset and clock-domain settings.
+
 ## Programming the FPGA
 
 ```bash

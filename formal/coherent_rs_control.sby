@@ -1,0 +1,42 @@
+[tasks]
+coh_rs_control_prove basic
+coh_rs_control_int_prove int
+coh_rs_control_window_prove window basic
+coh_rs_control_partial_prove partial
+coh_rs_control_mul_prove mul
+
+[options]
+mode prove
+depth 1
+timeout 120
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rs_issue2_selector.sv coherent_rs_issue2_selector.sv coherent_rs_capacity.sv coherent_rs_payload_store.sv
+read -formal -D SYNTHESIS -D RS_PRETAG_LOCAL_PROOF -D COHERENT_RS_CONTROL_LOCAL_PROOF -sv reservation_station.sv
+chparam -set PREPARE_ISSUE_CONTROLS 1 -set DUAL_ISSUE 1 reservation_station
+coh_rs_control_prove: chparam -set LANE1_ISSUE_BYPASS 0 reservation_station
+int: chparam -set DEPTH 16 -set HAS_SRC3 0 -set ISSUE2_WINDOW 8 -set LANE1_ISSUE_BYPASS 1 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_CDB_TAG_SHADOW 1 -set ISSUE_CDB_META_ANCHORS 1 -set DIVIDE_ISSUE_GATE 0 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 reservation_station
+window: chparam -set DEPTH 8 -set ISSUE2_WINDOW 5 -set LANE1_ISSUE_BYPASS 1 reservation_station
+partial: chparam -set DEPTH 5 -set ISSUE2_WINDOW 5 -set HAS_SRC3 0 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 -set LANE1_ISSUE_BYPASS 1 reservation_station
+mul: chparam -set TRUST_DISPATCH_VALID 1 -set SPECULATIVE_DATA_WRITES 1 -set DEPTH 4 -set DUAL_ISSUE 0 -set HAS_SRC3 0 -set DIVIDE_ISSUE_GATE 1 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 reservation_station
+prep -top reservation_station
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
+basic: select -assert-count 13 t:$check r:FLAVOR=assert %i
+int: select -assert-count 17 t:$check r:FLAVOR=assert %i
+partial: select -assert-count 15 t:$check r:FLAVOR=assert %i
+mul: select -assert-count 6 t:$check r:FLAVOR=assert %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv

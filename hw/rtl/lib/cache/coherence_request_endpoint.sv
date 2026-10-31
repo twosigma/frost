@@ -43,6 +43,7 @@ module coherence_request_endpoint #(
     input logic i_write_done,
     input logic i_error_disposed,
     output logic o_c_valid,
+    output logic o_c_selected,
     input logic i_c_ready,
     output logic [ADDR_WIDTH+17:0] o_c,
     input logic i_u_valid,
@@ -93,6 +94,7 @@ module coherence_request_endpoint #(
       demand_q.opcode
   ) && i_done_status == coherence_pkg::Consumed && !grant_q.error &&
       grant_q.opcode != coherence_pkg::GrantFail && !i_write_done);
+  assign o_c_selected = phase_q == SendC;
   assign o_c_valid = !i_rst && phase_q == SendC;
   assign o_u_ready = !i_rst && phase_q == WaitU && release_in.q == demand_q.q &&
       release_in.tid == grant_q.tid && release_in.addr == demand_q.addr;
@@ -138,6 +140,12 @@ module coherence_request_endpoint #(
     initial $fatal(1, "coherence_request_endpoint: invalid parameters");
   end
 `ifdef FORMAL
+  always_comb begin
+    p_c_selected_exact : assert (o_c_valid == (!i_rst && o_c_selected));
+  end
+  always_comb begin
+    p_grant_live : assert (!o_grant_valid || o_live);
+  end
   logic f_past_valid = 1'b0;
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;

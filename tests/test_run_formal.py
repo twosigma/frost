@@ -86,6 +86,177 @@ FORMAL_TARGETS = [
         tasks=("prove", "cover"),
     ),
     FormalTarget(
+        "coherent_rs_payload.sby",
+        "Coherent second-issue payload equals two-write banked storage.",
+        tasks=(
+            "coh_rs_payload4_prove",
+            "coh_rs_payload8_prove",
+            "coh_rs_payload16_prove",
+            "coh_rs_payload_wide_prove",
+        ),
+    ),
+    FormalTarget(
+        "coherent_rs_control.sby",
+        "Coherent allocation masks, issue controls, shift and count equality.",
+        tasks=(
+            "coh_rs_control_prove",
+            "coh_rs_control_int_prove",
+            "coh_rs_control_window_prove",
+            "coh_rs_control_partial_prove",
+            "coh_rs_control_mul_prove",
+        ),
+    ),
+    FormalTarget(
+        "coherent_rs_issue2_selector.sby",
+        "Coherent second-issue selection equals the tree and serial references.",
+        tasks=(
+            "coh_rs_issue2_8_prove",
+            "coh_rs_issue2_16_prove",
+            "coh_rs_issue2_5_prove",
+            "coh_rs_issue2_2_prove",
+            "coh_rs_issue2_3_prove",
+        ),
+    ),
+    FormalTarget(
+        "coherent_debug_request_count.sby",
+        "Coherent debug request count equality, including modulo wrap and reset.",
+        tasks=("debug_request_count_prove", "debug_request_count4_prove"),
+    ),
+    FormalTarget(
+        "coherent_rs_capacity.sby",
+        "Coherent reservation-station count and full flags match issue/dispatch arithmetic.",
+        tasks=(
+            "coh_rs_capacity4_prove",
+            "coh_rs_capacity8_prove",
+            "coh_rs_capacity16_prove",
+        ),
+    ),
+    FormalTarget(
+        "debug_dirty_next.sby",
+        "Debug dirty-word next-state equality for arbitrary control inputs.",
+        tasks=("debug_dirty_next_prove",),
+    ),
+    FormalTarget(
+        "debug_store_mirror_hold.sby",
+        "Debug mirror validity and occupied address equality.",
+        tasks=("mirror_hold_prove", "mirror_hold15_prove", "mirror_hold32_prove"),
+    ),
+    FormalTarget(
+        "coherence_read_payload.sby",
+        "Buffered coherent read payloads equal allocation-only storage.",
+        tasks=("coh_read_payload_prove", "coh_read_payload64_prove"),
+    ),
+    FormalTarget(
+        "coherent_l0.sby",
+        "L0 validity and invalidation masks at two cache depths.",
+        tasks=(
+            "coh_l0_flags_prove",
+            "coh_l0_flags256_prove",
+        ),
+    ),
+    FormalTarget(
+        "coherent_cpu.sby",
+        "Coherent SC ownership, load selection, parking, and reservation cuts.",
+        tasks=(
+            "coh_sc_selected_prove",
+            "coh_sc_class_small_prove",
+            "coh_sc_class_offset_prove",
+            "coh_sc_class_size_prove",
+            "coh_sc_class_zero_prove",
+            "coh_sc_class_wrap_prove",
+            "coh_lq_cut_prove",
+            "coh_lq_forward_prove",
+            "coh_lq_forward_normal_prove",
+            "coh_lq_busy_prove",
+            "coh_lq_normal_fill_prove",
+            "coh_address_class_prove",
+            "coh_candidate_select_prove",
+            "coh_lq_selector_prove",
+            "coh_lq_selector4_prove",
+            "coh_lq_selector16_prove",
+        ),
+    ),
+    FormalTarget(
+        "coherence_l1d.sby",
+        "The coherent L1 preserves pending stores, cuts, and exact atomic writes.",
+        tasks=("coh_l1d_bmc", "coh_l1d_multi_bmc"),
+    ),
+    FormalTarget(
+        "coherence_home_select.sby",
+        "Seat admission and circular work selection match serial priority.",
+        tasks=("coh_seat_select_prove", "coh_work_select_prove"),
+    ),
+    FormalTarget(
+        "coherence_home_completions.sby",
+        "Independent completion identities, predecessor order, and result ownership.",
+        tasks=("coh_completions_prove", "coh_completions_cover"),
+    ),
+    FormalTarget(
+        "coherence_home.sby",
+        "The coherent home preserves pins, dirty replies, and victim ownership.",
+        tasks=(
+            "coh_home_control_prove",
+            "coh_home_control64_prove",
+            "coh_home_wb_prove",
+            "coh_home_victim_cover",
+            "coh_home_error_cover",
+        ),
+    ),
+    FormalTarget(
+        "coherence_dma_ingress.sby",
+        "DMA issue order, opaque identities, independent completion, and reset ownership.",
+        tasks=(
+            "coh_dma_ingress_prove",
+            "coh_dma_ingress_cover",
+            "coh_dma_ingress_soc_prove",
+            "coh_dma_ingress_soc_cover",
+        ),
+    ),
+    FormalTarget(
+        "coherence_home_engine.sby",
+        "Resident image merges, independent probe/data arrival, and held service payloads.",
+        tasks=(
+            "coh_home_engine_prove",
+            "coh_home_engine64_prove",
+            "coh_home_engine_cover",
+        ),
+    ),
+    FormalTarget(
+        "coherence_home_array.sby",
+        "Independent L2 ports preserve byte values, tokens and physical-row exclusions.",
+        tasks=(
+            "coh_home_array_prove",
+            *(f"coh_home_array_uram_byte{lane}_prove" for lane in range(64)),
+            "coh_home_array_cover",
+        ),
+    ),
+    FormalTarget(
+        "coherence_array.sby",
+        "A watched byte preserves masked updates across serialized array operations.",
+        tasks=("coh_array_bmc", "coh_array_uram_bmc"),
+    ),
+    FormalTarget(
+        "coherence_control.sby",
+        "Coherent request arbitration, bridge lifetime, and atomic protection.",
+        tasks=(
+            "coh_c_payload_prove",
+            "coh_c_payload_wide_prove",
+            "coh_arbiter_prove",
+            "coh_arbiter19_prove",
+            "coh_arbiter_held_prove",
+            "coh_reader_prove",
+            "coh_ingress_prove",
+            "coh_atomic_guard_prove",
+            "coh_atomic_select_prove",
+            "coh_atomic_select_wide_prove",
+            "coh_atomic_pair_prove",
+            "coh_atomic_pair_wide_prove",
+            "coh_read_flags_prove",
+            "coh_read_select_prove",
+            "coh_read_select64_prove",
+        ),
+    ),
+    FormalTarget(
         "coherence_endpoints.sby",
         "Coherent endpoint payloads, identities and cancellation lifetimes",
         tasks=(
@@ -579,9 +750,20 @@ FORMAL_TARGETS = [
         "axi_coherent_bridge.sby",
         "AXI4 safety: response ordering and conservation, burst bytes to line "
         "requests and back, error bursts, and "
-        "the coherent ingress's request rules, unbounded on narrow, line-wide and "
-        "soc_top buses",
-        tasks=("prove", "prove_full_width", "prove_soc", "cover"),
+        "the coherent ingress's request rules, unbounded on narrow and line-wide "
+        "buses with up to eight bursts and eight line IDs per direction",
+        tasks=(
+            "prove",
+            "prove_full_width",
+            "prove_soc",
+            "prove_soc8_0",
+            "prove_soc8_1",
+            "prove_soc8_2",
+            "prove_soc8_3",
+            "bmc_soc",
+            "cover",
+            "cover_soc",
+        ),
     ),
     FormalTarget(
         "axil_reg_bridge.sby",
@@ -648,6 +830,11 @@ FORMAL_TARGETS = [
         "Fetch redirects match the reference when sequential catch-up requests are "
         "omitted",
         tasks=("prove",),
+    ),
+    FormalTarget(
+        "pc_tage_events.sby",
+        "Registered history events match PC-load qualification",
+        tasks=("pc_tage_events_prove", "pc_tage_events_cover"),
     ),
     FormalTarget(
         "pc_register_mux.sby",
@@ -754,10 +941,181 @@ FORMAL_TARGETS = [
         "Tomasulo commit and flush integration, including FP dispatch done repair",
         tasks=("bmc", "cover", "fp_repair_bmc"),
     ),
+    FormalTarget(
+        "debug_go_pipeline.sby",
+        "Registered debug GO keeps its command or resume target, holds until "
+        "acknowledgement, and clears on acknowledgement or module reset",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "debug_fetch_barrier.sby",
+        "Debug go follows fetch invalidation, preserves its target, and handles "
+        "withdrawal and reset without replay",
+        tasks=("prove", "cover"),
+    ),
 ]
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("coh_home_engine_prove", "Resident image values and held service payloads."),
+    ("coh_home_engine64_prove", "Sector image values in a two-sector resident line."),
+    ("coh_home_engine_cover", "Coincident dirty reply/data and failed SC completion."),
+    ("coh_dma_ingress_prove", "DMA credits, payloads, and identity conservation."),
+    ("coh_dma_ingress_cover", "Full DMA admission and delayed error completion."),
+    (
+        "coh_dma_ingress_soc_prove",
+        "DMA identity and payload conservation with eight credits.",
+    ),
+    (
+        "coh_dma_ingress_soc_cover",
+        "Eight DMA credits, queue wrap, drain, and ID reuse.",
+    ),
+    ("pc_tage_events_prove", "Unbounded history event equivalence"),
+    ("pc_tage_events_cover", "History event and suppression reachability"),
+    ("coh_rs_payload4_prove", "Coherent payload storage equality at four entries."),
+    ("coh_rs_payload8_prove", "Coherent payload storage equality at eight entries."),
+    ("coh_rs_payload16_prove", "Coherent payload storage equality at sixteen entries."),
+    ("coh_rs_payload_wide_prove", "Coherent payload storage equality at 125 bits."),
+    (
+        "coh_rs_control_prove",
+        "Coherent allocation masks and issue, immediate, shift and count controls with three sources.",
+    ),
+    (
+        "coh_rs_control_int_prove",
+        "Coherent integer allocation masks and issue, immediate, shift and count equality.",
+    ),
+    (
+        "coh_rs_control_window_prove",
+        "Coherent allocation masks and issue controls with a five-entry window.",
+    ),
+    (
+        "coh_rs_control_partial_prove",
+        "Coherent issue controls with a partial primary payload group.",
+    ),
+    (
+        "coh_rs_control_mul_prove",
+        "Coherent allocation and count controls in the multiply station.",
+    ),
+    ("coh_rs_issue2_8_prove", "Coherent second-issue equality at eight entries."),
+    ("coh_rs_issue2_16_prove", "Coherent second-issue equality at sixteen entries."),
+    ("coh_rs_issue2_5_prove", "Coherent second-issue equality at five entries."),
+    ("coh_rs_issue2_2_prove", "Coherent second-issue equality at two entries."),
+    ("coh_rs_issue2_3_prove", "Coherent second-issue equality at three entries."),
+    ("debug_request_count_prove", "Coherent debug request count at eight bits."),
+    ("debug_request_count4_prove", "Coherent debug request count at four bits."),
+    ("coh_rs_capacity4_prove", "Coherent capacity equality at four entries."),
+    ("coh_rs_capacity8_prove", "Coherent capacity equality at eight entries."),
+    ("coh_rs_capacity16_prove", "Coherent capacity equality at sixteen entries."),
+    ("coh_c_payload_prove", "Completion payload equality outside reset at fifty bits."),
+    (
+        "coh_c_payload_wide_prove",
+        "Completion payload equality outside reset at seventy-four bits.",
+    ),
+    ("debug_dirty_next_prove", "Debug dirty-word clear and set priority."),
+    ("coh_sc_class_small_prove", "Coherent SC class for an aligned four-KiB region."),
+    ("coh_sc_class_offset_prove", "Coherent SC class for an unaligned base."),
+    ("coh_sc_class_size_prove", "Coherent SC class for a non-power-of-two size."),
+    ("coh_sc_class_zero_prove", "Coherent SC class for an empty region."),
+    ("coh_sc_class_wrap_prove", "Coherent SC class for a wrapping region limit."),
+    ("mirror_hold_prove", "Debug mirror address equality at sixteen bits."),
+    ("mirror_hold15_prove", "Debug mirror address equality at fifteen bits."),
+    ("mirror_hold32_prove", "Debug mirror address equality at thirty-two bits."),
+    ("coh_read_payload_prove", "Coherent read payload storage at 32 address bits."),
+    ("coh_read_payload64_prove", "Coherent read payload storage at 64 address bits."),
+    ("coh_l0_flags_prove", "Coherent L0 next-state equality at 128 entries."),
+    ("coh_l0_flags256_prove", "Coherent L0 next-state equality at 256 entries."),
+    (
+        "coh_sc_selected_prove",
+        "Selected SC payload survives flushes through its result.",
+    ),
+    (
+        "coh_lq_cut_prove",
+        "Coherent cuts block load launches and local fast paths; "
+        "invalidated LR responses cannot renew reservations.",
+    ),
+    ("coh_lq_forward_prove", "Coherent forwarding obeys cuts and same-sector holds."),
+    (
+        "coh_lq_forward_normal_prove",
+        "Coherent forwarding and Normal-cache controls obey local invariants.",
+    ),
+    (
+        "coh_lq_busy_prove",
+        "Coherent capture obeys busy gating with load preparation disabled.",
+    ),
+    (
+        "coh_lq_normal_fill_prove",
+        "Coherent L0 fill permission agrees for both response sources.",
+    ),
+    (
+        "coh_address_class_prove",
+        "Coherent address slots carry exact PMA and cache classes.",
+    ),
+    (
+        "coh_candidate_select_prove",
+        "Coherent candidate selection matches its registered index.",
+    ),
+    ("coh_lq_selector_prove", "Coherent issue selection matches both SQ drain states."),
+    ("coh_lq_selector4_prove", "Coherent issue selection matches at depth four."),
+    ("coh_lq_selector16_prove", "Coherent issue selection matches at depth sixteen."),
+    (
+        "coh_read_flags_prove",
+        "Coherent read flags preserve response and completion priority.",
+    ),
+    (
+        "coh_read_select_prove",
+        "Coherent reads preserve blocked-slot circular priority.",
+    ),
+    ("coh_read_select64_prove", "Coherent read selection covers full-width addresses."),
+    ("coh_l1d_bmc", "Coherent L1 pending ownership and independent probes."),
+    (
+        "coh_l1d_multi_bmc",
+        "Coherent L1 with three request endpoints: line exclusion and waiters.",
+    ),
+    ("coh_home_wb_prove", "Detached victim ownership through successful B."),
+    ("coh_home_victim_cover", "Victim allocation, delayed B, and blocked refetch."),
+    ("coh_home_error_cover", "Failed B preserves dirty victim ownership."),
+    (
+        "coh_completions_prove",
+        "Completion identity, pin lifetime, and predecessor order.",
+    ),
+    ("coh_completions_cover", "Concurrent results and independent release."),
+    ("coh_seat_select_prove", "Fill waiter ranks match serial seat allocation."),
+    (
+        "coh_work_select_prove",
+        "Ready work and circular priority match serial selection.",
+    ),
+    ("coh_home_control_prove", "Composed home ownership and independent memory debt."),
+    ("coh_home_control64_prove", "Composed home ownership across sibling sectors."),
+    ("coh_home_array_prove", "Independent L2 ports preserve watched bytes."),
+    *[
+        (
+            f"coh_home_array_uram_byte{lane}_prove",
+            f"Registered L2 ports preserve byte {lane} and exclude row collisions.",
+        )
+        for lane in range(64)
+    ],
+    ("coh_home_array_cover", "Tag, read and update ports operate concurrently."),
+    ("coh_array_bmc", "Coherent array byte values and held responses."),
+    ("coh_array_uram_bmc", "Coherent array byte values through registered RAM ports."),
+    (
+        "coh_arbiter19_prove",
+        "Nineteen-way held arbitration and circular selection equality.",
+    ),
+    ("coh_arbiter_prove", "Coherent arbitration preserves held payloads."),
+    (
+        "coh_arbiter_held_prove",
+        "Captured arbitration validity matches held source offers.",
+    ),
+    ("coh_reader_prove", "Read identities survive through release."),
+    ("coh_ingress_prove", "DMA identities survive through release."),
+    ("coh_atomic_guard_prove", "Atomic protection covers retirement and release."),
+    ("coh_atomic_select_prove", "Atomic source qualification at five tag bits."),
+    ("coh_atomic_select_wide_prove", "Atomic source qualification at nine tag bits."),
+    (
+        "coh_atomic_pair_prove",
+        "Atomic guard state equality after source qualification.",
+    ),
+    ("coh_atomic_pair_wide_prove", "Atomic guard state equality at nine tag bits."),
     ("layout32", "Coherent channel layout at 32 physical address bits"),
     ("layout56", "Coherent channel layout at 56 physical address bits"),
     ("request_prove", "Unbounded coherent endpoint safety"),
@@ -880,7 +1238,31 @@ SBY_TASKS = [
     ("bmc32", "Bounded local equivalence at depth 32"),
     ("bmc_1g", "Bounded physical-address check at a 1 GiB DDR capacity"),
     ("prove_full_width", "Unbounded proof with a bus as wide as a line"),
-    ("prove_soc", "Unbounded proof in soc_top's configuration"),
+    (
+        "prove_soc",
+        "Unbounded proof at SoC bus widths; AXI bridge uses four bursts and IDs per direction",
+    ),
+    ("bmc_soc", "Bounded check with SoC burst and line-ID capacities"),
+    (
+        "prove_soc8_0",
+        "Eight-burst AXI bridge safety, assertion partition 0 of four",
+    ),
+    (
+        "prove_soc8_1",
+        "Eight-burst AXI bridge safety, assertion partition 1 of four",
+    ),
+    (
+        "prove_soc8_2",
+        "Eight-burst AXI bridge safety, assertion partition 2 of four",
+    ),
+    (
+        "prove_soc8_3",
+        "Eight-burst AXI bridge safety, assertion partition 3 of four",
+    ),
+    (
+        "cover_soc",
+        "SoC burst and ID capacity, allocator wrap, reordered replies, drain, and reuse",
+    ),
     ("bmc_64g", "Bounded physical-address check at a 64 GiB DDR capacity"),
     ("bmc_128g", "Bounded physical-address check at a 128 GiB DDR capacity"),
     ("cover_64g", "Physical-address reachability at a 64 GiB DDR capacity"),

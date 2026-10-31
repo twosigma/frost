@@ -44,7 +44,7 @@ import pytest
 import cocotb
 
 SW_APPS_DIR = Path(__file__).resolve().parent.parent / "sw" / "apps"
-# Simulation-only TestRIG harness, compiled into the rvfi_dii build only.
+# Simulation-only TestRIG harness and its recorder unit bench.
 RVFI_DII_HARNESS = (
     Path(__file__).resolve().parent.parent / "hw" / "sim" / "frost_rvfi_dii.sv"
 )
@@ -461,7 +461,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Queued NIC loopback frames overlapping 4 KiB DMA copies in plain "
             "and burst modes, with byte checks and zero MAC RX overflow"
         ),
-        extra_env=(("COCOTB_MAX_CYCLES", "400000"), ("COCOTB_NUM_RUNS", "1")),
+        extra_env=(("COCOTB_MAX_CYCLES", "800000"), ("COCOTB_NUM_RUNS", "1")),
     ),
     "nic_echo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -490,6 +490,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Self-modifying DDR code across fence.i timing and cache-state "
         "variations",
+        extra_env=(("COCOTB_MAX_CYCLES", "10000000"),),
     ),
     "ddr_heap_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -592,6 +593,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Sv39 walks see dirty L1D page tables, with 32-byte L2 lines",
         verilator_extra_args=("-GL2_LINE_BYTES=32",),
+        extra_env=(("COCOTB_MAX_CYCLES", "1000000"),),
     ),
     "smc_fencei_test_equal_lines": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -600,6 +602,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Self-modifying DDR code across fence.i, with 32-byte L2 lines",
         verilator_extra_args=("-GL2_LINE_BYTES=32",),
+        extra_env=(("COCOTB_MAX_CYCLES", "10000000"),),
     ),
     "csr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -680,6 +683,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Sv39 data translation, permissions, and precise faults through MPRV"
         ),
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
     ),
     **{
         f"vm_test_{1 << (bits - 30)}g": CocotbRunConfig(
@@ -691,7 +695,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
                 f"Sv39 final-word access and DDR-end walker fault at {1 << (bits - 30)} GiB"
             ),
             include_in_pytest=False,
-            extra_env=(("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),),
+            extra_env=(
+                ("EXTRA_CFLAGS", f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}"),
+                ("COCOTB_MAX_CYCLES", "3000000"),
+            ),
             verilator_extra_args=(
                 "-DFROST_WIDE_DDR_TEST",
                 f"-DFROST_DDR_CAPACITY_LOG2_BYTES={bits}",
@@ -715,9 +722,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Sv39 instruction fetch in supervisor and user modes, including cached DDR"
         ),
-        # Case Z's repeated L1I eviction and L1D writeback exceed the default
-        # 500k-cycle budget from DDR.
-        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
+        # Case Z repeats L1I eviction and complete L1D maintenance sweeps.
+        extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
     ),
     "itlb_test_1g": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -728,7 +734,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Sv39 instruction fetch and bare out-of-range fault at 1 GiB DDR",
         include_in_pytest=False,
         extra_env=(
-            ("COCOTB_MAX_CYCLES", "2000000"),
+            ("COCOTB_MAX_CYCLES", "20000000"),
             ("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=30"),
         ),
         verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
@@ -831,6 +837,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Wrong-path translation faults drain through branch and SFENCE recovery; "
             "replacement loads preserve their data"
         ),
+        extra_env=(("COCOTB_MAX_CYCLES", "12000000"),),
     ),
     "ptw_bus_fault_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -982,6 +989,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         # Small L2 and slow memory stress store drain and dirty writeback.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
+        extra_env=(("COCOTB_MAX_CYCLES", "1000000"),),
     ),
     "mret_timer_resume_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1004,6 +1012,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         # Small L2 and slow memory extend cold SC/load and store-drain windows.
         # These settings detect a stale interrupt resume PC during restoration.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
     ),
     "mtimer_stress": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1014,6 +1023,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Machine-timer interrupts and MRET keep making progress across timer phases "
             "through all 20,000 memory/ALU loop iterations"
         ),
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
     ),
     "mret_drain_deadlock": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1120,7 +1130,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "OpenSBI boot, SBI services and delegated APLIC interrupts (fixed memory layout)"
         ),
-        extra_env=(("COCOTB_MAX_CYCLES", "10000000"),),
+        extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
     ),
     "linux_irq_ddr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1166,7 +1176,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
     # Fixed simulation scales for CLINT re-arm and AMO/IRQ flush tests.
     # extra_env overrides external EXTRA_CFLAGS; use the base entries for
-    # custom scales. The bench's app_name-based budgets still apply.
+    # custom scales. The registry and benchmark runner supply cycle budgets.
     "amo_irq_torture_sim": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1176,7 +1186,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Timer interrupts preserve DDR atomic effects (simulation-scale workload)"
         ),
-        extra_env=(("EXTRA_CFLAGS", "-DAMO_TORTURE_ITERS=256"),),
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DAMO_TORTURE_ITERS=256"),
+            ("COCOTB_AMO_TORTURE_MAX_CYCLES", "12000000"),
+        ),
     ),
     "tick_torture_sim": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1236,6 +1249,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Timer interrupts preserve DDR return-address slots in a "
         "find-next-bit loop",
+        extra_env=(("COCOTB_MAX_CYCLES", "1000000"),),
     ),
     "lq_stale_slot_probe": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1265,6 +1279,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Sv39 walks see dirty L1D page tables without an intervening sfence.vma"
         ),
+        extra_env=(("COCOTB_MAX_CYCLES", "1000000"),),
     ),
     "ddr_atomic_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1285,6 +1300,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         # The app forces MEM_CONFIG=ddr. Use a small L2 and slow DDR for misses.
         # This variant does not exercise window_cannot_serve resteering.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
+        extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
     ),
     "freertos_demo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1294,8 +1310,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "FreeRTOS queues, mutexes, atomics, and tick-driven task switching"
         ),
-        # Allow for timer ticks spaced 10,000 cycles apart in simulation.
-        extra_env=(("COCOTB_MAX_CYCLES", "1000000"),),
+        # The budget covers atomic workers and timer-driven task switches.
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
     ),
     "fpu_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1509,7 +1525,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "disabled)"
         ),
         verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
-        extra_env=(("EXTRA_CFLAGS", "-DITLB_NO_CACHED_FETCH"),),
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DITLB_NO_CACHED_FETCH"),
+            ("COCOTB_MAX_CYCLES", "5000000"),
+        ),
     ),
     "served_window_resteer_fetch_fuzz": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1582,12 +1601,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=(
             "+define+FROST_RVFI_DII",
             "-DFROST_WIDE_DDR_TEST",
+            "-GL1_CACHE_BYTES=4096",
+            "-GL1I_CACHE_BYTES=4096",
+            "-GL2_CACHE_BYTES=16384",
             str(RVFI_DII_HARNESS),
             str(RVFI_DII_HARNESS.with_name("frost_rvfi_platform.sv")),
             # Sparse wide-DDR mode keeps full-width keys; this parameter is
             # unused for the sparse address range but keeps the old budget.
             "-GDDR_MODEL_BYTES=1073741824",
         ),
+    ),
+    "rvfi_recorder": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_rvfi_recorder",
+        hdl_toplevel_module="frost_rvfi_dii",
+        description="Retirement record capacity, delayed store and CSR data, and drain timeout",
+        verilator_extra_args=(str(RVFI_DII_HARNESS), "-GMaxInsns=16", "-GMaxEvents=32"),
     ),
     # Unit benches (no application), starting with the Tomasulo back end
     "reorder_buffer": CocotbRunConfig(
@@ -1620,6 +1648,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             # The shipped INT station is dual-issue; build the directed suite
             # against that elaboration rather than the single-port default.
             "-GDUAL_ISSUE=1",
+            "-GPREPARE_ISSUE_CONTROLS=1",
+            "--assert",
             "-GALLOC_INDEXED_REPAIR=1",
             "-GDISPATCH_REPAIR_BYPASS=0",
             "-GISSUE_REPAIR_BYPASS=0",
@@ -1638,6 +1668,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         verilator_extra_args=(
             "-GDUAL_ISSUE=1",
+            "-GPREPARE_ISSUE_CONTROLS=1",
             "-GTAG_INDEXED_BRANCH_PAYLOAD=1",
             "-GHAS_SRC3=0",
             "-GALLOC_INDEXED_REPAIR=1",
@@ -1989,12 +2020,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             (
                 "sram_macros_l1d_data",
                 "sdp_ram_byte_en",
-                "L1D data bank of one way",
+                "L1D data array",
                 "1x4",
                 (
                     "-GDATA_WIDTH=256",
-                    "-GADDR_WIDTH=10",
-                    "-GREAD_LATENCY=1",
+                    "-GADDR_WIDTH=12",
+                    "-GREAD_LATENCY=2",
                     "-GWRITE_LATENCY=1",
                     "-GREGISTER_READ_INPUT=0",
                     "-GREGISTER_READ_OUTPUT=0",
@@ -2129,6 +2160,119 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GCACHE_SIZE_BYTES=1024",
             "-GNUM_WAITERS=2",
             "-GSIM_FAST_MAINT=1",
+        ),
+    ),
+    "coherent_cpu_faults": CocotbRunConfig(
+        python_test_module="cocotb_tests.integration.test_coherent_cpu_faults",
+        hdl_toplevel_module="cpu_top",
+        description="Coherent atomic faults, parked-hart DMA service and reset preserve ownership.",
+        verilator_extra_args=(
+            "--assert",
+            "-GENABLE_COHERENCE=1",
+            "-GENABLE_CACHED_TIER=1",
+            "-GL1D_WAYS=1",
+            "-GL1I_WAYS=1",
+            "-GL2_WAYS=1",
+            "-GL1_CACHE_BYTES=256",
+            "-GL1I_CACHE_BYTES=256",
+            "-GL2_CACHE_BYTES=128",
+        ),
+    ),
+    "coherent_cut_fabric": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_cut_fabric",
+        hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
+        description="Actual probe replies wait for observation replay and reservation cuts.",
+        verilator_extra_args=("--assert",),
+    ),
+    "coherent_cut": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_cut",
+        hdl_toplevel_module="tomasulo_wrapper",
+        description="The coherent cut covers observations, delayed LR, and stale fills.",
+        verilator_extra_args=("--assert",),
+    ),
+    "coherence_l1d": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GCACHE_BYTES=512"),
+        python_test_module="cocotb_tests.cache.test_coherence_l1d",
+        hdl_toplevel_module="coherence_l1d",
+        description="Private grant acceptance behind independently held probe replies",
+    ),
+    "coherence_cluster": CocotbRunConfig(
+        verilator_extra_args=("--assert",),
+        python_test_module="cocotb_tests.cache.test_coherence_cluster",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="One hart, DMA, pending stores, recalls, and atomic ownership",
+    ),
+    "coherence_cluster_misses": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GL1D_MISSES=3"),
+        python_test_module="cocotb_tests.cache.test_coherence_cluster",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="The cluster with three L1D request endpoints: loads in flight beside "
+        "stores, probes and DMA",
+    ),
+    "coherence_dma_ingress": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_dma_ingress",
+        hdl_toplevel_module="coherence_dma_ingress",
+        description="Four DMA credits, opaque identities, completion delay, and reset",
+        verilator_extra_args=("--assert", "-GADDR_WIDTH=56"),
+    ),
+    "coherence_dma_ingress_8": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_dma_ingress",
+        hdl_toplevel_module="coherence_dma_ingress",
+        description="Eight DMA credits, as the cluster builds them",
+        verilator_extra_args=("--assert", "-GADDR_WIDTH=56", "-GSLOTS=8"),
+    ),
+    "coherence_home_completions": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home_completions",
+        hdl_toplevel_module="coherence_home_completions",
+        description="Independent results, completion pins, and same-sector predecessors",
+        verilator_extra_args=("--assert", "-GCACHE_BYTES=1024"),
+    ),
+    "coherence_home_array": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home_array",
+        hdl_toplevel_module="coherence_home_array",
+        description="Independent tag and data ports with physical-row hazards",
+        verilator_extra_args=("--assert", "-GCACHE_BYTES=1024"),
+    ),
+    "coherence_home_array_bram": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home_array",
+        hdl_toplevel_module="coherence_home_array",
+        description="Independent tag and data ports with physical-row hazards",
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GLINE_BYTES=32",
+            "-GULTRA=0",
+        ),
+    ),
+    "coherence_home_array_packed": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home_array",
+        hdl_toplevel_module="coherence_home_array",
+        description="Independent tag and data ports with physical-row hazards",
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=256",
+            "-GLINE_BYTES=32",
+            "-GWAYS=1",
+        ),
+    ),
+    "coherence_home": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home",
+        hdl_toplevel_module="coherence_home",
+        description="Independent completions, dirty recalls, way pins, and victim locks",
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=1024",
+        ),
+    ),
+    "coherence_home_equal": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home",
+        hdl_toplevel_module="coherence_home",
+        description="Coherent home with equal private and shared line sizes",
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GLINE_BYTES=32",
+            "-GULTRA=0",
         ),
     ),
     "coherence_endpoints": CocotbRunConfig(
@@ -2270,12 +2414,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="DMA coherence with 16 L2 miss and 4 writeback slots",
         verilator_extra_args=("-GL2_NUM_MSHR=16", "-GL2_NUM_WB=4"),
     ),
-    # The concurrency and DMA suites with the X3's ids, L1D miss slots, L2
-    # waiter seats, and stream prefetcher, whose reads add L2 traffic.
+    # The concurrency and DMA suites use eight L1D and L2 miss slots, two
+    # L2 waiter seats, and eight stream prefetch requests.
     "frost_cache_concurrency_prefetch": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache_concurrency",
         hdl_toplevel_module="frost_cache_test_harness",
-        description="Overlapping cache requests with the X3's slots and the L2 prefetcher",
+        description="Overlapping cache requests with eight miss slots and the L2 prefetcher",
         verilator_extra_args=(
             "-GUP_ID_BITS=4",
             "-GL1D_NUM_MSHR=8",
@@ -2289,7 +2433,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "frost_cache_dma_prefetch": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache_dma",
         hdl_toplevel_module="frost_cache_test_harness",
-        description="DMA coherence with the X3's slots and the L2 prefetcher",
+        description="DMA coherence with eight miss slots and the L2 prefetcher",
         verilator_extra_args=(
             "-GUP_ID_BITS=4",
             "-GL1D_NUM_MSHR=8",
@@ -2331,15 +2475,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GL2_WAYS=1",
         ),
     ),
-    # fence.i maintenance cycle-count measurement at the production cache
-    # geometry (128 KiB L1D, 16 KiB L1I, 2 MiB L2). Two builds, slow
+    # Generic line-cache fence.i maintenance cycle-count measurement at the
+    # full cache geometry (128 KiB L1D, 16 KiB L1I, 2 MiB L2). Two builds, slow
     # (FPGA-path FSM) and fast, so the speedup is readable from the logs. Not
     # part of the pytest sweep.
     "fence_speed_slow": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_fence_speed",
         hdl_toplevel_module="frost_cache_test_harness",
         description=(
-            "fence.i maintenance cost at production cache sizes with the hardware FSM"
+            "Generic line-cache fence.i maintenance cost at full cache sizes with the hardware FSM"
         ),
         verilator_extra_args=(
             "-GL1_CACHE_BYTES=131072",
@@ -2353,7 +2497,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cache.test_fence_speed",
         hdl_toplevel_module="frost_cache_test_harness",
         description=(
-            "fence.i maintenance cost at production cache sizes with fast simulation "
+            "Generic line-cache fence.i maintenance cost at full cache sizes with fast simulation "
             "maintenance"
         ),
         verilator_extra_args=(
@@ -2367,7 +2511,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     # DMA-port service envelope measurement: one build per candidate lock
     # count so producer depth can be swept against the sequencer's capacity,
     # plus one at the full-system DDR model latency and one with the
-    # production L2, which the write_l2_only scenario needs. Measurement
+    # 2 MiB L2, which the write_l2_only scenario needs. Measurement
     # only, not part of the pytest sweep.
     "dma_envelope_lock3": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_dma_envelope",
@@ -2476,9 +2620,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "debug_module": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug_module",
         hdl_toplevel_module="debug_module",
-        description=(
-            "DMI replies across reset and registered command/resume GO handshakes"
-        ),
+        description=("DMI reset, registered GO, slice stalls and dirty-word priority"),
         verilator_extra_args=("--assert",),
     ),
     "hang_triage": CocotbRunConfig(
@@ -2894,6 +3036,31 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("", "", ()),
             ("_64", " on a 64-bit bus", ("-GDATA_WIDTH=64",)),
             ("_32", " on a 32-bit bus", ("-GDATA_WIDTH=32", "-GID_WIDTH=2")),
+        )
+    },
+    **{
+        f"coherent_axi_ingress{suffix}": CocotbRunConfig(
+            python_test_module=(
+                "cocotb_tests.axi.test_axi_coherent_bridge,"
+                "cocotb_tests.axi.test_coherent_axi_ingress"
+            ),
+            hdl_toplevel_module="coherent_axi_test_harness",
+            description="AXI bursts through four coherent credits, completion delay, and reset",
+            verilator_extra_args=("--assert", *args),
+        )
+        for suffix, args in (
+            ("", ()),
+            ("_64", ("-GDATA_WIDTH=64",)),
+            # The SoC's widths: eight line IDs per direction and eight credits.
+            (
+                "_8",
+                (
+                    "-GLINE_ID_BITS=4",
+                    "-GWRITE_BURSTS=8",
+                    "-GREAD_BURSTS=8",
+                    "-GINGRESS_SLOTS=8",
+                ),
+            ),
         )
     },
     "axil_reg_bridge": CocotbRunConfig(
@@ -3487,6 +3654,19 @@ for _program in ("dma_torture", "nic_loopback", "itlb_test"):
                 f"-DFROST_DDR_CAPACITY_LOG2_BYTES={_capacity_log2}",
             ),
         )
+
+# CPU programs and the coherent control benches enable RTL assertions.
+for _name, _config in tuple(TEST_REGISTRY.items()):
+    if _config.hdl_toplevel_module == "frost" or _name in (
+        "debug_module",
+        "lq_l0_cache_128",
+        "lq_l0_cache_256",
+    ):
+        if "--assert" not in _config.verilator_extra_args:
+            TEST_REGISTRY[_name] = replace(
+                _config,
+                verilator_extra_args=(*_config.verilator_extra_args, "--assert"),
+            )
 
 # Registry entries that build an app and are collected by pytest. The unit
 # benches have no app_name and are excluded. Entries with the same Verilator

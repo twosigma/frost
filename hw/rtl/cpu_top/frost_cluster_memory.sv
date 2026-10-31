@@ -14,12 +14,11 @@
  *    limitations under the License.
  */
 
-// The memory side shared below a hart: the shared cache level
-// (frost_cluster_cache) with its DMA sequencer and the coherent ingress
-// register in front of it, and cpu_memory_fabric with its AXI master, which
-// combines the L2's line traffic with the hart's uncached data and
-// instruction requests. cpu_top composes it with frost_hart. See
-// cpu_top/README.md.
+// The shared memory side contains the S/M home, its L2 data array and the
+// DMA ingress. cpu_memory_fabric combines L2 traffic with uncached data
+// and instruction requests on the AXI master. See cpu_top/README.md.
+`include "coherence_types.svh"
+
 module frost_cluster_memory #(
     parameter int unsigned ENABLE_CACHED_TIER = 1,
     parameter bit ENABLE_COHERENCE = 1'b0,
@@ -39,14 +38,10 @@ module frost_cluster_memory #(
     parameter int unsigned AXI_ID_BITS = 6,
     parameter int unsigned AXI_USER_BITS = 1,
     parameter logic [2:0] AXI_MEMORY_PROT = 3'b011,
-    // Line ports from the hart: 32-byte lines and 4-bit ids.
+    // DMA ingress uses 32-byte lines and 4-bit ids.
     localparam int unsigned L1LineBytes = 32,
-    localparam int unsigned LineIdBits = 4,
-    // L1D upstream ids, which carry the DMA probes (frost_hart_cache).
-    localparam int unsigned ProbeIdxBitsMin = $clog2(riscv_pkg::DmaCoherenceLocks + 1),
-    localparam int unsigned ProbeIdxBits =
-        (LineIdBits > ProbeIdxBitsMin) ? LineIdBits : ProbeIdxBitsMin,
-    localparam int unsigned L1dIdBits = ProbeIdxBits + 1
+    localparam int unsigned LineIdBits = 4
+
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -68,64 +63,30 @@ module frost_cluster_memory #(
     output logic [L1LineBytes*8-1:0] o_coherent_resp_rdata,
     output logic o_coherent_resp_error,
 
-    // The hart's L1D downstream line port (slave).
-    input logic i_l1d_down_req_valid,
-    output logic o_l1d_down_req_ready,
-    input logic i_l1d_down_req_write,
-    input logic i_l1d_down_req_maintenance,
-    input logic [riscv_pkg::PhysAddrBits-1:0] i_l1d_down_req_addr,
-    input logic [L1LineBytes*8-1:0] i_l1d_down_req_wdata,
-    input logic [L1LineBytes-1:0] i_l1d_down_req_wstrb,
-    input logic [LineIdBits-1:0] i_l1d_down_req_id,
-    output logic o_l1d_down_resp_valid,
-    output logic [LineIdBits-1:0] o_l1d_down_resp_id,
-    output logic [L1LineBytes*8-1:0] o_l1d_down_resp_rdata,
-    output logic o_l1d_down_resp_error,
-
-    // The hart's L1I downstream line port (slave).
-    input logic i_l1i_down_req_valid,
-    output logic o_l1i_down_req_ready,
-    input logic i_l1i_down_req_write,
-    input logic [riscv_pkg::PhysAddrBits-1:0] i_l1i_down_req_addr,
-    input logic [L1LineBytes*8-1:0] i_l1i_down_req_wdata,
-    input logic [L1LineBytes-1:0] i_l1i_down_req_wstrb,
-    input logic [LineIdBits-2:0] i_l1i_down_req_id,
-    output logic o_l1i_down_resp_valid,
-    output logic [LineIdBits-2:0] o_l1i_down_resp_id,
-    output logic [L1LineBytes*8-1:0] o_l1i_down_resp_rdata,
-    output logic o_l1i_down_resp_error,
-
-    // The hart's walker sequencer line port (slave).
-    input logic i_walk_down_req_valid,
-    output logic o_walk_down_req_ready,
-    input logic [riscv_pkg::PhysAddrBits-1:0] i_walk_down_req_addr,
-    input logic [LineIdBits-2:0] i_walk_down_req_id,
-    output logic o_walk_down_resp_valid,
-    output logic [LineIdBits-2:0] o_walk_down_resp_id,
-    output logic [L1LineBytes*8-1:0] o_walk_down_resp_rdata,
-    output logic o_walk_down_resp_error,
-
-    // The DMA sequencer's probes into the hart's L1D.
-    output logic o_dma_probe_req_valid,
-    input logic i_dma_probe_req_ready,
-    output logic [riscv_pkg::PhysAddrBits-1:0] o_dma_probe_req_addr,
-    output logic o_dma_probe_req_inval,
-    output logic [L1dIdBits-1:0] o_dma_probe_req_id,
-    input logic i_dma_probe_ack_valid,
-    input logic [L1dIdBits-1:0] i_dma_probe_ack_id,
-    output logic o_dma_probe_release_valid,
-    output logic [L1dIdBits-1:0] o_dma_probe_release_id,
-
-    // Load-queue coherence handshake for DMA writes, to the hart.
-    output logic o_coh_admit_valid,
-    output logic [riscv_pkg::DmaCoherenceLockBits-1:0] o_coh_admit_slot,
-    output logic [riscv_pkg::PhysAddrBits-1:0] o_coh_admit_addr,
-    input logic i_coh_admit_ready,
-    output logic o_coh_inval_valid,
-    output logic [riscv_pkg::DmaCoherenceLockBits-1:0] o_coh_inval_slot,
-    input logic i_coh_inval_done,
-    output logic o_coh_release_valid,
-    output logic [riscv_pkg::DmaCoherenceLockBits-1:0] o_coh_release_slot,
+    input logic i_coherent_d_valid,
+    output logic o_coherent_d_ready,
+    input logic [riscv_pkg::PhysAddrBits+311:0] i_coherent_d,
+    output logic o_coherent_p_valid,
+    input logic i_coherent_p_ready,
+    output logic [riscv_pkg::PhysAddrBits+29:0] o_coherent_p,
+    input logic i_coherent_r_valid,
+    output logic o_coherent_r_ready,
+    input logic [riscv_pkg::PhysAddrBits+274:0] i_coherent_r,
+    input logic i_coherent_w_valid,
+    output logic o_coherent_w_ready,
+    input logic [riscv_pkg::PhysAddrBits+259:0] i_coherent_w,
+    output logic o_coherent_wa_valid,
+    input logic i_coherent_wa_ready,
+    output logic [riscv_pkg::PhysAddrBits+10:0] o_coherent_wa,
+    output logic o_coherent_g_valid,
+    input logic i_coherent_g_ready,
+    output logic [riscv_pkg::PhysAddrBits+274:0] o_coherent_g,
+    input logic i_coherent_c_valid,
+    output logic o_coherent_c_ready,
+    input logic [riscv_pkg::PhysAddrBits+17:0] i_coherent_c,
+    output logic o_coherent_u_valid,
+    input logic i_coherent_u_ready,
+    output logic [riscv_pkg::PhysAddrBits+14:0] o_coherent_u,
 
     // The hart's uncached and Device data requests.
     input logic i_data_req_valid,
@@ -206,6 +167,19 @@ module frost_cluster_memory #(
     input logic i_axi_rlast,
     input logic [AXI_USER_BITS-1:0] i_axi_ruser
 );
+`ifndef SYNTHESIS
+  // Registers power up arbitrary and the reset can reach this module a few
+  // cycles after the first edge, so the simulation checks begin at the first
+  // reset.
+`ifdef FORMAL
+  // Formal tasks start from a reset or from an induction state; the checks
+  // apply in both.
+  wire sim_reset_seen_q = 1'b1;
+`else
+  logic sim_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) sim_reset_seen_q <= 1'b1;
+`endif
+`endif
   localparam int unsigned DdrAxiIdBits = 5;
 
   logic dma_req_ready, dma_resp_valid, dma_resp_error;
@@ -214,33 +188,9 @@ module frost_cluster_memory #(
   wire coherent_address_ok = riscv_pkg::pma_cached_ok(
       riscv_pkg::XLEN'(i_coherent_req_addr)
   ) && i_coherent_req_addr[4:0] == 0;
-  // Register ingress ownership before the shared level's same-line checks.
-  // This separates a wrapper's arbitration/address mux from the cache
-  // admission path, while permitting dequeue and replacement on one edge.
-  logic coherent_pending_q;
-  logic dma_req_write;
-  logic [riscv_pkg::PhysAddrBits-1:0] dma_req_addr;
-  logic [L1LineBytes*8-1:0] dma_req_wdata;
-  logic [L1LineBytes-1:0] dma_req_wstrb;
-  logic [LineIdBits-1:0] dma_req_id;
-  wire dma_req_valid = ENABLE_COHERENCE && !i_rst && !i_fatal_error && coherent_pending_q;
+  wire dma_req_valid = ENABLE_COHERENCE && coherent_address_ok && i_coherent_req_valid;
   assign o_coherent_req_ready = ENABLE_COHERENCE && (ENABLE_CACHED_TIER != 0) &&
-      !i_rst && !i_fatal_error && coherent_address_ok &&
-      (!coherent_pending_q || dma_req_ready);
-  always_ff @(posedge i_clk) begin
-    if (i_rst) coherent_pending_q <= 1'b0;
-    else begin
-      if (dma_req_valid && dma_req_ready) coherent_pending_q <= 1'b0;
-      if (i_coherent_req_valid && o_coherent_req_ready) begin
-        coherent_pending_q <= 1'b1;
-        dma_req_write <= i_coherent_req_write;
-        dma_req_addr <= i_coherent_req_addr;
-        dma_req_wdata <= i_coherent_req_wdata;
-        dma_req_wstrb <= i_coherent_req_wstrb;
-        dma_req_id <= i_coherent_req_id;
-      end
-    end
-  end
+      coherent_address_ok && dma_req_ready;
   assign o_coherent_resp_valid = ENABLE_COHERENCE && dma_resp_valid;
   assign o_coherent_resp_id = ENABLE_COHERENCE ? dma_resp_id : '0;
   assign o_coherent_resp_rdata = ENABLE_COHERENCE ? dma_resp_rdata : '0;
@@ -254,109 +204,158 @@ module frost_cluster_memory #(
   logic [DdrAxiIdBits-1:0] down_resp_id;
   logic [L2_LINE_BYTES*8-1:0] down_resp_rdata;
 
-  if (ENABLE_CACHED_TIER != 0) begin : gen_cached_tier
-    frost_cluster_cache #(
-        .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
-        .ENABLE_RESPONSE_ERRORS(1'b1),
-        .L1_LINE_BYTES(L1LineBytes),
-        .L2_LINE_BYTES(L2_LINE_BYTES),
-        .UP_ID_BITS(LineIdBits),
-        .L2_CACHE_BYTES(L2_CACHE_BYTES),
-        .L2_WAYS(L2_WAYS),
-        .L2_NUM_MSHR(L2_NUM_MSHR),
-        .L2_NUM_WAITERS(L2_NUM_WAITERS),
-        .L2_PREFETCH(L2_PREFETCH),
-        .L2_PREFETCH_DISTANCE(L2_PREFETCH_DISTANCE),
-        .L2_PREFETCH_INFLIGHT(L2_PREFETCH_INFLIGHT),
-        .L2_NUM_WB(L2_NUM_WB),
-        .L2_DOWN_ID_BITS(DdrAxiIdBits),
-        .SIM_FAST_MAINT(SIM_FAST_MAINT),
-        .NUM_DMA_LOCK(riscv_pkg::DmaCoherenceLocks)
-    ) cluster_cache (
-        .o_dma_resp_error(dma_resp_error),
-        .o_fatal_error(o_cache_fatal),
-        .o_fatal_addr(o_cache_fatal_addr),
-
+  if (ENABLE_CACHED_TIER != 0) begin : gen_coherent_tier
+    `FROST_COHERENCE_TYPES(riscv_pkg::PhysAddrBits)
+    coh_d_t dma_d, home_d;
+    coh_g_t grant;
+    coh_c_t dma_c, home_c;
+    coh_u_t release_message;
+    logic dma_d_valid, dma_d_ready, home_d_valid, home_d_ready;
+    logic g_valid, g_ready, dma_g_ready, dma_c_valid, dma_c_ready;
+    logic home_c_valid, home_c_ready, u_valid, u_ready, dma_u_ready;
+    if (ENABLE_COHERENCE) begin : gen_dma_ingress
+      // Eight credits: the DMA bridge has eight read and eight write line IDs.
+      coherence_dma_ingress #(
+          .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
+          .SLOTS(8)
+      ) ingress (
+          .i_clk(i_clk),
+          .i_rst(i_rst),
+          .i_fatal_stop(i_fatal_error),
+          .i_req_valid(dma_req_valid),
+          .o_req_ready(dma_req_ready),
+          .i_req_write(i_coherent_req_write),
+          .i_req_addr(i_coherent_req_addr),
+          .i_req_data(i_coherent_req_wdata),
+          .i_req_mask(i_coherent_req_wstrb),
+          .i_req_id(i_coherent_req_id),
+          .o_resp_valid(dma_resp_valid),
+          .o_resp_id(dma_resp_id),
+          .o_resp_data(dma_resp_rdata),
+          .o_resp_error(dma_resp_error),
+          .o_d_valid(dma_d_valid),
+          .i_d_ready(dma_d_ready),
+          .o_d(dma_d),
+          .i_g_valid(g_valid && grant.q.src == 2),
+          .o_g_ready(dma_g_ready),
+          .i_g(grant),
+          .o_c_valid(dma_c_valid),
+          .i_c_ready(dma_c_ready),
+          .o_c(dma_c),
+          .i_u_valid(u_valid && release_message.q.src == 2),
+          .o_u_ready(dma_u_ready),
+          .i_u(release_message)
+      );
+    end else begin : gen_no_dma_ingress
+      assign dma_req_ready = 1'b0;
+      assign dma_resp_valid = 1'b0;
+      assign dma_resp_id = '0;
+      assign dma_resp_rdata = '0;
+      assign dma_resp_error = 1'b0;
+      assign dma_d_valid = 1'b0;
+      assign dma_d = '0;
+      assign dma_g_ready = 1'b0;
+      assign dma_c_valid = 1'b0;
+      assign dma_c = '0;
+      assign dma_u_ready = 1'b0;
+    end
+    coherence_d_arbiter #(
+        .WIDTH((riscv_pkg::PhysAddrBits + 312)),
+        .PORTS(2)
+    ) demands (
         .i_clk(i_clk),
         .i_rst(i_rst),
-        .i_l1d_down_req_valid(i_l1d_down_req_valid),
-        .o_l1d_down_req_ready(o_l1d_down_req_ready),
-        .i_l1d_down_req_write(i_l1d_down_req_write),
-        .i_l1d_down_req_maintenance(i_l1d_down_req_maintenance),
-        .i_l1d_down_req_addr(i_l1d_down_req_addr),
-        .i_l1d_down_req_wdata(i_l1d_down_req_wdata),
-        .i_l1d_down_req_wstrb(i_l1d_down_req_wstrb),
-        .i_l1d_down_req_id(i_l1d_down_req_id),
-        .o_l1d_down_resp_valid(o_l1d_down_resp_valid),
-        .o_l1d_down_resp_id(o_l1d_down_resp_id),
-        .o_l1d_down_resp_rdata(o_l1d_down_resp_rdata),
-        .o_l1d_down_resp_error(o_l1d_down_resp_error),
-        .i_l1i_down_req_valid(i_l1i_down_req_valid),
-        .o_l1i_down_req_ready(o_l1i_down_req_ready),
-        .i_l1i_down_req_write(i_l1i_down_req_write),
-        .i_l1i_down_req_addr(i_l1i_down_req_addr),
-        .i_l1i_down_req_wdata(i_l1i_down_req_wdata),
-        .i_l1i_down_req_wstrb(i_l1i_down_req_wstrb),
-        .i_l1i_down_req_id(i_l1i_down_req_id),
-        .o_l1i_down_resp_valid(o_l1i_down_resp_valid),
-        .o_l1i_down_resp_id(o_l1i_down_resp_id),
-        .o_l1i_down_resp_rdata(o_l1i_down_resp_rdata),
-        .o_l1i_down_resp_error(o_l1i_down_resp_error),
-        .i_walk_down_req_valid(i_walk_down_req_valid),
-        .o_walk_down_req_ready(o_walk_down_req_ready),
-        .i_walk_down_req_addr(i_walk_down_req_addr),
-        .i_walk_down_req_id(i_walk_down_req_id),
-        .o_walk_down_resp_valid(o_walk_down_resp_valid),
-        .o_walk_down_resp_id(o_walk_down_resp_id),
-        .o_walk_down_resp_rdata(o_walk_down_resp_rdata),
-        .o_walk_down_resp_error(o_walk_down_resp_error),
-        // DMA port: the NIC and the DMA test engine through the ingress
-        // register above. The coherence handshake runs to the hart's
-        // lq_coherence_port, and the probes to its L1D.
-        .i_dma_req_valid(dma_req_valid),
-        .o_dma_req_ready(dma_req_ready),
-        .i_dma_req_write(dma_req_write),
-        .i_dma_req_addr(dma_req_addr),
-        .i_dma_req_wdata(dma_req_wdata),
-        .i_dma_req_wstrb(dma_req_wstrb),
-        .i_dma_req_id(dma_req_id),
-        .o_dma_resp_valid(dma_resp_valid),
-        .o_dma_resp_id(dma_resp_id),
-        .o_dma_resp_rdata(dma_resp_rdata),
-        .o_coh_admit_valid(o_coh_admit_valid),
-        .o_coh_admit_slot(o_coh_admit_slot),
-        .o_coh_admit_addr(o_coh_admit_addr),
-        .i_coh_admit_ready(i_coh_admit_ready),
-        .o_coh_inval_valid(o_coh_inval_valid),
-        .o_coh_inval_slot(o_coh_inval_slot),
-        .i_coh_inval_done(i_coh_inval_done),
-        .o_coh_release_valid(o_coh_release_valid),
-        .o_coh_release_slot(o_coh_release_slot),
-        .o_dma_probe_req_valid(o_dma_probe_req_valid),
-        .i_dma_probe_req_ready(i_dma_probe_req_ready),
-        .o_dma_probe_req_addr(o_dma_probe_req_addr),
-        .o_dma_probe_req_inval(o_dma_probe_req_inval),
-        .o_dma_probe_req_id(o_dma_probe_req_id),
-        .i_dma_probe_ack_valid(i_dma_probe_ack_valid),
-        .i_dma_probe_ack_id(i_dma_probe_ack_id),
-        .o_dma_probe_release_valid(o_dma_probe_release_valid),
-        .o_dma_probe_release_id(o_dma_probe_release_id),
-        .o_l2_perf_events(o_l2_perf_events),
-        .o_l2_write_perf_events(o_l2_write_perf_events),
-        .o_down_req_valid(down_req_valid),
-        .i_down_req_ready(down_req_ready),
-        .o_down_req_write(down_req_write),
-        .o_down_req_addr(down_req_addr),
-        .o_down_req_wdata(down_req_wdata),
-        .o_down_req_wstrb(down_req_wstrb),
-        .o_down_req_id(down_req_id),
-        .i_down_resp_valid(down_resp_valid),
-        .i_down_resp_id(down_resp_id),
-        .i_down_resp_rdata(down_resp_rdata),
-        .i_down_resp_error(down_resp_error)
+        .i_valid({dma_d_valid, i_coherent_d_valid}),
+        .o_ready({dma_d_ready, o_coherent_d_ready}),
+        .i_payload({dma_d, i_coherent_d}),
+        .o_valid(home_d_valid),
+        .o_offer(),
+        .o_selected(),
+        .i_ready(home_d_ready),
+        .o_payload(home_d)
     );
-
-
+    assign o_coherent_g_valid = g_valid && grant.q.src == 0;
+    assign o_coherent_g = grant;
+    assign g_ready = grant.q.src == 2 ? dma_g_ready : i_coherent_g_ready;
+    assign o_coherent_u_valid = u_valid && release_message.q.src == 0;
+    assign o_coherent_u = release_message;
+    assign u_ready = release_message.q.src == 2 ? dma_u_ready : i_coherent_u_ready;
+    // Both C sources hold their offers until acceptance.
+    coherence_d_arbiter #(
+        .WIDTH(riscv_pkg::PhysAddrBits + 18),
+        .PORTS(2),
+        .HOLD_VALID(1)
+    ) completions (
+        .i_clk,
+        .i_rst,
+        .i_valid({dma_c_valid, i_coherent_c_valid}),
+        .o_ready({dma_c_ready, o_coherent_c_ready}),
+        .i_payload({dma_c, i_coherent_c}),
+        .o_valid(home_c_valid),
+        .o_offer(),
+        .o_selected(),
+        .i_ready(home_c_ready),
+        .o_payload(home_c)
+    );
+`ifndef SYNTHESIS
+    logic [1:0] c_stalled_q;
+    always_ff @(posedge i_clk) begin
+      c_stalled_q <= i_rst ? 2'b00 :
+          {dma_c_valid, i_coherent_c_valid} & ~{dma_c_ready, o_coherent_c_ready};
+      if (sim_reset_seen_q && !i_rst)
+        assert ((c_stalled_q & ~{dma_c_valid, i_coherent_c_valid}) == 0);
+    end
+`endif
+    coherence_home #(
+        .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
+        .LINE_BYTES(L2_LINE_BYTES),
+        .CACHE_BYTES(L2_CACHE_BYTES),
+        .WAYS(L2_WAYS),
+        .NUM_WB(L2_NUM_WB)
+    ) home (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_fatal_stop(i_fatal_error),
+        .i_d_valid(home_d_valid),
+        .o_d_ready(home_d_ready),
+        .i_d(home_d),
+        .o_p_valid(o_coherent_p_valid),
+        .i_p_ready(i_coherent_p_ready),
+        .o_p(o_coherent_p),
+        .i_r_valid(i_coherent_r_valid),
+        .o_r_ready(o_coherent_r_ready),
+        .i_r(i_coherent_r),
+        .i_w_valid(i_coherent_w_valid),
+        .o_w_ready(o_coherent_w_ready),
+        .i_w(i_coherent_w),
+        .o_wa_valid(o_coherent_wa_valid),
+        .i_wa_ready(i_coherent_wa_ready),
+        .o_wa(o_coherent_wa),
+        .o_g_valid(g_valid),
+        .i_g_ready(g_ready),
+        .o_g(grant),
+        .i_c_valid(home_c_valid),
+        .o_c_ready(home_c_ready),
+        .i_c(home_c),
+        .o_u_valid(u_valid),
+        .i_u_ready(u_ready),
+        .o_u(release_message),
+        .o_mem_req_valid(down_req_valid),
+        .i_mem_req_ready(down_req_ready),
+        .o_mem_req_write(down_req_write),
+        .o_mem_req_addr(down_req_addr),
+        .o_mem_req_data(down_req_wdata),
+        .o_mem_req_mask(down_req_wstrb),
+        .o_mem_req_id(down_req_id),
+        .i_mem_resp_valid(down_resp_valid),
+        .i_mem_resp_id(down_resp_id),
+        .i_mem_resp_data(down_resp_rdata),
+        .i_mem_resp_error(down_resp_error),
+        .o_perf_events(o_l2_perf_events),
+        .o_write_perf_events(o_l2_write_perf_events),
+        .o_fatal(o_cache_fatal),
+        .o_fatal_addr(o_cache_fatal_addr)
+    );
   end else begin : gen_no_cached_tier
     assign o_cache_fatal = 1'b0;
     assign o_cache_fatal_addr = '0;
@@ -367,40 +366,27 @@ module frost_cluster_memory #(
     assign dma_resp_id = '0;
     assign dma_resp_rdata = '0;
     assign dma_resp_error = 1'b0;
-    assign o_coh_admit_valid = 1'b0;
-    assign o_coh_admit_slot = '0;
-    assign o_coh_admit_addr = '0;
-    assign o_coh_inval_valid = 1'b0;
-    assign o_coh_inval_slot = '0;
-    assign o_coh_release_valid = 1'b0;
-    assign o_coh_release_slot = '0;
-    assign o_dma_probe_req_valid = 1'b0;
-    assign o_dma_probe_req_addr = '0;
-    assign o_dma_probe_req_inval = 1'b0;
-    assign o_dma_probe_req_id = '0;
-    assign o_dma_probe_release_valid = 1'b0;
-    assign o_dma_probe_release_id = '0;
-    assign o_l1d_down_req_ready = 1'b0;
-    assign o_l1d_down_resp_valid = 1'b0;
-    assign o_l1d_down_resp_id = '0;
-    assign o_l1d_down_resp_rdata = '0;
-    assign o_l1d_down_resp_error = 1'b0;
-    assign o_l1i_down_req_ready = 1'b0;
-    assign o_l1i_down_resp_valid = 1'b0;
-    assign o_l1i_down_resp_id = '0;
-    assign o_l1i_down_resp_rdata = '0;
-    assign o_l1i_down_resp_error = 1'b0;
-    assign o_walk_down_req_ready = 1'b0;
-    assign o_walk_down_resp_valid = 1'b0;
-    assign o_walk_down_resp_id = '0;
-    assign o_walk_down_resp_rdata = '0;
-    assign o_walk_down_resp_error = 1'b0;
     assign down_req_valid = 1'b0;
     assign down_req_write = 1'b0;
     assign down_req_addr = '0;
     assign down_req_wdata = '0;
     assign down_req_wstrb = '0;
     assign down_req_id = '0;
+  end
+
+  if (ENABLE_CACHED_TIER == 0) begin : gen_no_coherent_channels
+    assign o_coherent_d_ready = '0;
+    assign o_coherent_p_valid = '0;
+    assign o_coherent_p = '0;
+    assign o_coherent_r_ready = '0;
+    assign o_coherent_w_ready = '0;
+    assign o_coherent_wa_valid = '0;
+    assign o_coherent_wa = '0;
+    assign o_coherent_g_valid = '0;
+    assign o_coherent_g = '0;
+    assign o_coherent_c_ready = '0;
+    assign o_coherent_u_valid = '0;
+    assign o_coherent_u = '0;
   end
 
   cpu_memory_fabric #(

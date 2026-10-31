@@ -1,0 +1,72 @@
+[tasks]
+coh_home_control_prove control
+coh_home_control64_prove control wide
+coh_home_wb_prove wb unit
+coh_home_victim_cover covers
+coh_home_error_cover covers error
+
+[options]
+control: mode prove
+control: depth 2
+wb: mode prove
+wb: depth 4
+covers: mode cover
+covers: depth 180
+timeout 180
+control: timeout 600
+
+[engines]
+control: smtbmc boolector
+wb: smtbmc boolector
+covers: smtbmc boolector
+
+[script]
+read -formal -sv coherence_seat_select.sv coherence_work_select.sv
+read -sv cache_perf_pkg.sv
+error: verilog_defines -D COHERENCE_HOME_COVER_ERROR
+read -sv coherence_pkg.sv
+control: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_endpoint.sv
+wb: read -sv coherence_home_endpoint.sv
+covers: read -sv coherence_home_endpoint.sv
+control: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_d_arbiter.sv
+wb: read -sv coherence_d_arbiter.sv
+covers: read -sv coherence_d_arbiter.sv
+control: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_completions.sv
+wb: read -sv coherence_home_completions.sv
+covers: read -sv coherence_home_completions.sv
+control: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home.sv coherence_home_control_harness.sv
+wb: read -formal -sv -D SYNTHESIS -D COHERENCE_HOME_WB_PROOF coherence_home.sv
+covers: read -formal -sv -D COHERENCE_HOME_WB_PROOF -D COHERENCE_HOME_COVER coherence_home.sv coherence_home_harness.sv
+read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
+control: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_array.sv
+wb: read -sv coherence_home_array.sv
+covers: read -sv coherence_home_array.sv
+control: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_engine.sv
+wb: read -sv coherence_home_engine.sv
+covers: read -sv coherence_home_engine.sv
+unit: chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 -set RESULTS 2 -set FILLS 2 coherence_home
+wide: chparam -set LINE_BYTES 64 -set WAYS 1 coherence_home_control_harness
+control: prep -flatten -top coherence_home_control_harness
+unit: prep -flatten -top coherence_home
+error: chparam -set FAIL_B 1 coherence_home_harness
+covers: prep -flatten -top coherence_home_harness
+memory_map
+opt
+
+[files]
+../hw/rtl/lib/cache/coherence_seat_select.sv
+../hw/rtl/lib/cache/coherence_work_select.sv
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_home_array.sv
+../hw/rtl/lib/cache/coherence_home_engine.sv
+../hw/rtl/lib/cache/coherence_home_endpoint.sv
+../hw/rtl/lib/cache/coherence_home.sv
+../hw/rtl/lib/cache/coherence_home_completions.sv
+../hw/rtl/lib/cache/coherence_d_arbiter.sv
+coherence_home_harness.sv
+coherence_home_control_harness.sv
+../hw/rtl/lib/cache/cache_perf_pkg.sv

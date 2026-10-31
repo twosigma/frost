@@ -22,10 +22,14 @@ mixes LR, SC, and AMOs with loads, stores, integer operations, jumps,
 branches, fences, environment calls, and faulting accesses, and nothing that
 can trap or flush falls between an LR and the SC that closes it. Inside those
 windows go operations that cannot fault: loads, stores, and AMOs to valid,
-aligned addresses (one to the reserved doubleword cancels the reservation in
+aligned addresses (one to the reserved 32-byte line cancels the reservation in
 both), another LR, branches, jumps, and FENCE. Every window ends with an SC,
 which cancels the reservation in both whether it succeeds or not, so none is
 open outside a window.
+
+An SC uses the last LR's address and width, or an address outside its
+32-byte reservation set. The model matches SC addresses by reservation set;
+the cached CPU interface requires an exact address and width match.
 
 Each window, and each setup of a base register, is a `.noshrink` strand,
 which QuickCheckVEngine's shrinking neither removes nor rewrites, so a shrunk
@@ -500,13 +504,22 @@ class Generator:
         lr_base = self._pick_base(width, "lr", True)
         window = [lr(self._rd(), lr_base, width, *self._aqrl())]
         window += [self._window_op() for _ in range(rng.randrange(0, 9))]
+        for instruction in window:
+            word = instruction.word
+            if word & 0x7F == 0x2F and word >> 27 == LR:
+                lr_base = (word >> 15) & 31
+                width = 1 << ((word >> 12) & 7)
         sc_width = width if rng.random() < 0.8 else self._width()
-        candidates = self._base_choices(sc_width, "sc", True)
-        sc_base = (
-            lr_base
-            if lr_base in candidates and rng.random() < 0.7
-            else rng.choice(candidates)
-        )
+        reserved_line = self.bases.get(lr_base, 0) >> 5
+        candidates = [
+            base
+            for base in self._base_choices(sc_width, "sc", True)
+            if self.bases.get(base, 0) >> 5 != reserved_line
+        ]
+        if candidates and rng.random() < 0.3:
+            sc_base = rng.choice(candidates)
+        else:
+            sc_base, sc_width = lr_base, width
         window.append(sc(self._rd(), self._data(), sc_base, sc_width, *self._aqrl()))
         return window
 

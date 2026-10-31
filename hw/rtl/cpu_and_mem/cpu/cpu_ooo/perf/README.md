@@ -342,13 +342,13 @@ and done, and they partition the hazard-blocked gap:
 | 104 | 62 | (reserved) | n/a | Reads 0 |
 | 105 | 63 | `HEAD_LOAD_BBS_CAPTURE_GAP` | cycle | `HEAD_LOAD_BB_STAGING`, and staging is free: the head load has not been captured yet (a selector or capture-recycle bubble) |
 
-### Cache hierarchy 106–133: cache traffic, fetch stalls, miss latency, concurrency, L2 write costs
+### Cache hierarchy 106–133: cache traffic, fetch stalls, miss occupancy, concurrency, L2 write costs
 
-Sources: the registered event bundle from each `frost_cache` instance (L1I,
-L1D, and L2), the L2's write-cost bundle, and the fetch-miss stall from
-`fetch_provider.sv`. Each is registered at its source, so it lags the cache
-or fetch state it observes by a cycle, on top of the counter's own increment
-register. Totals and snapshot deltas are unaffected.
+L1I events come from `frost_cache`, L1D events from `coherence_l1d`, and L2
+events and write costs from `coherence_home`. The fetch-miss stall comes from
+`fetch_provider.sv`. Each bundle is registered at its source, so it lags the
+cache or fetch state it observes by a cycle, on top of the counter's own
+increment register. Totals and snapshot deltas are unaffected.
 
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
@@ -356,30 +356,30 @@ register. Totals and snapshot deltas are unaffected.
 | 107 | 1 | `L1I_HIT` | event | An L1I access hits at the tag stage |
 | 108 | 2 | `L1I_MISS` | event | An L1I access misses at the tag stage |
 | 109 | 3 | `L1I_WRITEBACK` | event | A counted miss evicts a dirty L1I victim (counted with the miss, not when the writeback leaves). The L1I is read-only, so this is normally 0 |
-| 110 | 4 | `L1D_ACCESS` | event | A demand request fires at the L1D upstream port |
-| 111 | 5 | `L1D_HIT` | event | An L1D access hits at the tag stage |
-| 112 | 6 | `L1D_MISS` | event | An L1D access misses at the tag stage |
-| 113 | 7 | `L1D_WRITEBACK` | event | A counted miss evicts a dirty L1D victim (counted with the miss, not when the writeback leaves) |
-| 114 | 8 | `L2_ACCESS` | event | A request fires at the L2 upstream port from the L1s, the page-table walker, the DMA sequencer, or the stream prefetcher: L1I fills and prefetches, L1D fills, walker reads, DMA traffic, dirty-victim writebacks, and the stream prefetcher's reads |
+| 110 | 4 | `L1D_ACCESS` | event | The L1D's first permission lookup for a CPU read or store, or its acceptance of a selected SC. Retries, probes and maintenance do not count |
+| 111 | 5 | `L1D_HIT` | event | An L1D access finds its sector with enough permission: S or M for a read, M for a store. AMOs and selected SCs count as misses |
+| 112 | 6 | `L1D_MISS` | event | An L1D access without enough permission. AMOs and selected SCs always count as misses |
+| 113 | 7 | `L1D_WRITEBACK` | event | A dirty L1D victim is frozen for its PutM, the L1D's dirty-sector writeback message, counted when the writeback starts rather than with the miss. Maintenance writebacks do not count |
+| 114 | 8 | `L2_ACCESS` | event | The L2 home's first lookup for a demand request from the L1D, the L1I, the page-table walker or DMA, or a lookup for a PutM other than maintenance |
 | 115 | 9 | `L2_HIT` | event | An L2 access hits at the tag stage |
 | 116 | 10 | `L2_MISS` | event | An L2 access misses at the tag stage |
-| 117 | 11 | `L2_WRITEBACK` | event | A counted miss evicts a dirty L2 victim (counted with the miss, not when the writeback leaves) |
+| 117 | 11 | `L2_WRITEBACK` | event | Memory accepts an L2 victim write, counted when the writeback leaves |
 | 118 | 12 | `L1I_FETCH_MISS_STALL` | cycle | Fetch is in the cached tier, its window is not ready, and an L1I miss is outstanding (any miss, including a next-line prefetch). Pipeline stalls, low-BRAM fetch, fills discarded by `fence.i`, and prefetch misses behind a ready window do not count |
-| 119 | 13 | `L1D_MISS_CYCLES_SUM` | sum | The number of L1D miss-status slots in use this cycle (`miss_outstanding`, `cache_perf_pkg::MissOutstandingBits` wide, at most `NUM_MSHR`) |
-| 120 | 14 | `L2_MISS_CYCLES_SUM` | sum | The number of L2 miss-status slots in use this cycle |
+| 119 | 13 | `L1D_MISS_CYCLES_SUM` | sum | The number of L1D misses outstanding this cycle: read slots waiting on a miss, the pending store's miss, and an SC waiting for its grant or result (`miss_outstanding`, `cache_perf_pkg::MissOutstandingBits` wide, at most 10) |
+| 120 | 14 | `L2_MISS_CYCLES_SUM` | sum | The number of occupied L2 home fills this cycle, at most four |
 | 121 | 15 | `L1I_HIT_UNDER_MISS` | event | An L1I hit resolved while at least one L1I miss was outstanding |
 | 122 | 16 | `L1D_HIT_UNDER_MISS` | event | Same, L1D |
-| 123 | 17 | `L2_HIT_UNDER_MISS` | event | Same, L2 |
-| 124 | 18 | `L1D_SLOT_FULL_STALL` | cycle | An L1D tag-stage decision held a miss because every miss-status slot or every writeback slot was busy (an L1D miss needs a free writeback slot whatever its victim). A held request rereads its tags before deciding again, so this counts decisions, not every cycle of the wait |
-| 125 | 19 | `L2_SLOT_FULL_STALL` | cycle | Same, L2, where only a miss with a dirty victim needs a writeback slot |
-| 126 | 20 | `L1D_CONFLICT_STALL` | cycle | An L1D tag-stage decision held a request because of a line in transition or a full set: a pending miss of its line that it could neither merge into nor wait on, a miss whose set has every way owned by pending misses, or, for a store hit, a copy of its line still in a writeback slot. Counted like `L1D_SLOT_FULL_STALL` |
-| 127 | 21 | `L2_CONFLICT_STALL` | cycle | Same, L2 |
-| 128 | 22 | `L1D_MISS_OVERLAP_CYCLES` | cycle | Two or more L1D miss-status slots were in use |
-| 129 | 23 | `L2_MISS_OVERLAP_CYCLES` | cycle | Two or more L2 miss-status slots were in use |
-| 130 | 24 | `L2_WRITE_FILL` | event | An L2 write miss took a miss-status slot that fetches its line from DDR to merge into: a 32-byte write covers half of a 64-byte L2 line. A write that merges into a pending write miss of its line does not count |
-| 131 | 25 | `L2_WRITE_FILL_CYCLES_SUM` | sum | The number of L2 miss-status slots held by those write misses this cycle, from their allocation until they free (a subset of 120) |
-| 132 | 26 | `L2_WRITE_READ_WAIT` | event | An L2 write waited in the tag stage for a read of its line: the line's miss-status slot was fetching for a read, or held a read waiting on it, so the write could neither merge nor proceed. Counted once per waiting write |
-| 133 | 27 | `L2_WRITE_READ_WAIT_CYCLES` | cycle | The tag stage held such a write: from the decision that found the read until the write's next decision, so each wait adds the cycles from its first decision to the one that completes it |
+| 123 | 17 | `L2_HIT_UNDER_MISS` | event | Always 0: the L2 coherence home does not report hits under a miss |
+| 124 | 18 | `L1D_SLOT_FULL_STALL` | cycle | An L1D read or store tag miss cannot acquire its required endpoint or writeback capacity, waits for an acquisition of the same line, or is blocked by atomic or drain work. With multiple endpoints, ordinary loads count when endpoints 1 through `MISSES-1` are full, even if endpoint 0 and both writeback slots are free. Counted per lookup, not per cycle of the wait |
+| 125 | 19 | `L2_SLOT_FULL_STALL` | cycle | A demand lookup cannot proceed and neither allocates nor joins a fill. Blocked tag hits count, and this can overlap `L2_CONFLICT_STALL` |
+| 126 | 20 | `L1D_CONFLICT_STALL` | cycle | The L1D is idle with no probe, grant or atomic write to serve, and its pending store waits because the store's sector is still in a writeback slot |
+| 127 | 21 | `L2_CONFLICT_STALL` | cycle | An L2 home lookup is blocked by work already in progress |
+| 128 | 22 | `L1D_MISS_OVERLAP_CYCLES` | cycle | Two or more L1D misses were outstanding |
+| 129 | 23 | `L2_MISS_OVERLAP_CYCLES` | cycle | Two or more L2 fills were in progress |
+| 130 | 24 | `L2_WRITE_FILL` | event | A DMA write missed in the L2 and took a fill that fetches its line from DDR to merge into |
+| 131 | 25 | `L2_WRITE_FILL_CYCLES_SUM` | sum | The number of L2 fills held by those DMA write misses this cycle (a subset of 120) |
+| 132 | 26 | `L2_WRITE_READ_WAIT` | event | Not implemented by the L2 coherence home; reads 0 |
+| 133 | 27 | `L2_WRITE_READ_WAIT_CYCLES` | cycle | Not implemented by the L2 coherence home; reads 0 |
 
 Access accounting is an exact partition:
 
@@ -387,54 +387,54 @@ Access accounting is an exact partition:
 HIT + MISS = ACCESS
 ```
 
-`ACCESS` counts the request at the upstream port, and `HIT` or `MISS` counts
-its tag decision later, so their pulses need not line up in a given cycle.
-Once every accepted request has resolved, the totals satisfy the identity
-exactly. The hit rate is `HIT / ACCESS`.
+For the L1I, `ACCESS` counts the request at the upstream port, and `HIT` or
+`MISS` counts its tag decision later, so their pulses need not line up in a
+given cycle. Once every accepted request has resolved, the totals satisfy
+the identity exactly. The L1D and L2 emit `ACCESS` with `HIT` or `MISS` in
+the same cycle. The hit rate is `HIT / ACCESS`.
 
 Maintenance traffic and coherence probes are not accesses: the reset tag
 sweep, the L1D `fence.i` writeback-all walk, the L1I invalidate-all walk, and
-probes add nothing to `ACCESS`, `HIT`, or `MISS`. `WRITEBACK` counts only
-dirty victims evicted by counted misses. L1I accesses, hits, and misses, and
-the L2 traffic they cause, include next-line prefetches;
-`L1I_FETCH_MISS_STALL` counts only cycles in which the fetch window is also
-not ready. The maintenance marking crosses the L1 arbiter, so L1D walk traffic
-and the victim writebacks it causes are excluded from the L2 counts as well.
+probes add nothing to `ACCESS`, `HIT`, or `MISS`, and `WRITEBACK` excludes
+maintenance writebacks. L1I accesses, hits, and misses, and the L2 traffic
+they cause, include next-line prefetches; `L1I_FETCH_MISS_STALL` counts only
+cycles in which the fetch window is also not ready. The L1D's maintenance
+PutMs are excluded from the L2 access, hit and miss counts as well.
 
-`miss_outstanding` is the number of the cache's miss-status slots in use,
-not counting maintenance. A miss that allocates takes a slot when its
-allocation lands and releases it once its fill has been written and answered.
-A request that merges into or waits on an in-flight miss to the same line
-counts in `MISS` but takes no slot. The miss sums integrate the slot count over
-time, so dividing by the miss count gives slot-cycles per miss:
+L1D `miss_outstanding` counts unresolved logical misses: read slots whose
+first lookup missed and whose result is not ready, a pending store that
+missed, and a selected SC still waiting for its grant or result. Read misses
+count even while waiting for an L1D request endpoint. Counter
+119 sums this count; 128 counts cycles with at least two such misses.
 
-```text
-L1D_MISS_CYCLES_SUM / L1D_MISS
-L2_MISS_CYCLES_SUM  / L2_MISS
-```
+L2 `miss_outstanding` counts occupied home fill controls, from allocation
+until release. It includes installed fills waiting for their waiter seats
+to clear. Multiple requests can share one fill. Counter 120 sums this
+occupancy; 129 counts cycles with at least two occupied fills.
 
-When every miss allocates its own slot, this is the average miss latency in
-cycles. Merged and waiting requests pull the quotient below the latency of the
-misses that allocate.
-
-Counters 130–133 measure the two costs of the L2's 64-byte lines under the
-32-byte writes of the L1D and the DMA port (see
-[The L2 line size](../../../../lib/cache/README.md#the-l2-line-size)). A
-write that misses reads its line from DDR before merging, and a write to a
-line with a read in flight waits for that read in the tag stage, which takes
-one request at a time, so every L2 request behind it waits too:
+Dividing each sum by its miss count gives different measures:
 
 ```text
-L2_WRITE_FILL / L2_MISS                         share of L2 misses that are write fills
-L2_WRITE_FILL_CYCLES_SUM / L2_WRITE_FILL        slot-cycles per write fill
-L2_WRITE_FILL_CYCLES_SUM / L2_MISS_CYCLES_SUM   share of L2 slot occupancy
-L2_WRITE_READ_WAIT_CYCLES / L2_WRITE_READ_WAIT  cycles each waiting write held the L2
+L1D_MISS_CYCLES_SUM / L1D_MISS   outstanding logical-miss cycles per L1D miss
+L2_MISS_CYCLES_SUM  / L2_MISS    home fill-slot cycles per L2 tag miss
 ```
 
-Each write fill is also a miss, and each waiting write's decisions are among
-the conflict stalls, so 130 ≤ 116 and 132 ≤ 127. Like every cache counter,
-these leave out `fence.i` writeback traffic, including the L1D writeback-all
-that `sfence.vma` runs.
+Counters 130–131 measure fills allocated by DMA writes. A DMA write that
+misses reads its L2 line from DDR before merging the written bytes (see
+[The L2 line size](../../../../lib/cache/README.md#the-l2-line-size)). Counter
+130 counts allocations; 131 counts their fill occupancy, including installed
+fills waiting for their waiter seats to clear:
+
+```text
+L2_WRITE_FILL / L2_MISS                       DMA-write fills per L2 tag miss
+L2_WRITE_FILL_CYCLES_SUM / L2_WRITE_FILL       fill-slot cycles per DMA-write fill
+L2_WRITE_FILL_CYCLES_SUM / L2_MISS_CYCLES_SUM  DMA-write share of home fill occupancy
+```
+
+Counters 132–133 are not implemented by the coherence home and read 0.
+L1D PutMs update resident L2 lines and do not allocate fills. Maintenance
+PutMs, including the L1D writeback-all that `sfence.vma` runs, are excluded
+from the access counts as well.
 
 With `ENABLE_CACHED_TIER=0`, all cache counters read 0.
 

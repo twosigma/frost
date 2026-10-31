@@ -1589,7 +1589,7 @@ def is_reference_x3_netlist(main_work: Path) -> bool:
         return False
     return (
         isinstance(config, dict)
-        and config.get("schema") == "x3_netlist_config_v4"
+        and config.get("schema") == "x3_netlist_config_v5"
         and config.get("cpu_base_clock_hz") == BOARD_CONFIG["x3"]["clock_freq"]
         and config.get("cpu_clock_div") == 1
         and config.get("ddr_capacity_log2_bytes") == 30
@@ -1597,24 +1597,24 @@ def is_reference_x3_netlist(main_work: Path) -> bool:
 
 
 def require_x3_netlist_configuration(
-    main_work: Path, cpu_clock_div: int, ddr_capacity_log2_bytes: int
+    main_work: Path,
+    cpu_clock_div: int,
+    ddr_capacity_log2_bytes: int,
 ) -> bool:
     """Resume only a checkpoint built for the requested clock and DDR map."""
     try:
         config = json.loads((main_work / X3_NETLIST_CONFIG_NAME).read_text())
         if not isinstance(config, dict) or (
-            config.get("schema") != "x3_netlist_config_v4"
+            config.get("schema") != "x3_netlist_config_v5"
             or config.get("cpu_base_clock_hz") != BOARD_CONFIG["x3"]["clock_freq"]
             or config.get("cpu_clock_div") != cpu_clock_div
             or config.get("ddr_capacity_log2_bytes") != ddr_capacity_log2_bytes
         ):
-            raise ValueError(
-                "checkpoint clock or DDR capacity differs from the X3 build"
-            )
+            raise ValueError("checkpoint configuration differs from the X3 build")
     except (OSError, ValueError) as error:
         print(
             f"Error: cannot resume X3 netlist configuration: {error}. "
-            "Use the checkpoint's clock and DDR capacity or restart synthesis."
+            "Use the checkpoint's configuration or restart synthesis."
         )
         return False
     return True
@@ -1664,7 +1664,7 @@ def copy_results_to_main_work(
         (main_work / X3_NETLIST_CONFIG_NAME).write_text(
             json.dumps(
                 {
-                    "schema": "x3_netlist_config_v4",
+                    "schema": "x3_netlist_config_v5",
                     "perf_counters": perf_counters,
                     "cpu_base_clock_hz": BOARD_CONFIG["x3"]["clock_freq"],
                     "cpu_clock_div": int(os.environ.get("FROST_CPU_CLK_DIV", "1")),
@@ -3447,15 +3447,31 @@ Examples:
         args.build_dir = args.build_dir.resolve()
 
     board_name = args.board_name
-
     if args.start_at == "bitstream":
         if args.stop_after is not None:
             parser.error("--start-at bitstream cannot be combined with --stop-after")
         build_options = (
             {"build_dir": args.build_dir} if args.build_dir is not None else {}
         )
+        script_dir = Path(__file__).parent.resolve()
+        if board_name == "x3":
+            board_build = (
+                args.build_dir if args.build_dir is not None else script_dir / "x3"
+            )
+            try:
+                capacity = board_ddr_capacity_log2_bytes(
+                    BOARD_DESIGN_DIR / "x3_ddr_bd.tcl"
+                )
+            except (OSError, ValueError) as error:
+                parser.error(str(error))
+            if not require_x3_netlist_configuration(
+                board_build / "work",
+                args.cpu_clock_div,
+                capacity,
+            ):
+                sys.exit(1)
         if not generate_bitstream(
-            Path(__file__).parent.resolve(),
+            script_dir,
             board_name,
             args.vivado_path,
             **build_options,
@@ -3716,7 +3732,9 @@ Examples:
             sys.exit(1)
         print(f"Starting from checkpoint: {checkpoint_path}")
         if board_name == "x3" and not require_x3_netlist_configuration(
-            main_work, functional_policy.cpu_clock_div, board_ddr_log2
+            main_work,
+            functional_policy.cpu_clock_div,
+            board_ddr_log2,
         ):
             sys.exit(1)
 

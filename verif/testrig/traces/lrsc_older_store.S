@@ -1,9 +1,6 @@
-# A store older than an LR, to the other word of the reserved doubleword,
-# keeps the reservation when it writes after the LR reads, so each SC
-# succeeds (x6 and x9 read 0). Six stores to the device quadrant ahead of it
-# hold it in the store queue while the LR reads (four are enough). Its write
-# cancelled FROST's reservation until an LR waited for committed stores to
-# drain.
+# Six Device stores precede a store to the other word of the LR's doubleword.
+# LR waits for every older committed store to drain before it reads.
+# Both SCs succeed, so x6 and x9 read zero.
 .4byte 0x00030cb7 # lui x25, 0x30
 .4byte 0x40100e37 # lui x28, 0x40100
 .4byte 0x008c8d13 # addi x26, x25, 8

@@ -81,6 +81,11 @@ module lq_l0_cache #(
     input logic            i_invalidate_line_valid,
     input logic [XLEN-1:0] i_invalidate_line_addr,
 
+    // Coherence query: whether any entry at the four dword indices of a
+    // 32-byte line is valid, whatever its tag.
+    input  logic [XLEN-1:0] i_query_line_addr = '0,
+    output logic            o_query_line_valid,
+
     // Clear all valid bits.
     input logic i_flush_all
 );
@@ -122,6 +127,7 @@ module lq_l0_cache #(
   // tag = addr[(3+IndexWidth) +: TagWidth]
 
   wire [IndexWidth-1:0] lookup_index = i_lookup_addr[3+:IndexWidth];
+  assign o_query_line_valid = |valid[{i_query_line_addr[3+IndexWidth-1:5], 2'b00}+:4];
   wire [TagWidth-1:0] lookup_tag = i_lookup_addr[(3+IndexWidth)+:TagWidth];
   // Decode the full zero-extended MMIO quadrant. Upper DDR addresses can
   // share bits [31:30] and must remain cacheable.
@@ -277,41 +283,54 @@ module lq_l0_cache #(
   logic lookup_line_invalidated;
   assign lookup_line_invalidated = i_invalidate_line_valid &&
       (i_invalidate_line_addr[5+:(IndexWidth-2)] == lookup_index[IndexWidth-1:2]);
-  assign o_lookup_hit =
-      !lookup_mmio && lookup_hit_array && !lookup_invalidated && !lookup_line_invalidated;
+  if (1'b1) begin : gen_coherent_lookup_permission
+    (* keep = "true" *) wire permitted = !lookup_mmio && valid[lookup_index] &&
+        !lookup_invalidated && !lookup_line_invalidated;
+    assign o_lookup_hit = permitted && (&lookup_tag_groups);
+`ifndef SYNTHESIS
+    always @(posedge i_clk) begin
+      p_lookup_permission_exact :
+      assert (o_lookup_hit ==
+          (!lookup_mmio && lookup_hit_array && !lookup_invalidated &&
+           !lookup_line_invalidated));
+    end
+`endif
+  end
   assign o_lookup_data = data_lookup_rd;
 
   // ===========================================================================
   // Sequential: Fill, Invalidate, Flush
   // ===========================================================================
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      valid <= '0;
-    end else if (i_flush_all) begin
-      valid <= '0;
-    end else begin
-      if (ram_write) begin
-        valid[ram_index] <= 1'b1;
-      end
-
-      // A fill at the invalidated index wins only if it has a different tag.
-      // For matching tags, invalidation wins to prevent stale response data
-      // from refilling a dword written by a concurrent store.
-      if (invalidate_fill_entry || invalidate_existing_entry) begin
-        valid[inv_index] <= 1'b0;
-      end
-      if (invalidate2_fill_entry || invalidate2_existing_entry) begin
-        valid[inv2_index] <= 1'b0;
-      end
-      // Line invalidate: tag-blind clear of the line's four dword entries,
-      // after the fill so it wins a same-cycle fill of any of them.
-      if (i_invalidate_line_valid) begin
-        for (int k = 0; k < 4; k++) begin
-          valid[{i_invalidate_line_addr[5+:(IndexWidth-2)], 2'(k)}] <= 1'b0;
-        end
-      end
+  if (1'b1) begin : gen_coherent_valid
+    logic [DEPTH-1:0] next_valid;
+    coherent_l0_flags #(
+        .DEPTH(DEPTH),
+        .TAG_WIDTH(TagWidth)
+    ) flags (
+        .i_clk,
+        .i_valid(valid),
+        .i_fill(i_fill_valid),
+        .i_fill_index(fill_index),
+        .i_fill_tag(fill_tag),
+        .i_store_update(store_update),
+        .i_inv(i_invalidate_valid),
+        .i_inv_index(inv_index),
+        .i_inv_tag(inv_tag),
+        .i_inv_tag_match(inv_tag_match),
+        .i_inv2(i_invalidate2_valid),
+        .i_inv2_index(inv2_index),
+        .i_inv2_tag(inv2_tag),
+        .i_inv2_tag_match(inv2_tag_match),
+        .i_line(i_invalidate_line_valid),
+        .i_line_index(i_invalidate_line_addr[5+:(IndexWidth-2)]),
+        .o_next(next_valid)
+    );
+    always_ff @(posedge i_clk) begin
+      if (!i_rst_n || i_flush_all) valid <= '0;
+      else valid <= next_valid;
     end
   end
+
 
   // ===========================================================================
   // Formal Verification

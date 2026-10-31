@@ -101,6 +101,14 @@ launches only when no other write is in flight, and nothing else launches until
 it completes. A cached write completes once the L1D has ordered it, so a store
 miss does not hold up the drain for the line fill.
 
+Cached ordinary stores may complete into one
+pending L1D record. That record participates in committed-empty and fence,
+Device and serializer drains. It blocks subsequent ordinary SQ launches
+until its bytes reach M. Cached SC writes carry their selected ROB tag and
+complete only after the conditional cache update. The selected context
+blocks younger retirement through that write, including flush-producing
+instructions.
+
 An entry is freed when its write completes, not when it launches, and stays
 visible to forwarding until then.
 
@@ -110,8 +118,10 @@ Cached and buffered Normal stores commit through two ports, one per ROB
 commit slot. Precise uncached stores report completion before retirement
 and free their SQ owner after B. Slot 2 retires only
 plain stores; the ROB keeps SCs and AMOs on slot 1. The committed-empty
-status is a register, with copies for its distant consumers (the ROB, the
-trap unit, and the LQ). Each commit port has a combinational copy
+base status is a register, with copies for its distant consumers (the ROB,
+the trap unit, and the LQ). Each output is qualified with
+pending ordinary stores, the selected SC write and the registered cached
+write strobe. Each commit port has a combinational copy
 (`i_commit_valid_comb*`) that feeds it directly, so the status turns
 non-empty at the edge that ends the commit cycle, when the registered commit
 arrives, and a fence, SC, trap, or device read never sees an empty committed

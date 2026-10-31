@@ -404,8 +404,8 @@
     ]
   },
   "platform": {
-    // A doubleword reservation that any store to it from this hart cancels.
-    "reservation": {"reservation_set_size_exp": 3, "require_exact_reservation_addr": false, "invalidate_on_same_hart_store": true},
+    // A 32-byte reservation set that any store to it from this hart cancels.
+    "reservation": {"reservation_set_size_exp": 5, "require_exact_reservation_addr": false, "invalidate_on_same_hart_store": true},
     "clint": {"supported": true, "base": 47749633474560, "size": 49152},
     "simple_interrupt_generator": {"supported": false, "base": 0},
     // The TestRIG build never waits in WFI (it takes no interrupts).

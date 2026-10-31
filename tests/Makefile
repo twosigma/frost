@@ -33,6 +33,27 @@ ifeq ($(TOPLEVEL),coherence_endpoints_test_harness)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/cache/coherence.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),coherence_home_completions)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/cache/coherence_home.f
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),coherence_home_array)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/ram/ram.f \
+        $(ROOT)/hw/rtl/lib/cache/coherence_home_array.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),coherence_l1d)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/cache/coherence_home.f
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),coherence_home)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/cache/coherence_home.f
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),coherence_cluster_test_harness)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/cache/coherence_home.f
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),reorder_buffer)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.f
@@ -300,6 +321,10 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/id_stage/id_stage.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),tomasulo_coherent_cut_test_harness)
+VERILOG_SOURCES += $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_coherent_cut_test_harness.sv
+COMPILE_ARGS += -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.f \
+        -f $(ROOT)/hw/rtl/lib/cache/coherence_home.f
 else ifeq ($(TOPLEVEL),tomasulo_wrapper)
 # Tomasulo integration wrapper block test (ROB + RAT + RS + CDB arbiter)
 COMPILE_ARGS := \
@@ -337,6 +362,8 @@ else ifeq ($(TOPLEVEL),debug_module)
 # Debug module unit bench (the DMI face)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/debug/debug_dirty_next.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/debug/coherent_debug_request_count.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/debug/debug_module.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),debug_fetch_barrier_tb)
@@ -455,6 +482,15 @@ else ifeq ($(TOPLEVEL),axi_coherent_bridge)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
         $(ROOT)/hw/rtl/lib/axi/axi_coherent_bridge.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),coherent_axi_test_harness)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/cache/coherence.f \
+        $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
+        $(ROOT)/hw/rtl/lib/cache/coherence_d_arbiter.sv \
+        $(ROOT)/hw/rtl/lib/cache/coherence_dma_ingress.sv \
+        $(ROOT)/hw/rtl/lib/axi/axi_coherent_bridge.sv \
+        $(ROOT)/hw/rtl/lib/axi/coherent_axi_test_harness.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),axi_mux_test_harness)
 # AXI4 N:1 mux unit bench (three ports, each named separately)
@@ -677,6 +713,7 @@ endif
 # appended after the defaults above because Verilator takes the last -G given
 # for a parameter, so registry-specific diagnostic sizing overrides win.
 FROST_VERILATOR_EXTRA_ARGS ?=
+
 ifneq ($(strip $(FROST_VERILATOR_EXTRA_ARGS)),)
 	EXTRA_ARGS += $(FROST_VERILATOR_EXTRA_ARGS)
 endif

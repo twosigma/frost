@@ -53,8 +53,8 @@ The [CI jobs](#ci) provide swap space for routing and the final report.
 1. In the frost image, `orfs.py prepare` converts the NIC and MAC/PCS
    sources with sv2v as [`tests/test_run_yosys.py`](../tests/test_run_yosys.py)
    does, and writes the source list from [`hw/rtl/frost.f`](../hw/rtl/frost.f)
-   to `asic/build/sources.mk`. No memory reads a `$readmemh` image here: the
-   SRAM macros have no initial contents, and the instruction memory's
+   and header directories to `asic/build/sources.mk`. No memory reads a
+   `$readmemh` image here: the SRAM macros have no initial contents, and the instruction memory's
    PC-metadata overlays read their images only outside Yosys.
 2. In the ORFS image, ORFS's Makefile runs the flow with
    [`config.mk`](config.mk). Make reruns only the stages whose input files
@@ -124,9 +124,8 @@ these modules.
 
 | Macro | Words x bits | Write mask | Size (um) | Read (ns) | Minimum period (ns) | Instances | Memories |
 | --- | --- | --- | --- | ---: | ---: | ---: | --- |
-| `sram_1w1r_4096x64_m8` | 4,096 x 64 | Bytes | 751.9 x 845.1 | 0.514 to 0.581 | 2.15 | 9 | L2 data, 1 row of 8; the NIC's transmit frame buffer, 1 macro |
+| `sram_1w1r_4096x64_m8` | 4,096 x 64 | Bytes | 751.9 x 845.1 | 0.514 to 0.581 | 2.15 | 13 | L2 data, 1 row of 8; L1D data, 1 row of 4; the NIC's transmit frame buffer, 1 macro |
 | `sram_2rw_4096x64_m8` | 4,096 x 64 | Bytes, both ports | 752.5 x 859.4 | 0.514 to 0.581 | 2.15 | 4 | Data memory, 4 rows |
-| `sram_1w1r_1024x64_m8` | 1,024 x 64 | Bytes | 416.5 x 436.5 | 0.378 to 0.445 | 1.65 | 16 | L1D data, 1 row of 4 in each way's bank |
 | `sram_1w1r_1024x19` | 1,024 x 19 | | 263.4 x 261.0 | 0.306 to 0.373 | 1.38 | 4 | L1D tags, one for each way |
 | `sram_1w1r_1024x18` | 1,024 x 18 | | 253.5 x 260.7 | 0.302 to 0.369 | 1.37 | 4 | L2 tags, 1 row of 4 ways |
 | `sram_1w1r_512x68` | 512 x 68 | | 436.7 x 245.7 | 0.384 to 0.451 | 1.67 | 2 | The NIC's receive and transmit FIFOs |
@@ -136,7 +135,7 @@ these modules.
 | `sram_1w1r_8192x4` | 8,192 x 4 | | 173.1 x 871.8 | 0.268 to 0.335 | 1.24 | 8 | Instruction memory's frontend-hot and compressed banks, 2 rows in each |
 | `sram_1w1r_4096x8` | 4,096 x 8 | | 234.2 x 489.9 | 0.294 to 0.362 | 1.34 | 8 | The NIC's receive packet buffer, 1 macro per byte lane |
 
-The macros cover 17.1 mm^2, more than half of the die. Read is the delay
+Read is the delay
 from the read clock's falling edge to the read data in the macro's Liberty
 model, driving 0.84 fF and 53.5 fF: an OpenRAM macro registers its inputs at
 the rising edge and reads in the second half of the cycle, so a read returns
@@ -149,16 +148,11 @@ differ from the block RAMs they replace in these cases:
   returns undefined data, where a block RAM on one clock returns the old
   word. For the memories that write whole words on one clock, the L1D tags
   and the BTB's payload tables, `frost_sram_1w1r` keeps the block RAM's
-  behavior: the macros take each
-  write a cycle late, from a register, and a read of the word that the
-  register holds returns the register's copy. The L1D depends on it: a fill
-  writes its line's tag in a cycle in which a request for another line of
-  the set can read the tags, and the old tag, invalid, keeps that request
-  from hitting the fill's way. The memories with write lanes, the caches'
-  data and the L2's tags, keep the undefined read, which frost_cache never
-  uses: in simulation its data arrays reject such a read when the cache uses
-  its data (`sdp_ram_byte_en`), and the L2 discards a delayed tag read that a
-  write of its set crossed. Across the data memory's and the instruction
+  behavior: each write takes place one cycle after capture, and reads of
+  that address use the registered value. The coherent array serializes
+  tag and data reads with updates. The memories with write lanes, the caches'
+  data and the L2's tags, keep the undefined read. The controllers consume
+  their read results only after a valid lookup. Across the data memory's and the instruction
   memory's two clocks, such a read is undefined in a block RAM as well.
 - A data memory port's read data after a cycle that writes that port is
   undefined, where the block RAM returns the written bytes. The CPU accepts
@@ -166,8 +160,8 @@ differ from the block RAMs they replace in these cases:
   program-loading port only in cycles that do not write it.
 - The L2 data macros' read data is undefined in the cycle after one
   without a read, where the block RAM keeps the word it last read, and the
-  read pipeline of `sdp_ram_byte_en` carries it on. frost_cache uses the
-  array's read data only when a request's data is due. The instruction
+  read pipeline of `sdp_ram_byte_en` carries it on. Cache controllers use
+  the array's read data only when a request's data is due. The instruction
   memory's banks and the MAC's transmit buffer keep the block RAM's behavior
   with a register of the last word read (`sdp_block_ram_dc_init`). Synthesis
   removes that register from the instruction banks, since `soc_top` reads
@@ -328,11 +322,11 @@ to 3, one for each way.
 
 | Instance | Wrapper | Memory | Macros |
 | --- | --- | --- | --- |
-| `cpu.cluster_memory.gen_cached_tier.cluster_cache.l2_cache.gen_data_array.data_array` | `sdp_ram_byte_en` | 4,096 x 512, byte lanes | 1 row of 8 `sram_1w1r_4096x64_m8` |
-| `cpu.cluster_memory.gen_cached_tier.cluster_cache.l2_cache.gen_tag_ultra.tag_array` | `sdp_packed_tag_uram` | 4,096 tags of 18 bits, read four at a time | 1 row of 4 `sram_1w1r_1024x18` |
-| `cpu.hart.gen_cached_tier.hart_cache.l1_cache.gen_data_banks.gen_bank[w].data_bank` | `sdp_ram_byte_en` | 1,024 x 256, byte lanes | 1 row of 4 `sram_1w1r_1024x64_m8` each |
-| `cpu.hart.gen_cached_tier.hart_cache.l1_cache.gen_tag_block.gen_way[w].tag_array` | `sdp_block_ram` | 1,024 x 19 | 1 `sram_1w1r_1024x19` each |
-| `cpu.hart.gen_cached_tier.hart_cache.l1i_cache.gen_data_banks.gen_bank[w].data_bank` | `sdp_ram_byte_en` | 128 x 256, byte lanes | 1 row of 4 `sram_1w1r_128x64_m8` each |
+| `cpu.cluster_memory.gen_coherent_tier.home.array.data_array` | `sdp_ram_byte_en` | 4,096 x 512, byte lanes | 1 row of 8 `sram_1w1r_4096x64_m8` |
+| `cpu.cluster_memory.gen_coherent_tier.home.array.gen_tag_ultra.tags` | `sdp_packed_tag_uram` | 4,096 tags of 18 bits, read four at a time | 1 row of 4 `sram_1w1r_1024x18` |
+| `cpu.hart.gen_coherent_tier.hart_cache.l1d.array.data_array` | `sdp_ram_byte_en` | 4,096 x 256, byte lanes | 1 row of 4 `sram_1w1r_4096x64_m8` |
+| `cpu.hart.gen_coherent_tier.hart_cache.l1d.array.gen_tag_block.gen_way[w].tags` | `sdp_block_ram` | 1,024 x 19 | 1 `sram_1w1r_1024x19` each |
+| `cpu.hart.gen_coherent_tier.hart_cache.l1i.gen_data_banks.gen_bank[w].data_bank` | `sdp_ram_byte_en` | 128 x 256, byte lanes | 1 row of 4 `sram_1w1r_128x64_m8` each |
 | `cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.branch_predictor_inst.btb_payload_ram_lookup_2`, `_alt`, and `_rot` | `sdp_block_ram` | 256 x 36 | 1 `sram_1w1r_256x36` each |
 | `soc.data_memory` | `tdp_bram_dc_byte_en` | 16,384 x 64, byte lanes, two ports | 4 rows of 1 `sram_2rw_4096x64_m8` |
 | `soc.instruction_memory.u_even_cold` and `u_odd_cold` | `sdp_block_ram_dc_init` | 16,384 x 28 | 2 rows of 1 `sram_1w1r_8192x28` each |

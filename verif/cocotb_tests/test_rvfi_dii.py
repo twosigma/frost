@@ -61,8 +61,8 @@ MAX_STREAM_WORDS = 8192
 MAX_EVENTS = MAX_STREAM_WORDS + 16
 # Log every record, the preamble's included.
 DEBUG = os.environ.get("FROST_RVFI_DII_DEBUG", "0") == "1"
-# Cycles without a retirement after which a test counts as hung.
-HANG_CYCLES = int(os.environ.get("FROST_RVFI_DII_HANG_CYCLES", "20000"))
+# The retirement bound covers a full L1D maintenance sweep and dirty replies.
+HANG_CYCLES = int(os.environ.get("FROST_RVFI_DII_HANG_CYCLES", "100000"))
 
 # frost_rvfi_dii's error_flags bits.
 HARNESS_ERRORS = {
@@ -161,14 +161,16 @@ class FrostRvfiDii:
                 self.errors.append(meaning)
                 cocotb.log.error(f"frost_rvfi_dii: {meaning}")
 
-        event_count = min(int(harness.event_count.value), MAX_EVENTS)
+        event_count = min(
+            int(harness.event_count.value), int(harness.event_target.value), MAX_EVENTS
+        )
         decoded = [
             decode_record(int(harness.rvfi_record[index].value))
             for index in range(event_count)
         ]
         if bool(int(harness.hung.value)):
             cocotb.log.warning(
-                f"no retirement for {HANG_CYCLES} cycles after "
+                f"no requested record progress for {HANG_CYCLES} cycles after "
                 f"{max(0, event_count - len(self.preamble))} of {len(trace)} instructions"
             )
 

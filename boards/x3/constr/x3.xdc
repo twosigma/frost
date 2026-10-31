@@ -340,6 +340,12 @@ set_property IOSTANDARD LVCMOS12           [get_ports "ddr4_sdram_c0_reset_n"]  
 # output), and the mem_ok synchronizer. Cut unrelated clock families.
 set_clock_groups -asynchronous     -group [get_clocks -include_generated_clocks -of_objects [get_ports i_sysclk_p]]     -group [get_clocks -include_generated_clocks -of_objects [get_ports default_300mhz_clk0_clk_p]]
 set_clock_groups -asynchronous     -group [get_clocks -include_generated_clocks -of_objects [get_ports i_nic_refclk_p]]     -group [get_clocks -include_generated_clocks -of_objects [get_ports default_300mhz_clk0_clk_p]]
+# The groups above can be applied before Vivado derives the DDR4 MMCM clocks,
+# leaving only the DDR4 input clock in their second group; the checkpoint then
+# stores that list. Name the MMCM outputs by their pins as well.
+set ddr4_mmcm_clocks [get_clocks -of_objects [get_pins -hierarchical -filter {NAME =~ "*u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT*"}]]
+set_clock_groups -asynchronous     -group [get_clocks -include_generated_clocks -of_objects [get_ports i_sysclk_p]]     -group $ddr4_mmcm_clocks
+set_clock_groups -asynchronous     -group [get_clocks -include_generated_clocks -of_objects [get_ports i_nic_refclk_p]]     -group $ddr4_mmcm_clocks
 
 # mem_ok crosses from DDR4 ui_clk through two synchronizer stages. Retain this
 # false path even if the broader asynchronous groups are later narrowed.

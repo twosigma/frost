@@ -2,9 +2,12 @@
 
 # Per-cache performance event types (must precede the cache modules).
 $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv
+-f $(ROOT)/hw/rtl/lib/cache/coherence_home.f
+$(ROOT)/hw/rtl/lib/cache/coherence_c_payload.sv
 
 # Write-back set-associative line cache (one module for every level)
 $(ROOT)/hw/rtl/lib/cache/frost_cache.sv
+$(ROOT)/hw/rtl/lib/cache/coherent_hart_cache.sv
 
 # N:1 tagged line-port arbiter. Parse it before the hierarchy to avoid
 # Yosys parameterized-module deferral and reprocessing failures.

@@ -305,7 +305,7 @@ def test_build_main_refreshes_actual_completed_report_stage(
     (work_dir / fpga_build.X3_NETLIST_CONFIG_NAME).write_text(
         json.dumps(
             {
-                "schema": "x3_netlist_config_v4",
+                "schema": "x3_netlist_config_v5",
                 "cpu_base_clock_hz": 322265625,
                 "cpu_clock_div": 1,
                 "ddr_capacity_log2_bytes": 30,
@@ -2691,7 +2691,7 @@ def _sweep_input(script_dir: Path, step: str) -> Path:
     (work_dir / fpga_build.X3_NETLIST_CONFIG_NAME).write_text(
         json.dumps(
             {
-                "schema": "x3_netlist_config_v4",
+                "schema": "x3_netlist_config_v5",
                 "cpu_base_clock_hz": 322265625,
                 "cpu_clock_div": 1,
                 "ddr_capacity_log2_bytes": 30,
@@ -4291,7 +4291,7 @@ def test_post_synth_promotion_stamps_the_netlist_perf_counters(
     fpga_build.copy_results_to_main_work(source, dest, "post_synth.dcp", "post_synth")
     stamp = dest / fpga_build.X3_NETLIST_CONFIG_NAME
     assert json.loads(stamp.read_text()) == {
-        "schema": "x3_netlist_config_v4",
+        "schema": "x3_netlist_config_v5",
         "perf_counters": int(perf_counters),
         "cpu_base_clock_hz": 322265625,
         "cpu_clock_div": int(divider),
@@ -4662,6 +4662,7 @@ def test_single_core_performance_flag_is_not_an_option(
     "overrides, publish",
     [
         ({}, True),
+        ({"schema": "x3_netlist_config_v4"}, False),
         ({"schema": "x3_netlist_config_v2", "single_core_performance": 0}, False),
         ({"schema": "x3_netlist_config_v2", "single_core_performance": 1}, False),
         ({"cpu_base_clock_hz": 300000000}, False),
@@ -4685,7 +4686,7 @@ def test_resumed_build_uses_recorded_configuration_for_readme(
     work = _sweep_input(tmp_path, "place")
     if overrides is not None:
         config = {
-            "schema": "x3_netlist_config_v4",
+            "schema": "x3_netlist_config_v5",
             "cpu_base_clock_hz": 322265625,
             "cpu_clock_div": 1,
             "ddr_capacity_log2_bytes": 30,

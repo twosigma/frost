@@ -1,22 +1,21 @@
 # Cache library
 
-This is FROST's cached memory tier: one set-associative, write-back,
-non-blocking line cache used three times (L1D, L1I, and L2), the arbiters
-that merge line ports, two sequencers that make DMA and page-table walks
-coherent with the L1D, an adapter between the L1s' 32-byte lines and the
-L2's 64-byte lines, a prefetcher that reads ahead of L1D miss streams into
-the L2, the bridge to the DDR controller's AXI port, and a simulation-only
-DDR model. Production cache ports carry tagged line requests, so
-levels stack freely and each level can have several transactions in flight.
-Coherence is handled in hardware: DMA and page-table walks see data that is
-still dirty in the L1D, and software never flushes a cache for them.
+The CPU cache hierarchy has a private S/M L1D and L1I above a shared L2
+home. The home orders acquisitions by sector, probes the L1D, merges dirty
+replies through L2 and orders DMA against CPU accesses. Page-table walks
+use the same home. FENCE.I writes private dirty data to L2 before
+invalidating the instruction cache and fetch buffers.
+
+The library also contains a generic nonblocking line cache, line arbiters,
+size adapters, an AXI bridge and a behavioral memory model. Component
+benches compose these modules independently of the CPU hierarchy.
 
 | File | Role |
 |------|------|
-| `frost_cache.sv` | The line cache, used at every level; the L1D instance also takes per-line coherence probes |
+| `frost_cache.sv` | Generic line cache, used by the CPU L1I and the component hierarchy benches |
 | `frost_hart_cache.sv` | One hart's private caches: the L1D and the L1I, the walker port's coherence sequencer, the probe injection register that the walker and DMA probes share into the L1D, and `fence.i` sequencing |
 | `frost_cluster_cache.sv` | The shared level: the L1D, walker, L1I, and DMA ports and the stream prefetcher over the arbiter tree, the DMA coherence sequencer, the line-size adapter, and the L2 |
-| `frost_cache_hierarchy.sv` | The two above as one module, for the unit benches and the TestRIG platform; `cpu_top` places them in `frost_hart` and `frost_cluster_memory` |
+| `frost_cache_hierarchy.sv` | Component hierarchy for the line-cache unit benches |
 | `line_size_adapter.sv` | Places each L1-line request in its sector of a wider L2 line and returns that sector of the response; an outstanding-transaction table holds each request's sector by id |
 | `line_port_arbiter.sv` | N:1 tagged arbiter: fixed priority by port index, optional starvation bound, port index prefixed to ids |
 | `dma_coherence_sequencer.sv` | Takes each DMA request through the L1D, and each DMA write through the load queue as well, before it reaches the L2 |
@@ -29,9 +28,10 @@ still dirty in the L1D, and software never flushes a cache for them.
 
 ## Line protocol
 
-Every port between the CPU-side adapters and the AXI bridge carries one line
-per transaction, with a transaction id. Lines are 32 bytes from the
-CPU-side adapters down to the line-size adapter and 64 bytes from there to
+In the line-port hierarchy, each port between the CPU-side adapters and the
+AXI bridge carries one line per transaction with a transaction id. Lines are
+32 bytes from the CPU-side adapters down to the line-size adapter and
+64 bytes from there to
 the bridge (`LINE_BYTES` below):
 
 ```
@@ -77,11 +77,11 @@ must take no action on a request until it fires.
 
 ## Coherent endpoint library
 
-`coherence.f` selects standalone coherent endpoints and their programmable
-harness. The production `cache.f` and `cpu_top` use the line protocol above.
-The coherent endpoints provide transport and ownership bookkeeping. Cache
-permission changes, line arbitration, dirty-data merging, and CPU cut service
-belong to their callers; these functions have no implementation in this library.
+`coherence.f` supplies the channel endpoints and their programmable harness.
+`cache.f` supplies the coherent controllers and line-cache components.
+The CPU filelists include their ownership and issue-control dependencies.
+The endpoints provide transport and ownership bookkeeping for the home
+and hart controllers.
 
 `coherence_pkg` defines opcodes, request identity, and home identity ranges.
 `FROST_COHERENCE_TYPES(P)` in `coherence_types.svh` declares packed payloads
@@ -106,7 +106,8 @@ Request identity q contains src 2, port_class 2, id 4, and epoch 1. Sources
 name data, instruction fetch, page-table walk, and agent traffic. Hart data
 IDs are 0 through 7, fetch IDs are 0 and 1, and the walk ID is 0. DMA IDs
 are opaque four-bit values; prefetch IDs are 0 through 3. Admission limits
-are four DMA requests and four prefetch requests. Admission arbitration is
+are the ingress's credits for DMA, eight in the cluster, and four prefetch
+requests. Admission arbitration is
 external to the endpoint slots.
 
 Home tid is six bits. For H harts, `completion_count(H)` is `11*H+8`.
@@ -139,8 +140,9 @@ describe messages; the endpoint library does not implement MESI transitions.
 `coherence_request_endpoint` reserves one request identity, a grant register,
 and completion storage at local request acceptance. SOURCE, PORT_CLASS, and
 SLOT select that identity. Separate instances provide independent D, IF, and
-PTW credits. The local caller reserves installation and dirty-victim storage
-before presenting a request. The endpoint holds D through acceptance and
+PTW credits. The local caller reserves installation storage before
+presenting a request. The L1D's endpoint 0 also reserves a dirty-victim slot
+then; a load endpoint's grant installs only while a slot is free. The endpoint holds D through acceptance and
 captures a matching G by q and address. The local grant consumer then sends
 Done. The endpoint keeps its identity through C and the matching U, including
 killed reads. GetM, Atomic, and StoreConditional reject killed completion and
@@ -155,6 +157,11 @@ register captures it. The dispatcher prevents duplicate live q values across
 records. A record accepts C only after G and emits U only after C and every
 registered absorbed-PutAck dependency. It becomes available on U consumption.
 The caller owns the line lock and destination pin through that edge.
+Completion identity and address comparisons use parallel three-bit groups.
+Hart completion payloads select with local endpoint phase indications.
+Channel valid signals apply reset qualification. Outside reset, each phase
+indication equals its channel-valid signal. The local `o_c_selected` output
+supplies this indication to the hart payload multiplexer.
 
 The home service registers an absorbed R through `i_absorb` after preserving
 its dirty image in a reserved sink. This port records cancellation metadata;
@@ -188,26 +195,286 @@ and PutM slots. Probe service, grant production, completion delivery, and
 release delivery require independent service resources. Debug halt and WFI
 must not stop those resources in an integration.
 
+## Coherent one-hart cache path
+
+`coherent_hart_cache` contains the L1D, read-only L1I, instruction and walker
+bridges, and maintenance arbitration. `coherence_home` contains the shared
+L2 controller and `coherence_home_array`, whose tag, data-read and masked-update
+ports have independent service. The L1D's `coherence_array` serializes its
+lookup, read and update operations in block RAM. The final tag-read edge
+selects the private way and starts any required data read. Replacement state
+uses the tag request's matching PLRU response.
+The L1D uses 32-byte sectors; the L2 supports 32-byte or 64-byte lines.
+
+The L1D has I, S and M states. Reads use S or M. A store hit in M writes its
+bytes before completing. An S/I store reserves one committed pending record
+and a dirty-eviction slot before acquiring M. The pending record owns the
+address, bytes and mask after the SQ completion. It blocks local accesses to
+its sector and yields probes while unrelated reads proceed. SQ launch readiness reserves the next cycle's registered write even when
+line maintenance starts on that edge. There are eight
+unmerged CPU read slots, two frozen PutM slots and `MISSES` request
+endpoints, set by `L1D_NUM_MSHR` and eight on X3. Endpoint 0 carries the
+pending store's GetM, LR, AMO and SC acquisitions, and ordinary loads only
+when it is the only endpoint; the others carry ordinary load misses. No two
+live endpoints hold the same sector. A load that misses on a sector a live
+endpoint holds waits for that endpoint's installation, or for its release if
+the sector was installed and already replaced, and then looks up again.
+Grants install one at a time, endpoint 0's first and then the lowest-numbered
+load endpoint's. A load grant installs only while a WB slot is free, and
+endpoint 0 does not take the last free slot while a load grant waits. New
+load acquisitions stop while an atomic is active or an AMO, SC or maintenance
+operation waits for every endpoint to be idle.
+Read status uses per-slot masks for allocation, response transfer, lookup
+results and grant completion. Completion and miss sets dominate allocation
+clears. Allocation sets dominate response clears of valid bits. A failed
+grant supplies the selected read's error bit. Status outcomes are computed
+with and without allocation. The allocation pulse selects the outcome.
+
+An L1D grant belongs to a live request endpoint. SC acceptance requires
+every endpoint to be idle, so grant processing and SC acceptance are mutually
+exclusive. Probe capture and service own local arbitration through R
+acceptance. Invalidation admission starts on P capture and keeps the captured
+address until the CPU accepts admission. Ready grants, writes and maintenance request one local selection
+edge after R acceptance. An eligible read requests a turn after four completed
+probe replies. Grants and writes take priority within that turn. A selected
+local operation completes its bounded array service before P is accepted. Waiting for an operand, permission or retirement does not hold
+the probe port. A withdrawn local offer releases its turn after one edge.
+Read-slot payload writes pass through a one-record buffer. The buffer
+captures the payload and a slot mask each cycle. The mask identifies the
+allocated slot and is zero without an allocation. It qualifies forwarding
+and writes to the slot storage. The forwarding mux
+makes each allocation visible on the allocation edge. Each slot keeps its
+allocated payload until reset or another allocation to that slot.
+Allocation marks an empty slot valid. Read eligibility compares each physical slot with pending, atomic and frozen
+writeback sectors. The comparisons use the stored slot addresses and the
+buffered allocation's address, and the slot mask selects between their
+results. Circular priority selects a qualified slot and its address.
+There are no E grants, silent upgrades, sharer hints or stream prefetches.
+The L1D has eight read slots and `L1D_NUM_MSHR` request endpoints. The home
+has four fills and `L2_NUM_WB` victim write slots. `L2_NUM_MSHR`,
+`L2_NUM_WAITERS` and the prefetch parameters have no effect on the CPU
+hierarchy.
+
+L1D performance events count the first permission lookup of each CPU read
+or ordinary store. Cached SC selection counts as a permission miss. A store
+to S and an AMO require permission and count as misses. Repeated lookups,
+probes and maintenance do not add demand events. Outstanding misses include
+unresolved read slots, the pending store and the selected SC. L2 events
+count shared demand lookups and non-maintenance PutM lookups. Its fill count
+is at most four. A DMA write miss contributes a write-fill event; probe data
+merges do not contribute another demand. Events are registered at their
+source and use the cache-counter ABI.
+
+The hart uses source 0 and classes 0, 1 and 2 for data, instruction and walker
+requests. The data class has one request identity per L1D endpoint, IDs 0
+to `L1D_NUM_MSHR - 1`; the instruction and walker classes have one each. Source 2 and class 3 identify
+DMA, whose four-bit ingress ID occupies q.id. `coherence_dma_ingress` has
+`SLOTS` admission credits, eight in the cluster, and holds each opaque ID
+until its slot frees. It presents requests in acceptance order without waiting for earlier
+grants or releases. Each slot independently owns its request, grant, completion,
+release and external response. G matches the full q and address; U also matches
+the granted tid. A slot offers C from the cycle after its G, and a fair
+arbiter captures the selected slot's C metadata and holds its presentation. A read's G carries its
+final data, so the read responds from the cycle after its G; a write responds
+on the cycle after its U. One response goes out per cycle, the U's slot first,
+so no response comes later than the cycle after its U. A slot and its opaque ID
+return at the later of the response edge and the U.
+Different sectors can complete out of order. The AXI bridge buffers read lines
+by ID and presents AXI read beats and write responses in burst order.
+Channel arbiters capture the payload with the selected input and hold both
+through a stalled presentation.
+The home's probe, tag, update, result and PutAck arbiters use their captured
+selection for validity. Each selected source holds its offer through acceptance.
+Fatal state suppresses probe validity, and the L1D applies reset to an
+offered probe. Reset and fatal state suppress PutAck validity and further array
+requests. Internal home and engine state changes are qualified by the stop
+condition alone, because reset clears every register they update.
+Read arbitration uses pending read offers. Home stop clears its
+unaccepted selection. Accepted reads keep their tokens through physical
+completion. A local fatal transition cancels an unaccepted read.
+
+The home admits nineteen requests with distinct identities. Eight engines
+share their image storage with the result credits. An engine hands its image
+to completion ownership before G. An idle grant register captures an accepted
+result directly when no older result awaits selection. The grant register
+presents G while it holds a grant. G acceptance returns that image credit;
+the identity and physical way pin last through U. Each request waits for
+earlier requests to the same 32-byte sector: for a hart request's U, and for a
+DMA request's result. A DMA requester keeps no copy, and its result follows its
+probe service and array update, so its G, C and U order nothing after it.
+
+`coherence_home_array` has separate tag-decision, data-read and masked-update
+ports. Each request carries a response token. Replacement state changes when
+the consumer claims a tag decision. An available miss response selects an
+unpinned way. Way claims enter through the tag response port. Put and writeback address
+hazards are checked at response acceptance. Tag updates exclude an unresolved lookup
+of the same physical packed row. A pending tag update blocks further lookups
+to that row until the update is accepted. Data hazards cover the read sample and the
+write input registers through completion. Contending reads and writes alternate
+service while prior operations drain. Masked updates preserve sibling sectors.
+
+Four fill controls own memory-read IDs 0 through 3. Each fill has a primary
+request and two read waiter seats. Parked requests release their engine and
+image credit. A request waiting for a way or resource retries from completion
+metadata. Returned fills wake their waiters after installation. Waiters reenter
+array and probe service in sector order and sample the current resident bytes.
+A successful fill's way pin lasts until its final waiter takes a completion
+pin. A failed fill transfers its error to completion metadata and releases
+its control before the waiters dispatch in sector order.
+
+Fill waiter ranks are independent of the available-seat count. A balanced
+prefix network counts up to three eligible entries before each candidate. Each fill
+stores its occupied seat count beside the seat mask. Allocation, joining
+readers, handoff and error cleanup update both on the same edge. A joining
+engine uses one seat before the queued waiters. Ready work precedes other
+eligible work. Both classes compute their circular priorities independently
+before selecting an encoded winner. Work selection uses registered parking
+state. A selection captured with a simultaneous fill park is canceled before
+allocating an engine or image credit. The tag decision carries its captured
+query address through conflict and replacement checks. Engine address pins
+exclude valid victim lines. An invalid way's stored tag does not create an
+address conflict; physical way pins and fill claims govern its reuse.
+
+Two ordinary PutM controls have frozen payload storage and independent array
+service. Round-robin arbitration rotates tag decisions, row reads, masked
+updates, probes, acknowledgements and results. Resident data reads overlap
+probes. Dirty probe bytes override the resident snapshot regardless of arrival
+order; DMA byte enables apply after that merge. The final service edge
+combines every completed input before the masked update or result becomes
+eligible. Error replies preserve dirty ownership. Probe replies have
+separate ownership from CPU reads, pending stores and PutM presentation.
+A pending probe reply prevents local grant selection until R acceptance.
+Grant application requires the private request endpoint to accept the grant.
+A ProbeRead of M merges dirty bytes and leaves S. ProbeInvalidate leaves I
+after the CPU cut. CheckSC returns the selected reservation result.
+An ordinary probe starts its tag request on P capture when the array is ready.
+Its reply forms on the edge that applies its state update, or on the lookup
+edge when no state changes, once the required cut is done. A state-only array
+update needs no data-write wait. A held R preserves its payload and prevents
+another P capture.
+CheckSC samples the reservation after capture.
+Probe lookups read private data only for an M hit. A clean read probe leaves
+the tag and bytes untouched. A downgrade or invalidation updates the tag
+without writing the data row.
+
+Every M sector has a resident L2 merge destination. Clean S and L0 copies
+may outlive an L2 replacement. Replacement recalls every victim sector
+without a directory hint, merges dirty replies, and freezes the complete
+victim image before reusing its row. A valid victim reserves one of two
+writeback slots before its first recall. Detached writes use memory IDs 16
+and 17. The physical address stays locked until
+a successful memory B response. A failed fill cannot expose the detached
+victim tag. Grants pin their destination through C and U. An absorbed PutM
+keeps its exact slot and epoch until WA cancellation. A completion with no
+pending cancellations becomes eligible for U on the following cycle. A fair
+arbiter holds each U presentation through acceptance. An ordinary PutM
+owns its control through WA. DMA reads collect dirty private data; DMA
+writes merge only their selected bytes after invalidation.
+An L2-resident DMA read with no dirty probe data returns the resident image
+without a data-array write. Fills and dirty replies reach the array before
+the home grants the read.
+A resident DMA write reads the L2 tag and writes its byte enables without
+reading the data array. A dirty probe supplies the complete private sector
+before those byte enables apply. The update preserves bytes outside its mask
+and every byte in the sibling sector. A miss reads the victim and fills the
+requested row before applying the write. GrantAck has zero data.
+
+The home arbitrates held probe packets from engines and fill controls.
+Reset and fatal status qualify probe service. The L1D computes incoming invalidate
+eligibility from its phase, probe occupancy, reply occupancy, opcode and fatal
+status. Probe validity and reset qualify that eligibility before it combines
+with the resident invalidation hold.
+
+The CPU cut stops local load launches at invalidation-probe capture. No read merging
+crosses the cut. The capture address marks matching response owners before
+that edge, preventing an L0 fill or LR reservation from a crossing response.
+An unrelated LR keeps its reservation eligibility.
+Invalidation covers L1D, L0, live read slots, reservations
+and returned-load observations held until retirement. Delayed invalidated
+LR responses cannot establish a reservation, and stale responses cannot
+refill L0. Loads blocked by a pending store or selected atomic are parked so
+that unrelated rows can issue. Cut admission and replay marking run in
+parallel with the probe's array lookup and state update. The probe reply
+waits for both operations. An admission answer is clean when the CPU holds
+nothing for the line: no L0 entry at its dword indices, no cached load or
+reservation on it, and no live or pending observation of it. A clean cut
+skips the CPU invalidation and its wait: its global issue gate ends at the
+clean answer, since nothing needs replay marking, and its reply still waits
+for the array lookup, the state update and any write-back absorption.
+Otherwise the global issue gate ends after replay marking is effective. In
+both cases the matching-sector gate lasts through reply acceptance.
+
+The atomic guard computes active and retired state for permitted and blocked
+arming. Candidate validity and the entry veto select between those results.
+The atomic guard captures the candidate tag while idle and holds it while
+active. Only an active context qualifies the tag.
+
+Cached SC and AMO requests acquire the home lock even on an M hit. The CPU
+arms a tagged ROB-head context before D presentation. The active, unretired
+context identifies a valid ROB head. Interrupt and debug
+entry cannot cancel that context. A fault in the selected instruction
+releases the context when no home transaction is live. SC
+checks the reservation after home resource entitlement; a passing CheckSC
+uses a self-ProbeRead to collect dirty data without cancelling its own
+reservation. A granted SC asserts pending-write ownership while its result
+waits for retirement. An interrupt or debug drain cannot stall the protected
+owner's retirement. A completed single step prevents the following atomic
+from acquiring ownership. The SQ writes only after the owner's retirement.
+The SC bridge holds the home lock and same-sector interlock through the tagged SQ write.
+AMO holds them through its read/compute/write sequence. C reports the actual
+write. U releases the home ownership, and precise instruction ownership also waits for retirement.
+Clean faults dispose C/U before precise exception entry. Dirty errors hold
+ownership and raise the cluster fatal indication until reset.
+
+A walker read first cleans its L1D sector through PutM, then uses ReadOnce.PTW.
+Instruction refills use ReadOnce.IF. FENCE.I drains older writes, cleans the
+whole L1D through PutM, invalidates L1I and resets the fetch generation.
+Maintenance yields to probes and shares local array service fairly with
+reads. FENCE, Device publication and serializer drains include pending
+committed stores and the selected SC write. They do not require all dirty L2
+bytes to reach external memory.
+
+The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_equal`, `coherence_cluster`
+and `coherent_cut` cover controller ownership, inclusion, cuts, atomics,
+probe service and the DMA sector handoff. `coherence_cluster_misses` repeats the cluster cases with three
+L1D request endpoints, including several loads in flight. The whole-SoC program configurations use this hierarchy.
+G and U route by their message source identity. Fair C arbiters select the
+hart and DMA inputs and the hart's data, instruction and walker inputs. Each
+arbiter holds its selection during backpressure and acknowledges only that input.
+Every C source, including each DMA ingress slot, holds its offer until
+acceptance, so these arbiters present their captured selection as C validity.
+
+Formal targets `coherence_home_completions`, `coherence_control`, `coherence_array`,
+`coherence_home`, `coherence_l1d` and `coherent_cpu` check endpoint service,
+representative byte values, bounded controller transitions and CPU ownership.
+The `coherence_l1d` target also runs the L1D with three request endpoints and
+checks that no two live endpoints hold one sector, that no load endpoint is
+live beside a granted atomic, and that a load grant installs with a free WB
+slot.
+Detached victim validity, address and a watched byte are checked by induction
+through B. Cover tasks reach allocation, a delayed B, a blocked refetch,
+successful disposal and a failed B with preserved dirty ownership.
+The controller bounds assume legal channel peers, cut admission within four
+cycles and invalidation acknowledgement within five cycles. They do not bound
+external memory response latency.
+
 ## The line cache
 
-`frost_cache` is one module for every level and every target. The
-instances differ in size, line size, storage, and slot counts:
+The following sections describe the generic line-cache components.
+`frost_cache_hierarchy` connects three `frost_cache` instances for unit
+benches. Their default sizes and storage are:
 
 | Instance | Size | Line | Ways x sets | Tags | Data | Miss slots | Waiter seats per miss slot | Writeback slots | Probe slots |
 |----------|------|------|-------------|------|------|------------|----------------------------|-----------------|-------------|
-| L1D | 128 KiB | 32 B | 4 x 1024 | Block RAM per way, 1-cycle read | Block RAM, a bank per way | 8 | 1 | 2 | 4 |
+| L1D | 128 KiB | 32 B | 4 x 1024 | Block RAM per way, 1-cycle read | Block RAM, a bank per way | 4 | 1 | 2 | 4 |
 | L1I | 16 KiB | 32 B | 4 x 128 | Block RAM per way, 1-cycle read | Block RAM, a bank per way | 2 | 1 | 2 (unused) | 0 |
 | L2 | 2 MiB | 64 B | 4 x 8192 | UltraRAM, a set's four ways in one 72-bit row, 3-cycle read | UltraRAM | 4 | 2 | 2 | 0 |
 
-The X3 overrides the L2 miss-slot count and prefetch request limit to eight.
-The table describes the generic CPU defaults.
-
 The ways are the hierarchy's `L1D_WAYS`, `L1I_WAYS`, and `L2_WAYS`
-parameters, which `frost` and `cpu_top` take too. The L1D's miss slots
-are the hierarchy's `L1D_NUM_MSHR` parameter and the L2's counts its
-`L2_NUM_MSHR`, `L2_NUM_WAITERS`, and `L2_NUM_WB` parameters, which
-`cpu_top` sets as in the table. Its downstream ids, `L2_DOWN_ID_BITS` wide
-(5 on the X3), hold up to 16 slots of each type.
+parameters. `L1D_NUM_MSHR` sets its L1D miss slots. `L2_NUM_MSHR`,
+`L2_NUM_WAITERS`, and `L2_NUM_WB` set its L2 capacities.
+The downstream IDs are `L2_DOWN_ID_BITS` wide. The default width of 5
+holds up to 16 slots of each type.
 
 ### Sets and ways
 
@@ -388,9 +655,9 @@ stale lines instead of writing them back. `SIM_FAST_MAINT=1` (simulation
 only) makes the sweep a one-cycle clear and makes writeback-all visit only
 sets with dirty lines, with the same functional effect.
 
-## The hierarchy
+## Component hierarchy
 
-The hierarchy has two parts. `frost_hart_cache` holds one hart's private
+The line-cache component hierarchy has two parts. `frost_hart_cache` holds one hart's private
 caches: the L1D, the L1I, the walker port's coherence sequencer, and the
 probe injection register in front of the L1D. `frost_cluster_cache` holds
 the shared level, which puts the L1D's, the walker's, the L1I's, and the DMA
@@ -401,15 +668,13 @@ the L1D's, the L1I's, and the walker sequencer's line ports and the DMA
 sequencer's probes into the L1D. Requests and responses pass through the
 arbiters and the adapter without a register stage, so the boundary between
 the parts adds no cycle.
-`frost_cache_hierarchy` composes the two parts as one module for the cache
-unit benches and the TestRIG platform. `cpu_top` instantiates
-`frost_hart_cache` in its hart (`frost_hart`) and `frost_cluster_cache` in
-the memory side the hart shares (`frost_cluster_memory`).
+`frost_cache_hierarchy` composes the two parts for component benches.
+The CPU hierarchy uses `coherent_hart_cache` and `coherence_home`.
 
 [![FROST cache hierarchy: L1D, walker, L1I and DMA arbitration through the line-size adapter into the L2 and DDR, each of the walker and DMA ports entering through its own coherence sequencer](../../../../docs/diagrams/cache-hierarchy.svg)](../../../../docs/diagrams/cache-hierarchy.svg)
 
-The diagram shows the X3 configuration. Arrows follow requests; responses
-return by id prefix.
+The diagram shows the line-cache component hierarchy. Arrows follow
+requests; responses return by id prefix.
 
 The arbiter tree is a 2:1 `line_port_arbiter` (walker over L1I) under a 3:1
 one (L1D over that pair over DMA). With the stream prefetcher
@@ -435,7 +700,7 @@ Each arbiter prefixes its port index to the ids it forwards, so ids stay
 unique across all upstream masters without a global plan. The tree yields a
 prefix-free code in `UP_ID_BITS + 2` bits:
 
-| Master | Id below the top arbiter | Local id bits (`UP_ID_BITS=4`, as `cpu_top` sets) |
+| Master | Id below the top arbiter | Local id bits (`UP_ID_BITS=4`) |
 |--------|--------------------------|--------------------------------|
 | L1D | `{2'b00, id}` | 4 |
 | Walker | `{2'b01, 1'b0, id}` | 3 |
@@ -443,14 +708,13 @@ prefix-free code in `UP_ID_BITS + 2` bits:
 | DMA port | `{2'b10, id}`; with the prefetcher `{2'b10, 1'b0, id}` | 4; with the prefetcher 3 |
 | Prefetcher | `{2'b10, 1'b1, id}` | 3 |
 
-The L2 sees those 6 bits. Its own downstream requests carry `{type, slot}`
-ids, `L2_DOWN_ID_BITS` wide: 5 on the X3, the AXI id width its DDR block
-design provides (`fpga/build/x3_ddr_bd.tcl`). The L1D spends one of its 4
-bits on the fill/writeback type and 3 on its 8 miss slots. The L1I has 2 miss
-slots, all its master, the two-line fetch buffer, ever uses. The walker keeps
-one walk in flight and uses id 0. `axi_coherent_bridge`, the DMA port's one
-agent in FROST, uses 3 bits of its ids. The prefetcher has 3 local id bits
-for its eight outstanding reads on the X3. Its generic limit is four reads.
+The L2 sees those 6 bits. Its downstream requests carry `{type, slot}`
+IDs, `L2_DOWN_ID_BITS` wide. With `UP_ID_BITS=4`, the L1D spends one
+bit on the fill/writeback type and has 3 bits available for miss slots.
+The L1I has 2 miss slots. The walker keeps one walk in flight and uses
+ID 0. `axi_coherent_bridge` uses its full 4-bit line IDs in soc_top. The prefetcher's
+3 local ID bits support up to eight outstanding reads; its default
+limit is four reads.
 
 The bridge drops any response whose id is not in flight. That is how a
 transaction interrupted by an image-load CPU reset drains harmlessly on
@@ -482,9 +746,10 @@ fatal address and stop CPU retirement. They cannot be made precise after a
 buffered store has retired. FROST's SoC also counts board DDR error responses
 in `memory_error_unit`; `memerr_test` checks the read exception, ECC/APLIC
 reporting and final fatal writeback stop. Coherent responses carry errors
-through the DMA sequencer and arbiter to `axi_coherent_bridge`, which answers
+through the home and DMA ingress to `axi_coherent_bridge`, which answers
 SLVERR to the NIC or the DMA test engine. `ENABLE_RESPONSE_ERRORS`
-defaults to 0 in the library modules; `cpu_top` sets it to 1.
+defaults to 0 in the generic line-cache modules. The CPU enables response
+errors on its instruction cache and propagates coherent data errors.
 
 The behavioral DDR model accepts `+axi_rd_error_addr=<hex>` and
 `+axi_wr_error_addr=<hex>` for region-relative failed lines. `line_port_axi_bridge`
@@ -509,9 +774,9 @@ so each instruction sequence starts with empty storage.
 
 ## The L2 line size
 
-The L1s, the walker, and the DMA port use 32-byte lines, and so does
-everything above the L2: the arbiters, both coherence sequencers, and the
-L1D's probes. The L2 uses 64-byte lines, each holding two 32-byte lines as
+In the generic line-cache hierarchy, the L1s, walker and DMA port use
+32-byte lines. The arbiters, both coherence sequencers and L1D probes
+use the same line size. The L2 uses 64-byte lines, each holding two 32-byte lines as
 its lower and upper halves, so every DDR transfer is one 512-bit beat, the
 width of the X3 DDR4 controller's word. The controller runs ECC without a
 data mask, so a write of less than a whole word makes it read the word,
@@ -573,17 +838,16 @@ every cache event, they leave out `fence.i` writebacks.
 
 Reset clears the L2's 8,192 sets, one set per cycle on hardware.
 
-DMA coherence and atomics work the same with either line size. DMA is
-coherent through the DMA port (see The DMA port and coherence); a master
-that reaches DDR below the L2 sees neither cache level. AMOs, LR, and SC
-execute in the load queue, on low BRAM and cached DDR, and reach the
-hierarchy as ordinary reads and writes. An atomic to any other address
-faults.
+DMA coherence works with either line size through the DMA port
+(see The DMA port and coherence). A master that reaches DDR below the L2
+sees neither cache level. The generic line-cache interface carries ordinary
+reads and writes. The CPU's cached atomic operations use the home protocol
+described above.
 
 ## The stream prefetcher
 
 `l2_stream_prefetcher` reads ahead of ascending L1D miss streams into the L2.
-`cpu_top` turns it on (`L2_PREFETCH`); 0 removes it. It watches the
+`frost_cache_hierarchy` enables it with `L2_PREFETCH=1`. It watches the
 L1D's read requests as the top arbiter takes them, which are its misses,
 store misses included. A table of 4 streams holds the last L2 line each
 stream missed on. A miss on the line after a stream's confirms the stream
@@ -594,7 +858,7 @@ ahead and never past the 4 KiB page of that miss, so it reads only memory
 that a demand access in the same page showed to exist.
 
 The reads are ordinary line reads on the prefetcher's side of the DMA port,
-at most `L2_PREFETCH_INFLIGHT` outstanding (4 by default, 8 on the X3).
+at most `L2_PREFETCH_INFLIGHT` outstanding (4 by default).
 Their responses only
 free the prefetcher's ids: the point is the L2 fill, which takes a way and
 touches the set's replacement state like a demand fill. A demand read that
@@ -744,7 +1008,7 @@ to answer.
 | `*_equal_lines` | The data-integrity, concurrency, and DMA suites with 32-byte L2 lines, equal to the L1s', as a control; also DDR load and store, fetch, atomic, DMA, page-table-walk, and `fence.i` programs on the whole system with 32-byte L2 lines and a 256-bit DDR port |
 | `*_16x4` | The L2-line, concurrency, and DMA suites with 16 L2 miss slots and 4 writeback slots |
 | `frost_cache_l2_lines_waiters2` | The L2-line suite with two waiter seats per L2 miss slot |
-| `*_prefetch` | The concurrency and DMA suites with the X3's ids, L1D and L2 miss slots, L2 waiter seats, and prefetch request limit |
+| `*_prefetch` | The concurrency and DMA suites with eight L1D miss slots, eight L2 miss slots, two waiter seats per L2 miss slot, and eight prefetch requests |
 | `*_ways1` | The data-integrity, concurrency, DMA, and L2-line suites with direct-mapped caches |
 | `l2_stream_prefetcher*` | Stream confirmation, read distance, page bounds, response ID reuse, and four- and eight-request caps under excess demand |
 | `line_port_arbiter*` | Arbitration and tagged responses |

@@ -32,6 +32,9 @@ module coherence_put_endpoint #(
     output logic [ADDR_WIDTH+259:0] o_w,
     input logic i_absorb_valid,
     output logic o_absorb_ready,
+    // o_absorb_ready without the W-acceptance term, for a consumer that
+    // applies that term itself.
+    output logic o_absorb_offer,
     input logic [5:0] i_absorb_tid,
     input logic [ADDR_WIDTH-1:0] i_absorb_addr,
     input logic i_absorb_epoch,
@@ -65,8 +68,9 @@ module coherence_put_endpoint #(
   assign o_w_valid = !i_rst && phase_q == Present;
   assign o_w = frozen_q;
   // Ordinary W acceptance wins a simultaneous claim for the frozen slot.
-  assign o_absorb_ready = !i_rst && phase_q == Present && !absorbed_q && !i_w_ready &&
+  assign o_absorb_offer = !i_rst && phase_q == Present && !absorbed_q &&
       i_absorb_addr == frozen_q.addr && i_absorb_epoch == frozen_q.epoch;
+  assign o_absorb_ready = o_absorb_offer && !i_w_ready;
   assign o_wa_ready = !i_rst && ack_in.hart == 1'(HART) && ack_in.put_id == 1'(SLOT) &&
       ack_in.epoch == frozen_q.epoch && ack_in.addr == frozen_q.addr &&
       ((phase_q == Accepted && !ack_in.absorbed) ||

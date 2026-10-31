@@ -29,6 +29,9 @@ module coherence_home_endpoint #(
     output logic o_d_ready,
     input logic [ADDR_WIDTH+311:0] i_d,
     output logic o_work_valid,
+    // o_work_valid without the reset term, for selection logic whose state
+    // is cleared by the same reset.
+    output logic o_work_offer,
     output logic [ADDR_WIDTH+311:0] o_work,
     input logic i_result_valid,
     output logic o_result_ready,
@@ -46,11 +49,26 @@ module coherence_home_endpoint #(
     input logic i_cancel_valid,
     input logic [ADDR_WIDTH+10:0] i_cancel,
     output logic o_u_valid,
+    // o_u_valid without the reset term, for a consumer that applies reset.
+    output logic o_u_offer,
     input logic i_u_ready,
     output logic [ADDR_WIDTH+14:0] o_u,
     output logic o_live,
     output logic [3:0] o_pending
 );
+`ifndef SYNTHESIS
+  // Registers power up arbitrary and the reset can reach this module a few
+  // cycles after the first edge, so the simulation checks begin at the first
+  // reset.
+`ifdef FORMAL
+  // Formal tasks start from a reset or from an induction state; the checks
+  // apply in both.
+  wire sim_reset_seen_q = 1'b1;
+`else
+  logic sim_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) sim_reset_seen_q <= 1'b1;
+`endif
+`endif
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
   typedef enum logic [2:0] {
     Idle,
@@ -59,7 +77,9 @@ module coherence_home_endpoint #(
     Cancel,
     SendU
   } phase_t;
-  phase_t phase_q;
+  // One-hot state keeps each transition, including G acceptance, to a
+  // single term of its next state.
+  (* fsm_encoding = "one_hot" *) phase_t phase_q;
   coh_d_t demand_in, demand_q;
   coh_g_t result_in;
   logic [2:0] grant_opcode_q;
@@ -82,8 +102,11 @@ module coherence_home_endpoint #(
   assign o_live = phase_q != Idle;
   assign o_pending = pending_q;
   assign o_work = demand_q;
-  assign o_work_valid = !i_rst && phase_q == Work;
-  assign o_d_ready = !i_rst && phase_q == Idle && coherence_pkg::legal_q(
+  assign o_work_offer = phase_q == Work;
+  assign o_work_valid = !i_rst && o_work_offer;
+  // Reset clears the endpoint, so D readiness leaves reset to the table's
+  // readiness, which applies it once.
+  assign o_d_ready = phase_q == Idle && coherence_pkg::legal_q(
       demand_in.q
   ) && demand_in.q.epoch == i_epoch &&
       (int'(demand_in.q.src) < NUM_HARTS || demand_in.q.src >= 2) && coherence_pkg::legal_opcode(
@@ -93,25 +116,54 @@ module coherence_home_endpoint #(
       result_in.tid == 6'(TID) && result_in.addr == demand_q.addr &&
       result_in.opcode <= coherence_pkg::GrantFail;
   assign o_g_valid = !i_rst && phase_q == Work && i_result_valid && result_matches;
-  assign o_result_ready = !i_rst && phase_q == Work && result_matches && i_g_ready;
+  // G readiness is the last term of result acceptance.
+  (* keep = "true" *) logic result_take;
+  assign result_take = !i_rst && phase_q == Work && result_matches;
+  assign o_result_ready = result_take && i_g_ready;
   assign o_g = result_in;
-  assign o_c_ready = !i_rst && phase_q == WaitC && completion_in.q == demand_q.q &&
-      completion_in.tid == 6'(TID) && completion_in.addr == demand_q.addr &&
-      completion_in.status <= coherence_pkg::Error &&
+  localparam int unsigned CompletionKeyWidth = ADDR_WIDTH + 15;
+  localparam int unsigned CompletionParts = (CompletionKeyWidth + 2) / 3;
+  localparam int unsigned CompletionGroups = (CompletionParts + 5) / 6;
+  wire [CompletionKeyWidth-1:0] completion_key =
+      {completion_in.q, completion_in.tid, completion_in.addr};
+  wire [CompletionKeyWidth-1:0] expected_completion_key =
+      {demand_q.q, 6'(TID), demand_q.addr};
+  (* keep = "true" *) logic [CompletionParts-1:0] completion_parts;
+  (* keep = "true" *) logic [CompletionGroups-1:0] completion_groups;
+  logic completion_matches;
+  for (genvar part = 0; part < CompletionParts; part++) begin : gen_completion_part
+    localparam int unsigned Bits = CompletionKeyWidth - 3 * part < 3 ?
+        CompletionKeyWidth - 3 * part : 3;
+    assign completion_parts[part] = completion_key[3*part+:Bits] ==
+        expected_completion_key[3*part+:Bits];
+  end
+  for (
+      genvar group_index = 0; group_index < CompletionGroups; group_index++
+  ) begin : gen_completion_group
+    localparam int unsigned Parts = CompletionParts - 6 * group_index < 6 ?
+        CompletionParts - 6 * group_index : 6;
+    assign completion_groups[group_index] = &completion_parts[6*group_index+:Parts];
+  end
+  assign completion_matches = &completion_groups;
+  // The status check depends on the C status bits and this endpoint's
+  // registers only, so it forms beside the key comparison.
+  wire irrevocable_demand = coherence_pkg::irrevocable(demand_q.opcode);
+  wire completion_status_ok = completion_in.status <= coherence_pkg::Error &&
       ((completion_in.status != coherence_pkg::Error && !grant_error_q) || i_error_disposed) &&
       !(grant_error_q && completion_in.status == coherence_pkg::Consumed) &&
-      !(coherence_pkg::irrevocable(
-      demand_q.opcode
-  ) && completion_in.status == coherence_pkg::Killed) && !(coherence_pkg::irrevocable(
-      demand_q.opcode
-  ) && completion_in.status == coherence_pkg::Consumed && !grant_error_q &&
-      grant_opcode_q != coherence_pkg::GrantFail && !completion_in.write_done);
+      !(irrevocable_demand && completion_in.status == coherence_pkg::Killed) &&
+      !(irrevocable_demand && completion_in.status == coherence_pkg::Consumed &&
+        !grant_error_q && grant_opcode_q != coherence_pkg::GrantFail &&
+        !completion_in.write_done);
+  wire waiting_completion = phase_q == WaitC;
+  assign o_c_ready = !i_rst && waiting_completion && completion_matches && completion_status_ok;
   assign o_absorb_ready = !i_rst && phase_q == Work && absorb_in.absorbed &&
       absorb_in.opcode == coherence_pkg::ProbeData && absorb_in.data_valid && !absorb_in.error &&
       absorb_in.tid == 6'(TID) && absorb_in.epoch == demand_q.q.epoch &&
       absorb_in.put_epoch == demand_q.q.epoch && absorb_in.addr == demand_q.addr &&
       int'(absorb_in.hart) < NUM_HARTS && !seen_q[absorb_slot];
-  assign o_u_valid = !i_rst && phase_q == SendU;
+  assign o_u_offer = phase_q == SendU;
+  assign o_u_valid = !i_rst && o_u_offer;
   assign o_u = {demand_q.q, 6'(TID), demand_q.addr};
 
   always_ff @(posedge i_clk) begin
@@ -149,7 +201,7 @@ module coherence_home_endpoint #(
           grant_error_q <= result_in.error;
           phase_q <= WaitC;
         end
-        WaitC:   if (i_c_valid && o_c_ready) phase_q <= Cancel;
+        WaitC:   if (i_c_valid && o_c_ready) phase_q <= pending_q == 0 ? SendU : Cancel;
         Cancel:  if (pending_q == 0) phase_q <= SendU;
         SendU:   if (i_u_ready) phase_q <= Idle;
         default: phase_q <= Idle;
@@ -165,7 +217,23 @@ module coherence_home_endpoint #(
       )) begin : gen_invalid_config
     initial $fatal(1, "coherence_home_endpoint: invalid parameters");
   end
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (sim_reset_seen_q && !i_rst) assert (phase_q <= SendU);
+  end
 `ifdef FORMAL
+  always_comb
+`else
+  always @(posedge i_clk)
+`endif
+  begin
+    p_completion_key_exact : assert (completion_matches ==
+        (completion_in.q == demand_q.q && completion_in.tid == 6'(TID) &&
+         completion_in.addr == demand_q.addr));
+  end
+`endif
+`ifdef FORMAL
+`ifndef COHERENCE_HOME_CONTROL
   logic f_past_valid = 1'b0;
   logic f_granted, f_completed, f_early_cancel;
   always_ff @(posedge i_clk) begin
@@ -207,6 +275,7 @@ module coherence_home_endpoint #(
         assert (pending_q == 0);
         assert (f_granted && f_completed);
       end
+      if ($past(i_c_valid && o_c_ready && pending_q == 0)) assert (o_u_valid);
       for (int slot = 0; slot < 4; slot++) begin
         if ($past(pending_q[slot]) && !pending_q[slot]) begin
           assert ($past(i_cancel_valid && cancel_in.absorbed && !cancel_in.error));
@@ -224,5 +293,6 @@ module coherence_home_endpoint #(
       cover (o_u_valid && i_u_ready && seen_q != 0 && f_early_cancel);
     end
   end
+`endif
 `endif
 endmodule

@@ -43,7 +43,10 @@ Each dispatch slot takes the next free entry at or after `tail_ptr`.
 Completed and flushed entries leave holes that allocation refills, so
 physical order is not program order: age always comes from ROB tags, and
 `tail_ptr` only marks where the free-entry search starts. An entry frees when
-its result enters `cdb_stage`, before the CDB broadcast.
+its result enters `cdb_stage`, before the CDB broadcast. The next valid bits
+are the bits kept through the cycle's flushes and frees, ORed with the new
+allocations, so the allocation enable, which arrives last from dispatch, meets
+them in the final term.
 
 Allocation requests on a flush cycle are dropped, as the ROB drops them.
 Dispatch can present one on a trap, xRET, or FENCE-class flush, because the
@@ -61,8 +64,9 @@ MEM_RS (or the data MMU, under address translation) sends each load's address
 with its ROB tag (`i_addr_update`), and a CAM on the entries' ROB tags finds
 the entry. The look-ahead arrives exactly one cycle earlier, so the LQ
 registers the match and selects the load in the cycle its address arrives.
-The scalar mode compares `i_pre_issue_rob_tag`; the candidate mode registers
-all candidate matches and selects one after the edge. In the core
+The scalar mode compares `i_pre_issue_rob_tag`; the candidate mode compares
+every candidate and registers the match of the one `i_pre_issue_sel` names,
+which arrives early in the cycle. In the core
 (`PREISSUE_READY_PICK=1`) the LQ compares its tags against every MEM_RS entry
 tag, and each candidate's ready vector picks the compare result of that
 candidate's winner (entry 0 when nothing is ready). Under translation it
@@ -75,6 +79,77 @@ arriving, not issued, not staged, not fenced by an older AMO); and the ROB-head
 load if it is ready for memory, which wins. A device load may be staged before
 it reaches the ROB head, but device loads, LRs and AMOs neither probe the SQ
 nor leave the LQ until they are at the head.
+
+The capture, issue and forwarding control banks compute memory candidates for
+both SQ drain states in
+[`coherent_lq_issue_selector.sv`](coherent_lq_issue_selector.sv). The live
+drain flag selects between those results. Each case also computes staged
+replacement from its winning masks and the per-entry age predicates, in
+three-entry groups; the ROB-head entry's age is compared directly from its
+tag, since at most one entry matches the head. Both
+cases use the same ring order and ROB-head priority. Each entry has a cyclic
+precedence mask derived from the queue head. An eligible entry wins when none
+of its predecessors is eligible. Scan indices and tags decode from the
+winning-entry masks. Selection is combinational. The coherent memory identity
+uses the merged ring mask when an address update is valid and the stored mask
+otherwise. Eligible ROB-head entries precede the ring scan. The coherent ring
+index and ROB tag decode from the selected ring mask. Head matches use the
+head selector's index and tag. The pre-issue selector registers a one-hot mask
+alongside the candidate matches. Staging capture uses candidate presence
+independently of ring ordering. The LQ prepares release permission for both
+staged-head matches and all combinations of cache hit, SQ-empty,
+committed-store presence, memory-busy and L0-hit permission. The head match
+selects between complete release outcomes. The cut hold,
+SQ check phase and address fault result qualify that outcome at the final
+selection. Fault release computes permission separately; CDB availability and
+completion priority qualify it. The pending bit qualifies release and
+replacement after selection. Each pending copy supplies vacancy independently.
+Candidate presence and the capture gate qualify capture. Staged control fields
+select capture values or separately computed hold values. Replacement selects
+stored and arriving age predicates with ROB-head priority. Each row's
+availability (not issued, no data, not staged or parked) is one term, and the
+row's other stored, arriving and head conditions, validity included, join it
+in the next, so each scan input is two levels from those registers. Alignment is evaluated separately for stored
+and arriving candidates before the selected result enters the staging
+register. The coherent clear calculation applies staging validity outside its
+issue, forwarding and fault eligibility terms. An older pending AMO clears the
+pending stage independently of the prepared outcomes. Sector blocking permits
+capture and vetoes memory or forwarding release. Fault release requires both
+cut and sector permission. Release predicates omit pending validity from their
+atomic admission and committed-store interlocks; the final pending gate
+qualifies those predicates. Cached-AMO protection qualifies the selected
+memory and forwarding release outcomes. Address faults, sector blocking and
+older-AMO capture permission remain independent of that protection. Issue,
+forwarding and probes require staging validity; issue and forwarding also
+apply the older-AMO veto.
+
+Coherent issue,
+forwarding and SQ-probe predicates decode address faults before applying
+the cut and same-sector holds. The coherent memory launch computes permission
+before applying the L0-hit result. Issue and SQ-probe permission are computed for both
+head-match outcomes. Separate expressions cover non-atomic loads and the ROB
+head with an empty committed SQ. The head comparison and committed-store drain
+select between them. Cached-AMO protection qualifies issue and SQ-probe permission
+after this selection.
+Forwarding
+requires an ordinary load and has no head-match dependency.
+Each coherent address slot stores PMA permission, Normal-memory classification
+and cache-region classification with its address. Stored and arriving payloads
+compute PMA permission before address-source selection. Staging selects the
+permission, Normal-memory class and cache-region class from the stored or arriving
+address. The captured Normal-memory class supplies L0-hit eligibility.
+Staging captures misalignment with the address and size. Fault checks apply
+the live trap setting to that captured result. The first candidate mask determines which
+address source wins ring order. Candidate presence is independent of
+that ordering and the selected payload.
+The coherent L0 computes lookup permission from validity, memory type and
+invalidation independently of the tag comparison. A hit requires both.
+Coherent L0 valid bits and data writes share fill permission computed for
+each response source before the cached/uncached response selection. Each cached
+response slot computes fill permission before the response ID selects a slot.
+Valid-state
+updates are computed for every fill and store-update combination. Those two
+flags select the resulting valid bits.
 
 ### ROB-head priority
 
@@ -91,6 +166,16 @@ and drains on its own. A head AMO or LR takes priority only once the
 committed-store queue is empty.
 
 ### Staging and the SQ check
+
+The LQ prepares release permission and memory launch
+controls for both committed-store drain states. The live drain flag selects
+those outcomes. Local holds qualify memory launch after drain selection.
+Release permission also accounts for both commit-pending states before the
+live commit flag selects the outcome. Capture combines that permission with
+pending validity, per-copy vacancy, candidate presence and replacement;
+replacement joins the other capture terms last.
+The capture gate qualifies the combined result. Clear combines release
+permission with its hold and fault conditions before applying pending validity.
 
 The staging register (`sq_check_*`) holds the selected load while the SQ
 checks it. Disambiguation is conservative: a load reads memory only when every
@@ -160,9 +245,9 @@ only their requested bytes (see the
 Uncached Normal and device loads share one in-flight tracker (`mem_outstanding` and
 the `fast_*` registers); each cached load holds a `cs_*` slot whose id travels
 with the request (`o_mem_read_id`) and the response (`i_mem_read_is_cached`,
-`i_mem_read_id`). An LR or AMO also sets `o_mem_read_no_merge`, so the
-cached-tier adapter never serves it from another load's line request. A
-launch copies the load's attributes into its tracker or slot, so the response
+`i_mem_read_id`). The coherent L1D also receives the request kind, size and
+ROB tag; the kind distinguishes ordinary loads, LRs and AMOs. A launch
+copies the load's attributes into its tracker or slot, so the response
 path does not read the entry's fields. While every slot is busy, or for a
 cycle after the router held a cached response behind a fast one
 (`i_cached_resp_held`), a registered hold stops every launch, low-BRAM and
@@ -238,11 +323,13 @@ cancels the request with no response owed. From N+2 until the load commits,
 interrupts wait; exceptions stay enabled. Arming only adds a precondition: the
 flush, write-port and drain conditions are checked again at accept.
 
-The shield cannot hang the core: while it defers an interrupt, the trap unit
-holds commit only while that interrupt arms (arming the read already required
-an empty committed-store queue), so the load commits and the interrupt
-follows. A simulation watchdog in cpu_ooo reports a shield held for 4096
-cycles.
+While the shield defers an interrupt, the trap unit holds commit only while
+that interrupt arms. A parked Device read waits for older committed stores
+to complete before arming. Progress requires those stores and the read's
+memory response to complete. The simulation watchdog in `cpu_ooo` allows
+65,536 cycles for the older-store drain, including cache initialization,
+and 4,096 cycles for read service and commit after drain. Each counter
+accumulates its phase's cycles until reset or shield release.
 
 ## L0 cache
 
@@ -314,21 +401,16 @@ reservation comes after the LR in program order. An older store to the other
 word of the LR's dword does not overlap the LR, so nothing else would hold the
 LR until that store writes.
 Devices hold no reservations, so an LR to the device quadrant faults instead
-(see [Completion](#completion)), with no read and no reservation. The
-reservation clears on any SC commit (`i_sc_clear_reservation`), a store or AMO
-write to the reserved dword (the SQ's write-launch snoop, or the AMO's write
-completing), a DMA write to its 32-byte line, or a trap, xRET, or FENCE-class
-flush (`i_full_flush`). A branch recovered at commit, the other source of a
-full flush, keeps it: an LR launches only at the ROB head, so the LR that set
-the reservation retired before the branch, and the flush removes only
-instructions after the branch. For DMA writes the reservation set is the
-32-byte line, and an SC to another dword of it fails, which the specification
-allows. An LR in flight when a DMA write hits its line, or whose response
-lands on the invalidation edge, sets no reservation. The SC goes through the
-SQ;
-[`sc_pending_unit`](../tomasulo_wrapper/atomics/sc_pending_unit.sv) decides
-success when the SC fires at the ROB head, from the reservation and the SC's
-dword.
+(see [Completion](#completion)), with no read and no reservation.
+The reservation records the exact physical address and W/D size. Its set
+covers the aligned 32-byte sector. Writes and invalidations to that sector
+clear it. An invalidation probe supplies its sector address at capture.
+Matching response slots suppress LR reservations and L0 fills on that edge
+and throughout the cut. Responses on other sectors keep their eligibility.
+A trap, xRET or FENCE-class flush clears the reservation; a
+branch recovered at commit preserves it. The SC goes through the SQ and
+[`sc_pending_unit`](../tomasulo_wrapper/atomics/sc_pending_unit.sv).
+Cached SC selection and its home check use the exact LR address and size.
 
 ### AMO sequence
 
@@ -353,7 +435,8 @@ therefore holds interrupts while an AMO occupies the ROB head
 before it touches memory. A simulation check reports any full flush that
 reaches an active AMO write. A flush that arrives earlier, including in
 `AMO_COMPUTE`, cancels the AMO cleanly. `AMO_COMPUTE` has already freed the
-response slot but still keeps the line busy for DMA admission.
+response slot. For a cached AMO, the home blocks later requests to the same
+sector until the AMO's write completes and its completion is released.
 
 ### Older-AMO fence
 
@@ -372,24 +455,49 @@ it, so no stale dependency reaches a new load. A fenced load cannot launch,
 forward or hit the L0, and if it is staged it gives up the staging register
 (`older_amo_write_pending`) so the AMO can reach the memory port.
 
+## Coherent memory interface
+
+The LQ supplies request kind, size and ROB tag to the coherent L1D. Cached
+AMOs require effective ROB-head protection before launch. Arming checks the
+staged translation, PMA and alignment results independently of that protection.
+Address faults complete through the exception path without arming ownership.
+Simulation assertions check the captured exception's ROB tag at trap entry.
+An atomic fault can release its context only after home ownership ends. LR
+records its exact physical address and W/D size with a 32-byte reservation set. An ordinary
+store or AMO write to that set, or a matching cut, clears the reservation. A
+successful cached SC clears it when its tagged write completes. Other SCs
+clear it at commit (`i_sc_clear_reservation`). The delayed-response
+suppression flag prevents an invalidated LR from recreating it.
+
+The local cut hold blocks L0 hits, forwarding and memory-read launch during
+capture. Returned-load observations remain replayable after their LQ rows
+are released. A load matching a pending store or selected atomic is parked
+until its holder changes. Other rows remain eligible for issue.
+
 ## DMA coherence
 
 A DMA agent below the L1D can write memory the core is reading. The wrapper's
 [`lq_coherence_port.sv`](../tomasulo_wrapper/coherence/lq_coherence_port.sv)
-mirrors the lines the cache hierarchy has admitted for DMA writes (up to
-three, `riscv_pkg::DmaCoherenceLocks`), and the
+has three reusable entries (`riscv_pkg::DmaCoherenceLocks`), but the current
+hart uses slot 0 for one coordinated invalidation at a time: the L1D's
+invalidation cut clears L0 copies and reservations and marks affected loads
+for replay before the L1D acknowledges the home. The
 [cache library](../../../../lib/cache/README.md) describes the whole write
 sequence. The LQ's part, all on 32-byte lines:
 
-- Admission. The LQ answers busy (`o_coh_query_busy`) for the queried line
-  while an AMO or LR on it is staged, holds a cached slot, or is in
-  `AMO_COMPUTE` or `AMO_WRITE_ACTIVE`. The port handles SCs.
+- Admission. The port records the L1D's invalidation cut. The wrapper ties
+  the port's LQ busy-query and SC-window inputs low; the home orders DMA
+  with LR, AMO and SC requests by sector. `o_coh_query_held` reports
+  whether the LQ holds anything for the admitted line: an L0 entry at one
+  of its dword indices, a cached load or a reservation on it. With nothing
+  held and no live observation, the port answers clean and the L1D skips
+  the invalidation.
 - Launch hold. A staged AMO or LR on an admitted line does not launch until
-  the line is released (`i_coh_block_*`). Admission is decided a cycle behind
-  the queue, so a newly staged AMO or LR also waits a cycle for its own
-  compare, and `i_coh_admit_pulse` holds every staged AMO or LR while an
-  admission answer is presented and for a cycle after it fires. No DMA write
-  can land between an atomic's read and its write.
+  the line is released (`i_coh_block_*`). The admitted-line comparison is
+  registered, so a newly staged AMO or LR also waits a cycle for its own
+  compare. `i_coh_admit_pulse` holds every staged AMO or LR while an admission
+  answer is presented and for a cycle after it fires. The home orders a DMA
+  write to the same sector before or after the atomic.
 - Invalidation (`i_coh_inval_*`). The LQ clears the line's four L0 entries,
   stops in-flight cached loads of the line from filling and in-flight LRs from
   setting a reservation, and clears a matching reservation. It does not
@@ -431,6 +539,19 @@ result waits in the data RAM. An AMO that does not fault completes through the
 data RAM, and nothing enters `cdb_stage` on a partial-flush cycle. When
 several results are ready, `cdb_stage` takes a queued completion first, then
 a memory response, a fault, an SQ forward, and an L0 hit.
+
+The LQ compares completion indices with each entry before
+selecting the free mask. Allocation has priority over freeing, and reset and
+full flush clear every valid bit.
+Cached response slots each qualify their live entry and AMO kind before
+response selection. The uncached tracker supplies its own qualification.
+
+Bypass payloads use the staged address-fault and
+forwarding predicates before cut and sector holds. Staged-load capture applies
+those holds; responses and queued completions use their own eligibility.
+Value, exception and cause match the qualified selections whenever the
+completion stage captures them. The coherent cause selection combines queued
+completion and bypass causes before the stage capture enable.
 
 A load that faults (misaligned when `i_trap_misaligned_accesses` is set,
 outside the physical memory map, an AMO or LR to the device quadrant, or with

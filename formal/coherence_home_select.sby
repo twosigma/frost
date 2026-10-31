@@ -1,0 +1,20 @@
+[tasks]
+coh_seat_select_prove seats
+coh_work_select_prove work
+
+[options]
+mode prove
+depth 1
+timeout 60
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv coherence_seat_select.sv coherence_work_select.sv
+seats: prep -top coherence_seat_select
+work: prep -top coherence_work_select
+
+[files]
+../hw/rtl/lib/cache/coherence_seat_select.sv
+../hw/rtl/lib/cache/coherence_work_select.sv

@@ -1,0 +1,17 @@
+[tasks]
+debug_dirty_next_prove
+
+[options]
+mode prove
+depth 1
+timeout 60
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv debug_dirty_next.sv
+prep -top debug_dirty_next
+
+[files]
+../hw/rtl/cpu_and_mem/debug/debug_dirty_next.sv
