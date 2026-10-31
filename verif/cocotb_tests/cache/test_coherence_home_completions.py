@@ -325,6 +325,42 @@ async def predecessor_release_and_slot_reuse_do_not_alias(dut: Any) -> None:
 
 
 @cocotb.test()
+async def dma_result_hands_its_sector_to_successors(dut: Any) -> None:
+    """Hold a sector behind a DMA request until its result, behind a hart one until U."""
+    b = Completions(dut)
+    await b.reset()
+    address = 0x80000000
+    first_dma = pack((2, 2), (2, 3), (4, 5), (1, 0))
+    second_dma = pack((2, 2), (2, 3), (4, 6), (1, 0))
+    await b.admit(first_dma, address, op=8)
+    first = await b.dispatch()
+    await b.admit(0, address)
+    await b.tick(3)
+    assert not b.get("o_work_valid")
+    await b.result(first, 0x11)
+    # The hart request starts before the DMA request's G, C and U.
+    hart = await b.dispatch()
+    assert hart[0] == 0
+    # A request admitted now waits for the hart request alone.
+    await b.admit(second_dma, address, op=7)
+    await b.grant(first, 0x11)
+    await b.result(hart, 0x22)
+    await b.grant(hart, 0x22)
+    await b.complete(hart)
+    await b.tick(5)
+    assert not b.get("o_work_valid")
+    await b.release(hart)
+    second = await b.dispatch()
+    assert second[0] == second_dma
+    await b.complete(first)
+    await b.release(first)
+    await b.result(second, 0x33)
+    await b.grant(second, 0x33)
+    await b.complete(second)
+    await b.release(second)
+
+
+@cocotb.test()
 async def idle_grant_captures_result_edge(dut: Any) -> None:
     """Capture an unopposed result into G and hold its full packet through stalls."""
     b = Completions(dut)

@@ -295,8 +295,10 @@ share their image storage with the result credits. An engine hands its image
 to completion ownership before G. An idle grant register captures an accepted
 result directly when no older result awaits selection. The grant register
 presents G while it holds a grant. G acceptance returns that image credit;
-the identity and physical way pin last through U. Each request waits for U
-from earlier requests to the same 32-byte sector.
+the identity and physical way pin last through U. Each request waits for
+earlier requests to the same 32-byte sector: for a hart request's U, and for a
+DMA request's result. A DMA requester keeps no copy, and its result follows its
+probe service and array update, so its G, C and U order nothing after it.
 
 `coherence_home_array` has separate tag-decision, data-read and masked-update
 ports. Each request carries a response token. Replacement state changes when
@@ -424,8 +426,8 @@ committed stores and the selected SC write. They do not require all dirty L2
 bytes to reach external memory.
 
 The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_equal`, `coherence_cluster`
-and `coherent_cut` cover controller ownership, inclusion, cuts, atomics and
-probe service. `coherence_cluster_misses` repeats the cluster cases with three
+and `coherent_cut` cover controller ownership, inclusion, cuts, atomics,
+probe service and the DMA sector handoff. `coherence_cluster_misses` repeats the cluster cases with three
 L1D request endpoints, including several loads in flight. The whole-SoC program configurations use this hierarchy.
 G and U route by their message source identity. Fair C arbiters select the
 hart and DMA inputs and the hart's data, instruction and walker inputs. Each
