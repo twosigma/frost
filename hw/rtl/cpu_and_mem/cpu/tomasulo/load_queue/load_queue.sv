@@ -1419,6 +1419,16 @@ module load_queue #(
   // module-level declaration as a separate, undriven implicit net.
   logic [DEPTH-1:0] staged_younger_than_entry;
   wire coherent_replace_without_update, coherent_replace_with_update;
+  // The staged load's age against the ROB-head entry, compared directly from
+  // that entry's tag so it is as early as the per-entry comparisons.
+  logic [ReorderBufferTagWidth-1:0] rob_head_entry_tag;
+  always_comb begin
+    rob_head_entry_tag = '0;
+    for (int i = 0; i < DEPTH; i++)
+      rob_head_entry_tag |= lq_rob_tag[i] & {ReorderBufferTagWidth{rob_head_match_q[i]}};
+  end
+  wire staged_younger_than_head = is_younger(sq_check_rob_tag_q, rob_head_entry_tag,
+                                             i_rob_head_tag);
 
   if (1'b1) begin : gen_coherent_issue_selector
     coherent_lq_issue_selector #(
@@ -1440,6 +1450,7 @@ module load_queue #(
         .head_idx(head_idx),
         .i_sq_committed_empty(i_sq_committed_empty),
         .i_staged_younger(staged_younger_than_entry),
+        .i_staged_younger_head(staged_younger_than_head),
         .o_replace_without_update(coherent_replace_without_update),
         .o_replace_with_update(coherent_replace_with_update),
         .o_issue_cdb_found(issue_cdb_found),
@@ -1865,6 +1876,13 @@ module load_queue #(
   end
   logic staged_younger_than_candidate;
   assign staged_younger_than_candidate = |(staged_younger_than_entry & issue_mem_onehot);
+`ifndef SYNTHESIS
+  // The selector reads the head entry's staged age from this direct
+  // comparison; the head match is at most one-hot.
+  always @(posedge i_clk)
+    if (reset_seen_q && i_rst_n && |rob_head_match_q)
+      assert (staged_younger_than_head == |(staged_younger_than_entry & rob_head_match_q));
+`endif
 
   // Precompute replacement with and without an address update for timing.
   // The first entry in the union is the earlier scan winner. Preserve head
@@ -1945,23 +1963,30 @@ module load_queue #(
         older_amo_write_pending || (fault_clear_ready && fault_granted);
     (* keep = "true" *) wire release_for_clear = (!coherent_sector_hold && release_ready) ||
         older_amo_write_pending || (fault_clear_ready && fault_granted);
-    wire replacement = i_addr_update.valid ? coherent_replace_with_update :
-        coherent_replace_without_update;
+    // Each take is its terms without replacement, or the staged load giving
+    // way to an older candidate. The two parts are kept, so the replacement
+    // choice meets them in the last term.
+    (* keep = "true" *) wire take_replaceable = sq_check_gate_early && sq_check_pending;
     for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_take
-      assign coherent_stage_take[copy_index] = sq_check_gate_early &&
+      (* keep = "true" *) wire take_without_replacement = sq_check_gate_early &&
           ((!coherent_pending[copy_index] && issue_mem_found) ||
-           (sq_check_pending && ((release_for_take && issue_mem_found) || replacement)));
+           (sq_check_pending && release_for_take && issue_mem_found));
+      assign coherent_stage_take[copy_index] = take_without_replacement ||
+          (take_replaceable && (i_addr_update.valid ? coherent_replace_with_update :
+           coherent_replace_without_update));
     end
     assign coherent_stage_clear = sq_check_pending && release_for_clear;
   end
 
+  // The selector's head term relies on the head match being at most one-hot
+  // (p_rob_head_match_onehot), so these equalities are checked where it is.
 `ifndef SYNTHESIS
 `ifdef FORMAL
   always_comb
 `else
   always @(posedge i_clk)
 `endif
-  begin
+  if ($onehot0(rob_head_match_q)) begin
     p_stage_replace_exact : assert (coherent_stage_replace ==
         (sq_check_pending && sq_check_gate_early &&
          (|(staged_younger_than_entry & issue_mem_onehot))));
@@ -1986,7 +2011,7 @@ module load_queue #(
 `else
     always @(posedge i_clk)
 `endif
-    begin
+    if ($onehot0(rob_head_match_q)) begin
       assert (coherent_stage_take[copy_index] == reference_take);
     end
 `endif
@@ -3430,7 +3455,7 @@ module load_queue #(
 `else
     always @(posedge i_clk)
 `endif
-    begin
+    if ($onehot0(rob_head_match_q)) begin
       p_stage_state_exact : assert (
           {sq_check_pending_next, sq_check_no_older_store_next,
            sq_check_phase2_next, sq_check_in_flight_mask_next} ==
@@ -3576,6 +3601,14 @@ module load_queue #(
   end
 
 
+  // Valid bits kept through this edge's partial flush and frees. Allocation,
+  // whose enable arrives last from dispatch, ORs its new entries in after.
+  (* keep = "true" *) wire [DEPTH-1:0] lq_valid_kept;
+  for (genvar i = 0; i < DEPTH; i++) begin : gen_lq_valid_kept
+    assign lq_valid_kept[i] = lq_valid[i] && !coherent_free_entry[i] && !(i_flush_en &&
+        (flush_all_entries || is_younger(lq_rob_tag[i], i_flush_tag, i_rob_head_tag)));
+  end
+
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       head_ptr                  <= '0;
@@ -3629,15 +3662,7 @@ module load_queue #(
       // Partial flush: invalidate entries younger than flush_tag
       // -----------------------------------------------------------------
       if (i_flush_en) begin
-        if (flush_all_entries) begin
-          lq_valid <= '0;
-        end else begin
-          for (int i = 0; i < DEPTH; i++) begin
-            if (lq_valid[i] && is_younger(lq_rob_tag[i], i_flush_tag, i_rob_head_tag)) begin
-              lq_valid[i] <= 1'b0;
-            end
-          end
-        end
+        // lq_valid_kept clears the flushed entries' valid bits.
         // If the outstanding fast-tier load was flushed, drop the next memory
         // response so the recycled slot cannot see stale data.
         if (fast_entry_flushed) begin
@@ -3784,11 +3809,7 @@ module load_queue #(
       // -----------------------------------------------------------------
       // Entry Freeing + Head Advancement
       // -----------------------------------------------------------------
-      begin
-        for (int entry = 0; entry < DEPTH; entry++) begin
-          if (coherent_free_entry[entry]) lq_valid[entry] <= 1'b0;
-        end
-      end
+      // lq_valid_kept clears the freed entries' valid bits.
 
       // -----------------------------------------------------------------
       // Allocation: initialize a new physical generation (control signals
@@ -3797,9 +3818,9 @@ module load_queue #(
       // Initialize after old-entry updates so allocation has final priority.
       // Legal allocations cannot overlap a completing entry, and the two slot
       // vectors are disjoint.
+      lq_valid <= alloc_oh | lq_valid_kept;
       for (int unsigned i = 0; i < DEPTH; i++) begin
         if (alloc_oh[i]) begin
-          lq_valid[i]          <= 1'b1;
           lq_addr_valid[i]     <= 1'b0;
           lq_issued[i]         <= 1'b0;
           lq_data_valid[i]     <= 1'b0;
