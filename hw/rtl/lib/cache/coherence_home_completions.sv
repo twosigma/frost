@@ -102,6 +102,12 @@ module coherence_home_completions #(
   logic [SLOTS-1:0] release_valid, release_offer, release_ready, release_fire;
   logic [SLOTS-1:0] issued_q, buffer_owned_q, result_valid_q, pin_valid_q, error_q;
   logic [SLOTS-1:0] predecessors_q[SLOTS];
+  // A DMA request's result completes its effect on the sector: its bytes and
+  // probe results are in the array, and it keeps no private copy. From the
+  // cycle after that result until its release, handed_q no longer orders
+  // younger requests behind it. Hart requests keep their order through U,
+  // since their grant installs after the result.
+  logic [SLOTS-1:0] handed_q;
   logic [SLOTS-1:0] parked_q, ready_q, wake_error_q, counted_q;
   logic [ResultBits-1:0] work_buffer_q;
   logic [SLOTS-1:0][ADDR_WIDTH+311:0] work;
@@ -285,11 +291,11 @@ module coherence_home_completions #(
   (* keep = "true" *) logic accepted_clear_if_hold, accepted_clear_if_release;
   wire release_go = !i_rst && i_u_ready;
   assign release_candidate = release_valid & release_selected;
-  assign accepted_clear_if_hold = !(|(live & incoming_sectors));
-  assign accepted_clear_if_release = !(|(live & ~release_candidate & incoming_sectors));
+  assign accepted_clear_if_hold = !(|(live & ~handed_q & incoming_sectors));
+  assign accepted_clear_if_release = !(|(live & ~handed_q & ~release_candidate & incoming_sectors));
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_clear_choice
-    assign clear_if_hold[slot] = predecessors_q[slot] == 0;
-    assign clear_if_release[slot] = (predecessors_q[slot] & ~release_candidate) == 0;
+    assign clear_if_hold[slot] = (predecessors_q[slot] & ~handed_q) == 0;
+    assign clear_if_release[slot] = (predecessors_q[slot] & ~handed_q & ~release_candidate) == 0;
   end
 `ifndef SYNTHESIS
   always_comb assert (release_fire == (release_candidate & {SLOTS{release_go}}));
@@ -459,6 +465,7 @@ module coherence_home_completions #(
       grant_zero_q <= '0;
       grant_q <= '0;
       pred_clear_q <= '1;
+      handed_q <= '0;
       for (int slot = 0; slot < SLOTS; slot++) begin
         predecessors_q[slot] <= '0;
         buffer_index_q[slot] <= '0;
@@ -516,8 +523,10 @@ module coherence_home_completions #(
         result_valid_q[grant_slot_q] <= 1'b0;
         buffer_owned_q[grant_slot_q] <= 1'b0;
       end
+      handed_q <= (handed_q | ({SLOTS{accept_result && work_identity[result_slot][8:7] == 2'd2}} &
+          (SLOTS'(1) << result_slot))) & ~release_fire;
       for (int slot = 0; slot < SLOTS; slot++) begin
-        predecessors_q[slot] <= predecessors_q[slot] & ~release_fire;
+        predecessors_q[slot] <= predecessors_q[slot] & ~release_fire & ~handed_q;
         if (release_fire[slot]) begin
           issued_q[slot] <= 1'b0;
           pin_valid_q[slot] <= 1'b0;
@@ -529,7 +538,7 @@ module coherence_home_completions #(
         if (accept_request && free_slot_index == SlotBits'(slot)) begin
           for (int older = 0; older < SLOTS; older++) begin
             predecessors_q[slot][older] <= live[older] && !release_fire[older] &&
-                incoming_sectors[older];
+                !handed_q[older] && incoming_sectors[older];
           end
         end
         pred_clear_q[slot] <= accept_request && free_slot_index == SlotBits'(slot) ?
@@ -620,6 +629,8 @@ module coherence_home_completions #(
     if (!i_rst) begin
       for (int slot = 0; slot < SLOTS; slot++) begin
         assert (pred_clear_q[slot] == (predecessors_q[slot] == 0));
+        // Only a live DMA request hands its sector to younger requests early.
+        if (handed_q[slot]) assert (live[slot] && work_identity[slot][8:7] == 2'd2);
         assert (work_later_q[slot] == (slot >= int'(work_next_q)));
       end
       if (accept_result) assert (result_hit == SLOTS'(1) << result_slot);
