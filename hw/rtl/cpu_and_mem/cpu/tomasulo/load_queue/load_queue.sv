@@ -1415,6 +1415,11 @@ module load_queue #(
     end
   end
 
+  // Declared before the selector: Vivado binds a port connection to a later
+  // module-level declaration as a separate, undriven implicit net.
+  logic [DEPTH-1:0] staged_younger_than_entry;
+  wire coherent_replace_without_update, coherent_replace_with_update;
+
   if (1'b1) begin : gen_coherent_issue_selector
     coherent_lq_issue_selector #(
         .DEPTH(DEPTH)
@@ -1853,7 +1858,6 @@ module load_queue #(
   // Compare the staged tag with each entry before selection for timing.
   // issue_mem_onehot selects exactly one age result, or zero when no
   // candidate exists.
-  logic [DEPTH-1:0] staged_younger_than_entry;
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
       staged_younger_than_entry[i] = is_younger(sq_check_rob_tag_q, lq_rob_tag[i], i_rob_head_tag);
@@ -1878,7 +1882,6 @@ module load_queue #(
   assign sq_check_replace = sq_check_pending && sq_check_gate_early &&
       (i_addr_update.valid ? replace_with_update : replace_without_update);
   logic [3:0] coherent_stage_take;
-  wire coherent_replace_without_update, coherent_replace_with_update;
   wire coherent_stage_replace;
   if (1'b1) begin : gen_coherent_replace_gate
     (* keep = "true" *) wire stage_replace = sq_check_pending && sq_check_gate_early &&
