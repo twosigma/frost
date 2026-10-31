@@ -38,9 +38,12 @@ and DMA. Snooping live load-queue entries is not enough, because an entry is
 freed as soon as its result is staged for the common data bus, before the
 load retires, so returned loads stay observable until they retire. A store
 acquires M before it writes. Probe data and acknowledgements must keep making
-progress when every queue is full. In simulation, DMA and NIC transfers are
-slower through the home than they were through the earlier DMA sequencer,
-and recovering that throughput is planned. The single-hart queue sizes and
+progress when every queue is full. In simulation, memory-bound code in DDR
+runs slower through the home than through the previous hierarchy: the L1D
+sends its store acquisitions one at a time, the home has four fills, and it
+has no stream prefetcher yet. Raising those is planned, along with the DMA
+test engine's transfer rate, which is slightly below what the earlier DMA
+sequencer reached. The single-hart queue sizes and
 lane choices will need revisiting against the timing and memory-traffic cost
 of the second hart.
 
