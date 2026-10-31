@@ -199,7 +199,18 @@ The AXI bridge, mux and both connected masters reset with that ownership.
 Requests accepted before reset are not guaranteed a response. Outgoing AXI
 transactions already presented drain as described above.
 
-Requests must be aligned to 32 bytes and remain within the configured cached memory region. An invalid address is not accepted and triggers a simulation assertion. Its sequencer probes dirty L1D lines, orders traffic at L2, and coordinates writes with the load queue and reservation/SC windows. FROST connects its NIC and DMA test engine, both AXI4 masters, through `axi_mux` and `axi_coherent_bridge` in `soc_top` ([AXI library](../lib/axi/README.md)). External masters accessing cached memory must use this path; bypassing it on the external AXI fabric is noncoherent. AMOs use CPU serialization and this coherence protocol, not AXI exclusives. Uncached atomic memory must be private to the hart or protected by the integrating system from competing noncoherent masters.
+Requests must be aligned to 32 bytes and remain within the configured cached
+memory region. An invalid address is not accepted and triggers a simulation
+assertion. The ingress queues requests; the coherence home probes the L1D
+and orders their service. The L1D coordinates invalidations with the load
+queue, and the home orders DMA with atomic and SC operations. FROST connects
+its NIC and DMA test engine, both AXI4 masters, through `axi_mux` and
+`axi_coherent_bridge` in `soc_top`
+([AXI library](../lib/axi/README.md)). External masters accessing cached
+memory must use this path; bypassing it on the external AXI fabric is
+noncoherent. AMOs use CPU serialization and this coherence protocol, not AXI
+exclusives. Uncached atomic memory must be private to the hart or protected
+by the integrating system from competing noncoherent masters.
 
 L2 is inside this single-hart `cpu_top`. The outgoing AXI master does not
 provide coherence between separate CPU instances.
