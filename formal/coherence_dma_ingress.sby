@@ -1,13 +1,21 @@
 [tasks]
 coh_dma_ingress_prove
 coh_dma_ingress_cover
+coh_dma_ingress_soc_prove soc
+coh_dma_ingress_soc_cover soc
 
 [options]
 coh_dma_ingress_prove: mode prove
 coh_dma_ingress_cover: mode cover
 coh_dma_ingress_prove: depth 6
 coh_dma_ingress_cover: depth 16
-timeout 180
+coh_dma_ingress_soc_prove: mode prove
+coh_dma_ingress_soc_prove: depth 6
+coh_dma_ingress_soc_cover: mode cover
+coh_dma_ingress_soc_cover: depth 48
+coh_dma_ingress_soc_prove: timeout 900
+coh_dma_ingress_soc_cover: timeout 600
+~soc: timeout 180
 
 [engines]
 smtbmc boolector
@@ -15,7 +23,10 @@ smtbmc boolector
 [script]
 read -sv coherence_pkg.sv
 read -formal -sv -D COHERENCE_ARBITER_COMPOSED coherence_d_arbiter.sv
-read -formal -sv coherence_dma_ingress.sv
+~coh_dma_ingress_soc_cover: read -formal -sv coherence_dma_ingress.sv
+coh_dma_ingress_soc_cover: read -formal -sv -D COHERENCE_DMA_SOC_COVER coherence_dma_ingress.sv
+soc: chparam -set SLOTS 8 coherence_dma_ingress
+coh_dma_ingress_soc_cover: chformal -assert -remove
 prep -top coherence_dma_ingress
 memory_map
 opt

@@ -558,12 +558,89 @@ module coherence_dma_ingress #(
       // A slot whose U arrives before its response responds the next cycle.
       if ($past(|release_due))
         assert (o_resp_valid && $past(release_due) == (SLOTS'(1) << response_slot_q));
+`ifndef COHERENCE_DMA_SOC_COVER
       cover (o_resp_valid && phase_q[response_slot_q] != Respond);
       cover (pulse_free && |release_free);
       cover (count_q == CountBits'(SLOTS) && queued_q == 0);
       cover (o_resp_valid && o_resp_error && count_q != 0);
       cover (o_resp_valid && accept_request && accept_demand && release_request);
+`endif
     end
   end
+`ifdef COHERENCE_DMA_SOC_COVER
+  // The cover driver fills the issue queue, drains writes through G/C/U,
+  // and reuses the first ID. The proof tasks permit arbitrary input traffic.
+  (* anyconst *) logic f_cover_overlap;
+  logic [15:0] f_old_ids_q;
+  logic [SlotBits-1:0] f_cover_id_q;
+  logic f_cover_g_valid, f_cover_u_valid;
+  coh_d_t f_cover_packet;
+  coh_g_t f_cover_g;
+  coh_u_t f_cover_u;
+  logic f_full_q, f_drained_q, f_head_wrapped_q;
+  logic [15:0] f_full_ids_q;
+  always_comb begin
+    f_cover_g_valid = 1'b0;
+    f_cover_u_valid = 1'b0;
+    f_cover_g = '0;
+    f_cover_u = '0;
+    f_cover_packet = '0;
+    for (int slot = 0; slot < SLOTS; slot++) begin
+      f_cover_packet = packet_q[slot];
+      if (phase_q[slot] == Sent) begin
+        f_cover_g_valid = 1'b1;
+        f_cover_g.q = f_cover_packet.q;
+        f_cover_g.addr = f_cover_packet.addr;
+        f_cover_g.opcode = coherence_pkg::GrantAck;
+        f_cover_g.tid = 6'(slot);
+      end
+      if (phase_q[slot] == WaitRelease) begin
+        f_cover_u_valid = 1'b1;
+        f_cover_u.q = f_cover_packet.q;
+        f_cover_u.addr = f_cover_packet.addr;
+        f_cover_u.tid = tid_q[slot];
+      end
+    end
+    assume (i_rst == !f_past_valid);
+    if (!i_rst) begin
+      assume (!i_fatal_stop && i_c_ready);
+      assume (i_req_write && i_req_addr == 0 && i_req_data == 0 && (&i_req_mask));
+      assume (i_req_id == 4'(f_cover_id_q));
+      assume (i_req_valid == (!f_full_q || f_drained_q || f_cover_overlap));
+      assume (i_d_ready == f_full_q);
+      assume (i_g_valid == f_cover_g_valid && i_g == f_cover_g);
+      assume (i_u_valid == f_cover_u_valid && i_u == f_cover_u);
+    end
+  end
+  always @(posedge i_clk) begin
+    if (i_rst) f_cover_id_q <= '0;
+    else if (accept_request) f_cover_id_q <= f_cover_id_q + 1'b1;
+  end
+  always @(posedge i_clk) begin
+    if (i_rst) begin
+      f_full_q <= 1'b0;
+      f_drained_q <= 1'b0;
+      f_head_wrapped_q <= 1'b0;
+      f_full_ids_q <= '0;
+      f_old_ids_q <= '0;
+    end else begin
+      if (count_q == SLOTS && queued_q == SLOTS) begin
+        f_full_q <= 1'b1;
+        f_full_ids_q <= occupied_q;
+        f_old_ids_q <= occupied_q;
+      end
+      if (f_full_q && accept_demand && (&head_q)) f_head_wrapped_q <= 1'b1;
+      if (f_full_q && count_q == 0) f_drained_q <= 1'b1;
+      if (pulse_free) f_old_ids_q[o_resp_id] <= 1'b0;
+      c_soc_live_reuse :
+      cover (f_full_q && accept_request && !f_old_ids_q[i_req_id] && (|f_old_ids_q));
+      c_soc_full : cover (f_full_q);
+      c_soc_tail_wrap : cover (f_full_q && tail_q == 0);
+      c_soc_head_wrap : cover (f_head_wrapped_q && head_q == 0);
+      c_soc_drain : cover (f_drained_q);
+      c_soc_id_reuse : cover (f_drained_q && accept_request && f_full_ids_q[i_req_id]);
+    end
+  end
+`endif
 `endif
 endmodule
