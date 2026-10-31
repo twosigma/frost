@@ -16,8 +16,10 @@
 
 `include "coherence_types.svh"
 
-// Eight unmerged CPU reads share one acquisition endpoint. A committed store
-// owns its bytes separately from the read queue and from dirty probe replies.
+// Eight unmerged CPU reads share MISSES request endpoints: endpoint 0 serves
+// every acquisition kind, and with more than one the others serve ordinary
+// load misses. A committed store owns its bytes separately from the read
+// queue and from dirty probe replies.
 module coherence_l1d #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned CACHE_BYTES = 128 * 1024,
@@ -229,8 +231,8 @@ module coherence_l1d #(
   localparam int unsigned EpSlots = 1 << EpBits;
   logic [EpSlots-1:0] live, ep_request_ready, ep_request_valid, ep_grant_valid, ep_grant_ready;
   logic [EpSlots-1:0] ep_done_valid, ep_write_done, ep_g_ready, ep_u_ready;
-  logic [1:0] ep_done_status[EpSlots];
-  coh_g_t ep_grant[EpSlots];
+  logic [EpSlots-1:0][1:0] ep_done_status;
+  coh_g_t [EpSlots-1:0] ep_grant;
   logic [EpBits-1:0] acq_ep_q, grant_ep_q, grant_pick;
   logic any_live;
   // Load endpoint bookkeeping, used only when MISSES > 1.
@@ -244,6 +246,10 @@ module coherence_l1d #(
   logic [7:0] rd_wait_q, rd_wait_release_q, rd_waiting, rd_owned, rd_miss_retry;
   logic [EpBits-1:0] rd_wait_ep_q[8];
   logic [2:0] fill_read_slot, failure_read_slot;
+  // The selected grant as a one-hot, and each endpoint's failing-read and
+  // error bits, so a failure reaches read status without the wide grant
+  // multiplexer.
+  logic [EpSlots-1:0] pick_onehot, ep_read_fail, ep_fail, ep_fail_error;
   logic acquisition_store_q, acquisition_sc_q;
   logic [2:0] acquisition_read_q;
   logic grant_valid, grant_ready;
@@ -253,9 +259,7 @@ module coherence_l1d #(
   logic pending_blocked;
 
   assign read_failure = active && phase_q == Idle &&
-      !probe_valid_q && !probe_priority &&
-      grant_valid && (grant.error || grant.opcode == coherence_pkg::GrantFail) &&
-      (grant_pick != '0 || (!acquisition_sc_q && !acquisition_store_q));
+      !probe_valid_q && !probe_priority && grant_valid && |(pick_onehot & ep_read_fail);
   assign read_hit = active && phase_q == LookupWait && array_valid &&
       operation_q != ProbeOp && operation_q != GrantOp && operation_q != StoreOp &&
       operation_q != AtomicWriteOp && operation_q != MaintOp &&
@@ -279,7 +283,7 @@ module coherence_l1d #(
       .i_response_id(rd_result),
       .i_failure_valid(read_failure),
       .i_acquisition_id(read_fill ? fill_read_slot : failure_read_slot),
-      .i_failure_error(grant.error),
+      .i_failure_error(|(pick_onehot & ep_fail_error)),
       .i_hit_valid(read_hit),
       .i_hit_id(selected_read_q),
       .i_fill_valid(read_fill),
@@ -358,6 +362,9 @@ module coherence_l1d #(
           (operation_q == StoreOp || operation_q == ReadOp) && !array_hit &&
           (!Multi ? (request_live || !wb_free) : operation_q == StoreOp ?
            (request_live || !ep0_wb_ok || store_same_line_q) :
+           rd_kind_q[selected_read_q] == ReadLR ?
+           (same_line || request_live || !ep0_wb_ok || load_block) :
+           rd_kind_q[selected_read_q] == ReadAMO ? (any_live || !wb_free) :
            (same_line || !load_ep_free || load_block));
       o_perf_events.conflict_stall <= active && phase_q == Idle &&
           !probe_valid_q && !probe_priority && !grant_valid && !atomic_write_q &&
@@ -490,6 +497,10 @@ module coherence_l1d #(
       assign ep_done_status[ep] = ld_status_q[ep];
       assign ep_write_done[ep] = 1'b0;
     end
+    coh_g_t endpoint_grant;
+    assign ep_grant[ep] = endpoint_grant;
+    assign ep_fail[ep] = endpoint_grant.error || endpoint_grant.opcode == coherence_pkg::GrantFail;
+    assign ep_fail_error[ep] = endpoint_grant.error;
     coherence_request_endpoint #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .SOURCE(0),
@@ -510,7 +521,7 @@ module coherence_l1d #(
         .i_g(i_g),
         .o_grant_valid(ep_grant_valid[ep]),
         .i_grant_ready(ep_grant_ready[ep]),
-        .o_grant(ep_grant[ep]),
+        .o_grant(endpoint_grant),
         .i_done_valid(ep_done_valid[ep]),
         .o_done_ready(),
         .i_done_status(ep_done_status[ep]),
@@ -535,6 +546,8 @@ module coherence_l1d #(
     assign ep_grant_valid[ep] = 1'b0;
     assign ep_grant_ready[ep] = 1'b0;
     assign ep_grant[ep] = '0;
+    assign ep_fail[ep] = 1'b0;
+    assign ep_fail_error[ep] = 1'b0;
     assign ep_g_ready[ep] = 1'b0;
     assign ep_u_ready[ep] = 1'b0;
     assign ep_done_valid[ep] = 1'b0;
@@ -550,6 +563,16 @@ module coherence_l1d #(
   end
   assign grant_valid = ep_grant_valid[0] || (|(ep_grant_valid & ~EpSlots'(1)) && wb_free);
   assign grant = ep_grant[grant_pick];
+  always_comb begin
+    for (int ep = 0; ep < EpSlots; ep++) begin
+      pick_onehot[ep] = ep_grant_valid[ep];
+      for (int lower = 0; lower < ep; lower++) if (ep_grant_valid[lower]) pick_onehot[ep] = 1'b0;
+      ep_read_fail[ep] = ep_fail[ep] && (ep != 0 || (!acquisition_sc_q && !acquisition_store_q));
+    end
+    failure_read_slot = '0;
+    for (int ep = 0; ep < EpSlots; ep++)
+    if (pick_onehot[ep]) failure_read_slot |= ep == 0 ? acquisition_read_q : ld_read_q[ep];
+  end
   assign fill_read_slot = grant_ep_q == '0 ? acquisition_read_q : ld_read_q[grant_ep_q];
   // Load endpoints. A miss on a line some live endpoint holds waits for that
   // endpoint: for its installation if it has not installed, otherwise for its
@@ -666,7 +689,13 @@ module coherence_l1d #(
         assert (wb_free);
     end
 `endif
-  assign failure_read_slot = grant_pick == '0 ? acquisition_read_q : ld_read_q[grant_pick];
+`ifndef SYNTHESIS
+  always_comb
+    if (grant_valid) begin
+      assert (pick_onehot == EpSlots'(1) << grant_pick);
+      assert (failure_read_slot == (grant_pick == '0 ? acquisition_read_q : ld_read_q[grant_pick]));
+    end
+`endif
 
   for (genvar slot = 0; slot < 2; slot++) begin : gen_put
     coh_w_t put_message;
