@@ -747,7 +747,7 @@ FORMAL_TARGETS = [
         "requests and back, error bursts, and "
         "the coherent ingress's request rules, unbounded on narrow, line-wide and "
         "soc_top buses",
-        tasks=("prove", "prove_full_width", "prove_soc", "cover"),
+        tasks=("prove", "prove_full_width", "prove_soc", "bmc_soc", "cover"),
     ),
     FormalTarget(
         "axil_reg_bridge.sby",
@@ -1215,6 +1215,7 @@ SBY_TASKS = [
     ("bmc_1g", "Bounded physical-address check at a 1 GiB DDR capacity"),
     ("prove_full_width", "Unbounded proof with a bus as wide as a line"),
     ("prove_soc", "Unbounded proof in soc_top's configuration"),
+    ("bmc_soc", "Bounded check in soc_top's configuration"),
     ("bmc_64g", "Bounded physical-address check at a 64 GiB DDR capacity"),
     ("bmc_128g", "Bounded physical-address check at a 128 GiB DDR capacity"),
     ("cover_64g", "Physical-address reachability at a 64 GiB DDR capacity"),

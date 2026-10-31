@@ -26,7 +26,8 @@ module coherent_axi_test_harness #(
     parameter logic [63:0] REGION_BYTES = 64'h4000_0000,
     parameter int unsigned WRITE_BURSTS = 4,
     parameter int unsigned READ_BURSTS = 4,
-    parameter int unsigned STARVATION_LIMIT = 8
+    parameter int unsigned STARVATION_LIMIT = 8,
+    parameter int unsigned INGRESS_SLOTS = 4
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -113,7 +114,8 @@ module coherent_axi_test_harness #(
       .*
   );
   coherence_dma_ingress #(
-      .ADDR_WIDTH(LINE_ADDR_WIDTH)
+      .ADDR_WIDTH(LINE_ADDR_WIDTH),
+      .SLOTS(INGRESS_SLOTS)
   ) ingress (
       .i_clk(i_clk),
       .i_rst(i_rst),

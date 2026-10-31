@@ -201,8 +201,10 @@ module frost_cluster_memory #(
     logic g_valid, g_ready, dma_g_ready, dma_c_valid, dma_c_ready;
     logic home_c_valid, home_c_ready, u_valid, u_ready, dma_u_ready;
     if (ENABLE_COHERENCE) begin : gen_dma_ingress
+      // Eight credits: the DMA bridge has eight read and eight write line IDs.
       coherence_dma_ingress #(
-          .ADDR_WIDTH(riscv_pkg::PhysAddrBits)
+          .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
+          .SLOTS(8)
       ) ingress (
           .i_clk(i_clk),
           .i_rst(i_rst),

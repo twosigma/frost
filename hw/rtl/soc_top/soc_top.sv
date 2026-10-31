@@ -1443,7 +1443,8 @@ AxilPorts
     // The NIC's ids, 3 bits; the engine's 2-bit ids are zero-extended.
     localparam int unsigned DmaUpIdBits = 3;
     localparam int unsigned DmaDownIdBits = DmaUpIdBits + $clog2(DmaPorts);
-    localparam int unsigned DmaLineIdBits = 3;
+    // Eight read and eight write line IDs, the coherent line ID's full width.
+    localparam int unsigned DmaLineIdBits = 4;
 
     logic [DmaPorts-1:0] up_awvalid, up_awready, up_awlock, up_wvalid, up_wready, up_wlast;
     logic [DmaPorts-1:0] up_bvalid, up_bready, up_arvalid, up_arready, up_arlock;
@@ -1993,6 +1994,8 @@ AxilPorts
         .ID_WIDTH(DmaDownIdBits),
         .LINE_ADDR_WIDTH(riscv_pkg::PhysAddrBits),
         .LINE_ID_BITS(DmaLineIdBits),
+        .WRITE_BURSTS(8),
+        .READ_BURSTS(8),
         .REGION_BASE(64'(CACHED_BASE)),
         .REGION_BYTES(CACHED_SIZE_BYTES)
     ) dma_bridge (
@@ -2048,10 +2051,12 @@ AxilPorts
         .i_line_resp_error(i_coherent_resp_error)
     );
     assign o_coherent_req_id = LineIdBits'(dma_line_req_id);
-    /* verilator lint_off UNUSEDSIGNAL */  // the bridge's ids fill the low bits
-    logic dma_resp_id_high_unused;
-    /* verilator lint_on UNUSEDSIGNAL */
-    assign dma_resp_id_high_unused = |i_coherent_resp_id[LineIdBits-1:DmaLineIdBits];
+    if (LineIdBits > DmaLineIdBits) begin : gen_resp_id_high
+      /* verilator lint_off UNUSEDSIGNAL */  // the bridge's ids fill the low bits
+      logic dma_resp_id_high_unused;
+      /* verilator lint_on UNUSEDSIGNAL */
+      assign dma_resp_id_high_unused = |i_coherent_resp_id[LineIdBits-1:DmaLineIdBits];
+    end
 
 `ifndef SYNTHESIS
     // Protocol checks on the two masters' ports and the bridge's.

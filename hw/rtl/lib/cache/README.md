@@ -106,7 +106,8 @@ Request identity q contains src 2, port_class 2, id 4, and epoch 1. Sources
 name data, instruction fetch, page-table walk, and agent traffic. Hart data
 IDs are 0 through 7, fetch IDs are 0 and 1, and the walk ID is 0. DMA IDs
 are opaque four-bit values; prefetch IDs are 0 through 3. Admission limits
-are four DMA requests and four prefetch requests. Admission arbitration is
+are the ingress's credits for DMA, eight in the cluster, and four prefetch
+requests. Admission arbitration is
 external to the endpoint slots.
 
 Home tid is six bits. For H harts, `completion_count(H)` is `11*H+8`.
@@ -268,8 +269,8 @@ The hart uses source 0 and classes 0, 1 and 2 for data, instruction and walker
 requests. The data class has one request identity per L1D endpoint, IDs 0
 to `L1D_NUM_MSHR - 1`; the instruction and walker classes have one each. Source 2 and class 3 identify
 DMA, whose four-bit ingress ID occupies q.id. `coherence_dma_ingress` has
-four admission credits and holds each opaque ID through external response
-delivery. It presents requests in acceptance order without waiting for earlier
+`SLOTS` admission credits, eight in the cluster, and holds each opaque ID
+through external response delivery. It presents requests in acceptance order without waiting for earlier
 grants or releases. Each slot independently owns its request, grant, completion,
 release and external response. G matches the full q and address; U also matches
 the granted tid. A fair arbiter captures C metadata from an accepted G
@@ -700,7 +701,7 @@ The L2 sees those 6 bits. Its downstream requests carry `{type, slot}`
 IDs, `L2_DOWN_ID_BITS` wide. With `UP_ID_BITS=4`, the L1D spends one
 bit on the fill/writeback type and has 3 bits available for miss slots.
 The L1I has 2 miss slots. The walker keeps one walk in flight and uses
-ID 0. `axi_coherent_bridge` uses 3 bits of its IDs. The prefetcher's
+ID 0. `axi_coherent_bridge` uses its full 4-bit line IDs in soc_top. The prefetcher's
 3 local ID bits support up to eight outstanding reads; its default
 limit is four reads.
 

@@ -67,7 +67,7 @@ parameters, and checks cached, cache-disabled and DMA-disabled CPU builds.
 All CPU configurations use the coherent interfaces and their ordinary source
 filelists.
 
-`coherence_dma_ingress` issues all four credits before G and checks reordered
+`coherence_dma_ingress` and `coherence_dma_ingress_8` issue all four or eight credits before G and check reordered
 G/C/U, full identities and reset at response presentation. The
 `coherent_axi_ingress` benches connect the AXI bridge to that ingress with
 independent home peers. They hold four results behind C, reorder line replies,

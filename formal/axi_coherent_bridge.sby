@@ -2,6 +2,7 @@
 prove
 prove_full_width
 prove_soc
+bmc_soc
 cover
 
 [options]
@@ -11,6 +12,8 @@ prove_full_width: mode prove
 prove_full_width: depth 3
 prove_soc: mode prove
 prove_soc: depth 3
+bmc_soc: mode bmc
+bmc_soc: depth 8
 cover: mode cover
 cover: depth 24
 
@@ -24,12 +27,14 @@ read -formal -sv sdp_dist_ram.sv axi_coherent_bridge.sv
 # beats per line, so segments merge beats, WRAP windows are narrower than,
 # equal to and wider than a line, and INCR bursts cross lines, with two
 # bursts and two ids per direction. prove_full_width has one beat per line,
-# as in soc_top. prove_soc is soc_top's bus, lines, tables, ids and
-# starvation bound.
+# as in soc_top. prove_soc is soc_top's bus, lines and starvation bound with
+# the default four bursts and ids per direction; bmc_soc adds soc_top's eight
+# bursts and ids per direction, bounded.
 prove: chparam -set LINE_BYTES 8 -set DATA_WIDTH 16 -set ADDR_WIDTH 16 -set LINE_ADDR_WIDTH 16 -set ID_WIDTH 2 -set LINE_ID_BITS 2 -set WRITE_BURSTS 2 -set READ_BURSTS 2 -set REGION_BASE 16384 -set REGION_BYTES 16384 -set STARVATION_LIMIT 2 axi_coherent_bridge
 cover: chparam -set LINE_BYTES 8 -set DATA_WIDTH 16 -set ADDR_WIDTH 16 -set LINE_ADDR_WIDTH 16 -set ID_WIDTH 2 -set LINE_ID_BITS 2 -set WRITE_BURSTS 2 -set READ_BURSTS 2 -set REGION_BASE 16384 -set REGION_BYTES 16384 -set STARVATION_LIMIT 2 axi_coherent_bridge
 prove_full_width: chparam -set LINE_BYTES 8 -set DATA_WIDTH 64 -set ADDR_WIDTH 16 -set LINE_ADDR_WIDTH 16 -set ID_WIDTH 2 -set LINE_ID_BITS 2 -set WRITE_BURSTS 2 -set READ_BURSTS 2 -set REGION_BASE 16384 -set REGION_BYTES 16384 -set STARVATION_LIMIT 2 axi_coherent_bridge
 prove_soc: chparam -set ADDR_WIDTH 16 -set LINE_ADDR_WIDTH 16 -set ID_WIDTH 4 -set REGION_BASE 16384 -set REGION_BYTES 16384 axi_coherent_bridge
+bmc_soc: chparam -set ADDR_WIDTH 16 -set LINE_ADDR_WIDTH 16 -set ID_WIDTH 4 -set LINE_ID_BITS 4 -set WRITE_BURSTS 8 -set READ_BURSTS 8 -set REGION_BASE 16384 -set REGION_BYTES 16384 axi_coherent_bridge
 prep -top axi_coherent_bridge
 
 [files]
