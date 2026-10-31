@@ -100,7 +100,10 @@ the stage before it.
 
 [`canonicalize.tcl`](canonicalize.tcl) edits the elaborated design before
 synthesis: it keeps the 10G receive parser's state encoding, as the Yosys
-checks do. [`clock_slack.tcl`](clock_slack.tcl) runs after the final report
+checks do. It preserves the coherence home engine's module boundary.
+Yosys maps one engine definition and writes eight instances in the netlist;
+OpenROAD links all eight instances into the design.
+[`clock_slack.tcl`](clock_slack.tcl) runs after the final report
 and writes each clock's worst setup and hold slack.
 
 ## SRAM macros
