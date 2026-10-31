@@ -1599,6 +1599,14 @@ def test_board_gty_generation_is_capability_gated() -> None:
     )
 
 
+def test_synthesis_rejects_implicit_nets() -> None:
+    """Vivado's implicit-net message is an error in top-level synthesis."""
+    tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
+    guard = "set_msg_config -id {Synth 8-11241} -new_severity ERROR"
+    assert guard in tcl
+    assert tcl.index(guard) < tcl.index("synth_design {*}$synth_args")
+
+
 def test_step_arm_state_is_declared_before_first_use() -> None:
     """Declare debug-step signals once, before use, to avoid implicit nets."""
     cpu = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv").read_text()
