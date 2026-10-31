@@ -205,7 +205,12 @@ FORMAL_TARGETS = [
     FormalTarget(
         "coherence_dma_ingress.sby",
         "DMA issue order, opaque identities, independent completion, and reset ownership.",
-        tasks=("coh_dma_ingress_prove", "coh_dma_ingress_cover"),
+        tasks=(
+            "coh_dma_ingress_prove",
+            "coh_dma_ingress_cover",
+            "coh_dma_ingress_soc_prove",
+            "coh_dma_ingress_soc_cover",
+        ),
     ),
     FormalTarget(
         "coherence_home_engine.sby",
@@ -946,6 +951,14 @@ SBY_TASKS = [
     ("coh_home_engine_cover", "Coincident dirty reply/data and failed SC completion."),
     ("coh_dma_ingress_prove", "DMA credits, payloads, and identity conservation."),
     ("coh_dma_ingress_cover", "Full DMA admission and delayed error completion."),
+    (
+        "coh_dma_ingress_soc_prove",
+        "DMA identity and payload conservation with eight credits.",
+    ),
+    (
+        "coh_dma_ingress_soc_cover",
+        "Eight DMA credits, queue wrap, drain, and ID reuse.",
+    ),
     ("pc_tage_events_prove", "Unbounded history event equivalence"),
     ("pc_tage_events_cover", "History event and suppression reachability"),
     ("coh_rs_payload4_prove", "Coherent payload storage equality at four entries."),
