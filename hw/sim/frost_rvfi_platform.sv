@@ -2127,6 +2127,7 @@ module frost_rvfi_platform #(
         .i_payload({dma_d, hart_d}),
         .o_valid(home_d_valid),
         .o_offer(),
+        .o_selected(),
         .i_ready(home_d_ready),
         .o_payload(home_d)
     );
