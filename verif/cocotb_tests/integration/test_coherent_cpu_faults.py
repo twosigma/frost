@@ -205,7 +205,11 @@ async def sc_refill_fault_preserves_virtual_address(dut: Any) -> None:
             body += literal(11, 0x20800) + [csr(0, 11, 0x300)]
         body += literal(4, virtual) + [addi(7, 0, 99)]
         body += [(2 << 27) | (4 << 15) | (3 << 12) | (5 << 7) | 0x2F]
-        body += [load(8, 4, 128, 3)]
+        # The evicting load depends on the LR's result, so its L2 refill
+        # follows the LR's even when the L1D has several misses in flight.
+        body += [(5 << 20) | (5 << 15) | (4 << 12) | (10 << 7) | 0x33]
+        body += [(4 << 20) | (10 << 15) | (10 << 7) | 0x33]
+        body += [load(8, 10, 128, 3)]
         fault_index = len(body)
         body += [(3 << 27) | (7 << 20) | (4 << 15) | (3 << 12) | (6 << 7) | 0x2F]
         assert len(body) < 56

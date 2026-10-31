@@ -613,6 +613,7 @@ module frost_hart #(
         .TAG_BITS(riscv_pkg::ReorderBufferTagWidth),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
         .L1I_WAYS(L1I_WAYS),
+        .L1D_MISSES(L1D_NUM_MSHR),
         .SIM_FAST_MAINT(SIM_FAST_MAINT)
     ) hart_cache (
         .i_clk(i_clk),

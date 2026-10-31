@@ -8,8 +8,9 @@ coherent DMA. VCU118 also has SPI flash boot into OpenSBI and U-Boot. See the
 [FPGA guide](../fpga/README.md) for X3 usage
 and the [VCU118 guide](vcu118/README.md) for its board integration and usage.
 
-The X3 has eight L1D read slots, which send one miss at a time to the L2,
-and eight load queue entries. Its L2 coherence home has four fills, each with
+The X3 has eight L1D read slots and eight L1D request endpoints, so up to
+seven load misses and one store, LR or atomic acquisition are in flight to the
+L2 at once, and eight load queue entries. Its L2 coherence home has four fills, each with
 an initiating request and room for two more read waiters, and two writeback
 slots.
 

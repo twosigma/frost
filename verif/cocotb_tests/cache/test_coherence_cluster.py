@@ -597,3 +597,52 @@ async def test_demand_counters_exclude_probe_and_maintenance(dut: Any) -> None:
     await cluster.tick(10)
     assert cluster.perf["l1d"][:4] == before_l1d
     assert cluster.perf["l2"][:4] == before_l2
+
+
+@cocotb.test()
+async def loads_in_flight_across_lines(dut: Any) -> None:
+    """Check read misses in flight together, a same-sector waiter and a DMA write."""
+    b = Cluster(dut)
+    await b.reset()
+    base = 0x80000000
+    # Six sectors in distinct L2 lines, then one sharing the first one's line.
+    sectors = [base + 0x40 * n for n in range(6)] + [base + 0x20]
+    for n, sector in enumerate(sectors):
+        line = sector & ~63
+        b.memory[line] = b.memory.get(line, 0) | ((0x1000 + n) << (8 * (sector & 63)))
+    reads = [*sectors, sectors[0]]
+    for slot, address in enumerate(reads):
+        await b.set(
+            i_read_valid=1,
+            i_read_id=slot,
+            i_read_kind=0,
+            i_read_size=3,
+            i_address=address,
+        )
+        await b.tick()
+    await b.set(i_read_valid=0)
+    peak = 0
+    for _ in range(12):
+        peak = max(peak, bin(int(dut.hart.live.value)).count("1"))
+        await b.tick()
+    # A DMA write to an unread sector runs while the reads are in flight.
+    await b.dma(base + 0x40 * 6, 0xAB, mask=1)
+    expected = {
+        slot: 0x1000 + sectors.index(address) for slot, address in enumerate(reads)
+    }
+    seen = {}
+    for _ in range(len(reads)):
+        for _ in range(2000):
+            peak = max(peak, bin(int(dut.hart.live.value)).count("1"))
+            if b.get("o_read_valid"):
+                break
+            await b.tick()
+        assert b.get("o_read_valid") and not b.get("o_read_error")
+        seen[b.get("o_read_id")] = b.get("o_read_data")
+        await b.set(i_read_ready=1)
+        await b.tick()
+        await b.set(i_read_ready=0)
+    assert seen == expected
+    misses = len(dut.hart_d_valid)
+    assert peak == (1 if misses == 1 else misses - 1), peak
+    assert await b.dma(base + 0x40 * 6) & 0xFF == 0xAB

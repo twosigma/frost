@@ -170,7 +170,8 @@ every supported extension and privilege mode.
 - Separate instruction and data paths into a cache hierarchy. On X3: 16 KiB
   L1I, 128 KiB L1D, and 2 MiB L2, all four-way, and a 256-entry L0 cache in the
   load queue. The L1D holds 32-byte sectors in I, S or M states, with eight
-  read slots and one miss at a time to the L2. The L2's coherence home orders
+  read slots and up to eight misses in flight to the L2, seven of them for
+  loads. The L2's coherence home orders
   the L1s, page-table walks and DMA by sector and has four fills. Low BRAM
   uses an 8 KiB instruction cache and L0 data reads with write-through stores.
   DMA is coherent with the data caches.

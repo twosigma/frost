@@ -80,7 +80,7 @@ with responses in flight.
 
 `coherence_home_completions`, `coherence_home`, `coherence_home_equal`,
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
-and CPU observation cuts. Home cases hold four memory fills while resident
+and CPU observation cuts; `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. Home cases hold four memory fills while resident
 requests execute, preserve waiter order across an older writer, and check
 current data on waiter reentry. They run in the unit shard. The program shards
 exercise the coherent hierarchy in both memory configurations. Whole-L1D

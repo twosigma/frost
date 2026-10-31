@@ -258,7 +258,8 @@ byte offset *i*. Producers position data by
   `riscv_pkg::CachedLoadSlots` slots on each cached launch, and the response
   returns it beside the beat, so several cached loads can be in flight and
   complete in any order. The coherent L1D tracks each load in its own read
-  slot, and its misses go to the home one at a time.
+  slot and sends up to seven load misses to the home at once, one per
+  32-byte sector.
   Uncached Normal and Device reads share one response owner until AXI R is
   consumed. The router arbitrates their completed response with cached beats;
   no later uncached read may overwrite that owner. The outgoing 256/512-bit
@@ -442,6 +443,7 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `DDR_MODEL_LATENCY_JITTER` / `DDR_MODEL_REORDER` | `0` / `0` | DDR model per-transaction latency jitter, and out-of-order completion across ids (simulation); `FROST_DDR_MODEL_SEED` draws these and the latency for a test run ([tests/README.md](../../tests/README.md#environment-and-output)) |
 | `frost.sv` | `SIM_FAST_MAINT` | `0` | Simulation only: 1 accelerates L1I maintenance; L1D sweeps still visit every set |
 | `frost.sv` | `FETCH_VALID_FUZZ` | `0` | Simulation only: 1 delays local instruction AXI responses to exercise variable fetch latency |
+| `frost.sv` | `L1D_NUM_MSHR` | `8` | L1D request endpoints, 1 to 8: one for stores, LR and atomics, the rest for load misses in flight |
 | `frost.sv` | `PERF_COUNTERS` | `0` | 1 builds the `mperf*` profiling counters |
 | `frost.sv` | `DEBUG_JTAG_TAP` | `1` | 1 uses the generic TAP on `i_jtag_*`; 0 takes the BSCAN bundle from the board |
 | `frost.sv` | `RAW_LOOPBACK` | `1` | 1 builds the NIC's raw TX-to-RX loopback, which needs one clock on both MAC clock ports; 0 for a transceiver's independent clocks |
