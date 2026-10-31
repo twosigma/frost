@@ -81,6 +81,11 @@ module lq_l0_cache #(
     input logic            i_invalidate_line_valid,
     input logic [XLEN-1:0] i_invalidate_line_addr,
 
+    // Coherence query: whether any entry at the four dword indices of a
+    // 32-byte line is valid, whatever its tag.
+    input  logic [XLEN-1:0] i_query_line_addr = '0,
+    output logic            o_query_line_valid,
+
     // Clear all valid bits.
     input logic i_flush_all
 );
@@ -122,6 +127,7 @@ module lq_l0_cache #(
   // tag = addr[(3+IndexWidth) +: TagWidth]
 
   wire [IndexWidth-1:0] lookup_index = i_lookup_addr[3+:IndexWidth];
+  assign o_query_line_valid = |valid[{i_query_line_addr[3+IndexWidth-1:5], 2'b00}+:4];
   wire [TagWidth-1:0] lookup_tag = i_lookup_addr[(3+IndexWidth)+:TagWidth];
   // Decode the full zero-extended MMIO quadrant. Upper DDR addresses can
   // share bits [31:30] and must remain cacheable.

@@ -240,7 +240,7 @@ module frost_hart #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_write_tag;
   logic coherent_atomic_protected;
   logic coherent_sc_commit;
-  logic cut_admit, cut_admit_ready, cut_inval, cut_inval_done, cut_release;
+  logic cut_admit, cut_admit_ready, cut_admit_clean, cut_inval, cut_inval_done, cut_release;
   logic [riscv_pkg::PhysAddrBits-1:0] cut_addr;
   logic [1:0][riscv_pkg::PhysAddrBits-1:0] block_addr;
   assign coherent_block_addr = {riscv_pkg::XLEN'(block_addr[1]), riscv_pkg::XLEN'(block_addr[0])};
@@ -401,6 +401,7 @@ module frost_hart #(
       .i_coh_admit_slot('0),
       .i_coh_admit_addr(riscv_pkg::XLEN'(cut_addr)),
       .o_coh_admit_ready(cut_admit_ready),
+      .o_coh_admit_clean(cut_admit_clean),
       .i_coh_inval_valid(cut_inval),
       .i_coh_inval_slot('0),
       .o_coh_inval_done(cut_inval_done),
@@ -662,6 +663,7 @@ module frost_hart #(
         .o_cut_hold(coherent_cut_hold),
         .o_cut_admit_valid(cut_admit),
         .i_cut_admit_ready(cut_admit_ready),
+        .i_cut_admit_clean(cut_admit_clean),
         .o_cut_address(cut_addr),
         .o_cut_inval_valid(cut_inval),
         .i_cut_inval_done(cut_inval_done),

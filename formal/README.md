@@ -323,7 +323,8 @@ flush or reset should have discarded staying invisible. It assumes an initial
 reset and that neither commit lane retires a tag observed in the current or
 previous cycle; `prove_unrestricted` drops that timing assumption and still
 proves flush cleanup, commit cleanup when no observation overlaps, and that a
-pending write wins over a coinciding commit. Because the replay mask is
+pending write wins over a coinciding commit. A clean admission sees no live or
+pending observation of its line. Because the replay mask is
 registered, it can name an observation cleared on the same edge; ROB
 acceptance and allocation timing keep such a mask from affecting the tag's
 next user, which this target does not check.

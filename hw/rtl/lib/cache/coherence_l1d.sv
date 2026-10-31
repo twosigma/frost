@@ -83,6 +83,9 @@ module coherence_l1d #(
     output logic o_cut_hold,
     output logic o_cut_admit_valid,
     input logic i_cut_admit_ready,
+    // With i_cut_admit_ready: the CPU holds nothing for the line, so the cut
+    // skips the CPU invalidation and its wait.
+    input logic i_cut_admit_clean = 1'b0,
     output logic [ADDR_WIDTH-1:0] o_cut_address,
     output logic o_cut_inval_valid,
     input logic i_cut_inval_done,
@@ -467,7 +470,7 @@ module coherence_l1d #(
         CutIdle:
         if (i_p_valid && o_p_ready && probe_in.opcode == coherence_pkg::ProbeInvalidate)
           cut_phase_q <= CutAdmit;
-        CutAdmit: if (i_cut_admit_ready) cut_phase_q <= CutInvalidate;
+        CutAdmit: if (i_cut_admit_ready) cut_phase_q <= i_cut_admit_clean ? CutDone : CutInvalidate;
         CutInvalidate: if (i_cut_inval_done) cut_phase_q <= CutWait;
         CutWait: cut_phase_q <= CutDone;
         CutDone: begin
@@ -1520,6 +1523,7 @@ module coherence_l1d #(
       if (o_r_valid && probe_q.opcode == coherence_pkg::ProbeInvalidate)
         assert (cut_phase_q == CutDone);
       if ($past(active && cut_phase_q == CutWait)) assert (cut_phase_q == CutDone);
+      cover (active && cut_phase_q == CutAdmit && i_cut_admit_ready && i_cut_admit_clean);
       if (o_cut_release)
         assert ($past(o_r_valid && i_r_ready && probe_q.opcode == coherence_pkg::ProbeInvalidate));
       if (o_sc_write_done) begin

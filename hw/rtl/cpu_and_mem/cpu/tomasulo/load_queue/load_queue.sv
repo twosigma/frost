@@ -248,6 +248,11 @@ module load_queue #(
     // in its write phase, so the line cannot be admitted yet.
     input logic [riscv_pkg::XLEN-1:0] i_coh_query_addr,
     output logic o_coh_query_busy,
+    // The CPU may hold the query line: an L0 entry at one of its dword
+    // indices, a cached slot on it, or a reservation on it. An in-flight AMO
+    // or LR holds a cached slot; the CPU invalidation changes nothing for
+    // one that is only staged.
+    output logic o_coh_query_held,
     // Memory observation: a cached-region load hit the L0, forwarded from the
     // SQ, or launched this cycle (the validation table's write; AMOs
     // excluded).
@@ -937,6 +942,16 @@ module load_queue #(
     if (((amo_state == AMO_COMPUTE) || (amo_state == AMO_WRITE_ACTIVE)) &&
         (amo_write_addr_q[XLEN-1:CohLineLsb] == i_coh_query_addr[XLEN-1:CohLineLsb])) begin
       o_coh_query_busy = 1'b1;
+    end
+  end
+  logic l0_query_line_valid;
+  always_comb begin
+    o_coh_query_held = l0_query_line_valid || (reservation_valid &&
+        reservation_addr[XLEN-1:CohLineLsb] == i_coh_query_addr[XLEN-1:CohLineLsb]);
+    for (int sl = 0; sl < int'(CachedSlots); sl++) begin
+      if (cs_valid[sl] &&
+          (cs_addr[sl][XLEN-1:CohLineLsb] == i_coh_query_addr[XLEN-1:CohLineLsb]))
+        o_coh_query_held = 1'b1;
     end
   end
   assign coh_reservation_inval = i_coh_inval_valid && reservation_valid &&
@@ -2431,6 +2446,8 @@ module load_queue #(
 
       // L0 survives pipeline flushes. Stores and DMA invalidate stale lines,
       // and response filtering prevents stale fills.
+      .i_query_line_addr(i_coh_query_addr),
+      .o_query_line_valid(l0_query_line_valid),
       .i_flush_all(1'b0),
 
       // Line invalidate: a DMA write to the line (lq_coherence_port).

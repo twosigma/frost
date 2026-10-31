@@ -487,7 +487,11 @@ sequence. The LQ's part, all on 32-byte lines:
 
 - Admission. The port records the L1D's invalidation cut. The wrapper ties
   the port's LQ busy-query and SC-window inputs low; the home orders DMA
-  with LR, AMO and SC requests by sector.
+  with LR, AMO and SC requests by sector. `o_coh_query_held` reports
+  whether the LQ holds anything for the admitted line: an L0 entry at one
+  of its dword indices, a cached load or a reservation on it. With nothing
+  held and no live observation, the port answers clean and the L1D skips
+  the invalidation.
 - Launch hold. A staged AMO or LR on an admitted line does not launch until
   the line is released (`i_coh_block_*`). The admitted-line comparison is
   registered, so a newly staged AMO or LR also waits a cycle for its own

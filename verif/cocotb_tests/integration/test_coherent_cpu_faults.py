@@ -422,11 +422,12 @@ async def parked_hart_serves_dirty_dma(dut: Any) -> None:
         wrapper = dut.hart.cpu_inst.u_tomasulo
         cut_phases: set[int] = set()
         cut_captured = False
+        cut_clean: bool | None = None
         cuts_completed = 0
 
         def check_cut_edges() -> None:
             """Follow the actual probe through capture, invalidation and reply."""
-            nonlocal cut_captured, cuts_completed
+            nonlocal cut_captured, cut_clean, cuts_completed
             probe = unpack(
                 int(l1d.i_p.value), (2, 6, 1, len(l1d.i_address), 2, 2, 9, 5, 3)
             )
@@ -436,13 +437,19 @@ async def parked_hart_serves_dirty_dma(dut: Any) -> None:
                 assert int(dut.hart.cut_addr.value) == probe[3]
                 assert int(wrapper.u_lq.i_coherent_cut_addr.value) == probe[3]
                 cut_captured = True
+                cut_clean = None
                 cut_phases.clear()
             if cut_captured:
-                phase = int(wrapper.u_coherence_port.inval_phase_q.value)
+                port = wrapper.u_coherence_port
+                if int(port.o_admit_ready.value):
+                    cut_clean = bool(int(port.o_admit_clean.value))
+                phase = int(port.inval_phase_q.value)
                 if phase:
                     cut_phases.add(phase)
                 if int(l1d.o_r_valid.value) and int(l1d.i_r_ready.value):
-                    assert cut_phases == {1, 2, 3}
+                    # A clean admission skips the CPU invalidation phases.
+                    assert cut_clean is not None
+                    assert cut_phases == (set() if cut_clean else {1, 2, 3})
                     assert not int(dut.hart.coherent_cut_hold.value)
                     cut_captured = False
                     cuts_completed += 1
