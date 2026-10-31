@@ -165,6 +165,7 @@ module cpu_tb
   logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_admit_slot;
   logic [riscv_pkg::XLEN-1:0] i_coh_admit_addr;
   logic o_coh_admit_ready;
+  logic o_coh_admit_clean;
   logic i_coh_inval_valid;
   logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_inval_slot;
   logic o_coh_inval_done;

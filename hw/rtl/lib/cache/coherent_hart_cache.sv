@@ -75,6 +75,8 @@ module coherent_hart_cache #(
     output logic o_cut_hold,
     output logic o_cut_admit_valid,
     input logic i_cut_admit_ready,
+    // With i_cut_admit_ready: the CPU holds nothing for the line.
+    input logic i_cut_admit_clean = 1'b0,
     output logic [ADDR_WIDTH-1:0] o_cut_address,
     output logic o_cut_inval_valid,
     input logic i_cut_inval_done,
@@ -257,6 +259,7 @@ module coherent_hart_cache #(
       .o_cut_hold(o_cut_hold),
       .o_cut_admit_valid(o_cut_admit_valid),
       .i_cut_admit_ready(i_cut_admit_ready),
+      .i_cut_admit_clean(i_cut_admit_clean),
       .o_cut_address(o_cut_address),
       .o_cut_inval_valid(o_cut_inval_valid),
       .i_cut_inval_done(i_cut_inval_done),

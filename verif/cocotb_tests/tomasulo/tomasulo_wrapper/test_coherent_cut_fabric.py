@@ -98,9 +98,17 @@ class Fabric:
         return (pattern & ~((1 << 64) - 1)) | stored
 
     async def cut(
-        self, response: dict | None = None, phase: int = -1, replay_mask: int = 0
+        self,
+        response: dict | None = None,
+        phase: int = -1,
+        replay_mask: int = 0,
+        clean: bool | None = None,
     ) -> tuple[int, ...]:
-        """Invalidate through P/R, with delayed cut service and a held complete reply."""
+        """Invalidate through P/R, with delayed cut service and a held complete reply.
+
+        A clean admission skips the CPU invalidation. ``clean`` states the
+        expected answer; a replay or a crossing response implies a full cut.
+        """
         d = self.dut
         b = self.interface
         d.i_probe_delay_admit.value = 1
@@ -134,13 +142,30 @@ class Fabric:
                 assert not self.get("o_coherent_reservation_valid")
             await b.step()
         d.i_probe_delay_admit.value = 0
-        await self.wait("o_probe_cut_inval")
-        for _ in range(5):
-            assert self.get("o_probe_cut_hold") and not self.get("o_reply_valid")
-            if response is not None:
-                assert not self.get("o_coherent_reservation_valid")
+        for _ in range(30):
+            await Timer(1, unit="ps")
+            if self.get("o_coh_admit_ready"):
+                answered = bool(self.get("o_coh_admit_clean"))
+                break
             await b.step()
-        d.i_probe_delay_inval.value = 0
+        else:
+            raise AssertionError("admission did not answer")
+        if clean is None and (replay_mask or response is not None):
+            clean = False
+        if clean is not None:
+            assert answered == clean
+        if answered:
+            d.i_probe_delay_inval.value = 0
+            await b.step()
+            assert not self.get("o_probe_cut_inval")
+        else:
+            await self.wait("o_probe_cut_inval")
+            for _ in range(5):
+                assert self.get("o_probe_cut_hold") and not self.get("o_reply_valid")
+                if response is not None:
+                    assert not self.get("o_coherent_reservation_valid")
+                await b.step()
+            d.i_probe_delay_inval.value = 0
         for _ in range(30):
             cut_phase = int(d.core.u_coherence_port.inval_phase_q.value)
             if response is not None and phase == cut_phase and not returned:
@@ -262,7 +287,8 @@ async def returned_forward_and_flushed_tag_reuse(dut: Any) -> None:
     await b.step()
     replacement = await b.dispatch(make_int_req(pc=0x4008, rd=8))
     assert replacement == load
-    await f.cut()
+    # The flush removed the only observation, so the CPU holds nothing.
+    await f.cut(clean=True)
     assert not int(dut.core.u_rob.rob_replay.value) & (1 << replacement)
 
 
@@ -351,3 +377,27 @@ async def both_retire_lanes_clear_observations(dut: Any) -> None:
     await f.cut()
     replay = int(dut.core.u_rob.rob_replay.value)
     assert all(not replay & (1 << tag) for tag in tags)
+
+
+@cocotb.test()
+async def clean_cut_and_aliasing_l0_entry(dut: Any) -> None:
+    """Answer clean for an untouched line; an L0 entry at its index keeps the cut full."""
+    b, f = await prepare(dut)
+    expected = await f.seed()
+    reply = await f.cut(clean=True)
+    assert reply[7] and reply[8] == expected
+    assert not int(dut.core.u_rob.rob_replay.value)
+    # A load of another line with the same L0 indices fills the L0; the
+    # tag-blind presence check then keeps the next cut full, with no replay.
+    alias = await b.dispatch(make_int_req(pc=0x5000, rd=9))
+    await issue(b, alias, OP_LW, WORD + 4096)
+    req = await request(b)
+    await b.step()
+    b.drive_lq_mem_response(0x0BADF00D, cached=True, slot=req["id"])
+    cdb = await wait_for_cdb(b)
+    assert cdb.tag == alias and cdb.value == 0x0BADF00D
+    b.clear_lq_mem_response()
+    for _ in range(5):
+        await b.step()
+    await f.cut(clean=False)
+    assert not int(dut.core.u_rob.rob_replay.value) & (1 << alias)

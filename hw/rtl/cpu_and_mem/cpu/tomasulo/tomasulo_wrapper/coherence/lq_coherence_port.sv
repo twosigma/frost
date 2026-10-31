@@ -38,6 +38,10 @@
  *            older load that sampled it afterwards.
  *   release  The DMA write has been ordered at the shared level: the mirror
  *            entry is dropped and the launch holds lift.
+ * The admission answer is clean when the CPU holds nothing for the line: no
+ * L0 entry at its dword indices, no cached load or reservation on it
+ * (i_lq_query_held), and no live or pending observation of it. The coherent
+ * L1D then skips the invalidation phase and its wait.
  *
  * The coherent hierarchy overlaps CPU invalidation with the L1D lookup and
  * permission update. Its probe reply waits until replay marking is effective.
@@ -59,6 +63,9 @@ module lq_coherence_port #(
     input  logic [LockBits-1:0] i_admit_slot,
     input  logic [    XLEN-1:0] i_admit_addr,
     output logic                o_admit_ready,
+    // With o_admit_ready: the CPU holds nothing for the line, so the L1D
+    // may skip the invalidation phase.
+    output logic                o_admit_clean,
     input  logic                i_inval_valid,
     input  logic [LockBits-1:0] i_inval_slot,
     output logic                o_inval_done,
@@ -68,6 +75,7 @@ module lq_coherence_port #(
     // Load queue.
     output logic [    XLEN-1:0]           o_lq_query_addr,
     input  logic                          i_lq_query_busy,
+    input  logic                          i_lq_query_held,
     output logic                          o_lq_inval_valid,
     output logic [    XLEN-1:0]           o_lq_inval_addr,
     output logic [NUM_LOCK-1:0]           o_lq_block_valid,
@@ -165,6 +173,12 @@ module lq_coherence_port #(
   // The answer names the entry it was computed for; the sequencer presents
   // a latched entry, so a mismatch only means the entry has moved on.
   assign o_admit_ready = admit_ready_q && i_admit_valid && (i_admit_slot == admit_ready_slot_q);
+  // Clean: no LQ copy, in-flight load or reservation on the line, and no live
+  // or pending observation of it. The cut hold stops new observations from
+  // the probe's capture cycle, so the table already holds every earlier one
+  // when the decision is made.
+  logic admit_clean_q;
+  assign o_admit_clean = admit_clean_q;
   assign admit_fire = o_admit_ready;
   // Register the hold for the admission answer cycle and the following cycle.
   assign admit_ready_d = adm_req_valid_q && !i_lq_query_busy && !sc_conflict && !admit_fire;
@@ -228,6 +242,35 @@ module lq_coherence_port #(
           obs_line_q[row][FirstBit+:ChunkBits] ==
               inval_compare_line_q[row/ReplayCompareGroupSize][FirstBit+:ChunkBits];
     end
+  end
+
+  // The admission line's observation check, with its own group copies of
+  // the line for fanout, captured with adm_req_line_q.
+  (* dont_touch = "true" *) logic [LineBits-1:0] adm_compare_line_q[ReplayCompareGroups];
+  for (
+      genvar group_index = 0; group_index < ReplayCompareGroups; group_index++
+  ) begin : gen_admission_compare_line
+    always_ff @(posedge i_clk) adm_compare_line_q[group_index] <= line_of(i_admit_addr);
+  end
+  (* keep = "true" *) logic [RobDepth-1:0][LineCompareChunks-1:0] adm_observed_equal_chunks;
+  (* keep = "true" *) logic [LineCompareChunks-1:0] adm_pending_equal_chunks;
+  for (genvar chunk = 0; chunk < LineCompareChunks; chunk++) begin : gen_admission_compare_chunk
+    localparam int unsigned FirstBit = chunk * LineCompareBits;
+    localparam int unsigned ChunkBits = ((LineBits - FirstBit) < LineCompareBits) ?
+        (LineBits - FirstBit) : LineCompareBits;
+    assign adm_pending_equal_chunks[chunk] =
+        obs_pend_line_q[FirstBit+:ChunkBits] == adm_compare_line_q[0][FirstBit+:ChunkBits];
+    for (genvar row = 0; row < RobDepth; row++) begin : gen_row
+      assign adm_observed_equal_chunks[row][chunk] =
+          obs_line_q[row][FirstBit+:ChunkBits] ==
+              adm_compare_line_q[row/ReplayCompareGroupSize][FirstBit+:ChunkBits];
+    end
+  end
+  logic adm_observed;
+  always_comb begin
+    adm_observed = obs_pend_valid_q && (&adm_pending_equal_chunks);
+    for (int i = 0; i < int'(RobDepth); i++)
+    if (obs_valid_q[i] && (&adm_observed_equal_chunks[i])) adm_observed = 1'b1;
   end
 
   always_comb begin
@@ -356,6 +399,17 @@ module lq_coherence_port #(
       assert (o_replay_set_mask[f_observation_tag] == f_expected_replay_q);
       if (o_replay_set_mask[f_observation_tag])
         assert ($past(i_rst_n && f_observed_q && inval_phase_q == 2'd2));
+      // A clean admission sees no live or pending observation of its line.
+      if (adm_req_valid_q && ((f_accepted_q && f_latest_line_q == adm_req_line_q) ||
+                              (f_table_expected && f_table_line == adm_req_line_q)))
+        assert (adm_observed);
+      cover (adm_req_valid_q && f_table_expected && f_table_line == adm_req_line_q);
+      cover (adm_req_valid_q && f_accepted_q && f_latest_line_q == adm_req_line_q);
+      // Both copies load on every edge outside reset, so they agree whenever an
+      // admission is being decided.
+      if (adm_req_valid_q)
+        for (int group_index = 0; group_index < ReplayCompareGroups; group_index++)
+        assert (adm_compare_line_q[group_index] == adm_req_line_q);
 `endif
       // Relate local line copies to the captured line during replay and done.
       if (inval_phase_q == 2'd2 || inval_phase_q == 2'd3) begin
@@ -451,6 +505,7 @@ module lq_coherence_port #(
       sc_hold_valid_q         <= 1'b0;
       adm_req_valid_q         <= 1'b0;
       admit_ready_q           <= 1'b0;
+      admit_clean_q           <= 1'b0;
       lq_admit_pulse_q        <= 1'b0;
       admit_fired_q           <= 1'b0;
       inval_phase_q           <= 2'd0;
@@ -464,6 +519,7 @@ module lq_coherence_port #(
       adm_req_slot_q     <= i_admit_slot;
       adm_req_line_q     <= line_of(i_admit_addr);
       admit_ready_q      <= admit_ready_d;
+      admit_clean_q      <= adm_req_valid_q && !i_lq_query_held && !adm_observed;
       lq_admit_pulse_q   <= admit_ready_d || admit_fire;
       admit_ready_slot_q <= adm_req_slot_q;
       admit_fired_q      <= admit_fire;
@@ -595,6 +651,13 @@ module lq_coherence_port #(
   cover_dma_admission_waits_for_atomic :
   cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       adm_req_valid_q && !admit_fire && i_lq_query_busy);
+  // A DMA write's admission finds its line clean, and one finds it held.
+  cover_dma_admission_clean :
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
+      o_admit_ready && o_admit_clean);
+  cover_dma_admission_held :
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
+      o_admit_ready && !o_admit_clean);
   // A DMA write's admission waits for an SC at the ROB head or still draining.
   cover_dma_admission_waits_for_sc :
   cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)

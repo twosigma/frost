@@ -274,6 +274,7 @@ module tomasulo_wrapper #(
     input  logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_admit_slot,
     input  logic [                riscv_pkg::XLEN-1:0] i_coh_admit_addr,
     output logic                                       o_coh_admit_ready,
+    output logic                                       o_coh_admit_clean,
     input  logic                                       i_coh_inval_valid,
     input  logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_inval_slot,
     output logic                                       o_coh_inval_done,
@@ -2142,7 +2143,7 @@ module tomasulo_wrapper #(
   logic coh_sc_head_query_match;
   logic [riscv_pkg::XLEN-1:0] coh_sc_head_addr;
   logic [riscv_pkg::XLEN-1:0] coh_lq_query_addr, coh_lq_inval_addr, coh_observe_addr;
-  logic coh_lq_query_busy, coh_lq_inval_valid, coh_observe_valid;
+  logic coh_lq_query_busy, coh_lq_query_held, coh_lq_inval_valid, coh_observe_valid;
   logic [riscv_pkg::DmaCoherenceLocks-1:0] coh_lq_block_valid;
   logic coh_lq_admit_pulse;
   logic [riscv_pkg::DmaCoherenceLocks-1:0][riscv_pkg::XLEN-1:0] coh_lq_block_addr;
@@ -2183,6 +2184,7 @@ module tomasulo_wrapper #(
       .i_admit_slot(i_coh_admit_slot),
       .i_admit_addr(i_coh_admit_addr),
       .o_admit_ready(o_coh_admit_ready),
+      .o_admit_clean(o_coh_admit_clean),
       .i_inval_valid(i_coh_inval_valid),
       .i_inval_slot(i_coh_inval_slot),
       .o_inval_done(o_coh_inval_done),
@@ -2190,6 +2192,7 @@ module tomasulo_wrapper #(
       .i_release_slot(i_coh_release_slot),
       .o_lq_query_addr(coh_lq_query_addr),
       .i_lq_query_busy(1'b0),
+      .i_lq_query_held(coh_lq_query_held),
       .o_lq_inval_valid(coh_lq_inval_valid),
       .o_lq_inval_addr(coh_lq_inval_addr),
       .o_lq_block_valid(coh_lq_block_valid),
@@ -3720,6 +3723,7 @@ module tomasulo_wrapper #(
       .i_coh_admit_pulse(coh_lq_admit_pulse),
       .i_coh_query_addr(coh_lq_query_addr),
       .o_coh_query_busy(coh_lq_query_busy),
+      .o_coh_query_held(coh_lq_query_held),
       .o_coh_observe_valid(coh_observe_valid),
       .o_coh_observe_rob_tag(coh_observe_rob_tag),
       .o_coh_observe_addr(coh_observe_addr),

@@ -395,8 +395,14 @@ LR responses cannot establish a reservation, and stale responses cannot
 refill L0. Loads blocked by a pending store or selected atomic are parked so
 that unrelated rows can issue. Cut admission and replay marking run in
 parallel with the probe's array lookup and state update. The probe reply
-waits for both operations. The global issue gate ends after replay marking
-is effective; the matching-sector gate lasts through reply acceptance.
+waits for both operations. An admission answer is clean when the CPU holds
+nothing for the line: no L0 entry at its dword indices, no cached load or
+reservation on it, and no live or pending observation of it. A clean cut
+skips the CPU invalidation and its wait: its global issue gate ends at the
+clean answer, since nothing needs replay marking, and its reply still waits
+for the array lookup, the state update and any write-back absorption.
+Otherwise the global issue gate ends after replay marking is effective. In
+both cases the matching-sector gate lasts through reply acceptance.
 
 The atomic guard computes active and retired state for permitted and blocked
 arming. Candidate validity and the entry veto select between those results.
