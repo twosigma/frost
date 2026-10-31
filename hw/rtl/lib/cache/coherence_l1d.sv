@@ -17,16 +17,17 @@
 `include "coherence_types.svh"
 
 // Eight unmerged CPU reads share MISSES request endpoints: endpoint 0 serves
-// every acquisition kind, and with more than one the others serve ordinary
-// load misses. A committed store owns its bytes separately from the read
-// queue and from dirty probe replies.
+// every acquisition kind when MISSES is one. With multiple endpoints,
+// endpoint 0 serves stores, LR, SC and AMOs; endpoints 1 to MISSES-1 serve
+// ordinary load misses. A committed store owns its bytes separately from
+// the read queue and from dirty probe replies.
 module coherence_l1d #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned CACHE_BYTES = 128 * 1024,
     parameter int unsigned WAYS = 4,
     parameter int unsigned TAG_BITS = 7,
-    // Request endpoints. Endpoint 0 serves every acquisition; with more than
-    // one, endpoints 1 to MISSES-1 serve only ordinary loads.
+    // Request endpoints. With one endpoint, endpoint 0 serves every acquisition.
+    // With multiple endpoints, ordinary loads use only endpoints 1 to MISSES-1.
     parameter int unsigned MISSES = 1,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
     localparam int unsigned Sets = CACHE_BYTES / (32 * WAYS),
