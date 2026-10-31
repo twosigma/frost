@@ -952,9 +952,12 @@ if {$step eq "synth"} {
         lappend synth_args -generic PERF_COUNTERS=1
         puts "Profiling counters included (generic PERF_COUNTERS)"
     }
-    # A late module-level declaration can leave generated primitive inputs
-    # attached to separate, undriven implicit nets. Reject that ambiguity before
-    # Vivado ties those inputs to constants and reports timing on the wrong logic.
+    # A name used before its declaration becomes an implicit net. Verilator
+    # binds the later declaration, but inside a generate block Vivado gives the
+    # use its own net, so either the use or the declaration is left undriven.
+    # Top-level synthesis rejects Vivado's implicit-net message (Synth 8-11241)
+    # and generated primitive inputs on an undriven net (Synth 8-605).
+    set_msg_config -id {Synth 8-11241} -new_severity ERROR
     set_msg_config -id {Synth 8-605} -new_severity ERROR
     # Out-of-range indices can become don't-cares in synthesis even when
     # simulation truncates the index to the intended vector width.
