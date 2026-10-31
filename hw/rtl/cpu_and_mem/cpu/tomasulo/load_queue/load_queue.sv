@@ -1978,8 +1978,17 @@ module load_queue #(
     assign coherent_stage_clear = sq_check_pending && release_for_clear;
   end
 
-  // The selector's head term relies on the head match being at most one-hot
-  // (p_rob_head_match_onehot), so these equalities are checked where it is.
+  // The selector's head term relies on the head match being at most one-hot,
+  // so these equalities are checked where it is. Formal proves the one-hot
+  // match (p_rob_head_match_onehot) and simulation checks it every cycle, so
+  // no multi-hot cycle passes unchecked.
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  always @(posedge i_clk)
+    if (reset_seen_q && i_rst_n)
+      p_rob_head_match_onehot_sim : assert ($onehot0(rob_head_match_q));
+`endif
+`endif
 `ifndef SYNTHESIS
 `ifdef FORMAL
   always_comb
