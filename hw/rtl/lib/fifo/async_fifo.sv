@@ -76,6 +76,7 @@ module async_fifo #(
 
   // ---- write side ------------------------------------------------------------
   logic [PtrBits-1:0] wptr_bin_q, wptr_gray_q;
+  logic [PtrBits-1:0] rptr_bin_q, rptr_gray_q;
   logic [PtrBits-1:0] rptr_gray_w, rptr_bin_w;
   cdc_sync #(
       .WIDTH(PtrBits)
@@ -107,7 +108,6 @@ module async_fifo #(
   end
 
   // ---- storage -----------------------------------------------------------------
-  logic [PtrBits-1:0] rptr_bin_q, rptr_gray_q;
   logic [DATA_WIDTH-1:0] ram_rdata;
   sdp_block_ram_dc #(
       .ADDR_WIDTH(AddrBits),

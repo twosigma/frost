@@ -149,6 +149,9 @@ module nic_rx_engine #(
   logic [LINE_BYTES-1:0] pk_wr_wstrb;
   logic [3:0] beat_bytes;
   logic beat_last;
+  // Frame context (below) that the packer reads.
+  logic [ADDR_WIDTH-1:0] buf_addr_q;
+  logic [15:0] buf_len_q;
   assign beat_bytes = 4'(i_fifo_code[2:0]) + 4'd1;
   assign beat_last  = i_fifo_code[nic_pkg::BeatCodeLastBit];
   nic_byte_pack #(
@@ -175,8 +178,8 @@ module nic_rx_engine #(
   );
 
   // ---- frame context -------------------------------------------------------------------
-  logic [ADDR_WIDTH-1:0] status_addr_q, buf_addr_q;
-  logic [15:0] buf_len_q, frame_len_q;
+  logic [ADDR_WIDTH-1:0] status_addr_q;
+  logic [15:0] frame_len_q;
   logic bad_desc_q, err_q, abort_q, stop_q;
   logic accept_q, desc_ok_q;  // the admit decision, registered
   logic [2:0] outstanding_q;  // data writes accepted by the front-end, not yet answered

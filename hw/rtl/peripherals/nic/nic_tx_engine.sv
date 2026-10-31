@@ -139,6 +139,9 @@ module nic_tx_engine #(
   logic [LINE_BYTES*8-1:0] up_line_data;
   logic [63:0] up_beat_data;
   logic [3:0] up_beat_bytes;
+  // Frame context (below) that the unpacker reads.
+  logic [15:0] len_q;
+  logic [OffsetBits-1:0] offset_q;
   nic_byte_unpack #(
       .LINE_BYTES(LINE_BYTES)
   ) u_unpack (
@@ -163,8 +166,6 @@ module nic_tx_engine #(
   logic [ADDR_WIDTH-1:0] status_addr_q;
   logic [ADDR_WIDTH-OffsetBits-1:0] line_first_q;
   logic [LineCountBits-1:0] n_lines_q, issued_q, cons_q;
-  logic [15:0] len_q;
-  logic [OffsetBits-1:0] offset_q;
   logic bad_desc_q, err_q, abort_q, stop_q;
   logic desc_ok_q;  // the admit decision, registered
   logic [2:0] outstanding_q;
