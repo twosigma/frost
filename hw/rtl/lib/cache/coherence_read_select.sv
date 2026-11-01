@@ -31,10 +31,8 @@ module coherence_read_select #(
     input logic [ADDR_WIDTH-1:0] i_write_addr,
     input logic [7:0] i_write_mask,
     input logic [2:0] i_round_robin,
-    input logic i_pending,
-    input logic [ADDR_WIDTH-1:0] i_pending_addr,
-    input logic i_atomic,
-    input logic [ADDR_WIDTH-1:0] i_atomic_addr,
+    input logic [1:0] i_block_valid,
+    input logic [2*ADDR_WIDTH-1:0] i_block_addr,
     input logic [1:0] i_wb_live,
     input logic [2*ADDR_WIDTH-1:0] i_wb_addr,
     input logic i_atomic_protected,
@@ -54,8 +52,10 @@ module coherence_read_select #(
   // separately, so the forwarding selection follows them.
   logic write_blocked;
   always_comb begin
-    write_blocked = (i_pending && i_write_addr[ADDR_WIDTH-1:5] == i_pending_addr[ADDR_WIDTH-1:5]) ||
-        (i_atomic && i_write_addr[ADDR_WIDTH-1:5] == i_atomic_addr[ADDR_WIDTH-1:5]);
+    write_blocked = (i_block_valid[0] &&
+        i_write_addr[ADDR_WIDTH-1:5] == i_block_addr[5+:ADDR_WIDTH-5]) ||
+        (i_block_valid[1] &&
+         i_write_addr[ADDR_WIDTH-1:5] == i_block_addr[ADDR_WIDTH+5+:ADDR_WIDTH-5]);
     for (int slot = 0; slot < 2; slot++)
       write_blocked |= i_wb_live[slot] && i_write_addr[ADDR_WIDTH-1:5] ==
           i_wb_addr[slot*ADDR_WIDTH+5+:ADDR_WIDTH-5];
@@ -64,9 +64,9 @@ module coherence_read_select #(
     wire [ADDR_WIDTH-1:0] address = i_stored_addr[index*ADDR_WIDTH+:ADDR_WIDTH];
     logic stored_blocked, blocked;
     always_comb begin
-      stored_blocked = (i_pending &&
-          address[ADDR_WIDTH-1:5] == i_pending_addr[ADDR_WIDTH-1:5]) ||
-          (i_atomic && address[ADDR_WIDTH-1:5] == i_atomic_addr[ADDR_WIDTH-1:5]);
+      stored_blocked = (i_block_valid[0] &&
+          address[ADDR_WIDTH-1:5] == i_block_addr[5+:ADDR_WIDTH-5]) ||
+          (i_block_valid[1] && address[ADDR_WIDTH-1:5] == i_block_addr[ADDR_WIDTH+5+:ADDR_WIDTH-5]);
       for (int slot = 0; slot < 2; slot++)
         stored_blocked |= i_wb_live[slot] && address[ADDR_WIDTH-1:5] ==
             i_wb_addr[slot*ADDR_WIDTH+5+:ADDR_WIDTH-5];
@@ -111,9 +111,10 @@ module coherence_read_select #(
     for (int index = 7; index >= 0; index--) begin
       ref_scan = 3'(i_round_robin + 3'(index));
       ref_address = i_addr[ref_scan*ADDR_WIDTH+:ADDR_WIDTH];
-      ref_blocked = (i_pending && ref_address[ADDR_WIDTH-1:5] ==
-          i_pending_addr[ADDR_WIDTH-1:5]) ||
-          (i_atomic && ref_address[ADDR_WIDTH-1:5] == i_atomic_addr[ADDR_WIDTH-1:5]);
+      ref_blocked = (i_block_valid[0] && ref_address[ADDR_WIDTH-1:5] ==
+          i_block_addr[5+:ADDR_WIDTH-5]) ||
+          (i_block_valid[1] &&
+           ref_address[ADDR_WIDTH-1:5] == i_block_addr[ADDR_WIDTH+5+:ADDR_WIDTH-5]);
       for (int slot = 0; slot < 2; slot++)
         ref_blocked |= i_wb_live[slot] && i_wb_addr[slot*ADDR_WIDTH+5+:ADDR_WIDTH-5] ==
             ref_address[ADDR_WIDTH-1:5];

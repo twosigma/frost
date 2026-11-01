@@ -632,6 +632,15 @@ module store_queue #(
     assign o_committed_empty_rob = committed_empty_rob_q && !drain_pending;
     assign o_committed_empty_trap = committed_empty_trap_q && !drain_pending;
     assign o_committed_empty_lq = committed_empty_lq_q && !drain_pending;
+`ifdef SQ_COMMITTED_EMPTY_LOCAL_PROOF
+    always_comb begin
+      assert (o_committed_empty == (committed_empty_q && !i_coherent_store_pending &&
+          !i_coherent_sc_pending && !(o_mem_write_en && o_mem_write_is_cached)));
+      assert (o_committed_empty_rob == (committed_empty_rob_q && !drain_pending));
+      assert (o_committed_empty_trap == (committed_empty_trap_q && !drain_pending));
+      assert (o_committed_empty_lq == (committed_empty_lq_q && !drain_pending));
+    end
+`endif
   end
 
   logic [DEPTH*ReorderBufferTagWidth-1:0] sq_rob_tag_flat;
@@ -896,7 +905,9 @@ module store_queue #(
   logic coherent_selected_sc, coherent_launch_ok;
   assign coherent_selected_sc = i_coherent_sc_pending && sq_is_sc[drain_idx_q] &&
       sq_rob_tag[drain_idx_q] == i_coherent_sc_tag;
-  assign coherent_launch_ok = !i_coherent_store_pending &&
+  assign coherent_launch_ok =
+      ((!sq_is_sc[drain_idx_q] && mem_write_addr_cached_for_plain_next) ||
+       !i_coherent_store_pending) &&
       (!i_coherent_sc_pending || coherent_selected_sc) &&
       (!mem_write_addr_cached_for_plain_next || i_coherent_store_ready || coherent_selected_sc);
   assign drain_ready = sq_valid[drain_idx_q] &&

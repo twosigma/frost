@@ -9,8 +9,8 @@ proof: aigsmt boolector
 covers: mode cover
 covers: depth 160
 covers: vcd_sim on
-proof: timeout 1800
-covers: timeout 900
+proof: timeout 2400
+covers: timeout 1200
 
 [engines]
 proof: abc pdr -r
@@ -20,7 +20,7 @@ covers: btor btormc
 read -formal -sv riscv_pkg.sv cache_perf_pkg.sv coherence_pkg.sv
 # Component targets prove the service engine and walker properties separately.
 read -sv coherence_home_engine.sv ptw.sv
-read -sv coherence_request_endpoint.sv coherence_d_arbiter.sv
+read -sv coherence_store_buffer.sv coherence_request_endpoint.sv coherence_d_arbiter.sv
 # Reader assertions apply here without the standalone environment assumptions.
 read -sv -nosynthesis coherence_line_bridge.sv
 proof: read -formal -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
@@ -50,3 +50,4 @@ coherent_hart_cache_formal.sv
 ../hw/rtl/lib/cache/coherence_line_bridge.sv
 ../hw/rtl/lib/cache/coherence_home_engine.sv
 ../hw/rtl/lib/cache/coherent_hart_cache.sv
+../hw/rtl/lib/cache/coherence_store_buffer.sv

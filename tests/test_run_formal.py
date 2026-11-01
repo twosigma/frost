@@ -63,6 +63,11 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "coherence_store_buffer.sby",
+        "Two accepted stores preserve order, payload, launch credit and acknowledgement.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "coherent_hart_cache.sby",
         "Fence ordering and coherent instruction/PTE visibility with discarded walks.",
         tasks=("coh_hart_maint_prove", "coh_hart_maint_cover"),
@@ -184,7 +189,17 @@ FORMAL_TARGETS = [
     FormalTarget(
         "coherence_l1d.sby",
         "The coherent L1 preserves pending stores, cuts, and exact atomic writes.",
-        tasks=("coh_l1d_bmc", "coh_l1d_multi_bmc"),
+        tasks=(
+            "coh_l1d_bmc",
+            "coh_l1d_multi_bmc",
+            "coh_l1d_cover",
+            "coh_l1d_data_bmc",
+            "coh_l1d_data1_bmc",
+            "coh_l1d_data2_bmc",
+            "coh_l1d_data3_bmc",
+            "coh_l1d_store_payload_bmc",
+            "coh_l1d_store_grant_bmc",
+        ),
     ),
     FormalTarget(
         "coherence_home_select.sby",
@@ -238,7 +253,12 @@ FORMAL_TARGETS = [
     FormalTarget(
         "coherence_array.sby",
         "A watched byte preserves masked updates across serialized array operations.",
-        tasks=("coh_array_bmc", "coh_array_uram_bmc"),
+        tasks=(
+            "coh_array_bmc",
+            "coh_array_uram_bmc",
+            "coh_array_cover",
+            "coh_array_uram_cover",
+        ),
     ),
     FormalTarget(
         "coherence_control.sby",
@@ -1035,6 +1055,18 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
+    ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
+    ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),
+    ("coh_l1d_store_payload_bmc", "Ordered head payload and masked hit installation."),
+    ("coh_l1d_store_grant_bmc", "Store miss byte merging against grant bytes."),
+    (
+        "coh_l1d_data_bmc",
+        "Arbitrary-byte store and probe images in the production array.",
+    ),
+    ("coh_l1d_cover", "Buffered stores, ordered installation, probes and errors."),
+    ("coh_array_cover", "Masked byte updates and tag-only hits in block RAM."),
+    ("coh_array_uram_cover", "Masked byte updates and tag-only hits in UltraRAM."),
     (
         "coh_hart_maint_prove",
         "Store installation, fence invalidation and coherent reads.",

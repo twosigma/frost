@@ -1,15 +1,19 @@
 [tasks]
 coh_array_bmc bram
 coh_array_uram_bmc uram
+coh_array_cover bram covers
+coh_array_uram_cover uram covers
 
 [options]
-mode bmc
+~covers: mode bmc
+covers: mode cover
 depth 32
 timeout 180
-aigsmt boolector
+~covers: aigsmt boolector
 
 [engines]
-abc bmc3
+~covers: abc bmc3
+covers: smtbmc boolector
 
 [script]
 read -formal -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv

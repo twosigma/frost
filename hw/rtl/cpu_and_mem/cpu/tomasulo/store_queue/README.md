@@ -101,11 +101,13 @@ launches only when no other write is in flight, and nothing else launches until
 it completes. A cached write completes once the L1D has ordered it, so a store
 miss does not hold up the drain for the line fill.
 
-Cached ordinary stores may complete into one
-pending L1D record. That record participates in committed-empty and fence,
-Device and serializer drains. It blocks subsequent ordinary SQ launches
-until its bytes reach M. Cached SC writes carry their selected ROB tag and
-complete only after the conditional cache update. The selected context
+Cached ordinary stores complete when captured in the L1D's two-entry ordered
+buffer. Available launch credit permits another cached ordinary store while
+accepted bytes await installation. Aggregate pending covers both records in
+committed-empty and fence, Device, trap and serializer drains. Normal/MMIO
+writes and SC wait for every buffered ordinary store to install. Cached SC
+writes carry their selected ROB tag and complete only after the conditional
+cache update. The selected context
 blocks younger retirement through that write, including flush-producing
 instructions.
 

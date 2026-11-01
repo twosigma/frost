@@ -183,7 +183,17 @@ module coherence_l1d #(
   logic read_failure, read_hit, read_fill;
   logic rd_candidate, rd_response;
   logic [2:0] rd_pick, rd_result, rd_rr_q, rd_response_rr_q, selected_read_q;
-  logic pending_q, pending_reported_q, pending_miss_q;
+  logic pending_q, pending_miss_q;
+  logic store_push, store_pop, store_credit, store_ack, tail_q;
+  localparam int unsigned StoreWidth = ADDR_WIDTH + 64 + 32 + TAG_BITS;
+  logic [StoreWidth-1:0] store_head, store_tail;
+  logic [63:0] pending_word;
+  logic [TAG_BITS-1:0] pending_tag;
+  logic [ADDR_WIDTH-1:0] tail_addr, second_block_addr_q;
+  logic tail_wb_blocked, tail_wb_blocked_q, tail_checked_q;
+  logic store_continue, atomic_done_q;
+  logic [31:0] update_mask_q;
+  logic array_skip_data, array_data_valid;
   logic [ADDR_WIDTH-1:0] pending_addr_q;
   logic [255:0] pending_data_q;
   logic [31:0] pending_mask_q;
@@ -250,7 +260,7 @@ module coherence_l1d #(
   logic [EpSlots-1:0] live, ep_request_ready, ep_request_valid, ep_grant_valid, ep_grant_ready;
   logic [EpSlots-1:0] ep_done_valid, ep_write_done, ep_g_ready, ep_u_ready;
   logic [EpSlots-1:0][1:0] ep_done_status;
-  coh_g_t [EpSlots-1:0] ep_grant;
+  logic [EpSlots-1:0][ADDR_WIDTH+274:0] ep_grant;
   logic [EpBits-1:0] acq_ep_q, grant_ep_q, grant_pick;
   logic any_live;
   // Load endpoint bookkeeping, used only when MISSES > 1.
@@ -405,14 +415,38 @@ module coherence_l1d #(
 `endif
 
   assign maint_eligible = maint_q && !pending_q && !atomic_q && !any_live && wb_free;
+  assign store_push = |i_write_mask && !i_write_atomic;
+  assign store_pop = active && phase_q == UpdateWait && array_ready &&
+      (operation_q == StoreOp ||
+       (operation_q == GrantOp && grant_ep_q == '0 && acquisition_store_q));
+  coherence_store_buffer #(
+      .WIDTH(StoreWidth)
+  ) store_buffer (
+      .i_clk,
+      .i_rst,
+      .i_push(store_push),
+      .i_payload({i_address, i_write_data,
+          (32'(i_write_mask) << {i_address[4:3], 3'b000}), i_write_tag}),
+      .i_pop(store_pop),
+      .o_ready(store_credit),
+      .o_done(store_ack),
+      .o_head_valid(pending_q),
+      .o_tail_valid(tail_q),
+      .o_head(store_head),
+      .o_tail(store_tail)
+  );
+  assign {pending_addr_q, pending_word, pending_mask_q, pending_tag} = store_head;
+  assign pending_data_q = {4{pending_word}};
+  assign tail_addr = store_tail[StoreWidth-1-:ADDR_WIDTH];
   assign o_pending_store = pending_q;
   assign o_atomic_live = atomic_q;
   assign o_sc_write_pending = atomic_q && atomic_sc_q && atomic_granted_q && !atomic_written_q;
   // SQ launch readiness precedes its registered write by one cycle.
-  assign o_store_ready = active && !pending_q && !atomic_q && !maint_q && !i_maint_valid;
-  assign o_write_inflight = (pending_q && !pending_reported_q) || atomic_write_q;
-  assign o_block_valid = {atomic_q, pending_q};
-  assign o_block_addr = {atomic_addr_q, pending_addr_q};
+  assign o_store_ready = active && store_credit && !atomic_q && !maint_q && !i_maint_valid;
+  assign o_write_inflight = store_ack || atomic_write_q;
+  assign o_write_done = store_ack || atomic_done_q;
+  assign o_block_valid = {atomic_q || tail_q, pending_q};
+  assign o_block_addr = {second_block_addr_q, pending_addr_q};
   assign o_sc_ready = active && !atomic_q && !pending_q && !any_live &&
       !o_sc_result_valid && i_atomic_protected && phase_q == Idle && wb_free &&
       !probe_valid_q && !probe_priority;
@@ -777,10 +811,8 @@ module coherence_l1d #(
       .i_write_addr(rd_write_payload[ReadPayloadWidth-ADDR_WIDTH+:ADDR_WIDTH]),
       .i_write_mask(rd_write_mask),
       .i_round_robin(rd_rr_q),
-      .i_pending(pending_q),
-      .i_pending_addr(pending_addr_q),
-      .i_atomic(atomic_q),
-      .i_atomic_addr(atomic_addr_q),
+      .i_block_valid(o_block_valid),
+      .i_block_addr(o_block_addr),
       .i_wb_live(wb_live),
       .i_wb_addr(wb_addr),
       .i_atomic_protected(i_atomic_protected),
@@ -798,6 +830,7 @@ module coherence_l1d #(
     wb_match = 1'b0;
     wb_match_slot = 1'b0;
     pending_blocked = 1'b0;
+    tail_wb_blocked = 1'b0;
     for (int slot = 1; slot >= 0; slot--) begin
       if (!wb_live[slot] && !(live[0] && reserved_wb_q == 1'(slot))) begin
         wb_free = 1'b1;
@@ -809,6 +842,8 @@ module coherence_l1d #(
       end
       if (wb_live[slot] && wb_addr[slot][ADDR_WIDTH-1:5] == pending_addr_q[ADDR_WIDTH-1:5])
         pending_blocked = 1'b1;
+      if (wb_live[slot] && wb_addr[slot][ADDR_WIDTH-1:5] == tail_addr[ADDR_WIDTH-1:5])
+        tail_wb_blocked = 1'b1;
     end
     rd_response = 1'b0;
     rd_result   = '0;
@@ -840,6 +875,30 @@ module coherence_l1d #(
     end
   end
 
+  // A continuation uses a resident tail and a comparison from the preceding
+  // cycle. Freeze and probe service cannot run beside a StoreOp update.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      tail_wb_blocked_q <= 1'b0;
+      tail_checked_q <= 1'b0;
+      second_block_addr_q <= '0;
+    end else begin
+      tail_wb_blocked_q <= tail_wb_blocked;
+      tail_checked_q <= tail_q && !store_pop;
+      if (store_push && pending_q && (!store_pop || tail_q))
+        second_block_addr_q <= i_address;
+      if (i_sc_valid && o_sc_ready) second_block_addr_q <= i_sc_address;
+      if (active && phase_q == LookupWait && array_valid && operation_q == ReadOp &&
+          rd_kind_q[selected_read_q] == ReadAMO && !any_live && !atomic_q &&
+          wb_free && i_atomic_protected) second_block_addr_q <= lookup_addr_q;
+    end
+  end
+  assign store_continue = tail_q && tail_checked_q && !tail_wb_blocked_q &&
+      !i_p_valid && !probe_valid_q && !o_r_valid && !grant_valid &&
+      !(request_live && acquisition_store_q);
+  assign array_skip_data = active && phase_q == Lookup && operation_q == StoreOp &&
+      !probe_launch;
+
   coherence_array #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .LINE_BYTES(32),
@@ -857,7 +916,7 @@ module coherence_l1d #(
       .i_req_exclude(exclude),
       .i_req_visit(!probe_launch && operation_q == MaintOp && !maint_line_q),
       .i_req_way(maint_way_q),
-      .i_req_skip_data_on_hit(1'b0),
+      .i_req_skip_data_on_hit(array_skip_data),
       .i_req_data_if_modified(probe_launch || operation_q == ProbeOp),
       .o_resp_valid(array_valid),
       .i_resp_ready(phase_q == LookupWait),
@@ -866,7 +925,7 @@ module coherence_l1d #(
       .o_resp_way(array_way),
       .o_resp_addr(array_addr),
       .o_resp_state(array_state),
-      .o_resp_data_valid(),
+      .o_resp_data_valid(array_data_valid),
       .o_resp_data(array_data),
       .i_update_valid(active && phase_q == Update),
       .o_update_ready(update_ready),
@@ -874,7 +933,7 @@ module coherence_l1d #(
       .i_update_way(way_q),
       .i_update_state(state_q),
       .i_update_insert(operation_q == GrantOp),
-      .i_update_mask({32{operation_q != ProbeOp}}),
+      .i_update_mask(update_mask_q),
       .i_update_data(image_q)
   );
 
@@ -893,12 +952,7 @@ module coherence_l1d #(
       o_read_id <= '0;
       o_read_data <= '0;
       o_read_error <= 1'b0;
-      pending_q <= 1'b0;
-      pending_reported_q <= 1'b0;
       pending_miss_q <= 1'b0;
-      pending_addr_q <= '0;
-      pending_data_q <= '0;
-      pending_mask_q <= '0;
       atomic_q <= 1'b0;
       atomic_sc_q <= 1'b0;
       atomic_granted_q <= 1'b0;
@@ -913,7 +967,7 @@ module coherence_l1d #(
       atomic_way_q <= '0;
       sc_checked_q <= 1'b0;
       sc_tid_q <= '0;
-      o_write_done <= 1'b0;
+      atomic_done_q <= 1'b0;
       o_sc_write_done <= 1'b0;
       o_sc_result_valid <= 1'b0;
       o_sc_success <= 1'b0;
@@ -941,6 +995,7 @@ module coherence_l1d #(
       reserved_wb_q <= 1'b0;
       lookup_addr_q <= '0;
       image_q <= '0;
+      update_mask_q <= '0;
       state_q <= '0;
       way_q <= '0;
       update_addr_q <= '0;
@@ -968,7 +1023,7 @@ module coherence_l1d #(
       rd_miss_q <= rd_miss_next;
       rd_ready_q <= rd_ready_next;
       rd_error_q <= rd_error_next;
-      o_write_done <= 1'b0;
+      atomic_done_q <= 1'b0;
       o_sc_write_done <= 1'b0;
       o_cut_release <= 1'b0;
       if (i_sc_commit) sc_committed_q <= 1'b1;
@@ -1005,14 +1060,10 @@ module coherence_l1d #(
           atomic_write_q <= 1'b1;
           atomic_data_q  <= {4{i_write_data}};
           atomic_mask_q  <= 32'(i_write_mask) << {i_address[4:3], 3'b000};
-        end else begin
-          pending_q <= 1'b1;
-          pending_reported_q <= 1'b0;
-          pending_miss_q <= 1'b0;
-          pending_addr_q <= i_address;
-          pending_data_q <= {4{i_write_data}};
-          pending_mask_q <= 32'(i_write_mask) << {i_address[4:3], 3'b000};
         end
+      end
+      if (store_pop || (store_push && !pending_q)) begin
+        pending_miss_q <= 1'b0;
       end
       if (i_sc_valid && o_sc_ready) begin
         atomic_q <= 1'b1;
@@ -1150,6 +1201,7 @@ module coherence_l1d #(
             update_addr_q <= array_addr;
             image_q <= array_data;
             state_q <= array_state;
+            update_mask_q <= operation_q == ProbeOp ? '0 : '1;
             case (operation_q)
               ProbeOp: begin
                 reply_q.state <= array_hit && probe_q.opcode == coherence_pkg::ProbeRead ?
@@ -1195,8 +1247,8 @@ module coherence_l1d #(
               end
               StoreOp: begin
                 if (array_hit && array_state == coherence_pkg::Modified) begin
-                  for (int index = 0; index < 32; index++)
-                  if (pending_mask_q[index]) image_q[8*index+:8] <= pending_data_q[8*index+:8];
+                  image_q <= pending_data_q;
+                  update_mask_q <= pending_mask_q;
                   phase_q <= Update;
                 end else begin
                   pending_miss_q <= 1'b1;
@@ -1269,10 +1321,6 @@ module coherence_l1d #(
             written_q <= 1'b0;
             done_status_q <= coherence_pkg::Consumed;
             end
-            if (operation_q == StoreOp && !pending_reported_q) begin
-              pending_reported_q <= 1'b1;
-              o_write_done <= 1'b1;
-            end
             phase_q <= Idle;
           end
           Freeze: if (wb_freeze_ready[freeze_slot_q]) phase_q <= Update;
@@ -1295,7 +1343,6 @@ module coherence_l1d #(
                   rd_data_q[ld_read_q[grant_ep_q]] <=
                       grant_q.data[64*rd_addr_q[ld_read_q[grant_ep_q]][4:3]+:64];
                 end else if (acquisition_store_q) begin
-                  pending_q <= 1'b0;
                   done_q <= 1'b1;
                   written_q <= 1'b1;
                 end else if (acquisition_sc_q) begin
@@ -1315,14 +1362,13 @@ module coherence_l1d #(
                 phase_q <= Idle;
               end
               StoreOp: begin
-                pending_q <= 1'b0;
-                if (!pending_reported_q) o_write_done <= 1'b1;
-                phase_q <= Idle;
+                phase_q <= store_continue ? Lookup : Idle;
+                if (store_continue) lookup_addr_q <= tail_addr;
               end
               AtomicWriteOp: begin
                 atomic_write_q <= 1'b0;
                 atomic_written_q <= 1'b1;
-                o_write_done <= 1'b1;
+                atomic_done_q <= 1'b1;
                 o_sc_write_done <= atomic_sc_q;
                 done_q <= 1'b1;
                 written_q <= 1'b1;
@@ -1427,6 +1473,12 @@ module coherence_l1d #(
   always_ff @(posedge i_clk) begin
     if (sim_reset_seen_q && !i_rst) begin
       if (i_read_valid) assert (!rd_valid_q[i_read_id]);
+      if (array_skip_data) assert (!probe_launch && operation_q == StoreOp);
+      if (active && phase_q == LookupWait && array_valid && operation_q == ProbeOp &&
+          array_hit && array_state == coherence_pkg::Modified) assert (array_data_valid);
+      if (store_pop) assert (pending_q && !probe_valid_q);
+      if (tail_q) assert (pending_q);
+      assert (!(pending_q && atomic_q));
       if (|i_write_mask) begin
         if (i_write_atomic) begin
           assert (atomic_q && atomic_granted_q && !atomic_written_q && !atomic_write_q);
@@ -1434,7 +1486,7 @@ module coherence_l1d #(
           assert (i_write_tag == atomic_tag_q);
           if (i_write_sc) assert (sc_committed_q);
         end else begin
-          assert (active && !pending_q && !atomic_q);
+          assert (active && !tail_q && !atomic_q);
           assert (o_store_ready || store_launch_ready_q);
         end
       end
@@ -1452,6 +1504,120 @@ module coherence_l1d #(
   end
 `endif
 `ifdef FORMAL
+`ifdef STORE_DATA_PROOF
+  initial assert ($bits(ep_grant) == EpSlots * (ADDR_WIDTH + 275));
+  (* anyconst *) logic [ADDR_WIDTH-6:0] f_sector;
+`ifdef STORE_BYTE_WORD
+  (* anyconst *) logic [2:0] f_byte_lane;
+  wire [4:0] f_byte = {2'(`STORE_BYTE_WORD), f_byte_lane};
+`else
+  (* anyconst *) logic [4:0] f_byte;
+`endif
+  logic f_byte_known_q;
+  logic [7:0] f_byte_q;
+  logic [StoreWidth-1:0] f_acquired_store_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_byte_known_q <= 1'b0;
+      f_byte_q <= '0;
+      f_acquired_store_q <= '0;
+    end else begin
+      if (active && phase_q == Acquire && operation_q == StoreOp && ep_request_ready[0])
+        f_acquired_store_q <= store_head;
+      if (request_live && acquisition_store_q && !written_q)
+        p_store_data_1 : assert (store_head == f_acquired_store_q);
+      if (active && phase_q == Update && update_ready) begin
+        if (operation_q == StoreOp) begin
+          p_store_data_2 : assert (pending_q && !probe_valid_q);
+          p_store_data_3 : assert (update_addr_q[ADDR_WIDTH-1:5] == pending_addr_q[ADDR_WIDTH-1:5]);
+          p_store_data_4 : assert (update_mask_q == pending_mask_q);
+          if (pending_mask_q[f_byte])
+            p_store_data_5 : assert (image_q[8*f_byte+:8] == pending_data_q[8*f_byte+:8]);
+        end
+        if (operation_q == GrantOp && grant_ep_q == '0 && acquisition_store_q) begin
+          p_store_data_8 : assert (pending_q && update_mask_q == '1);
+          p_store_data_9 : assert (update_addr_q[ADDR_WIDTH-1:5] == pending_addr_q[ADDR_WIDTH-1:5]);
+          p_store_data_10 : assert (image_q[8*f_byte+:8] ==
+              (pending_mask_q[f_byte] ? pending_data_q[8*f_byte+:8] : grant_q.data[8*f_byte+:8]));
+        end
+        if (update_addr_q[ADDR_WIDTH-1:5] == f_sector && update_mask_q[f_byte]) begin
+          f_byte_known_q <= 1'b1;
+          f_byte_q <= image_q[8*f_byte+:8];
+        end
+      end
+      if (f_byte_known_q && array_valid && array_data_valid && array_hit &&
+          array_addr[ADDR_WIDTH-1:5] == f_sector)
+        p_store_data_6 : assert (array_data[8*f_byte+:8] == f_byte_q);
+      if (f_byte_known_q && o_r_valid && reply_q.data_valid &&
+          reply_q.addr[ADDR_WIDTH-1:5] == f_sector)
+        p_store_data_7 : assert (reply_q.data[8*f_byte+:8] == f_byte_q);
+      cover (tail_q && probe_capture && probe_in.addr[ADDR_WIDTH-1:5] == tail_addr[ADDR_WIDTH-1:5]);
+      cover (tail_q && o_fatal && o_fatal_addr == acquisition_q.addr);
+    end
+  end
+`endif
+`ifdef STORE_COVER
+  // Cover-only traffic schedules leave the safety environments unconstrained.
+  (* anyconst *) logic [2:0] f_scenario;
+  logic [7:0] f_cycle_q = 0;
+  logic [3:0] f_stores_q = 0, f_installs_q = 0;
+  logic f_probe_after_install_q = 0, f_reacquired_q = 0;
+  logic f_store_offer_q = 0, f_probe_sent_q = 0;
+  coh_g_t f_cover_grant;
+  coh_u_t f_cover_release;
+  coh_p_t f_cover_probe;
+  always_comb begin
+    f_cover_grant = '0;
+    f_cover_grant.q = acquisition_q.q;
+    f_cover_grant.addr = acquisition_q.addr;
+    f_cover_grant.opcode = coherence_pkg::GrantM;
+    f_cover_grant.error = f_scenario == 4;
+    f_cover_release = '0;
+    f_cover_release.q = acquisition_q.q;
+    f_cover_release.addr = acquisition_q.addr;
+    f_cover_probe = '0;
+    f_cover_probe.addr = ADDR_WIDTH'(32'h80000000);
+    f_cover_probe.opcode = f_scenario == 2 ? coherence_pkg::CheckSC :
+        f_scenario == 1 ? coherence_pkg::ProbeInvalidate : coherence_pkg::ProbeRead;
+    f_cover_probe.check_q = acquisition_q.q;
+    f_cover_probe.size = 3'd3;
+  end
+  always_ff @(posedge i_clk) begin
+    if (f_cycle_q != 255) f_cycle_q <= f_cycle_q + 1'b1;
+    assume (f_scenario <= 4);
+    assume (i_rst == !f_past_valid);
+    assume (!i_fatal_stop && !i_read_valid && !i_maint_valid);
+    assume (i_address == ADDR_WIDTH'(32'h80000000));
+    assume (i_write_data == 64'h123456789abcdef0 && i_write_tag == 0);
+    assume (i_atomic_protected == (f_scenario == 2));
+    assume (i_sc_valid == (f_scenario == 2 && f_cycle_q == 4));
+    assume (i_sc_address == ADDR_WIDTH'(32'h80000000) && i_sc_size == 3 && i_sc_tag == 0);
+    assume (i_reservation_valid && i_reservation_addr == ADDR_WIDTH'(32'h80000000) &&
+        i_reservation_size == 3);
+    assume (i_sc_commit == (atomic_q && atomic_granted_q));
+    assume (i_write_atomic == (f_scenario == 2));
+    assume (i_write_sc == (f_scenario == 2));
+    assume (i_write_mask == (f_scenario == 2 ?
+        (sc_committed_q && atomic_granted_q && !atomic_written_q && !atomic_write_q ? 8'hff : 0) :
+        (f_store_offer_q ? 8'hff : 0)));
+    f_store_offer_q <= f_scenario != 2 && o_store_ready && f_stores_q < 6;
+    if (store_push) f_stores_q <= f_stores_q + 1'b1;
+    if (store_pop) f_installs_q <= f_installs_q + 1'b1;
+    if (probe_capture && f_installs_q != 0) f_probe_after_install_q <= 1;
+    if (f_probe_after_install_q && ep_request_valid[0] && ep_request_ready[0])
+      f_reacquired_q <= 1;
+    cover (store_pop && f_reacquired_q && f_probe_after_install_q);
+    assume (i_d_ready == '1 && i_c_ready == '1 && i_read_ready && i_r_ready && i_w_ready);
+    assume (i_sc_result_ready && i_cut_admit_ready && i_cut_admit_clean && i_cut_inval_done);
+    assume (i_g_valid && i_g == f_cover_grant && i_u_valid && i_u == f_cover_release);
+    assume (!i_wa_valid);
+    assume (i_p == f_cover_probe);
+    assume (i_p_valid == (!f_probe_sent_q && ((f_scenario == 1 && f_cycle_q >= 4) ||
+        (f_scenario == 2 && request_live && !atomic_granted_q) ||
+        (f_scenario == 3 && pending_q && f_installs_q != 0))));
+    if (probe_capture) f_probe_sent_q <= 1;
+  end
+`endif
   logic   f_past_valid = 1'b0;
   coh_g_t f_grant;
   assign f_grant = i_g;
@@ -1480,6 +1646,7 @@ module coherence_l1d #(
         assume (!rd_valid_q[i_read_id]);
         assume (!o_read_valid || o_read_id != i_read_id);
         assume (i_read_kind <= ReadAMO);
+        if (i_read_kind == ReadAMO) assume (!pending_q && !store_push);
       end
       if (|i_write_mask) begin
         if (i_write_atomic) begin
@@ -1488,10 +1655,11 @@ module coherence_l1d #(
           assume (i_write_tag == atomic_tag_q);
           if (i_write_sc) assume (sc_committed_q);
         end else begin
-          assume (active && !pending_q && !atomic_q);
-          assume (o_store_ready || store_launch_ready_q);
+          assume (active && !atomic_q && !amo_waiting);
+          assume (store_launch_ready_q);
         end
       end
+      if (i_sc_valid && o_sc_ready) assume (!store_push);
       if (i_sc_commit) assume (atomic_q && atomic_sc_q && atomic_granted_q);
       if (atomic_q || (request_live && acquisition_q.opcode == coherence_pkg::Atomic))
         assume (i_atomic_protected);
@@ -1547,7 +1715,14 @@ module coherence_l1d #(
         assert ($past(phase_q == UpdateWait && array_ready && operation_q == AtomicWriteOp));
       end
       if (o_sc_write_pending) assert (atomic_q && atomic_sc_q && !atomic_written_q);
-      if (pending_q && pending_reported_q) assert (o_block_valid[0]);
+      assert (o_block_valid == {atomic_q || tail_q, pending_q});
+      if (pending_q) assert (o_block_addr[0] == pending_addr_q);
+      if (tail_q) assert (o_block_addr[1] == tail_addr);
+      if (atomic_q) assert (o_block_addr[1] == atomic_addr_q);
+      if ($past(store_pop && tail_q)) assert (o_pending_store);
+      assert (store_ack == $past(store_push));
+      cover (tail_q && pending_q);
+      cover (store_pop && tail_q && store_continue);
       if ($past(active && grant_valid && grant_ready)) assert (operation_q == GrantOp);
       if ($past(active && phase_q == Idle) && phase_q == Lookup && operation_q == GrantOp)
         assert ($past(grant_valid && grant_ready));

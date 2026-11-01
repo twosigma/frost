@@ -91,7 +91,15 @@ exercise the coherent hierarchy in both memory configurations. Whole-L1D
 maintenance is active in simulation. Synthesis checks cover both line sizes
 at 32-bit and 56-bit physical widths.
 `coherence_l1d` holds a probe reply across a grant and checks single grant
-application, ordered read errors and completion of the following store.
+application, ordered read errors and installation of the following store.
+Its buffered-store cases check overlapping byte masks, same-sector order,
+held sector coverage, probe-driven reacquisition, frozen writeback conflicts
+and fatal acquisition errors. The `coherent_cut` bench delays old load responses
+across acceptance, acknowledgement and installation of partial stores, then
+checks that a subsequent load cannot use their stale data from L0.
+`cached_store_burst_test` checks cached store bursts followed by traps,
+FENCE.I, SC and AMO. Its CPU monitor requires accepted-store overlap with
+trap and fence drain waits.
 The cluster bench holds all eight CPU read identities occupied during dirty
 DMA reads and writes. Its invalidation case delays cut completion and checks
 response rotation and byte-write preservation.

@@ -387,6 +387,31 @@ module coherence_array #(
         ((RowBits'(o_resp_way) << SetBits) | RowBits'(set_q)) == f_row && f_byte_known)
       assert (o_resp_data[8*f_byte+:8] == f_byte_value);
   end
+  logic f_updated_q, f_disjoint_q, f_overlap_q, f_tag_only_q;
+  logic [LINE_BYTES-1:0] f_mask_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_updated_q <= 1'b0;
+      f_disjoint_q <= 1'b0;
+      f_overlap_q <= 1'b0;
+      f_tag_only_q <= 1'b0;
+      f_mask_q <= '0;
+    end else begin
+      if (o_resp_valid && o_resp_hit && skip_data_q && !o_resp_data_valid) f_tag_only_q <= 1'b1;
+      if (update_fire && data_waddr == f_row && |i_update_mask && !(&i_update_mask)) begin
+        f_updated_q <= 1'b1;
+        f_mask_q <= i_update_mask;
+        if (f_updated_q && !(|(f_mask_q & i_update_mask))) f_disjoint_q <= 1'b1;
+        if (f_updated_q && |(f_mask_q & i_update_mask)) f_overlap_q <= 1'b1;
+      end
+      if (((RowBits'(o_resp_way) << SetBits) | RowBits'(set_q)) == f_row &&
+          o_resp_valid && o_resp_data_valid && f_byte_known) begin
+        cover (f_disjoint_q);
+        cover (f_overlap_q);
+        cover (f_tag_only_q && f_updated_q);
+      end
+    end
+  end
   logic f_past_valid = 1'b0;
   wire [ADDR_WIDTH+WayBits+11:0] f_response_signature = {
     o_resp_hit, o_resp_available, o_resp_way, o_resp_addr, o_resp_state, o_resp_data[7:0]

@@ -400,6 +400,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         )
         for bits in range(30, 38)
     },
+    "cached_store_burst_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cached_store_burst_test",
+        nic_mac_clocks=False,
+        description="Buffered cached stores across masks, traps, FENCE.I, SC and AMO.",
+    ),
     "dma_torture": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -2216,7 +2223,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("--assert", "-GCACHE_BYTES=512"),
         python_test_module="cocotb_tests.cache.test_coherence_l1d",
         hdl_toplevel_module="coherence_l1d",
-        description="Private grant acceptance behind independently held probe replies",
+        description="Buffered store ordering, masked hits, grants, probes and frozen writebacks",
     ),
     "coherence_cluster": CocotbRunConfig(
         verilator_extra_args=("--assert",),

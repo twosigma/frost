@@ -1,0 +1,19 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+cover: mode cover
+depth 12
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv coherence_store_buffer.sv
+chparam -set WIDTH 8 coherence_store_buffer
+prep -top coherence_store_buffer
+
+[files]
+../hw/rtl/lib/cache/coherence_store_buffer.sv

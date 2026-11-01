@@ -216,15 +216,26 @@ in one cycle after an observed reset. Its write drain covers the data RAM
 input pipeline before requests resume. Hardware uses the per-set sweep with
 `SIM_FAST_MAINT=0`.
 
-The L1D has I, S and M states. Reads use S or M. A store hit in M writes its
-bytes before completing. An S/I store reserves one committed pending record
-and a dirty-eviction slot before acquiring M. The pending record owns the
-address, bytes and mask after the SQ completion. It blocks local accesses to
-its sector and yields probes while unrelated reads proceed. SQ launch readiness reserves the next cycle's registered write even when
-line maintenance starts on that edge. There are eight
+The L1D has I, S and M states. Reads use S or M. Two ordered committed
+store records own their addresses, bytes, masks and tags after SQ
+acknowledgement. Each accepted store receives one acknowledgement. The head
+installs before the tail; promotion keeps pending asserted. A Modified hit
+uses a tag-only lookup and the array's byte enables. A buffered tail can
+start its lookup after the head's masked update completes. An S/I head
+reserves a dirty-eviction slot before acquiring M. Endpoint 0 remains owned
+through U, so store acquisitions do not overlap.
+
+Two sector holds block local loads until the corresponding bytes are
+installed. The second hold names the tail or a selected atomic. Atomic
+drain gates exclude buffered ordinary stores from selected atomic ownership.
+Probes can precede queued stores; a queued store rechecks permission when
+selected. A selected array installation finishes before probe capture.
+SQ launch readiness reserves room for the next cycle's registered write,
+including an arriving write and a simultaneous maintenance request.
+There are eight
 unmerged CPU read slots, two frozen PutM slots and `MISSES` request
 endpoints, set by `L1D_NUM_MSHR` and eight on X3. Endpoint 0 carries the
-pending store's GetM, LR, AMO and SC acquisitions, and ordinary loads only
+head store's GetM, LR, AMO and SC acquisitions, and ordinary loads only
 when it is the only endpoint; the others carry ordinary load misses. No two
 live endpoints hold the same sector. A load that misses on a sector a live
 endpoint holds waits for that endpoint's installation, or for its release if
@@ -269,7 +280,7 @@ L1D performance events count the first permission lookup of each CPU read
 or ordinary store. Cached SC selection counts as a permission miss. A store
 to S and an AMO require permission and count as misses. Repeated lookups,
 probes and maintenance do not add demand events. Outstanding misses include
-unresolved read slots, the pending store and the selected SC. L2 events
+unresolved read slots, the head store acquisition and the selected SC. L2 events
 count shared demand lookups and non-maintenance PutM lookups. Its fill count
 is at most four. A DMA write miss contributes a write-fill event; probe data
 merges do not contribute another demand. Events are registered at their
