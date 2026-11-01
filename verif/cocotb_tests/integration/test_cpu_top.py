@@ -101,6 +101,8 @@ class System:
             dbg_go=0,
             dbg_go_addr=0,
             dbg_data=0,
+            # No Debug-Mode instruction-copy writes are outstanding.
+            imem_sync_done=1,
             coherent_req_valid=int(not self.coherence),
             coherent_req_write=1,
             coherent_req_addr=0x80004000,
