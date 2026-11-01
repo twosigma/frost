@@ -2329,6 +2329,40 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         extra_env=(("FROST_TEST_ARRAY_FAST", "1"), ("FROST_TEST_ARRAY_ULTRA", "1")),
     ),
+    "coherence_home_array_reset_long_write_sweep": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_reset",
+        hdl_toplevel_module="coherence_home_array",
+        description="Metadata reset drains an outstanding five-cycle data write",
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=1024",
+            "-GULTRA=0",
+            "-GDATA_WRITE_LATENCY=5",
+            "-GSIM_FAST_MAINT=0",
+        ),
+        extra_env=(
+            ("FROST_TEST_ARRAY_FAST", "0"),
+            ("FROST_TEST_ARRAY_ULTRA", "0"),
+            ("FROST_TEST_ARRAY_WRITE_LATENCY", "5"),
+        ),
+    ),
+    "coherence_home_array_reset_long_write_fast": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_reset",
+        hdl_toplevel_module="coherence_home_array",
+        description="Metadata reset drains an outstanding five-cycle data write",
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=1024",
+            "-GULTRA=0",
+            "-GDATA_WRITE_LATENCY=5",
+            "-GSIM_FAST_MAINT=1",
+        ),
+        extra_env=(
+            ("FROST_TEST_ARRAY_FAST", "1"),
+            ("FROST_TEST_ARRAY_ULTRA", "0"),
+            ("FROST_TEST_ARRAY_WRITE_LATENCY", "5"),
+        ),
+    ),
     "coherence_home_array": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home_array",
         hdl_toplevel_module="coherence_home_array",

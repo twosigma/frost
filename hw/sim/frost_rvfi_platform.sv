@@ -2151,7 +2151,8 @@ module frost_rvfi_platform #(
         .LINE_BYTES(L2_LINE_BYTES),
         .CACHE_BYTES(L2_CACHE_BYTES),
         .WAYS(L2_WAYS),
-        .NUM_WB(L2_NUM_WB)
+        .NUM_WB(L2_NUM_WB),
+        .SIM_FAST_MAINT(SIM_FAST_MAINT)
     ) home (
         .i_clk(i_clk),
         .i_rst(cpu_cache_rst),

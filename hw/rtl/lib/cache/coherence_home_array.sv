@@ -139,6 +139,20 @@ module coherence_home_array #(
   localparam int unsigned SimFastInit = SIM_FAST_MAINT;
   // Only an observed reset permits the simulation bulk clear.
   wire init_bulk_clear = SimFastInit != 0 && sim_reset_seen_q && !i_rst && phase_q == Init;
+  // The data RAM's write pipeline survives reset. Its last write must drain
+  // before cleared hazard tracking can admit another row access.
+  wire sim_init_drained;
+  if (SimFastInit != 0 && DATA_WRITE_LATENCY > 2) begin : gen_sim_init_drain
+    localparam int unsigned DrainBits = $clog2(DATA_WRITE_LATENCY);
+    logic [DrainBits-1:0] drain_q;
+    always_ff @(posedge i_clk) begin
+      if (i_rst) drain_q <= DrainBits'(DATA_WRITE_LATENCY - 1);
+      else if (phase_q == InitDrain && drain_q > 1) drain_q <= drain_q - 1'b1;
+    end
+    assign sim_init_drained = drain_q <= 1;
+  end else begin : gen_sim_init_no_drain
+    assign sim_init_drained = 1'b1;
+  end
 `endif
   logic hit;
   logic [WayBits-1:0] selected;
@@ -395,7 +409,12 @@ module coherence_home_array #(
           init_set_q <= init_set_q + 1'b1;
           if (&init_set_q || init_bulk_clear) phase_q <= InitDrain;
         end
-        InitDrain: phase_q <= Idle;
+        InitDrain: begin
+`ifndef SYNTHESIS
+          if (sim_init_drained || !sim_reset_seen_q)
+`endif
+            phase_q <= Idle;
+        end
         Tags: begin
           if (count_q == CountBits'(TAG_READ_LATENCY)) plru_q <= plru_read;
           count_q <= count_q - 1'b1;

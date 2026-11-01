@@ -33,6 +33,9 @@ class ResetArray:
         self.ways = 4
         self.fast = int(os.environ["FROST_TEST_ARRAY_FAST"])
         self.ultra = int(os.environ["FROST_TEST_ARRAY_ULTRA"])
+        self.write_latency = int(
+            os.environ.get("FROST_TEST_ARRAY_WRITE_LATENCY", str(1 + self.ultra))
+        )
 
     def get(self, name: str) -> int:
         """Sample one output."""
@@ -67,14 +70,18 @@ class ResetArray:
         assert not self.get("o_req_ready") and not self.get("o_update_ready")
         await self.drive(i_rst=0, i_resp_ready=1)
         sweep = 1 if self.fast else self.sets
-        drain = 1 if self.home else 2 + self.ultra
+        drain = 1 if self.home else 1 + self.write_latency
+        if self.home and self.fast:
+            drain = max(1, self.write_latency - 1)
         for cycle in range(sweep + drain):
             assert not self.get("o_req_ready"), cycle
             assert not self.get("o_update_ready"), cycle
             await self.tick()
         assert self.get("o_req_ready") and self.get("o_update_ready")
 
-    async def update(self, address: int, way: int, data: int) -> None:
+    async def update(
+        self, address: int, way: int, data: int, drain: bool = True
+    ) -> None:
         """Install a complete Modified row without touching replacement state."""
         fields = dict(
             i_update_addr=address,
@@ -92,7 +99,7 @@ class ResetArray:
         await self.drive(i_update_valid=1)
         await self.tick()
         await self.drive(i_update_valid=0)
-        for _ in range(4):
+        for _ in range(self.write_latency + 1 if drain else 0):
             await self.tick()
 
     async def lookup(
@@ -141,9 +148,23 @@ class ResetArray:
 async def reset_clears_metadata_and_preserves_data(dut: Any) -> None:
     """Clear every tag/state and PLRU bit at cold and populated reset."""
     b = ResetArray(dut)
+    for signal in dut:
+        if signal._name.startswith("i_"):
+            signal.value = 0
+    # Select an unwitnessed Init state even if the simulator's initial edge
+    # sampled a randomized reset input before the bench gained control.
+    dut.sim_reset_seen_q.value = 0
+    dut.phase_q.value = 0
+    await b.drive(i_clk=0)
+    for _ in range(3):
+        assert b.get("sim_reset_seen_q") == 0
+        assert b.get("init_bulk_clear") == 0
+        await b.tick()
     contents: dict[tuple[int, int], int] = {}
     for populated in (False, True):
         await b.reset()
+        if populated and b.home:
+            assert await b.read(0, 0) == contents[0, 0]
         for index in range(b.sets):
             address = index * b.line
             for way in range(b.ways):
@@ -178,3 +199,6 @@ async def reset_clears_metadata_and_preserves_data(dut: Any) -> None:
             for way in (0, 2, 0):
                 tag_address = address + (way + 1) * b.sets * b.line
                 assert (await b.lookup(tag_address, claim=1))[0] == 1
+        # Reset on the edge after acceptance, while a pipelined write is live.
+        contents[0, 0] ^= (1 << (8 * b.line)) - 1
+        await b.update(b.sets * b.line, 0, contents[0, 0], drain=False)

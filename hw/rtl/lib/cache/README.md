@@ -210,8 +210,9 @@ The L1D uses 32-byte sectors; the L2 supports 32-byte or 64-byte lines.
 Reset clears every set's tags, coherence states and replacement bits in both
 coherent arrays, then drains the metadata writes before accepting requests.
 Data RAM is not cleared. In simulation, `SIM_FAST_MAINT=1` clears that metadata
-in one cycle after an observed reset and keeps the write drain. Hardware
-uses the per-set sweep with `SIM_FAST_MAINT=0`.
+in one cycle after an observed reset. Its write drain covers the data RAM
+input pipeline before requests resume. Hardware uses the per-set sweep with
+`SIM_FAST_MAINT=0`.
 
 The L1D has I, S and M states. Reads use S or M. A store hit in M writes its
 bytes before completing. An S/I store reserves one committed pending record
