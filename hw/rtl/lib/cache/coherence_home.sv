@@ -24,9 +24,15 @@ module coherence_home #(
     parameter int unsigned CACHE_BYTES = 2 * 1024 * 1024,
     parameter int unsigned WAYS = 4,
     parameter int unsigned NUM_WB = 2,
-    parameter int unsigned COMPLETIONS = 19,
+    parameter int unsigned COMPLETIONS = coherence_pkg::completion_count(1),
     parameter int unsigned RESULTS = 8,
-    parameter int unsigned FILLS = 4,
+    parameter int unsigned FILLS = 8,
+    // Fills a prefetch leaves free for demand misses: a prefetch allocates a
+    // fill only while more than PREFETCH_RESERVE fills are free.
+    parameter int unsigned PREFETCH_RESERVE = FILLS / 4,
+    // Completion slots kept for prefetch requests (coherence_home_completions
+    // PREFETCH_SLOTS); zero shares every slot.
+    parameter int unsigned PREFETCH_SLOTS = coherence_pkg::PrefetchIds,
     parameter bit ULTRA = 1'b1,
     parameter int unsigned SIM_FAST_MAINT = 0,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
@@ -59,6 +65,16 @@ module coherence_home #(
     output logic o_u_valid,
     input logic i_u_ready,
     output logic [ADDR_WIDTH+14:0] o_u,
+    // Registered: more than PREFETCH_RESERVE fills were free on the cycle
+    // before, so a prefetch could allocate one. A prefetcher can hold back
+    // requests while it is clear.
+    output logic o_prefetch_room,
+    // A registered copy of D acceptance: a strobe on the cycle after it, with
+    // the accepted request's opcode, identity and address.
+    output logic o_accepted,
+    output logic [3:0] o_accepted_opcode,
+    output logic [8:0] o_accepted_q,
+    output logic [ADDR_WIDTH-1:0] o_accepted_addr,
     output logic o_mem_req_valid,
     input logic i_mem_req_ready,
     output logic o_mem_req_write,
@@ -103,7 +119,7 @@ module coherence_home #(
   localparam int unsigned UpdatePacketBits = ReadPacketBits + 4 + 9 * LINE_BYTES;
   localparam int unsigned TagBits = ADDR_WIDTH - SetBits - OffsetBits;
   localparam logic [5:0] FillTid = 6'(coherence_pkg::fill_base(1));
-  localparam logic [5:0] PutTid = 6'(coherence_pkg::put_base(1, 4));
+  localparam logic [5:0] PutTid = 6'(coherence_pkg::put_base(1, FILLS));
   typedef struct packed {
     logic [TokenBits-1:0]  token;
     logic [ADDR_WIDTH-1:0] addr;
@@ -234,9 +250,7 @@ module coherence_home #(
   logic [RESULTS-1:0][WAYS-1:0] engine_tag_q;
   logic work_set_q;
   logic [WAYS-1:0] work_tag_q;
-  logic put_query_q, put_victim_q;
-  logic [FILLS-1:0] put_fill_q, put_fill_old_q, fill_allocated_q;
-  logic [NUM_WB-1:0] put_wb_q, wb_allocated_q;
+  logic put_query_q, put_victim_q, put_owner_q, fill_allocated_q, victim_allocated_q;
   logic [1:0] array_state;
   logic array_data_valid, array_updated;
   logic [8*LINE_BYTES-1:0] array_data;
@@ -257,7 +271,18 @@ module coherence_home #(
   logic [FILLS-1:0][8*LINE_BYTES-1:0] fill_image_q;
   logic [FILLS-1:0] fill_victim_q, fill_sent_q, fill_done_q, fill_error_q;
   logic [FILLS-1:0] fill_read_sent_q, fill_read_done_q, fill_sector_q;
-  logic [FILLS-1:0] fill_dirty_q, fill_r_ready;
+  logic [FILLS-1:0] fill_dirty_q, fill_r_ready, fill_prefetch_q;
+  // Prefetch decisions. The tag port serves one lookup at a time, so flags
+  // captured with a lookup's token when the port accepts it belong to the
+  // decision in progress: lookup_prefetch_q, the lookup is a prefetch's;
+  // lookup_fill_q, that prefetch may allocate a fill (no non-prefetch
+  // request for its block was live before its dispatch). Only decisions
+  // allocate fills and write-back slots, and none falls between a lookup's
+  // acceptance and its response, so the room flags registered from the
+  // live flags are exact at the decision but for slots freed meanwhile.
+  logic lookup_prefetch_q, lookup_fill_q, prefetch_fill_q, prefetch_room_q, wb_two_free_q;
+  logic [RESULTS-1:0] engine_prefetch_q, engine_nofill_q;
+  logic work_nofill, array_two_available;
   logic [FILLS-1:0][LINE_BYTES/32-1:0] fill_dirty_sectors_q;
   logic [COMPLETIONS-1:0] fill_seats_q[FILLS], fill_add_seats[FILLS];
   logic [1:0] fill_seat_count_q[FILLS], fill_add_count[FILLS];
@@ -352,7 +377,7 @@ module coherence_home #(
   function automatic logic read_waiter(input logic [3:0] opcode);
     read_waiter = opcode == coherence_pkg::GetS || opcode == coherence_pkg::LoadReserved ||
         opcode == coherence_pkg::ReadOnceIF || opcode == coherence_pkg::ReadOncePTW ||
-        opcode == coherence_pkg::DMARead || opcode == coherence_pkg::Prefetch;
+        opcode == coherence_pkg::DMARead;
   endfunction
   // Reset clears every register that internal work updates, so internal
   // work is qualified by the stop condition alone. Outputs add the reset.
@@ -371,7 +396,8 @@ module coherence_home #(
       .CACHE_BYTES(CACHE_BYTES),
       .WAYS(WAYS),
       .SLOTS(COMPLETIONS),
-      .RESULT_SLOTS(RESULTS)
+      .RESULT_SLOTS(RESULTS),
+      .PREFETCH_SLOTS(PREFETCH_SLOTS)
   ) completions (
       .i_clk,
       .i_rst,
@@ -387,6 +413,11 @@ module coherence_home #(
       .o_work_buffer(work_buffer),
       .o_work_error(work_error),
       .o_work_counted(work_counted),
+      .o_work_nofill(work_nofill),
+      .o_accepted,
+      .o_accepted_opcode,
+      .o_accepted_q,
+      .o_accepted_addr,
       .i_count_valid(run && array_response && decision_engine),
       .i_count_tid(decision_tid),
       .o_waiting(waiting),
@@ -492,10 +523,19 @@ module coherence_home #(
 `endif
         .o_fatal(engine_fatal[engine])
     );
+    // The engine's work is a prefetch, and that prefetch may not allocate a
+    // fill: registered with the work, so the tag decision and the victim
+    // terms read one flop per engine.
     always_ff @(posedge i_clk) begin
-      if (i_rst) engine_counted_q[engine] <= 1'b0;
-      else if (work_offer && work_buffer == ResultBits'(engine))
-        engine_counted_q[engine] <= work_counted;
+      if (i_rst) begin
+        engine_counted_q[engine]  <= 1'b0;
+        engine_prefetch_q[engine] <= 1'b0;
+        engine_nofill_q[engine]   <= 1'b0;
+      end else if (work_offer && work_buffer == ResultBits'(engine)) begin
+        engine_counted_q[engine]  <= work_counted;
+        engine_prefetch_q[engine] <= work.opcode == coherence_pkg::Prefetch;
+        engine_nofill_q[engine]   <= work_nofill;
+      end
     end
     assign tag_valid[engine] = engine_lookup[engine];
     assign tag_payload[engine] = {TokenBits'(engine), engine_addr[engine]};
@@ -658,6 +698,7 @@ module coherence_home #(
       .o_resp_token_onehot(array_token_onehot),
       .o_resp_hit(array_hit),
       .o_resp_available(array_available),
+      .o_resp_two_available(array_two_available),
       .o_resp_way(array_way),
       .o_resp_addr(array_addr),
       .o_resp_state(array_state),
@@ -692,6 +733,27 @@ module coherence_home #(
       .o_updated_token(array_updated_token)
   );
 
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      lookup_prefetch_q <= 1'b0;
+      lookup_fill_q <= 1'b0;
+      prefetch_fill_q <= 1'b0;
+      prefetch_room_q <= 1'b0;
+      wb_two_free_q <= 1'b0;
+    end else begin
+      if (tag_request_valid && run && tag_request_ready) begin
+        lookup_prefetch_q <= int'(tag_request.token) < RESULTS &&
+            engine_prefetch_q[ResultBits'(tag_request.token)];
+        lookup_fill_q <= int'(tag_request.token) < RESULTS &&
+            engine_prefetch_q[ResultBits'(tag_request.token)] &&
+            !engine_nofill_q[ResultBits'(tag_request.token)];
+      end
+      prefetch_room_q <= $countones(~fill_live_q) > PREFETCH_RESERVE;
+      prefetch_fill_q <= lookup_fill_q && $countones(~fill_live_q) > PREFETCH_RESERVE;
+      wb_two_free_q   <= $countones(~wb_valid_q) >= 2;
+    end
+  end
+  assign o_prefetch_room = prefetch_room_q;
   // Way exclusion uses the registered set comparisons below. The array reads
   // it in selection and response cycles, when the query has held since the
   // edge before, and no fill is allocated and no put accepted on that edge
@@ -798,7 +860,10 @@ module coherence_home #(
   end
   for (genvar engine = 0; engine < RESULTS; engine++) begin : gen_engine_terms
     assign engine_tag_sel[engine] = engine_tag_q[engine][array_way];
-    assign engine_other[engine] = !engine_idle[engine] && !array_token_onehot[engine];
+    // A prefetch never touches the array after its decision, so its engine
+    // protects no victim.
+    assign engine_other[engine] = !engine_idle[engine] && !array_token_onehot[engine] &&
+        !engine_prefetch_q[engine];
     assign engine_victims[engine] = engine_other[engine] && (engine_accepted_q[engine] ?
         work_set_q && work_tag_sel : engine_set_q[engine] && engine_tag_sel[engine]);
   end
@@ -831,8 +896,16 @@ module coherence_home #(
   end
   assign fill_free_any = !(&fill_live);
   assign state_allows_fill = array_state == coherence_pkg::Invalid || wb_free_any;
+  // A prefetch allocates only while more than PREFETCH_RESERVE fills are
+  // free, two ways of the set were available and, for a valid victim, two
+  // write-back slots are free, and only if it may fill at all: it never
+  // takes a reserved fill, the last available way or the last write-back
+  // slot.
+  (* keep = "true" *) logic prefetch_fill_ok;
+  assign prefetch_fill_ok = !lookup_prefetch_q || (prefetch_fill_q && array_two_available &&
+      (array_state == coherence_pkg::Invalid || wb_two_free_q));
   assign fill_pre = decision_from_engine && !array_hit && array_available && fill_free_any &&
-      state_allows_fill;
+      state_allows_fill && prefetch_fill_ok;
   // The registered phase flags and the one-hot response token match their
   // encodings outside reset. Every formal task checks this, including those
   // read with SYNTHESIS defined, which makes the checks inductive; simulation
@@ -850,7 +923,9 @@ module coherence_home #(
   always_comb
     if (decision_reset_seen) begin
       assert (fill_pre == (decision_engine && !array_hit && array_available && fill_free &&
-          (array_state == coherence_pkg::Invalid || wb_free)));
+          (array_state == coherence_pkg::Invalid || wb_free) && (!lookup_prefetch_q ||
+          (prefetch_fill_q && array_two_available &&
+           (array_state == coherence_pkg::Invalid || wb_two_free_q)))));
       for (int token = 0; token < (1 << TokenBits); token++)
       assert (array_token_onehot[token] == (int'(array_token) == token));
       for (int fill = 0; fill < FILLS; fill++) begin
@@ -900,11 +975,11 @@ module coherence_home #(
     decision_hit = array_hit && array_available && !decision_blocked;
     decision_fill = fill_pre && !decision_blocked && !victim_blocked;
     decision_join = |join_fill;
-    decision_retry = decision_engine && !decision_hit;
+    decision_retry = decision_engine && !decision_hit && !lookup_prefetch_q;
     array_claim = run && array_response && (decision_hit || decision_fill);
     retry_valid = run && array_response && decision_retry;
     retry_park = decision_fill || decision_join;
-    pin_valid = run && array_response && decision_engine && decision_hit;
+    pin_valid = run && array_response && decision_engine && decision_hit && !lookup_prefetch_q;
   end
 
   // Parked readers own metadata seats, including readers with predecessors.
@@ -953,41 +1028,38 @@ module coherence_home #(
       incoming_put.put_id == selected_put_q.put_id && incoming_put.epoch == selected_put_q.epoch &&
       incoming_put.addr == selected_put_q.addr;
   // The selected put's block is compared with the fill and write-back blocks
-  // one cycle ahead, from its next address. A fill or write-back allocated
-  // this cycle takes the query or victim block next cycle.
+  // one cycle ahead, from its next address, and the comparisons are reduced
+  // before the register, so W readiness reads one registered term. A fill or
+  // write-back slot that stops blocking on an edge still holds the put for
+  // that cycle. The fill and write-back slot allocated on an edge take the
+  // query and victim blocks, compared from the decision.
   always_ff @(posedge i_clk) begin
     put_query_q  <= same_block(array_query, held_put_next);
     put_victim_q <= same_block(array_addr, held_put_next);
-    for (int fill = 0; fill < FILLS; fill++) begin
-      put_fill_q[fill] <= same_block(fill_addr_q[fill], held_put_next);
-      put_fill_old_q[fill] <= same_block(fill_old_addr_q[fill], held_put_next);
-      fill_allocated_q[fill] <= run && array_response && decision_fill &&
-          fill_free_index == FillBits'(fill);
-    end
-    for (int wb = 0; wb < NUM_WB; wb++) begin
-      put_wb_q[wb] <= same_block(wb_addr_q[wb], held_put_next);
-      wb_allocated_q[wb] <= run && array_response && decision_fill &&
-          array_state != coherence_pkg::Invalid && wb_free_index == WbBits'(wb);
-    end
+    put_owner_q  <= 1'b0;
+    for (int fill = 0; fill < FILLS; fill++)
+    if (fill_blocking_q[fill] && (same_block(
+            fill_addr_q[fill], held_put_next
+        ) || (fill_victim_q[fill] && same_block(
+            fill_old_addr_q[fill], held_put_next
+        ))))
+      put_owner_q <= 1'b1;
+    for (int wb = 0; wb < NUM_WB; wb++)
+    if (wb_valid_q[wb] && same_block(wb_addr_q[wb], held_put_next)) put_owner_q <= 1'b1;
+    fill_allocated_q <= run && array_response && decision_fill;
+    victim_allocated_q <= run && array_response && decision_fill &&
+        array_state != coherence_pkg::Invalid;
   end
   // The fill decision arrives last: the selected put waits on it only when
   // its block is this response's valid victim.
   (* keep = "true" *) logic put_held_blocked, put_victim_match, w_ready_early;
   assign put_victim_match = array_response && array_state != coherence_pkg::Invalid &&
       held_put_set_q && held_put_tag_sel;
-  // The held put's blocking terms are kept per owner from registered flags and
-  // compares, then reduced in one node, so W readiness also has a fixed depth.
-  (* keep = "true" *) logic [FILLS-1:0] fill_put_match, fill_put_blocks;
-  (* keep = "true" *) logic [NUM_WB-1:0] wb_put_blocks;
-  for (genvar fill = 0; fill < FILLS; fill++) begin : gen_fill_put_terms
-    assign fill_put_match[fill] = fill_allocated_q[fill] ? put_query_q : put_fill_q[fill];
-    assign fill_put_blocks[fill] = fill_blocking_q[fill] && (fill_put_match[fill] ||
-        (fill_victim_q[fill] && (fill_allocated_q[fill] ? put_victim_q : put_fill_old_q[fill])));
-  end
-  for (genvar wb = 0; wb < NUM_WB; wb++) begin : gen_wb_put_terms
-    assign wb_put_blocks[wb] = wb_valid_q[wb] && (wb_allocated_q[wb] ? put_victim_q : put_wb_q[wb]);
-  end
-  assign put_held_blocked = |{fill_put_blocks, wb_put_blocks};
+  // The held put's blocking term: the registered reduction and the owners
+  // allocated on the edge before, in one node, so W readiness has a fixed
+  // depth at any fill count.
+  assign put_held_blocked = put_owner_q || (fill_allocated_q && put_query_q) ||
+      (victim_allocated_q && put_victim_q);
   assign put_blocked = put_held_blocked || (put_victim_match && decision_fill);
   assign w_ready_early = active && put_selected_q && !put_busy && !put_held_blocked &&
       !put_busy_q[selected_put_q.put_id];
@@ -1160,6 +1232,7 @@ module coherence_home #(
         fill_seats_q[fill] <= '0;
         fill_seat_count_q[fill] <= '0;
         fill_write_q[fill] <= 1'b0;
+        fill_prefetch_q[fill] <= 1'b0;
         fill_ack_q[fill] <= '0;
       end else begin
         if (o_mem_req_valid && i_mem_req_ready && o_mem_req_id == 5'(fill))
@@ -1186,8 +1259,9 @@ module coherence_home #(
             fill_sector_q[fill] <= 1'b0;
             fill_dirty_q[fill] <= array_state == coherence_pkg::Modified;
             fill_dirty_sectors_q[fill] <= '0;
-            fill_seats_q[fill] <= COMPLETIONS'(1) << decision_tid;
-            fill_seat_count_q[fill] <= 1;
+            fill_seats_q[fill] <= lookup_prefetch_q ? '0 : COMPLETIONS'(1) << decision_tid;
+            fill_seat_count_q[fill] <= lookup_prefetch_q ? 2'd0 : 2'd1;
+            fill_prefetch_q[fill] <= lookup_prefetch_q;
             fill_write_q[fill] <= decision_opcode == coherence_pkg::DMAWrite;
           end
           if (array_response && join_fill[fill]) begin
@@ -1436,7 +1510,8 @@ module coherence_home #(
     end
   end
 
-  if (NUM_WB < 1 || NUM_WB > 16 || FILLS < 1 || FILLS > 4) begin : gen_invalid
+  if (NUM_WB < 1 || NUM_WB > 16 || FILLS < 1 || FILLS > 16 ||
+      PREFETCH_RESERVE >= FILLS) begin : gen_invalid
     initial $fatal(1, "coherence_home: invalid capacity");
   end
 `ifndef SYNTHESIS
@@ -1455,6 +1530,16 @@ module coherence_home #(
       reference_join_index = FillBits'(fill);
     end
   end
+  // Free fills and write-back slots counted from the phases.
+  logic [ FILLS-1:0] reference_fill_free;
+  logic [NUM_WB-1:0] reference_wb_free;
+  logic [4:0] reference_free_fills, reference_free_wbs;
+  for (genvar fill = 0; fill < FILLS; fill++) begin : gen_reference_fill_free
+    assign reference_fill_free[fill] = fill_phase_q[fill] == FillFree;
+  end
+  assign reference_wb_free = ~wb_valid_q & ~wb_frozen_q;
+  assign reference_free_fills = 5'($countones(reference_fill_free));
+  assign reference_free_wbs = 5'($countones(reference_wb_free));
   // Direct comparisons that the registered response-cycle terms replace.
   logic reference_blocked, reference_victim;
   always_comb begin
@@ -1483,7 +1568,8 @@ module coherence_home #(
     end
     for (int engine = 0; engine < RESULTS; engine++)
     if (array_state != coherence_pkg::Invalid && !engine_idle[engine] &&
-        array_token != TokenBits'(engine) && same_block(
+        array_token != TokenBits'(engine) &&
+        engine_opcode[engine] != coherence_pkg::Prefetch && same_block(
             engine_addr[engine], array_addr
         ))
       reference_victim = 1'b1;
@@ -1503,10 +1589,27 @@ module coherence_home #(
     if (wb_valid_q[wb] && same_block(wb_addr_q[wb], selected_put_q.addr))
       reference_put_blocked = 1'b1;
   end
+  // The owners that block the next cycle's put address now. W readiness
+  // registers this reduction, so a hold beyond the current conflicts follows
+  // a conflict of the cycle before.
+  logic reference_put_owner_next, reference_put_owner_q;
+  always_comb begin
+    reference_put_owner_next = 1'b0;
+    for (int fill = 0; fill < FILLS; fill++)
+    if (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady && (same_block(
+            fill_addr_q[fill], held_put_next
+        ) || (fill_victim_q[fill] && same_block(
+            fill_old_addr_q[fill], held_put_next
+        ))))
+      reference_put_owner_next = 1'b1;
+    for (int wb = 0; wb < NUM_WB; wb++)
+    if (wb_valid_q[wb] && same_block(wb_addr_q[wb], held_put_next)) reference_put_owner_next = 1'b1;
+  end
   logic [ADDR_WIDTH-1:0] reference_held_put_q;
   always_ff @(posedge i_clk) begin
     reference_ready_q <= !i_rst;
     reference_held_put_q <= held_put_next;
+    reference_put_owner_q <= reference_put_owner_next;
     // The completion table compares live sectors with held_put_next.
     if (sim_reset_seen_q && !i_rst && reference_ready_q)
       assert (selected_put_q.addr == reference_held_put_q);
@@ -1562,7 +1665,10 @@ module coherence_home #(
   end
   always_ff @(posedge i_clk)
     if (sim_reset_seen_q && !i_rst) begin
-      if (reference_ready_q) assert (put_blocked == reference_put_blocked);
+      // Every current conflict blocks W; any further hold follows a conflict
+      // of the cycle before.
+      if (reference_ready_q && reference_put_blocked) assert (put_blocked);
+      if (reference_ready_q && put_blocked) assert (reference_put_blocked || reference_put_owner_q);
       if (array_response) begin
         if (decision_fill && decision_from_engine && engine_non_alloc[ResultBits'(array_token)])
           assert (array_way == '0);
@@ -1589,7 +1695,10 @@ module coherence_home #(
         end
         for (int engine = 0; engine < RESULTS; engine++)
         if (!engine_idle[engine] && array_token != TokenBits'(engine))
-          assert (engine_victims[engine] == same_block(engine_addr[engine], array_addr));
+          assert (engine_victims[engine] == (engine_opcode[engine] != coherence_pkg::Prefetch &&
+              same_block(
+              engine_addr[engine], array_addr
+          )));
         assert ((held_put_set_q && held_put_tag_q[array_way]) == same_block(
             array_addr, selected_put_q.addr
         ));
@@ -1625,6 +1734,31 @@ module coherence_home #(
         assert (!array_exclude[array_way] && !decision_blocked && !victim_blocked);
         if (array_state != coherence_pkg::Invalid) assert (wb_free);
       end
+      // The prefetch flags belong to the decision in progress, and a
+      // prefetch decision never retries, pins, joins or parks.
+      if (array_response) begin
+        if (decision_engine)
+          assert (lookup_prefetch_q ==
+              (engine_opcode[ResultBits'(array_token)] == coherence_pkg::Prefetch) &&
+              lookup_fill_q == (lookup_prefetch_q && !engine_nofill_q[ResultBits'(array_token)]));
+          else assert (!lookup_prefetch_q && !lookup_fill_q);
+        if (lookup_prefetch_q) assert (!retry_valid && !pin_valid && !decision_join);
+      end
+      // A prefetch allocates only when it may fill, more than PREFETCH_RESERVE
+      // fills are free, two ways were available and, for a valid victim, two
+      // write-back slots are free.
+      if (array_response && active && decision_fill && lookup_prefetch_q) begin
+        assert (lookup_fill_q && array_two_available);
+        assert (int'(reference_free_fills) > PREFETCH_RESERVE);
+        if (array_state != coherence_pkg::Invalid) assert (reference_free_wbs >= 2);
+      end
+      for (int engine = 0; engine < RESULTS; engine++)
+      if (!engine_idle[engine]) begin
+        assert (engine_prefetch_q[engine] == (engine_opcode[engine] == coherence_pkg::Prefetch));
+        if (engine_nofill_q[engine]) assert (engine_prefetch_q[engine]);
+      end
+      for (int fill = 0; fill < FILLS; fill++)
+      if (fill_prefetch_q[fill] && fill_phase_q[fill] != FillFree) assert (!fill_write_q[fill]);
       if (array_response && active && !array_hit && array_available)
         assert (!array_exclude[array_way]);
       for (int put = 0; put < Puts; put++) begin
@@ -1737,14 +1871,14 @@ module coherence_home #(
       end
       for (int fill = 0; fill < FILLS; fill++) begin
         if (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady)
-          assert (fill_seats_q[fill] != 0);
+          assert (fill_seats_q[fill] != 0 || fill_prefetch_q[fill]);
         for (int slot = 0; slot < COMPLETIONS; slot++)
         if (fill_phase_q[fill] != FillFree && fill_seats_q[fill][slot])
           assert (same_block(fill_addr_q[fill], waiting_addr[slot]));
         for (int other = fill + 1; other < FILLS; other++)
         if (fill_phase_q[fill] != FillFree && fill_phase_q[other] != FillFree)
           assert ((fill_seats_q[fill] & fill_seats_q[other]) == 0);
-        if (fill_wake[fill]) assert (fill_seats_q[fill] != 0);
+        if (fill_wake[fill]) assert (fill_seats_q[fill] != 0 || fill_prefetch_q[fill]);
         if (fill_phase_q[fill] == FillReady) assert (fill_add_seats[fill] == 0);
       end
       assert (o_perf_events.access == (o_perf_events.hit || o_perf_events.miss));

@@ -51,7 +51,8 @@ module coherence_if_pair_formal (
       .SLOTS(3),
       .RESULT_SLOTS(2),
       .CACHE_BYTES(256),
-      .WAYS(2)
+      .WAYS(2),
+      .PREFETCH_SLOTS(0)
   ) dut (
       .i_clk,
       .i_rst(rst),
@@ -67,6 +68,7 @@ module coherence_if_pair_formal (
       .o_work_buffer(),
       .o_work_error(),
       .o_work_counted(),
+      .o_work_nofill(),
       .i_count_valid(1'b0),
       .i_count_tid('0),
       .o_waiting(),
@@ -88,6 +90,10 @@ module coherence_if_pair_formal (
       .o_exclude(),
       .i_next_put_addr('0),
       .o_put_busy(),
+      .o_accepted(),
+      .o_accepted_opcode(),
+      .o_accepted_q(),
+      .o_accepted_addr(),
       .i_result_valid(result_valid),
       .o_result_ready(result_ready),
       .i_result(result),

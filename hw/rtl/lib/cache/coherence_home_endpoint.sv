@@ -20,7 +20,10 @@ module coherence_home_endpoint #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned NUM_HARTS = 2,
     parameter int unsigned L2_NUM_MSHR = 4,
-    parameter int unsigned TID = 0
+    parameter int unsigned TID = 0,
+    // Requests the endpoint admits: 0 any, 1 all but prefetch (source 3),
+    // 2 prefetch only.
+    parameter int unsigned CLASS = 0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -111,7 +114,7 @@ module coherence_home_endpoint #(
   ) && demand_in.q.epoch == i_epoch &&
       (int'(demand_in.q.src) < NUM_HARTS || demand_in.q.src >= 2) && coherence_pkg::legal_opcode(
       demand_in.q, demand_in.opcode
-  ) && demand_in.addr[4:0] == 0;
+  ) && demand_in.addr[4:0] == 0 && (CLASS == 0 || (CLASS == 2) == (demand_in.q.src == 2'd3));
   assign result_matches = result_in.q == demand_q.q &&
       result_in.tid == 6'(TID) && result_in.addr == demand_q.addr &&
       result_in.opcode <= coherence_pkg::GrantFail;
@@ -207,7 +210,7 @@ module coherence_home_endpoint #(
       endcase
     end
   end
-  if (ADDR_WIDTH < 32 || ADDR_WIDTH > 56 || NUM_HARTS < 1 || NUM_HARTS > 2 ||
+  if (ADDR_WIDTH < 32 || ADDR_WIDTH > 56 || NUM_HARTS < 1 || NUM_HARTS > 2 || CLASS > 2 ||
       L2_NUM_MSHR < 1 || L2_NUM_MSHR > 64 ||
       coherence_pkg::home_count(
           NUM_HARTS, L2_NUM_MSHR

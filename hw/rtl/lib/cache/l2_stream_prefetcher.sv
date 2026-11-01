@@ -36,7 +36,8 @@
  * arbiter as ordinary line reads, and their responses are discarded: the
  * point is the L2 fill. A request is registered, so it holds still until the
  * arbiter takes it. At most MAX_INFLIGHT reads are outstanding, each under
- * its own id.
+ * its own id. A new request loads only while i_enable is set; one already
+ * loaded still goes out.
  */
 module l2_stream_prefetcher #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -53,6 +54,8 @@ module l2_stream_prefetcher #(
     // An L1D read request to the L2, on the cycle the arbiter takes it.
     input logic                  i_miss_valid,
     input logic [ADDR_WIDTH-1:0] i_miss_addr,
+    // Loads a new request while set.
+    input logic                  i_enable,
 
     // Line-port master: reads only.
     output logic                  o_req_valid,
@@ -160,12 +163,13 @@ module l2_stream_prefetcher #(
   end
 
   // Load the register when it is empty or emptying, a stream has a line to
-  // read, and fewer than MAX_INFLIGHT reads are outstanding. An observation
-  // that replaces the chosen entry this cycle wins: nothing loads.
+  // read, loads are enabled, and fewer than MAX_INFLIGHT reads are
+  // outstanding. An observation that replaces the chosen entry this cycle
+  // wins: nothing loads.
   logic load;
   logic obs_allocates;
   assign obs_allocates = obs_valid_q && !(|obs_succ) && !(|obs_same);
-  assign load = (!req_valid_q || req_fire) && cand_any &&
+  assign load = (!req_valid_q || req_fire) && cand_any && i_enable &&
       !(obs_allocates && (st_victim_q == cand_sel)) &&
       (inflight_q < InflightBits'(MAX_INFLIGHT));
 

@@ -33,7 +33,7 @@ module xilinx_frost_subsystem #(
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     // L2 line size (see frost.sv); the DDR AXI data width follows it.
     parameter int unsigned L2_LINE_BYTES = 64,
-    parameter int unsigned L2_NUM_MSHR = 4,
+    parameter int unsigned L2_NUM_MSHR = 8,
     parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
     // Optional boot-hang UART classifier. Leave off for interactive testing.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,

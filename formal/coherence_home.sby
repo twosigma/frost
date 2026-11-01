@@ -44,7 +44,7 @@ covers: read -sv coherence_home_array.sv
 control: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_engine.sv
 wb: read -sv coherence_home_engine.sv
 covers: read -sv coherence_home_engine.sv
-unit: chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 -set RESULTS 2 -set FILLS 2 coherence_home
+unit: chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 -set RESULTS 2 -set FILLS 2 -set PREFETCH_SLOTS 0 coherence_home
 wide: chparam -set LINE_BYTES 64 -set WAYS 1 coherence_home_control_harness
 control: prep -flatten -top coherence_home_control_harness
 unit: prep -flatten -top coherence_home

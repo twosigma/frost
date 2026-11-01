@@ -48,6 +48,7 @@ class PrefetchBench:
         Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
         dut.i_miss_valid.value = 0
         dut.i_miss_addr.value = 0
+        dut.i_enable.value = 1
         dut.i_req_ready.value = 0
         dut.i_resp_valid.value = 0
         dut.i_resp_id.value = 0
@@ -191,3 +192,29 @@ async def test_four_interleaved_streams(dut: Any) -> None:
         assert ahead, f"no reads for the stream at {base:#x}"
         assert max(ahead) == base + (5 + DISTANCE) * L2_LINE, [hex(a) for a in ahead]
     assert len(bench.reads) == len(set(bench.reads)), "a line was read twice"
+
+
+@cocotb.test()
+async def test_loads_wait_for_the_enable(dut: Any) -> None:
+    """A confirmed stream loads nothing while the enable is clear."""
+    bench = PrefetchBench(dut)
+    await bench.start()
+    base = 0x8060_0000
+    await bench.cycle(base)
+    await bench.cycle(base + L2_LINE)
+    await bench.idle(1)
+    assert len(bench.reads) <= 1, [hex(a) for a in bench.reads]
+    dut.i_enable.value = 0
+    await bench.idle(1)
+    held = len(bench.reads)
+    await bench.idle(30)
+    # A request loaded before the enable cleared still goes out.
+    assert len(bench.reads) <= held + 1, [hex(a) for a in bench.reads]
+    stopped = len(bench.reads)
+    await bench.idle(30)
+    assert len(bench.reads) == stopped, [hex(a) for a in bench.reads]
+    dut.i_enable.value = 1
+    await bench.idle(30)
+    assert bench.reads == [base + L2_LINE * k for k in range(2, 2 + DISTANCE)], [
+        hex(a) for a in bench.reads
+    ]
