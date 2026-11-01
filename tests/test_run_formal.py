@@ -63,6 +63,24 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "coherence_store_boundary.sby",
+        "Production SQ, router, buffered L1D and LQ preserve credit, drain and atomic exclusion.",
+        tasks=(
+            "bmc_load_same",
+            "bmc_load_other",
+            "bmc_amo_same",
+            "bmc_amo_other",
+            "bmc_sc",
+            "bmc_old",
+            "cover_load",
+            "cover_old",
+            "cover_amo",
+            "cover_sc",
+            "cover_edges_same",
+            "cover_edges_other",
+        ),
+    ),
+    FormalTarget(
         "coherence_store_buffer.sby",
         "Two accepted stores preserve order, payload, launch credit and acknowledgement.",
         tasks=("prove", "cover"),
@@ -1058,6 +1076,30 @@ SBY_TASKS = [
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
     ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),
+    (
+        "bmc_load_same",
+        "Loads through acceptance and installation of same-sector stores.",
+    ),
+    (
+        "bmc_load_other",
+        "Loads through acceptance and installation of different-sector stores.",
+    ),
+    ("bmc_amo_same", "Same-sector store and AMO handoff through release."),
+    ("bmc_amo_other", "Different-sector store and AMO handoff through release."),
+    ("bmc_sc", "SC handoff, acknowledgement and drain through release."),
+    ("bmc_old", "Old load responses and fresh bytes across buffered stores."),
+    ("cover_load", "Buffered store overlap with a younger load."),
+    ("cover_old", "Delayed old response and a fresh load staged before drain."),
+    ("cover_amo", "AMO retirement, delayed release and younger-store admission."),
+    ("cover_sc", "SC retirement, delayed release and younger-store admission."),
+    (
+        "cover_edges_same",
+        "Load staging at capture, acknowledgement, promotion and drain of same-sector stores.",
+    ),
+    (
+        "cover_edges_other",
+        "Load staging at capture, acknowledgement, promotion and drain of different-sector stores.",
+    ),
     ("coh_l1d_store_payload_bmc", "Ordered head payload and masked hit installation."),
     ("coh_l1d_store_grant_bmc", "Store miss byte merging against grant bytes."),
     (

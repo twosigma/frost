@@ -24,9 +24,9 @@
  *
  * Check the sum, final pointer, and sampled stores. Passing requires misses
  * on at least half the independent loads, overlapping misses in the
- * independent-load pass, and misses on at least half the stores. The home
- * serializes acquisitions and the L1D holds one pending store. Full-cache
- * mode also checks aggregate L2 miss traffic.
+ * independent-load pass, and misses on at least half the stores. The L1D
+ * buffers two ordered stores and issues one store acquisition at a time.
+ * Full-cache mode also checks aggregate L2 miss traffic.
  * Report each pass's cache-counter deltas; the chase is the serialized
  * control.
  */
