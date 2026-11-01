@@ -207,6 +207,8 @@ ports have independent service. The L1D's `coherence_array` serializes its
 lookup, read and update operations in block RAM. The final tag-read edge
 selects the private way and starts any required data read. Replacement state
 uses the tag request's matching PLRU response.
+Response data is meaningful only with `o_resp_data_valid`. A tag-only or
+skipped read keeps the prior response data without reading the data array.
 The L1D uses 32-byte sectors; the L2 supports 32-byte or 64-byte lines.
 
 Reset clears every set's tags, coherence states and replacement bits in both

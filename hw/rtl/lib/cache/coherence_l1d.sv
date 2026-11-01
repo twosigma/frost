@@ -1476,6 +1476,10 @@ module coherence_l1d #(
       if (array_skip_data) assert (!probe_launch && operation_q == StoreOp);
       if (active && phase_q == LookupWait && array_valid && operation_q == ProbeOp &&
           array_hit && array_state == coherence_pkg::Modified) assert (array_data_valid);
+      if (active && phase_q == LookupWait && array_valid && !array_data_valid) begin
+        p_skipped_array_data_unused : assert ((operation_q == StoreOp && array_hit) ||
+            (operation_q == ProbeOp && (!array_hit || array_state != coherence_pkg::Modified)));
+      end
       if (store_pop) assert (pending_q && !probe_valid_q);
       if (tail_q) assert (pending_q);
       assert (!(pending_q && atomic_q));

@@ -53,6 +53,7 @@ module coherence_array #(
     output logic [WayBits-1:0] o_resp_way,
     output logic [ADDR_WIDTH-1:0] o_resp_addr,
     output logic [1:0] o_resp_state,
+    // Data is meaningful only when valid; skipped reads keep the prior data.
     output logic o_resp_data_valid,
     output logic [8*LINE_BYTES-1:0] o_resp_data,
     // An update names a complete tag and row. Writes finish before another
@@ -340,7 +341,6 @@ module coherence_array #(
             o_resp_state <= tag_rdata[selected][TagBits+:2];
             o_resp_data_valid <= select_data;
             if (!select_data) begin
-              o_resp_data <= '0;
               phase_q <= Reply;
             end else begin
               count_q <= CountBits'(DATA_READ_LATENCY);
@@ -422,6 +422,9 @@ module coherence_array #(
     if (i_req_valid) assume (i_req_way < WAYS);
     if (i_update_valid) assume (i_update_way < WAYS);
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
+      if (!$past(phase_q == Data && count_q == 1))
+        p_data_changes_only_after_read :
+        assert (o_resp_data[8*f_byte+:8] == $past(o_resp_data[8*f_byte+:8]));
       if ($past(o_resp_valid && !i_resp_ready)) begin
         assert (o_resp_valid);
         assert (o_resp_data_valid == $past(o_resp_data_valid));
