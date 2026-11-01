@@ -2246,7 +2246,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_home_completions": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home_completions",
         hdl_toplevel_module="coherence_home_completions",
-        description="Independent results, completion pins, and same-sector predecessors",
+        description="Independent results, completion pins, same-sector predecessors, and "
+        "prefetch slots",
         verilator_extra_args=("--assert", "-GCACHE_BYTES=1024"),
     ),
     "coherence_array_reset_bram_sweep": CocotbRunConfig(
@@ -2410,7 +2411,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_home": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home",
         hdl_toplevel_module="coherence_home",
-        description="Independent completions, dirty recalls, way pins, and victim locks",
+        description="Independent completions, dirty recalls, way pins, victim locks, and "
+        "prefetches",
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=1024",

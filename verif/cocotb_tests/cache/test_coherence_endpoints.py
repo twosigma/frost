@@ -550,7 +550,7 @@ async def complete_request_identity_space(dut: Any) -> None:
     """Check all source, class, slot and epoch encodings at home admission."""
     b = Bench(dut)
     await b.reset()
-    harts = 1 if (b.get("o_layout") >> 21) == 19 else 2
+    harts = 1 if (b.get("o_layout") >> 21) == 23 else 2
     allowed: set[int] = set()
     for hart in range(harts):
         for port_class, count in ((0, 8), (1, 2), (2, 1)):
