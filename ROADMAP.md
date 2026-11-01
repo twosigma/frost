@@ -41,11 +41,17 @@ acquires M before it writes. Probe data and acknowledgements must keep making
 progress when every queue is full. In simulation, memory-bound code in DDR
 runs slower through the home than through the previous hierarchy: the L1D
 sends its store acquisitions one at a time, the home has four fills, and it
-has no stream prefetcher yet. Raising those is planned, along with the DMA
-test engine's transfer rate, which is slightly below what the earlier DMA
-sequencer reached. The single-hart queue sizes and
-lane choices will need revisiting against the timing and memory-traffic cost
-of the second hart.
+has no stream prefetcher yet. Other paths also take more cycles than
+before. The L1D completes one cached store at a time, hits included. The
+probe for an instruction or page-table read downgrades a Modified sector to
+Shared, so the next store to it acquires it again. The instruction side
+refills one line at a time, and a refill or page-table read from the L2
+takes about 30 cycles, against 10 to 16 before. An AMO waits for all of
+the L1D's requests to drain and always goes through the home. Each of these
+is planned as a separate change, as is raising the DMA test engine's
+transfer rate, which is slightly below what the earlier DMA sequencer
+reached. The single-hart queue sizes and lane choices will need revisiting
+against the timing and memory-traffic cost of the second hart.
 
 Writable BRAM stays private to one hart. Its read caches are outside the
 coherent ingress, and its instruction and data copies are separate, so a
