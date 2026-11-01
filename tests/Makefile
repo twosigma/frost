@@ -37,6 +37,11 @@ else ifeq ($(TOPLEVEL),coherence_home_completions)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/cache/coherence_home.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),coherence_array)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/ram/ram.f \
+        $(ROOT)/hw/rtl/lib/cache/coherence_array.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),coherence_home_array)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
@@ -699,7 +704,7 @@ SIM_MEM_SIZE_BYTES ?= 262144
 ENABLE_CACHED_TIER ?= 1
 DDR_MODEL_BYTES ?= 67108864
 DDR_MODEL_LATENCY ?= 30
-# Accelerate L1I invalidation and component-cache maintenance in simulation.
+# Accelerate coherent-array reset, L1I invalidation and component-cache maintenance.
 # The RTL default is 0; board builds leave it disabled.
 SIM_FAST_MAINT ?= 1
 ifeq ($(TOPLEVEL),frost)

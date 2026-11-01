@@ -26,6 +26,7 @@ module coherence_array #(
     parameter int unsigned TAG_READ_LATENCY = ULTRA ? 3 : 1,
     parameter int unsigned DATA_READ_LATENCY = ULTRA ? 6 : 2,
     parameter int unsigned DATA_WRITE_LATENCY = ULTRA ? 2 : 1,
+    parameter int unsigned SIM_FAST_MAINT = 0,
     localparam int unsigned OffsetBits = $clog2(LINE_BYTES),
     localparam int unsigned Sets = CACHE_BYTES / (LINE_BYTES * WAYS),
     localparam int unsigned SetBits = $clog2(Sets),
@@ -100,7 +101,15 @@ module coherence_array #(
   logic [WAYS-1:0] tag_we;
   logic [SetBits-1:0] tag_raddr, tag_waddr;
   logic [TagEntryBits-1:0] tag_wdata;
-  logic [TagEntryBits-1:0] tag_rdata[WAYS];
+  logic [TagEntryBits-1:0] tag_rdata [WAYS];
+`ifdef SYNTHESIS
+  localparam int unsigned SimFastInit = 0;
+  wire init_bulk_clear = 1'b0;
+`else
+  localparam int unsigned SimFastInit = SIM_FAST_MAINT;
+  // Only an observed reset permits the simulation bulk clear.
+  wire init_bulk_clear = SimFastInit != 0 && sim_reset_seen_q && !i_rst && phase_q == Init;
+`endif
 
   logic hit;
   logic select_valid;
@@ -171,11 +180,12 @@ module coherence_array #(
   );
   sdp_block_ram #(
       .ADDR_WIDTH(SetBits),
-      .DATA_WIDTH(PlruBits)
+      .DATA_WIDTH(PlruBits),
+      .SUPPORT_BULK_CLEAR(SimFastInit)
   ) replacement (
       .i_clk(i_clk),
       .i_write_enable(plru_we),
-      .i_bulk_clear(1'b0),
+      .i_bulk_clear(init_bulk_clear),
       .i_write_address(phase_q == Init ? init_set_q : set_q),
       .i_read_address(tag_raddr),
       .i_write_data(plru_write),
@@ -185,14 +195,15 @@ module coherence_array #(
   if (ULTRA) begin : gen_tag_ultra
     logic [WAYS*TagEntryBits-1:0] row;
     sdp_packed_tag_uram #(
-        .ADDR_WIDTH  (RowBits),
-        .DATA_WIDTH  (TagEntryBits),
+        .ADDR_WIDTH(RowBits),
+        .DATA_WIDTH(TagEntryBits),
         .READ_LATENCY(TAG_READ_LATENCY),
-        .READ_WORDS  (WAYS)
+        .READ_WORDS(WAYS),
+        .SUPPORT_BULK_CLEAR(SimFastInit)
     ) tags (
         .i_clk(i_clk),
         .i_write_enable(|tag_we),
-        .i_bulk_clear(1'b0),
+        .i_bulk_clear(init_bulk_clear),
         .i_write_address(RowBits'(tag_waddr) << WaySelBits),
         .i_write_word_mask(tag_we),
         .i_write_data(tag_wdata),
@@ -207,11 +218,12 @@ module coherence_array #(
     for (genvar way = 0; way < WAYS; way++) begin : gen_way
       sdp_block_ram #(
           .ADDR_WIDTH(SetBits),
-          .DATA_WIDTH(TagEntryBits)
+          .DATA_WIDTH(TagEntryBits),
+          .SUPPORT_BULK_CLEAR(SimFastInit)
       ) tags (
           .i_clk(i_clk),
           .i_write_enable(tag_we[way]),
-          .i_bulk_clear(1'b0),
+          .i_bulk_clear(init_bulk_clear),
           .i_write_address(tag_waddr),
           .i_read_address(tag_raddr),
           .i_write_data(tag_wdata),
@@ -293,7 +305,7 @@ module coherence_array #(
       case (phase_q)
         Init: begin
           init_set_q <= init_set_q + 1'b1;
-          if (&init_set_q) begin
+          if (&init_set_q || init_bulk_clear) begin
             count_q <= CountBits'(DATA_WRITE_LATENCY + 1);
             phase_q <= WriteWait;
           end

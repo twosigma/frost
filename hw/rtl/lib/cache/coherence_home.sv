@@ -28,6 +28,7 @@ module coherence_home #(
     parameter int unsigned RESULTS = 8,
     parameter int unsigned FILLS = 4,
     parameter bit ULTRA = 1'b1,
+    parameter int unsigned SIM_FAST_MAINT = 0,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
     localparam int unsigned WbBits = NUM_WB > 1 ? $clog2(NUM_WB) : 1
 ) (
@@ -633,7 +634,8 @@ module coherence_home #(
       .CACHE_BYTES(CACHE_BYTES),
       .WAYS(WAYS),
       .TOKEN_BITS(TokenBits),
-      .ULTRA(ULTRA)
+      .ULTRA(ULTRA),
+      .SIM_FAST_MAINT(SIM_FAST_MAINT)
   ) array (
       .i_clk,
       .i_rst,
