@@ -318,7 +318,9 @@ board, the [hardware regression](../fpga/README.md#hardware-regression) boots
 Debian from its NFS root, and `fpga/linux_boot_soak.py` boots the test image
 repeatedly.
 
-The NFS-root stage runs the static NIC loopback test from `/dev/shm` after
+The NFS-root stage accepts systemd `running`, or `degraded` when all failed
+units are `session-N.scope` units with `Result=resources`, and logs the
+tolerated scopes. It runs the static NIC loopback test from `/dev/shm` after
 dropping dentry and inode caches. The test opens counter and carrier files
 while the link is up, then holds the interface down for 65 seconds to expire
 NFS's default directory attribute cache. It reads through those descriptors

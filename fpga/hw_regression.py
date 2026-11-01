@@ -265,20 +265,32 @@ LINUX_ROOT_MOUNT_RE = re.compile(
     r"^\r*(nfs\d*)[ \t]+(\S+)[ \t]+(\S+)[ \t\r]*\n", re.MULTILINE
 )
 LINUX_ROOT_MOUNT_VERS = "vers=3"
-# Bound systemd startup, then print failed units and the current state.
+# Bound systemd startup, then print failed units, their results and the state.
 # ``state=`` distinguishes output from the echoed ``state=$(...)`` command,
 # even when the terminal wraps it.
 LINUX_SYSTEMD_WAIT_S = 300
 # ``--no-pager``, because a long enough list of failed units would otherwise
 # open a pager on this console, which reads the input the stage has typed ahead.
+# The sentinel permits a unit count only after the entire listing is consumed.
 LINUX_SYSTEMD_COMMAND = (
     f"timeout {LINUX_SYSTEMD_WAIT_S} systemctl is-system-running --wait "
     ">/dev/null; "
-    "systemctl --failed --no-legend --plain --no-pager; "
+    "echo systemd-check; "
+    "failed=$(systemctl --failed --no-legend --plain --no-pager); listed=$?; "
+    "printf '%s\\n' \"$failed\"; "
+    "printf '%s\\n' \"$failed\" systemd-list-end | { "
+    "count=0; while read -r unit rest; do "
+    '[ "$unit" = systemd-list-end ] && break; '
+    '[ -z "$unit" ] && continue; '
+    "count=$((count+1)); "
+    'result=$(systemctl show -p Result --value "$unit") || result=unknown; '
+    'echo failed_unit="$unit" result="$result"; done; '
+    '[ "$unit" = systemd-list-end ] && echo failed_count=$count; }; '
+    "echo failed_list_status=$listed; "
     "echo state=$(systemctl is-system-running)"
 )
 LINUX_SYSTEMD_RUNNING = "running"
-# Any complete state other than ``running`` ends capture as a failure.
+# Degraded is accepted only for session scopes whose result is resources.
 # Require a newline so a partial ``state=running`` cannot be read as ``state=r``.
 LINUX_SYSTEMD_STATE_RE = re.compile(r"^\r*state=(\w+)[ \t\r]*\n", re.MULTILINE)
 
@@ -1207,9 +1219,46 @@ def counter_values(serial_buf: str) -> dict[str, str]:
     return counts
 
 
+def tolerated_systemd_units(serial_buf: str) -> list[str]:
+    """Return session scopes when they alone explain the last degraded state.
+
+    A complete successful listing and Result=resources for every failed unit
+    are required. Missing results, an empty listing and other failures fail
+    the systemd check.
+    """
+    states = list(LINUX_SYSTEMD_STATE_RE.finditer(serial_buf))
+    if not states or states[-1].group(1) != "degraded":
+        return []
+    checks = list(re.finditer(r"^\r*systemd-check[\r]*\n", serial_buf, re.MULTILINE))
+    if not checks or checks[-1].end() > states[-1].start():
+        return []
+    check = serial_buf[checks[-1].end() : states[-1].start()]
+    statuses = re.findall(
+        r"^\r*failed_list_status=([^\r\n]*)[\r]*\n", check, re.MULTILINE
+    )
+    if statuses != ["0"]:
+        return []
+    units = re.findall(
+        r"^\r*failed_unit=(\S+) result=([^\r\n]*)[\r]*\n", check, re.MULTILINE
+    )
+    counts = re.findall(r"^\r*failed_count=([^\r\n]*)[\r]*\n", check, re.MULTILINE)
+    if (
+        counts != [str(len(units))]
+        or not units
+        or any(
+            not re.fullmatch(r"session-[0-9]+\.scope", unit) or result != "resources"
+            for unit, result in units
+        )
+    ):
+        return []
+    return [unit for unit, _ in units]
+
+
 def systemd_state(serial_buf: str) -> str | None:
-    """Return the last ``systemctl is-system-running`` state line, if any."""
+    """Return the last state, accepting only logind session resource failures."""
     states = LINUX_SYSTEMD_STATE_RE.findall(serial_buf)
+    if tolerated_systemd_units(serial_buf):
+        return LINUX_SYSTEMD_RUNNING
     return states[-1] if states else None
 
 
@@ -1249,8 +1298,9 @@ def linux_stage(root: LinuxRoot) -> UartStage:
     """Build UART checks for Debian booting from the NFS root.
 
     Require the pinned kernel and driver before login. After login, check the
-    NFSv3 mount, systemd startup, stress result, nonzero counters, the memory
-    error readback, scrub self-test, RAM patrol, and loopback with root access
+    NFSv3 mount, systemd startup (allowing only session scope resource failures),
+    stress result, nonzero counters, the memory error readback, scrub self-test,
+    RAM patrol, and loopback with root access
     restored. Explicit failures end capture immediately.
     """
     failure_markers = LINUX_FAILURE_MARKERS + (
@@ -1287,7 +1337,7 @@ def linux_stage(root: LinuxRoot) -> UartStage:
         return hit
 
     def lx_success(raw_buf: str) -> bool:
-        """Login, a running systemd, both counters, frost_nettest, and the root back."""
+        """Login, an accepted systemd state, counters, loopback, and root access."""
         serial_buf = console_text(raw_buf)
         if not lx_login(serial_buf):
             return False
@@ -1359,9 +1409,13 @@ def linux_stage(root: LinuxRoot) -> UartStage:
         summary = " ".join(f"{event}={counts[event]}" for event in LINUX_COUNTER_EVENTS)
         polls = memerr["polls_after"] - memerr["polls_before"]
         patrol = memerr["patrol_after"] - memerr["patrol_before"]
+        tolerated = tolerated_systemd_units(serial_buf)
+        systemd_note = LINUX_SYSTEMD_RUNNING
+        if tolerated:
+            systemd_note += f" (tolerated {', '.join(tolerated)}: resources)"
         return True, (
             f"{KERNEL_RELEASE}, NIC driver, {mount_note}, systemd "
-            f"{LINUX_SYSTEMD_RUNNING}, login, stress token, counters "
+            f"{systemd_note}, login, stress token, counters "
             f"{summary}, no memory errors ({polls} ECC polls), scrub self-test, "
             f"RAM patrol ({patrol} lines, a full pass), "
             f"{LINUX_NET_COMMAND}, root alive"

@@ -329,7 +329,10 @@ boot, and the tests. Raise it for a divided-clock bitstream, or for a first
 build that must download the Buildroot toolchain or the kernel.
 
 The stage checks the NFS mount and systemd and runs the stress and counter
-tests. It loads the memory error driver, requires its scrub self-test and an
+tests. Systemd must report `running`, or `degraded` with only failed
+`session-N.scope` units whose `Result` is `resources`. These logind session
+races are logged as tolerated. Every other failed unit or result fails the
+stage. It loads the memory error driver, requires its scrub self-test and an
 accelerated RAM patrol pass with zero hardware errors, and reloads it at the
 daily default. The patrol check allows 150 one-second waits. It then runs the
 NIC loopback test from `/dev/shm`, with dentry and inode caches dropped before
@@ -397,6 +400,6 @@ kernel the board runs.
 | Module missing under `/lib/modules/<version>` | Keep the running kernel installed; install its module, or load a kernel that is installed. An autoremove in the chroot sees the server's kernel. |
 | SSH public-key rejection | Check the key, root ownership, mode 700 on `.ssh`, and mode 600 on `authorized_keys`. |
 | Regression waits at login / `Login incorrect` | Add the console autologin drop-in from step 2. |
-| Regression reports degraded systemd | Inspect `systemctl --failed` and `systemctl status <unit>`. |
+| Regression reports degraded systemd | Inspect `systemctl --failed` and `systemctl show -p Result <unit>`. Only `session-N.scope` failures with `Result=resources` are tolerated. |
 | `/dev/shm/frost_nettest: Permission denied` | Remove `noexec` from the `/dev/shm` tmpfs. |
 | Regression `ENV_FAIL` | Follow the reported export, NFSv3, kernel, initramfs, write-permission, or compiler error. |

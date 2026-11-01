@@ -337,8 +337,8 @@ def test_the_same_export_under_another_server_name_says_so() -> None:
     assert "address the mount shows" in note
 
 
-def test_a_degraded_systemd_is_terminal_and_names_the_state() -> None:
-    """End capture on a failed systemd state, after the command lists failed units."""
+def test_a_degraded_systemd_with_a_failed_service_is_terminal() -> None:
+    """A failed service makes degraded terminal after the failed-unit listing."""
     linux = stage()
     transcript = TO_MOUNT + SYSTEMD_ECHO + SYSTEMD_DEGRADED
     assert linux.failure_done(transcript), "the stage would run to the timeout"
@@ -346,6 +346,136 @@ def test_a_degraded_systemd_is_terminal_and_names_the_state() -> None:
     ok, note = linux.judge(transcript)
     assert not ok and "systemd is degraded, not running" in note
     assert "serial-getty@ttyS0.service" in transcript
+
+
+@pytest.mark.parametrize(
+    "state,units,accepted",
+    [
+        ("running", [], True),
+        ("degraded", [("session-1.scope", "resources")], True),
+        (
+            "degraded",
+            [("session-1.scope", "resources"), ("session-23.scope", "resources")],
+            True,
+        ),
+        (
+            "degraded",
+            [("session-1.scope", "resources"), ("dbus.service", "exit-code")],
+            False,
+        ),
+        ("degraded", [("dbus.service", "resources")], False),
+        ("degraded", [("session-1.scope", "signal")], False),
+        ("degraded", [("session-1.scope", "")], False),
+        ("degraded", [("session-other.scope", "resources")], False),
+        ("degraded", [], False),
+    ],
+)
+def test_systemd_command_and_stage_accept_only_session_resource_failures(
+    state: str,
+    units: list[tuple[str, str]],
+    accepted: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the shell queries and verdict with a controlled systemctl."""
+    systemctl = tmp_path / "systemctl"
+    listing = "\n".join(f"{unit} loaded failed failed Test unit" for unit, _ in units)
+    cases = "\n".join(
+        f'"show -p Result --value {unit}") echo "{result}" ;;' for unit, result in units
+    )
+    systemctl.write_text(
+        '#!/bin/sh\ncase "$*" in\n'
+        f'"--failed --no-legend --plain --no-pager") printf "%s\\n" "{listing}" ;;\n'
+        f'"is-system-running"*) echo {state} ;;\n'
+        f"{cases}\n*) exit 99 ;;\nesac\n"
+    )
+    systemctl.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    done = hw.subprocess.run(
+        ["sh", "-c", hw.LINUX_SYSTEMD_COMMAND],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    for unit, result in units:
+        assert f"failed_unit={unit} result={result}\n" in done.stdout
+    transcript = FULL_TRANSCRIPT.replace(SYSTEMD_RUNNING, done.stdout + PROMPT)
+    linux = stage()
+    assert hw.systemd_state(transcript) == ("running" if accepted else state)
+    assert linux.failure_done(transcript) is not accepted
+    assert linux.success_done(transcript) is accepted
+    ok, note = linux.judge(transcript)
+    assert ok is accepted, note
+    if accepted and units:
+        assert "tolerated " in note and "resources" in note
+        assert all(unit in note for unit, _ in units)
+    else:
+        assert "tolerated " not in note
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        "failed_unit=session-1.scope result=resources\nfailed_count=1\nfailed_list_status=1\n",
+        "failed_unit=session-1.scope result=resources\nfailed_count=2\nfailed_list_status=0\n",
+        "failed_unit=session-1.scope result=unknown\nfailed_count=1\nfailed_list_status=0\n",
+        "failed_unit=session-1.scope result=resources\nfailed_count=1\n"
+        "failed_list_status=0\nfailed_list_status=1\n",
+        "failed_unit=session-1.scope result=resources\nfailed_count=1\n"
+        "failed_list_status=0\nfailed_list_status=unknown\n",
+        "failed_unit=session-1.scope result=resources\nfailed_count=1\n"
+        "failed_count=unknown\nfailed_list_status=0\n",
+        "failed_unit=session-1.scope result=resources\n",
+    ],
+)
+def test_incomplete_systemd_failure_queries_do_not_tolerate_degraded(
+    listing: str,
+) -> None:
+    """An error or incomplete list cannot establish the session-only exception."""
+    transcript = f"systemd-check\n{listing}state=degraded\n"
+    assert hw.systemd_state(transcript) == "degraded"
+    assert hw.tolerated_systemd_units(transcript) == []
+
+
+def test_truncated_systemd_unit_stream_cannot_hide_other_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Require the producer's final sentinel before accepting its unit count."""
+    systemctl = tmp_path / "systemctl"
+    systemctl.write_text(
+        '#!/bin/sh\ncase "$1" in\n'
+        "--failed) echo 'session-1.scope loaded failed failed Test unit' ;;\n"
+        "show) echo resources ;;\nis-system-running) echo degraded ;;\nesac\n"
+    )
+    systemctl.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    command = hw.LINUX_SYSTEMD_COMMAND.replace(
+        '"$failed" systemd-list-end', '"$failed"'
+    )
+    assert command != hw.LINUX_SYSTEMD_COMMAND
+    done = hw.subprocess.run(
+        ["sh", "-c", command], check=True, capture_output=True, text=True, timeout=10
+    )
+    assert "failed_unit=session-1.scope result=resources\n" in done.stdout
+    assert hw.systemd_state(done.stdout) == "degraded"
+
+
+def test_systemd_session_results_belong_to_the_last_check() -> None:
+    """An earlier tolerated scope cannot excuse a later degraded check."""
+    transcript = (
+        "systemd-check\nfailed_unit=session-1.scope result=resources\n"
+        "failed_count=1\nfailed_list_status=0\nstate=degraded\n"
+    )
+    assert hw.systemd_state(transcript) == "running"
+    for length in range(len("degraded") + 1):
+        assert (
+            hw.systemd_state(transcript[: -len("degraded\n")] + "degraded"[:length])
+            is None
+        )
+    assert (
+        hw.systemd_state(transcript + "systemd-check\nstate=degraded\n") == "degraded"
+    )
 
 
 def test_the_systemd_state_is_not_read_out_of_the_typed_command() -> None:

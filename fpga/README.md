@@ -200,6 +200,9 @@ counters. With `patrol_seconds=10`, it requires patrol progress and a full
 pass within 150 one-second waits, then reloads the module at the daily default.
 `FROST_MEMERR_MODULE` names a prebuilt module instead.
 
+The Linux stage accepts systemd `running`, or `degraded` when every failed
+unit is a `session-N.scope` with `Result=resources`. It logs the tolerated
+scopes. Any other failed unit or result fails the stage.
 Before NIC loopback, the stage drops dentry and inode caches and copies the
 static test to `/dev/shm`. The test opens its sysfs descriptors while the
 link is up, then holds it down for 65 seconds to expire NFS's default
