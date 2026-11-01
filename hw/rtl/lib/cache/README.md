@@ -274,6 +274,9 @@ from its coherent identity. IF and PTW data and errors register at G, after the
 home has merged dirty probe data. Each slot completes C and U independently
 of its reader response and accepts another request only after U. The two IF
 slots share staged D/C arbiters and return at most one response per cycle.
+Their G readiness uses the registered phase and full q match. The home admits
+at most one live request per q and returns that request's address in G.
+An assertion checks the address of every accepted grant.
 `coherence_line_bridge` defaults to a response after U for other users.
 
 Source 2 and class 3 identify

@@ -207,9 +207,13 @@ async def two_refills_fence_and_reversed_completion(dut: Any) -> None:
     await b.request(0x80000020, 6)
     await b.wait(lambda _: len(b.demands) == 2)
     assert set(b.live) == {0x20, 0x22} and not b.responses
-    for q, addr in ((0x24, 0x80000000), (0x20, 0x80000080), (0x40, 0x80000000)):
+    for q, addr in ((0x24, 0x80000000), (0x40, 0x80000000)):
         g = pack((3, 0), (9, q), (6, 0), (32, addr), (256, 0), (1, 0))
         assert not (await b.step(g_valid=1, g=g))["g_ready"]
+    # Readiness matches the waiting q independently of the G address.
+    for q in (0x20, 0x22):
+        g = pack((3, 0), (9, q), (6, 0), (32, 0x80000080), (256, 0), (1, 0))
+        assert (await b.step(g_valid=0, g=g))["g_ready"]
     await b.step(g_valid=0)
     await b.step(fence=1)
     for _ in range(10):
@@ -277,6 +281,8 @@ async def walk_errors_discard_and_retry_with_release_held(dut: Any) -> None:
             await b.walk()
             for level in range(depth + 1):
                 await b.wait(lambda _: 0x40 in b.live)
+                g = pack((3, 0), (9, 0x40), (6, 0), (32, 0x80000080), (256, 0), (1, 0))
+                assert (await b.step(g_valid=0, g=g))["g_ready"]
                 if level == depth:
                     await b.step(discard=int(discarded))
                     await b.grant(0x40, line((0x80000 << 10) | 0xCF), error=1)

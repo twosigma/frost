@@ -20,7 +20,9 @@ covers: btor btormc
 read -formal -sv riscv_pkg.sv cache_perf_pkg.sv coherence_pkg.sv
 # Component targets prove the service engine and walker properties separately.
 read -sv coherence_home_engine.sv ptw.sv
-read -sv coherence_request_endpoint.sv coherence_d_arbiter.sv coherence_line_bridge.sv
+read -sv coherence_request_endpoint.sv coherence_d_arbiter.sv
+# Reader assertions apply here without the standalone environment assumptions.
+read -sv -nosynthesis coherence_line_bridge.sv
 proof: read -formal -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
 covers: read -formal -D COH_MAINT_COVER -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
 covers: chparam -set COVER_MODE 1 coherent_hart_cache_formal

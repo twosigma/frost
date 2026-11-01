@@ -93,8 +93,9 @@ module coherence_line_bridge #(
   assign o_clean_addr = demand_q.addr;
   assign o_d_valid = !i_rst && phase_q == Demand;
   assign o_d = demand_q;
+  // The home preserves one live request per q and returns its address in G.
   assign o_g_ready = !i_rst && phase_q == Grant && grant_in.q == demand_q.q &&
-      grant_in.addr == demand_q.addr;
+      (EARLY_RESPONSE || grant_in.addr == demand_q.addr);
   assign completion = {
     demand_q.q,
     grant_q.tid,
@@ -175,6 +176,9 @@ module coherence_line_bridge #(
       assert (i_req_addr[4:0] == 0);
       assert (SOURCE == 2 || !i_req_write);
     end
+    if (sim_reset_seen_q && !i_rst && i_g_valid && o_g_ready) begin
+      p_grant_address : assert (grant_in.addr == demand_q.addr);
+    end
   end
 `endif
 `ifdef FORMAL
@@ -198,6 +202,9 @@ module coherence_line_bridge #(
       assume (i_req_addr[4:0] == 0);
       assume (SOURCE == 2 || !i_req_write);
     end
+    // The standalone reader uses the home's per-identity address contract.
+    if (EARLY_RESPONSE && !i_rst && phase_q == Grant && i_g_valid && grant_in.q == demand_q.q)
+      assume (grant_in.addr == demand_q.addr);
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
       if ($past(o_d_valid && !i_d_ready)) begin
         assert (o_d_valid);
