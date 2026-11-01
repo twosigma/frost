@@ -1207,6 +1207,7 @@ jobs:
           - shard: CSR profiling off
             pytest_filter: >-
               csr_file_bmc_perf_off or
+              coherent_local_atomic or
               (coherence_store_boundary and not (bmc_amo or bmc_sc or cover_amo or cover_sc))
             timeout_minutes: 120
           - shard: Reorder buffer
@@ -1219,7 +1220,7 @@ jobs:
           - shard: Coherence
             pytest_filter: >-
               (axi_coherent_bridge or coherence_ or coherent_) and not
-              (coherence_store_boundary or coh_hart_maint_prove or
+              (coherence_store_boundary or coherent_local_atomic or coh_hart_maint_prove or
               (coherence_l1d and not (coh_l1d_bmc or coh_l1d_multi_bmc)))
             timeout_minutes: 240
           # The hart maintenance composition proof models buffered store

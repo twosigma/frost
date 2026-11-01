@@ -1,0 +1,21 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+prove: aigsmt boolector
+cover: mode cover
+depth 24
+timeout 120
+
+[engines]
+prove: abc pdr
+cover: smtbmc boolector
+
+[script]
+read -formal -sv coherent_local_owners_formal.sv
+prep -top coherent_local_owners_formal
+
+[files]
+coherent_local_owners_formal.sv

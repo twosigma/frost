@@ -66,6 +66,16 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "coherent_local_owners.sby",
+        "Two-owner permission, evicted reservations and observation replay under the shared-home contract.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "coherent_local_atomic.sby",
+        "Local ownership progresses through production CPU memory dependencies beside held probes and grants.",
+        tasks=("amo_bmc", "sc_bmc", "amo_cover", "sc_cover", "reservation_prove"),
+    ),
+    FormalTarget(
         "coherence_store_boundary.sby",
         "Production SQ, router, buffered L1D and LQ preserve credit, drain and atomic exclusion.",
         tasks=(
@@ -213,6 +223,11 @@ FORMAL_TARGETS = [
         tasks=(
             "coh_l1d_bmc",
             "coh_l1d_multi_bmc",
+            "coh_l1d_local_prove",
+            "coh_l1d_local_multi_prove",
+            "coh_l1d_local_cover",
+            "coh_l1d_local_data_bmc",
+            "coh_l1d_local_ways_prove",
             "coh_l1d_cover",
             "coh_l1d_data_bmc",
             "coh_l1d_data1_bmc",
@@ -1143,6 +1158,28 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    (
+        "reservation_prove",
+        "Successful SC clears at installation; failed SC clears and discards.",
+    ),
+    ("amo_bmc", "Local AMO dependency safety and bounded progress."),
+    ("sc_bmc", "Local SC dependency safety and bounded progress."),
+    ("amo_cover", "Local AMO release and pending control-entry stages."),
+    ("sc_cover", "Local SC retirement and pending control-entry stages."),
+    (
+        "coh_l1d_local_prove",
+        "Local service exclusion, saved image and release by induction.",
+    ),
+    (
+        "coh_l1d_local_multi_prove",
+        "Local ownership beside unrelated endpoints by induction.",
+    ),
+    ("coh_l1d_local_ways_prove", "Local ownership with multiple ways by induction."),
+    (
+        "coh_l1d_local_cover",
+        "Local failure, completed update and deferred probe reply.",
+    ),
+    ("coh_l1d_local_data_bmc", "Local atomic data and control through the real array."),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
     ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),

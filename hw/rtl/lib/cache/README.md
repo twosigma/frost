@@ -260,7 +260,8 @@ Grants install one at a time, endpoint 0's first and then the lowest-numbered
 load endpoint's. A load grant installs only while a WB slot is free, and
 endpoint 0 does not take the last free slot while a load grant waits. New
 load acquisitions stop while an atomic is active or an AMO, SC or maintenance
-operation waits for every endpoint to be idle.
+operation waits for admission. A resident Modified atomic needs endpoint 0
+and its own sector free; home atomics and maintenance drain every endpoint.
 Read status uses per-slot masks for allocation, response transfer, lookup
 results and grant completion. Completion and miss sets dominate allocation
 clears. Allocation sets dominate response clears of valid bits. A failed
@@ -272,15 +273,18 @@ endpoints, the wait flag. These clears take priority over lookup and wait
 attachment updates on the same edge.
 
 An L1D grant belongs to a live request endpoint. SC acceptance requires
-every endpoint to be idle, so grant processing and SC acceptance are mutually
-exclusive. Probe capture and service own local arbitration through R
+endpoint 0 to be idle and excludes a selected grant. Grant processing and
+SC acceptance are mutually exclusive. Probe capture and service own local arbitration through R
 acceptance. Invalidation admission starts on P capture and keeps the captured
 address until the CPU accepts admission. Ready grants, writes and maintenance request one local selection
 edge after R acceptance. An eligible read requests a turn after four completed
 probe replies. Grants and atomic writes take priority within that turn. A waiting data read
-can use the turn between hit-store installations. A selected
-local operation completes its bounded array service before P is accepted. Waiting for an operand, permission or retirement does not hold
-the probe port. A withdrawn local offer releases its turn after one edge.
+can use the turn between hit-store installations. A selected local operation
+completes its array service before P is accepted. A local Modified atomic holds
+service from lookup through write installation and a registered release edge.
+This includes SC result consumption and retirement. Resource retries and home
+permission waits release the probe port. A withdrawn local offer releases its
+turn after one edge.
 Read-slot payload writes pass through a one-record buffer. The buffer
 captures the payload and a slot mask each cycle. The mask identifies the
 allocated slot and is zero without an allocation. It qualifies forwarding
@@ -299,10 +303,13 @@ slots. `L2_NUM_WAITERS` has no effect on the CPU hierarchy; `L2_PREFETCH`,
 prefetcher (see The home's prefetcher).
 
 L1D performance events count the first permission lookup of each CPU read
-or ordinary store. Cached SC selection counts as a permission miss. A store
-to S and an AMO require permission and count as misses. Repeated lookups,
+or ordinary store. Cached SC counts its first definitive classification: a Modified hit, including
+a failed reservation, is a hit; a home acquisition is a permission miss. A store
+to S requires permission and counts as a miss. AMOs on Modified sectors
+count as hits; other AMOs count as permission misses. Repeated lookups,
 probes and maintenance do not add demand events. Outstanding misses include
-unresolved read slots, the head store acquisition and the selected SC. L2 events
+unresolved read misses, the head store acquisition and an SC classified for
+home acquisition. L2 events
 count shared demand lookups, prefetch lookups and non-maintenance PutM
 lookups. Its fill count, prefetch fills included, is at most `L2_NUM_MSHR`.
 A prefetch that allocates nothing is not a slot-full stall; a blocked one is
@@ -488,20 +495,34 @@ arming. Candidate validity and the entry veto select between those results.
 The atomic guard captures the candidate tag while idle and holds it while
 active. Only an active context qualifies the tag.
 
-Cached SC and AMO requests acquire the home lock even on an M hit. The CPU
-arms a tagged ROB-head context before D presentation. The active, unretired
-context identifies a valid ROB head. Interrupt and debug
-entry cannot cancel that context. A fault in the selected instruction
-releases the context when no home transaction is live. SC
-checks the reservation after home resource entitlement; a passing CheckSC
-uses a self-ProbeRead to collect dirty data without cancelling its own
-reservation. A granted SC asserts pending-write ownership while its result
-waits for retirement. An interrupt or debug drain cannot stall the protected
-owner's retirement. A completed single step prevents the following atomic
-from acquiring ownership. The SQ writes only after the owner's retirement.
-The SC bridge holds the home lock and same-sector interlock through the tagged SQ write.
-AMO holds them through its read/compute/write sequence. C reports the actual
-write. U releases the home ownership, and precise instruction ownership also waits for retirement.
+Cached SC and AMO requests on resident Modified sectors complete locally.
+The L1D checks registered lookup results after older stores have installed,
+with endpoint 0 idle and no same-sector acquisition or frozen writeback.
+It holds the service engine through the read, tagged write, array installation
+and registered release. Probes, grant installation, replacement and maintenance
+wait during that interval. The saved sector image supplies the masked write.
+A local atomic allocates no home identity and sends no C or U.
+
+The CPU arms a tagged ROB-head context before cache presentation. The active,
+unretired context identifies a valid ROB head. Interrupt and debug entry
+cannot cancel that context. Protection ends after both retirement and release.
+A fault in the selected instruction releases the context only after cache
+ownership ends. A completed single step prevents the following atomic from
+acquiring ownership.
+
+Local SC checks its exact physical reservation address and W/D size before
+success. Failure returns one result without a write. Success holds pending-write
+ownership through result delivery, retirement and the tagged SQ write. An
+interrupt or debug drain cannot stall the protected owner's retirement. The
+reservation clears at write installation. The CPU's older-store drain, AMO
+load dependencies and invalidation replay rules order every aq/rl encoding.
+
+All other atomics acquire through the home after draining the endpoints.
+SC checks its reservation after home resource entitlement; a passing CheckSC
+uses a self-ProbeRead to collect dirty data without cancelling its reservation.
+The home lock spans the SC's tagged SQ write or the AMO read/compute/write.
+C reports the completed write. U releases home ownership; CPU protection
+also waits for retirement.
 Clean faults dispose C/U before precise exception entry. Dirty errors hold
 ownership and raise the cluster fatal indication until reset.
 
@@ -606,8 +627,8 @@ Formal targets `coherence_home_completions`, `coherence_control`, `coherence_arr
 representative byte values, bounded controller transitions and CPU ownership.
 The `coherence_l1d` target also runs the L1D with three request endpoints and
 checks that no two live endpoints hold one sector, that no load endpoint is
-live beside a granted atomic, and that a load grant installs with a free WB
-slot.
+live beside a granted home atomic, that a local atomic excludes its sector and endpoint
+0 while blocking service, and that a load grant installs with a free WB slot.
 Detached victim validity, address and a watched byte are checked by induction
 through B. Cover tasks reach allocation, a delayed B, a blocked refetch,
 successful disposal and a failed B with preserved dirty ownership.
@@ -998,8 +1019,8 @@ Reset clears the L2's 8,192 sets, one set per cycle on hardware.
 DMA coherence works with either line size through the DMA port
 (see The DMA port and coherence). A master that reaches DDR below the L2
 sees neither cache level. The generic line-cache interface carries ordinary
-reads and writes. The CPU's cached atomic operations use the home protocol
-described above.
+reads and writes. The CPU's cached atomic operations use local Modified
+ownership or the home protocol described above.
 
 ## The stream prefetcher
 
