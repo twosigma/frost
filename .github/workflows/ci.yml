@@ -1206,9 +1206,13 @@ jobs:
           - shard: Reorder buffer
             pytest_filter: "reorder_buffer_bmc"
             timeout_minutes: 120
-          # Includes the coherent hart maintenance composition proof.
+          # The coherence home, endpoints and bridges, the coherent CPU
+          # interfaces, and the hart maintenance composition proof.
+          - shard: Coherence
+            pytest_filter: "axi_coherent_bridge or coherence_ or coherent_"
+            timeout_minutes: 240
           - shard: Other tasks
-            pytest_filter: "not (csr_file_bmc or reorder_buffer_bmc)"
+            pytest_filter: "not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or coherence_ or coherent_)"
             timeout_minutes: 240
     steps:
       - name: Checkout repository
