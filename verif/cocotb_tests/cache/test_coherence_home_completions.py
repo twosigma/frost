@@ -434,3 +434,93 @@ async def selection_crossing_park_allocates_no_image(dut: Any) -> None:
     await b.grant(item, 0xBADCAFE)
     await b.complete(item)
     await b.release(item)
+
+
+async def dispatch_with_flag(b: Completions) -> tuple[tuple[int, int, int], int]:
+    """Dispatch one request and report its no-fill flag."""
+    await b.wait("o_work_valid")
+    flag = b.get("o_work_nofill")
+    return await b.dispatch(), flag
+
+
+@cocotb.test()
+async def prefetch_slots_keep_their_own_capacity(dut: Any) -> None:
+    """Prefetches and every other identity fill separate slot partitions."""
+    b = Completions(dut)
+    await b.reset()
+    for index in range(4):
+        await b.admit(480 + 2 * index, 0x80000000 + 64 * index, 9)
+    identities = [(2 * index, 0) for index in range(8)]
+    identities += [(32 + 2 * index, 5) for index in range(2)]
+    identities += [(64, 6)]
+    identities += [(352 + 2 * index, 7) for index in range(8)]
+    for index, (q, op) in enumerate(identities):
+        await b.admit(q, 0x80010000 + 64 * index, op)
+    assert b.get("live") == (1 << len(b.dut.live)) - 1
+
+
+@cocotb.test()
+async def prefetch_no_fill_flag_follows_live_demand(dut: Any) -> None:
+    """Dispatch a Prefetch with no fill while a demand for its block is live."""
+    b = Completions(dut)
+    await b.reset()
+    # A live GetS of the block before the Prefetch's admission.
+    await b.admit(0, 0x80000000)
+    await b.admit(480, 0x80000020, 9)
+    first, flag = await dispatch_with_flag(b)
+    assert first[0] == 0 and not flag
+    second, flag = await dispatch_with_flag(b)
+    assert second[0] == 480 and flag
+    # No demand for the block.
+    await b.admit(482, 0x80001000, 9)
+    third, flag = await dispatch_with_flag(b)
+    assert third[0] == 482 and not flag
+    # A GetM of the block admitted after the Prefetch, before its dispatch.
+    await b.admit(484, 0x80002000, 9)
+    await b.admit(2, 0x80002020, 1)
+    items = [await dispatch_with_flag(b) for _ in range(2)]
+    flags = {item[0]: flag for item, flag in items}
+    assert flags == {484: 1, 2: 0}
+
+
+@cocotb.test()
+async def prefetches_take_no_place_in_sector_order_or_put_waits(dut: Any) -> None:
+    """Keep Prefetches out of the sector order and out of PutM waits."""
+    b = Completions(dut)
+    await b.reset()
+    address = 0x80000000
+    await b.set(i_next_put_addr=address)
+    await b.admit(480, address, 9)
+    await b.tick(2)
+    assert not b.get("o_put_busy")
+    await b.admit(0, address)
+    await b.tick(2)
+    assert b.get("o_put_busy")
+    # The GetS dispatches before the Prefetch has a result, and a second
+    # Prefetch of the sector dispatches while the GetS is live.
+    first = await b.dispatch()
+    second = await b.dispatch()
+    assert {first[0], second[0]} == {480, 0}
+    await b.admit(482, address, 9)
+    third = await b.dispatch()
+    assert third[0] == 482
+    # The table takes a prefetch slot's G when it is presented.
+    await b.set(i_g_ready=1)
+    for item in (first, second, third):
+        if item[0] != 0:
+            await b.result(item, 0)
+    for _ in range(10):
+        if not b.get("result_valid_q"):
+            break
+        await b.tick()
+    assert not b.get("result_valid_q")
+    await b.set(i_g_ready=0)
+    for item in (first, second, third):
+        if item[0] != 0:
+            await b.complete(item)
+            await b.release(item)
+    demand = first if first[0] == 0 else second
+    await b.result(demand, 0x1234)
+    await b.grant(demand, 0x1234)
+    await b.complete(demand)
+    await b.release(demand)
