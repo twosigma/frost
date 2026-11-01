@@ -167,14 +167,14 @@ module coherence_endpoints_test_harness #(
     assert ($bits(width_g) == ADDR_WIDTH + 275);
     assert ($bits(width_c) == ADDR_WIDTH + 18);
     assert ($bits(width_u) == ADDR_WIDTH + 15);
-    assert (coherence_pkg::completion_count(1) == 19);
-    assert (coherence_pkg::completion_count(2) == 30);
-    assert (coherence_pkg::put_base(2, 4) == 34);
-    assert (coherence_pkg::put_base(2, 16) == 46);
-    assert (coherence_pkg::home_count(2, 4) == 38);
-    assert (coherence_pkg::home_count(2, 16) == 50);
-    assert (coherence_pkg::home_count(2, 30) == 64);
-    assert (coherence_pkg::home_count(1, 43) == 64);
+    assert (coherence_pkg::completion_count(1) == 23);
+    assert (coherence_pkg::completion_count(2) == 34);
+    assert (coherence_pkg::put_base(2, 4) == 38);
+    assert (coherence_pkg::put_base(2, 16) == 50);
+    assert (coherence_pkg::home_count(2, 4) == 42);
+    assert (coherence_pkg::home_count(2, 16) == 54);
+    assert (coherence_pkg::home_count(2, 26) == 64);
+    assert (coherence_pkg::home_count(1, 39) == 64);
   end
 `endif
   assign o_widths = {

@@ -169,10 +169,10 @@ async def widths_and_independent_queues(dut: Any) -> None:
     completions, fills, puts, count = [
         (layout >> shift) & 127 for shift in (21, 14, 7, 0)
     ]
-    assert completions in (19, 30)
+    assert completions in (23, 34)
     assert fills == completions
     assert puts - fills in (4, 16)
-    assert count == puts + (2 if completions == 19 else 4)
+    assert count == puts + (2 if completions == 23 else 4)
     await b.set(
         i_req_request=b.d(),
         i_req_request_valid=1,

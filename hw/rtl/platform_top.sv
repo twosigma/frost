@@ -44,12 +44,15 @@ module platform_top #(
     parameter int unsigned L1I_WAYS = 4,
     parameter int unsigned L2_WAYS = 4,
     // L1D_NUM_MSHR sets the L1D's request endpoints, 1 to 8: one for stores,
-    // LR and atomics, and the rest for load misses in flight. The home has
-    // four fills; L2_NUM_MSHR does not change that.
+    // LR and atomics, and the rest for load misses in flight. L2_NUM_MSHR
+    // sets the home's fills, 1 to 16; a prefetch leaves a quarter of them
+    // for demand misses.
     parameter int unsigned L1D_NUM_MSHR = 8,
-    parameter int unsigned L2_NUM_MSHR = 4,
+    parameter int unsigned L2_NUM_MSHR = 8,
     parameter int unsigned L2_NUM_WB = 2,
-    // Waiter and prefetch settings have no effect on the coherent home.
+    // Waiter settings have no effect on the coherent home. L2_PREFETCH
+    // builds its stream prefetcher, which reads up to L2_PREFETCH_DISTANCE
+    // lines ahead with up to L2_PREFETCH_INFLIGHT requests (at most 4).
     parameter int unsigned L2_NUM_WAITERS = 2,
     parameter int unsigned L2_PREFETCH = 1,
     parameter int unsigned L2_PREFETCH_DISTANCE = 8,

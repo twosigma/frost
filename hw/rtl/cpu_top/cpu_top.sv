@@ -39,7 +39,7 @@ module cpu_top #(
     parameter int unsigned L1I_WAYS = 4,
     parameter int unsigned L2_WAYS = 4,
     parameter int unsigned L1D_NUM_MSHR = 8,
-    parameter int unsigned L2_NUM_MSHR = 4,
+    parameter int unsigned L2_NUM_MSHR = 8,
     parameter int unsigned L2_NUM_WB = 2,
     parameter int unsigned L2_NUM_WAITERS = 2,
     parameter int unsigned L2_PREFETCH = 1,

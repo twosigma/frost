@@ -178,10 +178,12 @@ async def result_pool_backpressure_and_retry(dut: Any) -> None:
     """Eight held results leave independent admission and metadata credits."""
     b = Completions(dut)
     await b.reset()
+    # Every legal identity of one hart: eight data, two instruction and one
+    # page-walk request, eight DMA credits and four prefetches.
     identities = [(2 * index, 0) for index in range(8)]
     identities += [(32 + 2 * index, 5) for index in range(2)]
     identities += [(64, 6)]
-    identities += [(352 + 2 * index, 7) for index in range(4)]
+    identities += [(352 + 2 * index, 7) for index in range(8)]
     identities += [(480 + 2 * index, 9) for index in range(4)]
     for index, (q, op) in enumerate(identities):
         await b.admit(q, 0x80000000 + 32 * index, op)

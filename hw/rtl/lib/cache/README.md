@@ -21,7 +21,8 @@ benches compose these modules independently of the CPU hierarchy.
 | `line_port_arbiter.sv` | N:1 tagged arbiter: fixed priority by port index, optional starvation bound, port index prefixed to ids |
 | `dma_coherence_sequencer.sv` | Takes each DMA request through the L1D, and each DMA write through the load queue as well, before it reaches the L2 |
 | `walker_coherence_sequencer.sv` | Probes the L1D before each page-table walk read reaches the L2; one read in flight |
-| `l2_stream_prefetcher.sv` | Watches the L1D's misses and reads the lines ahead of ascending streams into the L2, never past the page of the last miss |
+| `l2_stream_prefetcher.sv` | Watches a stream of misses and reads the lines ahead of ascending streams into the L2, never past the page of the last miss; the component hierarchy's shared level has one, the coherent prefetcher two |
+| `coherence_prefetcher.sv` | The coherent home's source 3: two stream tables, for the hart's data misses and its instruction refills, choose lines that Prefetch requests read into the L2 |
 | `line_port_axi_bridge.sv` | Line port to single-beat AXI4 master; line ids become AXI ids, and each response carries the error bit of its RRESP or BRESP. The NIC's DMA master is one |
 | `axi_behavioral_memory.sv` | Simulation-only DDR model: concurrent transactions, latency and jitter settings, optional out-of-order completion, and injected error responses |
 | `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, and writeback pulses, hit-under-miss, the outstanding-miss count, and two stall classes; and the L2's write costs: write misses that fetch their line, and writes that wait for a read of their line |
@@ -111,7 +112,8 @@ are the ingress's credits for DMA, eight in the cluster, and four prefetch
 requests. Admission arbitration is
 external to the endpoint slots.
 
-Home tid is six bits. For H harts, `completion_count(H)` is `11*H+8`.
+Home tid is six bits. For H harts, `completion_count(H)` is `11*H+12`: eleven
+identities per hart, eight DMA credits and four prefetch identities.
 `fill_base(H)` equals this count, `put_base(H,F)` adds F fill controls, and
 `home_count(H,F)` adds two PutM controls per hart. H is 1 or 2. Home identities
 must fit 64 values. Elaboration rejects invalid geometry and identity
@@ -257,19 +259,22 @@ Allocation marks an empty slot valid. Read eligibility compares each physical sl
 writeback sectors. The comparisons use the stored slot addresses and the
 buffered allocation's address, and the slot mask selects between their
 results. Circular priority selects a qualified slot and its address.
-There are no E grants, silent upgrades, sharer hints or stream prefetches.
-The L1D has eight read slots and `L1D_NUM_MSHR` request endpoints. The home
-has four fills and `L2_NUM_WB` victim write slots. `L2_NUM_MSHR`,
-`L2_NUM_WAITERS` and the prefetch parameters have no effect on the CPU
-hierarchy.
+There are no E grants, silent upgrades or sharer hints, and the L1D does not
+prefetch. The L1D has eight read slots and `L1D_NUM_MSHR` request endpoints.
+The home has `L2_NUM_MSHR` fills, 1 to 16, and `L2_NUM_WB` victim write
+slots. `L2_NUM_WAITERS` has no effect on the CPU hierarchy; `L2_PREFETCH`,
+`L2_PREFETCH_DISTANCE` and `L2_PREFETCH_INFLIGHT` configure the home's
+prefetcher (see The home's prefetcher).
 
 L1D performance events count the first permission lookup of each CPU read
 or ordinary store. Cached SC selection counts as a permission miss. A store
 to S and an AMO require permission and count as misses. Repeated lookups,
 probes and maintenance do not add demand events. Outstanding misses include
 unresolved read slots, the pending store and the selected SC. L2 events
-count shared demand lookups and non-maintenance PutM lookups. Its fill count
-is at most four. A DMA write miss contributes a write-fill event; probe data
+count shared demand lookups, prefetch lookups and non-maintenance PutM
+lookups. Its fill count, prefetch fills included, is at most `L2_NUM_MSHR`.
+A prefetch that allocates nothing is not a slot-full stall; a blocked one is
+a conflict stall. A DMA write miss contributes a write-fill event; probe data
 merges do not contribute another demand. Events are registered at their
 source and use the cache-counter ABI.
 
@@ -312,15 +317,18 @@ Read arbitration uses pending read offers. Home stop clears its
 unaccepted selection. Accepted reads keep their tokens through physical
 completion. A local fatal transition cancels an unaccepted read.
 
-The home admits nineteen requests with distinct identities. Eight engines
+The home admits twenty-three requests with distinct identities: nineteen
+hart and DMA requests, and four prefetches in four slots kept for them, so
+neither kind waits for the other's capacity. Eight engines
 share their image storage with the result credits. An engine hands its image
 to completion ownership before G. An idle grant register captures an accepted
 result directly when no older result awaits selection. The grant register
 presents G while it holds a grant. G acceptance returns that image credit;
 the identity and physical way pin last through U. Each request waits for
 earlier requests to the same 32-byte sector: for a hart request's U, and for a
-DMA request's result. A DMA requester keeps no copy, and its result follows its
-probe service and array update, so its G, C and U order nothing after it.
+DMA or prefetch request's result. A DMA requester keeps no copy, and its result
+follows its probe service and array update, so its G, C and U order nothing
+after it. A prefetch keeps no copy either and changes nothing a client sees.
 
 `coherence_home_array` has separate tag-decision, data-read and masked-update
 ports. Each request carries a response token. Replacement state changes when
@@ -332,8 +340,9 @@ to that row until the update is accepted. Data hazards cover the read sample and
 write input registers through completion. Contending reads and writes alternate
 service while prior operations drain. Masked updates preserve sibling sectors.
 
-Four fill controls own memory-read IDs 0 through 3. Each fill has a primary
-request and two read waiter seats. Parked requests release their engine and
+`L2_NUM_MSHR` fill controls own memory-read IDs 0 to `L2_NUM_MSHR - 1`. A
+demand fill has a primary request and two read waiter seats; a prefetch's
+fill starts with none and takes up to three. Parked requests release their engine and
 image credit. A request waiting for a way or resource retries from completion
 metadata. Returned fills wake their waiters after installation. Waiters reenter
 array and probe service in sector order and sample the current resident bytes.
@@ -471,6 +480,46 @@ endpoint ownership and arbitrary-byte merges.
 Covers exercise discarded responses, two outstanding instruction fills,
 fence completion with an answered IF transaction awaiting U, reused MSHR IDs,
 installation before U, and IF/DMA/NIC contention with delayed completions.
+
+### The home's prefetcher
+
+`coherence_prefetcher` is the home's source 3, a third input of the
+cluster's D and C arbiters beside the hart and the DMA ingress. Two
+`l2_stream_prefetcher` tables choose the lines. The data table, four
+streams, watches the hart's GetS, GetM and LoadReserved requests, so store
+streams train it as well as load misses; the instruction table, two streams,
+watches its ReadOnce.IF refills. Both read a registered copy of the home's D
+acceptance, which adds no load to D readiness. A table confirms a stream on
+two consecutive L2 lines and requests up to `L2_PREFETCH_DISTANCE` (8) lines
+after its last miss, never past that miss's 4 KiB page, each line once. The
+wrapper owns `L2_PREFETCH_INFLIGHT` identities {3, 3, id}, at most four. It
+takes a table's request with a free identity into a D register that holds
+until the home accepts it, alternating between the tables, and the tables
+load new requests only while the home reports room for a prefetch fill.
+
+A Prefetch is a line-aligned D with no data, and the home answers it with
+GrantAck after one lookup. A resident line stays as it is: the prefetch takes
+no way pin and sends no probe, read or update; the hit updates replacement
+state as any hit does. An absent line gets a fill only if more than
+`PREFETCH_RESERVE` fills are free (a quarter of `L2_NUM_MSHR` in the
+cluster), at least two ways of the set are available, a valid victim finds
+two free write-back slots, and no hart or DMA request for the block was live
+before the prefetch's dispatch to an engine. A prefetch therefore never takes
+a reserved fill, the last available way or the last write-back slot. In
+every other case, a fill of the block in flight or a blocked block included,
+it completes having done nothing. It never retries, joins a fill or waits for
+one. Its fill starts with no seat; demand readers that arrive meanwhile take
+its seats and wake at the install. An engine serving a prefetch protects no
+victim, and a prefetch slot never makes a PutM wait.
+
+The four prefetch slots sit outside the hart-facing grant path. The
+prefetcher takes every G for source 3 when it is presented, so the cluster
+returns G readiness for source 3 unconditionally and those slots capture
+their G without it. C comes from registers through a held arbiter, and U
+returns the identity and the table's read id. An error response to a
+prefetch fill frees the fill without an install; the prefetch itself
+completes without an error, demand readers seated on the fill wake with the
+error, and a later demand miss reads the line again.
 
 The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_equal`, `coherence_cluster`
 and `coherent_cut` cover controller ownership, inclusion, cuts, atomics,
@@ -888,7 +937,9 @@ described above.
 ## The stream prefetcher
 
 `l2_stream_prefetcher` reads ahead of ascending L1D miss streams into the L2.
-`frost_cache_hierarchy` enables it with `L2_PREFETCH=1`. It watches the
+`frost_cache_hierarchy` enables it with `L2_PREFETCH=1`, and the coherent
+home's prefetcher uses two of its tables. A table loads a new request only
+while `i_enable` is set; the component hierarchy holds it set. It watches the
 L1D's read requests as the top arbiter takes them, which are its misses,
 store misses included. A table of 4 streams holds the last L2 line each
 stream missed on. A miss on the line after a stream's confirms the stream

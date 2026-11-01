@@ -19,7 +19,7 @@ covers: smtbmc boolector
 read -formal -sv coherence_seat_select.sv coherence_work_select.sv
 read -sv coherence_pkg.sv coherence_home_endpoint.sv coherence_d_arbiter.sv
 read -formal -sv coherence_home_completions.sv
-chparam -set SLOTS 3 -set RESULT_SLOTS 2 -set CACHE_BYTES 256 -set WAYS 2 coherence_home_completions
+chparam -set SLOTS 3 -set RESULT_SLOTS 2 -set CACHE_BYTES 256 -set WAYS 2 -set PREFETCH_SLOTS 0 coherence_home_completions
 base: prep -top coherence_home_completions -flatten
 if_pair: read -formal -sv coherence_if_pair_formal.sv
 if_pair: prep -top coherence_if_pair_formal -flatten

@@ -446,7 +446,8 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `CACHED_SIZE_BYTES` | `riscv_pkg::DdrCapacityBytes` | Cached-region aperture; keep equal to the package setting so PMA, caches, DMA and AXI agree |
 | `frost.sv` | `ENABLE_CACHED_TIER` | `0` | 1 builds the cache hierarchy; simulation sets it with `-G`, and boards with a DDR controller pass 1 |
 | `frost.sv` | `L1_CACHE_BYTES` / `L1I_CACHE_BYTES` / `L2_CACHE_BYTES` | `128 KiB` / `16 KiB` / `2 MiB` | L1D, L1I, and L2 sizes |
-| `frost.sv` | `L2_PREFETCH` | `1` | No effect: the L2 coherence home has no stream prefetcher |
+| `frost.sv` | `L2_NUM_MSHR` | `8` | Fills in the L2 coherence home, 1 to 16; a prefetch leaves a quarter of them for demand misses |
+| `frost.sv` | `L2_PREFETCH` | `1` | 1 builds the home's stream prefetcher (`L2_PREFETCH_DISTANCE` lines ahead, `L2_PREFETCH_INFLIGHT` requests in flight, at most 4) |
 | `frost.sv` | `USE_BEHAVIORAL_DDR` | `1` | 1 ends the tier in the simulation DDR model; 0 exports the bridge's AXI master on `o_ddr_axi_*` |
 | `frost.sv` | `DDR_MODEL_BYTES` / `DDR_MODEL_LATENCY` | `64 MiB` / `30` | DDR model size and access latency in cycles (simulation) |
 | `frost.sv` | `DDR_MODEL_LATENCY_JITTER` / `DDR_MODEL_REORDER` | `0` / `0` | DDR model per-transaction latency jitter, and out-of-order completion across ids (simulation); `FROST_DDR_MODEL_SEED` draws these and the latency for a test run ([tests/README.md](../../tests/README.md#environment-and-output)) |

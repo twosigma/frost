@@ -22,8 +22,14 @@ module coherence_home_completions #(
     parameter int unsigned LINE_BYTES = 64,
     parameter int unsigned CACHE_BYTES = 2 * 1024 * 1024,
     parameter int unsigned WAYS = 4,
-    parameter int unsigned SLOTS = 19,
+    parameter int unsigned SLOTS = coherence_pkg::completion_count(1),
     parameter int unsigned RESULT_SLOTS = 8,
+    // When nonzero, the last PREFETCH_SLOTS slots admit only prefetch
+    // requests (source 3) and the others only the rest, so each kind has
+    // capacity of its own. The table then takes every G from a prefetch slot
+    // as accepted when presented: the consumer must keep i_g_ready set while
+    // a source-3 G is valid.
+    parameter int unsigned PREFETCH_SLOTS = coherence_pkg::PrefetchIds,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
     localparam int unsigned SlotBits = SLOTS > 1 ? $clog2(SLOTS) : 1,
     localparam int unsigned ResultBits = RESULT_SLOTS > 1 ? $clog2(RESULT_SLOTS) : 1
@@ -44,6 +50,15 @@ module coherence_home_completions #(
     output logic [ResultBits-1:0] o_work_buffer,
     output logic o_work_error,
     output logic o_work_counted,
+    // The work is a prefetch whose block a non-prefetch request held live
+    // before the prefetch's dispatch: it must not allocate a fill.
+    output logic o_work_nofill,
+    // A registered copy of D acceptance: the strobe on the cycle after it,
+    // with the accepted request's opcode, identity and address.
+    output logic o_accepted,
+    output logic [3:0] o_accepted_opcode,
+    output logic [8:0] o_accepted_q,
+    output logic [ADDR_WIDTH-1:0] o_accepted_addr,
     input logic i_count_valid,
     input logic [5:0] i_count_tid,
     output logic [SLOTS-1:0] o_waiting,
@@ -115,13 +130,22 @@ module coherence_home_completions #(
   logic [SLOTS-1:0] release_valid, release_offer, release_ready, release_fire;
   logic [SLOTS-1:0] issued_q, buffer_owned_q, result_valid_q, pin_valid_q, error_q;
   logic [SLOTS-1:0] predecessors_q[SLOTS];
-  // A DMA request's result completes its effect on the sector: its bytes and
-  // probe results are in the array, and it keeps no private copy. From the
-  // cycle after that result until its release, handed_q no longer orders
-  // younger requests behind it. Hart requests keep their order through U,
-  // since their grant installs after the result.
+  // A DMA or prefetch request's result completes its effect on the sector:
+  // a DMA request's bytes and probe results are in the array, a prefetch
+  // changes nothing a client sees, and neither keeps a private copy. From
+  // the cycle after that result until its release, handed_q no longer
+  // orders younger requests behind it. Hart requests keep their order
+  // through U, since their grant installs after the result.
   logic [SLOTS-1:0] handed_q;
   logic [SLOTS-1:0] parked_q, ready_q, wake_error_q, counted_q;
+  // nofill_q[slot]: the slot holds a prefetch, and a non-prefetch request
+  // for its block was live at the prefetch's admission or was admitted
+  // after it. The work carries the flag; such a prefetch allocates no fill.
+  logic [SLOTS-1:0] nofill_q;
+  localparam int unsigned MainSlots = SLOTS - PREFETCH_SLOTS;
+  // The prefetch partition, and the slots that may hold a prefetch.
+  localparam logic [SLOTS-1:0] PrefetchSlot = ~((SLOTS'(1) << MainSlots) - SLOTS'(1));
+  logic [SLOTS-1:0] slot_prefetch;
   logic [ResultBits-1:0] work_buffer_q;
   logic [SLOTS-1:0][ADDR_WIDTH+311:0] work;
   logic [SLOTS-1:0][ADDR_WIDTH+14:0] releases;
@@ -131,7 +155,7 @@ module coherence_home_completions #(
   logic [WayBits-1:0] way_q[SLOTS];
   logic [RESULT_SLOTS-1:0] buffer_live_q, buffer_live_next;
   logic [ADDR_WIDTH+274:0] buffer_q[RESULT_SLOTS];
-  logic free_slot, duplicate, free_buffer;
+  logic free_slot, duplicate, free_buffer, incoming_prefetch;
   logic [  SlotBits-1:0] free_slot_index;
   logic [ResultBits-1:0] free_buffer_index;
   logic work_selected_q, work_found;
@@ -177,22 +201,42 @@ module coherence_home_completions #(
   assign accept_work = o_work_offer && i_work_ready;
   assign accept_result = i_result_valid && o_result_ready;
   assign accept_grant = o_g_valid && i_g_ready;
+  // The slot whose G is accepted. A prefetch slot's G is taken whenever it
+  // is presented (see PREFETCH_SLOTS), so only the other slots wait on G
+  // readiness.
+  logic [SLOTS-1:0] grant_taken;
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_grant_taken
+    assign grant_taken[slot] = grant_valid[slot] && (PrefetchSlot[slot] || i_g_ready);
+  end
 
   // Sector comparisons with the next put address are registered. A slot
   // live across the edge keeps its address unless its release was accepted
   // on the edge; a slot admitted on the edge takes the accepted request's
   // address. o_put_busy therefore reads registers only.
+  // A prefetch holds no copy and no permission, so prefetch slots never make
+  // a put wait.
   logic [SLOTS-1:0] put_sector_live_q, released_q;
   logic put_incoming_sector_q, request_accepted_q;
+  logic [3:0] accepted_opcode_q;
+  logic [8:0] accepted_q_q;
+  logic [ADDR_WIDTH-1:0] accepted_addr_q;
   always_ff @(posedge i_clk) begin
-    put_incoming_sector_q <= (incoming.addr >> 5) == (i_next_put_addr >> 5);
+    put_incoming_sector_q <= (incoming.addr >> 5) == (i_next_put_addr >> 5) && !incoming_prefetch;
     request_accepted_q <= accept_request;
+    accepted_opcode_q <= incoming.opcode;
+    accepted_q_q <= incoming.q;
+    accepted_addr_q <= incoming.addr;
     released_q <= release_fire;
     for (int slot = 0; slot < SLOTS; slot++)
-    put_sector_live_q[slot] <= live[slot] && (work_address[slot] >> 5) == (i_next_put_addr >> 5);
+    put_sector_live_q[slot] <= live[slot] && !slot_prefetch[slot] &&
+        (work_address[slot] >> 5) == (i_next_put_addr >> 5);
   end
   assign o_put_busy = |(put_sector_live_q & ~released_q) ||
       (request_accepted_q && put_incoming_sector_q);
+  assign o_accepted = request_accepted_q;
+  assign o_accepted_opcode = accepted_opcode_q;
+  assign o_accepted_q = accepted_q_q;
+  assign o_accepted_addr = accepted_addr_q;
   // Each slot's set comparison with the query is registered. A pinned slot
   // keeps its address across the edge, so o_exclude is exact whenever the
   // query's set is unchanged, as it is from tag selection through response.
@@ -202,16 +246,25 @@ module coherence_home_completions #(
     query_set_q[slot] <= work_address[slot][OffsetBits+:SetBits] ==
         i_query_addr[OffsetBits+:SetBits];
   end
+  // The lowest idle slot of the presented request's partition.
+  logic main_free, prefetch_free;
+  logic [SlotBits-1:0] main_free_index, prefetch_free_index;
   always_comb begin
-    free_slot = 1'b0;
-    free_slot_index = '0;
+    main_free = 1'b0;
+    main_free_index = '0;
+    prefetch_free = 1'b0;
+    prefetch_free_index = '0;
     free_buffer = 1'b0;
     free_buffer_index = '0;
     o_exclude = '0;
     for (int slot = SLOTS - 1; slot >= 0; slot--) begin
-      if (!live[slot]) begin
-        free_slot = 1'b1;
-        free_slot_index = SlotBits'(slot);
+      if (!live[slot] && !PrefetchSlot[slot]) begin
+        main_free = 1'b1;
+        main_free_index = SlotBits'(slot);
+      end
+      if (!live[slot] && PrefetchSlot[slot]) begin
+        prefetch_free = 1'b1;
+        prefetch_free_index = SlotBits'(slot);
       end
       for (int way = 0; way < WAYS; way++) begin
         if (pin_valid_q[slot] && way_q[slot] == WayBits'(way) && query_set_q[slot])
@@ -225,6 +278,10 @@ module coherence_home_completions #(
       end
     end
   end
+  assign incoming_prefetch = incoming.q.src == 2'd3;
+  assign free_slot = PREFETCH_SLOTS != 0 && incoming_prefetch ? prefetch_free : main_free;
+  assign free_slot_index = PREFETCH_SLOTS != 0 && incoming_prefetch ? prefetch_free_index :
+      main_free_index;
 
   // A request whose identity matches a live slot waits. Each slot compares
   // the nine identity bits in three-bit chunks, and the slot terms reduce
@@ -257,6 +314,7 @@ module coherence_home_completions #(
   assign o_work_buffer = work_buffer_q;
   assign o_work_error = wake_error_q[work_slot_q];
   assign o_work_counted = counted_q[work_slot_q];
+  assign o_work_nofill = nofill_q[work_slot_q];
   assign o_waiting_request = work;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_waiting
     assign o_waiting_offer[slot] = work_offer[slot] && !issued_q[slot] &&
@@ -295,7 +353,7 @@ module coherence_home_completions #(
 
   // pred_clear_q[slot] holds predecessors_q[slot] == 0, registered from the
   // predecessors' next state, so eligibility reads one flag per slot.
-  logic [SLOTS-1:0] pred_clear_q, incoming_sectors;
+  logic [SLOTS-1:0] pred_clear_q, incoming_sectors, incoming_blocks;
   // A release fires for the arbiter's selected offering slot when the U
   // channel is ready. The clear flags are prepared for both outcomes, with
   // and without an accepted request, and the U ready selects last.
@@ -315,7 +373,12 @@ module coherence_home_completions #(
     if (sim_reset_seen_q) assert (release_fire == (release_candidate & {SLOTS{release_go}}));
 `endif
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_work_eligible
-    assign incoming_sectors[slot] = (work_address[slot] >> 5) == (incoming.addr >> 5);
+    // A slot's L2 block matches the presented request's; the sector match
+    // adds the sector bit of a 64-byte line.
+    assign incoming_blocks[slot] = (work_address[slot] >> OffsetBits) ==
+        (incoming.addr >> OffsetBits);
+    assign incoming_sectors[slot] = incoming_blocks[slot] &&
+        (OffsetBits == 5 || work_address[slot][5] == incoming.addr[5]);
     assign work_eligible[slot] = work_offer[slot] && !issued_q[slot] && !parked_q[slot] &&
         pred_clear_q[slot];
   end
@@ -380,12 +443,15 @@ module coherence_home_completions #(
 
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_endpoint
     assign work_identity[slot] = request_q(work[slot]);
-    assign work_address[slot]  = request_addr(work[slot]);
+    assign work_address[slot] = request_addr(work[slot]);
+    assign slot_prefetch[slot] = PREFETCH_SLOTS != 0 ? PrefetchSlot[slot] :
+        work_identity[slot][8:7] == 2'd3;
     coherence_home_endpoint #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .NUM_HARTS(1),
         .L2_NUM_MSHR(4),
-        .TID(slot)
+        .TID(slot),
+        .CLASS(PREFETCH_SLOTS == 0 ? 0 : PrefetchSlot[slot] ? 2 : 1)
     ) endpoint (
         .i_clk,
         .i_rst,
@@ -402,8 +468,10 @@ module coherence_home_completions #(
         .i_result(grant_q),
         .o_g_valid(grant_valid[slot]),
         // Only the selected endpoint sees a valid result; G readiness needs
-        // no further qualification.
-        .i_g_ready(i_g_ready),
+        // no further qualification. The prefetcher takes every G addressed
+        // to source 3 when it is presented, so a prefetch slot's grant
+        // capture leaves G readiness out.
+        .i_g_ready(PrefetchSlot[slot] ? 1'b1 : i_g_ready),
         .o_g(),
         .i_c_valid,
         .i_error_disposed(error_q[slot]),
@@ -465,6 +533,7 @@ module coherence_home_completions #(
       error_q <= '0;
       parked_q <= '0;
       counted_q <= '0;
+      nofill_q <= '0;
       ready_q <= '0;
       wake_error_q <= '0;
       work_buffer_q <= '0;
@@ -534,10 +603,13 @@ module coherence_home_completions #(
         grant_next_q <= grant_slot_q == SlotBits'(SLOTS - 1) ? '0 : grant_slot_q + 1'b1;
         for (int slot = 0; slot < SLOTS; slot++)
         grant_later_q[slot] <= grant_slot_q == SlotBits'(SLOTS - 1) || slot > int'(grant_slot_q);
-        result_valid_q[grant_slot_q] <= 1'b0;
-        buffer_owned_q[grant_slot_q] <= 1'b0;
       end
-      handed_q <= (handed_q | ({SLOTS{accept_result && work_identity[result_slot][8:7] == 2'd2}} &
+      for (int slot = 0; slot < SLOTS; slot++)
+      if (grant_taken[slot]) begin
+        result_valid_q[slot] <= 1'b0;
+        buffer_owned_q[slot] <= 1'b0;
+      end
+      handed_q <= (handed_q | ({SLOTS{accept_result && work_identity[result_slot][8]}} &
           (SLOTS'(1) << result_slot))) & ~release_fire;
       for (int slot = 0; slot < SLOTS; slot++) begin
         predecessors_q[slot] <= predecessors_q[slot] & ~release_fire & ~handed_q;
@@ -554,6 +626,12 @@ module coherence_home_completions #(
             predecessors_q[slot][older] <= live[older] && !release_fire[older] &&
                 !handed_q[older] && incoming_sectors[older];
           end
+          nofill_q[slot] <= incoming_prefetch && |(live & ~slot_prefetch & incoming_blocks);
+        end else if (release_fire[slot]) begin
+          nofill_q[slot] <= 1'b0;
+        end else if (accept_request && !incoming_prefetch && incoming_blocks[slot] &&
+                     live[slot] && slot_prefetch[slot]) begin
+          nofill_q[slot] <= 1'b1;
         end
         pred_clear_q[slot] <= accept_request && free_slot_index == SlotBits'(slot) ?
             (release_go ? accepted_clear_if_release : accepted_clear_if_hold) :
@@ -580,7 +658,8 @@ module coherence_home_completions #(
 
   if (SLOTS < 1 || SLOTS > coherence_pkg::completion_count(
           1
-      ) || RESULT_SLOTS < 1 || RESULT_SLOTS > SLOTS || Sets < 2) begin : gen_invalid
+      ) || RESULT_SLOTS < 1 || RESULT_SLOTS > SLOTS || Sets < 2 || PREFETCH_SLOTS >
+          coherence_pkg::PrefetchIds || PREFETCH_SLOTS >= SLOTS) begin : gen_invalid
     initial $fatal(1, "coherence_home_completions: invalid capacity");
   end
 `ifndef SYNTHESIS
@@ -599,6 +678,35 @@ module coherence_home_completions #(
       assert (o_d_ready == (!i_fatal_stop && free_slot && !duplicate &&
           request_ready[free_slot_index]));
   end
+  // Prefetch slots: the partition holds, a prefetch's flag is set whenever a
+  // non-prefetch request for its block is live, and the slot's G is taken
+  // exactly when the table accepts it.
+  always_ff @(posedge i_clk) begin
+    if (sim_reset_seen_q && !i_rst) begin
+      assert (|grant_taken == accept_grant);
+      for (int slot = 0; slot < SLOTS; slot++) begin
+        if (PREFETCH_SLOTS != 0 && live[slot])
+          assert (PrefetchSlot[slot] == (work_identity[slot][8:7] == 2'd3));
+        if (nofill_q[slot]) assert (live[slot] && slot_prefetch[slot]);
+        for (int other = 0; other < SLOTS; other++)
+        if (live[slot] && slot_prefetch[slot] && live[other] && !slot_prefetch[other] &&
+            (work_address[slot] >> OffsetBits) == (work_address[other] >> OffsetBits))
+          assert (nofill_q[slot]);
+      end
+    end
+  end
+`ifdef FORMAL
+  // The consumer's side of PREFETCH_SLOTS: a prefetch slot's G is accepted
+  // when presented.
+  always_comb
+    if (!i_rst && PREFETCH_SLOTS != 0 && o_g_valid && PrefetchSlot[grant_slot_q])
+      assume (i_g_ready);
+`else
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst && PREFETCH_SLOTS != 0 && o_g_valid &&
+        PrefetchSlot[grant_slot_q])
+      assert (i_g_ready);
+`endif
 `ifndef FORMAL
   // Simulation checks o_put_busy against the direct comparison. The proof
   // leaves this check out: its engine does not close the address relation.
@@ -612,7 +720,7 @@ module coherence_home_completions #(
       assert (o_put_busy == (|reference_put_conflicts));
   end
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_reference_put_conflict
-    assign reference_put_conflicts[slot] = live[slot] &&
+    assign reference_put_conflicts[slot] = live[slot] && !slot_prefetch[slot] &&
         (work_address[slot] >> 5) == (reference_put_addr_q >> 5);
   end
 `endif
@@ -644,8 +752,9 @@ module coherence_home_completions #(
     if (sim_reset_seen_q && !i_rst) begin
       for (int slot = 0; slot < SLOTS; slot++) begin
         assert (pred_clear_q[slot] == (predecessors_q[slot] == 0));
-        // Only a live DMA request hands its sector to younger requests early.
-        if (handed_q[slot]) assert (live[slot] && work_identity[slot][8:7] == 2'd2);
+        // Only a live DMA or prefetch request (source 2 or 3) hands its
+        // sector to younger requests early.
+        if (handed_q[slot]) assert (live[slot] && work_identity[slot][8]);
         assert (work_later_q[slot] == (slot >= int'(work_next_q)));
       end
       if (accept_result) assert (result_hit == SLOTS'(1) << result_slot);

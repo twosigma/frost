@@ -2181,6 +2181,12 @@ module frost_rvfi_platform #(
         .o_u_valid(u_valid),
         .i_u_ready(u_ready),
         .o_u(release_message),
+        // The platform has no prefetcher.
+        .o_prefetch_room(),
+        .o_accepted(),
+        .o_accepted_opcode(),
+        .o_accepted_q(),
+        .o_accepted_addr(),
         .o_mem_req_valid(down_req_valid),
         .i_mem_req_ready(down_req_ready),
         .o_mem_req_write(down_req_write),

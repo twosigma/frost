@@ -410,6 +410,7 @@ module frost_cluster_cache #(
         .i_rst(i_rst),
         .i_miss_valid(i_l1d_down_req_valid && o_l1d_down_req_ready && !i_l1d_down_req_write),
         .i_miss_addr(i_l1d_down_req_addr),
+        .i_enable(1'b1),
         .o_req_valid(pf_down_req_valid),
         .i_req_ready(pf_down_req_ready),
         .o_req_addr(pf_down_req_addr),

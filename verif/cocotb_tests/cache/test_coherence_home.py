@@ -21,6 +21,10 @@ from cocotb.triggers import Timer
 
 from cocotb_tests.cache.test_coherence_endpoints import pack
 
+# The first fill TID, coherence_pkg::fill_base(1): one per completion slot
+# (11 per hart, 8 DMA credits and 4 prefetch identities) comes first.
+FILL_TID_BASE = 23
+
 
 def unpack(value: int, widths: tuple[int, ...]) -> tuple[int, ...]:
     """Decode fields in their declared order."""
@@ -122,7 +126,7 @@ class Home:
                 tid = (
                     (self.get("engine_tid") >> (6 * token)) & 63
                     if token < engines
-                    else 19 + token - engines
+                    else FILL_TID_BASE + token - engines
                 )
                 self.arrivals.append((self.cycle, "data", tid))
             if reply and self.get("o_r_ready"):
@@ -231,7 +235,7 @@ class Home:
     ) -> tuple[int, int]:
         """Encode hart or agent requests with disjoint source identities."""
         if op in (7, 8):
-            q = pack((2, 2), (2, 3), (4, 9 + slot), (1, 0))
+            q = pack((2, 2), (2, 3), (4, (9 + slot) % 16), (1, 0))
         elif op in (5, 6):
             q = pack((2, 0), (2, op - 4), (4, slot), (1, 0))
         else:
@@ -779,14 +783,15 @@ async def fatal_and_reset_with_held_results_and_dirty_victim(dut: Any) -> None:
 async def parked_fills_release_engines_and_reenter_under_miss_pressure(
     dut: Any,
 ) -> None:
-    """Four parked fills and eight retries leave resident service eligible."""
+    """Parked fills on every fill and retries on every engine keep hits served."""
     b = Home(dut)
     await b.reset()
     base = 0x80000000
     first = await b.start(0, base)
     await b.finish(first)
     b.read_delay = 1200
-    addresses = [base + (index + 1) * b.line for index in range(12)]
+    fills, engines = len(dut.fill_live_q), len(dut.engine_idle)
+    addresses = [base + (index + 1) * b.line for index in range(fills + engines)]
     for index, address in enumerate(addresses):
         await b.submit(0 if index < 8 else 7, address, slot=index % 8)
     retried = set()
@@ -794,11 +799,11 @@ async def parked_fills_release_engines_and_reenter_under_miss_pressure(
         if b.get("retry_valid") and not b.get("retry_park"):
             retried.add(b.get("decision_tid"))
         await b.tick()
-        if len(retried) == 8:
+        if len(retried) == engines:
             break
-    assert len(retried) == 8
-    assert int(dut.completions.parked_q.value).bit_count() == 4
-    assert len([t for t in b.transactions if not t[1]]) == 5
+    assert len(retried) == engines
+    assert int(dut.completions.parked_q.value).bit_count() == fills
+    assert len([t for t in b.transactions if not t[1]]) == fills + 1
     assert not b.get("o_g_valid")
     await b.submit(5, base)
     resident = await b.take_grant()
@@ -1071,20 +1076,21 @@ async def retried_dma_write_counts_its_fill_allocation(dut: Any) -> None:
     await b.reset()
     base = 0x80000000
     b.read_delay = 500
-    for slot in range(3):
+    fills = len(dut.fill_live_q)
+    for slot in range(fills - 1):
         await b.submit(7, base + slot * b.line, slot=slot)
-    await b.submit(0, base + 3 * b.line)
+    await b.submit(0, base + (fills - 1) * b.line)
     for _ in range(150):
-        if len(b.transactions) == 4:
+        if len(b.transactions) == fills:
             break
         await b.tick()
-    assert len(b.transactions) == 4
-    address = base + 4 * b.line
-    await b.submit(8, address, 0xAABBCCDD, 15, slot=3)
+    assert len(b.transactions) == fills
+    address = base + fills * b.line
+    await b.submit(8, address, 0xAABBCCDD, 15, slot=fills - 1)
     await b.tick(100)
-    assert len(b.transactions) == 4 and b.write_fills == 0
+    assert len(b.transactions) == fills and b.write_fills == 0
     seen = set()
-    for _ in range(5):
+    for _ in range(fills + 1):
         grant = await b.take_grant()
         assert not grant[5] and grant[3] not in seen
         seen.add(grant[3])

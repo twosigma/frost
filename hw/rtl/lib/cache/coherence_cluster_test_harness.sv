@@ -231,12 +231,16 @@ module coherence_cluster_test_harness #(
       .i_ready(home_d_ready),
       .o_payload(home_d)
   );
-  assign o_agent_g_valid = g_valid && grant.q.src == 2;
+  // The agent port carries DMA (source 2) and prefetch (source 3) traffic.
+  // The home takes a source-3 G as accepted when it is presented, so the
+  // agent must take it on that cycle.
+  assign o_agent_g_valid = g_valid && grant.q.src >= 2;
   assign o_agent_g = grant;
-  assign g_ready = grant.q.src == 2 ? i_agent_g_ready : hart_g_ready && !i_hold_grant;
-  assign o_agent_u_valid = u_valid && release_message.q.src == 2;
+  assign g_ready = grant.q.src == 3 ? 1'b1 :
+      grant.q.src == 2 ? i_agent_g_ready : hart_g_ready && !i_hold_grant;
+  assign o_agent_u_valid = u_valid && release_message.q.src >= 2;
   assign o_agent_u = release_message;
-  assign u_ready = release_message.q.src == 2 ? i_agent_u_ready : hart_u_ready;
+  assign u_ready = release_message.q.src >= 2 ? i_agent_u_ready : hart_u_ready;
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 18),
       .PORTS(L1D_MISSES + 1),
@@ -285,6 +289,11 @@ module coherence_cluster_test_harness #(
       .o_u_valid(u_valid),
       .i_u_ready(u_ready),
       .o_u(release_message),
+      .o_prefetch_room(),
+      .o_accepted(),
+      .o_accepted_opcode(),
+      .o_accepted_q(),
+      .o_accepted_addr(),
       .o_mem_req_valid(o_mem_req_valid),
       .i_mem_req_ready(i_mem_req_ready),
       .o_mem_req_write(o_mem_req_write),
