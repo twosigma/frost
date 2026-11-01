@@ -22,6 +22,8 @@ module coherence_line_bridge #(
     parameter int unsigned ID_BITS = 3,
     parameter int unsigned SOURCE = 0,
     parameter int unsigned PORT_CLASS = 1,
+    parameter int unsigned SLOT = 0,
+    parameter bit EARLY_RESPONSE = 1'b0,
     parameter bit CLEAN = 1'b0
 ) (
     input logic i_clk,
@@ -69,6 +71,7 @@ module coherence_line_bridge #(
 `endif
 `endif
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
+  wire [3:0] request_slot = SOURCE == 2 ? 4'(i_req_id) : 4'(SLOT);
   typedef enum logic [2:0] {
     Idle,
     Clean,
@@ -123,7 +126,7 @@ module coherence_line_bridge #(
           demand_q.opcode <= SOURCE == 2 ?
               (i_req_write ? coherence_pkg::DMAWrite : coherence_pkg::DMARead) :
               (PORT_CLASS == 2 ? coherence_pkg::ReadOncePTW : coherence_pkg::ReadOnceIF);
-          demand_q.q <= {2'(SOURCE), 2'(PORT_CLASS), SOURCE == 2 ? 4'(i_req_id) : 4'b0, 1'b0};
+          demand_q.q <= {2'(SOURCE), 2'(PORT_CLASS), request_slot, 1'b0};
           demand_q.addr <= {i_req_addr[ADDR_WIDTH-1:5], 5'b0};
           demand_q.mask <= SOURCE == 2 ? i_req_mask : '0;
           demand_q.wdata <= SOURCE == 2 ? i_req_data : '0;
@@ -135,23 +138,35 @@ module coherence_line_bridge #(
         Grant:
         if (i_g_valid && o_g_ready) begin
           grant_q <= grant_in;
+          if (EARLY_RESPONSE) begin
+            grant_q.data <= '0;
+            o_resp_valid <= 1'b1;
+            o_resp_id <= id_q;
+            o_resp_data <= grant_in.data;
+            o_resp_error <= grant_in.error;
+          end
           phase_q <= Complete;
         end
         Complete: if (i_c_ready) phase_q <= Release;
         Release:
         if (i_u_valid && o_u_ready) begin
-          o_resp_valid <= 1'b1;
-          o_resp_id <= id_q;
-          o_resp_data <= grant_q.data;
-          o_resp_error <= grant_q.error;
+          if (!EARLY_RESPONSE) begin
+            o_resp_valid <= 1'b1;
+            o_resp_id <= id_q;
+            o_resp_data <= grant_q.data;
+            o_resp_error <= grant_q.error;
+          end
           phase_q <= Idle;
         end
         default: phase_q <= Idle;
       endcase
     end
   end
-  if (!((SOURCE == 0 && (PORT_CLASS == 1 || PORT_CLASS == 2)) ||
-        (SOURCE == 2 && PORT_CLASS == 3 && ID_BITS == 4))) begin : gen_invalid
+  localparam bit ValidHart = SOURCE == 0 &&
+      ((PORT_CLASS == 1 && SLOT < 2) || (PORT_CLASS == 2 && SLOT == 0));
+  localparam bit ValidDma = SOURCE == 2 && PORT_CLASS == 3 && ID_BITS == 4 &&
+      SLOT == 0 && !EARLY_RESPONSE;
+  if (!(ValidHart || ValidDma)) begin : gen_invalid
     initial $fatal(1, "coherence_line_bridge: invalid identity");
   end
 `ifndef SYNTHESIS
@@ -167,9 +182,18 @@ module coherence_line_bridge #(
     p_c_selected_exact : assert (o_c_valid == (!i_rst && o_c_selected));
   end
   logic f_past_valid = 1'b0;
+  logic f_response_debt_q;
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
     if (!f_past_valid) assume (i_rst);
+    if (i_rst) f_response_debt_q <= 0;
+    else begin
+      if (o_resp_valid) begin
+        assert (f_response_debt_q);
+        f_response_debt_q <= 0;
+      end
+      if (i_req_valid && o_req_ready) f_response_debt_q <= 1;
+    end
     if (!i_rst && i_req_valid && o_req_ready) begin
       assume (i_req_addr[4:0] == 0);
       assume (SOURCE == 2 || !i_req_write);
@@ -183,8 +207,30 @@ module coherence_line_bridge #(
         assert (o_c_valid);
         assert (o_c == $past(o_c));
       end
-      if (o_resp_valid) assert ($past(i_u_valid && o_u_ready));
+      if (EARLY_RESPONSE) begin
+        assert (o_resp_valid == $past(i_g_valid && o_g_ready));
+        assert (f_response_debt_q == (phase_q == Clean || phase_q == Demand ||
+            phase_q == Grant || o_resp_valid));
+        if (o_resp_valid) begin
+          assert (o_resp_data == $past(grant_in.data));
+          assert (o_resp_error == $past(grant_in.error));
+        end
+      end else begin
+        if (o_resp_valid) assert ($past(i_u_valid && o_u_ready));
+        assert (f_response_debt_q == (phase_q != Idle || o_resp_valid));
+        if (o_resp_valid) begin
+          assert (o_resp_data == $past(grant_q.data));
+          assert (o_resp_error == $past(grant_q.error));
+        end
+      end
+      if (o_resp_valid) assert (o_resp_id == $past(id_q));
       if ($past(phase_q != Idle) && phase_q == Idle) assert ($past(i_u_valid && o_u_ready));
+      if (phase_q != Idle) begin
+        assert (demand_q.q[8:7] == 2'(SOURCE));
+        assert (demand_q.q[6:5] == 2'(PORT_CLASS));
+        assert (demand_q.q[4:1] == (SOURCE == 2 ? 4'(id_q) : 4'(SLOT)));
+        assert (!demand_q.q[0]);
+      end
       if (phase_q != Idle && $past(phase_q != Idle)) begin
         assert (id_q == $past(id_q));
         assert (demand_q == $past(demand_q));
@@ -194,6 +240,17 @@ module coherence_line_bridge #(
         assert (completion.addr == grant_q.addr);
       end
       cover (o_resp_valid && !o_resp_error);
+      cover (o_resp_valid && o_resp_error);
+      cover (EARLY_RESPONSE && phase_q == Complete && !i_c_ready && !f_response_debt_q);
+      cover (EARLY_RESPONSE && phase_q == Release && !i_u_valid && !f_response_debt_q);
+      cover (i_fatal_stop && phase_q == Release && !f_response_debt_q);
+      if ($past(i_fatal_stop)) assert (!$past(o_req_ready));
+    end
+    if (f_past_valid && i_rst) begin
+      cover ($past(phase_q == Demand));
+      cover ($past(phase_q == Grant));
+      cover ($past(phase_q == Complete));
+      cover ($past(phase_q == Release));
     end
   end
 `endif

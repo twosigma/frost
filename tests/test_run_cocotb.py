@@ -483,6 +483,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Self-modifying DDR code becomes visible after fence.i",
     ),
+    "ifread_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_ifread_program",
+        hdl_toplevel_module="frost",
+        app_name="ifread_test",
+        nic_mac_clocks=False,
+        description="DDR refill overlap, dirty instruction sectors, fences and discarded walks",
+        verilator_extra_args=("--assert",),
+    ),
+    "ifread_test_equal_lines": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_ifread_program",
+        hdl_toplevel_module="frost",
+        app_name="ifread_test",
+        nic_mac_clocks=False,
+        description="Instruction reader protocol with 32-byte home lines",
+        verilator_extra_args=("--assert", "-GL2_LINE_BYTES=32"),
+    ),
     "smc_fencei_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -2902,6 +2918,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cache.test_dma_errors",
         hdl_toplevel_module="dma_test_engine",
         description="Coherent DMA read/write/status errors abort without false success",
+    ),
+    "coherence_readers": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_readers",
+        hdl_toplevel_module="coherence_readers_test_harness",
+        description="Overlapping IF refills, fence drain, killed fetches and early PTW errors",
+        verilator_extra_args=("--assert",),
     ),
     "ptw_errors": CocotbRunConfig(
         python_test_module="cocotb_tests.mmu.test_ptw_errors",
