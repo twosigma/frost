@@ -2083,7 +2083,7 @@ module cpu_ooo #(
         exception_pending_q <= 1'b1;
         exception_tag_q <= head_tag;
       end
-      if (!i_rst && coherent_atomic_active && !i_fatal_stop) begin
+      if (reset_seen_q && !i_rst && coherent_atomic_active && !i_fatal_stop) begin
         if (!coherent_atomic_retired) assert (head_valid && head_tag == coherent_atomic_tag);
         if (trap_taken) begin
           assert (exception_pending_q && exception_tag_q == coherent_atomic_tag);
