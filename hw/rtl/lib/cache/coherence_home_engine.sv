@@ -353,11 +353,14 @@ module coherence_home_engine #(
         assert ((phase_q == Service || phase_q == Fatal) && read_sent_q && !read_done_q);
       if (i_updated) assert (phase_q == UpdateWait);
       if (o_r_ready) assert (probe_matches);
-      if (phase_q == Lookup) assert (!read_sent_q && !read_done_q && !dirty_q);
+      if (phase_q == Lookup) assert (!read_sent_q && !read_done_q && !dirty_q && !error_q);
       if (phase_q == Update || phase_q == UpdateWait || phase_q == Result)
         if (!error_q) assert (read_done_q && probe_phase_q == ProbeDone);
-      // A prefetch reads, probes and updates nothing.
-      if (prefetch && phase_q != Free) assert (!o_read_offer && !o_p_valid && !o_update_valid);
+      // A prefetch reads, probes and updates nothing: from its decision its
+      // read and probe are done, and it never updates or turns fatal.
+      if (prefetch && (phase_q == Service || phase_q == Result))
+        assert (read_sent_q && read_done_q && !dirty_q && probe_phase_q == ProbeDone);
+      if (prefetch) assert (phase_q != Update && phase_q != UpdateWait && phase_q != Fatal);
       if (absent_q) assert (phase_q == Result && prefetch);
     end
 `endif

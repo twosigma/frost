@@ -326,9 +326,10 @@ result directly when no older result awaits selection. The grant register
 presents G while it holds a grant. G acceptance returns that image credit;
 the identity and physical way pin last through U. Each request waits for
 earlier requests to the same 32-byte sector: for a hart request's U, and for a
-DMA or prefetch request's result. A DMA requester keeps no copy, and its result
-follows its probe service and array update, so its G, C and U order nothing
-after it. A prefetch keeps no copy either and changes nothing a client sees.
+DMA request's result. A DMA requester keeps no copy, and its result follows its
+probe service and array update, so its G, C and U order nothing after it. A
+prefetch changes nothing a client sees, so it neither waits for nor orders
+other requests.
 
 `coherence_home_array` has separate tag-decision, data-read and masked-update
 ports. Each request carries a response token. Replacement state changes when
@@ -508,15 +509,16 @@ before the prefetch's dispatch to an engine. A prefetch therefore never takes
 a reserved fill, the last available way or the last write-back slot. In
 every other case, a fill of the block in flight or a blocked block included,
 it completes having done nothing. It never retries, joins a fill or waits for
-one. Its fill starts with no seat; demand readers that arrive meanwhile take
-its seats and wake at the install. An engine serving a prefetch protects no
-victim, and a prefetch slot never makes a PutM wait.
+one, and it takes no place in the sector order. Its fill starts with no seat;
+demand readers that arrive meanwhile take its seats and wake at the install.
+An engine serving a prefetch protects no victim, and a prefetch slot never
+makes a PutM wait.
 
 The four prefetch slots sit outside the hart-facing grant path. The
-prefetcher takes every G for source 3 when it is presented, so the cluster
-returns G readiness for source 3 unconditionally and those slots capture
-their G without it. C comes from registers through a held arbiter, and U
-returns the identity and the table's read id. An error response to a
+prefetcher takes every G and U for source 3 when it is presented, so the
+cluster returns their readiness for source 3 unconditionally and those slots
+capture their G without it. C comes from registers through a held arbiter,
+and U returns the identity and the table's read id. An error response to a
 prefetch fill frees the fill without an install; the prefetch itself
 completes without an error, demand readers seated on the fill wake with the
 error, and a later demand miss reads the line again.
