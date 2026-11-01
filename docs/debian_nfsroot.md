@@ -332,9 +332,15 @@ The stage checks the NFS mount and systemd and runs the stress and counter
 tests. It loads the memory error driver, requires its scrub self-test and an
 accelerated RAM patrol pass with zero hardware errors, and reloads it at the
 daily default. The patrol check allows 150 one-second waits. It then runs the
-NIC loopback test and writes and syncs a file on the root to prove that the
-root came back after the test took its link down. It leaves `frost_stress`,
-`frost_nettest`, and `frost_memerr.ko` in `/usr/local/bin`. The SoC has no
+NIC loopback test from `/dev/shm`, with dentry and inode caches dropped before
+the test. Sysfs counters and carrier are opened before the link goes down.
+The test holds the interface down for 65 seconds before reading counters,
+exceeding NFS's default directory attribute cache lifetime.
+The shell opens MTU, flags and IPv6 restoration files before the test and
+writes through those descriptors, since absolute sysfs or proc lookups can
+revalidate the NFS root. It writes, syncs and removes a file on the root to
+prove that the root came back after the test took its link down. It leaves
+`frost_stress`, `frost_nettest`, and `frost_memerr.ko` in `/usr/local/bin`. The SoC has no
 software reset, so reload the image before the next boot.
 
 ## Operation

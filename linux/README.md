@@ -318,6 +318,13 @@ board, the [hardware regression](../fpga/README.md#hardware-regression) boots
 Debian from its NFS root, and `fpga/linux_boot_soak.py` boots the test image
 repeatedly.
 
+The NFS-root stage runs the static NIC loopback test from `/dev/shm` after
+dropping dentry and inode caches. The test opens counter and carrier files
+while the link is up, then holds the interface down for 65 seconds to expire
+NFS's default directory attribute cache. It reads through those descriptors
+during loopback. The shell restores the link through files opened before
+the test, then checks NFS writes and sync.
+
 CI boots the packaged kernel and initramfs on QEMU's `virt` machine with
 256 MiB using both bundled OpenSBI and FROST's firmware. A third boot uses
 FROST's firmware and 3 GiB of RAM starting at `0x8000_0000`. It requires

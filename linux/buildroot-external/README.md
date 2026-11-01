@@ -139,6 +139,17 @@ OpenSBI. RTL simulation does not boot Linux.
 | `frost_sigprobe` | vDSO signal-return probe |
 | `frost_nettest` | Driver loopback test; an optional interface argument selects the NIC. Prints `FROST_NET_LOOPBACK_PASS` or `FROST_NET_LOOPBACK_FAIL <reason>` and leaves the interface down with loopback disabled |
 
+`frost_nettest` opens the interface's sysfs directory, packet and error
+counters, and carrier before taking the link down. Reads seek those open
+files to offset zero, so they do not traverse an NFS root during loopback.
+When the root uses the tested interface, run a static copy from tmpfs and
+open any files needed to restore the interface before starting the test.
+The NFS-root stage drops dentry and inode caches before the test and sets
+`FROST_NETTEST_EXPIRE_NFS_CACHE=1`. This holds the interface down for 65 seconds
+before the first counter read, exceeding NFS's default directory attribute
+cache lifetime. The stage checks a root write, sync and removal after
+restoring MTU, flags and IPv6.
+
 `fpga/linux_boot_soak.py` fails a boot that passes the stress test but
 reports `counters=unavailable`; see
 [counter access](../README.md#counters-and-mcounteren).
