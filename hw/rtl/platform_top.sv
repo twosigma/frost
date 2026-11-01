@@ -254,6 +254,7 @@ module platform_top #(
   logic [10:0] cpu_msi_id;
   logic cpu_seip;
   logic [63:0] cpu_mtime;
+  logic imem_sync_done;
   logic dbg_haltreq;
   logic dbg_go;
   logic [31:0] dbg_go_addr;
@@ -373,6 +374,7 @@ module platform_top #(
       .i_msi_id(cpu_msi_id),
       .i_mtime(cpu_mtime),
       .i_disable_branch_prediction(1'b0),
+      .i_imem_sync_done(imem_sync_done),
       .i_dbg_haltreq(dbg_haltreq),
       .i_dbg_go(dbg_go),
       .i_dbg_go_addr(dbg_go_addr),
@@ -593,6 +595,7 @@ module platform_top #(
       .o_cpu_msi_level(cpu_msi_level),
       .o_cpu_msi_id(cpu_msi_id),
       .o_cpu_mtime(cpu_mtime),
+      .o_imem_sync_done(imem_sync_done),
       .o_dbg_haltreq(dbg_haltreq),
       .o_dbg_go(dbg_go),
       .o_dbg_go_addr(dbg_go_addr),

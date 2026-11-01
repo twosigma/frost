@@ -19,11 +19,10 @@
  *
  * Stores instructions in DDR and executes them after fence.i, covering:
  *
- *   stores -> SQ -> L1D (dirty)              ... invisible to fetch
- *   fence.i: SQ drain -> L1D writeback-all   ... pushed below the arbiter
- *            -> L1I invalidate-all           ... stale lines dropped
+ *   stores -> SQ -> L1D (dirty)
+ *   fence.i: SQ drain -> L1I invalidate-all  ... stale lines dropped
  *            -> fetch-buffer invalidate      ... stale window dropped
- *   call    -> L1I miss -> fill returns the freshly written code
+ *   call    -> L1I miss -> home probe returns the stored code
  *
  * Each round rewrites the same buffer, then makes a cold call and a warm L1I
  * call, and both must return the round's constant. After the first round,

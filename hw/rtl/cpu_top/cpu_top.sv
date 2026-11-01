@@ -65,6 +65,8 @@ module cpu_top #(
     input logic [10:0] i_msi_id = '0,
     input logic [63:0] i_mtime,
     input logic i_disable_branch_prediction = 1'b0,
+    // Fetch visibility of instruction-copy writes outside coherent memory.
+    input logic i_imem_sync_done = 1'b1,
     input logic i_dbg_haltreq = 1'b0,
     input logic i_dbg_go = 1'b0,
     input logic [31:0] i_dbg_go_addr = '0,
@@ -384,6 +386,7 @@ module cpu_top #(
       .i_msi_id,
       .i_mtime,
       .i_disable_branch_prediction,
+      .i_imem_sync_done,
       .i_dbg_haltreq,
       .i_dbg_go,
       .i_dbg_go_addr,

@@ -394,7 +394,7 @@ the identity exactly. The L1D and L2 emit `ACCESS` with `HIT` or `MISS` in
 the same cycle. The hit rate is `HIT / ACCESS`.
 
 Maintenance traffic and coherence probes are not accesses: the reset tag
-sweep, the L1D `fence.i` writeback-all walk, the L1I invalidate-all walk, and
+sweep, the L1I invalidate-all walk, and
 probes add nothing to `ACCESS`, `HIT`, or `MISS`, and `WRITEBACK` excludes
 maintenance writebacks. L1I accesses, hits, and misses, and the L2 traffic
 they cause, include next-line prefetches; `L1I_FETCH_MISS_STALL` counts only
@@ -433,8 +433,8 @@ L2_WRITE_FILL_CYCLES_SUM / L2_MISS_CYCLES_SUM  DMA-write share of home fill occu
 
 Counters 132–133 are not implemented by the coherence home and read 0.
 L1D PutMs update resident L2 lines and do not allocate fills. Maintenance
-PutMs, including the L1D writeback-all that `sfence.vma` runs, are excluded
-from the access counts as well.
+PutMs are excluded from the access counts as well. FENCE.I and SFENCE.VMA
+invalidate L1I without a full L1D writeback.
 
 With `ENABLE_CACHED_TIER=0`, all cache counters read 0.
 

@@ -200,6 +200,7 @@ module soc_top #(
     output logic                  [                       10:0] o_cpu_msi_id,
     output logic                                                o_cpu_seip,
     output logic                  [                       63:0] o_cpu_mtime,
+    output logic                                                o_imem_sync_done,
     output logic                                                o_dbg_haltreq,
     output logic                                                o_dbg_go,
     output logic                  [                       31:0] o_dbg_go_addr,
@@ -1031,6 +1032,16 @@ module soc_top #(
   wire boot_sram_slice_valid = (ENABLE_1G_ETH != 0) &&
       boot_sram_wr_req_q && !mirror_now_valid && !dm_soc_valid;
   assign slice_req_valid = mirror_now_valid || dm_soc_valid || boot_sram_slice_valid;
+  // In the asynchronous configuration each Debug-Mode store response waits
+  // for its mirror. The synchronous configuration waits at fence completion.
+  // Program-buffer writes also complete before the debug module issues GO.
+  // Registered for timing. A store requests its mirror on its write edge,
+  // before its response, and a fence starts only after the responses of
+  // older stores, so the registered value already includes their mirrors.
+  logic imem_sync_done_q;
+  always_ff @(posedge core_clk)
+    imem_sync_done_q <= ASYNC_CPU_CLOCK ? dm_all_done : slice_all_done && !slice_req_valid;
+  assign o_imem_sync_done = imem_sync_done_q;
   assign slice_req_mirror = mirror_now_valid;
   assign slice_req_word_addr = mirror_now_valid ? mirror_now_addr :
       (ENABLE_1G_ETH == 0 || dm_soc_valid) ? dm_soc_addr : boot_sram_word_addr_q;

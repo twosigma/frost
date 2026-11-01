@@ -2660,10 +2660,10 @@ static void test_zifencei(void)
 {
     BEGIN_EXTENSION(EXT_ZIFENCEI);
 
-    /* FENCE.I: instruction fetch fence. The ROB serializes it; it drains stores,
-     * writes back dirty L1D lines, and invalidates the L1I and fetch buffer
-     * (hw/rtl/README.md, "Memory Map"). Nothing observable to check here beyond
-     * executing without a trap. */
+    /* FENCE.I drains committed stores, synchronizes instruction-copy writes,
+     * and invalidates L1I and fetch buffers. Refills obtain dirty L1D bytes
+     * through home probes (hw/rtl/README.md, "Memory Map"). This check verifies
+     * execution without a trap. */
     __asm__ volatile("fence.i" ::: "memory");
     TEST_NO_CRASH("FENCE.I");
 

@@ -63,6 +63,11 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "coherent_hart_cache.sby",
+        "Fence ordering and coherent instruction/PTE visibility with discarded walks.",
+        tasks=("coh_hart_maint_prove", "coh_hart_maint_cover"),
+    ),
+    FormalTarget(
         "cpu_axi_payload.sby",
         "Occupied read-buffer payload equals owned-response capture through reset and backpressure",
         tasks=("prove", "cover"),
@@ -957,6 +962,14 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    (
+        "coh_hart_maint_prove",
+        "Store installation, fence invalidation and coherent reads.",
+    ),
+    (
+        "coh_hart_maint_cover",
+        "Discard, PutM absorption, old fills and delayed completions.",
+    ),
     ("coh_home_engine_prove", "Resident image values and held service payloads."),
     ("coh_home_engine64_prove", "Sector image values in a two-sector resident line."),
     ("coh_home_engine_cover", "Coincident dirty reply/data and failed SC completion."),

@@ -84,7 +84,7 @@ static void evict_probe(void)
 {
 #if DDR_MLP_FULL_CACHE
     static uint32_t pass;
-    /* Write dirty probe data to L2 before the alias reads. */
+    /* Drain committed stores before the alias reads evict the probe data. */
     __asm__ volatile("fence.i" ::: "memory");
     uint32_t first_way = pass++ * CACHE_EVICTING_LINES;
     /* Each pass touches a distinct group of alias windows. */

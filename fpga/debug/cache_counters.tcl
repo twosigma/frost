@@ -54,7 +54,8 @@ if {[catch {
 }
 
 # OpenOCD versions that have it can skip the fence.i they otherwise run before
-# each resume, which on FROST writes the L1D back and invalidates the L1I.
+# each resume. FENCE.I drains stores, synchronizes instruction-copy writes,
+# and invalidates L1I. Dirty L1D data is available through home probes.
 catch {riscv autofence off}
 
 proc frost_csr {number} {

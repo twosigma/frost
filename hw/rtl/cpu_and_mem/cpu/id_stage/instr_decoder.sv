@@ -271,7 +271,7 @@ module instr_decoder (
         endcase
       end
 
-      // FENCE.I (Zifencei) commits after L1D writeback and L1I invalidation.
+      // FENCE.I (Zifencei) commits after store drain and instruction synchronization.
       // Its full flush clears the front end, Tomasulo state, and fetch_provider
       // buffer, then refetches the fall-through address.
       riscv_pkg::OPC_MISC_MEM:

@@ -3,8 +3,9 @@
 The CPU cache hierarchy has a private S/M L1D and L1I above a shared L2
 home. The home orders acquisitions by sector, probes the L1D, merges dirty
 replies through L2 and orders DMA against CPU accesses. Page-table walks
-use the same home. FENCE.I writes private dirty data to L2 before
-invalidating the instruction cache and fetch buffers.
+use the same home. FENCE.I drains committed stores, invalidates L1I and waits
+for instruction-copy writes before flushing fetch buffers and refetching.
+Refills obtain dirty private data through home probes.
 
 The library also contains a generic nonblocking line cache, line arbiters,
 size adapters, an AXI bridge and a behavioral memory model. Component
@@ -426,13 +427,24 @@ write. U releases the home ownership, and precise instruction ownership also wai
 Clean faults dispose C/U before precise exception entry. Dirty errors hold
 ownership and raise the cluster fatal indication until reset.
 
-A walker read first cleans its L1D sector through PutM, then uses ReadOnce.PTW.
-Instruction refills use ReadOnce.IF. FENCE.I drains older writes, cleans the
-whole L1D through PutM, invalidates L1I and resets the fetch generation.
-Maintenance yields to probes and shares local array service fairly with
-reads. FENCE, Device publication and serializer drains include pending
+Walker reads use ReadOnce.PTW and instruction refills use ReadOnce.IF.
+The home probes the L1D and merges dirty resident or absorbed PutM data into
+its response. FENCE.I and SFENCE.VMA drain older committed stores through
+L1D installation, invalidate L1I and reset the fetch generation. Dirty L1D
+lines can remain resident. Fence completion also waits for instruction-copy
+writes outside the home through `i_imem_sync_done`. FENCE, Device publication
+and serializer drains include pending
 committed stores and the selected SC write. They do not require all dirty L2
 bytes to reach external memory.
+
+The `coherent_hart_cache` formal target composes its maintenance controller,
+IF/PTW bridges, the walker and the home service engine. Small private-cache
+models represent delayed store installation, dirty eviction, PutM absorption
+and instruction fills that drain during invalidation. The proof tracks a
+stored PTE version through the home and the returned IF/PTW data. Component
+targets check array storage, endpoint ownership and arbitrary-byte merges.
+Covers exercise discarded responses, an outstanding instruction fill,
+installation before U, and IF/DMA/NIC contention with delayed completions.
 
 The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_equal`, `coherence_cluster`
 and `coherent_cut` cover controller ownership, inclusion, cuts, atomics,
@@ -875,67 +887,35 @@ costs per kernel.
 
 ## The page-table walker port
 
-The hardware page-table walker (`ptw.sv`) is the hierarchy's `wup` port,
-between the L1D and the L1I in priority. With no grant lock, a ready walk
-never waits for an L1I fill to complete. A walk is a chain of dependent
-8-byte PTE reads, one per level, each a full-line read on this port; the
-walker extracts its PTE from the line response the way
-`cached_tier_adapter` extracts a beat. One walker serves both TLBs through a
+The hardware page-table walker (`ptw.sv`) reads cacheable DDR through
+`coherent_hart_cache.walk_bridge`. Each dependent 8-byte PTE read is a
+32-byte ReadOnce.PTW transaction. One walker serves both TLBs through a
 requester mux in `cpu_ooo`, where the data side wins, and one walk is in
-flight at a time. Walks only read: an access that needs a PTE's A or D bit
-set takes a page fault (Svade), so there is no PTE write path. Walker reads
-carry `maintenance = 0` and count as ordinary traffic.
+flight at a time. Roots and interior pointers outside cached DDR return an
+access fault before a line request. Walks only read: an access that needs a
+PTE's A or D bit set takes a page fault (Svade).
 
-Page tables live in cacheable DDR, and a page-table store sits dirty in the
-L1D like any other store, while the walker reads below the L1D. Software also
-publishes page tables without `sfence.vma`: Linux fills a new table, executes
-`fence w,w`, stores the pointer to it, and uses the mapping before the
-closing `sfence.vma`. A walker that read only the L2 could see the new
-pointer (evicted from the L1D) together with the stale table below the L1D
-that it points to. That is a translation that never existed, which the
-architecture forbids: a walk may return any translation valid since the last
-`sfence.vma`, but not a mixture.
+The home probes L1D for every PTE read. Dirty resident data or an absorbed
+PutM overrides the home image, including when the home array returns after
+the probe. The bridge has no preliminary L1D clean. Software can publish a
+child table with ordered stores and a parent pointer before SFENCE.VMA;
+a walk that observes the published pointer also observes its table stores.
+`ptw_coherence_test` establishes a stale home PTE by eviction, then publishes
+a dirty child table through an evicted parent pointer.
 
-`walker_coherence_sequencer` prevents this. Every walk read first sends a
-PROBE_CLEAN to the L1D, so a dirty copy is written back and ordered at the
-L2 ahead of the read, and stays valid and clean in the L1D. Stores still in
-the store queue are not covered, and need not be. They drain to the
-L1D in program order, so a walk that sees a later page-table store sees
-every earlier one, and a walk that sees neither returns the old translation,
-which is still permitted.
+SFENCE.VMA drains committed stores through L1D installation and runs the
+L1I/fetch synchronization handshake. The serializer's SFENCE window holds
+both TLBs invalid and discards a walk in flight. An accepted walk read
+consumes G, C and U even if its translation is discarded. Error responses
+follow the same drain; a poisoned walk suppresses its translation response.
 
-`sfence.vma` still runs the L1D writeback-all of the `fence.i` sequence, and
-the ROB serializer's SFENCE window (`rob_serializer.sv`) holds both TLBs
-invalid and keeps the walker from starting a walk or returning a result for
-the whole sequence, so nothing translated under the old tables installs
-meanwhile. Walks do not depend on that writeback.
-
-The walker and DMA sequencers share one probe injection register into the
-L1D. The walker takes priority for it: with one read in flight it presents at
-most one probe per round trip, so it cannot starve the DMA entries. The L1D
-has one more probe slot than the DMA sequencer can occupy, so one is always
-free for the walker.
-
-Progress: once accepted, a walk read completes on its own.
-
-- The probe waits only on L1D transients that resolve through the L2 (a
-  fill or writeback of the line already in flight, a writeback slot to free,
-  or a request ahead of it in the tag stage waiting on one of those) and on
-  its reserved probe slot.
-- The acknowledgement waits only for the level below to acknowledge the
-  dirty writeback.
-- The issue waits only for the arbiter tree, where the higher-priority L1D
-  traffic is finite while the CPU waits on the walk.
-- The response is unconditional.
-
-No step waits on the walker, the pipeline, commit, or the store queue, and
-walks and cache maintenance cannot deadlock. A probe that arrives while
-maintenance is pending waits in the injection register, outside the L1D
-pipeline that maintenance drains. A probe that already holds a slot releases
-it when its read is accepted, which never waits on maintenance, so a
-writeback-all waiting for the probe slots to empty always gets them. A walk
-discarded by `sfence.vma` or a `satp` write still consumes its response
-(`ptw.sv`).
+The component-only `frost_hart_cache` and `frost_cache_hierarchy` benches use
+`walker_coherence_sequencer` and the line-port arbiter tree. That sequencer
+sends PROBE_CLEAN before each PTE read, orders a dirty writeback at L2, and
+releases its probe slot when the read is accepted. Its reserved probe slot
+and the arbiter's bounded writeback service let accepted reads drain during
+maintenance. Those component hierarchies implement FENCE.I and SFENCE.VMA
+with L1D writeback-all followed by L1I invalidation.
 
 ## The DMA port and coherence
 

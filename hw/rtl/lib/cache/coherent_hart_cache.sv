@@ -122,6 +122,8 @@ module coherent_hart_cache #(
     output logic [255:0] o_walk_resp_data,
     output logic o_walk_resp_error,
     input logic i_fence_sync,
+    // Earlier writes to instruction memory outside the home have completed.
+    input logic i_imem_sync_done = 1'b1,
     output logic o_fence_done,
     output cache_perf_pkg::cache_instance_perf_events_t o_l1i_perf_events,
     output cache_perf_pkg::cache_instance_perf_events_t o_l1d_perf_events,
@@ -159,9 +161,6 @@ module coherent_hart_cache #(
   logic [ADDR_WIDTH-1:0] l1d_fatal_addr, l1i_fatal_addr;
   typedef enum logic [2:0] {
     MaintIdle,
-    WalkClean,
-    WalkDone,
-    FenceClean,
     FenceInvalidate,
     FenceWait,
     FenceDone,
@@ -169,8 +168,6 @@ module coherent_hart_cache #(
   } maint_state_t;
   maint_state_t maint_state_q;
   logic fence_dropped_q;
-  logic maint_valid, maint_done, clean_valid, clean_done;
-  logic [ADDR_WIDTH-1:0] clean_addr;
   logic l1i_invalidate, l1i_busy;
   logic if_req_valid, if_req_ready, if_req_write;
   logic [ADDR_WIDTH-1:0] if_req_addr;
@@ -265,10 +262,10 @@ module coherent_hart_cache #(
       .i_reservation_valid(i_reservation_valid),
       .i_reservation_addr(i_reservation_addr),
       .i_reservation_size(i_reservation_size),
-      .i_maint_valid(maint_valid),
-      .i_maint_line(maint_state_q == WalkClean),
-      .i_maint_address(clean_addr),
-      .o_maint_done(maint_done),
+      .i_maint_valid(1'b0),
+      .i_maint_line(1'b0),
+      .i_maint_address('0),
+      .o_maint_done(),
       .o_cut_hold(o_cut_hold),
       .o_cut_admit_valid(o_cut_admit_valid),
       .i_cut_admit_ready(i_cut_admit_ready),
@@ -401,7 +398,7 @@ module coherent_hart_cache #(
   coherence_line_bridge #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .PORT_CLASS(2),
-      .CLEAN(1'b1)
+      .CLEAN(1'b0)
   ) walk_bridge (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -417,9 +414,9 @@ module coherent_hart_cache #(
       .o_resp_id(o_walk_resp_id),
       .o_resp_data(o_walk_resp_data),
       .o_resp_error(o_walk_resp_error),
-      .o_clean_valid(clean_valid),
-      .o_clean_addr(clean_addr),
-      .i_clean_done(clean_done),
+      .o_clean_valid(),
+      .o_clean_addr(),
+      .i_clean_done(1'b0),
       .o_d_valid(d_valid[PtwPort]),
       .i_d_ready(d_ready[PtwPort]),
       .o_d(demand[PtwPort]),
@@ -435,11 +432,10 @@ module coherent_hart_cache #(
       .i_u(i_u)
   );
 
-  // The maintenance owner is fixed for the complete sweep or line clean.
-  assign maint_valid = maint_state_q == WalkClean || maint_state_q == FenceClean;
-  assign clean_done = maint_state_q == WalkDone;
+  // The serializer drains committed stores before requesting synchronization.
+  // IF and PTW reads obtain dirty L1D bytes through the home's probes.
   assign l1i_invalidate = maint_state_q == FenceInvalidate;
-  assign o_fence_done = maint_state_q == FenceDone;
+  assign o_fence_done   = maint_state_q == FenceDone;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       maint_state_q   <= MaintIdle;
@@ -449,15 +445,12 @@ module coherent_hart_cache #(
       else if (!i_fence_sync) fence_dropped_q <= 1'b1;
       case (maint_state_q)
         MaintIdle: begin
-          if (i_fence_sync) maint_state_q <= FenceClean;
-          else if (clean_valid) maint_state_q <= WalkClean;
+          if (i_fence_sync) maint_state_q <= FenceInvalidate;
         end
-        WalkClean: if (maint_done) maint_state_q <= WalkDone;
-        WalkDone: if (!clean_valid) maint_state_q <= MaintGap;
-        FenceClean: if (maint_done) maint_state_q <= FenceInvalidate;
         FenceInvalidate: if (l1i_busy) maint_state_q <= FenceWait;
         FenceWait:
-        if (!l1i_busy) maint_state_q <= i_fence_sync && !fence_dropped_q ? FenceDone : MaintGap;
+        if (!l1i_busy && i_imem_sync_done)
+          maint_state_q <= i_fence_sync && !fence_dropped_q ? FenceDone : MaintGap;
         FenceDone: if (!i_fence_sync) maint_state_q <= MaintGap;
         MaintGap: maint_state_q <= MaintIdle;
         default: maint_state_q <= MaintIdle;
@@ -476,6 +469,26 @@ module coherent_hart_cache #(
         if (c_valid[port_idx] && c_ready[port_idx])
           assert (o_c_valid && i_c_ready && o_c == completion[port_idx]);
       end
+    end
+  end
+`endif
+`ifdef FORMAL
+  logic f_invalidated_q, f_busy_q, f_mirror_wait_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || maint_state_q == MaintIdle) begin
+      f_invalidated_q <= 0;
+      f_busy_q <= 0;
+      f_mirror_wait_q <= 0;
+    end else begin
+      if (l1i_invalidate) f_invalidated_q <= 1;
+      if (l1i_busy) f_busy_q <= 1;
+      if (maint_state_q == FenceWait && !i_imem_sync_done) f_mirror_wait_q <= 1;
+    end
+    if (!i_rst && o_fence_done) begin
+      assert (f_invalidated_q && f_busy_q && !l1i_busy);
+      assert (!fence_dropped_q);
+      if (!$past(o_fence_done)) assert ($past(i_imem_sync_done));
+      cover (f_mirror_wait_q);
     end
   end
 `endif

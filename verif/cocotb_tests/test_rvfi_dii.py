@@ -61,7 +61,7 @@ MAX_STREAM_WORDS = 8192
 MAX_EVENTS = MAX_STREAM_WORDS + 16
 # Log every record, the preamble's included.
 DEBUG = os.environ.get("FROST_RVFI_DII_DEBUG", "0") == "1"
-# The retirement bound covers a full L1D maintenance sweep and dirty replies.
+# The retirement bound covers cache service, synchronization and recovery.
 HANG_CYCLES = int(os.environ.get("FROST_RVFI_DII_HANG_CYCLES", "100000"))
 
 # frost_rvfi_dii's error_flags bits.

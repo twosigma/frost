@@ -18,11 +18,10 @@
  * ptw: Sv39 page-table walker.
  *
  * One walk at a time. A request latches its VPN, and the FSM descends the
- * three levels with dependent full-line reads on the hierarchy's walker port
- * (wup). That port sits between the L1D and the L1I in arbiter priority and is
- * coherent with the L1D: the hierarchy probes the L1D before each read reaches
- * the shared level, so a walk sees page-table stores still dirty there without
- * an sfence.vma (see hw/rtl/lib/cache/README.md "The page-table walker port").
+ * three levels with dependent full-line reads. The production walk bridge
+ * issues ReadOncePTW to the home, which probes L1D and merges dirty data.
+ * A walk can observe ordered page-table stores without an sfence.vma
+ * (see hw/rtl/lib/cache/README.md "The page-table walker port").
  * The PTE is extracted from the line response by the address's dword offset,
  * the way cached_tier_adapter extracts a beat.
  *

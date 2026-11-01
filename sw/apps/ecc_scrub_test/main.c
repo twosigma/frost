@@ -63,7 +63,8 @@ static void check(const char *name, int ok)
 
 static void evict(void)
 {
-    /* fence.i drains both dirty L1D halves to the L2 before set eviction. */
+    /* The fence drains committed stores. Home set eviction probes both L1D
+     * sectors and merges their dirty data before writing the victim to DDR. */
     __asm__ volatile("fence.i" ::: "memory");
     for (unsigned long k = 1; k <= EVICT_LINES; k++)
         (void) *(volatile uint64_t *) (LINE_ADDR + k * L2_SET_STRIDE);

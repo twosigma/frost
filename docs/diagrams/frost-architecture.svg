@@ -20,17 +20,15 @@
     Matching I and D badges connect the CPU to the system view below.
     Cached instruction fetch uses a two-line fetch buffer and 16 KiB L1I with
     two miss slots; cached data uses a 128 KiB L1D with eight miss slots.
-    One shared page-table walker serves both
-    TLBs and reads below them through a coherence sequencer that probes the
-    L1D first. The NIC and DMA test engine use a 256-bit AXI4 mux and bridge
-    in the SoC to reach the CPU's coherent line ingress. Its sequencer probes
-    L1D and LQ, so DMA buffers need no data-cache maintenance. Two tagged 2:1
-    arbiters merge walker over L1I and DMA over stream prefetch. A bounded 3:1
-    arbiter admits L1D, the walker/L1I pair, then the DMA/prefetch pair through
-    a 32-to-64-byte line adapter into a 2 MiB UltraRAM L2 with eight miss slots,
-    two waiter seats per miss and two writeback slots. Prefetch permits eight
-    requests and reads up to eight L2 lines ahead within a page. All three
-    DDR caches are four-way. A 512-bit AXI4 master reaches the board DDR4
+    One shared page-table walker serves both TLBs. Its ReadOncePTW requests
+    reach the L2 home, which probes L1D and merges dirty data. Instruction
+    refills use ReadOnceIF through the same home. The NIC and DMA test engine
+    use a 256-bit AXI4 mux and bridge in the SoC to reach coherent ingress.
+    The home orders DMA through private-cache probes and load-queue cuts.
+    Tagged demand channels join L1D, instruction, walker and DMA requests at
+    the 2 MiB UltraRAM L2 home. The private sectors are 32 bytes and the home
+    lines are 64 bytes. All three DDR caches are four-way. A 512-bit AXI4
+    master reaches the board DDR4
     controller. Software sees a 1 GiB cached region at 0x80000000.
     The same master serves low BRAM and MMIO. Low BRAM has an 8 KiB instruction
     cache, L0 data reads and write-through stores; debug-page data bypasses L0.
@@ -54,9 +52,9 @@
       hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv: L0 geometry.
       hw/rtl/platform_top.sv + cpu_top/{cpu_top,frost_hart,frost_cluster_memory}.sv
         + soc_top/soc_top.sv: fetch buffer, memory, MMIO, debug.
-      hw/rtl/lib/cache/frost_{hart,cluster}_cache.sv: the L1s, then the
-        D > walker > I > DMA > prefetch tree and L2; {dma,walker}_coherence_sequencer.sv:
-        the two probing entries.
+      hw/rtl/lib/cache/coherent_hart_cache.sv: private caches and IF/PTW bridges.
+      hw/rtl/lib/cache/coherence_home.sv: shared home and victim recall.
+      hw/rtl/lib/cache/coherence_home_engine.sv: probes and dirty-data merge.
       hw/rtl/peripherals/nic/nic_top.sv: the NIC's register window, rings,
         DMA front and interrupt.
       hw/rtl/frost.sv, boards/{xilinx_frost_subsystem,x3/x3_frost}.sv:
@@ -281,7 +279,7 @@
     <rect x="340" y="1016" width="244" height="100" rx="12" class="memory"/>
     <text x="462" y="1048" class="heading">Sv39 walker</text>
     <text x="462" y="1075" class="body">Shared · one walk</text>
-    <text x="462" y="1101" class="small">Sequencer probes L1D</text>
+    <text x="462" y="1101" class="small">ReadOncePTW via home</text>
     <rect x="616" y="1016" width="244" height="100" rx="12" class="memory"/>
     <text x="738" y="1048" class="heading">L1D · 128 KiB</text>
     <text x="738" y="1075" class="body">Write-back, allocate</text>
@@ -289,7 +287,7 @@
     <rect x="892" y="1016" width="244" height="100" rx="12" class="memory"/>
     <text x="1014" y="1048" class="heading">Coherent ingress</text>
     <text x="1014" y="1075" class="body">SoC AXI4 → line bridge</text>
-    <text x="1014" y="1101" class="small">Sequencer probes L1D + LQ</text>
+    <text x="1014" y="1101" class="small">L1D probes + LQ cuts</text>
   </g>
   <g class="memlink" marker-end="url(#memory-arrow)">
     <path d="M 186 1116 V 1144"/>
@@ -298,11 +296,11 @@
     <path d="M 1014 1116 V 1144"/>
   </g>
   <rect x="64" y="1144" width="1072" height="50" rx="10" class="memory"/>
-  <text x="600" y="1176" class="label center">Line arbitration · D &gt; (walker &gt; I) &gt; (DMA &gt; prefetch) · 32 B → 64 B</text>
+  <text x="600" y="1176" class="label center">Coherent demands · L1D, ReadOnceIF, ReadOncePTW and DMA · home probes private data</text>
   <path d="M 226 1194 V 1222" class="memlink" marker-end="url(#memory-arrow)"/>
   <g id="l2-and-ddr" class="center">
     <rect x="64" y="1222" width="324" height="88" rx="12" class="memory"/>
-    <text x="226" y="1258" class="heading">Shared L2 · 2 MiB</text>
+    <text x="226" y="1258" class="heading">L2 home · 2 MiB</text>
     <text x="226" y="1288" class="body">4-way · 64 B · URAM · 8 misses</text>
     <path d="M 388 1266 H 438" class="memlink" marker-end="url(#memory-arrow)"/>
     <rect x="438" y="1222" width="324" height="88" rx="12" class="memory"/>
@@ -313,7 +311,7 @@
     <text x="974" y="1258" class="heading">SoC decode → board DDR4</text>
     <text x="974" y="1288" class="body">1 GiB region @ 0x8000_0000</text>
   </g>
-  <text x="600" y="1338" class="small center">DDR caches: L1I / L1D 32 B lines, L2 64 B. Stream prefetch: 8 requests, up to 8 lines ahead within a page.</text>
+  <text x="600" y="1338" class="small center">32 B private sectors, 64 B home lines. Instruction and PTE reads obtain dirty data through home probes.</text>
 
   <path d="M 64 1359 H 1136" stroke="#2b3c55"/>
   <text x="64" y="1388" class="section">SOC SERVICES · OUTSIDE CPU_TOP</text>

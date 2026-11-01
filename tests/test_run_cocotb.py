@@ -722,7 +722,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Sv39 instruction fetch in supervisor and user modes, including cached DDR"
         ),
-        # Case Z repeats L1I eviction and complete L1D maintenance sweeps.
+        # Case Z repeats L1I eviction and SFENCE with dirty data in L1D.
         extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
     ),
     "itlb_test_1g": CocotbRunConfig(
@@ -746,6 +746,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "JTAG debug control, register and memory access, stepping, and reset"
         ),
+    ),
+    "debug_fence_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.debug.test_debug_fence",
+        hdl_toplevel_module="frost",
+        app_name="debug_target",
+        description="Program-buffer BRAM patch with delayed mirror and fence completion",
     ),
     "debug_openocd_test": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug_openocd",

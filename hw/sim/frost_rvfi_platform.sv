@@ -445,7 +445,7 @@ module frost_rvfi_platform #(
   logic fetch_live_claim;  // IF consumed/captured the provider's live response this cycle
   logic pipeline_stall;  // front-end stall; holds slow publication, not overlay bypass
   logic fence_i_sync_req;  // ROB serializer holding commit for a fence.i cache sync
-  logic fence_i_sync_done;  // hierarchy finished L1D writeback-all + L1I invalidate-all
+  logic fence_i_sync_done;  // L1I invalidation and instruction-copy writes completed
   // Registered FENCE-class pipeline flush (native FENCE.I/SFENCE.VMA or a
   // translation-class CSR); invalidates the fetch provider before refetch.
   logic fence_i_flush;
@@ -2065,6 +2065,7 @@ module frost_rvfi_platform #(
         .o_walk_resp_data(walk_line_resp_rdata),
         .o_walk_resp_error(walk_line_resp_error),
         .i_fence_sync(fence_i_sync_req),
+        .i_imem_sync_done(slice_all_done && !slice_req_valid),
         .o_fence_done(fence_i_sync_done),
         .o_l1i_perf_events(cache_hierarchy_perf_events.l1i),
         .o_l1d_perf_events(cache_hierarchy_perf_events.l1d),
@@ -2801,8 +2802,8 @@ module frost_rvfi_platform #(
     assign walk_line_resp_rdata = '0;
     assign iup_resp_id = '0;
     assign iup_resp_rdata = '0;
-    // No caches to sync: fence.i completes immediately.
-    assign fence_i_sync_done = fence_i_sync_req;
+    // Fence completion waits for instruction-copy writes.
+    assign fence_i_sync_done = fence_i_sync_req && slice_all_done && !slice_req_valid;
     // With the tier disabled, cached reads return zero and writes complete
     // without storing data. One pending bit per load slot prevents lost
     // responses on consecutive launches. Return the lowest slot first when

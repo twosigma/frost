@@ -18,20 +18,18 @@
  * Sv39 page-table walks must see page-table stores that
  * are still dirty in the L1D, with no sfence.vma in between.
  *
- * The walker reads PTEs below the L1D, from L2 (or memory when there is no
- * L2). walker_coherence_sequencer probes the L1D before each walk read, so a
- * dirty page-table line is written back first (see "The page-table walker
- * port" in hw/rtl/lib/cache/README.md). Model Linux's __set_memory and
- * split_linear_mapping sequence: replace a 2 MiB leaf with a new 4 KiB PTE
- * table before sfence.vma. Evict the PMD to L2 while leaving the table dirty
- * in L1D. Reading only L2 would combine the new pointer with stale PTEs.
+ * Each ReadOncePTW probes the L1D through the home. A dirty resident sector
+ * or absorbed PutM supplies the current PTE bytes. Publishing a child table
+ * before sfence.vma must preserve the ordering of its contents and its parent
+ * pointer. Reading only the home image could combine that pointer with stale
+ * child PTEs.
  *
  * Each iteration uses a 2 MiB VA region R, a new child PTE page T, and a
  * target page tp inside R:
  *
  *   S1  Seed T with stale content and map R -> P1 with a 2 MiB leaf.
- *   S2  sfence.vma, the only one in the iteration: the old tables are
- *       written back to L2 and the DTLB is cleared.
+ *   S2  Evict the target seed sector to the home and read it back, then
+ *       sfence.vma to clear the DTLB.
  *   S3  Load from R to install its DTLB entry and check the P1 signature.
  *   S4  Evict R's DTLB entry by touching 24 other superpages.
  *   S5  Fill T with leaves mapping R -> P1 page by page, fence w,w, and point
@@ -40,8 +38,8 @@
  *   S7  Load R+tp. The DTLB misses, and the walk reads the new PMD pointer
  *       and then T's entry, whose line is still dirty in the L1D.
  *
- * No sfence.vma or fence.i may run from S5 through S7: both write the L1D
- * back, which would clean T's lines before the walk.
+ * S5 through S7 contains no sfence.vma or fence.i. The publication check
+ * depends on ordered stores and the home probe, without a translation fence.
  *
  * INVALID seeds V=0, so stale PTEs cause a load page fault (13). DECOY seeds
  * legal leaves pointing to a decoy frame, so stale PTEs return wrong data
@@ -53,6 +51,7 @@
  * memory configuration; the stack stays in uncached low BRAM.
  */
 
+#include "cache_evict.h"
 #include "uart.h"
 #include <stdint.h>
 
@@ -279,8 +278,20 @@ static int do_iter(unsigned iter, const struct iter_cfg *c)
     if (c->flavor == FLAVOR_DECOY)
         sd_phys(DECOY_FRAME, sigd);
 
-    /* --- S2: publish the OLD contents to L2 (writeback-all) and clear the
-     * DTLB. This is the last sfence before the hazard. --- */
+    /* S2: evict the target PTE sector so the home holds its seed. Each
+     * alias store installs a line; dependent loads touch it for replacement.
+     * Reading the seed back waits for its pending writeback to be ordered. */
+    const unsigned long seed_addr = T + (unsigned long) c->tp * 8ul;
+    const unsigned long seed_line = seed_addr & ~31ul;
+    for (unsigned k = 1; k <= CACHE_EVICTING_LINES; k++) {
+        const unsigned long a = seed_line + k * L1D_ALIAS_STRIDE;
+        sd_phys(a, 0);
+        (void) cache_touch_line(a + 8);
+    }
+    if (ld_phys(seed_addr) != seed) {
+        uart_printf("  [setup] iter %u: seed readback mismatch\r\n", iter);
+        return 0;
+    }
     sfence_vma();
     write_satp(SATP_SV39 | (PT_ROOT >> 12));
 
@@ -365,9 +376,9 @@ static int do_iter(unsigned iter, const struct iter_cfg *c)
         "  add  t6, t6, t5\n"
         "  addi t2, t2, -1\n"
         "  bnez t2, 6b\n"
-        "  fence\n" /* drain: the eviction writeback is now in flight */
+        "  fence\n" /* drain the committed stores before readback */
         /* S6b: reload the PMD line. It misses the L1D, and its fill waits for
-         * the line's writeback (frost_cache's same-line writeback interlock),
+         * the line's ordered writeback at the home,
          * so it reads the new pointer from L2. */
         "  ld   t5, 0(%[pmdent])\n"
         "  sd   t5, 0(%[scratch])\n"

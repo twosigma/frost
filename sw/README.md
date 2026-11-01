@@ -119,10 +119,11 @@ per-object linker rule.
 
 Low BRAM keeps separate instruction and data copies, so ordinary stores never
 change the code being fetched. Self-modifying code must live in DDR and run
-`fence.i` after writing it; `fence.i` drains stores, writes back the L1D, and
-invalidates the L1I and the fetch buffer. Stores made in Debug Mode, such as
-a debugger's software breakpoints, are mirrored into the BRAM instruction
-copy.
+`fence.i` after writing it; `fence.i` drains committed stores and invalidates
+the L1I and fetch buffers. Instruction refills obtain dirty L1D bytes through
+home probes. Stores made in Debug Mode, such as a debugger's software
+breakpoints, are mirrored into the BRAM instruction copy. FENCE.I waits for
+these instruction-copy writes before completing.
 
 ### Peripheral addresses
 

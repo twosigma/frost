@@ -119,9 +119,11 @@ it. `window` takes a snapshot, runs a command or waits, then takes another
 and reads both from the cache block's two snapshot banks, and prints the
 deltas with the L2's write costs. It counts the window's cycles with the
 `time` CSR, since Linux's perf support can stop and preload `mcycle`.
-OpenOCD runs `fence.i` before each resume, which writes the L1D back and
-empties the L1I, so a window starts that way. Stop the Vivado `hw_server`
-first; `FROST_JTAG_SERIAL` selects the cable as for `debug/openocd_x3.cfg`:
+The Tcl helper requests `riscv autofence off` when supported. If OpenOCD
+executes FENCE.I before resume, it drains committed stores, invalidates L1I
+and synchronizes instruction-copy writes. Dirty L1D data remains available
+to coherent home probes. Stop the Vivado `hw_server` first;
+`FROST_JTAG_SERIAL` selects the cable as for `debug/openocd_x3.cfg`:
 
 ```bash
 ./fpga/debug/cache_counters.py window -- ssh root@192.0.2.2 'dd if=/root/big of=/dev/null bs=1M'

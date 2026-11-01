@@ -22,8 +22,9 @@
  * The registry entry passes +axi_rd_error_addr and +axi_wr_error_addr, so the
  * DDR model answers SLVERR to every read of RD_ERROR_LINE and every write of
  * WR_ERROR_LINE. A write reaches DDR only when the L2 evicts the line, so the
- * test writes the line, has fence.i write the L1D back to the L2, and then
- * reads eight lines that share its L2 set. The read fault is handled precisely;
+ * test writes the line, drains the store with fence.i, and then reads eight
+ * lines that share its L2 set. Home eviction probes dirty L1D data before
+ * writing DDR. The read fault is handled precisely;
  * the final writeback error must stop the CPU with a sticky fatal indication. The bench plays the
  * X3's ECC reader (test_real_program.py, EccReportDriver): it holds i_ecc_present high and, once
  * IRQ_EN enables both ECC kinds, reports the corrected and uncorrectable errors and polls this

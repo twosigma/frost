@@ -97,10 +97,11 @@ static inline unsigned long ld64(unsigned long addr)
 }
 
 /* Write every probed line's signature and the -1 markers, then push them
- * out of both cache levels. fence.i writes the L1D back, and two passes over
- * the lines' L2 aliases evict them from the L2 (the first pass can
- * re-allocate a line written back from the L1D; the second cannot). Each
- * probed line's L2 set holds four probed lines, and the two passes miss
+ * out of both cache levels. The alias sweeps replace L1D lines and cause
+ * the home to evict their inclusive copies. Home eviction probes both
+ * private sectors and merges dirty replies before writing the victim to DDR.
+ * Two passes over the lines' L2 aliases evict them from L2. Each probed
+ * line's L2 set holds four probed lines, and the two passes miss
  * there eight times, more than the five misses on other lines that evict an
  * installed line from a 4-way set. A marker's set may hold no probed line,
  * so each marker also reads the lines 1 to 2 * L2_WAYS - 1 L2 ways above it

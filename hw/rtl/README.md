@@ -18,8 +18,8 @@ compilation order.
 
 The [CPU and system architecture diagram](../../docs/diagrams/frost-architecture.svg)
 shows the datapath, translation, memory tiers, MMIO, and debug interfaces.
-The [cache diagram](../../docs/diagrams/cache-hierarchy.svg) expands the
-cache hierarchy.
+The [component cache diagram](../../docs/diagrams/cache-hierarchy.svg) shows
+the line-cache hierarchy used by the component benches.
 
 `frost.sv` wraps `platform_top` with reset synchronization, UART clock
 crossings, and MMIO FIFOs. `platform_top` connects the reusable
@@ -145,8 +145,10 @@ maintenance. Code fetched from DDR passes through a buffer of two active
 lines and six victim lines in front of the L1I. See the
 [cache guide](lib/cache/README.md).
 
-`fence.i` drains stores, writes back dirty L1D lines, invalidates the L1I,
-and flushes the fetch buffer before refetch. Reset invalidates the caches.
+`fence.i` drains stores through L1D installation, waits for instruction-copy
+writes, invalidates the L1I, and flushes the fetch buffer before refetch.
+The home probes L1D for instruction refills and PTE reads, so dirty data can
+remain in L1D. Reset invalidates the caches.
 With `ENABLE_CACHED_TIER=0` there is no hierarchy: cached-region loads return
 zero, stores complete without effect, fetch uses low BRAM only, and the NIC
 and DMA test engine windows read zero. `USE_BEHAVIORAL_DDR=0` connects the
@@ -337,8 +339,11 @@ the DTM reporting busy, and is handled when the reset ends, with `dmactive` 0.
 `debug_slice_writer` writes the module's words into the slice through the
 BRAM programming port. It also mirrors Debug-Mode stores to the low BRAM's
 code region into the instruction copy, so software breakpoints and debugger
-writes to BRAM code are fetched. For code in DDR, OpenOCD executes `fence.i`,
-which publishes its writes. Debug CSRs and `dret` are illegal outside Debug
+writes to BRAM code are fetched. FENCE.I waits for the mirror completion
+before invalidating fetch state. With asynchronous CPU and SoC clocks, the
+store response waits for the mirror, so the committed-store drain supplies
+that ordering. For code in DDR, OpenOCD executes `fence.i`; refills obtain
+the patch through the home probe. Debug CSRs and `dret` are illegal outside Debug
 Mode.
 
 For OpenOCD, GDB, and VS Code use, see the

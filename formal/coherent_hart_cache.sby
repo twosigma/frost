@@ -1,0 +1,45 @@
+[tasks]
+coh_hart_maint_prove proof
+coh_hart_maint_cover covers
+
+[options]
+proof: mode prove
+proof: depth 32
+covers: mode cover
+covers: depth 100
+proof: timeout 600
+covers: timeout 300
+
+[engines]
+proof: abc pdr -r
+covers: smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv cache_perf_pkg.sv coherence_pkg.sv
+# Component targets prove the service engine and walker properties separately.
+read -sv coherence_home_engine.sv ptw.sv
+read -sv coherence_request_endpoint.sv coherence_d_arbiter.sv coherence_line_bridge.sv
+read -formal -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
+covers: chparam -set COVER_MODE 1 coherent_hart_cache_formal
+prep -flatten -top coherent_hart_cache_formal
+chformal -cover -remove c:*flatten_home* c:*flatten_walker* c:walker.* c:*bridge* c:*endpoint* c:*arbiter*
+memory_map
+opt
+techmap
+opt -fast
+setundef -anyseq
+opt_clean
+
+[files]
+coherent_hart_cache_models.sv
+coherent_hart_cache_formal.sv
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/ptw.sv
+../hw/rtl/lib/cache/cache_perf_pkg.sv
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_request_endpoint.sv
+../hw/rtl/lib/cache/coherence_d_arbiter.sv
+../hw/rtl/lib/cache/coherence_line_bridge.sv
+../hw/rtl/lib/cache/coherence_home_engine.sv
+../hw/rtl/lib/cache/coherent_hart_cache.sv

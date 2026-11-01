@@ -94,6 +94,10 @@ response rotation and byte-write preservation.
 
 `debug_test` exercises JTAG control, memory access and BRAM instruction
 mirroring. The debugger executes both words of an aligned doubleword patch.
+`debug_fence_test` warms BRAM instructions, patches both executed words,
+executes FENCE.I and calls the patch in one command. It stalls the mirror
+through programming-port backpressure and checks fence completion ordering.
+With asynchronous clocks, it checks the store response held before fence entry.
 The debug-module unit bench checks stalled slice requests and overlapping
 program-buffer writes. The reservation-station unit checks capacity after
 second-port issue, dual issue, simultaneous dispatch and issue, and flush.
@@ -115,7 +119,7 @@ The Tomasulo coherence fixture models CPU atomic protection and home SC
 results through tagged write completion. Admission races cover both probe-first
 and atomic-first ordering. The CPU and cache benches exercise the guard and
 home hardware that implement those fixture handshakes.
-The FENCE.I program uses full L1D maintenance sweeps. The AMO interrupt
+The FENCE.I program checks dirty-code visibility through home probes. The AMO interrupt
 workload uses 256 bursts of 64 AMOs.
 
 ```bash
@@ -178,8 +182,8 @@ two runs.
 
 `vm_test` and its aperture configurations use a three-million-cycle
 budget. `ptw_recovery_test` uses twelve million cycles for its complete
-branch-delay and walker-discard matrix. Their SFENCE.VMA operations use
-full L1D maintenance.
+branch-delay and walker-discard matrix. Their SFENCE.VMA operations drain
+committed stores, invalidate L1I and flush fetch and translation state.
 
 `opensbi_smoke` uses a twenty-million-cycle budget for firmware boot and
 its S-mode payload.
@@ -557,7 +561,7 @@ which have 90 minutes each. `--verbose` prints solver output.
 | `FROST_CPU_PHASE_PS` | Initial CPU clock phase in ps when the independent clock is selected; default 700 |
 | `FROST_ASYNC_CPU_CLOCK` | `1` enables the independent CPU boundary in Yosys synthesis tests |
 | `FROST_NIC_MAC_CLOCKS` | For the whole-SoC program and TestRIG benches, overrides the registry or runner default: `0` holds both NIC MAC clocks and their clock-OK inputs low with an access guard; `1` starts the clocks. The ISA, torture, and TestRIG runners default to `0` |
-| `SIM_FAST_MAINT` | Enables fast L1I invalidation in whole-SoC simulation (default 1). L1D clean-all visits every set and way |
+| `SIM_FAST_MAINT` | Enables fast L1I invalidation in whole-SoC simulation (default 1). Coherent fences leave dirty L1D data available to home probes |
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to
 `tests/results.xml`. A `test_run_cocotb.py` run passes only if the simulator

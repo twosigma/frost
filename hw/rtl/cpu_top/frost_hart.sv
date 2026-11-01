@@ -57,6 +57,8 @@ module frost_hart #(
     input logic [10:0] i_msi_id,
     input logic [63:0] i_mtime,
     input logic i_disable_branch_prediction,
+    // Fetch visibility of instruction-copy writes outside coherent memory.
+    input logic i_imem_sync_done = 1'b1,
     input logic i_dbg_haltreq,
     input logic i_dbg_go,
     input logic [31:0] i_dbg_go_addr,
@@ -709,6 +711,7 @@ module frost_hart #(
         .o_walk_resp_data(walk_line_resp_rdata),
         .o_walk_resp_error(walk_line_resp_error),
         .i_fence_sync(fence_i_sync_req),
+        .i_imem_sync_done,
         .o_fence_done(fence_i_sync_done),
         .o_l1i_perf_events(o_l1i_perf_events),
         .o_l1d_perf_events(o_l1d_perf_events),
@@ -730,7 +733,7 @@ module frost_hart #(
     assign walk_line_resp_error = 1'b0;
     assign walk_line_resp_id = '0;
     assign walk_line_resp_rdata = '0;
-    assign fence_i_sync_done = fence_i_sync_req;
+    assign fence_i_sync_done = fence_i_sync_req && i_imem_sync_done;
     // With caches disabled, data reads return zero and cached instruction
     // fetch and page-table walks are unavailable.
     logic [riscv_pkg::CachedLoadSlots-1:0] stub_read_pending_q;
