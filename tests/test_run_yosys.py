@@ -83,14 +83,15 @@ def _hierarchy_command(synth_command: str) -> str:
 def _get_timeout_seconds(synth_command: str) -> int:
     """Return the synthesis timeout in seconds.
 
-    Defaults are 1800 for generic synth and 7200 for other targets. Overrides:
+    Defaults are 1800 for generic synth, 10800 for Xilinx, and 7200 for other
+    targets. Overrides:
     FROST_YOSYS_GENERIC_TIMEOUT_SEC for generic synth,
     FROST_YOSYS_XILINX_TIMEOUT_SEC for Xilinx, and FROST_YOSYS_TIMEOUT_SEC for
     other targets. Generic synth also falls back to FROST_YOSYS_TIMEOUT_SEC.
     """
     default_generic_timeout = 1800
     default_timeout = 7200
-    default_xilinx_timeout = 7200
+    default_xilinx_timeout = 10800
 
     if _is_generic_synth_command(synth_command):
         env_name = "FROST_YOSYS_GENERIC_TIMEOUT_SEC"

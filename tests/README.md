@@ -510,7 +510,7 @@ Synthesizes `platform_top` (the CPU tile, SoC memory system, and NIC, from
 Xilinx UltraScale+ synthesis. Both fail on unresolved modules or latches.
 sv2v converts the NIC, MAC, and PCS sources for Yosys first. Generic
 synthesis does not check device mapping or timing. Xilinx synthesis has a
-two-hour timeout, which `FROST_YOSYS_XILINX_TIMEOUT_SEC` overrides.
+three-hour timeout, which `FROST_YOSYS_XILINX_TIMEOUT_SEC` overrides.
 
 ```bash
 ./scripts/frost.py synthesis                    # both targets
