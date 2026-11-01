@@ -482,6 +482,11 @@ module coherence_home_array #(
         assert (i_tag_owner[token_q]);
         assert ((o_query_addr >> OffsetBits) == (i_tag_address[token_q] >> OffsetBits));
       end
+      // The lookup in service has the only tag owner.
+      for (int token = 0; token < (1 << TOKEN_BITS); token++)
+      if (i_tag_owner[token])
+        assert ((phase_q == Tags || phase_q == Select || phase_q == Reply) &&
+            int'(token_q) == token);
       if (request_fire) assert (!i_tag_owner[i_req_token]);
       if (read_fire) assert (!i_read_owner[i_read_token]);
       if (update_fire) assert (!i_update_owner[i_update_token]);

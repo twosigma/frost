@@ -29,10 +29,10 @@
 // The wrapper owns IDS prefetch identities {3, 3, id}. It takes a table's
 // request, with a free identity, into a D register that holds until the home
 // accepts it; the two tables alternate when both have one. The home answers
-// every Prefetch with GrantAck after one lookup. The wrapper takes every G
-// for source 3 when it arrives (the home's prefetch completion slots rely on
-// this), presents C from registers through a held arbiter, and returns the
-// identity, and the table's own read id, at U.
+// every Prefetch with GrantAck after one lookup. The wrapper takes every G and
+// U for source 3 when they arrive (the home's prefetch completion slots rely
+// on this for G), presents C from registers through a held arbiter, and
+// returns the identity, and the table's own read id, at U.
 module coherence_prefetcher #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 64,
@@ -173,14 +173,14 @@ module coherence_prefetcher #(
   end
 
   // The D register. It loads a table's request with a free identity when it
-  // is empty or its request is taken; the instruction table goes first when
-  // it is its turn or the data table has nothing.
+  // is empty, so its load does not wait on D readiness; the instruction table
+  // goes first when it is its turn or the data table has nothing.
   logic d_valid_q, turn_q, load, pick;
   logic [ADDR_WIDTH-1:0] d_addr_q;
   logic [IdBits-1:0] d_id_q;
   wire d_fire = o_d_valid && i_d_ready;
   assign pick = table_valid[1] && (!table_valid[0] || turn_q);
-  assign load = !i_fatal_stop && (!d_valid_q || d_fire) && |table_valid && free;
+  assign load = !i_fatal_stop && !d_valid_q && |table_valid && free;
   assign table_ready = {load && pick, load && !pick};
   coh_d_t demand;
   always_comb begin
@@ -206,10 +206,11 @@ module coherence_prefetcher #(
       1'b0
     };
   end
-  // Every G for source 3 belongs to an identity waiting for it.
+  // Every G and U for source 3 belongs to an identity waiting for it, and
+  // is taken when it arrives.
   assign o_g_ready = 1'b1;
   wire [IdBits-1:0] grant_id = grant_in.q.id[IdBits-1:0];
-  assign o_u_ready = !i_rst && |release_match;
+  assign o_u_ready = 1'b1;
   // Each identity offering C holds its offer until the C is accepted.
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 18),
@@ -236,7 +237,7 @@ module coherence_prefetcher #(
     release_id = '0;
     for (int id = 0; id < Ids; id++) if (release_match[id]) release_id = IdBits'(id);
   end
-  wire release_fire = i_u_valid && o_u_ready;
+  wire release_fire = i_u_valid && |release_match;
   assign table_resp_valid = {
     release_fire && table_q[release_id], release_fire && !table_q[release_id]
   };
@@ -280,23 +281,120 @@ module coherence_prefetcher #(
     end
   end
 `ifndef SYNTHESIS
+  // The home's view of each identity: its D accepted, its G sent, its C
+  // taken. The home sends one G for each accepted D, and a U only after the
+  // identity's C.
+  logic [Ids-1:0] f_sent_q, f_granted_q, f_completed_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_sent_q <= '0;
+      f_granted_q <= '0;
+      f_completed_q <= '0;
+    end else begin
+      if (d_fire) f_sent_q[d_id_q] <= 1'b1;
+      if (i_g_valid) f_granted_q[grant_id] <= 1'b1;
+      for (int id = 0; id < Ids; id++) begin
+        if (c_valid[id] && c_ready[id]) f_completed_q[id] <= 1'b1;
+        if (i_u_valid && release_match[id]) begin
+          f_sent_q[id] <= 1'b0;
+          f_granted_q[id] <= 1'b0;
+          f_completed_q[id] <= 1'b0;
+        end
+      end
+    end
+  end
+  wire grant_legal = int'(grant_in.q.id) < IDS &&
+      grant_in.q == {2'd3, 2'd3, 4'(grant_id), 1'b0} && f_sent_q[grant_id] &&
+      !f_granted_q[grant_id] && grant_in.addr == addr_q[grant_id] &&
+      grant_in.opcode == coherence_pkg::GrantAck && grant_in.data == '0;
+  coh_c_t completion_out;
+  assign completion_out = o_c;
+  wire [IdBits-1:0] completion_id = completion_out.q.id[IdBits-1:0];
+  logic release_legal;
+  always_comb begin
+    release_legal = 1'b0;
+    for (int id = 0; id < IDS; id++)
+    if (f_completed_q[id] && release_in.q == {2'd3, 2'd3, 4'(id), 1'b0} &&
+        release_in.addr == addr_q[id] && release_in.tid == tid_q[id])
+      release_legal = 1'b1;
+  end
+`ifdef FORMAL
+  logic f_past_valid = 1'b0;
+  always_ff @(posedge i_clk) begin
+    f_past_valid <= 1'b1;
+    if (!f_past_valid) assume (i_rst);
+    if (f_past_valid && !$past(i_rst) && $past(i_fatal_stop)) assume (i_fatal_stop || i_rst);
+  end
+  always_comb
+    if (!i_rst) begin
+      if (i_g_valid) assume (grant_legal);
+      if (i_u_valid) assume (release_legal);
+    end
+`else
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst) begin
+      if (i_g_valid) assert (grant_legal);
+      if (i_u_valid) assert (release_legal);
+    end
+`endif
   always_ff @(posedge i_clk) begin
     if (sim_reset_seen_q && !i_rst) begin
-      // A G arrives only for an identity whose request the home accepted.
-      if (i_g_valid)
-        assert (int'(grant_in.q.id) < IDS && grant_in.q == {2'd3, 2'd3, 4'(grant_id), 1'b0} &&
-            phase_q[grant_id] == WaitGrant && !(d_valid_q && d_id_q == grant_id) &&
-            grant_in.addr == addr_q[grant_id] && grant_in.opcode == coherence_pkg::GrantAck);
-      assert ($onehot0(release_match));
-      if (d_valid_q)
-        assert (phase_q[d_id_q] == WaitGrant && addr_q[d_id_q] == d_addr_q && int'(d_id_q) < IDS);
+      // Each identity's phase follows the home's view of it, and only the
+      // identity in the D register waits to be sent.
       for (int id = 0; id < Ids; id++) begin
         if (id >= IDS) assert (phase_q[id] == Idle);
+        case (phase_q[id])
+          Idle: assert (!f_sent_q[id] && !f_granted_q[id] && !f_completed_q[id]);
+          WaitGrant:
+          assert (!f_granted_q[id] && !f_completed_q[id] &&
+              f_sent_q[id] == !(d_valid_q && d_id_q == IdBits'(id)));
+          Complete: assert (f_sent_q[id] && f_granted_q[id] && !f_completed_q[id]);
+          default: assert (f_sent_q[id] && f_granted_q[id] && f_completed_q[id]);
+        endcase
         if (phase_q[id] != Idle) assert (addr_q[id][$clog2(LINE_BYTES)-1:0] == 0);
+      end
+      if (d_valid_q)
+        assert (phase_q[d_id_q] == WaitGrant && addr_q[d_id_q] == d_addr_q && int'(d_id_q) < IDS);
+      // A legal U matches exactly one identity.
+      assert ($onehot0(release_match));
+      if (i_u_valid) assert (|release_match);
+      if (o_c_valid && i_c_ready) begin
+        assert (phase_q[completion_id] == Complete);
+        assert (o_c == completions[completion_id]);
       end
       for (int table_index = 0; table_index < 2; table_index++)
       if (table_valid[table_index]) assert (table_addr[table_index][$clog2(LINE_BYTES)-1:0] == 0);
     end
   end
+`ifdef FORMAL
+  // The table of the last load.
+  logic f_last_pick_q = 1'b0, f_loaded_q = 1'b0;
+  always_ff @(posedge i_clk)
+    if (load) begin
+      f_last_pick_q <= pick;
+      f_loaded_q <= 1'b1;
+    end
+  // The D and C presentations hold until taken, and D is a Prefetch of a
+  // line for one of the identities.
+  always_ff @(posedge i_clk) begin
+    if (f_past_valid && !i_rst && !$past(i_rst)) begin
+      if ($past(o_d_valid && !i_d_ready) && !i_fatal_stop) assert (o_d_valid && o_d == $past(o_d));
+      if ($past(o_c_valid && !i_c_ready)) assert (o_c_valid && o_c == $past(o_c));
+    end
+    if (!i_rst && o_d_valid)
+      assert (demand.opcode == coherence_pkg::Prefetch && demand.size == 3'd5 &&
+          demand.mask == '0 && demand.q.src == 2'd3 && demand.q.port_class == 2'd3 &&
+          int'(demand.q.id) < IDS && demand.addr[$clog2(
+          LINE_BYTES
+      )-1:0] == 0);
+    if (!i_rst) begin
+      cover (&f_sent_q[IDS-1:0]);
+      // The tables take turns: an instruction load right after a data load.
+      cover (load && pick && f_last_pick_q == 1'b0 && f_loaded_q);
+      cover (o_c_valid && !i_c_ready && i_g_valid);
+      cover (i_u_valid && o_u_ready && table_resp_valid[1]);
+    end
+  end
+`endif
 `endif
 endmodule

@@ -225,7 +225,26 @@ module l2_stream_prefetcher #(
     end
   end
 
+`ifdef FORMAL
+  // A request stays in the page of the stream line it was loaded from.
+  logic [LineBits-PageLineBits-1:0] f_req_page_q;
+  always_ff @(posedge i_clk) begin
+    if (load) f_req_page_q <= st_line_q[cand_sel][LineBits-1:PageLineBits];
+    if (!i_rst && req_valid_q) assert (req_line_q[LineBits-1:PageLineBits] == f_req_page_q);
+  end
+`ifdef L2_STREAM_PREFETCHER_IDS
+  // The parent returns only ids that are out, so the count follows them.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      if (i_resp_valid) assert (id_busy_q[i_resp_id]);
+      assert (inflight_q == InflightBits'($countones(id_busy_q)));
+      if (req_valid_q) assert (id_busy_q[req_id_q]);
+    end
+  end
+`endif
+`endif
 `ifndef SYNTHESIS
+`ifndef FORMAL
   logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
     if (i_rst) reset_seen_q <= 1'b1;
@@ -241,6 +260,7 @@ module l2_stream_prefetcher #(
       end
     end
   end
+`endif
 `endif
 
 endmodule : l2_stream_prefetcher

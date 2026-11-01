@@ -815,8 +815,9 @@ module coherence_home #(
     for (int way = 0; way < WAYS; way++) work_tag_q[way] <= block_tag(work_addr) == array_tags[way];
   end
   // The selected put's address on the next cycle, and the selected work's.
-  assign held_put_next = run && !put_selected_q && i_w_valid ? incoming_put.addr :
-      selected_put_q.addr;
+  // The put selection does not wait for the stop condition: W readiness
+  // already requires the home to be active.
+  assign held_put_next = !put_selected_q && i_w_valid ? incoming_put.addr : selected_put_q.addr;
   assign work_addr = request_addr(work);
   // One blocking term per owner: blocks a same-sector query, victims a
   // victim block that the owner holds. The decision and the W readiness that
@@ -1078,7 +1079,7 @@ module coherence_home #(
     if (i_rst) begin
       put_selected_q <= 1'b0;
       selected_put_q <= '0;
-    end else if (run) begin
+    end else begin
       if (!put_selected_q && i_w_valid) begin
         selected_put_q <= incoming_put;
         put_selected_q <= 1'b1;
@@ -1641,6 +1642,17 @@ module coherence_home #(
       reference_exclude[put_way_q[put]] = 1'b1;
   end
 `ifdef COHERENCE_HOME_CONTROL
+  // The prefetch flags of the lookup belong to its owner from the tag port's
+  // acceptance through the decision.
+  always_ff @(posedge i_clk)
+    if (!i_rst) begin
+      for (int engine = 0; engine < RESULTS; engine++)
+      if (f_tag_owner[engine])
+        assert (lookup_prefetch_q == engine_prefetch_q[engine] &&
+            lookup_fill_q == (engine_prefetch_q[engine] && !engine_nofill_q[engine]));
+      for (int put = 0; put < Puts; put++)
+      if (f_tag_owner[RESULTS+FILLS+put]) assert (!lookup_prefetch_q && !lookup_fill_q);
+    end
   // While the array selects or responds, the query has held since the edge
   // before and no excluding owner changed its address on that edge.
   always_ff @(posedge i_clk)
@@ -1752,8 +1764,11 @@ module coherence_home #(
         assert (int'(reference_free_fills) > PREFETCH_RESERVE);
         if (array_state != coherence_pkg::Invalid) assert (reference_free_wbs >= 2);
       end
+      // A busy engine serves its slot's request.
       for (int engine = 0; engine < RESULTS; engine++)
       if (!engine_idle[engine]) begin
+        assert (int'(engine_tid[engine]) < COMPLETIONS &&
+            engine_opcode[engine] == waiting_opcode[CompletionBits'(engine_tid[engine])]);
         assert (engine_prefetch_q[engine] == (engine_opcode[engine] == coherence_pkg::Prefetch));
         if (engine_nofill_q[engine]) assert (engine_prefetch_q[engine]);
       end
@@ -1874,7 +1889,9 @@ module coherence_home #(
           assert (fill_seats_q[fill] != 0 || fill_prefetch_q[fill]);
         for (int slot = 0; slot < COMPLETIONS; slot++)
         if (fill_phase_q[fill] != FillFree && fill_seats_q[fill][slot])
-          assert (same_block(fill_addr_q[fill], waiting_addr[slot]));
+          assert (same_block(
+              fill_addr_q[fill], waiting_addr[slot]
+          ) && waiting_opcode[slot] != coherence_pkg::Prefetch);
         for (int other = fill + 1; other < FILLS; other++)
         if (fill_phase_q[fill] != FillFree && fill_phase_q[other] != FillFree)
           assert ((fill_seats_q[fill] & fill_seats_q[other]) == 0);
