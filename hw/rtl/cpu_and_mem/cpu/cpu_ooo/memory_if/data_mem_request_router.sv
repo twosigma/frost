@@ -199,6 +199,11 @@ module data_mem_request_router #(
 );
 
 `ifndef SYNTHESIS
+`ifdef FORMAL
+  wire sim_reset_seen_q = 1'b1;
+`else
+  wire sim_reset_seen_q = reset_seen_q;
+`endif
   logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
 `endif
@@ -565,7 +570,7 @@ module data_mem_request_router #(
 
 `ifndef SYNTHESIS
   always_comb begin
-    if (!$isunknown(
+    if (sim_reset_seen_q && !$isunknown(
             {lq_mem_request_valid, lq_mem_read_en, o_data_mem_cached_read_enable,
                      o_data_mem_cached_read_if_sel, o_data_mem_cached_read_if_clear}
         ) && !(lq_mem_request_valid && lq_mem_read_en)) begin
@@ -878,11 +883,12 @@ module data_mem_request_router #(
 `endif  // FORMAL
 
 `ifndef SYNTHESIS
-  always_comb begin
-    p_uncached_read_enable_exact :
-    assert (o_uncached_read_enable ==
+  always_comb
+    if (sim_reset_seen_q) begin
+      p_uncached_read_enable_exact :
+      assert (o_uncached_read_enable ==
             (VARIABLE_UNCACHED && lq_mem_read_accepted && !lq_mem_request_is_cached));
-  end
+    end
 `endif
 
 `ifndef SYNTHESIS

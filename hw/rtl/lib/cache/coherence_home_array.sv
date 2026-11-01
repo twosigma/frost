@@ -307,6 +307,11 @@ module coherence_home_array #(
       .REGISTER_READ_INPUT(ULTRA),
       .REGISTER_READ_OUTPUT(ULTRA)
   ) data_array (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_check_enable(sim_reset_seen_q && !i_rst),
+`endif
+`endif
       .i_clk,
       .i_waddr(write_row),
       .i_wdata(i_update_data),

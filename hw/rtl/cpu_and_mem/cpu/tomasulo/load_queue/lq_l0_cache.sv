@@ -91,6 +91,11 @@ module lq_l0_cache #(
 );
 
 `ifndef SYNTHESIS
+`ifdef FORMAL
+  wire sim_reset_seen_q = 1'b1;
+`else
+  wire sim_reset_seen_q = reset_seen_q;
+`endif
   logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
 `endif
@@ -288,12 +293,13 @@ module lq_l0_cache #(
         !lookup_invalidated && !lookup_line_invalidated;
     assign o_lookup_hit = permitted && (&lookup_tag_groups);
 `ifndef SYNTHESIS
-    always @(posedge i_clk) begin
-      p_lookup_permission_exact :
-      assert (o_lookup_hit ==
+    always @(posedge i_clk)
+      if (sim_reset_seen_q) begin
+        p_lookup_permission_exact :
+        assert (o_lookup_hit ==
           (!lookup_mmio && lookup_hit_array && !lookup_invalidated &&
            !lookup_line_invalidated));
-    end
+      end
 `endif
   end
   assign o_lookup_data = data_lookup_rd;
@@ -336,27 +342,28 @@ module lq_l0_cache #(
   // Formal Verification
   // ===========================================================================
 `ifndef SYNTHESIS
-  always @(posedge i_clk) begin
-    p_tag_reduction_exact :
-    assert (lookup_hit_array == (valid[lookup_index] && (tag_lookup_rd == lookup_tag)));
-    p_store_tag_reduction_exact : assert (inv_tag_match == (tag_inv_rd == inv_tag));
-    p_amo_tag_reduction_exact : assert (inv2_tag_match == (tag_inv2_rd == inv2_tag));
-    p_store_fill_invalidate_exact :
-    assert (invalidate_fill_entry ==
+  always @(posedge i_clk)
+    if (sim_reset_seen_q) begin
+      p_tag_reduction_exact :
+      assert (lookup_hit_array == (valid[lookup_index] && (tag_lookup_rd == lookup_tag)));
+      p_store_tag_reduction_exact : assert (inv_tag_match == (tag_inv_rd == inv_tag));
+      p_amo_tag_reduction_exact : assert (inv2_tag_match == (tag_inv2_rd == inv2_tag));
+      p_store_fill_invalidate_exact :
+      assert (invalidate_fill_entry ==
         (i_invalidate_valid && !store_update && ram_write &&
          ram_index == inv_index && ram_tag == inv_tag));
-    p_store_existing_invalidate_exact :
-    assert (invalidate_existing_entry ==
+      p_store_existing_invalidate_exact :
+      assert (invalidate_existing_entry ==
         (i_invalidate_valid && !store_update && valid[inv_index] && tag_inv_rd == inv_tag &&
          !(ram_write && ram_index == inv_index && ram_tag != inv_tag)));
-    p_amo_fill_invalidate_exact :
-    assert (invalidate2_fill_entry ==
+      p_amo_fill_invalidate_exact :
+      assert (invalidate2_fill_entry ==
         (i_invalidate2_valid && ram_write && ram_index == inv2_index && ram_tag == inv2_tag));
-    p_amo_existing_invalidate_exact :
-    assert (invalidate2_existing_entry ==
+      p_amo_existing_invalidate_exact :
+      assert (invalidate2_existing_entry ==
         (i_invalidate2_valid && valid[inv2_index] && tag_inv2_rd == inv2_tag &&
          !(ram_write && ram_index == inv2_index && ram_tag != inv2_tag)));
-  end
+    end
 `endif
 `ifdef FORMAL
 

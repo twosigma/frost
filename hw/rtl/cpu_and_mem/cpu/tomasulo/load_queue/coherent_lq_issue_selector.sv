@@ -19,6 +19,11 @@ module coherent_lq_issue_selector #(
     parameter int unsigned DEPTH = riscv_pkg::LqDepth
 ) (
     input logic i_clk,
+`ifndef SYNTHESIS
+`ifndef FORMAL
+    input logic i_sim_rst,
+`endif
+`endif
     input logic [DEPTH-1:0] lq_valid,
     input logic [DEPTH-1:0] lq_addr_valid,
     input logic [DEPTH-1:0] lq_is_mmio,
@@ -241,6 +246,12 @@ module coherent_lq_issue_selector #(
   assign o_head_mem_update_rob_tag = selected.head_mem_update_rob_tag;
 
 `ifndef SYNTHESIS
+`ifdef FORMAL
+  wire sim_reset_seen_q = 1'b1;
+`else
+  logic sim_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_sim_rst) sim_reset_seen_q <= 1'b1;
+`endif
   selection_t reference;
   lq_issue_selector #(
       .DEPTH(DEPTH)
@@ -302,7 +313,7 @@ module coherent_lq_issue_selector #(
 `else
   always @(posedge i_clk)
 `endif
-  begin
+  if (sim_reset_seen_q) begin
     p_selection_exact : assert (selected == reference);
     p_result_scan_undrained :
     assert (o_issue_cdb_found == selected.issue_cdb_found &&

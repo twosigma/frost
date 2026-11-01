@@ -286,9 +286,18 @@ the scalar metadata copies and the SRAM tiles. The image load does not repeat
 on warm reset.
 
 Consistency checks that depend on reset state and functional cover points
-arm after their local reset completes. They remain active in ordinary and
-random-start simulations. Full-board simulation with power-on reset tied
-inactive uses configuration initializers and does not arm the DTM ownership
+arm after their local reset has been sampled. Coherent cache, load-queue, L0
+and CPU memory-interface checks use local reset history for combinational and
+clocked assertions. AXI response checks require both CPU and transport reset
+histories. NIC engine, descriptor and DMA-front checks require both the
+NIC reset and its AXI transport reset histories. The transport history reaches
+the NIC checks through simulation-only ports. These ports are absent under
+`FORMAL`. Simulation reset-history gates are constant true under `FORMAL`
+and absent from synthesis. Parameter checks and stateless combinational
+identities need no reset history. Load-queue storage and selection helpers
+observe the queue reset through simulation-only ports. The checks are active
+in ordinary and random-start simulations. Full-board simulation with power-on
+reset tied inactive uses configuration initializers and does not arm the DTM ownership
 assertions. Transport verification requires a power-on reset pulse.
 
 The whole-SoC program bench holds clocks low through the initial HDL

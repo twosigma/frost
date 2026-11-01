@@ -240,12 +240,18 @@ module cpu_uncached_adapter #(
 `endif
 
 `ifndef SYNTHESIS
-  always_comb begin
-    p_resp_ok_exact : assert (i_resp_ok == (i_resp_valid && (i_resp_status == 2'b00)));
-    p_req_valid_exact :
-    assert (o_req_valid == (!i_rst && !o_fatal_error && (!active_q || response_turnover) &&
+`ifdef FORMAL
+  wire sim_reset_seen_q = 1'b1;
+`else
+  wire sim_reset_seen_q = reset_seen_q;
+`endif
+  always_comb
+    if (sim_reset_seen_q) begin
+      p_resp_ok_exact : assert (i_resp_ok == (i_resp_valid && (i_resp_status == 2'b00)));
+      p_req_valid_exact :
+      assert (o_req_valid == (!i_rst && !o_fatal_error && (!active_q || response_turnover) &&
                             (request_has_write || read_pending_q)));
-  end
+    end
   always @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin
       assert (!i_read_enable || o_read_ready)

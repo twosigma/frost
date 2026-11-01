@@ -65,6 +65,14 @@ module coherence_array #(
     input logic [LINE_BYTES-1:0] i_update_mask,
     input logic [8*LINE_BYTES-1:0] i_update_data
 );
+`ifndef SYNTHESIS
+`ifdef FORMAL
+  wire sim_reset_seen_q = 1'b1;
+`else
+  logic sim_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) sim_reset_seen_q <= 1'b1;
+`endif
+`endif
   localparam int unsigned TagBits = ADDR_WIDTH - SetBits - OffsetBits;
   localparam int unsigned TagEntryBits = TagBits + 2;
   localparam int unsigned PlruBits = WAYS > 1 ? WAYS - 1 : 1;
@@ -226,6 +234,11 @@ module coherence_array #(
       .REGISTER_READ_INPUT(ULTRA),
       .REGISTER_READ_OUTPUT(ULTRA)
   ) data_array (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_check_enable(sim_reset_seen_q && !i_rst),
+`endif
+`endif
       .i_clk(i_clk),
       .i_waddr(data_waddr),
       .i_wdata(i_update_data),

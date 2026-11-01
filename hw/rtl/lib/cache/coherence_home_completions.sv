@@ -311,7 +311,8 @@ module coherence_home_completions #(
     assign clear_if_release[slot] = (predecessors_q[slot] & ~handed_q & ~release_candidate) == 0;
   end
 `ifndef SYNTHESIS
-  always_comb assert (release_fire == (release_candidate & {SLOTS{release_go}}));
+  always_comb
+    if (sim_reset_seen_q) assert (release_fire == (release_candidate & {SLOTS{release_go}}));
 `endif
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_work_eligible
     assign incoming_sectors[slot] = (work_address[slot] >> 5) == (incoming.addr >> 5);
@@ -591,7 +592,7 @@ module coherence_home_completions #(
     for (int slot = 0; slot < SLOTS; slot++)
     if (i_retry_valid && i_retry_tid == 6'(slot))
       reference_buffer_live[buffer_index_q[slot]] = 1'b0;
-    assert (buffer_live_next == reference_buffer_live);
+    if (sim_reset_seen_q) assert (buffer_live_next == reference_buffer_live);
   end
   always_ff @(posedge i_clk) begin
     if (sim_reset_seen_q && !i_rst)

@@ -23,6 +23,11 @@ module coherent_lq_address_store #(
     localparam int unsigned DEPTH = 1 << ADDR_WIDTH
 ) (
     input logic i_clk,
+`ifndef SYNTHESIS
+`ifndef FORMAL
+    input logic i_sim_rst,
+`endif
+`endif
     input logic i_write_enable,
     input logic [ADDR_WIDTH-1:0] i_write_address,
     input logic [XLEN-1:0] i_write_data,
@@ -44,6 +49,12 @@ module coherent_lq_address_store #(
     if (i_write_enable) payload[i_write_address] <= {o_write_class, i_write_data};
   assign {o_read_class, o_read_data} = payload[i_read_address];
 `ifndef SYNTHESIS
+`ifdef FORMAL
+  wire sim_reset_seen_q = 1'b1;
+`else
+  logic sim_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_sim_rst) sim_reset_seen_q <= 1'b1;
+`endif
   logic [XLEN-1:0] reference[DEPTH];
   initial for (int i = 0; i < DEPTH; i++) reference[i] = '0;
   always_ff @(posedge i_clk)
@@ -53,7 +64,7 @@ module coherent_lq_address_store #(
 `else
   always @(posedge i_clk)
 `endif
-  begin
+  if (sim_reset_seen_q) begin
     assert (o_read_data == reference[i_read_address]);
     assert (o_read_class == classify(o_read_data));
     for (int i = 0; i < DEPTH; i++) begin

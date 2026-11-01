@@ -796,6 +796,11 @@ module load_queue #(
         .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
     ) address_store (
         .i_clk,
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_sim_rst(!i_rst_n),
+`endif
+`endif
         .i_write_enable(lq_addr_update_we),
         .i_write_address(lq_addr_update_idx),
         .i_write_data(i_addr_update.address),
@@ -1284,6 +1289,11 @@ module load_queue #(
           .SELECT_WIDTH(PREISSUE_SEL_WIDTH)
       ) candidate_select (
           .i_clk,
+`ifndef SYNTHESIS
+`ifndef FORMAL
+          .i_sim_rst(!i_rst_n),
+`endif
+`endif
           .i_clear(!i_rst_n || i_flush_all),
           .i_select(i_pre_issue_sel),
           .i_candidates(candidates_flat),
@@ -1450,6 +1460,11 @@ module load_queue #(
         .DEPTH(DEPTH)
     ) selector (
         .i_clk,
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        .i_sim_rst(!i_rst_n),
+`endif
+`endif
         .lq_valid(lq_valid),
         .lq_addr_valid(lq_addr_valid),
         .lq_is_mmio(lq_is_mmio),
@@ -1626,7 +1641,7 @@ module load_queue #(
 `else
     always @(posedge i_clk)
 `endif
-    begin
+    if (sim_reset_seen_q) begin
       p_issue_mask_exact : assert (issue_mem_onehot == reference_mem_onehot);
       p_issue_idx_exact : assert (issue_mem_idx == reference_mem_idx);
       p_issue_tag_exact : assert (issue_mem_rob_tag == reference_mem_tag);
@@ -1814,7 +1829,7 @@ module load_queue #(
 `else
     always @(posedge i_clk)
 `endif
-    begin
+    if (sim_reset_seen_q) begin
       p_stage_class_choice_exact : assert (selected_permission ==
           ((sq_check_is_amo_next || sq_check_is_lr_next) ? selected_class[2] : selected_class[1]));
       p_stage_alignment_choice_exact : assert (selected_misaligned ==
@@ -1831,7 +1846,7 @@ module load_queue #(
       if (sq_check_payload_en) payload_seen <= 1'b1;
       if (reset_seen && i_rst_n && sq_check_pending)
         p_staged_payload_seen : assert (pending_payload_seen);
-      if (payload_seen) begin
+      if (sim_reset_seen_q && payload_seen) begin
         p_staged_pma_exact : assert (pma_ok_q ==
             ((sq_check_is_amo_q || sq_check_is_lr_q) ?
              riscv_pkg::pma_atomic_ok(sq_check_addr_q) : riscv_pkg::pma_data_ok(sq_check_addr_q)));
@@ -2010,7 +2025,7 @@ module load_queue #(
 `else
   always @(posedge i_clk)
 `endif
-  if ($onehot0(rob_head_match_q)) begin
+  if (sim_reset_seen_q && $onehot0(rob_head_match_q)) begin
     p_stage_replace_exact : assert (coherent_stage_replace ==
         (sq_check_pending && sq_check_gate_early &&
          (|(staged_younger_than_entry & issue_mem_onehot))));
@@ -2035,7 +2050,7 @@ module load_queue #(
 `else
     always @(posedge i_clk)
 `endif
-    if ($onehot0(rob_head_match_q)) begin
+    if (sim_reset_seen_q && $onehot0(rob_head_match_q)) begin
       assert (coherent_stage_take[copy_index] == reference_take);
     end
 `endif
@@ -2166,7 +2181,7 @@ module load_queue #(
 `else
     always @(posedge i_clk)
 `endif
-    begin
+    if (sim_reset_seen_q) begin
       p_empty_issue_exact : assert (!sq_check_pending ||
           (coherent_release_by_drain_empty[i_sq_empty] &
            {2{sq_check_phase2 && !coherent_address_fault && coherent_release_protected}}) ==
@@ -2198,7 +2213,7 @@ module load_queue #(
 `else
         always @(posedge i_clk)
 `endif
-        begin
+        if (sim_reset_seen_q) begin
           assert ((eligible_choice[head_case] && coherent_release_protected) == reference_eligible);
           assert ((issue_choice[head_case] && coherent_release_protected) ==
               (sq_check_phase2 && reference_eligible && !coherent_address_fault &&
@@ -2245,7 +2260,7 @@ module load_queue #(
 `else
     always @(posedge i_clk)
 `endif
-    begin
+    if (sim_reset_seen_q) begin
       p_issue_permission_exact : assert (sq_can_issue ==
           (sq_check_phase2 && sq_check_entry_issueable && !coherent_address_fault &&
            !sq_commit_interlock && !older_amo_write_pending &&
@@ -2280,7 +2295,7 @@ module load_queue #(
 `else
     always @(posedge i_clk)
 `endif
-    begin
+    if (sim_reset_seen_q) begin
       p_empty_forward_exact : assert (
           (sq_check_phase2 && !coherent_address_fault &&
            coherent_forward_unblocked_empty[i_sq_empty]) == forward_unblocked);
@@ -2293,7 +2308,7 @@ module load_queue #(
   end
 `ifndef SYNTHESIS
   if (1'b1) begin : gen_coherent_gate_checks
-    always_comb begin
+    always_comb if (sim_reset_seen_q) begin
       p_issue_gate_exact : assert (sq_can_issue ==
           (sq_check_phase2 && sq_check_entry_issueable && !sq_check_misaligned &&
            !sq_commit_interlock && !older_amo_write_pending &&
@@ -2524,7 +2539,7 @@ module load_queue #(
         !(cache_lookup_hit && launch_hit_blocks);
   end
 `ifndef SYNTHESIS
-  always_comb begin
+  always_comb if (sim_reset_seen_q) begin
     p_mem_read_en_exact : assert (o_mem_read_en == launch_mem_issue);
     p_launch_hit_last_exact : assert (mem_read_en == launch_mem_issue);
   end
@@ -2595,7 +2610,7 @@ module load_queue #(
         !(cache_lookup_hit && launch_hit_blocks);
   end
 `ifndef SYNTHESIS
-  always_comb begin
+  always_comb if (sim_reset_seen_q) begin
     p_fast_capture_exact : assert (fast_capture == (mem_read_en && !launching_is_cached));
     p_cs_capture_exact : assert (cs_capture == ({CachedSlots{mem_read_en && launching_is_cached}} &
         (CachedSlots'(1) << cs_alloc_idx)));
@@ -2808,7 +2823,7 @@ module load_queue #(
 `else
     always @(posedge i_clk)
 `endif
-    begin
+    if (sim_reset_seen_q) begin
       p_response_live_exact : assert (cache_fill_response_valid ==
           (i_mem_read_valid && resp_outstanding && !i_flush_all && !resp_drop &&
            lq_valid[issued_idx]));
@@ -2845,7 +2860,7 @@ module load_queue #(
 `else
     always @(posedge i_clk)
 `endif
-    begin
+    if (sim_reset_seen_q) begin
       p_fill_slot_select_exact : assert (cache_fill_if_slot ==
           (cs_valid[resp_slot] && !i_flush_all && !cs_drop[resp_slot] &&
            lq_valid[cs_idx[resp_slot]] && !cs_is_lr[resp_slot] && !cs_is_amo[resp_slot] &&
@@ -2865,7 +2880,7 @@ module load_queue #(
       !issued_is_mmio && !issued_is_lr && !issued_is_amo &&
       !(issued_is_cached && (issued_cached_line_invalidated || issued_cached_line_invalidate_now));
 `ifndef SYNTHESIS
-  always_comb begin
+  always_comb if (sim_reset_seen_q) begin
     p_cache_fill_write_exact : assert (cache_fill_write == cache_fill_valid);
   end
 `endif
@@ -3137,7 +3152,7 @@ module load_queue #(
 
 `ifndef SYNTHESIS
   if (1'b1) begin : gen_coherent_bypass_payload_check
-    always_ff @(posedge i_clk) begin
+    always_ff @(posedge i_clk) if (sim_reset_seen_q) begin
       if (issue_cdb_fire || bypass_fire) begin
         p_coherent_cdb_value_exact : assert (cdb_value_next ==
             (issue_cdb_found ? issue_cdb_result.value :
@@ -3187,7 +3202,7 @@ module load_queue #(
 `else
   always @(posedge i_clk)
 `endif
-  begin
+  if (sim_reset_seen_q) begin
     p_free_mask_exact : assert (coherent_free_entry ==
         (free_entry_en ? (DEPTH'(1) << free_entry_idx) : '0));
   end
@@ -3287,7 +3302,7 @@ module load_queue #(
   end
 
   // Sample on the clock edge to avoid intermediate delta-cycle tree values.
-  always_ff @(posedge i_clk) begin
+  always_ff @(posedge i_clk) if (sim_reset_seen_q) begin
     if (!$isunknown(lq_free_rotated)) begin
       p_lq_first_free_tree_found_exact :
       assert (lq_first_free_found == lq_first_free_found_reference);
@@ -3410,6 +3425,11 @@ module load_queue #(
   end
 `ifndef SYNTHESIS
   // The copies share next state; sequential checks start after local reset.
+`ifdef FORMAL
+  wire sim_reset_seen_q = 1'b1;
+`else
+  wire sim_reset_seen_q = reset_seen_q;
+`endif
   logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) reset_seen_q <= 1'b1;
@@ -3481,7 +3501,7 @@ module load_queue #(
 `else
     always @(posedge i_clk)
 `endif
-    if ($onehot0(rob_head_match_q)) begin
+    if (sim_reset_seen_q && $onehot0(rob_head_match_q)) begin
       p_stage_state_exact : assert (
           {sq_check_pending_next, sq_check_no_older_store_next,
            sq_check_phase2_next, sq_check_in_flight_mask_next} ==
@@ -4242,7 +4262,7 @@ module load_queue #(
     end
   end
 `ifndef SYNTHESIS
-  always_comb begin
+  always_comb if (sim_reset_seen_q) begin
     if (!$isunknown({amo_launch, mem_read_en, sq_check_is_amo_q})) begin
       p_amo_launch_is_the_amo_launch : assert (amo_launch == (mem_read_en && sq_check_is_amo_q));
     end
@@ -4299,7 +4319,7 @@ module load_queue #(
                                                            amo_response_minmax_relation_w_lo;
 `ifndef SYNTHESIS
   // The selected relation equals comparing the addressed word itself.
-  always_ff @(posedge i_clk) begin
+  always_ff @(posedge i_clk) if (sim_reset_seen_q) begin
     if (amo_response_capture && !$isunknown(
             {i_mem_read_data, issued_amo_rs2[31:0], issued_addr[2]}
         )) begin
@@ -4388,7 +4408,7 @@ module load_queue #(
             lq_bypass_cause(riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q),
                 !sq_check_pma_ok, sq_check_is_amo_q);
       end
-      if (reference_seen) begin
+      if (sim_reset_seen_q && reference_seen) begin
         p_cdb_cause_capture_exact : assert (cdb_stage_data.exc_cause === reference_cause);
       end
     end

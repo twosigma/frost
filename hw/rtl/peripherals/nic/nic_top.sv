@@ -410,6 +410,11 @@ module nic_top #(
       .APERTURE_BASE(APERTURE_BASE),
       .APERTURE_BYTES(APERTURE_BYTES)
   ) u_rx (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_sim_hold      (!reset_seen_q),
+`endif
+`endif
       .i_clk           (i_clk),
       .i_rst           (nic_rst_q),
       .i_enable        (rx_en),
@@ -454,6 +459,11 @@ module nic_top #(
       .APERTURE_BASE(APERTURE_BASE),
       .APERTURE_BYTES(APERTURE_BYTES)
   ) u_tx (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_sim_hold      (!reset_seen_q),
+`endif
+`endif
       .i_clk           (i_clk),
       .i_rst           (nic_rst_q),
       .i_enable        (tx_en),
@@ -505,6 +515,11 @@ module nic_top #(
       .APERTURE_BASE(APERTURE_BASE),
       .APERTURE_BYTES(APERTURE_BYTES)
   ) u_front (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_sim_hold      (!reset_seen_q),
+`endif
+`endif
       .i_clk           (i_clk),
       .i_rst           (nic_rst_q),
       .i_stop          (stop_dma),

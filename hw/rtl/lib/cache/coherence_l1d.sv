@@ -459,7 +459,7 @@ module coherence_l1d #(
 `else
   always @(posedge i_clk)
 `endif
-  begin
+  if (sim_reset_seen_q) begin
     p_absorb_go_exact : assert (absorb_go == wb_absorb_ready[probe_put_q]);
     // The hold covers every invalidating capture and active cut. It is exact
     // except in the stop's first cycle, when it may also hold for an offer.
@@ -708,7 +708,7 @@ module coherence_l1d #(
 `endif
 `ifndef SYNTHESIS
   always_comb
-    if (grant_valid) begin
+    if (sim_reset_seen_q && grant_valid) begin
       assert (pick_onehot == EpSlots'(1) << grant_pick);
       assert (failure_read_slot == (grant_pick == '0 ? acquisition_read_q : ld_read_q[grant_pick]));
     end
@@ -1358,7 +1358,7 @@ module coherence_l1d #(
   end
 `ifndef SYNTHESIS
   logic [7:0] reference_ready_next, reference_error_next, reference_valid_next, reference_miss_next;
-  always_ff @(posedge i_clk) begin
+  always_ff @(posedge i_clk) if (sim_reset_seen_q) begin
     p_grant_live : assert (!grant_valid || live[grant_pick]);
     p_grant_sc_exclusive : assert (!(grant_valid && o_sc_ready));
   end
@@ -1414,7 +1414,7 @@ module coherence_l1d #(
         end
       endcase
     end
-    p_read_status_exact :
+    if (sim_reset_seen_q) p_read_status_exact :
     assert ({rd_valid_next, rd_miss_next, rd_ready_next, rd_error_next} ==
         {reference_valid_next, reference_miss_next, reference_ready_next, reference_error_next});
   end

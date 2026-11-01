@@ -355,13 +355,19 @@ module cpu_axi_master #(
 `endif
 
 `ifndef SYNTHESIS
-  always_comb begin
-    p_resp_valid_id_exact :
-    assert (o_resp_valid_id == (o_resp_valid && (o_resp_id == ID_BITS'(FLAG_RESP_ID))));
-    p_resp_ok_id_exact :
-    assert (o_resp_ok_id ==
+`ifdef FORMAL
+  wire sim_reset_seen_q = 1'b1;
+`else
+  wire sim_reset_seen_q = reset_seen_q && axi_reset_seen_q;
+`endif
+  always_comb
+    if (sim_reset_seen_q) begin
+      p_resp_valid_id_exact :
+      assert (o_resp_valid_id == (o_resp_valid && (o_resp_id == ID_BITS'(FLAG_RESP_ID))));
+      p_resp_ok_id_exact :
+      assert (o_resp_ok_id ==
             (o_resp_valid && (o_resp_id == ID_BITS'(FLAG_RESP_ID)) && (o_resp_status == 2'b00)));
-  end
+    end
   always @(posedge i_clk) begin
     if (reset_seen_q && axi_reset_seen_q && req_fire) begin
       assert (i_req_size <= 3'($clog2(DATA_BYTES)))

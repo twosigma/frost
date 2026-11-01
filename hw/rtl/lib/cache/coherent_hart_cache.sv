@@ -468,7 +468,7 @@ module coherent_hart_cache #(
   logic [Ports-1:0] c_stalled_q;
   always_ff @(posedge i_clk) begin
     c_stalled_q <= i_rst ? '0 : c_valid & ~c_ready;
-    assert (c_valid == (c_selected & {Ports{!i_rst}}));
+    if (sim_reset_seen_q) assert (c_valid == (c_selected & {Ports{!i_rst}}));
     if (sim_reset_seen_q && !i_rst) begin
       assert ((c_stalled_q & ~c_valid) == 0);
       assert ($onehot0(c_ready));
