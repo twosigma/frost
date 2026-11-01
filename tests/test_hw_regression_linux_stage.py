@@ -708,8 +708,8 @@ def test_nettest_runs_from_tmpfs_and_gives_the_roots_link_back() -> None:
     """Run frost_nettest from tmpfs while it takes the NFS-root interface down.
 
     Disable IPv6 so looped-back autoconfiguration traffic cannot fail idle
-    checks. Restore saved MTU and flags with shell built-ins, then enable IPv6;
-    recovery must not need to page programs in over the disconnected root.
+    checks. Open restoration files before the test and write them through
+    descriptors so recovery does not traverse the disconnected NFS root.
     A bounded sync checks that the root is reachable again.
     """
     command = hw.nettest_command("enp1s0")
@@ -720,11 +720,14 @@ def test_nettest_runs_from_tmpfs_and_gives_the_roots_link_back() -> None:
     assert command.index(f"cat {sysfs}/mtu") < run_at
     assert command.index(f"cat {sysfs}/flags") < run_at
     assert command.index(f"echo 1 > {ipv6}") < run_at
-    assert command.index(f"echo $m > {sysfs}/mtu") > run_at
-    assert command.index(f"echo $f > {sysfs}/flags") > command.index(
-        f"echo $m > {sysfs}/mtu"
+    assert "{ if echo 2 > /proc/sys/vm/drop_caches; then " in command[:run_at]
+    assert (
+        f"FROST_NETTEST_EXPIRE_NFS_CACHE=1 {hw.LINUX_TMPFS}/frost_nettest;" in command
     )
-    assert command.index(f"echo 0 > {ipv6}") > run_at
+    assert command.index("echo $m >&3") > run_at
+    assert command.index("echo $f >&4") > command.index("echo $m >&3")
+    assert command.index("echo 0 >&5") > run_at
+    assert f"}} 3> {sysfs}/mtu 4> {sysfs}/flags 5> {ipv6}; " in command
     # The liveness step creates a file, which is a round trip to the server,
     # where a sync over a clean tree would return without one.
     assert command.endswith(f"; echo {hw.LINUX_ROOT_ALIVE_TOKEN}=$?")
@@ -735,6 +738,49 @@ def test_nettest_runs_from_tmpfs_and_gives_the_roots_link_back() -> None:
     # Run every restore step even if the test fails. Only the liveness
     # command uses &&, preserving its first failure status.
     assert " && " not in command[: command.index("timeout -k 5")]
+
+
+def test_cache_drop_failure_skips_nettest_and_restores_the_interface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed cache drop cannot pass through a stale or passing test binary."""
+    sysfs = tmp_path / "sysfs"
+    sysfs.mkdir()
+    (sysfs / "mtu").write_text("1500\n")
+    (sysfs / "flags").write_text("0x1003\n")
+    ipv6 = tmp_path / "disable_ipv6"
+    ipv6.write_text("0\n")
+    drop = tmp_path / "drop_caches"
+    drop.mkdir()
+    source = tmp_path / "bin"
+    target = tmp_path / "shm"
+    source.mkdir()
+    target.mkdir()
+    program = source / "frost_nettest"
+    program.write_text(f"#!/bin/sh\necho {hw.LINUX_NET_TOKEN}\n")
+    program.chmod(0o755)
+    timeout = source / "timeout"
+    timeout.write_text("#!/bin/sh\nexit 0\n")
+    timeout.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{source}:{os.environ['PATH']}")
+    monkeypatch.setattr(hw, "LINUX_ROOT_BIN", str(source))
+    monkeypatch.setattr(hw, "LINUX_TMPFS", str(target))
+    command = (
+        hw.nettest_command("eth0")
+        .replace("/sys/class/net/eth0", str(sysfs))
+        .replace("/proc/sys/net/ipv6/conf/eth0/disable_ipv6", str(ipv6))
+        .replace("/proc/sys/vm/drop_caches", str(drop))
+    )
+    assert hw.LINUX_NET_TOKEN_FAIL not in command
+    done = hw.subprocess.run(
+        ["sh", "-c", command], check=True, capture_output=True, text=True, timeout=10
+    )
+    assert hw.LINUX_NET_TOKEN_FAIL + " drop_caches\n" in done.stdout
+    assert hw.LINUX_NET_TOKEN not in done.stdout
+    assert (sysfs / "mtu").read_text() == "1500\n"
+    assert (sysfs / "flags").read_text() == "0x1003\n"
+    assert ipv6.read_text() == "0\n"
+    assert stage().failure_done(done.stdout)
 
 
 def test_a_root_that_does_not_come_back_is_a_failure_not_a_pass() -> None:

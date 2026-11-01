@@ -200,6 +200,13 @@ counters. With `patrol_seconds=10`, it requires patrol progress and a full
 pass within 150 one-second waits, then reloads the module at the daily default.
 `FROST_MEMERR_MODULE` names a prebuilt module instead.
 
+Before NIC loopback, the stage drops dentry and inode caches and copies the
+static test to `/dev/shm`. The test opens its sysfs descriptors while the
+link is up, then holds it down for 65 seconds to expire NFS's default
+directory attribute cache. The shell opens its restoration files before the
+test, restores MTU, flags and IPv6 through those descriptors, then writes,
+syncs and removes a root file to check NFS recovery.
+
 Stage selection follows `--board`; `bootrom` is available only on VCU118.
 The `bootrom` stage requires FSBL, OpenSBI, a device tree and U-Boot in flash.
 It requires the ROM's FSBL CRC verification, the FSBL's verified boot chain

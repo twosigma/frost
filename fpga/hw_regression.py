@@ -1160,11 +1160,18 @@ def nettest_command(interface: str) -> str:
     Copy the static binary to tmpfs so instruction or library faults cannot
     block on the root while loopback takes the link down. Disable IPv6 during
     the test: autoconfiguration traffic returning through loopback fails idle
-    checks. The test leaves the interface down and loopback off.
+    checks. Require a successful dentry and inode cache drop before the test.
+    The test opens its sysfs descriptors before taking the interface down.
+    Hold it down for 65 seconds to expire NFS's default directory attribute
+    cache: dropping caches alone allows pathname lookups before interface-down
+    to refresh it.
+    The test leaves the interface down with loopback off.
 
-    Restore the saved MTU and flags using shell built-ins, then enable IPv6.
-    The login shell still maps the NFS root; reclaim of its pages can block
-    recovery. The bounded helper's exec can also block if the link stays down,
+    Open restoration files while the link is up. Restore the saved MTU and
+    flags using shell built-ins and those descriptors, then enable IPv6.
+    Absolute sysfs and proc lookups can revalidate the NFS root. The login
+    shell maps the NFS root; reclaim of its pages can block recovery.
+    The bounded helper's exec can also block if the link stays down,
     causing a stage TIMEOUT.
 
     Create a file on the root, sync, and remove it under a timeout. The printed
@@ -1175,8 +1182,11 @@ def nettest_command(interface: str) -> str:
     return (
         f"m=$(cat {sysfs}/mtu); f=$(cat {sysfs}/flags); echo 1 > {ipv6}; "
         f"cp {LINUX_ROOT_BIN}/{LINUX_NET_COMMAND} {LINUX_TMPFS}/; "
-        f"{LINUX_TMPFS}/{LINUX_NET_COMMAND}; "
-        f"echo $m > {sysfs}/mtu; echo $f > {sysfs}/flags; echo 0 > {ipv6}; "
+        "{ if echo 2 > /proc/sys/vm/drop_caches; then "
+        f"FROST_NETTEST_EXPIRE_NFS_CACHE=1 {LINUX_TMPFS}/{LINUX_NET_COMMAND}; "
+        "else echo FROST_NET_LOOPBACK'_'FAIL drop_caches; fi; "
+        "echo $m >&3; echo $f >&4; echo 0 >&5; "
+        f"}} 3> {sysfs}/mtu 4> {sysfs}/flags 5> {ipv6}; "
         f"timeout -k 5 {LINUX_ROOT_SYNC_S} sh -c "
         f'"echo frost > {LINUX_ROOT_ALIVE_FILE} && sync && '
         f'rm -f {LINUX_ROOT_ALIVE_FILE}"; '

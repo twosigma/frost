@@ -37,7 +37,10 @@
  *
  * Every wait the program makes is bounded (one step's frames get 10 s); a
  * system call that never returns is left to the caller's timeout. The test
- * uses no IP: all control goes through ioctls and sysfs.
+ * uses no IP: all control goes through ioctls and sysfs. Sysfs descriptors
+ * are opened before taking the link down, so reads do not traverse an NFS root.
+ * FROST_NETTEST_EXPIRE_NFS_CACHE=1 holds the interface down for 65 seconds
+ * before reading counters, exceeding NFS's default directory attribute lifetime.
  */
 
 #include <arpa/inet.h>
@@ -97,6 +100,18 @@ static uint32_t g_run;
 static uint32_t g_seq;  /* the next frame's sequence number; never reused */
 static int g_ctl = -1;  /* ioctl socket */
 static int g_sock = -1; /* the bound test socket */
+static int g_sysfs = -1;
+static int g_expire_nfs_cache;
+enum { RX_PACKETS, TX_PACKETS, RX_ERRORS, TX_ERRORS, TX_DROPPED, CARRIER };
+static struct {
+    const char *leaf;
+    int fd;
+} g_attrs[] = {{"statistics/rx_packets", -1},
+               {"statistics/tx_packets", -1},
+               {"statistics/rx_errors", -1},
+               {"statistics/tx_errors", -1},
+               {"statistics/tx_dropped", -1},
+               {"carrier", -1}};
 static uint32_t g_feature_words;
 static int g_loopback_bit = -1;
 static char g_reason[256];
@@ -343,17 +358,32 @@ static int set_loopback(int on)
 
 /* ---- sysfs: carrier and the driver's statistics ---- */
 
-static int read_sysfs_u64(const char *leaf, uint64_t *value)
+/* Keep the directory and attributes open until exit, including on failure. */
+static int open_sysfs(void)
+{
+    char path[96];
+    snprintf(path, sizeof(path), "/sys/class/net/%s", g_ifname);
+    g_sysfs = open(path, O_RDONLY | O_DIRECTORY);
+    if (g_sysfs < 0)
+        return fail("%s: %s", path, strerror(errno));
+    for (unsigned i = 0; i < sizeof(g_attrs) / sizeof(g_attrs[0]); i++) {
+        g_attrs[i].fd = openat(g_sysfs, g_attrs[i].leaf, O_RDONLY);
+        if (g_attrs[i].fd < 0)
+            return fail("%s/%s: %s", path, g_attrs[i].leaf, strerror(errno));
+    }
+    return 0;
+}
+
+static int read_sysfs_u64(unsigned attr, uint64_t *value)
 {
     char path[96];
     char text[32];
-    snprintf(path, sizeof(path), "/sys/class/net/%s/%s", g_ifname, leaf);
-    int fd = open(path, O_RDONLY);
-    if (fd < 0)
+    snprintf(path, sizeof(path), "/sys/class/net/%s/%s", g_ifname, g_attrs[attr].leaf);
+    int fd = g_attrs[attr].fd;
+    if (lseek(fd, 0, SEEK_SET) < 0)
         return fail("%s: %s", path, strerror(errno));
     ssize_t n = read(fd, text, sizeof(text) - 1);
     int err = errno;
-    close(fd);
     if (n <= 0)
         return fail("%s: %s", path, n < 0 ? strerror(err) : "empty");
     text[n] = '\0';
@@ -366,11 +396,11 @@ static int read_sysfs_u64(const char *leaf, uint64_t *value)
 
 static int read_stats(struct net_stats *s)
 {
-    if (read_sysfs_u64("statistics/rx_packets", &s->rx_packets) != 0 ||
-        read_sysfs_u64("statistics/tx_packets", &s->tx_packets) != 0 ||
-        read_sysfs_u64("statistics/rx_errors", &s->rx_errors) != 0 ||
-        read_sysfs_u64("statistics/tx_errors", &s->tx_errors) != 0 ||
-        read_sysfs_u64("statistics/tx_dropped", &s->tx_dropped) != 0)
+    if (read_sysfs_u64(RX_PACKETS, &s->rx_packets) != 0 ||
+        read_sysfs_u64(TX_PACKETS, &s->tx_packets) != 0 ||
+        read_sysfs_u64(RX_ERRORS, &s->rx_errors) != 0 ||
+        read_sysfs_u64(TX_ERRORS, &s->tx_errors) != 0 ||
+        read_sysfs_u64(TX_DROPPED, &s->tx_dropped) != 0)
         return -1;
     return 0;
 }
@@ -385,7 +415,7 @@ static int wait_carrier(uint64_t *elapsed_ms)
     int ones = 0;
     for (;;) {
         uint64_t carrier;
-        if (read_sysfs_u64("carrier", &carrier) != 0)
+        if (read_sysfs_u64(CARRIER, &carrier) != 0)
             return -1;
         *elapsed_ms = now_ms() - start;
         ones = carrier == 1 ? ones + 1 : 0;
@@ -407,7 +437,7 @@ static int loopback_off_interval(uint64_t *carrier_ms)
     *carrier_ms = UINT64_MAX;
     for (;;) {
         uint64_t carrier;
-        if (read_sysfs_u64("carrier", &carrier) != 0)
+        if (read_sysfs_u64(CARRIER, &carrier) != 0)
             return -1;
         uint64_t elapsed = now_ms() - start;
         if (carrier != 0 && *carrier_ms == UINT64_MAX)
@@ -706,8 +736,11 @@ static int run(void)
     g_ctl = socket(AF_PACKET, SOCK_DGRAM, 0);
     if (g_ctl < 0)
         return fail("control socket: %s", strerror(errno));
-    if (find_interface() != 0 || find_loopback_bit() != 0 || set_up(0) != 0 ||
-        read_stats(&start) != 0)
+    if (find_interface() != 0 || find_loopback_bit() != 0 || open_sysfs() != 0 || set_up(0) != 0)
+        return -1;
+    if (g_expire_nfs_cache)
+        sleep_ms(65000);
+    if (read_stats(&start) != 0)
         return -1;
     progress("%s: driver %s, address %02x:%02x:%02x:%02x:%02x:%02x, loopback feature bit %d, "
              "run %08x; down",
@@ -828,6 +861,8 @@ static int restore(void)
 int main(int argc, char **argv)
 {
     struct timespec ts;
+    const char *expire_cache = getenv("FROST_NETTEST_EXPIRE_NFS_CACHE");
+    g_expire_nfs_cache = expire_cache && strcmp(expire_cache, "1") == 0;
     setvbuf(stdout, NULL, _IOLBF, 0);
     if (argc > 1 && argv[1][0] != '\0')
         g_requested_ifname = argv[1];
