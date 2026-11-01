@@ -3607,6 +3607,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
 }
 
+TEST_REGISTRY["memerr_test_seeded"] = replace(
+    TEST_REGISTRY["memerr_test"],
+    description="Seeded fatal writeback with ordered L2 conflict reads and reset",
+    extra_env=(
+        *TEST_REGISTRY["memerr_test"].extra_env,
+        ("FROST_DDR_MODEL_SEED", "41317470809-test-verilator-10"),
+        ("FROST_RANDOM_START_SEED", "41317470809-test-verilator-10"),
+    ),
+)
+
 # The full power-of-two raw-DDR capacity matrix. Keep the historical 64 GiB
 # entry above for existing callers; all entries use the same byte-level
 # bridge test, including the last representable line and +4 GiB separation.

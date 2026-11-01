@@ -579,6 +579,14 @@ for `pde_return_hazard` through `COCOTB_MAX_CYCLES`.
 `linux_irq_find_next_slot_test` sets a 1,000,000-cycle budget through the
 same variable.
 
+`memerr_test_seeded` pins both the DDR timing and random-start seeds to
+`41317470809-test-verilator-10`. It checks fatal writeback twice with a
+20-cycle reset between runs in BRAM, and once in DDR. The Runtime and other
+shard runs this entry alongside `memerr_test`, whose seeds come from the job.
+The eviction addresses depend on a CSR result after FENCE.I and on each
+preceding read, so speculative fills cannot warm the eviction set before
+the target store installs.
+
 The `async_hello_world`, `async_nic_loopback` and `async_dma_torture`
 program configurations exercise equal periods with a phase offset, a
 faster CPU, and a slower CPU. They run in both memory configurations in the

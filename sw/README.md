@@ -301,7 +301,7 @@ can be debugged and where each one first stops.
 | `lq_stale_slot_probe/` | Cached-load results must reach the right load across two partial flushes and ROB-tag reuse, with slow, reordered DDR responses |
 | `mem_divergence_probe/` | Cold versus warm reads of cached DDR (both dword halves, 64-bit reads, store forwarding) |
 | `memerr_readback/` | The memory error unit on the X3: the ECC reader is active and polling, and a DDR write and readback twice the L2's size reports no error |
-| `memerr_test/` | The memory error unit in simulation: DDR error responses injected by the model and ECC reports from the bench reach its counters, addresses, and APLIC interrupt |
+| `memerr_test/` | The memory error unit in simulation: DDR error responses injected by the model and ECC reports from the bench reach its counters, addresses, and APLIC interrupt; dependent conflict reads after FENCE.I evict the fatal-writeback line |
 | `memory_test/` | Arena allocator and `malloc`/`free`/`calloc`/`realloc`, including coalescing and overflow rejection |
 | `mret_drain_deadlock/` | `mret` right after cached-DDR stores must wait for them to drain, then continue |
 | `mret_timer_resume_test/` | A timer pending as `mret` drops to U-mode must save the U-mode entry point in `mepc` |

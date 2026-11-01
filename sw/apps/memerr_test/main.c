@@ -22,8 +22,8 @@
  * The registry entry passes +axi_rd_error_addr and +axi_wr_error_addr, so the
  * DDR model answers SLVERR to every read of RD_ERROR_LINE and every write of
  * WR_ERROR_LINE. A write reaches DDR only when the L2 evicts the line, so the
- * test writes the line, drains the store with fence.i, and then reads eight
- * lines that share its L2 set. Home eviction probes dirty L1D data before
+ * test writes the line, drains the store with fence.i, and then orders eight
+ * reads to lines that share its L2 set. Home eviction probes dirty L1D data before
  * writing DDR. The read fault is handled precisely;
  * the final writeback error must stop the CPU with a sticky fatal indication. The bench plays the
  * X3's ECC reader (test_real_program.py, EccReportDriver): it holds i_ecc_present high and, once
@@ -41,7 +41,7 @@
 /* Region offsets 16 MiB and 32 MiB, matching the registry's plusargs. */
 #define RD_ERROR_LINE 0x81000000ul
 #define WR_ERROR_LINE 0x82000000ul
-#define L2_SET_STRIDE (2ul << 20) /* frost.sv L2_CACHE_BYTES: one way's span */
+#define L2_SET_STRIDE (2ul << 20) /* A multiple of one L2 way's span. */
 #define EVICT_LINES 8
 
 /* What EccReportDriver reports. */
@@ -220,8 +220,15 @@ int main(void)
     uart_puts("\r\n<<EXPECT_FATAL>>\r\n");
     *(volatile uint64_t *) WR_ERROR_LINE = 0x5A5A5A5A5A5A5A5Aul;
     __asm__ volatile("fence.i" ::: "memory");
-    for (unsigned long k = 1; k <= EVICT_LINES; k++)
-        (void) *(volatile uint64_t *) (WR_ERROR_LINE + k * L2_SET_STRIDE);
+    /* The CSR read waits for the fence to retire. Address dependencies keep
+     * the eviction reads behind it and behind one another, so speculative
+     * fills cannot consume the eviction sequence before the store installs. */
+    unsigned long dependency;
+    __asm__ volatile("csrr %0, cycle" : "=r"(dependency) : : "memory");
+    for (unsigned long k = 1; k <= EVICT_LINES; k++) {
+        __asm__ volatile("and %0, %1, zero" : "=r"(dependency) : "r"(dependency));
+        dependency = *(volatile uint64_t *) (WR_ERROR_LINE + k * L2_SET_STRIDE + dependency);
+    }
     for (;;) {
     }
     return 0;
