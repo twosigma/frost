@@ -352,6 +352,88 @@ module dmmu (
   logic s1_can_load;
   assign s1_can_load = !s1_valid_q || s1_move || s1_killed;
 
+  // ---------------------------------------------------------------------------
+  // Last-page translation buffer (intra-page bypass directly into S2)
+  // ---------------------------------------------------------------------------
+  logic last_valid_q;
+  logic [riscv_pkg::Sv39VpnBits-1:0] last_vpn_q;
+  logic [PpnBits-1:0] last_ppn_q;
+  logic last_priv_u_q;
+  logic last_sum_q;
+  logic last_mxr_q;
+  logic last_perm_r_q, last_perm_w_q, last_perm_x_q, last_perm_u_q, last_perm_d_q;
+  logic last_is_mmio_q;
+  logic last_atomic_ok_q;
+
+  // Live incoming op qualification for bypass
+  logic iss_misaligned;
+  always_comb begin
+    unique case (iss_in.size)
+      riscv_pkg::MEM_SIZE_HALF:   iss_misaligned = iss_in.va[0];
+      riscv_pkg::MEM_SIZE_WORD:   iss_misaligned = |iss_in.va[1:0];
+      riscv_pkg::MEM_SIZE_DOUBLE: iss_misaligned = |iss_in.va[2:0];
+      default:                    iss_misaligned = 1'b0;  // byte
+    endcase
+  end
+
+  logic iss_noncanonical;
+  assign iss_noncanonical = !riscv_pkg::sv39_va_canonical(iss_in.va);
+
+  logic last_priv_match;
+  assign last_priv_match = (i_eff_priv_u == last_priv_u_q) &&
+                           (i_sum == last_sum_q) &&
+                           (i_mxr == last_mxr_q);
+
+  logic last_priv_ok;
+  assign last_priv_ok = last_perm_u_q ? (i_eff_priv_u || i_sum) : !i_eff_priv_u;
+
+  logic iss_perm_ok;
+  assign iss_perm_ok = iss_in.store_perms ?
+      (last_priv_ok && last_perm_w_q && last_perm_d_q) :
+      (last_priv_ok && (last_perm_r_q || (i_mxr && last_perm_x_q)));
+
+  logic iss_pma_ok;
+  assign iss_pma_ok = last_atomic_ok_q || (last_is_mmio_q && !iss_in.atomic);
+
+  logic iss_can_bypass;
+  assign iss_can_bypass = i_iss_valid && i_active && !iss_killed && !i_tlb_invalidate &&
+      !s0_valid_q && (!s1_valid_q || s1_killed) &&
+      last_valid_q && last_priv_match &&
+      (iss_in.va[38:12] == last_vpn_q) &&
+      !(i_trap_misaligned && iss_misaligned) &&
+      !iss_noncanonical &&
+      iss_perm_ok && iss_pma_ok;
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all || i_tlb_invalidate || !i_active) begin
+      last_valid_q <= 1'b0;
+    end else if (s1_move && (resolve_fault == riscv_pkg::DFAULT_NONE)) begin
+      last_valid_q     <= 1'b1;
+      last_vpn_q       <= s1_q.va[38:12];
+      last_ppn_q       <= resolve_ppn;
+      last_priv_u_q    <= i_eff_priv_u;
+      last_sum_q       <= i_sum;
+      last_mxr_q       <= i_mxr;
+      if (tlb_hit[0]) begin
+        last_perm_r_q    <= tlb_r[0];
+        last_perm_w_q    <= tlb_w[0];
+        last_perm_x_q    <= tlb_x[0];
+        last_perm_u_q    <= tlb_u[0];
+        last_perm_d_q    <= tlb_d[0];
+        last_is_mmio_q   <= tlb_is_mmio;
+        last_atomic_ok_q <= tlb_atomic_page[0];
+      end else begin
+        last_perm_r_q    <= i_walk_resp.perm_r;
+        last_perm_w_q    <= i_walk_resp.perm_w;
+        last_perm_x_q    <= i_walk_resp.perm_x;
+        last_perm_u_q    <= i_walk_resp.perm_u;
+        last_perm_d_q    <= i_walk_resp.perm_d;
+        last_is_mmio_q   <= walk_is_mmio;
+        last_atomic_ok_q <= riscv_pkg::pma_atomic_ok(walk_pa);
+      end
+    end
+  end
+
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
       s0_valid_q <= 1'b0;
@@ -363,6 +445,11 @@ module dmmu (
         if (s0_valid_q && !s0_killed) begin
           s1_valid_q <= 1'b1;
           s1_q <= s0_q;
+          s0_valid_q <= 1'b0;
+          s1_walk_asked_q <= 1'b0;
+        end else if (iss_can_bypass) begin
+          // Bypassed directly to S2, do not load S1
+          s1_valid_q <= 1'b0;
           s0_valid_q <= 1'b0;
           s1_walk_asked_q <= 1'b0;
         end else begin
@@ -471,23 +558,34 @@ module dmmu (
   assign s2_fault_next   = s2_leaf_applies && tlb_hit[0] ? s2_leaf_fault : s2_fault_without_leaf;
 
   always_ff @(posedge i_clk) begin
-    s2_is_mmio_q <= s2_mmio_next;
+    s2_is_mmio_q <= iss_can_bypass ? last_is_mmio_q : s2_mmio_next;
     if (!i_rst_n || i_flush_all) begin
       s2_valid_q <= 1'b0;
+    end else if (s1_move) begin
+      s2_valid_q <= 1'b1;
+      s2_tag_q <= s1_q.tag;
+      s2_va_q <= s1_q.va;
+      s2_ppn_q <= resolve_ppn;
+      s2_pa_q <= resolve_pa;
+      s2_fault_q <= riscv_pkg::data_fault_kind_e'(s2_fault_next);
+      s2_needs_sq_q <= s1_q.needs_sq;
+      s2_is_sc_q <= s1_q.is_sc;
+      s2_store_data_q <= s1_q.store_data;
+      s2_amo_rs2_q <= s1_q.amo_rs2;
+    end else if (iss_can_bypass) begin
+      s2_valid_q <= 1'b1;
+      s2_tag_q <= iss_in.tag;
+      s2_va_q <= iss_in.va;
+      s2_ppn_q <= last_ppn_q;
+      s2_pa_q <= 1'b1;
+      s2_fault_q <= riscv_pkg::DFAULT_NONE;
+      s2_needs_sq_q <= iss_in.needs_sq;
+      s2_is_sc_q <= iss_in.is_sc;
+      s2_store_data_q <= iss_in.store_data;
+      s2_amo_rs2_q <= iss_in.amo_rs2;
     end else begin
-      s2_valid_q <= s1_move;
+      s2_valid_q <= 1'b0;
     end
-    // Load payload every cycle. s2_valid_q sets only after resolution and
-    // qualifies every consumer, so extra captures are unused.
-    s2_tag_q <= s1_q.tag;
-    s2_va_q <= s1_q.va;
-    s2_ppn_q <= resolve_ppn;
-    s2_pa_q <= resolve_pa;
-    s2_fault_q <= riscv_pkg::data_fault_kind_e'(s2_fault_next);
-    s2_needs_sq_q <= s1_q.needs_sq;
-    s2_is_sc_q <= s1_q.is_sc;
-    s2_store_data_q <= s1_q.store_data;
-    s2_amo_rs2_q <= s1_q.amo_rs2;
   end
 
 `ifndef SYNTHESIS
@@ -507,6 +605,14 @@ module dmmu (
       ref_s2_is_sc_q <= s1_q.is_sc;
       ref_s2_store_data_q <= s1_q.store_data;
       ref_s2_amo_rs2_q <= s1_q.amo_rs2;
+    end else if (iss_can_bypass) begin
+      ref_s2_tag_q <= iss_in.tag;
+      ref_s2_addr_q <= riscv_pkg::XLEN'({last_ppn_q, iss_in.va[11:0]});
+      ref_s2_fault_q <= riscv_pkg::DFAULT_NONE;
+      ref_s2_needs_sq_q <= iss_in.needs_sq;
+      ref_s2_is_sc_q <= iss_in.is_sc;
+      ref_s2_store_data_q <= iss_in.store_data;
+      ref_s2_amo_rs2_q <= iss_in.amo_rs2;
     end
     if (reset_seen_q && i_rst_n && s2_valid_q) begin
       p_s2_payload_exact :
@@ -535,8 +641,10 @@ module dmmu (
 
   // S1 holds each op through the cycle before its S2 pulse, so S1's tag is
   // the one-cycle look-ahead the LQ needs, however long a walk takes.
-  assign o_pre_rob_tag = s1_q.tag;
-  assign o_pre_needs_lq = s1_valid_q && !s1_q.needs_sq;
+  // When an op hits the last-page bypass, it moves directly into S2, so its
+  // look-ahead is presented live at issue.
+  assign o_pre_rob_tag = iss_can_bypass ? iss_in.tag : s1_q.tag;
+  assign o_pre_needs_lq = iss_can_bypass ? (i_iss_valid && !iss_in.needs_sq) : (s1_valid_q && !s1_q.needs_sq);
 
   // Request a walk once for a live, canonical S1 miss with no trapping
   // misalignment or matching response. Hold valid until accepted. Suppress
