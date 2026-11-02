@@ -178,11 +178,11 @@ async def test_random_misses_read_nothing(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_four_interleaved_streams(dut: Any) -> None:
-    """Four streams missing in turn are all followed."""
+async def test_interleaved_streams(dut: Any) -> None:
+    """Each table entry follows its stream when misses arrive in turn."""
     bench = PrefetchBench(dut, ready_pct=80)
     await bench.start()
-    bases = [0x8050_0000 + n * 0x10_0000 for n in range(4)]
+    bases = [0x8050_0000 + n * 0x10_0000 for n in range(int(dut.STREAMS.value))]
     for step in range(6):
         for base in bases:
             await bench.cycle(base + step * L2_LINE)
@@ -192,6 +192,146 @@ async def test_four_interleaved_streams(dut: Any) -> None:
         assert ahead, f"no reads for the stream at {base:#x}"
         assert max(ahead) == base + (5 + DISTANCE) * L2_LINE, [hex(a) for a in ahead]
     assert len(bench.reads) == len(set(bench.reads)), "a line was read twice"
+
+
+@cocotb.test()
+async def test_backward_refills_and_forward_progress(dut: Any) -> None:
+    """Nearby backward refills preserve a confirmed stream's frontier."""
+    bench = PrefetchBench(dut, ready_pct=70, resp_delay=7)
+    await bench.start()
+    base = 0x8070_0000
+    for line in range(1, 6):
+        await bench.cycle(base + line * L2_LINE)
+        await bench.idle(30)
+    await bench.idle(100)
+    expected = [base + k * L2_LINE for k in range(3, 6 + DISTANCE)]
+    assert bench.reads == expected
+
+    for _ in range(3):
+        await bench.cycle(base + 3 * L2_LINE)
+        await bench.cycle(base + 4 * L2_LINE)
+        await bench.idle(100)
+    if int(dut.IGNORE_BACKWARD.value):
+        assert bench.reads == expected, "backward refills repeated the prefetches"
+    else:
+        assert len(bench.reads) > len(expected), "backward misses did not train"
+
+    before = len(bench.reads)
+    await bench.cycle(base + 6 * L2_LINE)
+    await bench.idle(100)
+    if int(dut.IGNORE_BACKWARD.value) or int(dut.STREAMS.value) >= 4:
+        assert bench.reads[before:] == [base + (6 + DISTANCE) * L2_LINE]
+    else:
+        assert len(bench.reads) == before
+        await bench.cycle(base + 7 * L2_LINE)
+        await bench.idle(100)
+        assert bench.reads[before:] == [
+            base + k * L2_LINE for k in range(8, 8 + DISTANCE)
+        ]
+
+    before = len(bench.reads)
+    lower_page = base - PAGE
+    await bench.cycle(lower_page + L2_LINE)
+    await bench.cycle(lower_page + 2 * L2_LINE)
+    await bench.idle(100)
+    assert bench.reads[before:] == [
+        lower_page + k * L2_LINE for k in range(3, 3 + DISTANCE)
+    ], "a lower address in another page did not train"
+
+
+@cocotb.test()
+async def test_backward_distance_boundary(dut: Any) -> None:
+    """The filter includes DISTANCE and permits training one line beyond it."""
+    bench = PrefetchBench(dut)
+    await bench.start()
+    base = 0x8080_0000
+    frontier = 20
+    await bench.cycle(base + (frontier - 1) * L2_LINE)
+    await bench.cycle(base + frontier * L2_LINE)
+    await bench.idle(40)
+    before = len(bench.reads)
+    for line in (frontier - DISTANCE, frontier - DISTANCE + 1):
+        await bench.cycle(base + line * L2_LINE)
+    await bench.idle(40)
+    if int(dut.IGNORE_BACKWARD.value):
+        assert len(bench.reads) == before
+    else:
+        assert len(bench.reads) > before
+
+    base += PAGE
+    await bench.cycle(base + (frontier - 1) * L2_LINE)
+    await bench.cycle(base + frontier * L2_LINE)
+    await bench.idle(40)
+    before = len(bench.reads)
+    for line in (frontier - DISTANCE - 1, frontier - DISTANCE):
+        await bench.cycle(base + line * L2_LINE)
+    await bench.idle(40)
+    assert bench.reads[before:] == [
+        base + k * L2_LINE for k in range(frontier - DISTANCE + 1, frontier + 1)
+    ]
+
+
+@cocotb.test()
+async def test_backward_distance_at_page_end(dut: Any) -> None:
+    """Backward filtering preserves the carry of the page-offset distance sum."""
+    bench = PrefetchBench(dut)
+    await bench.start()
+    base = 0x80B0_0000
+    last = PAGE // L2_LINE - 1
+    await bench.cycle(base + (last - 2) * L2_LINE)
+    await bench.cycle(base + (last - 1) * L2_LINE)
+    await bench.idle(40)
+    before = len(bench.reads)
+    await bench.cycle(base + (last - 4) * L2_LINE)
+    await bench.cycle(base + (last - 3) * L2_LINE)
+    await bench.idle(40)
+    if int(dut.IGNORE_BACKWARD.value):
+        assert len(bench.reads) == before
+    else:
+        assert len(bench.reads) > before
+
+
+@cocotb.test()
+async def test_backward_filter_follows_page_crossing(dut: Any) -> None:
+    """A stream crossing a page filters nearby backward refills in that page."""
+    bench = PrefetchBench(dut)
+    await bench.start()
+    base = 0x8090_0000
+    for line in range(-2, 3):
+        await bench.cycle(base + line * L2_LINE)
+        await bench.idle(30)
+    before = len(bench.reads)
+    await bench.cycle(base)
+    await bench.cycle(base + L2_LINE)
+    await bench.idle(40)
+    if int(dut.IGNORE_BACKWARD.value):
+        assert len(bench.reads) == before, "a page crossing lost backward filtering"
+    else:
+        assert len(bench.reads) > before
+
+
+@cocotb.test()
+async def test_backward_refills_while_request_is_held(dut: Any) -> None:
+    """Backward refills preserve a held request and its response identity."""
+    bench = PrefetchBench(dut, ready_pct=0, resp_delay=10)
+    await bench.start()
+    base = 0x80A0_0000
+    await bench.cycle(base + 10 * L2_LINE)
+    await bench.cycle(base + 11 * L2_LINE)
+    await bench.idle(4)
+    assert int(dut.o_req_valid.value)
+    held = (int(dut.o_req_addr.value), int(dut.o_req_id.value))
+    for line in (8, 9, 12, 10, 11):
+        await bench.cycle(base + line * L2_LINE)
+        assert int(dut.o_req_valid.value)
+        assert (int(dut.o_req_addr.value), int(dut.o_req_id.value)) == held
+    bench.ready_pct = 100
+    await bench.idle(100)
+    if int(dut.IGNORE_BACKWARD.value):
+        assert bench.reads == [
+            base + line * L2_LINE for line in range(12, 13 + DISTANCE)
+        ]
+    assert not bench.pending
 
 
 @cocotb.test()

@@ -22,7 +22,9 @@
  * cycle late. A table of STREAMS entries holds the last L2 line each stream
  * missed on. A miss on the line after an entry's confirms the entry and
  * advances it; a miss on an entry's own line leaves it; any other miss
- * replaces the entries in rotation. For each confirmed entry the prefetcher
+ * replaces the entries in rotation. With IGNORE_BACKWARD, a miss up to
+ * DISTANCE lines behind a confirmed entry in the same page also leaves the
+ * entries in place. For each confirmed entry the prefetcher
  * reads the lines after its last miss, up to DISTANCE lines ahead and never
  * past the PAGE_BYTES page of that miss, so it reads only memory that a
  * demand access in the same page made sure exists.
@@ -46,7 +48,8 @@ module l2_stream_prefetcher #(
     parameter int unsigned DISTANCE = 8,
     parameter int unsigned MAX_INFLIGHT = 4,
     parameter int unsigned ID_BITS = 3,
-    parameter int unsigned PAGE_BYTES = 4096
+    parameter int unsigned PAGE_BYTES = 4096,
+    parameter bit IGNORE_BACKWARD = 0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -90,14 +93,17 @@ module l2_stream_prefetcher #(
   /* verilator lint_on UNUSEDSIGNAL */
   assign miss_offset_unused = i_miss_addr[LineOffBits-1:0];
 
-  logic                obs_valid_q;
-  logic [LineBits-1:0] obs_line_q;
-  logic [LineBits-1:0] obs_line_p1_q;  // obs_line_q + 1
+  logic                  obs_valid_q;
+  logic [  LineBits-1:0] obs_line_q;
+  logic [  LineBits-1:0] obs_line_p1_q;  // obs_line_q + 1
+  logic [PageLineBits:0] obs_line_limit_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) obs_valid_q <= 1'b0;
     else obs_valid_q <= i_miss_valid;
-    obs_line_q    <= i_miss_addr[ADDR_WIDTH-1:LineOffBits];
+    obs_line_q <= i_miss_addr[ADDR_WIDTH-1:LineOffBits];
     obs_line_p1_q <= i_miss_addr[ADDR_WIDTH-1:LineOffBits] + LineBits'(1);
+    obs_line_limit_q <= (PageLineBits + 1)'(i_miss_addr[LineOffBits+:PageLineBits]) +
+        (PageLineBits + 1)'(DISTANCE);
   end
 
   // ---- Stream table -------------------------------------------------------------
@@ -108,11 +114,15 @@ module l2_stream_prefetcher #(
   logic [AheadBits-1:0] st_ahead_q[STREAMS];  // lines after it already read
   logic [StreamBits-1:0] st_victim_q;  // replaced next, in rotation
 
-  logic [STREAMS-1:0] obs_succ, obs_same;
+  logic [STREAMS-1:0] obs_succ, obs_same, obs_behind;
   always_comb begin
     for (int e = 0; e < int'(STREAMS); e++) begin
       obs_succ[e] = st_valid_q[e] && (obs_line_q == st_line_p1_q[e]);
       obs_same[e] = st_valid_q[e] && (obs_line_q == st_line_q[e]);
+      obs_behind[e] = IGNORE_BACKWARD && st_valid_q[e] && st_conf_q[e] &&
+          (obs_line_q >> PageLineBits) == (st_line_q[e] >> PageLineBits) &&
+          obs_line_q[PageLineBits-1:0] < st_line_q[e][PageLineBits-1:0] &&
+          obs_line_limit_q >= (PageLineBits + 1)'(st_line_q[e][PageLineBits-1:0]);
     end
   end
 
@@ -168,7 +178,7 @@ module l2_stream_prefetcher #(
   // wins: nothing loads.
   logic load;
   logic obs_allocates;
-  assign obs_allocates = obs_valid_q && !(|obs_succ) && !(|obs_same);
+  assign obs_allocates = obs_valid_q && !(|obs_succ) && !(|obs_same) && !(|obs_behind);
   assign load = (!req_valid_q || req_fire) && cand_any && i_enable &&
       !(obs_allocates && (st_victim_q == cand_sel)) &&
       (inflight_q < InflightBits'(MAX_INFLIGHT));

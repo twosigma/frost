@@ -25,6 +25,8 @@
 // refills (ReadOnceIF). Both read the home's registered copy of its D
 // acceptance, and both load new requests only while the home reports room
 // for a prefetch fill.
+// The instruction table preserves confirmed streams across backward refills
+// up to DISTANCE lines behind their last line in the same page.
 //
 // The wrapper owns IDS prefetch identities {3, 3, id}. It takes a table's
 // request, with a free identity, into a D register that holds until the home
@@ -138,6 +140,7 @@ module coherence_prefetcher #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .L2_LINE_BYTES(LINE_BYTES),
       .STREAMS(IF_STREAMS),
+      .IGNORE_BACKWARD(1),
       .DISTANCE(DISTANCE),
       .MAX_INFLIGHT(Ids),
       .ID_BITS(TableIdBits)

@@ -1933,6 +1933,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Eight outstanding prefetch reads, page bounds, and response ID reuse",
         verilator_extra_args=("-GMAX_INFLIGHT=8",),
     ),
+    "l2_stream_prefetcher_if": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_l2_stream_prefetcher",
+        hdl_toplevel_module="l2_stream_prefetcher",
+        description="Instruction streams filter backward refills within their distance bound",
+        verilator_extra_args=("-GSTREAMS=2", "-GIGNORE_BACKWARD=1"),
+    ),
     "cached_tier_adapter": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.memory.test_cached_tier_adapter",
         hdl_toplevel_module="cached_tier_adapter",

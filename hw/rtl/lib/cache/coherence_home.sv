@@ -211,6 +211,8 @@ module coherence_home #(
   logic [RESULTS-1:0][LINE_BYTES-1:0] engine_update_mask;
   logic [RESULTS-1:0][8*LINE_BYTES-1:0] engine_update_data;
   logic [Clients-1:0] tag_valid, tag_ready, read_valid, read_ready;
+  logic [Clients-1:0] tag_selected;
+  logic demand_tag_waiting;
   logic [Clients-1:0] update_valid, update_ready, probe_valid, probe_ready;
   logic [Clients-1:0] ack_valid, ack_ready;
   logic [Clients-1:0][TagPacketBits-1:0] tag_payload;
@@ -537,7 +539,8 @@ module coherence_home #(
         engine_nofill_q[engine]   <= work_nofill;
       end
     end
-    assign tag_valid[engine] = engine_lookup[engine];
+    assign tag_valid[engine] = engine_lookup[engine] &&
+        (!engine_prefetch_q[engine] || !demand_tag_waiting || tag_selected[engine]);
     assign tag_payload[engine] = {TokenBits'(engine), engine_addr[engine]};
     assign read_payload[engine] = {TokenBits'(engine), engine_way[engine], engine_addr[engine]};
     assign update_valid[engine] = engine_update[engine];
@@ -571,6 +574,10 @@ module coherence_home #(
 `endif
       .o_payload(result)
   );
+  // Demand and PutM lookups precede unselected prefetches. A selected
+  // prefetch keeps its held tag request.
+  assign demand_tag_waiting = |(engine_lookup & ~engine_prefetch_q) ||
+      |tag_valid[RESULTS+FILLS+:Puts];
   coherence_d_arbiter #(
       .WIDTH(TagPacketBits),
       .PORTS(Clients),
@@ -583,7 +590,7 @@ module coherence_home #(
       .i_payload(tag_payload),
       .o_valid(tag_request_valid),
       .o_offer(),
-      .o_selected(),
+      .o_selected(tag_selected),
       .i_ready(tag_request_ready && run),
 `ifdef COHERENCE_HOME_CONTROL
       .i_service_stop(!active),

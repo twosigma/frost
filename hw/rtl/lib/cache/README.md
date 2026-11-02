@@ -406,8 +406,12 @@ exclude valid victim lines. An invalid way's stored tag does not create an
 address conflict; physical way pins and fill claims govern its reuse.
 
 Two ordinary PutM controls have frozen payload storage and independent array
-service. Round-robin arbitration rotates tag decisions, row reads, masked
-updates, probes, acknowledgements and results. Resident data reads overlap
+service. Tag selection gives demand and PutM lookups priority over
+unselected prefetches. A selected prefetch keeps its held request. One
+shared cursor rotates across eligible tag ports. Sustained demand or PutM
+traffic can postpone unselected prefetches indefinitely. Round-robin arbitration
+rotates row reads, masked updates, probes, acknowledgements and results.
+Resident data reads overlap
 probes. Dirty probe bytes override the resident snapshot regardless of arrival
 order; DMA byte enables apply after that merge. The final service edge
 combines every completed input before the masked update or result becomes
@@ -545,6 +549,11 @@ takes a table's request with a free identity into a D register that holds
 until the home accepts it, alternating between the tables, and the tables
 load new requests only while the home reports room for a prefetch fill.
 
+The instruction table enables `IGNORE_BACKWARD`. A refill up to
+`L2_PREFETCH_DISTANCE` lines behind a confirmed stream's last line in the
+same page leaves the entries in place. Refills farther behind can replace
+an entry and train a stream.
+
 A Prefetch is a line-aligned D with no data, and the home answers it with
 GrantAck after one lookup. A resident line stays as it is: the prefetch takes
 no way pin and sends no probe, read or update; the hit updates replacement
@@ -575,8 +584,9 @@ and `coherent_cut` cover controller ownership, inclusion, cuts, atomics,
 probe service and the DMA sector handoff. Their prefetch cases cover the slot
 partition, the no-fill flag, prefetch fills that install, take a demand seat
 or fail, the fill reserve, the last available way and the last write-back
-slot, PutM beside live prefetches, and a demand that replaces lines held only
-by prefetches. `coherence_cluster_misses` repeats the cluster cases with three
+slot, PutM beside live prefetches, demand and PutM tag priority with held
+prefetch requests, and a demand that replaces lines held only by prefetches.
+`coherence_cluster_misses` repeats the cluster cases with three
 L1D request endpoints, including several loads in flight. `coherence_readers`
 controls grants and releases around the real L1I, fetch provider and PTW. It checks overlapping fills, invalidation, discarded fetches
 and walks, errors, reset, fatal stop and reuse of reader IDs before U.
@@ -997,7 +1007,10 @@ L1D's read requests as the top arbiter takes them, which are its misses,
 store misses included. A table of 4 streams holds the last L2 line each
 stream missed on. A miss on the line after a stream's confirms the stream
 and advances it, a miss on its own line leaves it, and any other miss
-replaces a stream in rotation. For each confirmed stream the prefetcher
+replaces a stream in rotation. With `IGNORE_BACKWARD=1`, a miss up to
+`DISTANCE` lines behind a confirmed stream in the same page also leaves the
+entries in place. This option defaults to zero and is enabled for the
+coherent home's instruction table. For each confirmed stream the prefetcher
 reads the lines after its last miss, up to `L2_PREFETCH_DISTANCE` (8) lines
 ahead and never past the 4 KiB page of that miss, so it reads only memory
 that a demand access in the same page showed to exist.
@@ -1126,7 +1139,7 @@ to answer.
 | `frost_cache_l2_lines_waiters2` | The L2-line suite with two waiter seats per L2 miss slot |
 | `*_prefetch` | The concurrency and DMA suites with eight L1D miss slots, eight L2 miss slots, two waiter seats per L2 miss slot, and eight prefetch requests |
 | `*_ways1` | The data-integrity, concurrency, DMA, and L2-line suites with direct-mapped caches |
-| `l2_stream_prefetcher*` | Stream confirmation, read distance, page bounds, response ID reuse, four- and eight-request caps under excess demand, and no new loads while disabled |
+| `l2_stream_prefetcher*` | Stream confirmation, read distance, page bounds, response ID reuse, four- and eight-request caps under excess demand, bounded backward instruction refills, and disabled request loading |
 | `line_port_arbiter*` | Arbitration and tagged responses |
 | `line_port_axi_bridge` | The bridge across a CPU reset against a slave that keeps running: held beats, AW/W pairing, dropped stale responses, and a reused id held back until the stale response for it has arrived; and across the slave's own reset, which withdraws the held beats |
 | `axi_behavioral_memory_*` | Boot-image loading and reset persistence for dense and wide sparse DDR, distinct high-address writes, and TestRIG's empty-memory reset contract |

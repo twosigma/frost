@@ -68,6 +68,7 @@ class Home:
         # Grants for source 3, which the bench takes when they are presented,
         # as the prefetcher does.
         self.prefetch_grants: list[tuple[int, ...]] = []
+        self.tag_trace: list[dict[str, int]] | None = None
 
     def get(self, name: str) -> int:
         """Read a signal."""
@@ -236,6 +237,21 @@ class Home:
             if prefetch_grant:
                 self.prefetch_grants.append(grant)
                 await self.set(i_g_ready=1)
+            if self.tag_trace is not None:
+                self.tag_trace.append(
+                    {
+                        name: self.get(name)
+                        for name in (
+                            "tag_request_valid",
+                            "tag_request_ready",
+                            "tag_request",
+                            "tag_selected",
+                            "tag_valid",
+                            "engine_lookup",
+                            "engine_prefetch_q",
+                        )
+                    }
+                )
             await self.set(i_clk=1)
             await self.set(i_clk=0)
             if prefetch_grant:
@@ -1560,6 +1576,82 @@ async def put_proceeds_beside_live_prefetches_of_its_sector(dut: Any) -> None:
     for grant in held:
         await b.complete(grant)
     assert await b.read(address) == data
+
+
+@cocotb.test()
+async def demand_and_put_precede_unselected_prefetch_tags(dut: Any) -> None:
+    """Tag priority preserves held requests and drains finite contention."""
+    b = Home(dut)
+    await b.reset()
+    base = 0x80003000
+    addresses = [base + k * b.line for k in range(6)]
+    for address in addresses:
+        assert await b.read(address, 7) == b.expected(address)
+    put_address = addresses[-1]
+    data = 0x5A5A_1234
+    grant = await b.start(1, put_address)
+    b.private[put_address] = (3, data)
+    await b.finish(grant, written=True)
+    b.frozen[0] = (put_address, data)
+    del b.private[put_address]
+
+    b.tag_trace = []
+    for slot, address in enumerate(addresses[:4]):
+        await b.submit(PREFETCH, address, slot=slot)
+    for _ in range(100):
+        if (
+            b.get("tag_request_valid")
+            and not b.get("tag_request_ready")
+            and b.get("tag_selected") & b.get("engine_prefetch_q")
+        ):
+            break
+        await b.tick()
+    else:
+        raise AssertionError("no held prefetch tag request")
+
+    await b.set(
+        i_w_valid=1,
+        i_w=pack((1, 0), (1, 0), (1, 0), (b.p, put_address), (256, data), (1, 0)),
+    )
+    await b.submit(7, addresses[4])
+    demand = await b.take_grant()
+    assert demand[3:6] == (addresses[4], b.expected(addresses[4]), 0)
+    await b.complete(demand)
+    for slot, address in enumerate(addresses[:4]):
+        await b.complete(await b.prefetch_grant(address, slot))
+    await b.tick(30)
+    assert not b.frozen and not b.accepted_puts
+    assert not b.prefetch_grants and not b.get("o_fatal")
+
+    put_base = len(dut.engine_idle) + int(dut.FILLS.value)
+    held = demand_priority = put_priority = 0
+    accepted = []
+    for previous, current in zip(b.tag_trace, b.tag_trace[1:]):
+        selected = previous["tag_selected"]
+        prefetches = previous["engine_prefetch_q"]
+        if previous["tag_request_valid"] and not previous["tag_request_ready"]:
+            assert current["tag_request_valid"]
+            assert current["tag_request"] == previous["tag_request"]
+            assert current["tag_selected"] == selected
+            held += bool(selected & prefetches)
+        if not selected and current["tag_selected"]:
+            demand_waiting = previous["engine_lookup"] & ~prefetches
+            put_waiting = previous["tag_valid"] >> put_base
+            if demand_waiting or put_waiting:
+                assert not current["tag_selected"] & prefetches
+                if previous["engine_lookup"] & prefetches:
+                    demand_priority += bool(demand_waiting)
+                    put_priority += bool(put_waiting)
+        if previous["tag_request_valid"] and previous["tag_request_ready"]:
+            accepted.append(previous["tag_request"] & ((1 << b.p) - 1))
+    assert held and demand_priority and put_priority, (
+        held,
+        demand_priority,
+        put_priority,
+    )
+    assert sorted(accepted) == sorted(addresses), accepted
+    b.tag_trace = None
+    assert await b.read(put_address) == data
 
 
 @cocotb.test()
