@@ -210,6 +210,7 @@ FORMAL_TARGETS = [
         tasks=(
             "coh_home_control_prove",
             "coh_home_control64_prove",
+            "coh_home_control_partition_prove",
             "coh_home_control4_bmc",
             "coh_home_control4_ultra_bmc",
             "coh_home_wb_prove",
@@ -1133,10 +1134,14 @@ SBY_TASKS = [
     ("coh_seat_select_prove", "Fill waiter ranks match serial seat allocation."),
     (
         "coh_work_select_prove",
-        "Ready work and circular priority match serial selection.",
+        "Ready work and circular priority match serial selection, last pick coded.",
     ),
     ("coh_home_control_prove", "Composed home ownership and independent memory debt."),
     ("coh_home_control64_prove", "Composed home ownership across sibling sectors."),
+    (
+        "coh_home_control_partition_prove",
+        "Composed home ownership with a completion slot kept for prefetches.",
+    ),
     (
         "coh_home_control4_bmc",
         "Bounded home checks with four ways, three fills and a fill reserve.",

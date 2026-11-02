@@ -15,16 +15,21 @@
  */
 
 // Ready work precedes other eligible work within circular priority.
+// With LAST_CODED, the last input stands for a group of slots kept apart:
+// picking it yields i_last_code, the slot the group offers, in place of the
+// input's index.
 module coherence_work_select #(
     parameter int unsigned SLOTS = 19,
-    localparam int unsigned SlotBits = SLOTS > 1 ? $clog2(SLOTS) : 1
+    parameter bit LAST_CODED = 1'b0,
+    parameter int unsigned CODE_BITS = SLOTS > 1 ? $clog2(SLOTS) : 1
 ) (
     input logic [SLOTS-1:0] i_eligible,
     input logic [SLOTS-1:0] i_ready,
     // i_later[slot]: the slot is at or after the rotation point.
     input logic [SLOTS-1:0] i_later,
+    input logic [CODE_BITS-1:0] i_last_code,
     output logic o_found,
-    output logic [SlotBits-1:0] o_pick
+    output logic [CODE_BITS-1:0] o_pick
 );
   localparam int unsigned GroupBits = 6;
   localparam int unsigned Groups = (SLOTS + GroupBits - 1) / GroupBits;
@@ -34,7 +39,12 @@ module coherence_work_select #(
   // groups' summaries and its own group's lower slots.
   (* keep = "true" *) logic [3:0][Groups-1:0] class_groups;
   logic [3:0] class_found;
-  logic [3:0][SlotBits-1:0] class_pick;
+  logic [3:0][CODE_BITS-1:0] class_pick;
+  // Each input's pick: its index, or i_last_code for a coded last input.
+  logic [SLOTS-1:0][CODE_BITS-1:0] codes;
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_codes
+    assign codes[slot] = LAST_CODED && slot == SLOTS - 1 ? i_last_code : CODE_BITS'(slot);
+  end
   logic [SLOTS-1:0] selected;
   assign o_found = |i_eligible;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_candidates
@@ -63,10 +73,10 @@ module coherence_work_select #(
       end
       assign class_selected[choice][slot] = candidates[choice][slot] && !below;
     end
-    for (genvar bit_index = 0; bit_index < SlotBits; bit_index++) begin : gen_encode
+    for (genvar bit_index = 0; bit_index < CODE_BITS; bit_index++) begin : gen_encode
       logic [SLOTS-1:0] contributors;
       for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_contributor
-        assign contributors[slot] = class_selected[choice][slot] && ((slot >> bit_index) & 1) != 0;
+        assign contributors[slot] = class_selected[choice][slot] && codes[slot][bit_index];
       end
       assign class_pick[choice][bit_index] = |contributors;
     end
@@ -75,8 +85,13 @@ module coherence_work_select #(
       class_found[2] ? class_selected[2] : class_selected[3];
   assign o_pick = class_found[0] ? class_pick[0] : class_found[1] ? class_pick[1] :
       class_found[2] ? class_pick[2] : class_pick[3];
+  // The indexed inputs' picks fit in CODE_BITS.
+  if (SLOTS < 1 || CODE_BITS < 1 || CODE_BITS > 16 ||
+      (1 << CODE_BITS) < (LAST_CODED ? SLOTS - 1 : SLOTS)) begin : gen_invalid
+    initial $fatal(1, "coherence_work_select: invalid parameters");
+  end
 `ifndef SYNTHESIS
-  logic [SlotBits-1:0] reference_pick, reference_first;
+  logic [CODE_BITS-1:0] reference_pick, reference_first;
   logic reference_after, ready_found;
   always_comb begin
     ready_found = |(i_eligible & i_ready);
@@ -85,10 +100,10 @@ module coherence_work_select #(
     reference_after = 1'b0;
     for (int slot = SLOTS - 1; slot >= 0; slot--) begin
       if (i_eligible[slot] && (!ready_found || i_ready[slot])) begin
-        reference_first = SlotBits'(slot);
+        reference_first = codes[slot];
         if (i_later[slot]) begin
           reference_after = 1'b1;
-          reference_pick  = SlotBits'(slot);
+          reference_pick  = codes[slot];
         end
       end
     end

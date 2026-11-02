@@ -25,6 +25,7 @@ module coherence_home_control_harness #(
     parameter int unsigned FILLS = 2,
     parameter int unsigned PREFETCH_RESERVE = FILLS / 4,
     parameter bit ULTRA = 1'b0,
+    parameter int unsigned PREFETCH_SLOTS = 0,
     localparam int unsigned AddressBits = $clog2(8 * LINE_BYTES * WAYS)
 ) (
     input logic i_clk,
@@ -68,7 +69,7 @@ module coherence_home_control_harness #(
   coherence_home #(
       .COMPLETIONS(3),
       .RESULTS(2),
-      .PREFETCH_SLOTS(0),
+      .PREFETCH_SLOTS(PREFETCH_SLOTS),
       .FILLS(FILLS),
       .PREFETCH_RESERVE(PREFETCH_RESERVE),
       .LINE_BYTES(LINE_BYTES),

@@ -359,7 +359,10 @@ stores its occupied seat count beside the seat mask. Allocation, joining
 readers, handoff and error cleanup update both on the same edge. A joining
 engine uses one seat before the queued waiters. Ready work precedes other
 eligible work. Both classes compute their circular priorities independently
-before selecting an encoded winner. Work selection uses registered parking
+before selecting an encoded winner. The prefetch slots share one place in
+that rotation, after the other slots; it offers a prefetch slot chosen in
+rotation among them on the previous cycle, leaving out the slot being
+dispatched. Work selection uses registered parking
 state. A selection captured with a simultaneous fill park is canceled before
 allocating an engine or image credit. The tag decision carries its captured
 query address through conflict and replacement checks. Engine address pins
