@@ -323,9 +323,15 @@ module coherence_home_completions #(
     assign duplicate_nodes[node] = |duplicates[6*node+:Bits];
   end
   assign duplicate = |duplicate_nodes;
-  // Every idle endpoint applies the same admission checks to the request, so
-  // any idle endpoint's readiness stands for the free slot's.
-  assign o_d_ready = !i_rst && !i_fatal_stop && !duplicate && |(request_ready & ~live);
+  // An idle endpoint of the request's partition admits exactly the requests
+  // that pass these checks, so D readiness takes them once from the request,
+  // beside the free-slot summaries and the duplicate check, rather than
+  // from each endpoint's readiness.
+  wire request_q_legal = coherence_pkg::legal_q(incoming.q);
+  wire request_opcode_legal = coherence_pkg::legal_opcode(incoming.q, incoming.opcode);
+  wire request_legal = request_q_legal && request_opcode_legal && incoming.q.epoch == 1'b0 &&
+      (incoming.q.src == 2'd0 || incoming.q.src >= 2'd2) && incoming.addr[4:0] == 0;
+  assign o_d_ready = !i_rst && !i_fatal_stop && !duplicate && request_legal && free_slot;
   assign o_work_offer = !i_fatal_stop && work_selected_q && !parked_q[work_slot_q];
   assign o_work_valid = !i_rst && o_work_offer;
   assign o_work = work[work_slot_q];
