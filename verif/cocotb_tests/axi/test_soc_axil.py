@@ -12,16 +12,17 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Exercise the SoC's AXI4-Lite device windows through its public AXI port."""
+"""Exercise the SoC's MMIO and AXI4-Lite windows through its public AXI port."""
 
 import os
+import random
 
 from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
 from cocotb.handle import Immediate
-from cocotb.triggers import FallingEdge, ReadWrite, Timer, with_timeout
+from cocotb.triggers import FallingEdge, ReadWrite, RisingEdge, Timer, with_timeout
 
 from cocotb_tests.test_real_program import fail_on_nic_access
 
@@ -241,6 +242,63 @@ class Bench:
                     await self.step(rst=0)
                 return accepted
         raise AssertionError(f"CPU AXI {channel.upper()} timed out")
+
+
+@cocotb.test()
+async def fifo_reads(dut: Any) -> None:
+    """Mask empty lanes and capture the last word before its one-shot pop."""
+    b = Bench(dut)
+    await b.reset()
+    rng = random.Random(os.environ.get("FROST_RANDOM_START_SEED", "fifo_reads"))
+    queues: list[list[int]] = [[], []]
+    pops = [0, 0]
+
+    def drive() -> None:
+        for lane in range(2):
+            getattr(dut, f"i_fifo{lane}_empty").value = int(not queues[lane])
+            getattr(dut, f"i_fifo{lane}_rd_data").value = (
+                queues[lane][0] if queues[lane] else rng.getrandbits(32) | 1
+            )
+
+    async def pop() -> None:
+        while True:
+            await RisingEdge(dut.i_clk)
+            for lane in range(2):
+                if int(getattr(dut, f"o_fifo{lane}_rd_en").value):
+                    pops[lane] += 1
+                    if queues[lane]:
+                        queues[lane].pop(0)
+            await Timer(1, unit="ps")
+            drive()
+
+    task = cocotb.start_soon(pop())
+    try:
+        for words in (
+            (0, 0xFFFFFFFF),
+            (0xFFFFFFFF, 0),
+            (rng.getrandbits(32), rng.getrandbits(32)),
+        ):
+            for empty_mask in range(4):
+                for addr, size in ((0x40000008, 2), (0x4000000C, 2), (0x40000008, 3)):
+                    queues[:] = [
+                        [] if empty_mask & (1 << lane) else [words[lane]]
+                        for lane in range(2)
+                    ]
+                    drive()
+                    for _ in range(2):
+                        expected = [q[0] if q else 0 for q in queues]
+                        lane = (addr >> 2) & 1
+                        value = (
+                            expected[0] | (expected[1] << 32)
+                            if size == 3
+                            else expected[lane]
+                        )
+                        before = pops.copy()
+                        assert await b.read(addr, size) == value
+                        assert pops[lane] == before[lane] + 1
+                        assert pops[1 - lane] == before[1 - lane]
+    finally:
+        task.cancel()
 
 
 @cocotb.test()

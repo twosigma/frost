@@ -274,7 +274,10 @@ and CLINT alias, support 64-bit access: an 8-byte load of `mtime`
 (`0x4001_BFF8`) returns the whole counter atomically, and an 8-byte
 `mtimecmp` store lands atomically. The 32-bit lo/hi aliases keep their word
 behavior. UART and FIFO registers are 32-bit-access-max: a wider store writes
-only the addressed word. The APLIC accepts only 32-bit accesses. Byte,
+only the addressed word. Each empty FIFO contributes zero to its 32-bit read
+lane and an empty read pops nothing. A non-empty FIFO returns its head word;
+only the addressed FIFO is popped. The response is captured before the pop
+and stays stable through backpressure. The APLIC accepts only 32-bit accesses. Byte,
 halfword and doubleword writes are ignored; reads of those sizes return zero without side effects. The DMA
 test engine, memory error unit, and NIC windows provide 32-bit registers:
 a 64-bit load returns an aligned register pair, and a 64-bit store writes

@@ -25,7 +25,7 @@
  * core on both ends: a store pushes a word and a load pops one. Software cannot
  * see the full or empty state. A push to a full FIFO overwrites the oldest
  * word and corrupts the FIFO, and a load from an empty one pops nothing and
- * returns stale data.
+ * returns zero. A zero word can also be valid FIFO data.
  */
 
 static inline void fifo0_write(uint32_t data_to_write)

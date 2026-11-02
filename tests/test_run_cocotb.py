@@ -2922,7 +2922,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "soc_axil": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_soc_axil",
         hdl_toplevel_module="soc_top",
-        description="SoC AXI4-Lite register mapping, CPU backpressure and reset recovery",
+        description="SoC register mapping, empty FIFO reads, CPU backpressure and reset recovery",
         verilator_extra_args=("-GENABLE_CACHED_TIER=1", "-GUSE_BEHAVIORAL_DDR=0"),
     ),
     **{
