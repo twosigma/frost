@@ -225,6 +225,9 @@ FORMAL_TARGETS = [
             "coh_l1d_multi_bmc",
             "coh_l1d_local_prove",
             "coh_l1d_local_multi_prove",
+            "coh_l1d_local_sector_prove",
+            "coh_l1d_local_multi_sector_prove",
+            "coh_l1d_local_ways_sector_prove",
             "coh_l1d_local_cover",
             "coh_l1d_local_data_bmc",
             "coh_l1d_local_ways_prove",
@@ -1175,6 +1178,15 @@ SBY_TASKS = [
         "Local ownership beside unrelated endpoints by induction.",
     ),
     ("coh_l1d_local_ways_prove", "Local ownership with multiple ways by induction."),
+    ("coh_l1d_local_sector_prove", "Local sector admission and identity by induction."),
+    (
+        "coh_l1d_local_multi_sector_prove",
+        "Local sector admission beside unrelated endpoints by induction.",
+    ),
+    (
+        "coh_l1d_local_ways_sector_prove",
+        "Local sector admission with multiple ways by induction.",
+    ),
     (
         "coh_l1d_local_cover",
         "Local failure, completed update and deferred probe reply.",

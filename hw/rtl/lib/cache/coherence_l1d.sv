@@ -1760,11 +1760,14 @@ module coherence_l1d #(
   logic [7:0] f_local_saved_q;
   logic [ADDR_WIDTH-6:0] f_local_sector_q;
   logic f_local_seen_q = 0, f_local_written_q = 0;
-  logic f_local_sector_clear;
+  logic f_local_sector_clear, f_local_lookup_clear;
   always_comb begin
     f_local_sector_clear = 1'b1;
-    for (int ep = 1; ep < MISSES; ep++)
+    f_local_lookup_clear = 1'b1;
+    for (int ep = 1; ep < MISSES; ep++) begin
       f_local_sector_clear &= !live[ep] || ld_line_q[ep] != atomic_addr_q[ADDR_WIDTH-1:5];
+      f_local_lookup_clear &= !live[ep] || ld_line_q[ep] != lookup_addr_q[ADDR_WIDTH-1:5];
+    end
   end
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -1773,6 +1776,17 @@ module coherence_l1d #(
       f_local_saved_q <= 0;
       f_local_sector_q <= 0;
     end else begin
+      if (operation_q == SCOp &&
+          (phase_q == Lookup || phase_q == LookupWait || phase_q == LocalCheck))
+        p_local_sc_lookup: assert (lookup_addr_q == atomic_addr_q);
+      if ((phase_q == LookupWait || phase_q == LocalCheck) &&
+          (operation_q == SCOp || (operation_q == ReadOp &&
+           rd_kind_q[selected_read_q] == ReadAMO))) begin
+        p_local_lookup_stable: assert (lookup_addr_q == $past(lookup_addr_q));
+        p_local_conflict_sample: assert (same_line || f_local_lookup_clear);
+      end
+      if (phase_q == LocalCheck && !local_conflict_q)
+        p_local_admit_sector: assert (f_local_lookup_clear);
       if (local_decision && local_hit_q) begin
         f_local_seen_q <= 1;
         f_local_written_q <= 0;
@@ -1784,10 +1798,14 @@ module coherence_l1d #(
       end
       if (atomic_local_q && atomic_done_q) f_local_written_q <= 1;
       if (atomic_local_q) begin
+        p_local_active: assert (atomic_q);
+        p_local_lookup_owner: assert (lookup_addr_q == atomic_addr_q);
         p_local_image: assert (image_q[8*f_local_byte+:8] == f_local_saved_q);
         p_local_exclusion: assert (!request_live && !pending_q && !store_push &&
             !probe_valid_q && !o_p_ready && !o_cut_hold && !grant_ready && !ep_request_valid[0]);
-        p_local_service: assert (phase_q != Idle && phase_q != Lookup && phase_q != LookupWait);
+        p_local_service: assert (phase_q == LocalReadReady || phase_q == LocalWaitWrite ||
+            phase_q == LocalMerge || phase_q == LocalFail || phase_q == LocalRelease ||
+            ((phase_q == Update || phase_q == UpdateWait) && operation_q == AtomicWriteOp));
         p_local_protected: assert (i_atomic_protected);
         p_local_permission: assert (state_q == coherence_pkg::Modified);
         p_local_sector: assert (f_local_sector_clear);
