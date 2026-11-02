@@ -288,6 +288,53 @@ load queue, its L0 cache, or queue capacities must also update the DMA
 coherence argument: the parameter bounds, and why DMA admission and service
 still make progress, including for loads that have not yet retired.
 
+## Linux performance
+
+Linux built without profile-guided optimization runs at an IPC of about 0.2
+to 0.3. It depends much more than CoreMark on stores, address translation,
+branch prediction, and floating point. Measurements with sysbench, `perf`,
+and targeted microbenchmarks give these items:
+
+1. Stores. Each store takes about six cycles, with translation on or off, so
+   `memset` and integer writes reach one 8-byte store every six cycles. The
+   store queue's drain and its commit into the L1D should reach two cycles
+   per store or better.
+2. Data translation. The data MMU's two registered stages add two cycles to
+   every load-to-use chain. A one-cycle hit path, such as a micro-TLB or a
+   bypass for the last page, would remove them. Dependent loads across pages
+   take about 12 cycles, against 5 within one page.
+3. TLB reach. The DTLB has 16 entries, and a miss costs about 50 cycles. The
+   ITLB has 8 entries, and a miss costs about 58. Without ASIDs, every
+   context switch flushes both. A 16-entry ITLB, a larger DTLB, ASID
+   support, and a page-walk cache for upper-level page-table entries would
+   each help.
+4. Sequential fetch under translation. The instruction MMU compares the
+   whole fetch address with its last translation, so each sequential fetch
+   costs a one-cycle bubble. Comparing the virtual page number, and forming
+   the physical address from the cached page and the page offset, removes
+   it.
+5. Branch prediction. A misprediction costs about 7 cycles, and the BTB has
+   256 direct-mapped entries. A 1024-entry two-way or four-way BTB is the
+   largest expected gain for Linux. In bare-metal microbenchmarks a taken
+   branch costs about 5 cycles, and a loop of four additions runs at 0.6 IPC
+   with translation off, so small loops need checking against the BTB. The
+   BTB read is on the fetch loop, one of the hardest paths at the target
+   clock.
+6. Floating point. One iterative engine executes every F and D instruction,
+   one at a time on a shared adder, to save area. Compares and
+   integer-to-FP conversions take 5 to 23 cycles, a dependent `fadd.d` 20,
+   and `fmul.d` 68. Pipelined units, or at least a fast path for compares,
+   conversions, moves, and sign injection, would serve sysbench-style code.
+7. Integer multiply and divide. A multiply takes about 9 cycles to a
+   dependent instruction. The divider produces one quotient bit per cycle,
+   65 cycles for a 64-bit operation, and a radix-4 divider halves that.
+8. Load queue depth. DDR latency dominates many Linux workloads. A balanced
+   two-level pick across 16 entries would let the memory reservation station
+   hold 16 loads (`MemRsDepth = 16`), with selection depth growing only with
+   the logarithm of the entry count.
+9. Performance counters. FROST counts more events than Linux `perf` sees.
+   Passing them to Linux through SBI lets standard tools report them.
+
 ## Core area
 
 A second hart duplicates the core and its L0 and L1 caches and shares the
@@ -324,5 +371,9 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
 - A redesign three or four instructions wide, sized first with a
   performance model
 - The V and H extensions
+- CHERI capabilities (RVY), following version 0.9.10.1 of the RISC-V CHERI
+  specification, with a capability tag controller and a software
+  revoker, so that the toolchains and Linux work for other RISC-V CHERI
+  cores also apply to FROST
 - Zbkx, Zknh, Zkne, Zknd, Zksh, and Zksed, together with Zbkb and Zbkc,
   complete the Zkn and Zks scalar cryptography suites.
