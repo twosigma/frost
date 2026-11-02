@@ -626,9 +626,11 @@ module immu #(
             {i_pc, i_priv_u, np_va_q, o_walk_req_valid, o_walk_vpn}
         )) begin
       if (translated_visible) begin
-        p_visible_pa0_ppn_exact : assert (o_pa0[riscv_pkg::PhysAddrBits-1:12] == pa0_q[riscv_pkg::PhysAddrBits-1:12]);
+        p_visible_pa0_ppn_exact :
+        assert (o_pa0[riscv_pkg::PhysAddrBits-1:12] == pa0_q[riscv_pkg::PhysAddrBits-1:12]);
         p_visible_tag_exact :
-        assert (key_valid_q && (key_va_q[XLEN-1:12] == i_pc[XLEN-1:12]) && (key_priv_u_q == i_priv_u) && resolved_q);
+        assert (key_valid_q && (key_va_q[XLEN-1:12] == i_pc[XLEN-1:12]) &&
+                (key_priv_u_q == i_priv_u) && resolved_q);
       end
       if (np_sample_matches) begin
         p_next_page_identity : assert (np_va_q == (key_va_q[XLEN-1:12] + 1'b1));

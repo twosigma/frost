@@ -1026,9 +1026,10 @@ async def test_directed_straddle_instruction_fault_xtval(dut: Any) -> None:
     await _accept_request(dut, 0x61)
     await _pulse_response(dut, vpn=0x61, fault_kind=DFAULT_ACCESS)
 
-    expected_access = _translated_window(pc_straddle_page, leaf0, fault1_kind=DFAULT_ACCESS)
+    expected_access = _translated_window(
+        pc_straddle_page, leaf0, fault1_kind=DFAULT_ACCESS
+    )
     _assert_window(dut, expected_access)
     assert int(dut.o_fault0.value) == 0
     assert int(dut.o_fault1.value) == 1
     assert int(dut.o_fault1_page.value) == 0
-
