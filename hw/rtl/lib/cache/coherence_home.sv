@@ -815,9 +815,12 @@ module coherence_home #(
     for (int way = 0; way < WAYS; way++) work_tag_q[way] <= block_tag(work_addr) == array_tags[way];
   end
   // The selected put's address on the next cycle, and the selected work's.
-  // The put selection does not wait for the stop condition: W readiness
-  // already requires the home to be active.
-  assign held_put_next = !put_selected_q && i_w_valid ? incoming_put.addr : selected_put_q.addr;
+  // An idle selection takes the incoming W's address whether or not W is
+  // valid: a W that is not valid leaves no put selected on the next cycle,
+  // and every use of these comparisons waits for a selected or accepted put.
+  // The put selection does not wait for the stop condition either: W
+  // readiness already requires the home to be active.
+  assign held_put_next = put_selected_q ? selected_put_q.addr : incoming_put.addr;
   assign work_addr = request_addr(work);
   // One blocking term per owner: blocks a same-sector query, victims a
   // victim block that the owner holds. The decision and the W readiness that
@@ -1039,19 +1042,22 @@ module coherence_home #(
   // write-back slot that stops blocking on an edge still holds the put for
   // that cycle. The fill and write-back slot allocated on an edge take the
   // query and victim blocks, compared from the decision.
+  // One term per fill and write-back slot, reduced as one vector.
+  logic [FILLS+NUM_WB-1:0] put_owners;
+  for (genvar fill = 0; fill < FILLS; fill++) begin : gen_put_fill_owner
+    assign put_owners[fill] = fill_blocking_q[fill] && (same_block(
+        fill_addr_q[fill], held_put_next
+    ) || (fill_victim_q[fill] && same_block(
+        fill_old_addr_q[fill], held_put_next
+    )));
+  end
+  for (genvar wb = 0; wb < NUM_WB; wb++) begin : gen_put_wb_owner
+    assign put_owners[FILLS+wb] = wb_valid_q[wb] && same_block(wb_addr_q[wb], held_put_next);
+  end
   always_ff @(posedge i_clk) begin
-    put_query_q  <= same_block(array_query, held_put_next);
+    put_query_q <= same_block(array_query, held_put_next);
     put_victim_q <= same_block(array_addr, held_put_next);
-    put_owner_q  <= 1'b0;
-    for (int fill = 0; fill < FILLS; fill++)
-    if (fill_blocking_q[fill] && (same_block(
-            fill_addr_q[fill], held_put_next
-        ) || (fill_victim_q[fill] && same_block(
-            fill_old_addr_q[fill], held_put_next
-        ))))
-      put_owner_q <= 1'b1;
-    for (int wb = 0; wb < NUM_WB; wb++)
-    if (wb_valid_q[wb] && same_block(wb_addr_q[wb], held_put_next)) put_owner_q <= 1'b1;
+    put_owner_q <= |put_owners;
     fill_allocated_q <= run && array_response && decision_fill;
     victim_allocated_q <= run && array_response && decision_fill &&
         array_state != coherence_pkg::Invalid;
@@ -1612,13 +1618,19 @@ module coherence_home #(
     if (wb_valid_q[wb] && same_block(wb_addr_q[wb], held_put_next)) reference_put_owner_next = 1'b1;
   end
   logic [ADDR_WIDTH-1:0] reference_held_put_q;
+  // held_put_exact_q: the held address of the cycle before is this cycle's
+  // selected put's, as it is whenever a put was selected or a W was valid.
+  logic held_put_exact_q;
   always_ff @(posedge i_clk) begin
     reference_ready_q <= !i_rst;
     reference_held_put_q <= held_put_next;
     reference_put_owner_q <= reference_put_owner_next;
+    held_put_exact_q <= put_selected_q || i_w_valid;
     // The completion table compares live sectors with held_put_next.
-    if (sim_reset_seen_q && !i_rst && reference_ready_q)
-      assert (selected_put_q.addr == reference_held_put_q);
+    if (sim_reset_seen_q && !i_rst && reference_ready_q) begin
+      if (held_put_exact_q) assert (selected_put_q.addr == reference_held_put_q);
+      if (put_selected_q) assert (held_put_exact_q);
+    end
   end
   // At most one fill reads or recalls into a write-back slot in a cycle.
   logic [NUM_WB-1:0][FILLS-1:0] reference_wb_writers;
@@ -1684,8 +1696,9 @@ module coherence_home #(
     if (sim_reset_seen_q && !i_rst) begin
       // Every current conflict blocks W; any further hold follows a conflict
       // of the cycle before.
-      if (reference_ready_q && reference_put_blocked) assert (put_blocked);
-      if (reference_ready_q && put_blocked) assert (reference_put_blocked || reference_put_owner_q);
+      if (reference_ready_q && held_put_exact_q && reference_put_blocked) assert (put_blocked);
+      if (reference_ready_q && held_put_exact_q && put_blocked)
+        assert (reference_put_blocked || reference_put_owner_q);
       if (array_response) begin
         if (decision_fill && decision_from_engine && engine_non_alloc[ResultBits'(array_token)])
           assert (array_way == '0);
@@ -1716,9 +1729,10 @@ module coherence_home #(
               same_block(
               engine_addr[engine], array_addr
           )));
-        assert ((held_put_set_q && held_put_tag_q[array_way]) == same_block(
-            array_addr, selected_put_q.addr
-        ));
+        if (held_put_exact_q)
+          assert ((held_put_set_q && held_put_tag_q[array_way]) == same_block(
+              array_addr, selected_put_q.addr
+          ));
         assert (decision_blocked == reference_blocked);
         assert (victim_blocked == reference_victim);
       end
