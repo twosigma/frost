@@ -371,7 +371,7 @@ class ReorderBufferInterface:
         self.dut.i_debug_mode.value = 0
         # Enable all counters. Allocation legality uses i_counter_blocked,
         # not this input.
-        self.dut.i_mcounteren.value = 0b111
+        self.dut.i_mcounteren.value = 0x1FF
         # FS=Initial allows FP allocation.
         self.dut.i_mstatus_fs_off.value = 0
         # frm=RNE allows dynamic-rounding FP allocation.

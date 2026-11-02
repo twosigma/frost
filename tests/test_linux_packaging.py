@@ -344,6 +344,18 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     assert 'compatible = "riscv,pmu";' in dts
     assert "riscv,event-to-mhpmcounters = <0x00000001 0x00000001 0x00000001>" in dts
     assert "<0x00000002 0x00000002 0x00000004>" in dts
+    # Standard event identifiers and raw selectors use separate OpenSBI tables.
+    assert "0x00010019" not in dts
+    assert "<0x00010021 0x00010021 0x00000020>" in dts
+    assert "<0x00000005 0x00000000 0x00000003>" in dts
+    assert "<0x00000006 0x00000000 0x00000004>" in dts
+    assert (
+        "riscv,raw-event-to-mhpmcounters = <0x0 0x3 0xffffffff 0xffffffff 0x08>" in dts
+    )
+    assert "<0x0 0x8 0xffffffff 0xffffffff 0x100>" in dts
+    assert "0x00020003" not in dts
+    for event in (7, 8, 9, 10):
+        assert f"<0x{event:08x} 0x{event:08x}" not in dts
 
 
 def test_sbi_packer_recognizes_linux_image_header() -> None:

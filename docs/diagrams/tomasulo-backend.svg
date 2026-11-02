@@ -120,7 +120,7 @@
     <rect x="408" y="382" width="258" height="75" rx="10" class="station"/>
     <text x="537" y="412" class="label">FP RS</text><text x="537" y="439" class="body">2 entries</text>
     <rect x="730" y="382" width="300" height="75" rx="10" class="station"/>
-    <text x="880" y="412" class="label">MEM RS · 8 entries</text>
+    <text x="880" y="412" class="label">MEM RS · 16 entries</text>
     <text x="880" y="439" class="body">Loads · stores · atomics</text>
   </g>
   <g class="flow" marker-end="url(#flow-arrow)">

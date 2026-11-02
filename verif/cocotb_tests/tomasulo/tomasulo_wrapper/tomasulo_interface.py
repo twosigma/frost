@@ -457,7 +457,7 @@ class TomasuloInterface:
         self.dut.i_sfence_illegal.value = 0
         self.dut.i_wfi_illegal.value = 0
         self.dut.i_priv_is_u.value = 0
-        self.dut.i_mcounteren.value = 7
+        self.dut.i_mcounteren.value = 0x1FF
         self.dut.i_mstatus_fs_off.value = 0
         # Data translation off: the data MMU stays on its combinational bypass
         # paths, and the CSR translation-invalidate pulse stays low.

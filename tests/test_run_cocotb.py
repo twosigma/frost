@@ -3536,8 +3536,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "perf_csr_half": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.perf.test_perf_csr_half",
         hdl_toplevel_module="perf_csr_half_test_harness",
-        description="Performance CSR half reads match full-counter reads on every "
-        "cycle",
+        description="Performance CSR half reads, HPM event selection, inhibition, "
+        "and privilege masks",
     ),
     "ooo_pipeline_control": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.pipeline_control.test_ooo_pipeline_control",

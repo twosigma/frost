@@ -342,43 +342,25 @@ def gen_dts(
 
 \tpmu {{
 \t\tcompatible = "riscv,pmu";
-\t\t/* Map hardware performance counters:
-\t\t * cycle -> mcycle (counter 0, bit 0)
-\t\t * instret -> minstret (counter 2, bit 2)
-\t\t * branch-instructions (event 5) -> mhpmcounter3 (counter 3, bit 3)
-\t\t * branch-misses (event 6) -> mhpmcounter4 (counter 4, bit 4)
-\t\t * itlb-misses (event 7 / raw 5) -> mhpmcounter5 (counter 5, bit 5)
-\t\t * dtlb-misses (event 8 / raw 6) -> mhpmcounter6 (counter 6, bit 6)
-\t\t * l1d-misses (event 4 / 9 / raw 7) -> mhpmcounter7 (counter 7, bit 7)
-\t\t * sq-full-stalls (event 10 / raw 8) -> mhpmcounter8 (counter 8, bit 8) */
+\t\t/* Fixed events: retired branches, branch mispredictions, ITLB walks,
+\t\t * DTLB walks, L1D permission misses, and SQ capacity stalls.
+\t\t * Counter N selects its event with mhpmeventN=N; zero disables it. */
 \t\triscv,event-to-mhpmcounters = <0x00000001 0x00000001 0x00000001>,
 \t\t\t\t      <0x00000002 0x00000002 0x00000004>,
 \t\t\t\t      <0x00000004 0x00000004 0x00000080>,
 \t\t\t\t      <0x00000005 0x00000005 0x00000008>,
 \t\t\t\t      <0x00000006 0x00000006 0x00000010>,
-\t\t\t\t      <0x00000007 0x00000007 0x00000020>,
-\t\t\t\t      <0x00000008 0x00000008 0x00000040>,
-\t\t\t\t      <0x00000009 0x00000009 0x00000080>,
-\t\t\t\t      <0x0000000a 0x0000000a 0x00000100>,
-\t\t\t\t      <0x00020003 0x00020003 0x00000008>,
-\t\t\t\t      <0x00020004 0x00020004 0x00000010>,
-\t\t\t\t      <0x00020005 0x00020005 0x00000020>,
-\t\t\t\t      <0x00020006 0x00020006 0x00000040>,
-\t\t\t\t      <0x00020007 0x00020007 0x00000080>,
-\t\t\t\t      <0x00020008 0x00020008 0x00000100>;
+\t\t\t\t      <0x00010021 0x00010021 0x00000020>;
 \t\triscv,event-to-mhpmevent = <0x00000004 0x00000000 0x00000007>,
-\t\t\t\t    <0x00000005 0x00000000 0x00000005>,
-\t\t\t\t    <0x00000006 0x00000000 0x00000006>,
-\t\t\t\t    <0x00000007 0x00000000 0x00000007>,
-\t\t\t\t    <0x00000008 0x00000000 0x00000008>,
-\t\t\t\t    <0x00000009 0x00000000 0x00000009>,
-\t\t\t\t    <0x0000000a 0x00000000 0x0000000a>,
-\t\t\t\t    <0x00020003 0x00000000 0x00000003>,
-\t\t\t\t    <0x00020004 0x00000000 0x00000004>,
-\t\t\t\t    <0x00020005 0x00000000 0x00000005>,
-\t\t\t\t    <0x00020006 0x00000000 0x00000006>,
-\t\t\t\t    <0x00020007 0x00000000 0x00000007>,
-\t\t\t\t    <0x00020008 0x00000000 0x00000008>;
+\t\t\t\t    <0x00000005 0x00000000 0x00000003>,
+\t\t\t\t    <0x00000006 0x00000000 0x00000004>,
+\t\t\t\t    <0x00010021 0x00000000 0x00000005>;
+\t\triscv,raw-event-to-mhpmcounters = <0x0 0x3 0xffffffff 0xffffffff 0x08>,
+\t\t\t\t        <0x0 0x4 0xffffffff 0xffffffff 0x10>,
+\t\t\t\t        <0x0 0x5 0xffffffff 0xffffffff 0x20>,
+\t\t\t\t        <0x0 0x6 0xffffffff 0xffffffff 0x40>,
+\t\t\t\t        <0x0 0x7 0xffffffff 0xffffffff 0x80>,
+\t\t\t\t        <0x0 0x8 0xffffffff 0xffffffff 0x100>;
 \t}};
 
 \tsoc@0 {{

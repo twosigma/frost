@@ -3697,9 +3697,12 @@ module cpu_ooo #(
     commit_branch_mispredict_count = 2'd0;
     if (rob_commit_valid && !rob_commit.exception) begin
       if (rob_commit.is_branch) commit_branch_retired_count = commit_branch_retired_count + 2'd1;
-      if (rob_commit.misprediction) commit_branch_mispredict_count = commit_branch_mispredict_count + 2'd1;
-      if (rob_commit_2.valid && rob_commit_2.is_branch) commit_branch_retired_count = commit_branch_retired_count + 2'd1;
-      if (rob_commit_2.valid && rob_commit_2.misprediction) commit_branch_mispredict_count = commit_branch_mispredict_count + 2'd1;
+      if (rob_commit.misprediction)
+        commit_branch_mispredict_count = commit_branch_mispredict_count + 2'd1;
+      if (rob_commit_2.valid && rob_commit_2.is_branch)
+        commit_branch_retired_count = commit_branch_retired_count + 2'd1;
+      if (rob_commit_2.valid && rob_commit_2.misprediction)
+        commit_branch_mispredict_count = commit_branch_mispredict_count + 2'd1;
     end
   end
 
@@ -3724,7 +3727,9 @@ module cpu_ooo #(
       .i_itlb_miss(iwalk_req_valid && iwalk_req_ready),
       .i_dtlb_miss(walk_req_valid && walk_req_ready),
       .i_l1d_miss(i_cache_perf_events.hierarchy.l1d.miss),
-      .i_sq_full_stall(dispatch_status.sq_full),
+      .i_sq_full_stall(dispatch_status.sq_full ||
+          (dispatch_status.slot2_block_lsq_full2 && from_id_to_ex_2.needs_sq &&
+           (from_id_to_ex.needs_sq ? sq_full_for_2 : sq_full))),
       .i_interrupts(file_interrupts),
       .i_mtime(i_mtime),
       .i_seip_line(file_seip),

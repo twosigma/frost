@@ -7,12 +7,12 @@
   "base": {
     // FIOM must be writable whenever satp.MODE can leave Bare, as FROST's is.
     "writable_fiom": true,
-    // mhpmcounter3..31 and mhpmevent3..31 read zero; mcounteren, scounteren,
-    // and mcountinhibit implement CY, TM, and IR (mcountinhibit CY and IR).
-    "writable_hpm_counters": {"len": 32, "value": "0x0000_0000"},
-    "mcounteren_writable_bits": {"len": 32, "value": "0x0000_0007"},
-    "scounteren_writable_bits": {"len": 32, "value": "0x0000_0007"},
-    "mcountinhibit": {"supported": true, "writable_bits": {"len": 32, "value": "0x0000_0005"}},
+    // Machine counters 3..8 have storage. Selectors are disabled in saved
+    // traces, so microarchitectural event timing does not affect comparison.
+    "writable_hpm_counters": {"len": 32, "value": "0x0000_01F8"},
+    "mcounteren_writable_bits": {"len": 32, "value": "0x0000_01FF"},
+    "scounteren_writable_bits": {"len": 32, "value": "0x0000_01FF"},
+    "mcountinhibit": {"supported": true, "writable_bits": {"len": 32, "value": "0x0000_01FD"}},
     // riscv_pkg::MedelegMask and FROST's three delegable interrupts.
     "medeleg": {"delegatable_bits": {"len": 64, "value": "0x0000_0000_0000_B3FF"}},
     "mideleg": {"delegatable_bits": {"len": "xlen", "value": "0x0000_0000_0000_0222"}},

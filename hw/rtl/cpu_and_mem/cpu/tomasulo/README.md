@@ -173,7 +173,7 @@ it; an SC result waits in its register only behind a store fault.
 |------------|-------|--------------|
 | `INT_RS`   | 16 (`INT_RS_DEPTH`) | ALU ops including LUI and AUIPC, shifts, Zba/Zbb/Zbs/Zbkb, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK, PAUSE (a NOP with no operands), and the illegal-instruction and fetch-fault markers |
 | `MUL_RS`   | 4     | MUL/MULW/MULH\*/CLMUL/CLMULH/CLMULR/DIV\*/REM\* |
-| `MEM_RS`   | 8     | All loads and stores (INT and FP), AMO\*, LR.W, LR.D, SC.W, SC.D, FENCE, FENCE.I, SFENCE.VMA |
+| `MEM_RS`   | 16    | All loads and stores (INT and FP), AMO\*, LR.W, LR.D, SC.W, SC.D, FENCE, FENCE.I, SFENCE.VMA |
 | `FP_RS`    | 2     | Every F and D compute instruction: FADD/FSUB, FMUL, FMA (3-source), FDIV, FSQRT, FMIN/FMAX, FEQ/FLT/FLE, FCVT\*, FMV.{X.W,W.X,X.D,D.X}, FCLASS, FSGNJ\* |
 | (none)     | n/a   | JAL, WFI, MRET, SRET, DRET: ROB only, no operands to wait for |
 

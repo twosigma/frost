@@ -20,7 +20,9 @@
 // aggregator and take their accesses from a real commit_bus_pipeline, including
 // its same-cycle flush mask. The full-width instance gets the inverted half, so
 // the equality checks also show that it ignores i_perf_counter_csr_half.
-module perf_csr_half_test_harness (
+module perf_csr_half_test_harness #(
+    parameter int unsigned PERF_COUNTERS = 1
+) (
     input logic i_clk,
     input logic i_rst,
     input logic i_flush,
@@ -36,6 +38,12 @@ module perf_csr_half_test_harness (
     input logic [4:0] i_fp_flags,
     input logic i_fp_flags_valid,
     input logic [63:0] i_mtime,
+    input logic [1:0] i_hpm_branches,
+    input logic [1:0] i_hpm_mispredicts,
+    input logic [3:0] i_hpm_events,
+    input logic i_mret,
+    input logic i_trap,
+    output logic [8:0] o_counter_blocked,
     output logic [63:0] o_reference,
     output logic [63:0] o_candidate,
     output logic [63:0] o_reference_comb,
@@ -61,6 +69,8 @@ module perf_csr_half_test_harness (
   logic [7:0] selectors[2];
   logic captures[2], previous[2];
   logic [31:0] counter_count;
+  logic [ 8:0] counter_blocked[2];
+  assign o_counter_blocked = counter_blocked[0];
 
   always_comb begin
     raw_commit = '0;
@@ -145,7 +155,8 @@ module perf_csr_half_test_harness (
   );
   for (genvar k = 0; k < 2; k++) begin : gen_csr
     csr_file #(
-        .UsePerfCsrHalf(k == 1)
+        .UsePerfCsrHalf(k == 1),
+        .PERF_COUNTERS (PERF_COUNTERS)
     ) u_csr (
         .i_clk(i_clk),
         .i_rst(i_rst),
@@ -157,6 +168,12 @@ module perf_csr_half_test_harness (
         .o_csr_read_data(read_data[k]),
         .o_csr_read_data_comb(read_comb[k]),
         .i_instruction_retired_count('0),
+        .i_branch_retired_count(i_hpm_branches),
+        .i_branch_mispredict_count(i_hpm_mispredicts),
+        .i_itlb_miss(i_hpm_events[0]),
+        .i_dtlb_miss(i_hpm_events[1]),
+        .i_l1d_miss(i_hpm_events[2]),
+        .i_sq_full_stall(i_hpm_events[3]),
         .i_interrupts('0),
         .i_mtime(i_mtime),
         .i_seip_line('0),
@@ -177,15 +194,15 @@ module perf_csr_half_test_harness (
         .o_mireg_illegal(),
         .o_sireg_illegal(),
         .o_stopei_illegal(),
-        .i_trap_taken('0),
+        .i_trap_taken(i_trap),
         .i_trap_to_s('0),
         .i_trap_pc('0),
         .i_trap_cause('0),
         .i_trap_value('0),
-        .i_trap_save_m('0),
+        .i_trap_save_m(i_trap),
         .i_trap_save_s('0),
         .i_trap_enter_d('0),
-        .i_mret_taken('0),
+        .i_mret_taken(i_mret),
         .i_sret_taken('0),
         .i_trap_to_d('0),
         .i_trap_dbg_cause('0),
@@ -208,7 +225,7 @@ module perf_csr_half_test_harness (
         .o_priv(),
         .o_mcounteren(),
         .o_scounteren(),
-        .o_counter_blocked(),
+        .o_counter_blocked(counter_blocked[k]),
         .o_stimecmp_blocked(),
         .o_sret_illegal(),
         .o_sfence_illegal(),

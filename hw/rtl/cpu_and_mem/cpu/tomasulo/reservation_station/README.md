@@ -13,7 +13,7 @@ second issue port for a second ALU.
 |----------|---------|-----------|
 | INT_RS | 16 (`INT_RS_DEPTH`) | `int_alu_shim` on port 0, a second `int_alu_shim` (ALU2) on port 1 |
 | MUL_RS | 4 | `int_muldiv_shim` |
-| MEM_RS | 8 | Address generation for the LQ and SQ, through the data MMU when translation is on |
+| MEM_RS | 16 | Address generation for the LQ and SQ, through the data MMU when translation is on |
 | FP_RS | 2 (`riscv_pkg::FpRsDepth`) | `fp_shim` (three sources, for FMA) |
 
 The [routing table](../README.md#reservation-station-routing)

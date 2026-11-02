@@ -394,7 +394,7 @@ __attribute__((naked)) static void b_read_cycle(void)
 
 __attribute__((naked)) static void b_read_hpm3(void)
 {
-    /* hpmcounter3 (0xC03) is unimplemented -> illegal at any privilege. */
+    /* hpmcounter3 (0xC03) requires its mcounteren bit below M mode. */
     __asm__ volatile("csrr t0, 0xC03\n ecall\n j .");
 }
 
@@ -878,16 +878,15 @@ int main(void)
     all_ok &= report("R unimpl-0x322-from-M", g_cause, 2u);
     M_CSR_PROBE("csrr %0, 0xB20", hpm_val); /* above mhpmcounter31 */
     all_ok &= report("R unimpl-0xB20-from-M", g_cause, 2u);
-    M_CSR_PROBE("csrr %0, 0xC03", hpm_val); /* hpmcounter3: no Zihpm */
-    all_ok &= report("R unimpl-0xC03-from-M", g_cause, 2u);
-    M_CSR_PROBE("csrr %0, 0xC1F", hpm_val); /* hpmcounter31: no Zihpm */
+    M_CSR_PROBE("csrr %0, 0xC03", hpm_val); /* Implemented user alias, readable in M. */
+    all_ok &= report("R hpmcounter3-from-M", g_cause, ~0ul);
+    M_CSR_PROBE("csrr %0, 0xC1F", hpm_val); /* Unimplemented user alias. */
     all_ok &= report("R unimpl-0xC1F-from-M", g_cause, 2u);
     cause = run_at_priv(&b_read_hpm3, PRIV_S);
-    all_ok &= report("R unimpl-csr-from-S", cause, 2u);
+    all_ok &= report("R hpmcounter3-gated-from-S", cause, 2u);
 
-    /* R: machine HPM CSRs read zero and ignore writes, the privileged
-     * specification's minimum implementation. A trap leaves the 0x5A5A
-     * seed; OpenSBI's write/read probe must instead see zero. */
+    /* R: counters 3..8 have storage and reset-disabled selectors. Machine
+     * counters and selectors 9..31 read zero and ignore writes. */
     M_CSR_PROBE("csrr %0, 0xB03", hpm_val); /* mhpmcounter3 */
     all_ok &= report("R mhpmcounter3-read", hpm_val, 0);
     M_CSR_PROBE("csrr %0, 0xB1F", hpm_val); /* mhpmcounter31 */
@@ -901,7 +900,7 @@ int main(void)
     M_CSR_PROBE("csrw 0x323, t1\n csrr %0, 0x323", hpm_val);
     all_ok &= report("R mhpmevent3-write-ignored", hpm_val, 0);
     M_CSR_PROBE("li t2, 1\n csrw 0xB03, t2\n csrrw %0, 0xB03, zero", hpm_val);
-    all_ok &= report("R mhpmcounter3-opensbi-probe", hpm_val, 0);
+    all_ok &= report("R mhpmcounter3-opensbi-probe", hpm_val, 1);
     cause = run_at_priv(&b_read_mhpm3, PRIV_S);
     all_ok &= report("R mhpmcounter3-from-S", cause, 2u);
 

@@ -386,13 +386,9 @@ module reorder_buffer #(
     };
   endfunction
 
-  // The machine HPM counters mhpmcounter3..31 (0xB03-0xB1F) and their event
-  // selectors mhpmevent3..31 (0x323-0x33F). FROST counts no HPM events, but
-  // the privileged spec defines all 29 pairs and makes a read-only-zero pair
-  // the minimum legal implementation, so they exist: csr_file's read mux
-  // returns 0 for them and no write arm matches them. Both ranges are M-only
-  // by address. OpenSBI finds a counter by writing 1 and reading it back, so
-  // a zero counter is not advertised.
+  // Machine HPM counters (0xB03-0xB1F) and event selectors (0x323-0x33F)
+  // are M-only by address. Counters and selectors 3..8 have storage;
+  // pairs 9..31 read zero and ignore writes.
   function automatic logic csr_is_mhpm(input logic [11:0] addr);
     csr_is_mhpm = ((addr[11:5] == 7'b1011_000) || (addr[11:5] == 7'b0011_001)) &&
                   (addr[4:0] >= 5'd3);
@@ -404,8 +400,8 @@ module reorder_buffer #(
   // unimplemented CSRs as zero would advertise missing features.
   // senvcfg exists (S/U make it mandatory) with FIOM as its only field, and the
   // read-only id registers mvendorid/marchid/mimpid/mconfigptr exist and
-  // read 0. The machine HPM counters and event selectors (csr_is_mhpm) exist
-  // and read 0 with writes ignored.
+  // read 0. Machine HPM counters and selectors exist across 3..31, with
+  // storage for 3..8 and zero-only pairs for 9..31.
   function automatic logic csr_addr_exists(input logic [11:0] addr);
     unique case (addr)
       // F extension

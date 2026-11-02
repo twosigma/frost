@@ -44,7 +44,7 @@ RS_NONE = 6
 RS_DEPTHS = {
     RS_INT: 16,
     RS_MUL: 4,
-    RS_MEM: 8,
+    RS_MEM: 16,
     RS_FP: 2,
 }
 
