@@ -33,7 +33,9 @@ module coherence_work_select #(
 );
   localparam int unsigned GroupBits = 6;
   localparam int unsigned Groups = (SLOTS + GroupBits - 1) / GroupBits;
-  logic [3:0][SLOTS-1:0] candidates;
+  // Each candidate is one kept LUT of the slot's inputs, so the group
+  // summaries and priorities below form a fixed tree.
+  (* keep = "true" *) logic [3:0][SLOTS-1:0] candidates;
   (* keep = "true" *) logic [3:0][SLOTS-1:0] class_selected;
   // Six-slot candidate summaries; each slot's priority comes from the lower
   // groups' summaries and its own group's lower slots.
