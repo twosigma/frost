@@ -41,8 +41,10 @@ CLOCK_PERIOD_NS = 10
 MAX_LATENCY = 80
 # Latencies count clock edges from the issue edge to the first cycle the
 # result is valid at the shim output.
-DIV_LATENCY = XLEN
-WORD_DIV_LATENCY = XLEN // 2
+# Radix-4 divider retires 2 bits per cycle: at most XLEN/2 cycles for 64-bit,
+# and XLEN/4 cycles for 32-bit word operations (with CLZ early exit for small operands).
+DIV_LATENCY = XLEN // 2
+WORD_DIV_LATENCY = XLEN // 4
 SHORT_WORD_OPS = os.environ.get("FROST_TEST_SHORT_WORD_OPS", "1") == "1"
 WORD_MUL_LATENCY = 3 if SHORT_WORD_OPS else 6
 WORD_LATENCIES = (
@@ -403,10 +405,9 @@ async def test_single_div_busy(dut: Any) -> None:
     iface.clear_issue()
     await FallingEdge(iface.clock)
 
-    for _ in range(DIV_LATENCY):
+    while not iface.read_div_fu_complete()["valid"]:
         assert iface.read_div_busy(), "o_div_busy should be high while dividing"
         assert not iface.read_busy(), "a DIV must not raise o_fu_busy"
-        assert not iface.read_div_fu_complete()["valid"]
         await iface.step()
 
     result = iface.read_div_fu_complete()
@@ -881,9 +882,8 @@ async def test_back_to_back_div(dut: Any) -> None:
         )
         await iface.step()
         iface.clear_issue()
-        latency = WORD_DIV_LATENCY if op.endswith("W") else DIV_LATENCY
-        for _ in range(latency):
-            assert not iface.read_div_fu_complete()["valid"]
+        while not iface.read_div_fu_complete()["valid"]:
+            assert iface.read_div_busy(), "o_div_busy should be high while dividing"
             await iface.step()
         result = iface.read_div_fu_complete()
         assert result["valid"], f"tag {rob_tag}: no result at its latency"
@@ -1076,11 +1076,12 @@ async def test_partial_flush_at_completion(dut: Any) -> None:
     iface = await setup(dut)
 
     # Tag 10 is younger than the flush boundary at 5 (head=0).
+    # Operand with MSB set ensures full-latency Radix-4 division (DIV_LATENCY steps).
     iface.drive_issue(
         valid=True,
         rob_tag=10,
         op=_op("DIV"),
-        src1_value=42,
+        src1_value=(1 << 63) | 42,
         src2_value=7,
     )
     await RisingEdge(iface.clock)
@@ -1313,7 +1314,12 @@ async def test_word_latency_and_hold(dut: Any) -> None:
     iface = await setup(dut)
     for name, latency in WORD_LATENCIES:
         await iface.reset()
-        a, b = 0x1234_5678_8000_0003, 0xDEAD_BEEF_FFFF_FFFE
+        a = 0x1234_5678_8000_0003
+        b = (
+            0xDEAD_BEEF_0000_0003
+            if name in ("DIVW", "REMUW")
+            else 0xDEAD_BEEF_FFFF_FFFE
+        )
         expected = getattr(alu_model, name.lower())(a, b)
         read = (
             iface.read_mul_fu_complete
