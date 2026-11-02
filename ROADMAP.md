@@ -39,10 +39,11 @@ freed as soon as its result is staged for the common data bus, before the
 load retires, so returned loads stay observable until they retire. A store
 acquires M before it writes. Probe data and acknowledgements must keep making
 progress when every queue is full. In simulation, memory-bound code in DDR
-runs slower through the home than through the previous hierarchy: the L1D
-sends its store acquisitions one at a time, the home has four fills, and it
-has no stream prefetcher yet. Other paths also take more cycles than
-before. The L1D completes one cached store at a time, hits included. The
+runs slower through the home than through the previous hierarchy, even with
+the home's eight fills and its stream prefetcher: the L1D sends its store
+acquisitions one at a time, and its read slots hold one load each, so a
+sequential stream keeps few misses in flight. Other paths also take more
+cycles than before. The L1D completes one cached store at a time, hits included. The
 probe for an instruction or page-table read downgrades a Modified sector to
 Shared, so the next store to it acquires it again. An instruction refill
 or page-table read from the L2 takes about 25 cycles, against 10 to 16
@@ -132,10 +133,11 @@ model of `cpu_top` and `soc_top` that CI compares with a CoreMark trace from
 the RTL. Its sweep of the previous hierarchy showed that a second memory
 channel needs about 16 reads in flight to use its bandwidth. In the coherent
 path, `L1D_NUM_MSHR` sets the L1D's request endpoints, eight on X3, so up to
-seven load misses go to a home with four fills; `L2_NUM_MSHR` and the L2
-prefetch parameters have no effect on the CPU. Measuring 8, 12 and 16 L2
-misses in flight in the RTL therefore needs more fills in the home, and a
-prefetcher in the home could supply further concurrent requests.
+seven load misses go to the home. `L2_NUM_MSHR` sets the home's fills, eight
+on X3, and the home's stream prefetcher adds up to four requests of its own.
+With four fills and no prefetcher, the demand side never had more than four
+L2 misses in flight in the programs measured in simulation, so more fills
+pay only together with the prefetcher.
 
 ## Verification
 
