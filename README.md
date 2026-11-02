@@ -183,8 +183,9 @@ every supported extension and privilege mode.
   load misses. A two-entry ordered store buffer installs Modified-sector
   hits with masked writes and gives waiting reads turns between stores.
   The L2's coherence home orders the L1s, page-table walks and DMA by sector
-  and has four fills. The build connects one hart. Low BRAM uses an 8 KiB
-  instruction cache and L0 data reads with write-through stores.
+  and has eight fills with data and instruction stream prefetching. The build
+  connects one hart. Low BRAM uses an 8 KiB instruction cache and L0 data
+  reads with write-through stores.
   DMA is coherent with the data caches; fills marked non-allocating use
   L2 way 0, while hits can use any way.
 - 256 KiB of on-chip BRAM and 1 GiB of cached DDR4, with the same
