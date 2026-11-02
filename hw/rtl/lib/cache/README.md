@@ -350,9 +350,11 @@ hart and DMA requests, and four prefetches in four slots kept for them, so
 neither kind waits for the other's capacity. Eight engines
 share their image storage with the result credits. An engine hands its image
 to completion ownership before G. An idle grant register captures an accepted
-result directly when no older result awaits selection. The grant register
-presents G while it holds a grant. G acceptance returns that image credit;
-the identity and physical way pin last through U. Each request waits for
+result directly when no older result awaits selection; otherwise it takes the
+next waiting result in rotation over the eight result buffers, whose stored
+tid names the slot. The grant register presents G while it holds a grant. G
+acceptance returns that image credit; the identity and physical way pin last
+through U. Each request waits for
 earlier requests to the same 32-byte sector: for a hart request's U, and for a
 DMA request's result. A DMA requester keeps no copy, and its result follows its
 probe service and array update, so its G, C and U order nothing after it. A
@@ -567,7 +569,11 @@ error, and a later demand miss reads the line again.
 
 The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_equal`, `coherence_cluster`
 and `coherent_cut` cover controller ownership, inclusion, cuts, atomics,
-probe service and the DMA sector handoff. `coherence_cluster_misses` repeats the cluster cases with three
+probe service and the DMA sector handoff. Their prefetch cases cover the slot
+partition, the no-fill flag, prefetch fills that install, take a demand seat
+or fail, the fill reserve, the last available way and the last write-back
+slot, PutM beside live prefetches, and a demand that replaces lines held only
+by prefetches. `coherence_cluster_misses` repeats the cluster cases with three
 L1D request endpoints, including several loads in flight. `coherence_readers`
 controls grants and releases around the real L1I, fetch provider and PTW. It checks overlapping fills, invalidation, discarded fetches
 and walks, errors, reset, fatal stop and reuse of reader IDs before U.
@@ -1117,7 +1123,7 @@ to answer.
 | `frost_cache_l2_lines_waiters2` | The L2-line suite with two waiter seats per L2 miss slot |
 | `*_prefetch` | The concurrency and DMA suites with eight L1D miss slots, eight L2 miss slots, two waiter seats per L2 miss slot, and eight prefetch requests |
 | `*_ways1` | The data-integrity, concurrency, DMA, and L2-line suites with direct-mapped caches |
-| `l2_stream_prefetcher*` | Stream confirmation, read distance, page bounds, response ID reuse, and four- and eight-request caps under excess demand |
+| `l2_stream_prefetcher*` | Stream confirmation, read distance, page bounds, response ID reuse, four- and eight-request caps under excess demand, and no new loads while disabled |
 | `line_port_arbiter*` | Arbitration and tagged responses |
 | `line_port_axi_bridge` | The bridge across a CPU reset against a slave that keeps running: held beats, AW/W pairing, dropped stale responses, and a reused id held back until the stale response for it has arrived; and across the slave's own reset, which withdraws the held beats |
 | `axi_behavioral_memory_*` | Boot-image loading and reset persistence for dense and wide sparse DDR, distinct high-address writes, and TestRIG's empty-memory reset contract |

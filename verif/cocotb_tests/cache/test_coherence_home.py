@@ -1494,7 +1494,7 @@ async def prefetch_error_frees_its_fill_and_wakes_joined_readers(dut: Any) -> No
 
 
 @cocotb.test()
-async def prefetches_order_with_dma_writes_and_reads(dut: Any) -> None:
+async def prefetches_beside_dma_writes_and_reads_change_no_bytes(dut: Any) -> None:
     """Prefetches beside DMA writes and reads change no bytes."""
     b = Home(dut)
     await b.reset()
