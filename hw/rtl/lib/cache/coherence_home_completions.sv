@@ -436,12 +436,12 @@ module coherence_home_completions #(
       SlotBits'(MainSlots) : work_slot_q;
   if (PREFETCH_SLOTS != 0) begin : gen_prefetch_work
     // The prefetch slots rotate among themselves: the first offered slot at
-    // or after the one after the last prefetch dispatched. A slot parked on
-    // this edge is not offered (the home parks no prefetch).
+    // or after the one after the last prefetch dispatched. The home parks no
+    // prefetch, so the offer reads registers only.
     logic [PREFETCH_SLOTS-1:0] offered, later_q, later, later_first, offered_first;
     logic [SlotBits-1:0] pick;
     for (genvar index = 0; index < PREFETCH_SLOTS; index++) begin : gen_offered
-      assign offered[index] = work_eligible[MainSlots+index] && !i_park[MainSlots+index] &&
+      assign offered[index] = work_eligible[MainSlots+index] &&
           !(work_selected_q && int'(work_slot_q) == MainSlots + index);
     end
     assign later = offered & later_q;
