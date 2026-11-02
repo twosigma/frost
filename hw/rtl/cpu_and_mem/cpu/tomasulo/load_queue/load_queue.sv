@@ -1161,7 +1161,35 @@ module load_queue #(
         wire [PREISSUE_RS_DEPTH-1:0] ready =
             i_pre_issue_ready[candidate*PREISSUE_RS_DEPTH +: PREISSUE_RS_DEPTH];
         logic [DEPTH-1:0] picked;
-        if (PREISSUE_RS_DEPTH == 8) begin : gen_pick8
+        if (PREISSUE_RS_DEPTH == 16) begin : gen_pick16
+          // Balanced 2-level 16-entry reduction tree to protect Fmax.
+          wire any_b0 = |ready[3:0];
+          wire any_b1 = |ready[7:4];
+          wire any_b2 = |ready[11:8];
+          wire any_low = any_b0 || any_b1;
+          for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry
+            wire [15:0] eq = pre_tag_eq[entry];
+            wire pick01 = ready[0] ? eq[0] : (ready[1] && eq[1]);
+            wire pick23 = ready[2] ? eq[2] : (ready[3] && eq[3]);
+            wire pick_b0 = (ready[0] || ready[1]) ? pick01 : pick23;
+
+            wire pick45 = ready[4] ? eq[4] : (ready[5] && eq[5]);
+            wire pick67 = ready[6] ? eq[6] : (ready[7] && eq[7]);
+            wire pick_b1 = (ready[4] || ready[5]) ? pick45 : pick67;
+
+            wire pick89 = ready[8] ? eq[8] : (ready[9] && eq[9]);
+            wire pick1011 = ready[10] ? eq[10] : (ready[11] && eq[11]);
+            wire pick_b2 = (ready[8] || ready[9]) ? pick89 : pick1011;
+
+            wire pick1213 = ready[12] ? eq[12] : (ready[13] && eq[13]);
+            wire pick1415 = ready[14] ? eq[14] : ready[15] ? eq[15] : eq[0];
+            wire pick_b3 = (ready[12] || ready[13]) ? pick1213 : pick1415;
+
+            wire pick_low = any_b0 ? pick_b0 : pick_b1;
+            wire pick_high = any_b2 ? pick_b2 : pick_b3;
+            assign picked[entry] = any_low ? pick_low : pick_high;
+          end
+        end else if (PREISSUE_RS_DEPTH == 8) begin : gen_pick8
           // Prefer the lowest ready entry in the low half, then the high half.
           // With none ready, use entry 0.
           wire any_low = |ready[3:0];

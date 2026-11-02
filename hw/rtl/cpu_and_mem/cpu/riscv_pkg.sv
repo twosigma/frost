@@ -1075,6 +1075,8 @@ package riscv_pkg;
   localparam bit [11:0] CsrCycle = 12'hC00;  // Cycle counter
   localparam bit [11:0] CsrTime = 12'hC01;  // Timer (mtime)
   localparam bit [11:0] CsrInstret = 12'hC02;  // Instructions retired
+  localparam bit [11:0] CsrHpmcounter3 = 12'hC03;  // Hardware performance counter 3 (branch instructions)
+  localparam bit [11:0] CsrHpmcounter4 = 12'hC04;  // Hardware performance counter 4 (branch mispredictions)
   localparam bit [11:0] CsrCycleH = 12'hC80;  // cycleh (RV32 only)
   localparam bit [11:0] CsrTimeH = 12'hC81;  // timeh (RV32 only)
   localparam bit [11:0] CsrInstretH = 12'hC82;  // instreth (RV32 only)
@@ -1084,6 +1086,10 @@ package riscv_pkg;
   localparam bit [11:0] CsrMcycleH = 12'hB80;  // mcycleh (RV32 only)
   localparam bit [11:0] CsrMinstret = 12'hB02;  // minstret
   localparam bit [11:0] CsrMinstretH = 12'hB82;  // minstreth (RV32 only)
+  localparam bit [11:0] CsrMhpmcounter3 = 12'hB03;  // mhpmcounter3
+  localparam bit [11:0] CsrMhpmcounter4 = 12'hB04;  // mhpmcounter4
+  localparam bit [11:0] CsrMhpmevent3 = 12'h323;  // mhpmevent3
+  localparam bit [11:0] CsrMhpmevent4 = 12'h324;  // mhpmevent4
 
   // Machine-mode CSR addresses (for trap/interrupt handling)
   localparam bit [11:0] CsrMstatus = 12'h300;  // Machine status register
@@ -2285,7 +2291,7 @@ package riscv_pkg;
   localparam int unsigned IntRsDepth = 16;  // Integer ALU operations
   localparam int unsigned IntRsIssue2Window = 8;
   localparam int unsigned MulRsDepth = 4;  // Multiply/divide operations
-  localparam int unsigned MemRsDepth = 8;  // Load/store operations
+  localparam int unsigned MemRsDepth = 16;  // Load/store operations
   localparam int unsigned FpRsDepth = 2;  // Every FP compute operation (3 sources)
 
   // Memory queue depths
