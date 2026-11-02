@@ -1200,18 +1200,27 @@ jobs:
       matrix:
         include:
           - shard: CSR profiling on
-            pytest_filter: "csr_file_bmc and not csr_file_bmc_perf_off"
+            pytest_filter: >-
+              (csr_file_bmc and not csr_file_bmc_perf_off) or
+              (coherence_store_boundary and (bmc_amo or bmc_sc or cover_amo or cover_sc))
             timeout_minutes: 120
           - shard: CSR profiling off
-            pytest_filter: "csr_file_bmc_perf_off"
+            pytest_filter: >-
+              csr_file_bmc_perf_off or
+              (coherence_store_boundary and not (bmc_amo or bmc_sc or cover_amo or cover_sc))
             timeout_minutes: 120
           - shard: Reorder buffer
-            pytest_filter: "reorder_buffer_bmc"
+            pytest_filter: >-
+              reorder_buffer_bmc or
+              (coherence_l1d and not (coh_l1d_bmc or coh_l1d_multi_bmc))
             timeout_minutes: 120
           # The coherence home, endpoints and bridges, the coherent CPU
           # interfaces, and the hart maintenance composition proof.
           - shard: Coherence
-            pytest_filter: "axi_coherent_bridge or coherence_ or coherent_"
+            pytest_filter: >-
+              (axi_coherent_bridge or coherence_ or coherent_) and not
+              (coherence_store_boundary or
+              (coherence_l1d and not (coh_l1d_bmc or coh_l1d_multi_bmc)))
             timeout_minutes: 240
           - shard: Other tasks
             pytest_filter: "not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or coherence_ or coherent_)"
