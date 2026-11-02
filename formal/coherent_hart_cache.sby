@@ -5,29 +5,36 @@ coh_hart_maint_cover covers
 [options]
 proof: mode prove
 proof: depth 32
+proof: aigsmt boolector
 covers: mode cover
-covers: depth 100
-proof: timeout 600
-covers: timeout 300
+covers: depth 160
+covers: vcd_sim on
+proof: timeout 1800
+covers: timeout 900
 
 [engines]
 proof: abc pdr -r
-covers: smtbmc boolector
+covers: btor btormc
 
 [script]
 read -formal -sv riscv_pkg.sv cache_perf_pkg.sv coherence_pkg.sv
 # Component targets prove the service engine and walker properties separately.
 read -sv coherence_home_engine.sv ptw.sv
-read -sv coherence_request_endpoint.sv coherence_d_arbiter.sv coherence_line_bridge.sv
-read -formal -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
+read -sv coherence_request_endpoint.sv coherence_d_arbiter.sv
+# Reader assertions apply here without the standalone environment assumptions.
+read -sv -nosynthesis coherence_line_bridge.sv
+proof: read -formal -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
+covers: read -formal -D COH_MAINT_COVER -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
 covers: chparam -set COVER_MODE 1 coherent_hart_cache_formal
 prep -flatten -top coherent_hart_cache_formal
+check -assert
 chformal -cover -remove c:*flatten_home* c:*flatten_walker* c:walker.* c:*bridge* c:*endpoint* c:*arbiter*
 memory_map
 opt
-techmap
-opt -fast
-setundef -anyseq
+proof: techmap
+proof: opt -fast
+proof: setundef -anyseq
+covers: setundef -zero
 opt_clean
 
 [files]

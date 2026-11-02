@@ -114,7 +114,11 @@ module coherence_l1d #(
     output logic [ADDR_WIDTH-1:0] o_fatal_addr
 );
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
+`ifdef COH_MAINT_COVER
+  wire install = 1, evict = 1;
+`else
   (* anyseq *) logic install, evict;
+`endif
   logic pending_q, sent_q, granted_q, written_q, live, request_ready;
   logic resident_q, put_q, put_accepted_q, reply_valid_q;
   logic [63:0] value_q, store_q;
@@ -212,6 +216,10 @@ module coherence_l1d #(
       store_q <= 0;
     end else begin
       assert (!i_maint_valid);
+      if (written_q) assert (value_q == store_q);
+      if (o_r_valid && reply_q.data_valid) assert (reply_q.data == {4{i_write_data}});
+      if (o_w_valid) assert (put.data == {4{i_write_data}});
+      if (pending_q || written_q) assert (store_q == i_write_data);
       if (|i_write_mask) begin
         assert (o_store_ready);
         pending_q <= 1;
@@ -327,25 +335,42 @@ module frost_cache #(
     output cache_perf_pkg::cache_instance_perf_events_t o_perf_events,
     output cache_perf_pkg::cache_write_perf_events_t o_write_perf_events
 );
+`ifdef COH_MAINT_COVER
+  wire fill_step = 1, invalidate_step = 1;
+`else
   (* anyseq *) logic fill_step, invalidate_step;
-  logic valid_q, demand_q, waiting_q, fill_q, busy_q;
-  logic [UP_ID_BITS-1:0] id_q;
-  logic [LINE_BYTES*8-1:0] data_q, fill_data_q;
-  logic fill_error_q;
+`endif
+  logic [1:0] valid_q, demand_q, waiting_q, fill_q;
+  logic busy_q;
+  logic [1:0][UP_ID_BITS-1:0] id_q;
+  logic [1:0][ADDR_WIDTH-1:0] address_q;
+  logic [1:0][LINE_BYTES*8-1:0] data_q, fill_data_q;
+  logic [1:0] fill_error_q;
+  wire [1:0] live = demand_q | waiting_q | fill_q;
+  wire slot = live[0];
+  wire down_slot = !demand_q[0];
+  wire fill_slot = !fill_q[0];
+  wire sector = i_up_req_addr[5];
+  wire pipeline_idle = !(|live) && !o_up_resp_valid;
+  wire sweep = busy_q && !i_invalidate_all && pipeline_idle && invalidate_step;
+  wire same_sector = (live[0] && address_q[0] == i_up_req_addr) ||
+      (live[1] && address_q[1] == i_up_req_addr);
   assign o_up_req_ready = !i_rst && !i_invalidate_all && !busy_q &&
-      !demand_q && !waiting_q && !fill_q && !o_up_resp_valid;
-  assign o_down_req_valid = !i_rst && demand_q;
+      !(&live) && !(|fill_q) && !o_up_resp_valid && !same_sector;
+  assign o_down_req_valid = !i_rst && |demand_q;
   assign o_down_req_write = 0;
-  assign o_down_req_addr = 32'h80000000;
+  assign o_down_req_addr = address_q[down_slot];
   assign o_down_req_wdata = 0;
   assign o_down_req_wstrb = 0;
-  assign o_down_req_id = 0;
+  assign o_down_req_id = DOWN_ID_BITS'(down_slot);
   assign o_down_req_maintenance = 0;
   assign o_maint_busy = busy_q;
   assign o_fatal_error = 0;
   assign o_fatal_addr = 0;
   assign o_perf_events = '0;
   assign o_write_perf_events = '0;
+  logic swept_q;
+  logic [1:0] old_fill_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       valid_q <= 0;
@@ -354,6 +379,7 @@ module frost_cache #(
       fill_q <= 0;
       busy_q <= 0;
       id_q <= 0;
+      address_q <= 0;
       data_q <= 0;
       fill_data_q <= 0;
       fill_error_q <= 0;
@@ -361,45 +387,60 @@ module frost_cache #(
       o_up_resp_id <= 0;
       o_up_resp_rdata <= 0;
       o_up_resp_error <= 0;
+      old_fill_q <= 0;
+      swept_q <= 0;
     end else begin
       assert (!i_writeback_all);
+      for (int n = 0; n < 2; n++) assert ($onehot0({demand_q[n], waiting_q[n], fill_q[n]}));
+      if (swept_q) assert ((old_fill_q & live) == 0);
       o_up_resp_valid <= 0;
       if (i_up_req_valid && o_up_req_ready) begin
-        id_q <= i_up_req_id;
-        if (valid_q) begin
+        id_q[slot] <= i_up_req_id;
+        address_q[slot] <= i_up_req_addr;
+        old_fill_q[slot] <= 0;
+        if (valid_q[sector]) begin
           o_up_resp_valid <= 1;
           o_up_resp_id <= i_up_req_id;
-          o_up_resp_rdata <= data_q;
+          o_up_resp_rdata <= data_q[sector];
           o_up_resp_error <= 0;
-        end else demand_q <= 1;
+        end else demand_q[slot] <= 1;
       end
       if (o_down_req_valid && i_down_req_ready) begin
-        demand_q  <= 0;
-        waiting_q <= 1;
+        demand_q[down_slot]  <= 0;
+        waiting_q[down_slot] <= 1;
       end
       if (i_down_resp_valid) begin
-        assert (waiting_q);
-        waiting_q <= 0;
-        fill_q <= 1;
-        fill_data_q <= i_down_resp_rdata;
-        fill_error_q <= i_down_resp_error;
+        assert (i_down_resp_id < 2);
+        assert (waiting_q[i_down_resp_id[0]]);
+        waiting_q[i_down_resp_id[0]] <= 0;
+        fill_q[i_down_resp_id[0]] <= 1;
+        fill_data_q[i_down_resp_id[0]] <= i_down_resp_rdata;
+        fill_error_q[i_down_resp_id[0]] <= i_down_resp_error;
       end
-      if (fill_q && fill_step) begin
-        fill_q <= 0;
-        data_q <= fill_data_q;
-        valid_q <= !fill_error_q;
+      if ((|fill_q) && fill_step) begin
+        assert (!(swept_q && old_fill_q[fill_slot]));
+        fill_q[fill_slot] <= 0;
+        data_q[address_q[fill_slot][5]] <= fill_data_q[fill_slot];
+        valid_q[address_q[fill_slot][5]] <= !fill_error_q[fill_slot];
         o_up_resp_valid <= 1;
-        o_up_resp_id <= id_q;
-        o_up_resp_rdata <= fill_data_q;
-        o_up_resp_error <= fill_error_q;
+        o_up_resp_id <= id_q[fill_slot];
+        o_up_resp_rdata <= fill_data_q[fill_slot];
+        o_up_resp_error <= fill_error_q[fill_slot];
       end
-      if (i_invalidate_all) busy_q <= 1;
-      if (busy_q && !i_invalidate_all && !demand_q && !waiting_q &&
-          !fill_q && !o_up_resp_valid && invalidate_step) begin
+      if (i_invalidate_all) begin
+        busy_q <= 1;
+        old_fill_q <= live;
+        swept_q <= 0;
+      end
+      if (sweep) begin
+        assert (!(|waiting_q) && !(|fill_q) && !(|demand_q) && !o_up_resp_valid);
         valid_q <= 0;
         busy_q  <= 0;
+        swept_q <= 1;
       end
-      cover (i_invalidate_all && (waiting_q || fill_q));
+      cover (i_invalidate_all && (|waiting_q || |fill_q));
+      cover (i_invalidate_all && &live);
+      cover (&waiting_q);
     end
   end
 

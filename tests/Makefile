@@ -59,6 +59,11 @@ else ifeq ($(TOPLEVEL),coherence_cluster_test_harness)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/cache/coherence_home.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),coherence_readers_test_harness)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/frost.f \
+        $(ROOT)/hw/rtl/lib/cache/coherence_readers_test_harness.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),reorder_buffer)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.f

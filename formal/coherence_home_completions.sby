@@ -1,6 +1,7 @@
 [tasks]
-coh_completions_prove proof
-coh_completions_cover covers
+coh_completions_prove proof base
+coh_completions_cover covers base
+coh_if_pair_cover covers if_pair
 
 [options]
 proof: mode prove
@@ -19,7 +20,10 @@ read -formal -sv coherence_seat_select.sv coherence_work_select.sv
 read -sv coherence_pkg.sv coherence_home_endpoint.sv coherence_d_arbiter.sv
 read -formal -sv coherence_home_completions.sv
 chparam -set SLOTS 3 -set RESULT_SLOTS 2 -set CACHE_BYTES 256 -set WAYS 2 coherence_home_completions
-prep -top coherence_home_completions -flatten
+base: prep -top coherence_home_completions -flatten
+if_pair: read -formal -sv coherence_if_pair_formal.sv
+if_pair: prep -top coherence_if_pair_formal -flatten
+if_pair: chformal -cover -remove c:*dut*
 memory_map
 opt
 proof: techmap
@@ -27,6 +31,7 @@ proof: opt
 proof: setundef -undriven -anyseq
 
 [files]
+coherence_if_pair_formal.sv
 ../hw/rtl/lib/cache/coherence_seat_select.sv
 ../hw/rtl/lib/cache/coherence_work_select.sv
 ../hw/rtl/lib/cache/coherence_pkg.sv

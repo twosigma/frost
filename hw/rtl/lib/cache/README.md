@@ -275,7 +275,18 @@ source and use the cache-counter ABI.
 
 The hart uses source 0 and classes 0, 1 and 2 for data, instruction and walker
 requests. The data class has one request identity per L1D endpoint, IDs 0
-to `L1D_NUM_MSHR - 1`; the instruction and walker classes have one each. Source 2 and class 3 identify
+to `L1D_NUM_MSHR - 1`. The instruction class uses IDs 0 and 1 for two bridge
+slots; the walker class uses ID 0. Each IF slot saves its L1I MSHR ID separately
+from its coherent identity. IF and PTW data and errors register at G, after the
+home has merged dirty probe data. Each slot completes C and U independently
+of its reader response and accepts another request only after U. The two IF
+slots share staged D/C arbiters and return at most one response per cycle.
+Their G readiness uses the registered phase and full q match. The home admits
+at most one live request per q and returns that request's address in G.
+An assertion checks the address of every accepted grant.
+`coherence_line_bridge` defaults to a response after U for other users.
+
+Source 2 and class 3 identify
 DMA, whose four-bit ingress ID occupies q.id. `coherence_dma_ingress` has
 `SLOTS` admission credits, eight in the cluster, and holds each opaque ID
 until its slot frees. It presents requests in acceptance order without waiting for earlier
@@ -438,25 +449,36 @@ Walker reads use ReadOnce.PTW and instruction refills use ReadOnce.IF.
 The home probes the L1D and merges dirty resident or absorbed PutM data into
 its response. FENCE.I and SFENCE.VMA drain older committed stores through
 L1D installation, invalidate L1I and reset the fetch generation. Dirty L1D
-lines can remain resident. Fence completion also waits for instruction-copy
-writes outside the home through `i_imem_sync_done`. FENCE, Device publication
-and serializer drains include pending
-committed stores and the selected SC write. They do not require all dirty L2
+lines can remain resident. L1I drains both MSHRs and pending refill and response
+stages before its invalidation sweep. A pre-fence fill cannot install after
+that sweep. A bridge that already answered its reader can finish C/U after
+fence completion without returning another response. Fence completion also
+waits for instruction-copy writes outside the home through `i_imem_sync_done`.
+FENCE, Device publication and serializer drains include pending committed
+stores and the selected SC write. They do not require all dirty L2
 bytes to reach external memory.
 
 The `coherent_hart_cache` formal target composes its maintenance controller,
 IF/PTW bridges, the walker and the home service engine. Small private-cache
 models represent delayed store installation, dirty eviction, PutM absorption
-and instruction fills that drain during invalidation. The proof tracks a
-stored PTE version through the home and the returned IF/PTW data. Component
-targets check array storage, endpoint ownership and arbitrary-byte merges.
-Covers exercise discarded responses, an outstanding instruction fill,
+and two instruction fills that drain during invalidation. The home contract
+has one entry per IF slot and a third shared by other classes. It preserves
+full identities and same-sector ordering through U while the service engine
+processes requests serially. The proof tracks a stored PTE version
+through the home and the returned IF/PTW data, response IDs, discarded walks
+and access-fault classification. Component targets check array storage,
+endpoint ownership and arbitrary-byte merges.
+Covers exercise discarded responses, two outstanding instruction fills,
+fence completion with an answered IF transaction awaiting U, reused MSHR IDs,
 installation before U, and IF/DMA/NIC contention with delayed completions.
 
 The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_equal`, `coherence_cluster`
 and `coherent_cut` cover controller ownership, inclusion, cuts, atomics,
 probe service and the DMA sector handoff. `coherence_cluster_misses` repeats the cluster cases with three
-L1D request endpoints, including several loads in flight. The whole-SoC program configurations use this hierarchy.
+L1D request endpoints, including several loads in flight. `coherence_readers`
+controls grants and releases around the real L1I, fetch provider and PTW. It checks overlapping fills, invalidation, discarded fetches
+and walks, errors, reset, fatal stop and reuse of reader IDs before U.
+The whole-SoC program configurations use this hierarchy.
 G and U route by their message source identity. Fair C arbiters select the
 hart and DMA inputs and the hart's data, instruction and walker inputs. Each
 arbiter holds its selection during backpressure and acknowledges only that input.
@@ -904,7 +926,10 @@ PTE's A or D bit set takes a page fault (Svade).
 
 The home probes L1D for every PTE read. Dirty resident data or an absorbed
 PutM overrides the home image, including when the home array returns after
-the probe. The bridge has no preliminary L1D clean. Software can publish a
+the probe. The bridge registers data and errors on G and keeps its identity
+through C and U. A dependent PTE request waits for that U before acceptance.
+Discarded walks consume their response while the bridge finishes C/U.
+The bridge has no preliminary L1D clean. Software can publish a
 child table with ordered stores and a parent pointer before SFENCE.VMA;
 a walk that observes the published pointer also observes its table stores.
 `ptw_coherence_test` establishes a stale home PTE by eviction, then publishes

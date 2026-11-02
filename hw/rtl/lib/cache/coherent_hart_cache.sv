@@ -145,11 +145,11 @@ module coherent_hart_cache #(
 `endif
 
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
-  // D and C ports: the L1D's endpoints first, then IF and PTW. G and U route
+  // D and C ports: the L1D's endpoints first, then two IF slots and PTW. G and U route
   // by port class.
-  localparam int unsigned Ports   = L1D_MISSES + 2;
+  localparam int unsigned Ports   = L1D_MISSES + 3;
   localparam int unsigned IfPort  = L1D_MISSES;
-  localparam int unsigned PtwPort = L1D_MISSES + 1;
+  localparam int unsigned PtwPort = L1D_MISSES + 2;
   logic [Ports-1:0] d_valid, d_ready, c_valid, c_ready, c_selected;
   logic [2:0] g_ready, u_ready;
   // Per-requester packets are plain vectors, read whole by the arbiters.
@@ -174,6 +174,22 @@ module coherent_hart_cache #(
   logic [2:0] if_req_id, if_resp_id;
   logic if_resp_valid, if_resp_error;
   logic [255:0] if_resp_data;
+  logic [1:0] if_slot_ready, if_slot_valid, if_slot_resp, if_slot_error;
+  logic [1:0] if_g_ready, if_u_ready;
+  logic [1:0][  2:0] if_slot_id;
+  logic [1:0][255:0] if_slot_data;
+  assign if_req_ready = |if_slot_ready;
+  assign if_slot_valid = {
+    if_req_valid && !if_slot_ready[0] && if_slot_ready[1], if_req_valid && if_slot_ready[0]
+  };
+  assign g_ready[1] = |if_g_ready;
+  assign u_ready[1] = |if_u_ready;
+  assign if_resp_valid = |if_slot_resp;
+  assign if_resp_id = ({3{if_slot_resp[0]}} & if_slot_id[0]) |
+      ({3{if_slot_resp[1]}} & if_slot_id[1]);
+  assign if_resp_data = ({256{if_slot_resp[0]}} & if_slot_data[0]) |
+      ({256{if_slot_resp[1]}} & if_slot_data[1]);
+  assign if_resp_error = |(if_slot_resp & if_slot_error);
   assign grant = i_g;
   assign release_message = i_u;
   assign o_fatal = l1d_fatal || l1i_fatal;
@@ -360,45 +376,50 @@ module coherent_hart_cache #(
       .o_perf_events(o_l1i_perf_events),
       .o_write_perf_events()
   );
-  coherence_line_bridge #(
-      .ADDR_WIDTH(ADDR_WIDTH),
-      .PORT_CLASS(1),
-      .CLEAN(1'b0)
-  ) if_bridge (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
-      .i_fatal_stop(i_fatal_stop),
-      .i_req_valid(if_req_valid),
-      .o_req_ready(if_req_ready),
-      .i_req_write(if_req_write),
-      .i_req_addr(if_req_addr),
-      .i_req_data('0),
-      .i_req_mask('0),
-      .i_req_id(if_req_id),
-      .o_resp_valid(if_resp_valid),
-      .o_resp_id(if_resp_id),
-      .o_resp_data(if_resp_data),
-      .o_resp_error(if_resp_error),
-      .o_clean_valid(),
-      .o_clean_addr(),
-      .i_clean_done(1'b0),
-      .o_d_valid(d_valid[IfPort]),
-      .i_d_ready(d_ready[IfPort]),
-      .o_d(demand[IfPort]),
-      .i_g_valid(i_g_valid && grant.q[6:5] == 1),
-      .o_g_ready(g_ready[1]),
-      .i_g(i_g),
-      .o_c_valid(c_valid[IfPort]),
-      .o_c_selected(c_selected[IfPort]),
-      .i_c_ready(c_ready[IfPort]),
-      .o_c(completion[IfPort]),
-      .i_u_valid(i_u_valid && release_message.q[6:5] == 1),
-      .o_u_ready(u_ready[1]),
-      .i_u(i_u)
-  );
+  for (genvar slot = 0; slot < 2; slot++) begin : gen_if
+    coherence_line_bridge #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .PORT_CLASS(1),
+        .SLOT(slot),
+        .EARLY_RESPONSE(1'b1),
+        .CLEAN(1'b0)
+    ) if_bridge (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_fatal_stop(i_fatal_stop),
+        .i_req_valid(if_slot_valid[slot]),
+        .o_req_ready(if_slot_ready[slot]),
+        .i_req_write(if_req_write),
+        .i_req_addr(if_req_addr),
+        .i_req_data('0),
+        .i_req_mask('0),
+        .i_req_id(if_req_id),
+        .o_resp_valid(if_slot_resp[slot]),
+        .o_resp_id(if_slot_id[slot]),
+        .o_resp_data(if_slot_data[slot]),
+        .o_resp_error(if_slot_error[slot]),
+        .o_clean_valid(),
+        .o_clean_addr(),
+        .i_clean_done(1'b0),
+        .o_d_valid(d_valid[IfPort+slot]),
+        .i_d_ready(d_ready[IfPort+slot]),
+        .o_d(demand[IfPort+slot]),
+        .i_g_valid(i_g_valid && grant.q[6:5] == 1),
+        .o_g_ready(if_g_ready[slot]),
+        .i_g(i_g),
+        .o_c_valid(c_valid[IfPort+slot]),
+        .o_c_selected(c_selected[IfPort+slot]),
+        .i_c_ready(c_ready[IfPort+slot]),
+        .o_c(completion[IfPort+slot]),
+        .i_u_valid(i_u_valid && release_message.q[6:5] == 1),
+        .o_u_ready(if_u_ready[slot]),
+        .i_u(i_u)
+    );
+  end
   coherence_line_bridge #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .PORT_CLASS(2),
+      .EARLY_RESPONSE(1'b1),
       .CLEAN(1'b0)
   ) walk_bridge (
       .i_clk(i_clk),
@@ -466,6 +487,11 @@ module coherent_hart_cache #(
     if (sim_reset_seen_q && !i_rst) begin
       assert ((c_stalled_q & ~c_valid) == 0);
       assert ($onehot0(c_ready));
+      assert ($onehot0(if_slot_valid));
+      assert ((if_req_valid && if_req_ready) == (|if_slot_valid));
+      assert ($onehot0(if_g_ready));
+      assert ($onehot0(if_u_ready));
+      assert ($onehot0(if_slot_resp));
       for (int port_idx = 0; port_idx < Ports; port_idx++) begin
         if (c_valid[port_idx] && c_ready[port_idx])
           assert (o_c_valid && i_c_ready && o_c == completion[port_idx]);
@@ -475,6 +501,52 @@ module coherent_hart_cache #(
 `endif
 `ifdef FORMAL
   logic f_invalidated_q, f_busy_q, f_mirror_wait_q;
+  logic [1:0] f_if_live_q, f_if_responded_q;
+  logic [1:0][2:0] f_if_id_q;
+  logic [1:0] f_if_waiting_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_if_live_q <= 0;
+      f_if_responded_q <= 0;
+      f_if_id_q <= 0;
+      f_if_waiting_q <= 0;
+    end else begin
+      if (if_req_valid && if_req_ready) begin
+        assert (if_req_id < 2 && !f_if_waiting_q[if_req_id[0]]);
+        f_if_waiting_q[if_req_id[0]] <= 1;
+      end
+      if (if_resp_valid) begin
+        assert (if_resp_id < 2 && f_if_waiting_q[if_resp_id[0]]);
+        f_if_waiting_q[if_resp_id[0]] <= 0;
+      end
+      for (int mshr = 0; mshr < 2; mshr++)
+      assert (f_if_waiting_q[mshr] ==
+            ((f_if_live_q[0] && !f_if_responded_q[0] && f_if_id_q[0] == 3'(mshr)) ||
+             (f_if_live_q[1] && !f_if_responded_q[1] && f_if_id_q[1] == 3'(mshr))));
+      for (int slot = 0; slot < 2; slot++) begin
+        if (if_slot_valid[slot]) begin
+          assert (!f_if_live_q[slot]);
+          f_if_live_q[slot] <= 1;
+          f_if_responded_q[slot] <= 0;
+          f_if_id_q[slot] <= if_req_id;
+        end
+        if (if_slot_resp[slot]) begin
+          assert (f_if_live_q[slot] && !f_if_responded_q[slot]);
+          assert (if_slot_id[slot] == f_if_id_q[slot]);
+          f_if_responded_q[slot] <= 1;
+        end
+        if (i_u_valid && if_u_ready[slot]) begin
+          assert (f_if_live_q[slot] && f_if_responded_q[slot]);
+          f_if_live_q[slot] <= 0;
+        end
+      end
+      cover ((if_slot_valid[0] && f_if_live_q[1] && f_if_responded_q[1] &&
+          f_if_id_q[1] == if_req_id) || (if_slot_valid[1] && f_if_live_q[0] &&
+          f_if_responded_q[0] && f_if_id_q[0] == if_req_id));
+      cover (&f_if_live_q && !(|f_if_responded_q));
+      cover (o_fence_done && |(f_if_live_q & f_if_responded_q));
+    end
+  end
   always_ff @(posedge i_clk) begin
     if (i_rst || maint_state_q == MaintIdle) begin
       f_invalidated_q <= 0;
