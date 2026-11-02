@@ -1791,6 +1791,16 @@ module coherence_home #(
 `ifdef FORMAL
   logic f_past_valid = 1'b0;
   logic [31:0] f_memory_pending_q;
+`ifdef COHERENCE_HOME_PREFETCH_COVER
+  logic [FILLS-1:0] f_prefetch_ready, f_prefetch_seated, f_prefetch_failed;
+  for (genvar fill = 0; fill < FILLS; fill++) begin : gen_prefetch_cover_terms
+    assign f_prefetch_ready[fill] = fill_prefetch_q[fill] && fill_phase_q[fill] == FillReady;
+    assign f_prefetch_seated[fill] = fill_prefetch_q[fill] && fill_phase_q[fill] == FillMemory &&
+        fill_seats_q[fill] != 0;
+    assign f_prefetch_failed[fill] = fill_prefetch_q[fill] && fill_phase_q[fill] == FillMemory &&
+        fill_done_q[fill] && fill_error_q[fill];
+  end
+`endif
   (* anyconst *) logic [OffsetBits-1:0] f_byte;
 `ifdef COHERENCE_HOME_COVER
   logic [2:0] f_seen_q;
@@ -1918,6 +1928,24 @@ module coherence_home #(
 `endif
       end
     end
+`ifdef COHERENCE_HOME_PREFETCH_COVER
+    if (!i_rst) begin
+      // A prefetch's fill installs with no seat, gains a demand seat, and
+      // fails. Prefetches never reach the highest fill indices (lowest-free
+      // allocation and the reserve), so these cover any fill.
+      cover (|f_prefetch_ready);
+      cover (|f_prefetch_seated);
+      cover (|f_prefetch_failed);
+      // Prefetch decisions: an allocation, one held back by the fill
+      // reserve, and one for a block a demand holds. The way and write-back
+      // limits are exercised by the home bench and the bounded tasks.
+      if (run && array_response && lookup_prefetch_q && !array_hit) begin
+        cover (decision_fill);
+        cover (lookup_fill_q && !prefetch_fill_q && fill_free_any);
+        cover (!lookup_fill_q);
+      end
+    end
+`endif
 `ifdef COHERENCE_HOME_COVER
     if (!i_rst) begin
 `ifdef COHERENCE_HOME_COVER_ERROR

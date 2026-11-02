@@ -1,0 +1,34 @@
+[tasks]
+coh_prefetcher_prove prove
+coh_prefetcher_ids_bmc bmc
+coh_prefetcher_cover cover
+
+[options]
+prove: mode prove
+prove: depth 4
+bmc: mode bmc
+bmc: depth 20
+cover: mode cover
+cover: depth 32
+timeout 600
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv coherence_pkg.sv
+read -formal -sv -D COHERENCE_ARBITER_COMPOSED coherence_d_arbiter.sv
+bmc: read -formal -sv -D L2_STREAM_PREFETCHER_IDS l2_stream_prefetcher.sv
+~bmc: read -formal -sv l2_stream_prefetcher.sv
+read -formal -sv coherence_prefetcher.sv
+chparam -set DATA_STREAMS 2 coherence_prefetcher
+prep -flatten -top coherence_prefetcher
+memory_map
+opt
+
+[files]
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_d_arbiter.sv
+../hw/rtl/lib/cache/l2_stream_prefetcher.sv
+../hw/rtl/lib/cache/coherence_prefetcher.sv

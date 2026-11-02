@@ -193,8 +193,16 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_home_completions.sby",
-        "Independent completion identities, predecessor order, and result ownership.",
-        tasks=("coh_completions_prove", "coh_completions_cover", "coh_if_pair_cover"),
+        "Independent completion identities, predecessor order, result ownership, "
+        "and prefetch slots.",
+        tasks=(
+            "coh_completions_prove",
+            "coh_completions_pairs_prove",
+            "coh_completions_partition_prove",
+            "coh_completions_cover",
+            "coh_completions_partition_cover",
+            "coh_if_pair_cover",
+        ),
     ),
     FormalTarget(
         "coherence_home.sby",
@@ -202,9 +210,21 @@ FORMAL_TARGETS = [
         tasks=(
             "coh_home_control_prove",
             "coh_home_control64_prove",
+            "coh_home_control4_bmc",
+            "coh_home_control4_ultra_bmc",
             "coh_home_wb_prove",
             "coh_home_victim_cover",
             "coh_home_error_cover",
+            "coh_home_prefetch_cover",
+        ),
+    ),
+    FormalTarget(
+        "coherence_prefetcher.sby",
+        "Prefetch identities, held D and C, and stream requests within their pages.",
+        tasks=(
+            "coh_prefetcher_prove",
+            "coh_prefetcher_ids_bmc",
+            "coh_prefetcher_cover",
         ),
     ),
     FormalTarget(
@@ -247,7 +267,7 @@ FORMAL_TARGETS = [
             "coh_c_payload_prove",
             "coh_c_payload_wide_prove",
             "coh_arbiter_prove",
-            "coh_arbiter19_prove",
+            "coh_arbiter23_prove",
             "coh_arbiter_held_prove",
             "coh_reader_prove",
             "coh_reader_cover",
@@ -1097,7 +1117,19 @@ SBY_TASKS = [
         "coh_completions_prove",
         "Completion identity, pin lifetime, and predecessor order.",
     ),
+    (
+        "coh_completions_pairs_prove",
+        "A prefetch's no-fill flag covers every live demand for its block.",
+    ),
+    (
+        "coh_completions_partition_prove",
+        "Kept prefetch slots: admission, unordered prefetches, and G taken on arrival.",
+    ),
     ("coh_completions_cover", "Concurrent results and independent release."),
+    (
+        "coh_completions_partition_cover",
+        "A full prefetch partition and a prefetch slot's G taken.",
+    ),
     ("coh_seat_select_prove", "Fill waiter ranks match serial seat allocation."),
     (
         "coh_work_select_prove",
@@ -1105,6 +1137,24 @@ SBY_TASKS = [
     ),
     ("coh_home_control_prove", "Composed home ownership and independent memory debt."),
     ("coh_home_control64_prove", "Composed home ownership across sibling sectors."),
+    (
+        "coh_home_control4_bmc",
+        "Bounded home checks with four ways, three fills and a fill reserve.",
+    ),
+    (
+        "coh_home_control4_ultra_bmc",
+        "Bounded four-way home checks with the registered tag array.",
+    ),
+    (
+        "coh_home_prefetch_cover",
+        "Prefetch fills that install, gain a seat or fail; reserve and no-fill decisions.",
+    ),
+    ("coh_prefetcher_prove", "Prefetch identities follow D, G, C and U; held D and C."),
+    (
+        "coh_prefetcher_ids_bmc",
+        "Each stream table's read ids return once, to the right table.",
+    ),
+    ("coh_prefetcher_cover", "All identities in flight, table turns, and a held C."),
     ("coh_home_array_prove", "Independent L2 ports preserve watched bytes."),
     *[
         (
@@ -1117,8 +1167,8 @@ SBY_TASKS = [
     ("coh_array_bmc", "Coherent array byte values and held responses."),
     ("coh_array_uram_bmc", "Coherent array byte values through registered RAM ports."),
     (
-        "coh_arbiter19_prove",
-        "Nineteen-way held arbitration and circular selection equality.",
+        "coh_arbiter23_prove",
+        "Twenty-three-way held arbitration and circular selection equality.",
     ),
     ("coh_arbiter_prove", "Coherent arbitration preserves held payloads."),
     (
