@@ -29,6 +29,7 @@ module coherence_l1d #(
     // Request endpoints. With one endpoint, endpoint 0 serves every acquisition.
     // With multiple endpoints, ordinary loads use only endpoints 1 to MISSES-1.
     parameter int unsigned MISSES = 1,
+    parameter int unsigned SIM_FAST_MAINT = 0,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
     localparam int unsigned Sets = CACHE_BYTES / (32 * WAYS),
     localparam int unsigned SetBits = $clog2(Sets)
@@ -844,7 +845,8 @@ module coherence_l1d #(
       .LINE_BYTES(32),
       .CACHE_BYTES(CACHE_BYTES),
       .WAYS(WAYS),
-      .BIMODAL_INSERT(1'b1)
+      .BIMODAL_INSERT(1'b1),
+      .SIM_FAST_MAINT(SIM_FAST_MAINT)
   ) array (
       .i_clk(i_clk),
       .i_rst(i_rst),

@@ -76,7 +76,11 @@ and check AXI burst order, byte masks, errors and reset on both bus widths.
 `coherence_home_array` and its BRAM and packed-tag variants check concurrent
 tag decisions, data reads and masked updates. They exercise physical-row
 aliases, live victim exclusions, continuous read/write contention and reset
-with responses in flight.
+with responses in flight. The `coherence_array_reset_*` and
+`coherence_home_array_reset_*` benches exercise both reset modes in block RAM
+and UltraRAM. They check every set and way after cold and populated resets,
+replacement choices for every exclusion mask, preservation of data RAM, and
+a write in flight through reset, including a five-cycle home data write.
 
 `coherence_home_completions`, `coherence_home`, `coherence_home_equal`,
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
@@ -561,7 +565,7 @@ which have 90 minutes each. `--verbose` prints solver output.
 | `FROST_CPU_PHASE_PS` | Initial CPU clock phase in ps when the independent clock is selected; default 700 |
 | `FROST_ASYNC_CPU_CLOCK` | `1` enables the independent CPU boundary in Yosys synthesis tests |
 | `FROST_NIC_MAC_CLOCKS` | For the whole-SoC program and TestRIG benches, overrides the registry or runner default: `0` holds both NIC MAC clocks and their clock-OK inputs low with an access guard; `1` starts the clocks. The ISA, torture, and TestRIG runners default to `0` |
-| `SIM_FAST_MAINT` | Enables fast L1I invalidation in whole-SoC simulation (default 1). Coherent fences leave dirty L1D data available to home probes |
+| `SIM_FAST_MAINT` | Clears coherent-array tags, coherence states and replacement bits in one simulation cycle and enables fast L1I invalidation (default 1). Data RAM is not cleared. Hardware uses 0. Coherent fences leave dirty L1D data available to home probes. The Physical address aperture (1 GiB / Bare access) CI job uses 0 with randomized start values to cover the real reset sweep |
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to
 `tests/results.xml`. A `test_run_cocotb.py` run passes only if the simulator

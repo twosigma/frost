@@ -364,6 +364,8 @@ jobs:
           PA_CAPACITY_GIB: ${{ matrix.capacity_gib }}
           PA_PROGRAMS: ${{ matrix.shard.programs }}
           PA_TESTS: ${{ matrix.shard.tests }}
+          # Cover the hardware reset sweep with the job's randomized start.
+          SIM_FAST_MAINT: ${{ matrix.capacity_gib == 1 && matrix.shard.name == 'Bare access' && '0' || '1' }}
           FROST_COVERAGE: "1"
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           FROST_RANDOM_START_SEED: ${{ matrix.shard.name != 'Unit boundaries' && format('{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) || '' }}

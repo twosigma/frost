@@ -66,7 +66,7 @@ module frost #(
     parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
     // L2 line size is 32 or 64 bytes. Each AXI beat carries one L2 line.
     parameter int unsigned L2_LINE_BYTES = 64,
-    // Simulation-only L1I maintenance acceleration. L1D sweeps visit every set.
+    // Simulation-only coherent-array reset and L1I maintenance acceleration.
     // Set to 1 only by the cocotb sim build, never for boards.
     parameter int unsigned SIM_FAST_MAINT = 0,
     // Behavioral main-memory model knobs (simulation only).

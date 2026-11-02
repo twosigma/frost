@@ -25,6 +25,7 @@ module coherence_home_array #(
     parameter int unsigned TAG_READ_LATENCY = ULTRA ? 3 : 1,
     parameter int unsigned DATA_READ_LATENCY = ULTRA ? 6 : 2,
     parameter int unsigned DATA_WRITE_LATENCY = ULTRA ? 2 : 1,
+    parameter int unsigned SIM_FAST_MAINT = 0,
     localparam int unsigned OffsetBits = $clog2(LINE_BYTES),
     localparam int unsigned Sets = CACHE_BYTES / (LINE_BYTES * WAYS),
     localparam int unsigned SetBits = $clog2(Sets),
@@ -131,6 +132,28 @@ module coherence_home_array #(
   logic [SetBits-1:0] tag_raddr, tag_waddr;
   logic [TagEntryBits-1:0] tag_wdata;
   logic [TagEntryBits-1:0] tag_rdata[WAYS], tags_q[WAYS];
+`ifdef SYNTHESIS
+  localparam int unsigned SimFastInit = 0;
+  wire init_bulk_clear = 1'b0;
+`else
+  localparam int unsigned SimFastInit = SIM_FAST_MAINT;
+  // Only an observed reset permits the simulation bulk clear.
+  wire init_bulk_clear = SimFastInit != 0 && sim_reset_seen_q && !i_rst && phase_q == Init;
+  // The data RAM's write pipeline survives reset. Its last write must drain
+  // before cleared hazard tracking can admit another row access.
+  wire sim_init_drained;
+  if (SimFastInit != 0 && DATA_WRITE_LATENCY > 2) begin : gen_sim_init_drain
+    localparam int unsigned DrainBits = $clog2(DATA_WRITE_LATENCY);
+    logic [DrainBits-1:0] drain_q;
+    always_ff @(posedge i_clk) begin
+      if (i_rst) drain_q <= DrainBits'(DATA_WRITE_LATENCY - 1);
+      else if (phase_q == InitDrain && drain_q > 1) drain_q <= drain_q - 1'b1;
+    end
+    assign sim_init_drained = drain_q <= 1;
+  end else begin : gen_sim_init_no_drain
+    assign sim_init_drained = 1'b1;
+  end
+`endif
   logic hit;
   logic [WayBits-1:0] selected;
   logic request_fire, read_fire, update_fire;
@@ -224,11 +247,12 @@ module coherence_home_array #(
   assign plru_we = !i_rst && (phase_q == Init || (o_resp_valid && i_resp_ready && i_resp_claim));
   sdp_block_ram #(
       .ADDR_WIDTH(SetBits),
-      .DATA_WIDTH(PlruBits)
+      .DATA_WIDTH(PlruBits),
+      .SUPPORT_BULK_CLEAR(SimFastInit)
   ) replacement (
       .i_clk,
       .i_write_enable(plru_we),
-      .i_bulk_clear(1'b0),
+      .i_bulk_clear(init_bulk_clear),
       .i_write_address(phase_q == Init ? init_set_q : set_q),
       .i_read_address(tag_raddr),
       .i_write_data(phase_q == Init ? PlruBits'(0) : touch(plru_q, o_resp_way)),
@@ -241,14 +265,15 @@ module coherence_home_array #(
   if (ULTRA) begin : gen_tag_ultra
     logic [WAYS*TagEntryBits-1:0] row;
     sdp_packed_tag_uram #(
-        .ADDR_WIDTH  (RowBits),
-        .DATA_WIDTH  (TagEntryBits),
+        .ADDR_WIDTH(RowBits),
+        .DATA_WIDTH(TagEntryBits),
         .READ_LATENCY(TAG_READ_LATENCY),
-        .READ_WORDS  (WAYS)
+        .READ_WORDS(WAYS),
+        .SUPPORT_BULK_CLEAR(SimFastInit)
     ) tags (
         .i_clk,
         .i_write_enable(|tag_we),
-        .i_bulk_clear(1'b0),
+        .i_bulk_clear(init_bulk_clear),
         .i_write_address(RowBits'(tag_waddr) << WaySelBits),
         .i_write_word_mask(tag_we),
         .i_write_data(tag_wdata),
@@ -263,11 +288,12 @@ module coherence_home_array #(
     for (genvar way = 0; way < WAYS; way++) begin : gen_way
       sdp_block_ram #(
           .ADDR_WIDTH(SetBits),
-          .DATA_WIDTH(TagEntryBits)
+          .DATA_WIDTH(TagEntryBits),
+          .SUPPORT_BULK_CLEAR(SimFastInit)
       ) tags (
           .i_clk,
           .i_write_enable(tag_we[way]),
-          .i_bulk_clear(1'b0),
+          .i_bulk_clear(init_bulk_clear),
           .i_write_address(tag_waddr),
           .i_read_address(tag_raddr),
           .i_write_data(tag_wdata),
@@ -381,9 +407,14 @@ module coherence_home_array #(
       case (phase_q)
         Init: begin
           init_set_q <= init_set_q + 1'b1;
-          if (&init_set_q) phase_q <= InitDrain;
+          if (&init_set_q || init_bulk_clear) phase_q <= InitDrain;
         end
-        InitDrain: phase_q <= Idle;
+        InitDrain: begin
+`ifndef SYNTHESIS
+          if (sim_init_drained || !sim_reset_seen_q)
+`endif
+            phase_q <= Idle;
+        end
         Tags: begin
           if (count_q == CountBits'(TAG_READ_LATENCY)) plru_q <= plru_read;
           count_q <= count_q - 1'b1;

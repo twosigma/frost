@@ -217,7 +217,8 @@ module coherent_hart_cache #(
       .CACHE_BYTES(CACHE_BYTES),
       .WAYS(WAYS),
       .TAG_BITS(TAG_BITS),
-      .MISSES(L1D_MISSES)
+      .MISSES(L1D_MISSES),
+      .SIM_FAST_MAINT(SIM_FAST_MAINT)
   ) l1d (
       .i_clk(i_clk),
       .i_rst(i_rst),
