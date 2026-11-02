@@ -359,12 +359,15 @@ module coherence_home_completions #(
   assign result_slot = SlotBits'(result.tid);
   wire result_opcode_ok = result.opcode <= coherence_pkg::GrantFail;
   localparam int unsigned ResultNodes = (SLOTS + 5) / 6;
-  (* keep = "true" *) logic [SLOTS-1:0] result_slot_match;
+  (* keep = "true" *) logic [SLOTS-1:0] result_addr_match, result_key_match, result_slot_match;
   (* keep = "true" *) logic [ResultNodes-1:0] result_nodes;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_result_hit
-    assign result_slot_match[slot] = result.tid == 6'(slot) && issued_q[slot] &&
-        buffer_owned_q[slot] && !result_valid_q[slot] && result.q == work_identity[slot] &&
-        result.addr == work_address[slot];
+    // The address comparison and the tid, state and identity comparison
+    // form side by side and meet in one node.
+    assign result_addr_match[slot] = result.addr == work_address[slot];
+    assign result_key_match[slot] = result.tid == 6'(slot) && issued_q[slot] &&
+        buffer_owned_q[slot] && !result_valid_q[slot] && result.q == work_identity[slot];
+    assign result_slot_match[slot] = result_addr_match[slot] && result_key_match[slot];
     assign result_hit[slot] = result_slot_match[slot] && result_opcode_ok;
   end
   for (genvar node = 0; node < ResultNodes; node++) begin : gen_result_node
