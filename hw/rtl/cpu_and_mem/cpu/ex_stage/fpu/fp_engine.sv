@@ -406,6 +406,48 @@ module fp_engine (
     pack_fp = is_d ? {sign, expf, frac} : {32'hFFFF_FFFF, sign, expf[7:0], frac[51:29]};
   endfunction
 
+  function automatic logic [5:0] clz64(input logic [63:0] v);
+    logic [5:0] cnt;
+    logic [31:0] v32;
+    logic [15:0] v16;
+    logic [7:0] v8;
+    logic [3:0] v4;
+    begin
+      cnt = 6'd0;
+      if (v[63:32] == 32'd0) begin
+        cnt[5] = 1'b1;
+        v32 = v[31:0];
+      end else begin
+        v32 = v[63:32];
+      end
+      if (v32[31:16] == 16'd0) begin
+        cnt[4] = 1'b1;
+        v16 = v32[15:0];
+      end else begin
+        v16 = v32[31:16];
+      end
+      if (v16[15:8] == 8'd0) begin
+        cnt[3] = 1'b1;
+        v8 = v16[7:0];
+      end else begin
+        v8 = v16[15:8];
+      end
+      if (v8[7:4] == 4'd0) begin
+        cnt[2] = 1'b1;
+        v4 = v8[3:0];
+      end else begin
+        v4 = v8[7:4];
+      end
+      case (v4)
+        4'b0001: cnt[1:0] = 2'd3;
+        4'b0010, 4'b0011: cnt[1:0] = 2'd2;
+        4'b0100, 4'b0101, 4'b0110, 4'b0111: cnt[1:0] = 2'd1;
+        default: cnt[1:0] = 2'd0;
+      endcase
+      clz64 = cnt;
+    end
+  endfunction
+
   // ===========================================================================
   // State
   // ===========================================================================
@@ -906,9 +948,238 @@ module fp_engine (
     endcase
   end
 
-  assign res_d = !res_load ? res_q : (res_is_fp ? pack_fp(
+  // ===========================================================================
+  // Fast paths for non-arithmetic operations (single/two-cycle execution)
+  // ===========================================================================
+  logic is_fast_op;
+  always_comb begin
+    unique case (dec_q.cls)
+      CL_MVXF,
+      CL_MVFX,
+      CL_SGNJ,
+      CL_CLASS,
+      CL_CMP,
+      CL_MINMAX,
+      CL_I2F: is_fast_op = 1'b1;
+      default: is_fast_op = 1'b0;
+    endcase
+  end
+
+  fp_class_t ca_comb, cb_comb;
+  assign ca_comb = classify(opa_q, dec_q.src_d);
+  assign cb_comb = classify(opb_q, dec_q.src_d);
+
+  logic [9:0] fast_class_mask;
+  always_comb begin
+    fast_class_mask = '0;
+    if (ca_comb.nan) fast_class_mask[ca_comb.snan ? 8 : 9] = 1'b1;
+    else if (ca_comb.infinite) fast_class_mask[ca_comb.sign ? 0 : 7] = 1'b1;
+    else if (ca_comb.zero) fast_class_mask[ca_comb.sign ? 3 : 4] = 1'b1;
+    else if (ca_comb.exp_zero) fast_class_mask[ca_comb.sign ? 2 : 5] = 1'b1;
+    else fast_class_mask[ca_comb.sign ? 1 : 6] = 1'b1;
+  end
+
+  logic fast_sgnj_sign;
+  always_comb begin
+    unique case (dec_q.fn)
+      2'd1:    fast_sgnj_sign = !cb_comb.sign;
+      2'd2:    fast_sgnj_sign = ca_comb.sign ^ cb_comb.sign;
+      default: fast_sgnj_sign = cb_comb.sign;
+    endcase
+  end
+
+  logic [63:0] fast_sgnj_res;
+  always_comb begin
+    if (dec_q.dst_d) begin
+      fast_sgnj_res = {fast_sgnj_sign, opa_q[62:0]};
+    end else begin
+      fast_sgnj_res = pack_fp(
+          fast_sgnj_sign,
+          field_exp(opa_q, ca_comb.box_ok, 1'b0),
+          field_frac(opa_q, ca_comb.box_ok, 1'b0),
+          1'b0
+      );
+    end
+  end
+
+  logic [62:0] fast_mag_a, fast_mag_b;
+  always_comb begin
+    if (dec_q.src_d) begin
+      fast_mag_a = opa_q[62:0];
+      fast_mag_b = opb_q[62:0];
+    end else begin
+      fast_mag_a = {32'b0, opa_q[30:0]};
+      fast_mag_b = {32'b0, opb_q[30:0]};
+    end
+  end
+  logic fast_mag_lt, fast_mag_eq;
+  assign fast_mag_lt = (fast_mag_a < fast_mag_b);
+  assign fast_mag_eq = (fast_mag_a == fast_mag_b);
+
+  logic fast_a_lt_b, fast_a_eq_b;
+  always_comb begin
+    if (ca_comb.zero && cb_comb.zero) begin
+      fast_a_lt_b = 1'b0;
+      fast_a_eq_b = 1'b1;
+    end else if (ca_comb.sign != cb_comb.sign) begin
+      fast_a_lt_b = ca_comb.sign;
+      fast_a_eq_b = 1'b0;
+    end else begin
+      fast_a_lt_b = ca_comb.sign ? !(fast_mag_lt || fast_mag_eq) : fast_mag_lt;
+      fast_a_eq_b = fast_mag_eq;
+    end
+  end
+
+  logic fast_cmp_bit;
+  logic fast_cmp_nv;
+  always_comb begin
+    fast_cmp_nv = 1'b0;
+    fast_cmp_bit = 1'b0;
+    unique case (dec_q.fn)
+      2'd0: begin
+        fast_cmp_bit = !(ca_comb.nan || cb_comb.nan) && fast_a_eq_b;
+        fast_cmp_nv = ca_comb.snan || cb_comb.snan;
+      end
+      2'd1: begin
+        fast_cmp_bit = !(ca_comb.nan || cb_comb.nan) && fast_a_lt_b;
+        fast_cmp_nv = ca_comb.nan || cb_comb.nan;
+      end
+      default: begin
+        fast_cmp_bit = !(ca_comb.nan || cb_comb.nan) && (fast_a_lt_b || fast_a_eq_b);
+        fast_cmp_nv = ca_comb.nan || cb_comb.nan;
+      end
+    endcase
+  end
+
+  logic fast_minmax_pick_b;
+  always_comb begin
+    if (ca_comb.nan) fast_minmax_pick_b = 1'b1;
+    else if (cb_comb.nan) fast_minmax_pick_b = 1'b0;
+    else if (ca_comb.zero && cb_comb.zero) fast_minmax_pick_b = !(ca_comb.sign ^ dec_q.fn[0]);
+    else fast_minmax_pick_b = !(fast_a_lt_b ^ dec_q.fn[0]);
+  end
+
+  logic [63:0] fast_minmax_res;
+  always_comb begin
+    if (ca_comb.nan && cb_comb.nan) begin
+      fast_minmax_res = dec_q.dst_d ? 64'h7FF8_0000_0000_0000 : {32'hFFFF_FFFF, 32'h7FC0_0000};
+    end else if (fast_minmax_pick_b) begin
+      fast_minmax_res = dec_q.dst_d ? opb_q :
+          pack_fp(cb_comb.sign, field_exp(opb_q, cb_comb.box_ok, 1'b0), field_frac(opb_q, cb_comb.box_ok, 1'b0), 1'b0);
+    end else begin
+      fast_minmax_res = dec_q.dst_d ? opa_q :
+          pack_fp(ca_comb.sign, field_exp(opa_q, ca_comb.box_ok, 1'b0), field_frac(opa_q, ca_comb.box_ok, 1'b0), 1'b0);
+    end
+  end
+
+  logic [63:0] fast_i2f_int;
+  always_comb begin
+    if (dec_q.int_w) begin
+      fast_i2f_int = dec_q.int_u ? {32'b0, opa_q[31:0]} : {{32{opa_q[31]}}, opa_q[31:0]};
+    end else begin
+      fast_i2f_int = opa_q;
+    end
+  end
+
+  logic fast_i2f_sign;
+  logic [63:0] fast_i2f_abs;
+  assign fast_i2f_sign = !dec_q.int_u && fast_i2f_int[63];
+  assign fast_i2f_abs  = fast_i2f_sign ? (-fast_i2f_int) : fast_i2f_int;
+
+  logic [5:0] fast_i2f_lz;
+  assign fast_i2f_lz = clz64(fast_i2f_abs);
+
+  logic [63:0] fast_i2f_norm;
+  assign fast_i2f_norm = fast_i2f_abs << fast_i2f_lz;
+
+  logic [10:0] fast_i2f_d_exp;
+  logic fast_i2f_d_round_up, fast_i2f_d_inexact, fast_i2f_d_carry;
+  logic [51:0] fast_i2f_d_frac;
+  always_comb begin
+    fast_i2f_d_exp = 11'd1086 - {5'b0, fast_i2f_lz};
+    fast_i2f_d_round_up = riscv_pkg::fp_compute_round_up(
+        rm_q, fast_i2f_norm[10], fast_i2f_norm[9], |fast_i2f_norm[8:0], fast_i2f_norm[11], fast_i2f_sign
+    );
+    fast_i2f_d_inexact = fast_i2f_norm[10] || fast_i2f_norm[9] || (|fast_i2f_norm[8:0]);
+    {fast_i2f_d_carry, fast_i2f_d_frac} = {1'b0, fast_i2f_norm[62:11]} + {52'b0, fast_i2f_d_round_up};
+    if (fast_i2f_d_carry) begin
+      fast_i2f_d_exp = fast_i2f_d_exp + 11'd1;
+      fast_i2f_d_frac = '0;
+    end
+  end
+
+  logic [7:0] fast_i2f_s_exp;
+  logic fast_i2f_s_round_up, fast_i2f_s_inexact, fast_i2f_s_carry;
+  logic [22:0] fast_i2f_s_frac;
+  always_comb begin
+    fast_i2f_s_exp = 8'd190 - {2'b0, fast_i2f_lz};
+    fast_i2f_s_round_up = riscv_pkg::fp_compute_round_up(
+        rm_q, fast_i2f_norm[39], fast_i2f_norm[38], |fast_i2f_norm[37:0], fast_i2f_norm[40], fast_i2f_sign
+    );
+    fast_i2f_s_inexact = fast_i2f_norm[39] || fast_i2f_norm[38] || (|fast_i2f_norm[37:0]);
+    {fast_i2f_s_carry, fast_i2f_s_frac} = {1'b0, fast_i2f_norm[62:40]} + {23'b0, fast_i2f_s_round_up};
+    if (fast_i2f_s_carry) begin
+      fast_i2f_s_exp = fast_i2f_s_exp + 8'd1;
+      fast_i2f_s_frac = '0;
+    end
+  end
+
+  logic [63:0] fast_i2f_res;
+  riscv_pkg::fp_flags_t fast_i2f_flags;
+  always_comb begin
+    fast_i2f_flags = '0;
+    if (fast_i2f_int == 64'd0) begin
+      fast_i2f_res = dec_q.dst_d ? 64'd0 : {32'hFFFF_FFFF, 32'd0};
+    end else if (dec_q.dst_d) begin
+      fast_i2f_res = {fast_i2f_sign, fast_i2f_d_exp, fast_i2f_d_frac};
+      fast_i2f_flags.nx = fast_i2f_d_inexact;
+    end else begin
+      fast_i2f_res = {32'hFFFF_FFFF, fast_i2f_sign, fast_i2f_s_exp, fast_i2f_s_frac};
+      fast_i2f_flags.nx = fast_i2f_s_inexact;
+    end
+  end
+
+  logic [63:0] fast_res;
+  riscv_pkg::fp_flags_t fast_flags;
+  always_comb begin
+    fast_flags = '0;
+    fast_res = '0;
+    unique case (dec_q.cls)
+      CL_MVXF: begin
+        fast_res = dec_q.int_w ? {{32{opa_q[31]}}, opa_q[31:0]} : opa_q;
+      end
+      CL_MVFX: begin
+        fast_res = dec_q.dst_d ? opa_q : {32'hFFFF_FFFF, opa_q[31:0]};
+      end
+      CL_CLASS: begin
+        fast_res = {54'b0, fast_class_mask};
+      end
+      CL_SGNJ: begin
+        fast_res = fast_sgnj_res;
+      end
+      CL_CMP: begin
+        fast_res = {63'b0, fast_cmp_bit};
+        fast_flags.nv = fast_cmp_nv;
+      end
+      CL_MINMAX: begin
+        fast_res = fast_minmax_res;
+        fast_flags.nv = ca_comb.snan || cb_comb.snan;
+      end
+      CL_I2F: begin
+        fast_res = fast_i2f_res;
+        fast_flags = fast_i2f_flags;
+      end
+      default: ;
+    endcase
+  end
+
+  logic [63:0] res_calc;
+  assign res_calc = res_is_fp ? pack_fp(
       fp_sign, fp_expf, fp_frac, dec_q.dst_d
-  ) : int_res);
+  ) : int_res;
+
+  assign res_d = (state_q == ST_DEC1 && is_fast_op) ? fast_res :
+                 (!res_load ? res_q : res_calc);
 
   // ===========================================================================
   // Decode cycle 2: special operands
@@ -1197,7 +1468,14 @@ module fp_engine (
         if (i_start) state_d = ST_DEC1;
       end
 
-      ST_DEC1: state_d = ST_DEC2;
+      ST_DEC1: begin
+        if (is_fast_op) begin
+          flags_d = fast_flags;
+          state_d = ST_DONE;
+        end else begin
+          state_d = ST_DEC2;
+        end
+      end
 
       ST_DEC2: begin
         eff_sub_d = 1'b0;
