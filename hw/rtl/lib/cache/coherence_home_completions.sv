@@ -219,7 +219,6 @@ module coherence_home_completions #(
 
   assign incoming = i_d;
   assign result = i_result;
-  assign release_fire = release_valid & release_ready;
   assign accept_request = i_d_valid && o_d_ready;
   assign accept_work = o_work_offer && i_work_ready;
   assign accept_result = i_result_valid && o_result_ready;
@@ -397,12 +396,16 @@ module coherence_home_completions #(
   logic [SLOTS-1:0] pred_clear_q, incoming_sectors, incoming_blocks, incoming_orders;
   // A release fires for the arbiter's selected offering slot when the U
   // channel is ready. The clear flags are prepared for both outcomes, with
-  // and without an accepted request, and the U ready selects last.
-  logic [SLOTS-1:0] release_selected, release_candidate;
+  // and without an accepted request, and the U ready selects last. The
+  // candidate is kept and already excludes reset (an endpoint offers U only
+  // outside reset), so U readiness meets each candidate directly.
+  logic [SLOTS-1:0] release_selected;
+  (* keep = "true" *)logic [SLOTS-1:0] release_candidate;
   (* keep = "true" *) logic [SLOTS-1:0] clear_if_hold, clear_if_release;
   (* keep = "true" *) logic accepted_clear_if_hold, accepted_clear_if_release;
   wire release_go = !i_rst && i_u_ready;
   assign release_candidate = release_valid & release_selected;
+  assign release_fire = release_candidate & {SLOTS{i_u_ready}};
   assign accepted_clear_if_hold = !(|(live & ~handed_q & incoming_orders));
   assign accepted_clear_if_release = !(|(live & ~handed_q & ~release_candidate & incoming_orders));
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_clear_choice
@@ -411,7 +414,10 @@ module coherence_home_completions #(
   end
 `ifndef SYNTHESIS
   always_comb
-    if (sim_reset_seen_q) assert (release_fire == (release_candidate & {SLOTS{release_go}}));
+    if (sim_reset_seen_q) begin
+      assert (release_fire == (release_candidate & {SLOTS{release_go}}));
+      assert (release_fire == (release_valid & release_ready));
+    end
 `endif
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_work_eligible
     // A slot's L2 block matches the presented request's; the sector match
@@ -764,8 +770,8 @@ module coherence_home_completions #(
                  slot_prefetch[slot])
           nofill_q[slot] <= 1'b1;
         pred_clear_q[slot] <= accept_request && free_slot_index == SlotBits'(slot) ?
-            (release_go ? accepted_clear_if_release : accepted_clear_if_hold) :
-            (release_go ? clear_if_release[slot] : clear_if_hold[slot]);
+            (i_u_ready ? accepted_clear_if_release : accepted_clear_if_hold) :
+            (i_u_ready ? clear_if_release[slot] : clear_if_hold[slot]);
         if (i_park[slot]) parked_q[slot] <= 1'b1;
         if (i_wake[slot]) parked_q[slot] <= 1'b0;
         if (i_pin_valid && i_pin_tid == 6'(slot)) way_q[slot] <= i_pin_way;
