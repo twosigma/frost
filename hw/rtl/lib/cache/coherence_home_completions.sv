@@ -175,6 +175,13 @@ module coherence_home_completions #(
   logic [RESULT_SLOTS-1:0] buffer_ready_q, buffer_zero_q, buffer_later_q;
   logic [RESULT_SLOTS-1:0] buffer_later_first, buffer_ready_first;
   (* keep = "true" *) logic [RESULT_SLOTS-1:0] buffer_later;
+  // G readiness depends on the clients' own comparisons with the presented
+  // grant, so every register it changes takes it as the last term: the
+  // grant's slot and buffer decodes, and each register's next state without
+  // the grant, are kept nodes.
+  (* keep = "true" *) logic [SLOTS-1:0] grant_slot_held, result_valid_hold, buffer_owned_hold;
+  (* keep = "true" *) logic [RESULT_SLOTS-1:0] grant_buffer_held, buffer_live_hold;
+  (* keep = "true" *) logic [RESULT_SLOTS-1:0] buffer_ready_hold;
   coh_g_t grant_q, result, grant_payload;
   coh_d_t incoming;
   logic result_matches;
@@ -207,7 +214,8 @@ module coherence_home_completions #(
   // readiness.
   logic [SLOTS-1:0] grant_taken;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_grant_taken
-    assign grant_taken[slot] = grant_valid[slot] && (PrefetchSlot[slot] || i_g_ready);
+    assign grant_slot_held[slot] = grant_selected_q && grant_slot_q == SlotBits'(slot);
+    assign grant_taken[slot] = grant_slot_held[slot] && (PrefetchSlot[slot] || i_g_ready);
   end
 
   // Sector comparisons with the next put address are registered. A slot
@@ -496,22 +504,48 @@ module coherence_home_completions #(
 
   for (genvar buffer_idx = 0; buffer_idx < RESULT_SLOTS; buffer_idx++) begin : gen_buffer_lifetime
     wire allocated = accept_work && work_buffer_q == ResultBits'(buffer_idx);
-    wire granted = accept_grant && buffer_index_q[grant_slot_q] == ResultBits'(buffer_idx);
     wire retried = i_retry_valid && int'(i_retry_tid) < SLOTS &&
         buffer_index_q[SlotBits'(i_retry_tid)] == ResultBits'(buffer_idx);
-    assign buffer_live_next[buffer_idx] =
-        (buffer_live_q[buffer_idx] || allocated) && !granted && !retried;
+    wire written = accept_result && buffer_index_q[result_slot] == ResultBits'(buffer_idx);
+    // The selected grant's buffer is its slot's (buffer_index_q[grant_slot_q]).
+    assign grant_buffer_held[buffer_idx] = grant_selected_q &&
+        grant_buffer_q == ResultBits'(buffer_idx);
+    assign buffer_live_hold[buffer_idx] = (buffer_live_q[buffer_idx] || allocated) && !retried;
+    assign buffer_live_next[buffer_idx] = buffer_live_hold[buffer_idx] &&
+        !(grant_buffer_held[buffer_idx] && i_g_ready);
+    assign buffer_ready_hold[buffer_idx] = buffer_ready_q[buffer_idx] || written;
     always_ff @(posedge i_clk) begin
-      if (i_rst) buffer_live_q[buffer_idx] <= 1'b0;
-      else buffer_live_q[buffer_idx] <= buffer_live_next[buffer_idx];
+      if (i_rst) begin
+        buffer_live_q[buffer_idx]  <= 1'b0;
+        buffer_ready_q[buffer_idx] <= 1'b0;
+      end else begin
+        buffer_live_q[buffer_idx] <= buffer_live_next[buffer_idx];
+        buffer_ready_q[buffer_idx] <= buffer_ready_hold[buffer_idx] &&
+            !(grant_buffer_held[buffer_idx] && i_g_ready);
+      end
+    end
+  end
+  // A slot's result waits from its result until its G is taken; its buffer
+  // is owned from its issue until that G or a retry.
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_result_state
+    assign result_valid_hold[slot] = result_valid_q[slot] || (i_result_valid && result_hit[slot]);
+    assign buffer_owned_hold[slot] = (buffer_owned_q[slot] ||
+        (accept_work && work_slot_q == SlotBits'(slot))) &&
+        !(i_retry_valid && i_retry_tid == 6'(slot));
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        result_valid_q[slot] <= 1'b0;
+        buffer_owned_q[slot] <= 1'b0;
+      end else begin
+        result_valid_q[slot] <= result_valid_hold[slot] && !grant_taken[slot];
+        buffer_owned_q[slot] <= buffer_owned_hold[slot] && !grant_taken[slot];
+      end
     end
   end
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       issued_q <= '0;
-      buffer_owned_q <= '0;
-      result_valid_q <= '0;
       pin_valid_q <= '0;
       error_q <= '0;
       parked_q <= '0;
@@ -529,7 +563,6 @@ module coherence_home_completions #(
       grant_next_q <= '0;
       grant_buffer_q <= '0;
       buffer_later_q <= '1;
-      buffer_ready_q <= '0;
       buffer_zero_q <= '0;
       grant_q <= '0;
       pred_clear_q <= '1;
@@ -553,20 +586,15 @@ module coherence_home_completions #(
         for (int slot = 0; slot < SLOTS; slot++)
         work_later_q[slot] <= work_slot_q == SlotBits'(SLOTS - 1) || slot > int'(work_slot_q);
         issued_q[work_slot_q] <= 1'b1;
-        buffer_owned_q[work_slot_q] <= 1'b1;
         buffer_index_q[work_slot_q] <= work_buffer_q;
         ready_q[work_slot_q] <= 1'b0;
       end
       for (int slot = 0; slot < SLOTS; slot++)
-      if (i_result_valid && result_hit[slot]) begin
-        result_valid_q[slot] <= 1'b1;
-        error_q[slot] <= result.error;
-      end
+      if (i_result_valid && result_hit[slot]) error_q[slot] <= result.error;
       if (accept_result) begin
         buffer_q[buffer_index_q[result_slot]] <= {
           result.opcode, result.q, result.tid, result.addr, 256'b0, result.error
         };
-        buffer_ready_q[buffer_index_q[result_slot]] <= 1'b1;
         buffer_zero_q[buffer_index_q[result_slot]] <=
             result.error || result.opcode == coherence_pkg::GrantAck;
       end
@@ -592,12 +620,6 @@ module coherence_home_completions #(
         for (int index = 0; index < RESULT_SLOTS; index++)
         buffer_later_q[index] <= grant_buffer_q == ResultBits'(RESULT_SLOTS - 1) ||
             index > int'(grant_buffer_q);
-        buffer_ready_q[grant_buffer_q] <= 1'b0;
-      end
-      for (int slot = 0; slot < SLOTS; slot++)
-      if (grant_taken[slot]) begin
-        result_valid_q[slot] <= 1'b0;
-        buffer_owned_q[slot] <= 1'b0;
       end
       handed_q <= (handed_q | ({SLOTS{accept_result && work_identity[result_slot][8:7] == 2'd2}} &
           (SLOTS'(1) << result_slot))) & ~release_fire;
@@ -638,7 +660,6 @@ module coherence_home_completions #(
         if (i_retry_valid && i_retry_tid == 6'(slot)) begin
           issued_q[slot] <= 1'b0;
           parked_q[slot] <= i_retry_park;
-          buffer_owned_q[slot] <= 1'b0;
         end
       end
     end
@@ -659,7 +680,7 @@ module coherence_home_completions #(
     for (int slot = 0; slot < SLOTS; slot++)
     if (i_retry_valid && i_retry_tid == 6'(slot))
       reference_buffer_live[buffer_index_q[slot]] = 1'b0;
-    if (sim_reset_seen_q) assert (buffer_live_next == reference_buffer_live);
+    if (sim_reset_seen_q && !i_rst) assert (buffer_live_next == reference_buffer_live);
   end
   always_ff @(posedge i_clk) begin
     if (sim_reset_seen_q && !i_rst)
@@ -800,6 +821,7 @@ module coherence_home_completions #(
       if (grant_selected_q) assert (buffer_index_q[grant_slot_q] == grant_buffer_q);
       assert ($onehot0(grant_valid));
       assert (o_g_valid == (|grant_valid));
+      assert (grant_valid == grant_slot_held);
       if (grant_selected_q) begin
         assert (grant_q.opcode <= coherence_pkg::GrantFail);
         assert (grant_q.q == work_identity[grant_slot_q]);
