@@ -258,6 +258,28 @@ async def test_ordinary_csr_and_same_cycle_fp_forwarding_unchanged(dut: Any) -> 
 
 
 @cocotb.test()
+async def test_hpmcounter_5_to_8_access(dut: Any) -> None:
+    """HPM counters 5..8 and their event registers read/write exact values."""
+    s = await setup(dut)
+    test_data = [
+        (0xB05, 0xC05, 0x325, 0x1234_5678_ABCD_0005, 0x55),
+        (0xB06, 0xC06, 0x326, 0x2345_6789_BCDE_0006, 0x66),
+        (0xB07, 0xC07, 0x327, 0x3456_789A_CDEF_0007, 0x77),
+        (0xB08, 0xC08, 0x328, 0x4567_89AB_DEF0_0008, 0x88),
+    ]
+    for mcounter, ucounter, mevent, val, event_val in test_data:
+        # Write machine counter
+        await s.access(mcounter, val, 1)
+        # Read back via machine CSR
+        assert await s.access(mcounter) == val
+        # Read back via user alias
+        assert await s.access(ucounter) == val
+        # Write and read event CSR
+        await s.access(mevent, event_val, 1)
+        assert await s.access(mevent) == event_val
+
+
+@cocotb.test()
 async def test_random_raw_commit_and_snapshot_histories(dut: Any) -> None:
     """Both paths agree under random back-to-back commits, flushes, resets, and snapshots."""
     s = await setup(dut)

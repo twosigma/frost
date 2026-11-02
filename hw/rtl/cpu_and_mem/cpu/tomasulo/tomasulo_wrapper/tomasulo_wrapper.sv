@@ -195,7 +195,7 @@ module tomasulo_wrapper #(
 
     // Pre-composed privilege-legality bits from csr_file, sampled at ROB
     // allocation (see reorder_buffer).
-    input logic [4:0] i_counter_blocked,
+    input logic [8:0] i_counter_blocked,
     input logic i_stimecmp_blocked,
     input logic i_mireg_illegal = 1'b0,
     input logic i_sireg_illegal = 1'b0,
@@ -206,9 +206,9 @@ module tomasulo_wrapper #(
     input logic i_priv_is_u,
     input logic i_debug_mode,
 
-    // Raw mcounteren CY/TM/IR/HPM3/HPM4 bits forwarded across the CSR/ROB interface;
+    // Raw mcounteren CY/TM/IR/HPM3..8 bits forwarded across the CSR/ROB interface;
     // allocation legality uses the privilege-resolved i_counter_blocked.
-    input logic [4:0] i_mcounteren,
+    input logic [8:0] i_mcounteren,
     // mstatus.FS == Off, sampled by the ROB's FP-op legality check at
     // allocation.
     input logic       i_mstatus_fs_off,

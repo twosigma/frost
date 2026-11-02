@@ -733,8 +733,8 @@ module cpu_ooo #(
   logic [15:0] csr_medeleg;
   logic [2:0] csr_mideleg_s;
   logic [2:0] csr_s_pending;
-  logic [4:0] csr_scounteren;
-  logic [4:0] csr_counter_blocked;
+  logic [8:0] csr_scounteren;
+  logic [8:0] csr_counter_blocked;
   logic csr_stimecmp_blocked;
   logic csr_mireg_illegal, csr_sireg_illegal, csr_stopei_illegal;
   logic csr_sret_illegal, csr_sfence_illegal, csr_wfi_illegal, csr_priv_is_u;
@@ -1886,7 +1886,7 @@ module cpu_ooo #(
   riscv_pkg::exc_cause_t rob_trap_cause;
   riscv_pkg::exc_cause_t rob_trap_cause_remapped;
   logic [1:0] csr_priv;  // current privilege from csr_file (PrivM/PrivS/PrivU)
-  logic [4:0] csr_mcounteren;  // mcounteren CY/TM/IR/HPM3/HPM4 from csr_file (S/U-mode counter gate)
+  logic [8:0] csr_mcounteren;  // mcounteren CY/TM/IR/HPM3..8 from csr_file (S/U-mode counter gate)
   // Arbitrated trap cause for csr_file: interrupt code with bit XLEN-1 set,
   // or the remapped synchronous exception cause.
   logic [XLEN-1:0] trap_cause_internal;
@@ -3721,6 +3721,10 @@ module cpu_ooo #(
       .i_instruction_retired_count(instruction_retired_count),
       .i_branch_retired_count(commit_branch_retired_count),
       .i_branch_mispredict_count(commit_branch_mispredict_count),
+      .i_itlb_miss(iwalk_req_valid && iwalk_req_ready),
+      .i_dtlb_miss(walk_req_valid && walk_req_ready),
+      .i_l1d_miss(i_cache_perf_events.hierarchy.l1d.miss),
+      .i_sq_full_stall(dispatch_status.sq_full),
       .i_interrupts(file_interrupts),
       .i_mtime(i_mtime),
       .i_seip_line(file_seip),
