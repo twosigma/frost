@@ -161,9 +161,19 @@ module coherence_home_completions #(
   logic [ResultBits-1:0] free_buffer_index;
   logic work_selected_q, work_found;
   logic [SLOTS-1:0] work_eligible;
-  logic [SlotBits-1:0] work_slot_q, work_next_q, work_pick;
-  // work_later_q[slot] holds slot >= work_next_q.
-  logic [SLOTS-1:0] work_later_q;
+  logic [SlotBits-1:0] work_slot_q, work_pick;
+  // Work rotates over positions: one per main slot, then one for all the
+  // prefetch slots. The prefetch position offers prefetch_work_slot_q, an
+  // eligible prefetch slot registered from the previous cycle, so every
+  // selector input is a register. That choice leaves out the slot being
+  // dispatched, and a pick needs an idle selection, which follows a
+  // dispatch by a cycle, so the registered choice is eligible whenever it
+  // can be picked. work_later_q[position] holds position >= work_next_q.
+  localparam int unsigned WorkPositions = PREFETCH_SLOTS != 0 ? MainSlots + 1 : SLOTS;
+  logic [WorkPositions-1:0] work_position_eligible, work_position_ready, work_later_q;
+  logic [SlotBits-1:0] work_next_q, work_position;
+  logic prefetch_work_found_q;
+  logic [SlotBits-1:0] prefetch_work_slot_q;
   // Grants rotate among the result buffers, so the G path does not grow with
   // the slot count. buffer_ready_q marks a buffer whose result awaits its G
   // (its owner's result_valid_q); buffer_zero_q marks one whose grant carries
@@ -394,15 +404,84 @@ module coherence_home_completions #(
     assign work_eligible[slot] = work_offer[slot] && !issued_q[slot] && !parked_q[slot] &&
         pred_clear_q[slot];
   end
+  for (genvar position = 0; position < WorkPositions; position++) begin : gen_work_position
+    if (PREFETCH_SLOTS != 0 && position == MainSlots) begin : gen_prefetch_position
+      assign work_position_eligible[position] = prefetch_work_found_q;
+      assign work_position_ready[position] = 1'b0;
+    end else begin : gen_slot_position
+      assign work_position_eligible[position] = work_eligible[position];
+      assign work_position_ready[position] = ready_q[position];
+    end
+  end
   coherence_work_select #(
-      .SLOTS(SLOTS)
+      .SLOTS(WorkPositions),
+      .LAST_CODED(PREFETCH_SLOTS != 0),
+      .CODE_BITS(SlotBits)
   ) work_selector (
-      .i_eligible(work_eligible),
-      .i_ready(ready_q),
+      .i_eligible(work_position_eligible),
+      .i_ready(work_position_ready),
       .i_later(work_later_q),
+      .i_last_code(prefetch_work_slot_q),
       .o_found(work_found),
       .o_pick(work_pick)
   );
+  // The selected slot's position in the rotation.
+  assign work_position = PREFETCH_SLOTS != 0 && int'(work_slot_q) >= MainSlots ?
+      SlotBits'(MainSlots) : work_slot_q;
+  if (PREFETCH_SLOTS != 0) begin : gen_prefetch_work
+    // The prefetch slots rotate among themselves: the first offered slot at
+    // or after the one after the last prefetch dispatched. A slot parked on
+    // this edge is not offered (the home parks no prefetch).
+    logic [PREFETCH_SLOTS-1:0] offered, later_q, later, later_first, offered_first;
+    logic [SlotBits-1:0] pick;
+    for (genvar index = 0; index < PREFETCH_SLOTS; index++) begin : gen_offered
+      assign offered[index] = work_eligible[MainSlots+index] && !i_park[MainSlots+index] &&
+          !(work_selected_q && int'(work_slot_q) == MainSlots + index);
+    end
+    assign later = offered & later_q;
+    always_comb begin
+      pick = '0;
+      for (int index = 0; index < PREFETCH_SLOTS; index++) begin
+        later_first[index]   = later[index];
+        offered_first[index] = offered[index];
+        for (int lower = 0; lower < index; lower++) begin
+          if (later[lower]) later_first[index] = 1'b0;
+          if (offered[lower]) offered_first[index] = 1'b0;
+        end
+      end
+      for (int index = 0; index < PREFETCH_SLOTS; index++)
+      if (|later ? later_first[index] : offered_first[index]) pick = SlotBits'(MainSlots + index);
+    end
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        prefetch_work_found_q <= 1'b0;
+        prefetch_work_slot_q <= SlotBits'(MainSlots);
+        later_q <= '1;
+      end else begin
+        prefetch_work_found_q <= |offered;
+        prefetch_work_slot_q  <= pick;
+        if (accept_work && int'(work_slot_q) >= MainSlots)
+          for (int index = 0; index < PREFETCH_SLOTS; index++)
+          later_q[index] <= int'(work_slot_q) == SLOTS - 1 || MainSlots + index > int'(work_slot_q);
+      end
+    end
+`ifndef SYNTHESIS
+    always_ff @(posedge i_clk)
+      if (sim_reset_seen_q && !i_rst && prefetch_work_found_q)
+        assert (int'(prefetch_work_slot_q) >= MainSlots && int'(prefetch_work_slot_q) < SLOTS &&
+            (work_eligible[prefetch_work_slot_q] ||
+             (work_selected_q && work_slot_q == prefetch_work_slot_q)));
+`endif
+`ifdef FORMAL
+    // Two prefetch slots offered, and the rotation prefers the second.
+    if (PREFETCH_SLOTS > 1) begin : gen_rotation_cover
+      always_ff @(posedge i_clk) if (!i_rst) cover (&offered[1:0] && !later_q[0] && later_q[1]);
+    end
+`endif
+  end else begin : gen_no_prefetch_work
+    assign prefetch_work_found_q = 1'b0;
+    assign prefetch_work_slot_q  = '0;
+  end
   // Grants rotate among the buffers holding ready results: the lowest ready
   // buffer at or after grant_next_q, else the lowest ready buffer. The pick is
   // one-hot and selects the buffer's payload directly; the payload's tid is
@@ -582,9 +661,10 @@ module coherence_home_completions #(
       if (work_selected_q && parked_q[work_slot_q]) work_selected_q <= 1'b0;
       if (accept_work) begin
         work_selected_q <= 1'b0;
-        work_next_q <= work_slot_q == SlotBits'(SLOTS - 1) ? '0 : work_slot_q + 1'b1;
-        for (int slot = 0; slot < SLOTS; slot++)
-        work_later_q[slot] <= work_slot_q == SlotBits'(SLOTS - 1) || slot > int'(work_slot_q);
+        work_next_q <= work_position == SlotBits'(WorkPositions - 1) ? '0 : work_position + 1'b1;
+        for (int position = 0; position < WorkPositions; position++)
+        work_later_q[position] <= work_position == SlotBits'(WorkPositions - 1) ||
+            position > int'(work_position);
         issued_q[work_slot_q] <= 1'b1;
         buffer_index_q[work_slot_q] <= work_buffer_q;
         ready_q[work_slot_q] <= 1'b0;
@@ -787,7 +867,6 @@ module coherence_home_completions #(
         if (slot_prefetch[slot] && live[slot]) assert (predecessors_q[slot] == 0);
         for (int other = 0; other < SLOTS; other++)
         if (slot_prefetch[other] && live[other]) assert (!predecessors_q[slot][other]);
-        assert (work_later_q[slot] == (slot >= int'(work_next_q)));
       end
       if (accept_result) assert (result_hit == SLOTS'(1) << result_slot);
       for (int slot = 0; slot < SLOTS; slot++)
@@ -795,7 +874,12 @@ module coherence_home_completions #(
           buffer_owned_q[slot] && !result_valid_q[slot] &&
           result.opcode <= coherence_pkg::GrantFail && result.q == work_identity[slot] &&
           result.addr == work_address[slot]));
-      assert (int'(grant_next_q) < RESULT_SLOTS);
+      assert (int'(grant_next_q) < RESULT_SLOTS && int'(work_next_q) < WorkPositions);
+      for (int position = 0; position < WorkPositions; position++)
+      assert (work_later_q[position] == (position >= int'(work_next_q)));
+      // The selector picks an eligible slot.
+      if (!work_selected_q && work_found && free_buffer)
+        assert (int'(work_pick) < SLOTS && work_eligible[work_pick]);
       // A ready buffer holds the result of the slot that owns it.
       for (int index = 0; index < RESULT_SLOTS; index++) begin
         assert (buffer_later_q[index] == (index >= int'(grant_next_q)));
@@ -929,6 +1013,9 @@ module coherence_home_completions #(
       assume ((i_park & ~o_waiting) == 0);
       assume ((i_wake & ~parked_q) == 0);
       assume ((i_park & i_wake) == 0);
+      // The home parks no prefetch (its composed proof asserts this), so a
+      // prefetch is never READY.
+      assume ((i_park & slot_prefetch & live) == 0);
       if (i_pin_valid) begin
         assume (int'(i_pin_tid) < SLOTS && int'(i_pin_way) < WAYS);
         assume (issued_q[SlotBits'(i_pin_tid)] && buffer_owned_q[SlotBits'(i_pin_tid)]);
