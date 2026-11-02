@@ -1,7 +1,9 @@
 [tasks]
 bmc_load_same bmc load same
 bmc_load_other bmc load other
-bmc_amo_same bmc amo same
+bmc_amo_same bmc amo same amo_partition amo_flow
+bmc_amo_same_owner bmc amo same amo_partition amo_owner
+bmc_amo_same_fatal bmc amo same amo_partition amo_fatal
 bmc_amo_other bmc amo other
 bmc_sc bmc sc
 bmc_old bmc old
@@ -72,6 +74,13 @@ load: chformal -cover -remove c:*p_amo_* c:*p_sc_* c:*p_old_*
 amo: chformal -cover -remove c:*p_load_* c:*p_sc_* c:*p_old_*
 sc: chformal -cover -remove c:*p_load_* c:*p_amo_* c:*p_old_*
 old: chformal -cover -remove c:*p_load_* c:*p_amo_* c:*p_sc_*
+amo_partition: select -assert-count 15 t:$check r:FLAVOR=assert %i
+amo_flow: chformal -assert -remove c:p_no_buffered_atomic c:p_no_buffered_guard c:p_no_fatal
+amo_flow: select -assert-count 12 t:$check r:FLAVOR=assert %i
+amo_owner: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_no_buffered_atomic c:p_no_buffered_guard %u %d
+amo_owner: select -assert-count 2 t:$check r:FLAVOR=assert %i
+amo_fatal: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_no_fatal %d
+amo_fatal: select -assert-count 1 t:$check r:FLAVOR=assert %i
 memory_map
 opt
 

@@ -417,7 +417,7 @@ module coherence_store_boundary_formal #(
       if (rt_sq_mem_write_done && !l1_sc_write_done) acknowledged_q <= acknowledged_q + 1'b1;
       p_no_buffered_atomic : assert (!(l1_pending_store && l1_atomic_live));
       p_no_buffered_guard : assert (!(l1_pending_store && protected_q));
-      assert (!l1_fatal);
+      p_no_fatal : assert (!l1_fatal);
       assert (acknowledged_q <= accepted_q);
       assert (accepted_q - acknowledged_q <= 1);
       if (ordinary_write) begin
