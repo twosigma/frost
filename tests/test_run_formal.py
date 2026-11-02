@@ -269,6 +269,16 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "coherence_array_plru.sby",
+        "Deferred hit touches preserve replacement values at every lookup.",
+        tasks=(
+            "coh_array_plru_prove",
+            "coh_array_plru_uram_prove",
+            "coh_array_plru_cover",
+            "coh_array_plru_uram_cover",
+        ),
+    ),
+    FormalTarget(
         "coherence_array.sby",
         "A watched byte preserves masked updates across serialized array operations.",
         tasks=(
@@ -1109,6 +1119,16 @@ SBY_TASKS = [
     ("coh_l1d_cover", "Buffered stores, ordered installation, probes and errors."),
     ("coh_array_cover", "Masked byte updates and tag-only hits in block RAM."),
     ("coh_array_uram_cover", "Masked byte updates and tag-only hits in UltraRAM."),
+    ("coh_array_plru_prove", "Deferred hit replacement equality in block RAM."),
+    (
+        "coh_array_plru_uram_prove",
+        "Deferred hit replacement equality with UltraRAM tags.",
+    ),
+    ("coh_array_plru_cover", "Deferred hit writes and following lookups in block RAM."),
+    (
+        "coh_array_plru_uram_cover",
+        "Deferred hit writes and following lookups with UltraRAM tags.",
+    ),
     (
         "coh_hart_maint_prove",
         "Store installation, fence invalidation and coherent reads.",

@@ -1,0 +1,37 @@
+[tasks]
+coh_array_plru_prove bram proof
+coh_array_plru_uram_prove uram proof
+coh_array_plru_cover bram covers
+coh_array_plru_uram_cover uram covers
+
+[options]
+proof: mode prove
+covers: mode cover
+depth 32
+timeout 300
+proof: aigsmt boolector
+
+[engines]
+proof: abc pdr -r
+covers: smtbmc boolector
+
+[script]
+read -formal -D F_COH_ARRAY_PLRU_PROOF -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
+chparam -set CACHE_BYTES 256 -set WAYS 4 coherence_array
+uram: chparam -set ULTRA 1 coherence_array
+prep -flatten -top coherence_array
+select -assert-count 4 c:p_plru_*
+chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_plru_* %d
+chformal -cover -remove t:$check r:FLAVOR=cover %i c:c_plru_* %d
+memory_map
+opt
+proof: techmap
+proof: opt -fast
+proof: setundef -anyseq
+opt_clean
+
+[files]
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_array.sv

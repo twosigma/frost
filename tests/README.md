@@ -81,6 +81,8 @@ with responses in flight. The `coherence_array_reset_*` and
 and UltraRAM. They check every set and way after cold and populated resets,
 replacement choices for every exclusion mask, preservation of data RAM, and
 a write in flight through reset, including a five-cycle home data write.
+The private-array benches alternate data and skipped-data hits, hold replies,
+and check replacement choices at the following lookup in each set.
 
 `coherence_home_completions`, `coherence_home`, `coherence_home_equal`,
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges

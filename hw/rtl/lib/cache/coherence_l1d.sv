@@ -1467,11 +1467,32 @@ module coherence_l1d #(
         {reference_valid_next, reference_miss_next, reference_ready_next, reference_error_next});
   end
   logic store_launch_ready_q;
+  logic insert_lookup_valid_q;
+  logic [SetBits-1:0] insert_lookup_set_q;
+  logic [WayBits-1:0] insert_lookup_way_q;
   always_ff @(posedge i_clk) begin
     store_launch_ready_q <= !i_rst && o_store_ready;
+    if (i_rst) begin
+      insert_lookup_valid_q <= 1'b0;
+      insert_lookup_set_q <= '0;
+      insert_lookup_way_q <= '0;
+    end else begin
+      if (active && phase_q == LookupWait && array_valid) begin
+        insert_lookup_valid_q <= 1'b1;
+        insert_lookup_set_q <= array_addr[5+:SetBits];
+        insert_lookup_way_q <= array_way;
+      end
+      if (active && phase_q == Update && update_ready && operation_q == GrantOp)
+        insert_lookup_valid_q <= 1'b0;
+    end
   end
   always_ff @(posedge i_clk) begin
     if (sim_reset_seen_q && !i_rst) begin
+      if (active && phase_q == Update && update_ready && operation_q == GrantOp) begin
+        p_insert_lookup_valid : assert (insert_lookup_valid_q);
+        p_insert_lookup_set : assert (update_addr_q[5+:SetBits] == insert_lookup_set_q);
+        p_insert_lookup_way : assert (way_q == insert_lookup_way_q);
+      end
       if (i_read_valid) assert (!rd_valid_q[i_read_id]);
       if (array_skip_data) assert (!probe_launch && operation_q == StoreOp);
       if (active && phase_q == LookupWait && array_valid && operation_q == ProbeOp &&

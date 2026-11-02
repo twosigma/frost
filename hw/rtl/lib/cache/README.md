@@ -205,8 +205,14 @@ bridges, and maintenance arbitration. `coherence_home` contains the shared
 L2 controller and `coherence_home_array`, whose tag, data-read and masked-update
 ports have independent service. The L1D's `coherence_array` serializes its
 lookup, read and update operations in block RAM. The final tag-read edge
-selects the private way and starts any required data read. Replacement state
-uses the tag request's matching PLRU response.
+selects the private way and registers any required data-read request.
+The input register occupies one cycle of the array's read latency. Replacement state
+uses the tag request's matching PLRU response. A hit updates replacement
+bits from the registered way during data service or the reply, before
+another request or update can enter.
+An insertion update uses the most recent lookup's set and selected way;
+the controller completes that update before issuing another lookup.
+The L1D asserts this pairing for each grant installation.
 Response data is meaningful only with `o_resp_data_valid`. A tag-only or
 skipped read keeps the prior response data without reading the data array.
 The L1D uses 32-byte sectors; the L2 supports 32-byte or 64-byte lines.

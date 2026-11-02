@@ -2259,7 +2259,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_array_reset_bram_sweep": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
         hdl_toplevel_module="coherence_array",
-        description="Cold and populated metadata reset preserves data and clears replacement",
+        description="Metadata reset, held hit responses and following replacement choices",
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=512",
@@ -2271,7 +2271,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_array_reset_bram_fast": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
         hdl_toplevel_module="coherence_array",
-        description="Cold and populated metadata reset preserves data and clears replacement",
+        description="Metadata reset, held hit responses and following replacement choices",
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=512",
@@ -2283,7 +2283,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_array_reset_uram_sweep": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
         hdl_toplevel_module="coherence_array",
-        description="Cold and populated metadata reset preserves data and clears replacement",
+        description="Metadata reset, held hit responses and following replacement choices",
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=512",
@@ -2295,7 +2295,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_array_reset_uram_fast": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
         hdl_toplevel_module="coherence_array",
-        description="Cold and populated metadata reset preserves data and clears replacement",
+        description="Metadata reset, held hit responses and following replacement choices",
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=512",
