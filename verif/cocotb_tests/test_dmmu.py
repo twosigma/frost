@@ -626,3 +626,142 @@ async def test_superpage_hit_over_matching_walk_fault(dut: Any) -> None:
             dut.i_walk_resp_valid.value = 0
             await _cycle(dut)
             assert not int(dut.o_iss_out_valid.value)
+
+
+@cocotb.test()
+async def test_last_page_bypass_single_cycle_latency(dut: Any) -> None:
+    """A load/store to the same page as the previous op hits in 1 cycle via bypass."""
+    await _setup(dut)
+    leaf = Leaf(vpn=0x400, ppn=0x80000)
+    await _install(dut, leaf)
+
+    # First op primes the last-page translation buffer (takes standard 2 cycles)
+    op0 = Op(va=0x400010, tag=1)
+    _issue(dut, op0)
+    await _cycle(dut)
+    assert not int(dut.o_iss_out_valid.value), "First op must take standard 2-stage path"
+    dut.i_iss_valid.value = 0
+    await _cycle(dut)
+    _check(dut, op0, leaf)
+
+    # Second op to the same page hits the last-page bypass in 1 cycle!
+    op1 = Op(va=0x400028, tag=2)
+    _issue(dut, op1)
+    await _cycle(dut)
+    # Right on the very next edge, op1 is valid at S2!
+    _check(dut, op1, leaf)
+
+    dut.i_iss_valid.value = 0
+    await _cycle(dut)
+    assert not int(dut.o_iss_out_valid.value)
+
+
+@cocotb.test()
+async def test_last_page_cross_page_takes_two_cycles(dut: Any) -> None:
+    """An access across page boundary does not bypass and takes standard 2 cycles."""
+    await _setup(dut)
+    leaf0 = Leaf(vpn=0x400, ppn=0x80000)
+    leaf1 = Leaf(vpn=0x500, ppn=0x81000)
+    await _install(dut, leaf0)
+    await _install(dut, leaf1)
+
+    # Prime page 0x400
+    op0 = Op(va=0x400010, tag=1)
+    _issue(dut, op0)
+    await _cycle(dut)
+    dut.i_iss_valid.value = 0
+    await _cycle(dut)
+    _check(dut, op0, leaf0)
+
+    # Access page 0x500: must NOT bypass
+    op1 = Op(va=0x500010, tag=2)
+    _issue(dut, op1)
+    await _cycle(dut)
+    assert not int(dut.o_iss_out_valid.value), "Cross-page access must not bypass"
+    dut.i_iss_valid.value = 0
+    await _cycle(dut)
+    _check(dut, op1, leaf1)
+
+
+@cocotb.test()
+async def test_last_page_bypass_sfence_invalidation(dut: Any) -> None:
+    """SFENCE / TLB invalidation invalidates the last-page translation buffer."""
+    await _setup(dut)
+    leaf = Leaf(vpn=0x400, ppn=0x80000)
+    await _install(dut, leaf)
+
+    op0 = Op(va=0x400010, tag=1)
+    _issue(dut, op0)
+    await _cycle(dut)
+    dut.i_iss_valid.value = 0
+    await _cycle(dut)
+    _check(dut, op0, leaf)
+
+    # Invalidate TLB
+    dut.i_tlb_invalidate.value = 1
+    await _cycle(dut)
+    dut.i_tlb_invalidate.value = 0
+
+    # Re-install leaf in DTLB (since invalidate cleared DTLB)
+    await _install(dut, leaf)
+
+    # Op to 0x400 must NOT bypass because last-page buffer was invalidated
+    op1 = Op(va=0x400028, tag=2)
+    _issue(dut, op1)
+    await _cycle(dut)
+    assert not int(dut.o_iss_out_valid.value), "Must not bypass after TLB invalidate"
+    dut.i_iss_valid.value = 0
+    await _cycle(dut)
+    _check(dut, op1, leaf)
+
+
+@cocotb.test()
+async def test_last_page_bypass_permission_mismatch_fault_precision(dut: Any) -> None:
+    """Store to read-only page does not bypass, preserving exact page fault."""
+    await _setup(dut)
+    # Read-only leaf (w=0)
+    leaf = Leaf(vpn=0x400, ppn=0x80000, w=0)
+    await _install(dut, leaf)
+
+    # Prime with load
+    op0 = Op(va=0x400010, tag=1, store=0)
+    _issue(dut, op0)
+    await _cycle(dut)
+    dut.i_iss_valid.value = 0
+    await _cycle(dut)
+    _check(dut, op0, leaf)
+
+    # Store to same page must not bypass and must fault
+    op1 = Op(va=0x400028, tag=2, needs_sq=1, store=1)
+    _issue(dut, op1)
+    await _cycle(dut)
+    assert not int(dut.o_iss_out_valid.value), "Permission mismatch must not bypass"
+    dut.i_iss_valid.value = 0
+    await _cycle(dut)
+    _check(dut, op1, leaf)
+    assert int(dut.o_iss_out_fault.value) == PAGE
+
+
+@cocotb.test()
+async def test_last_page_bypass_misaligned_trap_precision(dut: Any) -> None:
+    """Misaligned access does not bypass, preserving exact misaligned fault."""
+    await _setup(dut)
+    leaf = Leaf(vpn=0x400, ppn=0x80000)
+    await _install(dut, leaf)
+
+    op0 = Op(va=0x400010, tag=1)
+    _issue(dut, op0)
+    await _cycle(dut)
+    dut.i_iss_valid.value = 0
+    await _cycle(dut)
+    _check(dut, op0, leaf)
+
+    # Misaligned op (double at byte offset 1)
+    op1 = Op(va=0x400011, tag=2, size=3, trap_misaligned=1)
+    _issue(dut, op1)
+    await _cycle(dut)
+    assert not int(dut.o_iss_out_valid.value), "Misaligned access must not bypass"
+    dut.i_iss_valid.value = 0
+    await _cycle(dut)
+    _check(dut, op1, leaf)
+    assert int(dut.o_iss_out_fault.value) == MISALIGN
