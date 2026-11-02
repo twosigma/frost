@@ -192,6 +192,11 @@ module coherence_home_completions #(
   (* keep = "true" *) logic [SLOTS-1:0] grant_slot_held, result_valid_hold, buffer_owned_hold;
   (* keep = "true" *) logic [RESULT_SLOTS-1:0] grant_buffer_held, buffer_live_hold;
   (* keep = "true" *) logic [RESULT_SLOTS-1:0] buffer_ready_hold;
+  // U readiness also depends on the clients' comparisons, so the registers a
+  // release clears take it last the same way: kept next states without a
+  // release on the edge.
+  (* keep = "true" *) logic [SLOTS-1:0][SLOTS-1:0] predecessors_hold;
+  (* keep = "true" *) logic [SLOTS-1:0] handed_hold, ready_hold;
   coh_g_t grant_q, result, grant_payload;
   coh_d_t incoming;
   logic result_matches;
@@ -610,6 +615,25 @@ module coherence_home_completions #(
       end
     end
   end
+  // A slot's predecessors: an admitted request takes the live, unhanded
+  // requests it orders behind; a handed or released predecessor leaves.
+  // READY lasts from a wake until the slot's dispatch or release. A DMA
+  // request is handed at its result until its release.
+  wire result_handed = accept_result && work_identity[result_slot][8:7] == 2'd2;
+  assign handed_hold = handed_q | ({SLOTS{result_handed}} & (SLOTS'(1) << result_slot));
+  for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_release_hold
+    for (genvar older = 0; older < SLOTS; older++) begin : gen_older
+      assign predecessors_hold[slot][older] = accept_request &&
+          free_slot_index == SlotBits'(slot) ?
+          live[older] && !handed_q[older] && incoming_orders[older] :
+          predecessors_q[slot][older] && !handed_q[older];
+    end
+    assign ready_hold[slot] = ready_q[slot] && !(accept_work && work_slot_q == SlotBits'(slot));
+    always_ff @(posedge i_clk) begin
+      if (i_rst) ready_q[slot] <= 1'b0;
+      else ready_q[slot] <= i_wake[slot] || (ready_hold[slot] && !release_fire[slot]);
+    end
+  end
   // A slot's result waits from its result until its G is taken; its buffer
   // is owned from its issue until that G or a retry.
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_result_state
@@ -636,7 +660,6 @@ module coherence_home_completions #(
       parked_q <= '0;
       counted_q <= '0;
       nofill_q <= '0;
-      ready_q <= '0;
       wake_error_q <= '0;
       work_buffer_q <= '0;
       work_selected_q <= 1'b0;
@@ -673,7 +696,6 @@ module coherence_home_completions #(
             position > int'(work_position);
         issued_q[work_slot_q] <= 1'b1;
         buffer_index_q[work_slot_q] <= work_buffer_q;
-        ready_q[work_slot_q] <= 1'b0;
       end
       for (int slot = 0; slot < SLOTS; slot++)
       if (i_result_valid && result_hit[slot]) error_q[slot] <= result.error;
@@ -707,28 +729,21 @@ module coherence_home_completions #(
         buffer_later_q[index] <= grant_buffer_q == ResultBits'(RESULT_SLOTS - 1) ||
             index > int'(grant_buffer_q);
       end
-      handed_q <= (handed_q | ({SLOTS{accept_result && work_identity[result_slot][8:7] == 2'd2}} &
-          (SLOTS'(1) << result_slot))) & ~release_fire;
+      handed_q <= handed_hold & ~release_fire;
       for (int slot = 0; slot < SLOTS; slot++) begin
-        predecessors_q[slot] <= predecessors_q[slot] & ~release_fire & ~handed_q;
+        predecessors_q[slot] <= predecessors_hold[slot] & ~release_fire;
         if (release_fire[slot]) begin
           issued_q[slot] <= 1'b0;
           pin_valid_q[slot] <= 1'b0;
           error_q[slot] <= 1'b0;
           wake_error_q[slot] <= 1'b0;
           counted_q[slot] <= 1'b0;
-          ready_q[slot] <= 1'b0;
         end
-        if (accept_request && free_slot_index == SlotBits'(slot)) begin
-          for (int older = 0; older < SLOTS; older++) begin
-            predecessors_q[slot][older] <= live[older] && !release_fire[older] &&
-                !handed_q[older] && incoming_orders[older];
-          end
+        if (accept_request && free_slot_index == SlotBits'(slot))
           nofill_q[slot] <= incoming_prefetch && |(live & ~slot_prefetch & incoming_blocks);
-        end else if (accept_request && !incoming_prefetch && incoming_blocks[slot] &&
-                     live[slot] && slot_prefetch[slot]) begin
+        else if (accept_request && !incoming_prefetch && incoming_blocks[slot] && live[slot] &&
+                 slot_prefetch[slot])
           nofill_q[slot] <= 1'b1;
-        end
         pred_clear_q[slot] <= accept_request && free_slot_index == SlotBits'(slot) ?
             (release_go ? accepted_clear_if_release : accepted_clear_if_hold) :
             (release_go ? clear_if_release[slot] : clear_if_hold[slot]);
@@ -736,7 +751,6 @@ module coherence_home_completions #(
         if (i_park[slot]) parked_q[slot] <= 1'b1;
         if (i_wake[slot]) begin
           parked_q[slot] <= 1'b0;
-          ready_q[slot] <= 1'b1;
           wake_error_q[slot] <= i_wake_error[slot];
         end
         if (i_pin_valid && i_pin_tid == 6'(slot)) begin
