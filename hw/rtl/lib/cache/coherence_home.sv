@@ -996,11 +996,16 @@ module coherence_home #(
         decision_reader;
     assign joining = run && array_response && join_fill[fill];
     for (genvar slot = 0; slot < COMPLETIONS; slot++) begin : gen_eligible
-      assign eligible[slot] = enabled && waiting_offer[slot] && same_block(
-          waiting_addr[slot], fill_addr_q[fill]
-      ) && read_waiter(
-          waiting_opcode[slot]
-      );
+      if (PREFETCH_SLOTS != 0 && slot >= COMPLETIONS - PREFETCH_SLOTS) begin : gen_prefetch_slot
+        // A prefetch slot holds only Prefetches, which take no seat.
+        assign eligible[slot] = 1'b0;
+      end else begin : gen_request_slot
+        assign eligible[slot] = enabled && waiting_offer[slot] && same_block(
+            waiting_addr[slot], fill_addr_q[fill]
+        ) && read_waiter(
+            waiting_opcode[slot]
+        );
+      end
     end
     coherence_seat_select #(
         .SLOTS(COMPLETIONS)
