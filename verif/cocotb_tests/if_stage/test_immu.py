@@ -388,9 +388,8 @@ async def test_warm_translation_retags_once_per_pc_movement(dut: Any) -> None:
     await _return_leaf(dut, leaves[0])
     _assert_window(dut, _translated_window(pc_a, leaves[0]))
 
+    # Intra-page PC movement keeps the page translation valid without a bubble.
     await _move_pc(dut, pc_a_same_page)
-    _assert_invisible(dut)
-    await _cycle(dut)
     _assert_window(dut, _translated_window(pc_a_same_page, leaves[0]))
     assert int(dut.o_line_after_ok.value) == 0
 
@@ -766,3 +765,270 @@ async def test_cross_page_resolution_and_exact_successor_vpn(dut: Any) -> None:
     await _return_leaf(dut, leaf_giga)
     _assert_window(dut, _translated_window(pc_giga, leaf_giga))
     assert int(dut.o_walk_req_valid.value) == 0
+
+
+@cocotb.test()
+async def test_directed_cross_page_sequential_and_straddle_fault(dut: Any) -> None:
+    """1. Sequential fetch approaching and crossing a 4 KiB boundary where next page faults."""
+    await _setup(dut)
+    leaf0 = Leaf(vpn=0x10, ppn=0x80010)
+    pc_line_end = 0x0001_0FF8
+    pc_straddle = 0x0001_0FFC
+    pc_next_page = 0x0001_1000
+
+    # Step to last 8 bytes of page 0
+    await _move_pc(dut, pc_line_end)
+    dut.i_active.value = 1
+    await _cycle(dut)
+    await _accept_request(dut, leaf0.vpn)
+    await _return_leaf(dut, leaf0)
+    _assert_window(dut, _translated_window(pc_line_end, leaf0))
+    # At 0xFF8, [11:5] == 0x7F and [4:2] == 6 != 7, so after_ok is 0
+    assert int(dut.o_line_after_ok.value) == 0
+
+    # Step to 0xFFC (straddles 4 KiB boundary into VPN 0x11)
+    await _move_pc(dut, pc_straddle)
+    _assert_invisible(dut)
+    await _cycle(dut)
+    await _accept_request(dut, 0x11)
+    await _pulse_response(dut, vpn=0x11, fault_kind=DFAULT_PAGE)
+    # Word 0 succeeds, word 1 page faults
+    _assert_window(dut, _translated_window(pc_straddle, leaf0, fault1_kind=DFAULT_PAGE))
+    assert int(dut.o_fault0.value) == 0
+    assert int(dut.o_fault1.value) == 1
+    assert int(dut.o_fault1_page.value) == 1
+
+    # Sequential step crosses to 0x11000 (next page). Tag must mismatch!
+    await _move_pc(dut, pc_next_page)
+    _assert_invisible(dut)
+    await _cycle(dut)
+    # VPN 0x11 was memoized as refused, so it resolves to page fault on word 0
+    assert int(dut.o_fault0.value) == 1
+    assert int(dut.o_fault0_page.value) == 1
+
+
+@cocotb.test()
+async def test_directed_page_ping_pong_jump_tag_aliasing(dut: Any) -> None:
+    """2. Jump from one page to another and back to the first: tags must never alias."""
+    await _setup(dut)
+    leaf_a = Leaf(vpn=0x20, ppn=0x80020)
+    leaf_b = Leaf(vpn=0x21, ppn=0x80030)
+
+    pc_a1 = 0x0002_0010
+    pc_a2 = 0x0002_0020
+    pc_b1 = 0x0002_1040
+    pc_b2 = 0x0002_1080
+    pc_a3 = 0x0002_0060
+    pc_a4 = 0x0002_0064
+
+    # Page A: initial walk
+    await _move_pc(dut, pc_a1)
+    dut.i_active.value = 1
+    await _cycle(dut)
+    await _accept_request(dut, leaf_a.vpn)
+    await _return_leaf(dut, leaf_a)
+    _assert_window(dut, _translated_window(pc_a1, leaf_a))
+
+    # Page A intra-page step: instant hit
+    await _move_pc(dut, pc_a2)
+    _assert_window(dut, _translated_window(pc_a2, leaf_a))
+    assert int(dut.o_pa0.value) == 0x8002_0020
+
+    # Jump to Page B: tag must not alias Page A
+    await _move_pc(dut, pc_b1)
+    _assert_invisible(dut)
+    await _cycle(dut)
+    await _accept_request(dut, leaf_b.vpn)
+    await _return_leaf(dut, leaf_b)
+    _assert_window(dut, _translated_window(pc_b1, leaf_b))
+    assert int(dut.o_pa0.value) == 0x8003_0040
+
+    # Page B intra-page step: instant hit
+    await _move_pc(dut, pc_b2)
+    _assert_window(dut, _translated_window(pc_b2, leaf_b))
+    assert int(dut.o_pa0.value) == 0x8003_0080
+
+    # Jump back to Page A at new offset: must not alias Page B
+    await _move_pc(dut, pc_a3)
+    _assert_invisible(dut)
+    # Page A is warm in ITLB: resolves without walking
+    await _cycle(dut)
+    _assert_window(dut, _translated_window(pc_a3, leaf_a))
+    assert int(dut.o_pa0.value) == 0x8002_0060
+
+    # Page A intra-page step: instant hit again
+    await _move_pc(dut, pc_a4)
+    _assert_window(dut, _translated_window(pc_a4, leaf_a))
+    assert int(dut.o_pa0.value) == 0x8002_0064
+
+
+@cocotb.test()
+async def test_directed_privilege_change_same_vpn_mismatch(dut: Any) -> None:
+    """3. Privilege change on identical VPN must invalidate intra-page match."""
+    await _setup(dut)
+    # Supervisor-only leaf
+    leaf_s = Leaf(vpn=0x30, ppn=0x80040, perm_u=0)
+    pc = 0x0003_0000
+
+    # S-mode fetch
+    await _move_pc(dut, pc)
+    dut.i_priv_u.value = 0
+    dut.i_active.value = 1
+    await _cycle(dut)
+    await _accept_request(dut, leaf_s.vpn)
+    await _return_leaf(dut, leaf_s)
+    _assert_window(dut, _translated_window(pc, leaf_s, priv_u=0))
+
+    # Intra-page step still in S-mode: hit
+    await _move_pc(dut, pc + 4)
+    _assert_window(dut, _translated_window(pc + 4, leaf_s, priv_u=0))
+
+    # Privilege changes to U-mode: intra-page tag must mismatch immediately
+    dut.i_priv_u.value = 1
+    await _settle()
+    _assert_invisible(dut)
+
+    # Next cycle retags from ITLB; leaf has perm_u=0, so U-mode faults
+    await _cycle(dut)
+    expected_fault = _translated_window(pc + 4, leaf_s, priv_u=1)
+    _assert_window(dut, expected_fault)
+    assert expected_fault.fault0_page == 1
+
+    # Switch back to S-mode: invisible immediately, retags to valid
+    dut.i_priv_u.value = 0
+    await _settle()
+    _assert_invisible(dut)
+    await _cycle(dut)
+    _assert_window(dut, _translated_window(pc + 4, leaf_s, priv_u=0))
+
+
+@cocotb.test()
+async def test_directed_sfence_and_satp_intra_page_invalidation(dut: Any) -> None:
+    """4. SFENCE.VMA and satp writes between same-page fetches clear the tag."""
+    await _setup(dut)
+    leaf = Leaf(vpn=0x40, ppn=0x80050)
+    pc0 = 0x0004_0100
+    pc1 = 0x0004_0104
+    pc2 = 0x0004_0108
+
+    # Initial fetch
+    await _move_pc(dut, pc0)
+    dut.i_active.value = 1
+    await _cycle(dut)
+    await _accept_request(dut, leaf.vpn)
+    await _return_leaf(dut, leaf)
+    _assert_window(dut, _translated_window(pc0, leaf))
+
+    # Same page hit
+    await _move_pc(dut, pc1)
+    _assert_window(dut, _translated_window(pc1, leaf))
+
+    # SFENCE.VMA (i_tlb_invalidate) between same-page fetches
+    dut.i_tlb_invalidate.value = 1
+    await _settle()
+    _assert_invisible(dut)
+    await _cycle(dut)
+    dut.i_tlb_invalidate.value = 0
+
+    # Step to pc2 on the same page: must NOT bypass via intra-page match
+    await _move_pc(dut, pc2)
+    _assert_invisible(dut)
+    await _cycle(dut)
+    # TLB was cleared by sfence, so a walk is requested
+    await _accept_request(dut, leaf.vpn)
+    await _return_leaf(dut, leaf)
+    _assert_window(dut, _translated_window(pc2, leaf))
+
+    # satp write (disable MMU): immediate Bare mode
+    dut.i_active.value = 0
+    await _settle()
+    _assert_window(dut, _bare_window(pc2))
+
+    # Re-enable MMU: tag was cleared in Bare mode, must retag
+    await _cycle(dut)
+    dut.i_active.value = 1
+    await _settle()
+    _assert_invisible(dut)
+    await _cycle(dut)
+    _assert_window(dut, _translated_window(pc2, leaf))
+
+
+@cocotb.test()
+async def test_directed_pte_change_followed_by_sfence(dut: Any) -> None:
+    """5. A PTE change followed by sfence.vma updates the tagged translation."""
+    await _setup(dut)
+    leaf_old = Leaf(vpn=0x50, ppn=0x80060)
+    leaf_new = Leaf(vpn=0x50, ppn=0x80070)
+    pc = 0x0005_0200
+
+    # Old mapping
+    await _move_pc(dut, pc)
+    dut.i_active.value = 1
+    await _cycle(dut)
+    await _accept_request(dut, leaf_old.vpn)
+    await _return_leaf(dut, leaf_old)
+    _assert_window(dut, _translated_window(pc, leaf_old))
+    assert int(dut.o_pa0.value) == 0x8006_0200
+
+    # Step within page
+    await _move_pc(dut, pc + 4)
+    _assert_window(dut, _translated_window(pc + 4, leaf_old))
+    assert int(dut.o_pa0.value) == 0x8006_0204
+
+    # PTE updated in memory, followed by SFENCE.VMA
+    dut.i_tlb_invalidate.value = 1
+    await _cycle(dut)
+    dut.i_tlb_invalidate.value = 0
+
+    # Next fetch on same page must re-walk and receive new PPN
+    await _move_pc(dut, pc + 8)
+    _assert_invisible(dut)
+    await _cycle(dut)
+    await _accept_request(dut, leaf_new.vpn)
+    await _return_leaf(dut, leaf_new)
+    _assert_window(dut, _translated_window(pc + 8, leaf_new))
+    assert int(dut.o_pa0.value) == 0x8007_0208
+
+
+@cocotb.test()
+async def test_directed_straddle_instruction_fault_xtval(dut: Any) -> None:
+    """6. Instruction fault on second half of straddling instruction reports fault1."""
+    await _setup(dut)
+    leaf0 = Leaf(vpn=0x60, ppn=0x80080)
+    pc_straddle_page = 0x0006_0FFC
+
+    # Word 0 valid, word 1 page fault
+    await _move_pc(dut, pc_straddle_page)
+    dut.i_active.value = 1
+    await _cycle(dut)
+    await _accept_request(dut, 0x60)
+    await _pulse_response(dut, vpn=0x60, ppn=leaf0.ppn)
+    await _accept_request(dut, 0x61)
+    await _pulse_response(dut, vpn=0x61, fault_kind=DFAULT_PAGE)
+
+    expected_page = _translated_window(pc_straddle_page, leaf0, fault1_kind=DFAULT_PAGE)
+    _assert_window(dut, expected_page)
+    assert int(dut.o_fault0.value) == 0
+    assert int(dut.o_fault0_page.value) == 0
+    assert int(dut.o_fault1.value) == 1
+    assert int(dut.o_fault1_page.value) == 1
+    # Check that word 1 target address is the start of the faulting next page (xtval)
+    assert int(dut.o_pa1.value) & ~0xFFF == _next_page_va(pc_straddle_page) & PHYS_MASK
+
+    # Test word 1 access fault (PMA violation)
+    dut.i_tlb_invalidate.value = 1
+    await _cycle(dut)
+    dut.i_tlb_invalidate.value = 0
+    await _move_pc(dut, pc_straddle_page)
+    await _cycle(dut)
+    await _accept_request(dut, 0x60)
+    await _pulse_response(dut, vpn=0x60, ppn=leaf0.ppn)
+    await _accept_request(dut, 0x61)
+    await _pulse_response(dut, vpn=0x61, fault_kind=DFAULT_ACCESS)
+
+    expected_access = _translated_window(pc_straddle_page, leaf0, fault1_kind=DFAULT_ACCESS)
+    _assert_window(dut, expected_access)
+    assert int(dut.o_fault0.value) == 0
+    assert int(dut.o_fault1.value) == 1
+    assert int(dut.o_fault1_page.value) == 0
+
