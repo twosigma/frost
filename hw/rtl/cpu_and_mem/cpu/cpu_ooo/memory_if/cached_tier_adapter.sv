@@ -478,7 +478,8 @@ module cached_tier_adapter #(
             open_idx
           }
       );
-      if (!i_rst && known && ((read_sel ? read_if_sel : read_if_clear) == i_read_req)) begin
+      if (sim_reset_seen_q && !i_rst && known &&
+          ((read_sel ? read_if_sel : read_if_clear) == i_read_req)) begin
         p_accept_state_exact :
         assert ({valid_next[s], live_next[s], sent_next[s], open_next[s]} ==
                 {valid_ref, live_ref, sent_ref, open_ref});
@@ -520,6 +521,11 @@ module cached_tier_adapter #(
   assign o_write_inflight = pending_write_valid;
 
 `ifndef SYNTHESIS
+`ifdef FORMAL
+  wire sim_reset_seen_q = 1'b1;
+`else
+  wire sim_reset_seen_q = reset_seen_q;
+`endif
   logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
   logic                  launch_check_q;

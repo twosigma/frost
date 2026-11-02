@@ -18,3 +18,7 @@
 # Keep the 10G RX parser's state encoding, as tests/test_run_yosys.py does:
 # FSM recoding would expand its symbolic transitions into a table.
 setattr -set fsm_encoding {"none"} *eth10g_mac_rx*/w:state
+
+# Map one service engine definition for the home's result slots.
+# OpenROAD links a hardware instance for each slot.
+setattr -mod -set keep_hierarchy 1 *coherence_home_engine

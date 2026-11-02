@@ -1,0 +1,161 @@
+[tasks]
+coh_home_array_prove proof bram
+coh_home_array_uram_byte0_prove proof uram byte0
+coh_home_array_uram_byte1_prove proof uram byte1
+coh_home_array_uram_byte2_prove proof uram byte2
+coh_home_array_uram_byte3_prove proof uram byte3
+coh_home_array_uram_byte4_prove proof uram byte4
+coh_home_array_uram_byte5_prove proof uram byte5
+coh_home_array_uram_byte6_prove proof uram byte6
+coh_home_array_uram_byte7_prove proof uram byte7
+coh_home_array_uram_byte8_prove proof uram byte8
+coh_home_array_uram_byte9_prove proof uram byte9
+coh_home_array_uram_byte10_prove proof uram byte10
+coh_home_array_uram_byte11_prove proof uram byte11
+coh_home_array_uram_byte12_prove proof uram byte12
+coh_home_array_uram_byte13_prove proof uram byte13
+coh_home_array_uram_byte14_prove proof uram byte14
+coh_home_array_uram_byte15_prove proof uram byte15
+coh_home_array_uram_byte16_prove proof uram byte16
+coh_home_array_uram_byte17_prove proof uram byte17
+coh_home_array_uram_byte18_prove proof uram byte18
+coh_home_array_uram_byte19_prove proof uram byte19
+coh_home_array_uram_byte20_prove proof uram byte20
+coh_home_array_uram_byte21_prove proof uram byte21
+coh_home_array_uram_byte22_prove proof uram byte22
+coh_home_array_uram_byte23_prove proof uram byte23
+coh_home_array_uram_byte24_prove proof uram byte24
+coh_home_array_uram_byte25_prove proof uram byte25
+coh_home_array_uram_byte26_prove proof uram byte26
+coh_home_array_uram_byte27_prove proof uram byte27
+coh_home_array_uram_byte28_prove proof uram byte28
+coh_home_array_uram_byte29_prove proof uram byte29
+coh_home_array_uram_byte30_prove proof uram byte30
+coh_home_array_uram_byte31_prove proof uram byte31
+coh_home_array_uram_byte32_prove proof uram byte32
+coh_home_array_uram_byte33_prove proof uram byte33
+coh_home_array_uram_byte34_prove proof uram byte34
+coh_home_array_uram_byte35_prove proof uram byte35
+coh_home_array_uram_byte36_prove proof uram byte36
+coh_home_array_uram_byte37_prove proof uram byte37
+coh_home_array_uram_byte38_prove proof uram byte38
+coh_home_array_uram_byte39_prove proof uram byte39
+coh_home_array_uram_byte40_prove proof uram byte40
+coh_home_array_uram_byte41_prove proof uram byte41
+coh_home_array_uram_byte42_prove proof uram byte42
+coh_home_array_uram_byte43_prove proof uram byte43
+coh_home_array_uram_byte44_prove proof uram byte44
+coh_home_array_uram_byte45_prove proof uram byte45
+coh_home_array_uram_byte46_prove proof uram byte46
+coh_home_array_uram_byte47_prove proof uram byte47
+coh_home_array_uram_byte48_prove proof uram byte48
+coh_home_array_uram_byte49_prove proof uram byte49
+coh_home_array_uram_byte50_prove proof uram byte50
+coh_home_array_uram_byte51_prove proof uram byte51
+coh_home_array_uram_byte52_prove proof uram byte52
+coh_home_array_uram_byte53_prove proof uram byte53
+coh_home_array_uram_byte54_prove proof uram byte54
+coh_home_array_uram_byte55_prove proof uram byte55
+coh_home_array_uram_byte56_prove proof uram byte56
+coh_home_array_uram_byte57_prove proof uram byte57
+coh_home_array_uram_byte58_prove proof uram byte58
+coh_home_array_uram_byte59_prove proof uram byte59
+coh_home_array_uram_byte60_prove proof uram byte60
+coh_home_array_uram_byte61_prove proof uram byte61
+coh_home_array_uram_byte62_prove proof uram byte62
+coh_home_array_uram_byte63_prove proof uram byte63
+coh_home_array_cover covers
+
+[options]
+proof: mode prove
+covers: mode cover
+depth 32
+timeout 180
+proof: aigsmt boolector
+
+[engines]
+proof: abc pdr
+covers: smtbmc boolector
+
+[script]
+byte0: verilog_defines -D COHERENCE_ARRAY_BYTE=0
+byte1: verilog_defines -D COHERENCE_ARRAY_BYTE=1
+byte2: verilog_defines -D COHERENCE_ARRAY_BYTE=2
+byte3: verilog_defines -D COHERENCE_ARRAY_BYTE=3
+byte4: verilog_defines -D COHERENCE_ARRAY_BYTE=4
+byte5: verilog_defines -D COHERENCE_ARRAY_BYTE=5
+byte6: verilog_defines -D COHERENCE_ARRAY_BYTE=6
+byte7: verilog_defines -D COHERENCE_ARRAY_BYTE=7
+byte8: verilog_defines -D COHERENCE_ARRAY_BYTE=8
+byte9: verilog_defines -D COHERENCE_ARRAY_BYTE=9
+byte10: verilog_defines -D COHERENCE_ARRAY_BYTE=10
+byte11: verilog_defines -D COHERENCE_ARRAY_BYTE=11
+byte12: verilog_defines -D COHERENCE_ARRAY_BYTE=12
+byte13: verilog_defines -D COHERENCE_ARRAY_BYTE=13
+byte14: verilog_defines -D COHERENCE_ARRAY_BYTE=14
+byte15: verilog_defines -D COHERENCE_ARRAY_BYTE=15
+byte16: verilog_defines -D COHERENCE_ARRAY_BYTE=16
+byte17: verilog_defines -D COHERENCE_ARRAY_BYTE=17
+byte18: verilog_defines -D COHERENCE_ARRAY_BYTE=18
+byte19: verilog_defines -D COHERENCE_ARRAY_BYTE=19
+byte20: verilog_defines -D COHERENCE_ARRAY_BYTE=20
+byte21: verilog_defines -D COHERENCE_ARRAY_BYTE=21
+byte22: verilog_defines -D COHERENCE_ARRAY_BYTE=22
+byte23: verilog_defines -D COHERENCE_ARRAY_BYTE=23
+byte24: verilog_defines -D COHERENCE_ARRAY_BYTE=24
+byte25: verilog_defines -D COHERENCE_ARRAY_BYTE=25
+byte26: verilog_defines -D COHERENCE_ARRAY_BYTE=26
+byte27: verilog_defines -D COHERENCE_ARRAY_BYTE=27
+byte28: verilog_defines -D COHERENCE_ARRAY_BYTE=28
+byte29: verilog_defines -D COHERENCE_ARRAY_BYTE=29
+byte30: verilog_defines -D COHERENCE_ARRAY_BYTE=30
+byte31: verilog_defines -D COHERENCE_ARRAY_BYTE=31
+byte32: verilog_defines -D COHERENCE_ARRAY_BYTE=32
+byte33: verilog_defines -D COHERENCE_ARRAY_BYTE=33
+byte34: verilog_defines -D COHERENCE_ARRAY_BYTE=34
+byte35: verilog_defines -D COHERENCE_ARRAY_BYTE=35
+byte36: verilog_defines -D COHERENCE_ARRAY_BYTE=36
+byte37: verilog_defines -D COHERENCE_ARRAY_BYTE=37
+byte38: verilog_defines -D COHERENCE_ARRAY_BYTE=38
+byte39: verilog_defines -D COHERENCE_ARRAY_BYTE=39
+byte40: verilog_defines -D COHERENCE_ARRAY_BYTE=40
+byte41: verilog_defines -D COHERENCE_ARRAY_BYTE=41
+byte42: verilog_defines -D COHERENCE_ARRAY_BYTE=42
+byte43: verilog_defines -D COHERENCE_ARRAY_BYTE=43
+byte44: verilog_defines -D COHERENCE_ARRAY_BYTE=44
+byte45: verilog_defines -D COHERENCE_ARRAY_BYTE=45
+byte46: verilog_defines -D COHERENCE_ARRAY_BYTE=46
+byte47: verilog_defines -D COHERENCE_ARRAY_BYTE=47
+byte48: verilog_defines -D COHERENCE_ARRAY_BYTE=48
+byte49: verilog_defines -D COHERENCE_ARRAY_BYTE=49
+byte50: verilog_defines -D COHERENCE_ARRAY_BYTE=50
+byte51: verilog_defines -D COHERENCE_ARRAY_BYTE=51
+byte52: verilog_defines -D COHERENCE_ARRAY_BYTE=52
+byte53: verilog_defines -D COHERENCE_ARRAY_BYTE=53
+byte54: verilog_defines -D COHERENCE_ARRAY_BYTE=54
+byte55: verilog_defines -D COHERENCE_ARRAY_BYTE=55
+byte56: verilog_defines -D COHERENCE_ARRAY_BYTE=56
+byte57: verilog_defines -D COHERENCE_ARRAY_BYTE=57
+byte58: verilog_defines -D COHERENCE_ARRAY_BYTE=58
+byte59: verilog_defines -D COHERENCE_ARRAY_BYTE=59
+byte60: verilog_defines -D COHERENCE_ARRAY_BYTE=60
+byte61: verilog_defines -D COHERENCE_ARRAY_BYTE=61
+byte62: verilog_defines -D COHERENCE_ARRAY_BYTE=62
+byte63: verilog_defines -D COHERENCE_ARRAY_BYTE=63
+read -formal -sv -noautowire sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_home_array.sv
+chparam -set CACHE_BYTES 64 -set WAYS 1 -set LINE_BYTES 32 coherence_home_array
+uram: chparam -set CACHE_BYTES 128 -set LINE_BYTES 64 coherence_home_array
+bram: chparam -set ULTRA 0 coherence_home_array
+covers: chparam -set ULTRA 0 coherence_home_array
+prep -top coherence_home_array -flatten
+memory_map
+opt
+proof: techmap
+proof: opt
+proof: setundef -undriven -anyseq
+
+[files]
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_home_array.sv

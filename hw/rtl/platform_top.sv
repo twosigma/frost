@@ -39,30 +39,24 @@ module platform_top #(
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
-    // Ways per set of the L1D, L1I, and L2 (see frost_hart_cache and
-    // frost_cluster_cache).
+    // Ways per set in the private caches and shared array.
     parameter int unsigned L1D_WAYS = 4,
     parameter int unsigned L1I_WAYS = 4,
     parameter int unsigned L2_WAYS = 4,
-    // L1D miss-status slots, and L2 miss-status and writeback slots (see
-    // frost_hart_cache and frost_cluster_cache).
+    // L1D_NUM_MSHR sets the L1D's request endpoints, 1 to 8: one for stores,
+    // LR and atomics, and the rest for load misses in flight. The home has
+    // four fills; L2_NUM_MSHR does not change that.
     parameter int unsigned L1D_NUM_MSHR = 8,
     parameter int unsigned L2_NUM_MSHR = 4,
     parameter int unsigned L2_NUM_WB = 2,
-    // Read waiter seats per L2 miss slot (see frost_cluster_cache). A
-    // stream prefetch holds its slot's primary seat, so the L1D's reads of
-    // both halves of the line need two.
+    // Waiter and prefetch settings have no effect on the coherent home.
     parameter int unsigned L2_NUM_WAITERS = 2,
-    // The L2 stream prefetcher (see frost_cluster_cache): 0 turns it off.
     parameter int unsigned L2_PREFETCH = 1,
     parameter int unsigned L2_PREFETCH_DISTANCE = 8,
     parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
-    // L2 line size: 64 bytes, as on the X3, or 32, the L1s' line size, which
-    // leaves out the line-size adapter. Every DDR AXI transfer carries one L2
-    // line in a single beat.
+    // L2 line size is 32 or 64 bytes. Each AXI beat carries one L2 line.
     parameter int unsigned L2_LINE_BYTES = 64,
-    // Simulation-only fast cache maintenance for fence.i (see frost_cache).
-    // 0 = FPGA (cycle-accurate maintenance FSM); non-zero = sim fast path.
+    // Simulation-only L1I maintenance acceleration. L1D sweeps visit every set.
     parameter int unsigned SIM_FAST_MAINT = 0,
     // Behavioral main-memory model (simulation only; hardware integration
     // replaces it with the DDR controller behind the same AXI port).
@@ -260,6 +254,7 @@ module platform_top #(
   logic [10:0] cpu_msi_id;
   logic cpu_seip;
   logic [63:0] cpu_mtime;
+  logic imem_sync_done;
   logic dbg_haltreq;
   logic dbg_go;
   logic [31:0] dbg_go_addr;
@@ -379,6 +374,7 @@ module platform_top #(
       .i_msi_id(cpu_msi_id),
       .i_mtime(cpu_mtime),
       .i_disable_branch_prediction(1'b0),
+      .i_imem_sync_done(imem_sync_done),
       .i_dbg_haltreq(dbg_haltreq),
       .i_dbg_go(dbg_go),
       .i_dbg_go_addr(dbg_go_addr),
@@ -599,6 +595,7 @@ module platform_top #(
       .o_cpu_msi_level(cpu_msi_level),
       .o_cpu_msi_id(cpu_msi_id),
       .o_cpu_mtime(cpu_mtime),
+      .o_imem_sync_done(imem_sync_done),
       .o_dbg_haltreq(dbg_haltreq),
       .o_dbg_go(dbg_go),
       .o_dbg_go_addr(dbg_go_addr),

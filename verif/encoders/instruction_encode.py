@@ -541,9 +541,9 @@ def enc_fence() -> int:
 def enc_fence_i() -> int:
     """Encode FENCE.I instruction (opcode 0x0F, funct3 0x1).
 
-    FENCE.I synchronizes the instruction and data streams. On FROST it drains
-    stores, writes back dirty L1D lines, invalidates the L1I, and flushes the
-    fetch buffer before refetch.
+    FENCE.I drains committed stores, synchronizes instruction-copy writes,
+    invalidates L1I, and flushes fetch buffers before refetch. Instruction
+    refills obtain dirty L1D data through coherent home probes.
 
     Format: imm[11:0] | rs1 | funct3 | rd | opcode
     Standard encoding: 0x0000100f (imm=0, rs1=0, rd=0)

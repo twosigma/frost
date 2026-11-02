@@ -200,6 +200,7 @@ module soc_top #(
     output logic                  [                       10:0] o_cpu_msi_id,
     output logic                                                o_cpu_seip,
     output logic                  [                       63:0] o_cpu_mtime,
+    output logic                                                o_imem_sync_done,
     output logic                                                o_dbg_haltreq,
     output logic                                                o_dbg_go,
     output logic                  [                       31:0] o_dbg_go_addr,
@@ -976,16 +977,18 @@ module soc_top #(
     if (debug_soc_rst) mirror_overflow_q <= 1'b0;
     else mirror_overflow_q <= mirror_overflow;
   end
-  always_ff @(posedge i_clk) begin
-    if (debug_soc_rst) begin
-      mirror_hold_valid_q <= 1'b0;
-      mirror_hold_addr_q  <= '0;
-    end else if (mirror_hold_valid_q) begin
-      if (slice_req_ready) mirror_hold_valid_q <= 1'b0;
-    end else if (mirror_lo && mirror_hi && slice_req_ready) begin
-      mirror_hold_valid_q <= 1'b1;
-      mirror_hold_addr_q  <= {dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b1};
-    end
+  if (1'b1) begin : gen_coherent_mirror_hold
+    debug_store_mirror_hold #(
+        .ADDR_WIDTH(MemWordAddrWidth)
+    ) mirror_hold (
+        .i_clk,
+        .i_rst  (debug_soc_rst),
+        .i_push (mirror_lo && mirror_hi && slice_req_ready),
+        .i_pop  (slice_req_ready),
+        .i_addr ({dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b1}),
+        .o_valid(mirror_hold_valid_q),
+        .o_addr (mirror_hold_addr_q)
+    );
   end
   logic dm_request_ready, dm_all_done;
   logic dm_soc_valid;
@@ -1029,6 +1032,16 @@ module soc_top #(
   wire boot_sram_slice_valid = (ENABLE_1G_ETH != 0) &&
       boot_sram_wr_req_q && !mirror_now_valid && !dm_soc_valid;
   assign slice_req_valid = mirror_now_valid || dm_soc_valid || boot_sram_slice_valid;
+  // In the asynchronous configuration each Debug-Mode store response waits
+  // for its mirror. The synchronous configuration waits at fence completion.
+  // Program-buffer writes also complete before the debug module issues GO.
+  // Registered for timing. A store requests its mirror on its write edge,
+  // before its response, and a fence starts only after the responses of
+  // older stores, so the registered value already includes their mirrors.
+  logic imem_sync_done_q;
+  always_ff @(posedge core_clk)
+    imem_sync_done_q <= ASYNC_CPU_CLOCK ? dm_all_done : slice_all_done && !slice_req_valid;
+  assign o_imem_sync_done = imem_sync_done_q;
   assign slice_req_mirror = mirror_now_valid;
   assign slice_req_word_addr = mirror_now_valid ? mirror_now_addr :
       (ENABLE_1G_ETH == 0 || dm_soc_valid) ? dm_soc_addr : boot_sram_word_addr_q;
@@ -1431,9 +1444,8 @@ AxilPorts
     // DMA: the NIC (port 0) and the DMA test engine (port 1) are AXI4 masters
     // on dma_interconnect, whose one master enters the hierarchy's coherent
     // DMA port through dma_bridge (hw/rtl/lib/axi/README.md). The bus is 256
-    // bits, one beat per line. The bridge's line ids fill the low bits of
-    // the port's LineIdBits-bit ids, so bit 3 stays clear, which the
-    // hierarchy's stream prefetcher needs. The bridge uses the CPU clock
+    // bits, one beat per line. The bridge's three-bit line ids are
+    // zero-extended at the ingress. The bridge uses the CPU clock
     // when ASYNC_CPU_CLOCK is set. Paired resets cover both DMA domains.
     // The common-clock profile resets all four blocks with rst_core.
     localparam int unsigned DmaPorts = (ENABLE_1G_ETH != 0) ? 3 : 2;
@@ -1442,7 +1454,8 @@ AxilPorts
     // The NIC's ids, 3 bits; the engine's 2-bit ids are zero-extended.
     localparam int unsigned DmaUpIdBits = 3;
     localparam int unsigned DmaDownIdBits = DmaUpIdBits + $clog2(DmaPorts);
-    localparam int unsigned DmaLineIdBits = 3;
+    // Eight read and eight write line IDs, the coherent line ID's full width.
+    localparam int unsigned DmaLineIdBits = 4;
 
     logic [DmaPorts-1:0] up_awvalid, up_awready, up_awlock, up_wvalid, up_wready, up_wlast;
     logic [DmaPorts-1:0] up_bvalid, up_bready, up_arvalid, up_arready, up_arlock;
@@ -1992,6 +2005,8 @@ AxilPorts
         .ID_WIDTH(DmaDownIdBits),
         .LINE_ADDR_WIDTH(riscv_pkg::PhysAddrBits),
         .LINE_ID_BITS(DmaLineIdBits),
+        .WRITE_BURSTS(8),
+        .READ_BURSTS(8),
         .REGION_BASE(64'(CACHED_BASE)),
         .REGION_BYTES(CACHED_SIZE_BYTES)
     ) dma_bridge (
@@ -2047,10 +2062,12 @@ AxilPorts
         .i_line_resp_error(i_coherent_resp_error)
     );
     assign o_coherent_req_id = LineIdBits'(dma_line_req_id);
-    /* verilator lint_off UNUSEDSIGNAL */  // the bridge's ids fill the low bits
-    logic dma_resp_id_high_unused;
-    /* verilator lint_on UNUSEDSIGNAL */
-    assign dma_resp_id_high_unused = |i_coherent_resp_id[LineIdBits-1:DmaLineIdBits];
+    if (LineIdBits > DmaLineIdBits) begin : gen_resp_id_high
+      /* verilator lint_off UNUSEDSIGNAL */  // the bridge's ids fill the low bits
+      logic dma_resp_id_high_unused;
+      /* verilator lint_on UNUSEDSIGNAL */
+      assign dma_resp_id_high_unused = |i_coherent_resp_id[LineIdBits-1:DmaLineIdBits];
+    end
 
 `ifndef SYNTHESIS
     // Protocol checks on the two masters' ports and the bridge's.

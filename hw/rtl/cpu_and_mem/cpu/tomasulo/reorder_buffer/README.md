@@ -273,8 +273,9 @@ recovery ends in a full flush, which empties the store queue.
 FENCE, FENCE.I, and SFENCE.VMA wait at the head for committed stores to
 drain. FENCE.I and SFENCE.VMA then hold FENCE_I_SYNC, asserting
 `o_fence_i_sync_req` until the caches return `i_fence_i_sync_done`. By then
-the L1D has written back its dirty lines and the L1I has invalidated, so code
-fetched after the fence sees the stores before it. For SFENCE.VMA,
+the committed stores have been installed, instruction-copy writes have
+completed, and the L1I has invalidated. Refills probe L1D through the home,
+so code fetched after the fence sees the stores before it. For SFENCE.VMA,
 `o_sfence_window` is high for exactly the same cycles, and the wrapper turns
 it into the TLB and page-table-walker invalidate.
 

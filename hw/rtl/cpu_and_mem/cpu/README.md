@@ -51,8 +51,10 @@ walker (`mmu/ptw`), and these glue submodules from [`cpu_ooo/`](cpu_ooo/):
 | `tage_history` | `branch_recovery/` | The tagged direction predictor's path history and its restores, the saved lookup of each conditional branch, and training at commit |
 | `ex_comb_synthesizer` | `recovery/` | Builds IF's redirect, BTB-update, and RAS-restore bus from early recovery, commit-time recovery, and correct-branch commits, in that priority |
 | `data_mem_request_router` | `memory_if/` | Data-port arbitration (SQ writes, then AMO writes, then LQ reads), staged device reads, tagged completion for the cached tier; see the [data-tier bus rules](../../README.md#data-tier-bus-contract) |
-| `cached_tier_adapter` | `memory_if/` | Converts 64-bit data beats to 32-byte cache lines, with one line request for the loads of a line; instantiated in `frost_hart.sv` next to the hart's caches |
 | `perf_counter_aggregator` | `perf/` | Top-level and cache profiling counters and the counter read mux, present only with `PERF_COUNTERS=1` ([counter reference](cpu_ooo/perf/README.md)) |
+
+The tagged cached reads and stores connect directly to `coherent_hart_cache`
+in `frost_hart.sv`.
 
 `cpu_ooo.sv` itself keeps the logic that ties these blocks together:
 
@@ -160,16 +162,17 @@ word address with the newest 16 bits of the global path history, T2 with all
 words of the fetch window; the lookup registers and is compared with the tags
 the next cycle. The longer-history table whose tag matches provides the
 direction. Every taken control-flow instruction shifts bits [3:2] of its
-target into the history. The lookup history follows fetch:
-`tage_history` pushes the target the cycle after `pc_controller` loads a
-predicted one, and each redirect restores the history to its point in the
-program. A trap, xRET, FENCE-class flush, or commit-time recovery takes the
-history of the retired instructions. Early recovery or a PD redirect takes the
-branch's own lookup history, plus its target if it is now taken. A
-served-window resteer, which only variable-latency fetch produces, leaves the
-history unchanged, so when one returns fetch to a branch already predicted
-taken, the branch is looked up again with its own target in the history.
-That costs accuracy, not correctness.
+target into the history. The lookup history follows fetch: `tage_history`
+pushes the target the cycle after `pc_controller` loads a predicted one, and
+each redirect restores the history to its point in the program. The
+controller captures push and restore events with the PC load and captures
+zero for a held PC. A trap, xRET, FENCE-class flush, or commit-time recovery
+takes the history of the retired instructions. Early recovery or a PD
+redirect takes the branch's own lookup history, plus its target when taken.
+A served-window resteer, which only variable-latency fetch produces,
+leaves the history unchanged, so when one returns fetch to a branch already
+predicted taken, the branch is looked up again with its own target in the
+history. That costs accuracy, not correctness.
 
 When PD passes a conditional branch to ID, its lookup (indices, tags, which
 tables matched, the alternate direction, and the history) goes to a 64-entry

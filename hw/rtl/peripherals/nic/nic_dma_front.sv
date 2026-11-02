@@ -81,6 +81,11 @@ module nic_dma_front #(
 ) (
     input  logic i_clk,
     input  logic i_rst,
+`ifndef SYNTHESIS
+`ifndef FORMAL
+    input  logic i_sim_hold = 1'b0,
+`endif
+`endif
     input  logic i_stop,
     output logic o_idle,
 
@@ -400,12 +405,16 @@ module nic_dma_front #(
   bit reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
     if (i_rst) reset_seen_q <= 1'b1;
-    if (reset_seen_q && !i_rst && i_dma_resp_valid && (32'(i_dma_resp_id) >= NUM_ENTRIES))
-      $error(
-          "nic_dma_front: response for id %0d, outside the %0d entries", i_dma_resp_id, NUM_ENTRIES
-      );
-    else if (reset_seen_q && !i_rst && i_dma_resp_valid && !ent_valid_q[i_dma_resp_id])
-      $error("nic_dma_front: response for a free entry %0d", i_dma_resp_id);
+    if (!i_sim_hold) begin
+      if (reset_seen_q && !i_rst && i_dma_resp_valid && (32'(i_dma_resp_id) >= NUM_ENTRIES))
+        $error(
+            "nic_dma_front: response for id %0d, outside the %0d entries",
+            i_dma_resp_id,
+            NUM_ENTRIES
+        );
+      else if (reset_seen_q && !i_rst && i_dma_resp_valid && !ent_valid_q[i_dma_resp_id])
+        $error("nic_dma_front: response for a free entry %0d", i_dma_resp_id);
+    end
   end
 `endif
 `endif

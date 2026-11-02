@@ -2432,3 +2432,58 @@ async def test_tag_indexed_branch_payload_two_slots_and_flushes(dut: Any) -> Non
     )
 
     cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_capacity_with_second_port_and_dual_issue(dut: Any) -> None:
+    """Capacity follows second-port issue, dual issue, dispatch and recovery."""
+    dut_if, _ = await setup_test(dut)
+
+    def packet(tag: int) -> dict[str, Any]:
+        return dict(
+            rob_tag=tag,
+            op=OP_ADD,
+            src1_ready=True,
+            src2_ready=True,
+            src3_ready=True,
+            src1_value=tag + 1,
+            src2_value=2,
+        )
+
+    def capacity(count: int) -> None:
+        assert int(dut.o_count.value) == count
+        assert int(dut.o_full.value) == (count == RS_DEPTH)
+        assert int(dut.o_full_for_2.value) == (count >= RS_DEPTH - 1)
+
+    for tag in range(RS_DEPTH):
+        dut_if.drive_dispatch(**packet(tag))
+        await dut_if.step()
+        dut_if.clear_dispatch()
+    capacity(8)
+
+    dut.i_fu_ready_2.value = 1
+    await dut_if.step()
+    capacity(7)
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    capacity(5)
+
+    dut_if.drive_dispatch(**packet(8))
+    dut_if.drive_dispatch_2(intent_1=True, **packet(9))
+    await dut_if.step()
+    capacity(5)
+    dut_if.clear_dispatch()
+    dut_if.clear_dispatch_2()
+    dut_if.set_fu_ready(False)
+    dut.i_fu_ready_2.value = 0
+    await dut_if.step()
+    capacity(5)
+
+    dut.i_flush_en.value = 1
+    dut.i_flush_tag.value = 7
+    await dut_if.step()
+    capacity(3)
+    dut.i_flush_en.value = 0
+    dut.i_flush_all.value = 1
+    await dut_if.step()
+    capacity(0)

@@ -21,10 +21,10 @@
  * Memory and instruction barriers for RISC-V (Zifencei extension).
  *
  * On FROST, fence waits at the ROB head until committed stores have drained.
- * fence.i also waits for the L1D to write back its dirty lines and the L1I to
- * invalidate, then flushes the pipeline and fetch buffer and refetches. The
- * L1I is read-only and does not snoop the L1D, so without fence.i instruction
- * fetch would not observe earlier stores. Outside Debug Mode, CPU stores reach
+ * fence.i waits for L1I invalidation and instruction-copy writes, then flushes
+ * the pipeline and fetch buffer and refetches. Refills obtain dirty L1D data
+ * through the home probe. The read-only L1I does not snoop stores, so fence.i
+ * discards its stale instruction bytes. Outside Debug Mode, CPU stores reach
  * only the data copy of low BRAM, so self-modifying code must live in DDR.
  */
 

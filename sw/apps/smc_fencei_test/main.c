@@ -19,13 +19,13 @@
  *
  * Model patch_insn_write followed by fence.i: patch a cached-DDR instruction,
  * synchronize it, then execute it. Required ordering:
- *   store -> SQ -> L1D (dirty) ... new code invisible to fetch
- *   fence.i: drain committed SQ -> L1D writeback-all -> L1I invalidate-all
+ *   store -> SQ -> L1D (dirty)
+ *   fence.i: drain committed SQ -> L1I invalidate-all
  *            -> fetch-buffer invalidate
- *   call -> L1I miss -> fill returns the freshly written code
+ *   call -> L1I miss -> home probe returns the stored code
  *
  * Sweep the store-to-fence.i gap and use warm and cold cache lines. A cold
- * patch store needs write allocation before fence.i can write it back.
+ * patch store needs write allocation and installation before fence.i completes.
  * Alternate return values so executing stale code produces a mismatch.
  */
 

@@ -761,6 +761,12 @@ module trap_unit #(
   // ===========================================================================
   // Formal Verification Properties
   // ===========================================================================
+`ifndef SYNTHESIS
+  always @(posedge i_clk) begin
+    if (!i_rst && i_amo_at_head && o_trap_taken)
+      p_atomic_shield_selects_exception : assert (exception_take);
+  end
+`endif
 `ifdef FORMAL
   // csr_file's entry enables equal the take and steering outputs in every
   // state, so the prove task checks them from arbitrary register values.

@@ -1,0 +1,20 @@
+[tasks]
+coh_read_payload_prove normal
+coh_read_payload64_prove wide
+
+[options]
+mode prove
+depth 4
+timeout 180
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv coherence_read_payload.sv coherence_read_payload_formal.sv
+wide: chparam -set WIDTH 74 coherence_read_payload_formal
+prep -flatten -top coherence_read_payload_formal
+
+[files]
+../hw/rtl/lib/cache/coherence_read_payload.sv
+coherence_read_payload_formal.sv

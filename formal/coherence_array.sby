@@ -1,0 +1,24 @@
+[tasks]
+coh_array_bmc bram
+coh_array_uram_bmc uram
+
+[options]
+mode bmc
+depth 32
+timeout 180
+aigsmt boolector
+
+[engines]
+abc bmc3
+
+[script]
+read -formal -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
+chparam -set CACHE_BYTES 64 -set WAYS 1 coherence_array
+uram: chparam -set ULTRA 1 coherence_array
+prep -top coherence_array
+
+[files]
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_array.sv

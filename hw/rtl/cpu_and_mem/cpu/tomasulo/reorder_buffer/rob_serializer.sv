@@ -168,8 +168,8 @@ module rob_serializer (
           end else if (head_is_csr) begin
             serial_state_next = riscv_pkg::SERIAL_CSR_EXEC;
           end else if (head_is_fence || head_is_fence_i) begin
-            // Drained stores may still be dirty in L1D. FENCE.I syncs the
-            // caches so L1I and the fetch buffer refill after writeback.
+            // Drained stores can be dirty in L1D. FENCE.I invalidates the
+            // instruction caches; refills probe L1D through the home.
             if (i_sq_committed_empty) begin
               if (head_is_fence_i) begin
                 serial_state_next = riscv_pkg::SERIAL_FENCE_I_SYNC;

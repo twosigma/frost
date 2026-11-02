@@ -1,0 +1,24 @@
+[tasks]
+coh_rs_capacity4_prove d4
+coh_rs_capacity8_prove d8
+coh_rs_capacity16_prove
+
+[options]
+mode prove
+depth 1
+timeout 60
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv coherent_rs_capacity.sv
+d4: chparam -set DEPTH 4 coherent_rs_capacity
+d8: chparam -set DEPTH 8 coherent_rs_capacity
+prep -top coherent_rs_capacity
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-count 3 t:$check r:FLAVOR=assert %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv

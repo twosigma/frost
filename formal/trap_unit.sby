@@ -18,10 +18,10 @@ smtbmc z3
 read -formal -sv riscv_pkg.sv
 bmc: read -formal -sv trap_unit.sv
 cover: read -formal -sv trap_unit.sv
-# Only the entry-enable identities, from arbitrary register values.
+# Entry-enable identities and atomic exception selection use arbitrary state.
 prove: read -formal -D TRAP_ENTRY_ENABLE_LOCAL_PROOF -sv trap_unit.sv
 prep -top trap_unit
-prove: select -assert-count 3 t:$check
+prove: select -assert-count 4 t:$check
 prove: select -assert-none t:$assume
 
 [files]

@@ -13,6 +13,9 @@ smtbmc boolector
 
 [script]
 read -sv riscv_pkg.sv rs_issue2_selector.sv
+read -sv coherent_rs_capacity.sv
+read -sv coherent_rs_issue2_selector.sv
+read -sv coherent_rs_payload_store.sv
 read -formal -D SYNTHESIS -D RS_PRETAG_LOCAL_PROOF -D RS_DIVIDE_GATE_LOCAL_PROOF -sv reservation_station.sv
 # Exercise the MUL station's divide gate.
 chparam -set DEPTH 4 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set SPECULATIVE_DATA_WRITES 1 -set DIVIDE_ISSUE_GATE 1 reservation_station
@@ -32,3 +35,6 @@ select -assert-count 3 t:$check r:FLAVOR=assert %i
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv

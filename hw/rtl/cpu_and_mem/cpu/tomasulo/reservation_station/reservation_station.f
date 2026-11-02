@@ -11,4 +11,7 @@ $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
 
 # Port-1 issue selector and the reservation station itself
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv

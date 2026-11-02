@@ -2,7 +2,13 @@
 prove
 prove_full_width
 prove_soc
+prove_soc8_0 soc8 soc8proof
+prove_soc8_1 soc8 soc8proof
+prove_soc8_2 soc8 soc8proof
+prove_soc8_3 soc8 soc8proof
+bmc_soc soc8
 cover
+cover_soc soc8
 
 [options]
 prove: mode prove
@@ -11,27 +17,59 @@ prove_full_width: mode prove
 prove_full_width: depth 3
 prove_soc: mode prove
 prove_soc: depth 3
+soc8proof: mode prove
+soc8proof: depth 3
+soc8proof: timeout 1800
+bmc_soc: mode bmc
+bmc_soc: depth 8
 cover: mode cover
 cover: depth 24
+cover_soc: mode cover
+cover_soc: depth 64
+cover_soc: skip 60
+cover_soc: timeout 600
 
 [engines]
 smtbmc boolector
 
 [script]
-read -formal -sv sdp_dist_ram.sv axi_coherent_bridge.sv
+~cover_soc: read -formal -sv sdp_dist_ram.sv axi_coherent_bridge.sv
+cover_soc: read -formal -sv -D AXI_COHERENT_SOC_COVER sdp_dist_ram.sv axi_coherent_bridge.sv
 # 16-bit addresses with the region in the middle, so addresses on both sides
 # of it are reachable. prove and cover use 8-byte lines on a 16-bit bus, four
 # beats per line, so segments merge beats, WRAP windows are narrower than,
 # equal to and wider than a line, and INCR bursts cross lines, with two
 # bursts and two ids per direction. prove_full_width has one beat per line,
-# as in soc_top. prove_soc is soc_top's bus, lines, tables, ids and
-# starvation bound.
+# as in soc_top. prove_soc is soc_top's bus, lines and starvation bound with
+# the default four bursts and ids per direction. The soc8 tasks use eight
+# bursts and eight ids per direction. The four prove_soc8 partitions check
+# every assertion, using only assertion results from preceding cycles as
+# shared hypotheses. All four partitions are required. cover_soc fills, drains
+# and reuses both ID pools with single-beat traffic.
 prove: chparam -set LINE_BYTES 8 -set DATA_WIDTH 16 -set ADDR_WIDTH 16 -set LINE_ADDR_WIDTH 16 -set ID_WIDTH 2 -set LINE_ID_BITS 2 -set WRITE_BURSTS 2 -set READ_BURSTS 2 -set REGION_BASE 16384 -set REGION_BYTES 16384 -set STARVATION_LIMIT 2 axi_coherent_bridge
 cover: chparam -set LINE_BYTES 8 -set DATA_WIDTH 16 -set ADDR_WIDTH 16 -set LINE_ADDR_WIDTH 16 -set ID_WIDTH 2 -set LINE_ID_BITS 2 -set WRITE_BURSTS 2 -set READ_BURSTS 2 -set REGION_BASE 16384 -set REGION_BYTES 16384 -set STARVATION_LIMIT 2 axi_coherent_bridge
 prove_full_width: chparam -set LINE_BYTES 8 -set DATA_WIDTH 64 -set ADDR_WIDTH 16 -set LINE_ADDR_WIDTH 16 -set ID_WIDTH 2 -set LINE_ID_BITS 2 -set WRITE_BURSTS 2 -set READ_BURSTS 2 -set REGION_BASE 16384 -set REGION_BYTES 16384 -set STARVATION_LIMIT 2 axi_coherent_bridge
 prove_soc: chparam -set ADDR_WIDTH 16 -set LINE_ADDR_WIDTH 16 -set ID_WIDTH 4 -set REGION_BASE 16384 -set REGION_BYTES 16384 axi_coherent_bridge
+soc8: chparam -set ADDR_WIDTH 16 -set LINE_ADDR_WIDTH 16 -set ID_WIDTH 4 -set LINE_ID_BITS 4 -set WRITE_BURSTS 8 -set READ_BURSTS 8 -set REGION_BASE 16384 -set REGION_BYTES 16384 axi_coherent_bridge
+cover_soc: chformal -assert -remove
 prep -top axi_coherent_bridge
+# Freeze the DUT before reading the template, so automatic cell names match
+# across partitions. The template preserves each assertion's predicate and
+# enable, checks it in one partition, and assumes its one-cycle history.
+soc8proof: async2sync
+soc8proof: chformal -lower
+soc8proof: write_rtlil ../model/unpartitioned.il
+soc8proof: design -stash unpartitioned
+prove_soc8_0: read_verilog -formal -sv -D AXI_COHERENT_PARTITION=0 axi_coherent_bridge_assert.sv
+prove_soc8_1: read_verilog -formal -sv -D AXI_COHERENT_PARTITION=1 axi_coherent_bridge_assert.sv
+prove_soc8_2: read_verilog -formal -sv -D AXI_COHERENT_PARTITION=2 axi_coherent_bridge_assert.sv
+prove_soc8_3: read_verilog -formal -sv -D AXI_COHERENT_PARTITION=3 axi_coherent_bridge_assert.sv
+soc8proof: design -stash assertion_map
+soc8proof: design -load unpartitioned
+soc8proof: techmap -max_iter 1 -map %assertion_map
+soc8proof: opt_clean
 
 [files]
+axi_coherent_bridge_assert.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/lib/axi/axi_coherent_bridge.sv

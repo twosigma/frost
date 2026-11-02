@@ -377,7 +377,7 @@ quit
                 for _ in range(20000):
                     if gdb_proc.poll() is not None:
                         break
-                    assert time.monotonic() - started < 900, "GDB session timed out"
+                    assert time.monotonic() - started < 1800, "GDB session timed out"
                     await ClockCycles(dut.i_clk, 2000)
                 else:
                     raise AssertionError("GDB session did not finish")

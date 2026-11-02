@@ -14,8 +14,8 @@
 
 # Makefile for the self-modifying-code (fence.i) test application
 # Stores instruction words into a DDR buffer and executes them: the fence.i
-# between write and call must drain the SQ, write the L1D back, and
-# invalidate the L1I + fetch buffer for the calls to see the new code.
+# between write and call drains committed stores and invalidates L1I and
+# fetch buffers. The home probe supplies the stored instruction bytes.
 # With -Og, low-BRAM functions can sit close enough to address zero that the
 # rounded medany PC-relative relocation to ddr_code at 0x80000000 overflows,
 # so debug builds use the large code model, which loads literal addresses.

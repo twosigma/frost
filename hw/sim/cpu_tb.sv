@@ -165,6 +165,7 @@ module cpu_tb
   logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_admit_slot;
   logic [riscv_pkg::XLEN-1:0] i_coh_admit_addr;
   logic o_coh_admit_ready;
+  logic o_coh_admit_clean;
   logic i_coh_inval_valid;
   logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_inval_slot;
   logic o_coh_inval_done;
@@ -360,10 +361,38 @@ module cpu_tb
   // instructions stall mid-pipeline and need that immediate view.
   assign pipeline_stall_comb = device_under_test.pipeline_ctrl.stall;
 
-  // The pipeline harness retains the legacy fixed-latency memory path.
-  // Tie off the unused MSI ingress and variable-latency completions explicitly;
-  // the remaining ports connect by name to the instruction and data memories.
+  // The instruction fixture serves private uncached memory at fixed latency.
+  // Coherent cache ports, MSI ingress and variable-latency completions are idle.
   cpu_ooo device_under_test (
+      .i_coherent_store_pending(1'b0),
+      .i_coherent_store_ready(1'b1),
+      .i_coherent_sc_pending(1'b0),
+      .i_coherent_atomic_live(1'b0),
+      .i_coherent_block_valid('0),
+      .i_coherent_block_addr('0),
+      .i_coherent_cut_hold(1'b0),
+      .o_coherent_sc_valid(),
+      .i_coherent_sc_ready(1'b0),
+      .o_coherent_sc_addr(),
+      .o_coherent_sc_size(),
+      .o_coherent_sc_tag(),
+      .i_coherent_sc_result_valid(1'b0),
+      .o_coherent_sc_result_ready(),
+      .i_coherent_sc_success(1'b0),
+      .i_coherent_sc_error(1'b0),
+      .i_coherent_sc_write_done(1'b0),
+      .i_coherent_sc_write_tag('0),
+      .o_coherent_reservation_valid(),
+      .o_coherent_reservation_addr(),
+      .o_coherent_reservation_size(),
+      .o_coherent_read_kind(),
+      .o_coherent_read_size(),
+      .o_coherent_read_tag(),
+      .o_coherent_write_atomic(),
+      .o_coherent_write_sc(),
+      .o_coherent_write_tag(),
+      .o_coherent_atomic_protected(),
+      .o_coherent_sc_commit(),
       .i_boot_addr('0),
       .i_fatal_stop(1'b0),
       .i_msi_valid(1'b0),

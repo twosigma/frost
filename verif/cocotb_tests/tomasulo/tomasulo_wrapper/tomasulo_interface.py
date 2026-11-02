@@ -264,6 +264,8 @@ class TomasuloInterface:
         # Tier/slot of the most recent LQ memory launch, for response tagging.
         self.last_lq_launch_cached = False
         self.last_lq_launch_slot = 0
+        self.model_coherent_cache = False
+        self._reset_coherent_cache()
 
     # =========================================================================
     # Clock and Reset
@@ -293,9 +295,104 @@ class TomasuloInterface:
         ``drive_lq_mem_response`` can tag the response with the launching
         request's tier and cached slot (see ``read_lq_mem_request``).
         """
+        if self.model_coherent_cache:
+            self._drive_coherent_cache()
+            await Timer(1, unit="ps")
+            self._sample_coherent_cache()
         self._sample_lq_launch()
         await RisingEdge(self.clock)
         await FallingEdge(self.clock)
+        if self.model_coherent_cache:
+            self._drive_coherent_cache()
+            await Timer(1, unit="ps")
+
+    def _reset_coherent_cache(self) -> None:
+        """Clear the fixture's CPU protection and memory-completion contexts."""
+        self.coherence_admit_requested = False
+        self.coherence_cut_owned = False
+        self.coherence_atomic_active = False
+        self.coherence_atomic_retired = False
+        self.coherence_atomic_tag = 0
+        self.coherence_home_live = False
+        self.coherence_sc_pending = False
+        self.coherence_sc_result = False
+        self.coherence_sc_success = False
+        self.coherence_sampled_commit = {"valid": False, "tag": 0}
+
+    def coherence_admit_ready(self) -> bool:
+        """Report admission at the protected CPU/cache boundary."""
+        return bool(
+            self.dut.i_coh_admit_valid.value and self.dut.o_coh_admit_ready.value
+        )
+
+    def _drive_coherent_cache(self) -> None:
+        """Drive the abstract cache and the CPU guard outside this unit."""
+        d = self.dut
+        d.i_coh_admit_valid.value = int(
+            self.coherence_admit_requested and not self.coherence_atomic_active
+        )
+        d.i_coherent_atomic_protected.value = int(
+            self.coherence_atomic_active and not self.coherence_atomic_retired
+        )
+        d.i_coherent_atomic_live.value = int(self.coherence_home_live)
+        d.i_coherent_cut_hold.value = int(
+            (self.coherence_admit_requested or self.coherence_cut_owned)
+            and not self.coherence_atomic_active
+        )
+        d.i_coherent_sc_pending.value = int(self.coherence_sc_pending)
+        d.i_coherent_sc_ready.value = int(not self.coherence_sc_result)
+        d.i_coherent_sc_result_valid.value = int(self.coherence_sc_result)
+        d.i_coherent_sc_success.value = int(self.coherence_sc_success)
+        d.i_coherent_sc_write_done.value = int(
+            self.coherence_sc_pending and d.i_sq_mem_write_done.value
+        )
+        d.i_coherent_sc_write_tag.value = self.coherence_atomic_tag
+
+    def _sample_coherent_cache(self) -> None:
+        """Sample acquisition, result, write completion and retirement handshakes."""
+        d = self.dut
+        active = self.coherence_atomic_active
+        retired = self.coherence_atomic_retired
+        live = self.coherence_home_live
+        if self.coherence_admit_ready():
+            self.coherence_cut_owned = True
+        if int(d.i_coh_release_valid.value):
+            self.coherence_cut_owned = False
+        if (
+            not active
+            and not (self.coherence_admit_requested or self.coherence_cut_owned)
+            and not int(d.i_flush_all.value)
+            and int(d.o_coherent_arm_valid.value)
+        ):
+            self.coherence_atomic_active = True
+            self.coherence_atomic_retired = False
+            self.coherence_atomic_tag = int(d.o_coherent_arm_tag.value)
+        commit = self.read_commit()
+        self.coherence_sampled_commit = commit
+        if active and commit["valid"] and commit["tag"] == self.coherence_atomic_tag:
+            self.coherence_atomic_retired = True
+        if active and not live and (retired or int(d.i_flush_all.value)):
+            self.coherence_atomic_active = False
+        if int(d.o_lq_mem_read_en.value) and int(d.o_coherent_read_kind.value) == 2:
+            self.coherence_home_live = True
+        if int(d.i_amo_mem_write_done.value):
+            self.coherence_home_live = False
+        if self.coherence_sc_result and int(d.o_coherent_sc_result_ready.value):
+            self.coherence_sc_result = False
+        if int(d.o_coherent_sc_valid.value) and int(d.i_coherent_sc_ready.value):
+            self.coherence_sc_success = bool(
+                d.o_coherent_reservation_valid.value
+                and int(d.o_coherent_reservation_addr.value)
+                == int(d.o_coherent_sc_addr.value)
+                and int(d.o_coherent_reservation_size.value)
+                == int(d.o_coherent_sc_size.value)
+            )
+            self.coherence_sc_result = True
+            self.coherence_sc_pending = self.coherence_sc_success
+            self.coherence_home_live = self.coherence_sc_success
+        if int(d.i_coherent_sc_write_done.value):
+            self.coherence_sc_pending = False
+            self.coherence_home_live = False
 
     def _sample_lq_launch(self) -> None:
         """Remember the LQ launch, assuming addresses stay below the cached-window limit."""
@@ -326,6 +423,7 @@ class TomasuloInterface:
 
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
+        self._reset_coherent_cache()
         # ROB allocation
         self.dut.i_alloc_req.value = 0
         self.dut.i_alloc_req_2.value = 0
@@ -490,6 +588,22 @@ class TomasuloInterface:
         self.dut.i_cached_read_held.value = 0
         self.dut.i_slow_write_inflight.value = 0
         self.dut.i_uncached_read_busy.value = 0
+
+        # The memory fixture has no pending store or coherence cut.
+        self.dut.i_coherent_store_pending.value = 0
+        self.dut.i_coherent_store_ready.value = 1
+        self.dut.i_coherent_sc_pending.value = 0
+        self.dut.i_coherent_atomic_live.value = 0
+        self.dut.i_coherent_block_valid.value = 0
+        self.dut.i_coherent_block_addr.value = 0
+        self.dut.i_coherent_cut_hold.value = 0
+        self.dut.i_coherent_atomic_protected.value = int(not self.model_coherent_cache)
+        self.dut.i_coherent_sc_ready.value = 0
+        self.dut.i_coherent_sc_result_valid.value = 0
+        self.dut.i_coherent_sc_success.value = 0
+        self.dut.i_coherent_sc_error.value = 0
+        self.dut.i_coherent_sc_write_done.value = 0
+        self.dut.i_coherent_sc_write_tag.value = 0
 
         # DMA coherence handshake: idle.
         self.dut.i_coh_admit_valid.value = 0

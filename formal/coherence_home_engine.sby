@@ -1,0 +1,30 @@
+[tasks]
+coh_home_engine_prove proof
+coh_home_engine64_prove proof wide
+coh_home_engine_cover covers
+
+[options]
+proof: mode prove
+covers: mode cover
+proof: depth 4
+covers: depth 16
+timeout 180
+proof: aigsmt boolector
+
+[engines]
+proof: smtbmc boolector
+covers: smtbmc boolector
+
+[script]
+read -sv coherence_pkg.sv
+read -formal -sv -noautowire coherence_home_engine.sv
+chparam -set LINE_BYTES 32 -set WAYS 1 coherence_home_engine
+wide: chparam -set LINE_BYTES 64 coherence_home_engine
+prep -top coherence_home_engine -flatten
+memory_map
+opt
+
+[files]
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_home_engine.sv

@@ -12,7 +12,11 @@ smtbmc boolector
 
 [script]
 read -formal -sv riscv_pkg.sv
+read -sv coherent_l0_flags.sv
 read -sv sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv lq_l0_cache.sv lq_issue_selector.sv
+read -sv coherent_lq_issue_selector.sv
+read -sv coherent_lq_candidate_select.sv
+read -sv coherent_lq_address_store.sv
 read -formal -D SYNTHESIS -D F_LQ_PREMATCH_ONLY -D F_LQ_RAM_PAYLOAD_PROOF -D F_LQ_MERGED_REPLACE_LOCAL_PROOF -sv load_queue.sv
 bmc4: chparam -set DEPTH 4 load_queue
 bmc8: chparam -set DEPTH 8 -set PREISSUE_CANDIDATES 1 -set PREISSUE_SEL_WIDTH 3 -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
@@ -39,3 +43,7 @@ select -assert-count 4 t:$check r:FLAVOR=cover %i
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv

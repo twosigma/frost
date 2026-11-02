@@ -83,14 +83,15 @@ def _hierarchy_command(synth_command: str) -> str:
 def _get_timeout_seconds(synth_command: str) -> int:
     """Return the synthesis timeout in seconds.
 
-    Defaults are 1800 for generic synth and 7200 for other targets. Overrides:
+    Defaults are 1800 for generic synth, 10800 for Xilinx, and 7200 for other
+    targets. Overrides:
     FROST_YOSYS_GENERIC_TIMEOUT_SEC for generic synth,
     FROST_YOSYS_XILINX_TIMEOUT_SEC for Xilinx, and FROST_YOSYS_TIMEOUT_SEC for
     other targets. Generic synth also falls back to FROST_YOSYS_TIMEOUT_SEC.
     """
     default_generic_timeout = 1800
     default_timeout = 7200
-    default_xilinx_timeout = 7200
+    default_xilinx_timeout = 10800
 
     if _is_generic_synth_command(synth_command):
         env_name = "FROST_YOSYS_GENERIC_TIMEOUT_SEC"
@@ -205,6 +206,7 @@ class YosysRunner:
         """
         seen: set[str] = set()
         files: list[str] = []
+        self.include_dirs: set[str] = set()
 
         self._parse_filelist_recursive(filelist_path, files, seen)
         return files
@@ -220,7 +222,11 @@ class YosysRunner:
                 if not line or line.startswith("#") or line.startswith("//"):
                     continue
 
-                if line.startswith("-f "):
+                if line.startswith("+incdir+"):
+                    self.include_dirs.add(
+                        line[8:].replace("$(ROOT)", str(self.root_dir))
+                    )
+                elif line.startswith("-f "):
                     nested_filelist = line[3:].strip()
                     nested_filelist = nested_filelist.replace(
                         "$(ROOT)", str(self.root_dir)
@@ -283,7 +289,12 @@ class YosysRunner:
         ]
 
     def run_synthesis(
-        self, capture_output: bool = True, synth_command: str = "synth_xilinx"
+        self,
+        capture_output: bool = True,
+        synth_command: str = "synth_xilinx",
+        *,
+        top_module: str = "platform_top",
+        parameters: dict[str, int] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run Yosys synthesis on the design.
 
@@ -303,6 +314,7 @@ class YosysRunner:
         # Exclude simulation-only code. Enable Xilinx primitives only for
         # synth_xilinx targets.
         defines = _synthesis_defines()
+        defines += "".join(f" -I{directory}" for directory in sorted(self.include_dirs))
         if synth_command.startswith("synth_xilinx"):
             defines += " -DFROST_XILINX_PRIMS"
 
@@ -325,7 +337,15 @@ class YosysRunner:
             for vfile in verilog_files:
                 yosys_script.append(f"read_verilog -sv {defines} {vfile}")
 
-            yosys_script.append(_hierarchy_command(synth_command))
+            if parameters:
+                for parameter, value in parameters.items():
+                    yosys_script.append(
+                        f"chparam -set {parameter} {value} {top_module}"
+                    )
+            if top_module == "platform_top":
+                yosys_script.append(_hierarchy_command(synth_command))
+            else:
+                yosys_script.append(f"hierarchy -top {top_module}")
             # Preserve RX parser encoding to avoid expanding its symbolic
             # transitions into a table.
             yosys_script.append(

@@ -25,18 +25,20 @@
  * allocation-indexed repair avoids comparing repair tags against every
  * resident entry. Port 0 issues the lowest ready index; DUAL_ISSUE (INT_RS)
  * adds port 1, which issues the lowest ready non-branch entry other than port
- * 0's pick, with its own payload RAM copy and stage2 register. Optional src3
+ * 0's pick, with its own payload storage and stage2 register. Optional src3
  * supports FMA. Partial and full flushes clear validity.
  *
  * Control and source fields stay in FFs for parallel wakeup and flush scans.
- * Dispatch payloads use two-write-port distributed RAM and are read at issue;
- * the FF valid bits make stale RAM contents harmless. The INT instance keeps
+ * Dispatch payloads have two write ports and are read at issue. Coherent INT
+ * port 1 uses registers; other payload copies use distributed RAM. Valid
+ * bits qualify payload use. The INT instance keeps
  * the XLEN-wide pc, link address and predicted target in a ROB-tag-indexed
  * side RAM read behind its port-0 stage2 tag (TAG_INDEXED_BRANCH_PAYLOAD), so
  * the per-entry payload and both stage2 banks carry no XLEN branch words.
  */
 
 module reservation_station #(
+    parameter bit PREPARE_ISSUE_CONTROLS = 1'b0,
     parameter int unsigned DEPTH = 8,
     parameter bit HAS_SRC3 = 1'b1,
     // Precompute lookahead winners for both CDB lane-valid bits.
@@ -82,7 +84,7 @@ module reservation_station #(
     // occupancy. Zero uses exact count_next; nonzero values permit
     // conservative registered status without current dispatch inputs.
     parameter int unsigned DISPATCH_STATUS_RESERVE = 0,
-    // INT only: add an independent selector, payload RAM and stage2 bank for
+    // INT only: an independent selector, payload copy and stage2 bank serve
     // the lowest ready nonbranch entry other than port 0's pick. Branches
     // stay on port 0, which has the branch-resolution path.
     parameter bit DUAL_ISSUE = 1'b0,
@@ -614,14 +616,14 @@ module reservation_station #(
   logic can_issue_to_stage2;  // Stage2 is empty or being consumed, so the RS may load it
 
   // ===========================================================================
-  // Storage: FF-based control, LUTRAM-based payload
+  // Storage: control fields and dispatch payloads
   // ===========================================================================
   //
   // Control fields (FFs): rs_valid, rs_src*_ready/tag/value, rs_use_imm,
   //   rs_rob_tag. These need parallel CDB tag compare/write and flush scan.
-  // Payload fields (LUTRAM): op, imm, rm, and the branch/prediction/mem/csr
-  //   fields. Written once at dispatch, read once at issue (one copy per
-  //   issue port).
+  // Payload fields: op, imm, rm, and the branch/prediction/mem/csr fields.
+  //   Written once at dispatch, read once at issue (one copy per issue port).
+  //   Coherent INT port 1 uses registers; other copies use distributed RAM.
 
   // 1-bit packed vectors (for bulk operations)
   logic [DEPTH-1:0] rs_valid;
@@ -640,7 +642,7 @@ module reservation_station #(
   assign dispatch_shift_controls_2 = riscv_pkg::projected_shift_controls(i_dispatch_2.op);
   logic [DEPTH-1:0] rs_writes_cdb_hint;
   // A parallel branch-class bit lets port 1 exclude branches before reading
-  // payload RAM.
+  // its payload.
   logic [DEPTH-1:0] rs_is_branch_class;
   // Integer divide pre-decode in FFs, for the DIVIDE_ISSUE_GATE ready scan.
   logic [DEPTH-1:0] rs_is_divide;
@@ -793,6 +795,7 @@ module reservation_station #(
   logic [DEPTH-1:0] issue_sel_2;
   logic any_ready_2;
   logic issue_fire_2;
+  logic [DEPTH-1:0] coherent_issue2_clear_mask;
   logic stage2b_valid;
   logic stage2b_head_query_match;
   logic [(2**$clog2(DEPTH))-1:0] issue_sel_2_ohread;
@@ -804,9 +807,9 @@ module reservation_station #(
   (* max_fanout = 32 *) logic dispatch_fire_2;
 
   // ===========================================================================
-  // Payload LUTRAM: dispatch-only fields, read at issue
+  // Payload storage: dispatch-only fields, read at issue
   // ===========================================================================
-  // Each issue port reads a RAM copy with common dispatch writes. rs_valid
+  // Each issue port reads a payload copy with common dispatch writes. rs_valid
   // qualifies all uses, making stale payloads harmless.
 
   localparam int unsigned PayloadWidth =
@@ -1050,6 +1053,49 @@ module reservation_station #(
   // Flush uses the count of surviving entries.
   logic dispatch_full_next;
   logic dispatch_full_for_2_next;
+  logic coherent_full, coherent_full_for_2;
+  logic [CountWidth-1:0] coherent_count_next;
+  if (PREPARE_ISSUE_CONTROLS) begin : gen_coherent_capacity
+    logic [CountWidth-1:0] flush_count;
+    always_comb begin
+      if (i_flush_all) begin
+        flush_count = '0;
+      end else begin
+        flush_count = '0;
+        for (int entry = 0; entry < DEPTH; entry++) begin
+          flush_count += CountWidth'(rs_valid[entry] && !should_flush_entry(
+                                     rs_rob_tag[entry], i_flush_tag, i_rob_head_tag));
+        end
+      end
+    end
+`ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
+    always_comb begin
+      p_flush_count_exact : assert (!(i_flush_all || i_flush_en) || flush_count == count_next);
+      p_coherent_count_exact : assert (coherent_count_next == count_next);
+    end
+`endif
+    coherent_rs_capacity #(
+        .DEPTH(DEPTH)
+    ) capacity (
+        .i_count(count),
+        .i_issue({issue_fire_2, issue_fire}),
+        .i_dispatch({dispatch_fire_2, dispatch_fire}),
+        .i_flush(i_flush_all || i_flush_en),
+        .i_flush_count(flush_count),
+        .o_count_next(coherent_count_next),
+        .o_full(coherent_full),
+        .o_full_for_2(coherent_full_for_2)
+    );
+`ifndef SYNTHESIS
+    always @(posedge i_clk) begin
+      if (i_rst_n) begin
+        p_capacity_full_exact : assert (coherent_full == (count_next == CountWidth'(DEPTH)));
+        p_capacity_two_exact :
+        assert (coherent_full_for_2 == (count_next >= CountWidth'(DEPTH - 1)));
+      end
+    end
+`endif
+  end
   always_comb begin
     if (i_flush_all || i_flush_en) begin
       dispatch_full_next       = count_next == CountWidth'(DEPTH);
@@ -1071,6 +1117,10 @@ module reservation_station #(
           dispatch_full_for_2_next = count_after_issue >= CountWidth'(DEPTH - 1);
         end
       endcase
+    end
+    if (PREPARE_ISSUE_CONTROLS) begin
+      dispatch_full_next = coherent_full;
+      dispatch_full_for_2_next = coherent_full_for_2;
     end
   end
 
@@ -1197,6 +1247,32 @@ module reservation_station #(
     for (int i = 0; i < DEPTH; i++) begin
       alloc_sel_2[i] = data_write_2_en & (i_intent_1 ? one_free_below[i] : none_free_below[i]);
     end
+  end
+
+  logic [DEPTH-1:0] coherent_alloc1_target, coherent_alloc2_target;
+  if (PREPARE_ISSUE_CONTROLS) begin : gen_coherent_allocation_targets
+    (* keep = "true" *) logic [DEPTH-1:0] first_target, second_target;
+    assign first_target[DEPTH-1:1] = none_free_below[DEPTH-1:1];
+    assign first_target[0] = !(|none_free_below[DEPTH-1:1]);
+    assign second_target[DEPTH-1:1] = one_free_below[DEPTH-1:1];
+    assign second_target[0] = !(|one_free_below[DEPTH-1:1]);
+    assign coherent_alloc1_target = first_target;
+    assign coherent_alloc2_target = i_intent_1 ? second_target : first_target;
+`ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
+    always_comb begin
+      p_alloc1_target_exact : assert (coherent_alloc1_target == index_to_onehot(free_idx));
+      p_alloc2_target_exact : assert (coherent_alloc2_target == index_to_onehot(alloc_idx_2));
+    end
+`endif
+`ifndef SYNTHESIS
+    always @(posedge i_clk) begin
+      p_alloc1_target_exact : assert (coherent_alloc1_target == index_to_onehot(free_idx));
+      p_alloc2_target_exact : assert (coherent_alloc2_target == index_to_onehot(alloc_idx_2));
+    end
+`endif
+  end else begin : gen_line_allocation_targets
+    assign coherent_alloc1_target = '0;
+    assign coherent_alloc2_target = '0;
   end
 
   always_comb begin
@@ -1360,6 +1436,51 @@ module reservation_station #(
     end
   end
 
+  // Prepare readiness for both CDB validity bits before choosing a payload.
+  wire [1:0] issue_valid_case = {issue_cdb_2_valid, issue_cdb_valid};
+  (* keep = "true" *) logic [DEPTH-1:0] issue_ready_choice[4];
+  if (PREPARE_ISSUE_CONTROLS) begin : gen_issue_ready_choices
+    for (genvar valids = 0; valids < 4; valids++) begin : gen_valid_choice
+      localparam bit Valid0 = (valids & 1) != 0;
+      localparam bit Valid1 = (valids & 2) != 0;
+      for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_ready
+        assign issue_ready_choice[valids][entry] = rs_valid[entry] &&
+          !(rs_is_divide[entry] && divide_blocked) &&
+          (rs_src1_ready[entry] || (src1_repair_sel[entry] != 3'd0) ||
+           (Valid0 && !rs_src1_ready[entry] && !src1_cdb_pend[entry] &&
+            (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[entry] : rs_src1_tag[entry]) ==
+                issue_cdb_tag) ||
+           (LANE1_ISSUE_BYPASS && Valid1 &&
+            !rs_src1_ready[entry] && !src1_cdb_pend[entry] &&
+            (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[entry] : rs_src1_tag[entry]) ==
+                issue_cdb_2_tag)) &&
+          (rs_src2_ready[entry] || (src2_repair_sel[entry] != 3'd0) ||
+           (Valid0 && !rs_src2_ready[entry] && !src2_cdb_pend[entry] &&
+            (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[entry] : rs_src2_tag[entry]) ==
+                issue_cdb_tag) ||
+           (LANE1_ISSUE_BYPASS && Valid1 &&
+            !rs_src2_ready[entry] && !src2_cdb_pend[entry] &&
+            (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[entry] : rs_src2_tag[entry]) ==
+                issue_cdb_2_tag)) &&
+          (rs_src3_ready[entry] || (src3_repair_sel[entry] != 3'd0) ||
+           (HAS_SRC3 && Valid0 && !rs_src3_ready[entry] && !src3_cdb_pend[entry] &&
+            rs_src3_tag[entry] == issue_cdb_tag) ||
+           (HAS_SRC3 && LANE1_ISSUE_BYPASS && Valid1 &&
+            !rs_src3_ready[entry] && !src3_cdb_pend[entry] &&
+            rs_src3_tag[entry] == issue_cdb_2_tag));
+      end
+    end
+`ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
+    always_comb begin
+      p_primary_readiness_exact : assert (issue_ready_choice[issue_valid_case] == entry_ready);
+    end
+`endif
+  end else begin : gen_issue_ready_direct
+    for (genvar valids = 0; valids < 4; valids++) begin : gen_valid_choice
+      assign issue_ready_choice[valids] = entry_ready;
+    end
+  end
+
   // --- Issue selection (priority encoder: lowest ready index) ---
   // With CAPTURE_PRIMARY_EFFECTIVE_OPERANDS, issue_idx comes from the grouped
   // select below, which equals this scan for every ready vector.
@@ -1411,6 +1532,32 @@ module reservation_station #(
     for (genvar g = 0; g < int'(PayloadGroups); g++) begin : gen_payload_pick
       assign payload_group_pick[g] = group_pick[g];
     end
+    for (genvar g = 0; g < NumGroupSlots; g++) begin : gen_group_pick
+      if (PREPARE_ISSUE_CONTROLS) begin : gen_valid_choices
+        (* keep = "true" *) logic [1:0] pick_choice[4];
+        for (genvar valids = 0; valids < 4; valids++) begin : gen_valid_choice
+          logic [3:0] ready_bits;
+          for (genvar entry = 0; entry < 4; entry++) begin : gen_entry
+            if (4 * g + entry < DEPTH)
+              assign ready_bits[entry] = issue_ready_choice[valids][4*g+entry];
+            else assign ready_bits[entry] = 1'b0;
+          end
+          assign pick_choice[valids] = ready_bits[0] ? 2'd0 : ready_bits[1] ? 2'd1 :
+              ready_bits[2] ? 2'd2 : ready_bits[3] ? 2'd3 : 2'd0;
+        end
+        assign group_pick[g] = pick_choice[issue_valid_case];
+      end else begin : gen_direct
+        assign group_pick[g] = group_ready[g][0] ? 2'd0 : group_ready[g][1] ? 2'd1 :
+            group_ready[g][2] ? 2'd2 : group_ready[g][3] ? 2'd3 : 2'd0;
+      end
+`ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
+      always_comb begin
+        assert (group_pick[g] ==
+            (group_ready[g][0] ? 2'd0 : group_ready[g][1] ? 2'd1 :
+             group_ready[g][2] ? 2'd2 : group_ready[g][3] ? 2'd3 : 2'd0));
+      end
+`endif
+    end
     (* keep = "true" *) logic src1_bypass, src1_bypass_l1, src2_bypass, src2_bypass_l1;
     always_comb begin
       for (int g = 0; g < int'(NumGroupSlots); g++) begin
@@ -1424,8 +1571,6 @@ module reservation_station #(
         group_any[g] = |group_ready[g];
         // Zero when the group has no ready entry, so the issue index below
         // is zero with no entry ready, like the scan.
-        group_pick[g] = group_ready[g][0] ? 2'd0 : group_ready[g][1] ? 2'd1 :
-            group_ready[g][2] ? 2'd2 : group_ready[g][3] ? 2'd3 : 2'd0;
         for (int j = 0; j < 4; j++) begin
           if (((4 * g + j) < int'(DEPTH)) && (group_pick[g] == 2'(j))) begin
             group_metadata[g] = {
@@ -1996,15 +2141,88 @@ module reservation_station #(
           (ISSUE2_WINDOW == 0 || ISSUE2_WINDOW > DEPTH) ? DEPTH : ISSUE2_WINDOW;
       logic [$clog2(Issue2Window)-1:0] issue_idx_2_window;
       logic [Issue2Window-1:0] issue_sel_2_window;
-      rs_issue2_selector #(
-          .DEPTH(Issue2Window)
-      ) u_issue2_selector (
-          .i_ready         (entry_ready[Issue2Window-1:0]),
-          .i_branch_class  (rs_is_branch_class[Issue2Window-1:0]),
-          .o_issue_2_valid (any_ready_2),
-          .o_issue_2_idx   (issue_idx_2_window),
-          .o_issue_2_onehot(issue_sel_2_window)
-      );
+      logic coherent_issue2_use_imm;
+      if (PREPARE_ISSUE_CONTROLS) begin : gen_coherent_second_selector
+        wire [1:0] live_case = {issue_cdb_2_valid, issue_cdb_valid};
+        (* keep = "true" *) logic [Issue2Window-1:0] ready_choice[4];
+        (* keep = "true" *) logic [3:0] valid_choice;
+        (* keep = "true" *) logic [3:0] use_imm_choice;
+        (* keep = "true" *) logic [$clog2(Issue2Window)-1:0] index_choice[4];
+        (* keep = "true" *) logic [Issue2Window-1:0] onehot_choice[4];
+        for (genvar valids = 0; valids < 4; valids++) begin : gen_valid_choice
+          assign ready_choice[valids]   = issue_ready_choice[valids][Issue2Window-1:0];
+          assign use_imm_choice[valids] = |(rs_use_imm[Issue2Window-1:0] & onehot_choice[valids]);
+          coherent_rs_issue2_selector #(
+              .DEPTH(Issue2Window)
+          ) selector (
+              .i_ready(ready_choice[valids]),
+              .i_branch_class(rs_is_branch_class[Issue2Window-1:0]),
+              .o_issue_2_valid(valid_choice[valids]),
+              .o_issue_2_idx(index_choice[valids]),
+              .o_issue_2_onehot(onehot_choice[valids])
+          );
+        end
+        assign coherent_issue2_use_imm = use_imm_choice[live_case];
+        assign any_ready_2 = valid_choice[live_case];
+        assign issue_idx_2_window = index_choice[live_case];
+        assign issue_sel_2_window = onehot_choice[live_case];
+`ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
+        logic f_valid;
+        logic [$clog2(Issue2Window)-1:0] f_index;
+        logic [Issue2Window-1:0] f_onehot;
+        rs_issue2_selector #(
+            .DEPTH(Issue2Window)
+        ) formal_selector (
+            .i_ready(entry_ready[Issue2Window-1:0]),
+            .i_branch_class(rs_is_branch_class[Issue2Window-1:0]),
+            .o_issue_2_valid(f_valid),
+            .o_issue_2_idx(f_index),
+            .o_issue_2_onehot(f_onehot)
+        );
+        always_comb begin
+          p_ready_choice_exact : assert (ready_choice[live_case] == entry_ready[Issue2Window-1:0]);
+          p_issue_valid_exact : assert (any_ready_2 == f_valid);
+          p_issue_index_exact : assert (issue_idx_2_window == f_index);
+          p_issue_onehot_exact : assert (issue_sel_2_window == f_onehot);
+        end
+`endif
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        logic reference_valid;
+        logic [$clog2(Issue2Window)-1:0] reference_index;
+        logic [Issue2Window-1:0] reference_onehot;
+        rs_issue2_selector #(
+            .DEPTH(Issue2Window)
+        ) reference_selector (
+            .i_ready(entry_ready[Issue2Window-1:0]),
+            .i_branch_class(rs_is_branch_class[Issue2Window-1:0]),
+            .o_issue_2_valid(reference_valid),
+            .o_issue_2_idx(reference_index),
+            .o_issue_2_onehot(reference_onehot)
+        );
+        always @(posedge i_clk) begin
+          if (!$isunknown(
+                  {live_case, entry_ready[Issue2Window-1:0], rs_is_branch_class[Issue2Window-1:0]}
+              ))
+            p_issue_selection_exact :
+            assert (
+              {any_ready_2, issue_idx_2_window, issue_sel_2_window} ===
+              {reference_valid, reference_index, reference_onehot});
+        end
+`endif
+`endif
+      end else begin : gen_line_second_selector
+        assign coherent_issue2_use_imm = 1'b0;
+        rs_issue2_selector #(
+            .DEPTH(Issue2Window)
+        ) u_issue2_selector (
+            .i_ready         (entry_ready[Issue2Window-1:0]),
+            .i_branch_class  (rs_is_branch_class[Issue2Window-1:0]),
+            .o_issue_2_valid (any_ready_2),
+            .o_issue_2_idx   (issue_idx_2_window),
+            .o_issue_2_onehot(issue_sel_2_window)
+        );
+      end
       assign issue_idx_2 = $clog2(DEPTH)'(issue_idx_2_window);
       always_comb begin
         issue_sel_2 = '0;
@@ -2016,22 +2234,62 @@ module reservation_station #(
         issue_sel_2_ohread[DEPTH-1:0] = issue_sel_2;
       end
 
-      // The second RAM copy shares dispatch writes and uses port 1's one-hot
-      // winner for its LVT read.
       logic [PayloadWidth-1:0] payload_rd_data_b;
-      mwp_dist_ram_ohread #(
-          .ADDR_WIDTH     ($clog2(DEPTH)),
-          .DATA_WIDTH     (PayloadWidth),
-          .NUM_WRITE_PORTS(2)
-      ) u_payload_ram_2 (
-          .i_clk,
-          .i_write_enable ({dispatch_fire_2, dispatch_fire}),
-          .i_write_address({alloc_idx_2, free_idx}),
-          .i_read_address (issue_idx_2),
-          .i_read_onehot  (issue_sel_2_ohread),
-          .i_write_data   ({payload_wr_data_2, payload_wr_data}),
-          .o_read_data    (payload_rd_data_b)
-      );
+      if (PREPARE_ISSUE_CONTROLS) begin : gen_coherent_second_payload
+        localparam int unsigned PayloadRows = 2 ** $clog2(DEPTH);
+        coherent_rs_payload_store #(
+            .ADDR_WIDTH($clog2(DEPTH)),
+            .DATA_WIDTH(PayloadWidth)
+        ) payload_store (
+            .i_clk,
+            .i_write_enable({dispatch_fire_2, dispatch_fire}),
+            .i_write_address({alloc_idx_2, free_idx}),
+            .i_write_data({payload_wr_data_2, payload_wr_data}),
+            .i_read_onehot(issue_sel_2_ohread),
+            .o_read_data(payload_rd_data_b)
+        );
+`ifndef SYNTHESIS
+`ifndef FORMAL
+        logic [PayloadWidth-1:0] reference_payload;
+        mwp_dist_ram_ohread #(
+            .ADDR_WIDTH($clog2(DEPTH)),
+            .DATA_WIDTH(PayloadWidth),
+            .NUM_WRITE_PORTS(2)
+        ) reference_store (
+            .i_clk,
+            .i_write_enable({dispatch_fire_2, dispatch_fire}),
+            .i_write_address({alloc_idx_2, free_idx}),
+            .i_read_address(issue_idx_2),
+            .i_read_onehot(issue_sel_2_ohread),
+            .i_write_data({payload_wr_data_2, payload_wr_data}),
+            .o_read_data(reference_payload)
+        );
+        always @(posedge i_clk) begin
+          if (i_rst_n && issue_fire_2) begin
+            p_second_payload_mask : assert (issue_sel_2_ohread == (PayloadRows'(1) << issue_idx_2));
+            p_second_payload_exact : assert (payload_rd_data_b == reference_payload);
+          end
+        end
+`endif
+`endif
+      end else begin : gen_direct_second_payload
+        // The second RAM copy shares dispatch writes and uses port 1's one-hot
+        // winner for its LVT read.
+        mwp_dist_ram_ohread #(
+            .ADDR_WIDTH     ($clog2(DEPTH)),
+            .DATA_WIDTH     (PayloadWidth),
+            .NUM_WRITE_PORTS(2)
+        ) u_payload_ram_2 (
+            .i_clk,
+            .i_write_enable ({dispatch_fire_2, dispatch_fire}),
+            .i_write_address({alloc_idx_2, free_idx}),
+            .i_read_address (issue_idx_2),
+            .i_read_onehot  (issue_sel_2_ohread),
+            .i_write_data   ({payload_wr_data_2, payload_wr_data}),
+            .o_read_data    (payload_rd_data_b)
+        );
+
+      end
 
       logic [riscv_pkg::InstrOpWidth-1:0] pl2_op_bits;
       logic [                   XLEN-1:0] pl2_imm;
@@ -2202,9 +2460,48 @@ module reservation_station #(
         end
       end
 
-      // issue2_src2_value_effective feeds both the wide src2 operand FFs and
-      // the six shift-amount FFs, so both see the same live CDB selection and
-      // capture/hold lifetime.
+      // The shift amount and second operand use the same live CDB priority
+      // and capture/hold lifetime.
+      logic [5:0] coherent_shift_amount;
+      if (PREPARE_ISSUE_CONTROLS) begin : gen_coherent_shift_amount
+        logic [5:0] shift_choice[DEPTH];
+        for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry
+          logic [FLEN-1:0] operand;
+          assign operand = src2_cdb_bypass[entry] ? i_cdb.value :
+              src2_cdb_bypass_l1[entry] ? i_cdb_2.value :
+              (src2_repair_sel[entry] != 3'd0) ? repair_value_for_sel(
+              src2_repair_sel[entry]
+          ) : rs_src2_value[entry];
+          assign shift_choice[entry] = rs_shift_uses_imm[entry] ?
+              rs_shift_imm[entry] : operand[5:0];
+        end
+        always_comb begin
+          coherent_shift_amount = '0;
+          for (int entry = 0; entry < DEPTH; entry++) begin
+            coherent_shift_amount |= shift_choice[entry] & {6{issue_sel_2[entry]}};
+          end
+        end
+`ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
+        always_comb begin
+          p_shift_choice_exact :
+          assert (coherent_shift_amount ==
+              (issue2_shift_uses_imm_selected ? issue2_shift_imm_selected :
+               issue2_src2_value_effective[5:0]));
+        end
+`endif
+`ifndef SYNTHESIS
+        always @(posedge i_clk) begin
+          if (i_rst_n && issue_fire_2) begin
+            p_shift_capture_exact :
+            assert (coherent_shift_amount ==
+                (issue2_shift_uses_imm_selected ? issue2_shift_imm_selected :
+                 issue2_src2_value_effective[5:0]));
+          end
+        end
+`endif
+      end else begin : gen_no_coherent_shift_amount
+        assign coherent_shift_amount = '0;
+      end
 
       assign stage2b_should_flush = stage2b_valid &&
           (i_flush_all || (i_flush_en && should_flush_entry(
@@ -2215,6 +2512,26 @@ module reservation_station #(
       assign issue_fire_2 = any_ready_2 && i_fu_ready_2 && can_issue_to_stage2b &&
           !i_flush_all && !i_flush_en;
 
+      assign coherent_issue2_clear_mask = issue_sel_2 &
+          {DEPTH{i_fu_ready_2 && can_issue_to_stage2b && !i_flush_all && !i_flush_en}};
+`ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
+      always_comb begin
+        p_coherent_use_imm_exact : assert (coherent_issue2_use_imm == issue2_use_imm_selected);
+        p_coherent_clear_mask_exact :
+        assert (coherent_issue2_clear_mask == ({DEPTH{issue_fire_2}} & issue_sel_2));
+      end
+`endif
+`ifndef SYNTHESIS
+      always @(posedge i_clk) begin
+        if (PREPARE_ISSUE_CONTROLS && i_rst_n) begin
+          p_coherent_clear_capture_exact :
+          assert (coherent_issue2_clear_mask == ({DEPTH{issue_fire_2}} & issue_sel_2));
+          if (issue_fire_2)
+            p_coherent_use_imm_capture_exact :
+            assert (coherent_issue2_use_imm == issue2_use_imm_selected);
+        end
+      end
+`endif
       always_ff @(posedge i_clk) begin
         if (!i_rst_n) begin
           stage2b_valid <= 1'b0;
@@ -2228,14 +2545,17 @@ module reservation_station #(
           // allow at most one live match.
           stage2b_src1_value <= issue2_src1_value_effective;
           stage2b_src2_value <= issue2_src2_value_effective;
-          stage2b_shift_amount <= issue2_shift_uses_imm_selected ? issue2_shift_imm_selected :
+          if (PREPARE_ISSUE_CONTROLS) stage2b_shift_amount <= coherent_shift_amount;
+          else
+            stage2b_shift_amount <= issue2_shift_uses_imm_selected ? issue2_shift_imm_selected :
               issue2_src2_value_effective[5:0];
           if (HAS_SRC3) begin
             stage2b_src3_value <= issue2_src3_value_effective;
           end
           stage2b_imm <= pl2_imm;
           stage2b_jalr_imm <= pl2_jalr_imm;
-          stage2b_use_imm <= issue2_use_imm_selected;
+          if (PREPARE_ISSUE_CONTROLS) stage2b_use_imm <= coherent_issue2_use_imm;
+          else stage2b_use_imm <= issue2_use_imm_selected;
           stage2b_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ?
               issue2_writes_cdb_hint_selected : 1'b0;
           stage2b_rm <= pl2_rm;
@@ -2394,6 +2714,7 @@ module reservation_station #(
       assign issue_sel_2 = '0;
       assign any_ready_2 = 1'b0;
       assign issue_fire_2 = 1'b0;
+      assign coherent_issue2_clear_mask = '0;
       assign stage2b_valid = 1'b0;
       assign stage2b_head_query_match = 1'b0;
       assign o_issue_2 = '0;
@@ -2421,12 +2742,19 @@ module reservation_station #(
       repair_slot1_target_q <= '0;
       repair_slot2_target_q <= '0;
     end else begin
-      repair_slot1_target_q <= (ALLOC_INDEXED_REPAIR && dispatch_fire) ? index_to_onehot(
-          free_idx
-      ) : '0;
-      repair_slot2_target_q <= (ALLOC_INDEXED_REPAIR && dispatch_fire_2) ? index_to_onehot(
-          alloc_idx_2
-      ) : '0;
+      if (PREPARE_ISSUE_CONTROLS) begin
+        repair_slot1_target_q <= {DEPTH{ALLOC_INDEXED_REPAIR && dispatch_fire}} &
+            coherent_alloc1_target;
+        repair_slot2_target_q <= {DEPTH{ALLOC_INDEXED_REPAIR && dispatch_fire_2}} &
+            coherent_alloc2_target;
+      end else begin
+        repair_slot1_target_q <= (ALLOC_INDEXED_REPAIR && dispatch_fire) ? index_to_onehot(
+            free_idx
+        ) : '0;
+        repair_slot2_target_q <= (ALLOC_INDEXED_REPAIR && dispatch_fire_2) ? index_to_onehot(
+            alloc_idx_2
+        ) : '0;
+      end
     end
   end
 
@@ -2435,7 +2763,11 @@ module reservation_station #(
   logic [DEPTH-1:0] issue1_clear_mask;
   assign issue1_clear_mask = {DEPTH{issue_fire}} & primary_issue_onehot[DEPTH-1:0];
   logic [DEPTH-1:0] issue2_clear_mask;
-  assign issue2_clear_mask = {DEPTH{issue_fire_2}} & issue_sel_2;
+  if (PREPARE_ISSUE_CONTROLS) begin : gen_coherent_issue2_clear
+    assign issue2_clear_mask = coherent_issue2_clear_mask;
+  end else begin : gen_line_issue2_clear
+    assign issue2_clear_mask = {DEPTH{issue_fire_2}} & issue_sel_2;
+  end
 
 `ifdef RS_ISSUE_CLEAR_LOCAL_PROOF
   logic [DEPTH-1:0] f_issue2_clear_mask;
@@ -2476,6 +2808,68 @@ module reservation_station #(
   end
 `endif
 
+  // Entry valid state: a full flush clears every entry, a partial flush
+  // clears younger entries, and otherwise allocations set entries and both
+  // issue clears clear them. The issue clears follow the issue selection and
+  // apply last, to entries that neither flush nor allocate.
+  logic [DEPTH-1:0] rs_valid_alloc, rs_valid_issue_clear, rs_valid_next;
+  (* keep = "true" *) logic [DEPTH-1:0] rs_valid_hold, rs_valid_clearable;
+  always_comb begin
+    for (int entry = 0; entry < DEPTH; entry++) begin
+      rs_valid_alloc[entry] = PREPARE_ISSUE_CONTROLS ?
+          ((dispatch_fire && coherent_alloc1_target[entry]) ||
+           (dispatch_fire_2 && coherent_alloc2_target[entry])) :
+          ((dispatch_fire && int'(free_idx) == entry) ||
+           (dispatch_fire_2 && int'(alloc_idx_2) == entry));
+      rs_valid_hold[entry] = i_flush_all ? 1'b0 :
+          i_flush_en ? (rs_valid[entry] &&
+                        !should_flush_entry(rs_rob_tag[entry], i_flush_tag, i_rob_head_tag)) :
+          (rs_valid_alloc[entry] || rs_valid[entry]);
+      rs_valid_clearable[entry] = !i_flush_all && !i_flush_en && !rs_valid_alloc[entry];
+      rs_valid_issue_clear[entry] = issue2_clear_mask[entry] ||
+          (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS ? issue1_clear_mask[entry] :
+           (issue_fire && int'(issue_idx) == entry));
+    end
+    rs_valid_next = rs_valid_hold & ~(rs_valid_clearable & rs_valid_issue_clear);
+  end
+`ifndef SYNTHESIS
+  // The prioritized form rs_valid_next replaces.
+  logic [DEPTH-1:0] reference_valid_next;
+  always_comb begin
+    reference_valid_next = rs_valid;
+    if (i_flush_all) reference_valid_next = '0;
+    else if (i_flush_en) begin
+      for (int i = 0; i < DEPTH; i++)
+      if (rs_valid[i] && should_flush_entry(rs_rob_tag[i], i_flush_tag, i_rob_head_tag))
+        reference_valid_next[i] = 1'b0;
+    end else begin
+      if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS)
+        reference_valid_next = rs_valid & ~issue2_clear_mask & ~issue1_clear_mask;
+      else begin
+        reference_valid_next = rs_valid & ~issue2_clear_mask;
+        if (issue_fire) reference_valid_next[issue_idx] = 1'b0;
+      end
+      if (PREPARE_ISSUE_CONTROLS) begin
+        for (int entry = 0; entry < DEPTH; entry++) begin
+          if (dispatch_fire && coherent_alloc1_target[entry]) reference_valid_next[entry] = 1'b1;
+          if (dispatch_fire_2 && coherent_alloc2_target[entry]) reference_valid_next[entry] = 1'b1;
+        end
+      end else begin
+        if (dispatch_fire) reference_valid_next[free_idx] = 1'b1;
+        if (dispatch_fire_2) reference_valid_next[alloc_idx_2] = 1'b1;
+      end
+    end
+  end
+`ifdef FORMAL
+  always_comb
+`else
+  always @(posedge i_clk)
+`endif
+  begin
+    if (i_rst_n) p_valid_next_exact : assert (rs_valid_next == reference_valid_next);
+  end
+`endif
+
   // --- Control signals (with reset) ---
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
@@ -2492,7 +2886,8 @@ module reservation_station #(
       dispatch_full_q       <= 1'b0;
       dispatch_full_for_2_q <= 1'b0;
     end else begin
-      count <= count_next;
+      if (PREPARE_ISSUE_CONTROLS) count <= coherent_count_next;
+      else count <= count_next;
       if (DISPATCH_STATUS_RESERVE == 0) begin
         dispatch_full_q       <= dispatch_full_next;
         dispatch_full_for_2_q <= dispatch_full_for_2_next;
@@ -2501,76 +2896,108 @@ module reservation_station #(
         dispatch_full_for_2_q <= count >= CountWidth'(DispatchFullFor2Threshold);
       end
 
-      // Flush logic (highest priority for rs_valid)
-      if (i_flush_all) begin
-        rs_valid <= '0;
-      end else if (i_flush_en) begin
-        // Partial flush: invalidate entries younger than flush_tag. When the
-        // flush tag has already retired (head == flush_tag + 1, commit-time
-        // recovery) this compare clears nothing, so the wrapper sends that
-        // case as i_flush_all (its speculative_flush_all).
-        for (int i = 0; i < DEPTH; i++) begin
-          if (rs_valid[i] && should_flush_entry(rs_rob_tag[i], i_flush_tag, i_rob_head_tag)) begin
-            rs_valid[i] <= 1'b0;
+      // rs_valid_next applies flushes, issue clears and allocations.
+      rs_valid <= rs_valid_next;
+      if (!i_flush_all && !i_flush_en) begin
+        if (PREPARE_ISSUE_CONTROLS) begin
+          for (int entry = 0; entry < DEPTH; entry++) begin
+            if (dispatch_fire && coherent_alloc1_target[entry]) begin
+              if (TRACK_INT_WRITEBACK_HINT)
+                rs_writes_cdb_hint[entry] <= int_rs_writes_cdb(dispatch_op);
+
+              // Capture dispatch readiness, including repair bypass when enabled.
+              // Indexed repair and deferred CDB matches set ready one cycle later.
+              rs_src1_ready[entry] <= dispatch_src1_ready || dispatch_src1_repair_match;
+              rs_src2_ready[entry] <= dispatch_src2_ready || dispatch_src2_repair_match;
+              if (HAS_SRC3) begin
+                rs_src3_ready_q[entry] <= dispatch_src3_ready || dispatch_src3_repair_match;
+              end
+              rs_use_imm[entry] <= dispatch_use_imm;
+              rs_shift_uses_imm[entry] <= dispatch_shift_controls[0];
+              rs_shift_imm[entry] <= dispatch_imm[5:0];
+              // Write pending flags on every dispatch, including zero when unmatched,
+              // so reallocation cannot inherit a stale delivery.
+              src1_cdb_pend[entry] <= dispatch_src1_cdb_defer;
+              src1_cdb_pend_lane[entry] <= dispatch_src1_cdb_defer_lane;
+              src2_cdb_pend[entry] <= dispatch_src2_cdb_defer;
+              src2_cdb_pend_lane[entry] <= dispatch_src2_cdb_defer_lane;
+              if (HAS_SRC3) begin
+                src3_cdb_pend[entry] <= dispatch_src3_cdb_defer;
+                src3_cdb_pend_lane[entry] <= dispatch_src3_cdb_defer_lane;
+              end
+            end
+
+            // Slot 2 takes priority when both allocation targets name this entry.
+            if (dispatch_fire_2 && coherent_alloc2_target[entry]) begin
+              if (TRACK_INT_WRITEBACK_HINT)
+                rs_writes_cdb_hint[entry] <= int_rs_writes_cdb(dispatch_op_2);
+
+              rs_src1_ready[entry] <= dispatch_src1_ready_2 || dispatch_src1_repair_match_2;
+              rs_src2_ready[entry] <= dispatch_src2_ready_2 || dispatch_src2_repair_match_2;
+              if (HAS_SRC3) begin
+                rs_src3_ready_q[entry] <= dispatch_src3_ready_2 || dispatch_src3_repair_match_2;
+              end
+              rs_use_imm[entry] <= dispatch_use_imm_2;
+              rs_shift_uses_imm[entry] <= dispatch_shift_controls_2[0];
+              rs_shift_imm[entry] <= dispatch_imm_2[5:0];
+              src1_cdb_pend[entry] <= dispatch_src1_cdb_defer_2;
+              src1_cdb_pend_lane[entry] <= dispatch_src1_cdb_defer_lane_2;
+              src2_cdb_pend[entry] <= dispatch_src2_cdb_defer_2;
+              src2_cdb_pend_lane[entry] <= dispatch_src2_cdb_defer_lane_2;
+              if (HAS_SRC3) begin
+                src3_cdb_pend[entry] <= dispatch_src3_cdb_defer_2;
+                src3_cdb_pend_lane[entry] <= dispatch_src3_cdb_defer_lane_2;
+              end
+            end
           end
-        end
-      end else begin
-        // Both issue clears commute; later allocation writes take priority.
-        if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin
-          rs_valid <= rs_valid & ~issue2_clear_mask & ~issue1_clear_mask;
         end else begin
-          rs_valid <= rs_valid & ~issue2_clear_mask;
-          if (issue_fire) rs_valid[issue_idx] <= 1'b0;
-        end
+          if (dispatch_fire) begin
+            if (TRACK_INT_WRITEBACK_HINT)
+              rs_writes_cdb_hint[free_idx] <= int_rs_writes_cdb(dispatch_op);
 
-        if (dispatch_fire) begin
-          rs_valid[free_idx] <= 1'b1;
-          if (TRACK_INT_WRITEBACK_HINT)
-            rs_writes_cdb_hint[free_idx] <= int_rs_writes_cdb(dispatch_op);
-
-          // Capture dispatch readiness, including repair bypass when enabled.
-          // Indexed repair and deferred CDB matches set ready one cycle later.
-          rs_src1_ready[free_idx] <= dispatch_src1_ready || dispatch_src1_repair_match;
-          rs_src2_ready[free_idx] <= dispatch_src2_ready || dispatch_src2_repair_match;
-          if (HAS_SRC3) begin
-            rs_src3_ready_q[free_idx] <= dispatch_src3_ready || dispatch_src3_repair_match;
+            // Capture dispatch readiness, including repair bypass when enabled.
+            // Indexed repair and deferred CDB matches set ready one cycle later.
+            rs_src1_ready[free_idx] <= dispatch_src1_ready || dispatch_src1_repair_match;
+            rs_src2_ready[free_idx] <= dispatch_src2_ready || dispatch_src2_repair_match;
+            if (HAS_SRC3) begin
+              rs_src3_ready_q[free_idx] <= dispatch_src3_ready || dispatch_src3_repair_match;
+            end
+            rs_use_imm[free_idx] <= dispatch_use_imm;
+            rs_shift_uses_imm[free_idx] <= dispatch_shift_controls[0];
+            rs_shift_imm[free_idx] <= dispatch_imm[5:0];
+            // Write pending flags on every dispatch, including zero when unmatched,
+            // so reallocation cannot inherit a stale delivery.
+            src1_cdb_pend[free_idx] <= dispatch_src1_cdb_defer;
+            src1_cdb_pend_lane[free_idx] <= dispatch_src1_cdb_defer_lane;
+            src2_cdb_pend[free_idx] <= dispatch_src2_cdb_defer;
+            src2_cdb_pend_lane[free_idx] <= dispatch_src2_cdb_defer_lane;
+            if (HAS_SRC3) begin
+              src3_cdb_pend[free_idx] <= dispatch_src3_cdb_defer;
+              src3_cdb_pend_lane[free_idx] <= dispatch_src3_cdb_defer_lane;
+            end
           end
-          rs_use_imm[free_idx] <= dispatch_use_imm;
-          rs_shift_uses_imm[free_idx] <= dispatch_shift_controls[0];
-          rs_shift_imm[free_idx] <= dispatch_imm[5:0];
-          // Write pending flags on every dispatch, including zero when unmatched,
-          // so reallocation cannot inherit a stale delivery.
-          src1_cdb_pend[free_idx] <= dispatch_src1_cdb_defer;
-          src1_cdb_pend_lane[free_idx] <= dispatch_src1_cdb_defer_lane;
-          src2_cdb_pend[free_idx] <= dispatch_src2_cdb_defer;
-          src2_cdb_pend_lane[free_idx] <= dispatch_src2_cdb_defer_lane;
-          if (HAS_SRC3) begin
-            src3_cdb_pend[free_idx] <= dispatch_src3_cdb_defer;
-            src3_cdb_pend_lane[free_idx] <= dispatch_src3_cdb_defer_lane;
-          end
-        end
 
-        // Slot 2 writes a distinct entry, so the allocation writes cannot collide.
-        if (dispatch_fire_2) begin
-          rs_valid[alloc_idx_2] <= 1'b1;
-          if (TRACK_INT_WRITEBACK_HINT)
-            rs_writes_cdb_hint[alloc_idx_2] <= int_rs_writes_cdb(dispatch_op_2);
+          // Slot 2 writes a distinct entry, so the allocation writes cannot collide.
+          if (dispatch_fire_2) begin
+            if (TRACK_INT_WRITEBACK_HINT)
+              rs_writes_cdb_hint[alloc_idx_2] <= int_rs_writes_cdb(dispatch_op_2);
 
-          rs_src1_ready[alloc_idx_2] <= dispatch_src1_ready_2 || dispatch_src1_repair_match_2;
-          rs_src2_ready[alloc_idx_2] <= dispatch_src2_ready_2 || dispatch_src2_repair_match_2;
-          if (HAS_SRC3) begin
-            rs_src3_ready_q[alloc_idx_2] <= dispatch_src3_ready_2 || dispatch_src3_repair_match_2;
-          end
-          rs_use_imm[alloc_idx_2] <= dispatch_use_imm_2;
-          rs_shift_uses_imm[alloc_idx_2] <= dispatch_shift_controls_2[0];
-          rs_shift_imm[alloc_idx_2] <= dispatch_imm_2[5:0];
-          src1_cdb_pend[alloc_idx_2] <= dispatch_src1_cdb_defer_2;
-          src1_cdb_pend_lane[alloc_idx_2] <= dispatch_src1_cdb_defer_lane_2;
-          src2_cdb_pend[alloc_idx_2] <= dispatch_src2_cdb_defer_2;
-          src2_cdb_pend_lane[alloc_idx_2] <= dispatch_src2_cdb_defer_lane_2;
-          if (HAS_SRC3) begin
-            src3_cdb_pend[alloc_idx_2] <= dispatch_src3_cdb_defer_2;
-            src3_cdb_pend_lane[alloc_idx_2] <= dispatch_src3_cdb_defer_lane_2;
+            rs_src1_ready[alloc_idx_2] <= dispatch_src1_ready_2 || dispatch_src1_repair_match_2;
+            rs_src2_ready[alloc_idx_2] <= dispatch_src2_ready_2 || dispatch_src2_repair_match_2;
+            if (HAS_SRC3) begin
+              rs_src3_ready_q[alloc_idx_2] <= dispatch_src3_ready_2 || dispatch_src3_repair_match_2;
+            end
+            rs_use_imm[alloc_idx_2] <= dispatch_use_imm_2;
+            rs_shift_uses_imm[alloc_idx_2] <= dispatch_shift_controls_2[0];
+            rs_shift_imm[alloc_idx_2] <= dispatch_imm_2[5:0];
+            src1_cdb_pend[alloc_idx_2] <= dispatch_src1_cdb_defer_2;
+            src1_cdb_pend_lane[alloc_idx_2] <= dispatch_src1_cdb_defer_lane_2;
+            src2_cdb_pend[alloc_idx_2] <= dispatch_src2_cdb_defer_2;
+            src2_cdb_pend_lane[alloc_idx_2] <= dispatch_src2_cdb_defer_lane_2;
+            if (HAS_SRC3) begin
+              src3_cdb_pend[alloc_idx_2] <= dispatch_src3_cdb_defer_2;
+              src3_cdb_pend_lane[alloc_idx_2] <= dispatch_src3_cdb_defer_lane_2;
+            end
           end
         end
       end

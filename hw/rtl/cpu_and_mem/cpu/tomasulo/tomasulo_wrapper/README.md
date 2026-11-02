@@ -271,31 +271,47 @@ reports any fault.
 ## Store-conditional resolution
 
 MEM_RS issues an SC like a store: its address and data go to the SQ. The SC
-does not complete at issue. It waits in `sc_pending_unit`, and fires only when:
+does not complete at issue. It waits in `sc_pending_unit`. Selection requires:
 
-- its ROB entry is at the head,
-- the SQ is committed-empty,
-- its physical address is known (under data translation the data MMU supplies
+- its ROB entry at the head,
+- an empty committed SQ,
+- a known physical address (under data translation the data MMU supplies
   it after issue),
 - and nothing else is using or about to use the MEM CDB slot: no LQ result, no
   pending MEM adapter, no registered store fault, and no earlier SC result
-  still waiting.
+  awaiting consumption.
 
-The DMA coherence port can also hold SC fires around a DMA write.
+Coherent atomic candidate selection compares each source tag with the ROB head
+before selection. SC has priority over AMO. A qualified candidate carries the
+head tag; an invalid candidate's tag is unqualified.
 
-The SC succeeds when the LR reservation, held in the LQ, is valid and covers
-the SC's aligned doubleword, FROST's reservation granule. The reservation is
-cleared when any SC commits, when the SQ launches a write to the same
-doubleword or an AMO writes it, when a DMA write invalidates the line, and on
-a trap, xRET, or FENCE-class flush (the LQ's `i_full_flush`); a branch
-recovered at commit keeps it. An LR launches only once no committed store is
-left to write, so every SQ write that clears the reservation is from a store
-after the LR. A cached SC's result (0 on success, 1 on failure) is
-registered and presented to the MEM adapter in the following cycle. With
-`MEM_RESPONSE_ERRORS=1`, a successful uncached SC instead authorizes the
-SQ write and waits for its AXI B response before reporting success or an
-access fault. A failed SC still reports failure immediately. When a failed SC commits, the wrapper sends `sc_discard` to
-the SQ, which drops the entry without writing memory.
+Coherent SC completion supplies a zero-value flag from the selected success
+or fault-address source. The uncached store permit uses this flag with the
+completion valid bit and cached-region classification.
+
+The coherent SC table classifies aligned power-of-two cached regions with an
+address mask. Empty, unaligned, non-power-of-two or wrapping regions use the
+unsigned range comparison.
+
+A cached SC compares the exact physical address
+and W/D size recorded by LR. The reservation set is a 32-byte sector. Local
+writes and DMA invalidations to that sector clear it; read probes preserve
+it. The SC table holds the virtual address for access-fault completion.
+A selected SC owns an immutable request and result context independently
+of the speculative SC table. Its completion requires the matching home
+response and an available result slot, independently of SQ committed-empty
+status. The CPU arms interrupt/debug protection before
+request presentation. Home CheckSC and the conditional write recheck the
+reservation. A successful cached SC retires before its tagged SQ write;
+that write blocks younger retirement and drain completion until it finishes.
+The reservation clears at the exact write-complete edge. A failed SC drops
+its SQ entry without a write. Ungranted AMO and LR candidates yield probes.
+
+An uncached SC compares the aligned doubleword of the reservation.
+With `MEM_RESPONSE_ERRORS=1`, a successful uncached SC authorizes its SQ
+write and waits for the AXI B response before reporting success or an
+access fault. A failed SC reports failure without issuing a write. At its
+commit, `sc_discard` makes the SQ drop that entry.
 
 The pending table is keyed by ROB tag because MEM_RS issues SCs out of order:
 a speculated LR/SC retry loop can issue several SCs before the oldest reaches
@@ -398,3 +414,12 @@ top-level and cache counter blocks. See the
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
+
+The `coherent_cut_fabric` bench connects the private cache's probe and cut
+channels to the wrapper. It exercises dirty invalidation, held replies,
+returned L1 and L0 observations, SQ forwarding, delayed load and LR responses,
+flush and tag reuse, and both retirement lanes. CPU read responses have
+independent timing controls at the wrapper boundary. The private cache's
+modified line is installed through D/G/C/U before its probe response is
+checked. The bench controls cut admission and invalidation delays at their
+handshake boundary.

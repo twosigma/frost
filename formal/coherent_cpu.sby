@@ -1,0 +1,67 @@
+[tasks]
+coh_address_class_prove address_class
+coh_candidate_select_prove candidate
+coh_sc_selected_prove sc
+coh_sc_class_small_prove sc sc_small
+coh_sc_class_offset_prove sc sc_offset
+coh_sc_class_size_prove sc sc_size
+coh_sc_class_zero_prove sc sc_zero
+coh_sc_class_wrap_prove sc sc_wrap
+coh_lq_cut_prove lq
+coh_lq_forward_prove lq forward
+coh_lq_forward_normal_prove lq forward normal
+coh_lq_busy_prove lq forward normal busy
+coh_lq_normal_fill_prove lq normal
+coh_lq_selector_prove selector
+coh_lq_selector4_prove selector selector4
+coh_lq_selector16_prove selector selector16
+
+[options]
+mode prove
+depth 4
+timeout 180
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+sc: read -formal -sv -D COHERENT_SC_LOCAL_PROOF sc_pending_unit.sv
+sc_small: chparam -set CACHED_BASE 8192 -set CACHED_SIZE_BYTES 4096 sc_pending_unit
+sc_offset: chparam -set CACHED_BASE 2147483680 -set CACHED_SIZE_BYTES 8192 sc_pending_unit
+sc_size: chparam -set CACHED_SIZE_BYTES 402653184 sc_pending_unit
+sc_zero: chparam -set CACHED_BASE 0 -set CACHED_SIZE_BYTES 0 sc_pending_unit
+sc_wrap: chparam -set CACHED_BASE 64'hfffffffffffff000 -set CACHED_SIZE_BYTES 4096 sc_pending_unit
+sc: prep -flatten -top sc_pending_unit
+lq: read -sv sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv lq_l0_cache.sv coherent_l0_flags.sv lq_issue_selector.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv
+lq: read -formal -sv coherent_lq_address_store.sv
+lq: read -formal -sv -D F_LQ_PREMATCH_ONLY -D COHERENT_LQ_LOCAL_PROOF -D F_LQ_RESPONSE_FINAL_PROOF load_queue.sv
+forward: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
+normal: chparam -set CACHE_NORMAL_MEMORY 1 -set CACHE_UNCACHED_DATA 0 -set MEM_RESPONSE_ERRORS 1 load_queue
+busy: chparam -set PREPARE_LOAD_WHILE_BUSY 0 load_queue
+lq: prep -flatten -top load_queue
+
+selector: read -formal -sv lq_issue_selector.sv coherent_lq_issue_selector.sv
+selector4: chparam -set DEPTH 4 coherent_lq_issue_selector
+selector16: chparam -set DEPTH 16 coherent_lq_issue_selector
+selector: prep -flatten -top coherent_lq_issue_selector
+
+candidate: read -formal -sv coherent_lq_candidate_select.sv
+candidate: prep -top coherent_lq_candidate_select
+
+address_class: read -formal -sv coherent_lq_address_store.sv
+address_class: prep -flatten -top coherent_lq_address_store
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/atomics/sc_pending_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv

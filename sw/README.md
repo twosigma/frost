@@ -119,10 +119,11 @@ per-object linker rule.
 
 Low BRAM keeps separate instruction and data copies, so ordinary stores never
 change the code being fetched. Self-modifying code must live in DDR and run
-`fence.i` after writing it; `fence.i` drains stores, writes back the L1D, and
-invalidates the L1I and the fetch buffer. Stores made in Debug Mode, such as
-a debugger's software breakpoints, are mirrored into the BRAM instruction
-copy.
+`fence.i` after writing it; `fence.i` drains committed stores and invalidates
+the L1I and fetch buffers. Instruction refills obtain dirty L1D bytes through
+home probes. Stores made in Debug Mode, such as a debugger's software
+breakpoints, are mirrored into the BRAM instruction copy. FENCE.I waits for
+these instruction-copy writes before completing.
 
 ### Peripheral addresses
 
@@ -259,7 +260,7 @@ can be debugged and where each one first stops.
 | `arch_test/` | riscv-arch-test cases, whose signatures the bench reads from low BRAM and compares with committed Spike references; built per test with `TEST_SRC`; see the [architecture-test runner](../tests/README.md#test_arch_compliancepy) |
 | `branch_pred_test/` | Self-checking branch, loop, call, and indirect-jump cases in assembly |
 | `c_ext_test/` | Calls and returns through mixed 16- and 32-bit code, plus value checks of the RV64C-only encodings |
-| `cache_counter_target/` | Makes L2 write fills, prints the cache counters from its own snapshot, then sleeps in `wfi` without touching the caches until a UART byte starts a second run, which the JTAG reader (`fpga/debug/cache_counters.py`) measures; runs from low BRAM in either memory configuration |
+| `cache_counter_target/` | Makes L2 write fills with DMA, prints the cache counters from its own snapshot, then sleeps in `wfi` without touching the caches until a UART byte starts a second run, which the JTAG reader (`fpga/debug/cache_counters.py`) measures; runs from low BRAM in either memory configuration |
 | `call_stress/` | Repeated and nested calls and returns, built with compressed instructions |
 | `cf_ext_test/` | Compressed double-precision FP loads and stores (Zcd) |
 | `clint_test/` | SiFive CLINT alias: writes reach the native timer registers, and a timer interrupt armed through the alias fires |
@@ -300,7 +301,7 @@ can be debugged and where each one first stops.
 | `lq_stale_slot_probe/` | Cached-load results must reach the right load across two partial flushes and ROB-tag reuse, with slow, reordered DDR responses |
 | `mem_divergence_probe/` | Cold versus warm reads of cached DDR (both dword halves, 64-bit reads, store forwarding) |
 | `memerr_readback/` | The memory error unit on the X3: the ECC reader is active and polling, and a DDR write and readback twice the L2's size reports no error |
-| `memerr_test/` | The memory error unit in simulation: DDR error responses injected by the model and ECC reports from the bench reach its counters, addresses, and APLIC interrupt |
+| `memerr_test/` | The memory error unit in simulation: DDR error responses injected by the model and ECC reports from the bench reach its counters, addresses, and APLIC interrupt; dependent conflict reads after FENCE.I evict the fatal-writeback line |
 | `memory_test/` | Arena allocator and `malloc`/`free`/`calloc`/`realloc`, including coalescing and overflow rejection |
 | `mret_drain_deadlock/` | `mret` right after cached-DDR stores must wait for them to drain, then continue |
 | `mret_timer_resume_test/` | A timer pending as `mret` drops to U-mode must save the U-mode entry point in `mepc` |

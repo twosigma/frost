@@ -50,6 +50,36 @@ module tomasulo_wrapper #(
     // passes its build option; the standalone default enables counters.
     parameter int unsigned PERF_COUNTERS = 1
 ) (
+    // Coherent store ownership and selected atomic context.
+    input logic i_coherent_store_pending = 1'b0,
+    input logic i_coherent_store_ready = 1'b1,
+    input logic i_coherent_sc_pending = 1'b0,
+    input logic i_coherent_atomic_live = 1'b0,
+    input logic [1:0] i_coherent_block_valid = '0,
+    input logic [1:0][riscv_pkg::XLEN-1:0] i_coherent_block_addr = '0,
+    input logic i_coherent_cut_hold = 1'b0,
+    output logic o_coherent_sc_valid,
+    input logic i_coherent_sc_ready = 1'b0,
+    output logic [riscv_pkg::XLEN-1:0] o_coherent_sc_addr,
+    output logic [2:0] o_coherent_sc_size,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_sc_tag,
+    input logic i_coherent_sc_result_valid = 1'b0,
+    output logic o_coherent_sc_result_ready,
+    input logic i_coherent_sc_success = 1'b0,
+    input logic i_coherent_sc_error = 1'b0,
+    input logic i_coherent_sc_write_done = 1'b0,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_coherent_sc_write_tag = '0,
+    output logic o_coherent_reservation_valid,
+    output logic [riscv_pkg::XLEN-1:0] o_coherent_reservation_addr,
+    output logic [2:0] o_coherent_reservation_size,
+    input logic i_coherent_atomic_protected = 1'b0,
+    output logic o_coherent_arm_valid,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_arm_tag,
+    output logic [1:0] o_coherent_read_kind,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_read_tag,
+    output logic o_coherent_write_sc,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_sq_write_tag,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_amo_write_tag,
     input logic i_clk,
     input logic i_rst_n,
 
@@ -244,6 +274,7 @@ module tomasulo_wrapper #(
     input  logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_admit_slot,
     input  logic [                riscv_pkg::XLEN-1:0] i_coh_admit_addr,
     output logic                                       o_coh_admit_ready,
+    output logic                                       o_coh_admit_clean,
     input  logic                                       i_coh_inval_valid,
     input  logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_inval_slot,
     output logic                                       o_coh_inval_done,
@@ -1546,18 +1577,22 @@ module tomasulo_wrapper #(
   logic sq_committed_empty_lq;
   assign o_sq_committed_empty = sq_committed_empty;
 
-  // Any SC commit, success or failure, clears the reservation via registered commit.
+  // A coherent successful SC clears at its tagged write; other SCs clear at commit.
   logic sc_clear_reservation;
-  assign sc_clear_reservation = commit_bus_q_valid && commit_q_is_sc;
+  assign sc_clear_reservation = (commit_bus_q_valid && commit_q_is_sc &&
+      !(!commit_q_sc_failed &&
+        i_coherent_atomic_live && commit_bus_q.tag == o_coherent_sc_tag)) ||
+      (i_coherent_sc_write_done);
 
   // Reservation snoop invalidation: SQ write to the reservation address. The
-  // reservation covers a doubleword (RV64A: LR.D reserves one, and a granule
-  // may exceed the LR width), so any store in the dword kills it.
+  // reservation covers a 32-byte sector in cached memory.
   logic reservation_snoop_invalidate;
   assign reservation_snoop_invalidate = sq_cache_invalidate_valid &&
       lq_reservation_valid &&
-      (sq_cache_invalidate_addr[riscv_pkg::XLEN-1:3] ==
-       lq_reservation_addr[riscv_pkg::XLEN-1:3]);
+      !(o_coherent_write_sc && o_sq_mem_write_is_cached) &&
+      ((sq_cache_invalidate_addr[riscv_pkg::XLEN-1:5] == lq_reservation_addr[riscv_pkg::XLEN-1:5]));
+  assign o_coherent_reservation_valid = lq_reservation_valid;
+  assign o_coherent_reservation_addr = lq_reservation_addr;
 
   // A failed SC invalidates its SQ entry via registered commit.
   logic sc_discard;
@@ -1582,8 +1617,8 @@ module tomasulo_wrapper #(
   assign sq_commit_valid_scan_2 = commit_bus_2_q_valid_raw && commit_q_2_is_store_like;
 
   // ===========================================================================
-  // SC completion hand-off: sc_pending_unit tracks in-flight SCs in a ROB-tag
-  // table and fires the one at the ROB head once the SQ is committed-empty
+  // SC selection requires a ROB-head match and an empty committed SQ.
+  // A selected coherent SC completes independently of that drain status.
   // ===========================================================================
   logic sc_pending;
   // Forward declaration (assigned in SQ address section below)
@@ -1611,8 +1646,18 @@ module tomasulo_wrapper #(
   // Resolve the reservation at the head, but do not announce successful
   // uncached SC until the AXI write response. Failed SC still returns 1
   // immediately and the commit-side discard removes its SQ entry.
-  assign uncached_sc_success = MEM_RESPONSE_ERRORS && sc_resolution.valid &&
-      (sc_resolution.value == '0) && !coh_sc_head_is_cached;
+  logic sc_value_zero;
+  if (1'b1) begin : gen_coherent_sc_value
+    assign uncached_sc_success = MEM_RESPONSE_ERRORS && sc_resolution.valid &&
+        sc_value_zero && !coh_sc_head_is_cached;
+`ifndef SYNTHESIS
+    always @(posedge i_clk) begin
+      p_uncached_sc_exact :
+      assert (uncached_sc_success == (MEM_RESPONSE_ERRORS && sc_resolution.valid &&
+          (sc_resolution.value == '0) && !coh_sc_head_is_cached));
+    end
+`endif
+  end
   always_comb begin
     sc_fu_complete = sc_resolution;
     sc_fu_complete.valid = sc_resolution.valid && !uncached_sc_success;
@@ -2098,12 +2143,37 @@ module tomasulo_wrapper #(
   logic coh_sc_head_query_match;
   logic [riscv_pkg::XLEN-1:0] coh_sc_head_addr;
   logic [riscv_pkg::XLEN-1:0] coh_lq_query_addr, coh_lq_inval_addr, coh_observe_addr;
-  logic coh_lq_query_busy, coh_lq_inval_valid, coh_observe_valid;
+  logic coh_lq_query_busy, coh_lq_query_held, coh_lq_inval_valid, coh_observe_valid;
   logic [riscv_pkg::DmaCoherenceLocks-1:0] coh_lq_block_valid;
   logic coh_lq_admit_pulse;
   logic [riscv_pkg::DmaCoherenceLocks-1:0][riscv_pkg::XLEN-1:0] coh_lq_block_addr;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coh_observe_rob_tag;
   logic [riscv_pkg::ReorderBufferDepth-1:0] coh_replay_set_mask;
+  logic coherent_sc_arm, coherent_amo_arm;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_sc_arm_tag, coherent_amo_arm_tag;
+  if (1'b1) begin : gen_coherent_arm_select
+    coherent_atomic_select #(
+        .TAG_BITS(riscv_pkg::ReorderBufferTagWidth)
+    ) arm_select (
+        .i_sc_valid(coherent_sc_arm),
+        .i_sc_tag(coherent_sc_arm_tag),
+        .i_amo_valid(coherent_amo_arm),
+        .i_amo_tag(coherent_amo_arm_tag),
+        .i_head_tag(head_tag),
+        .o_arm_valid(o_coherent_arm_valid),
+        .o_arm_tag(o_coherent_arm_tag)
+    );
+`ifndef SYNTHESIS
+    wire reference_valid = coherent_sc_arm || coherent_amo_arm;
+    wire [riscv_pkg::ReorderBufferTagWidth-1:0] reference_tag =
+        coherent_sc_arm ? coherent_sc_arm_tag : coherent_amo_arm_tag;
+    always @(posedge i_clk) begin
+      p_arm_qualification_exact :
+      assert (o_coherent_arm_valid == (reference_valid && reference_tag == head_tag));
+      if (o_coherent_arm_valid) p_arm_tag_exact : assert (o_coherent_arm_tag == reference_tag);
+    end
+`endif
+  end
 
   lq_coherence_port #(
       .NUM_LOCK(riscv_pkg::DmaCoherenceLocks)
@@ -2114,13 +2184,15 @@ module tomasulo_wrapper #(
       .i_admit_slot(i_coh_admit_slot),
       .i_admit_addr(i_coh_admit_addr),
       .o_admit_ready(o_coh_admit_ready),
+      .o_admit_clean(o_coh_admit_clean),
       .i_inval_valid(i_coh_inval_valid),
       .i_inval_slot(i_coh_inval_slot),
       .o_inval_done(o_coh_inval_done),
       .i_release_valid(i_coh_release_valid),
       .i_release_slot(i_coh_release_slot),
       .o_lq_query_addr(coh_lq_query_addr),
-      .i_lq_query_busy(coh_lq_query_busy),
+      .i_lq_query_busy(1'b0),
+      .i_lq_query_held(coh_lq_query_held),
       .o_lq_inval_valid(coh_lq_inval_valid),
       .o_lq_inval_addr(coh_lq_inval_addr),
       .o_lq_block_valid(coh_lq_block_valid),
@@ -2129,11 +2201,11 @@ module tomasulo_wrapper #(
       .i_observe_valid(coh_observe_valid),
       .i_observe_rob_tag(coh_observe_rob_tag),
       .i_observe_addr(coh_observe_addr),
-      .i_sc_head_addr_valid(coh_sc_head_addr_valid),
+      .i_sc_head_addr_valid(1'b0),
       .i_sc_head_addr(coh_sc_head_addr),
-      .i_sc_head_query_match(coh_sc_head_query_match),
-      .i_sc_fire_success(coh_sc_fire_success),
-      .i_sc_commit(sc_clear_reservation),
+      .i_sc_head_query_match(1'b0),
+      .i_sc_fire_success(1'b0),
+      .i_sc_commit(1'b0),
       .i_sq_committed_empty(sq_committed_empty),
       .o_sc_hold(coh_sc_hold),
       .i_commit_valid(commit_bus_q_valid),
@@ -2151,6 +2223,20 @@ module tomasulo_wrapper #(
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
   ) sc_pending_unit_inst (
+      .i_atomic_protected              (i_coherent_atomic_protected),
+      .i_reservation_size              (o_coherent_reservation_size),
+      .o_coherent_arm_valid            (coherent_sc_arm),
+      .o_coherent_arm_tag              (coherent_sc_arm_tag),
+      .o_coherent_valid                (o_coherent_sc_valid),
+      .i_coherent_ready                (i_coherent_sc_ready),
+      .o_coherent_addr                 (o_coherent_sc_addr),
+      .o_coherent_size                 (o_coherent_sc_size),
+      .o_coherent_tag                  (o_coherent_sc_tag),
+      .i_coherent_result_valid         (i_coherent_sc_result_valid),
+      .o_coherent_result_ready         (o_coherent_sc_result_ready),
+      .i_coherent_success              (i_coherent_sc_success),
+      .i_coherent_error                (i_coherent_sc_error),
+      .o_sc_value_zero                 (sc_value_zero),
       .i_clk                           (i_clk),
       .i_rst_n                         (i_rst_n),
       .i_flush_en                      (i_flush_en),
@@ -2171,7 +2257,7 @@ module tomasulo_wrapper #(
       .i_sct_addr_fill_addr            (dmmu_out_addr),
       .i_speculative_flush_all         (speculative_flush_all),
       .i_speculative_flush_en          (speculative_flush_en),
-      .i_coh_sc_hold                   (coh_sc_hold),
+      .i_coh_sc_hold                   (1'b0),
       .i_coh_query_addr                (coh_lq_query_addr),
       .o_sc_head_query_match           (coh_sc_head_query_match),
       .o_sc_head_addr_valid            (coh_sc_head_addr_valid),
@@ -2581,6 +2667,7 @@ module tomasulo_wrapper #(
   end
 
   reservation_station #(
+      .PREPARE_ISSUE_CONTROLS(1'b1),
       .DEPTH(INT_RS_DEPTH),
       .HAS_SRC3(1'b0),
       .DISPATCH_REPAIR_BYPASS(1'b0),
@@ -2711,6 +2798,9 @@ module tomasulo_wrapper #(
 
   reservation_station #(
       .DEPTH(riscv_pkg::MulRsDepth),
+      .PREPARE_ISSUE_CONTROLS(1'b1),
+      // Dispatch checks capacity for both slots before asserting valid.
+      .TRUST_DISPATCH_VALID(1'b1),
       .HAS_SRC3(1'b0),
       // Repair already-done operands through the indexed response one cycle
       // after allocation, for timing.
@@ -3504,7 +3594,18 @@ module tomasulo_wrapper #(
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
       .ENABLE_SQ_FORWARD_FAST_PATH(1'b1)
   ) u_lq (
-      .i_clk  (i_clk),
+      .i_coherent_cut_hold(i_coherent_cut_hold),
+      .i_coherent_cut_addr(i_coh_admit_addr),
+      .i_coherent_block_valid(i_coherent_block_valid),
+      .i_coherent_block_addr(i_coherent_block_addr),
+      .i_coherent_atomic_protected(i_coherent_atomic_protected),
+      .o_coherent_arm_valid(coherent_amo_arm),
+      .o_coherent_arm_tag(coherent_amo_arm_tag),
+      .o_coherent_read_kind(o_coherent_read_kind),
+      .o_coherent_read_tag(o_coherent_read_tag),
+      .o_coherent_write_tag(o_coherent_amo_write_tag),
+      .o_reservation_size(o_coherent_reservation_size),
+      .i_clk(i_clk),
       .i_rst_n(i_rst_n),
 
       // Allocation (from dispatch)
@@ -3622,6 +3723,7 @@ module tomasulo_wrapper #(
       .i_coh_admit_pulse(coh_lq_admit_pulse),
       .i_coh_query_addr(coh_lq_query_addr),
       .o_coh_query_busy(coh_lq_query_busy),
+      .o_coh_query_held(coh_lq_query_held),
       .o_coh_observe_valid(coh_observe_valid),
       .o_coh_observe_rob_tag(coh_observe_rob_tag),
       .o_coh_observe_addr(coh_observe_addr),
@@ -3966,6 +4068,18 @@ module tomasulo_wrapper #(
   // never commits or drains.
   riscv_pkg::sq_addr_update_t sq_addr_update;
   logic sq_addr_update_capture_valid;
+  // Untranslated address and data updates take the PMA check last: the
+  // issue and alignment terms are prepared first. This equals the issue
+  // without store_misalign_issue.
+  (* keep = "true" *) logic store_update_without_pma;
+  assign store_update_without_pma = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
+      (!i_trap_misaligned_accesses || !store_addr_misaligned);
+`ifndef SYNTHESIS
+  always_comb
+    if (!i_translation_active)
+      assert ((store_update_without_pma && store_addr_pma_ok) ==
+          (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq && !store_misalign_issue));
+`endif
   always_comb begin
     if (i_translation_active) begin
       sq_addr_update.valid   = dmmu_store_ok;
@@ -3973,8 +4087,7 @@ module tomasulo_wrapper #(
       sq_addr_update.address = dmmu_out_addr;
       sq_addr_update.is_mmio = dmmu_out_is_mmio;
     end else begin
-      sq_addr_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
-                               !store_misalign_issue;
+      sq_addr_update.valid   = store_update_without_pma && store_addr_pma_ok;
       sq_addr_update.rob_tag = o_mem_rs_issue.rob_tag;
       sq_addr_update.address = sq_effective_addr;
       sq_addr_update.is_mmio = sq_addr_is_mmio;
@@ -3998,8 +4111,7 @@ module tomasulo_wrapper #(
       sq_data_update.rob_tag = dmmu_out_tag;
       sq_data_update.data    = dmmu_out_store_data;
     end else begin
-      sq_data_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
-                               !store_misalign_issue;
+      sq_data_update.valid = store_update_without_pma && store_addr_pma_ok;
       sq_data_update.rob_tag = o_mem_rs_issue.rob_tag;
       sq_data_update.data = o_mem_rs_issue.src2_value;
     end
@@ -4051,7 +4163,13 @@ module tomasulo_wrapper #(
       // local re-checks are redundant (see the parameter comment).
       .TRUST_DISPATCH_VALID(1'b1)
   ) u_sq (
-      .i_clk  (i_clk),
+      .i_coherent_store_pending(i_coherent_store_pending),
+      .i_coherent_store_ready(i_coherent_store_ready),
+      .i_coherent_sc_pending(i_coherent_sc_pending),
+      .i_coherent_sc_tag(o_coherent_sc_tag),
+      .o_coherent_write_sc(o_coherent_write_sc),
+      .o_coherent_write_tag(o_coherent_sq_write_tag),
+      .i_clk(i_clk),
       .i_rst_n(i_rst_n),
 
       // Allocation (from dispatch)

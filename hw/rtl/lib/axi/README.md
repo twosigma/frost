@@ -93,9 +93,20 @@ four each by default, counting the input registers.
 Writes use line ids `{0, n}` and reads `{1, n}`, n below
 `2^(LINE_ID_BITS - 1)`. A write id is held from the segment's seal to its
 line response; a read id until its segment's last R beat, so every line
-response has a place in the read buffer. Writes take the line port first,
+response has a place in the read buffer. A write takes the lowest free id. A
+read takes the first free id after the last read's, so a retired read id is
+reused last: the coherent ingress answers a read at its grant and holds its
+id until the home's release. Writes take the line port first,
 and a read waits for at most `STARVATION_LIMIT` write grants. The choice is
 held while the presented request waits, as the ingress requires.
+
+The cluster ingress admits eight line requests and preserves every bit of
+the bridge's line ID. In soc_top the bridge's line IDs are four bits wide,
+the full coherent request ID, so it has eight read and eight write IDs, and
+its tables hold eight bursts per direction. A write's line response follows the
+matching home Release, after its data operation and completion acknowledgement;
+a read's follows its grant, which carries its final data. The ingress holds an
+ID until both the response and the Release.
 
 Every AXI READY and every B and R output comes from registered state, and
 the line request is presented from registers. A one-beat read takes five
@@ -139,16 +150,18 @@ Its body is empty in synthesis and formal builds.
 | Target | Coverage |
 | --- | --- |
 | `axi_coherent_bridge`, `axi_coherent_bridge_64`, `axi_coherent_bridge_32` | Random bursts of every type and size against a byte reference at 256, 64 and 32 bits, error bursts, ingress errors, out-of-order line responses with stalls, exhausted ids and tables, read starvation under writes, and reset with bursts in flight |
+| `coherent_axi_ingress`, `coherent_axi_ingress_64`, `coherent_axi_ingress_8` | The bridge connected to the ingress (four entries; eight, with soc_top's eight line IDs and bursts per direction, in `_8`), delayed coherent channels, full credits, B after every line release, and shared reset at each coherent stage |
 | `axi_cdc` | All channel fields, independent backpressure, full FIFOs, wraparound, reset cancellation, equal periods with phase offset and unequal periods in both directions |
 | `axi_mux` | Three masters sharing id values against a reordering slave, late write data, and reset mid-traffic |
 
-Unbounded formal safety proofs cover the bridge (`axi_coherent_bridge`: AXI4 slave
+Unbounded formal safety tasks check the bridge (`axi_coherent_bridge`: AXI4 slave
 rules, B and R order and codes, each line write carrying exactly the bytes
 of its segment, R data for an arbitrary byte, and the ingress's request
-rules, with 8-byte lines on a 16-bit and a 64-bit bus and in `soc_top`'s
-configuration) and the mux (`axi_mux`: AXI4 rules on every port, W in
-AW-grant order, and B and R reaching the port their id names); see the
-[formal guide](../../../../formal/README.md). These proofs establish response
+rules, with 8-byte lines on a 16-bit and a 64-bit bus, and with `soc_top`'s
+256-bit bus and 32-byte lines at four and eight bursts and line IDs per
+direction; addresses are reduced to 16 bits) and the mux (`axi_mux`: AXI4
+rules on every port, W in AW-grant order, and B and R reaching the port their
+id names); see the [formal guide](../../../../formal/README.md). The assertions cover response
 ordering, no duplicate responses and conservation of outstanding requests;
 they do not establish eventual completion or starvation freedom. The three
 bridge cocotb benches and the mux bench check completion with timeouts,

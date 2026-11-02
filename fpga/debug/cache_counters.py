@@ -46,10 +46,12 @@ ends with one that reads both it and the cache block's preceding snapshot,
 the window's start, so the counter reads fall outside the window. The window
 includes the second OpenOCD run's start, during which the hart is halted
 briefly; DMA traffic, such as a NIC's, continues meanwhile. Elapsed cycles
-come from the time CSR, the CLINT's mtime, which counts core cycles. OpenOCD
-runs fence.i before each resume, which writes the L1D back and empties the
-L1I. Runs of this tool on one host take turns. FROST_JTAG_SERIAL selects the
-JTAG cable as for openocd_x3.cfg.
+come from the time CSR, the CLINT's mtime, which counts core cycles. The Tcl
+helper requests riscv autofence off when supported. A resume FENCE.I drains
+committed stores, invalidates L1I and synchronizes instruction-copy writes.
+Dirty L1D data remains available to coherent home probes. Runs of this tool
+on one host take turns. FROST_JTAG_SERIAL selects the JTAG cable as for
+openocd_x3.cfg.
 """
 
 import argparse

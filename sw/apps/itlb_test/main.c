@@ -817,7 +817,7 @@ int main(void)
      *
      * Thrashing runs 16.5 KiB of DDR instructions to evict the stub from
      * L1I and the provider buffers. sfence.vma evicts its translation and
-     * performs a fence.i cache sync (L1D writeback and L1I invalidation).
+     * performs a fence.i cache sync (store drain and L1I invalidation).
      * With neither, the stub stays warm after the first iteration. Thrashing
      * without sfence keeps its ITLB entry warm. ITLB_Z_L2_THRASH adds a
      * 4 MiB store sweep to make it L2-cold (board only).
@@ -908,8 +908,8 @@ int main(void)
 #endif
                 if (zv->sfence)
                     sfence_vma();
-                /* After main's sfence.vma, whose cache sync would clean them,
-                 * so the S handler's sfence.vma writes back at least 64 KiB. */
+                /* Dirty 64 KiB before entering the S handler. Its SFENCE.VMA
+                 * synchronizes fetch while the data can remain dirty in L1D. */
                 if (zv->dirty) {
                     volatile unsigned long *d = (volatile unsigned long *) Z_DIRTY_BASE;
                     for (unsigned long w = 0; w < Z_DIRTY_BYTES / sizeof(unsigned long); w += 4)

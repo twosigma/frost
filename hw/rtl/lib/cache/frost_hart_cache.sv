@@ -15,8 +15,8 @@
  */
 
 /*
- * frost_hart_cache: one hart's private caches (hw/rtl/lib/cache/README.md,
- * "The hierarchy").
+ * frost_hart_cache: the private caches in the generic line-cache hierarchy
+ * (hw/rtl/lib/cache/README.md, "The line cache").
  *
  * Three upstream line-port slaves:
  *   up   the data side, through the L1D;
@@ -33,8 +33,8 @@
  * wup port and the L1I's and walker's downstream ids carry UP_ID_BITS-1,
  * which the shared level's sub-arbiter widens by its port index. With the
  * default UP_ID_BITS=3, that leaves the L1I 2 miss slots, all its master (the
- * two-line fetch provider) ever uses. cpu_top uses UP_ID_BITS=4, which the
- * L1D's {type, slot} ids need for 8 miss slots (L1D_NUM_MSHR). The walker
+ * two-line fetch provider) ever uses. UP_ID_BITS=4 gives the L1D's
+ * {type, slot} ids room for 8 miss slots (L1D_NUM_MSHR). The walker
  * keeps one walk in flight with id 0.
  *
  * Each L1 exports a registered performance-event bundle. The L1D's

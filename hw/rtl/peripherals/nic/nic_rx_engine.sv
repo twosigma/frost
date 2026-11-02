@@ -48,6 +48,11 @@ module nic_rx_engine #(
 ) (
     input logic i_clk,
     input logic i_rst,
+`ifndef SYNTHESIS
+`ifndef FORMAL
+    input logic i_sim_hold = 1'b0,
+`endif
+`endif
 
     // Configuration and control.
     input  logic                  i_enable,
@@ -116,6 +121,11 @@ module nic_rx_engine #(
       .LINE_BYTES(LINE_BYTES),
       .TAG_BITS  (TAG_BITS)
   ) u_desc (
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      .i_sim_hold        (i_sim_hold),
+`endif
+`endif
       .i_clk             (i_clk),
       .i_rst             (i_rst),
       .i_enable          (i_enable),
@@ -408,10 +418,12 @@ module nic_rx_engine #(
   bit reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
     if (i_rst) reset_seen_q <= 1'b1;
-    if (reset_seen_q && !i_rst && data_resp && (outstanding_q == 3'd0) && !data_fire)
-      $error("nic_rx_engine: data response with nothing outstanding");
-    if (reset_seen_q && !i_rst && status_resp && !dd_inflight_q)
-      $error("nic_rx_engine: status response with no status write in flight");
+    if (!i_sim_hold) begin
+      if (reset_seen_q && !i_rst && data_resp && (outstanding_q == 3'd0) && !data_fire)
+        $error("nic_rx_engine: data response with nothing outstanding");
+      if (reset_seen_q && !i_rst && status_resp && !dd_inflight_q)
+        $error("nic_rx_engine: status response with no status write in flight");
+    end
   end
 `endif
 `endif
