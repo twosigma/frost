@@ -481,8 +481,12 @@ bytes to reach external memory.
 
 The `coherent_hart_cache` formal target composes its maintenance controller,
 IF/PTW bridges, the walker and the home service engine. Small private-cache
-models represent delayed store installation, dirty eviction, PutM absorption
-and two instruction fills that drain during invalidation. The home contract
+models represent two ordered stores, delayed installation, dirty eviction,
+PutM absorption and two instruction fills that drain during invalidation.
+Modified hits merge locally; acquisitions merge with captured grant data.
+An independent byte-mask reference checks the installed image. Stores wait
+for pending writeback completion before acquisition or installation. A resident
+sector can be evicted while another store remains buffered. The home contract
 has one entry per IF slot and a third shared by other classes. It preserves
 full identities and same-sector ordering through U while the service engine
 processes requests serially. The proof tracks a stored PTE version
@@ -491,7 +495,9 @@ and access-fault classification. Component targets check array storage,
 endpoint ownership and arbitrary-byte merges.
 Covers exercise discarded responses, two outstanding instruction fills,
 fence completion with an answered IF transaction awaiting U, reused MSHR IDs,
-installation before U, and IF/DMA/NIC contention with delayed completions.
+installation before U, local store hits, partial-store reacquisition, and
+IF/DMA/NIC contention with delayed completions. Store/writeback covers check
+post-fence visibility after ordinary PutM acknowledgement and probe absorption.
 
 The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_equal`, `coherence_cluster`
 and `coherent_cut` cover controller ownership, inclusion, cuts, atomics,
