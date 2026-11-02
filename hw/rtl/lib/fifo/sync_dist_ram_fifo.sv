@@ -15,8 +15,9 @@
  */
 
 /*
- * Circular FIFO in distributed RAM with asynchronous read. A read is gated
- * when the FIFO is empty. A write is never gated: writing while full
+ * Circular FIFO in distributed RAM with asynchronous read. A pop is gated
+ * when the FIFO is empty; o_read_data exposes the RAM at the read pointer
+ * regardless of occupancy. A write is never gated: writing while full
  * overwrites the oldest entry and pushes fill_count past FifoDepth, which
  * deasserts o_full. Callers must prevent overflow. The MMIO FIFOs in frost.sv
  * ignore o_full for timing and leave overflow to software.

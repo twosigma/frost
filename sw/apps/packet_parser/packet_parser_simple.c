@@ -99,7 +99,8 @@ static inline uint32_t fifo_read_word(int fifo_id)
     return (fifo_id == 0) ? fifo0_read() : fifo1_read();
 }
 
-/* Read one length-prefixed string; false on the zero-length terminator word. */
+/* Read one length-prefixed string; false on a zero-length terminator or an
+ * empty FIFO, whose read returns zero. */
 static bool read_string_from_fifo(int fifo_id, string_buffer_t *str)
 {
     uint32_t chunk;
@@ -144,7 +145,8 @@ static bool read_string_from_fifo(int fifo_id, string_buffer_t *str)
 }
 
 
-/* Discard leftover tag/value pairs, up to 128, until both FIFOs read empty. */
+/* Discard up to 128 tag/value pairs, stopping when both length bytes are zero.
+ * With both FIFOs empty, one read per FIFO returns zero and ends the drain. */
 static void drain_fifo_pairs(void)
 {
     string_buffer_t key_buf, val_buf;
@@ -381,7 +383,7 @@ int main(void)
 {
     uint32_t start_time, end_time;
 
-    /* Drain leftover data so parsing starts at a message boundary. */
+    /* Drain leftover framed pairs or stop after two reads if both FIFOs are empty. */
     drain_fifo_pairs();
 
     bool fifo_framing_ok = test_oversized_fifo_string();

@@ -2639,7 +2639,12 @@ AxilPorts
       //  UART TX (write-only, reads 0)}
       {UartMmioAddr[31:3], 3'b000} : mmio_read_data_comb = {{24'b0, i_uart_rx_data}, 32'b0};
       // {FIFO1, FIFO0}
-      {Fifo0MmioAddr[31:3], 3'b000} : mmio_read_data_comb = {i_fifo1_rd_data, i_fifo0_rd_data};
+      {
+        Fifo0MmioAddr[31:3], 3'b000
+      } :
+      mmio_read_data_comb = {
+        i_fifo1_empty ? 32'b0 : i_fifo1_rd_data, i_fifo0_empty ? 32'b0 : i_fifo0_rd_data
+      };
       {MtimeLowMmioAddr[31:3], 3'b000} : mmio_read_data_comb = mtime;
       {MtimecmpLowMmioAddr[31:3], 3'b000} : mmio_read_data_comb = mtimecmp;
       // {UART RX status (bit 0: data available), msip}
