@@ -145,7 +145,7 @@ static bool read_string_from_fifo(int fifo_id, string_buffer_t *str)
 }
 
 
-/* Discard up to 128 tag/value pairs, stopping when both length words are zero.
+/* Discard up to 128 tag/value pairs, stopping when both length bytes are zero.
  * With both FIFOs empty, one read per FIFO returns zero and ends the drain. */
 static void drain_fifo_pairs(void)
 {
