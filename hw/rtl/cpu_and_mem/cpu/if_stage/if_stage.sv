@@ -925,6 +925,7 @@ module if_stage #(
   // Translation and visibility timing are described at o_fetch_pa0.
   immu #(
       .XLEN(XLEN),
+      .NUM_ENTRIES(16),
       .PA_VALID_COPIES(riscv_pkg::FetchPaHoldCopies)
   ) u_immu (
       .i_clk(i_clk),
