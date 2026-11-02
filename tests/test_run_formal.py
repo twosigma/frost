@@ -199,8 +199,10 @@ FORMAL_TARGETS = [
             "coh_completions_prove",
             "coh_completions_pairs_prove",
             "coh_completions_partition_prove",
+            "coh_completions_partition2_prove",
             "coh_completions_cover",
             "coh_completions_partition_cover",
+            "coh_completions_partition2_cover",
             "coh_if_pair_cover",
         ),
     ),
@@ -1126,10 +1128,18 @@ SBY_TASKS = [
         "coh_completions_partition_prove",
         "Kept prefetch slots: admission, unordered prefetches, and G taken on arrival.",
     ),
+    (
+        "coh_completions_partition2_prove",
+        "Two kept prefetch slots sharing one place in the work rotation.",
+    ),
     ("coh_completions_cover", "Concurrent results and independent release."),
     (
         "coh_completions_partition_cover",
         "A full prefetch partition and a prefetch slot's G taken.",
+    ),
+    (
+        "coh_completions_partition2_cover",
+        "The prefetch rotation passing over an offered prefetch slot.",
     ),
     ("coh_seat_select_prove", "Fill waiter ranks match serial seat allocation."),
     (
