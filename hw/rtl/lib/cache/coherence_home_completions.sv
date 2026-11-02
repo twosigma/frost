@@ -352,18 +352,26 @@ module coherence_home_completions #(
         !(work_selected_q && work_slot_q == SlotBits'(slot));
     assign o_waiting[slot] = !i_rst && o_waiting_offer[slot];
   end
-  // A presented result matches at most one slot, the one its tid names:
-  // that slot's identity, address and state are selected by the tid and
-  // compared once.
+  // A presented result matches at most one slot, the one its tid names.
+  // Each slot compares the result with its own tid, state, identity and
+  // address, so acceptance does not wait for the tid to select a slot's
+  // address; the slot matches reduce through kept nodes of at most six.
   assign result_slot = SlotBits'(result.tid);
-  wire result_tid_valid = int'(result.tid) < SLOTS;
-  assign result_matches = result_tid_valid && issued_q[result_slot] &&
-      buffer_owned_q[result_slot] && !result_valid_q[result_slot] &&
-      result.opcode <= coherence_pkg::GrantFail && result.q == work_identity[result_slot] &&
-      result.addr == work_address[result_slot];
+  wire result_opcode_ok = result.opcode <= coherence_pkg::GrantFail;
+  localparam int unsigned ResultNodes = (SLOTS + 5) / 6;
+  (* keep = "true" *) logic [SLOTS-1:0] result_slot_match;
+  (* keep = "true" *) logic [ResultNodes-1:0] result_nodes;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_result_hit
-    assign result_hit[slot] = result_matches && result_slot == SlotBits'(slot);
+    assign result_slot_match[slot] = result.tid == 6'(slot) && issued_q[slot] &&
+        buffer_owned_q[slot] && !result_valid_q[slot] && result.q == work_identity[slot] &&
+        result.addr == work_address[slot];
+    assign result_hit[slot] = result_slot_match[slot] && result_opcode_ok;
   end
+  for (genvar node = 0; node < ResultNodes; node++) begin : gen_result_node
+    localparam int unsigned Bits = SLOTS - 6 * node < 6 ? SLOTS - 6 * node : 6;
+    assign result_nodes[node] = |result_slot_match[6*node+:Bits];
+  end
+  assign result_matches = result_opcode_ok && |result_nodes;
   assign o_result_ready = !i_rst && result_matches;
   // The selected grant's endpoint is in Work with a matching result, so the
   // grant register alone presents G. Every G consumer applies the same reset.
@@ -619,9 +627,9 @@ module coherence_home_completions #(
   // requests it orders behind; a handed or released predecessor leaves.
   // READY lasts from a wake until the slot's dispatch or release. A DMA
   // request is handed at its result until its release.
-  wire result_handed = accept_result && work_identity[result_slot][8:7] == 2'd2;
-  assign handed_hold = handed_q | ({SLOTS{result_handed}} & (SLOTS'(1) << result_slot));
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_release_hold
+    assign handed_hold[slot] = handed_q[slot] ||
+        (i_result_valid && result_hit[slot] && work_identity[slot][8:7] == 2'd2);
     for (genvar older = 0; older < SLOTS; older++) begin : gen_older
       assign predecessors_hold[slot][older] = accept_request &&
           free_slot_index == SlotBits'(slot) ?
