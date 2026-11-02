@@ -207,7 +207,7 @@ module reorder_buffer #(
     // sampled when each ROB entry allocates. CSR writes serialize younger
     // allocation, and privilege/Debug-Mode changes interpose a flushing
     // trap/xRET, so the snapshot remains exact for every surviving entry.
-    input logic [2:0] i_counter_blocked,
+    input logic [4:0] i_counter_blocked,
     // Sstc: S-mode stimecmp access with menvcfg.STCE=0 is illegal.
     input logic i_stimecmp_blocked,
     input logic i_mireg_illegal = 1'b0,
@@ -223,9 +223,9 @@ module reorder_buffer #(
     input logic i_debug_mode,
 
     // mcounteren counter-enable bits from csr_file ([0]=CY/cycle, [1]=TM/time,
-    // [2]=IR/instret). Unused here: allocation legality uses the
+    // [2]=IR/instret, [3]=HPM3, [4]=HPM4). Unused here: allocation legality uses the
     // privilege-resolved i_counter_blocked instead.
-    input logic [2:0] i_mcounteren,
+    input logic [4:0] i_mcounteren,
 
     // mstatus.FS == Off from csr_file. The allocation legality snapshot
     // marks any FP instruction or fflags/frm/fcsr access illegal while it is
@@ -367,18 +367,18 @@ module reorder_buffer #(
     onehot_read = |(vec & onehot);
   endfunction
 
-  // One-hot {IR, TM, CY}, in mcounteren bit order, for a CSR access to the
-  // Zicntr user counters cycle, time, or instret (0xC00-0xC02); addr[1:0]
-  // picks the bit. Nothing else matches. The RV32 high halves and the user
-  // hpmcounters (0xC03-0xC1F; no Zihpm) do not exist here, so
-  // csr_static_illegal rejects them, and the machine aliases (0xBxx) have
-  // their own privilege check in alloc_legality_fault.
-  function automatic logic [2:0] ucounter_onehot(input logic is_csr, input logic [11:0] addr);
+  // One-hot {HPM4, HPM3, IR, TM, CY}, in mcounteren bit order, for a CSR access to the
+  // Zicntr/Zihpm user counters (0xC00-0xC04); addr[2:0] picks the bit.
+  function automatic logic [4:0] ucounter_onehot(input logic is_csr, input logic [11:0] addr);
     logic m;
     // Assign the function name: the Yosys SV frontend rejects return concatenations.
-    m = is_csr && (addr[11:8] == 4'hC) && (addr[6:2] == 5'b0) && !addr[7];
+    m = is_csr && (addr[11:8] == 4'hC) && (addr[6:3] == 4'b0) && !addr[7];
     ucounter_onehot = {
-      m && (addr[1:0] == 2'b10), m && (addr[1:0] == 2'b01), m && (addr[1:0] == 2'b00)
+      m && (addr[2:0] == 3'b100),
+      m && (addr[2:0] == 3'b011),
+      m && (addr[2:0] == 3'b010),
+      m && (addr[2:0] == 3'b001),
+      m && (addr[2:0] == 3'b000)
     };
   endfunction
 
@@ -406,8 +406,9 @@ module reorder_buffer #(
     unique case (addr)
       // F extension
       riscv_pkg::CsrFflags, riscv_pkg::CsrFrm, riscv_pkg::CsrFcsr,
-      // Zicntr user counters (64-bit; the RV32 high halves do not exist)
+      // Zicntr/Zihpm user counters (64-bit; the RV32 high halves do not exist)
       riscv_pkg::CsrCycle, riscv_pkg::CsrTime, riscv_pkg::CsrInstret,
+      riscv_pkg::CsrHpmcounter3, riscv_pkg::CsrHpmcounter4,
       // Supervisor CSRs
       riscv_pkg::CsrSstatus, riscv_pkg::CsrSie, riscv_pkg::CsrStvec,
       riscv_pkg::CsrScounteren, riscv_pkg::CsrSenvcfg, riscv_pkg::CsrSscratch,
@@ -475,7 +476,7 @@ module reorder_buffer #(
     logic is_debug_csr;
     logic is_satp_csr;
     logic is_stimecmp_csr;
-    logic [2:0] ucounter_sel;
+    logic [4:0] ucounter_sel;
     begin
       needs_m_priv =
           (req.is_mret && !req.is_sret && !req.is_dret) ||

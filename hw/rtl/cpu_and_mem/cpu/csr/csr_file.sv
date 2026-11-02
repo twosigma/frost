@@ -89,6 +89,8 @@ module csr_file #(
 
     // Number of instructions retired this cycle: 0, 1, or 2.
     input logic [1:0] i_instruction_retired_count,
+    input logic [1:0] i_branch_retired_count = '0,
+    input logic [1:0] i_branch_mispredict_count = '0,
 
     // Pending inputs: registered IMSIC MEIP, registered timer, and software IRQ
     input riscv_pkg::interrupt_t i_interrupts,
@@ -182,22 +184,22 @@ module csr_file #(
     // on trap entry and xRET.
     output logic [1:0] o_priv,
 
-    // mcounteren bits: [0]=CY, [1]=TM, [2]=IR. Updated on committed CSR
+    // mcounteren bits: [0]=CY, [1]=TM, [2]=IR, [3]=HPM3, [4]=HPM4. Updated on committed CSR
     // writes; o_counter_blocked resolves access restrictions at allocation.
-    output logic [2:0] o_mcounteren,
+    output logic [4:0] o_mcounteren,
     // scounteren uses the same bit layout and gates U-mode access.
-    output logic [2:0] o_scounteren,
+    output logic [4:0] o_scounteren,
 
     // Legality bits sampled by the ROB at allocation. CSR writes stop younger
     // allocation, and privilege changes flush the pipeline, so each sample
     // remains valid until retirement.
-    //   o_counter_blocked[2:0]: CY/TM/IR access is illegal (U needs both
+    //   o_counter_blocked[4:0]: CY/TM/IR/HPM3/HPM4 access is illegal (U needs both
     //     mcounteren and scounteren; S needs mcounteren; M is never blocked).
     //   o_sret_illegal: U, or S with TSR set.
     //   o_sfence_illegal: SFENCE.VMA/satp in U, or S with TVM set.
     //   o_wfi_illegal: U, or S with TW set.
     //   o_priv_is_u: current privilege is U, for CSRs requiring S.
-    output logic [2:0] o_counter_blocked,
+    output logic [4:0] o_counter_blocked,
     // Sstc: stimecmp access in S requires menvcfg.STCE. M is never blocked;
     // U fails the generic needs-S check. Sampled at allocation as above.
     output logic o_stimecmp_blocked,
@@ -279,12 +281,18 @@ module csr_file #(
   // CSR Registers
   // ==========================================================================
 
-  // 64-bit counters for Zicntr
+  // 64-bit counters for Zicntr and HPM
   logic [    63:0] cycle_counter;
   logic [    63:0] instret_counter;
-  // mcountinhibit: the two implemented inhibit bits.
+  logic [    63:0] mhpmcounter3;
+  logic [    63:0] mhpmcounter4;
+  logic [    63:0] mhpmevent3;
+  logic [    63:0] mhpmevent4;
+  // mcountinhibit: implemented inhibit bits.
   logic            mcountinhibit_cy;
   logic            mcountinhibit_ir;
+  logic            mcountinhibit_hpm3;
+  logic            mcountinhibit_hpm4;
 
   // F extension CSRs
   logic [     4:0] fflags;  // FP exception flags: {NV, DZ, OF, UF, NX}
@@ -469,9 +477,9 @@ module csr_file #(
   logic next_mie_seie;
 
   logic [XLEN-1:0] mtvec;  // Trap vector (MODE in bits [1:0], BASE in [XLEN-1:2])
-  // mcounteren implements only CY/TM/IR; other bits read zero and ignore
-  // writes. Reset 3'b111 permits cycle/time/instret access below M.
-  logic [2:0] mcounteren_q;
+  // mcounteren implements CY/TM/IR/HPM3/HPM4; other bits read zero and ignore
+  // writes. Reset 5'h1F permits counter access below M.
+  logic [4:0] mcounteren_q;
   assign o_mcounteren = mcounteren_q;
   logic [XLEN-1:0] mscratch;  // Scratch register for trap handlers
   logic [XLEN-1:0] mepc;  // Exception PC
@@ -489,10 +497,10 @@ module csr_file #(
 
   // Supervisor trap CSRs.
   logic [XLEN-1:0] stvec;  // Supervisor trap vector (MODE bit 1 forced 0, like mtvec)
-  logic [2:0] scounteren_q;  // WARL CY/TM/IR like mcounteren; reset 0x7 (see header)
+  logic [4:0] scounteren_q;  // WARL CY/TM/IR/HPM3/HPM4 like mcounteren; reset 0x1F
   assign o_scounteren = scounteren_q;
   assign o_counter_blocked = gate_priv_is_u ? ~(mcounteren_q & scounteren_q) :
-      gate_priv_is_s ? ~mcounteren_q : 3'b000;
+      gate_priv_is_s ? ~mcounteren_q : 5'b00000;
   assign o_stimecmp_blocked = gate_priv_is_s && !menvcfg_stce;
   logic [XLEN-1:0] sscratch;
   logic [XLEN-1:0] sepc;  // bit 0 forced 0, like mepc
@@ -640,13 +648,17 @@ module csr_file #(
       riscv_pkg::CsrMideleg: csr_current_value = mideleg;
       riscv_pkg::CsrMie: csr_current_value = mie;
       riscv_pkg::CsrMtvec: csr_current_value = mtvec;
-      riscv_pkg::CsrMcounteren: csr_current_value = XLEN'({29'b0, mcounteren_q});
+      riscv_pkg::CsrMcounteren: csr_current_value = XLEN'({27'b0, mcounteren_q});
       riscv_pkg::CsrMcountinhibit:
-      csr_current_value = XLEN'({29'b0, mcountinhibit_ir, 1'b0, mcountinhibit_cy});
+      csr_current_value = XLEN'({27'b0, mcountinhibit_hpm4, mcountinhibit_hpm3, mcountinhibit_ir, 1'b0, mcountinhibit_cy});
       // The machine counter aliases are writable: their RMW base is the
       // live counter so csrrs/csrrc compose over the current value.
       riscv_pkg::CsrMcycle: csr_current_value = cycle_counter[XLEN-1:0];
       riscv_pkg::CsrMinstret: csr_current_value = instret_counter[XLEN-1:0];
+      riscv_pkg::CsrMhpmcounter3: csr_current_value = mhpmcounter3[XLEN-1:0];
+      riscv_pkg::CsrMhpmcounter4: csr_current_value = mhpmcounter4[XLEN-1:0];
+      riscv_pkg::CsrMhpmevent3: csr_current_value = mhpmevent3[XLEN-1:0];
+      riscv_pkg::CsrMhpmevent4: csr_current_value = mhpmevent4[XLEN-1:0];
       riscv_pkg::CsrMscratch: csr_current_value = mscratch;
       riscv_pkg::CsrMepc: csr_current_value = mepc;
       riscv_pkg::CsrMcause: csr_current_value = mcause;
@@ -756,6 +768,8 @@ module csr_file #(
   logic [XLEN-1:0] mstatus_new_value, sstatus_new_value, mie_new_value, sie_new_value;
   logic [XLEN-1:0] mcounteren_new_value, mcountinhibit_new_value;
   logic [XLEN-1:0] mcycle_new_value, minstret_new_value;
+  logic [XLEN-1:0] mhpmcounter3_new_value, mhpmcounter4_new_value;
+  logic [XLEN-1:0] mhpmevent3_new_value, mhpmevent4_new_value;
   logic [XLEN-1:0] mscratch_new_value, mepc_new_value, mcause_new_value, mtval_new_value;
   logic [XLEN-1:0] medeleg_new_value, mideleg_new_value, mip_new_value, sip_new_value;
   logic [XLEN-1:0] stvec_new_value, scounteren_new_value, sscratch_new_value;
@@ -787,12 +801,16 @@ module csr_file #(
   assign sstatus_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, sstatus);
   assign mie_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mie);
   assign sie_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, sie_view);
-  assign mcounteren_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, XLEN'({29'b0, mcounteren_q}));
+  assign mcounteren_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, XLEN'({27'b0, mcounteren_q}));
   assign mcountinhibit_new_value = zicsr_rmw(
-      csr_rmw_keep, csr_rmw_set, XLEN'({29'b0, mcountinhibit_ir, 1'b0, mcountinhibit_cy})
+      csr_rmw_keep, csr_rmw_set, XLEN'({27'b0, mcountinhibit_hpm4, mcountinhibit_hpm3, mcountinhibit_ir, 1'b0, mcountinhibit_cy})
   );
   assign mcycle_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, cycle_counter[XLEN-1:0]);
   assign minstret_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, instret_counter[XLEN-1:0]);
+  assign mhpmcounter3_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mhpmcounter3[XLEN-1:0]);
+  assign mhpmcounter4_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mhpmcounter4[XLEN-1:0]);
+  assign mhpmevent3_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mhpmevent3[XLEN-1:0]);
+  assign mhpmevent4_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mhpmevent4[XLEN-1:0]);
   assign mscratch_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mscratch);
   assign mepc_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mepc);
   assign mcause_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mcause);
@@ -802,7 +820,7 @@ module csr_file #(
   assign mip_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mip_rmw_base);
   assign sip_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, sip_view);
   assign stvec_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, stvec);
-  assign scounteren_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, XLEN'({29'b0, scounteren_q}));
+  assign scounteren_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, XLEN'({27'b0, scounteren_q}));
   assign sscratch_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, sscratch);
   assign sepc_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, sepc);
   assign scause_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, scause);
@@ -854,6 +872,10 @@ module csr_file #(
       riscv_pkg::CsrMcountinhibit: csr_local_new_value = mcountinhibit_new_value;
       riscv_pkg::CsrMcycle: csr_local_new_value = mcycle_new_value;
       riscv_pkg::CsrMinstret: csr_local_new_value = minstret_new_value;
+      riscv_pkg::CsrMhpmcounter3: csr_local_new_value = mhpmcounter3_new_value;
+      riscv_pkg::CsrMhpmcounter4: csr_local_new_value = mhpmcounter4_new_value;
+      riscv_pkg::CsrMhpmevent3: csr_local_new_value = mhpmevent3_new_value;
+      riscv_pkg::CsrMhpmevent4: csr_local_new_value = mhpmevent4_new_value;
       riscv_pkg::CsrMscratch: csr_local_new_value = mscratch_new_value;
       riscv_pkg::CsrMepc: csr_local_new_value = mepc_new_value;
       riscv_pkg::CsrMcause: csr_local_new_value = mcause_new_value;
@@ -965,6 +987,51 @@ module csr_file #(
       instruction_retired_count_q <= (mcountinhibit_ir || minstret_write) ? 2'd0 :
                                      i_instruction_retired_count;
       instret_counter <= minstret_write ? minstret_new_value : instret_counter_accumulated;
+    end
+  end
+
+  // ==========================================================================
+  // Hardware Performance Counters (mhpmcounter3 / mhpmcounter4)
+  // ==========================================================================
+  logic mhpmcounter3_write;
+  logic mhpmcounter4_write;
+  logic mhpmevent3_write;
+  logic mhpmevent4_write;
+  assign mhpmcounter3_write = csr_counter_write && (i_csr_address == riscv_pkg::CsrMhpmcounter3);
+  assign mhpmcounter4_write = csr_counter_write && (i_csr_address == riscv_pkg::CsrMhpmcounter4);
+  assign mhpmevent3_write   = csr_counter_write && (i_csr_address == riscv_pkg::CsrMhpmevent3);
+  assign mhpmevent4_write   = csr_counter_write && (i_csr_address == riscv_pkg::CsrMhpmevent4);
+
+  logic [ 1:0] branch_retired_count_q;
+  logic [ 1:0] branch_mispredict_count_q;
+  (* keep = "true" *) logic [63:0] mhpmcounter3_accumulated;
+  (* keep = "true" *) logic [63:0] mhpmcounter4_accumulated;
+  assign mhpmcounter3_accumulated = mhpmcounter3 + 64'(branch_retired_count_q);
+  assign mhpmcounter4_accumulated = mhpmcounter4 + 64'(branch_mispredict_count_q);
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      branch_retired_count_q <= 2'd0;
+      mhpmcounter3 <= 64'd0;
+      mhpmevent3 <= 64'd0;
+    end else begin
+      branch_retired_count_q <= (mcountinhibit_hpm3 || mhpmcounter3_write) ? 2'd0 :
+                                i_branch_retired_count;
+      mhpmcounter3 <= mhpmcounter3_write ? mhpmcounter3_new_value : mhpmcounter3_accumulated;
+      if (mhpmevent3_write) mhpmevent3 <= mhpmevent3_new_value;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      branch_mispredict_count_q <= 2'd0;
+      mhpmcounter4 <= 64'd0;
+      mhpmevent4 <= 64'd0;
+    end else begin
+      branch_mispredict_count_q <= (mcountinhibit_hpm4 || mhpmcounter4_write) ? 2'd0 :
+                                   i_branch_mispredict_count;
+      mhpmcounter4 <= mhpmcounter4_write ? mhpmcounter4_new_value : mhpmcounter4_accumulated;
+      if (mhpmevent4_write) mhpmevent4 <= mhpmevent4_new_value;
     end
   end
 
@@ -1224,15 +1291,17 @@ module csr_file #(
       o_s_select_onehot          <= '0;
       mtvec                      <= '0;
       mtvec_traps_misaligned_q   <= 1'b0;
-      mcounteren_q               <= 3'b111;
+      mcounteren_q               <= 5'h1F;
       mcountinhibit_cy           <= 1'b0;
       mcountinhibit_ir           <= 1'b0;
+      mcountinhibit_hpm3         <= 1'b0;
+      mcountinhibit_hpm4         <= 1'b0;
       mscratch                   <= '0;
       mepc                       <= '0;
       mcause                     <= '0;
       mtval                      <= '0;
       stvec                      <= '0;
-      scounteren_q               <= 3'b111;
+      scounteren_q               <= 5'h1F;
       sscratch                   <= '0;
       sepc                       <= '0;
       scause                     <= '0;
@@ -1271,10 +1340,12 @@ module csr_file #(
           mtvec                    <= {mtvec_new_value[XLEN-1:2], 1'b0, mtvec_new_value[0]};
           mtvec_traps_misaligned_q <= |mtvec_new_value[XLEN-1:2];
         end
-        riscv_pkg::CsrMcounteren: mcounteren_q <= mcounteren_new_value[2:0];  // WARL: CY/TM/IR only
-        riscv_pkg::CsrMcountinhibit: begin  // WARL: CY and IR only (TM/HPM bits read 0)
-          mcountinhibit_cy <= mcountinhibit_new_value[0];
-          mcountinhibit_ir <= mcountinhibit_new_value[2];
+        riscv_pkg::CsrMcounteren: mcounteren_q <= mcounteren_new_value[4:0];  // WARL: CY/TM/IR/HPM3/HPM4
+        riscv_pkg::CsrMcountinhibit: begin  // WARL: CY, IR, HPM3, HPM4
+          mcountinhibit_cy   <= mcountinhibit_new_value[0];
+          mcountinhibit_ir   <= mcountinhibit_new_value[2];
+          mcountinhibit_hpm3 <= mcountinhibit_new_value[3];
+          mcountinhibit_hpm4 <= mcountinhibit_new_value[4];
         end
         riscv_pkg::CsrMscratch: mscratch <= mscratch_new_value;
         riscv_pkg::CsrMepc: mepc <= {mepc_new_value[XLEN-1:1], 1'b0};  // 2-byte aligned for C ext
@@ -1300,7 +1371,7 @@ module csr_file #(
           if (mideleg_ssi) mip_ssip <= sip_new_value[riscv_pkg::MieSsiBit];
         end
         riscv_pkg::CsrStvec: stvec <= {stvec_new_value[XLEN-1:2], 1'b0, stvec_new_value[0]};
-        riscv_pkg::CsrScounteren: scounteren_q <= scounteren_new_value[2:0];  // WARL: CY/TM/IR only
+        riscv_pkg::CsrScounteren: scounteren_q <= scounteren_new_value[4:0];  // WARL: CY/TM/IR/HPM3/HPM4
         riscv_pkg::CsrSscratch: sscratch <= sscratch_new_value;
         riscv_pkg::CsrSepc: sepc <= {sepc_new_value[XLEN-1:1], 1'b0};  // 2-byte aligned for C
         riscv_pkg::CsrScause: scause <= scause_new_value;
@@ -1518,8 +1589,14 @@ module csr_file #(
   // selects with read enable. Addresses must be distinct so the masked
   // OR equals an address mux. ReadCsrAddrs[k] corresponds to read_csr_value[k].
   logic [XLEN-1:0] csr_read_data_comb;
-  localparam int unsigned NumReadCsrs = 53;
+  localparam int unsigned NumReadCsrs = 59;
   localparam logic [12*NumReadCsrs-1:0] ReadCsrAddrs = {
+    riscv_pkg::CsrMhpmevent4,    // 58
+    riscv_pkg::CsrMhpmevent3,    // 57
+    riscv_pkg::CsrHpmcounter4,   // 56
+    riscv_pkg::CsrHpmcounter3,   // 55
+    riscv_pkg::CsrMhpmcounter4,  // 54
+    riscv_pkg::CsrMhpmcounter3,  // 53
     riscv_pkg::CsrStopi,  // 52
     riscv_pkg::CsrStopei,  // 51
     riscv_pkg::CsrSireg,  // 50
@@ -1654,6 +1731,12 @@ module csr_file #(
     read_csr_value[50] = i_s_ireg;  // CsrSireg
     read_csr_value[51] = XLEN'(i_s_topei);  // CsrStopei
     read_csr_value[52] = stopi;  // CsrStopi
+    read_csr_value[53] = mhpmcounter3;  // CsrMhpmcounter3
+    read_csr_value[54] = mhpmcounter4;  // CsrMhpmcounter4
+    read_csr_value[55] = mhpmcounter3;  // CsrHpmcounter3
+    read_csr_value[56] = mhpmcounter4;  // CsrHpmcounter4
+    read_csr_value[57] = mhpmevent3;    // CsrMhpmevent3
+    read_csr_value[58] = mhpmevent4;    // CsrMhpmevent4
 
   end
   always_comb begin

@@ -342,14 +342,17 @@ def gen_dts(
 
 \tpmu {{
 \t\tcompatible = "riscv,pmu";
-\t\t/* FROST has only the two fixed counters (no programmable mhpmcounters).
-\t\t * Map cycle and instret to them so OpenSBI's SBI-v3 EVENT_GET_INFO
-\t\t * reports them supported (without a hw_event_map entry that bulk
-\t\t * probe returns even the fixed counters as unsupported and the
-\t\t * kernel's perf driver disables cycles/instructions). cycle ->
-\t\t * mcycle (counter 0, bit 0), instret -> minstret (counter 2, bit 2). */
+\t\t/* Map hardware performance counters:
+\t\t * cycle -> mcycle (counter 0, bit 0)
+\t\t * instret -> minstret (counter 2, bit 2)
+\t\t * branch-instructions (event 5) -> mhpmcounter3 (counter 3, bit 3)
+\t\t * branch-misses (event 6) -> mhpmcounter4 (counter 4, bit 4) */
 \t\triscv,event-to-mhpmcounters = <0x00000001 0x00000001 0x00000001>,
-\t\t\t\t      <0x00000002 0x00000002 0x00000004>;
+\t\t\t\t      <0x00000002 0x00000002 0x00000004>,
+\t\t\t\t      <0x00000005 0x00000005 0x00000008>,
+\t\t\t\t      <0x00000006 0x00000006 0x00000010>;
+\t\triscv,event-to-mhpmevent = <0x00000005 0x00000000 0x00000005>,
+\t\t\t\t    <0x00000006 0x00000000 0x00000006>;
 \t}};
 
 \tsoc@0 {{
