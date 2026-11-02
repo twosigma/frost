@@ -579,7 +579,7 @@ Every C source, including each DMA ingress slot, holds its offer until
 acceptance, so these arbiters present their captured selection as C validity.
 
 Formal targets `coherence_home_completions`, `coherence_control`, `coherence_array`,
-`coherence_home`, `coherence_l1d` and `coherent_cpu` check endpoint service,
+`coherence_home`, `coherence_prefetcher`, `coherence_l1d` and `coherent_cpu` check endpoint service,
 representative byte values, bounded controller transitions and CPU ownership.
 The `coherence_l1d` target also runs the L1D with three request endpoints and
 checks that no two live endpoints hold one sector, that no load endpoint is

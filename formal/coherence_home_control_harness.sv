@@ -17,9 +17,14 @@
 `include "coherence_types.svh"
 
 // Control interleavings span four cache capacities and three completion identities.
+// The four-way configurations let prefetches allocate and meet the fill
+// reserve, the last available way and the last write-back slot.
 module coherence_home_control_harness #(
     parameter int unsigned LINE_BYTES = 32,
     parameter int unsigned WAYS = 1,
+    parameter int unsigned FILLS = 2,
+    parameter int unsigned PREFETCH_RESERVE = FILLS / 4,
+    parameter bit ULTRA = 1'b0,
     localparam int unsigned AddressBits = $clog2(8 * LINE_BYTES * WAYS)
 ) (
     input logic i_clk,
@@ -64,11 +69,12 @@ module coherence_home_control_harness #(
       .COMPLETIONS(3),
       .RESULTS(2),
       .PREFETCH_SLOTS(0),
-      .FILLS(2),
+      .FILLS(FILLS),
+      .PREFETCH_RESERVE(PREFETCH_RESERVE),
       .LINE_BYTES(LINE_BYTES),
       .CACHE_BYTES(2 * LINE_BYTES * WAYS),
       .WAYS(WAYS),
-      .ULTRA(0)
+      .ULTRA(ULTRA)
   ) home (
       .i_clk,
       .i_rst,
