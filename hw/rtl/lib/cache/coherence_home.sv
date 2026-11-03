@@ -1557,8 +1557,7 @@ module coherence_home #(
         (completion_exclude | reference_exclude | streaming_exclude);
     if (sim_reset_seen_q && !i_rst && array_response && reference_ready_q) begin
       assert (exclude_matched_q);
-      assert (array_exclude ==
-          (completion_exclude | reference_exclude | streaming_exclude));
+      assert (array_exclude == (completion_exclude | reference_exclude | streaming_exclude));
     end
   end
   always_ff @(posedge i_clk)
