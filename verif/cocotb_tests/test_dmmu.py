@@ -639,7 +639,9 @@ async def test_last_page_bypass_single_cycle_latency(dut: Any) -> None:
     op0 = Op(va=0x400010, tag=1)
     _issue(dut, op0)
     await _cycle(dut)
-    assert not int(dut.o_iss_out_valid.value), "First op must take standard 2-stage path"
+    assert not int(dut.o_iss_out_valid.value), (
+        "First op must take standard 2-stage path"
+    )
     dut.i_iss_valid.value = 0
     await _cycle(dut)
     _check(dut, op0, leaf)

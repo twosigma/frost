@@ -408,12 +408,12 @@ module dmmu (
     if (!i_rst_n || i_flush_all || i_tlb_invalidate || !i_active) begin
       last_valid_q <= 1'b0;
     end else if (s1_move && (resolve_fault == riscv_pkg::DFAULT_NONE)) begin
-      last_valid_q     <= 1'b1;
-      last_vpn_q       <= s1_q.va[38:12];
-      last_ppn_q       <= resolve_ppn;
-      last_priv_u_q    <= i_eff_priv_u;
-      last_sum_q       <= i_sum;
-      last_mxr_q       <= i_mxr;
+      last_valid_q  <= 1'b1;
+      last_vpn_q    <= s1_q.va[38:12];
+      last_ppn_q    <= resolve_ppn;
+      last_priv_u_q <= i_eff_priv_u;
+      last_sum_q    <= i_sum;
+      last_mxr_q    <= i_mxr;
       if (tlb_hit[0]) begin
         last_perm_r_q    <= tlb_r[0];
         last_perm_w_q    <= tlb_w[0];
@@ -644,7 +644,8 @@ module dmmu (
   // When an op hits the last-page bypass, it moves directly into S2, so its
   // look-ahead is presented live at issue.
   assign o_pre_rob_tag = iss_can_bypass ? iss_in.tag : s1_q.tag;
-  assign o_pre_needs_lq = iss_can_bypass ? (i_iss_valid && !iss_in.needs_sq) : (s1_valid_q && !s1_q.needs_sq);
+  assign o_pre_needs_lq = iss_can_bypass ?
+      (i_iss_valid && !iss_in.needs_sq) : (s1_valid_q && !s1_q.needs_sq);
 
   // Request a walk once for a live, canonical S1 miss with no trapping
   // misalignment or matching response. Hold valid until accepted. Suppress
