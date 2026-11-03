@@ -332,8 +332,6 @@ and targeted microbenchmarks give these items:
    two-level pick across 16 entries would let the memory reservation station
    hold 16 loads (`MemRsDepth = 16`), with selection depth growing only with
    the logarithm of the entry count.
-9. Performance counters. FROST counts more events than Linux `perf` sees.
-   Passing them to Linux through SBI lets standard tools report them.
 
 ## Core area
 
