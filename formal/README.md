@@ -251,7 +251,7 @@ count.
 | --- | --- |
 | `alu_shift_hint` | An ALU given the precomputed shift amount matches one without it, and both match an independent shift and rotate reference |
 | `cdb_arbiter` | The two-lane grant tree equals a reference priority scan. Grants are one-hot per lane, disjoint, at most two, and only to valid requesters, and a kill clears both CDB valid bits and the visible grants. Assumes the ALU value-source rule: a live value belongs to a valid completion and equals its value, and otherwise the fallback value does |
-| `divider` | Every result equals the RISC-V result for all operands (signed and unsigned, divide by zero, overflow, and W forms), a result appears one cycle after the last step and stays until taken, a kill frees the divider on the next cycle, and only a start leaves idle, at 8 bits (`bmc_width8`). `prove_width64` proves the step count and remainder bound at 64 bits, unbounded. See below |
+| `divider` | Results equal RISC-V division and remainder at 8 bits, including signed, unsigned, divide by zero, overflow and W forms (`bmc_width8`). At 64 bits, `prove_width64` proves setup and recurrence control, held completion and cancellation, unbounded. Arithmetic values and a global latency bound at 64 bits are outside that proof. See below |
 | `fp_shim` | Busy exactly while the engine holds an operation, results only while busy and with the tag of the latest operation, a kill frees the engine on the next cycle, and no later result for an operation a flush squashed (a result in the flush cycle itself is the CDB adapter's to drop). The engine is replaced by a model with arbitrary latency, results, and flags. Assumes FP_RS issues only while the shim is not busy |
 | `fp_launch_squash` | Both launch modes match a reference launch-gated shim, all with real FP engines: the same busy and completion valid every cycle and the same valid completions, with initialized integer-conversion stage registers in the inductive relation; unbounded, assuming equal initial state, no issue while busy, and, with `LAUNCH_SQUASH=1`, the bubble after a flushed issue |
 | `fp_launch_squash_rs` | The real FP station with the wrapper's tie-offs leaves the bubble after a flushed issue that `LAUNCH_SQUASH` needs; unbounded |
@@ -263,11 +263,12 @@ count.
 | `mul_adapter_grant` | With the real CDB arbiter, the MUL adapter's local grant and the always-granted MUL and MEM adapters produce the same completions and pending bits as stateful adapters, under arbitrary competing results, flushes, and tags; unbounded |
 
 `divider` compares results with Verilog division at 8 bits, where division is
-cheap for the solver; the divider is the same RTL at every width. A start
-reloads all of the divider's state, so an operation behaves the same whatever
-came before it, and the 14-cycle bound (one complete operation with arbitrary
-operands, kills, and accept delays) covers every operation. The 64-bit
-divider runs in the `divider` simulation, against Python integer division.
+cheap for the solver; the divider uses the same RTL at both widths. A start
+captures the operands and operation flags. Preparation and alignment initialize
+the recurrence before it consumes them. The 14-cycle bound includes a complete
+8-bit operation, with arbitrary operands, kills and accept delays inside that
+window. The 64-bit `divider` simulation checks Python integer division and
+cycle counts, including early termination and setup cancellation.
 
 ### Memory system and coherence
 

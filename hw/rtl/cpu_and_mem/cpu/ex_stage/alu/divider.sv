@@ -15,24 +15,13 @@
  */
 
 /*
- * High-frequency Radix-4 divider for RISC-V DIV, DIVU, REM and REMU and their
- * RV64 W forms, one operation at a time.
- *
- * Key microarchitectural features:
- *   - Radix-4 Datapath: Retires 2 quotient bits per cycle, halving worst-case
- *     iteration counts to WIDTH/2 (32 steps for 64-bit ops, 16 steps for W forms).
- *   - Precomputed Multiples: Divisor multiples (1D, 2D, 3D) are formed during
- *     the idle-to-active setup cycle (3D = 2D + 1D). In each recurrence cycle,
- *     three parallel wide subtractions evaluate simultaneously into a late 4:1
- *     multiplexer, keeping the loop path strictly within ~380-420 ps without
- *     lowering Fmax.
- *   - CLZ Early Termination: A parallel leading-zero count tree on the dividend
- *     magnitude skips leading zero digit pairs, allowing small dividends to
- *     retire in 4-8 cycles instead of the full 32.
- *   - Instant Fast Paths: Divide-by-zero, signed overflow, and dividend < divisor
- *     retire in a single cycle.
- *   - Interface Contract: Preserves the standard handshake (i_start while o_idle,
- *     i_kill abort, o_done and o_result held until i_accept or i_kill).
+ * Radix-4 divider for RISC-V DIV, DIVU, REM, REMU and their W forms.
+ * Operand capture, leading-zero count and alignment precede the recurrence.
+ * Each recurrence evaluates three parallel subtractions and produces two
+ * quotient bits. Leading zero digit pairs do not require recurrence cycles.
+ * Divide by zero, full-width signed overflow and dividend magnitude below the divisor
+ * finish after operand capture and classification.
+ * The result stays valid until accept or kill; kill returns the unit to idle.
  */
 module divider #(
     parameter int unsigned WIDTH = riscv_pkg::XLEN
@@ -78,56 +67,60 @@ module divider #(
   end
 
   // ---------------------------------------------------------------------------
-  // Leading-Zero Counter (CLZ)
+  // State and captured operands
   // ---------------------------------------------------------------------------
-  function automatic logic [CountWidth:0] clz(input logic [WIDTH-1:0] val);
-    int unsigned i;
-    logic found;
-    begin
-      clz = (CountWidth + 1)'(WIDTH);
-      found = 1'b0;
-      for (i = 0; i < WIDTH; i++) begin
-        if (val[WIDTH - 1 - i] && !found) begin
-          clz = (CountWidth + 1)'(i);
-          found = 1'b1;
-        end
-      end
-    end
-  endfunction
-
-  logic [CountWidth:0] lz_dividend;
-  assign lz_dividend = clz(dividend_magnitude);
-
-  // For W forms, the active operand is restricted to the lower half.
-  logic [CountWidth:0] lz_active;
-  assign lz_active = i_is_word ?
-      ((lz_dividend >= (CountWidth + 1)'(HalfWidth)) ?
-          (lz_dividend - (CountWidth + 1)'(HalfWidth)) : '0) :
-      lz_dividend;
-
-  // Number of 2-bit radix-4 steps we can safely skip based on leading zeros
-  logic [CountWidth-1:0] skip_steps;
-  assign skip_steps = CountWidth'(lz_active >> 1);
-
-  logic [CountWidth-1:0] max_steps;
-  assign max_steps = i_is_word ? CountWidth'(HalfWidth / 2) : CountWidth'(WIDTH / 2);
-
-  // ---------------------------------------------------------------------------
-  // State
-  // ---------------------------------------------------------------------------
+  typedef enum logic [2:0] {
+    ST_IDLE,
+    ST_PREP,
+    ST_ALIGN,
+    ST_RUN,
+    ST_DONE
+  } state_e;
+  state_e state_q;
   logic running_q, done_q;
+  logic [WIDTH-1:0] dividend_q, dividend_magnitude_q;
+  logic overflow_q;
   logic [WIDTH-1:0] remainder_q;
   logic [WIDTH-1:0] quotient_q;
   logic [WIDTH-1:0] d1_q;
-  logic [WIDTH:0]   d2_q;
+  logic [WIDTH:0] d2_q;
   logic [WIDTH+1:0] d3_q;
   logic [CountWidth-1:0] steps_left_q;
+  logic [CountWidth-1:0] skip_steps_q;
   logic word_q, rem_q, negate_q;
   logic [WIDTH-1:0] fast_result_q;
   logic fast_exit_q;
 
-  assign o_idle = !running_q && !done_q;
+  assign o_idle = state_q == ST_IDLE;
+  assign running_q = state_q == ST_RUN;
+  assign done_q = state_q == ST_DONE;
   assign o_done = done_q;
+
+  // ---------------------------------------------------------------------------
+  // Leading-zero count on the captured magnitude
+  // ---------------------------------------------------------------------------
+  function automatic logic [CountWidth:0] clz(input logic [WIDTH-1:0] val);
+    logic [WIDTH-1:0] remaining;
+    logic [CountWidth-1:0] count;
+    begin
+      remaining = val;
+      count = '0;
+      for (int stage = CountWidth - 1; stage >= 0; stage--) begin
+        if ((remaining >> (WIDTH - (1 << stage))) == '0) begin
+          count[stage] = 1'b1;
+          remaining = remaining << (1 << stage);
+        end
+      end
+      clz = val == '0 ? (CountWidth + 1)'(WIDTH) : {1'b0, count};
+    end
+  endfunction
+
+  logic [CountWidth:0] lz_dividend, lz_active;
+  logic [CountWidth-1:0] skip_steps, max_steps;
+  assign lz_dividend = clz(dividend_magnitude_q);
+  assign lz_active   = word_q ? lz_dividend - (CountWidth + 1)'(HalfWidth) : lz_dividend;
+  assign skip_steps  = CountWidth'(lz_active >> 1);
+  assign max_steps   = word_q ? CountWidth'(HalfWidth / 2) : CountWidth'(WIDTH / 2);
 
   // ---------------------------------------------------------------------------
   // Radix-4 Recurrence Datapath (3 Parallel Subtractions + Late Select)
@@ -138,9 +131,9 @@ module divider #(
   logic [WIDTH-1:0] next_remainder;
 
   assign shifted = {remainder_q, quotient_q[WIDTH-1:WIDTH-2]};
-  assign diff1 = {1'b0, shifted} - {3'b0, d1_q};
-  assign diff2 = {1'b0, shifted} - {2'b0, d2_q};
-  assign diff3 = {1'b0, shifted} - {1'b0, d3_q};
+  assign diff1   = {1'b0, shifted} - {3'b0, d1_q};
+  assign diff2   = {1'b0, shifted} - {2'b0, d2_q};
+  assign diff3   = {1'b0, shifted} - {1'b0, d3_q};
 
   always_comb begin
     if (!diff3[WIDTH+2]) begin
@@ -166,78 +159,62 @@ module divider #(
   logic is_smaller;
   logic is_fast_path;
 
-  assign is_div_by_zero = (divisor == '0);
-  assign is_overflow = i_is_signed && (dividend == {1'b1, {(WIDTH - 1) {1'b0}}}) && (divisor == '1);
-  assign is_smaller = (dividend_magnitude < divisor_magnitude) && !is_div_by_zero;
+  assign is_div_by_zero = (d1_q == '0);
+  assign is_overflow = overflow_q;
+  assign is_smaller = (dividend_magnitude_q < d1_q) && !is_div_by_zero;
   assign is_fast_path = is_div_by_zero || is_overflow || is_smaller;
 
   // ---------------------------------------------------------------------------
-  // Sequential Control & Datapath
+  // Sequential control and datapath
   // ---------------------------------------------------------------------------
   always_ff @(posedge i_clk) begin
     if (i_rst || i_kill) begin
-      running_q   <= 1'b0;
-      done_q      <= 1'b0;
-      fast_exit_q <= 1'b0;
-    end else if (o_idle) begin
-      if (i_start) begin
-        if (is_fast_path) begin
-          running_q   <= 1'b0;
-          done_q      <= 1'b1;
-          fast_exit_q <= 1'b1;
-        end else begin
-          running_q   <= 1'b1;
-          done_q      <= 1'b0;
-          fast_exit_q <= 1'b0;
-        end
-      end
-    end else if (running_q) begin
-      running_q <= steps_left_q != '0;
-      done_q    <= steps_left_q == '0;
-    end else if (i_accept) begin
-      done_q      <= 1'b0;
-      fast_exit_q <= 1'b0;
+      state_q <= ST_IDLE;
+    end else begin
+      case (state_q)
+        ST_IDLE:  if (i_start) state_q <= ST_PREP;
+        ST_PREP:  state_q <= is_fast_path ? ST_DONE : ST_ALIGN;
+        ST_ALIGN: state_q <= ST_RUN;
+        ST_RUN:   if (steps_left_q == '0) state_q <= ST_DONE;
+        ST_DONE:  if (i_accept) state_q <= ST_IDLE;
+        default:  state_q <= ST_IDLE;
+      endcase
     end
   end
 
-  // Datapath registers
   logic [WIDTH-1:0] aligned_dividend;
-  assign aligned_dividend = i_is_word ?
-      {dividend_magnitude[HalfWidth-1:0], {HalfWidth{1'b0}}} : dividend_magnitude;
+  assign aligned_dividend = word_q ?
+      {dividend_magnitude_q[HalfWidth-1:0], {HalfWidth{1'b0}}} : dividend_magnitude_q;
 
   always_ff @(posedge i_clk) begin
-    if (o_idle) begin
-      remainder_q   <= '0;
-      word_q        <= i_is_word;
-      rem_q         <= i_is_rem;
-      negate_q      <= i_is_rem ? dividend_negative :
-          (dividend_negative ^ divisor_negative) && (divisor != '0);
-
-      // Fast exit result selection
-      if (is_div_by_zero) begin
-        fast_result_q <= i_is_rem ? dividend : '1;
-      end else if (is_overflow) begin
-        fast_result_q <= i_is_rem ? '0 : dividend;
-      end else if (is_smaller) begin
-        fast_result_q <= i_is_rem ? dividend : '0;
-      end else begin
-        fast_result_q <= '0;
-      end
-
-      // CLZ shift and step counter setup
-      if (skip_steps < max_steps) begin
-        quotient_q   <= aligned_dividend << (skip_steps * 2);
-        steps_left_q <= (max_steps - skip_steps) - 1'b1;
-      end else begin
-        quotient_q   <= aligned_dividend;
-        steps_left_q <= '0;
-      end
-
-      // Precomputed divisor multiples: 1D, 2D, 3D
+    if (o_idle && i_start) begin
+      dividend_q <= dividend;
+      dividend_magnitude_q <= dividend_magnitude;
       d1_q <= divisor_magnitude;
-      d2_q <= {1'b0, divisor_magnitude} << 1;
-      d3_q <= ({2'b00, divisor_magnitude} << 1) + {2'b00, divisor_magnitude};
-    end else if (running_q) begin
+      overflow_q <= i_is_signed && (dividend == {1'b1, {(WIDTH - 1) {1'b0}}}) && (divisor == '1);
+      word_q <= i_is_word;
+      rem_q <= i_is_rem;
+      negate_q <= i_is_rem ? dividend_negative : dividend_negative ^ divisor_negative;
+    end
+    if (state_q == ST_PREP) begin
+      remainder_q <= '0;
+      skip_steps_q <= skip_steps;
+      steps_left_q <= (max_steps - skip_steps) - 1'b1;
+      d2_q <= {d1_q, 1'b0};
+      d3_q <= {1'b0, d1_q, 1'b0} + {2'b0, d1_q};
+      fast_exit_q <= is_fast_path;
+      if (is_div_by_zero) begin
+        fast_result_q <= rem_q ? dividend_q : '1;
+      end else if (is_overflow) begin
+        fast_result_q <= rem_q ? '0 : dividend_q;
+      end else begin
+        fast_result_q <= rem_q ? dividend_q : '0;
+      end
+    end
+    if (state_q == ST_ALIGN) begin
+      quotient_q <= aligned_dividend << (skip_steps_q * 2);
+    end
+    if (running_q) begin
       remainder_q  <= next_remainder;
       quotient_q   <= {quotient_q[WIDTH-3:0], q_digit};
       steps_left_q <= steps_left_q - 1'b1;
@@ -256,7 +233,8 @@ module divider #(
       {{HalfWidth{signed_result[HalfWidth-1]}}, signed_result[HalfWidth-1:0]} : signed_result;
 
   assign o_result = fast_exit_q ?
-      (word_q ? {{HalfWidth{fast_result_q[HalfWidth-1]}}, fast_result_q[HalfWidth-1:0]} : fast_result_q) :
+      (word_q ?
+          {{HalfWidth{fast_result_q[HalfWidth-1]}}, fast_result_q[HalfWidth-1:0]} : fast_result_q) :
       computed_result;
 
   // ===========================================================================
@@ -331,8 +309,10 @@ module divider #(
         // Only start may leave idle. Steps progress to done unless killed;
         // kill returns idle next cycle. Done and result must remain stable
         // until accept or kill.
-        if ($past(o_idle && i_start && !i_kill && is_fast_path)) assert (done_q);
-        if ($past(o_idle && i_start && !i_kill && !is_fast_path)) assert (running_q);
+        if ($past(o_idle && i_start && !i_kill)) assert (state_q == ST_PREP);
+        if ($past(state_q == ST_PREP && !i_kill && is_fast_path)) assert (done_q);
+        if ($past(state_q == ST_PREP && !i_kill && !is_fast_path)) assert (state_q == ST_ALIGN);
+        if ($past(state_q == ST_ALIGN && !i_kill)) assert (running_q);
         if ($past(running_q && steps_left_q != '0 && !i_kill)) assert (running_q);
         if ($past(running_q && steps_left_q == '0 && !i_kill)) assert (done_q);
         if ($past(o_idle && !i_start)) assert (o_idle);

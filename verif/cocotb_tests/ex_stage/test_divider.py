@@ -14,8 +14,9 @@
 
 """Check the iterative divider against control and integer-arithmetic models.
 
-Check o_idle and o_done each cycle, and o_result while done. Results appear
-exactly WIDTH steps after start (WIDTH/2 for W forms) and stay until accepted.
+Check o_idle and o_done each cycle, and o_result while done. Capture, leading-zero
+count and alignment precede two-bit recurrence steps. Fast results finish after
+capture and classification. Results stay valid until accepted.
 W forms use the low operand halves and sign-extend the result. Vary live
 inputs during operations to check that the captured operands are retained.
 """
@@ -119,14 +120,16 @@ def expected_steps(op: Operation, width: int) -> int:
     a_mag = ((~a + 1) & ((1 << width) - 1)) if div_neg else a
     b_mag = ((~b + 1) & ((1 << width) - 1)) if dvs_neg else b
 
-    is_div_by_zero = (b == 0)
+    is_div_by_zero = b == 0
     is_overflow = op.signed and (a == (1 << (width - 1))) and (b == ((1 << width) - 1))
     is_smaller = (a_mag < b_mag) and not is_div_by_zero
     if is_div_by_zero or is_overflow or is_smaller:
         return 0
 
     lz_a = width - a_mag.bit_length() if a_mag != 0 else width
-    lz_active = (lz_a - half) if (op.word and lz_a >= half) else (0 if op.word else lz_a)
+    lz_active = (
+        (lz_a - half) if (op.word and lz_a >= half) else (0 if op.word else lz_a)
+    )
     skip = lz_active // 2
     max_steps = (half // 2) if op.word else (width // 2)
     return max(0, max_steps - skip)
@@ -200,8 +203,9 @@ async def test_divider_against_model(dut: Any) -> None:
             abandoned += int(state != "idle")
             state = "idle"
         elif state == "idle" and start:
-            steps_left = expected_steps(op, width)
-            state = "done" if steps_left == 0 else "running"
+            recurrence_steps = expected_steps(op, width)
+            steps_left = 1 if recurrence_steps == 0 else recurrence_steps + 2
+            state = "running"
             expected = reference(op, width)
             started += 1
         elif state == "running":

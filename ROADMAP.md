@@ -325,9 +325,12 @@ and targeted microbenchmarks give these items:
    and sign injection use two-cycle paths. Integer-to-FP conversion takes
    four cycles, or two for zero. Pipelined add and multiply units would let
    FP_RS issue independent arithmetic while earlier operations execute.
-7. Integer multiply and divide. A multiply takes about 9 cycles to a
-   dependent instruction. The divider produces one quotient bit per cycle,
-   65 cycles for a 64-bit operation, and a radix-4 divider halves that.
+7. Integer multiply and divide. The full-width multiplier has six stages;
+   its result FIFO, CDB and reservation station each contribute a cycle to
+   a dependent use. The radix-4 divider captures magnitudes, counts leading
+   zeros and aligns the dividend before producing two quotient bits per
+   cycle. It takes up to 35 cycles, or 19 for a W form, and handles divide
+   by zero, full-width overflow and smaller dividends in two cycles.
 8. Load queue depth. DDR latency dominates many Linux workloads. A balanced
    two-level pick across 16 entries would let the memory reservation station
    hold 16 loads (`MemRsDepth = 16`), with selection depth growing only with

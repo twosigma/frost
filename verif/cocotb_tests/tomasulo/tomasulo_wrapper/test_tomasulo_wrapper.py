@@ -65,9 +65,8 @@ if not 30 <= DDR_CAPACITY_LOG2_BYTES <= 37:
     raise ValueError("FROST_DDR_CAPACITY_LOG2_BYTES must select 1–128 GiB")
 DDR_LIMIT = 0x8000_0000 + (1 << DDR_CAPACITY_LOG2_BYTES)
 
-# The iterative divider produces one quotient bit per cycle, XLEN steps for a
-# full-width divide. The timeout adds a margin for issue, the DIV adapter and
-# the CDB.
+# The radix-4 divider uses three setup cycles and up to XLEN/2 recurrence
+# cycles. The timeout includes a margin for issue, the DIV adapter and CDB.
 DIV_CDB_TIMEOUT_CYCLES = XLEN + 16
 
 

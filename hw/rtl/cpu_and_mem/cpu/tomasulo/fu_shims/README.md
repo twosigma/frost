@@ -11,7 +11,7 @@ depends on how many operations its unit can have in flight.
 | Shim | RS | Units | Unit latency (cycles) | In flight |
 |------|----|-------|-----------------------|-----------|
 | `int_alu_shim` (two copies) | INT_RS | ALU | 0 (combinational) | n/a |
-| `int_muldiv_shim` | MUL_RS | Pipelined multiplier plus a 32-bit word multiplier and a 64-bit carry-less multiplier; iterative divider | MUL 6, MULW and CLMUL/CLMULH/CLMULR 3, DIV/REM 65, word DIV/REM 33 | Up to 4 multiplies, 1 divide |
+| `int_muldiv_shim` | MUL_RS | Pipelined multiplier plus a 32-bit word multiplier and a 64-bit carry-less multiplier; iterative divider | MUL 6, MULW and CLMUL/CLMULH/CLMULR 3, DIV/REM 2 to 35, word DIV/REM 2 to 19 | Up to 4 multiplies, 1 divide |
 | `fp_shim` | FP_RS | Iterative FP engine: every F and D compute instruction | 2 to 139, by operation and operands (see below) | 1 |
 
 `int_muldiv_shim` stores each multiply result in a FIFO before presenting it,
@@ -71,10 +71,15 @@ unflushed operations in flight never exceeds the FIFO depth, so the path holds
 at most four live multiplies and its FIFO cannot overflow. The FIFO pops when
 its adapter takes the head, or on its own when the head is flushed.
 
-The divider runs one operation at a time, one quotient bit per cycle, on
-magnitudes: DIV, DIVU, REM, and REMU take 64 steps and the W forms 32, with
-their operands' low words sign- or zero-extended. Counted from the issue cycle,
-the result is valid 65 cycles later (33 for a W form) and stays in the divider
+The divider runs one operation at a time on operand magnitudes. Three setup
+cycles capture the operands, count leading zeros and align the dividend.
+Each radix-4 recurrence produces two quotient bits, skipping leading zero
+pairs. Counted from issue, a normal result takes `3 + ceil(bit_length / 2)`
+cycles, where `bit_length` is the dividend magnitude's bit length: at most
+35 cycles for full-width operands and 19 for W forms. Divide by zero,
+full-width signed overflow and a dividend magnitude below the divisor take
+two cycles. W operands use their low words, sign- or zero-extended according
+to the operation. The result stays in the divider
 until the DIV adapter takes it; every W result is sign-extended. `o_div_busy`
 is high from the start until then. It does not feed `o_fu_busy`: MUL_RS holds
 waiting divides back itself (see its
