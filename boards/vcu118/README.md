@@ -162,6 +162,24 @@ device with `list_property` on `REGISTER.CONFIG_STATUS.SLR0.*` after
 `refresh_hw_device`; they update as the switch moves. A configured design
 lights one user LED steadily and blinks another.
 
+### 10G throughput benchmark
+
+`nic_bench` measures what the 10G NIC and its DMA engine move with the port's
+TX looped back to its RX, for example by a QSFP28 loopback module in QSFP1. It
+keeps both 256-entry rings full from bare metal (polled, no Linux), checks every
+frame's length and outcome, compares one frame in 32 byte for byte, and prints
+frame-byte and wire-byte rates for frame sizes from 64 to 9000 bytes, with the
+NIC's error counters. The 10GBASE-R MAC rate is 10 Gb/s on the wire.
+
+```bash
+export RISCV_PREFIX=riscv64-unknown-elf-
+python3 fpga/load_software/load_software.py vcu118 nic_bench
+```
+
+It replaces Linux on the board; power-cycle or reconfigure from flash to return
+to Linux. Linux raw-socket rates on the same module are far lower because the
+single hart saturates in the network stack, so use this test for the hardware
+figure.
 U-Boot stops at `frost=>`. Its environment is volatile; `saveenv` is not
 supported. It provides `sf` commands for flash access and DHCP, ping and TFTP
 through either NIC. For RJ-45 network loading, set the server address and use

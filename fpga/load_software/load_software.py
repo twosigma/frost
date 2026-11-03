@@ -83,6 +83,7 @@ VALID_APPS = [
     "memerr_readback",
     "memory_test",
     "misaligned_test",
+    "nic_bench",
     "nic_echo",
     "nic_loopback",
     "opensbi_smoke",

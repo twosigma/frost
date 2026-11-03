@@ -246,16 +246,16 @@ module nic_mac_wrap #(
   cdc_mailbox #(
       .WIDTH(CfgBits)
   ) u_rx_limit (
-      .i_src_clk(i_clk),
+      .i_src_clk  (i_clk),
       // Match the RX FIFO's core half: this receiver must clear for either reset source.
-      .i_src_rst(i_rst || i_core_rst_dom[1]),
-      .i_src_data({i_pause_low_water, i_pause_high_water, i_pause_ctrl, i_rx_fifo_limit}),
+      .i_src_rst  (i_rst || i_core_rst_dom[1]),
+      .i_src_data ({i_pause_low_water, i_pause_high_water, i_pause_ctrl, i_rx_fifo_limit}),
       .i_src_valid(i_rx_fifo_limit_wr),
       .o_src_ready(rx_limit_ready),
-      .o_src_idle(rx_limit_idle),
-      .i_dst_clk(i_rx_clk),
-      .i_dst_rst(rx_rst),
-      .o_dst_data(rx_cfg_msg),
+      .o_src_idle (rx_limit_idle),
+      .i_dst_clk  (i_rx_clk),
+      .i_dst_rst  (rx_rst),
+      .o_dst_data (rx_cfg_msg),
       .o_dst_valid(rx_limit_msg_valid),
       .i_dst_ready(1'b1)
   );
@@ -306,32 +306,32 @@ module nic_mac_wrap #(
   cdc_mailbox #(
       .WIDTH(48)
   ) u_mac_rx_mbx (
-      .i_src_clk(i_clk),
+      .i_src_clk  (i_clk),
       // As u_rx_limit: the core half clears for either reset source.
-      .i_src_rst(i_rst || i_core_rst_dom[1]),
-      .i_src_data(i_station_mac),
+      .i_src_rst  (i_rst || i_core_rst_dom[1]),
+      .i_src_data (i_station_mac),
       .i_src_valid(mac_rx_send),
       .o_src_ready(mac_rx_ready),
-      .o_src_idle(mac_rx_idle),
-      .i_dst_clk(i_rx_clk),
-      .i_dst_rst(rx_rst),
-      .o_dst_data(mac_rx_msg),
+      .o_src_idle (mac_rx_idle),
+      .i_dst_clk  (i_rx_clk),
+      .i_dst_rst  (rx_rst),
+      .o_dst_data (mac_rx_msg),
       .o_dst_valid(mac_rx_msg_valid),
       .i_dst_ready(1'b1)
   );
   cdc_mailbox #(
       .WIDTH(64)
   ) u_tx_cfg_mbx (
-      .i_src_clk(i_clk),
+      .i_src_clk  (i_clk),
       // As the TX FIFO's write side: the core half clears for either reset source.
-      .i_src_rst(i_rst || i_core_rst_dom[0]),
-      .i_src_data({i_pause_interval, i_station_mac}),
+      .i_src_rst  (i_rst || i_core_rst_dom[0]),
+      .i_src_data ({i_pause_interval, i_station_mac}),
       .i_src_valid(txc_send),
       .o_src_ready(txc_ready),
-      .o_src_idle(txc_idle),
-      .i_dst_clk(i_tx_clk),
-      .i_dst_rst(tx_rst),
-      .o_dst_data(txc_msg),
+      .o_src_idle (txc_idle),
+      .i_dst_clk  (i_tx_clk),
+      .i_dst_rst  (tx_rst),
+      .o_dst_data (txc_msg),
       .o_dst_valid(txc_msg_valid),
       .i_dst_ready(1'b1)
   );
