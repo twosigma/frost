@@ -2303,7 +2303,7 @@ package riscv_pkg;
   localparam int unsigned IntRsDepth = 16;  // Integer ALU operations
   localparam int unsigned IntRsIssue2Window = 8;
   localparam int unsigned MulRsDepth = 4;  // Multiply/divide operations
-  localparam int unsigned MemRsDepth = 16;  // Load/store operations
+  localparam int unsigned MemRsDepth = 8;  // Load/store operations
   localparam int unsigned FpRsDepth = 2;  // Every FP compute operation (3 sources)
 
   // Memory queue depths

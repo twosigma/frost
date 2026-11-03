@@ -186,6 +186,74 @@ async def dispatch_two_ready_adds(
     return expected
 
 
+@cocotb.test()
+async def test_mem_rs_capacity_and_flush_reuse(dut: Any) -> None:
+    """Eight memory entries expose both capacity limits and survive flush reuse."""
+    dut_if = await setup_test(dut)
+
+    async def enqueue(*tags: int) -> None:
+        for tag in tags:
+            allocated = await dut_if.dispatch(
+                AllocationRequest(
+                    pc=0x1000 + 4 * tag,
+                    rs_type=RS_MEM,
+                    is_store=tag % 2 != 0,
+                )
+            )
+            assert allocated == tag
+        for lane, tag in enumerate(tags):
+            drive = (
+                dut_if.drive_split_rs_dispatch
+                if lane == 0
+                else dut_if.drive_split_rs_dispatch_2
+            )
+            drive(
+                RS_MEM,
+                rob_tag=tag,
+                op=OP_LW if tag % 2 == 0 else OP_SW,
+                src1_ready=False,
+                src1_tag=30,
+                src2_ready=False,
+                src2_tag=31,
+                src3_ready=True,
+            )
+        await step_and_clear_dispatch(dut_if)
+
+    async def check_capacity(count: int) -> None:
+        await Timer(1, unit="ps")
+        assert_rs_counts(dut_if, {RS_MEM: count})
+        assert dut_if.rob_count == count
+        assert dut_if.rs_full_for(RS_MEM) == (count == 8)
+        assert bool(dut.o_mem_rs_full_for_2.value) == (count >= 7)
+        assert not dut_if.rs_issue_valid_for(RS_MEM)
+
+    for first in (0, 2, 4):
+        await enqueue(first, first + 1)
+        await check_capacity(first + 2)
+    await enqueue(6)
+    await check_capacity(7)
+    await enqueue(7)
+    await check_capacity(8)
+
+    dut_if.drive_flush_en(3)
+    await dut_if.step()
+    dut_if.clear_flush_en()
+    await check_capacity(4)
+    await dut_if.step()  # The SQ repairs its tail before allocation resumes.
+    await enqueue(4, 5)
+    await check_capacity(6)
+    await enqueue(6, 7)
+    await check_capacity(8)
+
+    dut_if.drive_flush_all()
+    await dut_if.step()
+    dut_if.clear_flush_all()
+    await check_capacity(0)
+    await dut_if.step()
+    await enqueue(0, 1)
+    await check_capacity(2)
+
+
 async def wait_for_alu2_cdb(
     dut_if: TomasuloInterface, max_cycles: int = 8
 ) -> tuple[int, CdbBroadcast]:
