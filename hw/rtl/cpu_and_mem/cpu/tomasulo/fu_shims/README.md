@@ -12,7 +12,7 @@ depends on how many operations its unit can have in flight.
 |------|----|-------|-----------------------|-----------|
 | `int_alu_shim` (two copies) | INT_RS | ALU | 0 (combinational) | n/a |
 | `int_muldiv_shim` | MUL_RS | Pipelined multiplier plus a 32-bit word multiplier and a 64-bit carry-less multiplier; iterative divider | MUL 6, MULW and CLMUL/CLMULH/CLMULR 3, DIV/REM 65, word DIV/REM 33 | Up to 4 multiplies, 1 divide |
-| `fp_shim` | FP_RS | Iterative FP engine: every F and D compute instruction | 3 to 139, by operation and operands (see below) | 1 |
+| `fp_shim` | FP_RS | Iterative FP engine: every F and D compute instruction | 2 to 139, by operation and operands (see below) | 1 |
 
 `int_muldiv_shim` stores each multiply result in a FIFO before presenting it,
 which adds at least one cycle, more if earlier results are still waiting. The
@@ -92,17 +92,22 @@ instead; only the tests and formal proofs use it.
 
 `fp_shim` starts each FP_RS issue on one
 [`fp_engine`](../../ex_stage/fpu/fp_engine.sv), which runs every F and D
-compute instruction (arithmetic, conversions, compares, min/max, classify,
-sign injection, and the FMV moves) one at a time on a single shared adder.
-One tag register tracks the operation in the engine. `o_fu_busy` is high
+compute instruction one at a time. Arithmetic and FP-to-integer conversions
+share an iterative adder. Moves, comparisons, min/max, classification, sign
+injection and integer-to-FP conversion have dedicated paths. One tag register
+tracks the operation in the engine. `o_fu_busy` is high
 while a nonsquashed operation occupies the engine, its result cycle included,
 and the wrapper also stops FP_RS while the adapter holds a result, so the
 engine's one-cycle result always finds the adapter free.
 
-The engine's latency, from the issue to the result cycle, depends on the
-operation and its operands. Operations whose result the decode cycles settle
-(NaN, infinity, and zero operands, invalid operations, divide by zero,
-out-of-range conversions, FCLASS, sign injection) take 3 cycles. For normal
+The engine's latency, from issue to the result cycle, depends on the operation
+and its operands. Moves, sign injection, FCLASS, comparisons and min/max take
+two cycles. Integer-to-FP conversion takes four cycles for a nonzero integer:
+operand capture, magnitude, leading-zero count and normalization, then rounding
+and packing. Zero integer conversions take two cycles. Arithmetic special
+results resolved during decode, including NaN, infinity, zero, invalid operations,
+divide by zero and some FP-to-integer saturation cases, take three cycles.
+FP-to-integer range checks after rounding use the iterative path. For normal
 operands:
 
 | Operation | Single | Double |
@@ -112,10 +117,12 @@ operands:
 | FMADD, FMSUB, FNMADD, FNMSUB | 37 to 60 | 66 to 89 |
 | FDIV | 49 to 50 | 70 to 71 |
 | FSQRT | 58 to 59 | 79 to 80 |
-| Conversions between integer and FP | up to 31 | up to 31 |
+| FP-to-integer conversions | up to 31 | up to 31 |
+| Integer-to-FP conversions | 2 or 4 | 2 or 4 |
 | FCVT.S.D, FCVT.D.S | 9 | 9 |
-| Compares, FMIN, FMAX | 7 | 7 |
-| FMV.X.*, FMV.*.X | 5 | 5 |
+| Compares, FMIN, FMAX | 2 | 2 |
+| FCLASS, sign injection | 2 | 2 |
+| FMV.X.*, FMV.*.X | 2 | 2 |
 
 An exact cancellation (a zero sum from normal operands) finishes a few cycles
 sooner than these ranges. Subnormal operands and results take longer, because

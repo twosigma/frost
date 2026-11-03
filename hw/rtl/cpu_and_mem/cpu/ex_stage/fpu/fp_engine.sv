@@ -18,8 +18,10 @@
   Iterative F/D floating-point engine, including FMV moves.
   One operation runs at a time.
 
-  Two decode cycles classify operands and handle special results, FCLASS,
-  and sign injection. Other operations share this datapath:
+  Moves, comparisons, min/max, FCLASS and sign injection finish after capture
+  and decode. Integer-to-FP conversions register magnitude, count leading zeros
+  and normalize, then round and pack; zero finishes in decode. Other operations
+  classify operands in two decode cycles and share this datapath:
     R  113-bit accumulator. Column 111 holds the leading bit of a normalized
        significand, column 112 a carry (after an add) or a sign (after a
        subtract), and column 0 is a sticky column: every right shift ORs the
@@ -37,10 +39,10 @@
   Multiply is radix-2 shift-and-add (53 or 24 steps); divide and square root
   are non-restoring, one bit per step (56 or 27 bits). Add and FMA normalize
   both operands and align the one with the smaller exponent into its sticky
-  column; the product keeps all 106 bits, so FMA rounds once. Compares and
-  min/max order the operands by subtracting their magnitudes, and integers
-  (conversions to integer, FMV) leave through R[111:48]. Latency depends on the
-  operation and the operands.
+  column; the product keeps all 106 bits, so FMA rounds once. FP-to-integer
+  conversions leave through R[111:48]. Comparisons and min/max order the raw
+  magnitudes in parallel with classification. Latency depends on the operation
+  and the operands.
 
   i_start is sampled only while o_idle is high. o_done pulses for one cycle
   with the result: single-precision FP results NaN-boxed, integer results
@@ -407,11 +409,11 @@ module fp_engine (
   endfunction
 
   function automatic logic [5:0] clz64(input logic [63:0] v);
-    logic [5:0] cnt;
+    logic [ 5:0] cnt;
     logic [31:0] v32;
     logic [15:0] v16;
-    logic [7:0] v8;
-    logic [3:0] v4;
+    logic [ 7:0] v8;
+    logic [ 3:0] v4;
     begin
       cnt = 6'd0;
       if (v[63:32] == 32'd0) begin
@@ -485,7 +487,9 @@ module fp_engine (
     ST_BE_ROUND,
     ST_BE_CARRY,
     ST_BE_PACK,
-    ST_DONE
+    ST_DONE,
+    ST_I2F_NORM,    // align the registered integer magnitude
+    ST_I2F_ROUND    // round and pack the normalized integer
   } state_e;
 
   typedef enum logic [1:0] {
@@ -618,11 +622,12 @@ module fp_engine (
   // ===========================================================================
   // Result-precision constants and rounding bits
   // ===========================================================================
-  logic signed [13:0] emin_p, floor_p, emax_p, bias_p;
-  assign emin_p  = dec_q.dst_d ? -14'sd1022 : -14'sd126;
+  logic signed [13:0] emin_p, floor_p, floor_step8_p, emax_p, bias_p;
+  assign emin_p = dec_q.dst_d ? -14'sd1022 : -14'sd126;
   assign floor_p = dec_q.dst_d ? -14'sd1023 : -14'sd127;
-  assign emax_p  = dec_q.dst_d ? 14'sd1023 : 14'sd127;
-  assign bias_p  = dec_q.dst_d ? 14'sd1023 : 14'sd127;
+  assign floor_step8_p = dec_q.dst_d ? -14'sd1015 : -14'sd119;
+  assign emax_p = dec_q.dst_d ? 14'sd1023 : 14'sd127;
+  assign bias_p = dec_q.dst_d ? 14'sd1023 : 14'sd127;
 
   // Significand R[111:59] (double) or R[111:88] (single), then guard, round
   // and sticky.
@@ -949,18 +954,13 @@ module fp_engine (
   end
 
   // ===========================================================================
-  // Fast paths for non-arithmetic operations (single/two-cycle execution)
+  // Fast paths for moves, comparisons, classification and integer conversion
   // ===========================================================================
   logic is_fast_op;
   always_comb begin
     unique case (dec_q.cls)
-      CL_MVXF,
-      CL_MVFX,
-      CL_SGNJ,
-      CL_CLASS,
-      CL_CMP,
-      CL_MINMAX,
-      CL_I2F: is_fast_op = 1'b1;
+      CL_MVXF, CL_MVFX, CL_SGNJ, CL_CLASS, CL_CMP, CL_MINMAX: is_fast_op = 1'b1;
+      CL_I2F: is_fast_op = (fast_i2f_int == '0);
       default: is_fast_op = 1'b0;
     endcase
   end
@@ -994,10 +994,14 @@ module fp_engine (
       fast_sgnj_res = {fast_sgnj_sign, opa_q[62:0]};
     end else begin
       fast_sgnj_res = pack_fp(
-          fast_sgnj_sign,
-          field_exp(opa_q, ca_comb.box_ok, 1'b0),
-          field_frac(opa_q, ca_comb.box_ok, 1'b0),
-          1'b0
+        fast_sgnj_sign,
+        field_exp(
+          opa_q, ca_comb.box_ok, 1'b0
+        ),
+        field_frac(
+          opa_q, ca_comb.box_ok, 1'b0
+        ),
+        1'b0
       );
     end
   end
@@ -1033,20 +1037,20 @@ module fp_engine (
   logic fast_cmp_bit;
   logic fast_cmp_nv;
   always_comb begin
-    fast_cmp_nv = 1'b0;
+    fast_cmp_nv  = 1'b0;
     fast_cmp_bit = 1'b0;
     unique case (dec_q.fn)
       2'd0: begin
         fast_cmp_bit = !(ca_comb.nan || cb_comb.nan) && fast_a_eq_b;
-        fast_cmp_nv = ca_comb.snan || cb_comb.snan;
+        fast_cmp_nv  = ca_comb.snan || cb_comb.snan;
       end
       2'd1: begin
         fast_cmp_bit = !(ca_comb.nan || cb_comb.nan) && fast_a_lt_b;
-        fast_cmp_nv = ca_comb.nan || cb_comb.nan;
+        fast_cmp_nv  = ca_comb.nan || cb_comb.nan;
       end
       default: begin
         fast_cmp_bit = !(ca_comb.nan || cb_comb.nan) && (fast_a_lt_b || fast_a_eq_b);
-        fast_cmp_nv = ca_comb.nan || cb_comb.nan;
+        fast_cmp_nv  = ca_comb.nan || cb_comb.nan;
       end
     endcase
   end
@@ -1064,11 +1068,27 @@ module fp_engine (
     if (ca_comb.nan && cb_comb.nan) begin
       fast_minmax_res = dec_q.dst_d ? 64'h7FF8_0000_0000_0000 : {32'hFFFF_FFFF, 32'h7FC0_0000};
     end else if (fast_minmax_pick_b) begin
-      fast_minmax_res = dec_q.dst_d ? opb_q :
-          pack_fp(cb_comb.sign, field_exp(opb_q, cb_comb.box_ok, 1'b0), field_frac(opb_q, cb_comb.box_ok, 1'b0), 1'b0);
+      fast_minmax_res = dec_q.dst_d ? opb_q : pack_fp(
+        cb_comb.sign,
+        field_exp(
+          opb_q, cb_comb.box_ok, 1'b0
+        ),
+        field_frac(
+          opb_q, cb_comb.box_ok, 1'b0
+        ),
+        1'b0
+      );
     end else begin
-      fast_minmax_res = dec_q.dst_d ? opa_q :
-          pack_fp(ca_comb.sign, field_exp(opa_q, ca_comb.box_ok, 1'b0), field_frac(opa_q, ca_comb.box_ok, 1'b0), 1'b0);
+      fast_minmax_res = dec_q.dst_d ? opa_q : pack_fp(
+        ca_comb.sign,
+        field_exp(
+          opa_q, ca_comb.box_ok, 1'b0
+        ),
+        field_frac(
+          opa_q, ca_comb.box_ok, 1'b0
+        ),
+        1'b0
+      );
     end
   end
 
@@ -1086,24 +1106,38 @@ module fp_engine (
   assign fast_i2f_sign = !dec_q.int_u && fast_i2f_int[63];
   assign fast_i2f_abs  = fast_i2f_sign ? (-fast_i2f_int) : fast_i2f_int;
 
-  logic [5:0] fast_i2f_lz;
-  assign fast_i2f_lz = clz64(fast_i2f_abs);
+  logic [63:0] fast_i2f_abs_q, fast_i2f_norm_q;
+  logic [5:0] fast_i2f_lz, fast_i2f_lz_q;
+  assign fast_i2f_lz = clz64(fast_i2f_abs_q);
 
-  logic [63:0] fast_i2f_norm;
-  assign fast_i2f_norm = fast_i2f_abs << fast_i2f_lz;
+  always_ff @(posedge i_clk) begin
+    if (state_q == ST_DEC1) begin
+      fast_i2f_abs_q <= fast_i2f_abs;
+    end
+    if (state_q == ST_I2F_NORM) begin
+      fast_i2f_lz_q   <= fast_i2f_lz;
+      fast_i2f_norm_q <= fast_i2f_abs_q << fast_i2f_lz;
+    end
+  end
 
   logic [10:0] fast_i2f_d_exp;
   logic fast_i2f_d_round_up, fast_i2f_d_inexact, fast_i2f_d_carry;
   logic [51:0] fast_i2f_d_frac;
   always_comb begin
-    fast_i2f_d_exp = 11'd1086 - {5'b0, fast_i2f_lz};
+    fast_i2f_d_exp = 11'd1086 - {5'b0, fast_i2f_lz_q};
     fast_i2f_d_round_up = riscv_pkg::fp_compute_round_up(
-        rm_q, fast_i2f_norm[10], fast_i2f_norm[9], |fast_i2f_norm[8:0], fast_i2f_norm[11], fast_i2f_sign
+      rm_q,
+      fast_i2f_norm_q[10],
+      fast_i2f_norm_q[9],
+      |fast_i2f_norm_q[8:0],
+      fast_i2f_norm_q[11],
+      fast_i2f_sign
     );
-    fast_i2f_d_inexact = fast_i2f_norm[10] || fast_i2f_norm[9] || (|fast_i2f_norm[8:0]);
-    {fast_i2f_d_carry, fast_i2f_d_frac} = {1'b0, fast_i2f_norm[62:11]} + {52'b0, fast_i2f_d_round_up};
+    fast_i2f_d_inexact = fast_i2f_norm_q[10] || fast_i2f_norm_q[9] || (|fast_i2f_norm_q[8:0]);
+    {fast_i2f_d_carry, fast_i2f_d_frac} =
+        {1'b0, fast_i2f_norm_q[62:11]} + {52'b0, fast_i2f_d_round_up};
     if (fast_i2f_d_carry) begin
-      fast_i2f_d_exp = fast_i2f_d_exp + 11'd1;
+      fast_i2f_d_exp  = fast_i2f_d_exp + 11'd1;
       fast_i2f_d_frac = '0;
     end
   end
@@ -1112,14 +1146,20 @@ module fp_engine (
   logic fast_i2f_s_round_up, fast_i2f_s_inexact, fast_i2f_s_carry;
   logic [22:0] fast_i2f_s_frac;
   always_comb begin
-    fast_i2f_s_exp = 8'd190 - {2'b0, fast_i2f_lz};
+    fast_i2f_s_exp = 8'd190 - {2'b0, fast_i2f_lz_q};
     fast_i2f_s_round_up = riscv_pkg::fp_compute_round_up(
-        rm_q, fast_i2f_norm[39], fast_i2f_norm[38], |fast_i2f_norm[37:0], fast_i2f_norm[40], fast_i2f_sign
+      rm_q,
+      fast_i2f_norm_q[39],
+      fast_i2f_norm_q[38],
+      |fast_i2f_norm_q[37:0],
+      fast_i2f_norm_q[40],
+      fast_i2f_sign
     );
-    fast_i2f_s_inexact = fast_i2f_norm[39] || fast_i2f_norm[38] || (|fast_i2f_norm[37:0]);
-    {fast_i2f_s_carry, fast_i2f_s_frac} = {1'b0, fast_i2f_norm[62:40]} + {23'b0, fast_i2f_s_round_up};
+    fast_i2f_s_inexact = fast_i2f_norm_q[39] || fast_i2f_norm_q[38] || (|fast_i2f_norm_q[37:0]);
+    {fast_i2f_s_carry, fast_i2f_s_frac} =
+        {1'b0, fast_i2f_norm_q[62:40]} + {23'b0, fast_i2f_s_round_up};
     if (fast_i2f_s_carry) begin
-      fast_i2f_s_exp = fast_i2f_s_exp + 8'd1;
+      fast_i2f_s_exp  = fast_i2f_s_exp + 8'd1;
       fast_i2f_s_frac = '0;
     end
   end
@@ -1143,7 +1183,7 @@ module fp_engine (
   riscv_pkg::fp_flags_t fast_flags;
   always_comb begin
     fast_flags = '0;
-    fast_res = '0;
+    fast_res   = '0;
     unique case (dec_q.cls)
       CL_MVXF: begin
         fast_res = dec_q.int_w ? {{32{opa_q[31]}}, opa_q[31:0]} : opa_q;
@@ -1165,21 +1205,16 @@ module fp_engine (
         fast_res = fast_minmax_res;
         fast_flags.nv = ca_comb.snan || cb_comb.snan;
       end
-      CL_I2F: begin
-        fast_res = fast_i2f_res;
-        fast_flags = fast_i2f_flags;
-      end
+      CL_I2F:  fast_res = dec_q.dst_d ? 64'd0 : {32'hFFFF_FFFF, 32'd0};
       default: ;
     endcase
   end
 
   logic [63:0] res_calc;
-  assign res_calc = res_is_fp ? pack_fp(
-      fp_sign, fp_expf, fp_frac, dec_q.dst_d
-  ) : int_res;
+  assign res_calc = res_is_fp ? pack_fp(fp_sign, fp_expf, fp_frac, dec_q.dst_d) : int_res;
 
   assign res_d = (state_q == ST_DEC1 && is_fast_op) ? fast_res :
-                 (!res_load ? res_q : res_calc);
+      (state_q == ST_I2F_ROUND) ? fast_i2f_res : (!res_load ? res_q : res_calc);
 
   // ===========================================================================
   // Decode cycle 2: special operands
@@ -1401,8 +1436,15 @@ module fp_engine (
   assign align_abs  = align_diff[13] ? 14'(-align_diff) : 14'(align_diff);
 
   logic signed [13:0] denorm_diff;  // emin - E
+  logic signed [13:0] denorm_collapse_p, denorm_wrap_p;
+  logic denorm_positive, denorm_collapse;
   logic signed [13:0] f2i_diff;  // 63 - EX (F2I shift, set up in ST_XFER)
   assign denorm_diff = emin_p - e_q;
+  assign denorm_collapse_p = dec_q.dst_d ? -14'sd1150 : -14'sd254;
+  assign denorm_wrap_p = dec_q.dst_d ? 14'sd7170 : 14'sd8066;
+  // Direct exponent comparisons include the signed subtraction's wraparound.
+  assign denorm_positive = (e_q < emin_p) || (e_q > denorm_wrap_p);
+  assign denorm_collapse = (e_q <= denorm_collapse_p) || (e_q > denorm_wrap_p);
   assign f2i_diff = 14'sd63 - ex_q;
 
   logic sh_step8;  // this shift step moves eight columns
@@ -1472,9 +1514,19 @@ module fp_engine (
         if (is_fast_op) begin
           flags_d = fast_flags;
           state_d = ST_DONE;
+        end else if (dec_q.cls == CL_I2F) begin
+          flags_d = '0;
+          state_d = ST_I2F_NORM;
         end else begin
           state_d = ST_DEC2;
         end
+      end
+
+      ST_I2F_NORM: state_d = ST_I2F_ROUND;
+
+      ST_I2F_ROUND: begin
+        flags_d = fast_i2f_flags;
+        state_d = ST_DONE;
       end
 
       ST_DEC2: begin
@@ -1921,7 +1973,7 @@ module fp_engine (
           state_d = ST_BE_PACK;
         end else if (!r_q[111] && (e_q > floor_p)) begin
           e_load = 1'b1;
-          if (r_top8_zero && ((e_q - 14'sd8) >= floor_p)) begin
+          if (r_top8_zero && (e_q >= floor_step8_p)) begin
             r_sel  = R_SHL8;
             eq_sel = EQ_M8;
           end else begin
@@ -1930,13 +1982,13 @@ module fp_engine (
           end
         end else begin
           tiny_d = be_tiny;
-          if (denorm_diff > 0) begin
+          if (denorm_positive) begin
             // Subnormal result: shift right to the minimum exponent.
             ep_sel = EP_ZERO;
             eq_sel = EQ_EMIN;
             e_load = 1'b1;
             sh_x_d = 1'b0;
-            sh_collapse_d = (denorm_diff >= 14'sd128);
+            sh_collapse_d = denorm_collapse;
             sh_cnt_d = denorm_diff[6:0];
             ret_d = RET_BE;
             state_d = ST_RSHIFT;

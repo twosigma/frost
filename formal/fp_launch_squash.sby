@@ -72,6 +72,9 @@ connect -nounset -set b_dp[70:70] u_base.u_engine.mag_lt_q
 connect -nounset -set b_dp[69:69] u_base.u_engine.mag_eq_q
 connect -nounset -set b_dp[68:5] u_base.u_engine.res_q
 connect -nounset -set b_dp[4:0] u_base.u_engine.flags_q
+connect -nounset -set b_i2f[133:70] u_base.u_engine.fast_i2f_abs_q
+connect -nounset -set b_i2f[69:64] u_base.u_engine.fast_i2f_lz_q
+connect -nounset -set b_i2f[63:0] u_base.u_engine.fast_i2f_norm_q
 connect -nounset -set c_state u_cand.u_engine.state_q
 connect -nounset -set c_tag u_cand.tag_q
 connect -nounset -set c_squash u_cand.squash_q
@@ -116,13 +119,16 @@ connect -nounset -set c_dp[70:70] u_cand.u_engine.mag_lt_q
 connect -nounset -set c_dp[69:69] u_cand.u_engine.mag_eq_q
 connect -nounset -set c_dp[68:5] u_cand.u_engine.res_q
 connect -nounset -set c_dp[4:0] u_cand.u_engine.flags_q
+connect -nounset -set c_i2f[133:70] u_cand.u_engine.fast_i2f_abs_q
+connect -nounset -set c_i2f[69:64] u_cand.u_engine.fast_i2f_lz_q
+connect -nounset -set c_i2f[63:0] u_cand.u_engine.fast_i2f_norm_q
 prep -top fp_launch_squash_miter
 # Fails on any undriven wire, so every probe must be connected.
 check -assert
 on: select -assert-count 3 t:$check r:FLAVOR=assume %i
 cover: select -assert-count 3 t:$check r:FLAVOR=assume %i
 off: select -assert-count 2 t:$check r:FLAVOR=assume %i
-select -assert-count 9 t:$check r:FLAVOR=assert %i
+select -assert-count 11 t:$check r:FLAVOR=assert %i
 select -assert-none t:$assume t:$assert t:$live t:$fair
 
 [files]

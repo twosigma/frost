@@ -320,11 +320,11 @@ and targeted microbenchmarks give these items:
    with translation off, so small loops need checking against the BTB. The
    BTB read is on the fetch loop, one of the hardest paths at the target
    clock.
-6. Floating point. One iterative engine executes every F and D instruction,
-   one at a time on a shared adder, to save area. Compares and
-   integer-to-FP conversions take 5 to 23 cycles, a dependent `fadd.d` 20,
-   and `fmul.d` 68. Pipelined units, or at least a fast path for compares,
-   conversions, moves, and sign injection, would serve sysbench-style code.
+6. Floating point. One engine executes F and D instructions one at a time.
+   Arithmetic shares an iterative adder. Comparisons, moves, min/max, FCLASS
+   and sign injection use two-cycle paths. Integer-to-FP conversion takes
+   four cycles, or two for zero. Pipelined add and multiply units would let
+   FP_RS issue independent arithmetic while earlier operations execute.
 7. Integer multiply and divide. A multiply takes about 9 cycles to a
    dependent instruction. The divider produces one quotient bit per cycle,
    65 cycles for a 64-bit operation, and a radix-4 divider halves that.

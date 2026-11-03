@@ -32,8 +32,9 @@
  * same flush.
  *
  * With LAUNCH_SQUASH, a flushed issue starts and a registered squash bit
- * kills it in its first decode cycle. It changes no result state, and
- * o_fu_busy stays low that cycle. The engine cannot take an issue then, so
+ * kills it in its first decode cycle. There is no valid completion, and
+ * o_fu_busy stays low. Fast operations may write result and flag registers
+ * during that cycle. The engine cannot take an issue then, so
  * LAUNCH_SQUASH requires a bubble after a flushed issue. FP_RS provides it:
  * the flush clears the squashed stage2 packet and blocks refill.
  */

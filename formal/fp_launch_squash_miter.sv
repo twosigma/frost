@@ -38,6 +38,9 @@ module fp_launch_squash_miter (
   localparam int unsigned TagW = riscv_pkg::ReorderBufferTagWidth;
   localparam logic [5:0] StIdle = 6'd0;  // fp_engine state_e encoding
   localparam logic [5:0] StDec1 = 6'd1;
+  localparam logic [5:0] StDec2 = 6'd2;
+  localparam logic [5:0] StI2fNorm = 6'd34;
+  localparam logic [5:0] StI2fRound = 6'd35;
 
 `ifdef FP_LS_ON
   localparam bit LaunchSquash = 1'b1;
@@ -80,7 +83,8 @@ module fp_launch_squash_miter (
   logic [TagW-1:0] b_tag, c_tag;  // u_*.tag_q
   logic [207:0] b_payload, c_payload;  // dec_q rm_q opa_q opb_q opc_q
   logic [65:0] b_dec1, c_dec1;  // ca/cb/cc ea/eb/ec f2i_over f2i_edge int_zero
-  logic [410:0] b_dp, c_dp;  // every other engine register
+  logic [410:0] b_dp, c_dp;  // shared arithmetic and result registers
+  logic [133:0] b_i2f, c_i2f;  // integer magnitude, leading zeros, normalized bits
 
   // The age compare both shims use, from the inputs.
   function automatic logic is_younger(input logic [TagW-1:0] entry_tag,
@@ -115,7 +119,7 @@ module fp_launch_squash_miter (
     if (f_init) begin
       a_equal_init :
       assume (b_state == c_state && !c_squash && b_tag == c_tag &&
-              b_payload == c_payload && b_dec1 == c_dec1 && b_dp == c_dp);
+              b_payload == c_payload && b_dec1 == c_dec1 && b_dp == c_dp && b_i2f == c_i2f);
     end
   end
 
@@ -152,7 +156,19 @@ module fp_launch_squash_miter (
     end else begin
       p_state_equal : assert (c_state == b_state);
     end
-    p_datapath_equal : assert (b_dp == c_dp);
+    // A squashed fast operation may write result and flags while the reference
+    // stays idle. Each result is checked on completion. Decode initializes
+    // flags before arithmetic uses them.
+    p_datapath_equal :
+    assert (b_dp[410:69] == c_dp[410:69] &&
+            ((b_state == StIdle || b_state == StDec1 || b_state == StDec2) ||
+             b_dp[4:0] == c_dp[4:0]));
+    if (b_state == StI2fNorm || b_state == StI2fRound) begin
+      p_i2f_input_equal : assert (b_i2f[133:70] == c_i2f[133:70]);
+    end
+    if (b_state == StI2fRound) begin
+      p_i2f_normalized_equal : assert (b_i2f[69:0] == c_i2f[69:0]);
+    end
     if (b_state != StIdle) begin
       p_payload_equal : assert (b_payload == c_payload && b_tag == c_tag);
     end
