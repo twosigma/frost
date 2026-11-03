@@ -610,7 +610,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "divider.sby",
-        "Divider arithmetic at 8 bits and step-count/remainder bounds at 64 bits",
+        "Divider arithmetic at 8 bits and setup, completion, and cancellation at 64 bits",
         tasks=("bmc_width8", "prove_width64", "cover_width8"),
     ),
     FormalTarget(

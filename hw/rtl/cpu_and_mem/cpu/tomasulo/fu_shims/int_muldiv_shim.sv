@@ -29,9 +29,9 @@
  *     (riscv_pkg::MulPipeDepth-cycle latency, pipelined)
  *   MULW -> dedicated unsigned 32-bit multiplier (3 cycles)
  *   CLMUL, CLMULH, CLMULR -> carry-less multiplier (3 cycles)
- *   DIV, DIVU, REM, REMU and their W forms -> iterative divider, one
- *     operation at a time (result after XLEN + 1 cycles, XLEN/2 + 1 for a W
- *     form)
+ *   DIV, DIVU, REM, REMU and their W forms -> radix-4 divider, one
+ *     operation at a time, with three setup cycles and leading-zero skipping.
+ *     Full-width results take at most XLEN/2 + 3 cycles, W forms XLEN/4 + 3.
  * SHORT_WORD_OPS=0 sends MULW through the full-width multiplier.
  *
  * The multiplier path is pipelined. A shift register as deep as the

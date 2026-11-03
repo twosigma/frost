@@ -472,3 +472,186 @@ async def test_flush_on_result_cycle(dut: Any) -> None:
     await FallingEdge(iface.clock)
     iface.clear_flush()
     await expect_no_result(iface, 20)
+
+
+@cocotb.test()
+async def test_fast_paths_non_arithmetic(dut: Any) -> None:
+    """Check fast-operation latency, exact flags, signed zero and NaN corners."""
+    iface = await setup(dut)
+
+    dp_pos_zero = 0x0000_0000_0000_0000
+    dp_neg_zero = 0x8000_0000_0000_0000
+    dp_qnan = 0x7FF8_0000_0000_0000
+    dp_snan = 0x7FF0_0000_0000_0001
+    dp_canonical_nan = 0x7FF8_0000_0000_0000
+
+    # 1. Compare operations (FEQ_D, FLT_D, FLE_D) at 2 cycles
+    # +0.0 == -0.0
+    lat = await check_op(iface, 1, "FEQ_D", dp_pos_zero, dp_neg_zero, 0, RM_RNE, 1, 0)
+    assert lat == 2, f"FEQ_D latency was {lat}, expected 2"
+
+    lat = await check_op(iface, 2, "FLT_D", dp_pos_zero, dp_neg_zero, 0, RM_RNE, 0, 0)
+    assert lat == 2, f"FLT_D latency was {lat}, expected 2"
+
+    lat = await check_op(iface, 3, "FLE_D", dp_neg_zero, dp_pos_zero, 0, RM_RNE, 1, 0)
+    assert lat == 2, f"FLE_D latency was {lat}, expected 2"
+
+    # Quiet NaN vs number: FEQ sets no flags, FLT and FLE set NV
+    await check_op(iface, 4, "FEQ_D", dp_qnan, DP_1_0, 0, RM_RNE, 0, 0)
+    await check_op(iface, 5, "FLT_D", dp_qnan, DP_1_0, 0, RM_RNE, 0, FLAG_NV)
+    await check_op(iface, 6, "FLE_D", dp_qnan, DP_1_0, 0, RM_RNE, 0, FLAG_NV)
+    # Signaling NaN raises NV even for FEQ
+    await check_op(iface, 7, "FEQ_D", dp_snan, DP_1_0, 0, RM_RNE, 0, FLAG_NV)
+
+    # 2. Min / Max operations at 2 cycles
+    # +/- 0 ordering: -0.0 < +0.0
+    lat = await check_op(
+        iface, 8, "FMIN_D", dp_pos_zero, dp_neg_zero, 0, RM_RNE, dp_neg_zero, 0
+    )
+    assert lat == 2, f"FMIN_D latency was {lat}, expected 2"
+
+    lat = await check_op(
+        iface, 9, "FMAX_D", dp_pos_zero, dp_neg_zero, 0, RM_RNE, dp_pos_zero, 0
+    )
+    assert lat == 2, f"FMAX_D latency was {lat}, expected 2"
+
+    # NaN handling: one NaN operand returns the other; two NaNs returns canonical quiet NaN
+    await check_op(iface, 10, "FMIN_D", dp_qnan, DP_3_0, 0, RM_RNE, DP_3_0, 0)
+    await check_op(iface, 11, "FMIN_D", DP_3_0, dp_qnan, 0, RM_RNE, DP_3_0, 0)
+    await check_op(
+        iface, 12, "FMIN_D", dp_qnan, dp_qnan, 0, RM_RNE, dp_canonical_nan, 0
+    )
+    await check_op(iface, 13, "FMIN_D", dp_snan, DP_3_0, 0, RM_RNE, DP_3_0, FLAG_NV)
+
+    # 3. Move operations at 2 cycles
+    lat = await check_op(iface, 14, "FMV_X_D", DP_3_0, 0, 0, RM_RNE, DP_3_0, 0)
+    assert lat == 2, f"FMV_X_D latency was {lat}, expected 2"
+
+    lat = await check_op(iface, 15, "FMV_D_X", DP_7_0, 0, 0, RM_RNE, DP_7_0, 0)
+    assert lat == 2, f"FMV_D_X latency was {lat}, expected 2"
+
+    lat = await check_op(
+        iface,
+        16,
+        "FMV_X_W",
+        0x1234_5678_8000_1234,
+        0,
+        0,
+        RM_RNE,
+        0xFFFF_FFFF_8000_1234,
+        0,
+    )
+    assert lat == 2, f"FMV_X_W latency was {lat}, expected 2"
+
+    lat = await check_op(
+        iface,
+        17,
+        "FMV_W_X",
+        0x1234_5678_8000_1234,
+        0,
+        0,
+        RM_RNE,
+        0xFFFF_FFFF_8000_1234,
+        0,
+    )
+    assert lat == 2, f"FMV_W_X latency was {lat}, expected 2"
+
+    # 4. Sign-injection operations at 2 cycles
+    lat = await check_op(
+        iface, 18, "FSGNJ_D", DP_3_0, dp_neg_zero, 0, RM_RNE, DP_3_0 | (1 << 63), 0
+    )
+    assert lat == 2, f"FSGNJ_D latency was {lat}, expected 2"
+
+    lat = await check_op(
+        iface, 19, "FSGNJN_D", DP_3_0, dp_neg_zero, 0, RM_RNE, DP_3_0, 0
+    )
+    assert lat == 2, f"FSGNJN_D latency was {lat}, expected 2"
+
+    lat = await check_op(
+        iface, 20, "FSGNJX_D", DP_3_0, dp_neg_zero, 0, RM_RNE, DP_3_0 | (1 << 63), 0
+    )
+    assert lat == 2, f"FSGNJX_D latency was {lat}, expected 2"
+
+    # 5. Classify operations at 2 cycles
+    lat = await check_op(
+        iface, 21, "FCLASS_D", dp_pos_zero, 0, 0, RM_RNE, 1 << 4, 0
+    )  # +0: bit 4
+    assert lat == 2, f"FCLASS_D latency was {lat}, expected 2"
+
+    await check_op(
+        iface, 22, "FCLASS_D", dp_neg_zero, 0, 0, RM_RNE, 1 << 3, 0
+    )  # -0: bit 3
+    await check_op(
+        iface, 23, "FCLASS_D", dp_qnan, 0, 0, RM_RNE, 1 << 9, 0
+    )  # quiet NaN: bit 9
+    await check_op(
+        iface, 24, "FCLASS_D", dp_snan, 0, 0, RM_RNE, 1 << 8, 0
+    )  # sNaN: bit 8
+
+    # 6. Integer-to-double conversions take four cycles, or two for zero.
+    lat = await check_op(
+        iface, 25, "FCVT_D_W", 0xFFFF_FFFF_FFFF_FFFF, 0, 0, RM_RNE, dp_bits(-1.0), 0
+    )
+    assert lat == 4, f"FCVT_D_W latency was {lat}, expected 4"
+
+    lat = await check_op(
+        iface,
+        26,
+        "FCVT_D_WU",
+        0xFFFF_FFFF_FFFF_FFFF,
+        0,
+        0,
+        RM_RNE,
+        dp_bits(4294967295.0),
+        0,
+    )
+    assert lat == 4, f"FCVT_D_WU latency was {lat}, expected 4"
+
+    lat = await check_op(iface, 27, "FCVT_D_L", 0, 0, 0, RM_RNE, dp_pos_zero, 0)
+    assert lat == 2, f"FCVT_D_L zero latency was {lat}, expected 2"
+
+    lat = await check_op(iface, 28, "FCVT_D_LU", 1, 0, 0, RM_RNE, DP_1_0, 0)
+    assert lat == 4, f"FCVT_D_LU 1.0 latency was {lat}, expected 4"
+
+    # FCVT_D_LU with rounding on 64-bit int exceeding 53 bits:
+    # 0x0020_0000_0000_0001 has 54 bits: 2^53 + 1
+    # Under RNE, rounds to 2^53 (NX set)
+    val_54b = (1 << 53) | 1
+    expected_val = (1023 + 53) << 52  # 2^53
+    await check_op(iface, 29, "FCVT_D_LU", val_54b, 0, 0, RM_RNE, expected_val, FLAG_NX)
+
+
+@cocotb.test()
+async def test_integer_conversion_pipeline_flush(dut: Any) -> None:
+    """Kill each conversion stage and reuse its tag on the next idle cycle."""
+    iface = await setup(dut)
+    for precision in ("S", "D"):
+        for form in ("W", "WU", "L", "LU"):
+            op = f"FCVT_{precision}_{form}"
+            expected = nan_box_f32(SP_1_0) if precision == "S" else DP_1_0
+            for flush_kind in ("full", "partial", "reset"):
+                for stage in range(1, 4):
+                    await issue(iface, 12, op, 0xFFFF_FFFF_FFFF_FFFF, rm=RM_RUP)
+                    for _ in range(stage - 1):
+                        assert iface.read_busy()
+                        assert not iface.read_fu_complete()["valid"]
+                        await RisingEdge(iface.clock)
+                        await FallingEdge(iface.clock)
+                    if flush_kind == "full":
+                        iface.drive_flush()
+                    elif flush_kind == "partial":
+                        iface.drive_partial_flush(flush_tag=11, head_tag=5)
+                    else:
+                        dut.i_rst_n.value = 0
+                    await RisingEdge(iface.clock)
+                    await FallingEdge(iface.clock)
+                    iface.clear_flush()
+                    iface.clear_partial_flush()
+                    dut.i_rst_n.value = 1
+                    assert not iface.read_busy()
+                    assert not iface.read_fu_complete()["valid"]
+                    latency = await check_op(
+                        iface, 12, op, 1, 0, 0, RM_RNE, expected, 0
+                    )
+                    assert latency == 4
+                    await expect_no_result(iface, 4)

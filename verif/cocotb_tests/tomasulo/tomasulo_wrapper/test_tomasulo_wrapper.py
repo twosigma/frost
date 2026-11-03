@@ -65,9 +65,8 @@ if not 30 <= DDR_CAPACITY_LOG2_BYTES <= 37:
     raise ValueError("FROST_DDR_CAPACITY_LOG2_BYTES must select 1–128 GiB")
 DDR_LIMIT = 0x8000_0000 + (1 << DDR_CAPACITY_LOG2_BYTES)
 
-# The iterative divider produces one quotient bit per cycle, XLEN steps for a
-# full-width divide. The timeout adds a margin for issue, the DIV adapter and
-# the CDB.
+# The radix-4 divider uses three setup cycles and up to XLEN/2 recurrence
+# cycles. The timeout includes a margin for issue, the DIV adapter and CDB.
 DIV_CDB_TIMEOUT_CYCLES = XLEN + 16
 
 
@@ -4873,9 +4872,13 @@ async def test_mul_issues_past_waiting_div(dut: Any) -> None:
     dut_if.set_fu_ready(RS_MUL, False)
     dut_if.set_commit_hold(True)
 
+    # Use operands with MSB set so the Radix-4 divider runs its full 32 cycles,
+    # ensuring the MUL finishes long before the first divide completes.
+    div1_src = (1 << 63) | 1000
+    div2_src = (1 << 63) | 2000
     ops = [
-        (OP_DIVU, 1000, 10, 100),
-        (OP_DIVU, 2000, 10, 200),
+        (OP_DIVU, div1_src, 10, div1_src // 10),
+        (OP_DIVU, div2_src, 10, div2_src // 10),
         (OP_MUL, 6, 7, 42),
     ]
     tags = []
