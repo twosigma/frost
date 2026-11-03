@@ -26,6 +26,7 @@ L1_LINE = 32
 L2_LINE = 64
 PAGE = 4096
 DISTANCE = 8  # the module's default
+BACKWARD_DISTANCE = min(2 * DISTANCE - 1, PAGE // L2_LINE - 1)
 
 
 class PrefetchBench:
@@ -240,8 +241,29 @@ async def test_backward_refills_and_forward_progress(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_backward_refills_before_confirmation(dut: Any) -> None:
+    """A tentative instruction entry survives nearby backward refills."""
+    bench = PrefetchBench(dut)
+    await bench.start()
+    base = 0x80C0_0000
+    for line in (20, 18, 19):
+        await bench.cycle(base + line * L2_LINE)
+        await bench.idle(40)
+    if int(dut.IGNORE_BACKWARD.value):
+        assert not bench.reads
+    else:
+        assert bench.reads, "backward data misses did not train"
+    await bench.cycle(base + 21 * L2_LINE)
+    await bench.idle(100)
+    if int(dut.IGNORE_BACKWARD.value):
+        assert bench.reads == [
+            base + line * L2_LINE for line in range(22, 22 + DISTANCE)
+        ]
+
+
+@cocotb.test()
 async def test_backward_distance_boundary(dut: Any) -> None:
-    """The filter includes DISTANCE and permits training one line beyond it."""
+    """The filter includes its backward bound and permits training beyond it."""
     bench = PrefetchBench(dut)
     await bench.start()
     base = 0x8080_0000
@@ -250,7 +272,7 @@ async def test_backward_distance_boundary(dut: Any) -> None:
     await bench.cycle(base + frontier * L2_LINE)
     await bench.idle(40)
     before = len(bench.reads)
-    for line in (frontier - DISTANCE, frontier - DISTANCE + 1):
+    for line in (frontier - BACKWARD_DISTANCE, frontier - BACKWARD_DISTANCE + 1):
         await bench.cycle(base + line * L2_LINE)
     await bench.idle(40)
     if int(dut.IGNORE_BACKWARD.value):
@@ -263,17 +285,21 @@ async def test_backward_distance_boundary(dut: Any) -> None:
     await bench.cycle(base + frontier * L2_LINE)
     await bench.idle(40)
     before = len(bench.reads)
-    for line in (frontier - DISTANCE - 1, frontier - DISTANCE):
+    for line in (frontier - BACKWARD_DISTANCE - 1, frontier - BACKWARD_DISTANCE):
         await bench.cycle(base + line * L2_LINE)
     await bench.idle(40)
     assert bench.reads[before:] == [
-        base + k * L2_LINE for k in range(frontier - DISTANCE + 1, frontier + 1)
+        base + k * L2_LINE
+        for k in range(
+            frontier - BACKWARD_DISTANCE + 1,
+            frontier - BACKWARD_DISTANCE + DISTANCE + 1,
+        )
     ]
 
 
 @cocotb.test()
 async def test_backward_distance_at_page_end(dut: Any) -> None:
-    """Backward filtering preserves the carry of the page-offset distance sum."""
+    """Backward refills near a page end preserve instruction entries."""
     bench = PrefetchBench(dut)
     await bench.start()
     base = 0x80B0_0000

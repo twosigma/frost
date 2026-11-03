@@ -1936,7 +1936,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "l2_stream_prefetcher_if": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_l2_stream_prefetcher",
         hdl_toplevel_module="l2_stream_prefetcher",
-        description="Instruction streams filter backward refills within their distance bound",
+        description="Instruction streams preserve a window of twice the read distance",
         verilator_extra_args=("-GSTREAMS=2", "-GIGNORE_BACKWARD=1"),
     ),
     "cached_tier_adapter": CocotbRunConfig(

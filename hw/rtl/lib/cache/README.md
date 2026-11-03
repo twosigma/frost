@@ -406,12 +406,8 @@ exclude valid victim lines. An invalid way's stored tag does not create an
 address conflict; physical way pins and fill claims govern its reuse.
 
 Two ordinary PutM controls have frozen payload storage and independent array
-service. Tag selection gives demand and PutM lookups priority over
-unselected prefetches. A selected prefetch keeps its held request. One
-shared cursor rotates across eligible tag ports. Sustained demand or PutM
-traffic can postpone unselected prefetches indefinitely. Round-robin arbitration
-rotates row reads, masked updates, probes, acknowledgements and results.
-Resident data reads overlap
+service. Round-robin arbitration rotates tag decisions, row reads, masked
+updates, probes, acknowledgements and results. Resident data reads overlap
 probes. Dirty probe bytes override the resident snapshot regardless of arrival
 order; DMA byte enables apply after that merge. The final service edge
 combines every completed input before the masked update or result becomes
@@ -550,7 +546,7 @@ until the home accepts it, alternating between the tables, and the tables
 load new requests only while the home reports room for a prefetch fill.
 
 The instruction table enables `IGNORE_BACKWARD`. A refill up to
-`L2_PREFETCH_DISTANCE` lines behind a confirmed stream's last line in the
+`2 * L2_PREFETCH_DISTANCE - 1` lines behind an entry's last line in the
 same page leaves the entries in place. Refills farther behind can replace
 an entry and train a stream.
 
@@ -584,9 +580,8 @@ and `coherent_cut` cover controller ownership, inclusion, cuts, atomics,
 probe service and the DMA sector handoff. Their prefetch cases cover the slot
 partition, the no-fill flag, prefetch fills that install, take a demand seat
 or fail, the fill reserve, the last available way and the last write-back
-slot, PutM beside live prefetches, demand and PutM tag priority with held
-prefetch requests, and a demand that replaces lines held only by prefetches.
-`coherence_cluster_misses` repeats the cluster cases with three
+slot, PutM beside live prefetches, and a demand that replaces lines held only
+by prefetches. `coherence_cluster_misses` repeats the cluster cases with three
 L1D request endpoints, including several loads in flight. `coherence_readers`
 controls grants and releases around the real L1I, fetch provider and PTW. It checks overlapping fills, invalidation, discarded fetches
 and walks, errors, reset, fatal stop and reuse of reader IDs before U.
@@ -1008,9 +1003,10 @@ store misses included. A table of 4 streams holds the last L2 line each
 stream missed on. A miss on the line after a stream's confirms the stream
 and advances it, a miss on its own line leaves it, and any other miss
 replaces a stream in rotation. With `IGNORE_BACKWARD=1`, a miss up to
-`DISTANCE` lines behind a confirmed stream in the same page also leaves the
-entries in place. This option defaults to zero and is enabled for the
-coherent home's instruction table. For each confirmed stream the prefetcher
+`2 * DISTANCE - 1` lines behind an entry in the same page also leaves the
+entries in place. The filter distance is capped at the page's line count
+minus one. This option defaults to zero and is enabled for the coherent
+home's instruction table. For each confirmed stream the prefetcher
 reads the lines after its last miss, up to `L2_PREFETCH_DISTANCE` (8) lines
 ahead and never past the 4 KiB page of that miss, so it reads only memory
 that a demand access in the same page showed to exist.

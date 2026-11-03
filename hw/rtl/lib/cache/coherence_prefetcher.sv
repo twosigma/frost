@@ -25,8 +25,8 @@
 // refills (ReadOnceIF). Both read the home's registered copy of its D
 // acceptance, and both load new requests only while the home reports room
 // for a prefetch fill.
-// The instruction table preserves confirmed streams across backward refills
-// up to DISTANCE lines behind their last line in the same page.
+// The instruction table preserves entries across backward refills up to
+// 2 * DISTANCE - 1 lines behind their last line in the same page.
 //
 // The wrapper owns IDS prefetch identities {3, 3, id}. It takes a table's
 // request, with a free identity, into a D register that holds until the home
@@ -110,8 +110,8 @@ module coherence_prefetcher #(
   wire watch_data = hart_request && accepted_q.port_class == 0 &&
       (i_accepted_opcode == coherence_pkg::GetS || i_accepted_opcode == coherence_pkg::GetM ||
        i_accepted_opcode == coherence_pkg::LoadReserved);
-  wire watch_if = hart_request && accepted_q.port_class == 1 &&
-      i_accepted_opcode == coherence_pkg::ReadOnceIF;
+  (* keep = "true" *) wire if_request = hart_request && accepted_q.port_class == 1;
+  wire watch_if = if_request && i_accepted_opcode == coherence_pkg::ReadOnceIF;
   logic [1:0] table_valid, table_ready, table_resp_valid;
   logic [1:0][ADDR_WIDTH-1:0] table_addr;
   logic [1:0][TableIdBits-1:0] table_id;
