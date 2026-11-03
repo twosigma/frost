@@ -1955,7 +1955,7 @@ module reorder_buffer #(
     (* keep = "true" *) logic store_completion_eligible;
     assign store_completion_eligible = completion_live &&
         i_store_complete_tag == ReorderBufferTagWidth'(entry);
-    wire done_without_store = alloc_en_2_control ?
+    (* keep = "true" *) wire done_without_store = alloc_en_2_control ?
         (alloc_en_control ? done_alloc_cases[3] : done_alloc_cases[2]) :
         (alloc_en_control ? done_alloc_cases[1] : done_alloc_cases[0]);
     wire exception_selected = alloc_en_2_control ?

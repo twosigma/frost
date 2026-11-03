@@ -2486,9 +2486,10 @@ module load_queue #(
   // handoffs still block it through disambiguation/invalidation or permission.
   wire sq_check_cacheable = CACHE_UNCACHED_DATA || sq_check_is_cached_region ||
       (CACHE_NORMAL_MEMORY && coherent_staged_normal);
-  assign cache_hit_fast_path = ENABLE_L0_FAST_PATH && sq_check_cacheable &&
-      !i_flush_all && !i_flush_en && !l0_lookup_busy && sq_can_issue && cache_lookup_hit &&
+  wire cache_hit_eligible = ENABLE_L0_FAST_PATH && sq_check_cacheable &&
+      !i_flush_all && !i_flush_en && !l0_lookup_busy && sq_can_issue &&
       !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
+  assign cache_hit_fast_path = cache_lookup_hit && cache_hit_eligible;
 
   assign stage_mem_issue_addr = sq_check_addr_q;
 
@@ -3061,9 +3062,10 @@ module load_queue #(
   end
 
   // cache_hit_fast_path is already flush-gated at its own assign.
-  assign cache_hit_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
-                                 !resp_bypass_fire && !misalign_bypass_fire &&
-                                 cache_hit_fast_path;
+  (* keep = "true" *) logic cache_hit_bypass_eligible;
+  assign cache_hit_bypass_eligible = cdb_stage_slot_available && !issue_cdb_fire &&
+      !resp_bypass_fire && !misalign_bypass_fire && cache_hit_eligible;
+  assign cache_hit_bypass_fire = cache_lookup_hit && cache_hit_bypass_eligible;
 
   // Forward directly into cdb_stage, including FLD's full beat. Forwarding
   // and an L0 hit are exclusive: forwarding needs an older store and a
@@ -3074,8 +3076,9 @@ module load_queue #(
                            !resp_bypass_fire && !misalign_bypass_fire &&
                            sq_do_forward && !i_flush_en;
 
-  assign bypass_fire = resp_bypass_fire || misalign_bypass_fire || cache_hit_bypass_fire ||
-                       fwd_bypass_fire;
+  (* keep = "true" *) logic bypass_without_cache_hit;
+  assign bypass_without_cache_hit = resp_bypass_fire || misalign_bypass_fire || fwd_bypass_fire;
+  assign bypass_fire = bypass_without_cache_hit || cache_hit_bypass_fire;
 
   // Mirror issue_cdb_result formatting, but sourced from the response-side
   // signals (lu_data_out / lu_cache_out / image beat) instead of the LUTRAM.
@@ -3647,12 +3650,14 @@ module load_queue #(
   end
 
 
-  // Valid bits kept through this edge's partial flush and frees. Allocation,
-  // whose enable arrives last from dispatch, ORs its new entries in after.
+  // Partial flush qualifies each valid bit before completion clears it.
+  // Allocation ORs its entries into the surviving valid mask.
+  (* keep = "true" *) wire [DEPTH-1:0] lq_valid_unflushed;
   (* keep = "true" *) wire [DEPTH-1:0] lq_valid_kept;
   for (genvar i = 0; i < DEPTH; i++) begin : gen_lq_valid_kept
-    assign lq_valid_kept[i] = lq_valid[i] && !coherent_free_entry[i] && !(i_flush_en &&
+    assign lq_valid_unflushed[i] = lq_valid[i] && !(i_flush_en &&
         (flush_all_entries || is_younger(lq_rob_tag[i], i_flush_tag, i_rob_head_tag)));
+    assign lq_valid_kept[i] = lq_valid_unflushed[i] && !coherent_free_entry[i];
   end
 
   always_ff @(posedge i_clk) begin
@@ -3963,10 +3968,10 @@ module load_queue #(
   // Give each address copy its own enable for fanout. Separate, identical
   // sq_check_pending_copy flops keep these enables distinct while preserving
   // capture/replace behavior.
-  logic sq_check_payload_en;
-  logic sq_check_payload_en_b;
-  logic sq_check_payload_en_c;
-  logic sq_check_payload_en_d;
+  (* max_fanout = 32 *) logic sq_check_payload_en;
+  (* max_fanout = 32 *) logic sq_check_payload_en_b;
+  (* max_fanout = 32 *) logic sq_check_payload_en_c;
+  (* max_fanout = 32 *) logic sq_check_payload_en_d;
   logic [IdxWidth-1:0] sq_check_idx_next;
   logic [ReorderBufferTagWidth-1:0] sq_check_rob_tag_next;
   logic [XLEN-1:0] sq_check_addr_next;

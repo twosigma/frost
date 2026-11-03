@@ -172,6 +172,7 @@ module coherence_home #(
   logic retry_valid, retry_park, pin_valid;
   logic [5:0] decision_tid;
   logic [WAYS-1:0] completion_exclude, array_exclude;
+  (* keep = "true" *) logic [WAYS-1:0] owner_exclude;
   logic put_busy;
   coh_w_t incoming_put, selected_put_q;
   logic put_selected_q, put_key_match, put_blocked;
@@ -692,17 +693,18 @@ module coherence_home #(
   // edge before, and no fill is allocated and no put accepted on that edge
   // for an owner that excludes a way.
   always_comb begin
-    array_exclude = completion_exclude;
+    owner_exclude = '0;
     for (int fill = 0; fill < FILLS; fill++) begin
       if (fill_phase_q[fill] != FillFree && fill_set_q[fill])
-        array_exclude[fill_way_q[fill]] = 1'b1;
+        owner_exclude[fill_way_q[fill]] = 1'b1;
     end
     for (int put = 0; put < Puts; put++) begin
       if ((put_phase_q[put] == PutUpdate || put_phase_q[put] == PutUpdateWait ||
           put_phase_q[put] == PutAck) && put_set_q[put])
-        array_exclude[put_way_q[put]] = 1'b1;
+        owner_exclude[put_way_q[put]] = 1'b1;
     end
   end
+  assign array_exclude = completion_exclude | owner_exclude;
   // The response-cycle decision compares the query block and the victim block
   // with every owner's address. Those comparisons are registered from the
   // cycle before: a response follows the selection cycle, and the query, the
