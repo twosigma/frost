@@ -4027,8 +4027,8 @@ module tomasulo_wrapper #(
   // but LQ visibility and SQ-check control clear or block on that edge. Only
   // LQ and SQ payload capture use raw pulses; other consumers use dmmu_out_valid.
   //
-  // The LQ look-ahead uses the held S1 tag or a live last-page bypass tag.
-  // Either tag precedes the corresponding S2 packet by one cycle.
+  // The LQ look-ahead uses the surviving S1 tag or the live issue tag.
+  // An address-update packet qualifies the corresponding registered match.
   always_comb begin
     if (i_translation_active) begin
       lq_addr_update_final.valid = dmmu_out_lq_capture_valid;

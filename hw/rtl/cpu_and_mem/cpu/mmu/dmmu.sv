@@ -80,7 +80,7 @@ module dmmu (
     output logic [riscv_pkg::XLEN-1:0] o_iss_out_store_data,
     output logic [riscv_pkg::XLEN-1:0] o_iss_out_amo_rs2,
 
-    // LQ look-ahead: the S1 operation, or a live last-page bypass operation.
+    // LQ look-ahead: the surviving S1 tag, or the live issue tag.
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_pre_rob_tag,
     output logic o_pre_needs_lq,
 
@@ -640,9 +640,10 @@ module dmmu (
   assign o_iss_out_store_data = s2_store_data_q;
   assign o_iss_out_amo_rs2 = s2_amo_rs2_q;
 
-  // An operation in S1 presents its tag until it advances to S2. A last-page
-  // bypass presents the issue tag in the cycle before its S2 pulse.
-  assign o_pre_rob_tag = iss_can_bypass ? iss_in.tag : s1_q.tag;
+  // A surviving S1 operation owns the next S2 packet. Otherwise only a live
+  // issue can bypass into S2. The tag can precede bypass eligibility because
+  // the LQ consumes its registered match only with an address-update packet.
+  assign o_pre_rob_tag = (!s1_valid_q || s1_killed) ? iss_in.tag : s1_q.tag;
   assign o_pre_needs_lq = iss_can_bypass ?
       (i_iss_valid && !iss_in.needs_sq) : (s1_valid_q && !s1_q.needs_sq);
 

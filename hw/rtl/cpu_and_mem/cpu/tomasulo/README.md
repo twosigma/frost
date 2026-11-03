@@ -243,10 +243,11 @@ serializer, branch-update, or trap paths.
 
 The LQ has bypasses of its own. MEM_RS signals its next issue one cycle
 early, so the LQ registers the address-update match in advance and the entry
-is address-valid in the cycle MEM_RS issues. With translation on, an eligible
-last-page hit enters DMMU S2 directly and provides its look-ahead from the live
-issue. Other operations provide the look-ahead from DMMU S1. In both cases
-the entry is address-valid in the cycle S2 delivers the address. When the LQ's CDB staging
+is address-valid in the cycle MEM_RS issues. With translation on, the
+look-ahead tag comes from a surviving DMMU S1 operation, or from the live
+issue when S1 is empty or killed. Eligible last-page hits enter S2 directly;
+other operations pass through S1. The registered match makes an entry
+address-valid only with S2's address-update pulse. When the LQ's CDB staging
 register is free and no stored result is waiting for it, a load's data from
 memory, the L0 cache, or an SQ forward goes straight into the staging register
 instead of through the entry's data field. See the
