@@ -307,25 +307,25 @@ and targeted microbenchmarks give these items:
    about 50 cycles and an ITLB miss about 58. Without ASIDs, every context
    switch flushes both. A larger DTLB, ASID support, and a page-walk cache for
    upper-level page-table entries would each help.
-5. Branch prediction. A misprediction costs about 7 cycles, and the BTB has
+4. Branch prediction. A misprediction costs about 7 cycles, and the BTB has
    256 direct-mapped entries. A 1024-entry two-way or four-way BTB is the
    largest expected gain for Linux. In bare-metal microbenchmarks a taken
    branch costs about 5 cycles, and a loop of four additions runs at 0.6 IPC
    with translation off, so small loops need checking against the BTB. The
    BTB read is on the fetch loop, one of the hardest paths at the target
    clock.
-6. Floating point. One engine executes F and D instructions one at a time.
+5. Floating point. One engine executes F and D instructions one at a time.
    Arithmetic shares an iterative adder. Comparisons, moves, min/max, FCLASS
    and sign injection use two-cycle paths. Integer-to-FP conversion takes
    four cycles, or two for zero. Pipelined add and multiply units would let
    FP_RS issue independent arithmetic while earlier operations execute.
-7. Integer multiply and divide. The full-width multiplier has six stages;
+6. Integer multiply and divide. The full-width multiplier has six stages;
    its result FIFO, CDB and reservation station each contribute a cycle to
    a dependent use. The radix-4 divider captures magnitudes, counts leading
    zeros and aligns the dividend before producing two quotient bits per
    cycle. It takes up to 35 cycles, or 19 for a W form, and handles divide
    by zero, full-width overflow and smaller dividends in two cycles.
-8. Load queue depth. DDR latency dominates many Linux workloads. A balanced
+7. Load queue depth. DDR latency dominates many Linux workloads. A balanced
    two-level pick across 16 entries would let the memory reservation station
    hold 16 loads (`MemRsDepth = 16`), with selection depth growing only with
    the logarithm of the entry count.

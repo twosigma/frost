@@ -63,3 +63,11 @@
 - Built the architectural performance model in `perf-modeling/`, a
   cycle-approximate model of `cpu_top` and `soc_top` correlated against
   traces that the program bench captures from the RTL
+- Measured Linux on FROST with sysbench, `perf` and microbenchmarks, which set
+  the roadmap's Linux performance items
+- Implemented the radix-4 divider with leading-zero early termination, and
+  the FP fast paths for compares, moves, sign injection and conversions
+- Doubled the ITLB to 16 entries and removed the Sv39 sequential-fetch
+  bubble with intra-page virtual tagging
+- Added the standard HPM counters 3 to 8 for branches, mispredictions, TLB
+  walks, L1D misses and store-queue stalls, with their OpenSBI PMU mapping
