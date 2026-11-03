@@ -73,17 +73,24 @@ module vcu118_ddr_init #(
   assign running = started_q && !done_q;
 
   // Address and data channels operate independently according to the AXI4 specification.
-  // Each is bounded by the region end and outstanding response capability.
-  assign o_awvalid = running && (aw_q != BurstBits'(TotalBursts))
+  // Each is bounded by the region end and outstanding response capability. The valid flags are
+  // registered: the wide counter compares end at a flop, so no long chain reaches the AXI sink
+  // (a handshake takes two cycles, which a one-time scrub does not mind).
+  logic aw_valid_q, w_valid_q;
+  logic aw_want, w_want;
+  assign aw_want = running && (aw_q != BurstBits'(TotalBursts))
       && ((aw_q - b_q) != BurstBits'(OutstandingCap));
+  assign w_want = running && (w_q != BurstBits'(TotalBursts))
+      && ((w_q - b_q) != BurstBits'(OutstandingCap));
+
+  assign o_awvalid = aw_valid_q;
   assign o_awid = WRITE_ID;
   assign o_awaddr = addr_q;
   assign o_awlen = 8'(BEATS_PER_BURST - 1);
   assign o_awsize = 3'($clog2(BytesPerBeat));
   assign o_awburst = 2'b01;  // INCR
 
-  assign o_wvalid = running && (w_q != BurstBits'(TotalBursts))
-      && ((w_q - b_q) != BurstBits'(OutstandingCap));
+  assign o_wvalid = w_valid_q;
   assign o_wdata = '0;
   assign o_wstrb = '1;
   assign o_wlast = beat_q == BeatBits'(BEATS_PER_BURST - 1);
@@ -108,8 +115,14 @@ module vcu118_ddr_init #(
       done_q       <= 1'b0;
       started_q    <= 1'b0;
       resp_error_q <= 1'b0;
+      aw_valid_q   <= 1'b0;
+      w_valid_q    <= 1'b0;
     end else begin
       if (i_start) started_q <= 1'b1;
+      if (aw_fire) aw_valid_q <= 1'b0;
+      else if (!aw_valid_q && aw_want) aw_valid_q <= 1'b1;
+      if (w_fire) w_valid_q <= 1'b0;
+      else if (!w_valid_q && w_want) w_valid_q <= 1'b1;
       if (aw_fire) begin
         aw_q   <= aw_q + 1'b1;
         addr_q <= addr_q + ADDR_BITS'(BytesPerBurst);
