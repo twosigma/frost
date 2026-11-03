@@ -276,6 +276,11 @@ uses word 0's physical page and faults for both words.
 The word-1 address uses the sampled next-page VA on a fault from the separate
 page lookup. A captured selector chooses that address.
 
+The data MMU caches the last clean page translation and its permissions.
+A matching eligible access enters the result stage in one cycle. Other
+accesses use the lookup stage followed by the result stage. Reset, full flush,
+translation disable and TLB invalidation clear the last-page buffer.
+
 The 16-entry ITLB and the data side's 16-entry DTLB share one read-only
 page-table walker in `cpu_ooo`; the data side wins when both ask. The walker
 never writes PTEs (Svade): a leaf with A=0, or a store to a leaf with D=0,

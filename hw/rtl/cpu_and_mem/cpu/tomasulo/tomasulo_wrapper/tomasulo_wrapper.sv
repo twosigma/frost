@@ -3571,7 +3571,7 @@ module tomasulo_wrapper #(
   // Forward declarations (assigned in the data-MMU section below): the
   // packet and pre-issue pair the LQ consumes.  They are the combinational
   // MEM_RS path when translation is inactive, and the data MMU's S2 packet
-  // and S1 look-ahead when it is active.
+  // and the S1 or live bypass look-ahead when it is active.
   riscv_pkg::lq_addr_update_t lq_addr_update_final;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] dmmu_pre_rob_tag;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tag_final;
@@ -3621,8 +3621,8 @@ module tomasulo_wrapper #(
       .i_addr_update(lq_addr_update_final),
 
       // Pre-issue look-ahead (from MEM_RS, 1 cycle before i_addr_update;
-      // under active translation it is the data MMU's S1 op, still one
-      // cycle before its packet)
+      // under active translation it is the data MMU's S1 operation or live
+      // bypass operation, one cycle before its packet)
       .i_pre_issue_rob_tag(mem_rs_pre_issue_rob_tag_final),
       .i_pre_issue_rob_tags(mem_rs_pre_issue_rob_tags_final),
       .i_pre_issue_sel(mem_rs_pre_issue_sel),

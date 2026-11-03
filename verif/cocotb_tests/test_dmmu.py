@@ -16,8 +16,9 @@
 
 The reference resolves Sv39 leaves, the PMA map (the device windows take loads
 and stores but no atomics), and the architectural fault priorities in Python.
-Protocol checks pin the two-cycle latency, one-result-per-cycle hit
-throughput, miss skid, and recovery behavior without inspecting internal RTL.
+Protocol checks cover one-cycle last-page hits, the two-stage fallback,
+one-result-per-cycle hit throughput, LQ look-ahead, miss skid, and recovery
+without inspecting internal RTL.
 """
 
 from dataclasses import dataclass, replace
@@ -767,3 +768,198 @@ async def test_last_page_bypass_misaligned_trap_precision(dut: Any) -> None:
     await _cycle(dut)
     _check(dut, op1, leaf)
     assert int(dut.o_iss_out_fault.value) == MISALIGN
+
+
+async def _paired_cycle(dut: Any) -> None:
+    """Check the LQ look-ahead against the next registered capture pulse."""
+    await Timer(1, unit="ns")
+    pre_tag = int(dut.o_pre_rob_tag.value)
+    pre_valid = int(dut.o_pre_needs_lq.value)
+    await _cycle(dut)
+    if int(dut.o_iss_out_lq_capture_valid.value):
+        assert pre_valid
+        assert int(dut.o_iss_out_rob_tag.value) == pre_tag
+
+
+async def _prime_last_page(dut: Any, leaf: Leaf, op: Op) -> None:
+    """Resolve a clean leaf through S1 and check its registered result."""
+    await _install(dut, leaf)
+    _issue(dut, op)
+    await _paired_cycle(dut)
+    assert not int(dut.o_iss_out_valid.value)
+    dut.i_iss_valid.value = 0
+    await _paired_cycle(dut)
+    _check(dut, op, leaf)
+    assert int(dut.o_iss_out_fault.value) == NONE
+
+
+@cocotb.test()
+async def test_last_page_bypass_partial_flush_resolution(dut: Any) -> None:
+    """A killed S1 hit or response leaves S2 available for an older bypass."""
+    await _setup(dut)
+    leaf_a = Leaf(vpn=0x400, ppn=0x80000)
+    leaf_b = Leaf(vpn=0x500, ppn=0x81000)
+    for resident_b in (True, False):
+        await _clear(dut)
+        if resident_b:
+            await _install(dut, leaf_b)
+        await _prime_last_page(dut, leaf_a, Op(va=0x400010, tag=1))
+        _issue(dut, Op(va=0x500010, tag=5))
+        await _paired_cycle(dut)
+        assert not int(dut.o_iss_out_valid.value)
+        if not resident_b:
+            _response(dut, leaf_b)
+        dut.i_flush_en.value = 1
+        dut.i_flush_tag.value = 2
+        dut.i_head_tag.value = 0
+        older = Op(va=0x400028, tag=1, data=0x123, amo_rs2=0x456)
+        _issue(dut, older)
+        await _paired_cycle(dut)
+        _check(dut, older, leaf_a)
+        dut.i_iss_valid.value = 0
+        dut.i_walk_resp_valid.value = 0
+        dut.i_flush_en.value = 0
+        await _paired_cycle(dut)
+        assert not int(dut.o_iss_out_valid.value)
+
+
+@cocotb.test()
+async def test_last_page_bypass_routing_and_lookahead(dut: Any) -> None:
+    """Consecutive load, store, SC, LR and AMO hits preserve tags and payloads."""
+    await _setup(dut)
+    leaf = Leaf(vpn=0x400, ppn=0x80000)
+    await _prime_last_page(dut, leaf, Op(va=0x400010, tag=1))
+    operations = (
+        Op(va=0x400028, tag=2),
+        Op(va=0x400030, tag=3, needs_sq=1, store=1, data=0x123456),
+        Op(va=0x400038, tag=4, needs_sq=1, store=1, atomic=1, is_sc=1, data=0xABC),
+        Op(va=0x400040, tag=5, atomic=1),
+        Op(va=0x400048, tag=6, store=1, atomic=1, amo_rs2=0xFEDCBA),
+    )
+    for op in operations:
+        _issue(dut, op)
+        await Timer(1, unit="ns")
+        assert int(dut.o_pre_rob_tag.value) == op.tag
+        assert int(dut.o_pre_needs_lq.value) == 1 - op.needs_sq
+        await _paired_cycle(dut)
+        _check(dut, op, leaf)
+    dut.i_iss_valid.value = 0
+    await _paired_cycle(dut)
+    assert not int(dut.o_iss_out_valid.value)
+
+
+@cocotb.test()
+async def test_last_page_bypass_warm_permissions_and_addresses(dut: Any) -> None:
+    """Warm-buffer access checks preserve faults, physical pages and routing."""
+    await _setup(dut)
+    base_leaf = Leaf(vpn=0x400, ppn=0x80000)
+    prime = Op(va=0x400010, tag=1)
+    access = Op(va=0x400028, tag=2)
+    cases = (
+        (replace(base_leaf, u=1), replace(prime, priv_u=1), access, False),
+        (replace(base_leaf, u=1), replace(prime, sum_=1), access, False),
+        (replace(base_leaf, r=0, x=1), replace(prime, mxr=1), access, False),
+        (replace(base_leaf, d=0), prime, replace(access, store=1, needs_sq=1), False),
+        (base_leaf, prime, replace(access, priv_u=1), False),
+        (replace(base_leaf, ppn=0x40000), prime, replace(access, atomic=1), False),
+        (base_leaf, prime, replace(access, va=access.va | (1 << 39)), False),
+        (base_leaf, prime, replace(access, va=0x400029), False),
+        (
+            replace(base_leaf, u=1),
+            replace(prime, priv_u=1),
+            replace(access, sum_=1),
+            False,
+        ),
+        (replace(base_leaf, level=1), prime, access, True),
+        (replace(base_leaf, level=2), prime, access, True),
+        (replace(base_leaf, ppn=(DDR_LIMIT - 4096) >> 12), prime, access, True),
+    )
+    for leaf, first, second, bypass in cases:
+        await _clear(dut)
+        await _prime_last_page(dut, leaf, first)
+        _issue(dut, second)
+        await _paired_cycle(dut)
+        if not bypass:
+            assert not int(dut.o_iss_out_valid.value)
+            dut.i_iss_valid.value = 0
+            await _paired_cycle(dut)
+        _check(dut, second, leaf)
+        dut.i_iss_valid.value = 0
+        await _paired_cycle(dut)
+
+
+@cocotb.test()
+async def test_last_page_bypass_lifetime_and_remap(dut: Any) -> None:
+    """Reset, full flush, disable and invalidation clear the fast translation."""
+    await _setup(dut)
+    original = Leaf(vpn=0x400, ppn=0x80000)
+    for event in ("reset", "flush", "disable", "remap"):
+        await _clear(dut)
+        await _prime_last_page(dut, original, Op(va=0x400010, tag=1))
+        signal = {
+            "reset": "i_rst_n",
+            "flush": "i_flush_all",
+            "disable": "i_active",
+            "remap": "i_tlb_invalidate",
+        }[event]
+        active_value = int(event in ("flush", "remap"))
+        getattr(dut, signal).value = active_value
+        await _paired_cycle(dut)
+        getattr(dut, signal).value = 1 - active_value
+        leaf = replace(original, ppn=0x81000) if event == "remap" else original
+        if event in ("reset", "remap"):
+            await _install(dut, leaf)
+        op = Op(va=0x400028, tag=2)
+        _issue(dut, op)
+        await _paired_cycle(dut)
+        assert not int(dut.o_iss_out_valid.value)
+        dut.i_iss_valid.value = 0
+        await _paired_cycle(dut)
+        _check(dut, op, leaf)
+
+
+@cocotb.test()
+async def test_last_page_bypass_backpressure_and_issue_kill(dut: Any) -> None:
+    """A warm hit waits behind S1/S0, and flushed issues produce no packet."""
+    await _setup(dut)
+    leaf_a = Leaf(vpn=0x400, ppn=0x80000)
+    leaf_b = Leaf(vpn=0x500, ppn=0x81000)
+    await _prime_last_page(dut, leaf_a, Op(va=0x400010, tag=1))
+    first = Op(va=0x500010, tag=3)
+    second = Op(va=0x400028, tag=4)
+    _issue(dut, first)
+    await _paired_cycle(dut)
+    assert int(dut.o_walk_req_valid.value)
+    _issue(dut, second)
+    await _paired_cycle(dut)
+    assert int(dut.o_stall.value)
+    assert not int(dut.o_iss_out_valid.value)
+    dut.i_iss_valid.value = 0
+    await _paired_cycle(dut)
+    assert int(dut.o_stall.value)
+    assert not int(dut.o_iss_out_valid.value)
+    _response(dut, leaf_b)
+    await _paired_cycle(dut)
+    _check(dut, first, leaf_b)
+    dut.i_walk_resp_valid.value = 0
+    await _paired_cycle(dut)
+    _check(dut, second, leaf_a)
+    dut.i_flush_en.value = 1
+    dut.i_flush_tag.value = 2
+    dut.i_head_tag.value = 0
+    _issue(dut, Op(va=0x400030, tag=5))
+    await _paired_cycle(dut)
+    assert not int(dut.o_iss_out_valid.value)
+    dut.i_flush_en.value = 0
+    surviving = Op(va=0x400038, tag=1)
+    _issue(dut, surviving)
+    await _paired_cycle(dut)
+    _check(dut, surviving, leaf_a)
+    dut.i_flush_all.value = 1
+    _issue(dut, Op(va=0x400040, tag=8))
+    await _paired_cycle(dut)
+    assert not int(dut.o_iss_out_valid.value)
+    dut.i_flush_all.value = 0
+    dut.i_iss_valid.value = 0
+    await _paired_cycle(dut)
+    assert not int(dut.o_iss_out_valid.value)

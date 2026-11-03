@@ -20,10 +20,11 @@
  * i_active, i_sum, i_mxr, and i_eff_priv_u are registered CSR state; changes
  * are accompanied by a full flush.
  *
- * Operations pass through two registered stages. S1 holds the operation
+ * Translation uses two registered stages. S1 holds the operation
  * until its DTLB lookup, checks, and any walk complete. S2 registers the
  * result and drives every consumer pulse. Hits sustain one operation per
- * cycle. Faults carry the VA for xtval instead of a PA; the wrapper routes
+ * cycle. Eligible last-page hits enter S2 directly from issue.
+ * Faults carry the VA for xtval instead of a PA; the wrapper routes
  * them to the LQ for loads/LR/AMOs or the store fault strobe for stores/SC.
  */
 module dmmu (
@@ -79,7 +80,7 @@ module dmmu (
     output logic [riscv_pkg::XLEN-1:0] o_iss_out_store_data,
     output logic [riscv_pkg::XLEN-1:0] o_iss_out_amo_rs2,
 
-    // Pre-issue look-ahead for the LQ: the op held in S1.
+    // LQ look-ahead: the S1 operation, or a live last-page bypass operation.
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_pre_rob_tag,
     output logic o_pre_needs_lq,
 
@@ -589,15 +590,15 @@ module dmmu (
   end
 
 `ifndef SYNTHESIS
-  // Reference S2 payload, loaded only on a resolution with the resolved
-  // address itself. Every field a consumer reads matches it while S2 is
-  // valid.
+  // Reference the operation that advances into S2, with its resolved address.
+  // A killed S1 operation cannot replace a live bypass's reference payload.
+  // Every field a consumer reads matches it while S2 is valid.
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] ref_s2_tag_q;
   logic [riscv_pkg::XLEN-1:0] ref_s2_addr_q, ref_s2_store_data_q, ref_s2_amo_rs2_q;
   riscv_pkg::data_fault_kind_e ref_s2_fault_q;
   logic ref_s2_needs_sq_q, ref_s2_is_sc_q;
   always_ff @(posedge i_clk) begin
-    if (s1_resolved) begin
+    if (s1_move) begin
       ref_s2_tag_q <= s1_q.tag;
       ref_s2_addr_q <= resolve_addr;
       ref_s2_fault_q <= resolve_fault;
@@ -795,6 +796,53 @@ module dmmu (
     )));
     // S2's split address rebuilds the resolution's address.
     p_resolve_addr_exact : assert (f_resolve_addr_ref == resolve_addr);
+  end
+`endif
+
+`ifdef DMMU_CAPTURE_LOCAL_PROOF
+  // Relate the issued packet and the consumer's preceding look-ahead without
+  // assumptions on TLB answers, issue order, flushes or permission controls.
+  logic f_capture_past_valid = 1'b0;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] f_pre_tag_q;
+  logic f_pre_needs_lq_q;
+  logic f_capture_expected_q, f_bypass_expected_q;
+  iss_payload_t f_capture_op_q;
+  logic [riscv_pkg::XLEN-1:0] f_capture_addr_q;
+  logic f_capture_mmio_q;
+  riscv_pkg::data_fault_kind_e f_capture_fault_q;
+  logic f_last_clear_q;
+  always_ff @(posedge i_clk) begin
+    f_capture_past_valid <= 1'b1;
+    if (!f_capture_past_valid) assume (!i_rst_n);
+    f_pre_tag_q <= o_pre_rob_tag;
+    f_pre_needs_lq_q <= o_pre_needs_lq;
+    f_capture_expected_q <= i_rst_n && !i_flush_all && (s1_move || iss_can_bypass);
+    f_bypass_expected_q <= i_rst_n && !i_flush_all && iss_can_bypass;
+    f_capture_op_q <= s1_move ? s1_q : iss_in;
+    f_capture_addr_q <= s1_move ? resolve_addr : riscv_pkg::XLEN'({last_ppn_q, iss_in.va[11:0]});
+    f_capture_fault_q <= s1_move ? resolve_fault : riscv_pkg::DFAULT_NONE;
+    f_capture_mmio_q <= s1_move ? resolve_is_mmio : last_is_mmio_q;
+    f_last_clear_q <= !i_rst_n || i_flush_all || i_tlb_invalidate || !i_active;
+    if (f_capture_past_valid) begin
+      p_capture_pulse : assert (s2_valid_q == f_capture_expected_q);
+      p_bypass_one_cycle : assert (!f_bypass_expected_q || s2_valid_q);
+      if (s2_valid_q) begin
+        p_capture_payload :
+        assert ({o_iss_out_rob_tag, o_iss_out_addr, o_iss_out_fault, o_iss_out_is_mmio,
+                 o_iss_out_needs_sq, o_iss_out_is_sc, o_iss_out_store_data, o_iss_out_amo_rs2} ==
+                {f_capture_op_q.tag, f_capture_addr_q, f_capture_fault_q, f_capture_mmio_q,
+                 f_capture_op_q.needs_sq, f_capture_op_q.is_sc, f_capture_op_q.store_data,
+                 f_capture_op_q.amo_rs2});
+      end
+      if (o_iss_out_lq_capture_valid) begin
+        p_lq_lookahead_valid : assert (f_pre_needs_lq_q);
+        p_lq_lookahead_tag : assert (o_iss_out_rob_tag == f_pre_tag_q);
+      end
+      if (f_last_clear_q) p_last_page_invalidation : assert (!last_valid_q);
+      cover (f_bypass_expected_q && o_iss_out_lq_capture_valid);
+      cover (f_bypass_expected_q && o_iss_out_sq_capture_valid);
+      cover (i_rst_n && !i_flush_all && s1_resolved && s1_killed && iss_can_bypass);
+    end
   end
 `endif
 

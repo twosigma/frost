@@ -265,6 +265,9 @@ The `dmmu` and `dmmu_1g` benches check translated hits, walk responses and
 early store lookups against an independent memory-map reference. Device
 cases cover the MMIO, APLIC and full IMSIC windows, their boundary pages,
 permissions, atomic-access faults and superpage offsets.
+Warm-buffer checks cover one-cycle load/store/SC/LR/AMO routing, successive
+tags and payloads, LQ look-ahead, permission changes, invalidation and remapping.
+A partial flush overlaps a killed S1 resolution with an older bypass.
 
 #### Random power-up state
 

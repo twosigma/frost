@@ -597,6 +597,12 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "dmmu_capture.sby",
+        "Data-MMU registered packets, one-cycle bypass, invalidation and preceding LQ "
+        "look-ahead agree across arbitrary issue, flush and TLB answers",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
         "rs_alloc_parallel.sby",
         "Parallel RS allocation indices match the serial free-entry search",
         tasks=("bmc4", "bmc8", "bmc16", "bmc32"),

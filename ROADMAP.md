@@ -301,10 +301,9 @@ and targeted microbenchmarks give these items:
    Modified sectors use masked writes, and waiting reads share array service
    with buffered hits. The store queue's drain and installation into the L1D
    should reach two cycles per store or better.
-2. Data translation. The data MMU's two registered stages add two cycles to
-   every load-to-use chain. A one-cycle hit path, such as a micro-TLB or a
-   bypass for the last page, would remove them. Dependent loads across pages
-   take about 12 cycles, against 5 within one page.
+2. Data translation. A last-page bypass sends eligible translated accesses
+   directly to DMMU stage S2. Other translated accesses use S1 and S2.
+   Reducing that path would improve cross-page translation latency.
 3. TLB reach. The DTLB and ITLB have 16 entries each. A DTLB miss costs
    about 50 cycles and an ITLB miss about 58. Without ASIDs, every context
    switch flushes both. A larger DTLB, ASID support, and a page-walk cache for
