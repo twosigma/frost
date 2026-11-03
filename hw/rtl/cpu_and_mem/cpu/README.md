@@ -22,7 +22,7 @@ expands renaming, execution, result broadcast, and load/store ordering.
 | `if_stage/` | Fetch PC control, branch prediction, instruction alignment |
 | `pd_stage/` | Slot-1 instruction from the native word or its predecoded RVC expansion, early source fields, the PD branch redirect |
 | `id_stage/` | Decode for both slots |
-| `mmu/` | Instruction MMU (8-entry ITLB), data MMU (16-entry DTLB), shared page-table walker |
+| `mmu/` | Instruction MMU (16-entry ITLB), data MMU (16-entry DTLB), shared page-table walker |
 | `csr/` | CSR file; CSR instructions execute at commit |
 | `control/trap_unit.sv` | Traps, delegation, interrupts, Debug Mode entry |
 | `ex_stage/` | ALU, multiplier and divider, FPU, branch unit |
@@ -264,12 +264,19 @@ instruction-memory metadata arrays that component tests use.
 `if_stage` uses `mmu/immu` to translate the fetch PC into the physical
 addresses of the window's two words, with a fault flag for each word. In Bare
 mode and in M-mode, translation is a combinational pass-through with no
-bubble. Under Sv39 a result is visible only for the exact {virtual PC,
-privilege} it was computed for, so each fetch-PC change costs one bubble, a
-4 KiB page crossing can cost a second, and an ITLB miss stalls IF until the
-walk returns.
+bubble. Under Sv39 the virtual page and privilege tag permit intra-page
+fetches to use the live offset without a bubble. A window crossing a 4 KiB
+boundary also requires an exact PC tag. A page or privilege change costs one
+capture cycle; a crossing can need another cycle for its next-page sample.
+An ITLB miss stalls IF until the walk returns. Each ITLB entry checks fetch
+permissions, PMA and the superpage successor before winner selection. The
+instruction-side instance disables unused data permission and PMA verdicts.
+Walk responses supply a separate successor candidate. A window within one page
+uses word 0's physical page and faults for both words.
+The word-1 address uses the sampled next-page VA on a fault from the separate
+page lookup. A captured selector chooses that address.
 
-The 8-entry ITLB and the data side's 16-entry DTLB share one read-only
+The 16-entry ITLB and the data side's 16-entry DTLB share one read-only
 page-table walker in `cpu_ooo`; the data side wins when both ask. The walker
 never writes PTEs (Svade): a leaf with A=0, or a store to a leaf with D=0,
 raises a page fault for software to handle. SFENCE.VMA, `satp` accesses, and

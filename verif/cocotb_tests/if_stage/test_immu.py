@@ -368,7 +368,7 @@ async def test_sv39_configured_ddr_top_and_out_of_range_leaf(dut: Any) -> None:
 
 @cocotb.test()
 async def test_warm_translation_retags_once_per_pc_movement(dut: Any) -> None:
-    """With the pages in the ITLB, each of these PC changes costs one invisible retag cycle."""
+    """Warm intra-page moves are visible; page changes take one capture cycle."""
     await _setup(dut)
     leaves = (
         Leaf(vpn=0x4, ppn=0x0C),
@@ -431,6 +431,131 @@ async def test_warm_translation_retags_once_per_pc_movement(dut: Any) -> None:
     assert int(dut.o_walk_req_valid.value) == 0
     await _cycle(dut)
     _assert_window(dut, _translated_window(pc_c, leaves[2]))
+
+
+@cocotb.test()
+async def test_crossing_then_intra_page_retarget(dut: Any) -> None:
+    """A same-page retarget uses word 0's page even after word 1 faults."""
+    await _setup(dut)
+    for successor_ppn, successor_exec in ((0x80000, 1), (0x80000, 0), (0x20, 1)):
+        dut.i_active.value = 0
+        dut.i_tlb_invalidate.value = 1
+        await _cycle(dut)
+        dut.i_tlb_invalidate.value = 0
+        pc = 0x0080_0FFC
+        first = Leaf(vpn=pc >> 12, ppn=0x10)
+        second = Leaf(vpn=first.vpn + 1, ppn=successor_ppn, perm_x=successor_exec)
+        await _move_pc(dut, pc)
+        dut.i_active.value = 1
+        await _cycle(dut)
+        await _accept_request(dut, first.vpn)
+        await _return_leaf(dut, first)
+        await _accept_request(dut, second.vpn)
+        await _return_leaf(dut, second)
+        _assert_window(dut, _translated_window(pc, first, leaf1=second))
+
+        for offset in (0x40, 0x44, 0xFE2, 0xFFA, 0x20):
+            same_page_pc = (pc & ~0xFFF) | offset
+            await _move_pc(dut, same_page_pc)
+            _assert_window(dut, _translated_window(same_page_pc, first))
+            assert int(dut.o_walk_req_valid.value) == 0
+
+        await _move_pc(dut, pc)
+        _assert_window(dut, _translated_window(pc, first, leaf1=second))
+
+        # Retag onto the second page, then recapture the crossing window.
+        second_pc = (second.vpn << 12) | 0x40
+        await _move_pc(dut, second_pc)
+        _assert_invisible(dut)
+        await _cycle(dut)
+        _assert_window(dut, _translated_window(second_pc, second))
+        await _move_pc(dut, pc)
+        _assert_invisible(dut)
+        await _cycle(dut)
+        await _cycle(dut)
+        _assert_window(dut, _translated_window(pc, first, leaf1=second))
+        assert int(dut.o_walk_req_valid.value) == 0
+
+
+@cocotb.test()
+async def test_warm_superpage_crossing_capture_latency(dut: Any) -> None:
+    """A warm superpage successor resolves in the page-tag capture cycle."""
+    await _setup(dut)
+    for level, initial_pc in ((1, 0x0040_1FFC), (2, 0x4000_1FFC)):
+        dut.i_active.value = 0
+        dut.i_tlb_invalidate.value = 1
+        await _cycle(dut)
+        dut.i_tlb_invalidate.value = 0
+        leaf = Leaf(vpn=initial_pc >> 12, ppn=0x80000, level=level)
+        await _move_pc(dut, initial_pc)
+        dut.i_active.value = 1
+        await _cycle(dut)
+        await _accept_request(dut, leaf.vpn)
+        await _return_leaf(dut, leaf)
+        _assert_window(dut, _translated_window(initial_pc, leaf))
+
+        for pc in (initial_pc + 0x2000, initial_pc + 0x4000, initial_pc):
+            await _move_pc(dut, pc)
+            _assert_invisible(dut)
+            await _cycle(dut)
+            _assert_window(dut, _translated_window(pc, leaf))
+            assert int(dut.o_walk_req_valid.value) == 0
+            same_page_pc = (pc & ~0xFFF) | 0x40
+            await _move_pc(dut, same_page_pc)
+            _assert_window(dut, _translated_window(same_page_pc, leaf))
+
+
+@cocotb.test()
+async def test_superpage_successor_pma_fault_and_retarget(dut: Any) -> None:
+    """A superpage successor outside BRAM faults only the crossing word."""
+    await _setup(dut)
+    pc = 0x0041_FFFC
+    leaf = Leaf(vpn=pc >> 12, ppn=0, level=1)
+    expected = Window(pa0=0x1_FFFC, pa1=0x2_0000, fault1=1)
+    await _move_pc(dut, pc)
+    dut.i_active.value = 1
+    await _cycle(dut)
+    await _accept_request(dut, leaf.vpn)
+    await _return_leaf(dut, leaf)
+    _assert_window(dut, expected)
+
+    await _move_pc(dut, 0x0041_F040)
+    _assert_window(dut, _translated_window(0x0041_F040, leaf))
+    await _move_pc(dut, pc)
+    _assert_window(dut, expected)
+
+    # A different page changes the result tag before the warm crossing lookup.
+    await _move_pc(dut, 0x0041_E040)
+    _assert_invisible(dut)
+    await _cycle(dut)
+    _assert_window(dut, _translated_window(0x0041_E040, leaf))
+    await _move_pc(dut, pc)
+    _assert_invisible(dut)
+    await _cycle(dut)
+    _assert_window(dut, expected)
+    assert int(dut.o_walk_req_valid.value) == 0
+
+
+@cocotb.test()
+async def test_sixteen_instruction_pages_resident(dut: Any) -> None:
+    """All sixteen installed 4 KiB pages remain resident through a revisit."""
+    await _setup(dut)
+    leaves = tuple(Leaf(vpn=0x100 + i, ppn=i + 1) for i in range(16))
+    for leaf in leaves:
+        pc = (leaf.vpn << 12) | 0x40
+        await _move_pc(dut, pc)
+        dut.i_active.value = 1
+        await _cycle(dut)
+        await _accept_request(dut, leaf.vpn)
+        await _return_leaf(dut, leaf)
+        _assert_window(dut, _translated_window(pc, leaf))
+    for leaf in leaves:
+        pc = (leaf.vpn << 12) | 0x42
+        await _move_pc(dut, pc)
+        _assert_invisible(dut)
+        await _cycle(dut)
+        _assert_window(dut, _translated_window(pc, leaf))
+        assert int(dut.o_walk_req_valid.value) == 0
 
 
 @cocotb.test()

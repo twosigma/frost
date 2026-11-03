@@ -25,7 +25,7 @@
  */
 module immu_test_harness #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
-    parameter int unsigned NUM_ENTRIES = 8,
+    parameter int unsigned NUM_ENTRIES = 16,
     parameter int unsigned PA_VALID_COPIES = riscv_pkg::FetchPaHoldCopies
 ) (
     input logic i_clk,

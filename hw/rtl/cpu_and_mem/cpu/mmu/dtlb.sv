@@ -15,8 +15,8 @@
  */
 
 /*
- * Fully associative Sv39 TLB with superpages: 16 entries for data, eight
- * for instructions. Level-masked VPN compares cover 1 GiB, 2 MiB, and 4 KiB
+ * Fully associative Sv39 TLB with superpages: 16 entries on each of the data
+ * and instruction sides. Level-masked VPN compares cover 1 GiB, 2 MiB, and 4 KiB
  * pages. The lowest matching index wins; replacement uses a rotating pointer.
  *
  * Entries have no ASID. SFENCE.VMA and CSR translation invalidation clear all
@@ -37,7 +37,9 @@ module dtlb #(
     parameter int unsigned NUM_ENTRIES    = 16,
     parameter int unsigned NUM_PORTS      = 3,
     // Enable per-entry fetch checks (o_fetch_*); unused by the data MMU.
-    parameter bit          FETCH_VERDICTS = 1'b0
+    parameter bit          FETCH_VERDICTS = 1'b0,
+    // Enable per-entry data permission and PMA checks; unused by the IMMU.
+    parameter bit          DATA_VERDICTS  = 1'b1
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -67,7 +69,8 @@ module dtlb #(
     // Data permissions: stores require W and D; loads require R or X with
     // MXR. U pages require U mode or SUM; S pages reject U mode.
     // o_atomic_page checks pma_atomic_ok on the zero-extended PA. Both
-    // outputs are clear on a miss; the ITLB leaves them unused.
+    // PMA outputs and o_perm_ok are clear on a miss or with DATA_VERDICTS
+    // disabled. The ITLB disables these unused data checks.
     input logic [NUM_PORTS-1:0] i_perm_store,
     input logic i_perm_priv_u,
     input logic i_perm_sum,
@@ -80,11 +83,16 @@ module dtlb #(
     //   o_fetch_next_pma_bad: pma_fetch_ok fails for the zero-extended next
     //     page inside the superpage (levels 1 and 2). High PPN bits are
     //     checked separately by o_fetch_pma_bad.
-    // All three are zero on a miss or when FETCH_VERDICTS is disabled.
+    //   o_fetch_next_ok: the hit permits fetch, passes PMA, and contains
+    //     the next 4 KiB page inside its superpage.
+    //   o_fetch_next_ppn: the successor PPN, usable when o_fetch_next_ok is set.
+    // These outputs are zero on a miss or when FETCH_VERDICTS is disabled.
     input logic i_fetch_priv_u,
     output logic [NUM_PORTS-1:0] o_fetch_perm_fault,
     output logic [NUM_PORTS-1:0] o_fetch_pma_bad,
-    output logic [NUM_PORTS-1:0] o_fetch_next_pma_bad
+    output logic [NUM_PORTS-1:0] o_fetch_next_pma_bad,
+    output logic [NUM_PORTS-1:0] o_fetch_next_ok,
+    output logic [NUM_PORTS-1:0][riscv_pkg::PhysAddrBits-13:0] o_fetch_next_ppn
 );
 
   localparam int unsigned EntryIdxBits = (NUM_ENTRIES > 1) ? $clog2(NUM_ENTRIES) : 1;
@@ -117,10 +125,18 @@ module dtlb #(
   (* keep = "true" *) logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] leaf_device_page;
   (* keep = "true" *) logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] leaf_atomic_page;
   (* keep = "true" *) logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] leaf_permissions;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] leaf_fetch_next_ok;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] leaf_fetch_perm_fault;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] leaf_fetch_pma_bad;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] leaf_fetch_next_pma_bad;
   (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] device_groups;
   (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] atomic_groups;
   (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] permission_groups;
   (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] high_ppn_groups;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] fetch_perm_groups;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] fetch_pma_groups;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] fetch_next_pma_groups;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] fetch_next_ok_groups;
   for (genvar p = 0; p < NUM_PORTS; p++) begin : gen_hit_port
     for (genvar e = 0; e < NUM_ENTRIES; e++) begin : gen_entry
       for (genvar c = 0; c < 9; c++) begin : gen_vpn_chunk
@@ -144,6 +160,14 @@ module dtlb #(
           leaf_permissions[p][3*g+:Entries]);
       assign high_ppn_groups[p][g] = |(lowest_match[p][3*g+:Entries] &
           e_ppn_hi_nonzero[3*g+:Entries]);
+      assign fetch_perm_groups[p][g] = |(lowest_match[p][3*g+:Entries] &
+          leaf_fetch_perm_fault[p][3*g+:Entries]);
+      assign fetch_pma_groups[p][g] = |(lowest_match[p][3*g+:Entries] &
+          leaf_fetch_pma_bad[p][3*g+:Entries]);
+      assign fetch_next_pma_groups[p][g] = |(lowest_match[p][3*g+:Entries] &
+          leaf_fetch_next_pma_bad[p][3*g+:Entries]);
+      assign fetch_next_ok_groups[p][g] = |(lowest_match[p][3*g+:Entries] &
+          leaf_fetch_next_ok[p][3*g+:Entries]);
     end
   end
   always_comb begin
@@ -182,23 +206,9 @@ module dtlb #(
     end
   end
 
+  logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0][PpnBits-1:0] leaf_ppn, leaf_next_ppn;
   always_comb begin
     for (int p = 0; p < NUM_PORTS; p++) begin
-      o_hit[p] = |hit_groups[p];
-      o_ppn[p] = '0;
-      o_device_page[p] = |device_groups[p];
-      o_perm_ok[p] = |permission_groups[p];
-      o_atomic_page[p] = |atomic_groups[p];
-      o_ppn_hi_nonzero[p] = |high_ppn_groups[p];
-      o_perm_r[p] = 1'b0;
-      o_perm_w[p] = 1'b0;
-      o_perm_x[p] = 1'b0;
-      o_perm_u[p] = 1'b0;
-      o_perm_d[p] = 1'b0;
-      o_level[p] = 2'd0;
-      o_fetch_perm_fault[p] = 1'b0;
-      o_fetch_pma_bad[p] = 1'b0;
-      o_fetch_next_pma_bad[p] = 1'b0;
       for (int e = 0; e < NUM_ENTRIES; e++) begin
         logic [PpnBits-1:0] ppn, next_ppn;
         // For a superpage the low PPN bits come from the VA, as Sv39
@@ -218,11 +228,49 @@ module dtlb #(
             next_ppn = e_ppn[e];
           end
         endcase
-        o_ppn[p] |= {PpnBits{lowest_match[p][e]}} & ppn;
-        leaf_device_page[p][e] = riscv_pkg::pma_device_ok(riscv_pkg::XLEN'({ppn, 12'h000}));
-        leaf_permissions[p][e] =
+        leaf_ppn[p][e] = ppn;
+        leaf_next_ppn[p][e] = next_ppn;
+        leaf_device_page[p][e] = DATA_VERDICTS &&
+            riscv_pkg::pma_device_ok(riscv_pkg::XLEN'({ppn, 12'h000}));
+        leaf_permissions[p][e] = DATA_VERDICTS &&
             leaf_perm_ok(i_perm_store[p], e_r[e], e_w[e], e_x[e], e_u[e], e_d[e]);
-        leaf_atomic_page[p][e] = riscv_pkg::pma_atomic_ok(riscv_pkg::XLEN'({ppn, 12'h000}));
+        leaf_atomic_page[p][e] = DATA_VERDICTS &&
+            riscv_pkg::pma_atomic_ok(riscv_pkg::XLEN'({ppn, 12'h000}));
+        leaf_fetch_next_ok[p][e] = FETCH_VERDICTS && e_x[e] &&
+            (e_u[e] == i_fetch_priv_u) && !e_ppn_hi_nonzero[e] &&
+            riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({ppn, 12'h000})) &&
+            (((e_level[e] == 2'd2) && !(&i_lookup_vpn[p][17:0])) ||
+             ((e_level[e] == 2'd1) && !(&i_lookup_vpn[p][8:0])));
+        leaf_fetch_perm_fault[p][e] = FETCH_VERDICTS && !(e_x[e] && (e_u[e] == i_fetch_priv_u));
+        leaf_fetch_pma_bad[p][e] = FETCH_VERDICTS &&
+            (e_ppn_hi_nonzero[e] || !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({ppn, 12'h000})));
+        leaf_fetch_next_pma_bad[p][e] = FETCH_VERDICTS &&
+            !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({next_ppn, 12'h000}));
+      end
+    end
+  end
+
+  always_comb begin
+    for (int p = 0; p < NUM_PORTS; p++) begin
+      o_hit[p] = |hit_groups[p];
+      o_ppn[p] = '0;
+      o_device_page[p] = |device_groups[p];
+      o_perm_ok[p] = |permission_groups[p];
+      o_atomic_page[p] = |atomic_groups[p];
+      o_ppn_hi_nonzero[p] = |high_ppn_groups[p];
+      o_perm_r[p] = 1'b0;
+      o_perm_w[p] = 1'b0;
+      o_perm_x[p] = 1'b0;
+      o_perm_u[p] = 1'b0;
+      o_perm_d[p] = 1'b0;
+      o_level[p] = 2'd0;
+      o_fetch_perm_fault[p] = |fetch_perm_groups[p];
+      o_fetch_pma_bad[p] = |fetch_pma_groups[p];
+      o_fetch_next_pma_bad[p] = |fetch_next_pma_groups[p];
+      o_fetch_next_ok[p] = |fetch_next_ok_groups[p];
+      o_fetch_next_ppn[p] = '0;
+      for (int e = 0; e < NUM_ENTRIES; e++) begin
+        o_ppn[p] |= {PpnBits{lowest_match[p][e]}} & leaf_ppn[p][e];
         o_perm_r[p] |= lowest_match[p][e] && e_r[e];
         o_perm_w[p] |= lowest_match[p][e] && e_w[e];
         o_perm_x[p] |= lowest_match[p][e] && e_x[e];
@@ -230,14 +278,7 @@ module dtlb #(
         o_perm_d[p] |= lowest_match[p][e] && e_d[e];
         o_level[p] |= {2{lowest_match[p][e]}} & e_level[e];
         if (FETCH_VERDICTS) begin
-          o_fetch_perm_fault[p] |= lowest_match[p][e] && !(e_x[e] && (e_u[e] == i_fetch_priv_u));
-          o_fetch_pma_bad[p] |= lowest_match[p][e] &&
-              (e_ppn_hi_nonzero[e] || !riscv_pkg::pma_fetch_ok(
-              riscv_pkg::XLEN'({ppn, 12'h000})
-          ));
-          o_fetch_next_pma_bad[p] |= lowest_match[p][e] && !riscv_pkg::pma_fetch_ok(
-              riscv_pkg::XLEN'({next_ppn, 12'h000})
-          );
+          o_fetch_next_ppn[p] |= {PpnBits{lowest_match[p][e]}} & leaf_next_ppn[p][e];
         end
       end
     end
@@ -277,7 +318,7 @@ module dtlb #(
     logic [PpnBits-1:0] ref_ppn, ref_next_ppn;
     logic ref_device_page, ref_ppn_hi_nonzero, ref_r, ref_w, ref_x, ref_u, ref_d;
     logic ref_perm_ok, ref_atomic_page;
-    logic ref_fetch_perm_fault, ref_fetch_pma_bad, ref_fetch_next_pma_bad;
+    logic ref_fetch_perm_fault, ref_fetch_pma_bad, ref_fetch_next_pma_bad, ref_fetch_next_ok;
     logic [1:0] ref_level;
     always_comb begin
       ref_ppn = '0;
@@ -291,6 +332,7 @@ module dtlb #(
       ref_fetch_perm_fault = 1'b0;
       ref_fetch_pma_bad = 1'b0;
       ref_fetch_next_pma_bad = 1'b0;
+      ref_fetch_next_ok = 1'b0;
       for (int e = NUM_ENTRIES - 1; e >= 0; e--) begin
         case (e_level[e])
           2'd2: ref_match[e] = e_valid[e] && i_lookup_vpn[gp][26:18] == e_vpn[e][26:18];
@@ -312,12 +354,15 @@ module dtlb #(
               ref_next_ppn = e_ppn[e];
             end
           endcase
-          ref_device_page = riscv_pkg::pma_device_ok(riscv_pkg::XLEN'({ref_ppn, 12'h000}));
+          ref_device_page = DATA_VERDICTS &&
+              riscv_pkg::pma_device_ok(riscv_pkg::XLEN'({ref_ppn, 12'h000}));
           ref_ppn_hi_nonzero = e_ppn_hi_nonzero[e];
           {ref_r, ref_w, ref_x, ref_u, ref_d} = {e_r[e], e_w[e], e_x[e], e_u[e], e_d[e]};
-          ref_perm_ok = (e_u[e] ? (i_perm_priv_u || i_perm_sum) : !i_perm_priv_u) &&
+          ref_perm_ok = DATA_VERDICTS &&
+              (e_u[e] ? (i_perm_priv_u || i_perm_sum) : !i_perm_priv_u) &&
               (i_perm_store[gp] ? (e_w[e] && e_d[e]) : (e_r[e] || (i_perm_mxr && e_x[e])));
-          ref_atomic_page = riscv_pkg::pma_atomic_ok(riscv_pkg::XLEN'({ref_ppn, 12'h000}));
+          ref_atomic_page = DATA_VERDICTS &&
+              riscv_pkg::pma_atomic_ok(riscv_pkg::XLEN'({ref_ppn, 12'h000}));
           ref_level = e_level[e];
           // Reference fetch checks use the selected entry's fields.
           ref_fetch_perm_fault = !(e_x[e] && (e_u[e] == i_fetch_priv_u));
@@ -325,6 +370,9 @@ module dtlb #(
               !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({ref_ppn, 12'h000}));
           ref_fetch_next_pma_bad =
               !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({ref_next_ppn, 12'h000}));
+          ref_fetch_next_ok = !ref_fetch_perm_fault && !ref_fetch_pma_bad &&
+              (((ref_level == 2'd2) && !(&i_lookup_vpn[gp][17:0])) ||
+               ((ref_level == 2'd1) && !(&i_lookup_vpn[gp][8:0])));
         end
       end
     end
@@ -337,9 +385,10 @@ module dtlb #(
               {ref_ppn, ref_device_page, ref_ppn_hi_nonzero, ref_r, ref_w, ref_x, ref_u, ref_d,
                ref_level, ref_perm_ok, ref_atomic_page});
       if (FETCH_VERDICTS) begin
-        p_fetch_verdicts_exact :
-        assert ({o_fetch_perm_fault[gp], o_fetch_pma_bad[gp], o_fetch_next_pma_bad[gp]} ==
-                {ref_fetch_perm_fault, ref_fetch_pma_bad, ref_fetch_next_pma_bad});
+        assert ({o_fetch_perm_fault[gp], o_fetch_pma_bad[gp], o_fetch_next_pma_bad[gp],
+                 o_fetch_next_ok[gp], o_fetch_next_ppn[gp]} ==
+                {ref_fetch_perm_fault, ref_fetch_pma_bad, ref_fetch_next_pma_bad,
+                 ref_fetch_next_ok, ref_next_ppn});
       end
     end
   end
