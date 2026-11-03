@@ -273,6 +273,7 @@ module platform_top #(
   logic fatal_error;
   logic [riscv_pkg::PhysAddrBits-1:0] fatal_addr;
   logic coherent_req_valid;
+  logic coherent_req_non_alloc;
   logic coherent_req_ready;
   logic coherent_req_write;
   logic [riscv_pkg::PhysAddrBits-1:0] coherent_req_addr;
@@ -401,6 +402,7 @@ module platform_top #(
       .i_coherent_req_wdata(coherent_req_wdata),
       .i_coherent_req_wstrb(coherent_req_wstrb),
       .i_coherent_req_id(coherent_req_id),
+      .i_coherent_req_non_alloc(coherent_req_non_alloc),
       .o_coherent_resp_valid(coherent_resp_valid),
       .o_coherent_resp_id(coherent_resp_id),
       .o_coherent_resp_rdata(coherent_resp_rdata),
@@ -618,6 +620,7 @@ module platform_top #(
       .o_coherent_req_wdata(coherent_req_wdata),
       .o_coherent_req_wstrb(coherent_req_wstrb),
       .o_coherent_req_id(coherent_req_id),
+      .o_coherent_req_non_alloc(coherent_req_non_alloc),
       .i_coherent_resp_valid(coherent_resp_valid),
       .i_coherent_resp_id(coherent_resp_id),
       .i_coherent_resp_rdata(coherent_resp_rdata),

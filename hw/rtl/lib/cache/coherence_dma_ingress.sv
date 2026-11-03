@@ -36,6 +36,7 @@ module coherence_dma_ingress #(
     input logic [255:0] i_req_data,
     input logic [31:0] i_req_mask,
     input logic [3:0] i_req_id,
+    input logic i_req_non_alloc = 1'b0,
     output logic o_resp_valid,
     output logic [255:0] o_resp_data,
     output logic [3:0] o_resp_id,
@@ -119,6 +120,7 @@ module coherence_dma_ingress #(
     incoming.addr = i_req_addr;
     incoming.size = 3'd5;
     incoming.mask = i_req_mask;
+    incoming.non_alloc = i_req_non_alloc;
     incoming.wdata = i_req_data;
     available = 1'b0;
     free_slot = '0;

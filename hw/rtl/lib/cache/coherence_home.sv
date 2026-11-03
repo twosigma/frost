@@ -172,6 +172,7 @@ module coherence_home #(
   logic retry_valid, retry_park, pin_valid;
   logic [5:0] decision_tid;
   logic [WAYS-1:0] completion_exclude, array_exclude;
+  logic [WAYS-1:0] streaming_exclude;
   (* keep = "true" *) logic [WAYS-1:0] owner_exclude;
   logic put_busy;
   coh_w_t incoming_put, selected_put_q;
@@ -186,6 +187,7 @@ module coherence_home #(
   logic [RESULTS-1:0][5:0] engine_tid;
   logic [RESULTS-1:0][3:0] engine_opcode;
   logic [RESULTS-1:0] engine_maintenance, engine_counted_q;
+  logic [RESULTS-1:0] engine_non_alloc;
   logic work_counted;
   logic [RESULTS-1:0][WayBits-1:0] engine_way;
   logic [RESULTS-1:0][255:0] engine_image;
@@ -211,7 +213,7 @@ module coherence_home #(
   logic [ADDR_WIDTH+10:0] ack_out;
   coh_g_t result;
   logic array_response, array_hit, array_available, array_claim;
-  logic [TokenBits-1:0] array_token, array_data_token, array_updated_token;
+  logic [TokenBits-1:0] array_token, array_data_token, array_updated_token, array_query_token;
   logic [(1 << TokenBits)-1:0] array_token_onehot;
   logic [ADDR_WIDTH-1:0] array_query, array_addr;
   logic [WayBits-1:0] array_way;
@@ -451,6 +453,7 @@ module coherence_home #(
         .o_tid(engine_tid[engine]),
         .o_opcode(engine_opcode[engine]),
         .o_maintenance(engine_maintenance[engine]),
+        .o_non_alloc(engine_non_alloc[engine]),
         .i_decision_valid(array_response && run && array_token == TokenBits'(engine)),
         .i_decision_resident(decision_hit),
         .i_decision_way(array_way),
@@ -646,6 +649,7 @@ module coherence_home #(
       .i_req_addr(tag_request.addr),
       .i_req_token(tag_request.token),
       .o_query_addr(array_query),
+      .o_query_token(array_query_token),
       .i_exclude(array_exclude),
       .o_resp_valid(array_response),
       .i_resp_ready(run),
@@ -703,8 +707,12 @@ module coherence_home #(
           put_phase_q[put] == PutAck) && put_set_q[put])
         owner_exclude[put_way_q[put]] = 1'b1;
     end
+    streaming_exclude = '0;
+    if (int'(array_query_token) < RESULTS && engine_non_alloc[ResultBits'(array_query_token)]) begin
+      streaming_exclude = ~WAYS'(1);
+    end
   end
-  assign array_exclude = completion_exclude | owner_exclude;
+  assign array_exclude = completion_exclude | owner_exclude | streaming_exclude;
   // The response-cycle decision compares the query block and the victim block
   // with every owner's address. Those comparisons are registered from the
   // cycle before: a response follows the selection cycle, and the query, the
@@ -1545,10 +1553,12 @@ module coherence_home #(
 `endif
   always_ff @(posedge i_clk) begin
     // Checked on each response for the response and selection cycles.
-    exclude_matched_q <= array_exclude == (completion_exclude | reference_exclude);
+    exclude_matched_q <= array_exclude ==
+        (completion_exclude | reference_exclude | streaming_exclude);
     if (sim_reset_seen_q && !i_rst && array_response && reference_ready_q) begin
       assert (exclude_matched_q);
-      assert (array_exclude == (completion_exclude | reference_exclude));
+      assert (array_exclude ==
+          (completion_exclude | reference_exclude | streaming_exclude));
     end
   end
   always_ff @(posedge i_clk)

@@ -500,6 +500,8 @@ module nic_top #(
 
   // The front end's line port, carried by the AXI master below.
   logic dma_req_valid, dma_req_ready, dma_req_write, dma_resp_valid, dma_resp_error;
+  logic [1:0] dma_req_kind;
+  logic [3:0] dma_req_cache;
   logic [ADDR_WIDTH-1:0] dma_req_addr;
   logic [LINE_BYTES*8-1:0] dma_req_wdata, dma_resp_rdata;
   logic [LINE_BYTES-1:0] dma_req_wstrb;
@@ -544,6 +546,7 @@ module nic_top #(
       .o_dma_req_wdata (dma_req_wdata),
       .o_dma_req_wstrb (dma_req_wstrb),
       .o_dma_req_id    (dma_req_id),
+      .o_dma_req_kind  (dma_req_kind),
       .i_dma_resp_valid(dma_resp_valid),
       .i_dma_resp_error(dma_resp_error),
       .i_dma_resp_id   (dma_resp_id),
@@ -553,6 +556,7 @@ module nic_top #(
   // ---- the DMA AXI4 master ---------------------------------------------------------------
   logic [ADDR_WIDTH-1:0] dma_axi_awaddr, dma_axi_araddr;
   logic [IdBits-1:0] dma_axi_awid, dma_axi_arid;
+  assign dma_req_cache = (dma_req_kind == nic_pkg::ReqKindData) ? 4'b0011 : 4'b1111;
   line_port_axi_bridge #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .AXI_ADDR_WIDTH(ADDR_WIDTH),
@@ -572,6 +576,7 @@ module nic_top #(
       .i_req_wdata   (dma_req_wdata),
       .i_req_wstrb   (dma_req_wstrb),
       .i_req_id      (dma_req_id),
+      .i_req_cache   (dma_req_cache),
       .o_resp_valid  (dma_resp_valid),
       .o_resp_id     (dma_resp_id),
       .o_resp_rdata  (dma_resp_rdata),
@@ -583,6 +588,7 @@ module nic_top #(
       .o_axi_awlen   (o_dma_axi_awlen),
       .o_axi_awsize  (o_dma_axi_awsize),
       .o_axi_awburst (o_dma_axi_awburst),
+      .o_axi_awcache (o_dma_axi_awcache),
       .o_axi_wvalid  (o_dma_axi_wvalid),
       .i_axi_wready  (i_dma_axi_wready),
       .o_axi_wdata   (o_dma_axi_wdata),
@@ -599,6 +605,7 @@ module nic_top #(
       .o_axi_arlen   (o_dma_axi_arlen),
       .o_axi_arsize  (o_dma_axi_arsize),
       .o_axi_arburst (o_dma_axi_arburst),
+      .o_axi_arcache (o_dma_axi_arcache),
       .i_axi_rvalid  (i_dma_axi_rvalid),
       .o_axi_rready  (o_dma_axi_rready),
       .i_axi_rid     (IdBits'(i_dma_axi_rid)),
@@ -612,16 +619,14 @@ module nic_top #(
       .o_wr_err_resp (),
       .o_wr_err_id   ()
   );
-  assign o_dma_axi_awid    = DMA_AXI_ID_BITS'(dma_axi_awid);
-  assign o_dma_axi_arid    = DMA_AXI_ID_BITS'(dma_axi_arid);
-  assign o_dma_axi_awaddr  = DMA_AXI_ADDR_BITS'(dma_axi_awaddr);
-  assign o_dma_axi_araddr  = DMA_AXI_ADDR_BITS'(dma_axi_araddr);
-  assign o_dma_axi_awlock  = 1'b0;
-  assign o_dma_axi_arlock  = 1'b0;
-  assign o_dma_axi_awcache = 4'b0011;
-  assign o_dma_axi_arcache = 4'b0011;
-  assign o_dma_axi_awprot  = 3'b010;
-  assign o_dma_axi_arprot  = 3'b010;
-  assign o_dma_axi_awqos   = 4'd0;
-  assign o_dma_axi_arqos   = 4'd0;
+  assign o_dma_axi_awid   = DMA_AXI_ID_BITS'(dma_axi_awid);
+  assign o_dma_axi_arid   = DMA_AXI_ID_BITS'(dma_axi_arid);
+  assign o_dma_axi_awaddr = DMA_AXI_ADDR_BITS'(dma_axi_awaddr);
+  assign o_dma_axi_araddr = DMA_AXI_ADDR_BITS'(dma_axi_araddr);
+  assign o_dma_axi_awlock = 1'b0;
+  assign o_dma_axi_arlock = 1'b0;
+  assign o_dma_axi_awprot = 3'b010;
+  assign o_dma_axi_arprot = 3'b010;
+  assign o_dma_axi_awqos  = 4'd0;
+  assign o_dma_axi_arqos  = 4'd0;
 endmodule : nic_top
