@@ -640,10 +640,8 @@ module dmmu (
   assign o_iss_out_store_data = s2_store_data_q;
   assign o_iss_out_amo_rs2 = s2_amo_rs2_q;
 
-  // S1 holds each op through the cycle before its S2 pulse, so S1's tag is
-  // the one-cycle look-ahead the LQ needs, however long a walk takes.
-  // When an op hits the last-page bypass, it moves directly into S2, so its
-  // look-ahead is presented live at issue.
+  // An operation in S1 presents its tag until it advances to S2. A last-page
+  // bypass presents the issue tag in the cycle before its S2 pulse.
   assign o_pre_rob_tag = iss_can_bypass ? iss_in.tag : s1_q.tag;
   assign o_pre_needs_lq = iss_can_bypass ?
       (i_iss_valid && !iss_in.needs_sq) : (s1_valid_q && !s1_q.needs_sq);
