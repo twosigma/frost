@@ -949,9 +949,28 @@ module store_queue #(
   assign write_fifo_occupancy_after_current_bus =
       {1'b0, write_inflight_cnt} + {2'b0, o_mem_write_en} -
       {2'b0, (i_mem_write_done && (write_inflight_cnt != 2'd0))};
+  // Writes in flight are all one tier, cached (L1D/DDR path) or not (BRAM path), and a
+  // store only pipelines behind writes of its own tier. The router makes the SQ's
+  // single done by OR-ing the BRAM tier's one-cycle fast done with the cached tier's
+  // done. Two tiers in flight together could return their dones in the same cycle,
+  // and the OR would drop one, leaving write_inflight_cnt above zero forever. A fast
+  // BRAM done would also pair with the older cached store's entry, because the queue
+  // retires entries in launch order. The tier of the writes in flight is the tier of
+  // the latest launch, since a launch behind a different tier waits for an empty pipe.
+  logic write_inflight_cached_q;
+  logic write_inflight_cached_cur;
+  logic write_tier_match;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) write_inflight_cached_q <= 1'b0;
+    else if (o_mem_write_en) write_inflight_cached_q <= o_mem_write_is_cached;
+  end
+  assign write_inflight_cached_cur =
+      o_mem_write_en ? o_mem_write_is_cached : write_inflight_cached_q;
+  assign write_tier_match = (write_fifo_occupancy_after_current_bus == 3'd0) ||
+      (write_inflight_cached_cur == mem_write_addr_cached_for_plain_next);
   assign mem_write_launch_serial_next = (write_inflight_cnt == 2'd0) && !o_mem_write_en;
   assign mem_write_launch_pipelined_next =
-      mem_write_plain_fast_next && !write_inflight_special &&
+      mem_write_plain_fast_next && !write_inflight_special && write_tier_match &&
       (write_fifo_occupancy_after_current_bus < 3'd2);
   assign mem_write_fire_next =
       drain_ready && (mem_write_launch_serial_next || mem_write_launch_pipelined_next);
