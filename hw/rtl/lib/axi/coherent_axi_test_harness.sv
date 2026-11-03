@@ -127,6 +127,7 @@ module coherent_axi_test_harness #(
       .i_req_data(o_line_req_wdata),
       .i_req_mask(o_line_req_wstrb),
       .i_req_id(4'(o_line_req_id)),
+      .i_req_non_alloc(o_line_req_non_alloc),
       .o_resp_valid(i_line_resp_valid),
       .o_resp_id(response_id),
       .o_resp_data(i_line_resp_rdata),
