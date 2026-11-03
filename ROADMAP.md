@@ -303,16 +303,10 @@ and targeted microbenchmarks give these items:
    every load-to-use chain. A one-cycle hit path, such as a micro-TLB or a
    bypass for the last page, would remove them. Dependent loads across pages
    take about 12 cycles, against 5 within one page.
-3. TLB reach. The DTLB has 16 entries, and a miss costs about 50 cycles. The
-   ITLB has 8 entries, and a miss costs about 58. Without ASIDs, every
-   context switch flushes both. A 16-entry ITLB, a larger DTLB, ASID
-   support, and a page-walk cache for upper-level page-table entries would
-   each help.
-4. Sequential fetch under translation. The instruction MMU compares the
-   whole fetch address with its last translation, so each sequential fetch
-   costs a one-cycle bubble. Comparing the virtual page number, and forming
-   the physical address from the cached page and the page offset, removes
-   it.
+3. TLB reach. The DTLB and ITLB have 16 entries each. A DTLB miss costs
+   about 50 cycles and an ITLB miss about 58. Without ASIDs, every context
+   switch flushes both. A larger DTLB, ASID support, and a page-walk cache for
+   upper-level page-table entries would each help.
 5. Branch prediction. A misprediction costs about 7 cycles, and the BTB has
    256 direct-mapped entries. A 1024-entry two-way or four-way BTB is the
    largest expected gain for Linux. In bare-metal microbenchmarks a taken
