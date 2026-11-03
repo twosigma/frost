@@ -42,7 +42,9 @@ progress when every queue is full. In simulation, memory-bound code in DDR
 runs slower through the home than through the previous hierarchy: the L1D
 sends its store acquisitions one at a time, the home has four fills, and it
 has no stream prefetcher yet. Other paths also take more cycles than
-before. The L1D completes one cached store at a time, hits included. The
+before. The L1D accepts ordered stores into a two-entry buffer and installs
+Modified-sector hits with masked writes. Waiting reads share array service
+with buffered store hits. The
 probe for an instruction or page-table read downgrades a Modified sector to
 Shared, so the next store to it acquires it again. An instruction refill
 or page-table read from the L2 takes about 25 cycles, against 10 to 16
@@ -295,10 +297,10 @@ to 0.3. It depends much more than CoreMark on stores, address translation,
 branch prediction, and floating point. Measurements with sysbench, `perf`,
 and targeted microbenchmarks give these items:
 
-1. Stores. Each store takes about six cycles, with translation on or off, so
-   `memset` and integer writes reach one 8-byte store every six cycles. The
-   store queue's drain and its commit into the L1D should reach two cycles
-   per store or better.
+1. Stores. The L1D accepts ordered stores into a two-entry buffer. Stores to
+   Modified sectors use masked writes, and waiting reads share array service
+   with buffered hits. The store queue's drain and installation into the L1D
+   should reach two cycles per store or better.
 2. Data translation. The data MMU's two registered stages add two cycles to
    every load-to-use chain. A one-cycle hit path, such as a micro-TLB or a
    bypass for the last page, would remove them. Dependent loads across pages
