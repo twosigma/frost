@@ -217,7 +217,8 @@ Library limits:
 
 ## Testing and debugging
 
-Test apps print `<<PASS>>` or `<<FAIL>>` on the UART. The simulation harness
+Test apps print `<<PASS>>` or `<<FAIL>>` on the UART. The execution-latency probe
+uses completion PCs checked by its dedicated simulation bench. The simulation harness
 fails a program that prints `<<FAIL>>` or exceeds its cycle budget: 500,000
 cycles unless the app has its own, and `COCOTB_MAX_CYCLES` changes the
 default. Hello World passes on its greeting, and `uart_echo` passes when it
@@ -283,6 +284,7 @@ can be debugged and where each one first stops.
 | `fetch_stall_repro/` | 32-bit instructions near cache-line boundaries, fetched cold from DDR; a PC+2 mis-step traps |
 | `fp_dyn_rm_test/` | FP instructions with the dynamic rounding mode trap as illegal while `frm` holds a reserved value; static modes and a valid `frm` work |
 | `fpu_assembly_test/` | FP hazards: squashed FP loads and load-use stalls |
+| `exec_latency_probe/` | Straight-line dependent and independent MUL, MULW, FADD.D, FMUL.D and FMADD.D sequences with arithmetic checks and named ranges for cycle tracing; the explicit `exec_latency_probe` target runs finite normal inputs, and `exec_latency_short` selects zero, infinity, NaN and cancellation chains |
 | `fpu_test/` | Subnormals, fused multiply-add, rounding, and conversions |
 | `freertos_demo/` | FreeRTOS V11.3.2 tasks passing data through a queue and sharing the UART under a mutex, while worker tasks increment one counter with `amoadd.w` and the 1 ms tick time-slices them; a tick inside a critical section must defer its task switch |
 | `fs_off_test/` | F/D instructions with `mstatus.FS` Off: illegal-instruction ahead of access and misaligned faults, no device read by a trapping FP load, and `mstatus.FS` writes, through `mstatus` or `sstatus`, that apply from the next instruction |

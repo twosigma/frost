@@ -3,17 +3,32 @@ prove control
 prove_alignment alignment
 prove_fallback control fallback
 prove_alignment_fallback alignment fallback
+prove_direct control direct
+prove_alignment_direct alignment direct
+prove_direct_fallback control direct fallback
+prove_alignment_direct_fallback alignment direct fallback
+cover_direct control direct
 cover control
 
 [options]
 prove: mode prove
-prove: depth 3
+prove: depth 8
 prove_alignment: mode prove
 prove_fallback: mode prove
-prove_fallback: depth 3
+prove_fallback: depth 8
 prove_alignment_fallback: mode prove
 cover: mode cover
 cover: depth 40
+
+prove_direct: mode prove
+prove_direct: depth 8
+prove_alignment_direct: mode prove
+cover_direct: mode cover
+cover_direct: depth 40
+
+prove_direct_fallback: mode prove
+prove_direct_fallback: depth 8
+prove_alignment_direct_fallback: mode prove
 
 [engines]
 prove: smtbmc boolector
@@ -22,12 +37,20 @@ prove_fallback: smtbmc boolector
 prove_alignment_fallback: abc pdr
 cover: smtbmc boolector
 
+prove_direct: smtbmc boolector
+prove_alignment_direct: abc pdr
+cover_direct: smtbmc boolector
+
+prove_direct_fallback: smtbmc boolector
+prove_alignment_direct_fallback: abc pdr
+
 [script]
 read -formal -sv riscv_pkg.sv
 read -sv dsp_tiled_multiplier_unsigned.sv multiplier.sv cl_multiplier.sv divider.sv sdp_dist_ram.sv
 control: read -formal -sv int_muldiv_shim.sv
 alignment: read -formal -D F_MULDIV_ALIGNMENT -sv int_muldiv_shim.sv
 fallback: chparam -set SHORT_WORD_OPS 0 int_muldiv_shim
+direct: chparam -set DIRECT_MUL 1 int_muldiv_shim
 prep -top int_muldiv_shim -flatten
 
 [files]

@@ -188,7 +188,7 @@ every valid ALU result, which follows from the rule in the next section. The
 | Slot | Adapter | `ALLOW_GRANT_REFILL` | `REGISTER_OUTPUT` | Other |
 |------|---------|----------------------|-------------------|-------|
 | 0, 7 | ALU, ALU2 | 1 (default) | 0 | `ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0` |
-| 1 | MUL | 0 | 0 | `ALWAYS_GRANTED=1`: highest priority; pending is constant zero (see the [adapter proof](../fu_cdb_adapter/README.md)) |
+| 1 | MUL | 0 | 0 | `ALWAYS_GRANTED=1`: highest priority; pending is constant zero; `DIRECT_MUL=1` presents the tracker tail without a FIFO (see the [adapter proof](../fu_cdb_adapter/README.md)) |
 | 2 | DIV | 0 | 1 | |
 | 3 | MEM | 0 | 0 | `ALWAYS_GRANTED=1`: second priority on a two-lane bus; pending is constant zero |
 | 4 | FP | 0 | 1 | |

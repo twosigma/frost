@@ -5,7 +5,7 @@
 # DSP-tiled multiplier core (used by the integer multiplier)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
 
-# RAM primitive used by the integer MUL/DIV shim's multiply result FIFO
+# RAM primitive for the integer MUL/DIV shim's buffered standalone mode
 $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv
 
 # ALU, plus the multiplier and divider sources int_muldiv_shim needs

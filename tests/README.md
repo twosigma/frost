@@ -151,6 +151,18 @@ a regex for the cocotb test function; with pytest, `-k` and `-m` select
 registry targets. A seed sweep gives each run its own build directory and
 prints a command that reproduces each failing seed.
 
+The explicit `exec_latency_probe` target records arithmetic issues, unit results,
+adapter results and CDB broadcasts in `.exec_latency/baseline.jsonl`. `FROST_EXECLAT_TRACE`
+selects another path, relative to `tests/` or absolute. ROB allocation maps issue
+tags to program addresses, since arithmetic issue packets omit their PCs. The
+bench checks the program's completion PC and fails on its failure PC or timeout.
+The integer chains check eight-cycle MUL and five-cycle MULW dependent issue.
+Each selected instruction's unit, adapter and CDB results are checked against
+the integer or exact double-precision vector, including flags and exceptions.
+The `exec_latency_short` variant selects zero, infinity, NaN and cancellation
+chains and writes `.exec_latency/short.jsonl`. Both targets run once and are
+excluded from pytest collection.
+
 Within a pytest run, a target reuses generated files only when its build
 settings match, and the files of a failed Verilator build are removed before
 the next target. pytest collects the applications grouped by their Verilator

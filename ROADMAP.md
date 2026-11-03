@@ -322,11 +322,13 @@ and targeted microbenchmarks give these items:
    four cycles, or two for zero. Pipelined add and multiply units would let
    FP_RS issue independent arithmetic while earlier operations execute.
 6. Integer multiply and divide. The full-width multiplier has six stages;
-   its result FIFO, CDB and reservation station each contribute a cycle to
-   a dependent use. The radix-4 divider captures magnitudes, counts leading
-   zeros and aligns the dividend before producing two quotient bits per
-   cycle. It takes up to 35 cycles, or 19 for a W form, and handles divide
-   by zero, full-width overflow and smaller dividends in two cycles.
+   its integrated completion bypasses the result FIFO. The CDB and
+   reservation station each contribute a cycle, giving eight cycles to a
+   dependent use. Word and carry-less multiplies take three arithmetic
+   cycles and five cycles to a dependent use. The radix-4 divider captures
+   magnitudes, counts leading zeros and aligns the dividend before producing
+   two quotient bits per cycle. It takes up to 35 cycles, or 19 for a W form.
+   Divide by zero, full-width overflow and smaller dividends take two cycles.
 7. Load queue depth. DDR latency dominates many Linux workloads. A balanced
    two-level pick across 16 entries would let the memory reservation station
    hold 16 loads (`MemRsDepth = 16`), with selection depth growing only with

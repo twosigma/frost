@@ -131,7 +131,7 @@ MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
 The FP engine completes on the `FP_ADD` slot; the `FP_DIV` and `FP_MUL` slots
 have no unit behind them. A completion that loses waits in its
 [`fu_cdb_adapter`](fu_cdb_adapter/README.md) and competes again the next
-cycle; the pipelined MUL path also queues results in a FIFO, and the divider
+cycle; the pipelined MUL path presents its result directly, and the divider
 holds its result until its adapter is free. On a full flush the arbiter's
 `i_kill` suppresses both lanes.
 

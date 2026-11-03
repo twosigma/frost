@@ -1485,15 +1485,13 @@ module tomasulo_wrapper #(
   logic                    div_busy;
   logic                    mul_rs_fu_ready;
 
-  // muldiv_busy is the multiplier path's credit-based back-pressure (FIFO
-  // occupancy in the shim). Adapter-pending bits do not gate new issues: the
-  // MUL FIFO absorbs transient CDB stalls, and the divider holds its result
-  // until the DIV adapter is free. Divides do not lower this ready: MUL_RS
-  // holds them back itself while div_busy is high.
+  // muldiv_busy bounds live multiplies and prevents tracker-slot collisions.
+  // Every MUL result wins a CDB lane; the divider holds its result until the
+  // DIV adapter is free. MUL_RS holds divides back while div_busy is high.
   assign mul_rs_fu_ready = i_mul_rs_fu_ready & ~muldiv_busy & ~i_backend_recovery_hold;
 
-  // Accept a shim result only when its adapter is idle. A pending result
-  // drains first, then the FIFO/divider result transfers next cycle, for timing.
+  // MUL's always-granted adapter is idle on every cycle. DIV waits for its
+  // registered adapter to drain before transferring another result.
   logic mul_result_accepted;
   assign mul_result_accepted = !mul_adapter_result_pending && mul_shim_out.valid;
 
@@ -3437,7 +3435,9 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // MUL/DIV Shim: translate rs_issue_t -> multiplier/divider -> fu_complete_t
   // ===========================================================================
-  int_muldiv_shim u_muldiv_shim (
+  int_muldiv_shim #(
+      .DIRECT_MUL(1'b1)
+  ) u_muldiv_shim (
       .i_clk            (i_clk),
       .i_rst_n          (i_rst_n),
       .i_rs_issue       (mul_rs_issue_w),
