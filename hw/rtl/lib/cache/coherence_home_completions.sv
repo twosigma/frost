@@ -653,8 +653,7 @@ module coherence_home_completions #(
     assign ready_hold[slot]  = ready_q[slot] && !dispatched;
     assign issued_hold[slot] = (issued_q[slot] || dispatched) && !retried;
     assign error_hold[slot]  = i_result_valid && result_hit[slot] ? result.error : error_q[slot];
-    // A wake, a count and a pin on the release edge take effect over it, as
-    // they did in the order of the table's updates.
+    // Wake, count and pin events take priority over release clearing.
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
         ready_q[slot] <= 1'b0;

@@ -10,10 +10,11 @@ and the [VCU118 guide](vcu118/README.md) for its board integration and usage.
 
 The X3 has eight L1D read slots and eight L1D request endpoints, so up to
 seven load misses and one store or LR acquisition are in flight to the L2 at
-once, and eight load queue entries. Its L2 coherence home has eight fills, each with
-an initiating request and room for two more read waiters, two writeback
-slots, and a stream prefetcher that reads ahead of the hart's data and
-instruction miss streams.
+once, and eight load queue entries. Its L2 coherence home has eight fills
+with three demand seats each. A demand fill uses one seat for its initiating
+request; a prefetch fill starts with all three seats free. The home has two
+writeback slots and a stream prefetcher that reads ahead of the hart's data
+and instruction miss streams.
 
 ## Architecture Overview
 

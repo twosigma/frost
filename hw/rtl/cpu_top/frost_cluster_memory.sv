@@ -330,7 +330,7 @@ module frost_cluster_memory #(
     assign o_coherent_u = release_message;
     assign u_ready = release_message.q.src == 2 ? dma_u_ready :
         release_message.q.src == 3 ? pf_u_ready : i_coherent_u_ready;
-    // Both C sources hold their offers until acceptance.
+    // All three C sources hold their offers until acceptance.
     coherence_d_arbiter #(
         .WIDTH(riscv_pkg::PhysAddrBits + 18),
         .PORTS(3),
