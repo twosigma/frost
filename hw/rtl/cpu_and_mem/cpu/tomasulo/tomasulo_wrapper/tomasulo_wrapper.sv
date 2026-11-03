@@ -3568,10 +3568,9 @@ module tomasulo_wrapper #(
     lq_addr_update.amo_rs2 = o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0];
   end
 
-  // Forward declarations (assigned in the data-MMU section below): the
-  // packet and pre-issue pair the LQ consumes.  They are the combinational
-  // MEM_RS path when translation is inactive, and the data MMU's S2 packet
-  // and the S1 or live bypass look-ahead when it is active.
+  // LQ packet and look-ahead signals. Inactive translation uses MEM_RS.
+  // Active translation uses the DMMU S2 packet and the tag from a surviving
+  // S1 operation or live issue. Packet valid qualifies the registered match.
   riscv_pkg::lq_addr_update_t lq_addr_update_final;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] dmmu_pre_rob_tag;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tag_final;
@@ -3620,9 +3619,8 @@ module tomasulo_wrapper #(
       // the data MMU's S2 packet: a PA, or the VA with a fault)
       .i_addr_update(lq_addr_update_final),
 
-      // Pre-issue look-ahead (from MEM_RS, 1 cycle before i_addr_update;
-      // under active translation it is the data MMU's S1 operation or live
-      // bypass operation, one cycle before its packet)
+      // The look-ahead tag precedes each valid address-update packet by one
+      // cycle. Active translation selects a surviving S1 tag or live issue tag.
       .i_pre_issue_rob_tag(mem_rs_pre_issue_rob_tag_final),
       .i_pre_issue_rob_tags(mem_rs_pre_issue_rob_tags_final),
       .i_pre_issue_sel(mem_rs_pre_issue_sel),
@@ -3909,8 +3907,7 @@ module tomasulo_wrapper #(
   logic dmmu_early_ok, dmmu_early2_ok;
   logic [riscv_pkg::XLEN-1:0] dmmu_early_pa, dmmu_early2_pa;
   logic dmmu_early_is_mmio, dmmu_early2_is_mmio;
-  // The MMU's pre-issue pair (its S1 stage's held op); the tag is declared
-  // with the LQ's forward declarations.
+  // MMU look-ahead qualifier; its tag is declared with the LQ signals.
   logic dmmu_pre_needs_lq;
 
   dmmu u_dmmu (
