@@ -63,6 +63,7 @@ BOARD_DESIGN_DIR = Path(__file__).resolve().parent
 # Limit concurrent Vivado processes to bound memory use (about 8 GB per worker).
 # This is separate from each process's thread count.
 DEFAULT_MAX_JOBS = 12
+VIVADO_EXIT_GRACE_S = 120.0
 
 # X3 defaults to AlternateRoutability to limit MUXF7/MUXF8 routing congestion.
 BOARD_CONFIG = {
@@ -3088,10 +3089,10 @@ def run_step(
             + "\n"
         )
         (work_dir / "phys_opt_iteration.json").unlink(missing_ok=True)
-    result = subprocess.run(vivado_command, cwd=work_dir)
+    returncode = run_vivado_step(vivado_command, work_dir)
 
-    if result.returncode != 0:
-        print(f"\n  [FAIL] {step} / {directive} (exit code {result.returncode})")
+    if returncode != 0:
+        print(f"\n  [FAIL] {step} / {directive} (exit code {returncode})")
         return False, None, ""
 
     timing_rpt = work_dir / f"{tcl_report_prefix}_timing.rpt"
@@ -3156,6 +3157,58 @@ def run_step(
     return True, wns, report_prefix
 
 
+def run_vivado_step(command: list[str], cwd: Path) -> int:
+    """Run one Vivado batch step and return its exit code.
+
+    Vivado normally exits right after printing ``Exiting Vivado``. If the
+    launcher process stays alive for ``VIVADO_EXIT_GRACE_S`` after that line, the
+    step is judged by its ``** DONE`` marker and the launcher is terminated, so a
+    stuck launcher cannot stall the whole build.
+    """
+    log_path = cwd / "vivado.log"
+    if "-log" in command:
+        log_path = cwd / command[command.index("-log") + 1]
+    process = subprocess.Popen(command, cwd=cwd)
+    try:
+        return _wait_for_vivado(process, log_path)
+    except BaseException:
+        # subprocess.run() kills its child on an interrupt; keep that behaviour.
+        process.kill()
+        process.wait()
+        raise
+
+
+def _wait_for_vivado(process: subprocess.Popen[bytes], log_path: Path) -> int:
+    """Wait for a Vivado launcher, ending it once Vivado has long since exited."""
+    exited_since: float | None = None
+    while True:
+        try:
+            returncode = process.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            return returncode
+        try:
+            text = log_path.read_text(errors="replace")
+        except OSError:
+            continue
+        if "Exiting Vivado at" not in text:
+            continue
+        if exited_since is None:
+            exited_since = time.monotonic()
+        elif time.monotonic() - exited_since > VIVADO_EXIT_GRACE_S:
+            print(
+                f"  Vivado finished but its launcher did not exit within "
+                f"{VIVADO_EXIT_GRACE_S:.0f} s; terminating it"
+            )
+            process.terminate()
+            try:
+                process.wait(timeout=10.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            return 0 if "** DONE" in text else 1
+
+
 def generate_bitstream(
     script_dir: Path,
     board_name: str,
@@ -3194,8 +3247,7 @@ def generate_bitstream(
         "0",
     ]
 
-    result = subprocess.run(vivado_command, cwd=main_work)
-    if result.returncode != 0:
+    if run_vivado_step(vivado_command, main_work) != 0:
         print("Error: Bitstream generation failed")
         return False
 
