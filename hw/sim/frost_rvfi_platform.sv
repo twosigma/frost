@@ -1901,6 +1901,9 @@ module frost_rvfi_platform #(
     localparam int unsigned DmaDownIdBits = DmaUpIdBits + 1;
     localparam int unsigned DmaLineIdBits = 3;
     logic dma_req_valid, dma_req_ready, dma_req_write;
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic dma_req_non_alloc;
+    /* verilator lint_on UNUSEDSIGNAL */
     logic [riscv_pkg::PhysAddrBits-1:0] dma_req_addr;
     logic [L1LineBytes*8-1:0] dma_req_wdata;
     logic [L1LineBytes-1:0] dma_req_wstrb;
@@ -2493,6 +2496,7 @@ module frost_rvfi_platform #(
         .o_line_req_wdata(dma_req_wdata),
         .o_line_req_wstrb(dma_req_wstrb),
         .o_line_req_id(dma_line_req_id),
+        .o_line_req_non_alloc(dma_req_non_alloc),
         .i_line_resp_valid(dma_resp_valid),
         .i_line_resp_id(dma_resp_id[DmaLineIdBits-1:0]),
         .i_line_resp_rdata(dma_resp_rdata),
