@@ -1417,10 +1417,12 @@ module load_queue #(
   logic coherent_staged_at_head;
   logic [1:0] coherent_probe_choice, coherent_issue_choice;
   logic [1:0] coherent_issue_by_drain, coherent_eligible_by_drain;
+  logic coherent_release_protected;
+`ifndef SYNTHESIS
   logic [1:0][1:0] coherent_release_by_drain_empty;
-  logic [1:0][1:0][1:0] coherent_release_cases;
-  logic coherent_release_eligible, coherent_release_protected;
+  logic coherent_release_eligible;
   logic [1:0] coherent_forward_unblocked_empty;
+`endif
   logic coherent_forward_unblocked;
   logic coherent_forward_clear_eligible;
   logic coherent_probe_ok, coherent_issue_ok, coherent_forward_ok;
@@ -1938,74 +1940,70 @@ module load_queue #(
   end
   wire [3:0] coherent_pending = {sq_check_pending_copy, sq_check_pending};
   logic coherent_stage_clear;
-  wire [1:0] coherent_commit_choice = {i_sq_commit_pending, i_sq_committed_empty};
+  logic cache_lookup_hit, resp_bypass_ok, sq_check_cacheable;
+  wire [3:0][1:0] coherent_take_code;
+  wire [1:0] coherent_clear_code;
+  wire coherent_fault_take, coherent_fault_clear;
   if (1'b1) begin : gen_coherent_capture_choices
-    // A flush leaves only the forwarding release, which depends on neither
-    // the head, hit nor bus case, so the flush selects it at the head choice
-    // rather than gating every memory release case.
-    (* keep = "true" *) logic [1:0] clear_by_head;
-    (* keep = "true" *) logic flushed_clear;
-    wire flushing = i_flush_all || i_flush_en;
-    assign flushed_clear = coherent_forward_unblocked_empty[i_sq_empty] &&
-        !(i_sq_commit_pending && sq_check_is_cached_region && sq_check_phase2);
-    for (genvar head_case = 0; head_case < 2; head_case++) begin : gen_head_choice
-      (* keep = "true" *) logic [1:0] clear_by_hit;
-      for (genvar hit_case = 0; hit_case < 2; hit_case++) begin : gen_hit_choice
-        localparam bit Hit = hit_case != 0;
-        (* keep = "true" *) logic [1:0] clear_by_empty;
-        for (genvar empty_case = 0; empty_case < 2; empty_case++) begin : gen_empty_choice
-          (* keep = "true" *) logic [3:0] clear_by_bus;
-          wire [1:0] bus_choice = {i_mem_bus_busy, i_l0_hit_allowed};
-          for (genvar bus_case = 0; bus_case < 4; bus_case++) begin : gen_bus_choice
-            localparam bit Busy = (bus_case & 2) != 0;
-            localparam bit L0Allowed = (bus_case & 1) != 0;
-            (* keep = "true" *) logic [3:0] clear_by_commit;
-            for (genvar commit_case = 0; commit_case < 4; commit_case++) begin : gen_commit_choice
-              localparam bit CommitPending = (commit_case & 2) != 0;
-              localparam int unsigned Drained = commit_case & 1;
-              wire interlock = CommitPending && sq_check_is_cached_region && sq_check_phase2;
-              wire clear_memory =
-                  coherent_release_cases[empty_case][Drained][head_case] && !interlock &&
-                  ((!Busy && !cached_launch_hold_q) ||
-                   (ENABLE_L0_FAST_PATH && sq_check_cacheable && (!Busy || L0Allowed) && Hit &&
-                    !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q));
-              assign clear_by_commit[commit_case] = clear_memory ||
-                  (coherent_forward_unblocked_empty[empty_case] && !interlock);
-            end
-            assign clear_by_bus[bus_case] = clear_by_commit[coherent_commit_choice];
-          end
-          assign clear_by_empty[empty_case] = clear_by_bus[bus_choice];
-        end
-        assign clear_by_hit[hit_case] = clear_by_empty[i_sq_empty];
-      end
-      assign clear_by_head[head_case] = flushing ? flushed_clear : clear_by_hit[cache_lookup_hit];
-    end
-    // Head identity selects between complete release cofactors. Phase and
-    // address faults qualify that selected release condition.
-    (* keep = "true" *) wire release_ready = sq_check_phase2 && !coherent_address_fault &&
-        coherent_release_protected && !i_coherent_cut_hold &&
-        clear_by_head[coherent_staged_at_head];
-    (* keep = "true" *) wire fault_clear_ready =
-        !coherent_local_hold && !resp_bypass_ok &&
-        coherent_release_eligible && coherent_address_fault && !i_flush_en;
-    wire fault_granted = cdb_stage_slot_available && !issue_cdb_fire;
-    (* keep = "true" *) wire release_for_take = release_ready || coherent_sector_hold ||
-        older_amo_write_pending || (fault_clear_ready && fault_granted);
-    (* keep = "true" *) wire release_for_clear = (!coherent_sector_hold && release_ready) ||
-        older_amo_write_pending || (fault_clear_ready && fault_granted);
-    // Each take is its terms without replacement, or the staged load giving
-    // way to an older candidate. The two parts are kept, so the replacement
-    // choice meets them in the last term.
-    (* keep = "true" *) wire take_replaceable = sq_check_gate_early && sq_check_pending;
+    // Encode held, miss and hit outcomes before the final capture choices.
+    lq_capture_prepare #(
+        .ENABLE_L0_FAST_PATH(ENABLE_L0_FAST_PATH),
+        .ENABLE_SQ_FORWARD_FAST_PATH(ENABLE_SQ_FORWARD_FAST_PATH)
+    ) u_prepare (
+        .i_pending(coherent_pending),
+        .i_phase2(sq_check_phase2),
+        .i_no_older_store(sq_check_no_older_store_q),
+        .i_is_lr(sq_check_is_lr_q),
+        .i_is_amo(sq_check_is_amo_q),
+        .i_is_mmio(sq_check_is_mmio_q),
+        .i_is_cached(sq_check_is_cached_region),
+        .i_cacheable(sq_check_cacheable),
+        .i_at_head(coherent_staged_at_head),
+        .i_admit(i_coh_admit_pulse),
+        .i_hold_valid(coh_hold_valid_q),
+        .i_sq_empty,
+        .i_sq_committed_empty,
+        .i_sq_commit_pending,
+        .i_all_older_known(i_sq_all_older_addrs_known),
+        .i_forward_match(i_sq_forward.match),
+        .i_can_forward(i_sq_forward.can_forward),
+        .i_mem_busy(i_mem_bus_busy),
+        .i_l0_allowed(i_l0_hit_allowed),
+        .i_cached_hold(cached_launch_hold_q),
+        .i_flush_all,
+        .i_flush_en,
+        .i_address_fault(coherent_address_fault),
+        .i_protected(coherent_release_protected),
+        .i_cut_hold(i_coherent_cut_hold),
+        .i_sector_hold(coherent_sector_hold),
+        .i_older_amo(older_amo_write_pending),
+        .i_cdb_available(cdb_stage_slot_available),
+        .i_issue_cdb_fire(issue_cdb_fire),
+        .i_gate(sq_check_gate_early),
+        .i_found(issue_mem_found),
+        .o_take_code(coherent_take_code),
+        .o_clear_code(coherent_clear_code),
+        .o_fault_take(coherent_fault_take),
+        .o_fault_clear(coherent_fault_clear)
+    );
     for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_take
-      (* keep = "true" *) wire take_without_replacement = sq_check_gate_early &&
-          ((!coherent_pending[copy_index] && issue_mem_found) ||
-           (sq_check_pending && release_for_take && issue_mem_found));
-      assign coherent_stage_take[copy_index] = take_without_replacement ||
-          (take_replaceable && (i_addr_update.valid ? coherent_replace_with_update :
-           coherent_replace_without_update));
+      lq_capture_select u_select (
+          .i_code(coherent_take_code[copy_index]),
+          .i_fault(coherent_fault_take && !resp_bypass_ok && !coh_launch_hold_q),
+          .i_hit(cache_lookup_hit),
+          .i_hold(coh_launch_hold_q),
+          .i_replace(coherent_stage_replace),
+          .o_choice(coherent_stage_take[copy_index])
+      );
     end
-    assign coherent_stage_clear = sq_check_pending && release_for_clear;
+    lq_capture_select u_clear (
+        .i_code(coherent_clear_code),
+        .i_fault(coherent_fault_clear && !resp_bypass_ok && !coh_launch_hold_q),
+        .i_hit(cache_lookup_hit),
+        .i_hold(coh_launch_hold_q),
+        .i_replace(1'b0),
+        .o_choice(coherent_stage_clear)
+    );
   end
 
   // The selector's head term relies on the head match being at most one-hot,
@@ -2151,10 +2149,11 @@ module load_queue #(
         !coherent_address_fault &&
         (sq_no_older_store || sq_check_is_amo_q ||
          (i_sq_all_older_addrs_known && !i_sq_forward.match));
-    (* keep = "true" *) wire head_release_eligible = !coh_launch_hold_q &&
-        !((sq_check_is_amo_q || sq_check_is_lr_q) && (i_coh_admit_pulse || !coh_hold_valid_q));
     assign coherent_release_protected =
         !sq_check_is_amo_q || !sq_check_is_cached_region || i_coherent_atomic_protected;
+`ifndef SYNTHESIS
+    (* keep = "true" *) wire head_release_eligible = !coh_launch_hold_q &&
+        !((sq_check_is_amo_q || sq_check_is_lr_q) && (i_coh_admit_pulse || !coh_hold_valid_q));
     assign coherent_release_eligible = coherent_staged_at_head ?
         (i_sq_committed_empty ? head_release_eligible : ordinary_eligible) :
         (ordinary_eligible && !sq_check_is_mmio_q);
@@ -2170,12 +2169,10 @@ module load_queue #(
         (* keep = "true" *) wire [1:0] by_head = {
           (drain_case != 0 ? head_drained : ordinary), ordinary && !sq_check_is_mmio_q
         };
-        assign coherent_release_cases[empty_case][drain_case] = by_head;
         assign coherent_release_by_drain_empty[empty_case][drain_case] =
             by_head[coherent_staged_at_head];
       end
     end
-`ifndef SYNTHESIS
 `ifdef FORMAL
     always_comb
 `else
@@ -2284,12 +2281,12 @@ module load_queue #(
     assign forward_clear_eligible = forward_unblocked && !sq_commit_interlock;
     assign forward_ok = forward_clear_eligible && sq_check_entry_valid &&
         !older_amo_write_pending;
+`ifndef SYNTHESIS
     assign coherent_forward_unblocked_empty[0] = ENABLE_SQ_FORWARD_FAST_PATH &&
         !coh_launch_hold_q &&
         !sq_check_no_older_store_q && i_sq_all_older_addrs_known &&
         i_sq_forward.can_forward && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
     assign coherent_forward_unblocked_empty[1] = 1'b0;
-`ifndef SYNTHESIS
 `ifdef FORMAL
     always_comb
 `else
@@ -2417,7 +2414,6 @@ module load_queue #(
   // ===========================================================================
   // L0 Cache Instance
   // ===========================================================================
-  logic                              cache_lookup_hit;
   logic [riscv_pkg::MemDataBits-1:0] cache_lookup_data;
   logic                              cache_fill_response_valid;
   logic                              cache_fill_valid;
@@ -2484,12 +2480,12 @@ module load_queue #(
   // may permit an unrelated hit during a buffered Normal store or older
   // Normal read. Same-dword stores, AMOs, precise writes and pending Device
   // handoffs still block it through disambiguation/invalidation or permission.
-  wire sq_check_cacheable = CACHE_UNCACHED_DATA || sq_check_is_cached_region ||
+  assign sq_check_cacheable = CACHE_UNCACHED_DATA || sq_check_is_cached_region ||
       (CACHE_NORMAL_MEMORY && coherent_staged_normal);
   wire cache_hit_eligible = ENABLE_L0_FAST_PATH && sq_check_cacheable &&
       !i_flush_all && !i_flush_en && !l0_lookup_busy && sq_can_issue &&
       !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
-  assign cache_hit_fast_path = cache_lookup_hit && cache_hit_eligible;
+  assign cache_hit_fast_path = cache_hit_eligible && cache_lookup_hit;
 
   assign stage_mem_issue_addr = sq_check_addr_q;
 
@@ -2712,15 +2708,18 @@ module load_queue #(
       ((sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE) ?
        i_sq_forward.data : FLEN'(lu_fwd_out));
 
+  // Apply the L0 hit after the other write permissions.
+  (* keep = "true" *) wire ram_hit_write_eligible = i_rst_n && cache_hit_eligible;
+  (* keep = "true" *) wire ram_non_hit_write = i_rst_n && !i_flush_all &&
+      (sq_do_forward || (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done));
+
   always_comb begin
     lq_data_we[0] = i_rst_n && !i_flush_all && accept_mem_response && !issued_is_amo;
     lq_data_wr_addr[0] = issued_idx;
     lq_data_wd[0] = (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE) ?
         i_mem_read_data : FLEN'(lu_data_out);
 
-    lq_data_we[1] = i_rst_n && !i_flush_all &&
-        (cache_hit_fast_path || sq_do_forward ||
-         (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done));
+    lq_data_we[1] = ram_non_hit_write || (ram_hit_write_eligible && cache_lookup_hit);
     lq_data_wr_addr[1] = (cache_hit_fast_path || sq_do_forward) ? sq_check_idx : amo_entry_idx;
     lq_data_wd[1] = (cache_hit_fast_path || sq_do_forward) ? ram_sq_payload : FLEN'(amo_old_value);
   end
@@ -2999,11 +2998,11 @@ module load_queue #(
   assign cdb_stage_slot_available = !cdb_stage_valid || i_result_accepted;
   assign issue_cdb_fire = issue_cdb_result.valid && cdb_stage_slot_available;
 
-  // The wrapper's cdb_kill and MEM adapter flush suppress full-flush results.
-  // Omit that gate here for payload timing.
+  // The wrapper's CDB arbiter suppresses full-flush broadcasts.
+  // Invalid payloads do not require full-flush qualification.
   always_comb begin
     o_fu_complete       = cdb_stage_data;
-    o_fu_complete.valid = cdb_stage_valid && !i_flush_en && !cdb_stage_result_flushed;
+    o_fu_complete.valid = cdb_stage_valid && !i_flush_en;
   end
   assign o_fu_complete_staged = cdb_stage_valid;
 
@@ -3014,7 +3013,6 @@ module load_queue #(
   // Responses, hits, and forwards otherwise use the data-valid path; faults
   // wait in staging. Nonfaulting AMOs complete through data RAM after writing.
   // All load sizes, including LD, FLD, and LR.D, can bypass.
-  logic resp_bypass_ok;
   logic resp_bypass_fire;
   logic cache_hit_bypass_fire;
   logic bypass_fire;
@@ -3076,9 +3074,18 @@ module load_queue #(
                            !resp_bypass_fire && !misalign_bypass_fire &&
                            sq_do_forward && !i_flush_en;
 
-  (* keep = "true" *) logic bypass_without_cache_hit;
-  assign bypass_without_cache_hit = resp_bypass_fire || misalign_bypass_fire || fwd_bypass_fire;
-  assign bypass_fire = bypass_without_cache_hit || cache_hit_bypass_fire;
+  // Any eligible source can fill an available stage when Phase A is idle.
+  wire completion_ready = cdb_stage_slot_available && !i_flush_en;
+  wire bypass_source;
+  lq_bypass_source u_bypass_source (
+      .i_flush_all(i_flush_all),
+      .i_response(coherent_response_bypass),
+      .i_fault(sq_check_misaligned),
+      .i_forward(sq_do_forward),
+      .i_hit(cache_hit_fast_path),
+      .o_source(bypass_source)
+  );
+  assign bypass_fire = completion_ready && !issue_cdb_found && bypass_source;
 
   // Mirror issue_cdb_result formatting, but sourced from the response-side
   // signals (lu_data_out / lu_cache_out / image beat) instead of the LUTRAM.
@@ -3196,8 +3203,15 @@ module load_queue #(
     wire issue_match = issue_cdb_idx == IdxWidth'(entry);
     wire response_match = issued_idx == IdxWidth'(entry);
     wire staged_match = sq_check_idx == IdxWidth'(entry);
-    assign coherent_free_entry[entry] = issue_cdb_fire ? issue_match :
-        (bypass_fire && (resp_bypass_data_sel ? response_match : staged_match));
+    wire bypass_match = resp_bypass_data_sel ? response_match : staged_match;
+    lq_entry_release u_release (
+        .i_ready(completion_ready),
+        .i_issue_found(issue_cdb_found),
+        .i_issue_match(issue_match),
+        .i_bypass_match(bypass_match),
+        .i_bypass_source(bypass_source),
+        .o_release(coherent_free_entry[entry])
+    );
   end
 `ifndef SYNTHESIS
 `ifdef FORMAL
@@ -3466,18 +3480,25 @@ module load_queue #(
     wire probe = coherent_probe_ok && !coherent_local_hold && !i_flush_all && !i_flush_en &&
         !drop_mem_response_pending && !sq_commit_check_block;
     (* keep = "true" *) logic pending_hold, no_older_hold, phase2_hold;
-    (* keep = "true" *) logic [DEPTH-1:0] in_flight_hold;
     assign pending_hold = sq_check_pending && !sq_check_flushed && !stage_clear;
     assign no_older_hold = sq_check_no_older_store_q && !sq_check_flushed;
     assign phase2_hold = !sq_check_flushed &&
         (sq_check_phase2 ||
          (!stage_clear &&
           ((sq_check_pending && i_sq_empty && !sq_commit_check_block) || probe)));
-    assign in_flight_hold = sq_check_in_flight_mask & {DEPTH{!sq_check_flushed && !stage_clear}};
     assign sq_check_pending_next = take || pending_hold;
     assign sq_check_no_older_store_next = take ? i_sq_empty : no_older_hold;
     assign sq_check_phase2_next = take ? i_sq_empty : phase2_hold;
-    assign sq_check_in_flight_mask_next = take ? issue_mem_onehot : in_flight_hold;
+    for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_inflight
+      lq_inflight_select u_select (
+          .i_current(sq_check_in_flight_mask[entry]),
+          .i_issue(issue_mem_onehot[entry]),
+          .i_take(take),
+          .i_clear(stage_clear),
+          .i_flushed(sq_check_flushed),
+          .o_next(sq_check_in_flight_mask_next[entry])
+      );
+    end
 
 `ifndef SYNTHESIS
     logic reference_pending, reference_no_older, reference_phase2;
@@ -3660,6 +3681,61 @@ module load_queue #(
     assign lq_valid_kept[i] = lq_valid_unflushed[i] && !coherent_free_entry[i];
   end
 
+  // Prepare local completion and response eligibility independently. Each
+  // entry applies hit, response acceptance and allocation at final selectors.
+  logic [3:0][DEPTH-1:0] lq_data_valid_choices;
+  logic [1:0][DEPTH-1:0] lq_response_eligible;
+  wire [DEPTH-1:0] lq_data_valid_next;
+  lq_result_valid_prepare #(
+      .DEPTH(DEPTH)
+  ) u_result_valid_prepare (
+      .i_rst_n(i_rst_n),
+      .i_flush_all(i_flush_all),
+      .i_flush_en(i_flush_en),
+      .i_valid(lq_data_valid),
+      .i_cdb_valid(cdb_stage_valid),
+      .i_result_accepted(i_result_accepted),
+      .i_issue_cdb_found(issue_cdb_found),
+      .i_misaligned(sq_check_misaligned),
+      .i_forward(sq_do_forward),
+      .i_check_idx(sq_check_idx),
+      .i_hit_eligible(cache_hit_eligible),
+      .i_response_error(mem_response_error),
+      .i_issued_amo(issued_is_amo),
+      .i_issued_idx(issued_idx),
+      .i_amo_done(amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done),
+      .i_amo_idx(amo_entry_idx),
+      .o_choices(lq_data_valid_choices),
+      .o_response_eligible(lq_response_eligible)
+  );
+  for (genvar i = 0; i < DEPTH; i++) begin : gen_lq_data_valid
+    logic local_complete, completed;
+    lq_result_valid_select u_select (
+        .i_choices({lq_data_valid_choices[3][i], lq_data_valid_choices[2][i],
+                    lq_data_valid_choices[1][i], lq_data_valid_choices[0][i]}),
+        .i_hit(cache_lookup_hit),
+        .i_response(coherent_response_bypass),
+        .o_completed(local_complete)
+    );
+    lq_result_valid_response u_response (
+        .i_local(local_complete),
+        .i_eligible({lq_response_eligible[1][i], lq_response_eligible[0][i]}),
+        .i_response(coherent_response_bypass),
+        .i_accept(accept_mem_response),
+        .o_completed(completed)
+    );
+    lq_result_valid_allocate u_allocate (
+        .i_completed(completed),
+        .i_first_room(first_room_oh[i]),
+        .i_second_room(second_room_oh[i]),
+        .i_alloc(i_alloc.valid),
+        .i_alloc_2(i_alloc_2.valid),
+        .o_valid(lq_data_valid_next[i])
+    );
+    always_ff @(posedge i_clk) lq_data_valid[i] <= lq_data_valid_next[i];
+  end
+
+
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       head_ptr                  <= '0;
@@ -3667,7 +3743,6 @@ module load_queue #(
       lq_valid                  <= '0;
       lq_addr_valid             <= '0;
       lq_issued                 <= '0;
-      lq_data_valid             <= '0;
       lq_response_error         <= '0;
       lq_forwarded              <= '0;
       mem_outstanding           <= 1'b0;
@@ -3685,7 +3760,6 @@ module load_queue #(
       lq_valid <= '0;
       lq_addr_valid <= '0;
       lq_issued <= '0;
-      lq_data_valid <= '0;
       lq_response_error <= '0;
       lq_forwarded <= '0;
       mem_outstanding <= 1'b0;
@@ -3753,24 +3827,8 @@ module load_queue #(
       end
 
       // -----------------------------------------------------------------
-      // L0 Cache Hit Fast Path: SQ confirmed no conflict, use cached data
-      // -----------------------------------------------------------------
-      // Skip the data_valid step when the completion bypass captured the
-      // cache hit directly into cdb_stage. The entry is already freed via
-      // free_entry_en.
-      if (cache_hit_fast_path && !cache_hit_bypass_fire) begin
-        lq_data_valid[sq_check_idx] <= 1'b1;
-      end
-
-      // -----------------------------------------------------------------
       // Store forwarding: write data directly, skip memory
       // -----------------------------------------------------------------
-      // Skip the data_valid step when the completion bypass captured the
-      // forward directly into cdb_stage. The entry is already freed via
-      // free_entry_en (mirrors the cache-hit bypass above).
-      if (sq_do_forward && !fwd_bypass_fire) begin
-        lq_data_valid[sq_check_idx] <= 1'b1;
-      end
       if (sq_do_forward) begin
         lq_forwarded[sq_check_idx] <= 1'b1;
       end
@@ -3789,7 +3847,6 @@ module load_queue #(
         if (!resp_from_slot) mem_outstanding <= 1'b0;
         if (mem_response_error) begin
           lq_response_error[issued_idx] <= 1'b1;
-          lq_data_valid[issued_idx] <= 1'b1;
         end else if (issued_is_amo) begin
           // MIN/MAX writes the next cycle; ordinary AMOs first use COMPUTE. The IDLE
           // guard prevents an overlapping response from replacing an active AMO.
@@ -3800,10 +3857,6 @@ module load_queue #(
           // write is harmless. LR sets its reservation on either completion path
           // unless coherence suppresses it.
           if (issued_is_lr && !issued_lr_suppressed) reservation_valid <= 1'b1;
-          if (!resp_bypass_fire) begin
-            // Standard path: let the priority encoder pick next cycle.
-            lq_data_valid[issued_idx] <= 1'b1;
-          end
         end
       end
 
@@ -3847,7 +3900,6 @@ module load_queue #(
       // AMO Write Completion: latch old value as result, invalidate cache
       // -----------------------------------------------------------------
       if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done) begin
-        lq_data_valid[amo_entry_idx]     <= 1'b1;
         lq_response_error[amo_entry_idx] <= MEM_RESPONSE_ERRORS && i_amo_mem_write_error;
         amo_state                        <= AMO_IDLE;
       end
@@ -3874,7 +3926,6 @@ module load_queue #(
         if (alloc_oh[i]) begin
           lq_addr_valid[i]     <= 1'b0;
           lq_issued[i]         <= 1'b0;
-          lq_data_valid[i]     <= 1'b0;
           lq_response_error[i] <= 1'b0;
           lq_forwarded[i]      <= 1'b0;
         end
@@ -5657,3 +5708,330 @@ module load_queue #(
 `endif
 
 endmodule : load_queue
+
+// Two-bit release classes exclude the launch-hold, L0-hit and fault selections.
+`ifdef FROST_XILINX_PRIMS
+(* keep_hierarchy = "yes" *)
+`endif
+module lq_capture_prepare #(
+    parameter bit ENABLE_L0_FAST_PATH = 1'b1,
+    parameter bit ENABLE_SQ_FORWARD_FAST_PATH = 1'b0
+) (
+    input logic [3:0] i_pending,
+    input logic i_phase2,
+    input logic i_no_older_store,
+    input logic i_is_lr,
+    input logic i_is_amo,
+    input logic i_is_mmio,
+    input logic i_is_cached,
+    input logic i_cacheable,
+    input logic i_at_head,
+    input logic i_admit,
+    input logic i_hold_valid,
+    input logic i_sq_empty,
+    input logic i_sq_committed_empty,
+    input logic i_sq_commit_pending,
+    input logic i_all_older_known,
+    input logic i_forward_match,
+    input logic i_can_forward,
+    input logic i_mem_busy,
+    input logic i_l0_allowed,
+    input logic i_cached_hold,
+    input logic i_flush_all,
+    input logic i_flush_en,
+    input logic i_address_fault,
+    input logic i_protected,
+    input logic i_cut_hold,
+    input logic i_sector_hold,
+    input logic i_older_amo,
+    input logic i_cdb_available,
+    input logic i_issue_cdb_fire,
+    input logic i_gate,
+    input logic i_found,
+    output logic [3:0][1:0] o_take_code,
+    output logic [1:0] o_clear_code,
+    output logic o_fault_take,
+    output logic o_fault_clear
+);
+  wire [2:0][3:0] take_basis;
+  wire [2:0] clear_basis;
+  wire ordinary = !i_is_lr && !i_is_amo;
+  wire head_eligible = !((i_is_lr || i_is_amo) && (i_admit || !i_hold_valid));
+  wire eligible = i_at_head ? (i_sq_committed_empty ? head_eligible : ordinary) :
+      (ordinary && !i_is_mmio);
+  wire store_clear = i_no_older_store || i_sq_empty ||
+      (i_at_head && i_sq_committed_empty && i_is_amo) ||
+      (i_all_older_known && !i_forward_match);
+  wire forward_clear = ENABLE_SQ_FORWARD_FAST_PATH &&
+      !i_no_older_store && !i_sq_empty && i_all_older_known && i_can_forward &&
+      !i_is_mmio && ordinary;
+  wire interlock = i_sq_commit_pending && i_is_cached && i_phase2;
+  wire fault_release = !i_cut_hold && !i_sector_hold &&
+      eligible && i_address_fault && !i_flush_en && i_cdb_available && !i_issue_cdb_fire;
+  for (genvar hit = 0; hit < 2; hit++) begin : gen_hit
+    wire memory_clear = eligible && store_clear && !i_flush_all && !i_flush_en &&
+        ((!i_mem_busy && !i_cached_hold) ||
+         (ENABLE_L0_FAST_PATH && hit != 0 && i_cacheable &&
+          (!i_mem_busy || i_l0_allowed) && !i_is_mmio && ordinary));
+    wire release_ready = i_phase2 && !i_address_fault && i_protected && !i_cut_hold &&
+        !interlock && (memory_clear || forward_clear);
+    wire release_take = release_ready || i_sector_hold || i_older_amo;
+    wire release_clear = (!i_sector_hold && release_ready) || i_older_amo;
+    for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_take
+      assign take_basis[hit][copy_index] = i_gate && i_found &&
+          (!i_pending[copy_index] || (i_pending[0] && release_take));
+    end
+    assign clear_basis[hit] = i_pending[0] && release_clear;
+  end
+  for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_held
+    assign take_basis[2][copy_index] = i_gate && i_found &&
+        (!i_pending[copy_index] || (i_pending[0] && (i_sector_hold || i_older_amo)));
+  end
+  assign clear_basis[2] = i_pending[0] && i_older_amo;
+  // Held implies miss, and miss implies hit, for each pending copy.
+  for (genvar copy_index = 0; copy_index < 4; copy_index++) begin : gen_encode
+    assign o_take_code[copy_index] = {take_basis[0][copy_index],
+        take_basis[2][copy_index] ||
+        (take_basis[1][copy_index] && !take_basis[0][copy_index])};
+  end
+  assign o_clear_code = {clear_basis[0], clear_basis[2] ||
+      (clear_basis[1] && !clear_basis[0])};
+  assign o_fault_take = i_gate && i_found && i_pending[0] && fault_release;
+  assign o_fault_clear = i_pending[0] && fault_release;
+endmodule
+
+// The release class, qualified fault and replacement meet at the final LUT.
+module lq_capture_select (
+    input logic [1:0] i_code,
+    input logic i_hit,
+    input logic i_hold,
+    input logic i_fault,
+    input logic i_replace,
+    output logic o_choice
+);
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT6 #(
+      .INIT(64'hFFFFFFFFFFFF88EC)
+  ) u_late_capture (
+      .I0(i_code[0]),
+      .I1(i_code[1]),
+      .I2(i_hit),
+      .I3(i_hold),
+      .I4(i_fault),
+      .I5(i_replace),
+      .O(o_choice)
+  );
+`else
+  assign o_choice = i_replace || i_fault ||
+      (i_code[1] ? (!i_hold || i_code[0]) : (i_code[0] && !i_hold && i_hit));
+`endif
+endmodule
+
+// Capture overrides clear and partial flush at each in-flight mask bit.
+module lq_inflight_select (
+    input logic i_current,
+    input logic i_issue,
+    input logic i_take,
+    input logic i_clear,
+    input logic i_flushed,
+    output logic o_next
+);
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT5 #(
+      .INIT(32'hC0C0C0CA)
+  ) u_late_inflight (
+      .I0(i_current),
+      .I1(i_issue),
+      .I2(i_take),
+      .I3(i_clear),
+      .I4(i_flushed),
+      .O(o_next)
+  );
+`else
+  assign o_next = i_take ? i_issue : (i_current && !i_clear && !i_flushed);
+`endif
+endmodule
+
+// Local completion outcomes and response eligibility precede acceptance.
+`ifdef FROST_XILINX_PRIMS
+(* keep_hierarchy = "yes" *)
+`endif
+module lq_result_valid_prepare #(
+    parameter int unsigned DEPTH = 8,
+    localparam int unsigned IdxWidth = $clog2(DEPTH)
+) (
+    input logic i_rst_n,
+    input logic i_flush_all,
+    input logic i_flush_en,
+    input logic [DEPTH-1:0] i_valid,
+    input logic i_cdb_valid,
+    input logic i_result_accepted,
+    input logic i_issue_cdb_found,
+    input logic i_misaligned,
+    input logic i_forward,
+    input logic [IdxWidth-1:0] i_check_idx,
+    input logic i_hit_eligible,
+    input logic i_response_error,
+    input logic i_issued_amo,
+    input logic [IdxWidth-1:0] i_issued_idx,
+    input logic i_amo_done,
+    input logic [IdxWidth-1:0] i_amo_idx,
+    output logic [3:0][DEPTH-1:0] o_choices,
+    output logic [1:0][DEPTH-1:0] o_response_eligible
+);
+  wire available = !i_cdb_valid || i_result_accepted;
+  wire issue_fire = i_issue_cdb_found && !i_flush_en && available;
+  for (genvar response = 0; response < 2; response++) begin : gen_response
+    wire response_fire = available && !issue_fire && !i_flush_all &&
+        (response != 0) && !i_flush_en;
+    wire misalign_fire = available && !issue_fire && !response_fire &&
+        i_misaligned && !i_flush_en;
+    wire forward_fire = available && !issue_fire && !response_fire &&
+        !misalign_fire && i_forward && !i_flush_en;
+    wire hit_waits = (i_cdb_valid && !i_result_accepted) ||
+        i_issue_cdb_found || (response != 0);
+    for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry
+      wire non_hit = i_rst_n && !i_flush_all &&
+          (i_valid[entry] ||
+           (i_forward && !forward_fire && i_check_idx == IdxWidth'(entry)) ||
+           (i_amo_done && i_amo_idx == IdxWidth'(entry)));
+      wire hit = i_rst_n && i_hit_eligible && i_check_idx == IdxWidth'(entry) && hit_waits;
+      assign o_choices[2*response][entry] = non_hit;
+      assign o_choices[2*response+1][entry] = non_hit || hit;
+      assign o_response_eligible[response][entry] = i_rst_n && !i_flush_all &&
+          i_issued_idx == IdxWidth'(entry) &&
+          (i_response_error || (!i_issued_amo && !response_fire));
+    end
+  end
+endmodule
+
+// Select a prepared completion with the response and L0-hit decisions.
+module lq_result_valid_select (
+    input logic [3:0] i_choices,
+    input logic i_hit,
+    input logic i_response,
+    output logic o_completed
+);
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT6 #(
+      .INIT(64'hFF00F0F0CCCCAAAA)
+  ) u_late_completion (
+      .I0(i_choices[0]),
+      .I1(i_choices[1]),
+      .I2(i_choices[2]),
+      .I3(i_choices[3]),
+      .I4(i_hit),
+      .I5(i_response),
+      .O(o_completed)
+  );
+`else
+  assign o_completed = i_response ? (i_hit ? i_choices[3] : i_choices[2]) :
+      (i_hit ? i_choices[1] : i_choices[0]);
+`endif
+endmodule
+
+// Accepted responses join local completion after entry eligibility selection.
+module lq_result_valid_response (
+    input logic i_local,
+    input logic [1:0] i_eligible,
+    input logic i_response,
+    input logic i_accept,
+    output logic o_completed
+);
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT5 #(
+      .INIT(32'hFAEEAAAA)
+  ) u_late_response (
+      .I0(i_local),
+      .I1(i_eligible[0]),
+      .I2(i_eligible[1]),
+      .I3(i_response),
+      .I4(i_accept),
+      .O(o_completed)
+  );
+`else
+  assign o_completed = i_local ||
+      (i_accept && (i_response ? i_eligible[1] : i_eligible[0]));
+`endif
+endmodule
+
+// Allocation clears the first free entry for either valid, and the second
+// free entry when both valids are asserted.
+module lq_result_valid_allocate (
+    input logic i_completed,
+    input logic i_first_room,
+    input logic i_second_room,
+    input logic i_alloc,
+    input logic i_alloc_2,
+    output logic o_valid
+);
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT5 #(
+      .INIT(32'h022222AA)
+  ) u_late_allocation (
+      .I0(i_completed),
+      .I1(i_first_room),
+      .I2(i_second_room),
+      .I3(i_alloc),
+      .I4(i_alloc_2),
+      .O(o_valid)
+  );
+`else
+  assign o_valid = i_completed &&
+      !((i_first_room && (i_alloc || i_alloc_2)) ||
+        (i_second_room && i_alloc && i_alloc_2));
+`endif
+endmodule
+
+
+// Combine bypass eligibility independently of payload priority.
+module lq_bypass_source (
+    input logic i_flush_all,
+    input logic i_response,
+    input logic i_fault,
+    input logic i_forward,
+    input logic i_hit,
+    output logic o_source
+);
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT5 #(
+      .INIT(32'hFFFFFFF4)
+  ) u_bypass_source (
+      .I0(i_flush_all),
+      .I1(i_response),
+      .I2(i_fault),
+      .I3(i_forward),
+      .I4(i_hit),
+      .O(o_source)
+  );
+`else
+  assign o_source = (!i_flush_all && i_response) || i_fault || i_forward || i_hit;
+`endif
+endmodule
+
+
+// Release the selected entry on a qualified completion edge.
+module lq_entry_release (
+    input logic i_ready,
+    input logic i_issue_found,
+    input logic i_issue_match,
+    input logic i_bypass_match,
+    input logic i_bypass_source,
+    output logic o_release
+);
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT5 #(
+      .INIT(32'hA2808080)
+  ) u_entry_release (
+      .I0(i_ready),
+      .I1(i_issue_found),
+      .I2(i_issue_match),
+      .I3(i_bypass_match),
+      .I4(i_bypass_source),
+      .O(o_release)
+  );
+`else
+  assign o_release = i_ready &&
+      (i_issue_found ? i_issue_match : (i_bypass_source && i_bypass_match));
+`endif
+endmodule

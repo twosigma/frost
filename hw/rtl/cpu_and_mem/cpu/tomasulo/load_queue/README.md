@@ -37,6 +37,11 @@ FROST passes a 256-entry L0 when Normal read caching is enabled; the raw LQ
 and strict CPU profile retain the 128-entry default. Cache depth does not
 change the number of in-flight loads or coherence observation entries.
 
+The L0 valid-bit read uses a balanced tree of four-way selections. The selected
+bit is qualified by MMIO, store and line-invalidation permissions independently
+of the tag comparison. The lookup is combinational. Primitive builds keep
+the selection hierarchy and the selector pin assignments.
+
 ## Allocation and capacity
 
 Each dispatch slot takes the next free entry at or after `tail_ptr`.
@@ -83,11 +88,15 @@ nor leave the LQ until they are at the head.
 The capture, issue and forwarding control banks compute memory candidates for
 both SQ drain states in
 [`coherent_lq_issue_selector.sv`](coherent_lq_issue_selector.sv). The live
-drain flag selects between those results. Each case also computes staged
+drain flag selects between those results. Each memory scan input combines a
+prepared class permission with the entry's valid, issued, data-valid and
+in-flight bits. Each combination uses one LUT5 when primitives are enabled.
+Each case also computes staged
 replacement from its winning masks and the per-entry age predicates, in
-three-entry groups; the ROB-head entry's age is compared directly from its
-tag, since at most one entry matches the head. Both
-cases use the same ring order and ROB-head priority. Each entry has a cyclic
+three-entry groups. The winning masks are preserved at each group's inputs.
+Each group uses one LUT6 when primitives are enabled. The ROB-head entry's
+age is compared directly from its tag, since at most one entry matches the
+head. Both cases use the same ring order and ROB-head priority. Each entry has a cyclic
 precedence mask derived from the queue head. An eligible entry wins when none
 of its predecessors is eligible. Scan indices and tags decode from the
 winning-entry masks. Selection is combinational. The coherent memory identity
@@ -96,30 +105,31 @@ otherwise. Eligible ROB-head entries precede the ring scan. The coherent ring
 index and ROB tag decode from the selected ring mask. Head matches use the
 head selector's index and tag. The pre-issue selector registers a one-hot mask
 alongside the candidate matches. Staging capture uses candidate presence
-independently of ring ordering. The LQ prepares release permission for both
-staged-head matches and all combinations of cache hit, SQ-empty,
-committed-store presence, memory-busy and L0-hit permission. The head match
-selects between complete release outcomes. The cut hold,
-SQ check phase and address fault result qualify that outcome at the final
-selection. Fault release computes permission separately; CDB availability and
-completion priority qualify it. The pending bit qualifies release and
-replacement after selection. Each pending copy supplies vacancy independently.
-Candidate presence and the capture gate qualify capture. Staged control fields
-select capture values or separately computed hold values. Replacement selects
-stored and arriving age predicates with ROB-head priority. Each row's
-availability (not issued, no data, not staged or parked) is one term, and the
-row's other stored, arriving and head conditions, validity included, join it
-in the next, so each scan input is two levels from those registers. Alignment is evaluated separately for stored
+independently of ring ordering. A helper prepares capture and clear outcomes
+for launch hold, an unheld miss and an unheld hit. These outcomes include the
+staged head match, SQ drain and forwarding permissions, memory-busy and
+L0-hit permission, phase and cut hold. Held implies miss, and miss implies
+hit, so two bits encode each outcome class. Each pending copy supplies
+vacancy independently; candidate presence and the capture gate qualify its
+capture outcomes. Fault release has separate qualification for CDB
+availability, completion priority, response bypass and launch hold. The
+release class, launch hold, L0 hit, qualified fault and replacement meet at
+explicit final LUTs in the primitive build, with equivalent portable logic.
+Each in-flight mask bit combines capture, clear and partial flush at a final
+LUT. Other staged controls select capture values or separately computed hold
+values. Replacement selects
+stored and arriving age predicates with ROB-head priority. Stored, arriving
+and head conditions form separate class permissions. Final eligibility
+requires the class permission, a valid row, and clear issued, data-valid and
+staged or parked flags. Alignment is evaluated separately for stored
 and arriving candidates before the selected result enters the staging
-register. The coherent clear calculation applies staging validity outside its
-issue, forwarding and fault eligibility terms. An older pending AMO clears the
-pending stage independently of the prepared outcomes. Sector blocking permits
-capture and vetoes memory or forwarding release. Fault release requires both
-cut and sector permission. Release predicates omit pending validity from their
-atomic admission and committed-store interlocks; the final pending gate
-qualifies those predicates. Cached-AMO protection qualifies the selected
-memory and forwarding release outcomes. Address faults, sector blocking and
-older-AMO capture permission remain independent of that protection. Issue,
+register. The capture helper combines staging validity with issue and forwarding
+eligibility in each prepared outcome, with fault eligibility kept separate. An older pending
+AMO contributes to both capture and clear. Sector blocking permits capture
+and vetoes memory or forwarding release. Fault release requires both cut
+and sector permission. Cached-AMO protection qualifies memory and forwarding
+release inside each unheld outcome. Address faults, sector blocking and
+older-AMO capture permission are independent of that protection. Issue,
 forwarding and probes require staging validity; issue and forwarding also
 apply the older-AMO veto.
 
@@ -144,12 +154,14 @@ address source wins ring order. Candidate presence is independent of
 that ordering and the selected payload.
 The coherent L0 computes lookup permission from validity, memory type and
 invalidation independently of the tag comparison. A hit requires both.
-Coherent L0 valid bits and data writes share fill permission computed for
-each response source before the cached/uncached response selection. Each cached
-response slot computes fill permission before the response ID selects a slot.
-Valid-state
-updates are computed for every fill and store-update combination. Those two
-flags select the resulting valid bits.
+Each entry's data-valid update prepares local completion outcomes for the
+response-bypass and L0-hit decisions, and separate response eligibility for
+both bypass choices. Response acceptance joins the selected local outcome;
+an accepted response is never a dropped response. The two allocation valids
+then clear the selected free entries. Small preparation logic and explicit
+final LUT selectors preserve these decisions in the primitive build. Portable
+logic implements the same functions. The result-RAM write enables and these
+decisions use the same cycle's lookup and completion signals.
 
 ### ROB-head priority
 
@@ -167,15 +179,13 @@ committed-store queue is empty.
 
 ### Staging and the SQ check
 
-The LQ prepares release permission and memory launch
-controls for both committed-store drain states. The live drain flag selects
+The LQ prepares memory launch controls for both committed-store drain
+states. The live drain flag selects
 those outcomes. Local holds qualify memory launch after drain selection.
-Release permission also accounts for both commit-pending states before the
-live commit flag selects the outcome. Capture combines that permission with
-pending validity, per-copy vacancy, candidate presence and replacement;
-replacement joins the other capture terms last.
-The capture gate qualifies the combined result. Clear combines release
-permission with its hold and fault conditions before applying pending validity.
+Capture and clear classes include the committed-store interlock, pending
+validity, per-copy vacancy, candidate presence and local holds. The helper
+encodes the held, unheld-miss and unheld-hit outcomes in two bits. Qualified
+fault release and replacement join the final hold and hit selection.
 
 The staging register (`sq_check_*`) holds the selected load while the SQ
 checks it. Disambiguation is conservative: a load reads memory only when every
@@ -540,9 +550,16 @@ data RAM, and nothing enters `cdb_stage` on a partial-flush cycle. When
 several results are ready, `cdb_stage` takes a queued completion first, then
 a memory response, a fault, an SQ forward, and an L0 hit.
 
-The LQ compares completion indices with each entry before
-selecting the free mask. Allocation has priority over freeing, and reset and
-full flush clear every valid bit.
+The completion-valid output is the stage-valid bit gated by `!i_flush_en`.
+Partial-flush tag comparisons determine whether the staged result is discarded.
+The wrapper's CDB arbiter suppresses full-flush broadcasts.
+
+Bypass eligibility combines response, fault, forwarding and hit sources
+independently of payload priority. Entry release applies completion readiness
+and queued-result priority after comparing each completion index. With
+`FROST_XILINX_PRIMS`, the source summary and each entry's release use one LUT5.
+Allocation has priority over freeing, and reset and full flush clear every
+valid bit.
 Cached response slots each qualify their live entry and AMO kind before
 response selection. The uncached tracker supplies its own qualification.
 

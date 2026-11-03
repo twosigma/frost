@@ -382,7 +382,65 @@ FORMAL_TARGETS = [
     FormalTarget(
         "lq_ram_payload.sby",
         "Load-result RAM writes and CDB values match reference selection",
-        tasks=("bmc", "bmc_forward", "bmc_forward_only", "cover"),
+        tasks=("bmc", "bmc_forward", "bmc_forward_only", "bmc_core", "cover"),
+    ),
+    FormalTarget(
+        "lq_result_valid.sby",
+        "Load-result validity matches completion and allocation priorities for arbitrary state.",
+        tasks=(
+            "result4_prove",
+            "result8_prove",
+            "result16_prove",
+            "result_no_forward_prove",
+            "result_no_l0_prove",
+            "result_plain_prove",
+            "result8_xilinx_prove",
+        ),
+    ),
+    FormalTarget(
+        "lq_result_pins.sby",
+        "Completion, response and allocation LUTs match their portable equations.",
+        tasks=("result_pins_prove", "result_pins_xilinx_prove"),
+    ),
+    FormalTarget(
+        "lq_age_groups.sby",
+        "Entry eligibility and grouped age selection match their direct equations.",
+        tasks=("age_groups_prove", "age_groups_xilinx_prove"),
+    ),
+    FormalTarget(
+        "lq_capture.sby",
+        "Capture choices, clear outputs, completion validity, bypass eligibility, entry release and staged "
+        "next state match the reference for arbitrary current state.",
+        tasks=(
+            "coh_lq_capture4_prove",
+            "coh_lq_capture8_prove",
+            "coh_lq_capture16_prove",
+            "coh_lq_capture_no_forward_prove",
+            "coh_lq_capture_no_l0_prove",
+            "coh_lq_capture_plain_prove",
+            "coh_lq_capture8_xilinx_prove",
+        ),
+    ),
+    FormalTarget(
+        "lq_l0_lookup.sby",
+        "Balanced L0 validity and permission match the indexed reference for arbitrary inputs.",
+        tasks=(
+            "lookup8_prove",
+            "lookup8_xilinx_prove",
+            "lookup16_prove",
+            "lookup16_xilinx_prove",
+            "lookup32_prove",
+            "lookup32_xilinx_prove",
+            "lookup128_prove",
+            "lookup128_xilinx_prove",
+            "lookup256_prove",
+            "lookup256_xilinx_prove",
+        ),
+    ),
+    FormalTarget(
+        "lq_capture_pins.sby",
+        "Capture, in-flight, bypass-source and release LUT INITs match independent pin equations.",
+        tasks=("capture_pins_prove", "capture_pins_xilinx_prove"),
     ),
     FormalTarget(
         "lq_replace_select.sby",
@@ -1047,6 +1105,79 @@ SBY_TASKS = [
     ("mirror_hold32_prove", "Debug mirror address equality at thirty-two bits."),
     ("coh_read_payload_prove", "Coherent read payload storage at 32 address bits."),
     ("coh_read_payload64_prove", "Coherent read payload storage at 64 address bits."),
+    ("bmc_core", "Load-result selection with the CPU feature configuration."),
+    ("coh_lq_capture4_prove", "Coherent capture equality at four entries."),
+    ("coh_lq_capture8_prove", "Coherent capture equality at eight entries."),
+    ("coh_lq_capture16_prove", "Coherent capture equality at sixteen entries."),
+    (
+        "coh_lq_capture_no_forward_prove",
+        "Coherent capture equality without forwarding.",
+    ),
+    ("coh_lq_capture_no_l0_prove", "Coherent capture equality without L0 completion."),
+    (
+        "coh_lq_capture_plain_prove",
+        "Coherent capture equality without local completion.",
+    ),
+    ("coh_lq_capture8_xilinx_prove", "Coherent capture equality with primitive LUTs."),
+    ("lookup8_prove", "L0 permission equality at 8 entries using portable logic."),
+    (
+        "lookup8_xilinx_prove",
+        "L0 permission equality at 8 entries using primitive LUTs.",
+    ),
+    ("lookup16_prove", "L0 permission equality at 16 entries using portable logic."),
+    (
+        "lookup16_xilinx_prove",
+        "L0 permission equality at 16 entries using primitive LUTs.",
+    ),
+    ("lookup32_prove", "L0 permission equality at 32 entries using portable logic."),
+    (
+        "lookup32_xilinx_prove",
+        "L0 permission equality at 32 entries using primitive LUTs.",
+    ),
+    ("lookup128_prove", "L0 permission equality at 128 entries using portable logic."),
+    (
+        "lookup128_xilinx_prove",
+        "L0 permission equality at 128 entries using primitive LUTs.",
+    ),
+    ("lookup256_prove", "L0 permission equality at 256 entries using portable logic."),
+    (
+        "lookup256_xilinx_prove",
+        "L0 permission equality at 256 entries using primitive LUTs.",
+    ),
+    (
+        "age_groups_prove",
+        "Portable entry eligibility, age-group selection and tails padded with zeros.",
+    ),
+    (
+        "age_groups_xilinx_prove",
+        "Primitive entry eligibility, age-group selection and tails padded with zeros.",
+    ),
+    (
+        "capture_pins_prove",
+        "Portable capture and release selection for every input combination.",
+    ),
+    (
+        "capture_pins_xilinx_prove",
+        "Capture and release LUT INITs for every input combination.",
+    ),
+    ("result4_prove", "Result-valid next state for four load entries."),
+    ("result8_prove", "Result-valid next state for eight load entries."),
+    ("result16_prove", "Result-valid next state for sixteen load entries."),
+    ("result_no_forward_prove", "Result validity with store forwarding disabled."),
+    ("result_no_l0_prove", "Result validity with L0 completion disabled."),
+    (
+        "result_plain_prove",
+        "Result validity with both local completion paths disabled.",
+    ),
+    ("result8_xilinx_prove", "Result-valid next state through the primitive LUTs."),
+    (
+        "result_pins_prove",
+        "Completion, response and allocation for arbitrary portable inputs.",
+    ),
+    (
+        "result_pins_xilinx_prove",
+        "Completion, response and allocation INITs for arbitrary pin inputs.",
+    ),
     ("coh_l0_flags_prove", "Coherent L0 next-state equality at 128 entries."),
     ("coh_l0_flags256_prove", "Coherent L0 next-state equality at 256 entries."),
     (

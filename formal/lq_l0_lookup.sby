@@ -1,0 +1,43 @@
+[tasks]
+lookup8_prove d8 portable
+lookup8_xilinx_prove d8 xilinx
+lookup16_prove d16 portable
+lookup16_xilinx_prove d16 xilinx
+lookup32_prove d32 portable
+lookup32_xilinx_prove d32 xilinx
+lookup128_prove d128 portable
+lookup128_xilinx_prove d128 xilinx
+lookup256_prove d256 portable
+lookup256_xilinx_prove d256 xilinx
+
+[options]
+mode prove
+depth 1
+timeout 90
+
+[engines]
+abc pdr
+
+[script]
+read -sv riscv_pkg.sv
+xilinx: read_verilog -formal +/xilinx/cells_sim.v
+portable: read -sv -D SYNTHESIS lq_l0_cache.sv
+xilinx: read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS lq_l0_cache.sv
+read -formal -sv lq_l0_lookup_equiv.sv
+d8: chparam -set DEPTH 8 lq_l0_lookup_equiv
+d16: chparam -set DEPTH 16 lq_l0_lookup_equiv
+d32: chparam -set DEPTH 32 lq_l0_lookup_equiv
+d128: chparam -set DEPTH 128 lq_l0_lookup_equiv
+d256: chparam -set DEPTH 256 lq_l0_lookup_equiv
+hierarchy -top lq_l0_lookup_equiv
+setattr -mod -unset keep_hierarchy
+prep -top lq_l0_lookup_equiv -flatten
+select -assert-count 1 t:$check r:FLAVOR=assert %i
+select -assert-none t:$assume t:$*ff* t:$*latch* t:$sr t:$mem* a:init
+select -assert-none t:$check r:FLAVOR=assume %i
+check -assert
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
+lq_l0_lookup_equiv.sv

@@ -127,33 +127,41 @@ module coherent_lq_issue_selector #(
     logic [DEPTH-1:0] head_stored, head_update;
     assign choices[drained] = choice;
     for (genvar index = 0; index < DEPTH; index++) begin : gen_eligible
-      // The entry's issue and data state changes late in the cycle. It meets
-      // the conditions that do not depend on it in one term, so each scan
-      // input is two levels from those registers.
-      (* keep = "true" *) wire available = !lq_issued[index] && !lq_data_valid[index] &&
-          !sq_check_in_flight_mask[index];
+      // Class permissions are prepared independently of the entry's valid,
+      // issue, data and in-flight state. Each eligibility cell combines them.
       wire atomic_ok = !(lq_is_lr[index] || lq_is_amo[index]) ||
           (rob_head_match_q[index] && 1'(drained));
-      wire stored_ok = lq_valid[index] && lq_addr_valid[index] &&
+      wire stored_ok = lq_addr_valid[index] &&
           (!lq_is_mmio[index] || rob_head_match_q[index]) && atomic_ok &&
           !blocked_by_amo_phys_q[index];
-      wire update_ok = lq_valid[index] && addr_update_pre_match_q[index] && atomic_ok &&
+      wire update_ok = addr_update_pre_match_q[index] && atomic_ok &&
           !blocked_by_amo_phys_q[index];
-      wire head_ok = lq_valid[index] && rob_head_match_q[index] &&
+      wire head_ok = rob_head_match_q[index] &&
           (!(lq_is_lr[index] || lq_is_amo[index]) || 1'(drained));
-      (* keep = "true" *) wire stored_eligible = available && stored_ok;
-      (* keep = "true" *) wire update_eligible = available && update_ok;
-      (* keep = "true" *) wire merged_eligible = available && (stored_ok || update_ok);
-      (* keep = "true" *) wire head_stored_eligible =
-          available && head_ok && lq_addr_valid[index];
-      (* keep = "true" *) wire head_update_eligible =
-          available && head_ok && addr_update_pre_match_q[index];
-      assign eligible[0][index] = stored_eligible;
-      assign eligible[1][index] = update_eligible;
-      assign eligible[2][index] = merged_eligible;
+      (* keep = "true" *) wire [4:0] class_ready = {
+        head_ok && addr_update_pre_match_q[index],
+        head_ok && lq_addr_valid[index],
+        stored_ok || update_ok,
+        update_ok,
+        stored_ok
+      };
+      (* keep = "true" *) wire [4:0] entry_eligible;
+      for (genvar kind = 0; kind < 5; kind++) begin : gen_class
+        coherent_lq_entry_eligible u_check (
+            .i_ready(class_ready[kind]),
+            .i_valid(lq_valid[index]),
+            .i_issued(lq_issued[index]),
+            .i_data_valid(lq_data_valid[index]),
+            .i_in_flight(sq_check_in_flight_mask[index]),
+            .o_eligible(entry_eligible[kind])
+        );
+      end
+      assign eligible[0][index] = entry_eligible[0];
+      assign eligible[1][index] = entry_eligible[1];
+      assign eligible[2][index] = entry_eligible[2];
       assign eligible[3][index] = lq_valid[index] && lq_data_valid[index];
-      assign head_stored[index] = head_stored_eligible;
-      assign head_update[index] = head_update_eligible;
+      assign head_stored[index] = entry_eligible[3];
+      assign head_update[index] = entry_eligible[4];
     end
     for (genvar source = 0; source < 4; source++) begin : gen_ring
       for (genvar index = 0; index < DEPTH; index++) begin : gen_first
@@ -168,6 +176,8 @@ module coherent_lq_issue_selector #(
         assign first[source][index] = eligible[source][index] && !(|earlier_group);
       end
     end
+    (* keep = "true" *) wire [DEPTH-1:0] stored_first = first[0];
+    (* keep = "true" *) wire [DEPTH-1:0] merged_first = first[2];
     // Replacement reads the staged load's age at the scan winner in kept
     // three-entry groups, or at the ROB-head entry, whose match is at most
     // one-hot, so each replacement bit is one term over kept inputs.
@@ -175,10 +185,16 @@ module coherent_lq_issue_selector #(
     (* keep = "true" *) logic [AgeGroups-1:0] merged_older, stored_older;
     for (genvar group_index = 0; group_index < AgeGroups; group_index++) begin : gen_age_group
       localparam int unsigned Bits = DEPTH - 3 * group_index < 3 ? DEPTH - 3 * group_index : 3;
-      assign merged_older[group_index] =
-          |(i_staged_younger[3*group_index+:Bits] & first[2][3*group_index+:Bits]);
-      assign stored_older[group_index] =
-          |(i_staged_younger[3*group_index+:Bits] & first[0][3*group_index+:Bits]);
+      coherent_lq_age_group u_merged_older (
+          .i_younger(3'(i_staged_younger[3*group_index+:Bits])),
+          .i_selected(3'(merged_first[3*group_index+:Bits])),
+          .o_older(merged_older[group_index])
+      );
+      coherent_lq_age_group u_stored_older (
+          .i_younger(3'(i_staged_younger[3*group_index+:Bits])),
+          .i_selected(3'(stored_first[3*group_index+:Bits])),
+          .o_older(stored_older[group_index])
+      );
     end
     (* keep = "true" *) wire head_stored_found = |head_stored;
     (* keep = "true" *) wire head_found = |head_stored || |head_update;
@@ -319,5 +335,54 @@ module coherent_lq_issue_selector #(
     assert (o_issue_cdb_found == selected.issue_cdb_found &&
             o_issue_cdb_idx == selected.issue_cdb_idx);
   end
+`endif
+endmodule
+
+
+// Select the age predicates at winning entries.
+module coherent_lq_age_group (
+    input  logic [2:0] i_younger,
+    input  logic [2:0] i_selected,
+    output logic       o_older
+);
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT6 #(
+      .INIT(64'hFFFFF888F888F888)
+  ) u_age_group (
+      .I0(i_younger[0]),
+      .I1(i_selected[0]),
+      .I2(i_younger[1]),
+      .I3(i_selected[1]),
+      .I4(i_younger[2]),
+      .I5(i_selected[2]),
+      .O (o_older)
+  );
+`else
+  assign o_older = |(i_younger & i_selected);
+`endif
+endmodule
+
+// Class permission and entry state jointly qualify each scan input.
+module coherent_lq_entry_eligible (
+    input  logic i_ready,
+    input  logic i_valid,
+    input  logic i_issued,
+    input  logic i_data_valid,
+    input  logic i_in_flight,
+    output logic o_eligible
+);
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT5 #(
+      .INIT(32'h00000008)
+  ) u_eligibility (
+      .I0(i_ready),
+      .I1(i_valid),
+      .I2(i_issued),
+      .I3(i_in_flight),
+      .I4(i_data_valid),
+      .O (o_eligible)
+  );
+`else
+  assign o_eligible = i_ready && i_valid && !i_issued && !i_data_valid && !i_in_flight;
 `endif
 endmodule

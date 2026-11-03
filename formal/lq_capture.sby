@@ -1,0 +1,157 @@
+[tasks]
+coh_lq_capture4_prove d4 portable
+coh_lq_capture8_prove d8 portable portable8
+coh_lq_capture8_xilinx_prove d8 xilinx
+coh_lq_capture16_prove d16 portable
+coh_lq_capture_no_forward_prove d8 no_forward portable portable8
+coh_lq_capture_no_l0_prove d8 no_l0 portable portable8
+coh_lq_capture_plain_prove d8 no_forward no_l0 portable portable8
+
+[options]
+mode prove
+depth 2
+timeout 90
+aigsmt boolector
+
+[engines]
+abc pdr
+
+[script]
+xilinx: read_verilog -formal +/xilinx/cells_sim.v
+xilinx: read -define FROST_XILINX_PRIMS
+read -sv -D SYNTHESIS riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv coherent_l0_flags.sv lq_l0_cache.sv lq_issue_selector.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv coherent_lq_address_store.sv load_queue.sv
+read -formal -sv lq_capture_equiv.sv
+chparam -set CACHE_NORMAL_MEMORY 1 -set MEM_RESPONSE_ERRORS 1 -set CACHE_UNCACHED_DATA 0 -set ENABLE_SQ_FORWARD_FAST_PATH 1 -set PREISSUE_CANDIDATES 1 -set PREISSUE_READY_PICK 1 -set PREISSUE_SEL_WIDTH 3 -set L0_CACHE_DEPTH 256 lq_capture_equiv
+d4: chparam -set DEPTH 4 lq_capture_equiv
+d16: chparam -set DEPTH 16 lq_capture_equiv
+no_forward: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 0 lq_capture_equiv
+no_l0: chparam -set ENABLE_L0_FAST_PATH 0 lq_capture_equiv
+hierarchy -top lq_capture_equiv
+delete t:*lq_l0_cache t:*mwp_dist_ram t:*sdp_dist_ram t:*coherent_lq_address_store
+hierarchy -top lq_capture_equiv
+proc -noopt
+setattr -mod -unset keep_hierarchy
+flatten
+opt_expr
+memory_map
+cd lq_capture_equiv
+delete t:$anyseq
+connect -nounset -set p_stage_address dut.sq_check_addr_q
+connect -nounset -set p_hold dut.coh_launch_hold_q
+connect -nounset -set p_hold_valid dut.coh_hold_valid_q
+connect -nounset -set p_pending dut.sq_check_pending
+connect -nounset -set p_pending_copy dut.sq_check_pending_copy
+connect -nounset -set p_phase2 dut.sq_check_phase2
+connect -nounset -set p_no_older dut.sq_check_no_older_store_q
+connect -nounset -set p_is_lr dut.sq_check_is_lr_q
+connect -nounset -set p_is_amo dut.sq_check_is_amo_q
+connect -nounset -set p_is_mmio dut.sq_check_is_mmio_q
+connect -nounset -set p_is_cached dut.sq_check_is_cached_region
+connect -nounset -set p_cacheable dut.sq_check_cacheable
+connect -nounset -set p_at_head dut.coherent_staged_at_head
+connect -nounset -set p_address_fault dut.coherent_address_fault
+connect -nounset -set p_protected dut.coherent_release_protected
+connect -nounset -set p_local_hold dut.coherent_local_hold
+connect -nounset -set p_sector_hold dut.coherent_sector_hold
+connect -nounset -set p_older_amo dut.older_amo_write_pending
+connect -nounset -set p_resp_bypass_ok dut.resp_bypass_ok
+connect -nounset -set p_cdb_available dut.cdb_stage_slot_available
+connect -nounset -set p_issue_cdb_fire dut.issue_cdb_fire
+connect -nounset -set p_cached_hold dut.cached_launch_hold_q
+connect -nounset -set p_gate_early dut.sq_check_gate_early
+connect -nounset -set p_found dut.issue_mem_found
+connect -nounset -set p_replace_with dut.coherent_replace_with_update
+connect -nounset -set p_replace_without dut.coherent_replace_without_update
+connect -nounset -set p_hit dut.cache_lookup_hit
+connect -nounset -set p_hit_fast dut.cache_hit_fast_path
+connect -nounset -set p_hit_bypass dut.cache_hit_bypass_fire
+connect -nounset -set p_take dut.coherent_stage_take
+connect -nounset -set p_clear dut.coherent_stage_clear
+connect -nounset -set p_take_basis dut.gen_coherent_capture_choices.u_prepare.take_basis
+connect -nounset -set p_clear_basis dut.gen_coherent_capture_choices.u_prepare.clear_basis
+connect -nounset -set p_flushed dut.sq_check_flushed
+connect -nounset -set p_probe_ok dut.coherent_probe_ok
+connect -nounset -set p_drop_pending dut.drop_mem_response_pending
+connect -nounset -set p_commit_block dut.sq_commit_check_block
+connect -nounset -set p_inflight dut.sq_check_in_flight_mask
+connect -nounset -set p_issue_onehot dut.issue_mem_onehot
+connect -nounset -set p_first_room dut.first_room_oh
+connect -nounset -set p_second_room dut.second_room_oh
+connect -nounset -set p_alloc dut.alloc_oh
+connect -nounset -set p_data_valid dut.lq_data_valid
+connect -nounset -set p_data_next dut.lq_data_valid_next
+connect -nounset -set p_forward dut.sq_do_forward
+connect -nounset -set p_fwd_bypass dut.fwd_bypass_fire
+connect -nounset -set p_check_idx dut.sq_check_idx
+connect -nounset -set p_drop_response dut.drop_mem_response_now
+connect -nounset -set p_accept_response dut.accept_mem_response
+connect -nounset -set p_issued_idx dut.issued_idx
+connect -nounset -set p_response_error dut.mem_response_error
+connect -nounset -set p_issued_amo dut.issued_is_amo
+connect -nounset -set p_resp_bypass dut.resp_bypass_fire
+connect -nounset -set p_amo_state dut.amo_state
+connect -nounset -set p_amo_idx dut.amo_entry_idx
+connect -nounset -set p_hit_eligible dut.cache_hit_eligible
+connect -nounset -set p_cdb_valid dut.cdb_stage_valid
+connect -nounset -set p_cdb_result_flushed dut.cdb_stage_result_flushed
+connect -nounset -set p_issue_cdb_found dut.issue_cdb_found
+connect -nounset -set p_response_bypass dut.coherent_response_bypass
+connect -nounset -set p_issue_by_drain dut.coherent_issue_by_drain
+connect -nounset -set p_entry_valid dut.sq_check_entry_valid
+connect -nounset -set p_commit_interlock dut.sq_commit_interlock
+connect -nounset -set p_launch dut.launch_permitted
+connect -nounset -set p_launch_hit_blocks dut.launch_hit_blocks
+connect -nounset -set p_read_en dut.o_mem_read_en
+connect -nounset -set p_bypass_fire dut.bypass_fire
+connect -nounset -set p_misaligned dut.sq_check_misaligned
+connect -nounset -set p_issue_idx dut.issue_cdb_idx
+connect -nounset -set p_free_entry dut.coherent_free_entry
+portable: connect -nounset -set p_pending_d $flatten\dut.$0\sq_check_pending[0:0]
+xilinx: connect -nounset -set p_pending_d $flatten\dut.\sq_check_pending_ff.$0\Q[0:0]
+connect -nounset -set p_pending_copy_d $flatten\dut.$0\sq_check_pending_copy[2:0]
+portable: connect -nounset -set p_no_older_d $flatten\dut.$0\sq_check_no_older_store_q[0:0]
+xilinx: connect -nounset -set p_no_older_d $flatten\dut.\sq_check_no_older_store_ff.$0\Q[0:0]
+portable: connect -nounset -set p_phase2_d $flatten\dut.$0\sq_check_phase2[0:0]
+xilinx: connect -nounset -set p_phase2_d $flatten\dut.\sq_check_phase2_ff.$0\Q[0:0]
+d4: connect -nounset -set p_inflight_d $flatten\dut.$0\sq_check_in_flight_mask[3:0]
+portable8: connect -nounset -set p_inflight_d $flatten\dut.$0\sq_check_in_flight_mask[7:0]
+xilinx: connect -nounset -set p_inflight_d[0] $flatten\dut.\gen_sq_check_in_flight_mask_ff[0].sq_check_in_flight_mask_ff.$0\Q[0:0]
+xilinx: connect -nounset -set p_inflight_d[1] $flatten\dut.\gen_sq_check_in_flight_mask_ff[1].sq_check_in_flight_mask_ff.$0\Q[0:0]
+xilinx: connect -nounset -set p_inflight_d[2] $flatten\dut.\gen_sq_check_in_flight_mask_ff[2].sq_check_in_flight_mask_ff.$0\Q[0:0]
+xilinx: connect -nounset -set p_inflight_d[3] $flatten\dut.\gen_sq_check_in_flight_mask_ff[3].sq_check_in_flight_mask_ff.$0\Q[0:0]
+xilinx: connect -nounset -set p_inflight_d[4] $flatten\dut.\gen_sq_check_in_flight_mask_ff[4].sq_check_in_flight_mask_ff.$0\Q[0:0]
+xilinx: connect -nounset -set p_inflight_d[5] $flatten\dut.\gen_sq_check_in_flight_mask_ff[5].sq_check_in_flight_mask_ff.$0\Q[0:0]
+xilinx: connect -nounset -set p_inflight_d[6] $flatten\dut.\gen_sq_check_in_flight_mask_ff[6].sq_check_in_flight_mask_ff.$0\Q[0:0]
+xilinx: connect -nounset -set p_inflight_d[7] $flatten\dut.\gen_sq_check_in_flight_mask_ff[7].sq_check_in_flight_mask_ff.$0\Q[0:0]
+d16: connect -nounset -set p_inflight_d $flatten\dut.$0\sq_check_in_flight_mask[15:0]
+cutpoint t:$dff
+# Current state is unconstrained, including primitive register INIT values.
+setattr -unset init
+setattr -unset keep
+opt_clean
+setundef -undriven -anyseq
+prep -top lq_capture_equiv
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-none t:$*ff* t:$*latch* t:$sr t:$mem* a:init
+select -assert-count 16 t:$check r:FLAVOR=assert %i
+check -assert
+techmap
+opt
+setundef -undriven -anyseq
+abc -g AND
+opt_clean
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
+lq_capture_equiv.sv
