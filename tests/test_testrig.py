@@ -87,6 +87,10 @@ DEFAULT_TEST_INCLUDE = (
     "float|float64|double|double64|csr|fencei|fencei64|pte|all|random)$"
 )
 
+# HPM event selectors 3..8 have implementation-defined WARL values, and Sail
+# cannot represent the partial set of user aliases 3..8. Those addresses
+# are checked by the CSR and privilege benches. Random traces leave their
+# selectors disabled, so machine counter storage can be compared.
 # CSRs the generators may access. Left out, as implementation-defined or
 # nondeterministic between the two: the cycle and time counters (FROST counts
 # clock cycles, Sail instructions); the interrupt enable and pending
@@ -97,10 +101,10 @@ DEFAULT_TEST_INCLUDE = (
 # does not; and unnamed addresses, which include FROST's custom profiling
 # CSRs.
 DEFAULT_CSR_INCLUDE = (
-    "^(fflags|frm|fcsr|instret|hpmcounter[0-9]+|sstatus|scounteren|senvcfg|"
+    "^(fflags|frm|fcsr|instret|hpmcounter(9|[12][0-9]|3[01])|sstatus|scounteren|senvcfg|"
     "sscratch|sepc|stval|satp|mvendorid|marchid|mimpid|mhartid|mstatus|misa|"
     "medeleg|mideleg|mcounteren|menvcfg|mscratch|mepc|mtval|pmpcfg[0-9]+|"
-    "pmpaddr[0-9]+|minstret|mhpmcounter[0-9]+|mhpmevent[0-9]+|mcountinhibit)$"
+    "pmpaddr[0-9]+|minstret|mhpmcounter[0-9]+|mhpmevent(9|[12][0-9]|3[01])|mcountinhibit)$"
 )
 
 

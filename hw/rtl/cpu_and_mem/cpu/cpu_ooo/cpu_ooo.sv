@@ -733,8 +733,8 @@ module cpu_ooo #(
   logic [15:0] csr_medeleg;
   logic [2:0] csr_mideleg_s;
   logic [2:0] csr_s_pending;
-  logic [2:0] csr_scounteren;
-  logic [2:0] csr_counter_blocked;
+  logic [8:0] csr_scounteren;
+  logic [8:0] csr_counter_blocked;
   logic csr_stimecmp_blocked;
   logic csr_mireg_illegal, csr_sireg_illegal, csr_stopei_illegal;
   logic csr_sret_illegal, csr_sfence_illegal, csr_wfi_illegal, csr_priv_is_u;
@@ -1886,7 +1886,7 @@ module cpu_ooo #(
   riscv_pkg::exc_cause_t rob_trap_cause;
   riscv_pkg::exc_cause_t rob_trap_cause_remapped;
   logic [1:0] csr_priv;  // current privilege from csr_file (PrivM/PrivS/PrivU)
-  logic [2:0] csr_mcounteren;  // mcounteren CY/TM/IR from csr_file (S/U-mode counter gate)
+  logic [8:0] csr_mcounteren;  // mcounteren CY/TM/IR/HPM3..8 from csr_file (S/U-mode counter gate)
   // Arbitrated trap cause for csr_file: interrupt code with bit XLEN-1 set,
   // or the remapped synchronous exception cause.
   logic [XLEN-1:0] trap_cause_internal;
@@ -3690,6 +3690,22 @@ module cpu_ooo #(
   end
 `endif
 
+  logic [1:0] commit_branch_retired_count;
+  logic [1:0] commit_branch_mispredict_count;
+  always_comb begin
+    commit_branch_retired_count = 2'd0;
+    commit_branch_mispredict_count = 2'd0;
+    if (rob_commit_valid && !rob_commit.exception) begin
+      if (rob_commit.is_branch) commit_branch_retired_count = commit_branch_retired_count + 2'd1;
+      if (rob_commit.misprediction)
+        commit_branch_mispredict_count = commit_branch_mispredict_count + 2'd1;
+      if (rob_commit_2.valid && rob_commit_2.is_branch)
+        commit_branch_retired_count = commit_branch_retired_count + 2'd1;
+      if (rob_commit_2.valid && rob_commit_2.misprediction)
+        commit_branch_mispredict_count = commit_branch_mispredict_count + 2'd1;
+    end
+  end
+
   csr_file #(
       .XLEN(XLEN),
       .COMMIT_EXCLUDES_CONTROL_TAKE(1'b1),
@@ -3706,6 +3722,14 @@ module cpu_ooo #(
       .o_csr_read_data(csr_read_data),
       .o_csr_read_data_comb(),
       .i_instruction_retired_count(instruction_retired_count),
+      .i_branch_retired_count(commit_branch_retired_count),
+      .i_branch_mispredict_count(commit_branch_mispredict_count),
+      .i_itlb_miss(iwalk_req_valid && iwalk_req_ready),
+      .i_dtlb_miss(walk_req_valid && walk_req_ready),
+      .i_l1d_miss(i_cache_perf_events.hierarchy.l1d.miss),
+      .i_sq_full_stall(dispatch_status.sq_full ||
+          (dispatch_status.slot2_block_lsq_full2 && from_id_to_ex_2.needs_sq &&
+           (from_id_to_ex.needs_sq ? sq_full_for_2 : sq_full))),
       .i_interrupts(file_interrupts),
       .i_mtime(i_mtime),
       .i_seip_line(file_seip),

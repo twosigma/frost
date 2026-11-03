@@ -162,11 +162,12 @@ module misprediction_flush_controller #(
   // is already handling. A blanket early-recovery gate would also drop the
   // recovery of a different mispredicted branch that commits in the same
   // cycle.
+  (* keep = "true" *) logic commit_misprediction_allowed;
   logic commit_is_misprediction;
-  assign commit_is_misprediction = rob_commit_misprediction_raw &&
-                                    !((early_mispredict_active ||
-                                       early_backend_recovery_pending) &&
-                                      head_tag == early_mispredict_tag);
+  assign commit_misprediction_allowed =
+      !((early_mispredict_active || early_backend_recovery_pending) &&
+        head_tag == early_mispredict_tag);
+  assign commit_is_misprediction = rob_commit_misprediction_raw && commit_misprediction_allowed;
 
   // Commit-time recovery is a one-cycle pulse the cycle after the
   // mispredicted branch retires. Reset or a full flush clears it.

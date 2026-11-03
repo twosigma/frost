@@ -20,7 +20,7 @@
  * Enter naked U-mode bodies through MRET. The M handler records the first
  * trap's mcause and MPP, postpones the timer, and returns to an mscratch
  * continuation with MPP=M. Counter tests leave scounteren at its reset
- * value, 0x7, so mcounteren alone controls U-mode access.
+ * value, 0x1FF, so mcounteren alone controls U-mode access.
  */
 
 #include <stdint.h>
@@ -213,8 +213,8 @@ int main(void)
     cause = run_in_umode(&u_mret_umode);
     all_ok &= report("D mret-from-U (want mcause=2)", cause, 2u, g_from_priv);
 
-    /* E: mcounteren=0x7 (the reset value, written back here): the three
-     * counter CSRs are U-readable, so the first trap is the trailing ecall */
+    /* E: mcounteren=0x7 enables the three base counter CSRs in U mode,
+     * so the first trap is the trailing ecall. */
     csr_write(mcounteren, 0x7u);
     cause = run_in_umode(&u_read_counters);
     all_ok &= report("E counters-enabled-from-U (want mcause=8)", cause, 8u, g_from_priv);
@@ -250,15 +250,15 @@ int main(void)
     cause = run_in_umode(&u_read_cycleh);
     all_ok &= report("K cycleh-illegal-at-rv64 (want mcause=2)", cause, 2u, g_from_priv);
 
-    /* L: mcounteren is WARL. Only CY/TM/IR exist, so all-ones reads back as
-     * 0x7. The csrs exercises the RMW current-value path. */
+    /* L: mcounteren is WARL. CY/TM/IR/HPM3..8 exist, so all-ones reads back as
+     * 0x1FF. The csrs exercises the RMW current-value path. */
     csr_write(mcounteren, 0xFFFFFFFFu);
     uint32_t warl = csr_read(mcounteren);
     csr_write(mcounteren, 0x0u);
     uint32_t zeroed = csr_read(mcounteren);
     csr_set(mcounteren, 0x1u);
     uint32_t rmw = csr_read(mcounteren);
-    int warl_ok = (warl == 0x7u) && (zeroed == 0x0u) && (rmw == 0x1u);
+    int warl_ok = (warl == 0x1FFu) && (zeroed == 0x0u) && (rmw == 0x1u);
     uart_puts(warl_ok ? "[PASS] " : "[FAIL] ");
     uart_puts("L mcounteren-warl got=");
     uart_hex(warl);
@@ -266,7 +266,7 @@ int main(void)
     uart_hex(zeroed);
     uart_putc(' ');
     uart_hex(rmw);
-    uart_puts(" (want 0x7 0x0 0x1)\r\n");
+    uart_puts(" (want 0x1FF 0x0 0x1)\r\n");
     all_ok &= warl_ok;
 
     /* M: M-mode counter reads are never gated, even with mcounteren=0. A

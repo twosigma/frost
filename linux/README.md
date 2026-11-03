@@ -158,11 +158,13 @@ is an illegal instruction (`mcause` 2, `mtval` 0).
 
 | CSR | Behavior |
 |---|---|
-| `mcounteren`, `scounteren` | Only the CY, TM, and IR bits (2:0) exist; bits 31:3 read zero and ignore writes. Both reset to `0x7`. |
-| `mcountinhibit` (0x320) | CY (bit 0) and IR (bit 2) stop `cycle` and `instret` while set. TM reads 0, and bits 31:3 read zero. |
+| `mcounteren`, `scounteren` | CY, TM, IR and HPM3..8 occupy bits 8:0; bits 31:9 read zero and ignore writes. Both reset to `0x1ff`. |
+| `mcountinhibit` (0x320) | CY (bit 0), IR (bit 2), and HPM3..8 (bits 8:3) inhibit their counters. TM and bits 31:9 read zero. |
 | `mcycle` (0xB00), `minstret` (0xB02) | Accept full 64-bit M-mode writes |
-| `mhpmcounter3`-`31` (0xB03-0xB1F), `mhpmevent3`-`31` (0x323-0x33F) | Read-only zero in M-mode, the privileged spec's minimum implementation: reads return 0 and writes are ignored. OpenSBI finds a counter by writing 1 and reading it back, so it finds none. |
-| `hpmcounter3`-`31` (0xC03-0xC1F) | Not implemented (no Zihpm). An unimplemented CSR raises an illegal instruction at every privilege, which lets firmware probe optional CSRs by trapping. |
+| `mhpmcounter3`-`8` (0xB03-0xB08), `mhpmevent3`-`8` (0x323-0x328) | Writable machine counters. Selector N selects counter N's fixed event; all other writes select zero and disable counting. |
+| `mhpmcounter9`-`31`, `mhpmevent9`-`31` | Machine-mode reads return zero and writes are ignored. |
+| `hpmcounter3`-`8` (0xC03-0xC08) | Read-only aliases, gated by counter enables in S/U modes. |
+| `hpmcounter9`-`31` (0xC09-0xC1F) | Unimplemented; accesses raise illegal instruction at every privilege. |
 
 OpenSBI's SBI PMU uses `mcountinhibit`, `mcycle`, and `minstret` to stop,
 start, and preload the fixed counters, and its privileged-version probe
@@ -173,8 +175,15 @@ decides whether to allow direct `rdcycle` and `rdinstret`.
 Userspace counts cycles and instructions through `perf_event_open`
 (`PERF_COUNT_HW_CPU_CYCLES`, `PERF_COUNT_HW_INSTRUCTIONS`), which Linux serves
 through the SBI PMU. The DTB's `riscv,pmu` node maps both events to the fixed
-counters; without it, OpenSBI reports them as unsupported and the kernel's
-perf driver disables them. `frost_stress --counters` counts a child process
+counters. Standard events map retired branches, branch mispredictions,
+ITLB read misses, and L1D permission misses. Permission misses include
+atomic requests that require cache permission. Raw selectors 3 through 8
+select branches, mispredictions, ITLB walks, DTLB walks, L1D permission
+misses, and store-queue capacity stalls, respectively. DTLB walks include
+loads and stores; SQ stalls cover one source of backend stalls. These two
+events are exposed only through `riscv,raw-event-to-mhpmcounters`. HPM
+storage and event counting are independent of the optional profiling
+counters. `frost_stress --counters` counts a child process
 running a fixed workload, from its exec to its exit, and the boot stress
 payload reports cycle, instruction, time, and IPC deltas for its own workload.
 

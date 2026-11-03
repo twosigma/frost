@@ -18,7 +18,7 @@
  * Directed CSR test.
  *
  * Check interrupt-enable writes and the counter controls used by OpenSBI's
- * SBI PMU and Sstc setup. mcountinhibit implements CY and IR; writable
+ * SBI PMU and Sstc setup. mcountinhibit implements CY, IR and HPM3..8; writable
  * counter aliases must preserve all 64 bits.
  * Pure reads must not suppress counter increments. Writes to minstret
  * replace the writing instruction's increment; write intent comes from the
@@ -165,7 +165,7 @@ static void counter_tests(void)
 {
     uint64_t a, b, c;
 
-    uart_puts("\r\nTest 4: mcountinhibit exists and is WARL over {CY, IR}\r\n");
+    uart_puts("\r\nTest 4: mcountinhibit WARL mask is 0x1FD\r\n");
     a = csr_read(0x320);
     check("reset value is 0", a == 0);
     csr_write(0x320, 0xFFFFFFFFFFFFFFFFull);
@@ -173,7 +173,7 @@ static void counter_tests(void)
     uart_puts("  all-ones write reads ");
     uart_hex64(a);
     uart_puts("\r\n");
-    check("only CY and IR stick (0x5)", a == 0x5);
+    check("CY, IR and HPM3..8 stick", a == 0x1FD);
     csr_write(0x320, 0);
     check("clears to 0", csr_read(0x320) == 0);
 

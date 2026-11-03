@@ -194,8 +194,8 @@ different implementation choice:
 | `mtval` | 0 for illegal instructions |
 | `mstatus.FS` | Dirty when an FP instruction raises a flag, even one already set |
 | `mstatus.VS` | Read-only zero: FROST has no V extension |
-| HPM counters | `mhpmcounter3..31` and `mhpmevent3..31` read zero; no `hpmcounter3..31` |
-| Counter enables | `mcounteren`, `scounteren`: CY, TM, and IR; `mcountinhibit`: CY and IR |
+| HPM counters | Machine counters 3..8 have storage; saved traces keep their selectors disabled. User aliases 3..8 are checked by the CSR and privilege benches; aliases 9..31 are absent |
+| Counter enables | `mcounteren`, `scounteren`: CY, TM, IR and HPM3..8; `mcountinhibit`: CY, IR and HPM3..8 |
 | Delegation | `medeleg` mask 0xB3FF, `mideleg` mask 0x222 |
 | PMP | None |
 | LR/SC | 32-byte reservation set, cancelled by a store or AMO from the hart to it (FROST also cancels it on a trap; see [The A extension](#the-a-extension)) |
@@ -216,6 +216,7 @@ result depends on timing, out of the default run:
 | `stimecmp` | The Sstc timer compare depends on time |
 | `mtvec`, `stvec` | Reserved MODE values: FROST keeps the low bit, Sail keeps the old MODE |
 | `mcause`, `scause` | The cause code is WLRL: FROST keeps any value written, Sail keeps the old value when the code is one it does not support |
+| `hpmcounter3..8`, `mhpmevent3..8` | Sail cannot represent the partial user-alias set or the fixed-event WARL selectors; CSR and privilege benches check these addresses |
 | Unnamed CSR addresses | Include FROST's custom profiling CSRs |
 | The `atomic` and `memAmo` templates | They put traps between LR and SC (see [The A extension](#the-a-extension)); `--atomics` covers the A extension instead |
 | `unstructured` template | Random 32-bit words reach custom CSRs and other implementation-defined encodings |
@@ -277,7 +278,7 @@ CI's TestRIG jobs replays all of them before its random run.
 | [`clint_window_load.S`](traces/clint_window_load.S) | A load just below 2^35 faults at the 1 GiB default and reaches DDR with a 64 GiB configuration; Sail disables its CLINT in both configurations |
 | [`envcfg_fiom.S`](traces/envcfg_fiom.S) | `menvcfg.FIOM` and `senvcfg.FIOM` are writable |
 | [`fence_r0.S`](traces/fence_r0.S) | `fence r,0` retires |
-| [`hpm_counters.S`](traces/hpm_counters.S) | `mhpmcounter3..31` and `mhpmevent3..31` read zero |
+| [`hpm_counters.S`](traces/hpm_counters.S) | Writable machine counter 3, zero-only machine counter/selector 31, and absent user alias 9 |
 | [`imsic_window_load.S`](traces/imsic_window_load.S) | An aligned doubleword load in the IMSIC window reaches the TestRIG device RAM without an access fault |
 | [`instret_nops.S`](traces/instret_nops.S) | NOP and C.NOP count in `minstret` |
 | [`lrsc_amo.S`](traces/lrsc_amo.S) | AMOs to the first two doublewords of the reserved line cancel the reservation; an AMO to the next line preserves it |

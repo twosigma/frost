@@ -1075,6 +1075,12 @@ package riscv_pkg;
   localparam bit [11:0] CsrCycle = 12'hC00;  // Cycle counter
   localparam bit [11:0] CsrTime = 12'hC01;  // Timer (mtime)
   localparam bit [11:0] CsrInstret = 12'hC02;  // Instructions retired
+  localparam bit [11:0] CsrHpmcounter3 = 12'hC03;  // Retired branches
+  localparam bit [11:0] CsrHpmcounter4 = 12'hC04;  // Branch mispredictions
+  localparam bit [11:0] CsrHpmcounter5 = 12'hC05;  // ITLB misses
+  localparam bit [11:0] CsrHpmcounter6 = 12'hC06;  // DTLB misses
+  localparam bit [11:0] CsrHpmcounter7 = 12'hC07;  // L1D permission misses
+  localparam bit [11:0] CsrHpmcounter8 = 12'hC08;  // Store-queue full stall cycles
   localparam bit [11:0] CsrCycleH = 12'hC80;  // cycleh (RV32 only)
   localparam bit [11:0] CsrTimeH = 12'hC81;  // timeh (RV32 only)
   localparam bit [11:0] CsrInstretH = 12'hC82;  // instreth (RV32 only)
@@ -1084,6 +1090,18 @@ package riscv_pkg;
   localparam bit [11:0] CsrMcycleH = 12'hB80;  // mcycleh (RV32 only)
   localparam bit [11:0] CsrMinstret = 12'hB02;  // minstret
   localparam bit [11:0] CsrMinstretH = 12'hB82;  // minstreth (RV32 only)
+  localparam bit [11:0] CsrMhpmcounter3 = 12'hB03;  // mhpmcounter3
+  localparam bit [11:0] CsrMhpmcounter4 = 12'hB04;  // mhpmcounter4
+  localparam bit [11:0] CsrMhpmcounter5 = 12'hB05;  // mhpmcounter5
+  localparam bit [11:0] CsrMhpmcounter6 = 12'hB06;  // mhpmcounter6
+  localparam bit [11:0] CsrMhpmcounter7 = 12'hB07;  // mhpmcounter7
+  localparam bit [11:0] CsrMhpmcounter8 = 12'hB08;  // mhpmcounter8
+  localparam bit [11:0] CsrMhpmevent3 = 12'h323;  // mhpmevent3
+  localparam bit [11:0] CsrMhpmevent4 = 12'h324;  // mhpmevent4
+  localparam bit [11:0] CsrMhpmevent5 = 12'h325;  // mhpmevent5
+  localparam bit [11:0] CsrMhpmevent6 = 12'h326;  // mhpmevent6
+  localparam bit [11:0] CsrMhpmevent7 = 12'h327;  // mhpmevent7
+  localparam bit [11:0] CsrMhpmevent8 = 12'h328;  // mhpmevent8
 
   // Machine-mode CSR addresses (for trap/interrupt handling)
   localparam bit [11:0] CsrMstatus = 12'h300;  // Machine status register

@@ -342,14 +342,25 @@ def gen_dts(
 
 \tpmu {{
 \t\tcompatible = "riscv,pmu";
-\t\t/* FROST has only the two fixed counters (no programmable mhpmcounters).
-\t\t * Map cycle and instret to them so OpenSBI's SBI-v3 EVENT_GET_INFO
-\t\t * reports them supported (without a hw_event_map entry that bulk
-\t\t * probe returns even the fixed counters as unsupported and the
-\t\t * kernel's perf driver disables cycles/instructions). cycle ->
-\t\t * mcycle (counter 0, bit 0), instret -> minstret (counter 2, bit 2). */
+\t\t/* Fixed events: retired branches, branch mispredictions, ITLB walks,
+\t\t * DTLB walks, L1D permission misses, and SQ capacity stalls.
+\t\t * Counter N selects its event with mhpmeventN=N; zero disables it. */
 \t\triscv,event-to-mhpmcounters = <0x00000001 0x00000001 0x00000001>,
-\t\t\t\t      <0x00000002 0x00000002 0x00000004>;
+\t\t\t\t      <0x00000002 0x00000002 0x00000004>,
+\t\t\t\t      <0x00000004 0x00000004 0x00000080>,
+\t\t\t\t      <0x00000005 0x00000005 0x00000008>,
+\t\t\t\t      <0x00000006 0x00000006 0x00000010>,
+\t\t\t\t      <0x00010021 0x00010021 0x00000020>;
+\t\triscv,event-to-mhpmevent = <0x00000004 0x00000000 0x00000007>,
+\t\t\t\t    <0x00000005 0x00000000 0x00000003>,
+\t\t\t\t    <0x00000006 0x00000000 0x00000004>,
+\t\t\t\t    <0x00010021 0x00000000 0x00000005>;
+\t\triscv,raw-event-to-mhpmcounters = <0x0 0x3 0xffffffff 0xffffffff 0x08>,
+\t\t\t\t        <0x0 0x4 0xffffffff 0xffffffff 0x10>,
+\t\t\t\t        <0x0 0x5 0xffffffff 0xffffffff 0x20>,
+\t\t\t\t        <0x0 0x6 0xffffffff 0xffffffff 0x40>,
+\t\t\t\t        <0x0 0x7 0xffffffff 0xffffffff 0x80>,
+\t\t\t\t        <0x0 0x8 0xffffffff 0xffffffff 0x100>;
 \t}};
 
 \tsoc@0 {{

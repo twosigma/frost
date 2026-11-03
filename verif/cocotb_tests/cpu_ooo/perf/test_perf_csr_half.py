@@ -105,6 +105,11 @@ async def setup(dut: Any) -> CsrPathChecker:
         "fp_flags",
         "fp_flags_valid",
         "mtime",
+        "hpm_branches",
+        "hpm_mispredicts",
+        "hpm_events",
+        "mret",
+        "trap",
     ):
         getattr(dut, "i_" + name).value = 0
     s = CsrPathChecker(dut)
@@ -258,6 +263,28 @@ async def test_ordinary_csr_and_same_cycle_fp_forwarding_unchanged(dut: Any) -> 
 
 
 @cocotb.test()
+async def test_hpmcounter_5_to_8_access(dut: Any) -> None:
+    """HPM counters 5..8 and their event registers read/write exact values."""
+    s = await setup(dut)
+    test_data = [
+        (0xB05, 0xC05, 0x325, 0x1234_5678_ABCD_0005, 5),
+        (0xB06, 0xC06, 0x326, 0x2345_6789_BCDE_0006, 6),
+        (0xB07, 0xC07, 0x327, 0x3456_789A_CDEF_0007, 7),
+        (0xB08, 0xC08, 0x328, 0x4567_89AB_DEF0_0008, 8),
+    ]
+    for mcounter, ucounter, mevent, val, event_val in test_data:
+        # Write machine counter
+        await s.access(mcounter, val, 1)
+        # Read back via machine CSR
+        assert await s.access(mcounter) == val
+        # Read back via user alias
+        assert await s.access(ucounter) == val
+        # Write and read event CSR
+        await s.access(mevent, event_val, 1)
+        assert await s.access(mevent) == event_val
+
+
+@cocotb.test()
 async def test_random_raw_commit_and_snapshot_histories(dut: Any) -> None:
     """Both paths agree under random back-to-back commits, flushes, resets, and snapshots."""
     s = await setup(dut)
@@ -299,3 +326,121 @@ async def test_random_raw_commit_and_snapshot_histories(dut: Any) -> None:
             mtime=rng.getrandbits(64),
         )
     await s.idle(2, rst=0, flush=0)
+
+
+@cocotb.test()
+async def test_hpm_event_selection_inhibit_and_aliases(dut: Any) -> None:
+    """Counter selection, inhibition and aliases agree with supplied event counts."""
+    s = await setup(dut)
+    await s.access(0x320, (1 << 64) - 1, 1)
+    assert await s.access(0x320) == 0x1FD
+    await s.access(0x320, 0, 1)
+    await s.idle(4, hpm_branches=2, hpm_mispredicts=1, hpm_events=15)
+    await s.idle(3, hpm_branches=0, hpm_mispredicts=0, hpm_events=0)
+    for n in range(3, 9):
+        assert await s.access(0xB00 + n) == 0
+        await s.access(0x320 + n, n, 1)
+        assert await s.access(0x320 + n) == n
+    await s.idle(5, hpm_branches=2, hpm_mispredicts=1, hpm_events=15)
+    await s.idle(3, hpm_branches=0, hpm_mispredicts=0, hpm_events=0)
+    for n in range(3, 9):
+        expected = 10 if n == 3 else 5
+        assert await s.access(0xB00 + n) == expected
+        assert await s.access(0xC00 + n) == expected
+    for blocked in range(3, 9):
+        await s.access(0x320, 1 << blocked, 1)
+        assert await s.access(0x320) == 1 << blocked
+        before = [await s.access(0xB00 + n) for n in range(3, 9)]
+        await s.idle(3, hpm_branches=2, hpm_mispredicts=1, hpm_events=15)
+        await s.idle(3, hpm_branches=0, hpm_mispredicts=0, hpm_events=0)
+        for n in range(3, 9):
+            delta = 0 if n == blocked else (6 if n == 3 else 3)
+            assert await s.access(0xB00 + n) == before[n - 3] + delta
+    await s.access(0x320, 0, 1)
+    for n in range(3, 9):
+        await s.access(0x320 + n, n + 1, 1)
+        assert await s.access(0x320 + n) == 0
+        await s.access(0xB00 + n, 0xFFFF_FFFF_FFFF_FFFE, 1)
+    await s.idle(4, hpm_branches=2, hpm_mispredicts=1, hpm_events=15)
+    await s.idle(3, hpm_branches=0, hpm_mispredicts=0, hpm_events=0)
+    for n in range(3, 9):
+        assert await s.access(0xC00 + n) == 0xFFFF_FFFF_FFFF_FFFE
+        await s.access(0x320 + n, n, 1)
+    await s.idle(3, hpm_branches=2, hpm_mispredicts=1, hpm_events=15)
+    await s.idle(3, hpm_branches=0, hpm_mispredicts=0, hpm_events=0)
+    for n in range(3, 9):
+        assert await s.access(0xC00 + n) == (4 if n == 3 else 1)
+
+
+@cocotb.test()
+async def test_hpm_privilege_enable_masks(dut: Any) -> None:
+    """M bypasses counter enables, S needs mcounteren and U needs both masks."""
+    s = await setup(dut)
+    for priv, mcounteren, scounteren, expected in (
+        (3, 0, 0, 0),
+        (1, 0x1FF, 0, 0),
+        (1, 7, 0x1FF, 0x1F8),
+        (0, 0x1FF, 0x155, 0x0AA),
+        (0, 0x0AA, 0x1FF, 0x155),
+    ):
+        await s.idle(trap=1)
+        await s.idle(3, trap=0)
+        await s.access(0x306, mcounteren, 1)
+        await s.access(0x106, scounteren, 1)
+        if priv != 3:
+            await s.access(0x300, priv << 11, 1)
+            await s.idle(mret=1)
+            await s.idle(3, mret=0)
+        assert int(dut.o_counter_blocked.value) == expected
+
+
+@cocotb.test()
+async def test_hpm_event_identity_and_pending_writes(dut: Any) -> None:
+    """Distinct events, RMW writes and inhibit/selector edges preserve exact counts."""
+    s = await setup(dut)
+    off = dict(hpm_branches=0, hpm_mispredicts=0, hpm_events=0)
+    for n in range(3, 9):
+        await s.access(0x320 + n, n, 1)
+    for n in range(3, 9):
+        on = dict(off)
+        if n == 3:
+            on["hpm_branches"] = 2
+        elif n == 4:
+            on["hpm_mispredicts"] = 1
+        else:
+            on["hpm_events"] = 1 << (n - 5)
+        increment = 2 if n == 3 else 1
+        for counter in range(3, 9):
+            await s.access(0xB00 + counter, 0, 1)
+        await s.idle(n, **on)
+        await s.idle(3, **off)
+        for counter in range(3, 9):
+            assert await s.access(0xB00 + counter) == (
+                n * increment if counter == n else 0
+            )
+
+        # A counter write replaces a nonzero pending increment.
+        await s.idle(2, **on)
+        await s.access(0xB00 + n, 0x40, 1)
+        await s.idle(1, **off)
+        assert await s.access(0xB00 + n) == 0x40
+        await s.access(0xB00 + n, 3, 2)
+        assert await s.access(0xB00 + n) == 0x43
+        await s.access(0xB00 + n, 0x41, 3)
+        assert await s.access(0xB00 + n) == 2
+
+        for control, stop_value, stop_op, start_value, start_op in (
+            (0x320, 1 << n, 2, 1 << n, 3),
+            (0x320 + n, 0, 1, n, 1),
+        ):
+            await s.access(0xB00 + n, 0, 1)
+            await s.idle(2, **on)
+            await s.access(control, stop_value, stop_op)
+            await s.idle(3, **off)
+            assert await s.access(0xB00 + n) == 4 * increment
+            await s.idle(5, **on)
+            assert await s.access(0xB00 + n) == 4 * increment
+            await s.access(control, start_value, start_op)
+            await s.idle(1, **on)
+            await s.idle(3, **off)
+            assert await s.access(0xB00 + n) == 5 * increment
