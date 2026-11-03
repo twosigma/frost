@@ -229,7 +229,9 @@ store records own their addresses, bytes, masks and tags after SQ
 acknowledgement. Each accepted store receives one acknowledgement. The head
 installs before the tail; promotion keeps pending asserted. A Modified hit
 uses a tag-only lookup and the array's byte enables. A buffered tail can
-start its lookup after the head's masked update completes. An S/I head
+start its lookup after the head's masked update completes. Registered read
+demand gives a waiting data read a turn between hit-store installations.
+Probes, grants and atomic operations have priority over that turn. An S/I head
 reserves a dirty-eviction slot before acquiring M. Endpoint 0 remains owned
 through U, so store acquisitions do not overlap.
 
@@ -265,7 +267,8 @@ exclusive. Probe capture and service own local arbitration through R
 acceptance. Invalidation admission starts on P capture and keeps the captured
 address until the CPU accepts admission. Ready grants, writes and maintenance request one local selection
 edge after R acceptance. An eligible read requests a turn after four completed
-probe replies. Grants and writes take priority within that turn. A selected
+probe replies. Grants and atomic writes take priority within that turn. A waiting data read
+can use the turn between hit-store installations. A selected
 local operation completes its bounded array service before P is accepted. Waiting for an operand, permission or retirement does not hold
 the probe port. A withdrawn local offer releases its turn after one edge.
 Read-slot payload writes pass through a one-record buffer. The buffer

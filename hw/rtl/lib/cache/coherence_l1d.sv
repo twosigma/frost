@@ -192,6 +192,7 @@ module coherence_l1d #(
   logic [ADDR_WIDTH-1:0] tail_addr, second_block_addr_q;
   logic tail_wb_blocked, tail_wb_blocked_q, tail_checked_q;
   logic store_continue, atomic_done_q;
+  logic store_read_turn_q, read_waiting_q;
   logic [31:0] update_mask_q;
   logic array_skip_data, array_data_valid;
   logic [ADDR_WIDTH-1:0] pending_addr_q;
@@ -875,15 +876,23 @@ module coherence_l1d #(
     end
   end
 
+  // A waiting read receives one turn between hit-store installations.
+  // Read demand is registered before store selection and continuation.
   // A continuation uses a resident tail and a comparison from the preceding
   // cycle. Freeze and probe service cannot run beside a StoreOp update.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       tail_wb_blocked_q <= 1'b0;
+      store_read_turn_q <= 1'b0;
+      read_waiting_q <= 1'b0;
       tail_checked_q <= 1'b0;
       second_block_addr_q <= '0;
     end else begin
       tail_wb_blocked_q <= tail_wb_blocked;
+      read_waiting_q <= rd_candidate;
+      if (active && phase_q == LookupWait && array_valid && operation_q == StoreOp &&
+          array_hit && array_state == coherence_pkg::Modified) store_read_turn_q <= 1'b1;
+      if (active && phase_q == Lookup && operation_q == ReadOp) store_read_turn_q <= 1'b0;
       tail_checked_q <= tail_q && !store_pop;
       if (store_push && pending_q && (!store_pop || tail_q))
         second_block_addr_q <= i_address;
@@ -894,6 +903,7 @@ module coherence_l1d #(
     end
   end
   assign store_continue = tail_q && tail_checked_q && !tail_wb_blocked_q &&
+      !(store_read_turn_q && read_waiting_q) &&
       !i_p_valid && !probe_valid_q && !o_r_valid && !grant_valid &&
       !(request_live && acquisition_store_q);
   assign array_skip_data = active && phase_q == Lookup && operation_q == StoreOp &&
@@ -1168,6 +1178,7 @@ module coherence_l1d #(
               acq_ep_q <= '0;
               phase_q <= Acquire;
             end else if (pending_q && !pending_blocked &&
+                !(store_read_turn_q && read_waiting_q) &&
                 (!pending_miss_q || (!request_live && ep0_wb_ok && !store_same_line_q)) &&
                 !(request_live && acquisition_store_q)) begin
               operation_q <= StoreOp;
@@ -1468,15 +1479,20 @@ module coherence_l1d #(
   end
   logic store_launch_ready_q;
   logic insert_lookup_valid_q;
+  logic read_owed_q;
   logic [SetBits-1:0] insert_lookup_set_q;
   logic [WayBits-1:0] insert_lookup_way_q;
   always_ff @(posedge i_clk) begin
     store_launch_ready_q <= !i_rst && o_store_ready;
     if (i_rst) begin
+      read_owed_q <= 1'b0;
       insert_lookup_valid_q <= 1'b0;
       insert_lookup_set_q <= '0;
       insert_lookup_way_q <= '0;
     end else begin
+      if (!rd_candidate || (phase_q == Lookup && operation_q == ReadOp)) read_owed_q <= 1'b0;
+      if (store_pop && operation_q == StoreOp && read_waiting_q && rd_candidate)
+        read_owed_q <= 1'b1;
       if (active && phase_q == LookupWait && array_valid) begin
         insert_lookup_valid_q <= 1'b1;
         insert_lookup_set_q <= array_addr[5+:SetBits];
@@ -1488,6 +1504,10 @@ module coherence_l1d #(
   end
   always_ff @(posedge i_clk) begin
     if (sim_reset_seen_q && !i_rst) begin
+      if (read_owed_q && rd_candidate && active && phase_q == Lookup)
+        p_store_yields_read : assert (operation_q != StoreOp);
+      if (store_pop && operation_q == StoreOp && read_waiting_q)
+        p_store_yield_stops_continuation : assert (!store_continue);
       if (active && phase_q == Update && update_ready && operation_q == GrantOp) begin
         p_insert_lookup_valid : assert (insert_lookup_valid_q);
         p_insert_lookup_set : assert (update_addr_q[5+:SetBits] == insert_lookup_set_q);
@@ -1587,7 +1607,7 @@ module coherence_l1d #(
   logic [7:0] f_cycle_q = 0;
   logic [3:0] f_stores_q = 0, f_installs_q = 0;
   logic f_probe_after_install_q = 0, f_reacquired_q = 0;
-  logic f_store_offer_q = 0, f_probe_sent_q = 0;
+  logic f_store_offer_q = 0, f_probe_sent_q = 0, f_read_sent_q = 0;
   coh_g_t f_cover_grant;
   coh_u_t f_cover_release;
   coh_p_t f_cover_probe;
@@ -1595,7 +1615,8 @@ module coherence_l1d #(
     f_cover_grant = '0;
     f_cover_grant.q = acquisition_q.q;
     f_cover_grant.addr = acquisition_q.addr;
-    f_cover_grant.opcode = coherence_pkg::GrantM;
+    f_cover_grant.opcode = f_scenario == 5 && !acquisition_store_q ?
+        coherence_pkg::GrantS : coherence_pkg::GrantM;
     f_cover_grant.error = f_scenario == 4;
     f_cover_release = '0;
     f_cover_release.q = acquisition_q.q;
@@ -1609,10 +1630,14 @@ module coherence_l1d #(
   end
   always_ff @(posedge i_clk) begin
     if (f_cycle_q != 255) f_cycle_q <= f_cycle_q + 1'b1;
-    assume (f_scenario <= 4);
+    assume (f_scenario <= 5);
     assume (i_rst == !f_past_valid);
-    assume (!i_fatal_stop && !i_read_valid && !i_maint_valid);
-    assume (i_address == ADDR_WIDTH'(32'h80000000));
+    assume (!i_fatal_stop && !i_maint_valid);
+    assume (i_read_valid == (f_scenario == 5 && f_installs_q != 0 &&
+        phase_q == Lookup && operation_q == StoreOp && !f_read_sent_q && !f_store_offer_q));
+    assume (i_read_kind == ReadLoad && i_read_id == 0);
+    if (i_read_valid) f_read_sent_q <= 1'b1;
+    assume (i_address == ADDR_WIDTH'(i_read_valid ? 32'h80000020 : 32'h80000000));
     assume (i_write_data == 64'h123456789abcdef0 && i_write_tag == 0);
     assume (i_atomic_protected == (f_scenario == 2));
     assume (i_sc_valid == (f_scenario == 2 && f_cycle_q == 4));
@@ -1748,6 +1773,7 @@ module coherence_l1d #(
       assert (store_ack == $past(store_push));
       cover (tail_q && pending_q);
       cover (store_pop && tail_q && store_continue);
+      cover (read_owed_q && pending_q && phase_q == Lookup && operation_q == ReadOp);
       if ($past(active && grant_valid && grant_ready)) assert (operation_q == GrantOp);
       if ($past(active && phase_q == Idle) && phase_q == Lookup && operation_q == GrantOp)
         assert ($past(grant_valid && grant_ready));

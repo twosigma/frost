@@ -676,6 +676,44 @@ async def buffered_masked_hits_preserve_order_and_cadence(dut: Any) -> None:
 
 
 @cocotb.test()
+async def buffered_hit_burst_yields_to_waiting_reads(dut: Any) -> None:
+    """Serve an unrelated read between buffered hits and preserve both writes."""
+    b = Private(dut)
+    await b.reset()
+    base = 0x80000000
+    pattern = int.from_bytes(bytes(range(32)), "little")
+    for address in (base, base + 32):
+        await store(b, address, pattern & ((1 << 64) - 1))
+        await getm(b, address, pattern)
+    await store(b, base, 0x1122334455667788)
+    await store(b, base + 8, 0x99AABBCCDDEEFF00)
+    assert b.get("o_block_valid") == 3
+    await b.set(i_read_valid=1, i_read_id=0, i_address=base + 32)
+    await b.tick()
+    await b.set(i_read_valid=0)
+    events = []
+    for _ in range(80):
+        if b.get("store_pop"):
+            events.append("store")
+        if b.get("read_hit"):
+            events.append("read")
+            assert b.get("o_pending_store")
+        assert not b.get("o_d_valid") and not b.get("o_fatal")
+        await b.tick()
+        if b.get("o_read_valid") and not b.get("o_pending_store"):
+            break
+    else:
+        raise AssertionError("mixed read and buffered hits did not drain")
+    assert events == ["store", "read", "store"]
+    assert b.get("o_read_data") == pattern & ((1 << 64) - 1)
+    assert not b.get("o_read_error")
+    assert b.acknowledged == 4 and b.installed == 4
+    expected = (pattern & ~((1 << 128) - 1)) | (0x99AABBCCDDEEFF00 << 64)
+    expected |= 0x1122334455667788
+    assert await snapshot(b, base) == expected
+
+
+@cocotb.test()
 async def buffered_tail_reacquires_after_probe_and_delayed_getm(dut: Any) -> None:
     """Require a queued hit to recheck permission after an intervening probe."""
     for invalidate in (False, True):
