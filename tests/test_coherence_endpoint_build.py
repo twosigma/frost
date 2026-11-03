@@ -117,12 +117,13 @@ def test_cpu_cache_configuration(cached: int, dma: int) -> None:
     runner = YosysRunner()
     checks = "select -assert-any *load_queue*/w:*; "
     controls = (
-        "*load_queue*/w:*gen_commit_choice*",
+        "*load_queue*/c:gen_coherent_capture_choices.u_prepare",
+        "*load_queue*/c:gen_coherent_capture_choices.gen_take*.u_select",
+        "*load_queue*/c:gen_coherent_capture_choices.u_clear",
         "*load_queue*/w:*gen_coherent_drain_choice*",
         "*load_queue*/w:*gen_coherent_head_choice*",
         "*load_queue*/w:gen_coherent_forward_gate.*",
         "*load_queue*/w:gen_coherent_replace_gate.*",
-        "*load_queue*/w:gen_coherent_capture_choices.*",
         "*load_queue*/w:gen_coherent_issue_gate.*",
     )
     for control in controls:

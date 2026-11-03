@@ -22,6 +22,9 @@ put_cover put reach
 channel_prove channel proof
 channel_cover channel reach
 home_wide home proof wide
+home_pending_prove home proof pending
+home_pending_wide_prove home proof wide pending
+home_pending_cover home reach pending
 layout32 layout
 layout56 layout layout_wide
 
@@ -37,6 +40,7 @@ reach: depth 18
 smtbmc boolector
 
 [script]
+pending: read -define COHERENCE_HOME_CONTROL COHERENCE_HOME_PENDING_EQUIV
 read -formal -sv coherence_pkg.sv coherence_channel.sv coherence_request_endpoint.sv coherence_home_endpoint.sv coherence_put_endpoint.sv coherence_endpoints_test_harness.sv
 layout_wide: chparam -set ADDR_WIDTH 56 -set L2_NUM_MSHR 16 coherence_endpoints_test_harness
 layout: prep -top coherence_endpoints_test_harness

@@ -289,8 +289,17 @@ module lq_l0_cache #(
   assign lookup_line_invalidated = i_invalidate_line_valid &&
       (i_invalidate_line_addr[5+:(IndexWidth-2)] == lookup_index[IndexWidth-1:2]);
   if (1'b1) begin : gen_coherent_lookup_permission
-    (* keep = "true" *) wire permitted = !lookup_mmio && valid[lookup_index] &&
-        !lookup_invalidated && !lookup_line_invalidated;
+    wire permitted;
+    lq_l0_lookup_permission #(
+        .DEPTH(DEPTH)
+    ) u_permission (
+        .i_valid(valid),
+        .i_index(lookup_index),
+        .i_mmio(lookup_mmio),
+        .i_invalidated(lookup_invalidated),
+        .i_line_invalidated(lookup_line_invalidated),
+        .o_permitted(permitted)
+    );
     assign o_lookup_hit = permitted && (&lookup_tag_groups);
 `ifndef SYNTHESIS
     always @(posedge i_clk)
@@ -524,4 +533,63 @@ module lq_l0_cache #(
 `endif
 `endif
 
+endmodule
+
+// Four-way selection combines adjacent groups at each level. Lookup permission
+// applies to the selected valid bit independently of the tag comparison.
+`ifdef FROST_XILINX_PRIMS (* keep_hierarchy = "yes" *)
+`endif
+module lq_l0_lookup_permission #(
+    parameter int unsigned DEPTH = 256,
+    localparam int unsigned IndexWidth = $clog2(DEPTH),
+    localparam int unsigned Levels = (IndexWidth + 1) / 2,
+    localparam int unsigned TreeWidth = 1 << (2 * Levels)
+) (
+    input logic [DEPTH-1:0] i_valid,
+    input logic [IndexWidth-1:0] i_index,
+    input logic i_mmio,
+    input logic i_invalidated,
+    input logic i_line_invalidated,
+    output logic o_permitted
+);
+  wire [2*Levels-1:0] index_bits = (2 * Levels)'(i_index);
+  wire [Levels:0][TreeWidth-1:0] selected;
+  assign selected[0] = TreeWidth'(i_valid);
+  for (genvar level = 0; level < Levels; level++) begin : gen_level
+    for (genvar node = 0; node < TreeWidth; node++) begin : gen_node
+      if (node < ((DEPTH + (1 << (2 * (level + 1))) - 1) >> (2 * (level + 1)))) begin : gen_select
+`ifdef FROST_XILINX_PRIMS
+        (* dont_touch = "true" *) LUT6 #(
+            .INIT(64'hFEDCBA9876543210)
+        ) u_valid (
+            .I0(index_bits[2*level]),
+            .I1(index_bits[2*level+1]),
+            .I2(selected[level][4*node]),
+            .I3(selected[level][4*node+1]),
+            .I4(selected[level][4*node+2]),
+            .I5(selected[level][4*node+3]),
+            .O (selected[level+1][node])
+        );
+`else
+        wire [3:0] choices = selected[level][4*node+:4];
+        assign selected[level+1][node] = choices[index_bits[2*level+:2]];
+`endif
+      end else begin : gen_unused
+        assign selected[level+1][node] = 1'b0;
+      end
+    end
+  end
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT4 #(
+      .INIT(16'h0100)
+  ) u_permission (
+      .I0(i_mmio),
+      .I1(i_invalidated),
+      .I2(i_line_invalidated),
+      .I3(selected[Levels][0]),
+      .O (o_permitted)
+  );
+`else
+  assign o_permitted = selected[Levels][0] && !i_mmio && !i_invalidated && !i_line_invalidated;
+`endif
 endmodule

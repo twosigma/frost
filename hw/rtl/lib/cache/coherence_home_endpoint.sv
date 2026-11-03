@@ -190,7 +190,6 @@ module coherence_home_endpoint #(
         Idle:
         if (i_d_valid && o_d_ready) begin
           demand_q <= demand_in;
-          pending_q <= '0;
           seen_q <= '0;
           cancelled_q <= '0;
           phase_q <= Work;
@@ -233,6 +232,30 @@ module coherence_home_endpoint #(
   end
 `endif
 `ifdef FORMAL
+`ifdef COHERENCE_HOME_PENDING_EQUIV
+  logic f_pending_valid = 1'b0;
+  logic [3:0] f_reference_pending;
+  always_ff @(posedge i_clk) begin
+    f_pending_valid <= 1'b1;
+    if (!f_pending_valid) assume (i_rst);
+    if (i_rst) begin
+      f_reference_pending <= '0;
+    end else begin
+      if (i_absorb_valid && o_absorb_ready)
+        f_reference_pending[absorb_slot] <= !cancelled_q[absorb_slot];
+      if (i_cancel_valid && o_live && cancel_in.absorbed && !cancel_in.error &&
+          cancel_in.tid == 6'(TID) && cancel_in.epoch == demand_q.q.epoch &&
+          cancel_in.addr == demand_q.addr)
+        f_reference_pending[cancel_slot] <= 1'b0;
+      if (phase_q == Idle && i_d_valid && o_d_ready) f_reference_pending <= '0;
+    end
+    if (f_pending_valid) begin
+      assert (pending_q == f_reference_pending);
+      if (phase_q == Idle || phase_q == SendU) assert (pending_q == 0);
+      cover (o_u_valid && i_u_ready && seen_q != 0);
+    end
+  end
+`endif
 `ifndef COHERENCE_HOME_CONTROL
   logic f_past_valid = 1'b0;
   logic f_granted, f_completed, f_early_cancel;

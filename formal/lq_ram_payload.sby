@@ -2,12 +2,14 @@
 bmc
 bmc_forward
 bmc_forward_only
+bmc_core
 cover
 
 [options]
 bmc: mode bmc
 bmc_forward: mode bmc
 bmc_forward_only: mode bmc
+bmc_core: mode bmc
 cover: mode cover
 depth 1
 
@@ -29,6 +31,7 @@ read -formal -D SYNTHESIS -D F_LQ_PREMATCH_ONLY -D F_LQ_RAM_PAYLOAD_PROOF -D F_L
 cover: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
 bmc_forward: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
 bmc_forward_only: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 -set ENABLE_L0_FAST_PATH 0 load_queue
+bmc_core: chparam -set CACHE_NORMAL_MEMORY 1 -set MEM_RESPONSE_ERRORS 1 -set CACHE_UNCACHED_DATA 0 -set ENABLE_SQ_FORWARD_FAST_PATH 1 -set PREISSUE_CANDIDATES 1 -set PREISSUE_READY_PICK 1 -set PREISSUE_SEL_WIDTH 3 -set L0_CACHE_DEPTH 256 load_queue
 delete t:lq_l0_cache t:mwp_dist_ram t:sdp_dist_ram
 proc
 setundef -undriven -anyseq

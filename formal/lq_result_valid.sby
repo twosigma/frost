@@ -1,0 +1,110 @@
+[tasks]
+result4_prove d4
+result8_prove d8
+result8_xilinx_prove d8 xilinx
+result16_prove d16
+result_no_forward_prove d8 no_forward
+result_no_l0_prove d8 no_l0
+result_plain_prove d8 no_forward no_l0
+
+[options]
+mode prove
+depth 2
+timeout 90
+aigsmt boolector
+
+[engines]
+abc pdr
+
+[script]
+xilinx: read_verilog -formal +/xilinx/cells_sim.v
+xilinx: read -define FROST_XILINX_PRIMS
+read -sv -D SYNTHESIS riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv coherent_l0_flags.sv lq_l0_cache.sv lq_issue_selector.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv coherent_lq_address_store.sv load_queue.sv
+read -formal -sv lq_result_valid_equiv.sv
+chparam -set CACHE_NORMAL_MEMORY 1 -set MEM_RESPONSE_ERRORS 1 -set CACHE_UNCACHED_DATA 0 -set ENABLE_SQ_FORWARD_FAST_PATH 1 -set PREISSUE_CANDIDATES 1 -set PREISSUE_READY_PICK 1 -set PREISSUE_SEL_WIDTH 3 -set L0_CACHE_DEPTH 256 lq_result_valid_equiv
+d4: chparam -set DEPTH 4 lq_result_valid_equiv
+d16: chparam -set DEPTH 16 lq_result_valid_equiv
+no_forward: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 0 lq_result_valid_equiv
+no_l0: chparam -set ENABLE_L0_FAST_PATH 0 lq_result_valid_equiv
+hierarchy -top lq_result_valid_equiv
+delete t:*lq_l0_cache t:*mwp_dist_ram t:*sdp_dist_ram t:*coherent_lq_address_store
+hierarchy -top lq_result_valid_equiv
+proc -noopt
+setattr -mod -unset keep_hierarchy
+flatten
+opt_expr
+memory_map
+cd lq_result_valid_equiv
+delete t:$anyseq
+connect -nounset -set p_alloc dut.alloc_oh
+connect -nounset -set p_data_valid dut.lq_data_valid
+connect -nounset -set p_data_next dut.lq_data_valid_next
+connect -nounset -set p_data_d[0] $flatten\dut.$0\lq_data_valid[0:0]
+connect -nounset -set p_data_d[1] $flatten\dut.$0\lq_data_valid[1:1]
+connect -nounset -set p_data_d[2] $flatten\dut.$0\lq_data_valid[2:2]
+connect -nounset -set p_data_d[3] $flatten\dut.$0\lq_data_valid[3:3]
+d8: connect -nounset -set p_data_d[4] $flatten\dut.$0\lq_data_valid[4:4]
+d16: connect -nounset -set p_data_d[4] $flatten\dut.$0\lq_data_valid[4:4]
+d8: connect -nounset -set p_data_d[5] $flatten\dut.$0\lq_data_valid[5:5]
+d16: connect -nounset -set p_data_d[5] $flatten\dut.$0\lq_data_valid[5:5]
+d8: connect -nounset -set p_data_d[6] $flatten\dut.$0\lq_data_valid[6:6]
+d16: connect -nounset -set p_data_d[6] $flatten\dut.$0\lq_data_valid[6:6]
+d8: connect -nounset -set p_data_d[7] $flatten\dut.$0\lq_data_valid[7:7]
+d16: connect -nounset -set p_data_d[7] $flatten\dut.$0\lq_data_valid[7:7]
+d16: connect -nounset -set p_data_d[8] $flatten\dut.$0\lq_data_valid[8:8]
+d16: connect -nounset -set p_data_d[9] $flatten\dut.$0\lq_data_valid[9:9]
+d16: connect -nounset -set p_data_d[10] $flatten\dut.$0\lq_data_valid[10:10]
+d16: connect -nounset -set p_data_d[11] $flatten\dut.$0\lq_data_valid[11:11]
+d16: connect -nounset -set p_data_d[12] $flatten\dut.$0\lq_data_valid[12:12]
+d16: connect -nounset -set p_data_d[13] $flatten\dut.$0\lq_data_valid[13:13]
+d16: connect -nounset -set p_data_d[14] $flatten\dut.$0\lq_data_valid[14:14]
+d16: connect -nounset -set p_data_d[15] $flatten\dut.$0\lq_data_valid[15:15]
+connect -nounset -set p_hit dut.cache_lookup_hit
+connect -nounset -set p_hit_fast dut.cache_hit_fast_path
+connect -nounset -set p_hit_bypass dut.cache_hit_bypass_fire
+connect -nounset -set p_hit_eligible dut.cache_hit_eligible
+connect -nounset -set p_forward dut.sq_do_forward
+connect -nounset -set p_fwd_bypass dut.fwd_bypass_fire
+connect -nounset -set p_check_idx dut.sq_check_idx
+connect -nounset -set p_drop_response dut.drop_mem_response_now
+connect -nounset -set p_accept_response dut.accept_mem_response
+connect -nounset -set p_issued_idx dut.issued_idx
+connect -nounset -set p_response_error dut.mem_response_error
+connect -nounset -set p_issued_amo dut.issued_is_amo
+connect -nounset -set p_resp_bypass dut.resp_bypass_fire
+connect -nounset -set p_amo_state dut.amo_state
+connect -nounset -set p_amo_idx dut.amo_entry_idx
+connect -nounset -set p_cdb_valid dut.cdb_stage_valid
+connect -nounset -set p_issue_cdb_found dut.issue_cdb_found
+connect -nounset -set p_response_bypass dut.coherent_response_bypass
+cutpoint t:$dff
+# Current state is unconstrained, including primitive register INIT values.
+setattr -unset init
+setattr -unset keep
+opt_clean
+setundef -undriven -anyseq
+prep -top lq_result_valid_equiv
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-none t:$*ff* t:$*latch* t:$sr t:$mem* a:init
+select -assert-count 3 t:$check r:FLAVOR=assert %i
+check -assert
+techmap
+opt
+setundef -undriven -anyseq
+abc -g AND
+opt_clean
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
+lq_result_valid_equiv.sv
