@@ -3621,6 +3621,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Sv39 fetch translation and fault visibility across retargets and page "
             "crossings"
         ),
+        verilator_extra_args=("--assert",),
     ),
     "immu_1g": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_immu",
@@ -3628,7 +3629,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Sv39 instruction translation and PMA faults at 1 GiB DDR",
         include_in_pytest=False,
         extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "30"),),
-        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30",),
+        verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30", "--assert"),
     ),
     "instruction_aligner": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_instruction_aligner",
@@ -3653,6 +3654,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.if_stage.test_if_stage",
         hdl_toplevel_module="if_stage",
         description="Instruction-fetch stage integration",
+        verilator_extra_args=("--assert",),
     ),
     "pd_stage": CocotbRunConfig(
         python_test_module="cocotb_tests.pd_stage.test_pd_stage",

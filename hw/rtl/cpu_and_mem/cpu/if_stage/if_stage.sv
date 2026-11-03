@@ -133,9 +133,9 @@ module if_stage #(
     // Physical side of the fetch address; o_pc stays the virtual fetch
     // address. With translation off (Bare mode or M-mode) these are a
     // combinational function of o_pc and always valid. Under Sv39 they are a
-    // tagged result for the registered o_pc, and valid drops, stalling the
-    // front end, for one bubble after o_pc moves, possibly a second at a
-    // 4 KiB page crossing, and through an ITLB miss.
+    // page-tagged result with live offsets. Page or privilege changes cost
+    // one capture cycle; a crossing window requires an exact PC tag and can
+    // need another cycle for its next-page sample. An ITLB miss stalls fetch.
     output logic [riscv_pkg::PhysAddrBits-1:0] o_fetch_pa0,
     output logic [riscv_pkg::PhysAddrBits-1:0] o_fetch_pa1,
     output logic o_fetch_pa_valid,
@@ -925,6 +925,7 @@ module if_stage #(
   // Translation and visibility timing are described at o_fetch_pa0.
   immu #(
       .XLEN(XLEN),
+      .NUM_ENTRIES(16),
       .PA_VALID_COPIES(riscv_pkg::FetchPaHoldCopies)
   ) u_immu (
       .i_clk(i_clk),

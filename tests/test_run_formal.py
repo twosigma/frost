@@ -816,6 +816,12 @@ FORMAL_TARGETS = [
         tasks=("bmc", "prove"),
     ),
     FormalTarget(
+        "immu_successor.sby",
+        "Instruction superpage successor eligibility, PPN and PMA equal the "
+        "selected-leaf reference for arbitrary TLB and walk state",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
         "immu_bare.sby",
         "Bare instruction-fetch addresses and PMA faults match the reference across "
         "datapath widths",
@@ -1348,8 +1354,8 @@ SBY_TASKS = [
     ("xilinx32", "Arbitrary-input LUT5 response-mux equivalence at 32 bits"),
     ("xilinx64", "Arbitrary-input LUT5 response-mux equivalence at 64 bits"),
     # Parameter-shape variants (chparam'd tops): the ITLB shape of the TLB.
-    ("bmc_itlb", "Bounded model checking in the 8-entry 2-port ITLB shape"),
-    ("cover_itlb", "Cover checking in the 8-entry 2-port ITLB shape"),
+    ("bmc_itlb", "Bounded checking of 16-entry 2-port ITLB fetch verdicts"),
+    ("cover_itlb", "Cover checking in the 16-entry 2-port ITLB shape"),
     ("bmc_xlen32", "Bounded checking with a local 32-bit datapath"),
     (
         "bmc_small_btb",

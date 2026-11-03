@@ -25,12 +25,12 @@
  *   pa1    = the aligned word after i_pc, with 32-bit wrap
  *   faults = the Bare PMA check of the full-XLEN PC
  *
- * Under Sv39 the registered result is tagged with {i_pc, i_priv_u}. On a tag
- * mismatch it is invisible at once (valid and all fault bits low), and the next
- * edge captures and resolves the current PC. A warm fetch whose window stays in
- * one page therefore costs one bubble after each PC change; a 4 KiB crossing
- * can cost a second while the registered next-page key catches up. A miss keeps
- * its tag and stalls IF until the shared walker answers.
+ * Under Sv39 the registered page result is tagged with the virtual page and
+ * privilege. Intra-page fetches use the live page offset without a bubble.
+ * A window that crosses a 4 KiB page boundary also requires an exact PC tag.
+ * A tag mismatch hides validity and faults until the result is captured; a
+ * crossing can need another cycle for its registered next-page key. A miss
+ * keeps its tag and stalls IF until the shared walker answers.
  *
  * An accepted walk records the key it was issued for. Retargets, privilege
  * changes, and mode changes do not cancel it: a late response still fills the
@@ -40,7 +40,7 @@
  */
 module immu #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
-    parameter int unsigned NUM_ENTRIES = 8,
+    parameter int unsigned NUM_ENTRIES = 16,
     parameter int unsigned PA_VALID_COPIES = 1
 ) (
     input logic i_clk,
@@ -54,9 +54,9 @@ module immu #(
     // that changes translation.
     input logic i_tlb_invalidate,
 
-    // pc_controller's registered fetch PC. The exact tag compare hides a result
-    // captured for an earlier value as soon as this register changes; the Bare
-    // outputs are formed directly from it.
+    // pc_controller's registered fetch PC. The page and privilege tag hides
+    // unrelated translations; crossing windows require the exact PC tag.
+    // The Bare outputs are formed directly from this input.
     input logic [XLEN-1:0] i_pc,
 
     output logic [riscv_pkg::PhysAddrBits-1:0] o_pa0,
@@ -120,7 +120,13 @@ module immu #(
   logic translated_visible;
   logic capture_en;
 
-  assign tag_match = key_valid_q && (key_va_q == i_pc) && (key_priv_u_q == i_priv_u);
+  logic same_page;
+  logic pc_match;
+  assign same_page = (key_va_q[XLEN-1:12] == i_pc[XLEN-1:12]);
+  assign pc_match = same_page && (!pc_page_cross || (key_va_q == i_pc));
+
+  assign tag_match = key_valid_q && (key_priv_u_q == i_priv_u) &&
+                     (same_page ? (!pc_page_cross || (key_va_q == i_pc)) : (key_va_q == i_pc));
   assign translated_visible = i_active && !i_tlb_invalidate && tag_match && resolved_q;
   assign capture_en = i_active && !i_tlb_invalidate && (!tag_match || !resolved_q);
 
@@ -171,6 +177,8 @@ module immu #(
   logic [1:0][1:0] tlb_level;
   // ITLB permission and PMA checks are computed per entry, for timing.
   logic [1:0] tlb_fetch_perm_fault, tlb_fetch_pma_bad, tlb_fetch_next_pma_bad;
+  logic [1:0] tlb_fetch_next_ok;
+  logic [1:0][PpnBits-1:0] tlb_fetch_next_ppn;
   logic tlb_install;
 
   assign tlb_vpn[0] = pc_vpn;
@@ -181,7 +189,8 @@ module immu #(
   dtlb #(
       .NUM_ENTRIES   (NUM_ENTRIES),
       .NUM_PORTS     (2),
-      .FETCH_VERDICTS(1'b1)
+      .FETCH_VERDICTS(1'b1),
+      .DATA_VERDICTS (1'b0)
   ) u_itlb (
       .i_clk(i_clk),
       .i_rst_n(!i_rst),
@@ -209,7 +218,9 @@ module immu #(
       .i_fetch_priv_u(i_priv_u),
       .o_fetch_perm_fault(tlb_fetch_perm_fault),
       .o_fetch_pma_bad(tlb_fetch_pma_bad),
-      .o_fetch_next_pma_bad(tlb_fetch_next_pma_bad)
+      .o_fetch_next_pma_bad(tlb_fetch_next_pma_bad),
+      .o_fetch_next_ok(tlb_fetch_next_ok),
+      .o_fetch_next_ppn(tlb_fetch_next_ppn)
   );
 
   // ---------------------------------------------------------------------------
@@ -376,45 +387,84 @@ module immu #(
   end
 `endif
 
-  // Derive the next word within a 2 MiB or 1 GiB leaf. At the superpage end,
-  // port 1 must resolve the next VPN. ITLB hits use per-entry next-page PMA;
-  // walk responses use the selected fields.
-  logic super_end;
+  // ITLB entries resolve superpage successors before winner selection.
+  // Walk responses form a separate candidate; an ITLB hit has priority.
+  // At the superpage end, port 1 resolves the successor VPN.
+  logic resp_super_end;
+  logic resp_super_ok;
+  logic [PpnBits-1:0] resp_ppn, resp_super_ppn;
   logic super_next_ok;
   logic [PpnBits-1:0] super_next_ppn;
   logic super_next_pma_bad;
-  logic super_next_pma_bad_selected;
+  logic resp_super_pma_bad;
   logic res0_from_tlb;
   assign res0_from_tlb = tlb_hit[0] && !i_tlb_invalidate;
+  assign resp_ppn = ppn_from_resp(i_walk_resp, pc_vpn);
   always_comb begin
-    unique case (res0.level)
+    unique case (i_walk_resp.level)
       2'd2: begin
-        super_end = &pc_vpn[17:0];
-        super_next_ppn = {res0.ppn[PpnBits-1:18], pc_vpn[17:0] + 18'd1};
+        resp_super_end = &pc_vpn[17:0];
+        resp_super_ppn = {resp_ppn[PpnBits-1:18], pc_vpn[17:0] + 18'd1};
       end
       2'd1: begin
-        super_end = &pc_vpn[8:0];
-        super_next_ppn = {res0.ppn[PpnBits-1:9], pc_vpn[8:0] + 9'd1};
+        resp_super_end = &pc_vpn[8:0];
+        resp_super_ppn = {resp_ppn[PpnBits-1:9], pc_vpn[8:0] + 9'd1};
       end
       default: begin
-        super_end = 1'b1;
-        super_next_ppn = res0.ppn;
+        resp_super_end = 1'b1;
+        resp_super_ppn = resp_ppn;
       end
     endcase
   end
-  assign super_next_ok = res0.clean_hit && (res0.level != 2'd0) && !super_end;
-  assign super_next_pma_bad_selected = !riscv_pkg::pma_fetch_ok(
-      riscv_pkg::XLEN'({super_next_ppn, 12'h000})
-  );
-  assign super_next_pma_bad = res0_from_tlb ? tlb_fetch_next_pma_bad[0] :
-                                              super_next_pma_bad_selected;
+  assign resp_super_ok = resp_for_live_key && (i_walk_resp.vpn == pc_vpn) &&
+      (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && i_walk_resp.perm_x &&
+      (i_walk_resp.perm_u == i_priv_u) && !(|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:PpnBits]) &&
+      riscv_pkg::pma_fetch_ok(
+      riscv_pkg::XLEN'({resp_ppn, 12'h000})
+  ) && !resp_super_end;
+  assign super_next_ok = !pc_noncanon && !i_tlb_invalidate &&
+      (tlb_fetch_next_ok[0] || (!tlb_hit[0] && resp_super_ok));
+  assign super_next_ppn = res0_from_tlb ? tlb_fetch_next_ppn[0] : resp_super_ppn;
+  assign resp_super_pma_bad = !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({resp_super_ppn, 12'h000}));
+  assign super_next_pma_bad = res0_from_tlb ? tlb_fetch_next_pma_bad[0] : resp_super_pma_bad;
 `ifndef SYNTHESIS
+  `define IMMU_CHECK_SUCCESSOR
+`elsif IMMU_SUCCESSOR_LOCAL_PROOF
+  `define IMMU_CHECK_SUCCESSOR
+`endif
+`ifdef IMMU_CHECK_SUCCESSOR
+  logic ref_super_end;
+  logic [PpnBits-1:0] ref_super_ppn;
   always_comb begin
-    if (super_next_ok && !$isunknown({super_next_pma_bad, super_next_pma_bad_selected})) begin
-      p_super_next_pma_exact : assert (super_next_pma_bad == super_next_pma_bad_selected);
+    case (res0.level)
+      2'd2: begin
+        ref_super_end = &pc_vpn[17:0];
+        ref_super_ppn = {res0.ppn[PpnBits-1:18], pc_vpn[17:0] + 18'd1};
+      end
+      2'd1: begin
+        ref_super_end = &pc_vpn[8:0];
+        ref_super_ppn = {res0.ppn[PpnBits-1:9], pc_vpn[8:0] + 9'd1};
+      end
+      default: begin
+        ref_super_end = 1'b1;
+        ref_super_ppn = res0.ppn;
+      end
+    endcase
+  end
+  always_comb begin
+    if (!$isunknown({super_next_ok, res0.clean_hit, ref_super_end})) begin
+      p_super_next_eligibility_exact : assert (super_next_ok == (res0.clean_hit && !ref_super_end));
+    end
+    if (super_next_ok && !$isunknown({super_next_pma_bad, super_next_ppn})) begin
+      p_super_next_ppn_exact : assert (super_next_ppn == ref_super_ppn);
+      p_super_next_pma_exact :
+      assert (super_next_pma_bad == !riscv_pkg::pma_fetch_ok(
+          riscv_pkg::XLEN'({super_next_ppn, 12'h000})
+      ));
     end
   end
 `endif
+  `undef IMMU_CHECK_SUCCESSOR
 
   // ---------------------------------------------------------------------------
   // Tag and result capture. The key and its result always load together.
@@ -423,6 +473,7 @@ module immu #(
   logic resolved_d, f0_d, f0p_d, f1_d, f1p_d, after_ok_d;
   logic miss0_d, miss1_d;
   logic resolved1;
+  logic pa1_use_va_d;
 
   always_comb begin
     pa0_d = res0.fault ? bare_pc : {res0.ppn, i_pc[11:0]};
@@ -435,6 +486,7 @@ module immu #(
     miss0_d = !res0.resolved;
     miss1_d = 1'b0;
     resolved1 = 1'b1;
+    pa1_use_va_d = 1'b0;
 
     if (pc_page_cross) begin
       if (super_next_ok) begin
@@ -442,7 +494,8 @@ module immu #(
         f1_d  = super_next_pma_bad;
         f1p_d = 1'b0;
       end else if (np_sample_matches) begin
-        pa1_d = res1.fault ? {np_va_q[PpnBits-1:0], 12'h000} : {res1.ppn, 12'h000};
+        pa1_d = {res1.ppn, 12'h000};
+        pa1_use_va_d = res1.fault;
         f1_d = res1.fault;
         f1p_d = res1.page;
         resolved1 = res1.resolved;
@@ -462,6 +515,11 @@ module immu #(
   logic [riscv_pkg::PhysAddrBits-1:0] pa0_q, pa1_q;
   logic f0_q, f0p_q, f1_q, f1p_q, after_ok_q;
   logic miss0_q, miss1_q;
+  // A next-page lookup fault uses its sampled VA. The address selector
+  // captures with pa1_q and holds with it when visibility is invalidated.
+  logic pa1_use_va_q;
+  logic [PpnBits-1:0] pa1_ppn;
+  assign pa1_ppn = pa1_use_va_q ? np_va_q[PpnBits-1:0] : pa1_q[riscv_pkg::PhysAddrBits-1:12];
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -474,6 +532,7 @@ module immu #(
       miss1_q <= 1'b0;
       pa0_q <= '0;
       pa1_q <= '0;
+      pa1_use_va_q <= 1'b0;
       f0_q <= 1'b0;
       f0p_q <= 1'b0;
       f1_q <= 1'b0;
@@ -499,6 +558,7 @@ module immu #(
       miss1_q <= miss1_d;
       pa0_q <= pa0_d;
       pa1_q <= pa1_d;
+      pa1_use_va_q <= pa1_use_va_d;
       f0_q <= f0_d;
       f0p_q <= f0p_d;
       f1_q <= f1_d;
@@ -551,7 +611,9 @@ module immu #(
     i_pc[11:0]
   };
   assign o_pa1 = {
-    i_active ? pa1_q[riscv_pkg::PhysAddrBits-1:12] : bare_pa1[riscv_pkg::PhysAddrBits-1:12],
+    i_active ? (pc_page_cross ? pa1_ppn :
+                               pa0_q[riscv_pkg::PhysAddrBits-1:12]) :
+               bare_pa1[riscv_pkg::PhysAddrBits-1:12],
     pc_plus4_lo,
     2'b00
   };
@@ -559,12 +621,13 @@ module immu #(
   (* keep = "true" *) logic visible_before_pc_compare;
   assign visible_before_pc_compare = !i_tlb_invalidate && key_valid_q &&
                                      (key_priv_u_q == i_priv_u) && resolved_q;
-  assign o_pa_valid = !i_active || (visible_before_pc_compare && (key_va_q == i_pc));
+  assign o_pa_valid = !i_active || (visible_before_pc_compare && pc_match);
   for (genvar copy = 0; copy < PA_VALID_COPIES; copy++) begin : gen_pa_valid_copy
     (* keep = "true", dont_touch = "true" *) logic pa_valid_copy;
-    assign pa_valid_copy = !i_active || (visible_before_pc_compare && (key_va_q == i_pc));
+    assign pa_valid_copy = !i_active || (visible_before_pc_compare && pc_match);
     assign o_pa_valid_copy[copy] = pa_valid_copy;
   end
+  wire live_after_ok = (i_pc[11:5] != 7'h7F) || (i_pc[4:2] == 3'b111);
   always_comb begin
     if (!i_active) begin
       o_fault0 = bare_verdict.bare_fault0;
@@ -575,9 +638,9 @@ module immu #(
     end else begin
       o_fault0 = translated_visible && f0_q;
       o_fault0_page = translated_visible && f0p_q;
-      o_fault1 = translated_visible && f1_q;
-      o_fault1_page = translated_visible && f1p_q;
-      o_line_after_ok = translated_visible && after_ok_q;
+      o_fault1 = translated_visible && (pc_page_cross ? f1_q : f0_q);
+      o_fault1_page = translated_visible && (pc_page_cross ? f1p_q : f0p_q);
+      o_line_after_ok = translated_visible && live_after_ok;
     end
   end
 
@@ -619,10 +682,11 @@ module immu #(
             {i_pc, i_priv_u, np_va_q, o_walk_req_valid, o_walk_vpn}
         )) begin
       if (translated_visible) begin
-        p_visible_pa0_exact : assert (o_pa0 == pa0_q);
-        p_visible_pa1_exact : assert (o_pa1 == pa1_q);
+        p_visible_pa0_ppn_exact :
+        assert (o_pa0[riscv_pkg::PhysAddrBits-1:12] == pa0_q[riscv_pkg::PhysAddrBits-1:12]);
         p_visible_tag_exact :
-        assert (key_valid_q && (key_va_q == i_pc) && (key_priv_u_q == i_priv_u) && resolved_q);
+        assert (key_valid_q && (key_va_q[XLEN-1:12] == i_pc[XLEN-1:12]) &&
+                (key_priv_u_q == i_priv_u) && resolved_q);
       end
       if (np_sample_matches) begin
         p_next_page_identity : assert (np_va_q == (key_va_q[XLEN-1:12] + 1'b1));
@@ -642,18 +706,38 @@ module immu #(
 `ifdef IMMU_PAGE_OFFSET_LOCAL_PROOF
   // The translation result and its VA key load together. Prove that the page
   // offset is preserved even for arbitrary ITLB answers, faults, and retargets,
-  // and that the output PAs equal the registered result whenever it is visible.
+  // and that visible PAs combine captured physical pages with live offsets.
+  // The reference selects a fault's VA before the capture.
   logic f_offset_past_valid = 1'b0;
   logic [11:0] f_key_next_offset;
+  logic [PpnBits-1:0] f_pa1_ppn_ref_q;
   assign f_key_next_offset = {key_va_q[11:2] + 10'd1, 2'b00};
+  always @(posedge i_clk) begin
+    if (i_rst) f_pa1_ppn_ref_q <= '0;
+    else if (i_active && !i_tlb_invalidate && capture_en) begin
+      if (!pc_page_cross) f_pa1_ppn_ref_q <= pa0_d[riscv_pkg::PhysAddrBits-1:12];
+      else if (super_next_ok) f_pa1_ppn_ref_q <= super_next_ppn;
+      else if (np_sample_matches) f_pa1_ppn_ref_q <= res1.fault ? np_va_q[PpnBits-1:0] : res1.ppn;
+      else f_pa1_ppn_ref_q <= '0;
+    end
+  end
   always @(posedge i_clk) begin
     f_offset_past_valid <= 1'b1;
     if (!f_offset_past_valid) assume (i_rst);
     if (f_offset_past_valid) begin
+      p_captured_word1_page_exact : assert (pa1_ppn == f_pa1_ppn_ref_q);
       p_key_pa0_offset : assert (!key_valid_q || pa0_q[11:0] == key_va_q[11:0]);
       p_key_pa1_offset : assert (!key_valid_q || pa1_q[11:0] == f_key_next_offset);
-      p_public_pa0_exact : assert (!translated_visible || o_pa0 == pa0_q);
-      p_public_pa1_exact : assert (!translated_visible || o_pa1 == pa1_q);
+      p_public_pa0_exact :
+      assert (!translated_visible || o_pa0 == {pa0_q[riscv_pkg::PhysAddrBits-1:12], i_pc[11:0]});
+      p_public_pa1_exact :
+      assert (!translated_visible || o_pa1 == {
+        pc_page_cross ? f_pa1_ppn_ref_q : pa0_q[riscv_pkg::PhysAddrBits-1:12],
+        pc_plus4_lo, 2'b00
+      });
+      p_same_page_word1_faults :
+      assert (!translated_visible || pc_page_cross ||
+              {o_fault1, o_fault1_page} == {o_fault0, o_fault0_page});
     end
   end
 `endif

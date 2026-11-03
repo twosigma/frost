@@ -647,7 +647,9 @@ module dmmu (
       .i_fetch_priv_u(1'b0),
       .o_fetch_perm_fault(),
       .o_fetch_pma_bad(),
-      .o_fetch_next_pma_bad()
+      .o_fetch_next_pma_bad(),
+      .o_fetch_next_ok(),
+      .o_fetch_next_ppn()
   );
 
 `ifdef DMMU_MMIO_LOCAL_PROOF

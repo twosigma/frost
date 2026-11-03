@@ -49,7 +49,7 @@ stations issue one operation per cycle. See the
 branch prediction, and the [Tomasulo guide](cpu_and_mem/cpu/tomasulo/README.md)
 for scheduling, execution, and commit.
 
-Sv39 translation uses an 8-entry ITLB, a 16-entry DTLB, and one read-only
+Sv39 translation uses a 16-entry ITLB, a 16-entry DTLB, and one read-only
 page-table walker shared by both, with 4 KiB, 2 MiB, and 1 GiB pages.
 Software manages the accessed and dirty bits (Svade): an access that needs
 one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
