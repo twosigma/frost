@@ -3157,6 +3157,32 @@ def run_step(
     return True, wns, report_prefix
 
 
+def explain_silent_vivado_exit(log_path: Path, returncode: int) -> None:
+    """Say so when a failed Vivado step left no ERROR line and no ``Exiting Vivado``.
+
+    That log ends mid-run: the process was killed from outside (another session
+    stopping Vivado, the OOM killer) or crashed, and the plain "exit code 1" would
+    otherwise look like an unexplained tool failure.
+    """
+    try:
+        lines = log_path.read_text(errors="replace").splitlines()
+    except OSError:
+        print(
+            f"  Vivado exited with code {returncode} and its log {log_path} cannot be read"
+        )
+        return
+    if any(line.startswith("ERROR:") for line in lines):
+        return
+    if any("Exiting Vivado at" in line for line in lines):
+        return
+    last = next((line for line in reversed(lines) if line.strip()), "")
+    print(
+        f"  Vivado exited with code {returncode} with no ERROR line and no 'Exiting Vivado' in "
+        f"{log_path}: the process ended abnormally (killed from outside or crashed); "
+        f"the log stops at: {last[:160]}"
+    )
+
+
 def run_vivado_step(command: list[str], cwd: Path) -> int:
     """Run one Vivado batch step and return its exit code.
 
@@ -3170,12 +3196,15 @@ def run_vivado_step(command: list[str], cwd: Path) -> int:
         log_path = cwd / command[command.index("-log") + 1]
     process = subprocess.Popen(command, cwd=cwd)
     try:
-        return _wait_for_vivado(process, log_path)
+        returncode = _wait_for_vivado(process, log_path)
     except BaseException:
         # subprocess.run() kills its child on an interrupt; keep that behaviour.
         process.kill()
         process.wait()
         raise
+    if returncode != 0:
+        explain_silent_vivado_exit(log_path, returncode)
+    return returncode
 
 
 def _wait_for_vivado(process: subprocess.Popen[bytes], log_path: Path) -> int:

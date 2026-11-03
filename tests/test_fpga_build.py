@@ -5281,3 +5281,67 @@ def test_interrupted_vivado_step_kills_its_launcher(
     with pytest.raises(KeyboardInterrupt):
         _launch_stuck_vivado(tmp_path, monkeypatch, launcher, "Running route\n")
     assert launcher.killed
+
+
+def _fail_vivado(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, log_text: str, returncode: int = 1
+) -> int:
+    """Run run_vivado_step against a launcher that exits at once with a failure."""
+    (tmp_path / "vivado.log").write_text(log_text)
+    launcher = SimpleNamespace(wait=lambda timeout=None: returncode)
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", lambda *_a, **_k: launcher)
+    return fpga_build.run_vivado_step(["vivado"], tmp_path)
+
+
+def test_failed_step_without_error_or_exit_line_reports_abnormal_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A log that stops mid-run names the abnormal end and its last line."""
+    log = "Running route\nPhase 4 Rip-up And Reroute\n\n"
+    assert _fail_vivado(tmp_path, monkeypatch, log) == 1
+    output = capsys.readouterr().out
+    assert "ended abnormally" in output
+    assert "exited with code 1" in output
+    assert "Phase 4 Rip-up And Reroute" in output
+
+
+@pytest.mark.parametrize(
+    "log",
+    (
+        "Running route\nERROR: [Route 35-1] Router failed\n",
+        "Running route\nINFO: Exiting Vivado at Tue Nov  3 13:37:14 2026...\n",
+    ),
+)
+def test_failed_step_with_error_or_exit_line_is_not_called_abnormal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    log: str,
+) -> None:
+    """Vivado's own error or exit line explains the failure; add nothing."""
+    assert _fail_vivado(tmp_path, monkeypatch, log) == 1
+    assert "ended abnormally" not in capsys.readouterr().out
+
+
+def test_successful_step_prints_no_abnormal_end_note(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Only a non-zero exit triggers the log check."""
+    assert _fail_vivado(tmp_path, monkeypatch, "Running route\n", returncode=0) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_failed_step_with_unreadable_log_says_so(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A missing log still yields a message instead of an exception."""
+    launcher = SimpleNamespace(wait=lambda timeout=None: 1)
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", lambda *_a, **_k: launcher)
+    assert fpga_build.run_vivado_step(["vivado"], tmp_path) == 1
+    assert "cannot be read" in capsys.readouterr().out
