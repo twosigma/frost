@@ -214,6 +214,23 @@ committed stores, invalidate L1I and flush fetch and translation state.
 `opensbi_smoke` uses a twenty-million-cycle budget for firmware boot and
 its S-mode payload.
 
+`mmu_reach` is a manual benchmark, excluded from the pytest application
+matrix. It runs dependent data and instruction chains at 1, 4, 16, 20, 32,
+and 64 pages after warmup traversals, plus a data control at fixed offsets.
+Separate data chains use leaves at each Sv39 level to measure walk depth.
+Its address space switch loop alternates two roots mapping the same virtual
+addresses to distinct physical data. Untimed checks verify each page's pointer
+and signature; instruction checks verify the visit counter and terminating PC. The
+application reports cycle counts through UART and runs once. Setting
+`FROST_MMU_REACH_TRACE` to an absolute output path captures MMU presentations,
+accepted operations, physical translation results, retirements, cancellations,
+invalidations, walks, coherent reads, and L0 events as JSONL. Allocation identities
+distinguish reused ROB tags. Fetch events identify page transitions. Set the
+variable inside the container invocation.
+
+`FROST_PTW_COHERENCE_TRACE` captures PTE addresses and responses, accepted
+ReadOncePTW requests, and home probe data as JSONL without application markers.
+
 `freertos_demo` runs twice in BRAM to check that its private linker script
 and startup code reinitialize the kernel, heap, and application state.
 Its simulation budget is three million cycles.

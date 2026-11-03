@@ -1319,6 +1319,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("COCOTB_MAX_CYCLES", "16000000"),
         ),
     ),
+    "mmu_reach": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="mmu_reach",
+        rerun_after_reset=False,
+        nic_mac_clocks=False,
+        include_in_pytest=False,
+        description="Sv39 TLB capacity, walk depth, and address space switch timing",
+        extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
+    ),
     "ptw_coherence_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

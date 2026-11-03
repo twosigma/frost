@@ -4746,6 +4746,14 @@ async def test_real_program(dut: Any) -> None:
     reset_history = await prepare_program_start(dut)
     start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
     start_cpu_clock(dut)
+    if trace_path := os.environ.get("FROST_MMU_REACH_TRACE"):
+        from cocotb_tests.mmu.reach_trace import capture
+
+        cocotb.start_soon(capture(dut, cpu_clock(dut), trace_path))
+    if trace_path := os.environ.get("FROST_PTW_COHERENCE_TRACE"):
+        from cocotb_tests.mmu.reach_trace import capture_coherence
+
+        cocotb.start_soon(capture_coherence(dut, cpu_clock(dut), trace_path))
     # i_clk_div4 exists only in frost.sv, not in the cpu_tb.sv testbench. It is
     # derived from i_clk rather than started as an independent Clock because the
     # dc_fifo clock domain crossing needs a fixed phase relationship.
