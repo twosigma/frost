@@ -158,6 +158,8 @@ register captures it. The dispatcher prevents duplicate live q values across
 records. A record accepts C only after G and emits U only after C and every
 registered absorbed-PutAck dependency. It becomes available on U consumption.
 The caller owns the line lock and destination pin through that edge.
+The pending mask is empty in Idle and SendU. Reset clears the mask, and each
+accepted absorption or cancellation updates its keyed bit.
 Completion identity and address comparisons use parallel three-bit groups.
 Hart completion payloads select with local endpoint phase indications.
 Channel valid signals apply reset qualification. Outside reset, each phase

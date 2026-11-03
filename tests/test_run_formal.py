@@ -280,6 +280,9 @@ FORMAL_TARGETS = [
             "channel_prove",
             "channel_cover",
             "home_wide",
+            "home_pending_prove",
+            "home_pending_wide_prove",
+            "home_pending_cover",
             "layout32",
             "layout56",
         ),
@@ -1302,6 +1305,18 @@ SBY_TASKS = [
     ("channel_prove", "Unbounded coherent endpoint safety"),
     ("channel_cover", "Coherent endpoint completion reachability"),
     ("home_wide", "Coherent home safety with wide physical addresses"),
+    (
+        "home_pending_prove",
+        "Home pending mask equals admission-clear reference after reset.",
+    ),
+    (
+        "home_pending_wide_prove",
+        "Home pending-mask equality with wide physical addresses.",
+    ),
+    (
+        "home_pending_cover",
+        "Home pending-mask equality through absorption and release.",
+    ),
     ("prove_engine", "Unbounded AXI4-Lite mapping for the DMA register bank"),
     ("prove_predecoded", "Unbounded IMSIC equivalence with registered input decodes"),
     ("msi_bmc", "Bounded APLIC MSI forwarding and pending transitions"),
