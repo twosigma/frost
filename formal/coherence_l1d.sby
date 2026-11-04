@@ -46,7 +46,7 @@ stream: chparam -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d
 prep -flatten -top coherence_l1d
 streamcovers: select -assert-count 2 c:*p_stream_two c:*p_stream_attach
 streamcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:*p_stream_two c:*p_stream_attach %u %d
-# Control assertions run in both control tasks; this task checks the datapath.
+# Control assertions run in the control tasks; this task checks the datapath.
 payload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
 payload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 %u %u %u %u %d
 arraydata: select -assert-count 2 c:p_store_data_6 c:p_store_data_7

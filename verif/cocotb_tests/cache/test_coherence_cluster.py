@@ -43,6 +43,7 @@ class Cluster:
         self.sc_writes: list[int] = []
         self.reply_states: list[int] = []
         self.memory_reads: list[int] = []
+        self.speculative_requests: set[int] = set()
         self.perf: dict[str, list[int]] = {
             "l1d": [0] * 8,
             "l2": [0] * 8,
@@ -110,6 +111,20 @@ class Cluster:
                         address,
                     )
                 )
+            if not self.get("i_rst"):
+                accepted = int(self.dut.hart_d_valid.value) & int(
+                    self.dut.hart_d_ready.value
+                )
+                speculative = int(self.dut.hart.ld_prefetch_q.value)
+                for ep in range(len(self.dut.hart_d_valid)):
+                    if (accepted & speculative) >> ep & 1:
+                        width = self.p + 312
+                        bits = (int(self.dut.hart_d.value) >> (width * ep)) & (
+                            (1 << width) - 1
+                        )
+                        fields = unpack(bits, (4, 9, self.p, 5, 3, 32, 1, 1, 1, 256))
+                        assert fields[0] == 0
+                        self.speculative_requests.add(fields[2])
             await self.set(i_clk=1)
             await self.set(i_clk=0)
             self.cycle += 1
@@ -707,3 +722,44 @@ async def loads_in_flight_across_lines(dut: Any) -> None:
     misses = len(dut.hart_d_valid)
     assert peak == (1 if misses == 1 else misses - 1), peak
     assert await b.dma(base + 0x40 * 6) & 0xFF == 0xAB
+
+
+@cocotb.test()
+async def speculative_fill_then_dma_write(dut: Any) -> None:
+    """Order a DMA write after witnessed speculative GetS requests at the home."""
+    if len(dut.hart_d_valid) < 8:
+        return
+    b = Cluster(dut)
+    await b.reset()
+    base = 0x80000000
+    await b.set(i_hold_grant=1)
+    for slot in range(3):
+        await b.set(
+            i_read_valid=1,
+            i_read_id=slot,
+            i_read_kind=0,
+            i_read_size=3,
+            i_address=base + 32 * slot,
+        )
+        await b.tick()
+    await b.set(i_read_valid=0)
+    target = base + 96
+    for _ in range(300):
+        if target in b.speculative_requests:
+            break
+        await b.tick()
+    assert target in b.speculative_requests
+    assert int(dut.hart.live.value) & int(dut.hart.ld_prefetch_q.value)
+    await b.set(i_hold_grant=0)
+    await b.dma(target, 0xABCDE123, mask=255)
+    assert target in b.cuts
+    responses = {}
+    for _ in range(3):
+        await b.wait("o_read_valid")
+        assert not b.get("o_read_error")
+        responses[b.get("o_read_id")] = b.get("o_read_data")
+        await b.set(i_read_ready=1)
+        await b.tick()
+        await b.set(i_read_ready=0)
+    assert responses == {0: 0, 1: 0, 2: 0}
+    assert await b.read(target, slot=7) == 0xABCDE123

@@ -33,6 +33,7 @@ class StreamPrivate(Private):
         self.requests: list[tuple[int, tuple[int, ...]]] = []
         self.responses: list[tuple[int, int, int]] = []
         self.completed: set[int] = set()
+        self.completion_accepted: set[int] = set()
         self.resident_hints_while_held: list[int] = []
 
     async def tick(self, count: int = 1) -> None:
@@ -72,6 +73,7 @@ class StreamPrivate(Private):
         self.requests.clear()
         self.responses.clear()
         self.completed.clear()
+        self.completion_accepted.clear()
         self.resident_hints_while_held.clear()
         await self.set(i_d_ready=(1 << self.endpoints) - 1, i_atomic_protected=1)
 
@@ -95,6 +97,7 @@ class StreamPrivate(Private):
         self.requests.clear()
         self.responses.clear()
         self.completed.clear()
+        self.completion_accepted.clear()
 
     async def requests_at_least(self, count: int) -> None:
         """Wait for accepted D messages with a fixed cycle bound."""
@@ -133,11 +136,20 @@ class StreamPrivate(Private):
             await self.tick()
         raise AssertionError(f"No completion for endpoint {ep}")
 
-    async def release(self, index: int) -> None:
-        """Accept C and return U for the matching transaction."""
-        ep, request = self.requests[index]
+    async def accept_completion(self, index: int) -> None:
+        """Accept C while leaving its endpoint waiting for U."""
+        ep, _ = self.requests[index]
+        assert self.get("o_c_valid") >> ep & 1
         await self.set(i_c_ready=1 << ep)
         await self.tick()
+        await self.set(i_c_ready=0)
+        self.completion_accepted.add(index)
+
+    async def release(self, index: int) -> None:
+        """Accept any pending C and return U for the matching transaction."""
+        ep, request = self.requests[index]
+        if index not in self.completion_accepted:
+            await self.accept_completion(index)
         await self.set(
             i_c_ready=0,
             i_u_valid=1,
@@ -291,6 +303,7 @@ async def resident_hint_preserves_waiting_data(dut: Any) -> None:
     b.requests.clear()
     b.responses.clear()
     b.completed.clear()
+    b.completion_accepted.clear()
     await b.seed_before(base)
     await b.issue(7, base + 64)
     await b.wait("o_read_valid")
@@ -401,11 +414,14 @@ async def accepted_hints_drain_for_exclusive_work(dut: Any) -> None:
         assert not b.get("hint_valid_q") and not b.get("stream_confirmed")
         for index in range(4):
             await b.grant(index)
+        for index in (2, 3):
+            await b.accept_completion(index)
         for index in range(2):
             await b.release(index)
         await b.set(i_read_ready=1)
         await b.tick(50)
         assert (b.get("live") & b.get("ld_prefetch_q")).bit_count() == 2
+        assert not b.get("o_c_valid") & b.get("ld_prefetch_q")
         assert (
             len(b.requests) == 4
             and not b.get("o_sc_ready")

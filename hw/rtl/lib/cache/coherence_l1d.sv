@@ -869,14 +869,14 @@ module coherence_l1d #(
         assert ((ep == 0 ? acquisition_q.addr[ADDR_WIDTH-1:5] : ld_line_q[ep]) != ld_line_q[other]);
       for (int ep = 0; ep < MISSES; ep++) begin
         if (live[ep] && ld_prefetch_q[ep]) begin
-          p_prefetch_pool : assert (StreamEnabled && ep >= MISSES - PrefetchCount && ep != 0);
-          p_prefetch_failure_isolation : assert (!ep_read_fail[ep]);
+          assert (StreamEnabled && ep >= MISSES - PrefetchCount && ep != 0);
+          assert (!ep_read_fail[ep]);
         end
         if (ep_request_valid[ep] && operation_q == PrefetchOp) begin
-          p_prefetch_gets : assert (acquisition.opcode == coherence_pkg::GetS &&
+          assert (acquisition.opcode == coherence_pkg::GetS &&
               acquisition.size == 3 && acquisition.offset == 0 && acquisition.mask == 0);
-          p_prefetch_page : assert (lookup_in_window && !prefetch_cancel && !prefetch_conflict);
-          p_prefetch_endpoint : assert (ep >= MISSES - PrefetchCount && ep != 0);
+          assert (lookup_in_window && !prefetch_cancel && !prefetch_conflict);
+          assert (ep >= MISSES - PrefetchCount && ep != 0);
         end
       end
       if (grant_prefetch_q) p_prefetch_fill_isolation : assert (!read_fill);

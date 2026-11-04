@@ -157,3 +157,68 @@ async def dirty_writeback_error_remains_fatal(dut: Any) -> None:
     await b.set(i_wa_valid=0)
     await b.wait("o_fatal")
     assert b.get("o_fatal_addr") == 0x80000260
+
+
+@cocotb.test()
+async def installed_hint_evicted_before_attached_retry(dut: Any) -> None:
+    """Reacquire an installed hint evicted before its attached load can look up."""
+    b = DirtyStream(dut)
+    await b.reset()
+    for slot in range(3):
+        await b.issue(slot, 0x80000000 + 32 * slot)
+    await b.requests_at_least(5)
+    target = 0x80000060
+    hint = next(i for i, (_, fields) in enumerate(b.requests) if fields[2] == target)
+    await b.issue(3, target)
+    await b.issue(4, target + 512)
+    await b.requests_at_least(6)
+    other = next(
+        i for i, (_, fields) in enumerate(b.requests) if fields[2] == target + 512
+    )
+    assert b.get("rd_wait_q") & 8
+
+    async def offer_grant(index: int, data: int) -> None:
+        ep, request = b.requests[index]
+        await b.set(
+            i_g_valid=1,
+            i_g=pack(
+                (3, 0), (9, request[1]), (6, ep), (b.p, request[2]), (256, data), (1, 0)
+            ),
+        )
+        await b.wait("o_g_ready")
+        await b.tick()
+        await b.set(i_g_valid=0)
+
+    await offer_grant(hint, 0)
+    for _ in range(100):
+        if (
+            b.get("operation_q") == 2
+            and b.get("phase_q") != 0
+            and b.get("grant_ep_q") == b.requests[hint][0]
+        ):
+            break
+        await b.tick()
+    else:
+        raise AssertionError("Speculative grant did not own the array service")
+    await offer_grant(other, b.word(target + 512))
+    for _ in range(150):
+        if b.get("o_c_valid") >> b.requests[other][0] & 1:
+            break
+        await b.tick()
+    else:
+        raise AssertionError("Conflicting grant did not install")
+    await b.accept_completion(hint)
+    await b.tick(40)
+    assert b.get("rd_wait_release_q") & 8
+    assert not b.get("rd_ready_q") & 8
+    assert len([fields for _, fields in b.requests if fields[2] == target]) == 1
+    await b.release(other)
+    await b.release(hint)
+    await b.drain(5)
+    assert sorted(b.responses) == [
+        (0, b.word(0x80000000), 0),
+        (1, b.word(0x80000020), 0),
+        (2, b.word(0x80000040), 0),
+        (3, b.word(target), 0),
+        (4, b.word(target + 512), 0),
+    ]
