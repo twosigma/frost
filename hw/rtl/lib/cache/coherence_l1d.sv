@@ -183,7 +183,7 @@ module coherence_l1d #(
   logic [7:0] rd_error_q, rd_ready_next, rd_error_next, rd_valid_next, rd_miss_next;
   logic read_miss;
   logic read_failure, read_hit, read_fill;
-  logic rd_candidate, rd_response;
+  logic rd_candidate, rd_response, rd_load_miss;
   logic [2:0] rd_pick, rd_result, rd_rr_q, rd_response_rr_q, selected_read_q;
   logic pending_q, pending_miss_q;
   logic store_push, store_pop, store_credit, store_ack, tail_q;
@@ -201,7 +201,7 @@ module coherence_l1d #(
   logic [3:0][5:0] store_contributors;
   logic [3:0][EpBits-1:0] store_ep;
   logic store_seal, store_acquire, store_head_ready;
-  logic look_found, look_valid_q, look_ready, borrowed_live, look_read_turn_q;
+  logic look_found, look_valid_q, look_available, look_ready, borrowed_live, look_read_turn_q;
   logic [1:0] look_index, look_index_q;
   logic [ADDR_WIDTH-1:0] look_addr_q;
   logic [3:0] look_blocked;
@@ -906,6 +906,7 @@ module coherence_l1d #(
       .i_waiting(rd_waiting),
       .i_miss_retry(rd_miss_retry),
       .o_found(rd_candidate),
+      .o_load_miss(rd_load_miss),
       .o_index(rd_pick),
       .o_address(rd_selected_addr)
   );
@@ -1029,11 +1030,12 @@ module coherence_l1d #(
       look_index = 2'(store_head_index + 2'(age));
     end
   end
-  assign look_ready = MISSES >= 3 && look_valid_q && !borrowed_live && load_ep_free &&
+  assign look_available = MISSES >= 3 && look_valid_q && !borrowed_live && load_ep_free &&
       !load_block && !i_sc_valid && !i_maint_valid && !amo_waiting &&
       store_valid[look_index_q] && !store_acquired[look_index_q] &&
-      !store_checked_q[look_index_q] && look_index_q != store_head_index &&
-      !(read_service_waiting && (look_read_turn_q || store_read_turn_q));
+      !store_checked_q[look_index_q] && look_index_q != store_head_index;
+  assign look_ready = look_available &&
+      !(read_service_waiting && store_read_turn_q) && !(rd_load_miss && look_read_turn_q);
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       look_valid_q <= 1'b0;
@@ -1048,12 +1050,13 @@ module coherence_l1d #(
       for (int slot = 0; slot < 4; slot++)
         if (!store_valid[slot] || (store_pop && store_head_index == 2'(slot)))
           store_checked_q[slot] <= 1'b0;
-      if (active && phase_q == LookupWait && array_valid && operation_q == LookaheadOp)
+      if (active && phase_q == LookupWait && array_valid && operation_q == LookaheadOp) begin
         store_checked_q[store_selected_q] <= 1'b1;
+        // A lookahead hit consumes no endpoint and yields the allocation turn.
+        look_read_turn_q <= 1'b1;
+      end
       if (active && phase_q == Acquire && ep_request_ready[acq_ep_q] && acq_ep_q != '0)
         look_read_turn_q <= operation_q == LookaheadOp;
-      if (active && phase_q == Lookup && (operation_q == ReadOp ||
-          (operation_q == GrantOp && !selected_grant_store))) look_read_turn_q <= 1'b0;
     end
   end
 
@@ -1505,7 +1508,8 @@ module coherence_l1d #(
                 end else if (rd_kind_q[selected_read_q] == ReadLR) begin
                   acq_ep_q <= '0;
                   phase_q <= !request_live && ep0_wb_ok && !load_block ? Acquire : Idle;
-                end else if (load_ep_free && !load_block) begin
+                end else if (load_ep_free && !load_block &&
+                    !(look_available && !look_read_turn_q)) begin
                   acq_ep_q <= load_ep_index;
                   phase_q <= Acquire;
                 end else phase_q <= Idle;

@@ -416,3 +416,157 @@ async def load_hits_allow_repeated_store_borrowing(dut: Any) -> None:
     await b.release(head)
     await b.release(tail)
     await b.wait("o_pending_store", 0)
+
+
+@cocotb.test()
+async def waiting_load_miss_keeps_its_allocation_turn(dut: Any) -> None:
+    """Keep a borrowed store behind a known miss while resident hits are served."""
+    b = Stream(dut)
+    await b.reset()
+    base = 0x80000000
+    hot, load, miss = base + 160, base + 128, base + 224
+    await store(b, hot, 0xABC)
+    await b.grant(hot)
+    await b.release(hot)
+    await b.set(
+        i_read_valid=1, i_read_id=0, i_read_kind=0, i_read_size=3, i_address=load
+    )
+    await b.tick()
+    await b.set(i_read_valid=0)
+    await b.issued(load)
+    for address in (base, base + 64):
+        await store(b, address, address)
+        await b.issued(address)
+    await b.set(i_read_valid=1, i_read_id=7, i_address=miss)
+    await b.tick()
+    await b.set(i_read_valid=0)
+    for _ in range(100):
+        if b.get("rd_miss_q") & 128:
+            break
+        await b.tick()
+    assert b.get("rd_miss_q") & 128
+    for address in (base + 32, base + 96):
+        await store(b, address, address)
+    await b.grant(base + 64)
+    await b.grant(base)
+    for _ in range(100):
+        if b.installs[-2:] == [base, base + 64]:
+            break
+        await b.tick()
+    assert b.installs[-2:] == [base, base + 64]
+    active: set[int] = set()
+    consumed = len(b.read_results)
+
+    async def hit() -> None:
+        nonlocal consumed
+        free = next((slot for slot in range(1, 7) if slot not in active), None)
+        await b.set(
+            i_read_valid=int(free is not None), i_read_id=free or 1, i_address=hot
+        )
+        if free is not None:
+            active.add(free)
+        await b.tick()
+        for slot, value in b.read_results[consumed:]:
+            assert slot in active and value == 0xABC
+            active.remove(slot)
+        consumed = len(b.read_results)
+
+    for _ in range(30):
+        await hit()
+    await b.set(i_read_valid=0)
+    assert consumed > 0
+    # Endpoint 0 and the other load keep their identities through this release.
+    await b.release(base + 64)
+    for _ in range(100):
+        await hit()
+        following = [d[2] for _, d in b.demands if d[2] in (miss, base + 96)]
+        if following:
+            assert following[0] == miss
+            break
+    else:
+        raise AssertionError("the waiting load miss received no allocation")
+    await b.set(i_read_valid=0)
+    for address in (load, miss):
+        await b.grant(address)
+        await b.release(address)
+    await b.release(base)
+    for address in (base + 32, base + 96):
+        await b.grant(address)
+    for address in (base + 32, base + 96):
+        await b.release(address)
+    await b.wait("o_pending_store", 0)
+    await b.wait("live", 0)
+    assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def head_lookup_preserves_lookahead_allocation_turn(dut: Any) -> None:
+    """Place a borrowed store between two misses across a head-store lookup."""
+    b = Stream(dut)
+    await b.reset()
+    base = 0x80000000
+    resident, first, second = base + 128, base + 224, base + 192
+    await b.set(
+        i_read_valid=1, i_read_id=0, i_read_kind=0, i_read_size=3, i_address=resident
+    )
+    await b.tick()
+    await b.set(i_read_valid=0)
+    await b.issued(resident)
+    for address in (base, base + 64):
+        await store(b, address, address)
+        await b.issued(address)
+    for address in (resident, base, base + 64):
+        await b.grant(address)
+    for _ in range(100):
+        if len(b.completions) == 3:
+            break
+        await b.tick()
+    assert len(b.completions) == 3
+    for address in (base + 32, base + 96):
+        await store(b, address, address)
+    for slot, address in ((6, first), (7, second)):
+        await b.set(i_read_valid=1, i_read_id=slot, i_address=address)
+        await b.tick()
+    await b.set(i_read_valid=0)
+    for _ in range(100):
+        if b.get("rd_miss_q") & 192 == 192 and b.get("pending_miss_q"):
+            break
+        await b.tick()
+    assert b.get("rd_miss_q") & 192 == 192 and b.get("pending_miss_q")
+    await b.release(base + 64)
+    for _ in range(100):
+        if b.get("operation_q") == 0 and b.get("phase_q") == 1:
+            break
+        await b.tick()
+    assert b.get("selected_read_q") == 6
+    await b.release(resident)
+    for _ in range(100):
+        if b.get("ep_request_valid"):
+            break
+        await b.tick()
+    assert b.get("acq_ep_q") == 1 and b.get("selected_read_q") == 6
+    _, demand = await b.issued(base)
+    await b.set(i_u_valid=1, i_u=pack((9, demand[1]), (6, 0), (b.p, base)))
+    assert b.get("o_u_ready")
+    await b.tick()
+    await b.set(i_u_valid=0)
+    for _ in range(100):
+        await b.tick()
+        following = [d[2] for _, d in b.demands if d[2] in (second, base + 96)]
+        if following:
+            assert following[0] == base + 96
+            break
+    else:
+        raise AssertionError("lookahead received no allocation after the load")
+    await b.grant(base + 96)
+    await b.grant(base + 32)
+    for address in (base + 32, base + 96):
+        await b.release(address)
+    await b.grant(first)
+    await b.release(first)
+    await b.grant(second)
+    await b.release(second)
+    await b.wait("o_pending_store", 0)
+    await b.wait("live", 0)
+    assert b.installs == [base, base + 64, base + 32, base + 96]
+    assert not b.get("o_fatal")

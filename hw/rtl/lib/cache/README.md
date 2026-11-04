@@ -281,7 +281,11 @@ No two live endpoints hold the same sector. A load miss on a sector held by
 an endpoint waits for installation, or for release if the installed sector
 has been replaced, then looks up again. Load and lookahead acquisitions stop
 while an atomic is active or an AMO, SC or maintenance operation waits for
-endpoint drain. Contending load and lookahead allocations alternate. Each acquired
+endpoint drain. Contending eligible load misses and lookahead acquisitions alternate
+successful allocations. Read hits do not clear the allocation turn. They permit
+store borrowing when no eligible load miss waits. A read miss can finish a lookup
+before yielding endpoint allocation to lookahead. A lookahead Modified hit
+consumes no endpoint and yields its allocation turn. Each acquired
 store record contributes to the outstanding-miss count until installation.
 Read status uses per-slot masks for allocation, response transfer, lookup
 results and grant completion. Completion and miss sets dominate allocation

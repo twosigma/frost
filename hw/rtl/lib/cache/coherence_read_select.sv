@@ -42,10 +42,11 @@ module coherence_read_select #(
     input logic [7:0] i_waiting,
     input logic [7:0] i_miss_retry,
     output logic o_found,
+    output logic o_load_miss,
     output logic [2:0] o_index,
     output logic [ADDR_WIDTH-1:0] o_address
 );
-  logic [7:0] eligible, upper, first;
+  logic [7:0] eligible, load_miss, upper, first;
   (* keep = "true" *) logic [7:0] first_upper, first_any;
   // i_addr is each slot's address after the buffered write forwards to it.
   // The comparisons use the stored addresses and the buffered write's address
@@ -76,6 +77,7 @@ module coherence_read_select #(
     assign eligible[index] = i_valid[index] && !i_ready[index] && !blocked &&
         (i_kind[2*index+:2] != 2'd2 || i_atomic_protected) &&
         !i_owned[index] && !i_waiting[index] && (!i_miss[index] || i_miss_retry[index]);
+    assign load_miss[index] = eligible[index] && i_miss[index] && i_kind[2*index+:2] == 2'd0;
     if (index == 7) begin : gen_last
       assign upper[index] = eligible[index];
     end else begin : gen_before_last
@@ -91,6 +93,7 @@ module coherence_read_select #(
   end
   assign first = (|upper) ? first_upper : first_any;
   assign o_found = |eligible;
+  assign o_load_miss = |load_miss;
   always_comb begin
     o_index = '0;
     o_address = '0;
@@ -100,11 +103,12 @@ module coherence_read_select #(
     end
   end
 `ifndef SYNTHESIS
-  logic ref_found, ref_blocked;
+  logic ref_found, ref_blocked, ref_load_miss;
   logic [2:0] ref_index, ref_scan;
   logic [ADDR_WIDTH-1:0] ref_address, ref_selected_address;
   always_comb begin
     ref_found = 1'b0;
+    ref_load_miss = 1'b0;
     ref_index = '0;
     ref_scan = '0;
     ref_address = '0;
@@ -125,6 +129,7 @@ module coherence_read_select #(
           (!i_miss[ref_scan] || i_miss_retry[ref_scan])) begin
         ref_found = 1'b1;
         ref_index = ref_scan;
+        if (i_miss[ref_scan] && i_kind[ref_scan*2+:2] == 2'd0) ref_load_miss = 1'b1;
       end
     end
     ref_selected_address = i_addr[ref_index*ADDR_WIDTH+:ADDR_WIDTH];
@@ -141,6 +146,7 @@ module coherence_read_select #(
 `endif
   begin
     p_read_select_exact : assert (o_found == ref_found && o_index == ref_index);
+    p_load_miss_exact : assert (o_load_miss == ref_load_miss);
     if (o_found) p_read_address_exact : assert (o_address == ref_selected_address);
     // The forwarded addresses the reference uses match the compared ones.
     if (!FORMAL_STANDALONE_ENV)
