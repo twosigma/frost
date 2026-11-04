@@ -128,12 +128,14 @@ class _AxiSlave:
             aw = (int(dut.o_axi_awid.value), int(dut.o_axi_awaddr.value))
             w = (int(dut.o_axi_wdata.value), int(dut.o_axi_wstrb.value))
             ar = (int(dut.o_axi_arid.value), int(dut.o_axi_araddr.value))
-            self._check_held("aw", awvalid, aw)
+            aw_payload = (*aw, int(dut.o_axi_awcache.value))
+            ar_payload = (*ar, int(dut.o_axi_arcache.value))
+            self._check_held("aw", awvalid, aw_payload)
             self._check_held("w", wvalid, w)
-            self._check_held("ar", arvalid, ar)
-            self._held["aw"] = aw if awvalid and not awready else None
+            self._check_held("ar", arvalid, ar_payload)
+            self._held["aw"] = aw_payload if awvalid and not awready else None
             self._held["w"] = w if wvalid and not wready else None
-            self._held["ar"] = ar if arvalid and not arready else None
+            self._held["ar"] = ar_payload if arvalid and not arready else None
             if awvalid and awready:
                 self.aw.append(aw)
             if wvalid and wready:
@@ -212,6 +214,7 @@ async def _start(dut: Any) -> tuple[_AxiSlave, _ResponseLog]:
     dut.i_req_wdata.value = 0
     dut.i_req_wstrb.value = 0
     dut.i_req_id.value = 0
+    dut.i_req_cache.value = 3
     assert int(dut.LINE_BYTES.value) == LINE_BYTES, (
         "build the bridge with LINE_BYTES=64"
     )
@@ -232,7 +235,7 @@ async def _reset(dut: Any) -> None:
 
 
 async def _fire(
-    dut: Any, *, write: bool, addr: int, req_id: int, wdata: int = 0
+    dut: Any, *, write: bool, addr: int, req_id: int, wdata: int = 0, cache: int = 3
 ) -> None:
     """Present one line request and return in the cycle after it fired."""
     await FallingEdge(dut.i_clk)
@@ -242,6 +245,7 @@ async def _fire(
     dut.i_req_wdata.value = wdata
     dut.i_req_wstrb.value = FULL_STRB if write else 0
     dut.i_req_id.value = req_id
+    dut.i_req_cache.value = cache
     await Timer(1, unit="ns")
     for _ in range(RESP_TIMEOUT_CYCLES):
         if int(dut.o_req_ready.value):
@@ -253,11 +257,34 @@ async def _fire(
     await RisingEdge(dut.i_clk)
     await FallingEdge(dut.i_clk)
     dut.i_req_valid.value = 0
+    assert int((dut.o_axi_awcache if write else dut.o_axi_arcache).value) == cache
 
 
 async def _cycles(dut: Any, n: int) -> None:
     for _ in range(n):
         await FallingEdge(dut.i_clk)
+
+
+@cocotb.test()
+async def cache_attributes_hold_across_independent_stalls(dut: Any) -> None:
+    """Each address channel holds its accepted request's cache attribute."""
+    slave, _ = await _start(dut)
+    slave.awready = False
+    slave.arready = False
+    await _fire(dut, write=True, addr=BASE_ADDR, req_id=0, wdata=7, cache=15)
+    await _fire(dut, write=False, addr=BASE_ADDR + LINE_BYTES, req_id=1, cache=3)
+    dut.i_req_cache.value = 7
+    for _ in range(8):
+        await _cycles(dut, 1)
+        assert int(dut.o_axi_awvalid.value) and int(dut.o_axi_awcache.value) == 15
+        assert int(dut.o_axi_arvalid.value) and int(dut.o_axi_arcache.value) == 3
+    await _reset(dut)
+    assert int(dut.o_axi_awcache.value) == 15
+    assert int(dut.o_axi_arcache.value) == 3
+    slave.awready = True
+    slave.arready = True
+    await _cycles(dut, 40)
+    assert not slave.violations, slave.violations
 
 
 @cocotb.test()

@@ -223,6 +223,7 @@ module soc_top #(
     output logic                  [                      255:0] o_coherent_req_wdata,
     output logic                  [                       31:0] o_coherent_req_wstrb,
     output logic                  [                        3:0] o_coherent_req_id,
+    output logic                                                o_coherent_req_non_alloc,
     input  logic                                                i_coherent_resp_valid,
     input  logic                  [                        3:0] i_coherent_resp_id,
     input  logic                  [                      255:0] i_coherent_resp_rdata,
@@ -2056,6 +2057,7 @@ AxilPorts
         .o_line_req_wdata(o_coherent_req_wdata),
         .o_line_req_wstrb(o_coherent_req_wstrb),
         .o_line_req_id(dma_line_req_id),
+        .o_line_req_non_alloc(o_coherent_req_non_alloc),
         .i_line_resp_valid(i_coherent_resp_valid),
         .i_line_resp_id(i_coherent_resp_id[DmaLineIdBits-1:0]),
         .i_line_resp_rdata(i_coherent_resp_rdata),
@@ -2169,6 +2171,7 @@ AxilPorts
     assign o_coherent_req_wdata = '0;
     assign o_coherent_req_wstrb = '0;
     assign o_coherent_req_id = '0;
+    assign o_coherent_req_non_alloc = 1'b0;
     assign dma_engine_irq = 1'b0;
     assign nic_irq = 1'b0;
     assign nic_1g_irq = 1'b0;

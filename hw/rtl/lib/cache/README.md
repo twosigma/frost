@@ -93,7 +93,7 @@ and every payload bit during a stall. Addresses name aligned 32-byte sectors.
 
 | Channel | Direction | Packed fields and widths | Payload bits |
 | --- | --- | --- | --- |
-| D | Requester to home | opcode 4, q 9, addr P, offset 5, size 3, mask 32, aq 1, rl 1, maintenance 1, wdata 256 | P + 312 |
+| D | Requester to home | opcode 4, q 9, addr P, offset 5, size 3, mask 32, aq 1, non_alloc 1, maintenance 1, wdata 256 | P + 312 |
 | P | Home to hart | opcode 2, tid 6, epoch 1, addr P, requester 2, reason 2, check_q 9, offset 5, size 3 | P + 30 |
 | R | Hart to home | opcode 2, tid 6, epoch 1, hart 1, addr P, state 2, clear 1, data_valid 1, data 256, absorbed 1, put_id 1, put_epoch 1, sc_valid 1, error 1 | P + 275 |
 | W | Hart to home | hart 1, put_id 1, epoch 1, addr P, data 256, maintenance 1 | P + 260 |
@@ -355,6 +355,14 @@ of the same physical packed row. A pending tag update blocks further lookups
 to that row until the update is accepted. Data hazards cover the read sample and the
 write input registers through completion. Contending reads and writes alternate
 service while prior operations drain. Masked updates preserve sibling sectors.
+
+The D channel's `non_alloc` hint restricts miss replacement to way 0.
+A streaming request that needs a replacement waits while way 0 is pinned.
+Hits use their resident way, including ways excluded from replacement.
+DMA reads and writes use private-cache probes and dirty-byte merging
+through the same service path as allocating requests. The hint controls
+replacement placement. Misses fetch and install cache lines, and
+unrestricted requests may allocate in any unpinned way.
 
 Four fill controls own memory-read IDs 0 through 3. Each fill has a primary
 request and two read waiter seats. Parked requests release their engine and

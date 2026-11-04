@@ -9,7 +9,7 @@ proof: aigsmt boolector
 covers: mode cover
 covers: depth 160
 covers: vcd_sim on
-proof: timeout 5400
+proof: timeout 7200
 covers: timeout 1200
 
 [engines]

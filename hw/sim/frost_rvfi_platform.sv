@@ -1901,6 +1901,7 @@ module frost_rvfi_platform #(
     localparam int unsigned DmaDownIdBits = DmaUpIdBits + 1;
     localparam int unsigned DmaLineIdBits = 3;
     logic dma_req_valid, dma_req_ready, dma_req_write;
+    logic dma_req_non_alloc;
     logic [riscv_pkg::PhysAddrBits-1:0] dma_req_addr;
     logic [L1LineBytes*8-1:0] dma_req_wdata;
     logic [L1LineBytes-1:0] dma_req_wstrb;
@@ -2096,6 +2097,7 @@ module frost_rvfi_platform #(
         .i_req_data(dma_req_wdata),
         .i_req_mask(dma_req_wstrb),
         .i_req_id(dma_req_id),
+        .i_req_non_alloc(dma_req_non_alloc),
         .o_resp_valid(dma_resp_valid),
         .o_resp_id(dma_resp_id),
         .o_resp_data(dma_resp_rdata),
@@ -2493,6 +2495,7 @@ module frost_rvfi_platform #(
         .o_line_req_wdata(dma_req_wdata),
         .o_line_req_wstrb(dma_req_wstrb),
         .o_line_req_id(dma_line_req_id),
+        .o_line_req_non_alloc(dma_req_non_alloc),
         .i_line_resp_valid(dma_resp_valid),
         .i_line_resp_id(dma_resp_id[DmaLineIdBits-1:0]),
         .i_line_resp_rdata(dma_resp_rdata),
@@ -2629,6 +2632,7 @@ module frost_rvfi_platform #(
         .o_axi_awlen(axi_awlen),
         .o_axi_awsize(axi_awsize),
         .o_axi_awburst(axi_awburst),
+        .o_axi_awcache(),
         .o_axi_wvalid(axi_wvalid),
         .i_axi_wready(axi_wready),
         .o_axi_wdata(axi_wdata),
@@ -2645,6 +2649,7 @@ module frost_rvfi_platform #(
         .o_axi_arlen(axi_arlen),
         .o_axi_arsize(axi_arsize),
         .o_axi_arburst(axi_arburst),
+        .o_axi_arcache(),
         .i_axi_rvalid(axi_rvalid),
         .o_axi_rready(axi_rready),
         .i_axi_rid(axi_rid),

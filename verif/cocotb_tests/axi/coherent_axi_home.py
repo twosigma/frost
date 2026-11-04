@@ -66,7 +66,7 @@ class CoherentHome(LineIngress):
         self.outstanding: dict[int, int] = {}
         # The ingress's credit count bounds what the home can hold.
         self.slots = len(dut.ingress.c_valid)
-        self.accepted: dict[int, tuple[int, int, int, int]] = {}
+        self.accepted: dict[int, tuple[int, int, int, int, int]] = {}
         self.released: dict[int, tuple[int, int, int]] = {}
         # A read may respond after its G, before its Release; a record retires
         # at the later of the two.
@@ -180,7 +180,13 @@ class CoherentHome(LineIngress):
                 assert self.region[0] <= address < sum(self.region)
                 assert not write or mask
                 self.outstanding[rid] = address
-                self.accepted[rid] = (write, address, mask, payload)
+                self.accepted[rid] = (
+                    write,
+                    address,
+                    mask,
+                    payload,
+                    int(dut.o_line_req_non_alloc.value),
+                )
                 self.issue_order.append((rid, order))
                 order += 1
                 self.log.append(
@@ -189,19 +195,21 @@ class CoherentHome(LineIngress):
                 self.max_occupied = max(self.max_occupied, len(self.outstanding))
                 assert len(self.outstanding) <= self.slots
             if int(dut.o_d_valid.value) and int(dut.i_d_ready.value):
-                op, q, addr, offset, size, mask, aq, rl, maintenance, value = unpack(
-                    int(dut.o_d.value), (4, 9, width, 5, 3, 32, 1, 1, 1, 256)
+                op, q, addr, offset, size, mask, aq, non_alloc, maintenance, value = (
+                    unpack(int(dut.o_d.value), (4, 9, width, 5, 3, 32, 1, 1, 1, 256))
                 )
                 rid = (q >> 1) & 15
                 assert q >> 5 == 0b1011 and q & 1 == 0 and rid not in self.pending
                 expected_id, accepted_order = self.issue_order.pop(0)
                 assert rid == expected_id, "D issue reordered external acceptance"
-                assert self.accepted[rid] == (int(op == 8), addr, mask, value)
-                assert (
-                    op in (7, 8)
-                    and size == 5
-                    and not (aq or rl or offset or maintenance)
+                assert self.accepted[rid] == (
+                    int(op == 8),
+                    addr,
+                    mask,
+                    value,
+                    non_alloc,
                 )
+                assert op in (7, 8) and size == 5 and not (aq or offset or maintenance)
                 live_tids = {
                     req.tid for req in self.pending.values() if req.phase != "released"
                 }

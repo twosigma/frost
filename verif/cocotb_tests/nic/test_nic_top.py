@@ -118,6 +118,10 @@ class _AxiPort:
         self.writes = 0
         self.seen_addrs: list[int] = []
         self.error_ranges: list[tuple[int, int]] = []
+        self.allocating_ranges = [
+            (ring, ring + 32 * (1 << size))
+            for ring, size in ((RX_RING, RX_SIZE_LOG2), (TX_RING, TX_SIZE_LOG2))
+        ]
         self._aw: list[tuple[int, int]] = []  # accepted AWs waiting for W: (id, addr)
         self._b: list[Any] | None = None
         self._r: list[Any] | None = None
@@ -171,6 +175,15 @@ class _AxiPort:
             dut.i_dma_axi_arready.value = int(arready)
             dut.i_dma_axi_wready.value = int(bool(self._aw) and rng.random() >= 0.15)
             await ReadOnly()
+            for channel in ("aw", "ar"):
+                if int(getattr(dut, f"o_dma_axi_{channel}valid").value):
+                    address = int(getattr(dut, f"o_dma_axi_{channel}addr").value)
+                    allocating = any(
+                        lo <= address < hi for lo, hi in self.allocating_ranges
+                    )
+                    assert int(getattr(dut, f"o_dma_axi_{channel}cache").value) == (
+                        15 if allocating else 3
+                    )
             if self._b is not None and int(dut.o_dma_axi_bready.value):
                 self._b = None
             if self._r is not None and int(dut.o_dma_axi_rready.value):
@@ -485,6 +498,7 @@ async def test_extended_address_descriptor(dut: Any) -> None:
     nic = await _start(dut, seed=6810, loopback=True)
     try:
         ring = 0x1_8011_0000
+        nic.port.allocating_ranges.append((ring, ring + 32 * (1 << TX_SIZE_LOG2)))
         buf = 0x1_8030_0023
         frame = nic.frame(97)
         assert await nic.rd(ABI_CTRL) == 0x2

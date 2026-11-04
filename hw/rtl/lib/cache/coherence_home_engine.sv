@@ -37,6 +37,7 @@ module coherence_home_engine #(
     output logic [5:0] o_tid,
     output logic [3:0] o_opcode,
     output logic o_maintenance,
+    output logic o_non_alloc,
     input logic i_decision_valid,
     input logic i_decision_resident,
     input logic [WayBits-1:0] i_decision_way,
@@ -157,6 +158,7 @@ module coherence_home_engine #(
   assign o_tid = tid_q;
   assign o_opcode = request_q.opcode;
   assign o_maintenance = request_q.maintenance;
+  assign o_non_alloc = request_q.non_alloc;
   assign o_way = way_q;
   assign o_read_offer = phase_q == Service && !read_sent_q;
   assign o_read_valid = run && o_read_offer;

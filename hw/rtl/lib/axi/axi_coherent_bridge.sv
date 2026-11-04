@@ -32,9 +32,11 @@
  * region is answered DECERR. Such an error burst sends no line request: its W
  * beats are taken and its B, or every one of its R beats (with zero data),
  * carries the code. The region's boundaries are 4 KiB aligned, so a legal
- * burst that starts inside it stays inside it. AxLOCK, AxCACHE, AxPROT and
- * AxQOS are ignored: an exclusive access is performed as a normal one and
- * answered OKAY, as AXI4 specifies for a slave without exclusive support.
+ * burst that starts inside it stays inside it. AWCACHE[3] and ARCACHE[2]
+ * select allocating line requests; a clear bit selects streaming placement.
+ * AxLOCK, AxPROT and AxQOS are ignored: an exclusive access is performed as
+ * a normal one and answered OKAY, as AXI4 specifies for a slave without
+ * exclusive support.
  *
  * Beats and segments. Beat addresses and byte lanes follow AXI4 for FIXED,
  * INCR and WRAP bursts, and W strobes are masked to the beat's lanes. A
@@ -127,6 +129,7 @@ module axi_coherent_bridge #(
     output logic [   8*LINE_BYTES-1:0] o_line_req_wdata,
     output logic [     LINE_BYTES-1:0] o_line_req_wstrb,
     output logic [   LINE_ID_BITS-1:0] o_line_req_id,
+    output logic                       o_line_req_non_alloc,
     input  logic                       i_line_resp_valid,
     input  logic [   LINE_ID_BITS-1:0] i_line_resp_id,
     input  logic [   8*LINE_BYTES-1:0] i_line_resp_rdata,
@@ -271,6 +274,7 @@ module axi_coherent_bridge #(
   // Line port: the write and read request registers and their merge
   // ---------------------------------------------------------------------------
   logic wreq_valid_q, rreq_valid_q;
+  logic wreq_non_alloc_q, rreq_non_alloc_q;
   logic [LineAddrBits-1:0] wreq_line_q, rreq_line_q;
   logic [ LineBits-1:0] wreq_data_q;
   logic [LineBytes-1:0] wreq_strb_q;
@@ -286,6 +290,7 @@ module axi_coherent_bridge #(
   assign o_line_req_wdata = wreq_data_q;
   assign o_line_req_wstrb = wreq_strb_q;
   assign o_line_req_id = {sel_read_q, sel_read_q ? rreq_sub_q : wreq_sub_q};
+  assign o_line_req_non_alloc = sel_read_q ? rreq_non_alloc_q : wreq_non_alloc_q;
 
   logic line_fire, wreq_fire, rreq_fire;
   assign line_fire = o_line_req_valid && i_line_req_ready;
@@ -307,6 +312,7 @@ module axi_coherent_bridge #(
   logic [7:0] aw_q_len;
   logic [2:0] aw_q_size;
   logic [1:0] aw_q_burst;
+  logic [3:0] aw_q_cache;
   logic [1:0] aw_q_code;
   assign aw_q_code = classify(aw_q_addr, aw_q_len, aw_q_size, aw_q_burst);
 
@@ -320,7 +326,7 @@ module axi_coherent_bridge #(
   logic [7:0] wbt_len_q[WRITE_BURSTS];
   logic [2:0] wbt_size_q[WRITE_BURSTS];
   logic [1:0] wbt_burst_q[WRITE_BURSTS];
-  logic [WRITE_BURSTS-1:0] wbt_done_q, wbt_err_q;
+  logic [WRITE_BURSTS-1:0] wbt_done_q, wbt_err_q, wbt_non_alloc_q;
   logic [OutBits-1:0] wbt_out_q[WRITE_BURSTS];
 
   assign o_axi_awready = !i_rst && ((32'(wbt_count_q) + 32'(aw_q_valid)) < WRITE_BURSTS);
@@ -330,7 +336,7 @@ module axi_coherent_bridge #(
   // The W engine works on the oldest entry whose beats are not all in.
   logic [WbtCountBits-1:0] w_pend_q;
   logic [WbtBits-1:0] w_idx_q;
-  logic w_err_q, w_last_q, w_seg_end_q;
+  logic w_err_q, w_last_q, w_seg_end_q, w_non_alloc_q;
   logic [LINE_ADDR_WIDTH-1:0] w_addr_q;
   logic [7:0] w_beat_q, w_len_q;
   logic [2:0] w_size_q;
@@ -438,17 +444,19 @@ module axi_coherent_bridge #(
         aw_q_len   <= i_axi_awlen;
         aw_q_size  <= i_axi_awsize;
         aw_q_burst <= i_axi_awburst;
+        aw_q_cache <= i_axi_awcache;
       end
       if (aw_q_valid) begin
-        wbt_id_q[wbt_tail_q]    <= aw_q_id;
-        wbt_code_q[wbt_tail_q]  <= aw_q_code;
-        wbt_addr_q[wbt_tail_q]  <= LINE_ADDR_WIDTH'(aw_q_addr);
-        wbt_len_q[wbt_tail_q]   <= aw_q_len;
-        wbt_size_q[wbt_tail_q]  <= aw_q_size;
-        wbt_burst_q[wbt_tail_q] <= aw_q_burst;
-        wbt_done_q[wbt_tail_q]  <= 1'b0;
-        wbt_err_q[wbt_tail_q]   <= 1'b0;
-        wbt_tail_q              <= wbt_tail_q + 1'b1;
+        wbt_id_q[wbt_tail_q]        <= aw_q_id;
+        wbt_code_q[wbt_tail_q]      <= aw_q_code;
+        wbt_addr_q[wbt_tail_q]      <= LINE_ADDR_WIDTH'(aw_q_addr);
+        wbt_len_q[wbt_tail_q]       <= aw_q_len;
+        wbt_size_q[wbt_tail_q]      <= aw_q_size;
+        wbt_burst_q[wbt_tail_q]     <= aw_q_burst;
+        wbt_non_alloc_q[wbt_tail_q] <= (aw_q_cache[3] == 1'b0);
+        wbt_done_q[wbt_tail_q]      <= 1'b0;
+        wbt_err_q[wbt_tail_q]       <= 1'b0;
+        wbt_tail_q                  <= wbt_tail_q + 1'b1;
       end
       wbt_count_q <= wbt_count_q + WbtCountBits'(aw_q_valid) - WbtCountBits'(b_fire);
       if (b_fire) wbt_head_q <= wbt_head_q + 1'b1;
@@ -459,6 +467,7 @@ module axi_coherent_bridge #(
         w_idx_q <= w_next_idx;
         w_err_q <= w_next_err;
         w_addr_q <= w_next_addr;
+        w_non_alloc_q <= w_load_from_aw ? (aw_q_cache[3] == 1'b0) : wbt_non_alloc_q[w_next_idx];
         w_beat_q <= '0;
         w_len_q <= w_next_len;
         w_size_q <= w_next_size;
@@ -496,6 +505,7 @@ module axi_coherent_bridge #(
         wreq_data_q <= w_line_data;
         wreq_strb_q <= w_line_strb;
         wreq_sub_q <= w_new_sub;
+        wreq_non_alloc_q <= w_non_alloc_q;
         w_id_busy_q[w_new_sub] <= 1'b1;
         w_id_burst_q[w_new_sub] <= w_idx_q;
       end
@@ -520,6 +530,7 @@ module axi_coherent_bridge #(
   logic [7:0] ar_q_len;
   logic [2:0] ar_q_size;
   logic [1:0] ar_q_burst;
+  logic [3:0] ar_q_cache;
   logic [1:0] ar_q_code;
   assign ar_q_code = classify(ar_q_addr, ar_q_len, ar_q_size, ar_q_burst);
 
@@ -532,6 +543,7 @@ module axi_coherent_bridge #(
   logic [7:0] rbt_len_q[READ_BURSTS];
   logic [2:0] rbt_size_q[READ_BURSTS];
   logic [1:0] rbt_burst_q[READ_BURSTS];
+  logic [READ_BURSTS-1:0] rbt_non_alloc_q;
 
   assign o_axi_arready = !i_rst && ((32'(rbt_count_q) + 32'(ar_q_valid)) < READ_BURSTS);
   logic ar_fire;
@@ -552,7 +564,7 @@ module axi_coherent_bridge #(
   // The issue walker works on the oldest entry with segments left to issue.
   logic [RbtCountBits-1:0] i_pend_q;
   logic [RbtBits-1:0] i_idx_q;
-  logic i_err_q, i_last_q, i_seg_start_q, i_seg_end_q;
+  logic i_err_q, i_last_q, i_seg_start_q, i_seg_end_q, i_non_alloc_q;
   logic [LINE_ADDR_WIDTH-1:0] i_addr_q;
   logic [7:0] i_beat_q, i_len_q;
   logic [2:0] i_size_q;
@@ -706,15 +718,17 @@ module axi_coherent_bridge #(
         ar_q_len   <= i_axi_arlen;
         ar_q_size  <= i_axi_arsize;
         ar_q_burst <= i_axi_arburst;
+        ar_q_cache <= i_axi_arcache;
       end
       if (ar_q_valid) begin
-        rbt_id_q[rbt_tail_q]    <= ar_q_id;
-        rbt_code_q[rbt_tail_q]  <= ar_q_code;
-        rbt_addr_q[rbt_tail_q]  <= LINE_ADDR_WIDTH'(ar_q_addr);
-        rbt_len_q[rbt_tail_q]   <= ar_q_len;
-        rbt_size_q[rbt_tail_q]  <= ar_q_size;
-        rbt_burst_q[rbt_tail_q] <= ar_q_burst;
-        rbt_tail_q              <= rbt_tail_q + 1'b1;
+        rbt_id_q[rbt_tail_q]        <= ar_q_id;
+        rbt_code_q[rbt_tail_q]      <= ar_q_code;
+        rbt_addr_q[rbt_tail_q]      <= LINE_ADDR_WIDTH'(ar_q_addr);
+        rbt_len_q[rbt_tail_q]       <= ar_q_len;
+        rbt_size_q[rbt_tail_q]      <= ar_q_size;
+        rbt_burst_q[rbt_tail_q]     <= ar_q_burst;
+        rbt_non_alloc_q[rbt_tail_q] <= (ar_q_cache[2] == 1'b0);
+        rbt_tail_q                  <= rbt_tail_q + 1'b1;
       end
       rbt_count_q <= rbt_count_q + RbtCountBits'(ar_q_valid) - RbtCountBits'(r_burst_done);
       if (r_burst_done) rbt_head_q <= rbt_head_q + 1'b1;
@@ -725,6 +739,7 @@ module axi_coherent_bridge #(
         i_idx_q <= i_next_idx;
         i_err_q <= i_next_err;
         i_addr_q <= i_next_addr;
+        i_non_alloc_q <= i_load_from_ar ? (ar_q_cache[2] == 1'b0) : rbt_non_alloc_q[i_next_idx];
         i_beat_q <= '0;
         i_len_q <= i_next_len;
         i_size_q <= i_next_size;
@@ -761,6 +776,7 @@ module axi_coherent_bridge #(
         rreq_valid_q <= 1'b1;
         rreq_line_q <= i_addr_q[LINE_ADDR_WIDTH-1:OffsetBits];
         rreq_sub_q <= r_new_sub;
+        rreq_non_alloc_q <= i_non_alloc_q;
         r_next_sub_q <= r_new_sub + 1'b1;
         r_id_busy_q[r_new_sub] <= 1'b1;
       end
@@ -1004,13 +1020,13 @@ module axi_coherent_bridge #(
     end else if (f_past_valid && !$past(i_rst)) begin
       if ($past(i_axi_awvalid && !o_axi_awready))
         assume (i_axi_awvalid && $stable(
-            {i_axi_awid, i_axi_awaddr, i_axi_awlen, i_axi_awsize, i_axi_awburst}
+            {i_axi_awid, i_axi_awaddr, i_axi_awlen, i_axi_awsize, i_axi_awburst, i_axi_awcache}
         ));
       if ($past(i_axi_wvalid && !o_axi_wready))
         assume (i_axi_wvalid && $stable({i_axi_wdata, i_axi_wstrb, i_axi_wlast}));
       if ($past(i_axi_arvalid && !o_axi_arready))
         assume (i_axi_arvalid && $stable(
-            {i_axi_arid, i_axi_araddr, i_axi_arlen, i_axi_arsize, i_axi_arburst}
+            {i_axi_arid, i_axi_araddr, i_axi_arlen, i_axi_arsize, i_axi_arburst, i_axi_arcache}
         ));
     end
   end
@@ -1268,7 +1284,7 @@ module axi_coherent_bridge #(
       if ($past(o_line_req_valid && !i_line_req_ready)) begin
         p_line_held :
         assert (o_line_req_valid && $stable(
-            {o_line_req_write, o_line_req_addr, o_line_req_id}
+            {o_line_req_write, o_line_req_addr, o_line_req_id, o_line_req_non_alloc}
         ) && (!o_line_req_write || $stable(
             {o_line_req_wdata, o_line_req_wstrb}
         )));

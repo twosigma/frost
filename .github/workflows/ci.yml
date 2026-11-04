@@ -1215,13 +1215,18 @@ jobs:
               (coherence_l1d and not (coh_l1d_bmc or coh_l1d_multi_bmc))
             timeout_minutes: 120
           # The coherence home, endpoints and bridges, the coherent CPU
-          # interfaces, and the hart maintenance composition proof.
+          # interfaces, and the hart maintenance covers.
           - shard: Coherence
             pytest_filter: >-
               (axi_coherent_bridge or coherence_ or coherent_) and not
-              (coherence_store_boundary or
+              (coherence_store_boundary or coh_hart_maint_prove or
               (coherence_l1d and not (coh_l1d_bmc or coh_l1d_multi_bmc)))
             timeout_minutes: 240
+          # The hart maintenance composition proof models buffered store
+          # hits and can take over an hour, so it runs in its own job.
+          - shard: Hart maintenance
+            pytest_filter: coh_hart_maint_prove
+            timeout_minutes: 150
           - shard: Other tasks
             pytest_filter: "not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or coherence_ or coherent_)"
             timeout_minutes: 240

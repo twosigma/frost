@@ -70,9 +70,12 @@ answered SLVERR. One whose start address lies outside
 `[REGION_BASE, REGION_BASE + REGION_BYTES)` is answered DECERR. Neither sends
 a line request: the bridge takes the burst's W beats and answers its B, or
 every R beat with zero data, with the code. The region's boundaries are 4 KiB
-aligned, so a legal burst that starts inside it ends inside it. AxLOCK,
-AxCACHE, AxPROT and AxQOS are ignored, and an exclusive access is performed
-as a normal one and answered OKAY, as AXI4 specifies for a slave without
+aligned, so a legal burst that starts inside it ends inside it. The bridge
+captures AWCACHE[3] for writes and ARCACHE[2] for reads with each burst. A
+clear allocation bit marks its line requests as streaming. The coherent
+home restricts streaming miss allocations to way 0 and services hits in
+any way. AxLOCK, AxPROT and AxQOS are ignored, and an exclusive access is
+performed as a normal one and answered OKAY, as AXI4 specifies for a slave without
 exclusive support.
 
 Beat addresses and byte lanes follow AXI4 for FIXED, INCR and WRAP bursts,

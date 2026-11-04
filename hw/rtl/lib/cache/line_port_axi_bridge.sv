@@ -93,6 +93,7 @@ module line_port_axi_bridge #(
     input  logic [LINE_BYTES*8-1:0] i_req_wdata,
     input  logic [  LINE_BYTES-1:0] i_req_wstrb,
     input  logic [     ID_BITS-1:0] i_req_id,
+    input  logic [             3:0] i_req_cache = 4'b0011,
     output logic                    o_resp_valid,
     output logic [     ID_BITS-1:0] o_resp_id,
     output logic [LINE_BYTES*8-1:0] o_resp_rdata,
@@ -107,6 +108,7 @@ module line_port_axi_bridge #(
     output logic [               7:0] o_axi_awlen,
     output logic [               2:0] o_axi_awsize,
     output logic [               1:0] o_axi_awburst,
+    output logic [               3:0] o_axi_awcache,
     output logic                      o_axi_wvalid,
     input  logic                      i_axi_wready,
     output logic [  LINE_BYTES*8-1:0] o_axi_wdata,
@@ -123,6 +125,7 @@ module line_port_axi_bridge #(
     output logic [               7:0] o_axi_arlen,
     output logic [               2:0] o_axi_arsize,
     output logic [               1:0] o_axi_arburst,
+    output logic [               3:0] o_axi_arcache,
     input  logic                      i_axi_rvalid,
     output logic                      o_axi_rready,
     input  logic [   AXI_ID_BITS-1:0] i_axi_rid,
@@ -167,10 +170,12 @@ module line_port_axi_bridge #(
   logic                      ar_valid_q = RandomStart ? 'x : 1'b0;
   logic [AXI_ADDR_WIDTH-1:0] ar_addr_q;
   logic [       ID_BITS-1:0] ar_id_q;
+  logic [               3:0] ar_cache_q = 4'b0011;
   logic                      aw_valid_q = RandomStart ? 'x : 1'b0;
   logic                      w_valid_q = RandomStart ? 'x : 1'b0;
   logic [AXI_ADDR_WIDTH-1:0] aw_addr_q;
   logic [       ID_BITS-1:0] aw_id_q;
+  logic [               3:0] aw_cache_q = 4'b0011;
   logic [  LINE_BYTES*8-1:0] w_data_q;
   logic [    LINE_BYTES-1:0] w_strb_q;
 
@@ -200,6 +205,7 @@ module line_port_axi_bridge #(
   assign o_axi_awvalid = aw_valid_q && !i_axi_rst;
   assign o_axi_awid    = AXI_ID_BITS'(aw_id_q);
   assign o_axi_awaddr  = aw_addr_q;
+  assign o_axi_awcache = aw_cache_q;
   assign o_axi_wvalid  = w_valid_q && !i_axi_rst;
   assign o_axi_wdata   = w_data_q;
   assign o_axi_wstrb   = w_strb_q;
@@ -207,6 +213,7 @@ module line_port_axi_bridge #(
   assign o_axi_arvalid = ar_valid_q && !i_axi_rst;
   assign o_axi_arid    = AXI_ID_BITS'(ar_id_q);
   assign o_axi_araddr  = ar_addr_q;
+  assign o_axi_arcache = ar_cache_q;
 
   // req_fire is low through either reset (o_req_ready), so i_rst only lets the
   // presented beats finish their handshakes; i_axi_rst drops them.
@@ -225,12 +232,14 @@ module line_port_axi_bridge #(
         w_valid_q  <= 1'b1;
         aw_addr_q  <= AXI_ADDR_WIDTH'(i_req_addr - BASE_ADDR);
         aw_id_q    <= i_req_id;
+        aw_cache_q <= i_req_cache;
         w_data_q   <= i_req_wdata;
         w_strb_q   <= i_req_wstrb;
       end else begin
         ar_valid_q <= 1'b1;
         ar_addr_q  <= AXI_ADDR_WIDTH'(i_req_addr - BASE_ADDR);
         ar_id_q    <= i_req_id;
+        ar_cache_q <= i_req_cache;
       end
     end
   end
@@ -411,10 +420,10 @@ module line_port_axi_bridge #(
   always @(posedge i_clk) begin
     if (f_past_valid && !i_axi_rst) begin
       if ($past(o_axi_arvalid && !i_axi_arready)) begin
-        p_ar_held : assert (o_axi_arvalid && $stable(o_axi_araddr) && $stable(o_axi_arid));
+        p_ar_held : assert (o_axi_arvalid && $stable({o_axi_araddr, o_axi_arid, o_axi_arcache}));
       end
       if ($past(o_axi_awvalid && !i_axi_awready)) begin
-        p_aw_held : assert (o_axi_awvalid && $stable(o_axi_awaddr) && $stable(o_axi_awid));
+        p_aw_held : assert (o_axi_awvalid && $stable({o_axi_awaddr, o_axi_awid, o_axi_awcache}));
       end
       if ($past(o_axi_wvalid && !i_axi_wready)) begin
         p_w_held : assert (o_axi_wvalid && $stable(o_axi_wdata) && $stable(o_axi_wstrb));
@@ -426,8 +435,10 @@ module line_port_axi_bridge #(
       // a request above 4 GiB and fail the wide formal configurations.
       if ($past(i_req_write)) begin
         p_aw_full_offset : assert (o_axi_awaddr == AXI_ADDR_WIDTH'($past(i_req_addr) - BASE_ADDR));
+        p_aw_cache : assert (o_axi_awcache == $past(i_req_cache));
       end else begin
         p_ar_full_offset : assert (o_axi_araddr == AXI_ADDR_WIDTH'($past(i_req_addr) - BASE_ADDR));
+        p_ar_cache : assert (o_axi_arcache == $past(i_req_cache));
       end
     end
     if (f_past_valid && $past(i_axi_rst)) begin

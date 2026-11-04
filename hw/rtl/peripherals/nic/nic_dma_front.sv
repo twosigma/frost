@@ -113,6 +113,7 @@ module nic_dma_front #(
     output logic [LINE_BYTES*8-1:0] o_dma_req_wdata,
     output logic [  LINE_BYTES-1:0] o_dma_req_wstrb,
     output logic [      IdBits-1:0] o_dma_req_id,
+    output logic [             1:0] o_dma_req_kind,
     input  logic                    i_dma_resp_valid,
     input  logic                    i_dma_resp_error = 1'b0,
     input  logic [      IdBits-1:0] i_dma_resp_id,
@@ -227,6 +228,7 @@ module nic_dma_front #(
   assign o_dma_req_wdata = rq_wdata_q[sel];
   assign o_dma_req_wstrb = rq_wstrb_q[sel];
   assign o_dma_req_id    = free_idx;
+  assign o_dma_req_kind  = rq_kind_q[sel];
   assign fire = o_dma_req_valid && i_dma_req_ready;
 
   always_comb begin

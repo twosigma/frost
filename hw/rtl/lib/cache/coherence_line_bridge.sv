@@ -36,6 +36,7 @@ module coherence_line_bridge #(
     input logic [255:0] i_req_data,
     input logic [31:0] i_req_mask,
     input logic [ID_BITS-1:0] i_req_id,
+    input logic i_req_non_alloc = 1'b0,
     output logic o_resp_valid,
     output logic [255:0] o_resp_data,
     output logic [ID_BITS-1:0] o_resp_id,
@@ -131,6 +132,7 @@ module coherence_line_bridge #(
           demand_q.addr <= {i_req_addr[ADDR_WIDTH-1:5], 5'b0};
           demand_q.mask <= SOURCE == 2 ? i_req_mask : '0;
           demand_q.wdata <= SOURCE == 2 ? i_req_data : '0;
+          demand_q.non_alloc <= SOURCE == 2 && i_req_non_alloc;
           id_q <= i_req_id;
           phase_q <= CLEAN ? Clean : Demand;
         end
@@ -206,6 +208,8 @@ module coherence_line_bridge #(
     if (EARLY_RESPONSE && !i_rst && phase_q == Grant && i_g_valid && grant_in.q == demand_q.q)
       assume (grant_in.addr == demand_q.addr);
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
+      if ($past(i_req_valid && o_req_ready))
+        assert (demand_q.non_alloc == (SOURCE == 2 && $past(i_req_non_alloc)));
       if ($past(o_d_valid && !i_d_ready)) begin
         assert (o_d_valid);
         assert (o_d == $past(o_d));

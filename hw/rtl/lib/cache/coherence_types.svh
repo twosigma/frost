@@ -26,7 +26,7 @@
     logic [2:0] size; \
     logic [31:0] mask; \
     logic aq; \
-    logic rl; \
+    logic non_alloc; \
     logic maintenance; \
     logic [255:0] wdata; \
   } coh_d_t; \

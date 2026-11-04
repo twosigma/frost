@@ -41,6 +41,7 @@ module coherence_home_array #(
     input logic [ADDR_WIDTH-1:0] i_req_addr,
     input logic [TOKEN_BITS-1:0] i_req_token,
     output logic [ADDR_WIDTH-1:0] o_query_addr,
+    output logic [TOKEN_BITS-1:0] o_query_token,
     input logic [WAYS-1:0] i_exclude,
     output logic o_resp_valid,
     input logic i_resp_ready,
@@ -206,6 +207,7 @@ module coherence_home_array #(
 
   assign o_init_done = phase_q != Init && phase_q != InitDrain;
   assign o_query_addr = {tag_q, set_q, {OffsetBits{1'b0}}};
+  assign o_query_token = token_q;
   assign tag_raddr = i_req_addr[OffsetBits+:SetBits];
   assign tag_waddr = phase_q == Init ? init_set_q : i_update_addr[OffsetBits+:SetBits];
   assign tag_wdata = phase_q == Init ? '0 :

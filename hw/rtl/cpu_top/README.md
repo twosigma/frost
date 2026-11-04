@@ -213,6 +213,11 @@ noncoherent. AMOs use CPU serialization and this coherence protocol, not AXI
 exclusives. Uncached atomic memory must be private to the hart or protected
 by the integrating system from competing noncoherent masters.
 
+`i_coherent_req_non_alloc` defaults to zero. When asserted, it restricts
+miss allocations to L2 way 0. Hits in every way and probes of private
+caches are coherent. The AXI bridge derives this hint from each channel's
+allocation attribute.
+
 L2 is inside this single-hart `cpu_top`. The outgoing AXI master does not
 provide coherence between separate CPU instances.
 
