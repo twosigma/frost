@@ -1,29 +1,36 @@
 [tasks]
-coh_l1d_bmc single control
-coh_l1d_multi_bmc multi control
-coh_l1d_stream_bmc stream multi control
+coh_l1d_conflict_prove single conflict
+coh_l1d_conflict_multi_prove multi conflict
+coh_l1d_conflict_stream_prove stream multi conflict
+coh_l1d_bmc single control bounded
+coh_l1d_multi_bmc multi control bounded
+coh_l1d_stream_bmc stream multi control bounded
 coh_l1d_stream_cover stream multi streamcovers covermode
 coh_l1d_turn_cover turnstream multi turncovers covermode
 coh_l1d_cover single covers covermode
-coh_l1d_data_bmc single data arraydata word0
-coh_l1d_data1_bmc single data arraydata word1
-coh_l1d_data2_bmc single data arraydata word2
-coh_l1d_data3_bmc single data arraydata word3
-coh_l1d_store_payload_bmc single data payload
-coh_l1d_store_grant_bmc single data grantdata
+coh_l1d_data_bmc single data arraydata word0 bounded
+coh_l1d_data1_bmc single data arraydata word1 bounded
+coh_l1d_data2_bmc single data arraydata word2 bounded
+coh_l1d_data3_bmc single data arraydata word3 bounded
+coh_l1d_store_payload_bmc single data payload bounded
+coh_l1d_store_grant_bmc single data grantdata bounded
 
 [options]
-~covermode: mode bmc
-~covermode: depth 40
-~covermode: timeout 1200
+bounded: mode bmc
+bounded: depth 40
+bounded: timeout 1200
+bounded: aigsmt boolector
+conflict: mode prove
+conflict: depth 2
+conflict: timeout 600
 covermode: mode cover
 covermode: depth 80
 covermode: timeout 600
-~covermode: aigsmt boolector
 
 [engines]
 control: abc bmc3
 data: abc bmc3
+conflict: smtbmc boolector
 covermode: smtbmc boolector
 
 [script]
@@ -31,6 +38,7 @@ read -sv coherence_read_stream.sv
 read -sv cache_perf_pkg.sv
 read -sv coherence_pkg.sv coherence_request_endpoint.sv coherence_put_endpoint.sv coherence_read_flags.sv coherence_read_select.sv
 control: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
+conflict: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 streamcovers: read -formal -sv -D STREAM_COVER coherence_read_payload.sv coherence_l1d.sv
 turncovers: read -formal -sv -D STREAM_TURN_COVER coherence_read_payload.sv coherence_l1d.sv
 covers: read -formal -sv -D STORE_COVER -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
@@ -46,7 +54,18 @@ single: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
 multi: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
 stream: chparam -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d
 turnstream: chparam -set STREAM_PREFETCH 1 coherence_l1d
-prep -flatten -top coherence_l1d
+~conflict: prep -flatten -top coherence_l1d
+conflict: hierarchy -check -top coherence_l1d
+conflict: proc -noopt
+conflict: flatten
+conflict: opt_expr -keepdc -noclkinv
+# The matching conflict proof supplies this guarded, clocked identity.
+control: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
+control: chformal -assert2assume c:p_prefetch_conflict_split
+conflict: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
+conflict: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_conflict_split %d
+conflict: chformal -assume -remove
+conflict: chformal -cover -remove
 streamcovers: select -assert-count 4 c:*p_stream_two c:*p_stream_attach c:*p_stream_lr_admit c:*p_stream_amo_admit
 streamcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:*p_stream_two c:*p_stream_attach c:*p_stream_lr_admit c:*p_stream_amo_admit %u %u %u %d
 # Control assertions run in the control tasks; this task checks the datapath.
@@ -59,11 +78,32 @@ grantdata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_8
 turncovers: select -assert-count 4 c:p_stream_read_turn c:p_stream_empty_turn c:p_stream_probe_turn c:p_stream_cancel_turn
 turncovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_stream_read_turn c:p_stream_empty_turn c:p_stream_probe_turn c:p_stream_cancel_turn %u %u %u %d
 memory_map
+conflict: select -assert-min 1 t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff
+conflict: cutpoint t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff
+conflict: select -assert-none t:*ff* t:*FF* t:*latch*
+conflict: delete -output w:*
+conflict: opt_clean
 opt
 multi: techmap
 multi: opt -fast
 multi: setundef -anyseq
 multi: opt_clean
+
+# Arbitrary state and both selector values cover every enabled valuation.
+conflict: design -save conflict_cases
+conflict: connect -set prefetch_busy 1'b0
+conflict: opt -full
+conflict: async2sync
+conflict: chformal -lower
+conflict: select -assert-count 1 t:$assert
+conflict: sat -seq 2 -prove-asserts -verify -timeout 60
+conflict: design -load conflict_cases
+conflict: connect -set prefetch_busy 1'b1
+conflict: opt -full
+conflict: async2sync
+conflict: chformal -lower
+conflict: select -assert-count 1 t:$assert
+conflict: sat -seq 2 -prove-asserts -verify -timeout 60
 
 [files]
 ../hw/rtl/lib/cache/coherence_read_stream.sv

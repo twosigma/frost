@@ -216,6 +216,9 @@ FORMAL_TARGETS = [
         "coherence_l1d.sby",
         "The coherent L1 preserves pending stores, cuts, and exact atomic writes.",
         tasks=(
+            "coh_l1d_conflict_prove",
+            "coh_l1d_conflict_multi_prove",
+            "coh_l1d_conflict_stream_prove",
             "coh_l1d_bmc",
             "coh_l1d_multi_bmc",
             "coh_l1d_stream_bmc",
@@ -1148,6 +1151,12 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("coh_l1d_conflict_prove", "Guarded conflict identity with one endpoint."),
+    ("coh_l1d_conflict_multi_prove", "Guarded conflict identity with three endpoints."),
+    (
+        "coh_l1d_conflict_stream_prove",
+        "Guarded conflict identity with eight endpoints and streaming enabled.",
+    ),
     (
         "stream_prove",
         "Demand stream confirmation, cancellation and bounded sector cursor.",

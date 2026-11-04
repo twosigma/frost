@@ -663,6 +663,11 @@ witness used, empty and cancelled opportunities and a held probe reply followed
 by local service. `coherence_read_stream` proves the three-miss confirmation
 rule, cancellation and page-bounded cursor, including simultaneous demand
 advance and hint consumption.
+Separate conflict proofs check both selector values with arbitrary controller
+state. They match the control configurations: one and three endpoints without
+look-ahead, and eight endpoints with look-ahead. Each control task uses its
+matching guarded conflict identity as a lemma. The consumer guards, acquisition
+window and protocol checks are separate assertions.
 Detached victim validity, address and a watched byte are checked by induction
 through B. Cover tasks reach allocation, a delayed B, a blocked refetch,
 successful disposal and a failed B with preserved dirty ownership.
