@@ -42,8 +42,11 @@ The diagram shows the X3 configuration; click it for the full-size version.
   itself: building bitstreams and programming and loading the board.
 - A cycle-approximate [performance model](perf-modeling/README.md) of the CPU
   and memory system for design-space sweeps, with RTL event capture and a
-  CoreMark IPC comparison against the RTL. Optional hardware performance
-  counters report stall causes, occupancy, and cache traffic.
+  CoreMark IPC comparison against the RTL. Architectural HPM counters 3–8
+  report retired branches, mispredictions, instruction and data TLB walks,
+  L1D permission misses, and store-queue capacity stalls through Linux `perf`
+  and the OpenSBI PMU mapping. Optional custom profiling counters report
+  stall causes, occupancy, and cache traffic.
 - FreeRTOS and all nine EEMBC CoreMark-PRO workloads.
 - A [VS Code extension](tools/vscode-frost/README.md) that programs the FPGA,
   builds and loads software, and debugs it with source breakpoints and a
@@ -156,25 +159,34 @@ every supported extension and privilege mode.
 
 - Tomasulo out-of-order execution with two-wide decode, rename, and commit, a
   32-entry reorder buffer, and precise exceptions.
-- Four reservation stations, two integer ALUs, a multiply and divide unit that
-  also performs carry-less multiplication, and an iterative single- and
-  double-precision floating-point unit. A load result can wake dependent
-  integer and memory operations a cycle before the common data bus
-  broadcasts it.
+- Four reservation stations, two integer ALUs, and an integer multiply/divide
+  unit with carry-less multiplication. Full-width multiplies take eight
+  cycles to a dependent use. The radix-4 divider takes up to 35 cycles,
+  or 19 for W forms. A load result can wake dependent integer and memory
+  operations a cycle before the common data bus broadcasts it.
+- A single- and double-precision FP engine with iterative arithmetic and
+  dedicated paths for compares, moves, min/max, FCLASS and sign injection
+  that take two cycles. Integer-to-FP conversion takes four cycles, or two
+  for zero.
 - Branch prediction with a 256-entry BTB, a bimodal and a tagged
   path-history direction predictor, and an 8-entry return stack. A
   mispredicted conditional branch redirects fetch and restores the rename
   tables the cycle after it resolves.
-- Sv39 virtual memory with hardware page-table walks and separate instruction
-  and data TLBs.
+- Sv39 virtual memory with hardware page-table walks and separate 16-entry
+  instruction and data TLBs. Intra-page instruction translation uses the
+  live page offset without a fetch bubble; eligible data accesses use a
+  last-page translation bypass.
 - Separate instruction and data paths into a cache hierarchy. On X3: 16 KiB
   L1I, 128 KiB L1D, and 2 MiB L2, all four-way, and a 256-entry L0 cache in the
   load queue. The L1D holds 32-byte sectors in I, S or M states, with eight
-  read slots and up to eight misses in flight to the L2, seven of them for
-  loads. The L2's coherence home orders
-  the L1s, page-table walks and DMA by sector and has four fills. Low BRAM
-  uses an 8 KiB instruction cache and L0 data reads with write-through stores.
-  DMA is coherent with the data caches.
+  read slots and up to eight requests in flight to the L2, seven of them for
+  load misses. A two-entry ordered store buffer installs Modified-sector
+  hits with masked writes and gives waiting reads turns between stores.
+  The L2's coherence home orders the L1s, page-table walks and DMA by sector
+  and has four fills. The build connects one hart. Low BRAM uses an 8 KiB
+  instruction cache and L0 data reads with write-through stores.
+  DMA is coherent with the data caches; fills marked non-allocating use
+  L2 way 0, while hits can use any way.
 - 256 KiB of on-chip BRAM and 1 GiB of cached DDR4, with the same
   [memory map](sw/README.md#memory-map) in simulation and on hardware.
 - UART, CLINT-compatible timer, an APLIC interrupt controller that delivers

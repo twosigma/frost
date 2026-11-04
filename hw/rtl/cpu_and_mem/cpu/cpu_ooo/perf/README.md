@@ -11,6 +11,13 @@ and cache counters and the read mux, and
 holds the back-end counters. This page is the reference for the build option,
 the CSR protocol, the counter numbering, and the C API.
 
+Architectural HPM counters 3–8 are available independently of `PERF_COUNTERS`.
+They count retired branches, mispredictions, instruction and data TLB walks,
+L1D permission misses, and store-queue capacity stalls. Linux `perf` accesses
+them through the OpenSBI PMU mapping; the [Linux counter guide](../../../../../../linux/README.md#counters-and-mcounteren)
+describes their event selectors, enables and user aliases. The custom
+snapshot protocol below applies to the optional profiling counters.
+
 ## Build option
 
 `PERF_COUNTERS=1` includes the counters and the `mperf*` CSR state. On the

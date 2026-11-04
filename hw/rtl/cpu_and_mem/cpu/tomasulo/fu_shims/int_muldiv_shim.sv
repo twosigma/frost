@@ -470,7 +470,7 @@ module int_muldiv_shim #(
        !mul_trk_flushed[WordMulInsert-1]);
 
   // ---------------------------------------------------------------------------
-  // Divider path: one iterative divider, one operation at a time
+  // Divider path: one radix-4 divider, one operation at a time
   // ---------------------------------------------------------------------------
   logic div_is_signed, div_is_w, div_is_rem;
   assign div_is_signed = (i_rs_issue.op == riscv_pkg::DIV) || (i_rs_issue.op == riscv_pkg::REM) ||

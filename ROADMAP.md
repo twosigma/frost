@@ -38,22 +38,18 @@ and DMA. Snooping live load-queue entries is not enough, because an entry is
 freed as soon as its result is staged for the common data bus, before the
 load retires, so returned loads stay observable until they retire. A store
 acquires M before it writes. Probe data and acknowledgements must keep making
-progress when every queue is full. In simulation, memory-bound code in DDR
-runs slower through the home than through the previous hierarchy: the L1D
-sends its store acquisitions one at a time, the home has four fills, and it
-has no stream prefetcher yet. Other paths also take more cycles than
-before. The L1D accepts ordered stores into a two-entry buffer and installs
-Modified-sector hits with masked writes. Waiting reads share array service
-with buffered store hits. The
-probe for an instruction or page-table read downgrades a Modified sector to
-Shared, so the next store to it acquires it again. An instruction refill
-or page-table read from the L2 takes about 25 cycles, against 10 to 16
-before. An AMO waits for all of the L1D's requests to drain and always goes
-through the home. Each of these
-is planned as a separate change, as is raising the DMA test engine's
-transfer rate, which is slightly below what the earlier DMA sequencer
-reached. The single-hart queue sizes and lane choices will need revisiting
-against the timing and memory-traffic cost of the second hart.
+progress when every queue is full. The L1D accepts ordered stores into a
+two-entry buffer and installs Modified-sector hits with masked writes.
+Waiting reads share array service with buffered store hits. Store acquisitions
+use one endpoint and do not overlap. The home has four fills and no stream
+prefetcher. Two instruction-refill slots can overlap; instruction and
+page-table readers capture data and errors at the grant and hold their
+identities through release. The probe for an instruction or page-table read
+downgrades a Modified sector to Shared, so the next store to it acquires it
+again. An AMO waits for all of the L1D's requests to drain and goes through
+the home. Further work targets concurrent store acquisitions, reader latency
+and DMA throughput. The single-hart queue sizes and lane choices will need
+revisiting for the second hart's memory traffic.
 
 Writable BRAM stays private to one hart. Its read caches are outside the
 coherent ingress, and its instruction and data copies are separate, so a
@@ -91,7 +87,9 @@ each 32-byte request from the L1 caches, the page-table walker, and the DMA
 port onto its half of a line. The L2 writes back only whole lines, each as a
 single 512-bit AXI transfer that the X3's ECC DDR4 controller takes without
 a read-modify-write, and a 32-byte DMA write that misses fetches its line and
-merges into it.
+merges into it. DMA requests marked non-allocating restrict miss placement
+to L2 way 0 and can hit in any way. The AXI bridge takes read allocation from
+ARCACHE[2] and write allocation from AWCACHE[3].
 
 The physical address width follows the configured DDR aperture, from 1 GiB,
 the default and the X3's, to 128 GiB, through the fetch and data paths, the
@@ -275,10 +273,10 @@ Priorities, guided by the performance counters and timing reports:
    instruction read cache in front of BRAM, compare a tagged predecode cache
    with a stream buffer. A taken slot-2 prediction costs one bubble and a PD
    redirect two. Fetch must keep working with variable-latency memory.
-6. Cheaper 32-bit operations on RV64. `MULW` takes three cycles and word
-   division or remainder thirty-three, though CoreMark gains little from a
-   faster `MULW`. Use instruction traces to evaluate fusion or elimination at
-   rename. Any such transformation must keep precise exceptions, retirement
+6. Cheaper 32-bit operations on RV64. `MULW` takes three arithmetic cycles
+   and word division or remainder takes up to nineteen, though CoreMark gains
+   little from a faster `MULW`. Use instruction traces to evaluate fusion or
+   elimination at rename. Any such transformation must keep precise exceptions, retirement
    counts, and debug single-step behavior, and be formally verified.
 7. Queue capacity where counters show pressure. Sixteen INT
    reservation-station entries capture the measured benefit; larger INT RS,
@@ -351,10 +349,11 @@ and targeted microbenchmarks give these items:
    magnitudes, counts leading zeros and aligns the dividend before producing
    two quotient bits per cycle. It takes up to 35 cycles, or 19 for a W form.
    Divide by zero, full-width overflow and smaller dividends take two cycles.
-7. Load queue depth. DDR latency dominates many Linux workloads. A balanced
-   two-level pick across 16 entries lets the memory reservation station hold
-   16 loads (`MemRsDepth = 16`), with selection depth growing only with the
-   logarithm of the entry count. Measured against eight entries, it leaves
+7. Load queue depth. DDR latency dominates many Linux workloads. The memory
+   reservation station and load queue each have eight entries. A proposed
+   16-entry memory reservation station (`MemRsDepth = 16`) uses a balanced
+   two-level pick, with selection depth growing only with the logarithm of
+   the entry count. Measured against eight entries, it leaves
    the DDR memory kernels unchanged, slows one memory-bound workload by about
    2%, in part from L0 fill collisions (see Single-core performance, item
    3), and lengthens paths among the hardest at the target clock, so it

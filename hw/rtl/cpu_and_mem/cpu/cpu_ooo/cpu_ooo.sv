@@ -45,9 +45,9 @@ module cpu_ooo #(
     parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
     parameter int unsigned DECODED_QUEUE_DEPTH = riscv_pkg::DecodedQueueDepth,
     // Profiling counters: perf_counter_aggregator, the wrapper's
-    // tomasulo_perf_counters and the CSR file's mperf* state. 0 = absent (the
-    // mperf* CSRs read zero and the event sources are unread); the production
-    // build leaves them out, analysis builds set the board top's generic.
+    // tomasulo_perf_counters and the CSR file's mperf* state. With 0, the
+    // mperf* CSRs read zero. Architectural HPM3..8 consume their events
+    // independently of this profiling option.
     parameter int unsigned PERF_COUNTERS = 0,
     // The walker's line port carries the L1s' 32-byte lines.
     localparam int unsigned WalkLineBytes = 32

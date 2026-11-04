@@ -13,9 +13,13 @@ benches compose these modules independently of the CPU hierarchy.
 
 | File | Role |
 |------|------|
+| `coherent_hart_cache.sv` | CPU private L1D and L1I, instruction and walker bridges, and maintenance arbitration |
+| `coherence_l1d.sv` | MSI data cache with probes, tagged reads and a two-entry ordered store buffer |
+| `coherence_home.sv` | Shared L2 home with sector ordering, dirty-data merge, four fills and streaming DMA placement |
+| `coherence_dma_ingress.sv` | Independent DMA request lifetimes, read responses at grant and write responses after release |
 | `frost_cache.sv` | Generic line cache, used by the CPU L1I and the component hierarchy benches |
-| `frost_hart_cache.sv` | One hart's private caches: the L1D and the L1I, the walker port's coherence sequencer, the probe injection register that the walker and DMA probes share into the L1D, and `fence.i` sequencing |
-| `frost_cluster_cache.sv` | The shared level: the L1D, walker, L1I, and DMA ports and the stream prefetcher over the arbiter tree, the DMA coherence sequencer, the line-size adapter, and the L2 |
+| `frost_hart_cache.sv` | Private caches in the line-cache component hierarchy: the L1D and the L1I, the walker port's coherence sequencer, the probe injection register that the walker and DMA probes share into the L1D, and `fence.i` sequencing |
+| `frost_cluster_cache.sv` | Shared level in the line-cache component hierarchy: the L1D, walker, L1I, and DMA ports and the stream prefetcher over the arbiter tree, the DMA coherence sequencer, the line-size adapter, and the L2 |
 | `frost_cache_hierarchy.sv` | Component hierarchy for the line-cache unit benches |
 | `line_size_adapter.sv` | Places each L1-line request in its sector of a wider L2 line and returns that sector of the response; an outstanding-transaction table holds each request's sector by id |
 | `line_port_arbiter.sv` | N:1 tagged arbiter: fixed priority by port index, optional starvation bound, port index prefixed to ids |

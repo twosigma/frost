@@ -45,7 +45,8 @@
 - Helps set the direction of the [roadmap](ROADMAP.md)
 - Found four RISC-V conformance bugs by differential testing against the Sail model
 - Suggested the RVFI-DII port and the TestRIG comparison against Sail that now runs in CI
-- Co-authored the fixes that make the machine HPM counters read-only zero and that page-fault on a non-leaf PTE with D, A, or U set
+- Co-authored the fixes that make the unimplemented machine HPM counters
+  read-only zero and that page-fault on a non-leaf PTE with D, A, or U set
 - Designed the 64-byte L2 and its 512-bit DDR port
 - Implemented configurable physical addressing for DDR apertures up to 128 GiB
   across the CPU, MMUs, caches, AXI, DMA, NIC, and firmware, including full-width

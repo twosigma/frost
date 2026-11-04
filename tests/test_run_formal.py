@@ -1145,7 +1145,7 @@ SBY_TASKS = [
     ),
     (
         "coh_hart_maint_prove",
-        "Store installation, fence invalidation and coherent reads.",
+        "Buffered store installation, fence invalidation and coherent reads.",
     ),
     (
         "coh_hart_maint_cover",

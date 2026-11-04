@@ -366,10 +366,12 @@ asynchronously with fabric reset or the registered core reset. CPU reset
 releases on the SoC clock edge after both requests clear.
 
 Synchronous resets establish pipeline validity, queue ownership, control
-state, and architectural control registers. Cache reset walks clear tags
-and replacement state before accepting requests; cache data arrays do not
-need clearing. The BTB clears its valid bits, and the return-address stack
-clears its occupancy. Direction and TAGE tables provide speculative hints;
+state, and architectural control registers. Cache reset clears tags and
+replacement state before accepting requests; cache data arrays do not need
+clearing. The coherent arrays use a per-set sweep in hardware. In simulation,
+`SIM_FAST_MAINT=1` clears their metadata in one cycle after an observed reset,
+then drains pending RAM writes before accepting requests. The BTB clears its
+valid bits, and the return-address stack clears its occupancy. Direction and TAGE tables provide speculative hints;
 their contents affect prediction accuracy rather than architectural state.
 Payload RAMs are qualified by ownership or validity, or written before use.
 Integer consumers substitute zero for x0; the unwritten register-file row

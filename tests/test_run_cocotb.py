@@ -652,7 +652,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="csr_test",
         nic_mac_clocks=False,
         description=(
-            "Machine-mode counter controls and pure reads checked against independent time"
+            "Machine counter controls, HPM storage and selectors, and pure reads "
+            "against independent time"
         ),
     ),
     "instret_test": CocotbRunConfig(
@@ -1818,7 +1819,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",
-        description=("RV64 division results, latency, backpressure, and cancellation"),
+        description=(
+            "Radix-4 RV64 division results, latency, backpressure, and cancellation"
+        ),
         verilator_extra_args=("-GWIDTH=64",),
     ),
     "int_muldiv_shim": CocotbRunConfig(
@@ -1853,7 +1856,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_shim",
         hdl_toplevel_module="fp_shim",
         description=(
-            "FP engine handoff, result tags, and flush handling through the shim"
+            "FP fast-path latency, engine handoff, result tags, and flush handling"
         ),
     ),
     "fp_engine_equiv": CocotbRunConfig(
@@ -1943,7 +1946,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="cached_tier_adapter",
         description=(
             "The cached_tier_adapter bench with the read request split on its late "
-            "term (SPLIT_READ_REQ), as the core builds the adapter"
+            "term (SPLIT_READ_REQ) in the component configuration"
         ),
         verilator_extra_args=("-GSPLIT_READ_REQ=1",),
         extra_env=(("ADAPTER_SPLIT_READ_REQ", "1"),),
@@ -3657,7 +3660,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_dmmu",
         hdl_toplevel_module="dmmu",
         description=(
-            "Sv39 data translation, fault priority, and recovery at the MMU ports"
+            "Sv39 data translation, last-page bypass, fault priority, and recovery"
         ),
     ),
     "dmmu_1g": CocotbRunConfig(
@@ -3672,8 +3675,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.if_stage.test_immu",
         hdl_toplevel_module="immu_test_harness",
         description=(
-            "Sv39 fetch translation and fault visibility across retargets and page "
-            "crossings"
+            "16-entry ITLB, intra-page fetch translation, retargets and page-crossing faults"
         ),
         verilator_extra_args=("--assert",),
     ),

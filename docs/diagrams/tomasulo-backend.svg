@@ -138,12 +138,12 @@
     <rect x="408" y="497" width="258" height="128" rx="10" class="execution"/>
     <text x="537" y="528" class="label">FP engine</text>
     <text x="537" y="557" class="small">Every F / D compute op</text>
-    <text x="537" y="583" class="small">Iterative, one at a time</text>
+    <text x="537" y="583" class="small">Iterative + fast paths</text>
     <text x="537" y="609" class="small">1 issue port</text>
     <rect x="730" y="497" width="300" height="128" rx="10" class="memory"/>
     <text x="880" y="529" class="label">Address generation + DMMU</text>
     <text x="880" y="559" class="body">Sv39 DTLB · 16 entries</text>
-    <text x="880" y="586" class="small">Bypass if translation inactive</text>
+    <text x="880" y="586" class="small">Last-page or Bare bypass</text>
     <text x="880" y="612" class="small">Misses use shared PTW</text>
   </g>
 

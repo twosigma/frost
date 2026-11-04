@@ -11,8 +11,8 @@ depends on how many operations its unit can have in flight.
 | Shim | RS | Units | Unit latency (cycles) | In flight |
 |------|----|-------|-----------------------|-----------|
 | `int_alu_shim` (two copies) | INT_RS | ALU | 0 (combinational) | n/a |
-| `int_muldiv_shim` | MUL_RS | Pipelined multiplier plus a 32-bit word multiplier and a 64-bit carry-less multiplier; iterative divider | MUL 6, MULW and CLMUL/CLMULH/CLMULR 3, DIV/REM 2 to 35, word DIV/REM 2 to 19 | Up to 4 multiplies, 1 divide |
-| `fp_shim` | FP_RS | Iterative FP engine: every F and D compute instruction | 2 to 139, by operation and operands (see below) | 1 |
+| `int_muldiv_shim` | MUL_RS | Pipelined multiplier plus a 32-bit word multiplier and a 64-bit carry-less multiplier; radix-4 divider | MUL 6, MULW and CLMUL/CLMULH/CLMULR 3, DIV/REM 2 to 35, word DIV/REM 2 to 19 | Up to 4 multiplies, 1 divide |
+| `fp_shim` | FP_RS | FP engine with iterative arithmetic and dedicated fast paths for F and D compute instructions | 2 to 139, by operation and operands (see below) | 1 |
 
 The wrapper sets `int_muldiv_shim.DIRECT_MUL=1`. Each multiply result reaches
 the adapter in the cycle its arithmetic unit produces it. The registered CDB

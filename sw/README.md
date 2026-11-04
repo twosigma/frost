@@ -268,7 +268,7 @@ can be debugged and where each one first stops.
 | `coremark/` | EEMBC CoreMark, built without the C extension by default; see its [README](apps/coremark/README.md) and [Spike tools](apps/coremark/iss/README.md) |
 | `coremark_pro/` | All nine EEMBC CoreMark-PRO workloads, loaded as `coremark_pro_<workload>`; the heap and large datasets live in DDR. `COREMARK_PRO_CACHE_COUNTERS=1` prints the cache counters' deltas over the timed region as one `FROST_CACHE_COUNTERS` line |
 | `csr_rmw_test/` | Old and new values for `csrrw`/`csrrs`/`csrrc`, including the same-register `mscratch` swap that OpenSBI's trap entry uses |
-| `csr_test/` | `mstatus.MIE` writes and the M-mode counter controls: `mcountinhibit`, 64-bit `mcycle`/`minstret` writes, pure reads checked against the independent timer/retirement count, and the Zicsr rule that a `minstret` write replaces the writing instruction's own increment |
+| `csr_test/` | `mstatus.MIE` writes and the M-mode counter controls: `mcountinhibit`, 64-bit `mcycle`/`minstret` writes, HPM counter storage and fixed-event selectors, pure reads checked against the independent timer/retirement count, and the Zicsr rule that a `minstret` write replaces the writing instruction's own increment |
 | `ddr_atomic_test/` | Word LR/SC and AMOs on cached DDR, printing a progress letter before each step |
 | `ddr_bench/` | Memory-bound kernels on cold cached-DDR regions (sequential, strided, interleaved, interleaved within one cache set, random, dependent, copy, write), with cycles and cache-counter deltas per kernel; `DDR_BENCH_SHIFT` shrinks them for simulation |
 | `ddr_exec_test/` | Code in DDR: calls into BRAM, recursion, a body larger than the fetch buffer, cold and warm runs |
@@ -338,7 +338,7 @@ can be debugged and where each one first stops.
 | `served_window_resteer/` | A BTB-predicted loop branch to an upper-half target; `served_window_resteer_fetch_fuzz` uses uncached Normal fetches and requires AXI fuzz delays and predicted-target waits on each reset run, with count/sum checks across 2,000 iterations. The IF-stage unit bench explicitly checks stale-window rejection and retry |
 | `slot2_fault_test/` | A fetch fault on the second instruction of a fetch pair, one whose bytes encode a NOP included, must trap at that instruction with exact `mepc` and `mtval` |
 | `smc_fencei_test/` | Self-modifying code with `fence.i` across store-to-fence gaps, warm and cold L1D, and tight loops |
-| `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, supervisor CSRs, counter permissions, CSR existence (illegal CSRs and the read-only-zero machine HPM CSRs), and interrupts |
+| `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, supervisor CSRs, counter permissions, CSR existence (illegal CSRs, writable machine HPM counter 3, zero-only counter 31, and user-alias permissions), and interrupts |
 | `spanning_test/` | 32-bit instructions that straddle a fetch-word boundary |
 | `sprintf_test/` | All 344 `sprintf`/`snprintf` checks against constant expected strings; the 2M-cycle simulation budget covers the measured 1.23M cycles in BRAM and DDR |
 | `sstc_test/` | Sstc: `menvcfg.STCE`, `stimecmp` access rules, and an S-mode timer interrupt through `stimecmp`; also the writable `menvcfg` and `senvcfg` bits |

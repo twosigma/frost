@@ -1110,8 +1110,8 @@ package riscv_pkg;
   localparam bit [11:0] CsrMideleg = 12'h303;  // Machine interrupt delegation
   localparam bit [11:0] CsrMie = 12'h304;  // Machine interrupt enable
   localparam bit [11:0] CsrMtvec = 12'h305;  // Machine trap vector base
-  localparam bit [11:0] CsrMcounteren = 12'h306;  // S/U counter enable (CY/TM/IR)
-  // mcountinhibit.CY/IR stop cycle/instret; TM and HPM bits read zero.
+  localparam bit [11:0] CsrMcounteren = 12'h306;  // S/U counter enable (CY/TM/IR/HPM3..8)
+  // mcountinhibit.CY/IR and HPM3..8 inhibit their counters; TM and bits 31:9 read zero.
   // OpenSBI probes this v1.11 CSR before using v1.12 menvcfg to enable Sstc.
   localparam bit [11:0] CsrMcountinhibit = 12'h320;
   localparam bit [11:0] CsrMenvcfg = 12'h30A;  // Machine environment configuration

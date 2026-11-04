@@ -7,19 +7,20 @@
     The INT, MUL, FP and MEM stations have 16, 4, 2 and 8 entries. INT issues
     to two ALUs; pipe 0 resolves branches. Other stations serve integer
     multiply/divide and carry-less multiply, every floating-point compute
-    operation (on one iterative engine), and memory operations. Two CDB lanes
+    operation (one engine with iterative arithmetic and fast paths), and memory operations. Two CDB lanes
     broadcast results to the reservation stations and ROB. The ROB commits
     up to two instructions in order to INT/FP register files and releases
     stores. CSR accesses execute at commit; traps support M/S/U delegation.
     Conditional-branch mispredictions redirect fetch and restore the RAT the
     cycle after resolution, then flush younger backend work the following cycle.
     JALR mispredictions and traps recover at commit.
-    Sv39 uses an eight-entry ITLB in IF and a 16-entry DTLB ahead of the
+    Sv39 uses a 16-entry ITLB in IF and a 16-entry DTLB ahead of the
     eight-entry load and store queues. The load queue contains a direct-mapped
     256-entry, eight-byte-granule L0 cache in FROST and receives store forwarding.
     Matching I and D badges connect the CPU to the system view below.
     Cached instruction fetch uses a two-line fetch buffer and 16 KiB L1I with
-    two miss slots; cached data uses a 128 KiB L1D with eight miss slots.
+    two miss slots; cached data uses a 128 KiB MSI L1D with eight request
+    endpoints and a two-entry ordered store buffer.
     One shared page-table walker serves both TLBs. Its ReadOncePTW requests
     reach the L2 home, which probes L1D and merges dirty data. Instruction
     refills use ReadOnceIF through the same home. The NIC and DMA test engine
@@ -136,7 +137,7 @@
     <rect x="80" y="230" width="208" height="100" rx="12" class="front"/>
     <text x="104" y="261" class="heading">IF / Fetch</text>
     <text x="104" y="288" class="body">64-bit window</text>
-    <text x="104" y="313" class="body">Sv39 ITLB · 8 entries</text>
+    <text x="104" y="313" class="body">Sv39 ITLB · 16 entries</text>
     <path d="M 288 280 H 312" class="flow" marker-end="url(#flow-arrow)"/>
     <rect x="312" y="230" width="208" height="100" rx="12" class="front"/>
     <text x="336" y="261" class="heading">PD / Predecode</text>
@@ -282,7 +283,7 @@
     <text x="462" y="1101" class="small">ReadOncePTW via home</text>
     <rect x="616" y="1016" width="244" height="100" rx="12" class="memory"/>
     <text x="738" y="1048" class="heading">L1D · 128 KiB</text>
-    <text x="738" y="1075" class="body">Write-back, allocate</text>
+    <text x="738" y="1075" class="body">MSI · 2-store buffer</text>
     <text x="738" y="1101" class="small">4-way · BRAM · 8 miss slots</text>
     <rect x="892" y="1016" width="244" height="100" rx="12" class="memory"/>
     <text x="1014" y="1048" class="heading">Coherent ingress</text>
@@ -301,7 +302,7 @@
   <g id="l2-and-ddr" class="center">
     <rect x="64" y="1222" width="324" height="88" rx="12" class="memory"/>
     <text x="226" y="1258" class="heading">L2 home · 2 MiB</text>
-    <text x="226" y="1288" class="body">4-way · 64 B · URAM · 8 misses</text>
+    <text x="226" y="1288" class="body">4-way · 64 B · URAM · 4 fills</text>
     <path d="M 388 1266 H 438" class="memlink" marker-end="url(#memory-arrow)"/>
     <rect x="438" y="1222" width="324" height="88" rx="12" class="memory"/>
     <text x="600" y="1258" class="heading">512-bit AXI4 master</text>

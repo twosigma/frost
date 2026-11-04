@@ -15,7 +15,7 @@
  */
 
 /*
-  Iterative F/D floating-point engine, including FMV moves.
+  F/D floating-point engine with iterative arithmetic and dedicated fast paths.
   One operation runs at a time.
 
   Moves, comparisons, min/max, FCLASS and sign injection finish after capture

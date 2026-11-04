@@ -52,8 +52,8 @@ module ooo_pipeline_control #(
     input logic i_front_end_indirect_control_flow_pending,
     input logic i_disable_branch_prediction,
     input logic i_flush_pipeline,
-    // Fetch translation is pending: an Sv39 PC-change bubble, a second bubble
-    // on page crossing, or an ITLB miss. IF captures and replays the bundle;
+    // Fetch translation is pending: an Sv39 page/privilege-tag capture,
+    // a crossing-window capture, or an ITLB miss. IF captures and replays the bundle;
     // the fetch provider retains its request. Flush overrides this stall.
     input logic i_fetch_pa_hold,
 

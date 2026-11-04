@@ -825,7 +825,8 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 | Torture | BRAM, DDR, and paged DDR |
 | TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
-| Tooling | Lint, fast Python tests, synthesis, and formal verification |
+| Tooling | Lint, fast Python tests and synthesis |
+| Formal verification | CSR profiling-on/off and ROB jobs, Coherence and Other tasks jobs, and a separate hart maintenance proof job; see the [formal guide](../formal/README.md) for budgets |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in four chained jobs |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
 | Coverage | One job merges the coverage of the simulating jobs into a report |

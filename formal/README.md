@@ -28,23 +28,29 @@ Run through the pinned Docker image:
 
 Other task names are parameter or width variants of these, such as
 `bmc_xlen32` or `bmc_xilinx`. Each target and task is a separate SymbiYosys
-run. The timeout is 40 minutes except for `csr_file:bmc`,
-`csr_file:bmc_perf_off`, and `reorder_buffer:bmc`, which have 90 minutes each.
-CI gives each of these three tasks a separate job with a 120-minute job
-limit, including image setup. The remaining tasks share a job with a
-240-minute limit. Each job stays below GitHub's six-hour limit.
+run. The runner's default timeout is 40 minutes. `csr_file:bmc`,
+`csr_file:bmc_perf_off`, and `reorder_buffer:bmc` each have 90 minutes.
+`coherent_hart_cache:coh_hart_maint_prove` has 120 minutes in both its SBY
+configuration and the runner. Individual SBY tasks can set shorter limits.
+
+CI assigns the CSR profiling-on, CSR profiling-off and reorder-buffer tasks
+to separate jobs with 120-minute limits; those jobs also run selected
+coherent-store tasks. The hart maintenance proof has a separate job with a
+150-minute limit. The Coherence job runs the other coherence tasks, including
+hart maintenance covers, with a 240-minute limit. The Other tasks job has a
+240-minute limit. Job limits include image setup.
 
 The CI jobs collect `tests/test_run_formal.py` and
 `tests/test_pa_bridge_mutation.py` through `./scripts/frost.py run pytest`
 with `-m formal` and a task filter. The two AXI address-truncation mutation
-checks run in the remaining-tasks job. To inspect a job's selection without
+checks run in the Other tasks job. To inspect a job's selection without
 running the solver, add `--collect-only -q` and its `-k` filter. The
 `./scripts/frost.py pytest` shortcut collects only cocotb tests.
 
-The CSR tasks retain depth 20 and the ROB task retains depth 12. Assertions,
-assumptions, engines, and cover depths are unchanged by the timeout settings.
-Each slow task's 90-minute backstop leaves 30 minutes for image setup and
-teardown within its 120-minute job limit.
+The CSR BMC tasks use depth 20 and the ROB BMC task uses depth 12. The hart
+maintenance proof uses ABC PDR with depth 32; its covers use depth 160 and
+a 20-minute SBY timeout. The runner's timeout controls wall-clock allowance;
+proof depths and engines come from each SBY file.
 `--verbose` prints solver output, and timeouts retain the last 40 captured
 log lines. SymbiYosys writes logs and any counterexample trace to
 `formal/<target>_<task>/`, which

@@ -114,7 +114,7 @@ class ReadRecord:
 
 
 # The cached_tier_adapter_split registry entry builds the adapter with
-# SPLIT_READ_REQ, as the core instantiates it, and sets this variable.
+# SPLIT_READ_REQ for the component bench and sets this variable.
 SPLIT_READ_REQ = os.environ.get("ADAPTER_SPLIT_READ_REQ", "0") == "1"
 
 
