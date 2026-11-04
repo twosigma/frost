@@ -295,6 +295,9 @@ requests. Three-endpoint caches allow one; smaller caches disable look-ahead.
 Demand may use every load endpoint. Eligible foreground work precedes hint
 selection. Registered hints check live acquisitions, buffered stores and
 frozen dirty writebacks, with conflicts rechecked before acquisition.
+A speculative tag decision checks the page and look-ahead window. The selected
+address and demand frontier stay fixed through acquisition, which checks
+cancellation and live ownership conflicts at endpoint acceptance.
 A resident hint needs no acquisition. Accepted speculative identity lasts
 through U, including when a CPU load attaches to the endpoint.
 

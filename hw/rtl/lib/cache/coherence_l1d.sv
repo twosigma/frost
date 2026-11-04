@@ -450,7 +450,7 @@ module coherence_l1d #(
   logic hint_valid_q, hint_checked_q, hint_eligible_q;
   logic [ADDR_WIDTH-1:0] hint_addr_q, prefetch_check_addr;
   logic prefetch_cancel, atomic_read_waiting, prefetch_busy;
-  logic prefetch_conflict, prefetch_accept, prefetch_ep_free;
+  logic prefetch_conflict, prefetch_accept, prefetch_acquire_ok, prefetch_ep_free;
   logic hint_in_window, lookup_in_window;
   logic [EpBits-1:0] prefetch_ep_index;
   always_comb begin
@@ -515,6 +515,9 @@ module coherence_l1d #(
   end
   assign prefetch_accept = !prefetch_cancel && !stream_replace && lookup_in_window &&
       !prefetch_conflict && !load_acquire_block;
+  // The selected address and demand frontier stay fixed through Acquire.
+  // Cancellation and live ownership conflicts are checked on its acceptance edge.
+  assign prefetch_acquire_ok = !prefetch_cancel && !prefetch_conflict && !load_acquire_block;
   assign stream_consume = !hint_valid_q && stream_valid && !prefetch_cancel && !stream_replace;
   always_ff @(posedge i_clk) begin
     if (i_rst || prefetch_cancel || stream_replace) begin
@@ -698,7 +701,7 @@ module coherence_l1d #(
   assign ep_write_done[0] = written_q;
   for (genvar ep = 0; ep < MISSES; ep++) begin : gen_request
     assign ep_request_valid[ep] = active && phase_q == Acquire && acq_ep_q == EpBits'(ep) &&
-        (operation_q != PrefetchOp || prefetch_accept) && (ep == 0 || !load_acquire_block);
+        (operation_q != PrefetchOp || prefetch_acquire_ok) && (ep == 0 || !load_acquire_block);
     assign ep_grant_ready[ep] = grant_ready && grant_valid && grant_pick == EpBits'(ep);
     if (ep > 0) begin : gen_load_done
       assign ep_done_valid[ep] = ld_done_q[ep];
@@ -913,6 +916,10 @@ module coherence_l1d #(
       end
       if (grant_prefetch_q) p_prefetch_fill_isolation : assert (!read_fill);
       if (operation_q == PrefetchOp) p_prefetch_lookup_isolation : assert (!read_hit && !read_miss);
+      if (active && phase_q == Acquire && operation_q == PrefetchOp) begin
+        p_prefetch_acquire_guard : assert (prefetch_acquire_ok == prefetch_accept);
+        if (!prefetch_cancel) assert (lookup_in_window && !stream_replace);
+      end
       if (atomic_q && atomic_granted_q)
         for (int ep = 1; ep < MISSES; ep++) assert (!live[ep]);
       if (grant_read_hold) assert (!grant_ready && !read_failure && !ep_grant_valid[0]);
@@ -1533,7 +1540,7 @@ module coherence_l1d #(
           end
           Acquire:
           if ((acq_ep_q != '0 && load_acquire_block) ||
-              (operation_q == PrefetchOp && !prefetch_accept)) phase_q <= Idle;
+              (operation_q == PrefetchOp && !prefetch_acquire_ok)) phase_q <= Idle;
           else if (ep_request_ready[acq_ep_q]) begin
             if (acq_ep_q == '0) begin
             acquisition_q <= acquisition;
