@@ -106,6 +106,7 @@ class AxiWrite:
     burst: int
     beats: list[tuple[int, int]]
     lock: int = 0
+    cache: int = 0
     resp: int | None = None
     order: int = -1
     done: Event = field(default_factory=Event)
@@ -121,6 +122,7 @@ class AxiRead:
     size: int
     burst: int
     lock: int = 0
+    cache: int = 0
     beats: list[tuple[int, int]] = field(default_factory=list)  # (data, resp)
     order: int = -1
     done: Event = field(default_factory=Event)
@@ -200,19 +202,27 @@ class AxiMaster:
         burst: int,
         beats: list[tuple[int, int]],
         lock: int = 0,
+        cache: int = 0,
     ) -> AxiWrite:
         """Queue a write burst; await its `done` event for the response."""
         assert len(beats) == length + 1
-        txn = AxiWrite(id, addr, length, size, burst, beats, lock)
+        txn = AxiWrite(id, addr, length, size, burst, beats, lock, cache)
         self._aw_queue.append(txn)
         self._w_queue.append(txn)
         return txn
 
     def read(
-        self, id: int, addr: int, length: int, size: int, burst: int, lock: int = 0
+        self,
+        id: int,
+        addr: int,
+        length: int,
+        size: int,
+        burst: int,
+        lock: int = 0,
+        cache: int = 0,
     ) -> AxiRead:
         """Queue a read burst; await its `done` event for the beats."""
-        txn = AxiRead(id, addr, length, size, burst, lock)
+        txn = AxiRead(id, addr, length, size, burst, lock, cache)
         self._ar_queue.append(txn)
         return txn
 
@@ -259,6 +269,7 @@ class AxiMaster:
                 self._sig(dut_in, "awsize").value = aw.size
                 self._sig(dut_in, "awburst").value = aw.burst
                 self._sig(dut_in, "awlock").value = aw.lock
+                self._sig(dut_in, "awcache").value = aw.cache
             ar = self._ar_cur
             self._sig(dut_in, "arvalid").value = int(ar is not None)
             if ar is not None:
@@ -268,6 +279,7 @@ class AxiMaster:
                 self._sig(dut_in, "arsize").value = ar.size
                 self._sig(dut_in, "arburst").value = ar.burst
                 self._sig(dut_in, "arlock").value = ar.lock
+                self._sig(dut_in, "arcache").value = ar.cache
             w = self._w_cur
             self._sig(dut_in, "wvalid").value = int(w is not None)
             if w is not None:

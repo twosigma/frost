@@ -100,6 +100,7 @@ class Ingress:
             i_req_write=ident & 1,
             i_req_data=(1 << (16 * ident)) | ident,
             i_req_mask=0x80000001 | (1 << ident),
+            i_req_non_alloc=(ident >> 1) & 1,
         )
         assert self.get("o_req_ready")
         await self.tick()
@@ -116,7 +117,7 @@ class Ingress:
             (3, 5),
             (32, 0x80000001 | (1 << ident)),
             (1, 0),
-            (1, 0),
+            (1, (ident >> 1) & 1),
             (1, 0),
             (256, (1 << (16 * ident)) | ident),
         )

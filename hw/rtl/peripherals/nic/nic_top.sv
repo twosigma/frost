@@ -21,8 +21,9 @@
  * DMA, and a level interrupt. The register bridge selects 32-bit write
  * lanes, complete wide-address writes, and aligned 64-bit read pairs. The DMA
  * master issues single-beat bursts of one 32-byte line (AxSIZE 5, INCR) at
- * full physical addresses, with ids of IdBits, AxCACHE 0011, AxPROT 010 and
- * AxLOCK 0; it always accepts B and R. Its line_port_axi_bridge resets with
+ * full physical addresses, with ids of IdBits, AxPROT 010 and AxLOCK 0.
+ * AxCACHE is 0011 for packet data and 1111 for descriptors and status.
+ * It always accepts B and R. Its line_port_axi_bridge resets with
  * the subsystem reset only: the RESET drain leaves it idle before the
  * front end's reset.
  * Toward the board: the MAC clocks, the raw PMA interface, the PHY status and

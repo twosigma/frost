@@ -27,7 +27,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, RisingEdge
+from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
 
 from cocotb_tests.axi.axi_models import (
     DECERR,
@@ -220,6 +220,75 @@ async def _wait(dut: Any, txns: list[Any], limit: int = TIMEOUT_CYCLES) -> None:
     raise AssertionError(
         f"{len(pending)} transactions did not complete, first {pending[0]}"
     )
+
+
+@cocotb.test()
+async def cache_hints_follow_queued_bursts(dut: Any) -> None:
+    """Read and write allocation hints follow every segment through stalls."""
+    bench = await _start(dut, seed=83, ingress_ready=0.3, master_ready=0.4)
+    expected: dict[tuple[int, int], int] = {}
+    seen: set[tuple[int, int]] = set()
+    txns: list[AxiRead | AxiWrite] = []
+    txn: AxiRead | AxiWrite
+    caches = (3, 7, 11, 15, 15, 11, 7, 3)
+    for index, cache in enumerate(caches + tuple(value ^ 12 for value in caches)):
+        for write in (0, 1):
+            addr = REGION_BASE + 0x10000 + write * 0x10000 + index * 0x100
+            for beat in range(4):
+                expected[write, (addr + beat * bench.bus) & -32] = int(
+                    not (cache & (8 if write else 4))
+                )
+            if write:
+                beats = [
+                    (bench.rng.getrandbits(8 * bench.bus), (1 << bench.bus) - 1)
+                    for _ in range(4)
+                ]
+                apply_write(bench.ref, addr, 3, bench.max_size, INCR, beats, bench.bus)
+                txn = bench.master.write(
+                    index % bench.ids,
+                    addr,
+                    3,
+                    bench.max_size,
+                    INCR,
+                    beats,
+                    cache=cache,
+                )
+            else:
+                for offset in range(4 * bench.bus):
+                    value = bench.rng.randrange(1, 256)
+                    bench.ref[addr + offset] = value
+                    bench.mem[addr + offset] = value
+                txn = bench.master.read(
+                    index % bench.ids, addr, 3, bench.max_size, INCR, cache=cache
+                )
+            txns.append(txn)
+
+    async def monitor() -> None:
+        while True:
+            await FallingEdge(dut.i_clk)
+            await ReadOnly()
+            if int(dut.o_line_req_valid.value):
+                key = (
+                    int(dut.o_line_req_write.value),
+                    int(dut.o_line_req_addr.value),
+                )
+                assert int(dut.o_line_req_non_alloc.value) == expected[key], (
+                    f"allocation hint for {key}: expected {expected[key]}"
+                )
+                if int(dut.i_line_req_ready.value):
+                    seen.add(key)
+
+    task = cocotb.start_soon(monitor())
+    await _wait(dut, txns)
+    for txn in txns:
+        if isinstance(txn, AxiWrite):
+            assert txn.resp == OKAY
+        else:
+            bench.check_read(txn)
+    bench.check_memory()
+    await bench.check_clean()
+    assert seen == expected.keys()
+    task.cancel()
 
 
 @cocotb.test()

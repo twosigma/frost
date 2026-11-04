@@ -79,6 +79,7 @@ module coherent_axi_test_harness #(
     output logic [     8*LINE_BYTES-1:0] o_line_req_wdata,
     output logic [       LINE_BYTES-1:0] o_line_req_wstrb,
     output logic [     LINE_ID_BITS-1:0] o_line_req_id,
+    output logic                         o_line_req_non_alloc,
     output logic                         i_line_resp_valid,
     output logic [     LINE_ID_BITS-1:0] i_line_resp_id,
     output logic [     8*LINE_BYTES-1:0] i_line_resp_rdata,

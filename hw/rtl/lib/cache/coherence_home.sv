@@ -1564,6 +1564,8 @@ module coherence_home #(
     if (sim_reset_seen_q && !i_rst) begin
       if (reference_ready_q) assert (put_blocked == reference_put_blocked);
       if (array_response) begin
+        if (decision_fill && decision_from_engine && engine_non_alloc[ResultBits'(array_token)])
+          assert (array_way == '0);
         for (int wb = 0; wb < NUM_WB; wb++) begin
           assert (wb_blocks[wb] == (wb_valid_q[wb] && same_block(wb_addr_q[wb], decision_addr)));
           assert (wb_victims[wb] == (wb_valid_q[wb] && same_block(wb_addr_q[wb], array_addr)));

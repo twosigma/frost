@@ -68,10 +68,10 @@ All CPU configurations use the coherent interfaces and their ordinary source
 filelists.
 
 `coherence_dma_ingress` and `coherence_dma_ingress_8` issue all four or eight credits before G and check reordered
-G/C/U, full identities and reset at response presentation. The
+G/C/U, full identities, streaming hints and reset at response presentation. The
 `coherent_axi_ingress` benches connect the AXI bridge to that ingress with
 independent home peers. They hold four results behind C, reorder line replies,
-and check AXI burst order, byte masks, errors and reset on both bus widths.
+and check AXI burst order, byte masks, allocation hints, errors and reset on both bus widths.
 
 `coherence_home_array` and its BRAM and packed-tag variants check concurrent
 tag decisions, data reads and masked updates. They exercise physical-row
@@ -88,7 +88,9 @@ and check replacement choices at the following lookup in each set.
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
 and CPU observation cuts; `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. Home cases hold four memory fills while resident
 requests execute, preserve waiter order across an older writer, and check
-current data on waiter reentry. They run in the unit shard. The program shards
+current data on waiter reentry. Streaming cases check way-0 miss placement,
+CPU line residency, dirty hits in other ways and progress after a pinned
+way is released. They run in the unit shard. The program shards
 exercise the coherent hierarchy in both memory configurations. Whole-L1D
 maintenance is active in simulation. Synthesis checks cover both line sizes
 at 32-bit and 56-bit physical widths.

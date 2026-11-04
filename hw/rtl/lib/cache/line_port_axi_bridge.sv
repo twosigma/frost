@@ -420,10 +420,10 @@ module line_port_axi_bridge #(
   always @(posedge i_clk) begin
     if (f_past_valid && !i_axi_rst) begin
       if ($past(o_axi_arvalid && !i_axi_arready)) begin
-        p_ar_held : assert (o_axi_arvalid && $stable(o_axi_araddr) && $stable(o_axi_arid));
+        p_ar_held : assert (o_axi_arvalid && $stable({o_axi_araddr, o_axi_arid, o_axi_arcache}));
       end
       if ($past(o_axi_awvalid && !i_axi_awready)) begin
-        p_aw_held : assert (o_axi_awvalid && $stable(o_axi_awaddr) && $stable(o_axi_awid));
+        p_aw_held : assert (o_axi_awvalid && $stable({o_axi_awaddr, o_axi_awid, o_axi_awcache}));
       end
       if ($past(o_axi_wvalid && !i_axi_wready)) begin
         p_w_held : assert (o_axi_wvalid && $stable(o_axi_wdata) && $stable(o_axi_wstrb));
@@ -435,8 +435,10 @@ module line_port_axi_bridge #(
       // a request above 4 GiB and fail the wide formal configurations.
       if ($past(i_req_write)) begin
         p_aw_full_offset : assert (o_axi_awaddr == AXI_ADDR_WIDTH'($past(i_req_addr) - BASE_ADDR));
+        p_aw_cache : assert (o_axi_awcache == $past(i_req_cache));
       end else begin
         p_ar_full_offset : assert (o_axi_araddr == AXI_ADDR_WIDTH'($past(i_req_addr) - BASE_ADDR));
+        p_ar_cache : assert (o_axi_arcache == $past(i_req_cache));
       end
     end
     if (f_past_valid && $past(i_axi_rst)) begin

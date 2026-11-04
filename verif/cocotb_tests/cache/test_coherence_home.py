@@ -58,6 +58,7 @@ class Home:
         self.replies: list[tuple[int, int]] = []
         self.arrivals: list[tuple[int, str, int]] = []
         self.write_fills = 0
+        self.allocations: list[tuple[int, int]] = []
 
     def get(self, name: str) -> int:
         """Read a signal."""
@@ -125,6 +126,10 @@ class Home:
                     else 19 + token - engines
                 )
                 self.arrivals.append((self.cycle, "data", tid))
+            if self.get("array_response") and self.get("decision_fill"):
+                self.allocations.append(
+                    (self.get("array_query"), self.get("array_way"))
+                )
             if reply and self.get("o_r_ready"):
                 tid = unpack(
                     reply[1], (2, 6, 1, 1, self.p, 2, 1, 1, 256, 1, 1, 1, 1, 1)
@@ -227,7 +232,13 @@ class Home:
             self.cycle += 1
 
     def demand(
-        self, op: int, address: int, data: int = 0, mask: int = 0, slot: int = 0
+        self,
+        op: int,
+        address: int,
+        data: int = 0,
+        mask: int = 0,
+        slot: int = 0,
+        non_alloc: int = 0,
     ) -> tuple[int, int]:
         """Encode hart or agent requests with disjoint source identities."""
         if op in (7, 8):
@@ -244,7 +255,7 @@ class Home:
             (3, 5 if op in (7, 8) else 3),
             (32, mask),
             (1, 0),
-            (1, 0),
+            (1, non_alloc),
             (1, 0),
             (256, data),
         )
@@ -260,20 +271,32 @@ class Home:
         )
 
     async def submit(
-        self, op: int, address: int, data: int = 0, mask: int = 0, slot: int = 0
+        self,
+        op: int,
+        address: int,
+        data: int = 0,
+        mask: int = 0,
+        slot: int = 0,
+        non_alloc: int = 0,
     ) -> None:
         """Admit a request without waiting for grant service."""
-        _, request = self.demand(op, address, data, mask, slot)
+        _, request = self.demand(op, address, data, mask, slot, non_alloc)
         await self.set(i_d_valid=1, i_d=request)
         await self.wait("o_d_ready")
         await self.tick()
         await self.set(i_d_valid=0)
 
     async def start(
-        self, op: int, address: int, data: int = 0, mask: int = 0, slot: int = 0
+        self,
+        op: int,
+        address: int,
+        data: int = 0,
+        mask: int = 0,
+        slot: int = 0,
+        non_alloc: int = 0,
     ) -> tuple[int, ...]:
         """Accept one request and leave its grant held at the home."""
-        await self.submit(op, address, data, mask, slot)
+        await self.submit(op, address, data, mask, slot, non_alloc)
         await self.wait("o_g_valid")
         return unpack(self.get("o_g"), (3, 9, 6, self.p, 256, 1))
 
@@ -338,12 +361,106 @@ class Home:
         await self.tick()
         await self.set(i_u_ready=0)
 
-    async def read(self, address: int, op: int = 0) -> int:
+    async def read(self, address: int, op: int = 0, non_alloc: int = 0) -> int:
         """Complete a read request."""
-        grant = await self.start(op, address)
+        grant = await self.start(op, address, non_alloc=non_alloc)
         assert grant[5] == 0
         await self.finish(grant)
         return grant[4]
+
+
+@cocotb.test()
+async def streaming_residency_and_dirty_hits(dut: Any) -> None:
+    """Streaming misses preserve three ways and hits merge dirty private bytes."""
+    for non_alloc in (0, 1):
+        b = Home(dut)
+        await b.reset()
+        base = 0x80000000
+        stride = 4 * b.line
+        for index in range(4):
+            address = base + index * stride
+            assert await b.read(address) == b.expected(address)
+        protected = [address for address, way in b.allocations if way != 0]
+        assert len(protected) == 3
+        initial_fills = len(b.allocations)
+        start = b.cycle
+        for index in range(8, 16):
+            address = base + index * stride
+            assert await b.read(address, 7, non_alloc) == b.expected(address)
+        stream_cycles = b.cycle - start
+        stream_fills = b.allocations[initial_fills:]
+        assert len(stream_fills) == 8
+        if non_alloc:
+            assert all(way == 0 for _, way in stream_fills)
+        before = len(b.allocations)
+        start = b.cycle
+        for address in protected:
+            assert await b.read(address) == b.expected(address)
+        misses = len(b.allocations) - before
+        dut._log.info(
+            "streaming policy=%d dma_cycles=%d hot_read_cycles=%d hot_refills=%d",
+            non_alloc,
+            stream_cycles,
+            b.cycle - start,
+            misses,
+        )
+        assert misses == (0 if non_alloc else 3)
+        if not non_alloc:
+            continue
+        address = protected[0]
+        dirty = int.from_bytes(bytes(range(32)), "little")
+        b.private[address] = (3, dirty)
+        assert await b.read(address, 7, 1) == dirty
+        assert b.private[address][0] == 2
+        dirty = int.from_bytes(bytes(range(32, 64)), "little")
+        b.private[address] = (3, dirty)
+        mask = 0x80000181
+        grant = await b.start(8, address, (1 << 256) - 1, mask, non_alloc=1)
+        assert not grant[5]
+        await b.finish(grant)
+        expected = bytearray(dirty.to_bytes(32, "little"))
+        for index in range(32):
+            if mask & (1 << index):
+                expected[index] = 255
+        assert await b.read(address) == int.from_bytes(expected, "little")
+        assert b.private[address][0] == 0
+        assert len(b.allocations) == before
+        address = base + 32 * stride
+        expected = bytearray(b.expected(address).to_bytes(32, "little"))
+        for index in range(32):
+            if mask & (1 << index):
+                expected[index] = 255
+        grant = await b.start(8, address, (1 << 256) - 1, mask, non_alloc=1)
+        assert not grant[5]
+        await b.finish(grant)
+        assert b.allocations[before:] == [(address & -b.line, 0)]
+        assert await b.read(address) == int.from_bytes(expected, "little")
+        for hot in protected[1:]:
+            assert await b.read(hot) == b.expected(hot)
+        assert len(b.allocations) == before + 1
+
+
+@cocotb.test()
+async def streaming_waits_for_its_pinned_way(dut: Any) -> None:
+    """Keep one set waiting for its streaming way while another completes."""
+    b = Home(dut)
+    await b.reset()
+    base = 0x80000000
+    await b.submit(7, base, non_alloc=1)
+    held = await b.take_grant()
+    assert b.allocations == [(base, 0)]
+    await b.submit(7, base + 4 * b.line, slot=1, non_alloc=1)
+    await b.tick(100)
+    assert not b.get("o_g_valid") and b.allocations == [(base, 0)]
+    await b.submit(7, base + b.line, slot=2, non_alloc=1)
+    unrelated = await b.take_grant()
+    assert unrelated[3] == base + b.line and not unrelated[5]
+    await b.complete(unrelated)
+    await b.complete(held)
+    waiting = await b.take_grant()
+    assert waiting[3] == base + 4 * b.line and not waiting[5]
+    await b.complete(waiting)
+    assert all(way == 0 for _, way in b.allocations)
 
 
 @cocotb.test()

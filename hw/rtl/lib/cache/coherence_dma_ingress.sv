@@ -382,6 +382,7 @@ module coherence_dma_ingress #(
           f_reference_request.addr <= i_req_addr;
           f_reference_request.size <= 5;
           f_reference_request.mask <= i_req_mask;
+          f_reference_request.non_alloc <= i_req_non_alloc;
           f_reference_request.wdata <= i_req_data;
           f_reference_sent_q <= 1'b0;
           f_reference_granted_q <= 1'b0;

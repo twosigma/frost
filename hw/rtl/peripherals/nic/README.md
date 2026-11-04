@@ -243,6 +243,11 @@ beats, the last carrying the remaining bytes. The status write is issued when
 the last beat has entered the FIFO: DD means the buffer has been read, not
 that the frame reached the wire.
 
+Packet data requests carry AxCACHE `0011`. Descriptor and status requests
+carry `1111`. The coherent home restricts packet data miss allocations to
+way 0; descriptor and status misses may use any unpinned way. All requests
+probe private caches and can hit in any L2 way.
+
 `nic_dma_front` puts both engines on the one DMA port. Every request an
 engine hands it gets exactly one response.
 

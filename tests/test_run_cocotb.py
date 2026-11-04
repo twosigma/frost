@@ -2459,7 +2459,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_home": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home",
         hdl_toplevel_module="coherence_home",
-        description="Independent completions, dirty recalls, way pins, and victim locks",
+        description=(
+            "Independent completions, dirty recalls, way pins, victim locks, "
+            "and streaming placement"
+        ),
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=1024",
@@ -2918,7 +2921,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.nic.test_nic_top",
         hdl_toplevel_module="nic_top",
         description=(
-            "NIC registers and frame traffic through raw loopback and a simulated wire"
+            "NIC registers, DMA allocation hints, and frame traffic through "
+            "raw loopback and a simulated wire"
         ),
     ),
     "nic_top_64g": CocotbRunConfig(
@@ -3191,7 +3195,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="line_port_axi_bridge",
         description=(
             "AXI transfers remain valid across CPU reset and clear on AXI reset; "
-            "requests wait for responses owed from before a CPU reset"
+            "requests preserve allocation hints and wait for responses owed "
+            "from before a CPU reset"
         ),
         verilator_extra_args=("-GLINE_BYTES=64",),
     ),
@@ -3235,7 +3240,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             hdl_toplevel_module="axi_coherent_bridge",
             description=(
                 f"AXI4 bursts of every type, size and alignment become coherent line "
-                f"requests{note}; errors, ordering, backpressure and reset"
+                f"requests{note}; allocation hints, errors, ordering, backpressure and reset"
             ),
             verilator_extra_args=args,
         )

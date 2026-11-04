@@ -32,9 +32,11 @@
  * region is answered DECERR. Such an error burst sends no line request: its W
  * beats are taken and its B, or every one of its R beats (with zero data),
  * carries the code. The region's boundaries are 4 KiB aligned, so a legal
- * burst that starts inside it stays inside it. AxLOCK, AxCACHE, AxPROT and
- * AxQOS are ignored: an exclusive access is performed as a normal one and
- * answered OKAY, as AXI4 specifies for a slave without exclusive support.
+ * burst that starts inside it stays inside it. AWCACHE[3] and ARCACHE[2]
+ * select allocating line requests; a clear bit selects streaming placement.
+ * AxLOCK, AxPROT and AxQOS are ignored: an exclusive access is performed as
+ * a normal one and answered OKAY, as AXI4 specifies for a slave without
+ * exclusive support.
  *
  * Beats and segments. Beat addresses and byte lanes follow AXI4 for FIXED,
  * INCR and WRAP bursts, and W strobes are masked to the beat's lanes. A
@@ -725,7 +727,7 @@ module axi_coherent_bridge #(
         rbt_len_q[rbt_tail_q]       <= ar_q_len;
         rbt_size_q[rbt_tail_q]      <= ar_q_size;
         rbt_burst_q[rbt_tail_q]     <= ar_q_burst;
-        rbt_non_alloc_q[rbt_tail_q] <= (ar_q_cache[3] == 1'b0);
+        rbt_non_alloc_q[rbt_tail_q] <= (ar_q_cache[2] == 1'b0);
         rbt_tail_q                  <= rbt_tail_q + 1'b1;
       end
       rbt_count_q <= rbt_count_q + RbtCountBits'(ar_q_valid) - RbtCountBits'(r_burst_done);
@@ -737,7 +739,7 @@ module axi_coherent_bridge #(
         i_idx_q <= i_next_idx;
         i_err_q <= i_next_err;
         i_addr_q <= i_next_addr;
-        i_non_alloc_q <= i_load_from_ar ? (ar_q_cache[3] == 1'b0) : rbt_non_alloc_q[i_next_idx];
+        i_non_alloc_q <= i_load_from_ar ? (ar_q_cache[2] == 1'b0) : rbt_non_alloc_q[i_next_idx];
         i_beat_q <= '0;
         i_len_q <= i_next_len;
         i_size_q <= i_next_size;
@@ -1018,13 +1020,13 @@ module axi_coherent_bridge #(
     end else if (f_past_valid && !$past(i_rst)) begin
       if ($past(i_axi_awvalid && !o_axi_awready))
         assume (i_axi_awvalid && $stable(
-            {i_axi_awid, i_axi_awaddr, i_axi_awlen, i_axi_awsize, i_axi_awburst}
+            {i_axi_awid, i_axi_awaddr, i_axi_awlen, i_axi_awsize, i_axi_awburst, i_axi_awcache}
         ));
       if ($past(i_axi_wvalid && !o_axi_wready))
         assume (i_axi_wvalid && $stable({i_axi_wdata, i_axi_wstrb, i_axi_wlast}));
       if ($past(i_axi_arvalid && !o_axi_arready))
         assume (i_axi_arvalid && $stable(
-            {i_axi_arid, i_axi_araddr, i_axi_arlen, i_axi_arsize, i_axi_arburst}
+            {i_axi_arid, i_axi_araddr, i_axi_arlen, i_axi_arsize, i_axi_arburst, i_axi_arcache}
         ));
     end
   end
@@ -1282,7 +1284,7 @@ module axi_coherent_bridge #(
       if ($past(o_line_req_valid && !i_line_req_ready)) begin
         p_line_held :
         assert (o_line_req_valid && $stable(
-            {o_line_req_write, o_line_req_addr, o_line_req_id}
+            {o_line_req_write, o_line_req_addr, o_line_req_id, o_line_req_non_alloc}
         ) && (!o_line_req_write || $stable(
             {o_line_req_wdata, o_line_req_wstrb}
         )));
