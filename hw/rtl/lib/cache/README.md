@@ -570,6 +570,14 @@ The `coherence_l1d` target also runs the L1D with three request endpoints and
 checks that no two live endpoints hold one sector, that no load endpoint is
 live beside a granted atomic, and that a load grant installs with a free WB
 slot.
+The `coherence_store_home` target connects the L1D and home with delayed memory
+responses. It checks a watched byte through two stores and a probing DMA read
+for sibling sectors, different rows and conflicting home sets. The conflicting
+case preloads the younger row in the home. Its pressure case holds two dirty
+victims and endpoint releases while a load grant and probing DMA request wait.
+The DMA consumer checks demand, grant, completion and release identities.
+Bounded progress assertions require both consumers to finish under the specified
+memory-response schedule.
 Detached victim validity, address and a watched byte are checked by induction
 through B. Cover tasks reach allocation, a delayed B, a blocked refetch,
 successful disposal and a failed B with preserved dirty ownership.

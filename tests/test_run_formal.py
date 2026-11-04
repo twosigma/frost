@@ -63,6 +63,20 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "coherence_store_home.sby",
+        "Production private and home caches preserve streamed bytes through replacement and DMA.",
+        tasks=(
+            "bmc_siblings",
+            "bmc_rows",
+            "bmc_conflict",
+            "cover_siblings",
+            "cover_rows",
+            "cover_conflict",
+            "bmc_pressure",
+            "cover_pressure",
+        ),
+    ),
+    FormalTarget(
         "coherence_store_boundary.sby",
         "Production SQ, router, buffered L1D and LQ preserve credit, drain and atomic exclusion.",
         tasks=(
@@ -1094,6 +1108,23 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("bmc_siblings", "Real-home sibling store byte safety."),
+    ("bmc_rows", "Real-home distinct-row store byte safety."),
+    ("bmc_conflict", "Real-home conflicting-row store byte safety."),
+    ("cover_siblings", "Sibling acquisitions complete and supply DMA data."),
+    (
+        "cover_rows",
+        "Distinct-row concurrent acquisitions complete and supply DMA data.",
+    ),
+    ("cover_conflict", "A same-set conflict serializes and supplies DMA data."),
+    (
+        "bmc_pressure",
+        "Real-home stores and load data survive held writebacks and releases.",
+    ),
+    (
+        "cover_pressure",
+        "Two held dirty victims yield to a probing DMA request and a waiting load.",
+    ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
     ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),
