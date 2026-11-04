@@ -588,9 +588,12 @@ module coherence_l1d #(
         p_prefetch_hint_conflict : assert (hint_conflict == prefetch_conflict_ref);
       if (phase_q == LookupWait && operation_q == PrefetchOp)
         p_prefetch_lookup_guard : assert (prefetch_accept == prefetch_accept_ref);
-      if (phase_q == Acquire && operation_q == PrefetchOp)
+      if (phase_q == Acquire && operation_q == PrefetchOp) begin
+        p_prefetch_acquire_pool : assert (StreamEnabled && acq_ep_q != 0 &&
+            int'(acq_ep_q) >= MISSES - PrefetchCount && int'(acq_ep_q) < MISSES);
         p_prefetch_acquire_conflict : assert (prefetch_acquire_ok ==
             (!prefetch_cancel && !prefetch_conflict_ref && !load_acquire_block));
+      end
     end
 `endif
 
@@ -753,8 +756,13 @@ module coherence_l1d #(
   assign ep_done_status[0] = done_status_q;
   assign ep_write_done[0] = written_q;
   for (genvar ep = 0; ep < MISSES; ep++) begin : gen_request
-    assign ep_request_valid[ep] = active && phase_q == Acquire && acq_ep_q == EpBits'(ep) &&
-        (operation_q != PrefetchOp || prefetch_acquire_ok) && (ep == 0 || !load_acquire_block);
+    if (StreamEnabled && ep >= MISSES - PrefetchCount) begin : gen_stream_admission
+      assign ep_request_valid[ep] = active && phase_q == Acquire && acq_ep_q == EpBits'(ep) &&
+          (operation_q != PrefetchOp || prefetch_acquire_ok) && !load_acquire_block;
+    end else begin : gen_demand_admission
+      assign ep_request_valid[ep] = active && phase_q == Acquire && acq_ep_q == EpBits'(ep) &&
+          (ep == 0 || !load_acquire_block);
+    end
     assign ep_grant_ready[ep] = grant_ready && grant_valid && grant_pick == EpBits'(ep);
     if (ep > 0) begin : gen_load_done
       assign ep_done_valid[ep] = ld_done_q[ep];
@@ -801,6 +809,18 @@ module coherence_l1d #(
         .o_live(live[ep])
     );
   end
+`ifndef SYNTHESIS
+  logic [EpSlots-1:0] request_valid_ref;
+  always_comb begin
+    request_valid_ref = '0;
+    for (int ep = 0; ep < MISSES; ep++)
+      request_valid_ref[ep] = active && phase_q == Acquire && acq_ep_q == EpBits'(ep) &&
+          (operation_q != PrefetchOp || prefetch_acquire_ok) && (ep == 0 || !load_acquire_block);
+  end
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && active)
+      p_request_admission : assert (ep_request_valid == request_valid_ref);
+`endif
   // A load endpoint's grant installs only while a WB slot is free for a
   // modified victim; endpoint 0 reserved its slot at Acquire.
   for (genvar ep = MISSES; ep < EpSlots; ep++) begin : gen_unused_endpoint

@@ -504,6 +504,65 @@ async def cancellation_at_each_unaccepted_stage(dut: Any) -> None:
 
 
 @cocotb.test()
+async def live_conflicts_on_hint_acceptance(dut: Any) -> None:
+    """Block a selected hint on a matching store or probe at its acceptance edge."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 3:
+        return
+    base = 0x80001020
+    for conflict in ("store", "probe"):
+        await b.reset()
+        await b.seed_before(base)
+        await b.issue(0, base)
+        await b.issue(1, base + 32)
+        if b.endpoints == 3:
+            await b.requests_at_least(2)
+            await b.grant(1)
+            await b.release(1)
+        for _ in range(150):
+            if b.get("operation_q") == 6 and b.get("phase_q") == 3:
+                break
+            await b.tick()
+        else:
+            raise AssertionError("Hint did not reach internal acceptance")
+        selected = b.get("ep_request_valid") & b.get("ep_request_ready")
+        assert selected.bit_count() == 1 and len(b.requests) == 2
+        address = b.get("lookup_addr_q")
+        if conflict == "store":
+            assert b.get("o_store_ready")
+            await b.set(
+                i_address=address, i_write_mask=255, i_write_data=b.word(address)
+            )
+            assert b.get("store_push")
+        else:
+            await b.set(
+                i_p_valid=1,
+                i_p=pack(
+                    (2, 0),
+                    (6, 17),
+                    (1, 0),
+                    (b.p, address),
+                    (2, 2),
+                    (2, 0),
+                    (9, 0),
+                    (5, 0),
+                    (3, 3),
+                ),
+            )
+        assert b.get("lookup_conflict") and not b.get("ep_request_valid")
+        await b.tick()
+        await b.set(i_write_mask=0)
+        assert not b.get("live") & selected
+        assert not b.get("ld_prefetch_q") and len(b.requests) == 2
+        if conflict == "probe":
+            await b.wait("o_p_ready")
+            await b.tick()
+            await b.set(i_p_valid=0)
+        assert b.get("pending_q" if conflict == "store" else "probe_valid_q")
+        assert not b.get("o_fatal")
+
+
+@cocotb.test()
 async def accepted_hints_drain_for_exclusive_work(dut: Any) -> None:
     """Keep speculative ownership through delayed U while AMO, SC and maintenance wait."""
     b = StreamPrivate(dut)
