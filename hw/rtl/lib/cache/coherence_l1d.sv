@@ -365,20 +365,25 @@ module coherence_l1d #(
     perf_outstanding += cache_perf_pkg::MissOutstandingBits'(
         atomic_q && atomic_sc_q && !atomic_granted_q && !o_sc_result_valid);
   end
+  // Allocation clears a slot's lookup history after its lookup update.
+  for (genvar slot = 0; slot < 8; slot++) begin : gen_perf_read_flags
+    wire lookup = perf_lookup && operation_q == ReadOp && selected_read_q == 3'(slot);
+    (* keep = "true" *) logic [1:0] seen_choice, miss_choice;
+    for (genvar allocated = 0; allocated < 2; allocated++) begin : gen_allocate_choice
+      wire clear_slot = i_rst || (allocated != 0 && i_read_id == 3'(slot));
+      assign seen_choice[allocated] = !clear_slot && (perf_read_seen_q[slot] || lookup);
+      assign miss_choice[allocated] = !clear_slot &&
+          (lookup ? !perf_hit : perf_read_miss_q[slot]);
+    end
+    always_ff @(posedge i_clk) begin
+      perf_read_seen_q[slot] <= seen_choice[i_read_valid];
+      perf_read_miss_q[slot] <= miss_choice[i_read_valid];
+    end
+  end
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      perf_read_seen_q <= '0;
-      perf_read_miss_q <= '0;
       o_perf_events <= '0;
     end else begin
-      if (perf_lookup && operation_q == ReadOp) begin
-        perf_read_seen_q[selected_read_q] <= 1'b1;
-        perf_read_miss_q[selected_read_q] <= !perf_hit;
-      end
-      if (i_read_valid) begin
-        perf_read_seen_q[i_read_id] <= 1'b0;
-        perf_read_miss_q[i_read_id] <= 1'b0;
-      end
       o_perf_events <= '0;
       o_perf_events.access <= perf_access;
       o_perf_events.hit <= perf_hit;
@@ -410,6 +415,24 @@ module coherence_l1d #(
       if (o_perf_events.hit_under_miss) begin
         assert (o_perf_events.hit);
         assert (o_perf_events.miss_outstanding != 0);
+      end
+    end
+  end
+  for (genvar slot = 0; slot < 8; slot++) begin : gen_read_flag_proof
+    always @(posedge i_clk) begin
+      if (f_past_valid) begin
+        assert (perf_read_seen_q[slot] == $past(
+            !i_rst && !(i_read_valid && i_read_id == 3'(slot)) &&
+            (perf_read_seen_q[slot] ||
+             (perf_lookup && operation_q == ReadOp && selected_read_q == 3'(slot)))));
+        assert (perf_read_miss_q[slot] == $past(
+            !i_rst && !(i_read_valid && i_read_id == 3'(slot)) &&
+            ((perf_lookup && operation_q == ReadOp && selected_read_q == 3'(slot)) ?
+             !perf_hit : perf_read_miss_q[slot])));
+        assert (rd_wait_q[slot] == $past(
+            !i_rst && (Multi ? !(i_read_valid && i_read_id == 3'(slot)) &&
+            ((rd_wait_q[slot] && rd_waiting[slot]) ||
+             (wait_attach && selected_read_q == 3'(slot))) : rd_wait_q[slot])));
       end
     end
   end
@@ -668,6 +691,17 @@ module coherence_l1d #(
   assign ep0_wb_ok = wb_free && !(load_grant_waiting && !(&(~wb_live)));
   assign load_block = Multi && (atomic_q || drain_q);
   assign wait_attach = Multi && read_miss && rd_kind_q[selected_read_q] != ReadAMO && same_line;
+  // Read validity selects between the allocation and hold/update outcomes.
+  for (genvar slot = 0; slot < 8; slot++) begin : gen_read_wait_flags
+    (* keep = "true" *) logic [1:0] wait_choice;
+    for (genvar allocated = 0; allocated < 2; allocated++) begin : gen_allocate_choice
+      wire clear_slot = allocated != 0 && i_read_id == 3'(slot);
+      assign wait_choice[allocated] = !i_rst && (Multi ? !clear_slot &&
+          ((rd_wait_q[slot] && rd_waiting[slot]) ||
+           (wait_attach && selected_read_q == 3'(slot))) : rd_wait_q[slot]);
+    end
+    always_ff @(posedge i_clk) rd_wait_q[slot] <= wait_choice[i_read_valid];
+  end
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       ld_done_q <= '0;
@@ -675,7 +709,6 @@ module coherence_l1d #(
       installed_q <= '0;
       same_line_q <= '0;
       store_same_line_q <= 1'b0;
-      rd_wait_q <= '0;
       rd_wait_release_q <= '0;
       for (int ep = 0; ep < EpSlots; ep++) begin
         ld_line_q[ep] <= '0;
@@ -715,13 +748,10 @@ module coherence_l1d #(
         end
       end
       for (int slot = 0; slot < 8; slot++) begin
-        if (rd_wait_q[slot] && !rd_waiting[slot]) rd_wait_q[slot] <= 1'b0;
         if (wait_attach && selected_read_q == 3'(slot)) begin
-          rd_wait_q[slot] <= 1'b1;
           rd_wait_ep_q[slot] <= same_line_ep;
           rd_wait_release_q[slot] <= installed_q[same_line_ep];
         end
-        if (i_read_valid && i_read_id == 3'(slot)) rd_wait_q[slot] <= 1'b0;
       end
     end
   end
