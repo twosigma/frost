@@ -128,7 +128,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherent_rs_control.sby",
-        "Coherent allocation masks, issue controls, shift and count equality.",
+        "Coherent allocation masks, issue metadata and controls, shift and count equality.",
         tasks=(
             "coh_rs_control_prove",
             "coh_rs_control_int_prove",

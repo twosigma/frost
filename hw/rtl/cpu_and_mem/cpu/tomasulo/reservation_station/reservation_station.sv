@@ -2142,16 +2142,28 @@ module reservation_station #(
       logic [$clog2(Issue2Window)-1:0] issue_idx_2_window;
       logic [Issue2Window-1:0] issue_sel_2_window;
       logic coherent_issue2_use_imm;
+      logic [ReorderBufferTagWidth-1:0] coherent_issue2_rob_tag;
+      logic coherent_issue2_writes_cdb_hint;
       if (PREPARE_ISSUE_CONTROLS) begin : gen_coherent_second_selector
         wire [1:0] live_case = {issue_cdb_2_valid, issue_cdb_valid};
         (* keep = "true" *) logic [Issue2Window-1:0] ready_choice[4];
         (* keep = "true" *) logic [3:0] valid_choice;
         (* keep = "true" *) logic [3:0] use_imm_choice;
+        (* keep = "true" *) logic [ReorderBufferTagWidth-1:0] tag_choice[4];
+        (* keep = "true" *) logic [3:0] hint_choice;
         (* keep = "true" *) logic [$clog2(Issue2Window)-1:0] index_choice[4];
         (* keep = "true" *) logic [Issue2Window-1:0] onehot_choice[4];
         for (genvar valids = 0; valids < 4; valids++) begin : gen_valid_choice
           assign ready_choice[valids]   = issue_ready_choice[valids][Issue2Window-1:0];
           assign use_imm_choice[valids] = |(rs_use_imm[Issue2Window-1:0] & onehot_choice[valids]);
+          assign hint_choice[valids] =
+              |(rs_writes_cdb_hint[Issue2Window-1:0] & onehot_choice[valids]);
+          always_comb begin
+            tag_choice[valids] = '0;
+            for (int entry = 0; entry < Issue2Window; entry++)
+              tag_choice[valids] |= rs_rob_tag[entry] &
+                  {ReorderBufferTagWidth{onehot_choice[valids][entry]}};
+          end
           coherent_rs_issue2_selector #(
               .DEPTH(Issue2Window)
           ) selector (
@@ -2163,6 +2175,8 @@ module reservation_station #(
           );
         end
         assign coherent_issue2_use_imm = use_imm_choice[live_case];
+        assign coherent_issue2_rob_tag = tag_choice[live_case];
+        assign coherent_issue2_writes_cdb_hint = hint_choice[live_case];
         assign any_ready_2 = valid_choice[live_case];
         assign issue_idx_2_window = index_choice[live_case];
         assign issue_sel_2_window = onehot_choice[live_case];
@@ -2213,6 +2227,8 @@ module reservation_station #(
 `endif
       end else begin : gen_line_second_selector
         assign coherent_issue2_use_imm = 1'b0;
+        assign coherent_issue2_rob_tag = '0;
+        assign coherent_issue2_writes_cdb_hint = 1'b0;
         rs_issue2_selector #(
             .DEPTH(Issue2Window)
         ) u_issue2_selector (
@@ -2517,6 +2533,9 @@ module reservation_station #(
 `ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
       always_comb begin
         p_coherent_use_imm_exact : assert (coherent_issue2_use_imm == issue2_use_imm_selected);
+        p_coherent_tag_exact : assert (coherent_issue2_rob_tag == issue2_rob_tag_selected);
+        p_coherent_hint_exact :
+        assert (coherent_issue2_writes_cdb_hint == issue2_writes_cdb_hint_selected);
         p_coherent_clear_mask_exact :
         assert (coherent_issue2_clear_mask == ({DEPTH{issue_fire_2}} & issue_sel_2));
       end
@@ -2526,6 +2545,10 @@ module reservation_station #(
         if (PREPARE_ISSUE_CONTROLS && i_rst_n) begin
           p_coherent_clear_capture_exact :
           assert (coherent_issue2_clear_mask == ({DEPTH{issue_fire_2}} & issue_sel_2));
+          p_coherent_tag_capture_exact :
+          assert (coherent_issue2_rob_tag == issue2_rob_tag_selected);
+          p_coherent_hint_capture_exact :
+          assert (coherent_issue2_writes_cdb_hint == issue2_writes_cdb_hint_selected);
           if (issue_fire_2)
             p_coherent_use_imm_capture_exact :
             assert (coherent_issue2_use_imm == issue2_use_imm_selected);
@@ -2539,7 +2562,8 @@ module reservation_station #(
           stage2b_valid <= 1'b0;
         end else if (issue_fire_2) begin
           stage2b_valid <= 1'b1;
-          stage2b_rob_tag <= issue2_rob_tag_selected;
+          stage2b_rob_tag <= PREPARE_ISSUE_CONTROLS ?
+              coherent_issue2_rob_tag : issue2_rob_tag_selected;
           stage2b_op <= riscv_pkg::instr_op_e'(pl2_op_bits);
           // Live CDB data overrides resident or repair data. Distinct lane tags
           // allow at most one live match.
@@ -2557,7 +2581,8 @@ module reservation_station #(
           if (PREPARE_ISSUE_CONTROLS) stage2b_use_imm <= coherent_issue2_use_imm;
           else stage2b_use_imm <= issue2_use_imm_selected;
           stage2b_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ?
-              issue2_writes_cdb_hint_selected : 1'b0;
+              (PREPARE_ISSUE_CONTROLS ? coherent_issue2_writes_cdb_hint :
+               issue2_writes_cdb_hint_selected) : 1'b0;
           stage2b_rm <= pl2_rm;
           stage2b_predicted_taken <= pl2_predicted_taken;
           stage2b_predicted_target_ok <= pl2_predicted_target_ok;

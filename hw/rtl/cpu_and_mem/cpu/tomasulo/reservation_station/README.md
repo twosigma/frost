@@ -168,7 +168,8 @@ Readiness and selection are computed for all four CDB-valid
 combinations before the live valid bits select the result.
 The primary port computes each four-entry group's payload index from these
 same readiness combinations. Live CDB validity selects the prepared index.
-Each combination also selects the immediate-use bit before live CDB validity.
+Each combination also selects the immediate-use bit, ROB tag and writeback
+hint before live CDB validity.
 The secondary clear mask applies port permission to the winner mask. A zero
 winner mask clears no entry.
 
