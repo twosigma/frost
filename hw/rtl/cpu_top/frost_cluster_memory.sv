@@ -29,7 +29,7 @@ module frost_cluster_memory #(
     parameter int unsigned L2_NUM_WAITERS = 2,
     parameter int unsigned L2_PREFETCH = 1,
     parameter int unsigned L2_PREFETCH_DISTANCE = 8,
-    parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
+    parameter int unsigned L2_PREFETCH_INFLIGHT = 3,
     parameter int unsigned L2_LINE_BYTES = 64,
     parameter int unsigned SIM_FAST_MAINT = 0,
     // The hart's uncached instruction fetch block (cpu_memory_fabric
@@ -262,8 +262,17 @@ module frost_cluster_memory #(
       assign dma_c = '0;
       assign dma_u_ready = 1'b0;
     end
-    // The home's stream prefetcher (L2_PREFETCH): source 3 on D, G, C and U, trained on the
-    // hart's demands as the home takes them.
+    // Prefetch requests use source 3. Hart data requests train the predictor
+    // on acceptance by the cluster D arbiter.
+    logic pf_pause;
+    coherence_prefetch_pause dma_pause (
+        .i_clk,
+        .i_rst,
+        .i_dma_valid(dma_req_valid),
+        .i_dma_accept(dma_req_valid && dma_req_ready),
+        .i_dma_response(dma_resp_valid),
+        .o_pause(pf_pause)
+    );
     if (L2_PREFETCH != 0) begin : gen_prefetch
       coherence_prefetch_agent #(
           .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
@@ -274,6 +283,7 @@ module frost_cluster_memory #(
           .i_clk(i_clk),
           .i_rst(i_rst),
           .i_fatal_stop(i_fatal_error),
+          .i_pause(pf_pause),
           .i_train_valid(i_coherent_d_valid && o_coherent_d_ready),
           .i_train_d(i_coherent_d),
           .o_d_valid(pf_d_valid),

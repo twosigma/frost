@@ -2466,6 +2466,30 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GWAYS=1",
         ),
     ),
+    "coherence_prefetch_contention": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_prefetch_contention",
+        hdl_toplevel_module="coherence_prefetch_test_harness",
+        description="Demand latency and bandwidth with streams, dirty victims and DMA",
+        verilator_extra_args=("--assert",),
+    ),
+    "coherence_prefetch_contention_off": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_prefetch_contention",
+        hdl_toplevel_module="coherence_prefetch_test_harness",
+        description="Demand latency and bandwidth with prefetch disabled",
+        verilator_extra_args=("--assert", "-GPREFETCH=0"),
+    ),
+    "coherence_prefetch": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_prefetch",
+        hdl_toplevel_module="coherence_prefetch_test_harness",
+        description="Four prefetch identities, delayed completion, errors, demand, PutM and DMA",
+        verilator_extra_args=("--assert", "-GPREFETCH_INFLIGHT=4"),
+    ),
+    "coherence_prefetch_equal": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_prefetch",
+        hdl_toplevel_module="coherence_prefetch_test_harness",
+        description="Prefetch and home integration with 32-byte lines",
+        verilator_extra_args=("--assert", "-GLINE_BYTES=32", "-GPREFETCH_INFLIGHT=4"),
+    ),
     "coherence_home": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home",
         hdl_toplevel_module="coherence_home",

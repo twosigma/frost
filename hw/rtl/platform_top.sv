@@ -56,7 +56,7 @@ module platform_top #(
     parameter int unsigned L2_NUM_WAITERS = 2,
     parameter int unsigned L2_PREFETCH = 1,
     parameter int unsigned L2_PREFETCH_DISTANCE = 8,
-    parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
+    parameter int unsigned L2_PREFETCH_INFLIGHT = 3,
     // L2 line size is 32 or 64 bytes. Each AXI beat carries one L2 line.
     parameter int unsigned L2_LINE_BYTES = 64,
     // Simulation-only coherent-array reset and L1I maintenance acceleration.

@@ -32,6 +32,7 @@ $(ROOT)/hw/rtl/lib/cache/coherence_prefetcher.sv
 # The coherence home's prefetch requester: the stream prefetcher above, issuing
 # Prefetch (source 3) requests to the home.
 $(ROOT)/hw/rtl/lib/cache/coherence_prefetch_agent.sv
+$(ROOT)/hw/rtl/lib/cache/coherence_prefetch_pause.sv
 
 # One hart's private caches: the L1s, the walker port, and the L1D's probe
 # injection and fence.i sequencing.

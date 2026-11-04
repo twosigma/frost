@@ -1,0 +1,46 @@
+#    Copyright 2026 Two Sigma Open Source, LLC
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+
+[tasks]
+pf_agent64_prove wide safety
+pf_agent32_prove narrow safety
+pf_agent4_prove wide full safety
+pf_agent64_cover wide full reach
+pf_agent32_cover narrow full reach
+
+[options]
+safety: mode prove
+safety: depth 12
+reach: mode cover
+reach: depth 40
+
+[engines]
+smtbmc boolector
+
+[script]
+read -define COHERENCE_ARBITER_COMPOSED
+read -formal -sv coherence_pkg.sv coherence_d_arbiter.sv coherence_request_endpoint.sv l2_stream_prefetcher.sv coherence_prefetch_agent.sv
+narrow: chparam -set L2_LINE_BYTES 32 coherence_prefetch_agent
+full: chparam -set MAX_INFLIGHT 4 coherence_prefetch_agent
+prep -top coherence_prefetch_agent
+memory_map
+opt_clean
+
+[files]
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_d_arbiter.sv
+../hw/rtl/lib/cache/coherence_request_endpoint.sv
+../hw/rtl/lib/cache/l2_stream_prefetcher.sv
+../hw/rtl/lib/cache/coherence_prefetch_agent.sv

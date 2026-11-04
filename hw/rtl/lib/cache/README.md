@@ -113,9 +113,9 @@ Request identity q contains src 2, port_class 2, id 4, and epoch 1. Sources
 name data, instruction fetch, page-table walk, and agent traffic. Hart data
 IDs are 0 through 7, fetch IDs are 0 and 1, and the walk ID is 0. DMA IDs
 are opaque four-bit values; prefetch IDs are 0 through 3. Admission limits
-are the ingress's credits for DMA, eight in the cluster, and four prefetch
-requests. Admission arbitration is
-external to the endpoint slots.
+are the ingress's credits for DMA, eight in the cluster, and
+`L2_PREFETCH_INFLIGHT` for prefetch, three by default and at most four.
+Admission arbitration is external to the endpoint slots.
 
 Home tid is six bits. For H harts, `completion_count(H)` is `11*H+12`: eleven
 identities per hart, eight DMA credits and four prefetch identities.
@@ -1133,6 +1133,8 @@ to answer.
 
 | Target family | Coverage |
 | --- | --- |
+| `coherence_prefetch*` | Four occupied prefetch identities, delayed G/C/U, fill errors, reset, same-line and unrelated demands, dirty replacement, PutM, marked DMA fills, and progress with completion, result, fill, writeback and PutM storage full at 32- and 64-byte lines |
+| `coherence_prefetch_contention*` | Demand latency and bandwidth with competing streams, dirty victims and DMA, with and without prefetch |
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, and dirty-L1D walker coherence |
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, a miss waiting for a way of its set, writeback and fill progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
@@ -1140,7 +1142,7 @@ to answer.
 | `*_equal_lines` | The data-integrity, concurrency, and DMA suites with 32-byte L2 lines, equal to the L1s', as a control; also DDR load and store, fetch, atomic, DMA, page-table-walk, and `fence.i` programs on the whole system with 32-byte L2 lines and a 256-bit DDR port |
 | `*_16x4` | The L2-line, concurrency, and DMA suites with 16 L2 miss slots and 4 writeback slots |
 | `frost_cache_l2_lines_waiters2` | The L2-line suite with two waiter seats per L2 miss slot |
-| `*_prefetch` | The concurrency and DMA suites with eight L1D miss slots, eight L2 miss slots, two waiter seats per L2 miss slot, and eight prefetch requests |
+| `frost_cache_*_prefetch` | The concurrency and DMA suites with eight L1D miss slots, eight L2 miss slots, two waiter seats per L2 miss slot, and eight prefetch requests |
 | `*_ways1` | The data-integrity, concurrency, DMA, and L2-line suites with direct-mapped caches |
 | `l2_stream_prefetcher*` | Stream confirmation, read distance, page bounds, response ID reuse, four- and eight-request caps under excess demand, bounded backward instruction refills, and disabled request loading |
 | `line_port_arbiter*` | Arbitration and tagged responses |

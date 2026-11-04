@@ -66,6 +66,22 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "coherence_prefetch_pause.sby",
+        "DMA credits and seven idle cycles gate prefetch admission.",
+        tasks=("pf_pause_prove", "pf_pause_cover"),
+    ),
+    FormalTarget(
+        "coherence_prefetch_agent.sby",
+        "Prefetch identities, held requests, error completion and reset at both line sizes.",
+        tasks=(
+            "pf_agent64_prove",
+            "pf_agent32_prove",
+            "pf_agent4_prove",
+            "pf_agent64_cover",
+            "pf_agent32_cover",
+        ),
+    ),
+    FormalTarget(
         "coherence_store_boundary.sby",
         "Production SQ, router, buffered L1D and LQ preserve credit, drain and atomic exclusion.",
         tasks=(
@@ -1140,6 +1156,25 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    (
+        "pf_pause_prove",
+        "Prefetch pause equals live DMA identities and recent activity.",
+    ),
+    ("pf_pause_cover", "Eight DMA identities, simultaneous reuse and return to idle."),
+    ("pf_agent64_prove", "Prefetch endpoint ownership with 64-byte lines."),
+    ("pf_agent32_prove", "Prefetch endpoint ownership with 32-byte lines."),
+    (
+        "pf_agent4_prove",
+        "Prefetch endpoint ownership with all four identities enabled.",
+    ),
+    (
+        "pf_agent64_cover",
+        "Four prefetch identities, errors, release and reset with 64-byte lines.",
+    ),
+    (
+        "pf_agent32_cover",
+        "Four prefetch identities, errors, release and reset with 32-byte lines.",
+    ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
     ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),

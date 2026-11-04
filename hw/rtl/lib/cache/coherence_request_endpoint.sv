@@ -50,6 +50,9 @@ module coherence_request_endpoint #(
     output logic o_u_ready,
     input logic [ADDR_WIDTH+14:0] i_u,
     output logic o_live
+`ifdef FORMAL
+    , output logic [2:0] o_formal_phase
+`endif
 );
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
   typedef enum logic [2:0] {
@@ -62,6 +65,9 @@ module coherence_request_endpoint #(
     WaitU
   } phase_t;
   phase_t phase_q;
+`ifdef FORMAL
+  assign o_formal_phase = phase_q;
+`endif
   coh_d_t request, demand_q;
   coh_g_t grant_in, grant_q;
   coh_c_t completion_q;

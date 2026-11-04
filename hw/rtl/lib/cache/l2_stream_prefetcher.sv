@@ -67,6 +67,9 @@ module l2_stream_prefetcher #(
     output logic [   ID_BITS-1:0] o_req_id,
     input  logic                  i_resp_valid,
     input  logic [   ID_BITS-1:0] i_resp_id
+`ifdef FORMAL
+    , output logic [(1<<ID_BITS)-1:0] o_formal_busy
+`endif
 );
 
   localparam int unsigned LineOffBits = $clog2(L2_LINE_BYTES);
@@ -167,6 +170,16 @@ module l2_stream_prefetcher #(
   assign o_req_valid = req_valid_q;
   assign o_req_addr  = {req_line_q, {LineOffBits{1'b0}}};
   assign o_req_id    = req_id_q;
+
+`ifdef FORMAL
+  assign o_formal_busy = id_busy_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      assert (inflight_q <= InflightBits'(MAX_INFLIGHT));
+      if (req_valid_q) assert (id_busy_q[req_id_q]);
+    end
+  end
+`endif
 
   logic req_fire;
   assign req_fire = req_valid_q && i_req_ready;
@@ -296,7 +309,18 @@ module l2_stream_prefetcher #(
     end
   end
 `endif
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      assert (!i_resp_valid || id_busy_q[i_resp_id]);
+      assert (!load || !id_busy_q[free_id]);
+      assert (inflight_q == InflightBits'($countones(id_busy_q)));
+      for (int e = 0; e < int'(STREAMS); e++) begin
+        if (st_valid_q[e]) assert (st_line_p1_q[e] == st_line_q[e] + LineBits'(1));
+      end
+    end
+  end
 `endif
+
 `ifndef SYNTHESIS
 `ifndef FORMAL
   logic reset_seen_q = 1'b0;

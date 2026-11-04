@@ -84,6 +84,15 @@ a write in flight through reset, including a five-cycle home data write.
 The private-array benches alternate data and skipped-data hits, hold replies,
 and check replacement choices at the following lookup in each set.
 
+`coherence_prefetch` and `coherence_prefetch_equal` connect the stream
+requester and its four endpoints to the home at both line sizes. They check
+identity occupancy through fill completion and G/C/U, independently delayed
+channels, errors and reset, demand joins, dirty recalls, PutM, marked DMA
+fills and progress with completion, result, fill, writeback and PutM
+storage full. The
+`coherence_prefetch_contention*` benches report demand service for competing
+streams, dirty replacement and DMA with prefetch enabled or disabled.
+
 `coherence_home_completions`, `coherence_home`, `coherence_home_equal`,
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
 and CPU observation cuts; `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. Home cases hold every memory fill while resident
