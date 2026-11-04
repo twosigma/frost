@@ -46,7 +46,8 @@ module coherence_read_select #(
     output logic [2:0] o_index,
     output logic [ADDR_WIDTH-1:0] o_address
 );
-  logic [7:0] eligible, load_miss, upper, first;
+  logic [7:0] eligible, load_miss, upper, first, stored_eligible, write_eligible;
+  (* keep = "true" *) logic stored_found, write_found;
   (* keep = "true" *) logic [7:0] first_upper, first_any;
   // i_addr is each slot's address after the buffered write forwards to it.
   // The comparisons use the stored addresses and the buffered write's address
@@ -74,9 +75,12 @@ module coherence_read_select #(
             i_wb_addr[slot*ADDR_WIDTH+5+:ADDR_WIDTH-5];
     end
     assign blocked = i_write_mask[index] ? write_blocked : stored_blocked;
-    assign eligible[index] = i_valid[index] && !i_ready[index] && !blocked &&
+    wire qualified = i_valid[index] && !i_ready[index] &&
         (i_kind[2*index+:2] != 2'd2 || i_atomic_protected) &&
         !i_owned[index] && !i_waiting[index] && (!i_miss[index] || i_miss_retry[index]);
+    assign eligible[index] = qualified && !blocked;
+    assign stored_eligible[index] = qualified && !i_write_mask[index] && !stored_blocked;
+    assign write_eligible[index] = qualified && i_write_mask[index];
     assign load_miss[index] = eligible[index] && i_miss[index] && i_kind[2*index+:2] == 2'd0;
     if (index == 7) begin : gen_last
       assign upper[index] = eligible[index];
@@ -92,7 +96,11 @@ module coherence_read_select #(
     end
   end
   assign first = (|upper) ? first_upper : first_any;
-  assign o_found = |eligible;
+  // Stored and buffered-write candidates reduce separately. The shared
+  // write-address check qualifies the buffered-write result.
+  assign stored_found = |stored_eligible;
+  assign write_found = |write_eligible;
+  assign o_found = stored_found || (write_found && !write_blocked);
   assign o_load_miss = |load_miss;
   always_comb begin
     o_index = '0;
@@ -145,6 +153,7 @@ module coherence_read_select #(
   always @(posedge i_clk)
 `endif
   begin
+    p_read_available_exact : assert (o_found == |eligible);
     p_read_select_exact : assert (o_found == ref_found && o_index == ref_index);
     p_load_miss_exact : assert (o_load_miss == ref_load_miss);
     if (o_found) p_read_address_exact : assert (o_address == ref_selected_address);

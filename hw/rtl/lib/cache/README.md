@@ -325,7 +325,9 @@ allocated payload until reset or another allocation to that slot.
 Allocation marks an empty slot valid. Read eligibility compares each physical slot with pending, atomic and frozen
 writeback sectors. The comparisons use the stored slot addresses and the
 buffered allocation's address, and the slot mask selects between their
-results. Circular priority selects a qualified slot and its address.
+results. Availability reduces stored and buffered-write candidates separately;
+the shared write-address exclusion qualifies the buffered-write result.
+Circular priority selects a qualified slot and its address.
 There are no E grants, silent upgrades, sharer hints or stream prefetches.
 The L1D has eight read slots and `L1D_NUM_MSHR` request endpoints. The home
 has four fills and `L2_NUM_WB` victim write slots. `L2_NUM_MSHR`,
