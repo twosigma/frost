@@ -7,7 +7,7 @@ SystemVerilog. It implements RV64GCB with machine, supervisor, and user modes
 and Sv39 virtual memory. The AMD Alveo X3522PV configuration targets 322 MHz
 and boots Debian 13 with Debian's unmodified riscv64 kernel, mounting its root
 filesystem over NFS through its own 10 Gigabit Ethernet NIC. It runs
-[CoreMark](sw/apps/coremark/README.md) at 4.51 CoreMark/MHz, 1,453 CoreMark at
+[CoreMark](sw/apps/coremark/README.md) at 4.55 CoreMark/MHz, 1,465 CoreMark at
 322 MHz.
 
 [![FROST architecture: two-wide out-of-order CPU, Sv39 translation, X3 cache hierarchy, and system peripherals](docs/diagrams/frost-architecture.svg)](docs/diagrams/frost-architecture.svg)
