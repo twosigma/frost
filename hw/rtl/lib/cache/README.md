@@ -285,7 +285,10 @@ endpoint drain. Contending eligible load misses and lookahead acquisitions alter
 successful allocations. Read hits do not clear the allocation turn. They permit
 store borrowing when no eligible load miss waits. A read miss can finish a lookup
 before yielding endpoint allocation to lookahead. A lookahead Modified hit
-consumes no endpoint and yields its allocation turn. Each acquired
+consumes no endpoint and yields its allocation turn. A yielded read miss reserves
+lookahead service ahead of head-store hits. The reservation ends after lookahead
+service, endpoint allocation, record promotion or removal, or an atomic or
+maintenance drain request. Each acquired
 store record contributes to the outstanding-miss count until installation.
 Read status uses per-slot masks for allocation, response transfer, lookup
 results and grant completion. Completion and miss sets dominate allocation

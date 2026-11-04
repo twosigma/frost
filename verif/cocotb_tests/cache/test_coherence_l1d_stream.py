@@ -570,3 +570,86 @@ async def head_lookup_preserves_lookahead_allocation_turn(dut: Any) -> None:
     await b.wait("live", 0)
     assert b.installs == [base, base + 64, base + 32, base + 96]
     assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def store_hits_cannot_displace_a_yielded_miss(dut: Any) -> None:
+    """Reserve lookahead service under replenishment and cancel it for drains."""
+    for drain in ("read", "sc", "maintenance"):
+        b = Stream(dut)
+        await b.reset()
+        a, c, miss = 0x80000000, 0x80000040, 0x80000080
+        for address in (a, c):
+            await store(b, address, 0xABC)
+            await b.grant(address)
+            await b.release(address)
+        await b.set(
+            i_p_valid=1,
+            i_p=pack(
+                (2, 0),
+                (6, 3),
+                (1, 0),
+                (b.p, a + 384),
+                (2, 0),
+                (2, 0),
+                (9, 0),
+                (5, 0),
+                (3, 0),
+            ),
+        )
+        await b.wait("o_p_ready")
+        await b.tick()
+        await b.set(i_p_valid=0)
+        await b.wait("o_r_valid")
+        for address in (a, c):
+            await store(b, address, 0xABC)
+        await b.set(
+            i_read_valid=1, i_read_kind=0, i_read_id=0, i_read_size=3, i_address=miss
+        )
+        await b.tick()
+        await b.set(i_read_valid=0)
+        await b.tick(8)
+        assert b.get("look_available") and not b.get("look_read_turn_q")
+        await b.set(i_r_ready=1)
+        await b.tick()
+        await b.set(i_r_ready=0)
+        offer, address, reserved = False, a, False
+        for _ in range(400):
+            if b.get("look_priority_q"):
+                reserved = True
+                if drain == "sc":
+                    await b.set(
+                        i_sc_valid=1, i_atomic_protected=1, i_sc_address=a, i_sc_size=3
+                    )
+                elif drain == "maintenance":
+                    await b.set(i_maint_valid=1)
+            await b.set(
+                i_write_mask=255 if offer else 0, i_address=address, i_write_data=0xABC
+            )
+            launch = (
+                drain == "read"
+                and b.get("operation_q") == 1
+                and b.get("phase_q") == 1
+                and b.get("store_count") <= 2
+                and bool(b.get("o_store_ready"))
+            )
+            await b.tick()
+            if offer:
+                address = c if address == a else a
+            offer = launch
+            if drain == "read" and any(d[2] == miss for _, d in b.demands):
+                break
+            if drain != "read" and reserved and not b.get("o_pending_store"):
+                break
+        else:
+            raise AssertionError(f"{drain} made no progress through store hits")
+        await b.set(i_write_mask=0)
+        assert reserved and not b.get("look_priority_q")
+        if drain == "read":
+            await b.grant(miss)
+            await b.release(miss)
+            await b.wait("o_pending_store", 0)
+            await b.wait("live", 0)
+        elif drain == "sc":
+            await b.wait("o_sc_ready")
+        assert not b.get("o_fatal")
