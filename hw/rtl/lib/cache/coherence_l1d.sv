@@ -506,7 +506,18 @@ module coherence_l1d #(
   assign pending_q = store_count != 0;
   assign tail_q = store_count > 1;
   assign store_next_index = store_head_index + 2'd1;
-  assign pending_addr_q = store_addr[store_head_index];
+  // Head promotion and empty insertion capture the sector address directly.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) pending_addr_q <= '0;
+    else if (store_push && (store_count == 0 || (store_count == 1 && store_pop)))
+      pending_addr_q <= {i_address[ADDR_WIDTH-1:5], 5'b0};
+    else if (store_pop) pending_addr_q <= store_addr[store_next_index];
+  end
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst && pending_q)
+      p_store_head_address : assert (pending_addr_q == store_addr[store_head_index]);
+`endif
   assign pending_data_q = store_data[store_head_index];
   assign pending_mask_q = store_mask[store_head_index];
   assign pending_tag = store_tag[store_head_index];

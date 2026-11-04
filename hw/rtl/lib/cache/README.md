@@ -272,6 +272,7 @@ endpoint capture without an intervening private installation.
 
 Grant eligibility is checked before priority. A registered store-owner mask
 follows the head on installation and includes accepted acquisitions.
+A registered head address follows empty insertion and head promotion.
 A younger store grant waits
 in its endpoint while the head and eligible reads continue. Endpoint 0
 reserves a free dirty-victim slot through installation. A nonzero endpoint
