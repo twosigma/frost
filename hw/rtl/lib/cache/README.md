@@ -276,7 +276,8 @@ A registered head address follows empty insertion and head promotion.
 Nonzero grant candidates share free writeback credit; endpoint zero uses its
 reserved credit. `coherence_grant_select` applies that shared credit after
 choosing the first nonzero candidate. For binary inputs, its outputs match a priority scan over
-all credit-qualified candidates.
+all credit-qualified candidates. The same selection qualifies the endpoint
+failure bit.
 A younger store grant waits
 in its endpoint while the head and eligible reads continue. Endpoint 0
 reserves a free dirty-victim slot through installation. A nonzero endpoint

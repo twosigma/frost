@@ -20,29 +20,37 @@ module coherence_grant_select #(
     localparam int unsigned IndexBits = $clog2(SLOTS)
 ) (
     input logic [SLOTS-1:0] i_offer,
+    input logic [SLOTS-1:0] i_failure,
     input logic i_zero_credit,
     input logic i_other_credit,
     output logic o_valid,
     output logic [IndexBits-1:0] o_index,
-    output logic [SLOTS-1:0] o_onehot
+    output logic [SLOTS-1:0] o_onehot,
+    output logic o_failure
 );
-  logic zero_selected;
+  (* keep = "true" *) logic [SLOTS-1:0] offered, failure;
+  (* keep = "true" *) logic zero_selected, other_allowed, other_failure;
   (* keep = "true" *) logic [SLOTS-1:1] other_first;
   logic [IndexBits-1:0] other_index;
-  assign zero_selected = i_offer[0] && i_zero_credit;
+  assign offered = i_offer;
+  assign failure = i_failure;
+  assign zero_selected = offered[0] && i_zero_credit;
+  assign other_allowed = i_other_credit && !zero_selected;
   for (genvar slot = 1; slot < SLOTS; slot++) begin : gen_other
-    if (slot == 1) assign other_first[slot] = i_offer[slot];
-    else assign other_first[slot] = i_offer[slot] && !(|i_offer[slot-1:1]);
+    if (slot == 1) assign other_first[slot] = offered[slot];
+    else assign other_first[slot] = offered[slot] && !(|offered[slot-1:1]);
   end
   always_comb begin
     other_index = '0;
     for (int slot = 1; slot < SLOTS; slot++)
     other_index |= IndexBits'(slot) & {IndexBits{other_first[slot]}};
   end
-  assign o_valid = zero_selected || (i_other_credit && |i_offer[SLOTS-1:1]);
-  assign o_index = !zero_selected && i_other_credit ? other_index : '0;
+  assign o_valid = zero_selected || (i_other_credit && |offered[SLOTS-1:1]);
+  assign o_index = other_allowed ? other_index : '0;
   assign o_onehot[0] = zero_selected;
-  assign o_onehot[SLOTS-1:1] = other_first & {(SLOTS - 1) {i_other_credit && !zero_selected}};
+  assign o_onehot[SLOTS-1:1] = other_first & {(SLOTS - 1) {other_allowed}};
+  assign other_failure = |(other_first & failure[SLOTS-1:1]);
+  assign o_failure = (zero_selected && failure[0]) || (other_allowed && other_failure);
 
 `ifndef SYNTHESIS
   logic ref_valid;
@@ -61,6 +69,7 @@ module coherence_grant_select #(
     p_grant_valid_exact : assert (o_valid == ref_valid);
     p_grant_index_exact : assert (o_index == ref_index);
     p_grant_onehot_exact : assert (o_onehot == ref_onehot);
+    p_grant_failure_exact : assert (o_failure == (ref_valid && |(ref_onehot & i_failure)));
   end
 `endif
 endmodule

@@ -1113,15 +1113,15 @@ FORMAL_TARGETS = [
 SBY_TASKS = [
     (
         "coh_grant_select2_prove",
-        "Two grant candidates preserve credit-qualified priority.",
+        "Two grant candidates preserve credit-qualified priority and failure selection.",
     ),
     (
         "coh_grant_select4_prove",
-        "Four grant candidates preserve credit-qualified priority.",
+        "Four grant candidates preserve credit-qualified priority and failure selection.",
     ),
     (
         "coh_grant_select8_prove",
-        "Eight grant candidates preserve credit-qualified priority.",
+        "Eight grant candidates preserve credit-qualified priority and failure selection.",
     ),
     ("bmc_siblings", "Real-home sibling store byte safety."),
     ("bmc_rows", "Real-home distinct-row store byte safety."),

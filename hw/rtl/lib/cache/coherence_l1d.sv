@@ -308,14 +308,13 @@ module coherence_l1d #(
   logic [EpSlots-1:0] pick_onehot, ep_read_fail, ep_fail, ep_fail_error;
   logic acquisition_store_q, acquisition_sc_q;
   logic [2:0] acquisition_read_q;
-  logic grant_valid, grant_ready;
+  logic grant_valid, grant_ready, grant_read_failure;
   coh_g_t grant, grant_q;
   logic done_q, done_ready, written_q;
   logic [1:0] done_status_q;
   logic pending_blocked;
 
-  assign read_failure = active && phase_q == Idle &&
-      !probe_valid_q && !probe_priority && grant_valid && |(pick_onehot & ep_read_fail);
+  assign read_failure = grant_ready && grant_read_failure;
   assign read_hit = active && phase_q == LookupWait && array_valid &&
       operation_q == ReadOp &&
       rd_kind_q[selected_read_q] != ReadAMO && array_hit;
@@ -731,11 +730,13 @@ module coherence_l1d #(
       .SLOTS(EpSlots)
   ) grant_select (
       .i_offer(grant_offer),
+      .i_failure(ep_read_fail),
       .i_zero_credit(wb_reserved_q),
       .i_other_credit(wb_free),
       .o_valid(grant_valid),
       .o_index(grant_pick),
-      .o_onehot(pick_onehot)
+      .o_onehot(pick_onehot),
+      .o_failure(grant_read_failure)
   );
   assign read_service_waiting = rd_candidate || load_grant_eligible;
   assign grant = ep_grant[grant_pick];
