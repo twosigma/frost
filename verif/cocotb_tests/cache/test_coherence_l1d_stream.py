@@ -171,17 +171,24 @@ class StreamPrivate(Private):
         await self.set(i_u_valid=0)
         self.completed.add(index)
 
-    async def probe(self, address: int, opcode: int = 0, check_q: int = 0) -> None:
+    async def probe(
+        self,
+        address: int,
+        opcode: int = 0,
+        check_q: int = 0,
+        tid: int = 17,
+        requester: int = 2,
+    ) -> None:
         """Capture a probe and hold its reply for explicit acceptance."""
         await self.set(
             i_p_valid=1,
             i_p=pack(
                 (2, opcode),
-                (6, 17),
+                (6, tid),
                 (1, 0),
                 (self.p, address),
-                (2, 2),
-                (2, 0),
+                (2, requester),
+                (2, 3 if opcode == 2 else 0),
                 (9, check_q),
                 (5, 0),
                 (3, 3),
@@ -202,20 +209,26 @@ class StreamPrivate(Private):
                 i_reservation_addr=request[2],
                 i_reservation_size=3,
             )
-            await self.probe(request[2], opcode=2, check_q=request[1])
+            await self.probe(
+                request[2],
+                opcode=2,
+                check_q=request[1],
+                tid=ep,
+                requester=request[1] >> 7,
+            )
             reply = unpack(
                 self.get("o_r"), (2, 6, 1, 1, self.p, 2, 1, 1, 256, 1, 1, 1, 1, 1)
             )
-            assert reply[0] == 2 and reply[1] == 17 and reply[4] == request[2]
+            assert reply[0] == 2 and reply[1] == ep and reply[4] == request[2]
             assert reply[12] and not reply[13]
             await self.set(i_r_ready=1)
             await self.tick()
             await self.set(i_r_ready=0)
-            await self.probe(request[2])
+            await self.probe(request[2], tid=ep, requester=request[1] >> 7)
             reply = unpack(
                 self.get("o_r"), (2, 6, 1, 1, self.p, 2, 1, 1, 256, 1, 1, 1, 1, 1)
             )
-            assert reply[1] == 17 and reply[4] == request[2] and not reply[13]
+            assert reply[1] == ep and reply[4] == request[2] and not reply[13]
             await self.set(i_r_ready=1)
             await self.tick()
             await self.set(i_r_ready=0)
@@ -430,7 +443,7 @@ async def resident_hint_preserves_waiting_data(dut: Any) -> None:
 
 @cocotb.test()
 async def cancellation_at_each_unaccepted_stage(dut: Any) -> None:
-    """Cancel hints before atomic admission or immediately for direct cancellation."""
+    """Cancel unaccepted hints after LR/AMO admission and on direct cancellation."""
     b = StreamPrivate(dut)
     if b.endpoints < 4:
         return
@@ -480,8 +493,13 @@ async def cancellation_at_each_unaccepted_stage(dut: Any) -> None:
                 assert not b.get("ep_request_valid")
             await b.tick()
             await b.set(i_read_valid=0)
-            await b.tick(12)
-            assert not b.get("hint_valid_q") and not b.get("stream_confirmed")
+            if cancel in ("lr", "amo"):
+                assert b.get("rd_valid_q") & 4 and b.get("atomic_read_waiting")
+                assert b.get("prefetch_cancel")
+            await b.tick()
+            assert not b.get("hint_valid_q") and not b.get("hint_checked_q")
+            assert not b.get("stream_confirmed")
+            await b.tick(11)
             assert not b.get("live") & b.get("ld_prefetch_q")
 
 
@@ -696,7 +714,7 @@ async def empty_turn_and_probe_local_turn(dut: Any) -> None:
     b = StreamPrivate(dut)
     if b.endpoints < 3:
         return
-    for held_probe in (False, True):
+    for mode in ("store", "probe", "cancel"):
         for error in (False, True):
             await b.reset()
             base = 0x80003000
@@ -707,7 +725,7 @@ async def empty_turn_and_probe_local_turn(dut: Any) -> None:
             await b.tick(40)
             await b.send_grant(0)
             await b.send_grant(1, error=error)
-            if not held_probe:
+            if mode == "store":
                 await b.set(i_address=base, i_write_mask=255, i_write_data=123)
                 await b.tick()
                 await b.set(i_write_mask=0)
@@ -719,7 +737,7 @@ async def empty_turn_and_probe_local_turn(dut: Any) -> None:
                 raise AssertionError("No unused grant-deferral opportunity")
             assert not b.get("prefetch_cancel")
             assert not b.get("grant_ready") and not b.get("read_failure")
-            if held_probe:
+            if mode == "probe":
                 await b.probe(base + 2048)
                 for _ in range(12):
                     assert b.get("grant_read_turn_q") and not b.get("grant_ready")
@@ -730,8 +748,18 @@ async def empty_turn_and_probe_local_turn(dut: Any) -> None:
                 await b.set(i_r_ready=0)
                 assert b.get("local_turn_q") and b.get("grant_ready")
             else:
-                assert not b.get("rd_candidate") and not b.get("grant_read_yield")
+                if mode == "cancel":
+                    assert b.get("rd_candidate")
+                    await b.set(
+                        i_maint_valid=1, i_maint_line=1, i_maint_address=base + 2048
+                    )
+                    assert b.get("prefetch_cancel") and b.get("grant_read_hold")
+                    assert b.get("rd_candidate") and not b.get("grant_read_yield")
+                    assert not b.get("grant_ready") and not b.get("read_failure")
+                else:
+                    assert not b.get("rd_candidate") and not b.get("grant_read_yield")
                 await b.tick()
+                assert not b.get("rd_ready_q") & 4
                 assert b.get("phase_q") == 0 and not b.get("grant_read_turn_q")
                 assert b.get("grant_ready")
             assert b.get("read_failure") == int(error)
@@ -775,9 +803,17 @@ async def atomic_admission_on_hint_acceptance(dut: Any) -> None:
             await b.tick()
             await b.set(i_read_valid=0)
             assert b.get("atomic_read_waiting") and b.get("prefetch_cancel")
+            assert b.get("rd_valid_q") & 4
+            payload = b.get("rd_payload_flat") >> (
+                2 * (b.p + 2 + 3 + len(dut.i_read_tag))
+            )
+            assert (payload >> (3 + len(dut.i_read_tag))) & 3 == kind
             assert b.get("live") & b.get("ld_prefetch_q") == accepted
             held_d = b.get("o_d")
-            for _ in range(12):
+            await b.tick()
+            assert not b.get("hint_valid_q") and not b.get("hint_checked_q")
+            assert not b.get("stream_confirmed")
+            for _ in range(11):
                 assert b.get("o_d_valid") == accepted and b.get("o_d") == held_d
                 assert not b.get("ep_request_valid")
                 assert not b.get("o_read_valid")
@@ -826,3 +862,46 @@ async def atomic_admission_on_hint_acceptance(dut: Any) -> None:
             if kind == 1 and error:
                 assert b.requests[3][0] == 0 and b.requests[3][1][0] == 2
             assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def endpoint_zero_bypasses_unused_credit(dut: Any) -> None:
+    """Accept a buffered store grant ahead of an unused ordinary-read opportunity."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 3:
+        return
+    await b.reset()
+    base = 0x80003000
+    await b.issue(0, base)
+    await b.issue(1, base + 512)
+    await b.issue(2, base + 8)
+    await b.requests_at_least(2)
+    await b.tick(40)
+    await b.set(i_address=base + 1024, i_write_mask=255, i_write_data=123)
+    await b.tick()
+    await b.set(i_write_mask=0)
+    await b.requests_at_least(3)
+    assert b.requests[2][0] == 0 and b.requests[2][1][0] == 1
+    for index in range(3):
+        await b.send_grant(index)
+    for _ in range(100):
+        if b.get("phase_q") == 0 and b.get("grant_read_turn_q"):
+            break
+        await b.tick()
+    else:
+        raise AssertionError("No credit beside the buffered endpoint-zero grant")
+    assert b.get("ep_grant_valid") & 1 and b.get("grant_pick") == 0
+    assert b.get("grant_ready") and not b.get("grant_read_hold")
+    await b.tick()
+    assert b.get("operation_q") == 2 and b.get("grant_ep_q") == 0
+    assert not b.get("grant_read_turn_q")
+    await b.tick(40)
+    for index in range(3):
+        await b.release(index)
+    await b.drain(3)
+    assert sorted(b.responses) == [
+        (0, b.word(base), 0),
+        (1, b.word(base + 512), 0),
+        (2, b.word(base + 8), 0),
+    ]
+    assert not b.get("o_pending_store") and not b.get("o_fatal")

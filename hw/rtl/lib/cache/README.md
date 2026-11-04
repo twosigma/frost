@@ -653,8 +653,9 @@ checks that no two live endpoints hold one sector, that no load endpoint is
 live beside a granted atomic, and that a load grant installs with a free WB
 slot. Its eight-endpoint stream tasks check speculative ownership and
 separation from demand response masks, and cover two accepted hints, demand
-attachment and simultaneous LR/AMO admission. Grant-turn covers witness a used
-opportunity, an empty opportunity and a held probe reply followed by local service. `coherence_read_stream` proves the three-miss confirmation
+attachment and simultaneous LR/AMO admission. Three-endpoint grant-turn covers
+witness used, empty and cancelled opportunities and a held probe reply followed
+by local service. `coherence_read_stream` proves the three-miss confirmation
 rule, cancellation and page-bounded cursor, including simultaneous demand
 advance and hint consumption.
 Detached victim validity, address and a watched byte are checked by induction

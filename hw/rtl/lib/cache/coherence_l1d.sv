@@ -1949,7 +1949,7 @@ module coherence_l1d #(
     if (f_turn_store) f_turn_store_sent_q <= 1;
     if (probe_capture) f_turn_probe_sent_q <= 1;
     if (o_r_valid && f_turn_reply_age_q < 12) f_turn_reply_age_q <= f_turn_reply_age_q + 1'b1;
-    assume (f_turn_scenario <= 2);
+    assume (f_turn_scenario <= 3);
     assume (i_write_atomic == 0 && i_write_mask == (f_turn_store ? 8'hff : 0));
     assume (i_p_valid == (f_turn_scenario == 2 && !f_turn_probe_sent_q &&
         grant_read_turn_q && phase_q == Idle));
@@ -1957,7 +1957,8 @@ module coherence_l1d #(
     if (o_d_valid[1] && i_d_ready[1]) f_turn_first_q <= o_d[1];
     if (o_d_valid[2] && i_d_ready[2]) f_turn_second_q <= o_d[2];
     assume (i_rst == !f_past_valid);
-    assume (!i_fatal_stop && !i_maint_valid && !i_sc_valid && !i_sc_commit);
+    assume (!i_fatal_stop && !i_sc_valid && !i_sc_commit);
+    assume (i_maint_valid == (f_turn_scenario == 3 && grant_read_turn_q && phase_q == Idle));
     assume (!i_wa_valid && !i_u_valid);
     assume (i_read_valid == (f_turn_cycle_q == 4 || f_turn_cycle_q == 5 ||
         f_turn_cycle_q == 6));
@@ -1969,6 +1970,8 @@ module coherence_l1d #(
     assume (i_g_valid == (f_turn_cycle_q >= 35 && f_turn_sent_q < 2));
     assume (i_g == f_turn_grant);
     p_stream_read_turn : cover (phase_q == Idle && grant_read_yield && rd_pick == 2);
+    p_stream_cancel_turn : cover (phase_q == Idle && grant_read_hold &&
+        prefetch_cancel && rd_candidate && !probe_priority && !probe_valid_q);
     p_stream_empty_turn : cover (phase_q == Idle && grant_read_hold &&
         !prefetch_cancel && !rd_candidate && !probe_priority && !probe_valid_q);
     p_stream_probe_turn : cover (local_turn_q && grant_read_turn_q &&
