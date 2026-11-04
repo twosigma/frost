@@ -217,9 +217,38 @@ module branch_predictor #(
   wire [BTB_INDEX_BITS-1:0] lookup_index_2_alt = lookup_index_2;
   wire [TagBits-1:0] lookup_tag_2_alt = lookup_tag_2;
 
+  // Two-stage update. Stage 1 (this cycle) reads the update-side copies,
+  // compares tags and picks the way and next counter from the early or late
+  // candidate. Stage 2 (next cycle) writes every RAM and valid/PLRU bit from
+  // the registered bundle below, so the way select no longer fans out to the
+  // write enables of the lookup copies in the same cycle. The whole update
+  // becomes visible to lookups one cycle later, as one unit. Stage 1 forwards
+  // the bundle still in flight, so back-to-back updates to one set read the
+  // state the earlier update writes.
+  logic p_update;
+  logic p_way;
+  logic [1:0] p_counter;
+  logic [XLEN-1:0] p_update_pc;
+  logic [XLEN-1:0] p_update_target;
+  logic p_update_compressed;
+  logic p_update_call;
+  logic p_update_return;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) p_update <= 1'b0;
+    else p_update <= i_update;
+    p_way               <= selected_way;
+    p_counter           <= next_counter;
+    p_update_pc         <= i_update_pc;
+    p_update_target     <= i_update_target;
+    p_update_compressed <= i_update_compressed;
+    p_update_call       <= i_update_call;
+    p_update_return     <= i_update_return;
+  end
+
   // Index and tag extraction for update
-  wire [BTB_INDEX_BITS-1:0] update_index = i_update_pc[BTB_INDEX_BITS+1:2];
-  wire [TagBits-1:0] update_tag = {i_update_pc[XLEN-1:BTB_INDEX_BITS+2], i_update_pc[1]};
+  wire [BTB_INDEX_BITS-1:0] update_index = p_update_pc[BTB_INDEX_BITS+1:2];
+  wire [TagBits-1:0] update_tag = {p_update_pc[XLEN-1:BTB_INDEX_BITS+2], p_update_pc[1]};
 
   wire [BTB_INDEX_BITS-1:0] early_update_index = i_early_update_pc[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] early_update_tag = {
@@ -232,10 +261,10 @@ module branch_predictor #(
   };
 
   // Slot-2 images store each update under branch PC minus 2 (T2) or 4 (T4).
-  wire [XLEN-1:0] update_pc_2_key = i_update_pc - XLEN'(2);
+  wire [XLEN-1:0] update_pc_2_key = p_update_pc - XLEN'(2);
   wire [BTB_INDEX_BITS-1:0] update_index_2 = update_pc_2_key[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] update_tag_2 = {update_pc_2_key[XLEN-1:BTB_INDEX_BITS+2], update_pc_2_key[1]};
-  wire [XLEN-1:0] update_pc_2_alt_key = i_update_pc - XLEN'(4);
+  wire [XLEN-1:0] update_pc_2_alt_key = p_update_pc - XLEN'(4);
   wire [BTB_INDEX_BITS-1:0] update_index_2_alt = update_pc_2_alt_key[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] update_tag_2_alt = {
     update_pc_2_alt_key[XLEN-1:BTB_INDEX_BITS+2], update_pc_2_alt_key[1]
@@ -245,8 +274,8 @@ module branch_predictor #(
   wire [BTB_INDEX_BITS-1:0] update_index_2_rot = update_index_2 - BTB_INDEX_BITS'(1);
 
   // Write enables for Way 0 and Way 1
-  wire update_we_w0 = i_update && (selected_way == 1'b0);
-  wire update_we_w1 = i_update && (selected_way == 1'b1);
+  wire update_we_w0 = p_update && (p_way == 1'b0);
+  wire update_we_w1 = p_update && (p_way == 1'b1);
 
   // =========================================================================
   // Tag RAM copies (Way 0 and Way 1)
@@ -329,11 +358,11 @@ module branch_predictor #(
 
   // Store low 32-bit targets and restore upper bits from the lookup PC.
   wire update_target_region_predictable =
-      i_update_target[XLEN-1:TargetBits] == i_update_pc[XLEN-1:TargetBits];
-  wire [TargetBits-1:0] update_target_stored = i_update_target[TargetBits-1:0];
+      p_update_target[XLEN-1:TargetBits] == p_update_pc[XLEN-1:TargetBits];
+  wire [TargetBits-1:0] update_target_stored = p_update_target[TargetBits-1:0];
 
-  wire update_slot2_plus2_key_same_region = i_update_pc[TargetBits-1:0] >= TargetBits'(2);
-  wire update_slot2_plus4_key_same_region = i_update_pc[TargetBits-1:0] >= TargetBits'(4);
+  wire update_slot2_plus2_key_same_region = p_update_pc[TargetBits-1:0] >= TargetBits'(2);
+  wire update_slot2_plus4_key_same_region = p_update_pc[TargetBits-1:0] >= TargetBits'(4);
   wire update_slot2_plus2_target_valid =
       update_target_region_predictable && update_slot2_plus2_key_same_region;
   wire update_slot2_plus4_target_valid =
@@ -343,10 +372,10 @@ module branch_predictor #(
   slot2_payload_t slot2_payload_write;
   assign slot2_payload_write = {
     update_target_stored[TargetBits-1:1],
-    next_counter,
-    i_update_compressed,
-    i_update_call,
-    i_update_return
+    p_counter,
+    p_update_compressed,
+    p_update_call,
+    p_update_return
   };
 
   // =========================================================================
@@ -540,7 +569,7 @@ module branch_predictor #(
       .i_clk,
       .i_write_enable(update_we_w0),
       .i_write_address(update_index),
-      .i_write_data(next_counter),
+      .i_write_data(p_counter),
       .i_read_address(lookup_index),
       .o_read_data(btb_counter_lookup_w0)
   );
@@ -552,7 +581,7 @@ module branch_predictor #(
       .i_clk,
       .i_write_enable(update_we_w1),
       .i_write_address(update_index),
-      .i_write_data(next_counter),
+      .i_write_data(p_counter),
       .i_read_address(lookup_index),
       .o_read_data(btb_counter_lookup_w1)
   );
@@ -564,7 +593,7 @@ module branch_predictor #(
       .i_clk,
       .i_write_enable(update_we_w0),
       .i_write_address(update_index),
-      .i_write_data(next_counter),
+      .i_write_data(p_counter),
       .i_read_address(late_update_index),
       .o_read_data(btb_counter_update_late_w0)
   );
@@ -576,7 +605,7 @@ module branch_predictor #(
       .i_clk,
       .i_write_enable(update_we_w1),
       .i_write_address(update_index),
-      .i_write_data(next_counter),
+      .i_write_data(p_counter),
       .i_read_address(late_update_index),
       .o_read_data(btb_counter_update_late_w1)
   );
@@ -589,7 +618,7 @@ module branch_predictor #(
       .i_clk,
       .i_write_enable(update_we_w0),
       .i_write_address(update_index),
-      .i_write_data(next_counter),
+      .i_write_data(p_counter),
       .i_read_address(early_update_index),
       .o_read_data(btb_counter_update_early_w0)
   );
@@ -602,7 +631,7 @@ module branch_predictor #(
       .i_clk,
       .i_write_enable(update_we_w1),
       .i_write_address(update_index),
-      .i_write_data(next_counter),
+      .i_write_data(p_counter),
       .i_read_address(early_update_index),
       .o_read_data(btb_counter_update_early_w1)
   );
@@ -615,7 +644,7 @@ module branch_predictor #(
       .i_clk,
       .i_write_enable(update_we_w0),
       .i_write_address(update_index),
-      .i_write_data(i_update_compressed),
+      .i_write_data(p_update_compressed),
       .i_read_address(lookup_index),
       .o_read_data(btb_compressed_lookup_w0)
   );
@@ -627,7 +656,7 @@ module branch_predictor #(
       .i_clk,
       .i_write_enable(update_we_w1),
       .i_write_address(update_index),
-      .i_write_data(i_update_compressed),
+      .i_write_data(p_update_compressed),
       .i_read_address(lookup_index),
       .o_read_data(btb_compressed_lookup_w1)
   );
@@ -640,7 +669,7 @@ module branch_predictor #(
       .i_clk,
       .i_write_enable(update_we_w0),
       .i_write_address(update_index),
-      .i_write_data({i_update_call, i_update_return}),
+      .i_write_data({p_update_call, p_update_return}),
       .i_read_address(lookup_index),
       .o_read_data(btb_kind_lookup_w0)
   );
@@ -652,7 +681,7 @@ module branch_predictor #(
       .i_clk,
       .i_write_enable(update_we_w1),
       .i_write_address(update_index),
-      .i_write_data({i_update_call, i_update_return}),
+      .i_write_data({p_update_call, p_update_return}),
       .i_read_address(lookup_index),
       .o_read_data(btb_kind_lookup_w1)
   );
@@ -738,44 +767,42 @@ module branch_predictor #(
       slot2_lookup_index_next_q <= slot2_lookup_index_next;
       slot2_stage_ready_q <= 1'b1;
 
-      slot2_forward_2_w0_q <=
-          i_update && (selected_way == 1'b0) && (update_index_2 == slot2_lookup_index);
-      slot2_forward_2_w1_q <=
-          i_update && (selected_way == 1'b1) && (update_index_2 == slot2_lookup_index);
+      slot2_forward_2_w0_q <= p_update && (p_way == 1'b0) && (update_index_2 == slot2_lookup_index);
+      slot2_forward_2_w1_q <= p_update && (p_way == 1'b1) && (update_index_2 == slot2_lookup_index);
       slot2_forward_2_alt_w0_q <=
-          i_update && (selected_way == 1'b0) && (update_index_2_alt == slot2_lookup_index);
+          p_update && (p_way == 1'b0) && (update_index_2_alt == slot2_lookup_index);
       slot2_forward_2_alt_w1_q <=
-          i_update && (selected_way == 1'b1) && (update_index_2_alt == slot2_lookup_index);
+          p_update && (p_way == 1'b1) && (update_index_2_alt == slot2_lookup_index);
       slot2_forward_2_rot_w0_q <=
-          i_update && (selected_way == 1'b0) && (update_index_2_rot == slot2_lookup_index);
+          p_update && (p_way == 1'b0) && (update_index_2_rot == slot2_lookup_index);
       slot2_forward_2_rot_w1_q <=
-          i_update && (selected_way == 1'b1) && (update_index_2_rot == slot2_lookup_index);
+          p_update && (p_way == 1'b1) && (update_index_2_rot == slot2_lookup_index);
 
-      if (i_update) begin
+      if (p_update) begin
         slot2_tag_2_forward_q     <= update_tag_2;
         slot2_tag_2_alt_forward_q <= update_tag_2_alt;
         slot2_payload_forward_q   <= slot2_payload_write;
       end
 
       slot2_valid_2_w0_q <=
-          (i_update && (selected_way == 1'b0) && (update_index_2 == slot2_lookup_index)) ?
+          (p_update && (p_way == 1'b0) && (update_index_2 == slot2_lookup_index)) ?
           update_slot2_plus2_target_valid : btb_valid_2_w0[slot2_lookup_index];
       slot2_valid_2_w1_q <=
-          (i_update && (selected_way == 1'b1) && (update_index_2 == slot2_lookup_index)) ?
+          (p_update && (p_way == 1'b1) && (update_index_2 == slot2_lookup_index)) ?
           update_slot2_plus2_target_valid : btb_valid_2_w1[slot2_lookup_index];
 
       slot2_valid_2_alt_w0_q <=
-          (i_update && (selected_way == 1'b0) && (update_index_2_alt == slot2_lookup_index)) ?
+          (p_update && (p_way == 1'b0) && (update_index_2_alt == slot2_lookup_index)) ?
           update_slot2_plus4_target_valid : btb_valid_2_alt_w0[slot2_lookup_index];
       slot2_valid_2_alt_w1_q <=
-          (i_update && (selected_way == 1'b1) && (update_index_2_alt == slot2_lookup_index)) ?
+          (p_update && (p_way == 1'b1) && (update_index_2_alt == slot2_lookup_index)) ?
           update_slot2_plus4_target_valid : btb_valid_2_alt_w1[slot2_lookup_index];
 
       slot2_valid_2_rot_w0_q <=
-          (i_update && (selected_way == 1'b0) && (update_index_2_rot == slot2_lookup_index)) ?
+          (p_update && (p_way == 1'b0) && (update_index_2_rot == slot2_lookup_index)) ?
           update_slot2_plus2_target_valid : btb_valid_2_rot_w0[slot2_lookup_index];
       slot2_valid_2_rot_w1_q <=
-          (i_update && (selected_way == 1'b1) && (update_index_2_rot == slot2_lookup_index)) ?
+          (p_update && (p_way == 1'b1) && (update_index_2_rot == slot2_lookup_index)) ?
           update_slot2_plus2_target_valid : btb_valid_2_rot_w1[slot2_lookup_index];
     end
   end
@@ -927,22 +954,50 @@ module branch_predictor #(
   // Early and Late Counter Update Candidates & Way Selection
   // =========================================================================
   (* keep = "true" *) logic [3:0][TagCompareChunks-1:0] update_tag_equal_chunks;
+  // Stage-1 view of the update-side state: the registered bundle overrides the
+  // RAM copies and valid/PLRU flops for the one set it is writing.
+  wire early_fwd = p_update && (update_index == early_update_index);
+  wire late_fwd = p_update && (update_index == late_update_index);
+  wire early_fwd_w0 = early_fwd && (p_way == 1'b0);
+  wire early_fwd_w1 = early_fwd && (p_way == 1'b1);
+  wire late_fwd_w0 = late_fwd && (p_way == 1'b0);
+  wire late_fwd_w1 = late_fwd && (p_way == 1'b1);
+
+  wire [TagBits-1:0] fwd_tag_early_w0 = early_fwd_w0 ? update_tag : btb_tag_update_early_w0;
+  wire [TagBits-1:0] fwd_tag_early_w1 = early_fwd_w1 ? update_tag : btb_tag_update_early_w1;
+  wire [TagBits-1:0] fwd_tag_late_w0 = late_fwd_w0 ? update_tag : btb_tag_update_late_w0;
+  wire [TagBits-1:0] fwd_tag_late_w1 = late_fwd_w1 ? update_tag : btb_tag_update_late_w1;
+  wire [1:0] fwd_counter_early_w0 = early_fwd_w0 ? p_counter : btb_counter_update_early_w0;
+  wire [1:0] fwd_counter_early_w1 = early_fwd_w1 ? p_counter : btb_counter_update_early_w1;
+  wire [1:0] fwd_counter_late_w0 = late_fwd_w0 ? p_counter : btb_counter_update_late_w0;
+  wire [1:0] fwd_counter_late_w1 = late_fwd_w1 ? p_counter : btb_counter_update_late_w1;
+  wire early_valid_w0 =
+      early_fwd_w0 ? update_target_region_predictable : btb_valid_w0[early_update_index];
+  wire early_valid_w1 =
+      early_fwd_w1 ? update_target_region_predictable : btb_valid_w1[early_update_index];
+  wire late_valid_w0 =
+      late_fwd_w0 ? update_target_region_predictable : btb_valid_w0[late_update_index];
+  wire late_valid_w1 =
+      late_fwd_w1 ? update_target_region_predictable : btb_valid_w1[late_update_index];
+  wire early_plru = early_fwd ? p_way : btb_plru[early_update_index];
+  wire late_plru = late_fwd ? p_way : btb_plru[late_update_index];
+
   for (genvar chunk = 0; chunk < TagCompareChunks; chunk++) begin : gen_update_tag_compare
     localparam int unsigned FirstBit = chunk * TagCompareChunkBits;
     localparam int unsigned Bits =
         (TagBits - FirstBit < TagCompareChunkBits) ? TagBits - FirstBit : TagCompareChunkBits;
     assign update_tag_equal_chunks[0][chunk] =
-        btb_tag_update_early_w0[FirstBit+:Bits] == early_update_tag[FirstBit+:Bits];
+        fwd_tag_early_w0[FirstBit+:Bits] == early_update_tag[FirstBit+:Bits];
     assign update_tag_equal_chunks[1][chunk] =
-        btb_tag_update_early_w1[FirstBit+:Bits] == early_update_tag[FirstBit+:Bits];
+        fwd_tag_early_w1[FirstBit+:Bits] == early_update_tag[FirstBit+:Bits];
     assign update_tag_equal_chunks[2][chunk] =
-        btb_tag_update_late_w0[FirstBit+:Bits] == late_update_tag[FirstBit+:Bits];
+        fwd_tag_late_w0[FirstBit+:Bits] == late_update_tag[FirstBit+:Bits];
     assign update_tag_equal_chunks[3][chunk] =
-        btb_tag_update_late_w1[FirstBit+:Bits] == late_update_tag[FirstBit+:Bits];
+        fwd_tag_late_w1[FirstBit+:Bits] == late_update_tag[FirstBit+:Bits];
   end
 
-  wire early_tag_matches_w0 = btb_valid_w0[early_update_index] && (&update_tag_equal_chunks[0]);
-  wire early_tag_matches_w1 = btb_valid_w1[early_update_index] && (&update_tag_equal_chunks[1]);
+  wire early_tag_matches_w0 = early_valid_w0 && (&update_tag_equal_chunks[0]);
+  wire early_tag_matches_w1 = early_valid_w1 && (&update_tag_equal_chunks[1]);
   wire early_target_hit = early_tag_matches_w0 || early_tag_matches_w1;
 
   always_comb begin
@@ -952,15 +1007,15 @@ module branch_predictor #(
       early_target_way = 1'b1;
     end else begin
       // Allocation: fill invalid way first, else replace LRU (1: Way 1 MRU -> victim Way 0; 0: victim Way 1)
-      if (!btb_valid_w0[early_update_index]) early_target_way = 1'b0;
-      else if (!btb_valid_w1[early_update_index]) early_target_way = 1'b1;
-      else early_target_way = btb_plru[early_update_index] ? 1'b0 : 1'b1;
+      if (!early_valid_w0) early_target_way = 1'b0;
+      else if (!early_valid_w1) early_target_way = 1'b1;
+      else early_target_way = early_plru ? 1'b0 : 1'b1;
     end
   end
 
   always_comb begin
     logic [1:0] cur_counter;
-    cur_counter = early_target_way ? btb_counter_update_early_w1 : btb_counter_update_early_w0;
+    cur_counter = early_target_way ? fwd_counter_early_w1 : fwd_counter_early_w0;
     if (!early_target_hit) begin
       early_next_counter = i_early_update_taken ? WeaklyTaken : WeaklyNotTaken;
     end else if (i_early_update_taken) begin
@@ -971,8 +1026,8 @@ module branch_predictor #(
     end
   end
 
-  wire late_tag_matches_w0 = btb_valid_w0[late_update_index] && (&update_tag_equal_chunks[2]);
-  wire late_tag_matches_w1 = btb_valid_w1[late_update_index] && (&update_tag_equal_chunks[3]);
+  wire late_tag_matches_w0 = late_valid_w0 && (&update_tag_equal_chunks[2]);
+  wire late_tag_matches_w1 = late_valid_w1 && (&update_tag_equal_chunks[3]);
   wire late_target_hit = late_tag_matches_w0 || late_tag_matches_w1;
 
   always_comb begin
@@ -981,15 +1036,15 @@ module branch_predictor #(
     end else if (late_tag_matches_w1) begin
       late_target_way = 1'b1;
     end else begin
-      if (!btb_valid_w0[late_update_index]) late_target_way = 1'b0;
-      else if (!btb_valid_w1[late_update_index]) late_target_way = 1'b1;
-      else late_target_way = btb_plru[late_update_index] ? 1'b0 : 1'b1;
+      if (!late_valid_w0) late_target_way = 1'b0;
+      else if (!late_valid_w1) late_target_way = 1'b1;
+      else late_target_way = late_plru ? 1'b0 : 1'b1;
     end
   end
 
   always_comb begin
     logic [1:0] cur_counter;
-    cur_counter = late_target_way ? btb_counter_update_late_w1 : btb_counter_update_late_w0;
+    cur_counter = late_target_way ? fwd_counter_late_w1 : fwd_counter_late_w0;
     if (!late_target_hit) begin
       late_next_counter = i_late_update_taken ? WeaklyTaken : WeaklyNotTaken;
     end else if (i_late_update_taken) begin
@@ -1019,8 +1074,8 @@ module branch_predictor #(
         btb_valid_2_rot_w0[i] <= 1'b0;
         btb_valid_2_rot_w1[i] <= 1'b0;
       end
-    end else if (i_update) begin
-      if (selected_way == 1'b0) begin
+    end else if (p_update) begin
+      if (p_way == 1'b0) begin
         btb_valid_w0[update_index]             <= update_target_region_predictable;
         btb_plru[update_index]                 <= 1'b0;  // Way 0 is now MRU
         btb_valid_2_w0[update_index_2]         <= update_slot2_plus2_target_valid;
@@ -1069,12 +1124,17 @@ module branch_predictor #(
   logic reference_selected_way;
   logic [1:0] reference_selected_next_counter;
 
+  wire [BTB_INDEX_BITS-1:0] ref_index = i_update_pc[BTB_INDEX_BITS+1:2];
+  wire [TagBits-1:0] ref_tag = {i_update_pc[XLEN-1:BTB_INDEX_BITS+2], i_update_pc[1]};
+  wire ref_region_predictable =
+      i_update_target[XLEN-1:TargetBits] == i_update_pc[XLEN-1:TargetBits];
+
   wire reference_tag_matches_w0 =
-      reference_update_valid_w0[update_index] &&
-      (reference_update_tag_w0[update_index] == update_tag);
+      reference_update_valid_w0[ref_index] &&
+      (reference_update_tag_w0[ref_index] == ref_tag);
   wire reference_tag_matches_w1 =
-      reference_update_valid_w1[update_index] &&
-      (reference_update_tag_w1[update_index] == update_tag);
+      reference_update_valid_w1[ref_index] &&
+      (reference_update_tag_w1[ref_index] == ref_tag);
   wire reference_tag_matches = reference_tag_matches_w0 || reference_tag_matches_w1;
 
   always_comb begin
@@ -1083,16 +1143,16 @@ module branch_predictor #(
     end else if (reference_tag_matches_w1) begin
       reference_selected_way = 1'b1;
     end else begin
-      if (!reference_update_valid_w0[update_index]) reference_selected_way = 1'b0;
-      else if (!reference_update_valid_w1[update_index]) reference_selected_way = 1'b1;
-      else reference_selected_way = reference_plru[update_index] ? 1'b0 : 1'b1;
+      if (!reference_update_valid_w0[ref_index]) reference_selected_way = 1'b0;
+      else if (!reference_update_valid_w1[ref_index]) reference_selected_way = 1'b1;
+      else reference_selected_way = reference_plru[ref_index] ? 1'b0 : 1'b1;
     end
   end
 
   always_comb begin
     logic [1:0] cur_ref_counter;
     cur_ref_counter = reference_selected_way ?
-        reference_update_counter_w1[update_index] : reference_update_counter_w0[update_index];
+        reference_update_counter_w1[ref_index] : reference_update_counter_w0[ref_index];
     if (!reference_tag_matches) begin
       reference_selected_next_counter = i_update_taken ? WeaklyTaken : WeaklyNotTaken;
     end else if (i_update_taken) begin
@@ -1125,15 +1185,15 @@ module branch_predictor #(
       end
     end else if (i_update) begin
       if (reference_selected_way == 1'b0) begin
-        reference_update_valid_w0[update_index]   <= update_target_region_predictable;
-        reference_update_tag_w0[update_index]     <= update_tag;
-        reference_update_counter_w0[update_index] <= reference_selected_next_counter;
-        reference_plru[update_index]              <= 1'b0;
+        reference_update_valid_w0[ref_index]   <= ref_region_predictable;
+        reference_update_tag_w0[ref_index]     <= ref_tag;
+        reference_update_counter_w0[ref_index] <= reference_selected_next_counter;
+        reference_plru[ref_index]              <= 1'b0;
       end else begin
-        reference_update_valid_w1[update_index]   <= update_target_region_predictable;
-        reference_update_tag_w1[update_index]     <= update_tag;
-        reference_update_counter_w1[update_index] <= reference_selected_next_counter;
-        reference_plru[update_index]              <= 1'b1;
+        reference_update_valid_w1[ref_index]   <= ref_region_predictable;
+        reference_update_tag_w1[ref_index]     <= ref_tag;
+        reference_update_counter_w1[ref_index] <= reference_selected_next_counter;
+        reference_plru[ref_index]              <= 1'b1;
       end
     end
   end
@@ -1184,10 +1244,10 @@ module branch_predictor #(
   slot2_payload_t reference_update_payload;
   assign reference_update_payload = {
     update_target_stored[TargetBits-1:1],
-    reference_selected_next_counter,
-    i_update_compressed,
-    i_update_call,
-    i_update_return
+    p_counter,
+    p_update_compressed,
+    p_update_call,
+    p_update_return
   };
 
   always_ff @(posedge i_clk) begin
@@ -1200,8 +1260,8 @@ module branch_predictor #(
         shifted_reference_valid_2_rot_w0[i] <= 1'b0;
         shifted_reference_valid_2_rot_w1[i] <= 1'b0;
       end
-    end else if (i_update) begin
-      if (reference_selected_way == 1'b0) begin
+    end else if (p_update) begin
+      if (p_way == 1'b0) begin
         shifted_reference_valid_2_w0[update_index_2] <= update_slot2_plus2_target_valid;
         shifted_reference_row_2_w0[update_index_2] <= {update_tag_2, reference_update_payload};
         shifted_reference_valid_2_alt_w0[update_index_2_alt] <= update_slot2_plus4_target_valid;

@@ -92,8 +92,13 @@ async def _update(
     early_taken: bool | None = None,
     late_pc: int | None = None,
     late_taken: bool | None = None,
+    drain: bool = True,
 ) -> None:
-    """Apply one selected BTB write with independent early/late RMW inputs."""
+    """Apply one selected BTB write with independent early/late RMW inputs.
+
+    The write lands one edge after the selection edge; drain=False leaves it in
+    flight so the next call can exercise the stage-1 forwarding.
+    """
     selected_early_pc = pc if early_active and early_pc is None else (early_pc or 0)
     selected_early_taken = (
         taken if early_active and early_taken is None else bool(early_taken)
@@ -127,6 +132,9 @@ async def _update(
     dut.i_update_call.value = 0
     dut.i_update_return.value = 0
     dut.i_early_update_active.value = 0
+    if drain:
+        # The predictor registers the selected update and writes it one edge later.
+        await _advance_cycle(dut)
     await _settle()
 
 
@@ -442,6 +450,16 @@ async def test_early_rmw_lookup_raw_changes_only_at_selected_write_edge(
 
     await _advance_cycle(dut)
 
+    # The selection edge only registers the update; both slots still present
+    # the old row.
+    dut.i_update.value = 0
+    dut.i_early_update_active.value = 0
+    await _settle()
+    _assert_slot1(dut, hit=True, taken=True, target=TARGET_A)
+    _assert_slot2(dut, hit=True, taken=True, target=TARGET_A)
+
+    await _advance_cycle(dut)
+
     _assert_slot1(
         dut,
         hit=True,
@@ -456,10 +474,6 @@ async def test_early_rmw_lookup_raw_changes_only_at_selected_write_edge(
         target=TARGET_B,
         compressed=True,
     )
-
-    dut.i_update.value = 0
-    dut.i_early_update_active.value = 0
-    await _settle()
 
 
 @cocotb.test()
@@ -476,6 +490,32 @@ async def test_tag_includes_pc_bit_one_for_halfword_aligned_aliases(dut: Any) ->
     assert not dut.o_btb_hit.value
     assert not dut.o_predicted_taken.value
     assert not dut.o_btb_compressed.value
+
+
+@cocotb.test()
+async def test_back_to_back_updates_forward_the_write_in_flight(dut: Any) -> None:
+    """A second update to one set reads the state the first update is writing."""
+    await _setup_test(dut)
+
+    # Allocation: the second entry must take the other way, not overwrite way 0.
+    await _update(dut, pc=PC_A, target=TARGET_A, taken=True, drain=False)
+    await _update(dut, pc=PC_A_INDEX_ALIAS, target=TARGET_B, taken=True, drain=False)
+    await _update(dut, pc=PC_A_THIRD_ALIAS, target=TARGET_C, taken=True)
+    await _lookup(dut, PC_A)
+    assert not dut.o_btb_hit.value
+    await _lookup(dut, PC_A_INDEX_ALIAS)
+    _assert_slot1(dut, hit=True, taken=True, target=TARGET_B)
+    await _lookup(dut, PC_A_THIRD_ALIAS)
+    _assert_slot1(dut, hit=True, taken=True, target=TARGET_C)
+
+    # Counter read-modify-write: each update steps the counter its predecessor wrote.
+    await _setup_test(dut)
+    for _ in range(3):
+        await _update(dut, pc=PC_A, target=TARGET_A, taken=True, drain=False)
+    await _update(dut, pc=PC_A, target=TARGET_A, taken=False, drain=False)
+    await _update(dut, pc=PC_A, target=TARGET_A, taken=False)
+    await _lookup(dut, PC_A)
+    assert not dut.o_predicted_taken.value
 
 
 @cocotb.test()
@@ -813,6 +853,8 @@ async def test_staged_slot2_same_edge_write_forwards_full_replacement_row(
     dut.i_late_update_taken.value = 1
     await _advance_cycle(dut)
     dut.i_update.value = 0
+    # The registered update writes on the next edge, which is the colliding one.
+    await _advance_cycle(dut)
 
     dut.i_pc_2_base.value = new_normal_base
     dut.i_pc_2_use_alt.value = 0
@@ -883,6 +925,8 @@ async def test_slot2_rotated_image_same_edge_write_forwards_wrapped_replacement(
     dut.i_late_update_taken.value = 1
     await _advance_cycle(dut)
     dut.i_update.value = 0
+    # The registered update writes on the next edge, which is the colliding one.
+    await _advance_cycle(dut)
 
     # The staged read is at the top of the address space and the served base
     # wraps to index zero, the next index, so the +2 selection uses RT2.

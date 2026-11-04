@@ -150,7 +150,9 @@ async def _btb_update(
     await _advance_cycle(dut)
     dut.i_btb_update.value = 0
     # branch_prediction_controller registers the full BTB update transaction,
-    # so the predictor writes it on this following edge.
+    # so the predictor selects its way on this following edge.
+    await _advance_cycle(dut)
+    # The predictor registers the selected update and writes it on one more edge.
     await _advance_cycle(dut)
 
 
