@@ -450,7 +450,9 @@ module coherence_l1d #(
   logic hint_valid_q, hint_checked_q, hint_eligible_q;
   logic [ADDR_WIDTH-1:0] hint_addr_q, prefetch_check_addr;
   logic prefetch_cancel, atomic_read_waiting, prefetch_busy;
-  logic prefetch_conflict, prefetch_accept, prefetch_acquire_ok, prefetch_ep_free;
+  logic prefetch_conflict, hint_conflict, lookup_conflict;
+  logic prefetch_accept, prefetch_acquire_ok, prefetch_ep_free;
+  logic [MISSES+6:0] hint_conflicts, lookup_conflicts;
   logic hint_in_window, lookup_in_window;
   logic [EpBits-1:0] prefetch_ep_index;
   always_comb begin
@@ -495,29 +497,46 @@ module coherence_l1d #(
       {1'b0, lookup_addr_q[11:5]} <= {1'b0, stream_frontier[11:5]} + 8'd8;
   assign prefetch_busy = operation_q == PrefetchOp && phase_q != Idle;
   assign prefetch_check_addr = prefetch_busy ? lookup_addr_q : hint_addr_q;
+  // The hint and selected lookup compare against live ownership independently.
   // Frozen dirty data excludes GetS even after its private tag is evicted.
-  // This comparison is repeated at the tag decision and endpoint acceptance.
-  always_comb begin
-    prefetch_conflict = atomic_q || probe_valid_q || cut_phase_q != CutIdle;
-    for (int ep = 0; ep < MISSES; ep++)
-      prefetch_conflict |= live[ep] && prefetch_check_addr[ADDR_WIDTH-1:5] ==
-          (ep == 0 ? acquisition_q.addr[ADDR_WIDTH-1:5] : ld_line_q[ep]);
-    for (int slot = 0; slot < 2; slot++)
-      prefetch_conflict |= wb_live[slot] &&
-          wb_addr[slot][ADDR_WIDTH-1:5] == prefetch_check_addr[ADDR_WIDTH-1:5];
-    prefetch_conflict |= pending_q && pending_addr_q[ADDR_WIDTH-1:5] ==
-        prefetch_check_addr[ADDR_WIDTH-1:5];
-    prefetch_conflict |= tail_q && tail_addr[ADDR_WIDTH-1:5] == prefetch_check_addr[ADDR_WIDTH-1:5];
-    prefetch_conflict |= store_push && i_address[ADDR_WIDTH-1:5] ==
-        prefetch_check_addr[ADDR_WIDTH-1:5];
-    prefetch_conflict |= i_p_valid && probe_in.addr[ADDR_WIDTH-1:5] ==
-        prefetch_check_addr[ADDR_WIDTH-1:5];
+  assign hint_conflicts[0] = atomic_q || probe_valid_q || cut_phase_q != CutIdle;
+  assign lookup_conflicts[0] = hint_conflicts[0];
+  for (genvar ep = 0; ep < MISSES; ep++) begin : gen_prefetch_conflict
+    assign hint_conflicts[ep+1] = live[ep] && hint_addr_q[ADDR_WIDTH-1:5] ==
+        (ep == 0 ? acquisition_q.addr[ADDR_WIDTH-1:5] : ld_line_q[ep]);
+    assign lookup_conflicts[ep+1] = live[ep] && lookup_addr_q[ADDR_WIDTH-1:5] ==
+        (ep == 0 ? acquisition_q.addr[ADDR_WIDTH-1:5] : ld_line_q[ep]);
   end
+  for (genvar slot = 0; slot < 2; slot++) begin : gen_prefetch_wb_conflict
+    assign hint_conflicts[MISSES+1+slot] = wb_live[slot] &&
+        wb_addr[slot][ADDR_WIDTH-1:5] == hint_addr_q[ADDR_WIDTH-1:5];
+    assign lookup_conflicts[MISSES+1+slot] = wb_live[slot] &&
+        wb_addr[slot][ADDR_WIDTH-1:5] == lookup_addr_q[ADDR_WIDTH-1:5];
+  end
+  assign hint_conflicts[MISSES+3] = pending_q &&
+      pending_addr_q[ADDR_WIDTH-1:5] == hint_addr_q[ADDR_WIDTH-1:5];
+  assign lookup_conflicts[MISSES+3] = pending_q &&
+      pending_addr_q[ADDR_WIDTH-1:5] == lookup_addr_q[ADDR_WIDTH-1:5];
+  assign hint_conflicts[MISSES+4] = tail_q &&
+      tail_addr[ADDR_WIDTH-1:5] == hint_addr_q[ADDR_WIDTH-1:5];
+  assign lookup_conflicts[MISSES+4] = tail_q &&
+      tail_addr[ADDR_WIDTH-1:5] == lookup_addr_q[ADDR_WIDTH-1:5];
+  assign hint_conflicts[MISSES+5] = store_push &&
+      i_address[ADDR_WIDTH-1:5] == hint_addr_q[ADDR_WIDTH-1:5];
+  assign lookup_conflicts[MISSES+5] = store_push &&
+      i_address[ADDR_WIDTH-1:5] == lookup_addr_q[ADDR_WIDTH-1:5];
+  assign hint_conflicts[MISSES+6] = i_p_valid &&
+      probe_in.addr[ADDR_WIDTH-1:5] == hint_addr_q[ADDR_WIDTH-1:5];
+  assign lookup_conflicts[MISSES+6] = i_p_valid &&
+      probe_in.addr[ADDR_WIDTH-1:5] == lookup_addr_q[ADDR_WIDTH-1:5];
+  assign hint_conflict = |hint_conflicts;
+  assign lookup_conflict = |lookup_conflicts;
+  assign prefetch_conflict = prefetch_busy ? lookup_conflict : hint_conflict;
   assign prefetch_accept = !prefetch_cancel && !stream_replace && lookup_in_window &&
-      !prefetch_conflict && !load_acquire_block;
+      !lookup_conflict && !load_acquire_block;
   // The selected address and demand frontier stay fixed through Acquire.
   // Cancellation and live ownership conflicts are checked on its acceptance edge.
-  assign prefetch_acquire_ok = !prefetch_cancel && !prefetch_conflict && !load_acquire_block;
+  assign prefetch_acquire_ok = !prefetch_cancel && !lookup_conflict && !load_acquire_block;
   assign stream_consume = !hint_valid_q && stream_valid && !prefetch_cancel && !stream_replace;
   always_ff @(posedge i_clk) begin
     if (i_rst || prefetch_cancel || stream_replace) begin
@@ -533,13 +552,47 @@ module coherence_l1d #(
       end
       if (hint_valid_q && !hint_checked_q && !prefetch_busy) begin
         hint_checked_q <= 1'b1;
-        hint_eligible_q <= !prefetch_conflict;
+        hint_eligible_q <= !hint_conflict;
       end
       if (hint_valid_q && (!hint_in_window ||
           (hint_checked_q && !hint_eligible_q) ||
           (prefetch_busy && lookup_addr_q == hint_addr_q))) hint_valid_q <= 1'b0;
     end
   end
+
+`ifndef SYNTHESIS
+  logic prefetch_conflict_ref, prefetch_accept_ref;
+  always_comb begin
+    prefetch_conflict_ref = atomic_q || probe_valid_q || cut_phase_q != CutIdle;
+    for (int ep = 0; ep < MISSES; ep++)
+      prefetch_conflict_ref |= live[ep] && prefetch_check_addr[ADDR_WIDTH-1:5] ==
+          (ep == 0 ? acquisition_q.addr[ADDR_WIDTH-1:5] : ld_line_q[ep]);
+    for (int slot = 0; slot < 2; slot++)
+      prefetch_conflict_ref |= wb_live[slot] &&
+          wb_addr[slot][ADDR_WIDTH-1:5] == prefetch_check_addr[ADDR_WIDTH-1:5];
+    prefetch_conflict_ref |= pending_q && pending_addr_q[ADDR_WIDTH-1:5] ==
+        prefetch_check_addr[ADDR_WIDTH-1:5];
+    prefetch_conflict_ref |= tail_q &&
+        tail_addr[ADDR_WIDTH-1:5] == prefetch_check_addr[ADDR_WIDTH-1:5];
+    prefetch_conflict_ref |= store_push && i_address[ADDR_WIDTH-1:5] ==
+        prefetch_check_addr[ADDR_WIDTH-1:5];
+    prefetch_conflict_ref |= i_p_valid && probe_in.addr[ADDR_WIDTH-1:5] ==
+        prefetch_check_addr[ADDR_WIDTH-1:5];
+  end
+  assign prefetch_accept_ref = !prefetch_cancel && !stream_replace && lookup_in_window &&
+      !prefetch_conflict_ref && !load_acquire_block;
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && active) begin
+      p_prefetch_conflict_split : assert (prefetch_conflict == prefetch_conflict_ref);
+      if (hint_valid_q && !hint_checked_q && !prefetch_busy)
+        p_prefetch_hint_conflict : assert (hint_conflict == prefetch_conflict_ref);
+      if (phase_q == LookupWait && operation_q == PrefetchOp)
+        p_prefetch_lookup_guard : assert (prefetch_accept == prefetch_accept_ref);
+      if (phase_q == Acquire && operation_q == PrefetchOp)
+        p_prefetch_acquire_conflict : assert (prefetch_acquire_ok ==
+            (!prefetch_cancel && !prefetch_conflict_ref && !load_acquire_block));
+    end
+`endif
 
   // A demand installation with an attached reader gives an ordinary read
   // one turn before another load grant. Probes and atomics keep priority.
@@ -917,7 +970,7 @@ module coherence_l1d #(
       if (grant_prefetch_q) p_prefetch_fill_isolation : assert (!read_fill);
       if (operation_q == PrefetchOp) p_prefetch_lookup_isolation : assert (!read_hit && !read_miss);
       if (active && phase_q == Acquire && operation_q == PrefetchOp) begin
-        p_prefetch_acquire_guard : assert (prefetch_acquire_ok == prefetch_accept);
+        p_prefetch_acquire_guard : assert (prefetch_acquire_ok == prefetch_accept_ref);
         if (!prefetch_cancel) assert (lookup_in_window && !stream_replace);
       end
       if (atomic_q && atomic_granted_q)
