@@ -30,6 +30,9 @@ class Private:
         """Record the cache interface."""
         self.dut = dut
         self.p = len(dut.i_address)
+        self.acknowledged = 0
+        self.installed = 0
+        self.cycles = 0
 
     def get(self, name: str) -> int:
         """Read a packed signal."""
@@ -44,6 +47,9 @@ class Private:
     async def tick(self, count: int = 1) -> None:
         """Advance the requested clock edges."""
         for _ in range(count):
+            self.acknowledged += self.get("o_write_done")
+            self.installed += self.get("store_pop")
+            self.cycles += 1
             await self.set(i_clk=1)
             await self.set(i_clk=0)
 
@@ -146,8 +152,9 @@ async def held_probe_reply_defers_grant_application(dut: Any) -> None:
         await b.tick()
         await b.set(i_u_valid=0)
         if store:
-            await b.wait("o_write_done")
+            await b.wait("o_pending_store", 0)
             await b.tick()
+            assert b.acknowledged == 2 and b.installed == 2
             await b.set(i_read_valid=1, i_read_id=0, i_address=address + 8)
             await b.tick()
             await b.set(i_read_valid=0)
@@ -411,6 +418,16 @@ async def continuous_probes_yield_to_ready_local_work(dut: Any) -> None:
         else:
             raise AssertionError(f"{kind} write starved behind probes")
         assert b.get("o_sc_write_done") == int(kind == "sc")
+        if kind == "store":
+            for _ in range(100):
+                if not b.get("o_pending_store"):
+                    break
+                await step()
+            else:
+                raise AssertionError(
+                    "accepted store installation starved behind probes"
+                )
+            assert b.installed == 2
         before = replied
         for _ in range(40):
             await step()
@@ -524,3 +541,331 @@ async def continuous_probes_allow_read_acquisition(dut: Any) -> None:
     for _ in range(12):
         assert b.get("o_read_valid") and b.get("o_read_data") == 0x12345678
         await b.tick()
+
+
+async def store(b: Private, address: int, data: int, mask: int = 255) -> None:
+    """Use a launch credit on the edge before presenting the write."""
+    await b.wait("o_store_ready")
+    await b.tick()
+    await b.set(i_address=address, i_write_mask=mask, i_write_data=data)
+    await b.tick()
+    await b.set(i_write_mask=0)
+    assert b.get("o_write_done")
+
+
+async def getm(b: Private, address: int, data: int, error: bool = False) -> None:
+    """Supply the oldest store's grant and retain its identity through release."""
+    await b.wait("o_d_valid")
+    demand = unpack(b.get("o_d"), (4, 9, b.p, 5, 3, 32, 1, 1, 1, 256))
+    assert demand[0] == 1 and demand[2] == address
+    await b.set(i_d_ready=1)
+    await b.tick()
+    await b.set(
+        i_d_ready=0,
+        i_g_valid=1,
+        i_g=pack(
+            (3, 2), (9, demand[1]), (6, 0), (b.p, address), (256, data), (1, error)
+        ),
+    )
+    await b.wait("o_g_ready")
+    await b.tick()
+    await b.set(i_g_valid=0)
+    if error:
+        await b.wait("o_fatal")
+        return
+    await b.wait("o_c_valid")
+    await b.set(i_c_ready=1)
+    await b.tick()
+    await b.set(
+        i_c_ready=0, i_u_valid=1, i_u=pack((9, demand[1]), (6, 0), (b.p, address))
+    )
+    await b.wait("o_u_ready")
+    await b.tick()
+    await b.set(i_u_valid=0)
+
+
+async def snapshot(b: Private, address: int, *, invalidate: bool = False) -> int:
+    """Read a dirty sector through the probe channel, including every byte."""
+    await b.set(
+        i_p_valid=1,
+        i_p=pack(
+            (2, int(invalidate)),
+            (6, 1),
+            (1, 0),
+            (b.p, address),
+            (2, 2),
+            (2, 0),
+            (9, 0),
+            (5, 0),
+            (3, 0),
+        ),
+        i_cut_admit_ready=1,
+        i_cut_admit_clean=1,
+    )
+    await b.wait("o_p_ready")
+    await b.tick()
+    await b.set(i_p_valid=0)
+    await b.wait("o_r_valid")
+    reply = unpack(b.get("o_r"), (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1))
+    assert reply[0] == 1 and reply[7] == 1
+    held = b.get("o_r")
+    for _ in range(8):
+        await b.tick()
+        assert b.get("o_r_valid") and b.get("o_r") == held
+    await b.set(i_r_ready=1)
+    await b.tick()
+    await b.set(i_r_ready=0)
+    return reply[8]
+
+
+@cocotb.test()
+async def buffered_masked_hits_preserve_order_and_cadence(dut: Any) -> None:
+    """Install overlapping and disjoint bytes with two accepted sectors held."""
+    b = Private(dut)
+    await b.reset()
+    base = 0x80000000
+    pattern = int.from_bytes(bytes(range(32)), "little")
+    expected = {base: pattern, base + 32: pattern}
+    for address in expected:
+        await store(b, address, pattern & ((1 << 64) - 1))
+        await getm(b, address, pattern)
+    # Both lines have Modified permission. Each write has a distinct payload.
+    writes = [
+        (
+            base + (index % 2) * 32 + ((index // 2) % 4) * 8,
+            0x1020304050607080 + index,
+            (255, 1, 3, 15, 128)[index % 5],
+        )
+        for index in range(32)
+    ]
+    accepted = 0
+    install_cycles = []
+    two_sectors = False
+    for _ in range(400):
+        if b.get("store_pop"):
+            install_cycles.append(b.cycles)
+        if b.get("o_block_valid") == 3:
+            holds = b.get("o_block_addr")
+            two_sectors |= (holds & ((1 << b.p) - 1)) >> 5 != (holds >> b.p) >> 5
+        launch = accepted < len(writes) and b.get("o_store_ready")
+        await b.tick()
+        if launch:
+            address, data, mask = writes[accepted]
+            accepted += 1
+            await b.set(i_address=address, i_write_data=data, i_write_mask=mask)
+            sector = address & ~31
+            for byte in range(8):
+                if mask & (1 << byte):
+                    shift = ((address & 24) + byte) * 8
+                    expected[sector] = (expected[sector] & ~(255 << shift)) | (
+                        ((data >> (byte * 8)) & 255) << shift
+                    )
+        else:
+            await b.set(i_write_mask=0)
+        if accepted == len(writes) and not b.get("o_pending_store"):
+            break
+    else:
+        raise AssertionError("buffered hit burst did not drain")
+    assert len(install_cycles) == len(writes)
+    assert {b - a for a, b in zip(install_cycles, install_cycles[1:])} == {6}
+    assert two_sectors and b.acknowledged == 34 and b.installed == 34
+    # Probe launch directly follows StoreOp and must read the full dirty image.
+    for address, data in expected.items():
+        assert await snapshot(b, address) == data
+    assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def buffered_hit_burst_yields_to_waiting_reads(dut: Any) -> None:
+    """Serve an unrelated read between buffered hits and preserve both writes."""
+    b = Private(dut)
+    await b.reset()
+    base = 0x80000000
+    pattern = int.from_bytes(bytes(range(32)), "little")
+    for address in (base, base + 32):
+        await store(b, address, pattern & ((1 << 64) - 1))
+        await getm(b, address, pattern)
+    await store(b, base, 0x1122334455667788)
+    await store(b, base + 8, 0x99AABBCCDDEEFF00)
+    assert b.get("o_block_valid") == 3
+    await b.set(i_read_valid=1, i_read_id=0, i_address=base + 32)
+    await b.tick()
+    await b.set(i_read_valid=0)
+    events = []
+    for _ in range(80):
+        if b.get("store_pop"):
+            events.append("store")
+        if b.get("read_hit"):
+            events.append("read")
+            assert b.get("o_pending_store")
+        assert not b.get("o_d_valid") and not b.get("o_fatal")
+        await b.tick()
+        if b.get("o_read_valid") and not b.get("o_pending_store"):
+            break
+    else:
+        raise AssertionError("mixed read and buffered hits did not drain")
+    assert events == ["store", "read", "store"]
+    assert b.get("o_read_data") == pattern & ((1 << 64) - 1)
+    assert not b.get("o_read_error")
+    assert b.acknowledged == 4 and b.installed == 4
+    expected = (pattern & ~((1 << 128) - 1)) | (0x99AABBCCDDEEFF00 << 64)
+    expected |= 0x1122334455667788
+    assert await snapshot(b, base) == expected
+
+
+@cocotb.test()
+async def buffered_tail_reacquires_after_probe_and_delayed_getm(dut: Any) -> None:
+    """Require a queued hit to recheck permission after an intervening probe."""
+    for invalidate in (False, True):
+        b = Private(dut)
+        await b.reset()
+        base = 0x80000000
+        pattern = int.from_bytes(bytes(range(32)), "little")
+        await store(b, base, pattern & ((1 << 64) - 1))
+        await getm(b, base, pattern)
+        await store(b, base + 32, 0x1234)
+        await b.wait("o_d_valid")
+        await store(b, base + 8, 0xAABBCCDD, 15)
+        assert b.get("o_block_valid") == 3 and not b.get("o_store_ready")
+        before = b.installed
+        assert await snapshot(b, base, invalidate=invalidate) == pattern
+        assert b.installed == before and b.get("o_block_valid") == 3
+        await getm(b, base + 32, pattern)
+        assert b.get("o_pending_store")
+        await getm(b, base, pattern)
+        await b.wait("o_pending_store", 0)
+        expected = (pattern & ~(0xFFFFFFFF << 64)) | (0xAABBCCDD << 64)
+        assert await snapshot(b, base) == expected
+        assert b.acknowledged == 3 and b.installed == 3
+        assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def store_error_stops_younger_installation_and_reset_clears_credit(
+    dut: Any,
+) -> None:
+    """Keep the younger hit uninstalled after the oldest acquisition fails."""
+    b = Private(dut)
+    await b.reset()
+    base = 0x80000000
+    await store(b, base, 0x1122)
+    await getm(b, base, 0)
+    await store(b, base + 32, 0x3344)
+    await b.wait("o_d_valid")
+    await store(b, base, 0x5566)
+    assert b.get("o_block_valid") == 3
+    before = b.installed
+    await getm(b, base + 32, 0, error=True)
+    assert b.get("o_fatal_addr") == base + 32
+    await b.tick(30)
+    assert b.installed == before and b.get("o_block_valid") == 3
+    assert not b.get("o_store_ready")
+    await b.reset()
+    assert not b.get("o_pending_store") and not b.get("o_write_done")
+    assert not b.get("o_block_valid") and not b.get("o_fatal")
+    await store(b, base, 0x7788)
+    await getm(b, base, 0)
+    assert await snapshot(b, base) == 0x7788
+
+
+@cocotb.test()
+async def frozen_writeback_blocks_buffered_tail_until_ack(dut: Any) -> None:
+    """Preserve frozen bytes across tail promotion, accepted W and absorbed W."""
+    for absorbed in (False, True):
+        b = Private(dut)
+        await b.reset()
+        base = 0x80000000
+        # Five sectors compete for the four ways of one set.
+        images = {}
+        for index in range(5):
+            address = base + index * 128
+            data = 0x1020304050607000 + index
+            images[address] = data
+            await store(b, address, data)
+            await getm(b, address, 0)
+        await b.wait("o_w_valid")
+        frozen = b.get("o_w")
+        put = unpack(frozen, (1, 1, 1, b.p, 256, 1))
+        victim = put[3]
+        assert put[4] == images[victim]
+        resident = base + 4 * 128
+        assert victim != resident
+        await store(b, resident + 8, 0x88776655, 15)
+        await store(b, victim + 8, 0xAABBCCDD, 15)
+        assert b.get("o_block_valid") == 3
+        before = b.installed
+        if absorbed:
+            assert await snapshot(b, victim) == images[victim]
+            reply = unpack(b.get("o_r"), (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1))
+            assert reply[9] and reply[10] == put[1]
+        else:
+            await b.set(i_w_ready=1)
+            await b.tick()
+            await b.set(i_w_ready=0)
+        await b.tick(30)
+        assert b.installed == before + 1
+        assert b.get("o_pending_store") and b.get("o_block_valid") == 1
+        assert not b.get("o_d_valid") and b.get("o_w") == frozen
+        await b.set(
+            i_wa_valid=1,
+            i_wa=pack(
+                (1, put[0]),
+                (1, put[1]),
+                (1, put[2]),
+                (b.p, victim),
+                (1, absorbed),
+                (6, 1 if absorbed else 0),
+                (1, 0),
+            ),
+        )
+        await b.wait("o_wa_ready")
+        await b.tick()
+        await b.set(i_wa_valid=0)
+        await getm(b, victim, images[victim])
+        assert await snapshot(b, victim) == images[victim] | (0xAABBCCDD << 64)
+        assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def reserved_store_credit_survives_maintenance_offer(dut: Any) -> None:
+    """Capture an already launched store when maintenance closes admission."""
+    b = Private(dut)
+    await b.reset()
+    base = 0x80000000
+    await store(b, base, 0x1122)
+    await getm(b, base, 0)
+    await b.wait("o_store_ready")
+    await b.tick()
+    await b.set(
+        i_maint_valid=1,
+        i_maint_line=1,
+        i_maint_address=base,
+        i_address=base + 8,
+        i_write_mask=255,
+        i_write_data=0x3344,
+    )
+    assert not b.get("o_store_ready")
+    await b.tick()
+    await b.set(i_write_mask=0)
+    assert b.get("o_write_done") and b.get("o_pending_store")
+    await b.wait("o_w_valid")
+    put = unpack(b.get("o_w"), (1, 1, 1, b.p, 256, 1))
+    assert put[3] == base and put[4] == 0x1122 | (0x3344 << 64)
+    assert put[5] and not b.get("o_maint_done")
+    await b.set(i_w_ready=1)
+    await b.tick()
+    await b.set(i_w_ready=0)
+    await b.tick(12)
+    assert not b.get("o_maint_done")
+    await b.set(
+        i_wa_valid=1,
+        i_wa=pack(
+            (1, put[0]), (1, put[1]), (1, put[2]), (b.p, base), (1, 0), (6, 0), (1, 0)
+        ),
+    )
+    await b.wait("o_wa_ready")
+    await b.tick()
+    await b.set(i_wa_valid=0)
+    await b.wait("o_maint_done")
+    assert b.acknowledged == 2 and b.installed == 2
+    assert not b.get("o_pending_store") and not b.get("o_fatal")

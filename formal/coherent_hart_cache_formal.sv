@@ -33,9 +33,10 @@ module coherent_hart_cache_formal #(
   // The service-engine target proves the merge independently for every byte.
   (* anyconst *) logic [1:0] arbitrary_stored_bits;
   wire [1:0] stored_bits = COVER_MODE ? 2'd1 : arbitrary_stored_bits;
+  (* anyconst *) logic stored_global, two_stores;
   // Cover schedules select acceptance/error discard, publication without a
   // fence, competing traffic, or a post-fence walk.
-  (* anyconst *) logic [3:0] cover_scenario;
+  (* anyconst *)logic [3:0] cover_scenario;
   logic [6:0] cover_cycle_q = 0;
   always_ff @(posedge i_clk) if (cover_cycle_q != 127) cover_cycle_q <= cover_cycle_q + 1;
   if (COVER_MODE) begin : gen_cover_schedule
@@ -43,17 +44,18 @@ module coherent_hart_cache_formal #(
     logic [2:0] fetch_count_q = 0, walk_count_q = 0;
     logic fetched_q = 0, put_demand_q = 0;
     always_comb begin
-      imem_done  = (cover_cycle_q > 60);
-      accept_put = (cover_scenario == 4);
-      finish_put = (cover_cycle_q[0] && (cover_scenario != 4 || put_demand_q));
-      assume (cover_scenario <= 8);
+      imem_done = (cover_cycle_q > 60);
+      accept_put = (cover_scenario == 4 || cover_scenario == 10);
+      finish_put = (cover_cycle_q[0] && (cover_scenario != 4 || put_demand_q) &&
+          (cover_scenario != 10 || cover_cycle_q > 48));
+      assume (cover_scenario <= 11);
       permit_lookup = 1;
       permit_data = 1;
       permit_update = 1;
       permit_c = cover_cycle_q[0];
       permit_g = (cover_cycle_q[0] && (cover_scenario != 5 || cover_cycle_q > 48));
       if (cover_scenario <= 4) begin
-        start_store = (cover_cycle_q == 3);
+        start_store = (cover_cycle_q == 3 || cover_cycle_q == 5);
         request_fence = (cover_scenario != 2 && !fence_seen_q);
         permit_u = cover_cycle_q[0];
         fetch_sector = 0;
@@ -65,8 +67,13 @@ module coherent_hart_cache_formal #(
         discard = ((cover_scenario == 0 && line_valid && line_ready) ||
             (cover_scenario == 1 && line_resp && line_error));
       end else begin
-        start_store = (cover_scenario == 6 && cover_cycle_q == 3);
-        request_fence = (cover_scenario == 6 && fetch_count_q == 2 && !fence_seen_q);
+        start_store = ((cover_scenario == 6 || cover_scenario == 9) &&
+            (cover_cycle_q == 3 || cover_cycle_q == 5)) ||
+            ((cover_scenario == 10 || cover_scenario == 11) &&
+            (cover_cycle_q == 3 || (stores_launched_q == 1 && put_valid)));
+        request_fence = ((cover_scenario == 6 && fetch_count_q == 2) ||
+            (cover_scenario == 9 && fetch_count_q == 1) ||
+            cover_scenario == 10 || cover_scenario == 11) && !fence_seen_q;
         fetch_sector = fetch_count_q[0];
         discard = 0;
         read_error = (cover_scenario == 8);
@@ -82,6 +89,19 @@ module coherent_hart_cache_formal #(
           fetch = (fetch_count_q < 2 && (fetch_count_q == 0 || fetched_q));
           walk = 0;
           permit_u = (&if_owned);
+        end else if (cover_scenario == 9) begin
+          fetch_sector = 0;
+          fetch = (store_sent_q && store_holds == 1 && fetch_count_q == 0);
+          walk = 0;
+          permit_u = cover_cycle_q[0];
+        end else if (cover_scenario == 10 || cover_scenario == 11) begin
+          fetch_sector = 0;
+          fetch = cover_scenario == 10 ?
+              (fence_seen_q && fetch_count_q == 0) :
+              ((fetch_count_q == 0 && store_sent_q && pending && put_valid &&
+              cover_cycle_q > 40) || (fetch_count_q == 1 && fence_seen_q));
+          walk = 0;
+          permit_u = cover_cycle_q[0];
         end else begin
           fetch = 0;
           walk = (walk_count_q < 2);
@@ -108,10 +128,28 @@ module coherent_hart_cache_formal #(
         permit_lookup, permit_data, permit_update, permit_g, permit_c, permit_u,
         read_error, fetch_sector, accept_put, finish_put} = inputs;
   end
-  wire [63:0] stored_pte = 64'h200000cf | (64'(stored_bits) << 8);
+  wire [63:0] stored_pte = 64'h200000cf | (64'(stored_bits) << 8) | (64'(stored_global) << 5);
+  wire [63:0] first_pte = two_stores ? stored_pte ^ 64'h300 : stored_pte;
   logic store_sent_q, fence_seen_q, fence_sync, fence_done, pending, store_ready;
-  wire [7:0] store_mask = !rst && start_store && !store_sent_q && store_ready ? 8'hff : 0;
-  assign fence_sync = request_fence && store_sent_q && !pending;
+  logic [ 1:0] stores_launched_q;
+  logic [ 1:0] store_holds;
+  logic [ 7:0] store_mask;
+  logic [63:0] store_data_q;
+  always_ff @(posedge i_clk) begin
+    if (rst) begin
+      stores_launched_q <= 0;
+      store_mask <= 0;
+      store_data_q <= 0;
+    end else begin
+      store_mask <= 0;
+      if (start_store && stores_launched_q < (two_stores ? 2 : 1) && store_ready) begin
+        stores_launched_q <= stores_launched_q + 1'b1;
+        store_mask <= stores_launched_q == 0 ? 8'hff : 8'h02;
+        store_data_q <= stores_launched_q == 0 && two_stores ? stored_pte ^ 64'h300 : stored_pte;
+      end
+    end
+  end
+  assign fence_sync = request_fence && store_sent_q && !pending && !(|store_mask);
   logic if_ready, if_resp, if_error;
   logic [1:0] if_after_q;
   logic fetch_sector;
@@ -170,7 +208,7 @@ module coherent_hart_cache_formal #(
       .o_read_data(),
       .o_read_error(),
       .i_write_mask(store_mask),
-      .i_write_data(stored_pte),
+      .i_write_data(store_data_q),
       .i_write_atomic('0),
       .i_write_sc('0),
       .i_write_tag('0),
@@ -180,7 +218,7 @@ module coherent_hart_cache_formal #(
       .o_pending_store(pending),
       .o_sc_write_pending(),
       .o_atomic_live(),
-      .o_block_valid(),
+      .o_block_valid(store_holds),
       .o_block_addr(),
       .i_atomic_protected('0),
       .i_sc_valid('0),
@@ -389,7 +427,8 @@ module coherent_hart_cache_formal #(
   end
   logic [Slots-1:0][Slots-1:0] predecessors_q;
   logic [Slots-1:0] home_live_q, grant_sent_q, complete_q, after_q, error_q;
-  logic home_published_q, probe_needs_fresh_q;
+  logic home_published_q, home_prefix_q, probe_needs_fresh_q;
+  logic store_put_complete_q, store_absorbed_q;
   logic engine_idle;
   logic [5:0] engine_tid;
   logic [1:0] service_slot, grant_slot, release_slot;
@@ -545,22 +584,33 @@ module coherent_hart_cache_formal #(
         assert (grant_key[n] == request_key[n] && grant_address[n] == request_address[n]);
       end
       if (result_valid && !result.error)
-        assert ((result.data & {4{64'hfffffffffffffcff}}) ==
+        assert ((result.data & {4{result.addr[5] ? 64'hfffffffffffffcff : 64'hfffffffffffffcdf}}) ==
           (result.addr[5] ? {4{64'h200004cf}} : {4{64'h200000cf}}));
       if (g_valid && !grant.error)
-        assert ((grant.data & {4{64'hfffffffffffffcff}}) ==
+        assert ((grant.data & {4{grant.addr[5] ? 64'hfffffffffffffcff : 64'hfffffffffffffcdf}}) ==
           (grant.addr[5] ? {4{64'h200004cf}} : {4{64'h200000cf}}));
     end
   always_ff @(posedge i_clk) begin
     if (rst) begin
       home_published_q <= 0;
+      home_prefix_q <= 0;
       probe_needs_fresh_q <= 0;
+      store_put_complete_q <= 0;
+      store_absorbed_q <= 0;
     end else begin
-      if ((put_pending_q && finish_put) ||
-          (update_valid && !update_pending_q && address == 32'h80000000))
-        home_published_q <= 1;
-      if (home_published_q) assert (home_data_q[9:8] == stored_bits);
-      if (update_valid && address == 32'h80000000) assert (update_data[9:8] == stored_bits);
+      if (pending && put_pending_q && finish_put) store_put_complete_q <= 1;
+      if (pending && r_valid && r_ready && reply.absorbed) store_absorbed_q <= 1;
+      if (update_valid && !update_pending_q && address == 32'h80000000) begin
+        home_prefix_q <= 1;
+        if (update_data == {4{stored_pte}}) home_published_q <= 1;
+      end else if (put_pending_q && finish_put) begin
+        home_prefix_q <= 1;
+        if (pending_put_q.data == {4{stored_pte}}) home_published_q <= 1;
+      end
+      if (home_prefix_q) assert (home_data_q == {4{first_pte}} || home_data_q == {4{stored_pte}});
+      if (home_published_q) assert (home_data_q == {4{stored_pte}});
+      if (update_valid && address == 32'h80000000)
+        assert (update_data == {4{first_pte}} || update_data == {4{stored_pte}});
       if (p_valid && p_ready)
         probe_needs_fresh_q <= address == 32'h80000000 &&
             store_sent_q && !pending && !home_published_q;
@@ -628,15 +678,17 @@ module coherent_hart_cache_formal #(
       expected_error_q <= 0;
       last_error_q <= 0;
     end else begin
-      if (|store_mask) store_sent_q <= 1;
+      if (|store_mask && stores_launched_q == (two_stores ? 2 : 1)) store_sent_q <= 1;
       if (fence_done) begin
         fence_seen_q <= 1;
-        assert (store_sent_q && !pending);
+        assert (store_sent_q && !pending && !(|store_mask));
       end
       if (fetch && if_ready) if_after_q[fetch_sector] <= fence_seen_q;
       if (if_resp) assert (if_response_id < 2);
-      if (if_resp && if_after_q[if_response_id[0]] && !if_error && !if_response_id[0])
+      if (if_resp && if_after_q[if_response_id[0]] && !if_error && !if_response_id[0]) begin
         assert (if_data[9:8] == stored_bits);
+        assert (if_data[5] == stored_global);
+      end
       if (if_resp && if_response_id[0] && !if_error) assert (if_data == {4{64'h200004cf}});
       if (line_valid && line_ready) begin
         line_live_q  <= 1;
@@ -645,7 +697,10 @@ module coherent_hart_cache_formal #(
       if (line_resp) begin
         assert (line_live_q);
         line_live_q <= 0;
-        if (walk_after_q && !line_error) assert (line_data[9:8] == stored_bits);
+        if (walk_after_q && !line_error) begin
+          assert (line_data[9:8] == stored_bits);
+          assert (line_data[5] == stored_global);
+        end
       end
       if (walk && walk_ready) begin
         poisoned_q <= 0;
@@ -696,6 +751,13 @@ module coherent_hart_cache_formal #(
       cover (line_resp && walk_after_q && !line_error && !fence_seen_q);
       cover (fence_seen_q && if_resp && if_after_q[if_response_id[0]] && !if_error);
       cover (fence_seen_q && line_resp && walk_after_q && !line_error && absorbed_q);
+      cover (fence_done && !two_stores);
+      cover (fence_done && two_stores);
+      cover (fence_seen_q && if_resp && !if_error && if_after_q[if_response_id[0]] &&
+          store_put_complete_q && stored_global);
+      cover (fence_seen_q && if_resp && !if_error && if_after_q[if_response_id[0]] &&
+          store_absorbed_q && stored_global);
+      cover (request_fence && store_sent_q && two_stores && store_holds == 1);
       cover (fence_done && &competitors_q && delayed_g_q && delayed_c_q && delayed_u_q);
 
       if (put_valid && put_ready) begin

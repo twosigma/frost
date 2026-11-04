@@ -37,7 +37,8 @@
  * VARIABLE_UNCACHED=1, uncached requests use ready/valid and complete only on
  * their external R/B response. The zero setting retains the fixed-latency
  * interface for pipeline component tests. While a
- * cached store is pending, i_cached_write_inflight keeps the write port busy.
+ * cached write awaits acknowledgement, i_cached_write_inflight keeps the
+ * write port busy. Sector holds cover accepted stores until installation.
  * The cached read enable also leaves split on its one late term, the live LQ
  * launch (o_data_mem_cached_read_sel), so the adapter can apply it last.
  *
@@ -480,11 +481,11 @@ module data_mem_request_router #(
     o_mmio_load_valid = lq_pending_mmio_read_accepted;
   end
 
-  // In the legacy profile, BRAM/MMIO SQ writes complete next cycle. Cached done
-  // means L1D has applied a hit or accepted a write miss for merging on fill;
-  // it does not require DDR completion. Done retires the SQ record and
-  // releases cache invalidation. Younger same-address loads wait until the
-  // store leaves the SQ, then L1D serves them from the merged data.
+  // With VARIABLE_UNCACHED=0, BRAM/MMIO SQ writes complete next cycle.
+  // Variable uncached writes complete with their external response.
+  // Ordinary cached done acknowledges L1D buffer capture and retires the SQ
+  // record. Sector holds protect younger
+  // loads until installation; aggregate pending keeps drain consumers waiting.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       sq_write_done_fast <= 1'b0;

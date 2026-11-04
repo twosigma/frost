@@ -53,6 +53,7 @@ module coherence_array #(
     output logic [WayBits-1:0] o_resp_way,
     output logic [ADDR_WIDTH-1:0] o_resp_addr,
     output logic [1:0] o_resp_state,
+    // Data is meaningful only when valid; skipped reads keep the prior data.
     output logic o_resp_data_valid,
     output logic [8*LINE_BYTES-1:0] o_resp_data,
     // An update names a complete tag and row. Writes finish before another
@@ -62,6 +63,7 @@ module coherence_array #(
     input logic [ADDR_WIDTH-1:0] i_update_addr,
     input logic [WayBits-1:0] i_update_way,
     input logic [1:0] i_update_state,
+    // An insertion follows a lookup of the same set and selected way.
     input logic i_update_insert,
     input logic [LINE_BYTES-1:0] i_update_mask,
     input logic [8*LINE_BYTES-1:0] i_update_data
@@ -97,7 +99,7 @@ module coherence_array #(
   logic [WAYS-1:0] exclude_q;
   logic [PlruBits-1:0] plru_read, plru_q, plru_write;
   logic [15:0] insert_lfsr_q;
-  logic plru_we;
+  logic plru_we, plru_hit_q;
   logic [WAYS-1:0] tag_we;
   logic [SetBits-1:0] tag_raddr, tag_waddr;
   logic [TagEntryBits-1:0] tag_wdata;
@@ -174,10 +176,10 @@ module coherence_array #(
       plru_read : plru_q;
   assign plru_we = !i_rst && (phase_q == Init ||
       (update_fire && i_update_insert && (!BIMODAL_INSERT || insert_lfsr_q[4:0] == 0)) ||
-      (select_valid && hit && !visit_q));
-  assign plru_write = phase_q == Init ? '0 : touch(
-      select_plru, select_valid ? selected : i_update_way
-  );
+      plru_hit_q);
+  // Hit touches use the registered way during data service or the reply.
+  // The metadata write finishes before another request or update can enter.
+  assign plru_write = phase_q == Init ? '0 : touch(plru_q, plru_hit_q ? o_resp_way : i_update_way);
   sdp_block_ram #(
       .ADDR_WIDTH(SetBits),
       .DATA_WIDTH(PlruBits),
@@ -243,7 +245,7 @@ module coherence_array #(
       .READ_LATENCY(DATA_READ_LATENCY),
       .WRITE_LATENCY(DATA_WRITE_LATENCY),
       .MEMORY_PRIMITIVE(ULTRA ? "ultra" : "block"),
-      .REGISTER_READ_INPUT(ULTRA),
+      .REGISTER_READ_INPUT(1'b1),
       .REGISTER_READ_OUTPUT(ULTRA)
   ) data_array (
 `ifndef SYNTHESIS
@@ -288,6 +290,7 @@ module coherence_array #(
       visit_way_q <= '0;
       exclude_q <= '0;
       plru_q <= '0;
+      plru_hit_q <= 1'b0;
       insert_lfsr_q <= 16'hACE1;
       o_resp_hit <= 1'b0;
       o_resp_available <= 1'b0;
@@ -297,6 +300,7 @@ module coherence_array #(
       o_resp_data <= '0;
       o_resp_data_valid <= 1'b0;
     end else begin
+      plru_hit_q <= select_valid && hit && !visit_q;
       insert_lfsr_q <= {
         insert_lfsr_q[14:0],
         insert_lfsr_q[15] ^ insert_lfsr_q[13] ^ insert_lfsr_q[12] ^ insert_lfsr_q[10]
@@ -340,7 +344,6 @@ module coherence_array #(
             o_resp_state <= tag_rdata[selected][TagBits+:2];
             o_resp_data_valid <= select_data;
             if (!select_data) begin
-              o_resp_data <= '0;
               phase_q <= Reply;
             end else begin
               count_q <= CountBits'(DATA_READ_LATENCY);
@@ -373,6 +376,45 @@ module coherence_array #(
     initial $fatal(1, "coherence_array: invalid parameters");
   end
 `ifdef FORMAL
+`ifdef F_COH_ARRAY_PLRU_PROOF
+  logic [PlruBits-1:0] f_plru_state[Sets];
+  logic [PlruBits-1:0] f_plru_read, f_hit_value_q;
+  logic [SetBits-1:0] f_hit_set_q;
+  logic f_hit_seen_q;
+  initial for (int set_index = 0; set_index < Sets; set_index++) f_plru_state[set_index] = '0;
+  // The reference writes a hit's replacement bits on the tag-selection edge.
+  always_ff @(posedge i_clk) begin
+    f_plru_read <= f_plru_state[tag_raddr];
+    if (init_bulk_clear) begin
+      for (int set_index = 0; set_index < Sets; set_index++) f_plru_state[set_index] <= '0;
+    end else if (!i_rst) begin
+      if (phase_q == Init) f_plru_state[init_set_q] <= '0;
+      else if (update_fire && i_update_insert && (!BIMODAL_INSERT || insert_lfsr_q[4:0] == 0))
+        f_plru_state[set_q] <= touch(select_plru, i_update_way);
+      else if (select_valid && hit && !visit_q) f_plru_state[set_q] <= touch(select_plru, selected);
+    end
+    if (i_rst) begin
+      f_hit_seen_q  <= 1'b0;
+      f_hit_value_q <= '0;
+      f_hit_set_q   <= '0;
+    end else begin
+      if (select_valid && hit && !visit_q) begin
+        f_hit_seen_q  <= 1'b1;
+        f_hit_value_q <= touch(select_plru, selected);
+        f_hit_set_q   <= set_q;
+      end
+      if (phase_q == Tags && count_q == CountBits'(TAG_READ_LATENCY))
+        p_plru_lookup_value : assert (plru_read == f_plru_read);
+      if (plru_hit_q) begin
+        p_plru_hit_exclusive : assert (!request_fire && !update_fire);
+        p_plru_hit_write : assert (plru_we && plru_write == f_hit_value_q && set_q == f_hit_set_q);
+      end
+      c_plru_hit_reply : cover (plru_hit_q && o_resp_valid && i_resp_ready);
+      c_plru_hit_data : cover (plru_hit_q && phase_q == Data);
+      c_plru_following_lookup : cover (f_hit_seen_q && request_fire && tag_raddr == f_hit_set_q);
+    end
+  end
+`endif
   (* anyconst *) logic [RowBits-1:0] f_row;
   (* anyconst *) logic [OffsetBits-1:0] f_byte;
   logic f_byte_known = 1'b0;
@@ -387,6 +429,31 @@ module coherence_array #(
         ((RowBits'(o_resp_way) << SetBits) | RowBits'(set_q)) == f_row && f_byte_known)
       assert (o_resp_data[8*f_byte+:8] == f_byte_value);
   end
+  logic f_updated_q, f_disjoint_q, f_overlap_q, f_tag_only_q;
+  logic [LINE_BYTES-1:0] f_mask_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_updated_q <= 1'b0;
+      f_disjoint_q <= 1'b0;
+      f_overlap_q <= 1'b0;
+      f_tag_only_q <= 1'b0;
+      f_mask_q <= '0;
+    end else begin
+      if (o_resp_valid && o_resp_hit && skip_data_q && !o_resp_data_valid) f_tag_only_q <= 1'b1;
+      if (update_fire && data_waddr == f_row && |i_update_mask && !(&i_update_mask)) begin
+        f_updated_q <= 1'b1;
+        f_mask_q <= i_update_mask;
+        if (f_updated_q && !(|(f_mask_q & i_update_mask))) f_disjoint_q <= 1'b1;
+        if (f_updated_q && |(f_mask_q & i_update_mask)) f_overlap_q <= 1'b1;
+      end
+      if (((RowBits'(o_resp_way) << SetBits) | RowBits'(set_q)) == f_row &&
+          o_resp_valid && o_resp_data_valid && f_byte_known) begin
+        cover (f_disjoint_q);
+        cover (f_overlap_q);
+        cover (f_tag_only_q && f_updated_q);
+      end
+    end
+  end
   logic f_past_valid = 1'b0;
   wire [ADDR_WIDTH+WayBits+11:0] f_response_signature = {
     o_resp_hit, o_resp_available, o_resp_way, o_resp_addr, o_resp_state, o_resp_data[7:0]
@@ -397,6 +464,12 @@ module coherence_array #(
     if (i_req_valid) assume (i_req_way < WAYS);
     if (i_update_valid) assume (i_update_way < WAYS);
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
+`ifdef F_COH_ARRAY_PLRU_PROOF
+      p_plru_pending_exact : assert (plru_hit_q == $past(select_valid && hit && !visit_q));
+`endif
+      if (!$past(phase_q == Data && count_q == 1))
+        p_data_changes_only_after_read :
+        assert (o_resp_data[8*f_byte+:8] == $past(o_resp_data[8*f_byte+:8]));
       if ($past(o_resp_valid && !i_resp_ready)) begin
         assert (o_resp_valid);
         assert (o_resp_data_valid == $past(o_resp_data_valid));

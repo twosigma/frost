@@ -81,6 +81,8 @@ with responses in flight. The `coherence_array_reset_*` and
 and UltraRAM. They check every set and way after cold and populated resets,
 replacement choices for every exclusion mask, preservation of data RAM, and
 a write in flight through reset, including a five-cycle home data write.
+The private-array benches alternate data and skipped-data hits, hold replies,
+and check replacement choices at the following lookup in each set.
 
 `coherence_home_completions`, `coherence_home`, `coherence_home_equal`,
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
@@ -91,7 +93,15 @@ exercise the coherent hierarchy in both memory configurations. Whole-L1D
 maintenance is active in simulation. Synthesis checks cover both line sizes
 at 32-bit and 56-bit physical widths.
 `coherence_l1d` holds a probe reply across a grant and checks single grant
-application, ordered read errors and completion of the following store.
+application, ordered read errors and installation of the following store.
+Its buffered-store cases check overlapping byte masks, same-sector order,
+held sector coverage, probe-driven reacquisition, frozen writeback conflicts
+and fatal acquisition errors. The `coherent_cut` bench delays old load responses
+across acceptance, acknowledgement and installation of partial stores, then
+checks that a subsequent load cannot use their stale data from L0.
+`cached_store_burst_test` checks cached store bursts followed by traps,
+FENCE.I, SC and AMO. Its CPU monitor requires accepted-store overlap with
+trap and fence drain waits.
 The cluster bench holds all eight CPU read identities occupied during dirty
 DMA reads and writes. Its invalidation case delays cut completion and checks
 response rotation and byte-write preservation.
@@ -140,6 +150,18 @@ The `cocotb` and `pytest` shortcuts clean `tests/` first. `--testcase` takes
 a regex for the cocotb test function; with pytest, `-k` and `-m` select
 registry targets. A seed sweep gives each run its own build directory and
 prints a command that reproduces each failing seed.
+
+The explicit `exec_latency_probe` target records arithmetic issues, unit results,
+adapter results and CDB broadcasts in `.exec_latency/baseline.jsonl`. `FROST_EXECLAT_TRACE`
+selects another path, relative to `tests/` or absolute. ROB allocation maps issue
+tags to program addresses, since arithmetic issue packets omit their PCs. The
+bench checks the program's completion PC and fails on its failure PC or timeout.
+The integer chains check eight-cycle MUL and five-cycle MULW dependent issue.
+Each selected instruction's unit, adapter and CDB results are checked against
+the integer or exact double-precision vector, including flags and exceptions.
+The `exec_latency_short` variant selects zero, infinity, NaN and cancellation
+chains and writes `.exec_latency/short.jsonl`. Both targets run once and are
+excluded from pytest collection.
 
 Within a pytest run, a target reuses generated files only when its build
 settings match, and the files of a failed Verilator build are removed before
@@ -192,6 +214,23 @@ committed stores, invalidate L1I and flush fetch and translation state.
 `opensbi_smoke` uses a twenty-million-cycle budget for firmware boot and
 its S-mode payload.
 
+`mmu_reach` is a manual benchmark, excluded from the pytest application
+matrix. It runs dependent data and instruction chains at 1, 4, 16, 20, 32,
+and 64 pages after warmup traversals, plus a data control at fixed offsets.
+Separate data chains use leaves at each Sv39 level to measure walk depth.
+Its address space switch loop alternates two roots mapping the same virtual
+addresses to distinct physical data. Untimed checks verify each page's pointer
+and signature; instruction checks verify the visit counter and terminating PC. The
+application reports cycle counts through UART and runs once. Setting
+`FROST_MMU_REACH_TRACE` to an absolute output path captures MMU presentations,
+accepted operations, physical translation results, retirements, cancellations,
+invalidations, walks, coherent reads, and L0 events as JSONL. Allocation identities
+distinguish reused ROB tags. Fetch events identify page transitions. Set the
+variable inside the container invocation.
+
+`FROST_PTW_COHERENCE_TRACE` captures PTE addresses and responses, accepted
+ReadOncePTW requests, and home probe data as JSONL without application markers.
+
 `freertos_demo` runs twice in BRAM to check that its private linker script
 and startup code reinitialize the kernel, heap, and application state.
 Its simulation budget is three million cycles.
@@ -243,6 +282,9 @@ The `dmmu` and `dmmu_1g` benches check translated hits, walk responses and
 early store lookups against an independent memory-map reference. Device
 cases cover the MMIO, APLIC and full IMSIC windows, their boundary pages,
 permissions, atomic-access faults and superpage offsets.
+Warm-buffer checks cover one-cycle load/store/SC/LR/AMO routing, successive
+tags and payloads, LQ look-ahead, permission changes, invalidation and remapping.
+A partial flush overlaps a killed S1 resolution with an older bypass.
 
 #### Random power-up state
 

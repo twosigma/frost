@@ -69,5 +69,7 @@
   the FP fast paths for compares, moves, sign injection and conversions
 - Doubled the ITLB to 16 entries and removed the Sv39 sequential-fetch
   bubble with intra-page virtual tagging
+- Added the data MMU's last-page translation bypass, which saves a cycle
+  on translated accesses to the most recently used page
 - Added the standard HPM counters 3 to 8 for branches, mispredictions, TLB
   walks, L1D misses and store-queue stalls, with their OpenSBI PMU mapping

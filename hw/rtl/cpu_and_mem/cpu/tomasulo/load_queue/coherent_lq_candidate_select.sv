@@ -43,7 +43,7 @@ module coherent_lq_candidate_select #(
   logic sim_reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (i_sim_rst) sim_reset_seen_q <= 1'b1;
 `endif
-  // The form this replaces: registered candidates chosen by a registered select.
+  // Reference selection from candidates and selector sampled together.
   logic [CANDIDATES*WIDTH-1:0] reference_candidates_q;
   logic [SELECT_WIDTH-1:0] reference_select_q;
   logic initialized = 1'b0;

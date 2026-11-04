@@ -36,10 +36,11 @@
  *
  * The multiplier path is pipelined. A shift register as deep as the
  * full-width unit tracks its in-flight operations, carrying each one's ROB
- * tag and result select, and a 4-entry result FIFO holds completions waiting
- * for the CDB adapter. Credit-based back-pressure (o_fu_busy) keeps unflushed
- * operations in flight plus FIFO occupancy within the FIFO depth, so the FIFO
- * cannot overflow. A MULW or carry-less multiply enters the tracker partway
+ * tag and result select. DIRECT_MUL presents the tracker tail directly and
+ * requires acceptance of every unsquashed result. Otherwise a 4-entry result
+ * FIFO holds completions waiting for the CDB adapter. Credit-based
+ * back-pressure (o_fu_busy) bounds unflushed operations plus FIFO occupancy
+ * to four. A MULW or carry-less multiply enters the tracker partway
  * down, at the stage that aligns with its product, and waits while a live
  * operation is about to move into that stage.
  *
@@ -50,7 +51,8 @@
  * the multiplies in the station keep issuing while divides wait there.
  */
 module int_muldiv_shim #(
-    parameter bit SHORT_WORD_OPS = 1'b1
+    parameter bit SHORT_WORD_OPS = 1'b1,
+    parameter bit DIRECT_MUL = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -146,7 +148,7 @@ module int_muldiv_shim #(
   endfunction
 
   // ---------------------------------------------------------------------------
-  // MUL path: MulPipeDepth-stage pipeline plus a 4-entry result FIFO
+  // MUL path: MulPipeDepth-stage pipeline with optional result buffering
   // ---------------------------------------------------------------------------
   logic multiplier_valid_input;
   logic multiplier_valid_output;
@@ -272,7 +274,7 @@ module int_muldiv_shim #(
         mul_trk_valid[0]   <= 1'b0;
         mul_trk_flushed[0] <= 1'b0;
       end
-      // The word and carry-less multipliers share the tail and FIFO. Their
+      // The word and carry-less multipliers share the tracker tail. Their
       // operations enter at WordMulInsert to align with the product; mul_busy
       // holds it off while a live entry is about to shift into that stage.
       if (multiplier_valid_input && mul_is_short) begin
@@ -308,37 +310,11 @@ module int_muldiv_shim #(
     end
   end
 
-  // ---------------------------------------------------------------------------
-  // MUL result FIFO (4 entries, FF control with LUTRAM payload)
-  // ---------------------------------------------------------------------------
   localparam int unsigned MulFifoDepth = 4;
-
-  logic [                  TagW-1:0] mul_fifo_tag           [MulFifoDepth];
-  logic [       riscv_pkg::FLEN-1:0] mul_fifo_value_rd;
-  logic [       riscv_pkg::FLEN-1:0] mul_fifo_value_wr_data;
-  logic [          MulFifoDepth-1:0] mul_fifo_valid;
-  logic [          MulFifoDepth-1:0] mul_fifo_flushed;
   logic [$clog2(MulFifoDepth+1)-1:0] mul_fifo_count;
-  logic                              mul_fifo_push;
+  logic [riscv_pkg::FLEN-1:0] mul_fifo_value_wr_data;
 
-  logic [  $clog2(MulFifoDepth)-1:0] mul_fifo_wr_ptr;
-  logic [  $clog2(MulFifoDepth)-1:0] mul_fifo_rd_ptr;
-
-  sdp_dist_ram #(
-      .ADDR_WIDTH($clog2(MulFifoDepth)),
-      .DATA_WIDTH(riscv_pkg::FLEN)
-  ) u_mul_fifo_value (
-      .i_clk,
-      .i_write_enable (mul_fifo_push),
-      .i_write_address(mul_fifo_wr_ptr),
-      .i_write_data   (mul_fifo_value_wr_data),
-      .i_read_address (mul_fifo_rd_ptr),
-      .o_read_data    (mul_fifo_value_rd)
-  );
-
-  // A result younger than a partial flush that is pushed in the flush cycle
-  // is marked flushed on write. The adapter filters a younger FIFO head in
-  // the flush cycle itself.
+  // The adapter suppresses same-cycle flushes before CDB arbitration.
   logic mul_completing;
   assign mul_completing = mul_trk_valid[MulPipeDepth-1] && !mul_trk_flushed[MulPipeDepth-1];
 
@@ -359,96 +335,132 @@ module int_muldiv_shim #(
   end
   assign mul_fifo_value_wr_data = riscv_pkg::FLEN'(mul_result_xlen);
 
-  // Apply a same-cycle partial flush to the result being pushed.
+  // Same-cycle partial flush classification of the tracker tail.
   logic mul_push_entry_flush_young;
   assign mul_push_entry_flush_young = i_flush_en && is_younger(
       mul_trk_tag[MulPipeDepth-1], i_flush_tag, i_rob_head_tag
   );
 
-  // Pop an accepted result or a head already marked flushed.
-  logic mul_fifo_pop;
-  logic mul_fifo_head_flushed;
-  assign mul_fifo_head_flushed = mul_fifo_valid[mul_fifo_rd_ptr] &&
-                                 mul_fifo_flushed[mul_fifo_rd_ptr];
-  assign mul_fifo_pop = (mul_fifo_count != '0) && (i_mul_accepted || mul_fifo_head_flushed);
+  if (DIRECT_MUL) begin : gen_direct_mul
+    assign mul_fifo_count = '0;
+    always_comb begin
+      o_mul_fu_complete = '0;
+      o_mul_fu_complete.valid = mul_completing;
+      o_mul_fu_complete.tag = mul_trk_tag[MulPipeDepth-1];
+      o_mul_fu_complete.value = mul_fifo_value_wr_data;
+    end
+  end else begin : gen_buffered_mul
+    // ---------------------------------------------------------------------------
+    // MUL result FIFO (4 entries, FF control with LUTRAM payload)
+    // ---------------------------------------------------------------------------
 
-  // Every result spends at least one cycle in the FIFO. A same-cycle bypass
-  // would feed the wrapper's accept logic back into mul_fifo_push.
-  assign mul_fifo_push = mul_completing;
+    logic [                TagW-1:0] mul_fifo_tag      [MulFifoDepth];
+    logic [     riscv_pkg::FLEN-1:0] mul_fifo_value_rd;
+    logic [        MulFifoDepth-1:0] mul_fifo_valid;
+    logic [        MulFifoDepth-1:0] mul_fifo_flushed;
+    logic                            mul_fifo_push;
 
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      for (int i = 0; i < MulFifoDepth; i++) begin
-        mul_fifo_valid[i]   <= 1'b0;
-        mul_fifo_flushed[i] <= 1'b0;
-      end
-      mul_fifo_wr_ptr <= '0;
-      mul_fifo_rd_ptr <= '0;
-      mul_fifo_count  <= '0;
-    end else if (i_flush) begin
-      for (int i = 0; i < MulFifoDepth; i++) begin
-        mul_fifo_valid[i]   <= 1'b0;
-        mul_fifo_flushed[i] <= 1'b0;
-      end
-      mul_fifo_wr_ptr <= '0;
-      mul_fifo_rd_ptr <= '0;
-      mul_fifo_count  <= '0;
-    end else begin
-      if (i_flush_en) begin
+    logic [$clog2(MulFifoDepth)-1:0] mul_fifo_wr_ptr;
+    logic [$clog2(MulFifoDepth)-1:0] mul_fifo_rd_ptr;
+
+    sdp_dist_ram #(
+        .ADDR_WIDTH($clog2(MulFifoDepth)),
+        .DATA_WIDTH(riscv_pkg::FLEN)
+    ) u_mul_fifo_value (
+        .i_clk,
+        .i_write_enable (mul_fifo_push),
+        .i_write_address(mul_fifo_wr_ptr),
+        .i_write_data   (mul_fifo_value_wr_data),
+        .i_read_address (mul_fifo_rd_ptr),
+        .o_read_data    (mul_fifo_value_rd)
+    );
+
+    // Pop an accepted result or a head already marked flushed.
+    logic mul_fifo_pop;
+    logic mul_fifo_head_flushed;
+    assign mul_fifo_head_flushed = mul_fifo_valid[mul_fifo_rd_ptr] &&
+                                   mul_fifo_flushed[mul_fifo_rd_ptr];
+    assign mul_fifo_pop = (mul_fifo_count != '0) && (i_mul_accepted || mul_fifo_head_flushed);
+
+    // Every result spends at least one cycle in the FIFO. A same-cycle bypass
+    // would feed the wrapper's accept logic back into mul_fifo_push.
+    assign mul_fifo_push = mul_completing;
+
+    always_ff @(posedge i_clk) begin
+      if (!i_rst_n) begin
         for (int i = 0; i < MulFifoDepth; i++) begin
-          if (mul_fifo_valid[i] && !mul_fifo_flushed[i] && is_younger(
-                  mul_fifo_tag[i], i_flush_tag, i_rob_head_tag
-              )) begin
-            mul_fifo_flushed[i] <= 1'b1;
+          mul_fifo_valid[i]   <= 1'b0;
+          mul_fifo_flushed[i] <= 1'b0;
+        end
+        mul_fifo_wr_ptr <= '0;
+        mul_fifo_rd_ptr <= '0;
+        mul_fifo_count  <= '0;
+      end else if (i_flush) begin
+        for (int i = 0; i < MulFifoDepth; i++) begin
+          mul_fifo_valid[i]   <= 1'b0;
+          mul_fifo_flushed[i] <= 1'b0;
+        end
+        mul_fifo_wr_ptr <= '0;
+        mul_fifo_rd_ptr <= '0;
+        mul_fifo_count  <= '0;
+      end else begin
+        if (i_flush_en) begin
+          for (int i = 0; i < MulFifoDepth; i++) begin
+            if (mul_fifo_valid[i] && !mul_fifo_flushed[i] && is_younger(
+                    mul_fifo_tag[i], i_flush_tag, i_rob_head_tag
+                )) begin
+              mul_fifo_flushed[i] <= 1'b1;
+            end
           end
         end
-      end
 
-      if (mul_fifo_push) begin
-        mul_fifo_tag[mul_fifo_wr_ptr] <= mul_trk_tag[MulPipeDepth-1];
-        mul_fifo_valid[mul_fifo_wr_ptr] <= 1'b1;
-        mul_fifo_flushed[mul_fifo_wr_ptr] <=
-            mul_trk_flushed[MulPipeDepth-1] || mul_push_entry_flush_young;
-        mul_fifo_wr_ptr <= mul_fifo_wr_ptr + 1;
-      end
+        if (mul_fifo_push) begin
+          mul_fifo_tag[mul_fifo_wr_ptr] <= mul_trk_tag[MulPipeDepth-1];
+          mul_fifo_valid[mul_fifo_wr_ptr] <= 1'b1;
+          mul_fifo_flushed[mul_fifo_wr_ptr] <=
+              mul_trk_flushed[MulPipeDepth-1] || mul_push_entry_flush_young;
+          mul_fifo_wr_ptr <= mul_fifo_wr_ptr + 1;
+        end
 
-      // Popping leaves the slot's flags set. mul_fifo_count gates their use
-      // for popping and output, and the next push overwrites them.
-      if (mul_fifo_pop) begin
-        mul_fifo_rd_ptr <= mul_fifo_rd_ptr + 1;
-      end
+        // Popping leaves the slot's flags set. mul_fifo_count gates their use
+        // for popping and output, and the next push overwrites them.
+        if (mul_fifo_pop) begin
+          mul_fifo_rd_ptr <= mul_fifo_rd_ptr + 1;
+        end
 
-      case ({
-        mul_fifo_push, mul_fifo_pop
-      })
-        2'b10:   mul_fifo_count <= mul_fifo_count + 1;
-        2'b01:   mul_fifo_count <= mul_fifo_count - 1;
-        default: mul_fifo_count <= mul_fifo_count;  // 2'b00 or 2'b11
-      endcase
+        case ({
+          mul_fifo_push, mul_fifo_pop
+        })
+          2'b10:   mul_fifo_count <= mul_fifo_count + 1;
+          2'b01:   mul_fifo_count <= mul_fifo_count - 1;
+          default: mul_fifo_count <= mul_fifo_count;  // 2'b00 or 2'b11
+        endcase
+      end
     end
+
+    // The registered flushed bit suppresses younger results after the flush
+    // edge; the adapter filters them during the flush cycle. The tag is
+    // unspecified while valid is low and the adapter uses it only with valid.
+    always_comb begin
+      o_mul_fu_complete.tag = mul_fifo_tag[mul_fifo_rd_ptr];
+      if (mul_fifo_count != '0 && !mul_fifo_flushed[mul_fifo_rd_ptr]) begin
+        o_mul_fu_complete.valid     = 1'b1;
+        o_mul_fu_complete.value     = mul_fifo_value_rd;
+        o_mul_fu_complete.exception = 1'b0;
+        o_mul_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
+        o_mul_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
+      end else begin
+        o_mul_fu_complete.valid     = 1'b0;
+        o_mul_fu_complete.value     = '0;
+        o_mul_fu_complete.exception = 1'b0;
+        o_mul_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
+        o_mul_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
+      end
+    end
+
   end
 
-  // The registered flushed bit suppresses younger results after the flush
-  // edge; the adapter filters them during the flush cycle. The tag is
-  // unspecified while valid is low and the adapter uses it only with valid.
-  always_comb begin
-    o_mul_fu_complete.tag = mul_fifo_tag[mul_fifo_rd_ptr];
-    if (mul_fifo_count != '0 && !mul_fifo_flushed[mul_fifo_rd_ptr]) begin
-      o_mul_fu_complete.valid     = 1'b1;
-      o_mul_fu_complete.value     = mul_fifo_value_rd;
-      o_mul_fu_complete.exception = 1'b0;
-      o_mul_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
-      o_mul_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
-    end else begin
-      o_mul_fu_complete.valid     = 1'b0;
-      o_mul_fu_complete.value     = '0;
-      o_mul_fu_complete.exception = 1'b0;
-      o_mul_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
-      o_mul_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
-    end
-  end
-
-  // MUL busy (credit-based to prevent FIFO overflow)
+  // Four credits cover all live multiplies and buffered results.
   logic [5:0] mul_total_occupancy;
   assign mul_total_occupancy = 6'(mul_fifo_count) + 6'(mul_inflight_count);
   // The RS's registered op is independent of ready and valid, so this short-op
@@ -542,6 +554,9 @@ module int_muldiv_shim #(
           mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_SEXT_W ?
           word_mul_valid : multiplier_valid_output))
         $error("int_muldiv_shim: MUL tracker/data pipeline mismatch");
+      if (DIRECT_MUL && mul_completing && !i_flush && !mul_push_entry_flush_young &&
+          !i_mul_accepted)
+        $error("int_muldiv_shim: direct MUL result was not accepted");
       if (is_div && i_rs_issue.valid && !div_idle)
         $error(
             "int_muldiv_shim: divide issue of tag %0d while the divider is busy", i_rs_issue.rob_tag
@@ -558,9 +573,23 @@ module int_muldiv_shim #(
   // holding its operation, which makes tail/data alignment inductive.
   logic [MulPipeDepth-1:0] f_full_mul;
   logic [WordMulDepth-1:0] f_word_mul, f_cl_mul;
+  logic [TagW-1:0] f_full_tag[MulPipeDepth], f_word_tag[WordMulDepth];
   logic [TagW-1:0] f_cl_tag[WordMulDepth];
+  mul_result_sel_e f_full_rsel[MulPipeDepth];
+  logic [MulPipeDepth-1:0] f_full_live;
+  logic [WordMulDepth-1:0] f_word_live, f_cl_live;
   always @(posedge i_clk) begin
-    f_cl_tag[0] <= i_rs_issue.rob_tag;
+    f_full_tag[0] <= i_rs_issue.rob_tag;
+    f_word_tag[0] <= i_rs_issue.rob_tag;
+    f_cl_tag[0]   <= i_rs_issue.rob_tag;
+    case (i_rs_issue.op)
+      riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU: f_full_rsel[0] <= MUL_SEL_HIGH;
+      riscv_pkg::MULW: f_full_rsel[0] <= MUL_SEL_SEXT_W;
+      default: f_full_rsel[0] <= MUL_SEL_LOW;
+    endcase
+    for (int stage = 1; stage < MulPipeDepth; stage++) f_full_rsel[stage] <= f_full_rsel[stage-1];
+    for (int stage = 1; stage < MulPipeDepth; stage++) f_full_tag[stage] <= f_full_tag[stage-1];
+    for (int stage = 1; stage < WordMulDepth; stage++) f_word_tag[stage] <= f_word_tag[stage-1];
     for (int stage = 1; stage < WordMulDepth; stage++) f_cl_tag[stage] <= f_cl_tag[stage-1];
   end
   always @(posedge i_clk) begin
@@ -574,19 +603,66 @@ module int_muldiv_shim #(
       f_cl_mul   <= {f_cl_mul[WordMulDepth-2:0], multiplier_valid_input && mul_is_cl};
     end
   end
+  // Independent source histories keep squashed operations dead even when a
+  // later issue reuses their ROB tag. Each source advances at its own latency.
+  always @(posedge i_clk) begin
+    if (!i_rst_n || i_flush) begin
+      f_full_live <= '0;
+      f_word_live <= '0;
+      f_cl_live   <= '0;
+    end else begin
+      f_full_live[0] <= multiplier_valid_input && !mul_is_short && !(i_flush_en && is_younger(
+          i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
+      ));
+      f_word_live[0] <= multiplier_valid_input && mul_is_short_word && !(i_flush_en && is_younger(
+          i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
+      ));
+      f_cl_live[0] <= multiplier_valid_input && mul_is_cl && !(i_flush_en && is_younger(
+          i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
+      ));
+      for (int stage = 1; stage < MulPipeDepth; stage++)
+      f_full_live[stage] <= f_full_live[stage-1] && !(i_flush_en && is_younger(
+          f_full_tag[stage-1], i_flush_tag, i_rob_head_tag
+      ));
+      for (int stage = 1; stage < WordMulDepth; stage++) begin
+        f_word_live[stage] <= f_word_live[stage-1] && !(i_flush_en && is_younger(
+            f_word_tag[stage-1], i_flush_tag, i_rob_head_tag
+        ));
+        f_cl_live[stage] <= f_cl_live[stage-1] && !(i_flush_en && is_younger(
+            f_cl_tag[stage-1], i_flush_tag, i_rob_head_tag
+        ));
+      end
+    end
+  end
   for (genvar stage = 0; stage < MulPipeDepth; stage++) begin : gen_f_mul_owner
     always @(posedge i_clk) begin
       if (f_past_valid && i_rst_n && mul_trk_valid[stage] && !mul_trk_flushed[stage]) begin
         if (mul_trk_rsel[stage] == MUL_SEL_CL) begin
           if (stage >= WordMulInsert) begin
-            assert (f_cl_mul[stage-WordMulInsert]);
+            assert (f_cl_live[stage-WordMulInsert]);
             assert (mul_trk_tag[stage] == f_cl_tag[stage-WordMulInsert]);
           end else assert (1'b0);
         end else if (SHORT_WORD_OPS && mul_trk_rsel[stage] == MUL_SEL_SEXT_W) begin
-          if (stage >= WordMulInsert)
-            assert (f_word_mul[stage-WordMulInsert]);
-            else assert (1'b0);
-        end else assert (f_full_mul[stage]);
+          if (stage >= WordMulInsert) begin
+            assert (f_word_live[stage-WordMulInsert]);
+            assert (mul_trk_tag[stage] == f_word_tag[stage-WordMulInsert]);
+          end else assert (1'b0);
+        end else begin
+          assert (f_full_live[stage]);
+          assert (mul_trk_rsel[stage] == f_full_rsel[stage]);
+          assert (mul_trk_tag[stage] == f_full_tag[stage]);
+        end
+        if (stage < WordMulInsert) assert (f_full_live[stage]);
+      end
+      if (f_past_valid && i_rst_n) begin
+        if (stage >= WordMulInsert) begin
+          assert ((mul_trk_valid[stage] && !mul_trk_flushed[stage]) ==
+              (f_full_live[stage] || f_word_live[stage-WordMulInsert] ||
+               f_cl_live[stage-WordMulInsert]));
+          assert (!(f_full_live[stage] && f_word_live[stage-WordMulInsert]));
+          assert (!(f_full_live[stage] && f_cl_live[stage-WordMulInsert]));
+          assert (!(f_word_live[stage-WordMulInsert] && f_cl_live[stage-WordMulInsert]));
+        end else assert ((mul_trk_valid[stage] && !mul_trk_flushed[stage]) == f_full_live[stage]);
       end
     end
   end
@@ -647,6 +723,30 @@ module int_muldiv_shim #(
             SHORT_WORD_OPS && mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_SEXT_W ?
             word_mul_valid : multiplier_valid_output);
 `endif
+      if (DIRECT_MUL) begin
+        assert (o_mul_fu_complete.valid == (f_full_live[MulPipeDepth-1] ||
+            f_word_live[WordMulDepth-1] || f_cl_live[WordMulDepth-1]));
+        if (f_full_live[MulPipeDepth-1]) begin
+          assert (o_mul_fu_complete.tag == f_full_tag[MulPipeDepth-1]);
+          case (f_full_rsel[MulPipeDepth-1])
+            MUL_SEL_HIGH:
+            assert (o_mul_fu_complete.value == riscv_pkg::FLEN'(mul_product[2*MulXlen-1:MulXlen]));
+            MUL_SEL_SEXT_W:
+            assert (o_mul_fu_complete.value == riscv_pkg::FLEN'($signed(mul_product[31:0])));
+            default: assert (o_mul_fu_complete.value == riscv_pkg::FLEN'(mul_product[MulXlen-1:0]));
+          endcase
+        end
+        if (f_word_live[WordMulDepth-1]) begin
+          assert (o_mul_fu_complete.tag == f_word_tag[WordMulDepth-1]);
+          assert (o_mul_fu_complete.value == riscv_pkg::FLEN'($signed(word_mul_product[31:0])));
+        end
+        if (f_cl_live[WordMulDepth-1]) begin
+          assert (o_mul_fu_complete.tag == f_cl_tag[WordMulDepth-1]);
+          assert (o_mul_fu_complete.value == riscv_pkg::FLEN'(cl_result));
+        end
+        if (o_mul_fu_complete.valid)
+          assert (!o_mul_fu_complete.exception && o_mul_fu_complete.fp_flags == '0);
+      end
       cover (mul_completing && mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_SEXT_W);
       cover (mul_completing && mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_CL);
       cover (mul_is_short && mul_busy && mul_total_occupancy < 4);

@@ -29,7 +29,7 @@ extracts and sign-extends bytes, halfwords and words from a 64-bit beat.
 | `ENABLE_L0_FAST_PATH` | 1 | Complete loads from the L0 |
 | `ENABLE_SQ_FORWARD_FAST_PATH` | 0; 1 in the core | Complete loads by store-to-load forwarding. With 0, a load that overlaps an older store waits for it to drain |
 | `PREPARE_LOAD_WHILE_BUSY` | `riscv_pkg::PrepareLoadWhileBusy` (1) | Stage the next load while the memory port is busy |
-| `PREISSUE_CANDIDATES`, `PREISSUE_SEL_WIDTH` | 0, 2; 1, 3 in the core | Register 2^`PREISSUE_SEL_WIDTH` look-ahead matches and select afterward (early load wakeup) |
+| `PREISSUE_CANDIDATES`, `PREISSUE_SEL_WIDTH` | 0, 2; 1, 3 in the core | Select one of 2^`PREISSUE_SEL_WIDTH` look-ahead matches and register it (early load wakeup) |
 | `PREISSUE_READY_PICK`, `PREISSUE_RS_DEPTH` | 0, 8; 1, 8 in the core | Compare RS entry tags first, then select a match using each candidate's ready vector |
 | `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, 1 GiB | Cached (DDR) region |
 

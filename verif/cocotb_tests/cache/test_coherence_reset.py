@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check cold and repeated metadata reset without clearing row data."""
+"""Check metadata reset, replacement touches and preservation of row data."""
 
 import os
 from typing import Any
@@ -103,10 +103,16 @@ class ResetArray:
             await self.tick()
 
     async def lookup(
-        self, address: int, exclude: int = 0, visit: int | None = None, claim: int = 0
+        self,
+        address: int,
+        exclude: int = 0,
+        visit: int | None = None,
+        claim: int = 0,
+        skip: bool = False,
+        hold: int = 0,
     ) -> tuple[int, int, int, int, int]:
         """Read one selected tag, optionally as a private maintenance visit."""
-        fields = dict(i_req_addr=address)
+        fields = dict(i_req_addr=address, i_resp_ready=int(not hold))
         if self.home:
             fields.update(i_exclude=exclude, i_resp_claim=claim)
         else:
@@ -114,6 +120,7 @@ class ResetArray:
                 i_req_exclude=exclude,
                 i_req_visit=int(visit is not None),
                 i_req_way=visit or 0,
+                i_req_skip_data_on_hit=int(skip),
             )
         await self.drive(**fields)
         await self.wait("o_req_ready")
@@ -128,6 +135,12 @@ class ResetArray:
             self.get("o_resp_state"),
         )
         payload = self.get("o_resp_tags" if self.home else "o_resp_data")
+        for _ in range(hold):
+            await self.tick()
+            assert self.get("o_resp_valid")
+            assert self.get("o_resp_way") == result[1]
+            assert self.get("o_resp_tags" if self.home else "o_resp_data") == payload
+        await self.drive(i_resp_ready=1)
         await self.tick()
         return (*result, payload)
 
@@ -202,3 +215,26 @@ async def reset_clears_metadata_and_preserves_data(dut: Any) -> None:
         # Reset on the edge after acceptance, while a pipelined write is live.
         contents[0, 0] ^= (1 << (8 * b.line)) - 1
         await b.update(b.sets * b.line, 0, contents[0, 0], drain=False)
+
+
+@cocotb.test()
+async def hit_touches_precede_following_lookups(dut: Any) -> None:
+    """Observe each private hit's replacement update at the next lookup."""
+    b = ResetArray(dut)
+    if b.home:
+        return
+    await b.reset()
+    for index in (0, 1):
+        for way in range(b.ways):
+            address = (index + (way + 1) * b.sets) * b.line
+            await b.update(address, way, (way + 1) * 0x01010101)
+    # These touches alternate the root and both children of the PLRU tree.
+    for step, (way, victim) in enumerate(
+        ((0, 2), (2, 1), (1, 3), (3, 0), (3, 0), (0, 2))
+    ):
+        address = (way + 1) * b.sets * b.line
+        assert (await b.lookup(address, skip=bool(step % 2), hold=step % 3))[0] == 1
+        hit, selected, _, _, _ = await b.lookup(0)
+        assert (hit, selected) == (0, victim)
+        hit, selected, _, _, _ = await b.lookup(b.line)
+        assert (hit, selected) == (0, 0)

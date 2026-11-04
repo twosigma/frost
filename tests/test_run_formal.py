@@ -35,13 +35,17 @@ FORMAL_DIR = "formal"
 
 # Per-task hang backstop in seconds; proof depth is set by each .sby file.
 SBY_TASK_TIMEOUT_S = 2400
-# The unchanged ROB BMC can take about an hour on a shared runner.
-# These tasks run in separate CI jobs. Their proof depth and input contracts
-# stay unchanged; only the solver's wall-clock allowance differs.
+# The unchanged ROB BMC can take about an hour on a shared runner, and the
+# hart maintenance proof, which models buffered store hits, can take about
+# forty minutes on a shared machine. The CSR and ROB BMCs run in separate
+# CI jobs; the maintenance proof runs in the Coherence shard, whose job limit
+# covers it. Their proof depth and input contracts stay unchanged; only the
+# solver's wall-clock allowance differs.
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "bmc"): 5400,
     ("csr_file", "bmc_perf_off"): 5400,
     ("reorder_buffer", "bmc"): 5400,
+    ("coherent_hart_cache", "coh_hart_maint_prove"): 5400,
 }
 
 
@@ -62,6 +66,29 @@ class FormalTarget:
 # Registry of formal verification targets.
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
+    FormalTarget(
+        "coherence_store_boundary.sby",
+        "Production SQ, router, buffered L1D and LQ preserve credit, drain and atomic exclusion.",
+        tasks=(
+            "bmc_load_same",
+            "bmc_load_other",
+            "bmc_amo_same",
+            "bmc_amo_other",
+            "bmc_sc",
+            "bmc_old",
+            "cover_load",
+            "cover_old",
+            "cover_amo",
+            "cover_sc",
+            "cover_edges_same",
+            "cover_edges_other",
+        ),
+    ),
+    FormalTarget(
+        "coherence_store_buffer.sby",
+        "Two accepted stores preserve order, payload, launch credit and acknowledgement.",
+        tasks=("prove", "cover"),
+    ),
     FormalTarget(
         "coherent_hart_cache.sby",
         "Fence ordering and coherent instruction/PTE visibility with discarded walks.",
@@ -184,7 +211,17 @@ FORMAL_TARGETS = [
     FormalTarget(
         "coherence_l1d.sby",
         "The coherent L1 preserves pending stores, cuts, and exact atomic writes.",
-        tasks=("coh_l1d_bmc", "coh_l1d_multi_bmc"),
+        tasks=(
+            "coh_l1d_bmc",
+            "coh_l1d_multi_bmc",
+            "coh_l1d_cover",
+            "coh_l1d_data_bmc",
+            "coh_l1d_data1_bmc",
+            "coh_l1d_data2_bmc",
+            "coh_l1d_data3_bmc",
+            "coh_l1d_store_payload_bmc",
+            "coh_l1d_store_grant_bmc",
+        ),
     ),
     FormalTarget(
         "coherence_home_select.sby",
@@ -236,9 +273,24 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "coherence_array_plru.sby",
+        "Deferred hit touches preserve replacement values at every lookup.",
+        tasks=(
+            "coh_array_plru_prove",
+            "coh_array_plru_uram_prove",
+            "coh_array_plru_cover",
+            "coh_array_plru_uram_cover",
+        ),
+    ),
+    FormalTarget(
         "coherence_array.sby",
         "A watched byte preserves masked updates across serialized array operations.",
-        tasks=("coh_array_bmc", "coh_array_uram_bmc"),
+        tasks=(
+            "coh_array_bmc",
+            "coh_array_uram_bmc",
+            "coh_array_cover",
+            "coh_array_uram_cover",
+        ),
     ),
     FormalTarget(
         "coherence_control.sby",
@@ -549,6 +601,12 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "dmmu_capture.sby",
+        "Data-MMU registered packets, one-cycle bypass, invalidation and preceding LQ "
+        "look-ahead agree across arbitrary issue, flush and TLB answers",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
         "rs_alloc_parallel.sby",
         "Parallel RS allocation indices match the serial free-entry search",
         tasks=("bmc4", "bmc8", "bmc16", "bmc32"),
@@ -615,6 +673,11 @@ FORMAL_TARGETS = [
             "prove_alignment",
             "prove_fallback",
             "prove_alignment_fallback",
+            "prove_direct",
+            "prove_alignment_direct",
+            "prove_direct_fallback",
+            "prove_alignment_direct_fallback",
+            "cover_direct",
             "cover",
         ),
     ),
@@ -1035,6 +1098,52 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
+    ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
+    ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),
+    (
+        "bmc_load_same",
+        "Loads through acceptance and installation of same-sector stores.",
+    ),
+    (
+        "bmc_load_other",
+        "Loads through acceptance and installation of different-sector stores.",
+    ),
+    ("bmc_amo_same", "Same-sector store and AMO handoff through release."),
+    ("bmc_amo_other", "Different-sector store and AMO handoff through release."),
+    ("bmc_sc", "SC handoff, acknowledgement and drain through release."),
+    ("bmc_old", "Old load responses and fresh bytes across buffered stores."),
+    ("cover_load", "Buffered store overlap with a younger load."),
+    ("cover_old", "Delayed old response and a fresh load staged before drain."),
+    ("cover_amo", "AMO retirement, delayed release and younger-store admission."),
+    ("cover_sc", "SC retirement, delayed release and younger-store admission."),
+    (
+        "cover_edges_same",
+        "Load staging at capture, acknowledgement, promotion and drain of same-sector stores.",
+    ),
+    (
+        "cover_edges_other",
+        "Load staging at capture, acknowledgement, promotion and drain of different-sector stores.",
+    ),
+    ("coh_l1d_store_payload_bmc", "Ordered head payload and masked hit installation."),
+    ("coh_l1d_store_grant_bmc", "Store miss byte merging against grant bytes."),
+    (
+        "coh_l1d_data_bmc",
+        "Arbitrary-byte store and probe images in the production array.",
+    ),
+    ("coh_l1d_cover", "Buffered stores, ordered installation, probes and errors."),
+    ("coh_array_cover", "Masked byte updates and tag-only hits in block RAM."),
+    ("coh_array_uram_cover", "Masked byte updates and tag-only hits in UltraRAM."),
+    ("coh_array_plru_prove", "Deferred hit replacement equality in block RAM."),
+    (
+        "coh_array_plru_uram_prove",
+        "Deferred hit replacement equality with UltraRAM tags.",
+    ),
+    ("coh_array_plru_cover", "Deferred hit writes and following lookups in block RAM."),
+    (
+        "coh_array_plru_uram_cover",
+        "Deferred hit writes and following lookups with UltraRAM tags.",
+    ),
     (
         "coh_hart_maint_prove",
         "Store installation, fence invalidation and coherent reads.",
@@ -1476,6 +1585,12 @@ SBY_TASKS = [
     ),
     ("cover_no_prepare_busy", "Load queue reachability without busy-port preparation"),
     ("prove_alignment", "Unbounded mixed-width tracker and physical FU alignment"),
+    ("prove_alignment_direct", "Unbounded direct multiply completion alignment"),
+    ("prove_direct_fallback", "Unbounded direct full-width fallback control"),
+    (
+        "prove_alignment_direct_fallback",
+        "Unbounded direct full-width fallback alignment",
+    ),
     ("prove_fallback", "Unbounded full-width fallback tracker and credits"),
     ("prove_alignment_fallback", "Unbounded full-width fallback FU alignment"),
     (
@@ -1698,6 +1813,7 @@ class FormalRunner:
         ("csr_file", "bmc", 5400),
         ("csr_file", "bmc_perf_off", 5400),
         ("reorder_buffer", "bmc", 5400),
+        ("coherent_hart_cache", "coh_hart_maint_prove", 5400),
         ("csr_file", "cover", 2400),
         ("reorder_buffer", "cover", 2400),
         ("line_port_axi_bridge", "bmc_128g", 2400),

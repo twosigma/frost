@@ -1,0 +1,27 @@
+[tasks]
+bmc
+prove
+cover
+
+[options]
+bmc: mode bmc
+prove: mode prove
+cover: mode cover
+depth 8
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read_verilog -formal -D SYNTHESIS -D DMMU_CAPTURE_LOCAL_PROOF -sv dmmu.sv
+# Consumer pairing and packet capture hold for arbitrary TLB answers.
+delete t:dtlb
+proc
+setundef -undriven -anyseq
+opt
+prep -top dmmu
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/dmmu.sv

@@ -225,6 +225,25 @@ UART_LINE_CHECK: dict[str, Any] = {
 
 # Single source of truth for every runnable test, keyed by test name.
 TEST_REGISTRY: dict[str, CocotbRunConfig] = {
+    "exec_latency_probe": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_exec_latency_probe",
+        hdl_toplevel_module="frost",
+        app_name="exec_latency_probe",
+        description="Arithmetic dependency and throughput traces",
+        include_in_pytest=False,
+        rerun_after_reset=False,
+        nic_mac_clocks=False,
+    ),
+    "exec_latency_short": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_exec_latency_probe",
+        hdl_toplevel_module="frost",
+        app_name="exec_latency_probe",
+        description="Arithmetic latency for zero, infinity, NaN and cancellation",
+        include_in_pytest=False,
+        extra_env=(("FROST_EXECLAT_SHORT", "1"),),
+        rerun_after_reset=False,
+        nic_mac_clocks=False,
+    ),
     **{
         f"ddr_reset_distribution{suffix}": CocotbRunConfig(
             python_test_module="cocotb_tests.test_ddr_reset_distribution",
@@ -400,6 +419,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         )
         for bits in range(30, 38)
     },
+    "cached_store_burst_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cached_store_burst_test",
+        nic_mac_clocks=False,
+        description="Buffered cached stores across masks, traps, FENCE.I, SC and AMO.",
+    ),
     "dma_torture": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1293,6 +1319,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("COCOTB_MAX_CYCLES", "16000000"),
         ),
     ),
+    "mmu_reach": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="mmu_reach",
+        rerun_after_reset=False,
+        nic_mac_clocks=False,
+        include_in_pytest=False,
+        description="Sv39 TLB capacity, walk depth, and address space switch timing",
+        extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
+    ),
     "ptw_coherence_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1792,6 +1828,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Integer and carry-less multiplication, division, scheduling, and recovery"
         ),
     ),
+    "int_muldiv_shim_direct": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_muldiv_direct",
+        hdl_toplevel_module="int_muldiv_shim",
+        description="Direct integer multiply completion cycles, mixed operations, and flushes",
+        verilator_extra_args=("-GDIRECT_MUL=1",),
+    ),
+    "int_muldiv_shim_direct_full_width": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_muldiv_direct",
+        hdl_toplevel_module="int_muldiv_shim",
+        description="Direct completions with full-width MULW arithmetic",
+        verilator_extra_args=("-GDIRECT_MUL=1", "-GSHORT_WORD_OPS=0"),
+        extra_env=(("FROST_TEST_SHORT_WORD_OPS", "0"),),
+    ),
     "int_muldiv_shim_full_width": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_muldiv_shim",
         hdl_toplevel_module="int_muldiv_shim",
@@ -2216,7 +2265,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("--assert", "-GCACHE_BYTES=512"),
         python_test_module="cocotb_tests.cache.test_coherence_l1d",
         hdl_toplevel_module="coherence_l1d",
-        description="Private grant acceptance behind independently held probe replies",
+        description="Buffered store ordering, masked hits, read turns, grants, probes and frozen writebacks",
     ),
     "coherence_cluster": CocotbRunConfig(
         verilator_extra_args=("--assert",),
@@ -2252,7 +2301,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_array_reset_bram_sweep": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
         hdl_toplevel_module="coherence_array",
-        description="Cold and populated metadata reset preserves data and clears replacement",
+        description="Metadata reset, held hit responses and following replacement choices",
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=512",
@@ -2264,7 +2313,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_array_reset_bram_fast": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
         hdl_toplevel_module="coherence_array",
-        description="Cold and populated metadata reset preserves data and clears replacement",
+        description="Metadata reset, held hit responses and following replacement choices",
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=512",
@@ -2276,7 +2325,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_array_reset_uram_sweep": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
         hdl_toplevel_module="coherence_array",
-        description="Cold and populated metadata reset preserves data and clears replacement",
+        description="Metadata reset, held hit responses and following replacement choices",
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=512",
@@ -2288,7 +2337,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_array_reset_uram_fast": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
         hdl_toplevel_module="coherence_array",
-        description="Cold and populated metadata reset preserves data and clears replacement",
+        description="Metadata reset, held hit responses and following replacement choices",
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=512",

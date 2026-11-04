@@ -42,7 +42,9 @@ progress when every queue is full. In simulation, memory-bound code in DDR
 runs slower through the home than through the previous hierarchy: the L1D
 sends its store acquisitions one at a time, the home has four fills, and it
 has no stream prefetcher yet. Other paths also take more cycles than
-before. The L1D completes one cached store at a time, hits included. The
+before. The L1D accepts ordered stores into a two-entry buffer and installs
+Modified-sector hits with masked writes. Waiting reads share array service
+with buffered store hits. The
 probe for an instruction or page-table read downgrades a Modified sector to
 Shared, so the next store to it acquires it again. An instruction refill
 or page-table read from the L2 takes about 25 cycles, against 10 to 16
@@ -295,14 +297,13 @@ to 0.3. It depends much more than CoreMark on stores, address translation,
 branch prediction, and floating point. Measurements with sysbench, `perf`,
 and targeted microbenchmarks give these items:
 
-1. Stores. Each store takes about six cycles, with translation on or off, so
-   `memset` and integer writes reach one 8-byte store every six cycles. The
-   store queue's drain and its commit into the L1D should reach two cycles
-   per store or better.
-2. Data translation. The data MMU's two registered stages add two cycles to
-   every load-to-use chain. A one-cycle hit path, such as a micro-TLB or a
-   bypass for the last page, would remove them. Dependent loads across pages
-   take about 12 cycles, against 5 within one page.
+1. Stores. The L1D accepts ordered stores into a two-entry buffer. Stores to
+   Modified sectors use masked writes, and waiting reads share array service
+   with buffered hits. The store queue's drain and installation into the L1D
+   should reach two cycles per store or better.
+2. Data translation. A last-page bypass sends eligible translated accesses
+   directly to DMMU stage S2. Other translated accesses use S1 and S2.
+   Reducing that path would improve cross-page translation latency.
 3. TLB reach. The DTLB and ITLB have 16 entries each. A DTLB miss costs
    about 50 cycles and an ITLB miss about 58. Without ASIDs, every context
    switch flushes both. A larger DTLB, ASID support, and a page-walk cache for
@@ -320,11 +321,13 @@ and targeted microbenchmarks give these items:
    four cycles, or two for zero. Pipelined add and multiply units would let
    FP_RS issue independent arithmetic while earlier operations execute.
 6. Integer multiply and divide. The full-width multiplier has six stages;
-   its result FIFO, CDB and reservation station each contribute a cycle to
-   a dependent use. The radix-4 divider captures magnitudes, counts leading
-   zeros and aligns the dividend before producing two quotient bits per
-   cycle. It takes up to 35 cycles, or 19 for a W form, and handles divide
-   by zero, full-width overflow and smaller dividends in two cycles.
+   its integrated completion bypasses the result FIFO. The CDB and
+   reservation station each contribute a cycle, giving eight cycles to a
+   dependent use. Word and carry-less multiplies take three arithmetic
+   cycles and five cycles to a dependent use. The radix-4 divider captures
+   magnitudes, counts leading zeros and aligns the dividend before producing
+   two quotient bits per cycle. It takes up to 35 cycles, or 19 for a W form.
+   Divide by zero, full-width overflow and smaller dividends take two cycles.
 7. Load queue depth. DDR latency dominates many Linux workloads. A balanced
    two-level pick across 16 entries would let the memory reservation station
    hold 16 loads (`MemRsDepth = 16`), with selection depth growing only with

@@ -114,15 +114,15 @@ module coherence_l1d #(
     output logic [ADDR_WIDTH-1:0] o_fatal_addr
 );
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
-`ifdef COH_MAINT_COVER
-  wire install = 1, evict = 1;
-`else
   (* anyseq *) logic install, evict;
-`endif
-  logic pending_q, sent_q, granted_q, written_q, live, request_ready;
+  logic pending_q, tail_q, sent_q, granted_q, written_q, live, request_ready;
+  logic pop, credit, accepted_q, acquire;
+  logic [71:0] head_payload, tail_payload;
+  logic [7:0] mask_q;
   logic resident_q, put_q, put_accepted_q, reply_valid_q;
-  logic [63:0] value_q, store_q;
+  logic [63:0] value_q, store_q, installed_value_q, grant_image_q;
   coh_d_t request;
+  coh_g_t grant_payload;
   coh_p_t probe;
   coh_r_t reply_q;
   coh_w_t put;
@@ -136,10 +136,29 @@ module coherence_l1d #(
     put.addr = request.addr;
     put.data = {4{value_q}};
   end
-  assign o_store_ready = !i_rst && !pending_q && !live;
+  assign o_store_ready = !i_rst && credit;
+  assign {store_q, mask_q} = head_payload;
+  assign acquire = pending_q && !sent_q && !live && !resident_q && !put_q;
+  assign pop = pending_q && install && !reply_valid_q && !i_p_valid && !put_q &&
+      (granted_q || (resident_q && !sent_q && !live));
+  coherence_store_buffer #(
+      .WIDTH(72)
+  ) stores (
+      .i_clk,
+      .i_rst,
+      .i_push(|i_write_mask),
+      .i_payload({i_write_data, i_write_mask}),
+      .i_pop(pop),
+      .o_ready(credit),
+      .o_done(accepted_q),
+      .o_head_valid(pending_q),
+      .o_tail_valid(tail_q),
+      .o_head(head_payload),
+      .o_tail(tail_payload)
+  );
   assign o_pending_store = pending_q;
-  assign o_write_inflight = pending_q;
-  assign o_write_done = grant_valid;
+  assign o_write_inflight = accepted_q;
+  assign o_write_done = accepted_q;
   assign o_p_ready = !i_rst && !reply_valid_q;
   assign o_r_valid = !i_rst && reply_valid_q;
   assign o_r = reply_q;
@@ -148,8 +167,8 @@ module coherence_l1d #(
   assign o_wa_ready = !i_rst && put_q;
   assign o_sc_write_pending = 0;
   assign o_atomic_live = 0;
-  assign o_block_valid = 0;
-  assign o_block_addr = 0;
+  assign o_block_valid = {tail_q, pending_q};
+  assign o_block_addr = {2{ADDR_WIDTH'(32'h80000000)}};
   assign o_read_valid = 0;
   assign o_read_id = 0;
   assign o_read_data = 0;
@@ -175,7 +194,7 @@ module coherence_l1d #(
       .i_clk,
       .i_rst,
       .i_epoch(1'b0),
-      .i_request_valid(pending_q && !sent_q),
+      .i_request_valid(acquire),
       .o_request_ready(request_ready),
       .i_request(request),
       .o_d_valid(o_d_valid[0]),
@@ -186,7 +205,7 @@ module coherence_l1d #(
       .i_g,
       .o_grant_valid(grant_valid),
       .i_grant_ready(1'b1),
-      .o_grant(),
+      .o_grant(grant_payload),
       .i_done_valid(written_q),
       .o_done_ready(),
       .i_done_status(coherence_pkg::Consumed),
@@ -203,7 +222,6 @@ module coherence_l1d #(
   );
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      pending_q <= 0;
       sent_q <= 0;
       granted_q <= 0;
       written_q <= 0;
@@ -213,30 +231,35 @@ module coherence_l1d #(
       reply_valid_q <= 0;
       reply_q <= '0;
       value_q <= 64'h200000cf;
-      store_q <= 0;
+      installed_value_q <= 64'h200000cf;
+      grant_image_q <= 0;
     end else begin
       assert (!i_maint_valid);
-      if (written_q) assert (value_q == store_q);
-      if (o_r_valid && reply_q.data_valid) assert (reply_q.data == {4{i_write_data}});
-      if (o_w_valid) assert (put.data == {4{i_write_data}});
-      if (pending_q || written_q) assert (store_q == i_write_data);
-      if (|i_write_mask) begin
-        assert (o_store_ready);
-        pending_q <= 1;
-        sent_q <= 0;
-        granted_q <= 0;
+      if (written_q) assert (value_q == installed_value_q);
+      if (o_r_valid && reply_q.data_valid) assert (reply_q.data == {4{installed_value_q}});
+      if (o_w_valid) assert (put.data == {4{installed_value_q}});
+      if (|i_write_mask) assert (!tail_q);
+      if (acquire && request_ready) begin
+        sent_q <= 1;
         written_q <= 0;
-        store_q <= i_write_data;
       end
-      if (pending_q && !sent_q && request_ready) sent_q <= 1;
-      if (grant_valid) granted_q <= 1;
-      if (pending_q && granted_q && install) begin
-        value_q <= store_q;
+      if (grant_valid) begin
+        granted_q <= 1;
+        grant_image_q <= grant_payload.data[63:0];
+      end
+      if (pop) begin
+        for (int byte_index = 0; byte_index < 8; byte_index++)
+        if (mask_q[byte_index]) begin
+          value_q[8*byte_index+:8] <= store_q[8*byte_index+:8];
+          installed_value_q[8*byte_index+:8] <= store_q[8*byte_index+:8];
+        end else if (granted_q) begin
+          value_q[8*byte_index+:8] <= grant_image_q[8*byte_index+:8];
+        end
         resident_q <= 1;
-        pending_q <= 0;
-        written_q <= 1;
+        granted_q  <= 0;
+        written_q  <= 1;
       end
-      if (resident_q && !pending_q && !reply_valid_q && !i_p_valid && evict) begin
+      if (resident_q && !pop && !put_q && !reply_valid_q && !i_p_valid && evict) begin
         resident_q <= 0;
         put_q <= 1;
       end
@@ -259,11 +282,18 @@ module coherence_l1d #(
         put_q <= 0;
         put_accepted_q <= 0;
       end
-      if (o_c_valid[0]) assert (written_q && !pending_q);
+      if (o_c_valid[0]) assert (written_q && !granted_q);
       if (i_u_valid && o_u_ready) begin
-        assert (written_q && value_q == store_q);
+        assert (written_q && value_q == installed_value_q);
+        sent_q <= 0;
         cover (written_q && !pending_q);
       end
+      cover (tail_q && pop);
+      cover (pop && !granted_q);
+      cover (pop && granted_q && mask_q == 8'h02);
+      cover (pending_q && put_q && put_accepted_q);
+      cover (pending_q && o_r_valid && i_r_ready && reply_q.absorbed);
+      cover (written_q && pending_q && !tail_q);
       cover (o_r_valid && i_r_ready && reply_q.absorbed);
     end
   end

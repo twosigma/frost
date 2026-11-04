@@ -35,8 +35,8 @@ int main(void)
 {
     int fail = 0;
 
-    /* Adjacent dword stores model page-table setup. The cached tier drains
-     * one store at a time; the CSR must wait for both committed stores. */
+    /* Adjacent dword stores model page-table setup. The CSR waits until
+     * both committed stores have installed their bytes. */
     for (int i = 0; i < N / 2; i++) {
         ddr_slots[2 * i] = 0xA5A5000000000000ULL + (uint64_t) (2 * i);
         ddr_slots[2 * i + 1] = 0xA5A5000000000000ULL + (uint64_t) (2 * i + 1);

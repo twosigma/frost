@@ -205,8 +205,16 @@ bridges, and maintenance arbitration. `coherence_home` contains the shared
 L2 controller and `coherence_home_array`, whose tag, data-read and masked-update
 ports have independent service. The L1D's `coherence_array` serializes its
 lookup, read and update operations in block RAM. The final tag-read edge
-selects the private way and starts any required data read. Replacement state
-uses the tag request's matching PLRU response.
+selects the private way and registers any required data-read request.
+The input register occupies one cycle of the array's read latency. Replacement state
+uses the tag request's matching PLRU response. A hit updates replacement
+bits from the registered way during data service or the reply, before
+another request or update can enter.
+An insertion update uses the most recent lookup's set and selected way;
+the controller completes that update before issuing another lookup.
+The L1D asserts this pairing for each grant installation.
+Response data is meaningful only with `o_resp_data_valid`. A tag-only or
+skipped read keeps the prior response data without reading the data array.
 The L1D uses 32-byte sectors; the L2 supports 32-byte or 64-byte lines.
 
 Reset clears every set's tags, coherence states and replacement bits in both
@@ -216,15 +224,28 @@ in one cycle after an observed reset. Its write drain covers the data RAM
 input pipeline before requests resume. Hardware uses the per-set sweep with
 `SIM_FAST_MAINT=0`.
 
-The L1D has I, S and M states. Reads use S or M. A store hit in M writes its
-bytes before completing. An S/I store reserves one committed pending record
-and a dirty-eviction slot before acquiring M. The pending record owns the
-address, bytes and mask after the SQ completion. It blocks local accesses to
-its sector and yields probes while unrelated reads proceed. SQ launch readiness reserves the next cycle's registered write even when
-line maintenance starts on that edge. There are eight
+The L1D has I, S and M states. Reads use S or M. Two ordered committed
+store records own their addresses, bytes, masks and tags after SQ
+acknowledgement. Each accepted store receives one acknowledgement. The head
+installs before the tail; promotion keeps pending asserted. A Modified hit
+uses a tag-only lookup and the array's byte enables. A buffered tail can
+start its lookup after the head's masked update completes. Registered read
+demand gives a waiting data read a turn between hit-store installations.
+Probes, grants and atomic operations have priority over that turn. An S/I head
+reserves a dirty-eviction slot before acquiring M. Endpoint 0 remains owned
+through U, so store acquisitions do not overlap.
+
+Two sector holds block local loads until the corresponding bytes are
+installed. The second hold names the tail or a selected atomic. Atomic
+drain gates exclude buffered ordinary stores from selected atomic ownership.
+Probes can precede queued stores; a queued store rechecks permission when
+selected. A selected array installation finishes before probe capture.
+SQ launch readiness reserves room for the next cycle's registered write,
+including an arriving write and a simultaneous maintenance request.
+There are eight
 unmerged CPU read slots, two frozen PutM slots and `MISSES` request
 endpoints, set by `L1D_NUM_MSHR` and eight on X3. Endpoint 0 carries the
-pending store's GetM, LR, AMO and SC acquisitions, and ordinary loads only
+head store's GetM, LR, AMO and SC acquisitions, and ordinary loads only
 when it is the only endpoint; the others carry ordinary load misses. No two
 live endpoints hold the same sector. A load that misses on a sector a live
 endpoint holds waits for that endpoint's installation, or for its release if
@@ -246,7 +267,8 @@ exclusive. Probe capture and service own local arbitration through R
 acceptance. Invalidation admission starts on P capture and keeps the captured
 address until the CPU accepts admission. Ready grants, writes and maintenance request one local selection
 edge after R acceptance. An eligible read requests a turn after four completed
-probe replies. Grants and writes take priority within that turn. A selected
+probe replies. Grants and atomic writes take priority within that turn. A waiting data read
+can use the turn between hit-store installations. A selected
 local operation completes its bounded array service before P is accepted. Waiting for an operand, permission or retirement does not hold
 the probe port. A withdrawn local offer releases its turn after one edge.
 Read-slot payload writes pass through a one-record buffer. The buffer
@@ -269,7 +291,7 @@ L1D performance events count the first permission lookup of each CPU read
 or ordinary store. Cached SC selection counts as a permission miss. A store
 to S and an AMO require permission and count as misses. Repeated lookups,
 probes and maintenance do not add demand events. Outstanding misses include
-unresolved read slots, the pending store and the selected SC. L2 events
+unresolved read slots, the head store acquisition and the selected SC. L2 events
 count shared demand lookups and non-maintenance PutM lookups. Its fill count
 is at most four. A DMA write miss contributes a write-fill event; probe data
 merges do not contribute another demand. Events are registered at their
@@ -462,8 +484,12 @@ bytes to reach external memory.
 
 The `coherent_hart_cache` formal target composes its maintenance controller,
 IF/PTW bridges, the walker and the home service engine. Small private-cache
-models represent delayed store installation, dirty eviction, PutM absorption
-and two instruction fills that drain during invalidation. The home contract
+models represent two ordered stores, delayed installation, dirty eviction,
+PutM absorption and two instruction fills that drain during invalidation.
+Modified hits merge locally; acquisitions merge with captured grant data.
+An independent byte-mask reference checks the installed image. Stores wait
+for pending writeback completion before acquisition or installation. A resident
+sector can be evicted while another store remains buffered. The home contract
 has one entry per IF slot and a third shared by other classes. It preserves
 full identities and same-sector ordering through U while the service engine
 processes requests serially. The proof tracks a stored PTE version
@@ -472,7 +498,9 @@ and access-fault classification. Component targets check array storage,
 endpoint ownership and arbitrary-byte merges.
 Covers exercise discarded responses, two outstanding instruction fills,
 fence completion with an answered IF transaction awaiting U, reused MSHR IDs,
-installation before U, and IF/DMA/NIC contention with delayed completions.
+installation before U, local store hits, partial-store reacquisition, and
+IF/DMA/NIC contention with delayed completions. Store/writeback covers check
+post-fence visibility after ordinary PutM acknowledgement and probe absorption.
 
 The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_equal`, `coherence_cluster`
 and `coherent_cut` cover controller ownership, inclusion, cuts, atomics,

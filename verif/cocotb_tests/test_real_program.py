@@ -4746,6 +4746,14 @@ async def test_real_program(dut: Any) -> None:
     reset_history = await prepare_program_start(dut)
     start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
     start_cpu_clock(dut)
+    if trace_path := os.environ.get("FROST_MMU_REACH_TRACE"):
+        from cocotb_tests.mmu.reach_trace import capture
+
+        cocotb.start_soon(capture(dut, cpu_clock(dut), trace_path))
+    if trace_path := os.environ.get("FROST_PTW_COHERENCE_TRACE"):
+        from cocotb_tests.mmu.reach_trace import capture_coherence
+
+        cocotb.start_soon(capture_coherence(dut, cpu_clock(dut), trace_path))
     # i_clk_div4 exists only in frost.sv, not in the cpu_tb.sv testbench. It is
     # derived from i_clk rather than started as an independent Clock because the
     # dc_fifo clock domain crossing needs a fixed phase relationship.
@@ -4838,6 +4846,12 @@ async def test_real_program(dut: Any) -> None:
         # fs_off_test checks that a trapping FS=Off FP load leaves a waiting
         # UART RX byte unread; the bench sends it (0x5A) once per run.
         uart_driver = UartRxDriver(dut)
+    store_watch = None
+    if app_name == "cached_store_burst_test":
+        from cocotb_tests.cache.store_burst_watch import StoreBurstWatch
+
+        store_watch = StoreBurstWatch(dut)
+        cocotb.start_soon(store_watch.run())
     nic_peer = NicEchoPeer(dut, uart_monitor) if app_name == "nic_echo" else None
     ecc_driver = EccReportDriver(dut) if app_name == "memerr_test" else None
     if app_name == "memerr_readback":
@@ -4934,6 +4948,8 @@ async def test_real_program(dut: Any) -> None:
             await check_uart_line(dut, uart_monitor, line_monitor)
         if coverage is not None:
             coverage.verify(run_number)
+        if store_watch is not None:
+            store_watch.verify()
 
     uart_monitor.stop()
     if line_monitor is not None:

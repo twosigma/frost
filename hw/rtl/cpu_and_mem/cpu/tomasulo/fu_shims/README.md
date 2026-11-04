@@ -14,9 +14,12 @@ depends on how many operations its unit can have in flight.
 | `int_muldiv_shim` | MUL_RS | Pipelined multiplier plus a 32-bit word multiplier and a 64-bit carry-less multiplier; iterative divider | MUL 6, MULW and CLMUL/CLMULH/CLMULR 3, DIV/REM 2 to 35, word DIV/REM 2 to 19 | Up to 4 multiplies, 1 divide |
 | `fp_shim` | FP_RS | Iterative FP engine: every F and D compute instruction | 2 to 139, by operation and operands (see below) | 1 |
 
-`int_muldiv_shim` stores each multiply result in a FIFO before presenting it,
-which adds at least one cycle, more if earlier results are still waiting. The
-other shims present a result in the cycle the unit produces it.
+The wrapper sets `int_muldiv_shim.DIRECT_MUL=1`. Each multiply result reaches
+the adapter in the cycle its arithmetic unit produces it. The registered CDB
+and consumer issue stage add two cycles: dependent MUL issues are eight cycles
+apart, and dependent MULW or carry-less operations are five cycles apart.
+The standalone default, `DIRECT_MUL=0`, stores results in a four-entry FIFO,
+which adds at least one cycle and supports downstream back-pressure.
 
 ## int_alu_shim
 
@@ -60,16 +63,19 @@ products. Operand and result reversal select the high or reversed result
 through the same low-product datapath.
 
 The multiply path has one tag tracker, a shift register as deep as the
-full-width unit, and one 4-entry result FIFO. MULW and carry-less operations
-enter the tracker partway down to align their data with the shared tail. If a
-live operation is about to enter that stage, the short operation waits.
+full-width unit. MULW and carry-less operations enter the tracker partway
+down to align their data with the shared tail. If a live operation is about
+to enter that stage, the short operation waits.
 Full-width operations enter the head. This busy term depends on the opcode;
 the RS presents its registered opcode independently of `ready`.
 
-Multiply back-pressure (`o_fu_busy`) is credit-based. FIFO occupancy plus
-unflushed operations in flight never exceeds the FIFO depth, so the path holds
-at most four live multiplies and its FIFO cannot overflow. The FIFO pops when
-its adapter takes the head, or on its own when the head is flushed.
+Multiply back-pressure (`o_fu_busy`) limits the path to four live operations.
+With `DIRECT_MUL=0`, FIFO occupancy also consumes credits. The FIFO pops when
+its adapter takes the head or when the head is flushed. With `DIRECT_MUL=1`,
+the tracker tail drives the completion directly, without a result FIFO. Every
+unsquashed completion must be accepted that cycle. The wrapper provides this
+contract through its always-granted MUL adapter and the highest-priority CDB
+slot. Same-cycle flush filtering belongs to the adapter and arbiter.
 
 The divider runs one operation at a time on operand magnitudes. Three setup
 cycles capture the operands, count leading zeros and align the dividend.
@@ -141,8 +147,8 @@ squashes everything in flight; a partial flush squashes operations younger
 than the flush point, using the same age comparison as the rest of the back
 end (`is_younger`, measured from the ROB head).
 
-`int_muldiv_shim` marks squashed multiplies in its tracker and FIFO and drops
-their results when they emerge. The pipelined multipliers have no
+`int_muldiv_shim` marks squashed multiplies in its tracker and optional FIFO
+and drops their results when they emerge. The pipelined multipliers have no
 mid-pipeline kill, so a squashed multiply rides to the end of its pipeline and
 is dropped there. A squashed divide is killed in the divider, which is idle
 again on the next cycle, and a divide issue that the same cycle's flush covers
@@ -170,10 +176,10 @@ raw low bits.
 
 ## Result FIFO pops
 
-`int_muldiv_shim`'s MUL FIFO advances the read pointer on a pop but leaves the
-slot's `valid` and `flushed` bits set. The FIFO count is the true occupancy,
-and the next push to the slot overwrites the stale bits, so any logic that
-reads those bits must also check the count.
+The buffered `int_muldiv_shim` MUL FIFO advances the read pointer on a pop but
+leaves the slot's `valid` and `flushed` bits set. The FIFO count is the true
+occupancy. The next push to the slot overwrites the stale bits, so any logic
+that reads those bits must also check the count.
 
 ## Verification
 
@@ -183,6 +189,12 @@ Each shim has a cocotb target of the same name. `int_alu_shim_shift_hint` and
 target checks tracker alignment with the integer and carry-less multiplier
 pipelines under arbitrary flushes and back-pressure. It also checks carry-less
 tracker tags and FIFO input data, credit bounds, and divide cancellation.
+The direct-mode tasks check each source's complete surviving issue history,
+output tags and result selection. `int_muldiv_shim_direct` checks exact result
+cycles, mixed operations, flushes, and tag reuse against integer models.
+`int_muldiv_shim_direct_full_width` exercises direct delivery with the
+full-width MULW fallback. `mul_adapter_grant` proves the integrated acceptance
+and same-cycle flush contract with the arbiter.
 The `fp_shim` target replaces the engine with a model of arbitrary latency
 and result.
 `fp_launch_squash` checks both launch modes against a reference with the real

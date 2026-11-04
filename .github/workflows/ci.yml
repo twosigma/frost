@@ -128,7 +128,7 @@ jobs:
           - name: Real Programs (DMA, NIC and coherence)
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
-              [nic_loopback] or [nic_echo] or [dma_torture] or [dma_torture_equal_lines] or
+              [nic_loopback] or [nic_echo] or [dma_torture] or [cached_store_burst_test] or [dma_torture_equal_lines] or
               [ptw_coherence_test] or [ptw_coherence_test_equal_lines] or [ifread_test] or [ifread_test_equal_lines] or [smc_fencei_test] or
               [smc_fencei_test_equal_lines] or [ddr_test_equal_lines] or [ddr_exec_test_equal_lines]
               or [ddr_atomic_test_equal_lines] or [async_hello_world] or [async_nic_loopback]
@@ -162,7 +162,7 @@ jobs:
               [tomasulo_perf] or [jal_target_seam] or [fetch_lead_repro] or [fetch_stall_repro] or
               [window_skip_repro] or [lq_stale_slot_probe] or [sprintf_test] or [strings_test] or
               [memory_test] or [freertos_demo] or [packet_parser] or [nic_loopback] or [nic_echo] or
-              [dma_torture] or [dma_torture_equal_lines] or [ptw_coherence_test] or
+              [dma_torture] or [cached_store_burst_test] or [dma_torture_equal_lines] or [ptw_coherence_test] or
               [ptw_coherence_test_equal_lines] or [ifread_test] or [ifread_test_equal_lines] or [smc_fencei_test] or [smc_fencei_test_equal_lines]
               or [ddr_test_equal_lines] or [ddr_exec_test_equal_lines] or
               [ddr_atomic_test_equal_lines] or [debug_test] or [debug_fence_test] or [debug_openocd_test] or [bram_reload]
@@ -1200,18 +1200,27 @@ jobs:
       matrix:
         include:
           - shard: CSR profiling on
-            pytest_filter: "csr_file_bmc and not csr_file_bmc_perf_off"
+            pytest_filter: >-
+              (csr_file_bmc and not csr_file_bmc_perf_off) or
+              (coherence_store_boundary and (bmc_amo or bmc_sc or cover_amo or cover_sc))
             timeout_minutes: 120
           - shard: CSR profiling off
-            pytest_filter: "csr_file_bmc_perf_off"
+            pytest_filter: >-
+              csr_file_bmc_perf_off or
+              (coherence_store_boundary and not (bmc_amo or bmc_sc or cover_amo or cover_sc))
             timeout_minutes: 120
           - shard: Reorder buffer
-            pytest_filter: "reorder_buffer_bmc"
+            pytest_filter: >-
+              reorder_buffer_bmc or
+              (coherence_l1d and not (coh_l1d_bmc or coh_l1d_multi_bmc))
             timeout_minutes: 120
           # The coherence home, endpoints and bridges, the coherent CPU
           # interfaces, and the hart maintenance composition proof.
           - shard: Coherence
-            pytest_filter: "axi_coherent_bridge or coherence_ or coherent_"
+            pytest_filter: >-
+              (axi_coherent_bridge or coherence_ or coherent_) and not
+              (coherence_store_boundary or
+              (coherence_l1d and not (coh_l1d_bmc or coh_l1d_multi_bmc)))
             timeout_minutes: 240
           - shard: Other tasks
             pytest_filter: "not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or coherence_ or coherent_)"

@@ -103,7 +103,7 @@ side effects are safe. The LQ and SQ order atomics instead (last row).
 | CSR | Runs its read/update handshake at the head. The value read reaches the register file through a delayed writeback at commit, and the front end holds younger instructions until then, because the CDB carries the CSR's write operand, not the value it reads. Translation CSRs also wait for committed stores to drain. |
 | FENCE / FENCE.I / SFENCE.VMA | Wait for committed stores to drain. FENCE.I and SFENCE.VMA then wait for instruction-copy writes and L1I invalidation, and flush fetch; SFENCE.VMA also invalidates the TLBs and the page-table walker. |
 | xRET | Handshakes with the trap unit and returns to `mepc`, `sepc`, or `dpc`. |
-| AMO / LR / SC | AMO and LR leave the LQ only at the ROB head, once no committed stores remain in the SQ. An SC issues from MEM_RS like a store but resolves only at the ROB head, after the committed stores drain (see the [wrapper](tomasulo_wrapper/README.md)). Atomics have no serializer state. |
+| AMO / LR / SC | AMO and LR leave the LQ only at the ROB head, once committed SQ work and accepted coherent stores have drained. An SC issues from MEM_RS like a store but resolves only at the ROB head, after the committed stores drain (see the [wrapper](tomasulo_wrapper/README.md)). Atomics have no serializer state. |
 
 The ROB marks a CSR instruction as a translation CSR at allocation: any
 `satp` access, or an `mstatus` or `sstatus` access that writes. Like FENCE.I
@@ -131,7 +131,7 @@ MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
 The FP engine completes on the `FP_ADD` slot; the `FP_DIV` and `FP_MUL` slots
 have no unit behind them. A completion that loses waits in its
 [`fu_cdb_adapter`](fu_cdb_adapter/README.md) and competes again the next
-cycle; the pipelined MUL path also queues results in a FIFO, and the divider
+cycle; the pipelined MUL path presents its result directly, and the divider
 holds its result until its adapter is free. On a full flush the arbiter's
 `i_kill` suppresses both lanes.
 
@@ -243,9 +243,11 @@ serializer, branch-update, or trap paths.
 
 The LQ has bypasses of its own. MEM_RS signals its next issue one cycle
 early, so the LQ registers the address-update match in advance and the entry
-is address-valid in the cycle MEM_RS issues. With translation on, the DMMU's
-first stage provides the look-ahead instead, and the entry is address-valid in
-the cycle the DMMU delivers the physical address. When the LQ's CDB staging
+is address-valid in the cycle MEM_RS issues. With translation on, the
+look-ahead tag comes from a surviving DMMU S1 operation, or from the live
+issue when S1 is empty or killed. Eligible last-page hits enter S2 directly;
+other operations pass through S1. The registered match makes an entry
+address-valid only with S2's address-update pulse. When the LQ's CDB staging
 register is free and no stored result is waiting for it, a load's data from
 memory, the L0 cache, or an SQ forward goes straight into the staging register
 instead of through the entry's data field. See the
