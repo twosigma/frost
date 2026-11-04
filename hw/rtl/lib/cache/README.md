@@ -258,7 +258,13 @@ live endpoints hold the same sector. A load that misses on a sector a live
 endpoint holds waits for that endpoint's installation, or for its release if
 the sector was installed and already replaced, and then looks up again.
 Grants install one at a time, endpoint 0's first and then the lowest-numbered
-load endpoint's. A load grant installs only while a WB slot is free, and
+load endpoint's. With stream look-ahead enabled, a successful demand installation
+with a reader waiting on that endpoint gives an eligible ordinary read one
+service turn before another load grant.
+The credit is consumed at read lookup start or grant acceptance. Probe turns,
+atomic work and maintenance suppress the credited turn. While a grant is
+selectable, a credited read may hit or attach to a live endpoint; its miss
+waits to start an acquisition. A load grant installs only while a WB slot is free, and
 endpoint 0 does not take the last free slot while a load grant waits. New
 load acquisitions stop while an atomic is active or an AMO, SC or maintenance
 operation waits for every endpoint to be idle.

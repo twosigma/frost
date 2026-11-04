@@ -286,13 +286,14 @@ module coherence_l1d #(
   logic acquisition_store_q, acquisition_sc_q;
   logic [2:0] acquisition_read_q;
   logic grant_valid, grant_ready;
+  logic grant_read_turn_q, grant_retry_q, grant_read_yield, load_acquire_block;
+  logic grant_demand_waiter;
   coh_g_t grant, grant_q;
   logic done_q, done_ready, written_q;
   logic [1:0] done_status_q;
   logic pending_blocked;
 
-  assign read_failure = active && phase_q == Idle &&
-      !probe_valid_q && !probe_priority && grant_valid && |(pick_onehot & ep_read_fail);
+  assign read_failure = grant_ready && grant_valid && |(pick_onehot & ep_read_fail);
   assign read_hit = active && phase_q == LookupWait && array_valid &&
       operation_q == ReadOp &&
       rd_kind_q[selected_read_q] != ReadAMO && array_hit;
@@ -513,7 +514,7 @@ module coherence_l1d #(
         prefetch_check_addr[ADDR_WIDTH-1:5];
   end
   assign prefetch_accept = !prefetch_cancel && !stream_replace && lookup_in_window &&
-      !prefetch_conflict;
+      !prefetch_conflict && !load_acquire_block;
   assign stream_consume = !hint_valid_q && stream_valid && !prefetch_cancel && !stream_replace;
   always_ff @(posedge i_clk) begin
     if (i_rst || prefetch_cancel || stream_replace) begin
@@ -535,6 +536,34 @@ module coherence_l1d #(
           (hint_checked_q && !hint_eligible_q) ||
           (prefetch_busy && lookup_addr_q == hint_addr_q))) hint_valid_q <= 1'b0;
     end
+  end
+
+  // A demand installation with an attached reader gives an ordinary read
+  // one turn before another load grant. Probes and atomics keep priority.
+  always_comb begin
+    grant_demand_waiter = 1'b0;
+    for (int slot = 0; slot < 8; slot++)
+      grant_demand_waiter |= rd_wait_q[slot] && !rd_wait_release_q[slot] &&
+          rd_wait_ep_q[slot] == grant_ep_q;
+  end
+  assign grant_read_yield = StreamEnabled && grant_read_turn_q && rd_candidate &&
+      grant_valid && !ep_grant_valid[0] && !local_turn_q && !prefetch_cancel;
+  assign load_acquire_block = StreamEnabled && grant_retry_q && grant_valid;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || prefetch_cancel) grant_read_turn_q <= 1'b0;
+    else begin
+      if ((grant_valid && grant_ready) ||
+          (active && phase_q == Lookup && operation_q == ReadOp)) grant_read_turn_q <= 1'b0;
+      if (active && phase_q == UpdateWait && array_ready &&
+          operation_q == GrantOp && grant_ep_q != '0)
+        grant_read_turn_q <= !grant_prefetch_q && grant_demand_waiter;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) grant_retry_q <= 1'b0;
+    else if (active && phase_q == Idle)
+      grant_retry_q <= grant_read_yield && !probe_valid_q && !probe_priority;
   end
 
   assign maint_eligible = maint_q && !pending_q && !atomic_q && !any_live && wb_free;
@@ -652,7 +681,8 @@ module coherence_l1d #(
     end
   end
   assign o_r = reply_q;
-  assign grant_ready = active && phase_q == Idle && !probe_valid_q && !probe_priority;
+  assign grant_ready = active && phase_q == Idle && !probe_valid_q && !probe_priority &&
+      !grant_read_yield;
   // Data-class request identities 0 to 7 are legal.
   if (MISSES < 1 || MISSES > 8) begin : gen_invalid_misses
     initial $fatal(1, "coherence_l1d: MISSES must be 1 to 8");
@@ -666,7 +696,7 @@ module coherence_l1d #(
   assign ep_write_done[0] = written_q;
   for (genvar ep = 0; ep < MISSES; ep++) begin : gen_request
     assign ep_request_valid[ep] = active && phase_q == Acquire && acq_ep_q == EpBits'(ep) &&
-        (operation_q != PrefetchOp || prefetch_accept);
+        (operation_q != PrefetchOp || prefetch_accept) && (ep == 0 || !load_acquire_block);
     assign ep_grant_ready[ep] = grant_ready && grant_valid && grant_pick == EpBits'(ep);
     if (ep > 0) begin : gen_load_done
       assign ep_done_valid[ep] = ld_done_q[ep];
@@ -730,14 +760,14 @@ module coherence_l1d #(
     assign ep_done_status[ep] = coherence_pkg::Consumed;
     assign ep_write_done[ep] = 1'b0;
   end
-  // Endpoint 0's grant goes first, then the lowest-numbered load grant. No new
-  // acquisition starts while a grant is selectable, so each waits only for the
-  // grants already present. A load grant also needs a free WB slot.
+  // Endpoint 0's grant goes first, then the lowest-numbered load grant.
+  // A credited read cannot acquire while a grant is selectable.
+  // A load grant also needs a free WB slot.
   always_comb begin
     grant_pick = '0;
     for (int ep = EpSlots - 1; ep >= 0; ep--) if (ep_grant_valid[ep]) grant_pick = EpBits'(ep);
   end
-  assign grant_valid = ep_grant_valid[0] || (|(ep_grant_valid & ~EpSlots'(1)) && wb_free);
+  assign grant_valid = ep_grant_valid[0] || ((|ep_grant_valid[EpSlots-1:1]) && wb_free);
   assign grant = ep_grant[grant_pick];
   always_comb begin
     for (int ep = 0; ep < EpSlots; ep++) begin
@@ -788,7 +818,7 @@ module coherence_l1d #(
   assign same_line = Multi && |same_line_q;
   // A load grant waits only for a WB slot. Endpoint 0 does not take the last
   // free slot from it, so stores and LR cannot keep a load grant waiting.
-  assign load_grant_waiting = Multi && |(ep_grant_valid & ~EpSlots'(1));
+  assign load_grant_waiting = Multi && |ep_grant_valid[EpSlots-1:1];
   assign ep0_wb_ok = wb_free && !(load_grant_waiting && !(&(~wb_live)));
   assign load_block = Multi && (atomic_q || drain_q);
   assign wait_attach = Multi && read_miss && rd_kind_q[selected_read_q] != ReadAMO && same_line;
@@ -883,6 +913,11 @@ module coherence_l1d #(
       if (operation_q == PrefetchOp) p_prefetch_lookup_isolation : assert (!read_hit && !read_miss);
       if (atomic_q && atomic_granted_q)
         for (int ep = 1; ep < MISSES; ep++) assert (!live[ep]);
+      if (grant_read_yield) begin
+        assert (!grant_ready && !read_failure && !ep_grant_valid[0]);
+        assert (!prefetch_cancel && !local_turn_q);
+      end
+      if (load_acquire_block) assert (ep_request_valid[EpSlots-1:1] == 0);
       if (grant_ready && grant_valid && grant_pick != '0) assert (wb_free);
       if (active && phase_q == LookupWait && array_valid && operation_q == GrantOp &&
           grant_ep_q != '0 && !array_hit && array_state == coherence_pkg::Modified)
@@ -1294,7 +1329,14 @@ module coherence_l1d #(
               end else phase_q <= Lookup;
             end else if (probe_priority || probe_valid_q) begin
               // Probe ownership excludes local selection through R acceptance.
-            end else if (grant_valid) begin
+            end else if (grant_read_yield) begin
+              maint_turn_q <= 1'b1;
+              operation_q <= ReadOp;
+              selected_read_q <= rd_pick;
+              lookup_addr_q <= rd_selected_addr;
+              rd_rr_q <= rd_pick + 1'b1;
+              phase_q <= Lookup;
+            end else if (grant_valid && grant_ready) begin
               grant_q <= grant;
               grant_ep_q <= grant_pick;
               grant_prefetch_q <= ld_prefetch_q[grant_pick];
@@ -1477,7 +1519,7 @@ module coherence_l1d #(
                 end else if (rd_kind_q[selected_read_q] == ReadLR) begin
                   acq_ep_q <= '0;
                   phase_q <= !request_live && ep0_wb_ok && !load_block ? Acquire : Idle;
-                end else if (load_ep_free && !load_block) begin
+                end else if (load_ep_free && !load_block && !load_acquire_block) begin
                   acq_ep_q <= load_ep_index;
                   phase_q <= Acquire;
                 end else phase_q <= Idle;
@@ -1485,7 +1527,8 @@ module coherence_l1d #(
             endcase
           end
           Acquire:
-          if (operation_q == PrefetchOp && !prefetch_accept) phase_q <= Idle;
+          if ((acq_ep_q != '0 && load_acquire_block) ||
+              (operation_q == PrefetchOp && !prefetch_accept)) phase_q <= Idle;
           else if (ep_request_ready[acq_ep_q]) begin
             if (acq_ep_q == '0) begin
             acquisition_q <= acquisition;
@@ -1609,7 +1652,7 @@ module coherence_l1d #(
           if (probe_priority || probe_valid_q) begin
           end else
           if (i_sc_valid && o_sc_ready) begin
-          end else if (grant_valid) begin
+          end else if (grant_valid && grant_ready) begin
             if ((grant.error || grant.opcode == coherence_pkg::GrantFail) &&
                 !ld_prefetch_q[grant_pick] &&
                 (grant_pick != '0 || (!acquisition_sc_q && !acquisition_store_q))) begin
@@ -1859,6 +1902,38 @@ module coherence_l1d #(
     assume (i_d_ready == 0 && i_c_ready == 0 && !i_read_ready);
   end
 `endif
+`ifdef STREAM_TURN_COVER
+  logic [6:0] f_turn_cycle_q = 0;
+  logic [1:0] f_turn_sent_q = 0;
+  coh_d_t f_turn_first_q, f_turn_second_q;
+  coh_g_t f_turn_grant;
+  always_comb begin
+    f_turn_grant = '0;
+    f_turn_grant.opcode = coherence_pkg::GrantS;
+    f_turn_grant.q = f_turn_sent_q == 0 ? f_turn_first_q.q : f_turn_second_q.q;
+    f_turn_grant.addr = f_turn_sent_q == 0 ? f_turn_first_q.addr : f_turn_second_q.addr;
+    f_turn_grant.tid = f_turn_sent_q == 0 ? 1 : 2;
+  end
+  always_ff @(posedge i_clk) begin
+    if (f_turn_cycle_q != 127) f_turn_cycle_q <= f_turn_cycle_q + 1'b1;
+    if (i_g_valid && o_g_ready) f_turn_sent_q <= f_turn_sent_q + 1'b1;
+    if (o_d_valid[1] && i_d_ready[1]) f_turn_first_q <= o_d[1];
+    if (o_d_valid[2] && i_d_ready[2]) f_turn_second_q <= o_d[2];
+    assume (i_rst == !f_past_valid);
+    assume (!i_fatal_stop && !i_maint_valid && !i_sc_valid && !i_sc_commit);
+    assume (i_write_mask == 0 && !i_p_valid && !i_wa_valid && !i_u_valid);
+    assume (i_read_valid == (f_turn_cycle_q == 4 || f_turn_cycle_q == 5 ||
+        f_turn_cycle_q == 6));
+    assume (i_read_id == (f_turn_cycle_q == 4 ? 0 : f_turn_cycle_q == 5 ? 1 : 2));
+    assume (i_address == ADDR_WIDTH'(32'h80000000 + (f_turn_cycle_q == 4 ? 0 :
+        f_turn_cycle_q == 5 ? 64 : 8)));
+    assume (i_read_kind == ReadLoad && i_read_size == 3 && i_read_tag == 0);
+    assume (i_d_ready == '1 && i_c_ready == 0 && !i_read_ready);
+    assume (i_g_valid == (f_turn_cycle_q >= 35 && f_turn_sent_q < 2));
+    assume (i_g == f_turn_grant);
+    p_stream_read_turn : cover (phase_q == Idle && grant_read_yield && rd_pick == 2);
+  end
+`endif
   logic   f_past_valid = 1'b0;
   coh_g_t f_grant;
   assign f_grant = i_g;
@@ -1932,6 +2007,23 @@ module coherence_l1d #(
       if (local_turn_q) assert (phase_q == Idle && !probe_valid_q && !o_r_valid);
       if ($past(o_r_valid && i_r_ready)) assert (local_turn_q == $past(local_ready));
       if ($past(local_turn_q)) assert (!local_turn_q);
+      if ($past(grant_read_yield && active && phase_q == Idle &&
+          !probe_valid_q && !probe_priority)) begin
+        assert (phase_q == Lookup && operation_q == ReadOp);
+        assert (selected_read_q == $past(rd_pick));
+      end
+      if ($past(active && phase_q == Idle))
+        assert (grant_retry_q == $past(grant_read_yield && !probe_valid_q && !probe_priority));
+      else assert ($stable(grant_retry_q));
+      if ($past(read_miss && grant_retry_q && grant_valid &&
+          rd_kind_q[selected_read_q] == ReadLoad)) assert (phase_q == Idle);
+      if ($past(prefetch_cancel)) assert (!grant_read_turn_q);
+      else if ($past(active && phase_q == UpdateWait && array_ready &&
+          operation_q == GrantOp && grant_ep_q != '0))
+        assert (grant_read_turn_q == $past(!grant_prefetch_q && grant_demand_waiter));
+      else if ($past((grant_valid && grant_ready) ||
+          (active && phase_q == Lookup && operation_q == ReadOp))) assert (!grant_read_turn_q);
+      else assert ($stable(grant_read_turn_q));
       if (local_turn_q && grant_valid && active) assert (grant_ready);
       if (rd_candidate && &read_probe_count_q) assert (local_ready);
       if ($past(local_turn_q && active && !grant_valid && atomic_write_q))

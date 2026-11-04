@@ -3,6 +3,7 @@ coh_l1d_bmc single control
 coh_l1d_multi_bmc multi control
 coh_l1d_stream_bmc stream multi control
 coh_l1d_stream_cover stream multi streamcovers covermode
+coh_l1d_turn_cover stream multi turncovers covermode
 coh_l1d_cover single covers covermode
 coh_l1d_data_bmc single data arraydata word0
 coh_l1d_data1_bmc single data arraydata word1
@@ -31,6 +32,7 @@ read -sv cache_perf_pkg.sv
 read -sv coherence_pkg.sv coherence_request_endpoint.sv coherence_put_endpoint.sv coherence_read_flags.sv coherence_read_select.sv
 control: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 streamcovers: read -formal -sv -D STREAM_COVER coherence_read_payload.sv coherence_l1d.sv
+turncovers: read -formal -sv -D STREAM_TURN_COVER coherence_read_payload.sv coherence_l1d.sv
 covers: read -formal -sv -D STORE_COVER -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
 word0: read -formal -sv -D STORE_DATA_PROOF -D STORE_BYTE_WORD=0 coherence_read_payload.sv coherence_l1d.sv
 word1: read -formal -sv -D STORE_DATA_PROOF -D STORE_BYTE_WORD=1 coherence_read_payload.sv coherence_l1d.sv
@@ -53,6 +55,8 @@ arraydata: select -assert-count 2 c:p_store_data_6 c:p_store_data_7
 arraydata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_6 c:p_store_data_7 %u %d
 grantdata: select -assert-count 3 c:p_store_data_8 c:p_store_data_9 c:p_store_data_10
 grantdata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_8 c:p_store_data_9 c:p_store_data_10 %u %u %d
+turncovers: select -assert-count 1 c:p_stream_read_turn
+turncovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_stream_read_turn %d
 memory_map
 opt
 multi: techmap

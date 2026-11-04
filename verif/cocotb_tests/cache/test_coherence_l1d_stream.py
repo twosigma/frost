@@ -112,8 +112,8 @@ class StreamPrivate(Private):
         """Give each dword a distinct deterministic value."""
         return address ^ 0x13579BDF01234567
 
-    async def grant(self, index: int, error: bool = False) -> None:
-        """Grant one recorded request and wait for its C offer."""
+    async def send_grant(self, index: int, error: bool = False) -> None:
+        """Transfer G into an endpoint without waiting for local service."""
         ep, request = self.requests[index]
         data = sum(self.word(request[2] + 8 * word) << (64 * word) for word in range(4))
         await self.set(
@@ -130,6 +130,11 @@ class StreamPrivate(Private):
         await self.wait("o_g_ready")
         await self.tick()
         await self.set(i_g_valid=0)
+
+    async def grant(self, index: int, error: bool = False) -> None:
+        """Grant one recorded request and wait for its C offer."""
+        await self.send_grant(index, error)
+        ep, _ = self.requests[index]
         for _ in range(250):
             if self.get("o_c_valid") >> ep & 1:
                 return
@@ -449,3 +454,125 @@ async def accepted_hints_drain_for_exclusive_work(dut: Any) -> None:
         else:
             await b.tick(20)
             assert not b.get("live") and len(b.requests) == 4
+
+
+@cocotb.test()
+async def demand_turn_between_buffered_grants(dut: Any) -> None:
+    """Serve a fill waiter before accepting the next successful or failed grant."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 3:
+        return
+    base = 0x80003000
+    for error in (False, True):
+        await b.reset()
+        await b.set(i_read_ready=0)
+        await b.issue(0, base)
+        await b.issue(1, base + 512)
+        await b.issue(2, base + 8)
+        await b.requests_at_least(2)
+        await b.tick(40)
+        assert b.get("rd_wait_q") & 4
+        await b.send_grant(0)
+        await b.send_grant(1, error=error)
+        for _ in range(100):
+            if b.get("phase_q") == 0 and b.get("grant_read_yield"):
+                assert b.get("grant_pick") == b.requests[1][0]
+                assert not b.get("grant_ready") and not b.get("read_failure")
+                assert not b.get("rd_ready_q") & 2
+                await b.tick()
+                assert b.get("operation_q") == 0 and b.get("selected_read_q") == 2
+                break
+            await b.tick()
+        else:
+            raise AssertionError("No demand turn between the buffered grants")
+        for _ in range(100):
+            if b.get("phase_q") == 0 and b.get("grant_valid") and b.get("grant_ready"):
+                assert not b.get("grant_read_turn_q")
+                assert b.get("rd_ready_q") & 4
+                await b.tick()
+                break
+            await b.tick()
+        else:
+            raise AssertionError("The next grant did not follow the demand turn")
+        mask = sum(1 << ep for ep, _ in b.requests)
+        for _ in range(100):
+            if b.get("o_c_valid") & mask == mask:
+                break
+            await b.tick()
+        else:
+            raise AssertionError("A buffered grant failed to complete")
+        await b.release(0)
+        await b.release(1)
+        await b.drain(3)
+        assert sorted(b.responses) == [
+            (0, b.word(base), 0),
+            (1, 0 if error else b.word(base + 512), int(error)),
+            (2, b.word(base + 8), 0),
+        ]
+        assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def credited_miss_waits_for_buffered_grant(dut: Any) -> None:
+    """Prevent a credited miss from acquiring ahead of a buffered grant."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 3:
+        return
+    for incoming_lr in (False, True):
+        await b.reset()
+        await b.set(i_read_ready=0)
+        base = 0x80004000
+        await b.issue(0, base)
+        await b.issue(1, base + 512)
+        await b.issue(2, base + 8)
+        await b.requests_at_least(2)
+        await b.tick(20)
+        await b.send_grant(0)
+        await b.send_grant(1)
+        await b.issue(3, base + 1024)
+        for _ in range(100):
+            if b.get("phase_q") == 0 and b.get("grant_read_yield"):
+                assert b.get("rd_pick") == 3
+                await b.tick()
+                if incoming_lr:
+                    await b.issue(4, base + 1536, kind=1)
+                    assert b.get("prefetch_cancel") and b.get("grant_retry_q")
+                break
+            await b.tick()
+        else:
+            raise AssertionError("The fresh demand did not receive the credited turn")
+        for _ in range(100):
+            if b.get("phase_q") == 2 and b.get("array_valid"):
+                assert b.get("operation_q") == 0 and b.get("selected_read_q") == 3
+                assert not b.get("array_hit") and b.get("load_acquire_block")
+                await b.tick()
+                assert b.get("phase_q") == 0 and len(b.requests) == 2
+                assert b.get("grant_valid") and b.get("grant_ready")
+                await b.tick()
+                break
+            await b.tick()
+        else:
+            raise AssertionError(
+                "The credited miss did not yield to its buffered grant"
+            )
+        mask = sum(1 << ep for ep, _ in b.requests)
+        for _ in range(100):
+            if b.get("o_c_valid") & mask == mask:
+                break
+            await b.tick()
+        else:
+            raise AssertionError("The buffered grant did not complete")
+        await b.release(0)
+        await b.release(1)
+        await b.requests_at_least(3)
+        await b.drain(5 if incoming_lr else 4)
+        expected = [
+            (0, b.word(base), 0),
+            (1, b.word(base + 512), 0),
+            (2, b.word(base + 8), 0),
+            (3, b.word(base + 1024), 0),
+        ]
+        if incoming_lr:
+            expected.append((4, b.word(base + 1536), 0))
+        assert sorted(b.responses) == expected
+        assert not b.get("o_fatal")

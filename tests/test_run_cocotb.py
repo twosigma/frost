@@ -2335,7 +2335,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         python_test_module="cocotb_tests.cache.test_coherence_l1d_stream",
         hdl_toplevel_module="coherence_l1d",
-        description="Speculative GetS ownership, read data isolation and demand attachment with 8 endpoints",
+        description="Speculative GetS ownership, demand attachment and read turns between load grants with 8 endpoints",
     ),
     "coherence_stream_dirty": CocotbRunConfig(
         verilator_extra_args=(
