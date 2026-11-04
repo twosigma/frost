@@ -27,6 +27,7 @@ benches compose these modules independently of the CPU hierarchy.
 | `walker_coherence_sequencer.sv` | Probes the L1D before each page-table walk read reaches the L2; one read in flight |
 | `l2_stream_prefetcher.sv` | Watches a stream of misses and reads the lines ahead of ascending streams into the L2, never past the page of the last miss; the component hierarchy's shared level has one, the coherent prefetcher two |
 | `coherence_prefetcher.sv` | The coherent home's source 3: two stream tables, for the hart's data misses and its instruction refills, choose lines that Prefetch requests read into the L2 |
+| `coherence_prefetch_agent.sv` | The coherence home's prefetch requester: `l2_stream_prefetcher` trained on the hart's D requests, issuing Prefetch (source 3) through four request endpoints |
 | `line_port_axi_bridge.sv` | Line port to single-beat AXI4 master; line ids become AXI ids, and each response carries the error bit of its RRESP or BRESP. The NIC's DMA master is one |
 | `axi_behavioral_memory.sv` | Simulation-only DDR model: concurrent transactions, latency and jitter settings, optional out-of-order completion, and injected error responses |
 | `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, and writeback pulses, hit-under-miss, the outstanding-miss count, and two stall classes; and the L2's write costs: write misses that fetch their line, and writes that wait for a read of their line |

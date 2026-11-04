@@ -29,6 +29,10 @@ $(ROOT)/hw/rtl/lib/cache/line_size_adapter.sv
 $(ROOT)/hw/rtl/lib/cache/l2_stream_prefetcher.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_prefetcher.sv
 
+# The coherence home's prefetch requester: the stream prefetcher above, issuing
+# Prefetch (source 3) requests to the home.
+$(ROOT)/hw/rtl/lib/cache/coherence_prefetch_agent.sv
+
 # One hart's private caches: the L1s, the walker port, and the L1D's probe
 # injection and fence.i sequencing.
 $(ROOT)/hw/rtl/lib/cache/frost_hart_cache.sv
