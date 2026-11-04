@@ -286,7 +286,7 @@ module coherence_l1d #(
   logic [EpSlots-1:0][ADDR_WIDTH+274:0] ep_grant;
   logic [EpBits-1:0] acq_ep_q, grant_ep_q, grant_pick;
   logic any_live;
-  logic [EpSlots-1:0] ep_store, ld_store_q, grant_eligible;
+  logic [EpSlots-1:0] ep_store, ld_store_q, grant_offer;
   logic [EpSlots-1:0] store_grant_head_q;
   logic [1:0] store_grant_index;
   logic grant_is_store, selected_grant_store;
@@ -721,25 +721,28 @@ module coherence_l1d #(
   end
   always_comb begin
     for (int ep = 0; ep < EpSlots; ep++) begin
-      grant_eligible[ep] = ep_grant_valid[ep] &&
-          (ep == 0 ? wb_reserved_q : wb_free);
+      grant_offer[ep] = ep_grant_valid[ep];
       if (ep_store[ep])
-        grant_eligible[ep] &= store_grant_head_q[ep] &&
+        grant_offer[ep] &= store_grant_head_q[ep] &&
             !(store_read_turn_q && read_waiting_q);
     end
-    grant_pick = '0;
-    for (int ep = EpSlots - 1; ep >= 0; ep--)
-      if (grant_eligible[ep]) grant_pick = EpBits'(ep);
   end
-  assign grant_valid = |grant_eligible;
+  coherence_grant_select #(
+      .SLOTS(EpSlots)
+  ) grant_select (
+      .i_offer(grant_offer),
+      .i_zero_credit(wb_reserved_q),
+      .i_other_credit(wb_free),
+      .o_valid(grant_valid),
+      .o_index(grant_pick),
+      .o_onehot(pick_onehot)
+  );
   assign read_service_waiting = rd_candidate || load_grant_eligible;
   assign grant = ep_grant[grant_pick];
   assign grant_is_store = ep_store[grant_pick];
   assign selected_grant_store = ep_store[grant_ep_q];
   always_comb begin
     for (int ep = 0; ep < EpSlots; ep++) begin
-      pick_onehot[ep] = grant_eligible[ep];
-      for (int lower = 0; lower < ep; lower++) if (grant_eligible[lower]) pick_onehot[ep] = 1'b0;
       ep_read_fail[ep] = ep_fail[ep] && !ep_store[ep] && (ep != 0 || !acquisition_sc_q);
     end
     failure_read_slot = '0;

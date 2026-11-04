@@ -22,7 +22,7 @@ bmc: abc bmc3
 covers: btor btormc
 
 [script]
-read -sv cache_perf_pkg.sv coherence_pkg.sv coherence_request_endpoint.sv coherence_home_endpoint.sv coherence_put_endpoint.sv coherence_read_flags.sv coherence_read_select.sv coherence_read_payload.sv coherence_store_buffer.sv coherence_array.sv coherence_l1d.sv coherence_home_array.sv coherence_seat_select.sv coherence_work_select.sv coherence_home_completions.sv coherence_home_engine.sv coherence_home.sv coherence_d_arbiter.sv coherence_cluster_test_harness.sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
+read -sv cache_perf_pkg.sv coherence_pkg.sv coherence_request_endpoint.sv coherence_home_endpoint.sv coherence_put_endpoint.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv coherence_read_payload.sv coherence_store_buffer.sv coherence_array.sv coherence_l1d.sv coherence_home_array.sv coherence_seat_select.sv coherence_work_select.sv coherence_home_completions.sv coherence_home_engine.sv coherence_home.sv coherence_d_arbiter.sv coherence_cluster_test_harness.sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
 read -formal -sv coherence_store_home_formal.sv
 rows: chparam -set SECTOR_CASE 1 coherence_store_home_formal
 conflict: chparam -set SECTOR_CASE 2 coherence_store_home_formal
@@ -46,6 +46,7 @@ coherence_store_home_formal.sv
 ../hw/rtl/lib/cache/coherence_home_endpoint.sv
 ../hw/rtl/lib/cache/coherence_put_endpoint.sv
 ../hw/rtl/lib/cache/coherence_read_flags.sv
+../hw/rtl/lib/cache/coherence_grant_select.sv
 ../hw/rtl/lib/cache/coherence_read_select.sv
 ../hw/rtl/lib/cache/coherence_read_payload.sv
 ../hw/rtl/lib/cache/coherence_store_buffer.sv

@@ -20,6 +20,9 @@ coh_atomic_guard_prove guard
 coh_read_flags_prove flags
 coh_read_select_prove select
 coh_read_select64_prove select wide
+coh_grant_select2_prove grant_select grant2
+coh_grant_select4_prove grant_select grant4
+coh_grant_select8_prove grant_select
 
 [options]
 mode prove
@@ -37,6 +40,8 @@ flags: depth 12
 select: depth 1
 payload: depth 1
 select: timeout 180
+grant_select: depth 1
+grant_select: timeout 180
 
 [engines]
 smtbmc boolector
@@ -64,6 +69,10 @@ guard: prep -top coherent_atomic_guard
 flags: prep -top coherence_read_flags
 wide: chparam -set ADDR_WIDTH 64 coherence_read_select
 select: prep -top coherence_read_select
+grant_select: read -formal -sv coherence_grant_select.sv
+grant2: chparam -set SLOTS 2 coherence_grant_select
+grant4: chparam -set SLOTS 4 coherence_grant_select
+grant_select: prep -top coherence_grant_select
 
 [files]
 coherent_atomic_select_formal.sv
@@ -76,3 +85,4 @@ coherent_atomic_select_formal.sv
 ../hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/coherent_atomic_guard.sv
 ../hw/rtl/lib/cache/coherence_read_flags.sv
 ../hw/rtl/lib/cache/coherence_read_select.sv
+../hw/rtl/lib/cache/coherence_grant_select.sv

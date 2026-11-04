@@ -327,6 +327,9 @@ FORMAL_TARGETS = [
             "coh_read_flags_prove",
             "coh_read_select_prove",
             "coh_read_select64_prove",
+            "coh_grant_select2_prove",
+            "coh_grant_select4_prove",
+            "coh_grant_select8_prove",
         ),
     ),
     FormalTarget(
@@ -1108,6 +1111,18 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    (
+        "coh_grant_select2_prove",
+        "Two grant candidates preserve credit-qualified priority.",
+    ),
+    (
+        "coh_grant_select4_prove",
+        "Four grant candidates preserve credit-qualified priority.",
+    ),
+    (
+        "coh_grant_select8_prove",
+        "Eight grant candidates preserve credit-qualified priority.",
+    ),
     ("bmc_siblings", "Real-home sibling store byte safety."),
     ("bmc_rows", "Real-home distinct-row store byte safety."),
     ("bmc_conflict", "Real-home conflicting-row store byte safety."),
