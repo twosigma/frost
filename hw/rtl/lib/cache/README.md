@@ -231,11 +231,15 @@ newest unsealed record of the same sector. Byte masks select the most recent
 value of each written byte. A record holds at most 32 contributors and seals
 at that limit or when selected as the head for installation. A simultaneous
 contributor is included before sealing. A, B, A stores occupy separate records.
+Launch credit reserves an arriving scalar without comparing its address or
+borrowing a simultaneous installation. The lookahead scheduler samples physical
+record conflicts before selecting by age. Queue changes invalidate that sample.
 
 Only the head installs. A Modified hit uses a tag-only lookup and the array's
 byte enables. A buffered successor can start its lookup after the head's
 masked update completes. Registered read demand gives a waiting data read a
-turn between hit-store installations. Lookahead lookups and store grant
+turn between store selections, including permission misses. Eligible load grants
+share that turn. Lookahead lookups and store grant
 installations also yield to waiting reads. Probes and atomic operations have
 priority. A selected array operation completes before probe capture; queued
 bytes and held grants are excluded from probe replies.
@@ -537,6 +541,10 @@ L1D request endpoints, including several loads in flight. `coherence_readers`
 controls grants and releases around the real L1I, fetch provider and PTW. It checks overlapping fills, invalidation, discarded fetches
 and walks, errors, reset, fatal stop and reuse of reader IDs before U.
 The whole-SoC program configurations use this hierarchy.
+`coherence_l1d_stream` checks ordered store installation, combining, independent
+grants, duplicate-sector exclusion and read turns. `coherence_store_pressure`
+holds both dirty victim slots and delays endpoint releases while ordinary loads
+and probing DMA requests use the production home.
 G and U route by their message source identity. Fair C arbiters select the
 hart and DMA inputs and the hart's data, instruction and walker inputs. Each
 arbiter holds its selection during backpressure and acknowledges only that input.

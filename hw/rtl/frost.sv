@@ -34,8 +34,8 @@ module frost #(
     // Simulation mtime multiplier; use 1 for synthesis.
     parameter int unsigned SIM_TIMER_SPEEDUP = 1,
     // Cached region [CACHED_BASE, CACHED_BASE + CACHED_SIZE_BYTES), backed by
-    // write-back caches and DDR. Supports several tagged loads and two ordered
-    // accepted stores, with variable-latency handshakes.
+    // write-back caches and DDR. Supports several tagged loads and four ordered
+    // combining store records, with variable-latency handshakes.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes,
     // 0 omits the hierarchy: cached loads return zero and stores have no effect.

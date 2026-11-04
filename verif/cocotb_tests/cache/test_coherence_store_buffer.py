@@ -101,9 +101,7 @@ async def records_preserve_scalar_bytes_and_credit(dut: Any) -> None:
             and records[-1]["addr"] == (addr & ~31)
         )
         # Credit samples the arriving pulse and never borrows a simultaneous pop.
-        expect_ready = len(records) < 4 and not (
-            len(records) == 3 and push and not merge
-        )
+        expect_ready = len(records) < 4 and not (len(records) == 3 and push)
         values = dict(
             i_push=int(push),
             i_addr=addr,
@@ -121,6 +119,15 @@ async def records_preserve_scalar_bytes_and_credit(dut: Any) -> None:
             getattr(dut, name).value = value
         await Timer(1, unit="ns")
         assert get("o_ready") == expect_ready
+        if records:
+            dut.i_addr.value = records[-1]["addr"]
+            await Timer(1, unit="ns")
+            assert get("o_ready") == expect_ready
+            dut.i_addr.value = records[-1]["addr"] ^ 32
+            await Timer(1, unit="ns")
+            assert get("o_ready") == expect_ready
+            dut.i_addr.value = addr
+            await Timer(1, unit="ns")
         launch_credit = bool(get("o_ready"))
         if push:
             accepted += 1

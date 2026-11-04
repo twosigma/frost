@@ -57,8 +57,9 @@ module coherence_store_buffer #(
   assign allocate = i_push && !merge;
   assign o_combined = i_push && merge;
   assign write_index = merge ? youngest : next_q;
-  // A pop supplies no speculative credit. An arriving merge uses no record.
-  assign o_ready = o_count < 4 && !(o_count == 3 && allocate);
+  // Credit reserves for an arriving write without comparing its address.
+  // A pop supplies no speculative credit.
+  assign o_ready = o_count < 4 && !(o_count == 3 && i_push);
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       o_count <= '0;

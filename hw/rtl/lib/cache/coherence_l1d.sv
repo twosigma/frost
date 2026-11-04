@@ -205,11 +205,15 @@ module coherence_l1d #(
   logic [1:0] look_index, look_index_q;
   logic [ADDR_WIDTH-1:0] look_addr_q;
   logic [3:0] look_blocked;
+  logic [3:0][3:0] look_pair_conflict_q;
+  logic [3:0] look_owner_conflict, look_owner_conflict_q, look_other_row_q;
+  logic look_snapshot_valid_q;
   logic [TAG_BITS-1:0] pending_tag;
   logic [ADDR_WIDTH-1:0] tail_addr;
   logic tail_wb_blocked, tail_wb_blocked_q, tail_checked_q;
   logic store_continue, atomic_done_q;
   logic store_read_turn_q, read_waiting_q;
+  logic read_service_waiting, load_grant_eligible;
   logic [31:0] update_mask_q;
   logic array_skip_data, array_data_valid;
   logic [ADDR_WIDTH-1:0] pending_addr_q;
@@ -597,7 +601,7 @@ module coherence_l1d #(
   assign any_live = |live;
   assign o_g_ready = |ep_g_ready;
   assign o_u_ready = |ep_u_ready;
-  assign ep_store = (ld_store_q & ~EpSlots'(1)) | EpSlots'(acquisition_store_q);
+  assign ep_store = {ld_store_q[EpSlots-1:1], acquisition_store_q};
   assign ep_done_valid[0] = done_q;
   assign ep_done_status[0] = done_status_q;
   assign ep_write_done[0] = written_q;
@@ -669,19 +673,26 @@ module coherence_l1d #(
   // Eligibility precedes priority. A held younger store grant cannot block
   // the head's lookup or a load grant that can install.
   always_comb begin
+    load_grant_eligible = 1'b0;
+    for (int ep = 0; ep < EpSlots; ep++)
+      if (ep_grant_valid[ep] && !ep_store[ep] &&
+          (ep == 0 ? wb_reserved_q : wb_free)) load_grant_eligible = 1'b1;
+  end
+  always_comb begin
     for (int ep = 0; ep < EpSlots; ep++) begin
       grant_eligible[ep] = ep_grant_valid[ep] &&
           (ep == 0 ? wb_reserved_q : wb_free);
       if (ep_store[ep])
         grant_eligible[ep] &= pending_q && store_acquired[store_head_index] &&
             store_ep[store_head_index] == EpBits'(ep) &&
-            !(store_read_turn_q && rd_candidate);
+            !(store_read_turn_q && read_waiting_q);
     end
     grant_pick = '0;
     for (int ep = EpSlots - 1; ep >= 0; ep--)
       if (grant_eligible[ep]) grant_pick = EpBits'(ep);
   end
   assign grant_valid = |grant_eligible;
+  assign read_service_waiting = rd_candidate || load_grant_eligible;
   assign grant = ep_grant[grant_pick];
   assign grant_is_store = ep_store[grant_pick];
   assign selected_grant_store = ep_store[grant_ep_q];
@@ -733,7 +744,7 @@ module coherence_l1d #(
   assign same_line = Multi && |same_line_q;
   // A load grant waits only for a WB slot. Endpoint 0 does not take the last
   // free slot from it, so stores and LR cannot keep a load grant waiting.
-  assign load_grant_waiting = Multi && |(ep_grant_valid & ~ep_store & ~EpSlots'(1));
+  assign load_grant_waiting = Multi && |(ep_grant_valid[EpSlots-1:1] & ~ep_store[EpSlots-1:1]);
   assign ep0_wb_ok = wb_free && !(load_grant_waiting && !(&(~wb_live)));
   assign load_block = Multi && (atomic_q || drain_q);
   assign wait_attach = Multi && read_miss && rd_kind_q[selected_read_q] != ReadAMO && same_line;
@@ -950,25 +961,11 @@ module coherence_l1d #(
     end
   end
 
-  // The lookahead scan compares registered records and endpoint identities.
+  // Physical record comparisons are sampled before ordered selection.
   // A conflicting home set cannot pin a younger row ahead of an older store.
   // A resident lookahead is only a scheduling hint; the head rechecks tags.
   always_comb begin
-    borrowed_live = |(live & ep_store & ~EpSlots'(1));
-    look_blocked = store_acquired | store_checked_q | ~store_valid;
-    for (int age = 0; age < 4; age++) begin
-      for (int older = 0; older < age; older++) begin
-        if (store_valid[2'(store_head_index+2'(older))] &&
-            (store_addr[2'(store_head_index+2'(age))][ADDR_WIDTH-1:5] ==
-             store_addr[2'(store_head_index+2'(older))][ADDR_WIDTH-1:5] ||
-             ((HomeSets == 1 ||
-               store_addr[2'(store_head_index+2'(age))][HomeOffset+:HomeSetBits] ==
-               store_addr[2'(store_head_index+2'(older))][HomeOffset+:HomeSetBits]) &&
-              store_addr[2'(store_head_index+2'(age))][ADDR_WIDTH-1:HomeOffset] !=
-              store_addr[2'(store_head_index+2'(older))][ADDR_WIDTH-1:HomeOffset])))
-          look_blocked[2'(store_head_index+2'(age))] = 1'b1;
-      end
-    end
+    look_owner_conflict = '0;
     for (int slot = 0; slot < 4; slot++) begin
       for (int ep = 0; ep < MISSES; ep++)
       if (live[ep] &&
@@ -980,10 +977,43 @@ module coherence_l1d #(
              ld_line_q[ep][HomeOffset-5+:HomeSetBits])) &&
             store_addr[slot][ADDR_WIDTH-1:HomeOffset] !=
             (ep == 0 ? acquisition_q.addr[ADDR_WIDTH-1:HomeOffset] :
-             ld_line_q[ep][ADDR_WIDTH-6:HomeOffset-5])))) look_blocked[slot] = 1'b1;
+             ld_line_q[ep][ADDR_WIDTH-6:HomeOffset-5])))) look_owner_conflict[slot] = 1'b1;
       for (int wb_slot = 0; wb_slot < 2; wb_slot++)
       if (wb_live[wb_slot] && wb_addr[wb_slot][ADDR_WIDTH-1:5] ==
-          store_addr[slot][ADDR_WIDTH-1:5]) look_blocked[slot] = 1'b1;
+          store_addr[slot][ADDR_WIDTH-1:5]) look_owner_conflict[slot] = 1'b1;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      look_pair_conflict_q <= '0;
+      look_owner_conflict_q <= '0;
+      look_other_row_q <= '0;
+      look_snapshot_valid_q <= 1'b0;
+    end else begin
+      look_owner_conflict_q <= look_owner_conflict;
+      look_snapshot_valid_q <= !store_pop && !store_push;
+      for (int slot = 0; slot < 4; slot++) begin
+        look_other_row_q[slot] <= store_addr[slot][ADDR_WIDTH-1:HomeOffset] !=
+            pending_addr_q[ADDR_WIDTH-1:HomeOffset];
+        for (int older = 0; older < 4; older++)
+          look_pair_conflict_q[slot][older] <=
+              store_addr[slot][ADDR_WIDTH-1:5] == store_addr[older][ADDR_WIDTH-1:5] ||
+              ((HomeSets == 1 || store_addr[slot][HomeOffset+:HomeSetBits] ==
+                store_addr[older][HomeOffset+:HomeSetBits]) &&
+               store_addr[slot][ADDR_WIDTH-1:HomeOffset] !=
+               store_addr[older][ADDR_WIDTH-1:HomeOffset]);
+      end
+    end
+  end
+  always_comb begin
+    borrowed_live = |(live[EpSlots-1:1] & ep_store[EpSlots-1:1]);
+    look_blocked = store_acquired | store_checked_q | ~store_valid | look_owner_conflict_q;
+    if (!look_snapshot_valid_q) look_blocked = '1;
+    for (int slot = 0; slot < 4; slot++) begin
+      for (int older = 0; older < 4; older++)
+      if (store_valid[older] && 2'(2'(older) - store_head_index) <
+          2'(2'(slot) - store_head_index) && look_pair_conflict_q[slot][older])
+        look_blocked[slot] = 1'b1;
     end
     look_found = 1'b0;
     look_index = '0;
@@ -994,8 +1024,7 @@ module coherence_l1d #(
     end
     for (int age = 3; age >= 1; age--)
     if (!look_blocked[2'(store_head_index+2'(age))] &&
-        store_addr[2'(store_head_index+2'(age))][ADDR_WIDTH-1:HomeOffset] !=
-        pending_addr_q[ADDR_WIDTH-1:HomeOffset]) begin
+        look_other_row_q[2'(store_head_index+2'(age))]) begin
       look_found = 1'b1;
       look_index = 2'(store_head_index + 2'(age));
     end
@@ -1004,7 +1033,7 @@ module coherence_l1d #(
       !load_block && !i_sc_valid && !i_maint_valid && !amo_waiting &&
       store_valid[look_index_q] && !store_acquired[look_index_q] &&
       !store_checked_q[look_index_q] && look_index_q != store_head_index &&
-      !(rd_candidate && (look_read_turn_q || store_read_turn_q));
+      !(read_service_waiting && (look_read_turn_q || store_read_turn_q));
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       look_valid_q <= 1'b0;
@@ -1023,10 +1052,12 @@ module coherence_l1d #(
         store_checked_q[store_selected_q] <= 1'b1;
       if (active && phase_q == Acquire && ep_request_ready[acq_ep_q] && acq_ep_q != '0)
         look_read_turn_q <= operation_q == LookaheadOp;
+      if (active && phase_q == Lookup && (operation_q == ReadOp ||
+          (operation_q == GrantOp && !selected_grant_store))) look_read_turn_q <= 1'b0;
     end
   end
 
-  // A waiting read receives one turn between hit-store installations.
+  // Eligible read lookups and grants receive a turn between store selections.
   // Read demand is registered before store selection and continuation.
   // A continuation uses a resident tail and a comparison from the preceding
   // cycle. Freeze and probe service cannot run beside a StoreOp update.
@@ -1039,9 +1070,9 @@ module coherence_l1d #(
 
     end else begin
       tail_wb_blocked_q <= tail_wb_blocked;
-      read_waiting_q <= rd_candidate;
-      if (active && phase_q == LookupWait && array_valid && operation_q == StoreOp &&
-          array_hit && array_state == coherence_pkg::Modified) store_read_turn_q <= 1'b1;
+      read_waiting_q <= read_service_waiting;
+      if (active && phase_q == LookupWait && array_valid && operation_q == StoreOp)
+        store_read_turn_q <= 1'b1;
       if (active && phase_q == LookupWait && array_valid && operation_q == LookaheadOp)
         store_read_turn_q <= 1'b1;
       if (store_pop && operation_q == GrantOp) store_read_turn_q <= 1'b1;
@@ -1648,7 +1679,7 @@ module coherence_l1d #(
   always_ff @(posedge i_clk) begin
     if (sim_reset_seen_q && !i_rst) begin
       p_store_endpoint_limit : assert ($countones(live & ep_store) <= 2);
-      p_borrowed_store_limit : assert ($countones(live & ep_store & ~EpSlots'(1)) <= 1);
+      p_borrowed_store_limit : assert ($countones(live[EpSlots-1:1] & ep_store[EpSlots-1:1]) <= 1);
       if (store_pop || (active && phase_q == Update &&
           (operation_q == StoreOp || (operation_q == GrantOp && selected_grant_store)))) begin
         p_store_head_valid : assert (store_valid[store_head_index] &&
@@ -1685,6 +1716,23 @@ module coherence_l1d #(
     end
   end
   logic store_launch_ready_q;
+  logic [1:0] waiting_store_selections_q;
+  wire completed_store_selection = active &&
+      ((phase_q == LookupWait && array_valid &&
+        (operation_q == StoreOp || operation_q == LookaheadOp)) ||
+       (store_pop && operation_q == GrantOp));
+  wire completed_read_selection = active &&
+      ((phase_q == LookupWait && array_valid && operation_q == ReadOp) ||
+       (phase_q == UpdateWait && array_ready && operation_q == GrantOp &&
+        !selected_grant_store));
+  always_ff @(posedge i_clk) begin
+    if (i_rst || !read_service_waiting || completed_read_selection)
+      waiting_store_selections_q <= '0;
+    else if (completed_store_selection)
+      waiting_store_selections_q <= waiting_store_selections_q + 2'd1;
+    if (sim_reset_seen_q && !i_rst)
+      p_store_read_service_bound : assert (waiting_store_selections_q <= 2);
+  end
   logic insert_lookup_valid_q;
   logic read_owed_q;
   logic [SetBits-1:0] insert_lookup_set_q;

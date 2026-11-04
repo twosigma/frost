@@ -36,10 +36,15 @@ class Stream(Private):
         self.hits = 0
         self.misses = 0
         self.combined = 0
+        self.read_results: list[tuple[int, int]] = []
 
     async def tick(self, count: int = 1) -> None:
         """Capture accepted channels and head installations before each edge."""
         for _ in range(count):
+            if self.get("o_read_valid") and self.get("i_read_ready"):
+                self.read_results.append(
+                    (self.get("o_read_id"), self.get("o_read_data"))
+                )
             events = self.get("o_perf_events")
             combined = (events >> 13) & 1
             self.accesses += ((events >> 11) & 1) + combined
@@ -69,6 +74,7 @@ class Stream(Private):
         self.demands.clear()
         self.completions.clear()
         self.installs.clear()
+        self.read_results.clear()
         self.accesses = self.hits = self.misses = self.combined = 0
         await self.set(i_d_ready=7, i_c_ready=7, i_read_ready=1)
 
@@ -302,3 +308,111 @@ async def lr_hit_and_atomic_drains_include_borrowed_endpoint(dut: Any) -> None:
             assert len(b.demands) == 3
             assert b.get("o_atomic_live")
         assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def queued_predecessor_blocks_duplicate_lookahead(dut: Any) -> None:
+    """Keep X2 behind unacquired X1 in H, X1, Y, X2 and preserve X1's bytes."""
+    b = Stream(dut)
+    await b.reset()
+    h, x, y = 0x80000000, 0x80000040, 0x80000020
+    await store(b, x, 0)
+    await b.grant(x)
+    await b.release(x)
+    b.demands.clear()
+    b.completions.clear()
+    b.installs.clear()
+    await store(b, h, 0x11, 1)
+    await b.issued(h)
+    await store(b, x, 0xAA, 1)
+    x1 = (b.get("store_head_index") + 1) % 4
+    for _ in range(100):
+        if b.get("store_checked_q") & (1 << x1):
+            break
+        await b.tick()
+    else:
+        raise AssertionError("X1 did not finish its resident lookahead")
+    await store(b, y, 0xCC, 1)
+    await store(b, x + 8, 0xBB, 1)
+    await b.issued(y)
+    assert b.get("store_count") == 4
+    head = b.get("store_head_index")
+    x1, x2 = (head + 1) % 4, (head + 3) % 4
+    assert not b.get("store_acquired") & (1 << x1)
+    assert b.get("look_blocked") & (1 << x2)
+    assert [d[2] for _, d in b.demands] == [h, y]
+    assert await snapshot(b, x, invalidate=True) == 0
+    await b.grant(y)
+    await b.grant(h)
+    await b.release(h)
+    await b.issued(x)
+    # The home image predates both partial stores to X.
+    await b.grant(x, 0)
+    await b.release(x)
+    await b.release(y)
+    await b.wait("o_pending_store", 0)
+    assert b.installs == [h, x, y, x]
+    assert len(b.demands) == 3
+    assert await snapshot(b, x) == 0xAA | (0xBB << 64)
+
+
+@cocotb.test()
+async def load_hits_allow_repeated_store_borrowing(dut: Any) -> None:
+    """Issue another borrowed GetM while unrelated resident loads keep arriving."""
+    b = Stream(dut)
+    await b.reset()
+    base = 0x80000000
+    hot = base + 32
+    await store(b, hot, 0xABC)
+    await b.grant(hot)
+    await b.release(hot)
+    for address in (base, base + 64):
+        await store(b, address, address)
+        await b.issued(address)
+    for address in (base, base + 64):
+        await b.grant(address)
+    for address in (base, base + 64):
+        await b.release(address)
+    head, tail = base + 256, base + 320
+    await store(b, head, 1)
+    await b.issued(head)
+    active: set[int] = set()
+    consumed = 0
+
+    async def hit() -> None:
+        nonlocal consumed
+        free = next((slot for slot in range(8) if slot not in active), None)
+        await b.set(
+            i_address=hot,
+            i_read_valid=int(free is not None),
+            i_read_kind=0,
+            i_read_id=free or 0,
+            i_read_size=3,
+        )
+        if free is not None:
+            active.add(free)
+        await b.tick()
+        for slot, value in b.read_results[consumed:]:
+            assert slot in active and value == 0xABC
+            active.remove(slot)
+        consumed = len(b.read_results)
+
+    for _ in range(12):
+        await hit()
+    await b.set(i_read_valid=0)
+    await store(b, tail, 2)
+    for slot, value in b.read_results[consumed:]:
+        assert slot in active and value == 0xABC
+        active.remove(slot)
+    consumed = len(b.read_results)
+    for _ in range(100):
+        await hit()
+    assert consumed > 10
+    assert any(ep != 0 and demand[2] == tail for ep, demand in b.demands)
+    assert sum(demand[0] == 0 for _, demand in b.demands) == 0
+    await b.set(i_read_valid=0)
+    await b.grant(tail)
+    await b.grant(head)
+    await b.release(head)
+    await b.release(tail)
+    await b.wait("o_pending_store", 0)

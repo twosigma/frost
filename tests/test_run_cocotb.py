@@ -2297,6 +2297,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="The cluster with three L1D request endpoints: loads in flight beside "
         "stores, probes and DMA",
     ),
+    "coherence_store_pressure": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GL1D_MISSES=3",
+            "-GL1D_CACHE_BYTES=128",
+            "-GL1D_WAYS=1",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_store_pressure",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Concurrent stores, frozen victims, delayed releases and probing DMA",
+    ),
     "coherence_dma_ingress": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_dma_ingress",
         hdl_toplevel_module="coherence_dma_ingress",
