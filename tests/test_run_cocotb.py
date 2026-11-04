@@ -601,8 +601,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="ddr_test",
         nic_mac_clocks=False,
-        description="Cached DDR loads and stores with 32-byte L2 lines",
-        verilator_extra_args=("-GL2_LINE_BYTES=32",),
+        description="Full CPU cached DDR loads and stores with 32-byte L2 lines and prefetch",
+        verilator_extra_args=("-GL2_LINE_BYTES=32", "-GL2_PREFETCH=1"),
     ),
     "ddr_exec_test_equal_lines": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

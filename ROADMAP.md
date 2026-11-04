@@ -388,9 +388,9 @@ and targeted microbenchmarks give these items:
    3), and lengthens paths among the hardest at the target clock, so it
    waits for the streaming-load work in item 8.
 8. Streaming loads. The load queue and the L1D track eight cached loads, so
-   a sequential stream of 8-byte loads keeps only two 32-byte lines in flight
-   and runs no faster than a dependent pointer chase: about 200 cycles per 64
-   bytes on a board with about 200 cycles of DRAM latency. The L1D's seven
+   their demand requests for a sequential stream of 8-byte loads cover only
+   two 32-byte lines at a time. The data-stream prefetch requester reads
+   ahead into the shared L2. The L1D's seven
    load endpoints are mostly idle. More cached loads in flight, one read slot
    per line for loads to the same line, or a next-line request from the L1D
    would let one stream keep several lines in flight, and each combines with

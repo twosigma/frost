@@ -1,27 +1,17 @@
 // Copyright (c) 2026 John Goodacre.
 
 /*
- * coherence_prefetch_agent: reads the lines ahead of a hart's ascending miss
- * streams into the coherence home's L2.
+ * coherence_prefetch_agent reads ahead of the hart's ascending data streams
+ * into the coherence home's L2. Accepted hart-0 data GetS and GetM requests
+ * train l2_stream_prefetcher, including L2 hits. Each predicted line uses
+ * source 3, class 3 and one of four coherence_request_endpoint instances.
  *
- * The coherent tier's L1D keeps eight CPU reads in flight on 32-byte sectors,
- * so a streaming loop of 8-byte loads has 64 bytes outstanding per memory
- * round trip and runs at one line per DRAM latency. The home has the protocol's
- * Prefetch request (source 3, port class 3, ids 0 to 3: a data-less fill into
- * the L2 with no probe and a GrantAck reply) but nothing issued it. This agent
- * is that requester: l2_stream_prefetcher watches the hart's demand reads and
- * writes (GetS and GetM on D, as the home takes them), and each line it picks
- * goes to the home as a Prefetch through one of four coherence_request_endpoint
- * instances, one per prefetcher id. The line then waits in the L2, so the
- * hart's later misses on it are L2 hits.
- *
- * The prefetcher frees an id only after that id's endpoint has taken its U,
- * so an id's endpoint is idle whenever the prefetcher loads that id again. The
- * agent accepts every grant at once and completes it as Consumed, or as Error
- * with the error disposed when the grant carries an error. It reads only lines
- * in the 4 KiB page of a demand access (PAGE_BYTES), which the demand's own
- * address check covered, and it neither trains nor requests while
- * i_fatal_stop is set.
+ * A Prefetch miss returns a data-less GrantAck after its fill completes.
+ * Target data needs no probe; victim replacement can recall private data.
+ * Each identity stays occupied through G, C and U. Successful grants finish
+ * with Consumed and errored grants with Error. Predictions stay within the
+ * training access's 4 KiB page. Fatal stop blocks training and endpoint
+ * request admission. Occupied identities keep their protocol state.
  */
 
 `include "coherence_types.svh"
@@ -91,9 +81,9 @@ module coherence_prefetch_agent #(
 
   logic [Slots-1:0] ep_request_valid, ep_request_ready, ep_d_valid, ep_d_ready, ep_g_ready;
   logic [Slots-1:0] ep_grant_valid, ep_c_valid, ep_c_ready, ep_u_ready, ep_live;
-  coh_d_t ep_d[Slots];
-  coh_g_t ep_grant[Slots];
-  coh_c_t ep_c[Slots];
+  logic [Slots-1:0][ADDR_WIDTH+311:0] ep_d;
+  logic [Slots-1:0][ADDR_WIDTH+274:0] ep_grant;
+  logic [Slots-1:0][ ADDR_WIDTH+17:0] ep_c;
 
   for (genvar s = 0; s < Slots; s++) begin : gen_slot
     coh_d_t request;
@@ -190,8 +180,10 @@ module coherence_prefetch_agent #(
       .o_payload(o_c)
   );
 
-  if (MAX_INFLIGHT < 1 || MAX_INFLIGHT > Slots || L2_LINE_BYTES != 64) begin : gen_invalid_config
-    initial $fatal(1, "coherence_prefetch_agent: MAX_INFLIGHT must be 1..4 and L2_LINE_BYTES 64");
+  if (MAX_INFLIGHT < 1 || MAX_INFLIGHT > Slots ||
+      (L2_LINE_BYTES != 32 && L2_LINE_BYTES != 64)) begin : gen_invalid_config
+    initial
+      $fatal(1, "coherence_prefetch_agent: MAX_INFLIGHT must be 1..4 and L2_LINE_BYTES 32 or 64");
   end
 
 `ifndef SYNTHESIS
