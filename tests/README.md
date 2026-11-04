@@ -89,9 +89,13 @@ requester and its four endpoints to the home at both line sizes. They check
 identity occupancy through fill completion and G/C/U, independently delayed
 channels, errors and reset, demand joins, dirty recalls, PutM, marked DMA
 fills and progress with completion, result, fill, writeback and PutM
-storage full. The
-`coherence_prefetch_contention*` benches report demand service for competing
-streams, dirty replacement and DMA with prefetch enabled or disabled.
+storage full. For known misses or recorded reads, the bench checks the
+first offered Prefetch grant against the memory response and, on success,
+the array's fill installation acknowledgement. Its installation history
+also covers grants after a fill slot frees.
+The `coherence_prefetch_contention*` benches report demand service for competing
+streams, dirty replacement, DMA and combined dirty/DMA pressure with
+prefetch enabled or disabled.
 
 `coherence_home_completions`, `coherence_home`, `coherence_home_equal`,
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges

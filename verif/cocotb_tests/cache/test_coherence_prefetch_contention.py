@@ -26,11 +26,17 @@ from cocotb_tests.cache.test_coherence_prefetch import PrefetchHome
 async def demand_contention(dut: Any) -> None:
     """Report completed demand latency and useful bytes per cycle for each mix."""
     for delay in (30, 200):
-        for scenario in ("cold_demand", "competing_streams", "dirty_dma"):
+        for scenario in (
+            "cold_demand",
+            "competing_streams",
+            "dirty_streams",
+            "dma",
+            "dirty_dma",
+        ):
             b = PrefetchHome(dut)
             await b.reset()
             base = 0x80000000
-            if scenario == "dirty_dma":
+            if scenario in ("dirty_streams", "dirty_dma"):
                 for index in range(16):
                     address = base + index * b.line
                     grant = await b.start(1, address)
@@ -53,7 +59,7 @@ async def demand_contention(dut: Any) -> None:
                 issued = b.cycle
                 await b.submit(0, address)
                 expected = {0: address}
-                if scenario == "dirty_dma":
+                if scenario in ("dma", "dirty_dma"):
                     dma_address = base + 0x6000 + index * b.line
                     q, _ = b.demand(7, dma_address, non_alloc=1)
                     expected[q] = dma_address

@@ -48,6 +48,7 @@ class PrefetchHome(Home):
         self.pf: list[tuple[int, str, tuple[int, ...]]] = []
         self.live: dict[int, tuple[int, str]] = {}
         self.returned: dict[int, int] = {}
+        self.installed: dict[int, int] = {}
         self.required_fills: set[int] = set()
         self.max_live = 0
         self.max_fills = 0
@@ -63,6 +64,13 @@ class PrefetchHome(Home):
     async def set(self, **values: int) -> None:
         """Sample protocol transfers immediately before each rising edge."""
         if values.get("i_clk") == 1 and not self.get("i_rst"):
+            if self.get("array_updated"):
+                slot = self.get("array_updated_token") - len(self.dut.engine_idle)
+                if 0 <= slot < 4 and int(self.dut.home.fill_phase_q[slot].value) == 7:
+                    address = (self.get("fill_addr_q") >> (slot * self.p)) & (
+                        (1 << self.p) - 1
+                    )
+                    self.installed[address] = self.cycle
             if self.get("i_r_valid") and self.get("o_r_ready"):
                 reply = unpack(
                     self.get("i_r"), (2, 6, 1, 1, self.p, 2, 1, 1, 256, 1, 1, 1, 1, 1)
@@ -104,6 +112,13 @@ class PrefetchHome(Home):
                         assert address in self.returned, (
                             "grant offered before fill response"
                         )
+                        if not fields[5]:
+                            assert (
+                                self.installed.get(address, -1)
+                                >= self.returned[address]
+                            ), (
+                                "grant offered before the array acknowledged installation"
+                            )
                     for slot in range(4):
                         fill_address = (self.get("fill_addr_q") >> (slot * self.p)) & (
                             (1 << self.p) - 1
