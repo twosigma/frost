@@ -1469,6 +1469,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         verilator_extra_args=("-GPERF_COUNTERS=1",),
     ),
+    "btb_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="btb_bench",
+        nic_mac_clocks=False,
+        description=(
+            "BTB set-associativity and capacity aliasing benchmark with "
+            "profiling counters"
+        ),
+        verilator_extra_args=("-GPERF_COUNTERS=1",),
+    ),
     "tomasulo_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
