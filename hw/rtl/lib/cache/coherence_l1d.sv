@@ -202,7 +202,7 @@ module coherence_l1d #(
   logic [3:0][EpBits-1:0] store_ep;
   logic store_seal, store_acquire, store_head_ready;
   logic look_found, look_valid_q, look_available, look_ready, borrowed_live, look_read_turn_q;
-  logic look_priority_q, read_yield_look;
+  logic look_priority_q, read_yield_look, look_retry;
   logic [1:0] look_priority_index_q;
   logic [1:0] look_index, look_index_q;
   logic [ADDR_WIDTH-1:0] look_addr_q;
@@ -287,6 +287,8 @@ module coherence_l1d #(
   logic [EpBits-1:0] acq_ep_q, grant_ep_q, grant_pick;
   logic any_live;
   logic [EpSlots-1:0] ep_store, ld_store_q, grant_eligible;
+  logic [EpSlots-1:0] store_grant_head_q;
+  logic [1:0] store_grant_index;
   logic grant_is_store, selected_grant_store;
   logic wb_reserved_q;
   // Nonzero endpoint identity and completion state, used when MISSES > 1.
@@ -371,12 +373,13 @@ module coherence_l1d #(
   // combined scalar contributes a buffer hit, including during a tag event.
   // Retries, probes and maintenance do not contribute demand events.
   logic [7:0] perf_read_seen_q, perf_read_miss_q;
+  logic [3:0] perf_store_seen_q;
   logic perf_lookup, perf_access, perf_hit, perf_sc, store_combined;
   logic [cache_perf_pkg::MissOutstandingBits-1:0] perf_outstanding;
   assign perf_lookup = active && phase_q == LookupWait && array_valid &&
       ((operation_q == ReadOp && !perf_read_seen_q[selected_read_q]) ||
-       (operation_q == StoreOp && !pending_miss_q && !store_checked_q[store_head_index]) ||
-       (operation_q == LookaheadOp && !store_checked_q[store_selected_q]));
+       (operation_q == StoreOp && !pending_miss_q && !perf_store_seen_q[store_head_index]) ||
+       (operation_q == LookaheadOp && !perf_store_seen_q[store_selected_q]));
   assign perf_sc = i_sc_valid && o_sc_ready;
   assign perf_access = perf_lookup || perf_sc;
   assign perf_hit = perf_lookup && array_hit &&
@@ -399,8 +402,14 @@ module coherence_l1d #(
     if (i_rst) begin
       perf_read_seen_q <= '0;
       perf_read_miss_q <= '0;
+      perf_store_seen_q <= '0;
       o_perf_events <= '0;
     end else begin
+      for (int slot = 0; slot < 4; slot++)
+        if (!store_valid[slot] || (store_pop && store_head_index == 2'(slot)))
+          perf_store_seen_q[slot] <= 1'b0;
+      if (perf_lookup && (operation_q == StoreOp || operation_q == LookaheadOp))
+        perf_store_seen_q[store_selected_q] <= 1'b1;
       if (perf_lookup && operation_q == ReadOp) begin
         perf_read_seen_q[selected_read_q] <= 1'b1;
         perf_read_miss_q[selected_read_q] <= !perf_hit;
@@ -674,6 +683,25 @@ module coherence_l1d #(
   end
   // Eligibility precedes priority. A held younger store grant cannot block
   // the head's lookup or a load grant that can install.
+  // The owner mask follows a pop and includes an accepted acquisition.
+  assign store_grant_index = store_pop ? store_next_index : store_head_index;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) store_grant_head_q <= '0;
+    else begin
+      for (int ep = 0; ep < EpSlots; ep++)
+        store_grant_head_q[ep] <= store_valid[store_grant_index] &&
+            store_acquired[store_grant_index] && store_ep[store_grant_index] == EpBits'(ep);
+      if (store_acquire && store_selected_q == store_grant_index)
+        store_grant_head_q <= EpSlots'(1) << acq_ep_q;
+    end
+  end
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst)
+      p_store_grant_head_exact : assert (store_grant_head_q ==
+          ((pending_q && store_acquired[store_head_index]) ?
+           (EpSlots'(1) << store_ep[store_head_index]) : '0));
+`endif
   always_comb begin
     load_grant_eligible = 1'b0;
     for (int ep = 0; ep < EpSlots; ep++)
@@ -685,8 +713,7 @@ module coherence_l1d #(
       grant_eligible[ep] = ep_grant_valid[ep] &&
           (ep == 0 ? wb_reserved_q : wb_free);
       if (ep_store[ep])
-        grant_eligible[ep] &= pending_q && store_acquired[store_head_index] &&
-            store_ep[store_head_index] == EpBits'(ep) &&
+        grant_eligible[ep] &= store_grant_head_q[ep] &&
             !(store_read_turn_q && read_waiting_q);
     end
     grant_pick = '0;
@@ -1036,8 +1063,9 @@ module coherence_l1d #(
       !load_block && !i_sc_valid && !i_maint_valid && !amo_waiting &&
       store_valid[look_index_q] && !store_acquired[look_index_q] &&
       !store_checked_q[look_index_q] && look_index_q != store_head_index;
-  assign look_ready = look_available &&
-      !(read_service_waiting && store_read_turn_q) && !(rd_load_miss && look_read_turn_q);
+  assign look_ready = look_available && !(read_waiting_q && store_read_turn_q);
+  assign look_retry = look_read_turn_q && rd_load_miss &&
+      (!array_hit || array_state != coherence_pkg::Modified);
   assign read_yield_look = active && phase_q == LookupWait && array_valid &&
       operation_q == ReadOp && rd_kind_q[selected_read_q] == ReadLoad &&
       !array_hit && !same_line && look_available && !look_read_turn_q;
@@ -1062,7 +1090,7 @@ module coherence_l1d #(
         if (!store_valid[slot] || (store_pop && store_head_index == 2'(slot)))
           store_checked_q[slot] <= 1'b0;
       if (active && phase_q == LookupWait && array_valid && operation_q == LookaheadOp) begin
-        store_checked_q[store_selected_q] <= 1'b1;
+        if (!look_retry) store_checked_q[store_selected_q] <= 1'b1;
         // A lookahead hit consumes no endpoint and yields the allocation turn.
         look_read_turn_q <= 1'b1;
         look_priority_q <= 1'b0;
@@ -1479,7 +1507,7 @@ module coherence_l1d #(
               end
               LookaheadOp: begin
                 phase_q <= (!array_hit || array_state != coherence_pkg::Modified) &&
-                    ep_request_ready[acq_ep_q] && !same_line ? Acquire : Idle;
+                    ep_request_ready[acq_ep_q] && !same_line && !look_retry ? Acquire : Idle;
               end
               AtomicWriteOp: begin
                 if (!array_hit || array_state != coherence_pkg::Modified ||

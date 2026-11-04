@@ -456,15 +456,17 @@ async def waiting_load_miss_keeps_its_allocation_turn(dut: Any) -> None:
     assert b.installs[-2:] == [base, base + 64]
     active: set[int] = set()
     consumed = len(b.read_results)
+    accepted_hits = 0
 
     async def hit() -> None:
-        nonlocal consumed
+        nonlocal consumed, accepted_hits
         free = next((slot for slot in range(1, 7) if slot not in active), None)
         await b.set(
             i_read_valid=int(free is not None), i_read_id=free or 1, i_address=hot
         )
         if free is not None:
             active.add(free)
+            accepted_hits += 1
         await b.tick()
         for slot, value in b.read_results[consumed:]:
             assert slot in active and value == 0xABC
@@ -489,6 +491,8 @@ async def waiting_load_miss_keeps_its_allocation_turn(dut: Any) -> None:
     for address in (load, miss):
         await b.grant(address)
         await b.release(address)
+    ep, _ = await b.issued(base + 96)
+    assert ep != 0
     await b.release(base)
     for address in (base + 32, base + 96):
         await b.grant(address)
@@ -496,6 +500,9 @@ async def waiting_load_miss_keeps_its_allocation_turn(dut: Any) -> None:
         await b.release(address)
     await b.wait("o_pending_store", 0)
     await b.wait("live", 0)
+    await b.wait("rd_valid_q", 0)
+    await b.tick(2)
+    assert (b.accesses, b.hits, b.misses) == (7 + accepted_hits, accepted_hits, 7)
     assert not b.get("o_fatal")
 
 

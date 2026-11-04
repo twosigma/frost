@@ -270,7 +270,9 @@ home set as an older queued or live store. `HOME_CACHE_BYTES`, `HOME_WAYS` and
 for a fresh lookup at the head. A miss classification proceeds directly to
 endpoint capture without an intervening private installation.
 
-Grant eligibility is checked before priority. A younger store grant waits
+Grant eligibility is checked before priority. A registered store-owner mask
+follows the head on installation and includes accepted acquisitions.
+A younger store grant waits
 in its endpoint while the head and eligible reads continue. Endpoint 0
 reserves a free dirty-victim slot through installation. A nonzero endpoint
 requires a free slot when its grant is selected. Endpoint 0 does not take the
@@ -282,7 +284,9 @@ an endpoint waits for installation, or for release if the installed sector
 has been replaced, then looks up again. Load and lookahead acquisitions stop
 while an atomic is active or an AMO, SC or maintenance operation waits for
 endpoint drain. Contending eligible load misses and lookahead acquisitions alternate
-successful allocations. Read hits do not clear the allocation turn. They permit
+successful allocations. Permission lookups precede endpoint-allocation arbitration.
+A lookahead miss that yields its allocation remains eligible for another lookup.
+Read hits do not clear the allocation turn. They permit
 store borrowing when no eligible load miss waits. A read miss can finish a lookup
 before yielding endpoint allocation to lookahead. A lookahead Modified hit
 consumes no endpoint and yields its allocation turn. A yielded read miss reserves
