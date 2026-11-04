@@ -208,10 +208,12 @@ for an ASIC, the RTL also needs:
 ## Single-core performance
 
 FROST runs CoreMark at 4.51 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
-The next goal is 5 CoreMark/MHz. A score counts only from a run of at least
-ten seconds that passes the CRC checks for both official seed sets, with the
-compiler flags, the `sw.bin` hash, and memory and cache settings recorded;
-see the [CoreMark README](sw/apps/coremark/README.md).
+The next goal is 5 CoreMark/MHz. Work toward it is paused while memory
+performance on the coherent hierarchy and timing margin at the target clock
+are restored. A score counts only from a run of at least ten seconds that
+passes the CRC checks for both official seed sets, with the compiler flags,
+the `sw.bin` hash, and memory and cache settings recorded; see the
+[CoreMark README](sw/apps/coremark/README.md).
 
 5 CoreMark/MHz is 200,000 cycles per iteration, against about 222,000 today.
 A model driven by the CoreMark instruction trace gives these estimates for
@@ -261,7 +263,9 @@ Priorities, guided by the performance counters and timing reports:
    Next, take a cycle out of load-to-use latency, try associativity in the
    load queue's L0 cache if its conflict counters justify it, then
    prefetching for dependent loads. The L0 holds 256 entries because its
-   misses to BRAM cross the AXI boundary.
+   misses to BRAM cross the AXI boundary. The L0 has one write port, and a
+   committed store update takes it ahead of a load-response fill, which is
+   then dropped, so the next load of that line misses the L0 again.
 4. Back-to-back integer issue. Dependent integer operations issue two cycles
    apart because the stations wake from the registered CDB, so serial chains,
    such as the table-driven CRC code GCC generates for CoreMark, run at half
@@ -300,26 +304,45 @@ and targeted microbenchmarks give these items:
 1. Stores. The L1D accepts ordered stores into a two-entry buffer. Stores to
    Modified sectors use masked writes, and waiting reads share array service
    with buffered hits. The store queue's drain and installation into the L1D
-   should reach two cycles per store or better.
+   should reach two cycles per store or better. Store misses still acquire
+   one 32-byte sector at a time: in simulation a sequential stream of 8-byte
+   stores takes about 180 cycles per 64 bytes, or 350 with 200 cycles of
+   DRAM latency, with the store queue full over 90% of the time. Two
+   acquisitions in flight, stores to one sector combined into one array
+   write, and installation in program order come next. Taking ownership of a
+   fully written sector without fetching its data would save a DRAM read per
+   sector, but needs a home protocol that tracks written sectors.
 2. Data translation. A last-page bypass sends eligible translated accesses
    directly to DMMU stage S2. Other translated accesses use S1 and S2.
    Reducing that path would improve cross-page translation latency.
 3. TLB reach. The DTLB and ITLB have 16 entries each. A DTLB miss costs
    about 50 cycles and an ITLB miss about 58. Without ASIDs, every context
    switch flushes both. A larger DTLB, ASID support, and a page-walk cache for
-   upper-level page-table entries would each help.
+   upper-level page-table entries would each help. A design is ready: an
+   8-entry cache of non-leaf entries in the walker, a 32-entry fully
+   associative DTLB, and ASIDs with global pages and selective `sfence.vma`.
+   In simulation the walker cache takes a miss in a chain of 20 or more pages
+   from 93 to 37 cycles, and the larger DTLB takes chains of up to 32 pages
+   to 5 cycles.
 4. Branch prediction. A misprediction costs about 7 cycles, and the BTB has
    256 direct-mapped entries. A 1024-entry two-way or four-way BTB is the
-   largest expected gain for Linux. In bare-metal microbenchmarks a taken
-   branch costs about 5 cycles, and a loop of four additions runs at 0.6 IPC
-   with translation off, so small loops need checking against the BTB. The
-   BTB read is on the fetch loop, one of the hardest paths at the target
-   clock.
+   largest expected gain for Linux: in Linux-like traces the 256-entry BTB
+   misses on 44 to 46% of lookups, and a 1024-entry two-way one on 7 to 11%.
+   In bare-metal microbenchmarks a taken branch costs about 5 cycles, and a
+   loop of four additions runs at 0.6 IPC with translation off; those
+   small-loop costs come from fetch coverage and packet formation, not BTB
+   capacity. The BTB read is on the fetch loop, one of the hardest paths at
+   the target clock, so a larger table could also sit behind the existing
+   one as a registered second level.
 5. Floating point. One engine executes F and D instructions one at a time.
    Arithmetic shares an iterative adder. Comparisons, moves, min/max, FCLASS
    and sign injection use two-cycle paths. Integer-to-FP conversion takes
    four cycles, or two for zero. Pipelined add and multiply units would let
-   FP_RS issue independent arithmetic while earlier operations execute.
+   FP_RS issue independent arithmetic while earlier operations execute. A
+   pipelined multiplier for both precisions, about 14 cycles instead of 66,
+   and a pipelined adder, 13 cycles instead of 15 to 20, are designed;
+   fused multiply-add would stay on the iterative engine at first. The first
+   multiplier implementation needs rework to fit the target clock.
 6. Integer multiply and divide. The full-width multiplier has six stages;
    its integrated completion bypasses the result FIFO. The CDB and
    reservation station each contribute a cycle, giving eight cycles to a
@@ -329,9 +352,23 @@ and targeted microbenchmarks give these items:
    two quotient bits per cycle. It takes up to 35 cycles, or 19 for a W form.
    Divide by zero, full-width overflow and smaller dividends take two cycles.
 7. Load queue depth. DDR latency dominates many Linux workloads. A balanced
-   two-level pick across 16 entries would let the memory reservation station
-   hold 16 loads (`MemRsDepth = 16`), with selection depth growing only with
-   the logarithm of the entry count.
+   two-level pick across 16 entries lets the memory reservation station hold
+   16 loads (`MemRsDepth = 16`), with selection depth growing only with the
+   logarithm of the entry count. Measured against eight entries, it leaves
+   the DDR memory kernels unchanged, slows one memory-bound workload by about
+   2%, in part from L0 fill collisions (see Single-core performance, item
+   3), and lengthens paths among the hardest at the target clock, so it
+   waits for the streaming-load work in item 8.
+8. Streaming loads. The load queue and the L1D track eight cached loads, so
+   a sequential stream of 8-byte loads keeps only two 32-byte lines in flight
+   and runs no faster than a dependent pointer chase: about 200 cycles per 64
+   bytes on a board with about 200 cycles of DRAM latency. The L1D's seven
+   load endpoints are mostly idle. More cached loads in flight, one read slot
+   per line for loads to the same line, or a next-line request from the L1D
+   would let one stream keep several lines in flight, and each combines with
+   a stream prefetcher in the home. Dependent loads are also slower than
+   through the previous hierarchy, by about 60% for L2 hits and 35% for DRAM,
+   so the home's request path needs a latency budget.
 
 ## Core area
 
