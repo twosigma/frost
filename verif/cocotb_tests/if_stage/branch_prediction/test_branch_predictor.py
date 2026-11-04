@@ -27,9 +27,11 @@ CLOCK_PERIOD_NS = 10
 PC_A = 0x80000100
 PC_B = 0x80000104
 PC_A_HALFWORD_ALIAS = PC_A | 0x2
-PC_A_INDEX_ALIAS = PC_A + 0x400
+PC_A_INDEX_ALIAS = PC_A + 0x800
+PC_A_THIRD_ALIAS = PC_A + 0x1000
 TARGET_A = 0x80001000
 TARGET_B = 0x80002000
+TARGET_C = 0x80003000
 HIGH_CANONICAL_PC = 0xFFFF_FFFF_FFE0_117E
 HIGH_CANONICAL_TARGET = 0xFFFF_FFFF_FFE0_1238
 
@@ -353,9 +355,8 @@ async def test_early_rmw_preserves_same_index_tag_replacement_and_shifted_copies
             early_taken=True,
         )
 
-    # PC_A_INDEX_ALIAS has PC_A's index but a different tag. A taken
-    # replacement must start at WeaklyTaken, not increment PC_A's
-    # StronglyNotTaken counter.
+    # PC_A_INDEX_ALIAS has PC_A's index but a different tag. In 2-way BTB,
+    # both PC_A (Way 0) and PC_A_INDEX_ALIAS (Way 1) co-exist.
     await _update(
         dut,
         pc=PC_A_INDEX_ALIAS,
@@ -368,7 +369,7 @@ async def test_early_rmw_preserves_same_index_tag_replacement_and_shifted_copies
     )
 
     await _lookup(dut, PC_A)
-    assert not dut.o_btb_hit.value
+    assert dut.o_btb_hit.value
     await _lookup(dut, PC_A_INDEX_ALIAS)
     _assert_slot1(
         dut,
@@ -394,18 +395,17 @@ async def test_early_rmw_preserves_same_index_tag_replacement_and_shifted_copies
         compressed=True,
     )
 
-    # A lower-priority update on the immediately following edge observes the
-    # replacement written by the early candidate.
+    # A third same-set update replaces the LRU way (Way 0, PC_A)
     await _update(
         dut,
-        pc=PC_A_INDEX_ALIAS,
-        target=TARGET_A,
-        taken=False,
-        early_pc=PC_B,
-        early_taken=True,
+        pc=PC_A_THIRD_ALIAS,
+        target=TARGET_C,
+        taken=True,
     )
-    await _lookup(dut, PC_A_INDEX_ALIAS)
-    _assert_slot1(dut, hit=True, taken=False, target=TARGET_A)
+    await _lookup(dut, PC_A)
+    assert not dut.o_btb_hit.value
+    await _lookup(dut, PC_A_THIRD_ALIAS)
+    _assert_slot1(dut, hit=True, taken=True, target=TARGET_C)
 
 
 @cocotb.test()
@@ -479,18 +479,30 @@ async def test_tag_includes_pc_bit_one_for_halfword_aligned_aliases(dut: Any) ->
 
 
 @cocotb.test()
-async def test_tag_mismatch_replaces_direct_mapped_entry(dut: Any) -> None:
-    """A same-index different-tag update replaces the old direct-mapped entry."""
+async def test_two_way_set_associativity_and_plru_replacement(dut: Any) -> None:
+    """Same-index different-tag entries co-exist in 2-way BTB; 3rd entry replaces LRU."""
     await _setup_test(dut)
 
     await _update(dut, pc=PC_A, target=TARGET_A, taken=True)
     await _update(dut, pc=PC_A_INDEX_ALIAS, target=TARGET_B, taken=True)
 
+    # Both PC_A (Way 0) and PC_A_INDEX_ALIAS (Way 1) co-exist in the set
+    await _lookup(dut, PC_A)
+    _assert_slot1(dut, hit=True, taken=True, target=TARGET_A)
+
+    await _lookup(dut, PC_A_INDEX_ALIAS)
+    _assert_slot1(dut, hit=True, taken=True, target=TARGET_B)
+
+    # 3rd entry evicts Way 0 (LRU, since Way 1 was updated last)
+    await _update(dut, pc=PC_A_THIRD_ALIAS, target=TARGET_C, taken=True)
     await _lookup(dut, PC_A)
     assert not dut.o_btb_hit.value
 
     await _lookup(dut, PC_A_INDEX_ALIAS)
     _assert_slot1(dut, hit=True, taken=True, target=TARGET_B)
+
+    await _lookup(dut, PC_A_THIRD_ALIAS)
+    _assert_slot1(dut, hit=True, taken=True, target=TARGET_C)
 
 
 @cocotb.test()
@@ -826,8 +838,16 @@ async def test_staged_slot2_same_edge_write_forwards_full_replacement_row(
         compressed=True,
     )
 
-    # Switching the served base back to the evicted key misses without
-    # another RAM read edge.
+    # In 2-way BTB, old_pc (Way 0) and new_pc (Way 1) co-exist in the set.
+    # Switching the served base back to old_base hits Way 0.
+    dut.i_pc_2_base.value = old_base
+    dut.i_pc_2_use_alt.value = 0
+    await _settle()
+    _assert_slot2(dut, hit=True, taken=True, target=TARGET_A)
+
+    # A third update to this set replaces Way 0 (old_pc, LRU)
+    third_pc = PC_A_THIRD_ALIAS
+    await _update(dut, pc=third_pc, target=TARGET_C, taken=True)
     dut.i_pc_2_base.value = old_base
     dut.i_pc_2_use_alt.value = 0
     await _settle()
@@ -908,12 +928,14 @@ async def test_shifted_slot2_lookup_preserves_counter_and_exact_key_mapping(
     await _lookup(dut, actual_pc, slot2=True)
     _assert_slot2(dut, hit=True, taken=False, target=TARGET_B)
 
-    # Both entries use slot-1 index 0 and T2 index 255. The second branch's T2
+    # Both entries use slot-1 index 0 and T2 index 511. The second branch's T2
     # key (U-2) is in a different 4-GiB region, so its write must invalidate
     # that T2 row rather than restore the target's upper bits from the key's
     # region. Slot 1 still trains.
-    first_pc = 0x80000400
+    # In 2-way BTB, first_pc (Way 0) and second_pc (Way 1) co-exist; third_pc evicts Way 0.
+    first_pc = 0x80000800
     second_pc = 0x00000000
+    third_pc = 0x80001000
     await _update(dut, pc=first_pc, target=TARGET_A, taken=True)
     await _lookup(dut, first_pc, slot2=True)
     _assert_slot2(dut, hit=True, taken=True, target=TARGET_A)
@@ -923,12 +945,13 @@ async def test_shifted_slot2_lookup_preserves_counter_and_exact_key_mapping(
     await _lookup(dut, second_pc, slot2=True)
     assert not dut.o_btb_hit_2.value
     assert not dut.o_predicted_taken_2.value
+    await _update(dut, pc=third_pc, target=TARGET_C, taken=True)
     await _lookup(dut, first_pc, slot2=True)
     assert not dut.o_btb_hit_2.value
 
-    # U=...402 maps to base ...400, exercising the PC[1] transition without
+    # U=...802 maps to base ...800, exercising the PC[1] transition without
     # an index borrow.
-    halfword_pc = 0x00000402
+    halfword_pc = 0x00000802
     await _update(
         dut,
         pc=halfword_pc,
@@ -957,9 +980,7 @@ async def test_shifted_slot2_lookup_uses_predecessor_key_collision_topology(
     halfword_pc = PC_A + 2
     next_word_pc = PC_A + 4
 
-    # These two PCs share a slot-1 index, but their U-2 keys land at adjacent
-    # T2 indices, so T2 keeps the older word-aligned entry after the slot-1
-    # table replaces it.
+    # In 2-way BTB, word_pc (Way 0) and halfword_pc (Way 1) co-exist in slot 1 and slot 2.
     await _update(dut, pc=word_pc, target=TARGET_A, taken=True)
     await _update(
         dut,
@@ -969,13 +990,18 @@ async def test_shifted_slot2_lookup_uses_predecessor_key_collision_topology(
         compressed=True,
     )
     await _lookup(dut, word_pc)
-    assert not dut.o_btb_hit.value
+    _assert_slot1(dut, hit=True, taken=True, target=TARGET_A)
     await _lookup(dut, word_pc, slot2=True)
     _assert_slot2(dut, hit=True, taken=True, target=TARGET_A)
 
-    # Conversely, these entries use adjacent slot-1 indices while their U-2
-    # keys share one T2 index, so updating the next word evicts only the
-    # halfword entry from T2.
+    # A third entry at this index evicts word_pc (LRU)
+    third_word_pc = PC_A + 0x800
+    await _update(dut, pc=third_word_pc, target=TARGET_C, taken=True)
+    await _lookup(dut, word_pc)
+    assert not dut.o_btb_hit.value
+
+    # In 2-way BTB, updating next_word_pc allocates into the other way in T2,
+    # so both halfword_pc and next_word_pc hit in slot 2.
     await _update(dut, pc=next_word_pc, target=TARGET_A + 4, taken=True)
     await _lookup(dut, halfword_pc)
     _assert_slot1(
@@ -986,7 +1012,7 @@ async def test_shifted_slot2_lookup_uses_predecessor_key_collision_topology(
         compressed=True,
     )
     await _lookup(dut, halfword_pc, slot2=True)
-    assert not dut.o_btb_hit_2.value
+    _assert_slot2(dut, hit=True, taken=True, target=TARGET_B, compressed=True)
     await _lookup(dut, next_word_pc, slot2=True)
     _assert_slot2(dut, hit=True, taken=True, target=TARGET_A + 4)
 
@@ -1027,17 +1053,16 @@ async def test_shifted_slot2_alt_lookup_is_exact_across_key_wraps(dut: Any) -> N
     await _setup_test(dut)
 
     cases = [
-        # update index 0 maps to T4 index 255 and borrows into the tag
-        (0x80000400, 0x800003FC, TARGET_A, False, True),
+        # update index 0 maps to T4 index 511 (with 512 sets) and borrows into the tag
+        (0x80000800, 0x800007FC, TARGET_A, False, True),
         # full XLEN wrap: the entry at zero is keyed by 0xffffffff_fffffffc.
         # That key is in a different region, so it must not allocate a
         # target-valid T4 row.
         (0x00000000, 0xFFFFFFFF_FFFFFFFC, TARGET_B, False, False),
         # the same index borrow preserves PC[1] for a halfword-aligned entry
-        (0x00000402, 0x000003FE, TARGET_A + 2, True, True),
+        (0x00000802, 0x000007FE, TARGET_A + 2, True, True),
     ]
 
-    previous_base: int | None = None
     for actual_pc, base_pc, target, compressed, shifted_predictable in cases:
         await _update(
             dut,
@@ -1059,14 +1084,10 @@ async def test_shifted_slot2_alt_lookup_is_exact_across_key_wraps(dut: Any) -> N
             assert not dut.o_btb_hit_2.value
             assert not dut.o_predicted_taken_2.value
 
-        # All cases share slot-1 index 0 and therefore T4 index 255. Each
-        # replacement must evict the previous T4 row just as it replaces the
-        # slot-1 entry.
-        if previous_base is not None:
-            await _lookup_slot2_alt(dut, previous_base)
-            assert not dut.o_btb_hit_2.value
-            assert not dut.o_predicted_taken_2.value
-        previous_base = base_pc
+    # In 2-way BTB, case 3 evicted case 1 (Way 0), while case 2 remains in Way 1.
+    await _lookup_slot2_alt(dut, 0x800007FC)
+    assert not dut.o_btb_hit_2.value
+    assert not dut.o_predicted_taken_2.value
 
 
 @cocotb.test()
