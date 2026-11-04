@@ -71,5 +71,8 @@
   bubble with intra-page virtual tagging
 - Added the data MMU's last-page translation bypass, which saves a cycle
   on translated accesses to the most recently used page
+- Added streaming coherent DMA, which keeps DMA fills marked non-allocating
+  in one L2 way so that network traffic does not evict the CPU's lines from
+  the others
 - Added the standard HPM counters 3 to 8 for branches, mispredictions, TLB
   walks, L1D misses and store-queue stalls, with their OpenSBI PMU mapping
