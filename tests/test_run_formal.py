@@ -218,6 +218,8 @@ FORMAL_TARGETS = [
         tasks=(
             "coh_l1d_bmc",
             "coh_l1d_multi_bmc",
+            "coh_l1d_stream_bmc",
+            "coh_l1d_stream_cover",
             "coh_l1d_cover",
             "coh_l1d_data_bmc",
             "coh_l1d_data1_bmc",
@@ -1153,6 +1155,11 @@ SBY_TASKS = [
         "stream_cover",
         "Page-end saturation and simultaneous demand advance and hint consumption.",
     ),
+    (
+        "coh_l1d_stream_bmc",
+        "Speculative endpoint ownership and demand-state isolation.",
+    ),
+    ("coh_l1d_stream_cover", "Two speculative endpoints and demand attachment."),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
     ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),

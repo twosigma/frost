@@ -248,6 +248,9 @@ module frost_hart #(
   assign coherent_block_addr = {riscv_pkg::XLEN'(block_addr[1]), riscv_pkg::XLEN'(block_addr[0])};
   localparam longint unsigned CachedBase = riscv_pkg::DdrBase;
   localparam longint unsigned CachedSizeBytes = riscv_pkg::DdrCapacityBytes;
+  localparam bit StreamPrefetch = CachedBase == riscv_pkg::DdrBase &&
+      CachedBase + CachedSizeBytes == riscv_pkg::DdrLimit &&
+      (CachedBase & 4095) == 0 && ((CachedBase + CachedSizeBytes) & 4095) == 0;
   logic debug_go, debug_fetch_invalidate;
   logic [31:0] debug_go_addr;
   if (CACHE_NORMAL_MEMORY) begin : gen_debug_fetch_barrier
@@ -617,6 +620,7 @@ module frost_hart #(
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
         .L1I_WAYS(L1I_WAYS),
         .L1D_MISSES(L1D_NUM_MSHR),
+        .L1D_STREAM_PREFETCH(StreamPrefetch),
         .SIM_FAST_MAINT(SIM_FAST_MAINT)
     ) hart_cache (
         .i_clk(i_clk),

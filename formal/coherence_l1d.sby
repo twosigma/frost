@@ -1,7 +1,9 @@
 [tasks]
 coh_l1d_bmc single control
 coh_l1d_multi_bmc multi control
-coh_l1d_cover single covers
+coh_l1d_stream_bmc stream multi control
+coh_l1d_stream_cover stream multi streamcovers covermode
+coh_l1d_cover single covers covermode
 coh_l1d_data_bmc single data arraydata word0
 coh_l1d_data1_bmc single data arraydata word1
 coh_l1d_data2_bmc single data arraydata word2
@@ -10,23 +12,25 @@ coh_l1d_store_payload_bmc single data payload
 coh_l1d_store_grant_bmc single data grantdata
 
 [options]
-~covers: mode bmc
-~covers: depth 40
-~covers: timeout 1200
-covers: mode cover
-covers: depth 80
-covers: timeout 600
-~covers: aigsmt boolector
+~covermode: mode bmc
+~covermode: depth 40
+~covermode: timeout 1200
+covermode: mode cover
+covermode: depth 80
+covermode: timeout 600
+~covermode: aigsmt boolector
 
 [engines]
 control: abc bmc3
 data: abc bmc3
-covers: smtbmc boolector
+covermode: smtbmc boolector
 
 [script]
+read -sv coherence_read_stream.sv
 read -sv cache_perf_pkg.sv
 read -sv coherence_pkg.sv coherence_request_endpoint.sv coherence_put_endpoint.sv coherence_read_flags.sv coherence_read_select.sv
 control: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
+streamcovers: read -formal -sv -D STREAM_COVER coherence_read_payload.sv coherence_l1d.sv
 covers: read -formal -sv -D STORE_COVER -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
 word0: read -formal -sv -D STORE_DATA_PROOF -D STORE_BYTE_WORD=0 coherence_read_payload.sv coherence_l1d.sv
 word1: read -formal -sv -D STORE_DATA_PROOF -D STORE_BYTE_WORD=1 coherence_read_payload.sv coherence_l1d.sv
@@ -38,7 +42,10 @@ read -sv coherence_store_buffer.sv
 read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
 single: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
 multi: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
+stream: chparam -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d
 prep -flatten -top coherence_l1d
+streamcovers: select -assert-count 2 c:*p_stream_two c:*p_stream_attach
+streamcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:*p_stream_two c:*p_stream_attach %u %d
 # Control assertions run in both control tasks; this task checks the datapath.
 payload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
 payload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 %u %u %u %u %d
@@ -54,6 +61,7 @@ multi: setundef -anyseq
 multi: opt_clean
 
 [files]
+../hw/rtl/lib/cache/coherence_read_stream.sv
 ../hw/rtl/lib/ram/sdp_block_ram.sv
 ../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
 ../hw/rtl/lib/ram/sdp_ram_byte_en.sv

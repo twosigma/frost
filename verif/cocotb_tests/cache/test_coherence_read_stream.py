@@ -27,6 +27,7 @@ async def bounded_stream_reference(dut: Any) -> None:
     rng = random.Random(93)
     frontier: int | None = None
     confirmed = False
+    pair_seen = False
     next_sector = 0
     dut.i_clk.value = 0
     for cycle in range(2400):
@@ -71,14 +72,61 @@ async def bounded_stream_reference(dut: Any) -> None:
                 next_sector += 1
         if reset or cancel:
             frontier, confirmed, next_sector = None, False, 0
+            pair_seen = False
         elif replacement:
             frontier, confirmed, next_sector = sector, False, sector + 1
+            pair_seen = False
         elif valid and adjacent and (confirmed or miss):
             frontier = sector
             if not confirmed or next_sector <= frontier:
                 next_sector = frontier + 1
-            confirmed = True
+            confirmed = confirmed or pair_seen
+            pair_seen = True
         dut.i_clk.value = 1
         await Timer(1, unit="ns")
         dut.i_clk.value = 0
         await Timer(1, unit="ns")
+
+
+@cocotb.test()
+async def isolated_record_pairs_and_confirmation(dut: Any) -> None:
+    """Reject isolated pairs at either alignment and confirm on the third miss."""
+    dut.i_clk.value = 0
+
+    async def step(address: int, miss: bool = True, cancel: bool = False) -> None:
+        dut.i_rst.value = 0
+        dut.i_cancel.value = int(cancel)
+        dut.i_demand_valid.value = 1
+        dut.i_demand_miss.value = int(miss)
+        dut.i_demand_addr.value = address
+        dut.i_consume.value = 0
+        await Timer(1, unit="ns")
+        dut.i_clk.value = 1
+        await Timer(1, unit="ns")
+        dut.i_clk.value = 0
+        await Timer(1, unit="ns")
+
+    for alignment in (0, 32):
+        await step(0, cancel=True)
+        for offset in (0x100, 0x700, 0x300, 0xB00):
+            base = 0x123456780000 + offset + alignment
+            await step(base)
+            await step(base + 32, miss=False)
+            assert int(dut.o_frontier.value) == base
+            await step(base + 32)
+            for address, miss in (
+                (base + 32, True),
+                (base + 40, False),
+                (base + 64, False),
+            ):
+                await step(address, miss=miss)
+                assert int(dut.o_frontier.value) == base + 32
+                assert not int(dut.o_confirmed.value) and not int(dut.o_valid.value)
+        await step(base + 64)
+        assert int(dut.o_confirmed.value) and int(dut.o_addr.value) == base + 96
+        await step(base + 96, miss=False)
+        assert int(dut.o_confirmed.value) and int(dut.o_frontier.value) == base + 96
+        await step(base + 128, cancel=True)
+        for index in range(3):
+            await step(base + 160 + 32 * index)
+            assert bool(dut.o_confirmed.value) == (index == 2)

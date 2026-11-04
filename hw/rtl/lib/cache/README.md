@@ -252,7 +252,8 @@ There are eight
 unmerged CPU read slots, two frozen PutM slots and `MISSES` request
 endpoints, set by `L1D_NUM_MSHR` and eight on X3. Endpoint 0 carries the
 head store's GetM, LR, AMO and SC acquisitions, and ordinary loads only
-when it is the only endpoint; the others carry ordinary load misses. No two
+when it is the only endpoint; the others carry ordinary load misses and
+optional speculative GetS requests. No two
 live endpoints hold the same sector. A load that misses on a sector a live
 endpoint holds waits for that endpoint's installation, or for its release if
 the sector was installed and already replaced, and then looks up again.
@@ -270,6 +271,34 @@ Lookup history and wait flags also compute their updates with and without
 allocation. Allocation clears lookup history and, with multiple request
 endpoints, the wait flag. These clears take priority over lookup and wait
 attachment updates on the same edge.
+
+`coherence_read_stream` tracks one ascending stream from CPU permission
+lookups. Three adjacent ordinary load misses confirm the stream. Before
+confirmation, an adjacent miss advances the seed and an adjacent hit leaves
+it unchanged. Demand hits and misses on the next sector advance a confirmed
+stream; a nonadjacent miss replaces it.
+Repeated accesses and retry lookups do not advance it. Look-ahead stays
+within eight sectors and within the current 4 KiB physical page.
+`STREAM_PREFETCH` defaults to zero in the generic L1D. The hart enables it
+for a page-aligned cached aperture equal to the Normal DDR PMA region.
+
+At most two of the highest-numbered load endpoints carry speculative GetS
+requests. Three-endpoint caches allow one; smaller caches disable look-ahead.
+Demand may use every load endpoint. Eligible foreground work precedes hint
+selection. Registered hints check live acquisitions, buffered stores and
+frozen dirty writebacks, with conflicts rechecked before acquisition.
+A resident hint needs no acquisition. Accepted speculative identity lasts
+through U, including when a CPU load attaches to the endpoint.
+
+Speculative grants install Shared data through the ordinary victim and
+probe service. They do not own a read ID, modify demand response data or
+complete a CPU load. An attached load repeats permission lookup after
+installation. A clean speculative read error is disposed through C and U;
+an attached demand then retries and determines its own result. Dirty
+writeback errors are fatal. Queued LR or AMO work, selected atomics, SC,
+local maintenance, reset and fatal stop cancel unaccepted hints. Accepted
+endpoints complete their protocol lifetime. LR may attach to a speculative
+fill; AMO, SC and local maintenance use the endpoint drain rules.
 
 An L1D grant belongs to a live request endpoint. SC acceptance requires
 every endpoint to be idle, so grant processing and SC acceptance are mutually
@@ -291,8 +320,8 @@ Allocation marks an empty slot valid. Read eligibility compares each physical sl
 writeback sectors. The comparisons use the stored slot addresses and the
 buffered allocation's address, and the slot mask selects between their
 results. Circular priority selects a qualified slot and its address.
-There are no E grants, silent upgrades or sharer hints, and the L1D does not
-prefetch. The L1D has eight read slots and `L1D_NUM_MSHR` request endpoints.
+There are no E grants, silent upgrades or sharer hints.
+The L1D has eight read slots and `L1D_NUM_MSHR` request endpoints.
 The home has `L2_NUM_MSHR` fills, 1 to 16, and `L2_NUM_WB` victim write
 slots. `L2_NUM_WAITERS` has no effect on the CPU hierarchy; `L2_PREFETCH`,
 `L2_PREFETCH_DISTANCE` and `L2_PREFETCH_INFLIGHT` configure the home's
@@ -301,12 +330,14 @@ prefetcher (see The home's prefetcher).
 L1D performance events count the first permission lookup of each CPU read
 or ordinary store. Cached SC selection counts as a permission miss. A store
 to S and an AMO require permission and count as misses. Repeated lookups,
-probes and maintenance do not add demand events. Outstanding misses include
+probes, speculative lookups and maintenance do not add demand events. Outstanding misses include
 unresolved read slots, the head store acquisition and the selected SC. L2 events
-count shared demand lookups, prefetch lookups and non-maintenance PutM
-lookups. Its fill count, prefetch fills included, is at most `L2_NUM_MSHR`.
-A prefetch that allocates nothing is not a slot-full stall; a blocked one is
-a conflict stall. A DMA write miss contributes a write-fill event; probe data
+count shared demand lookups, the L1D's speculative GetS lookups, prefetch
+lookups and non-maintenance PutM lookups. Private writeback events include
+speculative fills that evict dirty sectors. Its fill count, prefetch fills
+included, is at most `L2_NUM_MSHR`. A prefetch that allocates nothing is not
+a slot-full stall; a blocked one is a conflict stall. A DMA write miss
+contributes a write-fill event; probe data
 merges do not contribute another demand. Events are registered at their
 source and use the cache-counter ABI.
 
@@ -588,7 +619,14 @@ partition, the no-fill flag, prefetch fills that install, take a demand seat
 or fail, the fill reserve, the last available way and the last write-back
 slot, PutM beside live prefetches, and a demand that replaces lines held only
 by prefetches. `coherence_cluster_misses` repeats the cluster cases with three
-L1D request endpoints, including several loads in flight. `coherence_readers`
+L1D request endpoints, including several loads in flight.
+`coherence_l1d_stream_*` checks look-ahead capacity, occupied response IDs,
+resident hints, error disposal, cancellation and atomic drain.
+`coherence_stream_dirty` checks frozen dirty ownership and writeback errors.
+`coherent_stream_order` composes speculative fills with the LQ and ROB to
+check clean invalidation, stale observations and same-address load replay.
+`coherence_cluster_stream` enables look-ahead in the shared cluster cases.
+`coherence_readers`
 controls grants and releases around the real L1I, fetch provider and PTW. It checks overlapping fills, invalidation, discarded fetches
 and walks, errors, reset, fatal stop and reuse of reader IDs before U.
 The whole-SoC program configurations use this hierarchy.
@@ -604,7 +642,11 @@ representative byte values, bounded controller transitions and CPU ownership.
 The `coherence_l1d` target also runs the L1D with three request endpoints and
 checks that no two live endpoints hold one sector, that no load endpoint is
 live beside a granted atomic, and that a load grant installs with a free WB
-slot.
+slot. Its eight-endpoint stream tasks check speculative ownership and
+separation from demand response masks, and cover two accepted hints and a
+demand attachment. `coherence_read_stream` proves the three-miss confirmation
+rule, cancellation and page-bounded cursor, including simultaneous demand
+advance and hint consumption.
 Detached victim validity, address and a watched byte are checked by induction
 through B. Cover tasks reach allocation, a delayed B, a blocked refetch,
 successful disposal and a failed B with preserved dirty ownership.

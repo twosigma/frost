@@ -670,6 +670,7 @@ async def loads_in_flight_across_lines(dut: Any) -> None:
         line = sector & ~63
         b.memory[line] = b.memory.get(line, 0) | ((0x1000 + n) << (8 * (sector & 63)))
     reads = [*sectors, sectors[0]]
+    await b.set(i_hold_grant=1)
     for slot, address in enumerate(reads):
         await b.set(
             i_read_valid=1,
@@ -681,9 +682,10 @@ async def loads_in_flight_across_lines(dut: Any) -> None:
         await b.tick()
     await b.set(i_read_valid=0)
     peak = 0
-    for _ in range(12):
+    for _ in range(100):
         peak = max(peak, bin(int(dut.hart.live.value)).count("1"))
         await b.tick()
+    await b.set(i_hold_grant=0)
     # A DMA write to an unread sector runs while the reads are in flight.
     await b.dma(base + 0x40 * 6, 0xAB, mask=1)
     expected = {

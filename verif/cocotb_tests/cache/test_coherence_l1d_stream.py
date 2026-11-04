@@ -1,0 +1,435 @@
+#    Copyright 2026 Two Sigma Open Source, LLC
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+
+"""Hold coherent channels independently while speculative reads share the cache."""
+
+from typing import Any
+
+import cocotb
+
+from cocotb_tests.cache.test_coherence_endpoints import pack
+from cocotb_tests.cache.test_coherence_home import unpack
+from cocotb_tests.cache.test_coherence_l1d import Private
+
+
+class StreamPrivate(Private):
+    """Record accepted requests and responses without completing endpoints implicitly."""
+
+    def __init__(self, dut: Any) -> None:
+        """Initialize independent channel records."""
+        super().__init__(dut)
+        self.endpoints = len(dut.o_d_valid)
+        self.requests: list[tuple[int, tuple[int, ...]]] = []
+        self.responses: list[tuple[int, int, int]] = []
+        self.completed: set[int] = set()
+        self.resident_hints_while_held: list[int] = []
+
+    async def tick(self, count: int = 1) -> None:
+        """Record handshakes before each active edge."""
+        for _ in range(count):
+            if not self.get("i_rst"):
+                if (
+                    self.get("phase_q") == 2
+                    and self.get("array_valid")
+                    and self.get("operation_q") == 6
+                    and self.get("array_hit")
+                    and self.get("o_read_valid")
+                    and not self.get("i_read_ready")
+                ):
+                    self.resident_hints_while_held.append(self.get("lookup_addr_q"))
+                for ep in range(self.endpoints):
+                    if (self.get("o_d_valid") & self.get("i_d_ready")) >> ep & 1:
+                        bits = (self.get("o_d") >> (ep * (self.p + 312))) & (
+                            (1 << (self.p + 312)) - 1
+                        )
+                        self.requests.append(
+                            (ep, unpack(bits, (4, 9, self.p, 5, 3, 32, 1, 1, 1, 256)))
+                        )
+                if self.get("o_read_valid") and self.get("i_read_ready"):
+                    self.responses.append(
+                        (
+                            self.get("o_read_id"),
+                            self.get("o_read_data"),
+                            self.get("o_read_error"),
+                        )
+                    )
+            await super().tick()
+
+    async def reset(self) -> None:
+        """Reset all protocol peers and enable request acceptance."""
+        await super().reset()
+        self.requests.clear()
+        self.responses.clear()
+        self.completed.clear()
+        self.resident_hints_while_held.clear()
+        await self.set(i_d_ready=(1 << self.endpoints) - 1, i_atomic_protected=1)
+
+    async def issue(self, slot: int, address: int, kind: int = 0) -> None:
+        """Present one independent CPU read."""
+        await self.set(
+            i_read_valid=1,
+            i_read_id=slot,
+            i_address=address,
+            i_read_kind=kind,
+            i_read_size=3,
+        )
+        await self.tick()
+        await self.set(i_read_valid=0)
+
+    async def seed_before(self, address: int) -> None:
+        """Complete the first training sector before occupying the demand slots."""
+        await self.issue(7, address - 32)
+        await self.drain(1)
+        await self.set(i_read_ready=0)
+        self.requests.clear()
+        self.responses.clear()
+        self.completed.clear()
+
+    async def requests_at_least(self, count: int) -> None:
+        """Wait for accepted D messages with a fixed cycle bound."""
+        for _ in range(400):
+            if len(self.requests) >= count:
+                return
+            await self.tick()
+        raise AssertionError(f"Only {len(self.requests)} requests, expected {count}")
+
+    @staticmethod
+    def word(address: int) -> int:
+        """Give each dword a distinct deterministic value."""
+        return address ^ 0x13579BDF01234567
+
+    async def grant(self, index: int, error: bool = False) -> None:
+        """Grant one recorded request and wait for its C offer."""
+        ep, request = self.requests[index]
+        data = sum(self.word(request[2] + 8 * word) << (64 * word) for word in range(4))
+        await self.set(
+            i_g_valid=1,
+            i_g=pack(
+                (3, 2 if request[0] == 1 else 0),
+                (9, request[1]),
+                (6, ep),
+                (self.p, request[2]),
+                (256, data),
+                (1, int(error)),
+            ),
+        )
+        await self.wait("o_g_ready")
+        await self.tick()
+        await self.set(i_g_valid=0)
+        for _ in range(250):
+            if self.get("o_c_valid") >> ep & 1:
+                return
+            await self.tick()
+        raise AssertionError(f"No completion for endpoint {ep}")
+
+    async def release(self, index: int) -> None:
+        """Accept C and return U for the matching transaction."""
+        ep, request = self.requests[index]
+        await self.set(i_c_ready=1 << ep)
+        await self.tick()
+        await self.set(
+            i_c_ready=0,
+            i_u_valid=1,
+            i_u=pack((9, request[1]), (6, ep), (self.p, request[2])),
+        )
+        await self.wait("o_u_ready")
+        await self.tick()
+        await self.set(i_u_valid=0)
+        self.completed.add(index)
+
+    async def drain(self, count: int) -> None:
+        """Complete requests until all expected demand responses arrive."""
+        await self.set(i_read_ready=1)
+        index = 0
+        for _ in range(300):
+            if len(self.responses) == count:
+                return
+            if index < len(self.requests):
+                if index not in self.completed:
+                    await self.grant(index)
+                    await self.release(index)
+                index += 1
+            else:
+                await self.tick()
+        raise AssertionError(
+            f"Only {len(self.responses)} CPU responses, expected {count}"
+        )
+
+
+@cocotb.test()
+async def lookahead_and_occupied_read_ids(dut: Any) -> None:
+    """Fill all demand IDs, hold their responses, and install speculative data."""
+    b = StreamPrivate(dut)
+    await b.reset()
+    base = 0x80000020
+    await b.seed_before(base)
+    for slot in range(8):
+        await b.issue(slot, base + slot * 8)
+    speculative = 2 if b.endpoints >= 4 else int(b.endpoints == 3)
+    await b.requests_at_least(2 if b.endpoints > 2 else 1)
+    if b.endpoints in (3, 4):
+        await b.grant(1)
+        await b.release(1)
+    await b.requests_at_least(2 + speculative if b.endpoints > 2 else 1)
+    await b.tick(90)
+    assert b.get("ld_prefetch_q").bit_count() == speculative
+    assert (b.get("live") & b.get("ld_prefetch_q")).bit_count() == speculative
+    if b.endpoints >= 4:
+        assert {r[2] for _, r in b.requests} == {base, base + 32, base + 64, base + 96}
+        assert all(r[0] == 0 and r[4] == 3 and r[5] == 0 for _, r in b.requests)
+        demand = [i for i, (_, r) in enumerate(b.requests) if r[2] < base + 64]
+        hints = [i for i, (_, r) in enumerate(b.requests) if r[2] >= base + 64]
+        for index in demand:
+            if index not in b.completed:
+                await b.grant(index)
+        await b.tick(100)
+        held = (b.get("o_read_id"), b.get("o_read_data"), b.get("o_read_error"))
+        for index in hints:
+            await b.grant(index, error=index == hints[-1])
+        await b.tick(50)
+        assert held == (b.get("o_read_id"), b.get("o_read_data"), b.get("o_read_error"))
+        assert (b.get("live") & b.get("ld_prefetch_q")).bit_count() == speculative
+        for index in range(len(b.requests)):
+            if index not in b.completed:
+                await b.release(index)
+    await b.drain(8)
+    assert sorted(b.responses) == [
+        (slot, b.word(base + slot * 8), 0) for slot in range(8)
+    ]
+    for slot, address in ((0, base + 64), (7, base + 96)):
+        await b.issue(slot, address)
+    await b.drain(10)
+    assert sorted(b.responses[8:]) == [
+        (0, b.word(base + 64), 0),
+        (7, b.word(base + 96), 0),
+    ]
+    assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def speculative_attachment_and_retry(dut: Any) -> None:
+    """Release a failed hint through U before its attached demand reacquires."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 4:
+        return
+    await b.reset()
+    base = 0x80001020
+    await b.seed_before(base)
+    await b.issue(0, base)
+    await b.issue(1, base + 32)
+    await b.requests_at_least(3)
+    target = next(i for i, (_, r) in enumerate(b.requests) if r[2] == base + 64)
+    ep = b.requests[target][0]
+    await b.issue(2, base + 64)
+    await b.tick(40)
+    assert b.get("rd_wait_q") & 4
+    assert b.get("ld_prefetch_q") >> ep & 1
+    await b.grant(target, error=True)
+    await b.tick(40)
+    assert not b.get("o_read_valid")
+    assert len([r for _, r in b.requests if r[2] == base + 64]) == 1
+    assert b.get("rd_wait_release_q") & 4
+    await b.release(target)
+    for _ in range(100):
+        if len([r for _, r in b.requests if r[2] == base + 64]) == 2:
+            break
+        await b.tick()
+    else:
+        raise AssertionError("Demand did not retry after speculative error")
+    await b.drain(3)
+    assert sorted(b.responses) == [
+        (slot, b.word(base + 32 * slot), 0) for slot in range(3)
+    ]
+
+
+@cocotb.test()
+async def stream_page_end_and_atomic_cancellation(dut: Any) -> None:
+    """Check page-end saturation and queued-hint cancellation by pending LR."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 4:
+        return
+    for cancellation in (False, True):
+        await b.reset()
+        base = 0x80000FA0
+        await b.seed_before(base)
+        await b.issue(0, base)
+        await b.issue(1, base + 32)
+        await b.requests_at_least(3)
+        assert b.requests[-1][1][2] == base + 64
+        if cancellation:
+            await b.issue(2, base + 64, kind=1)
+        await b.tick(90)
+        assert all((r[2] & -4096) == (base & -4096) for _, r in b.requests)
+        assert len(b.requests) == 3
+        if cancellation:
+            assert not b.get("hint_valid_q") and not b.get("stream_confirmed")
+        await b.drain(3 if cancellation else 2)
+        assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def resident_hint_preserves_waiting_data(dut: Any) -> None:
+    """Discard a resident hint without overwriting a held demand word."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 4:
+        return
+    await b.reset()
+    base = 0x80000020
+    await b.issue(7, base + 64)
+    await b.drain(1)
+    b.requests.clear()
+    b.responses.clear()
+    b.completed.clear()
+    await b.seed_before(base)
+    await b.issue(7, base + 64)
+    await b.wait("o_read_valid")
+    held = (b.get("o_read_id"), b.get("o_read_data"), b.get("o_read_error"))
+    for slot in range(7):
+        await b.issue(slot, base + 8 * slot)
+    for address in (base, base + 32):
+        for _ in range(150):
+            matching = [
+                i for i, (_, request) in enumerate(b.requests) if request[2] == address
+            ]
+            if matching:
+                break
+            await b.tick()
+        else:
+            raise AssertionError("Demand acquisition did not arrive")
+        await b.grant(matching[0])
+        await b.release(matching[0])
+    await b.tick(100)
+    assert base + 64 in b.resident_hints_while_held
+    assert held == (b.get("o_read_id"), b.get("o_read_data"), b.get("o_read_error"))
+    assert not any(request[2] == base + 64 for _, request in b.requests)
+    await b.drain(8)
+    assert sorted(b.responses) == [
+        *((slot, b.word(base + 8 * slot), 0) for slot in range(7)),
+        (7, b.word(base + 64), 0),
+    ]
+
+
+@cocotb.test()
+async def cancellation_at_each_unaccepted_stage(dut: Any) -> None:
+    """Cancel a witnessed mid-page hint through its endpoint acceptance edge."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 4:
+        return
+    for stage in range(5):
+        for cancel in ("lr", "amo", "sc", "maintenance", "fatal", "reset"):
+            await b.reset()
+            await b.seed_before(0x80001020)
+            await b.issue(0, 0x80001020)
+            await b.issue(1, 0x80001040)
+            for _ in range(150):
+                phase = b.get("phase_q")
+                hint = b.get("hint_valid_q") and not b.get("hint_checked_q")
+                checked = b.get("hint_valid_q") and b.get("hint_checked_q")
+                selected = b.get("operation_q") == 6
+                reached = (
+                    hint,
+                    checked and phase == 0,
+                    selected and phase == 1,
+                    selected and phase == 2 and b.get("array_valid"),
+                    selected and phase == 3,
+                )[stage]
+                if reached:
+                    break
+                await b.tick()
+            else:
+                raise AssertionError(f"Hint stage {stage} was not reached")
+            assert not b.get("live") & b.get("ld_prefetch_q")
+            if cancel in ("lr", "amo"):
+                await b.set(
+                    i_read_valid=1,
+                    i_read_id=2,
+                    i_read_kind=1 if cancel == "lr" else 2,
+                    i_address=0x80001080,
+                    i_read_size=3,
+                )
+            elif cancel == "sc":
+                await b.set(i_sc_valid=1, i_sc_address=0x80001080, i_sc_size=3)
+            elif cancel == "maintenance":
+                await b.set(i_maint_valid=1, i_maint_line=1, i_maint_address=0x80001000)
+            elif cancel == "fatal":
+                await b.set(i_fatal_stop=1)
+            else:
+                await b.set(i_rst=1)
+            if stage == 4:
+                assert not b.get("ep_request_valid")
+            await b.tick()
+            await b.set(i_read_valid=0)
+            await b.tick(12)
+            assert not b.get("hint_valid_q") and not b.get("stream_confirmed")
+            assert not b.get("live") & b.get("ld_prefetch_q")
+
+
+@cocotb.test()
+async def accepted_hints_drain_for_exclusive_work(dut: Any) -> None:
+    """Keep speculative ownership through delayed U while AMO, SC and maintenance wait."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 8:
+        return
+    for waiting in ("amo", "sc", "maintenance", "lr"):
+        await b.reset()
+        await b.seed_before(0x80001020)
+        await b.issue(0, 0x80001020)
+        await b.issue(1, 0x80001040)
+        await b.requests_at_least(4)
+        assert (b.get("live") & b.get("ld_prefetch_q")).bit_count() == 2
+        assert b.get("stream_confirmed")
+        if waiting == "amo":
+            await b.issue(2, 0x80001080, kind=2)
+        elif waiting == "lr":
+            await b.issue(2, 0x80001060, kind=1)
+        elif waiting == "sc":
+            await b.set(i_sc_valid=1, i_sc_address=0x80001080, i_sc_size=3, i_sc_tag=7)
+        else:
+            await b.set(i_maint_valid=1, i_maint_line=1, i_maint_address=0x80001000)
+        await b.tick(10)
+        assert not b.get("hint_valid_q") and not b.get("stream_confirmed")
+        for index in range(4):
+            await b.grant(index)
+        for index in range(2):
+            await b.release(index)
+        await b.set(i_read_ready=1)
+        await b.tick(50)
+        assert (b.get("live") & b.get("ld_prefetch_q")).bit_count() == 2
+        assert (
+            len(b.requests) == 4
+            and not b.get("o_sc_ready")
+            and not b.get("o_maint_done")
+        )
+        if waiting == "lr":
+            assert (2, b.word(0x80001060), 0) in b.responses
+        await b.release(2)
+        await b.tick(20)
+        assert (
+            len(b.requests) == 4
+            and not b.get("o_sc_ready")
+            and not b.get("o_maint_done")
+        )
+        await b.release(3)
+        if waiting == "amo":
+            await b.requests_at_least(5)
+            assert b.requests[4][0] == 0 and b.requests[4][1][0] == 3
+        elif waiting == "sc":
+            await b.requests_at_least(5)
+            assert b.requests[4][0] == 0 and b.requests[4][1][0] == 4
+            await b.set(i_sc_valid=0)
+        elif waiting == "maintenance":
+            await b.wait("o_maint_done")
+        else:
+            await b.tick(20)
+            assert not b.get("live") and len(b.requests) == 4

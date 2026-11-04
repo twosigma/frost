@@ -14,7 +14,7 @@
  *    limitations under the License.
  */
 
-// Two adjacent demand misses confirm an ascending stream of 32-byte sectors.
+// Three adjacent demand misses confirm an ascending stream of 32-byte sectors.
 // The cursor stays within eight sectors and within the demand's 4 KiB page.
 module coherence_read_stream #(
     parameter int unsigned ADDR_WIDTH = 32
@@ -32,7 +32,7 @@ module coherence_read_stream #(
     output logic [ADDR_WIDTH-1:0] o_frontier,
     output logic o_replace
 );
-  logic seeded_q, confirmed_q;
+  logic seeded_q, pair_seen_q, confirmed_q;
   logic [ADDR_WIDTH-1:12] page_q;
   logic [6:0] frontier_q;
   logic [7:0] cursor_q, cursor_next;
@@ -59,12 +59,14 @@ module coherence_read_stream #(
   always_ff @(posedge i_clk) begin
     if (i_rst || i_cancel) begin
       seeded_q <= 1'b0;
+      pair_seen_q <= 1'b0;
       confirmed_q <= 1'b0;
       page_q <= '0;
       frontier_q <= '0;
       cursor_q <= '0;
     end else if (o_replace) begin
       seeded_q <= 1'b1;
+      pair_seen_q <= 1'b0;
       confirmed_q <= 1'b0;
       page_q <= i_demand_addr[ADDR_WIDTH-1:12];
       frontier_q <= i_demand_addr[11:5];
@@ -72,7 +74,8 @@ module coherence_read_stream #(
     end else begin
       cursor_q <= cursor_next;
       if (advance) begin
-        confirmed_q <= 1'b1;
+        confirmed_q <= confirmed_q || pair_seen_q;
+        pair_seen_q <= 1'b1;
         frontier_q  <= i_demand_addr[11:5];
       end
     end
@@ -84,6 +87,8 @@ module coherence_read_stream #(
     f_past_valid <= 1'b1;
     if (!f_past_valid) assume (i_rst);
     if (f_past_valid) begin
+      assert (!confirmed_q || pair_seen_q);
+      assert (!pair_seen_q || seeded_q);
       if (o_valid) begin
         assert (o_confirmed);
         assert (o_addr[ADDR_WIDTH-1:12] == o_frontier[ADDR_WIDTH-1:12]);
@@ -91,17 +96,20 @@ module coherence_read_stream #(
         assert (o_addr[4:0] == 0);
       end
       if ($past(i_rst || i_cancel)) begin
-        assert (!seeded_q && !o_valid && !o_confirmed);
+        assert (!seeded_q && !pair_seen_q && !o_valid && !o_confirmed);
       end else if ($past(o_replace)) begin
-        assert (seeded_q && !o_confirmed);
+        assert (seeded_q && !pair_seen_q && !o_confirmed);
         assert (o_frontier == {$past(i_demand_addr[ADDR_WIDTH-1:5]), 5'b0});
       end else begin
         if (o_confirmed && !$past(o_confirmed))
-          assert ($past(advance && i_demand_miss && seeded_q));
+          assert ($past(advance && i_demand_miss && seeded_q && pair_seen_q));
         if ($past(advance)) begin
           assert (o_frontier == {$past(i_demand_addr[ADDR_WIDTH-1:5]), 5'b0});
+          assert (pair_seen_q);
+          assert (confirmed_q == $past(confirmed_q || pair_seen_q));
         end else begin
           assert ($stable(o_frontier));
+          assert ($stable(pair_seen_q) && $stable(confirmed_q));
         end
         if (!$past(advance || (i_consume && o_valid))) assert ($stable(cursor_q));
         if ($past(i_consume && o_valid) && !$past(advance))

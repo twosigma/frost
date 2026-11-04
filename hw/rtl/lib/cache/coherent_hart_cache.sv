@@ -22,8 +22,9 @@ module coherent_hart_cache #(
     parameter int unsigned WAYS = 4,
     parameter int unsigned TAG_BITS = 5,
     // L1D request endpoints, 1 to 8: endpoint 0 serves stores, LR, AMO and
-    // SC; with two or more, the others carry ordinary load misses.
+    // SC; with two or more, the others carry load misses and optional GetS hints.
     parameter int unsigned L1D_MISSES = 8,
+    parameter bit L1D_STREAM_PREFETCH = 1'b0,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L1I_WAYS = 4,
     parameter int unsigned SIM_FAST_MAINT = 0
@@ -234,6 +235,7 @@ module coherent_hart_cache #(
       .WAYS(WAYS),
       .TAG_BITS(TAG_BITS),
       .MISSES(L1D_MISSES),
+      .STREAM_PREFETCH(L1D_STREAM_PREFETCH),
       .SIM_FAST_MAINT(SIM_FAST_MAINT)
   ) l1d (
       .i_clk(i_clk),

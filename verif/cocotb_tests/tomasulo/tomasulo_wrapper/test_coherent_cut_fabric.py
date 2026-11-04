@@ -103,6 +103,7 @@ class Fabric:
         phase: int = -1,
         replay_mask: int = 0,
         clean: bool | None = None,
+        address: int = LINE,
     ) -> tuple[int, ...]:
         """Invalidate through P/R, with delayed cut service and a held complete reply.
 
@@ -118,7 +119,7 @@ class Fabric:
             (2, 1),
             (6, self.tid),
             (1, 0),
-            (32, LINE),
+            (32, address),
             (2, 2),
             (2, 1),
             (9, 0),
@@ -128,7 +129,7 @@ class Fabric:
         d.i_probe_valid.value = 1
         await self.wait("o_probe_ready")
         assert self.get("o_probe_cut_hold")
-        assert self.get("o_probe_cut_addr") == LINE
+        assert self.get("o_probe_cut_addr") == address
         returned = False
         if response is not None and phase == 0:
             b.drive_lq_mem_response(0x12345678, cached=True, slot=response["id"])
@@ -181,7 +182,7 @@ class Fabric:
         assert int(d.core.u_rob.rob_replay.value) & replay_mask == replay_mask
         payload = self.get("o_reply")
         fields = unpack(payload, (2, 6, 1, 1, 32, 2, 1, 1, 256, 1, 1, 1, 1, 1))
-        assert fields[1] == self.tid and fields[4] == LINE and not fields[-1]
+        assert fields[1] == self.tid and fields[4] == address and not fields[-1]
         for _ in range(8):
             assert self.get("o_reply_valid") and self.get("o_reply") == payload
             assert not self.get("o_probe_ready") and not self.get("o_probe_cut_release")

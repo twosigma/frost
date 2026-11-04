@@ -19,9 +19,10 @@
 module coherence_cluster_test_harness #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 64,
-    parameter int unsigned TAG_BITS   = 7,
+    parameter int unsigned TAG_BITS = 7,
     // L1D request endpoints.
-    parameter int unsigned L1D_MISSES = 1
+    parameter int unsigned L1D_MISSES = 1,
+    parameter bit L1D_STREAM_PREFETCH = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -131,7 +132,8 @@ module coherence_cluster_test_harness #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_BYTES(1024),
       .TAG_BITS(TAG_BITS),
-      .MISSES(L1D_MISSES)
+      .MISSES(L1D_MISSES),
+      .STREAM_PREFETCH(L1D_STREAM_PREFETCH)
   ) hart (
       .i_clk(i_clk),
       .i_rst(i_rst),
