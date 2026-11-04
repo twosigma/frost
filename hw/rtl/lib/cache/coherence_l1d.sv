@@ -1972,7 +1972,8 @@ module coherence_l1d #(
     assume (i_write_mask == (f_scenario == 2 ?
         (sc_committed_q && atomic_granted_q && !atomic_written_q && !atomic_write_q ? 8'hff : 0) :
         (f_store_offer_q ? 8'hff : 0)));
-    f_store_offer_q <= f_scenario != 2 && o_store_ready && f_stores_q < 6;
+    f_store_offer_q <= f_scenario != 2 && o_store_ready &&
+        (f_stores_q < 6 || (f_scenario == 5 && f_read_sent_q && f_stores_q < 8));
     if (store_push) f_stores_q <= f_stores_q + 1'b1;
     if (store_pop) f_installs_q <= f_installs_q + 1'b1;
     if (probe_capture && f_installs_q != 0) f_probe_after_install_q <= 1;
