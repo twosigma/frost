@@ -156,9 +156,10 @@ module coherence_store_boundary_formal #(
           cycle_q < 105));
       assume (offer_load == (Mode != 0 || cycle_q == 30));
       if (!rst) begin
-        full_seen_q <= full_seen_q || (l1_block_valid == 3 && acknowledged_q == 2);
-        tail_drain_seen_q <= tail_drain_seen_q ||
-            (observe_drain && accepted_q == 2 && l1_block_valid == 1);
+        full_seen_q <= full_seen_q || ($countones(l1_block_valid) == 2 && acknowledged_q == 2);
+        tail_drain_seen_q <= tail_drain_seen_q || (observe_drain && accepted_q == 2 && $countones(
+            l1_block_valid
+        ) == 1);
         selected_seen_q <= selected_seen_q || (l1_atomic_live && accepted_q == 2);
         retired_seen_q <= retired_seen_q || (guard_retired && l1_atomic_live && step_q == 9);
         written_seen_q <= written_seen_q || (sc_written_q && guard_retired && l1_atomic_live);
@@ -191,7 +192,7 @@ module coherence_store_boundary_formal #(
           staged_q[0] <= |rt_data_mem_cached_byte_wr_en &&
               !rt_coherent_write_atomic && rt_data_mem_addr[63:5] == address1[63:5];
           staged_q[1] <= l1_write_done && accepted_q == 2;
-          staged_q[2] <= $past(l1_block_valid == 3) && l1_block_valid == 1;
+          staged_q[2] <= $past($countones(l1_block_valid) == 2) && $countones(l1_block_valid) == 1;
           staged_q[3] <= $past(l1_pending_store) && !l1_pending_store;
         end
         if (lq_fu_complete.valid && lq_fu_complete.value == {8{second_byte}}) begin
@@ -275,7 +276,7 @@ module coherence_store_boundary_formal #(
       assert (accepted_q - acknowledged_q <= 1);
       if (ordinary_write) begin
         assert ($past(l1_store_ready));
-        assert (l1_block_valid != 3);
+        assert ($countones(l1_block_valid) < 4);
       end
       if (l1_pending_store || (sq_mem_write_en && sq_mem_write_is_cached))
         assert (!sq_committed_empty && !sq_committed_empty_trap && !sq_committed_empty_lq);
@@ -472,7 +473,16 @@ module coherence_store_boundary_formal #(
       .i_coherent_cut_hold('0),
       .i_coherent_cut_addr('0),
       .i_coherent_block_valid(l1_block_valid),
-      .i_coherent_block_addr({32'b0, l1_block_addr[1], 32'b0, l1_block_addr[0]}),
+      .i_coherent_block_addr({
+        32'b0,
+        l1_block_addr[3],
+        32'b0,
+        l1_block_addr[2],
+        32'b0,
+        l1_block_addr[1],
+        32'b0,
+        l1_block_addr[0]
+      }),
       .i_coherent_atomic_protected(protected_q),
       .o_coherent_arm_valid(lq_coherent_arm_valid),
       .o_coherent_arm_tag(lq_coherent_arm_tag),
@@ -728,8 +738,8 @@ module coherence_store_boundary_formal #(
   logic l1_pending_store;
   logic l1_sc_write_pending;
   logic l1_atomic_live;
-  logic [1:0] l1_block_valid;
-  logic [1:0][AddrWidth-1:0] l1_block_addr;
+  logic [3:0] l1_block_valid;
+  logic [3:0][AddrWidth-1:0] l1_block_addr;
   logic l1_sc_ready;
   logic l1_sc_result_valid;
   logic l1_sc_success;

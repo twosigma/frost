@@ -42,7 +42,9 @@ class StoreBurstWatch:
             pending = int(self.cache.o_pending_store.value)
             if int(self.cache.tail_q.value):
                 self.hits["two"] += 1
-                assert int(self.cache.o_block_valid.value) == 3
+                assert int(self.cache.o_block_valid.value).bit_count() == int(
+                    self.cache.store_count.value
+                )
             if pending:
                 assert not int(self.sq.o_committed_empty.value)
                 assert not int(self.cache.o_atomic_live.value)

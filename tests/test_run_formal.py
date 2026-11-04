@@ -82,7 +82,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_store_buffer.sby",
-        "Two accepted stores preserve order, payload, launch credit and acknowledgement.",
+        "Four combining records preserve byte order, bounded contributors, launch credit and acknowledgement.",
         tasks=("prove", "cover"),
     ),
     FormalTarget(

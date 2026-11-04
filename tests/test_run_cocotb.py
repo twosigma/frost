@@ -2261,6 +2261,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="The coherent cut covers observations, delayed LR, and stale fills.",
         verilator_extra_args=("--assert",),
     ),
+    "coherence_store_buffer": CocotbRunConfig(
+        verilator_extra_args=("--assert",),
+        python_test_module="cocotb_tests.cache.test_coherence_store_buffer",
+        hdl_toplevel_module="coherence_store_buffer",
+        description="Ordered combining records, byte masks, delayed credit and bounded contributors",
+    ),
+    "coherence_l1d_stream": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GMISSES=3",
+            "-GHOME_CACHE_BYTES=512",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_l1d_stream",
+        hdl_toplevel_module="coherence_l1d",
+        description="Concurrent ordered store acquisitions, combining, probes and endpoint release",
+    ),
     "coherence_l1d": CocotbRunConfig(
         verilator_extra_args=("--assert", "-GCACHE_BYTES=512"),
         python_test_module="cocotb_tests.cache.test_coherence_l1d",

@@ -70,6 +70,8 @@ class Private:
         await self.tick(2)
         await self.set(i_rst=0)
         await self.tick(20)
+        self.acknowledged = 0
+        self.installed = 0
 
 
 @cocotb.test()
@@ -644,9 +646,14 @@ async def buffered_masked_hits_preserve_order_and_cadence(dut: Any) -> None:
     for _ in range(400):
         if b.get("store_pop"):
             install_cycles.append(b.cycles)
-        if b.get("o_block_valid") == 3:
+        if b.get("o_block_valid").bit_count() == 2:
             holds = b.get("o_block_addr")
-            two_sectors |= (holds & ((1 << b.p) - 1)) >> 5 != (holds >> b.p) >> 5
+            sectors = {
+                ((holds >> (slot * b.p)) & ((1 << b.p) - 1)) >> 5
+                for slot in range(4)
+                if b.get("o_block_valid") & (1 << slot)
+            }
+            two_sectors |= len(sectors) == 2
         launch = accepted < len(writes) and b.get("o_store_ready")
         await b.tick()
         if launch:
@@ -687,7 +694,7 @@ async def buffered_hit_burst_yields_to_waiting_reads(dut: Any) -> None:
         await getm(b, address, pattern)
     await store(b, base, 0x1122334455667788)
     await store(b, base + 8, 0x99AABBCCDDEEFF00)
-    assert b.get("o_block_valid") == 3
+    assert b.get("o_block_valid").bit_count() == 2
     await b.set(i_read_valid=1, i_read_id=0, i_address=base + 32)
     await b.tick()
     await b.set(i_read_valid=0)
@@ -726,10 +733,10 @@ async def buffered_tail_reacquires_after_probe_and_delayed_getm(dut: Any) -> Non
         await store(b, base + 32, 0x1234)
         await b.wait("o_d_valid")
         await store(b, base + 8, 0xAABBCCDD, 15)
-        assert b.get("o_block_valid") == 3 and not b.get("o_store_ready")
+        assert b.get("o_block_valid").bit_count() == 2
         before = b.installed
         assert await snapshot(b, base, invalidate=invalidate) == pattern
-        assert b.installed == before and b.get("o_block_valid") == 3
+        assert b.installed == before and b.get("o_block_valid").bit_count() == 2
         await getm(b, base + 32, pattern)
         assert b.get("o_pending_store")
         await getm(b, base, pattern)
@@ -753,12 +760,12 @@ async def store_error_stops_younger_installation_and_reset_clears_credit(
     await store(b, base + 32, 0x3344)
     await b.wait("o_d_valid")
     await store(b, base, 0x5566)
-    assert b.get("o_block_valid") == 3
+    assert b.get("o_block_valid").bit_count() == 2
     before = b.installed
     await getm(b, base + 32, 0, error=True)
     assert b.get("o_fatal_addr") == base + 32
     await b.tick(30)
-    assert b.installed == before and b.get("o_block_valid") == 3
+    assert b.installed == before and b.get("o_block_valid").bit_count() == 2
     assert not b.get("o_store_ready")
     await b.reset()
     assert not b.get("o_pending_store") and not b.get("o_write_done")
@@ -792,7 +799,7 @@ async def frozen_writeback_blocks_buffered_tail_until_ack(dut: Any) -> None:
         assert victim != resident
         await store(b, resident + 8, 0x88776655, 15)
         await store(b, victim + 8, 0xAABBCCDD, 15)
-        assert b.get("o_block_valid") == 3
+        assert b.get("o_block_valid").bit_count() == 2
         before = b.installed
         if absorbed:
             assert await snapshot(b, victim) == images[victim]
@@ -804,7 +811,7 @@ async def frozen_writeback_blocks_buffered_tail_until_ack(dut: Any) -> None:
             await b.set(i_w_ready=0)
         await b.tick(30)
         assert b.installed == before + 1
-        assert b.get("o_pending_store") and b.get("o_block_valid") == 1
+        assert b.get("o_pending_store") and b.get("o_block_valid").bit_count() == 1
         assert not b.get("o_d_valid") and b.get("o_w") == frozen
         await b.set(
             i_wa_valid=1,

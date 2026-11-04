@@ -48,8 +48,8 @@ module coherence_cluster_test_harness #(
     output logic o_pending_store,
     output logic o_sc_write_pending,
     output logic o_atomic_live,
-    output logic [1:0] o_block_valid,
-    output logic [1:0][ADDR_WIDTH-1:0] o_block_addr,
+    output logic [3:0] o_block_valid,
+    output logic [3:0][ADDR_WIDTH-1:0] o_block_addr,
     input logic i_atomic_protected,
     input logic i_sc_valid,
     output logic o_sc_ready,
@@ -131,7 +131,9 @@ module coherence_cluster_test_harness #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_BYTES(1024),
       .TAG_BITS(TAG_BITS),
-      .MISSES(L1D_MISSES)
+      .MISSES(L1D_MISSES),
+      .HOME_CACHE_BYTES(512),
+      .HOME_LINE_BYTES(LINE_BYTES)
   ) hart (
       .i_clk(i_clk),
       .i_rst(i_rst),

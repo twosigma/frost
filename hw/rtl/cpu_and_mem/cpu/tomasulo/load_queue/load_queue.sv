@@ -55,8 +55,8 @@ module load_queue #(
 ) (
     input logic i_coherent_cut_hold = 1'b0,
     input logic [riscv_pkg::XLEN-1:0] i_coherent_cut_addr = '0,
-    input logic [1:0] i_coherent_block_valid = '0,
-    input logic [1:0][riscv_pkg::XLEN-1:0] i_coherent_block_addr = '0,
+    input logic [3:0] i_coherent_block_valid = '0,
+    input logic [3:0][riscv_pkg::XLEN-1:0] i_coherent_block_addr = '0,
     input logic i_coherent_atomic_protected = 1'b0,
     output logic o_coherent_arm_valid,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_arm_tag,
@@ -1427,8 +1427,8 @@ module load_queue #(
   logic coherent_forward_clear_eligible;
   logic coherent_probe_ok, coherent_issue_ok, coherent_forward_ok;
   if (1'b1) begin : gen_coherent_park
-    logic [1:0] holder_valid_q;
-    logic [2*XLEN-1:0] holder_addr_q;
+    logic [3:0] holder_valid_q;
+    logic [4*XLEN-1:0] holder_addr_q;
     assign coherent_holder_changed = holder_valid_q != i_coherent_block_valid ||
         holder_addr_q != i_coherent_block_addr;
     always_ff @(posedge i_clk) begin
@@ -1754,7 +1754,7 @@ module load_queue #(
 
   always_comb begin
     coherent_sector_hold = 1'b0;
-    for (int holder = 0; holder < 2; holder++)
+    for (int holder = 0; holder < 4; holder++)
     coherent_sector_hold |= i_coherent_block_valid[holder] &&
           sq_check_addr_q[XLEN-1:5] == i_coherent_block_addr[holder][XLEN-1:5];
   end

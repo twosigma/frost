@@ -24,6 +24,9 @@ module coherent_hart_cache #(
     // L1D request endpoints, 1 to 8: endpoint 0 serves stores, LR, AMO and
     // SC; with two or more, the others carry ordinary load misses.
     parameter int unsigned L1D_MISSES = 8,
+    parameter int unsigned HOME_CACHE_BYTES = 2 * 1024 * 1024,
+    parameter int unsigned HOME_WAYS = 4,
+    parameter int unsigned HOME_LINE_BYTES = 64,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L1I_WAYS = 4,
     parameter int unsigned SIM_FAST_MAINT = 0
@@ -53,8 +56,8 @@ module coherent_hart_cache #(
     output logic o_pending_store,
     output logic o_sc_write_pending,
     output logic o_atomic_live,
-    output logic [1:0] o_block_valid,
-    output logic [1:0][ADDR_WIDTH-1:0] o_block_addr,
+    output logic [3:0] o_block_valid,
+    output logic [3:0][ADDR_WIDTH-1:0] o_block_addr,
     // Protection covers request presentation as well as acceptance.
     input logic i_atomic_protected,
     input logic i_sc_valid,
@@ -234,6 +237,9 @@ module coherent_hart_cache #(
       .WAYS(WAYS),
       .TAG_BITS(TAG_BITS),
       .MISSES(L1D_MISSES),
+      .HOME_CACHE_BYTES(HOME_CACHE_BYTES),
+      .HOME_WAYS(HOME_WAYS),
+      .HOME_LINE_BYTES(HOME_LINE_BYTES),
       .SIM_FAST_MAINT(SIM_FAST_MAINT)
   ) l1d (
       .i_clk(i_clk),

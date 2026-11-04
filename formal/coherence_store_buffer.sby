@@ -5,14 +5,16 @@ cover
 [options]
 prove: mode prove
 cover: mode cover
-depth 12
+prove: depth 4
+cover: depth 16
+timeout 2400
 
 [engines]
 smtbmc boolector
 
 [script]
 read -formal -sv coherence_store_buffer.sv
-chparam -set WIDTH 8 coherence_store_buffer
+chparam -set ADDR_WIDTH 8 -set TAG_BITS 2 -set EP_BITS 2 coherence_store_buffer
 prep -top coherence_store_buffer
 
 [files]

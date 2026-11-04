@@ -36,8 +36,8 @@ module lq_result_valid_equiv #(
 ) (
     input logic i_coherent_cut_hold,
     input logic [riscv_pkg::XLEN-1:0] i_coherent_cut_addr,
-    input logic [1:0] i_coherent_block_valid,
-    input logic [1:0][riscv_pkg::XLEN-1:0] i_coherent_block_addr,
+    input logic [3:0] i_coherent_block_valid,
+    input logic [3:0][riscv_pkg::XLEN-1:0] i_coherent_block_addr,
     input logic i_coherent_atomic_protected,
     input logic i_clk,
     input logic i_rst_n,

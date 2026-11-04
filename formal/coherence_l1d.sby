@@ -48,10 +48,10 @@ grantdata: select -assert-count 3 c:p_store_data_8 c:p_store_data_9 c:p_store_da
 grantdata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_8 c:p_store_data_9 c:p_store_data_10 %u %u %d
 memory_map
 opt
-multi: techmap
-multi: opt -fast
-multi: setundef -anyseq
-multi: opt_clean
+techmap
+opt -fast
+setundef -anyseq
+opt_clean
 
 [files]
 ../hw/rtl/lib/ram/sdp_block_ram.sv

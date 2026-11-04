@@ -501,8 +501,8 @@ module frost_rvfi_platform #(
   logic coherent_store_ready;
   logic coherent_sc_pending;
   logic coherent_atomic_live;
-  logic [1:0] coherent_block_valid;
-  logic [1:0][riscv_pkg::XLEN-1:0] coherent_block_addr;
+  logic [3:0] coherent_block_valid;
+  logic [3:0][riscv_pkg::XLEN-1:0] coherent_block_addr;
   logic coherent_cut_hold;
   logic coherent_sc_valid;
   logic coherent_sc_ready;
@@ -528,8 +528,9 @@ module frost_rvfi_platform #(
   logic coherent_sc_commit;
   logic cut_admit, cut_admit_ready, cut_admit_clean, cut_inval, cut_inval_done, cut_release;
   logic [riscv_pkg::PhysAddrBits-1:0] cut_addr;
-  logic [1:0][riscv_pkg::PhysAddrBits-1:0] block_addr;
-  assign coherent_block_addr = {riscv_pkg::XLEN'(block_addr[1]), riscv_pkg::XLEN'(block_addr[0])};
+  logic [3:0][riscv_pkg::PhysAddrBits-1:0] block_addr;
+  for (genvar holder = 0; holder < 4; holder++)
+    assign coherent_block_addr[holder] = riscv_pkg::XLEN'(block_addr[holder]);
   logic data_memory_cached_read_error, walk_line_resp_error, iup_resp_error;
   logic hart_fatal, home_fatal;
   wire cache_fatal = hart_fatal || home_fatal;
@@ -1971,6 +1972,9 @@ module frost_rvfi_platform #(
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
         .L1I_WAYS(L1I_WAYS),
         .L1D_MISSES(L1D_NUM_MSHR),
+        .HOME_CACHE_BYTES(L2_CACHE_BYTES),
+        .HOME_WAYS(L2_WAYS),
+        .HOME_LINE_BYTES(L2_LINE_BYTES),
         .SIM_FAST_MAINT(SIM_FAST_MAINT)
     ) hart_cache (
         .i_clk(i_clk),
