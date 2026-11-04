@@ -36,6 +36,7 @@ module coherence_store_buffer #(
     input logic [EP_BITS-1:0] i_acquire_ep,
     output logic o_ready,
     output logic o_done,
+    output logic o_combined,
     output logic [2:0] o_count,
     output logic [1:0] o_head,
     output logic [3:0] o_valid,
@@ -54,6 +55,7 @@ module coherence_store_buffer #(
   assign merge = o_count != 0 && !o_sealed[youngest] &&
       o_addr[youngest][ADDR_WIDTH-1:5] == i_addr[ADDR_WIDTH-1:5];
   assign allocate = i_push && !merge;
+  assign o_combined = i_push && merge;
   assign write_index = merge ? youngest : next_q;
   // A pop supplies no speculative credit. An arriving merge uses no record.
   assign o_ready = o_count < 4 && !(o_count == 3 && allocate);

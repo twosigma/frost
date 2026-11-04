@@ -32,10 +32,20 @@ class Stream(Private):
         self.demands: list[tuple[int, tuple[int, ...]]] = []
         self.completions: list[tuple[int, tuple[int, ...]]] = []
         self.installs: list[int] = []
+        self.accesses = 0
+        self.hits = 0
+        self.misses = 0
+        self.combined = 0
 
     async def tick(self, count: int = 1) -> None:
         """Capture accepted channels and head installations before each edge."""
         for _ in range(count):
+            events = self.get("o_perf_events")
+            combined = (events >> 13) & 1
+            self.accesses += ((events >> 11) & 1) + combined
+            self.hits += ((events >> 10) & 1) + combined
+            self.misses += (events >> 9) & 1
+            self.combined += combined
             for ep in range(len(self.dut.o_d_valid)):
                 if (self.get("o_d_valid") & self.get("i_d_ready")) & (1 << ep):
                     d = (self.get("o_d") >> (ep * (self.p + 312))) & (
@@ -59,6 +69,7 @@ class Stream(Private):
         self.demands.clear()
         self.completions.clear()
         self.installs.clear()
+        self.accesses = self.hits = self.misses = self.combined = 0
         await self.set(i_d_ready=7, i_c_ready=7, i_read_ready=1)
 
     async def issued(self, address: int) -> tuple[int, tuple]:
@@ -118,6 +129,7 @@ async def reverse_grants_combine_and_install_in_order(dut: Any) -> None:
     assert ep_a == 0 and ep_c != 0
     assert b.get("store_count") == 2
     assert b.acknowledged == 5
+    assert (b.accesses, b.hits, b.misses, b.combined) == (5, 3, 2, 3)
     await b.grant(c)
     await b.tick(20)
     assert b.installs == [] and b.completions == []

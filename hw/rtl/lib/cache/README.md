@@ -277,9 +277,8 @@ No two live endpoints hold the same sector. A load miss on a sector held by
 an endpoint waits for installation, or for release if the installed sector
 has been replaced, then looks up again. Load and lookahead acquisitions stop
 while an atomic is active or an AMO, SC or maintenance operation waits for
-endpoint drain. Contending load and lookahead allocations alternate. Ordinary stores contribute
-one demand performance event per record at its first lookup; each acquired
-record contributes to the outstanding-miss count until installation.
+endpoint drain. Contending load and lookahead allocations alternate. Each acquired
+store record contributes to the outstanding-miss count until installation.
 Read status uses per-slot masks for allocation, response transfer, lookup
 results and grant completion. Completion and miss sets dominate allocation
 clears. Allocation sets dominate response clears of valid bits. A failed
@@ -312,11 +311,15 @@ has four fills and `L2_NUM_WB` victim write slots. `L2_NUM_MSHR`,
 `L2_NUM_WAITERS` and the prefetch parameters have no effect on the CPU
 hierarchy.
 
-L1D performance events count the first permission lookup of each CPU read
-or ordinary store. Cached SC selection counts as a permission miss. A store
-to S and an AMO require permission and count as misses. Repeated lookups,
-probes and maintenance do not add demand events. Outstanding misses include
-unresolved read slots, the head store acquisition and the selected SC. L2 events
+L1D performance events count scalar CPU requests. The first store in a record
+counts at its first permission lookup; each additional scalar that combines
+counts as an access and a buffer hit on acceptance, even before permission
+arrives. A combined store and a tag lookup can contribute two accesses in one
+cycle. CPU reads count at their first lookup. Cached SC selection counts as
+a permission miss. A first store to S and an AMO require permission and count
+as misses. Repeated lookups, probes and maintenance do not add demand events.
+Outstanding misses include unresolved read slots, acquired store records,
+the head store waiting to acquire after a miss, and the selected SC. L2 events
 count shared demand lookups and non-maintenance PutM lookups. Its fill count
 is at most four. A DMA write miss contributes a write-fill event; probe data
 merges do not contribute another demand. Events are registered at their

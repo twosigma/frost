@@ -22,7 +22,8 @@ module coherent_hart_cache #(
     parameter int unsigned WAYS = 4,
     parameter int unsigned TAG_BITS = 5,
     // L1D request endpoints, 1 to 8: endpoint 0 serves stores, LR, AMO and
-    // SC; with two or more, the others carry ordinary load misses.
+    // SC. Nonzero endpoints carry loads; with three or more, one can carry
+    // a lookahead store while at least one remains available to loads.
     parameter int unsigned L1D_MISSES = 8,
     parameter int unsigned HOME_CACHE_BYTES = 2 * 1024 * 1024,
     parameter int unsigned HOME_WAYS = 4,

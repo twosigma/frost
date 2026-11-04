@@ -158,6 +158,7 @@ module coherence_l1d #(
       .TAG_BITS(TAG_BITS),
       .EP_BITS(1)
   ) stores (
+      .o_combined(),
       .i_clk,
       .i_rst,
       .i_push(|i_write_mask),

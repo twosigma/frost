@@ -361,10 +361,11 @@ module coherence_l1d #(
   assign active = !i_rst && !i_fatal_stop && !o_fatal;
   assign probe_in = i_p;
   assign ack = i_wa;
-  // Each read or store record contributes one lookup decision. Retries, probe traffic
-  // and maintenance do not contribute demand events.
+  // The first scalar in a store record contributes a lookup decision. Each
+  // combined scalar contributes a buffer hit, including during a tag event.
+  // Retries, probes and maintenance do not contribute demand events.
   logic [7:0] perf_read_seen_q, perf_read_miss_q;
-  logic perf_lookup, perf_access, perf_hit, perf_sc;
+  logic perf_lookup, perf_access, perf_hit, perf_sc, store_combined;
   logic [cache_perf_pkg::MissOutstandingBits-1:0] perf_outstanding;
   assign perf_lookup = active && phase_q == LookupWait && array_valid &&
       ((operation_q == ReadOp && !perf_read_seen_q[selected_read_q]) ||
@@ -403,6 +404,8 @@ module coherence_l1d #(
         perf_read_miss_q[i_read_id] <= 1'b0;
       end
       o_perf_events <= '0;
+      o_perf_events.store_combined <= store_combined;
+      o_perf_events.store_combined_under_miss <= store_combined && perf_outstanding != 0;
       o_perf_events.access <= perf_access;
       o_perf_events.hit <= perf_hit;
       o_perf_events.miss <= perf_access && !perf_hit;
@@ -434,6 +437,10 @@ module coherence_l1d #(
         assert (o_perf_events.hit);
         assert (o_perf_events.miss_outstanding != 0);
       end
+      if (o_perf_events.store_combined_under_miss) begin
+        assert (o_perf_events.store_combined);
+        assert (o_perf_events.miss_outstanding != 0);
+      end
     end
   end
 `endif
@@ -456,6 +463,7 @@ module coherence_l1d #(
       .i_clk,
       .i_rst,
       .i_push(store_push),
+      .o_combined(store_combined),
       .i_addr(i_address),
       .i_data(i_write_data),
       .i_mask(i_write_mask),
