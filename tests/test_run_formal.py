@@ -97,7 +97,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "coherence_store_buffer.sby",
         "Four combining records preserve byte order, bounded contributors, launch credit and acknowledgement.",
-        tasks=("prove", "cover"),
+        tasks=("prove", "cover", "store_saturation_bmc", "store_saturation_cover"),
     ),
     FormalTarget(
         "coherent_hart_cache.sby",
@@ -1111,6 +1111,14 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    (
+        "store_saturation_bmc",
+        "A delayed head preserves 33 younger same-byte stores through saturation and drain.",
+    ),
+    (
+        "store_saturation_cover",
+        "A younger record saturates at 32 contributors and its successor drains.",
+    ),
     (
         "coh_grant_select2_prove",
         "Two grant candidates preserve credit-qualified priority and failure selection.",

@@ -570,6 +570,11 @@ arbiter holds its selection during backpressure and acknowledges only that input
 Every C source, including each DMA ingress slot, holds its offer until
 acceptance, so these arbiters present their captured selection as C validity.
 
+The `coherence_store_buffer` target proves scalar and byte conservation by
+induction. A 48-cycle saturation case holds an older record while 33 writes
+target one younger byte, then checks the split at 32 contributors and ordered
+drain of all records.
+
 Formal targets `coherence_home_completions`, `coherence_control`, `coherence_array`,
 `coherence_home`, `coherence_l1d` and `coherent_cpu` check endpoint service,
 representative byte values, bounded controller transitions and CPU ownership.

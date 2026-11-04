@@ -1,12 +1,17 @@
 [tasks]
 prove
 cover
+store_saturation_cover saturation reached
+store_saturation_bmc saturation bounded
 
 [options]
 prove: mode prove
 cover: mode cover
 prove: depth 4
 cover: depth 16
+reached: mode cover
+bounded: mode bmc
+saturation: depth 48
 timeout 2400
 
 [engines]
@@ -14,8 +19,12 @@ smtbmc boolector
 
 [script]
 read -formal -sv coherence_store_buffer.sv
-chparam -set ADDR_WIDTH 8 -set TAG_BITS 2 -set EP_BITS 2 coherence_store_buffer
-prep -top coherence_store_buffer
+~saturation: chparam -set ADDR_WIDTH 8 -set TAG_BITS 2 -set EP_BITS 2 coherence_store_buffer
+~saturation: prep -top coherence_store_buffer
+saturation: read -formal -sv coherence_store_saturation_formal.sv
+saturation: prep -flatten -top coherence_store_saturation_formal
+saturation: chformal -cover -remove c:*dut*
 
 [files]
 ../hw/rtl/lib/cache/coherence_store_buffer.sv
+coherence_store_saturation_formal.sv
