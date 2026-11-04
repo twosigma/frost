@@ -286,7 +286,7 @@ module coherence_l1d #(
   logic acquisition_store_q, acquisition_sc_q;
   logic [2:0] acquisition_read_q;
   logic grant_valid, grant_ready;
-  logic grant_read_turn_q, grant_retry_q, grant_read_yield, load_acquire_block;
+  logic grant_read_turn_q, grant_retry_q, grant_read_hold, grant_read_yield, load_acquire_block;
   logic grant_demand_waiter;
   coh_g_t grant, grant_q;
   logic done_q, done_ready, written_q;
@@ -467,7 +467,7 @@ module coherence_l1d #(
       end
   end
   assign prefetch_cancel = !StreamEnabled || !active || atomic_q || atomic_read_waiting ||
-      (i_read_valid && i_read_kind != ReadLoad) || i_sc_valid || maint_q || i_maint_valid;
+      i_sc_valid || maint_q || i_maint_valid;
   coherence_read_stream #(
       .ADDR_WIDTH(ADDR_WIDTH)
   ) read_stream (
@@ -546,13 +546,15 @@ module coherence_l1d #(
       grant_demand_waiter |= rd_wait_q[slot] && !rd_wait_release_q[slot] &&
           rd_wait_ep_q[slot] == grant_ep_q;
   end
-  assign grant_read_yield = StreamEnabled && grant_read_turn_q && rd_candidate &&
-      grant_valid && !ep_grant_valid[0] && !local_turn_q && !prefetch_cancel;
+  assign grant_read_hold = StreamEnabled && grant_read_turn_q &&
+      grant_valid && !ep_grant_valid[0] && !local_turn_q;
+  assign grant_read_yield = grant_read_hold && rd_candidate && !prefetch_cancel;
   assign load_acquire_block = StreamEnabled && grant_retry_q && grant_valid;
   always_ff @(posedge i_clk) begin
     if (i_rst || prefetch_cancel) grant_read_turn_q <= 1'b0;
     else begin
       if ((grant_valid && grant_ready) ||
+          (active && phase_q == Idle && !probe_valid_q && !probe_priority && grant_read_hold) ||
           (active && phase_q == Lookup && operation_q == ReadOp)) grant_read_turn_q <= 1'b0;
       if (active && phase_q == UpdateWait && array_ready &&
           operation_q == GrantOp && grant_ep_q != '0)
@@ -682,7 +684,7 @@ module coherence_l1d #(
   end
   assign o_r = reply_q;
   assign grant_ready = active && phase_q == Idle && !probe_valid_q && !probe_priority &&
-      !grant_read_yield;
+      !grant_read_hold;
   // Data-class request identities 0 to 7 are legal.
   if (MISSES < 1 || MISSES > 8) begin : gen_invalid_misses
     initial $fatal(1, "coherence_l1d: MISSES must be 1 to 8");
@@ -913,6 +915,7 @@ module coherence_l1d #(
       if (operation_q == PrefetchOp) p_prefetch_lookup_isolation : assert (!read_hit && !read_miss);
       if (atomic_q && atomic_granted_q)
         for (int ep = 1; ep < MISSES; ep++) assert (!live[ep]);
+      if (grant_read_hold) assert (!grant_ready && !read_failure && !ep_grant_valid[0]);
       if (grant_read_yield) begin
         assert (!grant_ready && !read_failure && !ep_grant_valid[0]);
         assert (!prefetch_cancel && !local_turn_q);
@@ -1329,13 +1332,15 @@ module coherence_l1d #(
               end else phase_q <= Lookup;
             end else if (probe_priority || probe_valid_q) begin
               // Probe ownership excludes local selection through R acceptance.
-            end else if (grant_read_yield) begin
-              maint_turn_q <= 1'b1;
-              operation_q <= ReadOp;
-              selected_read_q <= rd_pick;
-              lookup_addr_q <= rd_selected_addr;
-              rd_rr_q <= rd_pick + 1'b1;
-              phase_q <= Lookup;
+            end else if (grant_read_hold) begin
+              if (grant_read_yield) begin
+                maint_turn_q <= 1'b1;
+                operation_q <= ReadOp;
+                selected_read_q <= rd_pick;
+                lookup_addr_q <= rd_selected_addr;
+                rd_rr_q <= rd_pick + 1'b1;
+                phase_q <= Lookup;
+              end
             end else if (grant_valid && grant_ready) begin
               grant_q <= grant;
               grant_ep_q <= grant_pick;
@@ -1880,6 +1885,12 @@ module coherence_l1d #(
   if (StreamEnabled) begin : gen_stream_covers
     always_ff @(posedge i_clk) begin
       p_stream_attach : cover (wait_attach && ld_prefetch_q[same_line_ep]);
+      p_stream_lr_admit : cover (i_read_valid && i_read_kind == ReadLR &&
+          phase_q == Acquire && operation_q == PrefetchOp &&
+          |(ep_request_valid & ep_request_ready));
+      p_stream_amo_admit : cover (i_read_valid && i_read_kind == ReadAMO &&
+          phase_q == Acquire && operation_q == PrefetchOp &&
+          |(ep_request_valid & ep_request_ready));
       if (PrefetchCount == 2)
         p_stream_two : cover (live[MISSES-1] && ld_prefetch_q[MISSES-1] &&
             live[MISSES-2] && ld_prefetch_q[MISSES-2]);
@@ -1887,27 +1898,45 @@ module coherence_l1d #(
   end
 `ifdef STREAM_COVER
   logic [6:0] f_stream_cycle_q = 0;
+  (* anyconst *) logic [1:0] f_stream_atomic;
+  logic f_stream_atomic_sent_q = 0;
+  wire f_stream_admit = f_stream_atomic != 0 && !f_stream_atomic_sent_q &&
+      phase_q == Acquire && operation_q == PrefetchOp &&
+      |(ep_request_valid & ep_request_ready);
   always_ff @(posedge i_clk) begin
     if (f_stream_cycle_q != 127) f_stream_cycle_q <= f_stream_cycle_q + 1'b1;
     assume (i_rst == !f_past_valid);
     assume (!i_fatal_stop && !i_maint_valid && !i_sc_valid && !i_sc_commit);
     assume (i_write_mask == 0 && !i_p_valid && !i_wa_valid && !i_g_valid && !i_u_valid);
+    assume (f_stream_atomic <= 2);
+    if (f_stream_admit) f_stream_atomic_sent_q <= 1;
     assume (i_read_valid == (f_stream_cycle_q == 4 || f_stream_cycle_q == 5 ||
-        f_stream_cycle_q == 6 || f_stream_cycle_q == 48));
+        f_stream_cycle_q == 6 || (f_stream_atomic == 0 && f_stream_cycle_q == 48) ||
+        f_stream_admit));
     assume (i_read_id == (f_stream_cycle_q == 4 ? 0 : f_stream_cycle_q == 5 ? 1 :
         f_stream_cycle_q == 6 ? 2 : 3));
-    assume (i_address == ADDR_WIDTH'(32'h80000000 + (f_stream_cycle_q == 4 ? 0 :
-        f_stream_cycle_q == 5 ? 32 : f_stream_cycle_q == 6 ? 64 : 96)));
-    assume (i_read_kind == ReadLoad && i_read_size == 3 && i_read_tag == 0);
+    assume (i_address == (f_stream_admit ? lookup_addr_q :
+        ADDR_WIDTH'(32'h80000000 + (f_stream_cycle_q == 4 ? 0 :
+        f_stream_cycle_q == 5 ? 32 : f_stream_cycle_q == 6 ? 64 : 96))));
+    assume (i_read_kind == (f_stream_admit ? f_stream_atomic : ReadLoad));
+    assume (i_read_size == 3 && i_read_tag == 0);
     assume (i_d_ready == 0 && i_c_ready == 0 && !i_read_ready);
   end
 `endif
 `ifdef STREAM_TURN_COVER
   logic [6:0] f_turn_cycle_q = 0;
   logic [1:0] f_turn_sent_q = 0;
+  (* anyconst *) logic [1:0] f_turn_scenario;
+  logic f_turn_store_sent_q = 0, f_turn_probe_sent_q = 0;
+  logic [3:0] f_turn_reply_age_q = 0;
+  wire f_turn_store = f_turn_scenario == 1 && f_turn_sent_q == 2 && !f_turn_store_sent_q;
+  coh_p_t f_turn_probe;
   coh_d_t f_turn_first_q, f_turn_second_q;
   coh_g_t f_turn_grant;
   always_comb begin
+    f_turn_probe = '0;
+    f_turn_probe.opcode = coherence_pkg::ProbeRead;
+    f_turn_probe.addr = ADDR_WIDTH'(32'h80000800);
     f_turn_grant = '0;
     f_turn_grant.opcode = coherence_pkg::GrantS;
     f_turn_grant.q = f_turn_sent_q == 0 ? f_turn_first_q.q : f_turn_second_q.q;
@@ -1917,21 +1946,33 @@ module coherence_l1d #(
   always_ff @(posedge i_clk) begin
     if (f_turn_cycle_q != 127) f_turn_cycle_q <= f_turn_cycle_q + 1'b1;
     if (i_g_valid && o_g_ready) f_turn_sent_q <= f_turn_sent_q + 1'b1;
+    if (f_turn_store) f_turn_store_sent_q <= 1;
+    if (probe_capture) f_turn_probe_sent_q <= 1;
+    if (o_r_valid && f_turn_reply_age_q < 12) f_turn_reply_age_q <= f_turn_reply_age_q + 1'b1;
+    assume (f_turn_scenario <= 2);
+    assume (i_write_atomic == 0 && i_write_mask == (f_turn_store ? 8'hff : 0));
+    assume (i_p_valid == (f_turn_scenario == 2 && !f_turn_probe_sent_q &&
+        grant_read_turn_q && phase_q == Idle));
+    assume (i_p == f_turn_probe && i_r_ready == (f_turn_reply_age_q == 12));
     if (o_d_valid[1] && i_d_ready[1]) f_turn_first_q <= o_d[1];
     if (o_d_valid[2] && i_d_ready[2]) f_turn_second_q <= o_d[2];
     assume (i_rst == !f_past_valid);
     assume (!i_fatal_stop && !i_maint_valid && !i_sc_valid && !i_sc_commit);
-    assume (i_write_mask == 0 && !i_p_valid && !i_wa_valid && !i_u_valid);
+    assume (!i_wa_valid && !i_u_valid);
     assume (i_read_valid == (f_turn_cycle_q == 4 || f_turn_cycle_q == 5 ||
         f_turn_cycle_q == 6));
     assume (i_read_id == (f_turn_cycle_q == 4 ? 0 : f_turn_cycle_q == 5 ? 1 : 2));
-    assume (i_address == ADDR_WIDTH'(32'h80000000 + (f_turn_cycle_q == 4 ? 0 :
+    assume (i_address == ADDR_WIDTH'(32'h80000000 + (f_turn_store || f_turn_cycle_q == 4 ? 0 :
         f_turn_cycle_q == 5 ? 64 : 8)));
     assume (i_read_kind == ReadLoad && i_read_size == 3 && i_read_tag == 0);
     assume (i_d_ready == '1 && i_c_ready == 0 && !i_read_ready);
     assume (i_g_valid == (f_turn_cycle_q >= 35 && f_turn_sent_q < 2));
     assume (i_g == f_turn_grant);
     p_stream_read_turn : cover (phase_q == Idle && grant_read_yield && rd_pick == 2);
+    p_stream_empty_turn : cover (phase_q == Idle && grant_read_hold &&
+        !prefetch_cancel && !rd_candidate && !probe_priority && !probe_valid_q);
+    p_stream_probe_turn : cover (local_turn_q && grant_read_turn_q &&
+        grant_valid && grant_ready && f_turn_reply_age_q == 12);
   end
 `endif
   logic   f_past_valid = 1'b0;
@@ -2003,6 +2044,16 @@ module coherence_l1d #(
       end
     end
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
+      if ($past(active && i_read_valid && i_read_kind != ReadLoad &&
+          phase_q == Acquire && operation_q == PrefetchOp &&
+          |(ep_request_valid & ep_request_ready))) begin
+        assert (atomic_read_waiting && prefetch_cancel);
+        assert (rd_valid_q[$past(i_read_id)]);
+        assert (rd_kind_q[$past(i_read_id)] == $past(i_read_kind));
+        assert (|(live & ld_prefetch_q));
+      end
+      if ($past(active && probe_valid_q && grant_read_turn_q && !prefetch_cancel))
+        assert (grant_read_turn_q);
       if (active) assert (f_probe_age < 32);
       if (local_turn_q) assert (phase_q == Idle && !probe_valid_q && !o_r_valid);
       if ($past(o_r_valid && i_r_ready)) assert (local_turn_q == $past(local_ready));
@@ -2011,6 +2062,12 @@ module coherence_l1d #(
           !probe_valid_q && !probe_priority)) begin
         assert (phase_q == Lookup && operation_q == ReadOp);
         assert (selected_read_q == $past(rd_pick));
+      end
+      if ($past(grant_read_hold && !grant_read_yield && active && phase_q == Idle &&
+          !probe_valid_q && !probe_priority)) begin
+        assert (phase_q == Idle && !grant_read_turn_q);
+        assert ($stable(rd_ready_q) ||
+            $past(i_read_valid || ((!o_read_valid || i_read_ready) && rd_response)));
       end
       if ($past(active && phase_q == Idle))
         assert (grant_retry_q == $past(grant_read_yield && !probe_valid_q && !probe_priority));
@@ -2022,6 +2079,7 @@ module coherence_l1d #(
           operation_q == GrantOp && grant_ep_q != '0))
         assert (grant_read_turn_q == $past(!grant_prefetch_q && grant_demand_waiter));
       else if ($past((grant_valid && grant_ready) ||
+          (active && phase_q == Idle && !probe_valid_q && !probe_priority && grant_read_hold) ||
           (active && phase_q == Lookup && operation_q == ReadOp))) assert (!grant_read_turn_q);
       else assert ($stable(grant_read_turn_q));
       if (local_turn_q && grant_valid && active) assert (grant_ready);

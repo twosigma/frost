@@ -25,11 +25,15 @@ from cocotb_tests.cache.test_coherence_home import unpack
 from cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_cut import issue
 from cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_cut_fabric import Fabric
 from cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper import (
+    OP_LR_W,
     OP_LW,
     RS_MEM,
     make_int_req,
 )
-from cocotb_tests.tomasulo.tomasulo_wrapper.tomasulo_interface import TomasuloInterface
+from cocotb_tests.tomasulo.tomasulo_wrapper.tomasulo_interface import (
+    AllocationRequest,
+    TomasuloInterface,
+)
 
 
 class StreamInterface(TomasuloInterface):
@@ -213,3 +217,46 @@ async def younger_old_and_older_new_replay(dut: Any) -> None:
             raise AssertionError("Flushed observation tag was not reused")
         await f.cut(address=address, clean=False)
         assert not int(dut.core.u_rob.rob_replay.value) & (1 << replacement)
+
+
+@cocotb.test()
+async def attached_lr_response_cut_suppresses_reservation(dut: Any) -> None:
+    """Suppress an LR reservation when a cut overtakes its held speculative fill response."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    b, f, seeds = await prepare_stream(dut)
+    address = 0x80004060
+    hint = await b.wait_request(address)
+    for index, seed_tag in enumerate(seeds):
+        seed = await b.wait_request(0x80004000 + 32 * index)
+        await b.complete(seed, index + 3)
+        await b.wait_value(seed_tag, index + 3)
+    b.set_commit_hold(False)
+    for _ in range(30):
+        if all(any(c["tag"] == seed for c in b.commits) for seed in seeds):
+            break
+        await b.step()
+    else:
+        raise AssertionError("Training loads did not retire before LR admission")
+    b.set_commit_hold(True)
+    tag = await b.dispatch(
+        AllocationRequest(pc=0x6000, dest_reg=8, dest_valid=True, is_lr=True)
+    )
+    await issue(b, tag, OP_LR_W, address)
+    for _ in range(20):
+        await b.step()
+    assert int(dut.cache.rd_wait_q.value)
+    dut.i_cache_read_hold.value = 1
+    await b.complete(hint, 0x11223344)
+    for _ in range(40):
+        if int(dut.cache_read_valid.value):
+            break
+        await b.step()
+    else:
+        raise AssertionError("Attached LR response was not held")
+    await f.cut(address=address, replay_mask=1 << tag, clean=False)
+    assert not int(dut.o_coherent_reservation_valid.value)
+    dut.i_cache_read_hold.value = 0
+    for _ in range(12):
+        await b.step()
+        assert not int(dut.o_coherent_reservation_valid.value)
+    assert int(dut.core.u_rob.rob_replay.value) & (1 << tag)

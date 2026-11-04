@@ -103,7 +103,11 @@ at 32-bit and 56-bit physical widths.
 application, ordered read errors and installation of the following store.
 Its buffered-store cases check overlapping byte masks, same-sector order,
 held sector coverage, probe-driven reacquisition, frozen writeback conflicts
-and fatal acquisition errors. The `coherent_cut` bench delays old load responses
+and fatal acquisition errors. Stream cases witness registered LR/AMO cancellation
+at hint acceptance, complete atomic drain through U, and check used or empty
+read opportunities between grants. Held probe replies preserve unused credit.
+The composed stream bench checks reservation suppression when a cut overtakes
+an attached LR response. The `coherent_cut` bench delays old load responses
 across acceptance, acknowledgement and installation of partial stores, then
 checks that a subsequent load cannot use their stale data from L0.
 `cached_store_burst_test` checks cached store bursts followed by traps,

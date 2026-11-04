@@ -46,8 +46,8 @@ single: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
 multi: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
 stream: chparam -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d
 prep -flatten -top coherence_l1d
-streamcovers: select -assert-count 2 c:*p_stream_two c:*p_stream_attach
-streamcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:*p_stream_two c:*p_stream_attach %u %d
+streamcovers: select -assert-count 4 c:*p_stream_two c:*p_stream_attach c:*p_stream_lr_admit c:*p_stream_amo_admit
+streamcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:*p_stream_two c:*p_stream_attach c:*p_stream_lr_admit c:*p_stream_amo_admit %u %u %u %d
 # Control assertions run in the control tasks; this task checks the datapath.
 payload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
 payload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 %u %u %u %u %d
@@ -55,8 +55,8 @@ arraydata: select -assert-count 2 c:p_store_data_6 c:p_store_data_7
 arraydata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_6 c:p_store_data_7 %u %d
 grantdata: select -assert-count 3 c:p_store_data_8 c:p_store_data_9 c:p_store_data_10
 grantdata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_8 c:p_store_data_9 c:p_store_data_10 %u %u %d
-turncovers: select -assert-count 1 c:p_stream_read_turn
-turncovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_stream_read_turn %d
+turncovers: select -assert-count 3 c:p_stream_read_turn c:p_stream_empty_turn c:p_stream_probe_turn
+turncovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_stream_read_turn c:p_stream_empty_turn c:p_stream_probe_turn %u %u %d
 memory_map
 opt
 multi: techmap

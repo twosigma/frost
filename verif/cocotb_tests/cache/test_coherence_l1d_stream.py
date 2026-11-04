@@ -119,7 +119,7 @@ class StreamPrivate(Private):
         await self.set(
             i_g_valid=1,
             i_g=pack(
-                (3, 2 if request[0] == 1 else 0),
+                (3, 2 if request[0] in (1, 3, 4) else 0),
                 (9, request[1]),
                 (6, ep),
                 (self.p, request[2]),
@@ -140,6 +140,12 @@ class StreamPrivate(Private):
                 return
             await self.tick()
         raise AssertionError(f"No completion for endpoint {ep}")
+
+    def completion(self, index: int) -> tuple[int, ...]:
+        """Decode one endpoint's completion identity, status and write acknowledgement."""
+        ep, _ = self.requests[index]
+        bits = (self.get("o_c") >> (ep * (self.p + 18))) & ((1 << (self.p + 18)) - 1)
+        return unpack(bits, (9, 6, self.p, 2, 1))
 
     async def accept_completion(self, index: int) -> None:
         """Accept C while leaving its endpoint waiting for U."""
@@ -164,6 +170,90 @@ class StreamPrivate(Private):
         await self.tick()
         await self.set(i_u_valid=0)
         self.completed.add(index)
+
+    async def probe(self, address: int, opcode: int = 0, check_q: int = 0) -> None:
+        """Capture a probe and hold its reply for explicit acceptance."""
+        await self.set(
+            i_p_valid=1,
+            i_p=pack(
+                (2, opcode),
+                (6, 17),
+                (1, 0),
+                (self.p, address),
+                (2, 2),
+                (2, 0),
+                (9, check_q),
+                (5, 0),
+                (3, 3),
+            ),
+        )
+        await self.wait("o_p_ready")
+        await self.tick()
+        await self.set(i_p_valid=0)
+        await self.wait("o_r_valid")
+
+    async def finish_atomic(self, index: int, sc: bool = False) -> None:
+        """Complete endpoint-zero acquisition, CPU write, C and delayed U."""
+        ep, request = self.requests[index]
+        assert ep == 0 and not self.get("live") & ~1
+        if sc:
+            await self.set(
+                i_reservation_valid=1,
+                i_reservation_addr=request[2],
+                i_reservation_size=3,
+            )
+            await self.probe(request[2], opcode=2, check_q=request[1])
+            reply = unpack(
+                self.get("o_r"), (2, 6, 1, 1, self.p, 2, 1, 1, 256, 1, 1, 1, 1, 1)
+            )
+            assert reply[0] == 2 and reply[1] == 17 and reply[4] == request[2]
+            assert reply[12] and not reply[13]
+            await self.set(i_r_ready=1)
+            await self.tick()
+            await self.set(i_r_ready=0)
+            await self.probe(request[2])
+            reply = unpack(
+                self.get("o_r"), (2, 6, 1, 1, self.p, 2, 1, 1, 256, 1, 1, 1, 1, 1)
+            )
+            assert reply[1] == 17 and reply[4] == request[2] and not reply[13]
+            await self.set(i_r_ready=1)
+            await self.tick()
+            await self.set(i_r_ready=0)
+        await self.send_grant(index)
+        await self.wait("atomic_granted_q")
+        await self.tick(12)
+        assert not self.get("o_c_valid") and self.get("live") == 1
+        if sc:
+            assert self.get("o_sc_result_valid") and self.get("o_sc_success")
+            assert not self.get("o_sc_error")
+            await self.set(i_sc_commit=1, i_sc_result_ready=1)
+            await self.tick()
+            await self.set(i_sc_commit=0)
+        else:
+            await self.wait("o_read_valid")
+            assert self.get("o_read_data") == self.word(request[2])
+            assert not self.get("o_read_error")
+        await self.set(
+            i_address=request[2],
+            i_write_mask=255,
+            i_write_data=0xFEDCBA9876543210,
+            i_write_atomic=1,
+            i_write_sc=int(sc),
+            i_write_tag=7 if sc else 0,
+        )
+        await self.tick()
+        await self.set(i_write_mask=0)
+        await self.wait("o_c_valid")
+        expected = (request[1], ep, request[2], 0, 1)
+        for _ in range(12):
+            assert self.completion(index) == expected and self.get("o_c_valid") == 1
+            assert self.get("live") == 1 and self.get("atomic_q")
+            await self.tick()
+        await self.accept_completion(index)
+        await self.tick(12)
+        assert self.get("live") == 1 and self.get("atomic_q")
+        await self.release(index)
+        assert not self.get("atomic_q") and not self.get("live")
 
     async def drain(self, count: int) -> None:
         """Complete requests until all expected demand responses arrive."""
@@ -340,12 +430,14 @@ async def resident_hint_preserves_waiting_data(dut: Any) -> None:
 
 @cocotb.test()
 async def cancellation_at_each_unaccepted_stage(dut: Any) -> None:
-    """Cancel a witnessed mid-page hint through its endpoint acceptance edge."""
+    """Cancel hints before atomic admission or immediately for direct cancellation."""
     b = StreamPrivate(dut)
     if b.endpoints < 4:
         return
     for stage in range(5):
         for cancel in ("lr", "amo", "sc", "maintenance", "fatal", "reset"):
+            if stage == 4 and cancel in ("lr", "amo"):
+                continue
             await b.reset()
             await b.seed_before(0x80001020)
             await b.issue(0, 0x80001020)
@@ -445,10 +537,13 @@ async def accepted_hints_drain_for_exclusive_work(dut: Any) -> None:
         if waiting == "amo":
             await b.requests_at_least(5)
             assert b.requests[4][0] == 0 and b.requests[4][1][0] == 3
+            await b.set(i_read_ready=0)
+            await b.finish_atomic(4)
         elif waiting == "sc":
             await b.requests_at_least(5)
             assert b.requests[4][0] == 0 and b.requests[4][1][0] == 4
             await b.set(i_sc_valid=0)
+            await b.finish_atomic(4, sc=True)
         elif waiting == "maintenance":
             await b.wait("o_maint_done")
         else:
@@ -518,7 +613,13 @@ async def credited_miss_waits_for_buffered_grant(dut: Any) -> None:
     b = StreamPrivate(dut)
     if b.endpoints < 3:
         return
-    for incoming_lr in (False, True):
+    for kind, arrival in (
+        (0, "none"),
+        (1, "lookup"),
+        (1, "selection"),
+        (2, "selection"),
+    ):
+        incoming_atomic = arrival != "none"
         await b.reset()
         await b.set(i_read_ready=0)
         base = 0x80004000
@@ -533,9 +634,14 @@ async def credited_miss_waits_for_buffered_grant(dut: Any) -> None:
         for _ in range(100):
             if b.get("phase_q") == 0 and b.get("grant_read_yield"):
                 assert b.get("rd_pick") == 3
-                await b.tick()
-                if incoming_lr:
-                    await b.issue(4, base + 1536, kind=1)
+                if arrival == "selection":
+                    await b.issue(4, base + 1536, kind=kind)
+                    assert b.get("phase_q") == 1 and b.get("grant_retry_q")
+                else:
+                    await b.tick()
+                if arrival == "lookup":
+                    await b.issue(4, base + 1536, kind=kind)
+                if incoming_atomic:
                     assert b.get("prefetch_cancel") and b.get("grant_retry_q")
                 break
             await b.tick()
@@ -565,14 +671,158 @@ async def credited_miss_waits_for_buffered_grant(dut: Any) -> None:
         await b.release(0)
         await b.release(1)
         await b.requests_at_least(3)
-        await b.drain(5 if incoming_lr else 4)
+        if kind == 2:
+            assert b.requests[2][0] == 0 and b.requests[2][1][0] == 3
+            await b.set(i_read_ready=1)
+            await b.tick(10)
+            await b.set(i_read_ready=0)
+            await b.finish_atomic(2)
+        await b.drain(5 if incoming_atomic else 4)
         expected = [
             (0, b.word(base), 0),
             (1, b.word(base + 512), 0),
             (2, b.word(base + 8), 0),
             (3, b.word(base + 1024), 0),
         ]
-        if incoming_lr:
+        if incoming_atomic:
             expected.append((4, b.word(base + 1536), 0))
         assert sorted(b.responses) == expected
         assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def empty_turn_and_probe_local_turn(dut: Any) -> None:
+    """Consume one empty opportunity and preserve unused credit across held R."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 3:
+        return
+    for held_probe in (False, True):
+        for error in (False, True):
+            await b.reset()
+            base = 0x80003000
+            await b.issue(0, base)
+            await b.issue(1, base + 512)
+            await b.issue(2, base + 8)
+            await b.requests_at_least(2)
+            await b.tick(40)
+            await b.send_grant(0)
+            await b.send_grant(1, error=error)
+            if not held_probe:
+                await b.set(i_address=base, i_write_mask=255, i_write_data=123)
+                await b.tick()
+                await b.set(i_write_mask=0)
+            for _ in range(100):
+                if b.get("phase_q") == 0 and b.get("grant_read_hold"):
+                    break
+                await b.tick()
+            else:
+                raise AssertionError("No unused grant-deferral opportunity")
+            assert not b.get("prefetch_cancel")
+            assert not b.get("grant_ready") and not b.get("read_failure")
+            if held_probe:
+                await b.probe(base + 2048)
+                for _ in range(12):
+                    assert b.get("grant_read_turn_q") and not b.get("grant_ready")
+                    assert not b.get("rd_ready_q") & 2 and not b.get("read_failure")
+                    await b.tick()
+                await b.set(i_r_ready=1)
+                await b.tick()
+                await b.set(i_r_ready=0)
+                assert b.get("local_turn_q") and b.get("grant_ready")
+            else:
+                assert not b.get("rd_candidate") and not b.get("grant_read_yield")
+                await b.tick()
+                assert b.get("phase_q") == 0 and not b.get("grant_read_turn_q")
+                assert b.get("grant_ready")
+            assert b.get("read_failure") == int(error)
+            await b.tick()
+            assert not b.get("grant_read_turn_q")
+            await b.tick(30)
+            assert b.get("o_c_valid") >> b.requests[1][0] & 1
+            assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def atomic_admission_on_hint_acceptance(dut: Any) -> None:
+    """Overlap LR/AMO admission with one hint and drain held D, C and U."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 4:
+        return
+    base = 0x80001020
+    for kind in (1, 2):
+        for error in (False, True):
+            await b.reset()
+            await b.seed_before(base)
+            await b.issue(0, base)
+            await b.issue(1, base + 32)
+            for _ in range(150):
+                if b.get("operation_q") == 6 and b.get("phase_q") == 3:
+                    break
+                await b.tick()
+            else:
+                raise AssertionError("Hint did not reach internal acceptance")
+            assert len(b.requests) == 2
+            await b.set(
+                i_d_ready=0,
+                i_read_valid=1,
+                i_read_id=2,
+                i_read_kind=kind,
+                i_read_size=3,
+                i_address=base + 64,
+            )
+            accepted = b.get("ep_request_valid") & b.get("ep_request_ready")
+            assert accepted.bit_count() == 1 and not b.get("prefetch_cancel")
+            await b.tick()
+            await b.set(i_read_valid=0)
+            assert b.get("atomic_read_waiting") and b.get("prefetch_cancel")
+            assert b.get("live") & b.get("ld_prefetch_q") == accepted
+            held_d = b.get("o_d")
+            for _ in range(12):
+                assert b.get("o_d_valid") == accepted and b.get("o_d") == held_d
+                assert not b.get("ep_request_valid")
+                assert not b.get("o_read_valid")
+                await b.tick()
+            assert not b.get("hint_valid_q") and not b.get("stream_confirmed")
+            await b.set(i_d_ready=(1 << b.endpoints) - 1)
+            await b.requests_at_least(3)
+            assert b.requests[2][1][2] == base + 64
+            await b.grant(2, error=error)
+            ep, request = b.requests[2]
+            expected = (request[1], ep, request[2], 2 if error else 0, 0)
+            for _ in range(20):
+                assert b.completion(2) == expected and b.get("o_c_valid") & accepted
+                assert b.get("live") & b.get("ld_prefetch_q") == accepted
+                assert len(b.requests) == 3
+                if kind == 2 or error:
+                    assert not b.get("rd_ready_q") & 4
+                await b.tick()
+            await b.accept_completion(2)
+            await b.tick(12)
+            assert b.get("live") & b.get("ld_prefetch_q") == accepted
+            assert not b.get("o_c_valid") & accepted
+            if kind == 1 and not error:
+                assert b.get("o_read_valid") and b.get("o_read_id") == 2
+                assert b.get("o_read_data") == b.word(base + 64)
+                assert not b.get("o_read_error")
+            else:
+                assert not b.get("o_read_valid")
+            for index in range(2):
+                await b.grant(index)
+                await b.release(index)
+            await b.tick(12)
+            assert len(b.requests) == 3
+            await b.release(2)
+            if kind == 2:
+                await b.requests_at_least(4)
+                assert b.requests[3][0] == 0 and b.requests[3][1][0] == 3
+                await b.set(i_read_ready=1)
+                await b.tick(10)
+                await b.set(i_read_ready=0)
+                await b.finish_atomic(3)
+            await b.drain(3)
+            assert sorted(b.responses) == [
+                (slot, b.word(base + 32 * slot), 0) for slot in range(3)
+            ]
+            if kind == 1 and error:
+                assert b.requests[3][0] == 0 and b.requests[3][1][0] == 2
+            assert not b.get("o_fatal")

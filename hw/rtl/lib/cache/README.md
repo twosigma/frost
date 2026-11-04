@@ -261,8 +261,10 @@ Grants install one at a time, endpoint 0's first and then the lowest-numbered
 load endpoint's. With stream look-ahead enabled, a successful demand installation
 with a reader waiting on that endpoint gives an eligible ordinary read one
 service turn before another load grant.
-The credit is consumed at read lookup start or grant acceptance. Probe turns,
-atomic work and maintenance suppress the credited turn. While a grant is
+The credit is consumed at the first probe-free grant-deferral opportunity,
+read lookup start or grant acceptance. An empty opportunity lasts one edge.
+Probe ownership preserves unused credit, and its following local turn bypasses
+deferral. Atomic work and maintenance cancel the credit. While a grant is
 selectable, a credited read may hit or attach to a live endpoint; its miss
 waits to start an acquisition. A load grant installs only while a WB slot is free, and
 endpoint 0 does not take the last free slot while a load grant waits. New
@@ -301,9 +303,10 @@ probe service. They do not own a read ID, modify demand response data or
 complete a CPU load. An attached load repeats permission lookup after
 installation. A clean speculative read error is disposed through C and U;
 an attached demand then retries and determines its own result. Dirty
-writeback errors are fatal. Queued LR or AMO work, selected atomics, SC,
-local maintenance, reset and fatal stop cancel unaccepted hints. Accepted
-endpoints complete their protocol lifetime. LR may attach to a speculative
+writeback errors are fatal. Registered admitted LR or AMO work, selected
+atomics, SC, local maintenance, reset and fatal stop cancel unaccepted hints.
+One hint may be accepted on the LR or AMO admission edge. Its endpoint owns
+the request through D, G, C and U, including channel backpressure. LR may attach to a speculative
 fill; AMO, SC and local maintenance use the endpoint drain rules.
 
 An L1D grant belongs to a live request endpoint. SC acceptance requires
@@ -649,8 +652,9 @@ The `coherence_l1d` target also runs the L1D with three request endpoints and
 checks that no two live endpoints hold one sector, that no load endpoint is
 live beside a granted atomic, and that a load grant installs with a free WB
 slot. Its eight-endpoint stream tasks check speculative ownership and
-separation from demand response masks, and cover two accepted hints and a
-demand attachment. `coherence_read_stream` proves the three-miss confirmation
+separation from demand response masks, and cover two accepted hints, demand
+attachment and simultaneous LR/AMO admission. Grant-turn covers witness a used
+opportunity, an empty opportunity and a held probe reply followed by local service. `coherence_read_stream` proves the three-miss confirmation
 rule, cancellation and page-bounded cursor, including simultaneous demand
 advance and hint consumption.
 Detached victim validity, address and a watched byte are checked by induction
