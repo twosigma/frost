@@ -341,9 +341,10 @@ Fatal state suppresses probe validity, and the L1D applies reset to an
 offered probe. Reset and fatal state suppress PutAck validity and further array
 requests. Internal home and engine state changes are qualified by the stop
 condition alone, because reset clears every register they update.
-Read arbitration uses pending read offers. Home stop clears its
-unaccepted selection. Accepted reads keep their tokens through physical
-completion. A local fatal transition cancels an unaccepted read.
+Read arbitration selects pending read offers with its held one-hot mask.
+Home stop clears its unaccepted selection. Accepted reads keep their tokens
+through physical completion. A local fatal transition cancels an unaccepted
+read.
 
 The home admits twenty-three requests with distinct identities: nineteen
 hart and DMA requests, and four prefetches in four slots kept for them, so

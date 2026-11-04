@@ -94,7 +94,8 @@ module coherence_d_arbiter #(
   end
   assign o_ready = {PORTS{!i_rst && i_ready}} & selected_ports_q;
   assign o_selected = selected_ports_q;
-  assign o_offer = selected_q && (HOLD_VALID || i_valid[selected_port_q]);
+  // Live validity selects the pending offer with the held one-hot mask.
+  assign o_offer = HOLD_VALID ? selected_q : |(i_valid & selected_ports_q);
   assign o_valid = !i_rst && o_offer;
   assign o_payload = payload_q;
   always_ff @(posedge i_clk) begin
@@ -140,6 +141,7 @@ module coherence_d_arbiter #(
       assert (o_payload == i_payload[selected_port_q]);
     if (sim_reset_seen_q && !i_rst) begin
       assert (selected_ports_q == (selected_q ? PORTS'(1) << selected_port_q : PORTS'(0)));
+      p_offer_select : assert (o_offer == (selected_q && (HOLD_VALID || i_valid[selected_port_q])));
       for (int port_idx = 0; port_idx < PORTS; port_idx++)
       assert (later_q[port_idx] == (port_idx >= int'(next_q)));
       if (found)
