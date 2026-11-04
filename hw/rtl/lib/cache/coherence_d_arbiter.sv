@@ -51,6 +51,7 @@ module coherence_d_arbiter #(
   // later_q[port] holds port >= next_q.
   logic [PORTS-1:0] later_q, later, later_first, valid_first, pick_ports;
   logic [Groups-1:0] later_groups, valid_groups;
+  (* keep = "true" *) logic [Groups-1:0] offer_groups;
   logic [WIDTH-1:0] payload_q, pick_payload;
   // The pick is the first valid port at or after next_q, else the first
   // valid port. Each port's priority comes from four-port group summaries
@@ -61,6 +62,8 @@ module coherence_d_arbiter #(
     localparam int unsigned Width = PORTS - Base < GroupBits ? PORTS - Base : GroupBits;
     assign later_groups[group_index] = |later[Base+:Width];
     assign valid_groups[group_index] = |i_valid[Base+:Width];
+    assign offer_groups[group_index] = HOLD_VALID ? 1'b0 :
+        |(i_valid[Base+:Width] & selected_ports_q[Base+:Width]);
   end
   for (genvar port_idx = 0; port_idx < PORTS; port_idx++) begin : gen_first
     localparam int unsigned Group  = port_idx / GroupBits;
@@ -94,8 +97,8 @@ module coherence_d_arbiter #(
   end
   assign o_ready = {PORTS{!i_rst && i_ready}} & selected_ports_q;
   assign o_selected = selected_ports_q;
-  // Live validity selects the pending offer with the held one-hot mask.
-  assign o_offer = HOLD_VALID ? selected_q : |(i_valid & selected_ports_q);
+  // Live offers pass through the held mask in groups before the final reduction.
+  assign o_offer = HOLD_VALID ? selected_q : |offer_groups;
   assign o_valid = !i_rst && o_offer;
   assign o_payload = payload_q;
   always_ff @(posedge i_clk) begin
