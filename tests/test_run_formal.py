@@ -208,6 +208,11 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "coherence_read_stream.sby",
+        "Ascending demand streams stay within the look-ahead window and physical page.",
+        tasks=("stream_prove", "stream_cover"),
+    ),
+    FormalTarget(
         "coherence_l1d.sby",
         "The coherent L1 preserves pending stores, cuts, and exact atomic writes.",
         tasks=(
@@ -1140,6 +1145,14 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    (
+        "stream_prove",
+        "Demand stream confirmation, cancellation and bounded sector cursor.",
+    ),
+    (
+        "stream_cover",
+        "Page-end saturation and simultaneous demand advance and hint consumption.",
+    ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
     ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),

@@ -2270,6 +2270,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="The coherent cut covers observations, delayed LR, and stale fills.",
         verilator_extra_args=("--assert",),
     ),
+    "coherence_read_stream": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GADDR_WIDTH=56"),
+        python_test_module="cocotb_tests.cache.test_coherence_read_stream",
+        hdl_toplevel_module="coherence_read_stream",
+        description="Demand stream confirmation, bounded look-ahead, cancellation and page edges",
+    ),
     "coherence_l1d": CocotbRunConfig(
         verilator_extra_args=("--assert", "-GCACHE_BYTES=512"),
         python_test_module="cocotb_tests.cache.test_coherence_l1d",
