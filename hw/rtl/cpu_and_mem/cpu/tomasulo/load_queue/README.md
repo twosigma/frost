@@ -405,6 +405,9 @@ FROST_VERILATOR_EXTRA_ARGS=-GL0_CACHE_DEPTH=256 ./scripts/frost.py cocotb corema
 
 The LR reservation (`o_reservation_valid`, `o_reservation_addr`) lives here.
 An LR reads memory and sets the reservation when its response is accepted.
+Separate registers capture the set event, clear event and held validity.
+Their combined output gives clears priority on that same edge. A full flush
+clears the reservation on its edge; commit-time branch recovery preserves it.
 Like an AMO, it launches at the ROB head once the SQ has no committed store
 left to write (`i_sq_committed_empty`), so every store whose write clears the
 reservation comes after the LR in program order. An older store to the other

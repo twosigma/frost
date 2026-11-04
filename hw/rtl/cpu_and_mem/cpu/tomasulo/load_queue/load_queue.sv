@@ -543,10 +543,12 @@ module load_queue #(
   logic [DEPTH-1:0] dep_identity_valid_q;
   logic [ReorderBufferTagWidth-1:0] dep_head_q;
 
-  // Reservation register (LR/SC)
+  // Reservation state (LR/SC)
   logic reservation_valid;
+  logic reservation_held_q, reservation_set_q, reservation_clear_q;
   logic [XLEN-1:0] reservation_addr;
   logic [2:0] reservation_size;
+  assign reservation_valid = (reservation_held_q || reservation_set_q) && !reservation_clear_q;
   assign o_reservation_valid = reservation_valid;
   assign o_reservation_addr  = reservation_addr;
   assign o_reservation_size  = reservation_size;
@@ -970,6 +972,24 @@ module load_queue #(
   assign reservation_clear = i_sc_clear_reservation || i_reservation_snoop_invalidate ||
       coh_reservation_inval || amo_reservation_inval ||
       (mem_read_en && sq_check_is_lr_q);
+  // Set and clear events are captured separately from the held reservation.
+  // Their registered values publish the result on the response edge, with
+  // clear taking priority. Commit-time misprediction recovery preserves it:
+  // an LR launches at the ROB head and retires before the recovered branch.
+  logic reservation_set;
+  assign reservation_set = accept_mem_response && !mem_response_error &&
+      issued_is_lr && !issued_is_amo && !issued_lr_suppressed;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      reservation_held_q <= 1'b0;
+      reservation_set_q <= 1'b0;
+      reservation_clear_q <= 1'b0;
+    end else begin
+      reservation_held_q <= reservation_valid;
+      reservation_set_q <= reservation_set;
+      reservation_clear_q <= reservation_clear || (i_flush_all && i_full_flush);
+    end
+  end
   // The hold is a registered compare of the staged atomic's line against the
   // mirror. A newly captured or replaced atomic has no compare of its own
   // yet, so it waits one cycle before its first launch (coh_hold_valid_q);
@@ -3751,7 +3771,6 @@ module load_queue #(
       cs_drop                   <= '0;
       cached_launch_hold_q      <= 1'b0;
       cs_any_q                  <= 1'b0;
-      reservation_valid         <= 1'b0;
       amo_state                 <= AMO_IDLE;
     end else if (i_flush_all) begin
       // Full flush: reset control signals
@@ -3776,11 +3795,6 @@ module load_queue #(
       cs_drop <= cs_valid_next;
       cached_launch_hold_q <= cached_launch_hold_next;
       cs_any_q <= |cs_valid_next;
-      // Commit-time misprediction recovery keeps the reservation. An LR
-      // launches only at the ROB head, so the LR that set it retired before
-      // the mispredicted branch, and the flush removes only instructions
-      // after that branch.
-      if (i_full_flush || reservation_clear) reservation_valid <= 1'b0;
       amo_state <= AMO_IDLE;
     end else begin
       // -----------------------------------------------------------------
@@ -3852,11 +3866,6 @@ module load_queue #(
           // guard prevents an overlapping response from replacing an active AMO.
           if (amo_response_capture)
             amo_state <= amo_response_is_minmax ? AMO_WRITE_ACTIVE : AMO_COMPUTE;
-        end else begin
-          // A bypassed result frees its entry, so skip data_valid; the response RAM
-          // write is harmless. LR sets its reservation on either completion path
-          // unless coherence suppresses it.
-          if (issued_is_lr && !issued_lr_suppressed) reservation_valid <= 1'b1;
         end
       end
 
@@ -3903,11 +3912,6 @@ module load_queue #(
         lq_response_error[amo_entry_idx] <= MEM_RESPONSE_ERRORS && i_amo_mem_write_error;
         amo_state                        <= AMO_IDLE;
       end
-
-      // -----------------------------------------------------------------
-      // Reservation clear (priority: clear wins over set)
-      // -----------------------------------------------------------------
-      if (reservation_clear) reservation_valid <= 1'b0;
 
       // -----------------------------------------------------------------
       // Entry Freeing + Head Advancement
@@ -5697,11 +5701,21 @@ module load_queue #(
           !mem_read_en && !cache_hit_fast_path && !sq_do_forward);
     if (f_coherent_past[1] && $past(!i_rst_n || i_flush_all || coherent_holder_changed))
       assert (coherent_parked_q == '0);
+    if (f_coherent_past[1] && !$past(i_rst_n))
+      p_reservation_reset : assert (!reservation_valid);
     if (f_coherent_past[1] && i_rst_n && $past(i_rst_n)) begin
-      if ($past(reservation_clear)) assert (!reservation_valid);
+      p_reservation_transition : assert (reservation_valid == $past(
+          (reservation_valid || (accept_mem_response && !mem_response_error &&
+           issued_is_lr && !issued_is_amo && !issued_lr_suppressed)) &&
+          !reservation_clear && !(i_flush_all && i_full_flush)));
+      if ($past(reservation_clear || (i_flush_all && i_full_flush)))
+        p_reservation_clear_priority : assert (!reservation_valid);
+      if ($past(i_flush_all && !i_full_flush && !reservation_clear))
+        p_reservation_recovery_keeps : assert (reservation_valid == $past(reservation_valid));
       if (!$past(reservation_valid) && reservation_valid)
-        assert ($past(
-            accept_mem_response && !mem_response_error && issued_is_lr && !issued_lr_suppressed
+        p_reservation_set_response : assert ($past(
+            accept_mem_response && !mem_response_error && issued_is_lr &&
+            !issued_is_amo && !issued_lr_suppressed
         ));
     end
   end

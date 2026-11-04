@@ -2727,6 +2727,46 @@ async def test_lr_sets_reservation(dut: Any) -> None:
 # LR reservation cleared by flush_all
 # ============================================================================
 @cocotb.test()
+async def test_lr_reservation_clear_at_response_boundary(dut: Any) -> None:
+    """A clear on or after an LR response prevents reservation resurrection."""
+    dut_if, _ = await setup(dut)
+    for cached in (False, True):
+        for clear_kind in ("sc", "snoop", "coherence"):
+            if clear_kind == "coherence" and not cached:
+                continue
+            for clear_delay in (0, 1, 2):
+                await dut_if.reset_dut()
+                address = (0x8000_0000 if cached else 0) + 0x3800
+                dut_if.drive_rob_head_tag(0)
+                dut_if.drive_alloc(0, size=MEM_SIZE_WORD, is_lr=True)
+                await dut_if.step()
+                dut_if.clear_alloc()
+                dut_if.drive_addr_update(0, address)
+                await dut_if.step()
+                dut_if.clear_addr_update()
+                dut_if.drive_sq_all_older_known(True)
+                dut_if.drive_sq_forward(match=False, can_forward=False)
+                request = await wait_for_mem_request(dut_if)
+                assert request["en"]
+                await dut_if.step()
+                dut_if.drive_mem_response(0x1234)
+                for cycle in range(6):
+                    clearing = cycle == clear_delay
+                    dut_if.drive_sc_clear_reservation(clearing and clear_kind == "sc")
+                    dut_if.drive_reservation_snoop_invalidate(
+                        clearing and clear_kind == "snoop"
+                    )
+                    dut.i_coh_inval_valid.value = clearing and clear_kind == "coherence"
+                    dut.i_coh_inval_addr.value = address
+                    await dut_if.step()
+                    dut_if.clear_mem_response()
+                    assert dut_if.read_reservation_valid() == (cycle < clear_delay), (
+                        f"cached={cached}, clear={clear_kind}, "
+                        f"delay={clear_delay}, cycle={cycle}"
+                    )
+
+
+@cocotb.test()
 async def test_lr_reservation_cleared_by_flush(dut: Any) -> None:
     """flush_all clears reservation."""
     dut_if, model = await setup(dut)
