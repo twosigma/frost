@@ -18,4 +18,3 @@ ABI := $(FROST_INT_ABI)
 ASM_SRC := btb_bench.S
 
 include ../../common/standalone_asm.mk
-
