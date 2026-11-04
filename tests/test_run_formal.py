@@ -76,6 +76,8 @@ FORMAL_TARGETS = [
         tasks=(
             "pf_agent64_prove",
             "pf_agent32_prove",
+            "pf_agent1_prove",
+            "pf_agent2_prove",
             "pf_agent4_prove",
             "pf_agent64_cover",
             "pf_agent32_cover",
@@ -1163,6 +1165,8 @@ SBY_TASKS = [
     ("pf_pause_cover", "Eight DMA identities, simultaneous reuse and return to idle."),
     ("pf_agent64_prove", "Prefetch endpoint ownership with 64-byte lines."),
     ("pf_agent32_prove", "Prefetch endpoint ownership with 32-byte lines."),
+    ("pf_agent1_prove", "Prefetch endpoint ownership with a one-request cap."),
+    ("pf_agent2_prove", "Prefetch endpoint ownership with a two-request cap."),
     (
         "pf_agent4_prove",
         "Prefetch endpoint ownership with all four identities enabled.",

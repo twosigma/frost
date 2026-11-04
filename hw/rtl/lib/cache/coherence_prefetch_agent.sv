@@ -104,8 +104,9 @@ module coherence_prefetch_agent #(
       request.addr = {pf_req_addr[ADDR_WIDTH-1:5], 5'b0};
       request.size = 3'd5;
     end
+    // The lowest-free-id allocator uses only identities below the cap.
     assign ep_request_valid[s] =
-        pf_req_valid && !i_fatal_stop && !i_pause && pf_req_id == IdBits'(s);
+        (s < MAX_INFLIGHT) && pf_req_valid && !i_fatal_stop && !i_pause && pf_req_id == IdBits'(s);
     coherence_request_endpoint #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .SOURCE(3),
@@ -242,7 +243,10 @@ module coherence_prefetch_agent #(
       assert (f_owned_q == ep_live);
       assert (pf_busy == (ep_live | (pf_req_valid ? Slots'(1) << pf_req_id : Slots'(0))));
       assert ($countones(f_owned_q) <= MAX_INFLIGHT);
-      if (pf_req_valid) assert (!ep_live[pf_req_id]);
+      if (pf_req_valid) begin
+        assert (int'(pf_req_id) < MAX_INFLIGHT);
+        assert (!ep_live[pf_req_id]);
+      end
       assert ($onehot0(ep_g_ready));
       assert ($onehot0(ep_u_ready));
       assert (!(i_fatal_stop || i_pause) || !(|ep_request_valid));

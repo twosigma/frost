@@ -176,6 +176,7 @@ module l2_stream_prefetcher #(
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
       assert (inflight_q <= InflightBits'(MAX_INFLIGHT));
+      assert ((id_busy_q >> MAX_INFLIGHT) == '0);
       if (req_valid_q) assert (id_busy_q[req_id_q]);
     end
   end

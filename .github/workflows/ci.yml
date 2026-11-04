@@ -1214,8 +1214,8 @@ jobs:
               reorder_buffer_bmc or
               (coherence_l1d and not (coh_l1d_bmc or coh_l1d_multi_bmc))
             timeout_minutes: 120
-          # The coherence home, prefetch requester, endpoints and bridges,
-          # the coherent CPU interfaces, and the hart maintenance covers.
+          # The coherence home, prefetch requester at every request cap,
+          # endpoints, bridges, coherent CPU interfaces and hart covers.
           - shard: Coherence
             pytest_filter: >-
               (axi_coherent_bridge or coherence_ or coherent_) and not
