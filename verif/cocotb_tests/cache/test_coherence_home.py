@@ -14,6 +14,7 @@
 
 """Exercise the home with independent hart and memory responders."""
 
+from collections.abc import Callable
 from typing import Any
 
 import cocotb
@@ -68,6 +69,8 @@ class Home:
         # Grants for source 3, which the bench takes when they are presented,
         # as the prefetcher does.
         self.prefetch_grants: list[tuple[int, ...]] = []
+        # Called after each clock edge with the registered state updated.
+        self.observers: list[Callable[[], None]] = []
 
     def get(self, name: str) -> int:
         """Read a signal."""
@@ -242,6 +245,8 @@ class Home:
                 await self.set(i_g_ready=held_ready)
             if not self.get("i_rst"):
                 self.write_fills += (self.get("o_write_perf_events") >> 7) & 1
+            for observer in self.observers:
+                observer()
             if next_put is not None:
                 await self.set(i_w_valid=1, i_w=next_put)
             elif drop_put:
@@ -431,6 +436,56 @@ class Home:
         assert grant[5] == 0
         await self.finish(grant)
         return grant[4]
+
+
+# Fill phases, in the order of coherence_home's fill_phase_t.
+FILL_PHASES = (
+    "free",
+    "recall",
+    "detach",
+    "invalidate",
+    "invalidate_wait",
+    "memory",
+    "install",
+    "install_wait",
+    "ready",
+    "fatal",
+)
+
+
+class FillMonitor:
+    """Record every fill's phase, response and error flags after each edge."""
+
+    def __init__(self, b: Home) -> None:
+        """Sample the fills at construction and after every later clock edge."""
+        self.dut = b.dut
+        self.fills = len(b.dut.fill_phase_q)
+        self.history = [self.sample()]
+        b.observers.append(self.observe)
+
+    def sample(self) -> list[tuple[str, int, int]]:
+        """Return each fill's phase name, fill_done_q and fill_error_q."""
+        done = int(self.dut.fill_done_q.value)
+        error = int(self.dut.fill_error_q.value)
+        return [
+            (
+                FILL_PHASES[int(self.dut.fill_phase_q[fill].value)],
+                (done >> fill) & 1,
+                (error >> fill) & 1,
+            )
+            for fill in range(self.fills)
+        ]
+
+    def observe(self) -> None:
+        """Append the state after one edge."""
+        self.history.append(self.sample())
+
+    def edges(self, fill: int) -> list[tuple[tuple[str, int, int], ...]]:
+        """Return the fill's (before, after) states for every recorded edge."""
+        return [
+            (self.history[edge - 1][fill], self.history[edge][fill])
+            for edge in range(1, len(self.history))
+        ]
 
 
 @cocotb.test()
@@ -1654,3 +1709,54 @@ async def prefetch_leaves_the_last_write_back_slot(dut: Any) -> None:
     assert b.reads_of(lines[5]) == 0
     assert await b.read(lines[6]) == b.expected(lines[6])
     assert int(dut.wb_valid_q.value).bit_count() == 2
+
+
+@cocotb.test()
+async def fill_responses_install_from_each_arrival_phase(dut: Any) -> None:
+    """Install a successful FillMemory response on the next edge.
+
+    Responses that arrive during victim recall, detach or invalidation wait
+    in fill_done_q, and an error response in FillMemory frees the fill.
+    """
+    arrivals = set()
+    for delay in range(30):
+        b = Home(dut)
+        await b.reset()
+        monitor = FillMonitor(b)
+        base = 0x80000000
+        stride = 4 * b.line
+        for index in range(4):
+            address = base + index * stride
+            assert await b.read(address) == b.expected(address)
+        b.read_delay = delay
+        address = base + 4 * stride
+        assert await b.read(address) == b.expected(address)
+        failed = base + b.line
+        b.errors.add(failed)
+        grant = await b.start(0, failed)
+        assert grant[5]
+        await b.finish(grant)
+        for fill in range(monitor.fills):
+            for before, after in monitor.edges(fill):
+                if before[0] == "memory" and before[1]:
+                    assert after[0] == ("free" if before[2] else "install")
+                if before[1] or not after[1]:
+                    continue
+                # A response arrived on this edge.
+                if before[0] == "memory":
+                    assert after[0] == ("memory" if after[2] else "install")
+                    arrivals.add("memory_error" if after[2] else "memory")
+                elif before[0] == "invalidate_wait" and after[0] == "memory":
+                    arrivals.add("invalidate_done")
+                else:
+                    assert after[0] == before[0] or after[0] in FILL_PHASES[1:6]
+                    arrivals.add(before[0])
+    dut._log.info("response arrival phases: %s", sorted(arrivals))
+    expected = {
+        "memory",
+        "memory_error",
+        "recall",
+        "invalidate_wait",
+        "invalidate_done",
+    }
+    assert expected <= arrivals

@@ -1328,6 +1328,13 @@ module coherence_home #(
               fill_seat_count_q[fill] <= '0;
             end
           end
+          // A successful response that arrives in FillMemory installs from
+          // the next cycle, beside the image capture above. A response that
+          // arrives in an earlier phase, and every error response, waits in
+          // fill_done_q for the transition above.
+          if (fill_phase_q[fill] == FillMemory && !fill_done_q[fill] && i_mem_resp_valid &&
+              i_mem_resp_id == 5'(fill) && !i_mem_resp_error)
+            fill_phase_q[fill] <= FillInstall;
           if (fill_phase_q[fill] == FillInstallWait && array_updated &&
               array_updated_token == TokenBits'(Client)) begin
             fill_phase_q[fill] <= FillReady;
@@ -1976,6 +1983,17 @@ module coherence_home #(
         cover (lookup_fill_q && !prefetch_fill_q && fill_free_any);
         cover (!lookup_fill_q);
       end
+    end
+`endif
+`ifdef COHERENCE_HOME_FILL_COVER
+    // Fill phase interleavings reachable with the control harness's free
+    // inputs. Fill 0 stands for each fill.
+    if (f_past_valid && !i_rst && !$past(i_rst)) begin
+      // A successful response in FillMemory installs from the next cycle.
+      cover ($past(
+          run && fill_phase_q[0] == FillMemory && !fill_done_q[0] && i_mem_resp_valid &&
+          i_mem_resp_id == 5'd0 && !i_mem_resp_error
+      ) && fill_phase_q[0] == FillInstall);
     end
 `endif
 `ifdef COHERENCE_HOME_COVER

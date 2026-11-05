@@ -251,6 +251,7 @@ FORMAL_TARGETS = [
             "coh_home_control_partition_prove",
             "coh_home_control4_bmc",
             "coh_home_control4_ultra_bmc",
+            "coh_home_fill_cover",
             "coh_home_wb_prove",
             "coh_home_victim_cover",
             "coh_home_error_cover",
@@ -1438,6 +1439,7 @@ SBY_TASKS = [
         "Each stream table's read ids return once, to the right table.",
     ),
     ("coh_prefetcher_cover", "All identities in flight, table turns, and a held C."),
+    ("coh_home_fill_cover", "Fill responses install from each fill phase."),
     ("coh_home_array_prove", "Independent L2 ports preserve watched bytes."),
     *[
         (
