@@ -582,7 +582,8 @@ proves, and its assumptions.
 
 Each target and task is a separate pytest case. The timeout is 40 minutes,
 except for `csr_file:bmc`, `csr_file:bmc_perf_off`, and `reorder_buffer:bmc`,
-which have 90 minutes each. `--verbose` prints solver output.
+which have 90 minutes each, and `coherent_hart_cache:coh_hart_maint_prove`,
+which has 120 minutes. `--verbose` prints solver output.
 
 ## Environment and output
 
@@ -823,7 +824,7 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 | Architecture compliance | BRAM and DDR, in groups of extensions; excludes Zifencei on BRAM and F/D on DDR; F and D share three BRAM shards without coverage; the other groups collect coverage |
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
 | Torture | BRAM, DDR, and paged DDR |
-| TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples |
+| TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and runs 50 sequences from the crypto generator |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis |
 | Formal verification | CSR profiling-on/off and ROB jobs, Coherence and Other tasks jobs, and a separate hart maintenance proof job; see the [formal guide](../formal/README.md) for budgets |
