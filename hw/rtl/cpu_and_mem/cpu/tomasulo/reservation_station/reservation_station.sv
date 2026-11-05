@@ -2586,7 +2586,7 @@ module reservation_station #(
 `endif
 `ifndef SYNTHESIS
       always @(posedge i_clk) begin
-        if (PREPARE_ISSUE_CONTROLS && i_rst_n) begin
+        if (reset_seen_q && PREPARE_ISSUE_CONTROLS && i_rst_n) begin
           p_coherent_clear_capture_exact :
           assert (coherent_issue2_clear_mask == ({DEPTH{issue_fire_2}} & issue_sel_2));
           p_coherent_tag_capture_exact :
