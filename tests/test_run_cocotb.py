@@ -2242,6 +2242,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GSIM_FAST_MAINT=1",
         ),
     ),
+    "coherent_cpu_local_contention": CocotbRunConfig(
+        python_test_module="cocotb_tests.integration.test_local_atomic_contention",
+        hdl_toplevel_module="cpu_top",
+        description="Protected SC completes beside a same-set grant, home probe and control entry.",
+        verilator_extra_args=(
+            "--assert",
+            "-GENABLE_COHERENCE=1",
+            "-GENABLE_CACHED_TIER=1",
+            "-GL1D_WAYS=1",
+            "-GL1I_WAYS=1",
+            "-GL2_WAYS=1",
+            "-GL1_CACHE_BYTES=256",
+            "-GL1I_CACHE_BYTES=256",
+            "-GL2_CACHE_BYTES=1024",
+        ),
+    ),
     "coherent_cpu_faults": CocotbRunConfig(
         python_test_module="cocotb_tests.integration.test_coherent_cpu_faults",
         hdl_toplevel_module="cpu_top",
@@ -2275,6 +2291,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cache.test_coherence_l1d",
         hdl_toplevel_module="coherence_l1d",
         description="Buffered store ordering, masked hits, read turns, grants, probes and frozen writebacks",
+    ),
+    "coherence_local_atomics": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GWAYS=1",
+            "-GMISSES=3",
+        ),
+        python_test_module="cocotb_tests.cache.test_local_atomics",
+        hdl_toplevel_module="coherence_l1d",
+        description="Local AMO and SC finish beside an uninstalled same-set load grant and probe",
+    ),
+    "coherence_local_atomics_8": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GCACHE_BYTES=512", "-GMISSES=8"),
+        python_test_module="cocotb_tests.cache.test_local_atomics",
+        hdl_toplevel_module="coherence_l1d",
+        description="Local atomic ownership with eight request endpoints and four ways",
     ),
     "coherence_cluster": CocotbRunConfig(
         verilator_extra_args=("--assert",),

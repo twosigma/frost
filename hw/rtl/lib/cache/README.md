@@ -111,14 +111,14 @@ and every payload bit during a stall. Addresses name aligned 32-byte sectors.
 Request identity q contains src 2, port_class 2, id 4, and epoch 1. Sources
 0 and 1 name harts, 2 names DMA, and 3 names prefetch. Classes 0, 1, 2, and 3
 name data, instruction fetch, page-table walk, and agent traffic. Hart data
-IDs are 0 through 7, fetch IDs are 0 and 1, and the walk ID is 0. DMA IDs
-are opaque four-bit values; prefetch IDs are 0 through 3, one for each
-request endpoint of the prefetch agent. Admission limits are the ingress's
-credits for DMA, eight in the cluster, and the agent's endpoints for
-prefetch: `L2_PREFETCH_INFLIGHT` data identities, three by default, and one
-instruction identity. Admission arbitration is external to the endpoint slots.
+IDs are 0 through 7, and fetch and walk IDs are 0 and 1. DMA IDs are opaque
+four-bit values; prefetch IDs are 0 through 3, one for each request endpoint
+of the prefetch agent. Admission limits are the ingress's credits for DMA,
+eight in the cluster, and the agent's endpoints for prefetch:
+`L2_PREFETCH_INFLIGHT` data identities, three by default, and one instruction
+identity. Admission arbitration is external to the endpoint slots.
 
-Home tid is six bits. For H harts, `completion_count(H)` is `11*H+12`: eleven
+Home tid is six bits. For H harts, `completion_count(H)` is `12*H+12`: twelve
 identities per hart, eight DMA credits and four prefetch identities. The
 last four slots take only prefetch requests, as many as the prefetch
 identities, so a prefetch never takes a hart or DMA slot.
@@ -264,7 +264,8 @@ Grants install one at a time, endpoint 0's first and then the lowest-numbered
 load endpoint's. A load grant installs only while a WB slot is free, and
 endpoint 0 does not take the last free slot while a load grant waits. New
 load acquisitions stop while an atomic is active or an AMO, SC or maintenance
-operation waits for every endpoint to be idle.
+operation waits for admission. A resident Modified atomic needs endpoint 0
+and its own sector free; home atomics and maintenance drain every endpoint.
 Read status uses per-slot masks for allocation, response transfer, lookup
 results and grant completion. Completion and miss sets dominate allocation
 clears. Allocation sets dominate response clears of valid bits. A failed
@@ -276,15 +277,18 @@ endpoints, the wait flag. These clears take priority over lookup and wait
 attachment updates on the same edge.
 
 An L1D grant belongs to a live request endpoint. SC acceptance requires
-every endpoint to be idle, so grant processing and SC acceptance are mutually
-exclusive. Probe capture and service own local arbitration through R
+endpoint 0 to be idle and excludes a selected grant. Grant processing and
+SC acceptance are mutually exclusive. Probe capture and service own local arbitration through R
 acceptance. Invalidation admission starts on P capture and keeps the captured
 address until the CPU accepts admission. Ready grants, writes and maintenance request one local selection
 edge after R acceptance. An eligible read requests a turn after four completed
 probe replies. Grants and atomic writes take priority within that turn. A waiting data read
-can use the turn between hit-store installations. A selected
-local operation completes its bounded array service before P is accepted. Waiting for an operand, permission or retirement does not hold
-the probe port. A withdrawn local offer releases its turn after one edge.
+can use the turn between hit-store installations. A selected local operation
+completes its array service before P is accepted. A local Modified atomic holds
+service from lookup through write installation and a registered release edge.
+This includes SC result consumption and retirement. Resource retries and home
+permission waits release the probe port. A withdrawn local offer releases its
+turn after one edge.
 Read-slot payload writes pass through a one-record buffer. The buffer
 captures the payload and a slot mask each cycle. The mask identifies the
 allocated slot and is zero without an allocation. It qualifies forwarding
@@ -303,10 +307,13 @@ slots. `L2_NUM_WAITERS` has no effect on the CPU hierarchy; `L2_PREFETCH`,
 prefetcher (see The home's prefetcher).
 
 L1D performance events count the first permission lookup of each CPU read
-or ordinary store. Cached SC selection counts as a permission miss. A store
-to S and an AMO require permission and count as misses. Repeated lookups,
+or ordinary store. Cached SC counts its first definitive classification: a Modified hit, including
+a failed reservation, is a hit; a home acquisition is a permission miss. A store
+to S requires permission and counts as a miss. AMOs on Modified sectors
+count as hits; other AMOs count as permission misses. Repeated lookups,
 probes and maintenance do not add demand events. Outstanding misses include
-unresolved read slots, the head store acquisition and the selected SC. L2 events
+unresolved read misses, the head store acquisition and an SC classified for
+home acquisition. L2 events
 count shared demand lookups, prefetch lookups and non-maintenance PutM
 lookups. Its fill count, prefetch fills included, is at most `L2_NUM_MSHR`.
 A prefetch that allocates nothing is not a slot-full stall; a blocked one is
@@ -316,12 +323,12 @@ source and use the cache-counter ABI.
 
 The hart uses source 0 and classes 0, 1 and 2 for data, instruction and walker
 requests. The data class has one request identity per L1D endpoint, IDs 0
-to `L1D_NUM_MSHR - 1`. The instruction class uses IDs 0 and 1 for two bridge
-slots; the walker class uses ID 0. Each IF slot saves its L1I MSHR ID separately
+to `L1D_NUM_MSHR - 1`. The instruction and walker classes each use IDs 0
+and 1 for two bridge slots. Each IF slot saves its L1I MSHR ID separately
 from its coherent identity. IF and PTW data and errors register at G, after the
 home has merged dirty probe data. Each slot completes C and U independently
-of its reader response and accepts another request only after U. The two IF
-slots share staged D/C arbiters and return at most one response per cycle.
+of its reader response and accepts another request only after U. Each class's
+two slots share staged D/C arbiters and return at most one response per cycle.
 Their G readiness uses the registered phase and full q match. The home admits
 at most one live request per q and returns that request's address in G.
 An assertion checks the address of every accepted grant.
@@ -355,7 +362,7 @@ Home stop clears its unaccepted selection. Accepted reads keep their tokens
 through physical completion. A local fatal transition cancels an unaccepted
 read.
 
-The home admits twenty-three requests with distinct identities: nineteen
+The home admits twenty-four requests with distinct identities: twenty
 hart and DMA requests, and four prefetches in four slots kept for them, so
 neither kind waits for the other's capacity. Eight engines
 share their image storage with the result credits. An engine hands its image
@@ -492,20 +499,40 @@ arming. Candidate validity and the entry veto select between those results.
 The atomic guard captures the candidate tag while idle and holds it while
 active. Only an active context qualifies the tag.
 
-Cached SC and AMO requests acquire the home lock even on an M hit. The CPU
-arms a tagged ROB-head context before D presentation. The active, unretired
-context identifies a valid ROB head. Interrupt and debug
-entry cannot cancel that context. A fault in the selected instruction
-releases the context when no home transaction is live. SC
-checks the reservation after home resource entitlement; a passing CheckSC
-uses a self-ProbeRead to collect dirty data without cancelling its own
-reservation. A granted SC asserts pending-write ownership while its result
-waits for retirement. An interrupt or debug drain cannot stall the protected
-owner's retirement. A completed single step prevents the following atomic
-from acquiring ownership. The SQ writes only after the owner's retirement.
-The SC bridge holds the home lock and same-sector interlock through the tagged SQ write.
-AMO holds them through its read/compute/write sequence. C reports the actual
-write. U releases the home ownership, and precise instruction ownership also waits for retirement.
+Cached SC and AMO requests on resident Modified sectors complete locally.
+The L1D checks registered lookup results after older stores have installed,
+with endpoint 0 idle and no same-sector acquisition or frozen writeback.
+It holds the service engine through the read, tagged write, array installation
+and registered release. Probes, grant installation, replacement and maintenance
+wait during that interval. The saved sector image supplies the masked write.
+A local atomic allocates no home identity and sends no C or U.
+A Modified hit blocked by a same-sector endpoint or frozen writeback repeats
+its lookup until that conflict clears. SC retries take priority over reads
+between those lookups, which can delay unrelated array service.
+The atomic address, size and tag are captured at SC acceptance or AMO
+classification. A local AMO also captures its read slot. The owned context
+holds through installation and release.
+
+The CPU arms a tagged ROB-head context before cache presentation. The active,
+unretired context identifies a valid ROB head. Interrupt and debug entry
+cannot cancel that context. Protection ends after both retirement and release.
+A fault in the selected instruction releases the context only after cache
+ownership ends. A completed single step prevents the following atomic from
+acquiring ownership.
+
+Local SC checks its exact physical reservation address and W/D size before
+success. Failure returns one result without a write. Success holds pending-write
+ownership through result delivery, retirement and the tagged SQ write. An
+interrupt or debug drain cannot stall the protected owner's retirement. The
+reservation clears at write installation. The CPU's older-store drain, AMO
+load dependencies and invalidation replay rules order every aq/rl encoding.
+
+All other atomics acquire through the home after draining the endpoints.
+SC checks its reservation after home resource entitlement; a passing CheckSC
+uses a self-ProbeRead to collect dirty data without cancelling its reservation.
+The home lock spans the SC's tagged SQ write or the AMO read/compute/write.
+C reports the completed write. U releases home ownership; CPU protection
+also waits for retirement.
 Clean faults dispose C/U before precise exception entry. Dirty errors hold
 ownership and raise the cluster fatal indication until reset.
 
@@ -636,8 +663,8 @@ Formal targets `coherence_home_completions`, `coherence_control`, `coherence_arr
 representative byte values, bounded controller transitions and CPU ownership.
 The `coherence_l1d` target also runs the L1D with three request endpoints and
 checks that no two live endpoints hold one sector, that no load endpoint is
-live beside a granted atomic, and that a load grant installs with a free WB
-slot.
+live beside a granted home atomic, that a local atomic excludes its sector and endpoint
+0 while blocking service, and that a load grant installs with a free WB slot.
 Detached victim validity, address and a watched byte are checked by induction
 through B. Cover tasks reach allocation, a delayed B, a blocked refetch,
 successful disposal and a failed B with preserved dirty ownership.
@@ -1028,8 +1055,8 @@ Reset clears the L2's 8,192 sets, one set per cycle on hardware.
 DMA coherence works with either line size through the DMA port
 (see The DMA port and coherence). A master that reaches DDR below the L2
 sees neither cache level. The generic line-cache interface carries ordinary
-reads and writes. The CPU's cached atomic operations use the home protocol
-described above.
+reads and writes. The CPU's cached atomic operations use local Modified
+ownership or the home protocol described above.
 
 ## The stream prefetcher
 
@@ -1072,19 +1099,20 @@ costs per kernel.
 
 ## The page-table walker port
 
-The hardware page-table walker (`ptw.sv`) reads cacheable DDR through
-`coherent_hart_cache.walk_bridge`. Each dependent 8-byte PTE read is a
-32-byte ReadOnce.PTW transaction. One walker serves both TLBs through a
-requester mux in `cpu_ooo`, where the data side wins, and one walk is in
-flight at a time. Roots and interior pointers outside cached DDR return an
+The hardware page-table walker (`ptw.sv`) reads cacheable DDR through the
+two bridge slots of `coherent_hart_cache.gen_walk`. Each dependent 8-byte PTE
+read is a 32-byte ReadOnce.PTW transaction. One walker serves both TLBs
+through a requester mux in `cpu_ooo`, where the data side wins, and one walk
+is in flight at a time. Roots and interior pointers outside cached DDR return an
 access fault before a line request. Walks only read: an access that needs a
 PTE's A or D bit set takes a page fault (Svade).
 
 The home probes L1D for every PTE read. Dirty resident data or an absorbed
 PutM overrides the home image, including when the home array returns after
-the probe. The bridge registers data and errors on G and keeps its identity
-through C and U. A dependent PTE request waits for that U before acceptance.
-Discarded walks consume their response while the bridge finishes C/U.
+the probe. A bridge slot registers data and errors on G and keeps its
+identity through C and U. A dependent PTE request takes an idle slot, so it
+waits for an earlier read's U only while both slots are busy. Discarded walks
+consume their response while the slot finishes C/U.
 The bridge has no preliminary L1D clean. Software can publish a
 child table with ordered stores and a parent pointer before SFENCE.VMA;
 a walk that observes the published pointer also observes its table stores.

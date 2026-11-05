@@ -396,12 +396,12 @@ and targeted microbenchmarks give these items:
    flight, and each combines with the home's prefetch agent. Dependent loads
    are also slower than through the previous hierarchy: in simulation an L2
    hit takes 45 cycles against 23, a DRAM miss 36 cycles more, and a
-   page-table walk 33 cycles more. The L1D installs a line before it answers
+   page-table walk 27 cycles more. The L1D installs a line before it answers
    the load, the home repeats its tag lookup and data read after a fill
    arrives, and registered stages and arbitration add the rest. Answering a
-   load from its grant, reading a victim's data only when it is dirty,
-   forwarding the arriving line to the first request, and a second request
-   slot for the page-table walker would recover most of the difference.
+   load from its grant, reading a victim's data only when it is dirty, and
+   forwarding the arriving line to the first request would recover most of
+   the difference.
 
 ## Core area
 

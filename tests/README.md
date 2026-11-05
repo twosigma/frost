@@ -131,6 +131,12 @@ checks that a subsequent load cannot use their stale data from L0.
 `cached_store_burst_test` checks cached store bursts followed by traps,
 FENCE.I, SC and AMO. Its CPU monitor requires accepted-store overlap with
 trap and fence drain waits.
+Local Modified-sector AMO and SC cases hold each probe class across lookup,
+result, write and release, check exact reservations and preauthorization loss,
+and preserve installed bytes through accepted and absorbed dirty evictions.
+`coherence_local_atomics` and `coherence_local_atomics_8` keep an unrelated
+same-set grant uninstalled during local ownership, with three and eight
+endpoints and one and four ways respectively.
 The cluster bench holds all eight CPU read identities occupied during dirty
 DMA reads and writes. Its invalidation case delays cut completion and checks
 response rotation and byte-write preservation.
@@ -146,7 +152,15 @@ program-buffer writes. The reservation-station unit checks capacity after
 second-port issue, dual issue, simultaneous dispatch and issue, and flush.
 
 The `coherent_cpu_faults` bench injects SC refill errors after clean replacement.
-It checks exact address and W/D size matching for cached SC and doubleword
+Successful local atomic cases inject interrupt and debug requests at every
+ownership phase, check a younger exception, and compare warm, fresh-sector and
+reader-downgraded SC latency.
+Every AMO operator runs at W/D widths, both word offsets and all aq/rl encodings.
+`coherent_cpu_local_contention` times a younger load's memory response to
+produce a same-set grant during local SC ownership. The grant and a DMA probe remain held
+through installation while an interrupt or debug request waits. The CPU
+retires SC and supplies its tagged write without waiting for either contender.
+The fault bench checks exact address and W/D size matching for cached SC and doubleword
 matching for uncached SC, including the stored value after each operation.
 It checks architectural trap cause, EPC and virtual fault address with and without
 translation. A delayed SC refill also checks that debug entry follows the

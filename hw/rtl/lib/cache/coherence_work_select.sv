@@ -19,7 +19,7 @@
 // picking it yields i_last_code, the slot the group offers, in place of the
 // input's index.
 module coherence_work_select #(
-    parameter int unsigned SLOTS = 19,
+    parameter int unsigned SLOTS = 20,
     parameter bit LAST_CODED = 1'b0,
     parameter int unsigned CODE_BITS = SLOTS > 1 ? $clog2(SLOTS) : 1
 ) (

@@ -1,7 +1,7 @@
 [tasks]
-coh_l1d_bmc single control
-coh_l1d_multi_bmc multi control
-coh_l1d_cover single covers
+coh_l1d_bmc single control control_single
+coh_l1d_multi_bmc multi control control_multi padded
+coh_l1d_cover single covers covermode
 coh_l1d_data_bmc single data arraydata word0
 coh_l1d_data1_bmc single data arraydata word1
 coh_l1d_data2_bmc single data arraydata word2
@@ -9,19 +9,37 @@ coh_l1d_data3_bmc single data arraydata word3
 coh_l1d_store_payload_bmc single data payload
 coh_l1d_store_grant_bmc single data grantdata
 
+coh_l1d_local_prove single local owner
+coh_l1d_local_multi_prove multi local owner padded
+coh_l1d_local_sector_prove single local sector
+coh_l1d_local_multi_sector_prove multi local sector padded
+coh_l1d_local_ways_sector_prove ways local sector padded
+coh_l1d_local_cover single localcovers covermode localscheduled
+coh_l1d_local_data_bmc single localschedule localscheduled
+coh_l1d_local_ways_prove ways local owner padded
+
 [options]
-~covers: mode bmc
-~covers: depth 40
-~covers: timeout 1200
-covers: mode cover
-covers: depth 80
-covers: timeout 600
-~covers: aigsmt boolector
+~covermode: mode bmc
+~covermode: depth 40
+local: mode prove
+local: depth 80
+sector: depth 8
+localschedule: depth 80
+~covermode: timeout 1200
+covermode: mode cover
+covermode: depth 80
+covermode: timeout 600
+~covermode: aigsmt boolector
 
 [engines]
-control: abc bmc3
+control_single: abc bmc3
+control_multi: abc bmc3 -c
 data: abc bmc3
 covers: smtbmc boolector
+owner: abc pdr
+sector: smtbmc boolector
+localschedule: abc bmc3
+localcovers: smtbmc boolector
 
 [script]
 read -sv cache_perf_pkg.sv
@@ -34,10 +52,13 @@ word2: read -formal -sv -D STORE_DATA_PROOF -D STORE_BYTE_WORD=2 coherence_read_
 word3: read -formal -sv -D STORE_DATA_PROOF -D STORE_BYTE_WORD=3 coherence_read_payload.sv coherence_l1d.sv
 payload: read -formal -sv -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
 grantdata: read -formal -sv -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
+local: read -formal -sv -D LOCAL_ATOMIC_PROOF coherence_read_payload.sv coherence_l1d.sv
+localscheduled: read -formal -sv -D LOCAL_ATOMIC_PROOF -D LOCAL_ATOMIC_COVER coherence_read_payload.sv coherence_l1d.sv
 read -sv coherence_store_buffer.sv
 read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
 single: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
 multi: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
+ways: chparam -set CACHE_BYTES 256 -set WAYS 4 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
 prep -flatten -top coherence_l1d
 # Control assertions run in both control tasks; this task checks the datapath.
 payload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
@@ -46,12 +67,27 @@ arraydata: select -assert-count 2 c:p_store_data_6 c:p_store_data_7
 arraydata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_6 c:p_store_data_7 %u %d
 grantdata: select -assert-count 3 c:p_store_data_8 c:p_store_data_9 c:p_store_data_10
 grantdata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_8 c:p_store_data_9 c:p_store_data_10 %u %u %d
+local: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_* c:p_atomic_context_identity c:p_atomic_read_identity %u %u %d
+local: chformal -assert -remove c:p_local_probe_data
+owner: chformal -assert -remove c:p_local_sector c:p_local_lookup_stable c:p_local_conflict_sample c:p_local_admit_sector
+owner: select -assert-count 19 t:$check r:FLAVOR=assert %i
+owner: select -assert-count 2 c:p_local_lookup_owner c:p_local_sc_lookup %u t:$check %i r:FLAVOR=assert %i
+sector: select -assert-count 8 c:p_local_sector c:p_local_lookup_stable c:p_local_conflict_sample c:p_local_admit_sector c:p_local_lookup_owner c:p_local_service c:p_local_sc_lookup c:p_local_active
+sector: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_sector c:p_local_lookup_stable c:p_local_conflict_sample c:p_local_admit_sector c:p_local_lookup_owner c:p_local_service c:p_local_sc_lookup c:p_local_active %u %u %u %u %u %u %u %d
+# The matching owner task proves both lookup facts by unbounded induction.
+sector: chformal -assert2assume c:p_local_lookup_owner c:p_local_sc_lookup
+sector: select -assert-count 6 t:$check r:FLAVOR=assert %i
+sector: select -assert-count 2 c:p_local_lookup_owner c:p_local_sc_lookup %u t:$check %i r:FLAVOR=assume %i
+# Array behavior is arbitrary for controller induction. Real-array byte and
+# completion checks run in the bounded task and the array proofs.
+local: cutpoint w:array_ready w:array_valid w:array_hit w:array_state w:array_addr w:array_data w:array_way w:array_available w:update_ready
+localcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_local_probe_cover c:p_local_fail_cover c:p_local_release_cover %u %u %d
 memory_map
 opt
-multi: techmap
-multi: opt -fast
-multi: setundef -anyseq
-multi: opt_clean
+padded: techmap
+padded: opt -fast
+padded: setundef -anyseq
+padded: opt_clean
 
 [files]
 ../hw/rtl/lib/ram/sdp_block_ram.sv

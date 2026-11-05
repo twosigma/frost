@@ -139,7 +139,7 @@ module coherence_request_endpoint #(
 
   localparam bit LegalIdentity =
       (SOURCE < 2 && ((PORT_CLASS == 0 && SLOT < 8) ||
-                     (PORT_CLASS == 1 && SLOT < 2) || (PORT_CLASS == 2 && SLOT == 0))) ||
+                     ((PORT_CLASS == 1 || PORT_CLASS == 2) && SLOT < 2))) ||
       (SOURCE == 2 && PORT_CLASS == 3 && SLOT < 16) ||
       (SOURCE == 3 && PORT_CLASS == 3 && SLOT < 4);
   if (ADDR_WIDTH < 32 || ADDR_WIDTH > 56 || !LegalIdentity) begin : gen_invalid_config

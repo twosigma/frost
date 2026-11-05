@@ -74,7 +74,7 @@ class ReaderMonitor:
                 assert not self.get(w, "o_resp_valid")
             if expected is not None:
                 q, ident, data, error = expected
-                if q == 0x40:
+                if q in (0x40, 0x42):
                     assert v("o_walk_resp_valid")
                     assert v("o_walk_resp_data") == data
                     assert v("o_walk_resp_error") == error
@@ -110,9 +110,12 @@ class ReaderMonitor:
                 if len(debt) == 2:
                     self.counts["two_refills"] += 1
             if v("i_walk_req_valid") and v("o_walk_req_ready"):
-                assert not walk_debt and 0x40 not in live
+                # The walker's slot 0 takes a request when it is idle, slot 1
+                # otherwise.
+                q = 0x40 if v("walk_slot_valid") & 1 else 0x42
+                assert not walk_debt and q not in live
                 walk_debt = True
-                live[0x40] = dict(
+                live[q] = dict(
                     ident=v("i_walk_req_id"),
                     addr=v("i_walk_req_addr"),
                     granted=0,
@@ -125,7 +128,7 @@ class ReaderMonitor:
                 self.counts["old_fill_at_fence"] += 1
             if v("i_g_valid") and v("o_g_ready"):
                 g = unpack(v("i_g"), (3, 9, 6, 32, 256, 1))
-                if g[1] in (0x20, 0x22, 0x40):
+                if g[1] in (0x20, 0x22, 0x40, 0x42):
                     r = live[g[1]]
                     assert not r["granted"] and r["addr"] == g[3]
                     r.update(granted=1, tid=g[2], error=g[5])
@@ -141,7 +144,7 @@ class ReaderMonitor:
                     r["complete"] = 1
             if v("i_u_valid") and v("o_u_ready"):
                 release = unpack(v("i_u"), (9, 6, 32))
-                if release[0] in (0x20, 0x22, 0x40):
+                if release[0] in (0x20, 0x22, 0x40, 0x42):
                     r = live.pop(release[0])
                     assert r["complete"]
                     assert (release[1], release[2]) == (r["tid"], r["addr"])
@@ -149,7 +152,9 @@ class ReaderMonitor:
             if v("o_r_valid") and v("i_r_ready"):
                 reply = unpack(v("o_r"), (2, 6, 1, 1, 32, 2, 1, 1, 256, 1, 1, 1, 1, 1))
                 if reply[7] and any(
-                    r["addr"] == reply[4] for q, r in live.items() if q != 0x40
+                    r["addr"] == reply[4]
+                    for q, r in live.items()
+                    if q not in (0x40, 0x42)
                 ):
                     self.counts["dirty_if"] += 1
 
