@@ -132,7 +132,7 @@ def test_configuration_file_sets_nested_controller_fields(tmp_path: Path) -> Non
     config = model.load_config(path)
     assert config.l1d_mshrs == 8
     assert config.axi_id_pool_size == 2
-    assert config.ddr.channels == 2 and config.ddr.latency_cycles == 30
+    assert config.ddr.channels == 2 and config.ddr.latency_cycles == 80
     path.write_text(json.dumps({"ddr": {"channels": 0}}))
     with pytest.raises(ValueError):
         model.load_config(path)

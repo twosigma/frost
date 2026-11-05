@@ -2690,7 +2690,7 @@ def rtl_audit() -> dict[str, Any]:
                 "source": "hw/rtl/lib/cache/README.md; hw/rtl/lib/cache/frost_cache_hierarchy.sv:845-927",
             },
             {
-                "fact": "soc_axi_slave routes physical DDR addresses [0x8000_0000, +DdrCapacityBytes) to a single 5-bit-ID, 512-bit DDR AXI port (backed in simulation by axi_behavioral_memory with latency=30, NUM_SLOTS=max(L2MaxSlots,8), optional LFSR jitter and reorder) and routes low BRAM/MMIO to a single local port.",
+                "fact": "soc_axi_slave routes physical DDR addresses [0x8000_0000, +DdrCapacityBytes) to a single 5-bit-ID, 512-bit DDR AXI port (backed in simulation by axi_behavioral_memory with latency=80, NUM_SLOTS=max(L2MaxSlots,8), optional LFSR jitter and reorder) and routes low BRAM/MMIO to a single local port.",
                 "source": "hw/rtl/soc_top/soc_axi_slave.sv:130-238; hw/rtl/soc_top/soc_top.sv:35-39, 396-399, 1396-1430; hw/rtl/lib/cache/axi_behavioral_memory.sv:18-67",
             },
             {
@@ -2708,7 +2708,7 @@ def rtl_audit() -> dict[str, Any]:
         ],
         "assumptions_not_claimed_as_rtl_calibration": [
             "Cache stage timing, insertion-LFSR phase, and pipeline stage latencies are abstractions that require cycle-by-cycle calibration.",
-            "The default DDR endpoint models FROST's single-channel axi_behavioral_memory.sv (LATENCY=30, NUM_SLOTS=max(L2MaxSlots,8)); board DDR4 MIG refresh and bank/row timing require hardware or VIP trace calibration.",
+            "The default DDR endpoint models FROST's single-channel axi_behavioral_memory.sv (LATENCY=80, NUM_SLOTS=max(L2MaxSlots,8)); board DDR4 MIG refresh and bank/row timing require hardware or VIP trace calibration.",
             "Workload micro-ops are representative pressure patterns, not captured Redis, HTTP, Linux or FaaS execution traces.",
             "The model does not execute the RISC-V ISA, model Sv39 page walks/DMA coherence traffic as workload events, or prove functional RTL equivalence.",
             "The candidate sweep may rank sensitivities, but synthesis/Fmax/area and RTL waveform comparison are required before an RTL change is accepted.",
@@ -2796,7 +2796,7 @@ def selftest() -> dict[str, Any]:
     check("single_channel_ddr_slot_scaling", ddr.effective_slots == 12)
 
     soc_loop = EventLoop()
-    soc = SocTopModel(ModelConfig(), soc_loop)
+    soc = SocTopModel(ModelConfig(ddr=DdrConfig(latency_cycles=30)), soc_loop)
     ddr_done: list[tuple[int, bool]] = []
     local_done: list[tuple[int, bool]] = []
     tx_ddr = AxiTransaction(
@@ -2942,7 +2942,7 @@ This is an evidence-backed *model recommendation*, not a claim that the RTL alre
 - FROST main pinned at `{RTL_COMMIT}` (22 October 2026): `platform_top.sv` composes `cpu_top.sv` and `soc_top.sv` across a single 6-bit-ID, 512-bit (64B) AXI4 boundary.
 - `cpu_top`: two-wide OOO, 32-entry ROB, 8-entry LQ/SQ, 16 KiB L1I, 128 KiB L1D, 2 MiB L2, 4-way caches, L1D MSHR 8, L2 MSHR 4, L2 writeback slots 2, prefetch enabled.
 - L1 uses 32-byte lines; the sector adapter feeds a 64-byte L2 and a 512-bit, single-beat AXI boundary. Cache lower IDs are `{{type, slot}}` and pending fills reserve their victim ways.
-- `soc_top`: `soc_axi_slave.sv` decodes physical DDR addresses (`0x8000_0000..`) to a single 5-bit-ID, 512-bit DDR AXI port (connected in simulation to `axi_behavioral_memory.sv` with `LATENCY=30`, `NUM_SLOTS=max(L2MaxSlots, 8)`) and routes low BRAM/MMIO accesses to a single local port.
+- `soc_top`: `soc_axi_slave.sv` decodes physical DDR addresses (`0x8000_0000..`) to a single 5-bit-ID, 512-bit DDR AXI port (connected in simulation to `axi_behavioral_memory.sv` with `LATENCY=80`, `NUM_SLOTS=max(L2MaxSlots, 8)`) and routes low BRAM/MMIO accesses to a single local port.
 
 ## Sweep result
 
