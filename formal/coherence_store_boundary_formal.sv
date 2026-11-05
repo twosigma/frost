@@ -23,6 +23,7 @@ module coherence_store_boundary_formal #(
     parameter bit COVER_BOUNDARIES = 1'b0,
     parameter bit LOCAL_PROGRESS = 1'b0,
     parameter bit COVER_LOCAL = 1'b0,
+    parameter bit COVER_AMO_HOME = 1'b0,
     parameter int unsigned MODE = 0,
     parameter int unsigned SECTOR_CASE = 2
 ) (
@@ -55,6 +56,9 @@ module coherence_store_boundary_formal #(
   // Atomic and old-response programs issue at the first dispatch opportunity.
   wire offer_load = Mode == 0 ? offer_normal_load : 1'b1;
   (* anyconst *) logic [7:0] first_byte, second_byte;
+  // The second older store may share the first store's sector, leaving a
+  // different-sector AMO target absent from the cache.
+  (* anyconst *) logic amo_prefix_same_sector;
   logic [3:0] step_q;
   logic atomic_complete_q, sc_written_q, guard_retired;
   wire retire_atomic = step_q == 6 && (Mode == 1 || Mode == 2) && atomic_complete_q &&
@@ -124,7 +128,8 @@ module coherence_store_boundary_formal #(
     alloc1 = alloc0;
     alloc1.valid = step_q == 1 && advance;
     alloc1.rob_tag = 1;
-    alloc1.address = address1 + (Mode == 3 ? 4 : 0);
+    alloc1.address = (Mode == 1 && !LOCAL_PROGRESS && amo_prefix_same_sector ?
+        address0 : address1) + (Mode == 3 ? 4 : 0);
     store_data = '0;
     store_data.valid = (step_q == 2 || step_q == 3 || step_q == 8 ||
         (step_q == 4 && Mode == 2)) && advance;
@@ -187,11 +192,13 @@ module coherence_store_boundary_formal #(
     logic [6:0] cycle_q = 0;
     logic full_seen_q = 0, tail_drain_seen_q = 0, selected_seen_q = 0;
     logic retired_seen_q = 0, written_seen_q = 0, released_seen_q = 0;
+    logic local_seen_q = 0, home_write_seen_q = 0;
     logic load_seen_q = 0, old_seen_q = 0, fresh_seen_q = 0;
     always_ff @(posedge i_clk) begin
       if (cycle_q != 127) cycle_q <= cycle_q + 1'b1;
       assume (advance && permit_d && permit_c && observe_drain);
       assume (first_byte == 8'h11 && second_byte == 8'h22);
+      if (COVER_AMO_HOME) assume (amo_prefix_same_sector);
       assume (permit_g == (Mode != 3 || demand_q.opcode != coherence_pkg::GetS || accepted_q == 2));
       assume (permit_u == !((Mode == 1 || Mode == 2) && demand_q.opcode != coherence_pkg::GetM &&
           cycle_q < 105));
@@ -201,6 +208,8 @@ module coherence_store_boundary_formal #(
         tail_drain_seen_q <= tail_drain_seen_q ||
             (observe_drain && accepted_q == 2 && l1_block_valid == 1);
         selected_seen_q <= selected_seen_q || (l1_atomic_live && accepted_q == 2);
+        local_seen_q <= local_seen_q || local_owner;
+        home_write_seen_q <= home_write_seen_q || home_atomic_write_lookup;
         retired_seen_q <= retired_seen_q || (guard_retired && selected_seen_q);
         written_seen_q <= written_seen_q || ((sc_written_q || l1_sc_write_done) && guard_retired);
         released_seen_q <= released_seen_q || (accepted_q == 3 && !l1_atomic_live);
@@ -215,6 +224,10 @@ module coherence_store_boundary_formal #(
           p_old_lifecycle : cover (Mode == 3 && old_seen_q && fresh_seen_q);
           p_amo_lifecycle :
           cover (Mode == 1 && selected_seen_q && retired_seen_q && released_seen_q);
+          if (Mode == 1 && SECTOR_CASE == 0)
+            p_amo_same_local : cover (local_seen_q && retired_seen_q && released_seen_q);
+          if (COVER_AMO_HOME)
+            p_amo_home_write : cover (home_write_seen_q && retired_seen_q && released_seen_q);
           p_sc_lifecycle :
           cover (Mode == 2 && selected_seen_q && retired_seen_q &&
               written_seen_q && released_seen_q);
@@ -246,6 +259,7 @@ module coherence_store_boundary_formal #(
   end
   logic protected_q;
   logic local_owner;
+  logic home_atomic_write_lookup;
   logic [3:0] local_phase;
   logic extra_sent_q, extra_granted_q, probe_offered_q, probe_accepted_q;
   coh_d_t extra_demand_q;
@@ -995,6 +1009,7 @@ module coherence_store_boundary_formal #(
 `ifdef LOCAL_ATOMIC_DEPENDENCY
       .o_formal_local(local_owner),
       .o_formal_phase(local_phase),
+      .o_formal_home_write(home_atomic_write_lookup),
 `endif
       .o_fatal(l1_fatal),
       .o_fatal_addr(l1_fatal_addr)
@@ -1002,6 +1017,7 @@ module coherence_store_boundary_formal #(
 `ifndef LOCAL_ATOMIC_DEPENDENCY
   assign local_owner = 0;
   assign local_phase = 0;
+  assign home_atomic_write_lookup = 0;
 `endif
   logic sc_coherent_arm_valid;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sc_coherent_arm_tag;

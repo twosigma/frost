@@ -87,11 +87,15 @@ FORMAL_TARGETS = [
             "bmc_amo_same_fatal",
             "prove_amo_same_fatal_sticky",
             "bmc_amo_other",
+            "bmc_amo_other_fatal",
+            "prove_amo_other_fatal_sticky",
             "bmc_sc",
             "bmc_old",
             "cover_load",
             "cover_old",
             "cover_amo",
+            "cover_amo_same",
+            "cover_amo_other_home",
             "cover_sc",
             "cover_edges_same",
             "cover_edges_other",
@@ -1217,12 +1221,22 @@ SBY_TASKS = [
         "prove_amo_same_fatal_sticky",
         "Fatal persistence after initial reset for the 140-frame AMO safety check.",
     ),
-    ("bmc_amo_other", "Different-sector store and AMO handoff through release."),
+    ("bmc_amo_other", "Different-sector store and AMO credit, drain and ownership."),
+    (
+        "bmc_amo_other_fatal",
+        "Different-sector fatal status at frame 139, paired with fatal persistence induction.",
+    ),
+    (
+        "prove_amo_other_fatal_sticky",
+        "Different-sector fatal persistence after initial reset for the AMO safety check.",
+    ),
     ("bmc_sc", "SC handoff, acknowledgement and drain through release."),
     ("bmc_old", "Old load responses and fresh bytes across buffered stores."),
     ("cover_load", "Buffered store overlap with a younger load."),
     ("cover_old", "Delayed old response and a fresh load staged before drain."),
     ("cover_amo", "AMO retirement, delayed release and younger-store admission."),
+    ("cover_amo_same", "Same-sector buffered stores and local AMO through release."),
+    ("cover_amo_other_home", "Different-sector AMO home write lookup and release."),
     ("cover_sc", "SC retirement, delayed release and younger-store admission."),
     (
         "cover_edges_same",
@@ -1847,6 +1861,75 @@ def formal_task_timeout_s(target: str, task: str) -> int:
     return SBY_TASK_TIMEOUT_OVERRIDES_S.get((target, task), SBY_TASK_TIMEOUT_S)
 
 
+def test_atomic_fatal_pairs_and_formal_shards() -> None:
+    """Require both fatal obligations and assign every formal case to one shard."""
+    import yaml  # type: ignore[import-untyped]
+    from _pytest.mark.expression import Expression
+
+    root = Path(__file__).resolve().parents[1]
+    target = next(t for t in FORMAL_TARGETS if t.name == "coherence_store_boundary")
+    registered = [name for name, _ in SBY_TASKS]
+    task_text = (root / "formal/coherence_store_boundary.sby").read_text()
+    task_lines = task_text.split("[tasks]", 1)[1].split("[options]", 1)[0]
+    sby_tasks = [line.split()[0] for line in task_lines.splitlines() if line.strip()]
+    pairs = [
+        f"{prefix}_amo_{sector}_{suffix}"
+        for sector in ("same", "other")
+        for prefix, suffix in (("bmc", "fatal"), ("prove", "fatal_sticky"))
+    ]
+    for name in pairs:
+        assert registered.count(name) == 1, name
+        assert target.tasks.count(name) == 1, name
+        assert sby_tasks.count(name) == 1, name
+
+    workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
+    shards = workflow["jobs"]["test-formal"]["strategy"]["matrix"]["include"]
+    filters = {
+        shard["shard"]: Expression.compile(shard["pytest_filter"]) for shard in shards
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/test_run_formal.py",
+            "tests/test_pa_bridge_mutation.py",
+            "--collect-only",
+            "-q",
+            "-m",
+            "formal",
+            "-p",
+            "no:cacheprovider",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    nodes = [
+        line.strip()
+        for line in result.stdout.splitlines()
+        if line.startswith("tests/") and "::" in line
+    ]
+    assert nodes
+    for name in pairs:
+        assert sum(f"[coherence_store_boundary_{name}]" in node for node in nodes) == 1
+    for node in nodes:
+
+        def matches_keyword(keyword: str, /, **kwargs: str | int | bool | None) -> bool:
+            """Match a keyword against the collected test's node ID."""
+            assert not kwargs
+            return keyword.casefold() in node.casefold()
+
+        matches = [
+            name
+            for name, expression in filters.items()
+            if expression.evaluate(matches_keyword)
+        ]
+        assert len(matches) == 1, (node, matches)
+
+
 def timeout_log_tail(error: subprocess.TimeoutExpired) -> str:
     """Keep recent solver progress when a captured run exceeds its backstop."""
     output = "".join(
@@ -1906,8 +1989,9 @@ class FormalRunner:
 
         cmd = ["sby", "-t", "-f", str(sby_path), task]
 
-        check_fatal_frame = (
-            target.name == "coherence_store_boundary" and task == "bmc_amo_same_fatal"
+        check_fatal_frame = target.name == "coherence_store_boundary" and task in (
+            "bmc_amo_same_fatal",
+            "bmc_amo_other_fatal",
         )
         if capture_output or check_fatal_frame:
             result = subprocess.run(
@@ -1996,6 +2080,7 @@ class FormalRunner:
 
 
 @pytest.mark.parametrize("capture_output", (False, True))
+@pytest.mark.parametrize("task", ("bmc_amo_same_fatal", "bmc_amo_other_fatal"))
 @pytest.mark.parametrize(
     "case",
     (
@@ -2010,7 +2095,7 @@ class FormalRunner:
     ),
 )
 def test_fatal_frame_validation(
-    monkeypatch: pytest.MonkeyPatch, capture_output: bool, case: str
+    monkeypatch: pytest.MonkeyPatch, capture_output: bool, case: str, task: str
 ) -> None:
     """Reject a success banner without the configured fatal-status evaluation."""
     output = "\n".join(
@@ -2042,15 +2127,11 @@ def test_fatal_frame_validation(
     monkeypatch.setattr(subprocess, "run", run)
     target = next(t for t in FORMAL_TARGETS if t.name == "coherence_store_boundary")
     if case == "complete":
-        result = FormalRunner().run_formal(
-            target, "bmc_amo_same_fatal", capture_output=capture_output
-        )
+        result = FormalRunner().run_formal(target, task, capture_output=capture_output)
         assert result.returncode == 0
     else:
         with pytest.raises(ValueError, match="did not complete its frame-139 check"):
-            FormalRunner().run_formal(
-                target, "bmc_amo_same_fatal", capture_output=capture_output
-            )
+            FormalRunner().run_formal(target, task, capture_output=capture_output)
 
 
 @pytest.mark.parametrize("capture_output", (False, True))

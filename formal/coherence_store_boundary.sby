@@ -5,11 +5,15 @@ bmc_amo_same bmc regular amo same amo_partition amo_flow
 bmc_amo_same_owner bmc regular amo same amo_partition amo_owner
 bmc_amo_same_fatal bmc amo same amo_partition amo_fatal
 prove_amo_same_fatal_sticky amo same sticky
-bmc_amo_other bmc regular amo other
+bmc_amo_other bmc regular amo other other_flow
+bmc_amo_other_fatal bmc amo other amo_partition amo_fatal
+prove_amo_other_fatal_sticky amo other sticky
 bmc_sc bmc regular sc
 bmc_old bmc regular old
 cover_load cover lifecycle load
 cover_amo cover lifecycle amo
+cover_amo_same cover lifecycle amo same
+cover_amo_other_home cover lifecycle amo other homepath
 cover_sc cover lifecycle sc
 cover_old cover lifecycle old
 cover_edges_same cover boundaries load same
@@ -32,6 +36,7 @@ sticky: timeout 120
 regular: abc bmc3 -c
 # Fatal status persists after the initial reset. The induction and frame-139
 # checks together exclude every fatal sample in the 140-frame horizon.
+# Run through test_run_formal.py, which validates the selected-frame result.
 amo_fatal: abc bmc3 -c -S 139
 sticky: smtbmc boolector
 cover: smtbmc boolector
@@ -65,10 +70,11 @@ read -sv coherence_request_endpoint.sv
 read -sv coherence_put_endpoint.sv
 read -sv coherence_store_buffer.sv
 read -sv coherence_array.sv
-read -sv coherence_l1d.sv
-~sticky: read -formal -sv -noautowire coherence_store_boundary_formal.sv
-sticky: read -formal -sv -noautowire -D FATAL_STICKY_PROOF coherence_store_boundary_formal.sv
+read -sv -D LOCAL_ATOMIC_DEPENDENCY coherence_l1d.sv
+~sticky: read -formal -sv -noautowire -D LOCAL_ATOMIC_DEPENDENCY coherence_store_boundary_formal.sv
+sticky: read -formal -sv -noautowire -D LOCAL_ATOMIC_DEPENDENCY -D FATAL_STICKY_PROOF coherence_store_boundary_formal.sv
 lifecycle: chparam -set COVER_MODE 1 coherence_store_boundary_formal
+homepath: chparam -set COVER_AMO_HOME 1 coherence_store_boundary_formal
 boundaries: chparam -set COVER_BOUNDARIES 1 coherence_store_boundary_formal
 same: chparam -set SECTOR_CASE 0 coherence_store_boundary_formal
 other: chparam -set SECTOR_CASE 1 coherence_store_boundary_formal
@@ -86,6 +92,9 @@ old: chformal -cover -remove c:*p_load_* c:*p_amo_* c:*p_sc_*
 amo_partition: select -assert-count 15 t:$check r:FLAVOR=assert %i
 amo_flow: chformal -assert -remove c:p_no_buffered_atomic c:p_no_buffered_guard c:p_no_fatal
 amo_flow: select -assert-count 12 t:$check r:FLAVOR=assert %i
+other_flow: select -assert-count 15 t:$check r:FLAVOR=assert %i
+other_flow: chformal -assert -remove c:p_no_fatal
+other_flow: select -assert-count 14 t:$check r:FLAVOR=assert %i
 amo_owner: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_no_buffered_atomic c:p_no_buffered_guard %u %d
 amo_owner: select -assert-count 2 t:$check r:FLAVOR=assert %i
 amo_fatal: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_no_fatal %d
