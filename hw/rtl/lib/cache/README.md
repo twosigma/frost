@@ -15,7 +15,7 @@ benches compose these modules independently of the CPU hierarchy.
 |------|------|
 | `coherent_hart_cache.sv` | CPU private L1D and L1I, instruction and walker bridges, and maintenance arbitration |
 | `coherence_l1d.sv` | MSI data cache with probes, tagged reads and a two-entry ordered store buffer |
-| `coherence_home.sv` | Shared L2 home with sector ordering, dirty-data merge, configurable fills, stream prefetching and streaming DMA placement |
+| `coherence_home.sv` | Shared L2 home with sector ordering, dirty-data merge, configurable fills, lookup-only Prefetch service and streaming DMA placement |
 | `coherence_dma_ingress.sv` | Independent DMA request lifetimes, read responses at grant and write responses after release |
 | `frost_cache.sv` | Generic line cache, used by the CPU L1I and the component hierarchy benches |
 | `frost_hart_cache.sv` | Private caches in the line-cache component hierarchy: the L1D and the L1I, the walker port's coherence sequencer, the probe injection register that the walker and DMA probes share into the L1D, and `fence.i` sequencing |
@@ -25,9 +25,9 @@ benches compose these modules independently of the CPU hierarchy.
 | `line_port_arbiter.sv` | N:1 tagged arbiter: fixed priority by port index, optional starvation bound, port index prefixed to ids |
 | `dma_coherence_sequencer.sv` | Takes each DMA request through the L1D, and each DMA write through the load queue as well, before it reaches the L2 |
 | `walker_coherence_sequencer.sv` | Probes the L1D before each page-table walk read reaches the L2; one read in flight |
-| `l2_stream_prefetcher.sv` | Watches a stream of misses and reads the lines ahead of ascending streams into the L2, never past the page of the last miss; the component hierarchy's shared level has one, the coherent prefetcher two |
-| `coherence_prefetcher.sv` | The coherent home's source 3: two stream tables, for the hart's data misses and its instruction refills, choose lines that Prefetch requests read into the L2 |
-| `coherence_prefetch_agent.sv` | The coherence home's prefetch requester: `l2_stream_prefetcher` trained on the hart's D requests, issuing Prefetch (source 3) through four request endpoints |
+| `l2_stream_prefetcher.sv` | Watches a stream of misses and reads the lines ahead of ascending streams into the L2, never past the page of the last miss; the component hierarchy's shared level has one, the coherent prefetch agent two |
+| `coherence_prefetch_agent.sv` | The coherent home's source 3: two stream tables, for the hart's data requests and its instruction refills, choose lines that Prefetch requests read into the L2 through four request endpoints |
+| `coherence_prefetch_pause.sv` | Holds new prefetch requests while DMA is offered or outstanding and for seven idle cycles after |
 | `line_port_axi_bridge.sv` | Line port to single-beat AXI4 master; line ids become AXI ids, and each response carries the error bit of its RRESP or BRESP. The NIC's DMA master is one |
 | `axi_behavioral_memory.sv` | Simulation-only DDR model: concurrent transactions, latency and jitter settings, optional out-of-order completion, and injected error responses |
 | `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, and writeback pulses, hit-under-miss, the outstanding-miss count, and two stall classes; and the L2's write costs: write misses that fetch their line, and writes that wait for a read of their line |
@@ -112,13 +112,16 @@ Request identity q contains src 2, port_class 2, id 4, and epoch 1. Sources
 0 and 1 name harts, 2 names DMA, and 3 names prefetch. Classes 0, 1, 2, and 3
 name data, instruction fetch, page-table walk, and agent traffic. Hart data
 IDs are 0 through 7, fetch IDs are 0 and 1, and the walk ID is 0. DMA IDs
-are opaque four-bit values; prefetch IDs are 0 through 3. Admission limits
-are the ingress's credits for DMA, eight in the cluster, and
-`L2_PREFETCH_INFLIGHT` for prefetch, three by default and at most four.
-Admission arbitration is external to the endpoint slots.
+are opaque four-bit values; prefetch IDs are 0 through 3, one for each
+request endpoint of the prefetch agent. Admission limits are the ingress's
+credits for DMA, eight in the cluster, and the agent's endpoints for
+prefetch: `L2_PREFETCH_INFLIGHT` data identities, three by default, and one
+instruction identity. Admission arbitration is external to the endpoint slots.
 
 Home tid is six bits. For H harts, `completion_count(H)` is `11*H+12`: eleven
-identities per hart, eight DMA credits and four prefetch identities.
+identities per hart, eight DMA credits and four prefetch identities. Each
+prefetch identity has a completion slot of its own, so a prefetch never
+takes a hart or DMA slot.
 `fill_base(H)` equals this count, `put_base(H,F)` adds F fill controls, and
 `home_count(H,F)` adds two PutM controls per hart. H is 1 or 2. Home identities
 must fit 64 values. Elaboration rejects invalid geometry and identity
@@ -538,24 +541,37 @@ post-fence visibility after ordinary PutM acknowledgement and probe absorption.
 
 ### The home's prefetcher
 
-`coherence_prefetcher` is the home's source 3, a third input of the
+`coherence_prefetch_agent` is the home's source 3, a third input of the
 cluster's D and C arbiters beside the hart and the DMA ingress. Two
-`l2_stream_prefetcher` tables choose the lines. The data table, four
-streams, watches the hart's GetS, GetM and LoadReserved requests, so store
-streams train it as well as load misses; the instruction table, two streams,
-watches its ReadOnce.IF refills. Both read a registered copy of the home's D
-acceptance, which adds no load to D readiness. A table confirms a stream on
-two consecutive L2 lines and requests up to `L2_PREFETCH_DISTANCE` (8) lines
-after its last miss, never past that miss's 4 KiB page, each line once. The
-wrapper owns `L2_PREFETCH_INFLIGHT` identities {3, 3, id}, at most four. It
-takes a table's request with a free identity into a D register that holds
-until the home accepts it, alternating between the tables, and the tables
-load new requests only while the home reports room for a prefetch fill.
+`l2_stream_prefetcher` tables choose the lines. Both read a registered copy
+of the home's D acceptance, which adds no load to D readiness. The data
+table, four streams, watches hart 0's GetS and GetM requests, L2 hits
+included, so store streams train it as well as load misses; the instruction
+table, two streams, watches its ReadOnce.IF refills. A table confirms a
+stream on two consecutive L2 lines and requests up to
+`L2_PREFETCH_DISTANCE` (8) lines after its last line, never past that line's
+4 KiB page, each line once. The tables load new requests only while the home
+reports room for a prefetch fill.
 
 The instruction table enables `IGNORE_BACKWARD`. A refill up to
 `2 * L2_PREFETCH_DISTANCE - 1` lines behind an entry's last line in the
 same page leaves the entries in place. Refills farther behind can replace
 an entry and train a stream.
+
+Each request goes out through the `coherence_request_endpoint` of its
+identity {3, 3, id}. The data table owns the first `L2_PREFETCH_INFLIGHT`
+identities, 0 to 2 by default, and the instruction table the identity
+after them, 3 by default; each table takes the lowest free identity of its
+own. Held
+arbiters merge the endpoints' D and C offers. An identity stays occupied
+from its D through G, C and U, and returns to its table at U. A predicted
+line that a live identity already holds is dropped and its table id
+returns at once, and the instruction table yields to a data request for
+the same line, so no two live identities hold one line. While a DMA request
+is offered or outstanding, and for seven idle cycles after the last one
+drains, `coherence_prefetch_pause` holds new requests; admitted ones go on.
+Fatal stop blocks training and admission, and occupied identities keep
+their protocol state.
 
 A Prefetch is a line-aligned D with no data, and the home answers it with
 GrantAck after one lookup. A resident line stays as it is: the prefetch takes
@@ -568,25 +584,30 @@ before the prefetch's dispatch to an engine. A prefetch therefore never takes
 a reserved fill, the last available way or the last write-back slot. In
 every other case, a fill of the block in flight or a blocked block included,
 it completes having done nothing. It never retries, joins a fill or waits for
-one, and it takes no place in the sector order. Its fill starts with no seat;
-demand readers that arrive meanwhile take its seats and wake at the install.
-An engine serving a prefetch protects no victim, and a prefetch slot never
-makes a PutM wait. While a PutM is neither accepted nor absorbed, its
-Modified sector keeps a resident L2 merge destination, so a Prefetch of that
-line allocates no fill and creates no owner that blocks W acceptance.
-Repeated Prefetches of the sector therefore cannot keep the PutM from being
-accepted or absorbed. A prefetch fill of another line can take the line as
-its victim; replacement then holds the victim through its recall, which
-absorbs the pending PutM before the row is reused.
+one, and it takes no place in the sector order. Its fill starts with no seat
+and does not wait for the identity, which may be released first; demand
+readers that arrive meanwhile take its seats and wake at the install. Prefetch requests use
+normal allocating replacement; the DMA non-allocating way-0 policy does not
+apply to them.
 
-The four prefetch slots sit outside the hart-facing grant path. The
-prefetcher takes every G and U for source 3 when it is presented, so the
-cluster returns their readiness for source 3 unconditionally and those slots
-capture their G without it. C comes from registers through a held arbiter,
-and U returns the identity and the table's read id. An error response to a
-prefetch fill frees the fill without an install; the prefetch itself
-completes without an error, demand readers seated on the fill wake with the
-error, and a later demand miss reads the line again.
+The four prefetch completion slots belong to source 3 alone and sit outside
+the hart-facing grant path. The agent takes every G and U for source 3 when
+it is presented, so the cluster returns their readiness for source 3
+unconditionally and those slots capture their G without it. An error
+response to a prefetch fill frees the fill without an install; the prefetch
+itself completes without an error, demand readers seated on the fill wake
+with the error, and a later demand miss reads the line again.
+
+An engine serving a prefetch protects no victim, and a prefetch slot never
+makes a PutM wait: the completion table's put check leaves the prefetch
+slots out, so the agent's live identities hold no PutM back however long
+they stay. While a PutM is neither accepted nor absorbed, its Modified
+sector keeps a resident L2 merge destination, so a Prefetch of that line
+allocates no fill and creates no owner that blocks W acceptance. Repeated
+Prefetches of the sector therefore cannot keep the PutM from being accepted
+or absorbed. A prefetch fill of another line can take the line as its
+victim; replacement then holds the victim through its recall, which absorbs
+the pending PutM before the row is reused.
 
 The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_equal`, `coherence_cluster`
 and `coherent_cut` cover controller ownership, inclusion, cuts, atomics,
@@ -594,7 +615,8 @@ probe service and the DMA sector handoff. Their prefetch cases cover the slot
 partition, the no-fill flag, prefetch fills that install, take a demand seat
 or fail, the fill reserve, the last available way and the last write-back
 slot, PutM beside live prefetches, and a demand that replaces lines held only
-by prefetches. `coherence_cluster_misses` repeats the cluster cases with three
+by prefetches. `coherence_prefetch` and `coherence_prefetch_equal` run the
+agent against the home at both line sizes. `coherence_cluster_misses` repeats the cluster cases with three
 L1D request endpoints, including several loads in flight. `coherence_readers`
 controls grants and releases around the real L1I, fetch provider and PTW. It checks overlapping fills, invalidation, discarded fetches
 and walks, errors, reset, fatal stop and reuse of reader IDs before U.
@@ -606,7 +628,7 @@ Every C source, including each DMA ingress slot, holds its offer until
 acceptance, so these arbiters present their captured selection as C validity.
 
 Formal targets `coherence_home_completions`, `coherence_control`, `coherence_array`,
-`coherence_home`, `coherence_prefetcher`, `coherence_l1d` and `coherent_cpu` check endpoint service,
+`coherence_home`, `coherence_prefetch_agent`, `coherence_prefetch_pause`, `coherence_l1d` and `coherent_cpu` check endpoint service,
 representative byte values, bounded controller transitions and CPU ownership.
 The `coherence_l1d` target also runs the L1D with three request endpoints and
 checks that no two live endpoints hold one sector, that no load endpoint is
@@ -1009,7 +1031,7 @@ described above.
 
 `l2_stream_prefetcher` reads ahead of ascending L1D miss streams into the L2.
 `frost_cache_hierarchy` enables it with `L2_PREFETCH=1`, and the coherent
-home's prefetcher uses two of its tables. A table loads a new request only
+prefetch agent uses two of its tables. A table loads a new request only
 while `i_enable` is set; the component hierarchy holds it set. It watches the
 L1D's read requests as the top arbiter takes them, which are its misses,
 store misses included. A table of 4 streams holds the last L2 line each
@@ -1018,8 +1040,8 @@ and advances it, a miss on its own line leaves it, and any other miss
 replaces a stream in rotation. With `IGNORE_BACKWARD=1`, a miss up to
 `2 * DISTANCE - 1` lines behind an entry in the same page also leaves the
 entries in place. The filter distance is capped at the page's line count
-minus one. This option defaults to zero and is enabled for the coherent
-home's instruction table. For each confirmed stream the prefetcher
+minus one. This option defaults to zero and is enabled for the prefetch
+agent's instruction table. For each confirmed stream the prefetcher
 reads the lines after its last miss, up to `L2_PREFETCH_DISTANCE` (8) lines
 ahead and never past the 4 KiB page of that miss, so it reads only memory
 that a demand access in the same page showed to exist.
@@ -1143,7 +1165,7 @@ to answer.
 
 | Target family | Coverage |
 | --- | --- |
-| `coherence_prefetch*` | Four occupied prefetch identities, delayed G/C/U, fill errors, reset, same-line and unrelated demands, dirty replacement, PutM, marked DMA fills, and progress with completion, result, fill, writeback and PutM storage full at 32- and 64-byte lines |
+| `coherence_prefetch*` | The prefetch agent against the home at 32- and 64-byte lines: data identities held at C and U, GrantAck at each lookup before the fill's memory response, fills that install on their own, a failed fill, reset and fatal stop, demands joining prefetch fills, dirty replacement, PutM beside live prefetches of its line, marked DMA fills, DMA responses before C and U, progress with completion, result and PutM storage full, and instruction and data streams on one line |
 | `coherence_prefetch_contention*` | Demand latency and bandwidth with competing streams, dirty victims and DMA, with and without prefetch |
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, and dirty-L1D walker coherence |
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, a miss waiting for a way of its set, writeback and fill progress, and `fence.i` |

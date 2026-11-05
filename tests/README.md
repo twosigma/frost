@@ -84,19 +84,23 @@ a write in flight through reset, including a five-cycle home data write.
 The private-array benches alternate data and skipped-data hits, hold replies,
 and check replacement choices at the following lookup in each set.
 
-`coherence_prefetch` and `coherence_prefetch_equal` connect the stream
-requester and its four endpoints to the home at both line sizes. They check
-identity occupancy through fill completion and G/C/U, independently delayed
-channels, errors and reset, demand joins, dirty recalls, PutM, marked DMA
-fills and progress with completion, result, fill, writeback and PutM
-storage full. For known misses or recorded reads, the bench checks the
-first offered Prefetch grant against the memory response and, on success,
-the array's fill installation acknowledgement. Its installation history
-also covers grants after a fill slot frees.
+`coherence_prefetch` and `coherence_prefetch_equal` connect the prefetch
+agent and its four endpoints to the home at both line sizes, with the
+shipping cap of three data identities. They check identity occupancy
+through G, C and U with C and U held, the GrantAck of each lookup before
+its fill's memory response, fills that install on their own, a failed fill
+that installs nothing, errors, reset and fatal stop, demand joins, dirty recalls, a PutM
+accepted beside live prefetches of its line, marked DMA fills, progress
+with completion, result and PutM storage full, and instruction and data
+streams on one line, where no line is requested twice while an identity
+holds it.
 The transport driver admits DMA at D and models the ingress's response
-pulses after read G or write U. Directed cases hold DMA C and U beyond the
-pause interval: reads allow prefetch admission after their response, while
-writes keep admission paused until their release and response.
+pulses after read G or write U. Production admits a DMA request at the
+ingress, a stage before D, and its pause starts there; the pause proof
+covers the production credit accounting. Directed cases hold
+DMA C and U beyond the pause interval: reads allow prefetch admission after
+their response, while writes keep admission paused until their release and
+response.
 The `coherence_prefetch_contention*` benches report demand service for competing
 streams, dirty replacement, DMA and combined dirty/DMA pressure with
 prefetch enabled or disabled.
