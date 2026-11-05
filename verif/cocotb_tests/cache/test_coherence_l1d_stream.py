@@ -76,7 +76,8 @@ class Stream(Private):
         self.installs.clear()
         self.read_results.clear()
         self.accesses = self.hits = self.misses = self.combined = 0
-        await self.set(i_d_ready=7, i_c_ready=7, i_read_ready=1)
+        endpoints = (1 << len(self.dut.o_d_valid)) - 1
+        await self.set(i_d_ready=endpoints, i_c_ready=endpoints, i_read_ready=1)
 
     async def issued(self, address: int) -> tuple[int, tuple]:
         """Wait for a request for the specified sector."""
@@ -659,4 +660,107 @@ async def store_hits_cannot_displace_a_yielded_miss(dut: Any) -> None:
             await b.wait("live", 0)
         elif drain == "sc":
             await b.wait("o_sc_ready")
+        assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def completed_load_grant_supplies_the_read_turn(dut: Any) -> None:
+    """Check load-grant read service between resident store installations."""
+    for dirty in (False, True):
+        b = Stream(dut)
+        await b.reset()
+        a, c, hot, miss = 0x80000000, 0x80000040, 0x80000060, 0x80000020
+        warm = (a, c, hot, a + 160, a + 288, a + 416, a + 544) if dirty else (a, c, hot)
+        for address in warm:
+            await store(b, address, 0xABC)
+            await b.grant(address)
+            await b.release(address)
+        await b.set(
+            i_read_valid=1, i_read_id=0, i_read_kind=0, i_read_size=3, i_address=miss
+        )
+        await b.tick()
+        await b.set(i_read_valid=0)
+        await b.issued(miss)
+        await b.set(
+            i_p_valid=1,
+            i_p=pack(
+                (2, 0),
+                (6, 3),
+                (1, 0),
+                (b.p, a + 384),
+                (2, 0),
+                (2, 0),
+                (9, 0),
+                (5, 0),
+                (3, 0),
+            ),
+        )
+        await b.wait("o_p_ready")
+        await b.tick()
+        await b.set(i_p_valid=0)
+        await b.wait("o_r_valid")
+        await store(b, a, 0x111)
+        await store(b, c, 0x222)
+        await b.set(
+            i_read_valid=1, i_read_id=1, i_read_kind=0, i_read_size=3, i_address=hot
+        )
+        await b.tick()
+        await b.set(i_read_valid=0)
+        await b.tick(4)
+        assert b.get("rd_candidate") and not b.get("store_read_turn_q")
+        await b.set(i_r_ready=1)
+        await b.tick()
+        await b.set(i_r_ready=0)
+        for _ in range(200):
+            if b.get("phase_q") == 1 and b.get("operation_q") == 1:
+                break
+            await b.tick()
+        else:
+            raise AssertionError("first resident store was not selected")
+        assert b.get("lookup_addr_q") == a
+        first_install = len(b.installs)
+        await b.grant(miss, 0xBEEF)
+        grant_selected = grant_completed = False
+        next_store = last_store = hit_completed = froze = False
+        for _ in range(200):
+            if b.get("phase_q") == 4 and b.get("operation_q") == 2:
+                assert b.get("read_owed_q")
+                froze = True
+            if b.get("phase_q") == 1 and b.get("operation_q") == 2:
+                assert b.get("read_owed_q") and b.get("rd_candidate")
+                assert not b.get("selected_grant_store")
+                grant_selected = True
+            if b.get("operation_q") == 2 and grant_selected and not grant_completed:
+                assert b.get("read_owed_q")
+            fill = bool(b.get("read_fill"))
+            if fill:
+                assert grant_selected
+                grant_completed = True
+            if b.get("completed_read_selection") and b.get("operation_q") == 0:
+                hit_completed = True
+            if b.get("phase_q") == 1 and b.get("operation_q") == 1:
+                if not next_store:
+                    assert (
+                        grant_completed and not hit_completed and b.get("rd_candidate")
+                    )
+                    assert b.get("lookup_addr_q") == c
+                    next_store = True
+                    await store(b, a, 0x333)
+                else:
+                    assert hit_completed and b.get("lookup_addr_q") == a
+                    last_store = True
+            await b.tick()
+            if fill:
+                assert not b.get("read_owed_q")
+            if last_store and len(b.read_results) == 2 and not b.get("o_pending_store"):
+                break
+        else:
+            raise AssertionError("read grant, store and waiting hit did not finish")
+        assert grant_selected and grant_completed and next_store and last_store
+        assert froze == dirty
+        assert b.installs[first_install:] == [a, c, a]
+        assert sorted(b.read_results) == [(0, 0xBEEF), (1, 0xABC)]
+        await b.release(miss)
+        assert await snapshot(b, a) == 0x333
+        assert await snapshot(b, c) == 0x222
         assert not b.get("o_fatal")

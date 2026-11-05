@@ -1821,7 +1821,9 @@ module coherence_l1d #(
       insert_lookup_set_q <= '0;
       insert_lookup_way_q <= '0;
     end else begin
-      if (!rd_candidate || (phase_q == Lookup && operation_q == ReadOp)) read_owed_q <= 1'b0;
+      // Read lookups and completed read grants discharge the service debt.
+      if (!rd_candidate || (phase_q == Lookup && operation_q == ReadOp) ||
+          read_fill) read_owed_q <= 1'b0;
       if (store_pop && operation_q == StoreOp && read_waiting_q && rd_candidate)
         read_owed_q <= 1'b1;
       if (active && phase_q == LookupWait && array_valid) begin

@@ -570,7 +570,9 @@ controls grants and releases around the real L1I, fetch provider and PTW. It che
 and walks, errors, reset, fatal stop and reuse of reader IDs before U.
 The whole-SoC program configurations use this hierarchy.
 `coherence_l1d_stream` checks ordered store installation, combining, independent
-grants, duplicate-sector exclusion and read turns. `coherence_store_pressure`
+grants, duplicate-sector exclusion and read turns. A completed load grant
+supplies read service between resident stores while another read waits.
+`coherence_store_pressure`
 holds both dirty victim slots and delays endpoint releases while ordinary loads
 and probing DMA requests use the production home.
 G and U route by their message source identity. Fair C arbiters select the
