@@ -1228,7 +1228,7 @@ jobs:
           # BMC takes longer, so they run in their own job.
           - shard: Hart maintenance
             pytest_filter: coh_hart_maint_prove or coh_l1d_stream_bmc
-            timeout_minutes: 240
+            timeout_minutes: 330
           - shard: Other tasks
             pytest_filter: "not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or coherence_ or coherent_)"
             timeout_minutes: 240

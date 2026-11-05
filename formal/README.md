@@ -39,9 +39,10 @@ to separate jobs with 120-minute limits. The two CSR jobs also run selected
 coherent store-boundary tasks, and the reorder-buffer job also runs the
 coherent L1D tasks other than its three control BMCs. The hart maintenance
 proof and the eight-endpoint L1D stream control BMC share a job with a
-240-minute limit. The Coherence job runs the other coherence tasks, including
-hart maintenance covers, with a 240-minute limit. The Other tasks job has a
-240-minute limit. Job limits include image setup.
+330-minute limit, which covers both allowances in sequence. The Coherence
+job runs the other coherence tasks, including hart maintenance covers, with
+a 240-minute limit. The Other tasks job has a 240-minute limit. Job limits
+include image setup.
 
 The CI jobs collect `tests/test_run_formal.py` and
 `tests/test_pa_bridge_mutation.py` through `./scripts/frost.py run pytest`
