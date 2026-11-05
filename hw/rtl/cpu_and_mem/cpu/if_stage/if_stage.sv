@@ -1005,16 +1005,23 @@ module if_stage #(
     end
   end
 `endif
+  // The execute and PD redirects and the flush terms combine first, so the
+  // fetch-loop prediction terms, the window resteer and the PC load enable
+  // can reach the register through one LUT.
+  (* keep = "true" *)logic fetch_cached_retarget_redirect;
+  (* keep = "true" *)logic fetch_cached_retarget_flush;
+  assign fetch_cached_retarget_redirect = i_from_ex_comb.branch_taken || i_pd_redirect;
+  assign fetch_cached_retarget_flush = i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken ||
+                                       i_fence_i_flush;
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
       o_fetch_cached_retarget <= 1'b0;
     end else begin
       o_fetch_cached_retarget <=
           (pc_update_en &&
-           (i_from_ex_comb.branch_taken || i_pd_redirect ||
-            slot2_prediction_used_for_pc || live_prediction_emits_with_output ||
-            window_resteer_pc_reg)) ||
-          i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken || i_fence_i_flush;
+           (fetch_cached_retarget_redirect || slot2_prediction_used_for_pc ||
+            live_prediction_emits_with_output || window_resteer_pc_reg)) ||
+          fetch_cached_retarget_flush;
     end
   end
 
