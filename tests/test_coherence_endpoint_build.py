@@ -68,6 +68,7 @@ def test_cluster_sources_are_available() -> None:
         "coherent_hart_cache.sv",
         "coherence_home.sv",
         "coherence_grant_select.sv",
+        "coherence_read_owners.sv",
         "debug_store_mirror_hold.sv",
         "coherence_c_payload.sv",
         "coherent_atomic_select.sv",

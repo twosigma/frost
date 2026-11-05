@@ -768,13 +768,7 @@ module coherence_l1d #(
     end
     same_line_ep = '0;
     for (int ep = 0; ep < MISSES; ep++) if (same_line_q[ep]) same_line_ep = EpBits'(ep);
-    rd_owned = '0;
     rd_waiting = '0;
-    if (request_live && !acquisition_store_q && !acquisition_sc_q)
-      rd_owned[acquisition_read_q] = 1'b1;
-    if (Multi)
-      for (int ep = 1; ep < MISSES; ep++)
-      if (live[ep] && !ep_store[ep] && !installed_q[ep]) rd_owned[ld_read_q[ep]] = 1'b1;
     for (int slot = 0; slot < 8; slot++) begin
       rd_waiting[slot] = Multi && rd_wait_q[slot] && live[rd_wait_ep_q[slot]] &&
           !(installed_q[rd_wait_ep_q[slot]] && !rd_wait_release_q[slot]);
@@ -785,6 +779,22 @@ module coherence_l1d #(
       else rd_miss_retry[slot] = !any_live && wb_free;
     end
   end
+  logic [3*MISSES-1:0] read_owner_slots;
+  assign read_owner_slots[0+:3] = acquisition_read_q;
+  for (genvar ep = 1; ep < MISSES; ep++) begin : gen_read_owner_slot
+    assign read_owner_slots[3*ep+:3] = ld_read_q[ep];
+  end
+  coherence_read_owners #(
+      .SLOTS(MISSES)
+  ) read_owners (
+      .i_clk(i_clk),
+      .i_live(live[MISSES-1:0]),
+      .i_store(ep_store[MISSES-1:0]),
+      .i_installed(installed_q[MISSES-1:0]),
+      .i_zero_sc(acquisition_sc_q),
+      .i_read_slot(read_owner_slots),
+      .o_owned(rd_owned)
+  );
   assign same_line = Multi && |same_line_q;
   // A load grant waits only for a WB slot. Endpoint 0 does not take the last
   // free slot from it, so stores and LR cannot keep a load grant waiting.

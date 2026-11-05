@@ -23,6 +23,10 @@ coh_read_select64_prove select wide
 coh_grant_select2_prove grant_select grant2
 coh_grant_select4_prove grant_select grant4
 coh_grant_select8_prove grant_select
+coh_read_owners1_prove owners owners1
+coh_read_owners3_prove owners owners3
+coh_read_owners4_prove owners owners4
+coh_read_owners8_prove owners owners8
 
 [options]
 mode prove
@@ -42,6 +46,8 @@ payload: depth 1
 select: timeout 180
 grant_select: depth 1
 grant_select: timeout 180
+owners: depth 1
+owners: timeout 180
 
 [engines]
 smtbmc boolector
@@ -73,6 +79,12 @@ grant_select: read -formal -sv coherence_grant_select.sv
 grant2: chparam -set SLOTS 2 coherence_grant_select
 grant4: chparam -set SLOTS 4 coherence_grant_select
 grant_select: prep -top coherence_grant_select
+owners: read -formal -sv coherence_read_owners.sv
+owners1: chparam -set SLOTS 1 coherence_read_owners
+owners3: chparam -set SLOTS 3 coherence_read_owners
+owners4: chparam -set SLOTS 4 coherence_read_owners
+owners8: chparam -set SLOTS 8 coherence_read_owners
+owners: prep -top coherence_read_owners
 
 [files]
 coherent_atomic_select_formal.sv
@@ -86,3 +98,4 @@ coherent_atomic_select_formal.sv
 ../hw/rtl/lib/cache/coherence_read_flags.sv
 ../hw/rtl/lib/cache/coherence_read_select.sv
 ../hw/rtl/lib/cache/coherence_grant_select.sv
+../hw/rtl/lib/cache/coherence_read_owners.sv

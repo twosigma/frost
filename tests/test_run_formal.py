@@ -335,6 +335,10 @@ FORMAL_TARGETS = [
             "coh_grant_select2_prove",
             "coh_grant_select4_prove",
             "coh_grant_select8_prove",
+            "coh_read_owners1_prove",
+            "coh_read_owners3_prove",
+            "coh_read_owners4_prove",
+            "coh_read_owners8_prove",
         ),
     ),
     FormalTarget(
@@ -1143,6 +1147,22 @@ SBY_TASKS = [
     (
         "coh_grant_select8_prove",
         "Eight grant candidates preserve credit-qualified priority and failure selection.",
+    ),
+    (
+        "coh_read_owners1_prove",
+        "One endpoint preserves the binary read ownership mask.",
+    ),
+    (
+        "coh_read_owners3_prove",
+        "The binary read ownership mask covers 3 endpoints.",
+    ),
+    (
+        "coh_read_owners4_prove",
+        "The binary read ownership mask covers 4 endpoints.",
+    ),
+    (
+        "coh_read_owners8_prove",
+        "The binary read ownership mask covers 8 endpoints.",
     ),
     ("bmc_siblings", "Real-home sibling store byte safety."),
     ("bmc_rows", "Real-home distinct-row store byte safety."),

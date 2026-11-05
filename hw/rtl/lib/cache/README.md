@@ -300,6 +300,10 @@ lookahead service ahead of head-store hits. The reservation ends after lookahead
 service, endpoint allocation, record promotion or removal, or an atomic or
 maintenance drain request. Each acquired
 store record contributes to the outstanding-miss count until installation.
+`coherence_read_owners` computes each read slot's ownership from parallel
+endpoint contributions. Endpoint zero excludes stores and SC; nonzero
+endpoints exclude stores and installed requests. Duplicate endpoint slot
+indices combine by OR. The binary mask matches an indexed endpoint scan.
 Read status uses per-slot masks for allocation, response transfer, lookup
 results and grant completion. Completion and miss sets dominate allocation
 clears. Allocation sets dominate response clears of valid bits. A failed
