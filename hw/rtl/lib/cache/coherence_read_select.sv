@@ -46,7 +46,8 @@ module coherence_read_select #(
     output logic [2:0] o_index,
     output logic [ADDR_WIDTH-1:0] o_address
 );
-  logic [7:0] eligible, load_miss, upper, first, stored_eligible, write_eligible;
+  logic [7:0] eligible, load_miss, upper, first;
+  (* keep = "true" *) logic [7:0] stored_eligible, write_eligible;
   (* keep = "true" *) logic stored_found, write_found;
   (* keep = "true" *) logic [7:0] first_upper, first_any;
   // i_addr is each slot's address after the buffered write forwards to it.
@@ -79,8 +80,11 @@ module coherence_read_select #(
         (i_kind[2*index+:2] != 2'd2 || i_atomic_protected) &&
         !i_owned[index] && !i_waiting[index] && (!i_miss[index] || i_miss_retry[index]);
     assign eligible[index] = qualified && !blocked;
-    assign stored_eligible[index] = qualified && !i_write_mask[index] && !stored_blocked;
-    assign write_eligible[index] = qualified && i_write_mask[index];
+    wire available = i_valid[index] && !i_ready[index] &&
+        (i_kind[2*index+:2] != 2'd2 || i_atomic_protected) &&
+        !i_waiting[index] && (!i_miss[index] || i_miss_retry[index]);
+    assign stored_eligible[index] = available && !i_write_mask[index] && !stored_blocked;
+    assign write_eligible[index] = available && i_write_mask[index];
     assign load_miss[index] = eligible[index] && i_miss[index] && i_kind[2*index+:2] == 2'd0;
     if (index == 7) begin : gen_last
       assign upper[index] = eligible[index];
@@ -96,10 +100,10 @@ module coherence_read_select #(
     end
   end
   assign first = (|upper) ? first_upper : first_any;
-  // Stored and buffered-write candidates reduce separately. The shared
-  // write-address check qualifies the buffered-write result.
-  assign stored_found = |stored_eligible;
-  assign write_found = |write_eligible;
+  // Ownership qualifies availability after the other per-slot checks.
+  // The shared write-address check qualifies the buffered-write result.
+  assign stored_found = |(stored_eligible & ~i_owned);
+  assign write_found = |(write_eligible & ~i_owned);
   assign o_found = stored_found || (write_found && !write_blocked);
   assign o_load_miss = |load_miss;
   always_comb begin
