@@ -77,14 +77,16 @@ class StreamPrivate(Private):
         self.resident_hints_while_held.clear()
         await self.set(i_d_ready=(1 << self.endpoints) - 1, i_atomic_protected=1)
 
-    async def issue(self, slot: int, address: int, kind: int = 0) -> None:
+    async def issue(
+        self, slot: int, address: int, kind: int = 0, size: int = 3
+    ) -> None:
         """Present one independent CPU read."""
         await self.set(
             i_read_valid=1,
             i_read_id=slot,
             i_address=address,
             i_read_kind=kind,
-            i_read_size=3,
+            i_read_size=size,
         )
         await self.tick()
         await self.set(i_read_valid=0)
@@ -285,6 +287,110 @@ class StreamPrivate(Private):
         raise AssertionError(
             f"Only {len(self.responses)} CPU responses, expected {count}"
         )
+
+
+@cocotb.test()
+async def demand_payloads_in_every_load_endpoint(dut: Any) -> None:
+    """Preserve size and offset while ordinary reads occupy every load endpoint."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 2:
+        return
+    for turn in range(4):
+        await b.reset()
+        await b.set(i_d_ready=0)
+        expected = {}
+        for slot in range(b.endpoints - 1):
+            size = (turn + slot) % 4
+            offset = 8 * (slot % 4) + (1 << size if size < 3 else 0)
+            address = 0x80000000 + turn * 0x10000 + slot * 0x1000 + offset
+            if b.p > 32:
+                address |= 1 << (b.p - 1)
+            expected[address & ~31] = (slot, address, size)
+            await b.issue(slot, address, size=size)
+        for _ in range(300):
+            if b.get("o_d_valid").bit_count() == b.endpoints - 1:
+                break
+            await b.tick()
+        else:
+            raise AssertionError("Demand did not occupy every nonzero endpoint")
+        assert b.get("o_d_valid") == (1 << b.endpoints) - 2
+        assert not b.get("ld_prefetch_q")
+        held = b.get("o_d")
+        for _ in range(8):
+            await b.tick()
+            assert b.get("o_d") == held
+        await b.set(i_d_ready=(1 << b.endpoints) - 1)
+        await b.requests_at_least(b.endpoints - 1)
+        assert {ep for ep, _ in b.requests} == set(range(1, b.endpoints))
+        for ep, request in b.requests:
+            _, address, size = expected[request[2]]
+            assert request == (
+                0,
+                ep << 1,
+                address & ~31,
+                address & 31,
+                size,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
+        await b.drain(b.endpoints - 1)
+        assert sorted(b.responses) == [
+            (slot, b.word(address & ~7), 0)
+            for slot, address, _ in sorted(expected.values())
+        ]
+        assert len(b.requests) == b.endpoints - 1
+        assert not b.get("live") and not b.get("o_fatal")
+
+
+@cocotb.test()
+async def read_id_reuse_before_endpoint_release(dut: Any) -> None:
+    """Reuse a consumed CPU read ID while its first endpoint waits for U."""
+    b = StreamPrivate(dut)
+    for kind in (0, 1):
+        await b.reset()
+        base = 0x80004000
+        await b.issue(0, base)
+        await b.requests_at_least(1)
+        await b.grant(0)
+        await b.set(i_read_ready=1)
+        for _ in range(80):
+            if len(b.responses) == 1:
+                break
+            await b.tick()
+        else:
+            raise AssertionError("First CPU read response did not drain")
+        await b.accept_completion(0)
+        await b.tick(12)
+        old_ep = b.requests[0][0]
+        assert b.get("live") == 1 << old_ep
+        assert not b.get("rd_valid_q") & 1
+        await b.issue(0, base + 512, kind=kind)
+        parallel = b.endpoints >= (2 if kind else 3)
+        if parallel:
+            await b.requests_at_least(2)
+            assert b.get("live") >> old_ep & 1
+            assert b.requests[1][0] != old_ep
+        else:
+            await b.tick(20)
+            assert len(b.requests) == 1 and b.get("rd_valid_q") & 1
+            await b.release(0)
+            await b.requests_at_least(2)
+        assert b.requests[1][1][0] == (2 if kind else 0)
+        if kind:
+            assert b.requests[1][0] == 0
+        await b.grant(1)
+        await b.release(1)
+        if parallel:
+            await b.release(0)
+        await b.drain(2)
+        assert b.responses == [
+            (0, b.word(base), 0),
+            (0, b.word(base + 512), 0),
+        ]
+        assert not b.get("live") and not b.get("o_fatal")
 
 
 @cocotb.test()

@@ -755,7 +755,27 @@ module coherence_l1d #(
   assign ep_done_valid[0] = done_q;
   assign ep_done_status[0] = done_status_q;
   assign ep_write_done[0] = written_q;
+`ifndef SYNTHESIS
+  logic [EpSlots-1:0] request_payload_match, load_payload_held;
+`endif
   for (genvar ep = 0; ep < MISSES; ep++) begin : gen_request
+    coh_d_t endpoint_acquisition;
+    if (ep == 0) begin : gen_atomic_payload
+      assign endpoint_acquisition = acquisition;
+    end else begin : gen_read_payload
+      always_comb begin
+        endpoint_acquisition = acquisition;
+        endpoint_acquisition.opcode = coherence_pkg::GetS;
+        endpoint_acquisition.mask = '0;
+      end
+    end
+`ifndef SYNTHESIS
+    coh_d_t held_request;
+    assign held_request = o_d[ep];
+    assign request_payload_match[ep] = endpoint_acquisition == acquisition;
+    assign load_payload_held[ep] = ep == 0 || !live[ep] ||
+        (held_request.opcode == coherence_pkg::GetS && held_request.mask == 0);
+`endif
     if (StreamEnabled && ep >= MISSES - PrefetchCount) begin : gen_stream_admission
       assign ep_request_valid[ep] = active && phase_q == Acquire && acq_ep_q == EpBits'(ep) &&
           (operation_q != PrefetchOp || prefetch_acquire_ok) && !load_acquire_block;
@@ -784,7 +804,7 @@ module coherence_l1d #(
         .i_epoch(1'b0),
         .i_request_valid(ep_request_valid[ep]),
         .o_request_ready(ep_request_ready[ep]),
-        .i_request(acquisition),
+        .i_request(endpoint_acquisition),
         .o_d_valid(o_d_valid[ep]),
         .i_d_ready(i_d_ready[ep]),
         .o_d(o_d[ep]),
@@ -810,20 +830,53 @@ module coherence_l1d #(
     );
   end
 `ifndef SYNTHESIS
-  logic [EpSlots-1:0] request_valid_ref;
+  logic [EpSlots-1:0] request_valid_ref, request_ready_ref;
   always_comb begin
     request_valid_ref = '0;
-    for (int ep = 0; ep < MISSES; ep++)
+    request_ready_ref = '0;
+    for (int ep = 0; ep < MISSES; ep++) begin
       request_valid_ref[ep] = active && phase_q == Acquire && acq_ep_q == EpBits'(ep) &&
           (operation_q != PrefetchOp || prefetch_acquire_ok) && (ep == 0 || !load_acquire_block);
+      request_ready_ref[ep] = !i_rst && !live[ep] &&
+          acquisition.q == {2'b00, 2'b00, 4'(ep), 1'b0} &&
+          coherence_pkg::legal_q(acquisition.q) &&
+          coherence_pkg::legal_opcode(acquisition.q, acquisition.opcode) &&
+          acquisition.addr[4:0] == 0;
+    end
   end
   always_ff @(posedge i_clk)
-    if (sim_reset_seen_q && active)
-      p_request_admission : assert (ep_request_valid == request_valid_ref);
+    if (sim_reset_seen_q && !i_rst) begin
+      p_request_ready_payload : assert (ep_request_ready == request_ready_ref);
+      p_request_payload : assert ((ep_request_valid & ~request_payload_match) == 0);
+      p_load_payload_held : assert (&load_payload_held);
+      p_acquire_index : assert (int'(acq_ep_q) < MISSES);
+      p_atomic_no_load_endpoint : assert (!atomic_q || !(|live[EpSlots-1:1]));
+      if (active) begin
+        p_request_admission : assert (ep_request_valid == request_valid_ref);
+        if (phase_q == Acquire) begin
+          if (acq_ep_q != 0) begin
+            p_acquire_read_role : assert (!atomic_q &&
+                ((operation_q == ReadOp && rd_valid_q[selected_read_q] &&
+                  !rd_ready_q[selected_read_q] && rd_kind_q[selected_read_q] == ReadLoad) ||
+                 (operation_q == PrefetchOp && StreamEnabled &&
+                  int'(acq_ep_q) >= MISSES - PrefetchCount)));
+            p_acquire_read_payload : assert (acquisition.opcode == coherence_pkg::GetS &&
+                acquisition.mask == 0);
+          end
+          if (!((acq_ep_q != 0 && load_acquire_block) ||
+              (operation_q == PrefetchOp && !prefetch_acquire_ok)))
+            p_acquire_request_valid : assert (ep_request_valid[acq_ep_q]);
+        end
+      end
+    end
 `endif
   // A load endpoint's grant installs only while a WB slot is free for a
   // modified victim; endpoint 0 reserved its slot at Acquire.
   for (genvar ep = MISSES; ep < EpSlots; ep++) begin : gen_unused_endpoint
+`ifndef SYNTHESIS
+    assign request_payload_match[ep] = 1'b1;
+    assign load_payload_held[ep] = 1'b1;
+`endif
     assign live[ep] = 1'b0;
     assign ep_request_ready[ep] = 1'b0;
     assign ep_request_valid[ep] = 1'b0;
@@ -993,8 +1046,6 @@ module coherence_l1d #(
         p_prefetch_acquire_guard : assert (prefetch_acquire_ok == prefetch_accept_ref);
         if (!prefetch_cancel) assert (lookup_in_window && !stream_replace);
       end
-      if (atomic_q && atomic_granted_q)
-        for (int ep = 1; ep < MISSES; ep++) assert (!live[ep]);
       if (grant_read_hold) assert (!grant_ready && !read_failure && !ep_grant_valid[0]);
       if (grant_read_yield) begin
         assert (!grant_ready && !read_failure && !ep_grant_valid[0]);

@@ -295,6 +295,9 @@ requests. Three-endpoint caches allow one; smaller caches disable look-ahead.
 Demand may use every load endpoint. Eligible foreground work precedes hint
 selection. Registered hints check live acquisitions, buffered stores and
 frozen dirty writebacks, with conflicts rechecked before acquisition.
+Nonzero endpoints receive GetS payloads with zero write masks. Demand size
+and offset follow the selected load. Endpoint zero carries the other
+acquisition kinds.
 Only the speculative endpoint pool uses the conditional hint acceptance
 guard. Endpoint zero and the demand-only endpoints use demand admission.
 The hint and selected lookup have separate comparisons against live ownership.
