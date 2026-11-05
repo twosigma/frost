@@ -37,7 +37,8 @@ This directory provides a **fast, cycle-approximate architectural performance mo
 
 ```
 perf-modeling/
-├── frost_perf_model.py          # Unified architectural model (CLI: run, replay, explore, sweep, audit, selftest, report)
+├── frost_perf_model.py          # Unified architectural model (CLI: run, memory-run, replay, explore, sweep, audit, selftest, report)
+├── memory_workloads.py          # Address and dependency generators for the DDR benchmark kernels
 ├── README.md                    # This document
 ├── docs/
 │   └── rtl_correlation_guide.md # Comprehensive guide for RTL correlation and trace capture
@@ -47,7 +48,8 @@ perf-modeling/
 │   └── ci_baseline.json         # Stored CoreMark figures and tolerance of the CI calibration check
 ├── tools/
 │   ├── run_calibration.py       # Calibration tool: validates traces, compares metrics, generates calibration.json
-│   └── refresh_baseline.py      # Recaptures CoreMark and rewrites the figures in ci_baseline.json
+│   ├── refresh_baseline.py      # Recaptures CoreMark and rewrites the figures in ci_baseline.json
+│   └── sweep_memory.py          # Sweeps cache resources and physical-channel service with explicit configurations
 ├── rtl/
 │   └── frost_perf_probe.sv      # Simulation-only Verilog event monitor mapping RTL handshakes to JSONL
 ├── tests/
@@ -60,6 +62,7 @@ perf-modeling/
     ├── multi_benchmark_correlation_report.md # Correlation and wall-time findings across 3 benchmarks
     ├── FROST_perf_model_report.md            # Architectural configuration study and sweep report
     ├── coremark_optimization_report.md       # Design space exploration and bottleneck analysis
+    ├── coremark_exploration.json             # CoreMark design-variant exploration behind the optimization report
     ├── frost_perf_selftest.json              # Model self-test verification artifact (14/14 checks pass)
     ├── frost_perf_rtl_alignment.json         # Static RTL alignment audit artifact
     ├── frost_perf_sweep.json                 # Baseline configuration parameter sweep
@@ -68,6 +71,7 @@ perf-modeling/
     │   ├── coremark_timed.jsonl              # 20 MB cycle-accurate JSONL execution trace
     │   ├── pipeline_counters.json            # Hardware-measured stall, dispatch, commit, and AXI counters
     │   ├── calibration.json                  # Model vs RTL correlation comparison record
+    │   ├── model_coremark_output.json        # Model's CoreMark workload run, the calibration's --model-run input
     │   └── findings.md                       # Deep-dive bottleneck analysis and reproduction guide
     ├── tomasulo_perf/                        # Tomasulo microarchitectural benchmark suite results
     │   ├── manifest.json
@@ -250,6 +254,8 @@ A change to the model that moves those results must rewrite them, with the comma
 python3 perf-modeling/frost_perf_model.py selftest --out perf-modeling/results/frost_perf_selftest.json
 python3 perf-modeling/frost_perf_model.py audit --out perf-modeling/results/frost_perf_rtl_alignment.json
 ```
+
+The Fast Python Tests job also runs `tests/test_perf_memory.py`, `tests/test_perf_workloads.py`, and `tests/test_perf_sweep.py` (section 12), and `tests/test_calibration_trace.py`, which tests the real-program bench's calibration capture (`verif/cocotb_tests/calibration_trace.py`) on a stand-in DUT.
 
 ### Calibration Check in CI
 

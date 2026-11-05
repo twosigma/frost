@@ -1,0 +1,36 @@
+[tasks]
+bmc
+bmc_four_way bmc four
+prove
+prove_four_way prove four
+cover
+
+[options]
+bmc: mode bmc
+bmc: depth 24
+prove: mode prove
+prove: depth 6
+cover: mode cover
+cover: depth 16
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -formal -sv sdp_dist_ram.sv
+read -formal -sv sdp_block_ram.sv
+bmc: read -formal -sv backing_btb.sv
+cover: read -formal -sv backing_btb.sv
+prove: read -formal -D BACKING_BTB_FORMAL_MIRROR_READ -sv backing_btb.sv
+chparam -set XLEN 8 -set ENTRIES 8 -set TARGET_BITS 5 backing_btb
+four: chparam -set WAYS 4 backing_btb
+prep -top backing_btb
+memory_map
+opt -fast
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/backing_btb.sv

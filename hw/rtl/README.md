@@ -4,8 +4,9 @@ This directory holds FROST's synthesizable SystemVerilog: a single-hart
 RV64GCB out-of-order CPU, its memory system, and its peripherals. The CPU
 schedules with Tomasulo's algorithm, decodes, renames, and commits up to two
 instructions per cycle, and runs M, S, and U modes with Sv39 virtual memory.
-Around it sit 256 KiB of on-chip BRAM, a three-cache hierarchy over a configurable DDR aperture of
-DDR, an APLIC, a RISC-V debug module, and a 10GBASE-R NIC.
+Around it sit 256 KiB of on-chip BRAM, a three-cache hierarchy over a
+configurable DDR aperture, an APLIC, a RISC-V debug module, and a 10GBASE-R
+NIC.
 
 The RTL is portable. Defining `FROST_XILINX_PRIMS` selects explicit Xilinx
 primitives in a few modules. `FROST_RVFI_DII`, for simulation only, builds

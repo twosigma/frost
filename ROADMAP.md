@@ -68,6 +68,33 @@ delegates the wired sources to the supervisor APLIC. Linux uses supervisor
 IMSIC delivery for IPIs and wired interrupts. The build connects one hart;
 the decoder and APLIC retain their hart-count parameters.
 
+Today the home probes only the one L1D, and several request and reply
+paths are fixed to hart 0. The steps to the second hart keep the single-hart
+build cycle-identical until the two-hart configuration exists:
+
+1. A written two-hart protocol contract, checked in the protocol model,
+   before any RTL changes.
+2. Hart identity throughout: request sources, reply routing, the home's
+   completion endpoints, `mhartid`, and the per-hart CSRs carry a hart
+   number.
+3. The home probes both L1Ds. Reads, store upgrades, and LRs probe the other
+   L1D, and each engine accepts each hart's reply on its own, since two
+   engines probing the harts in opposite orders would otherwise deadlock.
+4. A two-L1D cluster bench and bounded proofs for the races a second
+   requester creates: reads and writes to one sector from both harts, an
+   upgrade crossing an invalidation, a write-back crossing a probe, LR/SC
+   and AMOs across harts, and DMA against both harts.
+5. A two-hart `cpu_top` and SoC: per-hart timer compare and software
+   interrupts, APLIC and IMSIC targets for each hart, debug-module hart
+   selection, and a boot path that starts the second hart.
+6. Two-hart bare-metal tests, RVWMO litmus tests, and multi-hart debug
+   tests.
+7. A two-hart X3 build and hardware runs.
+8. OpenSBI hart start and Linux SMP, up to Debian on both harts.
+9. Multi-hart performance work, such as a hint that lets the home skip read
+   probes the other hart does not need, and home capacity sized for two
+   harts.
+
 Done means Debian running on both harts, multi-hart scaling reported
 separately from single-hart performance, and hours of sustained-load testing
 that repeatedly exercise the recovery paths.
@@ -129,8 +156,9 @@ write-read wait counters are not implemented and read zero.
 
 The [performance model](perf-modeling/README.md) is a cycle-approximate
 model of `cpu_top` and `soc_top` that CI compares with a CoreMark trace from
-the RTL. In the coherent path, `L1D_NUM_MSHR` sets the L1D's request
-endpoints, eight on X3, so up to
+the RTL. Its sweep of the previous hierarchy showed that a second memory
+channel needs about 16 reads in flight to use its bandwidth. In the coherent
+path, `L1D_NUM_MSHR` sets the L1D's request endpoints, eight on X3, so up to
 seven load misses go to the home. `L2_NUM_MSHR` sets the home's fills, eight
 on X3, and the home's stream prefetcher adds up to four requests of its own.
 
@@ -273,8 +301,9 @@ Priorities, guided by the performance counters and timing reports:
 6. Cheaper 32-bit operations on RV64. `MULW` takes three arithmetic cycles
    and word division or remainder takes up to nineteen, though CoreMark gains
    little from a faster `MULW`. Use instruction traces to evaluate fusion or
-   elimination at rename. Any such transformation must keep precise exceptions, retirement
-   counts, and debug single-step behavior, and be formally verified.
+   elimination at rename. Any such transformation must keep precise
+   exceptions, retirement counts, and debug single-step behavior, and be
+   formally verified.
 7. Queue capacity where counters show pressure. Sixteen INT
    reservation-station entries capture the measured benefit; larger INT RS,
    ROB, and load-queue sizes currently show little gain, and a second memory
@@ -319,16 +348,19 @@ and targeted microbenchmarks give these items:
    In simulation the walker cache takes a miss in a chain of 20 or more pages
    from 93 to 37 cycles, and the larger DTLB takes chains of up to 32 pages
    to 5 cycles.
-4. Branch prediction. A misprediction costs about 7 cycles, and the BTB has
-   256 direct-mapped entries. A 1024-entry two-way or four-way BTB is the
-   largest expected gain for Linux: in Linux-like traces the 256-entry BTB
-   misses on 44 to 46% of lookups, and a 1024-entry two-way one on 7 to 11%.
-   In bare-metal microbenchmarks a taken branch costs about 5 cycles, and a
-   loop of four additions runs at 0.6 IPC with translation off; those
-   small-loop costs come from fetch coverage and packet formation, not BTB
-   capacity. The BTB read is on the fetch loop, one of the hardest paths at
-   the target clock, so a larger table could also sit behind the existing
-   one as a registered second level.
+4. Branch prediction. A misprediction costs about 7 cycles. The BTB has 256
+   direct-mapped entries, and a 1024-entry two-way backing BTB behind it
+   predicts the jumps, calls and returns it misses through a PD redirect, at
+   that redirect's cost of two bubbles. In Linux-like traces the 256-entry
+   BTB misses on 44 to 46% of lookups, and a 1024-entry two-way one on 7 to
+   11%. A slot-1 conditional branch that misses the BTB is redirected by PD
+   when its direction predictors say taken, at the same cost, and a slot-2
+   one recovers from execution. A backing hit served from IF would save a
+   bubble, but its correction would sit on the fetch loop, one of the hardest
+   paths at the target clock. In bare-metal microbenchmarks a taken branch
+   costs about 5 cycles, and a loop of four additions runs at 0.6 IPC with
+   translation off; those small-loop costs come from fetch coverage and
+   packet formation, not BTB capacity.
 5. Floating point. One engine executes F and D instructions one at a time.
    Arithmetic shares an iterative adder. Comparisons, moves, min/max, FCLASS
    and sign injection use two-cycle paths. Integer-to-FP conversion takes
@@ -363,8 +395,15 @@ and targeted microbenchmarks give these items:
    per line for loads to the same line, or a next-line request from the L1D
    would let one stream keep several lines in flight, and each combines with
    a stream prefetcher in the home. Dependent loads are also slower than
-   through the previous hierarchy, by about 60% for L2 hits and 35% for DRAM,
-   so the home's request path needs a latency budget.
+   through the previous hierarchy: in simulation an L2 hit takes 45 cycles
+   against 23, a DRAM miss 39 cycles more, and a page-table walk 33 cycles
+   more. The L1D installs a line before it answers the load, the home repeats
+   its tag lookup and data read after a fill arrives, and registered stages
+   and arbitration add the rest. Answering a load from its grant, reading a
+   victim's data only when it is dirty, waking a fill's waiting requests when
+   the install is accepted, forwarding the arriving line to the first
+   request, and a second request slot for the page-table walker would
+   recover most of the difference.
 
 ## Core area
 

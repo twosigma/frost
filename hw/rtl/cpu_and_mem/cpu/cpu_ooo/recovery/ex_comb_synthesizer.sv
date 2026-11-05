@@ -95,8 +95,12 @@ module ex_comb_synthesizer #(
   assign correct_branch_commit_q_2           = i_correct_branch_commit_q_2;
 
   // Cap fanout of the BTB transaction muxes.
-  (* max_fanout = 64 *)riscv_pkg::from_ex_comb_t late_from_ex_comb;
-  (* max_fanout = 64 *)riscv_pkg::from_ex_comb_t from_ex_comb_synth;
+  (* max_fanout = 64 *) riscv_pkg::from_ex_comb_t late_from_ex_comb;
+  (* max_fanout = 64 *) riscv_pkg::from_ex_comb_t from_ex_comb_synth;
+
+  // A JAL or JALR also trains the backing BTB.
+  logic mispredict_commit_jump;
+  assign mispredict_commit_jump = mispredict_commit_q.is_jal || mispredict_commit_q.is_jalr;
 
   // Build the late BTB candidate independently of early_mispredict_active.
   always_comb begin
@@ -120,6 +124,7 @@ module ex_comb_synthesizer #(
         late_from_ex_comb.btb_update_compressed = mispredict_commit_q.is_compressed;
         late_from_ex_comb.btb_update_call       = mispredict_commit_q.is_call;
         late_from_ex_comb.btb_update_return     = mispredict_commit_q.is_return;
+        late_from_ex_comb.btb_update_jump       = mispredict_commit_jump;
       end
 
       if (mispredict_commit_q.has_checkpoint) begin

@@ -25,12 +25,14 @@ module id_stage #(
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id,
-    // Slot-1 direction override from PD registers, shared with IF: the new
-    // direction and, when taken, the target. Apply it here to keep target
+    // Direction override from PD registers, shared with IF: the new
+    // direction and, when taken, the target. It applies to slot 1, or to
+    // slot 2 for a backing BTB prediction there. Apply it here to keep target
     // arithmetic out of PD's packet register.
     input logic i_pd_redirect,
     input logic i_pd_redirect_taken,
     input logic [XLEN-1:0] i_pd_redirect_target,
+    input logic i_pd_redirect_slot2,
     // mstatus.FS == Off makes F/D instructions illegal. cpu_ooo registers
     // this one cycle after the CSR. FS enters or leaves Off only through a
     // write-intending mstatus/sstatus access; its FENCE-class flush discards
@@ -44,8 +46,8 @@ module id_stage #(
     // o_from_id_to_ex_next selects between them using stall.
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next_go,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next_hold,
-    // Slot 2 carries its own staged BTB metadata, without the slot-1 PD
-    // override. Slot-2 mispredictions recover in the back end.
+    // Slot 2 carries its own staged BTB metadata, which only a slot-2 PD
+    // override replaces. Slot-2 mispredictions recover in the back end.
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id_2,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_2,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next_2,
@@ -53,16 +55,26 @@ module id_stage #(
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next_hold_2
 );
 
-  // PD's redirect and veto metadata align with this cycle's slot-1 packet. A
+  // PD's redirect and veto metadata align with this cycle's packet. A
   // not-taken override keeps the BTB target, which only a taken prediction
-  // uses.
+  // uses. A slot-2 override is always taken.
   logic [XLEN-1:0] effective_btb_predicted_target;
   logic            effective_btb_predicted_taken;
-  assign effective_btb_predicted_target = (i_pd_redirect && i_pd_redirect_taken) ?
+  logic [XLEN-1:0] effective_btb_predicted_target_2;
+  logic            effective_btb_predicted_taken_2;
+  logic            pd_redirect_slot1;
+  logic            pd_redirect_slot2;
+  assign pd_redirect_slot1 = i_pd_redirect && !i_pd_redirect_slot2;
+  assign pd_redirect_slot2 = i_pd_redirect && i_pd_redirect_slot2;
+  assign effective_btb_predicted_target = (pd_redirect_slot1 && i_pd_redirect_taken) ?
                                           i_pd_redirect_target :
                                           i_from_pd_to_id.btb_predicted_target;
-  assign effective_btb_predicted_taken = i_pd_redirect ? i_pd_redirect_taken :
-                                                         i_from_pd_to_id.btb_predicted_taken;
+  assign effective_btb_predicted_taken = pd_redirect_slot1 ? i_pd_redirect_taken :
+                                                             i_from_pd_to_id.btb_predicted_taken;
+  assign effective_btb_predicted_target_2 = pd_redirect_slot2 ? i_pd_redirect_target :
+                                            i_from_pd_to_id_2.btb_predicted_target;
+  assign effective_btb_predicted_taken_2 = pd_redirect_slot2 ||
+                                           i_from_pd_to_id_2.btb_predicted_taken;
 
   // Slot-1 instruction and decoder outputs
   riscv_pkg::instr_t instruction;
@@ -655,7 +667,7 @@ module id_stage #(
       .i_program_counter(i_from_pd_to_id_2.program_counter),
       .i_immediate_b_type(immediate_b_type_2),
       .i_immediate_j_type(immediate_j_type_2),
-      .i_btb_predicted_target(i_from_pd_to_id_2.btb_predicted_target),
+      .i_btb_predicted_target(effective_btb_predicted_target_2),
       .i_immediate_u_type(immediate_u_type_2),
       .i_is_jal(is_jal_direct_2),
       .i_is_fetch_fault(is_fetch_fault_2),
@@ -821,7 +833,7 @@ module id_stage #(
       o_from_id_to_ex_2.is_fetch_fault <= i_pipeline_ctrl.flush ? 1'b0 : is_fetch_fault_2;
       o_from_id_to_ex_2.is_fetch_fault_page <= is_fetch_fault_page_2;
       o_from_id_to_ex_2.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
-                                               i_from_pd_to_id_2.btb_predicted_taken;
+                                               effective_btb_predicted_taken_2;
       o_from_id_to_ex_2.is_ras_return <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed_2;
       o_from_id_to_ex_2.is_ras_call <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed_2;
       o_from_id_to_ex_2.btb_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
@@ -848,7 +860,7 @@ module id_stage #(
       o_from_id_to_ex_2.branch_target_precomputed <= branch_target_precomputed_2;
       o_from_id_to_ex_2.jal_target_precomputed <= jal_target_precomputed_2;
       o_from_id_to_ex_2.pc_relative_precomputed <= pc_relative_precomputed_2;
-      o_from_id_to_ex_2.btb_predicted_target <= i_from_pd_to_id_2.btb_predicted_target;
+      o_from_id_to_ex_2.btb_predicted_target <= effective_btb_predicted_target_2;
       o_from_id_to_ex_2.ras_checkpoint_tos <= i_from_pd_to_id_2.ras_checkpoint_tos;
       o_from_id_to_ex_2.ras_checkpoint_valid_count <= i_from_pd_to_id_2.ras_checkpoint_valid_count;
       o_from_id_to_ex_2.ras_checkpoint_top <= i_from_pd_to_id_2.ras_checkpoint_top;
@@ -943,7 +955,7 @@ module id_stage #(
       n.is_illegal_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_illegal_instruction_2;
       n.is_fetch_fault = i_pipeline_ctrl.flush ? 1'b0 : is_fetch_fault_2;
       n.is_fetch_fault_page = is_fetch_fault_page_2;
-      n.btb_predicted_taken = i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id_2.btb_predicted_taken;
+      n.btb_predicted_taken = i_pipeline_ctrl.flush ? 1'b0 : effective_btb_predicted_taken_2;
       n.is_ras_return = i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed_2;
       n.is_ras_call = i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed_2;
       n.btb_correct_non_jalr = i_pipeline_ctrl.flush ? 1'b0 : btb_correct_non_jalr_precomputed_2;
@@ -967,7 +979,7 @@ module id_stage #(
       n.branch_target_precomputed = branch_target_precomputed_2;
       n.jal_target_precomputed = jal_target_precomputed_2;
       n.pc_relative_precomputed = pc_relative_precomputed_2;
-      n.btb_predicted_target = i_from_pd_to_id_2.btb_predicted_target;
+      n.btb_predicted_target = effective_btb_predicted_target_2;
       n.ras_checkpoint_tos = i_from_pd_to_id_2.ras_checkpoint_tos;
       n.ras_checkpoint_valid_count = i_from_pd_to_id_2.ras_checkpoint_valid_count;
       n.ras_checkpoint_top = i_from_pd_to_id_2.ras_checkpoint_top;

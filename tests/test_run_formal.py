@@ -952,6 +952,26 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "backing_btb.sby",
+        "Backing BTB lookups match a mirror of its sets, every set holds each "
+        "valid tag once, and requests in training hold their set's current "
+        "entries, at two and four ways",
+        tasks=("bmc", "bmc_four_way", "prove", "prove_four_way", "cover"),
+    ),
+    FormalTarget(
+        "pd_backing_redirect.sby",
+        "Backing BTB redirects fire for their slot's jump with its vetoes clear, "
+        "stack operations and refreshes follow them, and the redirect targets "
+        "match PD's reference models",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
+        "slot2_prediction_capture.sby",
+        "A staged slot-2 candidate and its metadata survive stalls, are consumed "
+        "only with replay, and are cancelled by reset or recovery",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "c_ext_state_cofactor.sby",
         "Compressed-instruction buffer state matches reference handoff priority",
         tasks=("bmc",),
@@ -1686,6 +1706,8 @@ SBY_TASKS = [
         "bmc_small_btb",
         "Bounded tag comparison with a 16-entry BTB and partial final group",
     ),
+    ("bmc_four_way", "Bounded checking with four ways"),
+    ("prove_four_way", "Unbounded safety checking with four ways"),
     ("bmc_xlen72", "Bounded Bare-output checking with local XLEN 72"),
     ("bmc_integrated", "Bounded checking with the integrated IF handoff parameter"),
     ("prove_xlen32", "Unbounded safety checking with a local 32-bit datapath"),

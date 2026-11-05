@@ -245,6 +245,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pd_redirect.value = 0
     dut.i_pd_redirect_taken.value = 1
     dut.i_pd_redirect_target.value = 0
+    dut.i_pd_redirect_slot2.value = 0
     dut.i_mstatus_fs_off.value = 0
 
 
@@ -466,6 +467,49 @@ async def test_pd_redirect_overrides_slot1_btb_metadata_only(dut: Any) -> None:
     assert slot2_packet["branch_target_precomputed"] == BASE_PC + 16
     assert slot2_packet["btb_predicted_taken"] is False
     assert slot2_packet["btb_predicted_target"] == 0x12345678
+
+
+@cocotb.test()
+async def test_slot2_pd_redirect_overrides_slot2_btb_metadata_only(dut: Any) -> None:
+    """A slot-2 PD redirect gives slot 2 the taken prediction and leaves slot 1."""
+    await _setup_test(dut)
+    addi = 0x00108093  # addi x1, x1, 1
+    slot2_jal = 0x0400006F  # jal x0, +64
+    redirect_target = (BASE_PC + 4 + 64) & 0xFFFFFFFF
+
+    _drive_pd_packet(
+        dut,
+        {
+            "program_counter": BASE_PC,
+            "instruction": addi,
+            "btb_predicted_taken": False,
+            "btb_predicted_target": 0x0BADF00C,
+        },
+    )
+    _drive_pd_packet(
+        dut,
+        {
+            "program_counter": BASE_PC + 4,
+            "instruction": slot2_jal,
+            "btb_predicted_taken": False,
+            "btb_predicted_target": 0,
+        },
+        slot2=True,
+    )
+    dut.i_pd_redirect.value = 1
+    dut.i_pd_redirect_target.value = redirect_target
+    dut.i_pd_redirect_slot2.value = 1
+    await _advance_cycle(dut)
+
+    packet = _read_id_packet(dut)
+    assert packet["btb_predicted_taken"] is False
+    assert packet["btb_predicted_target"] == 0x0BADF00C
+
+    slot2_packet = _read_id_packet(dut, slot2=True)
+    assert slot2_packet["is_jump_and_link"] is True
+    assert slot2_packet["btb_predicted_taken"] is True
+    assert slot2_packet["btb_predicted_target"] == redirect_target
+    assert slot2_packet["btb_correct_non_jalr"] is True
 
 
 @cocotb.test()

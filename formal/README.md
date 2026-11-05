@@ -34,8 +34,9 @@ run. The runner's default timeout is 40 minutes. `csr_file:bmc`,
 configuration and the runner. Individual SBY tasks can set shorter limits.
 
 CI assigns the CSR profiling-on, CSR profiling-off and reorder-buffer tasks
-to separate jobs with 120-minute limits; those jobs also run selected
-coherent-store tasks. The hart maintenance proof has a separate job with a
+to separate jobs with 120-minute limits. The two CSR jobs also run selected
+coherent store-boundary tasks, and the reorder-buffer job also runs the
+coherent L1D tasks other than its two control BMCs. The hart maintenance proof has a separate job with a
 150-minute limit. The Coherence job runs the other coherence tasks, including
 hart maintenance covers, with a 240-minute limit. The Other tasks job has a
 240-minute limit. Job limits include image setup.
@@ -92,8 +93,11 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | --- | --- |
 | `branch_prediction_alias` | The slot-1/slot-2 alias output computed from the base PC equals the generic computation under the fetch stage's base+2/base+4 wiring. Only this output is compared |
 | `branch_prediction_disable` | The prediction-use gates for both slots, slot 2's target select, and the metadata next state equal the reference equations, disabling prediction blocks both the live and the staged path, and the slot-2 targets' relations to the pending PC equal direct compares |
+| `slot2_prediction_capture` | A staged candidate and its payload share the first-stall capture edge and remain stable during the stall. Replay requests need a valid capture, consumption requires release, and reset or recovery cancels the capture. Assumes an initial reset; packet ownership is supplied by IF's replay input |
+| `backing_btb` | At 8 entries in two and four ways, with arbitrary lookups, packets, updates, refreshes and resets after an initial reset: each slot's hit, size, return type and target equal a lookup of a mirror of the sets at the slot's own PC, so both lookup images and the update array match every write, image 1 one set ahead; a slot 2 in the word after the last set and every read during reset or the sweep miss; a request in stage B holds its set's current value and one in stage C its current entries; a refresh changes only replacement state; and every cleared set holds each valid tag once. The `prove` tasks prove the training invariants for all reachable states, with training reading the mirror in place of the update array |
 | `btb_tag_compare` | Grouped BTB lookup and update tag compares equal full-width tag equality, for the 256-entry BTB and a 16-entry one, with arbitrary RAM outputs |
 | `c_ext_buffer_next` | The compressed-instruction buffer's next state equals the reference clear/capture/hold priority |
+| `pd_backing_redirect` | `pd_stage` with arbitrary packets, backing BTB results and pipeline control after an initial reset. A backing redirect fires only for its slot's registered JAL or JALR of the entry's size, with that slot's fast-taken prediction, bubble and fetch fault clear; a slot-2 redirect has a valid slot 2; a push or pop comes only with the redirect of a call or return, and a refresh names the redirecting slot's PC. The qualified redirect, its direction and its full-width target equal PD's reference models, and a backing redirect whose entry type matches its instruction takes the decoded-rule target. PD's simulation checks run only when their operands are known, which Yosys evaluates as false, so the formal block restates them. Assumes that IF's RV64C expansions and target candidates match the packet's instruction, that a slot-2 backing hit lies in slot 1's 4 GiB region, as `backing_btb` checks, and that a valid slot 2 follows a slot 1 that is not a conditional branch |
 | `c_ext_state_cofactor` | The same next state with the pending-prediction handoff split out equals the reference, and a handoff never keeps old-path buffer state |
 | `control_flow_holdoff` | Redirect and reset holdoff next state equals the reference equations |
 | `debug_fetch_barrier` | GO follows a sampled invalidation, preserves the captured target, and cannot replay after acknowledgement. Withdrawal cancels GO, reset clears pending work, and a held request reaches GO. Assumes an initial reset and acknowledgements only for presented GO requests |
@@ -119,17 +123,24 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `ras_checkpoint` | The return-address stack's outputs, next pointer, and count equal the reference equations, and so does every entry write: a push or swap writes its link address, a restore writes the saved top entry back, and nothing else changes |
 | `rvc_predecode` | The fill-time RV64C expansion and illegal flag equal the reference decompressor (`rvc_decompressor`) for all 65,536 16-bit parcels |
 
-`prediction_release` runs the real `pc_controller` and `c_ext_state`
-together. The harness replaces the PC-increment calculator with one whose PC
+`prediction_release` runs the real `pc_controller`, `c_ext_state`, and
+`slot2_prediction_capture` together. The harness replaces the PC-increment calculator with one whose PC
 outputs are unconstrained, which admits every real PC movement and more, and
 makes predictor requests arbitrary. The stand-in's next `pc_reg` is one of two
 unconstrained values, the NOP one when the NOP select is set, and its
 pending-PC relations are full-width compares of those values, which
 `pc_increment_relation` proves the real calculator matches. The harness likewise relates both slot-2 targets to
 the pending PC by direct compares, as `branch_prediction_disable` proves the
-predictor does. It assumes only a reset on the first cycle.
+predictor does. A staged candidate captures those relations with its target
+and the saved packet. Replay can redirect during registered stall, including
+release without a live response. Assertions check the saved packet PC and
+pending-PC relations throughout the held candidate's lifetime. Replay
+permission gates the capture outputs without changing its state. Derived
+invariants check the registered prediction metadata and the pending-PC
+relation and crossing replicas. Reset and recovery cancel the candidate.
+The harness assumes only a reset on the first cycle.
 `prediction_handoff` runs the same harness with the fetch stage's parameter
-setting. Both have `bmc`, `cover`, and ABC PDR `prove` tasks.
+setting. Both have `bmc`, `cover`, and SMT k-induction `prove` tasks.
 
 `prediction_metadata_tracker` models the registered predictor target, which
 may change while fetch runs and holds during a stall, and leaves the pending

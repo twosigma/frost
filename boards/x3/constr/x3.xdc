@@ -53,8 +53,11 @@ set_property PACKAGE_PIN J2 [get_ports i_cpu_clock_rxp]
 set_property PACKAGE_PIN J1 [get_ports i_cpu_clock_rxn]
 
 # Build and timing tools require the CPU clock name clock_from_mmcm for both
-# GTY (CPU_CLK_DIV 1/2) and MMCM (3/4) sources. GTY clocks resolve only after
-# the transceiver netlists are linked.
+# GTY (CPU_CLK_DIV 1/2) and MMCM (3/4) sources. At CPU_CLK_DIV 1, synthesis
+# times the CPU domain against the CPU clock wizard's in-context TXOUTCLK
+# clock, which carries the wizard pin's name. The rename below applies only
+# to an automatically derived clock, so it takes effect once the transceiver
+# netlists are linked.
 create_generated_clock -quiet -name clock_from_mmcm [get_pins -quiet [get_property -quiet SOURCE_PINS [get_clocks -quiet -of_objects [get_nets -quiet main_clock]]]]
 
 # Place CPU clock roots near the core for skew. X2Y7 is the synthesis and

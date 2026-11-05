@@ -131,9 +131,10 @@ module branch_prediction_controller #(
     input logic [riscv_pkg::XLEN-1:0] i_btb_late_update_pc,
     input logic                       i_btb_late_update_taken,
 
-    // Return address stack operation for the packet IF handed PD in the cycle
-    // before, registered by IF: a push for a call, a pop for a return, both
-    // for a coroutine swap. The stack outputs include it at once.
+    // Return address stack operation, registered by IF, for the packet IF
+    // handed PD in the cycle before or for PD's backing BTB redirect in the
+    // cycle before: a push for a call, a pop for a return, both for a
+    // coroutine swap. The stack outputs include it at once.
     input logic                       i_ras_push,
     input logic                       i_ras_pop,
     input logic [riscv_pkg::XLEN-1:0] i_ras_push_address,
@@ -482,8 +483,9 @@ module branch_prediction_controller #(
   // ===========================================================================
   // The top entry is the target of a BTB hit typed as a return. IF drives the
   // pushes and pops (i_ras_push, i_ras_pop), registered, for the packets PD
-  // takes whose used prediction came from a typed entry, so the stack moves
-  // only with packets that continue down the pipeline.
+  // takes whose used prediction came from a typed entry and for the calls and
+  // returns PD redirects for the backing BTB, so the stack moves only with
+  // instructions that continue down the pipeline.
   logic                  ras_nonempty;
   logic [      XLEN-1:0] ras_top;
   logic [RasPtrBits-1:0] ras_tos;

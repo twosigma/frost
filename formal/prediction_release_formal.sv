@@ -17,9 +17,9 @@
 // Integration harness for the fetch stage's pending-prediction rules: every
 // consumer of pending-prediction state is masked while nothing is pending,
 // and the holdoff outputs and captured predecessor tags keep their reference
-// relations. The real pc_controller and c_ext_state run together. Predictor
-// requests are arbitrary, and the lookup, buffer, and progress conditions
-// that would block some of them are omitted, which only admits more
+// relations. The real PC, compressed-state, and slot-2 capture modules run
+// together. Predictor requests are arbitrary. Lookup, buffer, and progress
+// conditions that would block some of them are omitted, admitting more
 // requests. The modeled prediction registers keep the real update enables
 // and the matching-target PD-redirect exception.
 module prediction_release_formal #(
@@ -74,6 +74,23 @@ module prediction_release_formal #(
   logic [XLEN-1:0] predicted_target_r;
   logic slot2_prediction_used;
   logic slot2_prediction_used_for_pc;
+  logic slot2_live_request;
+  logic slot2_live_consumed;
+  logic slot2_replay_request;
+  logic slot2_replay_consumed;
+  logic replay_saved_packet;
+  logic fetch_progress;
+  logic sel_nop_saved;
+  logic slot2_valid_saved;
+  logic slot2_capture_kill;
+  logic slot2_held_request;
+  logic slot2_held_consumed;
+  logic slot2_replay_permitted;
+  logic [XLEN-1:0] slot2_target_saved;
+  logic [XLEN-1:0] slot2_target_effective;
+  logic [XLEN-1:0] saved_packet_pc;
+  riscv_pkg::pc_pending_rel_t slot2_target_rel_live;
+  riscv_pkg::pc_pending_rel_t slot2_target_rel_saved;
   logic slot2_live_target_used_for_pc_cofactor;
   logic pd_redirect_kills_prediction_metadata;
   logic i_flush;
@@ -114,6 +131,18 @@ module prediction_release_formal #(
   // frontend flush, and a resteer is a qualification of the raw mismatch.
   assign i_flush = i_frontend_flush_request || i_fence_i_flush;
   assign i_window_cannot_serve = i_window_cannot_serve_raw && i_window_resteer_qualifier;
+  assign replay_saved_packet = stall_registered && saved_values_valid && !sel_nop_saved && !i_flush;
+  assign fetch_progress = i_fetch_progress || replay_saved_packet;
+  always_ff @(posedge i_clk) begin
+    if (i_reset || i_flush) begin
+      sel_nop_saved <= 1'b1;
+      slot2_valid_saved <= 1'b0;
+    end else if (i_stall && !stall_registered) begin
+      sel_nop_saved <= i_sel_nop;
+      slot2_valid_saved <= i_slot2_valid;
+      saved_packet_pc <= pc_reg;
+    end
+  end
 
   // Model the IF-stage boundary conservatively, without the BTB, RAS, or
   // instruction aligner: the request is arbitrary and IF's other blockers are
@@ -127,30 +156,61 @@ module prediction_release_formal #(
       i_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
       !stall_registered && !any_holdoff_safe && !prediction_holdoff;
   assign prediction_used = prediction_used_for_pc && !i_branch_taken && !i_stall;
-  assign slot2_prediction_used_for_pc =
+  assign slot2_live_request =
       i_slot2_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
       !stall_registered && !any_holdoff_safe && !prediction_holdoff &&
       (!PENDING_HANDOFF_EXCLUDES_SLOT2 ||
        !(i_window_cannot_serve_raw ? pending_prediction_holdoff_wcs :
                                     pending_prediction_holdoff_wcs0));
-  assign slot2_prediction_used = slot2_prediction_used_for_pc && !i_branch_taken && !i_stall;
+  assign slot2_live_consumed = slot2_live_request && !i_branch_taken && !i_stall;
+  assign slot2_prediction_used_for_pc = slot2_live_request || slot2_replay_request;
+  assign slot2_prediction_used = slot2_live_consumed || slot2_replay_consumed;
   // The live-lookup target (slot 1 aliasing the slot-2 candidate) redirects
   // only with a slot-2 request, as branch_prediction_controller's cofactor
   // requires slot-2 permission and implies that request.
-  assign slot2_live_target_used_for_pc_cofactor =
-      slot2_prediction_used_for_pc && i_slot2_live_target_request;
+  assign slot2_live_target_used_for_pc_cofactor = slot2_live_request && i_slot2_live_target_request;
   // branch_prediction_controller relates both slot-2 targets to the pending
   // prediction's PC registers; here, as direct compares. Fields in
   // pc_pending_rel_t order: at, below, above, pred, pred_native.
   riscv_pkg::pc_pending_rel_t slot2_staged_target_rel_pending;
   riscv_pkg::pc_pending_rel_t slot2_live_target_rel_pending;
-  assign slot2_staged_target_rel_pending = {
+  assign slot2_target_rel_live = {
     i_slot2_predicted_target == pending_prediction_pc,
     i_slot2_predicted_target[XLEN-1:1] < pending_prediction_pc[XLEN-1:1],
     i_slot2_predicted_target[XLEN-1:1] > pending_prediction_pc[XLEN-1:1],
     i_slot2_predicted_target == pending_prediction_prev_pc,
     i_slot2_predicted_target == pending_prediction_prev_native_pc
   };
+  assign slot2_target_effective = stall_registered ? slot2_target_saved : i_slot2_predicted_target;
+  assign slot2_staged_target_rel_pending = stall_registered ? slot2_target_rel_saved :
+      slot2_target_rel_live;
+  assign slot2_capture_kill = i_flush || i_pd_redirect || i_branch_taken ||
+      i_trap_taken || i_mret_taken;
+  // Keep replay permission outside the capture instance so assertions can
+  // observe its held request before replay and disable gating. These gates
+  // do not affect the capture state.
+  assign slot2_replay_permitted = replay_saved_packet && slot2_valid_saved &&
+      !any_holdoff_safe && !prediction_holdoff &&
+      !pending_prediction_holdoff_wcs0 && !i_window_cannot_serve_raw;
+  assign slot2_replay_request = slot2_held_request && slot2_replay_permitted;
+  assign slot2_replay_consumed = slot2_held_consumed && slot2_replay_permitted;
+  slot2_prediction_capture #(
+      .WIDTH(XLEN + $bits(slot2_target_rel_live))
+  ) u_slot2_capture (
+      .i_clk,
+      .i_reset,
+      .i_kill(slot2_capture_kill),
+      .i_stall,
+      .i_stall_registered(stall_registered),
+      .i_replay(1'b1),
+      .i_disable(1'b0),
+      .i_candidate(slot2_live_request && !i_branch_taken && i_slot2_valid && !i_sel_nop &&
+                   !(i_slot1_aliases_slot2_candidate && i_slot2_live_target_request)),
+      .i_payload({i_slot2_predicted_target, slot2_target_rel_live}),
+      .o_request(slot2_held_request),
+      .o_consumed(slot2_held_consumed),
+      .o_payload({slot2_target_saved, slot2_target_rel_saved})
+  );
   assign slot2_live_target_rel_pending = {
     i_slot2_live_predicted_target == pending_prediction_pc,
     i_slot2_live_predicted_target[XLEN-1:1] < pending_prediction_pc[XLEN-1:1],
@@ -174,7 +234,7 @@ module prediction_release_formal #(
     // Only the startup reset is assumed; subsequent resets remain arbitrary.
     if (i_reset || i_flush || pd_redirect_kills_prediction_metadata) begin
       prediction_holdoff <= 1'b0;
-    end else if (!i_stall && i_fetch_progress) begin
+    end else if (!i_stall && fetch_progress) begin
       prediction_holdoff <= prediction_used;
     end
 
@@ -184,17 +244,33 @@ module prediction_release_formal #(
     if (i_reset || i_flush) begin
       prediction_used_r <= 1'b0;
       sel_prediction_r  <= 1'b0;
-    end else if (i_pd_redirect || slot2_prediction_used) begin
+    end else if (i_pd_redirect || slot2_live_consumed) begin
       sel_prediction_r <= 1'b0;
-      if (pd_redirect_kills_prediction_metadata || slot2_prediction_used) prediction_used_r <= 1'b0;
-      else if (!i_stall && i_fetch_progress) prediction_used_r <= prediction_used;
-    end else if (!i_stall && i_fetch_progress) begin
+      if (pd_redirect_kills_prediction_metadata || slot2_live_consumed) prediction_used_r <= 1'b0;
+      else if (!i_stall && fetch_progress) prediction_used_r <= prediction_used;
+    end else if (!i_stall && fetch_progress) begin
       prediction_used_r <= prediction_used;
       sel_prediction_r  <= prediction_used;
     end
-    if (!i_stall && i_fetch_progress) predicted_target_r <= i_predicted_target;
+    if (!i_stall && fetch_progress) predicted_target_r <= i_predicted_target;
     cover (f_past_valid && i_reset);
     cover (f_past_valid && i_pd_redirect && !pd_redirect_kills_prediction_metadata && i_stall);
+    if (f_past_valid && !i_reset) begin
+      assert (!prediction_used_r || prediction_holdoff);
+      assert (!sel_prediction_r || prediction_used_r);
+    end
+    if (f_past_valid && !i_reset && slot2_held_request) begin
+      assert (pc_reg == saved_packet_pc);
+      assert (slot2_staged_target_rel_pending == {
+        slot2_target_effective == pending_prediction_pc,
+        slot2_target_effective[XLEN-1:1] < pending_prediction_pc[XLEN-1:1],
+        slot2_target_effective[XLEN-1:1] > pending_prediction_pc[XLEN-1:1],
+        slot2_target_effective == pending_prediction_prev_pc,
+        slot2_target_effective == pending_prediction_prev_native_pc
+      });
+      assert (!prediction_used && !prediction_used_r && !slot2_live_consumed);
+    end
+    cover (f_past_valid && slot2_replay_consumed && !i_fetch_progress);
   end
 
   pc_controller #(
@@ -204,7 +280,7 @@ module prediction_release_formal #(
       .i_clk,
       .i_reset,
       .i_stall,
-      .i_fetch_progress,
+      .i_fetch_progress(fetch_progress),
       .i_flush,
       .i_fence_i_flush,
       .i_fence_i_target,
@@ -246,13 +322,13 @@ module prediction_release_formal #(
       .i_slot2_prediction_used(slot2_prediction_used),
       .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot2_prediction_used_for_fetch_mux(slot2_prediction_used_for_pc),
-      .i_slot2_predicted_target,
+      .i_slot2_predicted_target(slot2_target_effective),
       // Every slot-2 request takes the staged select. The alias check and both
       // targets are arbitrary; the live select needs a request (above).
       .i_slot2_staged_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot1_aliases_slot2_candidate,
       .i_slot2_live_target_used_for_pc_cofactor(slot2_live_target_used_for_pc_cofactor),
-      .i_slot2_staged_predicted_target(i_slot2_predicted_target),
+      .i_slot2_staged_predicted_target(slot2_target_effective),
       .i_slot2_live_predicted_target,
       .i_slot2_staged_target_rel_pending(slot2_staged_target_rel_pending),
       .i_slot2_live_target_rel_pending(slot2_live_target_rel_pending),
@@ -311,7 +387,7 @@ module prediction_release_formal #(
       .i_pc_reg(pc_reg),
       .i_is_compressed,
       .i_sel_nop,
-      .i_fetch_progress,
+      .i_fetch_progress(fetch_progress),
       .i_instr_sideband('0),
       .i_instr_fault('0),
       .i_slot2_valid,
