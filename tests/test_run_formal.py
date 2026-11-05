@@ -102,7 +102,12 @@ FORMAL_TARGETS = [
     FormalTarget(
         "coherent_hart_cache.sby",
         "Fence ordering and coherent instruction/PTE visibility with discarded walks.",
-        tasks=("coh_hart_maint_prove", "coh_hart_maint_cover"),
+        tasks=(
+            "coh_hart_maint_prove",
+            "coh_hart_maint_cover",
+            "coh_hart_maint_four_bmc",
+            "coh_hart_maint_four_cover",
+        ),
     ),
     FormalTarget(
         "cpu_axi_payload.sby",
@@ -1118,6 +1123,14 @@ SBY_TASKS = [
     (
         "store_saturation_cover",
         "A younger record saturates at 32 contributors and its successor drains.",
+    ),
+    (
+        "coh_hart_maint_four_bmc",
+        "Four occupied records drain before a fence and final PTE publication.",
+    ),
+    (
+        "coh_hart_maint_four_cover",
+        "Four occupied records reach fence, instruction and PTW completion.",
     ),
     (
         "coh_grant_select2_prove",

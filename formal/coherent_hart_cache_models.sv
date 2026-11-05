@@ -117,7 +117,17 @@ module coherence_l1d #(
     output logic [ADDR_WIDTH-1:0] o_fatal_addr
 );
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
+`ifdef COH_MAINT_FOUR
+  logic four_records_q = 0;
+  wire  install = four_records_q;
+  wire  evict = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) four_records_q <= 0;
+    else if (record_count == 4) four_records_q <= 1;
+  end
+`else
   (* anyseq *) logic install, evict;
+`endif
   logic pending_q, tail_q, sent_q, granted_q, written_q, live, request_ready;
   logic pop, credit, accepted_q, acquire;
   logic [2:0] record_count;

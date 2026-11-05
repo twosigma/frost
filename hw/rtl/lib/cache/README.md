@@ -537,6 +537,11 @@ The `coherent_hart_cache` formal target composes its maintenance controller,
 IF/PTW bridges, the walker and the home service engine. Small private-cache
 models represent four ordered combining records, delayed installation, dirty eviction,
 PutM absorption and two instruction fills that drain during invalidation.
+The driver accepts one, two or four scalar stores before checking maintenance.
+A separate 240-cycle schedule supplies 67 scalar stores and holds installation
+until all four records are occupied. Its final scalar supplies distinct PTE
+bits. The schedule checks store drain, fence completion and the final value
+returned to instruction and page-table consumers.
 Modified hits merge locally; acquisitions merge with captured grant data.
 An independent byte-mask reference checks the installed image. Stores wait
 for pending writeback completion before acquisition or installation. A resident
