@@ -34,7 +34,7 @@ module soc_top #(
     parameter int unsigned L2_NUM_MSHR = 8,
     parameter int unsigned L2_NUM_WB = 2,
     parameter int unsigned DDR_MODEL_BYTES = 64 * 1024 * 1024,
-    parameter int unsigned DDR_MODEL_LATENCY = 30,
+    parameter int unsigned DDR_MODEL_LATENCY = 80,
     parameter int unsigned DDR_MODEL_LATENCY_JITTER = 0,
     parameter int unsigned DDR_MODEL_REORDER = 0,
     parameter int unsigned USE_BEHAVIORAL_DDR = 1,

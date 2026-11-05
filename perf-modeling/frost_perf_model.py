@@ -97,7 +97,7 @@ class DdrConfig:
     line_bytes: int = 64
     id_bits: int = 5  # riscv_pkg::DdrAxiIdBits (o_ddr_axi_arid / o_ddr_axi_awid)
     num_slots: int = 8  # queue slots per direction; behavioral DDR applies a floor
-    latency_cycles: int = 30  # DDR_MODEL_LATENCY default in soc_top.sv / frost.sv
+    latency_cycles: int = 80  # DDR_MODEL_LATENCY default in soc_top.sv / frost.sv
     latency_jitter: int = 0  # DDR_MODEL_LATENCY_JITTER default in soc_top.sv
     reorder: bool = False  # DDR_MODEL_REORDER default in soc_top.sv
     jitter_seed: int = 0xACE1  # JITTER_SEED default in axi_behavioral_memory.sv

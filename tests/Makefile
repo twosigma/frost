@@ -715,7 +715,7 @@ SIM_MEM_SIZE_BYTES ?= 262144
 #   DDR_MODEL_LATENCY=80 ./scripts/frost.py cocotb ddr_test
 ENABLE_CACHED_TIER ?= 1
 DDR_MODEL_BYTES ?= 67108864
-DDR_MODEL_LATENCY ?= 30
+DDR_MODEL_LATENCY ?= 80
 # Accelerate coherent-array reset, L1I invalidation and component-cache maintenance.
 # The RTL default is 0; board builds leave it disabled.
 SIM_FAST_MAINT ?= 1

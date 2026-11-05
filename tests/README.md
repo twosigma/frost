@@ -598,7 +598,7 @@ which has 120 minutes. `--verbose` prints solver output.
 | `COCOTB_RANDOM_SEED` | Random seed (set by `--random-seed`) |
 | `FROST_COCOTB_MEM_CONFIG` | Application memory tier (`bram` default, or `ddr`) |
 | `FROST_RANDOM_START_SEED` | Seed string enabling random register and memory power-up state; each run prints the string and Verilator seed |
-| `FROST_DDR_MODEL_SEED` | Draws the DDR model's latency (1 to 80 cycles), latency jitter, and out-of-order completion for whole-SoC builds from this string, and prints the draw. A setting the target pins, in its registry entry, in `FROST_VERILATOR_EXTRA_ARGS`, or with `DDR_MODEL_LATENCY`, keeps its value |
+| `FROST_DDR_MODEL_SEED` | Draws the DDR model's latency (1 to 160 cycles), latency jitter, and out-of-order completion for whole-SoC builds from this string, and prints the draw. A setting the target pins, in its registry entry, in `FROST_VERILATOR_EXTRA_ARGS`, or with `DDR_MODEL_LATENCY`, keeps its value |
 | `WAVES=1` | Write `dump.fst` waveforms |
 | `FROST_COVERAGE=1` | Build with line coverage and the cover points (see [Coverage](#coverage)) |
 | `FROST_COVERAGE_TOGGLE` | With `FROST_COVERAGE=1`: `0` disables toggle coverage, `1` collects the default set, and `control` selects control signals |

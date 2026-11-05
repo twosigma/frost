@@ -156,7 +156,7 @@ CALIBRATION_OUTPUT_VARIABLES = (
     "FROST_CALIBRATION_COUNTERS_PATH",
     "FROST_CALIBRATION_MANIFEST_PATH",
 )
-DDR_MODEL_LATENCY_RANGE = (1, 80)  # cycles, inclusive; the model's default is 30
+DDR_MODEL_LATENCY_RANGE = (1, 160)  # cycles, inclusive; the model's default is 80
 DDR_MODEL_JITTER_CHOICES = (0, 3, 7, 15, 31)
 
 
