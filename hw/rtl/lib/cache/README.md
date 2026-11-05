@@ -223,7 +223,9 @@ selects the private way and registers any required data-read request.
 The input register occupies one cycle of the array's read latency. Replacement state
 uses the tag request's matching PLRU response. A hit updates replacement
 bits from the registered way during data service or the reply, before
-another request or update can enter.
+another request or update can enter. A lookup marked `i_req_no_touch`
+leaves replacement state unchanged on a hit; the L1D marks look-ahead
+lookups this way.
 An insertion update uses the most recent lookup's set and selected way;
 the controller completes that update before issuing another lookup.
 The L1D asserts this pairing for each grant installation.
@@ -316,8 +318,9 @@ The lookup comparisons qualify the tag decision and endpoint acceptance.
 A speculative tag decision checks the page and look-ahead window. The selected
 address and demand frontier stay fixed through acquisition, which checks
 cancellation and live ownership conflicts at endpoint acceptance.
-A resident hint needs no acquisition. Accepted speculative identity lasts
-through U, including when a CPU load attaches to the endpoint.
+A resident hint needs no acquisition and leaves the sector's replacement
+state unchanged. Accepted speculative identity lasts through U, including
+when a CPU load attaches to the endpoint.
 
 Speculative grants install Shared data through the ordinary victim and
 probe service. They do not own a read ID, modify demand response data or

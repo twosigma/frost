@@ -1247,6 +1247,8 @@ module coherence_l1d #(
       .i_req_way(maint_way_q),
       .i_req_skip_data_on_hit(array_skip_data),
       .i_req_data_if_modified(probe_launch || operation_q == ProbeOp),
+      // A resident hint is not a CPU access and keeps the line's age.
+      .i_req_no_touch(!probe_launch && operation_q == PrefetchOp),
       .o_resp_valid(array_valid),
       .i_resp_ready(phase_q == LookupWait),
       .o_resp_hit(array_hit),

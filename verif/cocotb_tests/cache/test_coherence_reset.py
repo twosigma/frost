@@ -111,6 +111,7 @@ class ResetArray:
         skip: bool = False,
         hold: int = 0,
         modified: bool = False,
+        no_touch: bool = False,
         data_valid: bool | None = None,
         available: bool | None = None,
         latency: int | None = None,
@@ -126,6 +127,7 @@ class ResetArray:
                 i_req_way=visit or 0,
                 i_req_skip_data_on_hit=int(skip),
                 i_req_data_if_modified=int(modified),
+                i_req_no_touch=int(no_touch),
             )
         await self.drive(**fields)
         await self.wait("o_req_ready")
@@ -246,7 +248,7 @@ async def reset_clears_metadata_and_preserves_data(dut: Any) -> None:
 
 @cocotb.test()
 async def hit_touches_precede_following_lookups(dut: Any) -> None:
-    """Observe each private hit's replacement update at the next lookup."""
+    """Observe each hit's replacement update, or none for a no-touch hit."""
     b = ResetArray(dut)
     if b.home:
         return
@@ -265,6 +267,11 @@ async def hit_touches_precede_following_lookups(dut: Any) -> None:
         assert (hit, selected) == (0, victim)
         hit, selected, _, _, _ = await b.lookup(b.line)
         assert (hit, selected) == (0, 0)
+    # A no-touch hit on way 2 keeps it the next victim; a touching hit does not.
+    for no_touch, victim in ((True, 2), (False, 1)):
+        assert (await b.lookup(3 * b.sets * b.line, no_touch=no_touch))[0] == 1
+        hit, selected, _, _, _ = await b.lookup(0)
+        assert (hit, selected) == (0, victim)
 
 
 @cocotb.test()
