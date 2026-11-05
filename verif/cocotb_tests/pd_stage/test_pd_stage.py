@@ -258,11 +258,27 @@ async def _advance_cycle(dut: Any) -> None:
     await _settle()
 
 
+def _drive_backing(
+    dut: Any,
+    slot: int | None = None,
+    *,
+    target: int = 0,
+    compressed: bool = False,
+) -> None:
+    """Drive IF's backing BTB result: a hit in one slot, or none."""
+    width = len(dut.i_backing_target) // 2
+    dut.i_backing_hit.value = 0 if slot is None else 1 << slot
+    dut.i_backing_compressed.value = int(compressed) << (slot or 0)
+    value = ((target >> 1) & ((1 << width) - 1)) << (width * (slot or 0))
+    dut.i_backing_target.value = value if slot is not None else 0
+
+
 def _clear_inputs(dut: Any) -> None:
     """Drive all PD-stage inputs to idle values."""
     _drive_pipeline_ctrl(dut, {})
     _drive_if_packet(dut, {})
     _drive_if_packet(dut, {}, slot2=True)
+    _drive_backing(dut)
 
 
 async def _setup_test(dut: Any) -> None:
@@ -1299,3 +1315,138 @@ async def test_direction_redirect_target_split_boundary_cases(dut: Any) -> None:
         int(dut.o_pd_redirect_target.value)
         == (released_pc + released_offset) & MASK_XLEN
     )
+
+
+OPC_JAL = 0b1101111
+OPC_JALR = 0b1100111
+
+
+def _pack_jal(*, imm: int, rd: int) -> int:
+    """Pack a JAL instruction with a signed, even offset."""
+    offset = imm & 0x1FFFFF
+    return (
+        (((offset >> 20) & 1) << 31)
+        | (((offset >> 1) & 0x3FF) << 21)
+        | (((offset >> 11) & 1) << 20)
+        | (((offset >> 12) & 0xFF) << 12)
+        | ((rd & 0x1F) << 7)
+        | OPC_JAL
+    )
+
+
+def _packet(pc: int, instruction: int, **fields: int | bool) -> dict[str, int | bool]:
+    """Return a valid native slot packet."""
+    packet: dict[str, int | bool] = {
+        "program_counter": pc,
+        "raw_parcel": instruction & 0xFFFF,
+        "sel_nop": False,
+        "effective_instr": instruction,
+    }
+    packet.update(fields)
+    return packet
+
+
+async def _backing_redirect(dut: Any) -> tuple[bool, bool, int, bool]:
+    """Register the driven packet, then read the redirect and idle the inputs."""
+    await _advance_cycle(dut)
+    result = (
+        bool(dut.o_pd_redirect.value),
+        bool(dut.o_pd_redirect_taken.value),
+        int(dut.o_pd_redirect_target.value),
+        bool(dut.o_pd_redirect_slot2.value),
+    )
+    _clear_inputs(dut)
+    await _advance_cycle(dut)
+    return result
+
+
+@cocotb.test()
+async def test_backing_btb_redirects_unpredicted_jumps(dut: Any) -> None:
+    """A slot-1 JAL or JALR with a backing hit redirects to its target."""
+    await _setup_test(dut)
+    pc = 0x8000_0200
+    target = 0x8000_0F40
+    jalr = _pack_i(imm=0, rs1=5, funct3=0, rd=0, opcode=OPC_JALR)
+    for instruction in (_pack_jal(imm=0x40, rd=0), jalr):
+        _drive_if_packet(dut, _packet(pc, instruction))
+        _drive_backing(dut, 0, target=target)
+        redirect, taken, redirect_target, slot2 = await _backing_redirect(dut)
+        assert redirect and taken and not slot2
+        assert redirect_target == target
+
+    # The target's upper bits come from the branch's 4 GiB region.
+    high_pc = 0x1_8000_0200
+    _drive_if_packet(dut, _packet(high_pc, _pack_jal(imm=0x40, rd=0)))
+    _drive_backing(dut, 0, target=target)
+    redirect, _, redirect_target, _ = await _backing_redirect(dut)
+    assert redirect and redirect_target == (0x1_0000_0000 | target) & MASK_XLEN
+
+
+@cocotb.test()
+async def test_backing_btb_redirect_vetoes(dut: Any) -> None:
+    """Fast-taken, size mismatch, non-jumps, bubbles and faults never redirect."""
+    await _setup_test(dut)
+    pc = 0x8000_0200
+    target = 0x8000_0F40
+    jal = _pack_jal(imm=0x40, rd=0)
+    branch = _pack_b(imm=8, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
+    addi = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
+    cases = [
+        (
+            _packet(pc, jal, btb_predicted_taken=True, btb_predicted_target=target),
+            False,
+        ),
+        (_packet(pc, jal), True),
+        (_packet(pc, branch), False),
+        (_packet(pc, addi), False),
+        (_packet(pc, jal, sel_nop=True), False),
+        (_packet(pc, jal, fetch_fault=True), False),
+    ]
+    for packet, size_compressed in cases:
+        _drive_if_packet(dut, packet)
+        _drive_backing(dut, 0, target=target, compressed=size_compressed)
+        redirect, _, _, _ = await _backing_redirect(dut)
+        assert not redirect, packet
+
+
+@cocotb.test()
+async def test_backing_btb_compressed_jump_needs_a_compressed_entry(dut: Any) -> None:
+    """A compressed C.J redirects only with an entry trained at its size."""
+    await _setup_test(dut)
+    pc = 0x8000_0202
+    target = 0x8000_0400
+    c_j = 0xA001  # c.j +0
+    for compressed, expected in ((True, True), (False, False)):
+        _drive_if_packet(
+            dut,
+            {
+                "program_counter": pc,
+                "raw_parcel": c_j,
+                "sel_nop": False,
+                "sel_compressed": True,
+                "effective_instr": c_j,
+            },
+        )
+        _drive_backing(dut, 0, target=target, compressed=compressed)
+        redirect, _, redirect_target, _ = await _backing_redirect(dut)
+        assert redirect is expected
+        if expected:
+            assert redirect_target == target
+
+
+@cocotb.test()
+async def test_backing_btb_redirects_a_slot2_jump(dut: Any) -> None:
+    """A slot-2 jump redirects with the slot-2 flag; a bubble slot 2 never does."""
+    await _setup_test(dut)
+    pc = 0x8000_0200
+    target = 0x8000_0F40
+    addi = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
+    jal = _pack_jal(imm=0x40, rd=0)
+    for slot2_valid in (True, False):
+        _drive_if_packet(dut, _packet(pc, addi))
+        _drive_if_packet(dut, _packet(pc + 4, jal, sel_nop=not slot2_valid), slot2=True)
+        _drive_backing(dut, 1, target=target)
+        redirect, taken, redirect_target, slot2 = await _backing_redirect(dut)
+        assert redirect is slot2_valid
+        if slot2_valid:
+            assert taken and slot2 and redirect_target == target
