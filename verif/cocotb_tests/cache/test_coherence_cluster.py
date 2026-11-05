@@ -673,9 +673,8 @@ async def test_demand_counters_exclude_probe_and_maintenance(dut: Any) -> None:
     assert cluster.perf["l2"][:4] == before_l2
 
 
-@cocotb.test()
-async def loads_in_flight_across_lines(dut: Any) -> None:
-    """Check read misses in flight together, a same-sector waiter and a DMA write."""
+async def run_loads_in_flight(dut: Any, hold_grants: bool) -> int:
+    """Return the peak live endpoint count over seven misses and a DMA write."""
     b = Cluster(dut)
     await b.reset()
     base = 0x80000000
@@ -685,7 +684,7 @@ async def loads_in_flight_across_lines(dut: Any) -> None:
         line = sector & ~63
         b.memory[line] = b.memory.get(line, 0) | ((0x1000 + n) << (8 * (sector & 63)))
     reads = [*sectors, sectors[0]]
-    await b.set(i_hold_grant=1)
+    await b.set(i_hold_grant=int(hold_grants))
     for slot, address in enumerate(reads):
         await b.set(
             i_read_valid=1,
@@ -697,7 +696,7 @@ async def loads_in_flight_across_lines(dut: Any) -> None:
         await b.tick()
     await b.set(i_read_valid=0)
     peak = 0
-    for _ in range(100):
+    for _ in range(100 if hold_grants else 12):
         peak = max(peak, bin(int(dut.hart.live.value)).count("1"))
         await b.tick()
     await b.set(i_hold_grant=0)
@@ -719,9 +718,31 @@ async def loads_in_flight_across_lines(dut: Any) -> None:
         await b.tick()
         await b.set(i_read_ready=0)
     assert seen == expected
+    assert await b.dma(base + 0x40 * 6) & 0xFF == 0xAB
+    return peak
+
+
+@cocotb.test()
+async def loads_in_flight_across_lines(dut: Any) -> None:
+    """Check misses in flight under the home's own timing, a waiter and a DMA write."""
+    peak = await run_loads_in_flight(dut, hold_grants=False)
+    misses = len(dut.hart_d_valid)
+    # With up to three endpoints, every load endpoint holds a miss before the
+    # first grant returns. With more, early misses complete before the last
+    # ones issue.
+    if misses <= 3:
+        assert peak == (1 if misses == 1 else misses - 1), peak
+    else:
+        assert peak >= 3, peak
+    dut._log.info("peak live endpoints %d of %d", peak, misses)
+
+
+@cocotb.test()
+async def loads_in_flight_with_held_grants(dut: Any) -> None:
+    """Hold grants until every load endpoint holds a miss, then drain them."""
+    peak = await run_loads_in_flight(dut, hold_grants=True)
     misses = len(dut.hart_d_valid)
     assert peak == (1 if misses == 1 else misses - 1), peak
-    assert await b.dma(base + 0x40 * 6) & 0xFF == 0xAB
 
 
 @cocotb.test()
