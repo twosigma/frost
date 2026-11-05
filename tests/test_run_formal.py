@@ -22,6 +22,7 @@ live in the RTL (under `ifdef FORMAL` or a proof define) or in the harnesses
 in formal/.
 """
 
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -84,6 +85,7 @@ FORMAL_TARGETS = [
             "bmc_amo_same",
             "bmc_amo_same_owner",
             "bmc_amo_same_fatal",
+            "prove_amo_same_fatal_sticky",
             "bmc_amo_other",
             "bmc_sc",
             "bmc_old",
@@ -1207,7 +1209,14 @@ SBY_TASKS = [
     ),
     ("bmc_amo_same", "Same-sector store and AMO credit and drain through release."),
     ("bmc_amo_same_owner", "Same-sector buffered-store and atomic-owner exclusion."),
-    ("bmc_amo_same_fatal", "Same-sector store and AMO fatal-status exclusion."),
+    (
+        "bmc_amo_same_fatal",
+        "Same-sector fatal status at frame 139, paired with fatal persistence induction.",
+    ),
+    (
+        "prove_amo_same_fatal_sticky",
+        "Fatal persistence after initial reset for the 140-frame AMO safety check.",
+    ),
     ("bmc_amo_other", "Different-sector store and AMO handoff through release."),
     ("bmc_sc", "SC handoff, acknowledgement and drain through release."),
     ("bmc_old", "Old load responses and fresh bytes across buffered stores."),
@@ -1847,6 +1856,22 @@ def timeout_log_tail(error: subprocess.TimeoutExpired) -> str:
     return "\n".join(output.splitlines()[-40:])
 
 
+def fatal_frame_completed(output: str) -> bool:
+    """Require a complete frame-139 evaluation of fatal status."""
+    # ABC's nonzero start-frame summary can report zero completed frames.
+    # The per-frame result distinguishes a checked horizon from an empty range.
+    return all(
+        re.search(pattern, output)
+        for pattern in (
+            r"Params: FramesMax = 140\. Start = 139\. ConfLimit = 0\. TimeOut = 0\.",
+            r"engine_0: 139 \+ :",
+            r"engine_0: finished \(returncode=0\)",
+            r"engine_0: Status returned by engine: PASS",
+            r"DONE \(PASS, rc=0\)",
+        )
+    )
+
+
 class FormalRunner:
     """Run SymbiYosys tasks from the repository's formal/ directory."""
 
@@ -1870,7 +1895,7 @@ class FormalRunner:
         Args:
             target: The formal verification target to run.
             task: SymbiYosys task name (e.g., "bmc", "cover").
-            capture_output: If True, capture stdout/stderr. If False, stream to console.
+            capture_output: If True, capture stdout/stderr. Otherwise show tool output.
 
         Returns:
             CompletedProcess with results.
@@ -1881,14 +1906,27 @@ class FormalRunner:
 
         cmd = ["sby", "-t", "-f", str(sby_path), task]
 
-        if capture_output:
-            return subprocess.run(
+        check_fatal_frame = (
+            target.name == "coherence_store_boundary" and task == "bmc_amo_same_fatal"
+        )
+        if capture_output or check_fatal_frame:
+            result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 cwd=self.formal_dir,
                 timeout=formal_task_timeout_s(target.name, task),
             )
+            if not capture_output:
+                print(result.stdout or "", end="")
+                print(result.stderr or "", end="", file=sys.stderr)
+            if check_fatal_frame and result.returncode == 0:
+                output = (result.stdout or "") + (result.stderr or "")
+                if not fatal_frame_completed(output):
+                    raise ValueError(
+                        "Fatal-status BMC did not complete its frame-139 check"
+                    )
+            return result
         else:
             return subprocess.run(
                 cmd,
@@ -1955,6 +1993,64 @@ class FormalRunner:
                 info["elapsed"] = line
 
         return info
+
+
+@pytest.mark.parametrize("capture_output", (False, True))
+@pytest.mark.parametrize(
+    "case",
+    (
+        "complete",
+        "empty_range",
+        "short_bound",
+        "wrong_start",
+        "conflict_limit",
+        "time_limit",
+        "missing_completion",
+        "missing_pass",
+    ),
+)
+def test_fatal_frame_validation(
+    monkeypatch: pytest.MonkeyPatch, capture_output: bool, case: str
+) -> None:
+    """Reject a success banner without the configured fatal-status evaluation."""
+    output = "\n".join(
+        (
+            "engine_0: Params: FramesMax = 140. Start = 139. ConfLimit = 0. TimeOut = 0.",
+            "engine_0: 139 + : Var = 100. UNSAT = 1.0 sec",
+            "engine_0: No output asserted in 0 frames.",
+            "engine_0: finished (returncode=0)",
+            "engine_0: Status returned by engine: PASS",
+            "DONE (PASS, rc=0)",
+        )
+    )
+    changes = {
+        "empty_range": ("engine_0: 139 + :", "engine_0: no evaluation:"),
+        "short_bound": ("FramesMax = 140", "FramesMax = 139"),
+        "wrong_start": ("Start = 139", "Start = 140"),
+        "conflict_limit": ("ConfLimit = 0", "ConfLimit = 1"),
+        "time_limit": ("TimeOut = 0", "TimeOut = 1"),
+        "missing_completion": ("finished (returncode=0)", "interrupted"),
+        "missing_pass": ("DONE (PASS, rc=0)", "summary pending"),
+    }
+    if case != "complete":
+        output = output.replace(*changes[case])
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert kwargs["capture_output"]
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    target = next(t for t in FORMAL_TARGETS if t.name == "coherence_store_boundary")
+    if case == "complete":
+        result = FormalRunner().run_formal(
+            target, "bmc_amo_same_fatal", capture_output=capture_output
+        )
+        assert result.returncode == 0
+    else:
+        with pytest.raises(ValueError, match="did not complete its frame-139 check"):
+            FormalRunner().run_formal(
+                target, "bmc_amo_same_fatal", capture_output=capture_output
+            )
 
 
 @pytest.mark.parametrize("capture_output", (False, True))

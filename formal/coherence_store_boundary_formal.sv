@@ -1133,4 +1133,9 @@ module coherence_store_boundary_formal #(
             (interrupt_seen_q & Stages) == Stages);
     end
   end
+`ifdef FATAL_STICKY_PROOF
+  always_ff @(posedge i_clk)
+    if (!rst && !$past(rst))
+      p_fatal_sticky : assert (!$past(l1_fatal) || l1_fatal);
+`endif
 endmodule
