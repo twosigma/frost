@@ -999,7 +999,7 @@ module reservation_station #(
         .o_read_data(reference_opcode)
     );
     always @(posedge i_clk) begin
-      if (i_rst_n && issue_fire) begin
+      if (reset_seen_q && i_rst_n && issue_fire) begin
         p_primary_opcode_exact : assert (opcode == reference_opcode);
       end
     end
