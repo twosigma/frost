@@ -12,6 +12,8 @@ smtbmc boolector
 
 [script]
 read -formal -sv coherence_seat_select.sv coherence_work_select.sv
+seats: chparam -set SLOTS 23 coherence_seat_select
+work: chparam -set SLOTS 20 -set LAST_CODED 1 -set CODE_BITS 5 coherence_work_select
 seats: prep -top coherence_seat_select
 work: prep -top coherence_work_select
 

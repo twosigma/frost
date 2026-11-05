@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check the dual-issue RS port-1 shift amount registered with its operands.
+"""Check primary opcodes and port-1 shift amounts in the dual-issue RS.
 
 Barrel shifts and rotates use imm[5:0] for immediate forms and the final
 src2_value[5:0] for register forms.
@@ -187,3 +187,60 @@ async def test_live_cdb_hold_refill_and_flush(dut: Any) -> None:
         dut.i_fu_ready_2.value = 1
         await Timer(1, unit="ns")
         assert not issue2(dut)["valid"]
+
+
+@cocotb.test()
+async def test_primary_opcode_groups_hold_and_reuse(dut: Any) -> None:
+    """Check primary opcodes across groups, stalls, row reuse, and full flushes."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    iface = RSInterface(dut)
+    await iface.reset_dut()
+    operations = ("ADD", "XOR", "BEQ", "JALR", "SLL", "SUB", "OR", "AND")
+    for names in (operations, tuple(reversed(operations))):
+        dut.i_fu_ready.value = 0
+        dut.i_fu_ready_2.value = 0
+        for entry in range(0, len(names), 2):
+            iface.drive_dispatch(
+                rob_tag=entry + 1,
+                op=OPS[names[entry]],
+                src1_ready=True,
+                src2_ready=True,
+                imm=0x100 + entry,
+            )
+            iface.drive_dispatch_2(
+                intent_1=True,
+                rob_tag=entry + 2,
+                op=OPS[names[entry + 1]],
+                src1_ready=True,
+                src2_ready=True,
+                imm=0x101 + entry,
+            )
+            await iface.step()
+        iface.clear_dispatch()
+        iface.clear_dispatch_2()
+        dut.i_fu_ready.value = 1
+        for entry, name in enumerate(names):
+            await iface.step()
+            packet = unpack_rs_issue(int(dut.o_issue.value))
+            assert packet["valid"] and packet["rob_tag"] == entry + 1
+            assert packet["op"] == OPS[name]
+            assert packet["imm"] == 0x100 + entry
+            if entry in (2, 5):
+                dut.i_fu_ready.value = 0
+                for _ in range(2):
+                    await iface.step()
+                    held = unpack_rs_issue(int(dut.o_issue.value))
+                    assert not held["valid"]
+                    assert (held["rob_tag"], held["op"], held["imm"]) == (
+                        packet["rob_tag"],
+                        packet["op"],
+                        packet["imm"],
+                    )
+                dut.i_fu_ready.value = 1
+        dut.i_fu_ready.value = 0
+        iface.drive_flush_all()
+        await iface.step()
+        iface.clear_flush_all()
+        dut.i_fu_ready.value = 1
+        await Timer(1, unit="ns")
+        assert not unpack_rs_issue(int(dut.o_issue.value))["valid"]

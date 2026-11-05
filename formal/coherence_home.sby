@@ -1,22 +1,34 @@
 [tasks]
-coh_home_control_prove control
-coh_home_control64_prove control wide
+coh_home_control_prove control ctl
+coh_home_control64_prove control ctl wide
+coh_home_control_partition_prove control ctl partition
+coh_home_control4_bmc bmc4 ctl four
+coh_home_control4_ultra_bmc bmc4 ctl four ultra
 coh_home_wb_prove wb unit
 coh_home_victim_cover covers
 coh_home_error_cover covers error
+coh_home_prefetch_cover pfcover ctl four
 
 [options]
 control: mode prove
 control: depth 2
+pfcover: mode cover
+pfcover: depth 20
+bmc4: mode bmc
+bmc4: depth 14
 wb: mode prove
 wb: depth 4
 covers: mode cover
 covers: depth 180
 timeout 180
 control: timeout 600
+bmc4: timeout 1200
+pfcover: timeout 1200
 
 [engines]
 control: smtbmc boolector
+pfcover: smtbmc boolector
+bmc4: smtbmc boolector
 wb: smtbmc boolector
 covers: smtbmc boolector
 
@@ -24,29 +36,33 @@ covers: smtbmc boolector
 read -formal -sv coherence_seat_select.sv coherence_work_select.sv
 read -sv cache_perf_pkg.sv
 error: verilog_defines -D COHERENCE_HOME_COVER_ERROR
+pfcover: verilog_defines -D COHERENCE_HOME_PREFETCH_COVER
 read -sv coherence_pkg.sv
-control: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_endpoint.sv
+ctl: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_endpoint.sv
 wb: read -sv coherence_home_endpoint.sv
 covers: read -sv coherence_home_endpoint.sv
-control: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_d_arbiter.sv
+ctl: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_d_arbiter.sv
 wb: read -sv coherence_d_arbiter.sv
 covers: read -sv coherence_d_arbiter.sv
-control: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_completions.sv
+ctl: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_completions.sv
 wb: read -sv coherence_home_completions.sv
 covers: read -sv coherence_home_completions.sv
-control: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home.sv coherence_home_control_harness.sv
+ctl: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home.sv coherence_home_control_harness.sv
 wb: read -formal -sv -D SYNTHESIS -D COHERENCE_HOME_WB_PROOF coherence_home.sv
 covers: read -formal -sv -D COHERENCE_HOME_WB_PROOF -D COHERENCE_HOME_COVER coherence_home.sv coherence_home_harness.sv
 read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
-control: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_array.sv
+ctl: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_array.sv
 wb: read -sv coherence_home_array.sv
 covers: read -sv coherence_home_array.sv
-control: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_engine.sv
+ctl: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_engine.sv
 wb: read -sv coherence_home_engine.sv
 covers: read -sv coherence_home_engine.sv
-unit: chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 -set RESULTS 2 -set FILLS 2 coherence_home
+unit: chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 -set RESULTS 2 -set FILLS 2 -set PREFETCH_SLOTS 0 coherence_home
 wide: chparam -set LINE_BYTES 64 -set WAYS 1 coherence_home_control_harness
-control: prep -flatten -top coherence_home_control_harness
+four: chparam -set WAYS 4 -set FILLS 3 -set PREFETCH_RESERVE 1 coherence_home_control_harness
+ultra: chparam -set ULTRA 1 -set PREFETCH_RESERVE 0 coherence_home_control_harness
+partition: chparam -set PREFETCH_SLOTS 1 coherence_home_control_harness
+ctl: prep -flatten -top coherence_home_control_harness
 unit: prep -flatten -top coherence_home
 error: chparam -set FAIL_B 1 coherence_home_harness
 covers: prep -flatten -top coherence_home_harness

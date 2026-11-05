@@ -86,11 +86,16 @@ and check replacement choices at the following lookup in each set.
 
 `coherence_home_completions`, `coherence_home`, `coherence_home_equal`,
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
-and CPU observation cuts; `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. Home cases hold four memory fills while resident
+and CPU observation cuts; `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. Home cases hold every memory fill while resident
 requests execute, preserve waiter order across an older writer, and check
 current data on waiter reentry. Streaming cases check way-0 miss placement,
 CPU line residency, dirty hits in other ways and progress after a pinned
-way is released. They run in the unit shard. The program shards
+way is released, including a live prefetch fill in another way. Prefetch
+cases check the completion slots
+kept for prefetches, the no-fill flag, prefetch fills, the fill reserve and
+the last way and write-back slot, and PutM and replacement beside live
+prefetches; the cluster bench runs prefetches through its agent port. They
+run in the unit shard. The program shards
 exercise the coherent hierarchy in both memory configurations. Whole-L1D
 maintenance is active in simulation. Synthesis checks cover both line sizes
 at 32-bit and 56-bit physical widths.

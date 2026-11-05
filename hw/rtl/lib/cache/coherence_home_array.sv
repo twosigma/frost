@@ -51,6 +51,8 @@ module coherence_home_array #(
     output logic [(1 << TOKEN_BITS)-1:0] o_resp_token_onehot,
     output logic o_resp_hit,
     output logic o_resp_available,
+    // At least two ways of the set were not excluded at selection.
+    output logic o_resp_two_available,
     output logic [WayBits-1:0] o_resp_way,
     output logic [ADDR_WIDTH-1:0] o_resp_addr,
     output logic [1:0] o_resp_state,
@@ -402,6 +404,7 @@ module coherence_home_array #(
       plru_q <= '0;
       o_resp_hit <= 1'b0;
       o_resp_available <= 1'b0;
+      o_resp_two_available <= 1'b0;
       o_resp_way <= '0;
       o_resp_addr <= '0;
       o_resp_state <= '0;
@@ -428,6 +431,7 @@ module coherence_home_array #(
         Select: begin
           o_resp_hit <= hit;
           o_resp_available <= hit || !(&i_exclude);
+          o_resp_two_available <= $countones(~i_exclude) >= 2;
           o_resp_way <= selected;
           o_resp_addr <= {tags_q[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
           o_resp_state <= tags_q[selected][TagBits+:2];
@@ -473,10 +477,16 @@ module coherence_home_array #(
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
       if (phase_q == Reply && !o_resp_hit && o_resp_available) assert (!i_exclude[o_resp_way]);
+      if (phase_q == Reply && o_resp_two_available) assert (o_resp_available);
       if (phase_q == Tags || phase_q == Select || phase_q == Reply) begin
         assert (i_tag_owner[token_q]);
         assert ((o_query_addr >> OffsetBits) == (i_tag_address[token_q] >> OffsetBits));
       end
+      // The lookup in service has the only tag owner.
+      for (int token = 0; token < (1 << TOKEN_BITS); token++)
+      if (i_tag_owner[token])
+        assert ((phase_q == Tags || phase_q == Select || phase_q == Reply) &&
+            int'(token_q) == token);
       if (request_fire) assert (!i_tag_owner[i_req_token]);
       if (read_fire) assert (!i_read_owner[i_read_token]);
       if (update_fire) assert (!i_update_owner[i_update_token]);
@@ -562,9 +572,10 @@ module coherence_home_array #(
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
       if ($past(o_resp_valid && !i_resp_ready)) begin
         assert (o_resp_valid);
-        assert ({o_resp_token, o_resp_hit, o_resp_available, o_resp_way,
+        assert ({o_resp_token, o_resp_hit, o_resp_available, o_resp_two_available, o_resp_way,
             o_resp_addr, o_resp_state} == $past(
-            {o_resp_token, o_resp_hit, o_resp_available, o_resp_way, o_resp_addr, o_resp_state}
+            {o_resp_token, o_resp_hit, o_resp_available, o_resp_two_available, o_resp_way,
+             o_resp_addr, o_resp_state}
         ));
       end
       cover (request_fire && read_fire && update_fire);

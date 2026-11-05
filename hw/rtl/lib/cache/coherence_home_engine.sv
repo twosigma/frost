@@ -110,7 +110,7 @@ module coherence_home_engine #(
   // One-hot, so the home's decision reads the idle state as one flop.
   (* fsm_encoding = "one_hot" *) phase_t phase_q;
   probe_phase_t probe_phase_q;
-  coh_d_t request_q;
+  coh_d_t request_q, work_in;
   coh_p_t probe_q;
   coh_r_t reply;
   coh_wa_t ack_q;
@@ -120,6 +120,11 @@ module coherence_home_engine #(
   logic [8*LINE_BYTES-1:0] image_q;
   logic [1:0] state_q;
   logic read_sent_q, read_done_q, dirty_q, failed_q, error_q, lookup_sent_q;
+  // A prefetch's decision found no resident line (or a blocked one): it
+  // goes to Result with nothing to read or probe. Cleared at the result
+  // handshake.
+  logic absent_q;
+  wire  prefetch = request_q.opcode == coherence_pkg::Prefetch;
   logic probe_matches, upper, run, active, needs_probe, needs_data;
   logic reply_fire, reply_fatal, service_error, service_dirty, service_complete;
   logic data_complete, probe_complete, deciding;
@@ -128,6 +133,7 @@ module coherence_home_engine #(
   assign run = !i_stop;
   assign active = !i_rst && run;
   assign reply = i_r;
+  assign work_in = i_work;
   assign upper = LINE_BYTES == 64 && request_q.addr[5];
   assign needs_probe = request_q.opcode == coherence_pkg::Atomic ||
       request_q.opcode == coherence_pkg::StoreConditional ||
@@ -140,15 +146,20 @@ module coherence_home_engine #(
   assign deciding = phase_q == Lookup && lookup_sent_q;
 `ifdef COHERENCE_HOME_CONTROL
   assign o_tag_owner = deciding;
-  assign o_unpinned_owner = phase_q == Lookup;
-  assign o_pin_owner = phase_q == Service || phase_q == Update ||
-      phase_q == UpdateWait || phase_q == Fatal || (phase_q == Result && read_sent_q);
+  // A prefetch never takes a way pin.
+  assign o_unpinned_owner = phase_q == Lookup || (phase_q != Free && prefetch);
+  assign o_pin_owner = !prefetch && (phase_q == Service || phase_q == Update ||
+      phase_q == UpdateWait || phase_q == Fatal || (phase_q == Result && read_sent_q));
   always_ff @(posedge i_clk) begin
     if (i_rst) o_initial_error <= 1'b0;
     else if (active && i_work_valid) o_initial_error <= i_work_error;
     if (!i_rst && phase_q == Result && !read_sent_q) assert (o_initial_error);
     if (!i_rst && phase_q != Free && o_initial_error)
       assert (phase_q == Result && error_q && !read_sent_q);
+    if (!i_rst && absent_q) assert (phase_q == Result && prefetch && !error_q);
+    // A prefetch never parks, so its work never carries a wake error.
+    if (active && i_work_valid)
+      assert (!(i_work_error && work_in.opcode == coherence_pkg::Prefetch));
   end
   assign o_read_owner   = (phase_q == Service || phase_q == Fatal) && read_sent_q && !read_done_q;
   assign o_update_owner = phase_q == UpdateWait;
@@ -227,6 +238,7 @@ module coherence_home_engine #(
       failed_q <= 1'b0;
       error_q <= 1'b0;
       lookup_sent_q <= 1'b0;
+      absent_q <= 1'b0;
     end else if (run) begin
       if (i_work_valid) begin
         request_q <= i_work;
@@ -237,11 +249,20 @@ module coherence_home_engine #(
         read_sent_q <= 1'b0;
         read_done_q <= 1'b0;
         lookup_sent_q <= 1'b0;
+        absent_q <= 1'b0;
         phase_q <= i_work_error ? Result : Lookup;
       end
       if (o_lookup_valid && i_lookup_ready) lookup_sent_q <= 1'b1;
       if (deciding && i_decision_valid) begin
-        if (!i_decision_resident) phase_q <= Free;
+        if (!i_decision_resident && prefetch) begin
+          // A prefetch looks its line up once. Whether or not the decision
+          // allocated a fill, it completes with GrantAck.
+          read_sent_q <= 1'b1;
+          read_done_q <= 1'b1;
+          probe_phase_q <= ProbeDone;
+          absent_q <= 1'b1;
+          phase_q <= Result;
+        end else if (!i_decision_resident) phase_q <= Free;
         else begin
           way_q <= i_decision_way;
           state_q <= i_decision_state;
@@ -316,7 +337,10 @@ module coherence_home_engine #(
       end
       if (o_update_valid && i_update_ready) phase_q <= UpdateWait;
       if (phase_q == UpdateWait && i_updated) phase_q <= Result;
-      if (o_result_valid && i_result_ready) phase_q <= Free;
+      if (o_result_valid && i_result_ready) begin
+        absent_q <= 1'b0;
+        phase_q  <= Free;
+      end
     end
   end
 `ifndef SYNTHESIS
@@ -331,9 +355,15 @@ module coherence_home_engine #(
         assert ((phase_q == Service || phase_q == Fatal) && read_sent_q && !read_done_q);
       if (i_updated) assert (phase_q == UpdateWait);
       if (o_r_ready) assert (probe_matches);
-      if (phase_q == Lookup) assert (!read_sent_q && !read_done_q && !dirty_q);
+      if (phase_q == Lookup) assert (!read_sent_q && !read_done_q && !dirty_q && !error_q);
       if (phase_q == Update || phase_q == UpdateWait || phase_q == Result)
         if (!error_q) assert (read_done_q && probe_phase_q == ProbeDone);
+      // A prefetch reads, probes and updates nothing: from its decision its
+      // read and probe are done, and it never updates or turns fatal.
+      if (prefetch && (phase_q == Service || phase_q == Result))
+        assert (read_sent_q && read_done_q && !dirty_q && probe_phase_q == ProbeDone);
+      if (prefetch) assert (phase_q != Update && phase_q != UpdateWait && phase_q != Fatal);
+      if (absent_q) assert (phase_q == Result && prefetch);
     end
 `endif
 `ifdef FORMAL
@@ -351,6 +381,8 @@ module coherence_home_engine #(
     f_past_valid <= 1'b1;
     if (!f_past_valid) assume (i_rst);
     if (i_work_valid) assume (o_idle && active);
+    // The home never wakes a prefetch, so its work carries no error.
+    if (i_work_valid && work_in.opcode == coherence_pkg::Prefetch) assume (!i_work_error);
     if (i_decision_valid) begin
       assume (deciding && active);
       assume (int'(i_decision_way) < WAYS);
@@ -410,6 +442,7 @@ module coherence_home_engine #(
       end
       cover (i_r_valid && o_r_ready && reply.data_valid && i_data_valid);
       cover (o_result_valid && failed_q);
+      cover (o_result_valid && i_result_ready && absent_q);
       cover (o_result_valid && f_dirty_valid_q && request_q.opcode == coherence_pkg::DMAWrite);
     end
   end

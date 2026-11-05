@@ -25,7 +25,7 @@ from test_run_yosys import YosysRunner
 @pytest.mark.synthesis
 @pytest.mark.parametrize(
     "address,harts,fills",
-    [(32, 1, 4), (32, 2, 4), (56, 2, 16), (32, 2, 30), (32, 1, 43)],
+    [(32, 1, 4), (32, 2, 4), (56, 2, 16), (32, 2, 26), (32, 1, 39)],
 )
 def test_endpoint_synthesis(address: int, harts: int, fills: int) -> None:
     """Synthesize the endpoints and reject unresolved modules and latches."""
@@ -52,7 +52,7 @@ def test_endpoint_synthesis(address: int, harts: int, fills: int) -> None:
         ["yosys", "-p", script], capture_output=True, text=True, timeout=120
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    completions = 11 * harts + 8
+    completions = 11 * harts + 12
     puts = completions + fills
     count = puts + 2 * harts
     layout = (completions << 21) | (completions << 14) | (puts << 7) | count

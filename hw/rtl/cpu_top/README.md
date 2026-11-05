@@ -223,8 +223,9 @@ provide coherence between separate CPU instances.
 
 `frost_hart` contains `coherent_hart_cache`, and `frost_cluster_memory`
 contains `coherence_home`. The [cache interface](../lib/cache/README.md#coherent-one-hart-cache-path)
-uses S/M permissions for one hart. The home admits nineteen requests, with
-eight probe/data engines and four fill controls. Engines share image storage
+uses S/M permissions for one hart. The home admits twenty-three requests,
+four of them kept for its stream prefetcher, with eight probe/data engines and
+`L2_NUM_MSHR` fill controls (eight by default). Engines share image storage
 with eight result credits. Two ordinary PutM controls drain independently.
 Identities and way pins last through Release.
 There is no E permission or second hart. `ENABLE_COHERENCE` controls DMA

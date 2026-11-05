@@ -22,7 +22,9 @@
  * cycle late. A table of STREAMS entries holds the last L2 line each stream
  * missed on. A miss on the line after an entry's confirms the entry and
  * advances it; a miss on an entry's own line leaves it; any other miss
- * replaces the entries in rotation. For each confirmed entry the prefetcher
+ * replaces the entries in rotation. With IGNORE_BACKWARD, a miss up to
+ * 2 * DISTANCE - 1 lines behind an entry in the same page also leaves the
+ * entries in place. For each confirmed entry the prefetcher
  * reads the lines after its last miss, up to DISTANCE lines ahead and never
  * past the PAGE_BYTES page of that miss, so it reads only memory that a
  * demand access in the same page made sure exists.
@@ -36,7 +38,8 @@
  * arbiter as ordinary line reads, and their responses are discarded: the
  * point is the L2 fill. A request is registered, so it holds still until the
  * arbiter takes it. At most MAX_INFLIGHT reads are outstanding, each under
- * its own id.
+ * its own id. A new request loads only while i_enable is set; one already
+ * loaded still goes out.
  */
 module l2_stream_prefetcher #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -45,7 +48,8 @@ module l2_stream_prefetcher #(
     parameter int unsigned DISTANCE = 8,
     parameter int unsigned MAX_INFLIGHT = 4,
     parameter int unsigned ID_BITS = 3,
-    parameter int unsigned PAGE_BYTES = 4096
+    parameter int unsigned PAGE_BYTES = 4096,
+    parameter bit IGNORE_BACKWARD = 0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -53,6 +57,8 @@ module l2_stream_prefetcher #(
     // An L1D read request to the L2, on the cycle the arbiter takes it.
     input logic                  i_miss_valid,
     input logic [ADDR_WIDTH-1:0] i_miss_addr,
+    // Loads a new request while set.
+    input logic                  i_enable,
 
     // Line-port master: reads only.
     output logic                  o_req_valid,
@@ -66,6 +72,9 @@ module l2_stream_prefetcher #(
   localparam int unsigned LineOffBits = $clog2(L2_LINE_BYTES);
   localparam int unsigned LineBits = ADDR_WIDTH - LineOffBits;
   localparam int unsigned PageLineBits = $clog2(PAGE_BYTES / L2_LINE_BYTES);
+  localparam int unsigned BackwardDistance =
+      DISTANCE > (PAGE_BYTES / L2_LINE_BYTES) / 2 ?
+      PAGE_BYTES / L2_LINE_BYTES - 1 : 2 * DISTANCE - 1;
   localparam int unsigned StreamBits = (STREAMS > 1) ? $clog2(STREAMS) : 1;
   localparam int unsigned AheadBits = $clog2(DISTANCE + 1);
   localparam int unsigned NumIds = 1 << ID_BITS;
@@ -87,14 +96,17 @@ module l2_stream_prefetcher #(
   /* verilator lint_on UNUSEDSIGNAL */
   assign miss_offset_unused = i_miss_addr[LineOffBits-1:0];
 
-  logic                obs_valid_q;
-  logic [LineBits-1:0] obs_line_q;
-  logic [LineBits-1:0] obs_line_p1_q;  // obs_line_q + 1
+  logic                  obs_valid_q;
+  logic [  LineBits-1:0] obs_line_q;
+  logic [  LineBits-1:0] obs_line_p1_q;  // obs_line_q + 1
+  logic [PageLineBits:0] obs_line_limit_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) obs_valid_q <= 1'b0;
     else obs_valid_q <= i_miss_valid;
-    obs_line_q    <= i_miss_addr[ADDR_WIDTH-1:LineOffBits];
+    obs_line_q <= i_miss_addr[ADDR_WIDTH-1:LineOffBits];
     obs_line_p1_q <= i_miss_addr[ADDR_WIDTH-1:LineOffBits] + LineBits'(1);
+    obs_line_limit_q <= (PageLineBits + 1)'(i_miss_addr[LineOffBits+:PageLineBits]) +
+        (PageLineBits + 1)'(BackwardDistance);
   end
 
   // ---- Stream table -------------------------------------------------------------
@@ -105,11 +117,43 @@ module l2_stream_prefetcher #(
   logic [AheadBits-1:0] st_ahead_q[STREAMS];  // lines after it already read
   logic [StreamBits-1:0] st_victim_q;  // replaced next, in rotation
 
-  logic [STREAMS-1:0] obs_succ, obs_same;
+  logic [STREAMS-1:0] obs_succ, obs_same, obs_behind;
+  logic [STREAMS-1:0] obs_preserved;
   always_comb begin
     for (int e = 0; e < int'(STREAMS); e++) begin
       obs_succ[e] = st_valid_q[e] && (obs_line_q == st_line_p1_q[e]);
       obs_same[e] = st_valid_q[e] && (obs_line_q == st_line_q[e]);
+    end
+  end
+  for (genvar e = 0; e < STREAMS; e++) begin : gen_backward
+    if (IGNORE_BACKWARD && BackwardDistance > 0 &&
+        ((BackwardDistance + 1) & BackwardDistance) == 0) begin : gen_grouped
+      localparam int unsigned OffsetBits = $clog2(BackwardDistance + 1);
+      // A power-of-two window uses one offset-order comparison.
+      (* keep = "true" *) logic lower_or_equal, preserved, valid_page;
+      assign valid_page = st_valid_q[e] &&
+          (obs_line_q >> PageLineBits) == (st_line_q[e] >> PageLineBits);
+      assign lower_or_equal = obs_line_q[OffsetBits-1:0] <= st_line_q[e][OffsetBits-1:0];
+      if (OffsetBits < PageLineBits) begin : gen_partial_page
+        logic same_group, next_group;
+        assign same_group = obs_line_q[PageLineBits-1:OffsetBits] ==
+            st_line_q[e][PageLineBits-1:OffsetBits];
+        assign next_group = {1'b0, st_line_q[e][PageLineBits-1:OffsetBits]} ==
+            ({1'b0, obs_line_q[PageLineBits-1:OffsetBits]} +
+             (PageLineBits - OffsetBits + 1)'(1));
+        assign preserved = valid_page &&
+            ((same_group && lower_or_equal) || (next_group && !lower_or_equal));
+      end else begin : gen_full_page
+        assign preserved = valid_page && lower_or_equal;
+      end
+      assign obs_preserved[e] = preserved;
+      assign obs_behind[e] = preserved && !obs_same[e];
+    end else begin : gen_general
+      assign obs_behind[e] = IGNORE_BACKWARD && st_valid_q[e] &&
+          (obs_line_q >> PageLineBits) == (st_line_q[e] >> PageLineBits) &&
+          obs_line_q[PageLineBits-1:0] < st_line_q[e][PageLineBits-1:0] &&
+          obs_line_limit_q >= (PageLineBits + 1)'(st_line_q[e][PageLineBits-1:0]);
+      assign obs_preserved[e] = obs_same[e] | obs_behind[e];
     end
   end
 
@@ -160,12 +204,13 @@ module l2_stream_prefetcher #(
   end
 
   // Load the register when it is empty or emptying, a stream has a line to
-  // read, and fewer than MAX_INFLIGHT reads are outstanding. An observation
-  // that replaces the chosen entry this cycle wins: nothing loads.
+  // read, loads are enabled, and fewer than MAX_INFLIGHT reads are
+  // outstanding. An observation that replaces the chosen entry this cycle
+  // wins: nothing loads.
   logic load;
   logic obs_allocates;
-  assign obs_allocates = obs_valid_q && !(|obs_succ) && !(|obs_same);
-  assign load = (!req_valid_q || req_fire) && cand_any &&
+  assign obs_allocates = obs_valid_q && !(|obs_succ) && !(|obs_preserved);
+  assign load = (!req_valid_q || req_fire) && cand_any && i_enable &&
       !(obs_allocates && (st_victim_q == cand_sel)) &&
       (inflight_q < InflightBits'(MAX_INFLIGHT));
 
@@ -221,7 +266,39 @@ module l2_stream_prefetcher #(
     end
   end
 
+`ifdef FORMAL
+  // The backward window has strict lower and inclusive upper bounds.
+  for (genvar e = 0; e < STREAMS; e++) begin : gen_window_check
+    always_ff @(posedge i_clk)
+      if (!i_rst && obs_valid_q) begin
+        assert (obs_preserved[e] == (obs_same[e] | obs_behind[e]));
+        assert (obs_behind[e] == (IGNORE_BACKWARD && st_valid_q[e] &&
+            (obs_line_q >> PageLineBits) == (st_line_q[e] >> PageLineBits) &&
+            obs_line_q[PageLineBits-1:0] < st_line_q[e][PageLineBits-1:0] &&
+            (PageLineBits + 1)'(obs_line_q[PageLineBits-1:0]) +
+            (PageLineBits + 1)'(BackwardDistance) >=
+            (PageLineBits + 1)'(st_line_q[e][PageLineBits-1:0])));
+      end
+  end
+  // A request stays in the page of the stream line it was loaded from.
+  logic [LineBits-PageLineBits-1:0] f_req_page_q;
+  always_ff @(posedge i_clk) begin
+    if (load) f_req_page_q <= st_line_q[cand_sel][LineBits-1:PageLineBits];
+    if (!i_rst && req_valid_q) assert (req_line_q[LineBits-1:PageLineBits] == f_req_page_q);
+  end
+`ifdef L2_STREAM_PREFETCHER_IDS
+  // The parent returns only ids that are out, so the count follows them.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      if (i_resp_valid) assert (id_busy_q[i_resp_id]);
+      assert (inflight_q == InflightBits'($countones(id_busy_q)));
+      if (req_valid_q) assert (id_busy_q[req_id_q]);
+    end
+  end
+`endif
+`endif
 `ifndef SYNTHESIS
+`ifndef FORMAL
   logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
     if (i_rst) reset_seen_q <= 1'b1;
@@ -237,6 +314,7 @@ module l2_stream_prefetcher #(
       end
     end
   end
+`endif
 `endif
 
 endmodule : l2_stream_prefetcher

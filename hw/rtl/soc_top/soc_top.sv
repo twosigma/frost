@@ -31,7 +31,7 @@ module soc_top #(
     parameter int unsigned ENABLE_CACHED_TIER = 1,
     parameter int unsigned L2_LINE_BYTES = 64,
     // Size the behavioral DDR's queues for the CPU's configured cache slots.
-    parameter int unsigned L2_NUM_MSHR = 4,
+    parameter int unsigned L2_NUM_MSHR = 8,
     parameter int unsigned L2_NUM_WB = 2,
     parameter int unsigned DDR_MODEL_BYTES = 64 * 1024 * 1024,
     parameter int unsigned DDR_MODEL_LATENCY = 30,

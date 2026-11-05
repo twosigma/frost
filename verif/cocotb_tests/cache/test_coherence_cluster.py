@@ -42,6 +42,7 @@ class Cluster:
         self.cuts: list[int] = []
         self.sc_writes: list[int] = []
         self.reply_states: list[int] = []
+        self.memory_reads: list[int] = []
         self.perf: dict[str, list[int]] = {
             "l1d": [0] * 8,
             "l2": [0] * 8,
@@ -96,6 +97,8 @@ class Cluster:
             if self.get("o_mem_req_valid") and self.get("i_mem_req_ready"):
                 address = self.get("o_mem_req_addr")
                 write = self.get("o_mem_req_write")
+                if not write:
+                    self.memory_reads.append(address)
                 data = (
                     self.get("o_mem_req_data") if write else self.memory.get(address, 0)
                 )
@@ -218,6 +221,62 @@ class Cluster:
         await self.tick()
         await self.set(i_agent_u_ready=0)
         return grant[4]
+
+    async def prefetch(self, address: int, slot: int = 0) -> None:
+        """Run a Prefetch through the agent port as the prefetcher does."""
+        q = pack((2, 3), (2, 3), (4, slot), (1, 0))
+        request = pack(
+            (4, 9),
+            (9, q),
+            (self.p, address),
+            (5, 0),
+            (3, 5),
+            (32, 0),
+            (1, 0),
+            (1, 0),
+            (1, 0),
+            (256, 0),
+        )
+        await self.set(i_agent_valid=1, i_agent_d=request)
+        await self.wait("o_agent_ready")
+        await self.tick()
+        await self.set(i_agent_valid=0)
+        # The cluster takes a source-3 G on the cycle it is presented.
+        await self.wait("o_agent_g_valid")
+        grant = unpack(self.get("o_agent_g"), (3, 9, 6, self.p, 256, 1))
+        assert grant[0] == 4 and grant[1] == q and grant[4] == 0 and not grant[5]
+        await self.tick()
+        await self.set(
+            i_agent_c_valid=1,
+            i_agent_c=pack((9, q), (6, grant[2]), (self.p, address), (2, 0), (1, 0)),
+        )
+        await self.wait("o_agent_c_ready")
+        await self.tick()
+        await self.set(i_agent_c_valid=0)
+        await self.wait("o_agent_u_valid")
+        await self.set(i_agent_u_ready=1)
+        await self.tick()
+        await self.set(i_agent_u_ready=0)
+
+
+@cocotb.test()
+async def prefetch_fills_lines_beside_private_copies(dut: Any) -> None:
+    """Prefetches fill absent lines and leave lines the L1D holds untouched."""
+    b = Cluster(dut)
+    await b.reset()
+    absent, owned = 0x80001000, 0x80002000
+    await b.prefetch(absent)
+    await b.tick(40)
+    assert b.memory_reads.count(absent) == 1
+    assert await b.read(absent) == 0
+    assert b.memory_reads.count(absent) == 1
+    await b.store(owned, 0x0BADF00D)
+    await b.wait("o_pending_store", 0)
+    cuts = list(b.cuts)
+    await b.prefetch(owned, slot=1)
+    await b.prefetch(owned + 32, slot=2)
+    assert b.cuts == cuts
+    assert await b.read(owned) == 0x0BADF00D
 
 
 @cocotb.test()

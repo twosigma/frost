@@ -367,13 +367,13 @@ increment register. Totals and snapshot deltas are unaffected.
 | 111 | 5 | `L1D_HIT` | event | An L1D access finds its sector with enough permission: S or M for a read, M for a store. AMOs and selected SCs count as misses |
 | 112 | 6 | `L1D_MISS` | event | An L1D access without enough permission. AMOs and selected SCs always count as misses |
 | 113 | 7 | `L1D_WRITEBACK` | event | A dirty L1D victim is frozen for its PutM, the L1D's dirty-sector writeback message, counted when the writeback starts rather than with the miss. Maintenance writebacks do not count |
-| 114 | 8 | `L2_ACCESS` | event | The L2 home's first lookup for a demand request from the L1D, the L1I, the page-table walker or DMA, or a lookup for a PutM other than maintenance |
+| 114 | 8 | `L2_ACCESS` | event | The L2 home's first lookup for a demand or prefetch request, or a lookup for a PutM other than maintenance |
 | 115 | 9 | `L2_HIT` | event | An L2 access hits at the tag stage |
 | 116 | 10 | `L2_MISS` | event | An L2 access misses at the tag stage |
 | 117 | 11 | `L2_WRITEBACK` | event | Memory accepts an L2 victim write, counted when the writeback leaves |
 | 118 | 12 | `L1I_FETCH_MISS_STALL` | cycle | Fetch is in the cached tier, its window is not ready, and an L1I miss is outstanding (any miss, including a next-line prefetch). Pipeline stalls, low-BRAM fetch, fills discarded by `fence.i`, and prefetch misses behind a ready window do not count |
 | 119 | 13 | `L1D_MISS_CYCLES_SUM` | sum | The number of L1D misses outstanding this cycle: read slots waiting on a miss, the pending store's miss, and an SC waiting for its grant or result (`miss_outstanding`, `cache_perf_pkg::MissOutstandingBits` wide, at most 10) |
-| 120 | 14 | `L2_MISS_CYCLES_SUM` | sum | The number of occupied L2 home fills this cycle, at most four |
+| 120 | 14 | `L2_MISS_CYCLES_SUM` | sum | The number of occupied L2 home fills this cycle, including prefetch fills, at most `L2_NUM_MSHR` |
 | 121 | 15 | `L1I_HIT_UNDER_MISS` | event | An L1I hit resolved while at least one L1I miss was outstanding |
 | 122 | 16 | `L1D_HIT_UNDER_MISS` | event | Same, L1D |
 | 123 | 17 | `L2_HIT_UNDER_MISS` | event | Always 0: the L2 coherence home does not report hits under a miss |

@@ -21,6 +21,12 @@ from cocotb.triggers import Timer
 
 from cocotb_tests.cache.test_coherence_endpoints import pack
 
+# The first fill TID, coherence_pkg::fill_base(1): one per completion slot
+# (11 per hart, 8 DMA credits and 4 prefetch identities) comes first.
+FILL_TID_BASE = 23
+PREFETCH = 9
+GRANT_ACK = 4
+
 
 def unpack(value: int, widths: tuple[int, ...]) -> tuple[int, ...]:
     """Decode fields in their declared order."""
@@ -59,6 +65,9 @@ class Home:
         self.arrivals: list[tuple[int, str, int]] = []
         self.write_fills = 0
         self.allocations: list[tuple[int, int]] = []
+        # Grants for source 3, which the bench takes when they are presented,
+        # as the prefetcher does.
+        self.prefetch_grants: list[tuple[int, ...]] = []
 
     def get(self, name: str) -> int:
         """Read a signal."""
@@ -123,7 +132,7 @@ class Home:
                 tid = (
                     (self.get("engine_tid") >> (6 * token)) & 63
                     if token < engines
-                    else 19 + token - engines
+                    else FILL_TID_BASE + token - engines
                 )
                 self.arrivals.append((self.cycle, "data", tid))
             if self.get("array_response") and self.get("decision_fill"):
@@ -221,8 +230,16 @@ class Home:
                         write,
                     )
                 )
+            grant = unpack(self.get("o_g"), (3, 9, 6, self.p, 256, 1))
+            prefetch_grant = bool(self.get("o_g_valid")) and grant[1] >> 7 == 3
+            held_ready = self.get("i_g_ready")
+            if prefetch_grant:
+                self.prefetch_grants.append(grant)
+                await self.set(i_g_ready=1)
             await self.set(i_clk=1)
             await self.set(i_clk=0)
+            if prefetch_grant:
+                await self.set(i_g_ready=held_ready)
             if not self.get("i_rst"):
                 self.write_fills += (self.get("o_write_perf_events") >> 7) & 1
             if next_put is not None:
@@ -242,7 +259,9 @@ class Home:
     ) -> tuple[int, int]:
         """Encode hart or agent requests with disjoint source identities."""
         if op in (7, 8):
-            q = pack((2, 2), (2, 3), (4, 9 + slot), (1, 0))
+            q = pack((2, 2), (2, 3), (4, (9 + slot) % 16), (1, 0))
+        elif op == PREFETCH:
+            q = pack((2, 3), (2, 3), (4, slot), (1, 0))
         elif op in (5, 6):
             q = pack((2, 0), (2, op - 4), (4, slot), (1, 0))
         else:
@@ -252,7 +271,7 @@ class Home:
             (9, q),
             (self.p, address),
             (5, 0),
-            (3, 5 if op in (7, 8) else 3),
+            (3, 5 if op in (7, 8, PREFETCH) else 3),
             (32, mask),
             (1, 0),
             (1, non_alloc),
@@ -301,9 +320,17 @@ class Home:
         return unpack(self.get("o_g"), (3, 9, 6, self.p, 256, 1))
 
     async def take_grant(self) -> tuple[int, ...]:
-        """Consume one grant while keeping its completion outstanding."""
-        await self.wait("o_g_valid")
-        grant = unpack(self.get("o_g"), (3, 9, 6, self.p, 256, 1))
+        """Consume one grant while keeping its completion outstanding.
+
+        Grants for source 3 are taken by tick() and never returned here.
+        """
+        for _ in range(2000):
+            grant = unpack(self.get("o_g"), (3, 9, 6, self.p, 256, 1))
+            if self.get("o_g_valid") and grant[1] >> 7 != 3:
+                break
+            await self.tick()
+        else:
+            raise AssertionError(f"o_g_valid timed out at {self.cycle}")
         await self.set(i_g_ready=1)
         await self.tick()
         await self.set(i_g_ready=0)
@@ -360,6 +387,43 @@ class Home:
         await self.set(i_u_ready=1)
         await self.tick()
         await self.set(i_u_ready=0)
+
+    async def prefetch_grant(self, address: int, slot: int = 0) -> tuple[int, ...]:
+        """Wait for the grant of an admitted Prefetch, taken when presented."""
+        q = self.demand(PREFETCH, address, slot=slot)[0]
+        for _ in range(2000):
+            grant = next(
+                (g for g in self.prefetch_grants if g[1] == q and g[3] == address), None
+            )
+            if grant is not None:
+                self.prefetch_grants.remove(grant)
+                assert grant[0] == GRANT_ACK and grant[4] == 0 and grant[5] == 0
+                return grant
+            await self.tick()
+        raise AssertionError(f"prefetch grant for {address:#x} timed out")
+
+    async def prefetch(
+        self, address: int, slot: int = 0, finish: bool = True
+    ) -> tuple[int, ...]:
+        """Admit a Prefetch and, unless asked not to, complete and release it."""
+        await self.submit(PREFETCH, address, slot=slot)
+        grant = await self.prefetch_grant(address, slot)
+        if finish:
+            await self.complete(grant)
+        return grant
+
+    async def fills_live(self, count: int) -> None:
+        """Wait until a number of fills are live."""
+        for _ in range(500):
+            if int(self.dut.fill_live_q.value).bit_count() == count:
+                return
+            await self.tick()
+        raise AssertionError(f"{count} fills did not become live")
+
+    def reads_of(self, address: int) -> int:
+        """Count the memory reads of the line holding an address."""
+        line = address & -self.line
+        return len([t for t in self.transactions if not t[1] and t[2] == line])
 
     async def read(self, address: int, op: int = 0, non_alloc: int = 0) -> int:
         """Complete a read request."""
@@ -461,6 +525,56 @@ async def streaming_waits_for_its_pinned_way(dut: Any) -> None:
     assert waiting[3] == base + 4 * b.line and not waiting[5]
     await b.complete(waiting)
     assert all(way == 0 for _, way in b.allocations)
+
+
+@cocotb.test()
+async def streaming_waits_for_way_zero_beside_a_prefetch_fill(dut: Any) -> None:
+    """Check streaming stalls beside a prefetch while way zero is pinned."""
+    b = Home(dut)
+    await b.reset()
+    base = 0x80000000
+    stride = 4 * b.line
+    await b.submit(7, base, non_alloc=1)
+    held = await b.take_grant()
+    assert held[4] == b.expected(base) and not held[5]
+    assert b.allocations == [(base, 0)]
+
+    b.read_delay = 800
+    prefetched = base + stride
+    await b.prefetch(prefetched)
+    await b.fills_live(1)
+    assert b.reads_of(prefetched) == 1
+    assert b.allocations[-1][0] == prefetched and b.allocations[-1][1] != 0
+
+    waiting_address = base + 2 * stride
+    await b.submit(7, waiting_address, slot=1, non_alloc=1)
+    await b.tick(40)
+    assert not b.get("o_g_valid") and b.reads_of(waiting_address) == 0
+    assert int(dut.fill_live_q.value).bit_count() == 1
+
+    b.read_delay = 3
+    unrelated_address = base + b.line
+    await b.submit(7, unrelated_address, slot=2, non_alloc=1)
+    unrelated = await b.take_grant()
+    assert unrelated[3] == unrelated_address and not unrelated[5]
+    assert unrelated[4] == b.expected(unrelated_address)
+    await b.complete(unrelated)
+    assert b.reads_of(waiting_address) == 0
+
+    await b.complete(held)
+    waiting = await b.take_grant()
+    assert waiting[3] == waiting_address and not waiting[5]
+    assert waiting[4] == b.expected(waiting_address)
+    await b.complete(waiting)
+    assert int(dut.fill_live_q.value).bit_count() == 1
+    assert all(way == 0 for address, way in b.allocations if address != prefetched)
+
+    await b.tick(820)
+    assert not int(dut.fill_live_q.value)
+    before = len(b.allocations)
+    assert await b.read(prefetched, 7, non_alloc=1) == b.expected(prefetched)
+    assert b.reads_of(prefetched) == 1 and len(b.allocations) == before
+    assert not b.get("o_fatal")
 
 
 @cocotb.test()
@@ -896,14 +1010,15 @@ async def fatal_and_reset_with_held_results_and_dirty_victim(dut: Any) -> None:
 async def parked_fills_release_engines_and_reenter_under_miss_pressure(
     dut: Any,
 ) -> None:
-    """Four parked fills and eight retries leave resident service eligible."""
+    """Parked fills on every fill and retries on every engine keep hits served."""
     b = Home(dut)
     await b.reset()
     base = 0x80000000
     first = await b.start(0, base)
     await b.finish(first)
     b.read_delay = 1200
-    addresses = [base + (index + 1) * b.line for index in range(12)]
+    fills, engines = len(dut.fill_live_q), len(dut.engine_idle)
+    addresses = [base + (index + 1) * b.line for index in range(fills + engines)]
     for index, address in enumerate(addresses):
         await b.submit(0 if index < 8 else 7, address, slot=index % 8)
     retried = set()
@@ -911,11 +1026,11 @@ async def parked_fills_release_engines_and_reenter_under_miss_pressure(
         if b.get("retry_valid") and not b.get("retry_park"):
             retried.add(b.get("decision_tid"))
         await b.tick()
-        if len(retried) == 8:
+        if len(retried) == engines:
             break
-    assert len(retried) == 8
-    assert int(dut.completions.parked_q.value).bit_count() == 4
-    assert len([t for t in b.transactions if not t[1]]) == 5
+    assert len(retried) == engines
+    assert int(dut.completions.parked_q.value).bit_count() == fills
+    assert len([t for t in b.transactions if not t[1]]) == fills + 1
     assert not b.get("o_g_valid")
     await b.submit(5, base)
     resident = await b.take_grant()
@@ -1188,20 +1303,21 @@ async def retried_dma_write_counts_its_fill_allocation(dut: Any) -> None:
     await b.reset()
     base = 0x80000000
     b.read_delay = 500
-    for slot in range(3):
+    fills = len(dut.fill_live_q)
+    for slot in range(fills - 1):
         await b.submit(7, base + slot * b.line, slot=slot)
-    await b.submit(0, base + 3 * b.line)
+    await b.submit(0, base + (fills - 1) * b.line)
     for _ in range(150):
-        if len(b.transactions) == 4:
+        if len(b.transactions) == fills:
             break
         await b.tick()
-    assert len(b.transactions) == 4
-    address = base + 4 * b.line
-    await b.submit(8, address, 0xAABBCCDD, 15, slot=3)
+    assert len(b.transactions) == fills
+    address = base + fills * b.line
+    await b.submit(8, address, 0xAABBCCDD, 15, slot=fills - 1)
     await b.tick(100)
-    assert len(b.transactions) == 4 and b.write_fills == 0
+    assert len(b.transactions) == fills and b.write_fills == 0
     seen = set()
-    for _ in range(5):
+    for _ in range(fills + 1):
         grant = await b.take_grant()
         assert not grant[5] and grant[3] not in seen
         seen.add(grant[3])
@@ -1318,3 +1434,223 @@ async def sibling_misses_reuse_invalidated_clean_victim(dut: Any) -> None:
         await b.complete(response)
     assert any(t[1] == 0 and t[2] == victim for t in b.transactions[transactions:])
     assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def prefetch_fills_absent_lines_and_leaves_resident_ones(dut: Any) -> None:
+    """Fill an absent line for a Prefetch with no seat and leave a resident one."""
+    b = Home(dut)
+    await b.reset()
+    address = 0x80000040
+    await b.prefetch(address)
+    assert b.reads_of(address) == 1
+    await b.tick(b.read_delay + 20)
+    assert not int(dut.fill_live_q.value)
+    # The installed line serves a demand read and a second Prefetch without
+    # another memory read, probe or pin.
+    assert await b.read(address) == b.expected(address)
+    await b.prefetch(address)
+    await b.prefetch(address + 32, slot=1)
+    assert b.reads_of(address) == 1
+    assert not b.probes
+    assert not int(dut.completions.pin_valid_q.value)
+
+
+@cocotb.test()
+async def demand_read_takes_a_seat_on_a_prefetch_fill(dut: Any) -> None:
+    """Seat a read that meets a Prefetch's fill until its install."""
+    b = Home(dut)
+    await b.reset()
+    b.read_delay = 200
+    address = 0x80000000
+    await b.prefetch(address)
+    grant = await b.start(0, address, slot=1)
+    assert grant[4] == b.expected(address) and grant[5] == 0
+    await b.finish(grant)
+    assert b.reads_of(address) == 1
+
+
+@cocotb.test()
+async def prefetch_leaves_reserved_fills_and_the_last_way(dut: Any) -> None:
+    """Allocate Prefetch fills only above the fill reserve and with two ways."""
+    b = Home(dut)
+    await b.reset()
+    b.read_delay = 400
+    fills = len(dut.fill_live_q)
+    reserve = fills // 4
+    sets = 4
+    stride = sets * b.line
+    base = 0x80000000
+    # Demand misses leave reserve + 1 fills free, spread over the sets.
+    demands = [
+        base + (index % sets) * b.line + (index // sets + 1) * 4096
+        for index in range(fills - reserve - 1)
+    ]
+    for index, address in enumerate(demands):
+        await b.submit(0, address, slot=index)
+    await b.fills_live(len(demands))
+    # One more fill would leave reserve free: allowed.
+    allowed = base + 3 * b.line + 64 * 4096
+    await b.prefetch(allowed, slot=0)
+    assert b.reads_of(allowed) == 1
+    # Now only reserve fills are free: the next Prefetch does nothing.
+    dropped = base + 2 * b.line + 65 * 4096
+    await b.prefetch(dropped, slot=1)
+    assert b.reads_of(dropped) == 0
+    for _ in demands:
+        grant = await b.take_grant()
+        await b.complete(grant)
+    await b.tick(b.read_delay + 20)
+    # Three fills in flight in one set leave one way: a Prefetch of that set
+    # does nothing, and a demand miss still takes the last way.
+    same_set = [base + 128 * 4096 + index * stride * 16 for index in range(4)]
+    for index, address in enumerate(same_set[:3]):
+        await b.submit(0, address, slot=index)
+    await b.fills_live(3)
+    await b.prefetch(base + 200 * 4096, slot=2)
+    assert b.reads_of(base + 200 * 4096) == 0
+    await b.submit(0, same_set[3], slot=3)
+    await b.fills_live(4)
+    await b.tick(5)
+    assert b.reads_of(same_set[3]) == 1
+    for _ in same_set:
+        grant = await b.take_grant()
+        await b.complete(grant)
+
+
+@cocotb.test()
+async def prefetch_error_frees_its_fill_and_wakes_joined_readers(dut: Any) -> None:
+    """Free a failed Prefetch fill and report the error to a joined read."""
+    b = Home(dut)
+    await b.reset()
+    address = 0x80000000
+    b.errors.add(address)
+    await b.prefetch(address)
+    await b.tick(b.read_delay + 20)
+    assert not int(dut.fill_live_q.value)
+    b.errors.clear()
+    assert await b.read(address) == b.expected(address)
+    assert b.reads_of(address) == 2
+    other = 0x80001000
+    b.errors.add(other)
+    b.read_delay = 200
+    await b.prefetch(other)
+    grant = await b.start(0, other, slot=2)
+    assert grant[5] == 1
+    await b.finish(grant)
+    b.errors.clear()
+    b.read_delay = 3
+    assert await b.read(other) == b.expected(other)
+
+
+@cocotb.test()
+async def prefetches_beside_dma_writes_and_reads_change_no_bytes(dut: Any) -> None:
+    """Prefetches beside DMA writes and reads change no bytes."""
+    b = Home(dut)
+    await b.reset()
+    address = 0x80002000
+    low = (1 << 128) - 1
+    data = int.from_bytes(bytes(range(100, 132)), "little")
+    # A DMA write accepted after a Prefetch of its sector does not wait for
+    # it, but waits for any fill the Prefetch started.
+    await b.submit(PREFETCH, address, slot=0)
+    await b.submit(8, address, data, 0xFFFF, slot=0)
+    await b.complete(await b.prefetch_grant(address, 0))
+    write = await b.take_grant()
+    assert write[0] == GRANT_ACK
+    await b.complete(write)
+    expected = (b.expected(address) & ~low) | (data & low)
+    # A Prefetch accepted after a DMA write of its sector, in the other
+    # sector of the line, and beside a DMA read.
+    second = address + 32
+    await b.submit(8, second, data, 0xFFFF, slot=1)
+    await b.submit(PREFETCH, second, slot=1)
+    write = await b.take_grant()
+    assert write[0] == GRANT_ACK
+    await b.complete(write)
+    await b.complete(await b.prefetch_grant(second, 1))
+    expected_second = (b.expected(second) & ~low) | (data & low)
+    await b.prefetch(address, slot=2)
+    assert await b.read(address, 7) == expected
+    await b.prefetch(address, slot=3)
+    assert await b.read(address) == expected
+    assert await b.read(second) == expected_second
+    assert b.reads_of(address) == 1
+
+
+@cocotb.test()
+async def put_proceeds_beside_live_prefetches_of_its_sector(dut: Any) -> None:
+    """Live Prefetch slots of a sector never make its PutM wait."""
+    b = Home(dut)
+    await b.reset()
+    address = 0x80003000
+    data = 0x5A5A_1234
+    grant = await b.start(1, address)
+    b.private[address] = (3, data)
+    await b.finish(grant, written=True)
+    b.frozen[0] = (address, data)
+    del b.private[address]
+    held = []
+    for slot in range(4):
+        await b.submit(PREFETCH, address, slot=slot)
+        held.append(await b.prefetch_grant(address, slot))
+    await b.set(
+        i_w_valid=1,
+        i_w=pack((1, 0), (1, 0), (1, 0), (b.p, address), (256, data), (1, 0)),
+    )
+    await b.wait("o_w_ready")
+    await b.tick()
+    assert 0 in b.accepted_puts
+    for _ in range(100):
+        if 0 not in b.frozen:
+            break
+        await b.tick()
+    else:
+        raise AssertionError("the PutM was not acknowledged")
+    for grant in held:
+        await b.complete(grant)
+    assert await b.read(address) == data
+
+
+@cocotb.test()
+async def demand_replaces_a_line_held_by_resident_prefetches(dut: Any) -> None:
+    """Prefetches of every resident way of a set pin none of them."""
+    b = Home(dut)
+    await b.reset()
+    sets = 4
+    base = 0x80000000
+    lines = [base + index * sets * b.line for index in range(5)]
+    for address in lines[:4]:
+        assert await b.read(address) == b.expected(address)
+    held = []
+    for slot, address in enumerate(lines[:4]):
+        await b.submit(PREFETCH, address, slot=slot)
+        held.append(await b.prefetch_grant(address, slot))
+    assert b.reads_of(lines[4]) == 0
+    assert await b.read(lines[4]) == b.expected(lines[4])
+    for grant in held:
+        await b.complete(grant)
+    assert b.reads_of(lines[4]) == 1
+
+
+@cocotb.test()
+async def prefetch_leaves_the_last_write_back_slot(dut: Any) -> None:
+    """Keep a Prefetch with a valid victim off the last write-back slot."""
+    b = Home(dut)
+    await b.reset()
+    b.write_delay = 50000
+    sets = 4
+    base = 0x80000000
+    lines = [base + index * sets * b.line for index in range(7)]
+    # Every way of the set holds a line the L2 has dirty, so each victim
+    # needs a write-back, and the first one stays outstanding.
+    for address in lines[:4]:
+        grant = await b.start(8, address, 0x1234, 0xF)
+        await b.finish(grant)
+    assert await b.read(lines[4]) == b.expected(lines[4])
+    assert int(dut.wb_valid_q.value).bit_count() == 1
+    await b.prefetch(lines[5])
+    await b.tick(5)
+    assert b.reads_of(lines[5]) == 0
+    assert await b.read(lines[6]) == b.expected(lines[6])
+    assert int(dut.wb_valid_q.value).bit_count() == 2

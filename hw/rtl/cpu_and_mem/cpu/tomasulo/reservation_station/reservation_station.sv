@@ -30,8 +30,8 @@
  *
  * Control and source fields stay in FFs for parallel wakeup and flush scans.
  * Dispatch payloads have two write ports and are read at issue. Coherent INT
- * port 1 uses registers; other payload copies use distributed RAM. Valid
- * bits qualify payload use. The INT instance keeps
+ * port 1 and port 0's opcode use registers; other payload fields use
+ * distributed RAM. Valid bits qualify payload use. The INT instance keeps
  * the XLEN-wide pc, link address and predicted target in a ROB-tag-indexed
  * side RAM read behind its port-0 stage2 tag (TAG_INDEXED_BRANCH_PAYLOAD), so
  * the per-entry payload and both stage2 banks carry no XLEN branch words.
@@ -623,7 +623,8 @@ module reservation_station #(
   //   rs_rob_tag. These need parallel CDB tag compare/write and flush scan.
   // Payload fields: op, imm, rm, and the branch/prediction/mem/csr fields.
   //   Written once at dispatch, read once at issue (one copy per issue port).
-  //   Coherent INT port 1 uses registers; other copies use distributed RAM.
+  //   Coherent INT port 1 and port 0's opcode use registers. Other payload
+  //   fields use distributed RAM.
 
   // 1-bit packed vectors (for bulk operations)
   logic [DEPTH-1:0] rs_valid;
@@ -942,11 +943,31 @@ module reservation_station #(
         assign primary_issue_onehot[entry] = 1'b0;
       end
     end
-    (* keep = "true" *) logic [PayloadWidth-1:0] group_payload[PayloadGroups];
+`ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
+    always_comb begin
+      p_coherent_primary_opcode_mask :
+      assert (primary_issue_onehot == (PayloadDepth'(1) << issue_idx));
+    end
+`endif
+    localparam int unsigned RamPayloadWidth = PayloadWidth - riscv_pkg::InstrOpWidth;
+    logic [riscv_pkg::InstrOpWidth-1:0] opcode;
+    // The primary winner mask reads the opcode independently of the RAM address.
+    coherent_rs_payload_store #(
+        .ADDR_WIDTH($clog2(DEPTH)),
+        .DATA_WIDTH(riscv_pkg::InstrOpWidth)
+    ) opcode_store (
+        .i_clk,
+        .i_write_enable({dispatch_fire_2, dispatch_fire}),
+        .i_write_address({alloc_idx_2, free_idx}),
+        .i_write_data({dispatch_op_2, dispatch_op}),
+        .i_read_onehot(primary_issue_onehot),
+        .o_read_data(opcode)
+    );
+    (* keep = "true" *) logic [RamPayloadWidth-1:0] group_payload[PayloadGroups];
     for (genvar g = 0; g < int'(PayloadGroups); g++) begin : gen_payload_group
       mwp_dist_ram #(
           .ADDR_WIDTH(2),
-          .DATA_WIDTH(PayloadWidth),
+          .DATA_WIDTH(RamPayloadWidth),
           .NUM_WRITE_PORTS(2)
       ) u_payload_ram (
           .i_clk,
@@ -956,11 +977,34 @@ module reservation_station #(
           }),
           .i_write_address({2'(alloc_idx_2), 2'(free_idx)}),
           .i_read_address(payload_group_pick[g]),
-          .i_write_data({payload_wr_data_2, payload_wr_data}),
+          .i_write_data({payload_wr_data_2[RamPayloadWidth-1:0],
+                         payload_wr_data[RamPayloadWidth-1:0]}),
           .o_read_data(group_payload[g])
       );
     end
-    assign payload_rd_data = group_payload[payload_group_idx];
+    assign payload_rd_data = {opcode, group_payload[payload_group_idx]};
+`ifndef SYNTHESIS
+`ifndef FORMAL
+    logic [riscv_pkg::InstrOpWidth-1:0] reference_opcode;
+    mwp_dist_ram #(
+        .ADDR_WIDTH($clog2(DEPTH)),
+        .DATA_WIDTH(riscv_pkg::InstrOpWidth),
+        .NUM_WRITE_PORTS(2)
+    ) reference_opcode_store (
+        .i_clk,
+        .i_write_enable({dispatch_fire_2, dispatch_fire}),
+        .i_write_address({alloc_idx_2, free_idx}),
+        .i_read_address(issue_idx),
+        .i_write_data({dispatch_op_2, dispatch_op}),
+        .o_read_data(reference_opcode)
+    );
+    always @(posedge i_clk) begin
+      if (i_rst_n && issue_fire) begin
+        p_primary_opcode_exact : assert (opcode == reference_opcode);
+      end
+    end
+`endif
+`endif
   end else begin : gen_primary_payload_binary
     assign primary_issue_onehot = '0;
     assign payload_group_idx = '0;
@@ -979,7 +1023,7 @@ module reservation_station #(
     );
   end
 
-  // Unpack LUTRAM read data (at issue_idx, combinational / zero-latency)
+  // Unpack the combinational payload read for issue_idx.
   logic [riscv_pkg::InstrOpWidth-1:0] pl_op_bits;
   logic [                   XLEN-1:0] pl_imm;
   logic [                       11:0] pl_jalr_imm;
@@ -2142,16 +2186,28 @@ module reservation_station #(
       logic [$clog2(Issue2Window)-1:0] issue_idx_2_window;
       logic [Issue2Window-1:0] issue_sel_2_window;
       logic coherent_issue2_use_imm;
+      logic [ReorderBufferTagWidth-1:0] coherent_issue2_rob_tag;
+      logic coherent_issue2_writes_cdb_hint;
       if (PREPARE_ISSUE_CONTROLS) begin : gen_coherent_second_selector
         wire [1:0] live_case = {issue_cdb_2_valid, issue_cdb_valid};
         (* keep = "true" *) logic [Issue2Window-1:0] ready_choice[4];
         (* keep = "true" *) logic [3:0] valid_choice;
         (* keep = "true" *) logic [3:0] use_imm_choice;
+        (* keep = "true" *) logic [ReorderBufferTagWidth-1:0] tag_choice[4];
+        (* keep = "true" *) logic [3:0] hint_choice;
         (* keep = "true" *) logic [$clog2(Issue2Window)-1:0] index_choice[4];
         (* keep = "true" *) logic [Issue2Window-1:0] onehot_choice[4];
         for (genvar valids = 0; valids < 4; valids++) begin : gen_valid_choice
           assign ready_choice[valids]   = issue_ready_choice[valids][Issue2Window-1:0];
           assign use_imm_choice[valids] = |(rs_use_imm[Issue2Window-1:0] & onehot_choice[valids]);
+          assign hint_choice[valids] =
+              |(rs_writes_cdb_hint[Issue2Window-1:0] & onehot_choice[valids]);
+          always_comb begin
+            tag_choice[valids] = '0;
+            for (int entry = 0; entry < Issue2Window; entry++)
+              tag_choice[valids] |= rs_rob_tag[entry] &
+                  {ReorderBufferTagWidth{onehot_choice[valids][entry]}};
+          end
           coherent_rs_issue2_selector #(
               .DEPTH(Issue2Window)
           ) selector (
@@ -2163,6 +2219,8 @@ module reservation_station #(
           );
         end
         assign coherent_issue2_use_imm = use_imm_choice[live_case];
+        assign coherent_issue2_rob_tag = tag_choice[live_case];
+        assign coherent_issue2_writes_cdb_hint = hint_choice[live_case];
         assign any_ready_2 = valid_choice[live_case];
         assign issue_idx_2_window = index_choice[live_case];
         assign issue_sel_2_window = onehot_choice[live_case];
@@ -2213,6 +2271,8 @@ module reservation_station #(
 `endif
       end else begin : gen_line_second_selector
         assign coherent_issue2_use_imm = 1'b0;
+        assign coherent_issue2_rob_tag = '0;
+        assign coherent_issue2_writes_cdb_hint = 1'b0;
         rs_issue2_selector #(
             .DEPTH(Issue2Window)
         ) u_issue2_selector (
@@ -2517,6 +2577,9 @@ module reservation_station #(
 `ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
       always_comb begin
         p_coherent_use_imm_exact : assert (coherent_issue2_use_imm == issue2_use_imm_selected);
+        p_coherent_tag_exact : assert (coherent_issue2_rob_tag == issue2_rob_tag_selected);
+        p_coherent_hint_exact :
+        assert (coherent_issue2_writes_cdb_hint == issue2_writes_cdb_hint_selected);
         p_coherent_clear_mask_exact :
         assert (coherent_issue2_clear_mask == ({DEPTH{issue_fire_2}} & issue_sel_2));
       end
@@ -2526,6 +2589,10 @@ module reservation_station #(
         if (PREPARE_ISSUE_CONTROLS && i_rst_n) begin
           p_coherent_clear_capture_exact :
           assert (coherent_issue2_clear_mask == ({DEPTH{issue_fire_2}} & issue_sel_2));
+          p_coherent_tag_capture_exact :
+          assert (coherent_issue2_rob_tag == issue2_rob_tag_selected);
+          p_coherent_hint_capture_exact :
+          assert (coherent_issue2_writes_cdb_hint == issue2_writes_cdb_hint_selected);
           if (issue_fire_2)
             p_coherent_use_imm_capture_exact :
             assert (coherent_issue2_use_imm == issue2_use_imm_selected);
@@ -2539,7 +2606,8 @@ module reservation_station #(
           stage2b_valid <= 1'b0;
         end else if (issue_fire_2) begin
           stage2b_valid <= 1'b1;
-          stage2b_rob_tag <= issue2_rob_tag_selected;
+          stage2b_rob_tag <= PREPARE_ISSUE_CONTROLS ?
+              coherent_issue2_rob_tag : issue2_rob_tag_selected;
           stage2b_op <= riscv_pkg::instr_op_e'(pl2_op_bits);
           // Live CDB data overrides resident or repair data. Distinct lane tags
           // allow at most one live match.
@@ -2557,7 +2625,8 @@ module reservation_station #(
           if (PREPARE_ISSUE_CONTROLS) stage2b_use_imm <= coherent_issue2_use_imm;
           else stage2b_use_imm <= issue2_use_imm_selected;
           stage2b_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ?
-              issue2_writes_cdb_hint_selected : 1'b0;
+              (PREPARE_ISSUE_CONTROLS ? coherent_issue2_writes_cdb_hint :
+               issue2_writes_cdb_hint_selected) : 1'b0;
           stage2b_rm <= pl2_rm;
           stage2b_predicted_taken <= pl2_predicted_taken;
           stage2b_predicted_target_ok <= pl2_predicted_target_ok;

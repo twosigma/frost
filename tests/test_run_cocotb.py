@@ -1722,8 +1722,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.tomasulo.reservation_station.test_rs_issue2_shamt",
         hdl_toplevel_module="reservation_station",
         description=(
-            "Second-issue shift amounts stay with their operands through stalls and "
-            "recovery"
+            "Primary opcodes and second-issue shift amounts stay with their packets "
+            "through stalls and recovery"
         ),
         verilator_extra_args=(
             "-GDUAL_ISSUE=1",
@@ -1932,6 +1932,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="l2_stream_prefetcher",
         description="Eight outstanding prefetch reads, page bounds, and response ID reuse",
         verilator_extra_args=("-GMAX_INFLIGHT=8",),
+    ),
+    "l2_stream_prefetcher_if": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_l2_stream_prefetcher",
+        hdl_toplevel_module="l2_stream_prefetcher",
+        description="Instruction streams preserve a window of twice the read distance",
+        verilator_extra_args=("-GSTREAMS=2", "-GIGNORE_BACKWARD=1"),
     ),
     "cached_tier_adapter": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.memory.test_cached_tier_adapter",
@@ -2298,7 +2304,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_home_completions": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home_completions",
         hdl_toplevel_module="coherence_home_completions",
-        description="Independent results, completion pins, and same-sector predecessors",
+        description="Independent results, completion pins, same-sector predecessors, and "
+        "prefetch slots",
         verilator_extra_args=("--assert", "-GCACHE_BYTES=1024"),
     ),
     "coherence_array_reset_bram_sweep": CocotbRunConfig(
@@ -2464,7 +2471,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="coherence_home",
         description=(
             "Independent completions, dirty recalls, way pins, victim locks, "
-            "and streaming placement"
+            "prefetches, and streaming placement"
         ),
         verilator_extra_args=(
             "--assert",

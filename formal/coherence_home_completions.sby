@@ -1,7 +1,12 @@
 [tasks]
-coh_completions_prove proof base
-coh_completions_cover covers base
-coh_if_pair_cover covers if_pair
+coh_completions_prove proof plain base
+coh_completions_pairs_prove proof pairs plain base
+coh_completions_partition_prove proof partition base
+coh_completions_partition2_prove proof partition2 base
+coh_completions_cover covers plain base
+coh_completions_partition_cover covers partition base
+coh_completions_partition2_cover covers partition2 base
+coh_if_pair_cover covers if_pair plain
 
 [options]
 proof: mode prove
@@ -10,6 +15,7 @@ proof: aigsmt boolector
 covers: mode cover
 covers: depth 40
 timeout 180
+partition2: timeout 900
 
 [engines]
 proof: abc pdr
@@ -18,8 +24,11 @@ covers: smtbmc boolector
 [script]
 read -formal -sv coherence_seat_select.sv coherence_work_select.sv
 read -sv coherence_pkg.sv coherence_home_endpoint.sv coherence_d_arbiter.sv
-read -formal -sv coherence_home_completions.sv
-chparam -set SLOTS 3 -set RESULT_SLOTS 2 -set CACHE_BYTES 256 -set WAYS 2 coherence_home_completions
+~pairs: read -formal -sv coherence_home_completions.sv
+pairs: read -formal -sv -D COHERENCE_COMPLETIONS_PAIRS coherence_home_completions.sv
+plain: chparam -set SLOTS 3 -set RESULT_SLOTS 2 -set CACHE_BYTES 256 -set WAYS 2 -set PREFETCH_SLOTS 0 coherence_home_completions
+partition: chparam -set SLOTS 3 -set RESULT_SLOTS 2 -set CACHE_BYTES 256 -set WAYS 2 -set PREFETCH_SLOTS 1 coherence_home_completions
+partition2: chparam -set SLOTS 4 -set RESULT_SLOTS 2 -set CACHE_BYTES 256 -set WAYS 2 -set PREFETCH_SLOTS 2 coherence_home_completions
 base: prep -top coherence_home_completions -flatten
 if_pair: read -formal -sv coherence_if_pair_formal.sv
 if_pair: prep -top coherence_if_pair_formal -flatten

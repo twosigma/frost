@@ -24,7 +24,7 @@ module frost_cluster_memory #(
     parameter bit ENABLE_COHERENCE = 1'b0,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
     parameter int unsigned L2_WAYS = 4,
-    parameter int unsigned L2_NUM_MSHR = 4,
+    parameter int unsigned L2_NUM_MSHR = 8,
     parameter int unsigned L2_NUM_WB = 2,
     parameter int unsigned L2_NUM_WAITERS = 2,
     parameter int unsigned L2_PREFETCH = 1,
@@ -207,13 +207,57 @@ module frost_cluster_memory #(
 
   if (ENABLE_CACHED_TIER != 0) begin : gen_coherent_tier
     `FROST_COHERENCE_TYPES(riscv_pkg::PhysAddrBits)
-    coh_d_t dma_d, home_d;
+    coh_d_t dma_d, home_d, pf_d;
     coh_g_t grant;
-    coh_c_t dma_c, home_c;
+    coh_c_t dma_c, home_c, pf_c;
     coh_u_t release_message;
     logic dma_d_valid, dma_d_ready, home_d_valid, home_d_ready;
     logic g_valid, g_ready, dma_g_ready, dma_c_valid, dma_c_ready;
     logic home_c_valid, home_c_ready, u_valid, u_ready, dma_u_ready;
+    logic pf_d_valid, pf_d_ready, pf_g_ready, pf_c_valid, pf_c_ready, pf_u_ready;
+    logic home_accepted, home_prefetch_room;
+    logic [3:0] home_accepted_opcode;
+    logic [8:0] home_accepted_q;
+    logic [riscv_pkg::PhysAddrBits-1:0] home_accepted_addr;
+    if (L2_PREFETCH != 0) begin : gen_prefetcher
+      // The prefetcher watches the hart requests the home accepts, from the
+      // home's registered copy of its D acceptance.
+      coherence_prefetcher #(
+          .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
+          .LINE_BYTES(L2_LINE_BYTES),
+          .DISTANCE(L2_PREFETCH_DISTANCE),
+          .IDS(L2_PREFETCH_INFLIGHT > coherence_pkg::PrefetchIds ? coherence_pkg::PrefetchIds :
+               L2_PREFETCH_INFLIGHT)
+      ) prefetcher (
+          .i_clk(i_clk),
+          .i_rst(i_rst),
+          .i_fatal_stop(i_fatal_error),
+          .i_accepted(home_accepted),
+          .i_accepted_opcode(home_accepted_opcode),
+          .i_accepted_q(home_accepted_q),
+          .i_accepted_addr(home_accepted_addr),
+          .i_room(home_prefetch_room),
+          .o_d_valid(pf_d_valid),
+          .i_d_ready(pf_d_ready),
+          .o_d(pf_d),
+          .i_g_valid(g_valid && grant.q.src == 3),
+          .o_g_ready(pf_g_ready),
+          .i_g(grant),
+          .o_c_valid(pf_c_valid),
+          .i_c_ready(pf_c_ready),
+          .o_c(pf_c),
+          .i_u_valid(u_valid && release_message.q.src == 3),
+          .o_u_ready(pf_u_ready),
+          .i_u(release_message)
+      );
+    end else begin : gen_no_prefetcher
+      assign pf_d_valid = 1'b0;
+      assign pf_d = '0;
+      assign pf_g_ready = 1'b1;
+      assign pf_c_valid = 1'b0;
+      assign pf_c = '0;
+      assign pf_u_ready = 1'b0;
+    end
     if (ENABLE_COHERENCE) begin : gen_dma_ingress
       // Eight credits: the DMA bridge has eight read and eight write line IDs.
       coherence_dma_ingress #(
@@ -263,13 +307,13 @@ module frost_cluster_memory #(
     end
     coherence_d_arbiter #(
         .WIDTH((riscv_pkg::PhysAddrBits + 312)),
-        .PORTS(2)
+        .PORTS(3)
     ) demands (
         .i_clk(i_clk),
         .i_rst(i_rst),
-        .i_valid({dma_d_valid, i_coherent_d_valid}),
-        .o_ready({dma_d_ready, o_coherent_d_ready}),
-        .i_payload({dma_d, i_coherent_d}),
+        .i_valid({pf_d_valid, dma_d_valid, i_coherent_d_valid}),
+        .o_ready({pf_d_ready, dma_d_ready, o_coherent_d_ready}),
+        .i_payload({pf_d, dma_d, i_coherent_d}),
         .o_valid(home_d_valid),
         .o_offer(),
         .o_selected(),
@@ -278,21 +322,25 @@ module frost_cluster_memory #(
     );
     assign o_coherent_g_valid = g_valid && grant.q.src == 0;
     assign o_coherent_g = grant;
-    assign g_ready = grant.q.src == 2 ? dma_g_ready : i_coherent_g_ready;
+    // The home takes a G from one of its prefetch completion slots as
+    // accepted when it is presented, so source 3 must always be ready.
+    assign g_ready = grant.q.src == 2 ? dma_g_ready : grant.q.src == 3 ? pf_g_ready :
+        i_coherent_g_ready;
     assign o_coherent_u_valid = u_valid && release_message.q.src == 0;
     assign o_coherent_u = release_message;
-    assign u_ready = release_message.q.src == 2 ? dma_u_ready : i_coherent_u_ready;
-    // Both C sources hold their offers until acceptance.
+    assign u_ready = release_message.q.src == 2 ? dma_u_ready :
+        release_message.q.src == 3 ? pf_u_ready : i_coherent_u_ready;
+    // All three C sources hold their offers until acceptance.
     coherence_d_arbiter #(
         .WIDTH(riscv_pkg::PhysAddrBits + 18),
-        .PORTS(2),
+        .PORTS(3),
         .HOLD_VALID(1)
     ) completions (
         .i_clk,
         .i_rst,
-        .i_valid({dma_c_valid, i_coherent_c_valid}),
-        .o_ready({dma_c_ready, o_coherent_c_ready}),
-        .i_payload({dma_c, i_coherent_c}),
+        .i_valid({pf_c_valid, dma_c_valid, i_coherent_c_valid}),
+        .o_ready({pf_c_ready, dma_c_ready, o_coherent_c_ready}),
+        .i_payload({pf_c, dma_c, i_coherent_c}),
         .o_valid(home_c_valid),
         .o_offer(),
         .o_selected(),
@@ -300,12 +348,13 @@ module frost_cluster_memory #(
         .o_payload(home_c)
     );
 `ifndef SYNTHESIS
-    logic [1:0] c_stalled_q;
+    logic [2:0] c_stalled_q;
     always_ff @(posedge i_clk) begin
-      c_stalled_q <= i_rst ? 2'b00 :
-          {dma_c_valid, i_coherent_c_valid} & ~{dma_c_ready, o_coherent_c_ready};
+      c_stalled_q <= i_rst ? 3'b000 :
+          {pf_c_valid, dma_c_valid, i_coherent_c_valid} &
+          ~{pf_c_ready, dma_c_ready, o_coherent_c_ready};
       if (sim_reset_seen_q && !i_rst)
-        assert ((c_stalled_q & ~{dma_c_valid, i_coherent_c_valid}) == 0);
+        assert ((c_stalled_q & ~{pf_c_valid, dma_c_valid, i_coherent_c_valid}) == 0);
     end
 `endif
     coherence_home #(
@@ -314,7 +363,9 @@ module frost_cluster_memory #(
         .CACHE_BYTES(L2_CACHE_BYTES),
         .WAYS(L2_WAYS),
         .NUM_WB(L2_NUM_WB),
-        .SIM_FAST_MAINT(SIM_FAST_MAINT)
+        .SIM_FAST_MAINT(SIM_FAST_MAINT),
+        .FILLS(L2_NUM_MSHR),
+        .PREFETCH_RESERVE(L2_NUM_MSHR / 4)
     ) home (
         .i_clk(i_clk),
         .i_rst(i_rst),
@@ -343,6 +394,11 @@ module frost_cluster_memory #(
         .o_u_valid(u_valid),
         .i_u_ready(u_ready),
         .o_u(release_message),
+        .o_prefetch_room(home_prefetch_room),
+        .o_accepted(home_accepted),
+        .o_accepted_opcode(home_accepted_opcode),
+        .o_accepted_q(home_accepted_q),
+        .o_accepted_addr(home_accepted_addr),
         .o_mem_req_valid(down_req_valid),
         .i_mem_req_ready(down_req_ready),
         .o_mem_req_write(down_req_write),
