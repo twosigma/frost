@@ -479,8 +479,8 @@ module coherence_array #(
     if (i_update_valid) assume (i_update_way < WAYS);
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
 `ifdef F_COH_ARRAY_PLRU_PROOF
-      p_plru_pending_exact : assert (plru_hit_q ==
-          $past(select_valid && hit && !visit_q && !no_touch_q));
+      p_plru_pending_exact :
+      assert (plru_hit_q == $past(select_valid && hit && !visit_q && !no_touch_q));
 `endif
       if (!$past(phase_q == Data && count_q == 1))
         p_data_changes_only_after_read :
