@@ -30,8 +30,8 @@
  *
  * Control and source fields stay in FFs for parallel wakeup and flush scans.
  * Dispatch payloads have two write ports and are read at issue. Coherent INT
- * port 1 uses registers; other payload copies use distributed RAM. Valid
- * bits qualify payload use. The INT instance keeps
+ * port 1 and port 0's opcode use registers; other payload fields use
+ * distributed RAM. Valid bits qualify payload use. The INT instance keeps
  * the XLEN-wide pc, link address and predicted target in a ROB-tag-indexed
  * side RAM read behind its port-0 stage2 tag (TAG_INDEXED_BRANCH_PAYLOAD), so
  * the per-entry payload and both stage2 banks carry no XLEN branch words.
@@ -623,7 +623,8 @@ module reservation_station #(
   //   rs_rob_tag. These need parallel CDB tag compare/write and flush scan.
   // Payload fields: op, imm, rm, and the branch/prediction/mem/csr fields.
   //   Written once at dispatch, read once at issue (one copy per issue port).
-  //   Coherent INT port 1 uses registers; other copies use distributed RAM.
+  //   Coherent INT port 1 and port 0's opcode use registers. Other payload
+  //   fields use distributed RAM.
 
   // 1-bit packed vectors (for bulk operations)
   logic [DEPTH-1:0] rs_valid;
@@ -942,11 +943,31 @@ module reservation_station #(
         assign primary_issue_onehot[entry] = 1'b0;
       end
     end
-    (* keep = "true" *) logic [PayloadWidth-1:0] group_payload[PayloadGroups];
+`ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
+    always_comb begin
+      p_coherent_primary_opcode_mask :
+      assert (primary_issue_onehot == (PayloadDepth'(1) << issue_idx));
+    end
+`endif
+    localparam int unsigned RamPayloadWidth = PayloadWidth - riscv_pkg::InstrOpWidth;
+    logic [riscv_pkg::InstrOpWidth-1:0] opcode;
+    // The primary winner mask reads the opcode independently of the RAM address.
+    coherent_rs_payload_store #(
+        .ADDR_WIDTH($clog2(DEPTH)),
+        .DATA_WIDTH(riscv_pkg::InstrOpWidth)
+    ) opcode_store (
+        .i_clk,
+        .i_write_enable({dispatch_fire_2, dispatch_fire}),
+        .i_write_address({alloc_idx_2, free_idx}),
+        .i_write_data({dispatch_op_2, dispatch_op}),
+        .i_read_onehot(primary_issue_onehot),
+        .o_read_data(opcode)
+    );
+    (* keep = "true" *) logic [RamPayloadWidth-1:0] group_payload[PayloadGroups];
     for (genvar g = 0; g < int'(PayloadGroups); g++) begin : gen_payload_group
       mwp_dist_ram #(
           .ADDR_WIDTH(2),
-          .DATA_WIDTH(PayloadWidth),
+          .DATA_WIDTH(RamPayloadWidth),
           .NUM_WRITE_PORTS(2)
       ) u_payload_ram (
           .i_clk,
@@ -956,11 +977,34 @@ module reservation_station #(
           }),
           .i_write_address({2'(alloc_idx_2), 2'(free_idx)}),
           .i_read_address(payload_group_pick[g]),
-          .i_write_data({payload_wr_data_2, payload_wr_data}),
+          .i_write_data({payload_wr_data_2[RamPayloadWidth-1:0],
+                         payload_wr_data[RamPayloadWidth-1:0]}),
           .o_read_data(group_payload[g])
       );
     end
-    assign payload_rd_data = group_payload[payload_group_idx];
+    assign payload_rd_data = {opcode, group_payload[payload_group_idx]};
+`ifndef SYNTHESIS
+`ifndef FORMAL
+    logic [riscv_pkg::InstrOpWidth-1:0] reference_opcode;
+    mwp_dist_ram #(
+        .ADDR_WIDTH($clog2(DEPTH)),
+        .DATA_WIDTH(riscv_pkg::InstrOpWidth),
+        .NUM_WRITE_PORTS(2)
+    ) reference_opcode_store (
+        .i_clk,
+        .i_write_enable({dispatch_fire_2, dispatch_fire}),
+        .i_write_address({alloc_idx_2, free_idx}),
+        .i_read_address(issue_idx),
+        .i_write_data({dispatch_op_2, dispatch_op}),
+        .o_read_data(reference_opcode)
+    );
+    always @(posedge i_clk) begin
+      if (i_rst_n && issue_fire) begin
+        p_primary_opcode_exact : assert (opcode == reference_opcode);
+      end
+    end
+`endif
+`endif
   end else begin : gen_primary_payload_binary
     assign primary_issue_onehot = '0;
     assign payload_group_idx = '0;
@@ -979,7 +1023,7 @@ module reservation_station #(
     );
   end
 
-  // Unpack LUTRAM read data (at issue_idx, combinational / zero-latency)
+  // Unpack the combinational payload read for issue_idx.
   logic [riscv_pkg::InstrOpWidth-1:0] pl_op_bits;
   logic [                   XLEN-1:0] pl_imm;
   logic [                       11:0] pl_jalr_imm;

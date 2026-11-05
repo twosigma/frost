@@ -26,8 +26,8 @@ prep -top reservation_station
 select -assert-none t:$assume
 select -assert-none t:$check r:FLAVOR=assume %i
 basic: select -assert-count 15 t:$check r:FLAVOR=assert %i
-int: select -assert-count 19 t:$check r:FLAVOR=assert %i
-partial: select -assert-count 17 t:$check r:FLAVOR=assert %i
+int: select -assert-count 20 t:$check r:FLAVOR=assert %i
+partial: select -assert-count 18 t:$check r:FLAVOR=assert %i
 mul: select -assert-count 6 t:$check r:FLAVOR=assert %i
 
 [files]

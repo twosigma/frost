@@ -19,7 +19,8 @@ module rs_primary_payload_equiv #(
     parameter int unsigned DW =
         riscv_pkg::InstrOpWidth + riscv_pkg::XLEN + 12 + 3 + 1 + 1 + 1 + 1 + 1 + 1 + 2 + 1 + 12 +
         5 + 1 + riscv_pkg::CheckpointIdWidth + 1 + 1 + 1 + 1 + 1 + 3,
-    localparam int unsigned Groups = 1 << (AW - 2)
+    localparam int unsigned Groups = 1 << (AW - 2),
+    localparam int unsigned RamWidth = DW - riscv_pkg::InstrOpWidth
 ) (
     input logic clk,
     input logic [1:0] we,
@@ -33,7 +34,20 @@ module rs_primary_payload_equiv #(
   wire [AW-3:0] read_group = watched_address[AW-1:2];
   wire [Groups-1:0][1:0] group_pick = {Groups{watched_address[1:0]}};
   logic [DW-1:0] original_data;
-  logic [DW-1:0] group_data[Groups];
+  logic [RamWidth-1:0] group_data[Groups];
+  logic [riscv_pkg::InstrOpWidth-1:0] opcode;
+  localparam int unsigned Rows = 1 << AW;
+  coherent_rs_payload_store #(
+      .ADDR_WIDTH(AW),
+      .DATA_WIDTH(riscv_pkg::InstrOpWidth)
+  ) opcode_store (
+      .i_clk(clk),
+      .i_write_enable(we),
+      .i_write_address(wa),
+      .i_write_data({wd[1][DW-1:RamWidth], wd[0][DW-1:RamWidth]}),
+      .i_read_onehot(Rows'(1) << watched_address),
+      .o_read_data(opcode)
+  );
   wire [AW-1:0] original_addr = {read_group, group_pick[read_group]};
   mwp_dist_ram #(
       .ADDR_WIDTH(AW),
@@ -50,16 +64,16 @@ module rs_primary_payload_equiv #(
   for (genvar g = 0; g < Groups; g++) begin : gen_group
     mwp_dist_ram #(
         .ADDR_WIDTH(2),
-        .DATA_WIDTH(DW),
+        .DATA_WIDTH(RamWidth),
         .NUM_WRITE_PORTS(2)
     ) u_group (
         .i_clk(clk),
         .i_write_enable({we[1] && ((int'(wa[1]) >> 2) == g), we[0] && ((int'(wa[0]) >> 2) == g)}),
         .i_write_address({2'(wa[1]), 2'(wa[0])}),
-        .i_write_data(wd),
+        .i_write_data({wd[1][RamWidth-1:0], wd[0][RamWidth-1:0]}),
         .i_read_address(group_pick[g]),
         .o_read_data(group_data[g])
     );
   end
-  always_comb assert (original_data == group_data[read_group]);
+  always_comb assert (original_data == {opcode, group_data[read_group]});
 endmodule

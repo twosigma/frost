@@ -199,14 +199,15 @@ the port-1 selector and shift amount need. Fields written once at dispatch and
 read once at issue live in payload storage with one write port per
 dispatch slot: the operation, immediate, JALR offset, rounding mode,
 prediction bits, memory-op flags, CSR address and immediate, checkpoint ID,
-compressed flag, and a branch-class predecode. Port 0 uses distributed RAM.
-The INT station
-stores port 1's payload in a two-write register bank. The issue winner's
+compressed flag, and a branch-class predecode. Port 0 uses distributed RAM
+except for the INT station's opcode, which uses a two-write register bank
+read by the primary winner's one-hot mask. The INT station stores port 1's
+payload in a two-write register bank. The issue winner's
 one-hot mask selects its row. Write port index 1, corresponding to dispatch
 slot 2, wins a same-row write collision.
 Stations with `PREPARE_ISSUE_CONTROLS=0` read port 1's payload from a
 separate distributed-RAM copy.
-INT_RS splits port 0's copy into groups of four entries that follow the
+INT_RS splits port 0's RAM fields into groups of four entries that follow the
 two-level issue select. The valid bits gate every read, so stale payload
 behind a free entry is never used.
 
@@ -321,7 +322,8 @@ station does:
   exercises port 1 alone and both ports together. The bench leaves
   `TRUST_DISPATCH_VALID` and `ISSUE_CDB_META_ANCHORS` off.
 - `rs_issue2_selector` (cocotb and formal) checks port 1's selector against a
-  serial reference, and `rs_issue2_shamt` checks its shift amount.
+  serial reference. The `rs_issue2_shamt` bench checks the shift amount and
+  primary opcode selection through stalls, row reuse, and full flushes.
 - The `reservation_station` formal target checks the module defaults and the
   INT configuration; the `tomasulo_wrapper` target checks the 16-entry INT
   station against the real allocator; `rs_divide_gate` checks MUL_RS's divide

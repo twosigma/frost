@@ -1722,8 +1722,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.tomasulo.reservation_station.test_rs_issue2_shamt",
         hdl_toplevel_module="reservation_station",
         description=(
-            "Second-issue shift amounts stay with their operands through stalls and "
-            "recovery"
+            "Primary opcodes and second-issue shift amounts stay with their packets "
+            "through stalls and recovery"
         ),
         verilator_extra_args=(
             "-GDUAL_ISSUE=1",

@@ -35,11 +35,11 @@ selector: select -assert-none a:init
 # winner, and the pre-issue tag identity.
 selector: select -assert-count 5 t:$check r:FLAVOR=assert %i
 
-# Compare one full-width payload RAM against four groups of four entries.
+# Compare a full-width RAM against grouped payload RAMs and opcode registers.
 # An arbitrary constant watched address proves equality at every address for
 # all time; reads do not change state, so changing read addresses is covered.
 # Write data, enables and addresses are free, including port collisions.
-ram: read -sv riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv
+ram: read -sv riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv coherent_rs_payload_store.sv
 ram: read -formal -D SYNTHESIS -sv rs_primary_payload_equiv.sv
 ram: prep -top rs_primary_payload_equiv -flatten
 ram: memory_map
