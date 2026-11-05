@@ -476,8 +476,8 @@ module pd_stage #(
   // slot 2's otherwise, or the stack's top when that entry was trained on a
   // return and the stack holds an entry. A jump in slot 1 leaves no valid
   // slot 2, and a valid slot 2 follows a slot 1 that is not control flow, so
-  // every redirect takes its own slot's entry unless an entry no longer
-  // matches its instruction, which costs only a misprediction. A hit in
+  // every redirect takes its own slot's entry unless an entry does not match
+  // its instruction, which costs only a misprediction. A hit in
   // slot 2 lies in slot 1's 4 GiB region (the backing BTB gives the word
   // after the last set no slot-2 hit), so slot 1's PC supplies the upper
   // bits.
@@ -837,7 +837,9 @@ module pd_stage #(
   // A firing backing redirect takes the target its own instruction's decode
   // names, the stack's top for a return while the stack holds an entry and
   // its slot's entry otherwise, whenever the entry's return type matches that
-  // decode and, for slot 2, slot 1 has no hit.
+  // decode and, for slot 2, slot 1 has no hit and no fetch fault. A faulting
+  // slot 1's bytes are arbitrary and can decode as a conditional branch,
+  // which selects the direction target; its trap squashes the redirect.
   logic [XLEN-1:0] pd_backing_decoded_target_reference_q;
   logic [XLEN-1:0] pd_backing_decoded_target_reference_2_q;
   logic pd_backing_decoded_reference_valid_q;
@@ -881,7 +883,7 @@ module pd_stage #(
              i_backing_target[1], 1'b0};
         pd_backing_decoded_reference_valid_q <= i_backing_return[0] == pd_slot1_return_reference;
         pd_backing_decoded_reference_valid_2_q <= !i_backing_hit[0] &&
-            (i_backing_return[1] == pd_slot2_return_reference);
+            !i_from_if_to_pd.fetch_fault && (i_backing_return[1] == pd_slot2_return_reference);
         pd_backing_decoded_reference_armed <= 1'b1;
       end
     end
@@ -1040,30 +1042,47 @@ module pd_stage #(
   // RV64C expansions and target candidates match the packet's instruction,
   // as those checks state. A slot-2 backing hit lies in slot 1's 4 GiB
   // region, which backing_btb guarantees by giving the word after its last
-  // set no slot-2 hit (formal/backing_btb.sby), and IF pairs a slot 2 only
-  // behind a slot 1 that is not a conditional branch.
+  // set no slot-2 hit (formal/backing_btb.sby), and IF pairs a slot 2 behind
+  // a slot 1 that decodes as a conditional branch only when slot 1 faults,
+  // since a fault response carries arbitrary bytes and predecode metadata.
   logic formal_past_valid = 1'b0;
   logic [1:0] formal_backing_compressed_q;
+  logic [31:0] formal_slot1_instruction_q;
+  logic [31:0] formal_slot2_instruction_q;
   always_ff @(posedge i_clk) begin
     formal_past_valid <= 1'b1;
     if (!formal_past_valid) assume (i_pipeline_ctrl.reset);
     assume (!i_backing_hit[1] ||
             (i_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits] ==
              i_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits]));
-    assume (i_from_if_to_pd_2.sel_nop || !pd_cond_branch);
-    if (!i_pipeline_ctrl.stall) formal_backing_compressed_q <= i_backing_compressed;
+    assume (i_from_if_to_pd_2.sel_nop || !pd_cond_branch || i_from_if_to_pd.fetch_fault);
+    if (!i_pipeline_ctrl.stall) begin
+      formal_backing_compressed_q <= i_backing_compressed;
+      formal_slot1_instruction_q  <= instruction_non_nop;
+      formal_slot2_instruction_q  <= instruction_non_nop_2;
+    end
   end
 
   always_comb begin
     if (!i_from_if_to_pd.sel_nop && !i_from_if_to_pd.fetch_fault) begin
       assume (!pd_sel_compressed || ((instruction_non_nop_predecoded_rs2 == instruction_non_nop) &&
                                      (decomp_illegal == decomp_illegal_reference)));
+      assume (i_from_if_to_pd.source_hot_predecoded ==
+              {instruction_non_nop[21], instruction_non_nop[17:16]});
+      assume (i_from_if_to_pd.rs1_rest_predecoded ==
+              {instruction_non_nop[19:18], instruction_non_nop[15]});
+      assume (i_from_if_to_pd.bits24_20_predecoded == instruction_non_nop[24:20]);
     end
     if (!i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault) begin
       assume (pd_sel_compressed_2 == (i_from_if_to_pd_2.raw_parcel[1:0] != 2'b11));
       assume (!pd_sel_compressed_2 || ((instruction_non_nop_2 == decompressed_instr_2) &&
                                        (i_from_if_to_pd_2.decomp_illegal ==
                                         decomp_illegal_reference_2)));
+      assume (i_from_if_to_pd_2.source_hot_predecoded ==
+              {instruction_non_nop_2[21], instruction_non_nop_2[17:16]});
+      assume (source_reg_1_2 == instruction_non_nop_2[19:15]);
+      assume (source_reg_2_2 == instruction_non_nop_2[24:20]);
+      assume (source_reg_1_2[2:1] == i_from_if_to_pd_2.source_hot_predecoded[1:0]);
     end
     assume (pd_target_native_split == pd_target_native_reference);
     assume (pd_target_compressed_split == pd_target_compressed_reference);
@@ -1097,6 +1116,16 @@ module pd_stage #(
       if (o_pd_redirect_slot2) begin
         p_formal_slot2_flag_is_a_slot2_redirect :
         assert (pd_backing_redirect_2_r && !o_from_pd_to_id_2.inject_nop);
+      end
+      // The registered instruction that names the stack operation is the
+      // redirecting slot's instruction.
+      if (pd_backing_redirect_r) begin
+        p_formal_slot1_registered_instruction :
+        assert (o_from_pd_to_id.instruction == formal_slot1_instruction_q);
+      end
+      if (pd_backing_redirect_2_r) begin
+        p_formal_slot2_registered_instruction :
+        assert (o_from_pd_to_id_2.instruction == formal_slot2_instruction_q);
       end
       // A stack operation comes only with a backing redirect of a call or a
       // return, by the redirecting instruction's encoding.

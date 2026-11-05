@@ -1431,7 +1431,7 @@ async def test_backing_btb_calls_and_returns_operate_the_stack(dut: Any) -> None
         (ret, True, 0, target, False, True),
         (swap, True, 1, top, True, True),
         (jalr_ra_offset, False, 2, target, False, False),
-        # An entry whose type no longer matches its instruction picks the
+        # An entry whose type does not match its instruction picks the
         # target by its type; the stack operation follows the instruction.
         (jal, True, 2, top, False, False),
         (ret, False, 2, target, False, True),

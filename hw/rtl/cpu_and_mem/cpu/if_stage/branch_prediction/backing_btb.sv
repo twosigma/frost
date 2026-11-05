@@ -277,8 +277,8 @@ module backing_btb #(
 
   // An update writes its way, a hit or an allocation, only for a target in
   // the jump's region. A hit with a target outside it is invalidated, and a
-  // miss with one writes its set unchanged. A refresh writes its set
-  // unchanged apart from replacement.
+  // miss with one writes its set back as read. A refresh writes its set back
+  // as read apart from replacement.
   logic [ReplBits-1:0] c_replacement;
   logic [TagRowBits-1:0] write_tags;
   logic [PayloadRowBits-1:0] write_payloads;
@@ -581,9 +581,9 @@ module backing_btb #(
       if (sweep_active) begin
         p_formal_sweep_runs_alone : assert (!a_valid && !b_valid && !c_valid);
       end
-      // A request in stage B holds its set as the arrays hold it now, and
-      // one in stage C the tags and targets of it: only a refresh, which
-      // changes replacement state alone, writes the set in between.
+      // A request in stage B holds its set as the arrays hold it in the same
+      // cycle, and one in stage C the tags and targets of it: only a refresh,
+      // which changes replacement state alone, writes the set in between.
       if (b_valid) begin
         p_formal_stage_b_set_current : assert (b_set == formal_sets[b_index]);
       end

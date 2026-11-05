@@ -226,7 +226,7 @@ uses, names its return address stack operation: a call pushes its link
 address, a return pops, and a coroutine swap does both. An entry trained on
 a return targets the top entry of the packet's recovery point while the
 stack holds an entry, and its stored target otherwise; an entry whose type
-no longer matches the instruction at its PC costs only a misprediction. IF
+does not match the instruction at its PC costs only a misprediction. IF
 performs the operation once, in the redirect's first cycle (see [Return
 address stack recovery](#return-address-stack-recovery)). A build that
 disables branch prediction gets no backing redirects. A jump the backing BTB
