@@ -290,6 +290,10 @@ module coherence_l1d #(
   logic [EpSlots-1:0] store_grant_head_q;
   logic [1:0] store_grant_index;
   logic grant_is_store, selected_grant_store;
+  (* keep = "true" *) logic [EpSlots-1:0] grant_mux_select;
+  (* keep = "true" *) logic grant_failure, grant_error;
+  logic [1:0] store_write_index;
+  logic [ADDR_WIDTH-1:0] block_zero_addr_q;
   logic wb_reserved_q;
   // Nonzero endpoint identity and completion state, used when MISSES > 1.
   logic [ADDR_WIDTH-6:0] ld_line_q[EpSlots];
@@ -493,6 +497,7 @@ module coherence_l1d #(
       .o_done(store_ack),
       .o_count(store_count),
       .o_head(store_head_index),
+      .o_write_index(store_write_index),
       .o_valid(store_valid),
       .o_sealed(store_sealed),
       .o_acquired(store_acquired),
@@ -530,7 +535,8 @@ module coherence_l1d #(
   assign o_write_inflight = store_ack || atomic_write_q;
   assign o_write_done = store_ack || atomic_done_q;
   assign o_block_valid = atomic_q ? 4'b0001 : store_valid;
-  assign o_block_addr = {store_addr[3:1], atomic_q ? atomic_addr_q : store_addr[0]};
+  // Holder zero captures its address on each store or atomic ownership change.
+  assign o_block_addr = {store_addr[3:1], block_zero_addr_q};
   assign store_head_ready = pending_q && !look_priority_q && !store_acquired[store_head_index] &&
       !pending_blocked && !(store_read_turn_q && read_waiting_q) &&
       (!pending_miss_q || (!request_live && ep0_wb_ok && !store_same_line_q));
@@ -629,7 +635,7 @@ module coherence_l1d #(
   assign ep_write_done[0] = written_q;
   for (genvar ep = 0; ep < MISSES; ep++) begin : gen_request
     assign ep_request_valid[ep] = active && phase_q == Acquire && acq_ep_q == EpBits'(ep);
-    assign ep_grant_ready[ep] = grant_ready && grant_valid && grant_pick == EpBits'(ep);
+    assign ep_grant_ready[ep] = grant_ready && pick_onehot[ep];
     if (ep > 0) begin : gen_load_done
       assign ep_done_valid[ep] = ld_done_q[ep];
       assign ep_done_status[ep] = ld_status_q[ep];
@@ -740,9 +746,29 @@ module coherence_l1d #(
       .o_failure(grant_read_failure)
   );
   assign read_service_waiting = rd_candidate || load_grant_eligible;
-  assign grant = ep_grant[grant_pick];
-  assign grant_is_store = ep_store[grant_pick];
+  // An idle selection names endpoint zero. Valid selections use the grant mask.
+  assign grant_mux_select = {pick_onehot[EpSlots-1:1], !(|pick_onehot[EpSlots-1:1])};
+  always_comb begin
+    grant = '0;
+    for (int ep = 0; ep < EpSlots; ep++)
+      grant |= ep_grant[ep] & {(ADDR_WIDTH + 275) {grant_mux_select[ep]}};
+  end
+  assign grant_is_store = |(grant_mux_select & ep_store);
+  assign grant_failure = |(grant_mux_select & ep_fail);
+  assign grant_error = |(grant_mux_select & ep_fail_error);
   assign selected_grant_store = ep_store[grant_ep_q];
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst) begin
+      p_grant_mux_exact : assert (grant == ep_grant[grant_pick]);
+      p_grant_owner_exact : assert (grant_is_store == ep_store[grant_pick]);
+      p_grant_failure_exact : assert (grant_failure ==
+          (grant.error || grant.opcode == coherence_pkg::GrantFail));
+      p_grant_error_exact : assert (grant_error == grant.error);
+      p_block_zero_exact : assert (block_zero_addr_q ==
+          (atomic_q ? atomic_addr_q : store_addr[0]));
+    end
+`endif
   always_comb begin
     for (int ep = 0; ep < EpSlots; ep++) begin
       ep_read_fail[ep] = ep_fail[ep] && !ep_store[ep] && (ep != 0 || !acquisition_sc_q);
@@ -855,11 +881,11 @@ module coherence_l1d #(
           end
         end
         if (grant_ready && grant_valid && grant_pick == EpBits'(ep) &&
-            (grant.error || grant.opcode == coherence_pkg::GrantFail) && !ep_store[ep]) begin
+            grant_failure && !ep_store[ep]) begin
           installed_q[ep] <= 1'b1;
           if (ep > 0) begin
             ld_done_q[ep] <= 1'b1;
-            ld_status_q[ep] <= grant.error ? coherence_pkg::Error : coherence_pkg::Consumed;
+            ld_status_q[ep] <= grant_error ? coherence_pkg::Error : coherence_pkg::Consumed;
           end
         end
         if (active && phase_q == UpdateWait && array_ready && operation_q == GrantOp &&
@@ -1240,6 +1266,7 @@ module coherence_l1d #(
       atomic_written_q <= 1'b0;
       sc_committed_q <= 1'b0;
       atomic_addr_q <= '0;
+      block_zero_addr_q <= '0;
       atomic_size_q <= '0;
       atomic_tag_q <= '0;
       atomic_write_q <= 1'b0;
@@ -1310,6 +1337,8 @@ module coherence_l1d #(
       o_sc_write_done <= 1'b0;
       o_cut_release <= 1'b0;
       if (i_sc_commit) sc_committed_q <= 1'b1;
+      if (!atomic_q && store_push && store_write_index == 0)
+        block_zero_addr_q <= {i_address[ADDR_WIDTH-1:5], 5'b0};
       if (active && phase_q == UpdateWait && array_ready && operation_q == GrantOp &&
           grant_ep_q == '0) wb_reserved_q <= 1'b0;
       if (o_sc_result_valid && i_sc_result_ready) o_sc_result_valid <= 1'b0;
@@ -1328,6 +1357,8 @@ module coherence_l1d #(
         o_fatal_addr <= fatal_put.addr;
       end
       if (i_u_valid && ep_u_ready[0] && atomic_q) begin
+        block_zero_addr_q <= store_push && store_write_index == 0 ?
+            {i_address[ADDR_WIDTH-1:5], 5'b0} : store_addr[0];
         atomic_q <= 1'b0;
         atomic_granted_q <= 1'b0;
       end
@@ -1357,6 +1388,7 @@ module coherence_l1d #(
         atomic_written_q <= 1'b0;
         sc_committed_q <= 1'b0;
         atomic_addr_q <= i_sc_address;
+        block_zero_addr_q <= i_sc_address;
         atomic_size_q <= i_sc_size;
         atomic_tag_q <= i_sc_tag;
         sc_checked_q <= 1'b0;
@@ -1424,19 +1456,19 @@ module coherence_l1d #(
               grant_ep_q <= grant_pick;
               operation_q <= GrantOp;
               lookup_addr_q <= grant.addr;
-              if (grant.error || grant.opcode == coherence_pkg::GrantFail) begin
+              if (grant_failure) begin
                 if (grant_is_store) begin
                   o_fatal <= 1'b1;
                   o_fatal_addr <= grant.addr;
                 end else if (grant_pick != '0) rd_data_q[ld_read_q[grant_pick]] <= '0;
                 else begin
                   done_q <= 1'b1;
-                  done_status_q <= grant.error ? coherence_pkg::Error : coherence_pkg::Consumed;
+                  done_status_q <= grant_error ? coherence_pkg::Error : coherence_pkg::Consumed;
                   wb_reserved_q <= 1'b0;
                   if (acquisition_sc_q) begin
                     o_sc_result_valid <= 1'b1;
                     o_sc_success <= 1'b0;
-                    o_sc_error <= grant.error;
+                    o_sc_error <= grant_error;
                   end else rd_data_q[acquisition_read_q] <= '0;
                 end
               end else phase_q <= Lookup;
@@ -1580,6 +1612,7 @@ module coherence_l1d #(
                     atomic_granted_q <= 1'b0;
                     atomic_written_q <= 1'b0;
                     atomic_addr_q <= lookup_addr_q;
+                    block_zero_addr_q <= lookup_addr_q;
                     atomic_size_q <= rd_size_q[selected_read_q];
                     atomic_tag_q <= rd_tag_q[selected_read_q];
                     phase_q <= Acquire;

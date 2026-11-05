@@ -246,6 +246,8 @@ bytes and held grants are excluded from probe replies.
 
 Four sector holds block local loads until their records install. Atomic
 ownership uses the first hold while the ordinary store records are empty.
+The first hold captures store and atomic addresses on their ownership edges
+and restores the stored sector address when atomic ownership releases.
 SQ launch readiness reserves a record for the next cycle's registered write,
 including an arriving write. A simultaneous pop supplies no speculative
 credit. Every scalar launch invalidates its dword in the LQ's L0 cache.
@@ -277,7 +279,8 @@ Nonzero grant candidates share free writeback credit; endpoint zero uses its
 reserved credit. `coherence_grant_select` applies that shared credit after
 choosing the first nonzero candidate. For binary inputs, its outputs match a priority scan over
 all credit-qualified candidates. The same selection qualifies the endpoint
-failure bit.
+failure bit. The one-hot decision selects the grant packet, owner and failure
+fields in parallel. An idle decision selects endpoint zero.
 A younger store grant waits
 in its endpoint while the head and eligible reads continue. Endpoint 0
 reserves a free dirty-victim slot through installation. A nonzero endpoint
