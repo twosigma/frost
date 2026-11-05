@@ -885,7 +885,9 @@ module cpu_ooo #(
       .o_from_pd_to_id(from_pd_to_id),
       .i_from_if_to_pd_2(from_if_to_pd_2),
       .o_from_pd_to_id_2(from_pd_to_id_2),
-      .i_backing_hit(if_backing_hit),
+      // A build that disables branch prediction, such as TestRIG's, gets no
+      // backing BTB redirects.
+      .i_backing_hit(if_backing_hit & {2{!i_disable_branch_prediction}}),
       .i_backing_compressed(if_backing_compressed),
       .i_backing_target(if_backing_target),
       .o_pd_redirect(pd_redirect),

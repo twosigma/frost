@@ -212,7 +212,8 @@ the candidate fires the PD redirect, which costs the PD redirect's two
 bubbles instead of a recovery from execution or commit, and ID gives the
 instruction the prediction. Execution checks the target like any other
 prediction's. Calls and returns stay with the BTB, whose typed entries
-operate the return address stack.
+operate the return address stack. A build that disables branch prediction
+gets no backing redirects.
 
 ### Two-wide fetch and dispatch
 
