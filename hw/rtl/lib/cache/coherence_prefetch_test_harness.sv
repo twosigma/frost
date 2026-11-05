@@ -20,13 +20,13 @@ module coherence_prefetch_test_harness #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 64,
     parameter int unsigned PREFETCH_INFLIGHT = 3,
+    parameter int unsigned IF_STREAMS = 2,
     parameter bit DMA_PAUSE = 1,
     parameter bit PREFETCH = 1
 ) (
     input logic i_clk,
     input logic i_rst,
     input logic i_fatal_stop,
-    input logic i_hold_pf_g,
     input logic i_hold_pf_c,
     input logic i_hold_pf_u,
     input logic i_train_enable,
@@ -77,8 +77,12 @@ module coherence_prefetch_test_harness #(
   coh_u_t home_u;
   logic home_d_valid, home_d_ready, pf_d_valid;
   logic home_g_valid, home_g_ready, pf_g_ready;
-  logic home_c_valid, home_c_ready, pf_c_valid, home_c_pass;
+  logic home_c_valid, home_c_ready, pf_c_valid;
   logic home_u_valid, home_u_ready, pf_u_ready;
+  logic home_room, home_accepted;
+  logic [3:0] home_accepted_opcode;
+  logic [8:0] home_accepted_q;
+  logic [ADDR_WIDTH-1:0] home_accepted_addr;
   logic [1:0] d_ready, c_ready;
 
   coherence_d_arbiter #(
@@ -104,20 +108,20 @@ module coherence_prefetch_test_harness #(
   ) completions (
       .i_clk,
       .i_rst,
-      .i_valid({pf_c_valid, i_c_valid}),
+      .i_valid({pf_c_valid && !i_hold_pf_c, i_c_valid}),
       .o_ready(c_ready),
       .i_payload({pf_c, i_c}),
       .o_valid(home_c_valid),
       .o_offer(),
       .o_selected(),
-      .i_ready(home_c_ready && home_c_pass),
+      .i_ready(home_c_ready),
       .o_payload(home_c)
   );
-  assign home_c_pass = home_c.q.src != 2'd3 || !i_hold_pf_c;
   assign o_c_ready = c_ready[0];
   assign o_g_valid = home_g_valid && home_g.q.src != 2'd3;
   assign o_g = home_g;
-  assign home_g_ready = home_g.q.src == 2'd3 ? pf_g_ready && !i_hold_pf_g : i_g_ready;
+  // The home takes a source-3 G as accepted when it is presented.
+  assign home_g_ready = home_g.q.src == 2'd3 ? pf_g_ready : i_g_ready;
   assign o_u_valid = home_u_valid && home_u.q.src != 2'd3;
   assign o_u = home_u;
   assign home_u_ready = home_u.q.src == 2'd3 ? pf_u_ready && !i_hold_pf_u : i_u_ready;
@@ -161,24 +165,28 @@ module coherence_prefetch_test_harness #(
     coherence_prefetch_agent #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .L2_LINE_BYTES(LINE_BYTES),
-        .MAX_INFLIGHT(PREFETCH_INFLIGHT)
+        .MAX_INFLIGHT(PREFETCH_INFLIGHT),
+        .IF_STREAMS(IF_STREAMS)
     ) agent (
         .i_clk,
         .i_rst,
         .i_fatal_stop,
         .i_pause(pf_pause),
-        .i_train_valid(i_d_valid && d_ready[0] && i_train_enable),
-        .i_train_d(i_d),
+        .i_room(home_room),
+        .i_train_valid(home_accepted && i_train_enable),
+        .i_train_opcode(home_accepted_opcode),
+        .i_train_q(home_accepted_q),
+        .i_train_addr(home_accepted_addr),
         .o_d_valid(pf_d_valid),
         .i_d_ready(d_ready[1]),
         .o_d(pf_d),
-        .i_g_valid(home_g_valid && !i_hold_pf_g),
+        .i_g_valid(home_g_valid && home_g.q.src == 2'd3),
         .o_g_ready(pf_g_ready),
         .i_g(home_g),
         .o_c_valid(pf_c_valid),
         .i_c_ready(c_ready[1]),
         .o_c(pf_c),
-        .i_u_valid(home_u_valid && !i_hold_pf_u),
+        .i_u_valid(home_u_valid && home_u.q.src == 2'd3 && !i_hold_pf_u),
         .o_u_ready(pf_u_ready),
         .i_u(home_u)
     );
@@ -187,7 +195,7 @@ module coherence_prefetch_test_harness #(
     assign pf_d = '0;
     assign pf_c_valid = 1'b0;
     assign pf_c = '0;
-    assign pf_g_ready = 1'b0;
+    assign pf_g_ready = 1'b1;
     assign pf_u_ready = 1'b0;
   end
 
@@ -218,12 +226,17 @@ module coherence_prefetch_test_harness #(
       .o_g_valid(home_g_valid),
       .i_g_ready(home_g_ready),
       .o_g(home_g),
-      .i_c_valid(home_c_valid && home_c_pass),
+      .i_c_valid(home_c_valid),
       .o_c_ready(home_c_ready),
       .i_c(home_c),
       .o_u_valid(home_u_valid),
       .i_u_ready(home_u_ready),
       .o_u(home_u),
+      .o_prefetch_room(home_room),
+      .o_accepted(home_accepted),
+      .o_accepted_opcode(home_accepted_opcode),
+      .o_accepted_q(home_accepted_q),
+      .o_accepted_addr(home_accepted_addr),
       .o_mem_req_valid,
       .i_mem_req_ready,
       .o_mem_req_write,

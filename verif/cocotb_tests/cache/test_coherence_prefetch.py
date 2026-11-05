@@ -19,7 +19,13 @@ from typing import Any
 import cocotb
 
 from cocotb_tests.cache.test_coherence_endpoints import pack
-from cocotb_tests.cache.test_coherence_home import Home, unpack
+from cocotb_tests.cache.test_coherence_home import FILL_TID_BASE, Home, unpack
+
+# The harness's data identities (PREFETCH_INFLIGHT) and the instruction
+# table's identity after them.
+DATA_IDS = 3
+IF_ID = 3
+READ_ONCE_IF = 5
 
 
 class HomeSignals:
@@ -43,15 +49,16 @@ class PrefetchHome(Home):
     """Observe identities while the home services independent transport peers."""
 
     def __init__(self, dut: Any) -> None:
-        """Track prefetch protocol lifetimes and memory completion cycles."""
+        """Track prefetch protocol lifetimes and the fills they start."""
         super().__init__(HomeSignals(dut))
+        self.fills = len(dut.home.fill_live_q)
         self.pf: list[tuple[int, str, tuple[int, ...]]] = []
         self.live: dict[int, tuple[int, str]] = {}
         self.returned: dict[int, int] = {}
         self.installed: dict[int, int] = {}
-        self.required_fills: set[int] = set()
         self.max_live = 0
         self.max_fills = 0
+        self.drops = 0
         self.dirty_prefetch_recalls: list[int] = []
 
     def get(self, name: str) -> int:
@@ -61,34 +68,45 @@ class PrefetchHome(Home):
             signal = getattr(self.dut.home, name)
         return int(signal.value)
 
+    def fill_address(self, slot: int) -> int:
+        """Read a fill slot's line address."""
+        return (self.get("fill_addr_q") >> (slot * self.p)) & ((1 << self.p) - 1)
+
+    def lines(self, kind: str) -> list[int]:
+        """Prefetched line addresses in the order of one protocol step."""
+        return [f[2] if kind in "DCU" else f[3] for _, k, f in self.pf if k == kind]
+
     async def set(self, **values: int) -> None:
         """Sample protocol transfers immediately before each rising edge."""
         if values.get("i_clk") == 1 and not self.get("i_rst"):
+            engines = len(self.dut.engine_idle)
             if self.get("array_updated"):
-                slot = self.get("array_updated_token") - len(self.dut.engine_idle)
-                if 0 <= slot < 4 and int(self.dut.home.fill_phase_q[slot].value) == 7:
-                    address = (self.get("fill_addr_q") >> (slot * self.p)) & (
-                        (1 << self.p) - 1
-                    )
-                    self.installed[address] = self.cycle
+                slot = self.get("array_updated_token") - engines
+                if (
+                    0 <= slot < self.fills
+                    and int(self.dut.home.fill_phase_q[slot].value) == 7
+                ):
+                    self.installed[self.fill_address(slot)] = self.cycle
             if self.get("i_r_valid") and self.get("o_r_ready"):
                 reply = unpack(
                     self.get("i_r"), (2, 6, 1, 1, self.p, 2, 1, 1, 256, 1, 1, 1, 1, 1)
                 )
-                if 19 <= reply[1] < 23 and reply[7]:
-                    slot = reply[1] - 19
-                    address = (self.get("fill_addr_q") >> (slot * self.p)) & (
-                        (1 << self.p) - 1
-                    )
-                    if any(a == address for a, _ in self.live.values()):
-                        self.dirty_prefetch_recalls.append(reply[4])
+                slot = reply[1] - FILL_TID_BASE
+                if (
+                    0 <= slot < self.fills
+                    and reply[7]
+                    and (self.get("fill_prefetch_q") >> slot) & 1
+                ):
+                    self.dirty_prefetch_recalls.append(reply[4])
             if self.get("i_mem_resp_valid"):
                 rid = self.get("i_mem_resp_id")
-                if rid < 4:
-                    address = (self.get("fill_addr_q") >> (rid * self.p)) & (
-                        (1 << self.p) - 1
-                    )
-                    self.returned[address] = self.cycle
+                if rid < self.fills:
+                    self.returned[self.fill_address(rid)] = self.cycle
+            generate = getattr(self.dut.top, "gen_prefetch", None)
+            if generate is not None:
+                self.drops += int(generate.agent.data_drop.value) + int(
+                    generate.agent.if_drop.value
+                )
             if self.get("pf_d_valid") and self.get("d_ready") & 2:
                 fields = unpack(
                     self.get("pf_d"), (4, 9, self.p, 5, 3, 32, 1, 1, 1, 256)
@@ -97,42 +115,21 @@ class PrefetchHome(Home):
                 assert op == 9 and q >> 5 == 15
                 assert address % self.line == 0 and fields[7] == 0
                 assert q not in self.live, "identity reused before U"
+                assert all(a != address for a, _ in self.live.values()), (
+                    "two live identities hold one line"
+                )
                 self.live[q] = (address, "D")
-                self.pf.append((self.cycle, "D", fields))
+                self.pf.append((self.cycle, "D", (q, 0, address)))
             if self.get("home_g_valid"):
                 fields = unpack(self.get("home_g"), (3, 9, 6, self.p, 256, 1))
                 if fields[1] >> 5 == 15:
                     q, address = fields[1], fields[3]
                     assert self.live[q] == (address, "D")
                     assert fields[0] == 4 and fields[4] == 0
-                    reads = [
-                        c for c, w, a in self.transactions if not w and a == address
-                    ]
-                    if reads or address in self.required_fills:
-                        assert address in self.returned, (
-                            "grant offered before fill response"
-                        )
-                        if not fields[5]:
-                            assert (
-                                self.installed.get(address, -1)
-                                >= self.returned[address]
-                            ), (
-                                "grant offered before the array acknowledged installation"
-                            )
-                    for slot in range(4):
-                        fill_address = (self.get("fill_addr_q") >> (slot * self.p)) & (
-                            (1 << self.p) - 1
-                        )
-                        if (
-                            self.get("fill_live_q") & (1 << slot)
-                            and fill_address == address
-                        ):
-                            assert int(self.dut.home.fill_phase_q[slot].value) == 8, (
-                                "grant offered before fill installation"
-                            )
-                    if self.get("home_g_ready"):
-                        self.live[q] = (address, "G")
-                        self.pf.append((self.cycle, "G", fields))
+                    # The home takes a source-3 G when it presents it.
+                    assert self.get("home_g_ready")
+                    self.live[q] = (address, "G")
+                    self.pf.append((self.cycle, "G", fields))
             if self.get("pf_c_valid") and self.get("c_ready") & 2:
                 fields = unpack(self.get("pf_c"), (9, 6, self.p, 2, 1))
                 q, _, address, status, write = fields
@@ -154,10 +151,9 @@ class PrefetchHome(Home):
         await super().set(**values)
 
     async def prime(self, base: int, delay: int = 200) -> None:
-        """Train on resident lines so all fill slots can belong to prefetches."""
+        """Make two lines resident, then train on them as a stream."""
         for address in (base, base + self.line):
             assert await self.read(address) == self.expected(address)
-        self.required_fills.update(base + index * self.line for index in range(2, 10))
         self.read_delay = delay
         await self.set(i_train_enable=1)
         for address in (base, base + self.line):
@@ -172,60 +168,78 @@ class PrefetchHome(Home):
             await self.tick()
         raise AssertionError(f"condition timed out at {self.cycle}: {self.live}")
 
-    async def drain(self) -> None:
-        """Finish the eight-line prediction window and all releases."""
-        await self.until(lambda: len([1 for _, k, _ in self.pf if k == "U"]) == 8)
-        assert not self.live
+    async def drain(self, count: int = 8) -> None:
+        """Finish the prediction window's releases and every fill."""
+        await self.until(lambda: len(self.lines("U")) >= count)
+        await self.until(lambda: not self.live)
+        await self.until(lambda: self.get("fill_live_q") == 0)
         assert not self.get("o_fatal")
 
 
 @cocotb.test()
-async def four_identities_delayed_completion(dut: Any) -> None:
-    """Four fills wait for memory, G, C and U without identity recycling."""
+async def identities_and_held_completion(dut: Any) -> None:
+    """Hold data identities at C and U without reuse, then check their fills."""
     b = PrefetchHome(dut)
     await b.reset()
-    await b.set(i_hold_pf_g=1, i_hold_pf_c=1, i_hold_pf_u=1)
-    await b.prime(0x80000000)
-    await b.until(lambda: len(b.live) == 4 and b.get("fill_live_q").bit_count() == 4)
-    assert {q & 30 for q in b.live} == {0, 2, 4, 6}
+    base = 0x80000000
+    await b.set(i_hold_pf_c=1, i_hold_pf_u=1)
+    await b.prime(base)
+    await b.until(
+        lambda: (
+            len(b.live) == DATA_IDS
+            and all(phase == "G" for _, phase in b.live.values())
+        )
+    )
+    assert {(q >> 1) & 15 for q in b.live} == set(range(DATA_IDS))
     await b.tick(250)
-    assert len(b.live) == 4 and all(phase == "D" for _, phase in b.live.values())
-    await b.set(i_hold_pf_g=0)
-    await b.until(lambda: all(phase == "G" for _, phase in b.live.values()))
-    await b.tick(20)
-    assert len(b.live) == 4
+    assert len(b.live) == DATA_IDS
+    assert all(phase == "G" for _, phase in b.live.values())
     await b.set(i_hold_pf_c=0)
     await b.until(lambda: all(phase == "C" for _, phase in b.live.values()))
     await b.tick(20)
-    assert len(b.live) == 4
+    assert len(b.live) == DATA_IDS
     await b.set(i_hold_pf_u=0)
     await b.drain()
-    assert b.max_live == 4 and b.max_fills == 4
+    predicted = [base + index * b.line for index in range(2, 10)]
+    assert b.lines("D") == predicted
+    assert b.max_live == DATA_IDS
+    # Each fill installs its line after its memory response, with no
+    # identity left; later demands read the line without memory traffic.
+    for address in predicted:
+        assert b.installed[address] >= b.returned[address]
+        assert b.reads_of(address) == 1
+        assert await b.read(address) == b.expected(address)
+        assert b.reads_of(address) == 1
 
 
 @cocotb.test()
 async def errors_reset_and_fatal_stop(dut: Any) -> None:
-    """Complete errored fills as Error and reset during held G, C and U."""
+    """Install nothing for a failed fill; reset and stop with prefetches held."""
     b = PrefetchHome(dut)
     await b.reset()
     base = 0x80002000
-    b.errors.add(base + 2 * b.line)
+    failed = base + 2 * b.line
+    b.errors.add(failed)
     await b.prime(base, 70)
     await b.drain()
-    errors = [f for _, k, f in b.pf if k == "C" and f[3] == 2]
-    assert len(errors) == 1 and errors[0][2] == base + 2 * b.line
-    for hold in ("i_hold_pf_g", "i_hold_pf_c", "i_hold_pf_u"):
+    # The home answers the prefetch at its lookup; the fill's error frees the
+    # fill without an install, and the identity completes with Consumed.
+    assert all(f[3] == 0 for _, k, f in b.pf if k == "C")
+    prefetched = set(b.lines("D"))
+    assert failed in prefetched and failed in b.returned
+    assert failed not in b.installed and set(b.installed) & prefetched
+    for hold in ("i_hold_pf_c", "i_hold_pf_u"):
         b = PrefetchHome(dut)
         await b.reset()
         await b.set(**{hold: 1})
         await b.prime(base, 50)
-        await b.until(lambda: len(b.live) == 4)
+        await b.until(lambda: len(b.live) == DATA_IDS)
         await b.tick(100)
         await b.set(i_fatal_stop=1)
-        accepted = len([1 for _, k, _ in b.pf if k == "D"])
+        accepted = len(b.lines("D"))
         await b.set(i_train_enable=1)
         await b.tick(20)
-        assert len([1 for _, k, _ in b.pf if k == "D"]) == accepted
+        assert len(b.lines("D")) == accepted
         b = PrefetchHome(dut)
         await b.reset()
         await b.tick(100)
@@ -234,14 +248,15 @@ async def errors_reset_and_fatal_stop(dut: Any) -> None:
 
 
 @cocotb.test()
-async def demands_behind_full_prefetch_fills(dut: Any) -> None:
-    """Same-line and unrelated demand readers progress behind four prefetches."""
+async def demands_join_prefetch_fills(dut: Any) -> None:
+    """Join a demand to a pending prefetch fill beside an unrelated demand."""
     b = PrefetchHome(dut)
     await b.reset()
     base = 0x80004000
     await b.prime(base, 150)
-    await b.until(lambda: b.get("fill_live_q").bit_count() == 4)
-    addresses = (base + 2 * b.line, base + 0x1000)
+    await b.until(lambda: b.get("fill_live_q").bit_count() >= DATA_IDS)
+    joined = base + 2 * b.line
+    addresses = (joined, base + 0x1000)
     start = b.cycle
     for slot, address in enumerate(addresses):
         await b.submit(0, address, slot=slot)
@@ -254,7 +269,7 @@ async def demands_behind_full_prefetch_fills(dut: Any) -> None:
         seen.add(grant[3])
         await b.complete(grant)
     await b.drain()
-    assert sum(a == addresses[0] and not w for _, w, a in b.transactions) == 1
+    assert b.reads_of(joined) == 1
     dut._log.info(
         "PREFETCH demand_pair_cycles=%d max_fills=%d", b.cycle - start, b.max_fills
     )
@@ -262,7 +277,7 @@ async def demands_behind_full_prefetch_fills(dut: Any) -> None:
 
 @cocotb.test()
 async def dirty_victim_put_and_streaming_dma(dut: Any) -> None:
-    """Prefetch recalls preserve PutM bytes and marked DMA uses only way zero."""
+    """Prefetch recalls keep PutM bytes and marked DMA uses only way zero."""
     b = PrefetchHome(dut)
     await b.reset()
     base = 0x80008000
@@ -274,7 +289,7 @@ async def dirty_victim_put_and_streaming_dma(dut: Any) -> None:
         await b.finish(grant, written=True)
         b.private[address] = (3, (index + 1) * 0x0101010101010101)
     await b.prime(base + 0x1000, 80)
-    await b.until(lambda: len(b.live) == 4)
+    await b.until(lambda: len(b.live) == DATA_IDS)
     put_address = base + 15 * b.line
     put_data = b.private.pop(put_address)[1]
     b.frozen[0] = (put_address, put_data)
@@ -305,6 +320,47 @@ async def dirty_victim_put_and_streaming_dma(dut: Any) -> None:
 
 
 @cocotb.test()
+async def put_passes_live_prefetches_of_its_line(dut: Any) -> None:
+    """Accept a waiting PutM while prefetches of its line stay live."""
+    b = PrefetchHome(dut)
+    await b.reset()
+    base = 0x80018000
+    for address in (base, base + b.line):
+        assert await b.read(address) == b.expected(address)
+    # The hart holds the next three lines Modified.
+    targets = [base + index * b.line for index in range(2, 2 + DATA_IDS)]
+    for index, address in enumerate(targets):
+        grant = await b.start(1, address, slot=index)
+        await b.finish(grant, written=True)
+        b.private[address] = (3, (index + 1) * 0x1111)
+    # Each prefetch of them hits and waits at C, keeping its identity live.
+    await b.set(i_hold_pf_c=1, i_train_enable=1)
+    for address in (base, base + b.line):
+        assert await b.read(address) == b.expected(address)
+    await b.set(i_train_enable=0)
+    await b.until(
+        lambda: (
+            sorted(a for a, _ in b.live.values()) == targets
+            and all(phase == "G" for _, phase in b.live.values())
+        )
+    )
+    for slot, address in enumerate(targets[:2]):
+        data = b.private.pop(address)[1]
+        b.frozen[slot] = (address, data)
+        await b.set(
+            i_w_valid=1,
+            i_w=pack((1, 0), (1, slot), (1, 0), (b.p, address), (256, data), (1, 0)),
+        )
+        await b.until(lambda: slot in b.accepted_puts or slot not in b.frozen, 200)
+        await b.until(lambda: slot not in b.frozen, 200)
+    assert sorted(a for a, _ in b.live.values()) == targets
+    await b.set(i_hold_pf_c=0)
+    await b.until(lambda: not b.live)
+    for index, address in enumerate(targets[:2]):
+        assert (await b.read(address, 7)) & 0xFFFF == (index + 1) * 0x1111
+
+
+@cocotb.test()
 async def dma_response_before_delayed_completion(dut: Any) -> None:
     """Read responses allow admission during held DMA C/U; writes wait for U."""
     for write in (False, True):
@@ -316,7 +372,6 @@ async def dma_response_before_delayed_completion(dut: Any) -> None:
             for resident in (address, base, base + b.line):
                 assert await b.read(resident) == b.expected(resident)
             b.read_delay = 100
-            b.required_fills.update(base + index * b.line for index in range(2, 10))
             await b.submit(8 if write else 7, address, 0x1234, 0xFF, non_alloc=1)
             grant = await b.take_grant()
             assert grant[3] == address and not grant[5]
@@ -348,16 +403,16 @@ async def dma_response_before_delayed_completion(dut: Any) -> None:
                 training_grants.append(await b.take_grant())
             await b.set(i_train_enable=0)
             await b.tick(20)
-            accepted = len([1 for _, kind, _ in b.pf if kind == "D"])
+            accepted = len(b.lines("D"))
             if write:
                 assert b.get("dma_pause")
                 assert accepted == 0
                 await b.tick(150)
                 assert b.get("dma_pause")
-                assert len([1 for _, kind, _ in b.pf if kind == "D"]) == accepted
+                assert len(b.lines("D")) == accepted
             else:
                 assert not b.get("dma_pause")
-                await b.until(lambda: any(kind == "D" for _, kind, _ in b.pf))
+                await b.until(lambda: bool(b.lines("D")))
                 assert not b.get("dma_pause")
             if hold == "C":
                 assert not b.get("o_u_valid")
@@ -381,7 +436,7 @@ async def dma_response_before_delayed_completion(dut: Any) -> None:
 
 @cocotb.test()
 async def full_completion_queue_progress(dut: Any) -> None:
-    """Drain full completion, result, fill, writeback and PutM storage."""
+    """Drain full completion, result and PutM storage with prefetches held at C."""
     b = PrefetchHome(dut)
     await b.reset()
     base = 0x8000C000
@@ -396,32 +451,29 @@ async def full_completion_queue_progress(dut: Any) -> None:
     for address in (stream, stream + b.line):
         assert await b.read(address) == b.expected(address)
     await b.until(lambda: not b.responses and b.get("wb_valid_q") == 0)
-    b.required_fills.update(stream + index * b.line for index in range(2, 10))
     b.read_delay = 10000
     b.write_delay = 10000
-    await b.set(i_hold_pf_g=1, i_train_enable=1)
+    # Prefetch identities wait at C, so their completion slots stay live.
+    await b.set(i_hold_pf_c=1, i_train_enable=1)
     for address in (stream, stream + b.line):
         assert await b.read(address) == b.expected(address)
     await b.set(i_train_enable=0)
-    await b.until(
-        lambda: (
-            b.get("fill_live_q").bit_count() == 4
-            and b.get("wb_frozen_q").bit_count() == 2
-        )
-    )
+    await b.until(lambda: len(b.live) == DATA_IDS)
     requests = (
         [(0, s) for s in range(8)]
         + [(5, 0), (5, 1), (6, 0)]
-        + [(7, s) for s in range(4)]
+        + [(7, s) for s in range(8)]
     )
+    # The lines each way holds now: resident, clean and returned lines hit.
     ways = {(address // b.line % 4, way): address for address, way in b.allocations}
     resident = sorted(
         address
         for address in ways.values()
         if address in b.returned and b.private.get(address, (0, 0))[0] != 3
-    )
-    assert len(resident) == 8, resident
-    addresses = resident + [base + 0x4000 + index * b.line for index in range(7)]
+    )[:8]
+    addresses = resident + [
+        base + 0x4000 + index * b.line for index in range(len(requests) - len(resident))
+    ]
     expected = {}
     for (op, slot), address in zip(requests, addresses, strict=True):
         q, _ = b.demand(op, address, slot=slot)
@@ -445,18 +497,20 @@ async def full_completion_queue_progress(dut: Any) -> None:
         await b.wait("o_w_ready")
         await b.tick()
     await b.until(lambda: b.get("put_busy_q").bit_count() == 2)
-    assert int(dut.home.completions.live.value).bit_count() == 19
+    live = int(dut.home.completions.live.value).bit_count()
+    assert live == len(requests) + DATA_IDS
     assert int(dut.home.completions.result_valid_q.value).bit_count() == 8
-    assert b.get("fill_live_q").bit_count() == 4
-    assert b.get("wb_valid_q").bit_count() == 2
     assert b.get("put_busy_q").bit_count() == 2
     dut._log.info(
-        "PREFETCH full queues: completions=19 results=8 fills=4 writebacks=2 puts=2"
+        "PREFETCH full queues: completions=%d results=8 fills=%d writebacks=%d puts=2",
+        live,
+        b.get("fill_live_q").bit_count(),
+        b.get("wb_valid_q").bit_count(),
     )
     b.responses = [(b.cycle + 20, *response[1:]) for response in b.responses]
     b.read_delay = 20
     b.write_delay = 40
-    await b.set(i_hold_pf_g=0, i_wa_ready=1)
+    await b.set(i_hold_pf_c=0, i_wa_ready=1)
     for _ in requests:
         grant = await b.take_grant()
         address = expected.pop(grant[1])
@@ -468,3 +522,34 @@ async def full_completion_queue_progress(dut: Any) -> None:
     assert not expected and b.acks
     for address, data in puts:
         assert await b.read(address, 7) == data
+
+
+@cocotb.test()
+async def instruction_and_data_streams_share_no_line(dut: Any) -> None:
+    """Train instruction refills on their own table and identity.
+
+    No line is requested twice while an identity holds it.
+    """
+    b = PrefetchHome(dut)
+    await b.reset()
+    base = 0x80014000
+    for address in (base, base + b.line):
+        assert await b.read(address) == b.expected(address)
+    # Both tables train on the same two lines while prefetches wait at C.
+    await b.set(i_hold_pf_c=1, i_train_enable=1)
+    for address in (base, base + b.line):
+        assert await b.read(address) == b.expected(address)
+    await b.until(lambda: len(b.live) == DATA_IDS)
+    for address in (base, base + b.line):
+        assert await b.read(address, READ_ONCE_IF) == b.expected(address)
+    await b.set(i_train_enable=0)
+    # The instruction table drops the lines the data identities hold and
+    # takes its own identity for the next line.
+    await b.until(lambda: len(b.live) == DATA_IDS + 1)
+    held = {q: address for q, (address, _) in b.live.items()}
+    instruction_q = pack((2, 3), (2, 3), (4, IF_ID), (1, 0))
+    assert held[instruction_q] == base + (2 + DATA_IDS) * b.line
+    assert b.drops >= DATA_IDS
+    assert len(set(held.values())) == len(held)
+    await b.set(i_hold_pf_c=0)
+    await b.drain()

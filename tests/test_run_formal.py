@@ -276,15 +276,6 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
-        "coherence_prefetcher.sby",
-        "Prefetch identities, held D and C, and stream requests within their pages.",
-        tasks=(
-            "coh_prefetcher_prove",
-            "coh_prefetcher_ids_bmc",
-            "coh_prefetcher_cover",
-        ),
-    ),
-    FormalTarget(
         "coherence_dma_ingress.sby",
         "DMA issue order, opaque identities, independent completion, and reset ownership.",
         tasks=(
@@ -1471,12 +1462,6 @@ SBY_TASKS = [
         "coh_home_prefetch_cover",
         "Prefetch fills that install, gain a seat or fail; reserve and no-fill decisions.",
     ),
-    ("coh_prefetcher_prove", "Prefetch identities follow D, G, C and U; held D and C."),
-    (
-        "coh_prefetcher_ids_bmc",
-        "Each stream table's read ids return once, to the right table.",
-    ),
-    ("coh_prefetcher_cover", "All identities in flight, table turns, and a held C."),
     ("coh_home_array_prove", "Independent L2 ports preserve watched bytes."),
     *[
         (

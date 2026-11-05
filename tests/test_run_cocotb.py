@@ -2482,16 +2482,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cache.test_coherence_prefetch",
         hdl_toplevel_module="coherence_prefetch_test_harness",
         description=(
-            "Four prefetch identities, delayed completion, errors, demand, PutM "
-            "and DMA responses before C/U"
+            "Prefetch identities held at C and U, errors, demand joins, PutM, "
+            "instruction streams and DMA responses before C/U"
         ),
-        verilator_extra_args=("--assert", "-GPREFETCH_INFLIGHT=4"),
+        verilator_extra_args=("--assert",),
     ),
     "coherence_prefetch_equal": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_prefetch",
         hdl_toplevel_module="coherence_prefetch_test_harness",
         description="Prefetch and home integration with 32-byte lines",
-        verilator_extra_args=("--assert", "-GLINE_BYTES=32", "-GPREFETCH_INFLIGHT=4"),
+        verilator_extra_args=("--assert", "-GLINE_BYTES=32"),
     ),
     "coherence_home": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home",

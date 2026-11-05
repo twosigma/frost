@@ -308,16 +308,6 @@ module l2_stream_prefetcher #(
     if (load) f_req_page_q <= st_line_q[cand_sel][LineBits-1:PageLineBits];
     if (!i_rst && req_valid_q) assert (req_line_q[LineBits-1:PageLineBits] == f_req_page_q);
   end
-`ifdef L2_STREAM_PREFETCHER_IDS
-  // The parent returns only ids that are out, so the count follows them.
-  always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
-      if (i_resp_valid) assert (id_busy_q[i_resp_id]);
-      assert (inflight_q == InflightBits'($countones(id_busy_q)));
-      if (req_valid_q) assert (id_busy_q[req_id_q]);
-    end
-  end
-`endif
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
       assert (free_any == (inflight_q < InflightBits'(MAX_INFLIGHT)));

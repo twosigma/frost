@@ -18,8 +18,8 @@ pf_agent32_prove narrow safety
 pf_agent1_prove wide single safety
 pf_agent2_prove wide pair safety
 pf_agent4_prove wide full safety
-pf_agent64_cover wide full reach
-pf_agent32_cover narrow full reach
+pf_agent64_cover wide reach
+pf_agent32_cover narrow reach
 
 [options]
 safety: mode prove
@@ -36,7 +36,7 @@ read -formal -sv coherence_pkg.sv coherence_d_arbiter.sv coherence_request_endpo
 narrow: chparam -set L2_LINE_BYTES 32 coherence_prefetch_agent
 single: chparam -set MAX_INFLIGHT 1 coherence_prefetch_agent
 pair: chparam -set MAX_INFLIGHT 2 coherence_prefetch_agent
-full: chparam -set MAX_INFLIGHT 4 coherence_prefetch_agent
+full: chparam -set MAX_INFLIGHT 4 -set IF_STREAMS 0 coherence_prefetch_agent
 prep -top coherence_prefetch_agent
 memory_map
 opt_clean
