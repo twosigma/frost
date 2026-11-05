@@ -15,31 +15,30 @@
  */
 
 /*
- * l2_stream_prefetcher: reads the lines ahead of ascending L1D miss streams
- * into the L2.
+ * l2_stream_prefetcher reads ahead of ascending line streams into the L2.
+ * The cache hierarchy trains it on accepted L1D read misses. The coherent
+ * wrapper trains it on accepted hart data GetS and GetM requests, including
+ * home hits. Observations enter the stream table one cycle later.
  *
- * It watches the L1D's read requests to the L2, which are its misses, one
- * cycle late. A table of STREAMS entries holds the last L2 line each stream
- * missed on. A miss on the line after an entry's confirms the entry and
- * advances it; a miss on an entry's own line leaves it; any other miss
- * replaces the entries in rotation. With IGNORE_BACKWARD, a miss up to
- * 2 * DISTANCE - 1 lines behind an entry in the same page also leaves the
- * entries in place. For each confirmed entry the prefetcher
- * reads the lines after its last miss, up to DISTANCE lines ahead and never
- * past the PAGE_BYTES page of that miss, so it reads only memory that a
- * demand access in the same page made sure exists.
+ * A table of STREAMS entries holds the last training line of each stream.
+ * An observation on the line after an entry's confirms and advances it;
+ * an observation on an entry's own line leaves it unchanged. With
+ * IGNORE_BACKWARD, an observation up to 2 * DISTANCE - 1 lines behind an
+ * entry in the same page also leaves the entries in place. Other lines
+ * replace entries in rotation. Each confirmed entry requests up to DISTANCE
+ * lines ahead, within the PAGE_BYTES page of its last training address.
  *
  * Each entry keeps its last line, that line plus one (so a successor is an
  * equality match), and how many lines after the last line it has requested.
  * An advance shifts that count down by one. The address of the next read is
  * the only wide addition, and it feeds the request register.
  *
- * The reads go out on the prefetcher's own port of the hierarchy's top
- * arbiter as ordinary line reads, and their responses are discarded: the
- * point is the L2 fill. A request is registered, so it holds still until the
- * arbiter takes it. At most MAX_INFLIGHT reads are outstanding, each under
- * its own id. A new request loads only while i_enable is set; one already
- * loaded still goes out.
+ * The cache hierarchy serves requests as ordinary line reads. The coherent
+ * wrapper sends protocol Prefetch requests and releases each identity on U.
+ * Both paths discard returned data; the L2 fill serves later demands.
+ * A registered request holds until acceptance. At most MAX_INFLIGHT reads
+ * are outstanding, each under its own id. A new request loads only while
+ * i_enable is set; one already loaded still goes out.
  */
 module l2_stream_prefetcher #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -54,7 +53,7 @@ module l2_stream_prefetcher #(
     input logic i_clk,
     input logic i_rst,
 
-    // An L1D read request to the L2, on the cycle the arbiter takes it.
+    // A training address, on the cycle the caller accepts its request.
     input logic                  i_miss_valid,
     input logic [ADDR_WIDTH-1:0] i_miss_addr,
     // Loads a new request while set.
