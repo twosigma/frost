@@ -121,6 +121,7 @@ module coherence_l1d #(
 `ifdef LOCAL_ATOMIC_DEPENDENCY
     output wire o_formal_local,
     output wire [3:0] o_formal_phase,
+    output wire o_formal_home_write,
 `endif
     output logic o_fatal,
     output logic [ADDR_WIDTH-1:0] o_fatal_addr
@@ -176,10 +177,6 @@ module coherence_l1d #(
   // One-hot state keeps each transition, including the W-dependent probe
   // absorption, to a single term of its next state.
   (* fsm_encoding = "one_hot" *) phase_t phase_q;
-`ifdef LOCAL_ATOMIC_DEPENDENCY
-  assign o_formal_local = atomic_local_q;
-  assign o_formal_phase = phase_q;
-`endif
   cut_phase_t cut_phase_q;
   operation_t operation_q;
   logic active;
@@ -974,6 +971,34 @@ module coherence_l1d #(
                                 i_atomic_protected)));
   assign local_sc_match = i_reservation_valid && i_reservation_addr == atomic_addr_q &&
       i_reservation_size == atomic_size_q;
+`ifdef LOCAL_ATOMIC_DEPENDENCY
+  assign o_formal_local = atomic_local_q;
+  assign o_formal_phase = phase_q;
+  assign o_formal_home_write = active && phase_q == LookupWait && array_valid &&
+      operation_q == AtomicWriteOp && atomic_q && !atomic_sc_q && !atomic_local_q;
+`endif
+  // Only an owned context qualifies the atomic payload. While unowned, the
+  // payload follows the candidate selected by the registered service phase.
+  // Ownership holds it through installation and release.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      atomic_addr_q <= '0;
+      atomic_size_q <= '0;
+      atomic_tag_q <= '0;
+      atomic_read_q <= '0;
+    end else if (!atomic_q) begin
+      if (phase_q == LocalCheck && operation_q == ReadOp) begin
+        atomic_addr_q <= lookup_addr_q;
+        atomic_size_q <= rd_size_q[selected_read_q];
+        atomic_tag_q <= rd_tag_q[selected_read_q];
+      end else begin
+        atomic_addr_q <= i_sc_address;
+        atomic_size_q <= i_sc_size;
+        atomic_tag_q <= i_sc_tag;
+      end
+      atomic_read_q <= selected_read_q;
+    end
+  end
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       local_hit_q <= 1'b0;
@@ -1047,15 +1072,11 @@ module coherence_l1d #(
       pending_miss_q <= 1'b0;
       atomic_q <= 1'b0;
       atomic_local_q <= 1'b0;
-      atomic_read_q <= '0;
       sc_home_q <= 1'b0;
       atomic_sc_q <= 1'b0;
       atomic_granted_q <= 1'b0;
       atomic_written_q <= 1'b0;
       sc_committed_q <= 1'b0;
-      atomic_addr_q <= '0;
-      atomic_size_q <= '0;
-      atomic_tag_q <= '0;
       atomic_write_q <= 1'b0;
       atomic_data_q <= '0;
       atomic_mask_q <= '0;
@@ -1168,9 +1189,6 @@ module coherence_l1d #(
         atomic_granted_q <= 1'b0;
         atomic_written_q <= 1'b0;
         sc_committed_q <= 1'b0;
-        atomic_addr_q <= i_sc_address;
-        atomic_size_q <= i_sc_size;
-        atomic_tag_q <= i_sc_tag;
         sc_checked_q <= 1'b0;
       end
       if (i_p_valid && o_p_ready) begin
@@ -1416,10 +1434,6 @@ module coherence_l1d #(
                   phase_q <= local_sc_match ? LocalWaitWrite : LocalFail;
                 end else begin
                   atomic_sc_q <= 1'b0;
-                  atomic_addr_q <= lookup_addr_q;
-                  atomic_size_q <= rd_size_q[selected_read_q];
-                  atomic_tag_q <= rd_tag_q[selected_read_q];
-                  atomic_read_q <= selected_read_q;
                   phase_q <= LocalReadReady;
                 end
               end else if (operation_q == SCOp) begin
@@ -1432,9 +1446,6 @@ module coherence_l1d #(
                 atomic_sc_q <= 1'b0;
                 atomic_granted_q <= 1'b0;
                 atomic_written_q <= 1'b0;
-                atomic_addr_q <= lookup_addr_q;
-                atomic_size_q <= rd_size_q[selected_read_q];
-                atomic_tag_q <= rd_tag_q[selected_read_q];
                 phase_q <= Acquire;
               end
             end else phase_q <= Idle;
@@ -1647,8 +1658,31 @@ module coherence_l1d #(
         insert_lookup_valid_q <= 1'b0;
     end
   end
+  logic [ADDR_WIDTH-1:0] reference_atomic_addr_q;
+  logic [2:0] reference_atomic_size_q, reference_atomic_read_q;
+  logic [TAG_BITS-1:0] reference_atomic_tag_q;
   always_ff @(posedge i_clk) begin
+    if (i_sc_valid && o_sc_ready) begin
+      reference_atomic_addr_q <= i_sc_address;
+      reference_atomic_size_q <= i_sc_size;
+      reference_atomic_tag_q <= i_sc_tag;
+    end
+    if (local_decision && operation_q == ReadOp) begin
+      reference_atomic_addr_q <= lookup_addr_q;
+      reference_atomic_size_q <= rd_size_q[selected_read_q];
+      reference_atomic_tag_q <= rd_tag_q[selected_read_q];
+      reference_atomic_read_q <= selected_read_q;
+    end
     if (sim_reset_seen_q && !i_rst) begin
+      // The CPU presents one selected atomic until its ownership ends.
+      if (local_decision && operation_q == ReadOp)
+        p_atomic_single_owner : assert (!atomic_q);
+      if (atomic_q) begin
+        p_atomic_context_identity : assert ({atomic_addr_q, atomic_size_q, atomic_tag_q} ==
+            {reference_atomic_addr_q, reference_atomic_size_q, reference_atomic_tag_q});
+        if (atomic_local_q && !atomic_sc_q)
+          p_atomic_read_identity : assert (atomic_read_q == reference_atomic_read_q);
+      end
       if (read_owed_q && rd_candidate && active && phase_q == Lookup)
         p_store_yields_read : assert (operation_q != StoreOp);
       if (store_pop && operation_q == StoreOp && read_waiting_q)
@@ -1977,7 +2011,10 @@ module coherence_l1d #(
         assume (!rd_valid_q[i_read_id]);
         assume (!o_read_valid || o_read_id != i_read_id);
         assume (i_read_kind <= ReadAMO);
-        if (i_read_kind == ReadAMO) assume (!pending_q && !store_push);
+        if (i_read_kind == ReadAMO) begin
+          assume (!pending_q && !store_push);
+          assume (!atomic_q && !amo_waiting && !i_sc_valid);
+        end
       end
       if (|i_write_mask) begin
         if (i_write_atomic) begin
@@ -1990,6 +2027,8 @@ module coherence_l1d #(
           assume (store_launch_ready_q);
         end
       end
+      // The CPU's selected context serializes AMO and SC presentation.
+      if (i_sc_valid) assume (!atomic_q && !amo_waiting);
       if (i_sc_valid && o_sc_ready) assume (!store_push);
       if (i_sc_commit) assume (atomic_q && atomic_sc_q && atomic_granted_q);
       // The selected-SC contract keeps the reservation through installation.

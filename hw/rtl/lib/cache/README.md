@@ -502,6 +502,11 @@ It holds the service engine through the read, tagged write, array installation
 and registered release. Probes, grant installation, replacement and maintenance
 wait during that interval. The saved sector image supplies the masked write.
 A local atomic allocates no home identity and sends no C or U.
+A Modified hit blocked by a same-sector endpoint or frozen writeback repeats
+its lookup until that conflict clears. SC retries take priority over reads
+between those lookups, which can delay unrelated array service.
+The atomic address, size, tag and read slot follow the selected candidate
+while the ownership context is invalid and hold while it is valid.
 
 The CPU arms a tagged ROB-head context before cache presentation. The active,
 unretired context identifies a valid ROB head. Interrupt and debug entry
