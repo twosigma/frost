@@ -3616,6 +3616,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="branch_predictor",
         description="Branch-target lookup and predictor training",
     ),
+    "backing_btb": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.branch_prediction.test_backing_btb",
+        hdl_toplevel_module="backing_btb",
+        description="Backing BTB training, slot positions, replacement, and reset",
+    ),
+    "backing_btb_four_way": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.branch_prediction.test_backing_btb",
+        hdl_toplevel_module="backing_btb",
+        description="Backing BTB with four ways",
+        verilator_extra_args=("-GWAYS=4",),
+    ),
     "direction_predictor": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.branch_prediction.test_direction_predictor",
         hdl_toplevel_module="direction_predictor",

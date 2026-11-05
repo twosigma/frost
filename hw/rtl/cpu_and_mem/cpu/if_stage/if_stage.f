@@ -27,6 +27,9 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/fetch_redirect.sv
 # Low target sums carried to PD
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pd_target_candidate.sv
 
+# Prediction candidates captured with stalled packets
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/slot2_prediction_capture.sv
+
 # Instruction MMU - Bare-mode pass-through and Sv39 translation of the fetch PC;
 # its TLB module (mmu/dtlb.sv) is listed in tomasulo_wrapper.f
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/immu.sv

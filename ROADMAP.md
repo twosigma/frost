@@ -351,16 +351,19 @@ and targeted microbenchmarks give these items:
    In simulation the walker cache takes a miss in a chain of 20 or more pages
    from 93 to 37 cycles, and the larger DTLB takes chains of up to 32 pages
    to 5 cycles.
-4. Branch prediction. A misprediction costs about 7 cycles, and the BTB has
-   256 direct-mapped entries. A 1024-entry two-way or four-way BTB is the
-   largest expected gain for Linux: in Linux-like traces the 256-entry BTB
-   misses on 44 to 46% of lookups, and a 1024-entry two-way one on 7 to 11%.
-   In bare-metal microbenchmarks a taken branch costs about 5 cycles, and a
-   loop of four additions runs at 0.6 IPC with translation off; those
-   small-loop costs come from fetch coverage and packet formation, not BTB
-   capacity. The BTB read is on the fetch loop, one of the hardest paths at
-   the target clock, so a larger table could also sit behind the existing
-   one as a registered second level.
+4. Branch prediction. A misprediction costs about 7 cycles. The BTB has 256
+   direct-mapped entries, and a 1024-entry two-way backing BTB behind it
+   predicts the jumps, calls and returns it misses through a PD redirect, at
+   that redirect's cost of two bubbles. In Linux-like traces the 256-entry
+   BTB misses on 44 to 46% of lookups, and a 1024-entry two-way one on 7 to
+   11%. A slot-1 conditional branch that misses the BTB is redirected by PD
+   when its direction predictors say taken, at the same cost, and a slot-2
+   one recovers from execution. A backing hit served from IF would save a
+   bubble, but its correction would sit on the fetch loop, one of the hardest
+   paths at the target clock. In bare-metal microbenchmarks a taken branch
+   costs about 5 cycles, and a loop of four additions runs at 0.6 IPC with
+   translation off; those small-loop costs come from fetch coverage and
+   packet formation, not BTB capacity.
 5. Floating point. One engine executes F and D instructions one at a time.
    Arithmetic shares an iterative adder. Comparisons, moves, min/max, FCLASS
    and sign injection use two-cycle paths. Integer-to-FP conversion takes

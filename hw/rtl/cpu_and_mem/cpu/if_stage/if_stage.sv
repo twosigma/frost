@@ -116,11 +116,21 @@ module if_stage #(
     input logic i_dir_update_valid,
     input logic [riscv_pkg::BpDirIdxBits-1:0] i_dir_update_idx,
     input logic i_dir_update_taken,
-    // PD redirect: a slot-1 conditional branch whose final direction differs
-    // from the BTB direction IF followed, with that direction (from pd_stage)
+    // PD redirect (from pd_stage): a slot-1 conditional branch whose final
+    // direction differs from the BTB direction IF followed, or a backing BTB
+    // prediction of a jump in either slot, with the new direction and target
     input logic i_pd_redirect,
     input logic i_pd_redirect_taken,
     input logic [XLEN-1:0] i_pd_redirect_target,
+    // A PD redirect's return address stack operation, for a backing BTB
+    // prediction of a call, return, or coroutine swap (from pd_stage)
+    input logic i_pd_redirect_ras_push,
+    input logic i_pd_redirect_ras_pop,
+    input logic [XLEN-1:0] i_pd_redirect_ras_link,
+    // The PC of the backing BTB entry that a firing PD redirect used, whose
+    // replacement state the backing BTB refreshes (from pd_stage)
+    input logic i_pd_backing_refresh,
+    input logic [XLEN-1:0] i_pd_backing_refresh_pc,
     output logic [XLEN-1:0] o_pc,
     // The previous cycle consumed the stall-captured packet. The provider
     // uses this to classify PC movement as served. o_pc holds the owed fetch
@@ -178,6 +188,13 @@ module if_stage #(
     // Slot-2 packet. sel_nop marks an invalid slot; PD and ID propagate it
     // as a NOP so dispatch sees i_valid_2='0.
     output riscv_pkg::from_if_to_pd_t o_from_if_to_pd_2,
+    // Backing BTB result for each slot of the packet (index 0 is slot 1),
+    // replay-aligned like the packet: a hit, the entry's size and return
+    // type, and target bits [PhysAddrBits-1:1]. PD qualifies it.
+    output logic [1:0] o_backing_hit,
+    output logic [1:0] o_backing_compressed,
+    output logic [1:0] o_backing_return,
+    output logic [1:0][riscv_pkg::PhysAddrBits-2:0] o_backing_target,
     // Replay-aligned control-flow class from the aligner's predecode, used
     // by frontend_validity_tracker.
     output logic o_slot1_has_control_flow,
@@ -254,6 +271,31 @@ module if_stage #(
   riscv_pkg::pc_pending_rel_t slot2_live_target_rel_pending;
   logic slot2_predicted_is_call;
   logic slot2_predicted_is_return;
+  logic slot2_prediction_used_live;
+  logic slot2_prediction_used_for_pc_live;
+  logic slot2_prediction_used_for_fetch_mux_live;
+  logic slot2_staged_prediction_used_for_pc_live;
+  logic [XLEN-1:0] slot2_predicted_target_for_pc_live;
+  logic [XLEN-1:0] slot2_staged_predicted_target_live;
+  riscv_pkg::pc_pending_rel_t slot2_staged_target_rel_pending_live;
+  logic slot2_replay_request;
+  logic slot2_replay_consumed;
+  logic [XLEN-1:0] slot2_predicted_target_sc;
+  logic [1:0] slot2_predicted_kind_sc;
+  riscv_pkg::pc_pending_rel_t slot2_staged_target_rel_pending_sc;
+
+  assign slot2_prediction_used = slot2_prediction_used_live || slot2_replay_consumed;
+  assign slot2_prediction_used_for_pc = slot2_prediction_used_for_pc_live || slot2_replay_request;
+  assign slot2_prediction_used_for_fetch_mux =
+      slot2_prediction_used_for_fetch_mux_live || slot2_replay_request;
+  assign slot2_staged_prediction_used_for_pc =
+      slot2_staged_prediction_used_for_pc_live || slot2_replay_request;
+  assign slot2_predicted_target_for_pc = if_stage_stall_registered ? slot2_predicted_target_sc :
+      slot2_predicted_target_for_pc_live;
+  assign slot2_staged_predicted_target = if_stage_stall_registered ? slot2_predicted_target_sc :
+      slot2_staged_predicted_target_live;
+  assign slot2_staged_target_rel_pending = if_stage_stall_registered ?
+      slot2_staged_target_rel_pending_sc : slot2_staged_target_rel_pending_live;
 
   // Return address stack: the top of stack, valid count and top entry, the
   // recovery point of the packet leaving IF now, the push or pop for that
@@ -769,18 +811,18 @@ module if_stage #(
       .o_control_flow_to_halfword_pred(control_flow_to_halfword_pred),
 
       // Slot-2 prediction outputs.
-      .o_slot2_prediction_used(slot2_prediction_used),
-      .o_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
-      .o_slot2_prediction_used_for_fetch_mux(slot2_prediction_used_for_fetch_mux),
-      .o_slot2_staged_prediction_used_for_pc(slot2_staged_prediction_used_for_pc),
+      .o_slot2_prediction_used(slot2_prediction_used_live),
+      .o_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc_live),
+      .o_slot2_prediction_used_for_fetch_mux(slot2_prediction_used_for_fetch_mux_live),
+      .o_slot2_staged_prediction_used_for_pc(slot2_staged_prediction_used_for_pc_live),
       .o_slot1_aliases_slot2_candidate(slot1_aliases_slot2_candidate),
       .o_slot2_live_target_used_for_pc_cofactor(slot2_live_target_used_for_pc_cofactor),
       .o_slot2_predicted_taken(slot2_predicted_taken),
       .o_slot2_predicted_target(slot2_predicted_target),
-      .o_slot2_predicted_target_for_pc(slot2_predicted_target_for_pc),
-      .o_slot2_staged_predicted_target(slot2_staged_predicted_target),
+      .o_slot2_predicted_target_for_pc(slot2_predicted_target_for_pc_live),
+      .o_slot2_staged_predicted_target(slot2_staged_predicted_target_live),
       .o_slot2_live_predicted_target(slot2_live_predicted_target),
-      .o_slot2_staged_target_rel_pending(slot2_staged_target_rel_pending),
+      .o_slot2_staged_target_rel_pending(slot2_staged_target_rel_pending_live),
       .o_slot2_live_target_rel_pending(slot2_live_target_rel_pending),
       .o_slot2_predicted_is_call(slot2_predicted_is_call),
       .o_slot2_predicted_is_return(slot2_predicted_is_return),
@@ -993,16 +1035,23 @@ module if_stage #(
     end
   end
 `endif
+  // The execute and PD redirects and the flush terms combine first, so the
+  // fetch-loop prediction terms, the window resteer and the PC load enable
+  // can reach the register through one LUT.
+  (* keep = "true" *)logic fetch_cached_retarget_redirect;
+  (* keep = "true" *)logic fetch_cached_retarget_flush;
+  assign fetch_cached_retarget_redirect = i_from_ex_comb.branch_taken || i_pd_redirect;
+  assign fetch_cached_retarget_flush = i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken ||
+                                       i_fence_i_flush;
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
       o_fetch_cached_retarget <= 1'b0;
     end else begin
       o_fetch_cached_retarget <=
           (pc_update_en &&
-           (i_from_ex_comb.branch_taken || i_pd_redirect ||
-            slot2_prediction_used_for_pc || live_prediction_emits_with_output ||
-            window_resteer_pc_reg)) ||
-          i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken || i_fence_i_flush;
+           (fetch_cached_retarget_redirect || slot2_prediction_used_for_pc ||
+            live_prediction_emits_with_output || window_resteer_pc_reg)) ||
+          fetch_cached_retarget_flush;
     end
   end
 
@@ -2032,20 +2081,88 @@ module if_stage #(
 `endif
 
   // ===========================================================================
+  // Backing BTB
+  // ===========================================================================
+  // The lookup reads the set of the fetch PC register's word through the
+  // tagged predictor's copy of o_pc. The next cycle compares the packet IF
+  // serves; a packet whose set was not read gets no hit. Replay keeps the
+  // result of the packet's first stalled cycle, like the packet fields.
+  // Training takes the BTB updates of JALs and JALRs, and a refresh, through
+  // a register, the entry of each PD redirect that the backing BTB served.
+  localparam int unsigned BackingIndexBits = $clog2(
+      riscv_pkg::BackingBtbEntries / riscv_pkg::BackingBtbWays
+  );
+  localparam int unsigned BackingTargetBits = riscv_pkg::PhysAddrBits - 1;
+  localparam int unsigned BackingResultBits = 6 + 2 * BackingTargetBits;
+  logic [1:0] backing_hit_live;
+  logic [1:0] backing_compressed_live;
+  logic [1:0] backing_return_live;
+  logic [1:0][BackingTargetBits-1:0] backing_target_live;
+  logic backing_refresh_q;
+  logic [XLEN-1:0] backing_refresh_pc_q;
+  always_ff @(posedge i_clk) begin
+    backing_refresh_q <= i_pd_backing_refresh;
+    backing_refresh_pc_q <= i_pd_backing_refresh_pc;
+  end
+  backing_btb #(
+      .XLEN(XLEN)
+  ) u_backing_btb (
+      .i_clk,
+      .i_reset(i_pipeline_ctrl.reset),
+      .i_lookup_index(pc_tage_lookup[BackingIndexBits+1:2]),
+      .i_packet_pc(pc_reg),
+      .i_packet_compressed(is_compressed),
+      .o_hit(backing_hit_live),
+      .o_compressed(backing_compressed_live),
+      .o_return(backing_return_live),
+      .o_target(backing_target_live),
+      .i_update(i_from_ex_comb.btb_update && i_from_ex_comb.btb_update_jump),
+      .i_update_pc(i_from_ex_comb.btb_update_pc),
+      .i_update_target(i_from_ex_comb.btb_update_target),
+      .i_update_compressed(i_from_ex_comb.btb_update_compressed),
+      .i_update_return(i_from_ex_comb.btb_update_return),
+      .i_refresh(backing_refresh_q),
+      .i_refresh_pc(backing_refresh_pc_q)
+  );
+
+  logic [BackingResultBits-1:0] backing_result_live;
+  logic [BackingResultBits-1:0] backing_result_sc;
+  assign backing_result_live = {
+    backing_hit_live, backing_compressed_live, backing_return_live, backing_target_live
+  };
+  stall_capture_reg #(
+      .WIDTH(BackingResultBits)
+  ) u_backing_result_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(backing_result_live),
+      .o_data(backing_result_sc)
+  );
+  assign {o_backing_hit, o_backing_compressed, o_backing_return, o_backing_target} =
+      replay_saved_if_outputs ? backing_result_sc : backing_result_live;
+
+  // ===========================================================================
   // Return Address Stack Operation and Recovery Point
   // ===========================================================================
-  // Only packets accepted by PD update the RAS: stalls, flushes, and PD
-  // redirects block operations. Used predictions typed as calls push their
-  // link; returns pop; coroutine swaps do both. A taken instruction ends the
-  // bundle, so at most one slot operates on the stack.
+  // Packets accepted by PD update the RAS: stalls, flushes, and PD redirects
+  // block their operations. Used predictions typed as calls push their link;
+  // returns pop; coroutine swaps do both. A taken instruction ends the
+  // bundle, so at most one slot operates on the stack. A backing BTB
+  // redirect's operation from PD takes the same registers below, in the
+  // redirect's first cycle, stall or not.
   //
   // No younger prediction may use the old stack top during an operation.
-  // Registered metadata, pending handoffs, and stall replay block prediction;
+  // Registered metadata, pending handoffs, and stall replay block live prediction;
   // slot-2 prediction kills the slot-1 prediction; a collapsed-lead packet
   // carries its own lookup.
   //
-  // Both packets checkpoint the stack before their operation. The state is
-  // stable during a stall, so replay retains the original recovery point.
+  // Both packets checkpoint the stack before their operation. Only a backing
+  // BTB redirect's operation changes the state during a stall, and the
+  // packet IF holds then is a wrong-path one that the redirect drops, so
+  // replay retains the original recovery point.
   logic ras_packet_accepted;
   logic ras_op_slot1;
   logic ras_op_slot2;
@@ -2063,6 +2180,21 @@ module if_stage #(
   assign ras_pop = (ras_op_slot1 && slot1_packet_is_return) ||
                    (ras_op_slot2 && slot2_packet_is_return);
 
+  // A backing BTB prediction from PD operates the stack in the redirect's
+  // first cycle, when IF accepts no packet of its own, and takes the slot-1
+  // operation registers. A stall holds the redirect, and the operation
+  // happens once, in that first cycle. A flush in that cycle, which precedes
+  // every stack restore, drops it; a later flush leaves the restore to undo
+  // it.
+  logic pd_ras_operation;
+  logic pd_ras_operation_done_q;
+  assign pd_ras_operation = (i_pd_redirect_ras_push || i_pd_redirect_ras_pop) &&
+                            !pd_ras_operation_done_q && !i_pipeline_ctrl.flush;
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset || i_pipeline_ctrl.flush) pd_ras_operation_done_q <= 1'b0;
+    else pd_ras_operation_done_q <= (pd_ras_operation || pd_ras_operation_done_q) && if_stage_stall;
+  end
+
   // Register the operation's parts for timing; the stack applies them next
   // cycle. Reset drops the operation of its own cycle.
   logic ras_packet_accepted_q;
@@ -2073,14 +2205,14 @@ module if_stage #(
   logic ras_op_slot1_q;
   logic ras_op_slot2_q;
   always_ff @(posedge i_clk) begin
-    ras_packet_accepted_q <= !i_pipeline_ctrl.reset && ras_packet_accepted;
-    ras_slot1_taken_q     <= o_from_if_to_pd.btb_predicted_taken;
-    ras_slot1_call_q      <= slot1_packet_is_call;
-    ras_slot1_return_q    <= slot1_packet_is_return;
-    ras_slot2_taken_q     <= o_from_if_to_pd_2.btb_predicted_taken;
+    ras_packet_accepted_q <= !i_pipeline_ctrl.reset && (ras_packet_accepted || pd_ras_operation);
+    ras_slot1_taken_q     <= pd_ras_operation || o_from_if_to_pd.btb_predicted_taken;
+    ras_slot1_call_q      <= pd_ras_operation ? i_pd_redirect_ras_push : slot1_packet_is_call;
+    ras_slot1_return_q    <= pd_ras_operation ? i_pd_redirect_ras_pop : slot1_packet_is_return;
+    ras_slot2_taken_q     <= !pd_ras_operation && o_from_if_to_pd_2.btb_predicted_taken;
     ras_slot2_call_q      <= slot2_packet_is_call;
     ras_slot2_return_q    <= slot2_packet_is_return;
-    ras_link_address_q    <= link_address_sc;
+    ras_link_address_q    <= pd_ras_operation ? i_pd_redirect_ras_link : link_address_sc;
     ras_link_address_2_q  <= slot2_link_address;
   end
   assign ras_op_slot1_q = ras_packet_accepted_q && ras_slot1_taken_q &&
@@ -2099,6 +2231,8 @@ module if_stage #(
              prediction_used, slot2_prediction_used}
         )) begin
       p_ras_one_operation_per_bundle : assert (!(ras_op_slot1 && ras_op_slot2));
+      p_pd_ras_operation_has_no_if_operation :
+      assert (!(pd_ras_operation && (ras_op_slot1 || ras_op_slot2)));
       p_ras_operation_has_no_younger_live_prediction :
       assert (!(ras_op_slot1 && !live_prediction_emits_with_output &&
                 prediction_used && !slot2_prediction_used));
@@ -2630,7 +2764,7 @@ module if_stage #(
   assign o_from_if_to_pd_2.raw_parcel = replay_saved_if_outputs ? raw_parcel_2_saved : raw_parcel_2;
   assign o_from_if_to_pd_2.decomp_illegal = replay_saved_if_outputs ? slot2_decomp_illegal_sc :
                                             slot2_decomp_illegal;
-  // The PD redirect is slot-1 only.
+  // PD's direction redirect is slot-1 only.
   assign o_from_if_to_pd_2.pd_target_native_low = '0;
   assign o_from_if_to_pd_2.pd_target_native_high_select = '0;
   assign o_from_if_to_pd_2.pd_target_compressed_low = '0;
@@ -2685,59 +2819,74 @@ module if_stage #(
   assign o_from_if_to_pd_2.fetch_fault_page = fetch_fault_2_effective[1];
   assign o_from_if_to_pd_2.fetch_fault_hi = fetch_fault_2_effective[0];
 
-  // Slot-2 BTB outputs register with the instruction-RAM request; tags and
-  // metadata resolve when slot 2 reaches IF. Replay captures this result.
-  // Mark predicted_taken only if the prediction redirects fetch, so branch
-  // resolution compares against the path actually taken.
-  logic            slot2_predicted_taken_sc;
-  logic [XLEN-1:0] slot2_predicted_target_sc;
-
-  stall_capture_reg #(
-      .WIDTH(1)
-  ) u_slot2_predicted_taken_sc (
+  // Capture the validated staged candidate with its packet before live stall
+  // suppresses consumption. Its target, type, and pending-PC relations stay
+  // together while the BTB reads other rows. Replay owns the saved packet;
+  // every redirect cancels the candidate even while the front end is held.
+  logic slot2_capture_kill;
+  assign slot2_capture_kill = flush_for_c_ext_safe || i_pipeline_ctrl.flush ||
+      i_pd_redirect || i_from_ex_comb.branch_taken || i_trap_ctrl.trap_taken ||
+      i_trap_ctrl.mret_taken || i_fence_i_flush;
+  slot2_prediction_capture #(
+      .WIDTH(XLEN + 2 + $bits(slot2_staged_target_rel_pending))
+  ) u_slot2_prediction_capture (
       .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
+      .i_reset(i_pipeline_ctrl.reset),
+      .i_kill(slot2_capture_kill),
       .i_stall(if_stage_stall),
       .i_stall_registered(if_stage_stall_registered),
-      .i_data(slot2_predicted_taken),
-      .o_data(slot2_predicted_taken_sc)
+      .i_replay(replay_saved_if_outputs && !sel_nop_2_saved),
+      .i_disable(i_disable_branch_prediction || any_holdoff_safe ||
+                 prediction_holdoff || pending_prediction_holdoff_wcs0 ||
+                 window_cannot_serve_pc_reg),
+      .i_candidate(slot2_staged_prediction_used_for_pc_live),
+      .i_payload({
+        slot2_predicted_target,
+        slot2_predicted_is_call,
+        slot2_predicted_is_return,
+        slot2_staged_target_rel_pending_live
+      }),
+      .o_request(slot2_replay_request),
+      .o_consumed(slot2_replay_consumed),
+      .o_payload({
+        slot2_predicted_target_sc, slot2_predicted_kind_sc, slot2_staged_target_rel_pending_sc
+      })
   );
 
-  stall_capture_reg #(
-      .WIDTH(XLEN)
-  ) u_slot2_predicted_target_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(slot2_predicted_target),
-      .o_data(slot2_predicted_target_sc)
-  );
+`ifndef SYNTHESIS
+  logic [XLEN-1:0] slot2_candidate_pc_saved;
+  always_ff @(posedge i_clk) begin
+    if (if_stage_stall && !if_stage_stall_registered) slot2_candidate_pc_saved <= slot2_pc_live;
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && slot2_replay_request) begin
+      p_slot2_replay_has_exact_packet_owner :
+      assert (replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop &&
+              o_from_if_to_pd_2.program_counter == slot2_candidate_pc_saved);
+      p_slot2_replay_has_no_live_prediction :
+      assert (!slot2_prediction_used_live && !prediction_used && !prediction_used_r);
+      p_slot2_replay_target_matches_redirect :
+      assert (o_from_if_to_pd_2.btb_predicted_target == slot2_staged_predicted_target);
+      p_slot2_replay_pending_relations_match :
+      assert (slot2_staged_target_rel_pending == {
+        slot2_staged_predicted_target == pending_prediction_pc,
+        slot2_staged_predicted_target[XLEN-1:1] < pending_prediction_pc[XLEN-1:1],
+        slot2_staged_predicted_target[XLEN-1:1] > pending_prediction_pc[XLEN-1:1],
+        slot2_staged_predicted_target == pending_prediction_prev_pc,
+        slot2_staged_predicted_target == pending_prediction_prev_native_pc
+      });
+    end
+  end
+`endif
 
   // Clear the slot-2 taken flag when slot 2 is a NOP.
   logic slot2_sel_nop_effective;
   assign slot2_sel_nop_effective = replay_saved_if_outputs ? sel_nop_2_saved : sel_nop_2;
   assign o_from_if_to_pd_2.btb_predicted_taken = slot2_sel_nop_effective ? 1'b0 :
-                                     (replay_saved_if_outputs ? slot2_predicted_taken_sc :
+                                     (replay_saved_if_outputs ? slot2_replay_consumed :
                                       slot2_predicted_taken);
   assign o_from_if_to_pd_2.btb_predicted_target = replay_saved_if_outputs ?
                                                   slot2_predicted_target_sc :
                                                   slot2_predicted_target;
   // Types of the entry behind the slot-2 target, for the stack operation.
-  logic [1:0] slot2_predicted_kind_sc;
-  stall_capture_reg #(
-      .WIDTH(2)
-  ) u_slot2_predicted_kind_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data({slot2_predicted_is_call, slot2_predicted_is_return}),
-      .o_data(slot2_predicted_kind_sc)
-  );
   assign slot2_packet_is_call = replay_saved_if_outputs ? slot2_predicted_kind_sc[1] :
                                                           slot2_predicted_is_call;
   assign slot2_packet_is_return = replay_saved_if_outputs ? slot2_predicted_kind_sc[0] :
@@ -2753,7 +2902,8 @@ module if_stage #(
   // Carry its PC's index for conditional-branch training at commit.
   assign o_from_if_to_pd_2.bp_dir_taken = 1'b0;
   assign o_from_if_to_pd_2.bp_dir_idx = replay_saved_if_outputs ? bp_dir_idx_2_sc : bp_dir_idx_2;
-  // PD redirects only slot 1, so slot 2 carries no tagged-predictor direction.
+  // PD's direction redirect is slot-1 only, so slot 2 carries no
+  // tagged-predictor direction.
   assign o_from_if_to_pd_2.tage_valid = 1'b0;
   assign o_from_if_to_pd_2.tage_taken = 1'b0;
 

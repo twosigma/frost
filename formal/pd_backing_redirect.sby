@@ -1,0 +1,25 @@
+[tasks]
+bmc
+cover
+
+[options]
+bmc: mode bmc
+bmc: depth 10
+cover: mode cover
+cover: depth 10
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -formal -sv rvc_decompressor.sv
+read -formal -sv pd_target_high_precompute.sv
+read -formal -sv pd_stage.sv
+prep -top pd_stage
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv
+../hw/rtl/cpu_and_mem/cpu/pd_stage/pd_target_high_precompute.sv
+../hw/rtl/cpu_and_mem/cpu/pd_stage/pd_stage.sv

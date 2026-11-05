@@ -119,8 +119,9 @@ def _assert_btb_update(
     compressed: bool,
     call: bool = False,
     ret: bool = False,
+    jump: bool = False,
 ) -> None:
-    """Assert the BTB update payload fields."""
+    """Assert the BTB update payload fields; only a JAL or JALR is a jump."""
     assert output["btb_update"]
     assert output["btb_update_pc"] == (pc & MASK_XLEN)
     assert output["btb_update_target"] == (target & MASK_XLEN)
@@ -128,6 +129,7 @@ def _assert_btb_update(
     assert output["btb_update_compressed"] is compressed
     assert output["btb_update_call"] is call
     assert output["btb_update_return"] is ret
+    assert output["btb_update_jump"] is jump
 
 
 @cocotb.test()
@@ -283,7 +285,13 @@ async def test_commit_mispredict_jal_updates_btb(dut: Any) -> None:
 
         assert output["branch_target_address"] == 0x400
         _assert_btb_update(
-            output, pc=0x300, target=0x500, taken=True, compressed=False, call=call
+            output,
+            pc=0x300,
+            target=0x500,
+            taken=True,
+            compressed=False,
+            call=call,
+            jump=True,
         )
         _assert_late_btb_candidate(dut, pc=0x300, taken=True)
 
@@ -317,7 +325,13 @@ async def test_commit_mispredict_jalr_updates_btb(dut: Any) -> None:
         assert output["branch_taken"]
         assert output["branch_target_address"] == 0x700
         _assert_btb_update(
-            output, pc=0x600, target=0x710, taken=True, compressed=False, call=call
+            output,
+            pc=0x600,
+            target=0x710,
+            taken=True,
+            compressed=False,
+            call=call,
+            jump=True,
         )
         _assert_late_btb_candidate(dut, pc=0x600, taken=True)
 
@@ -356,7 +370,13 @@ async def test_commit_mispredict_return_restores_and_pops_ras(dut: Any) -> None:
     assert not output["ras_push_after_restore"]
     # The return trains its BTB entry as a return, with the target it took.
     _assert_btb_update(
-        output, pc=0x880, target=0x900, taken=True, compressed=False, ret=True
+        output,
+        pc=0x880,
+        target=0x900,
+        taken=True,
+        compressed=False,
+        ret=True,
+        jump=True,
     )
 
 
@@ -437,6 +457,7 @@ async def test_commit_mispredict_coroutine_replays_pop_then_push(dut: Any) -> No
         compressed=False,
         call=True,
         ret=True,
+        jump=True,
     )
 
 
