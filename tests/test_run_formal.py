@@ -269,6 +269,7 @@ FORMAL_TARGETS = [
             "coh_home_control_partition_prove",
             "coh_home_control4_bmc",
             "coh_home_control4_ultra_bmc",
+            "coh_home_fill_cover",
             "coh_home_wb_prove",
             "coh_home_victim_cover",
             "coh_home_error_cover",
@@ -1462,6 +1463,7 @@ SBY_TASKS = [
         "coh_home_prefetch_cover",
         "Prefetch fills that install, gain a seat or fail; reserve and no-fill decisions.",
     ),
+    ("coh_home_fill_cover", "Fill installation and waiter wake reachability."),
     ("coh_home_array_prove", "Independent L2 ports preserve watched bytes."),
     *[
         (

@@ -4,6 +4,7 @@ coh_home_control64_prove control ctl wide
 coh_home_control_partition_prove control ctl partition
 coh_home_control4_bmc bmc4 ctl four
 coh_home_control4_ultra_bmc bmc4 ctl four ultra
+coh_home_fill_cover control ctl fill_covers
 coh_home_wb_prove wb unit
 coh_home_victim_cover covers
 coh_home_error_cover covers error
@@ -24,6 +25,8 @@ timeout 180
 control: timeout 600
 bmc4: timeout 1200
 pfcover: timeout 1200
+fill_covers: mode cover
+fill_covers: depth 30
 
 [engines]
 control: smtbmc boolector
@@ -37,6 +40,7 @@ read -formal -sv coherence_seat_select.sv coherence_work_select.sv
 read -sv cache_perf_pkg.sv
 error: verilog_defines -D COHERENCE_HOME_COVER_ERROR
 pfcover: verilog_defines -D COHERENCE_HOME_PREFETCH_COVER
+fill_covers: verilog_defines -D COHERENCE_HOME_FILL_COVER
 read -sv coherence_pkg.sv
 ctl: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_endpoint.sv
 wb: read -sv coherence_home_endpoint.sv
