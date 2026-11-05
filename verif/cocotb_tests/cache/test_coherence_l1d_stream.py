@@ -874,6 +874,67 @@ async def credited_miss_waits_for_buffered_grant(dut: Any) -> None:
 
 
 @cocotb.test()
+async def credited_miss_keeps_its_turn(dut: Any) -> None:
+    """Keep the circular read pointer at a credited miss for the next selection."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 4:
+        return
+    await b.reset()
+    await b.set(i_read_ready=0)
+    base = 0x80005000
+    await b.issue(0, base)
+    await b.issue(1, base + 512)
+    await b.issue(2, base + 8)
+    await b.requests_at_least(2)
+    await b.tick(20)
+    await b.send_grant(0)
+    await b.send_grant(1)
+    await b.issue(3, base + 1024)
+    for _ in range(100):
+        if b.get("phase_q") == 0 and b.get("grant_read_yield"):
+            assert b.get("rd_pick") == 3
+            pointer = b.get("rd_rr_q")
+            await b.tick()
+            assert b.get("selected_read_q") == 3 and b.get("rd_rr_q") == pointer
+            break
+        await b.tick()
+    else:
+        raise AssertionError("The fresh demand did not receive the credited turn")
+    # The credited lookup misses beside the buffered grant. The next ordinary
+    # selection returns to read 3 before the waiter in read 2.
+    for _ in range(100):
+        await b.tick()
+        if b.get("phase_q") == 0:
+            break
+    for _ in range(200):
+        if b.get("phase_q") == 1 and b.get("operation_q") == 0:
+            assert b.get("selected_read_q") == 3
+            break
+        await b.tick()
+    else:
+        raise AssertionError("No ordinary read selection followed the credited miss")
+    await b.requests_at_least(3)
+    assert b.requests[2][1][2] == base + 1024
+    mask = (1 << b.requests[0][0]) | (1 << b.requests[1][0])
+    for _ in range(100):
+        if b.get("o_c_valid") & mask == mask:
+            break
+        await b.tick()
+    else:
+        raise AssertionError("The buffered grants did not complete")
+    await b.release(0)
+    await b.release(1)
+    await b.drain(4)
+    assert sorted(b.responses) == [
+        (0, b.word(base), 0),
+        (1, b.word(base + 512), 0),
+        (2, b.word(base + 8), 0),
+        (3, b.word(base + 1024), 0),
+    ]
+    assert not b.get("o_fatal")
+
+
+@cocotb.test()
 async def empty_turn_and_probe_local_turn(dut: Any) -> None:
     """Consume one empty opportunity and preserve unused credit across held R."""
     b = StreamPrivate(dut)

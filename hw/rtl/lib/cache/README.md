@@ -268,7 +268,9 @@ the sector was installed and already replaced, and then looks up again.
 Grants install one at a time, endpoint 0's first and then the lowest-numbered
 load endpoint's. With stream look-ahead enabled, a successful demand installation
 with a reader waiting on that endpoint gives an eligible ordinary read one
-service turn before another load grant.
+service turn before another load grant. The circular read selector chooses
+the read but keeps its pointer, so a read that misses on this turn keeps its
+place for the next ordinary selection.
 The credit is consumed at the first probe-free grant-deferral opportunity,
 read lookup start or grant acceptance. An empty opportunity lasts one edge.
 Probe ownership preserves unused credit, and its following local turn bypasses

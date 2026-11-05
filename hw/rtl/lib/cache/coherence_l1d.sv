@@ -1465,12 +1465,13 @@ module coherence_l1d #(
             end else if (probe_priority || probe_valid_q) begin
               // Probe ownership excludes local selection through R acceptance.
             end else if (grant_read_hold) begin
+              // The credited turn leaves the circular pointer in place, so a
+              // read that misses and cannot acquire keeps its next turn.
               if (grant_read_yield) begin
                 maint_turn_q <= 1'b1;
                 operation_q <= ReadOp;
                 selected_read_q <= rd_pick;
                 lookup_addr_q <= rd_selected_addr;
-                rd_rr_q <= rd_pick + 1'b1;
                 phase_q <= Lookup;
               end
             end else if (grant_valid && grant_ready) begin
@@ -2197,6 +2198,7 @@ module coherence_l1d #(
           !probe_valid_q && !probe_priority)) begin
         assert (phase_q == Lookup && operation_q == ReadOp);
         assert (selected_read_q == $past(rd_pick));
+        p_read_turn_pointer : assert (rd_rr_q == $past(rd_rr_q));
       end
       if ($past(grant_read_hold && !grant_read_yield && active && phase_q == Idle &&
           !probe_valid_q && !probe_priority)) begin
