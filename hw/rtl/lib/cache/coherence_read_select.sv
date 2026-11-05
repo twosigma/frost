@@ -46,7 +46,7 @@ module coherence_read_select #(
     output logic [2:0] o_index,
     output logic [ADDR_WIDTH-1:0] o_address
 );
-  logic [7:0] eligible, load_miss, upper, first;
+  logic [7:0] eligible, load_miss, upper, first, status_eligible;
   (* keep = "true" *) logic [7:0] stored_eligible, write_eligible;
   (* keep = "true" *) logic stored_found, write_found;
   (* keep = "true" *) logic [7:0] first_upper, first_any;
@@ -81,8 +81,9 @@ module coherence_read_select #(
         !i_owned[index] && !i_waiting[index] && (!i_miss[index] || i_miss_retry[index]);
     assign eligible[index] = qualified && !blocked;
     wire available = i_valid[index] && !i_ready[index] &&
-        (i_kind[2*index+:2] != 2'd2 || i_atomic_protected) &&
-        !i_waiting[index] && (!i_miss[index] || i_miss_retry[index]);
+        (i_kind[2*index+:2] != 2'd2 || i_atomic_protected);
+    assign status_eligible[index] = !i_owned[index] && !i_waiting[index] &&
+        (!i_miss[index] || i_miss_retry[index]);
     assign stored_eligible[index] = available && !i_write_mask[index] && !stored_blocked;
     assign write_eligible[index] = available && i_write_mask[index];
     assign load_miss[index] = eligible[index] && i_miss[index] && i_kind[2*index+:2] == 2'd0;
@@ -100,10 +101,10 @@ module coherence_read_select #(
     end
   end
   assign first = (|upper) ? first_upper : first_any;
-  // Ownership qualifies availability after the other per-slot checks.
+  // Ownership, waiters and retry credit qualify both masks.
   // The shared write-address check qualifies the buffered-write result.
-  assign stored_found = |(stored_eligible & ~i_owned);
-  assign write_found = |(write_eligible & ~i_owned);
+  assign stored_found = |(stored_eligible & status_eligible);
+  assign write_found = |(write_eligible & status_eligible);
   assign o_found = stored_found || (write_found && !write_blocked);
   assign o_load_miss = |load_miss;
   always_comb begin

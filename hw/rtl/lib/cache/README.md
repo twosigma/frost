@@ -336,8 +336,9 @@ Allocation marks an empty slot valid. Read eligibility compares each physical sl
 writeback sectors. The comparisons use the stored slot addresses and the
 buffered allocation's address, and the slot mask selects between their
 results. Availability reduces stored and buffered-write candidates separately.
-Endpoint ownership qualifies each mask after the other per-slot checks;
-the shared write-address exclusion qualifies the buffered-write result.
+Both masks are qualified by endpoint ownership, waiting status and miss
+retry credits. The shared write-address exclusion qualifies the
+buffered-write result.
 Circular priority selects a qualified slot and its address.
 There are no E grants, silent upgrades, sharer hints or stream prefetches.
 The L1D has eight read slots and `L1D_NUM_MSHR` request endpoints. The home
