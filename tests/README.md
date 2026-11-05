@@ -61,8 +61,10 @@ The `coherence_endpoints`, `coherence_endpoints_single`, and
 `coherence_endpoints_wide` unit benches exercise channel layout, delayed grants,
 identity reuse, independent probe queues, keyed PutAck cancellation, errors,
 and cluster reset. The wide case uses 56-bit physical addresses and 16 fill
-identities. `test_coherence_endpoint_build.py` elaborates and synthesizes these
-geometries, checks the six-bit home-ID capacity boundary, rejects invalid
+identities. The `coherence_endpoints_local` and
+`coherence_endpoints_local_wide` benches apply the same checks to request
+endpoints with separate phase occupancy registers.
+`test_coherence_endpoint_build.py` elaborates and synthesizes these geometries, checks the six-bit home-ID capacity boundary, rejects invalid
 parameters, and checks cached, cache-disabled and DMA-disabled CPU builds.
 All CPU configurations use the coherent interfaces and their ordinary source
 filelists.

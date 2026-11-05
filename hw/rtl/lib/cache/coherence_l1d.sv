@@ -797,7 +797,8 @@ module coherence_l1d #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .SOURCE(0),
         .PORT_CLASS(0),
-        .SLOT(ep)
+        .SLOT(ep),
+        .LOCAL_PHASE_UPDATES(StreamEnabled && ep != 0)
     ) request (
         .i_clk(i_clk),
         .i_rst(i_rst),

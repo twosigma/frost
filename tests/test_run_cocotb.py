@@ -2586,6 +2586,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Coherent channel widths, ownership and keyed completion",
         verilator_extra_args=("--assert", "-GADDR_WIDTH=56", "-GL2_NUM_MSHR=16"),
     ),
+    "coherence_endpoints_local": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_endpoints",
+        hdl_toplevel_module="coherence_endpoints_test_harness",
+        description="Coherent request endpoints with local phase transitions",
+        verilator_extra_args=("--assert", "-GLOCAL_PHASE_UPDATES=1"),
+    ),
+    "coherence_endpoints_local_wide": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_endpoints",
+        hdl_toplevel_module="coherence_endpoints_test_harness",
+        description="Wide coherent request endpoints with local phase transitions",
+        verilator_extra_args=(
+            "--assert",
+            "-GLOCAL_PHASE_UPDATES=1",
+            "-GADDR_WIDTH=56",
+            "-GL2_NUM_MSHR=16",
+        ),
+    ),
     "coherence_endpoints_single": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_endpoints",
         hdl_toplevel_module="coherence_endpoints_test_harness",
