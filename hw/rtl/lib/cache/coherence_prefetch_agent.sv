@@ -457,7 +457,7 @@ module coherence_prefetch_agent #(
       end
       cover (&f_owned_q && &f_d_q);
       cover (f_c_fire && f_c.status == coherence_pkg::Error);
-      cover (f_u_fire);
+      cover (u_fire);
       cover (&f_owned_q && o_c_valid && !i_c_ready && i_fatal_stop);
       cover (data_drop);
       if (IfTable) cover (if_drop);

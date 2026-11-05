@@ -203,9 +203,13 @@ async def identities_and_held_completion(dut: Any) -> None:
     predicted = [base + index * b.line for index in range(2, 10)]
     assert b.lines("D") == predicted
     assert b.max_live == DATA_IDS
-    # Each fill installs its line after its memory response, with no
-    # identity left; later demands read the line without memory traffic.
+    # The home grants each Prefetch at its lookup, before the fill's memory
+    # response, so the fill goes on whether or not its identity is live.
+    # Every fill installs after that response, and later demands read the
+    # line without memory traffic.
+    grants = {f[3]: cycle for cycle, k, f in b.pf if k == "G"}
     for address in predicted:
+        assert grants[address] < b.returned[address]
         assert b.installed[address] >= b.returned[address]
         assert b.reads_of(address) == 1
         assert await b.read(address) == b.expected(address)
@@ -464,7 +468,7 @@ async def full_completion_queue_progress(dut: Any) -> None:
         + [(5, 0), (5, 1), (6, 0)]
         + [(7, s) for s in range(8)]
     )
-    # The lines each way holds now: resident, clean and returned lines hit.
+    # The line in each way: resident, clean and returned lines hit.
     ways = {(address // b.line % 4, way): address for address, way in b.allocations}
     resident = sorted(
         address
