@@ -27,6 +27,7 @@ module coherent_atomic_guard #(
     input logic i_entry_wins,
     input logic i_commit_valid,
     input logic [TAG_BITS-1:0] i_commit_tag,
+    // Local service ownership or a home transaction awaiting U.
     input logic i_home_live,
     input logic i_own_fault,
     output logic o_active,

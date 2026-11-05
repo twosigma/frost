@@ -869,3 +869,323 @@ async def reserved_store_credit_survives_maintenance_offer(dut: Any) -> None:
     await b.wait("o_maint_done")
     assert b.acknowledged == 2 and b.installed == 2
     assert not b.get("o_pending_store") and not b.get("o_fatal")
+
+
+async def local_atomic(
+    b: Private,
+    address: int,
+    old: int,
+    data: int,
+    *,
+    sc: bool = False,
+    size: int = 3,
+    reservation: int = 1,
+    probe_stage: int | None = 11,
+    probe_opcode: int = 1,
+    reservation_offset: int = 0,
+    reservation_size: int | None = None,
+    lose_reservation_stage: int | None = None,
+    pending_grant: int | None = None,
+) -> int:
+    """Hold a selected probe across a tagged local update or failed SC."""
+    success = bool(
+        reservation
+        and reservation_offset == 0
+        and reservation_size in (None, size)
+        and lose_reservation_stage is None
+    )
+    await b.set(
+        i_atomic_protected=1,
+        i_address=address,
+        i_read_kind=2,
+        i_read_size=size,
+        i_read_tag=3,
+        i_read_id=4,
+        i_sc_address=address,
+        i_sc_size=size,
+        i_sc_tag=3,
+        i_reservation_valid=reservation,
+        i_reservation_addr=address + reservation_offset,
+        i_reservation_size=size if reservation_size is None else reservation_size,
+    )
+    start = b.cycles
+    if sc:
+        await b.set(i_sc_valid=1)
+        await b.wait("o_sc_ready")
+        await b.tick()
+        await b.set(i_sc_valid=0)
+    else:
+        await b.set(i_read_valid=1)
+        await b.tick()
+        await b.set(i_read_valid=0)
+    offered = False
+    for _ in range(60):
+        assert not b.get("o_d_valid"), "resident M atomic allocated a home identity"
+        if b.get("phase_q") == lose_reservation_stage:
+            await b.set(i_reservation_valid=0)
+        if b.get("phase_q") == probe_stage and not offered:
+            await b.set(
+                i_p_valid=1,
+                i_p=pack(
+                    (2, probe_opcode),
+                    (6, 9),
+                    (1, 0),
+                    (b.p, address & ~31),
+                    (2, 0),
+                    (2, 1),
+                    (9, 0),
+                    (5, 0),
+                    (3, size),
+                ),
+                i_cut_admit_ready=1,
+                i_cut_admit_clean=1,
+            )
+            offered = True
+        if b.get("o_sc_result_valid" if sc else "o_read_valid"):
+            break
+        await b.tick()
+    else:
+        raise AssertionError("local atomic did not produce a result")
+    if sc:
+        assert b.get("o_sc_success") == success and not b.get("o_sc_error")
+    else:
+        assert b.get("o_read_data") == old and b.get("o_read_id") == 4
+    if pending_grant is not None:
+        await b.set(i_g_valid=1, i_g=pending_grant)
+        await b.wait("o_g_ready")
+        await b.tick()
+        await b.set(i_g_valid=0)
+        assert not b.get("grant_ready")
+    for _ in range(7):
+        assert b.get("o_atomic_live") and not b.get("o_p_ready")
+        assert not b.get("o_cut_hold") and not b.get("o_d_valid")
+        await b.tick()
+    await b.set(i_sc_result_ready=int(sc), i_read_ready=int(not sc))
+    await b.tick()
+    await b.set(i_sc_result_ready=0, i_read_ready=0)
+    if sc and not success:
+        assert not b.get("o_sc_write_pending")
+    else:
+        if sc:
+            await b.set(i_sc_commit=1)
+            await b.tick()
+            await b.set(i_sc_commit=0)
+        mask = 255 if size == 3 else 15 << (address & 7)
+        await b.set(
+            i_write_atomic=1,
+            i_write_sc=int(sc),
+            i_write_tag=3,
+            i_write_mask=mask,
+            i_write_data=data,
+        )
+        await b.tick()
+        await b.set(i_write_mask=0)
+        for _ in range(30):
+            if b.get("phase_q") == probe_stage and not offered:
+                await b.set(
+                    i_p_valid=1,
+                    i_p=pack(
+                        (2, probe_opcode),
+                        (6, 9),
+                        (1, 0),
+                        (b.p, address & ~31),
+                        (2, 0),
+                        (2, 1),
+                        (9, 0),
+                        (5, 0),
+                        (3, size),
+                    ),
+                    i_cut_admit_ready=1,
+                    i_cut_admit_clean=1,
+                )
+                offered = True
+            if b.get("o_write_done"):
+                break
+            assert b.get("o_atomic_live") and not b.get("o_p_ready")
+            assert not b.get("o_cut_hold") and not b.get("o_d_valid")
+            await b.tick()
+        else:
+            raise AssertionError("protected write stalled behind offered probe")
+        assert b.get("o_sc_write_done") == int(sc)
+        assert b.get("o_atomic_live")
+    if probe_stage == 13 and not offered:
+        await b.set(
+            i_p_valid=1,
+            i_p=pack(
+                (2, probe_opcode),
+                (6, 9),
+                (1, 0),
+                (b.p, address & ~31),
+                (2, 0),
+                (2, 1),
+                (9, 0),
+                (5, 0),
+                (3, size),
+            ),
+            i_cut_admit_ready=1,
+            i_cut_admit_clean=1,
+        )
+        offered = True
+    await b.wait("o_atomic_live", 0)
+    elapsed = b.cycles - start
+    assert not b.get("o_c_valid") and not b.get("o_d_valid")
+    assert not b.get("o_fatal")
+    if offered:
+        await b.wait("o_p_ready")
+        await b.tick()
+        await b.set(i_p_valid=0)
+        await b.wait("o_r_valid")
+        reply = unpack(b.get("o_r"), (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1))
+        if probe_opcode == 2:
+            assert reply[0] == 2 and not reply[7]
+        else:
+            assert reply[7] and reply[5] == (2 if probe_opcode == 0 else 0)
+        await b.set(i_r_ready=1)
+        await b.tick()
+        await b.set(i_r_ready=0, i_write_atomic=0, i_write_sc=0)
+        return reply[8]
+    if probe_stage is None:
+        await b.set(i_write_atomic=0, i_write_sc=0)
+        return 0
+    raise AssertionError(
+        f"probe stage {probe_stage} was not reached in {elapsed} cycles"
+    )
+
+
+@cocotb.test()
+async def local_modified_atomics_hold_service_through_installation(dut: Any) -> None:
+    """Defer probes at lookup, result, merge, update and release boundaries."""
+    pattern = int.from_bytes(bytes(range(32)), "little")
+    for sc in (False, True):
+        for stage in (
+            (1, 2, 9, 11, 12, 5, 6, 13) if sc else (1, 2, 9, 10, 11, 12, 5, 6, 13)
+        ):
+            for size, offset in ((3, 16), (2, 4)):
+                b = Private(dut)
+                await b.reset()
+                address = 0x80000000
+                await store(b, address, pattern & ((1 << 64) - 1))
+                await getm(b, address, pattern)
+                old = (pattern >> (8 * (offset & ~7))) & ((1 << 64) - 1)
+                data = 0xFEDCBA9876543210
+                actual = await local_atomic(
+                    b, address + offset, old, data, sc=sc, size=size, probe_stage=stage
+                )
+                mask = ((1 << (64 if size == 3 else 32)) - 1) << (8 * offset)
+                shifted = data << (8 * (offset & ~7))
+                assert actual == (pattern & ~mask) | (shifted & mask)
+
+
+@cocotb.test()
+async def local_sc_reservation_failure_has_no_write(dut: Any) -> None:
+    """Check failed selected SC returns once without modifying bytes."""
+    b = Private(dut)
+    await b.reset()
+    address = 0x80000000
+    pattern = int.from_bytes(bytes(range(32)), "little")
+    await store(b, address, pattern & ((1 << 64) - 1))
+    await getm(b, address, pattern)
+    actual = await local_atomic(b, address, 0, 0, sc=True, reservation=0, probe_stage=9)
+    assert actual == pattern
+
+
+@cocotb.test()
+async def local_sc_rechecks_exact_reservation_before_success(dut: Any) -> None:
+    """Reject address, size and preauthorization reservation losses without a write."""
+    cases = [
+        {"reservation_offset": 8},
+        {"reservation_size": 2},
+        *({"lose_reservation_stage": stage} for stage in (1, 2, 9)),
+    ]
+    for case in cases:
+        b = Private(dut)
+        await b.reset()
+        address = 0x80000000
+        pattern = int.from_bytes(bytes(range(32)), "little")
+        await store(b, address, pattern & ((1 << 64) - 1))
+        await getm(b, address, pattern)
+        actual = await local_atomic(b, address, 0, 0, sc=True, probe_stage=14, **case)
+        assert actual == pattern
+
+
+@cocotb.test()
+async def local_owner_defers_read_and_check_sc_probes(dut: Any) -> None:
+    """Read and reservation probes wait for installation at every local phase."""
+    address = 0x80000000
+    for sc in (False, True):
+        stages = (1, 2, 9, 11, 12, 5, 6, 13) if sc else (1, 2, 9, 10, 11, 12, 5, 6, 13)
+        for opcode in (0, 2):
+            for stage in stages:
+                b = Private(dut)
+                await b.reset()
+                await store(b, address, 11)
+                await getm(b, address, 11)
+                actual = await local_atomic(
+                    b, address, 11, 99, sc=sc, probe_stage=stage, probe_opcode=opcode
+                )
+                if opcode == 0:
+                    assert actual == 99
+                else:
+                    assert await snapshot(b, address) == 99
+
+
+@cocotb.test()
+async def local_write_survives_dirty_eviction(dut: Any) -> None:
+    """Preserve the installed atomic bytes in accepted and absorbed PutM records."""
+    address = 0x80000000
+    for sc in (False, True):
+        for absorbed in (False, True):
+            b = Private(dut)
+            await b.reset()
+            await store(b, address, 11)
+            await getm(b, address, 11)
+            await local_atomic(b, address, 11, 99, sc=sc, probe_stage=None)
+            images = {address: 99}
+            evicted = False
+            for index in range(1, 17):
+                other = address + index * 128
+                images[other] = index
+                await store(b, other, index)
+                await getm(b, other, 0)
+                await b.set(i_read_valid=1, i_read_kind=0, i_read_id=0, i_address=other)
+                await b.tick()
+                await b.set(i_read_valid=0)
+                await b.wait("o_read_valid")
+                assert b.get("o_read_data") == index
+                await b.set(i_read_ready=1)
+                await b.tick()
+                await b.set(i_read_ready=0)
+                if not b.get("o_w_valid"):
+                    continue
+                frozen = b.get("o_w")
+                put = unpack(frozen, (1, 1, 1, b.p, 256, 1))
+                victim = put[3]
+                assert put[4] == images[victim]
+                absorb_this = absorbed and victim == address
+                if absorb_this:
+                    assert await snapshot(b, victim) == 99
+                else:
+                    await b.set(i_w_ready=1)
+                    await b.tick()
+                    await b.set(i_w_ready=0)
+                await b.tick(8)
+                assert b.get("o_w") == frozen
+                await b.set(
+                    i_wa_valid=1,
+                    i_wa=pack(
+                        (1, put[0]),
+                        (1, put[1]),
+                        (1, put[2]),
+                        (b.p, victim),
+                        (1, absorb_this),
+                        (6, 1 if absorb_this else 0),
+                        (1, 0),
+                    ),
+                )
+                await b.wait("o_wa_ready")
+                await b.tick()
+                await b.set(i_wa_valid=0)
+                if victim == address:
+                    evicted = True
+                    break
+            assert evicted and not b.get("o_fatal")

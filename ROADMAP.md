@@ -388,22 +388,20 @@ and targeted microbenchmarks give these items:
    3), and lengthens paths among the hardest at the target clock, so it
    waits for the streaming-load work in item 8.
 8. Streaming loads. The load queue and the L1D track eight cached loads, so
-   a sequential stream of 8-byte loads keeps only two 32-byte lines in flight
-   and runs no faster than a dependent pointer chase: about 200 cycles per 64
-   bytes on a board with about 200 cycles of DRAM latency. The L1D's seven
-   load endpoints are mostly idle. More cached loads in flight, one read slot
-   per line for loads to the same line, or a next-line request from the L1D
-   would let one stream keep several lines in flight, and each combines with
-   a stream prefetcher in the home. Dependent loads are also slower than
-   through the previous hierarchy: in simulation an L2 hit takes 45 cycles
-   against 23, a DRAM miss 39 cycles more, and a page-table walk 33 cycles
-   more. The L1D installs a line before it answers the load, the home repeats
-   its tag lookup and data read after a fill arrives, and registered stages
-   and arbitration add the rest. Answering a load from its grant, reading a
-   victim's data only when it is dirty, waking a fill's waiting requests when
-   the install is accepted, forwarding the arriving line to the first
-   request, and a second request slot for the page-table walker would
-   recover most of the difference.
+   their demand requests for a sequential stream of 8-byte loads cover only
+   two 32-byte lines at a time. The home's prefetch agent reads ahead into
+   the shared L2. The L1D's seven load endpoints are mostly idle. More cached
+   loads in flight, one read slot per line for loads to the same line, or a
+   next-line request from the L1D would let one stream keep several lines in
+   flight, and each combines with the home's prefetch agent. Dependent loads
+   are also slower than through the previous hierarchy: in simulation an L2
+   hit takes 45 cycles against 23, a DRAM miss 36 cycles more, and a
+   page-table walk 27 cycles more. The L1D installs a line before it answers
+   the load, the home repeats its tag lookup and data read after a fill
+   arrives, and registered stages and arbitration add the rest. Answering a
+   load from its grant, reading a victim's data only when it is dirty, and
+   forwarding the arriving line to the first request would recover most of
+   the difference.
 
 ## Core area
 

@@ -430,7 +430,8 @@ and throughout the cut. Responses on other sectors keep their eligibility.
 A trap, xRET or FENCE-class flush clears the reservation; a
 branch recovered at commit preserves it. The SC goes through the SQ and
 [`sc_pending_unit`](../tomasulo_wrapper/atomics/sc_pending_unit.sv).
-Cached SC selection and its home check use the exact LR address and size.
+Cached SC selection, local Modified-sector classification and the home check
+use the exact LR address and size.
 
 ### AMO sequence
 
@@ -455,8 +456,9 @@ therefore holds interrupts while an AMO occupies the ROB head
 before it touches memory. A simulation check reports any full flush that
 reaches an active AMO write. A flush that arrives earlier, including in
 `AMO_COMPUTE`, cancels the AMO cleanly. `AMO_COMPUTE` has already freed the
-response slot. For a cached AMO, the home blocks later requests to the same
-sector until the AMO's write completes and its completion is released.
+response slot. A cached AMO holds either the L1D service engine or its home
+lock through write installation and ownership release. CPU protection also
+waits for retirement.
 
 ### Older-AMO fence
 
@@ -482,7 +484,7 @@ AMOs require effective ROB-head protection before launch. Arming checks the
 staged translation, PMA and alignment results independently of that protection.
 Address faults complete through the exception path without arming ownership.
 Simulation assertions check the captured exception's ROB tag at trap entry.
-An atomic fault can release its context only after home ownership ends. LR
+An atomic fault can release its context only after local or home ownership ends. LR
 records its exact physical address and W/D size with a 32-byte reservation set. An ordinary
 store or AMO write to that set, or a matching cut, clears the reservation. A
 successful cached SC clears it when its tagged write completes. Other SCs

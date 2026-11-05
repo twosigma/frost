@@ -34,7 +34,7 @@ module xilinx_frost_subsystem #(
     // L2 line size (see frost.sv); the DDR AXI data width follows it.
     parameter int unsigned L2_LINE_BYTES = 64,
     parameter int unsigned L2_NUM_MSHR = 8,
-    parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
+    parameter int unsigned L2_PREFETCH_INFLIGHT = 3,
     // Optional boot-hang UART classifier. Leave off for interactive testing.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
     // Profiling counters (see frost.sv); the board top passes its generic.

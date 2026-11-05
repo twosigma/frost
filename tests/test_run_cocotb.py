@@ -601,8 +601,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="ddr_test",
         nic_mac_clocks=False,
-        description="Cached DDR loads and stores with 32-byte L2 lines",
-        verilator_extra_args=("-GL2_LINE_BYTES=32",),
+        description="Full CPU cached DDR loads and stores with 32-byte L2 lines and prefetch",
+        verilator_extra_args=("-GL2_LINE_BYTES=32", "-GL2_PREFETCH=1"),
     ),
     "ddr_exec_test_equal_lines": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -2242,6 +2242,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GSIM_FAST_MAINT=1",
         ),
     ),
+    "coherent_cpu_local_contention": CocotbRunConfig(
+        python_test_module="cocotb_tests.integration.test_local_atomic_contention",
+        hdl_toplevel_module="cpu_top",
+        description="Protected SC completes beside a same-set grant, home probe and control entry.",
+        verilator_extra_args=(
+            "--assert",
+            "-GENABLE_COHERENCE=1",
+            "-GENABLE_CACHED_TIER=1",
+            "-GL1D_WAYS=1",
+            "-GL1I_WAYS=1",
+            "-GL2_WAYS=1",
+            "-GL1_CACHE_BYTES=256",
+            "-GL1I_CACHE_BYTES=256",
+            "-GL2_CACHE_BYTES=1024",
+        ),
+    ),
     "coherent_cpu_faults": CocotbRunConfig(
         python_test_module="cocotb_tests.integration.test_coherent_cpu_faults",
         hdl_toplevel_module="cpu_top",
@@ -2360,6 +2376,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cache.test_coherence_l1d",
         hdl_toplevel_module="coherence_l1d",
         description="Buffered store ordering, masked hits, read turns, grants, probes and frozen writebacks",
+    ),
+    "coherence_local_atomics": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GWAYS=1",
+            "-GMISSES=3",
+        ),
+        python_test_module="cocotb_tests.cache.test_local_atomics",
+        hdl_toplevel_module="coherence_l1d",
+        description="Local AMO and SC finish beside an uninstalled same-set load grant and probe",
+    ),
+    "coherence_local_atomics_8": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GCACHE_BYTES=512", "-GMISSES=8"),
+        python_test_module="cocotb_tests.cache.test_local_atomics",
+        hdl_toplevel_module="coherence_l1d",
+        description="Local atomic ownership with eight request endpoints and four ways",
     ),
     "coherence_cluster": CocotbRunConfig(
         verilator_extra_args=("--assert",),
@@ -2550,6 +2583,33 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GLINE_BYTES=32",
             "-GWAYS=1",
         ),
+    ),
+    "coherence_prefetch_contention": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_prefetch_contention",
+        hdl_toplevel_module="coherence_prefetch_test_harness",
+        description="Demand latency and bandwidth with streams, dirty victims and DMA",
+        verilator_extra_args=("--assert",),
+    ),
+    "coherence_prefetch_contention_off": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_prefetch_contention",
+        hdl_toplevel_module="coherence_prefetch_test_harness",
+        description="Demand latency and bandwidth with prefetch disabled",
+        verilator_extra_args=("--assert", "-GPREFETCH=0"),
+    ),
+    "coherence_prefetch": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_prefetch",
+        hdl_toplevel_module="coherence_prefetch_test_harness",
+        description=(
+            "Prefetch identities held at C and U, errors, demand joins, PutM, "
+            "instruction streams and DMA responses before C/U"
+        ),
+        verilator_extra_args=("--assert",),
+    ),
+    "coherence_prefetch_equal": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_prefetch",
+        hdl_toplevel_module="coherence_prefetch_test_harness",
+        description="Prefetch and home integration with 32-byte lines",
+        verilator_extra_args=("--assert", "-GLINE_BYTES=32"),
     ),
     "coherence_home": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home",

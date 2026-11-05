@@ -169,10 +169,10 @@ async def widths_and_independent_queues(dut: Any) -> None:
     completions, fills, puts, count = [
         (layout >> shift) & 127 for shift in (21, 14, 7, 0)
     ]
-    assert completions in (23, 34)
+    assert completions in (24, 36)
     assert fills == completions
     assert puts - fills in (4, 16)
-    assert count == puts + (2 if completions == 23 else 4)
+    assert count == puts + (2 if completions == 24 else 4)
     await b.set(
         i_req_request=b.d(),
         i_req_request_valid=1,
@@ -550,10 +550,10 @@ async def complete_request_identity_space(dut: Any) -> None:
     """Check all source, class, slot and epoch encodings at home admission."""
     b = Bench(dut)
     await b.reset()
-    harts = 1 if (b.get("o_layout") >> 21) == 23 else 2
+    harts = 1 if (b.get("o_layout") >> 21) == 24 else 2
     allowed: set[int] = set()
     for hart in range(harts):
-        for port_class, count in ((0, 8), (1, 2), (2, 1)):
+        for port_class, count in ((0, 8), (1, 2), (2, 2)):
             allowed.update(
                 pack((2, hart), (2, port_class), (4, slot), (1, 0))
                 for slot in range(count)

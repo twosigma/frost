@@ -29,7 +29,7 @@ module frost_cluster_memory #(
     parameter int unsigned L2_NUM_WAITERS = 2,
     parameter int unsigned L2_PREFETCH = 1,
     parameter int unsigned L2_PREFETCH_DISTANCE = 8,
-    parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
+    parameter int unsigned L2_PREFETCH_INFLIGHT = 3,
     parameter int unsigned L2_LINE_BYTES = 64,
     parameter int unsigned SIM_FAST_MAINT = 0,
     // The hart's uncached instruction fetch block (cpu_memory_fabric
@@ -219,45 +219,6 @@ module frost_cluster_memory #(
     logic [3:0] home_accepted_opcode;
     logic [8:0] home_accepted_q;
     logic [riscv_pkg::PhysAddrBits-1:0] home_accepted_addr;
-    if (L2_PREFETCH != 0) begin : gen_prefetcher
-      // The prefetcher watches the hart requests the home accepts, from the
-      // home's registered copy of its D acceptance.
-      coherence_prefetcher #(
-          .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
-          .LINE_BYTES(L2_LINE_BYTES),
-          .DISTANCE(L2_PREFETCH_DISTANCE),
-          .IDS(L2_PREFETCH_INFLIGHT > coherence_pkg::PrefetchIds ? coherence_pkg::PrefetchIds :
-               L2_PREFETCH_INFLIGHT)
-      ) prefetcher (
-          .i_clk(i_clk),
-          .i_rst(i_rst),
-          .i_fatal_stop(i_fatal_error),
-          .i_accepted(home_accepted),
-          .i_accepted_opcode(home_accepted_opcode),
-          .i_accepted_q(home_accepted_q),
-          .i_accepted_addr(home_accepted_addr),
-          .i_room(home_prefetch_room),
-          .o_d_valid(pf_d_valid),
-          .i_d_ready(pf_d_ready),
-          .o_d(pf_d),
-          .i_g_valid(g_valid && grant.q.src == 3),
-          .o_g_ready(pf_g_ready),
-          .i_g(grant),
-          .o_c_valid(pf_c_valid),
-          .i_c_ready(pf_c_ready),
-          .o_c(pf_c),
-          .i_u_valid(u_valid && release_message.q.src == 3),
-          .o_u_ready(pf_u_ready),
-          .i_u(release_message)
-      );
-    end else begin : gen_no_prefetcher
-      assign pf_d_valid = 1'b0;
-      assign pf_d = '0;
-      assign pf_g_ready = 1'b1;
-      assign pf_c_valid = 1'b0;
-      assign pf_c = '0;
-      assign pf_u_ready = 1'b0;
-    end
     if (ENABLE_COHERENCE) begin : gen_dma_ingress
       // Eight credits: the DMA bridge has eight read and eight write line IDs.
       coherence_dma_ingress #(
@@ -304,6 +265,55 @@ module frost_cluster_memory #(
       assign dma_c_valid = 1'b0;
       assign dma_c = '0;
       assign dma_u_ready = 1'b0;
+    end
+    // Prefetch requests use source 3. The agent trains on the hart requests
+    // the home accepts, from the home's registered copy of its D acceptance,
+    // and loads new requests while the home reports room for a prefetch fill.
+    logic pf_pause;
+    coherence_prefetch_pause dma_pause (
+        .i_clk,
+        .i_rst,
+        .i_dma_valid(dma_req_valid),
+        .i_dma_accept(dma_req_valid && dma_req_ready),
+        .i_dma_response(dma_resp_valid),
+        .o_pause(pf_pause)
+    );
+    if (L2_PREFETCH != 0) begin : gen_prefetch
+      coherence_prefetch_agent #(
+          .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
+          .L2_LINE_BYTES(L2_LINE_BYTES),
+          .DISTANCE(L2_PREFETCH_DISTANCE),
+          .MAX_INFLIGHT(L2_PREFETCH_INFLIGHT)
+      ) agent (
+          .i_clk(i_clk),
+          .i_rst(i_rst),
+          .i_fatal_stop(i_fatal_error),
+          .i_pause(pf_pause),
+          .i_room(home_prefetch_room),
+          .i_train_valid(home_accepted),
+          .i_train_opcode(home_accepted_opcode),
+          .i_train_q(home_accepted_q),
+          .i_train_addr(home_accepted_addr),
+          .o_d_valid(pf_d_valid),
+          .i_d_ready(pf_d_ready),
+          .o_d(pf_d),
+          .i_g_valid(g_valid && grant.q.src == 3),
+          .o_g_ready(pf_g_ready),
+          .i_g(grant),
+          .o_c_valid(pf_c_valid),
+          .i_c_ready(pf_c_ready),
+          .o_c(pf_c),
+          .i_u_valid(u_valid && release_message.q.src == 3),
+          .o_u_ready(pf_u_ready),
+          .i_u(release_message)
+      );
+    end else begin : gen_no_prefetch
+      assign pf_d_valid = 1'b0;
+      assign pf_d = '0;
+      assign pf_g_ready = 1'b1;
+      assign pf_c_valid = 1'b0;
+      assign pf_c = '0;
+      assign pf_u_ready = 1'b0;
     end
     coherence_d_arbiter #(
         .WIDTH((riscv_pkg::PhysAddrBits + 312)),

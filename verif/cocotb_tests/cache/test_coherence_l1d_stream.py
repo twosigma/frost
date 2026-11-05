@@ -670,7 +670,7 @@ async def live_conflicts_on_hint_acceptance(dut: Any) -> None:
 
 @cocotb.test()
 async def accepted_hints_drain_for_exclusive_work(dut: Any) -> None:
-    """Keep speculative ownership through delayed U while AMO, SC and maintenance wait."""
+    """Hold speculative ownership through U while home atomics and maintenance wait."""
     b = StreamPrivate(dut)
     if b.endpoints < 8:
         return
@@ -687,7 +687,13 @@ async def accepted_hints_drain_for_exclusive_work(dut: Any) -> None:
         elif waiting == "lr":
             await b.issue(2, 0x80001060, kind=1)
         elif waiting == "sc":
+            # SC acceptance needs only endpoint 0 idle; its home acquisition
+            # waits for every endpoint.
             await b.set(i_sc_valid=1, i_sc_address=0x80001080, i_sc_size=3, i_sc_tag=7)
+            await b.wait("o_sc_ready")
+            await b.tick()
+            await b.set(i_sc_valid=0)
+            assert b.get("atomic_q")
         else:
             await b.set(i_maint_valid=1, i_maint_line=1, i_maint_address=0x80001000)
         await b.tick(10)
@@ -702,20 +708,12 @@ async def accepted_hints_drain_for_exclusive_work(dut: Any) -> None:
         await b.tick(50)
         assert (b.get("live") & b.get("ld_prefetch_q")).bit_count() == 2
         assert not b.get("o_c_valid") & b.get("ld_prefetch_q")
-        assert (
-            len(b.requests) == 4
-            and not b.get("o_sc_ready")
-            and not b.get("o_maint_done")
-        )
+        assert len(b.requests) == 4 and not b.get("o_maint_done")
         if waiting == "lr":
             assert (2, b.word(0x80001060), 0) in b.responses
         await b.release(2)
         await b.tick(20)
-        assert (
-            len(b.requests) == 4
-            and not b.get("o_sc_ready")
-            and not b.get("o_maint_done")
-        )
+        assert len(b.requests) == 4 and not b.get("o_maint_done")
         await b.release(3)
         if waiting == "amo":
             await b.requests_at_least(5)
@@ -725,7 +723,6 @@ async def accepted_hints_drain_for_exclusive_work(dut: Any) -> None:
         elif waiting == "sc":
             await b.requests_at_least(5)
             assert b.requests[4][0] == 0 and b.requests[4][1][0] == 4
-            await b.set(i_sc_valid=0)
             await b.finish_atomic(4, sc=True)
         elif waiting == "maintenance":
             await b.wait("o_maint_done")

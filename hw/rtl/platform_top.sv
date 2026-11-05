@@ -51,12 +51,14 @@ module platform_top #(
     parameter int unsigned L2_NUM_MSHR = 8,
     parameter int unsigned L2_NUM_WB = 2,
     // Waiter settings have no effect on the coherent home. L2_PREFETCH
-    // builds its stream prefetcher, which reads up to L2_PREFETCH_DISTANCE
-    // lines ahead with up to L2_PREFETCH_INFLIGHT requests (at most 4).
+    // builds its prefetch agent, which reads up to L2_PREFETCH_DISTANCE lines
+    // ahead of the hart's data and instruction streams, with
+    // L2_PREFETCH_INFLIGHT data requests (1 to 3) and one instruction request
+    // in flight.
     parameter int unsigned L2_NUM_WAITERS = 2,
     parameter int unsigned L2_PREFETCH = 1,
     parameter int unsigned L2_PREFETCH_DISTANCE = 8,
-    parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
+    parameter int unsigned L2_PREFETCH_INFLIGHT = 3,
     // L2 line size is 32 or 64 bytes. Each AXI beat carries one L2 line.
     parameter int unsigned L2_LINE_BYTES = 64,
     // Simulation-only coherent-array reset and L1I maintenance acceleration.

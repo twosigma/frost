@@ -54,6 +54,9 @@ module coherence_request_endpoint #(
     output logic [6:0] o_phase,
 `endif
     output logic o_live
+`ifdef FORMAL
+    , output logic [2:0] o_formal_phase
+`endif
 );
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
   typedef enum logic [2:0] {
@@ -68,6 +71,15 @@ module coherence_request_endpoint #(
   phase_t phase_q;
   logic idle_phase, send_d_phase, wait_g_phase, grant_phase;
   logic done_phase, send_c_phase, wait_u_phase;
+`ifdef FORMAL
+  // Harnesses read the encoded phase in either form of the phase state.
+  if (LOCAL_PHASE_UPDATES) begin : gen_formal_local_phase
+    assign o_formal_phase = {done_phase || send_c_phase || wait_u_phase,
+        wait_g_phase || grant_phase || wait_u_phase, send_d_phase || grant_phase || send_c_phase};
+  end else begin : gen_formal_encoded_phase
+    assign o_formal_phase = phase_q;
+  end
+`endif
   coh_d_t request, demand_q;
   coh_g_t grant_in, grant_q;
   coh_c_t completion_q;
@@ -194,7 +206,7 @@ module coherence_request_endpoint #(
 
   localparam bit LegalIdentity =
       (SOURCE < 2 && ((PORT_CLASS == 0 && SLOT < 8) ||
-                     (PORT_CLASS == 1 && SLOT < 2) || (PORT_CLASS == 2 && SLOT == 0))) ||
+                     ((PORT_CLASS == 1 || PORT_CLASS == 2) && SLOT < 2))) ||
       (SOURCE == 2 && PORT_CLASS == 3 && SLOT < 16) ||
       (SOURCE == 3 && PORT_CLASS == 3 && SLOT < 4);
   if (ADDR_WIDTH < 32 || ADDR_WIDTH > 56 || !LegalIdentity) begin : gen_invalid_config

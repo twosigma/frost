@@ -15,31 +15,30 @@
  */
 
 /*
- * l2_stream_prefetcher: reads the lines ahead of ascending L1D miss streams
- * into the L2.
+ * l2_stream_prefetcher reads ahead of ascending line streams into the L2.
+ * The cache hierarchy trains it on accepted L1D read misses. The coherent
+ * wrapper trains it on accepted hart data GetS and GetM requests, including
+ * home hits. Observations enter the stream table one cycle later.
  *
- * It watches the L1D's read requests to the L2, which are its misses, one
- * cycle late. A table of STREAMS entries holds the last L2 line each stream
- * missed on. A miss on the line after an entry's confirms the entry and
- * advances it; a miss on an entry's own line leaves it; any other miss
- * replaces the entries in rotation. With IGNORE_BACKWARD, a miss up to
- * 2 * DISTANCE - 1 lines behind an entry in the same page also leaves the
- * entries in place. For each confirmed entry the prefetcher
- * reads the lines after its last miss, up to DISTANCE lines ahead and never
- * past the PAGE_BYTES page of that miss, so it reads only memory that a
- * demand access in the same page made sure exists.
+ * A table of STREAMS entries holds the last training line of each stream.
+ * An observation on the line after an entry's confirms and advances it;
+ * an observation on an entry's own line leaves it unchanged. With
+ * IGNORE_BACKWARD, an observation up to 2 * DISTANCE - 1 lines behind an
+ * entry in the same page also leaves the entries in place. Other lines
+ * replace entries in rotation. Each confirmed entry requests up to DISTANCE
+ * lines ahead, within the PAGE_BYTES page of its last training address.
  *
- * Each entry keeps its last line, that line plus one (so a successor is an
- * equality match), and how many lines after the last line it has requested.
- * An advance shifts that count down by one. The address of the next read is
- * the only wide addition, and it feeds the request register.
+ * Each entry keeps its last line and how many later lines it has requested.
+ * Successor tests compare that line with the registered predecessor of the
+ * observation. An advance shifts the ahead count down by one. The next read
+ * preserves the entry's page bits and adds within its page offset.
  *
- * The reads go out on the prefetcher's own port of the hierarchy's top
- * arbiter as ordinary line reads, and their responses are discarded: the
- * point is the L2 fill. A request is registered, so it holds still until the
- * arbiter takes it. At most MAX_INFLIGHT reads are outstanding, each under
- * its own id. A new request loads only while i_enable is set; one already
- * loaded still goes out.
+ * The cache hierarchy serves requests as ordinary line reads. The coherent
+ * wrapper sends protocol Prefetch requests and releases each identity on U.
+ * Both paths discard returned data; the L2 fill serves later demands.
+ * A registered request holds until acceptance. At most MAX_INFLIGHT reads
+ * are outstanding, each under its own id. A new request loads only while
+ * i_enable is set; one already loaded still goes out.
  */
 module l2_stream_prefetcher #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -54,7 +53,7 @@ module l2_stream_prefetcher #(
     input logic i_clk,
     input logic i_rst,
 
-    // An L1D read request to the L2, on the cycle the arbiter takes it.
+    // A training address, on the cycle the caller accepts its request.
     input logic                  i_miss_valid,
     input logic [ADDR_WIDTH-1:0] i_miss_addr,
     // Loads a new request while set.
@@ -67,6 +66,9 @@ module l2_stream_prefetcher #(
     output logic [   ID_BITS-1:0] o_req_id,
     input  logic                  i_resp_valid,
     input  logic [   ID_BITS-1:0] i_resp_id
+`ifdef FORMAL
+    , output logic [(1<<ID_BITS)-1:0] o_formal_busy
+`endif
 );
 
   localparam int unsigned LineOffBits = $clog2(L2_LINE_BYTES);
@@ -98,13 +100,13 @@ module l2_stream_prefetcher #(
 
   logic                  obs_valid_q;
   logic [  LineBits-1:0] obs_line_q;
-  logic [  LineBits-1:0] obs_line_p1_q;  // obs_line_q + 1
+  logic [  LineBits-1:0] obs_line_m1_q;  // obs_line_q - 1
   logic [PageLineBits:0] obs_line_limit_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) obs_valid_q <= 1'b0;
     else obs_valid_q <= i_miss_valid;
     obs_line_q <= i_miss_addr[ADDR_WIDTH-1:LineOffBits];
-    obs_line_p1_q <= i_miss_addr[ADDR_WIDTH-1:LineOffBits] + LineBits'(1);
+    obs_line_m1_q <= i_miss_addr[ADDR_WIDTH-1:LineOffBits] - LineBits'(1);
     obs_line_limit_q <= (PageLineBits + 1)'(i_miss_addr[LineOffBits+:PageLineBits]) +
         (PageLineBits + 1)'(BackwardDistance);
   end
@@ -112,8 +114,7 @@ module l2_stream_prefetcher #(
   // ---- Stream table -------------------------------------------------------------
   logic [STREAMS-1:0] st_valid_q;
   logic [STREAMS-1:0] st_conf_q;
-  logic [LineBits-1:0] st_line_q[STREAMS];  // the stream's last missed line
-  logic [LineBits-1:0] st_line_p1_q[STREAMS];  // st_line_q + 1
+  logic [LineBits-1:0] st_line_q[STREAMS];  // the stream's last training line
   logic [AheadBits-1:0] st_ahead_q[STREAMS];  // lines after it already read
   logic [StreamBits-1:0] st_victim_q;  // replaced next, in rotation
 
@@ -121,7 +122,7 @@ module l2_stream_prefetcher #(
   logic [STREAMS-1:0] obs_preserved;
   always_comb begin
     for (int e = 0; e < int'(STREAMS); e++) begin
-      obs_succ[e] = st_valid_q[e] && (obs_line_q == st_line_p1_q[e]);
+      obs_succ[e] = st_valid_q[e] && (obs_line_m1_q == st_line_q[e]);
       obs_same[e] = st_valid_q[e] && (obs_line_q == st_line_q[e]);
     end
   end
@@ -162,17 +163,28 @@ module l2_stream_prefetcher #(
   logic [    LineBits-1:0] req_line_q;
   logic [     ID_BITS-1:0] req_id_q;
   logic [      NumIds-1:0] id_busy_q;  // loaded, response not yet back
-  logic [InflightBits-1:0] inflight_q;
+  logic [InflightBits-1:0] inflight_q;  // shadow count for ownership checks
 
   assign o_req_valid = req_valid_q;
   assign o_req_addr  = {req_line_q, {LineOffBits{1'b0}}};
   assign o_req_id    = req_id_q;
 
+`ifdef FORMAL
+  assign o_formal_busy = id_busy_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      assert (inflight_q <= InflightBits'(MAX_INFLIGHT));
+      assert ((id_busy_q >> MAX_INFLIGHT) == '0);
+      if (req_valid_q) assert (id_busy_q[req_id_q]);
+    end
+  end
+`endif
+
   logic req_fire;
   assign req_fire = req_valid_q && i_req_ready;
 
   // A confirmed entry with fewer than DISTANCE lines read ahead, whose next
-  // line stays in the page of its last miss: the line's index within the page
+  // line stays in the training page: the line's index within the page
   // plus the lines ahead plus one must stay below the page's line count.
   logic [STREAMS-1:0] cand;
   logic cand_any;
@@ -194,12 +206,17 @@ module l2_stream_prefetcher #(
     end
   end
 
-  // The lowest free id.
+  // The lowest free id below the request cap.
   logic [ID_BITS-1:0] free_id;
+  logic free_any;
   always_comb begin
     free_id = '0;
-    for (int n = int'(NumIds) - 1; n >= 0; n--) begin
-      if (!id_busy_q[n]) free_id = ID_BITS'(n);
+    free_any = 1'b0;
+    for (int n = int'(MAX_INFLIGHT) - 1; n >= 0; n--) begin
+      if (!id_busy_q[n]) begin
+        free_id = ID_BITS'(n);
+        free_any = 1'b1;
+      end
     end
   end
 
@@ -212,7 +229,14 @@ module l2_stream_prefetcher #(
   assign obs_allocates = obs_valid_q && !(|obs_succ) && !(|obs_preserved);
   assign load = (!req_valid_q || req_fire) && cand_any && i_enable &&
       !(obs_allocates && (st_victim_q == cand_sel)) &&
-      (inflight_q < InflightBits'(MAX_INFLIGHT));
+      free_any;
+
+  // A candidate stays in its entry's page, so only its page offset is added.
+  logic [LineBits-1:0] next_line;
+  logic [PageLineBits-1:0] next_offset;
+  assign next_offset = PageLineBits'(st_line_q[cand_sel]) + PageLineBits'(st_ahead_q[cand_sel]) +
+      PageLineBits'(1);
+  assign next_line = (st_line_q[cand_sel] >> PageLineBits << PageLineBits) | LineBits'(next_offset);
 
   // Per entry: a load adds one line ahead, and an advance moves the last line
   // up by one, so the lines ahead count one fewer.
@@ -236,7 +260,6 @@ module l2_stream_prefetcher #(
       for (int e = 0; e < int'(STREAMS); e++) begin
         if (st_advanced[e]) begin
           st_line_q[e]    <= obs_line_q;
-          st_line_p1_q[e] <= obs_line_p1_q;
           st_conf_q[e]    <= 1'b1;
           if (!st_loaded[e] && (st_ahead_q[e] != '0))
             st_ahead_q[e] <= st_ahead_q[e] - AheadBits'(1);
@@ -248,7 +271,6 @@ module l2_stream_prefetcher #(
         st_valid_q[st_victim_q]   <= 1'b1;
         st_conf_q[st_victim_q]    <= 1'b0;
         st_line_q[st_victim_q]    <= obs_line_q;
-        st_line_p1_q[st_victim_q] <= obs_line_p1_q;
         st_ahead_q[st_victim_q]   <= '0;
         st_victim_q               <= st_victim_q + StreamBits'(1);
       end
@@ -257,7 +279,7 @@ module l2_stream_prefetcher #(
       if (req_fire && !load) req_valid_q <= 1'b0;
       if (load) begin
         req_valid_q        <= 1'b1;
-        req_line_q         <= st_line_q[cand_sel] + LineBits'(st_ahead_q[cand_sel]) + LineBits'(1);
+        req_line_q         <= next_line;
         req_id_q           <= free_id;
         id_busy_q[free_id] <= 1'b1;
       end
@@ -286,17 +308,23 @@ module l2_stream_prefetcher #(
     if (load) f_req_page_q <= st_line_q[cand_sel][LineBits-1:PageLineBits];
     if (!i_rst && req_valid_q) assert (req_line_q[LineBits-1:PageLineBits] == f_req_page_q);
   end
-`ifdef L2_STREAM_PREFETCHER_IDS
-  // The parent returns only ids that are out, so the count follows them.
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
-      if (i_resp_valid) assert (id_busy_q[i_resp_id]);
+      assert (free_any == (inflight_q < InflightBits'(MAX_INFLIGHT)));
+      if (load)
+        assert (next_line == st_line_q[cand_sel] + LineBits'(st_ahead_q[cand_sel]) + LineBits'(1));
+      assert (!i_resp_valid || id_busy_q[i_resp_id]);
+      assert (!load || !id_busy_q[free_id]);
       assert (inflight_q == InflightBits'($countones(id_busy_q)));
-      if (req_valid_q) assert (id_busy_q[req_id_q]);
+      if (obs_valid_q) begin
+        assert (obs_line_m1_q + LineBits'(1) == obs_line_q);
+        for (int e = 0; e < int'(STREAMS); e++)
+        assert (obs_succ[e] == (st_valid_q[e] && obs_line_q == st_line_q[e] + LineBits'(1)));
+      end
     end
   end
 `endif
-`endif
+
 `ifndef SYNTHESIS
 `ifndef FORMAL
   logic reset_seen_q = 1'b0;
@@ -308,10 +336,12 @@ module l2_stream_prefetcher #(
       if (load && id_busy_q[free_id]) $error("l2_stream_prefetcher: no free id for a load");
       if (inflight_q != InflightBits'($countones(id_busy_q)))
         $error("l2_stream_prefetcher: in-flight count %0d disagrees with ids", inflight_q);
-      for (int e = 0; e < int'(STREAMS); e++) begin
-        if (st_valid_q[e] && (st_line_p1_q[e] != st_line_q[e] + LineBits'(1)))
-          $error("l2_stream_prefetcher: entry %0d's line plus one is stale", e);
-      end
+      if (free_any != (inflight_q < InflightBits'(MAX_INFLIGHT)))
+        $error("l2_stream_prefetcher: free ids disagree with the in-flight cap");
+      if (obs_valid_q && obs_line_m1_q + LineBits'(1) != obs_line_q)
+        $error("l2_stream_prefetcher: observed line predecessor is stale");
+      if (load && next_line != st_line_q[cand_sel] + LineBits'(st_ahead_q[cand_sel]) + LineBits'(1))
+        $error("l2_stream_prefetcher: page-offset prediction differs from full-line addition");
     end
   end
 `endif

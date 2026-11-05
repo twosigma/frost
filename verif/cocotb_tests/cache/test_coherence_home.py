@@ -14,6 +14,7 @@
 
 """Exercise the home with independent hart and memory responders."""
 
+from collections.abc import Callable
 from typing import Any
 
 import cocotb
@@ -22,8 +23,8 @@ from cocotb.triggers import Timer
 from cocotb_tests.cache.test_coherence_endpoints import pack
 
 # The first fill TID, coherence_pkg::fill_base(1): one per completion slot
-# (11 per hart, 8 DMA credits and 4 prefetch identities) comes first.
-FILL_TID_BASE = 23
+# (12 per hart, 8 DMA credits and 4 prefetch identities) comes first.
+FILL_TID_BASE = 24
 PREFETCH = 9
 GRANT_ACK = 4
 
@@ -68,6 +69,8 @@ class Home:
         # Grants for source 3, which the bench takes when they are presented,
         # as the prefetcher does.
         self.prefetch_grants: list[tuple[int, ...]] = []
+        # Called after each clock edge with the registered state updated.
+        self.observers: list[Callable[[], None]] = []
 
     def get(self, name: str) -> int:
         """Read a signal."""
@@ -129,6 +132,8 @@ class Home:
             if self.get("array_data_valid"):
                 token = self.get("array_data_token")
                 engines = len(self.dut.engine_idle)
+                # Fill tokens follow the engines; fill TIDs follow the
+                # completion slots.
                 tid = (
                     (self.get("engine_tid") >> (6 * token)) & 63
                     if token < engines
@@ -242,6 +247,8 @@ class Home:
                 await self.set(i_g_ready=held_ready)
             if not self.get("i_rst"):
                 self.write_fills += (self.get("o_write_perf_events") >> 7) & 1
+            for observer in self.observers:
+                observer()
             if next_put is not None:
                 await self.set(i_w_valid=1, i_w=next_put)
             elif drop_put:
@@ -431,6 +438,56 @@ class Home:
         assert grant[5] == 0
         await self.finish(grant)
         return grant[4]
+
+
+# Fill phases, in the order of coherence_home's fill_phase_t.
+FILL_PHASES = (
+    "free",
+    "recall",
+    "detach",
+    "invalidate",
+    "invalidate_wait",
+    "memory",
+    "install",
+    "install_wait",
+    "ready",
+    "fatal",
+)
+
+
+class FillMonitor:
+    """Record every fill's phase, response and error flags after each edge."""
+
+    def __init__(self, b: Home) -> None:
+        """Sample the fills at construction and after every later clock edge."""
+        self.dut = b.dut
+        self.fills = len(b.dut.fill_phase_q)
+        self.history = [self.sample()]
+        b.observers.append(self.observe)
+
+    def sample(self) -> list[tuple[str, int, int]]:
+        """Return each fill's phase name, fill_done_q and fill_error_q."""
+        done = int(self.dut.fill_done_q.value)
+        error = int(self.dut.fill_error_q.value)
+        return [
+            (
+                FILL_PHASES[int(self.dut.fill_phase_q[fill].value)],
+                (done >> fill) & 1,
+                (error >> fill) & 1,
+            )
+            for fill in range(self.fills)
+        ]
+
+    def observe(self) -> None:
+        """Append the state after one edge."""
+        self.history.append(self.sample())
+
+    def edges(self, fill: int) -> list[tuple[tuple[str, int, int], ...]]:
+        """Return the fill's (before, after) states for every recorded edge."""
+        return [
+            (self.history[edge - 1][fill], self.history[edge][fill])
+            for edge in range(1, len(self.history))
+        ]
 
 
 @cocotb.test()
@@ -1654,3 +1711,149 @@ async def prefetch_leaves_the_last_write_back_slot(dut: Any) -> None:
     assert b.reads_of(lines[5]) == 0
     assert await b.read(lines[6]) == b.expected(lines[6])
     assert int(dut.wb_valid_q.value).bit_count() == 2
+
+
+@cocotb.test()
+async def fill_responses_install_from_each_arrival_phase(dut: Any) -> None:
+    """Install a successful FillMemory response on the next edge.
+
+    Responses that arrive during victim recall, detach or invalidation wait
+    in fill_done_q, and an error response in FillMemory frees the fill.
+    """
+    arrivals = set()
+    for delay in range(30):
+        b = Home(dut)
+        await b.reset()
+        monitor = FillMonitor(b)
+        base = 0x80000000
+        stride = 4 * b.line
+        for index in range(4):
+            address = base + index * stride
+            assert await b.read(address) == b.expected(address)
+        b.read_delay = delay
+        address = base + 4 * stride
+        assert await b.read(address) == b.expected(address)
+        failed = base + b.line
+        b.errors.add(failed)
+        grant = await b.start(0, failed)
+        assert grant[5]
+        await b.finish(grant)
+        for fill in range(monitor.fills):
+            for before, after in monitor.edges(fill):
+                if before[0] == "memory" and before[1]:
+                    assert after[0] == ("free" if before[2] else "install")
+                if before[1] or not after[1]:
+                    continue
+                # A response arrived on this edge.
+                if before[0] == "memory":
+                    assert after[0] == ("memory" if after[2] else "install")
+                    arrivals.add("memory_error" if after[2] else "memory")
+                elif before[0] == "invalidate_wait" and after[0] == "memory":
+                    arrivals.add("invalidate_done")
+                else:
+                    assert after[0] == before[0] or after[0] in FILL_PHASES[1:6]
+                    arrivals.add(before[0])
+    dut._log.info("response arrival phases: %s", sorted(arrivals))
+    expected = {
+        "memory",
+        "memory_error",
+        "recall",
+        "invalidate_wait",
+        "invalidate_done",
+    }
+    assert expected <= arrivals
+
+
+@cocotb.test()
+async def fill_waiters_wake_once_when_the_install_is_accepted(dut: Any) -> None:
+    """Wake every seated reader on the edge after install acceptance, once."""
+    b = Home(dut)
+    await b.reset()
+    monitor = FillMonitor(b)
+    seats: list[list[int]] = [[int(s.value) for s in dut.fill_seats_q]]
+    parked = [int(dut.completions.parked_q.value)]
+
+    def observe() -> None:
+        seats.append([int(s.value) for s in dut.fill_seats_q])
+        parked.append(int(dut.completions.parked_q.value))
+
+    b.observers.append(observe)
+    base = 0x80000000
+    b.read_delay = 60
+    await b.submit(0, base, slot=0)
+    await b.tick(10)
+    # The same sector waits behind slot 0 and takes a seat; a DMA read of the
+    # other sector joins the fill at its tag decision.
+    await b.submit(0, base, slot=1)
+    if b.line == 64:
+        await b.submit(7, base + 32)
+    readers = 3 if b.line == 64 else 2
+    received = []
+    for _ in range(readers):
+        grant = await b.take_grant()
+        assert grant[4] == b.expected(grant[3]) and not grant[5]
+        received.append(grant[3])
+        await b.complete(grant)
+    assert sorted(received) == sorted(
+        [base, base] + ([base + 32] if b.line == 64 else [])
+    )
+    edges = [
+        (i, before, after) for i, (before, after) in enumerate(monitor.edges(0), 1)
+    ]
+    accepted = [
+        i
+        for i, before, after in edges
+        if (before[0], after[0]) == ("install", "install_wait")
+    ]
+    ready = [
+        i
+        for i, before, after in edges
+        if (before[0], after[0]) == ("install_wait", "ready")
+    ]
+    assert len(accepted) == 1 and len(ready) == 1
+    seated = seats[accepted[0]][0]
+    assert seated.bit_count() == readers
+    woken = [i for i in range(1, len(parked)) if parked[i - 1] & ~parked[i] & seated]
+    # Every waiter wakes on the edge after acceptance, before the install
+    # completes, and none is woken twice.
+    assert woken == [accepted[0] + 1]
+    assert parked[accepted[0]] & seated == seated
+    assert parked[woken[0]] & seated == 0
+    assert woken[0] < ready[0]
+    for i in range(accepted[0] + 1, len(parked)):
+        assert not ~parked[i - 1] & parked[i] & seated
+
+
+@cocotb.test()
+async def two_fills_install_in_one_set(dut: Any) -> None:
+    """Install two returned fills in one set on consecutive cycles."""
+    b = Home(dut)
+    await b.reset()
+    monitor = FillMonitor(b)
+    base = 0x80000000
+    stride = 4 * b.line
+    b.read_delay = 1000
+    addresses = [base, base + stride]
+    for slot, address in enumerate(addresses):
+        await b.submit(0, address, slot=slot)
+    for _ in range(100):
+        if len([r for r in b.responses if not r[5]]) == 2:
+            break
+        await b.tick()
+    else:
+        raise AssertionError("both fills did not reach memory")
+    b.responses = [(b.cycle, *r[1:]) for r in b.responses]
+    received = set()
+    for _ in addresses:
+        grant = await b.take_grant()
+        assert grant[4] == b.expected(grant[3]) and not grant[5]
+        received.add(grant[3])
+        await b.complete(grant)
+    assert received == set(addresses)
+    installing = ("install", "install_wait")
+    assert any(
+        all(state[0] in installing for state in sample[:2])
+        for sample in monitor.history
+    )
+    for address in addresses:
+        assert await b.read(address, 7) == b.expected(address)

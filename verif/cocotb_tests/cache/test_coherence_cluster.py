@@ -360,8 +360,8 @@ async def inclusion_and_maintenance(dut: Any) -> None:
 
 
 @cocotb.test()
-async def sc_self_probe_and_exact_write(dut: Any) -> None:
-    """Check selected SC ownership through its self probe and tagged write."""
+async def sc_local_ownership_and_exact_write(dut: Any) -> None:
+    """Check selected SC's Modified ownership through its tagged write."""
     b = Cluster(dut)
     await b.reset()
     address = 0x80000000
@@ -409,52 +409,103 @@ async def sc_self_probe_and_exact_write(dut: Any) -> None:
 
 
 @cocotb.test()
-async def amo_holds_home_until_exact_write(dut: Any) -> None:
-    """Check AMO publication before a queued DMA read."""
-    b = Cluster(dut)
-    await b.reset()
-    address = 0x80000000
-    await b.store(address, 17)
-    await b.wait("o_pending_store", 0)
-    await b.set(i_read_tag=11)
-    assert await b.read(address, kind=2) == 17
-    assert b.get("o_atomic_live")
-    q = pack((2, 2), (2, 3), (4, 9), (1, 0))
-    await b.set(
-        i_agent_valid=1,
-        i_agent_d=pack(
-            (4, 7),
-            (9, q),
-            (b.p, address),
-            (5, 0),
-            (3, 5),
-            (32, 0),
-            (1, 0),
-            (1, 0),
-            (1, 0),
-            (256, 0),
-        ),
-    )
-    await b.wait("o_agent_ready")
-    await b.tick()
-    await b.set(i_agent_valid=0)
-    await b.tick(20)
-    assert not b.get("o_agent_g_valid")
-    await b.set(
-        i_write_atomic=1,
-        i_write_sc=0,
-        i_write_tag=11,
-        i_address=address,
-        i_write_mask=255,
-        i_write_data=18,
-    )
-    await b.tick()
-    await b.set(i_write_mask=0)
-    await b.wait("o_write_done")
-    assert not b.get("o_sc_write_done")
-    await b.wait("o_agent_g_valid")
-    grant = unpack(b.get("o_agent_g"), (3, 9, 6, b.p, 256, 1))
-    assert grant[4] & ((1 << 64) - 1) == 18
+async def resident_atomic_serializes_agent_request(dut: Any) -> None:
+    """Home readers and writers wait for the local owner's installed bytes."""
+    for sc in (False, True):
+        for write in (False, True):
+            b = Cluster(dut)
+            await b.reset()
+            address = 0x80000000
+            await b.store(address, 17)
+            await b.wait("o_pending_store", 0)
+            await b.set(i_read_tag=11)
+            if sc:
+                await b.set(
+                    i_reservation_valid=1,
+                    i_reservation_addr=address,
+                    i_reservation_size=3,
+                    i_sc_valid=1,
+                    i_sc_address=address,
+                    i_sc_size=3,
+                    i_sc_tag=11,
+                )
+                await b.wait("o_sc_ready")
+                await b.tick()
+                await b.set(i_sc_valid=0)
+                await b.wait("o_sc_result_valid")
+                assert b.get("o_sc_success") and not b.get("o_sc_error")
+                await b.set(i_sc_result_ready=1)
+                await b.tick()
+                await b.set(i_sc_result_ready=0)
+            else:
+                assert await b.read(address, kind=2) == 17
+            assert int(dut.hart.atomic_local_q.value) and b.get("o_atomic_live")
+            q = pack((2, 2), (2, 3), (4, 9), (1, 0))
+            await b.set(
+                i_agent_valid=1,
+                i_agent_d=pack(
+                    (4, 8 if write else 7),
+                    (9, q),
+                    (b.p, address),
+                    (5, 0),
+                    (3, 5),
+                    (32, 2 if write else 0),
+                    (1, 0),
+                    (1, 0),
+                    (1, 0),
+                    (256, 0xAB00 if write else 0),
+                ),
+            )
+            await b.wait("o_agent_ready")
+            await b.tick()
+            await b.set(i_agent_valid=0)
+            offered = False
+            for _ in range(60):
+                offered |= bool(int(dut.hart.i_p_valid.value))
+                assert not b.get("o_agent_g_valid")
+                assert not b.get("o_cut_hold")
+                assert not int(dut.hart.o_p_ready.value)
+                await b.tick()
+            assert offered, "home did not offer its conflicting probe"
+            if sc:
+                await b.set(i_sc_commit=1)
+                await b.tick()
+                await b.set(i_sc_commit=0)
+            await b.set(
+                i_write_atomic=1,
+                i_write_sc=int(sc),
+                i_write_tag=11,
+                i_address=address,
+                i_write_mask=255,
+                i_write_data=18,
+            )
+            await b.tick()
+            await b.set(i_write_mask=0)
+            await b.wait("o_write_done")
+            assert b.get("o_sc_write_done") == sc
+            assert b.get("o_atomic_live") and not b.get("o_agent_g_valid")
+            await b.wait("o_agent_g_valid")
+            assert not b.get("o_atomic_live")
+            grant = unpack(b.get("o_agent_g"), (3, 9, 6, b.p, 256, 1))
+            assert grant[1] == q and not grant[5]
+            if not write:
+                assert grant[4] & ((1 << 64) - 1) == 18
+            await b.set(i_agent_g_ready=1)
+            await b.tick()
+            await b.set(
+                i_agent_g_ready=0,
+                i_agent_c_valid=1,
+                i_agent_c=pack((9, q), (6, grant[2]), (b.p, address), (2, 0), (1, 0)),
+            )
+            await b.wait("o_agent_c_ready")
+            await b.tick()
+            await b.set(i_agent_c_valid=0)
+            await b.wait("o_agent_u_valid")
+            await b.set(i_agent_u_ready=1)
+            await b.tick()
+            await b.set(i_agent_u_ready=0)
+            if write:
+                assert await b.dma(address) & ((1 << 64) - 1) == 0xAB12
 
 
 @cocotb.test()

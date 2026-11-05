@@ -298,11 +298,11 @@ and W/D size recorded by LR. The reservation set is a 32-byte sector. Local
 writes and DMA invalidations to that sector clear it; read probes preserve
 it. The SC table holds the virtual address for access-fault completion.
 A selected SC owns an immutable request and result context independently
-of the speculative SC table. Its completion requires the matching home
-response and an available result slot, independently of SQ committed-empty
+of the speculative SC table. Its completion requires the matching local or home
+result and an available result slot, independently of SQ committed-empty
 status. The CPU arms interrupt/debug protection before
-request presentation. Home CheckSC and the conditional write recheck the
-reservation. A successful cached SC retires before its tagged SQ write;
+request presentation. Local Modified classification or home CheckSC checks
+the reservation; the conditional write rechecks it. A successful cached SC retires before its tagged SQ write;
 that write blocks younger retirement and drain completion until it finishes.
 The reservation clears at the exact write-complete edge. A failed SC drops
 its SQ entry without a write. Ungranted AMO and LR candidates yield probes.

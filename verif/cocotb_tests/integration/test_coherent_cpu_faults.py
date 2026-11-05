@@ -546,3 +546,267 @@ async def reset_drains_victim_before_id_reuse(dut: Any) -> None:
     assert await s.until_write(0x40000028) == 0x88
     assert await s.dma(address) & ((1 << 64) - 1) == 0x77
     assert await s.dma(address + 128) & ((1 << 64) - 1) == 0x88
+
+
+@cocotb.test()
+async def local_atomic_defers_control_entry_at_each_phase(dut: Any) -> None:
+    """IRQ, debug and a younger exception preserve the local write exactly once."""
+    address = 0x80000000
+    cache = dut.hart.gen_coherent_tier.hart_cache.l1d
+    cpu = dut.hart.cpu_inst
+    for sc in (False, True):
+        for entry in ("irq", "debug", "exception"):
+            stages: tuple[int, ...] = (
+                (1, 2, 9, 11, 12, 5, 6, 13) if sc else (1, 2, 9, 10, 11, 12, 5, 6, 13)
+            )
+            if entry == "exception":
+                stages = (11,)
+            for stage in stages:
+                s = System(dut)
+                body = literal(4, address) + [addi(7, 0, 11), store(7, 4, 0, 3)]
+                body += [addi(2, 0, 8), csr(0, 2, 0x304), csr(0, 2, 0x300)]
+                body += [addi(7, 0, 99)]
+                if sc:
+                    body += [(2 << 27) | (4 << 15) | (3 << 12) | (5 << 7) | 0x2F]
+                atomic_offset = len(body) * 4
+                body += [
+                    ((3 << 27) if sc else 0)
+                    | (7 << 20)
+                    | (4 << 15)
+                    | (3 << 12)
+                    | (6 << 7)
+                    | 0x2F
+                ]
+                body += [0 if entry == "exception" else 0x0000006F]
+                atomic_pc = trap_program(s, body) + atomic_offset
+                await s.reset()
+                writes = 0
+                triggered = False
+                for _ in range(20000):
+                    protected = int(cpu.coherent_atomic_active.value)
+                    if protected and int(cache.phase_q.value) == stage:
+                        # Only the atomic's lookup and write phases qualify.
+                        op = int(cache.operation_q.value)
+                        if int(cache.atomic_local_q.value) or op in (0, 6):
+                            if entry == "irq":
+                                dut.i_interrupts.value = 1
+                            elif entry == "debug":
+                                dut.i_dbg_haltreq.value = 1
+                            triggered = True
+                            break
+                    await s.step()
+                assert triggered, (sc, entry, stage)
+                local_seen = bool(int(cache.atomic_local_q.value))
+                for _ in range(20000):
+                    writes += int(cache.atomic_done_q.value)
+                    local_seen |= bool(int(cache.atomic_local_q.value))
+                    if int(cpu.coherent_atomic_active.value):
+                        assert not int(cpu.trap_taken.value)
+                        assert not int(dut.o_dbg_parked.value)
+                    if entry == "debug" and int(dut.o_dbg_parked.value):
+                        break
+                    if entry != "debug" and any(
+                        addr == 0x40000020 for _, addr, _ in s.effects
+                    ):
+                        break
+                    await s.step()
+                else:
+                    raise AssertionError(
+                        f"control entry stalled: {sc=} {entry=} {stage=}"
+                    )
+                assert local_seen and writes == 1, (sc, entry, stage, writes)
+                assert not int(cache.o_atomic_live.value)
+                if entry != "debug":
+                    effects = {addr: value for _, addr, value in s.effects}
+                    assert effects[0x40000010] == (
+                        (1 << 63) | 3 if entry == "irq" else 2
+                    )
+                    assert effects[0x40000018] == atomic_pc + 4
+                    assert sum(addr == 0x40000010 for _, addr, _ in s.effects) == 1
+                result = await s.dma(address)
+                assert result & ((1 << 64) - 1) == (99 if sc else 110)
+
+
+@cocotb.test()
+async def atomic_latency_controls(dut: Any) -> None:
+    """Measure warm Modified AMOs and SC on fresh Shared sectors."""
+    cache = dut.hart.gen_coherent_tier.hart_cache.l1d
+    cpu = dut.hart.cpu_inst
+    for scenario in ("warm_amo", "warm_sc", "fresh_sc"):
+        s = System(dut)
+        address = 0x80000000
+        body = literal(4, address) + [addi(7, 0, 1)]
+        if scenario != "fresh_sc":
+            body += [store(7, 4, 0, 3)]
+        pcs = set()
+        for index in range(8):
+            if scenario != "warm_amo":
+                body += [(2 << 27) | (4 << 15) | (3 << 12) | (5 << 7) | 0x2F]
+            pcs.add(s.boot + 4 * len(body))
+            body += [
+                ((3 << 27) if scenario != "warm_amo" else 0)
+                | (7 << 20)
+                | (4 << 15)
+                | (3 << 12)
+                | (6 << 7)
+                | 0x2F
+            ]
+            if scenario == "fresh_sc" and index != 7:
+                body += [addi(4, 4, 32)]
+        body += [0x400000B7, store(7, 1, 0x28, 3), 0x0000006F]
+        s.program(body)
+        await s.reset()
+        reads = []
+        retirements = []
+        starts = []
+        ends = []
+        was_protected = False
+
+        def observe() -> None:
+            nonlocal was_protected
+            protected = bool(int(cpu.coherent_atomic_active.value))
+            if protected and not was_protected:
+                starts.append(s.cycle)
+            if was_protected and not protected:
+                ends.append(s.cycle)
+            was_protected = protected
+            if (
+                int(cache.i_read_valid.value) and int(cache.i_read_kind.value) == 2
+            ) or (int(cache.i_sc_valid.value) and int(cache.o_sc_ready.value)):
+                reads.append(s.cycle)
+            valid = int(dut.o_debug_commit_valid.value)
+            if valid & 1 and int(dut.o_debug_commit_pc.value) in pcs:
+                retirements.append(s.cycle)
+            if valid & 2 and int(dut.o_debug_commit_2_pc.value) in pcs:
+                retirements.append(s.cycle)
+
+        s.before_edge = observe
+        assert await s.until_write(0x40000028) == 1
+        assert len(reads) == len(retirements) == len(starts) == len(ends) == 8
+        d_read = [b - a for a, b in zip(reads, retirements, strict=True)]
+        d_guard = [b - a for a, b in zip(starts, ends, strict=True)]
+        dut._log.info(
+            "ATOMIC_TIMING %s request_to_retirement=%s protection=%s total=%d",
+            scenario,
+            d_read,
+            d_guard,
+            s.cycle,
+        )
+
+
+@cocotb.test()
+async def reader_downgrade_sc_latency(dut: Any) -> None:
+    """Measure successful SC after a coherent reader downgrades its sector."""
+    s = System(dut)
+    address = 0x80000000
+    cache = dut.hart.gen_coherent_tier.hart_cache.l1d
+    cpu = dut.hart.cpu_inst
+    body = literal(4, address) + [addi(7, 0, 11), store(7, 4, 0, 3)]
+    body += literal(9, 0x123456789ABCDEF) + [addi(10, 0, 3)]
+    body += [(2 << 27) | (4 << 15) | (3 << 12) | (5 << 7) | 0x2F]
+    body += [(1 << 25) | (10 << 20) | (9 << 15) | (5 << 12) | (9 << 7) | 0x33] * 3
+    body += [addi(7, 0, 99)]
+    sc_pc = s.boot + 4 * len(body)
+    body += [(3 << 27) | (7 << 20) | (4 << 15) | (3 << 12) | (6 << 7) | 0x2F]
+    body += [0x400000B7, store(6, 1, 0x28, 3), 0x0000006F]
+    s.program(body)
+    await s.reset()
+    events: dict[str, int] = {}
+    acquisitions = 0
+
+    def observe() -> None:
+        nonlocal acquisitions
+        protected = bool(int(cpu.coherent_atomic_active.value))
+        if protected:
+            events.setdefault("guard_start", s.cycle)
+        elif "guard_start" in events:
+            events.setdefault("guard_end", s.cycle)
+        if int(cache.i_sc_valid.value) and int(cache.o_sc_ready.value):
+            assert "request" not in events
+            events["request"] = s.cycle
+        if "request" in events:
+            acquisitions += bool(
+                int(cache.o_d_valid.value) & int(cache.i_d_ready.value) & 1
+            )
+        valid = int(dut.o_debug_commit_valid.value)
+        if (valid & 1 and int(dut.o_debug_commit_pc.value) == sc_pc) or (
+            valid & 2 and int(dut.o_debug_commit_2_pc.value) == sc_pc
+        ):
+            assert "retire" not in events
+            events["retire"] = s.cycle
+
+    s.before_edge = observe
+    for _ in range(20000):
+        if int(cache.i_reservation_valid.value):
+            break
+        await s.step()
+    else:
+        raise AssertionError("LR did not establish a reservation")
+    assert await s.dma(address) & ((1 << 64) - 1) == 11
+    assert "request" not in events
+    assert await s.until_write(0x40000028) == 0
+    assert acquisitions == 1
+    dut._log.info(
+        "ATOMIC_TIMING reader_downgrade_sc request_to_retirement=%d protection=%d total=%d",
+        events["retire"] - events["request"],
+        events["guard_end"] - events["guard_start"],
+        s.cycle,
+    )
+    assert await s.dma(address) & ((1 << 64) - 1) == 99
+
+
+@cocotb.test()
+async def local_amo_operators_widths_and_order_bits(dut: Any) -> None:
+    """Every AMO W/D operator preserves neighbors for all aq/rl encodings."""
+    initial = 0xF123456789ABCDEF
+    operand = 0x812345670FEDCBA9
+    address = 0x80000000
+    for size, offset in ((2, 0), (2, 4), (3, 0)):
+        bits = 8 * (1 << size)
+        mask = (1 << bits) - 1
+        old = (initial >> (offset * 8)) & mask
+        rhs = operand & mask
+        signed_old = old - (1 << bits) if old >> (bits - 1) else old
+        signed_rhs = rhs - (1 << bits) if rhs >> (bits - 1) else rhs
+        answers = {
+            0: old + rhs,
+            1: rhs,
+            4: old ^ rhs,
+            8: old | rhs,
+            12: old & rhs,
+            16: min(signed_old, signed_rhs),
+            20: max(signed_old, signed_rhs),
+            24: min(old, rhs),
+            28: max(old, rhs),
+        }
+        for opcode, updated in answers.items():
+            for order in range(4):
+                s = System(dut)
+                body = literal(4, address) + literal(7, initial)
+                body += [store(7, 4, 0, 3), addi(9, 4, offset)]
+                body += literal(7, operand)
+                body += [
+                    (opcode << 27)
+                    | (order << 25)
+                    | (7 << 20)
+                    | (9 << 15)
+                    | (size << 12)
+                    | (6 << 7)
+                    | 0x2F
+                ]
+                body += [
+                    load(8, 4, 0, 3),
+                    0x400000B7,
+                    store(6, 1, 0x10, 3),
+                    store(8, 1, 0x18, 3),
+                    0x0000006F,
+                ]
+                s.program(body)
+                await s.reset()
+                result = await s.until_write(0x40000018)
+                effects = {addr: value for _, addr, value in s.effects}
+                expected = (initial & ~(mask << (offset * 8))) | (
+                    (updated & mask) << (offset * 8)
+                )
+                assert result == expected, (size, offset, opcode, order)
+                assert effects[0x40000010] == signed_old & ((1 << 64) - 1)
