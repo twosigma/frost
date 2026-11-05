@@ -294,14 +294,42 @@ async def test_packet_outside_the_read_set_misses(dut: Any) -> None:
     await _update(dut, PC_A, TARGET_A)
     hit, _, _ = await _lookup(dut, PC_A, index_pc=PC_A + 4)
     assert hit == [False, False]
-    # The word after the last set of a block is set 0 of the next block,
-    # whose tag differs from the packet's.
-    last = (PC_A | ((_sets(dut) - 1) << 2)) & MASK_XLEN
+    # The word after the last set of a block is set 0 of the next block. A
+    # slot 2 there gets no hit, from either block's entry in set 0.
+    block = PC_A & ~((_sets(dut) << 2) - 1) & MASK_XLEN
+    last = block + ((_sets(dut) - 1) << 2)
+    await _update(dut, block, TARGET_A)
     await _update(dut, last + 4, TARGET_B)
     hit, _, _ = await _lookup(dut, last)
     assert not hit[1]
     hit, _, target = await _lookup(dut, last + 4)
     assert hit[0] and target[0] == _low(dut, TARGET_B)
+    hit, _, target = await _lookup(dut, block)
+    assert hit[0] and target[0] == _low(dut, TARGET_A)
+
+
+@cocotb.test()
+async def test_read_on_the_last_clearing_edge_misses(dut: Any) -> None:
+    """A lookup that reads the last set on the edge that clears it gets no hit."""
+    await _setup(dut)
+    last_pc = (PC_A | ((_sets(dut) - 1) << 2)) & MASK_XLEN
+    await _update(dut, last_pc, TARGET_A)
+    hit, _, _ = await _lookup(dut, last_pc)
+    assert hit[0]
+    dut.i_lookup_index.value = _sets(dut) - 1
+    dut.i_reset.value = 1
+    await RisingEdge(dut.i_clk)
+    await FallingEdge(dut.i_clk)
+    dut.i_reset.value = 0
+    # The sweep clears set k on edge k after reset; serve the packet after
+    # the edge that clears the last set, whose read returned the old set.
+    await _cycle(dut, _sets(dut))
+    dut.i_packet_pc.value = last_pc
+    dut.i_packet_compressed.value = 0
+    await _settle()
+    assert not (int(dut.o_hit.value) & 1)
+    hit, _, _ = await _lookup(dut, last_pc)
+    assert not hit[0]
 
 
 @cocotb.test()

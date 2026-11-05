@@ -140,8 +140,8 @@ next word). They are read a cycle ahead, so the lookup adds no fetch cycle,
 but a taken slot-2 prediction costs one bubble because fetch has already
 requested the next sequential window. At a halfword PC, a slot-2 hit predicts
 only if the entry was trained for an instruction of the same size. A JAL that
-misses the BTB mispredicts once; training at commit makes its next execution
-hit.
+misses both the BTB and the backing BTB mispredicts once; training at commit
+makes its next execution hit.
 
 PD can change the direction fetch followed for a slot-1 conditional branch,
 and redirects a JAL or JALR that the BTB did not predict taken to the target
@@ -195,25 +195,29 @@ branches are trained, though PD overrides only slot 1.
 `backing_btb` is a second BTB level with 1024 entries in two ways (four for
 measurement, through `riscv_pkg::BackingBtbWays`). Every BTB update also
 trains it, so it holds the BTB's branches and more. Its sets are indexed by
-the PC's word, like the BTB, and its tags hold the PC bits above the index
-and PC[1]. A miss allocates an invalid way or the way the set's replacement
-state names; a target in another 4 GiB region invalidates the entry, as in
-the BTB.
+the PC's word, like the BTB. An entry's tag holds the PC bits above the
+index, and PC[1] is kept with its target, counter, size, and type. A miss
+allocates an invalid way or the way the set's replacement state names; a
+target in another 4 GiB region invalidates the entry, as in the BTB. Reset
+clears one set per cycle, and the backing BTB makes no predictions until
+every set is clear.
 
 The lookup follows the fetch PC: the set of `o_pc`'s word, and the set after
 it for a slot 2 in the next word, read on the edge that requests the window.
 When IF serves that window the next cycle, the registered tags are compared
-with the packet's PC, so a packet whose set was not read gets no backing hit.
-IF passes PD each slot's hit, size, and target, kept across stall replay
-like the packet. PD registers a candidate for a slot-1 or slot-2 JAL or JALR
-whose backing entry predicts taken, has the instruction's size, and is
-neither a call nor a return. When the slot's BTB prediction was not taken,
-the candidate fires the PD redirect, which costs the PD redirect's two
-bubbles instead of a recovery from execution or commit, and ID gives the
-instruction the prediction. Execution checks the target like any other
-prediction's. Calls and returns stay with the BTB, whose typed entries
-operate the return address stack. A build that disables branch prediction
-gets no backing redirects.
+with the packet's PC, so a packet whose set was not read gets no backing hit,
+and neither does a slot 2 in the word after the last set. IF passes PD each
+slot's hit, size, and target, kept across stall replay like the packet. PD
+registers a candidate for a slot-1 or slot-2 JAL or JALR whose backing entry
+predicts taken, has the instruction's size, and is neither a call nor a
+return, and that is not a call or a return by the return address stack's
+rules either. When the slot's BTB prediction was not taken, the candidate
+fires the PD redirect, which costs the PD redirect's two bubbles instead of
+a misprediction recovery, and ID gives the instruction the prediction. The
+ROB checks a JAL's target at allocation, and the branch unit a JALR's at
+execution, as for any prediction. Calls and returns stay with the BTB, whose
+typed entries operate the return address stack. A build that disables branch
+prediction gets no backing redirects.
 
 ### Two-wide fetch and dispatch
 
@@ -468,9 +472,9 @@ commits, and each is a read-modify-write of a 2-bit counter.
 but in order, and back-to-back updates to one entry see each other. A slot-1
 correct-branch update that loses its cycle is dropped, and a waiting slot-2
 update is replaced by a newer one; both cost accuracy only. The backing BTB
-registers the same selected update, reads its set, and writes the set two
-cycles after the BTB; an update that reads the set being written takes the
-written set.
+registers the same selected update, reads its set, and writes the set one
+cycle after the BTB writes; an update that reads the set being written takes
+the written set.
 
 ### 4 GiB target limit
 

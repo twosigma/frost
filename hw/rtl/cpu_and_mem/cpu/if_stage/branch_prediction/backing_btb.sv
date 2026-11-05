@@ -21,10 +21,11 @@
  * turns a taken hit on a JAL or JALR that fast prediction did not take into
  * a PD redirect (hw/rtl/cpu_and_mem/cpu/README.md, "Backing BTB").
  *
- * Sets are indexed by PC word bits, like the fast BTB, and an entry's tag
- * holds the PC bits above the index and PC[1]. The target keeps its low
- * TARGET_BITS bits; the upper bits come from the branch's PC, and training
- * with a target in another region invalidates the entry, as in the fast BTB.
+ * Sets are indexed by PC word bits, like the fast BTB. An entry's tag holds
+ * the PC bits above the index, and its payload holds PC[1] with the target,
+ * counter, size and type. The target keeps its low TARGET_BITS bits; the
+ * upper bits come from the branch's PC, and training with a target in
+ * another region invalidates the entry, as in the fast BTB.
  *
  * Lookup. The caller supplies the set index of the fetch PC register. The
  * tag arrays read it without a clock and register the tags; the payload
@@ -33,8 +34,8 @@
  * compared with the packet's PC. Each lookup reads two sets: the packet's
  * word and the word after it, for a slot 2 there. The second image of each
  * array stores set S at row S-1, so both read at the same index. A packet
- * whose set is not the one read gets no hit. A next word in the following
- * set block misses, because its tag differs.
+ * whose set is not the one read gets no hit, and neither does a slot 2 in
+ * the word after the last set, which belongs to the next block of sets.
  *
  * Training. An update registers, reads its set from a third payload array
  * that also holds the tags, valid bits and replacement state, and writes the
@@ -45,8 +46,8 @@
  * training share no state across an edge: a lookup reads the arrays as they
  * were before that edge's write.
  *
- * Reset clears one set per cycle, all sets in 2**IndexBits cycles. Until the
- * last set is clear, lookups miss and updates are dropped.
+ * Reset clears one set per cycle, all sets in 2**IndexBits cycles. Lookups
+ * read while clearing miss, and updates arriving then are dropped.
  */
 module backing_btb #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
@@ -94,10 +95,10 @@ module backing_btb #(
   typedef struct packed {
     logic valid;
     logic [UpperBits-1:0] upper;
-    logic halfword;
   } tag_t;
 
   typedef struct packed {
+    logic halfword;
     logic [TARGET_BITS-2:0] target;
     logic [1:0] counter;
     logic compressed;
@@ -106,10 +107,10 @@ module backing_btb #(
   } payload_t;
 
   // A set is {replacement, the ways' tags, the ways' payloads}, way 0 lowest
-  // in each field. Widths are spelled out for Yosys, which cannot take $bits
-  // of a type here; the simulation checks below pin them to the structs.
-  localparam int unsigned TagEntryBits = UpperBits + 2;
-  localparam int unsigned PayloadEntryBits = TARGET_BITS + 4;
+  // in each field. The widths are written out rather than taken with $bits
+  // of the types; the simulation checks below pin them to the structs.
+  localparam int unsigned TagEntryBits = UpperBits + 1;
+  localparam int unsigned PayloadEntryBits = TARGET_BITS + 5;
   localparam int unsigned TagRowBits = WAYS * TagEntryBits;
   localparam int unsigned PayloadRowBits = WAYS * PayloadEntryBits;
   localparam int unsigned SetBits = ReplBits + TagRowBits + PayloadRowBits;
@@ -213,9 +214,11 @@ module backing_btb #(
   assign b_replacement = b_set[SetBits-1-:ReplBits];
   for (genvar way = 0; way < WAYS; way++) begin : gen_update_match
     tag_t tag;
+    payload_t payload;
     assign tag = b_set[PayloadRowBits+way*TagEntryBits+:TagEntryBits];
+    assign payload = b_set[way*PayloadEntryBits+:PayloadEntryBits];
     assign b_way_valid[way] = tag.valid;
-    assign b_way_match[way] = tag.valid && tag.upper == b_upper && tag.halfword == b_halfword;
+    assign b_way_match[way] = tag.valid && tag.upper == b_upper && payload.halfword == b_halfword;
   end
 
   // The hit way, else the lowest invalid way, else the replacement victim.
@@ -249,7 +252,7 @@ module backing_btb #(
         if (b_region_ok) begin
           new_tag.valid = 1'b1;
           new_tag.upper = b_upper;
-          new_tag.halfword = b_halfword;
+          new_payload.halfword = b_halfword;
           new_payload.target = b_target;
           new_payload.counter = b_hit ?
               train_counter(old_payload.counter, b_taken) : (b_taken ? 2'b10 : 2'b01);
@@ -296,8 +299,14 @@ module backing_btb #(
   // ===========================================================================
   // Lookup images
   // ===========================================================================
+  // A read on an edge that clears a set, or during reset, can return what
+  // that edge clears; its response is dropped.
   logic [IndexBits-1:0] request_index_q;
-  always_ff @(posedge i_clk) request_index_q <= i_lookup_index;
+  logic request_valid_q;
+  always_ff @(posedge i_clk) begin
+    request_index_q <= i_lookup_index;
+    request_valid_q <= !i_reset && !sweep_active;
+  end
 
   logic [1:0][TagRowBits-1:0] tags_q;
   logic [1:0][PayloadRowBits-1:0] payload_rows;
@@ -339,7 +348,9 @@ module backing_btb #(
   // Tag matches come from registers and the packet PC; the payload arrays'
   // outputs only qualify a hit and supply its fields.
   logic aligned;
-  assign aligned = !sweep_active && (request_index_q == i_packet_pc[IndexBits+1:2]);
+  logic last_set;
+  assign aligned  = request_valid_q && (request_index_q == i_packet_pc[IndexBits+1:2]);
+  assign last_set = &request_index_q;
 
   logic [1:0][WAYS-1:0] upper_match;
   logic [1:0][WAYS-1:0] entry_halfword;
@@ -353,7 +364,7 @@ module backing_btb #(
       assign tag = tags_q[image][way*TagEntryBits+:TagEntryBits];
       assign payload = payload_rows[image][way*PayloadEntryBits+:PayloadEntryBits];
       assign upper_match[image][way] = tag.valid && (tag.upper == i_packet_pc[XLEN-1:IndexBits+2]);
-      assign entry_halfword[image][way] = tag.halfword;
+      assign entry_halfword[image][way] = payload.halfword;
       assign entry_usable[image][way] = payload.counter[1] && !payload.is_call &&
           !payload.is_return;
       assign entry_compressed[image][way] = payload.compressed;
@@ -375,9 +386,12 @@ module backing_btb #(
   logic [1:0][WAYS-1:0] slot2_way_match;
   for (genvar way = 0; way < WAYS; way++) begin : gen_slot_match
     assign slot1_way_match[way] = upper_match[0][way] && (entry_halfword[0][way] == slot1_halfword);
+    // The set after the last one is set 0 of the next block, whose tags this
+    // block's upper PC bits do not name.
     for (genvar image = 0; image < 2; image++) begin : gen_image
       assign slot2_way_match[image][way] = upper_match[image][way] &&
-          (slot2_image == 1'(image)) && (entry_halfword[image][way] == slot2_halfword);
+          (slot2_image == 1'(image)) && (entry_halfword[image][way] == slot2_halfword) &&
+          !(image == 1 && last_set);
     end
   end
 
@@ -424,7 +438,9 @@ module backing_btb #(
           assert (!(write_tags[first*TagEntryBits+TagEntryBits-1] &&
                     write_tags[second*TagEntryBits+TagEntryBits-1] &&
                     write_tags[first*TagEntryBits+:TagEntryBits] ==
-                    write_tags[second*TagEntryBits+:TagEntryBits]));
+                    write_tags[second*TagEntryBits+:TagEntryBits] &&
+                    write_payloads[first*PayloadEntryBits+PayloadEntryBits-1] ==
+                    write_payloads[second*PayloadEntryBits+PayloadEntryBits-1]));
         end
       end
     end

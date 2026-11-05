@@ -452,13 +452,22 @@ module pd_stage #(
   assign pd_not_taken_candidate = pd_cond_branch && i_from_if_to_pd.tage_valid &&
                                   !i_from_if_to_pd.tage_taken;
 
-  // Backing BTB candidates, one per slot. Slot 1's opcode is its native
-  // word's or its RV64C expansion's (rvc_extra_predecoded). A slot-2 jump
-  // takes the target registers only behind a slot 1 that is not a branch;
-  // a jump in slot 1 leaves no valid slot 2.
-  localparam int unsigned BackingTargetBits = riscv_pkg::PhysAddrBits - 1;
+  // Backing BTB candidates, one per slot. Slot 1's fields are its native
+  // word's or its RV64C expansion's (rvc_extra_predecoded). A JAL or JALR
+  // that links (rd x1 or x5) is a call and a JALR from x1 a return, by the
+  // return address stack's rules; neither takes a backing redirect, whatever
+  // type its entry has. A slot-2 jump takes the target registers only behind
+  // a slot 1 that is not a branch; a jump in slot 1 leaves no valid slot 2.
+  function automatic logic untyped_jump(input logic [31:0] instruction);
+    logic links;
+    links = (instruction[11:7] == 5'd1) || (instruction[11:7] == 5'd5);
+    untyped_jump = !links && ((instruction[6:0] == riscv_pkg::OPC_JAL) ||
+        ((instruction[6:0] == riscv_pkg::OPC_JALR) && (instruction[19:15] != 5'd1)));
+  endfunction
   logic pd_slot1_jump;
   logic pd_slot2_jump;
+  logic pd_slot1_untyped_jump;
+  logic pd_slot2_untyped_jump;
   logic pd_backing_candidate;
   logic pd_backing_candidate_2;
   logic pd_backing_candidate_r;
@@ -469,9 +478,11 @@ module pd_stage #(
                          (instruction_non_nop_predecoded_rs2[6:0] == riscv_pkg::OPC_JALR);
   assign pd_slot2_jump = (i_from_if_to_pd_2.effective_instr[6:0] == riscv_pkg::OPC_JAL) ||
                          (i_from_if_to_pd_2.effective_instr[6:0] == riscv_pkg::OPC_JALR);
-  assign pd_backing_candidate = pd_slot1_jump && i_backing_hit[0] &&
+  assign pd_slot1_untyped_jump = untyped_jump(instruction_non_nop_predecoded_rs2);
+  assign pd_slot2_untyped_jump = untyped_jump(i_from_if_to_pd_2.effective_instr);
+  assign pd_backing_candidate = pd_slot1_untyped_jump && i_backing_hit[0] &&
                                 (i_backing_compressed[0] == pd_sel_compressed);
-  assign pd_backing_candidate_2 = pd_slot2_jump && i_backing_hit[1] &&
+  assign pd_backing_candidate_2 = pd_slot2_untyped_jump && i_backing_hit[1] &&
                                   (i_backing_compressed[1] == pd_sel_compressed_2);
   assign pd_backing_target_select = pd_slot1_jump || (pd_slot2_jump && !pd_cond_branch);
   assign pd_backing_target = pd_slot1_jump ?
@@ -701,11 +712,11 @@ module pd_stage #(
       (i_from_if_to_pd.btb_predicted_taken || i_from_if_to_pd.bp_dir_taken);
   logic pd_backing_reference_next;
   logic pd_backing_reference_next_2;
-  assign pd_backing_reference_next = pd_slot1_jump && i_backing_hit[0] &&
+  assign pd_backing_reference_next = pd_slot1_untyped_jump && i_backing_hit[0] &&
       (i_backing_compressed[0] == pd_sel_compressed) &&
       !i_from_if_to_pd.btb_predicted_taken && !i_from_if_to_pd.sel_nop &&
       !i_from_if_to_pd.fetch_fault;
-  assign pd_backing_reference_next_2 = pd_slot2_jump && i_backing_hit[1] &&
+  assign pd_backing_reference_next_2 = pd_slot2_untyped_jump && i_backing_hit[1] &&
       (i_backing_compressed[1] == pd_sel_compressed_2) &&
       !i_from_if_to_pd_2.btb_predicted_taken && !i_from_if_to_pd_2.sel_nop &&
       !i_from_if_to_pd_2.fetch_fault;

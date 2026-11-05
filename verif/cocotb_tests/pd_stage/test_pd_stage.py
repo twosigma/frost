@@ -1410,6 +1410,25 @@ async def test_backing_btb_redirect_vetoes(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_backing_btb_never_redirects_calls_or_returns(dut: Any) -> None:
+    """A linking jump or a JALR from x1 takes no backing redirect, whatever its entry."""
+    await _setup_test(dut)
+    pc = 0x8000_0200
+    target = 0x8000_0F40
+    for instruction in (
+        _pack_jal(imm=0x40, rd=1),
+        _pack_jal(imm=0x40, rd=5),
+        _pack_i(imm=0, rs1=1, funct3=0, rd=0, opcode=OPC_JALR),
+        _pack_i(imm=0, rs1=1, funct3=0, rd=5, opcode=OPC_JALR),
+        _pack_i(imm=0, rs1=6, funct3=0, rd=1, opcode=OPC_JALR),
+    ):
+        _drive_if_packet(dut, _packet(pc, instruction))
+        _drive_backing(dut, 0, target=target)
+        redirect, _, _, _ = await _backing_redirect(dut)
+        assert not redirect, hex(instruction)
+
+
+@cocotb.test()
 async def test_backing_btb_compressed_jump_needs_a_compressed_entry(dut: Any) -> None:
     """A compressed C.J redirects only with an entry trained at its size."""
     await _setup_test(dut)
