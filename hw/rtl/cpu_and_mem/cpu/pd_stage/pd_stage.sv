@@ -47,9 +47,9 @@ module pd_stage #(
     output riscv_pkg::from_pd_to_id_t o_from_pd_to_id_2,
     // IF's backing BTB result for each slot (index 0 is slot 1): a taken hit,
     // the entry's size, and target bits [PhysAddrBits-1:1].
-    input logic [1:0] i_backing_hit = '0,
-    input logic [1:0] i_backing_compressed = '0,
-    input logic [1:0][riscv_pkg::PhysAddrBits-2:0] i_backing_target = '0,
+    input logic [1:0] i_backing_hit,
+    input logic [1:0] i_backing_compressed,
+    input logic [1:0][riscv_pkg::PhysAddrBits-2:0] i_backing_target,
     // Redirect to IF, and the new direction: taken redirects to the branch
     // target, not taken to the fall-through. It fires for a slot-1
     // conditional branch whose final direction differs from the BTB

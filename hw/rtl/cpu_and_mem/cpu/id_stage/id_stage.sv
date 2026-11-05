@@ -32,7 +32,7 @@ module id_stage #(
     input logic i_pd_redirect,
     input logic i_pd_redirect_taken,
     input logic [XLEN-1:0] i_pd_redirect_target,
-    input logic i_pd_redirect_slot2 = 1'b0,
+    input logic i_pd_redirect_slot2,
     // mstatus.FS == Off makes F/D instructions illegal. cpu_ooo registers
     // this one cycle after the CSR. FS enters or leaves Off only through a
     // write-intending mstatus/sstatus access; its FENCE-class flush discards

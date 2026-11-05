@@ -124,9 +124,9 @@ module if_stage #(
     input logic [XLEN-1:0] i_pd_redirect_target,
     // A PD redirect's return address stack operation, for a backing BTB
     // prediction of a call, return, or coroutine swap (from pd_stage)
-    input logic i_pd_redirect_ras_push = 1'b0,
-    input logic i_pd_redirect_ras_pop = 1'b0,
-    input logic [XLEN-1:0] i_pd_redirect_ras_link = '0,
+    input logic i_pd_redirect_ras_push,
+    input logic i_pd_redirect_ras_pop,
+    input logic [XLEN-1:0] i_pd_redirect_ras_link,
     output logic [XLEN-1:0] o_pc,
     // The previous cycle consumed the stall-captured packet. The provider
     // uses this to classify PC movement as served. o_pc holds the owed fetch
