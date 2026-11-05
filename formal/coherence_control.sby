@@ -27,6 +27,10 @@ coh_read_owners1_prove owners owners1
 coh_read_owners3_prove owners owners3
 coh_read_owners4_prove owners owners4
 coh_read_owners8_prove owners owners8
+coh_miss_credit1_prove credit credit1
+coh_miss_credit3_prove credit credit3
+coh_miss_credit4_prove credit credit4
+coh_miss_credit8_prove credit credit8
 
 [options]
 mode prove
@@ -48,6 +52,8 @@ grant_select: depth 1
 grant_select: timeout 180
 owners: depth 1
 owners: timeout 180
+credit: depth 1
+credit: timeout 180
 
 [engines]
 smtbmc boolector
@@ -85,6 +91,12 @@ owners3: chparam -set SLOTS 3 coherence_read_owners
 owners4: chparam -set SLOTS 4 coherence_read_owners
 owners8: chparam -set SLOTS 8 coherence_read_owners
 owners: prep -top coherence_read_owners
+credit: read -formal -sv coherence_miss_credit.sv
+credit1: chparam -set SLOTS 1 coherence_miss_credit
+credit3: chparam -set SLOTS 3 coherence_miss_credit
+credit4: chparam -set SLOTS 4 coherence_miss_credit
+credit8: chparam -set SLOTS 8 coherence_miss_credit
+credit: prep -top coherence_miss_credit
 
 [files]
 coherent_atomic_select_formal.sv
@@ -99,3 +111,4 @@ coherent_atomic_select_formal.sv
 ../hw/rtl/lib/cache/coherence_read_select.sv
 ../hw/rtl/lib/cache/coherence_grant_select.sv
 ../hw/rtl/lib/cache/coherence_read_owners.sv
+../hw/rtl/lib/cache/coherence_miss_credit.sv

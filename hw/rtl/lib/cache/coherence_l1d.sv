@@ -298,6 +298,7 @@ module coherence_l1d #(
   logic [1:0] ld_status_q[EpSlots];
   logic same_line, store_same_line_q, load_ep_free, load_block, amo_waiting, wait_attach;
   logic load_grant_waiting, ep0_wb_ok, drain_q;
+  logic [3:0] retry_credit;
   logic [EpBits-1:0] same_line_ep, load_ep_index;
   logic [7:0] rd_wait_q, rd_wait_release_q, rd_waiting, rd_owned, rd_miss_retry;
   logic [EpBits-1:0] rd_wait_ep_q[8];
@@ -772,11 +773,10 @@ module coherence_l1d #(
     for (int slot = 0; slot < 8; slot++) begin
       rd_waiting[slot] = Multi && rd_wait_q[slot] && live[rd_wait_ep_q[slot]] &&
           !(installed_q[rd_wait_ep_q[slot]] && !rd_wait_release_q[slot]);
-      if (!Multi) rd_miss_retry[slot] = !request_live && wb_free;
-      else if (rd_kind_q[slot] == ReadLoad) rd_miss_retry[slot] = load_ep_free && !load_block;
-      else if (rd_kind_q[slot] == ReadLR)
-        rd_miss_retry[slot] = !request_live && ep0_wb_ok && !load_block;
-      else rd_miss_retry[slot] = !any_live && wb_free;
+      if (!Multi) rd_miss_retry[slot] = retry_credit[0];
+      else if (rd_kind_q[slot] == ReadLoad) rd_miss_retry[slot] = retry_credit[0];
+      else if (rd_kind_q[slot] == ReadLR) rd_miss_retry[slot] = retry_credit[1];
+      else rd_miss_retry[slot] = retry_credit[2];
     end
   end
   logic [3*MISSES-1:0] read_owner_slots;
@@ -798,8 +798,23 @@ module coherence_l1d #(
   assign same_line = Multi && |same_line_q;
   // A load grant waits only for a WB slot. Endpoint 0 does not take the last
   // free slot from it, so stores and LR cannot keep a load grant waiting.
-  assign load_grant_waiting = Multi && |(ep_grant_valid[EpSlots-1:1] & ~ep_store[EpSlots-1:1]);
-  assign ep0_wb_ok = wb_free && !(load_grant_waiting && !(&(~wb_live)));
+  coherence_miss_credit #(
+      .SLOTS(MISSES)
+  ) miss_credit (
+      .i_clk(i_clk),
+      .i_grant_valid(ep_grant_valid[MISSES-1:0]),
+      .i_store(ep_store[MISSES-1:0]),
+      .i_wb_live(wb_live),
+      .i_wb_free(wb_free),
+      .i_request_live(request_live),
+      .i_any_live(any_live),
+      .i_load_ep_free(load_ep_free),
+      .i_atomic(atomic_q),
+      .i_drain(drain_q),
+      .o_load_grant_waiting(load_grant_waiting),
+      .o_zero_wb_ok(ep0_wb_ok),
+      .o_retry(retry_credit)
+  );
   assign load_block = Multi && (atomic_q || drain_q);
   assign wait_attach = Multi && read_miss && rd_kind_q[selected_read_q] != ReadAMO && same_line;
   always_ff @(posedge i_clk) begin

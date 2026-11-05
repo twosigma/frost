@@ -282,7 +282,9 @@ A younger store grant waits
 in its endpoint while the head and eligible reads continue. Endpoint 0
 reserves a free dirty-victim slot through installation. A nonzero endpoint
 requires a free slot when its grant is selected. Endpoint 0 does not take the
-last free slot from a waiting load grant. Frozen slots remain occupied through
+last free slot from a waiting load grant. `coherence_miss_credit` computes this
+permission and the Load, LR and AMO retry credits from endpoint ownership,
+writeback occupancy and drain state. Frozen slots remain occupied through
 WA. A store error stops the hart without read completion or error disposal.
 
 No two live endpoints hold the same sector. A load miss on a sector held by
