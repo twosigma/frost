@@ -248,9 +248,10 @@ module frost_hart #(
   assign coherent_block_addr = {riscv_pkg::XLEN'(block_addr[1]), riscv_pkg::XLEN'(block_addr[0])};
   localparam longint unsigned CachedBase = riscv_pkg::DdrBase;
   localparam longint unsigned CachedSizeBytes = riscv_pkg::DdrCapacityBytes;
-  localparam bit StreamPrefetch = CachedBase == riscv_pkg::DdrBase &&
-      CachedBase + CachedSizeBytes == riscv_pkg::DdrLimit &&
-      (CachedBase & 4095) == 0 && ((CachedBase + CachedSizeBytes) & 4095) == 0;
+  // The cached window is the Normal DDR PMA region. L1D look-ahead stays in
+  // the 4 KiB page of a demand access, so it needs page-aligned window ends.
+  localparam bit StreamPrefetch = (CachedBase & 4095) == 0 &&
+      ((CachedBase + CachedSizeBytes) & 4095) == 0;
   logic debug_go, debug_fetch_invalidate;
   logic [31:0] debug_go_addr;
   if (CACHE_NORMAL_MEMORY) begin : gen_debug_fetch_barrier

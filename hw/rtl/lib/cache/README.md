@@ -300,8 +300,9 @@ it unchanged. Demand hits and misses on the next sector advance a confirmed
 stream; a nonadjacent miss replaces it.
 Repeated accesses and retry lookups do not advance it. Look-ahead stays
 within eight sectors and within the current 4 KiB physical page.
-`STREAM_PREFETCH` defaults to zero in the generic L1D. The hart enables it
-for a page-aligned cached aperture equal to the Normal DDR PMA region.
+`STREAM_PREFETCH` defaults to zero in the generic L1D. The hart's cached
+window is the Normal DDR PMA region, and the hart enables look-ahead when
+both ends of that window are page aligned.
 
 At most two of the highest-numbered load endpoints carry speculative GetS
 requests. Three-endpoint caches allow one; smaller caches disable look-ahead.
