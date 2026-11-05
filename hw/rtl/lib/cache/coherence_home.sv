@@ -270,6 +270,9 @@ module coherence_home #(
   logic [FILLS-1:0][WbBits-1:0] fill_wb_q;
   logic [FILLS-1:0][8*LINE_BYTES-1:0] fill_image_q;
   logic [FILLS-1:0] fill_victim_q, fill_sent_q, fill_done_q, fill_error_q;
+  // A successful fill has woken its waiters. Set on the first FillInstallWait
+  // cycle and cleared on allocation.
+  logic [FILLS-1:0] fill_woken_q;
   logic [FILLS-1:0] fill_read_sent_q, fill_read_done_q, fill_sector_q;
   logic [FILLS-1:0] fill_dirty_q, fill_r_ready, fill_prefetch_q;
   // Prefetch decisions. The tag port serves one lookup at a time, so flags
@@ -325,7 +328,8 @@ module coherence_home #(
     for (int fill = 0; fill < FILLS; fill++) f_local_fatal |= fill_phase_q[fill] == FillFatal;
     for (int put = 0; put < Puts; put++) f_local_fatal |= put_phase_q[put] == PutFatal;
     for (int fill = 0; fill < FILLS; fill++)
-    if (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady)
+    if (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady &&
+        !(fill_phase_q[fill] == FillInstallWait && fill_woken_q[fill]))
       f_fill_waiting |= fill_seats_q[fill];
     for (int fill = 0; fill < FILLS; fill++)
     if (fill_phase_q[fill] != FillFree) f_fill_seated |= fill_seats_q[fill];
@@ -1204,9 +1208,14 @@ module coherence_home #(
       {LINE_BYTES{fill_phase_q[fill] == FillInstall}},
       fill_phase_q[fill] == FillInstall ? fill_image_q[fill] : {(8 * LINE_BYTES) {1'b0}}
     };
+    // A successful fill wakes its waiters once, on the first cycle after the
+    // array accepts its install update. Seat admission is closed from then
+    // on, so the registered seat mask names every waiter. A waiter that
+    // reaches its tag decision before the install completes finds its line
+    // blocked by the fill and retries without parking. A failed fill wakes
+    // its waiters with the error.
     assign fill_wake[fill] = run &&
-        ((fill_phase_q[fill] == FillInstallWait && array_updated &&
-          array_updated_token == TokenBits'(Client)) ||
+        ((fill_phase_q[fill] == FillInstallWait && !fill_woken_q[fill]) ||
          (fill_phase_q[fill] == FillMemory && fill_done_q[fill] && fill_error_q[fill]));
     always_comb begin
       probe = '0;
@@ -1235,6 +1244,7 @@ module coherence_home #(
         fill_sent_q[fill] <= 1'b0;
         fill_done_q[fill] <= 1'b0;
         fill_error_q[fill] <= 1'b0;
+        fill_woken_q[fill] <= 1'b0;
         fill_victim_q[fill] <= 1'b0;
         fill_read_sent_q[fill] <= 1'b0;
         fill_read_done_q[fill] <= 1'b0;
@@ -1266,6 +1276,7 @@ module coherence_home #(
             fill_sent_q[fill] <= 1'b0;
             fill_done_q[fill] <= 1'b0;
             fill_error_q[fill] <= 1'b0;
+            fill_woken_q[fill] <= 1'b0;
             fill_read_sent_q[fill] <= array_state == coherence_pkg::Invalid;
             fill_read_done_q[fill] <= array_state == coherence_pkg::Invalid;
             fill_sector_q[fill] <= 1'b0;
@@ -1328,6 +1339,14 @@ module coherence_home #(
               fill_seat_count_q[fill] <= '0;
             end
           end
+          // A successful response that arrives in FillMemory installs from
+          // the next cycle, beside the image capture above. A response that
+          // arrives in an earlier phase, and every error response, waits in
+          // fill_done_q for the transition above.
+          if (fill_phase_q[fill] == FillMemory && !fill_done_q[fill] && i_mem_resp_valid &&
+              i_mem_resp_id == 5'(fill) && !i_mem_resp_error)
+            fill_phase_q[fill] <= FillInstall;
+          if (fill_phase_q[fill] == FillInstallWait) fill_woken_q[fill] <= 1'b1;
           if (fill_phase_q[fill] == FillInstallWait && array_updated &&
               array_updated_token == TokenBits'(Client)) begin
             fill_phase_q[fill] <= FillReady;
@@ -1621,6 +1640,13 @@ module coherence_home #(
   // held_put_exact_q: the held address of the cycle before is this cycle's
   // selected put's, as it is whenever a put was selected or a W was valid.
   logic held_put_exact_q;
+  // Each fill's success wake, recorded from the wake itself.
+  logic [FILLS-1:0] reference_woken_q;
+  always_ff @(posedge i_clk)
+    for (int fill = 0; fill < FILLS; fill++)
+      if (i_rst || (run && array_response && decision_fill && fill_free_index == FillBits'(fill)))
+        reference_woken_q[fill] <= 1'b0;
+      else if (fill_wake[fill] && !fill_error_q[fill]) reference_woken_q[fill] <= 1'b1;
   always_ff @(posedge i_clk) begin
     reference_ready_q <= !i_rst;
     reference_held_put_q <= held_put_next;
@@ -1804,6 +1830,24 @@ module coherence_home #(
       for (int fill = 0; fill < FILLS; fill++) begin
         assert ($countones(fill_seats_q[fill]) <= 3);
         assert (int'(fill_seat_count_q[fill]) == $countones(fill_seats_q[fill]));
+        // A successful fill wakes its waiters exactly once: after the array
+        // accepts its install update and no later than the install's
+        // completion, which every FillReady fill has passed.
+        assert (fill_woken_q[fill] == reference_woken_q[fill]);
+        if (fill_woken_q[fill])
+          assert (fill_phase_q[fill] == FillInstallWait || fill_phase_q[fill] == FillReady ||
+              fill_phase_q[fill] == FillFree);
+        if (fill_phase_q[fill] == FillReady) assert (fill_woken_q[fill]);
+        if (fill_wake[fill]) assert (!fill_woken_q[fill]);
+        // No request takes a seat while the install completes, so the wake
+        // names every waiter.
+        if (fill_phase_q[fill] == FillInstallWait)
+          assert (fill_add_seats[fill] == 0 && !join_fill[fill]);
+        // A seated request takes its completion pin only from a ready fill,
+        // which releases the seat on the same edge.
+        if (pin_valid && fill_phase_q[fill] != FillFree &&
+            fill_seats_q[fill][CompletionBits'(decision_tid)])
+          assert (fill_phase_q[fill] == FillReady);
         if (array_data_valid && array_data_token == TokenBits'(RESULTS + fill)) begin
           assert (fill_phase_q[fill] == FillRecall || fill_phase_q[fill] == FillFatal);
           assert (wb_valid_q[fill_wb_q[fill]] && !wb_frozen_q[fill_wb_q[fill]]);
@@ -1976,6 +2020,22 @@ module coherence_home #(
         cover (lookup_fill_q && !prefetch_fill_q && fill_free_any);
         cover (!lookup_fill_q);
       end
+    end
+`endif
+`ifdef COHERENCE_HOME_FILL_COVER
+    // Fill phase interleavings reachable with the control harness's free
+    // inputs. Fill 0 stands for each fill.
+    if (f_past_valid && !i_rst && !$past(i_rst)) begin
+      // A successful response in FillMemory installs from the next cycle.
+      cover ($past(
+          run && fill_phase_q[0] == FillMemory && !fill_done_q[0] && i_mem_resp_valid &&
+          i_mem_resp_id == 5'd0 && !i_mem_resp_error
+      ) && fill_phase_q[0] == FillInstall);
+      // A request takes a seat on the edge the array accepts the install.
+      cover (run && fill_phase_q[0] == FillInstall && update_ready[RESULTS] &&
+             fill_add_seats[0] != 0);
+      // Two waiters have woken while the install completes.
+      cover (fill_phase_q[0] == FillInstallWait && fill_woken_q[0] && fill_seat_count_q[0] == 2'd2);
     end
 `endif
 `ifdef COHERENCE_HOME_COVER
