@@ -83,7 +83,8 @@ class Readers:
                 assert s["served_word"] == self.expected_word
             if self.early is not None:
                 q, error = self.early
-                if q == 0x40:
+                # Walker identities have class 2.
+                if (q >> 5) & 3 == 2:
                     assert s["line_resp"] and s["line_error"] == error
                 else:
                     assert s["if_response"]
@@ -280,35 +281,85 @@ async def walk_errors_discard_and_retry_with_release_held(dut: Any) -> None:
             await b.reset()
             await b.walk()
             for level in range(depth + 1):
-                await b.wait(lambda _: 0x40 in b.live)
-                g = pack((3, 0), (9, 0x40), (6, 0), (32, 0x80000080), (256, 0), (1, 0))
+                await b.wait(lambda _, n=level + 1: len(b.demands) == n)
+                # Each read takes an idle walker slot.
+                q = b.demands[-1][1]
+                assert q in (0x40, 0x42)
+                g = pack((3, 0), (9, q), (6, 0), (32, 0x80000080), (256, 0), (1, 0))
                 assert (await b.step(g_valid=0, g=g))["g_ready"]
                 if level == depth:
                     await b.step(discard=int(discarded))
-                    await b.grant(0x40, line((0x80000 << 10) | 0xCF), error=1)
+                    await b.grant(q, line((0x80000 << 10) | 0xCF), error=1)
                     await b.step(discard=0)
                 else:
-                    await b.grant(0x40, line(((0x80001 + level) << 10) | 1))
-                    await b.release(0x40)
+                    await b.grant(q, line(((0x80001 + level) << 10) | 1))
+                    await b.release(q)
+            failed = b.demands[-1][1]
             await b.wait(lambda s: bool(s["walk_ready"]))
             if discarded:
                 assert not b.walks
             else:
                 assert len(b.walks) == 1 and b.walks[0] >> 78 == 3
                 assert (b.walks[0] >> 51) & ((1 << 27) - 1) == 7
+            # The next walk's read takes the other slot while the failed
+            # read's slot waits for U.
             before = len(b.demands)
             await b.walk(vpn=11)
-            for _ in range(8):
-                s = await b.step()
-                assert s["line_valid"] and not s["line_ready"]
-                assert len(b.demands) == before
-            await b.release(0x40)
             await b.wait(lambda _: len(b.demands) == before + 1)
-            await b.grant(0x40, line((0x80000 << 10) | 0xCF))
+            retry = b.demands[-1][1]
+            assert retry != failed and failed in b.live
+            await b.grant(retry, line((0x80000 << 10) | 0xCF))
             await b.wait(lambda s: bool(s["walk_ready"]))
             assert b.walks[-1] >> 78 == 0
             assert (b.walks[-1] >> 51) & ((1 << 27) - 1) == 11
-            await b.release(0x40)
+            await b.release(failed)
+            await b.release(retry)
+
+
+@cocotb.test()
+async def walk_reads_leave_before_the_previous_release(dut: Any) -> None:
+    """Send each dependent PTE read on the idle slot while earlier U is withheld."""
+    b = Readers(dut)
+    await b.reset()
+    await b.walk(vpn=5)
+    await b.wait(lambda _: len(b.demands) == 1)
+    first = b.demands[-1][1]
+    await b.grant(first, line((0x80001 << 10) | 1))
+    await b.wait(lambda _: len(b.demands) == 2)
+    second = b.demands[-1][1]
+    assert (first, second) == (0x40, 0x42) and first in b.live
+    await b.grant(second, line((0x80002 << 10) | 1))
+    # Both slots wait for U, so the leaf read waits for a release.
+    await b.wait(lambda s: bool(s["line_valid"]))
+    for _ in range(8):
+        s = await b.step()
+        assert s["line_valid"] and not s["line_ready"]
+        assert len(b.demands) == 2
+    await b.release(first)
+    await b.wait(lambda _: len(b.demands) == 3)
+    assert b.demands[-1][1] == first
+    await b.grant(first, line((0x80000 << 10) | 0xCF))
+    await b.wait(lambda s: bool(s["walk_ready"]))
+    assert len(b.walks) == 1 and b.walks[0] >> 78 == 0
+    assert (b.walks[0] >> 51) & ((1 << 27) - 1) == 5
+    await b.release(second)
+    await b.release(first)
+    assert not b.live
+    # A failed read on the second slot ends the walk with an access fault.
+    b.walks.clear()
+    await b.walk(vpn=9)
+    await b.wait(lambda _: len(b.demands) == 4)
+    assert b.demands[-1][1] == 0x40
+    await b.grant(0x40, line((0x80001 << 10) | 1))
+    await b.wait(lambda _: len(b.demands) == 5)
+    assert b.demands[-1][1] == 0x42 and 0x40 in b.live
+    await b.grant(0x42, line((0x80000 << 10) | 0xCF), error=1)
+    await b.wait(lambda s: bool(s["walk_ready"]))
+    assert len(b.walks) == 1 and b.walks[0] >> 78 == 3
+    assert (b.walks[0] >> 51) & ((1 << 27) - 1) == 9
+    await b.release(0x42)
+    await b.release(0x40)
+    assert not b.live
 
 
 @cocotb.test()
