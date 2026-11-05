@@ -276,9 +276,11 @@ module pd_stage #(
   // candidates are described where they are formed below.
   //
   // A JAL or JALR in either slot that the BTB did not predict taken redirects
-  // to the backing BTB's target when the backing BTB hits for it, with an
-  // entry of the same size that predicts taken and is neither a call nor a
-  // return. Execution checks the target like any prediction's.
+  // when the backing BTB hits for it with an entry of the same size that
+  // predicts taken: to the entry's target, or for a return to the stack top
+  // while the stack holds an entry, with the stack operation the
+  // instruction's encoding names. Execution checks the target like any
+  // prediction's.
   //
   // Native B-type and compressed C.BEQZ/C.BNEZ targets are computed as two
   // format-specific 13-bit carry-select candidates. Both immediates fit after

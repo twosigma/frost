@@ -962,7 +962,7 @@ async def test_squashed_typed_packet_leaves_the_stack_alone(dut: Any) -> None:
 async def test_pd_redirect_stack_operation_happens_once(dut: Any) -> None:
     """A PD redirect's push or pop happens once, across a held redirect.
 
-    A stall holds the redirect, and the operation still happens only in its
+    A stall holds the redirect, and the operation happens only in its
     first cycle; a flush drops it.
     """
     await _setup_test(dut)

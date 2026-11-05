@@ -116,8 +116,9 @@ module if_stage #(
     input logic i_dir_update_valid,
     input logic [riscv_pkg::BpDirIdxBits-1:0] i_dir_update_idx,
     input logic i_dir_update_taken,
-    // PD redirect: a slot-1 conditional branch whose final direction differs
-    // from the BTB direction IF followed, with that direction (from pd_stage)
+    // PD redirect (from pd_stage): a slot-1 conditional branch whose final
+    // direction differs from the BTB direction IF followed, or a backing BTB
+    // prediction of a jump in either slot, with the new direction and target
     input logic i_pd_redirect,
     input logic i_pd_redirect_taken,
     input logic [XLEN-1:0] i_pd_redirect_target,
@@ -2095,18 +2096,22 @@ module if_stage #(
   // ===========================================================================
   // Return Address Stack Operation and Recovery Point
   // ===========================================================================
-  // Only packets accepted by PD update the RAS: stalls, flushes, and PD
-  // redirects block operations. Used predictions typed as calls push their
-  // link; returns pop; coroutine swaps do both. A taken instruction ends the
-  // bundle, so at most one slot operates on the stack.
+  // Packets accepted by PD update the RAS: stalls, flushes, and PD redirects
+  // block their operations. Used predictions typed as calls push their link;
+  // returns pop; coroutine swaps do both. A taken instruction ends the
+  // bundle, so at most one slot operates on the stack. A backing BTB
+  // redirect's operation from PD takes the same registers below, in the
+  // redirect's first cycle, stall or not.
   //
   // No younger prediction may use the old stack top during an operation.
   // Registered metadata, pending handoffs, and stall replay block prediction;
   // slot-2 prediction kills the slot-1 prediction; a collapsed-lead packet
   // carries its own lookup.
   //
-  // Both packets checkpoint the stack before their operation. The state is
-  // stable during a stall, so replay retains the original recovery point.
+  // Both packets checkpoint the stack before their operation. Only a backing
+  // BTB redirect's operation changes the state during a stall, and the
+  // packet IF holds then is a wrong-path one that the redirect drops, so
+  // replay retains the original recovery point.
   logic ras_packet_accepted;
   logic ras_op_slot1;
   logic ras_op_slot2;
@@ -2708,7 +2713,7 @@ module if_stage #(
   assign o_from_if_to_pd_2.raw_parcel = replay_saved_if_outputs ? raw_parcel_2_saved : raw_parcel_2;
   assign o_from_if_to_pd_2.decomp_illegal = replay_saved_if_outputs ? slot2_decomp_illegal_sc :
                                             slot2_decomp_illegal;
-  // The PD redirect is slot-1 only.
+  // PD's direction redirect is slot-1 only.
   assign o_from_if_to_pd_2.pd_target_native_low = '0;
   assign o_from_if_to_pd_2.pd_target_native_high_select = '0;
   assign o_from_if_to_pd_2.pd_target_compressed_low = '0;
@@ -2831,7 +2836,8 @@ module if_stage #(
   // Carry its PC's index for conditional-branch training at commit.
   assign o_from_if_to_pd_2.bp_dir_taken = 1'b0;
   assign o_from_if_to_pd_2.bp_dir_idx = replay_saved_if_outputs ? bp_dir_idx_2_sc : bp_dir_idx_2;
-  // PD redirects only slot 1, so slot 2 carries no tagged-predictor direction.
+  // PD's direction redirect is slot-1 only, so slot 2 carries no
+  // tagged-predictor direction.
   assign o_from_if_to_pd_2.tage_valid = 1'b0;
   assign o_from_if_to_pd_2.tage_taken = 1'b0;
 

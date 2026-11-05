@@ -324,15 +324,16 @@ and targeted microbenchmarks give these items:
    to 5 cycles.
 4. Branch prediction. A misprediction costs about 7 cycles. The BTB has 256
    direct-mapped entries, and a 1024-entry two-way backing BTB behind it
-   predicts the jumps, calls and returns it misses through a PD redirect,
-   at that redirect's cost of two bubbles. In Linux-like traces the
-   256-entry BTB misses on 44 to 46% of lookups, and a 1024-entry two-way
-   one on 7 to 11%. A conditional branch that misses the BTB takes PD's
-   direction redirect at the same cost. A backing hit served from IF would
-   save a bubble, but its correction would sit on the fetch loop, one of the
-   hardest paths at the target clock. In bare-metal microbenchmarks a taken
-   branch costs about 5 cycles, and a loop of four additions runs at 0.6 IPC
-   with translation off; those small-loop costs come from fetch coverage and
+   predicts the jumps, calls and returns it misses through a PD redirect, at
+   that redirect's cost of two bubbles. In Linux-like traces the 256-entry
+   BTB misses on 44 to 46% of lookups, and a 1024-entry two-way one on 7 to
+   11%. A slot-1 conditional branch that misses the BTB is redirected by PD
+   when its direction predictors say taken, at the same cost, and a slot-2
+   one recovers from execution. A backing hit served from IF would save a
+   bubble, but its correction would sit on the fetch loop, one of the hardest
+   paths at the target clock. In bare-metal microbenchmarks a taken branch
+   costs about 5 cycles, and a loop of four additions runs at 0.6 IPC with
+   translation off; those small-loop costs come from fetch coverage and
    packet formation, not BTB capacity.
 5. Floating point. One engine executes F and D instructions one at a time.
    Arithmetic shares an iterative adder. Comparisons, moves, min/max, FCLASS

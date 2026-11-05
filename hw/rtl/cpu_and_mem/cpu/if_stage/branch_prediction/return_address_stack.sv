@@ -58,7 +58,8 @@ module return_address_stack #(
     input logic i_rst,
 
     // The pending operation: IF's registered operation for the packet PD took
-    // in the cycle before
+    // in the cycle before, or for PD's backing BTB redirect in the cycle
+    // before
     input logic i_push,
     input logic i_pop,
     input logic [riscv_pkg::XLEN-1:0] i_push_address,

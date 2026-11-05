@@ -162,7 +162,8 @@ module backing_btb #(
   // ===========================================================================
   // Training
   // ===========================================================================
-  // Stage A registers the update and reads its set; stage B writes the set.
+  // Stage A registers the update and reads its set, stage B finds its way,
+  // and stage C writes the set.
   logic a_valid;
   logic [IndexBits-1:0] a_index;
   logic [UpperBits-1:0] a_upper;
