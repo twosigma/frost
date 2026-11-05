@@ -465,7 +465,7 @@ async def full_completion_queue_progress(dut: Any) -> None:
     await b.until(lambda: len(b.live) == DATA_IDS)
     requests = (
         [(0, s) for s in range(8)]
-        + [(5, 0), (5, 1), (6, 0)]
+        + [(5, 0), (5, 1), (6, 0), (6, 1)]
         + [(7, s) for s in range(8)]
     )
     # The line in each way: resident, clean and returned lines hit.
