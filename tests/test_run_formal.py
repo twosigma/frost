@@ -35,16 +35,17 @@ FORMAL_DIR = "formal"
 
 # Per-task hang backstop in seconds; proof depth is set by each .sby file.
 SBY_TASK_TIMEOUT_S = 2400
-# The unchanged ROB BMC can take about an hour on a shared runner, and the
+# The unchanged ROB BMC can take about an hour on a shared runner, the
 # hart maintenance proof, which models buffered store hits, can take over an
-# hour on a loaded machine. These tasks run in separate CI jobs. Their proof
-# depth and input contracts stay unchanged; only the solver's wall-clock
-# allowance differs.
+# hour on a loaded machine, and the eight-endpoint L1D stream BMC can take
+# longer. These tasks run in separate CI jobs. Their proof depth and input
+# contracts stay unchanged; only the solver's wall-clock allowance differs.
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "bmc"): 5400,
     ("csr_file", "bmc_perf_off"): 5400,
     ("reorder_buffer", "bmc"): 5400,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
+    ("coherence_l1d", "coh_l1d_stream_bmc"): 10800,
 }
 
 
@@ -1953,6 +1954,8 @@ class FormalRunner:
         ("csr_file", "bmc_perf_off", 5400),
         ("reorder_buffer", "bmc", 5400),
         ("coherent_hart_cache", "coh_hart_maint_prove", 7200),
+        ("coherence_l1d", "coh_l1d_stream_bmc", 10800),
+        ("coherence_l1d", "coh_l1d_multi_bmc", 2400),
         ("csr_file", "cover", 2400),
         ("reorder_buffer", "cover", 2400),
         ("line_port_axi_bridge", "bmc_128g", 2400),

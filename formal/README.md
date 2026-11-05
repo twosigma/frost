@@ -30,14 +30,16 @@ Other task names are parameter or width variants of these, such as
 `bmc_xlen32` or `bmc_xilinx`. Each target and task is a separate SymbiYosys
 run. The runner's default timeout is 40 minutes. `csr_file:bmc`,
 `csr_file:bmc_perf_off`, and `reorder_buffer:bmc` each have 90 minutes.
-`coherent_hart_cache:coh_hart_maint_prove` has 120 minutes in both its SBY
-configuration and the runner. Individual SBY tasks can set shorter limits.
+`coherent_hart_cache:coh_hart_maint_prove` has 120 minutes and
+`coherence_l1d:coh_l1d_stream_bmc` has 180 minutes, in both their SBY
+configurations and the runner. Individual SBY tasks can set shorter limits.
 
 CI assigns the CSR profiling-on, CSR profiling-off and reorder-buffer tasks
 to separate jobs with 120-minute limits. The two CSR jobs also run selected
 coherent store-boundary tasks, and the reorder-buffer job also runs the
-coherent L1D tasks other than its two control BMCs. The hart maintenance proof has a separate job with a
-150-minute limit. The Coherence job runs the other coherence tasks, including
+coherent L1D tasks other than its three control BMCs. The hart maintenance
+proof and the eight-endpoint L1D stream control BMC share a job with a
+240-minute limit. The Coherence job runs the other coherence tasks, including
 hart maintenance covers, with a 240-minute limit. The Other tasks job has a
 240-minute limit. Job limits include image setup.
 

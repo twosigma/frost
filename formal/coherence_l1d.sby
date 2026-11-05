@@ -4,7 +4,7 @@ coh_l1d_conflict_multi_prove multi conflict
 coh_l1d_conflict_stream_prove stream multi conflict
 coh_l1d_bmc single control bounded
 coh_l1d_multi_bmc multi control bounded
-coh_l1d_stream_bmc stream multi control bounded
+coh_l1d_stream_bmc stream multi control bounded longbmc
 coh_l1d_stream_cover stream multi streamcovers covermode
 coh_l1d_turn_cover turnstream multi turncovers covermode
 coh_l1d_cover single covers covermode
@@ -19,6 +19,9 @@ coh_l1d_store_grant_bmc single data grantdata bounded
 bounded: mode bmc
 bounded: depth 40
 bounded: timeout 1200
+# The eight-endpoint stream BMC needs a longer budget; CI runs it in the
+# hart maintenance proof's job.
+longbmc: timeout 10800
 bounded: aigsmt boolector
 conflict: mode prove
 conflict: depth 2
