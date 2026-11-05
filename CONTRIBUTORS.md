@@ -77,3 +77,6 @@
   the others
 - Added the standard HPM counters 3 to 8 for branches, mispredictions, TLB
   walks, L1D misses and store-queue stalls, with their OpenSBI PMU mapping
+- Added the coherent prefetch agent, which trains a stream predictor on the
+  hart's data requests and reads the lines ahead of ascending streams into
+  the L2 with Prefetch requests to the home
