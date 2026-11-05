@@ -1764,6 +1764,11 @@ package riscv_pkg;
   localparam int unsigned RasDepth = 8;
   localparam int unsigned RasPtrBits = $clog2(RasDepth);
 
+  // Backing BTB (if_stage/branch_prediction/backing_btb.sv): entries and
+  // ways. Two or four ways.
+  localparam int unsigned BackingBtbEntries = 1024;
+  localparam int unsigned BackingBtbWays = 2;
+
   // Bimodal index width; must match direction_predictor.BIM_BITS.
   // Branches carry the prediction-time index through commit for training.
   localparam int unsigned BpDirIdxBits = 10;

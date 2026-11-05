@@ -178,6 +178,12 @@ module if_stage #(
     // Slot-2 packet. sel_nop marks an invalid slot; PD and ID propagate it
     // as a NOP so dispatch sees i_valid_2='0.
     output riscv_pkg::from_if_to_pd_t o_from_if_to_pd_2,
+    // Backing BTB result for each slot of the packet (index 0 is slot 1),
+    // replay-aligned like the packet: a taken hit on an untyped entry, the
+    // entry's size, and target bits [PhysAddrBits-1:1]. PD qualifies it.
+    output logic [1:0] o_backing_hit,
+    output logic [1:0] o_backing_compressed,
+    output logic [1:0][riscv_pkg::PhysAddrBits-2:0] o_backing_target,
     // Replay-aligned control-flow class from the aligner's predecode, used
     // by frontend_validity_tracker.
     output logic o_slot1_has_control_flow,
@@ -2030,6 +2036,56 @@ module if_stage #(
   end
 `endif
 `endif
+
+  // ===========================================================================
+  // Backing BTB
+  // ===========================================================================
+  // The lookup reads the set of the fetch PC register's word through the
+  // tagged predictor's copy of o_pc. The next cycle compares the packet IF
+  // serves; a packet whose set was not read gets no hit. Replay keeps the
+  // result of the packet's first stalled cycle, like the packet fields.
+  localparam int unsigned BackingIndexBits = $clog2(
+      riscv_pkg::BackingBtbEntries / riscv_pkg::BackingBtbWays
+  );
+  localparam int unsigned BackingTargetBits = riscv_pkg::PhysAddrBits - 1;
+  localparam int unsigned BackingResultBits = 4 + 2 * BackingTargetBits;
+  logic [1:0] backing_hit_live;
+  logic [1:0] backing_compressed_live;
+  logic [1:0][BackingTargetBits-1:0] backing_target_live;
+  backing_btb #(
+      .XLEN(XLEN)
+  ) u_backing_btb (
+      .i_clk,
+      .i_reset(i_pipeline_ctrl.reset),
+      .i_lookup_index(pc_tage_lookup[BackingIndexBits+1:2]),
+      .i_packet_pc(pc_reg),
+      .i_packet_compressed(is_compressed),
+      .o_hit(backing_hit_live),
+      .o_compressed(backing_compressed_live),
+      .o_target(backing_target_live),
+      .i_update(i_from_ex_comb.btb_update),
+      .i_update_pc(i_from_ex_comb.btb_update_pc),
+      .i_update_target(i_from_ex_comb.btb_update_target),
+      .i_update_taken(i_from_ex_comb.btb_update_taken),
+      .i_update_compressed(i_from_ex_comb.btb_update_compressed),
+      .i_update_call(i_from_ex_comb.btb_update_call),
+      .i_update_return(i_from_ex_comb.btb_update_return)
+  );
+
+  logic [BackingResultBits-1:0] backing_result_sc;
+  stall_capture_reg #(
+      .WIDTH(BackingResultBits)
+  ) u_backing_result_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data({backing_hit_live, backing_compressed_live, backing_target_live}),
+      .o_data(backing_result_sc)
+  );
+  assign {o_backing_hit, o_backing_compressed, o_backing_target} = replay_saved_if_outputs ?
+      backing_result_sc : {backing_hit_live, backing_compressed_live, backing_target_live};
 
   // ===========================================================================
   // Return Address Stack Operation and Recovery Point

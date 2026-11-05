@@ -116,6 +116,7 @@ cases, then the sequential PC.
 | Structure | Size | Predicts | Trained by |
 |-----------|------|----------|------------|
 | BTB | 256 entries, direct-mapped, 2-bit counters | Target and direction of conditional branches, JALs and JALRs; an entry is typed as a call, a return, or both | Mispredicted conditional branches, JALs and JALRs; correctly predicted conditional branches at commit |
+| Backing BTB | 1024 entries, two-way set-associative, 2-bit counters | Target of a JAL or JALR the BTB did not predict taken, through a PD redirect | The same updates as the BTB |
 | Return address stack | 8 entries | The target of a BTB hit typed as a return (`jalr x0, 0(ra)`, `c.jr ra`) or a coroutine swap (`jalr t0, 0(ra)`) | IF, when it hands PD a packet predicted from a typed entry: a call (JAL or JALR writing `ra` or `t0`) pushes, a return pops, a swap replaces the top; recovery restores it |
 | Bimodal direction predictor | 1024 2-bit counters | Direction of slot-1 conditional branches without a taken BTB prediction or a tagged match | Each conditional branch at commit |
 | Tagged direction predictor | Two tables of 1024 entries, hashed with 16 and 64 bits of path history; 9-bit tags, 3-bit counters | Direction of slot-1 conditional branches whose lookup matches a tag, either way | Each conditional branch at commit, at the entries its lookup read |
@@ -142,7 +143,9 @@ only if the entry was trained for an instruction of the same size. A JAL that
 misses the BTB mispredicts once; training at commit makes its next execution
 hit.
 
-PD can change the direction fetch followed for a slot-1 conditional branch.
+PD can change the direction fetch followed for a slot-1 conditional branch,
+and redirects a JAL or JALR that the BTB did not predict taken to the target
+the backing BTB holds for it (see [Backing BTB](#backing-btb)).
 IF reads two direction predictors at the fetch PC and passes their
 directions along with the branch. A tagged direction, when the branch's lookup
 matches a tag, is used either way; otherwise the bimodal direction can only
@@ -187,6 +190,30 @@ in the first table above its provider (T1, then T2) whose entry is not useful,
 or clears those usefulness bits when every candidate is useful. Slot-2
 branches are trained, though PD overrides only slot 1.
 
+### Backing BTB
+
+`backing_btb` is a second BTB level with 1024 entries in two ways (four for
+measurement, through `riscv_pkg::BackingBtbWays`). Every BTB update also
+trains it, so it holds the BTB's branches and more. Its sets are indexed by
+the PC's word, like the BTB, and its tags hold the PC bits above the index
+and PC[1]. A miss allocates an invalid way or the way the set's replacement
+state names; a target in another 4 GiB region invalidates the entry, as in
+the BTB.
+
+The lookup follows the fetch PC: the set of `o_pc`'s word, and the set after
+it for a slot 2 in the next word, read on the edge that requests the window.
+When IF serves that window the next cycle, the registered tags are compared
+with the packet's PC, so a packet whose set was not read gets no backing hit.
+IF passes PD each slot's hit, size, and target, kept across stall replay
+like the packet. PD registers a candidate for a slot-1 or slot-2 JAL or JALR
+whose backing entry predicts taken, has the instruction's size, and is
+neither a call nor a return. When the slot's BTB prediction was not taken,
+the candidate fires the PD redirect, which costs the PD redirect's two
+bubbles instead of a recovery from execution or commit, and ID gives the
+instruction the prediction. Execution checks the target like any other
+prediction's. Calls and returns stay with the BTB, whose typed entries
+operate the return address stack.
+
 ### Two-wide fetch and dispatch
 
 IF pairs two instructions only when all of these hold:
@@ -197,7 +224,8 @@ IF pairs two instructions only when all of these hold:
   LR/SC).
 - Slot 2 is not a native SYSTEM, MISC-MEM, AMO, or FP-compute (OP-FP or fused
   multiply-add) instruction. It may be a branch or jump, but only the slot-2
-  BTB lookup can predict it; the PD redirect covers slot 1 only.
+  BTB lookup or the backing BTB can predict it; the PD redirect's direction
+  change covers slot 1 only.
 - Slot 2 fits in the window. A 32-bit slot 2 that would start in the upper
   half of the second word does not.
 - No transient condition intervenes, such as an unsafe window read, an
@@ -438,7 +466,10 @@ commits, and each is a read-modify-write of a 2-bit counter.
 `branch_prediction_controller` registers it, so training lands one cycle late
 but in order, and back-to-back updates to one entry see each other. A slot-1
 correct-branch update that loses its cycle is dropped, and a waiting slot-2
-update is replaced by a newer one; both cost accuracy only.
+update is replaced by a newer one; both cost accuracy only. The backing BTB
+registers the same selected update, reads its set, and writes the set two
+cycles after the BTB; an update that reads the set being written takes the
+written set.
 
 ### 4 GiB target limit
 

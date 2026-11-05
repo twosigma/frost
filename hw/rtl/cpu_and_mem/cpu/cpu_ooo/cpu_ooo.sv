@@ -443,6 +443,11 @@ module cpu_ooo #(
   logic pd_redirect;
   logic pd_redirect_taken;
   logic [XLEN-1:0] pd_redirect_target;
+  logic pd_redirect_slot2;
+  // IF's backing BTB result for each slot, for PD's redirect
+  logic [1:0] if_backing_hit;
+  logic [1:0] if_backing_compressed;
+  logic [1:0][riscv_pkg::PhysAddrBits-2:0] if_backing_target;
 
   // Tagged direction predictor: lookup history, events, per-slot lookups,
   // saved-lookup index, and training (see tage_history).
@@ -845,6 +850,9 @@ module cpu_ooo #(
       .o_pc,
       .o_from_if_to_pd(from_if_to_pd),
       .o_from_if_to_pd_2(from_if_to_pd_2),
+      .o_backing_hit(if_backing_hit),
+      .o_backing_compressed(if_backing_compressed),
+      .o_backing_target(if_backing_target),
       .o_slot1_has_control_flow(if_slot1_has_control_flow),
       .o_slot1_is_indirect(if_slot1_is_indirect),
       .o_width_events(if_width_events),
@@ -877,9 +885,13 @@ module cpu_ooo #(
       .o_from_pd_to_id(from_pd_to_id),
       .i_from_if_to_pd_2(from_if_to_pd_2),
       .o_from_pd_to_id_2(from_pd_to_id_2),
+      .i_backing_hit(if_backing_hit),
+      .i_backing_compressed(if_backing_compressed),
+      .i_backing_target(if_backing_target),
       .o_pd_redirect(pd_redirect),
       .o_pd_redirect_taken(pd_redirect_taken),
       .o_pd_redirect_target(pd_redirect_target),
+      .o_pd_redirect_slot2(pd_redirect_slot2),
       .o_cond_branch(pd_cond_branch)
   );
 
@@ -995,6 +1007,7 @@ module cpu_ooo #(
       .i_pd_redirect(pd_redirect),
       .i_pd_redirect_taken(pd_redirect_taken),
       .i_pd_redirect_target(pd_redirect_target),
+      .i_pd_redirect_slot2(pd_redirect_slot2),
       .i_mstatus_fs_off(id_mstatus_fs_off_q),
       .o_from_id_to_ex(decoded_packet),
       .o_from_id_to_ex_next(decoded_packet_next),
