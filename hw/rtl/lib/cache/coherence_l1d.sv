@@ -977,28 +977,6 @@ module coherence_l1d #(
   assign o_formal_home_write = active && phase_q == LookupWait && array_valid &&
       operation_q == AtomicWriteOp && atomic_q && !atomic_sc_q && !atomic_local_q;
 `endif
-  // Only an owned context qualifies the atomic payload. While unowned, the
-  // payload follows the candidate selected by the registered service phase.
-  // Ownership holds it through installation and release.
-  always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      atomic_addr_q <= '0;
-      atomic_size_q <= '0;
-      atomic_tag_q <= '0;
-      atomic_read_q <= '0;
-    end else if (!atomic_q) begin
-      if (phase_q == LocalCheck && operation_q == ReadOp) begin
-        atomic_addr_q <= lookup_addr_q;
-        atomic_size_q <= rd_size_q[selected_read_q];
-        atomic_tag_q <= rd_tag_q[selected_read_q];
-      end else begin
-        atomic_addr_q <= i_sc_address;
-        atomic_size_q <= i_sc_size;
-        atomic_tag_q <= i_sc_tag;
-      end
-      atomic_read_q <= selected_read_q;
-    end
-  end
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       local_hit_q <= 1'b0;
@@ -1072,11 +1050,15 @@ module coherence_l1d #(
       pending_miss_q <= 1'b0;
       atomic_q <= 1'b0;
       atomic_local_q <= 1'b0;
+      atomic_read_q <= '0;
       sc_home_q <= 1'b0;
       atomic_sc_q <= 1'b0;
       atomic_granted_q <= 1'b0;
       atomic_written_q <= 1'b0;
       sc_committed_q <= 1'b0;
+      atomic_addr_q <= '0;
+      atomic_size_q <= '0;
+      atomic_tag_q <= '0;
       atomic_write_q <= 1'b0;
       atomic_data_q <= '0;
       atomic_mask_q <= '0;
@@ -1189,6 +1171,9 @@ module coherence_l1d #(
         atomic_granted_q <= 1'b0;
         atomic_written_q <= 1'b0;
         sc_committed_q <= 1'b0;
+        atomic_addr_q <= i_sc_address;
+        atomic_size_q <= i_sc_size;
+        atomic_tag_q <= i_sc_tag;
         sc_checked_q <= 1'b0;
       end
       if (i_p_valid && o_p_ready) begin
@@ -1434,6 +1419,10 @@ module coherence_l1d #(
                   phase_q <= local_sc_match ? LocalWaitWrite : LocalFail;
                 end else begin
                   atomic_sc_q <= 1'b0;
+                  atomic_addr_q <= lookup_addr_q;
+                  atomic_size_q <= rd_size_q[selected_read_q];
+                  atomic_tag_q <= rd_tag_q[selected_read_q];
+                  atomic_read_q <= selected_read_q;
                   phase_q <= LocalReadReady;
                 end
               end else if (operation_q == SCOp) begin
@@ -1446,6 +1435,9 @@ module coherence_l1d #(
                 atomic_sc_q <= 1'b0;
                 atomic_granted_q <= 1'b0;
                 atomic_written_q <= 1'b0;
+                atomic_addr_q <= lookup_addr_q;
+                atomic_size_q <= rd_size_q[selected_read_q];
+                atomic_tag_q <= rd_tag_q[selected_read_q];
                 phase_q <= Acquire;
               end
             end else phase_q <= Idle;

@@ -505,8 +505,9 @@ A local atomic allocates no home identity and sends no C or U.
 A Modified hit blocked by a same-sector endpoint or frozen writeback repeats
 its lookup until that conflict clears. SC retries take priority over reads
 between those lookups, which can delay unrelated array service.
-The atomic address, size, tag and read slot follow the selected candidate
-while the ownership context is invalid and hold while it is valid.
+The atomic address, size and tag are captured at SC acceptance or AMO
+classification. A local AMO also captures its read slot. The owned context
+holds through installation and release.
 
 The CPU arms a tagged ROB-head context before cache presentation. The active,
 unretired context identifies a valid ROB head. Interrupt and debug entry
