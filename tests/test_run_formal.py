@@ -1861,26 +1861,36 @@ def formal_task_timeout_s(target: str, task: str) -> int:
     return SBY_TASK_TIMEOUT_OVERRIDES_S.get((target, task), SBY_TASK_TIMEOUT_S)
 
 
-def test_atomic_fatal_pairs_and_formal_shards() -> None:
-    """Require both fatal obligations and assign every formal case to one shard."""
+def test_atomic_proof_pairs_and_formal_shards() -> None:
+    """Require proof dependencies and one CI shard for every formal case."""
     import yaml  # type: ignore[import-untyped]
     from _pytest.mark.expression import Expression
 
     root = Path(__file__).resolve().parents[1]
-    target = next(t for t in FORMAL_TARGETS if t.name == "coherence_store_boundary")
     registered = [name for name, _ in SBY_TASKS]
-    task_text = (root / "formal/coherence_store_boundary.sby").read_text()
-    task_lines = task_text.split("[tasks]", 1)[1].split("[options]", 1)[0]
-    sby_tasks = [line.split()[0] for line in task_lines.splitlines() if line.strip()]
-    pairs = [
-        f"{prefix}_amo_{sector}_{suffix}"
-        for sector in ("same", "other")
-        for prefix, suffix in (("bmc", "fatal"), ("prove", "fatal_sticky"))
-    ]
-    for name in pairs:
-        assert registered.count(name) == 1, name
-        assert target.tasks.count(name) == 1, name
-        assert sby_tasks.count(name) == 1, name
+    required = {
+        "coherence_store_boundary": [
+            f"{prefix}_amo_{sector}_{suffix}"
+            for sector in ("same", "other")
+            for prefix, suffix in (("bmc", "fatal"), ("prove", "fatal_sticky"))
+        ],
+        "coherence_l1d": [
+            f"coh_l1d_local{geometry}{part}_prove"
+            for geometry in ("", "_multi", "_ways")
+            for part in ("", "_sector")
+        ],
+    }
+    for target_name, names in required.items():
+        target = next(t for t in FORMAL_TARGETS if t.name == target_name)
+        task_text = (root / "formal" / target.sby_file).read_text()
+        task_lines = task_text.split("[tasks]", 1)[1].split("[options]", 1)[0]
+        sby_tasks = [
+            line.split()[0] for line in task_lines.splitlines() if line.strip()
+        ]
+        for name in names:
+            assert registered.count(name) == 1, name
+            assert target.tasks.count(name) == 1, name
+            assert sby_tasks.count(name) == 1, name
 
     workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
     shards = workflow["jobs"]["test-formal"]["strategy"]["matrix"]["include"]
@@ -1913,8 +1923,9 @@ def test_atomic_fatal_pairs_and_formal_shards() -> None:
         if line.startswith("tests/") and "::" in line
     ]
     assert nodes
-    for name in pairs:
-        assert sum(f"[coherence_store_boundary_{name}]" in node for node in nodes) == 1
+    for target_name, names in required.items():
+        for name in names:
+            assert sum(f"[{target_name}_{name}]" in node for node in nodes) == 1
     for node in nodes:
 
         def matches_keyword(keyword: str, /, **kwargs: str | int | bool | None) -> bool:
@@ -1928,6 +1939,112 @@ def test_atomic_fatal_pairs_and_formal_shards() -> None:
             if expression.evaluate(matches_keyword)
         ]
         assert len(matches) == 1, (node, matches)
+
+
+def test_local_sector_lemma_models_match() -> None:
+    """Require identical models for each unbounded lookup lemma and consumer."""
+    formal_dir = Path(__file__).resolve().parents[1] / "formal"
+
+    def config(task: str) -> dict[str, list[str]]:
+        result = subprocess.run(
+            ["sby", "--dumpcfg", "coherence_l1d.sby", task],
+            cwd=formal_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        sections: dict[str, list[str]] = {}
+        section = ""
+        for raw in result.stdout.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("["):
+                section = line
+                sections[section] = []
+            else:
+                sections[section].append(line)
+        return sections
+
+    def assertion_command(line: str) -> bool:
+        return line.startswith(("select -assert-", "chformal "))
+
+    common = [
+        "chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_* "
+        "c:p_atomic_context_identity c:p_atomic_read_identity %u %u %d",
+        "chformal -assert -remove c:p_local_probe_data",
+    ]
+    sector_names = (
+        "c:p_local_sector c:p_local_lookup_stable c:p_local_conflict_sample "
+        "c:p_local_admit_sector c:p_local_lookup_owner c:p_local_service "
+        "c:p_local_sc_lookup c:p_local_active"
+    )
+    lemmas = "c:p_local_lookup_owner c:p_local_sc_lookup"
+    role_check = f"select -assert-count 2 {lemmas} %u t:$check %i r:FLAVOR={{}} %i"
+    owner_commands = common + [
+        "chformal -assert -remove c:p_local_sector c:p_local_lookup_stable "
+        "c:p_local_conflict_sample c:p_local_admit_sector",
+        "select -assert-count 19 t:$check r:FLAVOR=assert %i",
+        role_check.format("assert"),
+    ]
+    sector_commands = common + [
+        f"select -assert-count 8 {sector_names}",
+        f"chformal -assert -remove t:$check r:FLAVOR=assert %i {sector_names}"
+        + " %u" * 7
+        + " %d",
+        f"chformal -assert2assume {lemmas}",
+        "select -assert-count 6 t:$check r:FLAVOR=assert %i",
+        role_check.format("assume"),
+    ]
+
+    def validate(owner: dict[str, list[str]], sector: dict[str, list[str]]) -> None:
+        assert owner.keys() == sector.keys()
+        for section in owner.keys() - {"[options]", "[engines]", "[script]"}:
+            assert owner[section] == sector[section]
+        model_scripts = []
+        for task, commands, depth, engine in (
+            (owner, owner_commands, "80", "abc pdr"),
+            (sector, sector_commands, "8", "smtbmc boolector"),
+        ):
+            script = task["[script]"]
+            assert [line for line in script if assertion_command(line)] == commands
+            model_scripts.append(
+                [line for line in script if not assertion_command(line)]
+            )
+            options = dict(line.split(maxsplit=1) for line in task["[options]"])
+            options.setdefault("expect", "PASS")
+            assert options == {
+                "mode": "prove",
+                "depth": depth,
+                "timeout": "1200",
+                "aigsmt": "boolector",
+                "expect": "PASS",
+            }
+            assert task["[engines]"] == [engine]
+        assert model_scripts[0] == model_scripts[1]
+
+    for geometry in ("", "_multi", "_ways"):
+        owner = config(f"coh_l1d_local{geometry}_prove")
+        sector = config(f"coh_l1d_local{geometry}_sector_prove")
+        validate(owner, sector)
+        for side, section, line in (
+            (0, "[script]", "chformal -assert -remove c:p_local_sc_lookup"),
+            (0, "[script]", "chformal -remove -assert c:p_local_sc_lookup"),
+            (1, "[script]", "chformal -assert -remove c:p_local_sector"),
+            (1, "[script]", "chformal -remove c:p_local_sector"),
+            (1, "[options]", "expect PASS,UNKNOWN,TIMEOUT"),
+            (1, "[options]", "smtc sector_only.smtc"),
+            (1, "[options]", "timeout 2400"),
+            (1, "[file sector_only.smtc]", "assume (= hidden 0)"),
+        ):
+            altered = [
+                {key: list(value) for key, value in task.items()}
+                for task in (owner, sector)
+            ]
+            altered[side].setdefault(section, []).append(line)
+            with pytest.raises(AssertionError):
+                validate(*altered)
 
 
 def timeout_log_tail(error: subprocess.TimeoutExpired) -> str:

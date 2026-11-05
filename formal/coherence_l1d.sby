@@ -69,10 +69,15 @@ grantdata: select -assert-count 3 c:p_store_data_8 c:p_store_data_9 c:p_store_da
 grantdata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_8 c:p_store_data_9 c:p_store_data_10 %u %u %d
 local: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_* c:p_atomic_context_identity c:p_atomic_read_identity %u %u %d
 local: chformal -assert -remove c:p_local_probe_data
-owner: chformal -assert -remove c:p_local_sector c:p_local_lookup_stable c:p_local_conflict_sample c:p_local_admit_sector c:p_local_lookup_owner c:p_local_sc_lookup
-owner: select -assert-count 17 t:$check r:FLAVOR=assert %i
+owner: chformal -assert -remove c:p_local_sector c:p_local_lookup_stable c:p_local_conflict_sample c:p_local_admit_sector
+owner: select -assert-count 19 t:$check r:FLAVOR=assert %i
+owner: select -assert-count 2 c:p_local_lookup_owner c:p_local_sc_lookup %u t:$check %i r:FLAVOR=assert %i
 sector: select -assert-count 8 c:p_local_sector c:p_local_lookup_stable c:p_local_conflict_sample c:p_local_admit_sector c:p_local_lookup_owner c:p_local_service c:p_local_sc_lookup c:p_local_active
 sector: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_sector c:p_local_lookup_stable c:p_local_conflict_sample c:p_local_admit_sector c:p_local_lookup_owner c:p_local_service c:p_local_sc_lookup c:p_local_active %u %u %u %u %u %u %u %d
+# The matching owner task proves both lookup facts by unbounded induction.
+sector: chformal -assert2assume c:p_local_lookup_owner c:p_local_sc_lookup
+sector: select -assert-count 6 t:$check r:FLAVOR=assert %i
+sector: select -assert-count 2 c:p_local_lookup_owner c:p_local_sc_lookup %u t:$check %i r:FLAVOR=assume %i
 # Array behavior is arbitrary for controller induction. Real-array byte and
 # completion checks run in the bounded task and the array proofs.
 local: cutpoint w:array_ready w:array_valid w:array_hit w:array_state w:array_addr w:array_data w:array_way w:array_available w:update_ready
