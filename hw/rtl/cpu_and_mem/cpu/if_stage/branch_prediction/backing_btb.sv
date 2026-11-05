@@ -487,9 +487,12 @@ module backing_btb #(
     assert ($bits(check_payload) == PayloadEntryBits);
   end
 
-  // A set never holds one tag in two ways.
+  // A set never holds one tag in two ways. The registers and arrays power up
+  // arbitrary, so the check begins at the first reset.
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_reset) reset_seen_q <= 1'b1;
   always_ff @(posedge i_clk) begin
-    if (!i_reset && !sweep_active && c_valid) begin
+    if (reset_seen_q && !i_reset && !sweep_active && c_valid) begin
       p_backing_btb_unique_tags : assert (tags_unique(write_tags));
     end
   end
