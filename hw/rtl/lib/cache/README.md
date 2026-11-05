@@ -571,7 +571,13 @@ it completes having done nothing. It never retries, joins a fill or waits for
 one, and it takes no place in the sector order. Its fill starts with no seat;
 demand readers that arrive meanwhile take its seats and wake at the install.
 An engine serving a prefetch protects no victim, and a prefetch slot never
-makes a PutM wait.
+makes a PutM wait. While a PutM is neither accepted nor absorbed, its
+Modified sector keeps a resident L2 merge destination, so a Prefetch of that
+line allocates no fill and creates no owner that blocks W acceptance.
+Repeated Prefetches of the sector therefore cannot keep the PutM from being
+accepted or absorbed. A prefetch fill of another line can take the line as
+its victim; replacement then holds the victim through its recall, which
+absorbs the pending PutM before the row is reused.
 
 The four prefetch slots sit outside the hart-facing grant path. The
 prefetcher takes every G and U for source 3 when it is presented, so the
