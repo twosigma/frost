@@ -1017,6 +1017,9 @@ home's instruction table. For each confirmed stream the prefetcher
 reads the lines after its last miss, up to `L2_PREFETCH_DISTANCE` (8) lines
 ahead and never past the 4 KiB page of that miss, so it reads only memory
 that a demand access in the same page showed to exist.
+Successor matching compares the observed line's registered predecessor
+with the table's last line. Predicted addresses keep that line's page bits
+and add the lookahead within the page.
 
 The reads are ordinary line reads on the prefetcher's side of the DMA port,
 at most `L2_PREFETCH_INFLIGHT` outstanding (4 by default).

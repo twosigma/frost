@@ -28,10 +28,10 @@
  * replace entries in rotation. Each confirmed entry requests up to DISTANCE
  * lines ahead, within the PAGE_BYTES page of its last training address.
  *
- * Each entry keeps its last line, that line plus one (so a successor is an
- * equality match), and how many lines after the last line it has requested.
- * An advance shifts that count down by one. The address of the next read is
- * the only wide addition, and it feeds the request register.
+ * Each entry keeps its last line and how many later lines it has requested.
+ * Successor tests compare that line with the registered predecessor of the
+ * observation. An advance shifts the ahead count down by one. The next read
+ * preserves the entry's page bits and adds within its page offset.
  *
  * The cache hierarchy serves requests as ordinary line reads. The coherent
  * wrapper sends protocol Prefetch requests and releases each identity on U.
@@ -100,13 +100,13 @@ module l2_stream_prefetcher #(
 
   logic                  obs_valid_q;
   logic [  LineBits-1:0] obs_line_q;
-  logic [  LineBits-1:0] obs_line_p1_q;  // obs_line_q + 1
+  logic [  LineBits-1:0] obs_line_m1_q;  // obs_line_q - 1
   logic [PageLineBits:0] obs_line_limit_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) obs_valid_q <= 1'b0;
     else obs_valid_q <= i_miss_valid;
     obs_line_q <= i_miss_addr[ADDR_WIDTH-1:LineOffBits];
-    obs_line_p1_q <= i_miss_addr[ADDR_WIDTH-1:LineOffBits] + LineBits'(1);
+    obs_line_m1_q <= i_miss_addr[ADDR_WIDTH-1:LineOffBits] - LineBits'(1);
     obs_line_limit_q <= (PageLineBits + 1)'(i_miss_addr[LineOffBits+:PageLineBits]) +
         (PageLineBits + 1)'(BackwardDistance);
   end
@@ -114,8 +114,7 @@ module l2_stream_prefetcher #(
   // ---- Stream table -------------------------------------------------------------
   logic [STREAMS-1:0] st_valid_q;
   logic [STREAMS-1:0] st_conf_q;
-  logic [LineBits-1:0] st_line_q[STREAMS];  // the stream's last missed line
-  logic [LineBits-1:0] st_line_p1_q[STREAMS];  // st_line_q + 1
+  logic [LineBits-1:0] st_line_q[STREAMS];  // the stream's last training line
   logic [AheadBits-1:0] st_ahead_q[STREAMS];  // lines after it already read
   logic [StreamBits-1:0] st_victim_q;  // replaced next, in rotation
 
@@ -123,7 +122,7 @@ module l2_stream_prefetcher #(
   logic [STREAMS-1:0] obs_preserved;
   always_comb begin
     for (int e = 0; e < int'(STREAMS); e++) begin
-      obs_succ[e] = st_valid_q[e] && (obs_line_q == st_line_p1_q[e]);
+      obs_succ[e] = st_valid_q[e] && (obs_line_m1_q == st_line_q[e]);
       obs_same[e] = st_valid_q[e] && (obs_line_q == st_line_q[e]);
     end
   end
@@ -185,7 +184,7 @@ module l2_stream_prefetcher #(
   assign req_fire = req_valid_q && i_req_ready;
 
   // A confirmed entry with fewer than DISTANCE lines read ahead, whose next
-  // line stays in the page of its last miss: the line's index within the page
+  // line stays in the training page: the line's index within the page
   // plus the lines ahead plus one must stay below the page's line count.
   logic [STREAMS-1:0] cand;
   logic cand_any;
@@ -227,6 +226,13 @@ module l2_stream_prefetcher #(
       !(obs_allocates && (st_victim_q == cand_sel)) &&
       (inflight_q < InflightBits'(MAX_INFLIGHT));
 
+  // A candidate stays in its entry's page, so only its page offset is added.
+  logic [LineBits-1:0] next_line;
+  logic [PageLineBits-1:0] next_offset;
+  assign next_offset = PageLineBits'(st_line_q[cand_sel]) + PageLineBits'(st_ahead_q[cand_sel]) +
+      PageLineBits'(1);
+  assign next_line = (st_line_q[cand_sel] >> PageLineBits << PageLineBits) | LineBits'(next_offset);
+
   // Per entry: a load adds one line ahead, and an advance moves the last line
   // up by one, so the lines ahead count one fewer.
   logic [STREAMS-1:0] st_loaded, st_advanced;
@@ -249,7 +255,6 @@ module l2_stream_prefetcher #(
       for (int e = 0; e < int'(STREAMS); e++) begin
         if (st_advanced[e]) begin
           st_line_q[e]    <= obs_line_q;
-          st_line_p1_q[e] <= obs_line_p1_q;
           st_conf_q[e]    <= 1'b1;
           if (!st_loaded[e] && (st_ahead_q[e] != '0))
             st_ahead_q[e] <= st_ahead_q[e] - AheadBits'(1);
@@ -261,7 +266,6 @@ module l2_stream_prefetcher #(
         st_valid_q[st_victim_q]   <= 1'b1;
         st_conf_q[st_victim_q]    <= 1'b0;
         st_line_q[st_victim_q]    <= obs_line_q;
-        st_line_p1_q[st_victim_q] <= obs_line_p1_q;
         st_ahead_q[st_victim_q]   <= '0;
         st_victim_q               <= st_victim_q + StreamBits'(1);
       end
@@ -270,7 +274,7 @@ module l2_stream_prefetcher #(
       if (req_fire && !load) req_valid_q <= 1'b0;
       if (load) begin
         req_valid_q        <= 1'b1;
-        req_line_q         <= st_line_q[cand_sel] + LineBits'(st_ahead_q[cand_sel]) + LineBits'(1);
+        req_line_q         <= next_line;
         req_id_q           <= free_id;
         id_busy_q[free_id] <= 1'b1;
       end
@@ -311,11 +315,15 @@ module l2_stream_prefetcher #(
 `endif
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
+      if (load)
+        assert (next_line == st_line_q[cand_sel] + LineBits'(st_ahead_q[cand_sel]) + LineBits'(1));
       assert (!i_resp_valid || id_busy_q[i_resp_id]);
       assert (!load || !id_busy_q[free_id]);
       assert (inflight_q == InflightBits'($countones(id_busy_q)));
-      for (int e = 0; e < int'(STREAMS); e++) begin
-        if (st_valid_q[e]) assert (st_line_p1_q[e] == st_line_q[e] + LineBits'(1));
+      if (obs_valid_q) begin
+        assert (obs_line_m1_q + LineBits'(1) == obs_line_q);
+        for (int e = 0; e < int'(STREAMS); e++)
+        assert (obs_succ[e] == (st_valid_q[e] && obs_line_q == st_line_q[e] + LineBits'(1)));
       end
     end
   end
@@ -332,10 +340,10 @@ module l2_stream_prefetcher #(
       if (load && id_busy_q[free_id]) $error("l2_stream_prefetcher: no free id for a load");
       if (inflight_q != InflightBits'($countones(id_busy_q)))
         $error("l2_stream_prefetcher: in-flight count %0d disagrees with ids", inflight_q);
-      for (int e = 0; e < int'(STREAMS); e++) begin
-        if (st_valid_q[e] && (st_line_p1_q[e] != st_line_q[e] + LineBits'(1)))
-          $error("l2_stream_prefetcher: entry %0d's line plus one is stale", e);
-      end
+      if (obs_valid_q && obs_line_m1_q + LineBits'(1) != obs_line_q)
+        $error("l2_stream_prefetcher: observed line predecessor is stale");
+      if (load && next_line != st_line_q[cand_sel] + LineBits'(st_ahead_q[cand_sel]) + LineBits'(1))
+        $error("l2_stream_prefetcher: page-offset prediction differs from full-line addition");
     end
   end
 `endif

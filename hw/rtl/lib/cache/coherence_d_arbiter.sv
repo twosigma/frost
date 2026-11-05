@@ -37,9 +37,6 @@ module coherence_d_arbiter #(
 `ifdef COHERENCE_HOME_CONTROL
     input logic i_service_stop,
 `endif
-`ifdef FORMAL
-    output logic [PortBits-1:0] o_formal_next,
-`endif
     output logic [WIDTH-1:0] o_payload
 );
   localparam int unsigned GroupBits = 4;
@@ -165,7 +162,6 @@ module coherence_d_arbiter #(
   end
 `endif
 `ifdef FORMAL
-  assign o_formal_next = next_q;
 `ifndef COHERENCE_HOME_CONTROL
   logic f_past_valid = 1'b0;
   logic [PortBits-1:0] f_pick;
