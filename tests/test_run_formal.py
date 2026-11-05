@@ -80,6 +80,9 @@ FORMAL_TARGETS = [
         "coherence_store_boundary.sby",
         "Production SQ, router, buffered L1D and LQ preserve credit, drain and atomic exclusion.",
         tasks=(
+            "bmc_four",
+            "cover_four",
+            "bmc_intervening",
             "bmc_load_same",
             "bmc_load_other",
             "bmc_amo_same",
@@ -236,6 +239,12 @@ FORMAL_TARGETS = [
             "coh_l1d_data3_bmc",
             "coh_l1d_store_payload_bmc",
             "coh_l1d_store_grant_bmc",
+            "coh_l1d_store_multi_payload_bmc",
+            "coh_l1d_store_multi_grant_bmc",
+            "coh_l1d_multi_data0_bmc",
+            "coh_l1d_multi_data1_bmc",
+            "coh_l1d_multi_data2_bmc",
+            "coh_l1d_multi_data3_bmc",
         ),
     ),
     FormalTarget(
@@ -1189,6 +1198,28 @@ SBY_TASKS = [
         "cover_pressure",
         "Two held dirty victims yield to a probing DMA request and a waiting load.",
     ),
+    ("bmc_four", "Four sector records preserve the production SQ and LQ handoff."),
+    (
+        "cover_four",
+        "Four acknowledged holders drain with concurrent store acquisitions.",
+    ),
+    ("bmc_intervening", "A younger store cannot change an intervening load result."),
+    (
+        "coh_l1d_multi_data0_bmc",
+        "Concurrent store acquisitions preserve array and probe bytes in word 0.",
+    ),
+    (
+        "coh_l1d_multi_data1_bmc",
+        "Concurrent store acquisitions preserve array and probe bytes in word 1.",
+    ),
+    (
+        "coh_l1d_multi_data2_bmc",
+        "Concurrent store acquisitions preserve array and probe bytes in word 2.",
+    ),
+    (
+        "coh_l1d_multi_data3_bmc",
+        "Concurrent store acquisitions preserve array and probe bytes in word 3.",
+    ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
     ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),
@@ -1218,6 +1249,14 @@ SBY_TASKS = [
     ),
     ("coh_l1d_store_payload_bmc", "Ordered head payload and masked hit installation."),
     ("coh_l1d_store_grant_bmc", "Store miss byte merging against grant bytes."),
+    (
+        "coh_l1d_store_multi_payload_bmc",
+        "Ordered store bytes with concurrent endpoints.",
+    ),
+    (
+        "coh_l1d_store_multi_grant_bmc",
+        "Concurrent store grants merge only the head record.",
+    ),
     (
         "coh_l1d_data_bmc",
         "Arbitrary-byte store and probe images in the production array.",

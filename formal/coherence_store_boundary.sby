@@ -1,21 +1,26 @@
 [tasks]
-bmc_load_same bmc load same
-bmc_load_other bmc load other
+bmc_four bmc load four
+cover_four cover lifecycle load four
+bmc_intervening bmc intervening
+bmc_load_same bmc load same ordinary
+bmc_load_other bmc load other ordinary
 bmc_amo_same bmc amo same
 bmc_amo_other bmc amo other
 bmc_sc bmc sc
 bmc_old bmc old
-cover_load cover lifecycle load
+cover_load cover lifecycle load ordinary
 cover_amo cover lifecycle amo
 cover_sc cover lifecycle sc
 cover_old cover lifecycle old
-cover_edges_same cover boundaries load same
-cover_edges_other cover boundaries load other
+cover_edges_same cover boundaries load same ordinary
+cover_edges_other cover boundaries load other ordinary
 
 [options]
 bmc: mode bmc
 cover: mode cover
-load: depth 80
+ordinary: depth 80
+four: depth 120
+intervening: depth 140
 old: depth 80
 amo: depth 140
 sc: depth 140
@@ -63,17 +68,26 @@ same: chparam -set SECTOR_CASE 0 coherence_store_boundary_formal
 other: chparam -set SECTOR_CASE 1 coherence_store_boundary_formal
 old: chparam -set SECTOR_CASE 1 coherence_store_boundary_formal
 load: chparam -set MODE 0 coherence_store_boundary_formal
+four: chparam -set FOUR_STORES 1 coherence_store_boundary_formal
+intervening: chparam -set MODE 4 coherence_store_boundary_formal
 amo: chparam -set MODE 1 coherence_store_boundary_formal
 sc: chparam -set MODE 2 coherence_store_boundary_formal
 old: chparam -set MODE 3 coherence_store_boundary_formal
 prep -flatten -top coherence_store_boundary_formal
+check -assert
 chformal -assert -cover -remove c:*sq_forwarding_unit_inst*
+intervening: chformal -cover -remove
 load: chformal -cover -remove c:*p_amo_* c:*p_sc_* c:*p_old_*
 amo: chformal -cover -remove c:*p_load_* c:*p_sc_* c:*p_old_*
 sc: chformal -cover -remove c:*p_load_* c:*p_amo_* c:*p_old_*
 old: chformal -cover -remove c:*p_load_* c:*p_amo_* c:*p_sc_*
 memory_map
 opt
+bmc: techmap
+bmc: opt -fast
+bmc: setundef -anyseq
+bmc: opt_clean
+check -assert
 
 [files]
 coherence_store_boundary_formal.sv

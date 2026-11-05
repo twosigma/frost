@@ -594,7 +594,14 @@ representative byte values, bounded controller transitions and CPU ownership.
 The `coherence_l1d` target also runs the L1D with three request endpoints and
 checks that no two live endpoints hold one sector, that no load endpoint is
 live beside a granted atomic, and that a load grant installs with a free WB
-slot.
+slot. Separate bounded tasks check ordered head payload, grant-byte merging
+and array/probe bytes in each 64-bit word through 40 cycles with concurrent
+endpoints.
+The `coherence_store_boundary` target composes the SQ, request router, L1D and
+load queue for bounded checks through 80 to 140 cycles. Its four-record cases
+check completion identities and the handoff of accepted stores and protected
+reads. Covers require a younger store grant before the head grant. An
+intervening-load case checks the value between two stores to one address.
 The `coherence_store_home` target connects the L1D and home with delayed memory
 responses. It checks a watched byte through two stores and a probing DMA read
 for sibling sectors, different rows and conflicting home sets. The conflicting

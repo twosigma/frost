@@ -8,6 +8,12 @@ coh_l1d_data2_bmc single data arraydata word2
 coh_l1d_data3_bmc single data arraydata word3
 coh_l1d_store_payload_bmc single data payload
 coh_l1d_store_grant_bmc single data grantdata
+coh_l1d_store_multi_payload_bmc multi data payload
+coh_l1d_store_multi_grant_bmc multi data grantdata
+coh_l1d_multi_data0_bmc multi data arraydata word0
+coh_l1d_multi_data1_bmc multi data arraydata word1
+coh_l1d_multi_data2_bmc multi data arraydata word2
+coh_l1d_multi_data3_bmc multi cadical arraydata word3
 
 [options]
 ~covers: mode bmc
@@ -21,6 +27,7 @@ covers: timeout 600
 [engines]
 control: abc bmc3
 data: abc bmc3
+cadical: abc bmc3 -c
 covers: smtbmc boolector
 
 [script]
