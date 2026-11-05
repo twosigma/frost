@@ -84,6 +84,28 @@ a write in flight through reset, including a five-cycle home data write.
 The private-array benches alternate data and skipped-data hits, hold replies,
 and check replacement choices at the following lookup in each set.
 
+`coherence_prefetch` and `coherence_prefetch_equal` connect the prefetch
+agent and its four endpoints to the home at both line sizes, with the
+shipping cap of three data identities. They check identity occupancy
+through G, C and U with C and U held, the GrantAck of each lookup before
+its fill's memory response, fills that install on their own, a failed fill
+that installs nothing, errors, reset and fatal stop, demand joins, dirty recalls, a PutM
+accepted beside live prefetches of its line, marked DMA fills, progress
+with every hart and DMA completion slot, every result buffer and both
+PutM controls full, and instruction and data
+streams on one line, where no line is requested twice while an identity
+holds it.
+The transport driver admits DMA at D and models the ingress's response
+pulses after read G or write U. Production admits a DMA request at the
+ingress, a stage before D, and its pause starts there; the pause proof
+covers the production credit accounting. Directed cases hold
+DMA C and U beyond the pause interval: reads allow prefetch admission after
+their response, while writes keep admission paused until their release and
+response.
+The `coherence_prefetch_contention*` benches report demand service for competing
+streams, dirty replacement, DMA and combined dirty/DMA pressure with
+prefetch enabled or disabled.
+
 `coherence_home_completions`, `coherence_home`, `coherence_home_equal`,
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
 and CPU observation cuts; `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. Home cases hold every memory fill while resident

@@ -140,8 +140,9 @@ module coherence_home_completions #(
   logic [SLOTS-1:0] parked_q, ready_q, wake_error_q, counted_q;
   // nofill_q[slot], while the slot is live: it holds a prefetch, and a
   // non-prefetch request for its block was live at the prefetch's admission
-  // or was admitted after it. The work carries the flag; such a prefetch
-  // allocates no fill. Admission sets the flag afresh.
+  // or was admitted after it. The work carries the flag, and the engine takes
+  // it at dispatch: a prefetch whose flag is set by its dispatch allocates no
+  // fill. Admission sets the flag afresh.
   logic [SLOTS-1:0] nofill_q;
   localparam int unsigned MainSlots = SLOTS - PREFETCH_SLOTS;
   // The prefetch partition, and the slots that may hold a prefetch.

@@ -67,6 +67,24 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "coherence_prefetch_pause.sby",
+        "DMA credits and seven idle cycles gate prefetch admission.",
+        tasks=("pf_pause_prove", "pf_pause_cover"),
+    ),
+    FormalTarget(
+        "coherence_prefetch_agent.sby",
+        "Prefetch identities, held requests, error completion and reset at both line sizes.",
+        tasks=(
+            "pf_agent64_prove",
+            "pf_agent32_prove",
+            "pf_agent1_prove",
+            "pf_agent2_prove",
+            "pf_agent4_prove",
+            "pf_agent64_cover",
+            "pf_agent32_cover",
+        ),
+    ),
+    FormalTarget(
         "coherent_local_owners.sby",
         "Two-owner permission, evicted reservations and observation replay under the shared-home contract.",
         tasks=("prove", "cover"),
@@ -282,15 +300,6 @@ FORMAL_TARGETS = [
             "coh_home_victim_cover",
             "coh_home_error_cover",
             "coh_home_prefetch_cover",
-        ),
-    ),
-    FormalTarget(
-        "coherence_prefetcher.sby",
-        "Prefetch identities, held D and C, and stream requests within their pages.",
-        tasks=(
-            "coh_prefetcher_prove",
-            "coh_prefetcher_ids_bmc",
-            "coh_prefetcher_cover",
         ),
     ),
     FormalTarget(
@@ -1170,6 +1179,27 @@ FORMAL_TARGETS = [
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
     (
+        "pf_pause_prove",
+        "Prefetch pause equals live DMA identities and recent activity.",
+    ),
+    ("pf_pause_cover", "Eight DMA identities, simultaneous reuse and return to idle."),
+    ("pf_agent64_prove", "Prefetch endpoint ownership with 64-byte lines."),
+    ("pf_agent32_prove", "Prefetch endpoint ownership with 32-byte lines."),
+    ("pf_agent1_prove", "Prefetch endpoint ownership with a one-request cap."),
+    ("pf_agent2_prove", "Prefetch endpoint ownership with a two-request cap."),
+    (
+        "pf_agent4_prove",
+        "Prefetch endpoint ownership with all four identities enabled.",
+    ),
+    (
+        "pf_agent64_cover",
+        "Four prefetch identities, errors, release and reset with 64-byte lines.",
+    ),
+    (
+        "pf_agent32_cover",
+        "Four prefetch identities, errors, release and reset with 32-byte lines.",
+    ),
+    (
         "reservation_prove",
         "Successful SC clears at installation; failed SC clears and discards.",
     ),
@@ -1511,12 +1541,6 @@ SBY_TASKS = [
         "coh_home_prefetch_cover",
         "Prefetch fills that install, gain a seat or fail; reserve and no-fill decisions.",
     ),
-    ("coh_prefetcher_prove", "Prefetch identities follow D, G, C and U; held D and C."),
-    (
-        "coh_prefetcher_ids_bmc",
-        "Each stream table's read ids return once, to the right table.",
-    ),
-    ("coh_prefetcher_cover", "All identities in flight, table turns, and a held C."),
     ("coh_home_fill_cover", "Fill installation and waiter wake reachability."),
     ("coh_home_array_prove", "Independent L2 ports preserve watched bytes."),
     *[

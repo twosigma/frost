@@ -24,10 +24,13 @@ $(ROOT)/hw/rtl/lib/cache/walker_coherence_sequencer.sv
 # Line-size adapter: L1-line requests as sectors of wider L2 lines.
 $(ROOT)/hw/rtl/lib/cache/line_size_adapter.sv
 
-# Stream prefetcher: reads lines ahead of L1D miss streams into the L2. The
-# coherent home's prefetcher wraps two of its stream tables.
+# Stream prefetcher: reads lines ahead of L1D miss streams into the L2.
 $(ROOT)/hw/rtl/lib/cache/l2_stream_prefetcher.sv
-$(ROOT)/hw/rtl/lib/cache/coherence_prefetcher.sv
+
+# The coherence home's prefetch requester: two stream tables above, issuing
+# Prefetch (source 3) requests to the home, and its DMA admission pause.
+$(ROOT)/hw/rtl/lib/cache/coherence_prefetch_agent.sv
+$(ROOT)/hw/rtl/lib/cache/coherence_prefetch_pause.sv
 
 # One hart's private caches: the L1s, the walker port, and the L1D's probe
 # injection and fence.i sequencing.

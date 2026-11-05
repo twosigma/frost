@@ -1220,8 +1220,8 @@ jobs:
               (coherence_store_boundary and (bmc_amo_other or bmc_amo_same_fatal)) or
               (coherent_local_atomic and sc_bmc)
             timeout_minutes: 120
-          # The coherence home, endpoints and bridges, the coherent CPU
-          # interfaces, and the hart maintenance covers.
+          # The coherence home, prefetch requester at every request cap,
+          # endpoints, bridges, coherent CPU interfaces and hart covers.
           - shard: Coherence
             pytest_filter: >-
               ((axi_coherent_bridge or coherence_ or coherent_) and not
