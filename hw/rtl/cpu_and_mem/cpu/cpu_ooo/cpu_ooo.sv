@@ -447,6 +447,8 @@ module cpu_ooo #(
   logic pd_redirect_ras_push;
   logic pd_redirect_ras_pop;
   logic [XLEN-1:0] pd_redirect_ras_link;
+  logic pd_backing_refresh;
+  logic [XLEN-1:0] pd_backing_refresh_pc;
   // IF's backing BTB result for each slot, for PD's redirect
   logic [1:0] if_backing_hit;
   logic [1:0] if_backing_compressed;
@@ -854,6 +856,8 @@ module cpu_ooo #(
       .i_pd_redirect_ras_push(pd_redirect_ras_push),
       .i_pd_redirect_ras_pop(pd_redirect_ras_pop),
       .i_pd_redirect_ras_link(pd_redirect_ras_link),
+      .i_pd_backing_refresh(pd_backing_refresh),
+      .i_pd_backing_refresh_pc(pd_backing_refresh_pc),
       .o_pc,
       .o_from_if_to_pd(from_if_to_pd),
       .o_from_if_to_pd_2(from_if_to_pd_2),
@@ -906,6 +910,8 @@ module cpu_ooo #(
       .o_pd_redirect_ras_push(pd_redirect_ras_push),
       .o_pd_redirect_ras_pop(pd_redirect_ras_pop),
       .o_pd_redirect_ras_link(pd_redirect_ras_link),
+      .o_pd_backing_refresh(pd_backing_refresh),
+      .o_pd_backing_refresh_pc(pd_backing_refresh_pc),
       .o_cond_branch(pd_cond_branch)
   );
 

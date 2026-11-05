@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the backing BTB: training, lookup positions and reset."""
+"""Unit tests for the backing BTB: training, refresh, lookup positions and reset."""
 
 from typing import Any
 
@@ -66,9 +66,10 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_update.value = 0
     dut.i_update_pc.value = 0
     dut.i_update_target.value = 0
-    dut.i_update_taken.value = 0
     dut.i_update_compressed.value = 0
     dut.i_update_return.value = 0
+    dut.i_refresh.value = 0
+    dut.i_refresh_pc.value = 0
 
 
 async def _settle() -> None:
@@ -104,7 +105,6 @@ async def _update(
     pc: int,
     target: int,
     *,
-    taken: bool = True,
     compressed: bool = False,
     ret: bool = False,
     settle_cycles: int = 4,
@@ -113,12 +113,20 @@ async def _update(
     dut.i_update.value = 1
     dut.i_update_pc.value = pc & MASK_XLEN
     dut.i_update_target.value = target & MASK_XLEN
-    dut.i_update_taken.value = int(taken)
     dut.i_update_compressed.value = int(compressed)
     dut.i_update_return.value = int(ret)
     await _cycle(dut)
     dut.i_update.value = 0
     dut.i_update_return.value = 0
+    await _cycle(dut, settle_cycles)
+
+
+async def _refresh(dut: Any, pc: int, *, settle_cycles: int = 4) -> None:
+    """Refresh the entry at pc, then wait until its set is written."""
+    dut.i_refresh.value = 1
+    dut.i_refresh_pc.value = pc & MASK_XLEN
+    await _cycle(dut)
+    dut.i_refresh.value = 0
     await _cycle(dut, settle_cycles)
 
 
@@ -231,7 +239,6 @@ async def test_close_updates_to_one_set(dut: Any) -> None:
 
     async def drive(pc: int, target: int) -> None:
         dut.i_update.value = 1
-        dut.i_update_taken.value = 1
         dut.i_update_pc.value = pc
         dut.i_update_target.value = target
         await _cycle(dut)
@@ -290,13 +297,9 @@ async def test_cross_region_target_invalidates(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_taken_counter_qualifies_hits_of_every_type(dut: Any) -> None:
-    """A hit predicts taken; returns hit like other jumps and report their type."""
+async def test_returns_hit_like_other_jumps_and_report_their_type(dut: Any) -> None:
+    """Every trained entry hits; a return entry reports its type."""
     await _setup(dut)
-    await _update(dut, PC_A, TARGET_A)
-    await _update(dut, PC_A, TARGET_A, taken=False)
-    hit, _, _ = await _lookup(dut, PC_A)
-    assert not hit[0]
     await _update(dut, PC_A, TARGET_A)
     hit, _, _ = await _lookup(dut, PC_A)
     assert hit[0] and _returns(dut) == [False, False]
@@ -389,3 +392,76 @@ async def test_reset_clears_entries_and_drops_updates_while_clearing(dut: Any) -
     await _update(dut, PC_A + 16, TARGET_B)
     hit, _, target = await _lookup(dut, PC_A + 16)
     assert hit[0] and target[0] == _low(dut, TARGET_B)
+
+
+async def _first_way_survives(dut: Any, base: int, *, refresh: bool) -> list[bool]:
+    """Fill a set, then allocate twice; report whether the first jump survives."""
+    ways = _ways(dut)
+    pcs = [_same_set_pc(dut, base, k) for k in range(ways + 2)]
+    for k in range(ways):
+        await _update(dut, pcs[k], TARGET_A + 0x10 * k)
+    survived = []
+    for k in (ways, ways + 1):
+        if refresh:
+            await _refresh(dut, pcs[0])
+        await _update(dut, pcs[k], TARGET_B + 0x10 * k)
+        hit, _, target = await _lookup(dut, pcs[k])
+        assert hit[0] and target[0] == _low(dut, TARGET_B + 0x10 * k), k
+        hit, _, target = await _lookup(dut, pcs[0])
+        survived.append(hit[0] and target[0] == _low(dut, TARGET_A))
+    return survived
+
+
+@cocotb.test()
+async def test_refreshed_jump_survives_allocations(dut: Any) -> None:
+    """A jump refreshed before each allocation in its set is never the victim."""
+    await _setup(dut)
+    assert await _first_way_survives(dut, PC_A, refresh=True) == [True, True]
+    # Without refreshes the first jump written is the first victim.
+    assert await _first_way_survives(dut, PC_A + 0x40, refresh=False) == [False, False]
+
+
+@cocotb.test()
+async def test_refresh_miss_and_dropped_refresh_change_nothing(dut: Any) -> None:
+    """A refresh that misses, or meets an update, leaves replacement alone."""
+    await _setup(dut)
+    ways = _ways(dut)
+    pcs = [_same_set_pc(dut, PC_A, k) for k in range(ways + 2)]
+    for k in range(ways):
+        await _update(dut, pcs[k], TARGET_A + 0x10 * k)
+    # A refresh of an absent PC in the set writes nothing and never hits.
+    await _refresh(dut, pcs[ways + 1])
+    hit, _, _ = await _lookup(dut, pcs[ways + 1])
+    assert not hit[0]
+    # A refresh in the same cycle as an update is dropped: the update takes
+    # the victim way, pcs[0]'s, as with no refresh at all.
+    dut.i_refresh.value = 1
+    dut.i_refresh_pc.value = pcs[0]
+    dut.i_update.value = 1
+    dut.i_update_pc.value = pcs[ways]
+    dut.i_update_target.value = TARGET_B
+    await _cycle(dut)
+    dut.i_refresh.value = 0
+    dut.i_update.value = 0
+    await _cycle(dut, 4)
+    hit, _, target = await _lookup(dut, pcs[ways])
+    assert hit[0] and target[0] == _low(dut, TARGET_B)
+    hit, _, _ = await _lookup(dut, pcs[0])
+    assert not hit[0]
+
+
+@cocotb.test()
+async def test_update_right_behind_a_refresh_lands(dut: Any) -> None:
+    """An update one stage behind a refresh of its set is not dropped."""
+    await _setup(dut)
+    other = _same_set_pc(dut, PC_A, 1)
+    await _update(dut, PC_A, TARGET_A)
+    dut.i_refresh.value = 1
+    dut.i_refresh_pc.value = PC_A
+    await _cycle(dut)
+    dut.i_refresh.value = 0
+    await _update(dut, other, TARGET_B)
+    hit, _, target = await _lookup(dut, other)
+    assert hit[0] and target[0] == _low(dut, TARGET_B)
+    hit, _, target = await _lookup(dut, PC_A)
+    assert hit[0] and target[0] == _low(dut, TARGET_A)

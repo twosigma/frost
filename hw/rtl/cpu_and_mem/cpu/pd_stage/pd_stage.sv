@@ -68,6 +68,10 @@ module pd_stage #(
     output logic o_pd_redirect_ras_push,
     output logic o_pd_redirect_ras_pop,
     output logic [XLEN-1:0] o_pd_redirect_ras_link,
+    // A firing backing BTB redirect, and the PC of the instruction whose
+    // entry it used, for the backing BTB's replacement state.
+    output logic o_pd_backing_refresh,
+    output logic [XLEN-1:0] o_pd_backing_refresh_pc,
     // Each slot's conditional-branch decode, before validity qualification,
     // for the tagged predictor's saved lookups.
     output logic [1:0] o_cond_branch
@@ -646,6 +650,9 @@ module pd_stage #(
                                   (pd_backing_redirect_2_r && pd_registered_call_2);
   assign o_pd_redirect_ras_pop = (pd_backing_redirect_r && pd_registered_return) ||
                                  (pd_backing_redirect_2_r && pd_registered_return_2);
+  assign o_pd_backing_refresh = pd_backing_redirect_r || pd_backing_redirect_2_r;
+  assign o_pd_backing_refresh_pc = pd_backing_redirect_r ? o_from_pd_to_id.program_counter :
+                                                           o_from_pd_to_id_2.program_counter;
   assign o_pd_redirect_ras_link = pd_backing_redirect_2_r ?
       o_from_pd_to_id_2.program_counter + (o_from_pd_to_id_2.is_compressed ?
           XLEN'(riscv_pkg::PcIncrementCompressed) : XLEN'(riscv_pkg::PcIncrement32bit)) :

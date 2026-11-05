@@ -17,17 +17,18 @@
 /*
  * Backing BTB: a set-associative second level behind the fast direct-mapped
  * BTB, 1024 entries in two ways by default (four ways for measurement). It
- * is trained by every BTB update and looked up for the packet IF serves. PD
- * turns a taken hit on a JAL or JALR that fast prediction did not take into
- * a PD redirect, with the return address stack operation that the
- * instruction's own encoding names (hw/rtl/cpu_and_mem/cpu/README.md,
- * "Backing BTB").
+ * holds jumps: IF trains it with the BTB updates of JALs and JALRs, and
+ * looks it up for the packet IF serves. PD turns a hit on a JAL or JALR that
+ * fast prediction did not take into a PD redirect, with the return address
+ * stack operation that the instruction's own encoding names, and refreshes
+ * the entry that served it (hw/rtl/cpu_and_mem/cpu/README.md, "Backing
+ * BTB").
  *
  * Sets are indexed by PC word bits, like the fast BTB. An entry's tag holds
- * the PC bits above the index and PC[1], with the counter, size and return
- * type; its payload holds the target. The target keeps its low TARGET_BITS
- * bits; the upper bits come from the branch's PC, and training with a
- * target in another region invalidates the entry, as in the fast BTB.
+ * the PC bits above the index and PC[1], with the size and return type; its
+ * payload holds the target. The target keeps its low TARGET_BITS bits; the
+ * upper bits come from the jump's PC, and training with a target in another
+ * region invalidates the entry, as in the fast BTB.
  *
  * Lookup. The caller supplies the set index of the fetch PC register. The
  * tag arrays read it without a clock and register the tags; the payload
@@ -44,13 +45,16 @@
  * Training. An update registers and reads its set from a third payload
  * array that also holds the tags, valid bits and replacement state; the
  * next stage finds its way and registers it, and the last writes the whole
- * set into every array. An update to the set written on the edge it reads
- * takes the written set instead, and one to the set that the update a stage
- * ahead writes is dropped. A hit trains the counter, a miss replaces an
- * invalid way or the way the replacement state names, and replacement then
- * points away from the written way. Lookups and training share no state
- * across an edge: a lookup reads the arrays as they were before that edge's
- * write.
+ * set into every array. A hit rewrites its way and a miss replaces an
+ * invalid way or the way the replacement state names; replacement then
+ * points away from the written way. A refresh takes the same stages when no
+ * update arrives: a hit writes the set back with replacement pointing away
+ * from the hit way, and a miss writes nothing. A request to the set written
+ * on the edge it reads takes the written set instead, and one to the set
+ * that the update a stage ahead writes is dropped; a refresh a stage ahead
+ * drops nothing, so only its replacement change can be lost. Lookups and
+ * training share no state across an edge: a lookup reads the arrays as they
+ * were before that edge's write.
  *
  * Reset clears one set per cycle, all sets in 2**IndexBits cycles. Lookups
  * read while clearing miss, and updates arriving then are dropped.
@@ -70,21 +74,25 @@ module backing_btb #(
     // Slot 1's PC and size in the response cycle. Slot 2 follows slot 1.
     input logic [XLEN-1:0] i_packet_pc,
     input logic i_packet_compressed,
-    // Per slot (index 0 is slot 1): a hit predicting taken, the size and
-    // return type the entry was trained with, and the stored target bits
-    // [TARGET_BITS-1:1].
+    // Per slot (index 0 is slot 1): a hit, the size and return type the
+    // entry was trained with, and the stored target bits [TARGET_BITS-1:1].
     output logic [1:0] o_hit,
     output logic [1:0] o_compressed,
     output logic [1:0] o_return,
     output logic [1:0][TARGET_BITS-2:0] o_target,
 
-    // Training, the update ex_comb_synthesizer selects, at most one per cycle
+    // Training: a jump's update from the one ex_comb_synthesizer selects,
+    // at most one per cycle
     input logic            i_update,
     input logic [XLEN-1:0] i_update_pc,
     input logic [XLEN-1:0] i_update_target,
-    input logic            i_update_taken,
     input logic            i_update_compressed,
-    input logic            i_update_return
+    input logic            i_update_return,
+    // Refresh: the PC of an entry that served a prediction. A hit there
+    // points replacement away from its way. Dropped in a cycle with an
+    // update.
+    input logic            i_refresh,
+    input logic [XLEN-1:0] i_refresh_pc
 );
 
   localparam int unsigned Sets = ENTRIES / WAYS;
@@ -102,7 +110,6 @@ module backing_btb #(
     logic valid;
     logic [UpperBits-1:0] upper;
     logic halfword;
-    logic [1:0] counter;
     logic compressed;
     logic is_return;
   } tag_t;
@@ -112,7 +119,7 @@ module backing_btb #(
   // A set is {replacement, the ways' tags, the ways' payloads}, way 0 lowest
   // in each field. The widths are written out rather than taken with $bits
   // of the types; the simulation checks below pin them to the structs.
-  localparam int unsigned TagEntryBits = UpperBits + 6;
+  localparam int unsigned TagEntryBits = UpperBits + 4;
   localparam int unsigned PayloadEntryBits = TARGET_BITS - 1;
   localparam int unsigned TagRowBits = WAYS * TagEntryBits;
   localparam int unsigned PayloadRowBits = WAYS * PayloadEntryBits;
@@ -139,11 +146,6 @@ module backing_btb #(
     touch = result;
   endfunction
 
-  function automatic logic [1:0] train_counter(input logic [1:0] counter, input logic taken);
-    if (taken) train_counter = (counter == 2'b11) ? counter : counter + 2'b01;
-    else train_counter = (counter == 2'b00) ? counter : counter - 2'b01;
-  endfunction
-
   // ===========================================================================
   // Reset sweep
   // ===========================================================================
@@ -162,48 +164,54 @@ module backing_btb #(
   // ===========================================================================
   // Training
   // ===========================================================================
-  // Stage A registers the update and reads its set, stage B finds its way,
-  // and stage C writes the set.
+  // Stage A registers the request (an update, else a refresh) and reads its
+  // set, stage B finds its way, and stage C writes the set.
+  logic [XLEN-1:0] request_pc;
+  assign request_pc = i_update ? i_update_pc : i_refresh_pc;
   logic a_valid;
+  logic a_refresh;
   logic [IndexBits-1:0] a_index;
   logic [UpperBits-1:0] a_upper;
   logic a_halfword;
   logic [TARGET_BITS-2:0] a_target;
   logic a_region_ok;
-  logic a_taken, a_compressed, a_return;
+  logic a_compressed, a_return;
   always_ff @(posedge i_clk) begin
-    a_valid      <= i_update && !i_reset && !sweep_active;
-    a_index      <= i_update_pc[IndexBits+1:2];
-    a_upper      <= i_update_pc[XLEN-1:IndexBits+2];
-    a_halfword   <= i_update_pc[1];
+    a_valid      <= (i_update || i_refresh) && !i_reset && !sweep_active;
+    a_refresh    <= !i_update;
+    a_index      <= request_pc[IndexBits+1:2];
+    a_upper      <= request_pc[XLEN-1:IndexBits+2];
+    a_halfword   <= request_pc[1];
     a_target     <= i_update_target[TARGET_BITS-1:1];
     a_region_ok  <= i_update_pc[XLEN-1:TARGET_BITS] == i_update_target[XLEN-1:TARGET_BITS];
-    a_taken      <= i_update_taken;
     a_compressed <= i_update_compressed;
     a_return     <= i_update_return;
   end
 
   logic b_valid;
+  logic b_refresh;
   logic [IndexBits-1:0] b_index;
   logic [UpperBits-1:0] b_upper;
   logic b_halfword;
   logic [TARGET_BITS-2:0] b_target;
   logic b_region_ok;
-  logic b_taken, b_compressed, b_return;
+  logic b_compressed, b_return;
   always_ff @(posedge i_clk) begin
     b_valid      <= a_valid && !i_reset;
+    b_refresh    <= a_refresh;
     b_index      <= a_index;
     b_upper      <= a_upper;
     b_halfword   <= a_halfword;
     b_target     <= a_target;
     b_region_ok  <= a_region_ok;
-    b_taken      <= a_taken;
     b_compressed <= a_compressed;
     b_return     <= a_return;
   end
 
-  // An update to the set written on the edge that read it takes the written
-  // set. One to the set that the update a stage ahead is writing is dropped.
+  // A request to the set written on the edge that read it takes the written
+  // set. One to the set that the update a stage ahead is writing is dropped;
+  // a refresh a stage ahead changes only replacement state, so the request
+  // behind it proceeds.
   logic b_forward_q;
   logic [SetBits-1:0] forward_set_q;
   logic [SetBits-1:0] update_set_raw;
@@ -235,8 +243,10 @@ module backing_btb #(
     end
   end
 
-  // Stage C registers the set, the chosen way and the update, then writes.
+  // Stage C registers the set, the chosen way and the request, then writes.
+  // A refresh that misses writes nothing.
   logic c_valid;
+  logic c_refresh;
   logic [IndexBits-1:0] c_index;
   logic [SetBits-1:0] c_set;
   logic c_hit;
@@ -245,9 +255,13 @@ module backing_btb #(
   logic c_halfword;
   logic [TARGET_BITS-2:0] c_target;
   logic c_region_ok;
-  logic c_taken, c_compressed, c_return;
+  logic c_compressed, c_return;
+  logic b_accepted;
+  assign b_accepted = b_valid && !(c_valid && !c_refresh && c_index == b_index) &&
+                      !(b_refresh && !b_hit);
   always_ff @(posedge i_clk) begin
-    c_valid      <= b_valid && !i_reset && !(c_valid && c_index == b_index);
+    c_valid      <= b_accepted && !i_reset;
+    c_refresh    <= b_refresh;
     c_index      <= b_index;
     c_set        <= b_set;
     c_hit        <= b_hit;
@@ -256,14 +270,14 @@ module backing_btb #(
     c_halfword   <= b_halfword;
     c_target     <= b_target;
     c_region_ok  <= b_region_ok;
-    c_taken      <= b_taken;
     c_compressed <= b_compressed;
     c_return     <= b_return;
   end
 
-  // A hit trains its counter and a miss allocates, both only for a target in
-  // the branch's region. A hit with a target outside it is invalidated, and
-  // a miss with one writes its set unchanged.
+  // An update writes its way, a hit or an allocation, only for a target in
+  // the jump's region. A hit with a target outside it is invalidated, and a
+  // miss with one writes its set unchanged. A refresh writes its set
+  // unchanged apart from replacement.
   logic [ReplBits-1:0] c_replacement;
   logic [TagRowBits-1:0] write_tags;
   logic [PayloadRowBits-1:0] write_payloads;
@@ -277,13 +291,11 @@ module backing_btb #(
     always_comb begin
       new_tag = old_tag;
       new_payload = old_payload;
-      if (c_way == WayBits'(way)) begin
+      if (!c_refresh && c_way == WayBits'(way)) begin
         if (c_region_ok) begin
           new_tag.valid = 1'b1;
           new_tag.upper = c_upper;
           new_tag.halfword = c_halfword;
-          new_tag.counter = c_hit ?
-              train_counter(old_tag.counter, c_taken) : (c_taken ? 2'b10 : 2'b01);
           new_tag.compressed = c_compressed;
           new_tag.is_return = c_return;
           new_payload.target = c_target;
@@ -295,7 +307,7 @@ module backing_btb #(
     assign write_tags[way*TagEntryBits+:TagEntryBits] = sweep_active ? '0 : new_tag;
     assign write_payloads[way*PayloadEntryBits+:PayloadEntryBits] = sweep_active ? '0 : new_payload;
   end
-  assign write_replacement = sweep_active ? '0 : (c_region_ok ? touch(
+  assign write_replacement = sweep_active ? '0 : ((c_refresh || c_region_ok) ? touch(
       c_replacement, c_way
   ) : c_replacement);
 
@@ -382,7 +394,6 @@ module backing_btb #(
 
   logic [1:0][WAYS-1:0] upper_match;
   logic [1:0][WAYS-1:0] entry_halfword;
-  logic [1:0][WAYS-1:0] entry_usable;
   logic [1:0][WAYS-1:0] entry_compressed;
   logic [1:0][WAYS-1:0] entry_return;
   logic [1:0][WAYS-1:0][TARGET_BITS-2:0] entry_target;
@@ -394,7 +405,6 @@ module backing_btb #(
       assign payload = payload_rows[image][way*PayloadEntryBits+:PayloadEntryBits];
       assign upper_match[image][way] = tag.valid && (tag.upper == i_packet_pc[XLEN-1:IndexBits+2]);
       assign entry_halfword[image][way] = tag.halfword;
-      assign entry_usable[image][way] = tag.counter[1];
       assign entry_compressed[image][way] = tag.compressed;
       assign entry_return[image][way] = tag.is_return;
       assign entry_target[image][way] = payload.target;
@@ -433,14 +443,14 @@ module backing_btb #(
     o_target = '0;
     for (int way = 0; way < WAYS; way++) begin
       if (slot1_way_match[way]) begin
-        o_hit[0] = o_hit[0] || entry_usable[0][way];
+        o_hit[0] = 1'b1;
         o_compressed[0] = o_compressed[0] || entry_compressed[0][way];
         o_return[0] = o_return[0] || entry_return[0][way];
         o_target[0] = o_target[0] | entry_target[0][way];
       end
       for (int image = 0; image < 2; image++) begin
         if (slot2_way_match[image][way]) begin
-          o_hit[1] = o_hit[1] || entry_usable[image][way];
+          o_hit[1] = 1'b1;
           o_compressed[1] = o_compressed[1] || entry_compressed[image][way];
           o_return[1] = o_return[1] || entry_return[image][way];
           o_target[1] = o_target[1] | entry_target[image][way];

@@ -127,6 +127,10 @@ module if_stage #(
     input logic i_pd_redirect_ras_push,
     input logic i_pd_redirect_ras_pop,
     input logic [XLEN-1:0] i_pd_redirect_ras_link,
+    // The PC of the backing BTB entry that a firing PD redirect used, whose
+    // replacement state the backing BTB refreshes (from pd_stage)
+    input logic i_pd_backing_refresh,
+    input logic [XLEN-1:0] i_pd_backing_refresh_pc,
     output logic [XLEN-1:0] o_pc,
     // The previous cycle consumed the stall-captured packet. The provider
     // uses this to classify PC movement as served. o_pc holds the owed fetch
@@ -2059,6 +2063,8 @@ module if_stage #(
   // tagged predictor's copy of o_pc. The next cycle compares the packet IF
   // serves; a packet whose set was not read gets no hit. Replay keeps the
   // result of the packet's first stalled cycle, like the packet fields.
+  // Training takes the BTB updates of JALs and JALRs, and a refresh, through
+  // a register, the entry of each PD redirect that the backing BTB served.
   localparam int unsigned BackingIndexBits = $clog2(
       riscv_pkg::BackingBtbEntries / riscv_pkg::BackingBtbWays
   );
@@ -2068,6 +2074,12 @@ module if_stage #(
   logic [1:0] backing_compressed_live;
   logic [1:0] backing_return_live;
   logic [1:0][BackingTargetBits-1:0] backing_target_live;
+  logic backing_refresh_q;
+  logic [XLEN-1:0] backing_refresh_pc_q;
+  always_ff @(posedge i_clk) begin
+    backing_refresh_q <= i_pd_backing_refresh;
+    backing_refresh_pc_q <= i_pd_backing_refresh_pc;
+  end
   backing_btb #(
       .XLEN(XLEN)
   ) u_backing_btb (
@@ -2080,12 +2092,13 @@ module if_stage #(
       .o_compressed(backing_compressed_live),
       .o_return(backing_return_live),
       .o_target(backing_target_live),
-      .i_update(i_from_ex_comb.btb_update),
+      .i_update(i_from_ex_comb.btb_update && i_from_ex_comb.btb_update_jump),
       .i_update_pc(i_from_ex_comb.btb_update_pc),
       .i_update_target(i_from_ex_comb.btb_update_target),
-      .i_update_taken(i_from_ex_comb.btb_update_taken),
       .i_update_compressed(i_from_ex_comb.btb_update_compressed),
-      .i_update_return(i_from_ex_comb.btb_update_return)
+      .i_update_return(i_from_ex_comb.btb_update_return),
+      .i_refresh(backing_refresh_q),
+      .i_refresh_pc(backing_refresh_pc_q)
   );
 
   logic [BackingResultBits-1:0] backing_result_live;

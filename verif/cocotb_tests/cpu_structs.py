@@ -182,6 +182,7 @@ FROM_EX_FIELDS = [
     ("btb_update_compressed", 1),
     ("btb_update_call", 1),
     ("btb_update_return", 1),
+    ("btb_update_jump", 1),
     ("ras_misprediction", 1),
     ("ras_restore_tos", RAS_PTR_BITS),
     ("ras_restore_valid_count", RAS_PTR_BITS + 1),

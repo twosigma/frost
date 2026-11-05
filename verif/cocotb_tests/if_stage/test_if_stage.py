@@ -408,6 +408,8 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pd_redirect_ras_push.value = 0
     dut.i_pd_redirect_ras_pop.value = 0
     dut.i_pd_redirect_ras_link.value = 0
+    dut.i_pd_backing_refresh.value = 0
+    dut.i_pd_backing_refresh_pc.value = 0
     # Tagged prediction is disabled and its training port is idle.
     dut.i_tage_hist.value = 0
     dut.i_tage_train_valid.value = 0
@@ -1000,6 +1002,45 @@ async def test_pd_redirect_stack_operation_happens_once(dut: Any) -> None:
 
     await redirect(push=False, pop=True, cycles=2)
     assert int(bpc.o_ras_checkpoint_valid_count.value) == 0
+
+
+@cocotb.test()
+async def test_backing_btb_trains_on_jumps_and_refreshes(dut: Any) -> None:
+    """The backing BTB takes jump updates and PD's refreshes, no other update."""
+    await _setup_test(dut)
+    backing = dut.u_backing_btb
+    for _ in range(2048):
+        if not int(backing.sweep_active.value):
+            break
+        await _advance_cycle(dut)
+    assert not int(backing.sweep_active.value)
+
+    pc = BASE_PC + 0x100
+    update = {
+        "btb_update": True,
+        "btb_update_pc": pc,
+        "btb_update_target": BASE_PC + 0x400,
+        "btb_update_taken": True,
+    }
+    _drive_from_ex(dut, update)
+    await _advance_cycle(dut)
+    assert not int(backing.a_valid.value), "a conditional branch's update"
+    _drive_from_ex(dut, {**update, "btb_update_jump": True})
+    await _advance_cycle(dut)
+    assert int(backing.a_valid.value) and not int(backing.a_refresh.value)
+    _drive_from_ex(dut, {})
+
+    # A refresh reaches the backing BTB through IF's register.
+    dut.i_pd_backing_refresh.value = 1
+    dut.i_pd_backing_refresh_pc.value = pc
+    await _advance_cycle(dut)
+    dut.i_pd_backing_refresh.value = 0
+    assert not int(backing.a_valid.value)
+    await _advance_cycle(dut)
+    assert int(backing.a_valid.value) and int(backing.a_refresh.value)
+    assert int(backing.a_index.value) == (pc >> 2) & ((1 << len(backing.a_index)) - 1)
+    await _advance_cycle(dut)
+    assert not int(backing.a_valid.value)
 
 
 @cocotb.test()

@@ -1585,3 +1585,40 @@ async def test_backing_btb_slot2_redirect_behind_reserved_slot1_jump(dut: Any) -
     assert int(dut.o_pd_redirect_ras_link.value) == pc + 6
     _clear_inputs(dut)
     await _advance_cycle(dut)
+
+
+@cocotb.test()
+async def test_backing_btb_redirect_refreshes_its_entry(dut: Any) -> None:
+    """A firing backing redirect names its slot's PC for a refresh; others do not."""
+    await _setup_test(dut)
+    pc = 0x8000_0200
+    target = 0x8000_0F40
+    addi = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
+    jal = _pack_jal(imm=0x40, rd=0)
+    cases = [
+        # slot-1 instruction, slot-2 instruction, hit slot, fast-taken, PC
+        (jal, None, 0, False, pc),
+        (addi, jal, 1, False, pc + 4),
+        (jal, None, 0, True, None),
+        (addi, None, None, False, None),
+    ]
+    for slot1, slot2, slot, fast_taken, refresh_pc in cases:
+        _drive_if_packet(
+            dut,
+            _packet(
+                pc,
+                slot1,
+                btb_predicted_taken=fast_taken,
+                btb_predicted_target=target,
+            ),
+        )
+        if slot2 is not None:
+            _drive_if_packet(dut, _packet(pc + 4, slot2), slot2=True)
+        _drive_backing(dut, slot, target=target)
+        await _advance_cycle(dut)
+        assert bool(dut.o_pd_backing_refresh.value) is (refresh_pc is not None)
+        if refresh_pc is not None:
+            assert int(dut.o_pd_backing_refresh_pc.value) == refresh_pc
+        _clear_inputs(dut)
+        await _advance_cycle(dut)
+        assert not bool(dut.o_pd_backing_refresh.value)

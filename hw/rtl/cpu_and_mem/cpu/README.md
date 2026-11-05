@@ -116,7 +116,7 @@ cases, then the sequential PC.
 | Structure | Size | Predicts | Trained by |
 |-----------|------|----------|------------|
 | BTB | 256 entries, direct-mapped, 2-bit counters | Target and direction of conditional branches, JALs and JALRs; an entry is typed as a call, a return, or both | Mispredicted conditional branches, JALs and JALRs; correctly predicted conditional branches at commit |
-| Backing BTB | 1024 entries, two-way set-associative, 2-bit counters | Target of a JAL or JALR the BTB did not predict taken, through a PD redirect | The same updates as the BTB |
+| Backing BTB | 1024 entries, two-way set-associative | Target of a JAL or JALR the BTB did not predict taken, through a PD redirect | Mispredicted JALs and JALRs at commit; each PD redirect it serves refreshes its entry's replacement state |
 | Return address stack | 8 entries | The target of a BTB hit typed as a return (`jalr x0, 0(ra)`, `c.jr ra`) or a coroutine swap (`jalr t0, 0(ra)`), and of a backing BTB redirect for one | IF, when it hands PD a packet predicted from a typed entry, and for a backing BTB redirect: a call (JAL or JALR writing `ra` or `t0`) pushes, a return pops, a swap replaces the top; recovery restores it |
 | Bimodal direction predictor | 1024 2-bit counters | Direction of slot-1 conditional branches without a taken BTB prediction or a tagged match | Each conditional branch at commit |
 | Tagged direction predictor | Two tables of 1024 entries, hashed with 16 and 64 bits of path history; 9-bit tags, 3-bit counters | Direction of slot-1 conditional branches whose lookup matches a tag, either way | Each conditional branch at commit, at the entries its lookup read |
@@ -193,16 +193,17 @@ branches are trained, though PD overrides only slot 1.
 ### Backing BTB
 
 `backing_btb` is a second BTB level with 1024 entries in two ways (four for
-measurement, through `riscv_pkg::BackingBtbWays`). Every BTB update also
-trains it, conditional branches included, though only its jumps, calls and
-returns are used. A correctly predicted jump sends no update, so its way
-ages while other branches in its set update theirs, and replacement or an
-update dropped because the update one stage ahead writes the same set can
-lose a branch the BTB holds. Its sets are indexed by the PC's word, like the
-BTB. An entry's tag holds the PC bits above the index and PC[1], with its
-counter, its size and whether it was trained on a return; the target is
-kept in a separate array. A miss allocates an invalid way or the way the
-set's replacement state names; a target in another 4 GiB region
+measurement, through `riscv_pkg::BackingBtbWays`). It holds jumps, calls and
+returns only: the BTB updates of JALs and JALRs train it, so it holds every
+jump that has mispredicted unless replacement has since taken it, or an
+update was dropped because the update one stage ahead writes the same set.
+Every hit predicts taken. A correctly predicted jump sends no update, so a
+PD redirect that the backing BTB serves refreshes its entry instead, making
+it the most recently used way of its set. Its sets are indexed
+by the PC's word, like the BTB. An entry's tag holds the PC bits above the
+index and PC[1], with its size and whether it was trained on a return; the
+target is kept in a separate array. A miss allocates an invalid way or the
+way the set's replacement state names; a target in another 4 GiB region
 invalidates the entry, as in the BTB. Reset clears one set per cycle, and
 the backing BTB makes no predictions until every set is clear.
 
@@ -214,24 +215,24 @@ and neither does a slot 2 in the word after the last set. The hit, size and
 type come from the registered tags, and the target from the target array
 read on the same edge. IF passes PD each slot's hit, size, type and target,
 kept across stall replay like the packet. PD registers a candidate for a
-slot-1 or slot-2 JAL or JALR whose backing entry predicts taken and has the
-instruction's size. When the slot's BTB prediction was not taken, the
-candidate fires the PD redirect, which costs the PD redirect's two bubbles
-instead of a misprediction recovery, and ID gives the instruction the
-prediction. The ROB checks a JAL's target at allocation, and the branch unit
-a JALR's at execution, as for any prediction. The instruction's own
-encoding, by the rules recovery uses, names its return address stack
-operation: a call pushes its link address, a return pops, and a coroutine
-swap does both. An entry trained on a return targets the top entry of the
-packet's recovery point while the stack holds an entry, and its stored
-target otherwise; an entry whose type no longer matches the instruction at
-its PC costs only a misprediction. IF performs the operation once, in the
-redirect's first cycle (see [Return address stack
-recovery](#return-address-stack-recovery)). A build that disables branch
-prediction gets no backing redirects. A jump the backing BTB predicts is
-not copied into the BTB: its correct prediction sends no update, so the
-BTB keeps the entry in that slot, and the jump costs the PD redirect for as
-long as that entry stays.
+slot-1 or slot-2 JAL or JALR whose backing entry has the instruction's size.
+When the slot's BTB prediction was not taken, the candidate fires the PD
+redirect, which costs the PD redirect's two bubbles instead of a
+misprediction recovery, ID gives the instruction the prediction, and IF
+passes the instruction's PC to the backing BTB as a refresh. The ROB checks
+a JAL's target at allocation, and the branch unit a JALR's at execution, as
+for any prediction. The instruction's own encoding, by the rules recovery
+uses, names its return address stack operation: a call pushes its link
+address, a return pops, and a coroutine swap does both. An entry trained on
+a return targets the top entry of the packet's recovery point while the
+stack holds an entry, and its stored target otherwise; an entry whose type
+no longer matches the instruction at its PC costs only a misprediction. IF
+performs the operation once, in the redirect's first cycle (see [Return
+address stack recovery](#return-address-stack-recovery)). A build that
+disables branch prediction gets no backing redirects. A jump the backing BTB
+predicts is not copied into the BTB: its correct prediction sends no update,
+so the BTB keeps the entry in that slot, and the jump costs the PD redirect
+for as long as that entry stays.
 
 ### Two-wide fetch and dispatch
 
@@ -493,10 +494,11 @@ commits, and each is a read-modify-write of a 2-bit counter.
 but in order, and back-to-back updates to one entry see each other. A slot-1
 correct-branch update that loses its cycle is dropped, and a waiting slot-2
 update is replaced by a newer one; both cost accuracy only. The backing BTB
-registers the same selected update, reads its set, finds its way, and writes
-the set two cycles after the BTB writes. An update that reads the set being
-written takes the written set, and an update to the same set as the one in
-the stage ahead of it is dropped, which costs accuracy only.
+registers the selected update when it trains a JAL or JALR, and otherwise a
+refresh, reads its set, finds its way, and writes the set two cycles after
+the BTB writes; a refresh that misses writes nothing. A request that reads
+the set being written takes the written set, and one to the same set as an
+update in the stage ahead of it is dropped, which costs accuracy only.
 
 ### 4 GiB target limit
 

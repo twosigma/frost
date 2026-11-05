@@ -2073,6 +2073,9 @@ package riscv_pkg;
     // or pushes onto it.
     logic btb_update_call;
     logic btb_update_return;
+    // The trained instruction is a JAL or JALR, which also trains the
+    // backing BTB.
+    logic btb_update_jump;
     // RAS misprediction recovery signals
     logic ras_misprediction;  // Restore the mispredicted instruction's recovery point
     logic [RasPtrBits-1:0] ras_restore_tos;  // TOS to restore on misprediction
