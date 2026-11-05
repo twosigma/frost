@@ -36,7 +36,7 @@ configuration and the runner. Individual SBY tasks can set shorter limits.
 CI assigns the CSR profiling-on, CSR profiling-off and reorder-buffer tasks
 to separate jobs with 120-minute limits. The two CSR jobs also run selected
 coherent store-boundary tasks, and the reorder-buffer job also runs the
-coherent L1D tasks other than its BMC. The hart maintenance proof has a separate job with a
+coherent L1D tasks other than its two control BMCs. The hart maintenance proof has a separate job with a
 150-minute limit. The Coherence job runs the other coherence tasks, including
 hart maintenance covers, with a 240-minute limit. The Other tasks job has a
 240-minute limit. Job limits include image setup.

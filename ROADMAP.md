@@ -159,10 +159,11 @@ model of `cpu_top` and `soc_top` that CI compares with a CoreMark trace from
 the RTL. Its sweep of the previous hierarchy showed that a second memory
 channel needs about 16 reads in flight to use its bandwidth. In the coherent
 path, `L1D_NUM_MSHR` sets the L1D's request endpoints, eight on X3, so up to
-seven load misses go to a home with four fills; `L2_NUM_MSHR` and the L2
-prefetch parameters have no effect on the CPU. Measuring 8, 12 and 16 L2
-misses in flight in the RTL therefore needs more fills in the home, and a
-prefetcher in the home could supply further concurrent requests.
+seven load misses go to a home with four fills; `L2_NUM_MSHR`,
+`L2_NUM_WAITERS` and the L2 prefetch parameters have no effect on the CPU.
+Measuring 8, 12 and 16 L2 misses in flight in the RTL therefore needs more
+fills in the home, and a prefetcher in the home could supply further
+concurrent requests.
 
 ## Verification
 

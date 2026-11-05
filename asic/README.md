@@ -31,13 +31,14 @@ lists the macros and every mocked memory with its dimensions.
 From the repository root:
 
 ```bash
-./asic/orfs.py run                    # the whole flow, with a thread per CPU
-./asic/orfs.py run --num-cores 16     # limit the tools' threads
-./asic/orfs.py run --target grt       # stop after synth, floorplan, place, cts, grt, or route
-./asic/orfs.py run --from route       # rerun detailed routing and finishing from asic/build
-./asic/orfs.py run --clock-period 1.6 # set the core clock period in ns
-./asic/orfs.py summary                # summarize asic/build again
-./asic/orfs.py paths --stage grt      # report a stage's setup paths by block
+./asic/orfs.py run                        # the whole flow, with a thread per CPU
+./asic/orfs.py run --num-cores 16         # limit the tools' threads
+./asic/orfs.py run --target grt           # stop after synth, floorplan, place, cts, grt, route, or finish (the default)
+./asic/orfs.py run --from route           # rerun detailed routing and finishing from asic/build
+./asic/orfs.py run --clock-period 1.6     # set the core clock period in ns
+./asic/orfs.py run --cpu-clock-period 2.5 # give the CPU its own clock, period in ns (ASYNC_CPU_CLOCK)
+./asic/orfs.py summary                    # summarize asic/build again
+./asic/orfs.py paths --stage grt          # report a stage's setup paths by block
 ```
 
 The script needs Docker and the `frost` image (see the
@@ -60,9 +61,10 @@ The [CI jobs](#ci) provide swap space for routing and the final report.
    [`config.mk`](config.mk). Make reruns only the stages whose input files
    changed since the last run. It does not track `config.mk`, so delete
    `asic/build` after changing the configuration, or rerun the affected
-   stages with `--from`. Nor does it track the core clock period, so `run`
-   refuses to continue a build made with another period, and `--from` keeps
-   the build's period.
+   stages with `--from`. Nor does it track the clock periods, so `run`
+   refuses to continue a build made with another core clock period or CPU
+   clock configuration. `--from` keeps the build's periods and refuses
+   `--clock-period` and `--cpu-clock-period`, which take effect at synthesis.
 3. `make elapsed` and the flow's metrics become `asic/build/summary.md`.
 
 The stages follow ORFS's make targets: `grt` is global routing and `route`
@@ -425,12 +427,15 @@ write port and their read port, as the X3's block RAMs do.
 
 ## Results with the SRAM macros
 
-The 256 KiB L2 column uses the default 3.103 ns core clock,
-`PLACE_DENSITY_LB_ADDON=0.20`, and 16 threads.
-The 2 MiB L2 column uses the X3's L2 size and a mocked instruction memory at
-commit `ea7289e0`. The mocked-memory column uses commit `e54df6da`, before
-the caches became 4-way set-associative, with every memory over 4,096 bits
-mocked and I/O delays counted from the clock at its port.
+The 256 KiB L2 column uses the default 3.103 ns core clock and 16 threads,
+with `PLACE_DENSITY_LB_ADDON=0.20` from an earlier `config.mk` rather than
+the [Design](#design) table's 0.10.
+The 2 MiB L2 column uses the X3's L2 size, with the instruction memory and
+the MAC's frame and packet buffers mocked, at commit `3d8f3c7c5` without the
+L1D's bimodal insertion from commit `e19d6bf58`. The mocked-memory column
+uses commit `1a2378235`, before the caches became 4-way set-associative,
+with every memory over 4,096 bits mocked and I/O delays counted from the
+clock at its port.
 
 | | Memories mocked | 2 MiB L2 | 256 KiB L2 |
 | --- | ---: | ---: | ---: |
