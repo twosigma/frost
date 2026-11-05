@@ -2481,7 +2481,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_prefetch": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_prefetch",
         hdl_toplevel_module="coherence_prefetch_test_harness",
-        description="Four prefetch identities, delayed completion, errors, demand, PutM and DMA",
+        description=(
+            "Four prefetch identities, delayed completion, errors, demand, PutM "
+            "and DMA responses before C/U"
+        ),
         verilator_extra_args=("--assert", "-GPREFETCH_INFLIGHT=4"),
     ),
     "coherence_prefetch_equal": CocotbRunConfig(

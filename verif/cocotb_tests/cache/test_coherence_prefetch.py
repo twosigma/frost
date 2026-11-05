@@ -305,6 +305,81 @@ async def dirty_victim_put_and_streaming_dma(dut: Any) -> None:
 
 
 @cocotb.test()
+async def dma_response_before_delayed_completion(dut: Any) -> None:
+    """Read responses allow admission during held DMA C/U; writes wait for U."""
+    for write in (False, True):
+        for hold in ("C", "U"):
+            b = PrefetchHome(dut)
+            await b.reset()
+            base = 0x80010000
+            address = base + 0x1000
+            for resident in (address, base, base + b.line):
+                assert await b.read(resident) == b.expected(resident)
+            b.read_delay = 100
+            b.required_fills.update(base + index * b.line for index in range(2, 10))
+            await b.submit(8 if write else 7, address, 0x1234, 0xFF, non_alloc=1)
+            grant = await b.take_grant()
+            assert grant[3] == address and not grant[5]
+            assert not b.get("dma_response_q")
+            await b.tick()
+            assert b.get("dma_response_q") == int(not write)
+            await b.tick()
+            assert not b.get("dma_response_q")
+            assert b.get("dma_pause")
+            if hold == "U":
+                await b.set(
+                    i_c_valid=1,
+                    i_c=pack(
+                        (9, grant[1]),
+                        (6, grant[2]),
+                        (b.p, address),
+                        (2, 0),
+                        (1, int(write)),
+                    ),
+                )
+                await b.wait("o_c_ready")
+                await b.tick()
+                await b.set(i_c_valid=0)
+                await b.wait("o_u_valid")
+            training_grants = []
+            await b.set(i_train_enable=1)
+            for slot in range(2):
+                await b.submit(0, base + slot * b.line, slot=slot)
+                training_grants.append(await b.take_grant())
+            await b.set(i_train_enable=0)
+            await b.tick(20)
+            accepted = len([1 for _, kind, _ in b.pf if kind == "D"])
+            if write:
+                assert b.get("dma_pause")
+                assert accepted == 0
+                await b.tick(150)
+                assert b.get("dma_pause")
+                assert len([1 for _, kind, _ in b.pf if kind == "D"]) == accepted
+            else:
+                assert not b.get("dma_pause")
+                await b.until(lambda: any(kind == "D" for _, kind, _ in b.pf))
+                assert not b.get("dma_pause")
+            if hold == "C":
+                assert not b.get("o_u_valid")
+                await b.complete(grant, written=write)
+            else:
+                assert b.get("o_u_valid")
+                assert unpack(b.get("o_u"), (9, 6, b.p)) == (
+                    grant[1],
+                    grant[2],
+                    address,
+                )
+                await b.set(i_u_ready=1)
+                await b.tick()
+                await b.set(i_u_ready=0)
+            assert b.get("dma_response_q") == int(write)
+            for training_grant in training_grants:
+                await b.complete(training_grant)
+            await b.until(lambda: not b.get("dma_pause"))
+            await b.drain()
+
+
+@cocotb.test()
 async def full_completion_queue_progress(dut: Any) -> None:
     """Drain full completion, result, fill, writeback and PutM storage."""
     b = PrefetchHome(dut)

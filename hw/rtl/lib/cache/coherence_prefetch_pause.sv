@@ -14,7 +14,7 @@
  *    limitations under the License.
  */
 
-// DMA owns ingress credits through its responses. Prefetch requests pause
+// DMA activity spans request acceptance through its response. Prefetches pause
 // while DMA is offered or outstanding and for seven idle cycles afterward.
 module coherence_prefetch_pause (
     input logic i_clk,

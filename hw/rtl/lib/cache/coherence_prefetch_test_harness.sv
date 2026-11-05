@@ -125,14 +125,35 @@ module coherence_prefetch_test_harness #(
   coh_d_t demand;
   assign demand = i_d;
   logic dma_pause;
-  wire  dma_offer = i_d_valid && demand.q.src == 2'd2;
-  wire  pf_pause = DMA_PAUSE && dma_pause;
+  wire dma_offer = i_d_valid && demand.q.src == 2'd2;
+  wire pf_pause = DMA_PAUSE && dma_pause;
+  // The transport driver admits DMA at D. Its response pulses follow the
+  // ingress policy: reads after G, writes after U, with one pulse per cycle.
+  logic [15:0] dma_write_q;
+  logic [3:0] dma_reads_q;
+  logic dma_response_q;
+  wire dma_read_grant = o_g_valid && i_g_ready && home_g.q.src == 2'd2 && !dma_write_q[home_g.q.id];
+  wire dma_write_release = o_u_valid && i_u_ready && home_u.q.src == 2'd2 &&
+      dma_write_q[home_u.q.id];
+  wire dma_read_response = (|dma_reads_q) && !dma_write_release;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      dma_write_q <= '0;
+      dma_reads_q <= '0;
+      dma_response_q <= 1'b0;
+    end else begin
+      if (dma_offer && o_d_ready)
+        dma_write_q[demand.q.id] <= demand.opcode == coherence_pkg::DMAWrite;
+      dma_reads_q <= dma_reads_q + 4'(dma_read_grant) - 4'(dma_read_response);
+      dma_response_q <= dma_write_release || dma_read_response;
+    end
+  end
   coherence_prefetch_pause pause_control (
       .i_clk,
       .i_rst,
       .i_dma_valid(dma_offer),
       .i_dma_accept(dma_offer && o_d_ready),
-      .i_dma_response(o_u_valid && i_u_ready && home_u.q.src == 2'd2),
+      .i_dma_response(dma_response_q),
       .o_pause(dma_pause)
   );
 

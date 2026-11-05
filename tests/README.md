@@ -93,6 +93,10 @@ storage full. For known misses or recorded reads, the bench checks the
 first offered Prefetch grant against the memory response and, on success,
 the array's fill installation acknowledgement. Its installation history
 also covers grants after a fill slot frees.
+The transport driver admits DMA at D and models the ingress's response
+pulses after read G or write U. Directed cases hold DMA C and U beyond the
+pause interval: reads allow prefetch admission after their response, while
+writes keep admission paused until their release and response.
 The `coherence_prefetch_contention*` benches report demand service for competing
 streams, dirty replacement, DMA and combined dirty/DMA pressure with
 prefetch enabled or disabled.
