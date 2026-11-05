@@ -46,8 +46,9 @@ home has eight fills and a stream prefetcher. Two instruction-refill slots can o
 page-table readers capture data and errors at the grant and hold their
 identities through release. The probe for an instruction or page-table read
 downgrades a Modified sector to Shared, so the next store to it acquires it
-again. An AMO waits for all of the L1D's requests to drain and goes through
-the home. Further work targets concurrent store acquisitions, reader latency
+again. An AMO or SC on a sector the L1D holds Modified completes in the L1D
+once endpoint 0 and that sector are free; other AMOs drain every L1D request
+and go through the home. Further work targets concurrent store acquisitions, reader latency
 and DMA throughput. The single-hart queue sizes and lane choices will need
 revisiting for the second hart's memory traffic.
 
