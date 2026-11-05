@@ -190,6 +190,11 @@ module coherence_l1d #(
   logic [ReadPayloadWidth-1:0] rd_write_payload;
   logic [7:0] rd_write_mask;
   logic [63:0] rd_data_q[8];
+  // A failed read returns zero data. Its data register clears on the cycle
+  // after the failure, from these registers, and a response on that cycle
+  // returns zero directly, so the clear stays off the grant selection.
+  logic fail_clear_q;
+  logic [2:0] fail_clear_slot_q;
   logic [7:0] rd_error_q, rd_ready_next, rd_error_next, rd_valid_next, rd_miss_next;
   logic read_miss;
   logic read_failure, read_hit, read_fill;
@@ -1116,11 +1121,16 @@ module coherence_l1d #(
       for (int index = 0; index < 8; index++) begin
         rd_data_q[index] <= '0;
       end
+      fail_clear_q <= 1'b0;
+      fail_clear_slot_q <= '0;
     end else begin
       rd_valid_q <= rd_valid_next;
       rd_miss_q <= rd_miss_next;
       rd_ready_q <= rd_ready_next;
       rd_error_q <= rd_error_next;
+      fail_clear_q <= read_failure;
+      fail_clear_slot_q <= failure_read_slot;
+      if (fail_clear_q) rd_data_q[fail_clear_slot_q] <= '0;
       atomic_done_q <= 1'b0;
       o_sc_write_done <= 1'b0;
       o_cut_release <= 1'b0;
@@ -1148,7 +1158,8 @@ module coherence_l1d #(
         o_read_valid <= rd_response;
         if (rd_response) begin
           o_read_id <= rd_result;
-          o_read_data <= rd_data_q[rd_result];
+          o_read_data <= fail_clear_q && fail_clear_slot_q == rd_result ? '0 :
+              rd_data_q[rd_result];
           o_read_error <= rd_error_q[rd_result];
           rd_response_rr_q <= rd_result + 1'b1;
         end
@@ -1239,21 +1250,19 @@ module coherence_l1d #(
               grant_ep_q <= grant_pick;
               operation_q <= GrantOp;
               lookup_addr_q <= grant.addr;
+              // A failed read's data clears from fail_clear_q a cycle later.
               if (grant.error || grant.opcode == coherence_pkg::GrantFail) begin
-                if (grant_pick != '0) rd_data_q[ld_read_q[grant_pick]] <= '0;
-                else begin
-                done_q <= 1'b1;
-                done_status_q <= grant.error ? coherence_pkg::Error : coherence_pkg::Consumed;
-                if (acquisition_sc_q) begin
-                  o_sc_result_valid <= 1'b1;
-                  o_sc_success <= 1'b0;
-                  o_sc_error <= grant.error;
-                end else if (!acquisition_store_q) begin
-                  rd_data_q[acquisition_read_q] <= '0;
-                end else begin
-                  o_fatal <= 1'b1;
-                  o_fatal_addr <= acquisition_q.addr;
-                end
+                if (grant_pick == '0) begin
+                  done_q <= 1'b1;
+                  done_status_q <= grant.error ? coherence_pkg::Error : coherence_pkg::Consumed;
+                  if (acquisition_sc_q) begin
+                    o_sc_result_valid <= 1'b1;
+                    o_sc_success <= 1'b0;
+                    o_sc_error <= grant.error;
+                  end else if (acquisition_store_q) begin
+                    o_fatal <= 1'b1;
+                    o_fatal_addr <= acquisition_q.addr;
+                  end
                 end
               end else phase_q <= Lookup;
             end else if (i_sc_valid && o_sc_ready) begin
