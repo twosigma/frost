@@ -1030,4 +1030,131 @@ module pd_stage #(
   assign dbg_ila_pd_id_fetch_fault = o_from_pd_to_id.fetch_fault;
 `endif
 
+`ifdef FORMAL
+  // ===========================================================================
+  // Formal model (formal/pd_backing_redirect.sby)
+  // ===========================================================================
+  // The simulation checks above run only when their operands are known
+  // (!$isunknown), which Yosys evaluates as false, so the properties they
+  // state are restated here without that gate. IF's
+  // RV64C expansions and target candidates match the packet's instruction,
+  // as those checks state. A slot-2 backing hit lies in slot 1's 4 GiB
+  // region, which backing_btb guarantees by giving the word after its last
+  // set no slot-2 hit (formal/backing_btb.sby), and IF pairs a slot 2 only
+  // behind a slot 1 that is not a conditional branch.
+  logic formal_past_valid = 1'b0;
+  logic [1:0] formal_backing_compressed_q;
+  always_ff @(posedge i_clk) begin
+    formal_past_valid <= 1'b1;
+    if (!formal_past_valid) assume (i_pipeline_ctrl.reset);
+    assume (!i_backing_hit[1] ||
+            (i_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits] ==
+             i_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits]));
+    assume (i_from_if_to_pd_2.sel_nop || !pd_cond_branch);
+    if (!i_pipeline_ctrl.stall) formal_backing_compressed_q <= i_backing_compressed;
+  end
+
+  always_comb begin
+    if (!i_from_if_to_pd.sel_nop && !i_from_if_to_pd.fetch_fault) begin
+      assume (!pd_sel_compressed || ((instruction_non_nop_predecoded_rs2 == instruction_non_nop) &&
+                                     (decomp_illegal == decomp_illegal_reference)));
+    end
+    if (!i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault) begin
+      assume (pd_sel_compressed_2 == (i_from_if_to_pd_2.raw_parcel[1:0] != 2'b11));
+      assume (!pd_sel_compressed_2 || ((instruction_non_nop_2 == decompressed_instr_2) &&
+                                       (i_from_if_to_pd_2.decomp_illegal ==
+                                        decomp_illegal_reference_2)));
+    end
+    assume (pd_target_native_split == pd_target_native_reference);
+    assume (pd_target_compressed_split == pd_target_compressed_reference);
+  end
+
+  logic formal_registered_jump, formal_registered_jump_2;
+  logic [XLEN-1:0] formal_redirect_pc;
+  assign formal_registered_jump = is_jump(o_from_pd_to_id.instruction);
+  assign formal_registered_jump_2 = is_jump(o_from_pd_to_id_2.instruction);
+  assign formal_redirect_pc = pd_backing_redirect_r ? o_from_pd_to_id.program_counter :
+                                                      o_from_pd_to_id_2.program_counter;
+  always_comb begin
+    if (formal_past_valid && !i_pipeline_ctrl.reset) begin
+      // A backing redirect fires for its slot's registered JAL or JALR, of
+      // the entry's size, and never with the slot's fast-taken prediction,
+      // bubble or fetch fault. A slot-2 redirect has a valid slot 2.
+      if (pd_backing_redirect_r) begin
+        p_formal_slot1_redirect_is_its_jump :
+        assert (formal_registered_jump &&
+                (o_from_pd_to_id.is_compressed == formal_backing_compressed_q[0]) &&
+                !o_from_pd_to_id.btb_predicted_taken && !o_from_pd_to_id.inject_nop &&
+                !o_from_pd_to_id.fetch_fault);
+      end
+      if (pd_backing_redirect_2_r) begin
+        p_formal_slot2_redirect_is_its_jump :
+        assert (formal_registered_jump_2 &&
+                (o_from_pd_to_id_2.is_compressed == formal_backing_compressed_q[1]) &&
+                !o_from_pd_to_id_2.btb_predicted_taken && !o_from_pd_to_id_2.inject_nop &&
+                !o_from_pd_to_id_2.fetch_fault);
+      end
+      if (o_pd_redirect_slot2) begin
+        p_formal_slot2_flag_is_a_slot2_redirect :
+        assert (pd_backing_redirect_2_r && !o_from_pd_to_id_2.inject_nop);
+      end
+      // A stack operation comes only with a backing redirect of a call or a
+      // return, by the redirecting instruction's encoding.
+      if (o_pd_redirect_ras_push) begin
+        p_formal_push_is_a_redirected_call :
+        assert ((pd_backing_redirect_r && pd_registered_call) ||
+                (pd_backing_redirect_2_r && pd_registered_call_2));
+      end
+      if (o_pd_redirect_ras_pop) begin
+        p_formal_pop_is_a_redirected_return :
+        assert ((pd_backing_redirect_r && pd_registered_return) ||
+                (pd_backing_redirect_2_r && pd_registered_return_2));
+      end
+      // A refresh names the redirecting slot's PC.
+      if (o_pd_backing_refresh) begin
+        p_formal_refresh_is_a_backing_redirect :
+        assert (o_pd_redirect && (o_pd_backing_refresh_pc == formal_redirect_pc));
+      end
+      // The reference models above: the qualified redirect and its
+      // direction, the full-width target, and each backing redirect's
+      // decoded-rule target.
+      if (pd_redirect_reference_armed) begin
+        p_formal_redirect_matches_reference : assert (pd_redirect_r == pd_redirect_reference_q);
+        p_formal_direction_matches_reference :
+        assert (!pd_redirect_r || (o_pd_redirect_taken == pd_redirect_taken_reference_q));
+      end
+      if (pd_redirect_target_reference_armed) begin
+        p_formal_target_matches_reference :
+        assert (o_pd_redirect_target == pd_redirect_target_reference_q);
+      end
+      if (pd_backing_decoded_reference_armed) begin
+        p_formal_slot1_target_matches_decode :
+        assert (!(pd_backing_redirect_r && pd_backing_decoded_reference_valid_q) ||
+                (o_pd_redirect_target == pd_backing_decoded_target_reference_q));
+        p_formal_slot2_target_matches_decode :
+        assert (!(pd_backing_redirect_2_r && !pd_backing_redirect_r &&
+                  pd_backing_decoded_reference_valid_2_q) ||
+                (o_pd_redirect_target == pd_backing_decoded_target_reference_2_q));
+      end
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (formal_past_valid && !i_pipeline_ctrl.reset) begin
+      cover (pd_backing_redirect_r && !o_pd_redirect_ras_push && !o_pd_redirect_ras_pop);
+      cover (pd_backing_redirect_2_r && o_pd_redirect_ras_push);
+      cover (pd_backing_redirect_r && o_pd_redirect_ras_pop &&
+             (o_pd_redirect_target == o_from_pd_to_id.ras_checkpoint_top));
+      cover (pd_backing_redirect_2_r && o_pd_redirect_ras_pop);
+      cover (pd_backing_redirect_r && i_pipeline_ctrl.stall);
+      cover (pd_redirect_r && !pd_backing_redirect_r && !pd_backing_redirect_2_r &&
+             pd_redirect_reference_armed && pd_redirect_target_reference_armed);
+      cover (pd_backing_redirect_r && pd_backing_decoded_reference_armed &&
+             pd_backing_decoded_reference_valid_q);
+      cover (pd_backing_redirect_2_r && !pd_backing_redirect_r &&
+             pd_backing_decoded_reference_armed && pd_backing_decoded_reference_valid_2_q);
+    end
+  end
+`endif
+
 endmodule : pd_stage

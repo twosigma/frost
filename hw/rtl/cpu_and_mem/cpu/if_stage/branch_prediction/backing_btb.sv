@@ -215,8 +215,9 @@ module backing_btb #(
   logic b_forward_q;
   logic [SetBits-1:0] forward_set_q;
   logic [SetBits-1:0] update_set_raw;
+  logic [SetBits-1:0] update_set_read;
   logic [SetBits-1:0] b_set;
-  assign b_set = b_forward_q ? forward_set_q : update_set_raw;
+  assign b_set = b_forward_q ? forward_set_q : update_set_read;
 
   logic [ReplBits-1:0] b_replacement;
   logic [WAYS-1:0] b_way_valid;
@@ -460,6 +461,21 @@ module backing_btb #(
     if (!aligned) o_hit = 2'b00;
   end
 
+  // Whether a set's tag row holds each valid tag once.
+  function automatic logic tags_unique(input logic [TagRowBits-1:0] tags);
+    tag_t first, second;
+    tags_unique = 1'b1;
+    for (int first_way = 0; first_way < WAYS; first_way++) begin
+      for (int second_way = first_way + 1; second_way < WAYS; second_way++) begin
+        first  = tags[first_way*TagEntryBits+:TagEntryBits];
+        second = tags[second_way*TagEntryBits+:TagEntryBits];
+        if (first.valid && second.valid && first.upper == second.upper &&
+            first.halfword == second.halfword)
+          tags_unique = 1'b0;
+      end
+    end
+  endfunction
+
 `ifndef SYNTHESIS
   tag_t check_tag;
   payload_t check_payload;
@@ -472,23 +488,167 @@ module backing_btb #(
   end
 
   // A set never holds one tag in two ways.
-  function automatic logic same_valid_tag(input tag_t first, input tag_t second);
-    same_valid_tag = first.valid && second.valid && first.upper == second.upper &&
-        first.halfword == second.halfword;
-  endfunction
   always_ff @(posedge i_clk) begin
     if (!i_reset && !sweep_active && c_valid) begin
-      for (int first = 0; first < WAYS; first++) begin
-        for (int second = first + 1; second < WAYS; second++) begin
-          p_backing_btb_unique_tags :
-          assert (!same_valid_tag(
-              tag_t'(write_tags[first*TagEntryBits+:TagEntryBits]),
-              tag_t'(write_tags[second*TagEntryBits+:TagEntryBits])
-          ));
-        end
-      end
+      p_backing_btb_unique_tags : assert (tags_unique(write_tags));
     end
   end
+`endif
+
+`ifdef FORMAL
+  // ===========================================================================
+  // Formal model (formal/backing_btb.sby)
+  // ===========================================================================
+  // formal_sets mirrors the update array: every write lands there on its
+  // edge. Its reads are read-old, like the arrays'. The bounded tasks check
+  // the update array and both lookup images against it, image 1 one set
+  // ahead. The proofs define BACKING_BTB_FORMAL_MIRROR_READ, so training
+  // reads the mirror itself and the tag invariants below are inductive
+  // without the arrays' rows; the arrays then only feed the lookup.
+  logic [SetBits-1:0] formal_sets[Sets];
+  logic [SetBits-1:0] formal_update_read_q;
+  logic [1:0][SetBits-1:0] formal_lookup_q;
+  initial for (int set = 0; set < Sets; set++) formal_sets[set] = '0;
+  always_ff @(posedge i_clk) begin
+    if (write_enable) formal_sets[write_index] <= write_set;
+    formal_update_read_q <= formal_sets[a_index];
+    formal_lookup_q[0]   <= formal_sets[i_lookup_index];
+    formal_lookup_q[1]   <= formal_sets[i_lookup_index+IndexBits'(1)];
+  end
+
+  // Every set the sweep has cleared holds each valid tag once.
+  logic formal_cleared_sets_unique;
+  always_comb begin
+    formal_cleared_sets_unique = 1'b1;
+    for (int set = 0; set < Sets; set++) begin
+      if ((!sweep_active || set < int'(sweep_index)) && !tags_unique(
+              formal_sets[set][PayloadRowBits+:TagRowBits]
+          ))
+        formal_cleared_sets_unique = 1'b0;
+    end
+  end
+
+  // The lookup reference: the mirror's sets as of the request edge, read at
+  // each slot's own PC. A slot 2 in the word after the last set gets no hit.
+  logic [1:0] formal_hit;
+  logic [1:0] formal_compressed;
+  logic [1:0] formal_return;
+  logic [1:0][TARGET_BITS-2:0] formal_target;
+  for (genvar slot = 0; slot < 2; slot++) begin : gen_formal_slot
+    logic [XLEN-1:0] pc;
+    logic same_word;
+    logic crosses_block;
+    logic [SetBits-1:0] set;
+    logic [WAYS-1:0] match;
+    logic [WAYS-1:0] way_compressed;
+    logic [WAYS-1:0] way_return;
+    // Target bits of the matching ways ORed so far, TARGET_BITS-1 per step.
+    logic [(WAYS+1)*(TARGET_BITS-1)-1:0] target_or;
+    assign pc = (slot == 0) ? i_packet_pc :
+        i_packet_pc + (i_packet_compressed ? XLEN'(2) : XLEN'(4));
+    assign same_word = pc[XLEN-1:2] == i_packet_pc[XLEN-1:2];
+    assign crosses_block = !same_word && (&i_packet_pc[IndexBits+1:2]);
+    assign set = same_word ? formal_lookup_q[0] : formal_lookup_q[1];
+    for (genvar way = 0; way < WAYS; way++) begin : gen_way
+      tag_t tag;
+      assign tag = set[PayloadRowBits+way*TagEntryBits+:TagEntryBits];
+      assign match[way] = tag.valid && (tag.upper == pc[XLEN-1:IndexBits+2]) &&
+          (tag.halfword == pc[1]);
+      assign way_compressed[way] = match[way] && tag.compressed;
+      assign way_return[way] = match[way] && tag.is_return;
+      assign target_or[(way+1)*(TARGET_BITS-1)+:TARGET_BITS-1] =
+          target_or[way*(TARGET_BITS-1)+:TARGET_BITS-1] |
+          (match[way] ? set[way*PayloadEntryBits+:PayloadEntryBits] : '0);
+    end
+    assign target_or[TARGET_BITS-2:0] = '0;
+    assign formal_hit[slot] = request_valid_q &&
+        (request_index_q == i_packet_pc[IndexBits+1:2]) && !crosses_block && |match;
+    assign formal_compressed[slot] = |way_compressed;
+    assign formal_return[slot] = |way_return;
+    assign formal_target[slot] = target_or[WAYS*(TARGET_BITS-1)+:TARGET_BITS-1];
+  end
+
+  logic formal_past_valid = 1'b0;
+  always_ff @(posedge i_clk) begin
+    formal_past_valid <= 1'b1;
+    if (!formal_past_valid) assume (i_reset);
+  end
+
+  always_comb begin
+    if (formal_past_valid) begin
+      p_formal_mirror_tags_unique : assert (formal_cleared_sets_unique);
+      // The sweep runs alone.
+      if (sweep_active) begin
+        p_formal_sweep_runs_alone : assert (!a_valid && !b_valid && !c_valid);
+      end
+      // A request in stage B holds its set as the arrays hold it now, and
+      // one in stage C the tags and targets of it: only a refresh, which
+      // changes replacement state alone, writes the set in between.
+      if (b_valid) begin
+        p_formal_stage_b_set_current : assert (b_set == formal_sets[b_index]);
+      end
+      if (c_valid) begin
+        p_formal_stage_c_entries_current :
+        assert (c_set[TagRowBits+PayloadRowBits-1:0] ==
+                formal_sets[c_index][TagRowBits+PayloadRowBits-1:0]);
+      end
+      // A refresh writes its set back with only replacement changed.
+      if (c_valid && c_refresh && !sweep_active) begin
+        p_formal_refresh_keeps_entries :
+        assert (write_set[TagRowBits+PayloadRowBits-1:0] == c_set[TagRowBits+PayloadRowBits-1:0]);
+      end
+      // A hit needs a request read outside reset and the sweep, for the set
+      // of the packet's word, and no slot-2 hit comes from the word after
+      // the last set.
+      if (o_hit != 2'b00) begin
+        p_formal_hit_needs_aligned_request :
+        assert (request_valid_q && (request_index_q == i_packet_pc[IndexBits+1:2]));
+      end
+      if (last_set && slot2_image) begin
+        p_formal_no_slot2_hit_past_last_set : assert (!o_hit[1]);
+      end
+`ifndef BACKING_BTB_FORMAL_MIRROR_READ
+      // The arrays equal the mirror: the update array's read, and each slot's
+      // lookup result against the reference over the mirror.
+      p_formal_update_read_matches_mirror : assert (update_set_raw == formal_update_read_q);
+      p_formal_hit_matches_reference : assert (o_hit == formal_hit);
+      if (o_hit[0]) begin
+        p_formal_slot1_fields_match_reference :
+        assert (o_compressed[0] == formal_compressed[0] && o_return[0] == formal_return[0] &&
+                o_target[0] == formal_target[0]);
+      end
+      if (o_hit[1]) begin
+        p_formal_slot2_fields_match_reference :
+        assert (o_compressed[1] == formal_compressed[1] && o_return[1] == formal_return[1] &&
+                o_target[1] == formal_target[1]);
+      end
+`endif
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (formal_past_valid) begin
+      // No hit for a read during reset or the sweep, the last sweep edge
+      // included.
+      if ($past(i_reset || sweep_active)) begin
+        p_formal_no_hit_after_reset_or_sweep : assert (o_hit == 2'b00);
+      end
+      cover (o_hit[0] && !$past(i_update || i_refresh));
+      cover (o_hit[1] && !slot2_image);
+      cover (o_hit[1] && slot2_image);
+      cover (c_valid && c_refresh);
+      cover (b_valid && b_refresh && !b_hit);
+      cover (b_valid && !b_accepted && c_valid && !c_refresh);
+      cover (b_valid && b_forward_q);
+      cover (b_valid && !b_refresh && !b_hit && &b_way_valid);
+    end
+  end
+`endif
+
+`ifdef BACKING_BTB_FORMAL_MIRROR_READ
+  assign update_set_read = formal_update_read_q;
+`else
+  assign update_set_read = update_set_raw;
 `endif
 
 endmodule : backing_btb
