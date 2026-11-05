@@ -110,13 +110,13 @@ and every payload bit during a stall. Addresses name aligned 32-byte sectors.
 Request identity q contains src 2, port_class 2, id 4, and epoch 1. Sources
 0 and 1 name harts, 2 names DMA, and 3 names prefetch. Classes 0, 1, 2, and 3
 name data, instruction fetch, page-table walk, and agent traffic. Hart data
-IDs are 0 through 7, fetch IDs are 0 and 1, and the walk ID is 0. DMA IDs
+IDs are 0 through 7, and fetch and walk IDs are 0 and 1. DMA IDs
 are opaque four-bit values; prefetch IDs are 0 through 3. Admission limits
 are the ingress's credits for DMA, eight in the cluster, and four prefetch
 requests. Admission arbitration is
 external to the endpoint slots.
 
-Home tid is six bits. For H harts, `completion_count(H)` is `11*H+12`: eleven
+Home tid is six bits. For H harts, `completion_count(H)` is `12*H+12`: twelve
 identities per hart, eight DMA credits and four prefetch identities.
 `fill_base(H)` equals this count, `put_base(H,F)` adds F fill controls, and
 `home_count(H,F)` adds two PutM controls per hart. H is 1 or 2. Home identities
@@ -312,12 +312,12 @@ source and use the cache-counter ABI.
 
 The hart uses source 0 and classes 0, 1 and 2 for data, instruction and walker
 requests. The data class has one request identity per L1D endpoint, IDs 0
-to `L1D_NUM_MSHR - 1`. The instruction class uses IDs 0 and 1 for two bridge
-slots; the walker class uses ID 0. Each IF slot saves its L1I MSHR ID separately
+to `L1D_NUM_MSHR - 1`. The instruction and walker classes each use IDs 0
+and 1 for two bridge slots. Each IF slot saves its L1I MSHR ID separately
 from its coherent identity. IF and PTW data and errors register at G, after the
 home has merged dirty probe data. Each slot completes C and U independently
-of its reader response and accepts another request only after U. The two IF
-slots share staged D/C arbiters and return at most one response per cycle.
+of its reader response and accepts another request only after U. Each class's
+two slots share staged D/C arbiters and return at most one response per cycle.
 Their G readiness uses the registered phase and full q match. The home admits
 at most one live request per q and returns that request's address in G.
 An assertion checks the address of every accepted grant.
@@ -351,7 +351,7 @@ Home stop clears its unaccepted selection. Accepted reads keep their tokens
 through physical completion. A local fatal transition cancels an unaccepted
 read.
 
-The home admits twenty-three requests with distinct identities: nineteen
+The home admits twenty-four requests with distinct identities: twenty
 hart and DMA requests, and four prefetches in four slots kept for them, so
 neither kind waits for the other's capacity. Eight engines
 share their image storage with the result credits. An engine hands its image
@@ -1038,19 +1038,20 @@ costs per kernel.
 
 ## The page-table walker port
 
-The hardware page-table walker (`ptw.sv`) reads cacheable DDR through
-`coherent_hart_cache.walk_bridge`. Each dependent 8-byte PTE read is a
-32-byte ReadOnce.PTW transaction. One walker serves both TLBs through a
-requester mux in `cpu_ooo`, where the data side wins, and one walk is in
-flight at a time. Roots and interior pointers outside cached DDR return an
+The hardware page-table walker (`ptw.sv`) reads cacheable DDR through the
+two bridge slots of `coherent_hart_cache.gen_walk`. Each dependent 8-byte PTE
+read is a 32-byte ReadOnce.PTW transaction. One walker serves both TLBs
+through a requester mux in `cpu_ooo`, where the data side wins, and one walk
+is in flight at a time. Roots and interior pointers outside cached DDR return an
 access fault before a line request. Walks only read: an access that needs a
 PTE's A or D bit set takes a page fault (Svade).
 
 The home probes L1D for every PTE read. Dirty resident data or an absorbed
 PutM overrides the home image, including when the home array returns after
-the probe. The bridge registers data and errors on G and keeps its identity
-through C and U. A dependent PTE request waits for that U before acceptance.
-Discarded walks consume their response while the bridge finishes C/U.
+the probe. A bridge slot registers data and errors on G and keeps its
+identity through C and U. A dependent PTE request takes an idle slot, so it
+waits for an earlier read's U only while both slots are busy. Discarded walks
+consume their response while the slot finishes C/U.
 The bridge has no preliminary L1D clean. Software can publish a
 child table with ordered stores and a parent pointer before SFENCE.VMA;
 a walk that observes the published pointer also observes its table stores.

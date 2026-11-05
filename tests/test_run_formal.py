@@ -322,7 +322,7 @@ FORMAL_TARGETS = [
             "coh_c_payload_prove",
             "coh_c_payload_wide_prove",
             "coh_arbiter_prove",
-            "coh_arbiter23_prove",
+            "coh_arbiter24_prove",
             "coh_arbiter_held_prove",
             "coh_reader_prove",
             "coh_reader_cover",
@@ -330,6 +330,8 @@ FORMAL_TARGETS = [
             "coh_reader_slot1_cover",
             "coh_ptw_reader_prove",
             "coh_ptw_reader_cover",
+            "coh_ptw_reader_slot1_prove",
+            "coh_ptw_reader_slot1_cover",
             "coh_reader_late_prove",
             "coh_ingress_prove",
             "coh_atomic_guard_prove",
@@ -1452,8 +1454,8 @@ SBY_TASKS = [
     ("coh_array_bmc", "Coherent array byte values and held responses."),
     ("coh_array_uram_bmc", "Coherent array byte values through registered RAM ports."),
     (
-        "coh_arbiter23_prove",
-        "Twenty-three-way held arbitration and circular selection equality.",
+        "coh_arbiter24_prove",
+        "Twenty-four-way held arbitration and circular selection equality.",
     ),
     ("coh_arbiter_prove", "Coherent arbitration preserves held payloads."),
     (
@@ -1479,6 +1481,14 @@ SBY_TASKS = [
         "PTW response at grant and identity ownership through release.",
     ),
     ("coh_ptw_reader_cover", "PTW response, errors, stalls and reset reachability."),
+    (
+        "coh_ptw_reader_slot1_prove",
+        "Second PTW identity responds at grant and survives through release.",
+    ),
+    (
+        "coh_ptw_reader_slot1_cover",
+        "Second PTW response and ownership tail reachability.",
+    ),
     ("coh_reader_late_prove", "Default reader response follows release."),
     ("coh_ingress_prove", "DMA identities survive through release."),
     ("coh_atomic_guard_prove", "Atomic protection covers retirement and release."),

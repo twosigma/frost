@@ -165,8 +165,7 @@ module coherence_line_bridge #(
       endcase
     end
   end
-  localparam bit ValidHart = SOURCE == 0 &&
-      ((PORT_CLASS == 1 && SLOT < 2) || (PORT_CLASS == 2 && SLOT == 0));
+  localparam bit ValidHart = SOURCE == 0 && (PORT_CLASS == 1 || PORT_CLASS == 2) && SLOT < 2;
   localparam bit ValidDma = SOURCE == 2 && PORT_CLASS == 3 && ID_BITS == 4 &&
       SLOT == 0 && !EARLY_RESPONSE;
   if (!(ValidHart || ValidDma)) begin : gen_invalid
