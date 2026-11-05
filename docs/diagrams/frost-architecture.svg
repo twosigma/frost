@@ -302,7 +302,7 @@
   <g id="l2-and-ddr" class="center">
     <rect x="64" y="1222" width="324" height="88" rx="12" class="memory"/>
     <text x="226" y="1258" class="heading">L2 home · 2 MiB</text>
-    <text x="226" y="1288" class="body">4-way · 64 B · URAM · 4 fills</text>
+    <text x="226" y="1288" class="body">4-way · 64 B · URAM · 8 fills</text>
     <path d="M 388 1266 H 438" class="memlink" marker-end="url(#memory-arrow)"/>
     <rect x="438" y="1222" width="324" height="88" rx="12" class="memory"/>
     <text x="600" y="1258" class="heading">512-bit AXI4 master</text>
