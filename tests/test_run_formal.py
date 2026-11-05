@@ -929,6 +929,12 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "slot2_prediction_capture.sby",
+        "A staged slot-2 candidate and its metadata survive stalls, are consumed "
+        "only with replay, and are cancelled by reset or recovery",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "c_ext_state_cofactor.sby",
         "Compressed-instruction buffer state matches reference handoff priority",
         tasks=("bmc",),

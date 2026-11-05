@@ -1870,7 +1870,9 @@ async def test_collapsed_fetch_lead_live_slot2_fallback_redirects_both_pcs(
     assert int(dut.pc_reg.value) == slot2_target
 
 
-async def _present_rt2_successor_slot2_candidate(dut: Any) -> tuple[int, int, int]:
+async def _present_rt2_successor_slot2_candidate(
+    dut: Any, *, call: bool = False, ret: bool = False
+) -> tuple[int, int, int]:
     """Put pc_reg one word past the BTB read, so slot 2 needs the rotated +2 copy."""
     successor_base = BASE_PC + 8
     slot2_pc = successor_base + 2
@@ -1881,6 +1883,8 @@ async def _present_rt2_successor_slot2_candidate(dut: Any) -> tuple[int, int, in
         pc=slot2_pc,
         target=slot2_target,
         compressed=True,
+        call=call,
+        ret=ret,
     )
     await _redirect_to(dut, BASE_PC)
 
@@ -1902,7 +1906,8 @@ async def _present_rt2_successor_slot2_candidate(dut: Any) -> tuple[int, int, in
     assert int(dut.pc_reg.value) == successor_base
     assert successor_base == early_lookup_base + 4
 
-    current_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_ADDIW)
+    slot2_instr = 0x8082 if ret else 0x9082 if call else COMPRESSED_ADDIW
+    current_word = _word(lo=COMPRESSED_NOP, hi=slot2_instr)
     _drive_fetch(
         dut,
         current_word=current_word,
@@ -1911,7 +1916,8 @@ async def _present_rt2_successor_slot2_candidate(dut: Any) -> tuple[int, int, in
     )
     await _settle()
 
-    return successor_base, slot2_pc, slot2_target
+    expected_target = int(dut.ras_checkpoint_top.value) if ret else slot2_target
+    return successor_base, slot2_pc, expected_target
 
 
 @cocotb.test()
@@ -1943,7 +1949,7 @@ async def test_slot2_rt2_successor_lookup_redirects(dut: Any) -> None:
 
 @cocotb.test()
 async def test_slot2_rt2_successor_lookup_stall_replay_is_safe(dut: Any) -> None:
-    """A stalled rotated-copy slot-2 hit is captured without taking its redirect."""
+    """A rotated-copy candidate redirects once when its captured packet is released."""
     await _setup_test(dut)
     (
         successor_base,
@@ -1951,9 +1957,7 @@ async def test_slot2_rt2_successor_lookup_stall_replay_is_safe(dut: Any) -> None
         slot2_target,
     ) = await _present_rt2_successor_slot2_candidate(dut)
 
-    # The first stall cycle still shows the rotated-copy result to the
-    # stall-ungated PC select, but it must not take the redirect or mark the
-    # packet taken.
+    # First-stall selection is available, but no redirect is consumed.
     _drive_pipeline_ctrl(dut, {"stall": True})
     dut.i_disable_branch_prediction.value = 0
     await _settle()
@@ -1975,18 +1979,200 @@ async def test_slot2_rt2_successor_lookup_stall_replay_is_safe(dut: Any) -> None
     assert int(dut.o_pc.value) != slot2_target
     assert int(dut.pc_reg.value) == successor_base
 
-    # The registered-stall replay presents the packet captured above and blocks
-    # a new prediction, so the unused rotated-copy result cannot reappear as
-    # stale taken metadata.
+    _drive_pipeline_ctrl(dut, {"stall": True, "stall_registered": True})
+    dut.i_instr_valid.value = 0
+    for _ in range(4):
+        await _advance_cycle(dut)
+        assert int(dut.pc_reg.value) == successor_base
+        assert not dut.slot2_prediction_used.value
+        assert not _read_if_packet(dut, slot2=True)["btb_predicted_taken"]
+
+    assert not bpc.btb_hit_2.value
     _drive_pipeline_ctrl(dut, {"stall_registered": True})
     await _settle()
 
     replay2 = _read_if_packet(dut, slot2=True)
     assert replay2["program_counter"] == slot2_pc
-    assert not replay2["btb_predicted_taken"]
+    assert replay2["btb_predicted_taken"]
     assert replay2["btb_predicted_target"] == slot2_target
     assert not bpc.o_slot2_prediction_used_for_pc.value
     assert not bpc.o_slot2_prediction_used.value
+    assert dut.slot2_replay_consumed.value
+    assert dut.slot2_prediction_used.value
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == slot2_target
+    assert int(dut.pc_reg.value) == slot2_target
+    assert dut.slot2_redirect_q.value
+    assert not dut.slot2_replay_consumed.value
+
+
+@cocotb.test()
+async def test_slot2_stalled_call_updates_ras_once(dut: Any) -> None:
+    """A captured typed call redirects on release and pushes one link."""
+    await _setup_test(dut)
+    _, slot2_pc, target = await _present_rt2_successor_slot2_candidate(dut, call=True)
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    dut.i_disable_branch_prediction.value = 0
+    await _advance_cycle(dut)
+    _drive_pipeline_ctrl(dut, {"stall": True, "stall_registered": True})
+    dut.i_instr_valid.value = 0
+    for _ in range(3):
+        await _advance_cycle(dut)
+        assert not dut.ras_push.value
+        assert int(dut.ras_checkpoint_valid_count.value) == 0
+    _drive_pipeline_ctrl(dut, {"stall_registered": True})
+    await _settle()
+    assert dut.ras_push.value
+    assert dut.slot2_replay_consumed.value
+    assert _read_if_packet(dut, slot2=True)["ras_checkpoint_valid_count"] == 0
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == target
+    _drive_pipeline_ctrl(dut, {})
+    dut.i_instr_valid.value = 1
+    for _ in range(3):
+        await _advance_cycle(dut)
+        assert int(dut.ras_checkpoint_valid_count.value) == 1
+        assert int(dut.ras_checkpoint_top.value) == slot2_pc + 2
+        assert not dut.ras_push.value
+
+
+@cocotb.test()
+async def test_slot2_stalled_return_preserves_ras_target(dut: Any) -> None:
+    """A saved return uses the captured stack target and pops exactly once."""
+    await _setup_test(dut)
+    call_pc = BASE_PC + 0x1004
+    await _train_btb(dut, pc=call_pc, target=BRANCH_TARGET, call=True)
+    await _present_typed_prediction(
+        dut, predecessor_pc=call_pc - 4, instruction=CALL_RA_PLUS4_INSTR
+    )
+    await _advance_cycle(dut)
+    await _advance_cycle(dut)
+    assert int(dut.ras_checkpoint_valid_count.value) == 1
+    assert int(dut.ras_checkpoint_top.value) == call_pc + 4
+    _, _, target = await _present_rt2_successor_slot2_candidate(dut, ret=True)
+    assert target != BRANCH_TARGET
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    dut.i_disable_branch_prediction.value = 0
+    await _advance_cycle(dut)
+    _drive_pipeline_ctrl(dut, {"stall": True, "stall_registered": True})
+    dut.i_instr_valid.value = 0
+    for _ in range(3):
+        await _advance_cycle(dut)
+        assert int(dut.ras_checkpoint_valid_count.value) == 1
+        assert not dut.ras_pop.value
+    _drive_pipeline_ctrl(dut, {"stall_registered": True})
+    await _settle()
+    packet = _read_if_packet(dut, slot2=True)
+    assert packet["btb_predicted_taken"]
+    assert packet["btb_predicted_target"] == target
+    assert packet["ras_checkpoint_valid_count"] == 1
+    assert dut.ras_pop.value
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == target
+    _drive_pipeline_ctrl(dut, {})
+    _drive_fetch(dut, current_word=NOP_INSTR, next_word=NOP_INSTR)
+    dut.i_instr_valid.value = 1
+    for _ in range(3):
+        await _advance_cycle(dut)
+        assert int(dut.ras_checkpoint_valid_count.value) == 0
+        assert not dut.ras_pop.value
+
+
+@cocotb.test()
+@cocotb.parametrize(compressed=[False, True])
+async def test_slot2_plus4_stall_replay(dut: Any, compressed: bool) -> None:
+    """Native and compressed slot-2 instructions keep the +4 candidate on replay."""
+    await _setup_test(dut)
+    slot2_pc = BASE_PC + 4
+    await _train_btb(dut, pc=slot2_pc, target=BRANCH_TARGET, compressed=compressed)
+    await _redirect_to(dut, BASE_PC)
+    _drive_fetch(
+        dut,
+        current_word=ADD_INSTR_A,
+        next_word=_word(lo=COMPRESSED_J, hi=COMPRESSED_NOP)
+        if compressed
+        else BRANCH_INSTR,
+        current_sb=_sideband(native_pairable_lo=True),
+        next_sb=_sideband(compressed_lo=compressed, compressed_hi=compressed),
+    )
+    dut.i_disable_branch_prediction.value = 0
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    await _settle()
+    assert dut.slot2_staged_prediction_used_for_pc_live.value
+    assert dut.slot2_plus4_candidate_valid.value
+    await _advance_cycle(dut)
+    _drive_pipeline_ctrl(dut, {"stall": True, "stall_registered": True})
+    dut.i_instr_valid.value = 0
+    for _ in range(3):
+        await _advance_cycle(dut)
+    _drive_pipeline_ctrl(dut, {"stall_registered": True})
+    await _settle()
+    packet = _read_if_packet(dut, slot2=True)
+    assert packet["program_counter"] == slot2_pc
+    assert packet["sel_compressed"] == compressed
+    assert packet["btb_predicted_taken"]
+    assert packet["btb_predicted_target"] == BRANCH_TARGET
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == BRANCH_TARGET
+    assert int(dut.pc_reg.value) == BRANCH_TARGET
+
+
+@cocotb.test()
+@cocotb.parametrize(
+    cancel=["reset", "flush", "pd", "branch", "trap", "mret", "fence", "disable"],
+    phase=["capture", "held", "release"],
+)
+async def test_slot2_stalled_candidate_cancellation(
+    dut: Any, cancel: str, phase: str
+) -> None:
+    """Recovery cancels a captured candidate; prediction disable blocks its use."""
+    await _setup_test(dut)
+    await _present_rt2_successor_slot2_candidate(dut)
+    dut.i_disable_branch_prediction.value = 0
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    if phase != "capture":
+        await _advance_cycle(dut)
+        _drive_pipeline_ctrl(dut, {"stall": True, "stall_registered": True})
+        await _advance_cycle(dut)
+        assert dut.u_slot2_prediction_capture.valid_q.value
+    controls = {"stall": phase != "release", "stall_registered": phase != "capture"}
+    _drive_pipeline_ctrl(dut, controls)
+    if cancel == "reset":
+        _drive_pipeline_ctrl(dut, dict(controls, reset=True))
+    elif cancel == "flush":
+        dut.i_frontend_state_flush.value = 1
+        _drive_pipeline_ctrl(dut, dict(controls, flush=True))
+    elif cancel == "pd":
+        dut.i_pd_redirect.value = 1
+        dut.i_pd_redirect_target.value = FENCE_TARGET
+    elif cancel == "branch":
+        _drive_from_ex(
+            dut, {"branch_taken": True, "branch_target_address": FENCE_TARGET}
+        )
+    elif cancel in ("trap", "mret"):
+        _drive_trap_ctrl(dut, {f"{cancel}_taken": True, "trap_target": FENCE_TARGET})
+    elif cancel == "fence":
+        dut.i_fence_i_flush.value = 1
+        dut.i_frontend_state_flush.value = 1
+        dut.i_fence_i_target.value = FENCE_TARGET
+    else:
+        dut.i_disable_branch_prediction.value = 1
+    await _settle()
+    assert not dut.slot2_replay_request.value
+    await _advance_cycle(dut)
+    if cancel != "disable":
+        assert not dut.u_slot2_prediction_capture.valid_q.value
+    _drive_pipeline_ctrl(dut, {"stall_registered": True})
+    dut.i_frontend_state_flush.value = 0
+    dut.i_pd_redirect.value = 0
+    dut.i_fence_i_flush.value = 0
+    _drive_from_ex(dut, {})
+    _drive_trap_ctrl(dut, {})
+    await _settle()
+    assert not dut.slot2_replay_consumed.value
+    assert not _read_if_packet(dut, slot2=True)["btb_predicted_taken"]
+    await _advance_cycle(dut)
+    assert not dut.u_slot2_prediction_capture.valid_q.value
 
 
 @cocotb.test()

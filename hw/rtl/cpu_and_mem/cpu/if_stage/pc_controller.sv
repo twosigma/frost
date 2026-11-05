@@ -2220,6 +2220,12 @@ module pc_controller #(
       p_formal_pc_reg_high_coverage_replica_exact :
       assert (o_pc_reg_high_for_coverage == o_pc_reg[1]);
       if (pending_prediction_valid) begin
+        p_formal_pending_crossing_replica_exact :
+        assert (pending_prediction_allow_cross_pc_mux_q == pending_prediction_allow_cross);
+        p_formal_pending_crossing_matches_pc :
+        assert (pending_prediction_allow_cross == pending_prediction_pc[1]);
+        p_formal_pending_relations_current_exact : assert (pending_rel_q == pending_rel_live);
+        p_formal_seq_reaches_current_exact : assert (seq_reaches_q == seq_reaches_pending_live);
         p_formal_pending_prediction_prev_pc_matches_capture :
         assert (pending_prediction_prev_pc ==
                 (pending_prediction_pc - riscv_pkg::PcIncrementCompressed));

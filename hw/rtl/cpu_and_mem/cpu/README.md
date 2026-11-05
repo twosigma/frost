@@ -420,6 +420,16 @@ which keeps the wide compares out of the PC loop. For a slot-2 redirect,
 `branch_prediction_controller` relates the stack top and each BTB candidate
 target to the saved PC before its late selects pick the target.
 
+### Stalled slot-2 predictions
+
+A validated staged slot-2 candidate is captured with its packet on the first
+stall edge, including its target, call/return type, and pending-PC relations.
+The BTB may read other rows during the stall. Releasing the saved packet uses
+the captured candidate once, redirects fetch, and marks that packet predicted
+taken. A held packet makes no RAS operation. Reset, flush, PD redirect,
+execute recovery, trap, xRET, and FENCE-class redirects cancel the candidate;
+prediction disable blocks its consumption.
+
 ### Served-window check and retries
 
 A provider can present a stale window, or one a word behind `pc_reg`.
@@ -479,7 +489,7 @@ A typed lookup reads the top of the stack before any operation in the same
 cycle. That is safe because no younger lookup's prediction survives a cycle
 in which PD takes a typed packet: registered slot-1 metadata implies the
 prediction holdoff, a pending-prediction handoff blocks prediction, a stall
-replay comes with the registered stall, a slot-2 prediction kills the
+replay blocks live lookup predictions, a slot-2 prediction kills the
 same-cycle slot-1 prediction, and a collapsed-lead packet carries its own
 lookup. if_stage asserts this, and branch_prediction_controller asserts that
 no operation is pending in a restore cycle, which would replace it, or in the

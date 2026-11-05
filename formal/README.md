@@ -92,6 +92,7 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | --- | --- |
 | `branch_prediction_alias` | The slot-1/slot-2 alias output computed from the base PC equals the generic computation under the fetch stage's base+2/base+4 wiring. Only this output is compared |
 | `branch_prediction_disable` | The prediction-use gates for both slots, slot 2's target select, and the metadata next state equal the reference equations, disabling prediction blocks both the live and the staged path, and the slot-2 targets' relations to the pending PC equal direct compares |
+| `slot2_prediction_capture` | A staged candidate and its payload share the first-stall capture edge and remain stable during the stall. Replay requests need a valid capture, consumption requires release, and reset or recovery cancels the capture. Assumes an initial reset; packet ownership is supplied by IF's replay input |
 | `btb_tag_compare` | Grouped BTB lookup and update tag compares equal full-width tag equality, for the 256-entry BTB and a 16-entry one, with arbitrary RAM outputs |
 | `c_ext_buffer_next` | The compressed-instruction buffer's next state equals the reference clear/capture/hold priority |
 | `c_ext_state_cofactor` | The same next state with the pending-prediction handoff split out equals the reference, and a handoff never keeps old-path buffer state |
@@ -119,17 +120,24 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `ras_checkpoint` | The return-address stack's outputs, next pointer, and count equal the reference equations, and so does every entry write: a push or swap writes its link address, a restore writes the saved top entry back, and nothing else changes |
 | `rvc_predecode` | The fill-time RV64C expansion and illegal flag equal the reference decompressor (`rvc_decompressor`) for all 65,536 16-bit parcels |
 
-`prediction_release` runs the real `pc_controller` and `c_ext_state`
-together. The harness replaces the PC-increment calculator with one whose PC
+`prediction_release` runs the real `pc_controller`, `c_ext_state`, and
+`slot2_prediction_capture` together. The harness replaces the PC-increment calculator with one whose PC
 outputs are unconstrained, which admits every real PC movement and more, and
 makes predictor requests arbitrary. The stand-in's next `pc_reg` is one of two
 unconstrained values, the NOP one when the NOP select is set, and its
 pending-PC relations are full-width compares of those values, which
 `pc_increment_relation` proves the real calculator matches. The harness likewise relates both slot-2 targets to
 the pending PC by direct compares, as `branch_prediction_disable` proves the
-predictor does. It assumes only a reset on the first cycle.
+predictor does. A staged candidate captures those relations with its target
+and the saved packet. Replay can redirect during registered stall, including
+release without a live response. Assertions check the saved packet PC and
+pending-PC relations throughout the held candidate's lifetime. Replay
+permission gates the capture outputs without changing its state. Derived
+invariants check the registered prediction metadata and the pending-PC
+relation and crossing replicas. Reset and recovery cancel the candidate.
+The harness assumes only a reset on the first cycle.
 `prediction_handoff` runs the same harness with the fetch stage's parameter
-setting. Both have `bmc`, `cover`, and ABC PDR `prove` tasks.
+setting. Both have `bmc`, `cover`, and SMT k-induction `prove` tasks.
 
 `prediction_metadata_tracker` models the registered predictor target, which
 may change while fetch runs and holds during a stall, and leaves the pending
