@@ -528,6 +528,56 @@ async def streaming_waits_for_its_pinned_way(dut: Any) -> None:
 
 
 @cocotb.test()
+async def streaming_waits_for_way_zero_beside_a_prefetch_fill(dut: Any) -> None:
+    """Check streaming stalls beside a prefetch while way zero is pinned."""
+    b = Home(dut)
+    await b.reset()
+    base = 0x80000000
+    stride = 4 * b.line
+    await b.submit(7, base, non_alloc=1)
+    held = await b.take_grant()
+    assert held[4] == b.expected(base) and not held[5]
+    assert b.allocations == [(base, 0)]
+
+    b.read_delay = 800
+    prefetched = base + stride
+    await b.prefetch(prefetched)
+    await b.fills_live(1)
+    assert b.reads_of(prefetched) == 1
+    assert b.allocations[-1][0] == prefetched and b.allocations[-1][1] != 0
+
+    waiting_address = base + 2 * stride
+    await b.submit(7, waiting_address, slot=1, non_alloc=1)
+    await b.tick(40)
+    assert not b.get("o_g_valid") and b.reads_of(waiting_address) == 0
+    assert int(dut.fill_live_q.value).bit_count() == 1
+
+    b.read_delay = 3
+    unrelated_address = base + b.line
+    await b.submit(7, unrelated_address, slot=2, non_alloc=1)
+    unrelated = await b.take_grant()
+    assert unrelated[3] == unrelated_address and not unrelated[5]
+    assert unrelated[4] == b.expected(unrelated_address)
+    await b.complete(unrelated)
+    assert b.reads_of(waiting_address) == 0
+
+    await b.complete(held)
+    waiting = await b.take_grant()
+    assert waiting[3] == waiting_address and not waiting[5]
+    assert waiting[4] == b.expected(waiting_address)
+    await b.complete(waiting)
+    assert int(dut.fill_live_q.value).bit_count() == 1
+    assert all(way == 0 for address, way in b.allocations if address != prefetched)
+
+    await b.tick(820)
+    assert not int(dut.fill_live_q.value)
+    before = len(b.allocations)
+    assert await b.read(prefetched, 7, non_alloc=1) == b.expected(prefetched)
+    assert b.reads_of(prefetched) == 1 and len(b.allocations) == before
+    assert not b.get("o_fatal")
+
+
+@cocotb.test()
 async def dirty_data_and_dma_masks(dut: Any) -> None:
     """Dirty private bytes reach the L2 before DMA reads or masked writes."""
     b = Home(dut)

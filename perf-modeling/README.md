@@ -22,8 +22,9 @@ This directory provides a **fast, cycle-approximate architectural performance mo
      - `SocTopModel` (`soc_top.sv`): `soc_axi_slave.sv` physical address decode (local BRAM/MMIO vs. DDR) and a swappable single-channel 512-bit AXI DDR controller (`SingleChannelDdrController`) modeled after `axi_behavioral_memory.sv`.
    - Connected via an explicit 6-bit-ID, 512-bit (64B) AXI4 interface (`SocTopPort`), enabling independent exploration of alternative memory controllers, interconnects, or multi-core fabrics without modifying the CPU core model.
    - The RTL's CPU caches use the coherent hierarchy: an MSI L1D with buffered
-     stores and probes, connected to the shared L2 coherence home, which has
-     four fills and no stream prefetcher (`L2_PREFETCH` has no effect on it).
+     stores and probes, connected to the shared L2 coherence home.
+     `L2_NUM_MSHR` sets its fill count, eight on X3, and `L2_PREFETCH` enables
+     data and instruction stream prefetching into the home.
      The model's caches are generic line caches with a stream prefetcher, so
      DDR forecasts need calibration against the coherent path.
 
