@@ -993,6 +993,8 @@ module coherence_l1d #(
           if (ep > 0) begin
             ld_prefetch_q[ep] <= operation_q == PrefetchOp;
             ld_line_q[ep] <= lookup_addr_q[ADDR_WIDTH-1:5];
+            // A speculative acceptance leaves an unrelated read slot here;
+            // every use of ld_read_q tests ld_prefetch_q.
             ld_read_q[ep] <= selected_read_q;
             ld_done_q[ep] <= 1'b0;
             ld_status_q[ep] <= coherence_pkg::Consumed;
@@ -1042,6 +1044,13 @@ module coherence_l1d #(
         end
       end
       if (grant_prefetch_q) p_prefetch_fill_isolation : assert (!read_fill);
+      // Grant service reads ld_read_q only through the captured flag, which
+      // matches the live endpoint's own flag.
+      if (operation_q == GrantOp && phase_q != Idle && grant_ep_q != '0)
+        p_grant_prefetch_flag : assert (live[grant_ep_q] &&
+            grant_prefetch_q == ld_prefetch_q[grant_ep_q]);
+      if (read_failure && grant_pick != '0)
+        p_failure_read_demand : assert (!ld_prefetch_q[grant_pick]);
       if (operation_q == PrefetchOp) p_prefetch_lookup_isolation : assert (!read_hit && !read_miss);
       if (active && phase_q == Acquire && operation_q == PrefetchOp) begin
         p_prefetch_acquire_guard : assert (prefetch_acquire_ok == prefetch_accept_ref);
