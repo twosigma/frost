@@ -1760,3 +1760,98 @@ async def fill_responses_install_from_each_arrival_phase(dut: Any) -> None:
         "invalidate_done",
     }
     assert expected <= arrivals
+
+
+@cocotb.test()
+async def fill_waiters_wake_once_when_the_install_is_accepted(dut: Any) -> None:
+    """Wake every seated reader on the edge after install acceptance, once."""
+    b = Home(dut)
+    await b.reset()
+    monitor = FillMonitor(b)
+    seats: list[list[int]] = [[int(s.value) for s in dut.fill_seats_q]]
+    parked = [int(dut.completions.parked_q.value)]
+
+    def observe() -> None:
+        seats.append([int(s.value) for s in dut.fill_seats_q])
+        parked.append(int(dut.completions.parked_q.value))
+
+    b.observers.append(observe)
+    base = 0x80000000
+    b.read_delay = 60
+    await b.submit(0, base, slot=0)
+    await b.tick(10)
+    # The same sector waits behind slot 0 and takes a seat; a DMA read of the
+    # other sector joins the fill at its tag decision.
+    await b.submit(0, base, slot=1)
+    if b.line == 64:
+        await b.submit(7, base + 32)
+    readers = 3 if b.line == 64 else 2
+    received = []
+    for _ in range(readers):
+        grant = await b.take_grant()
+        assert grant[4] == b.expected(grant[3]) and not grant[5]
+        received.append(grant[3])
+        await b.complete(grant)
+    assert sorted(received) == sorted(
+        [base, base] + ([base + 32] if b.line == 64 else [])
+    )
+    edges = [
+        (i, before, after) for i, (before, after) in enumerate(monitor.edges(0), 1)
+    ]
+    accepted = [
+        i
+        for i, before, after in edges
+        if (before[0], after[0]) == ("install", "install_wait")
+    ]
+    ready = [
+        i
+        for i, before, after in edges
+        if (before[0], after[0]) == ("install_wait", "ready")
+    ]
+    assert len(accepted) == 1 and len(ready) == 1
+    seated = seats[accepted[0]][0]
+    assert seated.bit_count() == readers
+    woken = [i for i in range(1, len(parked)) if parked[i - 1] & ~parked[i] & seated]
+    # Every waiter wakes on the edge after acceptance, before the install
+    # completes, and none is woken twice.
+    assert woken == [accepted[0] + 1]
+    assert parked[accepted[0]] & seated == seated
+    assert parked[woken[0]] & seated == 0
+    assert woken[0] < ready[0]
+    for i in range(accepted[0] + 1, len(parked)):
+        assert not ~parked[i - 1] & parked[i] & seated
+
+
+@cocotb.test()
+async def two_fills_install_in_one_set(dut: Any) -> None:
+    """Install two returned fills in one set on consecutive cycles."""
+    b = Home(dut)
+    await b.reset()
+    monitor = FillMonitor(b)
+    base = 0x80000000
+    stride = 4 * b.line
+    b.read_delay = 1000
+    addresses = [base, base + stride]
+    for slot, address in enumerate(addresses):
+        await b.submit(0, address, slot=slot)
+    for _ in range(100):
+        if len([r for r in b.responses if not r[5]]) == 2:
+            break
+        await b.tick()
+    else:
+        raise AssertionError("both fills did not reach memory")
+    b.responses = [(b.cycle, *r[1:]) for r in b.responses]
+    received = set()
+    for _ in addresses:
+        grant = await b.take_grant()
+        assert grant[4] == b.expected(grant[3]) and not grant[5]
+        received.add(grant[3])
+        await b.complete(grant)
+    assert received == set(addresses)
+    installing = ("install", "install_wait")
+    assert any(
+        all(state[0] in installing for state in sample[:2])
+        for sample in monitor.history
+    )
+    for address in addresses:
+        assert await b.read(address, 7) == b.expected(address)

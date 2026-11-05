@@ -389,8 +389,11 @@ unrestricted requests may allocate in any unpinned way.
 demand fill has a primary request and two read waiter seats; a prefetch's
 fill starts with none and takes up to three. Parked requests release their engine and
 image credit. A request waiting for a way or resource retries from completion
-metadata. Returned fills wake their waiters after installation. Waiters reenter
-array and probe service in sector order and sample the current resident bytes.
+metadata. A successful fill wakes its waiters on the cycle after the array
+accepts its installation update, and admits no waiters from then on. A waiter
+whose tag decision precedes the installation's completion finds the fill
+blocking its line and retries without parking. Waiters reenter array and probe
+service in sector order and sample the current resident bytes.
 A successful fill's way pin lasts until its final waiter takes a completion
 pin. A failed fill transfers its error to completion metadata and releases
 its control before the waiters dispatch in sector order.
