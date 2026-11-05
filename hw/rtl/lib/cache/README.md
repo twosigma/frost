@@ -338,6 +338,10 @@ probe replies. Grants and atomic writes take priority within that turn. A waitin
 can use the turn between hit-store installations. A selected
 local operation completes its bounded array service before P is accepted. Waiting for an operand, permission or retirement does not hold
 the probe port. A withdrawn local offer releases its turn after one edge.
+The array uses the highest matching valid way for hit state and modified-only
+data service, including a matching way in the replacement exclusion mask.
+A miss has no modified hit. Skip-on-hit suppresses hit data even for a
+modified-only request; a maintenance visit always reads its selected row.
 Read-slot payload writes pass through a one-record buffer. The buffer
 captures the payload and a slot mask each cycle. Reset qualifies the slot
 mask before allocation selects it. The mask identifies the allocated slot

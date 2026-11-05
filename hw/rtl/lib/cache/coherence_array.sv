@@ -113,7 +113,7 @@ module coherence_array #(
   wire init_bulk_clear = SimFastInit != 0 && sim_reset_seen_q && !i_rst && phase_q == Init;
 `endif
 
-  logic hit;
+  logic hit, hit_modified;
   logic select_valid;
   logic [PlruBits-1:0] select_plru;
   logic [WayBits-1:0] selected;
@@ -234,9 +234,15 @@ module coherence_array #(
     end
   end
 
-  assign data_raddr = (RowBits'(selected) << SetBits) | RowBits'(set_q);
-  assign select_data = visit_q || !((hit && skip_data_q) ||
-      (modified_data_q && (!hit || tag_rdata[selected][TagBits+:2] != 2'b11)));
+  assign data_raddr  = (RowBits'(selected) << SetBits) | RowBits'(set_q);
+  assign select_data = visit_q || !((hit && skip_data_q) || (modified_data_q && !hit_modified));
+`ifdef FORMAL
+  always_comb begin
+    p_data_select_exact :
+    assert (select_data == (visit_q || !((hit && skip_data_q) ||
+        (modified_data_q && (!hit || tag_rdata[selected][TagBits+:2] != 2'b11)))));
+  end
+`endif
   assign data_waddr = (RowBits'(i_update_way) << SetBits) |
       RowBits'(i_update_addr[OffsetBits+:SetBits]);
   sdp_ram_byte_en #(
@@ -265,12 +271,14 @@ module coherence_array #(
   always_comb begin
     selected = victim(select_plru, ~exclude_q);
     hit = 1'b0;
+    hit_modified = 1'b0;
     for (int way = WAYS - 1; way >= 0; way--) begin
       if (tag_rdata[way][TagBits+:2] == 0 && !exclude_q[way]) selected = WayBits'(way);
     end
     for (int way = 0; way < WAYS; way++) begin
       if (tag_rdata[way][TagBits+:2] != 0 && tag_rdata[way][TagBits-1:0] == tag_q) begin
         hit = 1'b1;
+        hit_modified = tag_rdata[way][TagBits+:2] == 2'b11;
         selected = WayBits'(way);
       end
     end

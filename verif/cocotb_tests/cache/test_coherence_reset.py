@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check metadata reset, replacement touches and preservation of row data."""
+"""Check metadata reset, replacement touches and conditional row-data service."""
 
 import os
 from typing import Any
@@ -52,11 +52,11 @@ class ResetArray:
         await self.drive(i_clk=1)
         await self.drive(i_clk=0)
 
-    async def wait(self, name: str) -> None:
-        """Bound service latency."""
-        for _ in range(32):
+    async def wait(self, name: str) -> int:
+        """Return the bounded cycle count until an output asserts."""
+        for cycle in range(32):
             if self.get(name):
-                return
+                return cycle
             await self.tick()
         raise AssertionError(f"{name} did not assert")
 
@@ -80,13 +80,13 @@ class ResetArray:
         assert self.get("o_req_ready") and self.get("o_update_ready")
 
     async def update(
-        self, address: int, way: int, data: int, drain: bool = True
+        self, address: int, way: int, data: int, drain: bool = True, state: int = 3
     ) -> None:
-        """Install a complete Modified row without touching replacement state."""
+        """Write a complete row without touching replacement state."""
         fields = dict(
             i_update_addr=address,
             i_update_way=way,
-            i_update_state=3,
+            i_update_state=state,
             i_update_mask=(1 << self.line) - 1,
             i_update_data=data,
         )
@@ -110,6 +110,10 @@ class ResetArray:
         claim: int = 0,
         skip: bool = False,
         hold: int = 0,
+        modified: bool = False,
+        data_valid: bool | None = None,
+        available: bool | None = None,
+        latency: int | None = None,
     ) -> tuple[int, int, int, int, int]:
         """Read one selected tag, optionally as a private maintenance visit."""
         fields = dict(i_req_addr=address, i_resp_ready=int(not hold))
@@ -121,13 +125,16 @@ class ResetArray:
                 i_req_visit=int(visit is not None),
                 i_req_way=visit or 0,
                 i_req_skip_data_on_hit=int(skip),
+                i_req_data_if_modified=int(modified),
             )
         await self.drive(**fields)
         await self.wait("o_req_ready")
         await self.drive(i_req_valid=1)
         await self.tick()
         await self.drive(i_req_valid=0)
-        await self.wait("o_resp_valid")
+        elapsed = await self.wait("o_resp_valid")
+        if latency is not None:
+            assert elapsed == latency, (elapsed, latency)
         result = (
             self.get("o_resp_hit"),
             self.get("o_resp_way"),
@@ -135,11 +142,31 @@ class ResetArray:
             self.get("o_resp_state"),
         )
         payload = self.get("o_resp_tags" if self.home else "o_resp_data")
+        captured_available = self.get("o_resp_available")
+        valid = None if self.home else self.get("o_resp_data_valid")
+        if data_valid is not None:
+            assert valid == int(data_valid)
+        if available is not None:
+            assert captured_available == int(available)
         for _ in range(hold):
             await self.tick()
             assert self.get("o_resp_valid")
-            assert self.get("o_resp_way") == result[1]
+            assert (
+                tuple(
+                    self.get(name)
+                    for name in (
+                        "o_resp_hit",
+                        "o_resp_way",
+                        "o_resp_addr",
+                        "o_resp_state",
+                    )
+                )
+                == result
+            )
+            assert self.get("o_resp_available") == captured_available
             assert self.get("o_resp_tags" if self.home else "o_resp_data") == payload
+            if not self.home:
+                assert self.get("o_resp_data_valid") == valid
         await self.drive(i_resp_ready=1)
         await self.tick()
         return (*result, payload)
@@ -238,3 +265,74 @@ async def hit_touches_precede_following_lookups(dut: Any) -> None:
         assert (hit, selected) == (0, victim)
         hit, selected, _, _, _ = await b.lookup(b.line)
         assert (hit, selected) == (0, 0)
+
+
+@cocotb.test()
+async def data_selection_uses_highest_matching_way(dut: Any) -> None:
+    """Check duplicate tags, modified-only reads, skip flags and visit priority."""
+    b = ResetArray(dut)
+    if b.home:
+        return
+    await b.reset()
+    address = b.sets * b.line
+    values = [int.from_bytes(bytes([way + 1]) * b.line, "little") for way in range(4)]
+    tag_latency, data_latency = (3, 6) if b.ultra else (1, 2)
+    for way in range(4):
+        await b.update(address, way, values[way], state=0)
+    for lower, higher in ((3, 1), (1, 3), (3, 3), (3, 0), (0, 0)):
+        await b.update(address, 0, values[0], state=lower)
+        await b.update(address, 3, values[3], state=higher)
+        states = [lower, 0, 0, higher]
+        for miss in (False, True):
+            request_address = address * (3 if miss else 1)
+            matched = not miss and bool(lower or higher)
+            hit_way = 3 if higher else 0
+            hit_modified = matched and states[hit_way] == 3
+            for skip, modified in (
+                (False, False),
+                (True, False),
+                (False, True),
+                (True, True),
+            ):
+                for visit in (None, 0, 3):
+                    expected_data = visit is not None or (
+                        not (matched and skip) and (not modified or hit_modified)
+                    )
+                    prior = b.get("o_resp_data")
+                    # Exclusions affect replacement; a matching excluded way wins.
+                    hit, way, returned_address, state, payload = await b.lookup(
+                        request_address,
+                        exclude=8,
+                        visit=visit,
+                        skip=skip,
+                        modified=modified,
+                        hold=2,
+                        data_valid=expected_data,
+                        available=True,
+                        latency=tag_latency + (data_latency if expected_data else 0),
+                    )
+                    assert hit == int(matched and visit is None)
+                    if visit is not None:
+                        assert way == visit
+                    elif matched:
+                        assert way == hit_way
+                    assert state == states[way]
+                    assert returned_address == address
+                    assert payload == (values[way] if expected_data else prior)
+    addresses = [(way + 1) * address for way in range(4)]
+    for way in range(4):
+        await b.update(addresses[way], way, values[way])
+    for skip, modified in ((False, False), (True, False), (False, True), (True, True)):
+        prior = b.get("o_resp_data")
+        hit, way, returned_address, state, payload = await b.lookup(
+            7 * address,
+            skip=skip,
+            modified=modified,
+            hold=2,
+            data_valid=not modified,
+            available=True,
+            latency=tag_latency + (0 if modified else data_latency),
+        )
+        assert hit == 0 and state == 3
+        assert returned_address == addresses[way]
+        assert payload == (prior if modified else values[way])
