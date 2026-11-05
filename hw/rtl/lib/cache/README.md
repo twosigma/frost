@@ -286,7 +286,8 @@ with and without allocation. The allocation pulse selects the outcome.
 Lookup history and wait flags also compute their updates with and without
 allocation. Allocation clears lookup history and, with multiple request
 endpoints, the wait flag. These clears take priority over lookup and wait
-attachment updates on the same edge.
+attachment updates on the same edge. The attachment endpoint and release flag
+capture independently of this clear.
 
 `coherence_read_stream` tracks one ascending stream from CPU permission
 lookups. Three adjacent ordinary load misses confirm the stream. Before
@@ -338,8 +339,9 @@ can use the turn between hit-store installations. A selected
 local operation completes its bounded array service before P is accepted. Waiting for an operand, permission or retirement does not hold
 the probe port. A withdrawn local offer releases its turn after one edge.
 Read-slot payload writes pass through a one-record buffer. The buffer
-captures the payload and a slot mask each cycle. The mask identifies the
-allocated slot and is zero without an allocation. It qualifies forwarding
+captures the payload and a slot mask each cycle. Reset qualifies the slot
+mask before allocation selects it. The mask identifies the allocated slot
+and is zero without an allocation. It qualifies forwarding
 and writes to the slot storage. The forwarding mux
 makes each allocation visible on the allocation edge. Each slot keeps its
 allocated payload until reset or another allocation to that slot.

@@ -174,7 +174,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_read_payload.sby",
-        "Buffered coherent read payloads equal allocation-only storage.",
+        "Buffered coherent read payloads and exports equal independent reference storage.",
         tasks=("coh_read_payload_prove", "coh_read_payload64_prove"),
     ),
     FormalTarget(
