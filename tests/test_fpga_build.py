@@ -1477,9 +1477,9 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert "cpu_and_mem/cpu/if_stage/fetch_redirect.sv" in if_stage_files
     assert "o_fetch_cached_retarget <=" in if_stage
     assert (
-        "slot2_prediction_used_for_pc || live_prediction_emits_with_output ||"
-        in if_stage
+        "(fetch_cached_retarget_redirect || slot2_prediction_used_for_pc ||" in if_stage
     )
+    assert "live_prediction_emits_with_output || window_resteer_pc_reg)) ||" in if_stage
     assert (
         "assign o_fetch_live_claim = i_instr_valid && !sel_nop && "
         "!if_stage_stall_registered;" in if_stage
