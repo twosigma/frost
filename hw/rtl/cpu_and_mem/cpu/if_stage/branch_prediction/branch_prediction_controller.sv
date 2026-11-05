@@ -131,9 +131,10 @@ module branch_prediction_controller #(
     input logic [riscv_pkg::XLEN-1:0] i_btb_late_update_pc,
     input logic                       i_btb_late_update_taken,
 
-    // Return address stack operation for the packet IF handed PD in the cycle
-    // before, registered by IF: a push for a call, a pop for a return, both
-    // for a coroutine swap. The stack outputs include it at once.
+    // Return address stack operation, registered by IF, for the packet IF
+    // handed PD in the cycle before or for PD's backing BTB redirect in the
+    // cycle before: a push for a call, a pop for a return, both for a
+    // coroutine swap. The stack outputs include it at once.
     input logic                       i_ras_push,
     input logic                       i_ras_pop,
     input logic [riscv_pkg::XLEN-1:0] i_ras_push_address,

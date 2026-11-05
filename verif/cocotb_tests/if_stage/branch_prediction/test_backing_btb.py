@@ -269,8 +269,8 @@ async def test_cross_region_target_invalidates(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_not_taken_counter_and_typed_entries_do_not_hit(dut: Any) -> None:
-    """Only entries predicting taken that are neither calls nor returns hit."""
+async def test_taken_counter_qualifies_hits_of_every_type(dut: Any) -> None:
+    """A hit predicts taken; calls and returns hit like other jumps."""
     await _setup(dut)
     await _update(dut, PC_A, TARGET_A)
     await _update(dut, PC_A, TARGET_A, taken=False)
@@ -280,11 +280,11 @@ async def test_not_taken_counter_and_typed_entries_do_not_hit(dut: Any) -> None:
     hit, _, _ = await _lookup(dut, PC_A)
     assert hit[0]
     await _update(dut, PC_A + 8, TARGET_A, call=True)
-    await _update(dut, PC_A + 12, TARGET_A, ret=True)
-    hit, _, _ = await _lookup(dut, PC_A + 8)
-    assert not hit[0]
-    hit, _, _ = await _lookup(dut, PC_A + 12)
-    assert not hit[0]
+    await _update(dut, PC_A + 12, TARGET_B, ret=True)
+    hit, _, target = await _lookup(dut, PC_A + 8)
+    assert hit[0] and target[0] == _low(dut, TARGET_A)
+    hit, _, target = await _lookup(dut, PC_A + 12)
+    assert hit[0] and target[0] == _low(dut, TARGET_B)
 
 
 @cocotb.test()

@@ -19,7 +19,9 @@
  * BTB, 1024 entries in two ways by default (four ways for measurement). It
  * is trained by every BTB update and looked up for the packet IF serves. PD
  * turns a taken hit on a JAL or JALR that fast prediction did not take into
- * a PD redirect (hw/rtl/cpu_and_mem/cpu/README.md, "Backing BTB").
+ * a PD redirect, with the return address stack operation that the
+ * instruction's own encoding names (hw/rtl/cpu_and_mem/cpu/README.md,
+ * "Backing BTB").
  *
  * Sets are indexed by PC word bits, like the fast BTB. An entry's tag holds
  * the PC bits above the index, and its payload holds PC[1] with the target,
@@ -64,9 +66,8 @@ module backing_btb #(
     // Slot 1's PC and size in the response cycle. Slot 2 follows slot 1.
     input logic [XLEN-1:0] i_packet_pc,
     input logic i_packet_compressed,
-    // Per slot (index 0 is slot 1): a hit predicting taken on an entry that is
-    // neither a call nor a return, the size the entry was trained with, and
-    // the stored target bits [TARGET_BITS-1:1].
+    // Per slot (index 0 is slot 1): a hit predicting taken, the size the
+    // entry was trained with, and the stored target bits [TARGET_BITS-1:1].
     output logic [1:0] o_hit,
     output logic [1:0] o_compressed,
     output logic [1:0][TARGET_BITS-2:0] o_target,
@@ -365,8 +366,7 @@ module backing_btb #(
       assign payload = payload_rows[image][way*PayloadEntryBits+:PayloadEntryBits];
       assign upper_match[image][way] = tag.valid && (tag.upper == i_packet_pc[XLEN-1:IndexBits+2]);
       assign entry_halfword[image][way] = payload.halfword;
-      assign entry_usable[image][way] = payload.counter[1] && !payload.is_call &&
-          !payload.is_return;
+      assign entry_usable[image][way] = payload.counter[1];
       assign entry_compressed[image][way] = payload.compressed;
       assign entry_target[image][way] = payload.target;
     end

@@ -117,7 +117,7 @@ cases, then the sequential PC.
 |-----------|------|----------|------------|
 | BTB | 256 entries, direct-mapped, 2-bit counters | Target and direction of conditional branches, JALs and JALRs; an entry is typed as a call, a return, or both | Mispredicted conditional branches, JALs and JALRs; correctly predicted conditional branches at commit |
 | Backing BTB | 1024 entries, two-way set-associative, 2-bit counters | Target of a JAL or JALR the BTB did not predict taken, through a PD redirect | The same updates as the BTB |
-| Return address stack | 8 entries | The target of a BTB hit typed as a return (`jalr x0, 0(ra)`, `c.jr ra`) or a coroutine swap (`jalr t0, 0(ra)`) | IF, when it hands PD a packet predicted from a typed entry: a call (JAL or JALR writing `ra` or `t0`) pushes, a return pops, a swap replaces the top; recovery restores it |
+| Return address stack | 8 entries | The target of a BTB hit typed as a return (`jalr x0, 0(ra)`, `c.jr ra`) or a coroutine swap (`jalr t0, 0(ra)`), and of a backing BTB redirect for one | IF, when it hands PD a packet predicted from a typed entry, and for a backing BTB redirect: a call (JAL or JALR writing `ra` or `t0`) pushes, a return pops, a swap replaces the top; recovery restores it |
 | Bimodal direction predictor | 1024 2-bit counters | Direction of slot-1 conditional branches without a taken BTB prediction or a tagged match | Each conditional branch at commit |
 | Tagged direction predictor | Two tables of 1024 entries, hashed with 16 and 64 bits of path history; 9-bit tags, 3-bit counters | Direction of slot-1 conditional branches whose lookup matches a tag, either way | Each conditional branch at commit, at the entries its lookup read |
 
@@ -144,8 +144,8 @@ misses both the BTB and the backing BTB mispredicts once; training at commit
 makes its next execution hit.
 
 PD can change the direction fetch followed for a slot-1 conditional branch,
-and redirects a JAL or JALR that the BTB did not predict taken to the target
-the backing BTB holds for it (see [Backing BTB](#backing-btb)).
+and redirects a JAL or JALR that the BTB did not predict taken when the
+backing BTB holds it (see [Backing BTB](#backing-btb)).
 IF reads two direction predictors at the fetch PC and passes their
 directions along with the branch. A tagged direction, when the branch's lookup
 matches a tag, is used either way; otherwise the bimodal direction can only
@@ -209,14 +209,18 @@ with the packet's PC, so a packet whose set was not read gets no backing hit,
 and neither does a slot 2 in the word after the last set. IF passes PD each
 slot's hit, size, and target, kept across stall replay like the packet. PD
 registers a candidate for a slot-1 or slot-2 JAL or JALR whose backing entry
-predicts taken, has the instruction's size, and is neither a call nor a
-return, and that is not a call or a return by the return address stack's
-rules either. When the slot's BTB prediction was not taken, the candidate
-fires the PD redirect, which costs the PD redirect's two bubbles instead of
-a misprediction recovery, and ID gives the instruction the prediction. The
-ROB checks a JAL's target at allocation, and the branch unit a JALR's at
-execution, as for any prediction. Calls and returns stay with the BTB, whose
-typed entries operate the return address stack. A build that disables branch
+predicts taken and has the instruction's size. When the slot's BTB
+prediction was not taken, the candidate fires the PD redirect, which costs
+the PD redirect's two bubbles instead of a misprediction recovery, and ID
+gives the instruction the prediction. The ROB checks a JAL's target at
+allocation, and the branch unit a JALR's at execution, as for any
+prediction. The instruction's own encoding, by the rules recovery uses,
+names its return address stack operation: a call pushes its link address,
+a return pops, and a coroutine swap does both. A return's target is the top
+entry of the packet's recovery point while the stack holds an entry, and
+the backing BTB's target otherwise. IF performs the operation once, in the
+redirect's first cycle (see [Return address stack
+recovery](#return-address-stack-recovery)). A build that disables branch
 prediction gets no backing redirects.
 
 ### Two-wide fetch and dispatch
@@ -431,17 +435,24 @@ prediction.
 ### Return address stack recovery
 
 The stack moves only when PD takes a packet whose used prediction came from a
-typed BTB entry: a packet squashed in IF, dropped by a flush or a PD redirect,
-or held by a stall never pushes or pops, and a stall replay pushes or pops
-once. At most one packet of a bundle can, because an instruction predicted
-taken ends the bundle. The recovery point that packet and its bundle partner
-carry is the stack state before their own operation: the top-of-stack
-pointer, the valid count, and the top entry. Restoring it keeps every older
-call pushed and every older return popped, and recovery then replays the
-mispredicted instruction's own push or pop. IF registers each operation, so
-the stack sees it the cycle after PD takes the packet and stores it on that
-cycle's edge; meanwhile the stack's outputs apply it to the stored state, so
-lookups and recovery points from that cycle on include it.
+typed BTB entry, or when PD redirects a call or return for the backing BTB: a
+packet squashed in IF, dropped by a flush or a PD redirect, or held by a
+stall never pushes or pops, and a stall replay pushes or pops once. At most
+one packet of a bundle can, because an instruction predicted taken ends the
+bundle. The recovery point that packet and its bundle partner carry is the
+stack state before their own operation: the top-of-stack pointer, the valid
+count, and the top entry. Restoring it keeps every older call pushed and
+every older return popped, and recovery then replays the mispredicted
+instruction's own push or pop. IF registers each operation, so the stack
+sees it the cycle after PD takes the packet and stores it on that cycle's
+edge; meanwhile the stack's outputs apply it to the stored state, so lookups
+and recovery points from that cycle on include it. A backing BTB redirect's
+operation takes the same registers in the redirect's first cycle, in which
+IF accepts no packet, so the stack sees it one cycle later than a typed
+BTB prediction's; the packets in IF and PD in the meantime are wrong-path
+ones that the redirect drops. The operation happens once even when a stall
+holds the redirect, and a flush in that first cycle drops it; a later flush
+that squashes the instruction leaves its recovery restore to undo it.
 
 The restore also writes the recovery point's top entry back. A wrong path
 that pops and then pushes overwrites that entry: a mispredicted branch just

@@ -405,6 +405,9 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pd_redirect.value = 0
     dut.i_pd_redirect_taken.value = 1
     dut.i_pd_redirect_target.value = 0
+    dut.i_pd_redirect_ras_push.value = 0
+    dut.i_pd_redirect_ras_pop.value = 0
+    dut.i_pd_redirect_ras_link.value = 0
     # Tagged prediction is disabled and its training port is idle.
     dut.i_tage_hist.value = 0
     dut.i_tage_train_valid.value = 0
@@ -953,6 +956,50 @@ async def test_squashed_typed_packet_leaves_the_stack_alone(dut: Any) -> None:
         _drive_pipeline_ctrl(dut, {})
         await _settle()
         assert int(bpc.o_ras_checkpoint_valid_count.value) == 0, squash
+
+
+@cocotb.test()
+async def test_pd_redirect_stack_operation_happens_once(dut: Any) -> None:
+    """A PD redirect's push or pop happens once, across a held redirect.
+
+    A stall holds the redirect, and the operation still happens only in its
+    first cycle; a flush drops it.
+    """
+    await _setup_test(dut)
+    bpc = dut.branch_prediction_controller_inst
+    link = BASE_PC + 0x204
+
+    async def redirect(
+        *, push: bool, pop: bool, cycles: int, flush: bool = False
+    ) -> None:
+        dut.i_pd_redirect.value = 1
+        dut.i_pd_redirect_target.value = BASE_PC + 0x400
+        dut.i_pd_redirect_ras_push.value = int(push)
+        dut.i_pd_redirect_ras_pop.value = int(pop)
+        dut.i_pd_redirect_ras_link.value = link
+        for cycle in range(cycles):
+            last = cycle == cycles - 1
+            _drive_pipeline_ctrl(
+                dut,
+                {"stall": not last, "stall_registered": cycle > 0, "flush": flush},
+            )
+            await _advance_cycle(dut)
+        dut.i_pd_redirect.value = 0
+        dut.i_pd_redirect_ras_push.value = 0
+        dut.i_pd_redirect_ras_pop.value = 0
+        _drive_pipeline_ctrl(dut, {})
+        await _advance_cycle(dut)
+        await _advance_cycle(dut)
+
+    await redirect(push=True, pop=False, cycles=3)
+    assert int(bpc.o_ras_checkpoint_valid_count.value) == 1
+    assert int(bpc.ras_inst.o_top.value) == link
+
+    await redirect(push=True, pop=False, cycles=1, flush=True)
+    assert int(bpc.o_ras_checkpoint_valid_count.value) == 1
+
+    await redirect(push=False, pop=True, cycles=2)
+    assert int(bpc.o_ras_checkpoint_valid_count.value) == 0
 
 
 @cocotb.test()

@@ -1410,22 +1410,81 @@ async def test_backing_btb_redirect_vetoes(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_backing_btb_never_redirects_calls_or_returns(dut: Any) -> None:
-    """A linking jump or a JALR from x1 takes no backing redirect, whatever its entry."""
+async def test_backing_btb_calls_and_returns_operate_the_stack(dut: Any) -> None:
+    """A call pushes its link, a return pops and targets the stack's top."""
     await _setup_test(dut)
     pc = 0x8000_0200
     target = 0x8000_0F40
-    for instruction in (
-        _pack_jal(imm=0x40, rd=1),
-        _pack_jal(imm=0x40, rd=5),
-        _pack_i(imm=0, rs1=1, funct3=0, rd=0, opcode=OPC_JALR),
-        _pack_i(imm=0, rs1=1, funct3=0, rd=5, opcode=OPC_JALR),
-        _pack_i(imm=0, rs1=6, funct3=0, rd=1, opcode=OPC_JALR),
-    ):
-        _drive_if_packet(dut, _packet(pc, instruction))
+    top = 0x8000_1234
+    jal_ra = _pack_jal(imm=0x40, rd=1)
+    ret = _pack_i(imm=0, rs1=1, funct3=0, rd=0, opcode=OPC_JALR)
+    swap = _pack_i(imm=0, rs1=1, funct3=0, rd=5, opcode=OPC_JALR)
+    jalr_ra_offset = _pack_i(imm=8, rs1=1, funct3=0, rd=0, opcode=OPC_JALR)
+    cases = [
+        # instruction, stack entries, expected target, push, pop
+        (jal_ra, 2, target, True, False),
+        (ret, 2, top, False, True),
+        (ret, 0, target, False, True),
+        (swap, 1, top, True, True),
+        (jalr_ra_offset, 2, target, False, False),
+    ]
+    # A return-shaped JALR with a nonzero funct3 is not a jump at all.
+    for funct3 in (1, 4):
+        illegal = _pack_i(imm=0, rs1=1, funct3=funct3, rd=0, opcode=OPC_JALR)
+        _drive_if_packet(dut, _packet(pc, illegal, ras_checkpoint_valid_count=2))
         _drive_backing(dut, 0, target=target)
         redirect, _, _, _ = await _backing_redirect(dut)
-        assert not redirect, hex(instruction)
+        assert not redirect
+        assert not bool(dut.o_pd_redirect_ras_pop.value)
+    for instruction, entries, expected, push, pop in cases:
+        _drive_if_packet(
+            dut,
+            _packet(
+                pc,
+                instruction,
+                ras_checkpoint_valid_count=entries,
+                ras_checkpoint_top=top,
+            ),
+        )
+        _drive_backing(dut, 0, target=target)
+        await _advance_cycle(dut)
+        assert bool(dut.o_pd_redirect.value), hex(instruction)
+        assert int(dut.o_pd_redirect_target.value) == expected, hex(instruction)
+        assert bool(dut.o_pd_redirect_ras_push.value) is push, hex(instruction)
+        assert bool(dut.o_pd_redirect_ras_pop.value) is pop, hex(instruction)
+        if push:
+            assert int(dut.o_pd_redirect_ras_link.value) == pc + 4
+        _clear_inputs(dut)
+        await _advance_cycle(dut)
+        assert not bool(dut.o_pd_redirect_ras_push.value)
+        assert not bool(dut.o_pd_redirect_ras_pop.value)
+
+
+@cocotb.test()
+async def test_backing_btb_slot2_call_links_after_slot2(dut: Any) -> None:
+    """A slot-2 call pushes the address after slot 2."""
+    await _setup_test(dut)
+    pc = 0x8000_0200
+    target = 0x8000_0F40
+    addi = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
+    _drive_if_packet(dut, _packet(pc, addi))
+    _drive_if_packet(dut, _packet(pc + 4, _pack_jal(imm=0x40, rd=1)), slot2=True)
+    _drive_backing(dut, 1, target=target)
+    await _advance_cycle(dut)
+    assert bool(dut.o_pd_redirect.value) and bool(dut.o_pd_redirect_slot2.value)
+    assert bool(dut.o_pd_redirect_ras_push.value)
+    assert not bool(dut.o_pd_redirect_ras_pop.value)
+    assert int(dut.o_pd_redirect_ras_link.value) == pc + 8
+    _clear_inputs(dut)
+    await _advance_cycle(dut)
+
+    # Nor is a slot-2 JALR with a nonzero funct3.
+    illegal = _pack_i(imm=0, rs1=6, funct3=2, rd=0, opcode=OPC_JALR)
+    _drive_if_packet(dut, _packet(pc, addi))
+    _drive_if_packet(dut, _packet(pc + 4, illegal), slot2=True)
+    _drive_backing(dut, 1, target=target)
+    redirect, _, _, _ = await _backing_redirect(dut)
+    assert not redirect
 
 
 @cocotb.test()

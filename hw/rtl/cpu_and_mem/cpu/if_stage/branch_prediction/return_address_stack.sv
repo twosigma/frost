@@ -23,15 +23,17 @@
  *
  * branch_prediction_controller reads the top entry as the target of a BTB hit
  * typed as a return, and IF drives the operations for the packets PD takes
- * whose used prediction came from a typed entry:
+ * whose used prediction came from a typed entry, and for the calls and
+ * returns PD redirects for the backing BTB:
  *
  *   push       a call: write the link address above the top
  *   pop        a return: drop the top entry
  *   push+pop   a coroutine swap: replace the top entry
  *
  * A pop or swap on an empty stack changes nothing. IF presents a registered
- * operation one cycle after PD accepts the packet. Outputs include that
- * pending operation, providing the recovery point for this cycle's packet.
+ * operation one cycle after PD accepts the packet, or after PD's redirect.
+ * Outputs include that pending operation, providing the recovery point for
+ * this cycle's packet.
  * The edge stores it; its entry write occurs even if reset clears the stack.
  *
  * Recovery restores a packet's pointer, count, and top entry, then applies

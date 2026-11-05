@@ -121,6 +121,11 @@ module if_stage #(
     input logic i_pd_redirect,
     input logic i_pd_redirect_taken,
     input logic [XLEN-1:0] i_pd_redirect_target,
+    // A PD redirect's return address stack operation, for a backing BTB
+    // prediction of a call, return, or coroutine swap (from pd_stage)
+    input logic i_pd_redirect_ras_push = 1'b0,
+    input logic i_pd_redirect_ras_pop = 1'b0,
+    input logic [XLEN-1:0] i_pd_redirect_ras_link = '0,
     output logic [XLEN-1:0] o_pc,
     // The previous cycle consumed the stall-captured packet. The provider
     // uses this to classify PC movement as served. o_pc holds the owed fetch
@@ -179,8 +184,8 @@ module if_stage #(
     // as a NOP so dispatch sees i_valid_2='0.
     output riscv_pkg::from_if_to_pd_t o_from_if_to_pd_2,
     // Backing BTB result for each slot of the packet (index 0 is slot 1),
-    // replay-aligned like the packet: a taken hit on an untyped entry, the
-    // entry's size, and target bits [PhysAddrBits-1:1]. PD qualifies it.
+    // replay-aligned like the packet: a hit predicting taken, the entry's
+    // size, and target bits [PhysAddrBits-1:1]. PD qualifies it.
     output logic [1:0] o_backing_hit,
     output logic [1:0] o_backing_compressed,
     output logic [1:0][riscv_pkg::PhysAddrBits-2:0] o_backing_target,
@@ -2119,6 +2124,21 @@ module if_stage #(
   assign ras_pop = (ras_op_slot1 && slot1_packet_is_return) ||
                    (ras_op_slot2 && slot2_packet_is_return);
 
+  // A backing BTB prediction from PD operates the stack in the redirect's
+  // first cycle, when IF accepts no packet of its own, and takes the slot-1
+  // operation registers. A stall holds the redirect, and the operation
+  // happens once, in that first cycle. A flush in that cycle, which precedes
+  // every stack restore, drops it; a later flush leaves the restore to undo
+  // it.
+  logic pd_ras_operation;
+  logic pd_ras_operation_done_q;
+  assign pd_ras_operation = (i_pd_redirect_ras_push || i_pd_redirect_ras_pop) &&
+                            !pd_ras_operation_done_q && !i_pipeline_ctrl.flush;
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset || i_pipeline_ctrl.flush) pd_ras_operation_done_q <= 1'b0;
+    else pd_ras_operation_done_q <= (pd_ras_operation || pd_ras_operation_done_q) && if_stage_stall;
+  end
+
   // Register the operation's parts for timing; the stack applies them next
   // cycle. Reset drops the operation of its own cycle.
   logic ras_packet_accepted_q;
@@ -2129,14 +2149,14 @@ module if_stage #(
   logic ras_op_slot1_q;
   logic ras_op_slot2_q;
   always_ff @(posedge i_clk) begin
-    ras_packet_accepted_q <= !i_pipeline_ctrl.reset && ras_packet_accepted;
-    ras_slot1_taken_q     <= o_from_if_to_pd.btb_predicted_taken;
-    ras_slot1_call_q      <= slot1_packet_is_call;
-    ras_slot1_return_q    <= slot1_packet_is_return;
-    ras_slot2_taken_q     <= o_from_if_to_pd_2.btb_predicted_taken;
+    ras_packet_accepted_q <= !i_pipeline_ctrl.reset && (ras_packet_accepted || pd_ras_operation);
+    ras_slot1_taken_q     <= pd_ras_operation || o_from_if_to_pd.btb_predicted_taken;
+    ras_slot1_call_q      <= pd_ras_operation ? i_pd_redirect_ras_push : slot1_packet_is_call;
+    ras_slot1_return_q    <= pd_ras_operation ? i_pd_redirect_ras_pop : slot1_packet_is_return;
+    ras_slot2_taken_q     <= !pd_ras_operation && o_from_if_to_pd_2.btb_predicted_taken;
     ras_slot2_call_q      <= slot2_packet_is_call;
     ras_slot2_return_q    <= slot2_packet_is_return;
-    ras_link_address_q    <= link_address_sc;
+    ras_link_address_q    <= pd_ras_operation ? i_pd_redirect_ras_link : link_address_sc;
     ras_link_address_2_q  <= slot2_link_address;
   end
   assign ras_op_slot1_q = ras_packet_accepted_q && ras_slot1_taken_q &&
@@ -2155,6 +2175,8 @@ module if_stage #(
              prediction_used, slot2_prediction_used}
         )) begin
       p_ras_one_operation_per_bundle : assert (!(ras_op_slot1 && ras_op_slot2));
+      p_pd_ras_operation_has_no_if_operation :
+      assert (!(pd_ras_operation && (ras_op_slot1 || ras_op_slot2)));
       p_ras_operation_has_no_younger_live_prediction :
       assert (!(ras_op_slot1 && !live_prediction_emits_with_output &&
                 prediction_used && !slot2_prediction_used));

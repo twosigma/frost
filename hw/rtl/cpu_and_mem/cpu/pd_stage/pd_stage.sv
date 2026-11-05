@@ -45,9 +45,8 @@ module pd_stage #(
     // inject_nop. Only a backing BTB prediction redirects for slot 2.
     input riscv_pkg::from_if_to_pd_t i_from_if_to_pd_2,
     output riscv_pkg::from_pd_to_id_t o_from_pd_to_id_2,
-    // IF's backing BTB result for each slot (index 0 is slot 1): a taken hit
-    // on an untyped entry, the entry's size, and target bits
-    // [PhysAddrBits-1:1].
+    // IF's backing BTB result for each slot (index 0 is slot 1): a taken hit,
+    // the entry's size, and target bits [PhysAddrBits-1:1].
     input logic [1:0] i_backing_hit = '0,
     input logic [1:0] i_backing_compressed = '0,
     input logic [1:0][riscv_pkg::PhysAddrBits-2:0] i_backing_target = '0,
@@ -62,6 +61,12 @@ module pd_stage #(
     // The redirect is a backing BTB prediction for slot 2, to which ID then
     // applies it instead of slot 1.
     output logic o_pd_redirect_slot2,
+    // The redirect's return address stack operation, for a backing BTB
+    // prediction of a call (push the link address), a return (pop), or a
+    // coroutine swap (both). IF performs it once per redirected instruction.
+    output logic o_pd_redirect_ras_push,
+    output logic o_pd_redirect_ras_pop,
+    output logic [XLEN-1:0] o_pd_redirect_ras_link,
     // Each slot's conditional-branch decode, before validity qualification,
     // for the tagged predictor's saved lookups.
     output logic [1:0] o_cond_branch
@@ -453,39 +458,56 @@ module pd_stage #(
                                   !i_from_if_to_pd.tage_taken;
 
   // Backing BTB candidates, one per slot. Slot 1's fields are its native
-  // word's or its RV64C expansion's (rvc_extra_predecoded). A JAL or JALR
-  // that links (rd x1 or x5) is a call and a JALR from x1 a return, by the
-  // return address stack's rules; neither takes a backing redirect, whatever
-  // type its entry has. A slot-2 jump takes the target registers only behind
-  // a slot 1 that is not a branch; a jump in slot 1 leaves no valid slot 2.
-  function automatic logic untyped_jump(input logic [31:0] instruction);
-    logic links;
-    links = (instruction[11:7] == 5'd1) || (instruction[11:7] == 5'd5);
-    untyped_jump = !links && ((instruction[6:0] == riscv_pkg::OPC_JAL) ||
-        ((instruction[6:0] == riscv_pkg::OPC_JALR) && (instruction[19:15] != 5'd1)));
+  // word's or its RV64C expansion's (rvc_extra_predecoded). The instruction's
+  // encoding names its return address stack operation, by the rules
+  // instruction_type_decoder and recovery use: a JAL or JALR that links (rd
+  // x1 or x5) pushes, and a JALR with rs1 x1, a zero immediate, and rd x0 or
+  // x5 pops; the target of one that pops is the stack's top while the stack
+  // holds an entry. A slot-2 jump takes the target registers only behind a
+  // slot 1 that is not a branch; a jump in slot 1 leaves no valid slot 2.
+  // A JALR needs funct3 000, as in instruction_type_decoder.
+  function automatic logic is_jalr(input logic [31:0] instruction);
+    is_jalr = (instruction[6:0] == riscv_pkg::OPC_JALR) && (instruction[14:12] == 3'b000);
+  endfunction
+  function automatic logic is_jump(input logic [31:0] instruction);
+    is_jump = (instruction[6:0] == riscv_pkg::OPC_JAL) || is_jalr(instruction);
+  endfunction
+  function automatic logic is_call(input logic [31:0] instruction);
+    is_call = is_jump(instruction) && ((instruction[11:7] == 5'd1) || (instruction[11:7] == 5'd5));
+  endfunction
+  function automatic logic is_return(input logic [31:0] instruction);
+    is_return = is_jalr(instruction) && (instruction[19:15] == 5'd1) &&
+        (instruction[31:20] == 12'd0) &&
+        ((instruction[11:7] == 5'd0) || (instruction[11:7] == 5'd5));
   endfunction
   logic pd_slot1_jump;
   logic pd_slot2_jump;
-  logic pd_slot1_untyped_jump;
-  logic pd_slot2_untyped_jump;
+  logic pd_slot1_call, pd_slot1_return;
+  logic pd_slot2_call, pd_slot2_return;
+  logic pd_backing_call_r, pd_backing_return_r;
+  logic pd_backing_target_return;
   logic pd_backing_candidate;
   logic pd_backing_candidate_2;
   logic pd_backing_candidate_r;
   logic pd_backing_candidate_2_r;
   logic pd_backing_target_select;
   logic [XLEN-1:0] pd_backing_target;
-  assign pd_slot1_jump = (instruction_non_nop_predecoded_rs2[6:0] == riscv_pkg::OPC_JAL) ||
-                         (instruction_non_nop_predecoded_rs2[6:0] == riscv_pkg::OPC_JALR);
-  assign pd_slot2_jump = (i_from_if_to_pd_2.effective_instr[6:0] == riscv_pkg::OPC_JAL) ||
-                         (i_from_if_to_pd_2.effective_instr[6:0] == riscv_pkg::OPC_JALR);
-  assign pd_slot1_untyped_jump = untyped_jump(instruction_non_nop_predecoded_rs2);
-  assign pd_slot2_untyped_jump = untyped_jump(i_from_if_to_pd_2.effective_instr);
-  assign pd_backing_candidate = pd_slot1_untyped_jump && i_backing_hit[0] &&
+  assign pd_slot1_jump = is_jump(instruction_non_nop_predecoded_rs2);
+  assign pd_slot2_jump = is_jump(i_from_if_to_pd_2.effective_instr);
+  assign pd_slot1_call = is_call(instruction_non_nop_predecoded_rs2);
+  assign pd_slot1_return = is_return(instruction_non_nop_predecoded_rs2);
+  assign pd_slot2_call = is_call(i_from_if_to_pd_2.effective_instr);
+  assign pd_slot2_return = is_return(i_from_if_to_pd_2.effective_instr);
+  assign pd_backing_candidate = pd_slot1_jump && i_backing_hit[0] &&
                                 (i_backing_compressed[0] == pd_sel_compressed);
-  assign pd_backing_candidate_2 = pd_slot2_untyped_jump && i_backing_hit[1] &&
+  assign pd_backing_candidate_2 = pd_slot2_jump && i_backing_hit[1] &&
                                   (i_backing_compressed[1] == pd_sel_compressed_2);
   assign pd_backing_target_select = pd_slot1_jump || (pd_slot2_jump && !pd_cond_branch);
-  assign pd_backing_target = pd_slot1_jump ?
+  // Both slots share the packet's stack recovery point.
+  assign pd_backing_target_return = (pd_slot1_jump ? pd_slot1_return : pd_slot2_return) &&
+      (i_from_if_to_pd.ras_checkpoint_valid_count != '0);
+  assign pd_backing_target = pd_backing_target_return ? i_from_if_to_pd.ras_checkpoint_top :
+      pd_slot1_jump ?
       {i_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits], i_backing_target[0],
        1'b0} :
       {i_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits], i_backing_target[1],
@@ -548,6 +570,15 @@ module pd_stage #(
     end
   end
 
+  // The candidate slot's stack operation, from the slot that takes the
+  // target registers; only a firing candidate uses it.
+  always_ff @(posedge i_clk) begin
+    if (!i_pipeline_ctrl.stall) begin
+      pd_backing_call_r   <= pd_slot1_jump ? pd_slot1_call : pd_slot2_call;
+      pd_backing_return_r <= pd_slot1_jump ? pd_slot1_return : pd_slot2_return;
+    end
+  end
+
   // A packet with a jump loads the backing target as the native target with
   // PC-high selected. Its jump is not a conditional branch, so the
   // fall-through and compressed-format selects stay clear.
@@ -604,6 +635,15 @@ module pd_stage #(
   assign o_pd_redirect_taken = !pd_redirect_fall_through_select_r;
   assign o_pd_redirect_target = {pd_redirect_target_high, pd_redirect_target_low};
   assign o_pd_redirect_slot2 = pd_backing_redirect_2_r;
+  assign o_pd_redirect_ras_push = (pd_backing_redirect_r || pd_backing_redirect_2_r) &&
+                                  pd_backing_call_r;
+  assign o_pd_redirect_ras_pop = (pd_backing_redirect_r || pd_backing_redirect_2_r) &&
+                                 pd_backing_return_r;
+  assign o_pd_redirect_ras_link = pd_backing_redirect_2_r ?
+      o_from_pd_to_id_2.program_counter + (o_from_pd_to_id_2.is_compressed ?
+          XLEN'(riscv_pkg::PcIncrementCompressed) : XLEN'(riscv_pkg::PcIncrement32bit)) :
+      o_from_pd_to_id.program_counter + (o_from_pd_to_id.is_compressed ?
+          XLEN'(riscv_pkg::PcIncrementCompressed) : XLEN'(riscv_pkg::PcIncrement32bit));
 
 `ifndef SYNTHESIS
   // Compare against registering the selected target on the same edge, with
@@ -712,11 +752,11 @@ module pd_stage #(
       (i_from_if_to_pd.btb_predicted_taken || i_from_if_to_pd.bp_dir_taken);
   logic pd_backing_reference_next;
   logic pd_backing_reference_next_2;
-  assign pd_backing_reference_next = pd_slot1_untyped_jump && i_backing_hit[0] &&
+  assign pd_backing_reference_next = pd_slot1_jump && i_backing_hit[0] &&
       (i_backing_compressed[0] == pd_sel_compressed) &&
       !i_from_if_to_pd.btb_predicted_taken && !i_from_if_to_pd.sel_nop &&
       !i_from_if_to_pd.fetch_fault;
-  assign pd_backing_reference_next_2 = pd_slot2_untyped_jump && i_backing_hit[1] &&
+  assign pd_backing_reference_next_2 = pd_slot2_jump && i_backing_hit[1] &&
       (i_backing_compressed[1] == pd_sel_compressed_2) &&
       !i_from_if_to_pd_2.btb_predicted_taken && !i_from_if_to_pd_2.sel_nop &&
       !i_from_if_to_pd_2.fetch_fault;
