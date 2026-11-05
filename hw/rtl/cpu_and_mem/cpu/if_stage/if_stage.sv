@@ -189,9 +189,8 @@ module if_stage #(
     // as a NOP so dispatch sees i_valid_2='0.
     output riscv_pkg::from_if_to_pd_t o_from_if_to_pd_2,
     // Backing BTB result for each slot of the packet (index 0 is slot 1),
-    // replay-aligned like the packet: a hit predicting taken, the entry's
-    // size and return type, and target bits [PhysAddrBits-1:1]. PD
-    // qualifies it.
+    // replay-aligned like the packet: a hit, the entry's size and return
+    // type, and target bits [PhysAddrBits-1:1]. PD qualifies it.
     output logic [1:0] o_backing_hit,
     output logic [1:0] o_backing_compressed,
     output logic [1:0] o_backing_return,

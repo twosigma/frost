@@ -45,8 +45,8 @@ module pd_stage #(
     // inject_nop. Only a backing BTB prediction redirects for slot 2.
     input riscv_pkg::from_if_to_pd_t i_from_if_to_pd_2,
     output riscv_pkg::from_pd_to_id_t o_from_pd_to_id_2,
-    // IF's backing BTB result for each slot (index 0 is slot 1): a taken hit,
-    // the entry's size and return type, and target bits [PhysAddrBits-1:1].
+    // IF's backing BTB result for each slot (index 0 is slot 1): a hit, the
+    // entry's size and return type, and target bits [PhysAddrBits-1:1].
     input logic [1:0] i_backing_hit,
     input logic [1:0] i_backing_compressed,
     input logic [1:0] i_backing_return,
@@ -281,11 +281,11 @@ module pd_stage #(
   // candidates are described where they are formed below.
   //
   // A JAL or JALR in either slot that the BTB did not predict taken redirects
-  // when the backing BTB hits for it with an entry of the same size that
-  // predicts taken: to the entry's target, or to the stack's top while the
-  // stack holds an entry when the entry was trained on a return, with the
-  // stack operation that the instruction's encoding names. Execution checks
-  // the target like any prediction's.
+  // when the backing BTB hits for it with an entry of the same size: to the
+  // entry's target, or to the stack's top while the stack holds an entry when
+  // the entry was trained on a return, with the stack operation that the
+  // instruction's encoding names. Execution checks the target like any
+  // prediction's.
   //
   // Native B-type and compressed C.BEQZ/C.BNEZ targets are computed as two
   // format-specific 13-bit carry-select candidates. Both immediates fit after
@@ -465,7 +465,7 @@ module pd_stage #(
                                   !i_from_if_to_pd.tage_taken;
 
   // Backing BTB candidates, one per slot: a JAL or JALR (funct3 000, as in
-  // instruction_type_decoder) with a taken hit of the same size. Slot 1's
+  // instruction_type_decoder) with a hit of the same size. Slot 1's
   // fields are its native word's or its RV64C expansion's
   // (rvc_extra_predecoded).
   //
