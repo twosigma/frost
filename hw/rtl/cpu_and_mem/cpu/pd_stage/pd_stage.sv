@@ -465,12 +465,9 @@ module pd_stage #(
   // instruction_type_decoder and recovery use: a JAL or JALR that links (rd
   // x1 or x5) pushes, and a JALR with rs1 x1, a zero immediate, and rd x0 or
   // x5 pops; the target of one that pops is the stack's top while the stack
-  // holds an entry. A packet whose slot 1 is not a conditional branch loads
-  // the backing target into the target registers: slot 1's for a slot-1
-  // jump, slot 2's otherwise. Only a firing candidate uses them, so a slot-2
-  // jump takes them only behind a slot 1 that is not a branch; a jump in
-  // slot 1 leaves no valid slot 2. The select needs only slot 1's branch
-  // decode. A JALR needs funct3 000, as in instruction_type_decoder.
+  // holds an entry. A slot-2 jump takes the target registers only behind a
+  // slot 1 that is not a branch; a jump in slot 1 leaves no valid slot 2.
+  // A JALR needs funct3 000, as in instruction_type_decoder.
   function automatic logic is_jalr(input logic [31:0] instruction);
     is_jalr = (instruction[6:0] == riscv_pkg::OPC_JALR) && (instruction[14:12] == 3'b000);
   endfunction
@@ -507,7 +504,7 @@ module pd_stage #(
                                 (i_backing_compressed[0] == pd_sel_compressed);
   assign pd_backing_candidate_2 = pd_slot2_jump && i_backing_hit[1] &&
                                   (i_backing_compressed[1] == pd_sel_compressed_2);
-  assign pd_backing_target_select = !pd_cond_branch;
+  assign pd_backing_target_select = pd_slot1_jump || (pd_slot2_jump && !pd_cond_branch);
   // Both slots share the packet's stack recovery point.
   assign pd_backing_target_return = (pd_slot1_jump ? pd_slot1_return : pd_slot2_return) &&
       (i_from_if_to_pd.ras_checkpoint_valid_count != '0);
@@ -584,9 +581,9 @@ module pd_stage #(
     end
   end
 
-  // A packet whose slot 1 is not a conditional branch loads the backing
-  // target as the native target with PC-high selected; the fall-through and
-  // compressed-format selects stay clear for it.
+  // A packet with a jump loads the backing target as the native target with
+  // PC-high selected. Its jump is not a conditional branch, so the
+  // fall-through and compressed-format selects stay clear.
   always_ff @(posedge i_clk) begin
     if (!i_pipeline_ctrl.stall) begin
       pd_redirect_target_native_low_r <= pd_backing_target_select ?
