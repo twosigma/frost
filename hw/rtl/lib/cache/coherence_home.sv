@@ -771,7 +771,7 @@ module coherence_home #(
     end
     streaming_exclude = '0;
     if (int'(array_query_token) < RESULTS && engine_non_alloc[ResultBits'(array_query_token)]) begin
-      streaming_exclude = ~WAYS'(1);
+      streaming_exclude = ~(WAYS'(1));
     end
   end
   assign array_exclude = completion_exclude | owner_exclude | streaming_exclude;
