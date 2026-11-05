@@ -46,9 +46,10 @@ module pd_stage #(
     input riscv_pkg::from_if_to_pd_t i_from_if_to_pd_2,
     output riscv_pkg::from_pd_to_id_t o_from_pd_to_id_2,
     // IF's backing BTB result for each slot (index 0 is slot 1): a taken hit,
-    // the entry's size, and target bits [PhysAddrBits-1:1].
+    // the entry's size and return type, and target bits [PhysAddrBits-1:1].
     input logic [1:0] i_backing_hit,
     input logic [1:0] i_backing_compressed,
+    input logic [1:0] i_backing_return,
     input logic [1:0][riscv_pkg::PhysAddrBits-2:0] i_backing_target,
     // Redirect to IF, and the new direction: taken redirects to the branch
     // target, not taken to the fall-through. It fires for a slot-1
@@ -277,10 +278,10 @@ module pd_stage #(
   //
   // A JAL or JALR in either slot that the BTB did not predict taken redirects
   // when the backing BTB hits for it with an entry of the same size that
-  // predicts taken: to the entry's target, or for a return to the stack top
-  // while the stack holds an entry, with the stack operation the
-  // instruction's encoding names. Execution checks the target like any
-  // prediction's.
+  // predicts taken: to the entry's target, or to the stack's top while the
+  // stack holds an entry when the entry was trained on a return, with the
+  // stack operation that the instruction's encoding names. Execution checks
+  // the target like any prediction's.
   //
   // Native B-type and compressed C.BEQZ/C.BNEZ targets are computed as two
   // format-specific 13-bit carry-select candidates. Both immediates fit after
@@ -459,15 +460,29 @@ module pd_stage #(
   assign pd_not_taken_candidate = pd_cond_branch && i_from_if_to_pd.tage_valid &&
                                   !i_from_if_to_pd.tage_taken;
 
-  // Backing BTB candidates, one per slot. Slot 1's fields are its native
-  // word's or its RV64C expansion's (rvc_extra_predecoded). The instruction's
-  // encoding names its return address stack operation, by the rules
-  // instruction_type_decoder and recovery use: a JAL or JALR that links (rd
-  // x1 or x5) pushes, and a JALR with rs1 x1, a zero immediate, and rd x0 or
-  // x5 pops; the target of one that pops is the stack's top while the stack
-  // holds an entry. A slot-2 jump takes the target registers only behind a
-  // slot 1 that is not a branch; a jump in slot 1 leaves no valid slot 2.
-  // A JALR needs funct3 000, as in instruction_type_decoder.
+  // Backing BTB candidates, one per slot: a JAL or JALR (funct3 000, as in
+  // instruction_type_decoder) with a taken hit of the same size. Slot 1's
+  // fields are its native word's or its RV64C expansion's
+  // (rvc_extra_predecoded).
+  //
+  // The target registers' data muxes take their controls from slot 1's
+  // branch decode and the backing BTB's registered tag fields, never from
+  // the jump or return decodes. A packet whose slot 1 is not a conditional
+  // branch loads the backing target: slot 1's entry when slot 1 hits and
+  // slot 2's otherwise, or the stack's top when that entry was trained on a
+  // return and the stack holds an entry. A jump in slot 1 leaves no valid
+  // slot 2, and a valid slot 2 follows a slot 1 that is not control flow, so
+  // every redirect takes its own slot's entry unless an entry no longer
+  // matches its instruction, which costs only a misprediction. A hit in
+  // slot 2 lies in slot 1's 4 GiB region (the backing BTB gives the word
+  // after the last set no slot-2 hit), so slot 1's PC supplies the upper
+  // bits.
+  //
+  // The redirect's stack operation is the one the redirecting instruction's
+  // encoding names, decoded from PD's registered instruction in the redirect
+  // cycle by the rules instruction_type_decoder and recovery use: a JAL or
+  // JALR that links (rd x1 or x5) pushes, and a JALR with rs1 x1, a zero
+  // immediate, and rd x0 or x5 pops.
   function automatic logic is_jalr(input logic [31:0] instruction);
     is_jalr = (instruction[6:0] == riscv_pkg::OPC_JALR) && (instruction[14:12] == 3'b000);
   endfunction
@@ -484,9 +499,6 @@ module pd_stage #(
   endfunction
   logic pd_slot1_jump;
   logic pd_slot2_jump;
-  logic pd_slot1_call, pd_slot1_return;
-  logic pd_slot2_call, pd_slot2_return;
-  logic pd_backing_call_r, pd_backing_return_r;
   logic pd_backing_target_return;
   logic pd_backing_candidate;
   logic pd_backing_candidate_2;
@@ -496,24 +508,20 @@ module pd_stage #(
   logic [XLEN-1:0] pd_backing_target;
   assign pd_slot1_jump = is_jump(instruction_non_nop_predecoded_rs2);
   assign pd_slot2_jump = is_jump(i_from_if_to_pd_2.effective_instr);
-  assign pd_slot1_call = is_call(instruction_non_nop_predecoded_rs2);
-  assign pd_slot1_return = is_return(instruction_non_nop_predecoded_rs2);
-  assign pd_slot2_call = is_call(i_from_if_to_pd_2.effective_instr);
-  assign pd_slot2_return = is_return(i_from_if_to_pd_2.effective_instr);
   assign pd_backing_candidate = pd_slot1_jump && i_backing_hit[0] &&
                                 (i_backing_compressed[0] == pd_sel_compressed);
   assign pd_backing_candidate_2 = pd_slot2_jump && i_backing_hit[1] &&
                                   (i_backing_compressed[1] == pd_sel_compressed_2);
-  assign pd_backing_target_select = pd_slot1_jump || (pd_slot2_jump && !pd_cond_branch);
+  assign pd_backing_target_select = !pd_cond_branch;
   // Both slots share the packet's stack recovery point.
-  assign pd_backing_target_return = (pd_slot1_jump ? pd_slot1_return : pd_slot2_return) &&
+  assign pd_backing_target_return =
+      (i_backing_hit[0] ? i_backing_return[0] : i_backing_return[1]) &&
       (i_from_if_to_pd.ras_checkpoint_valid_count != '0);
-  assign pd_backing_target = pd_backing_target_return ? i_from_if_to_pd.ras_checkpoint_top :
-      pd_slot1_jump ?
-      {i_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits], i_backing_target[0],
-       1'b0} :
-      {i_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits], i_backing_target[1],
-       1'b0};
+  assign pd_backing_target = pd_backing_target_return ? i_from_if_to_pd.ras_checkpoint_top : {
+    i_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
+    i_backing_hit[0] ? i_backing_target[0] : i_backing_target[1],
+    1'b0
+  };
 
   // The packet carries same-edge vetoes: predicted taken, inject_nop, and
   // fetch fault. A redirect sets inject_nop on the following wrong-path
@@ -572,18 +580,9 @@ module pd_stage #(
     end
   end
 
-  // The candidate slot's stack operation, from the slot that takes the
-  // target registers; only a firing candidate uses it.
-  always_ff @(posedge i_clk) begin
-    if (!i_pipeline_ctrl.stall) begin
-      pd_backing_call_r   <= pd_slot1_jump ? pd_slot1_call : pd_slot2_call;
-      pd_backing_return_r <= pd_slot1_jump ? pd_slot1_return : pd_slot2_return;
-    end
-  end
-
-  // A packet with a jump loads the backing target as the native target with
-  // PC-high selected. Its jump is not a conditional branch, so the
-  // fall-through and compressed-format selects stay clear.
+  // A packet whose slot 1 is not a conditional branch loads the backing
+  // target as the native target with PC-high selected, and its fall-through
+  // and compressed-format selects stay clear.
   always_ff @(posedge i_clk) begin
     if (!i_pipeline_ctrl.stall) begin
       pd_redirect_target_native_low_r <= pd_backing_target_select ?
@@ -637,10 +636,16 @@ module pd_stage #(
   assign o_pd_redirect_taken = !pd_redirect_fall_through_select_r;
   assign o_pd_redirect_target = {pd_redirect_target_high, pd_redirect_target_low};
   assign o_pd_redirect_slot2 = pd_backing_redirect_2_r;
-  assign o_pd_redirect_ras_push = (pd_backing_redirect_r || pd_backing_redirect_2_r) &&
-                                  pd_backing_call_r;
-  assign o_pd_redirect_ras_pop = (pd_backing_redirect_r || pd_backing_redirect_2_r) &&
-                                 pd_backing_return_r;
+  logic pd_registered_call, pd_registered_call_2;
+  logic pd_registered_return, pd_registered_return_2;
+  assign pd_registered_call = is_call(o_from_pd_to_id.instruction);
+  assign pd_registered_call_2 = is_call(o_from_pd_to_id_2.instruction);
+  assign pd_registered_return = is_return(o_from_pd_to_id.instruction);
+  assign pd_registered_return_2 = is_return(o_from_pd_to_id_2.instruction);
+  assign o_pd_redirect_ras_push = (pd_backing_redirect_r && pd_registered_call) ||
+                                  (pd_backing_redirect_2_r && pd_registered_call_2);
+  assign o_pd_redirect_ras_pop = (pd_backing_redirect_r && pd_registered_return) ||
+                                 (pd_backing_redirect_2_r && pd_registered_return_2);
   assign o_pd_redirect_ras_link = pd_backing_redirect_2_r ?
       o_from_pd_to_id_2.program_counter + (o_from_pd_to_id_2.is_compressed ?
           XLEN'(riscv_pkg::PcIncrementCompressed) : XLEN'(riscv_pkg::PcIncrement32bit)) :
@@ -818,6 +823,59 @@ module pd_stage #(
                                  XLEN'(riscv_pkg::PcIncrement32bit)) :
             (pd_backing_target_select ? pd_backing_target : pd_backward_target_reference);
         pd_redirect_target_reference_armed <= 1'b1;
+      end
+    end
+  end
+
+  // A firing backing redirect takes the target its own instruction's decode
+  // names, the stack's top for a return while the stack holds an entry and
+  // its slot's entry otherwise, whenever the entry's return type matches that
+  // decode and, for slot 2, slot 1 has no hit.
+  logic [XLEN-1:0] pd_backing_decoded_target_reference_q;
+  logic [XLEN-1:0] pd_backing_decoded_target_reference_2_q;
+  logic pd_backing_decoded_reference_valid_q;
+  logic pd_backing_decoded_reference_valid_2_q;
+  logic pd_backing_decoded_reference_armed = 1'b0;
+  logic pd_backing_stack_holds_entry;
+  logic pd_slot1_return_reference, pd_slot2_return_reference;
+  assign pd_backing_stack_holds_entry = i_from_if_to_pd.ras_checkpoint_valid_count != '0;
+  assign pd_slot1_return_reference = is_return(instruction_non_nop_predecoded_rs2);
+  assign pd_slot2_return_reference = is_return(i_from_if_to_pd_2.effective_instr);
+  always @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      pd_backing_decoded_reference_armed <= 1'b0;
+    end else begin
+      if (pd_backing_decoded_reference_armed && !$isunknown(
+              {
+                pd_backing_redirect_r,
+                pd_backing_redirect_2_r,
+                pd_backing_decoded_reference_valid_q,
+                pd_backing_decoded_reference_valid_2_q
+              }
+          )) begin
+        p_pd_backing_slot1_target_matches_decode :
+        assert (!(pd_backing_redirect_r && pd_backing_decoded_reference_valid_q) ||
+                (o_pd_redirect_target == pd_backing_decoded_target_reference_q));
+        p_pd_backing_slot2_target_matches_decode :
+        assert (!(pd_backing_redirect_2_r && !pd_backing_redirect_r &&
+                  pd_backing_decoded_reference_valid_2_q) ||
+                (o_pd_redirect_target == pd_backing_decoded_target_reference_2_q));
+      end
+      if (!i_pipeline_ctrl.stall) begin
+        pd_backing_decoded_target_reference_q <=
+            (pd_slot1_return_reference && pd_backing_stack_holds_entry) ?
+            i_from_if_to_pd.ras_checkpoint_top :
+            {i_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits], i_backing_target[0],
+             1'b0};
+        pd_backing_decoded_target_reference_2_q <=
+            (pd_slot2_return_reference && pd_backing_stack_holds_entry) ?
+            i_from_if_to_pd.ras_checkpoint_top :
+            {i_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
+             i_backing_target[1], 1'b0};
+        pd_backing_decoded_reference_valid_q <= i_backing_return[0] == pd_slot1_return_reference;
+        pd_backing_decoded_reference_valid_2_q <= !i_backing_hit[0] &&
+            (i_backing_return[1] == pd_slot2_return_reference);
+        pd_backing_decoded_reference_armed <= 1'b1;
       end
     end
   end

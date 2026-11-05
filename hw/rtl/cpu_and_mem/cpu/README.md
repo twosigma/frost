@@ -198,31 +198,34 @@ trains it, conditional branches included, though only its jumps, calls and
 returns are used. A correctly predicted jump sends no update, so its way
 ages while other branches in its set update theirs, and replacement or an
 update dropped because the update one stage ahead writes the same set can
-lose a branch the BTB holds. Its sets are indexed by the PC's word, like
-the BTB. An entry's tag holds the PC bits above the
-index, and PC[1] is kept with its target, counter, size, and type. A miss
-allocates an invalid way or the way the set's replacement state names; a
-target in another 4 GiB region invalidates the entry, as in the BTB. Reset
-clears one set per cycle, and the backing BTB makes no predictions until
-every set is clear.
+lose a branch the BTB holds. Its sets are indexed by the PC's word, like the
+BTB. An entry's tag holds the PC bits above the index and PC[1], with its
+counter, its size and whether it was trained on a return; the target is
+kept in a separate array. A miss allocates an invalid way or the way the
+set's replacement state names; a target in another 4 GiB region
+invalidates the entry, as in the BTB. Reset clears one set per cycle, and
+the backing BTB makes no predictions until every set is clear.
 
 The lookup follows the fetch PC: the set of `o_pc`'s word, and the set after
 it for a slot 2 in the next word, read on the edge that requests the window.
 When IF serves that window the next cycle, the registered tags are compared
 with the packet's PC, so a packet whose set was not read gets no backing hit,
-and neither does a slot 2 in the word after the last set. IF passes PD each
-slot's hit, size, and target, kept across stall replay like the packet. PD
-registers a candidate for a slot-1 or slot-2 JAL or JALR whose backing entry
-predicts taken and has the instruction's size. When the slot's BTB
-prediction was not taken, the candidate fires the PD redirect, which costs
-the PD redirect's two bubbles instead of a misprediction recovery, and ID
-gives the instruction the prediction. The ROB checks a JAL's target at
-allocation, and the branch unit a JALR's at execution, as for any
-prediction. The instruction's own encoding, by the rules recovery uses,
-names its return address stack operation: a call pushes its link address,
-a return pops, and a coroutine swap does both. A return's target is the top
-entry of the packet's recovery point while the stack holds an entry, and
-the backing BTB's target otherwise. IF performs the operation once, in the
+and neither does a slot 2 in the word after the last set. The hit, size and
+type come from the registered tags, and the target from the target array
+read on the same edge. IF passes PD each slot's hit, size, type and target,
+kept across stall replay like the packet. PD registers a candidate for a
+slot-1 or slot-2 JAL or JALR whose backing entry predicts taken and has the
+instruction's size. When the slot's BTB prediction was not taken, the
+candidate fires the PD redirect, which costs the PD redirect's two bubbles
+instead of a misprediction recovery, and ID gives the instruction the
+prediction. The ROB checks a JAL's target at allocation, and the branch unit
+a JALR's at execution, as for any prediction. The instruction's own
+encoding, by the rules recovery uses, names its return address stack
+operation: a call pushes its link address, a return pops, and a coroutine
+swap does both. An entry trained on a return targets the top entry of the
+packet's recovery point while the stack holds an entry, and its stored
+target otherwise; an entry whose type no longer matches the instruction at
+its PC costs only a misprediction. IF performs the operation once, in the
 redirect's first cycle (see [Return address stack
 recovery](#return-address-stack-recovery)). A build that disables branch
 prediction gets no backing redirects. A jump the backing BTB predicts is

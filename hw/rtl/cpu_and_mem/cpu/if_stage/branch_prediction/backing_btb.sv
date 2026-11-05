@@ -24,20 +24,22 @@
  * "Backing BTB").
  *
  * Sets are indexed by PC word bits, like the fast BTB. An entry's tag holds
- * the PC bits above the index, and its payload holds PC[1] with the target,
- * counter, size and type. The target keeps its low TARGET_BITS bits; the
- * upper bits come from the branch's PC, and training with a target in
- * another region invalidates the entry, as in the fast BTB.
+ * the PC bits above the index and PC[1], with the counter, size and return
+ * type; its payload holds the target. The target keeps its low TARGET_BITS
+ * bits; the upper bits come from the branch's PC, and training with a
+ * target in another region invalidates the entry, as in the fast BTB.
  *
  * Lookup. The caller supplies the set index of the fetch PC register. The
  * tag arrays read it without a clock and register the tags; the payload
  * arrays read it on the clock edge. In the next cycle IF serves the window
  * of that fetch, normally at i_packet_pc, and the registered tags are
- * compared with the packet's PC. Each lookup reads two sets: the packet's
- * word and the word after it, for a slot 2 there. The second image of each
- * array stores set S at row S-1, so both read at the same index. A packet
- * whose set is not the one read gets no hit, and neither does a slot 2 in
- * the word after the last set, which belongs to the next block of sets.
+ * compared with the packet's PC, so the hit, size and return type come from
+ * registers and only the target from the payload arrays. Each lookup reads
+ * two sets: the packet's word and the word after it, for a slot 2 there.
+ * The second image of each array stores set S at row S-1, so both read at
+ * the same index. A packet whose set is not the one read gets no hit, and
+ * neither does a slot 2 in the word after the last set, which belongs to
+ * the next block of sets.
  *
  * Training. An update registers and reads its set from a third payload
  * array that also holds the tags, valid bits and replacement state; the
@@ -68,10 +70,12 @@ module backing_btb #(
     // Slot 1's PC and size in the response cycle. Slot 2 follows slot 1.
     input logic [XLEN-1:0] i_packet_pc,
     input logic i_packet_compressed,
-    // Per slot (index 0 is slot 1): a hit predicting taken, the size the
-    // entry was trained with, and the stored target bits [TARGET_BITS-1:1].
+    // Per slot (index 0 is slot 1): a hit predicting taken, the size and
+    // return type the entry was trained with, and the stored target bits
+    // [TARGET_BITS-1:1].
     output logic [1:0] o_hit,
     output logic [1:0] o_compressed,
+    output logic [1:0] o_return,
     output logic [1:0][TARGET_BITS-2:0] o_target,
 
     // Training, the update ex_comb_synthesizer selects, at most one per cycle
@@ -80,7 +84,6 @@ module backing_btb #(
     input logic [XLEN-1:0] i_update_target,
     input logic            i_update_taken,
     input logic            i_update_compressed,
-    input logic            i_update_call,
     input logic            i_update_return
 );
 
@@ -98,22 +101,19 @@ module backing_btb #(
   typedef struct packed {
     logic valid;
     logic [UpperBits-1:0] upper;
-  } tag_t;
-
-  typedef struct packed {
     logic halfword;
-    logic [TARGET_BITS-2:0] target;
     logic [1:0] counter;
     logic compressed;
-    logic is_call;
     logic is_return;
-  } payload_t;
+  } tag_t;
+
+  typedef struct packed {logic [TARGET_BITS-2:0] target;} payload_t;
 
   // A set is {replacement, the ways' tags, the ways' payloads}, way 0 lowest
   // in each field. The widths are written out rather than taken with $bits
   // of the types; the simulation checks below pin them to the structs.
-  localparam int unsigned TagEntryBits = UpperBits + 1;
-  localparam int unsigned PayloadEntryBits = TARGET_BITS + 5;
+  localparam int unsigned TagEntryBits = UpperBits + 6;
+  localparam int unsigned PayloadEntryBits = TARGET_BITS - 1;
   localparam int unsigned TagRowBits = WAYS * TagEntryBits;
   localparam int unsigned PayloadRowBits = WAYS * PayloadEntryBits;
   localparam int unsigned SetBits = ReplBits + TagRowBits + PayloadRowBits;
@@ -170,7 +170,7 @@ module backing_btb #(
   logic a_halfword;
   logic [TARGET_BITS-2:0] a_target;
   logic a_region_ok;
-  logic a_taken, a_compressed, a_call, a_return;
+  logic a_taken, a_compressed, a_return;
   always_ff @(posedge i_clk) begin
     a_valid      <= i_update && !i_reset && !sweep_active;
     a_index      <= i_update_pc[IndexBits+1:2];
@@ -180,7 +180,6 @@ module backing_btb #(
     a_region_ok  <= i_update_pc[XLEN-1:TARGET_BITS] == i_update_target[XLEN-1:TARGET_BITS];
     a_taken      <= i_update_taken;
     a_compressed <= i_update_compressed;
-    a_call       <= i_update_call;
     a_return     <= i_update_return;
   end
 
@@ -190,7 +189,7 @@ module backing_btb #(
   logic b_halfword;
   logic [TARGET_BITS-2:0] b_target;
   logic b_region_ok;
-  logic b_taken, b_compressed, b_call, b_return;
+  logic b_taken, b_compressed, b_return;
   always_ff @(posedge i_clk) begin
     b_valid      <= a_valid && !i_reset;
     b_index      <= a_index;
@@ -200,7 +199,6 @@ module backing_btb #(
     b_region_ok  <= a_region_ok;
     b_taken      <= a_taken;
     b_compressed <= a_compressed;
-    b_call       <= a_call;
     b_return     <= a_return;
   end
 
@@ -218,11 +216,9 @@ module backing_btb #(
   assign b_replacement = b_set[SetBits-1-:ReplBits];
   for (genvar way = 0; way < WAYS; way++) begin : gen_update_match
     tag_t tag;
-    payload_t payload;
     assign tag = b_set[PayloadRowBits+way*TagEntryBits+:TagEntryBits];
-    assign payload = b_set[way*PayloadEntryBits+:PayloadEntryBits];
     assign b_way_valid[way] = tag.valid;
-    assign b_way_match[way] = tag.valid && tag.upper == b_upper && payload.halfword == b_halfword;
+    assign b_way_match[way] = tag.valid && tag.upper == b_upper && tag.halfword == b_halfword;
   end
 
   // The hit way, else the lowest invalid way, else the replacement victim.
@@ -249,7 +245,7 @@ module backing_btb #(
   logic c_halfword;
   logic [TARGET_BITS-2:0] c_target;
   logic c_region_ok;
-  logic c_taken, c_compressed, c_call, c_return;
+  logic c_taken, c_compressed, c_return;
   always_ff @(posedge i_clk) begin
     c_valid      <= b_valid && !i_reset && !(c_valid && c_index == b_index);
     c_index      <= b_index;
@@ -262,7 +258,6 @@ module backing_btb #(
     c_region_ok  <= b_region_ok;
     c_taken      <= b_taken;
     c_compressed <= b_compressed;
-    c_call       <= b_call;
     c_return     <= b_return;
   end
 
@@ -286,13 +281,12 @@ module backing_btb #(
         if (c_region_ok) begin
           new_tag.valid = 1'b1;
           new_tag.upper = c_upper;
-          new_payload.halfword = c_halfword;
+          new_tag.halfword = c_halfword;
+          new_tag.counter = c_hit ?
+              train_counter(old_tag.counter, c_taken) : (c_taken ? 2'b10 : 2'b01);
+          new_tag.compressed = c_compressed;
+          new_tag.is_return = c_return;
           new_payload.target = c_target;
-          new_payload.counter = c_hit ?
-              train_counter(old_payload.counter, c_taken) : (c_taken ? 2'b10 : 2'b01);
-          new_payload.compressed = c_compressed;
-          new_payload.is_call = c_call;
-          new_payload.is_return = c_return;
         end else if (c_hit) begin
           new_tag.valid = 1'b0;
         end
@@ -379,8 +373,8 @@ module backing_btb #(
   // ===========================================================================
   // Response
   // ===========================================================================
-  // Tag matches come from registers and the packet PC; the payload arrays'
-  // outputs only qualify a hit and supply its fields.
+  // Matches, sizes and return types come from registers and the packet PC;
+  // the payload arrays' outputs supply only the targets.
   logic aligned;
   logic last_set;
   assign aligned  = request_valid_q && (request_index_q == i_packet_pc[IndexBits+1:2]);
@@ -390,6 +384,7 @@ module backing_btb #(
   logic [1:0][WAYS-1:0] entry_halfword;
   logic [1:0][WAYS-1:0] entry_usable;
   logic [1:0][WAYS-1:0] entry_compressed;
+  logic [1:0][WAYS-1:0] entry_return;
   logic [1:0][WAYS-1:0][TARGET_BITS-2:0] entry_target;
   for (genvar image = 0; image < 2; image++) begin : gen_entry
     for (genvar way = 0; way < WAYS; way++) begin : gen_way
@@ -398,9 +393,10 @@ module backing_btb #(
       assign tag = tags_q[image][way*TagEntryBits+:TagEntryBits];
       assign payload = payload_rows[image][way*PayloadEntryBits+:PayloadEntryBits];
       assign upper_match[image][way] = tag.valid && (tag.upper == i_packet_pc[XLEN-1:IndexBits+2]);
-      assign entry_halfword[image][way] = payload.halfword;
-      assign entry_usable[image][way] = payload.counter[1];
-      assign entry_compressed[image][way] = payload.compressed;
+      assign entry_halfword[image][way] = tag.halfword;
+      assign entry_usable[image][way] = tag.counter[1];
+      assign entry_compressed[image][way] = tag.compressed;
+      assign entry_return[image][way] = tag.is_return;
       assign entry_target[image][way] = payload.target;
     end
   end
@@ -433,17 +429,20 @@ module backing_btb #(
   always_comb begin
     o_hit = '0;
     o_compressed = '0;
+    o_return = '0;
     o_target = '0;
     for (int way = 0; way < WAYS; way++) begin
       if (slot1_way_match[way]) begin
         o_hit[0] = o_hit[0] || entry_usable[0][way];
         o_compressed[0] = o_compressed[0] || entry_compressed[0][way];
+        o_return[0] = o_return[0] || entry_return[0][way];
         o_target[0] = o_target[0] | entry_target[0][way];
       end
       for (int image = 0; image < 2; image++) begin
         if (slot2_way_match[image][way]) begin
           o_hit[1] = o_hit[1] || entry_usable[image][way];
           o_compressed[1] = o_compressed[1] || entry_compressed[image][way];
+          o_return[1] = o_return[1] || entry_return[image][way];
           o_target[1] = o_target[1] | entry_target[image][way];
         end
       end
@@ -463,17 +462,19 @@ module backing_btb #(
   end
 
   // A set never holds one tag in two ways.
+  function automatic logic same_valid_tag(input tag_t first, input tag_t second);
+    same_valid_tag = first.valid && second.valid && first.upper == second.upper &&
+        first.halfword == second.halfword;
+  endfunction
   always_ff @(posedge i_clk) begin
     if (!i_reset && !sweep_active && c_valid) begin
       for (int first = 0; first < WAYS; first++) begin
         for (int second = first + 1; second < WAYS; second++) begin
           p_backing_btb_unique_tags :
-          assert (!(write_tags[first*TagEntryBits+TagEntryBits-1] &&
-                    write_tags[second*TagEntryBits+TagEntryBits-1] &&
-                    write_tags[first*TagEntryBits+:TagEntryBits] ==
-                    write_tags[second*TagEntryBits+:TagEntryBits] &&
-                    write_payloads[first*PayloadEntryBits+PayloadEntryBits-1] ==
-                    write_payloads[second*PayloadEntryBits+PayloadEntryBits-1]));
+          assert (!same_valid_tag(
+              tag_t'(write_tags[first*TagEntryBits+:TagEntryBits]),
+              tag_t'(write_tags[second*TagEntryBits+:TagEntryBits])
+          ));
         end
       end
     end

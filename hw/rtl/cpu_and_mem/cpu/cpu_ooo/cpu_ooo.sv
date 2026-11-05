@@ -450,6 +450,7 @@ module cpu_ooo #(
   // IF's backing BTB result for each slot, for PD's redirect
   logic [1:0] if_backing_hit;
   logic [1:0] if_backing_compressed;
+  logic [1:0] if_backing_return;
   logic [1:0][riscv_pkg::PhysAddrBits-2:0] if_backing_target;
 
   // Tagged direction predictor: lookup history, events, per-slot lookups,
@@ -858,6 +859,7 @@ module cpu_ooo #(
       .o_from_if_to_pd_2(from_if_to_pd_2),
       .o_backing_hit(if_backing_hit),
       .o_backing_compressed(if_backing_compressed),
+      .o_backing_return(if_backing_return),
       .o_backing_target(if_backing_target),
       .o_slot1_has_control_flow(if_slot1_has_control_flow),
       .o_slot1_is_indirect(if_slot1_is_indirect),
@@ -895,6 +897,7 @@ module cpu_ooo #(
       // backing BTB redirects.
       .i_backing_hit(if_backing_hit & {2{!i_disable_branch_prediction}}),
       .i_backing_compressed(if_backing_compressed),
+      .i_backing_return(if_backing_return),
       .i_backing_target(if_backing_target),
       .o_pd_redirect(pd_redirect),
       .o_pd_redirect_taken(pd_redirect_taken),

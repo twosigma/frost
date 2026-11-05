@@ -68,7 +68,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_update_target.value = 0
     dut.i_update_taken.value = 0
     dut.i_update_compressed.value = 0
-    dut.i_update_call.value = 0
     dut.i_update_return.value = 0
 
 
@@ -107,7 +106,6 @@ async def _update(
     *,
     taken: bool = True,
     compressed: bool = False,
-    call: bool = False,
     ret: bool = False,
     settle_cycles: int = 4,
 ) -> None:
@@ -117,11 +115,9 @@ async def _update(
     dut.i_update_target.value = target & MASK_XLEN
     dut.i_update_taken.value = int(taken)
     dut.i_update_compressed.value = int(compressed)
-    dut.i_update_call.value = int(call)
     dut.i_update_return.value = int(ret)
     await _cycle(dut)
     dut.i_update.value = 0
-    dut.i_update_call.value = 0
     dut.i_update_return.value = 0
     await _cycle(dut, settle_cycles)
 
@@ -145,6 +141,12 @@ async def _lookup(
         [bool(size & 1), bool(size & 2)],
         targets,
     )
+
+
+def _returns(dut: Any) -> list[bool]:
+    """Return each slot's stored return type for the packet just served."""
+    value = int(dut.o_return.value)
+    return [bool(value & 1), bool(value & 2)]
 
 
 def _low(dut: Any, target: int) -> int:
@@ -289,7 +291,7 @@ async def test_cross_region_target_invalidates(dut: Any) -> None:
 
 @cocotb.test()
 async def test_taken_counter_qualifies_hits_of_every_type(dut: Any) -> None:
-    """A hit predicts taken; calls and returns hit like other jumps."""
+    """A hit predicts taken; returns hit like other jumps and report their type."""
     await _setup(dut)
     await _update(dut, PC_A, TARGET_A)
     await _update(dut, PC_A, TARGET_A, taken=False)
@@ -297,13 +299,31 @@ async def test_taken_counter_qualifies_hits_of_every_type(dut: Any) -> None:
     assert not hit[0]
     await _update(dut, PC_A, TARGET_A)
     hit, _, _ = await _lookup(dut, PC_A)
-    assert hit[0]
-    await _update(dut, PC_A + 8, TARGET_A, call=True)
+    assert hit[0] and _returns(dut) == [False, False]
     await _update(dut, PC_A + 12, TARGET_B, ret=True)
-    hit, _, target = await _lookup(dut, PC_A + 8)
-    assert hit[0] and target[0] == _low(dut, TARGET_A)
     hit, _, target = await _lookup(dut, PC_A + 12)
     assert hit[0] and target[0] == _low(dut, TARGET_B)
+    assert _returns(dut)[0]
+    # Retraining as a plain jump clears the type.
+    await _update(dut, PC_A + 12, TARGET_B)
+    hit, _, _ = await _lookup(dut, PC_A + 12)
+    assert hit[0] and not _returns(dut)[0]
+
+
+@cocotb.test()
+async def test_slot2_return_type_in_both_images(dut: Any) -> None:
+    """Slot 2 reports its own entry's return type, in its word or the next."""
+    await _setup(dut)
+    await _update(dut, PC_A + 2, TARGET_A, compressed=True, ret=True)
+    await _update(dut, PC_A + 4, TARGET_B, ret=True)
+    await _update(dut, PC_A, TARGET_B, compressed=True)
+    # Slot 2 in the packet word, behind a compressed slot 1 with an entry.
+    hit, _, _ = await _lookup(dut, PC_A, compressed=True)
+    assert hit == [True, True] and _returns(dut) == [False, True]
+    # Slot 2 in the next word.
+    hit, _, target = await _lookup(dut, PC_A + 2, compressed=True)
+    assert hit == [True, True] and _returns(dut) == [True, True]
+    assert target[1] == _low(dut, TARGET_B)
 
 
 @cocotb.test()

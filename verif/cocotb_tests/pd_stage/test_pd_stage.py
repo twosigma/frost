@@ -264,11 +264,13 @@ def _drive_backing(
     *,
     target: int = 0,
     compressed: bool = False,
+    is_return: bool = False,
 ) -> None:
     """Drive IF's backing BTB result: a hit in one slot, or none."""
     width = len(dut.i_backing_target) // 2
     dut.i_backing_hit.value = 0 if slot is None else 1 << slot
     dut.i_backing_compressed.value = int(compressed) << (slot or 0)
+    dut.i_backing_return.value = int(is_return and slot is not None) << (slot or 0)
     value = ((target >> 1) & ((1 << width) - 1)) << (width * (slot or 0))
     dut.i_backing_target.value = value if slot is not None else 0
 
@@ -1420,13 +1422,19 @@ async def test_backing_btb_calls_and_returns_operate_the_stack(dut: Any) -> None
     ret = _pack_i(imm=0, rs1=1, funct3=0, rd=0, opcode=OPC_JALR)
     swap = _pack_i(imm=0, rs1=1, funct3=0, rd=5, opcode=OPC_JALR)
     jalr_ra_offset = _pack_i(imm=8, rs1=1, funct3=0, rd=0, opcode=OPC_JALR)
+    jal = _pack_jal(imm=0x40, rd=0)
     cases = [
-        # instruction, stack entries, expected target, push, pop
-        (jal_ra, 2, target, True, False),
-        (ret, 2, top, False, True),
-        (ret, 0, target, False, True),
-        (swap, 1, top, True, True),
-        (jalr_ra_offset, 2, target, False, False),
+        # instruction, entry is a return, stack entries, expected target,
+        # push, pop
+        (jal_ra, False, 2, target, True, False),
+        (ret, True, 2, top, False, True),
+        (ret, True, 0, target, False, True),
+        (swap, True, 1, top, True, True),
+        (jalr_ra_offset, False, 2, target, False, False),
+        # An entry whose type no longer matches its instruction picks the
+        # target by its type; the stack operation follows the instruction.
+        (jal, True, 2, top, False, False),
+        (ret, False, 2, target, False, True),
     ]
     # A return-shaped JALR with a nonzero funct3 is not a jump at all.
     for funct3 in (1, 4):
@@ -1436,7 +1444,7 @@ async def test_backing_btb_calls_and_returns_operate_the_stack(dut: Any) -> None
         redirect, _, _, _ = await _backing_redirect(dut)
         assert not redirect
         assert not bool(dut.o_pd_redirect_ras_pop.value)
-    for instruction, entries, expected, push, pop in cases:
+    for instruction, entry_return, entries, expected, push, pop in cases:
         _drive_if_packet(
             dut,
             _packet(
@@ -1446,7 +1454,7 @@ async def test_backing_btb_calls_and_returns_operate_the_stack(dut: Any) -> None
                 ras_checkpoint_top=top,
             ),
         )
-        _drive_backing(dut, 0, target=target)
+        _drive_backing(dut, 0, target=target, is_return=entry_return)
         await _advance_cycle(dut)
         assert bool(dut.o_pd_redirect.value), hex(instruction)
         assert int(dut.o_pd_redirect_target.value) == expected, hex(instruction)
@@ -1462,10 +1470,11 @@ async def test_backing_btb_calls_and_returns_operate_the_stack(dut: Any) -> None
 
 @cocotb.test()
 async def test_backing_btb_slot2_call_links_after_slot2(dut: Any) -> None:
-    """A slot-2 call pushes the address after slot 2."""
+    """A slot-2 call pushes the address after slot 2; a slot-2 return pops."""
     await _setup_test(dut)
     pc = 0x8000_0200
     target = 0x8000_0F40
+    top = 0x8000_1234
     addi = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
     _drive_if_packet(dut, _packet(pc, addi))
     _drive_if_packet(dut, _packet(pc + 4, _pack_jal(imm=0x40, rd=1)), slot2=True)
@@ -1475,6 +1484,20 @@ async def test_backing_btb_slot2_call_links_after_slot2(dut: Any) -> None:
     assert bool(dut.o_pd_redirect_ras_push.value)
     assert not bool(dut.o_pd_redirect_ras_pop.value)
     assert int(dut.o_pd_redirect_ras_link.value) == pc + 8
+    _clear_inputs(dut)
+    await _advance_cycle(dut)
+
+    ret = _pack_i(imm=0, rs1=1, funct3=0, rd=0, opcode=OPC_JALR)
+    _drive_if_packet(
+        dut, _packet(pc, addi, ras_checkpoint_valid_count=1, ras_checkpoint_top=top)
+    )
+    _drive_if_packet(dut, _packet(pc + 4, ret), slot2=True)
+    _drive_backing(dut, 1, target=target, is_return=True)
+    await _advance_cycle(dut)
+    assert bool(dut.o_pd_redirect.value) and bool(dut.o_pd_redirect_slot2.value)
+    assert int(dut.o_pd_redirect_target.value) == top
+    assert bool(dut.o_pd_redirect_ras_pop.value)
+    assert not bool(dut.o_pd_redirect_ras_push.value)
     _clear_inputs(dut)
     await _advance_cycle(dut)
 
@@ -1528,3 +1551,37 @@ async def test_backing_btb_redirects_a_slot2_jump(dut: Any) -> None:
         assert redirect is slot2_valid
         if slot2_valid:
             assert taken and slot2 and redirect_target == target
+
+
+@cocotb.test()
+async def test_backing_btb_slot2_redirect_behind_reserved_slot1_jump(dut: Any) -> None:
+    """A slot-2 redirect behind a reserved C.JR x0 takes slot 2's own entry.
+
+    The reserved parcel expands to an illegal JALR that pairs with a slot 2;
+    with no backing entry for slot 1, the slot-2 redirect targets slot 2's
+    entry with slot 2's stack operation.
+    """
+    await _setup_test(dut)
+    pc = 0x8000_0200
+    target = 0x8000_0F40
+    c_jr_x0 = 0x8002
+    jalr_x0_x0 = _pack_i(imm=0, rs1=0, funct3=0, rd=0, opcode=OPC_JALR)
+    _drive_if_packet(
+        dut,
+        {
+            "program_counter": pc,
+            "raw_parcel": c_jr_x0,
+            "sel_nop": False,
+            "sel_compressed": True,
+            "effective_instr": jalr_x0_x0,
+        },
+    )
+    _drive_if_packet(dut, _packet(pc + 2, _pack_jal(imm=0x40, rd=1)), slot2=True)
+    _drive_backing(dut, 1, target=target)
+    await _advance_cycle(dut)
+    assert bool(dut.o_pd_redirect.value) and bool(dut.o_pd_redirect_slot2.value)
+    assert int(dut.o_pd_redirect_target.value) == target
+    assert bool(dut.o_pd_redirect_ras_push.value)
+    assert int(dut.o_pd_redirect_ras_link.value) == pc + 6
+    _clear_inputs(dut)
+    await _advance_cycle(dut)
