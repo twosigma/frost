@@ -345,8 +345,8 @@ async def inclusion_and_maintenance(dut: Any) -> None:
 
 
 @cocotb.test()
-async def sc_self_probe_and_exact_write(dut: Any) -> None:
-    """Check selected SC ownership through its self probe and tagged write."""
+async def sc_local_ownership_and_exact_write(dut: Any) -> None:
+    """Check selected SC's Modified ownership through its tagged write."""
     b = Cluster(dut)
     await b.reset()
     address = 0x80000000
