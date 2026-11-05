@@ -119,9 +119,9 @@ prefetch: `L2_PREFETCH_INFLIGHT` data identities, three by default, and one
 instruction identity. Admission arbitration is external to the endpoint slots.
 
 Home tid is six bits. For H harts, `completion_count(H)` is `11*H+12`: eleven
-identities per hart, eight DMA credits and four prefetch identities. Each
-prefetch identity has a completion slot of its own, so a prefetch never
-takes a hart or DMA slot.
+identities per hart, eight DMA credits and four prefetch identities. The
+last four slots take only prefetch requests, as many as the prefetch
+identities, so a prefetch never takes a hart or DMA slot.
 `fill_base(H)` equals this count, `put_base(H,F)` adds F fill controls, and
 `home_count(H,F)` adds two PutM controls per hart. H is 1 or 2. Home identities
 must fit 64 values. Elaboration rejects invalid geometry and identity
@@ -550,8 +550,8 @@ included, so store streams train it as well as load misses; the instruction
 table, two streams, watches its ReadOnce.IF refills. A table confirms a
 stream on two consecutive L2 lines and requests up to
 `L2_PREFETCH_DISTANCE` (8) lines after its last line, never past that line's
-4 KiB page, each line once. The tables load new requests only while the home
-reports room for a prefetch fill.
+4 KiB page, each line once while the entry holds the stream. The tables load
+new requests only while the home reports room for a prefetch fill.
 
 The instruction table enables `IGNORE_BACKWARD`. A refill up to
 `2 * L2_PREFETCH_DISTANCE - 1` lines behind an entry's last line in the
@@ -590,10 +590,11 @@ readers that arrive meanwhile take its seats and wake at the install. Prefetch r
 normal allocating replacement; the DMA non-allocating way-0 policy does not
 apply to them.
 
-The four prefetch completion slots belong to source 3 alone and sit outside
-the hart-facing grant path. The agent takes every G and U for source 3 when
-it is presented, so the cluster returns their readiness for source 3
-unconditionally and those slots capture their G without it. An error
+The four prefetch completion slots hold source-3 requests alone. Their
+grants share the result buffers and the grant register with hart grants,
+but the agent takes every G and U for source 3 when it is presented, so the
+cluster returns their readiness for source 3 unconditionally and those slots
+capture their G without it. An error
 response to a prefetch fill frees the fill without an install; the prefetch
 itself completes without an error, demand readers seated on the fill wake
 with the error, and a later demand miss reads the line again.
@@ -1165,7 +1166,7 @@ to answer.
 
 | Target family | Coverage |
 | --- | --- |
-| `coherence_prefetch*` | The prefetch agent against the home at 32- and 64-byte lines: data identities held at C and U, GrantAck at each lookup before the fill's memory response, fills that install on their own, a failed fill, reset and fatal stop, demands joining prefetch fills, dirty replacement, PutM beside live prefetches of its line, marked DMA fills, DMA responses before C and U, progress with completion, result and PutM storage full, and instruction and data streams on one line |
+| `coherence_prefetch*` | The prefetch agent against the home at 32- and 64-byte lines: data identities held at C and U, GrantAck at each lookup before the fill's memory response, fills that install on their own, a failed fill, reset and fatal stop, demands joining prefetch fills, dirty replacement, PutM beside live prefetches of its line, marked DMA fills, DMA responses before C and U, progress with every hart and DMA completion slot, every result buffer and both PutM controls full, and instruction and data streams on one line |
 | `coherence_prefetch_contention*` | Demand latency and bandwidth with competing streams, dirty victims and DMA, with and without prefetch |
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, and dirty-L1D walker coherence |
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, a miss waiting for a way of its set, writeback and fill progress, and `fence.i` |

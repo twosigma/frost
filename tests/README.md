@@ -91,7 +91,8 @@ through G, C and U with C and U held, the GrantAck of each lookup before
 its fill's memory response, fills that install on their own, a failed fill
 that installs nothing, errors, reset and fatal stop, demand joins, dirty recalls, a PutM
 accepted beside live prefetches of its line, marked DMA fills, progress
-with completion, result and PutM storage full, and instruction and data
+with every hart and DMA completion slot, every result buffer and both
+PutM controls full, and instruction and data
 streams on one line, where no line is requested twice while an identity
 holds it.
 The transport driver admits DMA at D and models the ingress's response

@@ -440,7 +440,7 @@ async def dma_response_before_delayed_completion(dut: Any) -> None:
 
 @cocotb.test()
 async def full_completion_queue_progress(dut: Any) -> None:
-    """Drain full completion, result and PutM storage with prefetches held at C."""
+    """Drain full hart and DMA slots, results and PutM with prefetches held."""
     b = PrefetchHome(dut)
     await b.reset()
     base = 0x8000C000
