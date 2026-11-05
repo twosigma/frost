@@ -168,10 +168,11 @@ every supported extension and privilege mode.
   dedicated paths for compares, moves, min/max, FCLASS and sign injection
   that take two cycles. Integer-to-FP conversion takes four cycles, or two
   for zero.
-- Branch prediction with a 256-entry BTB, a bimodal and a tagged
-  path-history direction predictor, and an 8-entry return stack. A
-  mispredicted conditional branch redirects fetch and restores the rename
-  tables the cycle after it resolves.
+- Branch prediction with a 256-entry BTB, a 1024-entry two-way backing BTB
+  whose jump, call and return predictions redirect fetch from predecode, a
+  bimodal and a tagged path-history direction predictor, and an 8-entry
+  return stack. A mispredicted conditional branch redirects fetch and
+  restores the rename tables the cycle after it resolves.
 - Sv39 virtual memory with hardware page-table walks and separate 16-entry
   instruction and data TLBs. Intra-page instruction translation uses the
   live page offset without a fetch bubble; eligible data accesses use a

@@ -194,8 +194,12 @@ branches are trained, though PD overrides only slot 1.
 
 `backing_btb` is a second BTB level with 1024 entries in two ways (four for
 measurement, through `riscv_pkg::BackingBtbWays`). Every BTB update also
-trains it, so it holds the BTB's branches and more. Its sets are indexed by
-the PC's word, like the BTB. An entry's tag holds the PC bits above the
+trains it, conditional branches included, though only its jumps, calls and
+returns are used. A correctly predicted jump sends no update, so its way
+ages while other branches in its set update theirs, and replacement or an
+update dropped because the update one stage ahead writes the same set can
+lose a branch the BTB holds. Its sets are indexed by the PC's word, like
+the BTB. An entry's tag holds the PC bits above the
 index, and PC[1] is kept with its target, counter, size, and type. A miss
 allocates an invalid way or the way the set's replacement state names; a
 target in another 4 GiB region invalidates the entry, as in the BTB. Reset
@@ -221,7 +225,10 @@ entry of the packet's recovery point while the stack holds an entry, and
 the backing BTB's target otherwise. IF performs the operation once, in the
 redirect's first cycle (see [Return address stack
 recovery](#return-address-stack-recovery)). A build that disables branch
-prediction gets no backing redirects.
+prediction gets no backing redirects. A jump the backing BTB predicts is
+not copied into the BTB: its correct prediction sends no update, so the
+BTB keeps the entry in that slot, and the jump costs the PD redirect for as
+long as that entry stays.
 
 ### Two-wide fetch and dispatch
 
