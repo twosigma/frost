@@ -1552,6 +1552,16 @@ async def test_backing_btb_redirects_a_slot2_jump(dut: Any) -> None:
         if slot2_valid:
             assert taken and slot2 and redirect_target == target
 
+    # A slot 2 behind a faulting slot 1 faults too and never redirects, even
+    # when slot 1's bytes decode as a conditional branch.
+    branch = _pack_b(imm=8, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
+    for slot1 in (addi, branch):
+        _drive_if_packet(dut, _packet(pc, slot1, fetch_fault=True, tage_valid=True))
+        _drive_if_packet(dut, _packet(pc + 4, jal, fetch_fault=True), slot2=True)
+        _drive_backing(dut, 1, target=target)
+        redirect, _, _, _ = await _backing_redirect(dut)
+        assert not redirect, hex(slot1)
+
 
 @cocotb.test()
 async def test_backing_btb_slot2_redirect_behind_reserved_slot1_jump(dut: Any) -> None:
