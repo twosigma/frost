@@ -109,7 +109,7 @@ async def _update(
     compressed: bool = False,
     call: bool = False,
     ret: bool = False,
-    settle_cycles: int = 3,
+    settle_cycles: int = 4,
 ) -> None:
     """Apply one training update, then wait until every array holds it."""
     dut.i_update.value = 1
@@ -222,27 +222,46 @@ async def test_ways_fill_then_replace_the_older_way(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_back_to_back_updates_to_one_set(dut: Any) -> None:
-    """Consecutive updates to one set see each other and fill both ways."""
+async def test_close_updates_to_one_set(dut: Any) -> None:
+    """Close updates to one set land, except the second of a consecutive pair."""
     await _setup(dut)
     other = _same_set_pc(dut, PC_A, 1)
-    dut.i_update.value = 1
-    dut.i_update_taken.value = 1
-    dut.i_update_pc.value = PC_A
-    dut.i_update_target.value = TARGET_A
-    await _cycle(dut)
-    dut.i_update_pc.value = other
-    dut.i_update_target.value = TARGET_B
-    await _cycle(dut)
-    dut.i_update_pc.value = PC_A
-    dut.i_update_target.value = TARGET_B + 0x20
-    await _cycle(dut)
-    dut.i_update.value = 0
-    await _cycle(dut, 3)
+
+    async def drive(pc: int, target: int) -> None:
+        dut.i_update.value = 1
+        dut.i_update_taken.value = 1
+        dut.i_update_pc.value = pc
+        dut.i_update_target.value = target
+        await _cycle(dut)
+
+    async def idle(count: int) -> None:
+        dut.i_update.value = 0
+        await _cycle(dut, count)
+
+    # Two cycles apart: the second reads the set the first writes.
+    await drive(PC_A, TARGET_A)
+    await idle(1)
+    await drive(other, TARGET_B)
+    await idle(1)
+    await drive(PC_A, TARGET_B + 0x20)
+    await idle(4)
     hit, _, target = await _lookup(dut, PC_A)
     assert hit[0] and target[0] == _low(dut, TARGET_B + 0x20)
     hit, _, target = await _lookup(dut, other)
     assert hit[0] and target[0] == _low(dut, TARGET_B)
+
+    # Consecutive: the second update is dropped and the third lands.
+    third = _same_set_pc(dut, PC_A, 2)
+    await drive(PC_A, TARGET_A)
+    await drive(third, TARGET_A + 0x40)
+    await drive(other, TARGET_A + 0x80)
+    await idle(4)
+    hit, _, target = await _lookup(dut, PC_A)
+    assert hit[0] and target[0] == _low(dut, TARGET_A)
+    hit, _, target = await _lookup(dut, other)
+    assert hit[0] and target[0] == _low(dut, TARGET_A + 0x80)
+    hit, _, _ = await _lookup(dut, third)
+    assert not hit[0]
 
 
 @cocotb.test()

@@ -483,9 +483,10 @@ commits, and each is a read-modify-write of a 2-bit counter.
 but in order, and back-to-back updates to one entry see each other. A slot-1
 correct-branch update that loses its cycle is dropped, and a waiting slot-2
 update is replaced by a newer one; both cost accuracy only. The backing BTB
-registers the same selected update, reads its set, and writes the set one
-cycle after the BTB writes; an update that reads the set being written takes
-the written set.
+registers the same selected update, reads its set, finds its way, and writes
+the set two cycles after the BTB writes. An update that reads the set being
+written takes the written set, and an update to the same set as the one in
+the stage ahead of it is dropped, which costs accuracy only.
 
 ### 4 GiB target limit
 

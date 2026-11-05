@@ -39,14 +39,16 @@
  * whose set is not the one read gets no hit, and neither does a slot 2 in
  * the word after the last set, which belongs to the next block of sets.
  *
- * Training. An update registers, reads its set from a third payload array
- * that also holds the tags, valid bits and replacement state, and writes the
- * whole set into every array on the next edge. An update to the set written
- * on the edge it reads takes the written set instead. A hit trains the
- * counter, a miss replaces an invalid way or the way the replacement state
- * names, and replacement then points away from the written way. Lookups and
- * training share no state across an edge: a lookup reads the arrays as they
- * were before that edge's write.
+ * Training. An update registers and reads its set from a third payload
+ * array that also holds the tags, valid bits and replacement state; the
+ * next stage finds its way and registers it, and the last writes the whole
+ * set into every array. An update to the set written on the edge it reads
+ * takes the written set instead, and one to the set that the update a stage
+ * ahead writes is dropped. A hit trains the counter, a miss replaces an
+ * invalid way or the way the replacement state names, and replacement then
+ * points away from the written way. Lookups and training share no state
+ * across an edge: a lookup reads the arrays as they were before that edge's
+ * write.
  *
  * Reset clears one set per cycle, all sets in 2**IndexBits cycles. Lookups
  * read while clearing miss, and updates arriving then are dropped.
@@ -202,7 +204,7 @@ module backing_btb #(
   end
 
   // An update to the set written on the edge that read it takes the written
-  // set.
+  // set. One to the set that the update a stage ahead is writing is dropped.
   logic b_forward_q;
   logic [SetBits-1:0] forward_set_q;
   logic [SetBits-1:0] update_set_raw;
@@ -236,31 +238,61 @@ module backing_btb #(
     end
   end
 
+  // Stage C registers the set, the chosen way and the update, then writes.
+  logic c_valid;
+  logic [IndexBits-1:0] c_index;
+  logic [SetBits-1:0] c_set;
+  logic c_hit;
+  logic [WayBits-1:0] c_way;
+  logic [UpperBits-1:0] c_upper;
+  logic c_halfword;
+  logic [TARGET_BITS-2:0] c_target;
+  logic c_region_ok;
+  logic c_taken, c_compressed, c_call, c_return;
+  always_ff @(posedge i_clk) begin
+    c_valid      <= b_valid && !i_reset && !(c_valid && c_index == b_index);
+    c_index      <= b_index;
+    c_set        <= b_set;
+    c_hit        <= b_hit;
+    c_way        <= b_way;
+    c_upper      <= b_upper;
+    c_halfword   <= b_halfword;
+    c_target     <= b_target;
+    c_region_ok  <= b_region_ok;
+    c_taken      <= b_taken;
+    c_compressed <= b_compressed;
+    c_call       <= b_call;
+    c_return     <= b_return;
+  end
+
   // A hit trains its counter and a miss allocates, both only for a target in
-  // the branch's region. A hit with a target outside it is invalidated.
+  // the branch's region. A hit with a target outside it is invalidated, and
+  // a miss with one writes its set unchanged.
+  logic [ReplBits-1:0] c_replacement;
   logic [TagRowBits-1:0] write_tags;
   logic [PayloadRowBits-1:0] write_payloads;
   logic [ReplBits-1:0] write_replacement;
+  assign c_replacement = c_set[SetBits-1-:ReplBits];
   for (genvar way = 0; way < WAYS; way++) begin : gen_update_write
     tag_t old_tag, new_tag;
     payload_t old_payload, new_payload;
-    assign old_tag = b_set[PayloadRowBits+way*TagEntryBits+:TagEntryBits];
-    assign old_payload = b_set[way*PayloadEntryBits+:PayloadEntryBits];
+    assign old_tag = c_set[PayloadRowBits+way*TagEntryBits+:TagEntryBits];
+    assign old_payload = c_set[way*PayloadEntryBits+:PayloadEntryBits];
     always_comb begin
       new_tag = old_tag;
       new_payload = old_payload;
-      if (b_way == WayBits'(way)) begin
-        if (b_region_ok) begin
+      if (c_way == WayBits'(way)) begin
+        if (c_region_ok) begin
           new_tag.valid = 1'b1;
-          new_tag.upper = b_upper;
-          new_payload.halfword = b_halfword;
-          new_payload.target = b_target;
-          new_payload.counter = b_hit ?
-              train_counter(old_payload.counter, b_taken) : (b_taken ? 2'b10 : 2'b01);
-          new_payload.compressed = b_compressed;
-          new_payload.is_call = b_call;
-          new_payload.is_return = b_return;
-        end else if (b_hit) begin
+          new_tag.upper = c_upper;
+          new_payload.halfword = c_halfword;
+          new_payload.target = c_target;
+          new_payload.counter = c_hit ?
+              train_counter(old_payload.counter, c_taken) : (c_taken ? 2'b10 : 2'b01);
+          new_payload.compressed = c_compressed;
+          new_payload.is_call = c_call;
+          new_payload.is_return = c_return;
+        end else if (c_hit) begin
           new_tag.valid = 1'b0;
         end
       end
@@ -268,16 +300,16 @@ module backing_btb #(
     assign write_tags[way*TagEntryBits+:TagEntryBits] = sweep_active ? '0 : new_tag;
     assign write_payloads[way*PayloadEntryBits+:PayloadEntryBits] = sweep_active ? '0 : new_payload;
   end
-  assign write_replacement = sweep_active ? '0 : (b_region_ok ? touch(
-      b_replacement, b_way
-  ) : b_replacement);
+  assign write_replacement = sweep_active ? '0 : (c_region_ok ? touch(
+      c_replacement, c_way
+  ) : c_replacement);
 
   logic [SetBits-1:0] write_set;
   logic write_enable;
   logic [IndexBits-1:0] write_index;
   assign write_set = {write_replacement, write_tags, write_payloads};
-  assign write_enable = sweep_active || (b_valid && (b_region_ok || b_hit));
-  assign write_index = sweep_active ? sweep_index : b_index;
+  assign write_enable = sweep_active || c_valid;
+  assign write_index = sweep_active ? sweep_index : c_index;
 
   always_ff @(posedge i_clk) begin
     b_forward_q   <= write_enable && (write_index == a_index);
@@ -431,7 +463,7 @@ module backing_btb #(
 
   // A set never holds one tag in two ways.
   always_ff @(posedge i_clk) begin
-    if (!i_reset && !sweep_active && b_valid) begin
+    if (!i_reset && !sweep_active && c_valid) begin
       for (int first = 0; first < WAYS; first++) begin
         for (int second = first + 1; second < WAYS; second++) begin
           p_backing_btb_unique_tags :
