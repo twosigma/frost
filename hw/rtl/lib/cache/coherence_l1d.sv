@@ -174,8 +174,8 @@ module coherence_l1d #(
     ProbeOp,
     MaintOp,
     AtomicWriteOp,
-    PrefetchOp,
-    SCOp
+    SCOp,
+    PrefetchOp
   } operation_t;
   // One-hot state keeps each transition, including the W-dependent probe
   // absorption, to a single term of its next state.

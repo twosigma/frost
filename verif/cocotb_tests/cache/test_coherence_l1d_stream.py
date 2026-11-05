@@ -43,7 +43,7 @@ class StreamPrivate(Private):
                 if (
                     self.get("phase_q") == 2
                     and self.get("array_valid")
-                    and self.get("operation_q") == 6
+                    and self.get("operation_q") == 7
                     and self.get("array_hit")
                     and self.get("o_read_valid")
                     and not self.get("i_read_ready")
@@ -565,7 +565,7 @@ async def cancellation_at_each_unaccepted_stage(dut: Any) -> None:
                 phase = b.get("phase_q")
                 hint = b.get("hint_valid_q") and not b.get("hint_checked_q")
                 checked = b.get("hint_valid_q") and b.get("hint_checked_q")
-                selected = b.get("operation_q") == 6
+                selected = b.get("operation_q") == 7
                 reached = (
                     hint,
                     checked and phase == 0,
@@ -626,7 +626,7 @@ async def live_conflicts_on_hint_acceptance(dut: Any) -> None:
             await b.grant(1)
             await b.release(1)
         for _ in range(150):
-            if b.get("operation_q") == 6 and b.get("phase_q") == 3:
+            if b.get("operation_q") == 7 and b.get("phase_q") == 3:
                 break
             await b.tick()
         else:
@@ -1007,7 +1007,7 @@ async def atomic_admission_on_hint_acceptance(dut: Any) -> None:
             await b.issue(0, base)
             await b.issue(1, base + 32)
             for _ in range(150):
-                if b.get("operation_q") == 6 and b.get("phase_q") == 3:
+                if b.get("operation_q") == 7 and b.get("phase_q") == 3:
                     break
                 await b.tick()
             else:
