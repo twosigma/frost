@@ -68,6 +68,33 @@ delegates the wired sources to the supervisor APLIC. Linux uses supervisor
 IMSIC delivery for IPIs and wired interrupts. The build connects one hart;
 the decoder and APLIC retain their hart-count parameters.
 
+Today the home probes only the one L1D, and several request and reply
+paths are fixed to hart 0. The steps to the second hart keep the single-hart
+build cycle-identical until the two-hart configuration exists:
+
+1. A written two-hart protocol contract, checked in the protocol model,
+   before any RTL changes.
+2. Hart identity throughout: request sources, reply routing, the home's
+   completion endpoints, `mhartid`, and the per-hart CSRs carry a hart
+   number.
+3. The home probes both L1Ds. Reads, store upgrades, and LRs probe the other
+   L1D, and each engine accepts each hart's reply on its own, since two
+   engines probing the harts in opposite orders would otherwise deadlock.
+4. A two-L1D cluster bench and bounded proofs for the races a second
+   requester creates: reads and writes to one sector from both harts, an
+   upgrade crossing an invalidation, a write-back crossing a probe, LR/SC
+   and AMOs across harts, and DMA against both harts.
+5. A two-hart `cpu_top` and SoC: per-hart timer compare and software
+   interrupts, APLIC and IMSIC targets for each hart, debug-module hart
+   selection, and a boot path that starts the second hart.
+6. Two-hart bare-metal tests, RVWMO litmus tests, and multi-hart debug
+   tests.
+7. A two-hart X3 build and hardware runs.
+8. OpenSBI hart start and Linux SMP, up to Debian on both harts.
+9. Multi-hart performance work, such as a hint that lets the home skip read
+   probes the other hart does not need, and home capacity sized for two
+   harts.
+
 Done means Debian running on both harts, multi-hart scaling reported
 separately from single-hart performance, and hours of sustained-load testing
 that repeatedly exercise the recovery paths.
@@ -276,8 +303,9 @@ Priorities, guided by the performance counters and timing reports:
 6. Cheaper 32-bit operations on RV64. `MULW` takes three arithmetic cycles
    and word division or remainder takes up to nineteen, though CoreMark gains
    little from a faster `MULW`. Use instruction traces to evaluate fusion or
-   elimination at rename. Any such transformation must keep precise exceptions, retirement
-   counts, and debug single-step behavior, and be formally verified.
+   elimination at rename. Any such transformation must keep precise
+   exceptions, retirement counts, and debug single-step behavior, and be
+   formally verified.
 7. Queue capacity where counters show pressure. Sixteen INT
    reservation-station entries capture the measured benefit; larger INT RS,
    ROB, and load-queue sizes currently show little gain, and a second memory
@@ -366,8 +394,15 @@ and targeted microbenchmarks give these items:
    per line for loads to the same line, or a next-line request from the L1D
    would let one stream keep several lines in flight, and each combines with
    a stream prefetcher in the home. Dependent loads are also slower than
-   through the previous hierarchy, by about 60% for L2 hits and 35% for DRAM,
-   so the home's request path needs a latency budget.
+   through the previous hierarchy: in simulation an L2 hit takes 45 cycles
+   against 23, a DRAM miss 39 cycles more, and a page-table walk 33 cycles
+   more. The L1D installs a line before it answers the load, the home repeats
+   its tag lookup and data read after a fill arrives, and registered stages
+   and arbitration add the rest. Answering a load from its grant, reading a
+   victim's data only when it is dirty, waking a fill's waiting requests when
+   the install is accepted, forwarding the arriving line to the first
+   request, and a second request slot for the page-table walker would
+   recover most of the difference.
 
 ## Core area
 
