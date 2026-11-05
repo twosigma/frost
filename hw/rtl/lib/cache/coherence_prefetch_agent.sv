@@ -12,14 +12,14 @@
  * MAX_INFLIGHT - 1, the instruction table the next IF_INFLIGHT.
  *
  * The home answers each Prefetch with a data-less GrantAck after one lookup.
- * A fill it starts goes on after the identity's release, and target data
- * needs no probe; victim replacement can recall private data. Each identity
- * stays occupied through G, C and U, and the agent takes every G and U for
- * source 3 when presented. A predicted line that a live identity already
- * holds is dropped, so no two live identities hold one line. Predictions
- * stay within the training access's 4 KiB page. Fatal stop blocks training
- * and endpoint request admission. Occupied identities keep their protocol
- * state.
+ * A fill it starts does not wait for the identity, which may be released
+ * first, and target data needs no probe; victim replacement can recall
+ * private data. Each identity stays occupied through G, C and U, and the
+ * agent takes every G and U for source 3 when presented. A predicted line
+ * that a live identity already holds is dropped, so no two live identities
+ * hold one line. Predictions stay within the training access's 4 KiB page.
+ * Fatal stop blocks training and endpoint request admission. Occupied
+ * identities keep their protocol state.
  */
 
 `include "coherence_types.svh"
