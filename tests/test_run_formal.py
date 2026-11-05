@@ -1151,15 +1151,15 @@ SBY_TASKS = [
     ),
     (
         "coh_grant_select2_prove",
-        "Two grant candidates preserve credit-qualified priority and failure selection.",
+        "Two grant candidates preserve credit-qualified priority, failure and packet fields.",
     ),
     (
         "coh_grant_select4_prove",
-        "Four grant candidates preserve credit-qualified priority and failure selection.",
+        "Four grant candidates preserve credit-qualified priority, failure and packet fields.",
     ),
     (
         "coh_grant_select8_prove",
-        "Eight grant candidates preserve credit-qualified priority and failure selection.",
+        "Eight grant candidates preserve credit-qualified priority, failure and packet fields.",
     ),
     (
         "coh_read_owners1_prove",

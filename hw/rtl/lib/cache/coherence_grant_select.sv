@@ -21,17 +21,25 @@ module coherence_grant_select #(
 ) (
     input logic [SLOTS-1:0] i_offer,
     input logic [SLOTS-1:0] i_failure,
+    input logic [SLOTS-1:0] i_owner_store,
+    input logic [SLOTS-1:0] i_grant_failure,
+    input logic [SLOTS-1:0] i_grant_error,
     input logic i_zero_credit,
     input logic i_other_credit,
     output logic o_valid,
     output logic [IndexBits-1:0] o_index,
     output logic [SLOTS-1:0] o_onehot,
-    output logic o_failure
+    output logic o_failure,
+    output logic o_owner_store,
+    output logic o_grant_failure,
+    output logic o_grant_error
 );
   (* keep = "true" *) logic [SLOTS-1:0] offered, failure;
   (* keep = "true" *) logic zero_selected, other_allowed, other_failure;
   (* keep = "true" *) logic [SLOTS-1:1] other_first;
   logic [IndexBits-1:0] other_index;
+  (* keep = "true" *) logic other_selected;
+  (* keep = "true" *) logic [2:0] other_fields;
   assign offered = i_offer;
   assign failure = i_failure;
   assign zero_selected = offered[0] && i_zero_credit;
@@ -45,6 +53,17 @@ module coherence_grant_select #(
     for (int slot = 1; slot < SLOTS; slot++)
     other_index |= IndexBits'(slot) & {IndexBits{other_first[slot]}};
   end
+  // Packet attributes share the unqualified nonzero priority decision.
+  // An idle decision selects endpoint zero.
+  assign other_selected = other_allowed && |offered[SLOTS-1:1];
+  always_comb begin
+    other_fields = '0;
+    for (int slot = 1; slot < SLOTS; slot++)
+    other_fields |= {i_owner_store[slot], i_grant_failure[slot], i_grant_error[slot]} &
+          {3{other_first[slot]}};
+  end
+  assign {o_owner_store, o_grant_failure, o_grant_error} = other_selected ?
+      other_fields : {i_owner_store[0], i_grant_failure[0], i_grant_error[0]};
   assign o_valid = zero_selected || (i_other_credit && |offered[SLOTS-1:1]);
   assign o_index = other_allowed ? other_index : '0;
   assign o_onehot[0] = zero_selected;
@@ -66,6 +85,9 @@ module coherence_grant_select #(
       ref_index = IndexBits'(slot);
     end
     if (ref_valid) ref_onehot[ref_index] = 1'b1;
+    p_grant_fields_exact :
+    assert ({o_owner_store, o_grant_failure, o_grant_error} ==
+        {i_owner_store[ref_index], i_grant_failure[ref_index], i_grant_error[ref_index]});
     p_grant_valid_exact : assert (o_valid == ref_valid);
     p_grant_index_exact : assert (o_index == ref_index);
     p_grant_onehot_exact : assert (o_onehot == ref_onehot);

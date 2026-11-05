@@ -738,12 +738,18 @@ module coherence_l1d #(
   ) grant_select (
       .i_offer(grant_offer),
       .i_failure(ep_read_fail),
+      .i_owner_store(ep_store),
+      .i_grant_failure(ep_fail),
+      .i_grant_error(ep_fail_error),
       .i_zero_credit(wb_reserved_q),
       .i_other_credit(wb_free),
       .o_valid(grant_valid),
       .o_index(grant_pick),
       .o_onehot(pick_onehot),
-      .o_failure(grant_read_failure)
+      .o_failure(grant_read_failure),
+      .o_owner_store(grant_is_store),
+      .o_grant_failure(grant_failure),
+      .o_grant_error(grant_error)
   );
   assign read_service_waiting = rd_candidate || load_grant_eligible;
   // An idle selection names endpoint zero. Valid selections use the grant mask.
@@ -753,9 +759,6 @@ module coherence_l1d #(
     for (int ep = 0; ep < EpSlots; ep++)
       grant |= ep_grant[ep] & {(ADDR_WIDTH + 275) {grant_mux_select[ep]}};
   end
-  assign grant_is_store = |(grant_mux_select & ep_store);
-  assign grant_failure = |(grant_mux_select & ep_fail);
-  assign grant_error = |(grant_mux_select & ep_fail_error);
   assign selected_grant_store = ep_store[grant_ep_q];
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk)

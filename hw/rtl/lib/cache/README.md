@@ -279,8 +279,9 @@ Nonzero grant candidates share free writeback credit; endpoint zero uses its
 reserved credit. `coherence_grant_select` applies that shared credit after
 choosing the first nonzero candidate. For binary inputs, its outputs match a priority scan over
 all credit-qualified candidates. The same selection qualifies the endpoint
-failure bit. The one-hot decision selects the grant packet, owner and failure
-fields in parallel. An idle decision selects endpoint zero.
+failure bit. Owner, failure and error fields use the nonzero priority decision
+before shared credit qualification. The packet uses the one-hot selection.
+An idle decision selects endpoint zero.
 A younger store grant waits
 in its endpoint while the head and eligible reads continue. Endpoint 0
 reserves a free dirty-victim slot through installation. A nonzero endpoint
