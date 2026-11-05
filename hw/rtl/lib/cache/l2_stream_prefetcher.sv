@@ -163,7 +163,7 @@ module l2_stream_prefetcher #(
   logic [    LineBits-1:0] req_line_q;
   logic [     ID_BITS-1:0] req_id_q;
   logic [      NumIds-1:0] id_busy_q;  // loaded, response not yet back
-  logic [InflightBits-1:0] inflight_q;
+  logic [InflightBits-1:0] inflight_q;  // shadow count for ownership checks
 
   assign o_req_valid = req_valid_q;
   assign o_req_addr  = {req_line_q, {LineOffBits{1'b0}}};
@@ -206,12 +206,17 @@ module l2_stream_prefetcher #(
     end
   end
 
-  // The lowest free id.
+  // The lowest free id below the request cap.
   logic [ID_BITS-1:0] free_id;
+  logic free_any;
   always_comb begin
     free_id = '0;
-    for (int n = int'(NumIds) - 1; n >= 0; n--) begin
-      if (!id_busy_q[n]) free_id = ID_BITS'(n);
+    free_any = 1'b0;
+    for (int n = int'(MAX_INFLIGHT) - 1; n >= 0; n--) begin
+      if (!id_busy_q[n]) begin
+        free_id = ID_BITS'(n);
+        free_any = 1'b1;
+      end
     end
   end
 
@@ -224,7 +229,7 @@ module l2_stream_prefetcher #(
   assign obs_allocates = obs_valid_q && !(|obs_succ) && !(|obs_preserved);
   assign load = (!req_valid_q || req_fire) && cand_any && i_enable &&
       !(obs_allocates && (st_victim_q == cand_sel)) &&
-      (inflight_q < InflightBits'(MAX_INFLIGHT));
+      free_any;
 
   // A candidate stays in its entry's page, so only its page offset is added.
   logic [LineBits-1:0] next_line;
@@ -315,6 +320,7 @@ module l2_stream_prefetcher #(
 `endif
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
+      assert (free_any == (inflight_q < InflightBits'(MAX_INFLIGHT)));
       if (load)
         assert (next_line == st_line_q[cand_sel] + LineBits'(st_ahead_q[cand_sel]) + LineBits'(1));
       assert (!i_resp_valid || id_busy_q[i_resp_id]);
@@ -340,6 +346,8 @@ module l2_stream_prefetcher #(
       if (load && id_busy_q[free_id]) $error("l2_stream_prefetcher: no free id for a load");
       if (inflight_q != InflightBits'($countones(id_busy_q)))
         $error("l2_stream_prefetcher: in-flight count %0d disagrees with ids", inflight_q);
+      if (free_any != (inflight_q < InflightBits'(MAX_INFLIGHT)))
+        $error("l2_stream_prefetcher: free ids disagree with the in-flight cap");
       if (obs_valid_q && obs_line_m1_q + LineBits'(1) != obs_line_q)
         $error("l2_stream_prefetcher: observed line predecessor is stale");
       if (load && next_line != st_line_q[cand_sel] + LineBits'(st_ahead_q[cand_sel]) + LineBits'(1))

@@ -1023,6 +1023,7 @@ and add the lookahead within the page.
 
 The reads are ordinary line reads on the prefetcher's side of the DMA port,
 at most `L2_PREFETCH_INFLIGHT` outstanding (4 by default).
+Admission selects the lowest free identity below this cap.
 Their responses only
 free the prefetcher's ids: the point is the L2 fill, which takes a way and
 touches the set's replacement state like a demand fill. A demand read that
