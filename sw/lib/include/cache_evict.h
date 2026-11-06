@@ -19,12 +19,13 @@
  *
  * The L1D, L1I, and L2 are 4-way with tree pseudo-LRU replacement. The L1D
  * also uses bimodal insertion: a fill becomes its set's most recently used
- * only one time in 32, so reading new lines of a set once replaces one way of
- * it over and over and evicts nothing else. An access that hits a line makes
- * it most recently used. A program that pushes a line out of the L1D with
- * other lines of its set touches each of them with cache_touch_line, which
- * reads the line and then hits it; CACHE_EVICTING_LINES lines not already
- * cached, touched that way, evict every line the set held
+ * only one time in 32, or when a read is attached to its miss or another miss
+ * of its set has not installed, so reading new lines of a set one at a time
+ * mostly replaces one way of it. An access that hits a line makes it most
+ * recently used. A program that pushes a line out of the L1D with other lines
+ * of its set touches each of them with cache_touch_line, which reads the line
+ * and then hits it; CACHE_EVICTING_LINES lines not already cached, touched
+ * that way, evict every line the set held
  * (hw/rtl/lib/cache/README.md, "Sets and ways"). In the L1I and the L2,
  * every fill becomes most recently used, so plain accesses do the same
  * there.

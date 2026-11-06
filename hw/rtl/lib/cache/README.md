@@ -234,7 +234,12 @@ uses the tag request's matching PLRU response. A hit updates replacement
 bits from the registered way during data service or the reply, before
 another request or update can enter. A lookup marked `i_req_no_touch`
 leaves replacement state unchanged on a hit; the L1D marks look-ahead
-lookups this way.
+lookups this way. The L1D's array uses bimodal insertion (see Sets and ways),
+and `i_update_touch` makes one insertion update replacement state. The L1D
+sets it for a fill with a read attached to its endpoint or another miss of its
+set not yet installed, which moves the fill off its set's next-victim position
+before the next installation in the set. Any other fill keeps bimodal
+insertion.
 An insertion update uses the most recent lookup's set and selected way;
 the controller completes that update before issuing another lookup.
 The L1D asserts this pairing for each grant installation.
