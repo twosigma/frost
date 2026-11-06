@@ -307,6 +307,9 @@ module coherence_l1d #(
   // entries are idle constants.
   localparam int unsigned EpSlots = 1 << EpBits;
   logic [EpSlots-1:0] live, ep_request_ready, ep_request_valid, ep_grant_valid, ep_grant_ready;
+`ifdef LOCAL_OWNER_PROOF
+  logic [6:0] f_ep_phase[EpSlots];
+`endif
   logic [EpSlots-1:0] ep_done_valid, ep_write_done, ep_g_ready, ep_u_ready;
   logic [EpSlots-1:0][1:0] ep_done_status;
   logic [EpSlots-1:0][ADDR_WIDTH+274:0] ep_grant;
@@ -996,6 +999,10 @@ module coherence_l1d #(
     assign ep_grant[ep] = endpoint_grant;
     assign ep_fail[ep] = endpoint_grant.error || endpoint_grant.opcode == coherence_pkg::GrantFail;
     assign ep_fail_error[ep] = endpoint_grant.error;
+`ifdef LOCAL_OWNER_PROOF
+    logic [6:0] f_endpoint_phase;
+    assign f_ep_phase[ep] = f_endpoint_phase;
+`endif
     coherence_request_endpoint #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .SOURCE(0),
@@ -1029,6 +1036,9 @@ module coherence_l1d #(
         .i_u_valid(i_u_valid),
         .o_u_ready(ep_u_ready[ep]),
         .i_u(i_u),
+`ifdef LOCAL_OWNER_PROOF
+        .o_phase(f_endpoint_phase),
+`endif
         .o_live(live[ep])
     );
   end
@@ -2774,6 +2784,81 @@ module coherence_l1d #(
   end
 `endif
 `ifdef LOCAL_ATOMIC_PROOF
+  // A failed read completes a cycle after its grant. A lookup keeps its read
+  // valid and unready only if that slot stays out of selection until then, so
+  // the slot stays owned. The owner tasks assume this; the owned tasks prove it.
+  always_ff @(posedge i_clk)
+    if (!i_rst && fail_clear_q) p_local_failed_owned : assert (rd_owned_q[fail_clear_slot_q]);
+`ifdef LOCAL_OWNER_PROOF
+  // f_owner[ep] marks an endpoint that owns a read's slot, endpoint 0 through
+  // U and the others until the read installs or fails, and f_owner_slot[ep]
+  // names that slot. An owner's slot flag is set and owners hold distinct
+  // slots, so one owner's clear leaves the others'.
+  logic [MISSES-1:0] f_owner;
+  logic [2:0] f_owner_slot[MISSES];
+  logic f_owner_phase, f_owner_flag, f_owner_distinct, f_owner_fail, f_owner_pending;
+  logic f_owner_free;
+  always_comb begin
+    for (int ep = 0; ep < MISSES; ep++) begin
+      f_owner_slot[ep] = ep == 0 ? acquisition_read_q : ld_read_q[ep];
+      f_owner[ep] = live[ep] && !ep_store[ep] &&
+          (ep == 0 ? !acquisition_sc_q : !ld_prefetch_q[ep] && !installed_q[ep]);
+    end
+    f_owner_phase = 1'b1;
+    f_owner_flag = 1'b1;
+    f_owner_distinct = 1'b1;
+    f_owner_fail = 1'b1;
+    f_owner_pending = 1'b1;
+    f_owner_free = 1'b0;
+    for (int ep = 0; ep < MISSES; ep++) begin
+      if (ep != 0 && !live[ep]) f_owner_free = 1'b1;
+      if (!$onehot(f_ep_phase[ep])) f_owner_phase = 1'b0;
+      if (f_owner[ep] && !rd_owned_q[f_owner_slot[ep]]) f_owner_flag = 1'b0;
+      for (int other = ep + 1; other < MISSES; other++)
+      if (f_owner[ep] && f_owner[other] && f_owner_slot[ep] == f_owner_slot[other])
+        f_owner_distinct = 1'b0;
+      if (fail_owner_q && f_owner[ep] && f_owner_slot[ep] == fail_clear_slot_q)
+        f_owner_fail = 1'b0;
+      // Phase bits 1 to 3 are SendD, WaitG and Grant: a grant is still to
+      // come. An endpoint is done only after it installs or fails.
+      if (ep != 0 && |f_ep_phase[ep][3:1] && installed_q[ep]) f_owner_pending = 1'b0;
+      if (ep != 0 && ld_done_q[ep] && !installed_q[ep]) f_owner_pending = 1'b0;
+    end
+  end
+  always_ff @(posedge i_clk)
+    if (!i_rst) begin
+      p_owned_phase : assert (f_owner_phase);
+      p_owned_flag : assert (f_owner_flag);
+      p_owned_distinct : assert (f_owner_distinct);
+      p_owned_fail : assert (f_owner_fail);
+      p_owned_pending : assert (f_owner_pending);
+      p_owned_operation : assert (operation_q <= LookaheadOp &&
+          (StreamEnabled || operation_q != PrefetchOp));
+      p_owned_free : assert (!load_ep_free || f_owner_free);
+      if (operation_q == LookaheadOp &&
+          (phase_q == Lookup || phase_q == LookupWait || phase_q == Acquire))
+        p_owned_lookahead : assert (acq_ep_q != '0);
+      // An acquisition for anything but a read marks its endpoint as a store
+      // or a prefetch, or is the SC on endpoint 0.
+      if (active && phase_q == Acquire) begin
+        p_owned_acquire : assert (operation_q == ReadOp ||
+            (operation_q == StoreOp && acq_ep_q == '0) ||
+            (operation_q == LookaheadOp && acq_ep_q != '0) ||
+            (operation_q == SCOp && atomic_q && atomic_sc_q && acq_ep_q == '0 && !request_live) ||
+            (operation_q == PrefetchOp && StreamEnabled && acq_ep_q != '0));
+      end
+      // Phase bit 4 is Done: an installing grant's endpoint waits there.
+      if (operation_q == GrantOp && grant_ep_q != '0 &&
+          (phase_q == Lookup || phase_q == LookupWait || phase_q == Freeze ||
+           phase_q == Update || phase_q == UpdateWait))
+        p_owned_install : assert (int'(grant_ep_q) < MISSES && f_ep_phase[grant_ep_q][4] &&
+            !installed_q[grant_ep_q]);
+      // A read under lookup has no owner, so a new owner's slot is free.
+      if (operation_q == ReadOp && (phase_q == Lookup || phase_q == LookupWait ||
+                                    phase_q == LocalCheck || phase_q == Acquire))
+        p_owned_selected : assert (!rd_owned_q[selected_read_q]);
+    end
+`endif
   (* anyconst *) logic [4:0] f_local_byte;
   logic [7:0] f_local_saved_q;
   logic [ADDR_WIDTH-6:0] f_local_sector_q;
