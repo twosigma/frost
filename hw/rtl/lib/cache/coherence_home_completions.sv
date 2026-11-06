@@ -250,7 +250,7 @@ module coherence_home_completions #(
   assign accept_result = i_result_valid && o_result_ready;
   assign accept_grant = o_g_valid && i_g_ready;
   // The forward buffer is free from its G until the next forward.
-  assign o_forward_ready = !i_rst && !i_fatal_stop && !buffer_live_q[ForwardBuffer];
+  assign o_forward_ready = !i_fatal_stop && !buffer_live_q[ForwardBuffer];
   assign accept_forward = i_forward_valid && o_forward_ready;
   assign forwarded = {SLOTS{accept_forward}} & i_forward_slots;
   // The slot whose G is accepted. A prefetch slot's G is taken whenever it
