@@ -188,6 +188,7 @@ module line_port_axi_bridge #(
   logic write_slot_free, read_slot_free;
   assign write_slot_free = !aw_valid_q && !w_valid_q;
   assign read_slot_free = !ar_valid_q;
+  // An accepted request reaches AXI registers that i_rst does not clear.
   assign o_req_ready = !i_rst && !i_axi_rst && !stale_any_q &&
       (i_req_write ? write_slot_free : read_slot_free);
 
@@ -202,6 +203,7 @@ module line_port_axi_bridge #(
   assign o_axi_arsize  = 3'($clog2(LINE_BYTES));
   assign o_axi_arburst = 2'b01;  // INCR
 
+  // The AXI side takes its reset from the fabric's own signal.
   assign o_axi_awvalid = aw_valid_q && !i_axi_rst;
   assign o_axi_awid    = AXI_ID_BITS'(aw_id_q);
   assign o_axi_awaddr  = aw_addr_q;

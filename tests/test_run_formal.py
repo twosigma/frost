@@ -302,6 +302,9 @@ FORMAL_TARGETS = [
             "coh_l1d_turn_cover",
             "coh_l1d_local_prove",
             "coh_l1d_local_multi_prove",
+            "coh_l1d_local_owned_prove",
+            "coh_l1d_local_multi_owned_prove",
+            "coh_l1d_local_ways_owned_prove",
             "coh_l1d_local_sector_prove",
             "coh_l1d_local_multi_sector_prove",
             "coh_l1d_local_ways_sector_prove",
@@ -1325,6 +1328,18 @@ SBY_TASKS = [
         "Local ownership beside unrelated endpoints by induction.",
     ),
     ("coh_l1d_local_ways_prove", "Local ownership with multiple ways by induction."),
+    (
+        "coh_l1d_local_owned_prove",
+        "A failed read stays owned until its ready flag sets, by induction.",
+    ),
+    (
+        "coh_l1d_local_multi_owned_prove",
+        "A failed read stays owned beside other endpoints, by induction.",
+    ),
+    (
+        "coh_l1d_local_ways_owned_prove",
+        "A failed read stays owned with multiple ways, by induction.",
+    ),
     ("coh_l1d_local_sector_prove", "Local sector admission and identity by induction."),
     (
         "coh_l1d_local_multi_sector_prove",
@@ -2127,7 +2142,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherence_l1d": [
             f"coh_l1d_local{geometry}{part}_prove"
             for geometry in ("", "_multi", "_ways")
-            for part in ("", "_sector")
+            for part in ("", "_sector", "_owned")
         ],
     }
     for target_name, names in required.items():
@@ -2233,6 +2248,7 @@ def test_local_sector_lemma_models_match() -> None:
     lemmas = "c:p_local_lookup_owner c:p_local_sc_lookup"
     role_check = f"select -assert-count 2 {lemmas} %u t:$check %i r:FLAVOR={{}} %i"
     owner_commands = common + [
+        "chformal -assert2assume c:p_local_failed_owned",
         "chformal -assert -remove c:p_local_sector c:p_local_lookup_stable "
         "c:p_local_conflict_sample c:p_local_admit_sector",
         "select -assert-count 19 t:$check r:FLAVOR=assert %i",
@@ -2247,6 +2263,48 @@ def test_local_sector_lemma_models_match() -> None:
         "select -assert-count 6 t:$check r:FLAVOR=assert %i",
         role_check.format("assume"),
     ]
+    # An owned task's proof supports its owner task, so it assumes nothing back.
+    owned_commands = [
+        "chformal -assert -remove t:$check r:FLAVOR=assert %i "
+        "c:p_local_failed_owned c:p_owned_* %u %d",
+        "select -assert-count 12 t:$check r:FLAVOR=assert %i",
+    ]
+    # Only these reads differ from the owner task's model: both expose the
+    # request endpoint's phase, and neither changes its design logic.
+    owned_reads = {
+        "read -sv coherence_request_endpoint.sv": (
+            "read -formal -sv coherence_request_endpoint.sv"
+        ),
+        "read -formal -sv -D LOCAL_ATOMIC_PROOF coherence_read_payload.sv "
+        "coherence_l1d.sv": (
+            "read -formal -sv -D LOCAL_ATOMIC_PROOF -D LOCAL_OWNER_PROOF "
+            "coherence_read_payload.sv coherence_l1d.sv"
+        ),
+    }
+
+    def validate_owned(
+        owner: dict[str, list[str]], owned: dict[str, list[str]]
+    ) -> None:
+        assert owned.keys() == owner.keys()
+        for section in owned.keys() - {"[options]", "[engines]", "[script]"}:
+            assert owned[section] == owner[section]
+        script = owned["[script]"]
+        assert [line for line in script if assertion_command(line)] == owned_commands
+        assert [line for line in script if not assertion_command(line)] == [
+            owned_reads.get(line, line)
+            for line in owner["[script]"]
+            if not assertion_command(line)
+        ]
+        options = dict(line.split(maxsplit=1) for line in owned["[options]"])
+        options.setdefault("expect", "PASS")
+        assert options == {
+            "mode": "prove",
+            "depth": "8",
+            "timeout": "1200",
+            "aigsmt": "boolector",
+            "expect": "PASS",
+        }
+        assert owned["[engines]"] == ["smtbmc boolector"]
 
     def validate(owner: dict[str, list[str]], sector: dict[str, list[str]]) -> None:
         assert owner.keys() == sector.keys()
@@ -2278,6 +2336,19 @@ def test_local_sector_lemma_models_match() -> None:
         owner = config(f"coh_l1d_local{geometry}_prove")
         sector = config(f"coh_l1d_local{geometry}_sector_prove")
         validate(owner, sector)
+        owned = config(f"coh_l1d_local{geometry}_owned_prove")
+        validate_owned(owner, owned)
+        for section, line in (
+            ("[script]", "chformal -assert2assume c:p_local_lookup_owner"),
+            ("[script]", "chparam -set MISSES 4 coherence_l1d"),
+            ("[options]", "smtc owned_only.smtc"),
+            ("[options]", "expect PASS,UNKNOWN,TIMEOUT"),
+            ("[file owned_only.smtc]", "assume (= hidden 0)"),
+        ):
+            altered_owned = {key: list(value) for key, value in owned.items()}
+            altered_owned.setdefault(section, []).append(line)
+            with pytest.raises(AssertionError):
+                validate_owned(owner, altered_owned)
         for side, section, line in (
             (0, "[script]", "chformal -assert -remove c:p_local_sc_lookup"),
             (0, "[script]", "chformal -remove -assert c:p_local_sc_lookup"),

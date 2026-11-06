@@ -3,7 +3,7 @@ bmc
 
 [options]
 mode bmc
-depth 1
+depth 3
 
 [engines]
 smtbmc boolector
@@ -12,8 +12,9 @@ smtbmc boolector
 read -sv riscv_pkg.sv
 read_verilog -formal -D SYNTHESIS -D UNCACHED_READ_CAPTURE_LOCAL_PROOF -sv cpu_uncached_adapter.sv
 prep -top cpu_uncached_adapter -flatten
-select -assert-count 1 t:$check
-select -assert-none t:$assume a:init
+select -assert-count 2 t:$check
+select -assert-none t:$assume
+select -assert-none a:init w:f_past_valid %d
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

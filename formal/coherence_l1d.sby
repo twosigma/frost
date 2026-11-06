@@ -25,6 +25,9 @@ coh_l1d_multi_data3_bmc multi cadical arraydata word3 multidata
 
 coh_l1d_local_prove single local owner
 coh_l1d_local_multi_prove multi local owner padded
+coh_l1d_local_owned_prove single owned
+coh_l1d_local_multi_owned_prove multi owned padded
+coh_l1d_local_ways_owned_prove ways owned padded
 coh_l1d_local_sector_prove single local sector
 coh_l1d_local_multi_sector_prove multi local sector padded
 coh_l1d_local_ways_sector_prove ways local sector padded
@@ -38,6 +41,8 @@ coh_l1d_local_ways_prove ways local owner padded
 local: mode prove
 local: depth 80
 sector: depth 8
+owned: mode prove
+owned: depth 8
 localschedule: depth 80
 ~covermode: timeout 1200
 covermode: mode cover
@@ -74,6 +79,7 @@ covers: smtbmc boolector
 streamcovers: smtbmc boolector
 turncovers: smtbmc boolector
 owner: abc pdr
+owned: smtbmc boolector
 sector: smtbmc boolector
 localschedule: abc bmc3
 localcovers: smtbmc boolector
@@ -81,7 +87,10 @@ localcovers: smtbmc boolector
 [script]
 read -sv coherence_read_stream.sv
 read -sv cache_perf_pkg.sv
-read -sv coherence_pkg.sv coherence_request_endpoint.sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv
+read -sv coherence_pkg.sv
+owned: read -formal -sv coherence_request_endpoint.sv
+~owned: read -sv coherence_request_endpoint.sv
+read -sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv
 control: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 streamscript: read -formal -sv -D STREAM_COVER -D STREAM_PASSIVE_CYCLES=24 coherence_read_payload.sv coherence_l1d.sv
 conflict: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
@@ -95,6 +104,7 @@ word3: read -formal -sv -D STORE_DATA_PROOF -D STORE_BYTE_WORD=3 coherence_read_
 payload: read -formal -sv -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
 grantdata: read -formal -sv -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
 local: read -formal -sv -D LOCAL_ATOMIC_PROOF coherence_read_payload.sv coherence_l1d.sv
+owned: read -formal -sv -D LOCAL_ATOMIC_PROOF -D LOCAL_OWNER_PROOF coherence_read_payload.sv coherence_l1d.sv
 localscheduled: read -formal -sv -D LOCAL_ATOMIC_PROOF -D LOCAL_ATOMIC_COVER coherence_read_payload.sv coherence_l1d.sv
 read -sv coherence_store_buffer.sv
 read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
@@ -130,6 +140,11 @@ turncovers: select -assert-count 4 c:p_stream_read_turn c:p_stream_empty_turn c:
 turncovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_stream_read_turn c:p_stream_empty_turn c:p_stream_probe_turn c:p_stream_cancel_turn %u %u %u %d
 local: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_* c:p_atomic_context_identity c:p_atomic_read_identity %u %u %d
 local: chformal -assert -remove c:p_local_probe_data
+# Each owned task assumes nothing from the owner or sector tasks.
+owned: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_failed_owned c:p_owned_* %u %d
+owned: select -assert-count 12 t:$check r:FLAVOR=assert %i
+# The matching owned task proves this fact by unbounded induction.
+owner: chformal -assert2assume c:p_local_failed_owned
 owner: chformal -assert -remove c:p_local_sector c:p_local_lookup_stable c:p_local_conflict_sample c:p_local_admit_sector
 owner: select -assert-count 19 t:$check r:FLAVOR=assert %i
 owner: select -assert-count 2 c:p_local_lookup_owner c:p_local_sc_lookup %u t:$check %i r:FLAVOR=assert %i
@@ -141,6 +156,7 @@ sector: select -assert-count 6 t:$check r:FLAVOR=assert %i
 sector: select -assert-count 2 c:p_local_lookup_owner c:p_local_sc_lookup %u t:$check %i r:FLAVOR=assume %i
 # Array behavior is arbitrary for controller induction. Real-array byte and
 # completion checks run in the bounded task and the array proofs.
+owned: cutpoint w:array_ready w:array_valid w:array_hit w:array_state w:array_addr w:array_data w:array_way w:array_available w:update_ready
 local: cutpoint w:array_ready w:array_valid w:array_hit w:array_state w:array_addr w:array_data w:array_way w:array_available w:update_ready
 localcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_local_probe_cover c:p_local_fail_cover c:p_local_release_cover %u %u %d
 nostore: connect -set i_write_mask 8'h00

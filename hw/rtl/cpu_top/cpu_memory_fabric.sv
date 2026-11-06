@@ -187,7 +187,7 @@ module cpu_memory_fabric #(
   // the wide request mux, and the master's busy-ID lookup in one cycle.
   // A queued request has not yet been presented to AXI and may be discarded
   // by CPU reset; the master independently drains already presented beats.
-  assign req_ready = !i_rst && !i_axi_rst && (!pending_q || master_ready);
+  assign req_ready = !pending_q || master_ready;
   assign o_idle = master_idle && !pending_q;
   // The cache client's grant for each pointer value, so the L2's ready does
   // not wait for the encoded selection. Equal to selected == 0.

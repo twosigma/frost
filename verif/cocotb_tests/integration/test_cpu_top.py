@@ -489,9 +489,8 @@ async def interrupt_waits_for_device_store_response(dut: Any) -> None:
     assert handler_write > first_b
 
 
-@cocotb.test()
-async def core_reset_drains_old_epoch_and_samples_new_boot(dut: Any) -> None:
-    """Check core reset drains old epoch and samples new boot."""
+async def reset_mid_read(dut: Any, reset_cycles: int) -> None:
+    """Reset with an old-epoch read in flight; check the drain and the new boot."""
     s = System(dut)
     s.program([0x400000B7, load(3, 1, 4, 4), 0x0000006F])
     s.program(
@@ -514,12 +513,24 @@ async def core_reset_drains_old_epoch_and_samples_new_boot(dut: Any) -> None:
         raise AssertionError("old-epoch read did not start")
     dut.i_rst.value = 1
     dut.i_boot_addr.value = 0x1800
-    for _ in range(3):
+    for _ in range(reset_cycles):
         await s.step()
     dut.i_rst.value = 0
     assert await s.until_write(0x40000008) == 0x77
     assert s.pops == 1
     assert next(value for _, addr, value in s.effects if addr == 0x40000010) == 0x42
+
+
+@cocotb.test()
+async def core_reset_drains_old_epoch_and_samples_new_boot(dut: Any) -> None:
+    """Check core reset drains old epoch and samples new boot."""
+    await reset_mid_read(dut, 3)
+
+
+@cocotb.test()
+async def single_cycle_reset_drains_old_epoch_and_samples_new_boot(dut: Any) -> None:
+    """One reset cycle does the same."""
+    await reset_mid_read(dut, 1)
 
 
 @cocotb.test()

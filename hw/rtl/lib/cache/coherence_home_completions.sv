@@ -79,12 +79,15 @@ module coherence_home_completions #(
     // A fill forwards its line to its primary request, a parked GetS,
     // LoadReserved or GetM: the slot named by the one-hot i_forward_slots
     // takes the forward buffer, a completion pin on i_forward_way and its
-    // result at once. o_forward_ready reads registers only; the forwarded
-    // sector comes back through i_image_data.
+    // result i_forward at once. i_forward is the slot's G without data:
+    // GrantM for a GetM, else GrantS, with the slot's q, tid and address and
+    // no error. o_forward_ready reads registers only; the forwarded sector
+    // comes back through i_image_data.
     input logic i_forward_valid,
     output logic o_forward_ready,
     input logic [SLOTS-1:0] i_forward_slots,
     input logic [WayBits-1:0] i_forward_way,
+    input logic [ADDR_WIDTH+274:0] i_forward,
     input logic i_retry_valid,
     input logic [5:0] i_retry_tid,
     input logic i_pin_valid,
@@ -569,22 +572,11 @@ module coherence_home_completions #(
     end
     grant_pick = SlotBits'(grant_payload.tid);
   end
-  // The forwarded result: the named slot's identity and address, GrantM for a
-  // GetM and GrantS for a GetS or LoadReserved, with no error. Like every
-  // buffered result it stores no data.
+  // The forwarded result. Like every buffered result it stores no data.
   coh_g_t forward_result;
   always_comb begin
-    forward_result = '0;
-    forward_result.opcode = coherence_pkg::GrantS;
-    for (int slot = 0; slot < SLOTS; slot++) begin
-      if (i_forward_slots[slot]) begin
-        forward_result.q |= work_identity[slot];
-        forward_result.tid |= 6'(slot);
-        forward_result.addr |= work_address[slot];
-        if (request_opcode(work[slot]) == coherence_pkg::GetM)
-          forward_result.opcode = coherence_pkg::GrantM;
-      end
-    end
+    forward_result = i_forward;
+    forward_result.data = '0;
   end
 
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_endpoint
@@ -792,12 +784,14 @@ module coherence_home_completions #(
             position > int'(work_position);
         buffer_index_q[work_slot_q] <= BufferBits'(work_buffer_q);
       end
-      if (accept_result) begin
-        buffer_q[buffer_index_q[result_slot]] <= {
-          result.opcode, result.q, result.tid, result.addr, 256'b0, result.error
-        };
-        buffer_zero_q[buffer_index_q[result_slot]] <=
-            result.error || result.opcode == coherence_pkg::GrantAck;
+      // An engine's result goes to its slot's buffer, always an engine's.
+      for (int index = 0; index < RESULT_SLOTS; index++) begin
+        if (accept_result && buffer_index_q[result_slot] == BufferBits'(index)) begin
+          buffer_q[index] <= {
+            result.opcode, result.q, result.tid, result.addr, 256'b0, result.error
+          };
+          buffer_zero_q[index] <= result.error || result.opcode == coherence_pkg::GrantAck;
+        end
       end
       if (accept_forward) begin
         buffer_q[ForwardBuffer] <= forward_result;
@@ -880,8 +874,10 @@ module coherence_home_completions #(
       assert (|grant_taken == accept_grant);
       for (int slot = 0; slot < SLOTS; slot++) begin
         // A live slot holds the legal request it admitted.
-        if (live[slot])
+        if (live[slot]) begin
           assert (coherence_pkg::legal_opcode(work_identity[slot], work[slot][ADDR_WIDTH+311-:4]));
+          assert (work_address[slot][4:0] == 0);
+        end
         if (PREFETCH_SLOTS != 0 && live[slot])
           assert (PrefetchSlot[slot] == (work_identity[slot][8:7] == 2'd3));
         if (nofill_q[slot] && live[slot]) assert (slot_prefetch[slot]);
@@ -1044,8 +1040,15 @@ module coherence_home_completions #(
           ) == coherence_pkg::GetM);
           assert (!i_wake[slot] && !i_park[slot]);
           assert (!(work_selected_q && work_slot_q == SlotBits'(slot)));
+          assert (forward_result.q == work_identity[slot] && forward_result.tid == 6'(slot) &&
+              forward_result.addr == work_address[slot] && !forward_result.error);
+          assert (forward_result.opcode == (request_opcode(
+              work[slot]
+          ) == coherence_pkg::GetM ? coherence_pkg::GrantM : coherence_pkg::GrantS));
         end
       end
+      // An engine's result never targets the forward buffer.
+      if (accept_result) assert (int'(buffer_index_q[result_slot]) < RESULT_SLOTS);
       for (int slot = 0; slot < SLOTS; slot++)
       if (buffer_owned_q[slot] && buffer_index_q[slot] == BufferBits'(ForwardBuffer))
         assert (pin_valid_q[slot]);
@@ -1198,6 +1201,11 @@ module coherence_home_completions #(
           ) == coherence_pkg::GetM);
           assume (!i_wake[slot] && !i_park[slot]);
           assume (!(work_selected_q && work_slot_q == SlotBits'(slot)));
+          assume (forward_result.q == work_identity[slot] && forward_result.tid == 6'(slot) &&
+              forward_result.addr == work_address[slot] && !forward_result.error);
+          assume (forward_result.opcode == (request_opcode(
+              work[slot]
+          ) == coherence_pkg::GetM ? coherence_pkg::GrantM : coherence_pkg::GrantS));
         end
       end
     end

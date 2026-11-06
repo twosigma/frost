@@ -49,6 +49,11 @@ which must keep their exact bytes. To run only the fast Python tests:
 ./scripts/frost.py run pytest tests -m "not cocotb and not synthesis and not formal and not slow" -v
 ```
 
+`test_combinational_reset.py` reads the synthesized view of `hw/rtl` and fails
+on a reset term outside an `always_ff` block that
+`combinational_reset_allowlist.txt` does not list, and on an entry whose term is
+gone.
+
 ## Test runners
 
 ### `test_run_cocotb.py`

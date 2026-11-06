@@ -24,7 +24,8 @@
 // the new CPU epoch. New requests wait until all old responses have drained.
 // i_axi_rst resets both sides of the AXI connection and may withdraw VALID.
 // Both resets are synchronous to i_clk; i_axi_rst also gates VALID/READY low
-// combinationally. The integrating wrapper must synchronize their release.
+// combinationally, and i_rst gates request readiness. The integrating wrapper
+// must synchronize their release.
 module cpu_axi_master #(
     parameter int unsigned ADDR_WIDTH = 40,
     parameter int unsigned DATA_BYTES = 64,
@@ -64,7 +65,8 @@ module cpu_axi_master #(
     output logic [ID_BITS-1:0] o_read_resp_id,
     output logic [DATA_BYTES*8-1:0] o_read_resp_rdata,
     output logic [1:0] o_read_resp_status,
-    // Capture edge for payload metadata parallel to the R response buffer.
+    // Capture edge for payload metadata parallel to the R response buffer,
+    // outside reset.
     output logic o_read_resp_capture,
     // Includes queued requests, fabric transactions, buffered responses, and
     // pre-reset traffic. It is not merely an AXI channel-idle indication.
@@ -161,10 +163,12 @@ module cpu_axi_master #(
   logic req_fire, r_fire, b_fire, resp_fire;
   logic r_known, b_known;
 
+  // An accepted request reaches AXI registers that i_rst does not clear.
   assign o_req_ready = !i_rst && !i_axi_rst && !stale_any_q && !busy_q[i_req_id] &&
       (i_req_write ? (!aw_valid_q && !w_valid_q) : !ar_valid_q);
   assign req_fire = i_req_valid && o_req_ready;
 
+  // The AXI side takes its reset from the fabric's own signal.
   assign o_axi_awvalid = aw_valid_q && !i_axi_rst;
   assign o_axi_awid = aw_id_q;
   assign o_axi_awaddr = aw_addr_q;
@@ -238,32 +242,32 @@ module cpu_axi_master #(
   logic response_held_q = RandomStart ? 'x : 1'b0;
   logic held_select_b_q;
   assign select_b = response_held_q ? held_select_b_q : (b_valid_q && (!r_valid_q || prefer_b_q));
-  assign o_resp_valid = !i_rst && !i_axi_rst && (r_valid_q || b_valid_q);
+  assign o_resp_valid = r_valid_q || b_valid_q;
   assign o_resp_write = select_b;
   assign o_resp_id = select_b ? b_id_q : r_id_q;
   assign o_resp_rdata = select_b ? '0 : r_data_q;
   assign o_resp_status = select_b ? b_status_q : r_status_q;
   // Factor read publication before the shared payload mux. A held response
   // uses its saved channel; otherwise a read wins unless B has priority.
-  assign o_read_resp_valid = !i_rst && !i_axi_rst &&
-      (response_held_q ? ((r_valid_q || b_valid_q) && !held_select_b_q) :
-                        (r_valid_q && (!b_valid_q || !prefer_b_q)));
+  assign o_read_resp_valid = response_held_q ? ((r_valid_q || b_valid_q) && !held_select_b_q) :
+      (r_valid_q && (!b_valid_q || !prefer_b_q));
   assign o_read_resp_id = r_id_q;
   assign o_read_resp_rdata = r_data_q;
   assign o_read_resp_status = r_status_q;
-  assign o_read_resp_capture = !i_rst && !i_axi_rst && r_fire && r_known;
+  assign o_read_resp_capture = r_fire && r_known;
   // The same functions as o_resp_valid && o_resp_id == FLAG_RESP_ID, and
   // that with o_resp_status == OKAY, compared per channel before the select
   // and kept apart from the widely loaded response valid.
   (* keep = "true" *) logic resp_valid_id, resp_ok_id;
-  assign resp_valid_id = !i_rst && !i_axi_rst && (r_valid_q || b_valid_q) &&
+  assign resp_valid_id = (r_valid_q || b_valid_q) &&
       (select_b ? (b_id_q == ID_BITS'(FLAG_RESP_ID)) : (r_id_q == ID_BITS'(FLAG_RESP_ID)));
-  assign resp_ok_id = !i_rst && !i_axi_rst && (r_valid_q || b_valid_q) &&
+  assign resp_ok_id = (r_valid_q || b_valid_q) &&
       (select_b ? (b_id_q == ID_BITS'(FLAG_RESP_ID)) && (b_status_q == 2'b00) :
                   (r_id_q == ID_BITS'(FLAG_RESP_ID)) && (r_status_q == 2'b00));
   assign o_resp_valid_id = resp_valid_id;
   assign o_resp_ok_id = resp_ok_id;
   assign resp_fire = o_resp_valid && i_resp_ready;
+  // The fabric outlives i_rst, so a response drains through it.
   assign o_axi_rready = !i_axi_rst && (i_rst || !r_valid_q || (resp_fire && !select_b));
   assign o_axi_bready = !i_axi_rst && (i_rst || !b_valid_q || (resp_fire && select_b));
   assign r_fire = i_axi_rvalid && o_axi_rready;
@@ -311,13 +315,15 @@ module cpu_axi_master #(
   end
 
   // Payload writes use buffer vacancy or selected-read readiness. Ownership
-  // and reset qualify the valid flag and response publication.
+  // qualifies the valid flag and response publication, and the reset edge
+  // clears the flag.
   logic r_payload_write;
   assign r_payload_write = i_axi_rvalid && (!r_valid_q || (i_resp_ready && !select_b));
   always_ff @(posedge i_clk) begin
     if (r_payload_write) r_data_q <= i_axi_rdata;
   end
 
+  // i_rst does not clear these flags: they record the responses it abandons.
   always_comb begin
     stale_d = stale_q;
     if (i_rst) stale_d |= pending_q;
@@ -345,9 +351,13 @@ module cpu_axi_master #(
       if (r_valid_q) begin
         p_owned_read_payload : assert (r_data_q == f_owned_payload_q);
       end
-      cover_stalled_read : cover (r_valid_q && o_resp_valid && !select_b && !i_resp_ready);
-      cover_owned_replacement : cover (r_valid_q && resp_fire && !select_b && r_fire && r_known);
-      cover_b_before_read : cover (r_valid_q && b_valid_q && select_b && resp_fire && i_axi_rvalid);
+      cover_stalled_read :
+      cover (!i_rst && !i_axi_rst && r_valid_q && o_resp_valid && !select_b && !i_resp_ready);
+      cover_owned_replacement :
+      cover (!i_rst && !i_axi_rst && r_valid_q && resp_fire && !select_b && r_fire && r_known);
+      cover_b_before_read :
+      cover (!i_rst && !i_axi_rst && r_valid_q && b_valid_q && select_b && resp_fire &&
+             i_axi_rvalid);
       cover_unowned_read : cover (!i_rst && !i_axi_rst && !r_valid_q && r_fire && !r_known);
       cover_reset_with_read : cover (i_rst && r_valid_q);
     end
