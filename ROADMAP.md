@@ -38,19 +38,19 @@ Snooping live load-queue entries is not enough, because an entry is freed as
 soon as its result is staged for the common data bus, before the load retires,
 so returned loads stay observable until they retire. A store acquires M before
 it writes. Probe data and acknowledgements must keep making progress when every
-queue is full. The L1D accepts ordered stores into a two-entry buffer and
-installs Modified-sector hits with masked writes. Waiting reads share array
-service with buffered store hits. Store acquisitions use one endpoint and do
-not overlap, and each read slot holds one load. The home has eight fills and a
-stream prefetcher. Two instruction-refill slots can overlap; instruction and
-page-table readers capture data and errors at the grant and hold their
-identities through release. The probe for an instruction or page-table read
-downgrades a Modified sector to Shared, so the next store to it acquires it
-again. An AMO or SC on a sector the L1D holds Modified completes in the L1D
-once endpoint 0 and that sector are free; other AMOs drain every L1D request
-and go through the home. Further work targets concurrent store acquisitions,
-reader latency and DMA throughput. The single-hart queue sizes and lane choices
-will need revisiting for the second hart's memory traffic.
+queue is full. The L1D keeps four ordered store records, combines stores to one
+sector, and installs Modified-sector hits with masked writes. Waiting reads
+share array service with buffered store hits. Store acquisitions overlap on
+borrowed load endpoints, and each read slot holds one load. The home has eight
+fills and a stream prefetcher. Two instruction-refill slots can overlap;
+instruction and page-table readers capture data and errors at the grant and
+hold their identities through release. The probe for an instruction or
+page-table read downgrades a Modified sector to Shared, so the next store to it
+acquires it again. An AMO or SC on a sector the L1D holds Modified completes in
+the L1D once endpoint 0 and that sector are free; other AMOs drain every L1D
+request and go through the home. Further work targets reader latency and DMA
+throughput. The single-hart queue sizes and lane choices will need revisiting
+for the second hart's memory traffic.
 
 Writable BRAM stays private to one hart. Its read caches are outside the
 coherent ingress, and its instruction and data copies are separate, so a
@@ -326,17 +326,16 @@ to 0.3. It depends much more than CoreMark on stores, address translation,
 branch prediction, and floating point. Measurements with sysbench, `perf`,
 and targeted microbenchmarks give these items:
 
-1. Stores. The L1D accepts ordered stores into a two-entry buffer. Stores to
-   Modified sectors use masked writes, and waiting reads share array service
-   with buffered hits. The store queue's drain and installation into the L1D
-   should reach two cycles per store or better. Store misses still acquire
-   one 32-byte sector at a time: in simulation a sequential stream of 8-byte
-   stores takes about 180 cycles per 64 bytes, or 350 with 200 cycles of
-   DRAM latency, with the store queue full over 90% of the time. Two
-   acquisitions in flight, stores to one sector combined into one array
-   write, and installation in program order come next. Taking ownership of a
-   fully written sector without fetching its data would save a DRAM read per
-   sector, but needs a home protocol that tracks written sectors.
+1. Stores. The L1D keeps four ordered store records. Stores to one sector
+   combine into one record, acquisitions overlap on borrowed load endpoints,
+   and only the oldest record installs. Stores to Modified sectors use masked
+   writes, and waiting reads share array service with buffered hits. The
+   store queue's drain and installation into the L1D should reach two cycles
+   per store or better. In simulation a sequential stream of 8-byte stores
+   takes about 50 cycles per 64 bytes at 30 or 200 cycles of DRAM latency.
+   Taking ownership of a fully written sector without fetching its data would
+   save a DRAM read per sector, but needs a home protocol that tracks written
+   sectors.
 2. Data translation. A last-page bypass sends eligible translated accesses
    directly to DMMU stage S2. Other translated accesses use S1 and S2.
    Reducing that path would improve cross-page translation latency.
