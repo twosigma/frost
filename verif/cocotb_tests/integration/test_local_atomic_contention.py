@@ -22,6 +22,10 @@ from cocotb_tests.integration.test_coherent_cpu_faults import System, literal
 from cocotb_tests.integration.test_cpu_top import addi, csr, load, store, trap_program
 
 
+# operation_q's value for an SC.
+SC_OPERATION = 6
+
+
 @cocotb.test()
 async def sc_retires_with_held_probe_grant_and_control_entry(dut: Any) -> None:
     """Complete a protected SC beside a younger same-set fill and DMA probe."""
@@ -77,12 +81,9 @@ async def sc_retires_with_held_probe_grant_and_control_entry(dut: Any) -> None:
         for _ in range(20000):
             if arm_cycle is None and int(cpu.coherent_arm_valid.value):
                 arm_cycle = s.cycle
-            # Complete the younger fill near the last older divide retirement.
-            if (
-                divisions == 3
-                and int(divider.running_q.value)
-                and int(divider.steps_left_q.value) <= 8
-            ):
+            # Complete the younger fill once the SC's lookup starts. An earlier
+            # forwarded grant would evict the SC's line from the single way.
+            if divisions == 3 and int(cache.operation_q.value) == SC_OPERATION:
                 release_memory = True
             if not release_memory:
                 held_reads.extend(r for r in s.reads if r[1] in other_ids)
