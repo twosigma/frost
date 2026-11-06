@@ -22,6 +22,14 @@ module coherence_cluster_test_harness #(
     parameter int unsigned TAG_BITS = 7,
     // L1D request endpoints.
     parameter int unsigned L1D_MISSES = 1,
+    parameter int unsigned L1D_CACHE_BYTES = 1024,
+    parameter int unsigned L1D_WAYS = 4,
+    parameter int unsigned HOME_CACHE_BYTES = 512,
+    parameter int unsigned HOME_WAYS = 4,
+    parameter int unsigned HOME_COMPLETIONS = coherence_pkg::completion_count(1),
+    parameter int unsigned HOME_RESULTS = 8,
+    parameter int unsigned HOME_FILLS = 8,
+    parameter int unsigned HOME_PREFETCH_SLOTS = coherence_pkg::PrefetchIds,
     parameter bit L1D_STREAM_PREFETCH = 1'b0
 ) (
     input logic i_clk,
@@ -49,8 +57,8 @@ module coherence_cluster_test_harness #(
     output logic o_pending_store,
     output logic o_sc_write_pending,
     output logic o_atomic_live,
-    output logic [1:0] o_block_valid,
-    output logic [1:0][ADDR_WIDTH-1:0] o_block_addr,
+    output logic [3:0] o_block_valid,
+    output logic [3:0][ADDR_WIDTH-1:0] o_block_addr,
     input logic i_atomic_protected,
     input logic i_sc_valid,
     output logic o_sc_ready,
@@ -79,6 +87,8 @@ module coherence_cluster_test_harness #(
     input logic i_cut_inval_done,
     output logic o_cut_release,
     input logic i_hold_grant,
+    input logic i_hold_wa,
+    input logic i_hold_release,
     input logic i_agent_valid,
     output logic o_agent_ready,
     input logic [ADDR_WIDTH+311:0] i_agent_d,
@@ -105,6 +115,9 @@ module coherence_cluster_test_harness #(
     output cache_perf_pkg::cache_instance_perf_events_t o_l1d_perf,
     output cache_perf_pkg::cache_instance_perf_events_t o_l2_perf,
     output cache_perf_pkg::cache_write_perf_events_t o_l2_write_perf,
+    output logic [L1D_MISSES-1:0] o_live_stores,
+    output logic [1:0] o_held_puts,
+    output logic o_load_grant,
     output logic o_fatal,
     output logic [ADDR_WIDTH-1:0] o_fatal_addr
 );
@@ -125,14 +138,46 @@ module coherence_cluster_test_harness #(
   logic g_valid, g_ready, hart_g_ready, home_c_valid, home_c_ready;
   logic u_valid, u_ready, hart_u_ready;
   logic hart_fatal, home_fatal;
+  logic [1:0] accepted_puts_q;
   logic [ADDR_WIDTH-1:0] hart_fatal_addr, home_fatal_addr;
   assign o_fatal = hart_fatal || home_fatal;
   assign o_fatal_addr = hart_fatal ? hart_fatal_addr : home_fatal_addr;
+  // A reader ordered behind a lookahead store can hold that store's fill,
+  // so the head store's acquisition needs a second fill.
+  if (L1D_MISSES >= 3 && HOME_FILLS < 2) begin : gen_invalid_fills
+    initial $fatal(1, "coherence_cluster_test_harness: three or more L1D endpoints need two fills");
+  end
+  assign o_held_puts = accepted_puts_q | (w_valid ? (2'b01 << put.put_id) : 2'b00);
+  assign o_load_grant = g_valid && g_ready && grant.q.src == 0 &&
+      grant.opcode == coherence_pkg::GrantS;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) accepted_puts_q <= '0;
+    else begin
+      if (w_valid && w_ready) accepted_puts_q[put.put_id] <= 1'b1;
+      if (wa_valid && wa_ready && !i_hold_wa) accepted_puts_q[ack.put_id] <= 1'b0;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) o_live_stores <= '0;
+    else begin
+      for (int ep = 0; ep < L1D_MISSES; ep++) begin
+        if (home_d_valid && home_d_ready && home_d.q.src == 0 &&
+            home_d.opcode == coherence_pkg::GetM && home_d.q.id == 4'(ep))
+          o_live_stores[ep] <= 1'b1;
+        if (u_valid && u_ready && release_message.q.src == 0 && release_message.q.id == 4'(ep))
+          o_live_stores[ep] <= 1'b0;
+      end
+    end
+  end
   coherence_l1d #(
       .ADDR_WIDTH(ADDR_WIDTH),
-      .CACHE_BYTES(1024),
+      .CACHE_BYTES(L1D_CACHE_BYTES),
+      .WAYS(L1D_WAYS),
       .TAG_BITS(TAG_BITS),
       .MISSES(L1D_MISSES),
+      .HOME_CACHE_BYTES(HOME_CACHE_BYTES),
+      .HOME_WAYS(HOME_WAYS),
+      .HOME_LINE_BYTES(LINE_BYTES),
       .STREAM_PREFETCH(L1D_STREAM_PREFETCH)
   ) hart (
       .i_clk(i_clk),
@@ -201,7 +246,7 @@ module coherence_cluster_test_harness #(
       .o_w_valid(w_valid),
       .i_w_ready(w_ready),
       .o_w(put),
-      .i_wa_valid(wa_valid),
+      .i_wa_valid(wa_valid && !i_hold_wa),
       .o_wa_ready(wa_ready),
       .i_wa(ack),
       .i_g_valid(g_valid && grant.q.src == 0 && !i_hold_grant),
@@ -210,7 +255,7 @@ module coherence_cluster_test_harness #(
       .o_c_valid(hart_c_valid),
       .i_c_ready(hart_c_ready),
       .o_c(hart_c),
-      .i_u_valid(u_valid && release_message.q.src == 0),
+      .i_u_valid(u_valid && release_message.q.src == 0 && !i_hold_release),
       .o_u_ready(hart_u_ready),
       .i_u(release_message),
       .o_perf_events(o_l1d_perf),
@@ -240,7 +285,7 @@ module coherence_cluster_test_harness #(
       grant.q.src == 2 ? i_agent_g_ready : hart_g_ready && !i_hold_grant;
   assign o_agent_u_valid = u_valid && release_message.q.src >= 2;
   assign o_agent_u = release_message;
-  assign u_ready = release_message.q.src >= 2 ? i_agent_u_ready : hart_u_ready;
+  assign u_ready = release_message.q.src >= 2 ? i_agent_u_ready : hart_u_ready && !i_hold_release;
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 18),
       .PORTS(L1D_MISSES + 1),
@@ -257,9 +302,14 @@ module coherence_cluster_test_harness #(
       .o_payload(home_c)
   );
   coherence_home #(
-      .ADDR_WIDTH (ADDR_WIDTH),
-      .CACHE_BYTES(512),
-      .LINE_BYTES (LINE_BYTES)
+      .ADDR_WIDTH(ADDR_WIDTH),
+      .CACHE_BYTES(HOME_CACHE_BYTES),
+      .WAYS(HOME_WAYS),
+      .COMPLETIONS(HOME_COMPLETIONS),
+      .RESULTS(HOME_RESULTS),
+      .FILLS(HOME_FILLS),
+      .PREFETCH_SLOTS(HOME_PREFETCH_SLOTS),
+      .LINE_BYTES(LINE_BYTES)
   ) home (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -277,7 +327,7 @@ module coherence_cluster_test_harness #(
       .o_w_ready(w_ready),
       .i_w(put),
       .o_wa_valid(wa_valid),
-      .i_wa_ready(wa_ready),
+      .i_wa_ready(wa_ready && !i_hold_wa),
       .o_wa(ack),
       .o_g_valid(g_valid),
       .i_g_ready(g_ready),

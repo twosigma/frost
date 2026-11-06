@@ -33,7 +33,16 @@ module coherent_hart_cache_formal #(
   // The service-engine target proves the merge independently for every byte.
   (* anyconst *) logic [1:0] arbitrary_stored_bits;
   wire [1:0] stored_bits = COVER_MODE ? 2'd1 : arbitrary_stored_bits;
-  (* anyconst *) logic stored_global, two_stores;
+  (* anyconst *) logic stored_global, two_stores, four_stores;
+`ifdef COH_MAINT_FOUR
+  wire [6:0] store_goal = 7'd67;
+  logic four_records_seen_q = 0;
+  always_ff @(posedge i_clk) if (!rst && &store_holds) four_records_seen_q <= 1;
+`else
+  // The unbounded proof takes one or two scalars. Covers and the deterministic
+  // schedule fill the records.
+  wire [2:0] store_goal = COVER_MODE && four_stores ? 3'd4 : two_stores ? 3'd2 : 3'd1;
+`endif
   // Cover schedules select acceptance/error discard, publication without a
   // fence, competing traffic, or a post-fence walk.
   (* anyconst *)logic [3:0] cover_scenario;
@@ -44,6 +53,25 @@ module coherent_hart_cache_formal #(
     logic [2:0] fetch_count_q = 0, walk_count_q = 0;
     logic fetched_q = 0, put_demand_q = 0;
     always_comb begin
+`ifdef COH_MAINT_FOUR
+      assume (cover_scenario == 0);
+      imem_done = 1;
+      accept_put = 0;
+      finish_put = 1;
+      permit_lookup = 1;
+      permit_data = 1;
+      permit_update = 1;
+      permit_c = 1;
+      permit_g = 1;
+      permit_u = 1;
+      start_store = cover_cycle_q >= 3;
+      request_fence = !fence_seen_q;
+      fetch_sector = 0;
+      fetch = fence_seen_q && !after_fetch_q;
+      walk = fence_seen_q && !walked_q;
+      read_error = 0;
+      discard = 0;
+`else
       imem_done = (cover_cycle_q > 60);
       accept_put = (cover_scenario == 4 || cover_scenario == 10);
       finish_put = (cover_cycle_q[0] && (cover_scenario != 4 || put_demand_q) &&
@@ -55,7 +83,8 @@ module coherent_hart_cache_formal #(
       permit_c = cover_cycle_q[0];
       permit_g = (cover_cycle_q[0] && (cover_scenario != 5 || cover_cycle_q > 48));
       if (cover_scenario <= 4) begin
-        start_store = (cover_cycle_q == 3 || cover_cycle_q == 5);
+        start_store = (cover_cycle_q == 3 || cover_cycle_q == 5 ||
+            (four_stores && (cover_cycle_q == 7 || cover_cycle_q == 9)));
         request_fence = (cover_scenario != 2 && !fence_seen_q);
         permit_u = cover_cycle_q[0];
         fetch_sector = 0;
@@ -68,7 +97,8 @@ module coherent_hart_cache_formal #(
             (cover_scenario == 1 && line_resp && line_error));
       end else begin
         start_store = ((cover_scenario == 6 || cover_scenario == 9) &&
-            (cover_cycle_q == 3 || cover_cycle_q == 5)) ||
+            (cover_cycle_q == 3 || cover_cycle_q == 5 ||
+            (four_stores && (cover_cycle_q == 7 || cover_cycle_q == 9)))) ||
             ((cover_scenario == 10 || cover_scenario == 11) &&
             (cover_cycle_q == 3 || (stores_launched_q == 1 && put_valid)));
         request_fence = ((cover_scenario == 6 && fetch_count_q == 2) ||
@@ -91,7 +121,7 @@ module coherent_hart_cache_formal #(
           permit_u = (&if_owned);
         end else if (cover_scenario == 9) begin
           fetch_sector = 0;
-          fetch = (store_sent_q && store_holds == 1 && fetch_count_q == 0);
+          fetch = (store_sent_q && $countones(store_holds) == 1 && fetch_count_q == 0);
           walk = 0;
           permit_u = cover_cycle_q[0];
         end else if (cover_scenario == 10 || cover_scenario == 11) begin
@@ -108,6 +138,7 @@ module coherent_hart_cache_formal #(
           permit_u = (walk_count_q == 2);
         end
       end
+`endif
     end
     always_ff @(posedge i_clk) begin
       if (put_pending_q && home_d_valid && demand.addr == pending_put_q.addr) put_demand_q <= 1;
@@ -129,10 +160,14 @@ module coherent_hart_cache_formal #(
         read_error, fetch_sector, accept_put, finish_put} = inputs;
   end
   wire [63:0] stored_pte = 64'h200000cf | (64'(stored_bits) << 8) | (64'(stored_global) << 5);
-  wire [63:0] first_pte = two_stores ? stored_pte ^ 64'h300 : stored_pte;
+  wire [63:0] first_pte = store_goal > 1 ? stored_pte ^ 64'h300 : stored_pte;
   logic store_sent_q, fence_seen_q, fence_sync, fence_done, pending, store_ready;
-  logic [ 1:0] stores_launched_q;
-  logic [ 1:0] store_holds;
+`ifdef COH_MAINT_FOUR
+  logic [6:0] stores_launched_q;
+`else
+  logic [2:0] stores_launched_q;
+`endif
+  logic [ 3:0] store_holds;
   logic [ 7:0] store_mask;
   logic [63:0] store_data_q;
   always_ff @(posedge i_clk) begin
@@ -142,10 +177,15 @@ module coherent_hart_cache_formal #(
       store_data_q <= 0;
     end else begin
       store_mask <= 0;
-      if (start_store && stores_launched_q < (two_stores ? 2 : 1) && store_ready) begin
+      if (start_store && stores_launched_q < store_goal && store_ready) begin
         stores_launched_q <= stores_launched_q + 1'b1;
         store_mask <= stores_launched_q == 0 ? 8'hff : 8'h02;
-        store_data_q <= stores_launched_q == 0 && two_stores ? stored_pte ^ 64'h300 : stored_pte;
+`ifdef COH_MAINT_FOUR
+        store_data_q <= stores_launched_q == store_goal - 1'b1 ? stored_pte : stored_pte ^ 64'h300;
+`else
+        store_data_q <= (stores_launched_q == 0 && store_goal > 1) ?
+            stored_pte ^ 64'h300 : stored_pte;
+`endif
       end
     end
   end
@@ -675,11 +715,23 @@ module coherent_hart_cache_formal #(
       expected_error_q <= 0;
       last_error_q <= 0;
     end else begin
-      if (|store_mask && stores_launched_q == (two_stores ? 2 : 1)) store_sent_q <= 1;
+      if (|store_mask && stores_launched_q == store_goal) store_sent_q <= 1;
       if (fence_done) begin
         fence_seen_q <= 1;
         assert (store_sent_q && !pending && !(|store_mask));
+`ifdef COH_MAINT_FOUR
+        assert (four_records_seen_q && stores_launched_q == 67);
+`endif
       end
+`ifdef COH_MAINT_FOUR
+      p_four_records_full : cover (&store_holds && !fence_seen_q);
+      p_four_records_fence : cover (four_records_seen_q && fence_done);
+      p_four_records_if :
+      cover (four_records_seen_q && fence_seen_q && if_resp && if_after_q[0] && !if_error);
+      p_four_records_walk :
+      cover (four_records_seen_q && fence_seen_q &&
+          walk_resp && translation.fault_kind == riscv_pkg::DFAULT_NONE);
+`endif
       if (fetch && if_ready) if_after_q[fetch_sector] <= fence_seen_q;
       if (if_resp) assert (if_response_id < 2);
       if (if_resp && if_after_q[if_response_id[0]] && !if_error && !if_response_id[0]) begin
@@ -748,13 +800,14 @@ module coherent_hart_cache_formal #(
       cover (line_resp && walk_after_q && !line_error && !fence_seen_q);
       cover (fence_seen_q && if_resp && if_after_q[if_response_id[0]] && !if_error);
       cover (fence_seen_q && line_resp && walk_after_q && !line_error && absorbed_q);
-      cover (fence_done && !two_stores);
-      cover (fence_done && two_stores);
+      cover (fence_done && store_goal == 1);
+      cover (fence_done && store_goal == 2);
+      cover (fence_done && store_goal == 4);
       cover (fence_seen_q && if_resp && !if_error && if_after_q[if_response_id[0]] &&
           store_put_complete_q && stored_global);
       cover (fence_seen_q && if_resp && !if_error && if_after_q[if_response_id[0]] &&
           store_absorbed_q && stored_global);
-      cover (request_fence && store_sent_q && two_stores && store_holds == 1);
+      cover (request_fence && store_sent_q && two_stores && $countones(store_holds) == 1);
       cover (fence_done && &competitors_q && delayed_g_q && delayed_c_q && delayed_u_q);
 
       if (put_valid && put_ready) begin

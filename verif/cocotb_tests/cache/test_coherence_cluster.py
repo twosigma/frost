@@ -49,6 +49,8 @@ class Cluster:
             "l1d": [0] * 8,
             "l2": [0] * 8,
             "l2_write": [0] * 4,
+            "l1d_combined": [0] * 2,
+            "l2_combined": [0] * 2,
         }
 
     def get(self, name: str) -> int:
@@ -130,11 +132,22 @@ class Cluster:
             await self.set(i_clk=0)
             self.cycle += 1
             if not self.get("i_rst"):
-                for name in self.perf:
-                    widths = (
-                        (1, 5, 1, 1) if name == "l2_write" else (1, 1, 1, 1, 5, 1, 1, 1)
-                    )
-                    events = unpack(self.get(f"o_{name}_perf"), widths)
+                for name in ("l1d", "l2", "l2_write"):
+                    if name == "l2_write":
+                        events = unpack(self.get("o_l2_write_perf"), (1, 5, 1, 1))
+                    else:
+                        # The two combining fields precede the tag-stage fields.
+                        fields = unpack(
+                            self.get(f"o_{name}_perf"), (1, 1, 1, 1, 1, 1, 5, 1, 1, 1)
+                        )
+                        combined = f"{name}_combined"
+                        self.perf[combined] = [
+                            a + b
+                            for a, b in zip(
+                                self.perf[combined], fields[:2], strict=True
+                            )
+                        ]
+                        events = fields[2:]
                     self.perf[name] = [
                         a + b for a, b in zip(self.perf[name], events, strict=True)
                     ]
@@ -394,7 +407,7 @@ async def sc_local_ownership_and_exact_write(dut: Any) -> None:
     await b.tick()
     await b.set(i_sc_commit=0)
     await b.tick(20)
-    assert b.get("o_sc_write_pending") and b.get("o_block_valid") & 2
+    assert b.get("o_sc_write_pending") and b.get("o_block_valid") == 1
     await b.store(address, 92, atomic=True)
     await b.wait("o_sc_write_pending", 0)
     assert b.sc_writes == [7]
@@ -723,6 +736,28 @@ async def test_demand_counters_exclude_probe_and_maintenance(dut: Any) -> None:
     await cluster.tick(10)
     assert cluster.perf["l1d"][:4] == before_l1d
     assert cluster.perf["l2"][:4] == before_l2
+
+
+@cocotb.test()
+async def stores_combine_behind_a_held_grant(dut: Any) -> None:
+    """Count a combined scalar once as a buffer hit and keep both stores' bytes."""
+    b = Cluster(dut)
+    await b.reset()
+    a, c = 0x80000000, 0x80000040
+    await b.set(i_hold_grant=1)
+    await b.store(a, 1)
+    await b.store(c, 2)
+    await b.store(c + 8, 3)
+    await b.tick(4)
+    await b.set(i_hold_grant=0)
+    await b.wait("o_pending_store", 0)
+    await b.tick(10)
+    # Two record lookups miss; the third scalar combines before either miss.
+    assert b.perf["l1d_combined"] == [1, 0]
+    assert b.perf["l1d"][:3] == [2, 0, 2]
+    assert b.perf["l2_combined"] == [0, 0]
+    assert await b.dma(c) & ((1 << 128) - 1) == 2 | (3 << 64)
+    assert await b.dma(a) & ((1 << 64) - 1) == 1
 
 
 async def run_loads_in_flight(dut: Any, hold_grants: bool) -> int:

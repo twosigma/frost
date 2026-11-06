@@ -1,6 +1,8 @@
 [tasks]
 coh_hart_maint_prove proof
 coh_hart_maint_cover covers
+coh_hart_maint_four_bmc four bounded
+coh_hart_maint_four_cover four covers
 
 [options]
 proof: mode prove
@@ -11,10 +13,15 @@ covers: depth 160
 covers: vcd_sim on
 proof: timeout 7200
 covers: timeout 1200
+four: depth 240
+bounded: mode bmc
+bounded: timeout 2400
+bounded: aigsmt boolector
 
 [engines]
 proof: abc pdr -r
 covers: btor btormc
+bounded: abc bmc3 -c
 
 [script]
 read -formal -sv riscv_pkg.sv cache_perf_pkg.sv coherence_pkg.sv
@@ -24,16 +31,22 @@ read -sv coherence_store_buffer.sv coherence_request_endpoint.sv coherence_d_arb
 # Reader assertions apply here without the standalone environment assumptions.
 read -sv -nosynthesis coherence_line_bridge.sv
 proof: read -formal -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
-covers: read -formal -D COH_MAINT_COVER -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
+coh_hart_maint_cover: read -formal -D COH_MAINT_COVER -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
+four: read -formal -D COH_MAINT_COVER -D COH_MAINT_FOUR -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
 covers: chparam -set COVER_MODE 1 coherent_hart_cache_formal
+bounded: chparam -set COVER_MODE 1 coherent_hart_cache_formal
 prep -flatten -top coherent_hart_cache_formal
 check -assert
 chformal -cover -remove c:*flatten_home* c:*flatten_walker* c:walker.* c:*bridge* c:*endpoint* c:*arbiter*
+four: chformal -cover -remove c:* c:*p_four_records* %d
 memory_map
 opt
 proof: techmap
 proof: opt -fast
 proof: setundef -anyseq
+bounded: techmap
+bounded: opt -fast
+bounded: setundef -anyseq
 covers: setundef -zero
 opt_clean
 

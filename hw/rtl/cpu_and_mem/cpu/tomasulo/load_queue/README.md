@@ -493,8 +493,9 @@ suppression flag prevents an invalidated LR from recreating it.
 
 The local cut hold blocks L0 hits, forwarding and memory-read launch during
 capture. Returned-load observations remain replayable after their LQ rows
-are released. A load matching a pending store or selected atomic is parked
-until its holder changes. Other rows remain eligible for issue.
+are released. Four registered L1D sector holds name the pending store records,
+or a selected atomic while the store records are empty. A matching load is
+parked until a holder changes. Other rows remain eligible for issue.
 
 ## DMA coherence
 

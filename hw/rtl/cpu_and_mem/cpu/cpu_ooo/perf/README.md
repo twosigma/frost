@@ -363,8 +363,8 @@ increment register. Totals and snapshot deltas are unaffected.
 | 107 | 1 | `L1I_HIT` | event | An L1I access hits at the tag stage |
 | 108 | 2 | `L1I_MISS` | event | An L1I access misses at the tag stage |
 | 109 | 3 | `L1I_WRITEBACK` | event | A counted miss evicts a dirty L1I victim (counted with the miss, not when the writeback leaves). The L1I is read-only, so this is normally 0 |
-| 110 | 4 | `L1D_ACCESS` | event | The L1D's first permission lookup for a CPU read or store, or the definitive local/home classification of a selected SC. Retries, probes and maintenance do not count |
-| 111 | 5 | `L1D_HIT` | event | An L1D access finds its sector with enough permission: S or M for a read, M for a store, AMO or selected SC. An SC reservation failure on M counts as a hit |
+| 110 | 4 | `L1D_ACCESS` | event | The L1D's first permission lookup for a CPU read or the first store in a record, acceptance of each additional scalar store into a combining record, or the definitive local/home classification of a selected SC. Retries, probes and maintenance do not count |
+| 111 | 5 | `L1D_HIT` | event | An L1D access finds its sector with enough permission, S or M for a read and M for a store, AMO or selected SC, or a scalar store combines into a buffered record. Combining counts as a buffer hit even before permission arrives. An SC reservation failure on M counts as a hit |
 | 112 | 6 | `L1D_MISS` | event | An L1D access without enough permission. An AMO or selected SC counts when classified for home acquisition |
 | 113 | 7 | `L1D_WRITEBACK` | event | A dirty L1D victim is frozen for its PutM, the L1D's dirty-sector writeback message, counted when the writeback starts rather than with the miss. Maintenance writebacks do not count |
 | 114 | 8 | `L2_ACCESS` | event | The L2 home's first lookup for a demand or prefetch request, or a lookup for a PutM other than maintenance |
@@ -372,7 +372,7 @@ increment register. Totals and snapshot deltas are unaffected.
 | 116 | 10 | `L2_MISS` | event | An L2 access misses at the tag stage |
 | 117 | 11 | `L2_WRITEBACK` | event | Memory accepts an L2 victim write, counted when the writeback leaves |
 | 118 | 12 | `L1I_FETCH_MISS_STALL` | cycle | Fetch is in the cached tier, its window is not ready, and an L1I miss is outstanding (any miss, including a next-line prefetch). Pipeline stalls, low-BRAM fetch, fills discarded by `fence.i`, and prefetch misses behind a ready window do not count |
-| 119 | 13 | `L1D_MISS_CYCLES_SUM` | sum | The number of L1D misses outstanding this cycle: read slots waiting on a miss, the pending store's miss, and a home SC waiting for its grant or result (`miss_outstanding`, `cache_perf_pkg::MissOutstandingBits` wide, at most 10) |
+| 119 | 13 | `L1D_MISS_CYCLES_SUM` | sum | The number of L1D misses outstanding this cycle: read slots waiting on a miss, acquired store records, the head store waiting to acquire after a miss, and a home SC waiting for its grant or result (`miss_outstanding`, `cache_perf_pkg::MissOutstandingBits` wide, at most 12) |
 | 120 | 14 | `L2_MISS_CYCLES_SUM` | sum | The number of occupied L2 home fills this cycle, including prefetch fills, at most `L2_NUM_MSHR` |
 | 121 | 15 | `L1I_HIT_UNDER_MISS` | event | An L1I hit resolved while at least one L1I miss was outstanding |
 | 122 | 16 | `L1D_HIT_UNDER_MISS` | event | Same, L1D |
@@ -408,9 +408,15 @@ they cause, include next-line prefetches; `L1I_FETCH_MISS_STALL` counts only
 cycles in which the fetch window is also not ready. The L1D's maintenance
 PutMs are excluded from the L2 access, hit and miss counts as well.
 
+L1D access and hit increments can be two when a scalar combines during a
+tag lookup. Each accepted scalar contributes one access; combining contributes
+a hit without allocating another miss. The first scalar in a record contributes
+its lookup's hit or miss. Hit-under-miss includes both sources independently.
+
 L1D `miss_outstanding` counts unresolved logical misses: read slots whose
-first lookup missed and whose result is not ready, a pending store that
-missed, and a selected SC still waiting for its grant or result. Read misses
+first lookup missed and whose result is not ready, acquired store records until
+installation, the head store waiting to acquire after a miss, and a selected
+SC waiting for its grant or result. Read misses
 count even while waiting for an L1D request endpoint. Counter
 119 sums this count; 128 counts cycles with at least two such misses.
 
