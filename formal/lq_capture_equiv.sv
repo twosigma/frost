@@ -300,7 +300,7 @@ module lq_capture_equiv #(
       (p_second_room & {DEPTH{i_alloc.valid && i_alloc_2.valid}});
   logic [DEPTH-1:0] reference_data_next;
   for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_data
-    assign reference_data_next[entry] = i_rst_n && !i_flush_all && !reference_alloc[entry] &&
+    assign reference_data_next[entry] = !i_flush_all && !reference_alloc[entry] &&
         (p_data_valid[entry] ||
          (p_hit_fast && !p_hit_bypass && p_check_idx == IdxWidth'(entry)) ||
          (p_forward && !p_fwd_bypass && p_check_idx == IdxWidth'(entry)) ||
