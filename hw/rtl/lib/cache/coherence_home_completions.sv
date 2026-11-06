@@ -874,8 +874,10 @@ module coherence_home_completions #(
       assert (|grant_taken == accept_grant);
       for (int slot = 0; slot < SLOTS; slot++) begin
         // A live slot holds the legal request it admitted.
-        if (live[slot])
+        if (live[slot]) begin
           assert (coherence_pkg::legal_opcode(work_identity[slot], work[slot][ADDR_WIDTH+311-:4]));
+          assert (work_address[slot][4:0] == 0);
+        end
         if (PREFETCH_SLOTS != 0 && live[slot])
           assert (PrefetchSlot[slot] == (work_identity[slot][8:7] == 2'd3));
         if (nofill_q[slot] && live[slot]) assert (slot_prefetch[slot]);

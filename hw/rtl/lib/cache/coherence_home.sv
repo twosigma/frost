@@ -1997,6 +1997,9 @@ module coherence_home #(
         assert (fill_forward_q[fill] == (fill_primary_q[fill] != 0 &&
             (fill_phase_q[fill] == FillInstall || fill_phase_q[fill] == FillInstallWait ||
              fill_phase_q[fill] == FillReady)));
+        // A fill's address is block aligned and a slot's is sector aligned,
+        // so the fill's address and recorded sector give the primary's.
+        if (fill_phase_q[fill] != FillFree) assert (fill_addr_q[fill][OffsetBits-1:0] == 0);
         if (fill_primary_q[fill] != 0) begin
           assert (fill_phase_q[fill] != FillFree && !fill_prefetch_q[fill] && !fill_write_q[fill]);
           for (int slot = 0; slot < COMPLETIONS; slot++)
