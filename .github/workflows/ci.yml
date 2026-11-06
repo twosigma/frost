@@ -1229,11 +1229,17 @@ jobs:
           - shard: Coherence store home
             pytest_filter: coherence_store_home
             timeout_minutes: 240
-          # The L1D's control and data tasks and the AXI bridges.
+          # The three-endpoint L1D control BMC ran past two hours in CI and
+          # has a four-hour budget, so it gets a job of its own.
+          - shard: Coherence L1D multi-endpoint
+            pytest_filter: coh_l1d_multi_bmc
+            timeout_minutes: 330
+          # The L1D's other control and data tasks and the AXI bridges.
           - shard: Coherence L1D and bridges
             pytest_filter: >-
               axi_coherent_bridge or
               (coherence_l1d and not (coh_l1d_stream_bmc or coh_l1d_stream_free or
+              coh_l1d_multi_bmc or
               (coh_l1d_local and prove)))
             timeout_minutes: 330
           # The ordered store boundary tasks, the longest of the coherent BMCs

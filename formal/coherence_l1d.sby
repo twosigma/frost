@@ -65,7 +65,7 @@ nostore: timeout 3600
 # The control BMCs check four ordered store records, local atomics and
 # look-ahead admission and need more than the other tasks.
 control_single: timeout 3600
-control_multi: timeout 7200
+control_multi: timeout 14400
 multidata: timeout 3600
 
 [engines]

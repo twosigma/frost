@@ -640,7 +640,7 @@ except for `csr_file:bmc`, `csr_file:bmc_perf_off`, and `reorder_buffer:bmc`,
 which have 90 minutes each, `coherent_hart_cache:coh_hart_maint_prove`,
 which has 120 minutes, `coherence_l1d:coh_l1d_stream_bmc` and
 `coherence_l1d:coh_l1d_stream_free_nostore_bmc`, which have 60 minutes each,
-and `coherence_l1d:coh_l1d_multi_bmc`, which has 120 minutes.
+and `coherence_l1d:coh_l1d_multi_bmc`, which has 240 minutes.
 `--verbose` prints solver output.
 
 ## Environment and output
