@@ -33,6 +33,7 @@ amo: depth 140
 sc: depth 140
 timeout 2400
 four: timeout 7200
+intervening: timeout 7200
 bmc: aigsmt boolector
 sticky: mode prove
 sticky: depth 2
