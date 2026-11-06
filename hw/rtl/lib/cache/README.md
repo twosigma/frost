@@ -327,9 +327,10 @@ candidates share free writeback
 credit; endpoint zero uses its reserved credit. `coherence_grant_select` applies that shared credit after
 choosing the first nonzero candidate. For binary inputs, its outputs match a priority scan over
 all credit-qualified candidates. The same selection qualifies the endpoint
-failure bit. Owner, failure and error fields use the nonzero priority decision
-before shared credit qualification. The packet uses the one-hot selection.
-An idle decision selects endpoint zero.
+failure bit. Owner, failure and error fields and the packet use the nonzero
+priority decision before shared credit qualification. Endpoint zero's selection
+takes the packet ahead of it. An idle decision reads endpoint zero's fields,
+and a packet without a selection goes unread.
 A younger store grant waits
 in its endpoint while the head and eligible reads continue. Endpoint 0
 reserves a free dirty-victim slot through installation. A nonzero endpoint
@@ -380,7 +381,9 @@ events. `coherence_read_owners` computes the same mask from parallel endpoint
 contributions as a checking reference. Endpoint zero excludes stores and SC;
 nonzero endpoints exclude stores, hints and installed requests. Duplicate
 endpoint slot indices combine by OR. The binary mask matches an indexed
-endpoint scan.
+endpoint scan. A read's wait for another acquisition of its line, the flag for
+a free load endpoint and the flags for waiting LR and AMO reads register from
+the same kind of events.
 SC acceptance and local atomic admission do not read the SQ's write decode:
 the CPU presents an atomic only after its committed stores drain, so no store
 arrives beside them.
@@ -397,8 +400,10 @@ address joins that selection last.
 Read status uses per-slot masks for allocation, response transfer, lookup
 results and grant completion. Completion and miss sets dominate allocation
 clears. Allocation sets dominate response clears of valid bits. A failed
-grant supplies the selected read's error bit. Status outcomes are computed
-with and without allocation. The allocation pulse selects the outcome.
+read completes on the cycle after its grant, from registers that hold its slot
+and error bit, and its waiters' waits end on the same cycle. Status outcomes
+are computed with and without allocation. The allocation pulse selects the
+outcome.
 Lookup history and wait flags also compute their updates with and without
 allocation. Allocation clears lookup history and, with multiple request
 endpoints, the wait flag. These clears take priority over lookup and wait
@@ -421,18 +426,22 @@ requests. Three-endpoint caches allow one; smaller caches disable look-ahead.
 Demand may use every load endpoint. Eligible foreground work precedes hint
 selection. Registered hints check live acquisitions, buffered stores and
 frozen dirty writebacks, with conflicts rechecked before acquisition.
-A store that arrives on the acquisition edge is not compared. It waits for the
-endpoint like any store that arrives while the endpoint is live.
+The recheck reads a registered comparison, and any offered probe excludes the
+hint. A store that arrives on the acquisition edge or the edge before it is
+not compared. It waits for the endpoint like any store that arrives while the
+endpoint is live.
 Nonzero endpoints receive GetS payloads with zero write masks. Demand size
 and offset follow the selected load. Endpoint zero carries the other
 acquisition kinds.
 Only the speculative endpoint pool uses the conditional hint acceptance
 guard. Endpoint zero and the demand-only endpoints use demand admission.
 The hint and selected lookup have separate comparisons against live ownership.
-The lookup comparisons qualify the tag decision and endpoint acceptance.
+The registered lookup comparison qualifies the tag decision and endpoint
+acceptance. Only the prefetch can start an acquisition or a writeback while it
+runs, so that comparison covers live ownership at acceptance.
 A speculative tag decision checks the page and look-ahead window. The selected
 address and demand frontier stay fixed through acquisition, which checks
-cancellation and live ownership conflicts at endpoint acceptance.
+cancellation at endpoint acceptance.
 A resident hint needs no acquisition and leaves the sector's replacement
 state unchanged. Accepted speculative identity lasts through U, including
 when a CPU load attaches to the endpoint.

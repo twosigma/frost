@@ -25,12 +25,15 @@ module coherence_read_flags (
     input logic i_response_valid,
     input logic [2:0] i_response_id,
     input logic i_failure_valid,
-    input logic [2:0] i_acquisition_id,
+    input logic [2:0] i_failure_id,
     input logic i_failure_error,
     input logic i_hit_valid,
     input logic [2:0] i_hit_id,
     input logic i_fill_valid,
+    input logic [2:0] i_fill_id,
     input logic i_miss_valid,
+    // Slots a failure, hit or fill completes this cycle.
+    output logic [7:0] o_complete,
     output logic [7:0] o_valid,
     output logic [7:0] o_miss,
     output logic [7:0] o_ready,
@@ -40,10 +43,11 @@ module coherence_read_flags (
   (* keep = "true" *) logic [7:0] complete_mask, ready_preserved, error_preserved, error_set;
   (* keep = "true" *) logic [7:0] miss_mask, valid_preserved;
   assign response_mask = i_response_valid ? 8'h01 << i_response_id : '0;
-  assign failure_mask = i_failure_valid ? 8'h01 << i_acquisition_id : '0;
+  assign failure_mask = i_failure_valid ? 8'h01 << i_failure_id : '0;
   assign hit_mask = i_hit_valid ? 8'h01 << i_hit_id : '0;
-  assign fill_mask = i_fill_valid ? 8'h01 << i_acquisition_id : '0;
+  assign fill_mask = i_fill_valid ? 8'h01 << i_fill_id : '0;
   assign complete_mask = failure_mask | hit_mask | fill_mask;
+  assign o_complete = complete_mask;
   assign ready_preserved = i_ready & ~response_mask;
   assign error_preserved = i_error & ~failure_mask;
   assign error_set = failure_mask & {8{i_failure_error}};
@@ -82,11 +86,11 @@ module coherence_read_flags (
       reference_error[i_allocate_id] = 1'b0;
     end
     if (i_failure_valid) begin
-      reference_ready[i_acquisition_id] = 1'b1;
-      reference_error[i_acquisition_id] = i_failure_error;
+      reference_ready[i_failure_id] = 1'b1;
+      reference_error[i_failure_id] = i_failure_error;
     end
     if (i_hit_valid) reference_ready[i_hit_id] = 1'b1;
-    if (i_fill_valid) reference_ready[i_acquisition_id] = 1'b1;
+    if (i_fill_valid) reference_ready[i_fill_id] = 1'b1;
     if (i_miss_valid) reference_miss[i_hit_id] = 1'b1;
     p_read_flags_exact :
     assert ({o_valid, o_miss, o_ready, o_error} ==

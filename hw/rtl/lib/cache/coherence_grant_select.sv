@@ -29,6 +29,9 @@ module coherence_grant_select #(
     output logic o_valid,
     output logic [IndexBits-1:0] o_index,
     output logic [SLOTS-1:0] o_onehot,
+    // The first nonzero offer, without credit. A selection of a nonzero slot
+    // names it; o_onehot[0] selects endpoint zero's payload ahead of it.
+    output logic [SLOTS-1:1] o_other_first,
     output logic o_failure,
     output logic o_owner_store,
     output logic o_grant_failure,
@@ -68,6 +71,7 @@ module coherence_grant_select #(
   assign o_index = other_allowed ? other_index : '0;
   assign o_onehot[0] = zero_selected;
   assign o_onehot[SLOTS-1:1] = other_first & {(SLOTS - 1) {other_allowed}};
+  assign o_other_first = other_first;
   assign other_failure = |(other_first & failure[SLOTS-1:1]);
   assign o_failure = (zero_selected && failure[0]) || (other_allowed && other_failure);
 
