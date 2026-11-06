@@ -26,7 +26,7 @@ cover_edges_other cover boundaries load other ordinary
 bmc: mode bmc
 cover: mode cover
 ordinary: depth 80
-four: depth 120
+four: depth 104
 intervening: depth 140
 old: depth 80
 amo: depth 140
