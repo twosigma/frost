@@ -270,9 +270,12 @@ There are eight unmerged CPU read slots, two frozen PutM slots and `MISSES`
 request endpoints, set by `L1D_NUM_MSHR` and eight on X3. Endpoint 0 carries
 the head store's GetM, LR, AMO and SC acquisitions, and ordinary loads when it
 is the only endpoint. With at least three endpoints, a nonzero endpoint can
-carry a lookahead store GetM. At least one nonzero endpoint remains available
-to loads. There are at most two live store acquisitions, including installed
-requests awaiting U. Each endpoint owns its grant and completion metadata through U;
+carry a lookahead store GetM. At most one nonzero endpoint is lent to a store.
+There are at most two live store acquisitions, including installed requests
+awaiting U. A reader ordered behind a lookahead store can keep that store's
+home fill occupied until the store completes, so the head store's acquisition
+needs another fill. With three or more L1D endpoints the home needs at least
+two fills; `cpu_top` and the cluster test harness reject one. Each endpoint owns its grant and completion metadata through U;
 a popped queue record can be reused independently.
 
 Lookahead prefers another home row over the head's sibling sector. Only the

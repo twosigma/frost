@@ -141,6 +141,11 @@ module coherence_cluster_test_harness #(
   logic [ADDR_WIDTH-1:0] hart_fatal_addr, home_fatal_addr;
   assign o_fatal = hart_fatal || home_fatal;
   assign o_fatal_addr = hart_fatal ? hart_fatal_addr : home_fatal_addr;
+  // A reader ordered behind a lookahead store can hold that store's fill,
+  // so the head store's acquisition needs a second fill.
+  if (L1D_MISSES >= 3 && HOME_FILLS < 2) begin : gen_invalid_fills
+    initial $fatal(1, "coherence_cluster_test_harness: three or more L1D endpoints need two fills");
+  end
   assign o_held_puts = accepted_puts_q | (w_valid ? (2'b01 << put.put_id) : 2'b00);
   assign o_load_grant = g_valid && g_ready && grant.q.src == 0 &&
       grant.opcode == coherence_pkg::GrantS;
