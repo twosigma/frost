@@ -664,7 +664,7 @@ module coherence_l1d #(
       grant_retry_q <= grant_read_yield && !probe_valid_q && !probe_priority;
   end
 
-  // Every grant passes through Idle before the next one is captured.
+  // Idle clears the flag before each accepted grant enters Lookup.
   always_ff @(posedge i_clk) begin
     if (i_rst || phase_q == Idle) grant_answered_q <= 1'b0;
     else if (grant_answer) grant_answered_q <= 1'b1;
@@ -1070,12 +1070,28 @@ module coherence_l1d #(
     end
   end
 `ifndef SYNTHESIS
-  // Endpoints whose current acquisition has answered its read.
+`ifndef FORMAL
+  // Endpoints whose current acquisition has answered its read. These checks
+  // span whole acquisitions, which the control BMCs cannot afford, so they
+  // run in simulation. A load endpoint answers the ordinary load it acquired
+  // for, once per acquisition; its installation completes no read.
   logic [EpSlots-1:0] answered_q;
-  always_ff @(posedge i_clk)
+  always_ff @(posedge i_clk) begin
     for (int ep = 0; ep < EpSlots; ep++)
       if (i_rst || (ep_request_valid[ep] && ep_request_ready[ep])) answered_q[ep] <= 1'b0;
       else if (grant_answer && grant_ep_q == EpBits'(ep)) answered_q[ep] <= 1'b1;
+    if (sim_reset_seen_q && !i_rst && Multi) begin
+      if (phase_q == Lookup && operation_q == GrantOp && grant_ep_q != '0)
+        p_grant_answer_flag : assert (grant_answered_q == answered_q[grant_ep_q]);
+      if (grant_answer) begin
+        p_grant_answer_once : assert (!answered_q[grant_ep_q]);
+        p_grant_answer_read : assert (live[grant_ep_q] && !ld_prefetch_q[grant_ep_q] &&
+            rd_valid_q[ld_read_q[grant_ep_q]] && !rd_ready_q[ld_read_q[grant_ep_q]] &&
+            rd_kind_q[ld_read_q[grant_ep_q]] == ReadLoad);
+      end
+    end
+  end
+`endif
   // Home atomics drain load endpoints. Local atomics exclude only their
   // sector and endpoint 0, while holding service through installation.
   always_ff @(posedge i_clk)
@@ -1097,14 +1113,6 @@ module coherence_l1d #(
         end
       end
       if (grant_prefetch_q) p_prefetch_fill_isolation : assert (!read_fill);
-      // A load endpoint answers the ordinary load it acquired for, once per
-      // acquisition; its installation completes no read.
-      if (grant_answer) begin
-        p_grant_answer_once : assert (!answered_q[grant_ep_q]);
-        p_grant_answer_read : assert (live[grant_ep_q] && !ld_prefetch_q[grant_ep_q] &&
-            rd_valid_q[ld_read_q[grant_ep_q]] && !rd_ready_q[ld_read_q[grant_ep_q]] &&
-            rd_kind_q[ld_read_q[grant_ep_q]] == ReadLoad);
-      end
       // Grant service reads ld_read_q only through the captured flag, which
       // matches the live endpoint's own flag.
       if (operation_q == GrantOp && phase_q != Idle && grant_ep_q != '0)
@@ -2009,7 +2017,7 @@ module coherence_l1d #(
         LocalReadReady: reference_ready_next[atomic_read_q] = 1'b1;
         Lookup:
         if (operation_q == GrantOp && grant_ep_q != '0 && !ld_prefetch_q[grant_ep_q] &&
-            !answered_q[grant_ep_q])
+            !grant_answered_q)
           reference_ready_next[ld_read_q[grant_ep_q]] = 1'b1;
         UpdateWait:
         if (array_ready && operation_q == GrantOp && grant_ep_q == '0 &&
