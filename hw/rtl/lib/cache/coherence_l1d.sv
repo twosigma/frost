@@ -302,6 +302,9 @@ module coherence_l1d #(
   // entries are idle constants.
   localparam int unsigned EpSlots = 1 << EpBits;
   logic [EpSlots-1:0] live, ep_request_ready, ep_request_valid, ep_grant_valid, ep_grant_ready;
+  // Each endpoint's held grant, registered beside the endpoint's own state so
+  // grant selection and credits do not start at the reset qualification.
+  logic [EpSlots-1:0] ep_grant_held_q;
   logic [EpSlots-1:0] ep_done_valid, ep_write_done, ep_g_ready, ep_u_ready;
   logic [EpSlots-1:0][1:0] ep_done_status;
   logic [EpSlots-1:0][ADDR_WIDTH+274:0] ep_grant;
@@ -322,7 +325,7 @@ module coherence_l1d #(
   logic [EpSlots-1:0] ld_done_q, installed_q, same_line_q;
   logic [1:0] ld_status_q[EpSlots];
   logic same_line, store_same_line_q, load_ep_free, load_block, amo_waiting, wait_attach;
-  logic load_grant_waiting, ep0_wb_ok, drain_q;
+  logic load_grant_waiting_q, ep0_wb_ok, drain_q;
   logic [3:0] retry_credit;
   logic [EpBits-1:0] same_line_ep, load_ep_index;
   logic [7:0] rd_wait_q, rd_wait_release_q, rd_waiting, rd_owned, rd_ep_owned, rd_miss_retry;
@@ -744,6 +747,32 @@ module coherence_l1d #(
     assign ep_done_status[ep] = coherence_pkg::Consumed;
     assign ep_write_done[ep] = ld_store_q[ep] && ld_done_q[ep];
   end
+  // An endpoint holds a grant from G acceptance until the grant is selected.
+  // A nonzero endpoint's waiting load grant registers from that next state;
+  // an endpoint's store kind changes only at acquisition, when it holds none.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      ep_grant_held_q <= '0;
+      load_grant_waiting_q <= 1'b0;
+    end else begin
+      load_grant_waiting_q <= 1'b0;
+      for (int ep = 0; ep < EpSlots; ep++) begin
+        if (i_g_valid && ep_g_ready[ep]) ep_grant_held_q[ep] <= 1'b1;
+        if (ep_grant_ready[ep]) ep_grant_held_q[ep] <= 1'b0;
+        if (Multi && ep > 0 && !ep_store[ep] && ((i_g_valid && ep_g_ready[ep]) ||
+            (ep_grant_held_q[ep] && !ep_grant_ready[ep])))
+          load_grant_waiting_q <= 1'b1;
+      end
+    end
+  end
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst) begin
+      p_grant_held_exact : assert (ep_grant_held_q == ep_grant_valid);
+      p_load_grant_waiting_exact : assert (load_grant_waiting_q ==
+          (Multi && |(ep_grant_valid[EpSlots-1:1] & ~ep_store[EpSlots-1:1])));
+    end
+`endif
   // Eligibility precedes priority. A held younger store grant cannot block
   // the head's lookup or a load grant that can install.
   // The owner mask follows a pop and includes an accepted acquisition.
@@ -768,12 +797,12 @@ module coherence_l1d #(
   always_comb begin
     load_grant_eligible = 1'b0;
     for (int ep = 0; ep < EpSlots; ep++)
-      if (ep_grant_valid[ep] && !ep_store[ep] &&
+      if (ep_grant_held_q[ep] && !ep_store[ep] &&
           (ep == 0 ? wb_reserved_q : wb_free)) load_grant_eligible = 1'b1;
   end
   always_comb begin
     for (int ep = 0; ep < EpSlots; ep++) begin
-      grant_offer[ep] = ep_grant_valid[ep];
+      grant_offer[ep] = ep_grant_held_q[ep];
       if (ep_store[ep])
         grant_offer[ep] &= store_grant_head_q[ep] &&
             !(store_read_turn_q && read_waiting_q);
@@ -882,8 +911,7 @@ module coherence_l1d #(
       .SLOTS(MISSES)
   ) miss_credit (
       .i_clk(i_clk),
-      .i_grant_valid(ep_grant_valid[MISSES-1:0]),
-      .i_store(ep_store[MISSES-1:0]),
+      .i_load_grant_waiting(load_grant_waiting_q),
       .i_wb_live(wb_live),
       .i_wb_free(wb_free),
       .i_request_live(request_live),
@@ -891,7 +919,6 @@ module coherence_l1d #(
       .i_load_ep_free(load_ep_free),
       .i_atomic(atomic_q),
       .i_drain(drain_q),
-      .o_load_grant_waiting(load_grant_waiting),
       .o_zero_wb_ok(ep0_wb_ok),
       .o_retry(retry_credit)
   );

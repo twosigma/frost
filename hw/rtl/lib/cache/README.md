@@ -289,8 +289,9 @@ endpoint capture without an intervening private installation.
 Store-head eligibility is checked before priority. A registered store-owner mask
 follows the head on installation and includes accepted acquisitions.
 A registered head address follows empty insertion and head promotion.
-Nonzero grant candidates share free writeback credit; endpoint zero uses its
-reserved credit. `coherence_grant_select` applies that shared credit after
+Grant selection reads a register per endpoint that holds from G acceptance
+until the grant is selected. Nonzero grant candidates share free writeback
+credit; endpoint zero uses its reserved credit. `coherence_grant_select` applies that shared credit after
 choosing the first nonzero candidate. For binary inputs, its outputs match a priority scan over
 all credit-qualified candidates. The same selection qualifies the endpoint
 failure bit. Owner, failure and error fields use the nonzero priority decision
@@ -300,9 +301,11 @@ A younger store grant waits
 in its endpoint while the head and eligible reads continue. Endpoint 0
 reserves a free dirty-victim slot through installation. A nonzero endpoint
 requires a free slot when its grant is selected. Endpoint 0 does not take the
-last free slot from a waiting load grant. `coherence_miss_credit` computes this
-permission and the Load, LR and AMO retry credits from endpoint ownership,
-writeback occupancy and drain state. Frozen slots remain occupied through
+last free slot from a waiting load grant. A register records a waiting load
+grant from the next held state, since an endpoint's store kind changes only at
+acquisition. `coherence_miss_credit` computes this permission and the Load,
+LR and AMO retry credits from that register, endpoint ownership, writeback
+occupancy and drain state. Frozen slots remain occupied through
 WA. A store error stops the hart without read completion or error disposal.
 
 No two live endpoints hold the same sector. A load miss on a sector held by
