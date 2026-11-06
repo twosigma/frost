@@ -874,7 +874,7 @@ module coherence_l1d #(
   );
   // A local AMO owns its read slot until it releases its sector.
   assign rd_owned = rd_ep_owned |
-      ((atomic_q && atomic_local_q && !atomic_sc_q) ? 8'b1 << atomic_read_q : 8'b0);
+      ((atomic_q && atomic_local_q && !atomic_sc_q) ? 8'd1 << atomic_read_q : 8'd0);
   assign same_line = Multi && |same_line_q;
   // A load grant waits only for a WB slot. Endpoint 0 does not take the last
   // free slot from it, so stores and LR cannot keep a load grant waiting.
