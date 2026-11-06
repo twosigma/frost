@@ -200,6 +200,9 @@ module coherence_l1d #(
   logic [7:0] rd_error_q, rd_ready_next, rd_error_next, rd_valid_next, rd_miss_next;
   logic read_miss;
   logic read_failure, read_hit, read_fill;
+  // A load endpoint's grant answers its read once, in the grant's first
+  // Lookup cycle, from grant_q; installation follows.
+  logic grant_answer, grant_answered_q;
   logic rd_candidate, rd_response;
   logic [2:0] rd_pick, rd_result, rd_rr_q, rd_response_rr_q, selected_read_q;
   logic pending_q, pending_miss_q;
@@ -323,9 +326,12 @@ module coherence_l1d #(
   assign read_miss = active && phase_q == LookupWait && array_valid &&
       operation_q == ReadOp &&
       (rd_kind_q[selected_read_q] == ReadAMO || !array_hit);
-  assign read_fill = active && phase_q == UpdateWait && array_ready &&
-      operation_q == GrantOp && !grant_prefetch_q &&
-      (grant_ep_q != '0 || (!acquisition_store_q && !acquisition_sc_q));
+  // Endpoint 0's reads (LR, AMO, and loads with one endpoint) answer after
+  // installation.
+  assign grant_answer = active && phase_q == Lookup && operation_q == GrantOp &&
+      grant_ep_q != '0 && !grant_prefetch_q && !grant_answered_q;
+  assign read_fill = grant_answer || (active && phase_q == UpdateWait && array_ready &&
+      operation_q == GrantOp && grant_ep_q == '0 && !acquisition_store_q && !acquisition_sc_q);
 
   coherence_read_flags read_flags (
       .i_valid(rd_valid_q),
@@ -656,6 +662,12 @@ module coherence_l1d #(
     if (i_rst) grant_retry_q <= 1'b0;
     else if (active && phase_q == Idle)
       grant_retry_q <= grant_read_yield && !probe_valid_q && !probe_priority;
+  end
+
+  // Idle clears the flag before each accepted grant enters Lookup.
+  always_ff @(posedge i_clk) begin
+    if (i_rst || phase_q == Idle) grant_answered_q <= 1'b0;
+    else if (grant_answer) grant_answered_q <= 1'b1;
   end
 
   assign maint_eligible = maint_q && !pending_q && !atomic_q && !any_live && wb_free;
@@ -1058,6 +1070,37 @@ module coherence_l1d #(
     end
   end
 `ifndef SYNTHESIS
+  // The answer flag is clear when a grant enters Lookup, so a load endpoint's
+  // answer falls in that cycle.
+  logic lookup_seen_q;
+  always_ff @(posedge i_clk) begin
+    lookup_seen_q <= phase_q == Lookup;
+    if (sim_reset_seen_q && !i_rst && Multi && phase_q == Lookup && !lookup_seen_q &&
+        operation_q == GrantOp)
+      p_grant_answer_fresh : assert (!grant_answered_q);
+  end
+`ifndef FORMAL
+  // Endpoints whose current acquisition has answered its read. A load endpoint
+  // answers the ordinary load it acquired for, once per acquisition; its
+  // installation completes no read. The control BMCs cannot afford these
+  // checks, so they run in simulation.
+  logic [EpSlots-1:0] answered_q;
+  always_ff @(posedge i_clk) begin
+    for (int ep = 0; ep < EpSlots; ep++)
+      if (i_rst || (ep_request_valid[ep] && ep_request_ready[ep])) answered_q[ep] <= 1'b0;
+      else if (grant_answer && grant_ep_q == EpBits'(ep)) answered_q[ep] <= 1'b1;
+    if (sim_reset_seen_q && !i_rst && Multi) begin
+      if (phase_q == Lookup && operation_q == GrantOp && grant_ep_q != '0)
+        p_grant_answer_flag : assert (grant_answered_q == answered_q[grant_ep_q]);
+      if (grant_answer) begin
+        p_grant_answer_once : assert (!answered_q[grant_ep_q]);
+        p_grant_answer_read : assert (live[grant_ep_q] && !ld_prefetch_q[grant_ep_q] &&
+            rd_valid_q[ld_read_q[grant_ep_q]] && !rd_ready_q[ld_read_q[grant_ep_q]] &&
+            rd_kind_q[ld_read_q[grant_ep_q]] == ReadLoad);
+      end
+    end
+  end
+`endif
   // Home atomics drain load endpoints. Local atomics exclude only their
   // sector and endpoint 0, while holding service through installation.
   always_ff @(posedge i_clk)
@@ -1328,6 +1371,11 @@ module coherence_l1d #(
       .i_req_way(maint_way_q),
       .i_req_skip_data_on_hit(array_skip_data),
       .i_req_data_if_modified(probe_launch || operation_q == ProbeOp),
+      // A CPU read uses data only on a hit; its miss decision follows the
+      // tag result. A grant needs the replaced line's data only to freeze a
+      // Modified victim.
+      .i_req_data_if_hit(!probe_launch && operation_q == ReadOp),
+      .i_req_data_if_victim_modified(!probe_launch && operation_q == GrantOp),
       // A resident hint is not a CPU access and keeps the line's age.
       .i_req_no_touch(StreamEnabled && !probe_launch && operation_q == PrefetchOp),
       .o_resp_valid(array_valid),
@@ -1648,7 +1696,12 @@ module coherence_l1d #(
               phase_q <= Lookup;
             end
           end
-          Lookup: if (array_ready) phase_q <= LookupWait;
+          Lookup: begin
+            if (grant_answer)
+              rd_data_q[ld_read_q[grant_ep_q]] <=
+                  grant_q.data[64*rd_addr_q[ld_read_q[grant_ep_q]][4:3]+:64];
+            if (array_ready) phase_q <= LookupWait;
+          end
           LookupWait:
           if (array_valid) begin
             way_q <= array_way;
@@ -1853,9 +1906,9 @@ module coherence_l1d #(
           if (array_ready) begin
             case (operation_q)
               GrantOp: begin
+                // A load endpoint's read was answered in Lookup; its slot may
+                // hold a later read.
                 if (grant_ep_q != '0) begin
-                  if (!grant_prefetch_q) rd_data_q[ld_read_q[grant_ep_q]] <=
-                      grant_q.data[64*rd_addr_q[ld_read_q[grant_ep_q]][4:3]+:64];
                 end else if (acquisition_store_q) begin
                   done_q <= 1'b1;
                   written_q <= 1'b1;
@@ -1971,10 +2024,14 @@ module coherence_l1d #(
           endcase
         end
         LocalReadReady: reference_ready_next[atomic_read_q] = 1'b1;
+        Lookup:
+        if (operation_q == GrantOp && grant_ep_q != '0 && !ld_prefetch_q[grant_ep_q] &&
+            !grant_answered_q)
+          reference_ready_next[ld_read_q[grant_ep_q]] = 1'b1;
         UpdateWait:
-        if (array_ready && operation_q == GrantOp && !grant_prefetch_q &&
-            (grant_ep_q != '0 || (!acquisition_store_q && !acquisition_sc_q)))
-          reference_ready_next[fill_read_slot] = 1'b1;
+        if (array_ready && operation_q == GrantOp && grant_ep_q == '0 &&
+            !acquisition_store_q && !acquisition_sc_q)
+          reference_ready_next[acquisition_read_q] = 1'b1;
         default: begin
         end
       endcase
@@ -2047,8 +2104,15 @@ module coherence_l1d #(
       if (array_skip_data) assert (!probe_launch && operation_q == StoreOp);
       if (active && phase_q == LookupWait && array_valid && operation_q == ProbeOp &&
           array_hit && array_state == coherence_pkg::Modified) assert (array_data_valid);
+      if (active && phase_q == LookupWait && array_valid && operation_q == GrantOp &&
+          !array_hit && array_state == coherence_pkg::Modified)
+        p_grant_victim_data : assert (array_data_valid);
+      if (active && phase_q == LookupWait && array_valid && operation_q == ReadOp && array_hit)
+        p_read_hit_data : assert (array_data_valid);
       if (active && phase_q == LookupWait && array_valid && !array_data_valid) begin
         p_skipped_array_data_unused : assert ((operation_q == StoreOp && array_hit) ||
+            (operation_q == ReadOp && !array_hit) ||
+            (operation_q == GrantOp && (array_hit || array_state != coherence_pkg::Modified)) ||
             (operation_q == ProbeOp && (!array_hit || array_state != coherence_pkg::Modified)));
       end
       if (store_pop) assert (pending_q && !probe_valid_q);

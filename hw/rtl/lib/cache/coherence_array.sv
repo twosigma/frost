@@ -46,6 +46,12 @@ module coherence_array #(
     input logic [WayBits-1:0] i_req_way,
     input logic i_req_skip_data_on_hit,
     input logic i_req_data_if_modified,
+    // These lookups need data only on a hit, or only on a miss whose selected
+    // victim is Modified. Otherwise they reply in the first data-read cycle,
+    // from the registered tag result, and the data read goes unused. A
+    // maintenance visit always waits for its data.
+    input logic i_req_data_if_hit,
+    input logic i_req_data_if_victim_modified,
     // A hit of this lookup leaves replacement state unchanged.
     input logic i_req_no_touch,
     output logic o_resp_valid,
@@ -96,7 +102,9 @@ module coherence_array #(
   logic [CountBits-1:0] count_q;
   logic [SetBits-1:0] init_set_q, set_q;
   logic [TagBits-1:0] tag_q;
-  logic visit_q, skip_data_q, modified_data_q, no_touch_q;
+  logic visit_q, skip_data_q, modified_data_q, no_touch_q, hit_data_q, victim_data_q;
+  // The early reply depends only on registered request flags and tag results.
+  logic data_valid_q, early_reply;
   logic [WayBits-1:0] visit_way_q;
   logic [WAYS-1:0] exclude_q;
   logic [PlruBits-1:0] plru_read, plru_q, plru_write;
@@ -163,7 +171,11 @@ module coherence_array #(
   assign update_fire = i_update_valid && o_update_ready;
   assign o_req_ready = phase_q == Idle && !i_update_valid;
   assign request_fire = i_req_valid && o_req_ready;
-  assign o_resp_valid = phase_q == Reply;
+  assign early_reply = (hit_data_q && !o_resp_hit) ||
+      (victim_data_q && (o_resp_hit || o_resp_state != 2'b11));
+  // An early reply holds through Reply until it is consumed.
+  assign o_resp_valid = phase_q == Reply || (phase_q == Data && early_reply);
+  assign o_resp_data_valid = data_valid_q && !early_reply;
   assign tag_raddr = i_req_addr[OffsetBits+:SetBits];
   assign tag_waddr = phase_q == Init ? init_set_q : i_update_addr[OffsetBits+:SetBits];
   assign tag_wdata = phase_q == Init ? '0 :
@@ -299,6 +311,8 @@ module coherence_array #(
       skip_data_q <= 1'b0;
       modified_data_q <= 1'b0;
       no_touch_q <= 1'b0;
+      hit_data_q <= 1'b0;
+      victim_data_q <= 1'b0;
       visit_way_q <= '0;
       exclude_q <= '0;
       plru_q <= '0;
@@ -310,7 +324,7 @@ module coherence_array #(
       o_resp_addr <= '0;
       o_resp_state <= '0;
       o_resp_data <= '0;
-      o_resp_data_valid <= 1'b0;
+      data_valid_q <= 1'b0;
     end else begin
       plru_hit_q <= select_valid && hit && !visit_q && !no_touch_q;
       insert_lfsr_q <= {
@@ -341,6 +355,8 @@ module coherence_array #(
             skip_data_q <= i_req_skip_data_on_hit;
             modified_data_q <= i_req_data_if_modified;
             no_touch_q <= i_req_no_touch;
+            hit_data_q <= i_req_data_if_hit && !i_req_visit;
+            victim_data_q <= i_req_data_if_victim_modified && !i_req_visit;
             visit_way_q <= i_req_way;
             exclude_q <= i_req_exclude;
             count_q <= CountBits'(TAG_READ_LATENCY);
@@ -355,7 +371,7 @@ module coherence_array #(
             o_resp_way <= selected;
             o_resp_addr <= {tag_rdata[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
             o_resp_state <= tag_rdata[selected][TagBits+:2];
-            o_resp_data_valid <= select_data;
+            data_valid_q <= select_data;
             if (!select_data) begin
               phase_q <= Reply;
             end else begin
@@ -366,8 +382,10 @@ module coherence_array #(
         end
         Data: begin
           count_q <= count_q - 1'b1;
-          if (count_q == 1) begin
-            o_resp_data <= data_rdata;
+          if (early_reply && i_resp_ready) phase_q <= Idle;
+          else if (count_q == 1) begin
+            // A held early reply keeps its data unchanged into Reply.
+            if (!early_reply) o_resp_data <= data_rdata;
             phase_q <= Reply;
           end
         end
@@ -497,8 +515,28 @@ module coherence_array #(
       if (o_resp_valid && !o_resp_data_valid) begin
         assert (!visit_q);
         assert ((o_resp_hit && skip_data_q) ||
-                (modified_data_q && (!o_resp_hit || o_resp_state != 2'b11)));
+                (modified_data_q && (!o_resp_hit || o_resp_state != 2'b11)) ||
+                (hit_data_q && !o_resp_hit) ||
+                (victim_data_q && (o_resp_hit || o_resp_state != 2'b11)));
       end
+      // Only a response that needs no data replies before its data read ends.
+      if (o_resp_valid && phase_q == Data) begin
+        p_early_reply_tags_only : assert (early_reply && !o_resp_data_valid);
+        assert ((hit_data_q && !o_resp_hit) ||
+                (victim_data_q && (o_resp_hit || o_resp_state != 2'b11)));
+      end
+      if ($past(phase_q == Data && o_resp_valid && i_resp_ready))
+        p_early_reply_releases : assert (phase_q == Idle);
+      c_early_reply_data : cover (phase_q == Data && o_resp_valid && i_resp_ready);
+      c_early_reply_held : cover (phase_q == Reply && early_reply && data_valid_q);
+      c_early_reply_request :
+      cover ($past(phase_q == Data && o_resp_valid && i_resp_ready) && request_fire);
+      c_early_reply_update :
+      cover ($past(
+          phase_q == Data && o_resp_valid && i_resp_ready
+      ) && update_fire && |i_update_mask && data_waddr == $past(
+          data_raddr, 2
+      ));
     end
   end
 `endif
