@@ -540,6 +540,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ddr_heap_test",
         nic_mac_clocks=False,
         description="Large heap allocations in cached DDR",
+        # About 600,000 cycles at the seed draw's longest DDR latency (160).
+        extra_env=(("COCOTB_MAX_CYCLES", "800000"),),
     ),
     "ddr_mlp_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
