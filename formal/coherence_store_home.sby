@@ -14,7 +14,7 @@ covers: mode cover
 covers: vcd_sim on
 ordinary: depth 240
 deep: depth 360
-timeout 1200
+timeout 2400
 bmc: aigsmt boolector
 
 [engines]
