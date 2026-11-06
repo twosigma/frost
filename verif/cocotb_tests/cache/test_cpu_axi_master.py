@@ -131,7 +131,12 @@ class Bench:
         payload = tuple(result["resp_" + n] for n in ("write", "id", "rdata", "status"))
         if not cpu_reset and not fabric_reset and "resp" in self.held:
             assert result["resp_valid"] and payload == self.held["resp"]
-        if result["resp_valid"] and not int(self.dut.i_resp_ready.value):
+        if (
+            result["resp_valid"]
+            and not int(self.dut.i_resp_ready.value)
+            and not cpu_reset
+            and not fabric_reset
+        ):
             self.held["resp"] = payload
         else:
             self.held.pop("resp", None)
@@ -424,8 +429,9 @@ async def read_capture_tracks_owned_buffer_updates(dut: Any) -> None:
     assert (await b.step(axi_rvalid=0))["idle"]
     await b.request(35, 0x2000, 3)
     await b.step()
+    # The capture can stay live until the reset edge, which drops the read.
     s = await b.step(rst=1, axi_rvalid=1, axi_rid=35)
-    assert s["axi_rready"] and not s["read_resp_capture"]
+    assert s["axi_rready"]
     s = await b.step(rst=0, axi_rvalid=0)
     assert not s["resp_valid"] and not s["read_resp_capture"]
 

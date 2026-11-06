@@ -67,7 +67,11 @@ class Bench:
         if self.held is not None and not int(self.dut.i_rst.value):
             assert s["req_valid"] and request == self.held
         self.held = (
-            request if s["req_valid"] and not int(self.dut.i_req_ready.value) else None
+            request
+            if s["req_valid"]
+            and not int(self.dut.i_req_ready.value)
+            and not int(self.dut.i_rst.value)
+            else None
         )
         self.dut.i_clk.value = 1
         await Timer(5, unit="ns")
@@ -142,6 +146,53 @@ async def all_narrow_sizes_and_lanes(dut: Any) -> None:
             await b.step(read_resp_ready=1)
             await b.step(read_resp_ready=0)
     assert (await b.step())["idle"]
+
+
+@cocotb.test()
+async def single_cycle_reset_drops_every_request(dut: Any) -> None:
+    """One reset cycle drops active and queued work, whatever arrives on its edge."""
+    b = Bench(dut)
+    await b.reset()
+    await b.step(
+        write_enable=1,
+        write_addr=0x4000_0000,
+        write_size=2,
+        write_device=1,
+        write_data=0x33,
+        write_strb=0xF,
+    )
+    await b.step(write_addr=0x10008, write_size=3, write_device=0, write_strb=0xFF)
+    await b.step(write_enable=0, req_ready=1)
+    s = await b.step(
+        req_ready=0, read_enable=1, read_addr=0x4000_0040, read_size=2, read_device=1
+    )
+    assert s["write_inflight"]
+
+    await b.step(rst=1, read_enable=1, write_enable=1, req_ready=1, resp_valid=1)
+    s = await b.step(rst=0, read_enable=0, write_enable=0, req_ready=0, resp_valid=0)
+    assert s["idle"] and not s["req_valid"] and not s["write_inflight"]
+    assert not s["read_valid"] and not s["write_done"]
+    assert s["read_ready"] and s["write_ready"]
+    for _ in range(3):
+        s = await b.step()
+        assert s["idle"] and not s["req_valid"]
+
+    # A new read goes out as the first request, and its reply reaches the core.
+    await b.step(
+        read_enable=1,
+        read_addr=0x4000_0080,
+        read_size=3,
+        read_device=1,
+        read_resp_ready=0,
+    )
+    s = await b.step(read_enable=0, req_ready=1)
+    assert s["req_valid"] and not s["req_write"] and s["req_addr"] == 0x4000_0080
+    await b.step(req_ready=0)
+    await b.step(resp_valid=1, resp_rdata=0x1234)
+    s = await b.step(resp_valid=0)
+    assert s["read_valid"] and s["read_data"] == 0x1234
+    await b.step(read_resp_ready=1)
+    assert (await b.step(read_resp_ready=0))["idle"]
 
 
 @cocotb.test()

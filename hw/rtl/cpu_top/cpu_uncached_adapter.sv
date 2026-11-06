@@ -110,10 +110,10 @@ module cpu_uncached_adapter #(
 
   wire fatal_write_reply = i_resp_valid && active_q && active_write_q &&
       i_resp_status[1] && write_buffered_q[write_head_q];
-  assign write_pop = i_resp_valid && active_q && active_write_q && !i_rst && !fatal_write_reply;
+  assign write_pop = i_resp_valid && active_q && active_write_q && !fatal_write_reply;
   assign write_push = i_write_enable && o_write_ready;
-  assign o_write_ready = !i_rst && !o_fatal_error && ((write_count_q < 2) || write_pop);
-  assign o_read_ready = !i_rst && !o_fatal_error && !read_pending_q && !o_read_valid &&
+  assign o_write_ready = !o_fatal_error && ((write_count_q < 2) || write_pop);
+  assign o_read_ready = !o_fatal_error && !read_pending_q && !o_read_valid &&
       !(active_q && !active_write_q);
   // Queue the next request on a successful response edge. The fabric's
   // request register still separates it from AXI, whose master releases
@@ -128,9 +128,9 @@ module cpu_uncached_adapter #(
   // valid one without an error, so it turns the active request over and pops
   // a completed write; otherwise an active request blocks.
   (* keep = "true" *) logic req_valid_if_ok, req_valid_if_none;
-  assign req_valid_if_ok = !i_rst && !o_fatal_error &&
+  assign req_valid_if_ok = !o_fatal_error &&
       (read_pending_q || (write_count_q > ((active_q && active_write_q) ? 2'd1 : 2'd0)));
-  assign req_valid_if_none = !i_rst && !o_fatal_error && !active_q &&
+  assign req_valid_if_none = !o_fatal_error && !active_q &&
       (read_pending_q || (write_count_q != 2'd0));
   assign o_req_valid = i_resp_ok ? req_valid_if_ok : req_valid_if_none;
   assign o_req_write = request_write;
@@ -155,12 +155,13 @@ module cpu_uncached_adapter #(
 
   // Prepare the pending-bit alternatives without the late load-launch
   // pulse. Its last gate is then one LUT, instead of priority muxes for
-  // enqueue, handoff and reset on the L0-miss-to-uncached-read path.
+  // enqueue and handoff on the L0-miss-to-uncached-read path.
   (* keep = "true" *) logic read_pending_hold, read_pending_accept;
-  assign read_pending_hold   = !i_rst && read_pending_q && !(req_fire && !request_write);
-  assign read_pending_accept = !i_rst && o_read_ready && !(req_fire && !request_write);
+  assign read_pending_hold   = read_pending_q && !(req_fire && !request_write);
+  assign read_pending_accept = o_read_ready && !(req_fire && !request_write);
   always_ff @(posedge i_clk) begin
-    read_pending_q <= read_pending_hold || (i_read_enable && read_pending_accept);
+    if (i_rst) read_pending_q <= 1'b0;
+    else read_pending_q <= read_pending_hold || (i_read_enable && read_pending_accept);
     // An idle read slot may sample the candidate payload before its launch.
     // READY falls as soon as the slot is owned and stays low through the
     // response, preserving address/size/attributes and response byte lanes.
@@ -232,10 +233,16 @@ module cpu_uncached_adapter #(
     reference_read_pending = read_pending_q;
     if (i_read_enable && o_read_ready) reference_read_pending = 1'b1;
     if (req_fire && !request_write) reference_read_pending = 1'b0;
-    if (i_rst) reference_read_pending = 1'b0;
     p_read_pending_next_exact :
     assert ((read_pending_hold || (i_read_enable && read_pending_accept)) ==
             reference_read_pending);
+  end
+  logic f_past_valid = 1'b0;
+  logic f_reset_q;
+  always @(posedge i_clk) begin
+    f_past_valid <= 1'b1;
+    f_reset_q <= i_rst;
+    if (f_past_valid && f_reset_q) p_read_pending_reset : assert (!read_pending_q);
   end
 `endif
 
@@ -249,7 +256,7 @@ module cpu_uncached_adapter #(
     if (sim_reset_seen_q) begin
       p_resp_ok_exact : assert (i_resp_ok == (i_resp_valid && (i_resp_status == 2'b00)));
       p_req_valid_exact :
-      assert (o_req_valid == (!i_rst && !o_fatal_error && (!active_q || response_turnover) &&
+      assert (o_req_valid == (!o_fatal_error && (!active_q || response_turnover) &&
                             (request_has_write || read_pending_q)));
     end
   always @(posedge i_clk) begin
