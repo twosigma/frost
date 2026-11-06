@@ -1021,7 +1021,7 @@ module coherence_l1d #(
         if (ep_request_valid[ep] && ep_request_ready[ep]) begin
           installed_q[ep] <= 1'b0;
           if (ep > 0) begin
-            ld_prefetch_q[ep] <= operation_q == PrefetchOp;
+            ld_prefetch_q[ep] <= StreamEnabled && operation_q == PrefetchOp;
             ld_line_q[ep] <= lookup_addr_q[ADDR_WIDTH-1:5];
             // A speculative acceptance leaves an unrelated read slot here;
             // every use of ld_read_q tests ld_prefetch_q.
@@ -1229,7 +1229,7 @@ module coherence_l1d #(
     if (operation_q == StoreOp) begin
       acquisition.opcode = coherence_pkg::GetM;
       acquisition.mask   = pending_mask_q;
-    end else if (operation_q == PrefetchOp) begin
+    end else if (StreamEnabled && operation_q == PrefetchOp) begin
       acquisition.offset = '0;
     end else if (atomic_q && atomic_sc_q) begin
       acquisition.opcode = coherence_pkg::StoreConditional;
@@ -1325,7 +1325,7 @@ module coherence_l1d #(
       .i_req_skip_data_on_hit(array_skip_data),
       .i_req_data_if_modified(probe_launch || operation_q == ProbeOp),
       // A resident hint is not a CPU access and keeps the line's age.
-      .i_req_no_touch(!probe_launch && operation_q == PrefetchOp),
+      .i_req_no_touch(StreamEnabled && !probe_launch && operation_q == PrefetchOp),
       .o_resp_valid(array_valid),
       .i_resp_ready(phase_q == LookupWait),
       .o_resp_hit(array_hit),
@@ -1567,7 +1567,7 @@ module coherence_l1d #(
             end else if (grant_valid && grant_ready) begin
               grant_q <= grant;
               grant_ep_q <= grant_pick;
-              grant_prefetch_q <= ld_prefetch_q[grant_pick];
+              grant_prefetch_q <= StreamEnabled && ld_prefetch_q[grant_pick];
               operation_q <= GrantOp;
               lookup_addr_q <= grant.addr;
               // A failed read's data clears from fail_clear_q a cycle later.
@@ -1807,7 +1807,7 @@ module coherence_l1d #(
           end
           Acquire:
           if ((acq_ep_q != '0 && load_acquire_block) ||
-              (operation_q == PrefetchOp && !prefetch_acquire_ok)) phase_q <= Idle;
+              (StreamEnabled && operation_q == PrefetchOp && !prefetch_acquire_ok)) phase_q <= Idle;
           else if (ep_request_ready[acq_ep_q]) begin
             if (acq_ep_q == '0) begin
             acquisition_q <= acquisition;
