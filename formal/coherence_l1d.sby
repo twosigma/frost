@@ -14,6 +14,12 @@ coh_l1d_data2_bmc single data arraydata word2
 coh_l1d_data3_bmc single data arraydata word3
 coh_l1d_store_payload_bmc single data payload
 coh_l1d_store_grant_bmc single data grantdata
+coh_l1d_store_multi_payload_bmc multi data payload multidata
+coh_l1d_store_multi_grant_bmc multi data grantdata multidata
+coh_l1d_multi_data0_bmc multi data arraydata word0 multidata
+coh_l1d_multi_data1_bmc multi data arraydata word1 multidata
+coh_l1d_multi_data2_bmc multi data arraydata word2 multidata
+coh_l1d_multi_data3_bmc multi cadical arraydata word3 multidata
 
 coh_l1d_local_prove single local owner
 coh_l1d_local_multi_prove multi local owner padded
@@ -42,15 +48,18 @@ conflict: timeout 600
 # The eight-endpoint stream BMC needs a longer budget; CI runs it in the
 # hart maintenance proof's job.
 longbmc: timeout 10800
-# The three-endpoint control BMC checks local atomics and look-ahead
-# admission and needs more than the other control tasks.
-control_multi: timeout 3600
+# The control BMCs check four ordered store records, local atomics and
+# look-ahead admission and need more than the other tasks.
+control_single: timeout 3600
+control_multi: timeout 7200
+multidata: timeout 3600
 
 [engines]
 control_single: abc bmc3
 control_multi: abc bmc3 -c
 control_stream: abc bmc3
-data: abc bmc3
+data: abc bmc3 -c
+cadical: abc bmc3 -c
 conflict: smtbmc boolector
 covers: smtbmc boolector
 streamcovers: smtbmc boolector
@@ -63,7 +72,7 @@ localcovers: smtbmc boolector
 [script]
 read -sv coherence_read_stream.sv
 read -sv cache_perf_pkg.sv
-read -sv coherence_pkg.sv coherence_request_endpoint.sv coherence_put_endpoint.sv coherence_read_flags.sv coherence_read_select.sv
+read -sv coherence_pkg.sv coherence_request_endpoint.sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv
 control: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 conflict: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 streamcovers: read -formal -sv -D STREAM_COVER coherence_read_payload.sv coherence_l1d.sv
@@ -129,10 +138,10 @@ conflict: select -assert-none t:*ff* t:*FF* t:*latch*
 conflict: delete -output w:*
 conflict: opt_clean
 opt
-padded: techmap
-padded: opt -fast
-padded: setundef -anyseq
-padded: opt_clean
+techmap
+opt -fast
+setundef -anyseq
+opt_clean
 
 # Arbitrary state and both selector values cover every enabled valuation.
 conflict: design -save conflict_cases
@@ -161,7 +170,10 @@ conflict: sat -seq 2 -prove-asserts -verify -timeout 60
 ../hw/rtl/lib/cache/coherence_request_endpoint.sv
 ../hw/rtl/lib/cache/coherence_put_endpoint.sv
 ../hw/rtl/lib/cache/coherence_l1d.sv
+../hw/rtl/lib/cache/coherence_read_owners.sv
+../hw/rtl/lib/cache/coherence_miss_credit.sv
 ../hw/rtl/lib/cache/coherence_read_flags.sv
+../hw/rtl/lib/cache/coherence_grant_select.sv
 ../hw/rtl/lib/cache/coherence_read_select.sv
 ../hw/rtl/lib/cache/coherence_read_payload.sv
 ../hw/rtl/lib/cache/cache_perf_pkg.sv

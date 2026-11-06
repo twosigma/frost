@@ -33,6 +33,8 @@ module frost_hart #(
     parameter int unsigned L1D_WAYS = 4,
     parameter int unsigned L1I_WAYS = 4,
     parameter int unsigned L1D_NUM_MSHR = 8,
+    parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
+    parameter int unsigned L2_WAYS = 4,
     parameter int unsigned SIM_FAST_MAINT = 0,
     parameter int unsigned PERF_COUNTERS = 0,
     // The uncached data port: one beat of the outgoing AXI data bus (cpu_top
@@ -217,8 +219,8 @@ module frost_hart #(
   logic coherent_store_ready;
   logic coherent_sc_pending;
   logic coherent_atomic_live;
-  logic [1:0] coherent_block_valid;
-  logic [1:0][riscv_pkg::XLEN-1:0] coherent_block_addr;
+  logic [3:0] coherent_block_valid;
+  logic [3:0][riscv_pkg::XLEN-1:0] coherent_block_addr;
   logic coherent_cut_hold;
   logic coherent_sc_valid;
   logic coherent_sc_ready;
@@ -244,8 +246,9 @@ module frost_hart #(
   logic coherent_sc_commit;
   logic cut_admit, cut_admit_ready, cut_admit_clean, cut_inval, cut_inval_done, cut_release;
   logic [riscv_pkg::PhysAddrBits-1:0] cut_addr;
-  logic [1:0][riscv_pkg::PhysAddrBits-1:0] block_addr;
-  assign coherent_block_addr = {riscv_pkg::XLEN'(block_addr[1]), riscv_pkg::XLEN'(block_addr[0])};
+  logic [3:0][riscv_pkg::PhysAddrBits-1:0] block_addr;
+  for (genvar holder = 0; holder < 4; holder++)
+    assign coherent_block_addr[holder] = riscv_pkg::XLEN'(block_addr[holder]);
   localparam longint unsigned CachedBase = riscv_pkg::DdrBase;
   localparam longint unsigned CachedSizeBytes = riscv_pkg::DdrCapacityBytes;
   // The cached window is the Normal DDR PMA region. L1D look-ahead stays in
@@ -621,6 +624,9 @@ module frost_hart #(
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
         .L1I_WAYS(L1I_WAYS),
         .L1D_MISSES(L1D_NUM_MSHR),
+        .HOME_CACHE_BYTES(L2_CACHE_BYTES),
+        .HOME_WAYS(L2_WAYS),
+        .HOME_LINE_BYTES(DATA_BYTES),
         .L1D_STREAM_PREFETCH(StreamPrefetch),
         .SIM_FAST_MAINT(SIM_FAST_MAINT)
     ) hart_cache (

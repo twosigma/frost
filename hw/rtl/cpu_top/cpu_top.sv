@@ -169,6 +169,10 @@ module cpu_top #(
       $fatal(1, "cpu_top: configured physical address width exceeds the Sv39 PTE format");
     if (L2_LINE_BYTES != 32 && L2_LINE_BYTES != 64)
       $fatal(1, "cpu_top: supported L2/AXI beat sizes are 32 and 64 bytes");
+    // A reader ordered behind a lookahead store can hold that store's fill,
+    // so the head store's acquisition needs a second fill.
+    if (L1D_NUM_MSHR >= 3 && L2_NUM_MSHR < 2)
+      $fatal(1, "cpu_top: three or more L1D endpoints require at least two L2 fills");
     if ((riscv_pkg::DdrBase & 4095) != 0 ||
         (riscv_pkg::PmaUncachedBase & 4095) != 0 ||
         (riscv_pkg::PmaUncachedBytes & 4095) != 0 ||
@@ -348,6 +352,8 @@ module cpu_top #(
       .L1D_WAYS(L1D_WAYS),
       .L1I_WAYS(L1I_WAYS),
       .L1D_NUM_MSHR(L1D_NUM_MSHR),
+      .L2_CACHE_BYTES(L2_CACHE_BYTES),
+      .L2_WAYS(L2_WAYS),
       .SIM_FAST_MAINT(SIM_FAST_MAINT),
       .PERF_COUNTERS(PERF_COUNTERS),
       .DATA_BYTES(L2_LINE_BYTES),

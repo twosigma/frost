@@ -36,8 +36,8 @@ module lq_capture_equiv #(
 ) (
     input logic i_coherent_cut_hold,
     input logic [riscv_pkg::XLEN-1:0] i_coherent_cut_addr,
-    input logic [1:0] i_coherent_block_valid,
-    input logic [1:0][riscv_pkg::XLEN-1:0] i_coherent_block_addr,
+    input logic [3:0] i_coherent_block_valid,
+    input logic [3:0][riscv_pkg::XLEN-1:0] i_coherent_block_addr,
     input logic i_coherent_atomic_protected,
     input logic i_clk,
     input logic i_rst_n,
@@ -333,14 +333,18 @@ module lq_capture_equiv #(
         (reference_bypass_fire && (p_response_bypass ?
          (p_issued_idx == IdxWidth'(entry)) : (p_check_idx == IdxWidth'(entry))));
   end
+  logic reference_sector_hold;
+  always_comb begin
+    reference_sector_hold = 1'b0;
+    for (int holder = 0; holder < 4; holder++)
+    reference_sector_hold |= i_coherent_block_valid[holder] &&
+          p_stage_address[riscv_pkg::XLEN-1:5] ==
+          i_coherent_block_addr[holder][riscv_pkg::XLEN-1:5];
+  end
   always_comb begin
     assert (p_bypass_fire == reference_bypass_fire);
     assert (p_free_entry == reference_free_entry);
-    assert (p_sector_hold ==
-        ((i_coherent_block_valid[0] &&
-          p_stage_address[riscv_pkg::XLEN-1:5] == i_coherent_block_addr[0][riscv_pkg::XLEN-1:5]) ||
-         (i_coherent_block_valid[1] &&
-          p_stage_address[riscv_pkg::XLEN-1:5] == i_coherent_block_addr[1][riscv_pkg::XLEN-1:5])));
+    assert (p_sector_hold == reference_sector_hold);
     assert (((p_take_basis[2] & ~p_take_basis[0]) == 0) &&
         ((p_take_basis[0] & ~p_take_basis[1]) == 0) &&
         (!p_clear_basis[2] || p_clear_basis[0]) &&

@@ -9,6 +9,9 @@ $(ROOT)/hw/rtl/lib/cache/coherence_home_completions.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_home_engine.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_home.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_d_arbiter.sv
+$(ROOT)/hw/rtl/lib/cache/coherence_grant_select.sv
+$(ROOT)/hw/rtl/lib/cache/coherence_read_owners.sv
+$(ROOT)/hw/rtl/lib/cache/coherence_miss_credit.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_read_flags.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_read_select.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_read_payload.sv

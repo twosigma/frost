@@ -1,0 +1,70 @@
+[tasks]
+bmc_siblings bmc siblings ordinary
+bmc_rows bmc rows ordinary
+bmc_conflict bmc conflict deep
+cover_siblings covers siblings ordinary
+cover_rows covers rows ordinary
+cover_conflict covers conflict deep
+bmc_pressure bmc pressure deep
+cover_pressure covers pressure deep
+
+[options]
+bmc: mode bmc
+covers: mode cover
+covers: vcd_sim on
+ordinary: depth 240
+deep: depth 360
+timeout 2400
+bmc: aigsmt boolector
+
+[engines]
+bmc: abc bmc3
+covers: btor btormc
+
+[script]
+read -sv coherence_read_stream.sv
+read -sv cache_perf_pkg.sv coherence_pkg.sv coherence_request_endpoint.sv coherence_home_endpoint.sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv coherence_read_payload.sv coherence_store_buffer.sv coherence_array.sv coherence_l1d.sv coherence_home_array.sv coherence_seat_select.sv coherence_work_select.sv coherence_home_completions.sv coherence_home_engine.sv coherence_home.sv coherence_d_arbiter.sv coherence_cluster_test_harness.sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
+read -formal -sv coherence_store_home_formal.sv
+rows: chparam -set SECTOR_CASE 1 coherence_store_home_formal
+conflict: chparam -set SECTOR_CASE 2 coherence_store_home_formal
+pressure: chparam -set PRESSURE 1 coherence_store_home_formal
+covers: chparam -set COVER_MODE 1 coherence_store_home_formal
+prep -flatten -top coherence_store_home_formal
+check -assert
+memory_map
+opt
+bmc: techmap
+bmc: opt -fast
+setundef -anyseq
+opt_clean
+check -assert
+
+[files]
+coherence_store_home_formal.sv
+../hw/rtl/lib/cache/cache_perf_pkg.sv
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_request_endpoint.sv
+../hw/rtl/lib/cache/coherence_home_endpoint.sv
+../hw/rtl/lib/cache/coherence_put_endpoint.sv
+../hw/rtl/lib/cache/coherence_read_owners.sv
+../hw/rtl/lib/cache/coherence_miss_credit.sv
+../hw/rtl/lib/cache/coherence_read_flags.sv
+../hw/rtl/lib/cache/coherence_grant_select.sv
+../hw/rtl/lib/cache/coherence_read_select.sv
+../hw/rtl/lib/cache/coherence_read_stream.sv
+../hw/rtl/lib/cache/coherence_read_payload.sv
+../hw/rtl/lib/cache/coherence_store_buffer.sv
+../hw/rtl/lib/cache/coherence_array.sv
+../hw/rtl/lib/cache/coherence_l1d.sv
+../hw/rtl/lib/cache/coherence_home_array.sv
+../hw/rtl/lib/cache/coherence_seat_select.sv
+../hw/rtl/lib/cache/coherence_work_select.sv
+../hw/rtl/lib/cache/coherence_home_completions.sv
+../hw/rtl/lib/cache/coherence_home_engine.sv
+../hw/rtl/lib/cache/coherence_home.sv
+../hw/rtl/lib/cache/coherence_d_arbiter.sv
+../hw/rtl/lib/cache/coherence_cluster_test_harness.sv
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_types.svh

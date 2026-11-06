@@ -352,8 +352,12 @@ module perf_counter_aggregator #(
     perf_cache_inc[PerfCacheL1iWriteback] = {
       {63{1'b0}}, i_cache_perf_events.hierarchy.l1i.writeback
     };
-    perf_cache_inc[PerfCacheL1dAccess] = {{63{1'b0}}, i_cache_perf_events.hierarchy.l1d.access};
-    perf_cache_inc[PerfCacheL1dHit] = {{63{1'b0}}, i_cache_perf_events.hierarchy.l1d.hit};
+    perf_cache_inc[PerfCacheL1dAccess] =
+        64'(i_cache_perf_events.hierarchy.l1d.access) +
+        64'(i_cache_perf_events.hierarchy.l1d.store_combined);
+    perf_cache_inc[PerfCacheL1dHit] =
+        64'(i_cache_perf_events.hierarchy.l1d.hit) +
+        64'(i_cache_perf_events.hierarchy.l1d.store_combined);
     perf_cache_inc[PerfCacheL1dMiss] = {{63{1'b0}}, i_cache_perf_events.hierarchy.l1d.miss};
     perf_cache_inc[PerfCacheL1dWriteback] = {
       {63{1'b0}}, i_cache_perf_events.hierarchy.l1d.writeback
@@ -375,9 +379,9 @@ module perf_counter_aggregator #(
     perf_cache_inc[PerfCacheL1iHitUnderMiss] = {
       {63{1'b0}}, i_cache_perf_events.hierarchy.l1i.hit_under_miss
     };
-    perf_cache_inc[PerfCacheL1dHitUnderMiss] = {
-      {63{1'b0}}, i_cache_perf_events.hierarchy.l1d.hit_under_miss
-    };
+    perf_cache_inc[PerfCacheL1dHitUnderMiss] =
+        64'(i_cache_perf_events.hierarchy.l1d.hit_under_miss) +
+        64'(i_cache_perf_events.hierarchy.l1d.store_combined_under_miss);
     perf_cache_inc[PerfCacheL2HitUnderMiss] = {
       {63{1'b0}}, i_cache_perf_events.hierarchy.l2.hit_under_miss
     };

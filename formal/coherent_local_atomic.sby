@@ -42,8 +42,8 @@ read -sv coherent_atomic_guard.sv
 read -sv sdp_block_ram.sv
 read -sv sdp_packed_tag_uram.sv
 read -sv sdp_ram_byte_en.sv
-read -sv coherence_read_flags.sv
-read -sv coherence_read_select.sv
+read -sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv
+read -sv coherence_grant_select.sv coherence_read_select.sv
 read -sv coherence_read_payload.sv
 read -sv coherence_request_endpoint.sv
 read -sv coherence_put_endpoint.sv
@@ -94,7 +94,10 @@ coherence_store_boundary_formal.sv
 ../hw/rtl/lib/ram/sdp_block_ram.sv
 ../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
 ../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_read_owners.sv
+../hw/rtl/lib/cache/coherence_miss_credit.sv
 ../hw/rtl/lib/cache/coherence_read_flags.sv
+../hw/rtl/lib/cache/coherence_grant_select.sv
 ../hw/rtl/lib/cache/coherence_read_select.sv
 ../hw/rtl/lib/cache/coherence_read_payload.sv
 ../hw/rtl/lib/cache/coherence_request_endpoint.sv
