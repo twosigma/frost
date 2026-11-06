@@ -23,8 +23,8 @@ from cocotb.triggers import Timer
 from cocotb_tests.cache.test_coherence_endpoints import pack
 
 # The first fill TID, coherence_pkg::fill_base(1): one per completion slot
-# (11 per hart, 8 DMA credits and 4 prefetch identities) comes first.
-FILL_TID_BASE = 23
+# (12 per hart, 8 DMA credits and 4 prefetch identities) comes first.
+FILL_TID_BASE = 24
 PREFETCH = 9
 GRANT_ACK = 4
 
@@ -132,6 +132,8 @@ class Home:
             if self.get("array_data_valid"):
                 token = self.get("array_data_token")
                 engines = len(self.dut.engine_idle)
+                # Fill tokens follow the engines; fill TIDs follow the
+                # completion slots.
                 tid = (
                     (self.get("engine_tid") >> (6 * token)) & 63
                     if token < engines

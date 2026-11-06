@@ -26,7 +26,9 @@ module tomasulo_coherent_cut_test_harness #(
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
     parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
     parameter bit ROB_SHARED_LINK_BANK = 1'b0,
-    parameter int unsigned PERF_COUNTERS = 1
+    parameter int unsigned PERF_COUNTERS = 1,
+    parameter bit DIRECT_CACHE_READS = 1'b0,
+    parameter int unsigned CACHE_MISSES = 1
 ) (
     input logic i_coherent_store_pending = 1'b0,
     input logic i_coherent_store_ready = 1'b1,
@@ -354,15 +356,16 @@ module tomasulo_coherent_cut_test_harness #(
     input logic [31:0] i_seed_addr,
     input logic [7:0] i_seed_mask,
     input logic [63:0] i_seed_data,
-    output logic o_cache_d_valid,
-    input logic i_cache_d_ready,
-    output logic [343:0] o_cache_d,
+    input logic i_cache_read_hold = 1'b0,
+    output logic [CACHE_MISSES-1:0] o_cache_d_valid,
+    input logic [CACHE_MISSES-1:0] i_cache_d_ready,
+    output logic [CACHE_MISSES-1:0][343:0] o_cache_d,
     input logic i_cache_g_valid,
     output logic o_cache_g_ready,
     input logic [306:0] i_cache_g,
-    output logic o_cache_c_valid,
-    input logic i_cache_c_ready,
-    output logic [49:0] o_cache_c,
+    output logic [CACHE_MISSES-1:0] o_cache_c_valid,
+    input logic [CACHE_MISSES-1:0] i_cache_c_ready,
+    output logic [CACHE_MISSES-1:0][49:0] o_cache_c,
     input logic i_cache_u_valid,
     output logic o_cache_u_ready,
     input logic [46:0] i_cache_u,
@@ -370,6 +373,9 @@ module tomasulo_coherent_cut_test_harness #(
     output logic o_cache_fatal
 );
   logic cut_hold, cut_admit, cut_inval, cut_release;
+  logic cache_read_valid, cache_read_error;
+  logic [ 2:0] cache_read_id;
+  logic [63:0] cache_read_data;
   logic [31:0] cut_addr;
   assign o_probe_cut_hold = cut_hold;
   assign o_probe_cut_admit = cut_admit;
@@ -390,6 +396,12 @@ module tomasulo_coherent_cut_test_harness #(
       .ROB_SHARED_LINK_BANK(ROB_SHARED_LINK_BANK),
       .PERF_COUNTERS(PERF_COUNTERS)
   ) core (
+      .i_lq_mem_read_data(DIRECT_CACHE_READS ? cache_read_data : i_lq_mem_read_data),
+      .i_lq_mem_read_valid(DIRECT_CACHE_READS ?
+          cache_read_valid && !i_cache_read_hold : i_lq_mem_read_valid),
+      .i_lq_mem_read_error(DIRECT_CACHE_READS ? cache_read_error : i_lq_mem_read_error),
+      .i_lq_mem_read_id(DIRECT_CACHE_READS ? cache_read_id : i_lq_mem_read_id),
+      .i_lq_mem_read_is_cached(DIRECT_CACHE_READS || i_lq_mem_read_is_cached),
       .i_coherent_cut_hold(cut_hold),
       .i_coh_admit_valid(cut_admit && !i_probe_delay_admit),
       .i_coh_admit_slot('0),
@@ -403,22 +415,24 @@ module tomasulo_coherent_cut_test_harness #(
   coherence_l1d #(
       .ADDR_WIDTH(32),
       .CACHE_BYTES(512),
-      .TAG_BITS(riscv_pkg::ReorderBufferTagWidth)
+      .TAG_BITS(riscv_pkg::ReorderBufferTagWidth),
+      .MISSES(CACHE_MISSES),
+      .STREAM_PREFETCH(DIRECT_CACHE_READS)
   ) cache (
       .i_clk,
       .i_rst(!i_rst_n),
       .i_fatal_stop(1'b0),
-      .i_read_valid(1'b0),
-      .i_read_id('0),
-      .i_read_kind('0),
-      .i_read_size('0),
-      .i_read_tag('0),
-      .i_address(i_seed_addr),
-      .o_read_valid(),
-      .i_read_ready(1'b1),
-      .o_read_id(),
-      .o_read_data(),
-      .o_read_error(),
+      .i_read_valid(DIRECT_CACHE_READS && o_lq_mem_read_en),
+      .i_read_id(o_lq_mem_read_id),
+      .i_read_kind(o_coherent_read_kind),
+      .i_read_size(3'(o_lq_mem_read_size)),
+      .i_read_tag(o_coherent_read_tag),
+      .i_address(DIRECT_CACHE_READS ? o_lq_mem_read_addr[31:0] : i_seed_addr),
+      .o_read_valid(cache_read_valid),
+      .i_read_ready(!i_cache_read_hold),
+      .o_read_id(cache_read_id),
+      .o_read_data(cache_read_data),
+      .o_read_error(cache_read_error),
       .i_write_mask(i_seed_mask),
       .i_write_data(i_seed_data),
       .i_write_atomic(1'b0),
@@ -478,7 +492,6 @@ module tomasulo_coherent_cut_test_harness #(
       .i_g_valid(i_cache_g_valid),
       .o_g_ready(o_cache_g_ready),
       .i_g(i_cache_g),
-      .o_c_selected(),
       .o_c_valid(o_cache_c_valid),
       .i_c_ready(i_cache_c_ready),
       .o_c(o_cache_c),

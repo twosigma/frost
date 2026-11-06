@@ -19,7 +19,7 @@
 // group counts and a partial count within the candidate's own group add up in
 // two levels of six-input functions.
 module coherence_seat_select #(
-    parameter int unsigned SLOTS = 19
+    parameter int unsigned SLOTS = 20
 ) (
     input logic [SLOTS-1:0] i_eligible,
     input logic [1:0] i_occupied_count,

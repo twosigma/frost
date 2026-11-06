@@ -264,6 +264,13 @@ cycle after the router held a cached response behind a fast one
 device ones included; L0 hits and forwards continue. The one-cycle hold keeps
 back-to-back fast launches from starving the held response.
 
+L1D stream look-ahead uses coherent request endpoints without allocating
+LQ rows, cached response slots or observation entries. A demand may wait on
+such an endpoint, but its response ID and observation belong to the demand.
+After a fill it repeats the L1D permission lookup. Invalidations cover these
+demand observations through retirement and replay them under the same
+load-load ordering checks as other cached loads.
+
 A flushed cached load's slot is drop-marked (`cs_drop`) and stays busy until
 its response arrives, which is then drained. The load's entry frees at once
 and may already hold a new load, so a later flush must never judge a
@@ -423,7 +430,8 @@ and throughout the cut. Responses on other sectors keep their eligibility.
 A trap, xRET or FENCE-class flush clears the reservation; a
 branch recovered at commit preserves it. The SC goes through the SQ and
 [`sc_pending_unit`](../tomasulo_wrapper/atomics/sc_pending_unit.sv).
-Cached SC selection and its home check use the exact LR address and size.
+Cached SC selection, local Modified-sector classification and the home check
+use the exact LR address and size.
 
 ### AMO sequence
 
@@ -448,8 +456,9 @@ therefore holds interrupts while an AMO occupies the ROB head
 before it touches memory. A simulation check reports any full flush that
 reaches an active AMO write. A flush that arrives earlier, including in
 `AMO_COMPUTE`, cancels the AMO cleanly. `AMO_COMPUTE` has already freed the
-response slot. For a cached AMO, the home blocks later requests to the same
-sector until the AMO's write completes and its completion is released.
+response slot. A cached AMO holds either the L1D service engine or its home
+lock through write installation and ownership release. CPU protection also
+waits for retirement.
 
 ### Older-AMO fence
 
@@ -475,7 +484,7 @@ AMOs require effective ROB-head protection before launch. Arming checks the
 staged translation, PMA and alignment results independently of that protection.
 Address faults complete through the exception path without arming ownership.
 Simulation assertions check the captured exception's ROB tag at trap entry.
-An atomic fault can release its context only after home ownership ends. LR
+An atomic fault can release its context only after local or home ownership ends. LR
 records its exact physical address and W/D size with a 32-byte reservation set. An ordinary
 store or AMO write to that set, or a matching cut, clears the reservation. A
 successful cached SC clears it when its tagged write completes. Other SCs

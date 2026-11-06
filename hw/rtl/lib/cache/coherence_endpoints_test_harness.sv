@@ -17,9 +17,10 @@
 `include "coherence_types.svh"
 
 module coherence_endpoints_test_harness #(
-    parameter int unsigned ADDR_WIDTH  = 32,
-    parameter int unsigned NUM_HARTS   = 2,
-    parameter int unsigned L2_NUM_MSHR = 4
+    parameter int unsigned ADDR_WIDTH = 32,
+    parameter int unsigned NUM_HARTS = 2,
+    parameter int unsigned L2_NUM_MSHR = 4,
+    parameter bit LOCAL_PHASE_UPDATES = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -167,14 +168,14 @@ module coherence_endpoints_test_harness #(
     assert ($bits(width_g) == ADDR_WIDTH + 275);
     assert ($bits(width_c) == ADDR_WIDTH + 18);
     assert ($bits(width_u) == ADDR_WIDTH + 15);
-    assert (coherence_pkg::completion_count(1) == 23);
-    assert (coherence_pkg::completion_count(2) == 34);
-    assert (coherence_pkg::put_base(2, 4) == 38);
-    assert (coherence_pkg::put_base(2, 16) == 50);
-    assert (coherence_pkg::home_count(2, 4) == 42);
-    assert (coherence_pkg::home_count(2, 16) == 54);
-    assert (coherence_pkg::home_count(2, 26) == 64);
-    assert (coherence_pkg::home_count(1, 39) == 64);
+    assert (coherence_pkg::completion_count(1) == 24);
+    assert (coherence_pkg::completion_count(2) == 36);
+    assert (coherence_pkg::put_base(2, 4) == 40);
+    assert (coherence_pkg::put_base(2, 16) == 52);
+    assert (coherence_pkg::home_count(2, 4) == 44);
+    assert (coherence_pkg::home_count(2, 16) == 56);
+    assert (coherence_pkg::home_count(2, 24) == 64);
+    assert (coherence_pkg::home_count(1, 38) == 64);
   end
 `endif
   assign o_widths = {
@@ -194,7 +195,8 @@ module coherence_endpoints_test_harness #(
     7'(coherence_pkg::home_count(NUM_HARTS, L2_NUM_MSHR))
   };
   coherence_request_endpoint #(
-      .ADDR_WIDTH(ADDR_WIDTH)
+      .ADDR_WIDTH(ADDR_WIDTH),
+      .LOCAL_PHASE_UPDATES(LOCAL_PHASE_UPDATES)
   ) u_req (
       .i_error_disposed(i_req_error_disposed),
       .i_clk(i_clk),
@@ -217,7 +219,6 @@ module coherence_endpoints_test_harness #(
       .i_done_status(i_req_done_status),
       .i_write_done(i_req_write_done),
       .o_c_valid(o_req_c_valid),
-      .o_c_selected(),
       .i_c_ready(i_req_c_ready),
       .o_c(o_req_c),
       .i_u_valid(i_req_u_valid),
@@ -228,7 +229,8 @@ module coherence_endpoints_test_harness #(
 
   coherence_request_endpoint #(
       .ADDR_WIDTH(ADDR_WIDTH),
-      .PORT_CLASS(2)
+      .PORT_CLASS(2),
+      .LOCAL_PHASE_UPDATES(LOCAL_PHASE_UPDATES)
   ) u_ptw (
       .i_error_disposed(i_ptw_error_disposed),
       .i_clk(i_clk),
@@ -251,7 +253,6 @@ module coherence_endpoints_test_harness #(
       .i_done_status(i_ptw_done_status),
       .i_write_done(i_ptw_write_done),
       .o_c_valid(o_ptw_c_valid),
-      .o_c_selected(),
       .i_c_ready(i_ptw_c_ready),
       .o_c(o_ptw_c),
       .i_u_valid(i_ptw_u_valid),

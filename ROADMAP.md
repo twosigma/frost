@@ -32,24 +32,25 @@ follow if measurements show that the probes or the trip through the L2 limit
 performance: it would keep a copy of each L1D's tags, so that a request probes
 only the caches that hold the line, and move lines directly between the L1Ds.
 
-The coherence design covers everything a hart can hold: L0 data,
-outstanding fills, executed but unretired loads, AMOs, LR/SC reservations,
-and DMA. Snooping live load-queue entries is not enough, because an entry is
-freed as soon as its result is staged for the common data bus, before the
-load retires, so returned loads stay observable until they retire. A store
-acquires M before it writes. Probe data and acknowledgements must keep making
-progress when every queue is full. The L1D accepts ordered stores into a
-two-entry buffer and installs Modified-sector hits with masked writes.
-Waiting reads share array service with buffered store hits. Store acquisitions
-use one endpoint and do not overlap, and each read slot holds one load. The
-home has eight fills and a stream prefetcher. Two instruction-refill slots can overlap; instruction and
+The coherence design covers everything a hart can hold: L0 data, outstanding
+fills, executed but unretired loads, AMOs, LR/SC reservations, and DMA.
+Snooping live load-queue entries is not enough, because an entry is freed as
+soon as its result is staged for the common data bus, before the load retires,
+so returned loads stay observable until they retire. A store acquires M before
+it writes. Probe data and acknowledgements must keep making progress when every
+queue is full. The L1D accepts ordered stores into a two-entry buffer and
+installs Modified-sector hits with masked writes. Waiting reads share array
+service with buffered store hits. Store acquisitions use one endpoint and do
+not overlap, and each read slot holds one load. The home has eight fills and a
+stream prefetcher. Two instruction-refill slots can overlap; instruction and
 page-table readers capture data and errors at the grant and hold their
 identities through release. The probe for an instruction or page-table read
 downgrades a Modified sector to Shared, so the next store to it acquires it
-again. An AMO waits for all of the L1D's requests to drain and goes through
-the home. Further work targets concurrent store acquisitions, reader latency
-and DMA throughput. The single-hart queue sizes and lane choices will need
-revisiting for the second hart's memory traffic.
+again. An AMO or SC on a sector the L1D holds Modified completes in the L1D
+once endpoint 0 and that sector are free; other AMOs drain every L1D request
+and go through the home. Further work targets concurrent store acquisitions,
+reader latency and DMA throughput. The single-hart queue sizes and lane choices
+will need revisiting for the second hart's memory traffic.
 
 Writable BRAM stays private to one hart. Its read caches are outside the
 coherent ingress, and its instruction and data copies are separate, so a
@@ -388,21 +389,20 @@ and targeted microbenchmarks give these items:
    3), and lengthens paths among the hardest at the target clock, so it
    waits for the streaming-load work in item 8.
 8. Streaming loads. The load queue and the L1D track eight cached loads, so
-   a sequential stream of 8-byte loads keeps only two 32-byte lines in flight
-   and runs no faster than a dependent pointer chase: about 200 cycles per 64
-   bytes on a board with about 200 cycles of DRAM latency. The L1D's seven
-   load endpoints are mostly idle. More cached loads in flight, one read slot
-   per line for loads to the same line, or a next-line request from the L1D
-   would let one stream keep several lines in flight, and each combines with
-   a stream prefetcher in the home. Dependent loads are also slower than
+   their demand requests for a sequential stream of 8-byte loads cover only
+   two 32-byte lines at a time. The home's prefetch agent reads ahead into the
+   shared L2. After three adjacent load misses, the L1D also requests lines
+   ahead of the stream, up to eight lines ahead and within the 4 KiB page,
+   through its two highest-numbered load endpoints. More cached loads in
+   flight or one read slot per line for loads to the same line would let one
+   stream keep more lines in flight. Dependent loads are also slower than
    through the previous hierarchy: in simulation an L2 hit takes 45 cycles
-   against 23, a DRAM miss 36 cycles more, and a page-table walk 33 cycles
+   against 23, a DRAM miss 36 cycles more, and a page-table walk 27 cycles
    more. The L1D installs a line before it answers the load, the home repeats
    its tag lookup and data read after a fill arrives, and registered stages
    and arbitration add the rest. Answering a load from its grant, reading a
-   victim's data only when it is dirty, forwarding the arriving line to the
-   first request, and a second request slot for the page-table walker would
-   recover most of the difference.
+   victim's data only when it is dirty, and forwarding the arriving line to
+   the first request would recover most of the difference.
 
 ## Core area
 

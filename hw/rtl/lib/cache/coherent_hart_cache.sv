@@ -22,8 +22,9 @@ module coherent_hart_cache #(
     parameter int unsigned WAYS = 4,
     parameter int unsigned TAG_BITS = 5,
     // L1D request endpoints, 1 to 8: endpoint 0 serves stores, LR, AMO and
-    // SC; with two or more, the others carry ordinary load misses.
+    // SC; with two or more, the others carry load misses and optional GetS hints.
     parameter int unsigned L1D_MISSES = 8,
+    parameter bit L1D_STREAM_PREFETCH = 1'b0,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L1I_WAYS = 4,
     parameter int unsigned SIM_FAST_MAINT = 0
@@ -145,12 +146,12 @@ module coherent_hart_cache #(
 `endif
 
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
-  // D and C ports: the L1D's endpoints first, then two IF slots and PTW. G and U route
-  // by port class.
-  localparam int unsigned Ports   = L1D_MISSES + 3;
+  // D and C ports: the L1D's endpoints first, then two IF slots and two PTW
+  // slots. G and U route by port class.
+  localparam int unsigned Ports   = L1D_MISSES + 4;
   localparam int unsigned IfPort  = L1D_MISSES;
   localparam int unsigned PtwPort = L1D_MISSES + 2;
-  logic [Ports-1:0] d_valid, d_ready, c_valid, c_ready, c_selected;
+  logic [Ports-1:0] d_valid, d_ready, c_valid, c_ready;
   logic [2:0] g_ready, u_ready;
   // Per-requester packets are plain vectors, read whole by the arbiters.
   logic [Ports-1:0][ADDR_WIDTH+311:0] demand;
@@ -178,6 +179,13 @@ module coherent_hart_cache #(
   logic [1:0] if_g_ready, if_u_ready;
   logic [1:0][  2:0] if_slot_id;
   logic [1:0][255:0] if_slot_data;
+  // The walker's two bridge slots. Slot 0 takes a request when it is idle,
+  // slot 1 otherwise, so a page-table read can leave while the previous
+  // read's slot finishes its completion and release.
+  logic [1:0] walk_slot_ready, walk_slot_valid, walk_slot_resp, walk_slot_error;
+  logic [1:0] walk_g_ready, walk_u_ready;
+  logic [1:0][  2:0] walk_slot_id;
+  logic [1:0][255:0] walk_slot_data;
   assign if_req_ready = |if_slot_ready;
   assign if_slot_valid = {
     if_req_valid && !if_slot_ready[0] && if_slot_ready[1], if_req_valid && if_slot_ready[0]
@@ -190,6 +198,20 @@ module coherent_hart_cache #(
   assign if_resp_data = ({256{if_slot_resp[0]}} & if_slot_data[0]) |
       ({256{if_slot_resp[1]}} & if_slot_data[1]);
   assign if_resp_error = |(if_slot_resp & if_slot_error);
+  assign o_walk_req_ready = |walk_slot_ready;
+  assign walk_slot_valid = {
+    i_walk_req_valid && !walk_slot_ready[0] && walk_slot_ready[1],
+    i_walk_req_valid && walk_slot_ready[0]
+  };
+  assign g_ready[2] = |walk_g_ready;
+  assign u_ready[2] = |walk_u_ready;
+  // One G per cycle, and each slot registers its response at its G.
+  assign o_walk_resp_valid = |walk_slot_resp;
+  assign o_walk_resp_id = ({3{walk_slot_resp[0]}} & walk_slot_id[0]) |
+      ({3{walk_slot_resp[1]}} & walk_slot_id[1]);
+  assign o_walk_resp_data = ({256{walk_slot_resp[0]}} & walk_slot_data[0]) |
+      ({256{walk_slot_resp[1]}} & walk_slot_data[1]);
+  assign o_walk_resp_error = |(walk_slot_resp & walk_slot_error);
   assign grant = i_g;
   assign release_message = i_u;
   assign o_fatal = l1d_fatal || l1i_fatal;
@@ -208,7 +230,6 @@ module coherent_hart_cache #(
       .o_ready(c_ready),
       .i_payload(completion),
       .o_valid(o_c_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(i_c_ready),
       .o_payload(o_c)
@@ -223,7 +244,6 @@ module coherent_hart_cache #(
       .o_ready(d_ready),
       .i_payload(demand),
       .o_valid(o_d_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(i_d_ready),
       .o_payload(o_d)
@@ -234,6 +254,7 @@ module coherent_hart_cache #(
       .WAYS(WAYS),
       .TAG_BITS(TAG_BITS),
       .MISSES(L1D_MISSES),
+      .STREAM_PREFETCH(L1D_STREAM_PREFETCH),
       .SIM_FAST_MAINT(SIM_FAST_MAINT)
   ) l1d (
       .i_clk(i_clk),
@@ -310,7 +331,6 @@ module coherent_hart_cache #(
       .o_g_ready(g_ready[0]),
       .i_g(i_g),
       .o_c_valid(c_valid[L1D_MISSES-1:0]),
-      .o_c_selected(c_selected[L1D_MISSES-1:0]),
       .i_c_ready(c_ready[L1D_MISSES-1:0]),
       .o_c(completion[L1D_MISSES-1:0]),
       .i_u_valid(i_u_valid && release_message.q[6:5] == 0),
@@ -408,7 +428,6 @@ module coherent_hart_cache #(
         .o_g_ready(if_g_ready[slot]),
         .i_g(i_g),
         .o_c_valid(c_valid[IfPort+slot]),
-        .o_c_selected(c_selected[IfPort+slot]),
         .i_c_ready(c_ready[IfPort+slot]),
         .o_c(completion[IfPort+slot]),
         .i_u_valid(i_u_valid && release_message.q[6:5] == 1),
@@ -416,43 +435,45 @@ module coherent_hart_cache #(
         .i_u(i_u)
     );
   end
-  coherence_line_bridge #(
-      .ADDR_WIDTH(ADDR_WIDTH),
-      .PORT_CLASS(2),
-      .EARLY_RESPONSE(1'b1),
-      .CLEAN(1'b0)
-  ) walk_bridge (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
-      .i_fatal_stop(i_fatal_stop),
-      .i_req_valid(i_walk_req_valid),
-      .o_req_ready(o_walk_req_ready),
-      .i_req_write(1'b0),
-      .i_req_addr(i_walk_req_addr),
-      .i_req_data('0),
-      .i_req_mask('0),
-      .i_req_id(i_walk_req_id),
-      .o_resp_valid(o_walk_resp_valid),
-      .o_resp_id(o_walk_resp_id),
-      .o_resp_data(o_walk_resp_data),
-      .o_resp_error(o_walk_resp_error),
-      .o_clean_valid(),
-      .o_clean_addr(),
-      .i_clean_done(1'b0),
-      .o_d_valid(d_valid[PtwPort]),
-      .i_d_ready(d_ready[PtwPort]),
-      .o_d(demand[PtwPort]),
-      .i_g_valid(i_g_valid && grant.q[6:5] == 2),
-      .o_g_ready(g_ready[2]),
-      .i_g(i_g),
-      .o_c_valid(c_valid[PtwPort]),
-      .o_c_selected(c_selected[PtwPort]),
-      .i_c_ready(c_ready[PtwPort]),
-      .o_c(completion[PtwPort]),
-      .i_u_valid(i_u_valid && release_message.q[6:5] == 2),
-      .o_u_ready(u_ready[2]),
-      .i_u(i_u)
-  );
+  for (genvar slot = 0; slot < 2; slot++) begin : gen_walk
+    coherence_line_bridge #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .PORT_CLASS(2),
+        .SLOT(slot),
+        .EARLY_RESPONSE(1'b1),
+        .CLEAN(1'b0)
+    ) walk_bridge (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_fatal_stop(i_fatal_stop),
+        .i_req_valid(walk_slot_valid[slot]),
+        .o_req_ready(walk_slot_ready[slot]),
+        .i_req_write(1'b0),
+        .i_req_addr(i_walk_req_addr),
+        .i_req_data('0),
+        .i_req_mask('0),
+        .i_req_id(i_walk_req_id),
+        .o_resp_valid(walk_slot_resp[slot]),
+        .o_resp_id(walk_slot_id[slot]),
+        .o_resp_data(walk_slot_data[slot]),
+        .o_resp_error(walk_slot_error[slot]),
+        .o_clean_valid(),
+        .o_clean_addr(),
+        .i_clean_done(1'b0),
+        .o_d_valid(d_valid[PtwPort+slot]),
+        .i_d_ready(d_ready[PtwPort+slot]),
+        .o_d(demand[PtwPort+slot]),
+        .i_g_valid(i_g_valid && grant.q[6:5] == 2),
+        .o_g_ready(walk_g_ready[slot]),
+        .i_g(i_g),
+        .o_c_valid(c_valid[PtwPort+slot]),
+        .i_c_ready(c_ready[PtwPort+slot]),
+        .o_c(completion[PtwPort+slot]),
+        .i_u_valid(i_u_valid && release_message.q[6:5] == 2),
+        .o_u_ready(walk_u_ready[slot]),
+        .i_u(i_u)
+    );
+  end
 
   // The serializer drains committed stores before requesting synchronization.
   // IF and PTW reads obtain dirty L1D bytes through the home's probes.
@@ -483,7 +504,6 @@ module coherent_hart_cache #(
   logic [Ports-1:0] c_stalled_q;
   always_ff @(posedge i_clk) begin
     c_stalled_q <= i_rst ? '0 : c_valid & ~c_ready;
-    if (sim_reset_seen_q) assert (c_valid == (c_selected & {Ports{!i_rst}}));
     if (sim_reset_seen_q && !i_rst) begin
       assert ((c_stalled_q & ~c_valid) == 0);
       assert ($onehot0(c_ready));
@@ -492,6 +512,11 @@ module coherent_hart_cache #(
       assert ($onehot0(if_g_ready));
       assert ($onehot0(if_u_ready));
       assert ($onehot0(if_slot_resp));
+      assert ($onehot0(walk_slot_valid));
+      assert ((i_walk_req_valid && o_walk_req_ready) == (|walk_slot_valid));
+      assert ($onehot0(walk_g_ready));
+      assert ($onehot0(walk_u_ready));
+      assert ($onehot0(walk_slot_resp));
       for (int port_idx = 0; port_idx < Ports; port_idx++) begin
         if (c_valid[port_idx] && c_ready[port_idx])
           assert (o_c_valid && i_c_ready && o_c == completion[port_idx]);

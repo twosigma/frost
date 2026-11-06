@@ -43,6 +43,7 @@ class Cluster:
         self.sc_writes: list[int] = []
         self.reply_states: list[int] = []
         self.memory_reads: list[int] = []
+        self.speculative_requests: set[int] = set()
         self.perf: dict[str, list[int]] = {
             "l1d": [0] * 8,
             "l2": [0] * 8,
@@ -110,6 +111,20 @@ class Cluster:
                         address,
                     )
                 )
+            if not self.get("i_rst"):
+                accepted = int(self.dut.hart_d_valid.value) & int(
+                    self.dut.hart_d_ready.value
+                )
+                speculative = int(self.dut.hart.ld_prefetch_q.value)
+                for ep in range(len(self.dut.hart_d_valid)):
+                    if (accepted & speculative) >> ep & 1:
+                        width = self.p + 312
+                        bits = (int(self.dut.hart_d.value) >> (width * ep)) & (
+                            (1 << width) - 1
+                        )
+                        fields = unpack(bits, (4, 9, self.p, 5, 3, 32, 1, 1, 1, 256))
+                        assert fields[0] == 0
+                        self.speculative_requests.add(fields[2])
             await self.set(i_clk=1)
             await self.set(i_clk=0)
             self.cycle += 1
@@ -345,8 +360,8 @@ async def inclusion_and_maintenance(dut: Any) -> None:
 
 
 @cocotb.test()
-async def sc_self_probe_and_exact_write(dut: Any) -> None:
-    """Check selected SC ownership through its self probe and tagged write."""
+async def sc_local_ownership_and_exact_write(dut: Any) -> None:
+    """Check selected SC's Modified ownership through its tagged write."""
     b = Cluster(dut)
     await b.reset()
     address = 0x80000000
@@ -394,52 +409,103 @@ async def sc_self_probe_and_exact_write(dut: Any) -> None:
 
 
 @cocotb.test()
-async def amo_holds_home_until_exact_write(dut: Any) -> None:
-    """Check AMO publication before a queued DMA read."""
-    b = Cluster(dut)
-    await b.reset()
-    address = 0x80000000
-    await b.store(address, 17)
-    await b.wait("o_pending_store", 0)
-    await b.set(i_read_tag=11)
-    assert await b.read(address, kind=2) == 17
-    assert b.get("o_atomic_live")
-    q = pack((2, 2), (2, 3), (4, 9), (1, 0))
-    await b.set(
-        i_agent_valid=1,
-        i_agent_d=pack(
-            (4, 7),
-            (9, q),
-            (b.p, address),
-            (5, 0),
-            (3, 5),
-            (32, 0),
-            (1, 0),
-            (1, 0),
-            (1, 0),
-            (256, 0),
-        ),
-    )
-    await b.wait("o_agent_ready")
-    await b.tick()
-    await b.set(i_agent_valid=0)
-    await b.tick(20)
-    assert not b.get("o_agent_g_valid")
-    await b.set(
-        i_write_atomic=1,
-        i_write_sc=0,
-        i_write_tag=11,
-        i_address=address,
-        i_write_mask=255,
-        i_write_data=18,
-    )
-    await b.tick()
-    await b.set(i_write_mask=0)
-    await b.wait("o_write_done")
-    assert not b.get("o_sc_write_done")
-    await b.wait("o_agent_g_valid")
-    grant = unpack(b.get("o_agent_g"), (3, 9, 6, b.p, 256, 1))
-    assert grant[4] & ((1 << 64) - 1) == 18
+async def resident_atomic_serializes_agent_request(dut: Any) -> None:
+    """Home readers and writers wait for the local owner's installed bytes."""
+    for sc in (False, True):
+        for write in (False, True):
+            b = Cluster(dut)
+            await b.reset()
+            address = 0x80000000
+            await b.store(address, 17)
+            await b.wait("o_pending_store", 0)
+            await b.set(i_read_tag=11)
+            if sc:
+                await b.set(
+                    i_reservation_valid=1,
+                    i_reservation_addr=address,
+                    i_reservation_size=3,
+                    i_sc_valid=1,
+                    i_sc_address=address,
+                    i_sc_size=3,
+                    i_sc_tag=11,
+                )
+                await b.wait("o_sc_ready")
+                await b.tick()
+                await b.set(i_sc_valid=0)
+                await b.wait("o_sc_result_valid")
+                assert b.get("o_sc_success") and not b.get("o_sc_error")
+                await b.set(i_sc_result_ready=1)
+                await b.tick()
+                await b.set(i_sc_result_ready=0)
+            else:
+                assert await b.read(address, kind=2) == 17
+            assert int(dut.hart.atomic_local_q.value) and b.get("o_atomic_live")
+            q = pack((2, 2), (2, 3), (4, 9), (1, 0))
+            await b.set(
+                i_agent_valid=1,
+                i_agent_d=pack(
+                    (4, 8 if write else 7),
+                    (9, q),
+                    (b.p, address),
+                    (5, 0),
+                    (3, 5),
+                    (32, 2 if write else 0),
+                    (1, 0),
+                    (1, 0),
+                    (1, 0),
+                    (256, 0xAB00 if write else 0),
+                ),
+            )
+            await b.wait("o_agent_ready")
+            await b.tick()
+            await b.set(i_agent_valid=0)
+            offered = False
+            for _ in range(60):
+                offered |= bool(int(dut.hart.i_p_valid.value))
+                assert not b.get("o_agent_g_valid")
+                assert not b.get("o_cut_hold")
+                assert not int(dut.hart.o_p_ready.value)
+                await b.tick()
+            assert offered, "home did not offer its conflicting probe"
+            if sc:
+                await b.set(i_sc_commit=1)
+                await b.tick()
+                await b.set(i_sc_commit=0)
+            await b.set(
+                i_write_atomic=1,
+                i_write_sc=int(sc),
+                i_write_tag=11,
+                i_address=address,
+                i_write_mask=255,
+                i_write_data=18,
+            )
+            await b.tick()
+            await b.set(i_write_mask=0)
+            await b.wait("o_write_done")
+            assert b.get("o_sc_write_done") == sc
+            assert b.get("o_atomic_live") and not b.get("o_agent_g_valid")
+            await b.wait("o_agent_g_valid")
+            assert not b.get("o_atomic_live")
+            grant = unpack(b.get("o_agent_g"), (3, 9, 6, b.p, 256, 1))
+            assert grant[1] == q and not grant[5]
+            if not write:
+                assert grant[4] & ((1 << 64) - 1) == 18
+            await b.set(i_agent_g_ready=1)
+            await b.tick()
+            await b.set(
+                i_agent_g_ready=0,
+                i_agent_c_valid=1,
+                i_agent_c=pack((9, q), (6, grant[2]), (b.p, address), (2, 0), (1, 0)),
+            )
+            await b.wait("o_agent_c_ready")
+            await b.tick()
+            await b.set(i_agent_c_valid=0)
+            await b.wait("o_agent_u_valid")
+            await b.set(i_agent_u_ready=1)
+            await b.tick()
+            await b.set(i_agent_u_ready=0)
+            if write:
+                assert await b.dma(address) & ((1 << 64) - 1) == 0xAB12
 
 
 @cocotb.test()
@@ -658,9 +724,8 @@ async def test_demand_counters_exclude_probe_and_maintenance(dut: Any) -> None:
     assert cluster.perf["l2"][:4] == before_l2
 
 
-@cocotb.test()
-async def loads_in_flight_across_lines(dut: Any) -> None:
-    """Check read misses in flight together, a same-sector waiter and a DMA write."""
+async def run_loads_in_flight(dut: Any, hold_grants: bool) -> int:
+    """Return the peak live endpoint count over seven misses and a DMA write."""
     b = Cluster(dut)
     await b.reset()
     base = 0x80000000
@@ -670,6 +735,7 @@ async def loads_in_flight_across_lines(dut: Any) -> None:
         line = sector & ~63
         b.memory[line] = b.memory.get(line, 0) | ((0x1000 + n) << (8 * (sector & 63)))
     reads = [*sectors, sectors[0]]
+    await b.set(i_hold_grant=int(hold_grants))
     for slot, address in enumerate(reads):
         await b.set(
             i_read_valid=1,
@@ -681,9 +747,10 @@ async def loads_in_flight_across_lines(dut: Any) -> None:
         await b.tick()
     await b.set(i_read_valid=0)
     peak = 0
-    for _ in range(12):
+    for _ in range(100 if hold_grants else 12):
         peak = max(peak, bin(int(dut.hart.live.value)).count("1"))
         await b.tick()
+    await b.set(i_hold_grant=0)
     # A DMA write to an unread sector runs while the reads are in flight.
     await b.dma(base + 0x40 * 6, 0xAB, mask=1)
     expected = {
@@ -702,6 +769,108 @@ async def loads_in_flight_across_lines(dut: Any) -> None:
         await b.tick()
         await b.set(i_read_ready=0)
     assert seen == expected
+    assert await b.dma(base + 0x40 * 6) & 0xFF == 0xAB
+    return peak
+
+
+@cocotb.test()
+async def loads_in_flight_across_lines(dut: Any) -> None:
+    """Check misses in flight under the home's own timing, a waiter and a DMA write."""
+    peak = await run_loads_in_flight(dut, hold_grants=False)
+    misses = len(dut.hart_d_valid)
+    # With up to three endpoints, every load endpoint holds a miss before the
+    # first grant returns. With more, early misses complete before the last
+    # ones issue.
+    if misses <= 3:
+        assert peak == (1 if misses == 1 else misses - 1), peak
+    else:
+        assert peak >= 3, peak
+    dut._log.info("peak live endpoints %d of %d", peak, misses)
+
+
+@cocotb.test()
+async def loads_in_flight_with_held_grants(dut: Any) -> None:
+    """Hold grants until every load endpoint holds a miss, then drain them."""
+    peak = await run_loads_in_flight(dut, hold_grants=True)
     misses = len(dut.hart_d_valid)
     assert peak == (1 if misses == 1 else misses - 1), peak
-    assert await b.dma(base + 0x40 * 6) & 0xFF == 0xAB
+
+
+@cocotb.test()
+async def speculative_fill_then_dma_write(dut: Any) -> None:
+    """Order a DMA write after witnessed speculative GetS requests at the home."""
+    if len(dut.hart_d_valid) < 8:
+        return
+    b = Cluster(dut)
+    await b.reset()
+    base = 0x80000000
+    await b.set(i_hold_grant=1)
+    for slot in range(3):
+        await b.set(
+            i_read_valid=1,
+            i_read_id=slot,
+            i_read_kind=0,
+            i_read_size=3,
+            i_address=base + 32 * slot,
+        )
+        await b.tick()
+    await b.set(i_read_valid=0)
+    target = base + 96
+    for _ in range(300):
+        if target in b.speculative_requests:
+            break
+        await b.tick()
+    assert target in b.speculative_requests
+    assert int(dut.hart.live.value) & int(dut.hart.ld_prefetch_q.value)
+    await b.set(i_hold_grant=0)
+    await b.dma(target, 0xABCDE123, mask=255)
+    assert target in b.cuts
+    responses = {}
+    for _ in range(3):
+        await b.wait("o_read_valid")
+        assert not b.get("o_read_error")
+        responses[b.get("o_read_id")] = b.get("o_read_data")
+        await b.set(i_read_ready=1)
+        await b.tick()
+        await b.set(i_read_ready=0)
+    assert responses == {0: 0, 1: 0, 2: 0}
+    assert await b.read(target, slot=7) == 0xABCDE123
+
+
+@cocotb.test()
+async def single_cycle_reset_during_traffic(dut: Any) -> None:
+    """Reset for one cycle at each stage of a miss and a store, then run cleanly."""
+    b = Cluster(dut)
+    await b.reset()
+    target = 0x80001000
+    live_in_reset = 0
+    for delay in range(48):
+        await b.wait("o_store_ready")
+        await b.set(
+            i_address=target,
+            i_read_id=0,
+            i_read_kind=0,
+            i_read_size=3,
+            i_read_valid=1,
+        )
+        await b.tick()
+        await b.set(
+            i_read_valid=0,
+            i_address=target + 0x40,
+            i_write_data=delay,
+            i_write_mask=255,
+        )
+        await b.tick()
+        await b.set(i_write_mask=0)
+        await b.tick(delay)
+        await b.set(i_rst=1)
+        # Outputs may stay live in this cycle; every receiver takes the reset.
+        live_in_reset |= int(dut.hart_d_valid.value) | int(dut.hart_c_valid.value)
+        await b.tick()
+        await b.set(i_rst=0)
+        assert not int(dut.hart_d_valid.value) and not int(dut.hart_c_valid.value)
+        assert not b.get("o_read_valid") and not b.get("o_write_done")
+        b.responses.clear()
+        await b.tick(30)
+        assert await b.read(target + 0x80, slot=delay % 8) == 0
+    assert live_in_reset

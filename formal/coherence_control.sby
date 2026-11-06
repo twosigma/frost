@@ -6,7 +6,7 @@ coh_atomic_pair_wide_prove arm_pair arm_pair_wide
 coh_c_payload_prove payload
 coh_c_payload_wide_prove payload payload_wide
 coh_arbiter_prove arbiter
-coh_arbiter23_prove arbiter large_arbiter
+coh_arbiter24_prove arbiter large_arbiter
 coh_arbiter_held_prove arbiter large_arbiter held_arbiter
 coh_reader_prove reader early
 coh_reader_cover reader early covers
@@ -14,6 +14,8 @@ coh_reader_slot1_prove reader early slot1
 coh_reader_slot1_cover reader early slot1 covers
 coh_ptw_reader_prove reader early ptw
 coh_ptw_reader_cover reader early ptw covers
+coh_ptw_reader_slot1_prove reader early ptw slot1
+coh_ptw_reader_slot1_cover reader early ptw slot1 covers
 coh_reader_late_prove reader
 coh_ingress_prove reader dma
 coh_atomic_guard_prove guard
@@ -52,7 +54,7 @@ arm_pair: prep -flatten -top coherent_atomic_select_formal
 payload_wide: chparam -set WIDTH 74 coherence_c_payload
 payload: prep -top coherence_c_payload
 arbiter: chparam -set WIDTH 12 -set PORTS 3 coherence_d_arbiter
-large_arbiter: chparam -set PORTS 23 coherence_d_arbiter
+large_arbiter: chparam -set PORTS 24 coherence_d_arbiter
 held_arbiter: chparam -set HOLD_VALID 1 coherence_d_arbiter
 arbiter: prep -top coherence_d_arbiter
 dma: chparam -set SOURCE 2 -set PORT_CLASS 3 -set ID_BITS 4 coherence_line_bridge

@@ -44,7 +44,7 @@ module cpu_top #(
     parameter int unsigned L2_NUM_WAITERS = 2,
     parameter int unsigned L2_PREFETCH = 1,
     parameter int unsigned L2_PREFETCH_DISTANCE = 8,
-    parameter int unsigned L2_PREFETCH_INFLIGHT = 4,
+    parameter int unsigned L2_PREFETCH_INFLIGHT = 3,
     parameter int unsigned L2_LINE_BYTES = 64,
     parameter int unsigned SIM_FAST_MAINT = 0,
     parameter int unsigned PERF_COUNTERS = 0,

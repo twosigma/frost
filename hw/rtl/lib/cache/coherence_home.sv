@@ -175,7 +175,7 @@ module coherence_home #(
   recall_phase_t recall_phase_q[FILLS];
   put_phase_t put_phase_q[Puts];
   (* max_fanout = 64 *) logic run;
-  logic active, work_valid, work_offer, work_error;
+  logic fatal_event, work_valid, work_offer, work_error;
   coh_d_t work;
   logic [5:0] work_tid;
   logic [ResultBits-1:0] work_buffer, image_index;
@@ -222,9 +222,8 @@ module coherence_home #(
   read_packet_t row_request;
   update_packet_t update_request;
   logic tag_request_valid, tag_request_ready, row_request_valid, row_request_ready;
-  logic row_request_offer;
   logic update_request_valid, update_request_ready;
-  logic probe_out_valid, probe_out_offer, ack_out_valid, result_valid, result_ready;
+  logic probe_out_valid, ack_out_valid, result_valid, result_ready;
   logic [ADDR_WIDTH+29:0] probe_out;
   logic [ADDR_WIDTH+10:0] ack_out;
   coh_g_t result;
@@ -383,10 +382,23 @@ module coherence_home #(
         opcode == coherence_pkg::ReadOnceIF || opcode == coherence_pkg::ReadOncePTW ||
         opcode == coherence_pkg::DMARead;
   endfunction
-  // Reset clears every register that internal work updates, so internal
-  // work is qualified by the stop condition alone. Outputs add the reset.
-  assign run = !i_fatal_stop && !o_fatal;
-  assign active = !i_rst && run;
+  // Reset clears the home at its flops. A stop reaches internal work and
+  // outputs through this flop, so no selection or payload path starts at the
+  // fatal logic. A home failure stops the home on the edge that sets o_fatal.
+  // The fatal stop input stays set until reset and takes effect on the cycle
+  // after it rises.
+  always_comb begin
+    fatal_event = work_offer && work_error && work.opcode == coherence_pkg::GetM;
+    if (i_mem_resp_valid && i_mem_resp_id[4] && i_mem_resp_error) fatal_event = 1'b1;
+    for (int engine = 0; engine < RESULTS; engine++) if (engine_fatal[engine]) fatal_event = 1'b1;
+    for (int put = 0; put < Puts; put++) if (put_phase_q[put] == PutFatal) fatal_event = 1'b1;
+    for (int fill = 0; fill < FILLS; fill++)
+    if (fill_phase_q[fill] == FillFatal) fatal_event = 1'b1;
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) run <= 1'b1;
+    else run <= !i_fatal_stop && !o_fatal && !fatal_event;
+  end
   assign incoming_put = i_w;
   assign reply = i_r;
   always_comb begin
@@ -405,7 +417,7 @@ module coherence_home #(
   ) completions (
       .i_clk,
       .i_rst,
-      .i_fatal_stop(i_fatal_stop || o_fatal),
+      .i_fatal_stop(!run),
       .i_d_valid,
       .o_d_ready,
       .i_d,
@@ -567,11 +579,10 @@ module coherence_home #(
       .o_ready(engine_result_ready),
       .i_payload(engine_result_payload),
       .o_valid(result_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(result_ready && run),
 `ifdef COHERENCE_HOME_CONTROL
-      .i_service_stop(!active),
+      .i_service_stop(!run),
 `endif
       .o_payload(result)
   );
@@ -586,11 +597,10 @@ module coherence_home #(
       .o_ready(tag_ready),
       .i_payload(tag_payload),
       .o_valid(tag_request_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(tag_request_ready && run),
 `ifdef COHERENCE_HOME_CONTROL
-      .i_service_stop(!active),
+      .i_service_stop(!run),
 `endif
       .o_payload(tag_request)
   );
@@ -599,16 +609,15 @@ module coherence_home #(
       .PORTS(Clients)
   ) read_arbiter (
       .i_clk,
-      .i_rst(!active),
+      .i_rst(i_rst || !run),
       .i_valid(read_valid),
       .o_ready(read_ready),
       .i_payload(read_payload),
       .o_valid(row_request_valid),
-      .o_offer(row_request_offer),
       .o_selected(),
-      .i_ready(row_request_ready && active),
+      .i_ready(row_request_ready && run),
 `ifdef COHERENCE_HOME_CONTROL
-      .i_service_stop(!active || f_local_fatal),
+      .i_service_stop(!run || f_local_fatal),
 `endif
       .o_payload(row_request)
   );
@@ -623,11 +632,10 @@ module coherence_home #(
       .o_ready(update_ready),
       .i_payload(update_payload),
       .o_valid(update_request_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(update_request_ready && run),
 `ifdef COHERENCE_HOME_CONTROL
-      .i_service_stop(!active),
+      .i_service_stop(!run),
 `endif
       .o_payload(update_request)
   );
@@ -642,11 +650,10 @@ module coherence_home #(
       .o_ready(probe_ready),
       .i_payload(probe_payload),
       .o_valid(probe_out_valid),
-      .o_offer(probe_out_offer),
       .o_selected(),
       .i_ready(i_p_ready && run),
 `ifdef COHERENCE_HOME_CONTROL
-      .i_service_stop(!active),
+      .i_service_stop(!run),
 `endif
       .o_payload(probe_out)
   );
@@ -661,19 +668,17 @@ module coherence_home #(
       .o_ready(ack_ready),
       .i_payload(ack_payload),
       .o_valid(ack_out_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(i_wa_ready && run),
 `ifdef COHERENCE_HOME_CONTROL
-      .i_service_stop(!active),
+      .i_service_stop(!run),
 `endif
       .o_payload(ack_out)
   );
-  // The L1D qualifies an offered probe with the same reset itself.
-  assign o_p_valid = run && probe_out_offer;
+  assign o_p_valid = run && probe_out_valid;
   assign o_p = probe_out;
-  assign o_r_ready = active && (|engine_r_ready || |fill_r_ready);
-  assign o_wa_valid = active && ack_out_valid;
+  assign o_r_ready = run && (|engine_r_ready || |fill_r_ready);
+  assign o_wa_valid = run && ack_out_valid;
   assign o_wa = ack_out;
 
   coherence_home_array #(
@@ -707,8 +712,8 @@ module coherence_home #(
       .o_resp_addr(array_addr),
       .o_resp_state(array_state),
       .o_resp_tags(array_tags),
-      .i_read_valid(row_request_valid && active),
-      .i_read_offer(row_request_offer),
+      .i_read_valid(row_request_valid && run),
+      .i_read_offer(row_request_valid),
       .o_read_ready(row_request_ready),
       .i_read_addr(row_request.addr),
       .i_read_way(row_request.way),
@@ -1077,7 +1082,7 @@ module coherence_home #(
   assign put_held_blocked = put_owner_q || (fill_allocated_q && put_query_q) ||
       (victim_allocated_q && put_victim_q);
   assign put_blocked = put_held_blocked || (put_victim_match && decision_fill);
-  assign w_ready_early = active && put_selected_q && !put_busy && !put_held_blocked &&
+  assign w_ready_early = run && put_selected_q && !put_busy && !put_held_blocked &&
       !put_busy_q[selected_put_q.put_id];
   // One kept LUT of six kept signals, with decision_fill written out, so the
   // readiness reaches the L1D from a fixed depth.
@@ -1087,7 +1092,7 @@ module coherence_home #(
 `ifndef SYNTHESIS
   always_comb
     if (sim_reset_seen_q && !i_rst)
-      assert (o_w_ready == (active && put_selected_q && put_key_match && !put_busy &&
+      assert (o_w_ready == (run && put_selected_q && put_key_match && !put_busy &&
           !put_blocked && put_phase_q[selected_put_q.put_id] == PutFree));
 `endif
   always_ff @(posedge i_clk) begin
@@ -1434,6 +1439,7 @@ module coherence_home #(
       end
     end
   end
+  // The AXI bridge can keep running through a CPU reset.
   assign o_mem_req_valid = memory_out_valid && !i_rst;
   assign {o_mem_req_write, o_mem_req_addr, o_mem_req_data, o_mem_req_id} = memory_out;
   assign o_mem_req_mask = {LINE_BYTES{o_mem_req_write}};
@@ -1767,12 +1773,12 @@ module coherence_home #(
       assert ($onehot0({engine_r_ready, fill_r_ready}));
       assert ((park & wake) == 0);
       if (|image_select) assert (image_data == engine_image[image_index]);
-      if (work_valid && active) assert (engine_idle[work_buffer]);
+      if (work_valid && run) assert (engine_idle[work_buffer]);
       if (array_response && decision_engine)
         assert (same_block(array_query, engine_addr[ResultBits'(array_token)]));
       for (int engine = 0; engine < RESULTS; engine++)
-      if (active) assert (engine_read[engine] == read_valid[engine]);
-      if (active) assert ((row_request_valid && row_request_ready) == (|(read_valid & read_ready)));
+      if (run) assert (engine_read[engine] == read_valid[engine]);
+      if (run) assert ((row_request_valid && row_request_ready) == (|(read_valid & read_ready)));
       for (int put = 0; put < Puts; put++)
       if (array_response && array_token == TokenBits'(RESULTS + FILLS + put))
         assert (same_block(array_query, put_addr[put]));
@@ -1787,7 +1793,7 @@ module coherence_home #(
             fill_sent_q[FillBits'(i_mem_resp_id)] && !fill_done_q[FillBits'(i_mem_resp_id)]);
         end
       end
-      if (array_response && active && decision_fill) begin
+      if (array_response && run && decision_fill) begin
         assert (!array_exclude[array_way] && !decision_blocked && !victim_blocked);
         if (array_state != coherence_pkg::Invalid) assert (wb_free);
       end
@@ -1804,7 +1810,7 @@ module coherence_home #(
       // A prefetch allocates only when it may fill, more than PREFETCH_RESERVE
       // fills are free, two ways were available and, for a valid victim, two
       // write-back slots are free.
-      if (array_response && active && decision_fill && lookup_prefetch_q) begin
+      if (array_response && run && decision_fill && lookup_prefetch_q) begin
         assert (lookup_fill_q && array_two_available);
         assert (int'(reference_free_fills) > PREFETCH_RESERVE);
         if (array_state != coherence_pkg::Invalid) assert (reference_free_wbs >= 2);
@@ -1819,7 +1825,7 @@ module coherence_home #(
       end
       for (int fill = 0; fill < FILLS; fill++)
       if (fill_prefetch_q[fill] && fill_phase_q[fill] != FillFree) assert (!fill_write_q[fill]);
-      if (array_response && active && !array_hit && array_available)
+      if (array_response && run && !array_hit && array_available)
         assert (!array_exclude[array_way]);
       for (int put = 0; put < Puts; put++) begin
         if (array_response && array_token == TokenBits'(RESULTS + FILLS + put))
@@ -1884,13 +1890,17 @@ module coherence_home #(
     if (i_rst) f_seen_q <= '0;
     else
       f_seen_q <= f_seen_q | {(|wb_frozen_q), (|wb_sent_q),
-        (active && array_response && decision_blocked)};
+        (run && array_response && decision_blocked)};
   end
 `endif
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
     if (!f_past_valid) assume (i_rst);
     if (f_past_valid && !$past(i_rst) && $past(i_fatal_stop)) assume (i_fatal_stop || i_rst);
+    if (!i_rst) begin
+      p_stop_held : assert (run || i_fatal_stop || o_fatal);
+      p_fatal_stops : assert (!(run && o_fatal));
+    end
     if (!i_rst && i_w_valid)
       assume (incoming_put.hart == 0 && incoming_put.epoch == 0 && incoming_put.addr[4:0] == 0);
     if (i_rst) f_memory_pending_q <= '0;
@@ -1950,7 +1960,7 @@ module coherence_home #(
       if (pin_valid) assert (array_hit && !decision_blocked);
       if (array_claim && !array_hit) assert (!array_exclude[array_way]);
       if (retry_valid) assert (!pin_valid);
-      if (result_valid && active && result_ready) assert (int'(result.tid) < COMPLETIONS);
+      if (result_valid && run && result_ready) assert (int'(result.tid) < COMPLETIONS);
       for (int engine = 0; engine < RESULTS; engine++) begin
         assert (int'(engine_tid[engine]) < COMPLETIONS);
         for (int other = engine + 1; other < RESULTS; other++)

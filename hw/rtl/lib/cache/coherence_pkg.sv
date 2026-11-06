@@ -77,10 +77,10 @@ package coherence_pkg;
     Check = 3
   } reason_t;
 
-  // Eleven identities per hart, eight DMA credits and the prefetch
+  // Twelve identities per hart, eight DMA credits and the prefetch
   // identities, each with a completion slot of its own.
   function automatic integer completion_count(input integer harts);
-    completion_count = harts * 11 + 8 + coherence_pkg::PrefetchIds;
+    completion_count = harts * 12 + 8 + coherence_pkg::PrefetchIds;
   endfunction
   function automatic integer fill_base(input integer harts);
     fill_base = coherence_pkg::completion_count(harts);
@@ -98,7 +98,7 @@ package coherence_pkg;
   function automatic logic legal_q(input q_t q);
     if (q.src < 2) begin
       legal_q = (q.port_class == 0 && q.id < 8) ||
-          (q.port_class == 1 && q.id < 2) || (q.port_class == 2 && q.id == 0);
+          (q.port_class == 1 && q.id < 2) || (q.port_class == 2 && q.id < 2);
     end else begin
       legal_q = q.port_class == 3 && (q.src == 2 || int'(q.id) < coherence_pkg::PrefetchIds);
     end

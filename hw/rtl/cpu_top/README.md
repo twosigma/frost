@@ -10,7 +10,7 @@ uncached data and instruction ports.
 
 | Module | Contents |
 | --- | --- |
-| `frost_hart` | `cpu_ooo` with its MMUs, walker, L0 and IMSIC files; the instruction fetch providers; `coherent_hart_cache` with the S/M L1D, L1I, walker bridge and FENCE.I sequencing; and `cpu_uncached_adapter` |
+| `frost_hart` | `cpu_ooo` with its MMUs, walker, L0 and IMSIC files; the instruction fetch providers; `coherent_hart_cache` with the S/M L1D, L1I, walker bridges and FENCE.I sequencing; and `cpu_uncached_adapter` |
 | `frost_cluster_memory` | The DMA ingress queue; `coherence_home` with independent completions, the L2 array and victim ownership; and `cpu_memory_fabric` with its AXI master |
 
 The D/P/R/W/WA/G/C/U channels carry requests, probes, dirty data, grants
@@ -223,7 +223,7 @@ provide coherence between separate CPU instances.
 
 `frost_hart` contains `coherent_hart_cache`, and `frost_cluster_memory`
 contains `coherence_home`. The [cache interface](../lib/cache/README.md#coherent-one-hart-cache-path)
-uses S/M permissions for one hart. The home admits twenty-three requests,
+uses S/M permissions for one hart. The home admits twenty-four requests,
 four of them kept for its stream prefetcher, with eight probe/data engines and
 `L2_NUM_MSHR` fill controls (eight by default). Engines share image storage
 with eight result credits. Two ordinary PutM controls drain independently.

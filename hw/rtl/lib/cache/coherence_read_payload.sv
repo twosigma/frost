@@ -34,16 +34,18 @@ module coherence_read_payload #(
   // The allocation arrives late; keep it in the data input rather than a
   // synchronous reset pin.
   (* extract_reset = "no" *) logic [7:0] write_mask_q;
+  (* keep = "true" *) logic [7:0] selected_mask;
+  assign selected_mask = 8'h01 << i_allocate_id;
   wire [7:0] write_mask = write_mask_q;
   assign o_write_payload = write_payload_q;
   assign o_write_mask = write_mask_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      write_payload_q <= '0;
       write_mask_q <= '0;
+      write_payload_q <= '0;
     end else begin
+      write_mask_q <= i_allocate ? selected_mask : '0;
       write_payload_q <= i_payload;
-      write_mask_q <= i_allocate ? (8'h01 << i_allocate_id) : 8'b0;
     end
   end
   for (genvar slot = 0; slot < 8; slot++) begin : gen_slot

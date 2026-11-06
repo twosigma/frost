@@ -33,6 +33,14 @@ ifeq ($(TOPLEVEL),coherence_endpoints_test_harness)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/cache/coherence.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),coherence_prefetch_test_harness)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/cache/coherence_home.f \
+        $(ROOT)/hw/rtl/lib/cache/l2_stream_prefetcher.sv \
+        $(ROOT)/hw/rtl/lib/cache/coherence_prefetch_agent.sv \
+        $(ROOT)/hw/rtl/lib/cache/coherence_prefetch_pause.sv \
+        $(ROOT)/hw/rtl/lib/cache/coherence_prefetch_test_harness.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),coherence_home_completions)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/cache/coherence_home.f

@@ -22,6 +22,7 @@ live in the RTL (under `ifdef FORMAL` or a proof define) or in the harnesses
 in formal/.
 """
 
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -35,16 +36,20 @@ FORMAL_DIR = "formal"
 
 # Per-task hang backstop in seconds; proof depth is set by each .sby file.
 SBY_TASK_TIMEOUT_S = 2400
-# The unchanged ROB BMC can take about an hour on a shared runner, and the
+# The unchanged ROB BMC can take about an hour on a shared runner, the
 # hart maintenance proof, which models buffered store hits, can take over an
-# hour on a loaded machine. These tasks run in separate CI jobs. Their proof
-# depth and input contracts stay unchanged; only the solver's wall-clock
-# allowance differs.
+# hour on a loaded machine, and the eight-endpoint L1D stream BMC can take
+# longer. These tasks run in separate CI jobs. The three-endpoint L1D
+# control BMC can take about half an hour on a loaded machine and stays in
+# the Coherence job. Their proof depth and input contracts stay unchanged;
+# only the solver's wall-clock allowance differs.
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "bmc"): 5400,
     ("csr_file", "bmc_perf_off"): 5400,
     ("reorder_buffer", "bmc"): 5400,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
+    ("coherence_l1d", "coh_l1d_stream_bmc"): 10800,
+    ("coherence_l1d", "coh_l1d_multi_bmc"): 3600,
 }
 
 
@@ -66,18 +71,53 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "coherence_prefetch_pause.sby",
+        "DMA credits and seven idle cycles gate prefetch admission.",
+        tasks=("pf_pause_prove", "pf_pause_cover"),
+    ),
+    FormalTarget(
+        "coherence_prefetch_agent.sby",
+        "Prefetch identities, held requests, error completion and reset at both line sizes.",
+        tasks=(
+            "pf_agent64_prove",
+            "pf_agent32_prove",
+            "pf_agent1_prove",
+            "pf_agent2_prove",
+            "pf_agent4_prove",
+            "pf_agent64_cover",
+            "pf_agent32_cover",
+        ),
+    ),
+    FormalTarget(
+        "coherent_local_owners.sby",
+        "Two-owner permission, evicted reservations and observation replay under the shared-home contract.",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "coherent_local_atomic.sby",
+        "Local ownership progresses through production CPU memory dependencies beside held probes and grants.",
+        tasks=("amo_bmc", "sc_bmc", "amo_cover", "sc_cover", "reservation_prove"),
+    ),
+    FormalTarget(
         "coherence_store_boundary.sby",
         "Production SQ, router, buffered L1D and LQ preserve credit, drain and atomic exclusion.",
         tasks=(
             "bmc_load_same",
             "bmc_load_other",
             "bmc_amo_same",
+            "bmc_amo_same_owner",
+            "bmc_amo_same_fatal",
+            "prove_amo_same_fatal_sticky",
             "bmc_amo_other",
+            "bmc_amo_other_fatal",
+            "prove_amo_other_fatal_sticky",
             "bmc_sc",
             "bmc_old",
             "cover_load",
             "cover_old",
             "cover_amo",
+            "cover_amo_same",
+            "cover_amo_other_home",
             "cover_sc",
             "cover_edges_same",
             "cover_edges_other",
@@ -174,7 +214,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_read_payload.sby",
-        "Buffered coherent read payloads equal allocation-only storage.",
+        "Buffered coherent read payloads and exports equal independent reference storage.",
         tasks=("coh_read_payload_prove", "coh_read_payload64_prove"),
     ),
     FormalTarget(
@@ -208,11 +248,30 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "coherence_read_stream.sby",
+        "Ascending demand streams stay within the look-ahead window and physical page.",
+        tasks=("stream_prove", "stream_cover"),
+    ),
+    FormalTarget(
         "coherence_l1d.sby",
         "The coherent L1 preserves pending stores, cuts, and exact atomic writes.",
         tasks=(
+            "coh_l1d_conflict_prove",
+            "coh_l1d_conflict_multi_prove",
+            "coh_l1d_conflict_stream_prove",
             "coh_l1d_bmc",
             "coh_l1d_multi_bmc",
+            "coh_l1d_stream_bmc",
+            "coh_l1d_stream_cover",
+            "coh_l1d_turn_cover",
+            "coh_l1d_local_prove",
+            "coh_l1d_local_multi_prove",
+            "coh_l1d_local_sector_prove",
+            "coh_l1d_local_multi_sector_prove",
+            "coh_l1d_local_ways_sector_prove",
+            "coh_l1d_local_cover",
+            "coh_l1d_local_data_bmc",
+            "coh_l1d_local_ways_prove",
             "coh_l1d_cover",
             "coh_l1d_data_bmc",
             "coh_l1d_data1_bmc",
@@ -259,15 +318,6 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
-        "coherence_prefetcher.sby",
-        "Prefetch identities, held D and C, and stream requests within their pages.",
-        tasks=(
-            "coh_prefetcher_prove",
-            "coh_prefetcher_ids_bmc",
-            "coh_prefetcher_cover",
-        ),
-    ),
-    FormalTarget(
         "coherence_dma_ingress.sby",
         "DMA issue order, opaque identities, independent completion, and reset ownership.",
         tasks=(
@@ -307,8 +357,12 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_array.sby",
-        "A watched byte preserves masked updates across serialized array operations.",
+        "Serialized array byte values and exact conditional data selection.",
         tasks=(
+            "coh_array_select_prove",
+            "coh_array_select4_prove",
+            "coh_array_select56_prove",
+            "coh_array_select4_56_prove",
             "coh_array_bmc",
             "coh_array_uram_bmc",
             "coh_array_cover",
@@ -322,7 +376,7 @@ FORMAL_TARGETS = [
             "coh_c_payload_prove",
             "coh_c_payload_wide_prove",
             "coh_arbiter_prove",
-            "coh_arbiter23_prove",
+            "coh_arbiter24_prove",
             "coh_arbiter_held_prove",
             "coh_reader_prove",
             "coh_reader_cover",
@@ -330,6 +384,8 @@ FORMAL_TARGETS = [
             "coh_reader_slot1_cover",
             "coh_ptw_reader_prove",
             "coh_ptw_reader_cover",
+            "coh_ptw_reader_slot1_prove",
+            "coh_ptw_reader_slot1_cover",
             "coh_reader_late_prove",
             "coh_ingress_prove",
             "coh_atomic_guard_prove",
@@ -348,6 +404,13 @@ FORMAL_TARGETS = [
         tasks=(
             "request_prove",
             "request_cover",
+            "request_equiv32",
+            "request_equiv56",
+            "request_equiv_slot0",
+            "request_equiv_wide_slot0",
+            "request_equiv_ptw",
+            "request_equiv_wide_ptw",
+            "request_equiv_cover",
             "home_prove",
             "home_cover",
             "put_prove",
@@ -1141,6 +1204,78 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("coh_l1d_conflict_prove", "Guarded conflict identity with one endpoint."),
+    ("coh_l1d_conflict_multi_prove", "Guarded conflict identity with three endpoints."),
+    (
+        "coh_l1d_conflict_stream_prove",
+        "Guarded conflict identity with eight endpoints and streaming enabled.",
+    ),
+    (
+        "stream_prove",
+        "Demand stream confirmation, cancellation and bounded sector cursor.",
+    ),
+    (
+        "stream_cover",
+        "Page-end saturation and simultaneous demand advance and hint consumption.",
+    ),
+    (
+        "coh_l1d_stream_bmc",
+        "Speculative endpoint ownership and demand-state isolation.",
+    ),
+    ("coh_l1d_stream_cover", "Two speculative endpoints and demand attachment."),
+    ("coh_l1d_turn_cover", "A demand retry between buffered load grants."),
+    (
+        "pf_pause_prove",
+        "Prefetch pause equals live DMA identities and recent activity.",
+    ),
+    ("pf_pause_cover", "Eight DMA identities, simultaneous reuse and return to idle."),
+    ("pf_agent64_prove", "Prefetch endpoint ownership with 64-byte lines."),
+    ("pf_agent32_prove", "Prefetch endpoint ownership with 32-byte lines."),
+    ("pf_agent1_prove", "Prefetch endpoint ownership with a one-request cap."),
+    ("pf_agent2_prove", "Prefetch endpoint ownership with a two-request cap."),
+    (
+        "pf_agent4_prove",
+        "Prefetch endpoint ownership with all four identities enabled.",
+    ),
+    (
+        "pf_agent64_cover",
+        "Four prefetch identities, errors, release and reset with 64-byte lines.",
+    ),
+    (
+        "pf_agent32_cover",
+        "Four prefetch identities, errors, release and reset with 32-byte lines.",
+    ),
+    (
+        "reservation_prove",
+        "Successful SC clears at installation; failed SC clears and discards.",
+    ),
+    ("amo_bmc", "Local AMO dependency safety and bounded progress."),
+    ("sc_bmc", "Local SC dependency safety and bounded progress."),
+    ("amo_cover", "Local AMO release and pending control-entry stages."),
+    ("sc_cover", "Local SC retirement and pending control-entry stages."),
+    (
+        "coh_l1d_local_prove",
+        "Local service exclusion, saved image and release by induction.",
+    ),
+    (
+        "coh_l1d_local_multi_prove",
+        "Local ownership beside unrelated endpoints by induction.",
+    ),
+    ("coh_l1d_local_ways_prove", "Local ownership with multiple ways by induction."),
+    ("coh_l1d_local_sector_prove", "Local sector admission and identity by induction."),
+    (
+        "coh_l1d_local_multi_sector_prove",
+        "Local sector admission beside unrelated endpoints by induction.",
+    ),
+    (
+        "coh_l1d_local_ways_sector_prove",
+        "Local sector admission with multiple ways by induction.",
+    ),
+    (
+        "coh_l1d_local_cover",
+        "Local failure, completed update and deferred probe reply.",
+    ),
+    ("coh_l1d_local_data_bmc", "Local atomic data and control through the real array."),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
     ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),
@@ -1152,13 +1287,32 @@ SBY_TASKS = [
         "bmc_load_other",
         "Loads through acceptance and installation of different-sector stores.",
     ),
-    ("bmc_amo_same", "Same-sector store and AMO handoff through release."),
-    ("bmc_amo_other", "Different-sector store and AMO handoff through release."),
+    ("bmc_amo_same", "Same-sector store and AMO credit and drain through release."),
+    ("bmc_amo_same_owner", "Same-sector buffered-store and atomic-owner exclusion."),
+    (
+        "bmc_amo_same_fatal",
+        "Same-sector fatal status at frame 139, paired with fatal persistence induction.",
+    ),
+    (
+        "prove_amo_same_fatal_sticky",
+        "Fatal persistence after initial reset for the 140-frame AMO safety check.",
+    ),
+    ("bmc_amo_other", "Different-sector store and AMO credit, drain and ownership."),
+    (
+        "bmc_amo_other_fatal",
+        "Different-sector fatal status at frame 139, paired with fatal persistence induction.",
+    ),
+    (
+        "prove_amo_other_fatal_sticky",
+        "Different-sector fatal persistence after initial reset for the AMO safety check.",
+    ),
     ("bmc_sc", "SC handoff, acknowledgement and drain through release."),
     ("bmc_old", "Old load responses and fresh bytes across buffered stores."),
     ("cover_load", "Buffered store overlap with a younger load."),
     ("cover_old", "Delayed old response and a fresh load staged before drain."),
     ("cover_amo", "AMO retirement, delayed release and younger-store admission."),
+    ("cover_amo_same", "Same-sector buffered stores and local AMO through release."),
+    ("cover_amo_other_home", "Different-sector AMO home write lookup and release."),
     ("cover_sc", "SC retirement, delayed release and younger-store admission."),
     (
         "cover_edges_same",
@@ -1175,6 +1329,10 @@ SBY_TASKS = [
         "Arbitrary-byte store and probe images in the production array.",
     ),
     ("coh_l1d_cover", "Buffered stores, ordered installation, probes and errors."),
+    ("coh_array_select_prove", "Conditional data selection with one way."),
+    ("coh_array_select4_prove", "Conditional data selection with four ways."),
+    ("coh_array_select56_prove", "Conditional data selection at 56 address bits."),
+    ("coh_array_select4_56_prove", "Four-way conditional data selection at 56 bits."),
     ("coh_array_cover", "Masked byte updates and tag-only hits in block RAM."),
     ("coh_array_uram_cover", "Masked byte updates and tag-only hits in UltraRAM."),
     ("coh_array_plru_prove", "Deferred hit replacement equality in block RAM."),
@@ -1433,12 +1591,6 @@ SBY_TASKS = [
         "coh_home_prefetch_cover",
         "Prefetch fills that install, gain a seat or fail; reserve and no-fill decisions.",
     ),
-    ("coh_prefetcher_prove", "Prefetch identities follow D, G, C and U; held D and C."),
-    (
-        "coh_prefetcher_ids_bmc",
-        "Each stream table's read ids return once, to the right table.",
-    ),
-    ("coh_prefetcher_cover", "All identities in flight, table turns, and a held C."),
     ("coh_home_fill_cover", "Fill installation and waiter wake reachability."),
     ("coh_home_array_prove", "Independent L2 ports preserve watched bytes."),
     *[
@@ -1452,8 +1604,8 @@ SBY_TASKS = [
     ("coh_array_bmc", "Coherent array byte values and held responses."),
     ("coh_array_uram_bmc", "Coherent array byte values through registered RAM ports."),
     (
-        "coh_arbiter23_prove",
-        "Twenty-three-way held arbitration and circular selection equality.",
+        "coh_arbiter24_prove",
+        "Twenty-four-way held arbitration and circular selection equality.",
     ),
     ("coh_arbiter_prove", "Coherent arbitration preserves held payloads."),
     (
@@ -1479,6 +1631,14 @@ SBY_TASKS = [
         "PTW response at grant and identity ownership through release.",
     ),
     ("coh_ptw_reader_cover", "PTW response, errors, stalls and reset reachability."),
+    (
+        "coh_ptw_reader_slot1_prove",
+        "Second PTW identity responds at grant and survives through release.",
+    ),
+    (
+        "coh_ptw_reader_slot1_cover",
+        "Second PTW response and ownership tail reachability.",
+    ),
     ("coh_reader_late_prove", "Default reader response follows release."),
     ("coh_ingress_prove", "DMA identities survive through release."),
     ("coh_atomic_guard_prove", "Atomic protection covers retirement and release."),
@@ -1493,6 +1653,13 @@ SBY_TASKS = [
     ("layout56", "Coherent channel layout at 56 physical address bits"),
     ("request_prove", "Unbounded coherent endpoint safety"),
     ("request_cover", "Coherent endpoint completion reachability"),
+    ("request_equiv32", "Request endpoint phase and payload equivalence at 32 bits"),
+    ("request_equiv56", "Request endpoint phase and payload equivalence at 56 bits"),
+    ("request_equiv_slot0", "Request endpoint slot-zero phase equivalence"),
+    ("request_equiv_wide_slot0", "Wide request endpoint slot-zero phase equivalence"),
+    ("request_equiv_ptw", "PTW request endpoint phase equivalence"),
+    ("request_equiv_wide_ptw", "Wide PTW request endpoint phase equivalence"),
+    ("request_equiv_cover", "Request endpoint complete lifecycle reachability"),
     ("home_prove", "Unbounded coherent endpoint safety"),
     ("home_cover", "Coherent endpoint completion reachability"),
     ("put_prove", "Unbounded coherent endpoint safety"),
@@ -1775,6 +1942,192 @@ def formal_task_timeout_s(target: str, task: str) -> int:
     return SBY_TASK_TIMEOUT_OVERRIDES_S.get((target, task), SBY_TASK_TIMEOUT_S)
 
 
+def test_atomic_proof_pairs_and_formal_shards() -> None:
+    """Require proof dependencies and one CI shard for every formal case."""
+    import yaml  # type: ignore[import-untyped]
+    from _pytest.mark.expression import Expression
+
+    root = Path(__file__).resolve().parents[1]
+    registered = [name for name, _ in SBY_TASKS]
+    required = {
+        "coherence_store_boundary": [
+            f"{prefix}_amo_{sector}_{suffix}"
+            for sector in ("same", "other")
+            for prefix, suffix in (("bmc", "fatal"), ("prove", "fatal_sticky"))
+        ],
+        "coherence_l1d": [
+            f"coh_l1d_local{geometry}{part}_prove"
+            for geometry in ("", "_multi", "_ways")
+            for part in ("", "_sector")
+        ],
+    }
+    for target_name, names in required.items():
+        target = next(t for t in FORMAL_TARGETS if t.name == target_name)
+        task_text = (root / "formal" / target.sby_file).read_text()
+        task_lines = task_text.split("[tasks]", 1)[1].split("[options]", 1)[0]
+        sby_tasks = [
+            line.split()[0] for line in task_lines.splitlines() if line.strip()
+        ]
+        for name in names:
+            assert registered.count(name) == 1, name
+            assert target.tasks.count(name) == 1, name
+            assert sby_tasks.count(name) == 1, name
+
+    workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
+    shards = workflow["jobs"]["test-formal"]["strategy"]["matrix"]["include"]
+    filters = {
+        shard["shard"]: Expression.compile(shard["pytest_filter"]) for shard in shards
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/test_run_formal.py",
+            "tests/test_pa_bridge_mutation.py",
+            "--collect-only",
+            "-q",
+            "-m",
+            "formal",
+            "-p",
+            "no:cacheprovider",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    nodes = [
+        line.strip()
+        for line in result.stdout.splitlines()
+        if line.startswith("tests/") and "::" in line
+    ]
+    assert nodes
+    for target_name, names in required.items():
+        for name in names:
+            assert sum(f"[{target_name}_{name}]" in node for node in nodes) == 1
+    for node in nodes:
+
+        def matches_keyword(keyword: str, /, **kwargs: str | int | bool | None) -> bool:
+            """Match a keyword against the collected test's node ID."""
+            assert not kwargs
+            return keyword.casefold() in node.casefold()
+
+        matches = [
+            name
+            for name, expression in filters.items()
+            if expression.evaluate(matches_keyword)
+        ]
+        assert len(matches) == 1, (node, matches)
+
+
+def test_local_sector_lemma_models_match() -> None:
+    """Require identical models for each unbounded lookup lemma and consumer."""
+    formal_dir = Path(__file__).resolve().parents[1] / "formal"
+
+    def config(task: str) -> dict[str, list[str]]:
+        result = subprocess.run(
+            ["sby", "--dumpcfg", "coherence_l1d.sby", task],
+            cwd=formal_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        sections: dict[str, list[str]] = {}
+        section = ""
+        for raw in result.stdout.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("["):
+                section = line
+                sections[section] = []
+            else:
+                sections[section].append(line)
+        return sections
+
+    def assertion_command(line: str) -> bool:
+        return line.startswith(("select -assert-", "chformal "))
+
+    common = [
+        "chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_* "
+        "c:p_atomic_context_identity c:p_atomic_read_identity %u %u %d",
+        "chformal -assert -remove c:p_local_probe_data",
+    ]
+    sector_names = (
+        "c:p_local_sector c:p_local_lookup_stable c:p_local_conflict_sample "
+        "c:p_local_admit_sector c:p_local_lookup_owner c:p_local_service "
+        "c:p_local_sc_lookup c:p_local_active"
+    )
+    lemmas = "c:p_local_lookup_owner c:p_local_sc_lookup"
+    role_check = f"select -assert-count 2 {lemmas} %u t:$check %i r:FLAVOR={{}} %i"
+    owner_commands = common + [
+        "chformal -assert -remove c:p_local_sector c:p_local_lookup_stable "
+        "c:p_local_conflict_sample c:p_local_admit_sector",
+        "select -assert-count 19 t:$check r:FLAVOR=assert %i",
+        role_check.format("assert"),
+    ]
+    sector_commands = common + [
+        f"select -assert-count 8 {sector_names}",
+        f"chformal -assert -remove t:$check r:FLAVOR=assert %i {sector_names}"
+        + " %u" * 7
+        + " %d",
+        f"chformal -assert2assume {lemmas}",
+        "select -assert-count 6 t:$check r:FLAVOR=assert %i",
+        role_check.format("assume"),
+    ]
+
+    def validate(owner: dict[str, list[str]], sector: dict[str, list[str]]) -> None:
+        assert owner.keys() == sector.keys()
+        for section in owner.keys() - {"[options]", "[engines]", "[script]"}:
+            assert owner[section] == sector[section]
+        model_scripts = []
+        for task, commands, depth, engine in (
+            (owner, owner_commands, "80", "abc pdr"),
+            (sector, sector_commands, "8", "smtbmc boolector"),
+        ):
+            script = task["[script]"]
+            assert [line for line in script if assertion_command(line)] == commands
+            model_scripts.append(
+                [line for line in script if not assertion_command(line)]
+            )
+            options = dict(line.split(maxsplit=1) for line in task["[options]"])
+            options.setdefault("expect", "PASS")
+            assert options == {
+                "mode": "prove",
+                "depth": depth,
+                "timeout": "1200",
+                "aigsmt": "boolector",
+                "expect": "PASS",
+            }
+            assert task["[engines]"] == [engine]
+        assert model_scripts[0] == model_scripts[1]
+
+    for geometry in ("", "_multi", "_ways"):
+        owner = config(f"coh_l1d_local{geometry}_prove")
+        sector = config(f"coh_l1d_local{geometry}_sector_prove")
+        validate(owner, sector)
+        for side, section, line in (
+            (0, "[script]", "chformal -assert -remove c:p_local_sc_lookup"),
+            (0, "[script]", "chformal -remove -assert c:p_local_sc_lookup"),
+            (1, "[script]", "chformal -assert -remove c:p_local_sector"),
+            (1, "[script]", "chformal -remove c:p_local_sector"),
+            (1, "[options]", "expect PASS,UNKNOWN,TIMEOUT"),
+            (1, "[options]", "smtc sector_only.smtc"),
+            (1, "[options]", "timeout 2400"),
+            (1, "[file sector_only.smtc]", "assume (= hidden 0)"),
+        ):
+            altered = [
+                {key: list(value) for key, value in task.items()}
+                for task in (owner, sector)
+            ]
+            altered[side].setdefault(section, []).append(line)
+            with pytest.raises(AssertionError):
+                validate(*altered)
+
+
 def timeout_log_tail(error: subprocess.TimeoutExpired) -> str:
     """Keep recent solver progress when a captured run exceeds its backstop."""
     output = "".join(
@@ -1782,6 +2135,22 @@ def timeout_log_tail(error: subprocess.TimeoutExpired) -> str:
         for part in (error.stdout, error.stderr)
     )
     return "\n".join(output.splitlines()[-40:])
+
+
+def fatal_frame_completed(output: str) -> bool:
+    """Require a complete frame-139 evaluation of fatal status."""
+    # ABC's nonzero start-frame summary can report zero completed frames.
+    # The per-frame result distinguishes a checked horizon from an empty range.
+    return all(
+        re.search(pattern, output)
+        for pattern in (
+            r"Params: FramesMax = 140\. Start = 139\. ConfLimit = 0\. TimeOut = 0\.",
+            r"engine_0: 139 \+ :",
+            r"engine_0: finished \(returncode=0\)",
+            r"engine_0: Status returned by engine: PASS",
+            r"DONE \(PASS, rc=0\)",
+        )
+    )
 
 
 class FormalRunner:
@@ -1807,7 +2176,7 @@ class FormalRunner:
         Args:
             target: The formal verification target to run.
             task: SymbiYosys task name (e.g., "bmc", "cover").
-            capture_output: If True, capture stdout/stderr. If False, stream to console.
+            capture_output: If True, capture stdout/stderr. Otherwise show tool output.
 
         Returns:
             CompletedProcess with results.
@@ -1818,14 +2187,28 @@ class FormalRunner:
 
         cmd = ["sby", "-t", "-f", str(sby_path), task]
 
-        if capture_output:
-            return subprocess.run(
+        check_fatal_frame = target.name == "coherence_store_boundary" and task in (
+            "bmc_amo_same_fatal",
+            "bmc_amo_other_fatal",
+        )
+        if capture_output or check_fatal_frame:
+            result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 cwd=self.formal_dir,
                 timeout=formal_task_timeout_s(target.name, task),
             )
+            if not capture_output:
+                print(result.stdout or "", end="")
+                print(result.stderr or "", end="", file=sys.stderr)
+            if check_fatal_frame and result.returncode == 0:
+                output = (result.stdout or "") + (result.stderr or "")
+                if not fatal_frame_completed(output):
+                    raise ValueError(
+                        "Fatal-status BMC did not complete its frame-139 check"
+                    )
+            return result
         else:
             return subprocess.run(
                 cmd,
@@ -1895,6 +2278,61 @@ class FormalRunner:
 
 
 @pytest.mark.parametrize("capture_output", (False, True))
+@pytest.mark.parametrize("task", ("bmc_amo_same_fatal", "bmc_amo_other_fatal"))
+@pytest.mark.parametrize(
+    "case",
+    (
+        "complete",
+        "empty_range",
+        "short_bound",
+        "wrong_start",
+        "conflict_limit",
+        "time_limit",
+        "missing_completion",
+        "missing_pass",
+    ),
+)
+def test_fatal_frame_validation(
+    monkeypatch: pytest.MonkeyPatch, capture_output: bool, case: str, task: str
+) -> None:
+    """Reject a success banner without the configured fatal-status evaluation."""
+    output = "\n".join(
+        (
+            "engine_0: Params: FramesMax = 140. Start = 139. ConfLimit = 0. TimeOut = 0.",
+            "engine_0: 139 + : Var = 100. UNSAT = 1.0 sec",
+            "engine_0: No output asserted in 0 frames.",
+            "engine_0: finished (returncode=0)",
+            "engine_0: Status returned by engine: PASS",
+            "DONE (PASS, rc=0)",
+        )
+    )
+    changes = {
+        "empty_range": ("engine_0: 139 + :", "engine_0: no evaluation:"),
+        "short_bound": ("FramesMax = 140", "FramesMax = 139"),
+        "wrong_start": ("Start = 139", "Start = 140"),
+        "conflict_limit": ("ConfLimit = 0", "ConfLimit = 1"),
+        "time_limit": ("TimeOut = 0", "TimeOut = 1"),
+        "missing_completion": ("finished (returncode=0)", "interrupted"),
+        "missing_pass": ("DONE (PASS, rc=0)", "summary pending"),
+    }
+    if case != "complete":
+        output = output.replace(*changes[case])
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert kwargs["capture_output"]
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    target = next(t for t in FORMAL_TARGETS if t.name == "coherence_store_boundary")
+    if case == "complete":
+        result = FormalRunner().run_formal(target, task, capture_output=capture_output)
+        assert result.returncode == 0
+    else:
+        with pytest.raises(ValueError, match="did not complete its frame-139 check"):
+            FormalRunner().run_formal(target, task, capture_output=capture_output)
+
+
+@pytest.mark.parametrize("capture_output", (False, True))
 @pytest.mark.parametrize(
     "target_name,task,expected_timeout",
     (
@@ -1902,6 +2340,8 @@ class FormalRunner:
         ("csr_file", "bmc_perf_off", 5400),
         ("reorder_buffer", "bmc", 5400),
         ("coherent_hart_cache", "coh_hart_maint_prove", 7200),
+        ("coherence_l1d", "coh_l1d_stream_bmc", 10800),
+        ("coherence_l1d", "coh_l1d_multi_bmc", 3600),
         ("csr_file", "cover", 2400),
         ("reorder_buffer", "cover", 2400),
         ("line_port_axi_bridge", "bmc_128g", 2400),

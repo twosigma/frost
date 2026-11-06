@@ -1,12 +1,19 @@
 [tasks]
-bmc_load_same bmc load same
-bmc_load_other bmc load other
-bmc_amo_same bmc amo same
-bmc_amo_other bmc amo other
-bmc_sc bmc sc
-bmc_old bmc old
+bmc_load_same bmc regular load same
+bmc_load_other bmc regular load other
+bmc_amo_same bmc regular amo same amo_partition amo_flow
+bmc_amo_same_owner bmc regular amo same amo_partition amo_owner
+bmc_amo_same_fatal bmc amo same amo_partition amo_fatal
+prove_amo_same_fatal_sticky amo same sticky
+bmc_amo_other bmc regular amo other other_flow
+bmc_amo_other_fatal bmc amo other amo_partition amo_fatal
+prove_amo_other_fatal_sticky amo other sticky
+bmc_sc bmc regular sc
+bmc_old bmc regular old
 cover_load cover lifecycle load
 cover_amo cover lifecycle amo
+cover_amo_same cover lifecycle amo same
+cover_amo_other_home cover lifecycle amo other homepath
 cover_sc cover lifecycle sc
 cover_old cover lifecycle old
 cover_edges_same cover boundaries load same
@@ -21,12 +28,21 @@ amo: depth 140
 sc: depth 140
 timeout 2400
 bmc: aigsmt boolector
+sticky: mode prove
+sticky: depth 2
+sticky: timeout 120
 
 [engines]
-bmc: abc bmc3 -c
+regular: abc bmc3 -c
+# Fatal status persists after the initial reset. The induction and frame-139
+# checks together exclude every fatal sample in the 140-frame horizon.
+# Run through test_run_formal.py, which validates the selected-frame result.
+amo_fatal: abc bmc3 -c -S 139
+sticky: smtbmc boolector
 cover: smtbmc boolector
 
 [script]
+read -sv coherence_read_stream.sv
 read -sv riscv_pkg.sv
 read -sv cache_perf_pkg.sv
 read -sv coherence_pkg.sv
@@ -55,9 +71,11 @@ read -sv coherence_request_endpoint.sv
 read -sv coherence_put_endpoint.sv
 read -sv coherence_store_buffer.sv
 read -sv coherence_array.sv
-read -sv coherence_l1d.sv
-read -formal -sv -noautowire coherence_store_boundary_formal.sv
+read -sv -D LOCAL_ATOMIC_DEPENDENCY coherence_l1d.sv
+~sticky: read -formal -sv -noautowire -D LOCAL_ATOMIC_DEPENDENCY coherence_store_boundary_formal.sv
+sticky: read -formal -sv -noautowire -D LOCAL_ATOMIC_DEPENDENCY -D FATAL_STICKY_PROOF coherence_store_boundary_formal.sv
 lifecycle: chparam -set COVER_MODE 1 coherence_store_boundary_formal
+homepath: chparam -set COVER_AMO_HOME 1 coherence_store_boundary_formal
 boundaries: chparam -set COVER_BOUNDARIES 1 coherence_store_boundary_formal
 same: chparam -set SECTOR_CASE 0 coherence_store_boundary_formal
 other: chparam -set SECTOR_CASE 1 coherence_store_boundary_formal
@@ -72,10 +90,31 @@ load: chformal -cover -remove c:*p_amo_* c:*p_sc_* c:*p_old_*
 amo: chformal -cover -remove c:*p_load_* c:*p_sc_* c:*p_old_*
 sc: chformal -cover -remove c:*p_load_* c:*p_amo_* c:*p_old_*
 old: chformal -cover -remove c:*p_load_* c:*p_amo_* c:*p_sc_*
+amo_partition: select -assert-count 15 t:$check r:FLAVOR=assert %i
+amo_flow: chformal -assert -remove c:p_no_buffered_atomic c:p_no_buffered_guard c:p_no_fatal
+amo_flow: select -assert-count 12 t:$check r:FLAVOR=assert %i
+other_flow: select -assert-count 15 t:$check r:FLAVOR=assert %i
+other_flow: chformal -assert -remove c:p_no_fatal
+other_flow: select -assert-count 14 t:$check r:FLAVOR=assert %i
+amo_owner: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_no_buffered_atomic c:p_no_buffered_guard %u %d
+amo_owner: select -assert-count 2 t:$check r:FLAVOR=assert %i
+amo_fatal: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_no_fatal %d
+amo_fatal: select -assert-count 1 t:$check r:FLAVOR=assert %i
+amo_fatal: select -assert-count 1 c:p_no_fatal
+sticky: select -assert-count 16 t:$check r:FLAVOR=assert %i
+sticky: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_fatal_sticky %d
+sticky: select -assert-count 1 t:$check r:FLAVOR=assert %i
+sticky: select -assert-count 1 c:p_fatal_sticky
+# Every finite prefix extends because these tasks have no environment assumptions.
+amo_fatal: select -assert-none t:$assume
+amo_fatal: select -assert-none t:$check r:FLAVOR=assume %i
+sticky: select -assert-none t:$assume
+sticky: select -assert-none t:$check r:FLAVOR=assume %i
 memory_map
 opt
 
 [files]
+../hw/rtl/lib/cache/coherence_read_stream.sv
 coherence_store_boundary_formal.sv
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/lib/cache/cache_perf_pkg.sv
