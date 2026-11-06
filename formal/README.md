@@ -45,8 +45,10 @@ coherent store-boundary and local-atomic tasks, and the CSR profiling-on job
 runs the L1D local ownership proofs. The hart maintenance proof and the
 eight-endpoint L1D stream control BMCs share a job with a 330-minute limit,
 which covers their allowances in sequence. The store-home job runs the home's
-ordered store tasks with a 240-minute limit, and the L1D multi-endpoint job
-runs `coh_l1d_multi_bmc` alone with a 330-minute limit. The Coherence job runs the other
+ordered store tasks with a 240-minute limit. The L1D multi-endpoint job runs
+`coh_l1d_multi_bmc` alone, the L1D and bridges job runs the other L1D tasks
+and the AXI bridge targets, and the store-boundary job runs the store-boundary
+targets, each with a 330-minute limit. The Coherence job runs the other
 coherence tasks, including the hart maintenance covers, with a 240-minute
 limit. The Other tasks job has a 240-minute limit.
 Job limits include image setup.
