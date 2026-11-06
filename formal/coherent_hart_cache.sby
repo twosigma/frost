@@ -1,7 +1,7 @@
 [tasks]
 coh_hart_maint_prove proof
 coh_hart_maint_cover covers
-coh_hart_maint_four_bmc four bounded
+coh_hart_maint_four_bmc four bounded fourbmc
 coh_hart_maint_four_cover four covers
 
 [options]
@@ -16,6 +16,8 @@ covers: timeout 1200
 four: depth 240
 bounded: mode bmc
 bounded: timeout 2400
+# The four-record bounded task needs more than 40 minutes for its 240 frames.
+fourbmc: timeout 7200
 bounded: aigsmt boolector
 
 [engines]
