@@ -131,6 +131,13 @@ reset. Every endpoint resets together, and its epoch input is stable during
 operation. No coherent packet may survive reset. External response debt must
 be drained or discarded before identities are reused.
 
+The request and PutM endpoints, line bridges, channel arbiters, the L1D and
+its array apply reset at their flops, and their combinational outputs have no
+reset term. An output can be live in the first reset cycle, when every receiver
+on the same reset ignores it. The L1D array's tag and replacement writes and
+the home's memory request keep a reset term, because those RAMs have no reset
+and the AXI bridge can keep running through a CPU reset.
+
 | Encoding | Values |
 | --- | --- |
 | D opcode | 0 GetS, 1 GetM, 2 LoadReserved, 3 Atomic, 4 StoreConditional, 5 ReadOnceIF, 6 ReadOncePTW, 7 DMARead, 8 DMAWrite, 9 Prefetch |
@@ -179,10 +186,8 @@ The caller owns the line lock and destination pin through that edge.
 The pending mask is empty in Idle and SendU. Reset clears the mask, and each
 accepted absorption or cancellation updates its keyed bit.
 Completion identity and address comparisons use parallel three-bit groups.
-Hart completion payloads select with local endpoint phase indications.
-Channel valid signals apply reset qualification. Outside reset, each phase
-indication equals its channel-valid signal. The local `o_c_selected` output
-supplies this indication to the hart payload multiplexer.
+Hart completion payloads select with local endpoint phase indications, which
+are the endpoints' channel valid signals.
 
 The home service registers an absorbed R through `i_absorb` after preserving
 its dirty image in a reserved sink. This port records cancellation metadata;
@@ -287,6 +292,19 @@ endpoint 0 does not take the last free slot while a load grant waits. New
 load acquisitions stop while an atomic is active or an AMO, SC or maintenance
 operation waits for admission. A resident Modified atomic needs endpoint 0
 and its own sector free; home atomics and maintenance drain every endpoint.
+SC acceptance and local atomic admission do not read the SQ's write decode:
+the CPU presents an atomic only after its committed stores drain, so no store
+arrives beside them.
+
+A fatal stop reaches the L1D controller through one flop and takes effect on
+the cycle after it rises, so no selection or capture enable starts at the
+fatal logic. The CPU's retirement stop is separate and takes effect on the
+failure's cycle. An endpoint accepts every acquisition while idle, so the
+controller reads the endpoint's idle state for acceptance. The lookup address,
+selected read slot and grant payload have no reset and capture on every Idle
+cycle, because nothing reads them until a selection leaves Idle. The read
+address joins that selection last.
+
 Read status uses per-slot masks for allocation, response transfer, lookup
 results and grant completion. Completion and miss sets dominate allocation
 clears. Allocation sets dominate response clears of valid bits. A failed
@@ -314,6 +332,8 @@ requests. Three-endpoint caches allow one; smaller caches disable look-ahead.
 Demand may use every load endpoint. Eligible foreground work precedes hint
 selection. Registered hints check live acquisitions, buffered stores and
 frozen dirty writebacks, with conflicts rechecked before acquisition.
+A store that arrives on the acquisition edge is not compared. It waits for the
+endpoint like any store that arrives while the endpoint is live.
 Nonzero endpoints receive GetS payloads with zero write masks. Demand size
 and offset follow the selected load. Endpoint zero carries the other
 acquisition kinds.
@@ -335,6 +355,8 @@ installation. A clean speculative read error is disposed through C and U;
 an attached demand then retries and determines its own result. Dirty
 writeback errors are fatal. Registered admitted LR or AMO work, selected
 atomics, SC, local maintenance, reset and fatal stop cancel unaccepted hints.
+A hint offered to its endpoint on the cycle a fatal stop rises is accepted,
+because the stop takes effect on the next cycle.
 One hint may be accepted on the LR or AMO admission edge. Its endpoint owns
 the request through D, G, C and U, including channel backpressure. LR may attach to a speculative
 fill; home AMO and SC acquisitions and local maintenance use the endpoint
@@ -358,8 +380,8 @@ data service, including a matching way in the replacement exclusion mask.
 A miss has no modified hit. Skip-on-hit suppresses hit data even for a
 modified-only request; a maintenance visit always reads its selected row.
 Read-slot payload writes pass through a one-record buffer. The buffer
-captures the payload and a slot mask each cycle. Reset qualifies the slot
-mask before allocation selects it. The mask identifies the allocated slot
+captures the payload and a slot mask each cycle. Reset clears the slot mask
+through its data input. The mask identifies the allocated slot
 and is zero without an allocation. It qualifies forwarding
 and writes to the slot storage. The forwarding mux
 makes each allocation visible on the allocation edge. Each slot keeps its
@@ -423,10 +445,11 @@ Channel arbiters capture the payload with the selected input and hold both
 through a stalled presentation.
 The home's probe, tag, update, result and PutAck arbiters use their captured
 selection for validity. Each selected source holds its offer through acceptance.
-Fatal state suppresses probe validity, and the L1D applies reset to an
-offered probe. Reset and fatal state suppress PutAck validity and further array
-requests. Internal home and engine state changes are qualified by the stop
-condition alone, because reset clears every register they update.
+A stop reaches the home through one flop. A home failure stops the home on
+the edge that sets its fatal indication, and the fatal stop input takes effect
+on the cycle after it rises. The stop suppresses probe and PutAck validity and
+further array requests. Internal home and engine state changes are qualified
+by that stop alone, because reset clears every register they update.
 Read arbitration selects pending read offers with its held one-hot mask in
 four-port groups, then combines the group results.
 Home stop clears its unaccepted selection. Accepted reads keep their tokens
@@ -541,10 +564,10 @@ and every byte in the sibling sector. A miss reads the victim and fills the
 requested row before applying the write. GrantAck has zero data.
 
 The home arbitrates held probe packets from engines and fill controls.
-Reset and fatal status qualify probe service. The L1D computes incoming invalidate
+The fatal stop qualifies probe service. The L1D computes incoming invalidate
 eligibility from its phase, probe occupancy, reply occupancy, opcode and fatal
-status. Probe validity and reset qualify that eligibility before it combines
-with the resident invalidation hold.
+stop. Probe validity qualifies that eligibility before it combines with the
+resident invalidation hold.
 
 The CPU cut stops local load launches at invalidation-probe capture. No read merging
 crosses the cut. The capture address marks matching response owners before
