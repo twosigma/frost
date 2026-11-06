@@ -176,7 +176,8 @@ module coherence_home_completions #(
   logic [BufferBits-1:0] buffer_index_q[SLOTS];
   logic [WayBits-1:0] way_q[SLOTS];
   logic [Buffers-1:0] buffer_live_q, buffer_live_next;
-  logic [ADDR_WIDTH+274:0] buffer_q[Buffers];
+  // Registers, not a memory: Yosys's wide-port merge fails at this depth.
+  (* mem2reg *) logic [ADDR_WIDTH+274:0] buffer_q[Buffers];
   logic free_slot, duplicate, free_buffer, incoming_prefetch;
   logic [  SlotBits-1:0] free_slot_index;
   logic [ResultBits-1:0] free_buffer_index;

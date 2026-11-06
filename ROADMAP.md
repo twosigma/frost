@@ -396,14 +396,13 @@ and targeted microbenchmarks give these items:
    through its two highest-numbered load endpoints. More cached loads in
    flight or one read slot per line for loads to the same line would let one
    stream keep more lines in flight. Dependent loads are also slower than
-   through the previous hierarchy: in simulation an L2 hit takes 45 cycles
-   against 23, a DRAM miss 15 cycles more, and a page-table walk 27 cycles
-   more. The L1D installs a line before it answers the load, and registered
-   stages and arbitration add the rest. The home grants the load or store
-   that misses first from the arriving line; requests that join its fill,
-   and instruction, page-table and DMA reads, repeat the tag lookup and data
-   read after the line installs. Answering a load from its grant and reading
-   a victim's data only when it is dirty would recover part of the rest.
+   through the previous hierarchy: in simulation an L2 hit takes 36 cycles
+   against 23, a DRAM miss about 6 cycles more, and a page-table walk 27
+   cycles more. The L1D answers a load from its grant, and registered stages
+   and arbitration add the rest. The home grants the load or store that misses
+   first from the arriving line; requests that join its fill, and instruction,
+   page-table and DMA reads, repeat the tag lookup and data read after the
+   line installs.
 
 ## Core area
 

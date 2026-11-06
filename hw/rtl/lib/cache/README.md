@@ -240,6 +240,15 @@ the controller completes that update before issuing another lookup.
 The L1D asserts this pairing for each grant installation.
 Response data is meaningful only with `o_resp_data_valid`. A tag-only or
 skipped read keeps the prior response data without reading the data array.
+A lookup marked `i_req_data_if_hit` needs data only on a hit, and one
+marked `i_req_data_if_victim_modified` only when it misses and its selected
+victim is Modified; a maintenance visit always waits for its data.
+Otherwise such a lookup replies without data in the first data-read cycle,
+from the registered tag result, and its data read goes unused; a reply held
+past that cycle keeps its contents until consumed. The L1D marks CPU read
+lookups with the first flag, so a read miss is known after the tag read,
+and grant installation lookups with the second, so only an installation
+that freezes a Modified victim waits for the data read.
 The L1D uses 32-byte sectors; the L2 supports 32-byte or 64-byte lines.
 
 Reset clears every set's tags, coherence states and replacement bits in both
@@ -326,6 +335,13 @@ Load, LR and AMO retry credits from that indication, endpoint ownership,
 writeback occupancy and drain state. LR and AMO retries read their credits from
 a flop per read slot, and their lookups recheck the credit before acquiring. Frozen slots remain occupied through
 WA. A store error stops the hart without read completion or error disposal.
+
+A demand grant on a load endpoint answers its load from the captured grant in
+the grant's first lookup cycle, before installation, so the answered read slot
+can hold a later read while the line installs; that read becomes selectable
+when the installation completes. Endpoint 0 answers its reads after
+installation. A load endpoint's Done, and the loads waiting on it, follow
+installation.
 
 With stream look-ahead enabled, a successful demand installation
 with a reader waiting on that endpoint gives an eligible ordinary read one
