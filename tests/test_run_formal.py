@@ -51,6 +51,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_stream_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_multi_bmc"): 3600,
+    ("coherence_store_boundary", "bmc_four"): 7200,
+    ("coherence_store_boundary", "cover_four"): 7200,
 }
 
 
@@ -2480,6 +2482,7 @@ def test_fatal_frame_validation(
         ("coherent_hart_cache", "coh_hart_maint_prove", 7200),
         ("coherence_l1d", "coh_l1d_stream_bmc", 10800),
         ("coherence_l1d", "coh_l1d_bmc", 3600),
+        ("coherence_store_boundary", "bmc_four", 7200),
         ("coherence_l1d", "coh_l1d_multi_bmc", 3600),
         ("csr_file", "cover", 2400),
         ("reorder_buffer", "cover", 2400),
