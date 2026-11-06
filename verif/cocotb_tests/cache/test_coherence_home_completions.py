@@ -524,3 +524,70 @@ async def prefetches_take_no_place_in_sector_order_or_put_waits(dut: Any) -> Non
     await b.grant(demand, 0x1234)
     await b.complete(demand)
     await b.release(demand)
+
+
+@cocotb.test()
+async def forwarded_primary_takes_the_forward_buffer_beside_engine_results(
+    dut: Any,
+) -> None:
+    """Give a parked primary its pin, result and the forward buffer at once.
+
+    The forward buffer holds one forwarded grant from its forward until its
+    G; engine results keep their own buffers, and an engine result accepted
+    on the forward's edge goes to its buffer.
+    """
+    b = Completions(dut)
+    await b.reset()
+    # The forward buffer follows the engines' buffers.
+    forward = len(dut.buffer_live_q) - 1
+    address = 0x80000000
+    # The primary misses: dispatched, then retried with a park.
+    await b.admit(0, address, op=1)
+    primary = await b.dispatch()
+    await b.set(i_retry_valid=1, i_retry_tid=primary[1], i_retry_park=1)
+    await b.tick()
+    await b.set(i_retry_valid=0, i_retry_park=0)
+    assert b.get("parked_q") >> primary[1] & 1
+    assert not b.get("buffer_live_q") >> forward & 1
+    # Another request takes an engine result on the forward's edge.
+    await b.admit(2, address + 64)
+    other = await b.dispatch()
+    b.images[forward] = 0xF0F0
+    b.images[b.buffers[other[1]]] = 0x0F0F
+    packet = pack(
+        (3, 0), (9, other[0]), (6, other[1]), (b.p, other[2]), (256, 0x0F0F), (1, 0)
+    )
+    await b.set(i_result_valid=1, i_result=packet)
+    assert b.get("o_forward_ready") and b.get("o_result_ready")
+    await b.set(i_forward_valid=1, i_forward_slots=1 << primary[1], i_forward_way=1)
+    assert b.get("accept_forward") and b.get("accept_result")
+    await b.tick()
+    await b.set(i_forward_valid=0, i_forward_slots=0, i_result_valid=0)
+    assert not b.get("o_forward_ready")
+    assert not b.get("parked_q") >> primary[1] & 1
+    assert b.get("pin_valid_q") >> primary[1] & 1
+    await b.set(i_query_addr=address)
+    await b.tick()
+    assert b.get("o_exclude") == 2
+    # Both grants come out, each with its own data; GetM forwards as GrantM.
+    grants = {}
+    for _ in range(2):
+        await b.wait("o_g_valid")
+        fields = unpack(b.get("o_g"), (3, 9, 6, b.p, 256, 1))
+        grants[fields[1]] = fields
+        await b.set(i_g_ready=1)
+        await b.tick()
+        await b.set(i_g_ready=0)
+    assert grants[primary[0]] == (2, primary[0], primary[1], address, 0xF0F0, 0)
+    assert grants[other[0]] == (0, other[0], other[1], address + 64, 0x0F0F, 0)
+    assert b.get("o_forward_ready")
+    # The GetM's Done reports its write.
+    q, tid, address = primary
+    await b.set(i_c_valid=1, i_c=pack((9, q), (6, tid), (b.p, address), (2, 0), (1, 1)))
+    await b.wait("o_c_ready")
+    await b.tick()
+    await b.set(i_c_valid=0)
+    await b.release(primary)
+    await b.complete(other)
+    await b.release(other)
+    assert b.get("o_exclude") == 0 and b.get("buffer_live_q") == 0

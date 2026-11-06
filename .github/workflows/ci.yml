@@ -1221,14 +1221,20 @@ jobs:
               (coherent_local_atomic and sc_bmc)
             timeout_minutes: 120
           # The coherence home, prefetch requester at every request cap,
-          # endpoints, bridges, coherent CPU interfaces and hart covers.
+          # endpoints, coherent CPU interfaces and hart covers.
           - shard: Coherence
             pytest_filter: >-
-              ((axi_coherent_bridge or coherence_ or coherent_) and not
-              (coherence_store_boundary or coherent_local_atomic or coh_hart_maint_prove or
-              coh_l1d_stream_bmc or (coherence_l1d and coh_l1d_local and prove))) or
+              ((coherence_ or coherent_) and not
+              (axi_coherent_bridge or coherence_l1d or coherence_store_boundary or
+              coherent_local_atomic or coh_hart_maint_prove)) or
               (coherence_store_boundary and bmc_amo_same_owner) or
               (coherent_local_atomic and amo_cover)
+            timeout_minutes: 240
+          # The L1D's control and data tasks and the AXI bridges.
+          - shard: Coherence L1D and bridges
+            pytest_filter: >-
+              axi_coherent_bridge or
+              (coherence_l1d and not (coh_l1d_stream_bmc or (coh_l1d_local and prove)))
             timeout_minutes: 240
           # The hart maintenance composition proof models buffered store
           # hits and can take over an hour, and the eight-endpoint L1D stream

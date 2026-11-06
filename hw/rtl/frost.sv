@@ -76,7 +76,7 @@ module frost #(
     parameter int unsigned SIM_FAST_MAINT = 0,
     // Behavioral main-memory model knobs (simulation only).
     parameter int unsigned DDR_MODEL_BYTES = 64 * 1024 * 1024,
-    parameter int unsigned DDR_MODEL_LATENCY = 30,
+    parameter int unsigned DDR_MODEL_LATENCY = 80,
     // Per-transaction model latency jitter; 0 disables it (DDR_MODEL_REORDER
     // can still vary the latency).
     parameter int unsigned DDR_MODEL_LATENCY_JITTER = 0,
