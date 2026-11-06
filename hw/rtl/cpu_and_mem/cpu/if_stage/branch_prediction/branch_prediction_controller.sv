@@ -192,6 +192,7 @@ module branch_prediction_controller #(
     // Separate staged and live redirect terms, for timing. The live term
     // omits the alias check; pc_controller ANDs it back in at selection.
     output logic                       o_slot2_staged_prediction_used_for_pc,
+    output logic                       o_slot2_staged_prediction_used_for_capture,
     output logic                       o_slot1_aliases_slot2_candidate,
     output logic                       o_slot2_live_target_used_for_pc_cofactor,
     output logic                       o_slot2_predicted_taken,
@@ -981,6 +982,12 @@ module branch_prediction_controller #(
       slot2_prediction_permission && slot2_live_target_candidate_for_pc_cofactor;
 
   assign o_slot2_staged_prediction_used_for_pc = slot2_staged_prediction_used_for_pc;
+  // The replay capture reads its own copy, which leaves the select one reader
+  // and one gate before its wide fanout.
+  (* keep = "true", dont_touch = "true" *) logic slot2_staged_prediction_used_for_capture;
+  assign slot2_staged_prediction_used_for_capture =
+      slot2_prediction_permission && slot2_staged_prediction_candidate_for_pc;
+  assign o_slot2_staged_prediction_used_for_capture = slot2_staged_prediction_used_for_capture;
   assign o_slot2_live_target_used_for_pc_cofactor = slot2_live_target_used_for_pc_cofactor;
   assign o_slot2_staged_predicted_target = slot2_staged_typed_target_for_pc;
   assign o_slot2_live_predicted_target = slot1_typed_target;
@@ -1047,11 +1054,14 @@ module branch_prediction_controller #(
               slot2_live_fallback_used_for_pc,
               slot2_live_fallback_used_for_pc_cofactor,
               slot2_staged_prediction_used_for_pc,
+              slot2_staged_prediction_used_for_capture,
               slot2_live_target_used_for_pc,
               slot2_live_target_used_for_pc_cofactor,
               o_slot2_prediction_used_for_pc
             }
         )) begin
+      p_slot2_staged_capture_copy_exact :
+      assert (slot2_staged_prediction_used_for_capture == slot2_staged_prediction_used_for_pc);
       p_slot2_live_fallback_pc_cofactor_exact :
       assert (slot2_live_fallback_used_for_pc ==
               (slot1_aliases_slot2_candidate &&

@@ -275,6 +275,7 @@ module if_stage #(
   logic slot2_prediction_used_for_pc_live;
   logic slot2_prediction_used_for_fetch_mux_live;
   logic slot2_staged_prediction_used_for_pc_live;
+  logic slot2_staged_prediction_used_for_capture;
   logic [XLEN-1:0] slot2_predicted_target_for_pc_live;
   logic [XLEN-1:0] slot2_staged_predicted_target_live;
   riscv_pkg::pc_pending_rel_t slot2_staged_target_rel_pending_live;
@@ -815,6 +816,7 @@ module if_stage #(
       .o_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc_live),
       .o_slot2_prediction_used_for_fetch_mux(slot2_prediction_used_for_fetch_mux_live),
       .o_slot2_staged_prediction_used_for_pc(slot2_staged_prediction_used_for_pc_live),
+      .o_slot2_staged_prediction_used_for_capture(slot2_staged_prediction_used_for_capture),
       .o_slot1_aliases_slot2_candidate(slot1_aliases_slot2_candidate),
       .o_slot2_live_target_used_for_pc_cofactor(slot2_live_target_used_for_pc_cofactor),
       .o_slot2_predicted_taken(slot2_predicted_taken),
@@ -2839,7 +2841,7 @@ module if_stage #(
       .i_disable(i_disable_branch_prediction || any_holdoff_safe ||
                  prediction_holdoff || pending_prediction_holdoff_wcs0 ||
                  window_cannot_serve_pc_reg),
-      .i_candidate(slot2_staged_prediction_used_for_pc_live),
+      .i_candidate(slot2_staged_prediction_used_for_capture),
       .i_payload({
         slot2_predicted_target,
         slot2_predicted_is_call,
