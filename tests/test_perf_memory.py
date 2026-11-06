@@ -72,7 +72,11 @@ def test_channel_queues_backpressure_independently() -> None:
     controller = model.InterleavedDdrController(
         loop,
         model.DdrConfig(
-            controller="interleaved", channels=2, interleave_bytes=128, num_slots=1
+            controller="interleaved",
+            channels=2,
+            interleave_bytes=128,
+            num_slots=1,
+            latency_cycles=30,
         ),
     )
     results: list[tuple[int, int, bool]] = []

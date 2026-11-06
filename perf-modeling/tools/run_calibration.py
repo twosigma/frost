@@ -26,6 +26,7 @@ With --refresh as well, a passing check rewrites the baseline's figures.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -73,11 +74,24 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _model_run(workload: str, seed: int) -> dict[str, Any]:
-    """Run the model's built-in workload with the baseline's seed."""
+def _model_run(baseline: dict[str, Any]) -> dict[str, Any]:
+    """Run the model's built-in workload with the baseline's seed.
+
+    The baseline's ``model_ddr_latency_cycles``, if it has one, sets the
+    model's DDR latency; the BRAM-tier capture it compares with does not
+    depend on the simulation's DDR latency.
+    """
     import frost_perf_model
 
-    return frost_perf_model.run_workload(frost_perf_model.ModelConfig(), workload, seed)
+    config = frost_perf_model.ModelConfig()
+    latency = baseline.get("model_ddr_latency_cycles")
+    if latency is not None:
+        config = dataclasses.replace(
+            config, ddr=dataclasses.replace(config.ddr, latency_cycles=latency)
+        )
+    return frost_perf_model.run_workload(
+        config, baseline["model_workload"], baseline["model_seed"]
+    )
 
 
 def _identity_failures(manifest: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
@@ -144,7 +158,7 @@ def main() -> int:
     if args.model_run:
         model = _read_json(args.model_run)
     elif baseline is not None:
-        model = _model_run(baseline["model_workload"], baseline["model_seed"])
+        model = _model_run(baseline)
     else:
         model = None
     record = compare_summary(summarize(events), model)

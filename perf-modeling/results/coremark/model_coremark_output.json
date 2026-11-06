@@ -18,7 +18,7 @@
       "id_bits": 5,
       "interleave_bytes": 64,
       "jitter_seed": 44257,
-      "latency_cycles": 30,
+      "latency_cycles": 80,
       "latency_jitter": 0,
       "line_bytes": 64,
       "num_slots": 8,
@@ -78,7 +78,7 @@
   },
   "cpu_top": {
     "axi_master": {
-      "inflight_cycles": 3090,
+      "inflight_cycles": 8240,
       "max_inflight": 4,
       "read_beats": 103,
       "responses": 103
@@ -89,13 +89,13 @@
         "writeback_slots": 0
       },
       "stats": {
-        "bimodal_untouched_allocations": 142,
-        "downstream_backpressure": 341,
+        "bimodal_untouched_allocations": 139,
+        "downstream_backpressure": 930,
         "fills_issued": 144,
         "hits": 403,
-        "input_backpressure": 46,
+        "input_backpressure": 52,
         "misses": 144,
-        "mru_allocations": 2
+        "mru_allocations": 5
       }
     },
     "l1i": {
@@ -112,18 +112,18 @@
       },
       "stats": {
         "fills_issued": 103,
-        "hits": 57,
-        "input_backpressure": 23,
+        "hits": 48,
+        "input_backpressure": 17,
         "misses": 103,
         "mru_allocations": 103,
-        "mshr_backpressure": 333,
-        "mshr_merges": 14,
+        "mshr_backpressure": 921,
+        "mshr_merges": 23,
         "useful_prefetches": 16
       }
     },
     "line_size_adapter": {
-      "backpressure": 356,
-      "requests": 530,
+      "backpressure": 938,
+      "requests": 1112,
       "sector_0": 103,
       "sector_1": 71
     },
@@ -132,41 +132,41 @@
         "int_rs": 13,
         "lq": 8,
         "mem_rs": 8,
-        "rob": 27,
+        "rob": 24,
         "sq": 1
       },
       "stats": {
         "branch_mispredicts": 1,
-        "cdb_contention": 1026,
+        "cdb_contention": 1025,
         "completed": 3128,
-        "dispatch_stall_lq": 988,
-        "dispatch_stall_mem_rs": 560,
+        "dispatch_stall_lq": 1885,
+        "dispatch_stall_mem_rs": 1228,
         "dispatched": 3128,
-        "early_load_tokens": 530,
+        "early_load_tokens": 531,
         "frontend_recovery_stall": 2,
         "l0_fills": 448,
         "l0_hits": 768,
-        "l0_misses": 494,
+        "l0_misses": 500,
         "l0_store_updates": 48,
-        "load_cache_backpressure": 46,
-        "load_store_disambiguation_stall": 1078,
+        "load_cache_backpressure": 52,
+        "load_store_disambiguation_stall": 2530,
         "loads_issued": 1216,
-        "retire_head_not_ready": 1241,
+        "retire_head_not_ready": 2810,
         "retired": 3128,
         "stores_started_at_commit": 99
       }
     },
     "prefetcher": {
       "completed": 30,
-      "dropped_backpressure": 15,
+      "dropped_backpressure": 8,
       "issued": 30
     }
   },
-  "cycles": 3067,
-  "ipc": 1.0198891424845125,
+  "cycles": 4632,
+  "ipc": 0.6753022452504318,
   "memory": {
     "axi": {
-      "inflight_cycles": 3090,
+      "inflight_cycles": 8240,
       "max_inflight": 4,
       "read_beats": 103,
       "responses": 103
@@ -179,7 +179,7 @@
         "id_bits": 5,
         "interleave_bytes": 64,
         "jitter_seed": 44257,
-        "latency_cycles": 30,
+        "latency_cycles": 80,
         "latency_jitter": 0,
         "line_bytes": 64,
         "num_slots": 8,
@@ -202,13 +202,13 @@
         "writeback_slots": 0
       },
       "stats": {
-        "bimodal_untouched_allocations": 142,
-        "downstream_backpressure": 341,
+        "bimodal_untouched_allocations": 139,
+        "downstream_backpressure": 930,
         "fills_issued": 144,
         "hits": 403,
-        "input_backpressure": 46,
+        "input_backpressure": 52,
         "misses": 144,
-        "mru_allocations": 2
+        "mru_allocations": 5
       }
     },
     "l1i": {
@@ -225,24 +225,24 @@
       },
       "stats": {
         "fills_issued": 103,
-        "hits": 57,
-        "input_backpressure": 23,
+        "hits": 48,
+        "input_backpressure": 17,
         "misses": 103,
         "mru_allocations": 103,
-        "mshr_backpressure": 333,
-        "mshr_merges": 14,
+        "mshr_backpressure": 921,
+        "mshr_merges": 23,
         "useful_prefetches": 16
       }
     },
     "line_size_adapter": {
-      "backpressure": 356,
-      "requests": 530,
+      "backpressure": 938,
+      "requests": 1112,
       "sector_0": 103,
       "sector_1": 71
     },
     "prefetcher": {
       "completed": 30,
-      "dropped_backpressure": 15,
+      "dropped_backpressure": 8,
       "issued": 30
     },
     "soc": {
@@ -267,7 +267,7 @@
           "id_bits": 5,
           "interleave_bytes": 64,
           "jitter_seed": 44257,
-          "latency_cycles": 30,
+          "latency_cycles": 80,
           "latency_jitter": 0,
           "line_bytes": 64,
           "num_slots": 8,
@@ -291,40 +291,40 @@
     }
   },
   "micro_ops": 3128,
-  "micro_ops_per_second": 76616,
+  "micro_ops_per_second": 86346,
   "model_version": "1.0",
   "pipeline": {
     "max_occupancy": {
       "int_rs": 13,
       "lq": 8,
       "mem_rs": 8,
-      "rob": 27,
+      "rob": 24,
       "sq": 1
     },
     "stats": {
       "branch_mispredicts": 1,
-      "cdb_contention": 1026,
+      "cdb_contention": 1025,
       "completed": 3128,
-      "dispatch_stall_lq": 988,
-      "dispatch_stall_mem_rs": 560,
+      "dispatch_stall_lq": 1885,
+      "dispatch_stall_mem_rs": 1228,
       "dispatched": 3128,
-      "early_load_tokens": 530,
+      "early_load_tokens": 531,
       "frontend_recovery_stall": 2,
       "l0_fills": 448,
       "l0_hits": 768,
-      "l0_misses": 494,
+      "l0_misses": 500,
       "l0_store_updates": 48,
-      "load_cache_backpressure": 46,
-      "load_store_disambiguation_stall": 1078,
+      "load_cache_backpressure": 52,
+      "load_store_disambiguation_stall": 2530,
       "loads_issued": 1216,
-      "retire_head_not_ready": 1241,
+      "retire_head_not_ready": 2810,
       "retired": 3128,
       "stores_started_at_commit": 99
     }
   },
   "retired": 3128,
   "seed": 11,
-  "simulated_cycles_per_second": 75122,
+  "simulated_cycles_per_second": 127864,
   "soc_top": {
     "configuration": {
       "bram_base": 0,
@@ -347,7 +347,7 @@
         "id_bits": 5,
         "interleave_bytes": 64,
         "jitter_seed": 44257,
-        "latency_cycles": 30,
+        "latency_cycles": 80,
         "latency_jitter": 0,
         "line_bytes": 64,
         "num_slots": 8,
@@ -369,6 +369,6 @@
       "ddr_reads_forwarded": 103
     }
   },
-  "wall_time_seconds": 0.040827,
+  "wall_time_seconds": 0.036226,
   "workload": "coremark"
 }

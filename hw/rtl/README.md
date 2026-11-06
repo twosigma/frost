@@ -453,7 +453,7 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `L2_PREFETCH` | `1` | 1 builds the coherence home's prefetch agent (`coherence_prefetch_agent`): Prefetch requests for the lines ahead of the hart's ascending data and instruction streams |
 | `frost.sv` | `L2_PREFETCH_DISTANCE` / `L2_PREFETCH_INFLIGHT` | `8` / `3` | Lines read ahead of a stream, within its 4 KiB page, and the data requests in flight, 1 to 3, beside one instruction request |
 | `frost.sv` | `USE_BEHAVIORAL_DDR` | `1` | 1 ends the tier in the simulation DDR model; 0 exports the bridge's AXI master on `o_ddr_axi_*` |
-| `frost.sv` | `DDR_MODEL_BYTES` / `DDR_MODEL_LATENCY` | `64 MiB` / `30` | DDR model size and access latency in cycles (simulation) |
+| `frost.sv` | `DDR_MODEL_BYTES` / `DDR_MODEL_LATENCY` | `64 MiB` / `80` | DDR model size and access latency in cycles (simulation) |
 | `frost.sv` | `DDR_MODEL_LATENCY_JITTER` / `DDR_MODEL_REORDER` | `0` / `0` | DDR model per-transaction latency jitter, and out-of-order completion across ids (simulation); `FROST_DDR_MODEL_SEED` draws these and the latency for a test run ([tests/README.md](../../tests/README.md#environment-and-output)) |
 | `frost.sv` | `SIM_FAST_MAINT` | `0` | Simulation only: 1 clears coherent-array tags, states and replacement bits in one cycle and accelerates L1I maintenance; 0 keeps the per-set reset sweep |
 | `frost.sv` | `FETCH_VALID_FUZZ` | `0` | Simulation only: 1 delays local instruction AXI responses to exercise variable fetch latency |

@@ -4,6 +4,7 @@
   "memory_tier": "bram",
   "model_workload": "coremark",
   "model_seed": 11,
+  "model_ddr_latency_cycles": 30,
   "required_events": [
     "dispatch",
     "retire",
