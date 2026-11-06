@@ -1221,8 +1221,13 @@ jobs:
             pytest_filter: >-
               ((coherence_ or coherent_) and not
               (axi_coherent_bridge or coherence_l1d or coherence_store_boundary or
-              coherent_local_atomic or coh_hart_maint_prove)) or
+              coherence_store_home or coherent_local_atomic or coh_hart_maint_prove)) or
               (coherent_local_atomic and amo_cover)
+            timeout_minutes: 240
+          # The home's ordered store tasks, which alone ran for about two
+          # hours in the Coherence job and pushed it past its limit.
+          - shard: Coherence store home
+            pytest_filter: coherence_store_home
             timeout_minutes: 240
           # The L1D's control and data tasks and the AXI bridges.
           - shard: Coherence L1D and bridges
