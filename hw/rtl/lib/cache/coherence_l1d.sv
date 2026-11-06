@@ -1350,6 +1350,8 @@ module coherence_l1d #(
       .i_req_way(maint_way_q),
       .i_req_skip_data_on_hit(array_skip_data),
       .i_req_data_if_modified(probe_launch || operation_q == ProbeOp),
+      // A grant needs the replaced line's data only to freeze a Modified victim.
+      .i_req_data_if_victim_modified(!probe_launch && operation_q == GrantOp),
       // A resident hint is not a CPU access and keeps the line's age.
       .i_req_no_touch(StreamEnabled && !probe_launch && operation_q == PrefetchOp),
       .o_resp_valid(array_valid),
@@ -2066,8 +2068,12 @@ module coherence_l1d #(
       if (array_skip_data) assert (!probe_launch && operation_q == StoreOp);
       if (active && phase_q == LookupWait && array_valid && operation_q == ProbeOp &&
           array_hit && array_state == coherence_pkg::Modified) assert (array_data_valid);
+      if (active && phase_q == LookupWait && array_valid && operation_q == GrantOp &&
+          !array_hit && array_state == coherence_pkg::Modified)
+        p_grant_victim_data : assert (array_data_valid);
       if (active && phase_q == LookupWait && array_valid && !array_data_valid) begin
         p_skipped_array_data_unused : assert ((operation_q == StoreOp && array_hit) ||
+            (operation_q == GrantOp && (array_hit || array_state != coherence_pkg::Modified)) ||
             (operation_q == ProbeOp && (!array_hit || array_state != coherence_pkg::Modified)));
       end
       if (store_pop) assert (pending_q && !probe_valid_q);

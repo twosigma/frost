@@ -235,6 +235,12 @@ the controller completes that update before issuing another lookup.
 The L1D asserts this pairing for each grant installation.
 Response data is meaningful only with `o_resp_data_valid`. A tag-only or
 skipped read keeps the prior response data without reading the data array.
+A lookup marked `i_req_data_if_victim_modified` needs data only when it
+misses and its selected victim is Modified. Otherwise it replies without
+data in the first data-read cycle, from the registered tag result, and its
+data read goes unused; a reply held past that cycle keeps its contents
+until consumed. The L1D marks grant installation lookups this way, so only
+an installation that freezes a Modified victim waits for the data read.
 The L1D uses 32-byte sectors; the L2 supports 32-byte or 64-byte lines.
 
 Reset clears every set's tags, coherence states and replacement bits in both
