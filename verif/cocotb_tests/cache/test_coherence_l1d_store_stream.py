@@ -733,10 +733,16 @@ async def completed_load_grant_supplies_the_read_turn(dut: Any) -> None:
         grant_selected = grant_completed = False
         next_store = last_store = hit_completed = froze = False
         for _ in range(200):
+            # The grant answers its load in the first Lookup cycle, which
+            # discharges the read turn before the victim freezes.
             if b.get("phase_q") == 4 and b.get("operation_q") == 2:
-                assert b.get("read_owed_q")
+                assert grant_completed
                 froze = True
-            if b.get("phase_q") == 1 and b.get("operation_q") == 2:
+            if (
+                b.get("phase_q") == 1
+                and b.get("operation_q") == 2
+                and not grant_selected
+            ):
                 assert b.get("read_owed_q") and b.get("rd_candidate")
                 assert not b.get("selected_grant_store")
                 grant_selected = True
