@@ -24,6 +24,7 @@ module coherence_store_boundary_formal #(
     parameter bit LOCAL_PROGRESS = 1'b0,
     parameter bit COVER_LOCAL = 1'b0,
     parameter bit COVER_AMO_HOME = 1'b0,
+    parameter bit FOUR_STORES = 1'b0,
     parameter int unsigned MODE = 0,
     parameter int unsigned SECTOR_CASE = 2
 ) (
@@ -31,7 +32,8 @@ module coherence_store_boundary_formal #(
 );
   localparam int unsigned ReorderBufferTagWidth = riscv_pkg::ReorderBufferTagWidth;
   localparam int unsigned AddrWidth = 32, TagBits = ReorderBufferTagWidth;
-  localparam int unsigned Misses = LOCAL_PROGRESS ? 3 : 1, DEPTH = 4, XLEN = riscv_pkg::XLEN;
+  localparam int unsigned Misses = LOCAL_PROGRESS || FOUR_STORES ? 3 : 1, DEPTH = 4,
+      XLEN = riscv_pkg::XLEN;
   localparam int unsigned LqDepth = 2;
   localparam int unsigned RsDepth = riscv_pkg::MemRsDepth;
   `FROST_COHERENCE_TYPES(AddrWidth)
@@ -49,12 +51,12 @@ module coherence_store_boundary_formal #(
   end else begin : gen_sector_constant
     assign different_sector = 1'(SECTOR_CASE);
   end
-  localparam logic [1:0] Mode = 2'(MODE);
+  localparam logic [2:0] Mode = 3'(MODE);
   localparam bit LocalLR = LOCAL_PROGRESS && MODE == 2;
   localparam logic [ReorderBufferTagWidth-1:0] AtomicTag = LocalLR ? 3 : 2;
   localparam logic [ReorderBufferTagWidth-1:0] YoungerTag = AtomicTag + 1'b1;
   // Atomic and old-response programs issue at the first dispatch opportunity.
-  wire offer_load = Mode == 0 ? offer_normal_load : 1'b1;
+  wire offer_load = (Mode == 0 || Mode == 4) ? offer_normal_load : 1'b1;
   (* anyconst *) logic [7:0] first_byte, second_byte;
   // The second older store may share the first store's sector, leaving a
   // different-sector AMO target absent from the cache.
@@ -63,10 +65,10 @@ module coherence_store_boundary_formal #(
   logic atomic_complete_q, sc_written_q, guard_retired;
   wire retire_atomic = step_q == 6 && (Mode == 1 || Mode == 2) && atomic_complete_q &&
       advance && (!LOCAL_PROGRESS || !commit_hold);
-  wire commit_store =
+  wire commit_store = FOUR_STORES ? (step_q >= 6 && step_q <= 9) :
       (step_q == 4 || step_q == 9 || (retire_atomic && Mode == 2)) && commit_advance;
-  wire [ReorderBufferTagWidth-1:0] commit_tag =
-      step_q == 4 ? 0 : step_q == 9 ? YoungerTag : AtomicTag;
+  wire [ReorderBufferTagWidth-1:0] commit_tag = FOUR_STORES ?
+      ReorderBufferTagWidth'(step_q - 6) : (step_q == 4 ? 0 : step_q == 9 ? YoungerTag : AtomicTag);
   logic addressed_q, load_update_q, load_second_update_q;
   logic lr_addressed_q, lr_complete_q;
   logic old_request_q, old_complete_q, fresh_addressed_q;
@@ -103,13 +105,15 @@ module coherence_store_boundary_formal #(
       (step_q != 9 || !retirement_hold);
   wire pre_issue = (step_q >= 2 && offer_load &&
       (LocalLR ? !lr_addressed_q : (!addressed_q && Mode != 2))) || fresh_issue;
-  wire [ReorderBufferTagWidth-1:0] pre_issue_tag = fresh_issue ? 3 : 2;
+  wire [ReorderBufferTagWidth-1:0] pre_issue_tag = FOUR_STORES ? 4 : fresh_issue ? 3 : 2;
   wire [RsDepth-1:0] pre_issue_ready = RsDepth'(pre_issue);
   wire [RsDepth*ReorderBufferTagWidth-1:0] pre_issue_entry_tags =
       (RsDepth*ReorderBufferTagWidth)'(pre_issue_tag);
+  (* anyconst *) logic [1:0] watched_store;
   wire [63:0] address0 = 64'h80000000;
   wire [63:0] address1 = address0 + (different_sector ? 64'd32 : 64'd0);
-  wire [ReorderBufferTagWidth-1:0] head =
+  wire [ReorderBufferTagWidth-1:0] head = FOUR_STORES ?
+      (step_q < 6 ? 7'd0 : step_q <= 9 ? ReorderBufferTagWidth'(step_q-6) : 7'd4) :
       step_q < 5 ? 7'd0 : step_q == 5 ? 7'd1 :
       step_q == 6 ? ((LocalLR && !lr_complete_q) ? 7'd2 : AtomicTag) : YoungerTag;
   riscv_pkg::sq_alloc_req_t alloc0, alloc1;
@@ -153,6 +157,29 @@ module coherence_store_boundary_formal #(
     sc_issue.rob_tag = AtomicTag;
     sc_issue.op = riscv_pkg::SC_D;
     sc_issue.src1_value = address1;
+    if (Mode == 4) begin
+      alloc0.valid = step_q == 1 || step_q == 2;
+      alloc0.rob_tag = step_q == 2 ? 3 : 0;
+      alloc0.is_sc = 0;
+      store_data.valid = step_q >= 2 && step_q <= 4;
+      store_data.rob_tag = step_q == 2 ? 0 : step_q == 3 ? 1 : 3;
+      store_data.data = {8{step_q == 3 ? second_byte : first_byte}};
+    end
+    if (FOUR_STORES) begin
+      alloc0.valid = step_q == 1 || step_q == 2;
+      alloc0.rob_tag = step_q == 1 ? 0 : 2;
+      alloc0.is_sc = 0;
+      alloc0.address = address0 + (step_q == 1 ? 0 : 64);
+      alloc1 = alloc0;
+      alloc1.rob_tag = alloc0.rob_tag + 1'b1;
+      alloc1.address = alloc0.address + 32;
+      store_data.valid = step_q >= 2 && step_q <= 5;
+      store_data.rob_tag = ReorderBufferTagWidth'(step_q - 2);
+      store_data.data = {8{step_q == 2 ? first_byte : second_byte}};
+      load_alloc.rob_tag = 4;
+      load_addr.rob_tag = 4;
+      load_addr.address = address0 + 64'(watched_store) * 32;
+    end
   end
   always_ff @(posedge i_clk) begin
     if (Mode == 3) assume (different_sector);
@@ -170,10 +197,13 @@ module coherence_store_boundary_formal #(
       fresh_stage_q <= 0;
       fresh_addressed_q <= 0;
     end else begin
-      if (commit_advance && (step_q < 6 || (step_q > 6 && step_q < 10) || retire_atomic))
+      if (commit_advance && (FOUR_STORES ? step_q < 12 :
+          (step_q < 6 || (step_q > 6 && step_q < 10) || retire_atomic ||
+           (Mode == 4 && step_q == 6 && atomic_complete_q))))
         step_q <= step_q + 1'b1;
       if (LOCAL_PROGRESS ? (dependency_result.valid && dependency_result.tag == AtomicTag) :
-          ((Mode == 1 && lq_fu_complete.valid) || (Mode == 2 && sc_sc_fu_complete.valid)))
+          (((Mode == 1 || Mode == 4) && lq_fu_complete.valid) ||
+           (Mode == 2 && sc_sc_fu_complete.valid)))
         atomic_complete_q <= 1;
       if (l1_sc_write_done) sc_written_q <= 1;
       load_update_q <= pre_issue;
@@ -188,7 +218,7 @@ module coherence_store_boundary_formal #(
       if ((pre_issue && !LocalLR) || sc_issue.valid) addressed_q <= 1;
     end
   end
-  if (COVER_MODE) begin : gen_cover_schedule
+  if (COVER_MODE && !FOUR_STORES) begin : gen_cover_schedule
     logic [6:0] cycle_q = 0;
     logic full_seen_q = 0, tail_drain_seen_q = 0, selected_seen_q = 0;
     logic retired_seen_q = 0, written_seen_q = 0, released_seen_q = 0;
@@ -204,9 +234,10 @@ module coherence_store_boundary_formal #(
           cycle_q < 105));
       assume (offer_load == (Mode != 0 || cycle_q == 30));
       if (!rst) begin
-        full_seen_q <= full_seen_q || (l1_block_valid == 3 && acknowledged_q == 2);
-        tail_drain_seen_q <= tail_drain_seen_q ||
-            (observe_drain && accepted_q == 2 && l1_block_valid == 1);
+        full_seen_q <= full_seen_q || ($countones(l1_block_valid) == 2 && acknowledged_q == 2);
+        tail_drain_seen_q <= tail_drain_seen_q || (observe_drain && accepted_q == 2 && $countones(
+            l1_block_valid
+        ) == 1);
         selected_seen_q <= selected_seen_q || (l1_atomic_live && accepted_q == 2);
         local_seen_q <= local_seen_q || local_owner;
         home_write_seen_q <= home_write_seen_q || home_atomic_write_lookup;
@@ -235,6 +266,26 @@ module coherence_store_boundary_formal #(
       end
     end
   end
+  if (FOUR_STORES && COVER_MODE) begin : gen_four_cover
+    logic [7:0] cycle_q = 0;
+    logic full_q = 0, overlap_q = 0, reversed_q = 0;
+    always_ff @(posedge i_clk) begin
+      if (cycle_q != 255) cycle_q <= cycle_q + 1'b1;
+      assume (permit_d && permit_c && permit_u && observe_drain);
+      assume (permit_g == (cycle_q >= 40));
+      assume (offer_load == (cycle_q == 32));
+      assume (first_byte == 8'h11 && second_byte == 8'h22);
+      if (!rst) begin
+        full_q <= full_q || ($countones(l1_block_valid) == 4 && sq_empty && acknowledged_q == 4);
+        overlap_q <= overlap_q || $countones(home_live) == 2;
+        reversed_q <= reversed_q || reverse_store_grant;
+        p_four_handoff : cover (full_q && overlap_q && reversed_q && lq_fu_complete.valid);
+        p_four_drain :
+        cover (full_q && overlap_q && reversed_q && accepted_q == 4 &&
+            !l1_pending_store && !home_live_q);
+      end
+    end
+  end
   if (COVER_BOUNDARIES) begin : gen_boundary_covers
     logic [3:0] staged_q = 0;
     always_ff @(posedge i_clk) begin
@@ -245,7 +296,7 @@ module coherence_store_boundary_formal #(
           staged_q[0] <= |rt_data_mem_cached_byte_wr_en &&
               !rt_coherent_write_atomic && rt_data_mem_addr[63:5] == address1[63:5];
           staged_q[1] <= l1_write_done && accepted_q == 2;
-          staged_q[2] <= $past(l1_block_valid == 3) && l1_block_valid == 1;
+          staged_q[2] <= $past($countones(l1_block_valid) == 2) && $countones(l1_block_valid) == 1;
           staged_q[3] <= $past(l1_pending_store) && !l1_pending_store;
         end
         if (lq_fu_complete.valid && lq_fu_complete.value == {8{second_byte}}) begin
@@ -385,38 +436,132 @@ module coherence_store_boundary_formal #(
       .o_tag(guard_tag)
   );
   logic home_live_q, granted_q, complete_q;
+  logic [Misses-1:0] home_live, home_granted, home_complete;
+  logic [Misses-1:0] home_d_ready;
+  logic home_g_valid, home_u_valid, reverse_store_grant;
   coh_d_t demand, demand_q;
   coh_g_t grant;
   coh_u_t release_message;
   assign demand = l1_d[0];
-  always_comb begin
-    grant = '0;
-    grant.q = demand_q.q;
-    grant.addr = demand_q.addr;
-    grant.opcode = demand_q.opcode == coherence_pkg::GetS ?
-        coherence_pkg::GrantS : coherence_pkg::GrantM;
-    grant.data = demand_q.opcode == coherence_pkg::Atomic ? {32{second_byte}} : '0;
-    release_message = '0;
-    release_message.q = demand_q.q;
-    release_message.addr = demand_q.addr;
-  end
-  always_ff @(posedge i_clk) begin
-    if (rst) begin
-      home_live_q <= 0;
-      granted_q <= 0;
-      complete_q <= 0;
-      demand_q <= '0;
-    end else begin
-      if (l1_d_valid[0] && !home_live_q && permit_d) begin
-        home_live_q <= 1;
-        granted_q <= 0;
-        demand_q <= demand;
-      end
-      if (home_live_q && !granted_q && permit_g && l1_g_ready) granted_q <= 1;
-      if (l1_c_valid[0] && permit_c) complete_q <= 1;
-      if (complete_q && permit_u && l1_u_ready) begin
+  if (!FOUR_STORES) begin : gen_serial_home
+    coh_c_t completion;
+    assign completion = l1_c[0];
+    assign reverse_store_grant = 1'b0;
+    assign home_live = Misses'(home_live_q);
+    assign home_d_ready = {{(Misses - 1) {1'b1}}, (!home_live_q && permit_d)};
+    assign home_g_valid = home_live_q && !granted_q && permit_g;
+    assign home_u_valid = complete_q && permit_u;
+    always_comb begin
+      grant = '0;
+      grant.q = demand_q.q;
+      grant.tid = 6'd1;
+      grant.addr = demand_q.addr;
+      grant.opcode = demand_q.opcode == coherence_pkg::GetS ?
+          coherence_pkg::GrantS : coherence_pkg::GrantM;
+      grant.data = demand_q.opcode == coherence_pkg::Atomic ? {32{second_byte}} : '0;
+      release_message = '0;
+      release_message.q = demand_q.q;
+      release_message.tid = 6'd1;
+      release_message.addr = demand_q.addr;
+    end
+    always_ff @(posedge i_clk) begin
+      if (rst) begin
         home_live_q <= 0;
-        complete_q  <= 0;
+        granted_q <= 0;
+        complete_q <= 0;
+        demand_q <= '0;
+      end else begin
+        if (l1_d_valid[0] && home_d_ready[0]) begin
+          home_live_q <= 1;
+          granted_q <= 0;
+          demand_q <= demand;
+        end
+        if (home_g_valid && l1_g_ready) granted_q <= 1;
+        if (l1_c_valid[0] && permit_c) begin
+          assert (home_live_q && granted_q && !complete_q);
+          assert (completion == {demand_q.q, 6'd1, demand_q.addr,
+              coherence_pkg::Consumed, (demand_q.opcode != coherence_pkg::GetS)});
+          complete_q <= 1;
+        end
+        if (home_u_valid && l1_u_ready) begin
+          home_live_q <= 0;
+          complete_q  <= 0;
+        end
+      end
+    end
+  end else begin : gen_parallel_home
+    logic [Misses*(AddrWidth+312)-1:0] requests;
+    coh_d_t release_request, first_request;
+    (* anyseq *) logic [1:0] grant_choice, release_choice;
+    logic [1:0] grant_index, release_index;
+    assign home_live_q = |home_live;
+    assign home_d_ready = ~home_live & {Misses{permit_d}};
+    assign home_g_valid = grant_index < Misses && home_live[grant_index] &&
+        !home_granted[grant_index] && permit_g;
+    assign home_u_valid = release_index < Misses && home_complete[release_index] && permit_u;
+    assign first_request = requests[0+:(AddrWidth+312)];
+    assign reverse_store_grant = home_g_valid && l1_g_ready && grant_index != 0 &&
+        demand_q.opcode == coherence_pkg::GetM && home_live[0] && !home_granted[0] &&
+        first_request.opcode == coherence_pkg::GetM && first_request.addr == address0[31:0];
+    always_comb begin
+      grant_index   = grant_choice;
+      release_index = release_choice;
+      if (COVER_MODE) begin
+        grant_index   = 0;
+        release_index = 0;
+        for (int ep = 0; ep < Misses; ep++) begin
+          if (home_live[ep] && !home_granted[ep]) grant_index = 2'(ep);
+          if (home_complete[ep]) release_index = 2'(ep);
+        end
+      end
+      demand_q = '0;
+      release_request = '0;
+      for (int ep = 0; ep < Misses; ep++) begin
+        if (grant_index == 2'(ep)) demand_q = requests[ep*(AddrWidth+312)+:(AddrWidth+312)];
+        if (release_index == 2'(ep))
+          release_request = requests[ep*(AddrWidth+312)+:(AddrWidth+312)];
+      end
+      grant = '0;
+      grant.q = demand_q.q;
+      grant.tid = 6'(grant_index) + 1'b1;
+      grant.addr = demand_q.addr;
+      grant.opcode = demand_q.opcode == coherence_pkg::GetS ?
+          coherence_pkg::GrantS : coherence_pkg::GrantM;
+      release_message = '0;
+      release_message.q = release_request.q;
+      release_message.tid = 6'(release_index) + 1'b1;
+      release_message.addr = release_request.addr;
+    end
+    for (genvar ep = 0; ep < Misses; ep++) begin : gen_request
+      coh_d_t request;
+      coh_c_t completion;
+      assign request = requests[ep*(AddrWidth+312)+:(AddrWidth+312)];
+      assign completion = l1_c[ep];
+      always_ff @(posedge i_clk) begin
+        if (rst) begin
+          home_live[ep] <= 0;
+          home_granted[ep] <= 0;
+          home_complete[ep] <= 0;
+          requests[ep*(AddrWidth+312)+:(AddrWidth+312)] <= '0;
+        end else begin
+          if (l1_d_valid[ep] && home_d_ready[ep]) begin
+            home_live[ep] <= 1;
+            home_granted[ep] <= 0;
+            home_complete[ep] <= 0;
+            requests[ep*(AddrWidth+312)+:(AddrWidth+312)] <= l1_d[ep];
+          end
+          if (home_g_valid && l1_g_ready && grant_index == ep) home_granted[ep] <= 1;
+          if (l1_c_valid[ep] && permit_c) begin
+            assert (home_live[ep] && home_granted[ep] && !home_complete[ep]);
+            assert (completion == {request.q, 6'(ep + 1), request.addr,
+                coherence_pkg::Consumed, (request.opcode != coherence_pkg::GetS)});
+            home_complete[ep] <= 1;
+          end
+          if (home_u_valid && l1_u_ready && release_index == ep) begin
+            home_live[ep] <= 0;
+            home_complete[ep] <= 0;
+          end
+        end
       end
     end
   end
@@ -436,7 +581,7 @@ module coherence_store_boundary_formal #(
       assert (accepted_q - acknowledged_q <= 1);
       if (ordinary_write) begin
         assert ($past(l1_store_ready));
-        assert (l1_block_valid != 3);
+        assert ($countones(l1_block_valid) < 4);
       end
       if (l1_pending_store || (sq_mem_write_en && sq_mem_write_is_cached))
         assert (!sq_committed_empty && !sq_committed_empty_trap && !sq_committed_empty_lq);
@@ -444,9 +589,11 @@ module coherence_store_boundary_formal #(
         assert (l1_write_done && rt_sq_mem_write_done);
         assert (l1_pending_store);
       end
-      if (Mode == 0 && lq_fu_complete.valid) begin
+      if ((Mode == 0 || Mode == 4) && lq_fu_complete.valid) begin
         assert (!lq_fu_complete.exception);
-        p_load_value : assert (lq_fu_complete.value == {8{second_byte}});
+        p_load_value :
+        assert (lq_fu_complete.value ==
+            {8{FOUR_STORES && watched_store == 0 ? first_byte : second_byte}});
       end
       if (Mode == 3 && lq_fu_complete.valid) begin
         assert (!lq_fu_complete.exception);
@@ -515,11 +662,11 @@ module coherence_store_boundary_formal #(
       .i_commit_valid(commit_store),
       .i_commit_rob_tag(commit_tag),
       .i_commit_valid_comb(commit_store),
-      .i_commit_valid_2(step_q == 5 && advance),
+      .i_commit_valid_2(!FOUR_STORES && step_q == 5 && advance),
       .i_commit_rob_tag_2(7'd1),
-      .i_commit_valid_comb_2(step_q == 5 && advance),
+      .i_commit_valid_comb_2(!FOUR_STORES && step_q == 5 && advance),
       .i_commit_valid_scan(commit_store),
-      .i_commit_valid_scan_2(step_q == 5 && advance),
+      .i_commit_valid_scan_2(!FOUR_STORES && step_q == 5 && advance),
       .i_sq_check_capture_valid(lq_sq_check_capture_valid),
       .i_sq_check_addr(lq_sq_check_addr),
       .i_sq_check_addr_b(lq_sq_check_addr_b),
@@ -633,7 +780,16 @@ module coherence_store_boundary_formal #(
       .i_coherent_cut_hold(LOCAL_PROGRESS && l1_cut_hold),
       .i_coherent_cut_addr({32'b0, l1_cut_address}),
       .i_coherent_block_valid(l1_block_valid),
-      .i_coherent_block_addr({32'b0, l1_block_addr[1], 32'b0, l1_block_addr[0]}),
+      .i_coherent_block_addr({
+        32'b0,
+        l1_block_addr[3],
+        32'b0,
+        l1_block_addr[2],
+        32'b0,
+        l1_block_addr[1],
+        32'b0,
+        l1_block_addr[0]
+      }),
       .i_coherent_atomic_protected(protected_q),
       .o_coherent_arm_valid(lq_coherent_arm_valid),
       .o_coherent_arm_tag(lq_coherent_arm_tag),
@@ -668,7 +824,7 @@ module coherence_store_boundary_formal #(
       .o_sq_check_size(lq_sq_check_size),
       .i_sq_all_older_addrs_known(sq_sq_all_older_addrs_known),
       .i_sq_forward(sq_sq_forward),
-      .i_sq_commit_pending(commit_store || (step_q == 5 && advance)),
+      .i_sq_commit_pending(commit_store || (!FOUR_STORES && step_q == 5 && advance)),
       .o_mem_read_en(lq_mem_read_en),
       .o_mem_addr_valid(lq_mem_addr_valid),
       .o_mem_read_addr(lq_mem_read_addr),
@@ -889,8 +1045,8 @@ module coherence_store_boundary_formal #(
   logic l1_pending_store;
   logic l1_sc_write_pending;
   logic l1_atomic_live;
-  logic [1:0] l1_block_valid;
-  logic [1:0][AddrWidth-1:0] l1_block_addr;
+  logic [3:0] l1_block_valid;
+  logic [3:0][AddrWidth-1:0] l1_block_addr;
   logic l1_sc_ready;
   logic l1_sc_result_valid;
   logic l1_sc_success;
@@ -920,7 +1076,7 @@ module coherence_store_boundary_formal #(
   logic l1_fatal;
   logic [AddrWidth-1:0] l1_fatal_addr;
   coherence_l1d #(
-      .CACHE_BYTES(64),
+      .CACHE_BYTES(FOUR_STORES ? 128 : 64),
       .WAYS(1),
       .MISSES(Misses),
       .TAG_BITS(ReorderBufferTagWidth)
@@ -981,7 +1137,7 @@ module coherence_store_boundary_formal #(
       .i_cut_inval_done(LOCAL_PROGRESS),
       .o_cut_release(l1_cut_release),
       .o_d_valid(l1_d_valid),
-      .i_d_ready({{(Misses - 1) {1'b1}}, (!home_live_q && permit_d)}),
+      .i_d_ready(home_d_ready),
       .o_d(l1_d),
       .i_p_valid(LOCAL_PROGRESS && probe_offered_q && !probe_accepted_q),
       .o_p_ready(l1_p_ready),
@@ -995,14 +1151,14 @@ module coherence_store_boundary_formal #(
       .i_wa_valid('0),
       .o_wa_ready(l1_wa_ready),
       .i_wa('0),
-      .i_g_valid(extra_g_valid || (home_live_q && !granted_q && permit_g)),
+      .i_g_valid(extra_g_valid || home_g_valid),
       .o_g_ready(l1_g_ready),
       .i_g(extra_g_valid ? extra_grant : grant),
       .o_c_valid(l1_c_valid),
       .o_c_selected(l1_c_selected),
-      .i_c_ready(permit_c),
+      .i_c_ready(FOUR_STORES ? {Misses{permit_c}} : Misses'(permit_c)),
       .o_c(l1_c),
-      .i_u_valid(complete_q && permit_u),
+      .i_u_valid(home_u_valid),
       .o_u_ready(l1_u_ready),
       .i_u(release_message),
       .o_perf_events(l1_perf_events),

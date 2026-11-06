@@ -95,9 +95,26 @@ FORMAL_TARGETS = [
         tasks=("amo_bmc", "sc_bmc", "amo_cover", "sc_cover", "reservation_prove"),
     ),
     FormalTarget(
+        "coherence_store_home.sby",
+        "Production private and home caches preserve streamed bytes through replacement and DMA.",
+        tasks=(
+            "bmc_siblings",
+            "bmc_rows",
+            "bmc_conflict",
+            "cover_siblings",
+            "cover_rows",
+            "cover_conflict",
+            "bmc_pressure",
+            "cover_pressure",
+        ),
+    ),
+    FormalTarget(
         "coherence_store_boundary.sby",
         "Production SQ, router, buffered L1D and LQ preserve credit, drain and atomic exclusion.",
         tasks=(
+            "bmc_four",
+            "cover_four",
+            "bmc_intervening",
             "bmc_load_same",
             "bmc_load_other",
             "bmc_amo_same",
@@ -121,13 +138,18 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_store_buffer.sby",
-        "Two accepted stores preserve order, payload, launch credit and acknowledgement.",
-        tasks=("prove", "cover"),
+        "Four combining records preserve byte order, bounded contributors, launch credit and acknowledgement.",
+        tasks=("prove", "cover", "store_saturation_bmc", "store_saturation_cover"),
     ),
     FormalTarget(
         "coherent_hart_cache.sby",
         "Fence ordering and coherent instruction/PTE visibility with discarded walks.",
-        tasks=("coh_hart_maint_prove", "coh_hart_maint_cover"),
+        tasks=(
+            "coh_hart_maint_prove",
+            "coh_hart_maint_cover",
+            "coh_hart_maint_four_bmc",
+            "coh_hart_maint_four_cover",
+        ),
     ),
     FormalTarget(
         "cpu_axi_payload.sby",
@@ -264,6 +286,12 @@ FORMAL_TARGETS = [
             "coh_l1d_data3_bmc",
             "coh_l1d_store_payload_bmc",
             "coh_l1d_store_grant_bmc",
+            "coh_l1d_store_multi_payload_bmc",
+            "coh_l1d_store_multi_grant_bmc",
+            "coh_l1d_multi_data0_bmc",
+            "coh_l1d_multi_data1_bmc",
+            "coh_l1d_multi_data2_bmc",
+            "coh_l1d_multi_data3_bmc",
         ),
     ),
     FormalTarget(
@@ -377,6 +405,17 @@ FORMAL_TARGETS = [
             "coh_read_flags_prove",
             "coh_read_select_prove",
             "coh_read_select64_prove",
+            "coh_grant_select2_prove",
+            "coh_grant_select4_prove",
+            "coh_grant_select8_prove",
+            "coh_read_owners1_prove",
+            "coh_read_owners3_prove",
+            "coh_read_owners4_prove",
+            "coh_read_owners8_prove",
+            "coh_miss_credit1_prove",
+            "coh_miss_credit3_prove",
+            "coh_miss_credit4_prove",
+            "coh_miss_credit8_prove",
         ),
     ),
     FormalTarget(
@@ -1230,6 +1269,93 @@ SBY_TASKS = [
         "Local failure, completed update and deferred probe reply.",
     ),
     ("coh_l1d_local_data_bmc", "Local atomic data and control through the real array."),
+    (
+        "store_saturation_bmc",
+        "A delayed head preserves 33 younger same-byte stores through saturation and drain.",
+    ),
+    (
+        "store_saturation_cover",
+        "A younger record saturates at 32 contributors and its successor drains.",
+    ),
+    (
+        "coh_hart_maint_four_bmc",
+        "Four occupied records drain before a fence and final PTE publication.",
+    ),
+    (
+        "coh_hart_maint_four_cover",
+        "Four occupied records reach fence, instruction and PTW completion.",
+    ),
+    (
+        "coh_grant_select2_prove",
+        "Two grant candidates preserve credit-qualified priority, failure and packet fields.",
+    ),
+    (
+        "coh_grant_select4_prove",
+        "Four grant candidates preserve credit-qualified priority, failure and packet fields.",
+    ),
+    (
+        "coh_grant_select8_prove",
+        "Eight grant candidates preserve credit-qualified priority, failure and packet fields.",
+    ),
+    (
+        "coh_read_owners1_prove",
+        "One endpoint preserves the binary read ownership mask.",
+    ),
+    (
+        "coh_read_owners3_prove",
+        "The binary read ownership mask covers 3 endpoints.",
+    ),
+    (
+        "coh_read_owners4_prove",
+        "The binary read ownership mask covers 4 endpoints.",
+    ),
+    (
+        "coh_read_owners8_prove",
+        "The binary read ownership mask covers 8 endpoints.",
+    ),
+    ("coh_miss_credit1_prove", "Binary acquisition credits cover one endpoint."),
+    ("coh_miss_credit3_prove", "Binary acquisition credits cover 3 endpoints."),
+    ("coh_miss_credit4_prove", "Binary acquisition credits cover 4 endpoints."),
+    ("coh_miss_credit8_prove", "Binary acquisition credits cover 8 endpoints."),
+    ("bmc_siblings", "Real-home sibling store byte safety."),
+    ("bmc_rows", "Real-home distinct-row store byte safety."),
+    ("bmc_conflict", "Real-home conflicting-row store byte safety."),
+    ("cover_siblings", "Sibling acquisitions complete and supply DMA data."),
+    (
+        "cover_rows",
+        "Distinct-row concurrent acquisitions complete and supply DMA data.",
+    ),
+    ("cover_conflict", "A same-set conflict serializes and supplies DMA data."),
+    (
+        "bmc_pressure",
+        "Real-home stores and load data survive held writebacks and releases.",
+    ),
+    (
+        "cover_pressure",
+        "Two held dirty victims yield to a probing DMA request and a waiting load.",
+    ),
+    ("bmc_four", "Four sector records preserve the production SQ and LQ handoff."),
+    (
+        "cover_four",
+        "Four acknowledged holders drain with concurrent store acquisitions.",
+    ),
+    ("bmc_intervening", "A younger store cannot change an intervening load result."),
+    (
+        "coh_l1d_multi_data0_bmc",
+        "Concurrent store acquisitions preserve array and probe bytes in word 0.",
+    ),
+    (
+        "coh_l1d_multi_data1_bmc",
+        "Concurrent store acquisitions preserve array and probe bytes in word 1.",
+    ),
+    (
+        "coh_l1d_multi_data2_bmc",
+        "Concurrent store acquisitions preserve array and probe bytes in word 2.",
+    ),
+    (
+        "coh_l1d_multi_data3_bmc",
+        "Concurrent store acquisitions preserve array and probe bytes in word 3.",
+    ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
     ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),
@@ -1278,6 +1404,14 @@ SBY_TASKS = [
     ),
     ("coh_l1d_store_payload_bmc", "Ordered head payload and masked hit installation."),
     ("coh_l1d_store_grant_bmc", "Store miss byte merging against grant bytes."),
+    (
+        "coh_l1d_store_multi_payload_bmc",
+        "Ordered store bytes with concurrent endpoints.",
+    ),
+    (
+        "coh_l1d_store_multi_grant_bmc",
+        "Concurrent store grants merge only the head record.",
+    ),
     (
         "coh_l1d_data_bmc",
         "Arbitrary-byte store and probe images in the production array.",

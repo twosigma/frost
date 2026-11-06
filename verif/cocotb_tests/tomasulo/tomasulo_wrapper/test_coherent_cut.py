@@ -259,26 +259,27 @@ async def responses_cross_each_cut_edge(dut: Any) -> None:
 @cocotb.test()
 async def pending_store_blocks_same_sector_but_not_other_reads(dut: Any) -> None:
     """Check the pending-store interlock and unrelated-load progress."""
-    dut_if, _ = await setup_test(dut)
-    dut.i_coherent_store_ready.value = 0
-    dut.i_coherent_store_pending.value = 1
-    dut.i_coherent_block_valid.value = 1
-    dut.i_coherent_block_addr.value = LINE
-    dut_if.set_fu_ready(RS_MEM, True)
-    dut_if.set_commit_hold(True)
-    blocked = await dut_if.dispatch(make_int_req(pc=0x6000, rd=5))
-    await issue(dut_if, blocked, OP_LW, WORD)
-    for _ in range(8):
-        await dut_if.step()
-        assert not dut_if.read_lq_mem_request()["en"]
-    other = await dut_if.dispatch(make_int_req(pc=0x6004, rd=6))
-    await issue(dut_if, other, OP_LW, LINE + 64)
-    req = await request(dut_if)
-    assert req["addr"] == LINE + 64
-    assert not int(dut.o_sq_committed_empty_trap.value)
-    dut.i_coherent_store_pending.value = 0
-    dut.i_coherent_block_valid.value = 0
-    dut.i_coherent_store_ready.value = 1
+    for holder in range(4):
+        dut_if, _ = await setup_test(dut)
+        dut.i_coherent_store_ready.value = 0
+        dut.i_coherent_store_pending.value = 1
+        dut.i_coherent_block_valid.value = 1 << holder
+        dut.i_coherent_block_addr.value = LINE << (64 * holder)
+        dut_if.set_fu_ready(RS_MEM, True)
+        dut_if.set_commit_hold(True)
+        blocked = await dut_if.dispatch(make_int_req(pc=0x6000, rd=5))
+        await issue(dut_if, blocked, OP_LW, WORD)
+        for _ in range(8):
+            await dut_if.step()
+            assert not dut_if.read_lq_mem_request()["en"]
+        other = await dut_if.dispatch(make_int_req(pc=0x6004, rd=6))
+        await issue(dut_if, other, OP_LW, LINE + 64)
+        req = await request(dut_if)
+        assert req["addr"] == LINE + 64
+        assert not int(dut.o_sq_committed_empty_trap.value)
+        dut.i_coherent_store_pending.value = 0
+        dut.i_coherent_block_valid.value = 0
+        dut.i_coherent_store_ready.value = 1
 
 
 @cocotb.test()

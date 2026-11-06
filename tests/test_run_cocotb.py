@@ -2286,6 +2286,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="The coherent cut covers observations, delayed LR, and stale fills.",
         verilator_extra_args=("--assert",),
     ),
+    "coherence_store_buffer": CocotbRunConfig(
+        verilator_extra_args=("--assert",),
+        python_test_module="cocotb_tests.cache.test_coherence_store_buffer",
+        hdl_toplevel_module="coherence_store_buffer",
+        description="Ordered combining records, byte masks, delayed credit and bounded contributors",
+    ),
+    "coherence_l1d_stream": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GMISSES=3",
+            "-GHOME_CACHE_BYTES=512",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_l1d_stream",
+        hdl_toplevel_module="coherence_l1d",
+        description="Concurrent ordered store acquisitions, combining, probes and endpoint release",
+    ),
     "coherence_l1d": CocotbRunConfig(
         verilator_extra_args=("--assert", "-GCACHE_BYTES=512"),
         python_test_module="cocotb_tests.cache.test_coherence_l1d",
@@ -2321,6 +2338,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="coherence_cluster_test_harness",
         description="The cluster with three L1D request endpoints: loads in flight beside "
         "stores, probes and DMA",
+    ),
+    "coherence_store_pressure": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GL1D_MISSES=3",
+            "-GL1D_CACHE_BYTES=128",
+            "-GL1D_WAYS=1",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_store_pressure",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Concurrent stores, frozen victims, delayed releases and probing DMA",
     ),
     "coherence_dma_ingress": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_dma_ingress",

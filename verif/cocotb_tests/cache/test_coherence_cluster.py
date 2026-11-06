@@ -378,7 +378,7 @@ async def sc_local_ownership_and_exact_write(dut: Any) -> None:
     await b.tick()
     await b.set(i_sc_commit=0)
     await b.tick(20)
-    assert b.get("o_sc_write_pending") and b.get("o_block_valid") & 2
+    assert b.get("o_sc_write_pending") and b.get("o_block_valid") == 1
     await b.store(address, 92, atomic=True)
     await b.wait("o_sc_write_pending", 0)
     assert b.sc_writes == [7]

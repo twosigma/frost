@@ -153,7 +153,7 @@ and completion storage at local request acceptance. SOURCE, PORT_CLASS, and
 SLOT select that identity. Separate instances provide independent D, IF, and
 PTW credits. The local caller reserves installation storage before
 presenting a request. The L1D's endpoint 0 also reserves a dirty-victim slot
-then; a load endpoint's grant installs only while a slot is free. The endpoint holds D through acceptance and
+through installation; a nonzero endpoint's grant installs only while a slot is free. The endpoint holds D through acceptance and
 captures a matching G by q and address. The local grant consumer then sends
 Done. The endpoint keeps its identity through C and the matching U, including
 killed reads. GetM, Atomic, and StoreConditional reject killed completion and
@@ -234,38 +234,93 @@ in one cycle after an observed reset. Its write drain covers the data RAM
 input pipeline before requests resume. Hardware uses the per-set sweep with
 `SIM_FAST_MAINT=0`.
 
-The L1D has I, S and M states. Reads use S or M. Two ordered committed
-store records own their addresses, bytes, masks and tags after SQ
-acknowledgement. Each accepted store receives one acknowledgement. The head
-installs before the tail; promotion keeps pending asserted. A Modified hit
-uses a tag-only lookup and the array's byte enables. A buffered tail can
-start its lookup after the head's masked update completes. Registered read
-demand gives a waiting data read a turn between hit-store installations.
-Probes, grants and atomic operations have priority over that turn. An S/I head
-reserves a dirty-eviction slot before acquiring M. Endpoint 0 remains owned
-through U, so store acquisitions do not overlap.
+The L1D has I, S and M states. Reads use S or M. Four ordered committed
+store records own 32-byte sectors after SQ acknowledgement. Each accepted
+scalar store receives one acknowledgement. A store combines only with the
+newest unsealed record of the same sector. Byte masks select the most recent
+value of each written byte. A record holds at most 32 contributors and seals
+at that limit or when selected as the head for installation. A simultaneous
+contributor is included before sealing. A, B, A stores occupy separate records.
+Launch credit reserves an arriving scalar without comparing its address or
+borrowing a simultaneous installation. The lookahead scheduler samples physical
+record conflicts before selecting by age. Queue changes invalidate that sample.
 
-Two sector holds block local loads until the corresponding bytes are
-installed. The second hold names the tail or a selected atomic. Atomic
-drain gates exclude buffered ordinary stores from selected atomic ownership.
-Probes can precede queued stores; a queued store rechecks permission when
-selected. A selected array installation finishes before probe capture.
-SQ launch readiness reserves room for the next cycle's registered write,
-including an arriving write and a simultaneous maintenance request.
-There are eight
-unmerged CPU read slots, two frozen PutM slots and `MISSES` request
-endpoints, set by `L1D_NUM_MSHR` and eight on X3. Endpoint 0 carries the
-head store's GetM, LR, AMO and SC acquisitions, and ordinary loads only
-when it is the only endpoint; the others carry ordinary load misses. No two
-live endpoints hold the same sector. A load that misses on a sector a live
-endpoint holds waits for that endpoint's installation, or for its release if
-the sector was installed and already replaced, and then looks up again.
-Grants install one at a time, endpoint 0's first and then the lowest-numbered
-load endpoint's. A load grant installs only while a WB slot is free, and
-endpoint 0 does not take the last free slot while a load grant waits. New
-load acquisitions stop while an atomic is active or an AMO, SC or maintenance
-operation waits for admission. A resident Modified atomic needs endpoint 0
-and its own sector free; home atomics and maintenance drain every endpoint.
+Only the head installs. A Modified hit uses a tag-only lookup and the array's
+byte enables. A buffered successor can start its lookup after the head's
+masked update completes. Registered read demand gives a waiting data read a
+turn between store selections, including permission misses. Eligible load grants
+share that turn. Lookahead lookups and store grant
+installations also yield to waiting reads. Probes and atomic operations have
+priority. A selected array operation completes before probe capture; queued
+bytes and held grants are excluded from probe replies.
+
+Four sector holds block local loads until their records install. Atomic
+ownership uses the first hold while the ordinary store records are empty.
+The first hold captures store and atomic addresses on their ownership edges
+and restores the stored sector address when atomic ownership releases.
+SQ launch readiness reserves a record for the next cycle's registered write,
+including an arriving write and a simultaneous maintenance request. A
+simultaneous pop supplies no speculative credit. Every scalar launch invalidates its dword in the LQ's L0 cache.
+Fences and publication drains wait for all store records to install. A
+resident Modified atomic needs endpoint 0 and its own sector free; home SC and
+AMO acquisitions and maintenance wait for every request endpoint to release.
+LR uses the committed-store drain and its endpoint and sector checks.
+
+There are eight unmerged CPU read slots, two frozen PutM slots and `MISSES`
+request endpoints, set by `L1D_NUM_MSHR` and eight on X3. Endpoint 0 carries
+the head store's GetM, LR, AMO and SC acquisitions, and ordinary loads when it
+is the only endpoint. With at least three endpoints, a nonzero endpoint can
+carry a lookahead store GetM. At least one nonzero endpoint remains available
+to loads. There are at most two live store acquisitions, including installed
+requests awaiting U. Each endpoint owns its grant and completion metadata through U;
+a popped queue record can be reused independently.
+
+Lookahead prefers another home row over the head's sibling sector. Only the
+oldest queued record of a sector may acquire, and no live endpoint or frozen
+PutM may hold that sector. A younger different row cannot acquire in the same
+home set as an older queued or live store. `HOME_CACHE_BYTES`, `HOME_WAYS` and
+`HOME_LINE_BYTES` match the connected home. A lookahead Modified hit waits
+for a fresh lookup at the head. A miss classification proceeds directly to
+endpoint capture without an intervening private installation.
+
+Store-head eligibility is checked before priority. A registered store-owner mask
+follows the head on installation and includes accepted acquisitions.
+A registered head address follows empty insertion and head promotion.
+Nonzero grant candidates share free writeback credit; endpoint zero uses its
+reserved credit. `coherence_grant_select` applies that shared credit after
+choosing the first nonzero candidate. For binary inputs, its outputs match a priority scan over
+all credit-qualified candidates. The same selection qualifies the endpoint
+failure bit. Owner, failure and error fields use the nonzero priority decision
+before shared credit qualification. The packet uses the one-hot selection.
+An idle decision selects endpoint zero.
+A younger store grant waits
+in its endpoint while the head and eligible reads continue. Endpoint 0
+reserves a free dirty-victim slot through installation. A nonzero endpoint
+requires a free slot when its grant is selected. Endpoint 0 does not take the
+last free slot from a waiting load grant. `coherence_miss_credit` computes this
+permission and the Load, LR and AMO retry credits from endpoint ownership,
+writeback occupancy and drain state. Frozen slots remain occupied through
+WA. A store error stops the hart without read completion or error disposal.
+
+No two live endpoints hold the same sector. A load miss on a sector held by
+an endpoint waits for installation, or for release if the installed sector
+has been replaced, then looks up again. Load and lookahead acquisitions stop
+while an atomic is active or an AMO, SC or maintenance operation waits for
+admission. Contending eligible load misses and lookahead acquisitions alternate
+successful allocations. Permission lookups precede endpoint-allocation arbitration.
+A lookahead miss that yields its allocation remains eligible for another lookup.
+Read hits do not clear the allocation turn. They permit
+store borrowing when no eligible load miss waits. A read miss can finish a lookup
+before yielding endpoint allocation to lookahead. A lookahead Modified hit
+consumes no endpoint and yields its allocation turn. A yielded read miss reserves
+lookahead service ahead of head-store hits. The reservation ends after lookahead
+service, endpoint allocation, record promotion or removal, or an atomic or
+maintenance drain request. Each acquired
+store record contributes to the outstanding-miss count until installation.
+`coherence_read_owners` computes each read slot's ownership from parallel
+endpoint contributions. Endpoint zero excludes stores and SC; nonzero
+endpoints exclude stores and installed requests. Duplicate endpoint slot
+indices combine by OR. The binary mask matches an indexed endpoint scan.
 Read status uses per-slot masks for allocation, response transfer, lookup
 results and grant completion. Completion and miss sets dominate allocation
 clears. Allocation sets dominate response clears of valid bits. A failed
@@ -298,7 +353,11 @@ allocated payload until reset or another allocation to that slot.
 Allocation marks an empty slot valid. Read eligibility compares each physical slot with pending, atomic and frozen
 writeback sectors. The comparisons use the stored slot addresses and the
 buffered allocation's address, and the slot mask selects between their
-results. Circular priority selects a qualified slot and its address.
+results. Availability reduces stored and buffered-write candidates separately.
+Both masks are qualified by endpoint ownership, waiting status and miss
+retry credits. The shared write-address exclusion qualifies the
+buffered-write result.
+Circular priority selects a qualified slot and its address.
 There are no E grants, silent upgrades or sharer hints, and the L1D does not
 prefetch. The L1D has eight read slots and `L1D_NUM_MSHR` request endpoints.
 The home has `L2_NUM_MSHR` fills, 1 to 16, and `L2_NUM_WB` victim write
@@ -306,14 +365,18 @@ slots. `L2_NUM_WAITERS` has no effect on the CPU hierarchy; `L2_PREFETCH`,
 `L2_PREFETCH_DISTANCE` and `L2_PREFETCH_INFLIGHT` configure the home's
 prefetcher (see The home's prefetcher).
 
-L1D performance events count the first permission lookup of each CPU read
-or ordinary store. Cached SC counts its first definitive classification: a Modified hit, including
-a failed reservation, is a hit; a home acquisition is a permission miss. A store
-to S requires permission and counts as a miss. AMOs on Modified sectors
-count as hits; other AMOs count as permission misses. Repeated lookups,
-probes and maintenance do not add demand events. Outstanding misses include
-unresolved read misses, the head store acquisition and an SC classified for
-home acquisition. L2 events
+L1D performance events count scalar CPU requests. CPU reads count at their
+first permission lookup. The first store in a record counts at its first
+permission lookup; each additional scalar that combines counts as an access
+and a buffer hit on acceptance, even before permission arrives. A combined
+store and a tag lookup can contribute two accesses in one cycle. Cached SC
+counts its first definitive classification: a Modified hit, including a failed
+reservation, is a hit; a home acquisition is a permission miss. A first store
+to S requires permission and counts as a miss. AMOs on Modified sectors count
+as hits; other AMOs count as permission misses. Repeated lookups, probes and
+maintenance do not add demand events. Outstanding misses include unresolved
+read misses, acquired store records, the head store waiting to acquire after
+a miss, and an SC classified for home acquisition. L2 events
 count shared demand lookups, prefetch lookups and non-maintenance PutM
 lookups. Its fill count, prefetch fills included, is at most `L2_NUM_MSHR`.
 A prefetch that allocates nothing is not a slot-full stall; a blocked one is
@@ -551,8 +614,13 @@ bytes to reach external memory.
 
 The `coherent_hart_cache` formal target composes its maintenance controller,
 IF/PTW bridges, the walker and the home service engine. Small private-cache
-models represent two ordered stores, delayed installation, dirty eviction,
+models represent four ordered combining records, delayed installation, dirty eviction,
 PutM absorption and two instruction fills that drain during invalidation.
+The driver accepts one, two or four scalar stores before checking maintenance.
+A separate 240-cycle schedule supplies 67 scalar stores and holds installation
+until all four records are occupied. Its final scalar supplies distinct PTE
+bits. The schedule checks store drain, fence completion and the final value
+returned to instruction and page-table consumers.
 Modified hits merge locally; acquisitions merge with captured grant data.
 An independent byte-mask reference checks the installed image. Stores wait
 for pending writeback completion before acquisition or installation. A resident
@@ -652,11 +720,22 @@ L1D request endpoints, including several loads in flight. `coherence_readers`
 controls grants and releases around the real L1I, fetch provider and PTW. It checks overlapping fills, invalidation, discarded fetches
 and walks, errors, reset, fatal stop and reuse of reader IDs before U.
 The whole-SoC program configurations use this hierarchy.
+`coherence_l1d_stream` checks ordered store installation, combining, independent
+grants, duplicate-sector exclusion and read turns. A completed load grant
+supplies read service between resident stores while another read waits.
+`coherence_store_pressure`
+holds both dirty victim slots and delays endpoint releases while ordinary loads
+and probing DMA requests use the production home.
 G and U route by their message source identity. Fair C arbiters select the
 hart and DMA inputs and the hart's data, instruction and walker inputs. Each
 arbiter holds its selection during backpressure and acknowledges only that input.
 Every C source, including each DMA ingress slot, holds its offer until
 acceptance, so these arbiters present their captured selection as C validity.
+
+The `coherence_store_buffer` target proves scalar and byte conservation by
+induction. A 48-cycle saturation case holds an older record while 33 writes
+target one younger byte, then checks the split at 32 contributors and ordered
+drain of all records.
 
 Formal targets `coherence_home_completions`, `coherence_control`, `coherence_array`,
 `coherence_home`, `coherence_prefetch_agent`, `coherence_prefetch_pause`, `coherence_l1d` and `coherent_cpu` check endpoint service,
@@ -665,6 +744,22 @@ The `coherence_l1d` target also runs the L1D with three request endpoints and
 checks that no two live endpoints hold one sector, that no load endpoint is
 live beside a granted home atomic, that a local atomic excludes its sector and endpoint
 0 while blocking service, and that a load grant installs with a free WB slot.
+Separate bounded tasks check ordered head payload, grant-byte merging
+and array/probe bytes in each 64-bit word through 40 cycles with concurrent
+endpoints.
+The `coherence_store_boundary` target composes the SQ, request router, L1D and
+load queue for bounded checks through 80 to 140 cycles. Its four-record cases
+check completion identities and the handoff of accepted stores and protected
+reads. Covers require a younger store grant before the head grant. An
+intervening-load case checks the value between two stores to one address.
+The `coherence_store_home` target connects the L1D and home with delayed memory
+responses. It checks a watched byte through two stores and a probing DMA read
+for sibling sectors, different rows and conflicting home sets. The conflicting
+case preloads the younger row in the home. Its pressure case holds two dirty
+victims and endpoint releases while a load grant and probing DMA request wait.
+The DMA consumer checks demand, grant, completion and release identities.
+Bounded progress assertions require both consumers to finish under the specified
+memory-response schedule.
 Detached victim validity, address and a watched byte are checked by induction
 through B. Cover tasks reach allocation, a delayed B, a blocked refetch,
 successful disposal and a failed B with preserved dirty ownership.

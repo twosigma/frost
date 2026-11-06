@@ -25,6 +25,10 @@ package cache_perf_pkg;
   localparam int unsigned MissOutstandingBits = 5;
 
   typedef struct packed {
+    // A scalar store accepted into a combining record contributes an access
+    // and a buffer hit independently of the tag-stage event in this cycle.
+    logic store_combined;
+    logic store_combined_under_miss;
     logic access;
     logic hit;
     logic miss;

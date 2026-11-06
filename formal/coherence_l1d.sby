@@ -8,6 +8,12 @@ coh_l1d_data2_bmc single data arraydata word2
 coh_l1d_data3_bmc single data arraydata word3
 coh_l1d_store_payload_bmc single data payload
 coh_l1d_store_grant_bmc single data grantdata
+coh_l1d_store_multi_payload_bmc multi data payload
+coh_l1d_store_multi_grant_bmc multi data grantdata
+coh_l1d_multi_data0_bmc multi data arraydata word0
+coh_l1d_multi_data1_bmc multi data arraydata word1
+coh_l1d_multi_data2_bmc multi data arraydata word2
+coh_l1d_multi_data3_bmc multi cadical arraydata word3
 
 coh_l1d_local_prove single local owner
 coh_l1d_local_multi_prove multi local owner padded
@@ -35,6 +41,7 @@ covermode: timeout 600
 control_single: abc bmc3
 control_multi: abc bmc3 -c
 data: abc bmc3
+cadical: abc bmc3 -c
 covers: smtbmc boolector
 owner: abc pdr
 sector: smtbmc boolector
@@ -43,7 +50,7 @@ localcovers: smtbmc boolector
 
 [script]
 read -sv cache_perf_pkg.sv
-read -sv coherence_pkg.sv coherence_request_endpoint.sv coherence_put_endpoint.sv coherence_read_flags.sv coherence_read_select.sv
+read -sv coherence_pkg.sv coherence_request_endpoint.sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv
 control: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 covers: read -formal -sv -D STORE_COVER -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
 word0: read -formal -sv -D STORE_DATA_PROOF -D STORE_BYTE_WORD=0 coherence_read_payload.sv coherence_l1d.sv
@@ -84,10 +91,10 @@ local: cutpoint w:array_ready w:array_valid w:array_hit w:array_state w:array_ad
 localcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_local_probe_cover c:p_local_fail_cover c:p_local_release_cover %u %u %d
 memory_map
 opt
-padded: techmap
-padded: opt -fast
-padded: setundef -anyseq
-padded: opt_clean
+techmap
+opt -fast
+setundef -anyseq
+opt_clean
 
 [files]
 ../hw/rtl/lib/ram/sdp_block_ram.sv
@@ -99,7 +106,10 @@ padded: opt_clean
 ../hw/rtl/lib/cache/coherence_request_endpoint.sv
 ../hw/rtl/lib/cache/coherence_put_endpoint.sv
 ../hw/rtl/lib/cache/coherence_l1d.sv
+../hw/rtl/lib/cache/coherence_read_owners.sv
+../hw/rtl/lib/cache/coherence_miss_credit.sv
 ../hw/rtl/lib/cache/coherence_read_flags.sv
+../hw/rtl/lib/cache/coherence_grant_select.sv
 ../hw/rtl/lib/cache/coherence_read_select.sv
 ../hw/rtl/lib/cache/coherence_read_payload.sv
 ../hw/rtl/lib/cache/cache_perf_pkg.sv

@@ -31,8 +31,8 @@ module coherence_read_select #(
     input logic [ADDR_WIDTH-1:0] i_write_addr,
     input logic [7:0] i_write_mask,
     input logic [2:0] i_round_robin,
-    input logic [1:0] i_block_valid,
-    input logic [2*ADDR_WIDTH-1:0] i_block_addr,
+    input logic [3:0] i_block_valid,
+    input logic [4*ADDR_WIDTH-1:0] i_block_addr,
     input logic [1:0] i_wb_live,
     input logic [2*ADDR_WIDTH-1:0] i_wb_addr,
     input logic i_atomic_protected,
@@ -42,20 +42,23 @@ module coherence_read_select #(
     input logic [7:0] i_waiting,
     input logic [7:0] i_miss_retry,
     output logic o_found,
+    output logic o_load_miss,
     output logic [2:0] o_index,
     output logic [ADDR_WIDTH-1:0] o_address
 );
-  logic [7:0] eligible, upper, first;
+  logic [7:0] eligible, load_miss, upper, first, status_eligible;
+  (* keep = "true" *) logic [7:0] stored_eligible, write_eligible;
+  (* keep = "true" *) logic stored_found, write_found;
   (* keep = "true" *) logic [7:0] first_upper, first_any;
   // i_addr is each slot's address after the buffered write forwards to it.
   // The comparisons use the stored addresses and the buffered write's address
   // separately, so the forwarding selection follows them.
   logic write_blocked;
   always_comb begin
-    write_blocked = (i_block_valid[0] &&
-        i_write_addr[ADDR_WIDTH-1:5] == i_block_addr[5+:ADDR_WIDTH-5]) ||
-        (i_block_valid[1] &&
-         i_write_addr[ADDR_WIDTH-1:5] == i_block_addr[ADDR_WIDTH+5+:ADDR_WIDTH-5]);
+    write_blocked = 1'b0;
+    for (int holder = 0; holder < 4; holder++)
+      write_blocked |= i_block_valid[holder] && i_write_addr[ADDR_WIDTH-1:5] ==
+          i_block_addr[holder*ADDR_WIDTH+5+:ADDR_WIDTH-5];
     for (int slot = 0; slot < 2; slot++)
       write_blocked |= i_wb_live[slot] && i_write_addr[ADDR_WIDTH-1:5] ==
           i_wb_addr[slot*ADDR_WIDTH+5+:ADDR_WIDTH-5];
@@ -64,17 +67,26 @@ module coherence_read_select #(
     wire [ADDR_WIDTH-1:0] address = i_stored_addr[index*ADDR_WIDTH+:ADDR_WIDTH];
     logic stored_blocked, blocked;
     always_comb begin
-      stored_blocked = (i_block_valid[0] &&
-          address[ADDR_WIDTH-1:5] == i_block_addr[5+:ADDR_WIDTH-5]) ||
-          (i_block_valid[1] && address[ADDR_WIDTH-1:5] == i_block_addr[ADDR_WIDTH+5+:ADDR_WIDTH-5]);
+      stored_blocked = 1'b0;
+      for (int holder = 0; holder < 4; holder++)
+        stored_blocked |= i_block_valid[holder] && address[ADDR_WIDTH-1:5] ==
+            i_block_addr[holder*ADDR_WIDTH+5+:ADDR_WIDTH-5];
       for (int slot = 0; slot < 2; slot++)
         stored_blocked |= i_wb_live[slot] && address[ADDR_WIDTH-1:5] ==
             i_wb_addr[slot*ADDR_WIDTH+5+:ADDR_WIDTH-5];
     end
     assign blocked = i_write_mask[index] ? write_blocked : stored_blocked;
-    assign eligible[index] = i_valid[index] && !i_ready[index] && !blocked &&
+    wire qualified = i_valid[index] && !i_ready[index] &&
         (i_kind[2*index+:2] != 2'd2 || i_atomic_protected) &&
         !i_owned[index] && !i_waiting[index] && (!i_miss[index] || i_miss_retry[index]);
+    assign eligible[index] = qualified && !blocked;
+    wire available = i_valid[index] && !i_ready[index] &&
+        (i_kind[2*index+:2] != 2'd2 || i_atomic_protected);
+    assign status_eligible[index] = !i_owned[index] && !i_waiting[index] &&
+        (!i_miss[index] || i_miss_retry[index]);
+    assign stored_eligible[index] = available && !i_write_mask[index] && !stored_blocked;
+    assign write_eligible[index] = available && i_write_mask[index];
+    assign load_miss[index] = eligible[index] && i_miss[index] && i_kind[2*index+:2] == 2'd0;
     if (index == 7) begin : gen_last
       assign upper[index] = eligible[index];
     end else begin : gen_before_last
@@ -89,7 +101,12 @@ module coherence_read_select #(
     end
   end
   assign first = (|upper) ? first_upper : first_any;
-  assign o_found = |eligible;
+  // Ownership, waiters and retry credit qualify both masks.
+  // The shared write-address check qualifies the buffered-write result.
+  assign stored_found = |(stored_eligible & status_eligible);
+  assign write_found = |(write_eligible & status_eligible);
+  assign o_found = stored_found || (write_found && !write_blocked);
+  assign o_load_miss = |load_miss;
   always_comb begin
     o_index = '0;
     o_address = '0;
@@ -99,11 +116,12 @@ module coherence_read_select #(
     end
   end
 `ifndef SYNTHESIS
-  logic ref_found, ref_blocked;
+  logic ref_found, ref_blocked, ref_load_miss;
   logic [2:0] ref_index, ref_scan;
   logic [ADDR_WIDTH-1:0] ref_address, ref_selected_address;
   always_comb begin
     ref_found = 1'b0;
+    ref_load_miss = 1'b0;
     ref_index = '0;
     ref_scan = '0;
     ref_address = '0;
@@ -111,10 +129,10 @@ module coherence_read_select #(
     for (int index = 7; index >= 0; index--) begin
       ref_scan = 3'(i_round_robin + 3'(index));
       ref_address = i_addr[ref_scan*ADDR_WIDTH+:ADDR_WIDTH];
-      ref_blocked = (i_block_valid[0] && ref_address[ADDR_WIDTH-1:5] ==
-          i_block_addr[5+:ADDR_WIDTH-5]) ||
-          (i_block_valid[1] &&
-           ref_address[ADDR_WIDTH-1:5] == i_block_addr[ADDR_WIDTH+5+:ADDR_WIDTH-5]);
+      ref_blocked = 1'b0;
+      for (int holder = 0; holder < 4; holder++)
+        ref_blocked |= i_block_valid[holder] && ref_address[ADDR_WIDTH-1:5] ==
+            i_block_addr[holder*ADDR_WIDTH+5+:ADDR_WIDTH-5];
       for (int slot = 0; slot < 2; slot++)
         ref_blocked |= i_wb_live[slot] && i_wb_addr[slot*ADDR_WIDTH+5+:ADDR_WIDTH-5] ==
             ref_address[ADDR_WIDTH-1:5];
@@ -124,6 +142,7 @@ module coherence_read_select #(
           (!i_miss[ref_scan] || i_miss_retry[ref_scan])) begin
         ref_found = 1'b1;
         ref_index = ref_scan;
+        if (i_miss[ref_scan] && i_kind[ref_scan*2+:2] == 2'd0) ref_load_miss = 1'b1;
       end
     end
     ref_selected_address = i_addr[ref_index*ADDR_WIDTH+:ADDR_WIDTH];
@@ -139,7 +158,9 @@ module coherence_read_select #(
   always @(posedge i_clk)
 `endif
   begin
+    p_read_available_exact : assert (o_found == |eligible);
     p_read_select_exact : assert (o_found == ref_found && o_index == ref_index);
+    p_load_miss_exact : assert (o_load_miss == ref_load_miss);
     if (o_found) p_read_address_exact : assert (o_address == ref_selected_address);
     // The forwarded addresses the reference uses match the compared ones.
     if (!FORMAL_STANDALONE_ENV)
