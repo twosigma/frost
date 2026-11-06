@@ -1490,7 +1490,10 @@ SBY_TASKS = [
         "coh_l1d_multi_bmc",
         "Coherent L1 with three request endpoints: line exclusion and waiters.",
     ),
-    ("coh_home_wb_prove", "Detached victim ownership through successful B."),
+    (
+        "coh_home_wb_prove",
+        "Detached victim ownership through B and forwarded sector bytes.",
+    ),
     ("coh_home_victim_cover", "Victim allocation, delayed B, and blocked refetch."),
     ("coh_home_error_cover", "Failed B preserves dirty victim ownership."),
     (
@@ -1541,7 +1544,7 @@ SBY_TASKS = [
         "coh_home_prefetch_cover",
         "Prefetch fills that install, gain a seat or fail; reserve and no-fill decisions.",
     ),
-    ("coh_home_fill_cover", "Fill installation and waiter wake reachability."),
+    ("coh_home_fill_cover", "Fill installation, forward and waiter wake reachability."),
     ("coh_home_array_prove", "Independent L2 ports preserve watched bytes."),
     *[
         (
