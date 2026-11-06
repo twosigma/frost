@@ -39,7 +39,6 @@ module coherence_store_buffer #(
     output logic o_combined,
     output logic [2:0] o_count,
     output logic [1:0] o_head,
-    output logic [1:0] o_write_index,
     output logic [3:0] o_valid,
     output logic [3:0] o_sealed,
     output logic [3:0] o_acquired,
@@ -58,7 +57,6 @@ module coherence_store_buffer #(
   assign allocate = i_push && !merge;
   assign o_combined = i_push && merge;
   assign write_index = merge ? youngest : next_q;
-  assign o_write_index = write_index;
   // Credit reserves for an arriving write without comparing its address.
   // A pop supplies no speculative credit.
   assign o_ready = o_count < 4 && !(o_count == 3 && i_push);

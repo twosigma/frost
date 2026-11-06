@@ -559,10 +559,18 @@ async def forwarded_primary_takes_the_forward_buffer_beside_engine_results(
     )
     await b.set(i_result_valid=1, i_result=packet)
     assert b.get("o_forward_ready") and b.get("o_result_ready")
-    await b.set(i_forward_valid=1, i_forward_slots=1 << primary[1], i_forward_way=1)
+    forward_packet = pack(
+        (3, 2), (9, primary[0]), (6, primary[1]), (b.p, primary[2]), (256, 0), (1, 0)
+    )
+    await b.set(
+        i_forward_valid=1,
+        i_forward_slots=1 << primary[1],
+        i_forward_way=1,
+        i_forward=forward_packet,
+    )
     assert b.get("accept_forward") and b.get("accept_result")
     await b.tick()
-    await b.set(i_forward_valid=0, i_forward_slots=0, i_result_valid=0)
+    await b.set(i_forward_valid=0, i_forward_slots=0, i_forward=0, i_result_valid=0)
     assert not b.get("o_forward_ready")
     assert not b.get("parked_q") >> primary[1] & 1
     assert b.get("pin_valid_q") >> primary[1] & 1
