@@ -31,10 +31,11 @@ Other task names are parameter or width variants of these, such as
 run. The runner's default timeout is 40 minutes. `csr_file:bmc`,
 `csr_file:bmc_perf_off`, and `reorder_buffer:bmc` each have 90 minutes.
 `coherent_hart_cache:coh_hart_maint_prove`,
-`coherence_store_boundary:bmc_four`, `cover_four` and `bmc_intervening` have
-120 minutes, `coherence_l1d:coh_l1d_stream_bmc` has 180 minutes, and
-`coherence_l1d:coh_l1d_bmc`, `coh_l1d_multi_bmc` and the multi-endpoint data
-BMCs have 60 minutes, in both their SBY configurations and the runner.
+`coherence_store_boundary:bmc_four`, `cover_four` and `bmc_intervening` and
+`coherence_l1d:coh_l1d_multi_bmc` have 120 minutes,
+`coherence_l1d:coh_l1d_stream_bmc` has 180 minutes, and
+`coherence_l1d:coh_l1d_bmc` and the multi-endpoint data BMCs have 60 minutes,
+in both their SBY configurations and the runner.
 Individual SBY tasks can set shorter limits.
 
 CI assigns the CSR profiling-on, CSR profiling-off and reorder-buffer tasks

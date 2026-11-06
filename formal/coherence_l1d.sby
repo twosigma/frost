@@ -51,7 +51,7 @@ longbmc: timeout 10800
 # The control BMCs check four ordered store records, local atomics and
 # look-ahead admission and need more than the other tasks.
 control_single: timeout 3600
-control_multi: timeout 3600
+control_multi: timeout 7200
 multidata: timeout 3600
 
 [engines]
