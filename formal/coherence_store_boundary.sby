@@ -98,18 +98,18 @@ load: chformal -cover -remove c:*p_amo_* c:*p_sc_* c:*p_old_*
 amo: chformal -cover -remove c:*p_load_* c:*p_sc_* c:*p_old_*
 sc: chformal -cover -remove c:*p_load_* c:*p_amo_* c:*p_old_*
 old: chformal -cover -remove c:*p_load_* c:*p_amo_* c:*p_sc_*
-amo_partition: select -assert-count 15 t:$check r:FLAVOR=assert %i
+amo_partition: select -assert-count 17 t:$check r:FLAVOR=assert %i
 amo_flow: chformal -assert -remove c:p_no_buffered_atomic c:p_no_buffered_guard c:p_no_fatal
-amo_flow: select -assert-count 12 t:$check r:FLAVOR=assert %i
-other_flow: select -assert-count 15 t:$check r:FLAVOR=assert %i
+amo_flow: select -assert-count 14 t:$check r:FLAVOR=assert %i
+other_flow: select -assert-count 17 t:$check r:FLAVOR=assert %i
 other_flow: chformal -assert -remove c:p_no_fatal
-other_flow: select -assert-count 14 t:$check r:FLAVOR=assert %i
+other_flow: select -assert-count 16 t:$check r:FLAVOR=assert %i
 amo_owner: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_no_buffered_atomic c:p_no_buffered_guard %u %d
 amo_owner: select -assert-count 2 t:$check r:FLAVOR=assert %i
 amo_fatal: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_no_fatal %d
 amo_fatal: select -assert-count 1 t:$check r:FLAVOR=assert %i
 amo_fatal: select -assert-count 1 c:p_no_fatal
-sticky: select -assert-count 16 t:$check r:FLAVOR=assert %i
+sticky: select -assert-count 18 t:$check r:FLAVOR=assert %i
 sticky: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_fatal_sticky %d
 sticky: select -assert-count 1 t:$check r:FLAVOR=assert %i
 sticky: select -assert-count 1 c:p_fatal_sticky
