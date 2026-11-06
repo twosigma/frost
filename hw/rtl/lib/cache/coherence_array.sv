@@ -48,7 +48,8 @@ module coherence_array #(
     input logic i_req_data_if_modified,
     // This lookup's data is needed only on a miss whose selected victim is
     // Modified. Otherwise it replies in the first data-read cycle, from the
-    // registered tag result, and its data read goes unused.
+    // registered tag result, and its data read goes unused. A maintenance
+    // visit always waits for its data.
     input logic i_req_data_if_victim_modified,
     // A hit of this lookup leaves replacement state unchanged.
     input logic i_req_no_touch,
@@ -169,8 +170,7 @@ module coherence_array #(
   assign update_fire = i_update_valid && o_update_ready;
   assign o_req_ready = !i_rst && phase_q == Idle && !i_update_valid;
   assign request_fire = i_req_valid && o_req_ready;
-  assign early_reply = !visit_q &&
-      victim_data_q && (o_resp_hit || o_resp_state != 2'b11);
+  assign early_reply = !visit_q && victim_data_q && (o_resp_hit || o_resp_state != 2'b11);
   // An early reply holds through Reply until it is consumed.
   assign o_resp_valid = !i_rst && (phase_q == Reply || (phase_q == Data && early_reply));
   assign o_resp_data_valid = data_valid_q && !early_reply;
@@ -522,10 +522,14 @@ module coherence_array #(
         p_early_reply_releases : assert (phase_q == Idle);
       c_early_reply_data : cover (phase_q == Data && o_resp_valid && i_resp_ready);
       c_early_reply_held : cover (phase_q == Reply && early_reply && data_valid_q);
-      c_early_reply_request : cover ($past(phase_q == Data && o_resp_valid && i_resp_ready) &&
-          request_fire);
-      c_early_reply_update : cover ($past(phase_q == Data && o_resp_valid && i_resp_ready) &&
-          update_fire && data_waddr == $past(data_raddr, 2));
+      c_early_reply_request :
+      cover ($past(phase_q == Data && o_resp_valid && i_resp_ready) && request_fire);
+      c_early_reply_update :
+      cover ($past(
+          phase_q == Data && o_resp_valid && i_resp_ready
+      ) && update_fire && |i_update_mask && data_waddr == $past(
+          data_raddr, 2
+      ));
     end
   end
 `endif

@@ -236,7 +236,8 @@ The L1D asserts this pairing for each grant installation.
 Response data is meaningful only with `o_resp_data_valid`. A tag-only or
 skipped read keeps the prior response data without reading the data array.
 A lookup marked `i_req_data_if_victim_modified` needs data only when it
-misses and its selected victim is Modified. Otherwise it replies without
+misses and its selected victim is Modified; a maintenance visit always
+waits for its data. Otherwise it replies without
 data in the first data-read cycle, from the registered tag result, and its
 data read goes unused; a reply held past that cycle keeps its contents
 until consumed. The L1D marks grant installation lookups this way, so only
@@ -280,7 +281,8 @@ the sector was installed and already replaced, and then looks up again.
 Grants install one at a time, endpoint 0's first and then the lowest-numbered
 load endpoint's. A demand grant on a load endpoint answers its load from the
 captured grant in the grant's first lookup cycle, before installation, so the
-answered read slot can hold a later read while the line installs. Endpoint 0
+answered read slot can hold a later read while the line installs; that read
+becomes selectable when the installation completes. Endpoint 0
 answers its reads after installation. A load endpoint's Done, and the loads
 waiting on it, follow installation. With stream look-ahead enabled, a successful demand installation
 with a reader waiting on that endpoint gives an eligible ordinary read one
