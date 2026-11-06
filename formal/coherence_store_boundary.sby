@@ -27,7 +27,7 @@ bmc: mode bmc
 cover: mode cover
 ordinary: depth 80
 four: depth 104
-intervening: depth 140
+intervening: depth 104
 old: depth 80
 amo: depth 140
 sc: depth 140
