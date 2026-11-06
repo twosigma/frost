@@ -2274,6 +2274,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GL2_CACHE_BYTES=128",
         ),
     ),
+    "coherent_stream_order": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_stream_order",
+        hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
+        description="Speculative fills, same-address load replay and attached LR reservation suppression across a coherent cut",
+        verilator_extra_args=("--assert", "-GDIRECT_CACHE_READS=1", "-GCACHE_MISSES=8"),
+    ),
     "coherent_cut_fabric": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_cut_fabric",
         hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
@@ -2285,6 +2291,85 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="tomasulo_wrapper",
         description="The coherent cut covers observations, delayed LR, and stale fills.",
         verilator_extra_args=("--assert",),
+    ),
+    "coherence_read_stream": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GADDR_WIDTH=56"),
+        python_test_module="cocotb_tests.cache.test_coherence_read_stream",
+        hdl_toplevel_module="coherence_read_stream",
+        description="Three-miss stream confirmation, isolated record pairs, bounded look-ahead and cancellation",
+    ),
+    "coherence_l1d_stream_1": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GMISSES=1",
+            "-GSTREAM_PREFETCH=1",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_l1d_stream",
+        hdl_toplevel_module="coherence_l1d",
+        description="Look-ahead stays disabled with one request endpoint",
+    ),
+    "coherence_l1d_stream_2": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GMISSES=2",
+            "-GSTREAM_PREFETCH=1",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_l1d_stream",
+        hdl_toplevel_module="coherence_l1d",
+        description="Look-ahead stays disabled with two request endpoints",
+    ),
+    "coherence_l1d_stream_3": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GMISSES=3",
+            "-GSTREAM_PREFETCH=1",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_l1d_stream",
+        hdl_toplevel_module="coherence_l1d",
+        description="One speculative endpoint beside occupied demand IDs with three request endpoints",
+    ),
+    "coherence_l1d_stream_4": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GMISSES=4",
+            "-GSTREAM_PREFETCH=1",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_l1d_stream",
+        hdl_toplevel_module="coherence_l1d",
+        description="Speculative GetS ownership, read data isolation and demand attachment with 4 endpoints",
+    ),
+    "coherence_l1d_stream_8": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GMISSES=8",
+            "-GSTREAM_PREFETCH=1",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_l1d_stream",
+        hdl_toplevel_module="coherence_l1d",
+        description="Speculative ownership, atomic admission, demand attachment and bounded grant deferral with 8 endpoints",
+    ),
+    "coherence_stream_dirty": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GWAYS=1",
+            "-GMISSES=8",
+            "-GSTREAM_PREFETCH=1",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_stream_dirty",
+        hdl_toplevel_module="coherence_l1d",
+        description="Frozen dirty data excludes speculative acquisitions through writeback and probe absorption",
+    ),
+    "coherence_cluster_stream": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GL1D_MISSES=8", "-GL1D_STREAM_PREFETCH=1"),
+        python_test_module="cocotb_tests.cache.test_coherence_cluster",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Coherent streaming fills with stores, probes, DMA and atomic ownership",
     ),
     "coherence_l1d": CocotbRunConfig(
         verilator_extra_args=("--assert", "-GCACHE_BYTES=512"),
@@ -2344,7 +2429,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_array_reset_bram_sweep": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
         hdl_toplevel_module="coherence_array",
-        description="Metadata reset, held hit responses and following replacement choices",
+        description="Metadata reset, replacement choices, duplicate tags and data-service cycles",
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=512",
@@ -2356,7 +2441,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_array_reset_bram_fast": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
         hdl_toplevel_module="coherence_array",
-        description="Metadata reset, held hit responses and following replacement choices",
+        description="Metadata reset, replacement choices, duplicate tags and data-service cycles",
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=512",
@@ -2368,7 +2453,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_array_reset_uram_sweep": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
         hdl_toplevel_module="coherence_array",
-        description="Metadata reset, held hit responses and following replacement choices",
+        description="Metadata reset, replacement choices, duplicate tags and data-service cycles",
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=512",
@@ -2380,7 +2465,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_array_reset_uram_fast": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
         hdl_toplevel_module="coherence_array",
-        description="Metadata reset, held hit responses and following replacement choices",
+        description="Metadata reset, replacement choices, duplicate tags and data-service cycles",
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=512",
@@ -2560,6 +2645,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="coherence_endpoints_test_harness",
         description="Coherent channel widths, ownership and keyed completion",
         verilator_extra_args=("--assert", "-GADDR_WIDTH=56", "-GL2_NUM_MSHR=16"),
+    ),
+    "coherence_endpoints_local": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_endpoints",
+        hdl_toplevel_module="coherence_endpoints_test_harness",
+        description="Coherent request endpoints with local phase transitions",
+        verilator_extra_args=("--assert", "-GLOCAL_PHASE_UPDATES=1"),
+    ),
+    "coherence_endpoints_local_wide": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_endpoints",
+        hdl_toplevel_module="coherence_endpoints_test_harness",
+        description="Wide coherent request endpoints with local phase transitions",
+        verilator_extra_args=(
+            "--assert",
+            "-GLOCAL_PHASE_UPDATES=1",
+            "-GADDR_WIDTH=56",
+            "-GL2_NUM_MSHR=16",
+        ),
     ),
     "coherence_endpoints_single": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_endpoints",

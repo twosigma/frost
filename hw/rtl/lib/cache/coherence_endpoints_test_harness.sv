@@ -17,9 +17,10 @@
 `include "coherence_types.svh"
 
 module coherence_endpoints_test_harness #(
-    parameter int unsigned ADDR_WIDTH  = 32,
-    parameter int unsigned NUM_HARTS   = 2,
-    parameter int unsigned L2_NUM_MSHR = 4
+    parameter int unsigned ADDR_WIDTH = 32,
+    parameter int unsigned NUM_HARTS = 2,
+    parameter int unsigned L2_NUM_MSHR = 4,
+    parameter bit LOCAL_PHASE_UPDATES = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -194,7 +195,8 @@ module coherence_endpoints_test_harness #(
     7'(coherence_pkg::home_count(NUM_HARTS, L2_NUM_MSHR))
   };
   coherence_request_endpoint #(
-      .ADDR_WIDTH(ADDR_WIDTH)
+      .ADDR_WIDTH(ADDR_WIDTH),
+      .LOCAL_PHASE_UPDATES(LOCAL_PHASE_UPDATES)
   ) u_req (
       .i_error_disposed(i_req_error_disposed),
       .i_clk(i_clk),
@@ -217,7 +219,6 @@ module coherence_endpoints_test_harness #(
       .i_done_status(i_req_done_status),
       .i_write_done(i_req_write_done),
       .o_c_valid(o_req_c_valid),
-      .o_c_selected(),
       .i_c_ready(i_req_c_ready),
       .o_c(o_req_c),
       .i_u_valid(i_req_u_valid),
@@ -228,7 +229,8 @@ module coherence_endpoints_test_harness #(
 
   coherence_request_endpoint #(
       .ADDR_WIDTH(ADDR_WIDTH),
-      .PORT_CLASS(2)
+      .PORT_CLASS(2),
+      .LOCAL_PHASE_UPDATES(LOCAL_PHASE_UPDATES)
   ) u_ptw (
       .i_error_disposed(i_ptw_error_disposed),
       .i_clk(i_clk),
@@ -251,7 +253,6 @@ module coherence_endpoints_test_harness #(
       .i_done_status(i_ptw_done_status),
       .i_write_done(i_ptw_write_done),
       .o_c_valid(o_ptw_c_valid),
-      .o_c_selected(),
       .i_c_ready(i_ptw_c_ready),
       .o_c(o_ptw_c),
       .i_u_valid(i_ptw_u_valid),

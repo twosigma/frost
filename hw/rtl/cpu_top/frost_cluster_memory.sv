@@ -325,7 +325,6 @@ module frost_cluster_memory #(
         .o_ready({pf_d_ready, dma_d_ready, o_coherent_d_ready}),
         .i_payload({pf_d, dma_d, i_coherent_d}),
         .o_valid(home_d_valid),
-        .o_offer(),
         .o_selected(),
         .i_ready(home_d_ready),
         .o_payload(home_d)
@@ -352,7 +351,6 @@ module frost_cluster_memory #(
         .o_ready({pf_c_ready, dma_c_ready, o_coherent_c_ready}),
         .i_payload({pf_c, dma_c, i_coherent_c}),
         .o_valid(home_c_valid),
-        .o_offer(),
         .o_selected(),
         .i_ready(home_c_ready),
         .o_payload(home_c)

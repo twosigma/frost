@@ -264,6 +264,13 @@ cycle after the router held a cached response behind a fast one
 device ones included; L0 hits and forwards continue. The one-cycle hold keeps
 back-to-back fast launches from starving the held response.
 
+L1D stream look-ahead uses coherent request endpoints without allocating
+LQ rows, cached response slots or observation entries. A demand may wait on
+such an endpoint, but its response ID and observation belong to the demand.
+After a fill it repeats the L1D permission lookup. Invalidations cover these
+demand observations through retirement and replay them under the same
+load-load ordering checks as other cached loads.
+
 A flushed cached load's slot is drop-marked (`cs_drop`) and stays busy until
 its response arrives, which is then drained. The load's entry frees at once
 and may already hold a new load, so a later flush must never judge a

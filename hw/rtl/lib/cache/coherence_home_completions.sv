@@ -647,7 +647,6 @@ module coherence_home_completions #(
       .o_ready(release_ready),
       .i_payload(releases),
       .o_valid(o_u_valid),
-      .o_offer(),
       .o_selected(release_selected),
       .i_ready(i_u_ready),
 `ifdef COHERENCE_HOME_CONTROL

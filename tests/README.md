@@ -61,8 +61,10 @@ The `coherence_endpoints`, `coherence_endpoints_single`, and
 `coherence_endpoints_wide` unit benches exercise channel layout, delayed grants,
 identity reuse, independent probe queues, keyed PutAck cancellation, errors,
 and cluster reset. The wide case uses 56-bit physical addresses and 16 fill
-identities. `test_coherence_endpoint_build.py` elaborates and synthesizes these
-geometries, checks the six-bit home-ID capacity boundary, rejects invalid
+identities. The `coherence_endpoints_local` and
+`coherence_endpoints_local_wide` benches apply the same checks to request
+endpoints with separate phase occupancy registers.
+`test_coherence_endpoint_build.py` elaborates and synthesizes these geometries, checks the six-bit home-ID capacity boundary, rejects invalid
 parameters, and checks cached, cache-disabled and DMA-disabled CPU builds.
 All CPU configurations use the coherent interfaces and their ordinary source
 filelists.
@@ -83,6 +85,9 @@ replacement choices for every exclusion mask, preservation of data RAM, and
 a write in flight through reset, including a five-cycle home data write.
 The private-array benches alternate data and skipped-data hits, hold replies,
 and check replacement choices at the following lookup in each set.
+They check duplicate-tag priority, modified-only data service, both skip
+flags, maintenance visits and excluded matching ways. Data-valid and complete
+held responses are checked alongside exact tag-only and data-read cycles.
 
 `coherence_prefetch` and `coherence_prefetch_equal` connect the prefetch
 agent and its four endpoints to the home at both line sizes, with the
@@ -125,7 +130,11 @@ at 32-bit and 56-bit physical widths.
 application, ordered read errors and installation of the following store.
 Its buffered-store cases check overlapping byte masks, same-sector order,
 held sector coverage, probe-driven reacquisition, frozen writeback conflicts
-and fatal acquisition errors. The `coherent_cut` bench delays old load responses
+and fatal acquisition errors. Stream cases witness registered LR/AMO cancellation
+at hint acceptance, complete atomic drain through U, and check used or empty
+read opportunities between grants. Held probe replies preserve unused credit.
+The composed stream bench checks reservation suppression when a cut overtakes
+an attached LR response. The `coherent_cut` bench delays old load responses
 across acceptance, acknowledgement and installation of partial stores, then
 checks that a subsequent load cannot use their stale data from L0.
 `cached_store_burst_test` checks cached store bursts followed by traps,
@@ -623,8 +632,10 @@ proves, and its assumptions.
 
 Each target and task is a separate pytest case. The timeout is 40 minutes,
 except for `csr_file:bmc`, `csr_file:bmc_perf_off`, and `reorder_buffer:bmc`,
-which have 90 minutes each, and `coherent_hart_cache:coh_hart_maint_prove`,
-which has 120 minutes. `--verbose` prints solver output.
+which have 90 minutes each, `coherent_hart_cache:coh_hart_maint_prove`,
+which has 120 minutes, `coherence_l1d:coh_l1d_stream_bmc`, which has 180
+minutes, and `coherence_l1d:coh_l1d_multi_bmc`, which has 60 minutes.
+`--verbose` prints solver output.
 
 ## Environment and output
 
@@ -868,7 +879,7 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 | TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and runs 50 sequences from the crypto generator |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis |
-| Formal verification | CSR profiling-on/off and ROB jobs, Coherence and Other tasks jobs, and a separate hart maintenance proof job; see the [formal guide](../formal/README.md) for budgets |
+| Formal verification | CSR profiling-on/off and ROB jobs, Coherence and Other tasks jobs, and a separate job for the hart maintenance proof and the L1D stream BMC; see the [formal guide](../formal/README.md) for budgets |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in four chained jobs |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
 | Coverage | One job merges the coverage of the simulating jobs into a report |

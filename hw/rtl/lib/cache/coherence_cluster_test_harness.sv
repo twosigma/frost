@@ -19,9 +19,10 @@
 module coherence_cluster_test_harness #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 64,
-    parameter int unsigned TAG_BITS   = 7,
+    parameter int unsigned TAG_BITS = 7,
     // L1D request endpoints.
-    parameter int unsigned L1D_MISSES = 1
+    parameter int unsigned L1D_MISSES = 1,
+    parameter bit L1D_STREAM_PREFETCH = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -131,7 +132,8 @@ module coherence_cluster_test_harness #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_BYTES(1024),
       .TAG_BITS(TAG_BITS),
-      .MISSES(L1D_MISSES)
+      .MISSES(L1D_MISSES),
+      .STREAM_PREFETCH(L1D_STREAM_PREFETCH)
   ) hart (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -206,7 +208,6 @@ module coherence_cluster_test_harness #(
       .o_g_ready(hart_g_ready),
       .i_g(grant),
       .o_c_valid(hart_c_valid),
-      .o_c_selected(),
       .i_c_ready(hart_c_ready),
       .o_c(hart_c),
       .i_u_valid(u_valid && release_message.q.src == 0),
@@ -226,7 +227,6 @@ module coherence_cluster_test_harness #(
       .o_ready({o_agent_ready, hart_d_ready}),
       .i_payload({i_agent_d, hart_d}),
       .o_valid(home_d_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(home_d_ready),
       .o_payload(home_d)
@@ -252,7 +252,6 @@ module coherence_cluster_test_harness #(
       .o_ready({o_agent_c_ready, hart_c_ready}),
       .i_payload({i_agent_c, hart_c}),
       .o_valid(home_c_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(home_c_ready),
       .o_payload(home_c)

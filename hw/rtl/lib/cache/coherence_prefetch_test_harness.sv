@@ -95,7 +95,6 @@ module coherence_prefetch_test_harness #(
       .o_ready(d_ready),
       .i_payload({pf_d, i_d}),
       .o_valid(home_d_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(home_d_ready),
       .o_payload(home_d)
@@ -112,7 +111,6 @@ module coherence_prefetch_test_harness #(
       .o_ready(c_ready),
       .i_payload({pf_c, i_c}),
       .o_valid(home_c_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(home_c_ready),
       .o_payload(home_c)

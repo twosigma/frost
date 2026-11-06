@@ -46,6 +46,8 @@ module coherence_array #(
     input logic [WayBits-1:0] i_req_way,
     input logic i_req_skip_data_on_hit,
     input logic i_req_data_if_modified,
+    // A hit of this lookup leaves replacement state unchanged.
+    input logic i_req_no_touch,
     output logic o_resp_valid,
     input logic i_resp_ready,
     output logic o_resp_hit,
@@ -94,7 +96,7 @@ module coherence_array #(
   logic [CountBits-1:0] count_q;
   logic [SetBits-1:0] init_set_q, set_q;
   logic [TagBits-1:0] tag_q;
-  logic visit_q, skip_data_q, modified_data_q;
+  logic visit_q, skip_data_q, modified_data_q, no_touch_q;
   logic [WayBits-1:0] visit_way_q;
   logic [WAYS-1:0] exclude_q;
   logic [PlruBits-1:0] plru_read, plru_q, plru_write;
@@ -113,7 +115,7 @@ module coherence_array #(
   wire init_bulk_clear = SimFastInit != 0 && sim_reset_seen_q && !i_rst && phase_q == Init;
 `endif
 
-  logic hit;
+  logic hit, hit_modified;
   logic select_valid;
   logic [PlruBits-1:0] select_plru;
   logic [WayBits-1:0] selected;
@@ -157,15 +159,16 @@ module coherence_array #(
   endfunction
 
   assign o_init_done = phase_q != Init;
-  assign o_update_ready = !i_rst && phase_q == Idle;
+  assign o_update_ready = phase_q == Idle;
   assign update_fire = i_update_valid && o_update_ready;
-  assign o_req_ready = !i_rst && phase_q == Idle && !i_update_valid;
+  assign o_req_ready = phase_q == Idle && !i_update_valid;
   assign request_fire = i_req_valid && o_req_ready;
-  assign o_resp_valid = !i_rst && phase_q == Reply;
+  assign o_resp_valid = phase_q == Reply;
   assign tag_raddr = i_req_addr[OffsetBits+:SetBits];
   assign tag_waddr = phase_q == Init ? init_set_q : i_update_addr[OffsetBits+:SetBits];
   assign tag_wdata = phase_q == Init ? '0 :
       {i_update_state, i_update_addr[ADDR_WIDTH-1:OffsetBits+SetBits]};
+  // The tag and replacement RAMs have no reset, so reset gates their writes.
   for (genvar way = 0; way < WAYS; way++) begin : gen_tag_en
     assign tag_we[way] = !i_rst && (phase_q == Init ||
         (update_fire && i_update_way == WayBits'(way)));
@@ -234,9 +237,15 @@ module coherence_array #(
     end
   end
 
-  assign data_raddr = (RowBits'(selected) << SetBits) | RowBits'(set_q);
-  assign select_data = visit_q || !((hit && skip_data_q) ||
-      (modified_data_q && (!hit || tag_rdata[selected][TagBits+:2] != 2'b11)));
+  assign data_raddr  = (RowBits'(selected) << SetBits) | RowBits'(set_q);
+  assign select_data = visit_q || !((hit && skip_data_q) || (modified_data_q && !hit_modified));
+`ifdef FORMAL
+  always_comb begin
+    p_data_select_exact :
+    assert (select_data == (visit_q || !((hit && skip_data_q) ||
+        (modified_data_q && (!hit || tag_rdata[selected][TagBits+:2] != 2'b11)))));
+  end
+`endif
   assign data_waddr = (RowBits'(i_update_way) << SetBits) |
       RowBits'(i_update_addr[OffsetBits+:SetBits]);
   sdp_ram_byte_en #(
@@ -265,12 +274,14 @@ module coherence_array #(
   always_comb begin
     selected = victim(select_plru, ~exclude_q);
     hit = 1'b0;
+    hit_modified = 1'b0;
     for (int way = WAYS - 1; way >= 0; way--) begin
       if (tag_rdata[way][TagBits+:2] == 0 && !exclude_q[way]) selected = WayBits'(way);
     end
     for (int way = 0; way < WAYS; way++) begin
       if (tag_rdata[way][TagBits+:2] != 0 && tag_rdata[way][TagBits-1:0] == tag_q) begin
         hit = 1'b1;
+        hit_modified = tag_rdata[way][TagBits+:2] == 2'b11;
         selected = WayBits'(way);
       end
     end
@@ -287,6 +298,7 @@ module coherence_array #(
       visit_q <= 1'b0;
       skip_data_q <= 1'b0;
       modified_data_q <= 1'b0;
+      no_touch_q <= 1'b0;
       visit_way_q <= '0;
       exclude_q <= '0;
       plru_q <= '0;
@@ -300,7 +312,7 @@ module coherence_array #(
       o_resp_data <= '0;
       o_resp_data_valid <= 1'b0;
     end else begin
-      plru_hit_q <= select_valid && hit && !visit_q;
+      plru_hit_q <= select_valid && hit && !visit_q && !no_touch_q;
       insert_lfsr_q <= {
         insert_lfsr_q[14:0],
         insert_lfsr_q[15] ^ insert_lfsr_q[13] ^ insert_lfsr_q[12] ^ insert_lfsr_q[10]
@@ -328,6 +340,7 @@ module coherence_array #(
             visit_q <= i_req_visit;
             skip_data_q <= i_req_skip_data_on_hit;
             modified_data_q <= i_req_data_if_modified;
+            no_touch_q <= i_req_no_touch;
             visit_way_q <= i_req_way;
             exclude_q <= i_req_exclude;
             count_q <= CountBits'(TAG_READ_LATENCY);
@@ -391,14 +404,15 @@ module coherence_array #(
       if (phase_q == Init) f_plru_state[init_set_q] <= '0;
       else if (update_fire && i_update_insert && (!BIMODAL_INSERT || insert_lfsr_q[4:0] == 0))
         f_plru_state[set_q] <= touch(select_plru, i_update_way);
-      else if (select_valid && hit && !visit_q) f_plru_state[set_q] <= touch(select_plru, selected);
+      else if (select_valid && hit && !visit_q && !no_touch_q)
+        f_plru_state[set_q] <= touch(select_plru, selected);
     end
     if (i_rst) begin
       f_hit_seen_q  <= 1'b0;
       f_hit_value_q <= '0;
       f_hit_set_q   <= '0;
     end else begin
-      if (select_valid && hit && !visit_q) begin
+      if (select_valid && hit && !visit_q && !no_touch_q) begin
         f_hit_seen_q  <= 1'b1;
         f_hit_value_q <= touch(select_plru, selected);
         f_hit_set_q   <= set_q;
@@ -412,6 +426,7 @@ module coherence_array #(
       c_plru_hit_reply : cover (plru_hit_q && o_resp_valid && i_resp_ready);
       c_plru_hit_data : cover (plru_hit_q && phase_q == Data);
       c_plru_following_lookup : cover (f_hit_seen_q && request_fire && tag_raddr == f_hit_set_q);
+      c_plru_no_touch_hit : cover (select_valid && hit && !visit_q && no_touch_q);
     end
   end
 `endif
@@ -465,7 +480,8 @@ module coherence_array #(
     if (i_update_valid) assume (i_update_way < WAYS);
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
 `ifdef F_COH_ARRAY_PLRU_PROOF
-      p_plru_pending_exact : assert (plru_hit_q == $past(select_valid && hit && !visit_q));
+      p_plru_pending_exact :
+      assert (plru_hit_q == $past(select_valid && hit && !visit_q && !no_touch_q));
 `endif
       if (!$past(phase_q == Data && count_q == 1))
         p_data_changes_only_after_read :

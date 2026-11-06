@@ -13,6 +13,7 @@ $(ROOT)/hw/rtl/lib/cache/coherence_read_flags.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_read_select.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_read_payload.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_store_buffer.sv
+$(ROOT)/hw/rtl/lib/cache/coherence_read_stream.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_l1d.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_cluster_test_harness.sv
 $(ROOT)/hw/rtl/lib/cache/coherence_line_bridge.sv
