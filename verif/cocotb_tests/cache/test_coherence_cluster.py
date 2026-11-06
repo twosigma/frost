@@ -34,6 +34,7 @@ class Cluster:
         self.cycle = 0
         self.memory: dict[int, int] = {}
         self.responses: list[tuple[int, int, int, int]] = []
+        self.read_delay = 7
         self.cut_age = 0
         self.cut_admit_age = 0
         self.cut_admit_delay = 0
@@ -107,7 +108,7 @@ class Cluster:
                 )
                 self.responses.append(
                     (
-                        self.cycle + (31 if write else 7),
+                        self.cycle + (31 if write else self.read_delay),
                         self.get("o_mem_req_id"),
                         data,
                         address,
@@ -763,6 +764,9 @@ async def run_loads_in_flight(dut: Any, hold_grants: bool) -> int:
     """Return the peak live endpoint count over seven misses and a DMA write."""
     b = Cluster(dut)
     await b.reset()
+    # A first request's grant comes from its fill soon after the memory
+    # response, so misses overlap only behind a read of this length.
+    b.read_delay = 31
     base = 0x80000000
     # Six sectors in distinct L2 lines, then one sharing the first one's line.
     sectors = [base + 0x40 * n for n in range(6)] + [base + 0x20]

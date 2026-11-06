@@ -32,7 +32,9 @@ module coherence_home_completions #(
     parameter int unsigned PREFETCH_SLOTS = coherence_pkg::PrefetchIds,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
     localparam int unsigned SlotBits = SLOTS > 1 ? $clog2(SLOTS) : 1,
-    localparam int unsigned ResultBits = RESULT_SLOTS > 1 ? $clog2(RESULT_SLOTS) : 1
+    localparam int unsigned ResultBits = RESULT_SLOTS > 1 ? $clog2(RESULT_SLOTS) : 1,
+    // Result buffers: one per engine, then the forward buffer.
+    localparam int unsigned BufferBits = $clog2(RESULT_SLOTS + 1)
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -68,10 +70,21 @@ module coherence_home_completions #(
     input logic [SLOTS-1:0] i_wake,
     input logic [SLOTS-1:0] i_wake_error,
     input logic i_retry_park,
-    output logic [ResultBits-1:0] o_image_index,
+    // The buffer whose grant data i_image_data supplies: an engine's image,
+    // or the forwarded sector for index RESULT_SLOTS.
+    output logic [BufferBits-1:0] o_image_index,
     // One-hot form of o_image_index, all zero when no result awaits G.
-    output logic [RESULT_SLOTS-1:0] o_image_select,
+    output logic [RESULT_SLOTS:0] o_image_select,
     input logic [255:0] i_image_data,
+    // A fill forwards its line to its primary request, a parked GetS,
+    // LoadReserved or GetM: the slot named by the one-hot i_forward_slots
+    // takes the forward buffer, a completion pin on i_forward_way and its
+    // result at once. o_forward_ready reads registers only; the forwarded
+    // sector comes back through i_image_data.
+    input logic i_forward_valid,
+    output logic o_forward_ready,
+    input logic [SLOTS-1:0] i_forward_slots,
+    input logic [WayBits-1:0] i_forward_way,
     input logic i_retry_valid,
     input logic [5:0] i_retry_tid,
     input logic i_pin_valid,
@@ -98,6 +111,7 @@ module coherence_home_completions #(
 `ifdef COHERENCE_HOME_CONTROL
     input logic [SLOTS-1:0] i_fill_waiting,
     input logic [SLOTS-1:0] i_fill_seated,
+    input logic [SLOTS-1:0] i_fill_primary,
     input logic [RESULT_SLOTS-1:0] i_engine_busy,
     input logic [RESULT_SLOTS-1:0] i_engine_unpinned,
     input logic [RESULT_SLOTS-1:0] i_engine_pinned,
@@ -153,10 +167,16 @@ module coherence_home_completions #(
   logic [SLOTS-1:0][ADDR_WIDTH+14:0] releases;
   logic [SLOTS-1:0][8:0] work_identity;
   logic [SLOTS-1:0][ADDR_WIDTH-1:0] work_address;
-  logic [ResultBits-1:0] buffer_index_q[SLOTS];
+  // Buffers 0 to RESULT_SLOTS - 1 belong to the engines and hold their
+  // results; buffer RESULT_SLOTS, the forward buffer, holds a forwarded
+  // result. Only dispatch allocates an engine's buffer and only a forward
+  // allocates the forward buffer.
+  localparam int unsigned Buffers = RESULT_SLOTS + 1;
+  localparam int unsigned ForwardBuffer = RESULT_SLOTS;
+  logic [BufferBits-1:0] buffer_index_q[SLOTS];
   logic [WayBits-1:0] way_q[SLOTS];
-  logic [RESULT_SLOTS-1:0] buffer_live_q, buffer_live_next;
-  logic [ADDR_WIDTH+274:0] buffer_q[RESULT_SLOTS];
+  logic [Buffers-1:0] buffer_live_q, buffer_live_next;
+  logic [ADDR_WIDTH+274:0] buffer_q[Buffers];
   logic free_slot, duplicate, free_buffer, incoming_prefetch;
   logic [  SlotBits-1:0] free_slot_index;
   logic [ResultBits-1:0] free_buffer_index;
@@ -182,17 +202,17 @@ module coherence_home_completions #(
   // grant_next_q, and grant_buffer_q is the selected grant's buffer.
   logic grant_selected_q, grant_found, grant_after, grant_zero;
   logic [SlotBits-1:0] grant_slot_q, grant_pick;
-  logic [ResultBits-1:0] grant_next_q, grant_buffer_q;
-  logic [RESULT_SLOTS-1:0] buffer_ready_q, buffer_zero_q, buffer_later_q;
-  logic [RESULT_SLOTS-1:0] buffer_later_first, buffer_ready_first;
-  (* keep = "true" *) logic [RESULT_SLOTS-1:0] buffer_later;
+  logic [BufferBits-1:0] grant_next_q, grant_buffer_q;
+  logic [Buffers-1:0] buffer_ready_q, buffer_zero_q, buffer_later_q;
+  logic [Buffers-1:0] buffer_later_first, buffer_ready_first;
+  (* keep = "true" *) logic [Buffers-1:0] buffer_later;
   // G readiness depends on the clients' own comparisons with the presented
   // grant, so every register it changes takes it as the last term: the
   // grant's slot and buffer decodes, and each register's next state without
   // the grant, are kept nodes.
   (* keep = "true" *) logic [SLOTS-1:0] grant_slot_held, result_valid_hold, buffer_owned_hold;
-  (* keep = "true" *) logic [RESULT_SLOTS-1:0] grant_buffer_held, buffer_live_hold;
-  (* keep = "true" *) logic [RESULT_SLOTS-1:0] buffer_ready_hold;
+  (* keep = "true" *) logic [Buffers-1:0] grant_buffer_held, buffer_live_hold;
+  (* keep = "true" *) logic [Buffers-1:0] buffer_ready_hold;
   // U readiness also depends on the clients' comparisons, so the registers a
   // release clears take it last the same way: kept next states without a
   // release on the edge.
@@ -203,7 +223,9 @@ module coherence_home_completions #(
   logic result_matches;
   logic [SLOTS-1:0] result_hit;
   logic [SlotBits-1:0] result_slot;
-  logic accept_request, accept_work, accept_result, accept_grant;
+  logic accept_request, accept_work, accept_result, accept_grant, accept_forward;
+  // The slot a forward names on its accepting edge, else zero.
+  logic [SLOTS-1:0] forwarded;
 
   function automatic logic [2:0] grant_opcode(input coh_g_t packet);
     grant_opcode = packet.opcode;
@@ -217,6 +239,9 @@ module coherence_home_completions #(
   function automatic logic [ADDR_WIDTH-1:0] request_addr(input coh_d_t packet);
     request_addr = packet.addr;
   endfunction
+  function automatic logic [3:0] request_opcode(input coh_d_t packet);
+    request_opcode = packet.opcode;
+  endfunction
 
   assign incoming = i_d;
   assign result = i_result;
@@ -224,6 +249,10 @@ module coherence_home_completions #(
   assign accept_work = o_work_offer && i_work_ready;
   assign accept_result = i_result_valid && o_result_ready;
   assign accept_grant = o_g_valid && i_g_ready;
+  // The forward buffer is free from its G until the next forward.
+  assign o_forward_ready = !i_fatal_stop && !buffer_live_q[ForwardBuffer];
+  assign accept_forward = i_forward_valid && o_forward_ready;
+  assign forwarded = {SLOTS{accept_forward}} & i_forward_slots;
   // The slot whose G is accepted. A prefetch slot's G is taken whenever it
   // is presented (see PREFETCH_SLOTS), so only the other slots wait on G
   // readiness.
@@ -511,13 +540,13 @@ module coherence_home_completions #(
     assign prefetch_work_found_q = 1'b0;
     assign prefetch_work_slot_q  = '0;
   end
-  // Grants rotate among the buffers holding ready results: the lowest ready
-  // buffer at or after grant_next_q, else the lowest ready buffer. The pick is
-  // one-hot and selects the buffer's payload directly; the payload's tid is
-  // the slot.
+  // Grants rotate among the buffers holding ready results, the forward
+  // buffer included: the lowest ready buffer at or after grant_next_q, else
+  // the lowest ready buffer. The pick is one-hot and selects the buffer's
+  // payload directly; the payload's tid is the slot.
   assign buffer_later = buffer_ready_q & buffer_later_q;
   always_comb begin
-    for (int index = 0; index < RESULT_SLOTS; index++) begin
+    for (int index = 0; index < Buffers; index++) begin
       buffer_later_first[index] = buffer_later[index];
       buffer_ready_first[index] = buffer_ready_q[index];
       for (int lower = 0; lower < index; lower++) begin
@@ -533,11 +562,28 @@ module coherence_home_completions #(
     grant_zero = |(o_image_select & buffer_zero_q);
     grant_payload = '0;
     o_image_index = '0;
-    for (int index = 0; index < RESULT_SLOTS; index++) begin
+    for (int index = 0; index < Buffers; index++) begin
       grant_payload |= {(ADDR_WIDTH + 275) {o_image_select[index]}} & buffer_q[index];
-      if (o_image_select[index]) o_image_index |= ResultBits'(index);
+      if (o_image_select[index]) o_image_index |= BufferBits'(index);
     end
     grant_pick = SlotBits'(grant_payload.tid);
+  end
+  // The forwarded result: the named slot's identity and address, GrantM for a
+  // GetM and GrantS for a GetS or LoadReserved, with no error. Like every
+  // buffered result it stores no data.
+  coh_g_t forward_result;
+  always_comb begin
+    forward_result = '0;
+    forward_result.opcode = coherence_pkg::GrantS;
+    for (int slot = 0; slot < SLOTS; slot++) begin
+      if (i_forward_slots[slot]) begin
+        forward_result.q |= work_identity[slot];
+        forward_result.tid |= 6'(slot);
+        forward_result.addr |= work_address[slot];
+        if (request_opcode(work[slot]) == coherence_pkg::GetM)
+          forward_result.opcode = coherence_pkg::GrantM;
+      end
+    end
   end
 
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_endpoint
@@ -609,14 +655,23 @@ module coherence_home_completions #(
       .o_payload(o_u)
   );
 
-  for (genvar buffer_idx = 0; buffer_idx < RESULT_SLOTS; buffer_idx++) begin : gen_buffer_lifetime
-    wire allocated = accept_work && work_buffer_q == ResultBits'(buffer_idx);
-    wire retried = i_retry_valid && int'(i_retry_tid) < SLOTS &&
-        buffer_index_q[SlotBits'(i_retry_tid)] == ResultBits'(buffer_idx);
-    wire written = accept_result && buffer_index_q[result_slot] == ResultBits'(buffer_idx);
+  for (genvar buffer_idx = 0; buffer_idx < Buffers; buffer_idx++) begin : gen_buffer_lifetime
+    logic allocated, retried, written;
+    if (buffer_idx == ForwardBuffer) begin : gen_forward_buffer
+      // A forward allocates the buffer and writes its result on one edge. A
+      // forwarded slot holds a pin and a result, so it never retries.
+      assign allocated = accept_forward;
+      assign retried   = 1'b0;
+      assign written   = accept_forward;
+    end else begin : gen_engine_buffer
+      assign allocated = accept_work && work_buffer_q == ResultBits'(buffer_idx);
+      assign retried = i_retry_valid && int'(i_retry_tid) < SLOTS &&
+          buffer_index_q[SlotBits'(i_retry_tid)] == BufferBits'(buffer_idx);
+      assign written = accept_result && buffer_index_q[result_slot] == BufferBits'(buffer_idx);
+    end
     // The selected grant's buffer is its slot's (buffer_index_q[grant_slot_q]).
     assign grant_buffer_held[buffer_idx] = grant_selected_q &&
-        grant_buffer_q == ResultBits'(buffer_idx);
+        grant_buffer_q == BufferBits'(buffer_idx);
     assign buffer_live_hold[buffer_idx] = (buffer_live_q[buffer_idx] || allocated) && !retried;
     assign buffer_live_next[buffer_idx] = buffer_live_hold[buffer_idx] &&
         !(grant_buffer_held[buffer_idx] && i_g_ready);
@@ -636,7 +691,8 @@ module coherence_home_completions #(
   // requests it orders behind; a handed or released predecessor leaves.
   // READY lasts from a wake until the slot's dispatch or release. A DMA
   // request is handed at its result until its release. The issue, error,
-  // wake error, count and pin flags also clear at the slot's release.
+  // wake error, count and pin flags also clear at the slot's release. A
+  // forward issues and pins its slot as a dispatch and a hit decision do.
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_release_hold
     assign handed_hold[slot] = handed_q[slot] ||
         (i_result_valid && result_hit[slot] && work_identity[slot][8:7] == 2'd2);
@@ -650,9 +706,11 @@ module coherence_home_completions #(
     wire retried = i_retry_valid && i_retry_tid == 6'(slot);
     wire counted = i_count_valid && i_count_tid == 6'(slot);
     wire pinned = i_pin_valid && i_pin_tid == 6'(slot);
-    assign ready_hold[slot]  = ready_q[slot] && !dispatched;
-    assign issued_hold[slot] = (issued_q[slot] || dispatched) && !retried;
-    assign error_hold[slot]  = i_result_valid && result_hit[slot] ? result.error : error_q[slot];
+    assign ready_hold[slot] = ready_q[slot] && !dispatched;
+    assign issued_hold[slot] = (issued_q[slot] || dispatched || forwarded[slot]) && !retried;
+    // A forwarded result carries no error.
+    assign error_hold[slot] = forwarded[slot] ? 1'b0 :
+        i_result_valid && result_hit[slot] ? result.error : error_q[slot];
     // Wake, count and pin events take priority over release clearing.
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
@@ -669,16 +727,19 @@ module coherence_home_completions #(
         wake_error_q[slot] <= i_wake[slot] ? i_wake_error[slot] :
             wake_error_q[slot] && !release_fire[slot];
         counted_q[slot] <= counted || (counted_q[slot] && !release_fire[slot]);
-        pin_valid_q[slot] <= pinned || (pin_valid_q[slot] && !release_fire[slot]);
+        pin_valid_q[slot] <= pinned || forwarded[slot] ||
+            (pin_valid_q[slot] && !release_fire[slot]);
       end
     end
   end
   // A slot's result waits from its result until its G is taken; its buffer
-  // is owned from its issue until that G or a retry.
+  // is owned from its issue until that G or a retry. A forward brings the
+  // result and the buffer together.
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_result_state
-    assign result_valid_hold[slot] = result_valid_q[slot] || (i_result_valid && result_hit[slot]);
+    assign result_valid_hold[slot] = result_valid_q[slot] ||
+        (i_result_valid && result_hit[slot]) || forwarded[slot];
     assign buffer_owned_hold[slot] = (buffer_owned_q[slot] ||
-        (accept_work && work_slot_q == SlotBits'(slot))) &&
+        (accept_work && work_slot_q == SlotBits'(slot)) || forwarded[slot]) &&
         !(i_retry_valid && i_retry_tid == 6'(slot));
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
@@ -714,7 +775,7 @@ module coherence_home_completions #(
         buffer_index_q[slot] <= '0;
         way_q[slot] <= '0;
       end
-      for (int index = 0; index < RESULT_SLOTS; index++) buffer_q[index] <= '0;
+      for (int index = 0; index < Buffers; index++) buffer_q[index] <= '0;
     end else begin
       if (!work_selected_q && work_found && free_buffer) begin
         work_selected_q <= 1'b1;
@@ -728,7 +789,7 @@ module coherence_home_completions #(
         for (int position = 0; position < WorkPositions; position++)
         work_later_q[position] <= work_position == SlotBits'(WorkPositions - 1) ||
             position > int'(work_position);
-        buffer_index_q[work_slot_q] <= work_buffer_q;
+        buffer_index_q[work_slot_q] <= BufferBits'(work_buffer_q);
       end
       if (accept_result) begin
         buffer_q[buffer_index_q[result_slot]] <= {
@@ -736,6 +797,10 @@ module coherence_home_completions #(
         };
         buffer_zero_q[buffer_index_q[result_slot]] <=
             result.error || result.opcode == coherence_pkg::GrantAck;
+      end
+      if (accept_forward) begin
+        buffer_q[ForwardBuffer] <= forward_result;
+        buffer_zero_q[ForwardBuffer] <= 1'b0;
       end
       if (!grant_selected_q && !grant_found && accept_result) begin
         grant_selected_q <= 1'b1;
@@ -754,10 +819,9 @@ module coherence_home_completions #(
       end
       if (accept_grant) begin
         grant_selected_q <= 1'b0;
-        grant_next_q <= grant_buffer_q == ResultBits'(RESULT_SLOTS - 1) ? '0 :
-            grant_buffer_q + 1'b1;
-        for (int index = 0; index < RESULT_SLOTS; index++)
-        buffer_later_q[index] <= grant_buffer_q == ResultBits'(RESULT_SLOTS - 1) ||
+        grant_next_q <= grant_buffer_q == BufferBits'(Buffers - 1) ? '0 : grant_buffer_q + 1'b1;
+        for (int index = 0; index < Buffers; index++)
+        buffer_later_q[index] <= grant_buffer_q == BufferBits'(Buffers - 1) ||
             index > int'(grant_buffer_q);
       end
       handed_q <= handed_hold & ~release_fire;
@@ -775,6 +839,11 @@ module coherence_home_completions #(
         if (i_wake[slot]) parked_q[slot] <= 1'b0;
         if (i_pin_valid && i_pin_tid == 6'(slot)) way_q[slot] <= i_pin_way;
         if (i_retry_valid && i_retry_tid == 6'(slot)) parked_q[slot] <= i_retry_park;
+        if (forwarded[slot]) begin
+          parked_q[slot] <= 1'b0;
+          buffer_index_q[slot] <= BufferBits'(ForwardBuffer);
+          way_q[slot] <= i_forward_way;
+        end
       end
     end
   end
@@ -786,10 +855,11 @@ module coherence_home_completions #(
     initial $fatal(1, "coherence_home_completions: invalid capacity");
   end
 `ifndef SYNTHESIS
-  logic [RESULT_SLOTS-1:0] reference_buffer_live;
+  logic [Buffers-1:0] reference_buffer_live;
   always_comb begin
     reference_buffer_live = buffer_live_q;
-    if (accept_work) reference_buffer_live[work_buffer_q] = 1'b1;
+    if (accept_work) reference_buffer_live[BufferBits'(work_buffer_q)] = 1'b1;
+    if (accept_forward) reference_buffer_live[ForwardBuffer] = 1'b1;
     if (accept_grant) reference_buffer_live[buffer_index_q[grant_slot_q]] = 1'b0;
     for (int slot = 0; slot < SLOTS; slot++)
     if (i_retry_valid && i_retry_tid == 6'(slot))
@@ -879,17 +949,17 @@ module coherence_home_completions #(
   end
   // The buffers holding ready results, and the first of them at or after
   // grant_next_q in circular order.
-  logic [RESULT_SLOTS-1:0] reference_buffer_ready;
-  logic [  ResultBits-1:0] reference_grant_buffer;
+  logic [Buffers-1:0] reference_buffer_ready;
+  logic [BufferBits-1:0] reference_grant_buffer;
   always_comb begin
     reference_buffer_ready = '0;
     for (int slot = 0; slot < SLOTS; slot++)
     if (result_valid_q[slot] && buffer_owned_q[slot])
       reference_buffer_ready[buffer_index_q[slot]] = 1'b1;
     reference_grant_buffer = '0;
-    for (int offset = RESULT_SLOTS - 1; offset >= 0; offset--)
-    if (buffer_ready_q[(int'(grant_next_q)+offset)%RESULT_SLOTS])
-      reference_grant_buffer = ResultBits'((int'(grant_next_q) + offset) % RESULT_SLOTS);
+    for (int offset = Buffers - 1; offset >= 0; offset--)
+    if (buffer_ready_q[(int'(grant_next_q)+offset)%Buffers])
+      reference_grant_buffer = BufferBits'((int'(grant_next_q) + offset) % Buffers);
   end
   always_ff @(posedge i_clk) begin
     if (sim_reset_seen_q && !i_rst) begin
@@ -908,14 +978,14 @@ module coherence_home_completions #(
           buffer_owned_q[slot] && !result_valid_q[slot] &&
           result.opcode <= coherence_pkg::GrantFail && result.q == work_identity[slot] &&
           result.addr == work_address[slot]));
-      assert (int'(grant_next_q) < RESULT_SLOTS && int'(work_next_q) < WorkPositions);
+      assert (int'(grant_next_q) < Buffers && int'(work_next_q) < WorkPositions);
       for (int position = 0; position < WorkPositions; position++)
       assert (work_later_q[position] == (position >= int'(work_next_q)));
       // The selector picks an eligible slot.
       if (!work_selected_q && work_found && free_buffer)
         assert (int'(work_pick) < SLOTS && work_eligible[work_pick]);
       // A ready buffer holds the result of the slot that owns it.
-      for (int index = 0; index < RESULT_SLOTS; index++) begin
+      for (int index = 0; index < Buffers; index++) begin
         assert (buffer_later_q[index] == (index >= int'(grant_next_q)));
         assert (buffer_ready_q[index] == reference_buffer_ready[index]);
         if (buffer_ready_q[index])
@@ -925,7 +995,7 @@ module coherence_home_completions #(
       end
       assert (grant_found == (|result_valid_q));
       if (grant_found) begin
-        assert (o_image_select == RESULT_SLOTS'(1) << reference_grant_buffer);
+        assert (o_image_select == Buffers'(1) << reference_grant_buffer);
         assert (o_image_index == reference_grant_buffer);
         assert (grant_payload == buffer_q[reference_grant_buffer]);
         assert (int'(grant_pick) < SLOTS && result_valid_q[grant_pick] &&
@@ -951,8 +1021,33 @@ module coherence_home_completions #(
       assert ($countones(buffer_live_q) == $countones(buffer_owned_q));
       if (accept_work) begin
         assert (predecessors_q[work_slot_q] == 0);
-        assert (!buffer_live_q[work_buffer_q] && !parked_q[work_slot_q]);
+        assert (!buffer_live_q[BufferBits'(work_buffer_q)] && !parked_q[work_slot_q]);
+        assert (int'(work_buffer_q) < RESULT_SLOTS);
       end
+      // A forward names one parked GetS, LoadReserved or GetM that holds no
+      // buffer, pin or result and has no other event on the edge; the slot
+      // that owns the forward buffer holds its pin and has no engine.
+      if (i_forward_valid) begin
+        assert ($onehot(i_forward_slots) && int'(i_forward_way) < WAYS);
+        for (int slot = 0; slot < SLOTS; slot++)
+        if (i_forward_slots[slot]) begin
+          assert (work_valid[slot] && parked_q[slot] && !issued_q[slot] && !ready_q[slot]);
+          assert (!buffer_owned_q[slot] && !result_valid_q[slot] && !pin_valid_q[slot]);
+          assert (!slot_prefetch[slot] && !wake_error_q[slot] && predecessors_q[slot] == 0);
+          assert (request_opcode(
+              work[slot]
+          ) == coherence_pkg::GetS || request_opcode(
+              work[slot]
+          ) == coherence_pkg::LoadReserved || request_opcode(
+              work[slot]
+          ) == coherence_pkg::GetM);
+          assert (!i_wake[slot] && !i_park[slot]);
+          assert (!(work_selected_q && work_slot_q == SlotBits'(slot)));
+        end
+      end
+      for (int slot = 0; slot < SLOTS; slot++)
+      if (buffer_owned_q[slot] && buffer_index_q[slot] == BufferBits'(ForwardBuffer))
+        assert (pin_valid_q[slot]);
       for (int slot = 0; slot < SLOTS; slot++) begin
         assert (!predecessors_q[slot][slot]);
         if (i_park[slot]) assert (o_waiting[slot]);
@@ -976,7 +1071,7 @@ module coherence_home_completions #(
         if (release_fire[slot]) assert (!buffer_owned_q[slot]);
         if (i_retry_valid && i_retry_tid == 6'(slot))
           assert (issued_q[slot] && buffer_owned_q[slot] && !pin_valid_q[slot] &&
-              !result_valid_q[slot]);
+              !result_valid_q[slot] && int'(buffer_index_q[slot]) < RESULT_SLOTS);
         if (i_pin_valid && i_pin_tid == 6'(slot))
           assert (issued_q[slot] && buffer_owned_q[slot] && !result_valid_q[slot] &&
               !pin_valid_q[slot] && int'(i_pin_way) < WAYS);
@@ -999,11 +1094,32 @@ module coherence_home_completions #(
       assert ((i_fill_seated & (~work_valid | pin_valid_q | result_valid_q)) == 0);
       assert ((i_fill_seated & wake_error_q) == 0);
       assert ((wake_error_q & ~(ready_q | issued_q)) == 0);
+      // A fill's pending primary is a parked GetS, LoadReserved or GetM that
+      // holds no buffer, pin or result, and only a pending primary forwards.
+      assert ((i_fill_primary & (~work_valid | ~parked_q | issued_q | ready_q | buffer_owned_q |
+          result_valid_q | pin_valid_q | wake_error_q | slot_prefetch)) == 0);
+      // A primary was dispatched before it parked, so no earlier request of
+      // its sector remains.
+      assert ((issued_q & ~live) == 0 && (issued_q & ready_q) == 0);
+      for (int slot = 0; slot < SLOTS; slot++)
+      if (issued_q[slot]) assert (predecessors_q[slot] == 0);
+      for (int slot = 0; slot < SLOTS; slot++)
+      if (i_fill_primary[slot]) begin
+        assert (request_opcode(
+            work[slot]
+        ) == coherence_pkg::GetS || request_opcode(
+            work[slot]
+        ) == coherence_pkg::LoadReserved || request_opcode(
+            work[slot]
+        ) == coherence_pkg::GetM);
+        assert (predecessors_q[slot] == 0);
+      end
+      if (i_forward_valid) assert ((i_forward_slots & ~i_fill_primary) == 0);
       if (grant_selected_q) assert (result_valid_q[grant_slot_q] && buffer_owned_q[grant_slot_q]);
       if (work_selected_q) begin
         assert (work_valid[work_slot_q] && !issued_q[work_slot_q]);
         assert (!buffer_owned_q[work_slot_q]);
-        assert (!buffer_live_q[work_buffer_q]);
+        assert (!buffer_live_q[BufferBits'(work_buffer_q)]);
       end
       for (int engine = 0; engine < RESULT_SLOTS; engine++) begin
         if (i_engine_busy[engine]) begin
@@ -1014,7 +1130,7 @@ module coherence_home_completions #(
           if (i_engine_unpinned[engine]) assert (!pin_valid_q[SlotBits'(i_engine_tid[engine])]);
           if (i_engine_pinned[engine]) assert (pin_valid_q[SlotBits'(i_engine_tid[engine])]);
           assert (i_engine_initial_error[engine] == wake_error_q[SlotBits'(i_engine_tid[engine])]);
-          assert (buffer_index_q[SlotBits'(i_engine_tid[engine])] == ResultBits'(engine));
+          assert (buffer_index_q[SlotBits'(i_engine_tid[engine])] == BufferBits'(engine));
           assert (work_address[SlotBits'(i_engine_tid[engine])] == i_engine_addr[engine]);
         end
       end
@@ -1062,6 +1178,27 @@ module coherence_home_completions #(
         assume (!i_pin_valid || i_pin_tid != i_retry_tid);
         assume (!accept_result || result.tid != i_retry_tid);
       end
+      // The home's side of the forward contract (its composed proof asserts
+      // it): one pending primary, parked with no buffer, pin, result or
+      // other event on the edge.
+      if (i_forward_valid) begin
+        assume ($onehot(i_forward_slots) && int'(i_forward_way) < WAYS);
+        for (int slot = 0; slot < SLOTS; slot++)
+        if (i_forward_slots[slot]) begin
+          assume (work_valid[slot] && parked_q[slot] && !issued_q[slot] && !ready_q[slot]);
+          assume (!buffer_owned_q[slot] && !result_valid_q[slot] && !pin_valid_q[slot]);
+          assume (!slot_prefetch[slot] && !wake_error_q[slot] && predecessors_q[slot] == 0);
+          assume (request_opcode(
+              work[slot]
+          ) == coherence_pkg::GetS || request_opcode(
+              work[slot]
+          ) == coherence_pkg::LoadReserved || request_opcode(
+              work[slot]
+          ) == coherence_pkg::GetM);
+          assume (!i_wake[slot] && !i_park[slot]);
+          assume (!(work_selected_q && work_slot_q == SlotBits'(slot)));
+        end
+      end
     end
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
       for (int slot = 0; slot < SLOTS; slot++) begin
@@ -1096,6 +1233,9 @@ module coherence_home_completions #(
       // live prefetch.
       cover (accept_work && o_work_nofill);
       cover (|(handed_q & live) && |(slot_prefetch & live));
+      // A forwarded grant taken, and a forward beside an engine result.
+      cover (accept_grant && grant_buffer_q == BufferBits'(ForwardBuffer));
+      cover (accept_forward && accept_result);
     end
   end
   if (PREFETCH_SLOTS != 0) begin : gen_prefetch_slot_cover

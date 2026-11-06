@@ -156,7 +156,7 @@ CALIBRATION_OUTPUT_VARIABLES = (
     "FROST_CALIBRATION_COUNTERS_PATH",
     "FROST_CALIBRATION_MANIFEST_PATH",
 )
-DDR_MODEL_LATENCY_RANGE = (1, 80)  # cycles, inclusive; the model's default is 30
+DDR_MODEL_LATENCY_RANGE = (1, 160)  # cycles, inclusive; the model's default is 80
 DDR_MODEL_JITTER_CHOICES = (0, 3, 7, 15, 31)
 
 
@@ -540,6 +540,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ddr_heap_test",
         nic_mac_clocks=False,
         description="Large heap allocations in cached DDR",
+        # About 600,000 cycles at the seed draw's longest DDR latency (160).
+        extra_env=(("COCOTB_MAX_CYCLES", "800000"),),
     ),
     "ddr_mlp_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -2450,8 +2452,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherence_home_completions": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home_completions",
         hdl_toplevel_module="coherence_home_completions",
-        description="Independent results, completion pins, same-sector predecessors, and "
-        "prefetch slots",
+        description="Independent results, completion pins, same-sector predecessors, "
+        "forwarded results, and prefetch slots",
         verilator_extra_args=("--assert", "-GCACHE_BYTES=1024"),
     ),
     "coherence_array_reset_bram_sweep": CocotbRunConfig(
@@ -2644,7 +2646,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="coherence_home",
         description=(
             "Independent completions, dirty recalls, way pins, victim locks, "
-            "prefetches, and streaming placement"
+            "prefetches, grants forwarded from fills, and streaming placement"
         ),
         verilator_extra_args=(
             "--assert",

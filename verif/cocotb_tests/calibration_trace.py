@@ -63,7 +63,7 @@ SymbolCode = Callable[[str, str | None], dict[int, tuple[int, int]]]
 # The DDR model settings that tests/Makefile and frost.sv give a run that
 # does not set them.
 DDR_MODEL_DEFAULTS = {
-    "DDR_MODEL_LATENCY": 30,
+    "DDR_MODEL_LATENCY": 80,
     "DDR_MODEL_LATENCY_JITTER": 0,
     "DDR_MODEL_REORDER": 0,
 }

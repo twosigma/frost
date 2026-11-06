@@ -15,6 +15,7 @@ proof: aigsmt boolector
 covers: mode cover
 covers: depth 40
 timeout 180
+proof: timeout 600
 partition2: timeout 900
 
 [engines]
