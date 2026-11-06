@@ -1,6 +1,5 @@
-# Reset terms outside always_ff blocks, as `path: key`. tests/test_combinational_reset.py
-# keeps this list equal to the RTL. The key is the assigned signal, the instance
-# port, or the combinational condition that holds the reset term.
+# Reset terms outside always_ff blocks, as `path: key`; the key is the signal, port or
+# condition holding the term. A term with no reason beside it in the RTL may move to its flop.
 hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/early_misprediction_recovery.sv: if (i_rst)
 hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv: tage_pd_accept
 hw/rtl/cpu_and_mem/cpu/cpu_ooo/frontend_control/decoded_bundle_queue.sv: nonempty_next
