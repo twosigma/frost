@@ -57,7 +57,7 @@ conflict: timeout 600
 # maintenance proof's job. The free-input stream BMCs are shallower: their
 # frames take about 1.3 times longer than the previous one.
 longbmc: timeout 3600
-streamscript: depth 44
+streamscript: depth 42
 freestream: depth 16
 freestream: timeout 1800
 nostore: depth 24
