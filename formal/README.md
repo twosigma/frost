@@ -30,7 +30,7 @@ Other task names are parameter or width variants of these, such as
 `bmc_xlen32` or `bmc_xilinx`. Each target and task is a separate SymbiYosys
 run. The runner's default timeout is 40 minutes. `csr_file:bmc`,
 `csr_file:bmc_perf_off`, and `reorder_buffer:bmc` each have 90 minutes.
-`coherent_hart_cache:coh_hart_maint_prove`,
+`coherent_hart_cache:coh_hart_maint_prove`, `coh_hart_maint_four_bmc`,
 `coherence_store_boundary:bmc_four`, `cover_four` and `bmc_intervening` and
 `coherence_l1d:coh_l1d_multi_bmc` have 120 minutes,
 `coherence_l1d:coh_l1d_stream_bmc` has 180 minutes, and
