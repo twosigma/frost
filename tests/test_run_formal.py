@@ -36,16 +36,20 @@ FORMAL_DIR = "formal"
 
 # Per-task hang backstop in seconds; proof depth is set by each .sby file.
 SBY_TASK_TIMEOUT_S = 2400
-# The unchanged ROB BMC can take about an hour on a shared runner, and the
+# The unchanged ROB BMC can take about an hour on a shared runner, the
 # hart maintenance proof, which models buffered store hits, can take over an
-# hour on a loaded machine. These tasks run in separate CI jobs. Their proof
-# depth and input contracts stay unchanged; only the solver's wall-clock
-# allowance differs.
+# hour on a loaded machine, and the eight-endpoint L1D stream BMC can take
+# longer. These tasks run in separate CI jobs. The three-endpoint L1D
+# control BMC can take about half an hour on a loaded machine and stays in
+# the Coherence job. Their proof depth and input contracts stay unchanged;
+# only the solver's wall-clock allowance differs.
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "bmc"): 5400,
     ("csr_file", "bmc_perf_off"): 5400,
     ("reorder_buffer", "bmc"): 5400,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
+    ("coherence_l1d", "coh_l1d_stream_bmc"): 10800,
+    ("coherence_l1d", "coh_l1d_multi_bmc"): 3600,
 }
 
 
@@ -232,7 +236,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_read_payload.sby",
-        "Buffered coherent read payloads equal allocation-only storage.",
+        "Buffered coherent read payloads and exports equal independent reference storage.",
         tasks=("coh_read_payload_prove", "coh_read_payload64_prove"),
     ),
     FormalTarget(
@@ -266,11 +270,22 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "coherence_read_stream.sby",
+        "Ascending demand streams stay within the look-ahead window and physical page.",
+        tasks=("stream_prove", "stream_cover"),
+    ),
+    FormalTarget(
         "coherence_l1d.sby",
         "The coherent L1 preserves pending stores, cuts, and exact atomic writes.",
         tasks=(
+            "coh_l1d_conflict_prove",
+            "coh_l1d_conflict_multi_prove",
+            "coh_l1d_conflict_stream_prove",
             "coh_l1d_bmc",
             "coh_l1d_multi_bmc",
+            "coh_l1d_stream_bmc",
+            "coh_l1d_stream_cover",
+            "coh_l1d_turn_cover",
             "coh_l1d_local_prove",
             "coh_l1d_local_multi_prove",
             "coh_l1d_local_sector_prove",
@@ -370,8 +385,12 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_array.sby",
-        "A watched byte preserves masked updates across serialized array operations.",
+        "Serialized array byte values and exact conditional data selection.",
         tasks=(
+            "coh_array_select_prove",
+            "coh_array_select4_prove",
+            "coh_array_select56_prove",
+            "coh_array_select4_56_prove",
             "coh_array_bmc",
             "coh_array_uram_bmc",
             "coh_array_cover",
@@ -424,6 +443,13 @@ FORMAL_TARGETS = [
         tasks=(
             "request_prove",
             "request_cover",
+            "request_equiv32",
+            "request_equiv56",
+            "request_equiv_slot0",
+            "request_equiv_wide_slot0",
+            "request_equiv_ptw",
+            "request_equiv_wide_ptw",
+            "request_equiv_cover",
             "home_prove",
             "home_cover",
             "put_prove",
@@ -1217,6 +1243,26 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("coh_l1d_conflict_prove", "Guarded conflict identity with one endpoint."),
+    ("coh_l1d_conflict_multi_prove", "Guarded conflict identity with three endpoints."),
+    (
+        "coh_l1d_conflict_stream_prove",
+        "Guarded conflict identity with eight endpoints and streaming enabled.",
+    ),
+    (
+        "stream_prove",
+        "Demand stream confirmation, cancellation and bounded sector cursor.",
+    ),
+    (
+        "stream_cover",
+        "Page-end saturation and simultaneous demand advance and hint consumption.",
+    ),
+    (
+        "coh_l1d_stream_bmc",
+        "Speculative endpoint ownership and demand-state isolation.",
+    ),
+    ("coh_l1d_stream_cover", "Two speculative endpoints and demand attachment."),
+    ("coh_l1d_turn_cover", "A demand retry between buffered load grants."),
     (
         "pf_pause_prove",
         "Prefetch pause equals live DMA identities and recent activity.",
@@ -1417,6 +1463,10 @@ SBY_TASKS = [
         "Arbitrary-byte store and probe images in the production array.",
     ),
     ("coh_l1d_cover", "Buffered stores, ordered installation, probes and errors."),
+    ("coh_array_select_prove", "Conditional data selection with one way."),
+    ("coh_array_select4_prove", "Conditional data selection with four ways."),
+    ("coh_array_select56_prove", "Conditional data selection at 56 address bits."),
+    ("coh_array_select4_56_prove", "Four-way conditional data selection at 56 bits."),
     ("coh_array_cover", "Masked byte updates and tag-only hits in block RAM."),
     ("coh_array_uram_cover", "Masked byte updates and tag-only hits in UltraRAM."),
     ("coh_array_plru_prove", "Deferred hit replacement equality in block RAM."),
@@ -1737,6 +1787,13 @@ SBY_TASKS = [
     ("layout56", "Coherent channel layout at 56 physical address bits"),
     ("request_prove", "Unbounded coherent endpoint safety"),
     ("request_cover", "Coherent endpoint completion reachability"),
+    ("request_equiv32", "Request endpoint phase and payload equivalence at 32 bits"),
+    ("request_equiv56", "Request endpoint phase and payload equivalence at 56 bits"),
+    ("request_equiv_slot0", "Request endpoint slot-zero phase equivalence"),
+    ("request_equiv_wide_slot0", "Wide request endpoint slot-zero phase equivalence"),
+    ("request_equiv_ptw", "PTW request endpoint phase equivalence"),
+    ("request_equiv_wide_ptw", "Wide PTW request endpoint phase equivalence"),
+    ("request_equiv_cover", "Request endpoint complete lifecycle reachability"),
     ("home_prove", "Unbounded coherent endpoint safety"),
     ("home_cover", "Coherent endpoint completion reachability"),
     ("put_prove", "Unbounded coherent endpoint safety"),
@@ -2417,6 +2474,8 @@ def test_fatal_frame_validation(
         ("csr_file", "bmc_perf_off", 5400),
         ("reorder_buffer", "bmc", 5400),
         ("coherent_hart_cache", "coh_hart_maint_prove", 7200),
+        ("coherence_l1d", "coh_l1d_stream_bmc", 10800),
+        ("coherence_l1d", "coh_l1d_multi_bmc", 3600),
         ("csr_file", "cover", 2400),
         ("reorder_buffer", "cover", 2400),
         ("line_port_axi_bridge", "bmc_128g", 2400),

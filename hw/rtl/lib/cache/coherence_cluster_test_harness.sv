@@ -29,7 +29,8 @@ module coherence_cluster_test_harness #(
     parameter int unsigned HOME_COMPLETIONS = coherence_pkg::completion_count(1),
     parameter int unsigned HOME_RESULTS = 8,
     parameter int unsigned HOME_FILLS = 8,
-    parameter int unsigned HOME_PREFETCH_SLOTS = coherence_pkg::PrefetchIds
+    parameter int unsigned HOME_PREFETCH_SLOTS = coherence_pkg::PrefetchIds,
+    parameter bit L1D_STREAM_PREFETCH = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -176,7 +177,8 @@ module coherence_cluster_test_harness #(
       .MISSES(L1D_MISSES),
       .HOME_CACHE_BYTES(HOME_CACHE_BYTES),
       .HOME_WAYS(HOME_WAYS),
-      .HOME_LINE_BYTES(LINE_BYTES)
+      .HOME_LINE_BYTES(LINE_BYTES),
+      .STREAM_PREFETCH(L1D_STREAM_PREFETCH)
   ) hart (
       .i_clk(i_clk),
       .i_rst(i_rst),

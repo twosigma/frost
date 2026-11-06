@@ -1,0 +1,21 @@
+[tasks]
+stream_prove
+stream_cover
+
+[options]
+stream_prove: mode prove
+stream_prove: depth 24
+stream_cover: mode cover
+stream_cover: depth 24
+timeout 600
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv coherence_read_stream.sv
+chparam -set ADDR_WIDTH 56 coherence_read_stream
+prep -top coherence_read_stream
+
+[files]
+../hw/rtl/lib/cache/coherence_read_stream.sv

@@ -20,6 +20,7 @@ cover: smtbmc boolector
 reservation: smtbmc boolector
 
 [script]
+read -sv coherence_read_stream.sv
 read -sv riscv_pkg.sv
 read -sv cache_perf_pkg.sv
 read -sv coherence_pkg.sv
@@ -67,6 +68,7 @@ setundef -anyseq
 opt_clean
 
 [files]
+../hw/rtl/lib/cache/coherence_read_stream.sv
 coherent_local_atomic_formal.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_cdb_adapter/fu_cdb_adapter.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/cdb_arbiter/cdb_arbiter.sv

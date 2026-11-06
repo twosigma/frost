@@ -27,6 +27,7 @@ module coherence_l1d #(
     parameter int unsigned HOME_CACHE_BYTES = 2 * 1024 * 1024,
     parameter int unsigned HOME_WAYS = 4,
     parameter int unsigned HOME_LINE_BYTES = 64,
+    parameter bit STREAM_PREFETCH = 1'b0,
     parameter int unsigned SIM_FAST_MAINT = 0,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
     localparam int unsigned Sets = CACHE_BYTES / (32 * WAYS),
