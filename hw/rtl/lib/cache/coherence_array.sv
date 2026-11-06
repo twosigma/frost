@@ -71,8 +71,10 @@ module coherence_array #(
     input logic [ADDR_WIDTH-1:0] i_update_addr,
     input logic [WayBits-1:0] i_update_way,
     input logic [1:0] i_update_state,
-    // An insertion follows a lookup of the same set and selected way.
+    // An insertion follows a lookup of the same set and selected way. With
+    // BIMODAL_INSERT, i_update_touch makes it update replacement state.
     input logic i_update_insert,
+    input logic i_update_touch,
     input logic [LINE_BYTES-1:0] i_update_mask,
     input logic [8*LINE_BYTES-1:0] i_update_data
 );
@@ -190,7 +192,8 @@ module coherence_array #(
   assign select_plru = phase_q == Tags && count_q == CountBits'(TAG_READ_LATENCY) ?
       plru_read : plru_q;
   assign plru_we = !i_rst && (phase_q == Init ||
-      (update_fire && i_update_insert && (!BIMODAL_INSERT || insert_lfsr_q[4:0] == 0)) ||
+      (update_fire && i_update_insert &&
+       (!BIMODAL_INSERT || i_update_touch || insert_lfsr_q[4:0] == 0)) ||
       plru_hit_q);
   // Hit touches use the registered way during data service or the reply.
   // The metadata write finishes before another request or update can enter.
@@ -420,7 +423,8 @@ module coherence_array #(
       for (int set_index = 0; set_index < Sets; set_index++) f_plru_state[set_index] <= '0;
     end else if (!i_rst) begin
       if (phase_q == Init) f_plru_state[init_set_q] <= '0;
-      else if (update_fire && i_update_insert && (!BIMODAL_INSERT || insert_lfsr_q[4:0] == 0))
+      else if (update_fire && i_update_insert &&
+          (!BIMODAL_INSERT || i_update_touch || insert_lfsr_q[4:0] == 0))
         f_plru_state[set_q] <= touch(select_plru, i_update_way);
       else if (select_valid && hit && !visit_q && !no_touch_q)
         f_plru_state[set_q] <= touch(select_plru, selected);
@@ -445,6 +449,8 @@ module coherence_array #(
       c_plru_hit_data : cover (plru_hit_q && phase_q == Data);
       c_plru_following_lookup : cover (f_hit_seen_q && request_fire && tag_raddr == f_hit_set_q);
       c_plru_no_touch_hit : cover (select_valid && hit && !visit_q && no_touch_q);
+      c_plru_insert_touch :
+      cover (update_fire && i_update_insert && i_update_touch && insert_lfsr_q[4:0] != 0);
     end
   end
 `endif

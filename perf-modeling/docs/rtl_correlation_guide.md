@@ -119,7 +119,7 @@ The AXI bridge preserves internal cache IDs until completion. Its pool size boun
 
 Early load wakeup affects dependent memory operations. A nonfaulting accepted load can use an idle registered CDB lane to bypass one modeled memory-wakeup cycle. Two occupied registered lanes suppress the token. Integer dependencies use the ordinary path. The model omits speculative recovery and uncached-store completion arbitration.
 
-Cache replacement uses the RTL tree-PLRU victim walk and skips reserved ways. The insertion LFSR advances with modeled core cycles. Bimodal allocation updates replacement state when its low five bits are zero, while hits always update it. The allocation decision samples this state before the fill. Abstract cache-stage timing can shift the sampling phase relative to RTL, so compare miss counts as well as cycles when evaluating capacity or insertion policy.
+Cache replacement uses the RTL tree-PLRU victim walk and skips reserved ways. The insertion LFSR advances with modeled core cycles. Bimodal allocation updates replacement state when its low five bits are zero, while hits always update it. The coherent L1D also updates it for a fill with a read attached to its miss or another miss of its set not yet installed, which the model omits. The allocation decision samples this state before the fill. Abstract cache-stage timing can shift the sampling phase relative to RTL, so compare miss counts as well as cycles when evaluating capacity or insertion policy.
 
 ## 7. Instruction replay inputs
 

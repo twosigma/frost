@@ -347,7 +347,7 @@ module coherence_l1d #(
   logic atomic_sc_selected, read_selected, acquire_ready;
   logic [ADDR_WIDTH-1:0] lookup_other;
   (* keep = "true" *) logic lookup_other_valid;
-  logic grant_demand_waiter;
+  logic grant_demand_waiter, grant_touch_q;
   coh_g_t grant, grant_q;
   logic done_q, done_ready, written_q;
   logic [1:0] done_status_q;
@@ -697,6 +697,23 @@ module coherence_l1d #(
       grant_demand_waiter |= rd_wait_q[slot] && !rd_wait_release_q[slot] &&
           rd_wait_ep_q[slot] == grant_ep_q;
   end
+  // Bimodal insertion usually leaves a filled sector its set's next victim
+  // until a hit moves it, and the next installation in the set can come
+  // before that hit. A fill with a read attached to its endpoint is about to
+  // be hit, and a fill with another miss of its set not yet installed can be
+  // replaced by that miss's installation, so such a fill updates replacement
+  // state at installation. Any other fill keeps bimodal insertion. Only the
+  // replacement write reads this flag, at the update, and the grant's lookup
+  // address and endpoint have held for at least three cycles by then.
+  logic [EpSlots-1:0] set_ep;
+  always_comb begin
+    set_ep = '0;
+    for (int ep = 0; ep < MISSES; ep++)
+      set_ep[ep] = live[ep] && !installed_q[ep] && EpBits'(ep) != grant_ep_q &&
+          lookup_addr_q[5+:SetBits] ==
+          (ep == 0 ? acquisition_q.addr[5+:SetBits] : ld_line_q[ep][SetBits-1:0]);
+  end
+  always_ff @(posedge i_clk) grant_touch_q <= grant_demand_waiter || |set_ep;
   assign grant_read_hold = StreamEnabled && grant_read_turn_q &&
       grant_valid && !ep_grant_valid[0] && !local_turn_q;
   assign grant_read_yield = grant_read_hold && rd_candidate && !prefetch_cancel;
@@ -1750,6 +1767,7 @@ module coherence_l1d #(
       .i_update_way(way_q),
       .i_update_state(state_q),
       .i_update_insert(operation_q == GrantOp),
+      .i_update_touch(grant_touch_q),
       .i_update_mask(update_mask_q),
       .i_update_data(image_q)
   );

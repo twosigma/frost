@@ -389,8 +389,10 @@ FORMAL_TARGETS = [
         tasks=(
             "coh_array_plru_prove",
             "coh_array_plru_uram_prove",
+            "coh_array_plru_bimodal_prove",
             "coh_array_plru_cover",
             "coh_array_plru_uram_cover",
+            "coh_array_plru_bimodal_cover",
         ),
     ),
     FormalTarget(
@@ -1484,10 +1486,18 @@ SBY_TASKS = [
         "coh_array_plru_uram_prove",
         "Deferred hit replacement equality with UltraRAM tags.",
     ),
+    (
+        "coh_array_plru_bimodal_prove",
+        "Deferred hit replacement equality with bimodal insertion.",
+    ),
     ("coh_array_plru_cover", "Deferred hit writes and following lookups in block RAM."),
     (
         "coh_array_plru_uram_cover",
         "Deferred hit writes and following lookups with UltraRAM tags.",
+    ),
+    (
+        "coh_array_plru_bimodal_cover",
+        "Insertions that update replacement state under bimodal insertion.",
     ),
     (
         "coh_hart_maint_prove",

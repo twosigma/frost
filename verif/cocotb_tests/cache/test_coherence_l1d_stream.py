@@ -35,11 +35,20 @@ class StreamPrivate(Private):
         self.completed: set[int] = set()
         self.completion_accepted: set[int] = set()
         self.resident_hints_while_held: list[int] = []
+        self.install_touches: list[int] = []
 
     async def tick(self, count: int = 1) -> None:
         """Record handshakes before each active edge."""
         for _ in range(count):
             if not self.get("i_rst"):
+                # A grant's Update phase, with the array ready for it.
+                if (
+                    self.get("active")
+                    and self.get("phase_q") == 5
+                    and self.get("operation_q") == 2
+                    and self.get("update_ready")
+                ):
+                    self.install_touches.append(self.get("grant_touch_q"))
                 if (
                     self.get("phase_q") == 2
                     and self.get("array_valid")
@@ -1150,6 +1159,99 @@ async def endpoint_zero_bypasses_unused_credit(dut: Any) -> None:
         (2, b.word(base + 8), 0),
     ]
     assert not b.get("o_pending_store") and not b.get("o_fatal")
+
+
+@cocotb.test()
+async def miss_of_a_set_keeps_a_fill_from_the_next_fill(dut: Any) -> None:
+    """Update replacement state for a fill with a waiting read or a same-set miss."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 3:
+        return
+    await b.reset()
+    # The bench's 512-byte cache has 128-byte ways. The set's four ways hold
+    # valid sectors, so replacement state picks each victim from here on.
+    way_bytes = 128
+    base = 0x80005000
+    for way in range(4):
+        await b.issue(0, base + way * way_bytes)
+        await b.drain(way + 1)
+    await b.set(i_read_ready=0)
+    b.install_touches.clear()
+
+    async def fill(index: int) -> None:
+        await b.grant(index)
+        await b.release(index)
+
+    async def responded(count: int) -> None:
+        for _ in range(60):
+            if len(b.responses) == count:
+                return
+            await b.tick()
+        raise AssertionError(f"Only {len(b.responses)} CPU responses, expected {count}")
+
+    async def resident(slot: int, address: int) -> bool:
+        """Read an address, finish any miss, and report whether it hit."""
+        before = len(b.requests)
+        count = len(b.responses) + 1
+        await b.issue(slot, address)
+        await b.set(i_read_ready=1)
+        for _ in range(60):
+            if len(b.responses) == count or len(b.requests) > before:
+                break
+            await b.tick()
+        hit = len(b.requests) == before
+        if not hit:
+            await fill(before)
+        await responded(count)
+        await b.set(i_read_ready=0)
+        return hit
+
+    # Two misses of one set are in flight together: the first fill updates
+    # replacement state and keeps its sector from the second fill. Nothing
+    # is left in flight behind the second fill.
+    first = base + 4 * way_bytes
+    second = base + 5 * way_bytes
+    await b.issue(1, first)
+    await b.issue(2, second)
+    await b.requests_at_least(6)
+    await fill(4)
+    await fill(5)
+    await b.set(i_read_ready=1)
+    await responded(6)
+    await b.set(i_read_ready=0)
+    assert b.install_touches == [1, 0]
+    assert await resident(3, first + 8)
+    assert await resident(3, second + 8)
+
+    # One read at a time, no fill has a waiting read or a miss beside it.
+    b.install_touches.clear()
+    assert not await resident(4, base + 6 * way_bytes)
+    assert not await resident(5, base + 7 * way_bytes)
+    assert b.install_touches == [0, 0]
+
+    # A read attached to the fill's endpoint updates replacement state too.
+    b.install_touches.clear()
+    third = base + 8 * way_bytes
+    count = len(b.responses) + 2
+    await b.issue(6, third)
+    await b.issue(7, third + 8)
+    await b.requests_at_least(len(b.requests) + 1)
+    for _ in range(40):
+        if b.get("rd_wait_q") >> 7 & 1:
+            break
+        await b.tick()
+    else:
+        raise AssertionError("The second read did not attach to the endpoint")
+    await fill(len(b.requests) - 1)
+    await b.set(i_read_ready=1)
+    await responded(count)
+    await b.set(i_read_ready=0)
+    assert sorted(b.responses[-2:]) == [
+        (6, b.word(third), 0),
+        (7, b.word(third + 8), 0),
+    ]
+    assert b.install_touches == [1]
+    assert not b.get("o_fatal")
 
 
 @cocotb.test()
