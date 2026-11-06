@@ -1,6 +1,5 @@
-# Reset terms outside always_ff blocks, as `path: key`. tests/test_combinational_reset.py
-# keeps this list equal to the RTL. The key is the assigned signal, the instance
-# port, or the combinational condition that holds the reset term.
+# Reset terms outside always_ff blocks, as `path: key`; the key is the signal, port or
+# condition holding the term. A term with no reason beside it in the RTL may move to its flop.
 hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/early_misprediction_recovery.sv: if (i_rst)
 hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv: tage_pd_accept
 hw/rtl/cpu_and_mem/cpu/cpu_ooo/frontend_control/decoded_bundle_queue.sv: nonempty_next
@@ -40,14 +39,6 @@ hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv: sel_prediction_r
 hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv: u_final.I0
 hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv: u_slot1.I0
 hw/rtl/cpu_and_mem/cpu/if_stage/slot2_prediction_capture.sv: o_request
-hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv: amo_compute_commit
-hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv: candidate_select.i_clear
-hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv: hit
-hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv: lq_data_we[0]
-hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv: non_hit
-hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv: o_response_eligible[response][entry]
-hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv: ram_hit_write_eligible
-hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv: ram_non_hit_write
 hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.sv: if (!i_rst_n || i_flush_all)
 hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv: done_next[entry]
 hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv: exception_next[entry]

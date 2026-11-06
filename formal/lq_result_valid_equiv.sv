@@ -189,7 +189,7 @@ module lq_result_valid_equiv #(
 
   logic [DEPTH-1:0] reference_data_next;
   for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_data
-    assign reference_data_next[entry] = i_rst_n && !i_flush_all && !p_alloc[entry] &&
+    assign reference_data_next[entry] = !i_flush_all && !p_alloc[entry] &&
         (p_data_valid[entry] ||
          (p_hit_fast && !p_hit_bypass && p_check_idx == IdxWidth'(entry)) ||
          (p_forward && !p_fwd_bypass && p_check_idx == IdxWidth'(entry)) ||
@@ -200,6 +200,6 @@ module lq_result_valid_equiv #(
   always_comb begin
     assert (!p_accept_response || !p_drop_response);
     assert (p_data_next == reference_data_next);
-    assert (p_data_d == reference_data_next);
+    assert (p_data_d == (i_rst_n ? reference_data_next : '0));
   end
 endmodule

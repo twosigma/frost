@@ -354,6 +354,57 @@ async def test_reset_state(dut: Any) -> None:
 # Allocate single entry
 # ============================================================================
 @cocotb.test()
+async def test_single_cycle_reset_during_traffic(dut: Any) -> None:
+    """One reset cycle drops loads at every stage and leaves the LQ usable.
+
+    Reset lands with a result waiting for the CDB, a second result held in the
+    queue, a response arriving and an allocation on the same edge.
+    """
+    dut_if, model = await setup(dut)
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    for tag, address, data in ((0, 0x1000, 0x1111_1111), (1, 0x2000, 0x2222_2222)):
+        await alloc_and_addr(dut_if, model, tag, address)
+        assert (await wait_for_mem_request(dut_if))["en"]
+        await dut_if.step()
+        dut_if.drive_mem_response(data)
+        await dut_if.step()
+        dut_if.clear_mem_response()
+    await alloc_and_addr(dut_if, model, 2, 0x3000)
+    assert (await wait_for_mem_request(dut_if))["en"]
+    await dut_if.step()
+    await Timer(1, unit="ns")
+    assert dut_if.read_fu_complete().valid
+    assert int(dut.lq_data_valid.value) != 0
+
+    dut_if.drive_mem_response(0xDEAD_BEEF)
+    dut_if.drive_alloc(3, is_fp=False, size=MEM_SIZE_WORD, sign_ext=False)
+    dut.i_rst_n.value = 0
+    await dut_if.step()
+    dut.i_rst_n.value = 1
+    dut_if.clear_mem_response()
+    dut_if.clear_alloc()
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+
+    for _ in range(4):
+        await Timer(1, unit="ns")
+        assert dut_if.empty and dut_if.count == 0
+        assert int(dut.lq_data_valid.value) == 0
+        assert not dut_if.read_fu_complete().valid
+        assert not dut_if.read_mem_request()["en"]
+        assert not dut_if.read_sq_check()["valid"]
+        await dut_if.step()
+
+    fresh = LQModel()
+    await alloc_and_addr(dut_if, fresh, 4, 0x4000)
+    result = await complete_load_no_forward(dut_if, fresh, 0x1234_5678, rob_head_tag=4)
+    assert result.valid and result.tag == 4
+    assert result.value == 0x1234_5678
+
+
+@cocotb.test()
 async def test_alloc_single(dut: Any) -> None:
     """Allocate one entry, count=1."""
     dut_if, model = await setup(dut)
