@@ -31,7 +31,6 @@ async def sc_retires_with_held_probe_grant_and_control_entry(dut: Any) -> None:
         other = address + 256
         cache = dut.hart.gen_coherent_tier.hart_cache.l1d
         cpu = dut.hart.cpu_inst
-        divider = cpu.u_tomasulo.u_muldiv_shim.u_divider
         body = literal(4, address) + literal(5, other)
         body += [addi(7, 0, 11), store(7, 4, 0, 3)]
         body += [addi(2, 0, 8), csr(0, 2, 0x304), csr(0, 2, 0x300)]
@@ -51,16 +50,14 @@ async def sc_retires_with_held_probe_grant_and_control_entry(dut: Any) -> None:
         overlap = False
         local_seen = False
         writes = 0
-        divisions = 0
         release_memory = False
         overlap_phases: set[int] = set()
 
         def observe() -> None:
-            nonlocal overlap, local_seen, writes, divisions
+            nonlocal overlap, local_seen, writes
             if int(dut.o_axi_arvalid.value) and int(dut.i_axi_arready.value):
                 if int(dut.o_axi_araddr.value) == other:
                     other_ids.add(int(dut.o_axi_arid.value))
-            divisions += int(divider.i_start.value)
             local = bool(int(cache.atomic_local_q.value))
             local_seen |= local
             if local and int(cache.i_p_valid.value) and int(cache.grant_valid.value):
@@ -77,12 +74,9 @@ async def sc_retires_with_held_probe_grant_and_control_entry(dut: Any) -> None:
         for _ in range(20000):
             if arm_cycle is None and int(cpu.coherent_arm_valid.value):
                 arm_cycle = s.cycle
-            # Complete the younger fill near the last older divide retirement.
-            if (
-                divisions == 3
-                and int(divider.running_q.value)
-                and int(divider.steps_left_q.value) <= 8
-            ):
+            # Complete the younger fill just after the SC arms. Its forwarded
+            # grant then reaches the cache beside the SC's local ownership.
+            if arm_cycle is not None and s.cycle >= arm_cycle + 8:
                 release_memory = True
             if not release_memory:
                 held_reads.extend(r for r in s.reads if r[1] in other_ids)
