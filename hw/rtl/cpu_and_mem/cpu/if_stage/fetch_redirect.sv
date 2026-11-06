@@ -22,7 +22,7 @@
 // presenter still owes that packet and must deliver it before the target.
 //
 // Compute the priority result for neither prediction, slot 1, and slot 2,
-// then select the result. Arm 0 is reset, which forces the pulse low.
+// then select the result. Reset clears the pulse at its flop.
 module fetch_redirect (
     input logic i_clk,
     input logic i_reset,
@@ -61,33 +61,35 @@ module fetch_redirect (
     redirect_slot2 = i_pc_update_en && |(sel_slot2 & ~i_npc_seq);
   end
 
-  assign redirect_d = !i_reset && (i_npc_cond[Slot2Arm] ? redirect_slot2 :
-      (i_npc_cond[Slot1Arm] ? redirect_slot1 : redirect_neither));
+  assign redirect_d = i_npc_cond[Slot2Arm] ? redirect_slot2 :
+      (i_npc_cond[Slot1Arm] ? redirect_slot1 : redirect_neither);
   always_ff @(posedge i_clk) begin
-    o_fetch_redirect <= redirect_d;
+    if (i_reset) o_fetch_redirect <= 1'b0;
+    else o_fetch_redirect <= redirect_d;
   end
 
 `ifdef FORMAL
-  // Reference: the plain priority select over every arm, reset included, and
-  // IF's redirect equation. The proof needs no assumptions on the inputs, the
-  // sequential flags, the initial output, or simultaneous requests.
+  // Reference: the plain priority select over every arm and IF's redirect
+  // equation. The proof needs no assumptions on the inputs, the sequential
+  // flags, the initial output, or simultaneous requests.
   logic [Arms-1:0] original_cond;
   logic [Arms-1:0] original_sel;
   logic original_d;
   logic f_past_valid = 1'b0;
   always_comb begin
-    original_cond = {i_npc_cond, i_reset};
+    original_cond = {i_npc_cond, 1'b0};
     for (int unsigned k = 0; k < Arms; k++) begin
       original_sel[k] = original_cond[k] && !(|(original_cond & ((1 << k) - 1)));
     end
-    original_d = !i_reset && i_pc_update_en && |(original_sel & ~{i_npc_seq, 1'b0}) &&
+    original_d = i_pc_update_en && |(original_sel & ~{i_npc_seq, 1'b0}) &&
         !(original_sel[Slot1Arm] && !i_live_prediction_emits_with_output);
     p_redirect_original_next_equation : assert (redirect_d == original_d);
   end
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
     if (f_past_valid) begin
-      p_redirect_original_registered_waveform : assert (o_fetch_redirect == $past(original_d));
+      p_redirect_original_registered_waveform :
+      assert (o_fetch_redirect == ($past(i_reset) ? 1'b0 : $past(original_d)));
       cover (!i_reset && i_npc_cond[Slot2Arm] && i_npc_cond[Slot1Arm] &&
              original_sel[Slot2Arm] && redirect_d);
       cover (!i_reset && original_sel[Slot1Arm] &&

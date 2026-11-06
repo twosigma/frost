@@ -480,8 +480,6 @@ async def test_backend_pending_next_state_matches_register(dut: Any) -> None:
     await _settle_after_edge(dut)
     assert dut.o_early_backend_recovery_pending_next.value
     dut.i_rst.value = 1
-    await Timer(1, unit="ns")
-    assert not dut.o_early_backend_recovery_pending_next.value
     await _settle_after_edge(dut)
     assert not dut.o_early_backend_recovery_pending.value
     dut.i_rst.value = 0

@@ -17,7 +17,7 @@ setundef -undriven -anyseq
 opt
 prep -top return_address_stack
 select -assert-none t:*sdp_dist_ram
-select -assert-count 31 t:$check
+select -assert-count 30 t:$check
 select -assert-none t:$check r:FLAVOR=assume %i
 
 [files]

@@ -24,13 +24,13 @@
  * arm loaded the fetch PC, and the next cycle
  *   - a predicted-taken arm (slot 1 or slot 2) pushes the new fetch PC's
  *     bits, since the fetch PC now holds the target;
- *   - a redirect arm restores the history: reset clears it; a trap, xRET, or
+ *   - a redirect arm restores the history: a trap, xRET, or
  *     FENCE-class flush, and a misprediction recovered at commit, take the
  *     retirement history (everything older has retired, the recovered
  *     instruction included); a misprediction recovered early takes the
  *     branch's saved lookup history and pushes the new fetch PC if the branch
  *     was taken; a PD redirect does the same with the PD branch's lookup
- *     history and its new direction.
+ *     history and its new direction. Reset clears the history at its flop.
  * The lookup history is the registered history with that event applied, so
  * each lookup sees every older event, and a lookup never includes its own
  * branch.
@@ -62,7 +62,7 @@ module tage_history #(
     // Fetch-side events registered in pc_controller, and the fetch PC's
     // [3:2] for a push.
     input  logic                 i_hist_push,
-    input  logic [          4:0] i_hist_restore_arm,
+    input  logic [          4:1] i_hist_restore_arm,
     input  logic [PATH_BITS-1:0] i_fetch_pc_path_bits,
     output logic [HIST_BITS-1:0] o_lookup_hist,
 
@@ -313,17 +313,14 @@ module tage_history #(
     early_taken_q <= i_early_taken;
   end
 
-  // Arms, highest priority first: 0 reset, 1 trap or xRET, 2 FENCE-class
-  // flush, 3 misprediction recovery, 4 PD redirect. At most one is set.
+  // Arms, highest priority first: 1 trap or xRET, 2 FENCE-class flush,
+  // 3 misprediction recovery, 4 PD redirect. At most one is set.
   logic [HIST_BITS-1:0] restore_base;
   logic restore_push;
   always_comb begin
     restore_base = hist_q;
     restore_push = i_hist_push;
-    if (i_hist_restore_arm[0]) begin
-      restore_base = '0;
-      restore_push = 1'b0;
-    end else if (i_hist_restore_arm[1] || i_hist_restore_arm[2]) begin
+    if (i_hist_restore_arm[1] || i_hist_restore_arm[2]) begin
       restore_base = retired_hist;
       restore_push = 1'b0;
     end else if (i_hist_restore_arm[3]) begin

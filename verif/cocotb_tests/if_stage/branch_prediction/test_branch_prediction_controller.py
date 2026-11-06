@@ -214,6 +214,29 @@ async def test_reset_clears_registered_prediction_state(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_single_cycle_reset_drops_a_used_prediction(dut: Any) -> None:
+    """One reset cycle drops a registered prediction even when a stall would hold it."""
+    await _setup_test(dut)
+    await _btb_update(dut, pc=PC_A, target=TARGET_A)
+
+    _clear_inputs(dut)
+    dut.i_pc.value = PC_A
+    await _advance_cycle(dut)
+    assert dut.o_prediction_used_r.value
+    assert dut.o_prediction_holdoff.value
+
+    dut.i_stall.value = 1
+    dut.i_reset.value = 1
+    await _advance_cycle(dut)
+    dut.i_reset.value = 0
+    dut.i_stall.value = 0
+    await _settle()
+    assert not dut.o_prediction_used_r.value
+    assert not dut.o_sel_prediction_r.value
+    assert not dut.o_prediction_holdoff.value
+
+
+@cocotb.test()
 async def test_direction_update_trains_registered_slot1_metadata(dut: Any) -> None:
     """Direction updates train the embedded predictor and snapshot slot-1 metadata."""
     await _setup_test(dut)

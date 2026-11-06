@@ -104,6 +104,7 @@ module decoded_bundle_queue #(
   assign head_shadow_next = i_pop ?
       ((count_q > (PtrBits + 1)'(1)) ? shadow_q[PtrBits'(head_q + 1'b1)] : i_shadow) :
       ((count_q == '0) ? i_shadow : head_shadow_q);
+  // The output shadow has no reset and follows the producer through this select.
   assign nonempty_next = !(i_rst || i_flush) &&
       ((count_q + (PtrBits + 1)'(push) - (PtrBits + 1)'(pop)) != '0);
   assign o_shadow = out_shadow_q;

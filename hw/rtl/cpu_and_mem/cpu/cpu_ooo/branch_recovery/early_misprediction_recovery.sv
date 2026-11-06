@@ -162,13 +162,13 @@ module early_misprediction_recovery #(
   // by one cycle.
   logic early_backend_recovery_pending_next;
   always_comb begin
-    if (i_rst) early_backend_recovery_pending_next = 1'b0;
-    else if (flush_for_trap || flush_for_mret || fence_i_flush)
+    if (flush_for_trap || flush_for_mret || fence_i_flush)
       early_backend_recovery_pending_next = 1'b0;
     else early_backend_recovery_pending_next = early_mispredict_active;
   end
   always_ff @(posedge i_clk) begin
-    early_backend_recovery_pending <= early_backend_recovery_pending_next;
+    if (i_rst) early_backend_recovery_pending <= 1'b0;
+    else early_backend_recovery_pending <= early_backend_recovery_pending_next;
   end
 
   // Register the tag with the delayed backend partial flush.

@@ -17,7 +17,8 @@
 /*
   IF PC controller: the fetch PC (o_pc), which addresses instruction memory
   and the slot-1 BTB lookup, and pc_reg (o_pc_reg), the PC of the packet IF
-  emits. Next fetch PC priority: reset, trap or xRET, FENCE-class flush,
+  emits. Reset loads both from i_boot_addr at their flops. Next fetch PC
+  priority: trap or xRET, FENCE-class flush,
   misprediction recovery, PD redirect, served-window resteer, hold while no
   window arrives, slot-2 prediction, slot-1 prediction, the pending-prediction
   and halfword catch-up arms, then the sequential PC. pc_reg takes a slot-1
@@ -146,11 +147,11 @@ module pc_controller #(
     output logic [riscv_pkg::TageLookupHiBit:2] o_pc_tage_lookup,
     // Path-history events for the tagged predictor, from the arm that loaded
     // o_pc on the last edge: a predicted-taken arm (slot 2 or slot 1), whose
-    // target o_pc now holds, or one of the redirect arms (reset, trap or
-    // xRET, FENCE-class flush, misprediction recovery, PD redirect), which
-    // restore the history. Bit a of the restore vector is arm a.
+    // target is in o_pc, or one of the redirect arms (trap or xRET,
+    // FENCE-class flush, misprediction recovery, PD redirect), which restore
+    // the history. Bit a of the restore vector is arm a.
     output logic o_tage_hist_push,
-    output logic [4:0] o_tage_hist_restore_arm,
+    output logic [4:1] o_tage_hist_restore_arm,
     output logic [XLEN-1:0] o_pc_reg,
     // A register copy of o_pc_reg[1] for size and coverage checks, for fanout.
     output logic o_pc_reg_high_for_coverage,
@@ -397,7 +398,7 @@ module pc_controller #(
   //     next-window PC) and slot 2 both hit in one cycle, slot 1's registered
   //     handoff in N+2 would otherwise move pc_reg off the slot-2 target.
   logic sel_prediction_r;
-  assign sel_prediction_r = !i_reset && i_sel_prediction_r &&
+  assign sel_prediction_r = i_sel_prediction_r &&
                             !pending_prediction_valid && !redirect_kill_pending_q &&
                             !o_slot2_redirect_q;
 
@@ -831,7 +832,7 @@ module pc_controller #(
 
   // Compute next validity for both miss and prediction-use values, then
   // select running or stalled state for timing. Stalls block capture and
-  // handoff, but reset, redirects, and stale-state clearing still apply.
+  // handoff, but redirects and stale-state clearing still apply.
   // A prediction already emitted with its own packet never pends, so the
   // used values apply i_prediction_already_emitted, and the prediction-use
   // input selects directly. The slot-2 prediction, the latest input,
@@ -842,7 +843,7 @@ module pc_controller #(
   logic pending_clear_without_handoff;
   logic pending_valid_next;
   assign pending_clear_without_handoff =
-      i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
+      i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
       i_pd_redirect || i_fence_i_flush || redirect_kill_pending_q || stale_pending_prediction;
   assign pending_valid_when_stalled = !pending_clear_without_handoff && pending_prediction_valid;
   for (genvar miss = 0; miss < 2; miss++) begin : gen_pending_valid_by_miss
@@ -862,14 +863,15 @@ module pc_controller #(
   assign pending_valid_next = fetch_stall ? pending_valid_when_stalled :
       i_slot2_prediction_used ? pending_valid_with_slot2 : pending_valid_without_slot2;
   always_ff @(posedge i_clk) begin
-    pending_prediction_valid <= pending_valid_next;
+    if (i_reset) pending_prediction_valid <= 1'b0;
+    else pending_prediction_valid <= pending_valid_next;
   end
 
 `ifdef PC_PENDING_CAPTURE_LOCAL_PROOF
   logic pending_valid_reference;
   always_comb begin
     pending_valid_reference = pending_prediction_valid;
-    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
+    if (i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
         i_pd_redirect || i_fence_i_flush || clear_pending_prediction_state) begin
       pending_valid_reference = 1'b0;
     end else if (!fetch_stall && prediction_needs_pending) begin
@@ -963,7 +965,8 @@ module pc_controller #(
   assign npc_consume_val = npc_consume_is_seq ? seq_next_pc : pending_prediction_target;
 
   always_comb begin
-    npc_cond[0] = i_reset;
+    // Arm 0 stays clear: reset loads the PCs at their flops.
+    npc_cond[0] = 1'b0;
     npc_cond[1] = trap_or_mret;
     npc_cond[2] = i_fence_i_flush;
     npc_cond[3] = i_branch_taken;
@@ -1055,7 +1058,7 @@ module pc_controller #(
     end
   end
 
-  // Build redirect, target-holdoff, and pending data separately from reset,
+  // Build redirect, target-holdoff, and pending data separately from
   // resteer, no-progress hold, catch-up, and live predictions. Purely
   // sequential arms contribute zero here; the consume and pending-hold arms
   // give their non-sequential value, and their sequential cases select
@@ -1220,9 +1223,8 @@ module pc_controller #(
   assign next_pc_sequential_target =
       (npc_catchup_permission_without_nop_or_wcs && !sel_nop) ? seq_next_pc_plus_2 :
                                                                   seq_next_pc;
-  // Select redirect/resteer/hold data, then slot 1 and reset, then slot 2 or
+  // Select redirect/resteer/hold data, then slot 1, then slot 2 or
   // sequential data. Slot 2 wins over slot 1, which blocks sequential advance.
-  // Reset clears prediction permission and selects zero before the final mux.
   // Dedicated permission and slot-2 request copies reduce fanout.
   // FROST_XILINX_PRIMS uses explicit LUTs for the portable mux functions.
   (* keep = "true" *) logic [XLEN-1:0] npc_final_nonseq_data;
@@ -1232,7 +1234,7 @@ module pc_controller #(
   (* keep = "true" *) logic pc_reg_live_redirect_permission;
   (* keep = "true" *) logic npc_prediction_permission;
   (* keep = "true" *) logic npc_final_sequential_request;
-  assign npc_prediction_permission = !i_reset && pc_reg_live_redirect_permission &&
+  assign npc_prediction_permission = pc_reg_live_redirect_permission &&
       i_fetch_progress && !i_window_cannot_serve;
   // The local proof uses the canonical request with arbitrary inputs;
   // simulation checks that the fetch-mux copy equals it.
@@ -1243,7 +1245,7 @@ module pc_controller #(
   assign slot2_request_for_fetch_mux = i_slot2_prediction_used_for_fetch_mux;
 `endif
   (* keep = "true", dont_touch = "true" *) logic npc_fetch_mux_permission;
-  assign npc_fetch_mux_permission = !i_reset && pc_reg_live_redirect_permission &&
+  assign npc_fetch_mux_permission = pc_reg_live_redirect_permission &&
       i_fetch_progress && !i_window_cannot_serve;
 `ifndef SYNTHESIS
   always_comb begin
@@ -1280,14 +1282,13 @@ module pc_controller #(
         .O (npc_final_nonseq_data[bit_idx])
     );
     (* dont_touch = "true" *)
-    LUT5 #(
-        .INIT(32'h55154000)
+    LUT4 #(
+        .INIT(16'hF780)
     ) u_slot1 (
-        .I0(i_reset),
-        .I1(npc_prediction_permission),
-        .I2(npc_cond[8]),
-        .I3(npc_val[8][bit_idx]),
-        .I4(npc_final_nonseq_data[bit_idx]),
+        .I0(npc_prediction_permission),
+        .I1(npc_cond[8]),
+        .I2(npc_val[8][bit_idx]),
+        .I3(npc_final_nonseq_data[bit_idx]),
         .O (npc_slot1_or_nonseq_data[bit_idx])
     );
     (* dont_touch = "true" *)
@@ -1300,7 +1301,7 @@ module pc_controller #(
         .I3(npc_val[7][bit_idx]),
         .I4(next_pc_sequential_target[bit_idx]),
         .I5(npc_slot1_or_nonseq_data[bit_idx]),
-        .O (next_pc_zero_boot[bit_idx])
+        .O (next_pc[bit_idx])
     );
   end
 `else
@@ -1308,17 +1309,13 @@ module pc_controller #(
       next_pc_without_prediction_or_sequential : i_window_cannot_serve ?
       {o_pc_reg[XLEN-1:2], 2'b00} : !i_fetch_progress ? o_pc :
       next_pc_without_prediction_or_sequential;
-  assign npc_slot1_or_nonseq_data = i_reset ? '0 : npc_prediction_permission && npc_cond[8] ?
+  assign npc_slot1_or_nonseq_data = npc_prediction_permission && npc_cond[8] ?
       npc_val[8] : npc_final_nonseq_data;
-  assign next_pc_zero_boot = npc_fetch_mux_permission && slot2_request_for_fetch_mux ? npc_val[7] :
+  assign next_pc = npc_fetch_mux_permission && slot2_request_for_fetch_mux ? npc_val[7] :
       npc_final_sequential_request ? next_pc_sequential_target : npc_slot1_or_nonseq_data;
 `endif
 
-  logic [XLEN-1:0] next_pc_zero_boot, next_pc_reg_zero_boot;
-  assign next_pc = i_reset ? i_boot_addr : next_pc_zero_boot;
-  assign next_pc_reg = i_reset ? i_boot_addr : next_pc_reg_zero_boot;
-
-  // Build pc_reg data without reset, slot-2, or sequential selection.
+  // Build pc_reg data without slot-2 or sequential selection.
   // Slot-1 predictions enter through the registered handoff.
   //
   // The pending arms use the pending_mux_* terms, which ignore this cycle's
@@ -1366,7 +1363,7 @@ module pc_controller #(
   end
 
   // Select staged, sequential, or base data before the live slot-2 choice.
-  // The final mux prioritizes reset, redirect, then aliased live slot 2.
+  // The final mux prioritizes a redirect, then aliased live slot 2.
   // On a redirect, the base value already holds its target.
   (* keep = "true" *) logic pc_reg_live_candidate;
   (* keep = "true" *) logic pc_reg_seq_candidate;
@@ -1424,23 +1421,22 @@ module pc_controller #(
         .I4(pc_reg_nonseq_wcs0_without_slot2[bit_idx]),
         .O (pc_reg_staged_or_sequential[bit_idx])
     );
-    LUT6 #(
-        .INIT(64'h5515511144044000)
+    LUT5 #(
+        .INIT(32'hF7D5A280)
     ) u_final (
-        .I0(i_reset),
-        .I1(pc_reg_live_redirect_permission),
-        .I2(pc_reg_live_candidate),
-        .I3(i_slot2_live_predicted_target[bit_idx]),
-        .I4(pc_reg_staged_or_sequential[bit_idx]),
-        .I5(pc_reg_nonseq_wcs0_without_slot2[bit_idx]),
-        .O (next_pc_reg_zero_boot[bit_idx])
+        .I0(pc_reg_live_redirect_permission),
+        .I1(pc_reg_live_candidate),
+        .I2(i_slot2_live_predicted_target[bit_idx]),
+        .I3(pc_reg_staged_or_sequential[bit_idx]),
+        .I4(pc_reg_nonseq_wcs0_without_slot2[bit_idx]),
+        .O (next_pc_reg[bit_idx])
     );
   end
 `else
   assign pc_reg_staged_or_sequential = i_slot2_staged_prediction_used_for_pc ?
       i_slot2_staged_predicted_target :
       pc_reg_seq_candidate ? seq_next_pc_reg : pc_reg_nonseq_wcs0_without_slot2;
-  assign next_pc_reg_zero_boot = i_reset ? '0 : !pc_reg_live_redirect_permission ?
+  assign next_pc_reg = !pc_reg_live_redirect_permission ?
       pc_reg_nonseq_wcs0_without_slot2 : pc_reg_live_candidate ?
       i_slot2_live_predicted_target : pc_reg_staged_or_sequential;
 `endif
@@ -1449,13 +1445,12 @@ module pc_controller #(
   logic pc_update_en;
   logic pc_reg_redirect;
   logic pc_reg_load_en;
-  assign pc_update_en = i_reset || trap_or_mret || i_fence_i_flush || !i_stall;
-  // Reset and the redirect arms above the fetch holds must still land even if
-  // the served window is unusable or no fetch response arrived. Branch and PD
-  // redirects retain the outer pc_update_en stall qualification;
-  // reset, trap/xRET, and FENCE-class redirects retain their stall override.
-  assign pc_reg_redirect =
-      i_reset || trap_or_mret || i_fence_i_flush || i_branch_taken || i_pd_redirect;
+  assign pc_update_en = trap_or_mret || i_fence_i_flush || !i_stall;
+  // The redirect arms above the fetch holds must still land even if the
+  // served window is unusable or no fetch response arrived. Branch and PD
+  // redirects retain the outer pc_update_en stall qualification; trap/xRET
+  // and FENCE-class redirects retain their stall override.
+  assign pc_reg_redirect = trap_or_mret || i_fence_i_flush || i_branch_taken || i_pd_redirect;
   assign pc_reg_load_en =
       pc_update_en &&
       (pc_reg_redirect || (!i_window_cannot_serve && i_fetch_progress));
@@ -1468,7 +1463,7 @@ module pc_controller #(
 
   // Observation outputs and the fetch-PC load enable (see the port comments).
   assign o_next_pc = next_pc;
-  assign o_next_pc_holds = !i_reset && !trap_or_mret && !i_fence_i_flush && !i_branch_taken &&
+  assign o_next_pc_holds = !trap_or_mret && !i_fence_i_flush && !i_branch_taken &&
       !i_pd_redirect && !i_window_cannot_serve && !i_fetch_progress;
   assign o_pc_update_en = pc_update_en;
   assign o_pending_prediction_prev_pc = pending_prediction_prev_pc;
@@ -1480,10 +1475,16 @@ module pc_controller #(
   // instruction access fault through the FETCH_FAULT pseudo-op, so it never
   // silently aliases an in-map address.
   always_ff @(posedge i_clk) begin
-    if (pc_update_en) o_pc <= next_pc;
-    if (pc_reg_load_en) begin
-      o_pc_reg                   <= next_pc_reg;
-      pc_reg_high_for_coverage_q <= next_pc_reg[1];
+    if (i_reset) begin
+      o_pc                       <= i_boot_addr;
+      o_pc_reg                   <= i_boot_addr;
+      pc_reg_high_for_coverage_q <= i_boot_addr[1];
+    end else begin
+      if (pc_update_en) o_pc <= next_pc;
+      if (pc_reg_load_en) begin
+        o_pc_reg                   <= next_pc_reg;
+        pc_reg_high_for_coverage_q <= next_pc_reg[1];
+      end
     end
   end
 
@@ -1495,14 +1496,21 @@ module pc_controller #(
   logic [riscv_pkg::TageLookupHiBit:2] tage_word_held_q;
   logic tage_push_q;
   (* keep = "true" *) logic tage_push_enable;
-  logic [4:0] tage_restore_sel_q;
-  assign tage_push_enable = !i_stall && !(|npc_cond[6:0]);
+  logic [4:1] tage_restore_sel_q;
+  assign tage_push_enable = !i_stall && !(|npc_cond[6:1]);
   always_ff @(posedge i_clk) begin
-    tage_update_q      <= pc_update_en;
-    tage_word_fresh_q  <= next_pc[riscv_pkg::TageLookupHiBit:2];
-    tage_word_held_q   <= o_pc_tage_lookup;
-    tage_push_q        <= tage_push_enable && (|npc_cond[8:7]);
-    tage_restore_sel_q <= pc_update_en ? npc_sel[4:0] : 5'd0;
+    tage_word_fresh_q <= next_pc[riscv_pkg::TageLookupHiBit:2];
+    if (i_reset) begin
+      tage_update_q      <= 1'b0;
+      tage_word_held_q   <= i_boot_addr[riscv_pkg::TageLookupHiBit:2];
+      tage_push_q        <= 1'b0;
+      tage_restore_sel_q <= 4'd0;
+    end else begin
+      tage_update_q      <= pc_update_en;
+      tage_word_held_q   <= o_pc_tage_lookup;
+      tage_push_q        <= tage_push_enable && (|npc_cond[8:7]);
+      tage_restore_sel_q <= pc_update_en ? npc_sel[4:1] : 4'd0;
+    end
   end
   assign o_pc_tage_lookup = tage_update_q ? tage_word_fresh_q : tage_word_held_q;
   assign o_tage_hist_push = tage_push_q;
@@ -1510,19 +1518,19 @@ module pc_controller #(
 
 `ifdef PC_TAGE_EVENTS_LOCAL_PROOF
   logic tage_event_reference_valid_q = 1'b0;
-  logic [4:0] tage_restore_unqualified_reference_q;
+  logic [4:1] tage_restore_unqualified_reference_q;
   logic [1:0] tage_push_unqualified_reference_q;
   always_ff @(posedge i_clk) begin
     tage_event_reference_valid_q <= 1'b1;
-    tage_restore_unqualified_reference_q <= npc_sel[4:0];
-    tage_push_unqualified_reference_q <= npc_sel[8:7];
+    tage_restore_unqualified_reference_q <= i_reset ? 4'd0 : npc_sel[4:1];
+    tage_push_unqualified_reference_q <= i_reset ? 2'd0 : npc_sel[8:7];
     if (tage_event_reference_valid_q) begin
       p_tage_restore_event_matches_registered_qualification :
       assert (o_tage_hist_restore_arm ==
-              (tage_update_q ? tage_restore_unqualified_reference_q : 5'd0));
-      cover_tage_restore_event : cover (o_tage_hist_restore_arm != 5'd0);
+              (tage_update_q ? tage_restore_unqualified_reference_q : 4'd0));
+      cover_tage_restore_event : cover (o_tage_hist_restore_arm != 4'd0);
       cover_tage_restore_suppressed :
-      cover (!tage_update_q && tage_restore_unqualified_reference_q != 5'd0);
+      cover (!tage_update_q && tage_restore_unqualified_reference_q != 4'd0);
       p_tage_push_event_matches_registered_qualification :
       assert (o_tage_hist_push == (tage_update_q && tage_push_unqualified_reference_q != 2'b00));
       cover_tage_push_event : cover (o_tage_hist_push);
@@ -1753,8 +1761,7 @@ module pc_controller #(
   // holds implemented by the load enable. Disabled load data is irrelevant.
   logic [XLEN-1:0] next_pc_reg_priority_ref;
   always_comb begin
-    if (i_reset) next_pc_reg_priority_ref = i_boot_addr;
-    else if (trap_or_mret) next_pc_reg_priority_ref = i_trap_target;
+    if (trap_or_mret) next_pc_reg_priority_ref = i_trap_target;
     else if (i_fence_i_flush) next_pc_reg_priority_ref = i_fence_i_target;
     else if (i_branch_taken) next_pc_reg_priority_ref = i_branch_target;
     else if (i_pd_redirect) next_pc_reg_priority_ref = i_pd_redirect_target;
@@ -1774,7 +1781,7 @@ module pc_controller #(
   end
 
   always_comb begin
-    if ((i_reset || pending_rel_check_armed_q) && !$isunknown(
+    if (pending_rel_check_armed_q && !i_reset && !$isunknown(
             {pc_update_en, pc_reg_load_en, o_pc_reg, next_pc_reg, next_pc_reg_priority_ref}
         )) begin
       p_pc_reg_clock_enable_factoring_exact :
@@ -1981,7 +1988,7 @@ module pc_controller #(
                !o_pending_prediction_fetch_holdoff_wcs0 &&
                !o_pending_prediction_fetch_holdoff_wcs));
       p_fence_target_wins_both_pc_muxes :
-      assert (!i_fence_i_flush || i_reset || trap_or_mret ||
+      assert (!i_fence_i_flush || trap_or_mret ||
               (next_pc == i_fence_i_target && next_pc_reg == i_fence_i_target));
     end
   end
@@ -2000,12 +2007,11 @@ module pc_controller #(
     end
   end
 
-  // Compare the fetch-PC mux with a serial priority chain. Reset selects are
-  // valid immediately; pending-state comparisons require reset history.
+  // Compare the fetch-PC mux with a serial priority chain. Pending-state
+  // comparisons require reset history.
   logic [XLEN-1:0] npc_ref;
   always_comb begin
-    if (i_reset) npc_ref = i_boot_addr;
-    else if (trap_or_mret) npc_ref = i_trap_target;
+    if (trap_or_mret) npc_ref = i_trap_target;
     else if (i_fence_i_flush) npc_ref = i_fence_i_target;
     else if (i_branch_taken) npc_ref = i_branch_target;
     else if (i_pd_redirect) npc_ref = i_pd_redirect_target;
@@ -2026,7 +2032,7 @@ module pc_controller #(
 
   always_comb begin
     p_next_pc_onehot : assert ($onehot(npc_sel));
-    if (i_reset || pending_rel_check_armed_q) begin
+    if (pending_rel_check_armed_q && !i_reset) begin
       p_next_pc_matches_priority : assert (next_pc == npc_ref);
     end
   end
@@ -2051,8 +2057,7 @@ module pc_controller #(
   logic [XLEN-1:0] pc_mux_nested_reference_without_live_slot2;
   logic [XLEN-1:0] pc_mux_nested_reference;
   always_comb begin
-    if (i_reset) pc_mux_nested_reference_without_live_slot2 = i_boot_addr;
-    else if (trap_or_mret) pc_mux_nested_reference_without_live_slot2 = i_trap_target;
+    if (trap_or_mret) pc_mux_nested_reference_without_live_slot2 = i_trap_target;
     else if (i_fence_i_flush) pc_mux_nested_reference_without_live_slot2 = i_fence_i_target;
     else if (i_branch_taken) pc_mux_nested_reference_without_live_slot2 = i_branch_target;
     else if (i_pd_redirect) pc_mux_nested_reference_without_live_slot2 = i_pd_redirect_target;
@@ -2082,8 +2087,7 @@ module pc_controller #(
   logic pc_mux_nested_reference_live_override;
   logic [XLEN-1:0] pc_mux_nested_reference_if_alias;
   assign pc_mux_nested_reference_live_override =
-      i_slot2_live_target_used_for_pc_cofactor &&
-      !i_reset && !trap_or_mret && !i_fence_i_flush &&
+      i_slot2_live_target_used_for_pc_cofactor && !trap_or_mret && !i_fence_i_flush &&
       !i_branch_taken && !i_pd_redirect;
   assign pc_mux_nested_reference_if_alias = pc_mux_nested_reference_live_override ?
       i_slot2_live_predicted_target : pc_mux_nested_reference_without_live_slot2;
@@ -2259,7 +2263,7 @@ module pc_controller #(
       // arithmetic free.
       p_formal_lower_parcel_lookup_has_opposite_halfword_lanes :
       assert (!o_fetch_lookup_is_lower_parcel || (!o_pc[1] && o_pc_reg[1]));
-      if ($past(!i_flush && !fetch_stall && npc_sel[5] && o_pc_reg[1])) begin
+      if ($past(!i_reset && !i_flush && !fetch_stall && npc_sel[5] && o_pc_reg[1])) begin
         p_formal_lower_parcel_resteer_capture_has_exact_geometry :
         assert (o_fetch_lookup_is_lower_parcel && o_pc[XLEN-1:2] == o_pc_reg[XLEN-1:2]);
       end
@@ -2322,8 +2326,7 @@ module pc_controller #(
     end
   end
   always_comb begin
-    if (i_reset) fetch_ref = i_boot_addr;
-    else if (trap_or_mret) fetch_ref = i_trap_target;
+    if (trap_or_mret) fetch_ref = i_trap_target;
     else if (i_fence_i_flush) fetch_ref = i_fence_i_target;
     else if (i_branch_taken) fetch_ref = i_branch_target;
     else if (i_pd_redirect) fetch_ref = i_pd_redirect_target;

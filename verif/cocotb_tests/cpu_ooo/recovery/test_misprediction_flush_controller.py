@@ -254,6 +254,59 @@ async def test_commit_mispredict_captures_and_flushes_after_head(dut: Any) -> No
 
 
 @cocotb.test()
+async def test_single_cycle_reset_during_recovery(dut: Any) -> None:
+    """One reset cycle ends a recovery and keeps no tag from its own edge."""
+    await _setup_test(dut)
+
+    commit = {
+        "valid": True,
+        "tag": 6,
+        "has_checkpoint": True,
+        "checkpoint_id": 3,
+        "redirect_pc": 0x80000100,
+        "pc": 0x80000080,
+        "is_branch": True,
+    }
+    dut.i_checkpoint_in_use.value = 0b1000
+    _drive_commit(dut, commit)
+    dut.i_rob_commit_misprediction_raw.value = 1
+    await _advance_cycle(dut)
+    assert dut.o_mispredict_recovery_pending.value
+    assert dut.o_flush_en.value
+    assert int(dut.o_flush_tag.value) == 6
+
+    # A commit misprediction and an early recovery's launch share the reset edge.
+    dut.i_early_backend_recovery_pending_next.value = 1
+    dut.i_early_mispredict_tag.value = 9
+    dut.i_rst.value = 1
+    await _advance_cycle(dut)
+    dut.i_rst.value = 0
+    dut.i_early_backend_recovery_pending_next.value = 0
+    dut.i_early_mispredict_tag.value = 0
+    dut.i_rob_commit_misprediction_raw.value = 0
+    await _settle()
+
+    assert not dut.o_mispredict_recovery_pending.value
+    assert not dut.o_flush_en.value
+    assert int(dut.o_flush_tag.value) == 0
+    assert not dut.o_flush_pipeline.value
+    assert not dut.o_dispatch_flush.value
+    assert not dut.o_commit_recovery_flush_after_head.value
+    assert not dut.o_checkpoint_restore.value
+    assert not dut.o_checkpoint_free.value
+    assert int(dut.o_checkpoint_flush_free_mask.value) == 0
+
+    # The next misprediction recovers as usual.
+    _drive_commit(dut, {**commit, "tag": 11})
+    dut.i_rob_commit_misprediction_raw.value = 1
+    await _advance_cycle(dut)
+    dut.i_rob_commit_misprediction_raw.value = 0
+    assert dut.o_mispredict_recovery_pending.value
+    assert dut.o_flush_en.value
+    assert int(dut.o_flush_tag.value) == 11
+
+
+@cocotb.test()
 async def test_same_branch_early_recovery_suppresses_commit_mispredict(
     dut: Any,
 ) -> None:
