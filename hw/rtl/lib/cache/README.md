@@ -14,7 +14,7 @@ benches compose these modules independently of the CPU hierarchy.
 | File | Role |
 |------|------|
 | `coherent_hart_cache.sv` | CPU private L1D and L1I, instruction and walker bridges, and maintenance arbitration |
-| `coherence_l1d.sv` | MSI data cache with probes, tagged reads and a two-entry ordered store buffer |
+| `coherence_l1d.sv` | MSI data cache with probes, tagged reads and four ordered store records |
 | `coherence_home.sv` | Shared L2 home with sector ordering, dirty-data merge, configurable fills, lookup-only Prefetch service and streaming DMA placement |
 | `coherence_dma_ingress.sv` | Independent DMA request lifetimes, read responses at grant and write responses after release |
 | `frost_cache.sv` | Generic line cache, used by the CPU L1I and the component hierarchy benches |

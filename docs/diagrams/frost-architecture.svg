@@ -284,7 +284,7 @@
     <text x="462" y="1101" class="small">ReadOncePTW via home</text>
     <rect x="616" y="1016" width="244" height="100" rx="12" class="memory"/>
     <text x="738" y="1048" class="heading">L1D · 128 KiB</text>
-    <text x="738" y="1075" class="body">MSI · 2-store buffer</text>
+    <text x="738" y="1075" class="body">MSI · 4 store records</text>
     <text x="738" y="1101" class="small">4-way · BRAM · 8 miss slots</text>
     <rect x="892" y="1016" width="244" height="100" rx="12" class="memory"/>
     <text x="1014" y="1048" class="heading">Coherent ingress</text>

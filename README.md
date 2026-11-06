@@ -181,8 +181,8 @@ every supported extension and privilege mode.
   L1I, 128 KiB L1D, and 2 MiB L2, all four-way, and a 256-entry L0 cache in the
   load queue. The L1D holds 32-byte sectors in I, S or M states, with eight
   read slots and up to eight requests in flight to the L2, seven of them for
-  load misses. A two-entry ordered store buffer installs Modified-sector
-  hits with masked writes and gives waiting reads turns between stores.
+  load misses. Four ordered store records install Modified-sector
+  hits with masked writes and give waiting reads turns between stores.
   The L2's coherence home orders the L1s, page-table walks and DMA by sector
   and has eight fills with data and instruction stream prefetching. The build
   connects one hart. Low BRAM uses an 8 KiB instruction cache and L0 data
