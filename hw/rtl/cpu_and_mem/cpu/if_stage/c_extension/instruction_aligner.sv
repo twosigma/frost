@@ -929,14 +929,29 @@ module instruction_aligner #(
       slot2_current_hi_candidate_for_pc && !slot2_current_hi_invalid_for_pc_advance;
   assign slot2_next_hi_valid_for_pc_advance =
       slot2_next_hi_candidate_for_pc && !slot2_next_hi_invalid_for_pc_advance;
-  // Which of pc_reg + 2 and pc_reg + 4 is slot 2, from the qualified shape
-  // arms that PC advance also uses. NEXT_LO is +4 behind a native slot 1 at
-  // lo and +2 behind a compressed slot 1 at hi; CURRENT_HI is always +2 and
-  // NEXT_HI always +4.
-  assign o_slot2_plus2_candidate_valid = slot2_current_hi_valid_for_pc_advance ||
-      (i_pc_reg[1] && slot2_next_lo_valid_for_pc);
-  assign o_slot2_plus4_candidate_valid = slot2_next_hi_valid_for_pc_advance ||
-      (!i_pc_reg[1] && slot2_next_lo_valid_for_pc);
+  // Which of pc_reg + 2 and pc_reg + 4 is slot 2. NEXT_LO is +4 behind a native
+  // slot 1 at lo and +2 behind a compressed slot 1 at hi; CURRENT_HI is always
+  // +2 and NEXT_HI always +4. Both are ready for each value of the buffer
+  // select, which arrives last and reaches the BTB's candidate mux through one
+  // gate. A buffered slot 1 is at hi and has no BRAM word to worry about.
+  (* keep = "true" *) logic slot2_plus2_if_buffered, slot2_plus2_if_live;
+  (* keep = "true" *) logic slot2_plus4_if_buffered, slot2_plus4_if_live;
+  assign slot2_plus2_if_buffered =
+      i_instr_buffer_sideband[riscv_pkg::ImemSbPairableCompressedHi] && slot2_next_lo_start_valid;
+  assign slot2_plus4_if_buffered =
+      i_instr_buffer_sideband[riscv_pkg::ImemSbPairableNativeHi] &&
+      slot2_next_hi_compressed_for_pc_advance;
+  assign slot2_plus2_if_live = i_pc_reg[1] ?
+      aligned_current_pc_metadata[2] && !fetch_word_swapped_slot2 && slot2_next_lo_start_valid :
+      aligned_current_pc_pairability[0] &&
+      (!fetch_word_swapped_slot2 || slot2_current_hi_compressed_for_pc_advance);
+  assign slot2_plus4_if_live = !fetch_word_swapped_slot2 && (i_pc_reg[1] ?
+      aligned_current_pc_metadata[3] && slot2_next_hi_compressed_for_pc_advance :
+      aligned_current_pc_pairability[1] && slot2_next_lo_start_valid);
+  assign o_slot2_plus2_candidate_valid = o_use_instr_buffer ?
+      slot2_plus2_if_buffered : slot2_plus2_if_live;
+  assign o_slot2_plus4_candidate_valid = o_use_instr_buffer ?
+      slot2_plus4_if_buffered : slot2_plus4_if_live;
   assign slot2_valid_for_pc_advance = slot2_current_hi_valid_for_pc_advance ||
       slot2_next_lo_valid_for_pc || slot2_next_hi_valid_for_pc_advance;
   assign o_slot2_valid_for_pc = slot2_valid_for_pc_advance;
@@ -948,6 +963,13 @@ module instruction_aligner #(
         )) begin
       p_slot2_candidates_are_onehot :
       assert ($onehot0({o_slot2_plus4_candidate_valid, o_slot2_plus2_candidate_valid}));
+      // Reference: the qualified shape arms that PC advance uses.
+      p_slot2_plus2_candidate_exact :
+      assert (o_slot2_plus2_candidate_valid == (slot2_current_hi_valid_for_pc_advance ||
+                                                (i_pc_reg[1] && slot2_next_lo_valid_for_pc)));
+      p_slot2_plus4_candidate_exact :
+      assert (o_slot2_plus4_candidate_valid == (slot2_next_hi_valid_for_pc_advance ||
+                                                (!i_pc_reg[1] && slot2_next_lo_valid_for_pc)));
     end
   end
 `endif
