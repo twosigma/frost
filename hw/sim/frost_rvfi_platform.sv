@@ -65,7 +65,7 @@ module frost_rvfi_platform #(
     // Behavioral main-memory model (simulation only; hardware integration
     // replaces it with the DDR controller behind the same AXI port).
     parameter int unsigned DDR_MODEL_BYTES = 64 * 1024 * 1024,
-    parameter int unsigned DDR_MODEL_LATENCY = 30,
+    parameter int unsigned DDR_MODEL_LATENCY = 80,
     // Per-transaction latency jitter; 0 disables it (DDR_MODEL_REORDER can
     // still vary the latency).
     // See axi_behavioral_memory.LATENCY_JITTER.

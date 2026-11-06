@@ -18,6 +18,7 @@ The model's self-test, its trace-contract unit tests, rejection of aggregate
 events as instructions, and deterministic result fixtures.
 """
 
+import dataclasses
 import importlib.util
 import json
 import re
@@ -388,9 +389,14 @@ def test_the_stored_baseline_matches_the_model() -> None:
     baseline = json.loads(
         (PERF_MODELING / "calibration" / "ci_baseline.json").read_text(encoding="utf-8")
     )
-    run = model.run_workload(
-        model.ModelConfig(), baseline["model_workload"], baseline["model_seed"]
+    config = model.ModelConfig()
+    config = dataclasses.replace(
+        config,
+        ddr=dataclasses.replace(
+            config.ddr, latency_cycles=baseline["model_ddr_latency_cycles"]
+        ),
     )
+    run = model.run_workload(config, baseline["model_workload"], baseline["model_seed"])
     assert trace_contract.model_figures(run) == baseline["model"]
     delta = baseline["model"]["ipc"] / baseline["rtl"]["ipc"] - 1
     assert delta == pytest.approx(baseline["ipc_delta"])
