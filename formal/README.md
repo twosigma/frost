@@ -43,9 +43,10 @@ to separate jobs with 120-minute limits. These jobs also run selected
 coherent store-boundary and local-atomic tasks, and the CSR profiling-on job
 runs the L1D local ownership proofs. The hart maintenance proof and the
 eight-endpoint L1D stream control BMC share a job with a 330-minute limit,
-which covers both allowances in sequence. The Coherence job runs the other
-coherence tasks, including the remaining L1D tasks and the hart maintenance
-covers, with a 240-minute limit. The Other tasks job has a 240-minute limit.
+which covers both allowances in sequence. The store-home job runs the home's
+ordered store tasks with a 240-minute limit. The Coherence job runs the other
+coherence tasks, including the hart maintenance covers, with a 240-minute
+limit. The Other tasks job has a 240-minute limit.
 Job limits include image setup.
 
 The CI jobs collect `tests/test_run_formal.py` and
