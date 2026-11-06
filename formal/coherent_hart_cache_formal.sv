@@ -39,7 +39,9 @@ module coherent_hart_cache_formal #(
   logic four_records_seen_q = 0;
   always_ff @(posedge i_clk) if (!rst && &store_holds) four_records_seen_q <= 1;
 `else
-  wire [2:0] store_goal = four_stores ? 3'd4 : two_stores ? 3'd2 : 3'd1;
+  // The unbounded proof takes one or two scalars. Covers and the deterministic
+  // schedule fill the records.
+  wire [2:0] store_goal = COVER_MODE && four_stores ? 3'd4 : two_stores ? 3'd2 : 3'd1;
 `endif
   // Cover schedules select acceptance/error discard, publication without a
   // fence, competing traffic, or a post-fence walk.
