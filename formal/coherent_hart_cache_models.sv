@@ -24,6 +24,7 @@ module coherence_l1d #(
     parameter int unsigned WAYS = 4,
     parameter int unsigned TAG_BITS = 7,
     parameter int unsigned MISSES = 1,
+    parameter bit STREAM_PREFETCH = 1'b0,
     parameter int unsigned SIM_FAST_MAINT = 0,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
     localparam int unsigned Sets = CACHE_BYTES / (32 * WAYS),

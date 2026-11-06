@@ -42,6 +42,7 @@ sticky: smtbmc boolector
 cover: smtbmc boolector
 
 [script]
+read -sv coherence_read_stream.sv
 read -sv riscv_pkg.sv
 read -sv cache_perf_pkg.sv
 read -sv coherence_pkg.sv
@@ -113,6 +114,7 @@ memory_map
 opt
 
 [files]
+../hw/rtl/lib/cache/coherence_read_stream.sv
 coherence_store_boundary_formal.sv
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/lib/cache/cache_perf_pkg.sv
