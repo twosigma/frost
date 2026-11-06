@@ -366,6 +366,13 @@ With common CPU and SoC clocks, a separate CPU reset register asserts
 asynchronously with fabric reset or the registered core reset. CPU reset
 releases on the SoC clock edge after both requests clear.
 
+Reset belongs at the flop, as `if (rst) ... else ...`. Combinational outputs
+can stay live in a first reset cycle, when every receiver on the same reset
+ignores them. A reset term stays in combinational logic only where a receiver
+is not reset by the same signal, with a comment saying why.
+`tests/test_combinational_reset.py` fails on a term that
+`tests/combinational_reset_allowlist.txt` does not list.
+
 Synchronous resets establish pipeline validity, queue ownership, control
 state, and architectural control registers. Cache reset clears tags and
 replacement state before accepting requests; cache data arrays do not need
