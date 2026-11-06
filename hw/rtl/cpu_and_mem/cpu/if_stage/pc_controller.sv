@@ -1409,6 +1409,7 @@ module pc_controller #(
     end
   end
 `endif
+  logic next_pc_reg_high_for_coverage;
 `ifdef FROST_XILINX_PRIMS
   for (genvar bit_idx = 0; bit_idx < XLEN; bit_idx++) begin : gen_arch_pc_bit_mux
     LUT5 #(
@@ -1432,6 +1433,19 @@ module pc_controller #(
         .O (next_pc_reg[bit_idx])
     );
   end
+  // The coverage copy takes its own last gate: flops that share a D net keep
+  // reset in a LUT at D instead of on their R pins.
+  (* dont_touch = "true" *)
+  LUT5 #(
+      .INIT(32'hF7D5A280)
+  ) u_coverage_final (
+      .I0(pc_reg_live_redirect_permission),
+      .I1(pc_reg_live_candidate),
+      .I2(i_slot2_live_predicted_target[1]),
+      .I3(pc_reg_staged_or_sequential[1]),
+      .I4(pc_reg_nonseq_wcs0_without_slot2[1]),
+      .O (next_pc_reg_high_for_coverage)
+  );
 `else
   assign pc_reg_staged_or_sequential = i_slot2_staged_prediction_used_for_pc ?
       i_slot2_staged_predicted_target :
@@ -1439,6 +1453,7 @@ module pc_controller #(
   assign next_pc_reg = !pc_reg_live_redirect_permission ?
       pc_reg_nonseq_wcs0_without_slot2 : pc_reg_live_candidate ?
       i_slot2_live_predicted_target : pc_reg_staged_or_sequential;
+  assign next_pc_reg_high_for_coverage = next_pc_reg[1];
 `endif
 
   // PC registers
@@ -1483,7 +1498,7 @@ module pc_controller #(
       if (pc_update_en) o_pc <= next_pc;
       if (pc_reg_load_en) begin
         o_pc_reg                   <= next_pc_reg;
-        pc_reg_high_for_coverage_q <= next_pc_reg[1];
+        pc_reg_high_for_coverage_q <= next_pc_reg_high_for_coverage;
       end
     end
   end
