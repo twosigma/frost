@@ -46,9 +46,15 @@ module coherence_read_select #(
     output logic [2:0] o_index,
     output logic [ADDR_WIDTH-1:0] o_address
 );
+  // Blocking compares 18 sector index bits. An alias with a held sector waits
+  // for the holder like a match, and the holders do not wait for reads.
+  localparam int unsigned BlockBits = 18;
   logic [7:0] eligible, load_miss, upper, first, status_eligible;
   (* keep = "true" *) logic [7:0] stored_eligible, write_eligible;
-  (* keep = "true" *) logic stored_found, write_found;
+  (* keep = "true" *) logic write_found;
+  // Each group fits one LUT, so a slot's eligibility reaches o_found in two
+  // levels.
+  (* keep = "true" *) logic [2:0] stored_found;
   (* keep = "true" *) logic [7:0] first_upper, first_any;
   // i_addr is each slot's address after the buffered write forwards to it.
   // The comparisons use the stored addresses and the buffered write's address
@@ -57,11 +63,11 @@ module coherence_read_select #(
   always_comb begin
     write_blocked = 1'b0;
     for (int holder = 0; holder < 4; holder++)
-      write_blocked |= i_block_valid[holder] && i_write_addr[ADDR_WIDTH-1:5] ==
-          i_block_addr[holder*ADDR_WIDTH+5+:ADDR_WIDTH-5];
+      write_blocked |= i_block_valid[holder] && i_write_addr[5+:BlockBits] ==
+          i_block_addr[holder*ADDR_WIDTH+5+:BlockBits];
     for (int slot = 0; slot < 2; slot++)
-      write_blocked |= i_wb_live[slot] && i_write_addr[ADDR_WIDTH-1:5] ==
-          i_wb_addr[slot*ADDR_WIDTH+5+:ADDR_WIDTH-5];
+      write_blocked |= i_wb_live[slot] && i_write_addr[5+:BlockBits] ==
+          i_wb_addr[slot*ADDR_WIDTH+5+:BlockBits];
   end
   for (genvar index = 0; index < 8; index++) begin : gen_entry
     wire [ADDR_WIDTH-1:0] address = i_stored_addr[index*ADDR_WIDTH+:ADDR_WIDTH];
@@ -69,11 +75,11 @@ module coherence_read_select #(
     always_comb begin
       stored_blocked = 1'b0;
       for (int holder = 0; holder < 4; holder++)
-        stored_blocked |= i_block_valid[holder] && address[ADDR_WIDTH-1:5] ==
-            i_block_addr[holder*ADDR_WIDTH+5+:ADDR_WIDTH-5];
+        stored_blocked |= i_block_valid[holder] && address[5+:BlockBits] ==
+            i_block_addr[holder*ADDR_WIDTH+5+:BlockBits];
       for (int slot = 0; slot < 2; slot++)
-        stored_blocked |= i_wb_live[slot] && address[ADDR_WIDTH-1:5] ==
-            i_wb_addr[slot*ADDR_WIDTH+5+:ADDR_WIDTH-5];
+        stored_blocked |= i_wb_live[slot] && address[5+:BlockBits] ==
+            i_wb_addr[slot*ADDR_WIDTH+5+:BlockBits];
     end
     assign blocked = i_write_mask[index] ? write_blocked : stored_blocked;
     wire qualified = i_valid[index] && !i_ready[index] &&
@@ -103,9 +109,11 @@ module coherence_read_select #(
   assign first = (|upper) ? first_upper : first_any;
   // Ownership, waiters and retry credit qualify both masks.
   // The shared write-address check qualifies the buffered-write result.
-  assign stored_found = |(stored_eligible & status_eligible);
+  assign stored_found[0] = |(stored_eligible[2:0] & status_eligible[2:0]);
+  assign stored_found[1] = |(stored_eligible[5:3] & status_eligible[5:3]);
+  assign stored_found[2] = |(stored_eligible[7:6] & status_eligible[7:6]);
   assign write_found = |(write_eligible & status_eligible);
-  assign o_found = stored_found || (write_found && !write_blocked);
+  assign o_found = |stored_found || (write_found && !write_blocked);
   assign o_load_miss = |load_miss;
   always_comb begin
     o_index = '0;
@@ -131,11 +139,11 @@ module coherence_read_select #(
       ref_address = i_addr[ref_scan*ADDR_WIDTH+:ADDR_WIDTH];
       ref_blocked = 1'b0;
       for (int holder = 0; holder < 4; holder++)
-        ref_blocked |= i_block_valid[holder] && ref_address[ADDR_WIDTH-1:5] ==
-            i_block_addr[holder*ADDR_WIDTH+5+:ADDR_WIDTH-5];
+        ref_blocked |= i_block_valid[holder] && ref_address[5+:BlockBits] ==
+            i_block_addr[holder*ADDR_WIDTH+5+:BlockBits];
       for (int slot = 0; slot < 2; slot++)
-        ref_blocked |= i_wb_live[slot] && i_wb_addr[slot*ADDR_WIDTH+5+:ADDR_WIDTH-5] ==
-            ref_address[ADDR_WIDTH-1:5];
+        ref_blocked |= i_wb_live[slot] && i_wb_addr[slot*ADDR_WIDTH+5+:BlockBits] ==
+            ref_address[5+:BlockBits];
       if (i_valid[ref_scan] && !i_ready[ref_scan] && !ref_blocked &&
           (i_kind[ref_scan*2+:2] != 2'd2 || i_atomic_protected) &&
           !i_owned[ref_scan] && !i_waiting[ref_scan] &&

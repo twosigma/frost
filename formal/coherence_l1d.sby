@@ -48,8 +48,9 @@ conflict: timeout 600
 # The eight-endpoint stream BMC needs a longer budget; CI runs it in the
 # hart maintenance proof's job.
 longbmc: timeout 10800
-# The three-endpoint control BMC checks local atomics and look-ahead
-# admission and needs more than the other control tasks.
+# The control BMCs check four ordered store records, local atomics and
+# look-ahead admission and need more than the other tasks.
+control_single: timeout 3600
 control_multi: timeout 3600
 
 [engines]

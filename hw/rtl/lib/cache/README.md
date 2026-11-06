@@ -263,8 +263,9 @@ record conflicts before selecting by age. Queue changes invalidate that sample.
 Only the head installs. A Modified hit uses a tag-only lookup and the array's
 byte enables. A buffered successor can start its lookup after the head's
 masked update completes. Registered read demand gives a waiting data read a
-turn between store selections, including permission misses. Eligible load grants
-share that turn. Lookahead lookups and store grant
+turn between store selections, including permission misses. Eligible demand
+load grants share that turn; a speculative grant does not take it. Lookahead
+lookups and store grant
 installations also yield to waiting reads. Probes and atomic operations have
 priority. A selected array operation completes before probe capture; queued
 bytes and held grants are excluded from probe replies.
@@ -322,7 +323,8 @@ requires a free slot when its grant is selected. Endpoint 0 does not take the
 last free slot from a waiting load grant, a nonzero endpoint in its grant phase
 that carries a load. `coherence_miss_credit` computes this permission and the
 Load, LR and AMO retry credits from that indication, endpoint ownership,
-writeback occupancy and drain state. Frozen slots remain occupied through
+writeback occupancy and drain state. LR and AMO retries read their credits from
+a flop per read slot, and their lookups recheck the credit before acquiring. Frozen slots remain occupied through
 WA. A store error stops the hart without read completion or error disposal.
 
 With stream look-ahead enabled, a successful demand installation
@@ -352,10 +354,12 @@ lookahead service ahead of head-store hits. The reservation ends after lookahead
 service, endpoint allocation, record promotion or removal, or an atomic or
 maintenance drain request. Each acquired
 store record contributes to the outstanding-miss count until installation.
-`coherence_read_owners` computes each read slot's ownership from parallel
-endpoint contributions. Endpoint zero excludes stores and SC; nonzero
-endpoints exclude stores and installed requests. Duplicate endpoint slot
-indices combine by OR. The binary mask matches an indexed endpoint scan.
+The L1D registers read ownership from acquisition, installation and release
+events. `coherence_read_owners` computes the same mask from parallel endpoint
+contributions as a checking reference. Endpoint zero excludes stores and SC;
+nonzero endpoints exclude stores, hints and installed requests. Duplicate
+endpoint slot indices combine by OR. The binary mask matches an indexed
+endpoint scan.
 SC acceptance and local atomic admission do not read the SQ's write decode:
 the CPU presents an atomic only after its committed stores drain, so no store
 arrives beside them.
@@ -451,7 +455,8 @@ and writes to the slot storage. The forwarding mux
 makes each allocation visible on the allocation edge. Each slot keeps its
 allocated payload until reset or another allocation to that slot.
 Allocation marks an empty slot valid. Read eligibility compares each physical slot with pending, atomic and frozen
-writeback sectors. The comparisons use the stored slot addresses and the
+writeback sectors on 18 sector index bits. An alias waits for its holder like
+a match, and holders do not wait for reads. The comparisons use the stored slot addresses and the
 buffered allocation's address, and the slot mask selects between their
 results. Availability reduces stored and buffered-write candidates separately.
 Both masks are qualified by endpoint ownership, waiting status and miss

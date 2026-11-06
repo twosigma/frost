@@ -329,6 +329,8 @@ module coherence_l1d #(
   logic [3:0] retry_credit;
   logic [EpBits-1:0] same_line_ep, load_ep_index;
   logic [7:0] rd_wait_q, rd_wait_release_q, rd_waiting, rd_owned, rd_ep_owned, rd_miss_retry;
+  logic [7:0] rd_atomic_retry_q, rd_owned_q, rd_owner_set, rd_owner_clear;
+  logic fail_owner_q;
   logic [EpBits-1:0] rd_wait_ep_q[8];
   logic [2:0] fill_read_slot, failure_read_slot;
   // The selected grant as a one-hot, and each endpoint's failing-read and
@@ -565,8 +567,8 @@ module coherence_l1d #(
       .i_clk,
       .i_rst,
       .i_cancel(prefetch_cancel),
-      .i_demand_valid(perf_lookup && operation_q == ReadOp &&
-          rd_kind_q[selected_read_q] == ReadLoad),
+      .i_demand_valid(active && phase_q == LookupWait && array_valid && operation_q == ReadOp &&
+          rd_kind_q[selected_read_q] == ReadLoad && !perf_read_seen_q[selected_read_q]),
       .i_demand_miss(!array_hit),
       .i_demand_addr(lookup_addr_q),
       .i_consume(stream_consume),
@@ -1129,12 +1131,20 @@ module coherence_l1d #(
     for (int slot = 0; slot < 8; slot++) begin
       rd_waiting[slot] = Multi && rd_wait_q[slot] && live[rd_wait_ep_q[slot]] &&
           !(installed_q[rd_wait_ep_q[slot]] && !rd_wait_release_q[slot]);
-      if (rd_kind_q[slot] == ReadAMO && rd_local_retry_q[slot])
-        rd_miss_retry[slot] = !request_live && !pending_q;
-      else if (!Multi) rd_miss_retry[slot] = retry_credit[0];
-      else if (rd_kind_q[slot] == ReadLoad) rd_miss_retry[slot] = retry_credit[0];
-      else if (rd_kind_q[slot] == ReadLR) rd_miss_retry[slot] = retry_credit[1];
-      else rd_miss_retry[slot] = retry_credit[2];
+      rd_miss_retry[slot] = rd_atomic_retry_q[slot] || (retry_credit[0] && (Multi ?
+          rd_kind_q[slot] == ReadLoad : !(rd_kind_q[slot] == ReadAMO && rd_local_retry_q[slot])));
+    end
+  end
+  // Load retries read their credit directly. LR and AMO retries read a flop
+  // per slot, and their lookups recheck the credit before they acquire.
+  always_ff @(posedge i_clk) begin
+    for (int slot = 0; slot < 8; slot++) begin
+      if (i_rst) rd_atomic_retry_q[slot] <= 1'b0;
+      else if (rd_kind_q[slot] == ReadAMO && rd_local_retry_q[slot])
+        rd_atomic_retry_q[slot] <= !request_live && !pending_q;
+      else if (!Multi || rd_kind_q[slot] == ReadLoad) rd_atomic_retry_q[slot] <= 1'b0;
+      else if (rd_kind_q[slot] == ReadLR) rd_atomic_retry_q[slot] <= retry_credit[1];
+      else rd_atomic_retry_q[slot] <= retry_credit[2];
     end
   end
   logic [3*MISSES-1:0] read_owner_slots;
@@ -1142,6 +1152,35 @@ module coherence_l1d #(
   for (genvar ep = 1; ep < MISSES; ep++) begin : gen_read_owner_slot
     assign read_owner_slots[3*ep+:3] = ld_read_q[ep];
   end
+  // Read ownership registers from its events, so read selection does not
+  // start at the endpoints. A read owns its slot from acquisition: through U
+  // on endpoint 0, and through installation or failure on the others.
+  always_comb begin
+    rd_owner_set = '0;
+    rd_owner_clear = '0;
+    if (ep_request_valid[acq_ep_q] && acquire_ready && operation_q == ReadOp &&
+        (acq_ep_q != '0 || !(atomic_q && atomic_sc_q)))
+      rd_owner_set[selected_read_q] = 1'b1;
+    if (i_u_valid && ep_u_ready[0] && !ep_store[0] && !acquisition_sc_q)
+      rd_owner_clear[acquisition_read_q] = 1'b1;
+    if (fail_owner_q) rd_owner_clear[fail_clear_slot_q] = 1'b1;
+    for (int ep = 1; ep < MISSES; ep++)
+    if (!ep_store[ep] && !ld_prefetch_q[ep] && active && phase_q == UpdateWait && array_ready &&
+        operation_q == GrantOp && grant_ep_q == EpBits'(ep))
+      rd_owner_clear[ld_read_q[ep]] = 1'b1;
+  end
+  // A failed read on a nonzero endpoint clears a cycle later, when the read's
+  // ready flag already keeps it out of selection.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      rd_owned_q <= '0;
+      fail_owner_q <= 1'b0;
+    end else begin
+      rd_owned_q <= (rd_owned_q & ~rd_owner_clear) | rd_owner_set;
+      fail_owner_q <= read_failure && !pick_onehot[0];
+    end
+  end
+`ifndef SYNTHESIS
   coherence_read_owners #(
       .SLOTS(MISSES)
   ) read_owners (
@@ -1153,8 +1192,12 @@ module coherence_l1d #(
       .i_read_slot(read_owner_slots),
       .o_owned(rd_ep_owned)
   );
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst) p_read_owned_exact : assert (rd_owned_q ==
+        (rd_ep_owned | (fail_owner_q ? 8'd1 << fail_clear_slot_q : 8'd0)));
+`endif
   // A local AMO owns its read slot until it releases its sector.
-  assign rd_owned = rd_ep_owned |
+  assign rd_owned = rd_owned_q |
       ((atomic_q && atomic_local_q && !atomic_sc_q) ? 8'd1 << atomic_read_q : 8'd0);
   assign same_line = Multi && |same_line_q;
   // A load grant waits only for a WB slot. Endpoint 0 does not take the last
@@ -1577,7 +1620,8 @@ module coherence_l1d #(
         store_read_turn_q <= 1'b1;
       if (store_pop && operation_q == GrantOp) store_read_turn_q <= 1'b1;
       if (active && phase_q == Lookup && (operation_q == ReadOp ||
-          (operation_q == GrantOp && !selected_grant_store))) store_read_turn_q <= 1'b0;
+          (operation_q == GrantOp && !selected_grant_store && !grant_prefetch_q)))
+        store_read_turn_q <= 1'b0;
       tail_checked_q <= tail_q && !store_pop;
     end
   end
