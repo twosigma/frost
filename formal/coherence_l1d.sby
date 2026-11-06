@@ -58,7 +58,7 @@ multidata: timeout 3600
 control_single: abc bmc3
 control_multi: abc bmc3 -c
 control_stream: abc bmc3
-data: abc bmc3
+data: abc bmc3 -c
 cadical: abc bmc3 -c
 conflict: smtbmc boolector
 covers: smtbmc boolector
