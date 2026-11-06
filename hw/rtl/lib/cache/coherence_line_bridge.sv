@@ -51,7 +51,6 @@ module coherence_line_bridge #(
     output logic o_g_ready,
     input logic [ADDR_WIDTH+274:0] i_g,
     output logic o_c_valid,
-    output logic o_c_selected,
     input logic i_c_ready,
     output logic [ADDR_WIDTH+17:0] o_c,
     input logic i_u_valid,
@@ -89,13 +88,13 @@ module coherence_line_bridge #(
   logic [ID_BITS-1:0] id_q;
   assign grant_in = i_g;
   assign release_in = i_u;
-  assign o_req_ready = !i_rst && !i_fatal_stop && phase_q == Idle;
-  assign o_clean_valid = !i_rst && phase_q == Clean;
+  assign o_req_ready = !i_fatal_stop && phase_q == Idle;
+  assign o_clean_valid = phase_q == Clean;
   assign o_clean_addr = demand_q.addr;
-  assign o_d_valid = !i_rst && phase_q == Demand;
+  assign o_d_valid = phase_q == Demand;
   assign o_d = demand_q;
   // The home preserves one live request per q and returns its address in G.
-  assign o_g_ready = !i_rst && phase_q == Grant && grant_in.q == demand_q.q &&
+  assign o_g_ready = phase_q == Grant && grant_in.q == demand_q.q &&
       (EARLY_RESPONSE || grant_in.addr == demand_q.addr);
   assign completion = {
     demand_q.q,
@@ -104,10 +103,9 @@ module coherence_line_bridge #(
     grant_q.error ? coherence_pkg::Error : coherence_pkg::Consumed,
     1'b1
   };
-  assign o_c_selected = phase_q == Complete;
-  assign o_c_valid = !i_rst && phase_q == Complete;
+  assign o_c_valid = phase_q == Complete;
   assign o_c = completion;
-  assign o_u_ready = !i_rst && phase_q == Release && release_in.q == demand_q.q &&
+  assign o_u_ready = phase_q == Release && release_in.q == demand_q.q &&
       release_in.tid == grant_q.tid && release_in.addr == demand_q.addr;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -183,9 +181,6 @@ module coherence_line_bridge #(
   end
 `endif
 `ifdef FORMAL
-  always_comb begin
-    p_c_selected_exact : assert (o_c_valid == (!i_rst && o_c_selected));
-  end
   logic f_past_valid = 1'b0;
   logic f_response_debt_q;
   always_ff @(posedge i_clk) begin

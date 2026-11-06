@@ -27,11 +27,8 @@ module coherence_d_arbiter #(
     output logic [PORTS-1:0] o_ready,
     input logic [PORTS-1:0][WIDTH-1:0] i_payload,
     output logic o_valid,
-    // o_valid without the reset term, for a consumer that applies the same
-    // reset itself.
-    output logic o_offer,
-    // The held one-hot selection, which o_ready qualifies with reset and
-    // i_ready, for a consumer that applies i_ready itself.
+    // The held one-hot selection, which o_ready qualifies with i_ready, for a
+    // consumer that applies i_ready itself.
     output logic [PORTS-1:0] o_selected,
     input logic i_ready,
 `ifdef COHERENCE_HOME_CONTROL
@@ -95,11 +92,10 @@ module coherence_d_arbiter #(
       pick_payload |= {WIDTH{pick_ports[port_idx]}} & i_payload[port_idx];
     end
   end
-  assign o_ready = {PORTS{!i_rst && i_ready}} & selected_ports_q;
+  assign o_ready = {PORTS{i_ready}} & selected_ports_q;
   assign o_selected = selected_ports_q;
   // Live offers pass through the held mask in groups before the final reduction.
-  assign o_offer = HOLD_VALID ? selected_q : |offer_groups;
-  assign o_valid = !i_rst && o_offer;
+  assign o_valid = HOLD_VALID ? selected_q : |offer_groups;
   assign o_payload = payload_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -144,7 +140,7 @@ module coherence_d_arbiter #(
       assert (o_payload == i_payload[selected_port_q]);
     if (sim_reset_seen_q && !i_rst) begin
       assert (selected_ports_q == (selected_q ? PORTS'(1) << selected_port_q : PORTS'(0)));
-      p_offer_select : assert (o_offer == (selected_q && (HOLD_VALID || i_valid[selected_port_q])));
+      p_valid_select : assert (o_valid == (selected_q && (HOLD_VALID || i_valid[selected_port_q])));
       for (int port_idx = 0; port_idx < PORTS; port_idx++)
       assert (later_q[port_idx] == (port_idx >= int'(next_q)));
       if (found)

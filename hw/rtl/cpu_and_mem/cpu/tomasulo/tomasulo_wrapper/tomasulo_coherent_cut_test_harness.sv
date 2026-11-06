@@ -492,7 +492,6 @@ module tomasulo_coherent_cut_test_harness #(
       .i_g_valid(i_cache_g_valid),
       .o_g_ready(o_cache_g_ready),
       .i_g(i_cache_g),
-      .o_c_selected(),
       .o_c_valid(o_cache_c_valid),
       .i_c_ready(i_cache_c_ready),
       .o_c(o_cache_c),

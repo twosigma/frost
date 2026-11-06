@@ -261,7 +261,6 @@ module coherence_prefetch_agent #(
         .i_write_done(1'b0),
         .i_error_disposed(endpoint_grant.error),
         .o_c_valid(ep_c_valid[s]),
-        .o_c_selected(),
         .i_c_ready(ep_c_ready[s]),
         .o_c(ep_c[s]),
         .i_u_valid(i_u_valid),
@@ -284,7 +283,6 @@ module coherence_prefetch_agent #(
       .o_ready(ep_d_ready),
       .i_payload({ep_d[3], ep_d[2], ep_d[1], ep_d[0]}),
       .o_valid(o_d_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(i_d_ready),
       .o_payload(o_d)
@@ -301,7 +299,6 @@ module coherence_prefetch_agent #(
       .o_ready(ep_c_ready),
       .i_payload({ep_c[3], ep_c[2], ep_c[1], ep_c[0]}),
       .o_valid(o_c_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(i_c_ready),
       .o_payload(o_c)

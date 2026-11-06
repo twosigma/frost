@@ -35,15 +35,16 @@ module coherence_read_payload #(
   // synchronous reset pin.
   (* extract_reset = "no" *) logic [7:0] write_mask_q;
   (* keep = "true" *) logic [7:0] selected_mask;
-  assign selected_mask = i_rst ? '0 : (8'h01 << i_allocate_id);
+  assign selected_mask = 8'h01 << i_allocate_id;
   wire [7:0] write_mask = write_mask_q;
   assign o_write_payload = write_payload_q;
   assign o_write_mask = write_mask_q;
   always_ff @(posedge i_clk) begin
-    write_mask_q <= i_allocate ? selected_mask : '0;
     if (i_rst) begin
+      write_mask_q <= '0;
       write_payload_q <= '0;
     end else begin
+      write_mask_q <= i_allocate ? selected_mask : '0;
       write_payload_q <= i_payload;
     end
   end
