@@ -2009,7 +2009,7 @@ module coherence_l1d #(
         LocalReadReady: reference_ready_next[atomic_read_q] = 1'b1;
         Lookup:
         if (operation_q == GrantOp && grant_ep_q != '0 && !ld_prefetch_q[grant_ep_q] &&
-            !grant_answered_q)
+            !answered_q[grant_ep_q])
           reference_ready_next[ld_read_q[grant_ep_q]] = 1'b1;
         UpdateWait:
         if (array_ready && operation_q == GrantOp && grant_ep_q == '0 &&

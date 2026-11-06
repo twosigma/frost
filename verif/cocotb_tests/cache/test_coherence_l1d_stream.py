@@ -1193,7 +1193,7 @@ async def answered_read_id_reuse_during_installation(dut: Any) -> None:
             await b.tick()
         else:
             raise AssertionError("The grant did not answer its read")
-        # The read was answered while its grant still owns the array service.
+        # The grant owns the array service when its read is answered.
         assert b.get("operation_q") == 2 and b.get("phase_q") != 0
         assert not b.get("installed_q") >> ep & 1
         second = base + 8 if same_line else base + 0x1000
