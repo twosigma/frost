@@ -155,7 +155,7 @@ module coherent_hart_cache #(
   localparam int unsigned Ports   = L1D_MISSES + 4;
   localparam int unsigned IfPort  = L1D_MISSES;
   localparam int unsigned PtwPort = L1D_MISSES + 2;
-  logic [Ports-1:0] d_valid, d_ready, c_valid, c_ready, c_selected;
+  logic [Ports-1:0] d_valid, d_ready, c_valid, c_ready;
   logic [2:0] g_ready, u_ready;
   // Per-requester packets are plain vectors, read whole by the arbiters.
   logic [Ports-1:0][ADDR_WIDTH+311:0] demand;
@@ -234,7 +234,6 @@ module coherent_hart_cache #(
       .o_ready(c_ready),
       .i_payload(completion),
       .o_valid(o_c_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(i_c_ready),
       .o_payload(o_c)
@@ -249,7 +248,6 @@ module coherent_hart_cache #(
       .o_ready(d_ready),
       .i_payload(demand),
       .o_valid(o_d_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(i_d_ready),
       .o_payload(o_d)
@@ -340,7 +338,6 @@ module coherent_hart_cache #(
       .o_g_ready(g_ready[0]),
       .i_g(i_g),
       .o_c_valid(c_valid[L1D_MISSES-1:0]),
-      .o_c_selected(c_selected[L1D_MISSES-1:0]),
       .i_c_ready(c_ready[L1D_MISSES-1:0]),
       .o_c(completion[L1D_MISSES-1:0]),
       .i_u_valid(i_u_valid && release_message.q[6:5] == 0),
@@ -438,7 +435,6 @@ module coherent_hart_cache #(
         .o_g_ready(if_g_ready[slot]),
         .i_g(i_g),
         .o_c_valid(c_valid[IfPort+slot]),
-        .o_c_selected(c_selected[IfPort+slot]),
         .i_c_ready(c_ready[IfPort+slot]),
         .o_c(completion[IfPort+slot]),
         .i_u_valid(i_u_valid && release_message.q[6:5] == 1),
@@ -478,7 +474,6 @@ module coherent_hart_cache #(
         .o_g_ready(walk_g_ready[slot]),
         .i_g(i_g),
         .o_c_valid(c_valid[PtwPort+slot]),
-        .o_c_selected(c_selected[PtwPort+slot]),
         .i_c_ready(c_ready[PtwPort+slot]),
         .o_c(completion[PtwPort+slot]),
         .i_u_valid(i_u_valid && release_message.q[6:5] == 2),
@@ -516,7 +511,6 @@ module coherent_hart_cache #(
   logic [Ports-1:0] c_stalled_q;
   always_ff @(posedge i_clk) begin
     c_stalled_q <= i_rst ? '0 : c_valid & ~c_ready;
-    if (sim_reset_seen_q) assert (c_valid == (c_selected & {Ports{!i_rst}}));
     if (sim_reset_seen_q && !i_rst) begin
       assert ((c_stalled_q & ~c_valid) == 0);
       assert ($onehot0(c_ready));

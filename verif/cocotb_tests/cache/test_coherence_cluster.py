@@ -870,3 +870,42 @@ async def speculative_fill_then_dma_write(dut: Any) -> None:
         await b.set(i_read_ready=0)
     assert responses == {0: 0, 1: 0, 2: 0}
     assert await b.read(target, slot=7) == 0xABCDE123
+
+
+@cocotb.test()
+async def single_cycle_reset_during_traffic(dut: Any) -> None:
+    """Reset for one cycle at each stage of a miss and a store, then run cleanly."""
+    b = Cluster(dut)
+    await b.reset()
+    target = 0x80001000
+    live_in_reset = 0
+    for delay in range(48):
+        await b.wait("o_store_ready")
+        await b.set(
+            i_address=target,
+            i_read_id=0,
+            i_read_kind=0,
+            i_read_size=3,
+            i_read_valid=1,
+        )
+        await b.tick()
+        await b.set(
+            i_read_valid=0,
+            i_address=target + 0x40,
+            i_write_data=delay,
+            i_write_mask=255,
+        )
+        await b.tick()
+        await b.set(i_write_mask=0)
+        await b.tick(delay)
+        await b.set(i_rst=1)
+        # Outputs may stay live in this cycle; every receiver takes the reset.
+        live_in_reset |= int(dut.hart_d_valid.value) | int(dut.hart_c_valid.value)
+        await b.tick()
+        await b.set(i_rst=0)
+        assert not int(dut.hart_d_valid.value) and not int(dut.hart_c_valid.value)
+        assert not b.get("o_read_valid") and not b.get("o_write_done")
+        b.responses.clear()
+        await b.tick(30)
+        assert await b.read(target + 0x80, slot=delay % 8) == 0
+    assert live_in_reset

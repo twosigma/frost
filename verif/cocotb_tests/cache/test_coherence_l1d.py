@@ -776,6 +776,23 @@ async def store_error_stops_younger_installation_and_reset_clears_credit(
 
 
 @cocotb.test()
+async def fatal_stop_holds_the_controller_from_the_next_cycle(dut: Any) -> None:
+    """Service stops one cycle after a stop rises and returns after reset."""
+    b = Private(dut)
+    await b.reset()
+    await b.set(i_fatal_stop=1)
+    assert b.get("o_p_ready") and b.get("o_store_ready")
+    await b.tick()
+    assert not b.get("o_p_ready") and not b.get("o_store_ready")
+    await b.tick(4)
+    assert not b.get("o_p_ready") and not b.get("o_store_ready")
+    await b.set(i_fatal_stop=0, i_rst=1)
+    await b.tick()
+    await b.set(i_rst=0)
+    assert b.get("o_p_ready") and b.get("o_store_ready")
+
+
+@cocotb.test()
 async def frozen_writeback_blocks_buffered_tail_until_ack(dut: Any) -> None:
     """Preserve frozen bytes across tail promotion, accepted W and absorbed W."""
     for absorbed in (False, True):

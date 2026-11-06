@@ -44,7 +44,6 @@ module coherence_request_endpoint #(
     input logic i_write_done,
     input logic i_error_disposed,
     output logic o_c_valid,
-    output logic o_c_selected,
     input logic i_c_ready,
     output logic [ADDR_WIDTH+17:0] o_c,
     input logic i_u_valid,
@@ -93,16 +92,16 @@ module coherence_request_endpoint #(
   assign o_grant = grant_q;
   assign o_c = completion_q;
   assign o_live = !idle_phase;
-  assign o_request_ready = !i_rst && idle_phase && request.q == identity && coherence_pkg::legal_q(
+  assign o_request_ready = idle_phase && request.q == identity && coherence_pkg::legal_q(
       request.q
   ) && coherence_pkg::legal_opcode(
       request.q, request.opcode
   ) && request.addr[4:0] == 0;
-  assign o_d_valid = !i_rst && send_d_phase;
-  assign o_g_ready = !i_rst && wait_g_phase && grant_in.q == demand_q.q &&
+  assign o_d_valid = send_d_phase;
+  assign o_g_ready = wait_g_phase && grant_in.q == demand_q.q &&
       grant_in.addr == demand_q.addr && grant_in.opcode <= coherence_pkg::GrantFail;
-  assign o_grant_valid = !i_rst && grant_phase;
-  assign o_done_ready = !i_rst && done_phase && i_done_status <= coherence_pkg::Error &&
+  assign o_grant_valid = grant_phase;
+  assign o_done_ready = done_phase && i_done_status <= coherence_pkg::Error &&
       ((i_done_status != coherence_pkg::Error && !grant_q.error) || i_error_disposed) &&
       !(grant_q.error && i_done_status == coherence_pkg::Consumed) &&
       !(coherence_pkg::irrevocable(
@@ -111,9 +110,8 @@ module coherence_request_endpoint #(
       demand_q.opcode
   ) && i_done_status == coherence_pkg::Consumed && !grant_q.error &&
       grant_q.opcode != coherence_pkg::GrantFail && !i_write_done);
-  assign o_c_selected = send_c_phase;
-  assign o_c_valid = !i_rst && send_c_phase;
-  assign o_u_ready = !i_rst && wait_u_phase && release_in.q == demand_q.q &&
+  assign o_c_valid = send_c_phase;
+  assign o_u_ready = wait_u_phase && release_in.q == demand_q.q &&
       release_in.tid == grant_q.tid && release_in.addr == demand_q.addr;
 
   if (LOCAL_PHASE_UPDATES) begin : gen_local_phases
@@ -217,10 +215,7 @@ module coherence_request_endpoint #(
     wait_u_phase, send_c_phase, done_phase, grant_phase, wait_g_phase, send_d_phase, idle_phase
   };
   always_comb begin
-    p_c_selected_exact : assert (o_c_valid == (!i_rst && o_c_selected));
-  end
-  always_comb begin
-    p_grant_live : assert (!o_grant_valid || o_live);
+    if (!i_rst) p_grant_live : assert (!o_grant_valid || o_live);
   end
   logic f_past_valid = 1'b0;
   always_ff @(posedge i_clk) begin

@@ -43,7 +43,6 @@ module coherence_request_endpoint_reference #(
     input logic i_write_done,
     input logic i_error_disposed,
     output logic o_c_valid,
-    output logic o_c_selected,
     input logic i_c_ready,
     output logic [ADDR_WIDTH+17:0] o_c,
     input logic i_u_valid,
@@ -85,17 +84,16 @@ module coherence_request_endpoint_reference #(
   assign o_grant = grant_q;
   assign o_c = completion_q;
   assign o_live = phase_q != Idle;
-  assign o_request_ready = !i_rst && phase_q == Idle && request.q == identity &&
-      coherence_pkg::legal_q(
+  assign o_request_ready = phase_q == Idle && request.q == identity && coherence_pkg::legal_q(
       request.q
   ) && coherence_pkg::legal_opcode(
       request.q, request.opcode
   ) && request.addr[4:0] == 0;
-  assign o_d_valid = !i_rst && phase_q == SendD;
-  assign o_g_ready = !i_rst && phase_q == WaitG && grant_in.q == demand_q.q &&
+  assign o_d_valid = phase_q == SendD;
+  assign o_g_ready = phase_q == WaitG && grant_in.q == demand_q.q &&
       grant_in.addr == demand_q.addr && grant_in.opcode <= coherence_pkg::GrantFail;
-  assign o_grant_valid = !i_rst && phase_q == Grant;
-  assign o_done_ready = !i_rst && phase_q == Done && i_done_status <= coherence_pkg::Error &&
+  assign o_grant_valid = phase_q == Grant;
+  assign o_done_ready = phase_q == Done && i_done_status <= coherence_pkg::Error &&
       ((i_done_status != coherence_pkg::Error && !grant_q.error) || i_error_disposed) &&
       !(grant_q.error && i_done_status == coherence_pkg::Consumed) &&
       !(coherence_pkg::irrevocable(
@@ -104,9 +102,8 @@ module coherence_request_endpoint_reference #(
       demand_q.opcode
   ) && i_done_status == coherence_pkg::Consumed && !grant_q.error &&
       grant_q.opcode != coherence_pkg::GrantFail && !i_write_done);
-  assign o_c_selected = phase_q == SendC;
-  assign o_c_valid = !i_rst && phase_q == SendC;
-  assign o_u_ready = !i_rst && phase_q == WaitU && release_in.q == demand_q.q &&
+  assign o_c_valid = phase_q == SendC;
+  assign o_u_ready = phase_q == WaitU && release_in.q == demand_q.q &&
       release_in.tid == grant_q.tid && release_in.addr == demand_q.addr;
 
   always_ff @(posedge i_clk) begin

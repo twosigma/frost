@@ -207,7 +207,7 @@ module coherent_hart_cache_formal #(
   logic [26:0] accepted_vpn_q;
   logic expected_error_q, last_error_q;
   riscv_pkg::ptw_resp_t translation;
-  logic [2:0] d_valid, d_ready, c_valid, c_ready, c_selected;
+  logic [2:0] d_valid, d_ready, c_valid, c_ready;
   logic [2:0] g_ready, u_ready;
   logic [2:0][AddrWidth+311:0] demands;
   logic [2:0][ AddrWidth+17:0] completions;
@@ -394,7 +394,6 @@ module coherent_hart_cache_formal #(
         .o_g_ready(g_ready[source]),
         .i_g(grant),
         .o_c_valid(c_valid[source]),
-        .o_c_selected(c_selected[source]),
         .i_c_ready(c_ready[source]),
         .o_c(completions[source]),
         .i_u_valid(u_valid && release_message.q[8:7] == 2 && release_message.q[4:1] == 4'(source)),
@@ -412,7 +411,6 @@ module coherent_hart_cache_formal #(
       .o_ready(d_ready),
       .i_payload(demands),
       .o_valid(home_d_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(home_d_ready),
       .o_payload(demand)
@@ -428,7 +426,6 @@ module coherent_hart_cache_formal #(
       .o_ready(c_ready),
       .i_payload(completions),
       .o_valid(home_c_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(home_c_ready),
       .o_payload(completion)

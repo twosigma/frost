@@ -595,8 +595,10 @@ async def cancellation_at_each_unaccepted_stage(dut: Any) -> None:
                 await b.set(i_fatal_stop=1)
             else:
                 await b.set(i_rst=1)
+            # Reset acts at the flops and a fatal stop takes effect a cycle
+            # after it rises, so a selected hint stays offered on this edge.
             if stage == 4:
-                assert not b.get("ep_request_valid")
+                assert bool(b.get("ep_request_valid")) == (cancel in ("fatal", "reset"))
             await b.tick()
             await b.set(i_read_valid=0)
             if cancel in ("lr", "amo"):
@@ -606,12 +608,13 @@ async def cancellation_at_each_unaccepted_stage(dut: Any) -> None:
             assert not b.get("hint_valid_q") and not b.get("hint_checked_q")
             assert not b.get("stream_confirmed")
             await b.tick(11)
-            assert not b.get("live") & b.get("ld_prefetch_q")
+            accepted = stage == 4 and cancel == "fatal"
+            assert bool(b.get("live") & b.get("ld_prefetch_q")) == accepted
 
 
 @cocotb.test()
 async def live_conflicts_on_hint_acceptance(dut: Any) -> None:
-    """Block a selected hint on a matching store or probe at its acceptance edge."""
+    """Block a selected hint on a probe; a store on that edge waits for the hint."""
     b = StreamPrivate(dut)
     if b.endpoints < 3:
         return
@@ -640,31 +643,50 @@ async def live_conflicts_on_hint_acceptance(dut: Any) -> None:
                 i_address=address, i_write_mask=255, i_write_data=b.word(address)
             )
             assert b.get("store_push")
-        else:
-            await b.set(
-                i_p_valid=1,
-                i_p=pack(
-                    (2, 0),
-                    (6, 17),
-                    (1, 0),
-                    (b.p, address),
-                    (2, 2),
-                    (2, 0),
-                    (9, 0),
-                    (5, 0),
-                    (3, 3),
-                ),
+            assert not b.get("lookup_conflict")
+            assert b.get("ep_request_valid") == selected
+            await b.tick()
+            await b.set(i_write_mask=0)
+            assert b.get("live") & selected and b.get("ld_prefetch_q") == selected
+            assert b.get("pending_q")
+            await b.requests_at_least(3)
+            index = next(
+                i for i, entry in enumerate(b.requests) if entry[1][2] == address
             )
+            await b.tick(20)
+            assert not any(entry[1][0] == 1 for entry in b.requests)
+            await b.grant(index)
+            await b.release(index)
+            for _ in range(100):
+                if any(entry[1][0] == 1 for entry in b.requests):
+                    break
+                await b.tick()
+            ep, request = next(entry for entry in b.requests if entry[1][0] == 1)
+            assert ep == 0 and request[2] == address
+            assert not b.get("o_fatal")
+            continue
+        await b.set(
+            i_p_valid=1,
+            i_p=pack(
+                (2, 0),
+                (6, 17),
+                (1, 0),
+                (b.p, address),
+                (2, 2),
+                (2, 0),
+                (9, 0),
+                (5, 0),
+                (3, 3),
+            ),
+        )
         assert b.get("lookup_conflict") and not b.get("ep_request_valid")
         await b.tick()
-        await b.set(i_write_mask=0)
         assert not b.get("live") & selected
         assert not b.get("ld_prefetch_q") and len(b.requests) == 2
-        if conflict == "probe":
-            await b.wait("o_p_ready")
-            await b.tick()
-            await b.set(i_p_valid=0)
-        assert b.get("pending_q" if conflict == "store" else "probe_valid_q")
+        await b.wait("o_p_ready")
+        await b.tick()
+        await b.set(i_p_valid=0)
+        assert b.get("probe_valid_q")
         assert not b.get("o_fatal")
 
 
