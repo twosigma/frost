@@ -1188,7 +1188,12 @@ async def answered_read_id_reuse_during_installation(dut: Any) -> None:
         if dirty:
             await b.wait("o_w_valid")
             put = unpack(b.get("o_w"), (1, 1, 1, b.p, 256, 1))
-            assert put[3] & 0x1FF == 0 and put[3] != base
+            way = (put[3] - base) // 0x200 - 1
+            assert put[3] == base + 0x200 * (way + 1) and way in range(ways)
+            # The frozen victim holds its store over the grant that filled it.
+            assert put[4] == (0x1111 * (way + 1)) | sum(
+                b.word(put[3] + 8 * word) << (64 * word) for word in range(1, 4)
+            )
         for _ in range(100):
             if b.get("o_c_valid") >> ep & 1:
                 break
