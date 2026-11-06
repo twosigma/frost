@@ -1070,11 +1070,20 @@ module coherence_l1d #(
     end
   end
 `ifndef SYNTHESIS
+  // The answer flag is clear when a grant enters Lookup, so a load endpoint's
+  // answer falls in that cycle.
+  logic lookup_seen_q;
+  always_ff @(posedge i_clk) begin
+    lookup_seen_q <= phase_q == Lookup;
+    if (sim_reset_seen_q && !i_rst && Multi && phase_q == Lookup && !lookup_seen_q &&
+        operation_q == GrantOp)
+      p_grant_answer_fresh : assert (!grant_answered_q);
+  end
 `ifndef FORMAL
-  // Endpoints whose current acquisition has answered its read. These checks
-  // span whole acquisitions, which the control BMCs cannot afford, so they
-  // run in simulation. A load endpoint answers the ordinary load it acquired
-  // for, once per acquisition; its installation completes no read.
+  // Endpoints whose current acquisition has answered its read. A load endpoint
+  // answers the ordinary load it acquired for, once per acquisition; its
+  // installation completes no read. The control BMCs cannot afford these
+  // checks, so they run in simulation.
   logic [EpSlots-1:0] answered_q;
   always_ff @(posedge i_clk) begin
     for (int ep = 0; ep < EpSlots; ep++)
