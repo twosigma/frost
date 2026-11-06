@@ -38,8 +38,8 @@ FORMAL_DIR = "formal"
 SBY_TASK_TIMEOUT_S = 2400
 # The unchanged ROB BMC can take about an hour on a shared runner, the
 # hart maintenance proof, which models buffered store hits, can take over an
-# hour on a loaded machine, and the eight-endpoint L1D stream BMC can take
-# longer. These tasks run in separate CI jobs. The three-endpoint L1D
+# hour on a loaded machine, and the eight-endpoint L1D stream BMCs can take
+# up to an hour. These tasks run in separate CI jobs. The three-endpoint L1D
 # control BMC can take about half an hour on a loaded machine and stays in
 # the Coherence job. Their proof depth and input contracts stay unchanged;
 # only the solver's wall-clock allowance differs.
@@ -49,7 +49,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("reorder_buffer", "bmc"): 5400,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_four_bmc"): 7200,
-    ("coherence_l1d", "coh_l1d_stream_bmc"): 10800,
+    ("coherence_l1d", "coh_l1d_stream_bmc"): 3600,
+    ("coherence_l1d", "coh_l1d_stream_free_nostore_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_multi_bmc"): 7200,
     ("coherence_l1d", "coh_l1d_store_multi_payload_bmc"): 3600,
@@ -295,6 +296,8 @@ FORMAL_TARGETS = [
             "coh_l1d_bmc",
             "coh_l1d_multi_bmc",
             "coh_l1d_stream_bmc",
+            "coh_l1d_stream_free_bmc",
+            "coh_l1d_stream_free_nostore_bmc",
             "coh_l1d_stream_cover",
             "coh_l1d_turn_cover",
             "coh_l1d_local_prove",
@@ -1272,7 +1275,15 @@ SBY_TASKS = [
     ),
     (
         "coh_l1d_stream_bmc",
-        "Speculative endpoint ownership and demand-state isolation.",
+        "Speculative endpoint ownership and demand-state isolation along the scripted stream, with arbitrary replies after cycle 24.",
+    ),
+    (
+        "coh_l1d_stream_free_bmc",
+        "The same checks with arbitrary inputs, stores included, to depth 16.",
+    ),
+    (
+        "coh_l1d_stream_free_nostore_bmc",
+        "The same checks with arbitrary inputs and no stores, to depth 24.",
     ),
     ("coh_l1d_stream_cover", "Two speculative endpoints and demand attachment."),
     ("coh_l1d_turn_cover", "A demand retry between buffered load grants."),
@@ -2499,7 +2510,7 @@ def test_fatal_frame_validation(
         ("reorder_buffer", "bmc", 5400),
         ("coherent_hart_cache", "coh_hart_maint_prove", 7200),
         ("coherent_hart_cache", "coh_hart_maint_four_bmc", 7200),
-        ("coherence_l1d", "coh_l1d_stream_bmc", 10800),
+        ("coherence_l1d", "coh_l1d_stream_bmc", 3600),
         ("coherence_l1d", "coh_l1d_bmc", 3600),
         ("coherence_store_boundary", "bmc_four", 7200),
         ("coherence_l1d", "coh_l1d_multi_bmc", 7200),

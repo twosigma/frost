@@ -2863,21 +2863,12 @@ module coherence_l1d #(
     if (probe_capture) f_probe_sent_q <= 1;
   end
 `endif
-  if (StreamEnabled) begin : gen_stream_covers
-    always_ff @(posedge i_clk) begin
-      p_stream_attach : cover (wait_attach && ld_prefetch_q[same_line_ep]);
-      p_stream_lr_admit : cover (i_read_valid && i_read_kind == ReadLR &&
-          phase_q == Acquire && operation_q == PrefetchOp &&
-          |(ep_request_valid & ep_request_ready));
-      p_stream_amo_admit : cover (i_read_valid && i_read_kind == ReadAMO &&
-          phase_q == Acquire && operation_q == PrefetchOp &&
-          |(ep_request_valid & ep_request_ready));
-      if (PrefetchCount == 2)
-        p_stream_two : cover (live[MISSES-1] && ld_prefetch_q[MISSES-1] &&
-            live[MISSES-2] && ld_prefetch_q[MISSES-2]);
-    end
-  end
 `ifdef STREAM_COVER
+  // The environment answers nothing for the first STREAM_PASSIVE_CYCLES
+  // cycles and is free afterwards.
+`ifndef STREAM_PASSIVE_CYCLES
+`define STREAM_PASSIVE_CYCLES 127
+`endif
   logic [6:0] f_stream_cycle_q = 0;
   (* anyconst *) logic [1:0] f_stream_atomic;
   logic f_stream_atomic_sent_q = 0;
@@ -2888,7 +2879,9 @@ module coherence_l1d #(
     if (f_stream_cycle_q != 127) f_stream_cycle_q <= f_stream_cycle_q + 1'b1;
     assume (i_rst == !f_past_valid);
     assume (!i_fatal_stop && !i_maint_valid && !i_sc_valid && !i_sc_commit);
-    assume (i_write_mask == 0 && !i_p_valid && !i_wa_valid && !i_g_valid && !i_u_valid);
+    assume (i_write_mask == 0);
+    if (f_stream_cycle_q < `STREAM_PASSIVE_CYCLES)
+      assume (!i_p_valid && !i_wa_valid && !i_g_valid && !i_u_valid);
     assume (f_stream_atomic <= 2);
     if (f_stream_admit) f_stream_atomic_sent_q <= 1;
     assume (i_read_valid == (f_stream_cycle_q == 4 || f_stream_cycle_q == 5 ||
@@ -2901,7 +2894,8 @@ module coherence_l1d #(
         f_stream_cycle_q == 5 ? 32 : f_stream_cycle_q == 6 ? 64 : 96))));
     assume (i_read_kind == (f_stream_admit ? f_stream_atomic : ReadLoad));
     assume (i_read_size == 3 && i_read_tag == 0);
-    assume (i_d_ready == 0 && i_c_ready == 0 && !i_read_ready);
+    if (f_stream_cycle_q < `STREAM_PASSIVE_CYCLES)
+      assume (i_d_ready == 0 && i_c_ready == 0 && !i_read_ready);
   end
 `endif
 `ifdef STREAM_TURN_COVER
@@ -2960,6 +2954,37 @@ module coherence_l1d #(
   end
 `endif
   logic   f_past_valid = 1'b0;
+  // The covers skip the first sample, taken before the reset has acted.
+  if (StreamEnabled) begin : gen_stream_covers
+    always_ff @(posedge i_clk) begin
+      p_stream_attach : cover (f_past_valid && !i_rst && wait_attach &&
+          ld_prefetch_q[same_line_ep]);
+      p_stream_lr_admit : cover (f_past_valid && !i_rst && i_read_valid &&
+          i_read_kind == ReadLR && phase_q == Acquire && operation_q == PrefetchOp &&
+          |(ep_request_valid & ep_request_ready));
+      p_stream_amo_admit : cover (f_past_valid && !i_rst && i_read_valid &&
+          i_read_kind == ReadAMO && phase_q == Acquire && operation_q == PrefetchOp &&
+          |(ep_request_valid & ep_request_ready));
+      if (PrefetchCount == 2)
+        p_stream_two : cover (f_past_valid && !i_rst && live[MISSES-1] &&
+            ld_prefetch_q[MISSES-1] && live[MISSES-2] && ld_prefetch_q[MISSES-2]);
+    end
+  end
+`ifdef STREAM_PREFIX
+  // A deep BMC reaches the speculative behavior sooner when the first reads
+  // are the three sequential misses that confirm a stream. Every input is
+  // free from the cycle after them, and the other inputs are free throughout.
+  logic [3:0] f_prefix_q = 0;
+  always_ff @(posedge i_clk) begin
+    if (f_prefix_q != 15) f_prefix_q <= f_prefix_q + 1'b1;
+    if (f_prefix_q < 8) begin
+      assume (i_read_valid == (f_prefix_q >= 1 && f_prefix_q <= 3));
+      assume (i_read_kind == ReadLoad && i_read_size == 3);
+      assume (i_address == ADDR_WIDTH'(32'h80000000 + 32 * (f_prefix_q - 1)));
+      assume (i_read_id == 3'(f_prefix_q - 1));
+    end
+  end
+`endif
   coh_g_t f_grant;
   assign f_grant = i_g;
   logic [5:0] f_probe_age;

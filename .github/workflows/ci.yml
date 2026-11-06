@@ -1233,7 +1233,8 @@ jobs:
           - shard: Coherence L1D and bridges
             pytest_filter: >-
               axi_coherent_bridge or
-              (coherence_l1d and not (coh_l1d_stream_bmc or (coh_l1d_local and prove)))
+              (coherence_l1d and not (coh_l1d_stream_bmc or coh_l1d_stream_free or
+              (coh_l1d_local and prove)))
             timeout_minutes: 330
           # The ordered store boundary tasks, the longest of the coherent BMCs
           # after the stream and control tasks.
@@ -1242,9 +1243,9 @@ jobs:
             timeout_minutes: 330
           # The hart maintenance composition proof models buffered store
           # hits and can take over an hour, and the eight-endpoint L1D stream
-          # BMC takes longer, so they run in their own job.
+          # BMCs take about an hour, so they run in their own job.
           - shard: Hart maintenance
-            pytest_filter: coh_hart_maint_prove or coh_l1d_stream_bmc
+            pytest_filter: coh_hart_maint_prove or coh_l1d_stream_bmc or coh_l1d_stream_free
             timeout_minutes: 330
           - shard: Other tasks
             pytest_filter: "not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or coherence_ or coherent_)"

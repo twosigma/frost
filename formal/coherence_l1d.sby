@@ -4,7 +4,9 @@ coh_l1d_conflict_multi_prove multi conflict padded
 coh_l1d_conflict_stream_prove stream multi conflict padded
 coh_l1d_bmc single control control_single
 coh_l1d_multi_bmc multi control control_multi padded
-coh_l1d_stream_bmc stream multi control control_stream padded longbmc
+coh_l1d_stream_bmc stream multi control_stream padded longbmc streamscript
+coh_l1d_stream_free_bmc stream multi control control_stream padded freestream
+coh_l1d_stream_free_nostore_bmc stream multi control control_stream padded freestream nostore
 coh_l1d_stream_cover stream multi streamcovers covermode padded
 coh_l1d_turn_cover turnstream multi turncovers covermode padded
 coh_l1d_cover single covers covermode
@@ -45,9 +47,16 @@ covermode: timeout 600
 conflict: mode prove
 conflict: depth 2
 conflict: timeout 600
-# The eight-endpoint stream BMC needs a longer budget; CI runs it in the
-# hart maintenance proof's job.
-longbmc: timeout 10800
+# The eight-endpoint stream BMC reads the stream cover's scripted loads, so
+# its frames reach the speculative behavior; CI runs it in the hart
+# maintenance proof's job. The free-input stream BMCs are shallower: their
+# frames take about 1.3 times longer than the previous one.
+longbmc: timeout 3600
+streamscript: depth 44
+freestream: depth 16
+freestream: timeout 1800
+nostore: depth 24
+nostore: timeout 3600
 # The control BMCs check four ordered store records, local atomics and
 # look-ahead admission and need more than the other tasks.
 control_single: timeout 3600
@@ -74,6 +83,7 @@ read -sv coherence_read_stream.sv
 read -sv cache_perf_pkg.sv
 read -sv coherence_pkg.sv coherence_request_endpoint.sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv
 control: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
+streamscript: read -formal -sv -D STREAM_COVER -D STREAM_PASSIVE_CYCLES=24 coherence_read_payload.sv coherence_l1d.sv
 conflict: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 streamcovers: read -formal -sv -D STREAM_COVER coherence_read_payload.sv coherence_l1d.sv
 turncovers: read -formal -sv -D STREAM_TURN_COVER coherence_read_payload.sv coherence_l1d.sv
@@ -101,6 +111,8 @@ conflict: opt_expr -keepdc -noclkinv
 # The matching conflict proof supplies this guarded, clocked identity.
 control: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 control: chformal -assert2assume c:p_prefetch_conflict_split
+streamscript: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
+streamscript: chformal -assert2assume c:p_prefetch_conflict_split
 conflict: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 conflict: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_conflict_split %d
 conflict: chformal -assume -remove
@@ -131,6 +143,7 @@ sector: select -assert-count 2 c:p_local_lookup_owner c:p_local_sc_lookup %u t:$
 # completion checks run in the bounded task and the array proofs.
 local: cutpoint w:array_ready w:array_valid w:array_hit w:array_state w:array_addr w:array_data w:array_way w:array_available w:update_ready
 localcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_local_probe_cover c:p_local_fail_cover c:p_local_release_cover %u %u %d
+nostore: connect -set i_write_mask 8'h00
 memory_map
 conflict: select -assert-min 1 t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff
 conflict: cutpoint t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff
