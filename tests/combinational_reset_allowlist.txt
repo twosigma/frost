@@ -40,14 +40,6 @@ hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv: sel_prediction_r
 hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv: u_final.I0
 hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv: u_slot1.I0
 hw/rtl/cpu_and_mem/cpu/if_stage/slot2_prediction_capture.sv: o_request
-hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv: amo_compute_commit
-hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv: candidate_select.i_clear
-hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv: hit
-hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv: lq_data_we[0]
-hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv: non_hit
-hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv: o_response_eligible[response][entry]
-hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv: ram_hit_write_eligible
-hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv: ram_non_hit_write
 hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.sv: if (!i_rst_n || i_flush_all)
 hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv: done_next[entry]
 hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv: exception_next[entry]

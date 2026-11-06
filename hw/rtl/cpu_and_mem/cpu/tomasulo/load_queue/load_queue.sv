@@ -1309,12 +1309,8 @@ module load_queue #(
           .SELECT_WIDTH(PREISSUE_SEL_WIDTH)
       ) candidate_select (
           .i_clk,
-`ifndef SYNTHESIS
-`ifndef FORMAL
-          .i_sim_rst(!i_rst_n),
-`endif
-`endif
-          .i_clear(!i_rst_n || i_flush_all),
+          .i_rst_n,
+          .i_flush_all,
           .i_select(i_pre_issue_sel),
           .i_candidates(candidates_flat),
           .o_selected(addr_update_pre_match_tags_q)
@@ -2405,8 +2401,8 @@ module load_queue #(
       (i_flush_en && (flush_all_entries || is_younger(
       lq_rob_tag[amo_entry_idx], i_flush_tag, i_rob_head_tag
   )));
-  assign amo_compute_commit = (amo_state == AMO_COMPUTE) && i_rst_n &&
-      !i_flush_all && !amo_compute_owner_killed;
+  assign amo_compute_commit = (amo_state == AMO_COMPUTE) && !i_flush_all &&
+      !amo_compute_owner_killed;
 
   logic fast_resp_now;
   assign fast_resp_now = i_mem_read_valid && !i_mem_read_is_cached;
@@ -2728,13 +2724,14 @@ module load_queue #(
       ((sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE) ?
        i_sq_forward.data : FLEN'(lu_fwd_out));
 
-  // Apply the L0 hit after the other write permissions.
-  (* keep = "true" *) wire ram_hit_write_eligible = i_rst_n && cache_hit_eligible;
-  (* keep = "true" *) wire ram_non_hit_write = i_rst_n && !i_flush_all &&
+  // Apply the L0 hit after the other write permissions. Reset clears every
+  // valid bit, so a write in a reset cycle reaches no live entry.
+  (* keep = "true" *) wire ram_hit_write_eligible = cache_hit_eligible;
+  (* keep = "true" *) wire ram_non_hit_write = !i_flush_all &&
       (sq_do_forward || (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done));
 
   always_comb begin
-    lq_data_we[0] = i_rst_n && !i_flush_all && accept_mem_response && !issued_is_amo;
+    lq_data_we[0] = !i_flush_all && accept_mem_response && !issued_is_amo;
     lq_data_wr_addr[0] = issued_idx;
     lq_data_wd[0] = (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE) ?
         i_mem_read_data : FLEN'(lu_data_out);
@@ -2756,7 +2753,7 @@ module load_queue #(
     // ---------------------------------------------------------------
     // Port 0: memory response, independent of simultaneous local completions.
     // ---------------------------------------------------------------
-    if (i_rst_n && !i_flush_all && accept_mem_response) begin
+    if (!i_flush_all && accept_mem_response) begin
       f_ram_addr[0] = issued_idx;
       if (issued_is_amo) begin
         // AMO read: don't write data yet (port 1 handles after AMO write)
@@ -2778,7 +2775,7 @@ module load_queue #(
     // Forwarding requires a matching store; a hit requires either no older store
     // or no match. Thus the three sources cannot collide.
     // ---------------------------------------------------------------
-    if (i_rst_n && !i_flush_all) begin
+    if (!i_flush_all) begin
       if (cache_hit_fast_path) begin
         f_ram_we[1] = 1'b1;
         f_ram_addr[1] = sq_check_idx;
@@ -3709,7 +3706,6 @@ module load_queue #(
   lq_result_valid_prepare #(
       .DEPTH(DEPTH)
   ) u_result_valid_prepare (
-      .i_rst_n(i_rst_n),
       .i_flush_all(i_flush_all),
       .i_flush_en(i_flush_en),
       .i_valid(lq_data_valid),
@@ -3752,7 +3748,10 @@ module load_queue #(
         .i_alloc_2(i_alloc_2.valid),
         .o_valid(lq_data_valid_next[i])
     );
-    always_ff @(posedge i_clk) lq_data_valid[i] <= lq_data_valid_next[i];
+    always_ff @(posedge i_clk) begin
+      if (!i_rst_n) lq_data_valid[i] <= 1'b0;
+      else lq_data_valid[i] <= lq_data_valid_next[i];
+    end
   end
 
 
@@ -5574,6 +5573,7 @@ module load_queue #(
     if (f_past_valid && i_rst_n && !$past(i_rst_n)) begin
       p_reset_empty : assert (o_empty);
       p_reset_count_zero : assert (o_count == '0);
+      p_reset_clears_data_valid : assert (lq_data_valid == '0);
     end
   end
 
@@ -5874,7 +5874,6 @@ module lq_result_valid_prepare #(
     parameter int unsigned DEPTH = 8,
     localparam int unsigned IdxWidth = $clog2(DEPTH)
 ) (
-    input logic i_rst_n,
     input logic i_flush_all,
     input logic i_flush_en,
     input logic [DEPTH-1:0] i_valid,
@@ -5905,14 +5904,14 @@ module lq_result_valid_prepare #(
     wire hit_waits = (i_cdb_valid && !i_result_accepted) ||
         i_issue_cdb_found || (response != 0);
     for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry
-      wire non_hit = i_rst_n && !i_flush_all &&
+      wire non_hit = !i_flush_all &&
           (i_valid[entry] ||
            (i_forward && !forward_fire && i_check_idx == IdxWidth'(entry)) ||
            (i_amo_done && i_amo_idx == IdxWidth'(entry)));
-      wire hit = i_rst_n && i_hit_eligible && i_check_idx == IdxWidth'(entry) && hit_waits;
+      wire hit = i_hit_eligible && i_check_idx == IdxWidth'(entry) && hit_waits;
       assign o_choices[2*response][entry] = non_hit;
       assign o_choices[2*response+1][entry] = non_hit || hit;
-      assign o_response_eligible[response][entry] = i_rst_n && !i_flush_all &&
+      assign o_response_eligible[response][entry] = !i_flush_all &&
           i_issued_idx == IdxWidth'(entry) &&
           (i_response_error || (!i_issued_amo && !response_fire));
     end
