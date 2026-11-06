@@ -167,19 +167,20 @@ module coherence_array #(
   endfunction
 
   assign o_init_done = phase_q != Init;
-  assign o_update_ready = !i_rst && phase_q == Idle;
+  assign o_update_ready = phase_q == Idle;
   assign update_fire = i_update_valid && o_update_ready;
-  assign o_req_ready = !i_rst && phase_q == Idle && !i_update_valid;
+  assign o_req_ready = phase_q == Idle && !i_update_valid;
   assign request_fire = i_req_valid && o_req_ready;
   assign early_reply = (hit_data_q && !o_resp_hit) ||
       (victim_data_q && (o_resp_hit || o_resp_state != 2'b11));
   // An early reply holds through Reply until it is consumed.
-  assign o_resp_valid = !i_rst && (phase_q == Reply || (phase_q == Data && early_reply));
+  assign o_resp_valid = phase_q == Reply || (phase_q == Data && early_reply);
   assign o_resp_data_valid = data_valid_q && !early_reply;
   assign tag_raddr = i_req_addr[OffsetBits+:SetBits];
   assign tag_waddr = phase_q == Init ? init_set_q : i_update_addr[OffsetBits+:SetBits];
   assign tag_wdata = phase_q == Init ? '0 :
       {i_update_state, i_update_addr[ADDR_WIDTH-1:OffsetBits+SetBits]};
+  // The tag and replacement RAMs have no reset, so reset gates their writes.
   for (genvar way = 0; way < WAYS; way++) begin : gen_tag_en
     assign tag_we[way] = !i_rst && (phase_q == Init ||
         (update_fire && i_update_way == WayBits'(way)));

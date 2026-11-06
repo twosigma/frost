@@ -125,13 +125,12 @@ module coherence_home_engine #(
   // handshake.
   logic absent_q;
   wire  prefetch = request_q.opcode == coherence_pkg::Prefetch;
-  logic probe_matches, upper, run, active, needs_probe, needs_data;
+  logic probe_matches, upper, run, needs_probe, needs_data;
   logic reply_fire, reply_fatal, service_error, service_dirty, service_complete;
   logic data_complete, probe_complete, deciding;
   // Reset clears every register below and the home's arbiters, so internal
   // work and the offers to those arbiters are qualified by the stop alone.
   assign run = !i_stop;
-  assign active = !i_rst && run;
   assign reply = i_r;
   assign work_in = i_work;
   assign upper = LINE_BYTES == 64 && request_q.addr[5];
@@ -152,13 +151,13 @@ module coherence_home_engine #(
       phase_q == UpdateWait || phase_q == Fatal || (phase_q == Result && read_sent_q));
   always_ff @(posedge i_clk) begin
     if (i_rst) o_initial_error <= 1'b0;
-    else if (active && i_work_valid) o_initial_error <= i_work_error;
+    else if (run && i_work_valid) o_initial_error <= i_work_error;
     if (!i_rst && phase_q == Result && !read_sent_q) assert (o_initial_error);
     if (!i_rst && phase_q != Free && o_initial_error)
       assert (phase_q == Result && error_q && !read_sent_q);
     if (!i_rst && absent_q) assert (phase_q == Result && prefetch && !error_q);
     // A prefetch never parks, so its work never carries a wake error.
-    if (active && i_work_valid)
+    if (!i_rst && run && i_work_valid)
       assert (!(i_work_error && work_in.opcode == coherence_pkg::Prefetch));
   end
   assign o_read_owner   = (phase_q == Service || phase_q == Fatal) && read_sent_q && !read_done_q;
@@ -380,11 +379,11 @@ module coherence_home_engine #(
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
     if (!f_past_valid) assume (i_rst);
-    if (i_work_valid) assume (o_idle && active);
+    if (i_work_valid) assume (o_idle && run);
     // The home never wakes a prefetch, so its work carries no error.
     if (i_work_valid && work_in.opcode == coherence_pkg::Prefetch) assume (!i_work_error);
     if (i_decision_valid) begin
-      assume (deciding && active);
+      assume (deciding && run);
       assume (int'(i_decision_way) < WAYS);
     end
     if (i_data_valid)
@@ -397,7 +396,7 @@ module coherence_home_engine #(
     if (i_rst || i_work_valid) begin
       f_baseline_valid_q <= 1'b0;
       f_dirty_valid_q <= 1'b0;
-    end else if (active) begin
+    end else if (run) begin
       if (i_data_valid) begin
         f_baseline_q <= f_data_byte;
         f_baseline_valid_q <= 1'b1;
@@ -431,7 +430,7 @@ module coherence_home_engine #(
       if (o_update_valid)
         assert (!error_q && (dirty_q || request_q.opcode == coherence_pkg::DMAWrite));
     end
-    if (f_past_valid && !i_rst && !$past(i_rst) && active) begin
+    if (f_past_valid && !i_rst && !$past(i_rst) && run) begin
       if ($past(o_p_valid && !i_p_ready)) assert (o_p_valid && o_p == $past(o_p));
       if ($past(o_wa_valid && !i_wa_ready)) assert (o_wa_valid && o_wa == $past(o_wa));
       if ($past(o_result_valid && !i_result_ready))

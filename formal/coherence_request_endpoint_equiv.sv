@@ -50,7 +50,6 @@ module coherence_request_endpoint_equiv #(
   logic [ADDR_WIDTH+274:0] ref_o_grant;
   logic ref_o_done_ready;
   logic ref_o_c_valid;
-  logic ref_o_c_selected;
   logic [ADDR_WIDTH+17:0] ref_o_c;
   logic ref_o_u_ready;
   logic ref_o_live;
@@ -85,7 +84,6 @@ module coherence_request_endpoint_equiv #(
       .o_grant(ref_o_grant),
       .o_done_ready(ref_o_done_ready),
       .o_c_valid(ref_o_c_valid),
-      .o_c_selected(ref_o_c_selected),
       .o_c(ref_o_c),
       .o_u_ready(ref_o_u_ready),
       .o_live(ref_o_live),
@@ -100,7 +98,6 @@ module coherence_request_endpoint_equiv #(
     logic [ADDR_WIDTH+274:0] candidate_o_grant;
     logic candidate_o_done_ready;
     logic candidate_o_c_valid;
-    logic candidate_o_c_selected;
     logic [ADDR_WIDTH+17:0] candidate_o_c;
     logic candidate_o_u_ready;
     logic candidate_o_live;
@@ -136,7 +133,6 @@ module coherence_request_endpoint_equiv #(
         .o_grant(candidate_o_grant),
         .o_done_ready(candidate_o_done_ready),
         .o_c_valid(candidate_o_c_valid),
-        .o_c_selected(candidate_o_c_selected),
         .o_c(candidate_o_c),
         .o_u_ready(candidate_o_u_ready),
         .o_live(candidate_o_live),
@@ -152,7 +148,6 @@ module coherence_request_endpoint_equiv #(
         assert (candidate_o_grant == ref_o_grant);
         assert (candidate_o_done_ready == ref_o_done_ready);
         assert (candidate_o_c_valid == ref_o_c_valid);
-        assert (candidate_o_c_selected == ref_o_c_selected);
         assert (candidate_o_c == ref_o_c);
         assert (candidate_o_u_ready == ref_o_u_ready);
         assert (candidate_o_live == ref_o_live);

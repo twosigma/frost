@@ -913,7 +913,6 @@ module coherence_store_boundary_formal #(
   logic l1_wa_ready;
   logic l1_g_ready;
   logic [Misses-1:0] l1_c_valid;
-  logic [Misses-1:0] l1_c_selected;
   logic [Misses-1:0][AddrWidth+17:0] l1_c;
   logic l1_u_ready;
   cache_perf_pkg::cache_instance_perf_events_t l1_perf_events;
@@ -999,7 +998,6 @@ module coherence_store_boundary_formal #(
       .o_g_ready(l1_g_ready),
       .i_g(extra_g_valid ? extra_grant : grant),
       .o_c_valid(l1_c_valid),
-      .o_c_selected(l1_c_selected),
       .i_c_ready(permit_c),
       .o_c(l1_c),
       .i_u_valid(complete_q && permit_u),
