@@ -232,7 +232,6 @@ module coherence_dma_ingress #(
       .o_ready(c_ready),
       .i_payload(completions),
       .o_valid(o_c_valid),
-      .o_offer(),
       .o_selected(),
       .i_ready(i_c_ready),
       .o_payload(o_c)

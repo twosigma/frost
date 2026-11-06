@@ -63,15 +63,15 @@ module coherence_put_endpoint #(
   assign o_live = phase_q != Idle;
   assign o_fatal = phase_q == Fatal;
   assign o_absorbed = absorbed_q;
-  assign o_freeze_ready = !i_rst && phase_q == Idle && freeze_in.hart == 1'(HART) &&
+  assign o_freeze_ready = phase_q == Idle && freeze_in.hart == 1'(HART) &&
       freeze_in.put_id == 1'(SLOT) && freeze_in.epoch == i_epoch && freeze_in.addr[4:0] == 0;
-  assign o_w_valid = !i_rst && phase_q == Present;
+  assign o_w_valid = phase_q == Present;
   assign o_w = frozen_q;
   // Ordinary W acceptance wins a simultaneous claim for the frozen slot.
-  assign o_absorb_offer = !i_rst && phase_q == Present && !absorbed_q &&
+  assign o_absorb_offer = phase_q == Present && !absorbed_q &&
       i_absorb_addr == frozen_q.addr && i_absorb_epoch == frozen_q.epoch;
   assign o_absorb_ready = o_absorb_offer && !i_w_ready;
-  assign o_wa_ready = !i_rst && ack_in.hart == 1'(HART) && ack_in.put_id == 1'(SLOT) &&
+  assign o_wa_ready = ack_in.hart == 1'(HART) && ack_in.put_id == 1'(SLOT) &&
       ack_in.epoch == frozen_q.epoch && ack_in.addr == frozen_q.addr &&
       ((phase_q == Accepted && !ack_in.absorbed) ||
        (phase_q == Present && absorbed_q && ack_in.absorbed && ack_in.tid == absorb_tid_q));
