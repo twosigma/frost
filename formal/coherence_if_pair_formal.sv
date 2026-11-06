@@ -85,6 +85,7 @@ module coherence_if_pair_formal (
       .o_forward_ready(),
       .i_forward_slots('0),
       .i_forward_way('0),
+      .i_forward('0),
       .i_retry_valid(1'b0),
       .i_retry_tid('0),
       .i_pin_valid(1'b0),

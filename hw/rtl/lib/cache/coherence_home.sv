@@ -300,6 +300,11 @@ module coherence_home #(
   // its line, and its victim handling has let the install begin.
   logic [COMPLETIONS-1:0] fill_primary_q[FILLS];
   logic [FILLS-1:0] fill_primary_upper_q, fill_forward_q;
+  // The primary's G without data, recorded at allocation: its q, its tid
+  // and whether it is a GetM, so a forward reads only fill registers.
+  logic [8:0] fill_primary_ident_q[FILLS];
+  logic [5:0] fill_primary_tid_q[FILLS];
+  logic [FILLS-1:0] fill_primary_getm_q;
   // The forward on offer: a fill that may forward, its primary's slot, its
   // way and the sector. forward_data_q holds the accepted forward's sector
   // until the forward buffer's G.
@@ -307,6 +312,7 @@ module coherence_home #(
   logic [FILLS-1:0] forward_pick, forward_later_q, forward_later;
   logic [COMPLETIONS-1:0] forward_slots;
   logic [WayBits-1:0] forward_way;
+  coh_g_t forward_result;
   logic [255:0] forward_data, forward_data_q;
   logic [FILLS-1:0] fill_wake;
   logic [FILLS-1:0][ADDR_WIDTH+29:0] fill_probe;
@@ -381,6 +387,9 @@ module coherence_home #(
   endfunction
   function automatic logic [3:0] request_opcode(input coh_d_t packet);
     request_opcode = packet.opcode;
+  endfunction
+  function automatic logic [8:0] request_q(input coh_d_t packet);
+    request_q = packet.q;
   endfunction
   for (genvar slot = 0; slot < COMPLETIONS; slot++) begin : gen_waiter_fields
     assign waiting_addr[slot]   = request_addr(waiting_request[slot]);
@@ -473,6 +482,7 @@ module coherence_home #(
       .o_forward_ready(forward_ready),
       .i_forward_slots(forward_slots),
       .i_forward_way(forward_way),
+      .i_forward(forward_result),
       .i_retry_valid(retry_valid),
       .i_retry_tid(decision_tid),
       .i_pin_valid(pin_valid),
@@ -980,6 +990,13 @@ module coherence_home #(
     end
   `undef HOME_DECISION_CHECKS
 `endif
+  // The deciding request's identity, recorded with a primary's fill.
+  logic [8:0] decision_q;
+  always_comb begin
+    decision_q = '0;
+    for (int slot = 0; slot < COMPLETIONS; slot++)
+    if (decision_tid == 6'(slot)) decision_q = request_q(waiting_request[slot]);
+  end
   always_comb begin
     decision_reader = 1'b0;
     for (int engine = 0; engine < RESULTS; engine++)
@@ -1302,6 +1319,9 @@ module coherence_home #(
         fill_seat_count_q[fill] <= '0;
         fill_primary_q[fill] <= '0;
         fill_primary_upper_q[fill] <= 1'b0;
+        fill_primary_ident_q[fill] <= '0;
+        fill_primary_tid_q[fill] <= '0;
+        fill_primary_getm_q[fill] <= 1'b0;
         fill_forward_q[fill] <= 1'b0;
         fill_write_q[fill] <= 1'b0;
         fill_prefetch_q[fill] <= 1'b0;
@@ -1343,6 +1363,9 @@ module coherence_home #(
             fill_seat_count_q[fill] <= lookup_prefetch_q ? 2'd0 : 2'd1;
             fill_primary_q[fill] <= forwardable ? COMPLETIONS'(1) << decision_tid : '0;
             fill_primary_upper_q[fill] <= LINE_BYTES == 64 && decision_addr[5];
+            fill_primary_ident_q[fill] <= decision_q;
+            fill_primary_tid_q[fill] <= decision_tid;
+            fill_primary_getm_q[fill] <= decision_opcode == coherence_pkg::GetM;
             fill_forward_q[fill] <= 1'b0;
             fill_prefetch_q[fill] <= lookup_prefetch_q;
             fill_write_q[fill] <= decision_opcode == coherence_pkg::DMAWrite;
@@ -1447,15 +1470,22 @@ module coherence_home #(
     for (int fill = FILLS - 1; fill >= 0; fill--)
     if (|forward_later ? forward_later[fill] : fill_forward_q[fill])
       forward_pick = FILLS'(1) << fill;
-    forward_slots = '0;
-    forward_way   = '0;
-    forward_data  = '0;
+    forward_slots  = '0;
+    forward_way    = '0;
+    forward_data   = '0;
+    forward_result = '0;
     for (int fill = 0; fill < FILLS; fill++) begin
       if (forward_pick[fill]) begin
         forward_slots |= fill_primary_q[fill];
         forward_way |= fill_way_q[fill];
         forward_data  |= 256'(fill_image_q[fill] >>
             (LINE_BYTES == 64 && fill_primary_upper_q[fill] ? 256 : 0));
+        forward_result.q |= fill_primary_ident_q[fill];
+        forward_result.tid |= fill_primary_tid_q[fill];
+        forward_result.addr |= fill_addr_q[fill] |
+            ADDR_WIDTH'(LINE_BYTES == 64 && fill_primary_upper_q[fill] ? 32 : 0);
+        forward_result.opcode |= fill_primary_getm_q[fill] ? coherence_pkg::GrantM :
+            coherence_pkg::GrantS;
       end
     end
   end
@@ -1871,10 +1901,13 @@ module coherence_home #(
       assert ((forward_pick != 0) == (fill_forward_q != 0));
       assert (forward_valid == (run && fill_forward_q != 0));
       for (int fill = 0; fill < FILLS; fill++)
-      if (forward_pick[fill])
+      if (forward_pick[fill]) begin
         assert (forward_slots == fill_primary_q[fill] && forward_way == fill_way_q[fill] &&
             forward_data == 256'(fill_image_q[fill] >>
             (LINE_BYTES == 64 && fill_primary_upper_q[fill] ? 256 : 0)));
+        assert (forward_result.tid == fill_primary_tid_q[fill] && !forward_result.error &&
+            forward_result.data == '0);
+      end
       if (|image_select)
         assert (image_data == (int'(image_index) == RESULTS ? forward_data_q :
             engine_image[ResultBits'(image_index)]));
@@ -1973,6 +2006,10 @@ module coherence_home #(
                 waiting_opcode[slot] == coherence_pkg::GetM);
             assert (same_block(waiting_addr[slot], fill_addr_q[fill]));
             if (LINE_BYTES == 64) assert (waiting_addr[slot][5] == fill_primary_upper_q[fill]);
+            assert (fill_primary_ident_q[fill] == request_q(
+                waiting_request[slot]
+            ) && fill_primary_tid_q[fill] == 6'(slot) &&
+                fill_primary_getm_q[fill] == (waiting_opcode[slot] == coherence_pkg::GetM));
           end
         end
         if (fill_wake[fill] && !fill_error_q[fill]) assert ((wake & fill_primary_q[fill]) == 0);
