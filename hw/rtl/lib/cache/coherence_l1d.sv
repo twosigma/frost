@@ -3160,21 +3160,6 @@ module coherence_l1d #(
             ld_prefetch_q[MISSES-1] && live[MISSES-2] && ld_prefetch_q[MISSES-2]);
     end
   end
-`ifdef STREAM_PREFIX
-  // A deep BMC reaches the speculative behavior sooner when the first reads
-  // are the three sequential misses that confirm a stream. Every input is
-  // free from the cycle after them, and the other inputs are free throughout.
-  logic [3:0] f_prefix_q = 0;
-  always_ff @(posedge i_clk) begin
-    if (f_prefix_q != 15) f_prefix_q <= f_prefix_q + 1'b1;
-    if (f_prefix_q < 8) begin
-      assume (i_read_valid == (f_prefix_q >= 1 && f_prefix_q <= 3));
-      assume (i_read_kind == ReadLoad && i_read_size == 3);
-      assume (i_address == ADDR_WIDTH'(32'h80000000 + 32 * (f_prefix_q - 1)));
-      assume (i_read_id == 3'(f_prefix_q - 1));
-    end
-  end
-`endif
   coh_g_t f_grant;
   assign f_grant = i_g;
   logic [5:0] f_probe_age;
