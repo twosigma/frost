@@ -260,11 +260,12 @@ The first hold captures store and atomic addresses on their ownership edges
 and restores the stored sector address when atomic ownership releases.
 SQ launch readiness reserves a record for the next cycle's registered write,
 including an arriving write and a simultaneous maintenance request. A
-simultaneous pop supplies no speculative credit. Every scalar launch invalidates its dword in the LQ's L0 cache.
-Fences and publication drains wait for all store records to install. A
-resident Modified atomic needs endpoint 0 and its own sector free; home SC and
-AMO acquisitions and maintenance wait for every request endpoint to release.
-LR uses the committed-store drain and its endpoint and sector checks.
+simultaneous pop supplies no speculative credit. Every scalar launch
+invalidates its dword in the LQ's L0 cache. Fences and publication drains
+wait for all store records to install. A resident Modified atomic needs
+endpoint 0 and its own sector free; home SC and AMO acquisitions and
+maintenance wait for every request endpoint to release. LR uses the
+committed-store drain and its endpoint and sector checks.
 
 There are eight unmerged CPU read slots, two frozen PutM slots and `MISSES`
 request endpoints, set by `L1D_NUM_MSHR` and eight on X3. Endpoint 0 carries
@@ -275,8 +276,9 @@ There are at most two live store acquisitions, including installed requests
 awaiting U. A reader ordered behind a lookahead store can keep that store's
 home fill occupied until the store completes, so the head store's acquisition
 needs another fill. With three or more L1D endpoints the home needs at least
-two fills; `cpu_top` and the cluster test harness reject one. Each endpoint owns its grant and completion metadata through U;
-a popped queue record can be reused independently.
+two fills; `cpu_top` and the cluster test harness reject a one-fill home.
+Each endpoint owns its grant and completion metadata through U; a popped queue
+record can be reused independently.
 
 Lookahead prefers another home row over the head's sibling sector. Only the
 oldest queued record of a sector may acquire, and no live endpoint or frozen
