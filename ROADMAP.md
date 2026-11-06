@@ -104,8 +104,9 @@ that repeatedly exercise the recovery paths.
 
 The L1D, L1I, and L2 are 4-way set-associative with tree pseudo-LRU
 replacement, one design for every target. The L1D inserts lines bimodally: a
-fill becomes its set's most recently used only one time in 32, so a working
-set somewhat larger than the L1D keeps part of itself resident instead of
+fill becomes its set's most recently used only one time in 32, or when a read
+waits on it or another miss of its set has not installed. A working set
+somewhat larger than the L1D so keeps part of itself resident instead of
 evicting each line just before its next use. The L1I reads every way's data
 at the tag decision, which keeps its hit latency at that of a direct-mapped
 cache. The L1D and the L2 read the selected way after the tag lookup.
