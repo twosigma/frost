@@ -15,6 +15,13 @@
 [tasks]
 request_prove request proof
 request_cover request reach
+request_equiv32 equiv proof
+request_equiv56 equiv proof equiv_wide
+request_equiv_slot0 equiv proof slot0
+request_equiv_wide_slot0 equiv proof equiv_wide slot0
+request_equiv_ptw equiv proof ptw
+request_equiv_wide_ptw equiv proof equiv_wide ptw
+request_equiv_cover equiv reach
 home_prove home proof
 home_cover home reach
 put_prove put proof
@@ -42,6 +49,11 @@ smtbmc boolector
 [script]
 pending: read -define COHERENCE_HOME_CONTROL COHERENCE_HOME_PENDING_EQUIV
 read -formal -sv coherence_pkg.sv coherence_channel.sv coherence_request_endpoint.sv coherence_home_endpoint.sv coherence_put_endpoint.sv coherence_endpoints_test_harness.sv
+equiv: read -formal -sv coherence_request_endpoint_reference.sv coherence_request_endpoint_equiv.sv
+equiv_wide: chparam -set ADDR_WIDTH 56 coherence_request_endpoint_equiv
+slot0: chparam -set SLOT 0 coherence_request_endpoint_equiv
+ptw: chparam -set PORT_CLASS 2 -set SLOT 0 coherence_request_endpoint_equiv
+equiv: prep -top coherence_request_endpoint_equiv
 layout_wide: chparam -set ADDR_WIDTH 56 -set L2_NUM_MSHR 16 coherence_endpoints_test_harness
 layout: prep -top coherence_endpoints_test_harness
 wide: chparam -set ADDR_WIDTH 56 -set L2_NUM_MSHR 16 coherence_home_endpoint
@@ -58,3 +70,5 @@ channel: prep -top coherence_channel
 ../hw/rtl/lib/cache/coherence_put_endpoint.sv
 ../hw/rtl/lib/cache/coherence_channel.sv
 ../hw/rtl/lib/cache/coherence_endpoints_test_harness.sv
+coherence_request_endpoint_reference.sv
+coherence_request_endpoint_equiv.sv

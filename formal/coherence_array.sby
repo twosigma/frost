@@ -1,25 +1,55 @@
 [tasks]
-coh_array_bmc bram
-coh_array_uram_bmc uram
+coh_array_bmc bram bounded
+coh_array_uram_bmc uram bounded
 coh_array_cover bram covers
 coh_array_uram_cover uram covers
 
+coh_array_select_prove selection
+coh_array_select4_prove selection four
+coh_array_select56_prove selection wide
+coh_array_select4_56_prove selection four wide
+
 [options]
-~covers: mode bmc
+bounded: mode bmc
 covers: mode cover
-depth 32
+selection: mode prove
+~selection: depth 32
+selection: depth 2
 timeout 180
-~covers: aigsmt boolector
+bounded: aigsmt boolector
 
 [engines]
-~covers: abc bmc3
+bounded: abc bmc3
 covers: smtbmc boolector
+selection: smtbmc boolector
 
 [script]
 read -formal -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
 chparam -set CACHE_BYTES 64 -set WAYS 1 coherence_array
 uram: chparam -set ULTRA 1 coherence_array
-prep -top coherence_array
+four: chparam -set CACHE_BYTES 256 -set WAYS 4 coherence_array
+wide: chparam -set ADDR_WIDTH 56 coherence_array
+~selection: prep -top coherence_array
+selection: hierarchy -check -top coherence_array
+selection: proc -noopt
+selection: flatten
+selection: opt_expr -keepdc -noclkinv
+selection: select -assert-count 1 c:p_data_select_exact t:$check %i r:FLAVOR=assert %i
+selection: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_data_select_exact %d
+selection: chformal -assume -remove
+selection: chformal -cover -remove
+selection: memory_map
+selection: select -assert-min 1 t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff
+selection: cutpoint t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff
+selection: select -assert-none t:*ff* t:*FF* t:*latch*
+selection: setattr -unset init w:*
+selection: delete -output w:*
+selection: opt_clean
+selection: opt
+selection: chformal -lower
+selection: select -assert-count 1 t:$assert
+selection: select -assert-none t:$assume
+selection: sat -prove-asserts -verify -timeout 60
 
 [files]
 ../hw/rtl/lib/ram/sdp_block_ram.sv
