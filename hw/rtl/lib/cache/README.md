@@ -460,9 +460,11 @@ The home admits twenty-four requests with distinct identities: twenty
 hart and DMA requests, and four prefetches in four slots kept for them, so
 neither kind waits for the other's capacity. Eight engines
 share their image storage with the result credits. An engine hands its image
-to completion ownership before G. An idle grant register captures an accepted
+to completion ownership before G. A ninth result buffer, the forward buffer,
+holds a fill's forwarded result, and its sector waits in a register of the
+home. An idle grant register captures an accepted
 result directly when no older result awaits selection; otherwise it takes the
-next waiting result in rotation over the eight result buffers, whose stored
+next waiting result in rotation over the nine result buffers, whose stored
 tid names the slot. The grant register presents G while it holds a grant. G
 acceptance returns that image credit; the identity and physical way pin last
 through U. Each request waits for
@@ -491,22 +493,41 @@ replacement placement. Misses fetch and install cache lines, and
 unrestricted requests may allocate in any unpinned way.
 
 `L2_NUM_MSHR` fill controls own memory-read IDs 0 to `L2_NUM_MSHR - 1`. A
-demand fill has a primary request and two read waiter seats; a prefetch's
-fill starts with none and takes up to three. Parked requests release their engine and
+fill has three read waiter seats. A demand fill's primary request, the
+request whose decision allocated it, takes the first; a prefetch's fill
+starts with none. Parked requests release their engine and
 image credit. A request waiting for a way or resource retries from completion
-metadata. A successful fill wakes its waiters on the cycle after the array
-accepts its installation update, and admits no waiters from then on. A waiter
+metadata.
+
+A primary GetS, LoadReserved or GetM, whose hit service would read the row
+and send no probe, is granted from the fill's line. Once the fill holds its
+line and its victim handling has let the install begin, the fill offers the
+primary's sector; fills that may forward take turns. The completion table
+accepts the forward while its forward buffer is free: the primary's slot
+leaves its seat and takes its result, its completion pin on the fill's way
+and the forward buffer on one edge, and its G follows as any buffered result's.
+The fill blocks its whole line until the install completes, so a
+PutM, a probe or a replacement of the line waits for the install, and the
+G can precede it. Every other primary, and every waiter, takes the path
+below.
+
+A successful fill wakes its waiters on the cycle after the array
+accepts its installation update, and admits no waiters from then on. The
+wake leaves out a primary that waits for its forward; that primary keeps its
+seat, and the fill its line, until the forward is accepted. A waiter
 whose tag decision precedes the installation's completion finds the fill
 blocking its line and retries without parking. Waiters reenter array and probe
 service in sector order and sample the current resident bytes.
-A successful fill's way pin lasts until its final waiter takes a completion
-pin. A failed fill transfers its error to completion metadata and releases
-its control before the waiters dispatch in sector order.
+A successful fill's way pin lasts until its install completes and its final
+waiter, or its forwarded primary, has taken a completion pin. A failed fill
+wakes every seat, its primary included, with the error, transfers its error
+to completion metadata and releases its control before the waiters dispatch
+in sector order.
 
 Fill waiter ranks are independent of the available-seat count. A balanced
 prefix network counts up to three eligible entries before each candidate. Each fill
 stores its occupied seat count beside the seat mask. Allocation, joining
-readers, handoff and error cleanup update both on the same edge. A joining
+readers, handoff, a forward and error cleanup update both on the same edge. A joining
 engine uses one seat before the queued waiters. Ready work precedes other
 eligible work. Both classes compute their circular priorities independently
 before selecting an encoded winner. The prefetch slots share one place in
@@ -541,7 +562,8 @@ Probe lookups read private data only for an M hit. A clean read probe leaves
 the tag and bytes untouched. A downgrade or invalidation updates the tag
 without writing the data row.
 
-Every M sector has a resident L2 merge destination. Clean S and L0 copies
+Every M sector has a resident L2 merge destination, or a fill that blocks
+its line until the destination is installed. Clean S and L0 copies
 may outlive an L2 replacement. Replacement recalls every victim sector
 without a directory hint, merges dirty replies, and freezes the complete
 victim image before reusing its row. A valid victim reserves one of two
@@ -736,7 +758,8 @@ the pending PutM before the row is reused.
 
 The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_equal`, `coherence_cluster`
 and `coherent_cut` cover controller ownership, inclusion, cuts, atomics,
-probe service and the DMA sector handoff. Their prefetch cases cover the slot
+probe service and the DMA sector handoff, and a primary granted from its
+fill's line before the install completes. Their prefetch cases cover the slot
 partition, the no-fill flag, prefetch fills that install, take a demand seat
 or fail, the fill reserve, the last available way and the last write-back
 slot, PutM beside live prefetches, and a demand that replaces lines held only
@@ -1310,7 +1333,7 @@ to answer.
 
 | Target family | Coverage |
 | --- | --- |
-| `coherence_prefetch*` | The prefetch agent against the home at 32- and 64-byte lines: data identities held at C and U, GrantAck at each lookup before the fill's memory response, fills that install on their own, a failed fill, reset and fatal stop, demands joining prefetch fills, dirty replacement, PutM beside live prefetches of its line, marked DMA fills, DMA responses before C and U, progress with every hart and DMA completion slot, every result buffer and both PutM controls full, and instruction and data streams on one line |
+| `coherence_prefetch*` | The prefetch agent against the home at 32- and 64-byte lines: data identities held at C and U, GrantAck at each lookup before the fill's memory response, fills that install on their own, a failed fill, reset and fatal stop, demands joining prefetch fills, dirty replacement, PutM beside live prefetches of its line, marked DMA fills, DMA responses before C and U, progress with every hart and DMA completion slot, every engine's result buffer and both PutM controls full, and instruction and data streams on one line |
 | `coherence_prefetch_contention*` | Demand latency and bandwidth with competing streams, dirty victims and DMA, with and without prefetch |
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, and dirty-L1D walker coherence |
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, a miss waiting for a way of its set, writeback and fill progress, and `fence.i` |

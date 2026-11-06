@@ -96,7 +96,7 @@ through G, C and U with C and U held, the GrantAck of each lookup before
 its fill's memory response, fills that install on their own, a failed fill
 that installs nothing, errors, reset and fatal stop, demand joins, dirty recalls, a PutM
 accepted beside live prefetches of its line, marked DMA fills, progress
-with every hart and DMA completion slot, every result buffer and both
+with every hart and DMA completion slot, every engine's result buffer and both
 PutM controls full, and instruction and data
 streams on one line, where no line is requested twice while an identity
 holds it.

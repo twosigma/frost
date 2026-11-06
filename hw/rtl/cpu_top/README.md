@@ -226,7 +226,8 @@ contains `coherence_home`. The [cache interface](../lib/cache/README.md#coherent
 uses S/M permissions for one hart. The home admits twenty-four requests,
 four of them kept for its stream prefetcher, with eight probe/data engines and
 `L2_NUM_MSHR` fill controls (eight by default). Engines share image storage
-with eight result credits. Two ordinary PutM controls drain independently.
+with eight result credits, and a ninth result buffer holds a grant forwarded
+from a fill. Two ordinary PutM controls drain independently.
 Identities and way pins last through Release.
 There is no E permission or second hart. `ENABLE_COHERENCE` controls DMA
 ingress. `ENABLE_CACHED_TIER=0` omits the cache hierarchy.

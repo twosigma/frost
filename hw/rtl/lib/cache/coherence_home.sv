@@ -110,6 +110,9 @@ module coherence_home #(
   localparam int unsigned SetBits = $clog2(Sets);
   localparam int unsigned CompletionBits = COMPLETIONS > 1 ? $clog2(COMPLETIONS) : 1;
   localparam int unsigned ResultBits = RESULTS > 1 ? $clog2(RESULTS) : 1;
+  // The completion table's result buffers: the engines' and the forward
+  // buffer, index RESULTS.
+  localparam int unsigned BufferBits = $clog2(RESULTS + 1);
   localparam int unsigned FillBits = FILLS > 1 ? $clog2(FILLS) : 1;
   localparam int unsigned Puts = 2;
   localparam int unsigned Clients = RESULTS + FILLS + Puts;
@@ -178,8 +181,9 @@ module coherence_home #(
   logic fatal_event, work_valid, work_offer, work_error;
   coh_d_t work;
   logic [5:0] work_tid;
-  logic [ResultBits-1:0] work_buffer, image_index;
-  logic [RESULTS-1:0] image_select;
+  logic [ResultBits-1:0] work_buffer;
+  logic [BufferBits-1:0] image_index;
+  logic [RESULTS:0] image_select;
   logic [255:0] image_data;
   logic [COMPLETIONS-1:0] waiting, waiting_offer, park, wake, wake_error;
   logic [COMPLETIONS-1:0][ADDR_WIDTH+311:0] waiting_request;
@@ -288,6 +292,22 @@ module coherence_home #(
   logic [FILLS-1:0][LINE_BYTES/32-1:0] fill_dirty_sectors_q;
   logic [COMPLETIONS-1:0] fill_seats_q[FILLS], fill_add_seats[FILLS];
   logic [1:0] fill_seat_count_q[FILLS], fill_add_count[FILLS];
+  // Forwarding a fill's line to its primary request. fill_primary_q[fill] is
+  // the primary's seat while it waits for its forward: a GetS, LoadReserved
+  // or GetM whose decision allocated the fill, which needs no probe or update
+  // to be granted. fill_primary_upper_q is its sector of a 64-byte line.
+  // fill_forward_q marks a fill whose primary may take the forward: it holds
+  // its line, and its victim handling has let the install begin.
+  logic [COMPLETIONS-1:0] fill_primary_q[FILLS];
+  logic [FILLS-1:0] fill_primary_upper_q, fill_forward_q;
+  // The forward on offer: a fill that may forward, its primary's slot, its
+  // way and the sector. forward_data_q holds the accepted forward's sector
+  // until the forward buffer's G.
+  logic forward_valid, forward_ready, forward_accept;
+  logic [FILLS-1:0] forward_pick, forward_later_q, forward_later;
+  logic [COMPLETIONS-1:0] forward_slots;
+  logic [WayBits-1:0] forward_way;
+  logic [255:0] forward_data, forward_data_q;
   logic [FILLS-1:0] fill_wake;
   logic [FILLS-1:0][ADDR_WIDTH+29:0] fill_probe;
   // Held packets are stored as plain vectors and read through typed views.
@@ -316,12 +336,15 @@ module coherence_home #(
   logic [RESULTS-1:0] f_engine_unpinned;
   logic [RESULTS-1:0] f_engine_pinned, f_engine_initial_error;
   logic f_local_fatal, f_query_held;
-  logic [COMPLETIONS-1:0] f_fill_waiting, f_fill_seated;
+  logic [COMPLETIONS-1:0] f_fill_waiting, f_fill_seated, f_fill_primary;
   always_comb begin
     f_fill_waiting = '0;
     f_fill_seated  = '0;
-    f_local_fatal  = |engine_fatal;
-    f_tag_address  = '0;
+    f_fill_primary = '0;
+    for (int fill = 0; fill < FILLS; fill++)
+    if (fill_phase_q[fill] != FillFree) f_fill_primary |= fill_primary_q[fill];
+    f_local_fatal = |engine_fatal;
+    f_tag_address = '0;
     for (int engine = 0; engine < RESULTS; engine++) f_tag_address[engine] = engine_addr[engine];
     for (int put = 0; put < Puts; put++) f_tag_address[RESULTS+FILLS+put] = put_addr[put];
     for (int fill = 0; fill < FILLS; fill++) f_local_fatal |= fill_phase_q[fill] == FillFatal;
@@ -402,7 +425,7 @@ module coherence_home #(
   assign incoming_put = i_w;
   assign reply = i_r;
   always_comb begin
-    image_data = '0;
+    image_data = {256{image_select[RESULTS]}} & forward_data_q;
     for (int engine = 0; engine < RESULTS; engine++)
     image_data |= {256{image_select[engine]}} & engine_image[engine];
   end
@@ -446,6 +469,10 @@ module coherence_home #(
       .o_image_index(image_index),
       .o_image_select(image_select),
       .i_image_data(image_data),
+      .i_forward_valid(forward_valid),
+      .o_forward_ready(forward_ready),
+      .i_forward_slots(forward_slots),
+      .i_forward_way(forward_way),
       .i_retry_valid(retry_valid),
       .i_retry_tid(decision_tid),
       .i_pin_valid(pin_valid),
@@ -469,6 +496,7 @@ module coherence_home #(
 `ifdef COHERENCE_HOME_CONTROL
       .i_fill_waiting(f_fill_waiting),
       .i_fill_seated(f_fill_seated),
+      .i_fill_primary(f_fill_primary),
       .i_engine_busy(~engine_idle),
       .i_engine_unpinned(f_engine_unpinned),
       .i_engine_pinned(f_engine_pinned),
@@ -996,6 +1024,7 @@ module coherence_home #(
   end
 
   // Parked readers own metadata seats, including readers with predecessors.
+  // A demand fill's primary owns the first; a forward gives it up.
   for (genvar fill = 0; fill < FILLS; fill++) begin : gen_seats
     logic [COMPLETIONS-1:0] eligible;
     logic enabled, joining;
@@ -1035,8 +1064,11 @@ module coherence_home #(
     wake_error = '0;
     for (int fill = 0; fill < FILLS; fill++) begin
       park |= fill_add_seats[fill];
+      // A successful fill's wake leaves out a primary that waits for its
+      // forward; an error wakes every seat with the error.
       if (fill_wake[fill]) begin
-        wake |= fill_seats_q[fill];
+        wake |= fill_error_q[fill] ? fill_seats_q[fill] :
+            fill_seats_q[fill] & ~fill_primary_q[fill];
         if (fill_error_q[fill]) wake_error |= fill_seats_q[fill];
       end
     end
@@ -1188,6 +1220,15 @@ module coherence_home #(
         reply.epoch == 0 && reply.hart == 0 &&
         (reply.opcode == coherence_pkg::ProbeAck || reply.opcode == coherence_pkg::ProbeData);
     wire allocate = run && array_response && decision_fill && fill_free_index == FillBits'(fill);
+    // The primary may take a forward: a GetS, LoadReserved or GetM, and not
+    // a prefetch, whose decision allocates the fill.
+    wire forwardable = !lookup_prefetch_q && (decision_opcode == coherence_pkg::GetS ||
+        decision_opcode == coherence_pkg::LoadReserved || decision_opcode == coherence_pkg::GetM);
+    // The fill enters FillInstall on this edge.
+    wire install_entry = fill_phase_q[fill] == FillMemory && (fill_done_q[fill] ?
+        !fill_error_q[fill] : i_mem_resp_valid && i_mem_resp_id == 5'(fill) && !i_mem_resp_error);
+    wire forwarded = forward_accept && forward_pick[fill];
+    wire [COMPLETIONS-1:0] forward_seat = forwarded ? fill_primary_q[fill] : '0;
     assign tag_valid[Client] = 1'b0;
     assign tag_payload[Client] = '0;
     assign read_valid[Client] = fill_phase_q[fill] == FillRecall && !fill_read_sent_q[fill];
@@ -1217,8 +1258,9 @@ module coherence_home #(
     // array accepts its install update. Seat admission is closed from then
     // on, so the registered seat mask names every waiter. A waiter that
     // reaches its tag decision before the install completes finds its line
-    // blocked by the fill and retries without parking. A failed fill wakes
-    // its waiters with the error.
+    // blocked by the fill and retries without parking. A primary that waits
+    // for its forward is not a waiter: it keeps its seat until the forward.
+    // A failed fill wakes every seat with the error.
     assign fill_wake[fill] = run &&
         ((fill_phase_q[fill] == FillInstallWait && !fill_woken_q[fill]) ||
          (fill_phase_q[fill] == FillMemory && fill_done_q[fill] && fill_error_q[fill]));
@@ -1258,6 +1300,9 @@ module coherence_home #(
         fill_dirty_sectors_q[fill] <= '0;
         fill_seats_q[fill] <= '0;
         fill_seat_count_q[fill] <= '0;
+        fill_primary_q[fill] <= '0;
+        fill_primary_upper_q[fill] <= 1'b0;
+        fill_forward_q[fill] <= 1'b0;
         fill_write_q[fill] <= 1'b0;
         fill_prefetch_q[fill] <= 1'b0;
         fill_ack_q[fill] <= '0;
@@ -1270,8 +1315,15 @@ module coherence_home #(
           fill_error_q[fill] <= i_mem_resp_error;
         end
         if (run) begin
-          fill_seats_q[fill] <= fill_seats_q[fill] | fill_add_seats[fill];
-          fill_seat_count_q[fill] <= fill_seat_count_q[fill] + fill_add_count[fill];
+          // A forward takes the primary's seat away on the edge it is
+          // accepted, beside any seats added or released then.
+          fill_seats_q[fill] <= (fill_seats_q[fill] | fill_add_seats[fill]) & ~forward_seat;
+          fill_seat_count_q[fill] <= fill_seat_count_q[fill] + fill_add_count[fill] - 2'(forwarded);
+          if (forwarded) begin
+            fill_primary_q[fill] <= '0;
+            fill_forward_q[fill] <= 1'b0;
+          end
+          if (install_entry && fill_primary_q[fill] != 0) fill_forward_q[fill] <= 1'b1;
           if (allocate) begin
             fill_addr_q[fill] <= {decision_addr[ADDR_WIDTH-1:OffsetBits], {OffsetBits{1'b0}}};
             fill_old_addr_q[fill] <= array_addr;
@@ -1289,17 +1341,21 @@ module coherence_home #(
             fill_dirty_sectors_q[fill] <= '0;
             fill_seats_q[fill] <= lookup_prefetch_q ? '0 : COMPLETIONS'(1) << decision_tid;
             fill_seat_count_q[fill] <= lookup_prefetch_q ? 2'd0 : 2'd1;
+            fill_primary_q[fill] <= forwardable ? COMPLETIONS'(1) << decision_tid : '0;
+            fill_primary_upper_q[fill] <= LINE_BYTES == 64 && decision_addr[5];
+            fill_forward_q[fill] <= 1'b0;
             fill_prefetch_q[fill] <= lookup_prefetch_q;
             fill_write_q[fill] <= decision_opcode == coherence_pkg::DMAWrite;
           end
           if (array_response && join_fill[fill]) begin
             fill_seats_q[fill][CompletionBits'(decision_tid)] <= 1'b1;
-            fill_seat_count_q[fill] <= fill_seat_count_q[fill] + fill_add_count[fill] + 1'b1;
+            fill_seat_count_q[fill] <= fill_seat_count_q[fill] + fill_add_count[fill] + 1'b1 -
+                2'(forwarded);
           end
           if (fill_phase_q[fill] == FillReady && pin_valid &&
               fill_seats_q[fill][CompletionBits'(decision_tid)]) begin
             fill_seats_q[fill][CompletionBits'(decision_tid)] <= 1'b0;
-            fill_seat_count_q[fill] <= fill_seat_count_q[fill] - 1'b1;
+            fill_seat_count_q[fill] <= fill_seat_count_q[fill] - 1'b1 - 2'(forwarded);
           end
           if (fill_phase_q[fill] == FillReady && fill_seats_q[fill] == 0) begin
             fill_phase_q[fill] <= FillFree;
@@ -1342,6 +1398,7 @@ module coherence_home #(
               fill_blocking_q[fill] <= 1'b0;
               fill_seats_q[fill] <= '0;
               fill_seat_count_q[fill] <= '0;
+              fill_primary_q[fill] <= '0;
             end
           end
           // A successful response that arrives in FillMemory installs from
@@ -1375,6 +1432,42 @@ module coherence_home #(
         end
       end
     end
+  end
+
+  // Fills that may forward take turns: the first at or after the fill after
+  // the last one forwarded, else the first. The pick offers its primary's
+  // slot, its way and the primary's sector of its line, all from registers.
+  // The completion table accepts while its forward buffer is free; the slot
+  // then holds its grant, and the sector stays in forward_data_q until that
+  // grant's G. forward_later_q[fill] holds fill > the last fill forwarded,
+  // and holds every fill after the highest one forwards.
+  assign forward_later = fill_forward_q & forward_later_q;
+  always_comb begin
+    forward_pick = '0;
+    for (int fill = FILLS - 1; fill >= 0; fill--)
+    if (|forward_later ? forward_later[fill] : fill_forward_q[fill])
+      forward_pick = FILLS'(1) << fill;
+    forward_slots = '0;
+    forward_way   = '0;
+    forward_data  = '0;
+    for (int fill = 0; fill < FILLS; fill++) begin
+      if (forward_pick[fill]) begin
+        forward_slots |= fill_primary_q[fill];
+        forward_way |= fill_way_q[fill];
+        forward_data  |= 256'(fill_image_q[fill] >>
+            (LINE_BYTES == 64 && fill_primary_upper_q[fill] ? 256 : 0));
+      end
+    end
+  end
+  assign forward_valid  = run && |fill_forward_q;
+  assign forward_accept = forward_valid && forward_ready;
+  always_ff @(posedge i_clk) begin
+    if (forward_accept) forward_data_q <= forward_data;
+    if (i_rst) forward_later_q <= '1;
+    else if (forward_accept)
+      for (int fill = 0; fill < FILLS; fill++)
+      forward_later_q[fill] <= forward_pick[FILLS-1] ||
+          (forward_pick & ((FILLS'(1) << fill) - FILLS'(1))) != 0;
   end
 
   for (genvar fill = 0; fill < FILLS; fill++) begin : gen_fill_memory
@@ -1772,7 +1865,19 @@ module coherence_home #(
           FILLS'(1) << reference_join_index : FILLS'(0)));
       assert ($onehot0({engine_r_ready, fill_r_ready}));
       assert ((park & wake) == 0);
-      if (|image_select) assert (image_data == engine_image[image_index]);
+      // The forward offers one fill that may forward, with its primary's
+      // slot and the fill's way and line sector.
+      assert ($onehot0(forward_pick) && (forward_pick & ~fill_forward_q) == 0);
+      assert ((forward_pick != 0) == (fill_forward_q != 0));
+      assert (forward_valid == (run && fill_forward_q != 0));
+      for (int fill = 0; fill < FILLS; fill++)
+      if (forward_pick[fill])
+        assert (forward_slots == fill_primary_q[fill] && forward_way == fill_way_q[fill] &&
+            forward_data == 256'(fill_image_q[fill] >>
+            (LINE_BYTES == 64 && fill_primary_upper_q[fill] ? 256 : 0)));
+      if (|image_select)
+        assert (image_data == (int'(image_index) == RESULTS ? forward_data_q :
+            engine_image[ResultBits'(image_index)]));
       if (work_valid && run) assert (engine_idle[work_buffer]);
       if (array_response && decision_engine)
         assert (same_block(array_query, engine_addr[ResultBits'(array_token)]));
@@ -1849,8 +1954,33 @@ module coherence_home #(
         // names every waiter.
         if (fill_phase_q[fill] == FillInstallWait)
           assert (fill_add_seats[fill] == 0 && !join_fill[fill]);
-        // A seated request takes its completion pin only from a ready fill,
-        // which releases the seat on the same edge.
+        // A pending primary is one seat of a demand fill: a GetS,
+        // LoadReserved or GetM of the fill's block, in the recorded sector.
+        // The fill may forward once it holds its line and its install has
+        // begun, and a success wake never names its pending primary.
+        assert ($onehot0(
+            fill_primary_q[fill]
+        ) && (fill_primary_q[fill] & ~fill_seats_q[fill]) == 0);
+        assert (fill_forward_q[fill] == (fill_primary_q[fill] != 0 &&
+            (fill_phase_q[fill] == FillInstall || fill_phase_q[fill] == FillInstallWait ||
+             fill_phase_q[fill] == FillReady)));
+        if (fill_primary_q[fill] != 0) begin
+          assert (fill_phase_q[fill] != FillFree && !fill_prefetch_q[fill] && !fill_write_q[fill]);
+          for (int slot = 0; slot < COMPLETIONS; slot++)
+          if (fill_primary_q[fill][slot]) begin
+            assert (waiting_opcode[slot] == coherence_pkg::GetS ||
+                waiting_opcode[slot] == coherence_pkg::LoadReserved ||
+                waiting_opcode[slot] == coherence_pkg::GetM);
+            assert (same_block(waiting_addr[slot], fill_addr_q[fill]));
+            if (LINE_BYTES == 64) assert (waiting_addr[slot][5] == fill_primary_upper_q[fill]);
+          end
+        end
+        if (fill_wake[fill] && !fill_error_q[fill]) assert ((wake & fill_primary_q[fill]) == 0);
+        if (fill_phase_q[fill] != FillFree) assert (int'(fill_way_q[fill]) < WAYS);
+        // A seated request's decision takes its completion pin only from a
+        // ready fill, which releases the seat on the same edge; a forward
+        // gives the primary its pin and releases its seat in any phase it
+        // may forward in.
         if (pin_valid && fill_phase_q[fill] != FillFree &&
             fill_seats_q[fill][CompletionBits'(decision_tid)])
           assert (fill_phase_q[fill] == FillReady);
@@ -1884,6 +2014,24 @@ module coherence_home #(
   end
 `endif
   (* anyconst *) logic [OffsetBits-1:0] f_byte;
+`ifdef COHERENCE_HOME_WB_PROOF
+  // A watched byte of each fill's memory response stays in its image, and a
+  // forward from that fill offers it at the same offset of the sector when
+  // the byte lies in the primary's sector. This task runs on free data; the
+  // control tasks keep their payloads at zero.
+  logic [7:0] f_fill_byte_q[FILLS];
+  always_ff @(posedge i_clk)
+    for (int fill = 0; fill < FILLS; fill++) begin
+      if (i_mem_resp_valid && i_mem_resp_id == 5'(fill))
+        f_fill_byte_q[fill] <= i_mem_resp_data[8*f_byte+:8];
+      if (!i_rst && fill_done_q[fill]) begin
+        assert (fill_image_q[fill][8*f_byte+:8] == f_fill_byte_q[fill]);
+        if (forward_pick[fill] &&
+            (LINE_BYTES != 64 || f_byte[OffsetBits-1] == fill_primary_upper_q[fill]))
+          assert (forward_data[8*int'(f_byte[4:0])+:8] == f_fill_byte_q[fill]);
+      end
+    end
+`endif
 `ifdef COHERENCE_HOME_COVER
   logic [2:0] f_seen_q;
   always_ff @(posedge i_clk) begin
@@ -1968,7 +2116,10 @@ module coherence_home #(
           assert (engine_tid[engine] != engine_tid[other]);
       end
       for (int fill = 0; fill < FILLS; fill++) begin
-        if (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillReady)
+        // A demand fill keeps its primary's seat until the install begins;
+        // a forward can take it away from then on.
+        if (fill_phase_q[fill] != FillFree && fill_phase_q[fill] != FillInstall &&
+            fill_phase_q[fill] != FillInstallWait && fill_phase_q[fill] != FillReady)
           assert (fill_seats_q[fill] != 0 || fill_prefetch_q[fill]);
         for (int slot = 0; slot < COMPLETIONS; slot++)
         if (fill_phase_q[fill] != FillFree && fill_seats_q[fill][slot])
@@ -1978,7 +2129,8 @@ module coherence_home #(
         for (int other = fill + 1; other < FILLS; other++)
         if (fill_phase_q[fill] != FillFree && fill_phase_q[other] != FillFree)
           assert ((fill_seats_q[fill] & fill_seats_q[other]) == 0);
-        if (fill_wake[fill]) assert (fill_seats_q[fill] != 0 || fill_prefetch_q[fill]);
+        if (fill_wake[fill] && fill_error_q[fill])
+          assert (fill_seats_q[fill] != 0 || fill_prefetch_q[fill]);
         if (fill_phase_q[fill] == FillReady) assert (fill_add_seats[fill] == 0);
       end
       assert (o_perf_events.access == (o_perf_events.hit || o_perf_events.miss));
@@ -2046,6 +2198,12 @@ module coherence_home #(
              fill_add_seats[0] != 0);
       // Two waiters have woken while the install completes.
       cover (fill_phase_q[0] == FillInstallWait && fill_woken_q[0] && fill_seat_count_q[0] == 2'd2);
+      // A primary takes its forward while its fill is in FillInstall, and a
+      // forwarded G is taken while the install completes.
+      cover (run && forward_accept && forward_pick[0] && fill_phase_q[0] == FillInstall);
+      cover ($past(
+          run && !forward_ready
+      ) && run && forward_ready && fill_phase_q[0] == FillInstallWait);
     end
 `endif
 `ifdef COHERENCE_HOME_COVER

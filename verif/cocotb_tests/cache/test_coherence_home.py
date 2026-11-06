@@ -944,6 +944,10 @@ async def full_result_pool_keeps_both_put_slots_moving(dut: Any) -> None:
     for slot, (address, data) in enumerate(puts):
         b.frozen[slot] = (address, data)
         del b.private[address]
+    # The held reads hit, so each takes an engine's result image; the primary
+    # of a fill would take the forward buffer instead.
+    for slot in range(0, 8, b.line // 32):
+        assert await b.read(base + 32 * slot) == b.expected(base + 32 * slot)
     for slot in range(8):
         await b.submit(0, base + 32 * slot, slot=slot)
     for _ in range(2000):
@@ -1766,16 +1770,22 @@ async def fill_responses_install_from_each_arrival_phase(dut: Any) -> None:
 
 @cocotb.test()
 async def fill_waiters_wake_once_when_the_install_is_accepted(dut: Any) -> None:
-    """Wake every seated reader on the edge after install acceptance, once."""
+    """Forward to the primary, then wake every seated reader once.
+
+    The primary's grant comes from the fill image before the install
+    completes; the other readers wake on the edge after install acceptance.
+    """
     b = Home(dut)
     await b.reset()
     monitor = FillMonitor(b)
     seats: list[list[int]] = [[int(s.value) for s in dut.fill_seats_q]]
     parked = [int(dut.completions.parked_q.value)]
+    cycles = [b.cycle]
 
     def observe() -> None:
         seats.append([int(s.value) for s in dut.fill_seats_q])
         parked.append(int(dut.completions.parked_q.value))
+        cycles.append(b.cycle)
 
     b.observers.append(observe)
     base = 0x80000000
@@ -1789,12 +1799,16 @@ async def fill_waiters_wake_once_when_the_install_is_accepted(dut: Any) -> None:
         await b.submit(7, base + 32)
     readers = 3 if b.line == 64 else 2
     received = []
+    taken = []
     for _ in range(readers):
         grant = await b.take_grant()
+        taken.append(b.cycle - 1)
         assert grant[4] == b.expected(grant[3]) and not grant[5]
-        received.append(grant[3])
+        received.append((grant[1], grant[3]))
         await b.complete(grant)
-    assert sorted(received) == sorted(
+    # Slot 0's grant is the forward and comes first.
+    assert received[0] == (0, base)
+    assert sorted(a for _, a in received) == sorted(
         [base, base] + ([base + 32] if b.line == 64 else [])
     )
     edges = [
@@ -1811,8 +1825,11 @@ async def fill_waiters_wake_once_when_the_install_is_accepted(dut: Any) -> None:
         if (before[0], after[0]) == ("install_wait", "ready")
     ]
     assert len(accepted) == 1 and len(ready) == 1
+    # The forward took the primary's seat before the install was accepted,
+    # and its grant was taken before the install completed.
     seated = seats[accepted[0]][0]
-    assert seated.bit_count() == readers
+    assert seated.bit_count() == readers - 1 and not seated & 1
+    assert taken[0] < cycles[ready[0]]
     woken = [i for i in range(1, len(parked)) if parked[i - 1] & ~parked[i] & seated]
     # Every waiter wakes on the edge after acceptance, before the install
     # completes, and none is woken twice.
