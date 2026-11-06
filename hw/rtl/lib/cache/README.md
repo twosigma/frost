@@ -272,7 +272,11 @@ live endpoints hold the same sector. A load that misses on a sector a live
 endpoint holds waits for that endpoint's installation, or for its release if
 the sector was installed and already replaced, and then looks up again.
 Grants install one at a time, endpoint 0's first and then the lowest-numbered
-load endpoint's. With stream look-ahead enabled, a successful demand installation
+load endpoint's. A demand grant on a load endpoint answers its load from the
+captured grant in the grant's first lookup cycle, before installation, so the
+answered read slot can hold a later read while the line installs. Endpoint 0
+answers its reads after installation. A load endpoint's Done, and the loads
+waiting on it, follow installation. With stream look-ahead enabled, a successful demand installation
 with a reader waiting on that endpoint gives an eligible ordinary read one
 service turn before another load grant. The circular read selector chooses
 the read but keeps its pointer, so a read that misses on this turn keeps its

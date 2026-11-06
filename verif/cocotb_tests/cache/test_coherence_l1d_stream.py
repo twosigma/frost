@@ -1128,3 +1128,75 @@ async def endpoint_zero_bypasses_unused_credit(dut: Any) -> None:
         (2, b.word(base + 8), 0),
     ]
     assert not b.get("o_pending_store") and not b.get("o_fatal")
+
+
+@cocotb.test()
+async def answered_read_id_reuse_during_installation(dut: Any) -> None:
+    """Reuse an answered read ID while its grant installs over a clean or dirty victim."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 2:
+        return
+    ways = len(dut.exclude)
+    for dirty, same_line in (
+        (False, False),
+        (False, True),
+        (True, False),
+        (True, True),
+    ):
+        await b.reset()
+        base = 0x80006000
+        # Modified lines fill the set, so the load's installation freezes one.
+        for way in range(ways if dirty else 0):
+            await b.wait("o_store_ready")
+            await b.set(
+                i_address=base + 0x200 * (way + 1),
+                i_write_mask=255,
+                i_write_data=0x1111 * (way + 1),
+            )
+            await b.tick()
+            await b.set(i_write_mask=0)
+            await b.requests_at_least(way + 1)
+            await b.grant(way)
+            await b.release(way)
+        first = len(b.requests)
+        await b.issue(0, base)
+        await b.requests_at_least(first + 1)
+        ep = b.requests[first][0]
+        assert ep != 0
+        await b.set(i_read_ready=1)
+        await b.send_grant(first)
+        for _ in range(40):
+            if b.responses:
+                break
+            await b.tick()
+        else:
+            raise AssertionError("The grant did not answer its read")
+        # The read was answered while its grant still owns the array service.
+        assert b.get("operation_q") == 2 and b.get("phase_q") != 0
+        assert not b.get("installed_q") >> ep & 1
+        second = base + 8 if same_line else base + 0x1000
+        await b.issue(0, second)
+        for _ in range(60):
+            if b.get("installed_q") >> ep & 1:
+                break
+            assert b.get("rd_valid_q") & 1 and not b.get("rd_ready_q") & 1
+            await b.tick()
+        else:
+            raise AssertionError("The answered grant did not install")
+        # The installation completes no read: slot 0 holds the second read.
+        assert b.get("rd_valid_q") & 1 and not b.get("rd_ready_q") & 1
+        if dirty:
+            await b.wait("o_w_valid")
+            put = unpack(b.get("o_w"), (1, 1, 1, b.p, 256, 1))
+            assert put[3] & 0x1FF == 0 and put[3] != base
+        for _ in range(100):
+            if b.get("o_c_valid") >> ep & 1:
+                break
+            await b.tick()
+        else:
+            raise AssertionError("The answered endpoint offered no completion")
+        await b.release(first)
+        await b.drain(2)
+        assert b.responses == [(0, b.word(base), 0), (0, b.word(second), 0)]
+        assert len(b.requests) == first + (1 if same_line else 2)
+        assert not b.get("o_fatal")
