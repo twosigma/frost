@@ -514,7 +514,7 @@ module coherence_l1d #(
     if (f_past_valid) begin
       assert (o_perf_events.access == (o_perf_events.hit || o_perf_events.miss));
       assert (!(o_perf_events.hit && o_perf_events.miss));
-      assert (o_perf_events.miss_outstanding <= 12);
+      p_bounded_miss_outstanding : assert (o_perf_events.miss_outstanding <= 12);
       if ($past(i_rst)) assert (o_perf_events == '0);
       if (o_perf_events.hit_under_miss) begin
         assert (o_perf_events.hit);
@@ -1477,14 +1477,33 @@ module coherence_l1d #(
     end
   end
 `endif
-  // Home atomics drain load endpoints. Local atomics exclude only their
-  // sector and endpoint 0, while holding service through installation.
+  // Live endpoints hold distinct lines. Home atomics drain load endpoints.
+  // Local atomics exclude only their sector and endpoint 0, while holding
+  // service through installation.
+  for (genvar ep = 0; ep < MISSES; ep++) begin : gen_bounded_line
+    for (genvar other = ep + 1; other < MISSES; other++) begin : gen_other
+      coherence_l1d_bounded_check check (
+          .i_clk(i_clk),
+          .i_enable(sim_reset_seen_q && !i_rst && Multi && live[ep] && live[other]),
+          .i_ok((ep == 0 ? acquisition_q.addr[ADDR_WIDTH-1:5] : ld_line_q[ep]) != ld_line_q[other])
+      );
+    end
+  end
+  for (genvar ep = 1; ep < MISSES; ep++) begin : gen_bounded_atomic
+    wire atomic_owned = sim_reset_seen_q && !i_rst && Multi && atomic_q && atomic_granted_q;
+    coherence_l1d_bounded_check local_line (
+        .i_clk(i_clk),
+        .i_enable(atomic_owned && atomic_local_q),
+        .i_ok(!live[ep] || ld_line_q[ep] != atomic_addr_q[ADDR_WIDTH-1:5])
+    );
+    coherence_l1d_bounded_check home_idle (
+        .i_clk(i_clk),
+        .i_enable(atomic_owned && !atomic_local_q),
+        .i_ok(!live[ep])
+    );
+  end
   always_ff @(posedge i_clk)
     if (sim_reset_seen_q && !i_rst && Multi) begin
-      for (int ep = 0; ep < MISSES; ep++)
-      for (int other = 0; other < MISSES; other++)
-      if (ep < other && live[ep] && live[other])
-        assert ((ep == 0 ? acquisition_q.addr[ADDR_WIDTH-1:5] : ld_line_q[ep]) != ld_line_q[other]);
       for (int ep = 0; ep < MISSES; ep++) begin
         if (live[ep] && ld_prefetch_q[ep]) begin
           assert (StreamEnabled && ep >= MISSES - PrefetchCount && ep != 0);
@@ -1517,14 +1536,10 @@ module coherence_l1d #(
         assert (!prefetch_cancel && !local_turn_q);
       end
       if (load_acquire_block) assert (ep_request_valid[EpSlots-1:1] == 0);
-      if (atomic_q && atomic_granted_q)
-        for (int ep = 1; ep < MISSES; ep++)
-        if (atomic_local_q) assert (!live[ep] || ld_line_q[ep] != atomic_addr_q[ADDR_WIDTH-1:5]);
-        else assert (!live[ep]);
       if (grant_ready && grant_valid && grant_pick != '0) assert (wb_free);
       if (active && phase_q == LookupWait && array_valid && operation_q == GrantOp &&
           grant_ep_q != '0 && !array_hit && array_state == coherence_pkg::Modified)
-        assert (wb_free);
+        p_bounded_wb_free_lookup : assert (wb_free);
     end
 `endif
 `ifndef SYNTHESIS
@@ -2571,29 +2586,55 @@ module coherence_l1d #(
       if (grant_ready && grant_valid && grant_is_store)
         p_store_grant_head : assert (store_acquired[store_head_index] &&
             store_ep[store_head_index] == grant_pick && grant.addr == pending_addr_q);
-      for (int slot = 0; slot < 4; slot++)
-      if (store_valid[slot] && store_acquired[slot]) begin
-        assert (live[store_ep[slot]] && ep_store[store_ep[slot]]);
-        assert (store_addr[slot][ADDR_WIDTH-1:5] ==
-            (store_ep[slot] == '0 ? acquisition_q.addr[ADDR_WIDTH-1:5] :
-             ld_line_q[store_ep[slot]]));
-      end
       if (store_acquire) begin
         p_store_acquire_once : assert (!store_acquired[store_selected_q]);
-        for (int ep = 0; ep < MISSES; ep++)
-        if (live[ep]) assert (lookup_addr_q[ADDR_WIDTH-1:5] !=
-            (ep == 0 ? acquisition_q.addr[ADDR_WIDTH-1:5] : ld_line_q[ep]));
-        for (int age = 0; age < 4; age++)
-        if (2'(store_head_index+2'(age)) == store_selected_q)
-          for (int older = 0; older < age; older++) begin
-            assert (lookup_addr_q[ADDR_WIDTH-1:5] !=
-                store_addr[2'(store_head_index+2'(older))][ADDR_WIDTH-1:5]);
-            assert (lookup_addr_q[ADDR_WIDTH-1:HomeOffset] ==
+      end
+    end
+  end
+  // Acquired store records hold their endpoint and line, and an acquisition's
+  // lookup differs from each live endpoint's line and from each older store
+  // record's line.
+  for (genvar slot = 0; slot < 4; slot++) begin : gen_bounded_store_slot
+    wire acquired = sim_reset_seen_q && !i_rst && store_valid[slot] && store_acquired[slot];
+    coherence_l1d_bounded_check live_check (
+        .i_clk(i_clk),
+        .i_enable(acquired),
+        .i_ok(live[store_ep[slot]] && ep_store[store_ep[slot]])
+    );
+    coherence_l1d_bounded_check line_check (
+        .i_clk(i_clk),
+        .i_enable(acquired),
+        .i_ok(store_addr[slot][ADDR_WIDTH-1:5] ==
+              (store_ep[slot] == '0 ? acquisition_q.addr[ADDR_WIDTH-1:5] :
+               ld_line_q[store_ep[slot]]))
+    );
+  end
+  for (genvar ep = 0; ep < MISSES; ep++) begin : gen_bounded_acquire_line
+    coherence_l1d_bounded_check check (
+        .i_clk(i_clk),
+        .i_enable(sim_reset_seen_q && !i_rst && store_acquire && live[ep]),
+        .i_ok(lookup_addr_q[ADDR_WIDTH-1:5] !=
+              (ep == 0 ? acquisition_q.addr[ADDR_WIDTH-1:5] : ld_line_q[ep]))
+    );
+  end
+  for (genvar age = 0; age < 4; age++) begin : gen_bounded_acquire_age
+    for (genvar older = 0; older < age; older++) begin : gen_older
+      wire selected = sim_reset_seen_q && !i_rst && store_acquire &&
+          2'(store_head_index+2'(age)) == store_selected_q;
+      coherence_l1d_bounded_check line_check (
+          .i_clk(i_clk),
+          .i_enable(selected),
+          .i_ok(lookup_addr_q[ADDR_WIDTH-1:5] !=
+                store_addr[2'(store_head_index+2'(older))][ADDR_WIDTH-1:5])
+      );
+      coherence_l1d_bounded_check home_check (
+          .i_clk(i_clk),
+          .i_enable(selected),
+          .i_ok(lookup_addr_q[ADDR_WIDTH-1:HomeOffset] ==
                 store_addr[2'(store_head_index+2'(older))][ADDR_WIDTH-1:HomeOffset] ||
                 (HomeSets > 1 && lookup_addr_q[HomeOffset+:HomeSetBits] !=
-                 store_addr[2'(store_head_index+2'(older))][HomeOffset+:HomeSetBits]));
-          end
-      end
+                 store_addr[2'(store_head_index+2'(older))][HomeOffset+:HomeSetBits]))
+      );
     end
   end
   logic store_launch_ready_q;
@@ -2692,13 +2733,13 @@ module coherence_l1d #(
             (operation_q == GrantOp && (array_hit || array_state != coherence_pkg::Modified)) ||
             (operation_q == ProbeOp && (!array_hit || array_state != coherence_pkg::Modified)));
       end
-      if (store_pop) assert (pending_q && !probe_valid_q);
+      if (store_pop) p_bounded_store_pop_pending : assert (pending_q && !probe_valid_q);
       if (tail_q) assert (pending_q);
-      assert (!(pending_q && atomic_q));
+      p_bounded_pending_atomic : assert (!(pending_q && atomic_q));
       if ((i_sc_valid && o_sc_ready) || phase_q == LocalCheck)
         p_atomic_store_exclusive : assert (!store_push);
       if (atomic_q && atomic_local_q) begin
-        assert (!request_live && !pending_q && !store_push);
+        p_bounded_local_atomic_idle : assert (!request_live && !pending_q && !store_push);
         assert (!probe_valid_q && !o_p_ready && !o_cut_hold);
         assert (!grant_ready && !ep_request_valid[0]);
         assert (phase_q != Idle && phase_q != Lookup && phase_q != LookupWait);
@@ -2712,15 +2753,15 @@ module coherence_l1d #(
           assert (i_write_tag == atomic_tag_q);
           if (i_write_sc) assert (sc_committed_q);
         end else begin
-          assert (active && store_count < 4 && !atomic_q);
+          p_bounded_store_launch : assert (active && store_count < 4 && !atomic_q);
           assert (o_store_ready || store_launch_ready_q);
         end
       end
       if (o_d_valid[0] && (acquisition_q.opcode == coherence_pkg::Atomic ||
           acquisition_q.opcode == coherence_pkg::StoreConditional))
         assert (i_atomic_protected);
-      if (ep_request_valid[0]) assert (wb_free);
-      if (grant_valid && grant_ready) assert (live[grant_pick]);
+      if (ep_request_valid[0]) p_bounded_wb_free_request : assert (wb_free);
+      if (grant_valid && grant_ready) p_bounded_grant_pick_live : assert (live[grant_pick]);
       if (i_p_valid && o_p_ready && probe_in.opcode == coherence_pkg::ProbeRead &&
           atomic_q && !atomic_local_q && atomic_sc_q && sc_checked_q &&
           probe_in.addr == acquisition_q.addr)
@@ -3244,11 +3285,11 @@ module coherence_l1d #(
         assert (atomic_read_waiting && prefetch_cancel);
         assert (rd_valid_q[$past(i_read_id)]);
         assert (rd_kind_q[$past(i_read_id)] == $past(i_read_kind));
-        assert (|(live & ld_prefetch_q));
+        p_bounded_prefetch_live : assert (|(live & ld_prefetch_q));
       end
       if ($past(active && probe_valid_q && grant_read_turn_q && !prefetch_cancel))
         assert (grant_read_turn_q);
-      if (active) assert (f_probe_age < 32);
+      if (active) p_bounded_probe_age : assert (f_probe_age < 32);
       if (local_turn_q) assert (phase_q == Idle && !probe_valid_q && !o_r_valid);
       if ($past(o_r_valid && i_r_ready)) assert (local_turn_q == $past(local_ready));
       if ($past(local_turn_q)) assert (!local_turn_q);
@@ -3280,10 +3321,10 @@ module coherence_l1d #(
       if (local_turn_q && grant_valid && active) assert (grant_ready);
       if (rd_candidate && &read_probe_count_q) assert (local_ready);
       if ($past(local_turn_q && active && !grant_valid && atomic_write_q))
-        assert (phase_q == Lookup && operation_q == AtomicWriteOp);
+        p_bounded_atomic_write_phase : assert (phase_q == Lookup && operation_q == AtomicWriteOp);
       if ($past(active && o_r_valid && !i_r_ready) && active) begin
         assert (o_r_valid);
-        assert (f_reply_signature == $past(f_reply_signature));
+        p_reply_hold : assert (f_reply_signature == $past(f_reply_signature));
       end
       if (o_cut_admit_valid || o_cut_inval_valid)
         assert (probe_valid_q ? probe_q.opcode == coherence_pkg::ProbeInvalidate :
@@ -3297,7 +3338,7 @@ module coherence_l1d #(
       if (o_cut_release)
         assert ($past(o_r_valid && i_r_ready && probe_q.opcode == coherence_pkg::ProbeInvalidate));
       if (o_sc_write_done) begin
-        assert (atomic_written_q && sc_committed_q);
+        p_bounded_sc_write_done : assert (atomic_written_q && sc_committed_q);
         assert ($past(phase_q == UpdateWait && array_ready && operation_q == AtomicWriteOp));
       end
       if ($past(atomic_q && atomic_local_q) && !atomic_q) begin
@@ -3315,8 +3356,6 @@ module coherence_l1d #(
       end
       if (o_sc_write_pending) assert (atomic_q && atomic_sc_q && !atomic_written_q);
       assert (o_block_valid == (atomic_q ? 4'b0001 : store_valid));
-      for (int holder = 0; holder < 4; holder++)
-        if (store_valid[holder]) assert (o_block_addr[holder] == store_addr[holder]);
       if (atomic_q) assert (o_block_addr[0] == atomic_addr_q);
       if ($past(store_pop && tail_q)) assert (o_pending_store);
       assert (store_ack == $past(store_push));
@@ -3327,12 +3366,33 @@ module coherence_l1d #(
       if ($past(active && phase_q == Idle) && phase_q == Lookup && operation_q == GrantOp)
         assert ($past(grant_valid && grant_ready));
       if (active && phase_q == LookupWait && array_valid && operation_q == GrantOp)
-        assert (array_available);
+        p_bounded_array_available : assert (array_available);
       if (o_r_valid && probe_q.opcode == coherence_pkg::ProbeInvalidate)
         assert (reply_q.state == coherence_pkg::Invalid);
       cover (o_cut_release);
       cover (o_sc_write_done);
     end
   end
+  logic f_rst_q = 1'b0;
+  always_ff @(posedge i_clk) f_rst_q <= i_rst;
+  for (genvar holder = 0; holder < 4; holder++) begin : gen_bounded_block
+    coherence_l1d_bounded_check check (
+        .i_clk(i_clk),
+        .i_enable(f_past_valid && !i_rst && !f_rst_q && store_valid[holder]),
+        .i_ok(o_block_addr[holder] == store_addr[holder])
+    );
+  end
 `endif
 endmodule
+
+`ifndef SYNTHESIS
+// Checks one condition on each clock edge while enabled. The L1D instantiates
+// it once per loop iteration so that each check has its own hierarchical name.
+module coherence_l1d_bounded_check (
+    input logic i_clk,
+    input logic i_enable,
+    input logic i_ok
+);
+  always_ff @(posedge i_clk) if (i_enable) p_bounded_hold : assert (i_ok);
+endmodule
+`endif
