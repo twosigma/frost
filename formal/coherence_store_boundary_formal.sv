@@ -842,6 +842,7 @@ module coherence_store_boundary_formal #(
       .i_cached_resp_held(rt_cached_read_held),
       .o_fu_complete(lq_fu_complete),
       .o_fu_complete_staged(lq_fu_complete_staged),
+      .o_fu_complete_tag_next(),
       .i_adapter_result_pending(dependency_mem_pending || dependency_sc_pending),
       .i_result_accepted(dependency_lq_accepted),
       .i_rob_head_tag(head),

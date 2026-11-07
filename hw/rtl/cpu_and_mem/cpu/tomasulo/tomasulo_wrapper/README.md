@@ -352,11 +352,13 @@ load result. The merge requires the LQ result to own the MEM adapter's input,
 with no store fault, SC result, or uncached-store completion ahead of it and
 the adapter idle.
 
-INT_RS merges the token into its local CDB copies. Its issue tag inputs use
-separate copies with the same lane selection. Both issue ports capture the
-final operands in stage 2, including the early load value. A stalled packet
-holds those operands. An assertion checks that issue and resident wakeup
-see matching tags and valid bits.
+INT_RS merges the token into its local CDB copies. Its issue tag inputs are
+registers that make the same lane selection one edge earlier, from the next
+CDB valids and the LQ's next staged tag, so the issue compares start at a
+flop. Both issue ports capture the final operands in stage 2, including the
+early load value. A stalled packet holds those operands. An assertion checks
+that issue and resident wakeup see matching valid bits, and matching tags on a
+valid lane.
 
 The merged lanes also decide MEM_RS's next issue. MEM_RS exports one
 look-ahead candidate per combination of lane valids, and the LQ selects among
