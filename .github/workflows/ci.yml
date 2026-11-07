@@ -1242,13 +1242,23 @@ jobs:
               coh_l1d_multi_bmc or
               (coh_l1d_local and prove)))
             timeout_minutes: 330
-          # The ordered store boundary tasks, the longest of the coherent BMCs
-          # after the stream and control tasks.
-          - shard: Store boundary
-            pytest_filter: coherence_store_boundary
+          # The four-record and intervening-load boundary BMCs run to their
+          # full depths, 120 and 140 frames, and each fills a job.
+          - shard: Store boundary four records
+            pytest_filter: coherence_store_boundary_bmc_four
             timeout_minutes: 330
-          # The hart maintenance composition proof models buffered store
-          # hits and can take over an hour, and the eight-endpoint L1D stream
+          - shard: Store boundary intervening load
+            pytest_filter: coherence_store_boundary_bmc_intervening
+            timeout_minutes: 330
+          # The other ordered store boundary tasks.
+          - shard: Store boundary
+            pytest_filter: >-
+              coherence_store_boundary and not
+              (coherence_store_boundary_bmc_four or
+              coherence_store_boundary_bmc_intervening)
+            timeout_minutes: 330
+          # The hart maintenance composition proof with four scalar stores
+          # takes about an hour, and the eight-endpoint L1D stream
           # BMCs take about an hour, so they run in their own job.
           - shard: Hart maintenance
             pytest_filter: coh_hart_maint_prove or coh_l1d_stream_bmc or coh_l1d_stream_free
