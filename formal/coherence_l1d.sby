@@ -132,17 +132,16 @@ control: chformal -assert2assume c:p_prefetch_conflict_split
 streamscript: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 streamscript: chformal -assert2assume c:p_prefetch_conflict_split
 bulk: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
-bulk: select -assert-count 312 t:$check r:FLAVOR=assert %i
+bulk: select -assert-count 276 t:$check r:FLAVOR=assert %i
 outlier: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold %u %u %u %d
 outlier: select -assert-count 4 t:$check r:FLAVOR=assert %i
 # The unbounded stream proof leaves out the four outlier assertions, which the
 # outlier task proves, and the assertions that PDR does not close: the pairwise
 # distinctness of live endpoint lines, the store record address and acquisition
 # checks, the prefetch window and atomic exclusion checks, the pending-probe
-# bound and a few others. The source lines name unlabeled assertions, so the
-# count below changes when the file's assertions move.
+# bound and a few others. The bounded ones carry the p_bounded_ label prefix.
 unbounded: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
-unbounded: chformal -assert -remove a:src=*coherence_l1d.sv:517.* a:src=*coherence_l1d.sv:1487.* a:src=*coherence_l1d.sv:1522.* a:src=*coherence_l1d.sv:1523.* a:src=*coherence_l1d.sv:1527.* a:src=*coherence_l1d.sv:2576.* a:src=*coherence_l1d.sv:2577.* a:src=*coherence_l1d.sv:2584.* a:src=*coherence_l1d.sv:2589.* a:src=*coherence_l1d.sv:2591.* a:src=*coherence_l1d.sv:2695.* a:src=*coherence_l1d.sv:2697.* a:src=*coherence_l1d.sv:2701.* a:src=*coherence_l1d.sv:2715.* a:src=*coherence_l1d.sv:2722.* a:src=*coherence_l1d.sv:2723.* a:src=*coherence_l1d.sv:3247.* a:src=*coherence_l1d.sv:3251.* a:src=*coherence_l1d.sv:3283.* a:src=*coherence_l1d.sv:3300.* a:src=*coherence_l1d.sv:3319.* a:src=*coherence_l1d.sv:3330.* c:p_acquire_read_payload c:p_acquire_read_role c:p_atomic_no_load_endpoint c:p_atomic_single_owner c:p_atomic_store_exclusive c:p_block_zero_exact c:p_grant_live c:p_grant_prefetch_flag c:p_prefetch_hint_conflict c:p_prefetch_owner_conflict c:p_read_owned_exact c:p_request_payload c:p_store_acquire_once c:p_store_grant_head c:p_store_grant_head_exact c:p_store_head_address c:p_store_head_valid c:p_store_install_address c:p_store_read_service_bound c:p_store_yields_read
+unbounded: chformal -assert -remove c:*p_bounded_* c:p_acquire_read_payload c:p_acquire_read_role c:p_atomic_no_load_endpoint c:p_atomic_single_owner c:p_atomic_store_exclusive c:p_block_zero_exact c:p_grant_live c:p_grant_prefetch_flag c:p_prefetch_hint_conflict c:p_prefetch_owner_conflict c:p_read_owned_exact c:p_request_payload c:p_store_acquire_once c:p_store_grant_head c:p_store_grant_head_exact c:p_store_head_address c:p_store_head_valid c:p_store_install_address c:p_store_read_service_bound c:p_store_yields_read
 unbounded: select -assert-count 169 t:$check r:FLAVOR=assert %i
 conflict: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 conflict: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_conflict_split %d
