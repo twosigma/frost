@@ -3,10 +3,8 @@
 hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/early_misprediction_recovery.sv: if (i_rst)
 hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv: tage_pd_accept
 hw/rtl/cpu_and_mem/cpu/cpu_ooo/frontend_control/decoded_bundle_queue.sv: nonempty_next
-hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv: lq_live_read_accepted
-hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv: lq_pending_read_candidate
-hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv: o_data_mem_cached_read_if_sel
-hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv: uncached_read_if_launch
+hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv: o_mmio_load_valid
+hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv: o_mmio_read_pulse
 hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/perf_counter_aggregator.sv: perf_top_inc[PerfFrontendBubble]
 hw/rtl/cpu_and_mem/cpu/csr/csr_file.sv: o_m_ireg_we
 hw/rtl/cpu_and_mem/cpu/csr/csr_file.sv: o_m_topei_claim
