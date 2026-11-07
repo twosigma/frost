@@ -3283,7 +3283,7 @@ module coherence_l1d #(
         assert (phase_q == Lookup && operation_q == AtomicWriteOp);
       if ($past(active && o_r_valid && !i_r_ready) && active) begin
         assert (o_r_valid);
-        assert (f_reply_signature == $past(f_reply_signature));
+        p_reply_hold : assert (f_reply_signature == $past(f_reply_signature));
       end
       if (o_cut_admit_valid || o_cut_inval_valid)
         assert (probe_valid_q ? probe_q.opcode == coherence_pkg::ProbeInvalidate :

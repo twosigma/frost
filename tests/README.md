@@ -640,6 +640,7 @@ except for `csr_file:bmc`, `csr_file:bmc_perf_off`, and `reorder_buffer:bmc`,
 which have 90 minutes each, `coherent_hart_cache:coh_hart_maint_prove`,
 which has 120 minutes, `coherence_l1d:coh_l1d_stream_bmc` and
 `coherence_l1d:coh_l1d_stream_free_nostore_bmc`, which have 60 minutes each,
+`coherence_l1d:coh_l1d_stream_free_bmc`, which has 180 minutes,
 `coherence_store_boundary:bmc_four`, which has 300 minutes,
 `coherence_store_boundary:bmc_intervening`, which has 240 minutes,
 and `coherence_l1d:coh_l1d_multi_bmc`, which has 240 minutes.
@@ -887,7 +888,7 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 | TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and runs 50 sequences from the crypto generator |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis |
-| Formal verification | CSR profiling-on/off and ROB jobs; Coherence, store-home, L1D and bridges, store-boundary (three jobs) and Other tasks jobs; and a separate job for the hart maintenance proof and the L1D stream BMC; see the [formal guide](../formal/README.md) for budgets |
+| Formal verification | CSR profiling-on/off and ROB jobs; Coherence, store-home, L1D and bridges, store-boundary (three jobs), L1D free-stream and Other tasks jobs; and a separate job for the hart maintenance proof and the other L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in four chained jobs |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
 | Coverage | One job merges the coverage of the simulating jobs into a report |

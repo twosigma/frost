@@ -1257,11 +1257,17 @@ jobs:
               (coherence_store_boundary_bmc_four or
               coherence_store_boundary_bmc_intervening)
             timeout_minutes: 330
+          # The eight-endpoint L1D stream BMC with arbitrary inputs and
+          # stores runs to depth 32 and gets a job of its own.
+          - shard: Coherence L1D free stream
+            pytest_filter: coh_l1d_stream_free_bmc
+            timeout_minutes: 330
           # The hart maintenance composition proof with four scalar stores
-          # takes about an hour, and the eight-endpoint L1D stream
-          # BMCs take about an hour, so they run in their own job.
+          # takes about an hour, and the scripted and store-free eight-endpoint
+          # L1D stream BMCs take about an hour together, so they run in their
+          # own job.
           - shard: Hart maintenance
-            pytest_filter: coh_hart_maint_prove or coh_l1d_stream_bmc or coh_l1d_stream_free
+            pytest_filter: coh_hart_maint_prove or coh_l1d_stream_bmc or coh_l1d_stream_free_nostore
             timeout_minutes: 330
           - shard: Other tasks
             pytest_filter: "not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or coherence_ or coherent_)"
