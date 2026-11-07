@@ -29,7 +29,7 @@ module coherence_channel #(
   if (WIDTH < 1) begin : gen_invalid_config
     initial $fatal(1, "coherence_channel: invalid parameters");
   end
-  assign o_ready = !o_valid && !i_rst;
+  assign o_ready = !o_valid;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       o_valid   <= 1'b0;

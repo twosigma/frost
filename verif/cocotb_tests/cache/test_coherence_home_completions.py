@@ -40,13 +40,13 @@ class Completions(Bench):
             await self.set(i_clk=1)
             await self.set(i_clk=0)
 
-    async def reset(self, epoch: int = 0) -> None:
+    async def reset(self, epoch: int = 0, cycles: int = 2) -> None:
         """Reset every ownership record together."""
         for signal in self.dut:
             if signal._name.startswith("i_"):
                 signal.value = 0
         await self.set(i_rst=1)
-        await self.tick(2)
+        await self.tick(cycles)
         await self.set(i_rst=0)
 
     async def wait(self, signal: str) -> None:
@@ -57,9 +57,9 @@ class Completions(Bench):
             await self.tick()
         raise AssertionError(f"{signal} did not progress")
 
-    async def admit(self, q: int, address: int, op: int = 0) -> None:
-        """Queue an immutable request identity."""
-        request = pack(
+    def request(self, q: int, address: int, op: int = 0) -> int:
+        """Encode an immutable request identity."""
+        return pack(
             (4, op),
             (9, q),
             (self.p, address),
@@ -71,7 +71,10 @@ class Completions(Bench):
             (1, 0),
             (256, 0),
         )
-        await self.set(i_d_valid=1, i_d=request)
+
+    async def admit(self, q: int, address: int, op: int = 0) -> None:
+        """Queue an immutable request identity."""
+        await self.set(i_d_valid=1, i_d=self.request(q, address, op))
         await self.wait("o_d_ready")
         await self.tick()
         await self.set(i_d_valid=0)
@@ -171,6 +174,74 @@ async def same_sector_waits_for_release_while_other_lines_progress(dut: Any) -> 
     await b.admit(0, 0x80000100)
     reused = await b.dispatch()
     assert reused[0] == 0
+
+
+@cocotb.test()
+async def single_cycle_reset_with_every_channel_offered(dut: Any) -> None:
+    """One reset cycle frees every slot and credit, whatever fires on its edge."""
+    b = Completions(dut)
+    await b.reset()
+    base = 0x80000000
+    await b.admit(0, base)
+    released = await b.dispatch()
+    await b.result(released, 1)
+    await b.grant(released, 1)
+    await b.complete(released)
+    await b.wait("o_u_valid")
+    await b.admit(2, base + 64)
+    granted = await b.dispatch()
+    await b.result(granted, 2)
+    await b.wait("o_g_valid")
+    await b.admit(4, base + 128)
+    running = await b.dispatch()
+    await b.admit(6, base + 192)
+    await b.wait("o_work_valid")
+    assert b.get("buffer_live_q")
+
+    await b.set(
+        i_rst=1,
+        i_d_valid=1,
+        i_d=b.request(8, base + 256),
+        i_work_ready=1,
+        i_g_ready=1,
+        i_u_ready=1,
+        i_result_valid=1,
+        i_result=pack(
+            (3, 0),
+            (9, running[0]),
+            (6, running[1]),
+            (b.p, running[2]),
+            (256, 3),
+            (1, 0),
+        ),
+    )
+    await b.tick()
+    await b.set(
+        i_rst=0,
+        i_d_valid=0,
+        i_work_ready=0,
+        i_g_ready=0,
+        i_u_ready=0,
+        i_result_valid=0,
+    )
+
+    assert not b.get("o_work_valid") and not b.get("o_g_valid")
+    assert not b.get("o_u_valid") and not b.get("o_put_busy")
+    assert not b.get("o_accepted") and not b.get("released_q")
+    assert not b.get("buffer_live_q") and not b.get("buffer_owned_q")
+    await b.tick(4)
+    assert not b.get("o_work_valid") and not b.get("o_g_valid")
+    assert not b.get("o_u_valid")
+
+    # Every identity is free again.
+    for q in (0, 2, 4, 6):
+        await b.admit(q, base + 32 * q)
+        item = await b.dispatch()
+        await b.result(item, q + 1)
+        await b.grant(item, q + 1)
+        await b.complete(item)
+        await b.release(item)
+    assert not b.get("buffer_live_q")
 
 
 @cocotb.test()

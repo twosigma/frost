@@ -440,9 +440,8 @@ async def test_reads_progress_under_writes(dut: Any) -> None:
     await bench.check_clean()
 
 
-@cocotb.test()
-async def test_reset_mid_traffic(dut: Any) -> None:
-    """Reset drops everything in flight; traffic afterwards completes normally."""
+async def _reset_mid_traffic(dut: Any, reset_cycles: int) -> None:
+    """Reset for some cycles, then check traffic against a fresh reference."""
     bench = await _start(dut, seed=7)
     page = REGION_BASE + 0x300000
     for _ in range(20):
@@ -453,7 +452,7 @@ async def test_reset_mid_traffic(dut: Any) -> None:
     await FallingEdge(dut.i_clk)
     dut.i_rst.value = 1
     bench.master._task.cancel()
-    for _ in range(3):
+    for _ in range(reset_cycles):
         await RisingEdge(dut.i_clk)
     await FallingEdge(dut.i_clk)
     dut.i_rst.value = 0
@@ -472,3 +471,15 @@ async def test_reset_mid_traffic(dut: Any) -> None:
     for txn in reads:
         bench.check_read(txn)
     await bench.check_clean()
+
+
+@cocotb.test()
+async def test_reset_mid_traffic(dut: Any) -> None:
+    """Reset drops everything in flight; traffic afterwards completes normally."""
+    await _reset_mid_traffic(dut, 3)
+
+
+@cocotb.test()
+async def test_single_cycle_reset_mid_traffic(dut: Any) -> None:
+    """One reset cycle does the same, with the bridge's outputs live during it."""
+    await _reset_mid_traffic(dut, 1)

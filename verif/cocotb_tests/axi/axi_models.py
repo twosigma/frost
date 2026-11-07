@@ -431,6 +431,7 @@ class LineIngress:
         self.cycle = 0
         self.outstanding: dict[int, int] = {}  # id -> line address
         self._due: list[tuple[int, int, int, int]] = []  # (cycle, id, data, error)
+        self._after_reset = False
         self._held: tuple[int, ...] | None = None
         dut.i_line_req_ready.value = 0
         dut.i_line_resp_valid.value = 0
@@ -465,9 +466,11 @@ class LineIngress:
             await ReadOnly()
             in_reset = int(dut.i_rst.value)
             valid = int(dut.o_line_req_valid.value)
+            # A request can stay live until the reset edge, which clears it.
+            if self._after_reset and valid:
+                self.violations.append(f"cycle {self.cycle}: line request after reset")
+            self._after_reset = bool(in_reset)
             if in_reset:
-                if valid:
-                    self.violations.append(f"cycle {self.cycle}: line request in reset")
                 self._held = None
                 self._due.clear()
                 self.outstanding.clear()

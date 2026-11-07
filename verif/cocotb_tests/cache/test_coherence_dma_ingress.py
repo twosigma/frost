@@ -64,13 +64,13 @@ class Ingress:
             await self.set(i_clk=1)
             await self.set(i_clk=0)
 
-    async def reset(self) -> None:
+    async def reset(self, cycles: int = 2) -> None:
         """Discard both requester and home ownership in one reset epoch."""
         for signal in self.dut:
             if signal._name.startswith("i_"):
                 signal.value = 0
         await self.set(i_rst=1)
-        await self.tick(2)
+        await self.tick(cycles)
         await self.set(i_rst=0)
         self.responses.clear()
         self.completions.clear()
@@ -230,7 +230,7 @@ async def all_ids_and_completion_delay(dut: Any) -> None:
 async def reset_at_each_home_stage(dut: Any) -> None:
     """Reset clears queued, granted and unreleased ownership without a response."""
     b = Ingress(dut)
-    for stage in range(6):
+    for stage, cycles in [(stage, cycles) for cycles in (2, 1) for stage in range(6)]:
         await b.reset()
         for ident in (15, 8, 0, 7):
             await b.enqueue(ident)
@@ -251,7 +251,7 @@ async def reset_at_each_home_stage(dut: Any) -> None:
             await b.set(i_u_valid=0)
         if stage >= 5:
             await b.wait("o_resp_valid")
-        await b.reset()
+        await b.reset(cycles)
         assert not b.get("o_d_valid") and not b.get("o_resp_valid")
         await b.set(i_fatal_stop=1, i_req_valid=1, i_req_id=15)
         assert not b.get("o_req_ready")

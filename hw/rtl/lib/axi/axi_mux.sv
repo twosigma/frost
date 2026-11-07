@@ -360,7 +360,7 @@ module axi_mux #(
     end
   end
   always_comb begin
-    if (i_rst || !f_past_valid) assume (!i_dn_bvalid && !i_dn_rvalid);
+    if (!f_past_valid) assume (!i_dn_bvalid && !i_dn_rvalid);
     if (i_dn_bvalid) assume ((32'(b_port) < NUM_PORTS) && (f_b_owed[b_port] != '0));
     if (i_dn_rvalid) assume ((32'(r_port) < NUM_PORTS) && (f_r_owed[r_port] != '0));
     // The slave's bounded acceptance keeps the reference counters in range.

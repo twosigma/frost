@@ -178,14 +178,14 @@ module coherence_home #(
   recall_phase_t recall_phase_q[FILLS];
   put_phase_t put_phase_q[Puts];
   (* max_fanout = 64 *) logic run;
-  logic fatal_event, work_valid, work_offer, work_error;
+  logic fatal_event, work_valid, work_error;
   coh_d_t work;
   logic [5:0] work_tid;
   logic [ResultBits-1:0] work_buffer;
   logic [BufferBits-1:0] image_index;
   logic [RESULTS:0] image_select;
   logic [255:0] image_data;
-  logic [COMPLETIONS-1:0] waiting, waiting_offer, park, wake, wake_error;
+  logic [COMPLETIONS-1:0] waiting, park, wake, wake_error;
   logic [COMPLETIONS-1:0][ADDR_WIDTH+311:0] waiting_request;
   logic [COMPLETIONS-1:0][ADDR_WIDTH-1:0] waiting_addr;
   logic [COMPLETIONS-1:0][3:0] waiting_opcode;
@@ -420,7 +420,7 @@ module coherence_home #(
   // The fatal stop input stays set until reset and takes effect on the cycle
   // after it rises.
   always_comb begin
-    fatal_event = work_offer && work_error && work.opcode == coherence_pkg::GetM;
+    fatal_event = work_valid && work_error && work.opcode == coherence_pkg::GetM;
     if (i_mem_resp_valid && i_mem_resp_id[4] && i_mem_resp_error) fatal_event = 1'b1;
     for (int engine = 0; engine < RESULTS; engine++) if (engine_fatal[engine]) fatal_event = 1'b1;
     for (int put = 0; put < Puts; put++) if (put_phase_q[put] == PutFatal) fatal_event = 1'b1;
@@ -454,7 +454,6 @@ module coherence_home #(
       .o_d_ready,
       .i_d,
       .o_work_valid(work_valid),
-      .o_work_offer(work_offer),
       .i_work_ready(run),
       .o_work(work),
       .o_work_tid(work_tid),
@@ -469,7 +468,6 @@ module coherence_home #(
       .i_count_valid(run && array_response && decision_engine),
       .i_count_tid(decision_tid),
       .o_waiting(waiting),
-      .o_waiting_offer(waiting_offer),
       .o_waiting_request(waiting_request),
       .i_park(park),
       .i_wake(wake),
@@ -527,7 +525,7 @@ module coherence_home #(
         .i_clk,
         .i_rst,
         .i_stop(!run),
-        .i_work_valid(work_offer && work_buffer == ResultBits'(engine)),
+        .i_work_valid(work_valid && work_buffer == ResultBits'(engine)),
         .i_work(work),
         .i_tid(work_tid),
         .i_work_error(work_error),
@@ -585,7 +583,7 @@ module coherence_home #(
         engine_counted_q[engine]  <= 1'b0;
         engine_prefetch_q[engine] <= 1'b0;
         engine_nofill_q[engine]   <= 1'b0;
-      end else if (work_offer && work_buffer == ResultBits'(engine)) begin
+      end else if (work_valid && work_buffer == ResultBits'(engine)) begin
         engine_counted_q[engine]  <= work_counted;
         engine_prefetch_q[engine] <= work.opcode == coherence_pkg::Prefetch;
         engine_nofill_q[engine]   <= work_nofill;
@@ -647,6 +645,7 @@ module coherence_home #(
       .PORTS(Clients)
   ) read_arbiter (
       .i_clk,
+      // A stop clears this arbiter at run time, as a reset does.
       .i_rst(i_rst || !run),
       .i_valid(read_valid),
       .o_ready(read_ready),
@@ -856,7 +855,7 @@ module coherence_home #(
       engine_set_q[engine] <= same_set(engine_addr[engine], array_query);
       for (int way = 0; way < WAYS; way++)
       engine_tag_q[engine][way] <= block_tag(engine_addr[engine]) == array_tags[way];
-      engine_accepted_q[engine] <= run && work_offer && work_buffer == ResultBits'(engine);
+      engine_accepted_q[engine] <= run && work_valid && work_buffer == ResultBits'(engine);
     end
     work_set_q <= same_set(work_addr, array_query);
     for (int way = 0; way < WAYS; way++) work_tag_q[way] <= block_tag(work_addr) == array_tags[way];
@@ -1058,7 +1057,7 @@ module coherence_home #(
         // A prefetch slot holds only Prefetches, which take no seat.
         assign eligible[slot] = 1'b0;
       end else begin : gen_request_slot
-        assign eligible[slot] = enabled && waiting_offer[slot] && same_block(
+        assign eligible[slot] = enabled && waiting[slot] && same_block(
             waiting_addr[slot], fill_addr_q[fill]
         ) && read_waiter(
             waiting_opcode[slot]
@@ -1113,12 +1112,17 @@ module coherence_home #(
     assign put_owners[FILLS+wb] = wb_valid_q[wb] && same_block(wb_addr_q[wb], held_put_next);
   end
   always_ff @(posedge i_clk) begin
-    put_query_q <= same_block(array_query, held_put_next);
+    put_query_q  <= same_block(array_query, held_put_next);
     put_victim_q <= same_block(array_addr, held_put_next);
-    put_owner_q <= |put_owners;
-    fill_allocated_q <= run && array_response && decision_fill;
-    victim_allocated_q <= run && array_response && decision_fill &&
-        array_state != coherence_pkg::Invalid;
+    put_owner_q  <= |put_owners;
+    if (i_rst) begin
+      fill_allocated_q   <= 1'b0;
+      victim_allocated_q <= 1'b0;
+    end else begin
+      fill_allocated_q <= run && array_response && decision_fill;
+      victim_allocated_q <= run && array_response && decision_fill &&
+          array_state != coherence_pkg::Invalid;
+    end
   end
   // The fill decision arrives last: the selected put waits on it only when
   // its block is this response's valid victim.
@@ -1629,7 +1633,7 @@ module coherence_home #(
         o_fatal <= 1'b1;
         o_fatal_addr <= fill_old_addr_q[fill];
       end
-      if (work_offer && work_error && work.opcode == coherence_pkg::GetM) begin
+      if (work_valid && work_error && work.opcode == coherence_pkg::GetM) begin
         o_fatal <= 1'b1;
         o_fatal_addr <= work.addr;
       end
