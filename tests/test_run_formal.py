@@ -519,8 +519,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "sq_committed_empty.sby",
-        "Store-queue committed-empty state matches the reference through reset, flush, "
-        "and commit",
+        "Store-queue committed-empty state matches the reference through flush and commit",
         tasks=("bmc",),
     ),
     FormalTarget(

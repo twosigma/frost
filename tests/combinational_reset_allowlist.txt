@@ -44,8 +44,6 @@ hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv: done_next[entr
 hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv: exception_next[entry]
 hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv: replay_without_alloc
 hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv: valid_next[entry]
-hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv: committed_empty_next
-hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv: if (i_data_update_capture_valid && i_rst_n)
 hw/rtl/cpu_and_mem/debug/debug_module.sv: dm_rst
 hw/rtl/cpu_and_mem/debug/debug_module.sv: dmi_req_valid
 hw/rtl/cpu_and_mem/debug/debug_slice_writer.sv: o_req_ready
