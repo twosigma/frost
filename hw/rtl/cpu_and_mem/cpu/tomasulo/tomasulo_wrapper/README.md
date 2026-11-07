@@ -111,11 +111,11 @@ signals and ROB head tag.
 
 `i_backend_recovery_hold` is not a flush. While it is high, the wrapper blocks
 dispatch into every station, blocks issue, and holds the FP dispatch buffer.
-A fatal memory error immediately stops architectural retirement, front-end
-admission, and new memory requests. Its execution-only hold reaches the
-wrapper one clock later, keeping the fatal aggregation out of the branch
-completion path; results produced in that interval cannot retire or launch
-new side effects.
+A fatal memory error stops architectural retirement, front-end admission,
+and new memory requests from its latched flag, on the cycle after the
+failure. Its execution-only hold reaches the wrapper one clock later, keeping
+the fatal flag out of the branch completion path; results produced in that
+interval cannot retire or launch new side effects.
 The early-recovery controller registers the combined execution hold on the
 same edge as its early-recovery pending bit. A full flush cancels the early
 request but leaves a sampled fatal request asserted. Reset clears both.
