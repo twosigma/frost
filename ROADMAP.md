@@ -403,6 +403,16 @@ and targeted microbenchmarks give these items:
    first from the arriving line; requests that join its fill, and instruction,
    page-table and DMA reads, repeat the tag lookup and data read after the
    line installs.
+9. L1D read hits. The coherent L1D runs one operation at a time: reads,
+   store installs, grants and probes share one controller. In simulation a
+   read hit takes 11 cycles against 8 through the previous hierarchy, and the
+   L1D accepts a new read about every six cycles against about every two.
+   Workloads whose loads hit in the L1D or the L2 and that keep several loads
+   in flight wait on it. Reading the data array with the tags, returning hits
+   from that first stage, and keeping hits out of the controller that handles
+   misses and installs would cut the hit latency and let hits issue back to
+   back. The change touches the L1D's tag paths, among the tightest at the
+   target clock, so it follows the timing work.
 
 ## Core area
 
