@@ -274,7 +274,7 @@ count.
 | `reorder_buffer` | Occupancy and pointers, allocation into free entries, commit only of a done head, serializer control of traps, fences, CSR writes, and translation drains, and flush and reset. Assumes legal dispatch and completion traffic, including no CDB completion for an entry allocated the previous cycle or for a head the serializer holds. Depth 12 does not reach a full buffer with pointer wraparound |
 | `rob_alloc_lvt` | The packed allocation-payload memory equals separate per-field memories; unbounded |
 | `rob_bypass_control` | The head's completion bypass equals the OR of the per-lane bypasses, for arbitrary state and CDB inputs |
-| `rob_control_next` | Per-entry valid, done, exception, and replay next state equals the reference indexed writes, including reset, allocation coinciding with completion or commit, and stale tags |
+| `rob_control_next` | Per-entry valid, done, exception, and replay next state equals the reference indexed writes, including allocation coinciding with completion or commit, and stale tags |
 | `rob_retire_ready` | Per-entry retirement eligibility (completion, two-wide, misprediction) equals the selected-field expressions, and both head masks stay one-hot; unbounded, assuming an initial reset |
 | `rob_retire_stall` | Retirement strobes and every performance event equal a reference built from the serializer's full commit stall |
 | `rob_start_cofactor` | CSR and xRET start signals equal the reference equations, the head mask stays one-hot, and CSR and xRET entries never take the CDB bypass; unbounded. Assumes an initial reset |

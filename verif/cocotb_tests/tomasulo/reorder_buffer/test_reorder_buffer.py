@@ -261,6 +261,56 @@ async def test_basic_allocation(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_single_cycle_reset_during_traffic(dut: Any) -> None:
+    """One reset cycle clears every entry's status bits and leaves the ROB usable.
+
+    Reset lands with an allocation and a completion on the same edge. An
+    exception bit and a done bit set before reset must not reach new entries.
+    """
+    dut_if, _ = await setup_test(dut)
+    tags = [
+        await drive_single_alloc(
+            dut_if, make_simple_alloc_request(0x1000 + 4 * i, 5 + i)
+        )
+        for i in range(3)
+    ]
+    dut_if.drive_cdb_write(CDBWrite(tag=tags[1], value=1))
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.drive_cdb_write(CDBWrite(tag=tags[2], value=2, exception=True, exc_cause=2))
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+
+    dut_if.drive_alloc_request(make_simple_alloc_request(0x2000, 9))
+    dut_if.drive_cdb_write(CDBWrite(tag=tags[0], value=3))
+    dut_if.reset_n.value = 0
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.reset_n.value = 1
+    dut_if.clear_alloc_request()
+    dut_if.clear_cdb_write()
+
+    assert dut_if.empty and dut_if.count == 0
+    assert int(dut.rob_valid.value) == 0
+    assert int(dut.rob_done.value) == 0
+    assert int(dut.rob_exception.value) == 0
+    assert int(dut.rob_replay.value) == 0
+    assert not dut_if.commit_valid
+
+    tag = await drive_single_alloc(dut_if, make_simple_alloc_request(0x3000, 7))
+    assert tag == 0
+    assert not dut_if.head_done
+    dut_if.drive_cdb_write(CDBWrite(tag=tag, value=4))
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+    await ClockCycles(dut_if.clock, 3)
+    await FallingEdge(dut_if.clock)
+    assert dut_if.empty
+
+
+@cocotb.test()
 async def test_allocation_full(dut: Any) -> None:
     """Fill the buffer and check the full signal and alloc_ready."""
     cocotb.log.info("=== Test: Allocation Full ===")
