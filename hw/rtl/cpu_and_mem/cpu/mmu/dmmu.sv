@@ -558,35 +558,21 @@ module dmmu (
   assign s2_leaf_applies = s1_valid_q && !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical;
   assign s2_fault_next   = s2_leaf_applies && tlb_hit[0] ? s2_leaf_fault : s2_fault_without_leaf;
 
+  // S2 holds an operation for one cycle and its readers wait for s2_valid_q, so
+  // the payload loads every cycle and only the valid bit reads the bypass.
   always_ff @(posedge i_clk) begin
     s2_is_mmio_q <= iss_can_bypass ? last_is_mmio_q : s2_mmio_next;
-    if (!i_rst_n || i_flush_all) begin
-      s2_valid_q <= 1'b0;
-    end else if (s1_move) begin
-      s2_valid_q <= 1'b1;
-      s2_tag_q <= s1_q.tag;
-      s2_va_q <= s1_q.va;
-      s2_ppn_q <= resolve_ppn;
-      s2_pa_q <= resolve_pa;
-      s2_fault_q <= riscv_pkg::data_fault_kind_e'(s2_fault_next);
-      s2_needs_sq_q <= s1_q.needs_sq;
-      s2_is_sc_q <= s1_q.is_sc;
-      s2_store_data_q <= s1_q.store_data;
-      s2_amo_rs2_q <= s1_q.amo_rs2;
-    end else if (iss_can_bypass) begin
-      s2_valid_q <= 1'b1;
-      s2_tag_q <= iss_in.tag;
-      s2_va_q <= iss_in.va;
-      s2_ppn_q <= last_ppn_q;
-      s2_pa_q <= 1'b1;
-      s2_fault_q <= riscv_pkg::DFAULT_NONE;
-      s2_needs_sq_q <= iss_in.needs_sq;
-      s2_is_sc_q <= iss_in.is_sc;
-      s2_store_data_q <= iss_in.store_data;
-      s2_amo_rs2_q <= iss_in.amo_rs2;
-    end else begin
-      s2_valid_q <= 1'b0;
-    end
+    if (!i_rst_n || i_flush_all) s2_valid_q <= 1'b0;
+    else s2_valid_q <= s1_move || iss_can_bypass;
+    s2_tag_q <= s1_move ? s1_q.tag : iss_in.tag;
+    s2_va_q <= s1_move ? s1_q.va : iss_in.va;
+    s2_ppn_q <= s1_move ? resolve_ppn : last_ppn_q;
+    s2_pa_q <= !s1_move || resolve_pa;
+    s2_fault_q <= s1_move ? riscv_pkg::data_fault_kind_e'(s2_fault_next) : riscv_pkg::DFAULT_NONE;
+    s2_needs_sq_q <= s1_move ? s1_q.needs_sq : iss_in.needs_sq;
+    s2_is_sc_q <= s1_move ? s1_q.is_sc : iss_in.is_sc;
+    s2_store_data_q <= s1_move ? s1_q.store_data : iss_in.store_data;
+    s2_amo_rs2_q <= s1_move ? s1_q.amo_rs2 : iss_in.amo_rs2;
   end
 
 `ifndef SYNTHESIS
