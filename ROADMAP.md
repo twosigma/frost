@@ -411,8 +411,7 @@ and targeted microbenchmarks give these items:
    in flight wait on it. Reading the data array with the tags, returning hits
    from that first stage, and keeping hits out of the controller that handles
    misses and installs would cut the hit latency and let hits issue back to
-   back. The change touches the L1D's tag paths, among the tightest at the
-   target clock, so it follows the timing work.
+   back.
 
 ## Core area
 
