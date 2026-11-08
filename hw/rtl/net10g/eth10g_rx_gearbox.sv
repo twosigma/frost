@@ -29,6 +29,7 @@ module eth10g_rx_gearbox (
   logic [193:0] reservoir, next_reservoir;
   logic [7:0] count, next_count;
   assign o_block = reservoir[65:0];
+  // Loss of signal resets this gearbox but not every reader of its blocks.
   assign o_block_valid = !i_rst && count >= 8'd67;
 
   always_comb begin

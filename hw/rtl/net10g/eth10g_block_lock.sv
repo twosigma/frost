@@ -29,6 +29,7 @@ module eth10g_block_lock (
   logic [3:0] invalid;
   logic header_good;
   assign header_good = i_header[0] ^ i_header[1];
+  // The 10G block keeps its handshakes quiet in reset.
   // Combinational with the candidate, so the gearbox never tests stale
   // pipelined candidates after a slip.
   assign o_slip = !i_rst && i_signal_ok && i_block_valid && !header_good &&

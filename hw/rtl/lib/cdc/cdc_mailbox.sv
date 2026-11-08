@@ -47,6 +47,7 @@ module cdc_mailbox #(
       .o_sync (acknowledge_s)
   );
   assign o_src_idle  = request_q == acknowledge_s;
+  // The caller on each side need not take that side's reset.
   assign o_src_ready = !i_src_rst && o_src_idle;
   always_ff @(posedge i_src_clk) begin
     if (i_src_rst) request_q <= 1'b0;
@@ -56,6 +57,7 @@ module cdc_mailbox #(
     end
   end
   logic valid_q;
+  // As on the source side, the destination's caller need not take its reset.
   assign o_dst_valid = valid_q && !i_dst_rst;
   always_ff @(posedge i_dst_clk) begin
     if (i_dst_rst) begin

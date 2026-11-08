@@ -92,6 +92,7 @@ module async_fifo #(
   end
   logic [PtrBits-1:0] occupancy_w;
   assign occupancy_w = wptr_bin_q - rptr_bin_w;
+  // The writer need not take this reset.
   assign o_ready = !i_rst && (occupancy_w < PtrBits'(DEPTH - READY_MARGIN));
   logic push;
   assign push = i_valid && o_ready;

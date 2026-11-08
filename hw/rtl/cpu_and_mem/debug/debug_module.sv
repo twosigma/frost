@@ -188,6 +188,7 @@ module debug_module #(
 
   logic dmi_req_pending_q = RandomStart ? 'x : 1'b0;
   logic dmi_req_valid;
+  // The DTM is not reset by i_rst, so its request waits out the reset.
   assign dmi_req_valid = (i_dmi_req_valid || dmi_req_pending_q) && !i_rst && !i_power_on_rst;
   always_ff @(posedge i_clk) begin
     if (i_power_on_rst) dmi_req_pending_q <= 1'b0;

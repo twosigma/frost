@@ -172,6 +172,7 @@ module axi_mux #(
   assign aw_sel = aw_hold_q ? aw_sel_q : rr_pick(aw_cand, aw_rr_q);
   assign aw_any = aw_hold_q || (|aw_cand);
 
+  // The coherent bridge's proof environment takes requests as quiet in reset.
   assign o_dn_awvalid = !i_rst && aw_any && wq_room;
   assign o_dn_awid = {aw_sel, i_up_awid[aw_sel]};
   assign o_dn_awaddr = i_up_awaddr[aw_sel];
@@ -195,6 +196,7 @@ module axi_mux #(
   assign wq_any = wq_count_q != '0;
   assign w_port = wq_port_q[wq_head_q];
 
+  // The coherent bridge's proof environment takes requests as quiet in reset.
   assign o_dn_wvalid = !i_rst && wq_any && i_up_wvalid[w_port];
   assign o_dn_wdata = i_up_wdata[w_port];
   assign o_dn_wstrb = i_up_wstrb[w_port];
@@ -240,6 +242,7 @@ module axi_mux #(
   assign ar_sel = ar_hold_q ? ar_sel_q : rr_pick(i_up_arvalid, ar_rr_q);
   assign ar_any = ar_hold_q || (|i_up_arvalid);
 
+  // The coherent bridge's proof environment takes requests as quiet in reset.
   assign o_dn_arvalid = !i_rst && ar_any;
   assign o_dn_arid = {ar_sel, i_up_arid[ar_sel]};
   assign o_dn_araddr = i_up_araddr[ar_sel];

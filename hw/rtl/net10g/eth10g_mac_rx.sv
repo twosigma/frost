@@ -534,6 +534,7 @@ module eth10g_mac_rx #(
         .DATA_WIDTH(8)
     ) u_packet_memory (
         .i_write_clock(i_clk),
+        // The packet memory has no reset.
         .i_write_enable(!i_rst && memory_write_enable[lane]),
         .i_write_address(memory_write_address[lane]),
         .i_write_data(memory_write_data[lane]),

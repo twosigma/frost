@@ -120,6 +120,7 @@ module nic_mac_wrap #(
       .DEPTH(FIFO_DEPTH)
   ) u_tx_fifo (
       .i_clk  (i_clk),
+      // A soft reset of this domain clears the FIFO at run time.
       .i_rst  (i_rst || i_core_rst_dom[0]),
       .i_data ({i_tx_code, i_tx_data}),
       .i_valid(i_tx_valid),
@@ -153,6 +154,7 @@ module nic_mac_wrap #(
       .i_valid(m_valid),
       .o_ready(m_ready),
       .o_clk  (i_clk),
+      // A soft reset of this domain clears the FIFO at run time.
       .o_rst  (i_rst || i_core_rst_dom[1]),
       .o_data (r_word),
       .o_valid(o_rx_valid),
@@ -467,6 +469,8 @@ module nic_mac_wrap #(
   logic [5:0] ev_clk, ev_rst, ev_rebase;
   assign ev_pulse = {tx_bad_block, tx_drop, rx_bad_block, rx_bad_fcs, rx_bad_frame, rx_overflow};
   assign ev_clk = {i_tx_clk, i_tx_clk, i_rx_clk, i_rx_clk, i_rx_clk, i_rx_clk};
+  // Each counter takes its event's domain reset, and a soft reset rebases or
+  // clears the totals at run time.
   assign ev_rst = {tx_rst, tx_rst, rx_rst, rx_rst, rx_rst, rx_rst};
   assign ev_rebase = {
     i_core_rst_dom[0],
@@ -482,6 +486,7 @@ module nic_mac_wrap #(
         .i_src_rst   (ev_rst[e]),
         .i_src_event (ev_pulse[e]),
         .i_dst_clk   (i_clk),
+        // A soft reset clears the totals at run time.
         .i_dst_rst   (i_rst || i_soft_rst),
         .i_dst_rebase(ev_rebase[e]),
         .o_dst_total (o_totals[e])

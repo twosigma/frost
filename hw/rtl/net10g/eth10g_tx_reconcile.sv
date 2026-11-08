@@ -41,6 +41,7 @@ module eth10g_tx_reconcile (
   logic idle_boundary;
 
   assign idle_boundary = i_xgmii_ctrl == 8'hff && i_xgmii_data == IdleWord;
+  // The link status crosses to the NIC core, which i_rst does not cover.
   assign o_link_ready  = !i_rst && !i_local_fault && !i_remote_fault && !suppress_frame;
 
   always_ff @(posedge i_clk) begin
@@ -54,6 +55,7 @@ module eth10g_tx_reconcile (
   always_comb begin
     o_xgmii_data = IdleWord;
     o_xgmii_ctrl = 8'hff;
+    // Reset sends idle words, which the reconcile bench checks.
     if (!i_rst) begin
       if (i_local_fault) begin
         o_xgmii_data = RemoteFaultWord;

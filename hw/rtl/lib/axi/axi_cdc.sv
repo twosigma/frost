@@ -116,6 +116,8 @@ module axi_cdc #(
     input logic i_dst_rlast,
     input logic [USER_WIDTH-1:0] i_dst_ruser
 );
+  // The two sides' resets are not aligned, and either side's neighbors can be
+  // on another reset, so each side gates its own handshakes.
   logic aw_valid;
   assign o_dst_awvalid = aw_valid && !i_dst_rst;
   async_fifo #(
@@ -159,6 +161,7 @@ module axi_cdc #(
       .i_ready(i_dst_awready && !i_dst_rst)
   );
   logic w_valid;
+  // As for AW: this side gates its own handshakes with its own reset.
   assign o_dst_wvalid = w_valid && !i_dst_rst;
   async_fifo #(
       .DATA_WIDTH(DATA_WIDTH + DATA_WIDTH / 8 + 1 + USER_WIDTH),
@@ -177,6 +180,7 @@ module axi_cdc #(
       .i_ready(i_dst_wready && !i_dst_rst)
   );
   logic b_valid;
+  // As for AW: this side gates its own handshakes with its own reset.
   assign o_src_bvalid = b_valid && !i_src_rst;
   async_fifo #(
       .DATA_WIDTH(ID_WIDTH + 2 + USER_WIDTH),
@@ -195,6 +199,7 @@ module axi_cdc #(
       .i_ready(i_src_bready && !i_src_rst)
   );
   logic ar_valid;
+  // As for AW: this side gates its own handshakes with its own reset.
   assign o_dst_arvalid = ar_valid && !i_dst_rst;
   async_fifo #(
       .DATA_WIDTH(ID_WIDTH + ADDR_WIDTH + 8 + 3 + 2 + 1 + 4 + 3 + 4 + 4 + USER_WIDTH),
@@ -237,6 +242,7 @@ module axi_cdc #(
       .i_ready(i_dst_arready && !i_dst_rst)
   );
   logic r_valid;
+  // As for AW: this side gates its own handshakes with its own reset.
   assign o_src_rvalid = r_valid && !i_src_rst;
   async_fifo #(
       .DATA_WIDTH(ID_WIDTH + DATA_WIDTH + 2 + 1 + USER_WIDTH),

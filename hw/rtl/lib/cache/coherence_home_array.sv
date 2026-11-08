@@ -264,6 +264,7 @@ module coherence_home_array #(
       .o_read_data(plru_read)
   );
   for (genvar way = 0; way < WAYS; way++) begin : gen_tag_en
+    // The tag RAM has no reset.
     assign tag_we[way] = !i_rst && (phase_q == Init ||
         (update_fire && i_update_tag && i_update_way == WayBits'(way)));
   end

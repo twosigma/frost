@@ -282,6 +282,7 @@ module soc_top #(
   logic soc_axi_rst;
   logic debug_cpu_rst, debug_soc_rst;
   logic reset_request_soc;
+  // Each domain's reset is built here from the requests that cover it.
   wire  fabric_reset_request = (USE_BEHAVIORAL_DDR != 0) ? i_rst : i_ddr_axi_rst;
   if (ASYNC_CPU_CLOCK) begin : gen_clock_resets
     logic core_reset_cpu;
@@ -627,6 +628,7 @@ module soc_top #(
       local_addr[31:21] == ImsicWindowSel;
   assign aplic_msi_ready = !imsic_cpu_write &&
       (!ASYNC_CPU_CLOCK || (!local_imsic_pending && msi_ready));
+  // The CPU-clock FIFO takes soc_cpu_rst, which does not reset the writers here.
   assign imsic_write = (!ASYNC_CPU_CLOCK || !soc_cpu_rst) &&
       (imsic_cpu_write ||
        (aplic_msi_valid && aplic_msi_ready && (aplic_msi_addr[55:32] == '0)));
@@ -1071,6 +1073,7 @@ module soc_top #(
       .i_parked(dbg_parked),
       .i_cmd_err(dbg_cmd_err),
       .i_go_taken(dbg_go_taken),
+      // The debug module reports the core's reset as status.
       .i_core_in_reset(ASYNC_CPU_CLOCK ? o_cpu_rst : rst_core),
       .o_ndmreset(dbg_ndmreset),
       .o_slice_req_valid(dm_slice_req_valid),
@@ -1212,6 +1215,7 @@ module soc_top #(
   logic local_debug_q, local_mirror_aborted_q;
   wire store_debug_mode = ASYNC_CPU_CLOCK ?
       (use_incoming_payload ? local_req_user[0] : local_debug_q) : dbg_debug_mode;
+  // debug_soc_rst drops the mirror's slice writes, so a store stops waiting for them.
   wire debug_store_room = !ASYNC_CPU_CLOCK || !store_debug_mode || debug_soc_rst ||
       (slice_req_ready && !mirror_hold_valid_q);
   wire debug_store_done = !ASYNC_CPU_CLOCK || !local_debug_q || !local_write ||
@@ -1248,6 +1252,7 @@ module soc_top #(
                (fetch_fuzz_lfsr_q[12] ^ fetch_fuzz_lfsr_q[10])
       };
   end
+  // The local bus's memories and devices are not reset by soc_axi_rst.
   assign local_ready = local_state_q == 0 && !soc_axi_rst && debug_store_room;
   // MMIO captures the chosen request before decoding or executing it. Narrow
   // BRAM requests can access the synchronous RAM on acceptance; their response
@@ -1394,6 +1399,8 @@ module soc_top #(
   // ENABLE_1G_ETH != 0) is the 1G SGMII NIC. Only their windows enter state 5.
   // Request payloads and each channel VALID hold until the corresponding
   // handshake, and completion waits for B or R.
+  // The register slaves take rst_core and this state soc_axi_rst, so each side
+  // answers for the other's reset.
   assign local_axil = ENABLE_CACHED_TIER != 0 && !rst_core && local_ok &&
       local_device && !local_instruction &&
       ((local_addr[31:12] == NicBase[31:12]) ||
@@ -1407,6 +1414,7 @@ AxilPorts
   )'(2) : $clog2(
       AxilPorts
   )'(1);
+  // The register slaves are in reset with rst_core, so a reply is not waited for.
   assign reg_axil_bready = (local_state_q == 5 && local_write && !rst_core &&
       !soc_axi_rst) ? (AxilPorts'(1) << reg_axil_port_q) : '0;
   assign reg_axil_rready = (local_state_q == 5 && !local_write && !rst_core &&

@@ -131,6 +131,7 @@ module eth10g_mac_pcs #(
   );
   eth10g_rx_gearbox rx_gearbox (
       .i_clk(i_rx_clk),
+      // Loss of signal restarts block alignment at run time.
       .i_rst(i_rx_rst || !i_rx_signal_ok),
       .i_raw_data(i_rx_raw_data),
       .i_raw_valid(i_rx_raw_valid),
