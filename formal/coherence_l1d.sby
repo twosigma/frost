@@ -132,7 +132,7 @@ control: chformal -assert2assume c:p_prefetch_conflict_split
 streamscript: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 streamscript: chformal -assert2assume c:p_prefetch_conflict_split
 bulk: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
-bulk: select -assert-count 276 t:$check r:FLAVOR=assert %i
+bulk: select -assert-count 277 t:$check r:FLAVOR=assert %i
 outlier: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold %u %u %u %d
 outlier: select -assert-count 4 t:$check r:FLAVOR=assert %i
 # The unbounded stream proof leaves out the four outlier assertions, which the
@@ -142,7 +142,7 @@ outlier: select -assert-count 4 t:$check r:FLAVOR=assert %i
 # bound and a few others. The bounded ones carry the p_bounded_ label prefix.
 unbounded: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
 unbounded: chformal -assert -remove c:*p_bounded_* c:p_acquire_read_payload c:p_acquire_read_role c:p_atomic_no_load_endpoint c:p_atomic_single_owner c:p_atomic_store_exclusive c:p_block_zero_exact c:p_grant_live c:p_grant_prefetch_flag c:p_prefetch_hint_conflict c:p_prefetch_owner_conflict c:p_read_owned_exact c:p_request_payload c:p_store_acquire_once c:p_store_grant_head c:p_store_grant_head_exact c:p_store_head_address c:p_store_head_valid c:p_store_install_address c:p_store_read_service_bound c:p_store_yields_read
-unbounded: select -assert-count 169 t:$check r:FLAVOR=assert %i
+unbounded: select -assert-count 170 t:$check r:FLAVOR=assert %i
 conflict: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 conflict: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_conflict_split %d
 conflict: chformal -assume -remove

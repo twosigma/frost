@@ -357,14 +357,18 @@ module coherence_l1d #(
   logic done_q, done_ready, written_q;
   logic [1:0] done_status_q;
   logic pending_blocked;
+  // The selected read's kind, registered in Lookup, so the lookup's decisions
+  // in LookupWait start at a flop. A slot is not reallocated while it is
+  // looked up.
+  logic [1:0] selected_kind_q;
 
   assign read_failure = grant_ready && grant_read_failure;
   assign read_hit = active && ((phase_q == LookupWait && array_valid &&
-      operation_q == ReadOp && rd_kind_q[selected_read_q] != ReadAMO && array_hit) ||
+      operation_q == ReadOp && selected_kind_q != ReadAMO && array_hit) ||
       phase_q == LocalReadReady);
   assign read_miss = active && phase_q == LookupWait && array_valid &&
       operation_q == ReadOp &&
-      (rd_kind_q[selected_read_q] == ReadAMO || !array_hit);
+      (selected_kind_q == ReadAMO || !array_hit);
   // Endpoint 0's reads (LR, AMO, and loads with one endpoint) answer after
   // installation.
   assign grant_answer = active && phase_q == Lookup && operation_q == GrantOp &&
@@ -414,6 +418,7 @@ module coherence_l1d #(
     assign {rd_addr_q[slot], rd_kind_q[slot], rd_size_q[slot], rd_tag_q[slot]} =
         rd_payload_flat[slot*ReadPayloadWidth+:ReadPayloadWidth];
   end
+  always_ff @(posedge i_clk) if (phase_q == Lookup) selected_kind_q <= rd_kind_q[selected_read_q];
 
   // Reset clears the controller at its flops. A fatal stop reaches the
   // controller through this flop, so no selection or capture enable starts at
@@ -433,7 +438,7 @@ module coherence_l1d #(
   logic perf_lookup, perf_access, perf_hit, perf_sc, store_combined;
   logic [cache_perf_pkg::MissOutstandingBits-1:0] perf_outstanding;
   assign perf_lookup = (active && phase_q == LookupWait && array_valid &&
-      ((operation_q == ReadOp && rd_kind_q[selected_read_q] != ReadAMO &&
+      ((operation_q == ReadOp && selected_kind_q != ReadAMO &&
         !perf_read_seen_q[selected_read_q]) ||
        (operation_q == StoreOp && !pending_miss_q && !perf_store_seen_q[store_head_index]) ||
        (operation_q == LookaheadOp && !perf_store_seen_q[store_selected_q]))) ||
@@ -500,9 +505,9 @@ module coherence_l1d #(
           (operation_q == StoreOp || operation_q == ReadOp) && !array_hit &&
           (!Multi ? (request_live || !wb_free) : operation_q == StoreOp ?
            (request_live || !ep0_wb_ok || store_same_line_q) :
-           rd_kind_q[selected_read_q] == ReadLR ?
+           selected_kind_q == ReadLR ?
            (same_line || request_live || !ep0_wb_ok || load_block) :
-           rd_kind_q[selected_read_q] == ReadAMO ? (any_live || !wb_free) :
+           selected_kind_q == ReadAMO ? (any_live || !wb_free) :
            (same_line || !load_ep_free || load_block));
       o_perf_events.conflict_stall <= active && phase_q == Idle &&
           !probe_valid_q && !probe_priority && !grant_valid && !atomic_write_q &&
@@ -621,7 +626,7 @@ module coherence_l1d #(
       .i_rst,
       .i_cancel(prefetch_cancel),
       .i_demand_valid(active && phase_q == LookupWait && array_valid && operation_q == ReadOp &&
-          rd_kind_q[selected_read_q] == ReadLoad && !perf_read_seen_q[selected_read_q]),
+          selected_kind_q == ReadLoad && !perf_read_seen_q[selected_read_q]),
       .i_demand_miss(!array_hit),
       .i_demand_addr(lookup_addr_q),
       .i_consume(stream_consume),
@@ -1348,7 +1353,7 @@ module coherence_l1d #(
       .o_retry(retry_credit)
   );
   assign load_block = Multi && (atomic_q || drain_q);
-  assign wait_attach = Multi && read_miss && rd_kind_q[selected_read_q] != ReadAMO && same_line;
+  assign wait_attach = Multi && read_miss && selected_kind_q != ReadAMO && same_line;
   // A wait lasts while its endpoint is live, and until installation for a
   // read that attached before it. rd_wait_q holds that from the endpoint's
   // events. Read validity selects between the allocation and hold/update
@@ -1765,7 +1770,7 @@ module coherence_l1d #(
   assign look_retry = look_read_turn_q && rd_load_miss &&
       (!array_hit || array_state != coherence_pkg::Modified);
   assign read_yield_look = active && phase_q == LookupWait && array_valid &&
-      operation_q == ReadOp && rd_kind_q[selected_read_q] == ReadLoad &&
+      operation_q == ReadOp && selected_kind_q == ReadLoad &&
       !array_hit && !same_line && look_available && !look_read_turn_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -1862,7 +1867,7 @@ module coherence_l1d #(
         local_hit_q <= array_hit && array_state == coherence_pkg::Modified;
         local_conflict_q <= request_live || same_line || lookup_wb_conflict ||
             pending_q || store_push;
-        if (operation_q == ReadOp && rd_kind_q[selected_read_q] == ReadAMO)
+        if (operation_q == ReadOp && selected_kind_q == ReadAMO)
           rd_local_retry_q[selected_read_q] <= array_hit && array_state == coherence_pkg::Modified;
       end
       // A new read clears its slot's flag from the buffered write's mask, a
@@ -2334,7 +2339,7 @@ module coherence_l1d #(
               end
               SCOp: phase_q <= LocalCheck;
               default: begin
-                if (rd_kind_q[selected_read_q] == ReadAMO) begin
+                if (selected_kind_q == ReadAMO) begin
                   phase_q <= LocalCheck;
                 end else if (array_hit) begin
                   rd_data_q[selected_read_q] <= array_data[64*rd_addr_q[selected_read_q][4:3]+:64];
@@ -2344,7 +2349,7 @@ module coherence_l1d #(
                 end else if (same_line) begin
                   // Wait for the endpoint already acquiring this line.
                   phase_q <= Idle;
-                end else if (rd_kind_q[selected_read_q] == ReadLR) begin
+                end else if (selected_kind_q == ReadLR) begin
                   acq_ep_q <= '0;
                   phase_q <= !request_live && ep0_wb_ok && !load_block ? Acquire : Idle;
                 end else if (load_ep_free && !load_block && !load_acquire_block &&
@@ -2731,6 +2736,8 @@ module coherence_l1d #(
       if (active && phase_q == LookupWait && array_valid && operation_q == GrantOp &&
           !array_hit && array_state == coherence_pkg::Modified)
         p_grant_victim_data : assert (array_data_valid);
+      if (active && phase_q == LookupWait && operation_q == ReadOp)
+        p_selected_kind : assert (selected_kind_q == rd_kind_q[selected_read_q]);
       if (active && phase_q == LookupWait && array_valid && operation_q == ReadOp && array_hit)
         p_read_hit_data : assert (array_data_valid);
       if (active && phase_q == LookupWait && array_valid && !array_data_valid) begin
