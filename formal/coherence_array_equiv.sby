@@ -8,7 +8,7 @@ coh_array_equiv4_data17_bmc bmc bram four lane17
 coh_array_equiv4_bimodal_bmc bmc bram four bimodal
 coh_array_equiv_uram_bmc bmc uram
 coh_array_equiv_uram_data5_bmc bmc uram lane5
-coh_array_equiv4_uram_bmc bmc uram four
+coh_array_equiv4_uram_bmc bmc uram four foururam
 coh_array_equiv_cover cover bram four lane0
 
 [options]
@@ -16,8 +16,10 @@ bmc: mode bmc
 cover: mode cover
 ~uram: depth 30
 uram: depth 40
-# Four-way frames take about 1.4 times longer than the one before.
+# Four-way frames take about 1.4 times longer than the one before, and
+# four-way UltraRAM frames about 2.6 times.
 four: depth 24
+foururam: depth 20
 timeout 1800
 bmc: aigsmt boolector
 
