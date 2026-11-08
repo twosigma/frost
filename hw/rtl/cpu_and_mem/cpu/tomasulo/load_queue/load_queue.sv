@@ -242,6 +242,9 @@ module load_queue #(
     // =========================================================================
     input logic i_cache_invalidate_valid,
     input logic [riscv_pkg::XLEN-1:0] i_cache_invalidate_addr,
+    // With i_cache_invalidate_valid: a cached cbo.zero, which writes the whole
+    // 64-byte block at the address.
+    input logic i_cache_invalidate_block = 1'b0,
     input logic [63:0] i_cache_store_data = '0,
     input logic [7:0] i_cache_store_strb = '0,
     input logic i_l0_hit_allowed = 1'b0,
@@ -938,7 +941,9 @@ module load_queue #(
   always_comb begin
     for (int sl = 0; sl < int'(CachedSlots); sl++) begin
       cs_inval_now[sl] = cs_valid[sl] && i_cache_invalidate_valid &&
-          (i_cache_invalidate_addr[XLEN-1:3] == cs_addr[sl][XLEN-1:3]);
+          (i_cache_invalidate_addr[XLEN-1:6] == cs_addr[sl][XLEN-1:6]) &&
+          (i_cache_invalidate_block ||
+           i_cache_invalidate_addr[5:3] == cs_addr[sl][5:3]);
     end
   end
 
@@ -2692,6 +2697,7 @@ module load_queue #(
       // AMO serialization makes them exclusive; the cache does not require it.
       .i_invalidate_valid(i_cache_invalidate_valid),
       .i_invalidate_addr(i_cache_invalidate_addr),
+      .i_invalidate_block(i_cache_invalidate_block),
       .i_store_data(i_cache_store_data),
       .i_store_strb((CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
           i_cache_invalidate_addr
@@ -2703,6 +2709,7 @@ module load_queue #(
       // invalidation because head serialization blocks younger loads.
       .i_lookup_invalidate_valid(i_cache_invalidate_valid),
       .i_lookup_invalidate_addr (i_cache_invalidate_addr),
+      .i_lookup_invalidate_block(i_cache_invalidate_block),
 
       // L0 survives pipeline flushes. Stores and DMA invalidate stale lines,
       // and response filtering prevents stale fills.

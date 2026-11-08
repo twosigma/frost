@@ -101,7 +101,7 @@ module coherence_request_endpoint #(
   ) && request.addr[4:0] == 0;
   assign o_d_valid = send_d_phase;
   assign o_g_ready = wait_g_phase && grant_in.q == demand_q.q &&
-      grant_in.addr == demand_q.addr && grant_in.opcode <= coherence_pkg::GrantFail;
+      grant_in.addr == demand_q.addr && grant_in.opcode <= coherence_pkg::GrantMZero;
   assign o_grant_valid = grant_phase;
   assign o_done_ready = done_phase && i_done_status <= coherence_pkg::Error &&
       ((i_done_status != coherence_pkg::Error && !grant_q.error) || i_error_disposed) &&

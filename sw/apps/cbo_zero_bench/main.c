@@ -25,7 +25,9 @@
  *
  * Output lines: "FROST_CBO_BENCH <method> <size> <cold|warm> cycles=<n>".
  * The regions sit above the program image in DDR; set CBO_BENCH_BASE to
- * move them.
+ * move them. Each size runs the sd loop first; CBO_BENCH_CBO_FIRST runs
+ * cbo.zero first, so comparing both builds separates each method from the
+ * dirty lines that the method before it leaves in the caches.
  */
 
 #include <stdint.h>
@@ -137,13 +139,18 @@ int main(void)
     /* Each method and size gets its own never-touched region, so the cold
      * pass misses in the L1D and L2. The warm pass refills the region with
      * a pattern first, so both passes overwrite nonzero data. */
-    ok &= run("sd", clear_sd, base, CBO_BENCH_SMALL);
-    base += CBO_BENCH_SMALL;
-    ok &= run("cbo", clear_cbo, base, CBO_BENCH_SMALL);
-    base += CBO_BENCH_SMALL;
-    ok &= run("sd", clear_sd, base, CBO_BENCH_LARGE);
-    base += CBO_BENCH_LARGE;
-    ok &= run("cbo", clear_cbo, base, CBO_BENCH_LARGE);
+    static const unsigned long sizes[2] = {CBO_BENCH_SMALL, CBO_BENCH_LARGE};
+    for (int size = 0; size < 2; size++) {
+        for (int order = 0; order < 2; order++) {
+#ifdef CBO_BENCH_CBO_FIRST
+            int cbo = order == 0;
+#else
+            int cbo = order != 0;
+#endif
+            ok &= run(cbo ? "cbo" : "sd", cbo ? clear_cbo : clear_sd, base, sizes[size]);
+            base += sizes[size];
+        }
+    }
 
     uart_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
     for (;;) {

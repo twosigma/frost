@@ -49,10 +49,14 @@ module coherence_l1d #(
     input logic [63:0] i_write_data,
     input logic i_write_atomic,
     input logic i_write_sc,
+    // The hart-cache harness drives no cbo.zero writes.
+    input logic i_write_zero,
     input logic [TAG_BITS-1:0] i_write_tag,
     output logic o_write_done,
     output logic o_write_inflight,
     output logic o_store_ready,
+    output logic o_twin_push,
+    output logic [ADDR_WIDTH-1:0] o_twin_push_addr,
     output logic o_pending_store,
     output logic o_sc_write_pending,
     output logic o_atomic_live,
@@ -164,6 +168,8 @@ module coherence_l1d #(
     put.data = {4{value_q}};
   end
   assign o_store_ready = !i_rst && credit;
+  assign o_twin_push = 1'b0;
+  assign o_twin_push_addr = '0;
   assign pending_q = record_count != 0;
   assign tail_q = record_count > 1;
   assign store_q = record_data[head_index][63:0];

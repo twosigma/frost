@@ -673,6 +673,8 @@ module coherence_store_boundary_formal #(
   end
 
   logic sq_coherent_write_sc;
+  logic sq_coherent_write_zero;
+  logic sq_cache_invalidate_block;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_coherent_write_tag;
   logic sq_full;
   logic sq_full_for_2;
@@ -701,6 +703,7 @@ module coherence_store_boundary_formal #(
       .i_coherent_sc_pending(l1_sc_write_pending),
       .i_coherent_sc_tag(l1_sc_write_tag),
       .o_coherent_write_sc(sq_coherent_write_sc),
+      .o_coherent_write_zero(sq_coherent_write_zero),
       .o_coherent_write_tag(sq_coherent_write_tag),
       .i_clk(i_clk),
       .i_rst_n(!rst),
@@ -754,6 +757,7 @@ module coherence_store_boundary_formal #(
       .i_uncached_store_result_ready('0),
       .o_cache_invalidate_valid(sq_cache_invalidate_valid),
       .o_cache_invalidate_addr(sq_cache_invalidate_addr),
+      .o_cache_invalidate_block(sq_cache_invalidate_block),
       .i_rob_head_tag(head),
       .i_flush_en('0),
       .i_flush_tag('0),
@@ -922,6 +926,7 @@ module coherence_store_boundary_formal #(
       .i_early_recovery_flush('0),
       .i_cache_invalidate_valid(sq_cache_invalidate_valid),
       .i_cache_invalidate_addr(sq_cache_invalidate_addr),
+      .i_cache_invalidate_block(sq_cache_invalidate_block),
       .i_cache_store_data('0),
       .i_cache_store_strb('0),
       .i_l0_hit_allowed(!((sq_mem_write_en && !sq_mem_write_buffered) ||
@@ -960,6 +965,7 @@ module coherence_store_boundary_formal #(
   logic [2:0] rt_coherent_read_size;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] rt_coherent_read_tag;
   logic rt_coherent_write_sc;
+  logic rt_coherent_write_zero;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] rt_coherent_write_tag;
   logic rt_cached_read_ready;
   logic rt_uncached_read_enable;
@@ -993,6 +999,7 @@ module coherence_store_boundary_formal #(
       .i_coherent_read_kind(lq_coherent_read_kind),
       .i_coherent_read_tag(lq_coherent_read_tag),
       .i_coherent_sq_sc(sq_coherent_write_sc),
+      .i_coherent_sq_zero(sq_coherent_write_zero),
       .i_coherent_sq_tag(sq_coherent_write_tag),
       .i_coherent_amo_tag(lq_coherent_write_tag),
       .o_coherent_read_kind(rt_coherent_read_kind),
@@ -1000,6 +1007,7 @@ module coherence_store_boundary_formal #(
       .o_coherent_read_tag(rt_coherent_read_tag),
       .o_coherent_write_atomic(rt_coherent_write_atomic),
       .o_coherent_write_sc(rt_coherent_write_sc),
+      .o_coherent_write_zero(rt_coherent_write_zero),
       .o_coherent_write_tag(rt_coherent_write_tag),
       .i_clk(i_clk),
       .i_rst(rst),
@@ -1117,10 +1125,13 @@ module coherence_store_boundary_formal #(
       .i_write_data(rt_data_mem_cached_wr_data),
       .i_write_atomic(rt_coherent_write_atomic),
       .i_write_sc(rt_coherent_write_sc),
+      .i_write_zero(rt_coherent_write_zero),
       .i_write_tag(rt_coherent_write_tag),
       .o_write_done(l1_write_done),
       .o_write_inflight(l1_write_inflight),
       .o_store_ready(l1_store_ready),
+      .o_twin_push(),
+      .o_twin_push_addr(),
       .o_pending_store(l1_pending_store),
       .o_sc_write_pending(l1_sc_write_pending),
       .o_atomic_live(l1_atomic_live),

@@ -1292,12 +1292,18 @@ jobs:
           - shard: Coherence L1D data stores and ways
             pytest_filter: coh_l1d_store_ or coh_l1d_ways_data
             timeout_minutes: 270
+          # The three-endpoint L1D control BMC with cbo.zero writes has the same
+          # four-hour budget and a job of its own.
+          - shard: Coherence L1D zero multi-endpoint
+            pytest_filter: coh_l1d_zero_multi_bmc
+            timeout_minutes: 330
           # The remaining L1D covers, local and stream tasks, and AXI bridges.
           - shard: Coherence L1D and bridges
             pytest_filter: >-
               axi_coherent_bridge or
               (coherence_l1d and not (coh_l1d_stream_bmc or coh_l1d_stream_free or
-              coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_data or
+              coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_zero_multi_bmc or
+              coh_l1d_data or
               coh_l1d_multi_data or coh_l1d_store_ or coh_l1d_ways_data or
               (coh_l1d_local and prove)))
             timeout_minutes: 330

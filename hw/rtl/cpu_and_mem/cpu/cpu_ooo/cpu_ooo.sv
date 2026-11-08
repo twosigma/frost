@@ -55,6 +55,9 @@ module cpu_ooo #(
     // Coherent store ownership and selected atomic context.
     input logic i_coherent_store_pending = 1'b0,
     input logic i_coherent_store_ready = 1'b1,
+    // The L1D's cbo.zero twin record, which counts as a store push of its own.
+    input logic i_coherent_twin_push = 1'b0,
+    input logic [riscv_pkg::XLEN-1:0] i_coherent_twin_push_addr = '0,
     input logic i_coherent_sc_pending = 1'b0,
     input logic i_coherent_atomic_live = 1'b0,
     input logic [3:0] i_coherent_block_valid = '0,
@@ -79,6 +82,8 @@ module cpu_ooo #(
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_read_tag,
     output logic o_coherent_write_atomic,
     output logic o_coherent_write_sc,
+    // A cached cbo.zero write (see coherence_l1d).
+    output logic o_coherent_write_zero,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_write_tag,
     output logic o_coherent_atomic_protected,
     output logic o_coherent_sc_commit,
@@ -2130,6 +2135,7 @@ module cpu_ooo #(
   logic [1:0] coherent_lq_kind;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_lq_tag;
   logic coherent_sq_sc;
+  logic coherent_sq_zero;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_sq_tag, coherent_amo_tag;
   // An active, unretired context identifies the valid ROB head.
   assign coherent_head_protected = coherent_atomic_active && !coherent_atomic_retired;
@@ -2195,7 +2201,8 @@ module cpu_ooo #(
   // The coherent L1D pushes a store into its store buffer when the write
   // port carries a mask without an atomic write; the LQ matches the pushed
   // line against its entries for the next cycle's same-sector hold.
-  wire coherent_store_push = |o_data_mem_cached_byte_wr_en && !o_coherent_write_atomic;
+  wire coherent_store_push = (|o_data_mem_cached_byte_wr_en && !o_coherent_write_atomic) ||
+      i_coherent_twin_push;
   tomasulo_wrapper #(
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .MEM_RESPONSE_ERRORS(VARIABLE_UNCACHED),
@@ -2221,7 +2228,8 @@ module cpu_ooo #(
       .i_coherent_block_valid(i_coherent_block_valid),
       .i_coherent_block_addr(i_coherent_block_addr),
       .i_coherent_store_push(coherent_store_push),
-      .i_coherent_store_push_addr(o_data_mem_addr),
+      .i_coherent_store_push_addr(i_coherent_twin_push ? i_coherent_twin_push_addr :
+                                  o_data_mem_addr),
       .i_coherent_cut_hold(i_coherent_cut_hold),
       .o_coherent_sc_valid(o_coherent_sc_valid),
       .i_coherent_sc_ready(i_coherent_sc_ready),
@@ -2243,6 +2251,7 @@ module cpu_ooo #(
       .o_coherent_read_kind(coherent_lq_kind),
       .o_coherent_read_tag(coherent_lq_tag),
       .o_coherent_write_sc(coherent_sq_sc),
+      .o_coherent_write_zero(coherent_sq_zero),
       .o_coherent_sq_write_tag(coherent_sq_tag),
       .o_coherent_amo_write_tag(coherent_amo_tag),
       .i_clk,
@@ -3519,6 +3528,7 @@ module cpu_ooo #(
       .i_coherent_read_kind(coherent_lq_kind),
       .i_coherent_read_tag(coherent_lq_tag),
       .i_coherent_sq_sc(coherent_sq_sc),
+      .i_coherent_sq_zero(coherent_sq_zero),
       .i_coherent_sq_tag(coherent_sq_tag),
       .i_coherent_amo_tag(coherent_amo_tag),
       .o_coherent_read_kind(o_coherent_read_kind),
@@ -3526,6 +3536,7 @@ module cpu_ooo #(
       .o_coherent_read_tag(o_coherent_read_tag),
       .o_coherent_write_atomic(o_coherent_write_atomic),
       .o_coherent_write_sc(o_coherent_write_sc),
+      .o_coherent_write_zero(o_coherent_write_zero),
       .o_coherent_write_tag(o_coherent_write_tag),
       .i_clk,
       .i_rst,

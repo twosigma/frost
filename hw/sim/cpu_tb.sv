@@ -366,6 +366,8 @@ module cpu_tb
   cpu_ooo device_under_test (
       .i_coherent_store_pending(1'b0),
       .i_coherent_store_ready(1'b1),
+      .i_coherent_twin_push(1'b0),
+      .i_coherent_twin_push_addr('0),
       .i_coherent_sc_pending(1'b0),
       .i_coherent_atomic_live(1'b0),
       .i_coherent_block_valid('0),
@@ -390,6 +392,7 @@ module cpu_tb
       .o_coherent_read_tag(),
       .o_coherent_write_atomic(),
       .o_coherent_write_sc(),
+      .o_coherent_write_zero(),
       .o_coherent_write_tag(),
       .o_coherent_atomic_protected(),
       .o_coherent_sc_commit(),

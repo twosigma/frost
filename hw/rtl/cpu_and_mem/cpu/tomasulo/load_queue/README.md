@@ -407,6 +407,7 @@ replace newer L0 store data. Each invalidation source has its own port:
 | Source | Granule | When |
 |--------|---------|------|
 | SQ store write | Dword | At launch, suppress same-cycle hits; update selected bytes for eligible Normal memory, otherwise invalidate |
+| SQ cached cbo.zero | 64-byte block (eight entries, tag-blind) | At launch, suppress same-cycle hits in the block and invalidate it; an in-flight load of the block fills no L0 entry |
 | AMO write | Dword | When the write completes |
 | DMA write | 32-byte line (four entries, tag-blind) | On the coherence port's invalidation edge; a same-cycle hit is suppressed |
 

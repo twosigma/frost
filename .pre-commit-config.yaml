@@ -136,6 +136,7 @@ repos:
             tests/test_pa_bridge_mutation\.py|
             tests/test_slang_frontend\.py|
             verif/cocotb_tests/mmu/test_ptw_walk_cache\.py|
+            verif/cocotb_tests/cache/test_coherence_cbo_zero\.py|
             fpga/flash/(make_flash_image|program_flash)\.py
           )$
         args:

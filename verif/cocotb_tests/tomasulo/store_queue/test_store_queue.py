@@ -2648,7 +2648,7 @@ async def test_mixed_tier_stores_do_not_overlap_in_flight(dut: Any) -> None:
 
 
 # ============================================================================
-# cbo.zero: eight zero beats per entry
+# cbo.zero: one write per cached entry, eight zero beats per uncached entry
 # ============================================================================
 CBO_BLOCK = 64
 
@@ -2735,11 +2735,71 @@ async def test_cbo_zero_drains_eight_zero_beats(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_cbo_zero_slow_done_and_following_store(dut: Any) -> None:
-    """With slow completions the beats stay ordered and a younger SD follows."""
+async def test_cbo_zero_cached_block_is_one_write(dut: Any) -> None:
+    """A cached zero entry leaves as one marked write; a younger SD follows.
+
+    The write sits at the block base with zero data and every strobe, carries
+    the coherent zero mark and the block-wide L0 invalidation, and its done
+    frees the entry.
+    """
     dut_if, model = await setup(dut)
 
     rs1 = 0x8000_0040 + 0x13
+    block = rs1 & ~(CBO_BLOCK - 1)
+    await alloc_zero_block(dut_if, rob_tag=1, address=rs1)
+    await alloc_addr_data(
+        dut_if,
+        model,
+        rob_tag=2,
+        address=block + 0x18,
+        data=0x1122_3344_5566_7788,
+        size=MEM_SIZE_DOUBLE,
+    )
+    dut_if.drive_commit(1)
+    await dut_if.step()
+    dut_if.drive_commit(2)
+    await dut_if.step()
+    dut_if.clear_commit()
+
+    marks: list[tuple[int, int]] = []
+    writes: list[MemWriteReq] = []
+    pending: list[int] = []
+    for cycle in range(200):
+        await Timer(1, unit="ns")
+        if pending and pending[0] <= cycle:
+            pending.pop(0)
+            dut_if.drive_mem_write_done()
+        else:
+            dut_if.clear_mem_write_done()
+        write_req = dut_if.read_mem_write()
+        if write_req.en:
+            writes.append(write_req)
+            marks.append(
+                (
+                    int(dut.o_coherent_write_zero.value),
+                    int(dut.o_cache_invalidate_block.value),
+                )
+            )
+            pending.append(cycle + 3)
+        await dut_if.step()
+        if len(writes) == 2 and not pending:
+            break
+    dut_if.clear_mem_write_done()
+    await dut_if.step()
+    assert len(writes) == 2, f"Expected two writes, got {len(writes)}"
+    assert writes[0].addr == block and writes[0].data == 0 and writes[0].byte_en == 0xFF
+    assert marks[0] == (1, 1), f"The block write carries both marks: {marks[0]}"
+    assert writes[1].addr == block + 0x18 and writes[1].data == 0x1122_3344_5566_7788
+    assert marks[1] == (0, 0), f"The SD carries neither mark: {marks[1]}"
+    assert dut_if.empty
+
+
+@cocotb.test()
+async def test_cbo_zero_uncached_slow_done_and_following_store(dut: Any) -> None:
+    """With slow completions an uncached block's beats stay ordered; an SD follows."""
+    dut_if, model = await setup(dut)
+
+    rs1 = 0x0000_1040 + 0x13
     block = rs1 & ~(CBO_BLOCK - 1)
     await alloc_zero_block(dut_if, rob_tag=1, address=rs1)
     await alloc_addr_data(

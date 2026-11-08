@@ -85,6 +85,7 @@ module tomasulo_wrapper #(
     output logic [1:0] o_coherent_read_kind,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_read_tag,
     output logic o_coherent_write_sc,
+    output logic o_coherent_write_zero,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_sq_write_tag,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_amo_write_tag,
     input logic i_clk,
@@ -1600,6 +1601,7 @@ module tomasulo_wrapper #(
 
   logic sq_cache_invalidate_valid;
   logic [riscv_pkg::XLEN-1:0] sq_cache_invalidate_addr;
+  logic sq_cache_invalidate_block;
 
   // ===========================================================================
   // Atomics Wiring (LR/SC/AMO support)
@@ -1624,12 +1626,16 @@ module tomasulo_wrapper #(
       (i_coherent_sc_write_done);
 
   // Reservation snoop invalidation: SQ write to the reservation address. The
-  // reservation covers a 32-byte sector in cached memory.
+  // reservation covers a 32-byte sector in cached memory; a cached cbo.zero
+  // writes both sectors of its 64-byte block.
   logic reservation_snoop_invalidate;
   assign reservation_snoop_invalidate = sq_cache_invalidate_valid &&
       lq_reservation_valid &&
       !(o_coherent_write_sc && o_sq_mem_write_is_cached) &&
-      ((sq_cache_invalidate_addr[riscv_pkg::XLEN-1:5] == lq_reservation_addr[riscv_pkg::XLEN-1:5]));
+      ((sq_cache_invalidate_addr[riscv_pkg::XLEN-1:6] ==
+        lq_reservation_addr[riscv_pkg::XLEN-1:6]) &&
+       (sq_cache_invalidate_block ||
+        sq_cache_invalidate_addr[5] == lq_reservation_addr[5]));
   assign o_coherent_reservation_valid = lq_reservation_valid;
   assign o_coherent_reservation_addr = lq_reservation_addr;
 
@@ -3985,6 +3991,7 @@ module tomasulo_wrapper #(
       // L0 cache invalidation (from SQ)
       .i_cache_invalidate_valid(sq_cache_invalidate_valid),
       .i_cache_invalidate_addr(sq_cache_invalidate_addr),
+      .i_cache_invalidate_block(sq_cache_invalidate_block),
       .i_cache_store_data(o_sq_mem_write_data),
       .i_cache_store_strb(o_sq_mem_write_byte_en),
 
@@ -4442,6 +4449,7 @@ module tomasulo_wrapper #(
       .i_coherent_sc_pending(i_coherent_sc_pending),
       .i_coherent_sc_tag(o_coherent_sc_tag),
       .o_coherent_write_sc(o_coherent_write_sc),
+      .o_coherent_write_zero(o_coherent_write_zero),
       .o_coherent_write_tag(o_coherent_sq_write_tag),
       .i_clk(i_clk),
       .i_rst_n(i_rst_n),
@@ -4525,6 +4533,7 @@ module tomasulo_wrapper #(
       // L0 cache invalidation (to LQ)
       .o_cache_invalidate_valid(sq_cache_invalidate_valid),
       .o_cache_invalidate_addr (sq_cache_invalidate_addr),
+      .o_cache_invalidate_block(sq_cache_invalidate_block),
 
       // SC discard (pipelined: uses commit_bus_q)
       .i_sc_discard        (sc_discard),

@@ -14,7 +14,7 @@
  *    limitations under the License.
  */
 
-// Fill and store choices include word and line invalidations.
+// Fill and store choices include word, line and block invalidations.
 module coherent_l0_flags #(
     parameter int unsigned DEPTH = 256,
     parameter int unsigned TAG_WIDTH = 22,
@@ -36,6 +36,9 @@ module coherent_l0_flags #(
     input logic i_inv2_tag_match,
     input logic i_line,
     input logic [IndexWidth-3:0] i_line_index,
+    // Clear the eight dword entries of a 64-byte block, tag-blind.
+    input logic i_block = 1'b0,
+    input logic [IndexWidth-1:0] i_block_index = '0,
     output logic [DEPTH-1:0] o_next
 );
   logic [DEPTH-1:0] choices[4];
@@ -44,6 +47,7 @@ module coherent_l0_flags #(
       localparam bit Store = stored != 0;
       localparam bit Fill = filled != 0;
       (* keep = "true" *) logic [DEPTH-1:0] choice;
+      logic [IndexWidth-1:0] block_probe;
       wire write_valid = Store || Fill;
       wire [IndexWidth-1:0] write_index = Store ? i_inv_index : i_fill_index;
       wire [TAG_WIDTH-1:0] write_tag = Store ? i_inv_tag : i_fill_tag;
@@ -56,12 +60,18 @@ module coherent_l0_flags #(
       wire inv2_old = i_inv2 && i_valid[i_inv2_index] && i_inv2_tag_match &&
           !(write_valid && write_index == i_inv2_index && write_tag != i_inv2_tag);
       always_comb begin
+        block_probe = '0;
         choice = i_valid;
         if (write_valid) choice[write_index] = 1'b1;
         if (inv_fill || inv_old) choice[i_inv_index] = 1'b0;
         if (inv2_fill || inv2_old) choice[i_inv2_index] = 1'b0;
         if (i_line)
           for (int k = 0; k < 4; k++) choice[{i_line_index, 2'(k)}] = 1'b0;
+        if (i_block)
+          for (int entry = 0; entry < DEPTH; entry++) begin
+            block_probe = IndexWidth'(entry);
+            if (block_probe[IndexWidth-1:3] == i_block_index[IndexWidth-1:3]) choice[entry] = 1'b0;
+          end
       end
       assign choices[2*stored+filled] = choice;
     end
@@ -69,6 +79,7 @@ module coherent_l0_flags #(
   assign o_next = choices[{i_store_update, i_fill}];
 `ifndef SYNTHESIS
   logic [DEPTH-1:0] reference;
+  logic [IndexWidth-1:0] reference_probe;
   wire write_valid = i_store_update || i_fill;
   wire [IndexWidth-1:0] write_index = i_store_update ? i_inv_index : i_fill_index;
   wire [TAG_WIDTH-1:0] write_tag = i_store_update ? i_inv_tag : i_fill_tag;
@@ -81,12 +92,19 @@ module coherent_l0_flags #(
   wire inv2_old = i_inv2 && i_valid[i_inv2_index] && i_inv2_tag_match &&
       !(write_valid && write_index == i_inv2_index && write_tag != i_inv2_tag);
   always_comb begin
+    reference_probe = '0;
     reference = i_valid;
     if (write_valid) reference[write_index] = 1'b1;
     if (inv_fill || inv_old) reference[i_inv_index] = 1'b0;
     if (inv2_fill || inv2_old) reference[i_inv2_index] = 1'b0;
     if (i_line)
       for (int k = 0; k < 4; k++) reference[{i_line_index, 2'(k)}] = 1'b0;
+    if (i_block)
+      for (int entry = 0; entry < DEPTH; entry++) begin
+        reference_probe = IndexWidth'(entry);
+        if (reference_probe[IndexWidth-1:3] == i_block_index[IndexWidth-1:3])
+          reference[entry] = 1'b0;
+      end
   end
 `ifdef FORMAL
   always_comb

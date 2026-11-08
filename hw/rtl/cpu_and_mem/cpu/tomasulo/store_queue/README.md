@@ -44,8 +44,8 @@ Two ordering rules decide which stores count:
 MMIO stores and store-conditionals never forward. An SC can fail and write
 nothing, so a load behind it waits for the SC to drain and then reads memory.
 A cbo.zero entry conflicts with every load in its 64-byte block, whatever
-the load's bytes, and never forwards: the load waits until the block's last
-beat frees the entry, then reads the zeros from memory. A younger store
+the load's bytes, and never forwards: the load waits until the block's write
+frees the entry, then reads the zeros from memory. A younger store
 covering the load still forwards over the older block.
 
 On a full-flush cycle the scan can treat a squashed store's commit as visible.
@@ -86,9 +86,15 @@ Cached and buffered Normal entries require commit; precise uncached entries requ
 permission and the shield.
 Every store is a single 64-bit beat: sub-dword data is replicated across the
 beat and the byte strobe selects the lanes. A `cbo.zero` entry keeps `rs1`
-as its address and drains as eight zero beats with every strobe set, at the
-naturally aligned block base plus 8, 16, ... 56. Its entry stays the drain
-cursor through all eight launches; each beat takes a completion-FIFO slot and
+as its address. A cached block drains as one write at the naturally aligned
+block base, with zero data, every strobe set and `o_coherent_write_zero`, which
+the L1D takes as the whole block (see the
+[cache library](../../../../lib/cache/README.md#line-scope-cbozero)); its
+launch invalidates the block's eight L0 dwords (`o_cache_invalidate_block`)
+and clears an LR reservation on either sector, and its completion frees the
+entry. An uncached (BRAM) block drains as eight zero beats with every strobe
+set, at the block base plus 0, 8, ... 56. Its entry stays the drain cursor
+through all eight launches; each beat takes a completion-FIFO slot and
 invalidates its L0 dword, and only the eighth beat's completion frees the
 entry. A precise uncached block reports its completion, and any beat's error,
 with the eighth response. The write outputs are registered,

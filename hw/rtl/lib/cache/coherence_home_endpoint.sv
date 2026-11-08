@@ -109,7 +109,7 @@ module coherence_home_endpoint #(
   ) && demand_in.addr[4:0] == 0 && (CLASS == 0 || (CLASS == 2) == (demand_in.q.src == 2'd3));
   assign result_matches = result_in.q == demand_q.q &&
       result_in.tid == 6'(TID) && result_in.addr == demand_q.addr &&
-      result_in.opcode <= coherence_pkg::GrantFail;
+      result_in.opcode <= coherence_pkg::GrantMZero;
   assign o_g_valid = phase_q == Work && i_result_valid && result_matches;
   // G readiness is the last term of result acceptance.
   (* keep = "true" *) logic result_take;

@@ -34,7 +34,8 @@
  * flushes.
  *
  * Invalidation has two per-address ports, one for SQ store-write launch and
- * one for AMO completion, plus a tag-blind line port for DMA writes. A store
+ * one for AMO completion, plus a tag-blind line port for DMA writes. A cached
+ * cbo.zero's launch widens the SQ port to its 64-byte block, tag-blind. A store
  * invalidates its dword unless i_store_strb supplies committed data. Then a
  * matching cached word updates exactly those bytes; a full dword may allocate.
  * A store update owns the RAM write port over a coincident read fill. AMO and
@@ -69,6 +70,9 @@ module lq_l0_cache #(
     input logic [XLEN-1:0] i_invalidate_addr,
     input logic [    63:0] i_store_data = '0,
     input logic [     7:0] i_store_strb = '0,
+    // With i_invalidate_valid: clear the eight dword entries of the 64-byte
+    // block at i_invalidate_addr, tag-blind, instead of its dword.
+    input logic            i_invalidate_block = 1'b0,
 
     // AMO write completion uses a separate port for timing. LQ serialization
     // makes the two invalidate sources exclusive, but this cache does not
@@ -80,6 +84,8 @@ module lq_l0_cache #(
     // use only the sequential invalidation above.
     input logic            i_lookup_invalidate_valid,
     input logic [XLEN-1:0] i_lookup_invalidate_addr,
+    // Suppress a same-cycle hit anywhere in that address's 64-byte block.
+    input logic            i_lookup_invalidate_block = 1'b0,
     // Line invalidate (DMA coherence): clear the four dword entries of a
     // 32-byte line, tag-blind, and suppress a same-cycle hit on any of them.
     input logic            i_invalidate_line_valid,
@@ -173,7 +179,7 @@ module lq_l0_cache #(
 
   // Known committed stores update matching L0 bytes; full
   // dwords may allocate. A coincident response fill can be dropped safely.
-  wire store_update = i_invalidate_valid && (|i_store_strb) &&
+  wire store_update = i_invalidate_valid && !i_invalidate_block && (|i_store_strb) &&
       ((&i_store_strb) || (valid[inv_index] && inv_tag_match));
   wire ram_write = store_update || i_fill_valid;
   // The data and tag RAMs take the write through i_fill_write and the kill,
@@ -378,8 +384,10 @@ module lq_l0_cache #(
       (lookup_inv_index == lookup_index) &&
       (lookup_inv_tag == lookup_tag);
   logic lookup_line_invalidated;
-  assign lookup_line_invalidated = i_invalidate_line_valid &&
-      (i_invalidate_line_addr[5+:(IndexWidth-2)] == lookup_index[IndexWidth-1:2]);
+  assign lookup_line_invalidated = (i_invalidate_line_valid &&
+      (i_invalidate_line_addr[5+:(IndexWidth-2)] == lookup_index[IndexWidth-1:2])) ||
+      (i_lookup_invalidate_valid && i_lookup_invalidate_block &&
+       (lookup_inv_index >> 3) == (lookup_index >> 3));
   if (1'b1) begin : gen_coherent_lookup_permission
     wire permitted;
     lq_l0_lookup_permission #(
@@ -430,6 +438,8 @@ module lq_l0_cache #(
         .i_inv2_tag_match(inv2_tag_match),
         .i_line(i_invalidate_line_valid),
         .i_line_index(i_invalidate_line_addr[5+:(IndexWidth-2)]),
+        .i_block(i_invalidate_valid && i_invalidate_block),
+        .i_block_index(inv_index),
         .o_next(next_valid)
     );
     always_ff @(posedge i_clk) begin
@@ -519,7 +529,9 @@ module lq_l0_cache #(
                         !invalidate2_fill_entry &
                         !(i_invalidate_line_valid &&
                           (i_invalidate_line_addr[5+:(IndexWidth-2)] ==
-                           i_fill_addr[5+:(IndexWidth-2)]));
+                           i_fill_addr[5+:(IndexWidth-2)])) &&
+                        !(i_invalidate_valid && i_invalidate_block &&
+                          (inv_index >> 3) == (fill_index >> 3));
       f_fill_addr_q <= i_fill_addr;
       f_fill_data_q <= i_fill_data;
     end
@@ -536,6 +548,8 @@ module lq_l0_cache #(
         && !(i_invalidate_line_valid
              && i_invalidate_line_addr[5+:(IndexWidth-2)]
                 == f_fill_addr_q[5+:(IndexWidth-2)])
+        && !(i_lookup_invalidate_valid && i_lookup_invalidate_block
+             && (lookup_inv_index >> 3) == (lookup_index >> 3))
         && !(i_fill_valid
              && i_fill_addr[3+:IndexWidth]
                 == f_fill_addr_q[3+:IndexWidth]

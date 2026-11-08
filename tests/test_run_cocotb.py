@@ -772,6 +772,26 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
     ),
+    "cbo_zero_test_assert": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_test",
+        nic_mac_clocks=False,
+        description=(
+            "cbo.zero with the cache, load-queue and store-queue assertions enabled"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+        verilator_extra_args=("--assert",),
+    ),
+    "cbo_zero_test_equal_lines": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_test",
+        nic_mac_clocks=False,
+        description="cbo.zero with 32-byte L2 lines and assertions enabled",
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+        verilator_extra_args=("--assert", "-GL2_LINE_BYTES=32"),
+    ),
     "cbo_zero_bench": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -2511,6 +2531,26 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="coherence_cluster_test_harness",
         description="The cluster with three L1D request endpoints: loads in flight beside "
         "stores, probes and DMA",
+    ),
+    "coherence_cbo_zero": CocotbRunConfig(
+        verilator_extra_args=("--assert",),
+        python_test_module="cocotb_tests.cache.test_coherence_cbo_zero",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Line-scope cbo.zero: zero fills without memory reads, a DMA write "
+        "between the zero fill and the L1D's install, a stale copy upgraded to Modified zeros, dirty blocks",
+    ),
+    "coherence_cbo_zero_misses": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GL1D_MISSES=3"),
+        python_test_module="cocotb_tests.cache.test_coherence_cbo_zero",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Line-scope cbo.zero with three L1D request endpoints and look-ahead",
+    ),
+    "coherence_cbo_zero_equal_lines": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GL1D_MISSES=3", "-GLINE_BYTES=32"),
+        python_test_module="cocotb_tests.cache.test_coherence_cbo_zero",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Line-scope cbo.zero with 32-byte home lines: two zero-filled lines "
+        "per block",
     ),
     "coherence_store_pressure": CocotbRunConfig(
         verilator_extra_args=(

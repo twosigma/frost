@@ -183,7 +183,9 @@ module coherence_home_engine #(
   assign reply_fire = i_r_valid && o_r_ready;
   assign reply_fatal = reply_fire && reply.error &&
       (reply.data_valid || reply.absorbed || reply.state == coherence_pkg::Modified ||
-       state_q == coherence_pkg::Modified || request_q.opcode == coherence_pkg::GetM);
+       state_q == coherence_pkg::Modified || coherence_pkg::is_getm(
+      request_q.opcode
+  ));
   assign data_complete = read_done_q || i_data_valid;
   assign probe_complete = probe_phase_q == ProbeDone ||
       (probe_phase_q == ProbeAck && i_wa_ready) ||
@@ -212,6 +214,11 @@ module coherence_home_engine #(
     case (request_q.opcode)
       coherence_pkg::GetS, coherence_pkg::LoadReserved: result.opcode = coherence_pkg::GrantS;
       coherence_pkg::GetM, coherence_pkg::Atomic: result.opcode = coherence_pkg::GrantM;
+      // A GetMZero that reaches an engine found its line resident. With
+      // 64-byte lines it holds both sectors, so its grant gives the requester
+      // the upper sector as well.
+      coherence_pkg::GetMZero:
+      result.opcode = LINE_BYTES == 64 ? coherence_pkg::GrantMZero : coherence_pkg::GrantM;
       coherence_pkg::StoreConditional:
       result.opcode = failed_q ? coherence_pkg::GrantFail : coherence_pkg::GrantM;
       coherence_pkg::DMAWrite, coherence_pkg::Prefetch: begin
@@ -300,7 +307,9 @@ module coherence_home_engine #(
         end
         if (reply.error) begin
           if (reply.data_valid || reply.absorbed || reply.state == coherence_pkg::Modified ||
-              state_q == coherence_pkg::Modified || request_q.opcode == coherence_pkg::GetM)
+              state_q == coherence_pkg::Modified || coherence_pkg::is_getm(
+                  request_q.opcode
+              ))
             phase_q <= Fatal;
           else begin
             error_q <= 1'b1;

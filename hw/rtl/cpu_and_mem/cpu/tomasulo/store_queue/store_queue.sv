@@ -51,6 +51,8 @@ module store_queue #(
     input logic i_coherent_sc_pending = 1'b0,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_coherent_sc_tag = '0,
     output logic o_coherent_write_sc,
+    // The cached write is a cbo.zero of the 64-byte block at its address.
+    output logic o_coherent_write_zero,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_write_tag,
     input logic i_clk,
     input logic i_rst_n,
@@ -173,6 +175,9 @@ module store_queue #(
     // =========================================================================
     output logic                       o_cache_invalidate_valid,
     output logic [riscv_pkg::XLEN-1:0] o_cache_invalidate_addr,
+    // With o_cache_invalidate_valid: invalidate the 64-byte block at the
+    // address, a cached cbo.zero, instead of its dword.
+    output logic                       o_cache_invalidate_block,
 
     // =========================================================================
     // ROB Head Tag (for age comparisons)
@@ -951,24 +956,30 @@ module store_queue #(
   logic                                              mem_write_launch_pipelined_next;
   logic                 [                       2:0] write_fifo_occupancy_after_current_bus;
 
-  // Zero-block drain. zero_beat_q counts the launched beats of the cursor's
-  // cbo.zero entry; each beat writes eight zero bytes at the block base plus
-  // beat * 8, with every strobe set. The entry stays the cursor until its
-  // eighth beat launches, and only that beat's done frees it. Each beat takes
-  // a completion-FIFO slot, so done pulses stay in launch order.
+  // Zero-block drain. A cached cbo.zero entry is one write at its block base,
+  // which the L1D turns into the block's two sector records (see the cache
+  // README, Line-scope cbo.zero); its done frees the entry. An uncached entry
+  // writes eight zero beats: zero_beat_q counts its launched beats, each
+  // writes eight zero bytes at the block base plus beat * 8, the entry stays
+  // the cursor until its eighth beat launches, and only that beat's done
+  // frees it. Each write takes a completion-FIFO slot, so done pulses stay in
+  // launch order. Every zero write sets every strobe of its dword.
   localparam int unsigned ZeroBeatBits = $clog2(riscv_pkg::CboZeroBlockBytes / 8);
   localparam int unsigned ZeroBlockLsb = $clog2(riscv_pkg::CboZeroBlockBytes);
   logic [ZeroBeatBits-1:0] zero_beat_q;
   logic drain_is_zero;
+  logic drain_zero_cached;
   logic zero_beat_last;
-  assign drain_is_zero  = sq_is_zero[drain_idx_q];
+  assign drain_is_zero = sq_is_zero[drain_idx_q];
+  assign drain_zero_cached = drain_is_zero && mem_write_addr_cached_for_plain_next;
   assign zero_beat_last = &zero_beat_q;
 
   always_comb begin
     // Single-beat drains at every size (hw/rtl/README.md, "Data-tier bus contract"): doubles
     // are one 64-bit write. A zero entry's beat is a full double at its block offset.
     mem_write_addr_next = drain_is_zero ?
-        {sq_address[drain_idx_q][XLEN-1:ZeroBlockLsb], zero_beat_q, 3'b000} :
+        {sq_address[drain_idx_q][XLEN-1:ZeroBlockLsb],
+         drain_zero_cached ? ZeroBeatBits'(0) : zero_beat_q, 3'b000} :
         sq_address[drain_idx_q];
     mem_write_size_next = drain_is_zero ? riscv_pkg::MEM_SIZE_DOUBLE :
         riscv_pkg::mem_size_e'(sq_size[drain_idx_q]);
@@ -989,8 +1000,9 @@ module store_queue #(
       (sq_address[drain_idx_q] >= XLEN'(CACHED_BASE)) &&
       (sq_address[drain_idx_q] <  (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
   // Every store is one beat and completes its entry, including DOUBLE. A
-  // zero entry completes on its eighth beat.
-  assign mem_write_completes_next = !drain_is_zero || zero_beat_last;
+  // cached zero entry is one write; an uncached one completes on its eighth
+  // beat.
+  assign mem_write_completes_next = !drain_is_zero || drain_zero_cached || zero_beat_last;
   assign mem_write_plain_fast_next = (!PRECISE_UNCACHED ||
       ((CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
       sq_address[drain_idx_q]
@@ -1037,6 +1049,7 @@ module store_queue #(
         mem_write_addr_next
     );
     o_mem_write_is_cached <= mem_write_is_cached_next;
+    o_cache_invalidate_block <= drain_zero_cached;
 
     if (mem_write_fire_next) begin
       mem_write_entry_idx_stg <= drain_idx_q;
@@ -1058,8 +1071,9 @@ module store_queue #(
 
   if (1'b1) begin : gen_coherent_write_metadata
     always_ff @(posedge i_clk) begin
-      o_coherent_write_sc  <= sq_is_sc[drain_idx_q];
-      o_coherent_write_tag <= sq_rob_tag[drain_idx_q];
+      o_coherent_write_sc   <= sq_is_sc[drain_idx_q];
+      o_coherent_write_zero <= drain_zero_cached;
+      o_coherent_write_tag  <= sq_rob_tag[drain_idx_q];
     end
   end
 
@@ -1070,6 +1084,7 @@ module store_queue #(
   // is pending. The router orders reads behind it, including cached writes.
   // At worst, early invalidation costs a refill miss. One pulse covers every
   // size because stores do not cross dwords; MMIO invalidation is harmless.
+  // A cached zero write's pulse covers its whole block (o_cache_invalidate_block).
   assign o_cache_invalidate_valid = o_mem_write_en;
   assign o_cache_invalidate_addr = o_mem_write_addr;
 
@@ -1835,20 +1850,34 @@ module store_queue #(
   end
 
   // Zero-block drain: a nonzero beat count belongs to the cursor's unsent
-  // zero entry, and each zero beat on the bus writes eight zero bytes with
-  // every strobe inside that entry's block. Only the eighth beat completes.
-  logic f_mem_write_zero_stg;
+  // uncached zero entry, and each zero write on the bus writes eight zero
+  // bytes with every strobe inside that entry's block. A cached zero entry
+  // is one write at its block base, marked for the L1D and for a block-wide
+  // L0 invalidation, which completes it; an uncached one completes on its
+  // eighth beat. No other write carries either mark.
+  logic f_mem_write_zero_stg, f_mem_write_zero_cached_stg;
   logic [ZeroBeatBits-1:0] f_mem_write_beat_stg;
   always_ff @(posedge i_clk) begin
     if (mem_write_fire_next) begin
       f_mem_write_zero_stg <= drain_is_zero;
+      f_mem_write_zero_cached_stg <= drain_zero_cached;
       f_mem_write_beat_stg <= zero_beat_q;
     end
   end
   always_comb begin
     if (i_rst_n && (zero_beat_q != '0)) begin
       p_zero_beat_owns_cursor :
-      assert (sq_valid[drain_idx_q] && sq_is_zero[drain_idx_q] && !sq_sent[drain_idx_q]);
+      assert (sq_valid[drain_idx_q] && sq_is_zero[drain_idx_q] && !sq_sent[drain_idx_q] &&
+              !drain_zero_cached);
+    end
+    if (i_rst_n && o_mem_write_en) begin
+      p_zero_write_marks :
+      assert (o_coherent_write_zero == f_mem_write_zero_cached_stg &&
+              o_cache_invalidate_block == f_mem_write_zero_cached_stg);
+      if (f_mem_write_zero_cached_stg) begin
+        p_zero_write_cached : assert (o_mem_write_is_cached && f_mem_write_zero_stg);
+        p_zero_write_once : assert (f_mem_write_beat_stg == '0 && mem_write_completes_stg);
+      end
     end
     if (i_rst_n && o_mem_write_en && f_mem_write_zero_stg) begin
       p_zero_beat_full_strobe : assert (o_mem_write_byte_en == '1);
@@ -1858,7 +1887,8 @@ module store_queue #(
       assert (o_mem_write_addr ==
               {sq_address[mem_write_entry_idx_stg][XLEN-1:ZeroBlockLsb],
                f_mem_write_beat_stg, 3'b000});
-      p_zero_beat_completes_last : assert (mem_write_completes_stg == (&f_mem_write_beat_stg));
+      if (!f_mem_write_zero_cached_stg)
+        p_zero_beat_completes_last : assert (mem_write_completes_stg == (&f_mem_write_beat_stg));
     end
     if (i_rst_n && o_mem_write_en && !f_mem_write_zero_stg) begin
       p_scalar_write_completes : assert (mem_write_completes_stg);
@@ -1996,6 +2026,8 @@ module store_queue #(
 
       // A zero block frees its entry on the eighth beat's done.
       cover_zero_block_completes : cover (drain_remove_valid && sq_is_zero[write_entry_idx]);
+      // A cached zero block leaves as one write.
+      cover_zero_block_cached : cover (o_mem_write_en && o_coherent_write_zero);
     end
   end
 

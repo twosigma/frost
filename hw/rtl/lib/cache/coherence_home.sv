@@ -310,6 +310,10 @@ module coherence_home #(
   logic [8:0] fill_primary_ident_q[FILLS];
   logic [5:0] fill_primary_tid_q[FILLS];
   logic [FILLS-1:0] fill_primary_getm_q;
+  // A zero fill serves a GetMZero miss: its image starts as zeros with its
+  // memory read done, so it reads no memory, and it installs Modified, since
+  // only the L2 holds the zeros of the sector its primary does not own.
+  logic [FILLS-1:0] fill_zero_q, fill_zero_alloc;
   // The forward on offer: a fill that may forward, its primary's slot, its
   // way and the sector. forward_data_q holds the accepted forward's sector
   // until the forward buffer's G.
@@ -429,7 +433,7 @@ module coherence_home #(
   // The fatal stop input stays set until reset and takes effect on the cycle
   // after it rises.
   always_comb begin
-    fatal_event = work_valid && work_error && work.opcode == coherence_pkg::GetM;
+    fatal_event = work_valid && work_error && coherence_pkg::is_getm(work.opcode);
     if (i_mem_resp_valid && i_mem_resp_id[4] && i_mem_resp_error) fatal_event = 1'b1;
     for (int engine = 0; engine < RESULTS; engine++) if (engine_fatal[engine]) fatal_event = 1'b1;
     for (int put = 0; put < Puts; put++) if (put_phase_q[put] == PutFatal) fatal_event = 1'b1;
@@ -1257,7 +1261,12 @@ module coherence_home #(
     // The primary may take a forward: a GetS, LoadReserved or GetM, and not
     // a prefetch, whose decision allocates the fill.
     wire forwardable = !lookup_prefetch_q && (decision_opcode == coherence_pkg::GetS ||
-        decision_opcode == coherence_pkg::LoadReserved || decision_opcode == coherence_pkg::GetM);
+        decision_opcode == coherence_pkg::LoadReserved || coherence_pkg::is_getm(
+        decision_opcode
+    ));
+    // Every fill that a GetMZero's decision allocates is a zero fill.
+    wire zero_fill = !lookup_prefetch_q && decision_opcode == coherence_pkg::GetMZero;
+    assign fill_zero_alloc[fill] = allocate && zero_fill;
     // The fill enters FillInstall on this edge.
     wire install_entry = fill_phase_q[fill] == FillMemory && (fill_done_q[fill] ?
         !fill_error_q[fill] : i_mem_resp_valid && i_mem_resp_id == 5'(fill) && !i_mem_resp_error);
@@ -1326,7 +1335,8 @@ module coherence_home #(
       fill_way_q[fill],
       fill_phase_q[fill] == FillInvalidate ? fill_old_addr_q[fill] : fill_addr_q[fill],
       1'b1,
-      fill_phase_q[fill] == FillInvalidate ? 2'(coherence_pkg::Invalid) : 2'(coherence_pkg::Shared),
+      fill_phase_q[fill] == FillInvalidate ? 2'(coherence_pkg::Invalid) :
+          fill_zero_q[fill] ? 2'(coherence_pkg::Modified) : 2'(coherence_pkg::Shared),
       fill_phase_q[fill] == FillInstall,
       {LINE_BYTES{fill_phase_q[fill] == FillInstall}},
       fill_phase_q[fill] == FillInstall ? fill_image_q[fill] : {(8 * LINE_BYTES) {1'b0}}
@@ -1381,6 +1391,7 @@ module coherence_home #(
         fill_primary_ident_q[fill] <= '0;
         fill_primary_tid_q[fill] <= '0;
         fill_primary_getm_q[fill] <= 1'b0;
+        fill_zero_q[fill] <= 1'b0;
         fill_forward_q[fill] <= 1'b0;
         fill_write_q[fill] <= 1'b0;
         fill_prefetch_q[fill] <= 1'b0;
@@ -1393,6 +1404,9 @@ module coherence_home #(
           fill_done_q[fill]  <= 1'b1;
           fill_error_q[fill] <= i_mem_resp_error;
         end
+        // A zero fill's image is zero from allocation; it sends no read, so no
+        // response for its identity arrives.
+        if (run && fill_zero_alloc[fill]) fill_image_q[fill] <= '0;
         if (run) begin
           // A forward takes the primary's seat away on the edge it is
           // accepted, beside any seats added or released then.
@@ -1409,9 +1423,10 @@ module coherence_home #(
             fill_way_q[fill] <= array_way;
             fill_wb_q[fill] <= wb_free_index;
             fill_victim_q[fill] <= array_state != coherence_pkg::Invalid;
-            fill_sent_q[fill] <= 1'b0;
-            fill_done_q[fill] <= 1'b0;
+            fill_sent_q[fill] <= zero_fill;
+            fill_done_q[fill] <= zero_fill;
             fill_error_q[fill] <= 1'b0;
+            fill_zero_q[fill] <= zero_fill;
             fill_woken_q[fill] <= 1'b0;
             fill_read_sent_q[fill] <= array_state == coherence_pkg::Invalid;
             fill_read_done_q[fill] <= array_state == coherence_pkg::Invalid;
@@ -1424,7 +1439,7 @@ module coherence_home #(
             fill_primary_upper_q[fill] <= LINE_BYTES == 64 && decision_addr[5];
             fill_primary_ident_q[fill] <= decision_q;
             fill_primary_tid_q[fill] <= decision_tid;
-            fill_primary_getm_q[fill] <= decision_opcode == coherence_pkg::GetM;
+            fill_primary_getm_q[fill] <= coherence_pkg::is_getm(decision_opcode);
             fill_forward_q[fill] <= 1'b0;
             fill_prefetch_q[fill] <= lookup_prefetch_q;
             fill_write_q[fill] <= decision_opcode == coherence_pkg::DMAWrite;
@@ -1550,8 +1565,11 @@ module coherence_home #(
         forward_result.tid |= fill_primary_tid_q[fill];
         forward_result.addr |= fill_addr_q[fill] |
             ADDR_WIDTH'(LINE_BYTES == 64 && fill_primary_upper_q[fill] ? 32 : 0);
-        forward_result.opcode |= fill_primary_getm_q[fill] ? coherence_pkg::GrantM :
-            coherence_pkg::GrantS;
+        // With 64-byte lines a zero fill's grant tells its requester that the
+        // upper sector's zeros are performed here.
+        forward_result.opcode |= fill_zero_q[fill] ?
+            (LINE_BYTES == 64 ? coherence_pkg::GrantMZero : coherence_pkg::GrantM) :
+            fill_primary_getm_q[fill] ? coherence_pkg::GrantM : coherence_pkg::GrantS;
       end
     end
   end
@@ -1692,7 +1710,7 @@ module coherence_home #(
         o_fatal <= 1'b1;
         o_fatal_addr <= fill_old_addr_q[fill];
       end
-      if (work_valid && work_error && work.opcode == coherence_pkg::GetM) begin
+      if (work_valid && work_error && coherence_pkg::is_getm(work.opcode)) begin
         o_fatal <= 1'b1;
         o_fatal_addr <= work.addr;
       end
@@ -2071,16 +2089,31 @@ module coherence_home #(
           if (fill_primary_q[fill][slot]) begin
             assert (waiting_opcode[slot] == coherence_pkg::GetS ||
                 waiting_opcode[slot] == coherence_pkg::LoadReserved ||
-                waiting_opcode[slot] == coherence_pkg::GetM);
+                coherence_pkg::is_getm(
+                waiting_opcode[slot]
+            ));
+            // A zero fill's primary is the GetMZero that allocated it.
+            assert (fill_zero_q[fill] == (waiting_opcode[slot] == coherence_pkg::GetMZero));
             assert (same_block(waiting_addr[slot], fill_addr_q[fill]));
             if (LINE_BYTES == 64) assert (waiting_addr[slot][5] == fill_primary_upper_q[fill]);
             assert (fill_primary_ident_q[fill] == request_q(
                 waiting_request[slot]
             ) && fill_primary_tid_q[fill] == 6'(slot) &&
-                fill_primary_getm_q[fill] == (waiting_opcode[slot] == coherence_pkg::GetM));
+                fill_primary_getm_q[fill] == coherence_pkg::is_getm(
+                waiting_opcode[slot]
+            ));
           end
         end
         if (fill_wake[fill] && !fill_error_q[fill]) assert ((wake & fill_primary_q[fill]) == 0);
+        // A zero fill reads no memory: its read is done from allocation, with
+        // a zero image, and it is a demand GetMZero's fill.
+        if (fill_phase_q[fill] != FillFree && fill_zero_q[fill]) begin
+          assert (fill_sent_q[fill] && fill_done_q[fill] && !fill_error_q[fill]);
+          assert (!fill_prefetch_q[fill] && !fill_write_q[fill] && fill_primary_getm_q[fill]);
+          if (fill_phase_q[fill] != FillReady && fill_phase_q[fill] != FillInstallWait)
+            assert (fill_image_q[fill] == '0);
+        end
+        if (memory_valid[fill]) assert (!fill_zero_q[fill]);
         if (fill_phase_q[fill] != FillFree) assert (int'(fill_way_q[fill]) < WAYS);
         // A seated request's decision takes its completion pin only from a
         // ready fill, which releases the seat on the same edge; a forward
@@ -2129,6 +2162,7 @@ module coherence_home #(
     for (int fill = 0; fill < FILLS; fill++) begin
       if (i_mem_resp_valid && i_mem_resp_id == 5'(fill))
         f_fill_byte_q[fill] <= i_mem_resp_data[8*f_byte+:8];
+      if (run && fill_zero_alloc[fill]) f_fill_byte_q[fill] <= '0;
       if (!i_rst && fill_done_q[fill]) begin
         assert (fill_image_q[fill][8*f_byte+:8] == f_fill_byte_q[fill]);
         if (forward_pick[fill] &&

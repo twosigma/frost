@@ -30,10 +30,19 @@
  * The handler returns through an mscratch continuation (vm_test shape).
  * Translated cases run in M with MPRV and MPP=S, so the gate (current
  * privilege) passes and translation uses S permissions.
+ *
+ * Line-scope cases (H) use blocks of cached DDR that nothing has touched, so
+ * the home installs each as zeros without a memory read. DMA writes and
+ * reads of a block race its cbo.zero at several delays: each sector ends
+ * either all written or all zero, never mixed, and a read sees each sector
+ * whole. A block held by the L1I refetches its zeros after FENCE.I. Blocks
+ * zeroed back to back, with stores and loads beside them, end in program
+ * order.
  */
 
 #include <stdint.h>
 
+#include "dma_engine.h"
 #include "trap.h"
 #include "uart.h"
 
@@ -253,6 +262,216 @@ static void build_tables(void)
     l0[3] = PTE_PPN(FRAME(3)) | PTE_V | PTE_R | PTE_W | PTE_A; /* D clear (Svade) */
 }
 
+/* ---- Line-scope cases: fresh cached-DDR blocks, clear of the tables. ---- */
+#define H_BASE 0x81400000ul
+#define H_BLOCK(n) (H_BASE + (unsigned long) (n) * 0x1000ul)
+#define H_SCRATCH 0x81600000ul
+#define H_DELAYS 8
+
+static void cbo_zero_at(unsigned long addr)
+{
+    __asm__ volatile("mv t0, %0\n" CBO_ZERO_ASM("t0") : : "r"(addr) : "t0", "memory");
+}
+
+static void spin(unsigned long n)
+{
+    for (volatile unsigned long i = 0; i < n; i++) {
+    }
+}
+
+/* One 32-byte sector: every word equal to its DMA fill value, or zero. */
+static int sector_whole(volatile uint32_t *s, uint32_t pattern, int *filled)
+{
+    int all_fill = 1, all_zero = 1;
+    for (int i = 0; i < 8; i++) {
+        all_fill &= s[i] == pattern + (uint32_t) i;
+        all_zero &= s[i] == 0;
+    }
+    *filled = all_fill;
+    return all_fill || all_zero;
+}
+
+static int block_zero(volatile uint64_t *b, int from, int to)
+{
+    int ok = 1;
+    for (int i = from; i < to; i++)
+        ok &= b[i] == 0;
+    return ok;
+}
+
+static void report(int ok, const char *name)
+{
+    uart_puts(ok ? "[PASS] " : "[FAIL] ");
+    uart_puts(name);
+    uart_puts("\r\n");
+}
+
+/* Call code at addr in M; a fault returns to the continuation. Returns a0, or
+ * ~0 with g_cause set when the code traps. */
+static unsigned long call_code(unsigned long addr)
+{
+    unsigned long result;
+    g_cause = ~0ul;
+    g_tval = ~0ul;
+    __asm__ volatile("la   t0, 1f\n"
+                     "csrw mscratch, t0\n"
+                     "li   a0, -1\n"
+                     "jalr ra, 0(%1)\n"
+                     "1:\n"
+                     "mv   %0, a0\n"
+                     : "=r"(result)
+                     : "r"(addr)
+                     : "t0", "a0", "ra", "memory");
+    return result;
+}
+
+#define INSN_LI_A0(v) ((uint32_t) (((v) << 20) | (10u << 7) | 0x13u))
+#define INSN_RET 0x00008067u
+
+static int line_scope_cases(void)
+{
+    int ok = 1;
+
+    /* H1: a DMA write fills the upper sector while cbo.zero zeroes the
+     * block, at several delays. The upper sector ends whole, the lower one
+     * zero, and the neighbouring blocks untouched. */
+    {
+        int h_ok = 1, kept = 0;
+        for (int d = 0; d < H_DELAYS; d++) {
+            unsigned long blk = H_BLOCK(d) + BLOCK;
+            volatile uint64_t *b = (volatile uint64_t *) blk;
+            uint32_t pattern = 0x5A000000u + (uint32_t) (d << 8);
+            dma_engine_setup(0, (uint32_t) (blk + 32), 32, DMA_ENGINE_MODE_FILL, pattern, 0, 0);
+            dma_engine_start();
+            spin((unsigned long) d * 3);
+            cbo_zero_at(blk + 5);
+            dma_engine_wait();
+            __asm__ volatile("fence rw, rw" ::: "memory");
+            int filled;
+            h_ok &= sector_whole((volatile uint32_t *) (blk + 32), pattern, &filled);
+            h_ok &= block_zero(b, 0, 4);
+            kept += filled;
+        }
+        report(h_ok, "H1 dma-write-races-zero");
+        uart_printf("  H1 sectors keeping the DMA write: %d of %d\r\n", kept, H_DELAYS);
+        ok &= h_ok;
+    }
+
+    /* H2: a DMA copy of the block runs beside its cbo.zero: the copy sees
+     * each sector whole, old or zero, and the block then reads as zeros. */
+    {
+        int h_ok = 1;
+        for (int d = 0; d < H_DELAYS; d++) {
+            unsigned long blk = H_BLOCK(16 + d) + BLOCK;
+            volatile uint32_t *w = (volatile uint32_t *) blk;
+            uint32_t pattern = 0x3C000000u + (uint32_t) (d << 8);
+            for (int i = 0; i < 16; i++)
+                w[i] = pattern + (uint32_t) (i & 7);
+            __asm__ volatile("fence rw, rw" ::: "memory");
+            unsigned long dst = H_SCRATCH + (unsigned long) d * BLOCK;
+            dma_engine_setup((uint32_t) blk, (uint32_t) dst, 64, DMA_ENGINE_MODE_COPY, 0, 0, 0);
+            dma_engine_start();
+            spin((unsigned long) d * 3);
+            cbo_zero_at(blk);
+            dma_engine_wait();
+            __asm__ volatile("fence rw, rw" ::: "memory");
+            int filled;
+            h_ok &= sector_whole((volatile uint32_t *) dst, pattern, &filled);
+            h_ok &= sector_whole((volatile uint32_t *) (dst + 32), pattern, &filled);
+            h_ok &= block_zero((volatile uint64_t *) blk, 0, 8);
+        }
+        report(h_ok, "H2 dma-read-during-zero");
+        ok &= h_ok;
+    }
+
+    /* H3: a block held by the L1I. Code in its upper sector runs; cbo.zero
+     * then new code in its lower sector and FENCE.I: the new code runs, and
+     * the zeroed upper sector traps as an illegal instruction. */
+    {
+        unsigned long blk = H_BLOCK(32);
+        volatile uint32_t *code = (volatile uint32_t *) blk;
+        code[8] = INSN_LI_A0(42u);
+        code[9] = INSN_RET;
+        __asm__ volatile("fence rw, rw\n fence.i" ::: "memory");
+        unsigned long first = call_code(blk + 32);
+        cbo_zero_at(blk);
+        code[0] = INSN_LI_A0(7u);
+        code[1] = INSN_RET;
+        __asm__ volatile("fence rw, rw\n fence.i" ::: "memory");
+        unsigned long second = call_code(blk);
+        unsigned long zeroed = call_code(blk + 32);
+        int h_ok = first == 42 && second == 7 && zeroed == ~0ul && g_cause == CAUSE_ILLEGAL;
+        report(h_ok, "H3 l1i-held-block");
+        ok &= h_ok;
+    }
+
+    /* H4: eight blocks zeroed back to back with no fence: a store before,
+     * a store between and loads right behind them land in program order. */
+    {
+        unsigned long base = H_BLOCK(40);
+        volatile uint64_t *b = (volatile uint64_t *) base;
+        unsigned long l3, l5, l6;
+        b[3 * 8 + 2] = PATTERN; /* before its cbo.zero */
+        __asm__ volatile("mv   t0, %[base]\n" CBO_ZERO_ASM("t0") "addi t0, t0, 64\n" CBO_ZERO_ASM("t0") "addi t0, t0, 64\n" CBO_ZERO_ASM(
+                             "t0") "addi t0, t0, 64\n" CBO_ZERO_ASM("t0") "sd   %[pat], "
+                                                                          "0xF8(%[base])\n" /* block
+                                                                                               3,
+                                                                                               after
+                                                                                               its
+                                                                                               cbo.zero
+                                                                                             */
+                                                                          "addi t0, t0, "
+                                                                          "64\n" CBO_ZERO_ASM("t0") "addi t0, t0, 64\n" CBO_ZERO_ASM(
+                                                                              "t0") "ld   %[l5], "
+                                                                                    "0x168(%[base])"
+                                                                                    "\n"
+                                                                                    "addi t0, t0, "
+                                                                                    "64"
+                                                                                    "\n" CBO_ZERO_ASM(
+                                                                                        "t0") "ld  "
+                                                                                              " %["
+                                                                                              "l6],"
+                                                                                              " 0x1"
+                                                                                              "80(%"
+                                                                                              "[bas"
+                                                                                              "e])"
+                                                                                              "\n"
+                                                                                              "addi"
+                                                                                              " t0,"
+                                                                                              " t0,"
+                                                                                              " 64"
+                                                                                              "\n" CBO_ZERO_ASM(
+                                                                                                  "t0") "ld   %[l3], 0xF8(%[base])\n"
+                         : [l3] "=&r"(l3), [l5] "=&r"(l5), [l6] "=&r"(l6)
+                         : [base] "r"(base), [pat] "r"(PATTERN)
+                         : "t0", "memory");
+        int h_ok = l3 == PATTERN && l5 == 0 && l6 == 0;
+        for (int i = 0; i < 64; i++)
+            h_ok &= b[i] == (i == 3 * 8 + 7 ? PATTERN : 0);
+        report(h_ok, "H4 back-to-back");
+        ok &= h_ok;
+    }
+
+    /* H5: store, cbo.zero, load on a fresh block, and cbo.zero then load. */
+    {
+        volatile uint64_t *b = (volatile uint64_t *) H_BLOCK(48);
+        volatile uint64_t *c = (volatile uint64_t *) H_BLOCK(49);
+        unsigned long after_store, after_zero;
+        __asm__ volatile("sd   %[pat], 40(%[b])\n"
+                         "mv   t0, %[b]\n" CBO_ZERO_ASM("t0") "ld   %[s], 40(%[b])\n"
+                                                              "mv   t0, %[c]\n" CBO_ZERO_ASM(
+                                                                  "t0") "ld   %[z], 16(%[c])\n"
+                         : [s] "=&r"(after_store), [z] "=&r"(after_zero)
+                         : [b] "r"(b), [c] "r"(c), [pat] "r"(PATTERN)
+                         : "t0", "memory");
+        int h_ok =
+            after_store == 0 && after_zero == 0 && block_zero(b, 0, 8) && block_zero(c, 0, 8);
+        report(h_ok, "H5 store-zero-load");
+        ok &= h_ok;
+    }
+    return ok;
+}
+
 int main(void)
 {
     int ok = 1;
@@ -389,6 +608,8 @@ int main(void)
 
         __asm__ volatile("csrw satp, zero\n sfence.vma");
     }
+
+    ok &= line_scope_cases();
 
     uart_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
     for (;;) {
