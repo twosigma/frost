@@ -123,6 +123,7 @@ module lq_l0_cache #(
   logic [DEPTH-1:0] valid;
   logic [TagWidth-1:0] tag_lookup_rd;
   logic [TagWidth-1:0] tag_inv_rd;
+  logic [TagWidth-1:0] tag_inv2_rd;
   logic [riscv_pkg::MemDataBits-1:0] data_lookup_rd;
 
   // ===========================================================================
@@ -173,56 +174,142 @@ module lq_l0_cache #(
   wire [7:0] ram_strobe = store_update ? i_store_strb : {8{i_fill_write}};
 
   // Duplicate the tag LUTRAM for independent lookup and invalidate reads.
-  sdp_dist_ram #(
-      .ADDR_WIDTH(IndexWidth),
-      .DATA_WIDTH(TagWidth)
-  ) u_tag_lookup_ram (
-      .i_clk,
-      .i_write_enable (ram_write_en),
-      .i_write_address(ram_index),
-      .i_read_address (lookup_index),
-      .i_write_data   (ram_tag),
-      .o_read_data    (tag_lookup_rd)
-  );
-
-  sdp_dist_ram #(
-      .ADDR_WIDTH(IndexWidth),
-      .DATA_WIDTH(TagWidth)
-  ) u_tag_inv_ram (
-      .i_clk,
-      .i_write_enable (ram_write_en),
-      .i_write_address(ram_index),
-      .i_read_address (inv_index),
-      .i_write_data   (ram_tag),
-      .o_read_data    (tag_inv_rd)
-  );
-
-  logic [TagWidth-1:0] tag_inv2_rd;
-  sdp_dist_ram #(
-      .ADDR_WIDTH(IndexWidth),
-      .DATA_WIDTH(TagWidth)
-  ) u_tag_inv2_ram (
-      .i_clk,
-      .i_write_enable (ram_write_en),
-      .i_write_address(ram_index),
-      .i_read_address (inv2_index),
-      .i_write_data   (ram_tag),
-      .o_read_data    (tag_inv2_rd)
-  );
-
-  // Independent byte enables avoid a read/modify/write mux on the store path.
-  for (genvar byte_idx = 0; byte_idx < 8; byte_idx++) begin : gen_data_bytes
+  // Byte enables of their own avoid a read/modify/write mux on the store
+  // path. Deeper than one LUTRAM, each RAM is split into banks of 64 entries,
+  // so a bank's write enable is one gate: the store hit and the fill write
+  // select last, between bank selects decoded from the early indices. A read
+  // selects its bank's output by the index's high bits, as an inferred
+  // deeper RAM does.
+  localparam int unsigned BankBits = IndexWidth > 6 ? 6 : IndexWidth;
+  localparam int unsigned Banks = 2 ** (IndexWidth - BankBits);
+  (* keep = "true" *) logic [Banks-1:0] fill_bank_sel, store_bank_sel;
+  (* keep = "true" *) logic [Banks-1:0][7:0] store_bank_strb;
+  logic [Banks-1:0] bank_tag_write;
+  logic [Banks-1:0][7:0] bank_data_write;
+  logic [Banks-1:0][TagWidth-1:0] bank_tag_lookup_rd, bank_tag_inv_rd, bank_tag_inv2_rd;
+  logic [Banks-1:0][riscv_pkg::MemDataBits-1:0] bank_data_rd;
+  if (Banks > 1) begin : gen_banked
+    localparam int unsigned SelBits = IndexWidth - BankBits;
+    wire [ SelBits-1:0] fill_bank = fill_index[IndexWidth-1:BankBits];
+    wire [ SelBits-1:0] inv_bank = inv_index[IndexWidth-1:BankBits];
+    wire [ SelBits-1:0] inv2_bank = inv2_index[IndexWidth-1:BankBits];
+    wire [ SelBits-1:0] lookup_bank = lookup_index[IndexWidth-1:BankBits];
+    wire [BankBits-1:0] bank_index = ram_index[BankBits-1:0];
+    for (genvar bank = 0; bank < Banks; bank++) begin : gen_bank
+      assign fill_bank_sel[bank] = fill_bank == SelBits'(bank);
+      assign store_bank_sel[bank] = inv_bank == SelBits'(bank);
+      assign store_bank_strb[bank] = i_store_strb & {8{store_bank_sel[bank]}};
+      assign bank_tag_write[bank] = store_update ? store_bank_sel[bank] :
+          i_fill_write && fill_bank_sel[bank];
+      assign bank_data_write[bank] = store_update ? store_bank_strb[bank] :
+          {8{i_fill_write && fill_bank_sel[bank]}};
+      sdp_dist_ram #(
+          .ADDR_WIDTH(BankBits),
+          .DATA_WIDTH(TagWidth)
+      ) u_tag_lookup_ram (
+          .i_clk,
+          .i_write_enable (bank_tag_write[bank]),
+          .i_write_address(bank_index),
+          .i_read_address (lookup_index[BankBits-1:0]),
+          .i_write_data   (ram_tag),
+          .o_read_data    (bank_tag_lookup_rd[bank])
+      );
+      sdp_dist_ram #(
+          .ADDR_WIDTH(BankBits),
+          .DATA_WIDTH(TagWidth)
+      ) u_tag_inv_ram (
+          .i_clk,
+          .i_write_enable (bank_tag_write[bank]),
+          .i_write_address(bank_index),
+          .i_read_address (inv_index[BankBits-1:0]),
+          .i_write_data   (ram_tag),
+          .o_read_data    (bank_tag_inv_rd[bank])
+      );
+      sdp_dist_ram #(
+          .ADDR_WIDTH(BankBits),
+          .DATA_WIDTH(TagWidth)
+      ) u_tag_inv2_ram (
+          .i_clk,
+          .i_write_enable (bank_tag_write[bank]),
+          .i_write_address(bank_index),
+          .i_read_address (inv2_index[BankBits-1:0]),
+          .i_write_data   (ram_tag),
+          .o_read_data    (bank_tag_inv2_rd[bank])
+      );
+      for (genvar byte_idx = 0; byte_idx < 8; byte_idx++) begin : gen_data_bytes
+        sdp_dist_ram #(
+            .ADDR_WIDTH(BankBits),
+            .DATA_WIDTH(8)
+        ) u_data_ram (
+            .i_clk,
+            .i_write_enable(bank_data_write[bank][byte_idx]),
+            .i_write_address(bank_index),
+            .i_read_address(lookup_index[BankBits-1:0]),
+            .i_write_data(ram_data[8*byte_idx+:8]),
+            .o_read_data(bank_data_rd[bank][8*byte_idx+:8])
+        );
+      end
+    end
+    assign tag_lookup_rd = bank_tag_lookup_rd[lookup_bank];
+    assign tag_inv_rd = bank_tag_inv_rd[inv_bank];
+    assign tag_inv2_rd = bank_tag_inv2_rd[inv2_bank];
+    assign data_lookup_rd = bank_data_rd[lookup_bank];
+  end else begin : gen_single
+    assign fill_bank_sel = '0;
+    assign store_bank_sel = '0;
+    assign store_bank_strb = '0;
+    assign bank_tag_write = '0;
+    assign bank_data_write = '0;
+    assign bank_tag_lookup_rd = '0;
+    assign bank_tag_inv_rd = '0;
+    assign bank_tag_inv2_rd = '0;
+    assign bank_data_rd = '0;
     sdp_dist_ram #(
         .ADDR_WIDTH(IndexWidth),
-        .DATA_WIDTH(8)
-    ) u_data_ram (
+        .DATA_WIDTH(TagWidth)
+    ) u_tag_lookup_ram (
         .i_clk,
-        .i_write_enable(ram_strobe[byte_idx]),
+        .i_write_enable (ram_write_en),
         .i_write_address(ram_index),
-        .i_read_address(lookup_index),
-        .i_write_data(ram_data[8*byte_idx+:8]),
-        .o_read_data(data_lookup_rd[8*byte_idx+:8])
+        .i_read_address (lookup_index),
+        .i_write_data   (ram_tag),
+        .o_read_data    (tag_lookup_rd)
     );
+    sdp_dist_ram #(
+        .ADDR_WIDTH(IndexWidth),
+        .DATA_WIDTH(TagWidth)
+    ) u_tag_inv_ram (
+        .i_clk,
+        .i_write_enable (ram_write_en),
+        .i_write_address(ram_index),
+        .i_read_address (inv_index),
+        .i_write_data   (ram_tag),
+        .o_read_data    (tag_inv_rd)
+    );
+    sdp_dist_ram #(
+        .ADDR_WIDTH(IndexWidth),
+        .DATA_WIDTH(TagWidth)
+    ) u_tag_inv2_ram (
+        .i_clk,
+        .i_write_enable (ram_write_en),
+        .i_write_address(ram_index),
+        .i_read_address (inv2_index),
+        .i_write_data   (ram_tag),
+        .o_read_data    (tag_inv2_rd)
+    );
+    for (genvar byte_idx = 0; byte_idx < 8; byte_idx++) begin : gen_data_bytes
+      sdp_dist_ram #(
+          .ADDR_WIDTH(IndexWidth),
+          .DATA_WIDTH(8)
+      ) u_data_ram (
+          .i_clk,
+          .i_write_enable(ram_strobe[byte_idx]),
+          .i_write_address(ram_index),
+          .i_read_address(lookup_index),
+          .i_write_data(ram_data[8*byte_idx+:8]),
+          .o_read_data(data_lookup_rd[8*byte_idx+:8])
+      );
+    end
   end
 
   // ===========================================================================
