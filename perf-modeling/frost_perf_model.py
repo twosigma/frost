@@ -178,7 +178,7 @@ class ModelConfig:
     branch_recovery_cycles: int = 2
     decoded_queue_bundles: int = 4
     cache_normal_memory: bool = True
-    l0_cache_depth: int = 512
+    l0_cache_depth: int = 256
     normal_fetch_lines: int = 256
     early_load_wakeup: bool = True
     # Cache hierarchy shape (cpu_top.sv / frost_cache_hierarchy.sv).
@@ -2701,7 +2701,7 @@ def rtl_audit() -> dict[str, Any]:
         "implemented_features": [
             "Explicit CpuTopModel + SocTopModel separation across the 6-bit-ID, 512-bit AXI4 boundary so downstream projects can replace SocTopModel or DdrController independently.",
             "Two-wide dispatch/retire, bounded ROB/RS/LQ/SQ, out-of-order load/ALU completion, two-lane CDB contention, conservative non-speculative stores at commit.",
-            "Load Queue L0 Data Cache (512 dword entries) with 1-cycle CDB fast-path bypass and fill from L1D memory responses.",
+            "Load Queue L0 Data Cache (256 dword entries) with 1-cycle CDB fast-path bypass and fill from L1D memory responses.",
             "Separate L1I and L1D caches; 32-byte to 64-byte sector adapter; L2 with stream prefetcher; fill ownership; coalescing; writeback slots; write intent; cache-line dirty state.",
             "Explicit cache lower transaction IDs ({type, slot}), 64-byte single-beat AXI transfers, soc_axi_slave physical address decode (DDR vs. local BRAM/MMIO), and a single-channel 512-bit AXI DDR model matching axi_behavioral_memory.sv.",
             "Deterministic workload generators, sweep driver, self-tests, and machine-readable bottleneck counters.",

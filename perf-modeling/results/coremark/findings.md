@@ -107,7 +107,7 @@ The baseline `perf-modeling/frost_perf_model.py` directly models the FROST platf
    - Architectural Model IPC: **1.0199** (3,067 cycles, 3,128 retired uops)
    - Correlation Delta: within **+4.2%** of hardware RTL execution.
 3. **Key Microarchitectural Mechanisms**:
-   - **Load Queue L0 Data Cache (`lq_l0_cache.sv`)**: Modeled the 512-entry direct-mapped dword cache (`NormalLqL0Depth = 512`) delivering 1-cycle fast-path bypass.
+   - **Load Queue L0 Data Cache (`lq_l0_cache.sv`)**: Modeled the 256-entry direct-mapped dword cache (`NormalLqL0Depth = 256`) delivering 1-cycle fast-path bypass.
    - **Early Load Wakeup (`EARLY_LOAD_WAKEUP = 1`)**: Aligned with `mem_wakeup_merge.sv`, allowing a nonfaulting load to wake a dependent memory operation one cycle early when a registered CDB lane is free.
    - **Decoded Queue Predecode Presentation**: In steady-state timed loop execution, resident instructions in low BRAM / L1I are served with 2 instructions/cycle throughput without redundant frontend cold-start stalls.
    - **CoreMark Kernel ILP & Dependency Structure**: Calibrated matrix unrolling (dual independent accumulators) and CRC lookup table parallelism matching GCC 15.3.0 PGO code generation, with realistic branch misprediction rates (< 0.2%).

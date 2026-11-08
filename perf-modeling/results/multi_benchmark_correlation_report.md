@@ -43,7 +43,7 @@ The synthetic CoreMark workload has a **+4.2% IPC difference** from the archived
   - Hardware RTL IPC: **0.9786**
   - Correlation accuracy: within **+4.2%** (0.0413 IPC delta)
 - **Key Architectural Features Modeled**:
-  1. **L0 Data Cache (`lq_l0_cache.sv`)**: Models the 512-dword direct-mapped cache delivering 1-cycle fast-path bypass (`cache_hit_fast_path`).
+  1. **L0 Data Cache (`lq_l0_cache.sv`)**: Models the 256-dword direct-mapped cache delivering 1-cycle fast-path bypass (`cache_hit_fast_path`).
   2. **Early Load Wakeup (`EARLY_LOAD_WAKEUP = 1`)**: A nonfaulting load wakes a dependent memory operation one cycle early when a registered CDB lane is free. Integer consumers use the ordinary dependency path.
 
 ---

@@ -14,7 +14,7 @@ This directory provides a **fast, cycle-approximate architectural performance mo
 2. **RTL Cycle Correlation**:
    - CoreMark has an aggregate IPC comparison against RTL. The Tomasulo microarchitectural suite and DDR MLP stress test have validated event captures without model IPC comparisons.
    - CoreMark model IPC is **1.0199**, correlating within **+4.2%** of the hardware RTL's measured **0.9786 IPC** (239,452 cycles).
-   - Accurately models FROST-specific microarchitectural structures: the 512-entry Load Queue direct-mapped L0 Data Cache (`lq_l0_cache.sv`) with 1-cycle combinational fast-path bypass, early load wakeup (`EARLY_LOAD_WAKEUP = 1`), and the single-channel 512-bit AXI memory system.
+   - Accurately models FROST-specific microarchitectural structures: the 256-entry Load Queue direct-mapped L0 Data Cache (`lq_l0_cache.sv`) with 1-cycle combinational fast-path bypass, early load wakeup (`EARLY_LOAD_WAKEUP = 1`), and the single-channel 512-bit AXI memory system.
 
 3. **Modular SoC / Core Boundary**:
    - Reflects the structural hierarchy of `platform_top.sv`:
@@ -299,7 +299,7 @@ assumptions expressed in core cycles.
 | Dispatch, retirement, CDB width | 2 |
 | ROB / integer RS / memory RS entries | 32 / 16 / 8 |
 | Load / store queue entries | 8 / 8 |
-| L0 data entries | 512 dwords |
+| L0 data entries | 256 dwords |
 | L1I / L1D / L2 capacity | 16 KiB / 128 KiB / 2 MiB |
 | Cache associativity | 4 ways |
 | L1 / L2 line bytes | 32 / 64 |
