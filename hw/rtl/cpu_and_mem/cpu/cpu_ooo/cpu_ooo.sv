@@ -4072,8 +4072,15 @@ module cpu_ooo #(
   // must sit at the next PC of the previous retirement or trap/xRET take, and
   // slot 2 at slot 1's next PC. Any instruction retired from a wrong path
   // fails here, whatever the front end did to reach it: a stale prediction,
-  // a lost redirect, or a fetch that skipped or repeated code. The check arms
-  // at the first retirement after reset; WFI seeding does not move it.
+  // a lost redirect, or a fetch that skipped or repeated code.
+  //
+  // Every check in this block waits for the first reset: a random-start
+  // simulation begins with arbitrary registers, the registered resets
+  // included, so i_rst can be low before any reset while the state these
+  // checks read is arbitrary. The next-PC check then arms at the first
+  // retirement; WFI seeding does not move it.
+  logic next_pc_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) next_pc_reset_seen_q <= 1'b1;
   logic next_pc_check_armed_q;
   logic [XLEN-1:0] next_pc_expected_q;
   // The last retirements, printed when the check fails.
@@ -4089,7 +4096,7 @@ module cpu_ooo #(
     end
   endtask
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
+    if (i_rst || !next_pc_reset_seen_q) begin
       next_pc_check_armed_q <= 1'b0;
     end else begin
       if (next_pc_check_armed_q && rob_commit_valid_raw &&
@@ -4145,7 +4152,7 @@ module cpu_ooo #(
   // Every BTB invalidate lands in a full-flush cycle, so the flush cancels
   // the pending training that the controller's hold must outlast.
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (!i_rst && next_pc_reset_seen_q) begin
       p_btb_invalidate_with_full_flush : assert (!btb_invalidate || flush_all);
     end
   end
