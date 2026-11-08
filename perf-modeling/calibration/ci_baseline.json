@@ -2,9 +2,16 @@
   "benchmark": "coremark",
   "test": "coremark",
   "memory_tier": "bram",
-  "model_workload": "coremark",
+  "model_workload": "coremark_bram",
   "model_seed": 11,
-  "model_ddr_latency_cycles": 30,
+  "model_config": {
+    "soc.local_bram_read_cycles": 10,
+    "l0_cache_depth": 512
+  },
+  "model_config_sources": {
+    "soc.local_bram_read_cycles": "RTL: 10.0 cycles per load of a dependent pointer chase through BRAM data whose nodes alias in the L0 (8026 cycles for 800 loads)",
+    "l0_cache_depth": "RTL: riscv_pkg::NormalLqL0Depth, which platform_top.sv passes when normal-memory caching is on"
+  },
   "required_events": [
     "dispatch",
     "retire",
@@ -27,9 +34,9 @@
     }
   },
   "model": {
-    "cycles": 9286,
-    "retired_uops": 9328,
-    "ipc": 1.0045229377557614
+    "cycles": 3219,
+    "retired_uops": 3128,
+    "ipc": 0.9717303510406958
   },
-  "ipc_delta": 0.03749445034033516
+  "ipc_delta": 0.0036255107169207434
 }

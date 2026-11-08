@@ -390,12 +390,13 @@ def test_the_stored_baseline_matches_the_model() -> None:
         (PERF_MODELING / "calibration" / "ci_baseline.json").read_text(encoding="utf-8")
     )
     config = model.ModelConfig()
-    config = dataclasses.replace(
-        config,
-        ddr=dataclasses.replace(
-            config.ddr, latency_cycles=baseline["model_ddr_latency_cycles"]
-        ),
-    )
+    for name, value in baseline["model_config"].items():
+        assert name in baseline["model_config_sources"]
+        if name.startswith("soc."):
+            soc = dataclasses.replace(config.soc, **{name[4:]: value})
+            config = dataclasses.replace(config, soc=soc)
+        else:
+            config = dataclasses.replace(config, **{name: value})
     run = model.run_workload(config, baseline["model_workload"], baseline["model_seed"])
     assert trace_contract.model_figures(run) == baseline["model"]
     delta = baseline["model"]["ipc"] / baseline["rtl"]["ipc"] - 1

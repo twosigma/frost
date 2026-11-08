@@ -2498,6 +2498,27 @@ class FrostPipeline:
                         self.stats["memory_faults"] += 1
                     self._load_result(entry)
 
+                if self._is_local_bram(addr):
+                    # Low BRAM is outside the cached tier: the load takes the
+                    # SoC's local port and never reaches the L1D.
+                    local_read = AxiTransaction(
+                        address=addr,
+                        is_write=False,
+                        transaction_id=TransactionId("uncached", "fill", 0, 6),
+                        complete=on_load_complete,
+                        source="uncached",
+                        axi_id=32,
+                        bytes_size=8,
+                    )
+                    if not self.soc.submit_axi(local_read):
+                        self.stats["load_local_backpressure"] += 1
+                        continue
+                    entry.issued = True
+                    mem_issued += 1
+                    self.stats["loads_issued"] += 1
+                    self.stats["local_loads"] += 1
+                    continue
+
                 request = Request(
                     address=addr,
                     is_write=False,
@@ -2574,12 +2595,15 @@ class FrostPipeline:
         """
         if not self.committed_stores or self.loop.cycle < self.next_store_launch:
             return
+        address = self.committed_stores[0].op.data_address or 0
+        if self._is_local_bram(address):
+            self._drain_local_store(address)
+            return
         l1d = self.memory.l1d
         if not l1d.store_ready():
             self.stats["store_drain_backpressure"] += 1
             return
-        entry = self.committed_stores.popleft()
-        address = entry.op.data_address or 0
+        self.committed_stores.popleft()
         l1d.push_store(address)
         self.next_store_launch = self.loop.cycle + self.config.store_drain_cycles
         self.loop.after(1, self._store_acknowledged)
@@ -2588,6 +2612,38 @@ class FrostPipeline:
             dword = address >> 3
             l0_idx = dword % self.config.l0_cache_depth
             if self.l0_cache.get(l0_idx) == dword:
+                self.stats["l0_store_updates"] += 1
+
+    def _is_local_bram(self, address: int) -> bool:
+        """Return whether address lies in the low-BRAM aperture."""
+        soc = self.config.soc
+        return soc.bram_base <= address < soc.bram_base + soc.bram_bytes
+
+    def _drain_local_store(self, address: int) -> None:
+        """Write the oldest committed store to low BRAM through the local port.
+
+        The write frees its SQ entry when the port answers, and a resident
+        L0 dword takes the new value.
+        """
+        write = AxiTransaction(
+            address=address,
+            is_write=True,
+            transaction_id=TransactionId("uncached", "writeback", 0, 6),
+            complete=lambda _ok: self._store_acknowledged(),
+            source="uncached",
+            axi_id=32,
+            bytes_size=8,
+        )
+        if not self.soc.submit_axi(write):
+            self.stats["store_drain_backpressure"] += 1
+            return
+        self.committed_stores.popleft()
+        self.next_store_launch = self.loop.cycle + self.config.store_drain_cycles
+        self.stats["stores_drained"] += 1
+        self.stats["local_stores"] += 1
+        if self.config.l0_cache_depth > 0:
+            dword = address >> 3
+            if self.l0_cache.get(dword % self.config.l0_cache_depth) == dword:
                 self.stats["l0_store_updates"] += 1
 
     def _store_acknowledged(self) -> None:
@@ -2836,17 +2892,32 @@ def workload_memory_stress(seed: int, operations: int = 960) -> list[MicroOp]:
 def workload_coremark(seed: int, operations: int = 3600) -> list[MicroOp]:
     """Model CoreMark kernel micro-ops: list traversal, matrix ops, state machine & CRC.
 
-    Its data starts cold in DDR. Each L0 miss takes the coherent L1D's
-    one-at-a-time controller, so the length sets how far the cold start
-    weighs against the loops' steady state; 3600 operations put the CI
-    check's figure within its tolerance of the RTL capture.
+    Its data starts cold in DDR, so each L0 miss takes the coherent L1D's
+    one-at-a-time controller and the length sets how far the cold start
+    weighs against the loops' steady state. The CI check compares the BRAM
+    tier's ``coremark_bram`` instead.
     """
+    return _coremark_ops(operations, 0x8000_0000, 0x1_0000)
+
+
+def workload_coremark_bram(seed: int, operations: int = 1200) -> list[MicroOp]:
+    """Model the CoreMark kernels in the BRAM tier, as CI's capture runs them.
+
+    Its data lies in low BRAM, whose loads and stores take the SoC's local
+    port and never reach the coherent L1D, so the length needs no tuning for
+    a cold start.
+    """
+    return _coremark_ops(operations, 0x0000_0000, 0x8000)
+
+
+def _coremark_ops(operations: int, region: int, stride: int) -> list[MicroOp]:
+    """Return the CoreMark micro-ops with its arrays stride bytes apart in region."""
     b = ProgramBuilder()
-    code_base = 0x8000_2000
-    data_base = 0x8001_0000
-    matrix_base = 0x8002_0000
-    list_base = 0x8003_0000
-    crc_table_base = 0x8004_0000
+    code_base = region + 0x2000
+    data_base = region + stride
+    matrix_base = region + 2 * stride
+    list_base = region + 3 * stride
+    crc_table_base = region + 4 * stride
 
     # 1. Linked list traversal (pointer chasing + data extraction)
     last_ptr = b.emit("alu", code_base)
@@ -2904,6 +2975,16 @@ WORKLOADS: dict[str, Callable[[int], list[MicroOp]]] = {
     "coremark": workload_coremark,
 }
 
+# Workloads outside the sweeps: the CI check's BRAM-tier stand-in for the capture.
+STANDIN_WORKLOADS: dict[str, Callable[[int], list[MicroOp]]] = {
+    "coremark_bram": workload_coremark_bram,
+}
+
+
+def _named_workloads() -> dict[str, Callable[[int], list[MicroOp]]]:
+    """Return the sweep workloads and the stand-ins by name."""
+    return {**WORKLOADS, **STANDIN_WORKLOADS}
+
 
 def run_workload(config: ModelConfig, workload_name: str, seed: int) -> dict[str, Any]:
     """Run a named workload on config and return the result.
@@ -2911,11 +2992,11 @@ def run_workload(config: ModelConfig, workload_name: str, seed: int) -> dict[str
     The result also names the workload, its seed, and its micro-op count.
     The CoreMark workload starts with every fetch line ready.
     """
-    if workload_name not in WORKLOADS:
+    if workload_name not in _named_workloads():
         raise KeyError(workload_name)
-    program = WORKLOADS[workload_name](seed)
+    program = _named_workloads()[workload_name](seed)
     pipeline = FrostPipeline(config, program)
-    if workload_name == "coremark":
+    if workload_name.startswith("coremark"):
         for op in program:
             line = pipeline._fetch_line(op.fetch_address)
             pipeline.fetch_state[line] = "ready"
@@ -3240,11 +3321,11 @@ def explore_design_variants(
         workload_name = f"trace:{trace_path.name}"
     else:
         workload_name = str(workload_or_trace)
-        if workload_name not in WORKLOADS:
+        if workload_name not in _named_workloads():
             raise KeyError(
-                f"Unknown workload: {workload_name}. Available: {sorted(WORKLOADS)}"
+                f"Unknown workload: {workload_name}. Available: {sorted(_named_workloads())}"
             )
-        program = WORKLOADS[workload_name](seed)
+        program = _named_workloads()[workload_name](seed)
 
     all_variants = get_design_variants()
     selected_names = variant_names or list(all_variants.keys())
@@ -3779,7 +3860,7 @@ def parse_args() -> argparse.Namespace:
     report.add_argument("--sweep", type=Path, required=True)
     report.add_argument("--out", type=Path, required=True)
     run = sub.add_parser("run")
-    run.add_argument("--workload", choices=sorted(WORKLOADS), required=True)
+    run.add_argument("--workload", choices=sorted(_named_workloads()), required=True)
     run.add_argument("--seed", type=int, default=11)
     run.add_argument("--out", type=Path, required=True)
     run.add_argument("--config-file", type=Path)
@@ -3811,7 +3892,9 @@ def parse_args() -> argparse.Namespace:
         help="Explore design variants and generate optimization suggestions for FROST",
     )
     explore.add_argument(
-        "--workload", choices=sorted(WORKLOADS), help="Built-in workload to evaluate"
+        "--workload",
+        choices=sorted(_named_workloads()),
+        help="Built-in workload to evaluate",
     )
     explore.add_argument(
         "--trace", type=Path, help="Execution trace file to replay and optimize against"
