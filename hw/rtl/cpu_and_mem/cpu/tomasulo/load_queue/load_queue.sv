@@ -1805,25 +1805,39 @@ module load_queue #(
     // valid as a store is pushed takes the pushed line, which is matched
     // instead; holder zero holds every staged load in the cycle an atomic
     // starts or ends.
+    // The address update's own comparisons, shared by the entries. The write
+    // enable, which follows the update's flush qualification, arrives late, so
+    // it only selects between these and each entry's stored comparisons.
+    wire update_high_zero = i_addr_update.address[XLEN-1:SectorMsb+1] == '0;
+    wire [SectorBits-1:0] update_sector = i_addr_update.address[SectorMsb:5];
+    logic [3:0] update_holder_match;
+    always_comb
+      for (int holder = 0; holder < 4; holder++)
+        update_holder_match[holder] = update_high_zero &&
+            i_coherent_block_addr[holder][XLEN-1:SectorMsb+1] == '0 &&
+            update_sector == i_coherent_block_addr[holder][SectorMsb:5];
+    wire update_push_match = update_high_zero &&
+        update_sector == i_coherent_store_push_addr[SectorMsb:5];
     for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry
       logic [SectorBits-1:0] sector_q;
       logic high_zero_q;
-      logic [3:0] holder_match_q;
+      logic [3:0] holder_match_q, stored_holder_match;
       logic push_match_q;
       wire write = lq_addr_update_we && lq_addr_update_idx == IdxWidth'(entry);
-      wire [SectorBits-1:0] sector_next =
-          write ? i_addr_update.address[SectorMsb:5] : sector_q;
-      wire high_zero_next =
-          write ? i_addr_update.address[XLEN-1:SectorMsb+1] == '0 : high_zero_q;
-      always_ff @(posedge i_clk) begin
-        sector_q <= sector_next;
-        high_zero_q <= high_zero_next;
+      always_comb
         for (int holder = 0; holder < 4; holder++)
-          holder_match_q[holder] <= high_zero_next &&
+          stored_holder_match[holder] = high_zero_q &&
               i_coherent_block_addr[holder][XLEN-1:SectorMsb+1] == '0 &&
-              sector_next == i_coherent_block_addr[holder][SectorMsb:5];
+              sector_q == i_coherent_block_addr[holder][SectorMsb:5];
+      wire stored_push_match = high_zero_q && sector_q == i_coherent_store_push_addr[SectorMsb:5];
+      always_ff @(posedge i_clk) begin
+        if (write) begin
+          sector_q <= update_sector;
+          high_zero_q <= update_high_zero;
+        end
+        holder_match_q <= write ? update_holder_match : stored_holder_match;
         // The push itself arrives late; the hold applies it from push_prev_q.
-        push_match_q <= high_zero_next && sector_next == i_coherent_store_push_addr[SectorMsb:5];
+        push_match_q <= write ? update_push_match : stored_push_match;
       end
       assign entry_sector[entry] = sector_q;
       assign entry_high_zero[entry] = high_zero_q;
