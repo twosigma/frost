@@ -223,7 +223,7 @@ module c_ext_state #(
   for (genvar slot2 = 0; slot2 < 2; slot2++) begin : gen_buffer_slot2_case
     always_comb begin
       prev_without_handoff_cases[slot2] = o_prev_was_compressed_at_lo;
-      if (i_reset || i_control_flow_holdoff || i_flush || i_prediction_holdoff ||
+      if (i_control_flow_holdoff || i_flush || i_prediction_holdoff ||
         prediction_reset_buffer_state) begin
         prev_without_handoff_cases[slot2] = capture_pending_prediction_buffer;
       end else if (!i_stall && (i_fetch_progress || use_saved_values) && !i_any_holdoff_safe &&
@@ -241,18 +241,19 @@ module c_ext_state #(
   assign prev_compressed_next = prev_compressed_next_cases[i_slot2_valid];
 
   always_ff @(posedge i_clk) begin
-    o_prev_was_compressed_at_lo <= prev_compressed_next;
+    if (i_reset) o_prev_was_compressed_at_lo <= 1'b0;
+    else o_prev_was_compressed_at_lo <= prev_compressed_next;
   end
 
 `ifndef SYNTHESIS
   // Reference priority equation for the next buffer-valid state, checked
   // against the split form every cycle. The check needs no assumptions about
   // upstream controls or the current buffer state, including simultaneous
-  // reset, capture, and handoff.
+  // capture and handoff.
   logic prev_was_compressed_at_lo_priority_ref;
   always_comb begin
     prev_was_compressed_at_lo_priority_ref = o_prev_was_compressed_at_lo;
-    if (i_reset || i_control_flow_holdoff || i_flush || i_prediction_holdoff ||
+    if (i_control_flow_holdoff || i_flush || i_prediction_holdoff ||
         prediction_reset_buffer_state || i_pending_prediction_target_handoff) begin
       prev_was_compressed_at_lo_priority_ref = 1'b0;
       if (capture_pending_prediction_buffer_state) begin
@@ -319,7 +320,7 @@ module c_ext_state #(
   logic f_buffer_priority_ref;
   always_comb begin
     f_buffer_priority_ref = o_prev_was_compressed_at_lo;
-    if (i_reset || i_control_flow_holdoff || i_flush || i_prediction_holdoff ||
+    if (i_control_flow_holdoff || i_flush || i_prediction_holdoff ||
         prediction_reset_buffer_state || i_pending_prediction_target_handoff) begin
       f_buffer_priority_ref = 1'b0;
       if (capture_pending_prediction_buffer_state) begin

@@ -272,21 +272,25 @@ module cpu_top #(
 
   // A failure in the hart's caches, the L2, or the uncached adapter latches
   // the fatal indication with its address: the uncached adapter's first, then
-  // the L2's, the L1D's, and the L1I's. The hart stops on the failure's
-  // cycle; the fetch, uncached and coherent paths stop on the latched flag.
-  logic hart_cache_fatal, cluster_cache_fatal, cache_fatal, uncached_fatal, fatal_stop;
+  // the L2's, the L1D's, and the L1I's. Each of those stops itself on its own
+  // failure. The hart and the fetch, uncached and coherent paths stop on the
+  // latched flag; the hart reads its own copy, which places beside the
+  // reorder buffer.
+  logic hart_cache_fatal, cluster_cache_fatal, cache_fatal, uncached_fatal;
+  (* keep = "true", equivalent_register_removal = "no" *) logic hart_fatal_stop_q;
   logic [riscv_pkg::PhysAddrBits-1:0] hart_cache_fatal_addr, cluster_cache_fatal_addr;
   logic [riscv_pkg::PhysAddrBits-1:0] cache_fatal_addr, uncached_fatal_addr;
   assign cache_fatal = hart_cache_fatal || cluster_cache_fatal;
   assign cache_fatal_addr = cluster_cache_fatal ? cluster_cache_fatal_addr : hart_cache_fatal_addr;
-  assign fatal_stop = o_fatal_error || cache_fatal || uncached_fatal;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       o_fatal_error <= 1'b0;
-      o_fatal_addr  <= '0;
+      hart_fatal_stop_q <= 1'b0;
+      o_fatal_addr <= '0;
     end else if ((cache_fatal || uncached_fatal) && !o_fatal_error) begin
       o_fatal_error <= 1'b1;
-      o_fatal_addr  <= uncached_fatal ? uncached_fatal_addr : cache_fatal_addr;
+      hart_fatal_stop_q <= 1'b1;
+      o_fatal_addr <= uncached_fatal ? uncached_fatal_addr : cache_fatal_addr;
     end
   end
 `ifndef SYNTHESIS
@@ -294,8 +298,11 @@ module cpu_top #(
   // relies on the stop staying set until reset once it is set.
   logic fatal_stop_q = 1'b0;
   always_ff @(posedge i_clk) begin
-    fatal_stop_q <= !i_rst && fatal_stop;
-    if (sim_reset_seen_q && !i_rst && fatal_stop_q) assert (fatal_stop);
+    fatal_stop_q <= !i_rst && hart_fatal_stop_q;
+    if (sim_reset_seen_q && !i_rst) begin
+      if (fatal_stop_q) assert (hart_fatal_stop_q);
+      assert (hart_fatal_stop_q == o_fatal_error);
+    end
   end
 `endif
 
@@ -411,7 +418,7 @@ module cpu_top #(
       .o_debug_commit_2_pc,
       .o_debug_commit_valid,
       .i_fatal_error(o_fatal_error),
-      .i_fatal_stop(fatal_stop),
+      .i_fatal_stop(hart_fatal_stop_q),
       .o_cache_fatal(hart_cache_fatal),
       .o_cache_fatal_addr(hart_cache_fatal_addr),
       .o_uncached_fatal(uncached_fatal),

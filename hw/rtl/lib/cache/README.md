@@ -395,8 +395,8 @@ arrives beside them.
 
 A fatal stop reaches the L1D controller through one flop and takes effect on
 the cycle after it rises, so no selection or capture enable starts at the
-fatal logic. The CPU's retirement stop is separate and takes effect on the
-failure's cycle. An endpoint accepts every acquisition while idle, so the
+fatal logic. The CPU's retirement stop takes effect on the cycle after the
+failure. An endpoint accepts every acquisition while idle, so the
 controller reads the endpoint's idle state for acceptance. The lookup address,
 selected read slot and grant payload have no reset and capture on every Idle
 cycle, because nothing reads them until a selection leaves Idle. The read

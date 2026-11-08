@@ -256,7 +256,7 @@ readiness and tags.
 | `lq_replace_select` | The staging register's replacement decision equals the reference ROB-head and ring-position comparison at depths 4, 8, and 16 |
 | `lq_response_bypass` | The load-response bypass pulse equals the reference pulse qualified by full acceptance; the separate partial-flush guard makes the reference's age comparison redundant |
 | `lq_tag_order` | ROB-tag age order and the full-window boundary equal the reference computed in wider arithmetic, for all tags |
-| `sq_committed_empty` | Committed-empty next state equals the reference over reset, full flush, and registered and same-cycle commits. All four final outputs include pending coherent stores, the selected SC write and an arriving cached write |
+| `sq_committed_empty` | Committed-empty next state equals the reference over full flush and registered and same-cycle commits. All four final outputs include pending coherent stores, the selected SC write and an arriving cached write |
 | `sq_live_count` | The live store count's next value equals the reference arithmetic for each allocation outcome |
 | `sq_repair_mmio` | The early-address repair's two parallel MMIO flags equal MMIO classification of the full base-plus-immediate sum, including overflow |
 | `store_queue` | Live-count consistency, write prerequisites (committed, address and data valid), in-flight bounds, forwarding, and that committed stores survive a partial flush. Formal builds use a linear forwarding selector in place of the balanced tree, which Yosys mishandles, so the tree itself is not proved. Assumes, among other input rules, no allocation while the post-flush tail pullback is pending and no combinational commit pulse during a flush |

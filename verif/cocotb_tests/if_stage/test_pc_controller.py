@@ -24,6 +24,7 @@ from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 CLOCK_PERIOD_NS = 10
 BASE_PC = 0x80001000
+BOOT_PC = 0x4000
 BRANCH_TARGET = 0x80002000
 PD_TARGET = 0x80003000
 FENCE_TARGET = 0x80004000
@@ -258,8 +259,6 @@ async def test_pending_relations_wait_for_reset(dut: Any) -> None:
     dut.i_boot_addr.value = BASE_PC
     dut.i_reset.value = 1
     await _settle()
-    assert int(dut.next_pc.value) == BASE_PC
-    assert int(dut.next_pc_reg.value) == BASE_PC
     dut.i_clk.value = 1
     await _settle()
     assert dut.pending_rel_check_armed_q.value
@@ -272,8 +271,6 @@ async def test_pending_relations_wait_for_reset(dut: Any) -> None:
     dut.pending_prediction_allow_cross.value = 1
     dut.seq_reaches_q.value = 1
     await _settle()
-    assert int(dut.next_pc.value) == BRANCH_TARGET
-    assert int(dut.next_pc_reg.value) == BRANCH_TARGET
     dut.i_clk.value = 1
     await _settle()
     assert not dut.pending_prediction_valid.value
@@ -281,6 +278,51 @@ async def test_pending_relations_wait_for_reset(dut: Any) -> None:
     dut.i_clk.value = 0
     dut.i_reset.value = 0
     await _settle()
+
+
+@cocotb.test()
+async def test_single_cycle_reset_during_traffic(dut: Any) -> None:
+    """One reset cycle reloads the PCs and their copies and clears pending state.
+
+    Reset lands with a prediction pending, a live slot-1 prediction and a branch
+    redirect on the same edge.
+    """
+    await _setup_test(dut)
+    await _clear_reset_holdoff(dut)
+    await _start_word_stream_at(dut, BASE_PC)
+    _drive_slot1_prediction(dut, target=PRED_TARGET + 2)
+    await _advance_cycle(dut)
+    _clear_inputs(dut)
+    await _settle()
+    assert dut.pending_prediction_valid.value
+
+    dut.i_boot_addr.value = BOOT_PC
+    dut.i_branch_taken.value = 1
+    dut.i_branch_target.value = BRANCH_TARGET
+    _drive_slot1_prediction(dut, target=PRED_TARGET)
+    dut.i_stall.value = 1
+    dut.i_reset.value = 1
+    await _advance_cycle(dut)
+    dut.i_reset.value = 0
+    _clear_inputs(dut)
+    await _settle()
+
+    _assert_pc(dut, pc=BOOT_PC, pc_reg=BOOT_PC)
+    lookup_mask = (1 << len(dut.o_pc_tage_lookup)) - 1
+    assert int(dut.o_pc_tage_lookup.value) == (BOOT_PC >> 2) & lookup_mask
+    assert int(dut.o_pc_reg_high_for_coverage.value) == 0
+    assert not dut.pending_prediction_valid.value
+    assert not dut.o_pending_prediction_active.value
+    assert not dut.o_slot2_redirect_q.value
+    assert not dut.o_tage_hist_push.value
+    assert int(dut.o_tage_hist_restore_arm.value) == 0
+    assert dut.o_reset_holdoff.value
+    assert not dut.o_control_flow_holdoff.value
+    assert not dut.o_control_flow_to_halfword_r.value
+
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=BOOT_PC + 4, pc_reg=BOOT_PC)
+    assert not dut.o_reset_holdoff.value
 
 
 @cocotb.test()
@@ -531,7 +573,7 @@ async def test_slot2_prediction_redirects_immediately_and_pulses_bubble(
 async def test_live_slot2_fallback_alias_selects_pc_reg_last_and_keeps_priority(
     dut: Any,
 ) -> None:
-    """The alias check picks the live slot-2 target last, below reset and redirects."""
+    """The alias check picks the live slot-2 target last, below redirects."""
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
     await _start_word_stream_at(dut, BASE_PC)
@@ -562,10 +604,9 @@ async def test_live_slot2_fallback_alias_selects_pc_reg_last_and_keeps_priority(
     await _settle()
     assert int(dut.next_pc_reg.value) == PRED_TARGET
 
-    # Reset and the trap, xRET, FENCE-class, branch, and PD redirects still
-    # outrank the live slot-2 target.
+    # The trap, xRET, FENCE-class, branch, and PD redirects outrank the live
+    # slot-2 target.
     redirect_cases = (
-        ("i_reset", None, 0),
         ("i_trap_taken", "i_trap_target", TRAP_TARGET),
         ("i_mret_taken", "i_trap_target", TRAP_TARGET + 4),
         ("i_fence_i_flush", "i_fence_i_target", FENCE_TARGET),
@@ -577,12 +618,10 @@ async def test_live_slot2_fallback_alias_selects_pc_reg_last_and_keeps_priority(
         dut.i_reset.value = 0
         _drive_live_slot2_fallback(dut, target=SLOT2_TARGET)
         getattr(dut, active_name).value = 1
-        if target_name is not None:
-            getattr(dut, target_name).value = target
+        getattr(dut, target_name).value = target
         await _settle()
 
-        if active_name != "i_reset":
-            assert not dut.pc_reg_live_redirect_permission.value
+        assert not dut.pc_reg_live_redirect_permission.value
         assert int(dut.next_pc_reg.value) == target
 
     # Check one overlapping redirect through the register too, not just
@@ -594,6 +633,12 @@ async def test_live_slot2_fallback_alias_selects_pc_reg_last_and_keeps_priority(
     dut.i_branch_target.value = BRANCH_TARGET
     await _advance_cycle(dut)
     _assert_pc(dut, pc=BRANCH_TARGET, pc_reg=BRANCH_TARGET)
+
+    # Reset outranks all of them at the PC flops.
+    dut.i_reset.value = 1
+    await _advance_cycle(dut)
+    dut.i_reset.value = 0
+    _assert_pc(dut, pc=0, pc_reg=0)
 
 
 @cocotb.test()

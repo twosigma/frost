@@ -393,9 +393,9 @@ module misprediction_flush_controller #(
   // captures mispredict_commit_d on its launch edge.
   (* max_fanout = 32 *) logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag_q;
   always_ff @(posedge i_clk) begin
-    if (i_early_backend_recovery_pending_next) flush_tag_q <= i_early_mispredict_tag;
-    else if (!(i_rst || flush_all) && commit_is_misprediction)
-      flush_tag_q <= mispredict_commit_d.tag;
+    if (i_rst) flush_tag_q <= '0;
+    else if (i_early_backend_recovery_pending_next) flush_tag_q <= i_early_mispredict_tag;
+    else if (!flush_all && commit_is_misprediction) flush_tag_q <= mispredict_commit_d.tag;
     else flush_tag_q <= '0;
   end
 

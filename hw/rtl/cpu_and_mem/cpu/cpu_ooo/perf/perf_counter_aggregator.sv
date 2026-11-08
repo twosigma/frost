@@ -280,7 +280,7 @@ module perf_counter_aggregator #(
     perf_top_inc[PerfDispatchStall] = {{63{1'b0}}, dispatch_status.stall};
     perf_top_inc[PerfFrontendBubble] = {
       {63{1'b0}},
-      (!i_rst && !flush_pipeline && (post_flush_holdoff_q == 2'd0) &&
+      (!flush_pipeline && (post_flush_holdoff_q == 2'd0) &&
        !dispatch_status.stall &&
        !(csr_in_flight || csr_wb_pending || serializing_alloc_fire) &&
        !front_end_cf_serialize_stall &&

@@ -368,11 +368,11 @@ module data_mem_request_router #(
   // never are, even with every blocker open: they are captured into the
   // request register first and accepted only from there.
   assign lq_live_read_accepted =
-      !i_rst && !i_flush_all && !write_port_busy && lq_mem_read_en &&
+      !i_flush_all && !write_port_busy && lq_mem_read_en &&
       !lq_live_request_requires_park &&
       (!VARIABLE_UNCACHED || lq_live_is_cached || i_uncached_read_request_ready);
   assign lq_pending_read_candidate =
-      !i_rst && !i_flush_all && !i_block_new_requests &&
+      !i_flush_all && !i_block_new_requests &&
       !write_port_busy && lq_mem_request_valid &&
       (!VARIABLE_UNCACHED || lq_held_is_cached || i_uncached_read_request_ready);
   assign lq_pending_read_shielded =
@@ -407,7 +407,7 @@ module data_mem_request_router #(
       lq_pending_read_accepted;
   assign uncached_read_if_launch = VARIABLE_UNCACHED && !lq_mem_request_is_cached &&
       (lq_pending_read_accepted ||
-       (!i_rst && !i_flush_all && !write_port_busy && !lq_live_request_requires_park &&
+       (!i_flush_all && !write_port_busy && !lq_live_request_requires_park &&
         (lq_live_is_cached || i_uncached_read_request_ready)));
   assign lq_pending_mmio_read_accepted =
       lq_pending_read_accepted && lq_pending_request_requires_drain;
@@ -457,7 +457,7 @@ module data_mem_request_router #(
     // is the only candidate, and without one only the held request can be
     // accepted.
     o_data_mem_cached_read_sel = lq_mem_read_en;
-    o_data_mem_cached_read_if_sel = !i_rst && !i_flush_all && !i_block_new_requests &&
+    o_data_mem_cached_read_if_sel = !i_flush_all && !i_block_new_requests &&
         !write_port_busy &&
         !lq_live_request_requires_park && lq_live_is_cached;
     o_data_mem_cached_read_if_clear = lq_pending_read_accepted && lq_held_is_cached;
@@ -478,7 +478,8 @@ module data_mem_request_router #(
                           VARIABLE_UNCACHED ? i_uncached_write_done : 1'b1);
 
     o_mmio_load_addr = lq_mem_request_addr;
-    o_mmio_load_valid = lq_pending_mmio_read_accepted;
+    // The fixed-latency devices are not reset by i_rst.
+    o_mmio_load_valid = !i_rst && lq_pending_mmio_read_accepted;
   end
 
   // With VARIABLE_UNCACHED=0, BRAM/MMIO SQ writes complete next cycle.
@@ -625,7 +626,8 @@ module data_mem_request_router #(
   assign o_lq_mem_read_id = i_cached_read_id;
 
   // Only an accepted held request can cause an MMIO read.
-  assign o_mmio_read_pulse = lq_pending_mmio_read_accepted;
+  // The fixed-latency devices are not reset by i_rst.
+  assign o_mmio_read_pulse = !i_rst && lq_pending_mmio_read_accepted;
 
   // The legacy TestRIG fixture samples MMIO on o_mmio_read_pulse. Destructive FIFO/UART
   // pulses follow one cycle later, aligned with fast-response valid.
@@ -738,14 +740,17 @@ module data_mem_request_router #(
         p_mmio_effect_needs_sq_drain : assert (i_sq_committed_empty);
       end
     end
-    if (i_rst || i_flush_all || i_block_new_requests) begin
-      p_reset_or_flush_suppresses_accept :
+    if (i_flush_all || i_block_new_requests) begin
+      p_flush_suppresses_accept :
       assert (!lq_live_read_accepted && !lq_pending_read_candidate &&
               !lq_pending_read_shielded && !lq_pending_read_accepted &&
               !lq_mem_read_accepted);
-      p_reset_or_flush_has_no_combinational_read_effect :
+      p_flush_has_no_combinational_read_effect :
       assert (!o_data_mem_read_enable && !o_data_mem_cached_read_enable &&
               !o_mmio_read_pulse && !o_mmio_load_valid);
+    end
+    if (i_rst) begin
+      p_reset_has_no_device_effect : assert (!o_mmio_read_pulse && !o_mmio_load_valid);
     end
     if (i_block_new_requests) begin
       p_stop_suppresses_writes :

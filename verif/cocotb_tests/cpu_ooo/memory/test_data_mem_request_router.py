@@ -792,6 +792,55 @@ async def test_reset_discards_parked_device_read(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_single_cycle_reset_during_traffic(dut: Any) -> None:
+    """One reset cycle leaves no device effect and no request behind.
+
+    Reset lands on the cycle an armed device read would be accepted. Its read
+    enable can stay live for that cycle, since the memory it reaches has no
+    read side effect, but the device strobes stay low, the destructive pulses
+    never fire, and the held request is gone at the reset edge.
+    """
+    await _setup_test(dut)
+    dut.i_sq_committed_empty.value = 1
+    dut.i_lq_mem_read_en.value = 1
+    dut.i_lq_mem_read_addr.value = FIFO1_MMIO_ADDR
+    dut.i_lq_mem_addr_valid.value = 1
+    await _advance_cycle(dut)
+    dut.i_lq_mem_read_en.value = 0
+    dut.i_lq_mem_addr_valid.value = 0
+    await _advance_arming_cycle(dut)
+
+    dut.i_rst.value = 1
+    await _settle()
+    assert int(dut.o_mmio_read_pulse.value) == 0
+    assert int(dut.o_mmio_load_valid.value) == 0
+    await _advance_cycle(dut)
+    dut.i_rst.value = 0
+    await _settle()
+    for _ in range(3):
+        assert int(dut.o_lq_mem_request_valid.value) == 0
+        assert int(dut.o_data_mem_read_enable.value) == 0
+        assert int(dut.o_mmio_read_pulse.value) == 0
+        assert int(dut.o_mmio_load_valid.value) == 0
+        assert int(dut.o_lq_mem_read_valid.value) == 0
+        assert int(dut.o_mmio_fifo0_read_pulse.value) == 0
+        assert int(dut.o_mmio_fifo1_read_pulse.value) == 0
+        assert int(dut.o_mmio_uart_rx_ready_pulse.value) == 0
+        await _advance_cycle(dut)
+
+    # The next read takes the ordinary path.
+    dut.i_lq_mem_read_en.value = 1
+    dut.i_lq_mem_read_addr.value = FAST_ADDR
+    dut.i_lq_mem_addr_valid.value = 1
+    await _settle()
+    assert int(dut.o_data_mem_read_enable.value) == 1
+    await _advance_cycle(dut)
+    dut.i_lq_mem_read_en.value = 0
+    dut.i_lq_mem_addr_valid.value = 0
+    assert int(dut.o_lq_mem_read_valid.value) == 1
+
+
+@cocotb.test()
 async def test_store_drain_status_does_not_block_fast_or_cached_reads(
     dut: Any,
 ) -> None:

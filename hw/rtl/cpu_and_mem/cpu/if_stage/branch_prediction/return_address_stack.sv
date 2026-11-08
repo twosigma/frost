@@ -100,9 +100,7 @@ module return_address_stack #(
   // Operations
   // ===========================================================================
   // The pending operation's effect on the stored state, and the part of it
-  // this edge applies: a restore replaces it. A reset overrides a restore but
-  // not the pending operation's entry write, which belongs to the cycle
-  // before the reset.
+  // this edge applies: a restore replaces it.
   // {pop, push} after restore == 2'b11 is the swap encoding
   // (ex_comb_synthesizer). An empty restored stack has nothing to pop, so the
   // swap does nothing then and the state stays as restored.
@@ -110,7 +108,7 @@ module return_address_stack #(
   logic pending_swap, pending_push, pending_pop;
   logic restore_swap_req, do_restore_swap, do_restore_push;
   logic do_swap, do_push;
-  assign restore = i_misprediction && !i_rst;
+  assign restore = i_misprediction;
   assign pending_swap = i_push && i_pop && stack_not_empty;
   assign pending_push = i_push && !i_pop;
   assign pending_pop = i_pop && !i_push && stack_not_empty;
@@ -211,10 +209,7 @@ module return_address_stack #(
   always_comb begin
     tos_next = tos_after_pending;
     valid_count_next = valid_count_after_pending;
-    if (i_rst) begin
-      tos_next = '0;
-      valid_count_next = '0;
-    end else if (i_misprediction) begin
+    if (i_misprediction) begin
       // Restore the checkpoint, which excludes the mispredicted instruction's
       // own operation, then apply that operation.
       if (restore_swap_req) begin
@@ -236,8 +231,13 @@ module return_address_stack #(
   end
 
   always_ff @(posedge i_clk) begin
-    tos <= tos_next;
-    valid_count <= valid_count_next;
+    if (i_rst) begin
+      tos <= '0;
+      valid_count <= '0;
+    end else begin
+      tos <= tos_next;
+      valid_count <= valid_count_next;
+    end
   end
 
 `ifdef RAS_CHECKPOINT_LOCAL_PROOF
@@ -269,26 +269,21 @@ module return_address_stack #(
     reference_step = {step_tos, step_count};
   endfunction
 
-  // A restore counts only without a reset; the pending operation's entry
-  // write happens either way.
   logic reference_restore;
   logic [RAS_PTR_BITS-1:0] base_tos;
   logic [RAS_PTR_BITS:0] base_count;
   logic pop_req, push_req;
   always_comb begin
-    reference_restore = i_misprediction && !i_rst;
+    reference_restore = i_misprediction;
     base_tos = reference_restore ? i_restore_tos : tos;
     base_count = reference_restore ? i_restore_valid_count : valid_count;
     pop_req = reference_restore ? i_pop_after_restore : i_pop;
     push_req = reference_restore ? i_push_after_restore : i_push;
     assert ({o_tos, o_valid_count} == reference_step(tos, valid_count, i_pop, i_push));
     assert (o_nonempty == (o_valid_count != '0));
-    if (i_rst) begin
-      assert ({tos_next, valid_count_next} == '0);
-    end else begin
-      assert ({tos_next, valid_count_next} ==
-              reference_step(base_tos, base_count, pop_req, push_req));
-    end
+    assert ({tos_next, valid_count_next} == reference_step(
+        base_tos, base_count, pop_req, push_req
+    ));
   end
 
   // o_top is the entry at o_tos, or the pending link address when a pending

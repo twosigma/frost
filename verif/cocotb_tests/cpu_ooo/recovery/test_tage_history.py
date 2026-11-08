@@ -33,11 +33,11 @@ HIST_MASK = (1 << HIST_BITS) - 1
 PATH_BITS = 2
 FTQ_MASK = (1 << TAGE_FTQ_IDX_BITS) - 1
 
-ARM_RESET = 0
-ARM_TRAP = 1
-ARM_FENCE = 2
-ARM_RECOVERY = 3
-ARM_PD_REDIRECT = 4
+# Bit positions in i_hist_restore_arm, which is indexed from arm 1.
+ARM_TRAP = 0
+ARM_FENCE = 1
+ARM_RECOVERY = 2
+ARM_PD_REDIRECT = 3
 
 LOOKUP_A = {
     "index1": 0x055,
@@ -298,10 +298,75 @@ async def test_retired_taken_control_flow_builds_the_restore_history(dut: Any) -
         await _step(dut)
         dut.i_hist_push.value = 0
 
-    dut.i_hist_restore_arm.value = 1 << ARM_RESET
+
+@cocotb.test()
+async def test_single_cycle_reset_during_traffic(dut: Any) -> None:
+    """One reset cycle clears history, indices and training with events on its edge."""
+    await _setup_test(dut)
+
+    for tag, lookup in ((1, LOOKUP_A), (2, LOOKUP_B), (3, LOOKUP_A)):
+        idx = await _accept_branch(dut, lookup={**lookup, "index1": tag})
+        await _allocate(dut, tag, idx)
+
+    dut.i_hist_push.value = 1
+    dut.i_fetch_pc_path_bits.value = 0b11
+    await _step(dut)
+    dut.i_hist_push.value = 0
+    await _settle()
+    assert _lookup_hist(dut) != 0
+
+    # Both slots retire branches, so slot 1 trains and slot 2 waits in the hold.
+    await _commit(
+        dut,
+        [
+            {"valid": 1, "cond_branch": 1, "tag": 1, "taken_cf": 1, "target_bits": 1},
+            {"valid": 1, "cond_branch": 1, "tag": 2},
+        ],
+    )
+    assert _train(dut)["valid"]
+    assert dut.held_valid.value
+
+    dut.i_hist_push.value = 1
+    dut.i_pd_accept.value = 1
+    dut.i_pd_cond_branch.value = 1
+    dut.i_tage_slot_valid.value = 1
+    _drive_commit(
+        dut,
+        [
+            {"valid": 1, "cond_branch": 1, "tag": 3, "taken_cf": 1, "target_bits": 2},
+            None,
+        ],
+    )
+    dut.i_rst.value = 1
+    await _step(dut)
+    dut.i_rst.value = 0
+    _clear_inputs(dut)
+    await _settle()
+
+    assert _lookup_hist(dut) == 0
+    assert not _train(dut)["valid"]
+    assert not dut.held_valid.value
+    assert not dut.pd_accept_q.value
+    assert int(dut.ftq_write_ptr.value) == 0
+    assert int(dut.ftq_dispatch_ptr.value) == 0
+    assert int(dut.ftq_commit_ptr.value) == 0
+    dut.i_hist_restore_arm.value = 1 << ARM_TRAP
     await _settle()
     assert _lookup_hist(dut) == 0
     dut.i_hist_restore_arm.value = 0
+    await _settle()
+
+    # The hold's old branch trains nothing, and a new branch starts at entry 0.
+    await _step(dut)
+    assert not _train(dut)["valid"]
+    idx = await _accept_branch(dut, lookup=LOOKUP_B, bank=1)
+    assert idx == 0
+    await _allocate(dut, 7, idx)
+    await _commit(dut, [{"valid": 1, "cond_branch": 1, "tag": 7}, None])
+    train = _train(dut)
+    assert train["valid"]
+    assert {k: train["lookup"][k] for k in LOOKUP_B} == LOOKUP_B
+    assert train["bank"] == 1
 
 
 @cocotb.test()
