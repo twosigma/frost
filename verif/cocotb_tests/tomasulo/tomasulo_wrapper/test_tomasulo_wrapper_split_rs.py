@@ -34,6 +34,7 @@ from cocotb_tests.tomasulo.cdb_arbiter.cdb_arbiter_model import (
 )
 from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_model import (
     AllocationRequest,
+    BranchUpdate,
     CDBWrite,
 )
 from .tomasulo_interface import (
@@ -55,6 +56,7 @@ RS_NAMES = {
 OP_SW = instr_op_value("SW")
 OP_LW = instr_op_value("LW")
 OP_FMADD_D = instr_op_value("FMADD_D")
+OP_JALR = instr_op_value("JALR")
 
 
 async def setup_test(dut: Any) -> TomasuloInterface:
@@ -1051,3 +1053,187 @@ async def test_alu2_effective_packet_held_adapter_beats_injection(dut: Any) -> N
 
     dut_if.clear_fu_complete(FU_ALU2)
     cocotb.log.info("=== Test Passed ===")
+
+
+async def check_held_jalr_link(
+    dut: Any, contended_cycles: int, *, jalr_at_head_next: bool = False
+) -> None:
+    """Hold a JALR's link behind MUL and MEM and check the JALR waits for it.
+
+    The branch update marks a JALR done while its link still has to reach the
+    CDB. With the ROB full behind the JALR and MUL and MEM taking both lanes,
+    the link waits in the ALU adapter. If the JALR retired meanwhile, its tag
+    would be reallocated and the late link broadcast would complete the new
+    entry: in the drain window after three contended cycles, silently after
+    more. With jalr_at_head_next, two-wide commit is enabled and the JALR sits
+    at head+1 behind a done entry, at the tag wrap (head 31, JALR 0), so the
+    slot-2 gate decides.
+    """
+    dut_if = await setup_test(dut)
+    dut_if.set_fu_ready(RS_INT, False)
+
+    head_entry_tag: int | None = None
+    if jalr_at_head_next:
+        dut_if.set_widen_commit_ok(True)
+        # Retire 31 entries so that the head reaches the last tag.
+        for index in range(31):
+            tag = await dut_if.dispatch(AllocationRequest(pc=0x6000 + 4 * index))
+            dut_if.drive_fu_complete(FU_MUL, tag=tag, value=index)
+            await dut_if.step()
+            dut_if.clear_fu_complete(FU_MUL)
+        for _ in range(4):
+            await dut_if.step()
+        assert dut_if.rob_empty and dut_if.head_tag == 31
+        # A done entry at the head, held by commit hold until the JALR's
+        # link is held, so that the JALR is head+1 when both are done.
+        dut_if.set_commit_hold(True)
+        head_entry_tag = await dut_if.dispatch(AllocationRequest(pc=0x7FFC))
+        dut_if.drive_fu_complete(FU_MUL, tag=head_entry_tag, value=0x55)
+        await dut_if.step()
+        dut_if.clear_fu_complete(FU_MUL)
+
+    jalr_pc = 0x8000
+    target = 0x9000
+    link = jalr_pc + 4
+    jalr_tag = await dut_if.dispatch(
+        AllocationRequest(
+            pc=jalr_pc,
+            is_branch=True,
+            is_jalr=True,
+            predicted_taken=True,
+            predicted_target=target,
+            dest_valid=True,
+            dest_reg=1,
+        )
+    )
+    dut_if.drive_split_rs_dispatch(
+        RS_INT,
+        rob_tag=jalr_tag,
+        op=OP_JALR,
+        src1_ready=True,
+        src1_value=target,
+        src2_ready=True,
+        src3_ready=True,
+        imm=link,
+        predicted_taken=True,
+        predicted_target=target,
+        predicted_target_ok=True,
+        pc=jalr_pc,
+        link_addr=link,
+    )
+    await step_and_clear_dispatch(dut_if)
+
+    # Fill the ROB behind the JALR with entries that only complete when a
+    # test-injected MUL or MEM packet names them.
+    younger: list[int] = []
+    while not dut_if.rob_full:
+        younger.append(
+            await dut_if.dispatch(
+                AllocationRequest(pc=jalr_pc + 0x100 + 4 * len(younger))
+            )
+        )
+    expected_head = head_entry_tag if head_entry_tag is not None else jalr_tag
+    assert dut_if.head_tag == expected_head
+
+    # Port 0 selects the JALR, then presents it.
+    dut_if.set_fu_ready(RS_INT, True)
+    for _ in range(8):
+        await dut_if.step()
+        issue = dut_if.read_rs_issue()
+        if issue["valid"] and issue["rob_tag"] == jalr_tag:
+            break
+    else:
+        raise TimeoutError("JALR did not reach INT RS port 0")
+
+    # Resolve the JALR as predicted in its presentation cycle, as
+    # branch_resolution does, while MUL and MEM take both lanes for several
+    # cycles. A new ROB request waits for room the whole time.
+    dut_if.drive_branch_update(BranchUpdate(tag=jalr_tag, taken=True, target=target))
+    lane_tags = iter(younger)
+    reused_tag_cycle: int | None = None
+    link_grant_cycle: int | None = None
+    jalr_commit_cycle: int | None = None
+    held_link_committed = False
+    for cycle in range(contended_cycles + 12):
+        if cycle < contended_cycles:
+            dut_if.drive_fu_complete(FU_MUL, tag=next(lane_tags), value=0x1111)
+            dut_if.drive_fu_complete(FU_MEM, tag=next(lane_tags), value=0x2222)
+        else:
+            dut_if.clear_fu_complete(FU_MUL)
+            dut_if.clear_fu_complete(FU_MEM)
+        # Dispatch requests allocation only while the ROB reports room.
+        rob_has_room = not int(dut.o_rob_full.value)
+        if reused_tag_cycle is None and rob_has_room:
+            dut_if.drive_alloc_request(AllocationRequest(pc=0xA000))
+        else:
+            dut_if.clear_alloc_request()
+        await Timer(1, unit="ps")
+        if cycle == 0:
+            assert not (int(dut.o_cdb_grant.value) & (1 << FU_ALU)), (
+                "MUL and MEM should take both lanes from the JALR link"
+            )
+        held = (
+            bool(int(dut.alu_adapter_result_pending.value))
+            and (
+                int(dut.alu_adapter_to_arbiter.value)
+                >> (len(dut.alu_adapter_to_arbiter) - 6)
+            )
+            & 0x1F
+            == jalr_tag
+        )
+        if held and int(dut.o_cdb_grant.value) & (1 << FU_ALU):
+            link_grant_cycle = cycle
+        for read in (dut_if.read_commit, dut_if.read_commit_2):
+            commit = read()
+            if commit["valid"] and commit["tag"] == jalr_tag:
+                jalr_commit_cycle = cycle
+                if held:
+                    held_link_committed = True
+        if reused_tag_cycle is None and rob_has_room:
+            alloc_ready, alloc_tag, _ = dut_if.read_alloc_response()
+            if alloc_ready and alloc_tag == jalr_tag:
+                reused_tag_cycle = cycle
+        await dut_if.step()
+        if cycle == 0:
+            dut_if.clear_branch_update()
+            # Both the head entry and the JALR are done from here on.
+            dut_if.set_commit_hold(False)
+        dut_if.clear_alloc_request()
+
+    reused_done = reused_tag_cycle is not None and dut_if.rob_entry_done(jalr_tag)
+    reused_value = await dut_if.read_rob_entry_value(jalr_tag) if reused_done else None
+    cocotb.log.info(
+        f"link granted in cycle {link_grant_cycle}; JALR retired in cycle "
+        f"{jalr_commit_cycle} (while held: {held_link_committed}); tag {jalr_tag} "
+        f"reused in cycle {reused_tag_cycle}; reused entry done: {reused_done}; value: "
+        f"{reused_value if reused_value is None else hex(reused_value)} (link {link:#x})"
+    )
+    assert not held_link_committed, (
+        "JALR retired while its link was held in the ALU adapter"
+    )
+    assert link_grant_cycle is not None, "the held link was never granted"
+    assert jalr_commit_cycle is not None, "the JALR never retired"
+    assert jalr_commit_cycle > link_grant_cycle
+    assert reused_tag_cycle is not None, "the JALR's tag was never reallocated"
+    assert not dut_if.rob_entry_done(jalr_tag), (
+        "the JALR's late link broadcast completed the entry that reused its tag"
+    )
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_held_jalr_link_six_cycles(dut: Any) -> None:
+    """A JALR waits for a link that MUL and MEM hold for six cycles."""
+    await check_held_jalr_link(dut, contended_cycles=6)
+
+
+@cocotb.test()
+async def test_held_jalr_link_three_cycles(dut: Any) -> None:
+    """A JALR waits for a link that MUL and MEM hold for three cycles."""
+    await check_held_jalr_link(dut, contended_cycles=3)
+
+
+@cocotb.test()
+async def test_held_jalr_link_at_head_next(dut: Any) -> None:
+    """Two-wide commit does not retire a JALR at head+1 while its link is held."""
+    await check_held_jalr_link(dut, contended_cycles=4, jalr_at_head_next=True)

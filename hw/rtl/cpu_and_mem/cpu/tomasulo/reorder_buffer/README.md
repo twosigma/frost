@@ -59,12 +59,13 @@ directly, turns it off with `DrainWindowCheck=0`.
 
 A CDB write reaches a free entry only if it is stale: a completion for a tag
 that was flushed or has already retired (a JALR's wakeup broadcast can trail
-its retirement). If it lands in the cycle that entry is reallocated, the
-allocation wins in every field. The state bits and the exception cause take
-CDB writes only for valid entries, the value copies resolve the collision in
-the staged LVT, and the FP-flag RAMs number their allocation ports above
-their CDB ports. A store or branch, which never completes on the CDB,
-therefore retires with zero FP flags.
+its retirement unless `i_result_held` marks the JALR while its link waits).
+If it lands in the cycle that entry is reallocated, the allocation wins in
+every field. The state bits and the exception cause take CDB writes only for
+valid entries, the value copies resolve the collision in the staged LVT, and
+the FP-flag RAMs number their allocation ports above their CDB ports. A store,
+JAL or conditional branch, which never completes on the CDB, therefore retires
+with zero FP flags.
 
 ## Allocation
 
@@ -150,17 +151,24 @@ keeps the serializing classes off slot 2.
 
 The head retires when it is valid and done, has no exception, the serializer
 does not stall it, and retirement is permitted: no commit hold from cpu_ooo,
-no early-recovery pulse, and no flush. An exceptional head never retires; it
-traps. Nothing retires in a flush cycle, and the store queue relies on that:
-its flush logic has no guard for a store committing in the same cycle, so
-that store's write would be lost.
+no early-recovery pulse, and no flush. An entry marked in `i_result_held`,
+whose result a CDB adapter still holds, does not count as done at the head and
+cannot use the head bypass. Only a JALR, done on its branch update, can be
+done while its result is held; the Tomasulo wrapper marks it so that it waits
+for its link (see the
+[tag-reuse rule](../README.md#cdb-priority-and-tag-reuse)). Any other marked
+entry is not done, so a mark never takes away a head the serializer owns. An
+exceptional head never retires; it traps. Nothing retires in a flush cycle,
+and the store queue relies on that: its flush logic has no guard for a store
+committing in the same cycle, so that store's write would be lost.
 
 ### Two-wide commit
 
 Head and head+1 retire together when both are ready and both pass the hazard
-gate, unless cpu_ooo holds slot 2 off with `i_widen_commit_ok`. It does that
+gate, unless slot 2 is held off with `i_widen_commit_ok`. cpu_ooo does that
 during a debugger single step, so exactly one instruction retires before the
-halt. Slot 2 has no serializer, trap, or redirect path, so the gate keeps on
+halt, and the Tomasulo wrapper does it while the ALU adapter holds head+1's
+result. Slot 2 has no serializer, trap, or redirect path, so the gate keeps on
 slot 1 anything that needs one: CSRs, FENCE, FENCE.I, SFENCE.VMA, WFI, xRETs,
 AMO, LR, SC, exceptions, a mispredicted branch at the head, and a
 mispredicted or early-recovered branch at head+1.

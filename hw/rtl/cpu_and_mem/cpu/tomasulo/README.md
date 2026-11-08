@@ -159,13 +159,20 @@ tag in the queue.
 
 Each completion must also broadcast exactly once: a duplicate that arrives
 after the first copy retired the instruction lands on a freed or reallocated
-entry. The MEM slot needs care here, because store faults, SC results, and
-load results share it, in that priority order. The LQ pops its result exactly
-when the MEM mux presents it. Outside a full flush, a presented MEM result
-always wins a lane, because only MUL outranks MEM on a two-lane bus. The MEM
-adapter is therefore never left holding a result. A store fault, which its
-register presents for only one cycle, is broadcast unless a flush squashes
-it; an SC result waits in its register only behind a store fault.
+entry. An instruction with a CDB completion must also broadcast before its tag
+can be reused. A JALR is done on its branch update, when port 0 presents it,
+while its link still has to reach the CDB; when MUL and MEM take both lanes,
+the ALU adapter holds the link. The wrapper marks the entry whose result the
+adapter holds, the ROB does not count a marked head as done, and slot 2 does
+not retire head+1 while the adapter holds its result, so the link never
+reaches a reallocated tag. Other entries are not done while their result is
+held. The MEM slot needs care here, because store faults, SC results, and load
+results share it, in that priority order. The LQ pops its result exactly when
+the MEM mux presents it. Outside a full flush, a presented MEM result always
+wins a lane, because only MUL outranks MEM on a two-lane bus. The MEM adapter
+is therefore never left holding a result. A store fault, which its register
+presents for only one cycle, is broadcast unless a flush squashes it; an SC
+result waits in its register only behind a store fault.
 
 ### Reservation station routing
 
