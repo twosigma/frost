@@ -2367,8 +2367,10 @@ module tomasulo_wrapper #(
   // cycle without a grant or a full flush (a partially flushed result is not
   // presented), so the mask is a register beside the adapter's pending bit.
   // Commit permission (i_commit_hold) arrives late from cpu_ooo; the mask
-  // joins the per-entry done bits instead, before the head read.
-  logic [riscv_pkg::ReorderBufferDepth-1:0] alu_result_held_q;
+  // joins the per-entry done bits instead, before the head read. The mask's
+  // next state, which reads the late CDB grant, stays on the D input: mapped
+  // onto the flops' reset pin, it put the grant behind a slower pin.
+  (* extract_reset = "no" *) logic [riscv_pkg::ReorderBufferDepth-1:0] alu_result_held_q;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       alu_result_held_q <= '0;
