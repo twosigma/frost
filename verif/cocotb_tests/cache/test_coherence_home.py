@@ -94,14 +94,14 @@ class Home:
         data = self.memory.get(base, self.initial(base))
         return (data >> (8 * (address - base))) & ((1 << 256) - 1)
 
-    async def reset(self) -> None:
+    async def reset(self, cycles: int = 2) -> None:
         """Reset all ownership and wait for tag initialization."""
         self.accepted_puts.clear()
         for signal in self.dut:
             if signal._name.startswith("i_"):
                 signal.value = 0
         await self.set(i_rst=1)
-        await self.tick(2)
+        await self.tick(cycles)
         await self.set(i_rst=0, i_p_ready=1, i_wa_ready=1, i_mem_req_ready=1)
         await self.tick(20)
 
@@ -1022,8 +1022,7 @@ async def sibling_completion_pins_share_a_way_until_both_releases(dut: Any) -> N
     assert any(addr == base and reason == 2 for _, addr, reason, _ in b.probes)
 
 
-@cocotb.test()
-async def fatal_and_reset_with_held_results_and_dirty_victim(dut: Any) -> None:
+async def fatal_then_reset(dut: Any, reset_cycles: int) -> None:
     """Preserve held ownership at fatal stop and reset the home ownership records."""
     b = Home(dut)
     await b.reset()
@@ -1061,10 +1060,22 @@ async def fatal_and_reset_with_held_results_and_dirty_victim(dut: Any) -> None:
     b.replies.clear()
     b.private.clear()
     b.frozen.clear()
-    await b.reset()
+    await b.reset(reset_cycles)
     assert not b.get("o_g_valid") and not b.get("o_u_valid")
     assert not int(dut.wb_valid_q.value)
     assert await b.read(base + b.line) == b.expected(base + b.line)
+
+
+@cocotb.test()
+async def fatal_and_reset_with_held_results_and_dirty_victim(dut: Any) -> None:
+    """Preserve held ownership at fatal stop and reset the home ownership records."""
+    await fatal_then_reset(dut, 2)
+
+
+@cocotb.test()
+async def fatal_and_single_cycle_reset(dut: Any) -> None:
+    """One reset cycle does the same."""
+    await fatal_then_reset(dut, 1)
 
 
 @cocotb.test()
@@ -1105,6 +1116,24 @@ async def parked_fills_release_engines_and_reenter_under_miss_pressure(
         received.add(grant[3])
         await b.complete(grant)
     assert received == set(addresses)
+
+
+@cocotb.test()
+async def single_cycle_reset_on_a_fill_decision(dut: Any) -> None:
+    """Leave no allocation flag behind a reset edge on a fill decision."""
+    b = Home(dut)
+    await b.reset()
+    await b.submit(0, 0x80000000)
+    for _ in range(200):
+        if b.get("array_response") and b.get("decision_fill"):
+            break
+        await b.tick()
+    else:
+        raise AssertionError("no fill decision")
+    await b.set(i_rst=1)
+    await b.tick()
+    await b.set(i_rst=0)
+    assert not b.get("fill_allocated_q") and not b.get("victim_allocated_q")
 
 
 @cocotb.test()

@@ -57,13 +57,13 @@ class Bench:
             await self.set(i_clk=1)
             await self.set(i_clk=0)
 
-    async def reset(self, epoch: int = 0) -> None:
+    async def reset(self, epoch: int = 0, cycles: int = 2) -> None:
         """Reset every endpoint and select a cluster epoch."""
         for signal in self.dut:
             if signal._name.startswith("i_"):
                 signal.value = 0
         await self.set(i_rst=1, i_epoch=epoch)
-        await self.tick(2)
+        await self.tick(cycles)
         await self.set(i_rst=0)
 
     def d(self, q: int = 0, op: int = 0) -> int:
@@ -413,7 +413,7 @@ async def put_selection_error_and_reset(dut: Any) -> None:
 async def dma_identity_and_reset_with_live_grants(dut: Any) -> None:
     """Preserve opaque DMA IDs and discard all endpoint state on reset."""
     b = Bench(dut)
-    for phase in range(6):
+    for phase, cycles in [(phase, cycles) for cycles in (2, 1) for phase in range(6)]:
         await b.reset()
         q = pack((2, 2), (2, 3), (4, 15), (1, 0))
         demand = b.d(q=q, op=7)
@@ -440,7 +440,7 @@ async def dma_identity_and_reset_with_live_grants(dut: Any) -> None:
         if phase >= 5:
             await b.set(i_req_c_ready=1)
             await b.tick()
-        await b.reset(epoch=1)
+        await b.reset(epoch=1, cycles=cycles)
         assert b.get("o_home_live") == 0
         assert b.get("o_req_live") == 0
         await b.set(

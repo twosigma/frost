@@ -32,9 +32,6 @@ module coherence_home_endpoint #(
     output logic o_d_ready,
     input logic [ADDR_WIDTH+311:0] i_d,
     output logic o_work_valid,
-    // o_work_valid without the reset term, for selection logic whose state
-    // is cleared by the same reset.
-    output logic o_work_offer,
     output logic [ADDR_WIDTH+311:0] o_work,
     input logic i_result_valid,
     output logic o_result_ready,
@@ -52,8 +49,6 @@ module coherence_home_endpoint #(
     input logic i_cancel_valid,
     input logic [ADDR_WIDTH+10:0] i_cancel,
     output logic o_u_valid,
-    // o_u_valid without the reset term, for a consumer that applies reset.
-    output logic o_u_offer,
     input logic i_u_ready,
     output logic [ADDR_WIDTH+14:0] o_u,
     output logic o_live,
@@ -105,10 +100,7 @@ module coherence_home_endpoint #(
   assign o_live = phase_q != Idle;
   assign o_pending = pending_q;
   assign o_work = demand_q;
-  assign o_work_offer = phase_q == Work;
-  assign o_work_valid = !i_rst && o_work_offer;
-  // Reset clears the endpoint, so D readiness leaves reset to the table's
-  // readiness, which applies it once.
+  assign o_work_valid = phase_q == Work;
   assign o_d_ready = phase_q == Idle && coherence_pkg::legal_q(
       demand_in.q
   ) && demand_in.q.epoch == i_epoch &&
@@ -118,10 +110,10 @@ module coherence_home_endpoint #(
   assign result_matches = result_in.q == demand_q.q &&
       result_in.tid == 6'(TID) && result_in.addr == demand_q.addr &&
       result_in.opcode <= coherence_pkg::GrantFail;
-  assign o_g_valid = !i_rst && phase_q == Work && i_result_valid && result_matches;
+  assign o_g_valid = phase_q == Work && i_result_valid && result_matches;
   // G readiness is the last term of result acceptance.
   (* keep = "true" *) logic result_take;
-  assign result_take = !i_rst && phase_q == Work && result_matches;
+  assign result_take = phase_q == Work && result_matches;
   assign o_result_ready = result_take && i_g_ready;
   assign o_g = result_in;
   localparam int unsigned CompletionKeyWidth = ADDR_WIDTH + 15;
@@ -159,14 +151,13 @@ module coherence_home_endpoint #(
         !grant_error_q && grant_opcode_q != coherence_pkg::GrantFail &&
         !completion_in.write_done);
   wire waiting_completion = phase_q == WaitC;
-  assign o_c_ready = !i_rst && waiting_completion && completion_matches && completion_status_ok;
-  assign o_absorb_ready = !i_rst && phase_q == Work && absorb_in.absorbed &&
+  assign o_c_ready = waiting_completion && completion_matches && completion_status_ok;
+  assign o_absorb_ready = phase_q == Work && absorb_in.absorbed &&
       absorb_in.opcode == coherence_pkg::ProbeData && absorb_in.data_valid && !absorb_in.error &&
       absorb_in.tid == 6'(TID) && absorb_in.epoch == demand_q.q.epoch &&
       absorb_in.put_epoch == demand_q.q.epoch && absorb_in.addr == demand_q.addr &&
       int'(absorb_in.hart) < NUM_HARTS && !seen_q[absorb_slot];
-  assign o_u_offer = phase_q == SendU;
-  assign o_u_valid = !i_rst && o_u_offer;
+  assign o_u_valid = phase_q == SendU;
   assign o_u = {demand_q.q, 6'(TID), demand_q.addr};
 
   always_ff @(posedge i_clk) begin

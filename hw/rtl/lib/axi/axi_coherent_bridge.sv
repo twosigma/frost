@@ -61,10 +61,10 @@
  * request waits, as the ingress requires.
  *
  * Every AXI READY and every B and R output comes from registered state, and
- * the line request is presented from registers. i_rst is synchronous; while it
- * is asserted every VALID and READY is low. It must reset the bridge with its
- * AXI masters, and each reset of the ingress, which drops the requests it
- * holds, must overlap one of the bridge.
+ * the line request is presented from registers. i_rst is synchronous and
+ * applies at the flops. It must reset the bridge with its AXI masters and the
+ * ingress, which ignore its outputs in a reset cycle, and each reset of the
+ * ingress, which drops the requests it holds, must overlap one of the bridge.
  */
 module axi_coherent_bridge #(
     parameter int unsigned ADDR_WIDTH = 64,
@@ -284,7 +284,7 @@ module axi_coherent_bridge #(
   logic sel_read_q;
   logic [StarveBits-1:0] starve_q;
 
-  assign o_line_req_valid = !i_rst && (sel_read_q ? rreq_valid_q : wreq_valid_q);
+  assign o_line_req_valid = sel_read_q ? rreq_valid_q : wreq_valid_q;
   assign o_line_req_write = !sel_read_q;
   assign o_line_req_addr = {sel_read_q ? rreq_line_q : wreq_line_q, {OffsetBits{1'b0}}};
   assign o_line_req_wdata = wreq_data_q;
@@ -329,7 +329,7 @@ module axi_coherent_bridge #(
   logic [WRITE_BURSTS-1:0] wbt_done_q, wbt_err_q, wbt_non_alloc_q;
   logic [OutBits-1:0] wbt_out_q[WRITE_BURSTS];
 
-  assign o_axi_awready = !i_rst && ((32'(wbt_count_q) + 32'(aw_q_valid)) < WRITE_BURSTS);
+  assign o_axi_awready = (32'(wbt_count_q) + 32'(aw_q_valid)) < WRITE_BURSTS;
   logic aw_fire;
   assign aw_fire = i_axi_awvalid && o_axi_awready;
 
@@ -351,7 +351,7 @@ module axi_coherent_bridge #(
   logic w_id_free;
   assign w_id_free = !(&w_id_busy_q);
 
-  assign o_axi_wready = !i_rst && (w_pend_q != '0) &&
+  assign o_axi_wready = (w_pend_q != '0) &&
       (w_err_q || !w_seg_end_q || (!wreq_valid_q && w_id_free));
   logic w_fire, w_burst_end;
   assign w_fire = i_axi_wvalid && o_axi_wready;
@@ -411,7 +411,7 @@ module axi_coherent_bridge #(
   logic b_ready_head;
   assign b_ready_head = (wbt_count_q != '0) && wbt_done_q[wbt_head_q] &&
       (wbt_out_q[wbt_head_q] == '0);
-  assign o_axi_bvalid = !i_rst && b_ready_head;
+  assign o_axi_bvalid = b_ready_head;
   assign o_axi_bid = wbt_id_q[wbt_head_q];
   assign o_axi_bresp = (wbt_code_q[wbt_head_q] != RespOkay) ? wbt_code_q[wbt_head_q] :
       (wbt_err_q[wbt_head_q] ? RespSlvErr : RespOkay);
@@ -545,7 +545,7 @@ module axi_coherent_bridge #(
   logic [1:0] rbt_burst_q[READ_BURSTS];
   logic [READ_BURSTS-1:0] rbt_non_alloc_q;
 
-  assign o_axi_arready = !i_rst && ((32'(rbt_count_q) + 32'(ar_q_valid)) < READ_BURSTS);
+  assign o_axi_arready = (32'(rbt_count_q) + 32'(ar_q_valid)) < READ_BURSTS;
   logic ar_fire;
   assign ar_fire = i_axi_arvalid && o_axi_arready;
 
@@ -647,7 +647,7 @@ module axi_coherent_bridge #(
   logic r_beat_ready;
   assign r_beat_ready = (rbt_count_q != '0) && (seg_count_q != '0) &&
       (r_seg_err || rbuf_valid_q[r_seg_sub]);
-  assign o_axi_rvalid = !i_rst && r_beat_ready;
+  assign o_axi_rvalid = r_beat_ready;
   assign o_axi_rid = r_id_q;
   assign o_axi_rlast = r_last_q;
   always_comb begin
@@ -1219,12 +1219,12 @@ module axi_coherent_bridge #(
   end
 
   // ---- properties ----------------------------------------------------------------
-  always_comb begin
-    if (i_rst) begin
-      p_quiet_in_reset :
-      assert (!o_axi_awready && !o_axi_wready && !o_axi_arready && !o_axi_bvalid &&
-              !o_axi_rvalid && !o_line_req_valid);
+  always @(posedge i_clk) begin
+    if (f_past_valid && $past(i_rst)) begin
+      p_quiet_after_reset : assert (!o_axi_bvalid && !o_axi_rvalid && !o_line_req_valid);
     end
+  end
+  always_comb begin
     if (!i_rst && f_past_valid) begin
       p_tables_bounded :
       assert ((32'(f_aw_count) <= WRITE_BURSTS) && (32'(f_ar_count) <= READ_BURSTS));
