@@ -831,13 +831,13 @@ module csr_file #(
   assign mvip_new = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mvip);
   assign o_ireg_keep = csr_rmw_keep;
   assign o_ireg_set = csr_rmw_set;
-  assign o_m_ireg_we = !i_rst && storage_csr_write && csr_write_intent &&
+  assign o_m_ireg_we = storage_csr_write && csr_write_intent &&
       (i_csr_address == riscv_pkg::CsrMireg) && !o_mireg_illegal;
-  assign o_s_ireg_we = !i_rst && storage_csr_write && csr_write_intent &&
+  assign o_s_ireg_we = storage_csr_write && csr_write_intent &&
       (i_csr_address == riscv_pkg::CsrSireg) && !o_sireg_illegal;
-  assign o_m_topei_claim = !i_rst && storage_csr_write && csr_write_intent &&
+  assign o_m_topei_claim = storage_csr_write && csr_write_intent &&
       (i_csr_address == riscv_pkg::CsrMtopei);
-  assign o_s_topei_claim = !i_rst && storage_csr_write && csr_write_intent &&
+  assign o_s_topei_claim = storage_csr_write && csr_write_intent &&
       (i_csr_address == riscv_pkg::CsrStopei);
 
   assign fflags_new_value = zicsr_rmw(csr_rmw_keep, csr_rmw_set, XLEN'({27'b0, fflags}));
@@ -2026,7 +2026,7 @@ module csr_file #(
       assert (stopi == f_topi(mip & mie & mideleg));
       assert (mvip == ((XLEN'(mip_ssip) << 1) |
           (XLEN'(!menvcfg_stce && mip_stip) << 5) | (XLEN'(mip_seip) << 9)));
-      if (!csr_write_intent || !i_csr_write_enable || !i_csr_read_enable || i_rst)
+      if (!csr_write_intent || !i_csr_write_enable || !i_csr_read_enable)
         assert (!(o_m_topei_claim || o_s_topei_claim || o_m_ireg_we || o_s_ireg_we));
       if (i_csr_read_enable) begin
         case (i_csr_address)
