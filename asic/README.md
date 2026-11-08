@@ -129,8 +129,9 @@ these modules.
 
 | Macro | Words x bits | Write mask | Size (um) | Read (ns) | Minimum period (ns) | Instances | Memories |
 | --- | --- | --- | --- | ---: | ---: | ---: | --- |
-| `sram_1w1r_4096x64_m8` | 4,096 x 64 | Bytes | 751.9 x 845.1 | 0.514 to 0.581 | 2.15 | 13 | L2 data, 1 row of 8; L1D data, 1 row of 4; the NIC's transmit frame buffer, 1 macro |
+| `sram_1w1r_4096x64_m8` | 4,096 x 64 | Bytes | 751.9 x 845.1 | 0.514 to 0.581 | 2.15 | 9 | L2 data, 1 row of 8; the NIC's transmit frame buffer, 1 macro |
 | `sram_2rw_4096x64_m8` | 4,096 x 64 | Bytes, both ports | 752.5 x 859.4 | 0.514 to 0.581 | 2.15 | 4 | Data memory, 4 rows |
+| `sram_1w1r_1024x64_m8` | 1,024 x 64 | Bytes | 416.5 x 436.5 | 0.378 to 0.445 | 1.65 | 16 | L1D data, 1 row of 4 in each way's bank |
 | `sram_1w1r_1024x19` | 1,024 x 19 | | 263.4 x 261.0 | 0.306 to 0.373 | 1.38 | 4 | L1D tags, one for each way |
 | `sram_1w1r_1024x18` | 1,024 x 18 | | 253.5 x 260.7 | 0.302 to 0.369 | 1.37 | 4 | L2 tags, 1 row of 4 ways |
 | `sram_1w1r_512x68` | 512 x 68 | | 436.7 x 245.7 | 0.384 to 0.451 | 1.67 | 2 | The NIC's receive and transmit FIFOs |
@@ -329,7 +330,7 @@ to 3, one for each way.
 | --- | --- | --- | --- |
 | `cpu.cluster_memory.gen_coherent_tier.home.array.data_array` | `sdp_ram_byte_en` | 4,096 x 512, byte lanes | 1 row of 8 `sram_1w1r_4096x64_m8` |
 | `cpu.cluster_memory.gen_coherent_tier.home.array.gen_tag_ultra.tags` | `sdp_packed_tag_uram` | 4,096 tags of 18 bits, read four at a time | 1 row of 4 `sram_1w1r_1024x18` |
-| `cpu.hart.gen_coherent_tier.hart_cache.l1d.array.data_array` | `sdp_ram_byte_en` | 4,096 x 256, byte lanes | 1 row of 4 `sram_1w1r_4096x64_m8` |
+| `cpu.hart.gen_coherent_tier.hart_cache.l1d.array.gen_data_bank[w].data_array` | `sdp_ram_byte_en` | 1,024 x 256, byte lanes | 1 row of 4 `sram_1w1r_1024x64_m8` each |
 | `cpu.hart.gen_coherent_tier.hart_cache.l1d.array.gen_tag_block.gen_way[w].tags` | `sdp_block_ram` | 1,024 x 19 | 1 `sram_1w1r_1024x19` each |
 | `cpu.hart.gen_coherent_tier.hart_cache.l1i.gen_data_banks.gen_bank[w].data_bank` | `sdp_ram_byte_en` | 128 x 256, byte lanes | 1 row of 4 `sram_1w1r_128x64_m8` each |
 | `cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.branch_predictor_inst.btb_payload_ram_lookup_2`, `_alt`, and `_rot` | `sdp_block_ram` | 256 x 36 | 1 `sram_1w1r_256x36` each |

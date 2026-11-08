@@ -1,0 +1,52 @@
+[tasks]
+coh_array_equiv_bmc bmc bram
+coh_array_equiv_data0_bmc bmc bram lane0
+coh_array_equiv_data31_bmc bmc bram lane31
+coh_array_equiv4_bmc bmc bram four
+coh_array_equiv4_data0_bmc bmc bram four lane0
+coh_array_equiv4_data17_bmc bmc bram four lane17
+coh_array_equiv4_bimodal_bmc bmc bram four bimodal
+coh_array_equiv_uram_bmc bmc uram
+coh_array_equiv_uram_data5_bmc bmc uram lane5
+coh_array_equiv4_uram_bmc bmc uram four
+coh_array_equiv_cover cover bram four lane0
+
+[options]
+bmc: mode bmc
+cover: mode cover
+~uram: depth 30
+uram: depth 40
+timeout 1800
+bmc: aigsmt boolector
+
+[engines]
+bmc: abc bmc3
+cover: smtbmc boolector
+
+[script]
+read -formal -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
+read -formal -sv coherence_array.sv coherence_array_reference.sv coherence_array_equiv.sv
+four: chparam -set CACHE_BYTES 256 -set WAYS 4 coherence_array_equiv
+uram: chparam -set ULTRA 1 coherence_array_equiv
+bimodal: chparam -set BIMODAL_INSERT 1 coherence_array_equiv
+lane0: chparam -set DATA_BYTE 0 coherence_array_equiv
+lane5: chparam -set DATA_BYTE 5 coherence_array_equiv
+lane17: chparam -set DATA_BYTE 17 coherence_array_equiv
+lane31: chparam -set DATA_BYTE 31 coherence_array_equiv
+prep -top coherence_array_equiv
+select -assert-count 3 c:p_equiv_*
+# Out-of-range bits of the four-way selections are unreachable constants.
+memory_map
+opt
+techmap
+opt -fast
+setundef -anyseq
+opt_clean
+
+[files]
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_array.sv
+coherence_array_reference.sv
+coherence_array_equiv.sv
