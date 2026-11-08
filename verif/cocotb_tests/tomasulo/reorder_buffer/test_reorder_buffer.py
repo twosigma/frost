@@ -2278,7 +2278,7 @@ async def test_alloc_priv_fault_survives_nonexception_cdb(dut: Any) -> None:
 async def test_hpm_user_alias_allocation_masks(dut: Any) -> None:
     """Each HPM alias uses its own allocation-time permission bit."""
     dut_if, _ = await setup_test(dut)
-    for counter in range(3, 9):
+    for counter in range(3, 11):
         for priv in (0, 1, 3):
             for blocked, write_intent in ((False, False), (True, False), (False, True)):
                 await dut_if.reset_dut(RESET_CYCLES)
@@ -2316,6 +2316,37 @@ async def test_hpm_user_alias_allocation_masks(dut: Any) -> None:
                 if fault:
                     assert dut_if.trap_cause == EXC_ILLEGAL_INSTR
                     assert dut_if.trap_pc == req.pc
+
+
+@cocotb.test()
+async def test_scountovf_allocation_legality(dut: Any) -> None:
+    """Sscofpmf scountovf (0xDA0) is an S-level read-only CSR: U and writes trap."""
+    dut_if, _ = await setup_test(dut)
+    for priv in (0, 1, 3):
+        for write_intent in (False, True):
+            await dut_if.reset_dut(RESET_CYCLES)
+            dut.i_priv.value = priv
+            dut.i_priv_is_u.value = int(priv == PRIV_U)
+            dut.i_counter_blocked.value = 0
+            req = AllocationRequest(
+                pc=0x2200,
+                dest_reg=6,
+                dest_valid=True,
+                is_csr=True,
+                csr_addr=0xDA0,
+                csr_write_intent=write_intent,
+                csr_op=1 if write_intent else 0,
+            )
+            tag = await drive_single_alloc(dut_if, req)
+            dut_if.drive_cdb_write(CDBWrite(tag=tag, value=0))
+            await RisingEdge(dut_if.clock)
+            await FallingEdge(dut_if.clock)
+            dut_if.clear_cdb_write()
+            fault = priv == PRIV_U or write_intent
+            assert dut_if.trap_pending == fault, (priv, write_intent)
+            assert dut_if.csr_start == (not fault), (priv, write_intent)
+            if fault:
+                assert dut_if.trap_cause == EXC_ILLEGAL_INSTR
 
 
 @cocotb.test()

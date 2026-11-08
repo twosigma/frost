@@ -618,6 +618,12 @@ FORMAL_TARGETS = [
         tasks=("prove", "prove_integrated", "prove_perf_off"),
     ),
     FormalTarget(
+        "csr_sscofpmf.sby",
+        "Sscofpmf counter overflow, OF stickiness, inhibits, privilege attribution "
+        "and LCOFIP updates hold from arbitrary state",
+        tasks=("prove", "prove_integrated"),
+    ),
+    FormalTarget(
         "pc_increment_relation.sby",
         "PC increment comparisons and selection match full-width arithmetic, including "
         "wraparound",

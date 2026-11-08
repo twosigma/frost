@@ -1081,6 +1081,8 @@ package riscv_pkg;
   localparam bit [11:0] CsrHpmcounter6 = 12'hC06;  // DTLB misses
   localparam bit [11:0] CsrHpmcounter7 = 12'hC07;  // L1D permission misses
   localparam bit [11:0] CsrHpmcounter8 = 12'hC08;  // Store-queue full stall cycles
+  localparam bit [11:0] CsrHpmcounter9 = 12'hC09;  // Cycles, mode-filtered
+  localparam bit [11:0] CsrHpmcounter10 = 12'hC0A;  // Instructions retired, mode-filtered
   localparam bit [11:0] CsrCycleH = 12'hC80;  // cycleh (RV32 only)
   localparam bit [11:0] CsrTimeH = 12'hC81;  // timeh (RV32 only)
   localparam bit [11:0] CsrInstretH = 12'hC82;  // instreth (RV32 only)
@@ -1102,6 +1104,23 @@ package riscv_pkg;
   localparam bit [11:0] CsrMhpmevent6 = 12'h326;  // mhpmevent6
   localparam bit [11:0] CsrMhpmevent7 = 12'h327;  // mhpmevent7
   localparam bit [11:0] CsrMhpmevent8 = 12'h328;  // mhpmevent8
+  localparam bit [11:0] CsrMhpmcounter9 = 12'hB09;  // mhpmcounter9
+  localparam bit [11:0] CsrMhpmcounter10 = 12'hB0A;  // mhpmcounter10
+  localparam bit [11:0] CsrMhpmevent9 = 12'h329;  // mhpmevent9
+  localparam bit [11:0] CsrMhpmevent10 = 12'h32A;  // mhpmevent10
+  // Sscofpmf: scountovf shadows mhpmevent3..31.OF (read-only, S-level).
+  localparam bit [11:0] CsrScountovf = 12'hDA0;
+  // Sscofpmf mhpmevent fields. VSINH (59) and VUINH (58) are read-only zero
+  // without the H extension; 57:56 are WPRI; 55:0 select the event.
+  localparam int unsigned MhpmeventOfBit = 63;
+  localparam int unsigned MhpmeventMinhBit = 62;
+  localparam int unsigned MhpmeventSinhBit = 61;
+  localparam int unsigned MhpmeventUinhBit = 60;
+  localparam int unsigned MhpmeventSelectBits = 56;
+  // Implemented HPM counters 3..HpmCounterLast; counter-enable and inhibit
+  // masks are HpmCounterLast+1 bits wide.
+  localparam int unsigned HpmCounterLast = 10;
+  localparam int unsigned CounterMaskBits = HpmCounterLast + 1;
 
   // Machine-mode CSR addresses (for trap/interrupt handling)
   localparam bit [11:0] CsrMstatus = 12'h300;  // Machine status register
@@ -1110,8 +1129,8 @@ package riscv_pkg;
   localparam bit [11:0] CsrMideleg = 12'h303;  // Machine interrupt delegation
   localparam bit [11:0] CsrMie = 12'h304;  // Machine interrupt enable
   localparam bit [11:0] CsrMtvec = 12'h305;  // Machine trap vector base
-  localparam bit [11:0] CsrMcounteren = 12'h306;  // S/U counter enable (CY/TM/IR/HPM3..8)
-  // mcountinhibit.CY/IR and HPM3..8 inhibit their counters; TM and bits 31:9 read zero.
+  localparam bit [11:0] CsrMcounteren = 12'h306;  // S/U counter enable (CY/TM/IR/HPM3..10)
+  // mcountinhibit.CY/IR and HPM3..10 inhibit their counters; TM and bits 31:11 read zero.
   // OpenSBI probes this v1.11 CSR before using v1.12 menvcfg to enable Sstc.
   localparam bit [11:0] CsrMcountinhibit = 12'h320;
   localparam bit [11:0] CsrMenvcfg = 12'h30A;  // Machine environment configuration
@@ -1272,6 +1291,7 @@ package riscv_pkg;
   localparam int unsigned MieMtiBit = 7;  // Machine Timer Interrupt
   localparam int unsigned MieSeiBit = 9;  // Supervisor External Interrupt
   localparam int unsigned MieMeiBit = 11;  // Machine External Interrupt
+  localparam int unsigned MieLcofBit = 13;  // Local Counter Overflow Interrupt (Sscofpmf)
 
   // Exception cause codes (mcause values when the interrupt bit is clear),
   // XLEN-wide.
@@ -1299,9 +1319,11 @@ package riscv_pkg;
   // spec, and FROST raises no architectural cause 10, 14, or 16 and above.
   localparam bit [XLEN-1:0] MedelegMask = XLEN'(64'h0000_B3FF);
   // mideleg implemented-bit mask (WARL): the supervisor interrupt classes
-  // (SSI/STI/SEI). The machine classes are read-only zero per the spec.
+  // (SSI/STI/SEI) and the local counter-overflow interrupt (LCOFI). The
+  // machine classes are read-only zero per the spec.
   localparam bit [XLEN-1:0] MidelegMask =
-      XLEN'((64'h1 << MieSsiBit) | (64'h1 << MieStiBit) | (64'h1 << MieSeiBit));
+      XLEN'((64'h1 << MieSsiBit) | (64'h1 << MieStiBit) | (64'h1 << MieSeiBit) |
+            (64'h1 << MieLcofBit));
 
   // Interrupt causes include mcause[XLEN-1]. Compare at full width; a
   // 32-bit slice loses the interrupt bit on RV64.
@@ -1311,6 +1333,7 @@ package riscv_pkg;
   localparam bit [XLEN-1:0] IntMachineTimer = {1'b1, {(XLEN - 4) {1'b0}}, 3'd7};
   localparam bit [XLEN-1:0] IntSupervisorExternal = {1'b1, {(XLEN - 5) {1'b0}}, 4'd9};
   localparam bit [XLEN-1:0] IntMachineExternal = {1'b1, {(XLEN - 5) {1'b0}}, 4'd11};
+  localparam bit [XLEN-1:0] IntLocalCounterOverflow = {1'b1, {(XLEN - 5) {1'b0}}, 4'd13};
 
   // ===========================================================================
   // Section 4: Control Enumerations

@@ -28,7 +28,9 @@
  *   S-target (mideleg[i]=1, supervisor classes only):
  *     pending && mie[i] && (priv == U || (priv == S && sstatus.SIE))
  * An armed M request takes priority over an armed S request. Within M,
- * priority is MEI > MSI > MTI > SEI > SSI > STI; within S, SEI > SSI > STI.
+ * priority is MEI > MSI > MTI > SEI > SSI > STI > LCOFI; within S,
+ * SEI > SSI > STI > LCOFI. LCOFI (Sscofpmf local counter overflow, cause 13)
+ * is a delegable local interrupt like the supervisor classes.
  *
  * Debug Mode (RISC-V Debug Spec 0.13.2) uses a third take class, D:
  *   - haltreq and step completion enter Debug Mode, save dpc/dcsr, and
@@ -111,6 +113,10 @@ module trap_unit #(
     // classes from csr_file's effective sip bits {SEIP, STIP, SSIP}.
     input riscv_pkg::interrupt_t i_interrupts,
     input logic [2:0] i_s_pending,
+    // Sscofpmf: mip.LCOFIP and mideleg bit 13 from csr_file; mie.LCOFIE is
+    // i_mie[13].
+    input logic i_lcof_pending = 1'b0,
+    input logic i_mideleg_lcof = 1'b0,
 
     // Exception inputs from ROB commit/trap arbitration
     input logic i_exception_valid,
@@ -202,12 +208,16 @@ module trap_unit #(
   assign mie_seie = i_mie[riscv_pkg::MieSeiBit];
   assign mie_stie = i_mie[riscv_pkg::MieStiBit];
   assign mie_ssie = i_mie[riscv_pkg::MieSsiBit];
+  logic mie_lcofie;
+  assign mie_lcofie = i_mie[riscv_pkg::MieLcofBit];
 
-  // Supervisor pending bits and delegation selects.
-  logic seip, stip, ssip;
+  // Supervisor and local pending bits and delegation selects.
+  logic seip, stip, ssip, lcofip;
   assign {seip, stip, ssip} = i_s_pending;
-  logic deleg_sei, deleg_sti, deleg_ssi;
+  assign lcofip = i_lcof_pending;
+  logic deleg_sei, deleg_sti, deleg_ssi, deleg_lcof;
   assign {deleg_sei, deleg_sti, deleg_ssi} = i_mideleg_s;
+  assign deleg_lcof = i_mideleg_lcof;
 
   // trap_taken_prev prevents re-entry in the cycle after a CSR update.
   // The xRET markers cover the next cycle's registered flush: an old
@@ -283,6 +293,11 @@ module trap_unit #(
   logic meip_enabled, mtip_enabled, msip_enabled;
   logic seip_m_enabled, stip_m_enabled, ssip_m_enabled;
   logic seip_s_enabled, stip_s_enabled, ssip_s_enabled;
+  logic lcof_m_enabled, lcof_s_enabled;
+  assign lcof_m_enabled = lcofip && mie_lcofie && !deleg_lcof && m_int_globally_enabled &&
+      !trap_taken_prev && !mret_interrupt_inhibit;
+  assign lcof_s_enabled = lcofip && mie_lcofie && deleg_lcof && s_int_globally_enabled &&
+      !trap_taken_prev && !mret_interrupt_inhibit;
   assign meip_enabled = i_interrupts.meip && mie_meie && m_int_globally_enabled &&
       !trap_taken_prev && !mret_interrupt_inhibit;
   assign mtip_enabled = i_interrupts.mtip && mie_mtie && m_int_globally_enabled &&
@@ -312,8 +327,9 @@ module trap_unit #(
   logic take_trap_m, take_trap_s;
   assign m_int_pending_comb =
       (meip_enabled || mtip_enabled || msip_enabled ||
-       seip_m_enabled || ssip_m_enabled || stip_m_enabled) && !take_trap_m;
-  assign s_int_pending_comb = (seip_s_enabled || ssip_s_enabled || stip_s_enabled) && !take_trap_s;
+       seip_m_enabled || ssip_m_enabled || stip_m_enabled || lcof_m_enabled) && !take_trap_m;
+  assign s_int_pending_comb =
+      (seip_s_enabled || ssip_s_enabled || stip_s_enabled || lcof_s_enabled) && !take_trap_s;
 
   // Keep a latch while any source is pending, locally enabled, and targeting
   // its class, across global-enable drops and the xRET inhibit. The latch
@@ -326,10 +342,12 @@ module trap_unit #(
       ((i_interrupts.meip && mie_meie) || (i_interrupts.mtip && mie_mtie) ||
        (i_interrupts.msip && mie_msie) ||
        (seip && mie_seie && !deleg_sei) || (stip && mie_stie && !deleg_sti) ||
-       (ssip && mie_ssie && !deleg_ssi)) && !trap_taken_prev;
+       (ssip && mie_ssie && !deleg_ssi) || (lcofip && mie_lcofie && !deleg_lcof)) &&
+      !trap_taken_prev;
   assign s_int_source_live =
       ((seip && mie_seie && deleg_sei) || (stip && mie_stie && deleg_sti) ||
-       (ssip && mie_ssie && deleg_ssi)) && !trap_taken_prev;
+       (ssip && mie_ssie && deleg_ssi) || (lcofip && mie_lcofie && deleg_lcof)) &&
+      !trap_taken_prev;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -405,8 +423,8 @@ module trap_unit #(
   end
 
   // Vectored offset is 4 * cause, registered with the pending latches.
-  // M: MEI=44, MSI=12, MTI=28; undelegated SEI=36, SSI=4, STI=20.
-  // S: SEI=36, SSI=4, STI=20. All offsets fit in six bits.
+  // M: MEI=44, MSI=12, MTI=28; undelegated SEI=36, SSI=4, STI=20, LCOFI=52.
+  // S: SEI=36, SSI=4, STI=20, LCOFI=52. All offsets fit in six bits.
   logic [5:0] m_vectored_offset_comb, s_vectored_offset_comb;
   logic [5:0] m_vectored_offset, s_vectored_offset;
   always_comb begin
@@ -416,10 +434,12 @@ module trap_unit #(
     else if (seip_m_enabled) m_vectored_offset_comb = 6'd36;
     else if (ssip_m_enabled) m_vectored_offset_comb = 6'd4;
     else if (stip_m_enabled) m_vectored_offset_comb = 6'd20;
+    else if (lcof_m_enabled) m_vectored_offset_comb = 6'd52;
     else m_vectored_offset_comb = 6'd0;
     if (seip_s_enabled) s_vectored_offset_comb = 6'd36;
     else if (ssip_s_enabled) s_vectored_offset_comb = 6'd4;
     else if (stip_s_enabled) s_vectored_offset_comb = 6'd20;
+    else if (lcof_s_enabled) s_vectored_offset_comb = 6'd52;
     else s_vectored_offset_comb = 6'd0;
   end
 
@@ -434,7 +454,7 @@ module trap_unit #(
   // WFI wakes on any pending interrupt source, even if not enabled (per the
   // spec); the supervisor software-pending bits count like the platform bits.
   assign any_int_pending_raw = i_interrupts.meip || i_interrupts.mtip ||
-      i_interrupts.msip || seip || stip || ssip;
+      i_interrupts.msip || seip || stip || ssip || lcofip;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -467,10 +487,12 @@ module trap_unit #(
     else if (seip_m_enabled) m_int_cause_comb = riscv_pkg::IntSupervisorExternal;
     else if (ssip_m_enabled) m_int_cause_comb = riscv_pkg::IntSupervisorSoftware;
     else if (stip_m_enabled) m_int_cause_comb = riscv_pkg::IntSupervisorTimer;
+    else if (lcof_m_enabled) m_int_cause_comb = riscv_pkg::IntLocalCounterOverflow;
     else m_int_cause_comb = '0;
     if (seip_s_enabled) s_int_cause_comb = riscv_pkg::IntSupervisorExternal;
     else if (ssip_s_enabled) s_int_cause_comb = riscv_pkg::IntSupervisorSoftware;
     else if (stip_s_enabled) s_int_cause_comb = riscv_pkg::IntSupervisorTimer;
+    else if (lcof_s_enabled) s_int_cause_comb = riscv_pkg::IntLocalCounterOverflow;
     else s_int_cause_comb = '0;
   end
 
@@ -481,22 +503,24 @@ module trap_unit #(
   logic m_int_cause_source_pending;
   always_comb begin
     unique case (m_int_cause)
-      riscv_pkg::IntMachineExternal:    m_int_cause_source_pending = i_interrupts.meip;
-      riscv_pkg::IntMachineSoftware:    m_int_cause_source_pending = i_interrupts.msip;
-      riscv_pkg::IntMachineTimer:       m_int_cause_source_pending = i_interrupts.mtip;
-      riscv_pkg::IntSupervisorExternal: m_int_cause_source_pending = seip && !deleg_sei;
-      riscv_pkg::IntSupervisorSoftware: m_int_cause_source_pending = ssip && !deleg_ssi;
-      riscv_pkg::IntSupervisorTimer:    m_int_cause_source_pending = stip && !deleg_sti;
-      default:                          m_int_cause_source_pending = 1'b0;
+      riscv_pkg::IntMachineExternal:      m_int_cause_source_pending = i_interrupts.meip;
+      riscv_pkg::IntMachineSoftware:      m_int_cause_source_pending = i_interrupts.msip;
+      riscv_pkg::IntMachineTimer:         m_int_cause_source_pending = i_interrupts.mtip;
+      riscv_pkg::IntSupervisorExternal:   m_int_cause_source_pending = seip && !deleg_sei;
+      riscv_pkg::IntSupervisorSoftware:   m_int_cause_source_pending = ssip && !deleg_ssi;
+      riscv_pkg::IntSupervisorTimer:      m_int_cause_source_pending = stip && !deleg_sti;
+      riscv_pkg::IntLocalCounterOverflow: m_int_cause_source_pending = lcofip && !deleg_lcof;
+      default:                            m_int_cause_source_pending = 1'b0;
     endcase
   end
   logic s_int_cause_source_pending;
   always_comb begin
     unique case (s_int_cause)
-      riscv_pkg::IntSupervisorExternal: s_int_cause_source_pending = seip && deleg_sei;
-      riscv_pkg::IntSupervisorSoftware: s_int_cause_source_pending = ssip && deleg_ssi;
-      riscv_pkg::IntSupervisorTimer:    s_int_cause_source_pending = stip && deleg_sti;
-      default:                          s_int_cause_source_pending = 1'b0;
+      riscv_pkg::IntSupervisorExternal:   s_int_cause_source_pending = seip && deleg_sei;
+      riscv_pkg::IntSupervisorSoftware:   s_int_cause_source_pending = ssip && deleg_ssi;
+      riscv_pkg::IntSupervisorTimer:      s_int_cause_source_pending = stip && deleg_sti;
+      riscv_pkg::IntLocalCounterOverflow: s_int_cause_source_pending = lcofip && deleg_lcof;
+      default:                            s_int_cause_source_pending = 1'b0;
     endcase
   end
 
@@ -519,22 +543,24 @@ module trap_unit #(
   logic m_latched_source_enabled;
   always_comb begin
     unique case (m_int_cause)
-      riscv_pkg::IntMachineExternal:    m_latched_source_enabled = mie_meie;
-      riscv_pkg::IntMachineSoftware:    m_latched_source_enabled = mie_msie;
-      riscv_pkg::IntMachineTimer:       m_latched_source_enabled = mie_mtie;
-      riscv_pkg::IntSupervisorExternal: m_latched_source_enabled = mie_seie && !deleg_sei;
-      riscv_pkg::IntSupervisorSoftware: m_latched_source_enabled = mie_ssie && !deleg_ssi;
-      riscv_pkg::IntSupervisorTimer:    m_latched_source_enabled = mie_stie && !deleg_sti;
-      default:                          m_latched_source_enabled = 1'b0;
+      riscv_pkg::IntMachineExternal:      m_latched_source_enabled = mie_meie;
+      riscv_pkg::IntMachineSoftware:      m_latched_source_enabled = mie_msie;
+      riscv_pkg::IntMachineTimer:         m_latched_source_enabled = mie_mtie;
+      riscv_pkg::IntSupervisorExternal:   m_latched_source_enabled = mie_seie && !deleg_sei;
+      riscv_pkg::IntSupervisorSoftware:   m_latched_source_enabled = mie_ssie && !deleg_ssi;
+      riscv_pkg::IntSupervisorTimer:      m_latched_source_enabled = mie_stie && !deleg_sti;
+      riscv_pkg::IntLocalCounterOverflow: m_latched_source_enabled = mie_lcofie && !deleg_lcof;
+      default:                            m_latched_source_enabled = 1'b0;
     endcase
   end
   logic s_latched_source_enabled;
   always_comb begin
     unique case (s_int_cause)
-      riscv_pkg::IntSupervisorExternal: s_latched_source_enabled = mie_seie && deleg_sei;
-      riscv_pkg::IntSupervisorSoftware: s_latched_source_enabled = mie_ssie && deleg_ssi;
-      riscv_pkg::IntSupervisorTimer:    s_latched_source_enabled = mie_stie && deleg_sti;
-      default:                          s_latched_source_enabled = 1'b0;
+      riscv_pkg::IntSupervisorExternal:   s_latched_source_enabled = mie_seie && deleg_sei;
+      riscv_pkg::IntSupervisorSoftware:   s_latched_source_enabled = mie_ssie && deleg_ssi;
+      riscv_pkg::IntSupervisorTimer:      s_latched_source_enabled = mie_stie && deleg_sti;
+      riscv_pkg::IntLocalCounterOverflow: s_latched_source_enabled = mie_lcofie && deleg_lcof;
+      default:                            s_latched_source_enabled = 1'b0;
     endcase
   end
 
@@ -963,6 +989,26 @@ module trap_unit #(
       if ($past(!seip_s_enabled && !ssip_s_enabled && stip_s_enabled)) begin
         p_stip_s_priority : assert (s_int_cause == riscv_pkg::IntSupervisorTimer);
       end
+      // LCOFI has the lowest priority in each class.
+      if ($past(
+              lcof_m_enabled && !meip_enabled && !msip_enabled && !mtip_enabled &&
+                !seip_m_enabled && !ssip_m_enabled && !stip_m_enabled
+          )) begin
+        p_lcof_m_priority : assert (m_int_cause == riscv_pkg::IntLocalCounterOverflow);
+        p_vectored_lcof_m : assert (m_vectored_offset == 6'd52);
+      end
+      if ($past(lcof_s_enabled && !seip_s_enabled && !ssip_s_enabled && !stip_s_enabled)) begin
+        p_lcof_s_priority : assert (s_int_cause == riscv_pkg::IntLocalCounterOverflow);
+        p_vectored_lcof_s : assert (s_vectored_offset == 6'd52);
+      end
+      // An LCOFI cause is taken only while it is enabled and routed to the
+      // class taking it (the take rechecks both, like the other sources).
+      if (take_trap_m && (m_int_cause == riscv_pkg::IntLocalCounterOverflow)) begin
+        p_lcof_m_take_qualified : assert (mie_lcofie && !deleg_lcof);
+      end
+      if (take_trap_s && (s_int_cause == riscv_pkg::IntLocalCounterOverflow)) begin
+        p_lcof_s_take_qualified : assert (mie_lcofie && deleg_lcof);
+      end
 
       // Vectored offset correctness (spot checks per class).
       if ($past(meip_enabled)) begin
@@ -990,7 +1036,8 @@ module trap_unit #(
         p_reentry_prevention :
         assert (!meip_enabled && !mtip_enabled && !msip_enabled &&
                 !seip_m_enabled && !ssip_m_enabled && !stip_m_enabled &&
-                !seip_s_enabled && !ssip_s_enabled && !stip_s_enabled);
+                !seip_s_enabled && !ssip_s_enabled && !stip_s_enabled &&
+                !lcof_m_enabled && !lcof_s_enabled);
       end
 
       // A retargeted source (mideleg flipped while latched) can never be
@@ -1037,6 +1084,10 @@ module trap_unit #(
       cover_external_interrupt :
       cover (m_int_eligible && m_int_cause == riscv_pkg::IntMachineExternal);
       cover_s_interrupt_take : cover (take_trap_s);
+      cover_lcof_m_take :
+      cover (take_trap_m && (m_int_cause == riscv_pkg::IntLocalCounterOverflow));
+      cover_lcof_s_take :
+      cover (take_trap_s && (s_int_cause == riscv_pkg::IntLocalCounterOverflow));
       cover_undelegated_s_source_to_m :
       cover (take_trap_m && (m_int_cause == riscv_pkg::IntSupervisorExternal));
       cover_m_wins_over_armed_s : cover (take_trap_m && s_take_armed_q && s_int_eligible);

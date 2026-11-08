@@ -750,8 +750,9 @@ module cpu_ooo #(
   logic [15:0] csr_medeleg;
   logic [2:0] csr_mideleg_s;
   logic [2:0] csr_s_pending;
-  logic [8:0] csr_scounteren;
-  logic [8:0] csr_counter_blocked;
+  logic [riscv_pkg::CounterMaskBits-1:0] csr_scounteren;
+  logic [riscv_pkg::CounterMaskBits-1:0] csr_counter_blocked;
+  logic csr_lcof_pending, csr_mideleg_lcof;
   logic csr_stimecmp_blocked;
   logic csr_mireg_illegal, csr_sireg_illegal, csr_stopei_illegal;
   logic csr_sret_illegal, csr_sfence_illegal, csr_wfi_illegal, csr_priv_is_u;
@@ -1965,7 +1966,8 @@ module cpu_ooo #(
   riscv_pkg::exc_cause_t rob_trap_cause;
   riscv_pkg::exc_cause_t rob_trap_cause_remapped;
   logic [1:0] csr_priv;  // current privilege from csr_file (PrivM/PrivS/PrivU)
-  logic [8:0] csr_mcounteren;  // mcounteren CY/TM/IR/HPM3..8 from csr_file (S/U-mode counter gate)
+  // mcounteren CY/TM/IR/HPM3..10 from csr_file (S/U-mode counter gate)
+  logic [riscv_pkg::CounterMaskBits-1:0] csr_mcounteren;
   // Arbitrated trap cause for csr_file: interrupt code with bit XLEN-1 set,
   // or the remapped synchronous exception cause.
   logic [XLEN-1:0] trap_cause_internal;
@@ -3859,6 +3861,8 @@ module cpu_ooo #(
       .o_medeleg(csr_medeleg),
       .o_mideleg_s(csr_mideleg_s),
       .o_s_pending(csr_s_pending),
+      .o_lcof_pending(csr_lcof_pending),
+      .o_mideleg_lcof(csr_mideleg_lcof),
       .o_priv(csr_priv),
       .o_mcounteren(csr_mcounteren),
       .o_scounteren(csr_scounteren),
@@ -3999,7 +4003,7 @@ module cpu_ooo #(
   // resuming even while interrupts are globally disabled); the trap unit
   // separately decides whether to take the interrupt.
   assign interrupt_pending = file_interrupts.meip || file_interrupts.mtip || file_interrupts.msip ||
-      (|csr_s_pending);
+      (|csr_s_pending) || csr_lcof_pending;
 
   function automatic logic [XLEN-1:0] retired_next_pc(
       input riscv_pkg::reorder_buffer_commit_t commit);
@@ -4370,10 +4374,13 @@ module cpu_ooo #(
       // that mip writes can raise.
       .i_interrupts('0),
       .i_s_pending('0),
+      .i_lcof_pending(1'b0),
 `else
       .i_interrupts(file_interrupts),
       .i_s_pending(csr_s_pending),
+      .i_lcof_pending(csr_lcof_pending),
 `endif
+      .i_mideleg_lcof(csr_mideleg_lcof),
       // Exception from the ROB head. i_pipeline_stall does not gate the trap
       // unit's exception latch, so mask the exception over the same T+1/T+2
       // window; otherwise a stale younger exception could survive the full
