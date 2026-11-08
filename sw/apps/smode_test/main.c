@@ -885,8 +885,10 @@ int main(void)
     cause = run_at_priv(&b_read_hpm3, PRIV_S);
     all_ok &= report("R hpmcounter3-gated-from-S", cause, 2u);
 
-    /* R: counters 3..8 have storage and reset-disabled selectors. Machine
-     * counters and selectors 9..31 read zero and ignore writes. */
+    /* R: counters 3..10 have storage and reset-disabled selectors. Machine
+     * counters and selectors 11..31 read zero and ignore writes. An all-ones
+     * mhpmevent3 write keeps only the Sscofpmf OF/MINH/SINH/UINH bits: the
+     * event field is not 3, so it selects no event. */
     M_CSR_PROBE("csrr %0, 0xB03", hpm_val); /* mhpmcounter3 */
     all_ok &= report("R mhpmcounter3-read", hpm_val, 0);
     M_CSR_PROBE("csrr %0, 0xB1F", hpm_val); /* mhpmcounter31 */
@@ -897,8 +899,8 @@ int main(void)
     all_ok &= report("R mhpmevent31-read", hpm_val, 0);
     M_CSR_PROBE("csrw 0xB1F, t1\n csrr %0, 0xB1F", hpm_val);
     all_ok &= report("R mhpmcounter31-write-ignored", hpm_val, 0);
-    M_CSR_PROBE("csrw 0x323, t1\n csrr %0, 0x323", hpm_val);
-    all_ok &= report("R mhpmevent3-write-ignored", hpm_val, 0);
+    M_CSR_PROBE("csrw 0x323, t1\n csrr %0, 0x323\n csrw 0x323, zero", hpm_val);
+    all_ok &= report("R mhpmevent3-all-ones-warl", hpm_val, 0xF000000000000000ul);
     M_CSR_PROBE("li t2, 1\n csrw 0xB03, t2\n csrrw %0, 0xB03, zero", hpm_val);
     all_ok &= report("R mhpmcounter3-opensbi-probe", hpm_val, 1);
     cause = run_at_priv(&b_read_mhpm3, PRIV_S);
@@ -909,7 +911,7 @@ int main(void)
     all_ok &= report("S medeleg-warl", csr_read(medeleg), 0xB3FFul);
     csr_write(medeleg, 0);
     csr_write(mideleg, ~0ul);
-    all_ok &= report("S mideleg-warl", csr_read(mideleg), 0x222ul);
+    all_ok &= report("S mideleg-warl", csr_read(mideleg), 0x2222ul);
     csr_write(mideleg, 0);
     csr_clear(mstatus, 3ul << 11);
     csr_set(mstatus, 2ul << 11); /* reserved MPP=2'b10 */

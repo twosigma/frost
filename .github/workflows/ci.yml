@@ -104,6 +104,7 @@ jobs:
             pytest_filter: >-
               [imsic_csr_test] or [imsic_msi_test] or [imsic_collision_test] or
               [timer_replay_test] or [imsic_aplic_coexist_test] or [aplic_test] or [sstc_test] or
+              [sscofpmf_test] or
               [ns16550_irq_console_test] or [wfi_mepc_test] or
               [wfi_drain_mepc_test] or [mret_timer_resume_test] or [mtimer_stress] or
               [wfi_lost_tick] or [irq_mie_window] or [ns16550_test] or [clint_test] or
@@ -151,7 +152,7 @@ jobs:
               [ad_fault_test] or [smode_test] or [csr_rmw_test] or [ptw_bus_fault_test] or
               [ptw_recovery_test] or [sum_toggle_test] or [imsic_csr_test] or [imsic_msi_test] or
               [imsic_collision_test] or [timer_replay_test] or [imsic_aplic_coexist_test] or
-              [aplic_test] or [sstc_test] or
+              [aplic_test] or [sstc_test] or [sscofpmf_test] or
               [ns16550_irq_console_test] or [wfi_mepc_test] or [wfi_drain_mepc_test] or
               [mret_timer_resume_test] or [mtimer_stress] or [wfi_lost_tick] or [irq_mie_window] or
               [ns16550_test] or [clint_test] or [linux_irq_ddr_test] or [linux_irq_active_ddr_test]

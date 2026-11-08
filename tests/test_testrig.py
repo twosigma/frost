@@ -101,10 +101,10 @@ DEFAULT_TEST_INCLUDE = (
 # does not; and unnamed addresses, which include FROST's custom profiling
 # CSRs.
 DEFAULT_CSR_INCLUDE = (
-    "^(fflags|frm|fcsr|instret|hpmcounter(9|[12][0-9]|3[01])|sstatus|scounteren|senvcfg|"
+    "^(fflags|frm|fcsr|instret|hpmcounter(1[1-9]|2[0-9]|3[01])|sstatus|scounteren|senvcfg|"
     "sscratch|sepc|stval|satp|mvendorid|marchid|mimpid|mhartid|mstatus|misa|"
     "medeleg|mideleg|mcounteren|menvcfg|mscratch|mepc|mtval|pmpcfg[0-9]+|"
-    "pmpaddr[0-9]+|minstret|mhpmcounter[0-9]+|mhpmevent(9|[12][0-9]|3[01])|mcountinhibit)$"
+    "pmpaddr[0-9]+|minstret|mhpmcounter[0-9]+|mhpmevent(1[1-9]|2[0-9]|3[01])|mcountinhibit)$"
 )
 
 

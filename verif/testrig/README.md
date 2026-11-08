@@ -187,16 +187,16 @@ different implementation choice:
 
 | Setting | FROST |
 |---------|-------|
-| Extensions | RV64IMAFDC, B, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zicntr, S, U, Sv39, Svade, Svvptc, Sstc; `misa` read-only |
+| Extensions | RV64IMAFDC, B, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zicntr, S, U, Sv39, Svade, Svvptc, Sstc, Sscofpmf; `misa` read-only |
 | Memory regions | The PMA map: low BRAM, MMIO, APLIC, IMSIC, the rest of the device quadrant (stores only), and configurable DDR (1 GiB default), the only region page-table walks read |
 | Physical addresses | 64 bits wide, so an untranslated access beyond the memory map faults with its full address in `mtval` |
 | Misaligned accesses | Address-misaligned trap, after the PMA check |
 | `mtval` | 0 for illegal instructions |
 | `mstatus.FS` | Dirty when an FP instruction raises a flag, even one already set |
 | `mstatus.VS` | Read-only zero: FROST has no V extension |
-| HPM counters | Machine counters 3..8 have storage; saved traces keep their selectors disabled. User aliases 3..8 are checked by the CSR and privilege benches; aliases 9..31 are absent |
-| Counter enables | `mcounteren`, `scounteren`: CY, TM, IR and HPM3..8; `mcountinhibit`: CY, IR and HPM3..8 |
-| Delegation | `medeleg` mask 0xB3FF, `mideleg` mask 0x222 |
+| HPM counters | Machine counters 3..10 have storage; saved traces keep their selectors disabled. User aliases 3..10 are checked by the CSR and privilege benches; aliases 11..31 are absent |
+| Counter enables | `mcounteren`, `scounteren`: CY, TM, IR and HPM3..10; `mcountinhibit`: CY, IR and HPM3..10 |
+| Delegation | `medeleg` mask 0xB3FF, `mideleg` mask 0x2222 |
 | PMP | None |
 | LR/SC | 32-byte reservation set, cancelled by a store or AMO from the hart to it (FROST also cancels it on a trap; see [The A extension](#the-a-extension)) |
 | WFI | Completes at once |
@@ -216,7 +216,7 @@ result depends on timing, out of the default run:
 | `stimecmp` | The Sstc timer compare depends on time |
 | `mtvec`, `stvec` | Reserved MODE values: FROST keeps the low bit, Sail keeps the old MODE |
 | `mcause`, `scause` | The cause code is WLRL: FROST keeps any value written, Sail keeps the old value when the code is one it does not support |
-| `hpmcounter3..8`, `mhpmevent3..8` | Sail cannot represent the partial user-alias set or the fixed-event WARL selectors; CSR and privilege benches check these addresses |
+| `hpmcounter3..10`, `mhpmevent3..10`, `scountovf` | Sail cannot represent the partial user-alias set or the fixed-event WARL selectors; CSR and privilege benches check these addresses |
 | Unnamed CSR addresses | Include FROST's custom profiling CSRs |
 | The `atomic` and `memAmo` templates | They put traps between LR and SC (see [The A extension](#the-a-extension)); `--atomics` covers the A extension instead |
 | `unstructured` template | Random 32-bit words reach custom CSRs and other implementation-defined encodings |

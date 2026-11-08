@@ -1009,6 +1009,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Sstc timer access controls and delegated supervisor timer interrupts"
         ),
     ),
+    "sscofpmf_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="sscofpmf_test",
+        nic_mac_clocks=False,
+        description=(
+            "Sscofpmf counter overflow, LCOFI in M and delegated to S, scountovf, "
+            "and privilege-mode filtering"
+        ),
+    ),
     "ns16550_irq_console_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
