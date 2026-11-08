@@ -280,6 +280,44 @@ async def held_tag_blocks_colliding_updates_and_reset_cancels_reads(dut: Any) ->
 
 
 @cocotb.test()
+async def one_reset_cycle_with_an_update_and_a_read_on_its_edge(dut: Any) -> None:
+    """Leave no completion and no tag after an update and a read on a reset edge."""
+    b = Array(dut)
+    await b.reset()
+    full = (1 << b.line) - 1
+    await b.update(0, 0, 0x1234, full, 0)
+    await b.tick(12)
+    b.updated.clear()
+    await b.set(
+        i_update_valid=1,
+        i_update_addr=b.line,
+        i_update_way=1,
+        i_update_tag=1,
+        i_update_state=3,
+        i_update_data=0x5678,
+        i_update_mask=full,
+        i_update_token=1,
+        i_read_valid=1,
+        i_read_addr=0,
+        i_read_way=0,
+        i_read_token=2,
+        i_rst=1,
+    )
+    await b.set(i_clk=1)
+    await b.set(i_clk=0, i_rst=0, i_update_valid=0, i_read_valid=0)
+    b.reads.clear()
+    for _ in range(64):
+        if b.get("o_init_done"):
+            break
+        assert not b.get("o_read_valid") and not b.get("o_updated")
+        await b.tick()
+    await b.tick(16)
+    assert not b.read_done and not b.updated
+    assert (await b.lookup(0, 3))[1] == 0
+    assert (await b.lookup(b.line, 4))[1] == 0
+
+
+@cocotb.test()
 async def tag_row_alias_and_live_exclusions(dut: Any) -> None:
     """Packed sibling sets share a tag guard; current exclusions select victims."""
     b = Array(dut)

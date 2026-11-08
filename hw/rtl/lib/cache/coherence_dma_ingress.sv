@@ -134,6 +134,7 @@ module coherence_dma_ingress #(
   assign demand = packet_q[queue_q[head_q]];
   assign grant_in = i_g;
   assign release_in = i_u;
+  // The requester's reset can release an edge before this one.
   assign o_req_ready = !i_rst && !i_fatal_stop && available && !occupied_q[i_req_id];
   assign accept_request = i_req_valid && o_req_ready;
   assign accept_demand = o_d_valid && i_d_ready;
@@ -142,10 +143,10 @@ module coherence_dma_ingress #(
     assign head_slot[slot] = queue_q[head_q] == SlotBits'(slot);
   end
   assign release_request = i_u_valid && o_u_ready;
-  assign o_d_valid = !i_rst && !i_fatal_stop && queued_q != 0;
+  assign o_d_valid = !i_fatal_stop && queued_q != 0;
   assign o_d = demand;
-  assign o_g_ready = !i_rst && |grant_match;
-  assign o_u_ready = !i_rst && |release_match;
+  assign o_g_ready = |grant_match;
+  assign o_u_ready = |release_match;
 
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_slot
     coh_d_t request_packet;
@@ -165,7 +166,7 @@ module coherence_dma_ingress #(
     assign release_free[slot] = release_request && release_match[slot] && responded_q[slot];
     // A slot offers C from the cycle after its G, from registered state, so
     // the G comparison does not reach the C arbiter.
-    assign c_valid[slot] = !i_rst && phase_q[slot] == HaveGrant;
+    assign c_valid[slot] = phase_q[slot] == HaveGrant;
     assign completions[slot] = {
       request_packet.q,
       tid_q[slot],

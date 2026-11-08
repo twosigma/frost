@@ -73,12 +73,6 @@ hw/rtl/lib/axi/axi_cdc.sv: o_src_bvalid
 hw/rtl/lib/axi/axi_cdc.sv: o_src_rvalid
 hw/rtl/lib/axi/axi_cdc.sv: r_fifo.i_ready
 hw/rtl/lib/axi/axi_cdc.sv: w_fifo.i_ready
-hw/rtl/lib/axi/axi_coherent_bridge.sv: o_axi_arready
-hw/rtl/lib/axi/axi_coherent_bridge.sv: o_axi_awready
-hw/rtl/lib/axi/axi_coherent_bridge.sv: o_axi_bvalid
-hw/rtl/lib/axi/axi_coherent_bridge.sv: o_axi_rvalid
-hw/rtl/lib/axi/axi_coherent_bridge.sv: o_axi_wready
-hw/rtl/lib/axi/axi_coherent_bridge.sv: o_line_req_valid
 hw/rtl/lib/axi/axi_mux.sv: o_dn_arvalid
 hw/rtl/lib/axi/axi_mux.sv: o_dn_awvalid
 hw/rtl/lib/axi/axi_mux.sv: o_dn_wvalid
@@ -90,33 +84,11 @@ hw/rtl/lib/axi/axil_reg_bridge.sv: o_axil_wready
 hw/rtl/lib/axi/axil_reg_bridge.sv: write_apply
 hw/rtl/lib/cache/coherence_array.sv: plru_we
 hw/rtl/lib/cache/coherence_array.sv: tag_we[way]
-hw/rtl/lib/cache/coherence_channel.sv: o_ready
-hw/rtl/lib/cache/coherence_dma_ingress.sv: c_valid[slot]
-hw/rtl/lib/cache/coherence_dma_ingress.sv: o_d_valid
-hw/rtl/lib/cache/coherence_dma_ingress.sv: o_g_ready
 hw/rtl/lib/cache/coherence_dma_ingress.sv: o_req_ready
-hw/rtl/lib/cache/coherence_dma_ingress.sv: o_u_ready
 hw/rtl/lib/cache/coherence_home.sv: o_mem_req_valid
 hw/rtl/lib/cache/coherence_home.sv: read_arbiter.i_rst
-hw/rtl/lib/cache/coherence_home_array.sv: o_read_ready
-hw/rtl/lib/cache/coherence_home_array.sv: o_read_valid
-hw/rtl/lib/cache/coherence_home_array.sv: o_resp_valid
-hw/rtl/lib/cache/coherence_home_array.sv: o_update_ready
-hw/rtl/lib/cache/coherence_home_array.sv: o_updated
 hw/rtl/lib/cache/coherence_home_array.sv: plru_we
-hw/rtl/lib/cache/coherence_home_array.sv: req_ready_unclaimed
 hw/rtl/lib/cache/coherence_home_array.sv: tag_we[way]
-hw/rtl/lib/cache/coherence_home_completions.sv: o_d_ready
-hw/rtl/lib/cache/coherence_home_completions.sv: o_result_ready
-hw/rtl/lib/cache/coherence_home_completions.sv: o_waiting[slot]
-hw/rtl/lib/cache/coherence_home_completions.sv: o_work_valid
-hw/rtl/lib/cache/coherence_home_completions.sv: release_go
-hw/rtl/lib/cache/coherence_home_endpoint.sv: o_absorb_ready
-hw/rtl/lib/cache/coherence_home_endpoint.sv: o_c_ready
-hw/rtl/lib/cache/coherence_home_endpoint.sv: o_g_valid
-hw/rtl/lib/cache/coherence_home_endpoint.sv: o_u_valid
-hw/rtl/lib/cache/coherence_home_endpoint.sv: o_work_valid
-hw/rtl/lib/cache/coherence_home_endpoint.sv: result_take
 hw/rtl/lib/cache/line_port_axi_bridge.sv: if (i_axi_rst)
 hw/rtl/lib/cache/line_port_axi_bridge.sv: if (i_rst)
 hw/rtl/lib/cache/line_port_axi_bridge.sv: o_axi_arvalid

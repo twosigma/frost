@@ -116,9 +116,10 @@ the line request is presented from registers. A one-beat read takes five
 cycles from its AR handshake to its R beat when the ingress answers in the
 next cycle; each segment occupies the line port for one cycle.
 
-`i_rst` is synchronous, and while it is asserted every VALID and READY is
-low. The bridge resets with its AXI masters, and each reset of the ingress,
-which drops the requests it holds, must overlap one of the bridge. In the
+`i_rst` is synchronous and applies at the flops, so an output can stay live in
+a first reset cycle, when the masters and the ingress on that reset ignore it.
+The bridge resets with its AXI masters, and each reset of the ingress, which
+drops the requests it holds, must overlap one of the bridge. In the
 common-clock `soc_top` configuration, the masters, mux and bridge
 reset with `rst_core`, and the ingress reset includes it. The optional
 asynchronous configuration pairs the resets of the DMA owners across both

@@ -219,20 +219,20 @@ module coherence_home_array #(
   assign row_contended = i_read_valid && i_update_valid && i_update_has_data &&
       read_row == write_row;
   wire update_contended = i_read_offer && i_update_has_data && read_row == write_row;
-  assign o_update_ready = !i_rst && o_init_done && !write_hazard &&
+  assign o_update_ready = o_init_done && !write_hazard &&
       !(update_contended && read_turn_q) &&
       !(i_update_tag && tag_hazard);
   assign update_fire = i_update_valid && o_update_ready;
   // A claim reaches readiness through the last term only: the other terms
   // and the same-set comparison form beside the consumer's decision.
   (* keep = "true" *) logic req_ready_unclaimed, req_claim_conflict;
-  assign req_ready_unclaimed = !i_rst && (phase_q == Idle || (phase_q == Reply && i_resp_ready)) &&
+  assign req_ready_unclaimed = (phase_q == Idle || (phase_q == Reply && i_resp_ready)) &&
       !(i_update_valid && i_update_tag &&
         (tag_waddr >> TagGroupBits) == (tag_raddr >> TagGroupBits));
   assign req_claim_conflict = phase_q == Reply && set_q == tag_raddr;
   assign o_req_ready = req_ready_unclaimed && !(i_resp_claim && req_claim_conflict);
   assign request_fire = i_req_valid && o_req_ready;
-  assign o_resp_valid = !i_rst && phase_q == Reply;
+  assign o_resp_valid = phase_q == Reply;
   for (genvar way = 0; way < WAYS; way++) begin : gen_resp_tags
     assign o_resp_tags[way] = tags_q[way][TagBits-1:0];
   end
@@ -248,6 +248,7 @@ module coherence_home_array #(
 `endif
   always_comb if (token_reset_seen) assert (token_onehot_q == (1 << TOKEN_BITS)'(1) << token_q);
 `endif
+  // The replacement and tag RAMs have no reset.
   assign plru_we = !i_rst && (phase_q == Init || (o_resp_valid && i_resp_ready && i_resp_claim));
   sdp_block_ram #(
       .ADDR_WIDTH(SetBits),
@@ -322,11 +323,11 @@ module coherence_home_array #(
       end
     end
   end
-  assign o_read_ready = !i_rst && o_init_done && !read_hazard && !(row_contended && !read_turn_q);
+  assign o_read_ready = o_init_done && !read_hazard && !(row_contended && !read_turn_q);
   assign read_fire = i_read_valid && o_read_ready;
-  assign o_read_valid = !i_rst && read_valid_q[DATA_READ_LATENCY];
+  assign o_read_valid = read_valid_q[DATA_READ_LATENCY];
   assign o_read_token = read_token_q[DATA_READ_LATENCY];
-  assign o_updated = !i_rst && write_valid_q[DATA_WRITE_LATENCY];
+  assign o_updated = write_valid_q[DATA_WRITE_LATENCY];
   assign o_updated_token = write_token_q[DATA_WRITE_LATENCY];
   sdp_ram_byte_en #(
       .DATA_WIDTH(8 * LINE_BYTES),

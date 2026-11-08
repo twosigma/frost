@@ -131,12 +131,14 @@ reset. Every endpoint resets together, and its epoch input is stable during
 operation. No coherent packet may survive reset. External response debt must
 be drained or discarded before identities are reused.
 
-The request and PutM endpoints, line bridges, channel arbiters, the L1D and
-its array apply reset at their flops, and their combinational outputs have no
-reset term. An output can be live in the first reset cycle, when every receiver
-on the same reset ignores it. The L1D array's tag and replacement writes and
-the home's memory request keep a reset term, because those RAMs have no reset
-and the AXI bridge can keep running through a CPU reset.
+The request and PutM endpoints, line bridges, channel arbiters, the L1D, the
+home's completion table and endpoints, the arrays and the DMA ingress apply
+reset at their flops, and their combinational outputs have no reset term. An
+output can be live in the first reset cycle, when every receiver on the same
+reset ignores it. The arrays' tag and replacement writes, the home's memory
+request and the DMA ingress's request readiness keep a reset term, because those
+RAMs have no reset, the AXI bridge can keep running through a CPU reset, and a
+DMA requester has its own reset.
 
 | Encoding | Values |
 | --- | --- |
