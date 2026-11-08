@@ -301,6 +301,7 @@ FORMAL_TARGETS = [
             "coh_l1d_stream_bmc",
             "coh_l1d_stream_free_bmc",
             "coh_l1d_stream_free_nostore_bmc",
+            "coh_l1d_stream_owned_prove",
             "coh_l1d_stream_prove",
             "coh_l1d_stream_outlier_prove",
             "coh_l1d_stream_cover",
@@ -1310,6 +1311,10 @@ SBY_TASKS = [
         "The same checks, except four outlier assertions, with arbitrary inputs, stores included, to depth 32.",
     ),
     (
+        "coh_l1d_stream_owned_prove",
+        "Unbounded: read-slot ownership and the selected read's kind with eight endpoints, by induction.",
+    ),
+    (
         "coh_l1d_stream_prove",
         "Unbounded: most control assertions with eight endpoints, arbitrary inputs and stores.",
     ),
@@ -2212,7 +2217,8 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             f"coh_l1d_local{geometry}{part}_prove"
             for geometry in ("", "_multi", "_ways")
             for part in ("", "_sector", "_owned")
-        ],
+        ]
+        + ["coh_l1d_stream_owned_prove", "coh_l1d_stream_prove"],
     }
     for target_name, names in required.items():
         target = next(t for t in FORMAL_TARGETS if t.name == target_name)
@@ -2275,34 +2281,38 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         assert len(matches) == 1, (node, matches)
 
 
+def l1d_task_config(task: str) -> dict[str, list[str]]:
+    """Return a coherence_l1d.sby task's resolved sections, without comments."""
+    result = subprocess.run(
+        ["sby", "--dumpcfg", "coherence_l1d.sby", task],
+        cwd=Path(__file__).resolve().parents[1] / "formal",
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    sections: dict[str, list[str]] = {}
+    section = ""
+    for raw in result.stdout.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("["):
+            section = line
+            sections[section] = []
+        else:
+            sections[section].append(line)
+    return sections
+
+
+def assertion_command(line: str) -> bool:
+    """Report whether an SBY script line selects or converts properties."""
+    return line.startswith(("select -assert-", "chformal "))
+
+
 def test_local_sector_lemma_models_match() -> None:
     """Require identical models for each unbounded lookup lemma and consumer."""
-    formal_dir = Path(__file__).resolve().parents[1] / "formal"
-
-    def config(task: str) -> dict[str, list[str]]:
-        result = subprocess.run(
-            ["sby", "--dumpcfg", "coherence_l1d.sby", task],
-            cwd=formal_dir,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
-        )
-        sections: dict[str, list[str]] = {}
-        section = ""
-        for raw in result.stdout.splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("["):
-                section = line
-                sections[section] = []
-            else:
-                sections[section].append(line)
-        return sections
-
-    def assertion_command(line: str) -> bool:
-        return line.startswith(("select -assert-", "chformal "))
+    config = l1d_task_config
 
     common = [
         "chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_* "
@@ -2346,7 +2356,7 @@ def test_local_sector_lemma_models_match() -> None:
         ),
         "read -formal -sv -D LOCAL_ATOMIC_PROOF coherence_read_payload.sv "
         "coherence_l1d.sv": (
-            "read -formal -sv -D LOCAL_ATOMIC_PROOF -D LOCAL_OWNER_PROOF "
+            "read -formal -sv -D LOCAL_ATOMIC_PROOF -D READ_OWNER_PROOF "
             "coherence_read_payload.sv coherence_l1d.sv"
         ),
     }
@@ -2435,6 +2445,44 @@ def test_local_sector_lemma_models_match() -> None:
             altered[side].setdefault(section, []).append(line)
             with pytest.raises(AssertionError):
                 validate(*altered)
+
+
+def test_stream_owned_lemma_model_matches() -> None:
+    """Require the stream ownership lemmas' model to match their consumer's."""
+    owned = l1d_task_config("coh_l1d_stream_owned_prove")
+    proof = l1d_task_config("coh_l1d_stream_prove")
+    assert owned.keys() == proof.keys()
+    for section in owned.keys() - {"[options]", "[engines]", "[script]"}:
+        assert owned[section] == proof[section]
+    model = [line for line in owned["[script]"] if not assertion_command(line)]
+    assert model == [line for line in proof["[script]"] if not assertion_command(line)]
+    assert "read -formal -sv coherence_request_endpoint.sv" in model
+    assert (
+        "read -formal -sv -D STREAM_UNBOUNDED_PROOF -D READ_OWNER_PROOF "
+        "coherence_read_payload.sv coherence_l1d.sv"
+    ) in model
+    lemmas = "c:p_owned_* c:p_selected_kind"
+    # The lemma task proves its lemmas from the design alone.
+    assert [line for line in owned["[script]"] if assertion_command(line)] == [
+        f"chformal -assert -remove t:$check r:FLAVOR=assert %i {lemmas} %u %d",
+        "select -assert-count 14 t:$check r:FLAVOR=assert %i",
+    ]
+    proof_commands = [line for line in proof["[script]"] if assertion_command(line)]
+    assert (
+        f"select -assert-count 14 t:$check r:FLAVOR=assert %i {lemmas} %u %i"
+        in proof_commands
+    )
+    assert f"chformal -assert2assume {lemmas}" in proof_commands
+    options = dict(line.split(maxsplit=1) for line in owned["[options]"])
+    options.setdefault("expect", "PASS")
+    assert options == {
+        "mode": "prove",
+        "depth": "8",
+        "timeout": "1200",
+        "aigsmt": "boolector",
+        "expect": "PASS",
+    }
+    assert owned["[engines]"] == ["smtbmc boolector"]
 
 
 def timeout_log_tail(error: subprocess.TimeoutExpired) -> str:

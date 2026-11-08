@@ -8,7 +8,8 @@ coh_l1d_stream_bmc stream multi control_stream padded longbmc streamscript
 coh_l1d_stream_free_nostore_bmc stream multi control control_stream padded nostore
 coh_l1d_stream_free_bmc stream multi control control_stream padded bulk
 coh_l1d_stream_outlier_prove stream multi control padded pdr outlier
-coh_l1d_stream_prove stream multi padded pdr unbounded
+coh_l1d_stream_owned_prove stream multi padded streamread epphase streamowned
+coh_l1d_stream_prove stream multi padded pdr unbounded streamread epphase
 coh_l1d_stream_cover stream multi streamcovers covermode padded
 coh_l1d_turn_cover turnstream multi turncovers covermode padded
 coh_l1d_cover single covers covermode
@@ -27,9 +28,9 @@ coh_l1d_multi_data3_bmc multi cadical arraydata word3 multidata
 
 coh_l1d_local_prove single local owner
 coh_l1d_local_multi_prove multi local owner padded
-coh_l1d_local_owned_prove single owned
-coh_l1d_local_multi_owned_prove multi owned padded
-coh_l1d_local_ways_owned_prove ways owned padded
+coh_l1d_local_owned_prove single owned epphase
+coh_l1d_local_multi_owned_prove multi owned padded epphase
+coh_l1d_local_ways_owned_prove ways owned padded epphase
 coh_l1d_local_sector_prove single local sector
 coh_l1d_local_multi_sector_prove multi local sector padded
 coh_l1d_local_ways_sector_prove ways local sector padded
@@ -45,6 +46,8 @@ local: depth 80
 sector: depth 8
 owned: mode prove
 owned: depth 8
+streamowned: mode prove
+streamowned: depth 8
 localschedule: depth 80
 ~covermode: timeout 1200
 covermode: mode cover
@@ -88,6 +91,7 @@ streamcovers: smtbmc boolector
 turncovers: smtbmc boolector
 owner: abc pdr
 owned: smtbmc boolector
+streamowned: smtbmc boolector
 sector: smtbmc boolector
 localschedule: abc bmc3
 localcovers: smtbmc boolector
@@ -96,11 +100,12 @@ localcovers: smtbmc boolector
 read -sv coherence_read_stream.sv
 read -sv cache_perf_pkg.sv
 read -sv coherence_pkg.sv
-owned: read -formal -sv coherence_request_endpoint.sv
-~owned: read -sv coherence_request_endpoint.sv
+# The read ownership lemmas read the request endpoints' phases.
+epphase: read -formal -sv coherence_request_endpoint.sv
+~epphase: read -sv coherence_request_endpoint.sv
 read -sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv
 control: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
-unbounded: read -formal -sv -D STREAM_UNBOUNDED_PROOF coherence_read_payload.sv coherence_l1d.sv
+streamread: read -formal -sv -D STREAM_UNBOUNDED_PROOF -D READ_OWNER_PROOF coherence_read_payload.sv coherence_l1d.sv
 streamscript: read -formal -sv -D STREAM_COVER -D STREAM_PASSIVE_CYCLES=24 coherence_read_payload.sv coherence_l1d.sv
 conflict: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 streamcovers: read -formal -sv -D STREAM_COVER coherence_read_payload.sv coherence_l1d.sv
@@ -113,7 +118,7 @@ word3: read -formal -sv -D STORE_DATA_PROOF -D STORE_BYTE_WORD=3 coherence_read_
 payload: read -formal -sv -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
 grantdata: read -formal -sv -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
 local: read -formal -sv -D LOCAL_ATOMIC_PROOF coherence_read_payload.sv coherence_l1d.sv
-owned: read -formal -sv -D LOCAL_ATOMIC_PROOF -D LOCAL_OWNER_PROOF coherence_read_payload.sv coherence_l1d.sv
+owned: read -formal -sv -D LOCAL_ATOMIC_PROOF -D READ_OWNER_PROOF coherence_read_payload.sv coherence_l1d.sv
 localscheduled: read -formal -sv -D LOCAL_ATOMIC_PROOF -D LOCAL_ATOMIC_COVER coherence_read_payload.sv coherence_l1d.sv
 read -sv coherence_store_buffer.sv
 read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
@@ -134,6 +139,12 @@ streamscript: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:F
 streamscript: chformal -assert2assume c:p_prefetch_conflict_split
 unbounded: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 unbounded: chformal -assert2assume c:p_prefetch_conflict_split
+# The stream ownership task proves the read ownership lemmas and the selected
+# read's kind by 8-step induction and assumes nothing from this task. The
+# request endpoints' own checks run in their proofs.
+unbounded: chformal -assert -remove t:$check r:FLAVOR=assert %i a:src=*coherence_request_endpoint.sv:* %i
+unbounded: select -assert-count 14 t:$check r:FLAVOR=assert %i c:p_owned_* c:p_selected_kind %u %i
+unbounded: chformal -assert2assume c:p_owned_* c:p_selected_kind
 bulk: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
 bulk: select -assert-count 313 t:$check r:FLAVOR=assert %i
 outlier: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold %u %u %u %d
@@ -146,7 +157,7 @@ outlier: select -assert-count 4 t:$check r:FLAVOR=assert %i
 # the loop-generated ones; the others carry the p_bounded_ label prefix.
 unbounded: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
 unbounded: chformal -assert -remove c:*p_bounded_* c:p_acquire_read_payload c:p_acquire_read_role c:p_atomic_no_load_endpoint c:p_atomic_single_owner c:p_atomic_store_exclusive c:p_block_zero_exact c:p_grant_live c:p_grant_prefetch_flag c:p_prefetch_hint_conflict c:p_prefetch_owner_conflict c:p_read_owned_exact c:p_request_payload c:p_store_acquire_once c:p_store_grant_head c:p_store_grant_head_exact c:p_store_head_address c:p_store_head_valid c:p_store_install_address c:p_store_read_service_bound c:p_store_yields_read
-unbounded: select -assert-count 170 t:$check r:FLAVOR=assert %i
+unbounded: select -assert-count 169 t:$check r:FLAVOR=assert %i
 conflict: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 conflict: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_conflict_split %d
 conflict: chformal -assume -remove
@@ -167,6 +178,8 @@ local: chformal -assert -remove c:p_local_probe_data
 # Each owned task assumes nothing from the owner or sector tasks.
 owned: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_failed_owned c:p_owned_* %u %d
 owned: select -assert-count 12 t:$check r:FLAVOR=assert %i
+streamowned: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_owned_* c:p_selected_kind %u %d
+streamowned: select -assert-count 14 t:$check r:FLAVOR=assert %i
 # The matching owned task proves this fact by unbounded induction.
 owner: chformal -assert2assume c:p_local_failed_owned
 owner: chformal -assert -remove c:p_local_sector c:p_local_lookup_stable c:p_local_conflict_sample c:p_local_admit_sector

@@ -307,7 +307,7 @@ module coherence_l1d #(
   // entries are idle constants.
   localparam int unsigned EpSlots = 1 << EpBits;
   logic [EpSlots-1:0] live, ep_request_ready, ep_request_valid, ep_grant_valid, ep_grant_ready;
-`ifdef LOCAL_OWNER_PROOF
+`ifdef READ_OWNER_PROOF
   logic [6:0] f_ep_phase[EpSlots];
 `endif
   logic [EpSlots-1:0] ep_done_valid, ep_write_done, ep_g_ready, ep_u_ready;
@@ -1011,7 +1011,7 @@ module coherence_l1d #(
     assign ep_grant[ep] = endpoint_grant;
     assign ep_fail[ep] = endpoint_grant.error || endpoint_grant.opcode == coherence_pkg::GrantFail;
     assign ep_fail_error[ep] = endpoint_grant.error;
-`ifdef LOCAL_OWNER_PROOF
+`ifdef READ_OWNER_PROOF
     logic [6:0] f_endpoint_phase;
     assign f_ep_phase[ep] = f_endpoint_phase;
 `endif
@@ -1048,7 +1048,7 @@ module coherence_l1d #(
         .i_u_valid(i_u_valid),
         .o_u_ready(ep_u_ready[ep]),
         .i_u(i_u),
-`ifdef LOCAL_OWNER_PROOF
+`ifdef READ_OWNER_PROOF
         .o_phase(f_endpoint_phase),
 `endif
         .o_live(live[ep])
@@ -2814,7 +2814,9 @@ module coherence_l1d #(
   // the slot stays owned. The owner tasks assume this; the owned tasks prove it.
   always_ff @(posedge i_clk)
     if (!i_rst && fail_clear_q) p_local_failed_owned : assert (rd_owned_q[fail_clear_slot_q]);
-`ifdef LOCAL_OWNER_PROOF
+`endif
+  // The local owned tasks and the stream ownership task read these lemmas.
+`ifdef READ_OWNER_PROOF
   // f_owner[ep] marks an endpoint that owns a read's slot, endpoint 0 through
   // U and the others until the read installs or fails, and f_owner_slot[ep]
   // names that slot. An owner's slot flag is set and owners hold distinct
@@ -2882,8 +2884,18 @@ module coherence_l1d #(
       if (operation_q == ReadOp && (phase_q == Lookup || phase_q == LookupWait ||
                                     phase_q == LocalCheck || phase_q == Acquire))
         p_owned_selected : assert (!rd_owned_q[selected_read_q]);
+`ifdef STREAM_UNBOUNDED_PROOF
+      // The stream tasks have no local atomic proof, so they state its failed
+      // read ownership here. A read lookup's read also stays valid and unready,
+      // so its slot is not reallocated before LookupWait ends.
+      if (fail_clear_q) p_owned_failed_read : assert (rd_owned_q[fail_clear_slot_q]);
+      if (active && operation_q == ReadOp && (phase_q == Lookup || phase_q == LookupWait))
+        p_owned_lookup_read : assert (rd_valid_q[selected_read_q] &&
+            !rd_ready_q[selected_read_q]);
+`endif
     end
 `endif
+`ifdef LOCAL_ATOMIC_PROOF
   (* anyconst *) logic [4:0] f_local_byte;
   logic [7:0] f_local_saved_q;
   logic [ADDR_WIDTH-6:0] f_local_sector_q;
