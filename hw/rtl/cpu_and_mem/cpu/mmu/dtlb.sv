@@ -34,12 +34,15 @@
  * permits.
  */
 module dtlb #(
-    parameter int unsigned NUM_ENTRIES    = 16,
-    parameter int unsigned NUM_PORTS      = 3,
+    parameter int unsigned NUM_ENTRIES     = 16,
+    parameter int unsigned NUM_PORTS       = 3,
     // Enable per-entry fetch checks (o_fetch_*); unused by the data MMU.
-    parameter bit          FETCH_VERDICTS = 1'b0,
+    parameter bit          FETCH_VERDICTS  = 1'b0,
     // Enable per-entry data permission and PMA checks; unused by the IMMU.
-    parameter bit          DATA_VERDICTS  = 1'b1
+    parameter bit          DATA_VERDICTS   = 1'b1,
+    // Select o_ppn and o_fetch_next_ppn through kept groups of a fixed depth
+    // (the ITLB's PPN reaches the IMMU's registered PA through its resolver).
+    parameter bit          PPN_SELECT_TREE = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -250,6 +253,15 @@ module dtlb #(
     end
   end
 
+  // The tree select's terms and outputs (PPN_SELECT_TREE), formed below.
+  localparam int unsigned PpnGroups = (NUM_ENTRIES + 2) / 3;
+  logic [NUM_PORTS-1:0][PpnBits-1:0] tree_ppn, tree_next_ppn;
+  (* keep = "true" *) logic [NUM_ENTRIES-1:0] e_giga, e_mega;
+  (* keep = "true" *) logic [NUM_ENTRIES-1:0][PpnBits-1:0] e_ppn_own;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][PpnBits-1:0][PpnGroups-1:0] ppn_groups;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][PpnGroups-1:0] giga_groups, mega_groups;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][PpnBits-1:0] ppn_own;
+  (* keep = "true" *) logic [NUM_PORTS-1:0] giga_sel, mega_sel;
   always_comb begin
     for (int p = 0; p < NUM_PORTS; p++) begin
       o_hit[p] = |hit_groups[p];
@@ -270,18 +282,85 @@ module dtlb #(
       o_fetch_next_ok[p] = |fetch_next_ok_groups[p];
       o_fetch_next_ppn[p] = '0;
       for (int e = 0; e < NUM_ENTRIES; e++) begin
-        o_ppn[p] |= {PpnBits{lowest_match[p][e]}} & leaf_ppn[p][e];
+        if (!PPN_SELECT_TREE) o_ppn[p] |= {PpnBits{lowest_match[p][e]}} & leaf_ppn[p][e];
         o_perm_r[p] |= lowest_match[p][e] && e_r[e];
         o_perm_w[p] |= lowest_match[p][e] && e_w[e];
         o_perm_x[p] |= lowest_match[p][e] && e_x[e];
         o_perm_u[p] |= lowest_match[p][e] && e_u[e];
         o_perm_d[p] |= lowest_match[p][e] && e_d[e];
         o_level[p] |= {2{lowest_match[p][e]}} & e_level[e];
-        if (FETCH_VERDICTS) begin
+        if (FETCH_VERDICTS && !PPN_SELECT_TREE) begin
           o_fetch_next_ppn[p] |= {PpnBits{lowest_match[p][e]}} & leaf_next_ppn[p][e];
         end
       end
+      if (PPN_SELECT_TREE) begin
+        o_ppn[p] = tree_ppn[p];
+        if (FETCH_VERDICTS) o_fetch_next_ppn[p] = tree_next_ppn[p];
+      end
     end
+  end
+
+  // The tree select. A superpage takes its low PPN bits from the VA (from
+  // the VA's successor for o_fetch_next_ppn), so each PPN bit ORs the stored
+  // bits of the entries that supply it, three entries to a kept group, and
+  // the VA bits join last through one select for each superpage size. The
+  // result equals the plain select for every input.
+  if (PPN_SELECT_TREE) begin : gen_ppn_tree
+    // Stored bits that reach the select: an entry's own PPN bits, without
+    // the low bits a superpage takes from the VA.
+    for (genvar e = 0; e < NUM_ENTRIES; e++) begin : gen_entry
+      assign e_giga[e] = e_level[e] == 2'd2;
+      assign e_mega[e] = e_level[e] == 2'd1;
+      for (genvar b = 0; b < PpnBits; b++) begin : gen_bit
+        assign e_ppn_own[e][b] = e_ppn[e][b] && !(b < 18 && e_giga[e]) && !(b < 9 && e_mega[e]);
+      end
+    end
+    for (genvar p = 0; p < NUM_PORTS; p++) begin : gen_port
+      for (genvar g = 0; g < PpnGroups; g++) begin : gen_group
+        // A short last group repeats its first entry.
+        localparam int unsigned E0 = 3 * g;
+        localparam int unsigned E1 = (3 * g + 1 < NUM_ENTRIES) ? 3 * g + 1 : 3 * g;
+        localparam int unsigned E2 = (3 * g + 2 < NUM_ENTRIES) ? 3 * g + 2 : 3 * g;
+        for (genvar b = 0; b < PpnBits; b++) begin : gen_bit
+          assign ppn_groups[p][b][g] = (lowest_match[p][E0] && e_ppn_own[E0][b]) ||
+              (lowest_match[p][E1] && e_ppn_own[E1][b]) ||
+              (lowest_match[p][E2] && e_ppn_own[E2][b]);
+        end
+        assign giga_groups[p][g] = (lowest_match[p][E0] && e_giga[E0]) ||
+            (lowest_match[p][E1] && e_giga[E1]) || (lowest_match[p][E2] && e_giga[E2]);
+        assign mega_groups[p][g] = (lowest_match[p][E0] && e_mega[E0]) ||
+            (lowest_match[p][E1] && e_mega[E1]) || (lowest_match[p][E2] && e_mega[E2]);
+      end
+      assign giga_sel[p] = |giga_groups[p];
+      assign mega_sel[p] = |mega_groups[p];
+      for (genvar b = 0; b < PpnBits; b++) begin : gen_bit
+        assign ppn_own[p][b] = |ppn_groups[p][b];
+        if (b < 9) begin : gen_low
+          assign tree_ppn[p][b] = ppn_own[p][b] ||
+              ((giga_sel[p] || mega_sel[p]) && i_lookup_vpn[p][b]);
+          assign tree_next_ppn[p][b] = ppn_own[p][b] || (giga_sel[p] && next_vpn_low18[p][b]) ||
+              (mega_sel[p] && next_vpn_low9[p][b]);
+        end else if (b < 18) begin : gen_mid
+          assign tree_ppn[p][b] = ppn_own[p][b] || (giga_sel[p] && i_lookup_vpn[p][b]);
+          assign tree_next_ppn[p][b] = ppn_own[p][b] || (giga_sel[p] && next_vpn_low18[p][b]);
+        end else begin : gen_high
+          assign tree_ppn[p][b] = ppn_own[p][b];
+          assign tree_next_ppn[p][b] = ppn_own[p][b];
+        end
+      end
+    end
+  end else begin : gen_no_ppn_tree
+    assign tree_ppn = '0;
+    assign tree_next_ppn = '0;
+    assign e_giga = '0;
+    assign e_mega = '0;
+    assign e_ppn_own = '0;
+    assign ppn_groups = '0;
+    assign giga_groups = '0;
+    assign mega_groups = '0;
+    assign ppn_own = '0;
+    assign giga_sel = '0;
+    assign mega_sel = '0;
   end
 
   // ---------------------------------------------------------------------------

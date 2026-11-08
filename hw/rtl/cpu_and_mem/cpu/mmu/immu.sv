@@ -187,10 +187,11 @@ module immu #(
       (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && !i_tlb_invalidate;
 
   dtlb #(
-      .NUM_ENTRIES   (NUM_ENTRIES),
-      .NUM_PORTS     (2),
-      .FETCH_VERDICTS(1'b1),
-      .DATA_VERDICTS (1'b0)
+      .NUM_ENTRIES    (NUM_ENTRIES),
+      .NUM_PORTS      (2),
+      .FETCH_VERDICTS (1'b1),
+      .DATA_VERDICTS  (1'b0),
+      .PPN_SELECT_TREE(1'b1)
   ) u_itlb (
       .i_clk(i_clk),
       .i_rst_n(!i_rst),
