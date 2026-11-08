@@ -715,6 +715,10 @@ module cpu_ooo #(
   logic fence_i_flush;
   logic [XLEN-1:0] fence_i_target_pc;
   logic btb_invalidate_q;
+  // IF's BTB invalidate, and the fetch translation state of the last cycle
+  // it compares (see the BTB invalidate below).
+  logic btb_invalidate;
+  logic fetch_translation_active_prev_q;
 
   logic early_mispredict_active;
   logic early_mispredict_pending;
@@ -845,7 +849,7 @@ module cpu_ooo #(
       .i_flush_all(flush_all),
       .i_fence_i_flush(fence_i_flush),
       .i_fence_i_target(fence_i_target_pc),
-      .i_btb_invalidate(btb_invalidate_q),
+      .i_btb_invalidate(btb_invalidate),
       .i_disable_branch_prediction(disable_branch_prediction_ooo),
       // Bimodal direction-predictor training (conditional branches only, see
       // dir_update_* below).
@@ -1894,17 +1898,33 @@ module cpu_ooo #(
   assign fence_class_quiesce = translation_csr_commit_shadow || fence_i_flush;
   assign o_fence_i_flush = fence_i_flush;
 
-  // Invalidate the BTB with the FENCE-class flush of a FENCE.I, an SFENCE.VMA
-  // or a satp write, where the code or address space may have changed. The
-  // frequent mstatus/sstatus writes (SUM/MXR around user copies) keep the
-  // BTB. The translation CSR's commit is on rob_commit during its shadow
-  // cycle; registering here aligns the pulse with fence_i_flush.
+  // Invalidate the BTB wherever the code or the address space under its
+  // entries may have changed, always in a full-flush cycle:
+  //   - the FENCE-class flush of a FENCE.I, an SFENCE.VMA or a satp write
+  //     (btb_invalidate_q). The frequent mstatus/sstatus writes (SUM/MXR
+  //     around user copies) keep the BTB. The translation CSR's commit is on
+  //     rob_commit during its shadow cycle; registering here aligns the pulse
+  //     with fence_i_flush;
+  //   - a trap or xRET that switched fetch between bare and Sv39 addresses
+  //     (M-mode fetch is untranslated, so one address can name other code
+  //     there);
+  //   - a take into or within Debug Mode, whose go runs program-buffer and
+  //     abstract-command words the debug module may have rewritten.
+  // The last two use the registered take strobes in their flush_all cycle,
+  // when the fetch translation and Debug Mode registers already hold the
+  // take's result, so the take logic itself reaches no register here.
   always_ff @(posedge i_clk) begin
     if (i_rst) btb_invalidate_q <= 1'b0;
     else
       btb_invalidate_q <= fence_class_flush_event &&
           (!translation_csr_commit_shadow || (rob_commit.csr_addr == riscv_pkg::CsrSatp));
   end
+  // A copy of the fetch translation register one cycle late. It needs no
+  // reset: it samples a reset register during reset, and only a take reads it.
+  always_ff @(posedge i_clk) fetch_translation_active_prev_q <= csr_fetch_translation_active;
+  assign btb_invalidate = btb_invalidate_q || (trap_taken_reg && csr_debug_mode) ||
+      ((trap_taken_reg || mret_taken_reg) &&
+       (csr_fetch_translation_active != fetch_translation_active_prev_q));
 
   // CSR coordination
   logic csr_start, csr_done_ack;
@@ -4054,12 +4074,20 @@ module cpu_ooo #(
 `endif
 
 `ifndef SYNTHESIS
+`ifndef FORMAL
   // Architectural next-PC check over every retirement. Each slot-1 retirement
   // must sit at the next PC of the previous retirement or trap/xRET take, and
   // slot 2 at slot 1's next PC. Any instruction retired from a wrong path
   // fails here, whatever the front end did to reach it: a stale prediction,
-  // a lost redirect, or a fetch that skipped or repeated code. The check arms
-  // at the first retirement after reset; WFI seeding does not move it.
+  // a lost redirect, or a fetch that skipped or repeated code.
+  //
+  // Every check in this block waits for the first reset: a random-start
+  // simulation begins with arbitrary registers, the registered resets
+  // included, so i_rst can be low before any reset while the state these
+  // checks read is arbitrary. The next-PC check then arms at the first
+  // retirement; WFI seeding does not move it.
+  logic next_pc_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) next_pc_reset_seen_q <= 1'b1;
   logic next_pc_check_armed_q;
   logic [XLEN-1:0] next_pc_expected_q;
   // The last retirements, printed when the check fails.
@@ -4075,7 +4103,7 @@ module cpu_ooo #(
     end
   endtask
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
+    if (i_rst || !next_pc_reset_seen_q) begin
       next_pc_check_armed_q <= 1'b0;
     end else begin
       if (next_pc_check_armed_q && rob_commit_valid_raw &&
@@ -4127,6 +4155,15 @@ module cpu_ooo #(
       end
     end
   end
+
+  // Every BTB invalidate lands in a full-flush cycle, so the flush cancels
+  // the pending training that the controller's hold must outlast.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && next_pc_reset_seen_q) begin
+      p_btb_invalidate_with_full_flush : assert (!btb_invalidate || flush_all);
+    end
+  end
+`endif
 `endif
 
   assign wfi_resume_seed = rob_head_is_wfi && head_valid && (rob_trap_cause == '0) &&

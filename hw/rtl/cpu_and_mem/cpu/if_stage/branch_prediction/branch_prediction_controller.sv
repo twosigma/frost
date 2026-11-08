@@ -36,7 +36,9 @@ module branch_prediction_controller #(
 `endif
     input logic i_clk,
     input logic i_reset,
-    // Invalidate the BTB (FENCE.I, SFENCE.VMA, satp); see branch_predictor.
+    // Invalidate the BTB, in a full-flush cycle (FENCE.I, SFENCE.VMA, satp,
+    // a take between bare and Sv39 fetch, a take into or within Debug Mode);
+    // see branch_predictor.
     input logic i_btb_invalidate,
     input logic i_stall,
     input logic i_stall_registered,
@@ -315,9 +317,10 @@ module branch_prediction_controller #(
   end
 
   // Hold the invalidate for four cycles. Training from a branch that retired
-  // just before the FENCE-class instruction is still in its commit-to-BTB
-  // registers when the flush arrives, and describes the old code; the held
-  // invalidate drops it instead of letting it reinstall a stale entry.
+  // just before the flush (the FENCE-class instruction, the take or the go)
+  // is still in its commit-to-BTB registers when the flush arrives, and
+  // describes the old code or address space; the held invalidate drops it
+  // instead of letting it reinstall a stale entry.
   logic [1:0] btb_invalidate_hold_q;
   logic btb_invalidate_active;
   always_ff @(posedge i_clk) begin

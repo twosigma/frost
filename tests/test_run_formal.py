@@ -1201,7 +1201,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "prediction_release.sby",
         "Pending-prediction release preserves state masking, fetch holdoffs, and the "
-        "registered PC relations",
+        "registered PC relations, and the instruction buffer takes only pc_reg's word",
         tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(

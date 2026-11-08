@@ -422,6 +422,18 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
 
 ## Possible future work
 
+- A check that corrects a fast-BTB taken prediction on an instruction that
+  is not control flow. The BTB is tagged by fetch PC alone and is cleared
+  wherever software must fence a change to the code or translation under
+  it: FENCE.I, SFENCE.VMA, `satp` writes, takes between bare and Sv39
+  fetch, and takes into or within Debug Mode. Software that changes code
+  without FENCE.I, or replaces a valid executable mapping without
+  SFENCE.VMA, may see the old or the new instruction under the ISA, but a
+  stale entry can make the hart skip the instructions after the new one.
+  The check could sit in PD, redirecting to the fall-through as PD does
+  when the tagged predictor overrides a taken prediction, with a separate
+  case for slot 2, or at retirement, retiring the instruction alone and
+  restarting after a full flush.
 - The second DDR4 interface on the VCU118. The target has RJ-45 SGMII
   Ethernet and 10GBASE-R on QSFP1 lane 0, using the NIC's registers,
   descriptors, driver, and coherent DMA. It uses one DDR4 interface; the

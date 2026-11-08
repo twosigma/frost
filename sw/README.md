@@ -260,6 +260,7 @@ can be debugged and where each one first stops.
 | `amo_irq_torture/` | Timer interrupts swept across cached-DDR AMO bursts; counts every update to catch lost or duplicated ones |
 | `arch_test/` | riscv-arch-test cases, whose signatures the bench reads from low BRAM and compares with committed Spike references; built per test with `TEST_SRC`; see the [architecture-test runner](../tests/README.md#test_arch_compliancepy) |
 | `branch_pred_test/` | Self-checking branch, loop, call, and indirect-jump cases in assembly |
+| `btb_mode_alias_test/` | One address holds a taken `beq` under Sv39 S-mode fetch and an `addi` under bare M-mode fetch, or the reverse: after S-mode training and a trap, or M-mode training and an `mret` or `sret`, the other mode's BTB entry must not redirect the `addi` |
 | `c_ext_test/` | Calls and returns through mixed 16- and 32-bit code, plus value checks of the RV64C-only encodings |
 | `cache_counter_target/` | Makes L2 write fills with DMA, prints the cache counters from its own snapshot, then sleeps in `wfi` without touching the caches until a UART byte starts a second run, which the JTAG reader (`fpga/debug/cache_counters.py`) measures; runs from low BRAM in either memory configuration |
 | `call_stress/` | Repeated and nested calls and returns, built with compressed instructions |
@@ -280,6 +281,7 @@ can be debugged and where each one first stops.
 | `dma_torture/` | DMA test engine against the CPU caches: visibility, ordering, atomics and evictions racing engine writes, the completion interrupt, abort and reuse |
 | `drain_trapframe_test/` | Trap-frame stores to DDR must survive the L1D evicting their line during a timer interrupt |
 | `ecc_scrub_test/` | In simulation, eight atomic no-op writes preserve a patterned line and cause exactly one DDR writeback after eviction; a clean read causes none |
+| `fencei_bench/` | `fence.i` and refetch cost for JIT-style code generation in cached DDR |
 | `fetch_lead_repro/` | A call into a cold cached line whose first bundle advances 6 bytes, followed by a 32-bit instruction split across fetch words |
 | `fetch_stall_repro/` | 32-bit instructions near cache-line boundaries, fetched cold from DDR; a PC+2 mis-step traps |
 | `fp_dyn_rm_test/` | FP instructions with the dynamic rounding mode trap as illegal while `frm` holds a reserved value; static modes and a valid `frm` work |
@@ -338,6 +340,9 @@ can be debugged and where each one first stops.
 | `served_window_resteer/` | A BTB-predicted loop branch to an upper-half target; `served_window_resteer_fetch_fuzz` uses uncached Normal fetches and requires AXI fuzz delays and predicted-target waits on each reset run, with count/sum checks across 2,000 iterations. The IF-stage unit bench explicitly checks stale-window rejection and retry |
 | `slot2_fault_test/` | A fetch fault on the second instruction of a fetch pair, one whose bytes encode a NOP included, must trap at that instruction with exact `mepc` and `mtval` |
 | `smc_fencei_test/` | Self-modifying code with `fence.i` across store-to-fence gaps, warm and cold L1D, and tight loops |
+| `smc_predict_test/` | A `ret`, a `j` and an always-taken `beq`, each trained and then rewritten as an `addi`, must not follow their old predictions after `fence.i` |
+| `smc_stale_test/` | Rewritten code that is dirty in the L1D over an older L2 copy runs after `fence.i` |
+| `smc_torture/` | Random code mutation under trained predictors: leaf functions in DDR are trained, then patched in place or regenerated in a new layout, and after each `fence.i` an interpreter checks them; `-DSMC_SEED=<n>` varies the stream |
 | `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, supervisor CSRs, counter permissions, CSR existence (illegal CSRs, writable machine HPM counter 3, zero-only counter 31, and user-alias permissions), and interrupts |
 | `spanning_test/` | 32-bit instructions that straddle a fetch-word boundary |
 | `sprintf_test/` | All 344 `sprintf`/`snprintf` checks against constant expected strings; the 2M-cycle simulation budget covers the measured 1.23M cycles in BRAM and DDR |

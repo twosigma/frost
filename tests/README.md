@@ -161,6 +161,9 @@ mirroring. The debugger executes both words of an aligned doubleword patch.
 executes FENCE.I and calls the patch in one command. It stalls the mirror
 through programming-port backpressure and checks fence completion ordering.
 With asynchronous clocks, it checks the store response held before fence entry.
+`debug_progbuf_btb_test` runs a program buffer whose taken branches train the
+BTB, rewrites those words as `addi`s, and checks that no old entry redirects
+them.
 The debug-module unit bench checks stalled slice requests and overlapping
 program-buffer writes. The reservation-station unit checks capacity after
 second-port issue, dual issue, simultaneous dispatch and issue, and flush.

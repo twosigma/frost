@@ -111,11 +111,12 @@ module branch_predictor #(
     input logic [XLEN-1:0] i_late_update_pc,
     input logic            i_late_update_taken,
 
-    // Invalidate every entry, after software changed the code or the address
-    // space under it (FENCE.I, SFENCE.VMA, satp). Entries are keyed by
-    // virtual PC with no ASID, so a stale one can name a control-flow
-    // instruction, a size or an instruction boundary the current code does
-    // not have. Wins over a same-cycle update.
+    // Invalidate every entry, after the code or the address space under it
+    // may have changed (FENCE.I, SFENCE.VMA, satp, a take between bare and
+    // Sv39 fetch, a take into or within Debug Mode). Entries are keyed by
+    // fetch PC with no ASID or translation mode, so a stale one can name a
+    // control-flow instruction, a size or an instruction boundary the current
+    // code does not have. Wins over a same-cycle update.
     input logic i_invalidate_all
 );
 

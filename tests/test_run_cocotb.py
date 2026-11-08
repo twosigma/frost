@@ -540,6 +540,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Rewritten code does not follow stale branch predictions",
     ),
+    "btb_mode_alias_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="btb_mode_alias_test",
+        nic_mac_clocks=False,
+        description=(
+            "An address that holds a branch under Sv39 S-mode fetch and an addi under "
+            "bare M-mode fetch, or the reverse, does not follow the other mode's BTB entry"
+        ),
+    ),
     "ifread_test": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_ifread_program",
         hdl_toplevel_module="frost",
@@ -828,6 +838,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="debug_target",
         description="Program-buffer BRAM patch with delayed mirror and fence completion",
+    ),
+    "debug_progbuf_btb_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.debug.test_debug_progbuf_btb",
+        hdl_toplevel_module="frost",
+        app_name="debug_target",
+        description="A program-buffer branch rewritten as an addi does not follow its BTB entry",
     ),
     "debug_openocd_test": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug_openocd",

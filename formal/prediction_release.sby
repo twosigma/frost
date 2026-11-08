@@ -23,7 +23,8 @@ read -sv prediction_release_pc_increment.sv
 read -formal -D SYNTHESIS -sv pc_controller.sv
 read -formal -D SYNTHESIS -sv c_ext_state.sv
 read -formal -sv slot2_prediction_capture.sv
-read -formal -sv prediction_release_formal.sv
+bmc: read -formal -D PREDICTION_RELEASE_WORD_OWNERSHIP -sv prediction_release_formal.sv
+~bmc: read -formal -sv prediction_release_formal.sv
 prep -top prediction_release_formal
 
 [files]
