@@ -860,6 +860,11 @@ module tomasulo_wrapper #(
   riscv_pkg::fu_complete_t alu2_adapter_to_arbiter;
   riscv_pkg::fu_complete_t alu_shim_out;
   riscv_pkg::fu_complete_t alu2_shim_out;
+  // Adapter inputs. A port-0 result passes through the ALU2 adapter while the
+  // ALU adapter holds an older result; see alu_result_via_alu2.
+  riscv_pkg::fu_complete_t alu_adapter_in;
+  riscv_pkg::fu_complete_t alu2_adapter_in;
+  logic alu_result_via_alu2;
   logic alu_adapter_result_pending;
   logic alu2_adapter_result_pending;
   logic [riscv_pkg::FLEN-1:0] alu_adapter_held_value;
@@ -963,7 +968,7 @@ module tomasulo_wrapper #(
       .i_alu_live_value           (alu_shim_out.value),
       .i_alu_tree_fallback_value  (alu_tree_fallback_value),
       .i_alu2_value_is_live       (alu2_value_is_live),
-      .i_alu2_live_value          (alu2_shim_out.value),
+      .i_alu2_live_value          (alu2_adapter_in.value),
       .i_alu2_tree_fallback_value (alu2_tree_fallback_value),
       .i_kill                     (cdb_kill),
       .o_cdb                      (cdb_bus_comb),
@@ -1461,6 +1466,7 @@ module tomasulo_wrapper #(
   riscv_pkg::rs_issue_t int_rs_issue_raw;  // INT_RS issue output
   riscv_pkg::rs_issue_t int_rs_issue_w;  // INT_RS issue output
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] int_rs_branch_predicate_tag;
+  logic int_rs_issue_is_jalr;  // port 0's stage2 holds a JALR
   // alu_shim_out, alu_adapter_to_arbiter, and its pending bit are declared
   // above because the effective CDB packet uses them before this pipeline.
   logic alu_fu_busy;  // always 0 for single-cycle ALU
@@ -1473,7 +1479,17 @@ module tomasulo_wrapper #(
   logic int_rs_issue_writes_cdb_hint_2;
   logic alu2_fu_busy;
 
-  assign int_rs_fu_ready = i_rs_fu_ready & ~alu_adapter_result_pending & ~i_backend_recovery_hold;
+  // A result held in the ALU adapter blocks port 0 only while the ALU2 adapter
+  // cannot carry port 0's next result. With the ALU2 adapter idle and port 1
+  // presenting nothing, port 0 keeps issuing and its result passes through
+  // the ALU2 adapter; the held result keeps the ALU slot and its priority.
+  // JALR stays out: its branch update marks it done, so it can retire before
+  // its link broadcast, which must not queue behind later port-0 results in
+  // the lower-priority ALU2 slot.
+  assign alu_result_via_alu2 = alu_adapter_result_pending && !alu2_adapter_result_pending &&
+      !int_rs_issue_2_raw.valid && !int_rs_issue_is_jalr;
+  assign int_rs_fu_ready = i_rs_fu_ready & (~alu_adapter_result_pending | alu_result_via_alu2) &
+      ~i_backend_recovery_hold;
   assign int_rs_fu_ready_2 = i_rs_fu_ready & ~alu2_adapter_result_pending &
       ~i_backend_recovery_hold;
 
@@ -2789,6 +2805,7 @@ module tomasulo_wrapper #(
       .i_divider_busy(1'b0),
       .o_issue_writes_cdb_hint(int_rs_issue_writes_cdb_hint),
       .o_branch_predicate_tag(int_rs_branch_predicate_tag),
+      .o_issue_is_jalr(int_rs_issue_is_jalr),
       .o_issue_2(int_rs_issue_2_raw),
       .i_fu_ready_2(int_rs_fu_ready_2),
       .o_issue_writes_cdb_hint_2(int_rs_issue_writes_cdb_hint_2),
@@ -2895,6 +2912,7 @@ module tomasulo_wrapper #(
       .i_divider_busy(div_busy),
       .o_issue_writes_cdb_hint(),
       .o_branch_predicate_tag(),
+      .o_issue_is_jalr(),
       .o_issue_2(),
       .i_fu_ready_2(1'b0),
       .o_issue_writes_cdb_hint_2(),
@@ -3121,6 +3139,7 @@ module tomasulo_wrapper #(
       .i_divider_busy(1'b0),
       .o_issue_writes_cdb_hint(),
       .o_branch_predicate_tag(),
+      .o_issue_is_jalr(),
       .o_issue_2(),
       .i_fu_ready_2(1'b0),
       .o_issue_writes_cdb_hint_2(),
@@ -3365,6 +3384,7 @@ module tomasulo_wrapper #(
       .i_divider_busy             (1'b0),
       .o_issue_writes_cdb_hint    (),
       .o_branch_predicate_tag     (),
+      .o_issue_is_jalr            (),
       .o_issue_2                  (),
       .i_fu_ready_2               (1'b0),
       .o_issue_writes_cdb_hint_2  (),
@@ -3412,14 +3432,21 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // ALU CDB Adapter: result holding register between ALU and CDB arbiter
   // ===========================================================================
+  always_comb begin
+    alu_adapter_in       = alu_shim_out;
+    alu_adapter_in.valid = alu_shim_out.valid && !alu_adapter_result_pending;
+    alu2_adapter_in      = alu_result_via_alu2 ? alu_shim_out : alu2_shim_out;
+  end
+
   fu_cdb_adapter #(
-      // Pending deasserts int_rs_fu_ready, so shim-valid and pending are mutually
-      // exclusive. The held-payload write enable can omit grant-refill checks.
+      // Pending clears the adapter's input valid, so input-valid and pending are
+      // mutually exclusive. The held-payload write enable can omit grant-refill
+      // checks.
       .ALLOW_GRANT_REFILL_PAYLOAD_WRITE(1'b0)
   ) u_alu_adapter (
       .i_clk           (i_clk),
       .i_rst_n         (i_rst_n),
-      .i_fu_result     (alu_shim_out),
+      .i_fu_result     (alu_adapter_in),
       .o_fu_complete   (alu_adapter_to_arbiter),
       .o_held_value    (alu_adapter_held_value),
       .i_grant         (o_cdb_grant[0]),
@@ -3448,13 +3475,14 @@ module tomasulo_wrapper #(
   );
 
   fu_cdb_adapter #(
-      // Pending deasserts int_rs_fu_ready_2, so shim-valid and pending are mutually
-      // exclusive. The held-payload write enable can omit grant-refill checks.
+      // Pending deasserts int_rs_fu_ready_2 and alu_result_via_alu2, so
+      // input-valid and pending are mutually exclusive. The held-payload write
+      // enable can omit grant-refill checks.
       .ALLOW_GRANT_REFILL_PAYLOAD_WRITE(1'b0)
   ) u_alu2_adapter (
       .i_clk           (i_clk),
       .i_rst_n         (i_rst_n),
-      .i_fu_result     (alu2_shim_out),
+      .i_fu_result     (alu2_adapter_in),
       .o_fu_complete   (alu2_adapter_to_arbiter),
       .o_held_value    (alu2_adapter_held_value),
       .i_grant         (o_cdb_grant[riscv_pkg::FU_ALU2]),
@@ -3466,14 +3494,29 @@ module tomasulo_wrapper #(
   );
 
 `ifndef SYNTHESIS
-  // Pending gates each INT_RS ready input, which qualifies stage2 issue valid.
-  // These checks protect the ALU adapters' simplified payload write enables.
+  // A pending adapter takes no input, which protects the ALU adapters'
+  // simplified payload write enables.
   always_comb begin
     if (i_rst_n && sc_check_armed) begin
       p_alu_pending_blocks_payload_refill :
-      assert (!(alu_adapter_result_pending && alu_shim_out.valid));
+      assert (!(alu_adapter_result_pending && alu_adapter_in.valid));
       p_alu2_pending_blocks_payload_refill :
-      assert (!(alu2_adapter_result_pending && alu2_shim_out.valid));
+      assert (!(alu2_adapter_result_pending && alu2_adapter_in.valid));
+    end
+  end
+
+  // Port 0 presents a result while the ALU adapter holds one only through the
+  // ALU2 adapter, which then carries the whole port-0 packet and nothing from
+  // port 1. alu_result_via_alu2 reads port 0's stage2 packet, whose valid
+  // depends on it, so these checks sample settled values at the clock edge.
+  always @(posedge i_clk) begin
+    if (i_rst_n && sc_check_armed) begin
+      p_alu_held_result_presents_via_alu2 :
+      assert (!(alu_adapter_result_pending && alu_shim_out.valid) || alu_result_via_alu2);
+      if (alu_result_via_alu2) begin
+        p_alu_redirect_port1_idle : assert (!alu2_shim_out.valid);
+        p_alu_redirect_packet : assert (alu2_adapter_in == alu_shim_out);
+      end
     end
   end
 
@@ -4762,13 +4805,14 @@ module tomasulo_wrapper #(
     p_cdb_alu_effective_packet_equiv : assert (cdb_arb_in_0 == f_cdb_arb_in_0_generic);
     p_cdb_alu_live_packet_valid : assert (!alu_value_is_live || cdb_arb_in_0.valid);
     p_cdb_alu_live_value_contract :
-    assert (!alu_value_is_live || alu_shim_out.value == cdb_arb_in_0.value);
+    assert (!alu_value_is_live || alu_adapter_in.value == cdb_arb_in_0.value);
     p_cdb_alu_fallback_value_contract :
     assert (alu_value_is_live || alu_tree_fallback_value == cdb_arb_in_0.value);
 
     if (alu_value_is_live) begin
-      p_cdb_alu_live_is_shim_valid : assert (alu_shim_out.valid);
-      p_cdb_alu_live_adapter_identity : assert (alu_adapter_to_arbiter.value == alu_shim_out.value);
+      p_cdb_alu_live_is_shim_valid : assert (alu_adapter_in.valid);
+      p_cdb_alu_live_adapter_identity :
+      assert (alu_adapter_to_arbiter.value == alu_adapter_in.value);
     end
     if (alu_adapter_result_pending && alu_adapter_to_arbiter.valid) begin
       p_cdb_alu_pending_output_is_held :
@@ -4782,14 +4826,14 @@ module tomasulo_wrapper #(
     p_cdb_alu2_effective_packet_equiv : assert (cdb_arb_in_7 == f_cdb_arb_in_7_generic);
     p_cdb_alu2_live_packet_valid : assert (!alu2_value_is_live || cdb_arb_in_7.valid);
     p_cdb_alu2_live_value_contract :
-    assert (!alu2_value_is_live || alu2_shim_out.value == cdb_arb_in_7.value);
+    assert (!alu2_value_is_live || alu2_adapter_in.value == cdb_arb_in_7.value);
     p_cdb_alu2_fallback_value_contract :
     assert (alu2_value_is_live || alu2_tree_fallback_value == cdb_arb_in_7.value);
 
     if (alu2_value_is_live) begin
-      p_cdb_alu2_live_is_shim_valid : assert (alu2_shim_out.valid);
+      p_cdb_alu2_live_is_shim_valid : assert (alu2_adapter_in.valid);
       p_cdb_alu2_live_adapter_identity :
-      assert (alu2_adapter_to_arbiter.value == alu2_shim_out.value);
+      assert (alu2_adapter_to_arbiter.value == alu2_adapter_in.value);
     end
     if (alu2_adapter_result_pending && alu2_adapter_to_arbiter.valid) begin
       p_cdb_alu2_pending_output_is_held :
@@ -5197,6 +5241,14 @@ module tomasulo_wrapper #(
 
       // Commit fires
       cover_commit : cover (commit_bus.valid);
+
+      // Port 0 presents through the ALU2 adapter while the ALU adapter holds,
+      // and the passed-through result is granted or held there
+      cover_port0_through_alu2_granted :
+      cover (alu_result_via_alu2 && alu_shim_out.valid && o_cdb_grant[riscv_pkg::FU_ALU2]);
+      cover_port0_through_alu2_held :
+      cover (alu_result_via_alu2 && alu_shim_out.valid && !o_cdb_grant[riscv_pkg::FU_ALU2] &&
+             !cdb_kill);
 
       // A done head waits for the result the ALU adapter holds (JALR link)
       cover_head_done_result_held :

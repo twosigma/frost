@@ -201,12 +201,22 @@ With refill off, a granted adapter always returns to idle.
 every DIV and FP result. The [adapter README](../fu_cdb_adapter/README.md)
 describes each parameter.
 
-A pending ALU adapter deasserts its INT_RS port's `fu_ready`, so no ALU result
-arrives while it is pending; simulation asserts this for both ALUs. As a
-result the ALU adapters never actually refill, their holding register can use
-the result's valid bit alone as its write enable
-(`ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`), and that register holds every valid ALU
-result for the CDB value restore above.
+A pending ALU adapter receives no input; simulation asserts this for both
+ALUs. A pending ALU2 adapter deasserts port 1's `fu_ready`. While the ALU
+adapter holds a result, port 0 keeps issuing only if the ALU2 adapter is idle,
+port 1 presents nothing that cycle, and port 0's stage 2 holds no JALR
+(`alu_result_via_alu2`); its result then passes through the ALU2 adapter, live
+or held there, while the older held result keeps the ALU slot and its
+priority. Otherwise port 0's `fu_ready` is low. A JALR waits because its
+branch update marks it done before its link broadcast, which must not queue
+behind later port-0 results in the lower-priority ALU2 slot. Waiting also
+keeps every held JALR link in the ALU adapter, the one the held-result mask
+below covers. As a result the ALU adapters never actually refill, their
+holding register can use the result's valid bit alone as its write enable
+(`ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`), and that register holds every valid
+ALU result for the CDB value restore above. The wrapper takes the JALR bit
+from the INT RS's `o_issue_is_jalr`, not from the issue packet, whose valid
+depends on this ready.
 
 While the ALU adapter holds a result, the wrapper marks that entry in the
 ROB's `i_result_held`, a register with one bit per entry beside the adapter's

@@ -186,6 +186,9 @@ module reservation_station #(
     // Same-edge copy of the stage2 ROB tag used only by branch-resolution
     // predicates (BRANCH_PREDICATE_TAG_ANCHOR). Off, it aliases stage2_rob_tag.
     output logic                 [riscv_pkg::ReorderBufferTagWidth-1:0] o_branch_predicate_tag,
+    // Stage2 holds a JALR (o_issue.is_jalr without the issue packet), for
+    // logic that feeds i_fu_ready.
+    output logic                                                        o_issue_is_jalr,
 
     // Second issue port (DUAL_ISSUE only; tied off otherwise).
     output riscv_pkg::rs_issue_t       o_issue_2,
@@ -2169,6 +2172,7 @@ module reservation_station #(
   assign o_issue.is_branch_class = stage2_is_branch_class;
   assign o_issue.is_jal = stage2_is_jal;
   assign o_issue.is_jalr = stage2_is_jalr;
+  assign o_issue_is_jalr = stage2_is_jalr;
   assign o_issue.branch_op = stage2_branch_op;
 
   assign o_issue_writes_cdb_hint = stage2_writes_cdb_hint;

@@ -28,7 +28,9 @@ issue port 0 (CDB slot `FU_ALU`) and `u_alu2_shim` on port 1 (`FU_ALU2`). The
 ALU is single-cycle and has no multiplier or divider; M-extension operations
 go to `int_muldiv_shim`, and the shim asserts in simulation that none arrive
 here. The tag travels with the data and `o_fu_busy` is tied low. Back-pressure
-comes from the adapter: a pending ALU adapter deasserts its RS ready.
+comes from the adapters: a pending ALU2 adapter deasserts port 1's ready, and
+while the ALU adapter is pending, port 0 presents only when its result can pass
+through the idle ALU2 adapter (tomasulo_wrapper README).
 
 The RS sends conditional branches and JALR only to port 0, so only
 `u_alu_shim` sees them. Conditional branches do not write the CDB:

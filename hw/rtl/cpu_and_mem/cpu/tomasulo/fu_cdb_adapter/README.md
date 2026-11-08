@@ -68,9 +68,10 @@ incoming results, and both still take the real grant for the simulation
 assertion. The `mul_adapter_grant` formal target checks both against the
 real arbiter.
 
-The ALU adapters keep refill enabled, but a pending ALU adapter deasserts its
-INT RS ready, so the combinational ALU shim never presents a result while the
-adapter is pending; the wrapper asserts this. The same guarantee makes
+The ALU adapters keep refill enabled, but neither receives an input while it
+is pending: a pending ALU2 adapter deasserts INT RS port 1's ready, and while
+the ALU adapter is pending, port 0's result goes to the idle ALU2 adapter
+instead; the wrapper asserts both. The same guarantee makes
 `ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0` legal on both ALU adapters.
 
 ## Flushes
