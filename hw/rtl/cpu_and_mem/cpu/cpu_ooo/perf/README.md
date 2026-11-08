@@ -11,10 +11,11 @@ and cache counters and the read mux, and
 holds the back-end counters. This page is the reference for the build option,
 the CSR protocol, the counter numbering, and the C API.
 
-Architectural HPM counters 3–8 are available independently of `PERF_COUNTERS`.
+Architectural HPM counters 3–10 are available independently of `PERF_COUNTERS`.
 They count retired branches, mispredictions, instruction and data TLB walks,
-L1D permission misses, and store-queue capacity stalls. Selectors 10, 11 and
-12 instead count page-walker busy cycles (counter 8), SFENCE.VMA TLB
+L1D permission misses, store-queue capacity stalls, cycles, and retired
+instructions; Sscofpmf adds overflow and privilege filtering to each. Selectors
+16, 17 and 18 instead count page-walker busy cycles (counter 8), SFENCE.VMA TLB
 invalidates (counter 7) and CSR-requested TLB invalidates (counter 4). Linux `perf` accesses
 them through the OpenSBI PMU mapping; the [Linux counter guide](../../../../../../linux/README.md#counters-and-mcounteren)
 describes their event selectors, enables and user aliases. The custom
