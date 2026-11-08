@@ -1,7 +1,7 @@
 [tasks]
 coh_array_bmc bram bounded
 coh_array_uram_bmc uram bounded
-coh_array4_bmc bram bounded four undefined
+coh_array4_bmc bram bounded four undefined fourbram
 coh_array4_uram_bmc uram bounded four undefined
 coh_array_cover bram covers
 coh_array_uram_cover uram covers
@@ -17,7 +17,10 @@ covers: mode cover
 selection: mode prove
 ~selection: depth 32
 selection: depth 2
+# Four-way block RAM frames take about 1.35 times longer than the one before.
+fourbram: depth 24
 timeout 180
+bounded: timeout 1200
 four: timeout 1800
 bounded: aigsmt boolector
 
