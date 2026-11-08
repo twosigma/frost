@@ -2336,6 +2336,36 @@ module tomasulo_wrapper #(
   logic rob_sfence_window;
   assign o_tlb_invalidate = rob_sfence_window || i_csr_translation_flush_req;
 
+  // A JALR becomes done on its branch update, when port 0 presents it, but
+  // its link still has to reach the CDB. While the ALU adapter holds that
+  // link, the JALR must not retire: a full ROB would reallocate its tag, and
+  // the late broadcast would complete the new entry. alu_result_held_q marks
+  // the entry whose result the adapter holds, which the ROB treats as not
+  // done at the head, and slot 2 does not retire head+1 while the adapter
+  // holds its result. Other entries are not done while their result is held,
+  // and JALR issues only on port 0, so only a JALR waits here.
+  //
+  // The adapter holds a result exactly when it presented it in the previous
+  // cycle without a grant or a full flush (a partially flushed result is not
+  // presented), so the mask is a register beside the adapter's pending bit.
+  // Commit permission (i_commit_hold) arrives late from cpu_ooo; the mask
+  // joins the per-entry done bits instead, before the head read.
+  logic [riscv_pkg::ReorderBufferDepth-1:0] alu_result_held_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      alu_result_held_q <= '0;
+    end else begin
+      alu_result_held_q <= '0;
+      if (!speculative_flush_all && alu_adapter_to_arbiter.valid &&
+          !o_cdb_grant[riscv_pkg::FU_ALU]) begin
+        alu_result_held_q[alu_adapter_to_arbiter.tag] <= 1'b1;
+      end
+    end
+  end
+  logic rob_head_next_result_held;
+  assign rob_head_next_result_held = alu_adapter_result_pending &&
+      (alu_adapter_to_arbiter.tag == riscv_pkg::ReorderBufferTagWidth'(head_tag + 1'b1));
+
   reorder_buffer #(
       .SharedLinkBank(ROB_SHARED_LINK_BANK)
   ) u_rob (
@@ -2388,7 +2418,7 @@ module tomasulo_wrapper #(
       .o_commit_comb_2          (commit_bus_2),
       .o_commit_2_valid_raw     (commit_2_valid_raw),
       .o_commit_2_store_like_raw(commit_2_store_like_raw),
-      .i_widen_commit_ok        (i_widen_commit_ok),
+      .i_widen_commit_ok        (i_widen_commit_ok && !rob_head_next_result_held),
 
       // External coordination
       .i_sq_committed_empty           (sq_committed_empty_rob),
@@ -2437,6 +2467,7 @@ module tomasulo_wrapper #(
       .i_mstatus_fs_off               (i_mstatus_fs_off),
       .i_frm                          (i_frm_csr),
       .i_commit_hold                  (i_commit_hold),
+      .i_result_held                  (alu_result_held_q),
 
       // Flush
       .i_flush_en(i_flush_en),
@@ -3443,6 +3474,39 @@ module tomasulo_wrapper #(
       assert (!(alu_adapter_result_pending && alu_shim_out.valid));
       p_alu2_pending_blocks_payload_refill :
       assert (!(alu2_adapter_result_pending && alu2_shim_out.valid));
+    end
+  end
+
+  // No entry retires while an ALU adapter still holds its result, so a late
+  // broadcast cannot reach a reallocated tag. The ALU checks follow from the
+  // held mask and the slot-2 gate above. The ALU2 checks rely on the producer
+  // contracts (the ALU2 pipe takes no branch, so an ALU2 result is its
+  // entry's only completion), which the wrapper's formal environment leaves
+  // free (test-port results and branch updates), so they run in simulation
+  // only.
+  always @(posedge i_clk) begin
+    if (i_rst_n && sc_check_armed) begin
+      p_alu_result_held_matches_adapter :
+      assert (alu_result_held_q == (alu_adapter_result_pending ?
+          (riscv_pkg::ReorderBufferDepth'(1) << alu_adapter_to_arbiter.tag) : '0));
+      if (commit_bus.valid) begin
+        p_commit_waits_for_held_alu_result :
+        assert (!(alu_adapter_result_pending && alu_adapter_to_arbiter.tag == commit_bus.tag));
+      end
+      if (commit_bus_2.valid) begin
+        p_commit_2_waits_for_held_alu_result :
+        assert (!(alu_adapter_result_pending && alu_adapter_to_arbiter.tag == commit_bus_2.tag));
+      end
+`ifndef FORMAL
+      if (commit_bus.valid) begin
+        p_commit_waits_for_held_alu2_result :
+        assert (!(alu2_adapter_result_pending && alu2_adapter_to_arbiter.tag == commit_bus.tag));
+      end
+      if (commit_bus_2.valid) begin
+        p_commit_2_waits_for_held_alu2_result :
+        assert (!(alu2_adapter_result_pending && alu2_adapter_to_arbiter.tag == commit_bus_2.tag));
+      end
+`endif
     end
   end
 `endif
@@ -5134,6 +5198,10 @@ module tomasulo_wrapper #(
       // Commit fires
       cover_commit : cover (commit_bus.valid);
 
+      // A done head waits for the result the ALU adapter holds (JALR link)
+      cover_head_done_result_held :
+      cover (!o_rob_empty && rob_entry_done[head_tag] && alu_result_held_q[head_tag]);
+
 
       // Commit clears tracked INT register
       cover_commit_clears_int :
@@ -5222,11 +5290,12 @@ module tomasulo_wrapper #(
     if (!i_rst_n || i_flush_all || i_flush_en) dbg_stale_cyc_since_flush <= 0;
     else dbg_stale_cyc_since_flush <= dbg_stale_cyc_since_flush + 1;
   end
-  // Filter tags committed in the last two cycles for JALR's double completion:
-  // its link value is stored at allocation and branch_update marks it done,
-  // so commit can precede a contended ALU broadcast. A full ROB can reuse a
-  // tag within this window; the filter may also hide a stray write on that
-  // allocation cycle, which the ROB absorbs. Report later free-entry writes.
+  // Filter tags committed in the last two cycles. A JALR's link value is
+  // stored at allocation and branch_update marks it done, so it retires no
+  // earlier than the cycle its link broadcast reaches the ROB: it is not done
+  // at the head while the ALU adapter holds the link (alu_result_held_q). The
+  // filter may also hide a stray write on a reallocation cycle, which the ROB
+  // absorbs. Report later free-entry writes.
   logic [3:0] dbg_recent_commit_valid;
   logic [3:0][riscv_pkg::ReorderBufferTagWidth-1:0] dbg_recent_commit_tag;
   always @(posedge i_clk) begin
