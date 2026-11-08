@@ -303,6 +303,14 @@ def test_early_load_wakeup_only_advances_memory_consumers() -> None:
             )
             pipeline = model.FrostPipeline(config, builder.ops)
             pipeline.fetch_state[pipeline._fetch_line(0x80002000)] = "ready"
+            # Resident L1D lines: a miss's installation would hold the
+            # controller past the dependent load's wakeup.
+            l1d = pipeline.memory.l1d
+            for op in builder.ops:
+                if op.kind == "load":
+                    _, set_index, tag = l1d._set_and_tag(op.data_address)
+                    l1d._ways(set_index)[0].valid = True
+                    l1d._ways(set_index)[0].tag = tag
             cycles.append(pipeline.run()["cycles"])
         if kind == "load":
             assert cycles[0] - cycles[1] == 31
@@ -437,3 +445,149 @@ def test_bimodal_changes_conflict_workload() -> None:
         results[0]["memory"]["l1d"]["stats"]["misses"]
         != results[1]["memory"]["l1d"]["stats"]["misses"]
     )
+
+
+def test_read_stream_confirms_on_three_adjacent_misses_within_its_page() -> None:
+    """The look-ahead cursor runs up to eight sectors past the frontier, in the page."""
+    stream = model.ReadStream(8, 4096, 32)
+    assert stream.demand(0x1000, True)
+    stream.demand(0x1020, True)
+    assert stream.consume() is None
+    stream.demand(0x1040, True)
+    assert [stream.consume() for _ in range(9)] == [
+        0x1000 + 32 * sector for sector in range(3, 11)
+    ] + [None]
+    stream.demand(0x1060, False)
+    assert stream.consume() == 0x1000 + 32 * 11
+    edge = model.ReadStream(8, 4096, 32)
+    for sector in range(124, 127):
+        edge.demand(0x2000 + 32 * sector, True)
+    assert edge.consume() == 0x2000 + 32 * 127
+    assert edge.consume() is None
+    assert edge.demand(0x5000, True)
+    assert not edge.confirmed
+
+
+class HeldLower:
+    """Accept every request and keep it until a test completes it."""
+
+    def __init__(self) -> None:
+        """Hold no requests."""
+        self.requests: list[Any] = []
+
+    def submit(self, request: Any) -> bool:
+        """Accept and record a request."""
+        self.requests.append(request)
+        return True
+
+
+def coherent_l1d(**changes: Any) -> tuple[Any, Any, HeldLower]:
+    """Build a coherent L1D, with its loop, in front of a holding lower level."""
+    loop = model.EventLoop()
+    lower = HeldLower()
+    config = replace(model.ModelConfig(), **changes)
+    return model.CoherentL1d(loop, lower, config), loop, lower
+
+
+def load(address: int, done: list[int] | None = None, ident: int = 0) -> Any:
+    """Return a demand load that records its completion cycle in done."""
+    return model.Request(
+        address,
+        False,
+        "l1d",
+        ident,
+        lambda ok: done.append(address) if done is not None else None,
+        bytes_size=8,
+    )
+
+
+def idle(l1d: Any, loop: Any) -> None:
+    """Advance the loop until the L1D's controller is idle."""
+    while loop.cycle < l1d.busy_until:
+        loop.run_ready()
+        loop.cycle += 1
+    loop.run_ready()
+
+
+@pytest.mark.parametrize("slots,expected", [(2, [7, 6]), (4, [7, 6, 5, 4])])
+def test_look_ahead_takes_the_highest_endpoints_and_demand_the_lowest(
+    slots: int, expected: list[int]
+) -> None:
+    """Demand misses take endpoints from 1 up; hints fill the top slots only."""
+    l1d, loop, _lower = coherent_l1d(l1d_lookahead_slots=slots)
+    for sector in range(3):
+        idle(l1d, loop)
+        assert l1d.submit(load(0x8000_0000 + 32 * sector, ident=sector))
+    assert sorted(status.slot for status in l1d.mshrs.values()) == [1, 2, 3]
+    for _ in range(slots + 2):
+        idle(l1d, loop)
+        l1d.step_after_loads()
+    hints = [
+        status.slot
+        for status in l1d.mshrs.values()
+        if status.primary.source == "l1d_lookahead"
+    ]
+    assert hints == expected
+    assert l1d.stats["lookahead_issued"] == slots
+
+
+def test_controller_serves_one_lookup_at_a_time() -> None:
+    """A read hit holds the controller through its tag and data reads."""
+    l1d, loop, _lower = coherent_l1d()
+    line = l1d._ways(0)[0]
+    line.valid, line.tag = True, 0x8000_0000 // 32 // l1d.sets_count
+    done: list[int] = []
+    assert l1d.submit(load(0x8000_0000, done))
+    assert not l1d.submit(load(0x8000_0008, done, 1))
+    assert l1d.busy_until == l1d.lookup_cycles + l1d.data_cycles == 6
+
+
+def test_store_records_combine_by_sector_and_install_at_the_head() -> None:
+    """The youngest unsealed record combines; credit counts records, not stores."""
+    l1d, loop, lower = coherent_l1d()
+    for offset in range(0, 32, 8):
+        l1d.push_store(0x8000_0000 + offset)
+    for record in range(1, 4):
+        l1d.push_store(0x8000_0000 + 64 * record)
+    assert len(l1d.records) == 4 and l1d.records[0].contributors == 4
+    assert not l1d.store_ready()
+    l1d.step()
+    assert l1d.records[0].sealed and l1d.records[0].status.slot == 0
+    idle(l1d, loop)
+    l1d.step_after_loads()
+    lent = [record.status.slot for record in l1d.records if record.status]
+    assert lent == [0, 1] and l1d.borrowed == 1
+
+
+def test_home_prefetch_confirms_on_two_lines_and_keeps_its_reserve() -> None:
+    """Two consecutive lines start a stream; a prefetch never takes a reserved fill."""
+    pipeline = model.FrostPipeline(replace(model.ModelConfig(), l2_mshrs=8), [])
+    memory, loop = pipeline.memory, pipeline.loop
+    prefetcher = memory.prefetcher
+    for line in (0x0200_0000, 0x0200_0001):
+        prefetcher.observe(line)
+    advance(loop, 40)
+    issued = {status.line_address for status in memory.l2.mshrs.values()}
+    assert issued == {0x0200_0002 + index for index in range(len(issued))}
+    assert len(issued) <= memory.l2.mshr_count - prefetcher.reserve
+    assert prefetcher.stats["streams_allocated"] == 1
+
+
+def test_mem_rs_frees_at_issue_and_stores_retire_before_their_write() -> None:
+    """Loads and stores leave MEM_RS when they issue; stores commit before the L1D writes."""
+    builder = model.ProgramBuilder()
+    for index in range(8):
+        builder.emit("load", 0x80002000, 0x80400000 + 4096 * index)
+    builder.emit("store", 0x80002004, 0x80800000)
+    cycles = []
+    for entries in (2, 8):
+        config = replace(model.ModelConfig(), mem_rs_entries=entries, l2_prefetch=False)
+        pipeline = model.FrostPipeline(config, builder.ops)
+        pipeline.fetch_state[pipeline._fetch_line(0x80002000)] = "ready"
+        result = pipeline.run()
+        cycles.append(result["cycles"])
+        assert result["pipeline"]["max_occupancy"]["mem_rs"] <= entries
+        # The store has committed while its write still waits to drain.
+        assert pipeline.committed_stores or pipeline.memory.l1d.records
+    # The loads' misses overlap although two entries hold their issue.
+    assert cycles[0] - cycles[1] <= 8
