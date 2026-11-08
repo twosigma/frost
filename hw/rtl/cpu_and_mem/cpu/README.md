@@ -155,7 +155,9 @@ program-buffer and abstract-command words the debug module may have
 rewritten. The clear lasts four cycles, which drops training still in flight
 from the old code.
 `mstatus` and `sstatus` writes, and takes that stay on one side of that
-switch, keep the BTB.
+switch, keep the BTB. Code changed without FENCE.I, or a valid executable
+mapping replaced without SFENCE.VMA, is not covered (see the
+[roadmap](../../../../ROADMAP.md#possible-future-work)).
 
 PD can change the direction fetch followed for a slot-1 conditional branch,
 and redirects a JAL or JALR that the BTB did not predict taken when the
