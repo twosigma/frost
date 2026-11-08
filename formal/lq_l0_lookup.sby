@@ -9,6 +9,8 @@ lookup128_prove d128 portable
 lookup128_xilinx_prove d128 xilinx
 lookup256_prove d256 portable
 lookup256_xilinx_prove d256 xilinx
+lookup512_prove d512 portable
+lookup512_xilinx_prove d512 xilinx
 
 [options]
 mode prove
@@ -29,6 +31,7 @@ d16: chparam -set DEPTH 16 lq_l0_lookup_equiv
 d32: chparam -set DEPTH 32 lq_l0_lookup_equiv
 d128: chparam -set DEPTH 128 lq_l0_lookup_equiv
 d256: chparam -set DEPTH 256 lq_l0_lookup_equiv
+d512: chparam -set DEPTH 512 lq_l0_lookup_equiv
 hierarchy -top lq_l0_lookup_equiv
 setattr -mod -unset keep_hierarchy
 prep -top lq_l0_lookup_equiv -flatten

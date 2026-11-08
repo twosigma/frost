@@ -37,10 +37,20 @@ FROST passes a 512-entry L0 when Normal read caching is enabled; the raw LQ
 and strict CPU profile retain the 128-entry default. Cache depth does not
 change the number of in-flight loads or coherence observation entries.
 
-The L0 valid-bit read uses a balanced tree of four-way selections. The selected
-bit is qualified by MMIO, store and line-invalidation permissions independently
-of the tag comparison. The lookup is combinational. Primitive builds keep
-the selection hierarchy and the selector pin assignments.
+The L0 valid-bit read selects the indexed bit. The selected bit is qualified
+by MMIO, store and line-invalidation permissions independently of the tag
+comparison. The lookup is combinational. Primitive builds select among up to
+32 bits per level within one slice, four-way LUT6 selections feeding MUXF7,
+MUXF8 and MUXF9, so a 512-entry L0 takes two levels; they keep the selection
+hierarchy and the selector pin assignments.
+
+In the CPU, the staged load's same-sector hold reads registered matches: each
+entry keeps its sector and registers its match against every coherent L1D
+holder from its next address, and against a store the CPU's write port pushes
+into the L1D's store buffer, so a record that turns valid with that push
+matches through the pushed line. Holder zero changes only when an atomic starts
+or ends, and in that cycle the hold covers every staged load. The raw LQ
+compares the staged address with the holders directly.
 
 ## Allocation and capacity
 
