@@ -224,7 +224,7 @@ module dtm_core (
   end
 
   // One request pulse per toggle; the payload is stable by construction.
-  assign o_dmi_req_valid = !i_power_on_rst && (req_sync2 != req_seen_q);
+  assign o_dmi_req_valid = req_sync2 != req_seen_q;
   assign o_dmi_req_op = req_op_q;
   assign o_dmi_req_addr = req_addr_q;
   assign o_dmi_req_data = req_data_q;
