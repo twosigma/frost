@@ -8,25 +8,29 @@ This directory provides a **fast, cycle-approximate architectural performance mo
 
 1. **Simulation Speedup**:
    - Full-system Verilator RTL simulation runs at ~1.7 kHz (simulated cycles per second).
-   - The recorded analytical CoreMark run executes at **75,122 simulated cycles/s**. Instruction replay requires instruction records with dependencies; aggregate calibration events are rejected.
+   - The recorded analytical CoreMark run executes at **65,372 simulated cycles/s**. Instruction replay requires instruction records with dependencies; aggregate calibration events are rejected.
    - This speed enables broad design space sweeps and bottleneck sensitivity analyses that would be computationally prohibitive in cycle-accurate RTL.
 
 2. **RTL Cycle Correlation**:
    - CoreMark has an aggregate IPC comparison against RTL. The Tomasulo microarchitectural suite and DDR MLP stress test have validated event captures without model IPC comparisons.
-   - CoreMark model IPC is **1.0199**, correlating within **+4.2%** of the hardware RTL's measured **0.9786 IPC** (239,452 cycles).
+   - CoreMark model IPC is **1.0045**, correlating within **+2.6%** of the hardware RTL's measured **0.9786 IPC** (239,452 cycles).
+   - A VCU118 board data set (`results/vcu118_sync10i/`) compares the memory path with sequential, strided, store and chase benchmarks measured on an FPGA build under Linux (section 13).
    - Accurately models FROST-specific microarchitectural structures: the 256-entry Load Queue direct-mapped L0 Data Cache (`lq_l0_cache.sv`) with 1-cycle combinational fast-path bypass, early load wakeup (`EARLY_LOAD_WAKEUP = 1`), and the single-channel 512-bit AXI memory system.
 
 3. **Modular SoC / Core Boundary**:
    - Reflects the structural hierarchy of `platform_top.sv`:
-     - `CpuTopModel` (`cpu_top.sv`): 2-wide out-of-order execution engine (ROB, RS, LQ, SQ, L0 D-cache, L1I, L1D, 32B-to-64B sector adapter, and L2 cache with stream prefetcher).
+     - `CpuTopModel` (`cpu_top.sv`): 2-wide out-of-order execution engine (ROB, RS, LQ, SQ, L0 D-cache, L1I, coherent L1D, 32B-to-64B sector adapter, and L2 home with its stream prefetch agent).
      - `SocTopModel` (`soc_top.sv`): `soc_axi_slave.sv` physical address decode (local BRAM/MMIO vs. DDR) and a swappable single-channel 512-bit AXI DDR controller (`SingleChannelDdrController`) modeled after `axi_behavioral_memory.sv`.
    - Connected via an explicit 6-bit-ID, 512-bit (64B) AXI4 interface (`SocTopPort`), enabling independent exploration of alternative memory controllers, interconnects, or multi-core fabrics without modifying the CPU core model.
    - The RTL's CPU caches use the coherent hierarchy: an MSI L1D with buffered
      stores and probes, connected to the shared L2 coherence home.
      `L2_NUM_MSHR` sets its fill count, eight on X3, and `L2_PREFETCH` enables
      data and instruction stream prefetching into the home.
-     The model's caches are generic line caches with a stream prefetcher, so
-     DDR forecasts need calibration against the coherent path.
+     The model's L1D follows the coherent L1D's controller, request
+     endpoints, stream look-ahead and store records, and its prefetcher
+     follows the home's data prefetch agent (section 8). The L2 and L1I are
+     generic line caches, so DDR forecasts need calibration against the
+     coherent path.
 
 4. **Zero RTL Modifications**:
    - Strictly modeling software. All synthesizable RTL in `hw/rtl/` remains 100% untouched.
@@ -39,6 +43,7 @@ This directory provides a **fast, cycle-approximate architectural performance mo
 perf-modeling/
 ├── frost_perf_model.py          # Unified architectural model (CLI: run, memory-run, replay, explore, sweep, audit, selftest, report)
 ├── memory_workloads.py          # Address and dependency generators for the DDR benchmark kernels
+├── board_workloads.py           # Loop bodies of the board memory benchmarks behind a board data set
 ├── README.md                    # This document
 ├── docs/
 │   └── rtl_correlation_guide.md # Comprehensive guide for RTL correlation and trace capture
@@ -49,6 +54,7 @@ perf-modeling/
 ├── tools/
 │   ├── run_calibration.py       # Calibration tool: validates traces, compares metrics, generates calibration.json
 │   ├── refresh_baseline.py      # Recaptures CoreMark and rewrites the figures in ci_baseline.json
+│   ├── board_calibration.py     # Runs a board data set's benchmarks and records the model's residuals
 │   └── sweep_memory.py          # Sweeps cache resources and physical-channel service with explicit configurations
 ├── rtl/
 │   └── frost_perf_probe.sv      # Simulation-only Verilog event monitor mapping RTL handshakes to JSONL
@@ -78,11 +84,16 @@ perf-modeling/
     │   ├── tomasulo_perf_timed.jsonl         # 21 MB cycle-accurate JSONL execution trace
     │   ├── pipeline_counters.json
     │   └── calibration.json
-    └── ddr_mlp_test/                         # DDR memory-level parallelism stress test results
-        ├── manifest.json
-        ├── ddr_mlp_timed.jsonl               # 3.7 MB cycle-accurate JSONL execution trace
-        ├── pipeline_counters.json
-        └── calibration.json
+    ├── ddr_mlp_test/                         # DDR memory-level parallelism stress test results
+    │   ├── manifest.json
+    │   ├── ddr_mlp_timed.jsonl               # 3.7 MB cycle-accurate JSONL execution trace
+    │   ├── pipeline_counters.json
+    │   └── calibration.json
+    └── vcu118_sync10i/                       # VCU118 FPGA board memory benchmarks under Linux
+        ├── manifest.json                     # Board, build, clocks, programs and raw result files
+        ├── measurements.json                 # Measured figures with their raw result lines
+        ├── model_config.json                 # The platform's model configuration (--config-file form)
+        └── calibration.json                  # Model figures and residuals from tools/board_calibration.py
 ```
 
 ---
@@ -95,7 +106,7 @@ The archived RTL results cover three benchmarks under Verilator. CoreMark has a 
 
 | Benchmark | Workload Characteristic | Timed RTL Cycles | Retired Uops | Hardware RTL IPC | Calibrated Model IPC | Correlation Delta | Status |
 |---|---|---:|---:|---:|---:|---:|:---:|
-| **CoreMark** | General compute / integer pipeline | 239,452 | 234,317 | **0.9786** | **1.0199** | **+4.2%** | PASS (CRC verified) |
+| **CoreMark** | General compute / integer pipeline | 239,452 | 234,317 | **0.9786** | **1.0045** | **+2.6%** | PASS (CRC verified) |
 | **tomasulo_perf** | 14 directed microarchitecture benchmarks | 487,313 | 175,025 | **0.3592** | Not available | Not compared | PASS (14/14 sub-benchmarks) |
 | **ddr_mlp_test** | Memory-level parallelism & AXI queueing | 94,010 | 30,427 | **0.3237** | Not available | Not compared | PASS |
 
@@ -107,7 +118,7 @@ The archived RTL results cover three benchmarks under Verilator. CoreMark has a 
 | **tomasulo_perf (Verilator RTL)** | 487,313 | 277.67 s | 1,755 cyc/s | 630 uop/s | **1.0x (Baseline)** |
 | **ddr_mlp_test (Verilator RTL)** | 94,010 | 56.63 s | 1,660 cyc/s | 537 uop/s | **1.0x (Baseline)** |
 | **FROST Perf Model (Aggregate Trace Replay)** | Rejected | Not available | Not available | Not available | Not available |
-| **FROST Perf Model (Analytical CoreMark)** | 3,067 | 0.040827 s | **75,122 cyc/s** | **76,616 uop/s** | **44.1x cycle-rate ratio** |
+| **FROST Perf Model (Analytical CoreMark)** | 9,286 | 0.142048 s | **65,372 cyc/s** | **65,667 uop/s** | **38.3x cycle-rate ratio** |
 
 ---
 
@@ -303,14 +314,27 @@ assumptions expressed in core cycles.
 | L1I / L1D / L2 capacity | 16 KiB / 128 KiB / 2 MiB |
 | Cache associativity | 4 ways |
 | L1 / L2 line bytes | 32 / 64 |
-| L1D / L2 miss slots | 8 / 4 |
+| L1D request endpoints / L2 miss slots | 8 / 4 |
+| L1D stream look-ahead endpoints / window | 2 / 8 sectors |
+| L1D store records / read slots | 4 / 8 |
 | L1D / L2 writeback slots | 2 / 2 |
 | L2 waiter seats per miss | 2 |
+| L2 prefetch streams / identities / distance | 4 / 3 / 8 lines |
 | L1D / L2 internal ID bits | 4 / 5 |
 | CPU / DDR AXI ID bits | 6 / 5 |
 | AXI outstanding transaction limit | 32 |
 
-Caches reserve a victim way while a fill is pending. Same-line requests share a bounded miss record. Dirty victims complete their writeback before the replacement fill. Cache responses are pipelined at one per cycle after their configured latency. Stores issue from the ROB head, and the model waits for their cache completion before retirement.
+`cpu_top` passes eight L2 fills (`L2_NUM_MSHR`) and a 512-entry L0 with Normal read caching; the model keeps four L2 miss slots and 256 L0 entries, and a configuration file states the RTL's values, as the board data set does for its fills.
+
+Caches reserve a victim way while a fill is pending. Same-line requests share a bounded miss record. The L1D and the L2 write a dirty victim back beside the replacement fill and hold its writeback slot until the lower level acknowledges it, as the L1D's frozen PutM slots and the home's detached victims do. Cache responses are pipelined at one per cycle after their configured latency.
+
+MEM_RS frees an entry when it issues one load or store per cycle (`reservation_station.sv`), and the LQ frees an entry when its result reaches the CDB stage (`load_queue.sv`). An ordinary store is done at issue and retires without waiting for memory. A committed store keeps its SQ entry until it drains: cached stores launch one at a time, at most every `store_drain_cycles`, into the L1D's store records, and the L1D's acknowledgement a cycle later frees the entry (`store_queue.sv`). The SQ is full while the records are, so SQ depth and the records' installation rate set a store stream's throughput.
+
+The L1D follows `coherence_l1d.sv`. One controller serves one operation at a time: in its Idle priority, a grant's installation, the head store, a load, a lent store endpoint, then stream look-ahead. A lookup holds it for `l1_tag_cycles + 3` cycles (Idle, Lookup, the tag read and the reply), a hit for `l1_data_cycles` more, an acquisition for one more, and an installation or store update for `l1_write_cycles + 2` beyond the lookup; a dirty victim adds its data read and the freeze. `l1d_mshrs` request endpoints carry acquisitions: endpoint 0 the head store's GetM, the others load misses, the lowest free one first. A demand grant answers its load in its lookup cycle; loads that attached to the endpoint look up again after the installation, one of them ahead of the next grant. Each endpoint stays live until U, `coherence_release_cycles` after installation. Up to four store records hold committed stores; only the youngest unsealed record combines another store to its sector, a record seals at its head's lookup, and every record installs at the head, with one load endpoint lent to a younger record's GetM. A read of a sector with a buffered store waits.
+
+Stream look-ahead follows `coherence_read_stream.sv`. Three adjacent demand sector misses confirm a stream, and the cursor runs up to `l1d_lookahead_sectors` sectors past the demand frontier, within a 4 KiB page. Hints use the highest `l1d_lookahead_slots` load endpoints, limited to `l1d_mshrs - 2` so one load endpoint stays demand-only (`PrefetchCount` is 2 for four or more endpoints and 1 for three), and demand may use every load endpoint. A hint waits for its window and an endpoint, takes the controller only when nothing else wants it, and its fill trains the L2 prefetcher like a demand miss. A change of `PrefetchCount` in the RTL is a change of `l1d_lookahead_slots`.
+
+The L2 prefetcher follows the home's data prefetch agent (`coherence_prefetch_agent.sv`, `l2_stream_prefetcher.sv`). Its four-entry stream table trains on every L1D request the L2 accepts, hits included, confirms a stream on two consecutive lines, and requests up to `l2_prefetch_distance` lines after its last line, never past the page. A request loads only while more than a quarter of the L2 miss slots are free and one of `l2_prefetch_inflight` identities is free; the home answers it after one lookup, and its identity returns `coherence_release_cycles` later while any fill continues. The home fills only when two ways of the set are available and, for a valid victim, every writeback slot is free; otherwise, or for a resident or in-flight line, the prefetch does nothing. The instruction prefetch table and the pause beside DMA traffic are not modeled.
 
 Replacement follows the tree-PLRU walk in `frost_cache.sv`. An invalid unreserved way takes priority; otherwise the walk avoids reserved subtrees. Hits update the tree. An allocation updates it unless bimodal insertion is enabled and the low five bits of the free-running insertion LFSR are nonzero. The LFSR starts at `0xACE1` and uses the RTL's feedback taps. The model samples it at its allocation decision, not at fill completion. `l1d_bimodal_insert` defaults to true; `l2_bimodal_insert` defaults to false. Tag-stage timing is an abstraction, so the insertion phase is not calibrated cycle by cycle to RTL.
 
@@ -380,3 +404,34 @@ A model change that alters the stored results regenerates the corresponding JSON
 The report renderers reproduce `results/FROST_perf_model_report.md` and `results/coremark_optimization_report.md` from the corresponding sweep and exploration results. The model tests compare both documents with that output.
 
 CI captures the BRAM CoreMark timed region and compares its observed IPC with the synthetic CoreMark workload. `calibration/ci_baseline.json` names the memory tier, workload, seed, required event classes, and tolerance. A passing comparison is an aggregate calibration check; it does not validate DDR sensitivity or other workloads. `tools/refresh_baseline.py` captures and checks that region before writing the baseline. A baseline refresh accompanies an intentional model or RTL performance change and records its reason in the commit.
+
+The synthetic CoreMark's data starts cold in DDR, while the BRAM tier's loads never reach the coherent L1D. Each of the workload's L0 misses takes the L1D's one-at-a-time controller, so its length sets how far the cold start weighs against the loops' steady state: 1,200 operations ran at IPC 0.68 under the check's settings, and 3,600 run at 1.0045, 3.7% above the stored RTL figure.
+
+## 13. Board calibration data sets
+
+A board data set records benchmarks measured on hardware, with the platform's model configuration. `tools/board_calibration.py` runs each benchmark's loop body from `board_workloads.py`, starting with every cache full of unrelated lines (modified ones behind store streams), measures the steady state once the body's warm-up share has retired, and writes each figure, the model's, and their residual to the set's `calibration.json`. Points marked `fit` set a configuration latency and match by construction; `--fit` searches those latencies again, and `--set FIELD=JSON` overrides a configuration field for a sensitivity study.
+
+```bash
+python3 perf-modeling/tools/board_calibration.py \
+    --data-set perf-modeling/results/vcu118_sync10i \
+    --out perf-modeling/results/vcu118_sync10i/calibration.json
+```
+
+`results/vcu118_sync10i/` holds benchmarks measured on 2026-11-08 on a VCU118 FPGA build of upstream `699b7068` with the board series: CPU at 200 MHz, the SoC, L2 home and DDR4 controller at 100 MHz, under Linux. It is an FPGA platform point: the half-rate home and controller set its latencies, so its absolute figures are not ASIC figures. Its configuration states the RTL's eight home fills, doubles the home's tag stage and C-to-U interval for the half-rate home, and fits two latencies: `l2_data_cycles` (39) to the 256 KiB dependent chain and `ddr.latency_cycles` (148) to the dependent DRAM chase. The board takes 0.54 DTLB misses per chase hop and the model has no page walker, so that DDR latency includes the walks.
+
+| Benchmark | Board | Model | Residual | Role |
+|---|---:|---:|---:|---|
+| Sequential 8-byte read | 132.2 MB/s | 156.5 MB/s | +18.4% | prediction |
+| Strided read, 16 B | 209.4 MB/s | 272.6 MB/s | +30.2% | prediction |
+| Strided read, 32 B | 327.5 MB/s | 464.4 MB/s | +41.8% | prediction |
+| Strided read, 64 B | 518.1 MB/s | 524.2 MB/s | +1.2% | prediction |
+| Strided read, 128 B | 1108.0 MB/s | 868.2 MB/s | -21.6% | prediction |
+| Sequential 8-byte write | 97.7 MB/s | 104.0 MB/s | +6.4% | prediction |
+| memcpy (int-copy body) | 172.3 MB/s | 149.6 MB/s | -13.2% | prediction |
+| memset (int-write body) | 97.6 MB/s | 104.0 MB/s | +6.5% | prediction |
+| Dependent DRAM chase | 818.6 ns | 820.2 ns | +0.2% | fit |
+| 256 KiB dependent chain | 181.9 ns | 182.0 ns | +0.1% | fit |
+
+The L1D's one-at-a-time controller sets the rate of the sector-adjacent streams: a sequential sector takes a missing lookup, three loads that attach to its endpoint and look up again after the installation, the installation and look-ahead lookups. With a lookup every cycle instead, the model reads 249 MB/s sequentially and 397 MB/s at a 16-byte stride. For the same reason, two more look-ahead endpoints add 4% to sequential reads with the home's prefetcher on and 21% with it off, and an LQ of 16 adds nothing without a wider ROB.
+
+With the home's prefetcher on, the model reads the sector-adjacent streams 18% to 42% faster than the board; with it off, 16% to 30% slower. The model's prefetcher follows the RTL's agent, so the board's hides less latency for a reason the model omits. Candidates are the home's lookup bandwidth (one service engine at half the CPU clock takes demand requests, prefetch lookups, writebacks and completions in turn, while the model's L2 takes a lookup every CPU cycle), the prefetch pause beside the board's Ethernet DMA, the identity's GrantAck, C and U round trip across the clock boundary, the registered room flag, and the DDR4 controller's bank, refresh and turnaround timing. Strided reads at 128 bytes, which neither mechanism covers, depend on the endpoints' lifetime; a DDR latency near 105 cycles matches them and leaves the chase short by about 90 cycles for each page walk, but makes the store streams 30% to 37% faster than the board, a second open item.

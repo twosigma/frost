@@ -2,7 +2,7 @@
 
 ## Decision
 
-For the model's workload mix on FROST's single-channel 512-bit AXI memory architecture, the best evaluated configuration is **l2_mshr_12**. Its comparative geomean cycle ratio is **0.872** versus the RTL baseline (lower is better). The recommended model configuration is therefore **L2 MSHR = 12** with FROST's 64-byte/512-bit AXI boundary and single-channel DDR endpoint. Retain L1D MSHR = 8 because the current cached-load and L1D ID ownership are both eight-slot bounded. In implementation, stage 8 MSHRs first if it materially lowers Fmax/area risk, then validate the 12-slot endpoint against RTL traces and synthesis.
+For the model's workload mix on FROST's single-channel 512-bit AXI memory architecture, the best evaluated configuration is **l2_mshr_12**. Its comparative geomean cycle ratio is **0.927** versus the RTL baseline (lower is better). The recommended model configuration is therefore **L2 MSHR = 12** with FROST's 64-byte/512-bit AXI boundary and single-channel DDR endpoint. Retain L1D MSHR = 8 because the current cached-load and L1D ID ownership are both eight-slot bounded. In implementation, stage 8 MSHRs first if it materially lowers Fmax/area risk, then validate the 12-slot endpoint against RTL traces and synthesis.
 
 This is an evidence-backed *model recommendation*, not a claim that the RTL already achieves the reported absolute cycle counts. The candidate remains subject to RTL waveform comparison, synthesis/Fmax/area review, and controller-timing calibration.
 
@@ -17,23 +17,23 @@ This is an evidence-backed *model recommendation*, not a claim that the RTL alre
 
 | Candidate | Geomean cycles / baseline | Mean cycles | Mean IPC | L2-MSHR backpressure |
 |---|---:|---:|---:|---:|
-| l2_mshr_12 | 0.872 | 34818.5 | 0.159 | 0 |
-| l2_mshr_12_wb_4 | 0.872 | 34818.5 | 0.159 | 0 |
-| l2_mshr_8 | 0.914 | 35547.8 | 0.156 | 4377 |
-| l2_mshr_8_wb_4 | 0.914 | 35547.8 | 0.156 | 4377 |
-| l2_mshr_8_prefetch_off | 0.946 | 35717.3 | 0.134 | 4377 |
-| rtl_baseline | 1.000 | 37445.2 | 0.146 | 55746 |
+| l2_mshr_12 | 0.927 | 38413.0 | 0.199 | 0 |
+| l2_mshr_12_wb_4 | 0.927 | 38413.0 | 0.199 | 0 |
+| l2_mshr_8 | 0.933 | 38530.5 | 0.198 | 1375 |
+| l2_mshr_8_wb_4 | 0.933 | 38530.5 | 0.198 | 1375 |
+| l2_mshr_8_prefetch_off | 0.953 | 38803.3 | 0.180 | 1370 |
+| rtl_baseline | 1.000 | 40223.2 | 0.191 | 45360 |
 
 | Workload | Baseline cycles | Recommended cycles | Delta |
 |---|---:|---:|---:|
-| redis_kv | 15491 | 15416 | -0.5% |
-| http_api | 34094 | 34094 | +0.0% |
-| faas_cold | 86266 | 86266 | +0.0% |
-| linux_service | 55388 | 55388 | +0.0% |
-| memory_stress | 28800 | 13345 | -53.7% |
-| coremark | 4632 | 4402 | -5.0% |
+| redis_kv | 16039 | 16013 | -0.2% |
+| http_api | 36392 | 36011 | -1.0% |
+| faas_cold | 91132 | 91061 | -0.1% |
+| linux_service | 58271 | 58271 | +0.0% |
+| memory_stress | 29764 | 19663 | -33.9% |
+| coremark | 9741 | 9459 | -2.9% |
 
-The baseline has 55746 modeled L2-MSHR backpressure events across the workload set. Enlarging L2 concurrency is a more focused next RTL experiment than enlarging L1D MSHRs: the latter cannot exceed eight without changing the existing four-bit L1D `{type, slot}` ownership/ID contract and is not useful beyond the 8-entry load queue in this model.
+The baseline has 45360 modeled L2-MSHR backpressure events across the workload set. Enlarging L2 concurrency is a more focused next RTL experiment than enlarging L1D MSHRs: the latter cannot exceed eight without changing the existing four-bit L1D `{type, slot}` ownership/ID contract and is not useful beyond the 8-entry load queue in this model.
 
 ## Low-hanging-fruit refinements
 

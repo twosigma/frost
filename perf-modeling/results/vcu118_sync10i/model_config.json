@@ -1,0 +1,10 @@
+{
+  "name": "vcu118_sync10i",
+  "l2_mshrs": 8,
+  "l2_tag_cycles": 6,
+  "l2_data_cycles": 39,
+  "coherence_release_cycles": 8,
+  "ddr": {
+    "latency_cycles": 148
+  }
+}

@@ -6,7 +6,7 @@ This document describes the methodology for capturing cycle-accurate microarchit
 
 ## 1. Overview & Objectives
 
-The FROST performance model provides a cycle-approximate simulator with a recorded analytical CoreMark rate of 75,122 simulated cycles/s for the FROST platform (`platform_top` = `cpu_top` + `soc_top`). To ensure that architectural recommendations and design space exploration reflect actual hardware behavior, the model is calibrated directly against cycle-accurate Verilator RTL simulation traces.
+The FROST performance model provides a cycle-approximate simulator with a recorded analytical CoreMark rate of 65,372 simulated cycles/s for the FROST platform (`platform_top` = `cpu_top` + `soc_top`). To ensure that architectural recommendations and design space exploration reflect actual hardware behavior, the model is calibrated directly against cycle-accurate Verilator RTL simulation traces.
 
 Key objectives:
 1. **Zero Intrusion**: Probes monitor RTL simulation state without perturbing DUT timing, changing clocking, or altering synthesizable RTL (`hw/rtl/`).
@@ -120,6 +120,8 @@ The AXI bridge preserves internal cache IDs until completion. Its pool size boun
 Early load wakeup affects dependent memory operations. A nonfaulting accepted load can use an idle registered CDB lane to bypass one modeled memory-wakeup cycle. Two occupied registered lanes suppress the token. Integer dependencies use the ordinary path. The model omits speculative recovery and uncached-store completion arbitration.
 
 Cache replacement uses the RTL tree-PLRU victim walk and skips reserved ways. The insertion LFSR advances with modeled core cycles. Bimodal allocation updates replacement state when its low five bits are zero, while hits always update it. The coherent L1D also updates it for a fill with a read attached to its miss or another miss of its set not yet installed, which the model omits. The allocation decision samples this state before the fill. Abstract cache-stage timing can shift the sampling phase relative to RTL, so compare miss counts as well as cycles when evaluating capacity or insertion policy.
+
+Board measurements form a data set in `results/` (README section 13): a manifest with the board, build, clocks and raw result files, the measured figures with their raw lines, and the platform's model configuration. Mark each point as a `fit`, when it sets a configuration latency, or a `prediction`. Fit a latency to a dependent chain whose path the model covers; a page walk, a TLB miss or an operating-system event the model omits stays in the fitted latency, so record it in the manifest. Compare streams in their steady state: the calibration starts each body with caches full of unrelated lines, as in the middle of a pass over a buffer far larger than the L2, and measures after its warm-up share retires.
 
 ## 7. Instruction replay inputs
 

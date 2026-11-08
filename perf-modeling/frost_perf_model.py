@@ -30,8 +30,10 @@ Another project can swap ``SocTopModel`` (or ``DdrController``) while keeping
 ``ModelConfig`` / ``SocConfig`` / ``DdrConfig``.
 
 Grounding snapshot: twosigma/frost main @ 410aa8f3e866fffb078fc8f7fd3672866d83d131
-(2026-10-22).  See ``rtl_audit`` for exact source locations and the boundary
-between source-proven configuration and modelling assumptions.
+(2026-10-22); the coherent L1D, the store drain, the home's prefetch agent,
+and MEM_RS and LQ release follow ade0de67.  See ``rtl_audit`` for exact
+source locations and the boundary between source-proven configuration and
+modelling assumptions.
 
 Examples:
   python frost_perf_model.py selftest --out results/frost_perf_selftest.json
@@ -201,11 +203,24 @@ class ModelConfig:
     l2_wb_slots: int = 2
     l2_waiters: int = 2
     l2_prefetch: bool = True
-    l2_prefetch_distance: int = 8
-    l2_prefetch_inflight: int = 4
+    l2_prefetch_distance: int = 8  # L2_PREFETCH_DISTANCE, in 64-byte lines
+    l2_prefetch_inflight: int = 3  # L2_PREFETCH_INFLIGHT data identities
+    l2_prefetch_streams: int = 4  # coherence_prefetch_agent STREAMS
+    prefetch_page_bytes: int = 4096  # look-ahead and prefetch stay in one page
+    # Coherent L1D (coherence_l1d.sv): l1d_mshrs is its request-endpoint
+    # count. Endpoint 0 serves stores; the others serve load misses, and the
+    # highest l1d_lookahead_slots of them may carry stream look-ahead GetS.
+    l1d_lookahead_slots: int = 2  # PrefetchCount for eight endpoints
+    l1d_lookahead_sectors: int = 8  # look-ahead window past the demand frontier
+    l1d_store_records: int = 4  # ordered 32-byte store records
+    l1d_store_lookahead: bool = True  # one load endpoint lent to a younger store
+    l1d_read_slots: int = 8  # CPU read slots, including reads waiting on a fill
+    store_drain_cycles: int = 3  # SQ launch interval for cached stores
+    coherence_release_cycles: int = 4  # installation or GrantAck to U
     # Pipeline / cache timing abstraction.
-    l1_tag_cycles: int = 1
-    l1_data_cycles: int = 2
+    l1_tag_cycles: int = 1  # coherence_array TAG_READ_LATENCY
+    l1_data_cycles: int = 2  # coherence_array DATA_READ_LATENCY
+    l1_write_cycles: int = 1  # coherence_array DATA_WRITE_LATENCY
     l2_tag_cycles: int = 3
     l2_data_cycles: int = 6
     cache_fill_cycles: int = 1
@@ -271,6 +286,36 @@ class ModelConfig:
             or self.ddr.latency_jitter < 0
         ):
             raise ValueError("invalid DDR slot or latency configuration")
+        if (
+            self.l1d_lookahead_slots < 0
+            or self.l1d_lookahead_sectors < 1
+            or self.l1d_store_records < 1
+            or self.l1d_read_slots < 1
+            or self.store_drain_cycles < 1
+            or self.l1_write_cycles < 1
+            or self.coherence_release_cycles < 0
+            or self.l2_prefetch_streams < 1
+            or self.l2_prefetch_inflight < 1
+            or self.l2_prefetch_distance < 1
+        ):
+            raise ValueError("invalid look-ahead, store record, or prefetch setting")
+        page_sectors = self.prefetch_page_bytes // self.l1_line_bytes
+        if (
+            self.prefetch_page_bytes % self.l2_line_bytes
+            or self.l1d_lookahead_sectors >= page_sectors
+            or self.l2_prefetch_distance
+            >= self.prefetch_page_bytes // self.l2_line_bytes
+        ):
+            raise ValueError("look-ahead and prefetch distances must fit in a page")
+
+    @property
+    def l1d_lookahead_endpoints(self) -> int:
+        """Return the endpoints that may carry stream look-ahead.
+
+        coherence_l1d.sv keeps at least one load endpoint demand-only, so
+        three endpoints allow one and fewer allow none.
+        """
+        return min(self.l1d_lookahead_slots, max(0, self.l1d_mshrs - 2))
 
 
 def with_config(base: ModelConfig, name: str, **changes: Any) -> ModelConfig:
@@ -393,8 +438,8 @@ class CacheLine:
 class MissStatus:
     """One MSHR: the missing line, the way it reserves, and its requests.
 
-    A miss that evicts a dirty line waits for that line's writeback
-    before it fetches.
+    A miss that evicts a dirty line writes it back first, or beside the
+    fill when the cache buffers its victims.
     """
 
     slot: int
@@ -408,6 +453,9 @@ class MissStatus:
     waiting_for_wb: bool = False
     wb_slot: int | None = None
     evicted_line_address: int | None = None
+    wb_sent: bool = False
+    granted: bool = False
+    fill_ok: bool = True
 
 
 class SubmissionPort(Protocol):
@@ -443,13 +491,19 @@ class CacheLevel:
         response_cycles: int,
         id_bits: int,
         bimodal_insert: bool = False,
-        miss_observer: Callable[[int], None] | None = None,
+        request_observer: Callable[[int], None] | None = None,
+        buffered_writeback: bool = False,
     ) -> None:
         """Create an empty cache with the given geometry, miss resources, and latencies.
 
         id_bits is the width of the {type, slot} IDs of its requests to the
-        lower level. miss_observer, when given, receives the line address of
-        each L1D demand miss.
+        lower level. request_observer, when given, receives the line address
+        of each accepted request from the L1D, hit or miss, as the home's
+        prefetch agent sees hart GetS and GetM. With buffered_writeback, a
+        dirty victim's writeback goes out beside the fill and holds its
+        writeback slot until acknowledged, as the coherent L1D's frozen PutM
+        slots and the home's detached victims do; otherwise the fill waits
+        for the writeback.
         """
         self.name = name
         if ways < 1 or ways & (ways - 1):
@@ -469,11 +523,13 @@ class CacheLevel:
         self.response_cycles = response_cycles
         self.id_bits = id_bits
         self.bimodal_insert = bimodal_insert
-        self.miss_observer = miss_observer
+        self.request_observer = request_observer
+        self.buffered_writeback = buffered_writeback
         self.sets: dict[int, list[CacheLine]] = {}
         self.mshrs: dict[int, MissStatus] = {}
         self._used_mshr_slots: set[int] = set()
         self._used_wb_slots: set[int] = set()
+        self._wb_lines: dict[int, int] = {}  # writeback slot -> line in flight
         self._last_accept_cycle = -1
         self._last_response_cycle = -1
         self.plru: dict[int, int] = {}
@@ -550,6 +606,12 @@ class CacheLevel:
 
     def submit(self, request: Request) -> bool:
         """Accept at most one tag lookup per modeled cache cycle."""
+        accepted = self._submit(request)
+        if accepted and self.request_observer is not None and request.source == "l1d":
+            self.request_observer(request.address // self.line_bytes)
+        return accepted
+
+    def _submit(self, request: Request) -> bool:
         if self._last_accept_cycle == self.loop.cycle:
             self.stats["input_backpressure"] += 1
             return False
@@ -591,6 +653,25 @@ class CacheLevel:
         if victim_way is None:
             self.stats["reserved_way_backpressure"] += 1
             return False
+        slot = next(s for s in range(self.mshr_count) if s not in self._used_mshr_slots)
+        return (
+            self._allocate_miss(request, line_address, set_index, victim_way, slot)
+            is not None
+        )
+
+    def _allocate_miss(
+        self,
+        request: Request,
+        line_address: int,
+        set_index: int,
+        victim_way: int,
+        slot: int,
+    ) -> MissStatus | None:
+        """Reserve victim_way and miss slot for line_address and start the miss.
+
+        Return None, with nothing reserved, when a dirty victim finds no
+        writeback slot.
+        """
         victim = self._ways(set_index)[victim_way]
         needs_wb = victim.valid and victim.dirty
         evicted_line_address = (
@@ -603,14 +684,13 @@ class CacheLevel:
             wb_slot = self._allocate_slot(self._used_wb_slots, self.wb_slots)
             if wb_slot is None:
                 self.stats["writeback_backpressure"] += 1
-                return False
-        mshr_slot = self._allocate_slot(self._used_mshr_slots, self.mshr_count)
-        assert mshr_slot is not None
+                return None
+        self._used_mshr_slots.add(slot)
         self._last_accept_cycle = self.loop.cycle
-        victim.reserved_by = mshr_slot
+        victim.reserved_by = slot
         victim.valid = False
         status = MissStatus(
-            slot=mshr_slot,
+            slot=slot,
             line_address=line_address,
             set_index=set_index,
             way_index=victim_way,
@@ -625,15 +705,62 @@ class CacheLevel:
         self.stats["misses"] += 1
         if needs_wb:
             self.stats["dirty_evictions"] += 1
-        if self.miss_observer is not None and request.source == "l1d":
-            self.miss_observer(line_address)
         self.loop.after(self.tag_cycles, lambda status=status: self._begin_miss(status))
+        return status
+
+    def prefetch_lookup(self, line_address: int, reserve: int) -> bool:
+        """Serve one Prefetch request at the home (``coherence_home.sv``).
+
+        The request takes the lookup port; return False when the port is
+        busy this cycle. A resident line keeps its data and updates
+        replacement state as any hit does. An absent line starts a fill
+        only while more than reserve miss slots are free, two ways of its
+        set are available and, for a valid victim, every writeback slot is
+        free. Otherwise, or when a fill of the line is in flight, the
+        prefetch completes having done nothing; it never waits or retries.
+        """
+        if self._last_accept_cycle == self.loop.cycle:
+            self.stats["prefetch_port_backpressure"] += 1
+            return False
+        self._last_accept_cycle = self.loop.cycle
+        set_index, tag = line_address % self.sets_count, line_address // self.sets_count
+        hit_way = self._find(set_index, tag)
+        if hit_way is not None:
+            self._touch(set_index, hit_way)
+            self.stats["prefetch_resident"] += 1
+            return True
+        if line_address in self.mshrs:
+            self.stats["prefetch_in_flight"] += 1
+            return True
+        lines = self._ways(set_index)
+        available = sum(line.reserved_by is None for line in lines)
+        victim_way = self._victim(set_index)
+        free_wb = self.wb_slots - len(self._used_wb_slots)
+        if (
+            self.mshr_count - len(self.mshrs) <= reserve
+            or available < 2
+            or victim_way is None
+            or (lines[victim_way].valid and free_wb < min(2, self.wb_slots))
+        ):
+            self.stats["prefetch_declined"] += 1
+            return True
+        request = Request(
+            address=line_address * self.line_bytes,
+            is_write=False,
+            source="prefetch",
+            request_id=("prefetch", line_address),
+            complete=lambda _ok: None,
+            bytes_size=self.line_bytes,
+        )
+        slot = next(s for s in range(self.mshr_count) if s not in self._used_mshr_slots)
+        if self._allocate_miss(request, line_address, set_index, victim_way, slot):
+            self.stats["prefetch_fills"] += 1
         return True
 
     def _begin_miss(self, status: MissStatus) -> None:
         if self.mshrs.get(status.line_address) is not status:
             return
-        if status.waiting_for_wb:
+        if status.waiting_for_wb and not status.wb_sent:
             assert status.wb_slot is not None
             wb_id = TransactionId(self.name, "writeback", status.wb_slot, self.id_bits)
             evicted_line_address = self._evicted_line_address(status)
@@ -648,7 +775,11 @@ class CacheLevel:
             if not self.lower.submit(wb):
                 self.stats["downstream_backpressure"] += 1
                 self.loop.after(1, lambda status=status: self._begin_miss(status))
-            return
+                return
+            status.wb_sent = True
+            self._wb_lines[status.wb_slot] = evicted_line_address
+            if not self.buffered_writeback:
+                return
         if status.fill_started:
             return
         fill_id = TransactionId(self.name, "fill", status.slot, self.id_bits)
@@ -672,13 +803,18 @@ class CacheLevel:
         return status.evicted_line_address
 
     def _writeback_done(self, status: MissStatus) -> None:
-        if self.mshrs.get(status.line_address) is not status:
+        if (
+            not self.buffered_writeback
+            and self.mshrs.get(status.line_address) is not status
+        ):
             return
         status.waiting_for_wb = False
         assert status.wb_slot is not None
         self._used_wb_slots.remove(status.wb_slot)
+        self._wb_lines.pop(status.wb_slot, None)
         self.stats["writebacks_completed"] += 1
-        self._begin_miss(status)
+        if not self.buffered_writeback:
+            self._begin_miss(status)
 
     def _fill_done(self, status: MissStatus, ok: bool) -> None:
         if self.mshrs.get(status.line_address) is not status:
@@ -1360,53 +1496,658 @@ class AxiBridge:
         return accepted
 
 
-class StreamPrefetcher:
-    """Small, intentionally transparent approximation of the RTL L2 stream prefetcher."""
+@dataclass
+class PrefetchStream:
+    """One entry of ``l2_stream_prefetcher.sv``'s stream table."""
 
-    def __init__(self, adapter: LineSizeAdapter, config: ModelConfig) -> None:
-        """Prefetch through adapter with the configuration's distance and limit."""
-        self.adapter = adapter
+    line: int
+    confirmed: bool = False
+    ahead: int = 0
+
+
+class StreamPrefetcher:
+    """The home's data prefetcher (``coherence_prefetch_agent.sv``).
+
+    The ``l2_stream_prefetcher.sv`` table holds l2_prefetch_streams entries,
+    each the last training line of a stream and how many lines after it
+    have been requested. Training comes from every accepted hart GetS and
+    GetM at the home, L2 hits included, one cycle later. A line after an
+    entry's confirms and advances it; an entry's own line leaves it
+    unchanged; any other line replaces an entry in rotation. The lowest
+    confirmed entry with fewer than l2_prefetch_distance lines requested
+    requests the next line, never past its page. A request loads only
+    while more than l2_mshrs // 4 home fills are free (PREFETCH_RESERVE)
+    and one of l2_prefetch_inflight identities is free. The home answers
+    each Prefetch with GrantAck after one lookup; the identity returns at
+    U, coherence_release_cycles later, while any fill goes on without it.
+    A line that a live identity already holds is dropped.
+    """
+
+    def __init__(self, loop: EventLoop, l2: CacheLevel, config: ModelConfig) -> None:
+        """Prefetch into l2 with the configuration's table, distance and identities."""
+        self.loop = loop
+        self.l2 = l2
         self.config = config
-        self.last_line: int | None = None
-        self.inflight = 0
-        self.next_id = 0
+        self.reserve = config.l2_mshrs // 4
+        self.page_lines = config.prefetch_page_bytes // config.l2_line_bytes
+        self.streams: list[PrefetchStream | None] = [None] * config.l2_prefetch_streams
+        self.victim = 0
+        self.live: dict[int, int] = {}  # identity -> line
+        self.pending: tuple[int, int] | None = None  # registered (identity, line)
+        self._scheduled = False
         self.stats: Counter = Counter()
 
-    def observe(self, l1_line: int) -> None:
-        """Note an L1D miss and prefetch ahead of a sequential stream.
+    def observe(self, line: int) -> None:
+        """Train on an accepted hart data request for line, a cycle later."""
+        if self.config.l2_prefetch:
+            self.loop.after(1, lambda line=line: self._train(line))
 
-        A miss on the line after the previous miss requests the line
-        l2_prefetch_distance lines ahead, unless l2_prefetch_inflight
-        prefetches are already in flight.
-        """
-        if not self.config.l2_prefetch:
+    def _train(self, line: int) -> None:
+        self.stats["observations"] += 1
+        for entry in self.streams:
+            if entry is not None and line == entry.line + 1:
+                entry.line, entry.confirmed = line, True
+                entry.ahead = max(0, entry.ahead - 1)
+                self._schedule()
+                return
+        if any(entry is not None and entry.line == line for entry in self.streams):
             return
-        sequential = self.last_line is not None and l1_line == self.last_line + 1
-        self.last_line = l1_line
-        if not sequential or self.inflight >= self.config.l2_prefetch_inflight:
-            return
-        target = l1_line + self.config.l2_prefetch_distance
-        request_id = ("prefetch", self.next_id)
-        self.next_id += 1
-        self.inflight += 1
+        self.streams[self.victim] = PrefetchStream(line)
+        self.victim = (self.victim + 1) % len(self.streams)
+        self.stats["streams_allocated"] += 1
 
-        def done(_ok: bool) -> None:
-            self.inflight -= 1
-            self.stats["completed"] += 1
+    def _schedule(self) -> None:
+        if not self._scheduled:
+            self._scheduled = True
+            self.loop.after(1, self._pump)
 
-        request = Request(
-            address=target * self.config.l1_line_bytes,
-            is_write=False,
-            source="prefetch",
-            request_id=request_id,
-            complete=done,
-            bytes_size=self.config.l1_line_bytes,
+    def _candidate(self) -> PrefetchStream | None:
+        for entry in self.streams:
+            if (
+                entry is not None
+                and entry.confirmed
+                and entry.ahead < self.config.l2_prefetch_distance
+                and entry.line % self.page_lines + entry.ahead + 1 < self.page_lines
+            ):
+                return entry
+        return None
+
+    def _pump(self) -> None:
+        self._scheduled = False
+        if self.pending is None:
+            entry = self._candidate()
+            free = [
+                ident
+                for ident in range(self.config.l2_prefetch_inflight)
+                if ident not in self.live
+            ]
+            room = self.l2.mshr_count - len(self.l2.mshrs) > self.reserve
+            if entry is not None and free and room:
+                line = entry.line + entry.ahead + 1
+                entry.ahead += 1
+                if line in self.live.values():
+                    self.stats["dropped_live"] += 1
+                else:
+                    self.live[free[0]] = line
+                    self.pending = (free[0], line)
+            elif entry is not None:
+                self.stats["identity_stall" if room else "room_stall"] += 1
+        if self.pending is not None:
+            ident, line = self.pending
+            if self.l2.prefetch_lookup(line, self.reserve):
+                self.pending = None
+                self.stats["issued"] += 1
+                self.loop.after(
+                    self.l2.tag_cycles + self.config.coherence_release_cycles,
+                    lambda ident=ident: self._release(ident),
+                )
+        if self.pending is not None or self._candidate() is not None:
+            self._schedule()
+
+    def _release(self, ident: int) -> None:
+        del self.live[ident]
+        self.stats["completed"] += 1
+        self._schedule()
+
+
+class ReadStream:
+    """``coherence_read_stream.sv``: one ascending stream of 32-byte sectors.
+
+    Three adjacent demand misses confirm the stream. Before confirmation an
+    adjacent miss advances the seed and an adjacent hit leaves it
+    unchanged; a confirmed stream advances on demand hits and misses of the
+    next sector; a nonadjacent miss replaces it. The cursor stays within
+    distance sectors of the demand frontier and within its page.
+    """
+
+    def __init__(self, distance: int, page_bytes: int, sector_bytes: int) -> None:
+        """Start unseeded with the given window, page and sector sizes."""
+        self.distance = distance
+        self.page_bytes = page_bytes
+        self.sector_bytes = sector_bytes
+        self.page_sectors = page_bytes // sector_bytes
+        self.seeded = self.pair_seen = self.confirmed = False
+        self.page = self.frontier = self.cursor = 0
+
+    def demand(self, address: int, miss: bool) -> bool:
+        """Note a demand's first lookup; return True when it replaces the stream."""
+        page = address // self.page_bytes
+        sector = address % self.page_bytes // self.sector_bytes
+        same = self.seeded and page == self.page and sector == self.frontier
+        adjacent = self.seeded and page == self.page and sector == self.frontier + 1
+        if miss and not same and not adjacent:
+            self.seeded, self.pair_seen, self.confirmed = True, False, False
+            self.page, self.frontier, self.cursor = page, sector, sector + 1
+            return True
+        if adjacent and (self.confirmed or miss):
+            if not self.confirmed or self.cursor <= sector:
+                self.cursor = sector + 1
+            self.confirmed = self.confirmed or self.pair_seen
+            self.pair_seen = True
+            self.frontier = sector
+        return False
+
+    def in_window(self, address: int) -> bool:
+        """Return True while address lies ahead of the frontier in the window."""
+        sector = address % self.page_bytes // self.sector_bytes
+        return (
+            self.confirmed
+            and address // self.page_bytes == self.page
+            and self.frontier < sector <= self.frontier + self.distance
         )
-        if self.adapter.submit(request):
-            self.stats["issued"] += 1
+
+    def consume(self) -> int | None:
+        """Return the cursor's sector address and advance it, if it is valid."""
+        address = self.page * self.page_bytes + self.cursor * self.sector_bytes
+        if self.cursor >= self.page_sectors or not self.in_window(address):
+            return None
+        self.cursor += 1
+        return address
+
+
+@dataclass
+class StoreRecord:
+    """One of the coherent L1D's ordered 32-byte store records."""
+
+    line_address: int
+    contributors: int = 1
+    sealed: bool = False
+    status: MissStatus | None = None  # its GetM, once acquired
+    checked: bool = False  # a look-ahead lookup found it Modified
+    writing: bool = False  # a head hit is updating the array
+
+
+class CoherentL1d(CacheLevel):
+    """The coherent L1D (``coherence_l1d.sv``) behind the load and store queues.
+
+    One controller serves one operation at a time, in its Idle priority:
+    a grant's installation, the head store, a load, a store look-ahead, and
+    stream look-ahead last. Each operation holds the controller for its
+    phases (Idle, Lookup, the array's tag and data reads, then Acquire, or
+    Update and its array write), so a read hit holds it for
+    l1_tag_cycles + l1_data_cycles + 3 cycles.
+
+    l1d_mshrs request endpoints carry acquisitions. Endpoint 0 carries the
+    head store's GetM; endpoints 1 and up carry load misses, the lowest free
+    one for each demand. Stream look-ahead GetS uses the highest
+    l1d_lookahead_endpoints of them, and one may be lent to a younger
+    store's GetM. A demand grant answers its load before installation;
+    loads that attached to an endpoint look up again after it installs.
+    Each endpoint stays live through U, coherence_release_cycles after
+    installation. Committed stores enter l1d_store_records ordered sector
+    records; only the youngest unsealed record combines, and every record
+    installs at the head. A dirty victim's writeback leaves beside the fill.
+    """
+
+    def __init__(
+        self, loop: EventLoop, lower: SubmissionPort, config: ModelConfig
+    ) -> None:
+        """Create the L1D from the configuration's geometry and endpoint settings."""
+        super().__init__(
+            "l1d",
+            loop,
+            lower,
+            config.l1d_bytes,
+            config.l1_line_bytes,
+            config.l1d_ways,
+            config.l1d_mshrs,
+            config.l1d_wb_slots,
+            config.l1d_read_slots,
+            config.l1_tag_cycles,
+            config.l1_data_cycles,
+            config.cache_fill_cycles,
+            config.cache_response_cycles,
+            config.l1d_id_bits,
+            bimodal_insert=config.l1d_bimodal_insert,
+            buffered_writeback=True,
+        )
+        self.release_cycles = config.coherence_release_cycles
+        # Controller occupancy: Idle, Lookup, the array's tag read, and the
+        # reply cycle; a hit adds the data read, an acquisition its Acquire
+        # cycle, and an update its Update, array write and UpdateWait.
+        self.lookup_cycles = config.l1_tag_cycles + 3
+        self.update_cycles = self.lookup_cycles + config.l1_write_cycles + 2
+        endpoints = range(config.l1d_mshrs)
+        self.load_endpoints = list(endpoints[1:] if config.l1d_mshrs > 1 else endpoints)
+        self.lookahead_endpoints = list(
+            endpoints[config.l1d_mshrs - config.l1d_lookahead_endpoints :]
+            if config.l1d_lookahead_endpoints
+            else []
+        )
+        self.store_lookahead = config.l1d_store_lookahead and config.l1d_mshrs >= 3
+        self.record_limit = config.l1d_store_records
+        self.records: deque[StoreRecord] = deque()
+        self.stream = ReadStream(
+            config.l1d_lookahead_sectors,
+            config.prefetch_page_bytes,
+            config.l1_line_bytes,
+        )
+        self.hint: int | None = None
+        self.borrowed: int | None = None  # the endpoint lent to a younger store
+        self.busy_until = 0
+        self.grants: list[MissStatus] = []
+        self.replays: deque[Request] = deque()
+        self.read_turn = False  # a read waits for its turn between other work
+        self._looked_up: set[Any] = set()
+        self._waiting_for_endpoint: set[Any] = set()
+
+    # Controller and ownership.
+    def _idle(self) -> bool:
+        return self.loop.cycle >= self.busy_until
+
+    def _occupy(self, cycles: int) -> None:
+        self.busy_until = self.loop.cycle + cycles
+        self._last_accept_cycle = self.loop.cycle
+        self.stats["controller_busy_cycles"] += cycles
+
+    def _free(self, candidates: Iterable[int]) -> list[int]:
+        return [ep for ep in candidates if ep not in self._used_mshr_slots]
+
+    def _record_holds(self, line_address: int) -> bool:
+        return any(record.line_address == line_address for record in self.records)
+
+    def _wb_holds(self, line_address: int) -> bool:
+        return line_address in self._wb_lines.values()
+
+    def step(self) -> None:
+        """Start a grant's installation or a store operation, ahead of loads.
+
+        A grant or store yields one turn to a waiting load after each store
+        operation and after a demand installation with attached loads.
+        """
+        if not self._idle() or self.read_turn:
+            return
+        if not self._start_grant():
+            self._start_store()
+
+    def step_after_loads(self) -> None:
+        """Use an idle controller after this cycle's loads: deferred work, then hints."""
+        if not self._idle():
+            return
+        self.read_turn = False
+        if self._start_grant() or self._start_store() or self._start_store_lookahead():
+            return
+        self._start_hint()
+
+    def submit(self, request: Request) -> bool:
+        """Look up a load when the controller is idle.
+
+        A hit answers after the data read. A miss attaches to the endpoint
+        that holds its sector or acquires the lowest free load endpoint; a
+        miss that finds none waits, without another lookup, for one to free.
+        """
+        if request.is_write:
+            raise ValueError("stores enter the coherent L1D through push_store")
+        if not self._idle():
+            self.stats["input_backpressure"] += 1
+            return False
+        if not self._eligible(request):
+            return False
+        first = request.request_id not in self._looked_up
+        self._looked_up.add(request.request_id)
+        return self._read(request, first)
+
+    def service_replays(self) -> None:
+        """Look up again, ahead of new loads, a load released by an installation."""
+        if not self._idle() or not self.replays:
+            return
+        request = self.replays[0]
+        if self._eligible(request):
+            self.replays.popleft()
+            if not self._read(request, False):
+                self.replays.appendleft(request)
+
+    def _eligible(self, request: Request) -> bool:
+        line_address = request.address // self.line_bytes
+        if self._record_holds(line_address) or self._wb_holds(line_address):
+            # A read of a buffered store's or a frozen victim's sector waits.
+            self.stats["store_record_wait"] += 1
+            return False
+        # A miss that found no endpoint waits for one before it looks again.
+        return request.request_id not in self._waiting_for_endpoint or bool(
+            self._free(self.load_endpoints)
+        )
+
+    def _read(self, request: Request, first: bool) -> bool:
+        line_address, set_index, tag = self._set_and_tag(request.address)
+        hit_way = self._find(set_index, tag)
+        if first and self.stream.demand(request.address, hit_way is None):
+            self.hint = None
+        self.read_turn = False
+        if hit_way is not None:
+            self._occupy(self.lookup_cycles + self.data_cycles)
+            line = self._ways(set_index)[hit_way]
+            self._touch(set_index, hit_way)
+            if line.prefetched:
+                self.stats["useful_lookaheads"] += 1
+            line.prefetched = False
+            self.stats["hits"] += 1
+            self.loop.after(
+                self.lookup_cycles + self.data_cycles, lambda: self._respond(request)
+            )
+            return self._accepted(request)
+        active = self.mshrs.get(line_address)
+        if active is not None:
+            self._occupy(self.lookup_cycles)
+            active.waiters.append(request)
+            self.stats["mshr_merges"] += 1
+            if active.primary.source == "l1d_lookahead":
+                self.stats["lookahead_attached"] += 1
+            return self._accepted(request)
+        free = self._free(self.load_endpoints)
+        victim_way = self._victim(set_index)
+        if not free or victim_way is None:
+            # The miss's lookup finds no endpoint; it retries when one frees.
+            self._occupy(self.lookup_cycles)
+            self._waiting_for_endpoint.add(request.request_id)
+            self.stats["mshr_backpressure"] += 1
+            return False
+        status = self._allocate_miss(
+            request, line_address, set_index, victim_way, free[0]
+        )
+        if status is None:
+            self._occupy(self.lookup_cycles)
+            self._waiting_for_endpoint.add(request.request_id)
+            return False
+        self._occupy(self.lookup_cycles + 1)
+        return self._accepted(request)
+
+    def _accepted(self, request: Request) -> bool:
+        self._looked_up.discard(request.request_id)
+        self._waiting_for_endpoint.discard(request.request_id)
+        return True
+
+    # Grants.
+    def _fill_done(self, status: MissStatus, ok: bool) -> None:
+        if self.mshrs.get(status.line_address) is not status:
+            return
+        status.granted = True
+        status.fill_ok = ok
+        if status.primary.source == "store_lookahead" and (
+            not self.records or self.records[0].status is not status
+        ):
+            # A younger store's grant waits in its endpoint until the head.
+            return
+        self.grants.append(status)
+
+    def _start_grant(self) -> bool:
+        if not self.grants:
+            return False
+        # Endpoint 0's grant goes first, then the lowest-numbered load grant.
+        status = min(self.grants, key=lambda item: item.slot)
+        self.grants.remove(status)
+        victim_dirty = status.wb_slot is not None
+        cycles = self.update_cycles + (self.data_cycles + 1 if victim_dirty else 0)
+        self._occupy(cycles)
+        if status.primary.source == "l1d":
+            # The demand grant answers its load in its Lookup cycle.
+            self.loop.after(
+                2,
+                lambda request=status.primary, ok=status.fill_ok: self._respond(
+                    request, ok
+                ),
+            )
+        self.loop.after(cycles - 1, lambda: self._install(status))
+        self.stats["installations"] += 1
+        return True
+
+    def _install(self, status: MissStatus) -> None:
+        if self.mshrs.get(status.line_address) is not status:
+            return
+        _, _, tag = self._set_and_tag(status.line_address * self.line_bytes)
+        line = self._ways(status.set_index)[status.way_index]
+        line.tag = tag
+        line.valid = status.fill_ok
+        line.dirty = status.write_intent
+        line.reserved_by = None
+        line.prefetched = status.primary.source == "l1d_lookahead"
+        del self.mshrs[status.line_address]
+        self.loop.after(
+            self.release_cycles,
+            lambda slot=status.slot, source=status.primary.source: self._release(
+                slot, source
+            ),
+        )
+        if status.primary.source in {"store", "store_lookahead"}:
+            self._pop_store()
+        if not status.fill_ok:
+            for request in status.waiters:
+                self._respond(request, False)
+        elif status.waiters:
+            # Attached loads look up again; one takes a turn before more grants.
+            self.replays.extend(status.waiters)
+            self.read_turn = True
+
+    def _release(self, slot: int, source: str) -> None:
+        """End an endpoint's acquisition at U."""
+        self._used_mshr_slots.remove(slot)
+        if source == "store_lookahead":
+            self.borrowed = None
+
+    # Stream look-ahead.
+    def _start_hint(self) -> None:
+        if not self.lookahead_endpoints:
+            return
+        if self.hint is None:
+            self.hint = self.stream.consume()
+        if self.hint is None:
+            return
+        if not self.stream.in_window(self.hint):
+            self.hint = None
+            return
+        line_address, set_index, tag = self._set_and_tag(self.hint)
+        if (
+            line_address in self.mshrs
+            or self._record_holds(line_address)
+            or self._wb_holds(line_address)
+        ):
+            self.stats["lookahead_conflicts"] += 1
+            self.hint = None
+            return
+        free = self._free(self.lookahead_endpoints)
+        if not free:
+            return
+        self.hint = None
+        if self._find(set_index, tag) is not None:
+            # A resident hint needs no acquisition and keeps the line's age.
+            self._occupy(self.lookup_cycles)
+            self.stats["lookahead_resident"] += 1
+            return
+        victim_way = self._victim(set_index)
+        if victim_way is None:
+            return
+        request = Request(
+            address=line_address * self.line_bytes,
+            is_write=False,
+            source="l1d_lookahead",
+            request_id=("lookahead", line_address),
+            complete=lambda _ok: None,
+            bytes_size=self.line_bytes,
+        )
+        if self._allocate_miss(request, line_address, set_index, victim_way, free[-1]):
+            self._occupy(self.lookup_cycles + 1)
+            self.stats["lookahead_issued"] += 1
+
+    # Store records.
+    def store_ready(self) -> bool:
+        """Return True when a record is free for the next committed store.
+
+        The credit does not compare addresses, so a store that would
+        combine also needs a free record (coherence_store_buffer.sv).
+        """
+        return len(self.records) < self.record_limit
+
+    def push_store(self, address: int) -> None:
+        """Buffer a committed store, combining it with the youngest unsealed record."""
+        line_address = address // self.line_bytes
+        youngest = self.records[-1] if self.records else None
+        if (
+            youngest is not None
+            and not youngest.sealed
+            and youngest.line_address == line_address
+        ):
+            youngest.contributors += 1
+            # A record seals at 32 contributors (coherence_store_buffer.sv).
+            youngest.sealed = youngest.contributors >= 32
+            self.stats["stores_combined"] += 1
+            return
+        if len(self.records) >= self.record_limit:
+            raise RuntimeError("store record pushed without credit")
+        self.records.append(StoreRecord(line_address))
+        self.stats["store_records"] += 1
+
+    def _start_store(self) -> bool:
+        if not self.records or self.records[0].writing:
+            return False
+        head = self.records[0]
+        if head.status is not None:
+            if head.status.granted and head.status not in self.grants:
+                # A lent endpoint's grant installs once its record is the head.
+                self.grants.append(head.status)
+                return self._start_grant()
+            return False
+        line_address, set_index, tag = self._set_and_tag(
+            head.line_address * self.line_bytes
+        )
+        if line_address in self.mshrs or 0 in self._used_mshr_slots:
+            return False
+        head.sealed = True
+        self.read_turn = True
+        hit_way = self._find(set_index, tag)
+        if hit_way is not None and self._ways(set_index)[hit_way].dirty:
+            self._occupy(self.update_cycles)
+            self._touch(set_index, hit_way)
+            head.writing = True
+            self.stats["store_hits"] += 1
+            self.loop.after(self.update_cycles - 1, self._pop_store)
+            return True
+        self._acquire_store(head, 0, "store")
+        return True
+
+    def _start_store_lookahead(self) -> bool:
+        if (
+            not self.store_lookahead
+            or len(self.records) < 2
+            or self.borrowed is not None
+        ):
+            return False
+        free = self._free(self.load_endpoints)
+        if not free:
+            return False
+        records = list(self.records)
+        head_row = records[0].line_address * self.line_bytes // 64
+        candidates = []
+        for age, record in enumerate(records):
+            if age == 0 or record.status is not None or record.checked:
+                continue
+            if any(
+                other.line_address == record.line_address for other in records[:age]
+            ):
+                continue
+            if record.line_address in self.mshrs or self._wb_holds(record.line_address):
+                continue
+            candidates.append(record)
+        if not candidates:
+            return False
+        # Look-ahead prefers another home row over the head's sibling sector.
+        other_row = [
+            record
+            for record in candidates
+            if record.line_address * self.line_bytes // 64 != head_row
+        ]
+        record = (other_row or candidates)[0]
+        line_address, set_index, tag = self._set_and_tag(
+            record.line_address * self.line_bytes
+        )
+        self.read_turn = True
+        hit_way = self._find(set_index, tag)
+        if hit_way is not None and self._ways(set_index)[hit_way].dirty:
+            self._occupy(self.lookup_cycles)
+            record.checked = True
+            return True
+        self._acquire_store(record, free[0], "store_lookahead")
+        return True
+
+    def _acquire_store(self, record: StoreRecord, endpoint: int, source: str) -> None:
+        line_address, set_index, tag = self._set_and_tag(
+            record.line_address * self.line_bytes
+        )
+        request = Request(
+            address=line_address * self.line_bytes,
+            is_write=True,
+            source=source,
+            request_id=(source, line_address),
+            complete=lambda _ok: None,
+            bytes_size=self.line_bytes,
+        )
+        hit_way = self._find(set_index, tag)
+        self._occupy(self.lookup_cycles + 1)
+        if hit_way is not None:
+            # A Shared copy needs permission; it stays in its way.
+            line = self._ways(set_index)[hit_way]
+            line.reserved_by = endpoint
+            self._used_mshr_slots.add(endpoint)
+            status = MissStatus(
+                slot=endpoint,
+                line_address=line_address,
+                set_index=set_index,
+                way_index=hit_way,
+                primary=request,
+                write_intent=True,
+            )
+            self.mshrs[line_address] = status
+            self.stats["store_upgrades"] += 1
+            self.loop.after(
+                self.tag_cycles, lambda status=status: self._begin_miss(status)
+            )
         else:
-            self.inflight -= 1
-            self.stats["dropped_backpressure"] += 1
+            victim_way = self._victim(set_index)
+            if victim_way is None:
+                return
+            allocated = self._allocate_miss(
+                request, line_address, set_index, victim_way, endpoint
+            )
+            if allocated is None:
+                return
+            status = allocated
+        record.status = status
+        if source == "store":
+            self.stats["store_acquisitions"] += 1
+        else:
+            self.borrowed = endpoint
+            self.stats["store_lookaheads"] += 1
+
+    def _pop_store(self) -> None:
+        self.records.popleft()
+        self.stats["store_records_installed"] += 1
+
+    def occupancy(self) -> dict[str, int]:
+        """Return the live endpoints, writeback slots, and store records."""
+        return {
+            "mshrs": len(self._used_mshr_slots),
+            "writeback_slots": len(self._used_wb_slots),
+            "store_records": len(self.records),
+        }
 
 
 class CpuTopMemoryHierarchy:
@@ -1422,7 +2163,7 @@ class CpuTopMemoryHierarchy:
         controller: DdrController | None = None,
         soc: SocTopPort | None = None,
     ) -> None:
-        """Build the L1I, L1D, sector adapter, prefetcher, L2, and AXI bridge.
+        """Build the L1I, coherent L1D, sector adapter, prefetcher, L2, and AXI bridge.
 
         The bridge leads to soc, or to a SocTopModel built from the
         configuration.
@@ -1459,29 +2200,14 @@ class CpuTopMemoryHierarchy:
             config.cache_response_cycles,
             config.l2_id_bits,
             bimodal_insert=config.l2_bimodal_insert,
+            buffered_writeback=True,
         )
         self.adapter = LineSizeAdapter(
             self.l2, config.l1_line_bytes, config.l2_line_bytes
         )
-        self.prefetcher = StreamPrefetcher(self.adapter, config)
-        self.l1d = CacheLevel(
-            "l1d",
-            loop,
-            self.adapter,
-            config.l1d_bytes,
-            config.l1_line_bytes,
-            config.l1d_ways,
-            config.l1d_mshrs,
-            config.l1d_wb_slots,
-            1,
-            config.l1_tag_cycles,
-            config.l1_data_cycles,
-            config.cache_fill_cycles,
-            config.cache_response_cycles,
-            config.l1d_id_bits,
-            bimodal_insert=config.l1d_bimodal_insert,
-            miss_observer=self.prefetcher.observe,
-        )
+        self.prefetcher = StreamPrefetcher(loop, self.l2, config)
+        self.l2.request_observer = self.prefetcher.observe
+        self.l1d = CoherentL1d(loop, self.adapter, config)
         self.l1i = CacheLevel(
             "l1i",
             loop,
@@ -1541,7 +2267,7 @@ class RobEntry:
     dispatched_cycle: int
     issued: bool = False
     done: bool = False
-    store_started: bool = False
+    rs_issued: bool = False  # left MEM_RS for the LQ or SQ
     fault: bool = False
 
 
@@ -1584,6 +2310,8 @@ class FrostPipeline:
         self.mem_rs_in_use = 0
         self.lq_in_use = 0
         self.sq_in_use = 0
+        self.committed_stores: deque[RobEntry] = deque()
+        self.next_store_launch = 0
         self.completions: list[RobEntry] = []
         self.frontend_blocked_until = 0
         self.stats: Counter = Counter()
@@ -1688,6 +2416,7 @@ class FrostPipeline:
     def _issue(self) -> None:
         alu_issued = 0
         mem_issued = 0
+        mem_rs_issued = 0
 
         # Disambiguate stores in O(N): the first unresolved store in ROB order
         # bounds all younger loads that could conflict.
@@ -1698,9 +2427,24 @@ class FrostPipeline:
                 break
 
         for entry in list(self.rob):
-            if entry.issued or entry.done or not self._deps_ready(entry):
+            if entry.issued or entry.done:
                 continue
             op = entry.op
+            if op.kind in {"load", "store"} and not entry.rs_issued:
+                # MEM_RS issues one operation per cycle and frees its entry
+                # at issue (reservation_station.sv); the LQ or SQ holds it on.
+                if mem_rs_issued or not self._deps_ready(entry):
+                    continue
+                entry.rs_issued = True
+                mem_rs_issued += 1
+                self.mem_rs_in_use -= 1
+                if op.kind == "store":
+                    # An ordinary store marks its ROB entry done directly.
+                    entry.issued = True
+                    self.loop.after(1, lambda entry=entry: self._store_ready(entry))
+                    continue
+            elif not self._deps_ready(entry):
+                continue
             if op.kind in {"alu", "branch"}:
                 if alu_issued >= self.config.alu_issue_width:
                     continue
@@ -1734,7 +2478,7 @@ class FrostPipeline:
                     entry.issued = True
                     mem_issued += 1
                     self.stats["loads_issued"] += 1
-                    self._complete_later(entry, 1)
+                    self.loop.after(1, lambda entry=entry: self._load_result(entry))
                     continue
 
                 self.stats["l0_misses"] += 1
@@ -1749,9 +2493,10 @@ class FrostPipeline:
                         if self.config.l0_cache_depth > 0:
                             self.l0_cache[l0_idx] = dword
                             self.stats["l0_fills"] += 1
-                        self.completions.append(entry)
                     else:
-                        self._fault(entry)
+                        entry.fault = True
+                        self.stats["memory_faults"] += 1
+                    self._load_result(entry)
 
                 request = Request(
                     address=addr,
@@ -1768,9 +2513,13 @@ class FrostPipeline:
                 mem_issued += 1
                 self.stats["loads_issued"] += 1
 
-    def _fault(self, entry: RobEntry) -> None:
-        entry.fault = True
-        self.stats["memory_faults"] += 1
+    def _load_result(self, entry: RobEntry) -> None:
+        """Free a load's LQ entry as its result enters the CDB stage.
+
+        load_queue.sv frees the entry when cdb_stage captures the result,
+        before the broadcast and long before retirement.
+        """
+        self.lq_in_use -= 1
         self.completions.append(entry)
 
     def _drain_cdb(self) -> None:
@@ -1808,50 +2557,46 @@ class FrostPipeline:
                         self.loop.cycle + self.config.branch_recovery_cycles,
                     )
                     self.stats["branch_mispredicts"] += 1
-            else:
-                self.mem_rs_in_use -= 1
             self.stats["completed"] += 1
 
-    def _start_head_store(self, entry: RobEntry) -> bool:
-        if entry.store_started or not self._deps_ready(entry):
-            return False
-        request = Request(
-            address=entry.op.data_address or 0,
-            is_write=True,
-            source="l1d",
-            request_id=entry.op.op_id,
-            complete=lambda ok, entry=entry: self._store_done(entry, ok),
-            bytes_size=8,
-        )
-        if not self.memory.l1d.submit(request):
-            self.stats["store_cache_backpressure"] += 1
-            return False
-        entry.store_started = True
-        entry.issued = True
-        self.stats["stores_started_at_commit"] += 1
-        return True
+    def _store_ready(self, entry: RobEntry) -> None:
+        """Record an issued store's address and data in its SQ entry."""
+        entry.done = True
+        self.completed_ids.add(entry.op.op_id)
+        self.stats["completed"] += 1
 
-    def _store_done(self, entry: RobEntry, ok: bool) -> None:
-        if not ok:
-            self.stats["memory_faults"] += 1
-        if ok and self.config.l0_cache_depth > 0 and entry.op.data_address is not None:
-            dword = entry.op.data_address >> 3
+    def _drain_stores(self) -> None:
+        """Launch the oldest committed store into the L1D's store records.
+
+        A cached store launches when no other write is in flight
+        (``store_queue.sv``); the L1D acknowledges it a cycle after capture,
+        which frees its SQ entry. The launch updates a resident L0 dword.
+        """
+        if not self.committed_stores or self.loop.cycle < self.next_store_launch:
+            return
+        l1d = self.memory.l1d
+        if not l1d.store_ready():
+            self.stats["store_drain_backpressure"] += 1
+            return
+        entry = self.committed_stores.popleft()
+        address = entry.op.data_address or 0
+        l1d.push_store(address)
+        self.next_store_launch = self.loop.cycle + self.config.store_drain_cycles
+        self.loop.after(1, self._store_acknowledged)
+        self.stats["stores_drained"] += 1
+        if self.config.l0_cache_depth > 0:
+            dword = address >> 3
             l0_idx = dword % self.config.l0_cache_depth
             if self.l0_cache.get(l0_idx) == dword:
                 self.stats["l0_store_updates"] += 1
-                self.l0_cache[l0_idx] = dword
-        entry.done = True
-        self.completed_ids.add(entry.op.op_id)
-        self.mem_rs_in_use -= 1
-        self.stats["completed"] += 1
+
+    def _store_acknowledged(self) -> None:
+        self.sq_in_use -= 1
 
     def _retire(self) -> None:
         retired = 0
         while retired < self.config.retire_width and self.rob:
             entry = self.rob[0]
-            if entry.op.kind == "store" and not entry.done:
-                self._start_head_store(entry)
-                break
             if not entry.done:
                 self.stats["retire_head_not_ready"] += 1
                 break
@@ -1859,10 +2604,9 @@ class FrostPipeline:
             self.retired += 1
             retired += 1
             self.stats["retired"] += 1
-            if entry.op.kind == "load":
-                self.lq_in_use -= 1
-            elif entry.op.kind == "store":
-                self.sq_in_use -= 1
+            if entry.op.kind == "store":
+                # A committed store keeps its SQ entry until it drains.
+                self.committed_stores.append(entry)
 
     def _record_occupancy(self) -> None:
         n_rob = len(self.rob)
@@ -1876,6 +2620,11 @@ class FrostPipeline:
             self.max_occupancy["lq"] = self.lq_in_use
         if self.sq_in_use > self.max_occupancy["sq"]:
             self.max_occupancy["sq"] = self.sq_in_use
+        if self.sq_in_use >= self.config.store_queue_entries:
+            self.stats["sq_full_cycles"] += 1
+        records = len(self.memory.l1d.records)
+        if records > self.max_occupancy["store_records"]:
+            self.max_occupancy["store_records"] = records
 
     def run(self, max_cycles: int = 2_000_000) -> dict[str, Any]:
         """Run until every micro-op retires; return cycles, IPC, and statistics.
@@ -1889,7 +2638,13 @@ class FrostPipeline:
             self.loop.run_ready()
             self._drain_cdb()
             self._retire()
+            self._drain_stores()
+            # The L1D controller takes a grant or the head store, then a load,
+            # then deferred work, a lent store endpoint, and look-ahead last.
+            self.memory.l1d.step()
+            self.memory.l1d.service_replays()
             self._issue()
+            self.memory.l1d.step_after_loads()
             self._dispatch()
             self._issue_fetches()
             self._record_occupancy()
@@ -2078,8 +2833,14 @@ def workload_memory_stress(seed: int, operations: int = 960) -> list[MicroOp]:
     return b.ops
 
 
-def workload_coremark(seed: int, operations: int = 1200) -> list[MicroOp]:
-    """Model CoreMark kernel micro-ops: list traversal, matrix ops, state machine & CRC."""
+def workload_coremark(seed: int, operations: int = 3600) -> list[MicroOp]:
+    """Model CoreMark kernel micro-ops: list traversal, matrix ops, state machine & CRC.
+
+    Its data starts cold in DDR. Each L0 miss takes the coherent L1D's
+    one-at-a-time controller, so the length sets how far the cold start
+    weighs against the loops' steady state; 3600 operations put the CI
+    check's figure within its tolerance of the RTL capture.
+    """
     b = ProgramBuilder()
     code_base = 0x8000_2000
     data_base = 0x8001_0000
@@ -2697,17 +3458,51 @@ def rtl_audit() -> dict[str, Any]:
                 "fact": "Load Queue direct-mapped L0 Data Cache (NormalLqL0Depth = 512 dword entries) provides 1-cycle fast-path bypass for cached hits; EARLY_LOAD_WAKEUP enables 1-cycle dependent scheduling.",
                 "source": "hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv:18-47; hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv:1926-1928; hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv:43, 2806-2817",
             },
+            {
+                "fact": "At ade0de67, cpu_top passes L1D_NUM_MSHR=8 request endpoints, L2_NUM_MSHR=8 home fills, L2_PREFETCH=1, L2_PREFETCH_DISTANCE=8 and L2_PREFETCH_INFLIGHT=3; the model's default keeps four L2 miss slots, and a board configuration states eight.",
+                "source": "hw/rtl/cpu_top/cpu_top.sv:41-47 (ade0de67)",
+            },
+            {
+                "fact": "MEM_RS frees an entry when it issues, and the LQ frees an entry when cdb_stage captures its result; an ordinary store marks its ROB entry done at issue, commits, and keeps its SQ entry until the L1D acknowledges its launch.",
+                "source": "hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv:2830-2833, 2882-2902; hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv:3218-3221; hw/rtl/cpu_and_mem/cpu/tomasulo/README.md:21-27; hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/README.md:77-117 (ade0de67)",
+            },
+            {
+                "fact": "Cached stores launch from the SQ one at a time: a launch waits for the previous write's done and the L1D's record credit, and the L1D acknowledges a captured store on the next cycle.",
+                "source": "hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv:913-924, 964-976; hw/rtl/lib/cache/coherence_store_buffer.sv:59-75 (ade0de67)",
+            },
+            {
+                "fact": "The coherent L1D buffers committed stores in four ordered 32-byte records; only the youngest unsealed record combines, a record seals at 32 contributors or when the head is selected, and every record installs at the head. Endpoint 0 carries the head's GetM and at most one load endpoint is lent to a younger record's GetM.",
+                "source": "hw/rtl/lib/cache/coherence_store_buffer.sv:17-117; hw/rtl/lib/cache/coherence_l1d.sv:803-811, 1733-1761, 2202-2210 (ade0de67)",
+            },
+            {
+                "fact": "One L1D controller serves one operation at a time in Idle priority order (probe, grant, SC, atomic write, head store, lookahead store, read, maintenance, stream hint). A lookup passes Idle, Lookup, the array's tag read (1 cycle) and its reply; a hit adds the 2-cycle data read, an acquisition its Acquire cycle, and an installation or store update its Update, 1-cycle array write and UpdateWait.",
+                "source": "hw/rtl/lib/cache/coherence_l1d.sv:2143-2518; hw/rtl/lib/cache/coherence_array.sv:26-28, 186-194, 378-431 (ade0de67)",
+            },
+            {
+                "fact": "Load misses take the lowest free load endpoint; a miss on a sector that a live endpoint holds attaches and looks up again after the installation; a demand grant answers its load in its Lookup cycle; each endpoint stays live through U.",
+                "source": "hw/rtl/lib/cache/coherence_l1d.sv:1218-1231, 1297-1315, 2233-2238, 2339-2351; hw/rtl/lib/cache/README.md:316, 350-355, 369-372 (ade0de67)",
+            },
+            {
+                "fact": "Stream look-ahead: three adjacent demand sector misses confirm a stream; the cursor stays within eight sectors past the frontier and within a 4 KiB page; hints use the highest PrefetchCount load endpoints (2 with four or more endpoints, 1 with three), demand may use every load endpoint, and a hint is the controller's lowest-priority selection.",
+                "source": "hw/rtl/lib/cache/coherence_read_stream.sv:17-82; hw/rtl/lib/cache/coherence_l1d.sv:550-553, 611-638, 692-713, 2227-2231, 2304-2309 (ade0de67)",
+            },
+            {
+                "fact": "The home's prefetch agent trains a four-stream table on accepted hart GetS and GetM, L2 hits included; it confirms on two consecutive lines, requests up to eight lines ahead within the page, loads a request only while more than FILLS/4 fills are free, holds each of three identities from D through U, and the home fills only with two available ways and, for a valid victim, two free writeback slots.",
+                "source": "hw/rtl/lib/cache/coherence_prefetch_agent.sv:1-36, 80-115; hw/rtl/lib/cache/l2_stream_prefetcher.sv:17-41, 186-249; hw/rtl/lib/cache/coherence_home.sv:28-32, 785-802, 949-958 (ade0de67)",
+            },
         ],
         "implemented_features": [
             "Explicit CpuTopModel + SocTopModel separation across the 6-bit-ID, 512-bit AXI4 boundary so downstream projects can replace SocTopModel or DdrController independently.",
-            "Two-wide dispatch/retire, bounded ROB/RS/LQ/SQ, out-of-order load/ALU completion, two-lane CDB contention, conservative non-speculative stores at commit.",
+            "Two-wide dispatch/retire, bounded ROB/RS/LQ/SQ with MEM_RS release at issue and LQ release at the result, out-of-order load/ALU completion, two-lane CDB contention, and committed stores draining from the SQ into the L1D's store records.",
             "Load Queue L0 Data Cache (256 dword entries) with 1-cycle CDB fast-path bypass and fill from L1D memory responses.",
-            "Separate L1I and L1D caches; 32-byte to 64-byte sector adapter; L2 with stream prefetcher; fill ownership; coalescing; writeback slots; write intent; cache-line dirty state.",
+            "Coherent L1D with one controller, request endpoints held through U, attached loads that look up again after installation, stream look-ahead on the highest endpoints, four ordered store records with one lent endpoint, and buffered victim writebacks.",
+            "Separate L1I and L1D caches; 32-byte to 64-byte sector adapter; L2 with the home's stream prefetch agent; fill ownership; coalescing; writeback slots; write intent; cache-line dirty state.",
             "Explicit cache lower transaction IDs ({type, slot}), 64-byte single-beat AXI transfers, soc_axi_slave physical address decode (DDR vs. local BRAM/MMIO), and a single-channel 512-bit AXI DDR model matching axi_behavioral_memory.sv.",
             "Deterministic workload generators, sweep driver, self-tests, and machine-readable bottleneck counters.",
         ],
         "assumptions_not_claimed_as_rtl_calibration": [
             "Cache stage timing, insertion-LFSR phase, and pipeline stage latencies are abstractions that require cycle-by-cycle calibration.",
+            "The L1D controller's priority omits probes, atomics, maintenance and the credited read turn's exact edges; the SQ launch interval, the C-to-U interval (coherence_release_cycles), and the L2 home's lookup and fill timing are abstractions, and the home's instruction prefetch table and DMA pause are not modeled.",
             "The default DDR endpoint models FROST's single-channel axi_behavioral_memory.sv (LATENCY=80, NUM_SLOTS=max(L2MaxSlots,8)); board DDR4 MIG refresh and bank/row timing require hardware or VIP trace calibration.",
             "Workload micro-ops are representative pressure patterns, not captured Redis, HTTP, Linux or FaaS execution traces.",
             "The model does not execute the RISC-V ISA, model Sv39 page walks/DMA coherence traffic as workload events, or prove functional RTL equivalence.",

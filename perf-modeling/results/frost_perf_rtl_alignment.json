@@ -1,6 +1,7 @@
 {
   "assumptions_not_claimed_as_rtl_calibration": [
     "Cache stage timing, insertion-LFSR phase, and pipeline stage latencies are abstractions that require cycle-by-cycle calibration.",
+    "The L1D controller's priority omits probes, atomics, maintenance and the credited read turn's exact edges; the SQ launch interval, the C-to-U interval (coherence_release_cycles), and the L2 home's lookup and fill timing are abstractions, and the home's instruction prefetch table and DMA pause are not modeled.",
     "The default DDR endpoint models FROST's single-channel axi_behavioral_memory.sv (LATENCY=80, NUM_SLOTS=max(L2MaxSlots,8)); board DDR4 MIG refresh and bank/row timing require hardware or VIP trace calibration.",
     "Workload micro-ops are representative pressure patterns, not captured Redis, HTTP, Linux or FaaS execution traces.",
     "The model does not execute the RISC-V ISA, model Sv39 page walks/DMA coherence traffic as workload events, or prove functional RTL equivalence.",
@@ -8,9 +9,10 @@
   ],
   "implemented_features": [
     "Explicit CpuTopModel + SocTopModel separation across the 6-bit-ID, 512-bit AXI4 boundary so downstream projects can replace SocTopModel or DdrController independently.",
-    "Two-wide dispatch/retire, bounded ROB/RS/LQ/SQ, out-of-order load/ALU completion, two-lane CDB contention, conservative non-speculative stores at commit.",
+    "Two-wide dispatch/retire, bounded ROB/RS/LQ/SQ with MEM_RS release at issue and LQ release at the result, out-of-order load/ALU completion, two-lane CDB contention, and committed stores draining from the SQ into the L1D's store records.",
     "Load Queue L0 Data Cache (256 dword entries) with 1-cycle CDB fast-path bypass and fill from L1D memory responses.",
-    "Separate L1I and L1D caches; 32-byte to 64-byte sector adapter; L2 with stream prefetcher; fill ownership; coalescing; writeback slots; write intent; cache-line dirty state.",
+    "Coherent L1D with one controller, request endpoints held through U, attached loads that look up again after installation, stream look-ahead on the highest endpoints, four ordered store records with one lent endpoint, and buffered victim writebacks.",
+    "Separate L1I and L1D caches; 32-byte to 64-byte sector adapter; L2 with the home's stream prefetch agent; fill ownership; coalescing; writeback slots; write intent; cache-line dirty state.",
     "Explicit cache lower transaction IDs ({type, slot}), 64-byte single-beat AXI transfers, soc_axi_slave physical address decode (DDR vs. local BRAM/MMIO), and a single-channel 512-bit AXI DDR model matching axi_behavioral_memory.sv.",
     "Deterministic workload generators, sweep driver, self-tests, and machine-readable bottleneck counters."
   ],
@@ -48,6 +50,38 @@
     {
       "fact": "Load Queue direct-mapped L0 Data Cache (NormalLqL0Depth = 512 dword entries) provides 1-cycle fast-path bypass for cached hits; EARLY_LOAD_WAKEUP enables 1-cycle dependent scheduling.",
       "source": "hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv:18-47; hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv:1926-1928; hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv:43, 2806-2817"
+    },
+    {
+      "fact": "At ade0de67, cpu_top passes L1D_NUM_MSHR=8 request endpoints, L2_NUM_MSHR=8 home fills, L2_PREFETCH=1, L2_PREFETCH_DISTANCE=8 and L2_PREFETCH_INFLIGHT=3; the model's default keeps four L2 miss slots, and a board configuration states eight.",
+      "source": "hw/rtl/cpu_top/cpu_top.sv:41-47 (ade0de67)"
+    },
+    {
+      "fact": "MEM_RS frees an entry when it issues, and the LQ frees an entry when cdb_stage captures its result; an ordinary store marks its ROB entry done at issue, commits, and keeps its SQ entry until the L1D acknowledges its launch.",
+      "source": "hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv:2830-2833, 2882-2902; hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv:3218-3221; hw/rtl/cpu_and_mem/cpu/tomasulo/README.md:21-27; hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/README.md:77-117 (ade0de67)"
+    },
+    {
+      "fact": "Cached stores launch from the SQ one at a time: a launch waits for the previous write's done and the L1D's record credit, and the L1D acknowledges a captured store on the next cycle.",
+      "source": "hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv:913-924, 964-976; hw/rtl/lib/cache/coherence_store_buffer.sv:59-75 (ade0de67)"
+    },
+    {
+      "fact": "The coherent L1D buffers committed stores in four ordered 32-byte records; only the youngest unsealed record combines, a record seals at 32 contributors or when the head is selected, and every record installs at the head. Endpoint 0 carries the head's GetM and at most one load endpoint is lent to a younger record's GetM.",
+      "source": "hw/rtl/lib/cache/coherence_store_buffer.sv:17-117; hw/rtl/lib/cache/coherence_l1d.sv:803-811, 1733-1761, 2202-2210 (ade0de67)"
+    },
+    {
+      "fact": "One L1D controller serves one operation at a time in Idle priority order (probe, grant, SC, atomic write, head store, lookahead store, read, maintenance, stream hint). A lookup passes Idle, Lookup, the array's tag read (1 cycle) and its reply; a hit adds the 2-cycle data read, an acquisition its Acquire cycle, and an installation or store update its Update, 1-cycle array write and UpdateWait.",
+      "source": "hw/rtl/lib/cache/coherence_l1d.sv:2143-2518; hw/rtl/lib/cache/coherence_array.sv:26-28, 186-194, 378-431 (ade0de67)"
+    },
+    {
+      "fact": "Load misses take the lowest free load endpoint; a miss on a sector that a live endpoint holds attaches and looks up again after the installation; a demand grant answers its load in its Lookup cycle; each endpoint stays live through U.",
+      "source": "hw/rtl/lib/cache/coherence_l1d.sv:1218-1231, 1297-1315, 2233-2238, 2339-2351; hw/rtl/lib/cache/README.md:316, 350-355, 369-372 (ade0de67)"
+    },
+    {
+      "fact": "Stream look-ahead: three adjacent demand sector misses confirm a stream; the cursor stays within eight sectors past the frontier and within a 4 KiB page; hints use the highest PrefetchCount load endpoints (2 with four or more endpoints, 1 with three), demand may use every load endpoint, and a hint is the controller's lowest-priority selection.",
+      "source": "hw/rtl/lib/cache/coherence_read_stream.sv:17-82; hw/rtl/lib/cache/coherence_l1d.sv:550-553, 611-638, 692-713, 2227-2231, 2304-2309 (ade0de67)"
+    },
+    {
+      "fact": "The home's prefetch agent trains a four-stream table on accepted hart GetS and GetM, L2 hits included; it confirms on two consecutive lines, requests up to eight lines ahead within the page, loads a request only while more than FILLS/4 fills are free, holds each of three identities from D through U, and the home fills only with two available ways and, for a valid victim, two free writeback slots.",
+      "source": "hw/rtl/lib/cache/coherence_prefetch_agent.sv:1-36, 80-115; hw/rtl/lib/cache/l2_stream_prefetcher.sv:17-41, 186-249; hw/rtl/lib/cache/coherence_home.sv:28-32, 785-802, 949-958 (ade0de67)"
     }
   ]
 }

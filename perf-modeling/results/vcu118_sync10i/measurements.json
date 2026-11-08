@@ -1,0 +1,112 @@
+{
+  "data_set": "vcu118_sync10i",
+  "points": [
+    {
+      "name": "sequential_read",
+      "kernel": "stream_read",
+      "role": "prediction",
+      "value": 132.2,
+      "unit": "MB/s",
+      "derived": {"ns_per_load": 60.51, "lines64_per_s": 2065694, "ipc": 0.341},
+      "raw": [
+        "STREAM read bytes=268435456 ops=33554432 seconds=2.030457 MBps=132.2 ns_per_op=60.51 lines64_per_s=2065694 sink=144680345676021760",
+        "HPM read cycles=406133168 instret=138404799 branches=34168963 mispredicts=98495 itlb_miss=278 dtlb_miss=30523 l1d_miss=29341632 sq_full_cycles=508692"
+      ]
+    },
+    {
+      "name": "stride_16",
+      "kernel": "stride_16",
+      "role": "prediction",
+      "value": 209.4,
+      "unit": "MB/s",
+      "raw": [
+        "STREAM stride bytes=268435456 ops=16777216 seconds=1.281795 MBps=209.4 ns_per_op=76.40 lines64_per_s=3272212 sink=72340172838010880",
+        "HPM stride cycles=256401489 instret=86189884 branches=17107625 mispredicts=52799 itlb_miss=278 dtlb_miss=16908 l1d_miss=14037998 sq_full_cycles=371804"
+      ]
+    },
+    {
+      "name": "stride_32",
+      "kernel": "stride_32",
+      "role": "prediction",
+      "value": 327.5,
+      "unit": "MB/s",
+      "raw": [
+        "STREAM stride bytes=268435456 ops=8388608 seconds=0.819639 MBps=327.5 ns_per_op=97.71 lines64_per_s=5117258 sink=9259542123273781248",
+        "HPM stride cycles=163970022 instret=43379948 branches=8594108 mispredicts=32491 itlb_miss=19 dtlb_miss=9749 l1d_miss=8286013 sq_full_cycles=221343"
+      ]
+    },
+    {
+      "name": "stride_64",
+      "kernel": "stride_64",
+      "role": "prediction",
+      "value": 518.1,
+      "unit": "MB/s",
+      "derived": {"lines64_per_s": 8095670},
+      "raw": [
+        "STREAM stride bytes=268435456 ops=4194304 seconds=0.518092 MBps=518.1 ns_per_op=123.52 lines64_per_s=8095670 sink=4629771061636890624",
+        "HPM stride cycles=103661421 instret=22142548 branches=4366646 mispredicts=35767 itlb_miss=1350 dtlb_miss=11495 l1d_miss=4228877 sq_full_cycles=206452"
+      ]
+    },
+    {
+      "name": "stride_128",
+      "kernel": "stride_128",
+      "role": "prediction",
+      "value": 1108.0,
+      "unit": "MB/s",
+      "derived": {"loads_per_s": 8656568, "note": "MB/s of buffer spanned, one load per 128 bytes"},
+      "raw": [
+        "STREAM stride bytes=268435456 ops=2097152 seconds=0.242261 MBps=1108.0 ns_per_op=115.52 lines64_per_s=17313154 sink=2314885530818445312",
+        "HPM stride cycles=48494164 instret=10889228 branches=2154794 mispredicts=8611 itlb_miss=17 dtlb_miss=3320 l1d_miss=2105380 sq_full_cycles=54424"
+      ]
+    },
+    {
+      "name": "sequential_write",
+      "kernel": "stream_write",
+      "role": "prediction",
+      "value": 97.7,
+      "unit": "MB/s",
+      "derived": {"sq_full_fraction": 0.746},
+      "raw": [
+        "STREAM write bytes=268435456 ops=33554432 seconds=2.748207 MBps=97.7 ns_per_op=81.90 lines64_per_s=1526197 sink=0",
+        "HPM write cycles=549682755 instret=139151120 branches=34263499 mispredicts=112578 itlb_miss=409 dtlb_miss=31791 l1d_miss=8436540 sq_full_cycles=410007310"
+      ]
+    },
+    {
+      "name": "memcpy",
+      "kernel": "memcpy",
+      "role": "prediction",
+      "value": 172.3,
+      "unit": "MB/s",
+      "raw": ["memcpy        172.3 MB/s   (best 1.558 s)", "int-copy      171.5 MB/s   (best 1.565 s)"]
+    },
+    {
+      "name": "memset",
+      "kernel": "memset",
+      "role": "prediction",
+      "value": 97.6,
+      "unit": "MB/s",
+      "raw": ["memset         97.6 MB/s   (best 1.376 s)", "int-write      96.2 MB/s   (best 1.395 s)"]
+    },
+    {
+      "name": "dram_chase",
+      "kernel": "dram_chase",
+      "role": "fit",
+      "value": 818.6,
+      "unit": "ns per load",
+      "derived": {"dtlb_misses_per_hop": 0.54, "note": "fits ddr.latency_cycles; includes the walks of 0.54 DTLB misses per hop, which the model does not model"},
+      "raw": [
+        "STREAM chase bytes=67108864 ops=1048576 seconds=0.858330 MBps=78.2 ns_per_op=818.57 lines64_per_s=1221646 sink=0",
+        "HPM chase cycles=171712117 instret=6770148 branches=1267881 mispredicts=34495 itlb_miss=18 dtlb_miss=565399 l1d_miss=1058224 sq_full_cycles=189322"
+      ]
+    },
+    {
+      "name": "l2_chain",
+      "kernel": "l2_chase",
+      "role": "fit",
+      "value": 181.9,
+      "unit": "ns per load",
+      "derived": {"note": "fits l2_data_cycles"},
+      "raw": ["latency-L2    181.9 ns per dependent load (256 KiB chain, sink 9216)"]
+    }
+  ]
+}

@@ -124,7 +124,7 @@ repos:
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
             verif/cocotb_tests/cache/test_(dma_test_engine|frost_cache)_wide\.py|
-            perf-modeling/(frost_perf_model|calibration/trace_contract|tools/run_calibration|tests/test_trace_contract)\.py|
+            perf-modeling/(frost_perf_model|board_workloads|calibration/trace_contract|tools/run_calibration|tools/board_calibration|tests/test_trace_contract)\.py|
             tests/test_pa_bridge_mutation\.py|
             fpga/flash/(make_flash_image|program_flash)\.py
           )$
