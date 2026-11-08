@@ -74,23 +74,32 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _model_run(baseline: dict[str, Any]) -> dict[str, Any]:
-    """Run the model's built-in workload with the baseline's seed.
+def model_config(baseline: dict[str, Any]) -> Any:
+    """Return the model configuration the baseline names.
 
-    The baseline's ``model_ddr_latency_cycles``, if it has one, sets the
-    model's DDR latency; the BRAM-tier capture it compares with does not
-    depend on the simulation's DDR latency.
+    ``model_config`` maps ``ModelConfig`` fields, and ``soc.``-prefixed
+    ``SocConfig`` fields, to the values of the captured hardware;
+    ``model_config_sources`` records where each value comes from. The
+    model's own defaults apply to every other field.
     """
     import frost_perf_model
 
     config = frost_perf_model.ModelConfig()
-    latency = baseline.get("model_ddr_latency_cycles")
-    if latency is not None:
-        config = dataclasses.replace(
-            config, ddr=dataclasses.replace(config.ddr, latency_cycles=latency)
-        )
+    for name, value in baseline.get("model_config", {}).items():
+        if name.startswith("soc."):
+            soc = dataclasses.replace(config.soc, **{name[4:]: value})
+            config = dataclasses.replace(config, soc=soc)
+        else:
+            config = dataclasses.replace(config, **{name: value})
+    return config
+
+
+def _model_run(baseline: dict[str, Any]) -> dict[str, Any]:
+    """Run the model's built-in workload with the baseline's seed and configuration."""
+    import frost_perf_model
+
     return frost_perf_model.run_workload(
-        config, baseline["model_workload"], baseline["model_seed"]
+        model_config(baseline), baseline["model_workload"], baseline["model_seed"]
     )
 
 
