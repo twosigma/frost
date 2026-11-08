@@ -568,13 +568,20 @@ module coherence_l1d #(
       atomic_read_held |= rd_kind_q[slot] != ReadLoad;
     end
   end
+  // Read validity, which settles last, selects each flag's outcome with or
+  // without the allocated read.
+  (* keep = "true" *) logic [1:0] amo_waiting_choice, atomic_read_waiting_choice;
+  assign amo_waiting_choice = {amo_held || i_read_kind == ReadAMO, amo_held};
+  assign atomic_read_waiting_choice = {
+    atomic_read_held || i_read_kind != ReadLoad, atomic_read_held
+  };
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       amo_waiting <= 1'b0;
       atomic_read_waiting <= 1'b0;
     end else begin
-      amo_waiting <= amo_held || (i_read_valid && i_read_kind == ReadAMO);
-      atomic_read_waiting <= atomic_read_held || (i_read_valid && i_read_kind != ReadLoad);
+      amo_waiting <= amo_waiting_choice[i_read_valid];
+      atomic_read_waiting <= atomic_read_waiting_choice[i_read_valid];
     end
   end
 `ifndef SYNTHESIS
