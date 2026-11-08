@@ -108,6 +108,7 @@ async def setup(dut: Any) -> CsrPathChecker:
         "hpm_branches",
         "hpm_mispredicts",
         "hpm_events",
+        "hpm_translation_events",
         "mret",
         "trap",
     ):
@@ -370,6 +371,61 @@ async def test_hpm_event_selection_inhibit_and_aliases(dut: Any) -> None:
     await s.idle(3, hpm_branches=0, hpm_mispredicts=0, hpm_events=0)
     for n in range(3, 9):
         assert await s.access(0xC00 + n) == (4 if n == 3 else 1)
+
+
+@cocotb.test()
+async def test_hpm_translation_event_selectors(dut: Any) -> None:
+    """Selectors 10, 11 and 12 count walker busy cycles and TLB invalidates."""
+    s = await setup(dut)
+    off = dict(
+        hpm_branches=0, hpm_mispredicts=0, hpm_events=0, hpm_translation_events=0
+    )
+    for counter, selector in ((8, 10), (7, 11), (4, 12)):
+        await s.access(0x320 + counter, selector, 1)
+        assert await s.access(0x320 + counter) == selector
+        await s.access(0xB00 + counter, 0, 1)
+    # The fixed events no longer reach the reselected counters.
+    await s.idle(4, hpm_branches=2, hpm_mispredicts=1, hpm_events=15)
+    await s.idle(3, **off)
+    for counter in (8, 7, 4):
+        assert await s.access(0xB00 + counter) == 0
+    # Walker busy for five cycles, two SFENCE.VMA invalidate starts.
+    await s.idle(5, hpm_translation_events=1)
+    await s.idle(1, hpm_translation_events=2)
+    await s.idle(1, hpm_translation_events=0)
+    await s.idle(1, hpm_translation_events=2)
+    await s.idle(3, **off)
+    assert await s.access(0xB08) == 5
+    assert await s.access(0xB07) == 2
+    assert await s.access(0xB04) == 0
+    # Every satp access, a read included, requests one CSR invalidate.
+    await s.access(0x180, 0, 1)
+    await s.access(0x180)
+    await s.idle(3)
+    assert await s.access(0xB04) == 2
+    # An sstatus SUM toggle is not a translation invalidate.
+    await s.access(0x100, 1 << 18, 2)
+    await s.access(0x100, 1 << 18, 3)
+    await s.idle(3)
+    assert await s.access(0xB04) == 2
+    # An MPRV change is.
+    await s.access(0x300, 1 << 17, 2)
+    await s.access(0x300, 1 << 17, 3)
+    await s.idle(3)
+    assert await s.access(0xB04) == 4
+    # Translation selectors are counter-specific: elsewhere they disable.
+    for counter in (3, 5, 6):
+        for selector in (10, 11, 12):
+            await s.access(0x320 + counter, selector, 1)
+            assert await s.access(0x320 + counter) == 0
+    await s.access(0x328, 9, 1)
+    assert await s.access(0x328) == 0
+    # Restoring the fixed selector restores the fixed event.
+    await s.access(0x328, 8, 1)
+    await s.access(0xB08, 0, 1)
+    await s.idle(3, hpm_events=8, hpm_translation_events=1)
+    await s.idle(3, **off)
+    assert await s.access(0xB08) == 3
 
 
 @cocotb.test()

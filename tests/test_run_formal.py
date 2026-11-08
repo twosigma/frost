@@ -1167,6 +1167,12 @@ FORMAL_TARGETS = [
         tasks=("bmc", "prove"),
     ),
     FormalTarget(
+        "immu_memo.sby",
+        "The instruction MMU's fault memo is cleared by every full flush and "
+        "filled only by a walk accepted after the last flush (Svvptc)",
+        tasks=("bmc", "prove"),
+    ),
+    FormalTarget(
         "immu_successor.sby",
         "Instruction superpage successor eligibility, PPN and PMA equal the "
         "selected-leaf reference for arbitrary TLB and walk state",

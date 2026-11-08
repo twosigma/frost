@@ -83,6 +83,9 @@ static volatile unsigned long g_y_faults;
 /* Y, S flavor: {scause, stval, sepc} as the S handler found them on entry,
  * recorded before anything is compared, so a wrong or skipped entry shows. */
 static volatile unsigned long g_y_s_seen[3];
+/* Y, Svvptc pass: the handlers install the PTE and return without
+ * sfence.vma, as Linux does when the hart advertises Svvptc. */
+static volatile unsigned long g_y_skip_sfence;
 #ifndef ITLB_Y_ITERS
 #define ITLB_Y_ITERS 1
 #endif
@@ -160,8 +163,12 @@ __attribute__((naked, aligned(4))) static void y_trap_handler(void)
         "la   t1, g_y_faults\n"
         "addi t2, t2, 1\n"
         "sd   t2, 0(t1)\n"
+        "la   t1, g_y_skip_sfence\n"
+        "ld   t1, 0(t1)\n"
+        "bnez t1, 1f\n"
         "csrr t0, mtval\n"
         "sfence.vma t0, x0\n" /* address-specific, as the kernel's local_flush_tlb_page */
+        "1:\n"
         "mret\n"
         "9:\n"
         "j    itlb_trap_handler\n");
@@ -205,8 +212,12 @@ __attribute__((naked, aligned(4))) static void y_s_trap_handler(void)
                      "la   t1, g_y_faults\n"
                      "addi t2, t2, 1\n"
                      "sd   t2, 0(t1)\n"
+                     "la   t1, g_y_skip_sfence\n"
+                     "ld   t1, 0(t1)\n"
+                     "bnez t1, 1f\n"
                      "csrr t0, stval\n"
                      "sfence.vma t0, x0\n"
+                     "1:\n"
                      "sret\n"
                      "9:\n"
                      "ecall\n"
@@ -698,13 +709,16 @@ int main(void)
      * the fault delegated to an S handler (sret); 3 as 2 at the Linux-shaped
      * high VAs, repeated ITLB_Y_ITERS times (default 1). Each fault installs
      * a PTE, executes sfence.vma for the address and returns to the faulting
-     * PC with mret or sret. */
-    {
+     * PC with mret or sret. The second pass (Svvptc) returns without the
+     * sfence.vma: the retry must walk again and see the new PTE, so no
+     * memoized fault may survive the xRET. */
+    for (int pass = 0; pass < 2; pass++) {
         static const unsigned long y_entry[4] = {0x000, 0x380, 0x200, 0x000};
         static const unsigned long y_target[4] = {0x000, 0x5E0, 0x000, 0x000};
         static const unsigned long y_marker[4] = {0xD0, 0xD6, 0xD0, 0xD0};
         unsigned long pa_c = (unsigned long) itlb_page_c;
         unsigned long pa_t = (unsigned long) itlb_page_t;
+        g_y_skip_sfence = (unsigned long) pass;
         for (int mode = 0; mode < 4; mode++) {
             volatile unsigned long *l0 = (volatile unsigned long *) (mode == 3 ? PT_L0_Y : PT_L0_A);
             unsigned long va_c = mode == 3   ? VA_Y_HI_CALLER
@@ -795,6 +809,8 @@ int main(void)
             if (mode >= 2)
                 csr_write(medeleg, 0);
             uart_puts(y_ok ? "[PASS] Y fault-then-retry " : "[FAIL] Y fault-then-retry ");
+            if (pass)
+                uart_puts("svvptc ");
             uart_puts(mode == 0   ? "u/M-mret (4 variants)\r\n"
                       : mode == 1 ? "s/M-mret (4 variants)\r\n"
                       : mode == 2 ? "u/S-sret (4 variants)\r\n"

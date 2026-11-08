@@ -40,8 +40,8 @@
  * VPN. The requesting MMU checks permissions at lookup, because SUM, MXR, and
  * the effective privilege are live CSR state, not walk state.
  *
- * i_discard (SFENCE.VMA, a satp access, or an mstatus/sstatus write that
- * changes translation) poisons the walk in flight: every outstanding line read
+ * i_discard (SFENCE.VMA, a satp access, or an mstatus write that changes MPRV,
+ * or MPP under MPRV) poisons the walk in flight: every outstanding line read
  * is still consumed, but no response fires. That keeps a translation read from
  * the old page tables from installing after the invalidate. The requester's
  * own pipeline flushes do not discard: a walk for a killed instruction still
@@ -77,6 +77,11 @@ module ptw #(
     input  logic                 [ riscv_pkg::Sv39VpnBits-1:0] i_req_vpn,
     // Poison the walk in flight (and any response about to fire).
     input  logic                                               i_discard,
+
+    // A walk is in progress (the FSM is not idle), for the HPM walk-busy
+    // event. Registered state only.
+    output logic                                               o_busy,
+
     // One-cycle response pulse.
     output logic                                               o_resp_valid,
     output riscv_pkg::ptw_resp_t                               o_resp,
@@ -194,6 +199,8 @@ module ptw #(
   assign o_req_ready = (state_q == PTW_IDLE) && !i_discard;
   assign o_resp_valid = (state_q == PTW_RESP) && !discard_q && !i_discard;
   assign o_resp = resp_q;
+  assign o_busy = (state_q != PTW_IDLE);
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       state_q <= PTW_IDLE;

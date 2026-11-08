@@ -180,6 +180,7 @@ def _drive_idle(dut: Any) -> None:
     dut.i_active.value = 0
     dut.i_priv_u.value = 0
     dut.i_tlb_invalidate.value = 0
+    dut.i_full_flush.value = 0
     dut.i_pc_update_en.value = 0
     dut.i_pc_d.value = 0
     dut.i_walk_req_ready.value = 0
@@ -1158,3 +1159,76 @@ async def test_directed_straddle_instruction_fault_xtval(dut: Any) -> None:
     assert int(dut.o_fault0.value) == 0
     assert int(dut.o_fault1.value) == 1
     assert int(dut.o_fault1_page.value) == 0
+
+
+@cocotb.test()
+async def test_full_flush_clears_refusal_memo(dut: Any) -> None:
+    """Svvptc: a refused walk's memo does not outlive a trap, xRET or fence flush.
+
+    Software may map a page (an invalid-to-valid PTE store) in a fault handler
+    and return without sfence.vma. The refetch after the flush walks again
+    and sees the new leaf instead of the memoized fault.
+    """
+    await _setup(dut)
+    dut.i_active.value = 1
+    refused_pc = 0x0007_0040
+    refused_vpn = refused_pc >> 12
+    handler_pc = 0x0007_2040
+    handler_leaf = Leaf(vpn=handler_pc >> 12, ppn=0x1C)
+    expected_refusal = Window(
+        pa0=refused_pc,
+        pa1=_next_word_pa(refused_pc),
+        fault0=1,
+        fault0_page=1,
+        fault1=1,
+        fault1_page=1,
+        line_after_ok=1,
+    )
+
+    await _move_pc(dut, refused_pc)
+    await _cycle(dut)
+    await _accept_request(dut, refused_vpn)
+    await _pulse_response(dut, vpn=refused_vpn, fault_kind=DFAULT_PAGE)
+    _assert_window(dut, expected_refusal)
+
+    # The fault traps: the flush retargets fetch to the handler.
+    dut.i_full_flush.value = 1
+    await _move_pc(dut, handler_pc)
+    dut.i_full_flush.value = 0
+    await _cycle(dut)
+    await _accept_request(dut, handler_leaf.vpn)
+    await _return_leaf(dut, handler_leaf)
+    _assert_window(dut, _translated_window(handler_pc, handler_leaf))
+
+    # The handler maps the page and returns without sfence.vma.
+    mapped = Leaf(vpn=refused_vpn, ppn=0x80090)
+    dut.i_full_flush.value = 1
+    await _move_pc(dut, refused_pc)
+    dut.i_full_flush.value = 0
+    _assert_invisible(dut)
+    await _cycle(dut)
+    await _accept_request(dut, refused_vpn)
+    await _return_leaf(dut, mapped)
+    _assert_window(dut, _translated_window(refused_pc, mapped))
+
+    # A walk accepted before a flush may have read the PTE before the stores
+    # the flush ordered. Its fault reaches the live key but not the memo.
+    late_pc = 0x0007_4040
+    late_vpn = late_pc >> 12
+    await _move_pc(dut, late_pc)
+    await _cycle(dut)
+    await _accept_request(dut, late_vpn)
+    dut.i_full_flush.value = 1
+    await _cycle(dut)
+    dut.i_full_flush.value = 0
+    await _pulse_response(dut, vpn=late_vpn, fault_kind=DFAULT_PAGE)
+    await _move_pc(dut, handler_pc)
+    await _cycle(dut)
+    _assert_window(dut, _translated_window(handler_pc, handler_leaf))
+    await _move_pc(dut, late_pc)
+    _assert_invisible(dut)
+    await _cycle(dut)
+    late_leaf = Leaf(vpn=late_vpn, ppn=0x800A0)
+    await _accept_request(dut, late_vpn)
+    await _return_leaf(dut, late_leaf)
+    _assert_window(dut, _translated_window(late_pc, late_leaf))

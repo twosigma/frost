@@ -240,6 +240,7 @@ module coherence_readers_test_harness (
       .o_req_ready(o_walk_ready),
       .i_req_vpn(i_vpn),
       .i_discard(i_discard),
+      .o_busy(),
       .o_resp_valid(o_walk_valid),
       .o_resp(o_translation),
       .o_line_req_valid(o_line_valid),

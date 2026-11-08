@@ -878,6 +878,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Committed DDR stores drain before satp and mstatus writes retire"
         ),
     ),
+    "sum_toggle_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="sum_toggle_test",
+        nic_mac_clocks=False,
+        description=(
+            "S-mode SUM and MXR toggles keep TLB entries and apply the live bits"
+        ),
+    ),
     "imsic_csr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

@@ -435,6 +435,8 @@
     "Zcd": {"supported": true},
     "Sstc": {"supported": true},
     "Svade": {"supported": true},
+    // No translation structure keeps an invalid PTE past the next trap.
+    "Svvptc": {"supported": true},
     "Svbare": {"supported": true},
     "Sv39": {"supported": true},
     "C": {"mutable_misa": false},
@@ -517,7 +519,6 @@
     "Sv57": {"supported": false},
     "Ssqosid": {"supported": false},
     "Svpbmt": {"supported": false},
-    "Svvptc": {"supported": false},
     "Stateen": {"Smstateen": {"supported": false}, "Ssstateen": {"supported": false}}
   }
 }

@@ -369,6 +369,7 @@ module coherent_hart_cache_formal #(
       .o_req_ready(walk_ready),
       .i_req_vpn(walk_vpn),
       .i_discard(discard),
+      .o_busy(),
       .o_resp_valid(walk_resp),
       .o_resp(translation),
       .o_line_req_valid(line_valid),

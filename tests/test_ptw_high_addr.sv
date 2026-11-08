@@ -21,6 +21,7 @@ module test_ptw_high_addr;
       .o_req_ready(req_ready),
       .i_req_vpn(req_vpn),
       .i_discard(1'b0),
+      .o_busy(),
       .o_resp_valid(resp_valid),
       .o_resp(resp),
       .o_line_req_valid(line_valid),

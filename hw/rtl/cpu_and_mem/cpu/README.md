@@ -413,8 +413,12 @@ that FENCE.I uses, so it also drops the fetch provider's buffered lines. Across 
 Debug Mode, and xRET takes and ignores exceptions, so no younger instruction
 can overwrite the CSR write or act on the old translation. Separately,
 `csr_file` raises a one-cycle TLB and walker invalidate for every `satp`
-access, and for an `mstatus` or `sstatus` write only when SUM, MXR, or MPRV
-changes (or MPP while MPRV is set).
+access, and for an `mstatus` write only when MPRV changes (or MPP while MPRV
+is set). SUM and MXR changes keep the TLBs: entries hold the raw leaf
+permissions, and every lookup applies the live SUM, MXR and effective
+privilege, so the full flush alone retires the old permission state. Linux
+toggles SUM around every user copy, so this keeps both TLBs warm across
+syscalls.
 
 ## Subtle cases
 

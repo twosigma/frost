@@ -36,7 +36,9 @@
  * changes, and mode changes do not cancel it: a late response still fills the
  * ITLB or the fault memo, but it bypasses into the live result only while its
  * saved key matches the live tag. An invalidate clears the ITLB, the memo, the
- * tag, and the outstanding walk, and ignores a response in the same cycle.
+ * tag, and the outstanding walk, and ignores a response in the same cycle. A
+ * full pipeline flush clears the memo and a registered fault, so no invalid
+ * PTE outlives a trap (Svvptc).
  */
 module immu #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
@@ -50,9 +52,14 @@ module immu #(
     input logic i_active,
     input logic i_priv_u,
 
-    // Invalidate on SFENCE.VMA, any satp access, or an mstatus/sstatus write
-    // that changes translation.
+    // Invalidate on SFENCE.VMA, any satp access, or an mstatus write that
+    // changes MPRV (or MPP under MPRV).
     input logic i_tlb_invalidate,
+
+    // Registered full pipeline flush (trap, xRET, or FENCE-class). It clears
+    // the fault memo, so a fault from an invalid PTE never outlives the trap
+    // it raises (Svvptc).
+    input logic i_full_flush = 1'b0,
 
     // pc_controller's registered fetch PC. The page and privilege tag hides
     // unrelated translations; crossing windows require the exact PC tag.
@@ -248,17 +255,31 @@ module immu #(
   // ---------------------------------------------------------------------------
   // One-entry memo of the last faulting walk (resp_refused). A walk fault
   // depends on the page tables, not on privilege, so the memo carries no
-  // privilege tag and stays valid until the next invalidate, like the ITLB.
+  // privilege tag. It holds a fault only until the next invalidate or full
+  // pipeline flush (Svvptc): an invalid PTE is never kept across a trap,
+  // xRET or FENCE-class flush. A fetch that uses the memo on the correct path
+  // traps, and that trap clears it, so a memo entry raises at most one fault,
+  // and the refetch after the handler walks again. A walk accepted before a
+  // flush may read a PTE older than the stores the flush ordered, so its
+  // fault does not fill the memo either. The xRET that returns from a
+  // handler waits for committed stores to drain, so a walk accepted after
+  // it observes the handler's PTE stores.
   // ---------------------------------------------------------------------------
   logic memo_valid_q;
   logic [VpnBits-1:0] memo_vpn_q;
   logic memo_page_q;
   logic resp_refused;
-  assign resp_refused = walk_resp_matches &&
+  logic walk_memo_ok_q;  // the walk in flight was accepted after the last full flush
+  assign resp_refused = walk_resp_matches && walk_memo_ok_q &&
       (i_walk_resp.fault_kind != riscv_pkg::DFAULT_NONE) && !i_tlb_invalidate;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst || i_tlb_invalidate) begin
+    if (i_rst || i_full_flush) walk_memo_ok_q <= 1'b0;
+    else if (o_walk_req_valid && i_walk_req_ready) walk_memo_ok_q <= 1'b1;
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst || i_tlb_invalidate || i_full_flush) begin
       memo_valid_q <= 1'b0;
     end else if (resp_refused) begin
       memo_valid_q <= 1'b1;
@@ -645,6 +666,19 @@ module immu #(
       f1p_q <= f1p_d;
       after_ok_q <= after_ok_d;
     end
+    // A full flush also drops a registered fault (Svvptc): the result turns
+    // unresolved, so a refetch of the same window after the handler
+    // translates again. Only the resolution and fault bits change here, which
+    // keeps the term off the address-capture path.
+    if (!i_rst && i_full_flush && (f0_q || f1_q)) begin
+      resolved_q <= 1'b0;
+      miss0_q <= 1'b0;
+      miss1_q <= 1'b0;
+      f0_q <= 1'b0;
+      f0p_q <= 1'b0;
+      f1_q <= 1'b0;
+      f1p_q <= 1'b0;
+    end
   end
 
   // ---------------------------------------------------------------------------
@@ -864,6 +898,35 @@ module immu #(
       p_same_page_word1_faults :
       assert (!translated_visible || pc_page_cross ||
               {o_fault1, o_fault1_page} == {o_fault0, o_fault0_page});
+    end
+  end
+`endif
+
+`ifdef IMMU_MEMO_LOCAL_PROOF
+  // Svvptc: the fault memo never holds a fault across a full flush, and only
+  // a walk accepted after the most recent flush fills it. The references
+  // track flushes, walk acceptance and refused responses independently of
+  // walk_memo_ok_q, for arbitrary ITLB answers and walker traffic.
+  logic f_memo_past_valid = 1'b0;
+  logic f_accepted_since_flush_q;  // a walk was accepted after the last flush
+  logic f_flush_since_fill_q;  // a flush or invalidate followed the last fill
+  always @(posedge i_clk) begin
+    if (i_rst || i_full_flush) f_accepted_since_flush_q <= 1'b0;
+    else if (o_walk_req_valid && i_walk_req_ready) f_accepted_since_flush_q <= 1'b1;
+    if (i_rst || i_full_flush || i_tlb_invalidate) f_flush_since_fill_q <= 1'b1;
+    else if (resp_refused) f_flush_since_fill_q <= 1'b0;
+  end
+  always @(posedge i_clk) begin
+    f_memo_past_valid <= 1'b1;
+    if (!f_memo_past_valid) assume (i_rst);
+    if (f_memo_past_valid && !$past(i_rst)) begin
+      if ($past(i_full_flush)) p_flush_clears_memo : assert (!memo_valid_q);
+      if ($past(resp_refused && !i_full_flush && !i_tlb_invalidate))
+        p_memo_fill_after_flush : assert ($past(f_accepted_since_flush_q) && memo_valid_q);
+      p_memo_needs_fault_since_flush : assert (!memo_valid_q || !f_flush_since_fill_q);
+      // A registered fault does not survive a full flush either.
+      if ($past(i_full_flush && (f0_q || f1_q)))
+        p_flush_drops_registered_fault : assert (!resolved_q && !f0_q && !f1_q);
     end
   end
 `endif

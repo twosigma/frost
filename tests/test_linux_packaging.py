@@ -334,7 +334,7 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     assert f"local-mac-address = [{packer.NIC_MAC_ADDRESS}];" in dts
     assert "clock-frequency = <300000000>;" in dts
     assert 'mmu-type = "riscv,sv39";' in dts
-    for ext in ("smaia", "ssaia", "sstc", "svade", "zicntr"):
+    for ext in ("smaia", "ssaia", "sstc", "svade", "svvptc", "zicntr"):
         assert f'"{ext}"' in dts and f"_{ext}" in packer.ISA_STRING
     assert "bootargs" not in dts and "initrd" not in dts
     # The SBI-v3 EVENT_GET_INFO probe only reports events present in OpenSBI's
@@ -353,6 +353,11 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
         "riscv,raw-event-to-mhpmcounters = <0x0 0x3 0xffffffff 0xffffffff 0x08>" in dts
     )
     assert "<0x0 0x8 0xffffffff 0xffffffff 0x100>" in dts
+    # Translation selectors: walker busy cycles on counter 8, SFENCE.VMA
+    # invalidates on counter 7, CSR-requested invalidates on counter 4.
+    assert "<0x0 0xa 0xffffffff 0xffffffff 0x100>" in dts
+    assert "<0x0 0xb 0xffffffff 0xffffffff 0x80>" in dts
+    assert "<0x0 0xc 0xffffffff 0xffffffff 0x10>;" in dts
     assert "0x00020003" not in dts
     for event in (7, 8, 9, 10):
         assert f"<0x{event:08x} 0x{event:08x}" not in dts
