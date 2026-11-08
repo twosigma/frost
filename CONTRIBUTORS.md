@@ -80,3 +80,9 @@
 - Added the coherent prefetch agent, which trains a stream predictor on the
   hart's data requests and reads the lines ahead of ascending streams into
   the L2 with Prefetch requests to the home
+- Added a self-modifying-code torture test and a next-PC check at retirement,
+  and fixed the two front-end bugs they found: stale fast-BTB predictions
+  after code or translation changes, and a compressed-instruction buffer that
+  could take a word from the wrong fetch window
+- Extended the performance model to the coherent L1D, the store drain and the
+  home's prefetcher, with a VCU118 board data set and its calibration tool
