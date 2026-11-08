@@ -775,9 +775,16 @@ module coherence_store_boundary_formal #(
       .PREISSUE_READY_PICK(1'b1),
       .PREISSUE_SEL_WIDTH(3),
       .PREISSUE_RS_DEPTH(RsDepth),
-      .ENABLE_SQ_FORWARD_FAST_PATH(1'b1)
+      .ENABLE_SQ_FORWARD_FAST_PATH(1'b1),
+      .REGISTERED_SECTOR_MATCH(1'b1)
   ) lq (
       .i_coherent_cut_hold(LOCAL_PROGRESS && l1_cut_hold),
+      // The L1D's store push, as the L1D's write port sees it.
+      .i_coherent_store_push(|rt_data_mem_cached_byte_wr_en && !rt_coherent_write_atomic),
+      .i_coherent_store_push_addr({
+        32'b0, extra_read ? address0[31:0] + 32'd64 : rt_data_mem_addr[31:0]
+      }),
+      .i_coherent_atomic_live(l1_atomic_live),
       .i_coherent_cut_addr({32'b0, l1_cut_address}),
       .i_coherent_block_valid(l1_block_valid),
       .i_coherent_block_addr({

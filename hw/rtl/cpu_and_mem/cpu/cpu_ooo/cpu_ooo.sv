@@ -2128,6 +2128,10 @@ module cpu_ooo #(
 `endif
   end
 
+  // The coherent L1D pushes a store into its store buffer when the write
+  // port carries a mask without an atomic write; the LQ matches the pushed
+  // line against its entries for the next cycle's same-sector hold.
+  wire coherent_store_push = |o_data_mem_cached_byte_wr_en && !o_coherent_write_atomic;
   tomasulo_wrapper #(
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .MEM_RESPONSE_ERRORS(VARIABLE_UNCACHED),
@@ -2143,7 +2147,8 @@ module cpu_ooo #(
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
       .INT_RS_DEPTH(INT_RS_DEPTH),
       .CACHED_BASE(CACHED_BASE),
-      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
+      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
+      .REGISTERED_SECTOR_MATCH(1'b1)
   ) u_tomasulo (
       .i_coherent_store_pending(i_coherent_store_pending),
       .i_coherent_store_ready(i_coherent_store_ready),
@@ -2151,6 +2156,8 @@ module cpu_ooo #(
       .i_coherent_atomic_live(i_coherent_atomic_live),
       .i_coherent_block_valid(i_coherent_block_valid),
       .i_coherent_block_addr(i_coherent_block_addr),
+      .i_coherent_store_push(coherent_store_push),
+      .i_coherent_store_push_addr(o_data_mem_addr),
       .i_coherent_cut_hold(i_coherent_cut_hold),
       .o_coherent_sc_valid(o_coherent_sc_valid),
       .i_coherent_sc_ready(i_coherent_sc_ready),

@@ -51,12 +51,21 @@ module load_queue #(
     // Device requests first wait in the router's pending register, which
     // blocks later handoffs through i_mem_bus_busy.
     parameter longint unsigned CACHED_BASE = riscv_pkg::DdrBase,
-    parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes
+    parameter longint unsigned CACHED_SIZE_BYTES = riscv_pkg::DdrCapacityBytes,
+    // With the coherent L1D's holder protocol (a record takes its line from
+    // the store pushed the cycle before; holder zero changes only when an
+    // atomic starts or ends), register each entry's same-sector match.
+    parameter bit REGISTERED_SECTOR_MATCH = 1'b0
 ) (
     input logic i_coherent_cut_hold = 1'b0,
     input logic [riscv_pkg::XLEN-1:0] i_coherent_cut_addr = '0,
     input logic [3:0] i_coherent_block_valid = '0,
     input logic [3:0][riscv_pkg::XLEN-1:0] i_coherent_block_addr = '0,
+    // The L1D's write port as it pushes a store into the store buffer, and
+    // whether an atomic owns holder zero.
+    input logic i_coherent_store_push = 1'b0,
+    input logic [riscv_pkg::XLEN-1:0] i_coherent_store_push_addr = '0,
+    input logic i_coherent_atomic_live = 1'b0,
     input logic i_coherent_atomic_protected = 1'b0,
     output logic o_coherent_arm_valid,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_arm_tag,
@@ -1771,11 +1780,99 @@ module load_queue #(
       !(sq_check_is_amo_q && sq_check_is_cached_region &&
         !i_coherent_atomic_protected);
 
+  // A staged load waits while a holder covers its sector.
+  logic reference_sector_hold;
+  // Registered same-sector matches (REGISTERED_SECTOR_MATCH): each entry's
+  // sector above the 32-byte offset and below PhysAddrBits.
+  localparam int unsigned SectorMsb = riscv_pkg::PhysAddrBits - 1;
+  localparam int unsigned SectorBits = SectorMsb - 4;
+  logic [DEPTH-1:0][SectorBits-1:0] entry_sector;
+  logic [DEPTH-1:0] entry_high_zero;
+  logic [DEPTH-1:0][3:0] entry_holder_match_q;
+  logic [DEPTH-1:0] entry_push_match_q;
+  logic [3:0] holder_valid_prev_q;
+  logic push_prev_q, atomic_prev_q;
   always_comb begin
-    coherent_sector_hold = 1'b0;
+    reference_sector_hold = 1'b0;
     for (int holder = 0; holder < 4; holder++)
-    coherent_sector_hold |= i_coherent_block_valid[holder] &&
+    reference_sector_hold |= i_coherent_block_valid[holder] &&
           sq_check_addr_q[XLEN-1:5] == i_coherent_block_addr[holder][XLEN-1:5];
+  end
+  if (REGISTERED_SECTOR_MATCH) begin : gen_registered_sector_match
+    // Each entry's sector and its match against every holder are registered,
+    // from the entry's next address and the holders' current addresses, so
+    // the staged load's hold reads registers by its index. A record that turns
+    // valid as a store is pushed takes the pushed line, which is matched
+    // instead; holder zero holds every staged load in the cycle an atomic
+    // starts or ends.
+    for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry
+      logic [SectorBits-1:0] sector_q;
+      logic high_zero_q;
+      logic [3:0] holder_match_q;
+      logic push_match_q;
+      wire write = lq_addr_update_we && lq_addr_update_idx == IdxWidth'(entry);
+      wire [SectorBits-1:0] sector_next =
+          write ? i_addr_update.address[SectorMsb:5] : sector_q;
+      wire high_zero_next =
+          write ? i_addr_update.address[XLEN-1:SectorMsb+1] == '0 : high_zero_q;
+      always_ff @(posedge i_clk) begin
+        sector_q <= sector_next;
+        high_zero_q <= high_zero_next;
+        for (int holder = 0; holder < 4; holder++)
+          holder_match_q[holder] <= high_zero_next &&
+              i_coherent_block_addr[holder][XLEN-1:SectorMsb+1] == '0 &&
+              sector_next == i_coherent_block_addr[holder][SectorMsb:5];
+        push_match_q <= i_coherent_store_push && high_zero_next &&
+            sector_next == i_coherent_store_push_addr[SectorMsb:5];
+      end
+      assign entry_sector[entry] = sector_q;
+      assign entry_high_zero[entry] = high_zero_q;
+      assign entry_holder_match_q[entry] = holder_match_q;
+      assign entry_push_match_q[entry] = push_match_q;
+    end
+    always_ff @(posedge i_clk) begin
+      if (!i_rst_n) begin
+        holder_valid_prev_q <= '0;
+        push_prev_q <= 1'b0;
+        atomic_prev_q <= 1'b0;
+      end else begin
+        holder_valid_prev_q <= i_coherent_block_valid;
+        push_prev_q <= i_coherent_store_push;
+        atomic_prev_q <= i_coherent_atomic_live;
+      end
+    end
+    wire atomic_edge = i_coherent_atomic_live != atomic_prev_q;
+    always_comb begin
+      coherent_sector_hold = 1'b0;
+      for (int holder = 0; holder < 4; holder++)
+      coherent_sector_hold |= i_coherent_block_valid[holder] &&
+            ((holder == 0 && atomic_edge) ||
+             ((push_prev_q && !holder_valid_prev_q[holder]) ?
+              entry_push_match_q[sq_check_idx] : entry_holder_match_q[sq_check_idx][holder]));
+    end
+`ifndef SYNTHESIS
+    // The registered match is exact for the L1D's holders, apart from the
+    // cycle an atomic starts or ends, where it holds instead.
+`ifdef FORMAL
+    always_comb
+`else
+    always @(posedge i_clk)
+`endif
+    if (sim_reset_seen_q && i_rst_n) begin
+      if (sq_check_entry_valid)
+        p_sector_entry_address :
+        assert (entry_sector[sq_check_idx] == sq_check_addr_q[SectorMsb:5] &&
+                entry_high_zero[sq_check_idx] == (sq_check_addr_q[XLEN-1:SectorMsb+1] == '0));
+      if (atomic_edge)
+        p_sector_hold_covers : assert (coherent_sector_hold || !reference_sector_hold);
+      else p_sector_hold_exact : assert (coherent_sector_hold == reference_sector_hold);
+    end
+`endif
+  end else begin : gen_combinational_sector_match
+    assign coherent_sector_hold = reference_sector_hold;
+    logic unused_holder_protocol;
+    assign unused_holder_protocol = ^{i_coherent_store_push, i_coherent_store_push_addr,
+                                      i_coherent_atomic_live};
   end
   // Address faults are independent of the cut and same-sector holds.
   assign coherent_address_fault =

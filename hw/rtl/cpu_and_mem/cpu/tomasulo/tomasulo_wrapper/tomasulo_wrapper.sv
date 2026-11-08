@@ -48,7 +48,10 @@ module tomasulo_wrapper #(
     parameter bit ROB_SHARED_LINK_BANK = 1'b0,
     // Disable back-end profiling counters and return zero when 0. cpu_ooo
     // passes its build option; the standalone default enables counters.
-    parameter int unsigned PERF_COUNTERS = 1
+    parameter int unsigned PERF_COUNTERS = 1,
+    // The LQ registers its same-sector matches from the coherent L1D's store
+    // pushes and atomic state; cpu_ooo, which supplies both, enables it.
+    parameter bit REGISTERED_SECTOR_MATCH = 1'b0
 ) (
     // Coherent store ownership and selected atomic context.
     input logic i_coherent_store_pending = 1'b0,
@@ -57,6 +60,9 @@ module tomasulo_wrapper #(
     input logic i_coherent_atomic_live = 1'b0,
     input logic [3:0] i_coherent_block_valid = '0,
     input logic [3:0][riscv_pkg::XLEN-1:0] i_coherent_block_addr = '0,
+    // The L1D write port's store push and its address.
+    input logic i_coherent_store_push = 1'b0,
+    input logic [riscv_pkg::XLEN-1:0] i_coherent_store_push_addr = '0,
     input logic i_coherent_cut_hold = 1'b0,
     output logic o_coherent_sc_valid,
     input logic i_coherent_sc_ready = 1'b0,
@@ -3600,12 +3606,16 @@ module tomasulo_wrapper #(
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
-      .ENABLE_SQ_FORWARD_FAST_PATH(1'b1)
+      .ENABLE_SQ_FORWARD_FAST_PATH(1'b1),
+      .REGISTERED_SECTOR_MATCH(REGISTERED_SECTOR_MATCH)
   ) u_lq (
       .i_coherent_cut_hold(i_coherent_cut_hold),
       .i_coherent_cut_addr(i_coh_admit_addr),
       .i_coherent_block_valid(i_coherent_block_valid),
       .i_coherent_block_addr(i_coherent_block_addr),
+      .i_coherent_store_push(i_coherent_store_push),
+      .i_coherent_store_push_addr(i_coherent_store_push_addr),
+      .i_coherent_atomic_live(i_coherent_atomic_live),
       .i_coherent_atomic_protected(i_coherent_atomic_protected),
       .o_coherent_arm_valid(coherent_amo_arm),
       .o_coherent_arm_tag(coherent_amo_arm_tag),
