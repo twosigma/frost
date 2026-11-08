@@ -111,6 +111,10 @@ async def access_fault_at_each_level_and_successful_retry(dut: Any) -> None:
         s = await b.step()
         assert s["resp_valid"] and (s["resp"] >> 78) == 3
         await b.step()
+        # The retry rewrites the root slot, so empty the walk cache first, as
+        # software's sfence.vma does after changing a valid pointer.
+        await b.step(discard=1)
+        await b.step(discard=0)
         await b.issue()
         # Aligned 1 GiB leaf, V/R/W/X/A/D. This retry must succeed.
         await b.line(0x80000000, (0x80000 << 10) | 0xCF)
@@ -143,7 +147,13 @@ async def discard_on_accept_drains_once_before_retry(dut: Any) -> None:
     for error in (False, True):
         await b.reset()
         await b.issue()
-        for _ in range(3):
+        # The walk-cache lookup precedes the first read.
+        for _ in range(4):
+            if (await b.step())["line_req_valid"]:
+                break
+        else:
+            raise AssertionError("walker did not issue a PTE read")
+        for _ in range(2):
             assert (await b.step())["line_req_valid"]
         s = await b.step(discard=1, line_req_ready=1)
         assert s["line_req_valid"] and s["line_req_addr"] == 0x80000000

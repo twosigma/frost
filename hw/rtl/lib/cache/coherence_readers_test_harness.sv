@@ -229,9 +229,13 @@ module coherence_readers_test_harness (
       .i_line_resp_rdata(o_resp_data),
       .i_invalidate(i_invalidate)
   );
+  // The walk cache is left out: this harness drives every PTE read of a walk
+  // through the bridge slots, and ptw_walk_cache tests the walk cache.
   ptw #(
       .ENABLE_RESPONSE_ERRORS(1),
-      .WALK_ID_BITS(3)
+      .WALK_ID_BITS(3),
+      .PWC_L1_ENTRIES(0),
+      .PWC_ROOT_ENTRIES(0)
   ) walker (
       .i_clk(i_clk),
       .i_rst(i_rst),

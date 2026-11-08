@@ -352,8 +352,17 @@ The 16-entry ITLB and the data side's 16-entry DTLB share one read-only
 page-table walker in `cpu_ooo`; the data side wins when both ask. The walker
 never writes PTEs (Svade): a leaf with A=0, or a store to a leaf with D=0,
 raises a page fault for software to handle. SFENCE.VMA, `satp` accesses, and
-`mstatus`/`sstatus` writes that change translation flush both TLBs and discard
-any walk in flight. The [RTL overview](../../README.md) lists the supported
+`mstatus` writes that change MPRV (or MPP under MPRV) flush both TLBs and
+discard any walk in flight.
+
+The walker keeps a walk cache of upper-level pointers: 16 level-1 pointers
+(the level-0 table of a 2 MiB region) and 4 root pointers (the level-1 table
+of a 1 GiB region). A walk looks both up in two registered cycles (tag
+compare, then select) and starts
+at level 0 or level 1 on a hit, so it makes one or two dependent line reads
+instead of three. Only a valid non-leaf PTE that a walk descends through fills
+it; an invalid or faulting PTE never does (Svvptc), and the walk invalidate
+empties it. The cache is on the miss path only. The [RTL overview](../../README.md) lists the supported
 page sizes, and the [cache README](../../lib/cache/README.md) describes the
 walker's port into the cache hierarchy.
 

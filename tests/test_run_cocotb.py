@@ -3372,6 +3372,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Page-table bus errors at every level, discard and successful retry",
         verilator_extra_args=("-GENABLE_RESPONSE_ERRORS=1",),
     ),
+    "ptw_walk_cache": CocotbRunConfig(
+        python_test_module="cocotb_tests.mmu.test_ptw_walk_cache",
+        hdl_toplevel_module="ptw",
+        description=(
+            "Walk-cache hits, discards and Svvptc-permitted page-table changes "
+            "against a reference Sv39 walk"
+        ),
+    ),
     "soc_vcu118": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_soc_vcu118",
         hdl_toplevel_module="soc_top",

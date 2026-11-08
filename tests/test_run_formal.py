@@ -912,7 +912,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "ptw.sby",
-        "Page-table walk state matches reference PTE classification",
+        "Page-table walk state matches reference PTE classification, and the walk "
+        "cache holds only valid pointers that memory holds, cleared by every discard",
+        tasks=("bmc", "cover", "bmc_nopwc"),
     ),
     FormalTarget(
         "reorder_buffer.sby",
@@ -2225,6 +2227,7 @@ SBY_TASKS = [
     # Parameter-shape variants (chparam'd tops): the ITLB shape of the TLB.
     ("bmc_itlb", "Bounded checking of 16-entry 2-port ITLB fetch verdicts"),
     ("cover_itlb", "Cover checking in the 16-entry 2-port ITLB shape"),
+    ("bmc_nopwc", "Bounded checking of the page-table walker without its walk cache"),
     ("bmc_xlen32", "Bounded checking with a local 32-bit datapath"),
     (
         "bmc_small_btb",
