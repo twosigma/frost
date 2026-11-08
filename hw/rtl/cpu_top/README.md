@@ -283,7 +283,7 @@ The standalone bench executes real instructions while an external AXI model vari
 | Disabled DMA ingress | `cpu_top_boundary` checks that the disabled ingress remains inactive while outgoing traffic runs |
 | Configurable PMA | `cpu_top_custom_map` and `cpu_top_strict_map` check relocated regions and rejection outside the configured device windows |
 | Optional Normal read caching | `cpu_top_writethrough` repeats the standalone boundary cases and checks FENCE.I, read faults, precise SC/AMO errors, and fatal buffered writes; `cpu_top_writethrough_custom_map` relocates the regions above 4 GiB |
-| Read-cache coherence and fills | `load_queue_writethrough` prevents stale responses from replacing newer store data; `lq_l0_cache_128` / `256` check byte updates and invalidation priority; `fetch_provider_direct` checks hits, conflicts, straddles, late fills and executable-region limits |
+| Read-cache coherence and fills | `load_queue_writethrough` prevents stale responses from replacing newer store data; `lq_l0_cache_128` / `256` / `512` check byte updates and invalidation priority; `fetch_provider_direct` checks hits, conflicts, straddles, late fills and executable-region limits |
 
 The full-platform `debug_openocd_test` additionally checks halt, resume,
 single-step, breakpoints, register/memory access, privilege, and reset through
