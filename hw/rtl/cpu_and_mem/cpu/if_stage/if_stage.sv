@@ -109,6 +109,10 @@ module if_stage #(
     // access that may change translation) and its refetch target.
     input logic i_fence_i_flush,
     input logic [XLEN-1:0] i_fence_i_target,
+    // With i_fence_i_flush for FENCE.I, SFENCE.VMA and satp writes (not
+    // mstatus/sstatus): the code or address space may have changed, so the
+    // BTB's entries may describe instructions that are no longer there.
+    input logic i_btb_invalidate,
     // Blocks BTB, RAS, and slot-2 predictions.
     input logic i_disable_branch_prediction,
     // Bimodal direction-predictor training from commit (conditional branches
@@ -708,6 +712,7 @@ module if_stage #(
 `endif
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
+      .i_btb_invalidate(i_btb_invalidate),
       // Serialization stalls (for unresolved older branches or CSRs) must also
       // block new predictions. Otherwise a younger speculative branch or return
       // can arm a pending prediction that outlives, and conflicts with, the

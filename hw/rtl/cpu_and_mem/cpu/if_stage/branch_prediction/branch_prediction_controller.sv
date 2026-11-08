@@ -36,6 +36,8 @@ module branch_prediction_controller #(
 `endif
     input logic i_clk,
     input logic i_reset,
+    // Invalidate the BTB (FENCE.I, SFENCE.VMA, satp); see branch_predictor.
+    input logic i_btb_invalidate,
     input logic i_stall,
     input logic i_stall_registered,
     // A live window or stall-replay packet is available. No progress holds
@@ -312,6 +314,19 @@ module branch_prediction_controller #(
     btb_late_update_taken_q  <= i_btb_late_update_taken;
   end
 
+  // Hold the invalidate for four cycles. Training from a branch that retired
+  // just before the FENCE-class instruction is still in its commit-to-BTB
+  // registers when the flush arrives, and describes the old code; the held
+  // invalidate drops it instead of letting it reinstall a stale entry.
+  logic [1:0] btb_invalidate_hold_q;
+  logic btb_invalidate_active;
+  always_ff @(posedge i_clk) begin
+    if (i_reset) btb_invalidate_hold_q <= '0;
+    else if (i_btb_invalidate) btb_invalidate_hold_q <= 2'd3;
+    else if (btb_invalidate_hold_q != '0) btb_invalidate_hold_q <= btb_invalidate_hold_q - 2'd1;
+  end
+  assign btb_invalidate_active = i_btb_invalidate || (btb_invalidate_hold_q != '0);
+
   // Preserve the predictor boundary for timing.
   (* keep_hierarchy = "yes" *)
   branch_predictor #(
@@ -364,7 +379,8 @@ module branch_prediction_controller #(
       .i_early_update_pc(btb_early_update_pc_q),
       .i_early_update_taken(btb_early_update_taken_q),
       .i_late_update_pc(btb_late_update_pc_q),
-      .i_late_update_taken(btb_late_update_taken_q)
+      .i_late_update_taken(btb_late_update_taken_q),
+      .i_invalidate_all(btb_invalidate_active)
   );
 
   // ===========================================================================
