@@ -173,6 +173,8 @@ module soc_axi_slave #(
   // including when the other address channel arrives in a later cycle.
   assign choose_read = local_hold_q ? local_hold_read_q :
       can_read && (!can_write || !prefer_write_q);
+  // With a separate CPU clock the bus master's reset comes through its own
+  // synchronizer, and the external DDR interconnect has its own reset.
   assign o_local_valid = !i_axi_rst && !local_busy_q && (can_read || can_write);
   assign o_local_write = !choose_read;
   assign o_local_addr = choose_read ? local_ar_addr : local_aw_addr;
@@ -186,6 +188,7 @@ module soc_axi_slave #(
       (local_write_q ? !local_b_valid_q : !local_r_valid_q) && !i_axi_rst;
   assign local_resp_fire = i_local_resp_valid && o_local_resp_ready;
 
+  // As above: the master and the DDR interconnect can be on other resets.
   assign o_axi_awready = !aw_valid_q && !i_axi_rst;
   assign o_axi_wready = !i_axi_rst &&
       ((aw_valid_q && aw_ddr_q) ? !w_sent_q && i_ddr_axi_wready :
@@ -220,6 +223,7 @@ module soc_axi_slave #(
   wire [DATA_BYTES*8-1:0] local_reply_data = i_local_resp_rdata << {local_dword_q, 6'b0};
   assign r_local = r_hold_q ? r_hold_local_q : local_r_available;
   assign b_local = b_hold_q ? b_hold_local_q : local_b_available;
+  // Responses and their readies take the reset for the same reason.
   assign o_axi_rvalid = !i_axi_rst && (r_local ? local_r_available : i_ddr_axi_rvalid);
   assign o_axi_rid =
       r_local ? (local_r_valid_q ? local_r_id_q : local_id_q) : ID_BITS'(i_ddr_axi_rid);

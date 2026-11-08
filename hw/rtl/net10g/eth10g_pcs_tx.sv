@@ -32,6 +32,7 @@ module eth10g_pcs_tx (
   logic [63:0] payload, scrambled;
   logic [1:0] header, header_reg;
   logic bad_block;
+  // The 10G block keeps its handshakes quiet in reset.
   assign o_xgmii_ready = !i_rst && (!o_block_valid || i_block_ready);
   assign o_block = {scrambled, header_reg};
   eth10g_encode encoder (

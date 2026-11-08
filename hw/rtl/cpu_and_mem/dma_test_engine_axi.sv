@@ -196,7 +196,7 @@ module dma_test_engine_axi #(
   logic [1:0] beat_q;  // the W or R beat of a burst-form transfer
   logic r_error_q;
 
-  assign req_ready = !i_rst && !busy_q;
+  assign req_ready = !busy_q;
   logic req_fire;
   assign req_fire = req_valid && req_ready;
 

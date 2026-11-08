@@ -184,7 +184,9 @@ pair. `ADDR_BITS` selects the window offset width. `WIDE_OFFSETS` packs
 The bridge accepts AW and W in either order, buffers their payloads, and
 executes one transaction at a time through response acceptance. B and R are
 registered and return OKAY. AxPROT is accepted and ignored. Reset abandons
-transactions and clears control state. A write with every strobe set at a
+transactions and clears control state at the flops; in a first reset cycle
+the handshakes and register writes can stay live, and the register file and
+the requester take the same reset. A write with every strobe set at a
 listed wide offset asserts `o_wr64_en`. Other writes to those dwords have no
 effect. For other offsets, any upper-half strobe selects the upper word;
 otherwise the lower word is selected. Any set strobe asserts `o_wr_en`, and

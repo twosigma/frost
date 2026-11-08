@@ -410,6 +410,7 @@ module aplic #(
     end
   end
 
+  // The message's receiver, the hart's interrupt file, is on another reset.
   assign o_msi_valid = MSI_ENABLE && msi_valid_q && !i_rst;
   assign o_msi_addr = msi_addr_q;
   assign o_msi_data = msi_data_q;

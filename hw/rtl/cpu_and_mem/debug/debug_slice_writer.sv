@@ -80,6 +80,7 @@ module debug_slice_writer #(
   logic stage_valid_q;
   logic [ReqBits-1:0] stage_q;
   logic accept;
+  // Requests come from the SoC bus, which i_rst does not cover.
   assign o_req_ready = !i_rst && (!stage_valid_q || fifo_ready);
   assign accept = i_req_valid && o_req_ready;
   always_ff @(posedge i_clk) begin

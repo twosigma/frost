@@ -79,14 +79,14 @@ module axil_reg_bridge #(
   end
 
   // Readiness depends only on the selected transaction and its buffers.
-  assign o_axil_awready = !i_rst && state_q == Write && !aw_pending_q;
-  assign o_axil_wready = !i_rst && state_q == Write && !w_pending_q;
-  assign o_axil_arready = !i_rst && state_q == Read;
-  assign o_axil_bvalid = !i_rst && state_q == WriteResp;
-  assign o_axil_rvalid = !i_rst && state_q == ReadResp;
+  assign o_axil_awready = state_q == Write && !aw_pending_q;
+  assign o_axil_wready = state_q == Write && !w_pending_q;
+  assign o_axil_arready = state_q == Read;
+  assign o_axil_bvalid = state_q == WriteResp;
+  assign o_axil_rvalid = state_q == ReadResp;
   assign o_axil_bresp = 2'b00;
   assign o_axil_rresp = 2'b00;
-  assign write_apply = !i_rst && state_q == Write && aw_pending_q && w_pending_q;
+  assign write_apply = state_q == Write && aw_pending_q && w_pending_q;
   always_comb begin
     wide_dword   = 1'b0;
     wide_address = 1'b0;
@@ -194,6 +194,11 @@ module axil_reg_bridge #(
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
     if (!f_past_valid) assume (i_rst);
+    // A reset edge leaves the bridge idle: no READY, VALID or register write.
+    if (f_past_valid && $past(i_rst)) begin
+      assert (!o_axil_awready && !o_axil_wready && !o_axil_arready);
+      assert (!o_axil_bvalid && !o_axil_rvalid && !o_wr_en && !o_wr64_en);
+    end
     if (f_past_valid && !$past(i_rst) && !i_rst) begin
       if ($past(i_axil_awvalid && !o_axil_awready)) begin
         assume (i_axil_awvalid);
@@ -221,8 +226,6 @@ module axil_reg_bridge #(
       f_w <= 1'b0;
       f_ar <= 1'b0;
       f_applied <= 1'b0;
-      assert (!o_axil_awready && !o_axil_wready && !o_axil_arready);
-      assert (!o_axil_bvalid && !o_axil_rvalid && !o_wr_en && !o_wr64_en);
     end else if (f_past_valid) begin
       assert (state_q <= ReadResp);
       assert (!(aw_pending_q || w_pending_q) || state_q == Write);

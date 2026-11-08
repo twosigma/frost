@@ -42,6 +42,7 @@ module eth10g_pcs_rx #(
   logic valid_reg, good_reg, bad_block;
   logic reset_path;
   logic pcs_ok, checked_valid, bad_sequence;
+  // Loss of signal clears the decode path at run time, as a reset does.
   assign reset_path = i_rst || !i_signal_ok;
   assign pcs_ok = i_signal_ok && o_locked && !o_high_ber;
 
@@ -80,6 +81,7 @@ module eth10g_pcs_rx #(
   );
   eth10g_rx_sequence sequence_check (
       .i_clk(i_clk),
+      // Losing the block lock restarts the sequence check at run time.
       .i_rst(i_rst || !pcs_ok),
       .i_enable(valid_reg && good_reg),
       .i_xgmii_data(decoded),
@@ -101,6 +103,7 @@ module eth10g_pcs_rx #(
       if (i_block_valid) header_reg <= i_block[1:0];
     end
   end
+  // The 10G block keeps its handshakes quiet in reset.
   // Local fault also aborts an unfinished MAC frame when the input disappears.
   assign o_xgmii_valid = !i_rst && (pcs_ok ? checked_valid : (valid_reg || !i_signal_ok));
   assign o_xgmii_data  = pcs_ok ? checked_data : 64'h0100009c0100009c;

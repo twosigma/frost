@@ -102,6 +102,7 @@ module eth10g_mac_tx #(
   logic bad_beat;
   logic [63:0] payload_word;
 
+  // The MAC bench checks that no beat is taken in reset.
   assign s_axis_tready = i_enable && !i_rst && !buffer_full[write_buffer];
 
   always_comb begin
@@ -241,6 +242,7 @@ module eth10g_mac_tx #(
       .DATA_WIDTH(64)
   ) u_frame_memory (
       .i_write_clock(i_clk),
+      // The frame memory has no reset.
       .i_write_enable(!i_rst && i_enable && s_axis_tvalid && s_axis_tready && !write_discard &&
                       !bad_beat),
       .i_write_address({write_buffer, WordIndexWidth'(write_length >> 3)}),
