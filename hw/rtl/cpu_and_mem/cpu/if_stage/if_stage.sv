@@ -1089,6 +1089,7 @@ module if_stage #(
       .i_is_compressed(is_compressed),
       .i_sel_nop(sel_nop),
       .i_fetch_progress(fetch_progress),
+      .i_window_cannot_serve(window_cannot_serve_pc_reg),
       .i_slot2_valid(slot2_valid),
       // Align sideband to match instruction word selection
       .i_instr_sideband(fetch_word_swapped_for_c_ext ?

@@ -55,6 +55,10 @@ module c_ext_state #(
     // A live window or saved stall snapshot is available. Buffer updates
     // exclude no-progress cycles and the registered bubble sources below.
     input logic i_fetch_progress,
+    // The live window does not cover pc_reg: its word belongs to another
+    // address (for example a predicted target fetched while pc_reg still
+    // owes the predicted instruction), so it must not enter the buffer.
+    input logic i_window_cannot_serve,
     input logic [riscv_pkg::ImemSidebandWidth-1:0] i_instr_sideband,
     // Fetch-fault status of the current effective word ({fault, page kind}).
     // Captured beside the word so a buffered faulted word still delivers a
@@ -152,6 +156,10 @@ module c_ext_state #(
   logic [1:0] effective_fault_for_buffer;
   assign effective_fault_for_buffer = use_saved_values ? fault_saved : i_instr_fault;
   assign is_compressed_for_buffer = use_saved_values ? is_compressed_saved : i_is_compressed;
+  // The buffer word must be pc_reg's: the stall snapshot, or a live window
+  // that covers pc_reg.
+  logic buffer_word_is_pc_reg;
+  assign buffer_word_is_pc_reg = use_saved_values || !i_window_cannot_serve;
   assign preserve_lo_compressed_buffer_on_prediction =
       i_prediction_reset_state &&
       is_compressed_for_buffer &&
@@ -162,6 +170,7 @@ module c_ext_state #(
   assign capture_pending_prediction_buffer =
       i_pending_prediction_active &&
       i_prediction_holdoff &&
+      buffer_word_is_pc_reg &&
       is_compressed_for_buffer &&
       !i_pc_reg[1];
   // If the predicted instruction and target handoff occur together, its
@@ -226,7 +235,8 @@ module c_ext_state #(
       if (i_control_flow_holdoff || i_flush || i_prediction_holdoff ||
         prediction_reset_buffer_state) begin
         prev_without_handoff_cases[slot2] = capture_pending_prediction_buffer;
-      end else if (!i_stall && (i_fetch_progress || use_saved_values) && !i_any_holdoff_safe &&
+      end else if (!i_stall && (i_fetch_progress || use_saved_values) && buffer_word_is_pc_reg &&
+                 !i_any_holdoff_safe &&
                  !pending_prediction_target_holdoff_needs_buffer &&
                  !i_pending_prediction_active) begin
         // Slot 2 has already consumed the upper sibling when both parcels emit.
@@ -259,7 +269,8 @@ module c_ext_state #(
       if (capture_pending_prediction_buffer_state) begin
         prev_was_compressed_at_lo_priority_ref = 1'b1;
       end
-    end else if (!i_stall && (i_fetch_progress || use_saved_values) && !i_any_holdoff_safe &&
+    end else if (!i_stall && (i_fetch_progress || use_saved_values) && buffer_word_is_pc_reg &&
+                 !i_any_holdoff_safe &&
                  !pending_prediction_target_holdoff_needs_buffer &&
                  !i_pending_prediction_active) begin
       prev_was_compressed_at_lo_priority_ref =
@@ -284,7 +295,7 @@ module c_ext_state #(
   // write. Exclude prediction holdoff unless preserving an older packet,
   // so stale post-redirect data cannot become valid.
   always_ff @(posedge i_clk) begin
-    if (!i_stall && (i_fetch_progress || use_saved_values) &&
+    if (!i_stall && (i_fetch_progress || use_saved_values) && buffer_word_is_pc_reg &&
         (!i_any_holdoff_safe || capture_pending_prediction_buffer) &&
         !i_flush &&
         !pending_prediction_target_holdoff_needs_buffer &&
@@ -326,7 +337,8 @@ module c_ext_state #(
       if (capture_pending_prediction_buffer_state) begin
         f_buffer_priority_ref = 1'b1;
       end
-    end else if (!i_stall && (i_fetch_progress || use_saved_values) && !i_any_holdoff_safe &&
+    end else if (!i_stall && (i_fetch_progress || use_saved_values) && buffer_word_is_pc_reg &&
+                 !i_any_holdoff_safe &&
                  !pending_prediction_target_holdoff_needs_buffer &&
                  !i_pending_prediction_active) begin
       f_buffer_priority_ref = is_compressed_for_buffer && !i_pc_reg[1] && !i_slot2_valid;
