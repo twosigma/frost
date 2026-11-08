@@ -86,6 +86,7 @@ module fp_launch_squash_rs_producer (
       .i_divider_busy             (1'b0),
       .o_issue_writes_cdb_hint    (),
       .o_branch_predicate_tag     (),
+      .o_issue_is_jalr            (),
       .o_issue_2                  (),
       .i_fu_ready_2               (1'b0),
       .o_issue_writes_cdb_hint_2  (),

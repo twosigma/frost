@@ -21,7 +21,10 @@ only their test inputs drive them.
 
 ALU and ALU2 are the two single-cycle integer pipes fed by the dual-issue INT
 reservation station. Either can win either lane, so a stream of pure ALU work
-can broadcast two results per cycle.
+can broadcast two results per cycle. While the ALU adapter holds a result,
+INT RS port 0's next result can arrive on the ALU2 slot instead (see the
+[wrapper README](../tomasulo_wrapper/README.md)); the held result keeps the
+ALU slot, so it still outranks the newer one.
 
 A completion that is not granted stays in its
 [`fu_cdb_adapter`](../fu_cdb_adapter/README.md) and competes again the next

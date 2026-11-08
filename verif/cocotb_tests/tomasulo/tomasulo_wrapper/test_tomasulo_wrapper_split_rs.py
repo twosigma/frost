@@ -55,6 +55,7 @@ RS_NAMES = {
 OP_SW = instr_op_value("SW")
 OP_LW = instr_op_value("LW")
 OP_FMADD_D = instr_op_value("FMADD_D")
+OP_JALR = instr_op_value("JALR")
 
 
 async def setup_test(dut: Any) -> TomasuloInterface:
@@ -1051,3 +1052,150 @@ async def test_alu2_effective_packet_held_adapter_beats_injection(dut: Any) -> N
 
     dut_if.clear_fu_complete(FU_ALU2)
     cocotb.log.info("=== Test Passed ===")
+
+
+def cdb_lane_packets(dut: Any) -> set[tuple[int, int, int]]:
+    """Return the valid packets on both combinational CDB lanes as (FU, tag, value)."""
+    return {
+        (cdb.fu_type, cdb.tag, cdb.value) for cdb in read_cdb_lanes(dut) if cdb.valid
+    }
+
+
+async def run_port0_behind_held_alu_result(
+    dut: Any, *, second_is_jalr: bool, second_loses: bool
+) -> None:
+    """Hold port 0's first result behind MUL and MEM, then present its next op.
+
+    Port 0 issues A and then B on consecutive cycles. A presents while MUL and
+    MEM take both lanes, so the ALU adapter holds it. In the next cycle port 0
+    presents B through the idle ALU2 adapter, unless B is a JALR, which waits
+    for A's grant and then presents through the ALU adapter. With
+    second_loses, MUL and MEM also take both lanes from A and B in B's cycle,
+    and the ALU2 adapter holds B.
+    """
+    dut_if = await setup_test(dut)
+
+    # Park an incomplete entry at the ROB head so the blockers cannot retire.
+    await dut_if.dispatch(AllocationRequest(pc=0x7300))
+    mul_tag = await dut_if.dispatch(AllocationRequest(pc=0x7304))
+    mem_tag = await dut_if.dispatch(AllocationRequest(pc=0x7308))
+    a_tag = await dut_if.dispatch(AllocationRequest(pc=0x7310))
+    b_tag = await dut_if.dispatch(
+        AllocationRequest(
+            pc=0x7314,
+            is_branch=second_is_jalr,
+            is_jalr=second_is_jalr,
+            predicted_taken=second_is_jalr,
+            predicted_target=0x9000 if second_is_jalr else 0,
+        )
+    )
+    a_value = (0x0000_1111_0000_0001 + 0x0000_2222_0000_0002) & MASK_XLEN
+    b_link = 0x7318
+    b_value = b_link if second_is_jalr else (0x0000_3333_0000_0003 + 0x4) & MASK_XLEN
+    dut_if.set_fu_ready(RS_INT, True)
+
+    # A enters INT_RS; port 0 selects it in the next cycle.
+    dut_if.drive_split_rs_dispatch(
+        RS_INT,
+        rob_tag=a_tag,
+        op=0,
+        src1_ready=True,
+        src1_value=0x0000_1111_0000_0001,
+        src2_ready=True,
+        src2_value=0x0000_2222_0000_0002,
+        src3_ready=True,
+    )
+    await step_and_clear_dispatch(dut_if)
+
+    # B enters INT_RS while port 0 selects A.
+    b_payload: dict[str, Any] = {
+        "rob_tag": b_tag,
+        "src1_ready": True,
+        "src2_ready": True,
+        "src3_ready": True,
+    }
+    if second_is_jalr:
+        b_payload.update(
+            op=OP_JALR,
+            src1_value=0x9000,
+            imm=b_link,
+            predicted_taken=True,
+            predicted_target=0x9000,
+            predicted_target_ok=True,
+            pc=0x7314,
+            link_addr=b_link,
+        )
+    else:
+        b_payload.update(op=0, src1_value=0x0000_3333_0000_0003, src2_value=0x4)
+    dut_if.drive_split_rs_dispatch(RS_INT, **b_payload)
+    await step_and_clear_dispatch(dut_if)
+
+    # A presents on port 0 and loses to MUL and MEM; port 0 selects B.
+    dut_if.drive_fu_complete(FU_MUL, tag=mul_tag, value=0x1111)
+    dut_if.drive_fu_complete(FU_MEM, tag=mem_tag, value=0x2222)
+    await Timer(1, unit="ps")
+    issue = dut_if.read_rs_issue()
+    assert issue["valid"] and issue["rob_tag"] == a_tag
+    assert not (int(dut.o_cdb_grant.value) & (1 << FU_ALU))
+    await dut_if.step()
+    if not second_loses:
+        dut_if.clear_fu_complete(FU_MUL)
+        dut_if.clear_fu_complete(FU_MEM)
+    await Timer(1, unit="ps")
+    assert int(dut.alu_adapter_result_pending.value)
+
+    if second_is_jalr:
+        # The JALR stays in stage 2 until the ALU adapter is free.
+        assert not int(dut.int_rs_fu_ready.value)
+        assert cdb_lane_packets(dut) == {(FU_ALU, a_tag, a_value)}
+        await dut_if.step()
+        await Timer(1, unit="ps")
+        assert cdb_lane_packets(dut) == {(FU_ALU, b_tag, b_value)}
+    elif second_loses:
+        # B passes through the ALU2 adapter, loses with A, and waits there.
+        assert int(dut.int_rs_fu_ready.value)
+        assert not (int(dut.o_cdb_grant.value) & ((1 << FU_ALU) | (1 << FU_ALU2)))
+        await dut_if.step()
+        dut_if.clear_fu_complete(FU_MUL)
+        dut_if.clear_fu_complete(FU_MEM)
+        await Timer(1, unit="ps")
+        assert int(dut.alu2_adapter_result_pending.value)
+        assert cdb_lane_packets(dut) == {
+            (FU_ALU, a_tag, a_value),
+            (FU_ALU2, b_tag, b_value),
+        }
+    else:
+        # B passes through the idle ALU2 adapter while A keeps the ALU slot.
+        assert int(dut.int_rs_fu_ready.value)
+        assert cdb_lane_packets(dut) == {
+            (FU_ALU, a_tag, a_value),
+            (FU_ALU2, b_tag, b_value),
+        }
+
+    for _ in range(3):
+        await dut_if.step()
+    assert dut_if.rob_entry_done(a_tag)
+    assert dut_if.rob_entry_done(b_tag)
+    assert await dut_if.read_rob_entry_value(a_tag) == a_value
+    assert await dut_if.read_rob_entry_value(b_tag) == b_value
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_port0_passes_through_alu2_while_alu_holds(dut: Any) -> None:
+    """Port 0's next result uses the idle ALU2 adapter while the ALU adapter holds."""
+    await run_port0_behind_held_alu_result(
+        dut, second_is_jalr=False, second_loses=False
+    )
+
+
+@cocotb.test()
+async def test_port0_pass_through_result_waits_in_alu2(dut: Any) -> None:
+    """A passed-through port-0 result that loses waits in the ALU2 adapter."""
+    await run_port0_behind_held_alu_result(dut, second_is_jalr=False, second_loses=True)
+
+
+@cocotb.test()
+async def test_port0_jalr_waits_for_held_alu_result(dut: Any) -> None:
+    """A JALR in port 0's stage 2 waits for the held ALU result, then uses ALU."""
+    await run_port0_behind_held_alu_result(dut, second_is_jalr=True, second_loses=False)

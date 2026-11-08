@@ -114,7 +114,9 @@ An entry issues when it is ready, `i_fu_ready` is high, and the stage-2
 register is empty or being emptied this cycle. At the clock edge the entry
 moves into stage 2 and its slot frees; the functional unit sees it on
 `o_issue` in the next cycle, with `o_issue.valid = stage2_valid && i_fu_ready`.
-If `i_fu_ready` drops, stage 2 holds the packet.
+If `i_fu_ready` drops, stage 2 holds the packet. `o_issue_is_jalr` repeats
+`o_issue.is_jalr` outside the packet, for logic that computes `i_fu_ready`
+from what stage 2 holds.
 
 ## Divide gate (MUL_RS)
 
