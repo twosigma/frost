@@ -1480,8 +1480,8 @@ package riscv_pkg;
   // this capacity without changing the queue or coherence-table capacity.
   localparam int unsigned LqL0Depth = 128;
   // Normal AXI reads have a longer miss path than the legacy local port.
-  // The optional read-cache policy defaults to 2 KiB of clean data.
-  localparam int unsigned NormalLqL0Depth = 256;
+  // The optional read-cache policy defaults to 4 KiB of clean data.
+  localparam int unsigned NormalLqL0Depth = 512;
 
   // DMA sequencer lock count (frost_cluster_cache NUM_DMA_LOCK), mirrored
   // by lq_coherence_port. A write holds a lock from admission until the

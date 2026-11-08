@@ -1793,7 +1793,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             verilator_extra_args=(f"-GDEPTH={depth}",),
             extra_env=(("FROST_TEST_L0_DEPTH", str(depth)),),
         )
-        for depth in (128, 256)
+        for depth in (128, 256, 512)
     },
     "store_queue": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.store_queue.test_store_queue",
@@ -4097,6 +4097,7 @@ for _name, _config in tuple(TEST_REGISTRY.items()):
         "debug_module",
         "lq_l0_cache_128",
         "lq_l0_cache_256",
+        "lq_l0_cache_512",
     ):
         if "--assert" not in _config.verilator_extra_args:
             TEST_REGISTRY[_name] = replace(
