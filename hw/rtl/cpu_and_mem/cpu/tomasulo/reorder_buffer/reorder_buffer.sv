@@ -1958,102 +1958,100 @@ module reorder_buffer #(
     (* keep = "true" *) wire done_without_store = alloc_en_2_control ?
         (alloc_en_control ? done_alloc_cases[3] : done_alloc_cases[2]) :
         (alloc_en_control ? done_alloc_cases[1] : done_alloc_cases[0]);
-    wire exception_selected = alloc_en_2_control ?
+    assign done_next[entry] = done_without_store ||
+        (i_store_complete_valid && store_completion_eligible);
+    assign exception_next[entry] = alloc_en_2_control ?
         (alloc_en_control ? exception_alloc_cases[3] : exception_alloc_cases[2]) :
         (alloc_en_control ? exception_alloc_cases[1] : exception_alloc_cases[0]);
-    assign done_next[entry] = i_rst_n &&
-        (done_without_store || (i_store_complete_valid && store_completion_eligible));
-    assign exception_next[entry] = i_rst_n && exception_selected;
   end
   always_ff @(posedge i_clk) begin
-    rob_done <= done_next;
-    rob_exception <= exception_next;
+    if (!i_rst_n) begin
+      rob_done <= '0;
+      rob_exception <= '0;
+    end else begin
+      rob_done <= done_next;
+      rob_exception <= exception_next;
+    end
   end
 
 `ifdef ROB_CONTROL_NEXT_LOCAL_PROOF
   // Reference: the indexed-write form of the transitions, built from the
   // actual current state. All inputs and current bits are unconstrained; no
-  // reset or admission assumption.
+  // admission assumption. Reset applies at the flops, after these transitions.
   logic [ReorderBufferDepth-1:0] f_done_next, f_exception_next;
   always_comb begin
     f_done_next = rob_done;
-    f_exception_next = rob_exception;
-    if (!i_rst_n) begin
-      f_done_next      = '0;
-      f_exception_next = '0;
-    end else begin
-      // Memory-order replay flags make their entries exceptional
-      // through the same stored bit as execution exceptions.
-      f_exception_next = rob_exception | (i_replay_set_mask & rob_valid);
-      // ---------------------------------------------------------------------
-      // Allocation Write (control fields only)
-      // ---------------------------------------------------------------------
-      if (alloc_en_control) begin
-        // Legality is complete at allocation; an exceptional CDB completion
-        // may still set the bit later.
-        f_exception_next[tail_idx] = alloc_legality_fault_data;
+    // Memory-order replay flags make their entries exceptional
+    // through the same stored bit as execution exceptions.
+    f_exception_next = rob_exception | (i_replay_set_mask & rob_valid);
+    // ---------------------------------------------------------------------
+    // Allocation Write (control fields only)
+    // ---------------------------------------------------------------------
+    if (alloc_en_control) begin
+      // Legality is complete at allocation; an exceptional CDB completion
+      // may still set the bit later.
+      f_exception_next[tail_idx] = alloc_legality_fault_data;
 
-        // JAL's link and target are both known at allocation. JALR and
-        // conditional branches wait for branch resolution.
-        if (i_alloc_req.is_jal) begin
-          f_done_next[tail_idx] = 1'b1;
-        end else if (i_alloc_req.is_jalr) begin
-          // JALR: link address known, target unknown until execute
-          f_done_next[tail_idx] = 1'b0;
-        end else if (i_alloc_req.is_wfi || i_alloc_req.is_fence ||
-                     i_alloc_req.is_fence_i || i_alloc_req.is_mret) begin
-          // Done from the execution side at dispatch; the serializer gates
-          // their commit.
-          f_done_next[tail_idx] = 1'b1;
-        end else begin
-          f_done_next[tail_idx] = 1'b0;
-        end
+      // JAL's link and target are both known at allocation. JALR and
+      // conditional branches wait for branch resolution.
+      if (i_alloc_req.is_jal) begin
+        f_done_next[tail_idx] = 1'b1;
+      end else if (i_alloc_req.is_jalr) begin
+        // JALR: link address known, target unknown until execute
+        f_done_next[tail_idx] = 1'b0;
+      end else if (i_alloc_req.is_wfi || i_alloc_req.is_fence ||
+                   i_alloc_req.is_fence_i || i_alloc_req.is_mret) begin
+        // Done from the execution side at dispatch; the serializer gates
+        // their commit.
+        f_done_next[tail_idx] = 1'b1;
+      end else begin
+        f_done_next[tail_idx] = 1'b0;
       end
+    end
 
-      // The allocation slots target distinct entries, so their writes cannot collide.
-      if (alloc_en_2_control) begin
-        f_exception_next[tail_idx_2] = alloc_legality_fault_data_2;
+    // The allocation slots target distinct entries, so their writes cannot collide.
+    if (alloc_en_2_control) begin
+      f_exception_next[tail_idx_2] = alloc_legality_fault_data_2;
 
-        if (i_alloc_req_2.is_jal) begin
-          f_done_next[tail_idx_2] = 1'b1;
-        end else if (i_alloc_req_2.is_jalr) begin
-          f_done_next[tail_idx_2] = 1'b0;
-        end else if (i_alloc_req_2.is_wfi || i_alloc_req_2.is_fence ||
-                     i_alloc_req_2.is_fence_i || i_alloc_req_2.is_mret) begin
-          f_done_next[tail_idx_2] = 1'b1;
-        end else begin
-          f_done_next[tail_idx_2] = 1'b0;
-        end
+      if (i_alloc_req_2.is_jal) begin
+        f_done_next[tail_idx_2] = 1'b1;
+      end else if (i_alloc_req_2.is_jalr) begin
+        f_done_next[tail_idx_2] = 1'b0;
+      end else if (i_alloc_req_2.is_wfi || i_alloc_req_2.is_fence ||
+                   i_alloc_req_2.is_fence_i || i_alloc_req_2.is_mret) begin
+        f_done_next[tail_idx_2] = 1'b1;
+      end else begin
+        f_done_next[tail_idx_2] = 1'b0;
       end
+    end
 
-      // ---------------------------------------------------------------------
-      // CDB Write (mark entry done with result)
-      // ---------------------------------------------------------------------
-      // A nonexceptional CDB completion preserves an allocation fault. An
-      // exceptional completion sets the bit and replaces the cause.
-      if (cdb_state_wr_en) begin
-        f_done_next[i_cdb_write.tag] = 1'b1;
-        if (i_cdb_write.exception) f_exception_next[i_cdb_write.tag] = 1'b1;
-      end
-      // The CDB lanes carry distinct tags, so these writes cannot collide.
-      if (cdb_state_wr_en_2) begin
-        f_done_next[i_cdb_write_2.tag] = 1'b1;
-        if (i_cdb_write_2.exception) f_exception_next[i_cdb_write_2.tag] = 1'b1;
-      end
+    // ---------------------------------------------------------------------
+    // CDB Write (mark entry done with result)
+    // ---------------------------------------------------------------------
+    // A nonexceptional CDB completion preserves an allocation fault. An
+    // exceptional completion sets the bit and replaces the cause.
+    if (cdb_state_wr_en) begin
+      f_done_next[i_cdb_write.tag] = 1'b1;
+      if (i_cdb_write.exception) f_exception_next[i_cdb_write.tag] = 1'b1;
+    end
+    // The CDB lanes carry distinct tags, so these writes cannot collide.
+    if (cdb_state_wr_en_2) begin
+      f_done_next[i_cdb_write_2.tag] = 1'b1;
+      if (i_cdb_write_2.exception) f_exception_next[i_cdb_write_2.tag] = 1'b1;
+    end
 
-      // ---------------------------------------------------------------------
-      // Direct store completion (mark plain store entry done)
-      // ---------------------------------------------------------------------
-      if (i_store_complete_valid && !i_flush_all && rob_valid[i_store_complete_tag]) begin
-        f_done_next[i_store_complete_tag] = 1'b1;
-      end
+    // ---------------------------------------------------------------------
+    // Direct store completion (mark plain store entry done)
+    // ---------------------------------------------------------------------
+    if (i_store_complete_valid && !i_flush_all && rob_valid[i_store_complete_tag]) begin
+      f_done_next[i_store_complete_tag] = 1'b1;
+    end
 
-      // ---------------------------------------------------------------------
-      // Branch Update (mark branch done)
-      // ---------------------------------------------------------------------
-      if (branch_wr_en) begin
-        f_done_next[i_branch_update.tag] = 1'b1;
-      end
+    // ---------------------------------------------------------------------
+    // Branch Update (mark branch done)
+    // ---------------------------------------------------------------------
+    if (branch_wr_en) begin
+      f_done_next[i_branch_update.tag] = 1'b1;
     end
   end
 
@@ -2082,7 +2080,7 @@ module reorder_buffer #(
     wire commit_clear = !i_flush_all &&
         ((commit_en && head_clear_mask[entry]) ||
          (commit_2_fire && head_next_clear_mask[entry]));
-    wire replay_without_alloc = i_rst_n && !cdb_clear && !flush_clear &&
+    wire replay_without_alloc = !cdb_clear && !flush_clear &&
         (rob_replay[entry] ||
          (i_replay_set_mask[entry] && rob_valid[entry] && !rob_exception[entry]));
     (* keep = "true" *) logic [3:0] replay_alloc_cases;
@@ -2099,43 +2097,39 @@ module reorder_buffer #(
     assign replay_next[entry] = replay_after_alloc && !commit_clear;
   end
   always_ff @(posedge i_clk) begin
-    rob_replay <= replay_next;
+    if (!i_rst_n) rob_replay <= '0;
+    else rob_replay <= replay_next;
   end
 
 `ifdef ROB_CONTROL_NEXT_LOCAL_PROOF
   logic [ReorderBufferDepth-1:0] f_replay_next;
   always_comb begin
-    f_replay_next = rob_replay;
-    if (!i_rst_n) begin
+    f_replay_next = rob_replay | (i_replay_set_mask & rob_valid & ~rob_exception);
+    if (cdb_state_wr_en && i_cdb_write.exception) f_replay_next[i_cdb_write.tag] = 1'b0;
+    if (cdb_state_wr_en_2 && i_cdb_write_2.exception) f_replay_next[i_cdb_write_2.tag] = 1'b0;
+    if (i_flush_all) begin
       f_replay_next = '0;
-    end else begin
-      f_replay_next = rob_replay | (i_replay_set_mask & rob_valid & ~rob_exception);
-      if (cdb_state_wr_en && i_cdb_write.exception) f_replay_next[i_cdb_write.tag] = 1'b0;
-      if (cdb_state_wr_en_2 && i_cdb_write_2.exception) f_replay_next[i_cdb_write_2.tag] = 1'b0;
-      if (i_flush_all) begin
+    end else if (i_flush_en) begin
+      if (flush_after_head_commit) begin
         f_replay_next = '0;
-      end else if (i_flush_en) begin
-        if (flush_after_head_commit) begin
-          f_replay_next = '0;
-        end else begin
-          for (int i = 0; i < ReorderBufferDepth; i++) begin
-            if (should_flush_entry(i[ReorderBufferTagWidth-1:0], i_flush_tag, head_idx)) begin
-              f_replay_next[i] = 1'b0;
-            end
+      end else begin
+        for (int i = 0; i < ReorderBufferDepth; i++) begin
+          if (should_flush_entry(i[ReorderBufferTagWidth-1:0], i_flush_tag, head_idx)) begin
+            f_replay_next[i] = 1'b0;
           end
         end
       end
-      if (alloc_en_valid) f_replay_next[tail_idx] = 1'b0;
-      if (alloc_en_2_valid) f_replay_next[tail_idx_2] = 1'b0;
-      if (commit_en && !i_flush_all) begin
-        for (int i = 0; i < ReorderBufferDepth; i++) begin
-          if (head_clear_mask[i]) f_replay_next[i] = 1'b0;
-        end
+    end
+    if (alloc_en_valid) f_replay_next[tail_idx] = 1'b0;
+    if (alloc_en_2_valid) f_replay_next[tail_idx_2] = 1'b0;
+    if (commit_en && !i_flush_all) begin
+      for (int i = 0; i < ReorderBufferDepth; i++) begin
+        if (head_clear_mask[i]) f_replay_next[i] = 1'b0;
       end
-      if (commit_2_fire && !i_flush_all) begin
-        for (int i = 0; i < ReorderBufferDepth; i++) begin
-          if (head_next_clear_mask[i]) f_replay_next[i] = 1'b0;
-        end
+    end
+    if (commit_2_fire && !i_flush_all) begin
+      for (int i = 0; i < ReorderBufferDepth; i++) begin
+        if (head_next_clear_mask[i]) f_replay_next[i] = 1'b0;
       end
     end
   end
@@ -2146,7 +2140,7 @@ module reorder_buffer #(
 `endif
 
   // Keep valid state separate for timing. Priority is flush clear, then
-  // allocation set, then commit clear; reset overrides all three.
+  // allocation set, then commit clear.
   logic [ReorderBufferDepth-1:0] valid_next;
   for (genvar entry = 0; entry < ReorderBufferDepth; entry++) begin : gen_valid_next
     wire alloc_here = tail_idx == ReorderBufferTagWidth'(entry);
@@ -2169,45 +2163,42 @@ module reorder_buffer #(
     assign valid_after_alloc = alloc_en_2_valid ?
         (alloc_en_valid ? valid_alloc_cases[3] : valid_alloc_cases[2]) :
         (alloc_en_valid ? valid_alloc_cases[1] : valid_alloc_cases[0]);
-    assign valid_next[entry] = i_rst_n && valid_after_alloc && !commit_clear;
+    assign valid_next[entry] = valid_after_alloc && !commit_clear;
   end
   always_ff @(posedge i_clk) begin
-    rob_valid <= valid_next;
+    if (!i_rst_n) rob_valid <= '0;
+    else rob_valid <= valid_next;
   end
 
 `ifdef ROB_CONTROL_NEXT_LOCAL_PROOF
   logic [ReorderBufferDepth-1:0] f_valid_next;
   always_comb begin
     f_valid_next = rob_valid;
-    if (!i_rst_n) begin
+    if (i_flush_all) begin
       f_valid_next = '0;
-    end else begin
-      if (i_flush_all) begin
+    end else if (i_flush_en) begin
+      if (flush_after_head_commit) begin
         f_valid_next = '0;
-      end else if (i_flush_en) begin
-        if (flush_after_head_commit) begin
-          f_valid_next = '0;
-        end else begin
-          for (int i = 0; i < ReorderBufferDepth; i++) begin
-            if (rob_valid[i] && should_flush_entry(
-                    i[ReorderBufferTagWidth-1:0], i_flush_tag, head_idx
-                )) begin
-              f_valid_next[i] = 1'b0;
-            end
+      end else begin
+        for (int i = 0; i < ReorderBufferDepth; i++) begin
+          if (rob_valid[i] && should_flush_entry(
+                  i[ReorderBufferTagWidth-1:0], i_flush_tag, head_idx
+              )) begin
+            f_valid_next[i] = 1'b0;
           end
         end
       end
-      if (alloc_en_valid) f_valid_next[tail_idx] = 1'b1;
-      if (alloc_en_2_valid) f_valid_next[tail_idx_2] = 1'b1;
-      if (commit_en && !i_flush_all) begin
-        for (int i = 0; i < ReorderBufferDepth; i++) begin
-          if (head_clear_mask[i]) f_valid_next[i] = 1'b0;
-        end
+    end
+    if (alloc_en_valid) f_valid_next[tail_idx] = 1'b1;
+    if (alloc_en_2_valid) f_valid_next[tail_idx_2] = 1'b1;
+    if (commit_en && !i_flush_all) begin
+      for (int i = 0; i < ReorderBufferDepth; i++) begin
+        if (head_clear_mask[i]) f_valid_next[i] = 1'b0;
       end
-      if (commit_2_fire && !i_flush_all) begin
-        for (int i = 0; i < ReorderBufferDepth; i++) begin
-          if (head_next_clear_mask[i]) f_valid_next[i] = 1'b0;
-        end
+    end
+    if (commit_2_fire && !i_flush_all) begin
+      for (int i = 0; i < ReorderBufferDepth; i++) begin
+        if (head_next_clear_mask[i]) f_valid_next[i] = 1'b0;
       end
     end
   end
@@ -3619,6 +3610,7 @@ module reorder_buffer #(
     // Reset properties (check state after reset deasserts)
     if (f_past_valid && i_rst_n && !$past(i_rst_n)) begin
       p_reset_clears_valid : assert (rob_valid == '0);
+      p_reset_clears_status : assert ({rob_done, rob_exception, rob_replay} == '0);
 
       p_reset_clears_ptrs : assert (head_ptr == '0 && tail_ptr == '0);
 

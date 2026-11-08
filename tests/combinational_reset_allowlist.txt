@@ -8,10 +8,6 @@ hw/rtl/cpu_and_mem/cpu/csr/csr_file.sv: o_m_topei_claim
 hw/rtl/cpu_and_mem/cpu/csr/csr_file.sv: o_s_ireg_we
 hw/rtl/cpu_and_mem/cpu/csr/csr_file.sv: o_s_topei_claim
 hw/rtl/cpu_and_mem/cpu/id_stage/id_stage.sv: if (i_pipeline_ctrl.reset)
-hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv: done_next[entry]
-hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv: exception_next[entry]
-hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv: replay_without_alloc
-hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv: valid_next[entry]
 hw/rtl/cpu_and_mem/debug/debug_module.sv: dm_rst
 hw/rtl/cpu_and_mem/debug/debug_module.sv: dmi_req_valid
 hw/rtl/cpu_and_mem/debug/debug_slice_writer.sv: o_req_ready
