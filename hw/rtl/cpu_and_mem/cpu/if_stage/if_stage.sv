@@ -109,8 +109,9 @@ module if_stage #(
     // access that may change translation) and its refetch target.
     input logic i_fence_i_flush,
     input logic [XLEN-1:0] i_fence_i_target,
-    // With i_fence_i_flush for FENCE.I, SFENCE.VMA and satp writes (not
-    // mstatus/sstatus): the code or address space may have changed, so the
+    // In the full-flush cycle of a FENCE.I, an SFENCE.VMA, a satp write (not
+    // mstatus/sstatus), a take between bare and Sv39 fetch, or a take into or
+    // within Debug Mode: the code or address space may have changed, so the
     // BTB's entries may describe instructions that are no longer there.
     input logic i_btb_invalidate,
     // Blocks BTB, RAS, and slot-2 predictions.

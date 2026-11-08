@@ -144,6 +144,19 @@ only if the entry was trained for an instruction of the same size. A JAL that
 misses both the BTB and the backing BTB mispredicts once; training at commit
 makes its next execution hit.
 
+BTB tags are fetch PCs, with no ASID or translation mode, and nothing
+corrects a taken hit on an instruction that is not control flow: PD and the
+branch unit check only branches and jumps. So the BTB clears every entry in
+the full-flush cycle of each event after which the code or the address space
+under an entry may differ: FENCE.I, SFENCE.VMA, a `satp` write, a trap, xRET
+or Debug Mode entry that switches fetch between bare (M-mode) and Sv39
+addresses, and every take into or within Debug Mode, since a go runs
+program-buffer and abstract-command words the debug module may have
+rewritten. The clear lasts four cycles, which drops training still in flight
+from the old code.
+`mstatus` and `sstatus` writes, and takes that stay on one side of that
+switch, keep the BTB.
+
 PD can change the direction fetch followed for a slot-1 conditional branch,
 and redirects a JAL or JALR that the BTB did not predict taken when the
 backing BTB holds it (see [Backing BTB](#backing-btb)).
