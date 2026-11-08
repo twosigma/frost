@@ -1327,11 +1327,12 @@ module branch_prediction_controller #(
   end
 
   // The slot-2 target relations equal direct compares of the targets
-  // pc_controller receives. The predictor's selected target and row return
-  // flag are its +4 or +2 candidate's (branch_predictor's selector checks).
+  // pc_controller receives. The predictor's selected target, row return flag
+  // and hit are its +4 or +2 candidate's (branch_predictor's selector checks).
   always_comb begin
     assume (btb_predicted_target_2 ==
             (slot2_pc_use_alt ? btb_predicted_target_2_plus4 : btb_predicted_target_2_plus2));
+    assume (btb_hit_2 == (slot2_pc_use_alt ? btb_hit_2_plus4 : btb_hit_2_plus2));
     assume (btb_entry_is_return_2 ==
             (slot2_pc_use_alt ? btb_entry_is_return_2_plus4 : btb_entry_is_return_2_plus2));
     p_slot2_staged_target_rel_matches_compares :
