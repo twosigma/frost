@@ -1,0 +1,35 @@
+{
+  "name": "vcu118_sync10i",
+  "description": "Memory benchmarks on a VCU118 FPGA build of FROST under Linux. An FPGA platform point: the L2 and the DDR4 controller run at 100 MHz, so absolute latencies are not ASIC figures.",
+  "board": "AMD VCU118 (XCVU9P)",
+  "build": {
+    "label": "sync10i",
+    "upstream_commit": "699b7068e8e8f192463ea9727266e0248f4c5fff",
+    "board_series": "VCU118 board target, DDR4 controller and Ethernet patches on upstream 699b7068",
+    "l0_cache_depth": 256,
+    "note": "Upstream 699b7068 precedes a2a3045c, so its load queue L0 has 256 entries; its L1D and home timing match ade0de67 cycle for cycle (c64467c4)."
+  },
+  "clocks_mhz": {
+    "cpu": 200.0,
+    "soc": 100.0,
+    "l2_home": 100.0,
+    "ddr_controller": 100.0
+  },
+  "measured": "2026-11-08",
+  "software": "Linux 6.12.113 (riscv64), single thread, buffers far larger than the L2",
+  "programs": {
+    "stream": "tools/bench/hpm/stream.c (sequential read, strided read, sequential write, dependent chase over a random cycle of 64-byte lines in 64 MiB), with user-mode HPM counter reads around each timed loop",
+    "membench": "tools/bench/membench.c (libc memcpy and memset over 128 MiB, a dependent chase over a 256 KiB ring of 64-byte lines)"
+  },
+  "raw_results": [
+    "tools/bench/results/20261108T090519Z_hpm_sync10i.txt",
+    "tools/bench/results/20261108T090552Z_stride_sync10i.txt",
+    "tools/bench/results/20261108T090143Z_sync10i_cpu200_soc100_drv0039.txt"
+  ],
+  "raw_results_repository": "the board-integration repository that holds the VCU118 target; the files are not part of FROST",
+  "model_configuration": "model_config.json",
+  "notes": [
+    "The model has no TLB or page walker. The dependent DRAM chase takes 0.54 DTLB misses per hop on the board, so the DDR latency fitted to it includes their walks and overstates the controller's latency.",
+    "memcpy and memset are libc routines; the model runs membench's unrolled int-copy and int-write bodies, which the board measures at 171.5 and 96.2 MB/s in the same run."
+  ]
+}

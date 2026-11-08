@@ -14,6 +14,7 @@ This directory provides a **fast, cycle-approximate architectural performance mo
 2. **RTL Cycle Correlation**:
    - CoreMark has an aggregate IPC comparison against RTL. The Tomasulo microarchitectural suite and DDR MLP stress test have validated event captures without model IPC comparisons.
    - CoreMark model IPC is **1.0045**, correlating within **+2.6%** of the hardware RTL's measured **0.9786 IPC** (239,452 cycles).
+   - A VCU118 board data set (`results/vcu118_sync10i/`) compares the memory path with sequential, strided, store and chase benchmarks measured on an FPGA build under Linux (section 13).
    - Accurately models FROST-specific microarchitectural structures: the 256-entry Load Queue direct-mapped L0 Data Cache (`lq_l0_cache.sv`) with 1-cycle combinational fast-path bypass, early load wakeup (`EARLY_LOAD_WAKEUP = 1`), and the single-channel 512-bit AXI memory system.
 
 3. **Modular SoC / Core Boundary**:
@@ -42,6 +43,7 @@ This directory provides a **fast, cycle-approximate architectural performance mo
 perf-modeling/
 ├── frost_perf_model.py          # Unified architectural model (CLI: run, memory-run, replay, explore, sweep, audit, selftest, report)
 ├── memory_workloads.py          # Address and dependency generators for the DDR benchmark kernels
+├── board_workloads.py           # Loop bodies of the board memory benchmarks behind a board data set
 ├── README.md                    # This document
 ├── docs/
 │   └── rtl_correlation_guide.md # Comprehensive guide for RTL correlation and trace capture
@@ -52,6 +54,7 @@ perf-modeling/
 ├── tools/
 │   ├── run_calibration.py       # Calibration tool: validates traces, compares metrics, generates calibration.json
 │   ├── refresh_baseline.py      # Recaptures CoreMark and rewrites the figures in ci_baseline.json
+│   ├── board_calibration.py     # Runs a board data set's benchmarks and records the model's residuals
 │   └── sweep_memory.py          # Sweeps cache resources and physical-channel service with explicit configurations
 ├── rtl/
 │   └── frost_perf_probe.sv      # Simulation-only Verilog event monitor mapping RTL handshakes to JSONL
@@ -81,11 +84,16 @@ perf-modeling/
     │   ├── tomasulo_perf_timed.jsonl         # 21 MB cycle-accurate JSONL execution trace
     │   ├── pipeline_counters.json
     │   └── calibration.json
-    └── ddr_mlp_test/                         # DDR memory-level parallelism stress test results
-        ├── manifest.json
-        ├── ddr_mlp_timed.jsonl               # 3.7 MB cycle-accurate JSONL execution trace
-        ├── pipeline_counters.json
-        └── calibration.json
+    ├── ddr_mlp_test/                         # DDR memory-level parallelism stress test results
+    │   ├── manifest.json
+    │   ├── ddr_mlp_timed.jsonl               # 3.7 MB cycle-accurate JSONL execution trace
+    │   ├── pipeline_counters.json
+    │   └── calibration.json
+    └── vcu118_sync10i/                       # VCU118 FPGA board memory benchmarks under Linux
+        ├── manifest.json                     # Board, build, clocks, programs and raw result files
+        ├── measurements.json                 # Measured figures with their raw result lines
+        ├── model_config.json                 # The platform's model configuration (--config-file form)
+        └── calibration.json                  # Model figures and residuals from tools/board_calibration.py
 ```
 
 ---
@@ -316,7 +324,7 @@ assumptions expressed in core cycles.
 | CPU / DDR AXI ID bits | 6 / 5 |
 | AXI outstanding transaction limit | 32 |
 
-`cpu_top` passes eight L2 fills (`L2_NUM_MSHR`) and a 512-entry L0 with Normal read caching; the model keeps four L2 miss slots and 256 L0 entries, and a configuration file states the RTL's values.
+`cpu_top` passes eight L2 fills (`L2_NUM_MSHR`) and a 512-entry L0 with Normal read caching; the model keeps four L2 miss slots and 256 L0 entries, and a configuration file states the RTL's values, as the board data set does for its fills.
 
 Caches reserve a victim way while a fill is pending. Same-line requests share a bounded miss record. The L1D and the L2 write a dirty victim back beside the replacement fill and hold its writeback slot until the lower level acknowledges it, as the L1D's frozen PutM slots and the home's detached victims do. Cache responses are pipelined at one per cycle after their configured latency.
 
@@ -399,3 +407,31 @@ CI captures the BRAM CoreMark timed region and compares its observed IPC with th
 
 The synthetic CoreMark's data starts cold in DDR, while the BRAM tier's loads never reach the coherent L1D. Each of the workload's L0 misses takes the L1D's one-at-a-time controller, so its length sets how far the cold start weighs against the loops' steady state: 1,200 operations ran at IPC 0.68 under the check's settings, and 3,600 run at 1.0045, 3.7% above the stored RTL figure.
 
+## 13. Board calibration data sets
+
+A board data set records benchmarks measured on hardware, with the platform's model configuration. `tools/board_calibration.py` runs each benchmark's loop body from `board_workloads.py`, starting with every cache full of unrelated lines (modified ones behind store streams), measures the steady state once the body's warm-up share has retired, and writes each figure, the model's, and their residual to the set's `calibration.json`. Points marked `fit` set a configuration latency and match by construction; `--fit` searches those latencies again, and `--set FIELD=JSON` overrides a configuration field for a sensitivity study.
+
+```bash
+python3 perf-modeling/tools/board_calibration.py \
+    --data-set perf-modeling/results/vcu118_sync10i \
+    --out perf-modeling/results/vcu118_sync10i/calibration.json
+```
+
+`results/vcu118_sync10i/` holds benchmarks measured on 2026-11-08 on a VCU118 FPGA build of upstream `699b7068` with the board series: CPU at 200 MHz, the SoC, L2 home and DDR4 controller at 100 MHz, under Linux. It is an FPGA platform point: the half-rate home and controller set its latencies, so its absolute figures are not ASIC figures. Its configuration states the RTL's eight home fills, doubles the home's tag stage and C-to-U interval for the half-rate home, and fits two latencies: `l2_data_cycles` (39) to the 256 KiB dependent chain and `ddr.latency_cycles` (148) to the dependent DRAM chase. The board takes 0.54 DTLB misses per chase hop and the model has no page walker, so that DDR latency includes the walks.
+
+| Benchmark | Board | Model | Residual | Role |
+|---|---:|---:|---:|---|
+| Sequential 8-byte read | 132.2 MB/s | 156.5 MB/s | +18.4% | prediction |
+| Strided read, 16 B | 209.4 MB/s | 272.6 MB/s | +30.2% | prediction |
+| Strided read, 32 B | 327.5 MB/s | 464.4 MB/s | +41.8% | prediction |
+| Strided read, 64 B | 518.1 MB/s | 524.2 MB/s | +1.2% | prediction |
+| Strided read, 128 B | 1108.0 MB/s | 868.2 MB/s | -21.6% | prediction |
+| Sequential 8-byte write | 97.7 MB/s | 104.0 MB/s | +6.4% | prediction |
+| memcpy (int-copy body) | 172.3 MB/s | 149.6 MB/s | -13.2% | prediction |
+| memset (int-write body) | 97.6 MB/s | 104.0 MB/s | +6.5% | prediction |
+| Dependent DRAM chase | 818.6 ns | 820.2 ns | +0.2% | fit |
+| 256 KiB dependent chain | 181.9 ns | 182.0 ns | +0.1% | fit |
+
+The L1D's one-at-a-time controller sets the rate of the sector-adjacent streams: a sequential sector takes a missing lookup, three loads that attach to its endpoint and look up again after the installation, the installation and look-ahead lookups. With a lookup every cycle instead, the model reads 249 MB/s sequentially and 397 MB/s at a 16-byte stride. For the same reason, two more look-ahead endpoints add 4% to sequential reads with the home's prefetcher on and 21% with it off, and an LQ of 16 adds nothing without a wider ROB.
+
+With the home's prefetcher on, the model reads the sector-adjacent streams 18% to 42% faster than the board; with it off, 16% to 30% slower. The model's prefetcher follows the RTL's agent, so the board's hides less latency for a reason the model omits. Candidates are the home's lookup bandwidth (one service engine at half the CPU clock takes demand requests, prefetch lookups, writebacks and completions in turn, while the model's L2 takes a lookup every CPU cycle), the prefetch pause beside the board's Ethernet DMA, the identity's GrantAck, C and U round trip across the clock boundary, the registered room flag, and the DDR4 controller's bank, refresh and turnaround timing. Strided reads at 128 bytes, which neither mechanism covers, depend on the endpoints' lifetime; a DDR latency near 105 cycles matches them and leaves the chase short by about 90 cycles for each page walk, but makes the store streams 30% to 37% faster than the board, a second open item.
