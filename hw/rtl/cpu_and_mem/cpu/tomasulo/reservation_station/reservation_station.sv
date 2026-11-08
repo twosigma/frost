@@ -1299,10 +1299,20 @@ module reservation_station #(
   logic [DEPTH-1:0] coherent_alloc1_target, coherent_alloc2_target;
   if (PREPARE_ISSUE_CONTROLS) begin : gen_coherent_allocation_targets
     (* keep = "true" *) logic [DEPTH-1:0] first_target, second_target;
+    // Entry 0 is the first target when it is free or no entry is free, and the
+    // second target when at most one entry is free. Reductions of the valid
+    // bits and nibble counts form both directly, so entry 0's next valid state
+    // does not wait on the other entries' search results.
+    logic at_most_one_free;
+    always_comb begin
+      at_most_one_free = &nib_all_valid;
+      for (int n = 0; n < AllocNibbles; n++)
+        at_most_one_free |= nib_one_free[n] & (&(nib_all_valid | AllocNibbles'(32'd1 << n)));
+    end
     assign first_target[DEPTH-1:1] = none_free_below[DEPTH-1:1];
-    assign first_target[0] = !(|none_free_below[DEPTH-1:1]);
+    assign first_target[0] = !rs_valid[0] || (&rs_valid[DEPTH-1:1]);
     assign second_target[DEPTH-1:1] = one_free_below[DEPTH-1:1];
-    assign second_target[0] = !(|one_free_below[DEPTH-1:1]);
+    assign second_target[0] = at_most_one_free;
     assign coherent_alloc1_target = first_target;
     assign coherent_alloc2_target = i_intent_1 ? second_target : first_target;
 `ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
