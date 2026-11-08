@@ -1850,23 +1850,31 @@ module load_queue #(
              ((push_prev_q && !holder_valid_prev_q[holder]) ?
               entry_push_match_q[sq_check_idx] : entry_holder_match_q[sq_check_idx][holder]));
     end
-`ifndef SYNTHESIS
-    // The registered match is exact for the L1D's holders, apart from the
-    // cycle an atomic starts or ends, where it holds instead.
+    // The registered match is exact for a staged load under the L1D's
+    // holders, apart from the cycle an atomic starts or ends, where it holds
+    // instead. Simulation and formal reads check it; a composed proof that
+    // reads this file for synthesis defines LQ_SECTOR_MATCH_PROOF to keep it.
+`ifdef LQ_SECTOR_MATCH_PROOF
+`define LQ_SECTOR_MATCH_CHECKS
+`elsif SYNTHESIS
+`else
+`define LQ_SECTOR_MATCH_CHECKS
+`endif
+`ifdef LQ_SECTOR_MATCH_CHECKS
 `ifdef FORMAL
     always_comb
 `else
     always @(posedge i_clk)
 `endif
-    if (sim_reset_seen_q && i_rst_n) begin
-      if (sq_check_entry_valid)
-        p_sector_entry_address :
-        assert (entry_sector[sq_check_idx] == sq_check_addr_q[SectorMsb:5] &&
-                entry_high_zero[sq_check_idx] == (sq_check_addr_q[XLEN-1:SectorMsb+1] == '0));
+    if (i_rst_n && sq_check_entry_valid) begin
+      p_sector_entry_address :
+      assert (entry_sector[sq_check_idx] == sq_check_addr_q[SectorMsb:5] &&
+              entry_high_zero[sq_check_idx] == (sq_check_addr_q[XLEN-1:SectorMsb+1] == '0));
       if (atomic_edge)
         p_sector_hold_covers : assert (coherent_sector_hold || !reference_sector_hold);
       else p_sector_hold_exact : assert (coherent_sector_hold == reference_sector_hold);
     end
+`undef LQ_SECTOR_MATCH_CHECKS
 `endif
   end else begin : gen_combinational_sector_match
     assign coherent_sector_hold = reference_sector_hold;
