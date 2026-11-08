@@ -116,7 +116,7 @@ module branch_predictor #(
     // virtual PC with no ASID, so a stale one can name a control-flow
     // instruction, a size or an instruction boundary the current code does
     // not have. Wins over a same-cycle update.
-    input logic            i_invalidate_all
+    input logic i_invalidate_all
 );
 
   // BTB parameters

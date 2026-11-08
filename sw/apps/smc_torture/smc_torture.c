@@ -58,18 +58,18 @@
 #define PATCHES 3
 
 enum kind {
-    K_ADDI,   /* addi a0, a0, imm           32 */
-    K_CADDI,  /* c.addi a0, imm             16 */
-    K_NOP,    /* addi x0, x0, 0             32 */
-    K_CNOP,   /* c.nop                      16 */
-    K_J,      /* jal x0, fwd                32 */
-    K_CJ,     /* c.j fwd                    16 */
-    K_BEQ,    /* beq x0, x0, fwd (taken)    32 */
-    K_BNE,    /* bne x0, x0, fwd (not taken) 32 */
-    K_CBEQZ,  /* c.beqz a5, fwd (taken)     16 */
-    K_CBNEZ,  /* c.bnez a5, fwd (not taken) 16 */
-    K_RET,    /* jalr x0, 0(ra)             32 */
-    K_CRET,   /* c.jr ra                    16 */
+    K_ADDI,  /* addi a0, a0, imm           32 */
+    K_CADDI, /* c.addi a0, imm             16 */
+    K_NOP,   /* addi x0, x0, 0             32 */
+    K_CNOP,  /* c.nop                      16 */
+    K_J,     /* jal x0, fwd                32 */
+    K_CJ,    /* c.j fwd                    16 */
+    K_BEQ,   /* beq x0, x0, fwd (taken)    32 */
+    K_BNE,   /* bne x0, x0, fwd (not taken) 32 */
+    K_CBEQZ, /* c.beqz a5, fwd (taken)     16 */
+    K_CBNEZ, /* c.bnez a5, fwd (not taken) 16 */
+    K_RET,   /* jalr x0, 0(ra)             32 */
+    K_CRET,  /* c.jr ra                    16 */
     K_COUNT
 };
 
@@ -217,8 +217,7 @@ static uint16_t enc_cj(int off)
     uint32_t u = (uint32_t) off;
     return (uint16_t) ((0x5u << 13) | (((u >> 11) & 1) << 12) | (((u >> 4) & 1) << 11) |
                        (((u >> 8) & 3) << 9) | (((u >> 10) & 1) << 8) | (((u >> 6) & 1) << 7) |
-                       (((u >> 7) & 1) << 6) | (((u >> 1) & 7) << 3) | (((u >> 5) & 1) << 2) |
-                       0x1);
+                       (((u >> 7) & 1) << 6) | (((u >> 1) & 7) << 3) | (((u >> 5) & 1) << 2) | 0x1);
 }
 
 static uint16_t enc_cb(int off, unsigned funct3)
@@ -252,8 +251,8 @@ static void emit(const struct func *f)
                 put32(code, off, ((imm & 0xfff) << 20) | (10u << 15) | (10u << 7) | 0x13);
                 break;
             case K_CADDI:
-                code[off / 2] = (uint16_t) ((((imm >> 5) & 1) << 12) | (10u << 7) |
-                                            ((imm & 0x1f) << 2) | 0x1);
+                code[off / 2] =
+                    (uint16_t) ((((imm >> 5) & 1) << 12) | (10u << 7) | ((imm & 0x1f) << 2) | 0x1);
                 break;
             case K_NOP:
                 put32(code, off, 0x00000013u);
@@ -325,8 +324,18 @@ static int failures;
 #ifdef SMC_VERBOSE
 static void dump(const char *what, unsigned round, const struct func *f)
 {
-    static const char *const names[K_COUNT] = {"addi", "c.addi", "nop", "c.nop", "j", "c.j",
-                                               "beq", "bne", "c.beqz", "c.bnez", "ret", "c.ret"};
+    static const char *const names[K_COUNT] = {"addi",
+                                               "c.addi",
+                                               "nop",
+                                               "c.nop",
+                                               "j",
+                                               "c.j",
+                                               "beq",
+                                               "bne",
+                                               "c.beqz",
+                                               "c.bnez",
+                                               "ret",
+                                               "c.ret"};
     uart_printf("round %u %s:", round, what);
     for (unsigned i = 1; i < f->n; i++) {
         const struct insn *x = &f->in[i];
@@ -357,8 +366,8 @@ static void run(const char *what, unsigned round, const struct func *f)
 #endif
         if (got != want) {
             if (failures < 8) {
-                uart_printf("FAIL: round %u %s call %ld got %ld want %ld\n", round, what, c, got,
-                            want);
+                uart_printf(
+                    "FAIL: round %u %s call %ld got %ld want %ld\n", round, what, c, got, want);
             }
             failures++;
         }

@@ -155,7 +155,7 @@ module c_ext_state #(
   assign effective_sideband_for_buffer = use_saved_values ? sideband_saved : i_instr_sideband;
   logic [1:0] effective_fault_for_buffer;
   assign effective_fault_for_buffer = use_saved_values ? fault_saved : i_instr_fault;
-  assign is_compressed_for_buffer = use_saved_values ? is_compressed_saved : i_is_compressed;
+  assign is_compressed_for_buffer   = use_saved_values ? is_compressed_saved : i_is_compressed;
   // The buffer word must be pc_reg's: the stall snapshot, or a live window
   // that covers pc_reg.
   logic buffer_word_is_pc_reg;

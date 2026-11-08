@@ -48,9 +48,11 @@
 #define INSN_ADDI_A0_1 0x00150513u /* addi a0, a0, 1 */
 #define INSN_RET 0x00008067u       /* jalr x0, 0(ra) */
 
-__attribute__((section(".ddr_bss"), aligned(64))) static volatile uint32_t ddr_code_buf[MAX_BODY_INSNS + 1];
+__attribute__((section(".ddr_bss"),
+               aligned(64))) static volatile uint32_t ddr_code_buf[MAX_BODY_INSNS + 1];
 __attribute__((section(".ddr_bss"), aligned(64))) static volatile uint32_t ddr_stub_buf[8];
-__attribute__((section(".ddr_bss"), aligned(64))) static volatile uint32_t ddr_dirty_buf[DIRTY_WORDS];
+__attribute__((section(".ddr_bss"),
+               aligned(64))) static volatile uint32_t ddr_dirty_buf[DIRTY_WORDS];
 
 /* Low-BRAM code cannot reach these with PC-relative addressing, so load their
  * addresses from absolute pointers (as crt0 does for .ddr_bss). */
@@ -86,8 +88,11 @@ static void stat_add(struct stat *s, uint64_t v)
 
 static void stat_print(const char *name, unsigned insns, const struct stat *s)
 {
-    uart_printf("RESULT %s insns=%u min=%llu mean=%llu\n", name, insns,
-                (unsigned long long) s->min, (unsigned long long) (s->sum / REPS));
+    uart_printf("RESULT %s insns=%u min=%llu mean=%llu\n",
+                name,
+                insns,
+                (unsigned long long) s->min,
+                (unsigned long long) (s->sum / REPS));
 }
 
 static inline void fence_i(void)

@@ -44,7 +44,8 @@
 #define INSN_RET 0x00008067u
 
 __attribute__((section(".ddr_bss"), aligned(64))) static volatile uint32_t ddr_code_buf[32];
-__attribute__((section(".ddr_bss"), aligned(64))) static volatile uint64_t ddr_evict_buf[EVICT_BYTES / 8];
+__attribute__((section(".ddr_bss"),
+               aligned(64))) static volatile uint64_t ddr_evict_buf[EVICT_BYTES / 8];
 
 /* Low-BRAM code cannot reach .ddr_bss PC-relatively; load the addresses. */
 static volatile uint32_t *volatile const ddr_code_p = ddr_code_buf;
@@ -97,8 +98,13 @@ static void check_calls(const char *mode, int evict, int it, long k)
         long got = fn(1000 * c);
         if (got != 1000 * c + k) {
             if (failures < 10) {
-                uart_printf("FAIL: %s evict=%d iter %d call %ld got %ld want %ld\n", mode, evict, it,
-                            c, got, 1000 * c + k);
+                uart_printf("FAIL: %s evict=%d iter %d call %ld got %ld want %ld\n",
+                            mode,
+                            evict,
+                            it,
+                            c,
+                            got,
+                            1000 * c + k);
             }
             failures++;
         }
