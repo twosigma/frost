@@ -124,10 +124,16 @@ module reorder_buffer #(
     output logic                              o_commit_2_valid_raw,
     output logic                              o_commit_2_store_like_raw,
 
-    // Slot-2 permission from cpu_ooo. It is low only during a debugger single
-    // step, so exactly one instruction retires before the halt.
+    // Slot-2 permission. cpu_ooo lowers it during a debugger single step, so
+    // exactly one instruction retires before the halt, and the Tomasulo
+    // wrapper lowers it while the ALU adapter holds head+1's result.
     input logic i_widen_commit_ok,
     input logic i_commit_hold,
+    // Entries whose result a CDB adapter still holds, one bit per entry,
+    // registered by the Tomasulo wrapper. At the head such an entry counts as
+    // not done and cannot use the CDB bypass, so a JALR, done from its branch
+    // update, does not retire while its link waits for the CDB.
+    input logic [riscv_pkg::ReorderBufferDepth-1:0] i_result_held,
 
     // =========================================================================
     // Store Queue Coordination
@@ -560,6 +566,14 @@ module reorder_buffer #(
   // !(is_branch|is_csr|is_fence|is_fence_i|is_wfi|is_mret): the head CDB
   // bypass exclusion set folded into one bit.
   logic [ReorderBufferDepth-1:0] rob_f_cdb_bypass_ok;
+  // The head reads (head_done, head_f_cdb_bypass_ok and the stored and bypass
+  // ready vectors) drop entries in i_result_held. Only a JALR is done while
+  // its result is held, from its branch update; a marked entry of any other
+  // class is not done, because the held result is its completion, so a mark
+  // never takes away a head the serializer owns. Head+1, storage and
+  // o_entry_done use the raw bits; the wrapper gates slot 2 itself.
+  logic [ReorderBufferDepth-1:0] rob_done_unheld;
+  logic [ReorderBufferDepth-1:0] rob_f_cdb_bypass_ok_unheld;
   // !(is_csr|is_fence|is_fence_i|is_wfi|is_mret|is_amo|is_lr|is_sc): the
   // static (allocation-known) part of the 2-wide commit hazard gates.
   logic [ReorderBufferDepth-1:0] rob_f_ok_2wide_static;
@@ -737,7 +751,9 @@ module reorder_buffer #(
   assign head_f_is_lr = onehot_read(rob_f_is_lr, head_clear_mask);
   assign head_f_perf_wait_int = onehot_read(rob_f_perf_wait_int, head_clear_mask);
   assign head_f_perf_wait_mem_load = onehot_read(rob_f_perf_wait_mem_load, head_clear_mask);
-  assign head_f_cdb_bypass_ok = onehot_read(rob_f_cdb_bypass_ok, head_clear_mask);
+  assign rob_done_unheld = rob_done & ~i_result_held;
+  assign rob_f_cdb_bypass_ok_unheld = rob_f_cdb_bypass_ok & ~i_result_held;
+  assign head_f_cdb_bypass_ok = onehot_read(rob_f_cdb_bypass_ok_unheld, head_clear_mask);
   assign head_f_ok_2wide_static = onehot_read(rob_f_ok_2wide_static, head_clear_mask);
   assign head_f_is_sret = onehot_read(rob_f_is_sret, head_clear_mask);
   assign head_f_is_dret = onehot_read(rob_f_is_dret, head_clear_mask);
@@ -787,7 +803,7 @@ module reorder_buffer #(
 
   // Read head fields using the registered one-hot pointer image.
   assign head_valid = onehot_read(rob_valid, head_clear_mask);
-  assign head_done = onehot_read(rob_done, head_clear_mask);
+  assign head_done = onehot_read(rob_done_unheld, head_clear_mask);
   // Execution faults, allocation faults and replay share rob_exception.
   // rob_replay selects ExcMemReplay as the cause.
   logic head_replay;
@@ -2346,8 +2362,8 @@ module reorder_buffer #(
   (* keep = "true" *) logic [ReorderBufferDepth-1:0] entry_bypass_ready;
   (* keep = "true" *) logic head_stored_ready;
   (* keep = "true" *) logic head_bypass_ready;
-  assign entry_stored_ready = rob_valid & rob_done & ~rob_exception;
-  assign entry_bypass_ready = rob_valid & rob_f_cdb_bypass_ok & ~rob_exception;
+  assign entry_stored_ready = rob_valid & rob_done_unheld & ~rob_exception;
+  assign entry_bypass_ready = rob_valid & rob_f_cdb_bypass_ok_unheld & ~rob_exception;
   assign head_stored_ready = onehot_read(entry_stored_ready, head_clear_mask);
   assign head_bypass_ready = onehot_read(entry_bypass_ready, head_clear_mask);
   assign commit_ready_early =
@@ -3155,9 +3171,10 @@ module reorder_buffer #(
   end
 
   // A CDB result for an invalid tag is stale, except for a late JALR link
-  // broadcast (filtered below). Producers must suppress squashed and duplicate
-  // results. Queue allocation is flush-gated, and the wrapper pops a memory
-  // result on grant, preventing duplicate LQ/SQ deliveries.
+  // broadcast (filtered below; in the CPU, i_result_held keeps a JALR from
+  // retiring before its link is granted). Producers must suppress squashed
+  // and duplicate results. Queue allocation is flush-gated, and the wrapper
+  // pops a memory result on grant, preventing duplicate LQ/SQ deliveries.
   //
   // A stale write has these effects:
   //   - State and cause writes require rob_valid. Nonexceptional completions
@@ -3219,6 +3236,31 @@ module reorder_buffer #(
     end
   end : g_shared_link_bank_check
 
+  // The held-result mask's contract, which the formal environment assumes: at
+  // most one entry, a marked entry is done only if it is an unexceptional
+  // branch (a JALR, done by its branch update), and no branch allocation has
+  // a serializing class.
+  always @(posedge i_clk) begin
+    if (dbg_mask_seen_reset && i_rst_n) begin
+      if (!$onehot0(i_result_held)) begin
+        $error("Reorder Buffer: i_result_held marks several entries (0x%08x)", i_result_held);
+      end
+      if (|(i_result_held & rob_valid & rob_done & ~(rob_f_is_branch & ~rob_exception))) begin
+        $error(
+            "Reorder Buffer: i_result_held marks a done entry other than a clean branch (0x%08x)",
+            i_result_held);
+      end
+      if ((i_alloc_req.alloc_valid && i_alloc_req.is_branch &&
+           (i_alloc_req.is_wfi || i_alloc_req.is_csr || i_alloc_req.is_fence ||
+            i_alloc_req.is_fence_i || i_alloc_req.is_mret)) ||
+          (i_alloc_req_2.alloc_valid && i_alloc_req_2.is_branch &&
+           (i_alloc_req_2.is_wfi || i_alloc_req_2.is_csr || i_alloc_req_2.is_fence ||
+            i_alloc_req_2.is_fence_i || i_alloc_req_2.is_mret))) begin
+        $error("Reorder Buffer: branch allocation with a serializing class");
+      end
+    end
+  end
+
   // Rate-limited diagnostics for stale writes to free entries, with cycles
   // since the last flush. These should be silent apart from the filter below.
   int unsigned dbg_cyc_since_flush;
@@ -3228,9 +3270,11 @@ module reorder_buffer #(
     else dbg_cyc_since_flush <= dbg_cyc_since_flush + 1;
   end
   // Treat tags committed in the last two cycles as late JALR broadcasts.
-  // JALR can commit from branch_update before its link wakeup reaches CDB.
-  // This filter checks only tags, so it also hides stray writes in that
-  // window. Allocation absorbs a write in the reallocation cycle.
+  // Without i_result_held a JALR can commit from branch_update before its
+  // link broadcast arrives. In the CPU the wrapper sets it until the link is
+  // granted, so the broadcast arrives by the commit cycle. This filter checks
+  // only tags, so it also hides stray writes in that window. Allocation
+  // absorbs a write in the reallocation cycle.
   logic [3:0] dbg_recent_commit_valid;
   logic [3:0][ReorderBufferTagWidth-1:0] dbg_recent_commit_tag;
   always @(posedge i_clk) begin
@@ -3408,6 +3452,19 @@ module reorder_buffer #(
         {i_alloc_req_2.is_wfi, i_alloc_req_2.is_csr, i_alloc_req_2.is_fence,
                       i_alloc_req_2.is_fence_i, i_alloc_req_2.is_mret}
     ));
+    // A branch or jump is no serializing class either.
+    assume (!(i_alloc_req.alloc_valid && i_alloc_req.is_branch &&
+              (i_alloc_req.is_wfi || i_alloc_req.is_csr || i_alloc_req.is_fence ||
+               i_alloc_req.is_fence_i || i_alloc_req.is_mret)));
+    assume (!(i_alloc_req_2.alloc_valid && i_alloc_req_2.is_branch &&
+              (i_alloc_req_2.is_wfi || i_alloc_req_2.is_csr || i_alloc_req_2.is_fence ||
+               i_alloc_req_2.is_fence_i || i_alloc_req_2.is_mret)));
+    // i_result_held marks the one entry whose result the ALU adapter holds
+    // and has not delivered, so only a JALR, an unexceptional branch done by
+    // its branch update, is done while marked. With the class assumption
+    // above, a mark never covers a head the serializer owns.
+    assume ($onehot0(i_result_held));
+    assume ((i_result_held & rob_valid & rob_done & ~(rob_f_is_branch & ~rob_exception)) == '0);
   end
 
   // Reference occupancy includes accepted allocations. Interface assumptions
@@ -3622,6 +3679,9 @@ module reorder_buffer #(
   // Cover properties
   // -------------------------------------------------------------------------
 
+  logic [ReorderBufferDepth-1:0] f_prev_result_held_q;
+  always @(posedge i_clk) f_prev_result_held_q <= i_result_held;
+
   always @(posedge i_clk) begin
     if (i_rst_n) begin
       cover_alloc_and_commit : cover (alloc_en && commit_en);
@@ -3638,6 +3698,13 @@ module reorder_buffer #(
       cover_csr_serialize : cover (serial_state == riscv_pkg::SERIAL_CSR_EXEC && i_csr_done);
 
       cover_translation_csr_drain : cover (serial_state == riscv_pkg::SERIAL_CSR_TRANSLATION_DRAIN);
+
+      // A done JALR at the head waits while its result is held, then retires
+      // the cycle after the mark clears.
+      cover_held_jalr_head :
+      cover (head_valid && head_is_jalr && rob_done[head_idx] && i_result_held[head_idx] &&
+             !head_ready);
+      cover_held_jalr_retires : cover (commit_en && head_is_jalr && f_prev_result_held_q[head_idx]);
 
       cover_wfi_wakeup : cover (serial_state == riscv_pkg::SERIAL_WFI_WAIT && i_interrupt_pending);
 

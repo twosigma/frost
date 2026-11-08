@@ -353,6 +353,7 @@ class ReorderBufferInterface:
         self.dut.i_fence_i_sync_done.value = 1
         self.dut.i_widen_commit_ok.value = 1
         self.dut.i_commit_hold.value = 0
+        self.dut.i_result_held.value = 0
         self.dut.i_csr_done.value = 0
         self.dut.i_trap_taken.value = 0
         self.dut.i_mret_done.value = 0

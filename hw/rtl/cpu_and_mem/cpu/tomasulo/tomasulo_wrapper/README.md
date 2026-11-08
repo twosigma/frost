@@ -205,17 +205,30 @@ A pending ALU adapter receives no input; simulation asserts this for both
 ALUs. A pending ALU2 adapter deasserts port 1's `fu_ready`. While the ALU
 adapter holds a result, port 0 keeps issuing only if the ALU2 adapter is idle,
 port 1 presents nothing that cycle, and port 0's stage 2 holds no JALR
-(`alu_result_via_alu2`); its result then passes through the ALU2 adapter,
-live or held there, while the older held result keeps the ALU slot and its
+(`alu_result_via_alu2`); its result then passes through the ALU2 adapter, live
+or held there, while the older held result keeps the ALU slot and its
 priority. Otherwise port 0's `fu_ready` is low. A JALR waits because its
 branch update marks it done before its link broadcast, which must not queue
-behind later port-0 results in the lower-priority ALU2 slot. As a result the
-ALU adapters never actually refill, their holding register can use the
-result's valid bit alone as its write enable
-(`ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`), and that register holds every valid ALU
-result for the CDB value restore above. The wrapper takes the JALR bit from
-the INT RS's `o_issue_is_jalr`, not from the issue packet, whose valid
+behind later port-0 results in the lower-priority ALU2 slot. Waiting also
+keeps every held JALR link in the ALU adapter, the one the held-result mask
+below covers. As a result the ALU adapters never actually refill, their
+holding register can use the result's valid bit alone as its write enable
+(`ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`), and that register holds every valid
+ALU result for the CDB value restore above. The wrapper takes the JALR bit
+from the INT RS's `o_issue_is_jalr`, not from the issue packet, whose valid
 depends on this ready.
+
+While the ALU adapter holds a result, the wrapper marks that entry in the
+ROB's `i_result_held`, a register with one bit per entry beside the adapter's
+pending bit, and the ROB does not count a marked head as done. While the
+adapter holds head+1's result, the wrapper keeps slot 2 from retiring
+(`i_widen_commit_ok`). Only a JALR, done on its branch update, can be done
+while its result is held; the
+[tag-reuse rule](../README.md#cdb-priority-and-tag-reuse) explains why it must
+wait. The mask joins the per-entry done bits rather than cpu_ooo's commit
+hold, which arrives late in the cycle. Simulation checks that no entry retires
+while either ALU adapter holds its result, and that the mask matches the
+adapter; formal checks both for the ALU adapter.
 
 Test inputs `i_fu_complete_0` to `i_fu_complete_7` feed the same slots in any
 cycle the slot's adapter presents nothing (always, for slots 5 and 6).
