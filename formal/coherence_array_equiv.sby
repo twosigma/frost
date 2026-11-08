@@ -16,6 +16,8 @@ bmc: mode bmc
 cover: mode cover
 ~uram: depth 30
 uram: depth 40
+# Four-way frames take about 1.4 times longer than the one before.
+four: depth 24
 timeout 1800
 bmc: aigsmt boolector
 
