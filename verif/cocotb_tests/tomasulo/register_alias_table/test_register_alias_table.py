@@ -615,6 +615,29 @@ async def test_checkpoint_restore_ras_state(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_single_cycle_reset_clears_checkpoints_during_a_save(dut: Any) -> None:
+    """One reset cycle frees every checkpoint, even with a save on the same edge."""
+    dut_if, _ = await setup_test(dut)
+    await dut_if.checkpoint_save(checkpoint_id=0, branch_tag=5)
+    await dut_if.checkpoint_save(checkpoint_id=1, branch_tag=6)
+    await RisingEdge(dut_if.clock)
+    assert dut_if.checkpoint_alloc_id == 2
+
+    await dut_if.wait_falling()
+    dut_if.drive_checkpoint_save(checkpoint_id=2, branch_tag=7)
+    dut_if.reset_n.value = 0
+    await dut_if.wait_rising()
+    await dut_if.wait_falling()
+    dut_if.reset_n.value = 1
+    dut_if.clear_checkpoint_save()
+    await dut_if.step()
+
+    assert int(dut.checkpoint_valid.value) == 0
+    assert dut_if.checkpoint_available
+    assert dut_if.checkpoint_alloc_id == 0
+
+
+@cocotb.test()
 async def test_checkpoint_free(dut: Any) -> None:
     """Freeing a checkpoint makes its slot available again."""
     cocotb.log.info("=== Test: Checkpoint Free ===")

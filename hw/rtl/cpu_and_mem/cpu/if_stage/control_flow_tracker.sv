@@ -100,19 +100,21 @@ module control_flow_tracker #(
   assign holdoff_without_predictions = control_flow_without_predictions ||
       (control_flow_holdoff_q && fetch_stall);
   assign reset_holdoff_without_predictions = fetch_stall || control_flow_without_predictions;
-  assign control_flow_holdoff_next = !i_reset &&
-      (i_prediction_used || i_slot2_prediction_used || holdoff_without_predictions);
-  assign reset_holdoff_next = i_reset || (o_reset_holdoff &&
-      (i_prediction_used || i_slot2_prediction_used || reset_holdoff_without_predictions));
+  assign control_flow_holdoff_next =
+      i_prediction_used || i_slot2_prediction_used || holdoff_without_predictions;
+  assign reset_holdoff_next = o_reset_holdoff &&
+      (i_prediction_used || i_slot2_prediction_used || reset_holdoff_without_predictions);
 
   always_ff @(posedge i_clk) begin
     // Redirects are captured even during a stall, so back-pressure cannot
     // skip the stale-response suppression cycle.
-    control_flow_holdoff_q <= control_flow_holdoff_next;
-    o_reset_holdoff <= reset_holdoff_next;
     if (i_reset) begin
+      control_flow_holdoff_q <= 1'b0;
+      o_reset_holdoff <= 1'b1;
       fence_i_fetch_holdoff_q <= 1'b0;
     end else begin
+      control_flow_holdoff_q <= control_flow_holdoff_next;
+      o_reset_holdoff <= reset_holdoff_next;
       fence_i_fetch_holdoff_q <= i_fence_i_flush || (fence_i_fetch_holdoff_q && fetch_stall);
     end
   end
@@ -121,9 +123,8 @@ module control_flow_tracker #(
   // Check equivalent transitions for arbitrary state and simultaneous inputs.
   always_comb begin
     assert (control_flow_holdoff_next ==
-        (!i_reset && (control_flow_change || (control_flow_holdoff_q && fetch_stall))));
-    assert (reset_holdoff_next ==
-        (i_reset || (o_reset_holdoff && (fetch_stall || control_flow_change))));
+        (control_flow_change || (control_flow_holdoff_q && fetch_stall)));
+    assert (reset_holdoff_next == (o_reset_holdoff && (fetch_stall || control_flow_change)));
   end
 `endif
 
@@ -150,12 +151,12 @@ module control_flow_tracker #(
     (i_slot2_prediction_used && i_slot2_predicted_target[1]);
 
   // o_control_flow_to_halfword_r next state:
-  //   !i_reset && (o_control_flow_to_halfword ||
-  //                (o_control_flow_to_halfword_r && fetch_stall && !control_flow_change))
+  //   o_control_flow_to_halfword ||
+  //   (o_control_flow_to_halfword_r && fetch_stall && !control_flow_change)
   // Compute all four prediction cases before selecting. A prediction is a
   // control-flow change, so only the no-prediction case can hold the old
   // value. Simultaneous sources OR their target bits; no exclusivity is
-  // assumed. Reset clears every case.
+  // assumed.
   logic halfword_without_predictions;
   (* keep = "true" *) logic [3:0] halfword_next_by_prediction;
 
@@ -165,20 +166,20 @@ module control_flow_tracker #(
     (i_branch_taken && i_branch_target[1]) ||
     ((i_trap_taken || i_mret_taken) && i_trap_target[1]) ||
     (i_pd_redirect && i_pd_redirect_target[1]);
-  assign halfword_next_by_prediction[0] = !i_reset &&
-    (halfword_without_predictions ||
-     (o_control_flow_to_halfword_r && fetch_stall && !control_flow_without_predictions));
-  assign halfword_next_by_prediction[1] = !i_reset &&
-    (halfword_without_predictions || i_predicted_target[1]);
-  assign halfword_next_by_prediction[2] = !i_reset &&
-    (halfword_without_predictions || i_slot2_predicted_target[1]);
-  assign halfword_next_by_prediction[3] = !i_reset &&
-    (halfword_without_predictions || i_predicted_target[1] || i_slot2_predicted_target[1]);
+  assign halfword_next_by_prediction[0] = halfword_without_predictions ||
+    (o_control_flow_to_halfword_r && fetch_stall && !control_flow_without_predictions);
+  assign halfword_next_by_prediction[1] = halfword_without_predictions || i_predicted_target[1];
+  assign halfword_next_by_prediction[2] =
+    halfword_without_predictions || i_slot2_predicted_target[1];
+  assign halfword_next_by_prediction[3] =
+    halfword_without_predictions || i_predicted_target[1] || i_slot2_predicted_target[1];
 
   always_ff @(posedge i_clk) begin
-    o_control_flow_to_halfword_r <= i_slot2_prediction_used ?
-      (i_prediction_used ? halfword_next_by_prediction[3] : halfword_next_by_prediction[2]) :
-      (i_prediction_used ? halfword_next_by_prediction[1] : halfword_next_by_prediction[0]);
+    if (i_reset) o_control_flow_to_halfword_r <= 1'b0;
+    else
+      o_control_flow_to_halfword_r <= i_slot2_prediction_used ?
+        (i_prediction_used ? halfword_next_by_prediction[3] : halfword_next_by_prediction[2]) :
+        (i_prediction_used ? halfword_next_by_prediction[1] : halfword_next_by_prediction[0]);
   end
 
 endmodule : control_flow_tracker

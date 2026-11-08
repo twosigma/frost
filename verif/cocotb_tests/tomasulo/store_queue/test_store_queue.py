@@ -216,6 +216,55 @@ async def test_reset_state(dut: Any) -> None:
     assert not dut_if.read_mem_write().en, "No memory write after reset"
 
 
+@cocotb.test()
+async def test_single_cycle_reset_during_traffic(dut: Any) -> None:
+    """One reset cycle drops stores at every stage and leaves the SQ usable.
+
+    Reset lands with a committed store draining, a data capture for an entry
+    and a commit on the same edge. No write survives, and the committed-empty
+    copies read high from the first cycle after reset.
+    """
+    dut_if, model = await setup(dut)
+    dut_if.drive_rob_head_tag(0)
+    await alloc_addr_data(dut_if, model, 0, 0x1000, 0x1111_1111)
+    await alloc_addr_data(dut_if, model, 1, 0x2000, 0x2222_2222)
+    dut_if.drive_alloc(2, size=MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.drive_addr_update(2, 0x3000)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.drive_commit(0)
+    await dut_if.step()
+    dut_if.clear_commit()
+
+    dut_if.drive_data_update(2, 0x3333_3333)
+    dut_if.drive_commit(1)
+    dut.i_rst_n.value = 0
+    await dut_if.step()
+    dut.i_rst_n.value = 1
+    dut_if.clear_data_update()
+    dut_if.clear_commit()
+
+    await Timer(1, unit="ns")
+    assert bool(dut.committed_empty_q.value)
+    assert bool(dut.committed_empty_rob_q.value)
+    assert bool(dut.committed_empty_trap_q.value)
+    assert bool(dut.committed_empty_lq_q.value)
+    for _ in range(4):
+        await Timer(1, unit="ns")
+        assert dut_if.empty and dut_if.count == 0
+        assert dut_if.committed_empty
+        assert not dut_if.read_mem_write().en
+        await dut_if.step()
+
+    fresh = SQModel()
+    await alloc_addr_data(dut_if, fresh, 3, 0x4000, 0x4444_4444)
+    write_req = await commit_and_write(dut_if, fresh, rob_tag=3)
+    assert write_req.addr == 0x4000
+    assert write_req.data == wbeat(0x4444_4444)
+
+
 # ============================================================================
 # Allocate single entry
 # ============================================================================

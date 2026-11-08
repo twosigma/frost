@@ -42,7 +42,7 @@ module slot2_prediction_capture #(
     if (i_stall && !i_stall_registered) o_payload <= i_payload;
   end
 
-  assign o_request  = valid_q && i_replay && !i_reset && !i_kill && !i_disable;
+  assign o_request  = valid_q && i_replay && !i_kill && !i_disable;
   assign o_consumed = o_request && !i_stall;
 
 `ifdef FORMAL
@@ -63,7 +63,7 @@ module slot2_prediction_capture #(
         assert (o_payload == $past(i_payload));
         else assert (o_payload == $past(o_payload));
 
-      assert (!o_request || (valid_q && i_replay && !i_reset && !i_kill && !i_disable));
+      assert (!o_request || (valid_q && i_replay && !i_kill && !i_disable));
       assert (!o_consumed || (o_request && !i_stall));
       cover (o_consumed && $past(i_stall && i_stall_registered));
       cover (valid_q && i_kill && i_replay && !o_request);

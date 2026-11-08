@@ -761,26 +761,23 @@ module fetch_provider #(
   always_comb begin
     for (int p = 0; p < 2; p++) begin
       resp_for_slot[p] = i_line_resp_valid && (resp_slot == 1'(p));
-      if (i_rst) begin
-        fill_busy_next[p]    = 1'b0;
-        fill_discard_next[p] = 1'b0;
-      end else begin
-        fill_busy_next[p] = fill_busy_q[p] ? !resp_for_slot[p] : want_fill[p];
-        fill_discard_next[p] = (fill_busy_q[p] && resp_for_slot[p]) ? 1'b0 :
-            (fill_discard_q[p] || (i_invalidate && fill_busy_q[p]));
-      end
+      fill_busy_next[p] = fill_busy_q[p] ? !resp_for_slot[p] : want_fill[p];
+      fill_discard_next[p] = (fill_busy_q[p] && resp_for_slot[p]) ? 1'b0 :
+          (fill_discard_q[p] || (i_invalidate && fill_busy_q[p]));
     end
   end
 
   always_ff @(posedge i_clk) begin
-    fill_busy_q    <= fill_busy_next;
-    fill_discard_q <= fill_discard_next;
     if (i_rst) begin
+      fill_busy_q     <= '0;
+      fill_discard_q  <= '0;
       fill_sent_q     <= '0;
       slot_error_q    <= '0;
       slot_valid_q[0] <= 1'b0;
       slot_valid_q[1] <= 1'b0;
     end else begin
+      fill_busy_q    <= fill_busy_next;
+      fill_discard_q <= fill_discard_next;
       if (i_invalidate) begin
         slot_valid_q[0] <= 1'b0;
         slot_valid_q[1] <= 1'b0;
@@ -825,14 +822,20 @@ module fetch_provider #(
   (* dont_touch = "true" *)logic [1:0][SlotGroups-1:0] grp_discard_q;
   logic [1:0][SlotGroups-1:0] grp_install;
   always_ff @(posedge i_clk) begin
-    for (int p = 0; p < 2; p++) begin
-      grp_busy_q[p]    <= {SlotGroups{fill_busy_next[p]}};
-      grp_discard_q[p] <= {SlotGroups{fill_discard_next[p]}};
+    if (i_rst) begin
+      grp_busy_q    <= '0;
+      grp_discard_q <= '0;
+    end else begin
+      for (int p = 0; p < 2; p++) begin
+        grp_busy_q[p]    <= {SlotGroups{fill_busy_next[p]}};
+        grp_discard_q[p] <= {SlotGroups{fill_discard_next[p]}};
+      end
     end
   end
   always_comb begin
     for (int p = 0; p < 2; p++) begin
       for (int g = 0; g < SlotGroups; g++) begin
+        // The payload registers and direct arrays have no reset.
         grp_install[p][g] = !i_rst && (copy_now[p] ||
             (grp_busy_q[p][g] && resp_for_slot[p] && !grp_discard_q[p][g] && !i_invalidate));
       end

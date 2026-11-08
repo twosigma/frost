@@ -79,9 +79,8 @@ module frost_hart #(
     output logic [1:0] o_debug_commit_valid,
 
     // Fatal stop. i_fatal_error is the tile's sticky fatal indication, and
-    // i_fatal_stop adds the failures reported in this cycle, the hart's own
-    // and the shared level's. The hart reports its caches' and its uncached
-    // adapter's failures separately.
+    // i_fatal_stop is a copy of it for the CPU and the L1D. The hart reports
+    // its caches' and its uncached adapter's failures separately.
     input logic i_fatal_error,
     input logic i_fatal_stop,
     output logic o_cache_fatal,
@@ -823,7 +822,9 @@ module frost_hart #(
       .i_read_resp_ready(uncached_read_ready),
       .o_read_data(uncached_read_data),
       .o_read_status(uncached_read_status),
-      .i_write_enable((|uncached_write_strb) && !i_fatal_error),
+      // The adapter stops taking writes on its own failure, a cycle ahead of the
+      // latched flag.
+      .i_write_enable((|uncached_write_strb) && !i_fatal_error && !o_uncached_fatal),
       .o_write_ready(),
       .i_write_addr(data_memory_address),
       .i_write_size(uncached_write_size),

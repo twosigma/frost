@@ -218,7 +218,7 @@ module if_stage #(
     input logic i_tage_train_taken,
     input logic i_tage_train_mispredicted,
     output logic o_tage_hist_push,
-    output logic [4:0] o_tage_hist_restore_arm,
+    output logic [4:1] o_tage_hist_restore_arm,
     // The fetch PC's [3:2], which a history push shifts in.
     output logic [riscv_pkg::TagePathBits-1:0] o_tage_fetch_path_bits,
     output logic [1:0] o_tage_slot_valid,  // bit s: slot s + 1
@@ -275,6 +275,7 @@ module if_stage #(
   logic slot2_prediction_used_for_pc_live;
   logic slot2_prediction_used_for_fetch_mux_live;
   logic slot2_staged_prediction_used_for_pc_live;
+  logic slot2_staged_prediction_used_for_capture;
   logic [XLEN-1:0] slot2_predicted_target_for_pc_live;
   logic [XLEN-1:0] slot2_staged_predicted_target_live;
   riscv_pkg::pc_pending_rel_t slot2_staged_target_rel_pending_live;
@@ -815,6 +816,7 @@ module if_stage #(
       .o_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc_live),
       .o_slot2_prediction_used_for_fetch_mux(slot2_prediction_used_for_fetch_mux_live),
       .o_slot2_staged_prediction_used_for_pc(slot2_staged_prediction_used_for_pc_live),
+      .o_slot2_staged_prediction_used_for_capture(slot2_staged_prediction_used_for_capture),
       .o_slot1_aliases_slot2_candidate(slot1_aliases_slot2_candidate),
       .o_slot2_live_target_used_for_pc_cofactor(slot2_live_target_used_for_pc_cofactor),
       .o_slot2_predicted_taken(slot2_predicted_taken),
@@ -2839,7 +2841,7 @@ module if_stage #(
       .i_disable(i_disable_branch_prediction || any_holdoff_safe ||
                  prediction_holdoff || pending_prediction_holdoff_wcs0 ||
                  window_cannot_serve_pc_reg),
-      .i_candidate(slot2_staged_prediction_used_for_pc_live),
+      .i_candidate(slot2_staged_prediction_used_for_capture),
       .i_payload({
         slot2_predicted_target,
         slot2_predicted_is_call,
@@ -2964,19 +2966,24 @@ module if_stage #(
   // delivery and kill events aligned and leaves free-running counts intact.
   riscv_pkg::if_width_events_t width_events_q;
   always_ff @(posedge i_clk) begin
-    width_events_q.deliver1 <= width_deliver1;
-    width_events_q.deliver2 <= width_deliver2;
-    width_events_q.kill_s1_native_ctrl <= width_slot2_killed && slot2_kill_causes_effective[0];
-    width_events_q.kill_s1_native_serialize <= width_slot2_killed && slot2_kill_causes_effective[1];
-    width_events_q.kill_slot1_ctrl <= width_slot2_killed && slot2_kill_causes_effective[2];
-    width_events_q.kill_class <= width_slot2_killed && slot2_kill_causes_effective[3];
-    width_events_q.kill_window_limit <= width_slot2_killed && slot2_kill_causes_effective[4];
-    width_events_q.kill_transient <= width_slot2_killed && slot2_kill_causes_effective[5];
-    // Slot-2 BTB predicted-taken accepted (already !stall-qualified inside
-    // branch_prediction_controller, so it pulses once per event).  Each
-    // occurrence costs one fetch bubble, which slot2_redirect_q marks on the
-    // following cycle.
-    width_events_q.slot2_pred_taken <= slot2_prediction_used;
+    if (i_pipeline_ctrl.reset) begin
+      width_events_q <= '0;
+    end else begin
+      width_events_q.deliver1 <= width_deliver1;
+      width_events_q.deliver2 <= width_deliver2;
+      width_events_q.kill_s1_native_ctrl <= width_slot2_killed && slot2_kill_causes_effective[0];
+      width_events_q.kill_s1_native_serialize <= width_slot2_killed &&
+                                                 slot2_kill_causes_effective[1];
+      width_events_q.kill_slot1_ctrl <= width_slot2_killed && slot2_kill_causes_effective[2];
+      width_events_q.kill_class <= width_slot2_killed && slot2_kill_causes_effective[3];
+      width_events_q.kill_window_limit <= width_slot2_killed && slot2_kill_causes_effective[4];
+      width_events_q.kill_transient <= width_slot2_killed && slot2_kill_causes_effective[5];
+      // Slot-2 BTB predicted-taken accepted (already !stall-qualified inside
+      // branch_prediction_controller, so it pulses once per event).  Each
+      // occurrence costs one fetch bubble, which slot2_redirect_q marks on the
+      // following cycle.
+      width_events_q.slot2_pred_taken <= slot2_prediction_used;
+    end
   end
   assign o_width_events = width_events_q;
 

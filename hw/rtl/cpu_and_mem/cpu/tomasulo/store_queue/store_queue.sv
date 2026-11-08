@@ -315,9 +315,9 @@ module store_queue #(
   always_comb begin
     sq_data_we     = 1'b0;
     sq_data_wr_idx = '0;
-    // A full flush clears entry validity on this edge, so a coincident payload
-    // write remains hidden. Omit the flush gate for timing.
-    if (i_data_update_capture_valid && i_rst_n) begin
+    // Reset and a full flush clear entry validity on this edge, so a
+    // coincident payload write remains hidden.
+    if (i_data_update_capture_valid) begin
       for (int i = 0; i < DEPTH; i++) begin
         if (sq_valid[i] && !sq_data_valid[i] && sq_rob_tag[i] == i_data_update.rob_tag) begin
           sq_data_we     = 1'b1;
@@ -590,29 +590,37 @@ module store_queue #(
   (* keep = "true" *)logic no_registered_committed_work;
   logic committed_empty_next;
   assign no_registered_committed_work = !any_committed && !i_commit_valid && !i_commit_valid_2;
-  assign committed_empty_next = !i_rst_n || i_flush_all ||
+  assign committed_empty_next = i_flush_all ||
       (no_registered_committed_work && !i_commit_valid_comb && !i_commit_valid_comb_2);
   // Identical copies of committed_empty_q for fanout. Preserve separate flops.
   (* dont_touch = "true" *)logic committed_empty_rob_q;
   (* dont_touch = "true" *)logic committed_empty_trap_q;
   (* dont_touch = "true" *)logic committed_empty_lq_q;
   always_ff @(posedge i_clk) begin
-    committed_empty_q      <= committed_empty_next;
-    committed_empty_rob_q  <= committed_empty_next;
-    committed_empty_trap_q <= committed_empty_next;
-    committed_empty_lq_q   <= committed_empty_next;
+    if (!i_rst_n) begin
+      committed_empty_q      <= 1'b1;
+      committed_empty_rob_q  <= 1'b1;
+      committed_empty_trap_q <= 1'b1;
+      committed_empty_lq_q   <= 1'b1;
+    end else begin
+      committed_empty_q      <= committed_empty_next;
+      committed_empty_rob_q  <= committed_empty_next;
+      committed_empty_trap_q <= committed_empty_next;
+      committed_empty_lq_q   <= committed_empty_next;
+    end
   end
 
 `ifdef SQ_COMMITTED_EMPTY_LOCAL_PROOF
   always_comb begin
-    assert (committed_empty_next == ((!i_rst_n || i_flush_all) ? 1'b1 :
+    assert (committed_empty_next == (i_flush_all ? 1'b1 :
         (!any_committed && !i_commit_valid && !i_commit_valid_2 &&
          !i_commit_valid_comb && !i_commit_valid_comb_2)));
   end
 `endif
 
 `ifndef SYNTHESIS
-  // Every copy takes committed_empty_next, so they agree from the first edge.
+  // Every copy takes the same reset and next state, so they agree from the
+  // first edge.
   logic committed_empty_copies_armed_q = 1'b0;
   always_ff @(posedge i_clk) begin
     committed_empty_copies_armed_q <= 1'b1;
@@ -1852,6 +1860,9 @@ module store_queue #(
     if (f_past_valid && i_rst_n && !$past(i_rst_n)) begin
       p_reset_empty : assert (o_empty);
       p_reset_count_zero : assert (o_count == '0);
+      p_reset_committed_empty :
+      assert (&{committed_empty_q, committed_empty_rob_q, committed_empty_trap_q,
+                committed_empty_lq_q});
     end
   end
 

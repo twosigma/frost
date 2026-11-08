@@ -436,6 +436,7 @@ module id_stage #(
   function automatic riscv_pkg::from_id_to_ex_t id_next_for(input logic advance);
     riscv_pkg::from_id_to_ex_t n;
     n = o_from_id_to_ex;
+    // The decoded queue's shadow copies have no reset and take the NOP from here.
     if (i_pipeline_ctrl.reset) begin
       n.instruction = riscv_pkg::NOP;
       n.is_compressed = 1'b0;
@@ -881,6 +882,7 @@ module id_stage #(
   function automatic riscv_pkg::from_id_to_ex_t id_next_2_for(input logic advance);
     riscv_pkg::from_id_to_ex_t n;
     n = o_from_id_to_ex_2;
+    // The decoded queue's shadow copies have no reset and take the NOP from here.
     if (i_pipeline_ctrl.reset) begin
       n.instruction = riscv_pkg::NOP;
       n.is_compressed = 1'b0;

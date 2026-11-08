@@ -231,6 +231,28 @@ async def test_prediction_reset_preserves_low_compressed_buffer_once(dut: Any) -
 
 
 @cocotb.test()
+async def test_single_cycle_reset_clears_the_buffer_over_a_capture(dut: Any) -> None:
+    """One reset cycle clears an armed buffer, even with a capture on its edge."""
+    await _setup_test(dut)
+
+    _drive_instruction(dut, compressed=True, pc_reg=PC_LO)
+    await _advance_cycle(dut)
+    assert dut.o_prev_was_compressed_at_lo.value
+
+    dut.i_prediction_reset_state.value = 1
+    dut.i_reset.value = 1
+    await _advance_cycle(dut)
+    dut.i_reset.value = 0
+    dut.i_prediction_reset_state.value = 0
+    await _settle()
+    assert not dut.o_prev_was_compressed_at_lo.value
+    assert not dut.o_saved_values_valid.value
+
+    await _advance_cycle(dut)
+    assert dut.o_prev_was_compressed_at_lo.value
+
+
+@cocotb.test()
 async def test_pending_prediction_target_holdoff_preserves_needed_buffer(
     dut: Any,
 ) -> None:

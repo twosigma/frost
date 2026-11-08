@@ -1503,6 +1503,7 @@ module tomasulo_wrapper #(
   // ===========================================================================
   riscv_pkg::fu_complete_t lq_fu_complete;  // LQ -> adapter
   logic lq_fu_complete_staged;  // registered LQ CDB-stage occupancy, flush-free
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] lq_fu_complete_tag_next;
   // mem_adapter_to_arbiter declared above (forward declaration)
   logic mem_adapter_result_pending;
   logic lq_result_accepted;
@@ -2609,7 +2610,9 @@ module tomasulo_wrapper #(
   assign int_rs_cdb_0 = EARLY_LOAD_WAKEUP ? int_rs_wakeup_0 : cdb_bus_int_rs_qualified;
   assign int_rs_cdb_1 = EARLY_LOAD_WAKEUP ? int_rs_wakeup_1 : cdb_bus_2_int_rs_qualified;
   // CDB valid/tag copies for INT_RS issue compares, for fanout. They sample
-  // the same edge as the INT-local packets; values are not duplicated.
+  // the same edge as the INT-local packets; values are not duplicated. Each
+  // tag register already holds its lane's tag after the early-load merge, so
+  // the compares start at a flop. A lane's tag is meaningful while it is valid.
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
   logic                                        int_rs_issue_cdb_valid;
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
@@ -2632,9 +2635,15 @@ module tomasulo_wrapper #(
       int_rs_issue_cdb_2_valid <= cdb_bus_2_comb.valid;
     end
   end
+  // mem_wakeup_merge's lane choice, one edge early: lane 0 takes the load when
+  // the registered lane 0 will be idle, and lane 1 when only lane 0 will be
+  // busy.
   always_ff @(posedge i_clk) begin
-    int_rs_issue_cdb_tag   <= cdb_bus_comb.tag;
-    int_rs_issue_cdb_2_tag <= cdb_bus_2_comb.tag;
+    int_rs_issue_cdb_tag <= (EARLY_LOAD_WAKEUP && !cdb_bus_comb.valid) ?
+        lq_fu_complete_tag_next : cdb_bus_comb.tag;
+    int_rs_issue_cdb_2_tag <=
+        (EARLY_LOAD_WAKEUP && cdb_bus_comb.valid && !cdb_bus_2_comb.valid) ?
+        lq_fu_complete_tag_next : cdb_bus_2_comb.tag;
   end
 
 `ifndef SYNTHESIS
@@ -2643,12 +2652,12 @@ module tomasulo_wrapper #(
       p_int_rs_issue_cdb_lane0_anchor_phase_identity :
       assert (
         int_rs_issue_cdb_valid == cdb_bus_int_rs_valid &&
-        int_rs_issue_cdb_tag == cdb_bus_int_rs_tag
+        (!int_rs_issue_cdb_valid || int_rs_issue_cdb_tag == cdb_bus_int_rs_tag)
       );
       p_int_rs_issue_cdb_lane1_anchor_phase_identity :
       assert (
         int_rs_issue_cdb_2_valid == cdb_bus_2_int_rs_valid &&
-        int_rs_issue_cdb_2_tag == cdb_bus_2_int_rs_tag
+        (!int_rs_issue_cdb_2_valid || int_rs_issue_cdb_2_tag == cdb_bus_2_int_rs_tag)
       );
     end
   end
@@ -2715,9 +2724,9 @@ module tomasulo_wrapper #(
       .i_cdb(int_rs_cdb_0),
       .i_cdb_2(int_rs_cdb_1),
       .i_issue_cdb_valid(EARLY_LOAD_WAKEUP ? int_issue_wakeup_0.valid : int_rs_issue_cdb_valid),
-      .i_issue_cdb_tag(EARLY_LOAD_WAKEUP ? int_issue_wakeup_0.tag : int_rs_issue_cdb_tag),
+      .i_issue_cdb_tag(int_rs_issue_cdb_tag),
       .i_issue_cdb_2_valid(EARLY_LOAD_WAKEUP ? int_issue_wakeup_1.valid : int_rs_issue_cdb_2_valid),
-      .i_issue_cdb_2_tag(EARLY_LOAD_WAKEUP ? int_issue_wakeup_1.tag : int_rs_issue_cdb_2_tag),
+      .i_issue_cdb_2_tag(int_rs_issue_cdb_2_tag),
       .i_repair_valid_1(int_done_repair_valid_1),
       .i_repair_tag_1(i_bypass_tag_1),
       .i_repair_value_1(bypass_value_1),
@@ -2942,7 +2951,7 @@ module tomasulo_wrapper #(
   );
 
   // INT_RS captures the staged load through an idle lane. Its issue compares
-  // use separate registered CDB tags and the same early-load selection.
+  // use separate registered lane tags and the same early-load selection.
   mem_wakeup_merge #(
       .FORMAL_STANDALONE_ENV(1'b0)
   ) u_int_wakeup_merge (
@@ -2988,10 +2997,10 @@ module tomasulo_wrapper #(
       assert (int_rs_early_load_injected == mem_rs_early_load_injected);
       p_int_early_issue_lane0_identity :
       assert (int_issue_wakeup_0.valid == int_rs_wakeup_0.valid &&
-              int_issue_wakeup_0.tag == int_rs_wakeup_0.tag);
+              (!int_issue_wakeup_0.valid || int_rs_issue_cdb_tag == int_rs_wakeup_0.tag));
       p_int_early_issue_lane1_identity :
       assert (int_issue_wakeup_1.valid == int_rs_wakeup_1.valid &&
-              int_issue_wakeup_1.tag == int_rs_wakeup_1.tag);
+              (!int_issue_wakeup_1.valid || int_rs_issue_cdb_2_tag == int_rs_wakeup_1.tag));
     end
   end
 
@@ -3676,6 +3685,7 @@ module tomasulo_wrapper #(
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),
       .o_fu_complete_staged(lq_fu_complete_staged),
+      .o_fu_complete_tag_next(lq_fu_complete_tag_next),
       // Unused by the LQ but kept for Vivado mapping stability; see the
       // i_adapter_result_pending port comment in load_queue.sv before
       // removing it.

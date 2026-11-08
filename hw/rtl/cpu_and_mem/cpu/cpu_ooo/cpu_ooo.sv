@@ -460,7 +460,7 @@ module cpu_ooo #(
   logic [riscv_pkg::TageHistBits-1:0] tage_lookup_hist;
   logic [riscv_pkg::TageHistBits-1:0] tage_packet_hist;
   logic tage_hist_push;
-  logic [4:0] tage_hist_restore_arm;
+  logic [4:1] tage_hist_restore_arm;
   logic [riscv_pkg::TagePathBits-1:0] tage_fetch_path_bits;
   logic [1:0] tage_slot_valid;
   riscv_pkg::tage_lookup_t tage_slot_lookup;
@@ -3224,8 +3224,7 @@ module cpu_ooo #(
   logic [1:0] tage_pd_cond_branch;
   logic [1:0] tage_slot_bank;
   logic [1:0] tage_base_taken;
-  assign tage_pd_accept = !pipeline_ctrl.reset && !pipeline_ctrl.stall && !pipeline_ctrl.flush &&
-                          !pd_redirect;
+  assign tage_pd_accept = !pipeline_ctrl.stall && !pipeline_ctrl.flush && !pd_redirect;
   assign tage_pd_cond_branch[0] = pd_cond_branch[0] && !from_if_to_pd.sel_nop &&
                                   !from_if_to_pd.fetch_fault;
   assign tage_pd_cond_branch[1] = pd_cond_branch[1] && !from_if_to_pd_2.sel_nop &&

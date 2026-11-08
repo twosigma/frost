@@ -192,6 +192,7 @@ module branch_prediction_controller #(
     // Separate staged and live redirect terms, for timing. The live term
     // omits the alias check; pc_controller ANDs it back in at selection.
     output logic                       o_slot2_staged_prediction_used_for_pc,
+    output logic                       o_slot2_staged_prediction_used_for_capture,
     output logic                       o_slot1_aliases_slot2_candidate,
     output logic                       o_slot2_live_target_used_for_pc_cofactor,
     output logic                       o_slot2_predicted_taken,
@@ -539,7 +540,7 @@ module branch_prediction_controller #(
   // prediction_used_effective's live stall gate prevents consumption.
   logic prediction_common_wcs0, prediction_common_wcs;
   (* keep = "true" *) logic prediction_common_core;
-  assign prediction_common_core = !i_reset && !i_trap_taken && !i_mret_taken &&
+  assign prediction_common_core = !i_trap_taken && !i_mret_taken &&
       !i_stall_registered && !i_any_holdoff_safe && !o_prediction_holdoff && !i_use_instr_buffer;
   assign prediction_common_wcs0 = prediction_common_core && !i_disable_branch_prediction_wcs0;
   assign prediction_common_wcs = prediction_common_core && !i_disable_branch_prediction_wcs;
@@ -551,7 +552,6 @@ module branch_prediction_controller #(
             {
               prediction_common,
               i_disable_branch_prediction,
-              i_reset,
               i_trap_taken,
               i_mret_taken,
               i_stall_registered,
@@ -561,7 +561,7 @@ module branch_prediction_controller #(
             }
         )) begin
       p_prediction_common_cofactors_exact :
-      assert (prediction_common == (!i_reset && !i_trap_taken && !i_mret_taken &&
+      assert (prediction_common == (!i_trap_taken && !i_mret_taken &&
                                     !i_stall_registered && !i_any_holdoff_safe &&
                                     !o_prediction_holdoff && !i_use_instr_buffer &&
                                     !i_disable_branch_prediction));
@@ -842,8 +842,8 @@ module branch_prediction_controller #(
   // Slot-2 Prediction Gating
   // ===========================================================================
   // Slot-2 prediction reuses prediction_common, so it inherits slot-1's
-  // per-cycle blockers: reset, trap, mret, holdoff, non-covering window,
-  // instruction buffer, and prediction disabled.  On top of those:
+  // per-cycle blockers: trap, mret, holdoff, non-covering window, instruction
+  // buffer, and prediction disabled.  On top of those:
   //   - i_slot2_valid: slot 2 must be emitted this cycle.  It is not when,
   //     for example, slot 1 is a NOP or control flow, or slot 2 does not fit.
   //   - halfword PC guard: a slot-2 PC[1]=1 is safe to predict only when the
@@ -982,6 +982,12 @@ module branch_prediction_controller #(
       slot2_prediction_permission && slot2_live_target_candidate_for_pc_cofactor;
 
   assign o_slot2_staged_prediction_used_for_pc = slot2_staged_prediction_used_for_pc;
+  // The replay capture reads its own copy, which leaves the select one reader
+  // and one gate before its wide fanout.
+  (* keep = "true", dont_touch = "true" *) logic slot2_staged_prediction_used_for_capture;
+  assign slot2_staged_prediction_used_for_capture =
+      slot2_prediction_permission && slot2_staged_prediction_candidate_for_pc;
+  assign o_slot2_staged_prediction_used_for_capture = slot2_staged_prediction_used_for_capture;
   assign o_slot2_live_target_used_for_pc_cofactor = slot2_live_target_used_for_pc_cofactor;
   assign o_slot2_staged_predicted_target = slot2_staged_typed_target_for_pc;
   assign o_slot2_live_predicted_target = slot1_typed_target;
@@ -997,13 +1003,14 @@ module branch_prediction_controller #(
   (* keep = "true" *)logic slot2_metadata_kill_enable;
   logic prediction_metadata_next;
   assign prediction_metadata_next_without_slot2 =
-      !i_reset && !i_flush && !pd_redirect_kills_prediction_metadata &&
+      !i_flush && !pd_redirect_kills_prediction_metadata &&
       ((!i_stall && i_fetch_progress) ? prediction_used_effective : o_prediction_used_r);
   assign slot2_metadata_kill_enable = slot2_prediction_permission && !i_stall;
   assign prediction_metadata_next = prediction_metadata_next_without_slot2 &&
       !(slot2_metadata_kill_enable && slot2_prediction_candidate_for_pc);
   always_ff @(posedge i_clk) begin
-    o_prediction_used_r <= prediction_metadata_next;
+    if (i_reset) o_prediction_used_r <= 1'b0;
+    else o_prediction_used_r <= prediction_metadata_next;
   end
 
   // Select the live or staged target before validity, for timing. Invalid
@@ -1047,11 +1054,14 @@ module branch_prediction_controller #(
               slot2_live_fallback_used_for_pc,
               slot2_live_fallback_used_for_pc_cofactor,
               slot2_staged_prediction_used_for_pc,
+              slot2_staged_prediction_used_for_capture,
               slot2_live_target_used_for_pc,
               slot2_live_target_used_for_pc_cofactor,
               o_slot2_prediction_used_for_pc
             }
         )) begin
+      p_slot2_staged_capture_copy_exact :
+      assert (slot2_staged_prediction_used_for_capture == slot2_staged_prediction_used_for_pc);
       p_slot2_live_fallback_pc_cofactor_exact :
       assert (slot2_live_fallback_used_for_pc ==
               (slot1_aliases_slot2_candidate &&
@@ -1211,9 +1221,7 @@ module branch_prediction_controller #(
   logic prediction_metadata_next_ref;
   always_comb begin
     prediction_metadata_next_ref = o_prediction_used_r;
-    if (i_reset) begin
-      prediction_metadata_next_ref = 1'b0;
-    end else if (i_flush) begin
+    if (i_flush) begin
       prediction_metadata_next_ref = 1'b0;
     end else if (i_pd_redirect || o_slot2_prediction_used) begin
       if (pd_redirect_kills_prediction_metadata || o_slot2_prediction_used)
@@ -1233,17 +1241,17 @@ module branch_prediction_controller #(
   always_comb begin
     p_prediction_common_wcs0_matches_original :
     assert (prediction_common_wcs0 ==
-            (!i_reset && !i_trap_taken && !i_mret_taken && !i_stall_registered &&
+            (!i_trap_taken && !i_mret_taken && !i_stall_registered &&
              !i_any_holdoff_safe && !o_prediction_holdoff && !i_use_instr_buffer &&
              !i_disable_branch_prediction_wcs0));
     p_prediction_common_wcs_matches_original :
     assert (prediction_common_wcs ==
-            (!i_reset && !i_trap_taken && !i_mret_taken && !i_stall_registered &&
+            (!i_trap_taken && !i_mret_taken && !i_stall_registered &&
              !i_any_holdoff_safe && !o_prediction_holdoff && !i_use_instr_buffer &&
              !i_disable_branch_prediction_wcs));
     p_prediction_common_selected_matches_original :
     assert (prediction_common ==
-            (!i_reset && !i_trap_taken && !i_mret_taken && !i_stall_registered &&
+            (!i_trap_taken && !i_mret_taken && !i_stall_registered &&
              !i_any_holdoff_safe && !o_prediction_holdoff && !i_use_instr_buffer &&
              !(i_window_cannot_serve_raw ? i_disable_branch_prediction_wcs :
                                           i_disable_branch_prediction_wcs0)));

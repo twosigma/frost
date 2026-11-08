@@ -104,8 +104,9 @@ once, and `pc_reg` follows one cycle later, after the branch itself has been
 emitted; a taken slot-2 prediction moves both PCs at once. A two-instruction
 bundle advances `pc_reg` by 4, 6, or 8 bytes, a single instruction by 2 or 4.
 
-`pc_controller` picks the next fetch PC in this priority: reset, trap or xRET,
-FENCE-class flush (FENCE.I, SFENCE.VMA, or a
+Reset loads both PCs with the boot address at their flops. `pc_controller`
+picks the next fetch PC in this priority: trap or xRET, FENCE-class flush
+(FENCE.I, SFENCE.VMA, or a
 [translation-changing CSR write](#csr-writes)), misprediction recovery, PD
 redirect, served-window resteer, hold while no window arrives, slot-2
 prediction, slot-1 prediction, the pending-prediction and halfword catch-up

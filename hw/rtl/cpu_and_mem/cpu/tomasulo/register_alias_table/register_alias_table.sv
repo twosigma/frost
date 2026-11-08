@@ -666,9 +666,7 @@ module register_alias_table (
   logic [CheckpointIdWidth-1:0] checkpoint_alloc_id_next;
 
   always_comb begin
-    if (!i_rst_n || i_flush_all) begin
-      checkpoint_valid_next = '0;
-    end else if (i_checkpoint_restore_reclaim_all) begin
+    if (i_flush_all || i_checkpoint_restore_reclaim_all) begin
       checkpoint_valid_next = '0;
     end else begin
       checkpoint_valid_next = checkpoint_valid;
@@ -677,7 +675,7 @@ module register_alias_table (
       // Individual frees (branch commit or early recovery)
       if (i_checkpoint_free) checkpoint_valid_next[i_checkpoint_free_id] = 1'b0;
       if (i_checkpoint_free_2) checkpoint_valid_next[i_checkpoint_free_id_2] = 1'b0;
-      // Save wins over individual and masked frees, but not reset/flush/reclaim.
+      // Save wins over individual and masked frees, but not flush or reclaim.
       if (i_checkpoint_save) checkpoint_valid_next[i_checkpoint_id] = 1'b1;
     end
   end
@@ -694,9 +692,15 @@ module register_alias_table (
   end
 
   always_ff @(posedge i_clk) begin
-    checkpoint_valid       <= checkpoint_valid_next;
-    o_checkpoint_available <= checkpoint_available_next;
-    o_checkpoint_alloc_id  <= checkpoint_alloc_id_next;
+    if (!i_rst_n) begin
+      checkpoint_valid       <= '0;
+      o_checkpoint_available <= 1'b1;
+      o_checkpoint_alloc_id  <= '0;
+    end else begin
+      checkpoint_valid       <= checkpoint_valid_next;
+      o_checkpoint_available <= checkpoint_available_next;
+      o_checkpoint_alloc_id  <= checkpoint_alloc_id_next;
+    end
   end
 
   // ===========================================================================

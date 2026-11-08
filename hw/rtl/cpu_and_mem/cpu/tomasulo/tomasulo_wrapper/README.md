@@ -111,11 +111,11 @@ signals and ROB head tag.
 
 `i_backend_recovery_hold` is not a flush. While it is high, the wrapper blocks
 dispatch into every station, blocks issue, and holds the FP dispatch buffer.
-A fatal memory error immediately stops architectural retirement, front-end
-admission, and new memory requests. Its execution-only hold reaches the
-wrapper one clock later, keeping the fatal aggregation out of the branch
-completion path; results produced in that interval cannot retire or launch
-new side effects.
+A fatal memory error stops architectural retirement, front-end admission,
+and new memory requests from its latched flag, on the cycle after the
+failure. Its execution-only hold reaches the wrapper one clock later, keeping
+the fatal flag out of the branch completion path; results produced in that
+interval cannot retire or launch new side effects.
 The early-recovery controller registers the combined execution hold on the
 same edge as its early-recovery pending bit. A full flush cancels the early
 request but leaves a sampled fatal request asserted. Reset clears both.
@@ -352,11 +352,13 @@ load result. The merge requires the LQ result to own the MEM adapter's input,
 with no store fault, SC result, or uncached-store completion ahead of it and
 the adapter idle.
 
-INT_RS merges the token into its local CDB copies. Its issue tag inputs use
-separate copies with the same lane selection. Both issue ports capture the
-final operands in stage 2, including the early load value. A stalled packet
-holds those operands. An assertion checks that issue and resident wakeup
-see matching tags and valid bits.
+INT_RS merges the token into its local CDB copies. Its issue tag inputs are
+registers that make the same lane selection one edge earlier, from the next
+CDB valids and the LQ's next staged tag, so the issue compares start at a
+flop. Both issue ports capture the final operands in stage 2, including the
+early load value. A stalled packet holds those operands. An assertion checks
+that issue and resident wakeup see matching valid bits, and matching tags on a
+valid lane.
 
 The merged lanes also decide MEM_RS's next issue. MEM_RS exports one
 look-ahead candidate per combination of lane valids, and the LQ selects among
