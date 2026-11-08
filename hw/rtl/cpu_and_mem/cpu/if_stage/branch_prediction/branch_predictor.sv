@@ -109,7 +109,14 @@ module branch_predictor #(
     // early-active. An update with no early candidate carries this PC and
     // outcome. All writes come from the selected update interface above.
     input logic [XLEN-1:0] i_late_update_pc,
-    input logic            i_late_update_taken
+    input logic            i_late_update_taken,
+
+    // Invalidate every entry, after software changed the code or the address
+    // space under it (FENCE.I, SFENCE.VMA, satp). Entries are keyed by
+    // virtual PC with no ASID, so a stale one can name a control-flow
+    // instruction, a size or an instruction boundary the current code does
+    // not have. Wins over a same-cycle update.
+    input logic i_invalidate_all
 );
 
   // BTB parameters
@@ -524,6 +531,12 @@ module branch_predictor #(
       slot2_valid_2_rot_q <=
           (i_update && (update_index_2_rot == slot2_lookup_index)) ?
           update_slot2_plus2_target_valid : btb_valid_2_rot[slot2_lookup_index];
+      // The slot-2 valids are read a cycle ahead; drop the pre-clear copies.
+      if (i_invalidate_all) begin
+        slot2_valid_2_q     <= 1'b0;
+        slot2_valid_2_alt_q <= 1'b0;
+        slot2_valid_2_rot_q <= 1'b0;
+      end
     end
   end
 
@@ -697,7 +710,7 @@ module branch_predictor #(
 
   // Synchronous update and reset
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
+    if (i_rst || i_invalidate_all) begin
       for (int i = 0; i < BtbEntries; i++) begin
         btb_valid[i]       <= 1'b0;
         btb_valid_2[i]     <= 1'b0;
@@ -810,6 +823,10 @@ module branch_predictor #(
       for (int i = 0; i < BtbEntries; i++) begin
         reference_update_valid[i] <= 1'b0;
       end
+    end else if (i_invalidate_all) begin
+      for (int i = 0; i < BtbEntries; i++) begin
+        reference_update_valid[i] <= 1'b0;
+      end
     end else if (i_update) begin
       reference_update_valid[update_index] <= update_target_region_predictable;
     end
@@ -896,7 +913,7 @@ module branch_predictor #(
       (shifted_reference_row_2_rot[shifted_reference_index_2_rot].tag == lookup_tag_2);
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
+    if (i_rst || i_invalidate_all) begin
       for (int i = 0; i < BtbEntries; i++) begin
         shifted_reference_valid_2[i]     <= 1'b0;
         shifted_reference_valid_2_alt[i] <= 1'b0;

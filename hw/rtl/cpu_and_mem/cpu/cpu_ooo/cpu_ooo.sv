@@ -714,6 +714,7 @@ module cpu_ooo #(
   logic frontend_state_flush;
   logic fence_i_flush;
   logic [XLEN-1:0] fence_i_target_pc;
+  logic btb_invalidate_q;
 
   logic early_mispredict_active;
   logic early_mispredict_pending;
@@ -844,6 +845,7 @@ module cpu_ooo #(
       .i_flush_all(flush_all),
       .i_fence_i_flush(fence_i_flush),
       .i_fence_i_target(fence_i_target_pc),
+      .i_btb_invalidate(btb_invalidate_q),
       .i_disable_branch_prediction(disable_branch_prediction_ooo),
       // Bimodal direction-predictor training (conditional branches only, see
       // dir_update_* below).
@@ -1891,6 +1893,18 @@ module cpu_ooo #(
   logic fence_class_quiesce;
   assign fence_class_quiesce = translation_csr_commit_shadow || fence_i_flush;
   assign o_fence_i_flush = fence_i_flush;
+
+  // Invalidate the BTB with the FENCE-class flush of a FENCE.I, an SFENCE.VMA
+  // or a satp write, where the code or address space may have changed. The
+  // frequent mstatus/sstatus writes (SUM/MXR around user copies) keep the
+  // BTB. The translation CSR's commit is on rob_commit during its shadow
+  // cycle; registering here aligns the pulse with fence_i_flush.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) btb_invalidate_q <= 1'b0;
+    else
+      btb_invalidate_q <= fence_class_flush_event &&
+          (!translation_csr_commit_shadow || (rob_commit.csr_addr == riscv_pkg::CsrSatp));
+  end
 
   // CSR coordination
   logic csr_start, csr_done_ack;
@@ -4035,6 +4049,82 @@ module cpu_ooo #(
     if (resume_pc_reference_armed_q && !i_rst && interrupt_resume_pc != resume_pc_reference_q) begin
       $error("cpu_ooo: interrupt_resume_pc %08x != reference %08x", interrupt_resume_pc,
              resume_pc_reference_q);
+    end
+  end
+`endif
+
+`ifndef SYNTHESIS
+  // Architectural next-PC check over every retirement. Each slot-1 retirement
+  // must sit at the next PC of the previous retirement or trap/xRET take, and
+  // slot 2 at slot 1's next PC. Any instruction retired from a wrong path
+  // fails here, whatever the front end did to reach it: a stale prediction,
+  // a lost redirect, or a fetch that skipped or repeated code. The check arms
+  // at the first retirement after reset; WFI seeding does not move it.
+  logic next_pc_check_armed_q;
+  logic [XLEN-1:0] next_pc_expected_q;
+  // The last retirements, printed when the check fails.
+  localparam int unsigned NextPcHistory = 8;
+  logic [NextPcHistory-1:0][XLEN-1:0] next_pc_hist_pc_q;
+  logic [NextPcHistory-1:0][XLEN-1:0] next_pc_hist_next_q;
+  logic [NextPcHistory-1:0][2:0] next_pc_hist_flags_q;  // {slot 2, misprediction, compressed}
+  task automatic next_pc_dump();
+    for (int i = NextPcHistory - 1; i >= 0; i--) begin
+      $display("cpu_ooo:   retired pc %016x next %016x slot2 %0d mispredict %0d rvc %0d",
+               next_pc_hist_pc_q[i], next_pc_hist_next_q[i], next_pc_hist_flags_q[i][2],
+               next_pc_hist_flags_q[i][1], next_pc_hist_flags_q[i][0]);
+    end
+  endtask
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      next_pc_check_armed_q <= 1'b0;
+    end else begin
+      if (next_pc_check_armed_q && rob_commit_valid_raw &&
+          rob_commit_comb.pc != next_pc_expected_q) begin
+        next_pc_dump();
+        $error("cpu_ooo: retired pc %016x, architectural next pc %016x", rob_commit_comb.pc,
+               next_pc_expected_q);
+      end
+      if (rob_commit_valid_raw && rob_commit_2_valid_raw &&
+          rob_commit_comb_2.pc != rob_head_retired_next_pc) begin
+        next_pc_dump();
+        $error("cpu_ooo: slot-2 retired pc %016x, slot-1 next pc %016x", rob_commit_comb_2.pc,
+               rob_head_retired_next_pc);
+      end
+      if (rob_commit_valid_raw) begin
+        next_pc_hist_pc_q <= {next_pc_hist_pc_q[NextPcHistory-2:0], rob_commit_comb.pc};
+        next_pc_hist_next_q <= {next_pc_hist_next_q[NextPcHistory-2:0], rob_head_retired_next_pc};
+        next_pc_hist_flags_q <= {
+          next_pc_hist_flags_q[NextPcHistory-2:0],
+          {1'b0, rob_commit_comb.misprediction, rob_commit_comb.is_compressed}
+        };
+        if (rob_commit_2_valid_raw) begin
+          next_pc_hist_pc_q <= {
+            next_pc_hist_pc_q[NextPcHistory-3:0], rob_commit_comb.pc, rob_commit_comb_2.pc
+          };
+          next_pc_hist_next_q <= {
+            next_pc_hist_next_q[NextPcHistory-3:0],
+            rob_head_retired_next_pc,
+            rob_head_next_retired_next_pc
+          };
+          next_pc_hist_flags_q <= {
+            next_pc_hist_flags_q[NextPcHistory-3:0],
+            {1'b0, rob_commit_comb.misprediction, rob_commit_comb.is_compressed},
+            {1'b1, rob_commit_comb_2.misprediction, rob_commit_comb_2.is_compressed}
+          };
+        end
+      end
+      if (trap_or_xret_taken) begin
+        next_pc_check_armed_q <= 1'b1;
+        next_pc_expected_q <= trap_taken ? trap_entry_target :
+                              mret_start_is_dret ? csr_dpc :
+                              mret_start_is_sret ? csr_sepc : csr_mepc;
+      end else if (rob_commit_2_valid_raw) begin
+        next_pc_check_armed_q <= 1'b1;
+        next_pc_expected_q <= rob_head_next_retired_next_pc;
+      end else if (rob_commit_valid_raw) begin
+        next_pc_check_armed_q <= 1'b1;
+        next_pc_expected_q <= rob_head_retired_next_pc;
+      end
     end
   end
 `endif

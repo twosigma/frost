@@ -388,6 +388,7 @@ module prediction_release_formal #(
       .i_is_compressed,
       .i_sel_nop,
       .i_fetch_progress(fetch_progress),
+      .i_window_cannot_serve,
       .i_instr_sideband('0),
       .i_instr_fault('0),
       .i_slot2_valid,
