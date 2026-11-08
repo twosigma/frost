@@ -535,15 +535,17 @@ module lq_l0_cache #(
 
 endmodule
 
-// Four-way selection combines adjacent groups at each level. Lookup permission
-// applies to the selected valid bit independently of the tag comparison.
+// Lookup permission applies to the selected valid bit independently of the
+// tag comparison. In the Xilinx build each level selects among up to 32 valid
+// bits within one slice: four-way LUT6 selections feed the slice's MUXF7,
+// MUXF8 and MUXF9, so five index bits cost one LUT and three dedicated
+// multiplexers instead of three LUT levels.
 `ifdef FROST_XILINX_PRIMS (* keep_hierarchy = "yes" *)
 `endif
 module lq_l0_lookup_permission #(
     parameter int unsigned DEPTH = 256,
     localparam int unsigned IndexWidth = $clog2(DEPTH),
-    localparam int unsigned Levels = (IndexWidth + 1) / 2,
-    localparam int unsigned TreeWidth = 1 << (2 * Levels)
+    localparam int unsigned Levels = (IndexWidth + 4) / 5
 ) (
     input logic [DEPTH-1:0] i_valid,
     input logic [IndexWidth-1:0] i_index,
@@ -552,44 +554,110 @@ module lq_l0_lookup_permission #(
     input logic i_line_invalidated,
     output logic o_permitted
 );
-  wire [2*Levels-1:0] index_bits = (2 * Levels)'(i_index);
-  wire [Levels:0][TreeWidth-1:0] selected;
-  assign selected[0] = TreeWidth'(i_valid);
-  for (genvar level = 0; level < Levels; level++) begin : gen_level
-    for (genvar node = 0; node < TreeWidth; node++) begin : gen_node
-      if (node < ((DEPTH + (1 << (2 * (level + 1))) - 1) >> (2 * (level + 1)))) begin : gen_select
+  logic selected_valid;
 `ifdef FROST_XILINX_PRIMS
-        (* dont_touch = "true" *) LUT6 #(
-            .INIT(64'hFEDCBA9876543210)
-        ) u_valid (
-            .I0(index_bits[2*level]),
-            .I1(index_bits[2*level+1]),
-            .I2(selected[level][4*node]),
-            .I3(selected[level][4*node+1]),
-            .I4(selected[level][4*node+2]),
-            .I5(selected[level][4*node+3]),
-            .O (selected[level+1][node])
-        );
-`else
-        wire [3:0] choices = selected[level][4*node+:4];
-        assign selected[level+1][node] = choices[index_bits[2*level+:2]];
-`endif
+  // Level l selects with index bits [5l+4:5l] among the previous level's
+  // outputs, in groups of up to 32.
+  localparam int unsigned Padded = 1 << (5 * Levels);
+  wire [Levels:0][Padded-1:0] selected;
+  wire [5*Levels-1:0] index_bits = (5 * Levels)'(i_index);
+  assign selected[0] = Padded'(i_valid);
+  for (genvar level = 0; level < Levels; level++) begin : gen_level
+    localparam int unsigned Inputs = DEPTH >> (5 * level);
+    localparam int unsigned GroupBits = (IndexWidth - 5 * level) < 5 ? IndexWidth - 5 * level : 5;
+    localparam int unsigned Groups = Inputs >> GroupBits;
+    wire [4:0] group_select = index_bits[5*level+:5];
+    for (genvar group = 0; group < Padded / 32; group++) begin : gen_group
+      if (group < Groups) begin : gen_select
+        localparam int unsigned Base = group << GroupBits;
+        localparam int unsigned Luts = GroupBits >= 2 ? 1 << (GroupBits - 2) : 1;
+        wire [7:0] lut_out;
+        wire [3:0] f7_out;
+        wire [1:0] f8_out;
+        for (genvar lut = 0; lut < 8; lut++) begin : gen_lut
+          if (lut < Luts) begin : gen_used
+            localparam int unsigned First = Base + 4 * lut;
+            wire [3:0] choices;
+            for (genvar bit_index = 0; bit_index < 4; bit_index++) begin : gen_choice
+              if (GroupBits >= 2 || bit_index < 2) begin : gen_input
+                assign choices[bit_index] = selected[level][First+bit_index];
+              end else begin : gen_padding
+                assign choices[bit_index] = 1'b0;
+              end
+            end
+            (* dont_touch = "true" *) LUT6 #(
+                .INIT(64'hFEDCBA9876543210)
+            ) u_select (
+                .I0(group_select[0]),
+                .I1(GroupBits >= 2 ? group_select[1] : 1'b0),
+                .I2(choices[0]),
+                .I3(choices[1]),
+                .I4(choices[2]),
+                .I5(choices[3]),
+                .O (lut_out[lut])
+            );
+          end else begin : gen_unused
+            assign lut_out[lut] = 1'b0;
+          end
+        end
+        for (genvar f7 = 0; f7 < 4; f7++) begin : gen_f7
+          if (GroupBits >= 3 && f7 < Luts / 2) begin : gen_used
+            (* dont_touch = "true" *) MUXF7 u_f7 (
+                .I0(lut_out[2*f7]),
+                .I1(lut_out[2*f7+1]),
+                .S (group_select[2]),
+                .O (f7_out[f7])
+            );
+          end else begin : gen_unused
+            assign f7_out[f7] = 1'b0;
+          end
+        end
+        for (genvar f8 = 0; f8 < 2; f8++) begin : gen_f8
+          if (GroupBits >= 4 && f8 < Luts / 4) begin : gen_used
+            (* dont_touch = "true" *) MUXF8 u_f8 (
+                .I0(f7_out[2*f8]),
+                .I1(f7_out[2*f8+1]),
+                .S (group_select[3]),
+                .O (f8_out[f8])
+            );
+          end else begin : gen_unused
+            assign f8_out[f8] = 1'b0;
+          end
+        end
+        if (GroupBits == 5) begin : gen_f9
+          (* dont_touch = "true" *) MUXF9 u_f9 (
+              .I0(f8_out[0]),
+              .I1(f8_out[1]),
+              .S (group_select[4]),
+              .O (selected[level+1][group])
+          );
+        end else if (GroupBits == 4) begin : gen_f8_out
+          assign selected[level+1][group] = f8_out[0];
+        end else if (GroupBits == 3) begin : gen_f7_out
+          assign selected[level+1][group] = f7_out[0];
+        end else begin : gen_lut_out
+          assign selected[level+1][group] = lut_out[0];
+        end
       end else begin : gen_unused
-        assign selected[level+1][node] = 1'b0;
+        assign selected[level+1][group] = 1'b0;
       end
     end
+    for (genvar spare = Padded / 32; spare < Padded; spare++) begin : gen_spare
+      assign selected[level+1][spare] = 1'b0;
+    end
   end
-`ifdef FROST_XILINX_PRIMS
+  assign selected_valid = selected[Levels][0];
   (* dont_touch = "true" *) LUT4 #(
       .INIT(16'h0100)
   ) u_permission (
       .I0(i_mmio),
       .I1(i_invalidated),
       .I2(i_line_invalidated),
-      .I3(selected[Levels][0]),
+      .I3(selected_valid),
       .O (o_permitted)
   );
 `else
-  assign o_permitted = selected[Levels][0] && !i_mmio && !i_invalidated && !i_line_invalidated;
+  assign selected_valid = i_valid[i_index];
+  assign o_permitted = selected_valid && !i_mmio && !i_invalidated && !i_line_invalidated;
 `endif
 endmodule

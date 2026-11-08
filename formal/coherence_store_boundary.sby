@@ -64,7 +64,9 @@ read -sv lq_issue_selector.sv
 read -sv coherent_lq_issue_selector.sv
 read -sv coherent_lq_candidate_select.sv
 read -sv coherent_lq_address_store.sv
-read -sv load_queue.sv
+# The ordinary load tasks keep the LQ's registered same-sector match checks.
+ordinary: read -sv -D LQ_SECTOR_MATCH_PROOF load_queue.sv
+~ordinary: read -sv load_queue.sv
 read -sv data_mem_request_router.sv
 read -sv sc_pending_unit.sv
 read -sv coherent_atomic_guard.sv

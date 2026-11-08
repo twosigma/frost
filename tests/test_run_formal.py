@@ -645,7 +645,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "lq_l0_lookup.sby",
-        "Balanced L0 validity and permission match the indexed reference for arbitrary inputs.",
+        "L0 validity selection and permission match the indexed reference for arbitrary inputs.",
         tasks=(
             "lookup8_prove",
             "lookup8_xilinx_prove",
@@ -657,6 +657,8 @@ FORMAL_TARGETS = [
             "lookup128_xilinx_prove",
             "lookup256_prove",
             "lookup256_xilinx_prove",
+            "lookup512_prove",
+            "lookup512_xilinx_prove",
         ),
     ),
     FormalTarget(
@@ -1668,6 +1670,11 @@ SBY_TASKS = [
     (
         "lookup256_xilinx_prove",
         "L0 permission equality at 256 entries using primitive LUTs.",
+    ),
+    ("lookup512_prove", "L0 permission equality at 512 entries using portable logic."),
+    (
+        "lookup512_xilinx_prove",
+        "L0 permission equality at 512 entries using primitive LUTs and wide multiplexers.",
     ),
     (
         "age_groups_prove",
