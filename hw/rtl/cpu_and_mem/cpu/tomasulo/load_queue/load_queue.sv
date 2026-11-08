@@ -1822,8 +1822,8 @@ module load_queue #(
           holder_match_q[holder] <= high_zero_next &&
               i_coherent_block_addr[holder][XLEN-1:SectorMsb+1] == '0 &&
               sector_next == i_coherent_block_addr[holder][SectorMsb:5];
-        push_match_q <= i_coherent_store_push && high_zero_next &&
-            sector_next == i_coherent_store_push_addr[SectorMsb:5];
+        // The push itself arrives late; the hold applies it from push_prev_q.
+        push_match_q <= high_zero_next && sector_next == i_coherent_store_push_addr[SectorMsb:5];
       end
       assign entry_sector[entry] = sector_q;
       assign entry_high_zero[entry] = high_zero_q;
