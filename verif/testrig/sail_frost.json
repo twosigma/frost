@@ -81,7 +81,7 @@
           "misaligned_atomicity_granule_size_exp": 0,
           "vector_misaligned_atomicity_granule_size_exp": 0,
           "reservability": "RsrvEventual",
-          "supports_cbo_zero": false,
+          "supports_cbo_zero": true,
           "supports_pte_read": false,
           "supports_pte_write": false
         },
@@ -355,7 +355,7 @@
           "misaligned_atomicity_granule_size_exp": 0,
           "vector_misaligned_atomicity_granule_size_exp": 0,
           "reservability": "RsrvEventual",
-          "supports_cbo_zero": false,
+          "supports_cbo_zero": true,
           "supports_pte_read": true,
           "supports_pte_write": false
         },
@@ -447,7 +447,9 @@
     "Zic64b": {"supported": false},
     "Zicbom": {"supported": false},
     "Zicbop": {"supported": false},
-    "Zicboz": {"supported": false},
+    // cbo.zero zeroes 64-byte blocks of low BRAM and cached DDR, the regions
+    // marked supports_cbo_zero above; Sail's default block size is 64 bytes.
+    "Zicboz": {"supported": true},
     "Ziccamoa": {"supported": false},
     "Ziccamoc": {"supported": false},
     "Ziccif": {"supported": false},

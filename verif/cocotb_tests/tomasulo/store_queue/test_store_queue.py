@@ -2571,3 +2571,304 @@ async def test_commit_cycle_registered_guard_survives_flush_after_head(
     assert write_req.en and write_req.addr == 0x3000, (
         "flush-cycle-committed store never drained after the flush"
     )
+
+
+# ============================================================================
+# Tier-matched store drain sequencing
+# ============================================================================
+@cocotb.test()
+async def test_mixed_tier_stores_do_not_overlap_in_flight(dut: Any) -> None:
+    """A store never launches behind an in-flight write of the other tier.
+
+    The router ORs the BRAM tier's fast done with the cached tier's done into the
+    queue's single write-done, so two tiers in flight could drop a done and hang
+    the drain. Cached stores are at DdrBase, BRAM stores below it.
+    """
+    dut_if, model = await setup(dut)
+    cached_base = 0x8000_4000
+    bram_base = 0x0000_4000
+    addrs = [
+        bram_base,
+        cached_base,
+        cached_base + 8,
+        bram_base + 8,
+        bram_base + 16,
+        cached_base + 16,
+    ]
+
+    for i, addr in enumerate(addrs):
+        await alloc_addr_data(
+            dut_if,
+            model,
+            rob_tag=i,
+            address=addr,
+            data=0x3333_0000 + i,
+            size=MEM_SIZE_DOUBLE,
+        )
+    for tag in list(range(1, len(addrs))) + [0]:
+        dut_if.drive_commit(tag)
+        model.commit(tag)
+        await dut_if.step()
+        dut_if.clear_commit()
+
+    # Each write is acknowledged two cycles after launch, like a slow tier.
+    in_flight: list[int] = []
+    launched: list[MemWriteReq] = []
+    prev_cached: bool | None = None
+    for cycle in range(12 * len(addrs)):
+        await Timer(1, unit="ns")
+        if in_flight and in_flight[0] <= cycle:
+            in_flight.pop(0)
+            dut_if.drive_mem_write_done()
+            model.mem_write_done()
+            model.advance_head()
+        else:
+            dut_if.clear_mem_write_done()
+        write_req = dut_if.read_mem_write()
+        if write_req.en:
+            is_cached = write_req.addr >= 0x8000_0000
+            assert not (
+                in_flight and prev_cached is not None and is_cached != prev_cached
+            ), (
+                f"Launched {'cached' if is_cached else 'BRAM'} store {write_req.addr:#x} "
+                f"behind {len(in_flight)} in-flight write(s) of the other tier"
+            )
+            launched.append(write_req)
+            prev_cached = is_cached
+            model.mem_write_initiate()
+            in_flight.append(cycle + 2)
+        await dut_if.step()
+        if len(launched) == len(addrs) and not in_flight:
+            break
+    dut_if.clear_mem_write_done()
+    await dut_if.step()
+    await dut_if.step()
+    assert [w.addr for w in launched] == addrs, "Stores must leave in program order"
+    assert dut_if.empty, "SQ should be empty after all stores drain"
+
+
+# ============================================================================
+# cbo.zero: eight zero beats per entry
+# ============================================================================
+CBO_BLOCK = 64
+
+
+async def alloc_zero_block(
+    dut_if: SQInterface, rob_tag: int, address: int, junk_data: int = MASK64
+) -> None:
+    """Allocate a cbo.zero entry and supply its rs1 address and src2 value.
+
+    MEM_RS sends a data update for every SQ entry; a zero entry ignores it.
+    """
+    dut_if.drive_alloc(rob_tag, size=MEM_SIZE_BYTE, is_zero=True)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.drive_addr_update(rob_tag, address)
+    dut_if.drive_data_update(rob_tag, junk_data)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.clear_data_update()
+
+
+async def collect_writes(
+    dut_if: SQInterface, count: int, done_delay: int = 1, max_cycles: int = 200
+) -> tuple[list[MemWriteReq], list[int]]:
+    """Collect count write launches, answering each done_delay cycles later.
+
+    Returns the writes and the SQ live count sampled at each launch.
+    """
+    writes: list[MemWriteReq] = []
+    counts: list[int] = []
+    pending: list[int] = []
+    for cycle in range(max_cycles):
+        await Timer(1, unit="ns")
+        if pending and pending[0] <= cycle:
+            pending.pop(0)
+            dut_if.drive_mem_write_done()
+        else:
+            dut_if.clear_mem_write_done()
+        write_req = dut_if.read_mem_write()
+        if write_req.en:
+            writes.append(write_req)
+            counts.append(dut_if.count)
+            pending.append(cycle + done_delay)
+        await dut_if.step()
+        if len(writes) == count and not pending:
+            break
+    dut_if.clear_mem_write_done()
+    await dut_if.step()
+    await dut_if.step()
+    return writes, counts
+
+
+@cocotb.test()
+async def test_cbo_zero_drains_eight_zero_beats(dut: Any) -> None:
+    """A zero entry writes its aligned 64-byte block as eight full zero beats.
+
+    rs1 stays unaligned in the entry; the drain aligns it. The entry stays
+    live through the first seven beats and frees on the eighth's done.
+    """
+    dut_if, _model = await setup(dut)
+
+    rs1 = 0x0001_2345_6789_ABED
+    block = rs1 & ~(CBO_BLOCK - 1)
+    await alloc_zero_block(dut_if, rob_tag=4, address=rs1)
+    dut_if.drive_commit(4)
+    await dut_if.step()
+    dut_if.clear_commit()
+
+    for done_delay in (1,):
+        writes, counts = await collect_writes(dut_if, 8, done_delay=done_delay)
+        assert len(writes) == 8, f"Expected eight beats, got {len(writes)}"
+        for beat, write_req in enumerate(writes):
+            assert write_req.addr == (block | (beat << 3)) & MASK_XLEN, (
+                f"Beat {beat}: address 0x{write_req.addr:x}"
+            )
+            assert write_req.data == 0, f"Beat {beat}: data 0x{write_req.data:x}"
+            assert write_req.byte_en == 0xFF, (
+                f"Beat {beat}: strobe 0x{write_req.byte_en:x}"
+            )
+        assert all(count == 1 for count in counts), (
+            f"The entry must stay live through every beat: {counts}"
+        )
+    assert dut_if.empty, "The eighth done must free the zero entry"
+
+
+@cocotb.test()
+async def test_cbo_zero_slow_done_and_following_store(dut: Any) -> None:
+    """With slow completions the beats stay ordered and a younger SD follows."""
+    dut_if, model = await setup(dut)
+
+    rs1 = 0x8000_0040 + 0x13
+    block = rs1 & ~(CBO_BLOCK - 1)
+    await alloc_zero_block(dut_if, rob_tag=1, address=rs1)
+    await alloc_addr_data(
+        dut_if,
+        model,
+        rob_tag=2,
+        address=block + 0x18,
+        data=0x1122_3344_5566_7788,
+        size=MEM_SIZE_DOUBLE,
+    )
+    dut_if.drive_commit(1)
+    await dut_if.step()
+    dut_if.drive_commit(2)
+    await dut_if.step()
+    dut_if.clear_commit()
+
+    writes, counts = await collect_writes(dut_if, 9, done_delay=3)
+    assert len(writes) == 9, f"Expected nine writes, got {len(writes)}"
+    assert [w.addr for w in writes[:8]] == [block | (b << 3) for b in range(8)]
+    assert all(w.data == 0 and w.byte_en == 0xFF for w in writes[:8])
+    assert writes[8].addr == block + 0x18 and writes[8].data == 0x1122_3344_5566_7788
+    assert counts[:8] == [2] * 8, f"Both entries stay live during the block: {counts}"
+    assert dut_if.empty
+
+
+@cocotb.test()
+async def test_cbo_zero_forwarding_waits_in_block(dut: Any) -> None:
+    """A younger load anywhere in a pending zero block matches without forwarding.
+
+    Loads outside the block see no conflict, and a younger covering store
+    still forwards over the older zero block.
+    """
+    dut_if, model = await setup(dut)
+
+    rs1 = 0x2000_0105
+    block = rs1 & ~(CBO_BLOCK - 1)
+    await alloc_zero_block(dut_if, rob_tag=3, address=rs1)
+    dut_if.drive_rob_head_tag(0)
+
+    for offset, size in (
+        (0, MEM_SIZE_BYTE),
+        (0x3C, MEM_SIZE_WORD),
+        (0x38, MEM_SIZE_DOUBLE),
+    ):
+        dut_if.drive_sq_check(addr=block + offset, rob_tag=6, size=size)
+        await dut_if.step()
+        fwd = dut_if.read_sq_forward()
+        assert fwd.match, f"Load at +0x{offset:x} must see the zero block"
+        assert not fwd.can_forward, "A zero block never forwards"
+        dut_if.clear_sq_check()
+
+    for addr in (block - 8, block + CBO_BLOCK):
+        dut_if.drive_sq_check(addr=addr, rob_tag=6, size=MEM_SIZE_DOUBLE)
+        await dut_if.step()
+        fwd = dut_if.read_sq_forward()
+        assert not fwd.match, f"Load at 0x{addr:x} is outside the block"
+        dut_if.clear_sq_check()
+
+    # A load older than the zero entry ignores it.
+    dut_if.drive_sq_check(addr=block, rob_tag=2, size=MEM_SIZE_DOUBLE)
+    await dut_if.step()
+    assert not dut_if.read_sq_forward().match, "An older load ignores the zero block"
+    dut_if.clear_sq_check()
+
+    await alloc_addr_data(
+        dut_if,
+        model,
+        rob_tag=4,
+        address=block + 0x20,
+        data=0xCAFE_F00D_1234_5678,
+        size=MEM_SIZE_DOUBLE,
+    )
+    dut_if.drive_sq_check(addr=block + 0x20, rob_tag=6, size=MEM_SIZE_DOUBLE)
+    await dut_if.step()
+    fwd = dut_if.read_sq_forward()
+    assert fwd.match and fwd.can_forward, "The younger SD covers the load"
+    assert fwd.data == 0xCAFE_F00D_1234_5678
+    dut_if.clear_sq_check()
+
+    dut_if.drive_sq_check(addr=block + 0x28, rob_tag=6, size=MEM_SIZE_DOUBLE)
+    await dut_if.step()
+    fwd = dut_if.read_sq_forward()
+    assert fwd.match and not fwd.can_forward, (
+        "Outside the SD the zero block still waits"
+    )
+    dut_if.clear_sq_check()
+
+
+@cocotb.test()
+async def test_cbo_zero_survives_partial_flush_mid_block(dut: Any) -> None:
+    """A committed zero entry keeps draining across a partial flush.
+
+    The flush removes a younger uncommitted store; the block finishes its
+    eight beats and the removed store never writes.
+    """
+    dut_if, model = await setup(dut)
+
+    rs1 = 0x3000_0000
+    await alloc_zero_block(dut_if, rob_tag=1, address=rs1)
+    await alloc_addr_data(dut_if, model, rob_tag=5, address=0x4000, data=0x55)
+    dut_if.drive_commit(1)
+    await dut_if.step()
+    dut_if.clear_commit()
+
+    writes: list[MemWriteReq] = []
+    flushed = False
+    prev_en = False
+    for _cycle in range(120):
+        await Timer(1, unit="ns")
+        write_req = dut_if.read_mem_write()
+        if write_req.en:
+            writes.append(write_req)
+        if len(writes) == 3 and not flushed:
+            dut_if.drive_partial_flush(flush_tag=2)
+            flushed = True
+        else:
+            dut_if.clear_partial_flush()
+        # Answer every write on the following cycle.
+        if prev_en:
+            dut_if.drive_mem_write_done()
+        else:
+            dut_if.clear_mem_write_done()
+        prev_en = write_req.en
+        await dut_if.step()
+        if len(writes) >= 8 and dut_if.empty:
+            break
+    dut_if.clear_mem_write_done()
+    dut_if.clear_partial_flush()
+    assert [w.addr for w in writes] == [rs1 | (b << 3) for b in range(8)], (
+        f"Unexpected writes {[hex(w.addr) for w in writes]}"
+    )
+    assert dut_if.empty

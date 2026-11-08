@@ -16,7 +16,7 @@
 
 /*
   Combinational decoder for RV64GCB (Zba/Zbb/Zbs), Zicond, Zbc, Zbkb, Zbkc, Zicsr,
-  and M/S/U-mode privileged instructions. Compressed instructions arrive
+  Zicboz, and M/S/U-mode privileged instructions. Compressed instructions arrive
   already expanded. o_instr_op selects the operation; o_illegal flags any
   encoding not decoded here, including reserved FP rounding modes.
  */
@@ -285,6 +285,13 @@ module instr_decoder (
           o_instr_op = riscv_pkg::PAUSE;  // Zihintpause: hint to pause
         else o_instr_op = riscv_pkg::FENCE;  // FENCE (memory ordering)
         3'b001: o_instr_op = riscv_pkg::FENCE_I;  // FENCE.I (instruction fetch ordering)
+        // CBO.ZERO (Zicboz) is 0x0040A00F with any rs1: funct12 0x004, rd x0.
+        // The Zicbom encodings (cbo.clean/flush/inval) stay illegal.
+        3'b010:
+        if (i_instr.funct7 == 7'b0000000 && i_instr.source_reg_2 == 5'b00100 &&
+            i_instr.dest_reg == 5'b0)
+          o_instr_op = riscv_pkg::CBO_ZERO;
+        else o_illegal = 1'b1;
         default: o_illegal = 1'b1;
       endcase
 

@@ -64,6 +64,7 @@ ISA_TEST_SUITES = {
     "rv64mi": "RV64 Machine-Mode",
     "rv64si": "RV64 Supervisor-Mode",  # S-mode
     "rv64uzbc": "RV64 Zbc Extension",
+    "rv64mzicbo": "RV64 Zicboz (cbo.zero)",
     # rv64uzbkx: skipped, FROST does not implement Zbkx
     # rv64uzfh: skipped, FROST does not implement Zfh
 }

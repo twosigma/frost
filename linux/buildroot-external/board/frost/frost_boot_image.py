@@ -84,11 +84,14 @@ LINUX_IMAGE_SIZE_OFFSET = 0x10  # u64 image_size (text + bss)
 ISA_BASE = "rv64i"
 ISA_EXTENSIONS = (
     "i", "m", "a", "f", "d", "c",
-    "zicsr", "zifencei", "zicntr",
+    "zicsr", "zifencei", "zicntr", "zicboz",
     "zba", "zbb", "zbc", "zbs", "zbkb", "zbkc", "zicond", "zihintpause",
     "smaia", "ssaia", "sscofpmf", "sstc", "svade", "svvptc",
 )  # fmt: skip
-ISA_STRING = "rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbc_zbs_zbkb_zbkc_zicond_zihintpause_smaia_ssaia_sscofpmf_sstc_svade_svvptc"
+# Zicboz block size: cbo.zero zeroes one 64-byte L2 line
+# (riscv_pkg::CboZeroBlockBytes).
+CBOZ_BLOCK_BYTES = 64
+ISA_STRING = "rv64imafdc_zicsr_zifencei_zicntr_zicboz_zba_zbb_zbc_zbs_zbkb_zbkc_zicond_zihintpause_smaia_ssaia_sscofpmf_sstc_svade_svvptc"
 
 # Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
 # and fails frost_nettest's idle checks. The initramfs needs no IPv6.
@@ -324,6 +327,7 @@ def gen_dts(
 \t\t\triscv,isa-base = "{ISA_BASE}";
 \t\t\triscv,isa = "{ISA_STRING}";
 \t\t\triscv,isa-extensions = {ext_list};
+\t\t\triscv,cboz-block-size = <{CBOZ_BLOCK_BYTES}>;
 
 \t\t\tcpu0_intc: interrupt-controller {{
 \t\t\t\t#interrupt-cells = <0x01>;

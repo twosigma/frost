@@ -1726,15 +1726,17 @@ module tomasulo_wrapper #(
   logic dmmu_store_fault;
   logic dmmu_store_ok;
 
-  // Store immediates are sign-extended S-immediates or zero (SC), so they can
-  // move the base by at most one 4 KiB page. The low 13-bit sum supplies the
-  // page carry and alignment bits. Legal store pages are [0, 0x3f], the
+  // Store immediates are sign-extended S-immediates or zero (SC, cbo.zero), so
+  // they can move the base by at most one 4 KiB page. The low 13-bit sum
+  // supplies the page carry and alignment bits. Legal store pages are [0, 0x3f], the
   // device quadrant, and [DdrBase, DdrLimit), as in riscv_pkg::pma_store_ok. The device quadrant
   // includes unserved addresses, whose writes the device bus ignores.
   //
   // A one-page move changes membership only at interval boundaries. The
-  // boundary checks below compute pma_store_ok(src1 + sext12(imm)). SC has a
-  // zero immediate and excludes device pages, yielding pma_atomic_ok(src1).
+  // boundary checks below compute pma_store_ok(src1 + sext12(imm)). SC and
+  // cbo.zero have a zero immediate and exclude device pages, yielding
+  // pma_atomic_ok(src1). cbo.zero's byte size never misaligns, and its
+  // 64-byte block stays inside the page and PMA region of src1.
   // Keep the 13-bit tap explicit for synthesis; sq_effective_addr retains the
   // full address for the SQ and xtval.
   (* keep = "true" *) logic [12:0] store_page_offset_sum;
@@ -1765,6 +1767,8 @@ module tomasulo_wrapper #(
   logic store_addr_pma_ok;
   logic store_addr_misaligned;
   logic mem_rs_issue_is_sc;
+  logic mem_rs_issue_is_cbo_zero;
+  logic mem_rs_issue_atomic_pma;
 
   assign store_page_offset_sum =
       {1'b0, o_mem_rs_issue.src1_value[11:0]} + {1'b0, o_mem_rs_issue.imm[11:0]};
@@ -1782,9 +1786,13 @@ module tomasulo_wrapper #(
 
   assign mem_rs_issue_is_sc = (o_mem_rs_issue.op == riscv_pkg::SC_W) ||
       (o_mem_rs_issue.op == riscv_pkg::SC_D);
+  // cbo.zero shares SC's zero immediate and atomic PMA map: BRAM and cached
+  // DDR only, so a block write never reaches a device.
+  assign mem_rs_issue_is_cbo_zero = o_mem_rs_issue.op == riscv_pkg::CBO_ZERO;
+  assign mem_rs_issue_atomic_pma = mem_rs_issue_is_sc || mem_rs_issue_is_cbo_zero;
   assign store_base_pma_ok = store_base_z18 || store_base_ddr_ok ||
       (store_base_z32 && (o_mem_rs_issue.src1_value[31:30] == 2'b01) &&
-       !mem_rs_issue_is_sc);
+       !mem_rs_issue_atomic_pma);
   assign store_base_page_eq_0 = store_base_z18 && store_base_page_lo6_zero;
   assign store_base_page_eq_3f = store_base_z18 && store_base_page_lo6_ones;
   assign store_base_page_eq_40 = store_base_z19 && o_mem_rs_issue.src1_value[18] &&
@@ -1807,11 +1815,11 @@ module tomasulo_wrapper #(
   assign store_base_page_eq_max = &o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:12];
 
   assign store_page_inc_toggle = store_base_page_eq_max || store_base_page_eq_3f ||
-      (!mem_rs_issue_is_sc && store_base_page_eq_3ffff) || store_base_page_eq_ddr_last ||
-      (mem_rs_issue_is_sc && store_base_page_eq_ddr_before);
+      (!mem_rs_issue_atomic_pma && store_base_page_eq_3ffff) || store_base_page_eq_ddr_last ||
+      (mem_rs_issue_atomic_pma && store_base_page_eq_ddr_before);
   assign store_page_dec_toggle = store_base_page_eq_0 || store_base_page_eq_40 ||
-      (!mem_rs_issue_is_sc && store_base_page_eq_40000) || store_base_page_eq_ddr_end ||
-      (mem_rs_issue_is_sc && store_base_page_eq_ddr_first);
+      (!mem_rs_issue_atomic_pma && store_base_page_eq_40000) || store_base_page_eq_ddr_end ||
+      (mem_rs_issue_atomic_pma && store_base_page_eq_ddr_first);
   // Without a carry, only a negative immediate changes the page. With a
   // carry, only a nonnegative immediate does. Select between both cases.
   assign store_pma_without_page_carry = store_base_pma_ok ^
@@ -1822,7 +1830,7 @@ module tomasulo_wrapper #(
   // integrations use the full configured PMA predicate on the effective PA.
   assign store_addr_pma_ok = riscv_pkg::PmaUsesFrostMap ?
       (store_page_offset_sum[12] ? store_pma_with_page_carry : store_pma_without_page_carry) :
-      (mem_rs_issue_is_sc ? riscv_pkg::pma_atomic_ok(
+      (mem_rs_issue_atomic_pma ? riscv_pkg::pma_atomic_ok(
       sq_effective_addr
   ) : riscv_pkg::pma_store_ok(
       sq_effective_addr
@@ -1871,7 +1879,10 @@ module tomasulo_wrapper #(
   logic store_addr_misaligned_full_ref;
   logic store_misalign_issue_full_ref;
   logic store_issue_fire_full_ref;
-  assign store_addr_pma_ok_full_ref = mem_rs_issue_is_sc ? riscv_pkg::pma_atomic_ok(
+  assign store_addr_pma_ok_full_ref = ((o_mem_rs_issue.op == riscv_pkg::SC_W) ||
+                                       (o_mem_rs_issue.op == riscv_pkg::SC_D) ||
+                                       (o_mem_rs_issue.op == riscv_pkg::CBO_ZERO)) ?
+      riscv_pkg::pma_atomic_ok(
       sq_effective_addr
   ) : riscv_pkg::pma_store_ok(
       sq_effective_addr
@@ -1906,7 +1917,7 @@ module tomasulo_wrapper #(
             o_mem_rs_issue.imm[riscv_pkg::XLEN-1:12] ==
             {(riscv_pkg::XLEN - 12) {o_mem_rs_issue.imm[11]}}
         );
-        p_store_sc_imm_zero : assert (!mem_rs_issue_is_sc || (o_mem_rs_issue.imm == '0));
+        p_store_sc_imm_zero : assert (!mem_rs_issue_atomic_pma || (o_mem_rs_issue.imm == '0));
         if (o_mem_rs_issue.imm[riscv_pkg::XLEN-1:12] ==
             {(riscv_pkg::XLEN - 12) {o_mem_rs_issue.imm[11]}}) begin
           p_store_page_pma_exact : assert (store_addr_pma_ok === store_addr_pma_ok_full_ref);
@@ -4062,6 +4073,7 @@ module tomasulo_wrapper #(
       r.is_fp       = dispatch.is_fp_mem;
       r.size        = dispatch.mem_size;
       r.is_sc       = (dispatch.op == riscv_pkg::SC_W) || (dispatch.op == riscv_pkg::SC_D);
+      r.is_zero     = dispatch.op == riscv_pkg::CBO_ZERO;
       r.addr_valid  = 1'b0;
       r.address     = '0;
       r.is_mmio     = 1'b0;
@@ -4195,7 +4207,7 @@ module tomasulo_wrapper #(
       .i_iss_needs_sq(o_mem_rs_issue.mem_needs_sq),
       .i_iss_store_perms(o_mem_rs_issue.mem_needs_sq || dmmu_iss_is_amo),
       .i_iss_is_sc(mem_rs_issue_is_sc),
-      .i_iss_atomic(dmmu_iss_is_amo || dmmu_iss_is_lr || mem_rs_issue_is_sc),
+      .i_iss_atomic(dmmu_iss_is_amo || dmmu_iss_is_lr || mem_rs_issue_atomic_pma),
       .i_iss_store_data(o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
       .i_iss_amo_rs2(o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
       .o_iss_out_valid(dmmu_out_valid),

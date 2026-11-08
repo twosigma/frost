@@ -1036,6 +1036,15 @@ module cpu_ooo #(
     if (i_rst) id_mstatus_fs_off_q <= 1'b0;
     else id_mstatus_fs_off_q <= csr_mstatus_fs_off;
   end
+  // The Zicboz gate takes the same registered path. It changes only with
+  // privilege (trap, xRET) or an envcfg write, a translation-class CSR; each
+  // full flush discards the decode under the old value.
+  logic csr_cbo_zero_illegal;
+  logic id_cbo_zero_illegal_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) id_cbo_zero_illegal_q <= 1'b0;
+    else id_cbo_zero_illegal_q <= csr_cbo_zero_illegal;
+  end
 
   id_stage #(
       .XLEN(XLEN)
@@ -1048,6 +1057,7 @@ module cpu_ooo #(
       .i_pd_redirect_target(pd_redirect_target),
       .i_pd_redirect_slot2(pd_redirect_slot2),
       .i_mstatus_fs_off(id_mstatus_fs_off_q),
+      .i_cbo_zero_illegal(id_cbo_zero_illegal_q),
       .o_from_id_to_ex(decoded_packet),
       .o_from_id_to_ex_next(decoded_packet_next),
       .o_from_id_to_ex_next_go(decoded_packet_next_go),
@@ -3898,6 +3908,7 @@ module cpu_ooo #(
       .o_fetch_priv_u(csr_fetch_priv_u),
       .o_satp_root_ppn(csr_satp_root_ppn),
       .o_mstatus_fs_off(csr_mstatus_fs_off),
+      .o_cbo_zero_illegal(csr_cbo_zero_illegal),
       .o_debug_mode(csr_debug_mode),
       .o_dcsr_step(csr_dcsr_step),
       .o_dcsr_ebreak(csr_dcsr_ebreak),
@@ -3928,6 +3939,10 @@ module cpu_ooo #(
     if (reset_seen_q && fs_off_checks_armed && !i_rst &&
         (csr_mstatus_fs_off != id_mstatus_fs_off_q)) begin
       p_fs_off_change_flushes_decode : assert (flush_all);
+    end
+    if (reset_seen_q && fs_off_checks_armed && !i_rst &&
+        (csr_cbo_zero_illegal != id_cbo_zero_illegal_q)) begin
+      p_cbo_zero_gate_change_flushes_decode : assert (flush_all);
     end
   end
 `endif
@@ -4441,7 +4456,9 @@ module cpu_ooo #(
       assert (!translation_csr_commit_shadow ||
               (rob_commit.csr_addr == riscv_pkg::CsrSatp) ||
               (rob_commit.csr_addr == riscv_pkg::CsrMstatus) ||
-              (rob_commit.csr_addr == riscv_pkg::CsrSstatus));
+              (rob_commit.csr_addr == riscv_pkg::CsrSstatus) ||
+              (rob_commit.csr_addr == riscv_pkg::CsrMenvcfg) ||
+              (rob_commit.csr_addr == riscv_pkg::CsrSenvcfg));
       p_fence_class_quiesce_blocks_control_take :
       assert (!fence_class_quiesce || !(trap_taken || xret_taken));
       p_csr_write_excludes_control_take : assert (!(csr_commit_fire && (trap_taken || xret_taken)));

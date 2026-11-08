@@ -43,6 +43,10 @@ Two ordering rules decide which stores count:
 
 MMIO stores and store-conditionals never forward. An SC can fail and write
 nothing, so a load behind it waits for the SC to drain and then reads memory.
+A cbo.zero entry conflicts with every load in its 64-byte block, whatever
+the load's bytes, and never forwards: the load waits until the block's last
+beat frees the entry, then reads the zeros from memory. A younger store
+covering the load still forwards over the older block.
 
 On a full-flush cycle the scan can treat a squashed store's commit as visible.
 This is harmless because the LQ discards any forwarding result captured on a
@@ -81,7 +85,13 @@ entry is eligible and has its address and data, and it never skips ahead.
 Cached and buffered Normal entries require commit; precise uncached entries require ROB-head
 permission and the shield.
 Every store is a single 64-bit beat: sub-dword data is replicated across the
-beat and the byte strobe selects the lanes. The write outputs are registered,
+beat and the byte strobe selects the lanes. A `cbo.zero` entry keeps `rs1`
+as its address and drains as eight zero beats with every strobe set, at the
+naturally aligned block base plus 8, 16, ... 56. Its entry stays the drain
+cursor through all eight launches; each beat takes a completion-FIFO slot and
+invalidates its L0 dword, and only the eighth beat's completion frees the
+entry. A precise uncached block reports its completion, and any beat's error,
+with the eighth response. The write outputs are registered,
 including `is_mmio` and `is_cached` flags that let the memory router steer the
 write without decoding the address again. `o_mem_write_buffered` identifies
 an ordinary Normal store that has already retired; this distinguishes its

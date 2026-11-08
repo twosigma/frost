@@ -131,7 +131,8 @@ module instr_operand_classifier_equiv (
       riscv_pkg::AMOOR_D,
       riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
       riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D,
-      riscv_pkg::FENCE, riscv_pkg::FENCE_I, riscv_pkg::SFENCE_VMA:
+      riscv_pkg::FENCE, riscv_pkg::FENCE_I, riscv_pkg::SFENCE_VMA,
+      riscv_pkg::CBO_ZERO:
       rs_type_pre = riscv_pkg::RS_MEM;
 
       riscv_pkg::FADD_S, riscv_pkg::FSUB_S,
@@ -165,7 +166,8 @@ module instr_operand_classifier_equiv (
     endcase
 
     case (op_for_pre_decode)
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD: is_int_store_pre = 1'b1;
+      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD, riscv_pkg::CBO_ZERO:
+      is_int_store_pre = 1'b1;
       default: is_int_store_pre = 1'b0;
     endcase
 
@@ -185,7 +187,7 @@ module instr_operand_classifier_equiv (
 
     case (op_for_pre_decode)
       riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
-      riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::SC_W, riscv_pkg::SC_D:
+      riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::SC_W, riscv_pkg::SC_D, riscv_pkg::CBO_ZERO:
       needs_sq_pre = 1'b1;
       default: needs_sq_pre = 1'b0;
     endcase

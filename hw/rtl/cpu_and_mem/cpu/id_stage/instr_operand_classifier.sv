@@ -144,7 +144,14 @@ module instr_operand_classifier (
             i_instr.source_reg_2 == 5'b10000 && i_instr.source_reg_1 == '0 &&
             i_instr.dest_reg == '0)
           raw_class.rs_type = riscv_pkg::RS_INT;
-        else begin
+        else if (i_instr.funct3 == 3'b010) begin
+          // CBO.ZERO: a store of the block containing rs1. Bits 24:20 hold
+          // funct12, not rs2; i_illegal covers the encodings that are not it.
+          raw_class.uses_int_rs1 = 1'b1;
+          raw_class.is_int_store = 1'b1;
+          raw_class.rs_type = riscv_pkg::RS_MEM;
+          raw_class.needs_sq = 1'b1;
+        end else begin
           raw_class.rs_type = riscv_pkg::RS_MEM;
           raw_class.is_fence = i_instr.funct3 == 3'b000;
           raw_class.is_fence_i = i_instr.funct3 == 3'b001;

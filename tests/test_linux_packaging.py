@@ -334,8 +334,18 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     assert f"local-mac-address = [{packer.NIC_MAC_ADDRESS}];" in dts
     assert "clock-frequency = <300000000>;" in dts
     assert 'mmu-type = "riscv,sv39";' in dts
-    for ext in ("smaia", "ssaia", "sscofpmf", "sstc", "svade", "svvptc", "zicntr"):
+    for ext in (
+        "smaia",
+        "ssaia",
+        "sscofpmf",
+        "sstc",
+        "svade",
+        "svvptc",
+        "zicntr",
+        "zicboz",
+    ):
         assert f'"{ext}"' in dts and f"_{ext}" in packer.ISA_STRING
+    assert "riscv,cboz-block-size = <64>;" in dts
     assert "bootargs" not in dts and "initrd" not in dts
     # The SBI-v3 EVENT_GET_INFO probe only reports events present in OpenSBI's
     # hw_event_map, which comes from this node; without it perf_event_open, which

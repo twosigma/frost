@@ -53,7 +53,7 @@ any of them rebuilds.
 | `GENERATE_IMEM_INIT` | `0` | `1` also writes the split instruction-BRAM init files for Vivado |
 
 `-march` is `rv64` followed by `FROST_MARCH_EXTENSIONS`, which defaults to
-`imafdc_zicsr_zicntr_zifencei_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause`. An app
+`imafdc_zicsr_zicntr_zifencei_zicboz_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause`. An app
 sets it, or `APP_TUNE_FLAGS`, before including `common.mk`. The `FROST_DEBUG=1`
 flags come after the tuning flags, so debug builds stay debuggable. Backends
 that build their own flags take the names from `common/arch.mk`:
@@ -264,6 +264,8 @@ can be debugged and where each one first stops.
 | `c_ext_test/` | Calls and returns through mixed 16- and 32-bit code, plus value checks of the RV64C-only encodings |
 | `cache_counter_target/` | Makes L2 write fills with DMA, prints the cache counters from its own snapshot, then sleeps in `wfi` without touching the caches until a UART byte starts a second run, which the JTAG reader (`fpga/debug/cache_counters.py`) measures; runs from low BRAM in either memory configuration |
 | `call_stress/` | Repeated and nested calls and returns, built with compressed instructions |
+| `cbo_zero_bench/` | Cycles to clear 64 KiB and 1 MiB of cold and warm cached DDR with an `sd` loop and with `cbo.zero`; prints one `FROST_CBO_BENCH` line per run |
+| `cbo_zero_test/` | Zicboz `cbo.zero`: the 64-byte block containing an unaligned `rs1` in cached DDR and low BRAM, neighbours untouched, younger loads and stores in program order, the CBZE gate in S and U, and store access and page faults with `mtval` = `rs1` |
 | `cf_ext_test/` | Compressed double-precision FP loads and stores (Zcd) |
 | `clint_test/` | SiFive CLINT alias: writes reach the native timer registers, and a timer interrupt armed through the alias fires |
 | `coremark/` | EEMBC CoreMark, built without the C extension by default; see its [README](apps/coremark/README.md) and [Spike tools](apps/coremark/iss/README.md) |

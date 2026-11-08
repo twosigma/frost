@@ -411,7 +411,7 @@ module reorder_buffer #(
   // illegal-instruction at every privilege, as the privileged spec requires.
   // OpenSBI probes optional CSRs by catching that trap, so reading
   // unimplemented CSRs as zero would advertise missing features.
-  // senvcfg exists (S/U make it mandatory) with FIOM as its only field, and the
+  // senvcfg exists (S/U make it mandatory) with FIOM and CBZE as its fields, and the
   // read-only id registers mvendorid/marchid/mimpid/mconfigptr exist and
   // read 0. Machine HPM counters and selectors exist across 3..31, with
   // storage for 3..10 and zero-only pairs for 11..31. Sscofpmf adds
@@ -598,7 +598,8 @@ module reorder_buffer #(
   // translation: any satp access, and an mstatus/sstatus access with
   // architectural write intent. id_stage's mstatus.FS=Off check also relies
   // on this class: the full flush that ends every such write discards whatever
-  // ID decoded under the old FS value.
+  // ID decoded under the old FS value. menvcfg/senvcfg writes join the class
+  // for the same reason: ID's cbo.zero gate reads their CBZE bits.
   logic [ReorderBufferDepth-1:0] rob_f_csr_may_change_translation;
 
 
@@ -1158,7 +1159,9 @@ module reorder_buffer #(
           ((i_alloc_req.csr_addr == riscv_pkg::CsrSatp) ||
            (i_alloc_req.csr_write_intent &&
             ((i_alloc_req.csr_addr == riscv_pkg::CsrMstatus) ||
-             (i_alloc_req.csr_addr == riscv_pkg::CsrSstatus))));
+             (i_alloc_req.csr_addr == riscv_pkg::CsrSstatus) ||
+             (i_alloc_req.csr_addr == riscv_pkg::CsrMenvcfg) ||
+             (i_alloc_req.csr_addr == riscv_pkg::CsrSenvcfg))));
     end
     if (alloc_en_2_control) begin
       rob_f_store_like[tail_idx_2] <= i_alloc_req_2.is_store || i_alloc_req_2.is_fp_store ||
@@ -1194,7 +1197,9 @@ module reorder_buffer #(
           ((i_alloc_req_2.csr_addr == riscv_pkg::CsrSatp) ||
            (i_alloc_req_2.csr_write_intent &&
             ((i_alloc_req_2.csr_addr == riscv_pkg::CsrMstatus) ||
-             (i_alloc_req_2.csr_addr == riscv_pkg::CsrSstatus))));
+             (i_alloc_req_2.csr_addr == riscv_pkg::CsrSstatus) ||
+             (i_alloc_req_2.csr_addr == riscv_pkg::CsrMenvcfg) ||
+             (i_alloc_req_2.csr_addr == riscv_pkg::CsrSenvcfg))));
     end
   end
 

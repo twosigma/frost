@@ -187,7 +187,7 @@ different implementation choice:
 
 | Setting | FROST |
 |---------|-------|
-| Extensions | RV64IMAFDC, B, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zicntr, S, U, Sv39, Svade, Svvptc, Sstc, Sscofpmf; `misa` read-only |
+| Extensions | RV64IMAFDC, B, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zicntr, Zicboz, S, U, Sv39, Svade, Svvptc, Sstc, Sscofpmf; `misa` read-only |
 | Memory regions | The PMA map: low BRAM, MMIO, APLIC, IMSIC, the rest of the device quadrant (stores only), and configurable DDR (1 GiB default), the only region page-table walks read |
 | Physical addresses | 64 bits wide, so an untranslated access beyond the memory map faults with its full address in `mtval` |
 | Misaligned accesses | Address-misaligned trap, after the PMA check |
@@ -225,7 +225,9 @@ result depends on timing, out of the default run:
 ## Directed behavior
 
 `menvcfg.FIOM` and `senvcfg.FIOM` are writable. FENCE orders I/O and memory
-regardless of the predecessor and successor bits.
+regardless of the predecessor and successor bits. `menvcfg.CBZE` and
+`senvcfg.CBZE` are writable, and `cbo.zero` zeroes 64-byte blocks of low BRAM
+and cached DDR, the regions `sail_frost.json` marks `supports_cbo_zero`.
 
 An AMO write cancels the reservation on its 32-byte line. A branch recovered
 at commit preserves the reservation. The directed traces
@@ -276,7 +278,7 @@ CI's TestRIG jobs replays all of them before its random run.
 | Trace | Checks |
 |-------|--------|
 | [`clint_window_load.S`](traces/clint_window_load.S) | A load just below 2^35 faults at the 1 GiB default and reaches DDR with a 64 GiB configuration; Sail disables its CLINT in both configurations |
-| [`envcfg_fiom.S`](traces/envcfg_fiom.S) | `menvcfg.FIOM` and `senvcfg.FIOM` are writable |
+| [`envcfg_fiom.S`](traces/envcfg_fiom.S) | `menvcfg.FIOM`, `senvcfg.FIOM` and both CBZE bits are writable |
 | [`fence_r0.S`](traces/fence_r0.S) | `fence r,0` retires |
 | [`hpm_counters.S`](traces/hpm_counters.S) | Writable machine counter 3, zero-only machine counter/selector 31, and absent user alias 9 |
 | [`imsic_window_load.S`](traces/imsic_window_load.S) | An aligned doubleword load in the IMSIC window reaches the TestRIG device RAM without an access fault |

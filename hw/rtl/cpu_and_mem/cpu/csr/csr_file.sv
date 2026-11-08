@@ -23,9 +23,9 @@
   sstatus, sie, and sip are views of M-mode storage. sie/sip expose only
   delegated supervisor bits at every privilege; sip permits writes only to
   delegated SSIP. medeleg/mideleg use the package WARL masks: M-mode ECALL
-  and machine interrupts cannot delegate. menvcfg implements FIOM and STCE;
-  senvcfg, required for S/U support, implements FIOM. FIOM is stored only
-  (see riscv_pkg::EnvcfgFiomBit).
+  and machine interrupts cannot delegate. menvcfg implements FIOM, CBZE and
+  STCE; senvcfg, required for S/U support, implements FIOM and CBZE. FIOM is
+  stored only (see riscv_pkg::EnvcfgFiomBit); CBZE gates cbo.zero below M.
 
   mstatus.MPRV makes data accesses use MPP. MPP and dcsr.prv fold reserved
   2'b10 to U. FS resets to Initial and becomes Dirty on FP state writes;
@@ -280,6 +280,12 @@ module csr_file #(
     // and fflags/frm/fcsr accesses. Changes only on a committed CSR write
     // (hardware only sets Dirty, never Off).
     output logic o_mstatus_fs_off,
+
+    // Zicboz: cbo.zero is illegal in S without menvcfg.CBZE and in U without
+    // both menvcfg.CBZE and senvcfg.CBZE. id_stage decodes it as illegal while
+    // set. Changes only on an envcfg write, a trap or an xRET, each followed
+    // by a full flush.
+    output logic o_cbo_zero_illegal,
 
     // Debug Mode state for allocation legality, trap routing, halt reporting,
     // and single stepping. Changes require a flushing trap/DRET or a
@@ -576,10 +582,13 @@ module csr_file #(
   localparam bit PerfCountersPresent = (PERF_COUNTERS != 0);
 
   logic menvcfg_stce, menvcfg_fiom, senvcfg_fiom;
+  logic menvcfg_cbze, senvcfg_cbze;
   logic [XLEN-1:0] menvcfg, senvcfg;  // Readback views of the stored fields
   assign menvcfg = (XLEN'(menvcfg_stce) << riscv_pkg::MenvcfgStceBit) |
+      (XLEN'(menvcfg_cbze) << riscv_pkg::EnvcfgCbzeBit) |
       (XLEN'(menvcfg_fiom) << riscv_pkg::EnvcfgFiomBit);
-  assign senvcfg = XLEN'(senvcfg_fiom) << riscv_pkg::EnvcfgFiomBit;
+  assign senvcfg = (XLEN'(senvcfg_cbze) << riscv_pkg::EnvcfgCbzeBit) |
+      (XLEN'(senvcfg_fiom) << riscv_pkg::EnvcfgFiomBit);
 
   // Supervisor trap CSRs.
   logic [XLEN-1:0] stvec;  // Supervisor trap vector (MODE bit 1 forced 0, like mtvec)
@@ -588,6 +597,8 @@ module csr_file #(
   assign o_counter_blocked = gate_priv_is_u ? ~(mcounteren_q & scounteren_q) :
       gate_priv_is_s ? ~mcounteren_q : '0;
   assign o_stimecmp_blocked = gate_priv_is_s && !menvcfg_stce;
+  assign o_cbo_zero_illegal = (gate_priv_is_s && !menvcfg_cbze) ||
+      (gate_priv_is_u && !(menvcfg_cbze && senvcfg_cbze));
   logic [XLEN-1:0] sscratch;
   logic [XLEN-1:0] sepc;  // bit 0 forced 0, like mepc
   logic [XLEN-1:0] scause;
@@ -1526,7 +1537,9 @@ module csr_file #(
       satp_mode_sv39             <= 1'b0;
       satp_ppn                   <= '0;
       menvcfg_stce               <= 1'b0;
+      menvcfg_cbze               <= 1'b0;
       menvcfg_fiom               <= 1'b0;
+      senvcfg_cbze               <= 1'b0;
       senvcfg_fiom               <= 1'b0;
       stimecmp                   <= 64'hFFFF_FFFF_FFFF_FFFF;
       perf_counter_select        <= '0;
@@ -1600,13 +1613,17 @@ module csr_file #(
             satp_ppn <= satp_new_value[SatpPpnBits-1:0];
           end
         end
-        // menvcfg implements FIOM and STCE, senvcfg FIOM (the rest stays
-        // WARL-0); stimecmp is the full 64-bit compare value.
+        // menvcfg implements FIOM, CBZE and STCE, senvcfg FIOM and CBZE (the
+        // rest stays WARL-0); stimecmp is the full 64-bit compare value.
         riscv_pkg::CsrMenvcfg: begin
           menvcfg_stce <= menvcfg_new_value[riscv_pkg::MenvcfgStceBit];
+          menvcfg_cbze <= menvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
           menvcfg_fiom <= menvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
         end
-        riscv_pkg::CsrSenvcfg: senvcfg_fiom <= senvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
+        riscv_pkg::CsrSenvcfg: begin
+          senvcfg_cbze <= senvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
+          senvcfg_fiom <= senvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
+        end
         riscv_pkg::CsrStimecmp: stimecmp <= stimecmp_new_value;
         // Without counters the profiling state keeps its reset value.
         // mperfctl reads 0, so a pure read's write-back would clear the bank
@@ -2454,6 +2471,11 @@ module csr_file #(
       // signal is exactly FS==Off.
       p_sd_mirrors_fs : assert (mstatus[XLEN-1] == (mstatus_fs == FsDirty));
       p_fs_off_export : assert (o_mstatus_fs_off == (mstatus_fs == FsOff));
+      // cbo.zero legality: M always, S with menvcfg.CBZE, U with both bits.
+      p_cbo_zero_gate_export :
+      assert (o_cbo_zero_illegal == ((priv_q == riscv_pkg::PrivS) ? !menvcfg[7] :
+                                     (priv_q == riscv_pkg::PrivU) ? !(menvcfg[7] && senvcfg[7]) :
+                                     1'b0));
 
       // mtvec MODE: bit 1 always 0, bit 0 can be 0 (Direct) or 1 (Vectored).
       p_mtvec_aligned : assert (mtvec[1] == 1'b0);
@@ -2790,6 +2812,7 @@ module csr_file #(
   logic [$bits(mcountinhibit_cy)-1:0] f_old_mcountinhibit_cy;
   logic [$bits(mcountinhibit_ir)-1:0] f_old_mcountinhibit_ir;
   logic [$bits(medeleg_q)-1:0] f_old_medeleg_q;
+  logic [$bits(menvcfg_cbze)-1:0] f_old_menvcfg_cbze;
   logic [$bits(menvcfg_fiom)-1:0] f_old_menvcfg_fiom;
   logic [$bits(menvcfg_stce)-1:0] f_old_menvcfg_stce;
   logic [$bits(mepc)-1:0] f_old_mepc;
@@ -2809,6 +2832,7 @@ module csr_file #(
   logic [$bits(satp_ppn)-1:0] f_old_satp_ppn;
   logic [$bits(scause)-1:0] f_old_scause;
   logic [$bits(scounteren_q)-1:0] f_old_scounteren_q;
+  logic [$bits(senvcfg_cbze)-1:0] f_old_senvcfg_cbze;
   logic [$bits(senvcfg_fiom)-1:0] f_old_senvcfg_fiom;
   logic [$bits(sepc)-1:0] f_old_sepc;
   logic [$bits(sscratch)-1:0] f_old_sscratch;
@@ -2852,6 +2876,7 @@ module csr_file #(
     f_old_mcountinhibit_cy <= mcountinhibit_cy;
     f_old_mcountinhibit_ir <= mcountinhibit_ir;
     f_old_medeleg_q <= medeleg_q;
+    f_old_menvcfg_cbze <= menvcfg_cbze;
     f_old_menvcfg_fiom <= menvcfg_fiom;
     f_old_menvcfg_stce <= menvcfg_stce;
     f_old_mepc <= mepc;
@@ -2871,6 +2896,7 @@ module csr_file #(
     f_old_satp_ppn <= satp_ppn;
     f_old_scause <= scause;
     f_old_scounteren_q <= scounteren_q;
+    f_old_senvcfg_cbze <= senvcfg_cbze;
     f_old_senvcfg_fiom <= senvcfg_fiom;
     f_old_sepc <= sepc;
     f_old_sscratch <= sscratch;
@@ -2906,7 +2932,9 @@ module csr_file #(
       f_old_satp_mode_sv39             <= 1'b0;
       f_old_satp_ppn                   <= '0;
       f_old_menvcfg_stce               <= 1'b0;
+      f_old_menvcfg_cbze               <= 1'b0;
       f_old_menvcfg_fiom               <= 1'b0;
+      f_old_senvcfg_cbze               <= 1'b0;
       f_old_senvcfg_fiom               <= 1'b0;
       f_old_stimecmp                   <= 64'hFFFF_FFFF_FFFF_FFFF;
       f_old_perf_counter_select        <= '0;
@@ -2986,13 +3014,17 @@ module csr_file #(
             f_old_satp_ppn <= csr_new_value[SatpPpnBits-1:0];
           end
         end
-        // menvcfg implements FIOM and STCE, senvcfg FIOM (the rest stays
-        // WARL-0); stimecmp is the full 64-bit compare value.
+        // menvcfg implements FIOM, CBZE and STCE, senvcfg FIOM and CBZE (the
+        // rest stays WARL-0); stimecmp is the full 64-bit compare value.
         riscv_pkg::CsrMenvcfg: begin
           f_old_menvcfg_stce <= csr_new_value[riscv_pkg::MenvcfgStceBit];
+          f_old_menvcfg_cbze <= csr_new_value[riscv_pkg::EnvcfgCbzeBit];
           f_old_menvcfg_fiom <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
         end
-        riscv_pkg::CsrSenvcfg: f_old_senvcfg_fiom <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
+        riscv_pkg::CsrSenvcfg: begin
+          f_old_senvcfg_cbze <= csr_new_value[riscv_pkg::EnvcfgCbzeBit];
+          f_old_senvcfg_fiom <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
+        end
         riscv_pkg::CsrStimecmp: f_old_stimecmp <= csr_new_value;
         // Without counters the profiling state keeps its reset value.
         riscv_pkg::CsrMperfSel: if (PerfCountersPresent) f_old_perf_counter_select <= csr_new_value;
@@ -3108,6 +3140,7 @@ module csr_file #(
               {f_old_hpm_select, f_old_hpm_alt, f_old_hpm_of, f_old_hpm_minh, f_old_hpm_sinh,
                f_old_hpm_uinh});
       assert (medeleg_q == f_old_medeleg_q);
+      assert (menvcfg_cbze == f_old_menvcfg_cbze);
       assert (menvcfg_fiom == f_old_menvcfg_fiom);
       assert (menvcfg_stce == f_old_menvcfg_stce);
       assert (mepc == f_old_mepc);
@@ -3127,6 +3160,7 @@ module csr_file #(
       assert (satp_ppn == f_old_satp_ppn);
       assert (scause == f_old_scause);
       assert (scounteren_q == f_old_scounteren_q);
+      assert (senvcfg_cbze == f_old_senvcfg_cbze);
       assert (senvcfg_fiom == f_old_senvcfg_fiom);
       assert (sepc == f_old_sepc);
       assert (sscratch == f_old_sscratch);

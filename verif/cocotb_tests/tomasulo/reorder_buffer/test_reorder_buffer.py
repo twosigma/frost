@@ -69,6 +69,8 @@ CSR_MSTATUS = 0x300
 CSR_SSTATUS = 0x100
 CSR_SATP = 0x180
 CSR_MIE = 0x304
+CSR_MENVCFG = 0x30A
+CSR_SENVCFG = 0x10A
 
 
 def log_random_seed() -> int:
@@ -2096,10 +2098,16 @@ async def test_translation_csr_done_is_held_until_sq_drain(dut: Any) -> None:
 
 @cocotb.test()
 async def test_writing_status_csrs_wait_for_sq(dut: Any) -> None:
-    """Writing mstatus or sstatus uses the translation-CSR drain path."""
+    """Writing mstatus, sstatus or an envcfg CSR uses the translation-CSR drain path.
+
+    menvcfg and senvcfg hold the CBZE bits that ID's cbo.zero gate reads, so
+    their writes end with the same full flush.
+    """
     dut_if, _model = await setup_test(dut)
 
-    for case_index, csr_addr in enumerate((CSR_MSTATUS, CSR_SSTATUS)):
+    for case_index, csr_addr in enumerate(
+        (CSR_MSTATUS, CSR_SSTATUS, CSR_MENVCFG, CSR_SENVCFG)
+    ):
         dut_if.set_sq_committed_empty(False)
         tag = await drive_single_alloc(
             dut_if,

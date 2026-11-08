@@ -247,6 +247,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pd_redirect_target.value = 0
     dut.i_pd_redirect_slot2.value = 0
     dut.i_mstatus_fs_off.value = 0
+    dut.i_cbo_zero_illegal.value = 0
 
 
 async def _setup_test(dut: Any) -> None:
@@ -848,6 +849,55 @@ async def test_memory_queue_needs_follow_the_operand_class(dut: Any) -> None:
             packet = _read_id_packet(dut, slot2=slot2)
             assert packet["needs_lq"] is needs_lq, f"{name} slot2={slot2}: needs_lq"
             assert packet["needs_sq"] is needs_sq, f"{name} slot2={slot2}: needs_sq"
+
+
+@cocotb.test()
+async def test_cbo_zero_class_and_cbze_gate(dut: Any) -> None:
+    """cbo.zero decodes as a store-queue store of rs1; the CBZE gate makes it illegal.
+
+    With i_cbo_zero_illegal set, cbo.zero in either slot takes the neutral
+    illegal class and no store-queue entry. The other CBO encodings stay
+    illegal whatever the gate.
+    """
+    await _setup_test(dut)
+    cbo_zero = _pack_i(imm=4, rs1=5, funct3=0b010, rd=0, opcode=0b0001111)
+    cbo_clean = _pack_i(imm=1, rs1=5, funct3=0b010, rd=0, opcode=0b0001111)
+    cbo_zero_rd = _pack_i(imm=4, rs1=5, funct3=0b010, rd=3, opcode=0b0001111)
+    cbo_op = _INSTR_OPS["CBO_ZERO"]
+
+    for gate in (0, 1):
+        for slot2 in (False, True):
+            _drive_pd_packet(
+                dut, {"program_counter": BASE_PC, "instruction": cbo_zero}, slot2=slot2
+            )
+            _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+            dut.i_cbo_zero_illegal.value = gate
+            await _advance_cycle(dut)
+            packet = _read_id_packet(dut, slot2=slot2)
+            if gate:
+                assert packet["is_illegal_instruction"] is True, f"slot2={slot2}"
+                assert packet["rs_type"] == RS_INT
+                assert packet["is_int_store"] is False
+                assert packet["needs_sq"] is False and packet["needs_lq"] is False
+                assert packet["uses_int_rs1"] is False
+            else:
+                assert packet["is_illegal_instruction"] is False, f"slot2={slot2}"
+                assert packet["instruction_operation"] == cbo_op
+                assert packet["rs_type"] == RS_MEM
+                assert packet["is_int_store"] is True
+                assert packet["needs_sq"] is True and packet["needs_lq"] is False
+                assert packet["uses_int_rs1"] is True
+                assert packet["uses_int_rs2"] is False
+                assert packet["has_int_dest"] is False
+
+    dut.i_cbo_zero_illegal.value = 0
+    for raw in (cbo_clean, cbo_zero_rd):
+        _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": raw})
+        _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=True)
+        await _advance_cycle(dut)
+        packet = _read_id_packet(dut)
+        assert packet["is_illegal_instruction"] is True, hex(raw)
+        assert packet["needs_sq"] is False
 
 
 @cocotb.test()

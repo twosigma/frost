@@ -319,7 +319,10 @@ module dispatch #(
   always_comb begin
     mem_size_defaulted = 1'b0;
     case (op)
-      riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB: mem_size = riscv_pkg::MEM_SIZE_BYTE;
+      // cbo.zero takes the byte size, so its rs1 is never misaligned; the SQ
+      // entry's zero-block flag widens the write to the whole block.
+      riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB, riscv_pkg::CBO_ZERO:
+      mem_size = riscv_pkg::MEM_SIZE_BYTE;
       riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH: mem_size = riscv_pkg::MEM_SIZE_HALF;
       riscv_pkg::LW, riscv_pkg::LWU, riscv_pkg::SW, riscv_pkg::FLW, riscv_pkg::FSW,
       riscv_pkg::LR_W, riscv_pkg::SC_W,
@@ -542,7 +545,8 @@ module dispatch #(
   always_comb begin
     mem_size_2_defaulted = 1'b0;
     case (op_2)
-      riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB: mem_size_2 = riscv_pkg::MEM_SIZE_BYTE;
+      riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB, riscv_pkg::CBO_ZERO:
+      mem_size_2 = riscv_pkg::MEM_SIZE_BYTE;
       riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH: mem_size_2 = riscv_pkg::MEM_SIZE_HALF;
       riscv_pkg::LW, riscv_pkg::LWU, riscv_pkg::SW, riscv_pkg::FLW, riscv_pkg::FSW,
       riscv_pkg::LR_W, riscv_pkg::SC_W,

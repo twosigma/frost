@@ -761,6 +761,26 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "F/D instructions trap without memory effects when mstatus.FS is Off"
         ),
     ),
+    "cbo_zero_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_test",
+        nic_mac_clocks=False,
+        description=(
+            "Zicboz cbo.zero: 64-byte zeroing in DDR and BRAM, CBZE gating, "
+            "store faults with mtval = rs1"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+    ),
+    "cbo_zero_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_bench",
+        nic_mac_clocks=False,
+        description="Cycles to clear 64 KiB and 1 MiB of cached DDR: sd loop against cbo.zero",
+        include_in_pytest=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "40000000"),),
+    ),
     "vm_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

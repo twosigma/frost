@@ -104,10 +104,13 @@ class ReorderBufferEntry:
 
     @property
     def csr_may_change_translation(self) -> bool:
-        """True for any satp access or a write to mstatus or sstatus."""
+        """True for any satp access or a write to mstatus, sstatus or envcfg.
+
+        menvcfg and senvcfg hold the CBZE bits that ID's cbo.zero gate reads.
+        """
         return self.is_csr and (
             self.csr_addr == 0x180
-            or (self.csr_write_intent and self.csr_addr in (0x100, 0x300))
+            or (self.csr_write_intent and self.csr_addr in (0x100, 0x300, 0x10A, 0x30A))
         )
 
 
