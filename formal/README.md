@@ -136,7 +136,7 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `prediction_handoff` | `prediction_release` with `PENDING_HANDOFF_EXCLUDES_SLOT2=1`, the fetch stage's setting |
 | `prediction_metadata_output` | Each packet's BTB-taken bit equals the reference priority, and a packet that a saved or pending prediction does not belong to never reports taken |
 | `prediction_metadata_tracker` | A pending prediction's saved PC and target hold until their packet consumes them or a reset or redirect kills them, and call and return types always leave with their target. See below |
-| `prediction_release` | Pending-prediction outputs are masked while nothing is pending, a ready handoff raises both prediction holdoffs, and the holdoffs, predecessor-PC tags, and lower-parcel lookup match their reference relations. Whenever a prediction will be pending, the registered `pc_reg` relations load next cycle's wide-compare values. See below |
+| `prediction_release` | Pending-prediction outputs are masked while nothing is pending, a ready handoff raises both prediction holdoffs, and the holdoffs, predecessor-PC tags, and lower-parcel lookup match their reference relations. Whenever a prediction will be pending, the registered `pc_reg` relations load next cycle's wide-compare values. In `bmc`, the instruction buffer takes only `pc_reg`'s word. See below |
 | `ras_checkpoint` | The return-address stack's outputs, next pointer, and count equal the reference equations, and so does every entry write: a push or swap writes its link address, a restore writes the saved top entry back, and nothing else changes |
 | `rvc_predecode` | The fill-time RV64C expansion and illegal flag equal the reference decompressor (`rvc_decompressor`) for all 65,536 16-bit parcels |
 
@@ -155,6 +155,13 @@ pending-PC relations throughout the held candidate's lifetime. Replay
 permission gates the capture outputs without changing its state. Derived
 invariants check the registered prediction metadata and the pending-PC
 relation and crossing replicas. Reset and recovery cancel the candidate.
+`c_ext_state` gets the raw window mismatch and a squash that includes it, as
+in the fetch stage. Each live word it sees carries an identity: `pc_reg`'s
+word when the window covers `pc_reg`, an arbitrary word otherwise. The `bmc`
+task checks that whenever the instruction buffer is valid holding a word it
+has just taken, the word is `pc_reg`'s, or on a stall replay the snapshot's.
+The check is bounded only: the snapshot word is internal to `c_ext_state`, so
+induction could start from a snapshot that does not match its PC.
 The harness assumes only a reset on the first cycle.
 `prediction_handoff` runs the same harness with the fetch stage's parameter
 setting. Both have `bmc`, `cover`, and SMT k-induction `prove` tasks.

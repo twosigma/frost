@@ -22,6 +22,12 @@
 // conditions that would block some of them are omitted, admitting more
 // requests. The modeled prediction registers keep the real update enables
 // and the matching-target PD-redirect exception.
+//
+// The compressed state sees the window mismatch and the squash IF gives it
+// (the raw mismatch, and sel_nop including it). With
+// PREDICTION_RELEASE_WORD_OWNERSHIP (the bmc task), each live word also
+// carries the identity of the word it came from, so a check can require the
+// instruction buffer to take only pc_reg's word.
 module prediction_release_formal #(
     parameter bit PENDING_HANDOFF_EXCLUDES_SLOT2 = 1'b0
 ) (
@@ -128,9 +134,12 @@ module prediction_release_formal #(
 
   // These are wiring identities in the production integration, expressed as
   // logic instead of assumptions: every FENCE-class event is part of the full
-  // frontend flush, and a resteer is a qualification of the raw mismatch.
+  // frontend flush, a resteer is a qualification of the raw mismatch, and
+  // IF's packet squash includes the raw mismatch (if_stage's sel_nop).
   assign i_flush = i_frontend_flush_request || i_fence_i_flush;
   assign i_window_cannot_serve = i_window_cannot_serve_raw && i_window_resteer_qualifier;
+  logic sel_nop;
+  assign sel_nop = i_sel_nop || i_window_cannot_serve_raw;
   assign replay_saved_packet = stall_registered && saved_values_valid && !sel_nop_saved && !i_flush;
   assign fetch_progress = i_fetch_progress || replay_saved_packet;
   always_ff @(posedge i_clk) begin
@@ -138,7 +147,7 @@ module prediction_release_formal #(
       sel_nop_saved <= 1'b1;
       slot2_valid_saved <= 1'b0;
     end else if (i_stall && !stall_registered) begin
-      sel_nop_saved <= i_sel_nop;
+      sel_nop_saved <= sel_nop;
       slot2_valid_saved <= i_slot2_valid;
       saved_packet_pc <= pc_reg;
     end
@@ -368,6 +377,25 @@ module prediction_release_formal #(
       .o_npc_val()
   );
 
+  // Word ownership. A live word is pc_reg's word, named by its address bits,
+  // when the window covers pc_reg, and arbitrary otherwise. The stall snapshot
+  // holds the word of the PC it was taken at, which IF captures only from a
+  // packet it emits. Whenever the buffer is valid holding a word it has just
+  // taken, that word must be pc_reg's, or the snapshot's on its replay.
+  (* anyseq *) logic [31:0] i_uncovered_word;
+  logic [31:0] effective_instr;
+  logic [31:0] buffer_word_expected;
+  logic [31:0] buffer_word_expected_q;
+  logic [31:0] instr_buffer_q;
+  logic reset_q;
+  // The buffer's source on the edge being checked: the stall snapshot, and
+  // whether the live window missed pc_reg.
+  logic buffer_from_snapshot_q;
+  logic window_uncovered_q;
+  assign effective_instr = i_window_cannot_serve_raw ? i_uncovered_word : pc_reg[33:2];
+  assign buffer_word_expected = (stall_registered && saved_values_valid) ? saved_packet_pc[33:2] :
+                                                                         pc_reg[33:2];
+
   c_ext_state #(
       .XLEN(XLEN)
   ) u_c_ext_state (
@@ -383,12 +411,14 @@ module prediction_release_formal #(
       .i_pending_prediction_active(pending_prediction_active),
       .i_pending_prediction_target_handoff(pending_prediction_target_handoff),
       .i_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
-      .i_effective_instr('0),
+      .i_effective_instr(effective_instr),
       .i_pc_reg(pc_reg),
       .i_is_compressed,
-      .i_sel_nop,
+      .i_sel_nop(sel_nop),
       .i_fetch_progress(fetch_progress),
-      .i_window_cannot_serve,
+      // The raw mismatch, as if_stage wires it: a window that does not cover
+      // pc_reg must not enter the buffer, whether or not it resteers.
+      .i_window_cannot_serve(i_window_cannot_serve_raw),
       .i_instr_sideband('0),
       .i_instr_fault('0),
       .i_slot2_valid,
@@ -399,5 +429,22 @@ module prediction_release_formal #(
       .o_instr_buffer_sideband(instr_buffer_sideband),
       .o_instr_buffer_fault(instr_buffer_fault)
   );
+
+  // The ownership check (see the identities above the instance).
+  always_ff @(posedge i_clk) begin
+    reset_q <= i_reset;
+    instr_buffer_q <= instr_buffer;
+    buffer_word_expected_q <= buffer_word_expected;
+    buffer_from_snapshot_q <= stall_registered && saved_values_valid;
+    window_uncovered_q <= i_window_cannot_serve_raw;
+    if (f_past_valid && !reset_q && !i_reset && prev_was_compressed_at_lo &&
+        (instr_buffer != instr_buffer_q)) begin
+`ifdef PREDICTION_RELEASE_WORD_OWNERSHIP
+      p_buffer_takes_pc_reg_word : assert (instr_buffer == buffer_word_expected_q);
+`endif
+      cover (!buffer_from_snapshot_q);
+      cover (buffer_from_snapshot_q && window_uncovered_q);
+    end
+  end
 
 endmodule : prediction_release_formal
