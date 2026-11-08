@@ -1868,6 +1868,8 @@ module load_queue #(
     // holders, apart from the cycle an atomic starts or ends, where it holds
     // instead. Simulation and formal reads check it; a composed proof that
     // reads this file for synthesis defines LQ_SECTOR_MATCH_PROOF to keep it.
+    // Simulation checks start after local reset, because a random-start run
+    // begins with arbitrary entry and staging registers.
 `ifdef LQ_SECTOR_MATCH_PROOF
 `define LQ_SECTOR_MATCH_CHECKS
 `elsif SYNTHESIS
@@ -1876,11 +1878,14 @@ module load_queue #(
 `endif
 `ifdef LQ_SECTOR_MATCH_CHECKS
 `ifdef FORMAL
+    wire sector_reset_seen_q = 1'b1;
     always_comb
 `else
+    logic sector_reset_seen_q = 1'b0;
+    always_ff @(posedge i_clk) if (!i_rst_n) sector_reset_seen_q <= 1'b1;
     always @(posedge i_clk)
 `endif
-    if (i_rst_n && sq_check_entry_valid) begin
+    if (sector_reset_seen_q && i_rst_n && sq_check_entry_valid) begin
       p_sector_entry_address :
       assert (entry_sector[sq_check_idx] == sq_check_addr_q[SectorMsb:5] &&
               entry_high_zero[sq_check_idx] == (sq_check_addr_q[XLEN-1:SectorMsb+1] == '0));
