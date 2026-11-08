@@ -287,7 +287,7 @@ Priorities, guided by the performance counters and timing reports:
    loads, and load preparation while the memory port is busy are in place.
    Next, take a cycle out of load-to-use latency, try associativity in the
    load queue's L0 cache if its conflict counters justify it, then
-   prefetching for dependent loads. The L0 holds 256 entries because its
+   prefetching for dependent loads. The L0 holds 512 entries because its
    misses to BRAM cross the AXI boundary. The L0 has one write port, and a
    committed store update takes it ahead of a load-response fill, which is
    then dropped, so the next load of that line misses the L0 again.

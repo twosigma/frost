@@ -56,7 +56,7 @@ adapter wiring.
 | `EARLY_LOAD_WAKEUP` | 1 (`riscv_pkg::EarlyLoadWakeup`) | [Early load wakeup](#early-load-wakeup) |
 | `PREPARE_LOAD_WHILE_BUSY` | 1 (`riscv_pkg::PrepareLoadWhileBusy`) | LQ: stage a load while the memory port is busy; the wrapper may separately permit unrelated L0 hits during buffered Normal stores and older Normal reads |
 | `CACHE_NORMAL_MEMORY` | 0 | Optional Normal read-cache/write-through policy; FROST enables it, excluding the debug data page |
-| `L0_CACHE_DEPTH` | 128 (`riscv_pkg::LqL0Depth`) | LQ L0 entries; FROST passes 256 with Normal read caching |
+| `L0_CACHE_DEPTH` | 128 (`riscv_pkg::LqL0Depth`) | LQ L0 entries; FROST passes 512 with Normal read caching |
 | `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, `0x4000_0000` | Cached (DDR) region, for LQ and SQ tier tagging |
 | `PERF_COUNTERS` | 1 | 0 leaves out `tomasulo_perf_counters`; `o_perf_counter_data` then reads zero |
 

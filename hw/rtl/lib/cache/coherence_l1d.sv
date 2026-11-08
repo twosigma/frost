@@ -1491,31 +1491,17 @@ module coherence_l1d #(
 `endif
   // Live endpoints hold distinct lines. Home atomics drain load endpoints.
   // Local atomics exclude only their sector and endpoint 0, while holding
-  // service through installation.
-  for (genvar ep = 0; ep < MISSES; ep++) begin : gen_bounded_line
-    for (genvar other = ep + 1; other < MISSES; other++) begin : gen_other
-      coherence_l1d_bounded_check check (
-          .i_clk(i_clk),
-          .i_enable(sim_reset_seen_q && !i_rst && Multi && live[ep] && live[other]),
-          .i_ok((ep == 0 ? acquisition_q.addr[ADDR_WIDTH-1:5] : ld_line_q[ep]) != ld_line_q[other])
-      );
-    end
-  end
-  for (genvar ep = 1; ep < MISSES; ep++) begin : gen_bounded_atomic
-    wire atomic_owned = sim_reset_seen_q && !i_rst && Multi && atomic_q && atomic_granted_q;
-    coherence_l1d_bounded_check local_line (
-        .i_clk(i_clk),
-        .i_enable(atomic_owned && atomic_local_q),
-        .i_ok(!live[ep] || ld_line_q[ep] != atomic_addr_q[ADDR_WIDTH-1:5])
-    );
-    coherence_l1d_bounded_check home_idle (
-        .i_clk(i_clk),
-        .i_enable(atomic_owned && !atomic_local_q),
-        .i_ok(!live[ep])
-    );
-  end
+  // service through installation. The unbounded stream proof defines
+  // STREAM_UNBOUNDED_PROOF to leave out the checks it does not close; the
+  // stream BMCs check them to their depth.
   always_ff @(posedge i_clk)
     if (sim_reset_seen_q && !i_rst && Multi) begin
+`ifndef STREAM_UNBOUNDED_PROOF
+      for (int ep = 0; ep < MISSES; ep++)
+      for (int other = 0; other < MISSES; other++)
+      if (ep < other && live[ep] && live[other])
+        assert ((ep == 0 ? acquisition_q.addr[ADDR_WIDTH-1:5] : ld_line_q[ep]) != ld_line_q[other]);
+`endif
       for (int ep = 0; ep < MISSES; ep++) begin
         if (live[ep] && ld_prefetch_q[ep]) begin
           assert (StreamEnabled && ep >= MISSES - PrefetchCount && ep != 0);
@@ -1548,6 +1534,12 @@ module coherence_l1d #(
         assert (!prefetch_cancel && !local_turn_q);
       end
       if (load_acquire_block) assert (ep_request_valid[EpSlots-1:1] == 0);
+`ifndef STREAM_UNBOUNDED_PROOF
+      if (atomic_q && atomic_granted_q)
+        for (int ep = 1; ep < MISSES; ep++)
+        if (atomic_local_q) assert (!live[ep] || ld_line_q[ep] != atomic_addr_q[ADDR_WIDTH-1:5]);
+        else assert (!live[ep]);
+`endif
       if (grant_ready && grant_valid && grant_pick != '0) assert (wb_free);
       if (active && phase_q == LookupWait && array_valid && operation_q == GrantOp &&
           grant_ep_q != '0 && !array_hit && array_state == coherence_pkg::Modified)
@@ -2598,55 +2590,33 @@ module coherence_l1d #(
       if (grant_ready && grant_valid && grant_is_store)
         p_store_grant_head : assert (store_acquired[store_head_index] &&
             store_ep[store_head_index] == grant_pick && grant.addr == pending_addr_q);
+`ifndef STREAM_UNBOUNDED_PROOF
+      for (int slot = 0; slot < 4; slot++)
+      if (store_valid[slot] && store_acquired[slot]) begin
+        assert (live[store_ep[slot]] && ep_store[store_ep[slot]]);
+        assert (store_addr[slot][ADDR_WIDTH-1:5] ==
+            (store_ep[slot] == '0 ? acquisition_q.addr[ADDR_WIDTH-1:5] :
+             ld_line_q[store_ep[slot]]));
+      end
+`endif
       if (store_acquire) begin
         p_store_acquire_once : assert (!store_acquired[store_selected_q]);
-      end
-    end
-  end
-  // Acquired store records hold their endpoint and line, and an acquisition's
-  // lookup differs from each live endpoint's line and from each older store
-  // record's line.
-  for (genvar slot = 0; slot < 4; slot++) begin : gen_bounded_store_slot
-    wire acquired = sim_reset_seen_q && !i_rst && store_valid[slot] && store_acquired[slot];
-    coherence_l1d_bounded_check live_check (
-        .i_clk(i_clk),
-        .i_enable(acquired),
-        .i_ok(live[store_ep[slot]] && ep_store[store_ep[slot]])
-    );
-    coherence_l1d_bounded_check line_check (
-        .i_clk(i_clk),
-        .i_enable(acquired),
-        .i_ok(store_addr[slot][ADDR_WIDTH-1:5] ==
-              (store_ep[slot] == '0 ? acquisition_q.addr[ADDR_WIDTH-1:5] :
-               ld_line_q[store_ep[slot]]))
-    );
-  end
-  for (genvar ep = 0; ep < MISSES; ep++) begin : gen_bounded_acquire_line
-    coherence_l1d_bounded_check check (
-        .i_clk(i_clk),
-        .i_enable(sim_reset_seen_q && !i_rst && store_acquire && live[ep]),
-        .i_ok(lookup_addr_q[ADDR_WIDTH-1:5] !=
-              (ep == 0 ? acquisition_q.addr[ADDR_WIDTH-1:5] : ld_line_q[ep]))
-    );
-  end
-  for (genvar age = 0; age < 4; age++) begin : gen_bounded_acquire_age
-    for (genvar older = 0; older < age; older++) begin : gen_older
-      wire selected = sim_reset_seen_q && !i_rst && store_acquire &&
-          2'(store_head_index+2'(age)) == store_selected_q;
-      coherence_l1d_bounded_check line_check (
-          .i_clk(i_clk),
-          .i_enable(selected),
-          .i_ok(lookup_addr_q[ADDR_WIDTH-1:5] !=
-                store_addr[2'(store_head_index+2'(older))][ADDR_WIDTH-1:5])
-      );
-      coherence_l1d_bounded_check home_check (
-          .i_clk(i_clk),
-          .i_enable(selected),
-          .i_ok(lookup_addr_q[ADDR_WIDTH-1:HomeOffset] ==
+`ifndef STREAM_UNBOUNDED_PROOF
+        for (int ep = 0; ep < MISSES; ep++)
+        if (live[ep]) assert (lookup_addr_q[ADDR_WIDTH-1:5] !=
+            (ep == 0 ? acquisition_q.addr[ADDR_WIDTH-1:5] : ld_line_q[ep]));
+        for (int age = 0; age < 4; age++)
+        if (2'(store_head_index+2'(age)) == store_selected_q)
+          for (int older = 0; older < age; older++) begin
+            assert (lookup_addr_q[ADDR_WIDTH-1:5] !=
+                store_addr[2'(store_head_index+2'(older))][ADDR_WIDTH-1:5]);
+            assert (lookup_addr_q[ADDR_WIDTH-1:HomeOffset] ==
                 store_addr[2'(store_head_index+2'(older))][ADDR_WIDTH-1:HomeOffset] ||
                 (HomeSets > 1 && lookup_addr_q[HomeOffset+:HomeSetBits] !=
-                 store_addr[2'(store_head_index+2'(older))][HomeOffset+:HomeSetBits]))
-      );
+                 store_addr[2'(store_head_index+2'(older))][HomeOffset+:HomeSetBits]));
+          end
+`endif
+      end
     end
   end
   logic store_launch_ready_q;
@@ -3370,6 +3340,10 @@ module coherence_l1d #(
       end
       if (o_sc_write_pending) assert (atomic_q && atomic_sc_q && !atomic_written_q);
       assert (o_block_valid == (atomic_q ? 4'b0001 : store_valid));
+`ifndef STREAM_UNBOUNDED_PROOF
+      for (int holder = 0; holder < 4; holder++)
+        if (store_valid[holder]) assert (o_block_addr[holder] == store_addr[holder]);
+`endif
       if (atomic_q) assert (o_block_addr[0] == atomic_addr_q);
       if ($past(store_pop && tail_q)) assert (o_pending_store);
       assert (store_ack == $past(store_push));
@@ -3387,26 +3361,5 @@ module coherence_l1d #(
       cover (o_sc_write_done);
     end
   end
-  logic f_rst_q = 1'b0;
-  always_ff @(posedge i_clk) f_rst_q <= i_rst;
-  for (genvar holder = 0; holder < 4; holder++) begin : gen_bounded_block
-    coherence_l1d_bounded_check check (
-        .i_clk(i_clk),
-        .i_enable(f_past_valid && !i_rst && !f_rst_q && store_valid[holder]),
-        .i_ok(o_block_addr[holder] == store_addr[holder])
-    );
-  end
 `endif
 endmodule
-
-`ifndef SYNTHESIS
-// Checks one condition on each clock edge while enabled. The L1D instantiates
-// it once per loop iteration so that each check has its own hierarchical name.
-module coherence_l1d_bounded_check (
-    input logic i_clk,
-    input logic i_enable,
-    input logic i_ok
-);
-  always_ff @(posedge i_clk) if (i_enable) p_bounded_hold : assert (i_ok);
-endmodule
-`endif

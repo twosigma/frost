@@ -33,7 +33,7 @@ extracts and sign-extends bytes, halfwords and words from a 64-bit beat.
 | `PREISSUE_READY_PICK`, `PREISSUE_RS_DEPTH` | 0, 8; 1, 8 in the core | Compare RS entry tags first, then select a match using each candidate's ready vector |
 | `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, 1 GiB | Cached (DDR) region |
 
-FROST passes a 256-entry L0 when Normal read caching is enabled; the raw LQ
+FROST passes a 512-entry L0 when Normal read caching is enabled; the raw LQ
 and strict CPU profile retain the 128-entry default. Cache depth does not
 change the number of in-flight loads or coherence observation entries.
 
@@ -398,7 +398,7 @@ on the data-memory read-address path.
 `L0_CACHE_DEPTH` comes down from `frost` and must be a power of two from 8 to
 2^28: the index must reach above the four-dword DMA line, and the tag
 (physical address bits 31 and below) needs at least one bit. Nothing else is
-sized from it. Regressions cover 128 and 256 entries; larger sizes have not
+sized from it. Regressions cover 128, 256 and 512 entries; larger sizes have not
 been evaluated for resources or timing.
 
 ```bash
@@ -627,7 +627,7 @@ causes below it), waiting for the CDB, and already out of the LQ. See the
 The `load_queue` cocotb suite tests the queue in isolation,
 `load_queue_no_prepare_busy` reruns it with `PREPARE_LOAD_WHILE_BUSY=0`, and
 `load_queue_sq_forward` with `ENABLE_SQ_FORWARD_FAST_PATH=1`, as in the core.
-`lq_l0_cache_128` and `lq_l0_cache_256` test the L0 alone, and
+`lq_l0_cache_128`, `lq_l0_cache_256` and `lq_l0_cache_512` test the L0 alone, and
 `lq_stale_slot_probe` is a full-core program that drives two partial flushes
 and ROB-tag reuse against slow, reordered DDR responses. The wrapper and
 router suites (`tomasulo_coherence`, `data_mem_request_router` and others)
