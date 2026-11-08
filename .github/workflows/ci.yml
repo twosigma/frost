@@ -1221,9 +1221,15 @@ jobs:
             pytest_filter: >-
               ((coherence_ or coherent_) and not
               (axi_coherent_bridge or coherence_l1d or coherence_store_boundary or
-              coherence_store_home or coherent_local_atomic or coh_hart_maint_prove)) or
+              coherence_store_home or coherent_local_atomic or coh_hart_maint_prove or
+              coherence_array_equiv)) or
               (coherent_local_atomic and amo_cover)
             timeout_minutes: 240
+          # The coherent array's equivalence with its reference array, about an
+          # hour of BMC tasks.
+          - shard: Coherence array equivalence
+            pytest_filter: coherence_array_equiv
+            timeout_minutes: 120
           # The home's ordered store tasks, which alone ran for about two
           # hours in the Coherence job and pushed it past its limit.
           - shard: Coherence store home

@@ -129,8 +129,10 @@ module coherence_array #(
   logic select_valid;
   logic [PlruBits-1:0] select_plru;
   logic [WayBits-1:0] selected;
-  logic [RowBits-1:0] data_raddr, data_waddr;
   logic [8*LINE_BYTES-1:0] data_rdata;
+  logic [8*LINE_BYTES-1:0] bank_rdata[WAYS];
+  logic [WayBits-1:0] plru_way;
+  logic [PlruBits-1:0] plru_bit_we;
   logic update_fire, request_fire, select_data;
 
   function automatic logic [WayBits-1:0] victim(input logic [PlruBits-1:0] state,
@@ -168,6 +170,19 @@ module coherence_array #(
     touch = value;
   endfunction
 
+  // The tree bits on a way's path, the only bits a touch of that way writes.
+  function automatic logic [PlruBits-1:0] path(input logic [WayBits-1:0] way);
+    logic [PlruBits-1:0] value;
+    int node;
+    value = '0;
+    node  = 1;
+    for (int level = WaySelBits - 1; level >= 0; level--) begin
+      value[node-1] = 1'b1;
+      node = 2 * node + int'(way[level]);
+    end
+    path = value;
+  endfunction
+
   assign o_init_done = phase_q != Init;
   assign o_update_ready = phase_q == Idle;
   assign update_fire = i_update_valid && o_update_ready;
@@ -197,20 +212,26 @@ module coherence_array #(
       plru_hit_q);
   // Hit touches use the registered way during data service or the reply.
   // The metadata write finishes before another request or update can enter.
-  assign plru_write = phase_q == Init ? '0 : touch(plru_q, plru_hit_q ? o_resp_way : i_update_way);
-  sdp_block_ram #(
-      .ADDR_WIDTH(SetBits),
-      .DATA_WIDTH(PlruBits),
-      .SUPPORT_BULK_CLEAR(SimFastInit)
-  ) replacement (
-      .i_clk(i_clk),
-      .i_write_enable(plru_we),
-      .i_bulk_clear(init_bulk_clear),
-      .i_write_address(phase_q == Init ? init_set_q : set_q),
-      .i_read_address(tag_raddr),
-      .i_write_data(plru_write),
-      .o_read_data(plru_read)
-  );
+  // Each tree bit has its own RAM, and a touch writes only the bits on its
+  // way's path, so no write depends on the state read before it.
+  assign plru_way = plru_hit_q ? o_resp_way : i_update_way;
+  assign plru_bit_we = !plru_we ? '0 : phase_q == Init ? '1 : path(plru_way);
+  assign plru_write = phase_q == Init ? '0 : touch('0, plru_way);
+  for (genvar node = 0; node < PlruBits; node++) begin : gen_replacement
+    sdp_block_ram #(
+        .ADDR_WIDTH(SetBits),
+        .DATA_WIDTH(1),
+        .SUPPORT_BULK_CLEAR(SimFastInit)
+    ) replacement (
+        .i_clk(i_clk),
+        .i_write_enable(plru_bit_we[node]),
+        .i_bulk_clear(init_bulk_clear),
+        .i_write_address(phase_q == Init ? init_set_q : set_q),
+        .i_read_address(tag_raddr),
+        .i_write_data(plru_write[node]),
+        .o_read_data(plru_read[node])
+    );
+  end
 
   if (ULTRA) begin : gen_tag_ultra
     logic [WAYS*TagEntryBits-1:0] row;
@@ -252,7 +273,6 @@ module coherence_array #(
     end
   end
 
-  assign data_raddr  = (RowBits'(selected) << SetBits) | RowBits'(set_q);
   assign select_data = visit_q || !((hit && skip_data_q) || (modified_data_q && !hit_modified));
 `ifdef FORMAL
   always_comb begin
@@ -261,30 +281,42 @@ module coherence_array #(
         (modified_data_q && (!hit || tag_rdata[selected][TagBits+:2] != 2'b11)))));
   end
 `endif
-  assign data_waddr = (RowBits'(i_update_way) << SetBits) |
-      RowBits'(i_update_addr[OffsetBits+:SetBits]);
-  sdp_ram_byte_en #(
-      .DATA_WIDTH(8 * LINE_BYTES),
-      .ADDR_WIDTH(RowBits),
-      .READ_LATENCY(DATA_READ_LATENCY),
-      .WRITE_LATENCY(DATA_WRITE_LATENCY),
-      .MEMORY_PRIMITIVE(ULTRA ? "ultra" : "block"),
-      .REGISTER_READ_INPUT(1'b1),
-      .REGISTER_READ_OUTPUT(ULTRA)
-  ) data_array (
+  // Each way has a data bank of Sets rows. In the final tag-read cycle every
+  // bank reads the lookup's set from set_q, with no input register, and the
+  // bank's output register is the read latency's second cycle; the selected
+  // way's row then reaches o_resp_data through a multiplexer. The banks read
+  // every cycle. A bank's read enable qualifies only its collision check:
+  // the selected bank's read never meets a write, which the array accepts
+  // only in Idle.
+  for (genvar way = 0; way < WAYS; way++) begin : gen_data_bank
+    sdp_ram_byte_en #(
+        .DATA_WIDTH(8 * LINE_BYTES),
+        .ADDR_WIDTH(SetBits),
+        .READ_LATENCY(DATA_READ_LATENCY),
+        .WRITE_LATENCY(DATA_WRITE_LATENCY),
+        .MEMORY_PRIMITIVE(ULTRA ? "ultra" : "block"),
+        .REGISTER_READ_INPUT(1'b0),
+        .REGISTER_READ_OUTPUT(ULTRA)
+    ) data_array (
 `ifndef SYNTHESIS
 `ifndef FORMAL
-      .i_check_enable(sim_reset_seen_q && !i_rst),
+        .i_check_enable(sim_reset_seen_q && !i_rst),
 `endif
 `endif
-      .i_clk(i_clk),
-      .i_waddr(data_waddr),
-      .i_wdata(i_update_data),
-      .i_wbyte_en(i_update_mask & {LINE_BYTES{update_fire}}),
-      .i_re(select_valid && select_data),
-      .i_raddr(data_raddr),
-      .o_rdata(data_rdata)
-  );
+        .i_clk(i_clk),
+        .i_waddr(i_update_addr[OffsetBits+:SetBits]),
+        .i_wdata(i_update_data),
+        .i_wbyte_en(i_update_mask & {LINE_BYTES{update_fire && i_update_way == WayBits'(way)}}),
+        .i_re(select_valid && select_data && selected == WayBits'(way)),
+        .i_raddr(set_q),
+        .o_rdata(bank_rdata[way])
+    );
+  end
+  if (WAYS > 1) begin : gen_bank_select
+    assign data_rdata = bank_rdata[o_resp_way];
+  end else begin : gen_one_bank
+    assign data_rdata = bank_rdata[0];
+  end
 
   always_comb begin
     selected = victim(select_plru, ~exclude_q);
@@ -417,6 +449,7 @@ module coherence_array #(
   logic f_hit_seen_q;
   initial for (int set_index = 0; set_index < Sets; set_index++) f_plru_state[set_index] = '0;
   // The reference writes a hit's replacement bits on the tag-selection edge.
+  // Each touch changes only the bits on its way's path of the current state.
   always_ff @(posedge i_clk) begin
     f_plru_read <= f_plru_state[tag_raddr];
     if (init_bulk_clear) begin
@@ -425,9 +458,9 @@ module coherence_array #(
       if (phase_q == Init) f_plru_state[init_set_q] <= '0;
       else if (update_fire && i_update_insert &&
           (!BIMODAL_INSERT || i_update_touch || insert_lfsr_q[4:0] == 0))
-        f_plru_state[set_q] <= touch(select_plru, i_update_way);
+        f_plru_state[set_q] <= touch(f_plru_state[set_q], i_update_way);
       else if (select_valid && hit && !visit_q && !no_touch_q)
-        f_plru_state[set_q] <= touch(select_plru, selected);
+        f_plru_state[set_q] <= touch(f_plru_state[set_q], selected);
     end
     if (i_rst) begin
       f_hit_seen_q  <= 1'b0;
@@ -443,7 +476,10 @@ module coherence_array #(
         p_plru_lookup_value : assert (plru_read == f_plru_read);
       if (plru_hit_q) begin
         p_plru_hit_exclusive : assert (!request_fire && !update_fire);
-        p_plru_hit_write : assert (plru_we && plru_write == f_hit_value_q && set_q == f_hit_set_q);
+        p_plru_hit_write :
+        assert (plru_we && plru_bit_we == path(
+            o_resp_way
+        ) && ((plru_write ^ f_hit_value_q) & plru_bit_we) == '0 && set_q == f_hit_set_q);
       end
       c_plru_hit_reply : cover (plru_hit_q && o_resp_valid && i_resp_ready);
       c_plru_hit_data : cover (plru_hit_q && phase_q == Data);
@@ -454,13 +490,17 @@ module coherence_array #(
     end
   end
 `endif
+  // A row is a way's bank entry for a set, numbered {way, set}.
+  wire [RowBits-1:0] f_update_row = (RowBits'(i_update_way) << SetBits) |
+      RowBits'(i_update_addr[OffsetBits+:SetBits]);
+  wire [RowBits-1:0] f_read_row = (RowBits'(selected) << SetBits) | RowBits'(set_q);
   (* anyconst *) logic [RowBits-1:0] f_row;
   (* anyconst *) logic [OffsetBits-1:0] f_byte;
   logic f_byte_known = 1'b0;
   logic [7:0] f_byte_value;
   always_ff @(posedge i_clk) begin
     if (i_rst) f_byte_known <= 1'b0;
-    else if (update_fire && data_waddr == f_row && i_update_mask[f_byte]) begin
+    else if (update_fire && f_update_row == f_row && i_update_mask[f_byte]) begin
       f_byte_known <= 1'b1;
       f_byte_value <= i_update_data[8*f_byte+:8];
     end
@@ -479,7 +519,7 @@ module coherence_array #(
       f_mask_q <= '0;
     end else begin
       if (o_resp_valid && o_resp_hit && skip_data_q && !o_resp_data_valid) f_tag_only_q <= 1'b1;
-      if (update_fire && data_waddr == f_row && |i_update_mask && !(&i_update_mask)) begin
+      if (update_fire && f_update_row == f_row && |i_update_mask && !(&i_update_mask)) begin
         f_updated_q <= 1'b1;
         f_mask_q <= i_update_mask;
         if (f_updated_q && !(|(f_mask_q & i_update_mask))) f_disjoint_q <= 1'b1;
@@ -540,8 +580,8 @@ module coherence_array #(
       c_early_reply_update :
       cover ($past(
           phase_q == Data && o_resp_valid && i_resp_ready
-      ) && update_fire && |i_update_mask && data_waddr == $past(
-          data_raddr, 2
+      ) && update_fire && |i_update_mask && f_update_row == $past(
+          f_read_row, 2
       ));
     end
   end

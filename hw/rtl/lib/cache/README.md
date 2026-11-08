@@ -229,11 +229,14 @@ must not stop those resources in an integration.
 bridges, and maintenance arbitration. `coherence_home` contains the shared
 L2 controller and `coherence_home_array`, whose tag, data-read and masked-update
 ports have independent service. The L1D's `coherence_array` serializes its
-lookup, read and update operations in block RAM. The final tag-read edge
-selects the private way and registers any required data-read request.
-The input register occupies one cycle of the array's read latency. Replacement state
-uses the tag request's matching PLRU response. A hit updates replacement
-bits from the registered way during data service or the reply, before
+lookup, read and update operations in block RAM. Its data array has a bank
+per way, rows by set. The final tag-read cycle selects the private way, and
+every bank reads the set's row in that cycle; the banks' output registers are
+the second cycle of the read latency, and a way multiplexer passes the
+selected way's row to the response. Victim selection uses the tag request's
+matching PLRU response. Each tree bit of the replacement state has its own
+RAM, and a touch writes only the bits on its way's path. A hit writes them
+from the registered way during data service or the reply, before
 another request or update can enter. A lookup marked `i_req_no_touch`
 leaves replacement state unchanged on a hit; the L1D marks look-ahead
 lookups this way. The L1D's array uses bimodal insertion (see Sets and ways),
@@ -904,6 +907,10 @@ hart and DMA inputs and the hart's data, instruction and walker inputs. Each
 arbiter holds its selection during backpressure and acknowledges only that input.
 Every C source, including each DMA ingress slot, holds its offer until
 acceptance, so these arbiters present their captured selection as C validity.
+
+The `coherence_array_equiv` target checks that `coherence_array` matches,
+output for output on every cycle, a reference array with one data RAM of
+`{way, set}` rows and a replacement RAM written whole.
 
 The `coherence_store_buffer` target proves scalar and byte conservation by
 induction. A 48-cycle saturation case holds an older record while 33 writes

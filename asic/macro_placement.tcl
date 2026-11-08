@@ -164,7 +164,7 @@ set frost_l2_data [lsort -command frost_compare_slices \
   [frost_macros {home\.array\.data_array\.}]]
 set frost_l2_tags [frost_macros {home\.array\.gen_tag_ultra\.}]
 set frost_data_memory [frost_macros {data_memory\.}]
-set frost_l1d_data [frost_macros {l1d\.array\.data_array\.}]
+set frost_l1d_data [frost_macros {l1d\.array\.gen_data_bank}]
 set frost_l1d_tags [frost_macros {l1d\.array\.gen_tag_block\.}]
 set frost_l1i_data [frost_macros {l1i\.gen_data_banks\.}]
 set frost_nic [frost_macros {u_[rt]x_fifo\.storage\.}]
@@ -218,16 +218,16 @@ frost_place_row [lreverse $frost_imem_odd] \
 set frost_bottom_top [expr { $frost_imem_y + max([frost_row_height $frost_imem_even], \
   [frost_row_height $frost_imem_odd]) }]
 
-# The top band: the L1D data in the middle, four 64-bit slices in a two by
-# two grid; at the left the L1I data, four banks of four slices, then the
+# The top band: the L1D data in the middle, a row of four 64-bit slices for
+# each way's bank; at the left the L1I data, four banks of four slices, then the
 # NIC's FIFOs, the BTB's payload tables and the MAC's
 # receive lanes; at the right the L1D tags, the L2 tags and the MAC's transmit
 # frame buffer.
-set frost_l1d_width [frost_grid_width $frost_l1d_data 2]
+set frost_l1d_width [frost_grid_width $frost_l1d_data 4]
 set frost_l1d_x [expr { ($frost_core_width - $frost_l1d_width) / 2 }]
 set frost_l1d_y [expr { $frost_core_height - $frost_edge - \
-  [frost_grid_height $frost_l1d_data 2] }]
-frost_place_grid $frost_l1d_data $frost_l1d_x $frost_l1d_y 2
+  [frost_grid_height $frost_l1d_data 4] }]
+frost_place_grid $frost_l1d_data $frost_l1d_x $frost_l1d_y 4
 
 set frost_left_y [expr { $frost_core_height - $frost_edge - \
   [frost_grid_height $frost_l1i_data 4] }]

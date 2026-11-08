@@ -1,6 +1,8 @@
 [tasks]
 coh_array_bmc bram bounded
 coh_array_uram_bmc uram bounded
+coh_array4_bmc bram bounded four undefined fourbram
+coh_array4_uram_bmc uram bounded four undefined
 coh_array_cover bram covers
 coh_array_uram_cover uram covers
 
@@ -15,7 +17,11 @@ covers: mode cover
 selection: mode prove
 ~selection: depth 32
 selection: depth 2
+# Four-way block RAM frames take about 1.35 times longer than the one before.
+fourbram: depth 24
 timeout 180
+bounded: timeout 1200
+four: timeout 1800
 bounded: aigsmt boolector
 
 [engines]
@@ -30,6 +36,13 @@ uram: chparam -set ULTRA 1 coherence_array
 four: chparam -set CACHE_BYTES 256 -set WAYS 4 coherence_array
 wide: chparam -set ADDR_WIDTH 56 coherence_array
 ~selection: prep -top coherence_array
+# Out-of-range bits of the four-way selections are unreachable constants.
+undefined: memory_map
+undefined: opt
+undefined: techmap
+undefined: opt -fast
+undefined: setundef -anyseq
+undefined: opt_clean
 selection: hierarchy -check -top coherence_array
 selection: proc -noopt
 selection: flatten
