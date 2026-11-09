@@ -2345,8 +2345,12 @@ module reservation_station #(
             .i_write_data({payload_wr_data_2, payload_wr_data}),
             .o_read_data(reference_payload)
         );
+        // A random-start simulation begins with arbitrary RAM contents and
+        // registers, so the checks start after local reset.
+        logic second_payload_reset_seen_q = 1'b0;
+        always_ff @(posedge i_clk) if (!i_rst_n) second_payload_reset_seen_q <= 1'b1;
         always @(posedge i_clk) begin
-          if (i_rst_n && issue_fire_2) begin
+          if (second_payload_reset_seen_q && i_rst_n && issue_fire_2) begin
             p_second_payload_mask : assert (issue_sel_2_ohread == (PayloadRows'(1) << issue_idx_2));
             p_second_payload_exact : assert (payload_rd_data_b == reference_payload);
           end
