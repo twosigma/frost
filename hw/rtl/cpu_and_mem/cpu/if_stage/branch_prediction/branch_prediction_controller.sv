@@ -83,6 +83,10 @@ module branch_prediction_controller #(
     input logic                       i_slot2_plus2_candidate_valid,
     input logic                       i_slot2_plus4_candidate_valid,
     input logic                       i_slot2_valid,
+    // i_slot2_valid with the raw served-window guard
+    // (i_window_cannot_serve_raw) forced low: IF forms i_slot2_valid as this
+    // and not the guard, so the staged select below applies the guard last.
+    input logic                       i_slot2_valid_wcs0,
     // Candidate-local sizes arrive without the late slot-1-size select, so
     // each fixed BTB result can complete its strict halfword safety check in
     // parallel.
@@ -1000,8 +1004,14 @@ module branch_prediction_controller #(
   // target even when the candidate valids are not one-hot.
   assign slot2_staged_prediction_candidate_for_pc =
       slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken;
+  // The staged select feeds the fetch-PC mux. The raw served-window guard
+  // clears both prediction_common and i_slot2_valid, so the select is formed
+  // with the guard low and the guard applies last.
+  (* keep = "true" *) logic slot2_staged_prediction_used_for_pc_wcs0;
+  assign slot2_staged_prediction_used_for_pc_wcs0 = prediction_common_wcs0 && !i_branch_taken &&
+      !i_is_32bit_spanning && i_slot2_valid_wcs0 && slot2_staged_prediction_candidate_for_pc;
   assign slot2_staged_prediction_used_for_pc =
-      slot2_prediction_permission && slot2_staged_prediction_candidate_for_pc;
+      slot2_staged_prediction_used_for_pc_wcs0 && !i_window_cannot_serve_raw;
   assign slot2_live_fallback_used_for_pc =
       slot2_live_fallback_select && !i_branch_taken && !i_is_32bit_spanning;
   assign slot2_live_fallback_candidate_for_pc_cofactor =
@@ -1330,6 +1340,11 @@ module branch_prediction_controller #(
   // pc_controller receives. The predictor's selected target, row return flag
   // and hit are its +4 or +2 candidate's (branch_predictor's selector checks).
   always_comb begin
+    // IF's slot-2 valid is its guard-low cofactor without the guard.
+    assume (i_slot2_valid == (i_slot2_valid_wcs0 && !i_window_cannot_serve_raw));
+    p_slot2_staged_wcs_cofactor :
+    assert (slot2_staged_prediction_used_for_pc ==
+            (slot2_prediction_permission && slot2_staged_prediction_candidate_for_pc));
     assume (btb_predicted_target_2 ==
             (slot2_pc_use_alt ? btb_predicted_target_2_plus4 : btb_predicted_target_2_plus2));
     assume (btb_hit_2 == (slot2_pc_use_alt ? btb_hit_2_plus4 : btb_hit_2_plus2));
