@@ -59,6 +59,9 @@ module dmmu (
     input logic i_iss_needs_sq,  // routing: SQ-resident (stores + SC)
     input logic i_iss_store_perms,  // permission class: stores + SC + AMOs
     input logic i_iss_is_sc,
+    // Zicbom cbo.clean/flush/inval: an SQ-resident op with load permissions
+    // (store perms clear), whose faults the wrapper reports as store faults.
+    input logic i_iss_is_cmo,
     input logic i_iss_atomic,  // AMO, LR or SC: checked against the atomic PMA map
     input logic [riscv_pkg::XLEN-1:0] i_iss_store_data,
     input logic [riscv_pkg::XLEN-1:0] i_iss_amo_rs2,
@@ -77,6 +80,7 @@ module dmmu (
     output riscv_pkg::data_fault_kind_e o_iss_out_fault,
     output logic o_iss_out_needs_sq,
     output logic o_iss_out_is_sc,
+    output logic o_iss_out_is_cmo,
     output logic [riscv_pkg::XLEN-1:0] o_iss_out_store_data,
     output logic [riscv_pkg::XLEN-1:0] o_iss_out_amo_rs2,
 
@@ -133,6 +137,7 @@ module dmmu (
     logic needs_sq;
     logic store_perms;
     logic is_sc;
+    logic is_cmo;
     logic atomic;
     logic [riscv_pkg::XLEN-1:0] store_data;
     logic [riscv_pkg::XLEN-1:0] amo_rs2;
@@ -146,6 +151,7 @@ module dmmu (
     iss_in.needs_sq = i_iss_needs_sq;
     iss_in.store_perms = i_iss_store_perms;
     iss_in.is_sc = i_iss_is_sc;
+    iss_in.is_cmo = i_iss_is_cmo;
     iss_in.atomic = i_iss_atomic;
     iss_in.store_data = i_iss_store_data;
     iss_in.amo_rs2 = i_iss_amo_rs2;
@@ -545,7 +551,7 @@ module dmmu (
   logic s2_pa_q;
   logic s2_is_mmio_q;
   riscv_pkg::data_fault_kind_e s2_fault_q;
-  logic s2_needs_sq_q, s2_is_sc_q;
+  logic s2_needs_sq_q, s2_is_sc_q, s2_is_cmo_q;
   logic [riscv_pkg::XLEN-1:0] s2_store_data_q, s2_amo_rs2_q;
 
   // Compute S2's next MMIO bit for both tlb_is_mmio values and select last,
@@ -614,6 +620,7 @@ module dmmu (
     s2_fault_q <= s1_move ? riscv_pkg::data_fault_kind_e'(s2_fault_next) : riscv_pkg::DFAULT_NONE;
     s2_needs_sq_q <= s1_move ? s1_q.needs_sq : iss_in.needs_sq;
     s2_is_sc_q <= s1_move ? s1_q.is_sc : iss_in.is_sc;
+    s2_is_cmo_q <= s1_move ? s1_q.is_cmo : iss_in.is_cmo;
     s2_store_data_q <= s1_move ? s1_q.store_data : iss_in.store_data;
     s2_amo_rs2_q <= s1_move ? s1_q.amo_rs2 : iss_in.amo_rs2;
   end
@@ -625,7 +632,7 @@ module dmmu (
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] ref_s2_tag_q;
   logic [riscv_pkg::XLEN-1:0] ref_s2_addr_q, ref_s2_store_data_q, ref_s2_amo_rs2_q;
   riscv_pkg::data_fault_kind_e ref_s2_fault_q;
-  logic ref_s2_needs_sq_q, ref_s2_is_sc_q;
+  logic ref_s2_needs_sq_q, ref_s2_is_sc_q, ref_s2_is_cmo_q;
   always_ff @(posedge i_clk) begin
     if (s1_move) begin
       ref_s2_tag_q <= s1_q.tag;
@@ -633,6 +640,7 @@ module dmmu (
       ref_s2_fault_q <= resolve_fault;
       ref_s2_needs_sq_q <= s1_q.needs_sq;
       ref_s2_is_sc_q <= s1_q.is_sc;
+      ref_s2_is_cmo_q <= s1_q.is_cmo;
       ref_s2_store_data_q <= s1_q.store_data;
       ref_s2_amo_rs2_q <= s1_q.amo_rs2;
     end else if (iss_can_bypass) begin
@@ -641,15 +649,16 @@ module dmmu (
       ref_s2_fault_q <= riscv_pkg::DFAULT_NONE;
       ref_s2_needs_sq_q <= iss_in.needs_sq;
       ref_s2_is_sc_q <= iss_in.is_sc;
+      ref_s2_is_cmo_q <= iss_in.is_cmo;
       ref_s2_store_data_q <= iss_in.store_data;
       ref_s2_amo_rs2_q <= iss_in.amo_rs2;
     end
     if (reset_seen_q && i_rst_n && s2_valid_q) begin
       p_s2_payload_exact :
-      assert ({s2_tag_q, o_iss_out_addr, s2_fault_q, s2_needs_sq_q, s2_is_sc_q, s2_store_data_q,
-               s2_amo_rs2_q} ==
+      assert ({s2_tag_q, o_iss_out_addr, s2_fault_q, s2_needs_sq_q, s2_is_sc_q, s2_is_cmo_q,
+               s2_store_data_q, s2_amo_rs2_q} ==
               {ref_s2_tag_q, ref_s2_addr_q, ref_s2_fault_q, ref_s2_needs_sq_q, ref_s2_is_sc_q,
-               ref_s2_store_data_q, ref_s2_amo_rs2_q});
+               ref_s2_is_cmo_q, ref_s2_store_data_q, ref_s2_amo_rs2_q});
     end
   end
 `endif
@@ -666,6 +675,7 @@ module dmmu (
   assign o_iss_out_fault = s2_fault_q;
   assign o_iss_out_needs_sq = s2_needs_sq_q;
   assign o_iss_out_is_sc = s2_is_sc_q;
+  assign o_iss_out_is_cmo = s2_is_cmo_q;
   assign o_iss_out_store_data = s2_store_data_q;
   assign o_iss_out_amo_rs2 = s2_amo_rs2_q;
 
@@ -879,10 +889,11 @@ module dmmu (
       if (s2_valid_q) begin
         p_capture_payload :
         assert ({o_iss_out_rob_tag, o_iss_out_addr, o_iss_out_fault, o_iss_out_is_mmio,
-                 o_iss_out_needs_sq, o_iss_out_is_sc, o_iss_out_store_data, o_iss_out_amo_rs2} ==
+                 o_iss_out_needs_sq, o_iss_out_is_sc, o_iss_out_is_cmo, o_iss_out_store_data,
+                 o_iss_out_amo_rs2} ==
                 {f_capture_op_q.tag, f_capture_addr_q, f_capture_fault_q, f_capture_mmio_q,
-                 f_capture_op_q.needs_sq, f_capture_op_q.is_sc, f_capture_op_q.store_data,
-                 f_capture_op_q.amo_rs2});
+                 f_capture_op_q.needs_sq, f_capture_op_q.is_sc, f_capture_op_q.is_cmo,
+                 f_capture_op_q.store_data, f_capture_op_q.amo_rs2});
       end
       if (o_iss_out_lq_capture_valid) begin
         p_lq_lookahead_valid : assert (f_pre_needs_lq_q);

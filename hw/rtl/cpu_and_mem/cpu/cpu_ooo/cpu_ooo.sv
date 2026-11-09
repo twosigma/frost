@@ -58,6 +58,8 @@ module cpu_ooo #(
     // misaligned-access engine instead of trapping (misaligned/ma_engine.sv).
     // Its sector requests leave through the o_ma_line_* port.
     parameter bit MISALIGNED_HW = 1'b0,
+    // Zicbom: execute cbo.inval as cbo.flush at every privilege (csr_file).
+    parameter bit CBO_INVAL_AS_FLUSH = 1'b0,
     // The walker's line port carries the L1s' 32-byte lines.
     localparam int unsigned WalkLineBytes = 32
 ) (
@@ -1109,6 +1111,20 @@ module cpu_ooo #(
     if (i_rst) id_cbo_zero_illegal_q <= 1'b0;
     else id_cbo_zero_illegal_q <= csr_cbo_zero_illegal;
   end
+  // The Zicbom gates (CBCFE, CBIE) take it too, with the same change rule.
+  logic csr_cbo_cf_illegal, csr_cbo_inval_illegal, csr_cbo_inval_flush;
+  logic id_cbo_cf_illegal_q, id_cbo_inval_illegal_q, id_cbo_inval_flush_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      id_cbo_cf_illegal_q    <= 1'b0;
+      id_cbo_inval_illegal_q <= 1'b0;
+      id_cbo_inval_flush_q   <= 1'b0;
+    end else begin
+      id_cbo_cf_illegal_q    <= csr_cbo_cf_illegal;
+      id_cbo_inval_illegal_q <= csr_cbo_inval_illegal;
+      id_cbo_inval_flush_q   <= csr_cbo_inval_flush;
+    end
+  end
 
   id_stage #(
       .XLEN(XLEN)
@@ -1123,6 +1139,9 @@ module cpu_ooo #(
       .i_mstatus_fs_off(id_mstatus_fs_off_q),
       .i_mstatus_vs_off(id_mstatus_vs_off_q),
       .i_cbo_zero_illegal(id_cbo_zero_illegal_q),
+      .i_cbo_cf_illegal(id_cbo_cf_illegal_q),
+      .i_cbo_inval_illegal(id_cbo_inval_illegal_q),
+      .i_cbo_inval_flush(id_cbo_inval_flush_q),
       .o_from_id_to_ex(decoded_packet),
       .o_from_id_to_ex_next(decoded_packet_next),
       .o_from_id_to_ex_next_go(decoded_packet_next_go),
@@ -3949,6 +3968,7 @@ module cpu_ooo #(
   csr_file #(
       .XLEN(XLEN),
       .COMMIT_EXCLUDES_CONTROL_TAKE(1'b1),
+      .CBO_INVAL_AS_FLUSH(CBO_INVAL_AS_FLUSH),
       .UsePerfCsrHalf(1'b1),
       .PERF_COUNTERS(PERF_COUNTERS),
       .VECTOR(VECTOR),
@@ -4056,6 +4076,9 @@ module cpu_ooo #(
       .o_vec_vtype(csr_vec_vtype),
       .o_vec_vstart(csr_vec_vstart),
       .o_cbo_zero_illegal(csr_cbo_zero_illegal),
+      .o_cbo_cf_illegal(csr_cbo_cf_illegal),
+      .o_cbo_inval_illegal(csr_cbo_inval_illegal),
+      .o_cbo_inval_flush(csr_cbo_inval_flush),
       .o_debug_mode(csr_debug_mode),
       .o_dcsr_step(csr_dcsr_step),
       .o_dcsr_ebreak(csr_dcsr_ebreak),
@@ -4094,6 +4117,11 @@ module cpu_ooo #(
     if (reset_seen_q && fs_off_checks_armed && !i_rst &&
         (csr_cbo_zero_illegal != id_cbo_zero_illegal_q)) begin
       p_cbo_zero_gate_change_flushes_decode : assert (flush_all);
+    end
+    if (reset_seen_q && fs_off_checks_armed && !i_rst &&
+        ({csr_cbo_cf_illegal, csr_cbo_inval_illegal, csr_cbo_inval_flush} !=
+         {id_cbo_cf_illegal_q, id_cbo_inval_illegal_q, id_cbo_inval_flush_q})) begin
+      p_cbo_mgmt_gates_change_flushes_decode : assert (flush_all);
     end
   end
 `endif

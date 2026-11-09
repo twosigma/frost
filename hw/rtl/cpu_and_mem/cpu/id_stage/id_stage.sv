@@ -46,6 +46,13 @@ module id_stage #(
     // FS-Off. Legal envcfg writes affect only lower privilege; traps, xRETs
     // and debug transitions flush the decode that used the old permission.
     input logic i_cbo_zero_illegal,
+    // Zicbom gates, registered by cpu_ooo the same way: cbo.clean/cbo.flush
+    // illegal (CBCFE), cbo.inval illegal (CBIE = 00), and cbo.inval executed
+    // as cbo.flush (CBIE = 01), which ID decodes as CBO_FLUSH so nothing
+    // downstream sees CBIE.
+    input logic i_cbo_cf_illegal,
+    input logic i_cbo_inval_illegal,
+    input logic i_cbo_inval_flush,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex,
     // Next-edge value of o_from_id_to_ex (its register D), for a consumer
     // that keeps a registered copy of fields it selects against this output.
@@ -140,6 +147,7 @@ module id_stage #(
   logic decoded_illegal;
   instr_decoder instr_decoder_inst (
       .i_instr(i_from_pd_to_id.instruction),
+      .i_cbo_inval_flush(i_cbo_inval_flush),
       .o_instr_op(decoded_operation),
       .o_illegal(decoded_illegal)
   );
@@ -234,16 +242,24 @@ module id_stage #(
   // memory fault cannot replace its illegal-instruction cause.
   // The CBZE gate applies the same way: an illegal cbo.zero routes to INT_RS
   // with no store-queue entry, so no store fault can replace its cause.
+  // The Zicbom gates follow it, selected by funct12 bits 22:20 (100 zero, 000
+  // inval, 001 clean, 010 flush; the decoder rejects the other encodings).
+  function automatic logic cbo_illegal_for(input logic [2:0] funct12_low);
+    cbo_illegal_for = funct12_low[2] ? i_cbo_zero_illegal :
+        (|funct12_low[1:0]) ? i_cbo_cf_illegal : i_cbo_inval_illegal;
+  endfunction
   logic is_cbo_direct;
   assign is_cbo_direct = (instruction.opcode == riscv_pkg::OPC_MISC_MEM) &&
                          (instruction.funct3 == 3'b010);
+  logic cbo_gate_illegal;
+  assign cbo_gate_illegal = cbo_illegal_for(instruction.source_reg_2[2:0]);
   logic is_illegal_instruction;
   logic is_vector_direct;
   assign is_vector_direct = instruction.opcode == riscv_pkg::OPC_OP_V;
   assign is_illegal_instruction = decoder_illegal | i_from_pd_to_id.illegal_instruction |
                                   (i_mstatus_fs_off & is_fp_instruction_direct) |
                                   (i_mstatus_vs_off & is_vector_direct) |
-                                  (i_cbo_zero_illegal & is_cbo_direct);
+                                  (cbo_gate_illegal & is_cbo_direct);
 
   // Rounding mode: for FP operations funct3 (bits [14:12]) encodes rm.
   logic [2:0] fp_rm_direct;
@@ -631,6 +647,7 @@ module id_stage #(
   logic decoded_illegal_2;
   instr_decoder instr_decoder_inst_2 (
       .i_instr(i_from_pd_to_id_2.instruction),
+      .i_cbo_inval_flush(i_cbo_inval_flush),
       .o_instr_op(decoded_operation_2),
       .o_illegal(decoded_illegal_2)
   );
@@ -720,13 +737,15 @@ module id_stage #(
   logic is_cbo_direct_2;
   assign is_cbo_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_MISC_MEM) &&
                            (instruction_2.funct3 == 3'b010);
+  logic cbo_gate_illegal_2;
+  assign cbo_gate_illegal_2 = cbo_illegal_for(instruction_2.source_reg_2[2:0]);
   logic is_illegal_instruction_2;
   logic is_vector_direct_2;
   assign is_vector_direct_2 = instruction_2.opcode == riscv_pkg::OPC_OP_V;
   assign is_illegal_instruction_2 = decoder_illegal_2 | i_from_pd_to_id_2.illegal_instruction |
                                     (i_mstatus_fs_off & is_fp_instruction_direct_2) |
                                     (i_mstatus_vs_off & is_vector_direct_2) |
-                                    (i_cbo_zero_illegal & is_cbo_direct_2);
+                                    (cbo_gate_illegal_2 & is_cbo_direct_2);
 
   logic [2:0] fp_rm_direct_2;
   assign fp_rm_direct_2 = instruction_2.funct3;

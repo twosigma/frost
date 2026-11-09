@@ -1779,6 +1779,7 @@ module tomasulo_wrapper #(
   logic mem_rs_issue_is_sc;
   logic mem_rs_issue_is_cbo_zero;
   logic mem_rs_issue_atomic_pma;
+  logic mem_rs_issue_is_cmo;
 
   assign store_page_offset_sum =
       {1'b0, o_mem_rs_issue.src1_value[11:0]} + {1'b0, o_mem_rs_issue.imm[11:0]};
@@ -1787,6 +1788,12 @@ module tomasulo_wrapper #(
   // SC and cbo.zero use the atomic PMA map, excluding all device pages.
   assign mem_rs_issue_is_cbo_zero = o_mem_rs_issue.op == riscv_pkg::CBO_ZERO;
   assign mem_rs_issue_atomic_pma = mem_rs_issue_is_sc || mem_rs_issue_is_cbo_zero;
+  // Zicbom ops take the ordinary store PMA map: a block in BRAM, DDR or a
+  // device window is permitted (as a load or a store to it would be) and
+  // executes as an ordered no-op (store_queue); outside the map is a store
+  // access fault. Their zero immediate leaves rs1 as the address.
+  assign mem_rs_issue_is_cmo = (o_mem_rs_issue.op == riscv_pkg::CBO_CLEAN) ||
+      (o_mem_rs_issue.op == riscv_pkg::CBO_FLUSH) || (o_mem_rs_issue.op == riscv_pkg::CBO_INVAL);
   coherent_store_pma store_pma (
       .i_base(o_mem_rs_issue.src1_value),
       .i_effective_addr(sq_effective_addr),
@@ -1816,6 +1823,7 @@ module tomasulo_wrapper #(
   // Declared here, driven in the dmmu section below (the MMU's issue-out
   // pulse split by fault/ok and routed by its needs_sq echo).
   logic dmmu_out_is_sc;
+  logic dmmu_out_is_cmo;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] dmmu_out_tag;
   // Factor the untranslated done predicate for timing. It uses the same PMA
   // and alignment checks as store_misalign_issue; fault priority is unchanged.
@@ -2473,8 +2481,11 @@ module tomasulo_wrapper #(
       .i_cdb_write_2(cdb_write_from_arbiter_2),
       .i_cdb_match_tag(cdb_rob_match_tag),
       .i_cdb_match_tag_2(cdb_rob_match_tag_2),
+      // A Zicbom op completes at issue wherever its block lies: it writes
+      // nothing, so no precise bus response can fault it.
       .i_store_complete_valid(store_issue_fire &&
           (!MEM_RESPONSE_ERRORS ||
+           (i_translation_active ? dmmu_out_is_cmo : mem_rs_issue_is_cmo) ||
            (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
           i_translation_active ? dmmu_out_addr : sq_effective_addr
       )) || (((i_translation_active ? dmmu_out_addr : sq_effective_addr) >=
@@ -4183,19 +4194,29 @@ module tomasulo_wrapper #(
   // Build either slot's SQ allocation with the address invalid.
   // sq_early_addr_pipeline supplies it a cycle later when the base is ready;
   // otherwise it waits for operand repair or MEM_RS issue.
+  // A Zicbom op's kind; the SQ uses it only on Zicbom entries.
+  function automatic riscv_pkg::cmo_kind_e cmo_kind_of(input riscv_pkg::instr_op_e op);
+    cmo_kind_of = (op == riscv_pkg::CBO_CLEAN) ? riscv_pkg::CMO_CLEAN :
+        (op == riscv_pkg::CBO_FLUSH) ? riscv_pkg::CMO_FLUSH : riscv_pkg::CMO_INVAL;
+  endfunction
   function automatic riscv_pkg::sq_alloc_req_t make_sq_alloc(
       input logic valid_routed, input riscv_pkg::rs_dispatch_t dispatch);
     riscv_pkg::sq_alloc_req_t r;
+    logic is_cmo;
     begin
-      r.valid       = valid_routed && dispatch.mem_needs_sq;
-      r.rob_tag     = dispatch.rob_tag;
-      r.is_fp       = dispatch.is_fp_mem;
-      r.size        = dispatch.mem_size;
-      r.is_sc       = (dispatch.op == riscv_pkg::SC_W) || (dispatch.op == riscv_pkg::SC_D);
-      r.is_zero     = dispatch.op == riscv_pkg::CBO_ZERO;
-      r.addr_valid  = 1'b0;
-      r.address     = '0;
-      r.is_mmio     = 1'b0;
+      is_cmo = (dispatch.op == riscv_pkg::CBO_CLEAN) || (dispatch.op == riscv_pkg::CBO_FLUSH) ||
+          (dispatch.op == riscv_pkg::CBO_INVAL);
+      r.valid = valid_routed && dispatch.mem_needs_sq;
+      r.rob_tag = dispatch.rob_tag;
+      r.is_fp = dispatch.is_fp_mem;
+      r.size = dispatch.mem_size;
+      r.is_sc = (dispatch.op == riscv_pkg::SC_W) || (dispatch.op == riscv_pkg::SC_D);
+      r.is_zero = dispatch.op == riscv_pkg::CBO_ZERO;
+      r.is_cmo = is_cmo;
+      r.cmo_kind = cmo_kind_of(dispatch.op);
+      r.addr_valid = 1'b0;
+      r.address = '0;
+      r.is_mmio = 1'b0;
       make_sq_alloc = r;
     end
   endfunction
@@ -4324,8 +4345,12 @@ module tomasulo_wrapper #(
       .i_iss_va(lq_effective_addr),
       .i_iss_size(riscv_pkg::mem_size_e'(o_mem_rs_issue.mem_size)),
       .i_iss_needs_sq(o_mem_rs_issue.mem_needs_sq),
-      .i_iss_store_perms(o_mem_rs_issue.mem_needs_sq || dmmu_iss_is_amo),
+      // A Zicbom op is permitted wherever a load is (R, or X with MXR; A set,
+      // D ignored); its faults are still store faults (cmo.adoc,
+      // norm:cbm_access, norm:cbm_unperm_fault), since it is SQ-resident.
+      .i_iss_store_perms((o_mem_rs_issue.mem_needs_sq && !mem_rs_issue_is_cmo) || dmmu_iss_is_amo),
       .i_iss_is_sc(mem_rs_issue_is_sc),
+      .i_iss_is_cmo(mem_rs_issue_is_cmo),
       .i_iss_atomic(dmmu_iss_is_amo || dmmu_iss_is_lr || mem_rs_issue_atomic_pma),
       .i_iss_store_data(o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
       .i_iss_amo_rs2(o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
@@ -4338,6 +4363,7 @@ module tomasulo_wrapper #(
       .o_iss_out_fault(dmmu_out_fault),
       .o_iss_out_needs_sq(dmmu_out_needs_sq),
       .o_iss_out_is_sc(dmmu_out_is_sc),
+      .o_iss_out_is_cmo(dmmu_out_is_cmo),
       .o_iss_out_store_data(dmmu_out_store_data),
       .o_iss_out_amo_rs2(dmmu_out_amo_rs2),
       .o_pre_rob_tag(dmmu_pre_rob_tag),

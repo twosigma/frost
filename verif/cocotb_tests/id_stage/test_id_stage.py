@@ -248,6 +248,9 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pd_redirect_slot2.value = 0
     dut.i_mstatus_fs_off.value = 0
     dut.i_cbo_zero_illegal.value = 0
+    dut.i_cbo_cf_illegal.value = 0
+    dut.i_cbo_inval_illegal.value = 0
+    dut.i_cbo_inval_flush.value = 0
 
 
 async def _setup_test(dut: Any) -> None:
@@ -856,12 +859,12 @@ async def test_cbo_zero_class_and_cbze_gate(dut: Any) -> None:
     """cbo.zero decodes as a store-queue store of rs1; the CBZE gate makes it illegal.
 
     With i_cbo_zero_illegal set, cbo.zero in either slot takes the neutral
-    illegal class and no store-queue entry. The other CBO encodings stay
-    illegal whatever the gate.
+    illegal class and no store-queue entry. Unassigned CBO encodings and a
+    nonzero rd stay illegal whatever the gate.
     """
     await _setup_test(dut)
     cbo_zero = _pack_i(imm=4, rs1=5, funct3=0b010, rd=0, opcode=0b0001111)
-    cbo_clean = _pack_i(imm=1, rs1=5, funct3=0b010, rd=0, opcode=0b0001111)
+    cbo_clean = _pack_i(imm=3, rs1=5, funct3=0b010, rd=0, opcode=0b0001111)
     cbo_zero_rd = _pack_i(imm=4, rs1=5, funct3=0b010, rd=3, opcode=0b0001111)
     cbo_op = _INSTR_OPS["CBO_ZERO"]
 
@@ -1073,3 +1076,79 @@ async def test_btb_target_check_for_direct_branches(dut: Any) -> None:
     await _advance_cycle(dut)
     packet = _read_id_packet(dut)
     assert packet["btb_correct_non_jalr"] is False
+
+
+@cocotb.test()
+async def test_cbo_mgmt_class_and_gates(dut: Any) -> None:
+    """cbo.clean/flush/inval decode as store-queue entries of rs1, gated in ID.
+
+    i_cbo_cf_illegal makes clean and flush illegal, i_cbo_inval_illegal makes
+    inval illegal, each with the neutral class and no store-queue entry; the
+    gates do not cross. i_cbo_inval_flush decodes inval as CBO_FLUSH. Encodings
+    with rd != 0 or funct12 0x003 stay illegal.
+    """
+    await _setup_test(dut)
+    raw = {
+        "CBO_INVAL": _pack_i(imm=0, rs1=9, funct3=0b010, rd=0, opcode=0b0001111),
+        "CBO_CLEAN": _pack_i(imm=1, rs1=9, funct3=0b010, rd=0, opcode=0b0001111),
+        "CBO_FLUSH": _pack_i(imm=2, rs1=9, funct3=0b010, rd=0, opcode=0b0001111),
+    }
+    for cf_gate, inval_gate, inval_flush in (
+        (0, 0, 0),
+        (1, 0, 0),
+        (0, 1, 0),
+        (0, 0, 1),
+        (1, 1, 1),
+    ):
+        for name, instruction in raw.items():
+            for slot2 in (False, True):
+                _drive_pd_packet(
+                    dut,
+                    {"program_counter": BASE_PC, "instruction": instruction},
+                    slot2=slot2,
+                )
+                _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+                dut.i_cbo_cf_illegal.value = cf_gate
+                dut.i_cbo_inval_illegal.value = inval_gate
+                dut.i_cbo_inval_flush.value = inval_flush
+                dut.i_cbo_zero_illegal.value = 1
+                await _advance_cycle(dut)
+                packet = _read_id_packet(dut, slot2=slot2)
+                where = f"{name} cf={cf_gate} inval={inval_gate} flush={inval_flush} slot2={slot2}"
+                illegal = inval_gate if name == "CBO_INVAL" else cf_gate
+                if illegal:
+                    assert packet["is_illegal_instruction"] is True, where
+                    assert packet["rs_type"] == RS_INT, where
+                    assert (
+                        packet["needs_sq"] is False and packet["needs_lq"] is False
+                    ), where
+                    continue
+                want = "CBO_FLUSH" if (name == "CBO_INVAL" and inval_flush) else name
+                assert packet["is_illegal_instruction"] is False, where
+                assert packet["instruction_operation"] == _INSTR_OPS[want], where
+                assert packet["rs_type"] == RS_MEM, where
+                assert packet["is_int_store"] is True, where
+                assert packet["needs_sq"] is True and packet["needs_lq"] is False, where
+                assert packet["uses_int_rs1"] is True, where
+                assert packet["uses_int_rs2"] is False, where
+                assert packet["has_int_dest"] is False, where
+
+    for gate in (0, 1):
+        dut.i_cbo_cf_illegal.value = gate
+        dut.i_cbo_inval_illegal.value = gate
+        dut.i_cbo_zero_illegal.value = gate
+        for bad in (
+            _pack_i(imm=1, rs1=9, funct3=0b010, rd=4, opcode=0b0001111),
+            _pack_i(imm=0x3, rs1=9, funct3=0b010, rd=0, opcode=0b0001111),
+            _pack_i(imm=0x22, rs1=9, funct3=0b010, rd=0, opcode=0b0001111),
+        ):
+            _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": bad})
+            _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=True)
+            await _advance_cycle(dut)
+            packet = _read_id_packet(dut)
+            assert packet["is_illegal_instruction"] is True, hex(bad)
+            assert packet["needs_sq"] is False
+    dut.i_cbo_cf_illegal.value = 0
+    dut.i_cbo_inval_illegal.value = 0
+    dut.i_cbo_inval_flush.value = 0
+    dut.i_cbo_zero_illegal.value = 0

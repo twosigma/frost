@@ -449,7 +449,9 @@
     "H": {"supported": false},
     "Zibi": {"supported": false},
     "Zic64b": {"supported": false},
-    "Zicbom": {"supported": false},
+    // cbo.clean/flush/inval on 64-byte blocks; menvcfg/senvcfg CBIE and CBCFE.
+    // Every FROST master is coherent, so they change no data, as in Sail.
+    "Zicbom": {"supported": true},
     "Zicbop": {"supported": false},
     // cbo.zero zeroes 64-byte blocks (platform.cache_block_size_exp) of low
     // BRAM and cached DDR, the regions marked supports_cbo_zero above.
@@ -525,7 +527,10 @@
     "Sv48": {"supported": false},
     "Sv57": {"supported": false},
     "Ssqosid": {"supported": false},
-    "Svpbmt": {"supported": false},
+    // menvcfg.PBMTE is writable. FROST's walker still faults PTE bits 62:61
+    // (Svpbmt commit 4 adds the PBMT walk), so a trace that sets PBMTE and
+    // then maps a PBMT page diverges until then.
+    "Svpbmt": {"supported": true},
     "Stateen": {"Smstateen": {"supported": false}, "Ssstateen": {"supported": false}}
   }
 }

@@ -952,6 +952,26 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
         verilator_extra_args=("--assert", "-GL2_LINE_BYTES=32"),
     ),
+    "cbo_mgmt_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_mgmt_test",
+        nic_mac_clocks=False,
+        description=(
+            "Zicbom cbo.clean/flush/inval as ordered no-ops: CBCFE and CBIE gates in S and U, "
+            "CBIE WARL, load-permission translation, store faults with mtval = rs1, device no-op"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+    ),
+    "cbo_mgmt_test_assert": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_mgmt_test",
+        nic_mac_clocks=False,
+        description="Zicbom with the cache, load-queue and store-queue assertions enabled",
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+        verilator_extra_args=("--assert",),
+    ),
     "cbo_zero_bench": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
