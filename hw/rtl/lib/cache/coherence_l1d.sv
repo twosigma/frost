@@ -3244,9 +3244,12 @@ module coherence_l1d #(
       // An acquisition clears endpoint 0's done flag, so its request phases
       // find it clear.
       if (|f_ep_phase[0][3:1]) p_owned_done0 : assert (!done_q);
-      // A read under lookup or acquisition stays valid and unready.
-      if (active && operation_q == ReadOp && (phase_q == Lookup || phase_q == LookupWait ||
-                                              phase_q == LocalCheck || phase_q == Acquire))
+      // A read under lookup or acquisition stays valid and unready, but the
+      // hit path may answer a shadow lookup's read once it hits.
+      if (active && operation_q == ReadOp &&
+          (phase_q == LocalCheck || phase_q == Acquire ||
+           ((phase_q == Lookup || phase_q == LookupWait) &&
+            (!(first_lookup ? shadow_now : shadow_q) || (shadow_q && !path_hit_q)))))
         p_owned_read_live : assert (rd_valid_q[selected_read_q] &&
             !rd_ready_q[selected_read_q]);
 `endif
