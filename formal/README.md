@@ -30,36 +30,77 @@ Other task names are parameter or width variants of these, such as
 `bmc_xlen32` or `bmc_xilinx`. Each target and task is a separate SymbiYosys
 run. The runner's default timeout is 40 minutes. `csr_file:bmc`,
 `csr_file:bmc_perf_off`, and `reorder_buffer:bmc` each have 90 minutes.
-`coherent_hart_cache:coh_hart_maint_prove`, `coh_hart_maint_four_bmc`,
-`coherence_store_boundary:cover_four` have 120 minutes,
-`coherence_store_boundary:bmc_four` has 300 minutes and `bmc_intervening` has
-240 minutes, `coherence_l1d:coh_l1d_multi_bmc` has 240 minutes,
-`coherence_l1d:coh_l1d_stream_free_bmc` has 180 minutes,
-`coherence_l1d:coh_l1d_stream_bmc` and `coh_l1d_stream_free_nostore_bmc` have
-60 minutes, and
-`coherence_l1d:coh_l1d_bmc` and the multi-endpoint data BMCs have 60 minutes,
-and `coherence_array:coh_array4_port_bmc` has 100 minutes,
-in both their SBY configurations and the runner.
+`coherent_hart_cache:coh_hart_maint_prove`, `coh_hart_maint_four_bmc`, and
+`coherence_store_boundary:cover_four` have 120 minutes.
+`coherence_store_boundary:bmc_four` has 300 minutes and `bmc_intervening`
+has 240 minutes. `coherence_l1d:coh_l1d_bmc` has 180 minutes at depth 40;
+`coh_l1d_multi_bmc` has 300 minutes at depth 40.
+`coh_l1d_stream_free_bmc` has 180 minutes; `coh_l1d_stream_bmc` and
+`coh_l1d_stream_free_nostore_bmc` have 60 minutes each.
+`coherence_array:coh_array_port_bmc` has 40 minutes and
+`coh_array4_port_bmc` has 100 minutes at depth 24. The L1D, store and
+hit-port allowances match in the SBY configurations and the runner.
 Individual SBY tasks can set shorter limits.
+
+The following data and store BMC allowances round twice the measured
+runtime up to five-minute increments. Measurements ran beside one other
+formal job. Word variants share their word-0 representative's allowance;
+all L1D data BMCs keep depth 40.
+
+| Target | Task | SBY and runner timeout (seconds / minutes) |
+| --- | --- | --- |
+| `coherence_l1d` | `coh_l1d_data_bmc`, `coh_l1d_data1_bmc`, `coh_l1d_data2_bmc`, `coh_l1d_data3_bmc` | 3,900 / 65 each |
+| `coherence_l1d` | `coh_l1d_multi_data0_bmc` through `coh_l1d_multi_data3_bmc` | 4,200 / 70 each |
+| `coherence_l1d` | `coh_l1d_store_payload_bmc` | 900 / 15 |
+| `coherence_l1d` | `coh_l1d_store_grant_bmc` | 1,200 / 20 |
+| `coherence_l1d` | `coh_l1d_store_multi_payload_bmc` | 1,800 / 30 |
+| `coherence_l1d` | `coh_l1d_store_multi_grant_bmc` | 3,600 / 60 |
+| `coherence_l1d` | `coh_l1d_ways_data_bmc` | 5,100 / 85 |
+| `coherence_store_boundary` | `bmc_amo_same` | 3,300 / 55 |
+| `coherence_store_boundary` | `bmc_amo_other` | 4,800 / 80 |
+| `coherence_store_boundary` | `bmc_sc` | 3,600 / 60 |
+| `coherence_store_home` | `bmc_siblings` | 1,800 / 30 |
+| `coherence_store_home` | `bmc_rows` | 2,100 / 35 |
+| `coherence_store_home` | `bmc_conflict` | 2,400 / 40 |
+| `coherence_store_home` | `bmc_pressure` | 2,700 / 45 |
 
 CI assigns the CSR profiling-on, CSR profiling-off and reorder-buffer tasks
 to separate jobs with 120-minute limits. These jobs also run selected
-coherent store-boundary and local-atomic tasks, and the CSR profiling-on job
-runs the L1D local ownership proofs. The hart maintenance proof and the
-scripted and store-free eight-endpoint L1D stream control BMCs share a job with
-a 330-minute limit, which covers their allowances in sequence. The free-input
-stream BMC with stores shares a job with the four-way hit-port array BMC, and
-the four-record boundary BMC and the intervening-load boundary BMC each have
-a job of their own, each with a 330-minute limit. The store-home job runs the home's
-ordered store tasks with a 240-minute limit. The L1D multi-endpoint job runs
-`coh_l1d_multi_bmc` alone, the L1D and bridges job runs the other L1D tasks
-and the AXI bridge targets, and the store-boundary job runs the other store-boundary
-targets, each with a 330-minute limit. Two coherent-array equivalence jobs
-run the `coherence_array_equiv` tasks, the four-way tasks in one and the
-others in the other, each with a 120-minute limit. The Coherence
-job runs the other coherence tasks, including the hart maintenance covers,
+local-atomic tasks, and the CSR profiling-on job runs the L1D local ownership
+proofs. The hart maintenance proof and the scripted and store-free
+eight-endpoint L1D stream control BMCs share a job with a 330-minute limit.
+The free-input stream BMC with stores shares a 330-minute job with the
+four-way hit-port array BMC. The four-record boundary BMC and the
+intervening-load boundary BMC each have a 330-minute job of their own.
+
+The L1D control job runs `coh_l1d_bmc` alone with a 200-minute limit, and
+the L1D multi-endpoint job runs `coh_l1d_multi_bmc` alone with a 330-minute
+limit. Three Coherence L1D data jobs run the four single-endpoint word tasks
+(330 minutes), the four multi-endpoint word tasks (330 minutes), and the
+payload, grant and four-way data tasks (270 minutes). Their task allowances
+sum to 260, 280 and 210 minutes, respectively, at most 85% of each job.
+The L1D and bridges job runs the remaining L1D tasks and AXI bridge targets
+with a 330-minute limit.
+
+The store-boundary AMO flow job runs `bmc_amo_same` and `bmc_amo_other`
+with a 180-minute limit. SC, owner, fatal, load and cover tasks share the
+240-minute store-boundary job. The store-home job runs its four BMCs and
+covers with a 240-minute limit. For these store jobs, the measured BMC
+allowances plus twice main's remaining case times use about 75%, 74% and
+73% of the limits, respectively. Two coherent-array equivalence jobs run
+the `coherence_array_equiv` tasks, the five four-way tasks in one and the
+other eight in the other, each with a 120-minute limit. The Coherence job
+runs the other coherence tasks, including the hart maintenance covers,
 with a 240-minute limit. The Other tasks job has a 240-minute limit.
 Job limits include image setup.
+
+`coherence_store_boundary:bmc_four` runs to depth **114** with the L1D hit
+path. The depth-120 sizing run reached frame 117 before its 18,000-second
+timeout; frame 113 took about four hours beside one other formal job.
+`cover_four` keeps its depth of 120 and reaches the handoff cover at frame
+57 and the drain cover at frame 92, leaving at least 22 frames before the
+BMC depth. Restoring the BMC to depth 120 is an open
+[verification item](../ROADMAP.md#verification).
 
 The CI jobs collect `tests/test_run_formal.py` and
 `tests/test_pa_bridge_mutation.py` through `./scripts/frost.py run pytest`
@@ -331,7 +372,7 @@ cycle counts, including early termination and setup cancellation.
 | `cache_mshr_payload` | Per-entry MSHR data and byte strobes equal the reference indexed fill and store merge, including fills that coincide with stores, on every byte that can be read, in a 256-byte cache with 8-byte lines |
 | `coherence_store_buffer` | Four ordered combining records conserve accepted scalar stores, byte masks and acknowledgements under address-independent delayed launch credit. Unbounded induction checks a watched byte, sealed payload stability and the 32-contributor limit; covers full occupancy and simultaneous acceptance, sealing and installation. A 48-cycle case checks 33 writes to one younger byte behind a delayed head, saturation, successor allocation and complete ordered drain |
 | `coherence_read_stream` | Inductive three-miss confirmation, cancellation and cursor bounds at 56-bit physical addresses, with demands and second-input hits arbitrary; covers concurrent advance/consume, a second-input advance and page-end saturation |
-| `coherence_store_boundary` | Reduced ordered stores, loads and atomics with production SQ, router, LQ and L1D; two LQ entries, eight L0 words, core preissue/forwarding controls and an externally supplied SC reservation. Checks acknowledgement routing, launch credit, drain and complete load values through 80 cycles, intervening-load values through 140 cycles, and atomic exclusion through retirement and release through 140 cycles. The four-record configuration uses three request endpoints and checks completion identities through 120 cycles; its covers require a younger store grant before the head grant, followed by load completion or store and endpoint drain. Same-sector AMO checks require four tasks without cross-partition assumptions: flow, ownership, fatal persistence induction and a fatal-status check at frame 139. Different-sector AMOs require flow/ownership, fatal persistence and frame-139 tasks. The model resets once and has no environment assumptions. An earlier fatal sample persists to the final checked sample. Run the fatal checks through `test_run_formal.py`, which requires a completed frame-139 evaluation. Fast tests require both obligations in the registry and one CI shard per formal case. The same-sector prefix installs Modified data and covers local AMO release; it cannot reach the home write lookup without a probe or replacement. The different-sector prefix permits the second older store on either sector, covering both a resident target and a home acquisition. Its home cover reaches the AtomicWriteOp lookup and release. Covers also reach load staging at capture, acknowledgement, promotion and drain; the fence target checks maintenance ordering |
+| `coherence_store_boundary` | Reduced ordered stores, loads and atomics with production SQ, router, LQ and L1D; two LQ entries, eight L0 words, core preissue/forwarding controls and an externally supplied SC reservation. Checks acknowledgement routing, launch credit, drain and complete load values through 80 cycles, intervening-load values through 140 cycles, and atomic exclusion through retirement and release through 140 cycles. The four-record configuration uses three request endpoints and checks completion identities through 114 cycles; its depth-120 covers require a younger store grant before the head grant, followed by load completion or store and endpoint drain. Same-sector AMO checks require four tasks without cross-partition assumptions: flow, ownership, fatal persistence induction and a fatal-status check at frame 139. Different-sector AMOs require flow/ownership, fatal persistence and frame-139 tasks. The model resets once and has no environment assumptions. An earlier fatal sample persists to the final checked sample. Run the fatal checks through `test_run_formal.py`, which requires a completed frame-139 evaluation. Fast tests require both obligations in the registry and one CI shard per formal case. The same-sector prefix installs Modified data and covers local AMO release; it cannot reach the home write lookup without a probe or replacement. The different-sector prefix permits the second older store on either sector, covering both a resident target and a home acquisition. Its home cover reaches the AtomicWriteOp lookup and release. Covers also reach load staging at capture, acknowledgement, promotion and drain; the fence target checks maintenance ordering |
 | `coherent_local_atomic` | Reduced production SQ, router, LQ, L1D, atomic guard and MEM completion path check local installation, reservation lifetime and bounded service through 100 cycles. LR creates the SC reservation; SC installation clears it. An unrelated same-set grant and invalidating probe compete with the local owner while a control-entry request is pending. The reduced program supplies translated, nonfaulting operands, ready prefix-store home channels and up to eight finite competing MEM completions, with no reset or fatal stop. Retirement eligibility is modeled with production hold equations; this is not a whole-CPU liveness proof. Covers local release, SC retirement before installation and control requests in each phase. Retirement and completion excerpts have source-equality checks |
 | `coherent_local_owners` | Abstract two-owner contract proves exclusive Modified permission, installation before peer observation, and invalidation cuts for reservations and observations surviving private eviction. Assumes the shared home routes cuts to all CPU holders before conflicting permission; it does not instantiate a second hart or its routing |
 | `coherence_l1d` | Control and store-data checks run through 40 cycles with one or three endpoints. Control checks also run with eight endpoints and look-ahead in six tasks: a 42-cycle task that issues the stream cover's scripted loads with stores off and no replies for 24 cycles and arbitrary replies afterwards; a 32-cycle task with arbitrary inputs and stores that leaves out four assertions; a 24-cycle task with arbitrary inputs, no stores and every assertion; an 8-step induction with arbitrary inputs and stores that proves the read ownership lemmas, a lookup's read staying valid and unready until the lookup or the hit path answers it, the registered kind of the selected read outside a shadow lookup the hit path answers, and that a lookup of a slot whose hit the hit path holds is a shadow; and two unbounded PDR proofs with arbitrary inputs and stores. The first PDR proof assumes the induction's lemmas and covers most other control assertions, and the second covers the four left out of the 32-cycle task, the grant multiplexer, local image, load payload and reply hold checks. The induction reads the first PDR proof's model and assumes nothing from it. The PDR proofs leave out the pairwise distinctness of live endpoint lines, the store-record address and acquisition checks, the prefetch window and prefetch acquisition window checks, the atomic exclusion checks, the hit path's slot and answer checks, the 32-cycle pending-probe bound and a few smaller ones, which only the bounded tasks check. Free-input frames take about 1.3 times longer than the previous one, which keeps the arbitrary-input tasks short; the eight-endpoint stream behavior is first reachable at cycles 28 to 37, so the scripted task is the one that reaches it. The 32-cycle pending-probe service bound is not reachable in the bounded eight-endpoint tasks; the one- and three-endpoint tasks check both through 40 cycles. The scripted task's optional fourth load falls at cycle 48, after its depth. The read-status reference places a load endpoint's answer in its grant's first lookup cycle and a hit-path answer in its fourth stage. The control tasks check that the hit path holds valid, unanswered load slots, that its answer is the slot's only completion, and that a lookup of a slot whose hit it holds is a shadow; the bounded tasks also check that the shadow's tag result agrees with the hit path's. The store-data tasks check that a hit-path answer of the watched sector holds its byte as of the hit path's read edge, and a word-0 data task runs with four ways and three endpoints. A 40-cycle free-input cover task reaches a hit-path answer, a shadow lookup that answers nothing, a shadow miss that acquires, and the hit path's refusals for a sector holder, a probe and the array. Checks that the answer goes to an eligible read, once per acquisition, run in simulation. Separate conflict proofs check both address-selector values against an independent reference with arbitrary controller state, and each control task uses the guarded identity from its matching conflict proof. Stream tasks check speculative endpoint isolation and cover demand attachment, two speculative endpoints, LR/AMO admission beside hint acceptance, and used, empty or cancelled demand opportunities between buffered grants. Grant-turn covers use three endpoints and include a held probe reply. Local ownership induction uses arbitrary array responses and checks service exclusion, saved identity/image and installation before release, with one or four ways. Ownership induction also proves local and SC lookup address identities. Sector induction checks the registered conflict sample and admission beside live endpoints under those two unbounded facts. Each sector task requires its matching owner task; their parameters, inputs, cutpoints and interface assumptions match. Ownership induction assumes twelve facts that the `coh_l1d_local*_owned_prove` tasks prove by 8-step induction: a failed read's slot is still owned on the cycle after its grant; an atomic's pending write data, its write update, its grant and endpoint 0's AMO or SC acquisition belong to the atomic in service; the local phases serve a local atomic, which stays active and in service; a failed local SC holds no grant or write; and a read lookup's registered kind is its read's. Those tasks also prove endpoint 0's phase across a remote atomic, the read ownership lemmas and a lookup's read staying valid and unready, with the same cutpoints and interface assumptions, and assume nothing from the owner or sector tasks. Fast tests enforce the model match, task registration and CI membership. A separate 80-cycle scheduled real-array task checks arbitrary-byte preservation and deferred probe data. Covers reach local SC failure, completed installation and a probe reply after release. Selected-SC reservation stability is an interface assumption here; the local CPU composition derives it from LR and the production clear paths |

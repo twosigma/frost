@@ -31,6 +31,9 @@ hw/rtl/lib/axi/axi_cdc.sv: w_fifo.i_ready
 hw/rtl/lib/axi/axi_mux.sv: o_dn_arvalid
 hw/rtl/lib/axi/axi_mux.sv: o_dn_awvalid
 hw/rtl/lib/axi/axi_mux.sv: o_dn_wvalid
+# Hit-port touches write the same unreset replacement RAM as plru_we; the
+# array's RAM-write comment documents why reset gates both write sources.
+hw/rtl/lib/cache/coherence_array.sv: hp_touch_we
 hw/rtl/lib/cache/coherence_array.sv: plru_we
 hw/rtl/lib/cache/coherence_array.sv: tag_we[way]
 hw/rtl/lib/cache/coherence_dma_ingress.sv: o_req_ready

@@ -68,7 +68,7 @@ conflict: timeout 600
 # maintenance proof's job. The free-input stream BMCs are shallower: their
 # frames take about 1.3 times longer than the previous one. The free BMC with
 # stores leaves out four assertions that the outlier proof covers without a
-# depth bound, and CI runs it in a job of its own.
+# depth bound, and shares a CI job with the four-way hit-port array BMC.
 longbmc: timeout 3600
 streamscript: depth 42
 nostore: depth 24
@@ -79,10 +79,25 @@ unbounded: timeout 2400
 outlier: timeout 2400
 nostore: timeout 3600
 # The control BMCs check four ordered store records, local atomics and
-# look-ahead admission and need more than the other tasks.
-control_single: timeout 3600
-control_multi: timeout 14400
-multidata: timeout 3600
+# look-ahead admission. Each runs in its own CI job.
+control_single: depth 40
+control_single: timeout 10800
+control_multi: timeout 18000
+# Data tasks get about twice their measured duration, rounded up to five
+# minutes; word variants share the word-0 representative's allowance.
+coh_l1d_data_bmc: timeout 3900
+coh_l1d_data1_bmc: timeout 3900
+coh_l1d_data2_bmc: timeout 3900
+coh_l1d_data3_bmc: timeout 3900
+coh_l1d_store_payload_bmc: timeout 900
+coh_l1d_store_grant_bmc: timeout 1200
+coh_l1d_store_multi_payload_bmc: timeout 1800
+coh_l1d_store_multi_grant_bmc: timeout 3600
+coh_l1d_multi_data0_bmc: timeout 4200
+coh_l1d_multi_data1_bmc: timeout 4200
+coh_l1d_multi_data2_bmc: timeout 4200
+coh_l1d_multi_data3_bmc: timeout 4200
+coh_l1d_ways_data_bmc: timeout 5100
 
 [engines]
 control_single: abc bmc3

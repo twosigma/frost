@@ -189,6 +189,10 @@ of those need more endpoint protocol lemmas, such as that a failing or filled
 read is owned and unanswered and that endpoint 0 completes only after its
 installation.
 
+Open: restore `coherence_store_boundary:bmc_four` to depth 120 with the
+L1D hit path, using additional lemmas or splitting the checks into smaller
+cones so the task fits its CI budget.
+
 ## ASIC-ready RTL
 
 The RTL is portable: Xilinx primitives sit behind `FROST_XILINX_PRIMS`, and

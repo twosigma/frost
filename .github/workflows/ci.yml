@@ -1234,39 +1234,67 @@ jobs:
           - shard: Coherence array equivalence four-way
             pytest_filter: coh_array_equiv4
             timeout_minutes: 120
-          # The home's ordered store tasks, which alone ran for about two
-          # hours in the Coherence job and pushed it past its limit.
+          # The home's store BMC allowances plus twice main's cover times
+          # use about three quarters of this job.
           - shard: Coherence store home
             pytest_filter: coherence_store_home
             timeout_minutes: 240
-          # The three-endpoint L1D control BMC ran past two hours in CI and
-          # has a four-hour budget, so it gets a job of its own.
+          # The single-endpoint control BMC has a three-hour allowance for
+          # its 40 frames; image setup has another twenty minutes.
+          - shard: Coherence L1D control
+            pytest_filter: coh_l1d_bmc
+            timeout_minutes: 200
+          # The three-endpoint control BMC has a five-hour allowance.
           - shard: Coherence L1D multi-endpoint
             pytest_filter: coh_l1d_multi_bmc
             timeout_minutes: 330
-          # The L1D's other control and data tasks and the AXI bridges.
+          # Word variants share their representative's measured allowance:
+          # 65 minutes each for one endpoint, 70 for three endpoints. The
+          # sums use 79% and 85% of their respective job limits.
+          - shard: Coherence L1D data single-endpoint
+            pytest_filter: coh_l1d_data
+            timeout_minutes: 330
+          - shard: Coherence L1D data multi-endpoint
+            pytest_filter: coh_l1d_multi_data
+            timeout_minutes: 330
+          # Payload, grant and four-way data tasks have 210 minutes of
+          # allowances in total, leaving setup and solver headroom.
+          - shard: Coherence L1D data stores and ways
+            pytest_filter: coh_l1d_store_ or coh_l1d_ways_data
+            timeout_minutes: 270
+          # The remaining L1D covers, local and stream tasks, and AXI bridges.
           - shard: Coherence L1D and bridges
             pytest_filter: >-
               axi_coherent_bridge or
               (coherence_l1d and not (coh_l1d_stream_bmc or coh_l1d_stream_free or
-              coh_l1d_multi_bmc or
+              coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_data or
+              coh_l1d_multi_data or coh_l1d_store_ or coh_l1d_ways_data or
               (coh_l1d_local and prove)))
             timeout_minutes: 330
-          # The four-record and intervening-load boundary BMCs run to their
-          # full depths, 120 and 140 frames, and each fills a job.
+          # The four-record boundary BMC runs 114 frames with the hit path;
+          # the intervening-load BMC keeps 140. Each has a job of its own.
           - shard: Store boundary four records
             pytest_filter: coherence_store_boundary_bmc_four
             timeout_minutes: 330
           - shard: Store boundary intervening load
             pytest_filter: coherence_store_boundary_bmc_intervening
             timeout_minutes: 330
-          # The other ordered store boundary tasks.
+          # The AMO flow BMCs have 55- and 80-minute allowances. The owner
+          # and fatal checks stay with SC and the shorter boundary tasks.
+          - shard: Store boundary AMO flow
+            pytest_filter: >-
+              coherence_store_boundary and (bmc_amo_same or bmc_amo_other) and
+              not (fatal or owner)
+            timeout_minutes: 180
+          # SC's allowance plus twice the other cases' measured main times
+          # uses about three quarters of this job.
           - shard: Store boundary
             pytest_filter: >-
               coherence_store_boundary and not
               (coherence_store_boundary_bmc_four or
-              coherence_store_boundary_bmc_intervening)
-            timeout_minutes: 330
+              coherence_store_boundary_bmc_intervening or
+              ((bmc_amo_same or bmc_amo_other) and not (fatal or owner)))
+            timeout_minutes: 240
           # The eight-endpoint L1D stream BMC with arbitrary inputs and
           # stores runs to depth 32, and the four-way hit-port array BMC,
           # about 50 minutes, shares its job.
