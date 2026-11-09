@@ -49,12 +49,20 @@
  * blocks, their two L2 aliases (the L2 is 2 MiB, 4-way, so its ways are
  * 512 KiB), the marker lines with their aliases, and the result records; the
  * regions never overlap. */
-#define POOL_BASE 0x83000000ul /* aliases at 0x83200000 and 0x83400000 */
+/* L2_ALIAS is the L2 capacity: build with -DL2_ALIAS=0x400000ul for a 4 MiB
+ * L2. The pool, its aliases, the markers and the result records are laid out
+ * from it. A 4 MiB L2 starts the pool 16 MiB lower so the markers' aliases
+ * still end inside the model. At 2 MiB the aliases are at 0x83200000 and
+ * 0x83400000, the markers at 0x83600000 (aliases to 0x83A00000) and the
+ * results at 0x83C00000. */
+#ifndef L2_ALIAS
 #define L2_ALIAS 0x200000ul
+#endif
+#define POOL_BASE (L2_ALIAS > 0x200000ul ? 0x82000000ul : 0x83000000ul)
 #define L2_WAYS 4u
 #define L2_WAY_BYTES (L2_ALIAS / L2_WAYS)
-#define MARK_BASE 0x83600000ul /* aliases one L2 way apart, to 0x83A00000 */
-#define OUT_BASE 0x83C00000ul
+#define MARK_BASE (POOL_BASE + 3ul * L2_ALIAS)
+#define OUT_BASE (MARK_BASE + 3ul * L2_ALIAS)
 #define NPROBE 11u /* N and P1..P10 */
 #define SEED 0x9E3779B97F4A7C15ul
 

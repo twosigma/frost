@@ -155,6 +155,12 @@ CFLAGS += $(DDR_CAPACITY_CFLAG)
 endif
 endif
 
+# L2 capacity of the build under test, for programs that alias L2 sets
+# (cache_evict.h). Unset keeps the 2 MiB default.
+ifneq ($(strip $(FROST_L2_CACHE_BYTES)),)
+CFLAGS += -DCACHE_L2_BYTES=$(FROST_L2_CACHE_BYTES)u
+endif
+
 # Assembly startup code (initializes stack, zeroes BSS, calls main)
 ASSEMBLY_STARTUP_FILE := ../../common/crt0.S
 

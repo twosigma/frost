@@ -636,6 +636,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("COCOTB_MAX_CYCLES", "1500000"),
         ),
     ),
+    # Dependent-load latency over 1, 3 and 4 MiB working sets: shows where the
+    # L2 capacity falls. The L2 size comes from FROST_VERILATOR_EXTRA_ARGS
+    # (-GL2_CACHE_BYTES=...). Measurement only, not part of the pytest sweep.
+    "l2_capacity_chase": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="l2_capacity_chase",
+        nic_mac_clocks=False,
+        rerun_after_reset=False,
+        description="Dependent-load latency over working sets around the L2 capacity",
+        extra_env=(("COCOTB_MAX_CYCLES", "400000000"),),
+        include_in_pytest=False,
+    ),
     # The system with 32-byte L2 lines, equal to the L1s': no line-size
     # adapter and a 256-bit DDR port. Adjacent, so consecutive runs reuse one
     # build.
