@@ -153,12 +153,15 @@ module control_flow_tracker #(
   // o_control_flow_to_halfword_r next state:
   //   o_control_flow_to_halfword ||
   //   (o_control_flow_to_halfword_r && fetch_stall && !control_flow_change)
-  // Compute all four prediction cases before selecting. A prediction is a
+  // The terms without slot 2's target are formed first. A prediction is a
   // control-flow change, so only the no-prediction case can hold the old
   // value. Simultaneous sources OR their target bits; no exclusivity is
-  // assumed.
+  // assumed. Slot 2's target bit settles last and joins the final gate
+  // directly, with both prediction selects.
   logic halfword_without_predictions;
-  (* keep = "true" *) logic [3:0] halfword_next_by_prediction;
+  (* keep = "true" *)logic halfword_hold_case;
+  (* keep = "true" *)logic halfword_with_slot1;
+  logic halfword_next;
 
   assign control_flow_without_predictions =
     i_trap_taken || i_mret_taken || i_branch_taken || i_pd_redirect;
@@ -166,20 +169,31 @@ module control_flow_tracker #(
     (i_branch_taken && i_branch_target[1]) ||
     ((i_trap_taken || i_mret_taken) && i_trap_target[1]) ||
     (i_pd_redirect && i_pd_redirect_target[1]);
-  assign halfword_next_by_prediction[0] = halfword_without_predictions ||
+  assign halfword_hold_case = halfword_without_predictions ||
     (o_control_flow_to_halfword_r && fetch_stall && !control_flow_without_predictions);
-  assign halfword_next_by_prediction[1] = halfword_without_predictions || i_predicted_target[1];
-  assign halfword_next_by_prediction[2] =
-    halfword_without_predictions || i_slot2_predicted_target[1];
-  assign halfword_next_by_prediction[3] =
-    halfword_without_predictions || i_predicted_target[1] || i_slot2_predicted_target[1];
+  assign halfword_with_slot1 = halfword_without_predictions || i_predicted_target[1];
+`ifdef FROST_XILINX_PRIMS
+  LUT6 #(
+      .INIT(64'hFFFFF0AAF0CCF0AA)
+  ) u_halfword_next (
+      .I0(halfword_hold_case),
+      .I1(halfword_without_predictions),
+      .I2(halfword_with_slot1),
+      .I3(i_prediction_used),
+      .I4(i_slot2_prediction_used),
+      .I5(i_slot2_predicted_target[1]),
+      .O (halfword_next)
+  );
+`else
+  assign halfword_next = i_slot2_prediction_used ?
+    (i_slot2_predicted_target[1] ||
+     (i_prediction_used ? halfword_with_slot1 : halfword_without_predictions)) :
+    (i_prediction_used ? halfword_with_slot1 : halfword_hold_case);
+`endif
 
   always_ff @(posedge i_clk) begin
     if (i_reset) o_control_flow_to_halfword_r <= 1'b0;
-    else
-      o_control_flow_to_halfword_r <= i_slot2_prediction_used ?
-        (i_prediction_used ? halfword_next_by_prediction[3] : halfword_next_by_prediction[2]) :
-        (i_prediction_used ? halfword_next_by_prediction[1] : halfword_next_by_prediction[0]);
+    else o_control_flow_to_halfword_r <= halfword_next;
   end
 
 endmodule : control_flow_tracker
