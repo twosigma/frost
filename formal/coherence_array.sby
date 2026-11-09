@@ -25,7 +25,8 @@ fourbram: depth 24
 timeout 180
 bounded: timeout 1200
 four: timeout 1800
-port: timeout 1800
+# The one-way hit-port BMC takes about 19 minutes and has twice that.
+port: timeout 2400
 # The four-way hit-port BMC takes about 50 minutes for its 24 frames and
 # has twice that; CI runs it beside the free-input L1D stream BMC.
 fourport: timeout 6000
