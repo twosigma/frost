@@ -218,6 +218,9 @@ module coherence_home #(
   logic [RESULTS-1:0][8*LINE_BYTES-1:0] engine_update_data;
   logic [Clients-1:0] tag_valid, tag_ready, read_valid, read_ready;
   logic [Clients-1:0] update_valid, update_ready, probe_valid, probe_ready;
+  // The update arbiter's selected client, whose acceptance waits only on the
+  // array's readiness.
+  logic [Clients-1:0] update_selected;
   logic [Clients-1:0] ack_valid, ack_ready;
   logic [Clients-1:0][TagPacketBits-1:0] tag_payload;
   logic [Clients-1:0][ReadPacketBits-1:0] read_payload;
@@ -311,7 +314,11 @@ module coherence_home #(
   // way and the sector. forward_data_q holds the accepted forward's sector
   // until the forward buffer's G.
   logic forward_valid, forward_ready, forward_accept;
-  logic [FILLS-1:0] forward_pick, forward_later_q, forward_later;
+  logic [FILLS-1:0] forward_pick, forward_pick_q, forward_later_q;
+  // fill_forward_set[fill]: the fill enters FillInstall with a primary on
+  // this edge, so it may forward from the next cycle. Both of its uses apply
+  // it only while the home runs.
+  logic [FILLS-1:0] fill_forward_set;
   logic [COMPLETIONS-1:0] forward_slots;
   logic [WayBits-1:0] forward_way;
   coh_g_t forward_result;
@@ -671,7 +678,7 @@ module coherence_home #(
       .o_ready(update_ready),
       .i_payload(update_payload),
       .o_valid(update_request_valid),
-      .o_selected(),
+      .o_selected(update_selected),
       .i_ready(update_request_ready && run),
 `ifdef COHERENCE_HOME_CONTROL
       .i_service_stop(!run),
@@ -1235,6 +1242,10 @@ module coherence_home #(
     end
   end
 
+  // An allocation's first phase: FillMemory without a victim, else
+  // FillRecall.
+  (* keep = "true" *) fill_phase_t fill_phase_allocated;
+  assign fill_phase_allocated = array_state == coherence_pkg::Invalid ? FillMemory : FillRecall;
   for (genvar fill = 0; fill < FILLS; fill++) begin : gen_fill
     localparam int unsigned Client = RESULTS + fill;
     coh_p_t probe;
@@ -1252,6 +1263,49 @@ module coherence_home #(
         !fill_error_q[fill] : i_mem_resp_valid && i_mem_resp_id == 5'(fill) && !i_mem_resp_error);
     wire forwarded = forward_accept && forward_pick[fill];
     wire [COMPLETIONS-1:0] forward_seat = forwarded ? fill_primary_q[fill] : '0;
+    assign fill_forward_set[fill] = install_entry && fill_primary_q[fill] != 0;
+    // The phase's next state forms in kept nodes beside the two late
+    // decisions, which select it last: allocation, which finds the fill in
+    // FillFree, and update acceptance, which finds it in FillInvalidate or
+    // FillInstall. No other phase write applies in those phases.
+    (* keep = "true" *) fill_phase_t fill_phase_hold, fill_phase_updated;
+    (* keep = "true" *) logic fill_update_armed;
+    always_comb begin
+      fill_phase_hold = fill_phase_q[fill];
+      if (run) begin
+        if (fill_phase_q[fill] == FillReady && fill_seats_q[fill] == 0) fill_phase_hold = FillFree;
+        if (i_r_valid && fill_r_ready[fill] && reply.error) fill_phase_hold = FillFatal;
+        if (fill_phase_q[fill] == FillRecall && recall_phase_q[fill] == RecallDone &&
+            !(LINE_BYTES == 64 && !fill_sector_q[fill]) && fill_read_done_q[fill])
+          fill_phase_hold = FillDetach;
+        if (fill_phase_q[fill] == FillDetach) fill_phase_hold = FillInvalidate;
+        if (fill_phase_q[fill] == FillInvalidateWait && array_updated &&
+            array_updated_token == TokenBits'(Client))
+          fill_phase_hold = FillMemory;
+        if (fill_phase_q[fill] == FillMemory && fill_done_q[fill])
+          fill_phase_hold = fill_error_q[fill] ? FillFree : FillInstall;
+        // A successful response that arrives in FillMemory installs from
+        // the next cycle, beside the image capture below. A response that
+        // arrives in an earlier phase, and every error response, waits in
+        // fill_done_q for the transition above.
+        if (fill_phase_q[fill] == FillMemory && !fill_done_q[fill] && i_mem_resp_valid &&
+            i_mem_resp_id == 5'(fill) && !i_mem_resp_error)
+          fill_phase_hold = FillInstall;
+        if (fill_phase_q[fill] == FillInstallWait && array_updated &&
+            array_updated_token == TokenBits'(Client))
+          fill_phase_hold = FillReady;
+      end
+    end
+    assign fill_phase_updated = fill_phase_q[fill] == FillInvalidate ? FillInvalidateWait :
+        FillInstallWait;
+    assign fill_update_armed = run && update_selected[Client] &&
+        (fill_phase_q[fill] == FillInvalidate || fill_phase_q[fill] == FillInstall);
+    always_ff @(posedge i_clk) begin
+      if (i_rst) fill_phase_q[fill] <= FillFree;
+      else if (update_request_ready && fill_update_armed) fill_phase_q[fill] <= fill_phase_updated;
+      else if (allocate) fill_phase_q[fill] <= fill_phase_allocated;
+      else fill_phase_q[fill] <= fill_phase_hold;
+    end
     assign tag_valid[Client] = 1'b0;
     assign tag_payload[Client] = '0;
     assign read_valid[Client] = fill_phase_q[fill] == FillRecall && !fill_read_sent_q[fill];
@@ -1303,7 +1357,6 @@ module coherence_home #(
     end
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
-        fill_phase_q[fill] <= FillFree;
         fill_live_q[fill] <= 1'b0;
         fill_blocking_q[fill] <= 1'b0;
         recall_phase_q[fill] <= RecallDone;
@@ -1349,7 +1402,7 @@ module coherence_home #(
             fill_primary_q[fill] <= '0;
             fill_forward_q[fill] <= 1'b0;
           end
-          if (install_entry && fill_primary_q[fill] != 0) fill_forward_q[fill] <= 1'b1;
+          if (fill_forward_set[fill]) fill_forward_q[fill] <= 1'b1;
           if (allocate) begin
             fill_addr_q[fill] <= {decision_addr[ADDR_WIDTH-1:OffsetBits], {OffsetBits{1'b0}}};
             fill_old_addr_q[fill] <= array_addr;
@@ -1386,10 +1439,7 @@ module coherence_home #(
             fill_seats_q[fill][CompletionBits'(decision_tid)] <= 1'b0;
             fill_seat_count_q[fill] <= fill_seat_count_q[fill] - 1'b1 - 2'(forwarded);
           end
-          if (fill_phase_q[fill] == FillReady && fill_seats_q[fill] == 0) begin
-            fill_phase_q[fill] <= FillFree;
-            fill_live_q[fill]  <= 1'b0;
-          end
+          if (fill_phase_q[fill] == FillReady && fill_seats_q[fill] == 0) fill_live_q[fill] <= 1'b0;
           if (read_valid[Client] && read_ready[Client]) fill_read_sent_q[fill] <= 1'b1;
           if (array_data_valid && array_data_token == TokenBits'(Client))
             fill_read_done_q[fill] <= 1'b1;
@@ -1401,8 +1451,7 @@ module coherence_home #(
               if ((LINE_BYTES == 64 && reply.addr[5]) == 1'(sector))
                 fill_dirty_sectors_q[fill][sector] <= 1'b1;
             end
-            if (reply.error) fill_phase_q[fill] <= FillFatal;
-            else begin
+            if (!reply.error) begin
               if (reply.absorbed) begin
                 fill_ack_q[fill] <= absorbed_ack;
                 recall_phase_q[fill] <= RecallAck;
@@ -1410,72 +1459,70 @@ module coherence_home #(
             end
           end
           if (ack_valid[Client] && ack_ready[Client]) recall_phase_q[fill] <= RecallDone;
-          if (fill_phase_q[fill] == FillRecall && recall_phase_q[fill] == RecallDone) begin
-            if (LINE_BYTES == 64 && !fill_sector_q[fill]) begin
-              fill_sector_q[fill]  <= 1'b1;
-              recall_phase_q[fill] <= RecallOffer;
-            end else if (fill_read_done_q[fill]) fill_phase_q[fill] <= FillDetach;
+          if (fill_phase_q[fill] == FillRecall && recall_phase_q[fill] == RecallDone &&
+              LINE_BYTES == 64 && !fill_sector_q[fill]) begin
+            fill_sector_q[fill]  <= 1'b1;
+            recall_phase_q[fill] <= RecallOffer;
           end
-          if (fill_phase_q[fill] == FillDetach) fill_phase_q[fill] <= FillInvalidate;
-          if (fill_phase_q[fill] == FillInvalidateWait && array_updated &&
-              array_updated_token == TokenBits'(Client))
-            fill_phase_q[fill] <= FillMemory;
-          if (fill_phase_q[fill] == FillMemory && fill_done_q[fill]) begin
-            fill_phase_q[fill] <= fill_error_q[fill] ? FillFree : FillInstall;
-            if (fill_error_q[fill]) begin
-              fill_live_q[fill] <= 1'b0;
-              fill_blocking_q[fill] <= 1'b0;
-              fill_seats_q[fill] <= '0;
-              fill_seat_count_q[fill] <= '0;
-              fill_primary_q[fill] <= '0;
-            end
+          if (fill_phase_q[fill] == FillMemory && fill_done_q[fill] && fill_error_q[fill]) begin
+            fill_live_q[fill] <= 1'b0;
+            fill_blocking_q[fill] <= 1'b0;
+            fill_seats_q[fill] <= '0;
+            fill_seat_count_q[fill] <= '0;
+            fill_primary_q[fill] <= '0;
           end
-          // A successful response that arrives in FillMemory installs from
-          // the next cycle, beside the image capture above. A response that
-          // arrives in an earlier phase, and every error response, waits in
-          // fill_done_q for the transition above.
-          if (fill_phase_q[fill] == FillMemory && !fill_done_q[fill] && i_mem_resp_valid &&
-              i_mem_resp_id == 5'(fill) && !i_mem_resp_error)
-            fill_phase_q[fill] <= FillInstall;
           if (fill_phase_q[fill] == FillInstallWait) fill_woken_q[fill] <= 1'b1;
           if (fill_phase_q[fill] == FillInstallWait && array_updated &&
-              array_updated_token == TokenBits'(Client)) begin
-            fill_phase_q[fill] <= FillReady;
+              array_updated_token == TokenBits'(Client))
             fill_blocking_q[fill] <= 1'b0;
-          end
           // Allocation finds the fill free, where no update above applies, so
-          // its phase writes come last and the late decision selects them last.
+          // its writes come last and the late decision selects them last.
           if (allocate) begin
-            fill_phase_q[fill] <= array_state == coherence_pkg::Invalid ? FillMemory : FillRecall;
             fill_live_q[fill] <= 1'b1;
             fill_blocking_q[fill] <= 1'b1;
             recall_phase_q[fill] <= RecallOffer;
           end
-          // Update acceptance only applies in FillInvalidate or FillInstall,
-          // where no other phase write applies, so the late array readiness
-          // selects the phase last as well.
-          if (fill_phase_q[fill] == FillInvalidate && update_ready[Client])
-            fill_phase_q[fill] <= FillInvalidateWait;
-          if (fill_phase_q[fill] == FillInstall && update_ready[Client])
-            fill_phase_q[fill] <= FillInstallWait;
         end
       end
     end
   end
 
   // Fills that may forward take turns: the first at or after the fill after
-  // the last one forwarded, else the first. The pick offers its primary's
-  // slot, its way and the primary's sector of its line, all from registers.
-  // The completion table accepts while its forward buffer is free; the slot
-  // then holds its grant, and the sector stays in forward_data_q until that
-  // grant's G. forward_later_q[fill] holds fill > the last fill forwarded,
-  // and holds every fill after the highest one forwards.
-  assign forward_later = fill_forward_q & forward_later_q;
-  always_comb begin
-    forward_pick = '0;
+  // the last one forwarded, else the first. forward_later_q[fill] holds fill
+  // > the last fill forwarded, and holds every fill after the highest one
+  // forwards. The pick offers its primary's slot, its way and the primary's
+  // sector of its line, all from registers. The completion table accepts
+  // while its forward buffer is free; the slot then holds its grant, and the
+  // sector stays in forward_data_q until that grant's G.
+  function automatic logic [FILLS-1:0] forward_turn(input logic [FILLS-1:0] ready,
+                                                    input logic [FILLS-1:0] later);
+    forward_turn = '0;
     for (int fill = FILLS - 1; fill >= 0; fill--)
-    if (|forward_later ? forward_later[fill] : fill_forward_q[fill])
-      forward_pick = FILLS'(1) << fill;
+    if (|(ready & later) ? ready[fill] && later[fill] : ready[fill])
+      forward_turn = FILLS'(1) << fill;
+  endfunction
+  function automatic logic [FILLS-1:0] forward_after(input logic [FILLS-1:0] pick);
+    for (int fill = 0; fill < FILLS; fill++)
+    forward_after[fill] = pick[FILLS-1] || (pick & ((FILLS'(1) << fill) - FILLS'(1))) != 0;
+  endfunction
+  // forward_pick_q holds the turn of the current state, formed from the
+  // next state: the fills that may forward, without an accepted forward's
+  // fill and with each install that begins with a primary, and the turn
+  // past an accepted forward's fill. An allocation finds its fill free, so
+  // it never clears a fill that may forward, and the late decision stays
+  // out of the pick.
+  logic [FILLS-1:0] forward_ready_next;
+  assign forward_ready_next = fill_forward_q | (run ? fill_forward_set : '0);
+  always_ff @(posedge i_clk) begin
+    if (i_rst) forward_pick_q <= '0;
+    else if (forward_accept)
+      forward_pick_q <= forward_turn(
+          forward_ready_next & ~forward_pick_q, forward_after(forward_pick_q)
+      );
+    else forward_pick_q <= forward_turn(forward_ready_next, forward_later_q);
+  end
+  assign forward_pick = forward_pick_q;
+  always_comb begin
     forward_slots  = '0;
     forward_way    = '0;
     forward_data   = '0;
@@ -1500,10 +1547,7 @@ module coherence_home #(
   always_ff @(posedge i_clk) begin
     if (forward_accept) forward_data_q <= forward_data;
     if (i_rst) forward_later_q <= '1;
-    else if (forward_accept)
-      for (int fill = 0; fill < FILLS; fill++)
-      forward_later_q[fill] <= forward_pick[FILLS-1] ||
-          (forward_pick & ((FILLS'(1) << fill) - FILLS'(1))) != 0;
+    else if (forward_accept) forward_later_q <= forward_after(forward_pick);
   end
 
   for (genvar fill = 0; fill < FILLS; fill++) begin : gen_fill_memory
@@ -1902,7 +1946,9 @@ module coherence_home #(
       assert ($onehot0({engine_r_ready, fill_r_ready}));
       assert ((park & wake) == 0);
       // The forward offers one fill that may forward, with its primary's
-      // slot and the fill's way and line sector.
+      // slot and the fill's way and line sector. The registered pick is the
+      // turn of the current state.
+      assert (forward_pick_q == forward_turn(fill_forward_q, forward_later_q));
       assert ($onehot0(forward_pick) && (forward_pick & ~fill_forward_q) == 0);
       assert ((forward_pick != 0) == (fill_forward_q != 0));
       assert (forward_valid == (run && fill_forward_q != 0));
