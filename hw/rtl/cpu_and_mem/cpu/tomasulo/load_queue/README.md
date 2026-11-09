@@ -61,7 +61,10 @@ physical order is not program order: age always comes from ROB tags, and
 its result enters `cdb_stage`, before the CDB broadcast. The next valid bits
 are the bits kept through the cycle's flushes and frees, ORed with the new
 allocations, so the allocation enable, which arrives last from dispatch, meets
-them in the final term.
+them in the final term. A new generation also clears its entry's address-valid,
+issued, response-error and forwarded flags: each flag's value from this cycle's
+other updates meets the allocation valids and the free-entry masks in one final
+gate on the flop's D input.
 
 Allocation requests on a flush cycle are dropped, as the ROB drops them.
 Dispatch can present one on a trap, xRET, or FENCE-class flush, because the

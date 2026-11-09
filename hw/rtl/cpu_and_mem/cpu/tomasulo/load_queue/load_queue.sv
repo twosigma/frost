@@ -3933,16 +3933,90 @@ module load_queue #(
     end
   end
 
+  // Address-valid, issued, response-error and forwarded flags. A new
+  // generation's allocation clears them last: each flag's kept value meets
+  // the late allocation valids and the early room masks in one gate on the D
+  // pin, rather than through a shared allocation mask on the reset pin.
+  // A later update to the same entry wins, as in program order: an issue
+  // over a partial flush's clear, an AMO write's result over a response error.
+  if (1'b1) begin : gen_lq_flags
+    logic [DEPTH-1:0] addr_valid_kept, issued_kept, response_error_kept, forwarded_kept;
+    always_comb begin
+      for (int i = 0; i < DEPTH; i++) begin
+        addr_valid_kept[i] = lq_addr_valid[i] ||
+            (lq_addr_update_we && lq_addr_update_idx == IdxWidth'(i));
+        forwarded_kept[i] = lq_forwarded[i] || (sq_do_forward && sq_check_idx == IdxWidth'(i));
+        issued_kept[i] = lq_issued[i];
+        if (i_flush_en && fast_entry_flushed && fast_idx == IdxWidth'(i)) issued_kept[i] = 1'b0;
+        for (int sl = 0; sl < int'(CachedSlots); sl++) begin
+          if (i_flush_en && cs_flushed[sl] &&
+              !(resp_from_slot && (resp_slot == CachedSlotBits'(sl))) &&
+              cs_idx[sl] == IdxWidth'(i))
+            issued_kept[i] = 1'b0;
+        end
+        if (mem_read_en && launch_mem_issue_idx == IdxWidth'(i)) issued_kept[i] = 1'b1;
+        response_error_kept[i] = lq_response_error[i] || (!drop_mem_response_now &&
+            accept_mem_response && mem_response_error && issued_idx == IdxWidth'(i));
+        if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done && amo_entry_idx == IdxWidth'(i))
+          response_error_kept[i] = MEM_RESPONSE_ERRORS && i_amo_mem_write_error;
+      end
+    end
+    for (genvar i = 0; i < DEPTH; i++) begin : gen_entry
+      wire addr_valid_next, issued_next, response_error_next, forwarded_next;
+      lq_result_valid_allocate u_addr_valid (
+          .i_completed(addr_valid_kept[i]),
+          .i_first_room(first_room_oh[i]),
+          .i_second_room(second_room_oh[i]),
+          .i_alloc(i_alloc.valid),
+          .i_alloc_2(i_alloc_2.valid),
+          .o_valid(addr_valid_next)
+      );
+      lq_result_valid_allocate u_issued (
+          .i_completed(issued_kept[i]),
+          .i_first_room(first_room_oh[i]),
+          .i_second_room(second_room_oh[i]),
+          .i_alloc(i_alloc.valid),
+          .i_alloc_2(i_alloc_2.valid),
+          .o_valid(issued_next)
+      );
+      lq_result_valid_allocate u_response_error (
+          .i_completed(response_error_kept[i]),
+          .i_first_room(first_room_oh[i]),
+          .i_second_room(second_room_oh[i]),
+          .i_alloc(i_alloc.valid),
+          .i_alloc_2(i_alloc_2.valid),
+          .o_valid(response_error_next)
+      );
+      lq_result_valid_allocate u_forwarded (
+          .i_completed(forwarded_kept[i]),
+          .i_first_room(first_room_oh[i]),
+          .i_second_room(second_room_oh[i]),
+          .i_alloc(i_alloc.valid),
+          .i_alloc_2(i_alloc_2.valid),
+          .o_valid(forwarded_next)
+      );
+      always_ff @(posedge i_clk) begin
+        if (!i_rst_n || i_flush_all) begin
+          lq_addr_valid[i]     <= 1'b0;
+          lq_issued[i]         <= 1'b0;
+          lq_response_error[i] <= 1'b0;
+          lq_forwarded[i]      <= 1'b0;
+        end else begin
+          lq_addr_valid[i]     <= addr_valid_next;
+          lq_issued[i]         <= issued_next;
+          lq_response_error[i] <= response_error_next;
+          lq_forwarded[i]      <= forwarded_next;
+        end
+      end
+    end
+  end
+
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       head_ptr                  <= '0;
       tail_ptr                  <= '0;
       lq_valid                  <= '0;
-      lq_addr_valid             <= '0;
-      lq_issued                 <= '0;
-      lq_response_error         <= '0;
-      lq_forwarded              <= '0;
       mem_outstanding           <= 1'b0;
       drop_mem_response_pending <= 1'b0;
       cs_valid                  <= '0;
@@ -3955,10 +4029,6 @@ module load_queue #(
       head_ptr <= '0;
       tail_ptr <= '0;
       lq_valid <= '0;
-      lq_addr_valid <= '0;
-      lq_issued <= '0;
-      lq_response_error <= '0;
-      lq_forwarded <= '0;
       mem_outstanding <= 1'b0;
       // On full flush, retain response debt for accepted fast requests unless
       // this edge drains it. Router-pending requests are unaccepted and canceled.
@@ -3984,7 +4054,6 @@ module load_queue #(
         // response so the recycled slot cannot see stale data.
         if (fast_entry_flushed) begin
           mem_outstanding <= 1'b0;
-          lq_issued[fast_idx] <= 1'b0;
           if (!fast_resp_now) begin
             drop_mem_response_pending <= 1'b1;
           end
@@ -3994,7 +4063,6 @@ module load_queue #(
         for (int sl = 0; sl < int'(CachedSlots); sl++) begin
           if (cs_flushed[sl] && !(resp_from_slot && (resp_slot == CachedSlotBits'(sl)))) begin
             cs_drop[sl] <= 1'b1;
-            lq_issued[cs_idx[sl]] <= 1'b0;
           end
         end
         // No current-cycle allocation can advance the search cursor. It may
@@ -4010,20 +4078,8 @@ module load_queue #(
         tail_ptr <= tail_ptr + PtrWidth'(1);
       end
 
-      // -----------------------------------------------------------------
-      // Address Update: CAM search for matching rob_tag (control only;
-      // data signals written in dedicated no-reset always_ff blocks)
-      // -----------------------------------------------------------------
-      if (lq_addr_update_we) begin
-        lq_addr_valid[lq_addr_update_idx] <= 1'b1;
-      end
-
-      // -----------------------------------------------------------------
-      // Store forwarding: write data directly, skip memory
-      // -----------------------------------------------------------------
-      if (sq_do_forward) begin
-        lq_forwarded[sq_check_idx] <= 1'b1;
-      end
+      // Address updates, forwards, issue and response errors set the
+      // per-entry flags in flag_kept below.
 
       // -----------------------------------------------------------------
       // Memory Response: capture data from memory bus
@@ -4037,9 +4093,7 @@ module load_queue #(
         end
       end else if (accept_mem_response) begin
         if (!resp_from_slot) mem_outstanding <= 1'b0;
-        if (mem_response_error) begin
-          lq_response_error[issued_idx] <= 1'b1;
-        end else if (issued_is_amo) begin
+        if (!mem_response_error && issued_is_amo) begin
           // MIN/MAX writes the next cycle; ordinary AMOs first use COMPUTE. The IDLE
           // guard prevents an overlapping response from replacing an active AMO.
           if (amo_response_capture)
@@ -4062,7 +4116,6 @@ module load_queue #(
       // name an index already reused, and its branch leaves that entry alone.
       // Cached launches use separate slots.
       if (mem_read_en) begin
-        lq_issued[launch_mem_issue_idx] <= 1'b1;
         if (launching_is_cached) begin
           cs_valid[cs_alloc_idx] <= 1'b1;
           cs_drop[cs_alloc_idx]  <= 1'b0;
@@ -4087,8 +4140,7 @@ module load_queue #(
       // AMO Write Completion: latch old value as result, invalidate cache
       // -----------------------------------------------------------------
       if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done) begin
-        lq_response_error[amo_entry_idx] <= MEM_RESPONSE_ERRORS && i_amo_mem_write_error;
-        amo_state                        <= AMO_IDLE;
+        amo_state <= AMO_IDLE;
       end
 
       // -----------------------------------------------------------------
@@ -4103,15 +4155,8 @@ module load_queue #(
       // Initialize after old-entry updates so allocation has final priority.
       // Legal allocations cannot overlap a completing entry, and the two slot
       // vectors are disjoint.
+      // lq_valid_next, and flag_kept below, apply the allocations.
       lq_valid <= lq_valid_next;
-      for (int unsigned i = 0; i < DEPTH; i++) begin
-        if (alloc_oh[i]) begin
-          lq_addr_valid[i]     <= 1'b0;
-          lq_issued[i]         <= 1'b0;
-          lq_response_error[i] <= 1'b0;
-          lq_forwarded[i]      <= 1'b0;
-        end
-      end
 
       // Advance head past all contiguous invalid entries (including freed)
       head_ptr <= head_advance_target;
