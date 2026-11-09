@@ -63,6 +63,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_slot2_plus2_candidate_valid.value = 0
     dut.i_slot2_plus4_candidate_valid.value = 0
     dut.i_slot2_valid.value = 0
+    dut.i_slot2_valid_wcs0.value = 0
     dut.i_slot2_is_compressed_plus2.value = 0
     dut.i_slot2_is_compressed_plus4.value = 0
     dut.i_slot2_is_compressed.value = 0
@@ -343,6 +344,7 @@ async def test_slot2_collision_kills_metadata_and_quarantines_holdoffs(
     dut.i_pc_2_base.value = SLOT2_PC - 2
     dut.i_slot2_plus2_candidate_valid.value = 1
     dut.i_slot2_valid.value = 1
+    dut.i_slot2_valid_wcs0.value = 1
     await _settle()
 
     assert dut.o_prediction_used.value
@@ -410,6 +412,7 @@ async def test_live_prediction_holdoff_blocks_slot2_redirect(dut: Any) -> None:
     dut.i_pc_2_base.value = SLOT2_PC - 2
     dut.i_slot2_plus2_candidate_valid.value = 1
     dut.i_slot2_valid.value = 1
+    dut.i_slot2_valid_wcs0.value = 1
     await _settle()
 
     assert _slot2_btb_hit(dut)
@@ -806,6 +809,7 @@ async def test_slot2_btb_prediction_gates_valid_and_halfword_size_match(
     assert not dut.o_slot2_prediction_used.value
 
     dut.i_slot2_valid.value = 1
+    dut.i_slot2_valid_wcs0.value = 1
     await _settle()
 
     assert _slot2_btb_hit(dut)
@@ -830,6 +834,7 @@ async def test_slot2_btb_prediction_gates_valid_and_halfword_size_match(
     dut.i_pc_2_base.value = SLOT2_HALFWORD_PC - 2
     dut.i_slot2_plus2_candidate_valid.value = 1
     dut.i_slot2_valid.value = 1
+    dut.i_slot2_valid_wcs0.value = 1
     dut.i_slot2_is_compressed_plus2.value = 1
     dut.i_slot2_is_compressed.value = 1
     await _settle()
@@ -860,6 +865,7 @@ async def test_slot2_btb_prediction_safely_misses_unstaged_current_index(
     dut.i_pc_2_base.value = SLOT2_PC - 2
     dut.i_slot2_plus2_candidate_valid.value = 1
     dut.i_slot2_valid.value = 1
+    dut.i_slot2_valid_wcs0.value = 1
     await _settle()
 
     assert not _slot2_btb_hit(dut)
@@ -871,9 +877,11 @@ async def test_slot2_btb_prediction_safely_misses_unstaged_current_index(
     # on the preceding edge.
     dut.i_slot2_plus2_candidate_valid.value = 0
     dut.i_slot2_valid.value = 0
+    dut.i_slot2_valid_wcs0.value = 0
     await _stage_slot2_images(dut, SLOT2_PC - 2)
     dut.i_slot2_plus2_candidate_valid.value = 1
     dut.i_slot2_valid.value = 1
+    dut.i_slot2_valid_wcs0.value = 1
     await _settle()
 
     assert _slot2_btb_hit(dut)
@@ -908,6 +916,7 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     dut.i_lookup_lead_collapsed.value = 1
     dut.i_slot2_plus4_candidate_valid.value = 1
     dut.i_slot2_valid.value = 1
+    dut.i_slot2_valid_wcs0.value = 1
     # The RAS input is the older registered packet. Its call must push even
     # while this younger live lookup belongs to slot 2.
     _drive_ras_push(dut, PC_B)
@@ -953,6 +962,7 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     dut.i_pc_2_base.value = SLOT2_PC - 4
     dut.i_slot2_plus4_candidate_valid.value = 1
     dut.i_slot2_valid.value = 1
+    dut.i_slot2_valid_wcs0.value = 1
     await _settle()
 
     assert dut.btb_hit_2.value
@@ -995,6 +1005,7 @@ async def test_fixed_lead_live_taken_disagreement_has_no_duplicate_owner(
     dut.i_lookup_lead_collapsed.value = 0
     dut.i_slot2_plus4_candidate_valid.value = 1
     dut.i_slot2_valid.value = 1
+    dut.i_slot2_valid_wcs0.value = 1
     _drive_ras_push(dut, PC_B)
     await _settle()
 
@@ -1043,6 +1054,7 @@ async def test_slot2_typed_return_predicts_the_stack_top(dut: Any) -> None:
     dut.i_pc_2_base.value = SLOT2_PC - 4
     dut.i_slot2_plus4_candidate_valid.value = 1
     dut.i_slot2_valid.value = 1
+    dut.i_slot2_valid_wcs0.value = 1
     await _settle()
 
     assert dut.o_slot2_prediction_used.value
@@ -1074,6 +1086,7 @@ async def test_slot2_candidate_owner_blocks_slot1_when_full_slot2_valid_is_low(
     dut.i_pc_2_base.value = SLOT2_PC - 4
     dut.i_slot2_plus4_candidate_valid.value = 1
     dut.i_slot2_valid.value = 0
+    dut.i_slot2_valid_wcs0.value = 0
     _drive_ras_push(dut, PC_B)
     await _settle()
 
@@ -1125,6 +1138,7 @@ async def test_blocked_ghost_slot2_candidate_preserves_direction_snapshot(
     dut.i_pc_2_base.value = GHOST_OWNER_PC - 4
     dut.i_slot2_plus4_candidate_valid.value = 1
     dut.i_slot2_valid.value = 0
+    dut.i_slot2_valid_wcs0.value = 0
     dut.i_any_holdoff_safe.value = 1
     await _settle()
 
@@ -1163,6 +1177,7 @@ async def test_collapsed_fetch_lead_transfers_live_not_taken_hit_metadata(
     dut.i_lookup_lead_collapsed.value = 1
     dut.i_slot2_plus2_candidate_valid.value = 1
     dut.i_slot2_valid.value = 1
+    dut.i_slot2_valid_wcs0.value = 1
     _drive_ras_push(dut, PC_B)
     await _settle()
 
@@ -1204,6 +1219,7 @@ async def test_slot2_btb_prediction_selects_alternate_pc_candidate(dut: Any) -> 
     dut.i_slot2_plus2_candidate_valid.value = 1
     dut.i_slot2_plus4_candidate_valid.value = 0
     dut.i_slot2_valid.value = 1
+    dut.i_slot2_valid_wcs0.value = 1
     # The +2 candidate is word-aligned, so a size mismatch between the live
     # instruction and the BTB entry does not block it.
     dut.i_slot2_is_compressed_plus2.value = 1

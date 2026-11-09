@@ -1526,6 +1526,8 @@ module tomasulo_wrapper #(
   riscv_pkg::fu_complete_t lq_fu_complete;  // LQ -> adapter
   logic lq_fu_complete_staged;  // registered LQ CDB-stage occupancy, flush-free
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] lq_fu_complete_tag_next;
+  logic lq_fu_complete_tag_fire;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] lq_fu_complete_tag_fired;
   // mem_adapter_to_arbiter declared above (forward declaration)
   logic mem_adapter_result_pending;
   logic lq_result_accepted;
@@ -2365,8 +2367,10 @@ module tomasulo_wrapper #(
   // cycle without a grant or a full flush (a partially flushed result is not
   // presented), so the mask is a register beside the adapter's pending bit.
   // Commit permission (i_commit_hold) arrives late from cpu_ooo; the mask
-  // joins the per-entry done bits instead, before the head read.
-  logic [riscv_pkg::ReorderBufferDepth-1:0] alu_result_held_q;
+  // joins the per-entry done bits instead, before the head read. The mask's
+  // next state, which reads the late CDB grant, stays on the D input: mapped
+  // onto the flops' reset pin, it put the grant behind a slower pin.
+  (* extract_reset = "no" *) logic [riscv_pkg::ReorderBufferDepth-1:0] alu_result_held_q;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       alu_result_held_q <= '0;
@@ -2690,14 +2694,57 @@ module tomasulo_wrapper #(
   end
   // mem_wakeup_merge's lane choice, one edge early: lane 0 takes the load when
   // the registered lane 0 will be idle, and lane 1 when only lane 0 will be
-  // busy.
-  always_ff @(posedge i_clk) begin
-    int_rs_issue_cdb_tag <= (EARLY_LOAD_WAKEUP && !cdb_bus_comb.valid) ?
-        lq_fu_complete_tag_next : cdb_bus_comb.tag;
-    int_rs_issue_cdb_2_tag <=
-        (EARLY_LOAD_WAKEUP && cdb_bus_comb.valid && !cdb_bus_2_comb.valid) ?
-        lq_fu_complete_tag_next : cdb_bus_2_comb.tag;
+  // busy. The load's tag is the LQ's fired tag when its CDB stage takes a
+  // result and its staged tag otherwise. The take, the lanes' valids and their
+  // tags all arrive late, so each tag bit is one gate of all of them.
+  logic lane0_takes_load, lane1_takes_load;
+  assign lane0_takes_load = EARLY_LOAD_WAKEUP && !cdb_bus_comb.valid;
+  assign lane1_takes_load = EARLY_LOAD_WAKEUP && cdb_bus_comb.valid && !cdb_bus_2_comb.valid;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] issue_cdb_tag_next, issue_cdb_2_tag_next;
+  for (genvar b = 0; b < riscv_pkg::ReorderBufferTagWidth; b++) begin : gen_issue_cdb_tag_bit
+    if (EARLY_LOAD_WAKEUP) begin : gen_load_merge
+      issue_lane_tag_bit #(
+          .LANE1(1'b0)
+      ) u_lane0 (
+          .i_take(lq_fu_complete_tag_fire),
+          .i_fired(lq_fu_complete_tag_fired[b]),
+          .i_held(lq_fu_complete.tag[b]),
+          .i_cdb_valid(cdb_bus_comb.valid),
+          .i_cdb_2_valid(1'b0),
+          .i_lane_tag(cdb_bus_comb.tag[b]),
+          .o_tag(issue_cdb_tag_next[b])
+      );
+      issue_lane_tag_bit #(
+          .LANE1(1'b1)
+      ) u_lane1 (
+          .i_take(lq_fu_complete_tag_fire),
+          .i_fired(lq_fu_complete_tag_fired[b]),
+          .i_held(lq_fu_complete.tag[b]),
+          .i_cdb_valid(cdb_bus_comb.valid),
+          .i_cdb_2_valid(cdb_bus_2_comb.valid),
+          .i_lane_tag(cdb_bus_2_comb.tag[b]),
+          .o_tag(issue_cdb_2_tag_next[b])
+      );
+    end else begin : gen_cdb_only
+      assign issue_cdb_tag_next[b]   = cdb_bus_comb.tag[b];
+      assign issue_cdb_2_tag_next[b] = cdb_bus_2_comb.tag[b];
+    end
   end
+  always_ff @(posedge i_clk) begin
+    int_rs_issue_cdb_tag   <= issue_cdb_tag_next;
+    int_rs_issue_cdb_2_tag <= issue_cdb_2_tag_next;
+  end
+`ifndef SYNTHESIS
+  always_comb
+    if (i_rst_n && sc_check_armed) begin
+      p_issue_cdb_tag_next_exact :
+      assert (issue_cdb_tag_next ==
+              (lane0_takes_load ? lq_fu_complete_tag_next : cdb_bus_comb.tag));
+      p_issue_cdb_2_tag_next_exact :
+      assert (issue_cdb_2_tag_next ==
+              (lane1_takes_load ? lq_fu_complete_tag_next : cdb_bus_2_comb.tag));
+    end
+`endif
 
 `ifndef SYNTHESIS
   always_comb begin
@@ -3803,6 +3850,8 @@ module tomasulo_wrapper #(
       .o_fu_complete(lq_fu_complete),
       .o_fu_complete_staged(lq_fu_complete_staged),
       .o_fu_complete_tag_next(lq_fu_complete_tag_next),
+      .o_fu_complete_tag_fire(lq_fu_complete_tag_fire),
+      .o_fu_complete_tag_fired(lq_fu_complete_tag_fired),
       // Unused by the LQ but kept for Vivado mapping stability; see the
       // i_adapter_result_pending port comment in load_queue.sv before
       // removing it.
@@ -5424,4 +5473,52 @@ module tomasulo_wrapper #(
   end
 `endif
 
+endmodule
+
+
+// One bit of an INT RS issue-compare lane tag: the CDB lane's tag, or the load
+// queue's next completion tag when the early-load merge puts the load on the
+// lane. Lane 0 takes the load when its CDB lane is idle, lane 1 when only lane
+// 0 is busy. The load queue's take, the lanes' valids and the lane's tag reach
+// the bit through one gate.
+module issue_lane_tag_bit #(
+    parameter bit LANE1 = 1'b0
+) (
+    input  logic i_take,         // load queue's CDB stage takes a result
+    input  logic i_fired,        // that result's tag bit
+    input  logic i_held,         // the staged result's tag bit
+    input  logic i_cdb_valid,    // CDB lane 0 valid
+    input  logic i_cdb_2_valid,  // CDB lane 1 valid (lane 1 only)
+    input  logic i_lane_tag,     // this lane's CDB tag bit
+    output logic o_tag
+);
+`ifdef FROST_XILINX_PRIMS
+  if (LANE1) begin : gen_lane1
+    (* dont_touch = "true" *) LUT6 #(
+        .INIT(64'hFFFFD8FF0000D800)
+    ) u_tag (
+        .I0(i_take),
+        .I1(i_fired),
+        .I2(i_held),
+        .I3(i_cdb_valid),
+        .I4(i_cdb_2_valid),
+        .I5(i_lane_tag),
+        .O (o_tag)
+    );
+  end else begin : gen_lane0
+    (* dont_touch = "true" *) LUT5 #(
+        .INIT(32'hFFD800D8)
+    ) u_tag (
+        .I0(i_take),
+        .I1(i_fired),
+        .I2(i_held),
+        .I3(i_cdb_valid),
+        .I4(i_lane_tag),
+        .O (o_tag)
+    );
+  end
+`else
+  wire takes_load = LANE1 ? (i_cdb_valid && !i_cdb_2_valid) : !i_cdb_valid;
+  assign o_tag = takes_load ? (i_take ? i_fired : i_held) : i_lane_tag;
+`endif
 endmodule

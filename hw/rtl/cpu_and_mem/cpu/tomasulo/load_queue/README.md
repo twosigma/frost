@@ -369,7 +369,9 @@ complete aligned dwords. FROST enables this option, while standalone
 `cpu_top` defaults it off. Device traffic always bypasses L0.
 
 The L0 is direct-mapped with 8-byte (dword) lines: valid bits in flip-flops,
-tags and data in LUTRAM. The staged load looks it up combinationally
+tags and data in LUTRAM. Above 64 entries the LUTRAMs are split into 64-entry
+banks, and each bank's write enable is one gate over bank selects decoded
+from the store and fill indices. The staged load looks it up combinationally
 alongside the SQ check, and a hit completes the load in the cycle the SQ
 answer allows. Every load size can hit, FLD included. Device loads, LRs and
 AMOs never hit or fill.

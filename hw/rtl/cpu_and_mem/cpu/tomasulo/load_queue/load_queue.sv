@@ -181,6 +181,11 @@ module load_queue #(
     // o_fu_complete.tag after the next edge, for lane tags registered ahead of
     // the early-load merge.
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_fu_complete_tag_next,
+    // Its two parts: whether the CDB stage takes a result on the next edge,
+    // and that result's tag. Without a take the tag stays o_fu_complete.tag.
+    // A consumer can apply the late take last.
+    output logic o_fu_complete_tag_fire,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_fu_complete_tag_fired,
     // Unused input retained for Vivado mapping stability. Removing it and its
     // wrapper driver requires synthesis and optimization timing validation.
     input logic i_adapter_result_pending,  // unused (back-pressure comes from i_result_accepted)
@@ -3279,8 +3284,10 @@ module load_queue #(
   // don't-care otherwise.
   assign bypass_idx = resp_bypass_data_sel ? issued_idx : sq_check_idx;
   assign bypass_tag = resp_bypass_data_sel ? issued_rob_tag : sq_check_rob_tag_q;
-  assign o_fu_complete_tag_next = !(issue_cdb_fire || bypass_fire) ? cdb_stage_data.tag :
-      issue_cdb_found ? issue_cdb_result.tag : bypass_tag;
+  assign o_fu_complete_tag_fire = issue_cdb_fire || bypass_fire;
+  assign o_fu_complete_tag_fired = issue_cdb_found ? issue_cdb_result.tag : bypass_tag;
+  assign o_fu_complete_tag_next = o_fu_complete_tag_fire ? o_fu_complete_tag_fired :
+      cdb_stage_data.tag;
   // A faulting load (misaligned, outside the physical map, or with a parked
   // translation fault) raises an exception instead of producing a register
   // result, so its CDB value slot is free to carry the faulting address.
@@ -3817,14 +3824,16 @@ module load_queue #(
   end
 
 
-  // Partial flush qualifies each valid bit before completion clears it.
-  // Allocation ORs its entries into the surviving valid mask.
+  // Partial flush qualifies each valid bit before completion clears it. Each
+  // next valid bit joins the surviving bit, the entry's release and its
+  // allocation in one term: the release, late from an L0 hit, and the
+  // allocation, late from dispatch, each pass one gate.
   (* keep = "true" *) wire [DEPTH-1:0] lq_valid_unflushed;
-  (* keep = "true" *) wire [DEPTH-1:0] lq_valid_kept;
-  for (genvar i = 0; i < DEPTH; i++) begin : gen_lq_valid_kept
+  (* keep = "true" *) wire [DEPTH-1:0] lq_valid_next;
+  for (genvar i = 0; i < DEPTH; i++) begin : gen_lq_valid_next
     assign lq_valid_unflushed[i] = lq_valid[i] && !(i_flush_en &&
         (flush_all_entries || is_younger(lq_rob_tag[i], i_flush_tag, i_rob_head_tag)));
-    assign lq_valid_kept[i] = lq_valid_unflushed[i] && !coherent_free_entry[i];
+    assign lq_valid_next[i] = alloc_oh[i] || (lq_valid_unflushed[i] && !coherent_free_entry[i]);
   end
 
   // Prepare local completion and response eligibility independently. Each
@@ -3929,7 +3938,7 @@ module load_queue #(
       // Partial flush: invalidate entries younger than flush_tag
       // -----------------------------------------------------------------
       if (i_flush_en) begin
-        // lq_valid_kept clears the flushed entries' valid bits.
+        // lq_valid_next clears the flushed entries' valid bits.
         // If the outstanding fast-tier load was flushed, drop the next memory
         // response so the recycled slot cannot see stale data.
         if (fast_entry_flushed) begin
@@ -4044,7 +4053,7 @@ module load_queue #(
       // -----------------------------------------------------------------
       // Entry Freeing + Head Advancement
       // -----------------------------------------------------------------
-      // lq_valid_kept clears the freed entries' valid bits.
+      // lq_valid_next clears the freed entries' valid bits.
 
       // -----------------------------------------------------------------
       // Allocation: initialize a new physical generation (control signals
@@ -4053,7 +4062,7 @@ module load_queue #(
       // Initialize after old-entry updates so allocation has final priority.
       // Legal allocations cannot overlap a completing entry, and the two slot
       // vectors are disjoint.
-      lq_valid <= alloc_oh | lq_valid_kept;
+      lq_valid <= lq_valid_next;
       for (int unsigned i = 0; i < DEPTH; i++) begin
         if (alloc_oh[i]) begin
           lq_addr_valid[i]     <= 1'b0;

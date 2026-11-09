@@ -15,7 +15,8 @@ smtbmc boolector
 [script]
 read -sv riscv_pkg.sv
 read_verilog -formal -D SYNTHESIS -D DMMU_CAPTURE_LOCAL_PROOF -sv dmmu.sv
-# Consumer pairing and packet capture hold for arbitrary TLB answers.
+# Consumer pairing and packet capture hold for arbitrary TLB answers whose
+# clean-hit verdict is a hit with no fault.
 delete t:dtlb
 proc
 setundef -undriven -anyseq

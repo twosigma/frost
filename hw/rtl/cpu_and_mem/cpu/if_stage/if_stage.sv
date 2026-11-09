@@ -447,6 +447,7 @@ module if_stage #(
   logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel;
   logic slot2_valid;  // matches the output slot-2 valid sent to PD/dispatch
   logic slot2_prediction_valid;  // live-only valid for the current staged slot-2 lookup
+  logic slot2_prediction_valid_wcs0;  // the same with the raw served-window guard low
   logic slot2_redirect_q;  // One-cycle bubble after slot-2 BTB redirect.
   // Slot 2 bubbles with slot 1: holdoffs and flushes can leave live bytes
   // unrelated to pc_reg. A pending prediction belongs to one instruction.
@@ -739,6 +740,7 @@ module if_stage #(
       .i_slot2_plus2_candidate_valid(slot2_plus2_candidate_valid),
       .i_slot2_plus4_candidate_valid(slot2_plus4_candidate_valid),
       .i_slot2_valid(slot2_prediction_valid),
+      .i_slot2_valid_wcs0(slot2_prediction_valid_wcs0),
       .i_slot2_is_compressed_plus2(slot2_is_compressed_plus2_for_btb),
       .i_slot2_is_compressed_plus4(slot2_is_compressed_plus4_for_btb),
       // The per-candidate sizes above let branch_prediction_controller qualify
@@ -1507,6 +1509,10 @@ module if_stage #(
   assign window_resteer_pc_reg = window_cannot_serve_pc_reg && !sel_nop_existing_wcs;
 
   assign sel_nop = sel_nop_existing_wcs0 || window_cannot_serve_pc_reg;
+  // Slot 2's prediction valid with the raw served-window guard forced low;
+  // the controller applies the guard last to the staged slot-2 select.
+  assign slot2_prediction_valid_wcs0 =
+      !(sel_nop_2_aligner || sel_nop_existing_wcs0 || pending_prediction_kills_live_slot2);
 
   // PC-control squash affects only arms below trap, xRET, and FENCE-class
   // redirects. Its state clears on full flush, so omit that flush term for
@@ -1536,6 +1542,9 @@ module if_stage #(
         )) begin
       p_pc_control_sel_nop_exact_unless_kill :
       assert (i_flush_all || (pc_control_sel_nop == sel_nop));
+      p_slot2_prediction_valid_wcs_cofactor :
+      assert (slot2_prediction_valid ==
+              (slot2_prediction_valid_wcs0 && !window_cannot_serve_pc_reg));
       // The premise: a full-flush cycle is always a trap, xRET, or FENCE-class arm cycle.
       p_full_flush_kill_wins_next_pc :
       assert (!i_flush_all || i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken || i_fence_i_flush);

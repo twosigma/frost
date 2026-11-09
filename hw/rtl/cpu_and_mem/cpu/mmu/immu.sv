@@ -187,10 +187,11 @@ module immu #(
       (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && !i_tlb_invalidate;
 
   dtlb #(
-      .NUM_ENTRIES   (NUM_ENTRIES),
-      .NUM_PORTS     (2),
-      .FETCH_VERDICTS(1'b1),
-      .DATA_VERDICTS (1'b0)
+      .NUM_ENTRIES    (NUM_ENTRIES),
+      .NUM_PORTS      (2),
+      .FETCH_VERDICTS (1'b1),
+      .DATA_VERDICTS  (1'b0),
+      .PPN_SELECT_TREE(1'b1)
   ) u_itlb (
       .i_clk(i_clk),
       .i_rst_n(!i_rst),
@@ -213,8 +214,10 @@ module immu #(
       .i_perm_priv_u(1'b0),
       .i_perm_sum(1'b0),
       .i_perm_mxr(1'b0),
+      .i_perm_atomic('0),
       .o_perm_ok(),
       .o_atomic_page(),
+      .o_clean_hit(),
       .i_fetch_priv_u(i_priv_u),
       .o_fetch_perm_fault(tlb_fetch_perm_fault),
       .o_fetch_pma_bad(tlb_fetch_pma_bad),
@@ -627,7 +630,12 @@ module immu #(
     assign pa_valid_copy = !i_active || (visible_before_pc_compare && pc_match);
     assign o_pa_valid_copy[copy] = pa_valid_copy;
   end
-  wire live_after_ok = (i_pc[11:5] != 7'h7F) || (i_pc[4:2] == 3'b111);
+  wire  live_after_ok = (i_pc[11:5] != 7'h7F) || (i_pc[4:2] == 3'b111);
+  // The fetch PC's fault reaches the branch predictor's disable, so it too
+  // takes the live-PC compare last: translated_visible is i_active,
+  // visible_before_pc_compare and pc_match.
+  (* keep = "true" *)logic fault0_before_pc_compare;
+  assign fault0_before_pc_compare = visible_before_pc_compare && f0_q;
   always_comb begin
     if (!i_active) begin
       o_fault0 = bare_verdict.bare_fault0;
@@ -636,7 +644,7 @@ module immu #(
       o_fault1_page = 1'b0;
       o_line_after_ok = 1'b1;
     end else begin
-      o_fault0 = translated_visible && f0_q;
+      o_fault0 = fault0_before_pc_compare && pc_match;
       o_fault0_page = translated_visible && f0p_q;
       o_fault1 = translated_visible && (pc_page_cross ? f1_q : f0_q);
       o_fault1_page = translated_visible && (pc_page_cross ? f1p_q : f0p_q);
@@ -681,6 +689,7 @@ module immu #(
     if (reset_seen_q && !i_rst && !$isunknown(
             {i_pc, i_priv_u, np_va_q, o_walk_req_valid, o_walk_vpn}
         )) begin
+      p_fault0_compare_last_exact : assert (!i_active || o_fault0 == (translated_visible && f0_q));
       if (translated_visible) begin
         p_visible_pa0_ppn_exact :
         assert (o_pa0[riscv_pkg::PhysAddrBits-1:12] == pa0_q[riscv_pkg::PhysAddrBits-1:12]);

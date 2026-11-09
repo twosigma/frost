@@ -169,7 +169,9 @@ module coherence_home #(
     PutAck,
     PutFatal
   } put_phase_t;
-  fill_phase_t fill_phase_q[FILLS];
+  // The fill phase keeps its next-state logic on the D input; mapping part
+  // of it onto the flops' reset pin lengthened the tag-to-phase path.
+  (* extract_reset = "no" *) fill_phase_t fill_phase_q[FILLS];
   // Registered phase flags for the tag decision. They change only where their
   // decoded phase value changes, so the decision reads one flop per owner and
   // the flags' inputs stay shallow.
