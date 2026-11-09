@@ -62,6 +62,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_multi_data1_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_multi_data2_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_multi_data3_bmc"): 3600,
+    ("coherence_l1d", "coh_l1d_ways_data_bmc"): 3600,
     ("coherence_store_boundary", "bmc_four"): 18000,
     ("coherence_store_boundary", "cover_four"): 7200,
     ("coherence_store_boundary", "bmc_intervening"): 14400,
@@ -318,6 +319,7 @@ FORMAL_TARGETS = [
             "coh_l1d_local_data_bmc",
             "coh_l1d_local_ways_prove",
             "coh_l1d_cover",
+            "coh_l1d_path_cover",
             "coh_l1d_data_bmc",
             "coh_l1d_data1_bmc",
             "coh_l1d_data2_bmc",
@@ -330,6 +332,7 @@ FORMAL_TARGETS = [
             "coh_l1d_multi_data1_bmc",
             "coh_l1d_multi_data2_bmc",
             "coh_l1d_multi_data3_bmc",
+            "coh_l1d_ways_data_bmc",
         ),
     ),
     FormalTarget(
@@ -403,9 +406,11 @@ FORMAL_TARGETS = [
             "coh_array_plru_prove",
             "coh_array_plru_uram_prove",
             "coh_array_plru_bimodal_prove",
+            "coh_array_plru_port_prove",
             "coh_array_plru_cover",
             "coh_array_plru_uram_cover",
             "coh_array_plru_bimodal_cover",
+            "coh_array_plru_port_cover",
         ),
     ),
     FormalTarget(
@@ -420,8 +425,11 @@ FORMAL_TARGETS = [
             "coh_array_uram_bmc",
             "coh_array4_bmc",
             "coh_array4_uram_bmc",
+            "coh_array_port_bmc",
+            "coh_array4_port_bmc",
             "coh_array_cover",
             "coh_array_uram_cover",
+            "coh_array4_port_cover",
         ),
     ),
     FormalTarget(
@@ -438,6 +446,8 @@ FORMAL_TARGETS = [
             "coh_array_equiv_uram_bmc",
             "coh_array_equiv_uram_data5_bmc",
             "coh_array_equiv4_uram_bmc",
+            "coh_array_equiv_port_bmc",
+            "coh_array_equiv_port_data0_bmc",
             "coh_array_equiv_cover",
         ),
     ),
@@ -1479,6 +1489,10 @@ SBY_TASKS = [
         "coh_l1d_multi_data3_bmc",
         "Concurrent store acquisitions preserve array and probe bytes in word 3.",
     ),
+    (
+        "coh_l1d_ways_data_bmc",
+        "Four-way array, probe and hit-path bytes in word 0 with three endpoints.",
+    ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
     ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),
@@ -1540,6 +1554,10 @@ SBY_TASKS = [
         "Arbitrary-byte store and probe images in the production array.",
     ),
     ("coh_l1d_cover", "Buffered stores, ordered installation, probes and errors."),
+    (
+        "coh_l1d_path_cover",
+        "Hit-path answers, shadow lookups and the hit path's refusals with free inputs.",
+    ),
     ("coh_array_select_prove", "Conditional data selection with one way."),
     ("coh_array_select4_prove", "Conditional data selection with four ways."),
     ("coh_array_select56_prove", "Conditional data selection at 56 address bits."),
@@ -1563,6 +1581,14 @@ SBY_TASKS = [
     (
         "coh_array_plru_bimodal_cover",
         "Insertions that update replacement state under bimodal insertion.",
+    ),
+    (
+        "coh_array_plru_port_prove",
+        "Replacement equality with hit-port touches beside the array's writes.",
+    ),
+    (
+        "coh_array_plru_port_cover",
+        "Hit-port touches applied beside a hit and dropped under an array write.",
     ),
     (
         "coh_hart_maint_prove",
@@ -1832,6 +1858,9 @@ SBY_TASKS = [
     ("coh_array_uram_bmc", "Coherent array byte values through registered RAM ports."),
     ("coh_array4_bmc", "Coherent array byte values and held responses with four ways."),
     ("coh_array4_uram_bmc", "Four-way coherent array byte values in UltraRAM."),
+    ("coh_array_port_bmc", "Hit-port tags and byte values beside lookups, one way."),
+    ("coh_array4_port_bmc", "Hit-port tags and byte values beside lookups, four ways."),
+    ("coh_array4_port_cover", "Hit-port hits beside lookups and after writes."),
     ("coh_array_equiv_bmc", "Cycle equivalence with the reference array, one way."),
     ("coh_array_equiv_data0_bmc", "One-way response data equivalence in byte lane 0."),
     (
@@ -1860,6 +1889,14 @@ SBY_TASKS = [
         "UltraRAM response data equivalence in byte lane 5.",
     ),
     ("coh_array_equiv4_uram_bmc", "Four-way cycle equivalence in UltraRAM."),
+    (
+        "coh_array_equiv_port_bmc",
+        "Cycle equivalence with hit-port reads beside the lookups, one way.",
+    ),
+    (
+        "coh_array_equiv_port_data0_bmc",
+        "Byte lane 0 data equivalence with hit-port reads beside the lookups.",
+    ),
     ("coh_array_equiv_cover", "Compared data responses and insertions are reachable."),
     (
         "coh_arbiter24_prove",

@@ -2,9 +2,11 @@
 coh_array_plru_prove bram proof
 coh_array_plru_uram_prove uram proof
 coh_array_plru_bimodal_prove bram proof bimodal
+coh_array_plru_port_prove bram proof bimodal port
 coh_array_plru_cover bram covers
 coh_array_plru_uram_cover uram covers
 coh_array_plru_bimodal_cover bram covers bimodal
+coh_array_plru_port_cover bram covers bimodal port
 
 [options]
 proof: mode prove
@@ -22,6 +24,7 @@ read -formal -D F_COH_ARRAY_PLRU_PROOF -sv sdp_block_ram.sv sdp_packed_tag_uram.
 chparam -set CACHE_BYTES 256 -set WAYS 4 coherence_array
 uram: chparam -set ULTRA 1 coherence_array
 bimodal: chparam -set BIMODAL_INSERT 1 coherence_array
+port: chparam -set HIT_PORT 1 coherence_array
 prep -flatten -top coherence_array
 select -assert-count 4 c:p_plru_*
 chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_plru_* %d

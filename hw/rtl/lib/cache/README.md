@@ -30,7 +30,7 @@ benches compose these modules independently of the CPU hierarchy.
 | `coherence_prefetch_pause.sv` | Holds new prefetch requests while DMA is offered or outstanding and for seven idle cycles after |
 | `line_port_axi_bridge.sv` | Line port to single-beat AXI4 master; line ids become AXI ids, and each response carries the error bit of its RRESP or BRESP. The NIC's DMA master is one |
 | `axi_behavioral_memory.sv` | Simulation-only DDR model: concurrent transactions, latency and jitter settings, optional out-of-order completion, and injected error responses |
-| `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, and writeback pulses, hit-under-miss, the outstanding-miss count, and two stall classes; and the L2's write costs: write misses that fetch their line, and writes that wait for a read of their line |
+| `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, and writeback pulses, the L1D hit path's hits, hit-under-miss, the outstanding-miss count, and two stall classes; and the L2's write costs: write misses that fetch their line, and writes that wait for a read of their line |
 | `*_test_harness.sv` | cocotb tops: hierarchy + bridge + memory (with a bench-paced hold on the bridge), and arbiter + bridge + memory |
 
 ## Line protocol
@@ -233,11 +233,19 @@ lookup, read and update operations in block RAM. Its data array has a bank
 per way, rows by set. The final tag-read cycle selects the private way, and
 every bank reads the set's row in that cycle; the banks' output registers are
 the second cycle of the read latency, and a way multiplexer passes the
-selected way's row to the response. Victim selection uses the tag request's
+selected way's row to the response. With `HIT_PORT`, the array also has a
+hit port: a copy of the tags, written with them, and the banks' read address
+in every cycle but a data-reading lookup's final tag-read cycle. A request
+taken with `o_hp_ready` reads the copy and every bank's row of its set on one
+edge; its hit shows two cycles later and the hit way's dword a cycle after
+that, both as of that edge. The port is not ready in that tag-read cycle, in
+a cycle that writes its set, or before the reset sweep ends. Victim selection uses the tag request's
 matching PLRU response. Each tree bit of the replacement state has its own
 RAM, and a touch writes only the bits on its way's path. A hit writes them
 from the registered way during data service or the reply, before
-another request or update can enter. A lookup marked `i_req_no_touch`
+another request or update can enter. A hit-port hit writes its way's bits in
+its third cycle unless the array writes replacement state in that cycle, which
+drops the touch. A lookup marked `i_req_no_touch`
 leaves replacement state unchanged on a hit; the L1D marks look-ahead
 lookups this way. The L1D's array uses bimodal insertion (see Sets and ways),
 and `i_update_touch` makes one insertion update replacement state. The L1D
@@ -250,6 +258,8 @@ the controller completes that update before issuing another lookup.
 The L1D asserts this pairing for each grant installation.
 Response data is meaningful only with `o_resp_data_valid`. A tag-only or
 skipped read keeps the prior response data without reading the data array.
+A lookup marked `i_req_tags_only` reads no data and replies after the tag
+read, so it leaves the banks to the hit port.
 A lookup marked `i_req_data_if_hit` needs data only on a hit, and one
 marked `i_req_data_if_victim_modified` only when it misses and its selected
 victim is Modified; a maintenance visit always waits for its data.
@@ -498,6 +508,20 @@ Both masks are qualified by endpoint ownership, waiting status and miss
 retry credits. The shared write-address exclusion qualifies the
 buffered-write result.
 Circular priority selects a qualified slot and its address.
+Loads also have a hit path beside the controller. In the cycle after a load
+arrives, the L1D offers it to the array's hit port from registers, unless a
+probe is in service, an owner holds its slot, or a holder blocks its sector
+by the rule above. A hit completes the slot's read four cycles after its
+arrival, and the response leaves like any other. In stage 4, as the hit path
+answers it, the slot is out of read selection. A read that the controller
+selects while the hit path holds it, including one selected in its stage-3
+cycle, gets a shadow lookup, which reads tags only, leaves replacement state
+alone and answers nothing if either lookup hits; a read that misses both takes
+the miss path from that lookup.
+Hit-path hits train the stream detector through two entries on its second
+input, which it compares apart from the controller's load reports and takes
+in cycles without one; a hit only advances a confirmed stream, and one that
+finds both entries full is dropped.
 There are no E grants, silent upgrades or sharer hints.
 The L1D has eight read slots and `L1D_NUM_MSHR` request endpoints.
 The home has `L2_NUM_MSHR` fills, 1 to 16, and `L2_NUM_WB` victim write
@@ -506,9 +530,11 @@ slots. `L2_NUM_WAITERS` has no effect on the CPU hierarchy; `L2_PREFETCH`,
 prefetcher (see The home's prefetcher).
 
 L1D performance events count scalar CPU requests. CPU reads count at their
-first permission lookup. The first store in a record counts at its first
-permission lookup; each additional scalar that combines counts as an access
-and a buffer hit on acceptance, even before permission arrives. A combined
+first permission lookup; a read that the hit path answers counts as an access
+and a hit when it is answered, and its shadow lookup adds nothing. The first
+store in a record counts at its first permission lookup; each additional
+scalar that combines counts as an access and a buffer hit on acceptance, even
+before permission arrives. A combined
 store and a tag lookup can contribute two accesses in one cycle. Cached SC
 counts its first definitive classification: a Modified hit, including a failed
 reservation, is a hit; a home acquisition is a permission miss. A first store
@@ -910,7 +936,11 @@ acceptance, so these arbiters present their captured selection as C validity.
 
 The `coherence_array_equiv` target checks that `coherence_array` matches,
 output for output on every cycle, a reference array with one data RAM of
-`{way, set}` rows and a replacement RAM written whole.
+`{way, set}` rows and a replacement RAM written whole, also with hit-port
+reads beside the lookups. The `coherence_array` target checks the hit port's
+tags and bytes against the values written before its read edge, and that the
+port never reads the banks beside a data-reading lookup or a write to its
+set.
 
 The `coherence_store_buffer` target proves scalar and byte conservation by
 induction. A 48-cycle saturation case holds an older record while 33 writes
@@ -922,7 +952,9 @@ Formal targets `coherence_home_completions`, `coherence_control`, `coherence_arr
 representative byte values, bounded controller transitions and CPU ownership.
 The `coherence_l1d` target also runs the L1D with three request endpoints and
 checks that no two live endpoints hold one sector, that no load endpoint is
-live beside a granted home atomic, that a local atomic excludes its sector and endpoint
+live beside a granted home atomic, that the hit path holds valid unanswered
+load slots and answers each at most once, that a lookup of a slot whose hit
+it holds is a shadow that agrees with it, that a local atomic excludes its sector and endpoint
 0 while blocking service, and that a load grant installs with a free WB
 slot. Its eight-endpoint stream tasks check speculative ownership and
 separation from demand response masks, and cover two accepted hints, demand
@@ -930,14 +962,14 @@ attachment and simultaneous LR/AMO admission. Three-endpoint grant-turn covers
 witness used, empty and cancelled opportunities and a held probe reply followed
 by local service. `coherence_read_stream` proves the three-miss confirmation
 rule, cancellation and page-bounded cursor, including simultaneous demand
-advance and hint consumption.
+advance and hint consumption and advances from its second hit input.
 Separate conflict proofs check both selector values with arbitrary controller
 state. They match the control configurations: one and three endpoints without
 look-ahead, and eight endpoints with look-ahead. Each control task uses its
 matching guarded conflict identity as a lemma. The consumer guards, acquisition
 window and protocol checks are separate assertions.
 Separate bounded tasks check ordered head payload, grant-byte merging
-and array/probe bytes in each 64-bit word through 40 cycles with concurrent
+and array, probe and hit-path bytes in each 64-bit word through 40 cycles with concurrent
 endpoints.
 The `coherence_store_boundary` target composes the SQ, request router, L1D and
 load queue for bounded checks through 80 to 140 cycles. Its four-record cases

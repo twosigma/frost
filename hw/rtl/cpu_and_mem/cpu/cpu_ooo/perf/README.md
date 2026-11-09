@@ -363,8 +363,8 @@ increment register. Totals and snapshot deltas are unaffected.
 | 107 | 1 | `L1I_HIT` | event | An L1I access hits at the tag stage |
 | 108 | 2 | `L1I_MISS` | event | An L1I access misses at the tag stage |
 | 109 | 3 | `L1I_WRITEBACK` | event | A counted miss evicts a dirty L1I victim (counted with the miss, not when the writeback leaves). The L1I is read-only, so this is normally 0 |
-| 110 | 4 | `L1D_ACCESS` | event | The L1D's first permission lookup for a CPU read or the first store in a record, acceptance of each additional scalar store into a combining record, or the definitive local/home classification of a selected SC. Retries, probes and maintenance do not count |
-| 111 | 5 | `L1D_HIT` | event | An L1D access finds its sector with enough permission, S or M for a read and M for a store, AMO or selected SC, or a scalar store combines into a buffered record. Combining counts as a buffer hit even before permission arrives. An SC reservation failure on M counts as a hit |
+| 110 | 4 | `L1D_ACCESS` | event | The L1D's first permission lookup for a CPU read or the first store in a record, a read that the L1D's hit path answers, acceptance of each additional scalar store into a combining record, or the definitive local/home classification of a selected SC. Retries, probes and maintenance do not count |
+| 111 | 5 | `L1D_HIT` | event | An L1D access finds its sector with enough permission, S or M for a read and M for a store, AMO or selected SC, the hit path answers a read, or a scalar store combines into a buffered record. Combining counts as a buffer hit even before permission arrives. An SC reservation failure on M counts as a hit |
 | 112 | 6 | `L1D_MISS` | event | An L1D access without enough permission. An AMO or selected SC counts when classified for home acquisition |
 | 113 | 7 | `L1D_WRITEBACK` | event | A dirty L1D victim is frozen for its PutM, the L1D's dirty-sector writeback message, counted when the writeback starts rather than with the miss. Maintenance writebacks do not count |
 | 114 | 8 | `L2_ACCESS` | event | The L2 home's first lookup for a demand or prefetch request, or a lookup for a PutM other than maintenance |
@@ -408,10 +408,13 @@ they cause, include next-line prefetches; `L1I_FETCH_MISS_STALL` counts only
 cycles in which the fetch window is also not ready. The L1D's maintenance
 PutMs are excluded from the L2 access, hit and miss counts as well.
 
-L1D access and hit increments can be two when a scalar combines during a
-tag lookup. Each accepted scalar contributes one access; combining contributes
-a hit without allocating another miss. The first scalar in a record contributes
-its lookup's hit or miss. Hit-under-miss includes both sources independently.
+L1D access and hit increments can be two or three when a scalar combines or
+the hit path answers a read during a tag lookup. Each accepted scalar
+contributes one access; combining contributes a hit without allocating another
+miss. The first scalar in a record contributes its lookup's hit or miss. A read
+that the hit path answers contributes an access and a hit, and the controller's
+shadow lookup of it adds nothing. Hit-under-miss includes every source
+independently.
 
 L1D `miss_outstanding` counts unresolved logical misses: read slots whose
 first lookup missed and whose result is not ready, acquired store records until

@@ -32,21 +32,25 @@ module coherence_read_flags (
     input logic i_fill_valid,
     input logic [2:0] i_fill_id,
     input logic i_miss_valid,
-    // Slots a failure, hit or fill completes this cycle.
+    // A hit-path answer completes its slot as a hit does.
+    input logic i_path_valid,
+    input logic [2:0] i_path_id,
+    // Slots a failure, hit, fill or hit-path answer completes this cycle.
     output logic [7:0] o_complete,
     output logic [7:0] o_valid,
     output logic [7:0] o_miss,
     output logic [7:0] o_ready,
     output logic [7:0] o_error
 );
-  logic [7:0] response_mask, failure_mask, hit_mask, fill_mask;
+  logic [7:0] response_mask, failure_mask, hit_mask, fill_mask, path_mask;
   (* keep = "true" *) logic [7:0] complete_mask, ready_preserved, error_preserved, error_set;
   (* keep = "true" *) logic [7:0] miss_mask, valid_preserved;
   assign response_mask = i_response_valid ? 8'h01 << i_response_id : '0;
   assign failure_mask = i_failure_valid ? 8'h01 << i_failure_id : '0;
   assign hit_mask = i_hit_valid ? 8'h01 << i_hit_id : '0;
   assign fill_mask = i_fill_valid ? 8'h01 << i_fill_id : '0;
-  assign complete_mask = failure_mask | hit_mask | fill_mask;
+  assign path_mask = i_path_valid ? 8'h01 << i_path_id : '0;
+  assign complete_mask = failure_mask | hit_mask | fill_mask | path_mask;
   assign o_complete = complete_mask;
   assign ready_preserved = i_ready & ~response_mask;
   assign error_preserved = i_error & ~failure_mask;
@@ -91,6 +95,7 @@ module coherence_read_flags (
     end
     if (i_hit_valid) reference_ready[i_hit_id] = 1'b1;
     if (i_fill_valid) reference_ready[i_fill_id] = 1'b1;
+    if (i_path_valid) reference_ready[i_path_id] = 1'b1;
     if (i_miss_valid) reference_miss[i_hit_id] = 1'b1;
     p_read_flags_exact :
     assert ({o_valid, o_miss, o_ready, o_error} ==

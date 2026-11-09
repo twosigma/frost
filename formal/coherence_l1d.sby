@@ -13,6 +13,7 @@ coh_l1d_stream_prove stream multi padded pdr unbounded streamread epphase
 coh_l1d_stream_cover stream multi streamcovers covermode padded
 coh_l1d_turn_cover turnstream multi turncovers covermode padded
 coh_l1d_cover single covers covermode
+coh_l1d_path_cover single pathcovers covermode
 coh_l1d_data_bmc single data arraydata word0
 coh_l1d_data1_bmc single data arraydata word1
 coh_l1d_data2_bmc single data arraydata word2
@@ -25,6 +26,7 @@ coh_l1d_multi_data0_bmc multi data arraydata word0 multidata
 coh_l1d_multi_data1_bmc multi data arraydata word1 multidata
 coh_l1d_multi_data2_bmc multi data arraydata word2 multidata
 coh_l1d_multi_data3_bmc multi cadical arraydata word3 multidata
+coh_l1d_ways_data_bmc ways data arraydata word0 multidata
 
 coh_l1d_local_prove single local owner
 coh_l1d_local_multi_prove multi local owner padded
@@ -53,6 +55,10 @@ localschedule: depth 80
 covermode: mode cover
 covermode: depth 80
 covermode: timeout 600
+# The hit-path covers use free inputs, so they need longer than the scripted
+# covers.
+pathcovers: depth 40
+pathcovers: timeout 1800
 ~covermode: aigsmt boolector
 conflict: mode prove
 conflict: depth 2
@@ -87,6 +93,7 @@ data: abc bmc3 -c
 cadical: abc bmc3 -c
 conflict: smtbmc boolector
 covers: smtbmc boolector
+pathcovers: smtbmc boolector
 streamcovers: smtbmc boolector
 turncovers: smtbmc boolector
 owner: abc pdr
@@ -111,6 +118,7 @@ conflict: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 streamcovers: read -formal -sv -D STREAM_COVER coherence_read_payload.sv coherence_l1d.sv
 turncovers: read -formal -sv -D STREAM_TURN_COVER coherence_read_payload.sv coherence_l1d.sv
 covers: read -formal -sv -D STORE_COVER -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
+pathcovers: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 word0: read -formal -sv -D STORE_DATA_PROOF -D STORE_BYTE_WORD=0 coherence_read_payload.sv coherence_l1d.sv
 word1: read -formal -sv -D STORE_DATA_PROOF -D STORE_BYTE_WORD=1 coherence_read_payload.sv coherence_l1d.sv
 word2: read -formal -sv -D STORE_DATA_PROOF -D STORE_BYTE_WORD=2 coherence_read_payload.sv coherence_l1d.sv
@@ -146,7 +154,7 @@ unbounded: chformal -assert -remove t:$check r:FLAVOR=assert %i a:src=*coherence
 unbounded: select -assert-count 14 t:$check r:FLAVOR=assert %i c:p_owned_* c:p_selected_kind %u %i
 unbounded: chformal -assert2assume c:p_owned_* c:p_selected_kind
 bulk: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
-bulk: select -assert-count 313 t:$check r:FLAVOR=assert %i
+bulk: select -assert-count 320 t:$check r:FLAVOR=assert %i
 outlier: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold %u %u %u %d
 outlier: select -assert-count 4 t:$check r:FLAVOR=assert %i
 # The unbounded stream proof leaves out the four outlier assertions, which the
@@ -157,18 +165,24 @@ outlier: select -assert-count 4 t:$check r:FLAVOR=assert %i
 # the loop-generated ones; the others carry the p_bounded_ label prefix.
 unbounded: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
 unbounded: chformal -assert -remove c:*p_bounded_* c:p_acquire_read_payload c:p_acquire_read_role c:p_atomic_no_load_endpoint c:p_atomic_single_owner c:p_atomic_store_exclusive c:p_block_zero_exact c:p_grant_live c:p_grant_prefetch_flag c:p_prefetch_hint_conflict c:p_prefetch_owner_conflict c:p_read_owned_exact c:p_request_payload c:p_store_acquire_once c:p_store_grant_head c:p_store_grant_head_exact c:p_store_head_address c:p_store_head_valid c:p_store_install_address c:p_store_read_service_bound c:p_store_yields_read
-unbounded: select -assert-count 169 t:$check r:FLAVOR=assert %i
+unbounded: select -assert-count 175 t:$check r:FLAVOR=assert %i
 conflict: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 conflict: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_conflict_split %d
 conflict: chformal -assume -remove
 conflict: chformal -cover -remove
+# The scripted store covers issue one load, which the hit path cannot take;
+# the hit-path covers run with free inputs and only the interface assumptions.
+covers: chformal -cover -remove c:c_path_*
+pathcovers: select -assert-count 6 c:c_path_*
+pathcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:c_path_* %d
+pathcovers: chformal -assert -remove
 streamcovers: select -assert-count 4 c:*p_stream_two c:*p_stream_attach c:*p_stream_lr_admit c:*p_stream_amo_admit
 streamcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:*p_stream_two c:*p_stream_attach c:*p_stream_lr_admit c:*p_stream_amo_admit %u %u %u %d
 # Control assertions run in the control tasks; this task checks the datapath.
 payload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
 payload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 %u %u %u %u %d
-arraydata: select -assert-count 2 c:p_store_data_6 c:p_store_data_7
-arraydata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_6 c:p_store_data_7 %u %d
+arraydata: select -assert-count 4 c:p_store_data_6 c:p_store_data_7 c:p_store_data_path c:p_store_data_path_known
+arraydata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_6 c:p_store_data_7 c:p_store_data_path c:p_store_data_path_known %u %u %u %d
 grantdata: select -assert-count 3 c:p_store_data_8 c:p_store_data_9 c:p_store_data_10
 grantdata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_8 c:p_store_data_9 c:p_store_data_10 %u %u %d
 turncovers: select -assert-count 4 c:p_stream_read_turn c:p_stream_empty_turn c:p_stream_probe_turn c:p_stream_cancel_turn

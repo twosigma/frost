@@ -9,6 +9,8 @@ coh_array_equiv4_bimodal_bmc bmc bram four bimodal
 coh_array_equiv_uram_bmc bmc uram
 coh_array_equiv_uram_data5_bmc bmc uram lane5
 coh_array_equiv4_uram_bmc bmc uram four foururam
+coh_array_equiv_port_bmc bmc bram port
+coh_array_equiv_port_data0_bmc bmc bram port lane0
 coh_array_equiv_cover cover bram four lane0
 
 [options]
@@ -37,6 +39,7 @@ lane0: chparam -set DATA_BYTE 0 coherence_array_equiv
 lane5: chparam -set DATA_BYTE 5 coherence_array_equiv
 lane17: chparam -set DATA_BYTE 17 coherence_array_equiv
 lane31: chparam -set DATA_BYTE 31 coherence_array_equiv
+port: chparam -set HIT_PORT 1 coherence_array_equiv
 prep -top coherence_array_equiv
 select -assert-count 3 c:p_equiv_*
 # Out-of-range bits of the four-way selections are unreachable constants.
