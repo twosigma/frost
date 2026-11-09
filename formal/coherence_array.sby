@@ -4,7 +4,7 @@ coh_array_uram_bmc uram bounded
 coh_array4_bmc bram bounded four undefined fourbram
 coh_array4_uram_bmc uram bounded four undefined
 coh_array_port_bmc bram bounded port
-coh_array4_port_bmc bram bounded four undefined port fourbram
+coh_array4_port_bmc bram bounded four undefined port fourbram fourport
 coh_array_cover bram covers
 coh_array_uram_cover uram covers
 coh_array4_port_cover bram covers four port
@@ -26,6 +26,9 @@ timeout 180
 bounded: timeout 1200
 four: timeout 1800
 port: timeout 1800
+# The four-way hit-port BMC takes about 50 minutes for its 24 frames and
+# has twice that; CI runs it beside the free-input L1D stream BMC.
+fourport: timeout 6000
 bounded: aigsmt boolector
 
 [engines]

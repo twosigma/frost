@@ -41,7 +41,8 @@ SBY_TASK_TIMEOUT_S = 2400
 # hour on a loaded machine, and the scripted and store-free eight-endpoint
 # L1D stream BMCs can take up to an hour. The free-input stream BMC with
 # stores runs 32 frames, and the four-record and intervening-load store
-# boundary BMCs run 120 and 140 frames. These tasks run in separate CI jobs.
+# boundary BMCs run 120 and 140 frames. The four-way hit-port array BMC takes
+# about 50 minutes for its 24 frames. These tasks run in separate CI jobs.
 # The three-endpoint L1D control BMC can take about half an hour on a loaded
 # machine and stays in the Coherence job. Their proof depth and input
 # contracts stay unchanged; only the solver's wall-clock allowance differs.
@@ -54,6 +55,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_stream_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_nostore_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_bmc"): 10800,
+    ("coherence_array", "coh_array4_port_bmc"): 6000,
     ("coherence_l1d", "coh_l1d_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_multi_bmc"): 14400,
     ("coherence_l1d", "coh_l1d_store_multi_payload_bmc"): 3600,

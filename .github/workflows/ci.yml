@@ -1222,7 +1222,7 @@ jobs:
               ((coherence_ or coherent_) and not
               (axi_coherent_bridge or coherence_l1d or coherence_store_boundary or
               coherence_store_home or coherent_local_atomic or coh_hart_maint_prove or
-              coherence_array_equiv)) or
+              coherence_array_equiv or coh_array4_port_bmc)) or
               (coherent_local_atomic and amo_cover)
             timeout_minutes: 240
           # The coherent array's equivalence with its reference array, about an
@@ -1264,9 +1264,10 @@ jobs:
               coherence_store_boundary_bmc_intervening)
             timeout_minutes: 330
           # The eight-endpoint L1D stream BMC with arbitrary inputs and
-          # stores runs to depth 32 and gets a job of its own.
+          # stores runs to depth 32, and the four-way hit-port array BMC,
+          # about 50 minutes, shares its job.
           - shard: Coherence L1D free stream
-            pytest_filter: coh_l1d_stream_free_bmc
+            pytest_filter: coh_l1d_stream_free_bmc or coh_array4_port_bmc
             timeout_minutes: 330
           # The hart maintenance composition proof with four scalar stores
           # takes about an hour, and the scripted and store-free eight-endpoint

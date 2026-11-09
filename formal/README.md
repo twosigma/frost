@@ -38,6 +38,7 @@ run. The runner's default timeout is 40 minutes. `csr_file:bmc`,
 `coherence_l1d:coh_l1d_stream_bmc` and `coh_l1d_stream_free_nostore_bmc` have
 60 minutes, and
 `coherence_l1d:coh_l1d_bmc` and the multi-endpoint data BMCs have 60 minutes,
+and `coherence_array:coh_array4_port_bmc` has 100 minutes,
 in both their SBY configurations and the runner.
 Individual SBY tasks can set shorter limits.
 
@@ -47,8 +48,9 @@ coherent store-boundary and local-atomic tasks, and the CSR profiling-on job
 runs the L1D local ownership proofs. The hart maintenance proof and the
 scripted and store-free eight-endpoint L1D stream control BMCs share a job with
 a 330-minute limit, which covers their allowances in sequence. The free-input
-stream BMC with stores, the four-record boundary BMC and the intervening-load
-boundary BMC each have a job of their own with a 330-minute limit. The store-home job runs the home's
+stream BMC with stores shares a job with the four-way hit-port array BMC, and
+the four-record boundary BMC and the intervening-load boundary BMC each have
+a job of their own, each with a 330-minute limit. The store-home job runs the home's
 ordered store tasks with a 240-minute limit. The L1D multi-endpoint job runs
 `coh_l1d_multi_bmc` alone, the L1D and bridges job runs the other L1D tasks
 and the AXI bridge targets, and the store-boundary job runs the other store-boundary
