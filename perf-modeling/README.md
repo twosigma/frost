@@ -27,7 +27,8 @@ This directory provides a **fast, cycle-approximate architectural performance mo
      `L2_NUM_MSHR` sets its fill count, eight on X3, and `L2_PREFETCH` enables
      data and instruction stream prefetching into the home.
      The model's L1D follows the coherent L1D's controller, request
-     endpoints, stream look-ahead and store records, and its prefetcher
+     endpoints, stream look-ahead and store records, but not its hit path,
+     and its prefetcher
      follows the home's data prefetch agent (section 8). The L2 and L1I are
      generic line caches, so DDR forecasts need calibration against the
      coherent path.
@@ -330,7 +331,7 @@ Caches reserve a victim way while a fill is pending. Same-line requests share a 
 
 MEM_RS frees an entry when it issues one load or store per cycle (`reservation_station.sv`), and the LQ frees an entry when its result reaches the CDB stage (`load_queue.sv`). An ordinary store is done at issue and retires without waiting for memory. A committed store keeps its SQ entry until it drains: cached stores launch one at a time, at most every `store_drain_cycles`, into the L1D's store records, and the L1D's acknowledgement a cycle later frees the entry (`store_queue.sv`). The SQ is full while the records are, so SQ depth and the records' installation rate set a store stream's throughput.
 
-The L1D follows `coherence_l1d.sv`. One controller serves one operation at a time: in its Idle priority, a grant's installation, the head store, a load, a lent store endpoint, then stream look-ahead. A lookup holds it for `l1_tag_cycles + 3` cycles (Idle, Lookup, the tag read and the reply), a hit for `l1_data_cycles` more, an acquisition for one more, and an installation or store update for `l1_write_cycles + 2` beyond the lookup; a dirty victim adds its data read and the freeze. `l1d_mshrs` request endpoints carry acquisitions: endpoint 0 the head store's GetM, the others load misses, the lowest free one first. A demand grant answers its load in its lookup cycle; loads that attached to the endpoint look up again after the installation, one of them ahead of the next grant. Each endpoint stays live until U, `coherence_release_cycles` after installation. Up to four store records hold committed stores; only the youngest unsealed record combines another store to its sector, a record seals at its head's lookup, and every record installs at the head, with one load endpoint lent to a younger record's GetM. A read of a sector with a buffered store waits.
+The L1D follows `coherence_l1d.sv` without its hit path. One controller serves one operation at a time: in its Idle priority, a grant's installation, the head store, a load, a lent store endpoint, then stream look-ahead. A lookup holds it for `l1_tag_cycles + 3` cycles (Idle, Lookup, the tag read and the reply), a hit for `l1_data_cycles` more, an acquisition for one more, and an installation or store update for `l1_write_cycles + 2` beyond the lookup; a dirty victim adds its data read and the freeze. `l1d_mshrs` request endpoints carry acquisitions: endpoint 0 the head store's GetM, the others load misses, the lowest free one first. A demand grant answers its load in its lookup cycle; loads that attached to the endpoint look up again after the installation, one of them ahead of the next grant. Each endpoint stays live until U, `coherence_release_cycles` after installation. Up to four store records hold committed stores; only the youngest unsealed record combines another store to its sector, a record seals at its head's lookup, and every record installs at the head, with one load endpoint lent to a younger record's GetM. A read of a sector with a buffered store waits.
 
 Stream look-ahead follows `coherence_read_stream.sv`. Three adjacent demand sector misses confirm a stream, and the cursor runs up to `l1d_lookahead_sectors` sectors past the demand frontier, within a 4 KiB page. Hints use the highest `l1d_lookahead_slots` load endpoints, limited to `l1d_mshrs - 2` so one load endpoint stays demand-only (`PrefetchCount` is 2 for four or more endpoints and 1 for three), and demand may use every load endpoint. A hint waits for its window and an endpoint, takes the controller only when nothing else wants it, and its fill trains the L2 prefetcher like a demand miss. A change of `PrefetchCount` in the RTL is a change of `l1d_lookahead_slots`.
 
@@ -438,5 +439,6 @@ With the home's prefetcher on, the model reads the sector-adjacent streams 18% t
 
 ### Open items
 
+- The model has no L1D hit path. In the RTL a hit path beside the controller answers loads that hit, so the model's L1D takes every load through a controller lookup and answers hits later and fewer per cycle than the RTL. The board data set predates the hit path.
 - The model's default local BRAM read is 2 cycles, against 10 measured on the RTL (a dependent pointer chase through BRAM data, with its misses aliased in the L0, takes 10.0 cycles per load). The CI check sets 10 in its baseline.
 - The model's dependent L0 hit costs 1 cycle, against the RTL's 3 (the same chase with its nodes resident in the L0 takes 3.0 cycles per load).

@@ -107,9 +107,11 @@ replacement, one design for every target. The L1D inserts lines bimodally: a
 fill becomes its set's most recently used only one time in 32, or when a read
 waits on it or another miss of its set has not installed. A working set
 somewhat larger than the L1D so keeps part of itself resident instead of
-evicting each line just before its next use. The L1I reads every way's data
-at the tag decision, which keeps its hit latency at that of a direct-mapped
-cache. The L1D and the L2 read the selected way after the tag lookup.
+evicting each line just before its next use. The L1I and the L1D read every
+way's data at the tag decision, which keeps their hit latency at that of a
+direct-mapped cache, and the L1D's hit path reads a copy of the tags and every
+way's row of a load's set on one edge. The L2 reads the selected way after the
+tag lookup.
 
 The L2 uses 64-byte lines, following John Goodacre's design. The home maps
 each 32-byte request from the L1 caches, the page-table walker, and the DMA
@@ -410,19 +412,16 @@ and targeted microbenchmarks give these items:
    first from the arriving line; requests that join its fill, and instruction,
    page-table and DMA reads, repeat the tag lookup and data read after the
    line installs.
-9. L1D read hits. A hit path beside the coherent L1D's one controller
-   answers loads that hit. In simulation a dependent load that hits takes 9
-   cycles from launch to launch, against 11 before the hit path and 8
-   through the previous hierarchy, and with four chains of loads in flight
-   the L1D answers one about every 2.3 cycles, against six before and two
-   through the previous hierarchy. The hit path's answers still wait a cycle
-   in the read slots' response registers, which direct responses would
-   remove. It refuses a load whose arrival meets a lookup that reads data, a
-   probe or a holder of its sector, and the controller still spends up to
-   four cycles shadowing a load that it selects while the hit path holds it;
-   retrying refused loads, starting misses from the hit path's tag result,
-   and tag-only lookups for stores, look-ahead stores and prefetch hints would
-   remove most of that.
+9. L1D read hits. A hit path beside the coherent L1D's controller answers
+   loads that hit. Its answers still wait a cycle in the read slots' response
+   registers, which answering from its last stage would remove, and a variant
+   without that stage would be shorter again. It refuses a load whose arrival
+   meets a lookup that reads data, a probe or a holder of its sector;
+   retrying refused loads, and refusing only for probes to the load's sector,
+   would answer more of them. The controller still shadows a load that it
+   selects while the hit path holds it, which starting misses from the hit
+   path's tag result would avoid, and tags-only lookups would keep stores,
+   look-ahead stores and prefetch hints out of the data banks.
 
 ## Core area
 
