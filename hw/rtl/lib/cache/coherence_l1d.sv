@@ -2814,6 +2814,39 @@ module coherence_l1d #(
   // the slot stays owned. The owner tasks assume this; the owned tasks prove it.
   always_ff @(posedge i_clk)
     if (!i_rst && fail_clear_q) p_local_failed_owned : assert (rd_owned_q[fail_clear_slot_q]);
+  // The owner tasks also assume these facts about the atomic in service, and
+  // the owned tasks prove them. An atomic's write data is pending only for a
+  // granted atomic that has not written.
+  always_ff @(posedge i_clk)
+    if (!i_rst && atomic_write_q)
+      p_local_write_pending : assert (atomic_q && atomic_granted_q && !atomic_written_q);
+  // An atomic write's update runs while its data waits.
+  always_ff @(posedge i_clk)
+    if (!i_rst && operation_q == AtomicWriteOp &&
+        (phase_q == Lookup || phase_q == LookupWait || phase_q == Freeze ||
+         phase_q == Update || phase_q == UpdateWait))
+      p_local_write_op : assert (atomic_write_q);
+  // A remote AMO's acquisition starts with the AMO in service.
+  always_ff @(posedge i_clk)
+    if (!i_rst && active && operation_q == ReadOp && phase_q == Acquire &&
+        rd_kind_q[selected_read_q] == ReadAMO)
+      p_local_amo_acquire : assert (atomic_q && !atomic_sc_q && !atomic_local_q && !live[0]);
+  // Endpoint 0's AMO acquisition belongs to the remote AMO in service.
+  always_ff @(posedge i_clk)
+    if (!i_rst && live[0] && acquisition_q.opcode == coherence_pkg::Atomic)
+      p_local_acquired_amo : assert (atomic_q && !atomic_sc_q && !atomic_local_q);
+  // The local phases serve a local atomic.
+  always_ff @(posedge i_clk)
+    if (!i_rst && (phase_q == LocalReadReady || phase_q == LocalWaitWrite ||
+                   phase_q == LocalMerge || phase_q == LocalRelease || phase_q == LocalFail))
+      p_local_phase : assert (atomic_q && atomic_local_q);
+  // A grant belongs to the atomic in service.
+  always_ff @(posedge i_clk)
+    if (!i_rst && atomic_granted_q) p_local_granted : assert (atomic_q);
+  // Endpoint 0's SC acquisition belongs to the remote SC in service.
+  always_ff @(posedge i_clk)
+    if (!i_rst && live[0] && acquisition_sc_q)
+      p_local_acquired_sc : assert (atomic_q && atomic_sc_q && !atomic_local_q);
 `endif
   // The local owned tasks and the stream ownership task read these lemmas.
 `ifdef READ_OWNER_PROOF
@@ -2880,6 +2913,26 @@ module coherence_l1d #(
            phase_q == Update || phase_q == UpdateWait))
         p_owned_install : assert (int'(grant_ep_q) < MISSES && f_ep_phase[grant_ep_q][4] &&
             !installed_q[grant_ep_q]);
+`ifdef LOCAL_ATOMIC_PROOF
+      // A remote atomic's grant leaves endpoint 0 in its Done phase until the
+      // write completes, and endpoint 0 waits there while its grant installs.
+      if (atomic_granted_q && !atomic_local_q && !atomic_written_q)
+        p_owned_atomic_done : assert (f_ep_phase[0][4] && !done_q);
+      if (atomic_granted_q && !atomic_local_q)
+        p_owned_atomic_granted : assert (|f_ep_phase[0][6:4]);
+      if (operation_q == GrantOp && grant_ep_q == '0 &&
+          (phase_q == Lookup || phase_q == LookupWait || phase_q == Freeze ||
+           phase_q == Update || phase_q == UpdateWait))
+        p_owned_install0 : assert (f_ep_phase[0][4] && !done_q && !atomic_granted_q);
+      // An acquisition clears endpoint 0's done flag, so its request phases
+      // find it clear.
+      if (|f_ep_phase[0][3:1]) p_owned_done0 : assert (!done_q);
+      // A read under lookup or acquisition stays valid and unready.
+      if (active && operation_q == ReadOp && (phase_q == Lookup || phase_q == LookupWait ||
+                                              phase_q == LocalCheck || phase_q == Acquire))
+        p_owned_read_live : assert (rd_valid_q[selected_read_q] &&
+            !rd_ready_q[selected_read_q]);
+`endif
       // A read under lookup has no owner, so a new owner's slot is free.
       if (operation_q == ReadOp && (phase_q == Lookup || phase_q == LookupWait ||
                                     phase_q == LocalCheck || phase_q == Acquire))
