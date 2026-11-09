@@ -174,6 +174,15 @@ The kernel and initramfs must support the FROST NIC and the selected root
 filesystem. The software flash image contains firmware and a DTB, without a
 kernel or root filesystem.
 
+OpenSBI configures the hart from the flash DTB, and Linux reads the DTB that
+`booti` passes, so build both from `dts/frost_vcu118.dts` and replace them
+together. OpenSBI sets `menvcfg.CBZE` when the flash DTB lists `zicboz`. Linux
+then zeroes pages with `cbo.zero`, sets `senvcfg.CBZE` for user space and
+reports the extension and its 64-byte block through `riscv_hwprobe`, all from
+the `zicboz` entry and `riscv,cboz-block-size` in its own DTB. A kernel DTB that
+lists `zicboz` needs a flash DTB that lists it too: `cbo.zero` in supervisor
+mode requires `menvcfg.CBZE`.
+
 The Linux build can compose the test initramfs with the driver modules and
 startup scripts for its pinned Debian kernel, then wrap it as `rootfs.uimg`:
 

@@ -405,6 +405,9 @@
     ]
   },
   "platform": {
+    // cbo.zero zeroes one 64-byte block (riscv_pkg::CboZeroBlockBytes), the
+    // riscv,cboz-block-size the device trees advertise.
+    "cache_block_size_exp": 6,
     // A 32-byte reservation set that any store to it from this hart cancels.
     "reservation": {"reservation_set_size_exp": 5, "require_exact_reservation_addr": false, "invalidate_on_same_hart_store": true},
     "clint": {"supported": true, "base": 47749633474560, "size": 49152},
@@ -447,8 +450,8 @@
     "Zic64b": {"supported": false},
     "Zicbom": {"supported": false},
     "Zicbop": {"supported": false},
-    // cbo.zero zeroes 64-byte blocks of low BRAM and cached DDR, the regions
-    // marked supports_cbo_zero above; Sail's default block size is 64 bytes.
+    // cbo.zero zeroes 64-byte blocks (platform.cache_block_size_exp) of low
+    // BRAM and cached DDR, the regions marked supports_cbo_zero above.
     "Zicboz": {"supported": true},
     "Ziccamoa": {"supported": false},
     "Ziccamoc": {"supported": false},
