@@ -43,8 +43,9 @@ module tomasulo_wrapper #(
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
     parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
-    // Share the ROB value RAM's link bank only when at most one branch allocates
-    // per cycle, as cpu_ooo dispatch guarantees. The default allows any pair.
+    // Share the ROB value RAM's link bank only when slot 2 never allocates
+    // behind a slot-1 branch, as cpu_ooo dispatch guarantees. The default
+    // allows any pair.
     parameter bit ROB_SHARED_LINK_BANK = 1'b0,
     // Disable back-end profiling counters and return zero when 0. cpu_ooo
     // passes its build option; the standalone default enables counters.
