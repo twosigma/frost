@@ -16,7 +16,8 @@
 
 // Coherent issue selection computes both SQ drain states in parallel.
 module coherent_lq_issue_selector #(
-    parameter int unsigned DEPTH = riscv_pkg::LqDepth
+    parameter int unsigned DEPTH = riscv_pkg::LqDepth,
+    localparam int unsigned AgeGroups = (DEPTH + 2) / 3
 ) (
     input logic i_clk,
 `ifndef SYNTHESIS
@@ -42,8 +43,14 @@ module coherent_lq_issue_selector #(
     // i_staged_younger at the ROB-head entry, when rob_head_match_q is set.
     input logic i_staged_younger_head,
 
-    output logic o_replace_without_update,
-    output logic o_replace_with_update,
+    // Replacement inputs of each drain choice, indexed by the value of
+    // i_sq_committed_empty: the age groups at the merged and stored scan
+    // winners, and whether a ROB-head entry is a candidate with and without an
+    // address update. The load queue applies its early selects to these.
+    output logic [1:0][AgeGroups-1:0] o_merged_older,
+    output logic [1:0][AgeGroups-1:0] o_stored_older,
+    output logic [1:0] o_head_found,
+    output logic [1:0] o_head_stored_found,
 
     output logic o_issue_cdb_found,
     output logic [$clog2(DEPTH)-1:0] o_issue_cdb_idx,
@@ -68,8 +75,6 @@ module coherent_lq_issue_selector #(
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_head_mem_update_rob_tag
 );
   typedef struct packed {
-    logic replace_without_update;
-    logic replace_with_update;
     logic issue_cdb_found;
     logic [$clog2(DEPTH)-1:0] issue_cdb_idx;
     logic [DEPTH-1:0] merged_scan_onehot;
@@ -180,8 +185,8 @@ module coherent_lq_issue_selector #(
     (* keep = "true" *) wire [DEPTH-1:0] merged_first = first[2];
     // Replacement reads the staged load's age at the scan winner in kept
     // three-entry groups, or at the ROB-head entry, whose match is at most
-    // one-hot, so each replacement bit is one term over kept inputs.
-    localparam int unsigned AgeGroups = (DEPTH + 2) / 3;
+    // one-hot. The groups and head flags leave the selector separately, so
+    // the load queue's drain, update and head selects meet them in one term.
     (* keep = "true" *) logic [AgeGroups-1:0] merged_older, stored_older;
     for (genvar group_index = 0; group_index < AgeGroups; group_index++) begin : gen_age_group
       localparam int unsigned Bits = DEPTH - 3 * group_index < 3 ? DEPTH - 3 * group_index : 3;
@@ -198,6 +203,10 @@ module coherent_lq_issue_selector #(
     end
     (* keep = "true" *) wire head_stored_found = |head_stored;
     (* keep = "true" *) wire head_found = |head_stored || |head_update;
+    assign o_merged_older[drained] = merged_older;
+    assign o_stored_older[drained] = stored_older;
+    assign o_head_found[drained] = head_found;
+    assign o_head_stored_found[drained] = head_stored_found;
     always_comb begin
       choice = '0;
       choice.issue_cdb_found = |eligible[3];
@@ -210,8 +219,6 @@ module coherent_lq_issue_selector #(
       choice.head_mem_stored_onehot = head_stored;
       choice.head_mem_update_found = |head_update;
       choice.head_mem_update_onehot = head_update;
-      choice.replace_without_update = head_stored_found ? i_staged_younger_head : |stored_older;
-      choice.replace_with_update = head_found ? i_staged_younger_head : |merged_older;
       for (int index = 0; index < DEPTH; index++) begin
         choice.issue_cdb_idx |= IdxWidth'(index) & {IdxWidth{first[3][index]}};
         choice.stored_scan_idx |= IdxWidth'(index) & {IdxWidth{first[0][index]}};
@@ -237,8 +244,6 @@ module coherent_lq_issue_selector #(
   // from the first choice without the drain select.
   selection_t undrained;
   assign undrained = choices[0];
-  assign o_replace_without_update = selected.replace_without_update;
-  assign o_replace_with_update = selected.replace_with_update;
   assign o_issue_cdb_found = undrained.issue_cdb_found;
   assign o_issue_cdb_idx = undrained.issue_cdb_idx;
   assign o_merged_scan_onehot = selected.merged_scan_onehot;
@@ -308,13 +313,20 @@ module coherent_lq_issue_selector #(
       .o_head_mem_update_onehot(reference.head_mem_update_onehot),
       .o_head_mem_update_rob_tag(reference.head_mem_update_rob_tag)
   );
-  assign reference.replace_without_update = reference.head_mem_stored_found ?
+  // Replacement with and without an address update, for the selected drain
+  // choice: from the reference scan, and from the exported groups and head
+  // flags in the form the load queue's terms expand.
+  wire reference_replace_without_update = reference.head_mem_stored_found ?
       (|(i_staged_younger & reference.head_mem_stored_onehot)) :
       (|(i_staged_younger & reference.stored_scan_onehot));
-  assign reference.replace_with_update = reference.head_mem_stored_found ?
+  wire reference_replace_with_update = reference.head_mem_stored_found ?
       (|(i_staged_younger & reference.head_mem_stored_onehot)) : reference.head_mem_update_found ?
           (|(i_staged_younger & reference.head_mem_update_onehot)) :
           (|(i_staged_younger & reference.merged_scan_onehot));
+  wire exported_replace_without_update = o_head_stored_found[i_sq_committed_empty] ?
+      i_staged_younger_head : |o_stored_older[i_sq_committed_empty];
+  wire exported_replace_with_update = o_head_found[i_sq_committed_empty] ?
+      i_staged_younger_head : |o_merged_older[i_sq_committed_empty];
 `ifdef FORMAL
   // The load queue asserts both: unique live ROB tags keep the head match at
   // most one-hot, and its direct head comparison equals the matched entry's.
@@ -331,6 +343,10 @@ module coherent_lq_issue_selector #(
 `endif
   if (sim_reset_seen_q) begin
     p_selection_exact : assert (selected == reference);
+    p_replace_without_update_exact :
+    assert (exported_replace_without_update == reference_replace_without_update);
+    p_replace_with_update_exact :
+    assert (exported_replace_with_update == reference_replace_with_update);
     p_result_scan_undrained :
     assert (o_issue_cdb_found == selected.issue_cdb_found &&
             o_issue_cdb_idx == selected.issue_cdb_idx);

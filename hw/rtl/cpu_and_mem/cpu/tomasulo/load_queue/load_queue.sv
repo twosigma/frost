@@ -1478,7 +1478,11 @@ module load_queue #(
   // Declared before the selector: Vivado binds a port connection to a later
   // module-level declaration as a separate, undriven implicit net.
   logic [DEPTH-1:0] staged_younger_than_entry;
-  wire coherent_replace_without_update, coherent_replace_with_update;
+  // The selector's replacement inputs for each drain choice (see the
+  // replacement terms after sq_check_replace).
+  localparam int unsigned ReplaceGroups = (DEPTH + 2) / 3;
+  wire [1:0][ReplaceGroups-1:0] coherent_merged_older, coherent_stored_older;
+  wire [1:0] coherent_head_found, coherent_head_stored_found;
   // The staged load's age against the ROB-head entry, compared directly from
   // that entry's tag so it is as early as the per-entry comparisons.
   logic [ReorderBufferTagWidth-1:0] rob_head_entry_tag;
@@ -1516,8 +1520,10 @@ module load_queue #(
         .i_sq_committed_empty(i_sq_committed_empty),
         .i_staged_younger(staged_younger_than_entry),
         .i_staged_younger_head(staged_younger_than_head),
-        .o_replace_without_update(coherent_replace_without_update),
-        .o_replace_with_update(coherent_replace_with_update),
+        .o_merged_older(coherent_merged_older),
+        .o_stored_older(coherent_stored_older),
+        .o_head_found(coherent_head_found),
+        .o_head_stored_found(coherent_head_stored_found),
         .o_issue_cdb_found(issue_cdb_found),
         .o_issue_cdb_idx(issue_cdb_idx),
         .o_merged_scan_onehot(merged_scan_onehot),
@@ -1947,12 +1953,21 @@ module load_queue #(
   if (1'b1) begin : gen_coherent_staged_class
     logic pma_ok_q, cached_q, misaligned_q, normal_q;
     wire stored_atomic = lq_is_amo[issue_mem_stored_idx] || lq_is_lr[issue_mem_stored_idx];
-    wire update_atomic = lq_is_amo[update_issue_payload_idx] || lq_is_lr[update_issue_payload_idx];
+    (* keep = "true" *) wire update_atomic =
+        lq_is_amo[update_issue_payload_idx] || lq_is_lr[update_issue_payload_idx];
     (* keep = "true" *) wire stored_permission =
         stored_atomic ? coherent_stored_class[2] : coherent_stored_class[1];
-    (* keep = "true" *) wire update_permission =
-        update_atomic ? coherent_update_class[2] : coherent_update_class[1];
-    wire selected_permission = issue_mem_uses_addr_update ? update_permission : stored_permission;
+    // The arriving address's range checks come last. Atomic permission is
+    // memory permission, the uncached or cached-DDR range, and data permission
+    // adds the device range (pma_atomic_ok, pma_data_ok), so the three kept
+    // checks meet the early source select and atomic flag in one term.
+    (* keep = "true" *) wire update_uncached_ok = (riscv_pkg::PmaUncachedBytes != 0) &&
+        ((i_addr_update.address - riscv_pkg::PmaUncachedBase) <= riscv_pkg::PmaUncachedBytes - 1);
+    (* keep = "true" *) wire update_cached_ok = riscv_pkg::pma_cached_ok(i_addr_update.address);
+    (* keep = "true" *) wire update_device_ok = riscv_pkg::pma_device_ok(i_addr_update.address);
+    (* keep = "true" *) wire selected_permission = issue_mem_uses_addr_update ?
+        (update_uncached_ok || update_cached_ok || (!update_atomic && update_device_ok)) :
+        stored_permission;
     wire [3:0] selected_class = issue_mem_uses_addr_update ?
         coherent_update_class : coherent_stored_class;
     (* keep = "true" *) wire stored_misaligned = is_load_misaligned(
@@ -1982,6 +1997,9 @@ module load_queue #(
     if (sim_reset_seen_q) begin
       p_stage_class_choice_exact : assert (selected_permission ==
           ((sq_check_is_amo_next || sq_check_is_lr_next) ? selected_class[2] : selected_class[1]));
+      p_update_range_split_exact : assert (
+          (update_uncached_ok || update_cached_ok) == coherent_update_class[2] &&
+          (update_uncached_ok || update_cached_ok || update_device_ok) == coherent_update_class[1]);
       p_stage_alignment_choice_exact : assert (selected_misaligned ==
           is_load_misaligned(sq_check_size_next, sq_check_addr_next));
     end
@@ -2081,9 +2099,32 @@ module load_queue #(
       (i_addr_update.valid ? replace_with_update : replace_without_update);
   logic [3:0] coherent_stage_take;
   wire coherent_stage_replace;
+  // Replacement takes the head age when a head entry is a candidate and the
+  // scan winner's age groups otherwise, for the drain state and address-update
+  // case that hold. Those selects are early and the age groups late, so each
+  // case's enable is formed first and meets its groups in one kept term, and
+  // the four terms and the head term meet in one more: the groups pass two
+  // gates before the final take instead of four.
   if (1'b1) begin : gen_coherent_replace_gate
-    (* keep = "true" *) wire stage_replace = sq_check_pending && sq_check_gate_early &&
-        (i_addr_update.valid ? coherent_replace_with_update : coherent_replace_without_update);
+    (* keep = "true" *) wire replace_allowed = sq_check_pending && sq_check_gate_early;
+    (* keep = "true" *) wire [1:0] scan_with_en, scan_without_en;
+    (* keep = "true" *) wire [1:0] scan_with_term, scan_without_term;
+    (* keep = "true" *) wire head_term;
+    for (genvar drained = 0; drained < 2; drained++) begin : gen_drained
+      assign scan_with_en[drained] = replace_allowed && i_addr_update.valid &&
+          (i_sq_committed_empty == 1'(drained)) && !coherent_head_found[drained];
+      assign scan_without_en[drained] = replace_allowed && !i_addr_update.valid &&
+          (i_sq_committed_empty == 1'(drained)) && !coherent_head_stored_found[drained];
+      assign scan_with_term[drained] =
+          scan_with_en[drained] && (|coherent_merged_older[drained]);
+      assign scan_without_term[drained] =
+          scan_without_en[drained] && (|coherent_stored_older[drained]);
+    end
+    assign head_term = replace_allowed && staged_younger_than_head && (i_addr_update.valid ?
+        coherent_head_found[i_sq_committed_empty] :
+        coherent_head_stored_found[i_sq_committed_empty]);
+    (* keep = "true" *) wire stage_replace =
+        (|scan_with_term) || (|scan_without_term) || head_term;
     assign coherent_stage_replace = stage_replace;
   end
   wire [3:0] coherent_pending = {sq_check_pending_copy, sq_check_pending};
@@ -2566,6 +2607,10 @@ module load_queue #(
   logic                              cache_fill_response_valid;
   logic                              cache_fill_valid;
   logic                              cache_fill_write;
+  // The fill's RAM write enable without this cycle's store, cut and DMA
+  // compares, and those compares on their own as the fill's kill (formed with
+  // the fill permission below).
+  (* keep = "true" *) logic          cache_fill_pre, cache_fill_cut;
   logic [                  XLEN-1:0] cache_fill_addr;
   logic [riscv_pkg::MemDataBits-1:0] cache_fill_data;
 
@@ -2583,7 +2628,8 @@ module load_queue #(
 
       // Fill: on memory response
       .i_fill_valid(cache_fill_write),
-      .i_fill_write(cache_fill_write),
+      .i_fill_write(cache_fill_pre),
+      .i_fill_kill (cache_fill_cut),
       .i_fill_addr (cache_fill_addr),
       .i_fill_data (cache_fill_data),
 
@@ -2991,18 +3037,36 @@ module load_queue #(
   ) && !fast_line_invalidated && !fast_line_invalidate_now);
   // Per-source fill qualification supplies the L0 RAM write enables and
   // coherent valid bits. The default valid-bit path uses cache_fill_valid.
-  (* keep = "true" *) logic cache_fill_if_slot, cache_fill_if_fast;
+  logic cache_fill_if_slot, cache_fill_if_fast;
+  // Each source's fill permission without the kill's compares.
+  (* keep = "true" *) logic cache_fill_pre_slot, cache_fill_pre_fast;
   if (1'b1) begin : gen_coherent_fill_slot_permission
-    // The coherent invalidation, which arrives last, is selected for the
-    // response slot apart from the slot's other permission terms.
+    // A slot's fill permission leaves out this cycle's store, cut and DMA
+    // compares, which arrive last; the kill below applies them to the
+    // response slot alone.
     (* keep = "true" *) logic [CachedSlots-1:0] slot_permission;
     for (genvar slot = 0; slot < CachedSlots; slot++) begin : gen_slot
       assign slot_permission[slot] = cs_valid[slot] && !cs_drop[slot] &&
-          lq_valid[cs_idx[slot]] && !cs_is_lr[slot] && !cs_is_amo[slot] &&
-          !(cs_inval[slot] || cs_inval_now[slot]);
+          lq_valid[cs_idx[slot]] && !cs_is_lr[slot] && !cs_is_amo[slot] && !cs_inval[slot];
     end
-    assign cache_fill_if_slot = !i_flush_all && slot_permission[resp_slot] &&
+    assign cache_fill_pre_slot = !i_flush_all && slot_permission[resp_slot];
+    assign cache_fill_if_slot = cache_fill_pre_slot && !cs_inval_now[resp_slot] &&
         !cs_coh_inval_now[resp_slot];
+    // The kill compares the late store, cut and DMA addresses once each with
+    // the response slot's address, selected first by the early response id,
+    // or takes the fast read's store compare, and the L0 applies it at its
+    // write enables' last gate. For a cached response it equals
+    // cs_inval_now || cs_coh_inval_now at the response slot.
+    wire [XLEN-1:3] resp_slot_dword = cs_addr[resp_slot][XLEN-1:3];
+    assign cache_fill_cut = i_mem_read_is_cached ? (cs_valid[resp_slot] &&
+        ((i_cache_invalidate_valid && i_cache_invalidate_addr[XLEN-1:3] == resp_slot_dword) ||
+         (i_coh_inval_valid &&
+          i_coh_inval_addr[XLEN-1:CohLineLsb] == resp_slot_dword[XLEN-1:CohLineLsb]) ||
+         (i_coherent_cut_hold &&
+          i_coherent_cut_addr[XLEN-1:CohLineLsb] == resp_slot_dword[XLEN-1:CohLineLsb]))) :
+        (!CACHE_UNCACHED_DATA && fast_line_invalidate_now);
+    assign cache_fill_pre = i_mem_read_valid && !mem_response_error &&
+        (i_mem_read_is_cached ? cache_fill_pre_slot : cache_fill_pre_fast);
 `ifndef SYNTHESIS
 `ifdef FORMAL
     always_comb
@@ -3017,13 +3081,18 @@ module load_queue #(
     end
 `endif
   end
+  assign cache_fill_pre_fast = mem_outstanding && !i_flush_all && !drop_mem_response_pending &&
+      lq_valid[fast_idx] && !fast_is_mmio && !fast_is_lr && !fast_is_amo &&
+      (CACHE_UNCACHED_DATA || (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
+      fast_addr
+  ) && !fast_line_invalidated));
+  // The undivided fast-path permission, for the checks below.
   assign cache_fill_if_fast = mem_outstanding && !i_flush_all && !drop_mem_response_pending &&
       lq_valid[fast_idx] && !fast_is_mmio && !fast_is_lr && !fast_is_amo &&
       (CACHE_UNCACHED_DATA || (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
       fast_addr
   ) && !fast_line_invalidated && !fast_line_invalidate_now));
-  assign cache_fill_write = i_mem_read_valid && !mem_response_error &&
-      (i_mem_read_is_cached ? cache_fill_if_slot : cache_fill_if_fast);
+  assign cache_fill_write = cache_fill_pre && !cache_fill_cut;
   assign cache_fill_valid = cache_fill_response_valid && cache_fill_memory_type_ok &&
       !mem_response_error &&
       !issued_is_mmio && !issued_is_lr && !issued_is_amo &&
@@ -3031,6 +3100,8 @@ module load_queue #(
 `ifndef SYNTHESIS
   always_comb if (sim_reset_seen_q) begin
     p_cache_fill_write_exact : assert (cache_fill_write == cache_fill_valid);
+    p_cache_fill_split_exact : assert (cache_fill_write == (i_mem_read_valid &&
+        !mem_response_error && (i_mem_read_is_cached ? cache_fill_if_slot : cache_fill_if_fast)));
   end
 `endif
 `ifdef F_LQ_NORMAL_FILL_POLICY_PROOF
@@ -3892,16 +3963,90 @@ module load_queue #(
     end
   end
 
+  // Address-valid, issued, response-error and forwarded flags. A new
+  // generation's allocation clears them last: each flag's kept value meets
+  // the late allocation valids and the early room masks in one gate on the D
+  // pin, rather than through a shared allocation mask on the reset pin.
+  // A later update to the same entry wins, as in program order: an issue
+  // over a partial flush's clear, an AMO write's result over a response error.
+  if (1'b1) begin : gen_lq_flags
+    logic [DEPTH-1:0] addr_valid_kept, issued_kept, response_error_kept, forwarded_kept;
+    always_comb begin
+      for (int i = 0; i < DEPTH; i++) begin
+        addr_valid_kept[i] = lq_addr_valid[i] ||
+            (lq_addr_update_we && lq_addr_update_idx == IdxWidth'(i));
+        forwarded_kept[i] = lq_forwarded[i] || (sq_do_forward && sq_check_idx == IdxWidth'(i));
+        issued_kept[i] = lq_issued[i];
+        if (i_flush_en && fast_entry_flushed && fast_idx == IdxWidth'(i)) issued_kept[i] = 1'b0;
+        for (int sl = 0; sl < int'(CachedSlots); sl++) begin
+          if (i_flush_en && cs_flushed[sl] &&
+              !(resp_from_slot && (resp_slot == CachedSlotBits'(sl))) &&
+              cs_idx[sl] == IdxWidth'(i))
+            issued_kept[i] = 1'b0;
+        end
+        if (mem_read_en && launch_mem_issue_idx == IdxWidth'(i)) issued_kept[i] = 1'b1;
+        response_error_kept[i] = lq_response_error[i] || (!drop_mem_response_now &&
+            accept_mem_response && mem_response_error && issued_idx == IdxWidth'(i));
+        if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done && amo_entry_idx == IdxWidth'(i))
+          response_error_kept[i] = MEM_RESPONSE_ERRORS && i_amo_mem_write_error;
+      end
+    end
+    for (genvar i = 0; i < DEPTH; i++) begin : gen_entry
+      wire addr_valid_next, issued_next, response_error_next, forwarded_next;
+      lq_result_valid_allocate u_addr_valid (
+          .i_completed(addr_valid_kept[i]),
+          .i_first_room(first_room_oh[i]),
+          .i_second_room(second_room_oh[i]),
+          .i_alloc(i_alloc.valid),
+          .i_alloc_2(i_alloc_2.valid),
+          .o_valid(addr_valid_next)
+      );
+      lq_result_valid_allocate u_issued (
+          .i_completed(issued_kept[i]),
+          .i_first_room(first_room_oh[i]),
+          .i_second_room(second_room_oh[i]),
+          .i_alloc(i_alloc.valid),
+          .i_alloc_2(i_alloc_2.valid),
+          .o_valid(issued_next)
+      );
+      lq_result_valid_allocate u_response_error (
+          .i_completed(response_error_kept[i]),
+          .i_first_room(first_room_oh[i]),
+          .i_second_room(second_room_oh[i]),
+          .i_alloc(i_alloc.valid),
+          .i_alloc_2(i_alloc_2.valid),
+          .o_valid(response_error_next)
+      );
+      lq_result_valid_allocate u_forwarded (
+          .i_completed(forwarded_kept[i]),
+          .i_first_room(first_room_oh[i]),
+          .i_second_room(second_room_oh[i]),
+          .i_alloc(i_alloc.valid),
+          .i_alloc_2(i_alloc_2.valid),
+          .o_valid(forwarded_next)
+      );
+      always_ff @(posedge i_clk) begin
+        if (!i_rst_n || i_flush_all) begin
+          lq_addr_valid[i]     <= 1'b0;
+          lq_issued[i]         <= 1'b0;
+          lq_response_error[i] <= 1'b0;
+          lq_forwarded[i]      <= 1'b0;
+        end else begin
+          lq_addr_valid[i]     <= addr_valid_next;
+          lq_issued[i]         <= issued_next;
+          lq_response_error[i] <= response_error_next;
+          lq_forwarded[i]      <= forwarded_next;
+        end
+      end
+    end
+  end
+
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       head_ptr                  <= '0;
       tail_ptr                  <= '0;
       lq_valid                  <= '0;
-      lq_addr_valid             <= '0;
-      lq_issued                 <= '0;
-      lq_response_error         <= '0;
-      lq_forwarded              <= '0;
       mem_outstanding           <= 1'b0;
       drop_mem_response_pending <= 1'b0;
       cs_valid                  <= '0;
@@ -3914,10 +4059,6 @@ module load_queue #(
       head_ptr <= '0;
       tail_ptr <= '0;
       lq_valid <= '0;
-      lq_addr_valid <= '0;
-      lq_issued <= '0;
-      lq_response_error <= '0;
-      lq_forwarded <= '0;
       mem_outstanding <= 1'b0;
       // On full flush, retain response debt for accepted fast requests unless
       // this edge drains it. Router-pending requests are unaccepted and canceled.
@@ -3943,7 +4084,6 @@ module load_queue #(
         // response so the recycled slot cannot see stale data.
         if (fast_entry_flushed) begin
           mem_outstanding <= 1'b0;
-          lq_issued[fast_idx] <= 1'b0;
           if (!fast_resp_now) begin
             drop_mem_response_pending <= 1'b1;
           end
@@ -3953,7 +4093,6 @@ module load_queue #(
         for (int sl = 0; sl < int'(CachedSlots); sl++) begin
           if (cs_flushed[sl] && !(resp_from_slot && (resp_slot == CachedSlotBits'(sl)))) begin
             cs_drop[sl] <= 1'b1;
-            lq_issued[cs_idx[sl]] <= 1'b0;
           end
         end
         // No current-cycle allocation can advance the search cursor. It may
@@ -3969,20 +4108,8 @@ module load_queue #(
         tail_ptr <= tail_ptr + PtrWidth'(1);
       end
 
-      // -----------------------------------------------------------------
-      // Address Update: CAM search for matching rob_tag (control only;
-      // data signals written in dedicated no-reset always_ff blocks)
-      // -----------------------------------------------------------------
-      if (lq_addr_update_we) begin
-        lq_addr_valid[lq_addr_update_idx] <= 1'b1;
-      end
-
-      // -----------------------------------------------------------------
-      // Store forwarding: write data directly, skip memory
-      // -----------------------------------------------------------------
-      if (sq_do_forward) begin
-        lq_forwarded[sq_check_idx] <= 1'b1;
-      end
+      // Address updates, forwards, issue and response errors set the
+      // per-entry flags in flag_kept below.
 
       // -----------------------------------------------------------------
       // Memory Response: capture data from memory bus
@@ -3996,9 +4123,7 @@ module load_queue #(
         end
       end else if (accept_mem_response) begin
         if (!resp_from_slot) mem_outstanding <= 1'b0;
-        if (mem_response_error) begin
-          lq_response_error[issued_idx] <= 1'b1;
-        end else if (issued_is_amo) begin
+        if (!mem_response_error && issued_is_amo) begin
           // MIN/MAX writes the next cycle; ordinary AMOs first use COMPUTE. The IDLE
           // guard prevents an overlapping response from replacing an active AMO.
           if (amo_response_capture)
@@ -4021,7 +4146,6 @@ module load_queue #(
       // name an index already reused, and its branch leaves that entry alone.
       // Cached launches use separate slots.
       if (mem_read_en) begin
-        lq_issued[launch_mem_issue_idx] <= 1'b1;
         if (launching_is_cached) begin
           cs_valid[cs_alloc_idx] <= 1'b1;
           cs_drop[cs_alloc_idx]  <= 1'b0;
@@ -4046,8 +4170,7 @@ module load_queue #(
       // AMO Write Completion: latch old value as result, invalidate cache
       // -----------------------------------------------------------------
       if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done) begin
-        lq_response_error[amo_entry_idx] <= MEM_RESPONSE_ERRORS && i_amo_mem_write_error;
-        amo_state                        <= AMO_IDLE;
+        amo_state <= AMO_IDLE;
       end
 
       // -----------------------------------------------------------------
@@ -4062,15 +4185,8 @@ module load_queue #(
       // Initialize after old-entry updates so allocation has final priority.
       // Legal allocations cannot overlap a completing entry, and the two slot
       // vectors are disjoint.
+      // lq_valid_next, and flag_kept below, apply the allocations.
       lq_valid <= lq_valid_next;
-      for (int unsigned i = 0; i < DEPTH; i++) begin
-        if (alloc_oh[i]) begin
-          lq_addr_valid[i]     <= 1'b0;
-          lq_issued[i]         <= 1'b0;
-          lq_response_error[i] <= 1'b0;
-          lq_forwarded[i]      <= 1'b0;
-        end
-      end
 
       // Advance head past all contiguous invalid entries (including freed)
       head_ptr <= head_advance_target;

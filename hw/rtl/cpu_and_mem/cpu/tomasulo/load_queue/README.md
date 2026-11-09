@@ -61,7 +61,10 @@ physical order is not program order: age always comes from ROB tags, and
 its result enters `cdb_stage`, before the CDB broadcast. The next valid bits
 are the bits kept through the cycle's flushes and frees, ORed with the new
 allocations, so the allocation enable, which arrives last from dispatch, meets
-them in the final term.
+them in the final term. A new generation also clears its entry's address-valid,
+issued, response-error and forwarded flags: each flag's value from this cycle's
+other updates meets the allocation valids and the free-entry masks in one final
+gate on the flop's D input.
 
 Allocation requests on a flush cycle are dropped, as the ROB drops them.
 Dispatch can present one on a trap, xRET, or FENCE-class flush, because the
@@ -101,12 +104,15 @@ both SQ drain states in
 drain flag selects between those results. Each memory scan input combines a
 prepared class permission with the entry's valid, issued, data-valid and
 in-flight bits. Each combination uses one LUT5 when primitives are enabled.
-Each case also computes staged
-replacement from its winning masks and the per-entry age predicates, in
-three-entry groups. The winning masks are preserved at each group's inputs.
-Each group uses one LUT6 when primitives are enabled. The ROB-head entry's
-age is compared directly from its tag, since at most one entry matches the
-head. Both cases use the same ring order and ROB-head priority. Each entry has a cyclic
+Each case also reads the
+staged load's age at its winning masks, in three-entry groups. The winning
+masks are preserved at each group's inputs. Each group uses one LUT6 when
+primitives are enabled. The ROB-head entry's age is compared directly from its
+tag, since at most one entry matches the head. The selector passes each drain
+case's groups and head-candidate flags to the LQ, which forms replacement: the
+pending, gate, drain and address-update selects arrive before the groups, so
+each case's select meets its groups in one kept term, and the four terms and
+the head term meet in one more before the final capture LUTs. Both cases use the same ring order and ROB-head priority. Each entry has a cyclic
 precedence mask derived from the queue head. An eligible entry wins when none
 of its predecessors is eligible. Scan indices and tags decode from the
 winning-entry masks. Selection is combinational. The coherent memory identity
@@ -157,7 +163,10 @@ Each coherent address slot stores PMA permission, Normal-memory classification
 and cache-region classification with its address. Stored and arriving payloads
 compute PMA permission before address-source selection. Staging selects the
 permission, Normal-memory class and cache-region class from the stored or arriving
-address. The captured Normal-memory class supplies L0-hit eligibility.
+address. The arriving address's permission is formed from its uncached,
+cached-DDR and device range checks, which meet the source select and the
+atomic flag in one final term. The captured Normal-memory class supplies
+L0-hit eligibility.
 Staging captures misalignment with the address and size. Fault checks apply
 the live trap setting to that captured result. The first candidate mask determines which
 address source wins ring order. Candidate presence is independent of
@@ -371,10 +380,12 @@ complete aligned dwords. FROST enables this option, while standalone
 The L0 is direct-mapped with 8-byte (dword) lines: valid bits in flip-flops,
 tags and data in LUTRAM. Above 64 entries the LUTRAMs are split into 64-entry
 banks, and each bank's write enable is one gate over bank selects decoded
-from the store and fill indices. The staged load looks it up combinationally
-alongside the SQ check, and a hit completes the load in the cycle the SQ
-answer allows. Every load size can hit, FLD included. Device loads, LRs and
-AMOs never hit or fill.
+from the store and fill indices. A store, coherent cut or DMA invalidation
+that drops a response's fill this cycle is compared with that response's
+address alone and enters the same gate. The staged load looks it up
+combinationally alongside the SQ check, and a hit completes the load in the
+cycle the SQ answer allows. Every load size can hit, FLD included. Device
+loads, LRs and AMOs never hit or fill.
 
 A memory response fills its line with the whole beat, except on a full-flush
 cycle, when the response is being drained (apart from the partial-flush case
