@@ -35,30 +35,19 @@ module coherent_atomic_guard #(
     // The active context qualifies the tag.
     output logic [TAG_BITS-1:0] o_tag
 );
-  logic [1:0] context_choice[2];
+  // Next state in closed form. Arming needs an idle guard, an arm request
+  // whose tag is the valid ROB head, and no winning entry. An active guard
+  // retires on its commit and releases once retired or faulted with the home
+  // idle. The late inputs (i_entry_wins, i_own_fault, i_commit_valid) join
+  // the last gate; the arm match is kept.
+  (* keep = "true" *) logic arm_match;
+  logic arm_now;
   logic [1:0] selected_context;
-  for (genvar arm_case = 0; arm_case < 2; arm_case++) begin : gen_arm_case
-    localparam bit CanArm = arm_case != 0;
-    (* keep = "true" *) logic [1:0] result;
-    logic active, retired;
-    always_comb begin
-      active  = o_active;
-      retired = o_retired;
-      if (!o_active && CanArm && i_head_valid && i_arm_tag == i_head_tag) begin
-        active  = 1'b1;
-        retired = 1'b0;
-      end
-      if (o_active && i_commit_valid && i_commit_tag == o_tag) retired = 1'b1;
-      if (o_active && o_retired && !i_home_live) active = 1'b0;
-      if (o_active && i_own_fault && !i_home_live) active = 1'b0;
-    end
-    assign result = {active, retired};
-    assign context_choice[arm_case] = result;
-  end
-  always_comb begin
-    selected_context = context_choice[0];
-    if (i_arm_valid && !i_entry_wins) selected_context = context_choice[1];
-  end
+  assign arm_match = i_arm_valid && i_head_valid && i_arm_tag == i_head_tag;
+  assign arm_now = arm_match && !i_entry_wins;
+  assign selected_context[1] = o_active ? (i_home_live || (!o_retired && !i_own_fault)) : arm_now;
+  assign selected_context[0] = o_active ? (o_retired || (i_commit_valid && i_commit_tag == o_tag)) :
+      (o_retired && !arm_now);
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       o_active <= 1'b0;
