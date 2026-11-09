@@ -393,13 +393,13 @@ module eth10g_mac_rx #(
   // with the stored length, and only that beat keeps fewer than eight bytes.
   logic [DescriptorAddrWidth-1:0] descriptor_read;
   logic [CountWidth-4:0] read_beat, read_beat_next;
-  logic [CountWidth-1:0] read_length;
+  logic [DescriptorAddrWidth-1:0] next_descriptor_read;
+  logic [CountWidth-1:0] read_length, next_read_length;
   logic reader_capture, reader_last, reader_extra;
   logic [63:0] reader_data;
   logic [7:0] reader_keep, final_keep;
   logic [1:0] skid_valid;  // [0] drives m_axis_*; [1] holds a second beat
   always_comb begin
-    read_length = packet_length[descriptor_read];
     reader_capture = descriptor_avail != 0 && !skid_valid[1];
     read_beat_next = read_beat + 1'b1;
     if (read_length[2:0] == 3'd0) begin
@@ -427,6 +427,21 @@ module eth10g_mac_rx #(
       next_descriptor_avail = descriptor_avail - 1'b1;
     end
   end
+
+  // The length memory has a registered read port, sampling the next descriptor's
+  // slot on every clock, so the memory maps to a register file or flops with a
+  // registered output. A length written on the edge that samples it is passed
+  // through, so read_length is the slot's current length on every clock and the
+  // reader sees the same value as an asynchronous read.
+  always_comb begin
+    next_descriptor_read = descriptor_read;
+    if (reader_capture && reader_last) next_descriptor_read = descriptor_read + 1'b1;
+    next_read_length = packet_length[next_descriptor_read];
+    if (descriptor_write_enable && descriptor_write == next_descriptor_read) begin
+      next_read_length = descriptor_write_length;
+    end
+  end
+  always_ff @(posedge i_clk) read_length <= next_read_length;
 
   // ---- Output register ---------------------------------------------------------------------
   // Two entries: the first drives the AXI Stream output and changes only when
