@@ -114,19 +114,29 @@ module immu #(
   // ---------------------------------------------------------------------------
   logic key_valid_q;
   logic [XLEN-1:0] key_va_q;
+  // The key's page crossing, &key_va_q[11:2], loaded with the key.
+  logic key_cross_q;
   logic key_priv_u_q;
   logic resolved_q;
   logic tag_match;
   logic translated_visible;
   logic capture_en;
 
-  logic same_page;
-  logic pc_match;
+  // The live-PC match: the page compare, and for a crossing window an exact
+  // key. A crossing PC's bits 11:2 are all ones, so the key matches them
+  // exactly when the key itself crosses (key_cross_q), leaving bits 1:0 to
+  // compare. The terms are kept apart so that each output that takes the
+  // match meets them in its last gate. A full match implies the same page,
+  // so this equals same_page && (!pc_page_cross || key_va_q == i_pc).
+  (* keep = "true" *) logic same_page;
+  (* keep = "true" *) logic pc_cross_key_ok;
+  logic pc_low_ok, pc_match;
   assign same_page = (key_va_q[XLEN-1:12] == i_pc[XLEN-1:12]);
-  assign pc_match = same_page && (!pc_page_cross || (key_va_q == i_pc));
+  assign pc_cross_key_ok = key_cross_q && (key_va_q[1:0] == i_pc[1:0]);
+  assign pc_low_ok = !pc_page_cross || pc_cross_key_ok;
+  assign pc_match = same_page && pc_low_ok;
 
-  assign tag_match = key_valid_q && (key_priv_u_q == i_priv_u) &&
-                     (same_page ? (!pc_page_cross || (key_va_q == i_pc)) : (key_va_q == i_pc));
+  assign tag_match = key_valid_q && (key_priv_u_q == i_priv_u) && pc_match;
   assign translated_visible = i_active && !i_tlb_invalidate && tag_match && resolved_q;
   assign capture_en = i_active && !i_tlb_invalidate && (!tag_match || !resolved_q);
 
@@ -179,6 +189,10 @@ module immu #(
   logic [1:0] tlb_fetch_perm_fault, tlb_fetch_pma_bad, tlb_fetch_next_pma_bad;
   logic [1:0] tlb_fetch_next_ok;
   logic [1:0][PpnBits-1:0] tlb_fetch_next_ppn;
+  // The hit's stored PPN bits and superpage size, for the word-1 page that
+  // joins its VA bits after the capture.
+  logic [1:0][PpnBits-1:0] tlb_ppn_own;
+  logic [1:0] tlb_giga, tlb_mega;
   logic tlb_install;
 
   assign tlb_vpn[0] = pc_vpn;
@@ -223,7 +237,10 @@ module immu #(
       .o_fetch_pma_bad(tlb_fetch_pma_bad),
       .o_fetch_next_pma_bad(tlb_fetch_next_pma_bad),
       .o_fetch_next_ok(tlb_fetch_next_ok),
-      .o_fetch_next_ppn(tlb_fetch_next_ppn)
+      .o_fetch_next_ppn(tlb_fetch_next_ppn),
+      .o_ppn_own(tlb_ppn_own),
+      .o_giga(tlb_giga),
+      .o_mega(tlb_mega)
   );
 
   // ---------------------------------------------------------------------------
@@ -262,12 +279,25 @@ module immu #(
       default: ppn_from_resp = resp.ppn[PpnBits-1:0];
     endcase
   endfunction
+  // A response's stored PPN bits, zero where a superpage takes VA bits.
+  function automatic logic [PpnBits-1:0] own_from_resp(input riscv_pkg::ptw_resp_t resp);
+    unique case (resp.level)
+      2'd2: own_from_resp = {resp.ppn[PpnBits-1:18], 18'd0};
+      2'd1: own_from_resp = {resp.ppn[PpnBits-1:9], 9'd0};
+      default: own_from_resp = resp.ppn[PpnBits-1:0];
+    endcase
+  endfunction
 
   typedef struct packed {
     logic resolved;
     logic fault;
     logic page;
     logic [PpnBits-1:0] ppn;
+    // ppn in parts: the stored bits and the superpage size whose VA bits it
+    // joins (the dtlb's o_ppn_own, o_giga and o_mega, or the response's).
+    logic [PpnBits-1:0] own;
+    logic giga;
+    logic mega;
     logic hi_nonzero;
     logic [1:0] level;
     logic clean_hit;
@@ -276,10 +306,11 @@ module immu #(
   // Hits use ITLB permission and PMA checks; walk responses are checked here.
   function automatic port_res_t resolve_port(
       input logic noncanon, input logic [VpnBits-1:0] vpn, input logic hit,
-      input logic [PpnBits-1:0] ppn, input logic hi_nonzero, input logic tlb_perm_fault,
-      input logic tlb_pma_bad, input logic [1:0] level, input logic priv_u, input logic invalidate,
-      input logic resp_valid, input riscv_pkg::ptw_resp_t resp, input logic memo_valid,
-      input logic [VpnBits-1:0] memo_vpn, input logic memo_page);
+      input logic [PpnBits-1:0] ppn, input logic [PpnBits-1:0] ppn_own, input logic giga,
+      input logic mega, input logic hi_nonzero, input logic tlb_perm_fault, input logic tlb_pma_bad,
+      input logic [1:0] level, input logic priv_u, input logic invalidate, input logic resp_valid,
+      input riscv_pkg::ptw_resp_t resp, input logic memo_valid, input logic [VpnBits-1:0] memo_vpn,
+      input logic memo_page);
     port_res_t r;
     logic resp_match, use_resp_leaf, have;
     logic e_hi_nonzero;
@@ -297,12 +328,18 @@ module immu #(
         e_level = resp.level;
         perm_ok = resp.perm_x && (resp.perm_u == priv_u);
         pma_bad = e_hi_nonzero || !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({e_ppn, 12'h000}));
+        r.own = own_from_resp(resp);
+        r.giga = resp.level == 2'd2;
+        r.mega = resp.level == 2'd1;
       end else begin
         e_hi_nonzero = hi_nonzero;
         e_ppn = ppn;
         e_level = level;
         perm_ok = !tlb_perm_fault;
         pma_bad = tlb_pma_bad;
+        r.own = ppn_own;
+        r.giga = giga;
+        r.mega = mega;
       end
       r.ppn = e_ppn;
       r.hi_nonzero = e_hi_nonzero;
@@ -341,6 +378,9 @@ module immu #(
       pc_vpn,
       tlb_hit[0],
       tlb_ppn[0],
+      tlb_ppn_own[0],
+      tlb_giga[0],
+      tlb_mega[0],
       tlb_hi_nonzero[0],
       tlb_fetch_perm_fault[0],
       tlb_fetch_pma_bad[0],
@@ -358,6 +398,9 @@ module immu #(
       np_va_q[VpnBits-1:0],
       tlb_hit[1],
       tlb_ppn[1],
+      tlb_ppn_own[1],
+      tlb_giga[1],
+      tlb_mega[1],
       tlb_hi_nonzero[1],
       tlb_fetch_perm_fault[1],
       tlb_fetch_pma_bad[1],
@@ -428,6 +471,13 @@ module immu #(
   assign super_next_ok = !pc_noncanon && !i_tlb_invalidate &&
       (tlb_fetch_next_ok[0] || (!tlb_hit[0] && resp_super_ok));
   assign super_next_ppn = res0_from_tlb ? tlb_fetch_next_ppn[0] : resp_super_ppn;
+  // super_next_ppn in parts for word 1's capture: the stored bits and the
+  // superpage size whose low VA bits the next VPN supplies.
+  logic [PpnBits-1:0] super_next_own;
+  logic super_next_giga, super_next_mega;
+  assign super_next_own = res0_from_tlb ? tlb_ppn_own[0] : own_from_resp(i_walk_resp);
+  assign super_next_giga = res0_from_tlb ? tlb_giga[0] : (i_walk_resp.level == 2'd2);
+  assign super_next_mega = res0_from_tlb ? tlb_mega[0] : (i_walk_resp.level == 2'd1);
   assign resp_super_pma_bad = !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({resp_super_ppn, 12'h000}));
   assign super_next_pma_bad = res0_from_tlb ? tlb_fetch_next_pma_bad[0] : resp_super_pma_bad;
 `ifndef SYNTHESIS
@@ -472,7 +522,9 @@ module immu #(
   // ---------------------------------------------------------------------------
   // Tag and result capture. The key and its result always load together.
   // ---------------------------------------------------------------------------
-  logic [riscv_pkg::PhysAddrBits-1:0] pa0_d, pa1_d;
+  logic [riscv_pkg::PhysAddrBits-1:0] pa0_d;
+  logic [PpnBits-1:0] pa1_own_d;
+  logic pa1_giga_d, pa1_mega_d;
   logic resolved_d, f0_d, f0p_d, f1_d, f1p_d, after_ok_d;
   logic miss0_d, miss1_d;
   logic resolved1;
@@ -480,7 +532,12 @@ module immu #(
 
   always_comb begin
     pa0_d = res0.fault ? bare_pc : {res0.ppn, i_pc[11:0]};
-    pa1_d = {pa0_d[riscv_pkg::PhysAddrBits-1:12], pc_plus4_lo, 2'b00};
+    // Word 1's page for a crossing window, in parts: the read side joins
+    // np_va_q's low bits for a superpage, after the capture. A key that stays
+    // in its page reads pa0_q instead, so these need no page-cross select.
+    pa1_own_d = super_next_ok ? super_next_own : (np_sample_matches ? res1.own : '0);
+    pa1_giga_d = super_next_ok ? super_next_giga : (np_sample_matches && res1.giga);
+    pa1_mega_d = super_next_ok ? super_next_mega : (np_sample_matches && res1.mega);
     f0_d = res0.fault;
     f0p_d = res0.page;
     f1_d = res0.fault;
@@ -493,18 +550,15 @@ module immu #(
 
     if (pc_page_cross) begin
       if (super_next_ok) begin
-        pa1_d = {super_next_ppn, 12'h000};
         f1_d  = super_next_pma_bad;
         f1p_d = 1'b0;
       end else if (np_sample_matches) begin
-        pa1_d = {res1.ppn, 12'h000};
         pa1_use_va_d = res1.fault;
         f1_d = res1.fault;
         f1p_d = res1.page;
         resolved1 = res1.resolved;
         miss1_d = res0.resolved && !res1.resolved;
       end else begin
-        pa1_d = '0;
         f1_d = 1'b0;
         f1p_d = 1'b0;
         resolved1 = 1'b0;
@@ -515,26 +569,42 @@ module immu #(
     after_ok_d = (pa0_d[11:5] != 7'h7F) || (pa0_d[4:2] == 3'b111);
   end
 
-  logic [riscv_pkg::PhysAddrBits-1:0] pa0_q, pa1_q;
+  logic [riscv_pkg::PhysAddrBits-1:0] pa0_q;
+  logic [PpnBits-1:0] pa1_own_q;
+  logic pa1_giga_q, pa1_mega_q;
   logic f0_q, f0p_q, f1_q, f1p_q, after_ok_q;
   logic miss0_q, miss1_q;
   // A next-page lookup fault uses its sampled VA. The address selector
-  // captures with pa1_q and holds with it when visibility is invalidated.
+  // captures with word 1's page and holds with it when visibility is
+  // invalidated.
   logic pa1_use_va_q;
-  logic [PpnBits-1:0] pa1_ppn;
-  assign pa1_ppn = pa1_use_va_q ? np_va_q[PpnBits-1:0] : pa1_q[riscv_pkg::PhysAddrBits-1:12];
+  // Word 1's page. A crossing key's page joins np_va_q's low 18 bits for a
+  // gigapage and its low 9 for a megapage (np_va_q loads with the key, and
+  // np_sample_matches leaves it unchanged); any other key's word 1 lies in
+  // pa0_q's page, chosen by key_cross_q.
+  logic [PpnBits-1:0] pa1_join, pa1_ppn;
+  always_comb begin
+    pa1_join = pa1_own_q;
+    if (pa1_giga_q) pa1_join[17:0] = pa1_join[17:0] | np_va_q[17:0];
+    if (pa1_mega_q) pa1_join[8:0] = pa1_join[8:0] | np_va_q[8:0];
+  end
+  assign pa1_ppn = !key_cross_q ? pa0_q[riscv_pkg::PhysAddrBits-1:12] :
+      pa1_use_va_q ? np_va_q[PpnBits-1:0] : pa1_join;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       key_valid_q <= 1'b0;
       key_va_q <= '0;
+      key_cross_q <= 1'b0;
       key_priv_u_q <= 1'b0;
       np_va_q <= '0;
       resolved_q <= 1'b0;
       miss0_q <= 1'b0;
       miss1_q <= 1'b0;
       pa0_q <= '0;
-      pa1_q <= '0;
+      pa1_own_q <= '0;
+      pa1_giga_q <= 1'b0;
+      pa1_mega_q <= 1'b0;
       pa1_use_va_q <= 1'b0;
       f0_q <= 1'b0;
       f0p_q <= 1'b0;
@@ -554,13 +624,16 @@ module immu #(
     end else if (capture_en) begin
       key_valid_q <= 1'b1;
       key_va_q <= i_pc;
+      key_cross_q <= pc_page_cross;
       key_priv_u_q <= i_priv_u;
       np_va_q <= pc_np_va;
       resolved_q <= resolved_d;
       miss0_q <= miss0_d;
       miss1_q <= miss1_d;
       pa0_q <= pa0_d;
-      pa1_q <= pa1_d;
+      pa1_own_q <= pa1_own_d;
+      pa1_giga_q <= pa1_giga_d;
+      pa1_mega_q <= pa1_mega_d;
       pa1_use_va_q <= pa1_use_va_d;
       f0_q <= f0_d;
       f0p_q <= f0p_d;
@@ -627,7 +700,23 @@ module immu #(
   assign o_pa_valid = !i_active || (visible_before_pc_compare && pc_match);
   for (genvar copy = 0; copy < PA_VALID_COPIES; copy++) begin : gen_pa_valid_copy
     (* keep = "true", dont_touch = "true" *) logic pa_valid_copy;
+`ifdef FROST_XILINX_PRIMS
+    // One LUT after the page compare and the crossing test:
+    // !I0 || (I1 && I2 && (!I3 || I4)).
+    (* dont_touch = "true" *)
+    LUT5 #(
+        .INIT(32'hD5D555D5)
+    ) u_pa_valid (
+        .I0(i_active),
+        .I1(visible_before_pc_compare),
+        .I2(same_page),
+        .I3(pc_page_cross),
+        .I4(pc_cross_key_ok),
+        .O (pa_valid_copy)
+    );
+`else
     assign pa_valid_copy = !i_active || (visible_before_pc_compare && pc_match);
+`endif
     assign o_pa_valid_copy[copy] = pa_valid_copy;
   end
   wire  live_after_ok = (i_pc[11:5] != 7'h7F) || (i_pc[4:2] == 3'b111);
@@ -718,9 +807,28 @@ module immu #(
   // and that visible PAs combine captured physical pages with live offsets.
   // The reference selects a fault's VA before the capture.
   logic f_offset_past_valid = 1'b0;
-  logic [11:0] f_key_next_offset;
   logic [PpnBits-1:0] f_pa1_ppn_ref_q;
-  assign f_key_next_offset = {key_va_q[11:2] + 10'd1, 2'b00};
+  // The dtlb gives arbitrary answers here, within its output contract (which
+  // tlb.sby checks): o_ppn and o_fetch_next_ppn are the stored part with the
+  // lookup VPN's or the next VPN's low bits joined for the superpage size,
+  // and the stored part is zero where those bits go.
+  function automatic logic [PpnBits-1:0] f_join(input logic [PpnBits-1:0] own, input logic giga,
+                                                input logic mega, input logic [17:0] va);
+    f_join = own;
+    if (giga) f_join[17:0] = va;
+    if (mega) f_join[8:0] = va[8:0];
+  endfunction
+  always_comb begin
+    for (int p = 0; p < 2; p++) begin
+      assume (!(tlb_giga[p] && tlb_mega[p]));
+      assume (!tlb_giga[p] || tlb_ppn_own[p][17:0] == '0);
+      assume (!tlb_mega[p] || tlb_ppn_own[p][8:0] == '0);
+      assume (tlb_ppn[p] == f_join(tlb_ppn_own[p], tlb_giga[p], tlb_mega[p], tlb_vpn[p][17:0]));
+    end
+    assume (tlb_fetch_next_ppn[0] == f_join(
+        tlb_ppn_own[0], tlb_giga[0], tlb_mega[0], tlb_vpn[0][17:0] + 18'd1
+    ));
+  end
   always @(posedge i_clk) begin
     if (i_rst) f_pa1_ppn_ref_q <= '0;
     else if (i_active && !i_tlb_invalidate && capture_en) begin
@@ -735,8 +843,9 @@ module immu #(
     if (!f_offset_past_valid) assume (i_rst);
     if (f_offset_past_valid) begin
       p_captured_word1_page_exact : assert (pa1_ppn == f_pa1_ppn_ref_q);
+      p_key_cross_exact : assert (key_cross_q == &key_va_q[11:2]);
+      p_pc_low_ok_exact : assert (pc_low_ok == (!pc_page_cross || (key_va_q[11:0] == i_pc[11:0])));
       p_key_pa0_offset : assert (!key_valid_q || pa0_q[11:0] == key_va_q[11:0]);
-      p_key_pa1_offset : assert (!key_valid_q || pa1_q[11:0] == f_key_next_offset);
       p_public_pa0_exact :
       assert (!translated_visible || o_pa0 == {pa0_q[riscv_pkg::PhysAddrBits-1:12], i_pc[11:0]});
       p_public_pa1_exact :

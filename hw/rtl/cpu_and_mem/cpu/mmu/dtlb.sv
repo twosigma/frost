@@ -101,7 +101,15 @@ module dtlb #(
     output logic [NUM_PORTS-1:0] o_fetch_pma_bad,
     output logic [NUM_PORTS-1:0] o_fetch_next_pma_bad,
     output logic [NUM_PORTS-1:0] o_fetch_next_ok,
-    output logic [NUM_PORTS-1:0][riscv_pkg::PhysAddrBits-13:0] o_fetch_next_ppn
+    output logic [NUM_PORTS-1:0][riscv_pkg::PhysAddrBits-13:0] o_fetch_next_ppn,
+    // With PPN_SELECT_TREE, o_ppn in parts: the hit's stored PPN bits, zero
+    // where a superpage takes VA bits, and whether the hit is a gigapage or a
+    // megapage. o_ppn joins i_lookup_vpn's low 18 bits for a gigapage and its
+    // low 9 bits for a megapage; o_fetch_next_ppn joins those of the next VPN.
+    // Zero on a miss or without PPN_SELECT_TREE.
+    output logic [NUM_PORTS-1:0][riscv_pkg::PhysAddrBits-13:0] o_ppn_own,
+    output logic [NUM_PORTS-1:0] o_giga,
+    output logic [NUM_PORTS-1:0] o_mega
 );
 
   localparam int unsigned EntryIdxBits = (NUM_ENTRIES > 1) ? $clog2(NUM_ENTRIES) : 1;
@@ -374,6 +382,9 @@ module dtlb #(
     assign giga_sel = '0;
     assign mega_sel = '0;
   end
+  assign o_ppn_own = ppn_own;
+  assign o_giga = giga_sel;
+  assign o_mega = mega_sel;
 
   // ---------------------------------------------------------------------------
   // Install / invalidate. Rotating replacement pointer.
@@ -411,8 +422,13 @@ module dtlb #(
     logic ref_perm_ok, ref_atomic_page;
     logic ref_fetch_perm_fault, ref_fetch_pma_bad, ref_fetch_next_pma_bad, ref_fetch_next_ok;
     logic [1:0] ref_level;
+    logic [PpnBits-1:0] ref_own;
+    logic ref_giga, ref_mega;
     always_comb begin
       ref_ppn = '0;
+      ref_own = '0;
+      ref_giga = 1'b0;
+      ref_mega = 1'b0;
       ref_next_ppn = '0;
       ref_device_page = 1'b0;
       ref_ppn_hi_nonzero = 1'b0;
@@ -455,6 +471,11 @@ module dtlb #(
           ref_atomic_page = DATA_VERDICTS &&
               riscv_pkg::pma_atomic_ok(riscv_pkg::XLEN'({ref_ppn, 12'h000}));
           ref_level = e_level[e];
+          ref_giga = e_level[e] == 2'd2;
+          ref_mega = e_level[e] == 2'd1;
+          ref_own = e_ppn[e];
+          if (ref_giga) ref_own[17:0] = '0;
+          if (ref_mega) ref_own[8:0] = '0;
           // Reference fetch checks use the selected entry's fields.
           ref_fetch_perm_fault = !(e_x[e] && (e_u[e] == i_fetch_priv_u));
           ref_fetch_pma_bad = e_ppn_hi_nonzero[e] ||
@@ -478,6 +499,9 @@ module dtlb #(
       // The clean-hit verdict is the hit's data checks.
       assert (o_clean_hit[gp] == (o_hit[gp] && o_perm_ok[gp] && !o_ppn_hi_nonzero[gp] &&
           (o_atomic_page[gp] || (o_device_page[gp] && !i_perm_atomic[gp]))));
+      // The parts of the selected PPN, for a user that joins the VA bits.
+      assert ({o_ppn_own[gp], o_giga[gp], o_mega[gp]} ==
+              (PPN_SELECT_TREE ? {ref_own, ref_giga, ref_mega} : '0));
       if (FETCH_VERDICTS) begin
         assert ({o_fetch_perm_fault[gp], o_fetch_pma_bad[gp], o_fetch_next_pma_bad[gp],
                  o_fetch_next_ok[gp], o_fetch_next_ppn[gp]} ==

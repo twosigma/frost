@@ -757,7 +757,10 @@ module dmmu (
       .o_fetch_pma_bad(),
       .o_fetch_next_pma_bad(),
       .o_fetch_next_ok(),
-      .o_fetch_next_ppn()
+      .o_fetch_next_ppn(),
+      .o_ppn_own(),
+      .o_giga(),
+      .o_mega()
   );
 
   // The capture proof deletes the DTLB. Its clean-hit verdict is its hit with
