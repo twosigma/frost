@@ -24,9 +24,14 @@
   delegated supervisor bits at every privilege; sip permits writes to
   delegated SSIP and LCOFIP. medeleg/mideleg use the package WARL masks:
   M-mode ECALL and the machine software, timer and external interrupt classes
-  cannot delegate. menvcfg implements FIOM, CBZE and STCE; senvcfg, required
-  for S/U support, implements FIOM and CBZE. FIOM is stored only (see
-  riscv_pkg::EnvcfgFiomBit); CBZE gates cbo.zero below M.
+  cannot delegate. menvcfg implements FIOM, CBIE, CBCFE, CBZE, PBMTE and STCE;
+  senvcfg, required for S/U support, implements FIOM, CBIE, CBCFE and CBZE.
+  FIOM is stored only (see riscv_pkg::EnvcfgFiomBit); CBZE gates cbo.zero
+  below M, and CBCFE and CBIE gate cbo.clean/cbo.flush and cbo.inval. CBIE is
+  WARL {00, 01, 11}: a write of the reserved 10 stores 00. With
+  CBO_INVAL_AS_FLUSH, 11 also stores 01 and cbo.inval executes as cbo.flush at
+  every privilege. PBMTE is stored for the page-table walker, which does not
+  read it yet.
 
   mstatus.MPRV makes data accesses use MPP. MPP and dcsr.prv fold reserved
   2'b10 to U. FS resets to Initial and becomes Dirty on FP state writes;
@@ -104,6 +109,10 @@ module csr_file #(
     // This removes redundant trap priority from write paths. The default
     // retains trap-over-write priority.
     parameter bit COMMIT_EXCLUDES_CONTROL_TAKE = 1'b0,
+    // Zicbom: execute cbo.inval as cbo.flush at every privilege, so it never
+    // discards dirty data (the CHERI recommendation). CBIE then stores 01
+    // for a write of 11.
+    parameter bit CBO_INVAL_AS_FLUSH = 1'b0,
     // 1: i_perf_counter_csr_half already holds the counter half that the
     // current i_csr_address reads (cpu_ooo's aggregator selects it on the
     // edge that registers the address), and mperfdata/mperfdatah return it.
@@ -319,6 +328,14 @@ module csr_file #(
     // set. A legal envcfg write affects only lower privilege. Traps, xRETs
     // and debug transitions change the executing privilege and flush decode.
     output logic o_cbo_zero_illegal,
+    // Zicbom, with the same change rule: cbo.clean and cbo.flush are illegal
+    // in S without menvcfg.CBCFE and in U without both CBCFE bits; cbo.inval
+    // is illegal in S with menvcfg.CBIE = 00 and in U with either CBIE = 00;
+    // o_cbo_inval_flush selects a flush for cbo.inval below M when a CBIE
+    // that applies is 01 (always, with CBO_INVAL_AS_FLUSH).
+    output logic o_cbo_cf_illegal,
+    output logic o_cbo_inval_illegal,
+    output logic o_cbo_inval_flush,
 
     // Debug Mode state for allocation legality, trap routing, halt reporting,
     // and single stepping. Changes require a flushing trap/DRET or a
@@ -623,12 +640,27 @@ module csr_file #(
 
   logic menvcfg_stce, menvcfg_fiom, senvcfg_fiom;
   logic menvcfg_cbze, senvcfg_cbze;
+  logic menvcfg_cbcfe, senvcfg_cbcfe, menvcfg_pbmte;
+  logic [1:0] menvcfg_cbie, senvcfg_cbie;
   logic [XLEN-1:0] menvcfg, senvcfg;  // Readback views of the stored fields
   assign menvcfg = (XLEN'(menvcfg_stce) << riscv_pkg::MenvcfgStceBit) |
+      (XLEN'(menvcfg_pbmte) << riscv_pkg::MenvcfgPbmteBit) |
       (XLEN'(menvcfg_cbze) << riscv_pkg::EnvcfgCbzeBit) |
+      (XLEN'(menvcfg_cbcfe) << riscv_pkg::EnvcfgCbcfeBit) |
+      (XLEN'(menvcfg_cbie) << riscv_pkg::EnvcfgCbieLsb) |
       (XLEN'(menvcfg_fiom) << riscv_pkg::EnvcfgFiomBit);
   assign senvcfg = (XLEN'(senvcfg_cbze) << riscv_pkg::EnvcfgCbzeBit) |
+      (XLEN'(senvcfg_cbcfe) << riscv_pkg::EnvcfgCbcfeBit) |
+      (XLEN'(senvcfg_cbie) << riscv_pkg::EnvcfgCbieLsb) |
       (XLEN'(senvcfg_fiom) << riscv_pkg::EnvcfgFiomBit);
+  // CBIE WARL: the reserved 10 stores 00; with CBO_INVAL_AS_FLUSH, 11 stores
+  // 01, so the field never selects an invalidate.
+  function automatic logic [1:0] cbie_warl(input logic [1:0] written);
+    if (written == 2'b10) cbie_warl = riscv_pkg::EnvcfgCbieIllegal;
+    else if (CBO_INVAL_AS_FLUSH && written == riscv_pkg::EnvcfgCbieInval)
+      cbie_warl = riscv_pkg::EnvcfgCbieFlush;
+    else cbie_warl = written;
+  endfunction
 
   // Supervisor trap CSRs.
   logic [XLEN-1:0] stvec;  // Supervisor trap vector (MODE bit 1 forced 0, like mtvec)
@@ -639,6 +671,19 @@ module csr_file #(
   assign o_stimecmp_blocked = gate_priv_is_s && !menvcfg_stce;
   assign o_cbo_zero_illegal = (gate_priv_is_s && !menvcfg_cbze) ||
       (gate_priv_is_u && !(menvcfg_cbze && senvcfg_cbze));
+  assign o_cbo_cf_illegal = (gate_priv_is_s && !menvcfg_cbcfe) ||
+      (gate_priv_is_u && !(menvcfg_cbcfe && senvcfg_cbcfe));
+  assign o_cbo_inval_illegal =
+      (gate_priv_is_s && (menvcfg_cbie == riscv_pkg::EnvcfgCbieIllegal)) ||
+      (gate_priv_is_u && ((menvcfg_cbie == riscv_pkg::EnvcfgCbieIllegal) ||
+                          (senvcfg_cbie == riscv_pkg::EnvcfgCbieIllegal)));
+  // An illegal cbo.inval never reaches the decode that reads this, so 00 and
+  // 01 need not be told apart: below M, an inval executes as a flush unless
+  // every CBIE that applies is 11.
+  assign o_cbo_inval_flush = CBO_INVAL_AS_FLUSH ||
+      (gate_priv_is_s && (menvcfg_cbie != riscv_pkg::EnvcfgCbieInval)) ||
+      (gate_priv_is_u && ((menvcfg_cbie != riscv_pkg::EnvcfgCbieInval) ||
+                          (senvcfg_cbie != riscv_pkg::EnvcfgCbieInval)));
   logic [XLEN-1:0] sscratch;
   logic [XLEN-1:0] sepc;  // bit 0 forced 0, like mepc
   logic [XLEN-1:0] scause;
@@ -1715,8 +1760,13 @@ module csr_file #(
       satp_ppn                   <= '0;
       menvcfg_stce               <= 1'b0;
       menvcfg_cbze               <= 1'b0;
+      menvcfg_pbmte              <= 1'b0;
+      menvcfg_cbcfe              <= 1'b0;
+      menvcfg_cbie               <= 2'b00;
       menvcfg_fiom               <= 1'b0;
       senvcfg_cbze               <= 1'b0;
+      senvcfg_cbcfe              <= 1'b0;
+      senvcfg_cbie               <= 2'b00;
       senvcfg_fiom               <= 1'b0;
       stimecmp                   <= 64'hFFFF_FFFF_FFFF_FFFF;
       perf_counter_select        <= '0;
@@ -1790,16 +1840,22 @@ module csr_file #(
             satp_ppn <= satp_new_value[SatpPpnBits-1:0];
           end
         end
-        // menvcfg implements FIOM, CBZE and STCE, senvcfg FIOM and CBZE (the
-        // rest stays WARL-0); stimecmp is the full 64-bit compare value.
+        // menvcfg implements FIOM, CBIE, CBCFE, CBZE, PBMTE and STCE, senvcfg
+        // FIOM, CBIE, CBCFE and CBZE (the rest stays WARL-0); stimecmp is the
+        // full 64-bit compare value.
         riscv_pkg::CsrMenvcfg: begin
-          menvcfg_stce <= menvcfg_new_value[riscv_pkg::MenvcfgStceBit];
-          menvcfg_cbze <= menvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
-          menvcfg_fiom <= menvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
+          menvcfg_stce  <= menvcfg_new_value[riscv_pkg::MenvcfgStceBit];
+          menvcfg_pbmte <= menvcfg_new_value[riscv_pkg::MenvcfgPbmteBit];
+          menvcfg_cbze  <= menvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
+          menvcfg_cbcfe <= menvcfg_new_value[riscv_pkg::EnvcfgCbcfeBit];
+          menvcfg_cbie  <= cbie_warl(menvcfg_new_value[riscv_pkg::EnvcfgCbieLsb+:2]);
+          menvcfg_fiom  <= menvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
         end
         riscv_pkg::CsrSenvcfg: begin
-          senvcfg_cbze <= senvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
-          senvcfg_fiom <= senvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
+          senvcfg_cbze  <= senvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
+          senvcfg_cbcfe <= senvcfg_new_value[riscv_pkg::EnvcfgCbcfeBit];
+          senvcfg_cbie  <= cbie_warl(senvcfg_new_value[riscv_pkg::EnvcfgCbieLsb+:2]);
+          senvcfg_fiom  <= senvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
         end
         riscv_pkg::CsrStimecmp: stimecmp <= stimecmp_new_value;
         // Without counters the profiling state keeps its reset value.
@@ -2509,10 +2565,14 @@ module csr_file #(
 
       // Access privilege is enforced by the ROB, not by this standalone file.
       // A legal envcfg write cannot change permission in the executing mode:
-      // menvcfg is M-only; senvcfg is M/S-only and gates only U.
+      // menvcfg is M-only; senvcfg is M/S-only and gates only U. The same
+      // holds for the Zicbom gates (CBCFE, CBIE) beside CBZE.
       if ($past(f_envcfg_legal_write) && priv_q == $past(priv_q)) begin
         p_envcfg_write_preserves_current_cbo_gate :
-        assert (o_cbo_zero_illegal == $past(o_cbo_zero_illegal));
+        assert ({o_cbo_zero_illegal, o_cbo_cf_illegal, o_cbo_inval_illegal, o_cbo_inval_flush} ==
+                $past(
+            {o_cbo_zero_illegal, o_cbo_cf_illegal, o_cbo_inval_illegal, o_cbo_inval_flush}
+        ));
       end
 
       // Debug Mode entry: dpc/dcsr record the resume state, priv
@@ -2861,6 +2921,29 @@ module csr_file #(
       assert (o_cbo_zero_illegal == ((priv_q == riscv_pkg::PrivS) ? !menvcfg[7] :
                                      (priv_q == riscv_pkg::PrivU) ? !(menvcfg[7] && senvcfg[7]) :
                                      1'b0));
+      // Zicbom legality and the inval-as-flush selection, from the readback
+      // views: CBCFE bit 6, CBIE bits 5:4 (cmo.adoc, norm:menvcfg_cbie_*).
+      p_cbo_cf_gate_export :
+      assert (o_cbo_cf_illegal == ((priv_q == riscv_pkg::PrivS) ? !menvcfg[6] :
+                                   (priv_q == riscv_pkg::PrivU) ? !(menvcfg[6] && senvcfg[6]) :
+                                   1'b0));
+      p_cbo_inval_gate_export :
+      assert (o_cbo_inval_illegal ==
+              ((priv_q == riscv_pkg::PrivS) ? (menvcfg[5:4] == 2'b00) :
+               (priv_q == riscv_pkg::PrivU) ? (menvcfg[5:4] == 2'b00 || senvcfg[5:4] == 2'b00) :
+               1'b0));
+      if (!o_cbo_inval_illegal) begin
+        p_cbo_inval_flush_export :
+        assert (o_cbo_inval_flush ==
+                (CBO_INVAL_AS_FLUSH ||
+                 ((priv_q == riscv_pkg::PrivS) ? (menvcfg[5:4] == 2'b01) :
+                  (priv_q == riscv_pkg::PrivU) ? (menvcfg[5:4] == 2'b01 || senvcfg[5:4] == 2'b01) :
+                  1'b0)));
+      end
+      // CBIE never holds the reserved 10, nor 11 when inval executes as flush.
+      p_cbie_warl :
+      assert (menvcfg[5:4] != 2'b10 && senvcfg[5:4] != 2'b10 &&
+              !(CBO_INVAL_AS_FLUSH && (menvcfg[5:4] == 2'b11 || senvcfg[5:4] == 2'b11)));
 
       // mtvec MODE: bit 1 always 0, bit 0 can be 0 (Direct) or 1 (Vectored).
       p_mtvec_aligned : assert (mtvec[1] == 1'b0);
@@ -3222,6 +3305,9 @@ module csr_file #(
   logic [$bits(mcountinhibit_ir)-1:0] f_old_mcountinhibit_ir;
   logic [$bits(medeleg_q)-1:0] f_old_medeleg_q;
   logic [$bits(menvcfg_cbze)-1:0] f_old_menvcfg_cbze;
+  logic [$bits(menvcfg_cbcfe)-1:0] f_old_menvcfg_cbcfe;
+  logic [$bits(menvcfg_cbie)-1:0] f_old_menvcfg_cbie;
+  logic [$bits(menvcfg_pbmte)-1:0] f_old_menvcfg_pbmte;
   logic [$bits(menvcfg_fiom)-1:0] f_old_menvcfg_fiom;
   logic [$bits(menvcfg_stce)-1:0] f_old_menvcfg_stce;
   logic [$bits(mepc)-1:0] f_old_mepc;
@@ -3242,7 +3328,15 @@ module csr_file #(
   logic [$bits(scause)-1:0] f_old_scause;
   logic [$bits(scounteren_q)-1:0] f_old_scounteren_q;
   logic [$bits(senvcfg_cbze)-1:0] f_old_senvcfg_cbze;
+  logic [$bits(senvcfg_cbcfe)-1:0] f_old_senvcfg_cbcfe;
+  logic [$bits(senvcfg_cbie)-1:0] f_old_senvcfg_cbie;
   logic [$bits(senvcfg_fiom)-1:0] f_old_senvcfg_fiom;
+  // Reference CBIE WARL: reserved 10 stores 00; 11 stores 01 when inval
+  // always executes as flush.
+  function automatic logic [1:0] f_cbie_ref(input logic [1:0] written);
+    f_cbie_ref = (written == 2'b10) ? 2'b00 :
+        (CBO_INVAL_AS_FLUSH && written == 2'b11) ? 2'b01 : written;
+  endfunction
   logic [$bits(sepc)-1:0] f_old_sepc;
   logic [$bits(sscratch)-1:0] f_old_sscratch;
   logic [$bits(stimecmp)-1:0] f_old_stimecmp;
@@ -3286,6 +3380,9 @@ module csr_file #(
     f_old_mcountinhibit_ir <= mcountinhibit_ir;
     f_old_medeleg_q <= medeleg_q;
     f_old_menvcfg_cbze <= menvcfg_cbze;
+    f_old_menvcfg_cbcfe <= menvcfg_cbcfe;
+    f_old_menvcfg_cbie <= menvcfg_cbie;
+    f_old_menvcfg_pbmte <= menvcfg_pbmte;
     f_old_menvcfg_fiom <= menvcfg_fiom;
     f_old_menvcfg_stce <= menvcfg_stce;
     f_old_mepc <= mepc;
@@ -3306,6 +3403,8 @@ module csr_file #(
     f_old_scause <= scause;
     f_old_scounteren_q <= scounteren_q;
     f_old_senvcfg_cbze <= senvcfg_cbze;
+    f_old_senvcfg_cbcfe <= senvcfg_cbcfe;
+    f_old_senvcfg_cbie <= senvcfg_cbie;
     f_old_senvcfg_fiom <= senvcfg_fiom;
     f_old_sepc <= sepc;
     f_old_sscratch <= sscratch;
@@ -3342,8 +3441,13 @@ module csr_file #(
       f_old_satp_ppn                   <= '0;
       f_old_menvcfg_stce               <= 1'b0;
       f_old_menvcfg_cbze               <= 1'b0;
+      f_old_menvcfg_cbcfe              <= 1'b0;
+      f_old_menvcfg_cbie               <= 2'b00;
+      f_old_menvcfg_pbmte              <= 1'b0;
       f_old_menvcfg_fiom               <= 1'b0;
       f_old_senvcfg_cbze               <= 1'b0;
+      f_old_senvcfg_cbcfe              <= 1'b0;
+      f_old_senvcfg_cbie               <= 2'b00;
       f_old_senvcfg_fiom               <= 1'b0;
       f_old_stimecmp                   <= 64'hFFFF_FFFF_FFFF_FFFF;
       f_old_perf_counter_select        <= '0;
@@ -3423,16 +3527,22 @@ module csr_file #(
             f_old_satp_ppn <= csr_new_value[SatpPpnBits-1:0];
           end
         end
-        // menvcfg implements FIOM, CBZE and STCE, senvcfg FIOM and CBZE (the
-        // rest stays WARL-0); stimecmp is the full 64-bit compare value.
+        // menvcfg implements FIOM, CBIE, CBCFE, CBZE, PBMTE and STCE, senvcfg
+        // FIOM, CBIE, CBCFE and CBZE (the rest stays WARL-0); stimecmp is the
+        // full 64-bit compare value.
         riscv_pkg::CsrMenvcfg: begin
-          f_old_menvcfg_stce <= csr_new_value[riscv_pkg::MenvcfgStceBit];
-          f_old_menvcfg_cbze <= csr_new_value[riscv_pkg::EnvcfgCbzeBit];
-          f_old_menvcfg_fiom <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
+          f_old_menvcfg_stce  <= csr_new_value[riscv_pkg::MenvcfgStceBit];
+          f_old_menvcfg_pbmte <= csr_new_value[62];
+          f_old_menvcfg_cbze  <= csr_new_value[riscv_pkg::EnvcfgCbzeBit];
+          f_old_menvcfg_cbcfe <= csr_new_value[6];
+          f_old_menvcfg_cbie  <= f_cbie_ref(csr_new_value[5:4]);
+          f_old_menvcfg_fiom  <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
         end
         riscv_pkg::CsrSenvcfg: begin
-          f_old_senvcfg_cbze <= csr_new_value[riscv_pkg::EnvcfgCbzeBit];
-          f_old_senvcfg_fiom <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
+          f_old_senvcfg_cbze  <= csr_new_value[riscv_pkg::EnvcfgCbzeBit];
+          f_old_senvcfg_cbcfe <= csr_new_value[6];
+          f_old_senvcfg_cbie  <= f_cbie_ref(csr_new_value[5:4]);
+          f_old_senvcfg_fiom  <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
         end
         riscv_pkg::CsrStimecmp: f_old_stimecmp <= csr_new_value;
         // Without counters the profiling state keeps its reset value.
@@ -3550,6 +3660,8 @@ module csr_file #(
                f_old_hpm_uinh});
       assert (medeleg_q == f_old_medeleg_q);
       assert (menvcfg_cbze == f_old_menvcfg_cbze);
+      assert ({menvcfg_cbcfe, menvcfg_cbie, menvcfg_pbmte} ==
+              {f_old_menvcfg_cbcfe, f_old_menvcfg_cbie, f_old_menvcfg_pbmte});
       assert (menvcfg_fiom == f_old_menvcfg_fiom);
       assert (menvcfg_stce == f_old_menvcfg_stce);
       assert (mepc == f_old_mepc);
@@ -3570,6 +3682,7 @@ module csr_file #(
       assert (scause == f_old_scause);
       assert (scounteren_q == f_old_scounteren_q);
       assert (senvcfg_cbze == f_old_senvcfg_cbze);
+      assert ({senvcfg_cbcfe, senvcfg_cbie} == {f_old_senvcfg_cbcfe, f_old_senvcfg_cbie});
       assert (senvcfg_fiom == f_old_senvcfg_fiom);
       assert (sepc == f_old_sepc);
       assert (sscratch == f_old_sscratch);
