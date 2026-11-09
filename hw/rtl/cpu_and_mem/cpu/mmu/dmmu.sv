@@ -760,11 +760,9 @@ module dmmu (
       .o_fetch_next_ppn()
   );
 
-  // The local proofs delete the DTLB. Its clean-hit verdict is its hit with
-  // no fault, as the DTLB's own checks prove.
+  // The capture proof deletes the DTLB. Its clean-hit verdict is its hit with
+  // no fault, as the DTLB's own checks prove. The MMIO proof reads the DTLB.
 `ifdef DMMU_CAPTURE_LOCAL_PROOF
-  always_comb assume (tlb_clean_hit[0] == (tlb_hit[0] && (tlb_fault == riscv_pkg::DFAULT_NONE)));
-`elsif DMMU_MMIO_LOCAL_PROOF
   always_comb assume (tlb_clean_hit[0] == (tlb_hit[0] && (tlb_fault == riscv_pkg::DFAULT_NONE)));
 `endif
 `ifdef DMMU_MMIO_LOCAL_PROOF
