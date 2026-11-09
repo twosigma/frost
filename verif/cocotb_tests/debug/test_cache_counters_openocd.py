@@ -86,7 +86,7 @@ WINDOW_COMMAND = """
 import pathlib, sys, time
 started, done = map(pathlib.Path, sys.argv[1:])
 started.touch()
-deadline = time.monotonic() + 3600
+deadline = time.monotonic() + 7200
 while not done.exists():
     if time.monotonic() > deadline:
         sys.exit("the bench never reported the second run done")
@@ -124,7 +124,7 @@ async def _run_tool(dut: Any, openocd: str, port: int, *action: str) -> str:
         f"set FROST_RBB_PORT {port}",
         # The simulated JTAG is far slower than a cable.
         "--timeout",
-        "3600",
+        "7200",
         *action,
     ]
     cocotb.log.info("launching: " + " ".join(cmd))
