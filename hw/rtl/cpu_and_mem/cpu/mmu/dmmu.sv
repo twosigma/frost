@@ -804,7 +804,8 @@ module dmmu (
 
 `ifdef DMMU_CAPTURE_LOCAL_PROOF
   // Relate the issued packet and the consumer's preceding look-ahead without
-  // assumptions on TLB answers, issue order, flushes or permission controls.
+  // assumptions on issue order, flushes or permission controls, and on TLB
+  // answers beyond the clean-hit relation above.
   logic f_capture_past_valid = 1'b0;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] f_pre_tag_q;
   logic f_pre_needs_lq_q;
