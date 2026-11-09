@@ -1,0 +1,45 @@
+# Copyright (c) 2026 John Goodacre.
+#
+# Flash invalidate (frost_cache FLASH_INVALIDATE, the L1I): with the
+# simulation bulk clear, every tag read returns the RAM's valid bits from the
+# flip-flops once a sweep has cleared both; on the hardware path an
+# invalidate-all sweep lasts one cycle. A 256-byte cache with 8-byte lines
+# (8 sets) with free inputs, from any register state.
+[tasks]
+bmc_fast
+bmc_fast_ways1
+bmc_hw
+cover_fast
+
+[options]
+bmc_fast: mode bmc
+bmc_fast_ways1: mode bmc
+bmc_hw: mode bmc
+cover_fast: mode cover
+depth 16
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv cache_perf_pkg.sv sdp_block_ram.sv sdp_ram_byte_en.sv sdp_packed_tag_uram.sv
+read -formal -D SYNTHESIS -D CACHE_FLASH_PROOF -sv frost_cache.sv
+bmc_fast: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 4 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 1 frost_cache
+bmc_fast_ways1: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 1 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 1 frost_cache
+bmc_hw: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 4 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 0 frost_cache
+cover_fast: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 4 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 1 frost_cache
+prep -top frost_cache -flatten
+memory_map
+opt
+select -assert-none t:$assume
+bmc_fast: select -assert-count 4 t:$check
+bmc_fast_ways1: select -assert-count 4 t:$check
+bmc_hw: select -assert-count 4 t:$check
+
+[files]
+../hw/rtl/lib/cache/cache_perf_pkg.sv
+../hw/rtl/lib/cache/frost_cache.sv
+
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv

@@ -93,7 +93,10 @@
  * line back through the writeback slots, and leaves it valid and clean.
  * o_maint_busy covers the walk and the drain of its writebacks.
  * SIM_FAST_MAINT (simulation only) makes the sweep one cycle and has
- * writeback-all visit only the sets with dirty lines.
+ * writeback-all visit only the sets with dirty lines. FLASH_INVALIDATE (the
+ * L1I, synthesizable) keeps the valid bits in flip-flops and clears them all
+ * at once, so invalidate-all takes one sweep cycle in hardware too; the
+ * reset sweep still walks every set to clear the tag and replacement RAMs.
  *
  * Probes (NUM_PROBE > 0, the L1D) are per-line coherence requests on the
  * upstream port. PROBE_CLEAN writes a dirty copy back and leaves it valid and
@@ -153,6 +156,11 @@ module frost_cache #(
     // verilog_lint: waive explicit-parameter-storage-type
     parameter TAG_MEMORY_PRIMITIVE = "block",
     parameter int unsigned TAG_READ_LATENCY = 1,
+    // 1: keep the valid bits in flip-flops beside the tag RAM, so
+    // invalidate-all clears every line in one cycle instead of sweeping the
+    // sets (fence.i on the L1I). Needs one-cycle block tags; like
+    // invalidate-all itself, only for a read-only cache.
+    parameter bit FLASH_INVALIDATE = 1'b0,
     // Simulation only: bulk-clear tags in one cycle and walk only dirty sets
     // for writeback-all. The resulting invalidation/writeback behavior matches
     // the hardware sweep. Keep 0 for synthesis.
@@ -291,6 +299,8 @@ module frost_cache #(
       $fatal(1, "frost_cache: block tags require TAG_READ_LATENCY=1");
     if ((TAG_MEMORY_PRIMITIVE == "ultra") && (TAG_READ_LATENCY < 3))
       $fatal(1, "frost_cache: packed ultra tags require TAG_READ_LATENCY>=3");
+    if (FLASH_INVALIDATE && ((TAG_MEMORY_PRIMITIVE != "block") || (TAG_READ_LATENCY != 1)))
+      $fatal(1, "frost_cache: FLASH_INVALIDATE requires one-cycle block tags");
     if (DOWN_ID_BITS < 2) $fatal(1, "frost_cache: DOWN_ID_BITS must be >= 2");
     if (NUM_WAITERS < 1) $fatal(1, "frost_cache: NUM_WAITERS must be >= 1");
     if ((1 << DownSlotBits) < NUM_MSHR || (1 << DownSlotBits) < NUM_WB)
@@ -404,10 +414,60 @@ module frost_cache #(
   logic                        tag_re;
   logic [TAG_READ_LATENCY-1:0] tag_response_valid_q;
   logic                        tag_response_valid;
-  logic [WAYS-1:0] tag_rdata_valid, tag_rdata_dirty;
+  logic [WAYS-1:0] tag_rdata_valid, tag_rdata_dirty, tag_ram_valid;
   logic [TagBits-1:0] tag_rdata_tag[WAYS];
   for (genvar gw = 0; gw < int'(WAYS); gw++) begin : gen_tag_unpack
-    assign {tag_rdata_valid[gw], tag_rdata_dirty[gw], tag_rdata_tag[gw]} = tag_rdata[gw];
+    assign {tag_ram_valid[gw], tag_rdata_dirty[gw], tag_rdata_tag[gw]} = tag_rdata[gw];
+  end
+
+  // Flash invalidate: the valid bits live in flip-flops, written by every tag
+  // write and read like the one-cycle tag RAM (a read in the cycle of a write
+  // to its set returns the old bits, as the RAM does). The whole sweep state
+  // clears them, so invalidate-all needs one sweep cycle and the RAM's valid
+  // bit goes unused. The other tag fields of an invalid way are don't-care:
+  // every use of the dirty bit and the tag is qualified by valid.
+  if (FLASH_INVALIDATE) begin : gen_flash_valid
+    logic [WAYS-1:0] valid_q[NumSets];
+    logic [WAYS-1:0] valid_rd_q;
+    always_ff @(posedge i_clk) begin
+      if (mstate_q == M_SWEEP) begin
+        for (int s = 0; s < int'(NumSets); s++) valid_q[s] <= '0;
+      end else begin
+        for (int w = 0; w < int'(WAYS); w++)
+        if (tag_we[w]) valid_q[tag_waddr][w] <= tag_wdata[TagEntryBits-1];
+      end
+    end
+    always_ff @(posedge i_clk) valid_rd_q <= valid_q[tag_raddr];
+    assign tag_rdata_valid = valid_rd_q;
+`ifdef CACHE_FLASH_PROOF
+    // formal/cache_flash_valid.sby. With SIM_FAST_MAINT the RAM's valid bits
+    // are bulk-cleared in the same sweep cycle, so once a sweep has cleared
+    // both and its read has left the read register, every tag read returns
+    // the RAM's valid bits from the flip-flops. Without SIM_FAST_MAINT an
+    // invalidate-all sweep lasts one cycle.
+    logic proof_swept_q = 1'b0, proof_swept2_q = 1'b0, proof_inval_q = 1'b0;
+    always_ff @(posedge i_clk) begin
+      if (mstate_q == M_SWEEP) proof_swept_q <= 1'b1;
+      proof_swept2_q <= proof_swept_q;
+      proof_inval_q  <= (mstate_q == M_IDLE) && i_invalidate_all && pipeline_idle && !i_rst;
+    end
+    always_comb begin
+      if ((SIM_FAST_MAINT != 0) && proof_swept2_q) assert (valid_rd_q == tag_ram_valid);
+      if ((SIM_FAST_MAINT == 0) && proof_inval_q && !i_rst)
+        assert ((mstate_q == M_SWEEP) && (sweep_idx_q == {SetBits{1'b1}}));
+    end
+    // Reachability: an invalidate-all, and a valid line read after a sweep.
+    always_ff @(posedge i_clk) begin
+      cover (proof_inval_q);
+      cover (proof_swept2_q && tag_response_valid && (valid_rd_q != '0));
+    end
+`endif
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic ram_valid_unused;
+    assign ram_valid_unused = ^tag_ram_valid;
+    /* verilator lint_on UNUSEDSIGNAL */
+  end else begin : gen_ram_valid
+    assign tag_rdata_valid = tag_ram_valid;
   end
 
   always_ff @(posedge i_clk) begin
@@ -2096,7 +2156,9 @@ module frost_cache #(
           // Maintenance has priority and waits for the pipeline to drain
           // (ready is masked while it is requested).
           if (i_invalidate_all && pipeline_idle) begin
-            sweep_idx_q <= '0;
+            // Flash invalidate clears every valid bit in the sweep's first
+            // cycle, so the sweep starts at its last set and ends there.
+            sweep_idx_q <= FLASH_INVALIDATE ? {SetBits{1'b1}} : '0;
             mstate_q    <= M_SWEEP;
           end else if (i_writeback_all && pipeline_idle) begin
             flush_idx_q <= (SIM_FAST_MAINT != 0) ? first_dirty_full : (wb_any_q ? wb_lo_q : '0);

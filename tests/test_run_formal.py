@@ -773,6 +773,12 @@ FORMAL_TARGETS = [
         tasks=("bmc", "bmc_ways1", "bmc_delayed"),
     ),
     FormalTarget(
+        "cache_flash_valid.sby",
+        "Flash-invalidate valid flip-flops return the tag RAM's valid bits, and an "
+        "invalidate-all sweep lasts one cycle",
+        tasks=("bmc_fast", "bmc_fast_ways1", "bmc_hw", "cover_fast"),
+    ),
+    FormalTarget(
         "lq_alloc_mask.sby",
         "Load-queue allocation masks and capacity checks match the reference search",
         tasks=("bmc4", "bmc8", "bmc16"),
@@ -2364,6 +2370,13 @@ SBY_TASKS = [
     ("bmc_mshr8", "Bounded check with eight miss-status slots"),
     ("bmc_ways1", "Bounded check of a direct-mapped cache"),
     ("bmc_delayed", "Bounded check with delayed (UltraRAM) tags"),
+    ("bmc_fast", "Bounded check with the simulation bulk clear"),
+    (
+        "bmc_fast_ways1",
+        "Bounded check of a direct-mapped cache with the simulation bulk clear",
+    ),
+    ("bmc_hw", "Bounded check of the hardware maintenance path"),
+    ("cover_fast", "Reachability covers with the simulation bulk clear"),
     ("bmc_free_bin", "Bounded shared-link memory equivalence with free binary reads"),
     ("bmc_free_oh", "Bounded shared-link memory equivalence with free one-hot reads"),
     (
