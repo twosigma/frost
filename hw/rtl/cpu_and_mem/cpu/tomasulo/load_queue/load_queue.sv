@@ -1478,7 +1478,11 @@ module load_queue #(
   // Declared before the selector: Vivado binds a port connection to a later
   // module-level declaration as a separate, undriven implicit net.
   logic [DEPTH-1:0] staged_younger_than_entry;
-  wire coherent_replace_without_update, coherent_replace_with_update;
+  // The selector's replacement inputs for each drain choice (see the
+  // replacement terms after sq_check_replace).
+  localparam int unsigned ReplaceGroups = (DEPTH + 2) / 3;
+  wire [1:0][ReplaceGroups-1:0] coherent_merged_older, coherent_stored_older;
+  wire [1:0] coherent_head_found, coherent_head_stored_found;
   // The staged load's age against the ROB-head entry, compared directly from
   // that entry's tag so it is as early as the per-entry comparisons.
   logic [ReorderBufferTagWidth-1:0] rob_head_entry_tag;
@@ -1516,8 +1520,10 @@ module load_queue #(
         .i_sq_committed_empty(i_sq_committed_empty),
         .i_staged_younger(staged_younger_than_entry),
         .i_staged_younger_head(staged_younger_than_head),
-        .o_replace_without_update(coherent_replace_without_update),
-        .o_replace_with_update(coherent_replace_with_update),
+        .o_merged_older(coherent_merged_older),
+        .o_stored_older(coherent_stored_older),
+        .o_head_found(coherent_head_found),
+        .o_head_stored_found(coherent_head_stored_found),
         .o_issue_cdb_found(issue_cdb_found),
         .o_issue_cdb_idx(issue_cdb_idx),
         .o_merged_scan_onehot(merged_scan_onehot),
@@ -2081,9 +2087,32 @@ module load_queue #(
       (i_addr_update.valid ? replace_with_update : replace_without_update);
   logic [3:0] coherent_stage_take;
   wire coherent_stage_replace;
+  // Replacement takes the head age when a head entry is a candidate and the
+  // scan winner's age groups otherwise, for the drain state and address-update
+  // case that hold. Those selects are early and the age groups late, so each
+  // case's enable is formed first and meets its groups in one kept term, and
+  // the four terms and the head term meet in one more: the groups pass two
+  // gates before the final take instead of four.
   if (1'b1) begin : gen_coherent_replace_gate
-    (* keep = "true" *) wire stage_replace = sq_check_pending && sq_check_gate_early &&
-        (i_addr_update.valid ? coherent_replace_with_update : coherent_replace_without_update);
+    (* keep = "true" *) wire replace_allowed = sq_check_pending && sq_check_gate_early;
+    (* keep = "true" *) wire [1:0] scan_with_en, scan_without_en;
+    (* keep = "true" *) wire [1:0] scan_with_term, scan_without_term;
+    (* keep = "true" *) wire head_term;
+    for (genvar drained = 0; drained < 2; drained++) begin : gen_drained
+      assign scan_with_en[drained] = replace_allowed && i_addr_update.valid &&
+          (i_sq_committed_empty == 1'(drained)) && !coherent_head_found[drained];
+      assign scan_without_en[drained] = replace_allowed && !i_addr_update.valid &&
+          (i_sq_committed_empty == 1'(drained)) && !coherent_head_stored_found[drained];
+      assign scan_with_term[drained] =
+          scan_with_en[drained] && (|coherent_merged_older[drained]);
+      assign scan_without_term[drained] =
+          scan_without_en[drained] && (|coherent_stored_older[drained]);
+    end
+    assign head_term = replace_allowed && staged_younger_than_head && (i_addr_update.valid ?
+        coherent_head_found[i_sq_committed_empty] :
+        coherent_head_stored_found[i_sq_committed_empty]);
+    (* keep = "true" *) wire stage_replace =
+        (|scan_with_term) || (|scan_without_term) || head_term;
     assign coherent_stage_replace = stage_replace;
   end
   wire [3:0] coherent_pending = {sq_check_pending_copy, sq_check_pending};

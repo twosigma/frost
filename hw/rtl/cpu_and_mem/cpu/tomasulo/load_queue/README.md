@@ -101,12 +101,15 @@ both SQ drain states in
 drain flag selects between those results. Each memory scan input combines a
 prepared class permission with the entry's valid, issued, data-valid and
 in-flight bits. Each combination uses one LUT5 when primitives are enabled.
-Each case also computes staged
-replacement from its winning masks and the per-entry age predicates, in
-three-entry groups. The winning masks are preserved at each group's inputs.
-Each group uses one LUT6 when primitives are enabled. The ROB-head entry's
-age is compared directly from its tag, since at most one entry matches the
-head. Both cases use the same ring order and ROB-head priority. Each entry has a cyclic
+Each case also reads the
+staged load's age at its winning masks, in three-entry groups. The winning
+masks are preserved at each group's inputs. Each group uses one LUT6 when
+primitives are enabled. The ROB-head entry's age is compared directly from its
+tag, since at most one entry matches the head. The selector passes each drain
+case's groups and head-candidate flags to the LQ, which forms replacement: the
+pending, gate, drain and address-update selects arrive before the groups, so
+each case's select meets its groups in one kept term, and the four terms and
+the head term meet in one more before the final capture LUTs. Both cases use the same ring order and ROB-head priority. Each entry has a cyclic
 precedence mask derived from the queue head. An eligible entry wins when none
 of its predecessors is eligible. Scan indices and tags decode from the
 winning-entry masks. Selection is combinational. The coherent memory identity
