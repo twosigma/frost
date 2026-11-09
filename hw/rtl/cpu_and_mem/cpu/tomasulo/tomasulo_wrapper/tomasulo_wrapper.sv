@@ -2342,9 +2342,18 @@ module tomasulo_wrapper #(
   // SC tag comparison for timing.
   assign mem_rs_fu_ready = mem_rs_fu_ready_base;
 
+  // Port 0's issue valid feeds the ALU shim and branch resolution. At a high
+  // ready base port 0 issues from stage 2 when the ALU adapter is idle or
+  // alu_result_via_alu2 holds, which then reads only registered terms; the
+  // kept registered part leaves the ready base for the last gate. This equals
+  // the INT RS's issue valid with the recovery hold applied.
+  (* keep = "true" *) logic int_rs_issue_staged_ready;
+  assign int_rs_issue_staged_ready = int_rs_issue_staged && (!alu_adapter_result_pending ||
+      (!alu2_adapter_result_pending && !int_rs_issue_is_jalr && !int_rs_issue_2_staged));
+
   always_comb begin
     int_rs_issue_w = int_rs_issue_raw;
-    if (i_backend_recovery_hold) int_rs_issue_w.valid = 1'b0;
+    int_rs_issue_w.valid = int_rs_issue_ready_base && int_rs_issue_staged_ready;
     int_rs_issue_2_w = int_rs_issue_2_raw;
     if (i_backend_recovery_hold) int_rs_issue_2_w.valid = 1'b0;
 
@@ -2357,6 +2366,22 @@ module tomasulo_wrapper #(
     fp_rs_issue_w = fp_rs_issue_raw;
     if (i_backend_recovery_hold) fp_rs_issue_w.valid = 1'b0;
   end
+
+`ifndef SYNTHESIS
+  // Port 0's issue valid matches the INT RS's with the recovery hold.
+  // Simulation samples settled values at the clock edge.
+`ifdef FORMAL
+  wire int_issue_reset_seen_q = 1'b1;
+  always_comb
+`else
+  logic int_issue_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) int_issue_reset_seen_q <= 1'b1;
+  always @(posedge i_clk)
+`endif
+    if (int_issue_reset_seen_q && i_rst_n)
+      p_int_issue_valid_matches_station :
+      assert (int_rs_issue_w.valid == (int_rs_issue_raw.valid && !i_backend_recovery_hold));
+`endif
 
   // ===========================================================================
   // Reorder Buffer Instance
