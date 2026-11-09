@@ -195,7 +195,7 @@ module dmmu (
   logic [2:0] tlb_device_page;
   // Per-entry permission and atomic PMA checks. Port 0 uses S1's access type;
   // the early ports request store permissions.
-  logic [2:0] tlb_perm_ok, tlb_atomic_page;
+  logic [2:0] tlb_perm_ok, tlb_atomic_page, tlb_clean_hit;
 
   assign tlb_vpn[0] = s1_q.va[38:12];
 
@@ -405,10 +405,17 @@ module dmmu (
       !iss_noncanonical &&
       iss_perm_ok && iss_pma_ok;
 
+  // The buffer captures a clean translation. For a DTLB hit the clean check
+  // is the TLB's per-entry verdict, selected with the hit, so the capture
+  // enable does not wait on the fault select.
+  logic last_capture;
+  assign last_capture = s1_valid_q && !s1_killed && !(i_trap_misaligned && s1_misaligned) &&
+      !s1_noncanonical && (tlb_hit[0] ? tlb_clean_hit[0] :
+                           (walk_resp_for_s1 && (walk_fault == riscv_pkg::DFAULT_NONE)));
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all || i_tlb_invalidate || !i_active) begin
       last_valid_q <= 1'b0;
-    end else if (s1_move && (resolve_fault == riscv_pkg::DFAULT_NONE)) begin
+    end else if (last_capture) begin
       last_valid_q  <= 1'b1;
       last_vpn_q    <= s1_q.va[38:12];
       last_ppn_q    <= resolve_ppn;
@@ -486,6 +493,10 @@ module dmmu (
 `ifndef SYNTHESIS
   logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
+  always_comb
+    if (reset_seen_q && i_rst_n && !$isunknown({s1_valid_q, s1_killed, last_capture}))
+      p_last_capture_exact :
+      assert (last_capture == (s1_move && (resolve_fault == riscv_pkg::DFAULT_NONE)));
   // Reference payload loaded only when an op slips in behind a held S1. Both
   // hold the same op whenever the skid is valid.
   iss_payload_t s0_ref_q;
@@ -738,6 +749,8 @@ module dmmu (
       .i_perm_mxr(i_mxr),
       .o_perm_ok(tlb_perm_ok),
       .o_atomic_page(tlb_atomic_page),
+      .i_perm_atomic({2'b00, s1_q.atomic}),
+      .o_clean_hit(tlb_clean_hit),
       // The instruction MMU's leaf checks; the data side uses its own.
       .i_fetch_priv_u(1'b0),
       .o_fetch_perm_fault(),
@@ -747,6 +760,13 @@ module dmmu (
       .o_fetch_next_ppn()
   );
 
+  // The local proofs delete the DTLB. Its clean-hit verdict is its hit with
+  // no fault, as the DTLB's own checks prove.
+`ifdef DMMU_CAPTURE_LOCAL_PROOF
+  always_comb assume (tlb_clean_hit[0] == (tlb_hit[0] && (tlb_fault == riscv_pkg::DFAULT_NONE)));
+`elsif DMMU_MMIO_LOCAL_PROOF
+  always_comb assume (tlb_clean_hit[0] == (tlb_hit[0] && (tlb_fault == riscv_pkg::DFAULT_NONE)));
+`endif
 `ifdef DMMU_MMIO_LOCAL_PROOF
   // The DTLB's per-entry device-window bit is the window decode of the PPN
   // it selects, on every port.

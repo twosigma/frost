@@ -80,6 +80,12 @@ module dtlb #(
     input logic i_perm_mxr,
     output logic [NUM_PORTS-1:0] o_perm_ok,
     output logic [NUM_PORTS-1:0] o_atomic_page,
+    // A hit that passes the data checks for the port's access: o_perm_ok,
+    // no PPN bits above the physical width, and the PMA check, which admits
+    // a device window only when i_perm_atomic is clear. Each entry forms the
+    // verdict before the winner selects it, so it is ready when o_hit is.
+    input logic [NUM_PORTS-1:0] i_perm_atomic = '0,
+    output logic [NUM_PORTS-1:0] o_clean_hit,
     // With FETCH_VERDICTS, check each hit before selection:
     //   o_fetch_perm_fault: X is clear or U differs from i_fetch_priv_u.
     //   o_fetch_pma_bad: high PPN bits are nonzero or pma_fetch_ok fails.
@@ -136,6 +142,8 @@ module dtlb #(
   (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] atomic_groups;
   (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] permission_groups;
   (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] high_ppn_groups;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] leaf_clean;
+  (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] clean_groups;
   (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] fetch_perm_groups;
   (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] fetch_pma_groups;
   (* keep = "true" *) logic [NUM_PORTS-1:0][VerdictGroups-1:0] fetch_next_pma_groups;
@@ -163,6 +171,7 @@ module dtlb #(
           leaf_permissions[p][3*g+:Entries]);
       assign high_ppn_groups[p][g] = |(lowest_match[p][3*g+:Entries] &
           e_ppn_hi_nonzero[3*g+:Entries]);
+      assign clean_groups[p][g] = |(lowest_match[p][3*g+:Entries] & leaf_clean[p][3*g+:Entries]);
       assign fetch_perm_groups[p][g] = |(lowest_match[p][3*g+:Entries] &
           leaf_fetch_perm_fault[p][3*g+:Entries]);
       assign fetch_pma_groups[p][g] = |(lowest_match[p][3*g+:Entries] &
@@ -239,6 +248,8 @@ module dtlb #(
             leaf_perm_ok(i_perm_store[p], e_r[e], e_w[e], e_x[e], e_u[e], e_d[e]);
         leaf_atomic_page[p][e] = DATA_VERDICTS &&
             riscv_pkg::pma_atomic_ok(riscv_pkg::XLEN'({ppn, 12'h000}));
+        leaf_clean[p][e] = leaf_permissions[p][e] && !e_ppn_hi_nonzero[e] &&
+            (leaf_atomic_page[p][e] || (leaf_device_page[p][e] && !i_perm_atomic[p]));
         leaf_fetch_next_ok[p][e] = FETCH_VERDICTS && e_x[e] &&
             (e_u[e] == i_fetch_priv_u) && !e_ppn_hi_nonzero[e] &&
             riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({ppn, 12'h000})) &&
@@ -270,6 +281,7 @@ module dtlb #(
       o_perm_ok[p] = |permission_groups[p];
       o_atomic_page[p] = |atomic_groups[p];
       o_ppn_hi_nonzero[p] = |high_ppn_groups[p];
+      o_clean_hit[p] = |clean_groups[p];
       o_perm_r[p] = 1'b0;
       o_perm_w[p] = 1'b0;
       o_perm_x[p] = 1'b0;
@@ -463,6 +475,9 @@ module dtlb #(
                o_atomic_page[gp]} ==
               {ref_ppn, ref_device_page, ref_ppn_hi_nonzero, ref_r, ref_w, ref_x, ref_u, ref_d,
                ref_level, ref_perm_ok, ref_atomic_page});
+      // The clean-hit verdict is the hit's data checks.
+      assert (o_clean_hit[gp] == (o_hit[gp] && o_perm_ok[gp] && !o_ppn_hi_nonzero[gp] &&
+          (o_atomic_page[gp] || (o_device_page[gp] && !i_perm_atomic[gp]))));
       if (FETCH_VERDICTS) begin
         assert ({o_fetch_perm_fault[gp], o_fetch_pma_bad[gp], o_fetch_next_pma_bad[gp],
                  o_fetch_next_ok[gp], o_fetch_next_ppn[gp]} ==
