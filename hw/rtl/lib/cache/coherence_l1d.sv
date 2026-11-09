@@ -247,6 +247,9 @@ module coherence_l1d #(
   logic atomic_local_q, sc_home_q, local_hit_q, local_conflict_q;
   logic local_admit, local_decision, local_sc_match, lookup_wb_conflict;
   logic [2:0] atomic_read_q;
+  // The local AMO's read slot, one-hot, written with atomic_read_q, so the
+  // owned mask and the held hit do not decode it.
+  logic [7:0] atomic_read_onehot_q;
   logic [7:0] rd_local_retry_q;
   logic sc_committed_q;
   logic [ADDR_WIDTH-1:0] atomic_addr_q;
@@ -598,7 +601,7 @@ module coherence_l1d #(
   (* keep = "true" *) logic [3:0] amo_held_choice, atomic_read_held_choice;
   wire held_hit = active && ((phase_q == LookupWait && array_valid && operation_q == ReadOp &&
       selected_kind_q != ReadAMO && array_hit && !shadow_q) || phase_q == LocalReadReady);
-  assign held_hit_slot = 8'd1 << (phase_q == LocalReadReady ? atomic_read_q : selected_read_q);
+  assign held_hit_slot = phase_q == LocalReadReady ? atomic_read_onehot_q : 8'd1 << selected_read_q;
   assign held_fill_slot = 8'd1 << fill_read_slot;
   always_comb begin
     for (int slot = 0; slot < 8; slot++) begin
@@ -730,13 +733,16 @@ module coherence_l1d #(
   // comparison only for a store of the line that arrived a cycle earlier,
   // which orders like a store just after acceptance.
   always_ff @(posedge i_clk) lookup_conflict_q <= lookup_conflict;
-  assign prefetch_accept = !prefetch_cancel && !stream_replace && lookup_in_window &&
+  // The detector replaces its stream only on a load lookup's report, which
+  // arrives late from the array; the prefetch lookup, the hint's consumption
+  // and the Idle decision never see one, so they leave the replacement out.
+  assign prefetch_accept = !prefetch_cancel && lookup_in_window &&
       !lookup_conflict_q && !i_p_valid && !load_acquire_block;
   // The selected address and demand frontier stay fixed through Acquire.
   // Cancellation is checked on its acceptance edge.
   assign prefetch_acquire_ok = !prefetch_cancel && !lookup_conflict_q && !i_p_valid &&
       !load_acquire_block;
-  assign stream_consume = !hint_valid_q && stream_valid && !prefetch_cancel && !stream_replace;
+  assign stream_consume = !hint_valid_q && stream_valid && !prefetch_cancel;
   always_ff @(posedge i_clk) begin
     if (i_rst || prefetch_cancel || stream_replace) begin
       hint_valid_q <= 1'b0;
@@ -1339,7 +1345,7 @@ module coherence_l1d #(
 `endif
   // A local AMO owns its read slot until it releases its sector.
   assign rd_owned = rd_owned_q |
-      ((atomic_q && atomic_local_q && !atomic_sc_q) ? 8'd1 << atomic_read_q : 8'd0);
+      ((atomic_q && atomic_local_q && !atomic_sc_q) ? atomic_read_onehot_q : 8'd0);
   assign same_line = Multi && |same_line_q;
   // Endpoint events that a waiting read and the free-endpoint flag follow: U
   // ends an acquisition, and installation or a failed grant installs it. A
@@ -2200,6 +2206,7 @@ module coherence_l1d #(
       atomic_q <= 1'b0;
       atomic_local_q <= 1'b0;
       atomic_read_q <= '0;
+      atomic_read_onehot_q <= 8'd1;
       sc_home_q <= 1'b0;
       atomic_sc_q <= 1'b0;
       atomic_granted_q <= 1'b0;
@@ -2460,7 +2467,7 @@ module coherence_l1d #(
                 phase_q <= Lookup;
               end
             end else if (hint_valid_q && hint_checked_q && hint_eligible_q &&
-                prefetch_ep_free && !prefetch_cancel && !stream_replace && hint_in_window) begin
+                prefetch_ep_free && !prefetch_cancel && hint_in_window) begin
               operation_q <= PrefetchOp;
               phase_q <= Lookup;
             end
@@ -2616,6 +2623,7 @@ module coherence_l1d #(
                   atomic_size_q <= rd_size_q[selected_read_q];
                   atomic_tag_q <= rd_tag_q[selected_read_q];
                   atomic_read_q <= selected_read_q;
+                  atomic_read_onehot_q <= 8'd1 << selected_read_q;
                   phase_q <= LocalReadReady;
                 end
               end else if (operation_q == SCOp) begin
@@ -2950,6 +2958,9 @@ module coherence_l1d #(
         if (atomic_local_q && !atomic_sc_q)
           p_atomic_read_identity : assert (atomic_read_q == reference_atomic_read_q);
       end
+      p_atomic_read_onehot : assert (atomic_read_onehot_q == 8'd1 << atomic_read_q);
+      if (stream_replace)
+        p_stream_replace_report : assert (active && phase_q == LookupWait && operation_q == ReadOp);
       if (read_owed_q && rd_candidate && active && phase_q == Lookup)
         p_store_yields_read : assert (operation_q != StoreOp);
       if (store_pop && operation_q == StoreOp && read_waiting_q)

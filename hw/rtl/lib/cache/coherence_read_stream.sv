@@ -60,11 +60,17 @@ module coherence_read_stream #(
   assign o_valid = confirmed_q && !cursor_q[7] &&
       cursor_q > {1'b0, frontier_q} && cursor_q <= {1'b0, frontier_q} + 8'd8;
 
+  // The demand report and its miss arrive late, so the stepped cursor is
+  // formed for each step source from its registered address, and the report
+  // selects last.
+  logic [7:0] cursor_consumed, cursor_demand_step, cursor_hit_step;
   always_comb begin
-    cursor_next = cursor_q;
-    if (i_consume && o_valid) cursor_next = cursor_q + 8'd1;
-    if (step && (!confirmed_q || cursor_next <= {1'b0, step_addr[11:5]}))
-      cursor_next = {1'b0, step_addr[11:5]} + 8'd1;
+    cursor_consumed = (i_consume && o_valid) ? cursor_q + 8'd1 : cursor_q;
+    cursor_demand_step = (!confirmed_q || cursor_consumed <= {1'b0, i_demand_addr[11:5]}) ?
+        {1'b0, i_demand_addr[11:5]} + 8'd1 : cursor_consumed;
+    cursor_hit_step = (!confirmed_q || cursor_consumed <= {1'b0, i_hit_addr[11:5]}) ?
+        {1'b0, i_hit_addr[11:5]} + 8'd1 : cursor_consumed;
+    cursor_next = advance ? cursor_demand_step : hit_advance ? cursor_hit_step : cursor_consumed;
   end
   always_ff @(posedge i_clk) begin
     if (i_rst || i_cancel) begin

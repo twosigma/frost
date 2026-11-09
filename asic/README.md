@@ -298,8 +298,9 @@ the right. The top band holds the L1D data in the middle, a row of four
 macros for each way; at its left the L1I data, arranged the same way, then
 the NIC's FIFOs, the BTB's payload tables, and two rows of four receive
 packet macros; and at its right the L1D tags, a row of four with the hit
-path's copy in a second row, the L2 tags, and the transmit frame macro. The logic band is 800 um high, and the script stops the flow if
-the core leaves less than 600 um for it.
+path's copy in a second row, the L2 tags, and the transmit frame macro. The
+logic band is 800 um high, and the script stops the flow if the core leaves
+less than 600 um for it.
 Macros above one another stand 40 um apart and groups of macros 80 um.
 Macros side by side stand 62 um apart, because the cell rows between them
 take their power from the metal4 straps that cross the gap: the platform's
