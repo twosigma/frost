@@ -402,12 +402,49 @@ module sq_early_addr_pipeline (
   end
 `endif
 
+  // The device-quadrant test of a sum a + b, given its low half's 33-bit sum.
+  // With the FROST map the sum is in the quadrant when its bits above 31 are
+  // zero and bits 31:30 are 01. Sum bit k above 32 is zero exactly when
+  // a[k] ^ b[k] equals the carry an all-zero upper half implies,
+  // a[k-1] | b[k-1], and bit 32 when a[32] ^ b[32] equals the low half's carry
+  // out, so only bits 31:30 and that carry wait for the low half's add.
+  function automatic logic sum_device_quadrant(input logic [riscv_pkg::XLEN-1:0] a,
+                                               input logic [riscv_pkg::XLEN-1:0] b,
+                                               input logic [32:0] low);
+    sum_device_quadrant = riscv_pkg::PmaUsesFrostMap ?
+        ((&(~(a[riscv_pkg::XLEN-1:33] ^ b[riscv_pkg::XLEN-1:33] ^
+              (a[riscv_pkg::XLEN-2:32] | b[riscv_pkg::XLEN-2:32])))) &&
+         !(a[32] ^ b[32] ^ low[32]) && (low[31:30] == 2'b01)) :
+        riscv_pkg::pma_device_quadrant(a + b);
+  endfunction
+  // An address sum from its low half's sum and the carry into the upper half.
+  localparam int unsigned UpperSumBits = riscv_pkg::XLEN - 32;
+  function automatic logic [riscv_pkg::XLEN-1:0] sum_from_low(input logic [riscv_pkg::XLEN-1:0] a,
+                                                              input logic [riscv_pkg::XLEN-1:0] b,
+                                                              input logic [32:0] low);
+    sum_from_low = {
+      a[riscv_pkg::XLEN-1:32] + b[riscv_pkg::XLEN-1:32] + UpperSumBits'(low[32]), low[31:0]
+    };
+  endfunction
+
   // Keep full XLEN address sums. Out-of-map stores fault at MEM_RS issue or
   // data translation, so their SQ entries never drain.
   logic [riscv_pkg::XLEN-1:0] sq_early_effective_addr;
   logic [riscv_pkg::XLEN-1:0] sq_early_effective_addr_2;
-  assign sq_early_effective_addr   = (sq_early_addr_base_q + sq_early_addr_imm_q);
-  assign sq_early_effective_addr_2 = (sq_early_addr_base_2_q + sq_early_addr_imm_2_q);
+  wire [32:0] sq_early_effective_low =
+      {1'b0, sq_early_addr_base_q[31:0]} + {1'b0, sq_early_addr_imm_q[31:0]};
+  wire [32:0] sq_early_effective_low_2 =
+      {1'b0, sq_early_addr_base_2_q[31:0]} + {1'b0, sq_early_addr_imm_2_q[31:0]};
+  assign sq_early_effective_addr = sum_from_low(
+      sq_early_addr_base_q, sq_early_addr_imm_q, sq_early_effective_low
+  );
+  assign sq_early_effective_addr_2 = sum_from_low(
+      sq_early_addr_base_2_q, sq_early_addr_imm_2_q, sq_early_effective_low_2
+  );
+  wire [1:0] sq_early_effective_mmio = {
+    sum_device_quadrant(sq_early_addr_base_2_q, sq_early_addr_imm_2_q, sq_early_effective_low_2),
+    sum_device_quadrant(sq_early_addr_base_q, sq_early_addr_imm_q, sq_early_effective_low)
+  };
 
   // A held candidate drains its latched address.
   logic [riscv_pkg::XLEN-1:0] sq_early_hold_effective_addr;
@@ -447,9 +484,12 @@ module sq_early_addr_pipeline (
   assign repair_half_matches = {sq_early_addr_repair_half_match_2, sq_early_addr_repair_half_match};
   for (genvar slot = 0; slot < 2; slot++) begin : gen_repair
     for (genvar source = 0; source < 8; source++) begin : gen_source
-      assign repair_sums[slot][source] = repair_bases[source] + repair_immediates[slot];
-      assign repair_mmio_candidates[slot][source] = riscv_pkg::pma_device_quadrant(
-          repair_sums[slot][source]
+      wire [32:0] low = {1'b0, repair_bases[source][31:0]} + {1'b0, repair_immediates[slot][31:0]};
+      assign repair_sums[slot][source] = sum_from_low(
+          repair_bases[source], repair_immediates[slot], low
+      );
+      assign repair_mmio_candidates[slot][source] = sum_device_quadrant(
+          repair_bases[source], repair_immediates[slot], low
       );
     end
     for (genvar pair = 0; pair < 3; pair++) begin : gen_pair
@@ -578,7 +618,7 @@ module sq_early_addr_pipeline (
     logic [8:0] mmio_value;
     assign mmio_take[0]  = address_fresh[slot];
     assign mmio_take[1]  = !address_fresh[slot] && address_held[slot];
-    assign mmio_value[0] = riscv_pkg::pma_device_quadrant(address_fresh_data[slot]);
+    assign mmio_value[0] = sq_early_effective_mmio[slot];
     assign mmio_value[1] = riscv_pkg::pma_device_quadrant(address_held_data[slot]);
     for (genvar source = 0; source < 6; source++) begin : gen_mmio_source
       wire earlier_match = |(repair_conditions[slot] & 8'((1 << source) - 1));
