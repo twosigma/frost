@@ -711,6 +711,10 @@ module pd_stage #(
 `endif
 
 `ifndef SYNTHESIS
+`ifndef FORMAL
+  // Sample-valid flags can arm before reset; all redirect checks also wait
+  // for pd_reset_seen_q so arbitrary startup packets are never checked.
+`endif
   // Reference model of the candidate FFs: reset and flush clear them even
   // during a stall, a stall holds them, and every enabled edge captures the
   // branch and its directions with no feedback from the qualified redirect.
@@ -724,7 +728,11 @@ module pd_stage #(
       pd_not_taken_candidate_payload_reference_q <= 1'b0;
       pd_redirect_candidate_payload_reference_armed <= 1'b1;
     end else begin
-      if (pd_redirect_candidate_payload_reference_armed && !$isunknown(
+      if (
+`ifndef FORMAL
+          pd_reset_seen_q &&
+`endif
+          pd_redirect_candidate_payload_reference_armed && !$isunknown(
               {
                 pd_taken_candidate_r,
                 pd_not_taken_candidate_r,
@@ -797,7 +805,11 @@ module pd_stage #(
       pd_redirect_reference_q <= 1'b0;
       pd_redirect_reference_armed <= 1'b1;
     end else begin
-      if (pd_redirect_reference_armed && !$isunknown(
+      if (
+`ifndef FORMAL
+          pd_reset_seen_q &&
+`endif
+          pd_redirect_reference_armed && !$isunknown(
               {pd_redirect_r, pd_redirect_reference_q, o_pd_redirect_taken,
                pd_redirect_taken_reference_q}
           )) begin
@@ -827,7 +839,11 @@ module pd_stage #(
     if (i_pipeline_ctrl.reset) begin
       pd_redirect_target_reference_armed <= 1'b0;
     end else begin
-      if (pd_redirect_target_reference_armed && !$isunknown(
+      if (
+`ifndef FORMAL
+          pd_reset_seen_q &&
+`endif
+          pd_redirect_target_reference_armed && !$isunknown(
               {o_pd_redirect_target, pd_redirect_target_reference_q}
           )) begin
         p_pd_redirect_target_boundary_exact :
@@ -862,7 +878,11 @@ module pd_stage #(
     if (i_pipeline_ctrl.reset) begin
       pd_backing_decoded_reference_armed <= 1'b0;
     end else begin
-      if (pd_backing_decoded_reference_armed && !$isunknown(
+      if (
+`ifndef FORMAL
+          pd_reset_seen_q &&
+`endif
+          pd_backing_decoded_reference_armed && !$isunknown(
               {
                 pd_backing_redirect_r,
                 pd_backing_redirect_2_r,

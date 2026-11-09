@@ -1312,8 +1312,17 @@ module soc_top #(
   assign dbg_bram_store_strb = data_memory_bram_byte_write_enable;
 
 `ifndef SYNTHESIS
+`ifndef FORMAL
+  // These checks use AXI-domain state; wait for that domain's first reset.
+  logic bram_axi_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (soc_axi_rst) bram_axi_reset_seen_q <= 1'b1;
+`endif
   always @(posedge i_clk) begin
-    if (!soc_axi_rst) begin
+    if (
+`ifndef FORMAL
+        bram_axi_reset_seen_q &&
+`endif
+        !soc_axi_rst) begin
       assert (data_memory_bram_byte_write_enable ==
           ((fast_bram_fire || local_bram) ? data_memory_byte_write_enable : 8'b0));
       assert (dbg_bram_store == (|data_memory_bram_byte_write_enable));

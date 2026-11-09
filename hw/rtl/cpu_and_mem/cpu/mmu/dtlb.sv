@@ -413,6 +413,11 @@ module dtlb #(
   end
 
 `ifndef SYNTHESIS
+`ifndef FORMAL
+  // Lookup references read entry state, which is arbitrary before reset.
+  logic lookup_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) lookup_reset_seen_q <= 1'b1;
+`endif
   // Reference lookup: the priority chain in which the lowest matching index
   // wins. The select tree above must give the same result for every lookup.
   for (genvar gp = 0; gp < NUM_PORTS; gp++) begin : gen_lookup_reference
@@ -488,7 +493,11 @@ module dtlb #(
         end
       end
     end
+`ifdef FORMAL
     always_ff @(posedge i_clk) begin
+`else
+    always_ff @(posedge i_clk) if (lookup_reset_seen_q) begin
+`endif
       // Leave this generated assertion unnamed for Yosys's frontend.
       assert (match[gp] == ref_match && o_hit[gp] == (|ref_match));
       assert ({o_ppn[gp], o_device_page[gp], o_ppn_hi_nonzero[gp], o_perm_r[gp], o_perm_w[gp],
