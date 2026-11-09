@@ -52,9 +52,14 @@ module immu #(
     input logic i_active,
     input logic i_priv_u,
 
-    // Invalidate on SFENCE.VMA, any satp access, or an mstatus write that
-    // changes MPRV (or MPP under MPRV).
+    // Translation changed: SFENCE.VMA, any satp access, or an mstatus write
+    // that changes MPRV (or MPP under MPRV). It clears the registered result
+    // and tag, the fault memo and the outstanding walk. ITLB entries are
+    // ASID-tagged and leave only through i_tlb_flush.
     input logic i_tlb_invalidate,
+    input riscv_pkg::tlb_flush_t i_tlb_flush,
+    // satp.ASID with no delay: the refetch after a satp write runs under it.
+    input logic [riscv_pkg::AsidBits-1:0] i_asid,
 
     // Registered full pipeline flush (trap, xRET, or FENCE-class). It clears
     // the fault memo, so a fault from an invalid PTE never outlives the trap
@@ -232,7 +237,8 @@ module immu #(
   ) u_itlb (
       .i_clk(i_clk),
       .i_rst_n(!i_rst),
-      .i_invalidate_all(i_tlb_invalidate),
+      .i_flush(i_tlb_flush),
+      .i_asid(i_asid),
       .i_install_valid(tlb_install),
       .i_install(i_walk_resp),
       .i_lookup_vpn(tlb_vpn),

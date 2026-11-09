@@ -19,9 +19,12 @@
  * and instruction sides. Level-masked VPN compares cover 1 GiB, 2 MiB, and 4 KiB
  * pages. The lowest matching index wins; replacement uses a rotating pointer.
  *
- * Entries have no ASID. SFENCE.VMA and CSR translation invalidation clear all
- * entries; invalidate wins over a simultaneous install from the old address
- * space. See cpu/README.md, "CSR writes".
+ * Each entry carries the ASID it was installed under and the leaf's global bit.
+ * A lookup hits an entry of its own ASID, or a global entry under any ASID.
+ * A flush (riscv_pkg::tlb_flush_t) clears everything, one ASID's non-global
+ * entries, the entries covering one page, or both filters together; a flush
+ * wins over a simultaneous install from the old address space. See
+ * cpu/README.md, "CSR writes".
  *
  * Store the configured physical PPN and a flag for nonzero PPN bits above
  * it. Return PA[PhysAddrBits-1:12], permissions, and per-entry permission/PMA
@@ -47,9 +50,16 @@ module dtlb #(
     input logic i_clk,
     input logic i_rst_n,
 
-    input logic i_invalidate_all,
+    // Flush entries (see riscv_pkg::tlb_flush_t): everything, one ASID's
+    // non-global entries, the entries covering a page, or both together.
+    // Flush wins over a simultaneous install.
+    input riscv_pkg::tlb_flush_t i_flush,
 
-    // Install a walked leaf (fault-free ptw response).
+    // The ASID that lookups and installs use (satp.ASID).
+    input logic [riscv_pkg::AsidBits-1:0] i_asid,
+
+    // Install a walked leaf (fault-free ptw response), tagged with i_asid
+    // unless the leaf is global.
     input logic                 i_install_valid,
     input riscv_pkg::ptw_resp_t i_install,
 
@@ -121,6 +131,17 @@ module dtlb #(
   logic [PpnBits-1:0] e_ppn[NUM_ENTRIES];
   logic [NUM_ENTRIES-1:0] e_ppn_hi_nonzero;
   logic [NUM_ENTRIES-1:0] e_r, e_w, e_x, e_u, e_d;
+  // Address-space tag: an entry hits for lookups under its ASID, or for every
+  // ASID when it is global.
+  logic [riscv_pkg::AsidBits-1:0] e_asid[NUM_ENTRIES];
+  logic [NUM_ENTRIES-1:0] e_g;
+
+  // The ASID test is the same for every port, so it sits beside the VPN
+  // compares and joins the match as one more AND input.
+  logic [NUM_ENTRIES-1:0] asid_ok;
+  always_comb begin
+    for (int e = 0; e < NUM_ENTRIES; e++) asid_ok[e] = e_g[e] || (e_asid[e] == i_asid);
+  end
 
   // ---------------------------------------------------------------------------
   // Lookup: level-masked compare, lowest matching index wins.
@@ -197,9 +218,10 @@ module dtlb #(
         vpn1_eq[p][e] = &vpn_chunk_eq[p][e][5:3];
         vpn0_eq[p][e] = &vpn_chunk_eq[p][e][2:0];
         unique case (e_level[e])
-          2'd2:    match[p][e] = e_valid[e] && vpn2_eq[p][e];
-          2'd1:    match[p][e] = e_valid[e] && vpn2_eq[p][e] && vpn1_eq[p][e];
-          default: match[p][e] = e_valid[e] && vpn2_eq[p][e] && vpn1_eq[p][e] && vpn0_eq[p][e];
+          2'd2: match[p][e] = e_valid[e] && asid_ok[e] && vpn2_eq[p][e];
+          2'd1: match[p][e] = e_valid[e] && asid_ok[e] && vpn2_eq[p][e] && vpn1_eq[p][e];
+          default:
+          match[p][e] = e_valid[e] && asid_ok[e] && vpn2_eq[p][e] && vpn1_eq[p][e] && vpn0_eq[p][e];
         endcase
       end
       for (int e = 0; e < NUM_ENTRIES; e++) begin
@@ -391,14 +413,35 @@ module dtlb #(
   // ---------------------------------------------------------------------------
   logic [EntryIdxBits-1:0] repl_ptr_q;
 
+  // Entries a flush removes. The flush command comes from registers that
+  // hold still for the cycles of the flush window, so this compare is not on
+  // a lookup path. Page match is level-masked: a flush for a page also removes
+  // a 2 MiB or 1 GiB entry that covers it. An ASID flush spares global entries.
+  logic [ NUM_ENTRIES-1:0] flush_kill;
+  always_comb begin
+    for (int e = 0; e < NUM_ENTRIES; e++) begin
+      logic covers, asid_hit;
+      unique case (e_level[e])
+        2'd2:    covers = (e_vpn[e][26:18] == i_flush.vpn[26:18]);
+        2'd1:    covers = (e_vpn[e][26:9] == i_flush.vpn[26:9]);
+        default: covers = (e_vpn[e] == i_flush.vpn);
+      endcase
+      asid_hit = !e_g[e] && (e_asid[e] == i_flush.asid);
+      flush_kill[e] = i_flush.en && e_valid[e] && (!i_flush.use_va || covers) &&
+          (!i_flush.use_asid || asid_hit);
+    end
+  end
+
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       e_valid <= '0;
       repl_ptr_q <= '0;
-    end else if (i_invalidate_all) begin
-      e_valid <= '0;
+    end else if (i_flush.en) begin
+      e_valid <= e_valid & ~flush_kill;
     end else if (i_install_valid) begin
       e_valid[repl_ptr_q] <= 1'b1;
+      e_asid[repl_ptr_q] <= i_asid;
+      e_g[repl_ptr_q] <= i_install.perm_g;
       e_vpn[repl_ptr_q] <= i_install.vpn;
       e_level[repl_ptr_q] <= i_install.level;
       e_ppn[repl_ptr_q] <= i_install.ppn[PpnBits-1:0];
@@ -447,9 +490,15 @@ module dtlb #(
       ref_fetch_next_ok = 1'b0;
       for (int e = NUM_ENTRIES - 1; e >= 0; e--) begin
         case (e_level[e])
-          2'd2: ref_match[e] = e_valid[e] && i_lookup_vpn[gp][26:18] == e_vpn[e][26:18];
-          2'd1: ref_match[e] = e_valid[e] && i_lookup_vpn[gp][26:9] == e_vpn[e][26:9];
-          default: ref_match[e] = e_valid[e] && i_lookup_vpn[gp] == e_vpn[e];
+          2'd2:
+          ref_match[e] = e_valid[e] && (e_g[e] || e_asid[e] == i_asid) &&
+              i_lookup_vpn[gp][26:18] == e_vpn[e][26:18];
+          2'd1:
+          ref_match[e] = e_valid[e] && (e_g[e] || e_asid[e] == i_asid) &&
+              i_lookup_vpn[gp][26:9] == e_vpn[e][26:9];
+          default:
+          ref_match[e] = e_valid[e] && (e_g[e] || e_asid[e] == i_asid) &&
+              i_lookup_vpn[gp] == e_vpn[e];
         endcase
         if (ref_match[e]) begin
           unique case (e_level[e])
@@ -522,9 +571,11 @@ module dtlb #(
 `endif
 
 `ifdef FORMAL
-  // A watched slot must retain its last install until overwritten or
-  // invalidated. A level-masked lookup must hit it while live; invalidate
-  // must clear every valid entry.
+  // A watched slot must retain its last install until overwritten or flushed.
+  // A level-masked lookup under the entry's ASID (or any ASID, when global)
+  // must hit it while live; no lookup under another ASID may hit a non-global
+  // entry; and a flush must remove exactly the entries it names (everything,
+  // an ASID's non-global entries, the pages covering an address, or both).
   logic f_past_valid;
   initial f_past_valid = 1'b0;
   always_ff @(posedge i_clk) f_past_valid <= 1'b1;
@@ -534,23 +585,43 @@ module dtlb #(
   (* anyconst *) logic [EntryIdxBits-1:0] f_slot;
   logic f_watch_live;  // f_slot holds a tracked install
   riscv_pkg::ptw_resp_t f_watch;
+  logic [riscv_pkg::AsidBits-1:0] f_watch_asid;
+
+  // Reference: the flush names the watched entry.
+  logic f_watch_killed;
+  always_comb begin
+    logic covers;
+    unique case (f_watch.level)
+      2'd2: covers = (f_watch.vpn[26:18] == i_flush.vpn[26:18]);
+      2'd1: covers = (f_watch.vpn[26:9] == i_flush.vpn[26:9]);
+      default: covers = (f_watch.vpn == i_flush.vpn);
+    endcase
+    f_watch_killed = i_flush.en && (!i_flush.use_va || covers) &&
+        (!i_flush.use_asid || (!f_watch.perm_g && f_watch_asid == i_flush.asid));
+  end
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_invalidate_all) begin
+    if (!i_rst_n) begin
       f_watch_live <= 1'b0;
+    end else if (i_flush.en) begin
+      if (f_watch_killed) f_watch_live <= 1'b0;
     end else if (i_install_valid && (repl_ptr_q == f_slot)) begin
       f_watch_live <= 1'b1;
       f_watch <= i_install;
+      f_watch_asid <= i_asid;
     end
   end
 
-  // Level-masked match of a lookup vpn against the watched payload.
+  // Level-masked match of a lookup vpn against the watched payload, under
+  // the current ASID.
   function automatic logic f_masked_match(input logic [riscv_pkg::Sv39VpnBits-1:0] vpn);
+    logic page;
     unique case (f_watch.level)
-      2'd2: f_masked_match = (vpn[26:18] == f_watch.vpn[26:18]);
-      2'd1: f_masked_match = (vpn[26:9] == f_watch.vpn[26:9]);
-      default: f_masked_match = (vpn == f_watch.vpn);
+      2'd2: page = (vpn[26:18] == f_watch.vpn[26:18]);
+      2'd1: page = (vpn[26:9] == f_watch.vpn[26:9]);
+      default: page = (vpn == f_watch.vpn);
     endcase
+    f_masked_match = page && (f_watch.perm_g || f_watch_asid == i_asid);
   endfunction
 
   always_ff @(posedge i_clk) begin
@@ -565,10 +636,18 @@ module dtlb #(
         assert (e_r[f_slot] == f_watch.perm_r && e_w[f_slot] == f_watch.perm_w &&
                 e_x[f_slot] == f_watch.perm_x && e_u[f_slot] == f_watch.perm_u &&
                 e_d[f_slot] == f_watch.perm_d);
+        p_watch_tag : assert (e_g[f_slot] == f_watch.perm_g && e_asid[f_slot] == f_watch_asid);
       end
-      // Invalidate leaves nothing valid (and therefore nothing can hit).
-      if ($past(i_invalidate_all) && $past(i_rst_n)) begin
-        p_inval_clears : assert (e_valid == '0);
+      // Flush everything leaves nothing valid (and therefore nothing can hit).
+      if ($past(i_flush.en && !i_flush.use_va && !i_flush.use_asid) && $past(i_rst_n)) begin
+        p_flush_all_clears : assert (e_valid == '0);
+      end
+      // A flush removes the watched entry exactly when it names it.
+      if ($past(f_watch_live && i_flush.en && f_watch_killed) && $past(i_rst_n)) begin
+        p_flush_kills_named : assert (!e_valid[f_slot]);
+      end
+      if ($past(f_watch_live && i_flush.en && !f_watch_killed) && $past(i_rst_n)) begin
+        p_flush_spares_others : assert (e_valid[f_slot]);
       end
     end
   end
@@ -577,12 +656,16 @@ module dtlb #(
   // repeated procedural assertion labels, loops and generates included).
   logic f_watch_match_missed;  // some port masked-matches the live watch but misses
   logic f_hit_without_valid;  // some port hits with no valid entry anywhere
+  logic f_foreign_asid_hit;  // some port matches the watched non-global entry of another ASID
   always_comb begin
     f_watch_match_missed = 1'b0;
     f_hit_without_valid  = 1'b0;
+    f_foreign_asid_hit   = 1'b0;
     for (int p = 0; p < NUM_PORTS; p++) begin
       if (f_watch_live && f_masked_match(i_lookup_vpn[p]) && !o_hit[p]) f_watch_match_missed = 1'b1;
       if (o_hit[p] && !(|e_valid)) f_hit_without_valid = 1'b1;
+      if (f_watch_live && !f_watch.perm_g && (f_watch_asid != i_asid) && match[p][f_slot])
+        f_foreign_asid_hit = 1'b1;
     end
   end
 
@@ -592,15 +675,29 @@ module dtlb #(
       p_watch_hits : assert (!f_watch_match_missed);
       // Soundness: a hit implies some valid entry exists.
       p_hit_sound : assert (!f_hit_without_valid);
+      // Isolation: a non-global entry never matches under another ASID.
+      p_asid_isolation : assert (!f_foreign_asid_hit);
     end
   end
 
-  // Reachability: an install that later hits, and a flash invalidate.
+  // Reachability: an install that later hits, a global hit under another
+  // ASID, and each flush form.
   always_ff @(posedge i_clk) begin
     if (f_past_valid && i_rst_n) begin
       c_watch_hit : cover (f_watch_live && o_hit[0] && f_masked_match(i_lookup_vpn[0]));
       c_super_1g : cover (f_watch_live && (f_watch.level == 2'd2) && o_hit[0]);
-      c_inval : cover ($past(i_invalidate_all));
+      c_global_other_asid :
+      cover (f_watch_live && f_watch.perm_g && (f_watch_asid != i_asid) && o_hit[0] &&
+             f_masked_match(
+          i_lookup_vpn[0]
+      ));
+      c_flush_all : cover (i_flush.en && !i_flush.use_va && !i_flush.use_asid);
+      c_flush_asid : cover (f_watch_live && f_watch_killed && i_flush.use_asid && !i_flush.use_va);
+      c_flush_va : cover (f_watch_live && f_watch_killed && i_flush.use_va && !i_flush.use_asid);
+      c_flush_va_asid :
+      cover (f_watch_live && f_watch_killed && i_flush.use_va && i_flush.use_asid);
+      c_flush_spares_global :
+      cover (f_watch_live && f_watch.perm_g && i_flush.en && i_flush.use_asid && !f_watch_killed);
     end
   end
 `endif

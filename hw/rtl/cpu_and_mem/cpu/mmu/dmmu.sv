@@ -41,9 +41,15 @@ module dmmu (
     // nonzero). The LQ and wrapper alignment checks use the same input.
     input logic i_trap_misaligned,
 
-    // Clears every DTLB entry: SFENCE.VMA, or the CSR file's translation
-    // invalidate. The walker discards its walk in flight on the same signal.
+    // Translation changed: an SFENCE.VMA window, or the CSR file's
+    // translation-change pulse (satp access, MPRV change). It drops the
+    // last-page buffer, holds back walk requests and installs, and the walker
+    // discards its walk in flight on the same signal. It does not empty the
+    // DTLB: entries are ASID-tagged, and i_tlb_flush names what to remove.
     input logic i_tlb_invalidate,
+    input riscv_pkg::tlb_flush_t i_tlb_flush,
+    // satp.ASID, registered with the other translation state.
+    input logic [riscv_pkg::AsidBits-1:0] i_asid,
 
     // Pipeline kills.
     input logic i_flush_all,
@@ -761,7 +767,8 @@ module dmmu (
   ) u_dtlb (
       .i_clk(i_clk),
       .i_rst_n(i_rst_n),
-      .i_invalidate_all(i_tlb_invalidate),
+      .i_flush(i_tlb_flush),
+      .i_asid(i_asid),
       .i_install_valid(tlb_install),
       .i_install(i_walk_resp),
       .i_lookup_vpn(tlb_vpn),

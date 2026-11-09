@@ -183,7 +183,10 @@ module if_stage #(
     // port.
     input logic i_fetch_translation_active,
     input logic i_fetch_priv_u,
+    input logic [riscv_pkg::AsidBits-1:0] i_fetch_asid,
     input logic i_tlb_invalidate,
+    // ITLB entries to remove (SFENCE.VMA window, or a CSR-requested flush).
+    input riscv_pkg::tlb_flush_t i_tlb_flush,
     output logic o_walk_req_valid,
     input logic i_walk_req_ready,
     output logic [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
@@ -985,6 +988,8 @@ module if_stage #(
       .i_active(i_fetch_translation_active),
       .i_priv_u(i_fetch_priv_u),
       .i_tlb_invalidate(i_tlb_invalidate),
+      .i_tlb_flush(i_tlb_flush),
+      .i_asid(i_fetch_asid),
       .i_full_flush(i_flush_all),
       .i_pc(pc),
       .o_pa0(o_fetch_pa0),

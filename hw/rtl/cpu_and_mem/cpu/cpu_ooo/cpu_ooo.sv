@@ -49,6 +49,10 @@ module cpu_ooo #(
     // mperf* CSRs read zero. Architectural HPM3..10 consume their events
     // independently of this profiling option.
     parameter int unsigned PERF_COUNTERS = 0,
+    // Sets of the second-level TLB in front of the walker (four ways each:
+    // 128 sets are 512 entries). Zero removes it and sends every L1 miss to
+    // the walker.
+    parameter int unsigned L2TLB_SETS = 128,
     // Vector unit: VECTOR=1 adds the vector state, VLEN is the vector
     // register width (128, 256 or 512), and VECTOR_ADVERTISE sets misa.V.
     parameter bit VECTOR = 1'b0,
@@ -792,6 +796,12 @@ module cpu_ooo #(
   // tlb_invalidate it clears both TLBs and discards the walk in flight; the
   // ROB serializer handles pipeline recovery separately.
   logic csr_translation_flush_req;
+  // Registered pulse beside it for a satp root switch or MPRV change: the
+  // TLBs drop every entry. A satp write that keeps the root (an ASID change)
+  // leaves the entries in place; the ASID tag separates the address spaces.
+  logic csr_tlb_flush_all_req;
+  logic [riscv_pkg::AsidBits-1:0] csr_mmu_asid, csr_fetch_asid;
+  riscv_pkg::tlb_flush_t tlb_flush;
   // Registered translation state from csr_file, and the data MMU's walker
   // port between the wrapper and the ptw below.
   logic csr_translation_active, csr_mmu_sum, csr_mmu_mxr, csr_mmu_eff_priv_u;
@@ -872,6 +882,8 @@ module cpu_ooo #(
       .i_fetch_translation_active(csr_fetch_translation_active),
       .i_fetch_priv_u(csr_fetch_priv_u),
       .i_tlb_invalidate(tlb_invalidate),
+      .i_tlb_flush(tlb_flush),
+      .i_fetch_asid(csr_fetch_asid),
       .o_walk_req_valid(iwalk_req_valid),
       .i_walk_req_ready(iwalk_req_ready),
       .o_walk_vpn(iwalk_vpn),
@@ -2520,6 +2532,9 @@ module cpu_ooo #(
       .i_mmu_eff_priv_u(csr_mmu_eff_priv_u),
       .i_csr_translation_flush_req(csr_translation_flush_req),
       .o_tlb_invalidate(tlb_invalidate),
+      .i_csr_tlb_flush_all_req(csr_tlb_flush_all_req),
+      .o_tlb_flush(tlb_flush),
+      .i_mmu_asid(csr_mmu_asid),
       .o_walk_req_valid(walk_req_valid),
       .i_walk_req_ready(walk_req_ready),
       .o_walk_vpn(walk_vpn),
@@ -4041,6 +4056,9 @@ module cpu_ooo #(
       .o_wfi_illegal(csr_wfi_illegal),
       .o_priv_is_u(csr_priv_is_u),
       .o_csr_translation_flush_req(csr_translation_flush_req),
+      .o_csr_tlb_flush_all_req(csr_tlb_flush_all_req),
+      .o_mmu_asid(csr_mmu_asid),
+      .o_fetch_asid(csr_fetch_asid),
       .o_translation_active(csr_translation_active),
       .o_mmu_sum(csr_mmu_sum),
       .o_mmu_mxr(csr_mmu_mxr),
@@ -4132,6 +4150,40 @@ module cpu_ooo #(
   assign iwalk_resp_valid = ptw_resp_valid && walk_owner_i_q;
   assign ma_walk_resp_valid = ptw_resp_valid && walk_owner_ma_q;
 
+  // The second-level TLB answers repeat translations before the walker sees
+  // them and stores the clean 4 KiB translations the walker returns. With
+  // L2TLB_SETS = 0 the requests pass to the walker unchanged.
+  logic l2_ptw_req_valid, l2_ptw_req_ready, l2_ptw_resp_valid;
+  logic [riscv_pkg::Sv39VpnBits-1:0] l2_ptw_req_vpn;
+  riscv_pkg::ptw_resp_t l2_ptw_resp;
+  if (L2TLB_SETS > 0) begin : g_l2tlb
+    l2tlb #(
+        .SETS(L2TLB_SETS)
+    ) u_l2tlb (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_asid(csr_mmu_asid),
+        .i_flush(tlb_flush),
+        .i_discard(tlb_invalidate),
+        .i_req_valid(ptw_req_valid),
+        .o_req_ready(ptw_req_ready),
+        .i_req_vpn(ptw_req_vpn),
+        .o_resp_valid(ptw_resp_valid),
+        .o_resp(walk_resp),
+        .o_ptw_req_valid(l2_ptw_req_valid),
+        .i_ptw_req_ready(l2_ptw_req_ready),
+        .o_ptw_req_vpn(l2_ptw_req_vpn),
+        .i_ptw_resp_valid(l2_ptw_resp_valid),
+        .i_ptw_resp(l2_ptw_resp)
+    );
+  end else begin : g_no_l2tlb
+    assign l2_ptw_req_valid = ptw_req_valid;
+    assign ptw_req_ready    = l2_ptw_req_ready;
+    assign l2_ptw_req_vpn   = ptw_req_vpn;
+    assign ptw_resp_valid   = l2_ptw_resp_valid;
+    assign walk_resp        = l2_ptw_resp;
+  end
+
   ptw #(
       .ENABLE_RESPONSE_ERRORS(VARIABLE_UNCACHED),
       .LINE_BYTES(WalkLineBytes)
@@ -4139,13 +4191,13 @@ module cpu_ooo #(
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_root_ppn(csr_satp_root_ppn),
-      .i_req_valid(ptw_req_valid),
-      .o_req_ready(ptw_req_ready),
-      .i_req_vpn(ptw_req_vpn),
+      .i_req_valid(l2_ptw_req_valid),
+      .o_req_ready(l2_ptw_req_ready),
+      .i_req_vpn(l2_ptw_req_vpn),
       .i_discard(tlb_invalidate),
       .o_busy(ptw_busy),
-      .o_resp_valid(ptw_resp_valid),
-      .o_resp(walk_resp),
+      .o_resp_valid(l2_ptw_resp_valid),
+      .o_resp(l2_ptw_resp),
       .o_line_req_valid(o_walk_line_req_valid),
       .i_line_req_ready(i_walk_line_req_ready),
       .o_line_req_addr(o_walk_line_req_addr),

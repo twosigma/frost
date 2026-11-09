@@ -33,6 +33,8 @@ from cocotb.triggers import RisingEdge, Timer
 NONE, MISALIGN, PAGE, ACCESS = range(4)
 VPN_MASK = (1 << 27) - 1
 XLEN_MASK = (1 << 64) - 1
+# riscv_pkg::tlb_flush_t {en, use_va, vpn[26:0], use_asid, asid[8:0]}, 39 bits.
+FLUSH_ALL = 1 << 38
 DDR_CAPACITY_LOG2_BYTES = int(os.environ.get("FROST_DDR_CAPACITY_LOG2_BYTES", "30"))
 DDR_LIMIT = 0x8000_0000 + (1 << DDR_CAPACITY_LOG2_BYTES)
 
@@ -49,6 +51,7 @@ class Leaf:
     x: int = 0
     u: int = 0
     d: int = 1
+    g: int = 0
     fault: int = NONE
 
     def packed(self) -> int:
@@ -63,6 +66,7 @@ class Leaf:
             (self.x, 1),
             (self.u, 1),
             (self.d, 1),
+            (self.g, 1),
         )
         value = 0
         for field, width in fields:
@@ -141,6 +145,8 @@ async def _setup(dut: Any) -> None:
         "i_mxr",
         "i_eff_priv_u",
         "i_tlb_invalidate",
+        "i_tlb_flush",
+        "i_asid",
         "i_flush_all",
         "i_flush_en",
         "i_flush_tag",
@@ -176,9 +182,11 @@ async def _clear(dut: Any) -> None:
     dut.i_walk_resp_valid.value = 0
     dut.i_flush_all.value = 1
     dut.i_tlb_invalidate.value = 1
+    dut.i_tlb_flush.value = FLUSH_ALL
     await _cycle(dut)
     dut.i_flush_all.value = 0
     dut.i_tlb_invalidate.value = 0
+    dut.i_tlb_flush.value = 0
 
 
 def _response(dut: Any, leaf: Leaf) -> None:
@@ -904,8 +912,11 @@ async def test_last_page_bypass_lifetime_and_remap(dut: Any) -> None:
         }[event]
         active_value = int(event in ("flush", "remap"))
         getattr(dut, signal).value = active_value
+        # A real invalidate comes with its flush command.
+        dut.i_tlb_flush.value = FLUSH_ALL if event == "remap" else 0
         await _paired_cycle(dut)
         getattr(dut, signal).value = 1 - active_value
+        dut.i_tlb_flush.value = 0
         leaf = replace(original, ppn=0x81000) if event == "remap" else original
         if event in ("reset", "remap"):
             await _install(dut, leaf)
@@ -963,3 +974,125 @@ async def test_last_page_bypass_backpressure_and_issue_kill(dut: Any) -> None:
     dut.i_iss_valid.value = 0
     await _paired_cycle(dut)
     assert not int(dut.o_iss_out_valid.value)
+
+
+def _flush_cmd(vpn: int | None = None, asid: int | None = None) -> int:
+    """Pack a riscv_pkg::tlb_flush_t that clears entries by page and/or ASID."""
+    return (
+        (1 << 38)
+        | (int(vpn is not None) << 37)
+        | (((vpn or 0) & VPN_MASK) << 10)
+        | (int(asid is not None) << 9)
+        | ((asid or 0) & 0x1FF)
+    )
+
+
+async def _translation_changed(dut: Any, flush: int = 0) -> None:
+    """Pulse the translation-changed input with an optional flush command."""
+    dut.i_tlb_invalidate.value = 1
+    dut.i_tlb_flush.value = flush
+    await _cycle(dut)
+    dut.i_tlb_invalidate.value = 0
+    dut.i_tlb_flush.value = 0
+
+
+async def _switch_asid(dut: Any, asid: int) -> None:
+    """Change satp.ASID the way the CSR file does: new value plus a changed pulse."""
+    dut.i_asid.value = asid
+    await _translation_changed(dut)
+
+
+async def _probe(dut: Any, asid: int, leaf: Leaf) -> bool:
+    """Look the leaf's page up under asid; return True for a TLB hit.
+
+    A miss is answered with the same leaf, which installs it again.
+    """
+    await _switch_asid(dut, asid)
+    op = Op(va=(leaf.vpn << 12) | 0x20, tag=1)
+    _issue(dut, op)
+    await _cycle(dut)
+    miss = bool(int(dut.o_walk_req_valid.value))
+    dut.i_iss_valid.value = 0
+    if miss:
+        _response(dut, leaf)
+    await _cycle(dut)
+    _check(dut, op, leaf)
+    dut.i_walk_resp_valid.value = 0
+    await _cycle(dut)
+    return not miss
+
+
+@cocotb.test()
+async def test_asid_isolation_and_global_entries(dut: Any) -> None:
+    """Same page under two ASIDs keeps two entries; a global entry serves all."""
+    await _setup(dut)
+    await _clear(dut)
+    leaf_a = Leaf(vpn=0x400, ppn=0x80000)
+    leaf_b = Leaf(vpn=0x400, ppn=0x81000)
+    leaf_g = Leaf(vpn=0x600, ppn=0x83000, g=1)
+    for asid, leaf in ((1, leaf_a), (2, leaf_b), (1, leaf_g)):
+        await _switch_asid(dut, asid)
+        await _install(dut, leaf)
+    assert await _probe(dut, 1, leaf_a)
+    assert await _probe(dut, 2, leaf_b)
+    assert await _probe(dut, 1, leaf_a)
+    # The global entry hits under an ASID that never installed it.
+    assert await _probe(dut, 3, leaf_g)
+    assert await _probe(dut, 0x1FF, leaf_g)
+    # A non-global entry never answers for another ASID.
+    assert not await _probe(dut, 3, leaf_a)
+    assert not await _probe(dut, 4, leaf_b)
+
+
+@cocotb.test()
+async def test_sfence_forms_follow_the_privileged_spec(dut: Any) -> None:
+    """Flush by page, by ASID, by both, and everything; global entries are spared by ASID."""
+    await _setup(dut)
+    leaf_a = Leaf(vpn=0x400, ppn=0x80000)
+    leaf_b = Leaf(vpn=0x400, ppn=0x81000)
+    leaf_c = Leaf(vpn=0x500, ppn=0x82000)
+    leaf_g = Leaf(vpn=0x600, ppn=0x83000, g=1)
+    entries = ((1, "A", leaf_a), (2, "B", leaf_b), (1, "C", leaf_c), (1, "G", leaf_g))
+    # (flush, names that survive)
+    cases = {
+        "none": (None, "ABCG"),
+        "asid1": (_flush_cmd(asid=1), "BG"),
+        "page400": (_flush_cmd(vpn=0x400), "CG"),
+        "page600": (_flush_cmd(vpn=0x600), "ABC"),
+        "page400_asid1": (_flush_cmd(vpn=0x400, asid=1), "BCG"),
+        "page600_asid1": (_flush_cmd(vpn=0x600, asid=1), "ABCG"),
+        "all": (_flush_cmd(), ""),
+    }
+    for name, (flush, survivors) in cases.items():
+        await _clear(dut)
+        for asid, _, leaf in entries:
+            await _switch_asid(dut, asid)
+            await _install(dut, leaf)
+        if flush is not None:
+            await _translation_changed(dut, flush)
+        for asid, label, leaf in entries:
+            hit = await _probe(dut, asid, leaf)
+            assert hit == (label in survivors), f"{name}: entry {label} hit={hit}"
+
+
+@cocotb.test()
+async def test_asid_wrap_and_reuse_after_flush(dut: Any) -> None:
+    """ASIDs 0 and 511 stay separate; a reused ASID sees nothing after its flush."""
+    await _setup(dut)
+    await _clear(dut)
+    leaf_lo = Leaf(vpn=0x400, ppn=0x80000)
+    leaf_hi = Leaf(vpn=0x400, ppn=0x81000)
+    leaf_new = Leaf(vpn=0x400, ppn=0x82000)
+    for asid, leaf in ((0, leaf_lo), (0x1FF, leaf_hi)):
+        await _switch_asid(dut, asid)
+        await _install(dut, leaf)
+    assert await _probe(dut, 0, leaf_lo)
+    assert await _probe(dut, 0x1FF, leaf_hi)
+    # The OS recycles ASID 0x1FF: it flushes that ASID, then maps a new page.
+    await _translation_changed(dut, _flush_cmd(asid=0x1FF))
+    assert not await _probe(dut, 0x1FF, leaf_hi)
+    await _translation_changed(dut, _flush_cmd(asid=0x1FF))
+    await _switch_asid(dut, 0x1FF)
+    await _install(dut, leaf_new)
+    assert await _probe(dut, 0x1FF, leaf_new)
+    assert await _probe(dut, 0, leaf_lo)

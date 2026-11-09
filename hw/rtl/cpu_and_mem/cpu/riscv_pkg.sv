@@ -1752,7 +1752,30 @@ package riscv_pkg;
     logic perm_x;
     logic perm_u;
     logic perm_d;  // D=0 install is legal; a store to it faults at lookup
+    // Global mapping: the leaf's G bit, or G on any non-leaf PTE above it
+    // (which makes every mapping below it global). Not matched by ASID.
+    logic perm_g;
   } ptw_resp_t;
+
+  // satp.ASID is 9 bits (ASIDLEN = 9). Linux discovers it by writing all ones
+  // to satp.ASID and reading back; satp[59:53] stay zero.
+  localparam int unsigned AsidBits = 9;
+
+  // SFENCE.VMA, as the TLBs see it, for the cycles of its serialized window,
+  // or one cycle for a CSR-requested flush (use_va = use_asid = 0: everything).
+  //   use_va = 0, use_asid = 0: every entry.
+  //   use_va = 0, use_asid = 1: every non-global entry of that ASID.
+  //   use_va = 1, use_asid = 0: every entry (any ASID, global too) whose page
+  //                             covers vpn, of any size.
+  //   use_va = 1, use_asid = 1: every non-global entry of that ASID whose
+  //                             page covers vpn.
+  typedef struct packed {
+    logic en;
+    logic use_va;
+    logic [Sv39VpnBits-1:0] vpn;
+    logic use_asid;
+    logic [AsidBits-1:0] asid;
+  } tlb_flush_t;
   // FP register width: 64-bit to support the D extension.
   localparam int unsigned FpWidth = 64;
   localparam int unsigned FpSingleWidth = 32;
@@ -3155,8 +3178,8 @@ package riscv_pkg;
   endfunction
 
   // Integer rs1 use, excluding FP sources, immediate-only fields, and
-  // operations with no source. SFENCE.VMA ignores its operands (flush-all).
-
+  // operations with no source. SFENCE.VMA reads rs1 (address filter) and rs2
+  // (ASID filter); x0 reads as zero and selects "all".
   function automatic logic uses_int_rs1(instr_op_e op);
     if (uses_fp_rs1(op)) begin
       uses_int_rs1 = 1'b0;
@@ -3165,7 +3188,7 @@ package riscv_pkg;
         LUI, AUIPC, JAL,
         ECALL, EBREAK,
         FENCE, FENCE_I,
-        WFI, MRET, SRET, DRET, SFENCE_VMA, PAUSE,
+        WFI, MRET, SRET, DRET, PAUSE,
         CSRRWI, CSRRSI, CSRRCI,
         ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT,
         VSETIVLI, VARITH, VTOX:
@@ -3200,6 +3223,8 @@ package riscv_pkg;
         ROL, ROR,
         CZERO_EQZ, CZERO_NEZ,
         PACK, PACKH,
+        // SFENCE.VMA: rs2 is the ASID filter
+        SFENCE_VMA,
         // RV64 W-form R-type ops
         ADDW, SUBW, SLLW, SRLW, SRAW, ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, ROLW, RORW, PACKW,
         // Integer stores

@@ -137,6 +137,8 @@ module csr_file #(
     input logic [1:0] i_instruction_retired_count,
     input logic [1:0] i_branch_retired_count = '0,
     input logic [1:0] i_branch_mispredict_count = '0,
+    // L1 TLB misses: a walk request accepted by the second-level TLB, whether
+    // that array answers it or the walker does.
     input logic       i_itlb_miss = '0,
     input logic       i_dtlb_miss = '0,
     input logic       i_l1d_miss = '0,
@@ -269,12 +271,18 @@ module csr_file #(
     output logic o_wfi_illegal,
     output logic o_priv_is_u,
 
-    // One-cycle TLB/PTW invalidate pulse for any enabled committed satp
+    // One-cycle translation-change pulse for any enabled committed satp
     // access, or an mstatus commit whose computed result changes MPRV (or
-    // MPP while MPRV=1). SUM and MXR changes do not invalidate: lookups apply
-    // them live. The ROB serializer separately drains committed stores and
-    // flushes the pipeline.
+    // MPP while MPRV=1). It discards the walk in flight and the walk cache and
+    // drops the MMUs' transient results (last-page buffer, fetch result, fault
+    // memo); it leaves TLB entries alone, since they are ASID-tagged. SUM and
+    // MXR changes do not raise it: lookups apply them live. The ROB serializer
+    // separately drains committed stores and flushes the pipeline.
     output logic o_csr_translation_flush_req,
+    // One-cycle pulse, the cycle after o_csr_translation_flush_req's cause,
+    // that also empties every TLB entry: an MPRV or MPP-under-MPRV change, or
+    // a satp write that names another root under the same ASID.
+    output logic o_csr_tlb_flush_all_req,
 
     // Data-translation state, delayed one cycle. Every input change (satp,
     // status, privilege) is followed by a full flush whose refetch outlasts
@@ -283,6 +291,7 @@ module csr_file #(
     output logic o_mmu_sum,
     output logic o_mmu_mxr,
     output logic o_mmu_eff_priv_u,  // effective data privilege == U
+    output logic [riscv_pkg::AsidBits-1:0] o_mmu_asid,  // satp.ASID
     // Fetch uses current privilege; MPRV affects data only. These outputs
     // decode from fetch_priv_q, which equals priv_q on every cycle. There
     // is no extra delay: a privilege or mode change immediately hides old
@@ -290,6 +299,7 @@ module csr_file #(
     // With translation off, the IMMU is combinational.
     output logic o_fetch_translation_active,  // satp Sv39 && priv != M
     output logic o_fetch_priv_u,  // current privilege == U
+    output logic [riscv_pkg::AsidBits-1:0] o_fetch_asid,  // satp.ASID, no delay
     // Root PPN for the walker (satp.PPN, registered storage). A satp write
     // also raises o_csr_translation_flush_req, which discards any walk in
     // flight.
@@ -644,18 +654,24 @@ module csr_file #(
   logic [XLEN-1:0] scause;
   logic [XLEN-1:0] stval;
   // satp supports Bare and Sv39; an unsupported MODE leaves the whole
-  // register unchanged (privileged spec). ASID is WARL-0. All 44 PPN bits
-  // are stored so the walker can fault on roots outside cached DDR.
+  // register unchanged (privileged spec). ASID is WARL with ASIDLEN = 9: bits
+  // [52:44] store what is written and [59:53] read zero, in Bare mode too (Linux
+  // sizes its allocator by writing all ones to the ASID field of a Bare satp
+  // and reading back). All 44 PPN bits are stored so the walker can fault on
+  // roots outside cached DDR.
   localparam bit SatpSv39Supported = 1'b1;
   localparam logic [3:0] SatpModeBare = 4'd0;
   localparam logic [3:0] SatpModeSv39 = 4'd8;
   localparam int unsigned SatpPpnBits = 44;
+  localparam int unsigned SatpAsidBits = riscv_pkg::AsidBits;
   logic satp_mode_sv39;  // 0 = Bare, 1 = Sv39
+  logic [SatpAsidBits-1:0] satp_asid;
   logic [SatpPpnBits-1:0] satp_ppn;
   logic [XLEN-1:0] satp;
   assign satp = {
     satp_mode_sv39 ? SatpModeSv39 : SatpModeBare,  // MODE [63:60]
-    16'b0,  // ASID [59:44] (WARL-0)
+    7'b0,  // ASID [59:53] (above ASIDLEN)
+    satp_asid,  // ASID [52:44]
     satp_ppn  // PPN [43:0]
   };
 
@@ -1712,6 +1728,7 @@ module csr_file #(
       mip_stip                   <= 1'b0;
       mip_seip                   <= 1'b0;
       satp_mode_sv39             <= 1'b0;
+      satp_asid                  <= '0;
       satp_ppn                   <= '0;
       menvcfg_stce               <= 1'b0;
       menvcfg_cbze               <= 1'b0;
@@ -1779,14 +1796,16 @@ module csr_file #(
         riscv_pkg::CsrScause: scause <= scause_new_value;
         riscv_pkg::CsrStval: stval <= stval_new_value;
         // satp: a write carrying an unsupported MODE leaves the whole
-        // register unchanged (privileged-spec rule). ASID is WARL-0; the
-        // PPN field stores all written bits.
+        // register unchanged (privileged-spec rule). The ASID field keeps its
+        // low 9 bits; the PPN field stores all written bits.
         riscv_pkg::CsrSatp: begin
           if (satp_new_value[63:60] == SatpModeBare) begin
             satp_mode_sv39 <= 1'b0;
+            satp_asid <= satp_new_value[SatpPpnBits+:SatpAsidBits];
             satp_ppn <= satp_new_value[SatpPpnBits-1:0];
           end else if (SatpSv39Supported && (satp_new_value[63:60] == SatpModeSv39)) begin
             satp_mode_sv39 <= 1'b1;
+            satp_asid <= satp_new_value[SatpPpnBits+:SatpAsidBits];
             satp_ppn <= satp_new_value[SatpPpnBits-1:0];
           end
         end
@@ -1940,29 +1959,65 @@ module csr_file #(
   end
   assign o_csr_translation_flush_req = csr_translation_flush_req_q;
 
+  // Entries are tagged with the ASID that installed them, so a satp write
+  // that changes the ASID, or keeps address space and root, leaves the TLBs
+  // alone: the new ASID simply hits different entries. Two events clear every
+  // entry (o_csr_tlb_flush_all_req):
+  //   - an MPRV change, or an MPP change under MPRV (as before), and
+  //   - a satp write that names a different root under the same ASID. Software
+  //     that reuses an ASID for another root owes an SFENCE.VMA; flushing here
+  //     keeps software that never uses ASIDs (every ASID zero) working, since
+  //     it switches roots without one.
+  logic csr_satp_root_switch;
+  assign csr_satp_root_switch = storage_csr_write && (i_csr_address == riscv_pkg::CsrSatp) &&
+      ((satp_new_value[63:60] == SatpModeBare) ||
+       (SatpSv39Supported && (satp_new_value[63:60] == SatpModeSv39))) &&
+      (satp_new_value[SatpPpnBits-1:0] != satp_ppn) &&
+      (satp_new_value[SatpPpnBits+:SatpAsidBits] == satp_asid);
+  logic csr_tlb_flush_all_req_d, csr_tlb_flush_all_req_q;
+  assign csr_tlb_flush_all_req_d = i_csr_write_enable && i_csr_read_enable &&
+      (csr_satp_root_switch ||
+       (((i_csr_address == riscv_pkg::CsrMstatus) ||
+         (i_csr_address == riscv_pkg::CsrSstatus)) &&
+        (COMMIT_EXCLUDES_CONTROL_TAKE ? csr_status_write_changes_translation :
+         ((next_mstatus_mprv != mstatus_mprv) ||
+          (mstatus_mprv && (next_mstatus_mpp != mstatus_mpp))))));
+  always_ff @(posedge i_clk) begin
+    if (i_rst) csr_tlb_flush_all_req_q <= 1'b0;
+    else csr_tlb_flush_all_req_q <= csr_tlb_flush_all_req_d;
+  end
+  assign o_csr_tlb_flush_all_req = csr_tlb_flush_all_req_q;
+
   // The data-translation state bundle (see the port comment for why its
   // one-cycle delay is safe). Effective data privilege honors MPRV.
   logic [1:0] eff_data_priv;
   assign eff_data_priv = mstatus_mprv ? mstatus_mpp : priv_q;
 
   logic translation_active_q, mmu_sum_q, mmu_mxr_q, mmu_eff_priv_u_q;
+  logic [SatpAsidBits-1:0] mmu_asid_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       translation_active_q <= 1'b0;
       mmu_sum_q <= 1'b0;
       mmu_mxr_q <= 1'b0;
       mmu_eff_priv_u_q <= 1'b0;
+      mmu_asid_q <= '0;
     end else begin
       translation_active_q <= satp_mode_sv39 && (eff_data_priv != riscv_pkg::PrivM);
       mmu_sum_q <= mstatus_sum;
       mmu_mxr_q <= mstatus_mxr;
       mmu_eff_priv_u_q <= (eff_data_priv == riscv_pkg::PrivU);
+      mmu_asid_q <= satp_asid;
     end
   end
   assign o_translation_active = translation_active_q;
   assign o_mmu_sum = mmu_sum_q;
   assign o_mmu_mxr = mmu_mxr_q;
   assign o_mmu_eff_priv_u = mmu_eff_priv_u_q;
+  assign o_mmu_asid = mmu_asid_q;
+  // Fetch uses the ASID register itself: the refetch after a satp write
+  // starts after the register has updated, like fetch_translation_active_q.
+  assign o_fetch_asid = satp_asid;
   // Fetch reads translation from a register written with the next satp
   // mode and privilege, so it always equals satp_mode_sv39 && fetch_priv_q
   // != M without a decode after the registers. satp's mode changes only
@@ -2885,9 +2940,9 @@ module csr_file #(
       // sepc/stvec keep the same alignment invariants as mepc/mtvec.
       p_sepc_aligned : assert (sepc[0] == 1'b0);
       p_stvec_aligned : assert (stvec[1] == 1'b0);
-      // satp invariants: ASID reads zero; the Bare-only check applies only
-      // while SatpSv39Supported is 0.
-      p_satp_asid_zero : assert (satp[59:44] == '0);
+      // satp invariants: ASID bits above ASIDLEN read zero; the Bare-only
+      // check applies only while SatpSv39Supported is 0.
+      p_satp_asid_zero : assert (satp[59:44+SatpAsidBits] == '0);
       if (!SatpSv39Supported) begin
         p_satp_bare_only : assert (!satp_mode_sv39);
       end
@@ -3049,6 +3104,19 @@ module csr_file #(
       csr_write_intent && !(i_trap_taken && !i_trap_to_d);
   assign f_old_mcycle_write = f_old_counter_write && (i_csr_address == riscv_pkg::CsrMcycle);
   assign f_old_minstret_write = f_old_counter_write && (i_csr_address == riscv_pkg::CsrMinstret);
+  // The all-entries flush: an MPRV change (or MPP under MPRV), or a satp write
+  // of a valid MODE that names another root under the same ASID.
+  logic f_old_tlb_flush_all_req;
+  assign f_old_tlb_flush_all_req = i_csr_write_enable && i_csr_read_enable &&
+      ((i_csr_address == riscv_pkg::CsrSatp) && !(i_trap_taken && !i_trap_to_d) &&
+       ((csr_new_value[63:60] == SatpModeBare) ||
+        (SatpSv39Supported && (csr_new_value[63:60] == SatpModeSv39))) &&
+       (csr_new_value[SatpPpnBits-1:0] != satp_ppn) &&
+       (csr_new_value[SatpPpnBits+:SatpAsidBits] == satp_asid) ||
+       (((i_csr_address == riscv_pkg::CsrMstatus) ||
+         (i_csr_address == riscv_pkg::CsrSstatus)) &&
+        ((f_old_next_mstatus_mprv != mstatus_mprv) ||
+         (mstatus_mprv && (f_old_next_mstatus_mpp != mstatus_mpp)))));
   // SUM and MXR are permission inputs applied at lookup, so only satp and the
   // effective-privilege fields (MPRV, and MPP under MPRV) invalidate.
   assign f_old_translation_req = i_csr_write_enable && i_csr_read_enable &&
@@ -3238,6 +3306,7 @@ module csr_file #(
   logic [$bits(perf_cache_previous_select)-1:0] f_old_perf_cache_previous_select;
   logic [$bits(perf_counter_select)-1:0] f_old_perf_counter_select;
   logic [$bits(satp_mode_sv39)-1:0] f_old_satp_mode_sv39;
+  logic [$bits(satp_asid)-1:0] f_old_satp_asid;
   logic [$bits(satp_ppn)-1:0] f_old_satp_ppn;
   logic [$bits(scause)-1:0] f_old_scause;
   logic [$bits(scounteren_q)-1:0] f_old_scounteren_q;
@@ -3302,6 +3371,7 @@ module csr_file #(
     f_old_perf_cache_previous_select <= perf_cache_previous_select;
     f_old_perf_counter_select <= perf_counter_select;
     f_old_satp_mode_sv39 <= satp_mode_sv39;
+    f_old_satp_asid <= satp_asid;
     f_old_satp_ppn <= satp_ppn;
     f_old_scause <= scause;
     f_old_scounteren_q <= scounteren_q;
@@ -3339,6 +3409,7 @@ module csr_file #(
       f_old_mip_stip                   <= 1'b0;
       f_old_mip_seip                   <= 1'b0;
       f_old_satp_mode_sv39             <= 1'b0;
+      f_old_satp_asid                  <= '0;
       f_old_satp_ppn                   <= '0;
       f_old_menvcfg_stce               <= 1'b0;
       f_old_menvcfg_cbze               <= 1'b0;
@@ -3412,14 +3483,16 @@ module csr_file #(
         riscv_pkg::CsrScause: f_old_scause <= csr_new_value;
         riscv_pkg::CsrStval: f_old_stval <= csr_new_value;
         // satp: a write carrying an unsupported MODE leaves the whole
-        // register unchanged (privileged-spec rule). ASID is WARL-0; the
-        // PPN field stores all written bits.
+        // register unchanged (privileged-spec rule). The ASID field keeps its
+        // low 9 bits; the PPN field stores all written bits.
         riscv_pkg::CsrSatp: begin
           if (csr_new_value[63:60] == SatpModeBare) begin
             f_old_satp_mode_sv39 <= 1'b0;
+            f_old_satp_asid <= csr_new_value[SatpPpnBits+:SatpAsidBits];
             f_old_satp_ppn <= csr_new_value[SatpPpnBits-1:0];
           end else if (SatpSv39Supported && (csr_new_value[63:60] == SatpModeSv39)) begin
             f_old_satp_mode_sv39 <= 1'b1;
+            f_old_satp_asid <= csr_new_value[SatpPpnBits+:SatpAsidBits];
             f_old_satp_ppn <= csr_new_value[SatpPpnBits-1:0];
           end
         end
@@ -3508,6 +3581,7 @@ module csr_file #(
   always_comb begin
     if (f_csr_legal) begin
       assert (csr_translation_flush_req_d == f_old_translation_req);
+      assert (csr_tlb_flush_all_req_d == f_old_tlb_flush_all_req);
       assert ({next_mstatus_mie, next_mstatus_mpie, next_mstatus_mpp, next_mstatus_mprv,
                next_mstatus_fs, next_mstatus_sie, next_mstatus_spie, next_mstatus_spp,
                next_mstatus_sum, next_mstatus_mxr, next_mstatus_tvm, next_mstatus_tw,
@@ -3566,6 +3640,7 @@ module csr_file #(
       assert (perf_cache_previous_select == f_old_perf_cache_previous_select);
       assert (perf_counter_select == f_old_perf_counter_select);
       assert (satp_mode_sv39 == f_old_satp_mode_sv39);
+      assert (satp_asid == f_old_satp_asid);
       assert (satp_ppn == f_old_satp_ppn);
       assert (scause == f_old_scause);
       assert (scounteren_q == f_old_scounteren_q);

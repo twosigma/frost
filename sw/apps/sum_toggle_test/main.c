@@ -26,7 +26,7 @@
  *     permission in either direction), for loads and stores;
  *   - an execute-only S page loads only with MXR=1, in both directions;
  *   - a loop that toggles SUM around nine resident pages walks no page table
- *     (HPM DTLB and ITLB walk counters), and a satp access still invalidates.
+ *     (HPM DTLB and ITLB walk counters), and SFENCE.VMA still invalidates.
  * It also reports the cycle cost of a SUM toggle pair against the same loop
  * with sstatus writes that leave SUM unchanged. Faults trap to M (medeleg=0),
  * which counts them and resumes at the next instruction; the test's S code
@@ -258,10 +258,11 @@ __asm__(".section .text\n"
         "    rdcycle t5\n"
         "    sub  a0, t5, t4\n    sd   a0, 136(s1)\n"                     /* [17] cycles */
         "    csrr a0, 0xC06\n    sub  a0, a0, s8\n    sd   a0, 144(s1)\n" /* [18] 0 */
-        /* 9: a satp access still invalidates: the next U load walks. */
+        /* 9: SFENCE.VMA still invalidates: the next U load walks. A satp write
+         * that keeps the root and the ASID leaves the entries in place; the
+         * asid_test covers the satp cases. */
         "    csrr s8, 0xC06\n"
-        "    csrr a0, satp\n"
-        "    csrw satp, a0\n"
+        "    sfence.vma\n"
         "    ld   a2, 0(s0)\n"
         "    csrr a1, 0xC06\n    sub  a1, a1, s8\n    sd   a1, 152(s1)\n" /* [19] >= 1 */
         "    ecall\n"
@@ -341,10 +342,10 @@ int main(void)
     ok &= check("14 sum-toggles-keep-itlb", g_res[14], 0);
     ok &= check("18 unchanged-sum-keep-dtlb", g_res[18], 0);
     if (g_res[19] == 0) {
-        uart_printf("[FAIL] 19 satp-access-invalidates walks=0\n");
+        uart_printf("[FAIL] 19 sfence-invalidates walks=0\n");
         ok = 0;
     } else {
-        uart_printf("[PASS] 19 satp-access-invalidates walks=%lu\n", g_res[19]);
+        uart_printf("[PASS] 19 sfence-invalidates walks=%lu\n", g_res[19]);
     }
     uart_printf("SUMTOGGLE loops=%d toggle_cycles=%lu steady_cycles=%lu "
                 "per_iter_toggle=%lu per_iter_steady=%lu dtlb_walks=%lu itlb_walks=%lu "

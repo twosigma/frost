@@ -166,6 +166,11 @@ module instr_operand_classifier (
           raw_class.rs_type = riscv_pkg::RS_MEM;
           raw_class.is_fence_i = 1'b1;
           raw_class.is_sfence_vma = 1'b1;
+          // rs1 is the address filter and rs2 the ASID filter. The MEM_RS
+          // entry waits for both and hands them to the ROB when it issues
+          // (x0 reads as ready zero; dispatch records which are nonzero).
+          raw_class.uses_int_rs1 = 1'b1;
+          raw_class.uses_int_rs2 = 1'b1;
         end else if ({i_instr.funct7, i_instr.source_reg_2} != 12'h000 &&
                      {i_instr.funct7, i_instr.source_reg_2} != 12'h001) begin
           raw_class.rs_type = riscv_pkg::RS_NONE;  // Legal xRET / WFI.

@@ -37,7 +37,7 @@ DDR_BASE = 0x8000_0000
 DDR_LIMIT = DDR_BASE + (1 << 30)
 LINE_BYTES = 32
 DFAULT_NONE, DFAULT_PAGE, DFAULT_ACCESS = 0, 2, 3
-V, R, W, X, U, A, D = 1, 2, 4, 8, 16, 64, 128
+V, R, W, X, U, G, A, D = 1, 2, 4, 8, 16, 32, 64, 128
 ROOT = 0x8010_0000
 
 
@@ -47,13 +47,13 @@ def pte(ppn: int, flags: int) -> int:
 
 
 def unpack(resp: int) -> dict[str, int]:
-    """Split a ptw_resp_t: {fault, vpn, ppn, level, r, w, x, u, d}."""
+    """Split a ptw_resp_t: {fault, vpn, ppn, level, r, w, x, u, d, g}."""
     return {
-        "fault": (resp >> 78) & 3,
-        "vpn": (resp >> 51) & ((1 << 27) - 1),
-        "ppn": (resp >> 7) & ((1 << 44) - 1),
-        "level": (resp >> 5) & 3,
-        "perms": resp & 0x1F,
+        "fault": (resp >> 79) & 3,
+        "vpn": (resp >> 52) & ((1 << 27) - 1),
+        "ppn": (resp >> 8) & ((1 << 44) - 1),
+        "level": (resp >> 6) & 3,
+        "perms": resp & 0x3F,
     }
 
 
@@ -83,6 +83,7 @@ class Memory:
     def walk(self, root_ppn: int, vpn: int) -> dict[str, int]:
         """Walk Sv39 page tables with FROST's fault classification."""
         ptr = root_ppn
+        glob = 0  # a global bit on any level makes the translation global
         for level in (2, 1, 0):
             index = (vpn >> (9 * level)) & 0x1FF
             addr = (ptr << 12) + index * 8
@@ -105,6 +106,7 @@ class Memory:
                     return {"fault": DFAULT_PAGE, "vpn": vpn}
                 perms = (r << 4) | (w << 3) | (x << 2) | (((e >> 4) & 1) << 1)
                 perms |= (e >> 7) & 1
+                perms = (perms << 1) | glob | ((e >> 5) & 1)
                 return {
                     "fault": DFAULT_NONE,
                     "vpn": vpn,
@@ -114,6 +116,7 @@ class Memory:
                 }
             if level == 0:
                 return {"fault": DFAULT_PAGE, "vpn": vpn}
+            glob |= (e >> 5) & 1
             ptr = ppn
         raise AssertionError("unreachable")
 
@@ -418,13 +421,25 @@ async def random_walks_match_reference(dut: Any) -> None:
 
     def leaf_flags() -> int:
         return rng.choice(
-            (V | R | A, V | R | W | A | D, V | X | A, V | R | X | U | A, V | R)
+            (
+                V | R | A,
+                V | R | W | A | D,
+                V | X | A,
+                V | R | X | U | A,
+                V | R,
+                V | R | A | G,
+                V | R | W | A | D | G,
+            )
         )
+
+    def pointer_flags() -> int:
+        # A global bit on a pointer makes every translation below it global.
+        return V | rng.choice((0, 0, G))
 
     def build_slot(r: int, s: int) -> None:
         if r not in l1_table:
             l1_table[r] = table(next(tables))
-            m.write(ROOT + 8 * r, pte(l1_table[r] >> 12, V))
+            m.write(ROOT + 8 * r, pte(l1_table[r] >> 12, pointer_flags()))
         if rng.random() < 0.2:
             # A 2 MiB leaf, aligned or not.
             ppn = 0x80000 + (rng.randrange(4) << 9) + (0 if rng.random() < 0.8 else 1)
@@ -433,7 +448,7 @@ async def random_walks_match_reference(dut: Any) -> None:
             key = (r, s)
             if key not in l0_table:
                 l0_table[key] = table(next(tables))
-            m.write(l1_table[r] + 8 * s, pte(l0_table[key] >> 12, V))
+            m.write(l1_table[r] + 8 * s, pte(l0_table[key] >> 12, pointer_flags()))
 
     def vpn_of(r: int, s: int, i: int) -> int:
         return (r << 18) | (s << 9) | i

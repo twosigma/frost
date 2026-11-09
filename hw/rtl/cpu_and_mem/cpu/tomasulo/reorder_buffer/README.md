@@ -291,6 +291,17 @@ so code fetched after the fence sees the stores before it. For SFENCE.VMA,
 `o_sfence_window` is high for exactly the same cycles, and the wrapper turns
 it into the TLB and page-table-walker invalidate.
 
+An SFENCE.VMA also carries its rs1 and rs2 values. With `SfenceOperands` set
+(`tomasulo_wrapper` does), the MEM_RS holds the instruction until both
+registers are ready and, when it issues, hands the page number (rs1[38:12]),
+the ASID (rs2[8:0]) and two flags (rs1 and rs2 are not x0) to
+`sfence_operand_store` under its ROB tag. The store clears an entry's ready bit
+when the ROB allocates the tag, so a flushed SFENCE.VMA leaves nothing behind.
+The serializer leaves IDLE for an SFENCE.VMA only when its entry is ready, and
+the head entry is registered into `o_sfence_flush`, a `tlb_flush_t` whose `en`
+is `o_sfence_window`. The head is pinned throughout FENCE_I_SYNC, so the
+filter is stable for the whole window.
+
 FENCE.I, SFENCE.VMA, and translation CSRs end in a full flush and refetch.
 `o_fence_class_flush_event` marks the event, and `o_fence_i_flush`, the same
 signal a cycle later, requests the flush:

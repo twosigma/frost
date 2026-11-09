@@ -25,7 +25,7 @@ read -formal -sv riscv_pkg.sv
 read -formal -sv sdp_dist_ram.sv
 read -formal -sv mwp_dist_ram.sv
 read -formal -sv mwp_dist_ram_ohread.sv
-read -sv rob_serializer.sv
+read -sv rob_serializer.sv sfence_operand_store.sv
 read -sv reorder_buffer.sv
 read -sv register_alias_table.sv
 read -formal -sv rs_issue2_selector.sv
@@ -76,6 +76,7 @@ prep -top tomasulo_wrapper
 ../hw/rtl/lib/ram/mwp_dist_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_serializer.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/sfence_operand_store.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv

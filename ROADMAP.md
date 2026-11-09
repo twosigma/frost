@@ -386,16 +386,12 @@ and targeted microbenchmarks give these items:
 2. Data translation. A last-page bypass sends eligible translated accesses
    directly to DMMU stage S2. Other translated accesses use S1 and S2.
    Reducing that path would improve cross-page translation latency.
-3. TLB reach. The DTLB and ITLB have 16 entries each. The walker keeps a
-   cache of upper-level page-table pointers, 16 for 2 MiB regions and 4 for
-   1 GiB regions, so a walk that hits it makes one or two dependent reads
-   instead of three. In simulation a dependent load that misses the DTLB
-   takes about 35 cycles against 5 on a hit, and an instruction page visit
-   that misses the ITLB about 51 against 20. Without ASIDs, every context
-   switch flushes both TLBs. A larger DTLB and ASID support would each help.
-   A design is ready: a 32-entry fully associative DTLB, which in simulation
-   takes chains of up to 32 pages to 5 cycles, and ASIDs with global pages
-   and selective `sfence.vma`.
+3. TLB reach. The DTLB and ITLB have 16 entries each, backed by a 512-entry
+   second-level TLB, ASIDs with global pages, selective `sfence.vma`, and a
+   walker cache of upper-level page-table pointers. An L1 miss that hits the
+   second-level TLB costs three cycles; one that misses it walks, and the
+   walker cache takes the walk to one dependent read. Reach beyond 2 MiB, and
+   superpage entries in the second-level TLB, would be the next steps.
 4. Branch prediction. A misprediction costs about 7 cycles. The BTB has 256
    direct-mapped entries, and a 1024-entry two-way backing BTB behind it
    predicts the jumps, calls and returns it misses through a PD redirect, at
