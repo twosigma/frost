@@ -181,6 +181,11 @@ module load_queue #(
     // o_fu_complete.tag after the next edge, for lane tags registered ahead of
     // the early-load merge.
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_fu_complete_tag_next,
+    // Its two parts: whether the CDB stage takes a result on the next edge,
+    // and that result's tag. Without a take the tag stays o_fu_complete.tag.
+    // A consumer can apply the late take last.
+    output logic o_fu_complete_tag_fire,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_fu_complete_tag_fired,
     // Unused input retained for Vivado mapping stability. Removing it and its
     // wrapper driver requires synthesis and optimization timing validation.
     input logic i_adapter_result_pending,  // unused (back-pressure comes from i_result_accepted)
@@ -3279,8 +3284,10 @@ module load_queue #(
   // don't-care otherwise.
   assign bypass_idx = resp_bypass_data_sel ? issued_idx : sq_check_idx;
   assign bypass_tag = resp_bypass_data_sel ? issued_rob_tag : sq_check_rob_tag_q;
-  assign o_fu_complete_tag_next = !(issue_cdb_fire || bypass_fire) ? cdb_stage_data.tag :
-      issue_cdb_found ? issue_cdb_result.tag : bypass_tag;
+  assign o_fu_complete_tag_fire = issue_cdb_fire || bypass_fire;
+  assign o_fu_complete_tag_fired = issue_cdb_found ? issue_cdb_result.tag : bypass_tag;
+  assign o_fu_complete_tag_next = o_fu_complete_tag_fire ? o_fu_complete_tag_fired :
+      cdb_stage_data.tag;
   // A faulting load (misaligned, outside the physical map, or with a parked
   // translation fault) raises an exception instead of producing a register
   // result, so its CDB value slot is free to carry the faulting address.

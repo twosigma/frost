@@ -1526,6 +1526,8 @@ module tomasulo_wrapper #(
   riscv_pkg::fu_complete_t lq_fu_complete;  // LQ -> adapter
   logic lq_fu_complete_staged;  // registered LQ CDB-stage occupancy, flush-free
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] lq_fu_complete_tag_next;
+  logic lq_fu_complete_tag_fire;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] lq_fu_complete_tag_fired;
   // mem_adapter_to_arbiter declared above (forward declaration)
   logic mem_adapter_result_pending;
   logic lq_result_accepted;
@@ -2690,14 +2692,33 @@ module tomasulo_wrapper #(
   end
   // mem_wakeup_merge's lane choice, one edge early: lane 0 takes the load when
   // the registered lane 0 will be idle, and lane 1 when only lane 0 will be
-  // busy.
+  // busy. The load's tag is the LQ's fired tag when its CDB stage takes a
+  // result and its staged tag otherwise. That fire arrives last, so each
+  // lane's tag is formed for both values of it, and the fire selects.
+  logic lane0_takes_load, lane1_takes_load;
+  assign lane0_takes_load = EARLY_LOAD_WAKEUP && !cdb_bus_comb.valid;
+  assign lane1_takes_load = EARLY_LOAD_WAKEUP && cdb_bus_comb.valid && !cdb_bus_2_comb.valid;
+  (* keep = "true" *) logic [riscv_pkg::ReorderBufferTagWidth-1:0] lane0_tag_fired, lane0_tag_held;
+  (* keep = "true" *) logic [riscv_pkg::ReorderBufferTagWidth-1:0] lane1_tag_fired, lane1_tag_held;
+  assign lane0_tag_fired = lane0_takes_load ? lq_fu_complete_tag_fired : cdb_bus_comb.tag;
+  assign lane0_tag_held  = lane0_takes_load ? lq_fu_complete.tag : cdb_bus_comb.tag;
+  assign lane1_tag_fired = lane1_takes_load ? lq_fu_complete_tag_fired : cdb_bus_2_comb.tag;
+  assign lane1_tag_held  = lane1_takes_load ? lq_fu_complete.tag : cdb_bus_2_comb.tag;
   always_ff @(posedge i_clk) begin
-    int_rs_issue_cdb_tag <= (EARLY_LOAD_WAKEUP && !cdb_bus_comb.valid) ?
-        lq_fu_complete_tag_next : cdb_bus_comb.tag;
-    int_rs_issue_cdb_2_tag <=
-        (EARLY_LOAD_WAKEUP && cdb_bus_comb.valid && !cdb_bus_2_comb.valid) ?
-        lq_fu_complete_tag_next : cdb_bus_2_comb.tag;
+    int_rs_issue_cdb_tag   <= lq_fu_complete_tag_fire ? lane0_tag_fired : lane0_tag_held;
+    int_rs_issue_cdb_2_tag <= lq_fu_complete_tag_fire ? lane1_tag_fired : lane1_tag_held;
   end
+`ifndef SYNTHESIS
+  always_comb
+    if (i_rst_n && sc_check_armed) begin
+      p_issue_cdb_tag_fire_cofactor :
+      assert ((lq_fu_complete_tag_fire ? lane0_tag_fired : lane0_tag_held) ==
+              (lane0_takes_load ? lq_fu_complete_tag_next : cdb_bus_comb.tag));
+      p_issue_cdb_2_tag_fire_cofactor :
+      assert ((lq_fu_complete_tag_fire ? lane1_tag_fired : lane1_tag_held) ==
+              (lane1_takes_load ? lq_fu_complete_tag_next : cdb_bus_2_comb.tag));
+    end
+`endif
 
 `ifndef SYNTHESIS
   always_comb begin
@@ -3803,6 +3824,8 @@ module tomasulo_wrapper #(
       .o_fu_complete(lq_fu_complete),
       .o_fu_complete_staged(lq_fu_complete_staged),
       .o_fu_complete_tag_next(lq_fu_complete_tag_next),
+      .o_fu_complete_tag_fire(lq_fu_complete_tag_fire),
+      .o_fu_complete_tag_fired(lq_fu_complete_tag_fired),
       // Unused by the LQ but kept for Vivado mapping stability; see the
       // i_adapter_result_pending port comment in load_queue.sv before
       // removing it.
