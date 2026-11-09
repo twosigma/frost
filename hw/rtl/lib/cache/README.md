@@ -724,10 +724,11 @@ for the array lookup, the state update and any write-back absorption.
 Otherwise the global issue gate ends after replay marking is effective. In
 both cases the matching-sector gate lasts through reply acceptance.
 
-The atomic guard computes active and retired state for permitted and blocked
-arming. Candidate validity and the entry veto select between those results.
-The atomic guard captures the candidate tag while idle and holds it while
-active. Only an active context qualifies the tag.
+The atomic guard arms when idle on a candidate whose tag is the valid ROB
+head, unless an entry vetoes it in that cycle. An active guard retires on its
+commit and releases once retired or faulted with the home idle. The atomic
+guard captures the candidate tag while idle and holds it while active. Only
+an active context qualifies the tag.
 
 Cached SC and AMO requests on resident Modified sectors complete locally.
 The L1D checks registered lookup results after older stores have installed,
