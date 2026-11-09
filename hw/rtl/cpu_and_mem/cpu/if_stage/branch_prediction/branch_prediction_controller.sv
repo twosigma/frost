@@ -259,6 +259,8 @@ module branch_prediction_controller #(
 
   // Slot-2 BTB outputs.
   logic            btb_hit_2;
+  logic            btb_hit_2_plus2;
+  logic            btb_hit_2_plus4;
   logic            btb_predicted_taken_2;
   logic            btb_predicted_taken_2_plus2;
   logic            btb_predicted_taken_2_plus4;
@@ -357,8 +359,8 @@ module branch_prediction_controller #(
       .o_btb_compressed_2_plus2(btb_compressed_2_plus2),
       .o_btb_compressed_2_plus4(btb_compressed_2_plus4),
       .o_btb_hit_2(btb_hit_2),
-      .o_btb_hit_2_plus2(),
-      .o_btb_hit_2_plus4(),
+      .o_btb_hit_2_plus2(btb_hit_2_plus2),
+      .o_btb_hit_2_plus4(btb_hit_2_plus4),
       .o_predicted_taken_2(btb_predicted_taken_2),
       .o_predicted_target_2(btb_predicted_target_2),
       .o_btb_compressed_2(btb_compressed_2),
@@ -964,17 +966,32 @@ module branch_prediction_controller #(
       prediction_common && !i_branch_taken && !i_is_32bit_spanning;
   assign slot2_prediction_permission = slot2_prediction_permission_without_valid && i_slot2_valid;
   // A collapsed lead makes slot1_prediction_owned_by_slot2 equal the alias.
-  // The live fallback still requires a hit and taken direction.
+  // The live fallback still requires a hit and taken direction. The +4
+  // candidate valid, which selects the staged slot-2 hit, settles late, so the
+  // candidate is formed for each value of it, with that position's staged hit,
+  // and the valid picks between the two last.
+  logic slot2_live_fallback_common;
+  (* keep = "true" *)logic slot2_prediction_candidate_plus2_pos;
+  (* keep = "true" *)logic slot2_prediction_candidate_plus4_pos;
+  assign slot2_live_fallback_common =
+      i_lookup_lead_collapsed && slot1_aliases_slot2_candidate && btb_hit &&
+      slot2_live_fallback_size_safe && dir_predicted_taken;
+  assign slot2_prediction_candidate_plus2_pos =
+      slot2_plus2_candidate_safe_taken || (slot2_live_fallback_common && !btb_hit_2_plus2);
+  assign slot2_prediction_candidate_plus4_pos =
+      slot2_plus2_candidate_safe_taken || slot2_plus4_safe_taken ||
+      (slot2_live_fallback_common && !btb_hit_2_plus4);
   assign slot2_prediction_candidate_for_pc =
-      slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken ||
-      (i_lookup_lead_collapsed && slot1_aliases_slot2_candidate && !btb_hit_2 &&
-       btb_hit && slot2_live_fallback_size_safe && dir_predicted_taken);
+      slot2_pc_use_alt ? slot2_prediction_candidate_plus4_pos :
+      slot2_prediction_candidate_plus2_pos;
   assign o_slot2_prediction_used_for_pc =
       slot2_prediction_permission && slot2_prediction_candidate_for_pc;
-  // Duplicate the slot-2 request for the fetch-PC mux, for fanout.
+  // Duplicate the slot-2 request for the fetch-PC mux, for fanout. It reads
+  // the two position candidates directly, so the +4 valid selects in its gate.
   (* keep = "true", dont_touch = "true" *) logic slot2_prediction_used_for_fetch_mux;
-  assign slot2_prediction_used_for_fetch_mux =
-      slot2_prediction_permission && slot2_prediction_candidate_for_pc;
+  assign slot2_prediction_used_for_fetch_mux = slot2_prediction_permission &&
+      (slot2_pc_use_alt ? slot2_prediction_candidate_plus4_pos :
+       slot2_prediction_candidate_plus2_pos);
   assign o_slot2_prediction_used_for_fetch_mux = slot2_prediction_used_for_fetch_mux;
   // Split the slot-2 redirect into a staged-copy term and a live-lookup term
   // with the alias factored out (pc_controller ANDs the alias back in).
