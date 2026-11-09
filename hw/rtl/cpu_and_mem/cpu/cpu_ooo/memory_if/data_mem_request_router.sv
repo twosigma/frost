@@ -289,6 +289,7 @@ module data_mem_request_router #(
   assign lq_mem_request_id_eff = lq_mem_request_valid ? lq_mem_request_id : i_lq_mem_read_id;
   assign lq_mem_request_no_merge_eff =
       lq_mem_request_valid ? lq_mem_request_no_merge : i_lq_mem_read_no_merge;
+  logic amo_cached_write_launch;
   if (1'b1) begin : gen_coherent_metadata
     always_ff @(posedge i_clk) begin
       if (!lq_mem_request_valid) begin
@@ -335,7 +336,6 @@ module data_mem_request_router #(
   // VARIABLE_UNCACHED extends this ownership to the uncached AXI adapter;
   // only the legacy local-memory path completes an AMO combinationally.
   logic amo_variable_inflight;
-  logic amo_cached_write_launch;
   logic amo_uncached_write_launch;
   assign amo_cached_write_launch =
       amo_mem_write_en && amo_mem_write_is_cached && !amo_variable_inflight;

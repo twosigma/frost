@@ -364,6 +364,7 @@ module debug_module #(
     end
   end
 
+  logic [SliceWords-1:0] coherent_dirty_next;
   always_ff @(posedge i_clk) begin
     if (dm_rst) begin
       haltreq_q   <= 1'b0;
@@ -500,7 +501,6 @@ module debug_module #(
     end
   end
 
-  logic [SliceWords-1:0] coherent_dirty_next;
   if (1'b1) begin : gen_coherent_dirty
     logic [SliceWords-1:0] set_words;
     always_comb begin

@@ -831,6 +831,8 @@ module csr_file #(
   assign mvip_new = zicsr_rmw(csr_rmw_keep, csr_rmw_set, mvip);
   assign o_ireg_keep = csr_rmw_keep;
   assign o_ireg_set = csr_rmw_set;
+  logic csr_write_intent;
+  logic storage_csr_write;
   assign o_m_ireg_we = storage_csr_write && csr_write_intent &&
       (i_csr_address == riscv_pkg::CsrMireg) && !o_mireg_illegal;
   assign o_s_ireg_we = storage_csr_write && csr_write_intent &&
@@ -1002,7 +1004,6 @@ module csr_file #(
   // dispatch clears op[1:0] only for set/clear with a zero register/immediate
   // field. Generic M/S trap entry takes priority unless the parameter
   // guarantees exclusion.
-  logic csr_write_intent;
   logic csr_counter_write;
   logic mcycle_write;
   logic minstret_write;
@@ -1440,7 +1441,6 @@ module csr_file #(
   // The CSR write arm comes first. With COMMIT_EXCLUDES_CONTROL_TAKE it wins
   // over a coincident trap entry, so the write path carries no take;
   // otherwise an entry suppresses the write.
-  logic storage_csr_write;
   assign storage_csr_write = i_csr_write_enable && i_csr_read_enable &&
       (COMMIT_EXCLUDES_CONTROL_TAKE || !(i_trap_save_m || i_trap_save_s));
 

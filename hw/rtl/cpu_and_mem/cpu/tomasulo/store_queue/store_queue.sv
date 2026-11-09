@@ -851,9 +851,10 @@ module store_queue #(
   // (write_inflight_cnt == 0 && !o_mem_write_en).
 
   logic uncached_pending_q, uncached_armed_q;
-  logic uncached_sc_permit_q;
+  logic                             uncached_sc_permit_q;
   logic [ReorderBufferTagWidth-1:0] uncached_sc_tag_q;
-  logic uncached_precommit_ready;
+  logic                             uncached_precommit_ready;
+  logic                             mem_write_addr_cached_for_plain_next;
   assign o_uncached_store_pending = PRECISE_UNCACHED && sq_valid[drain_idx_q] &&
       !sq_committed[drain_idx_q] && !sq_sent[drain_idx_q] &&
       sq_addr_valid[drain_idx_q] && sq_data_valid[drain_idx_q] &&
@@ -930,7 +931,6 @@ module store_queue #(
   logic                              mem_write_is_cached_next;
   logic                              mem_write_launch_serial_next;
   logic                              mem_write_launch_pipelined_next;
-  logic                              mem_write_addr_cached_for_plain_next;
   logic [                       2:0] write_fifo_occupancy_after_current_bus;
 
   always_comb begin

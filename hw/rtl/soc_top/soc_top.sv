@@ -624,6 +624,11 @@ module soc_top #(
   // CPU IPI stores win the single port. Invalid high APLIC addresses are
   // consumed and dropped before narrowing, never aliased into a valid page.
   logic msi_ready;
+  logic local_valid, local_ready, local_write, local_error;
+  logic [AXI_USER_BITS-1:0] local_req_user;
+  logic local_debug_q, local_mirror_aborted_q;
+  logic [riscv_pkg::PhysAddrBits-1:0] local_addr;
+  logic [2:0] local_state_q;
   wire local_imsic_pending = local_state_q == 4 && local_write &&
       local_addr[31:21] == ImsicWindowSel;
   assign aplic_msi_ready = !imsic_cpu_write &&
@@ -957,6 +962,9 @@ module soc_top #(
   logic [MemByteAddrWidth-1:2] mirror_hold_addr_q;
   logic mirror_now_valid, mirror_lo, mirror_hi, mirror_overflow;
   logic [MemByteAddrWidth-1:2] mirror_now_addr;
+  wire use_incoming_payload = local_state_q == 0;
+  wire store_debug_mode = ASYNC_CPU_CLOCK ?
+      (use_incoming_payload ? local_req_user[0] : local_debug_q) : dbg_debug_mode;
   // dbg_bram_store is the OR of dbg_bram_store_strb (cpu_ooo), so either
   // half's strobes imply it.
   assign mirror_lo = store_debug_mode && (|dbg_bram_store_strb[3:0]);
@@ -1209,12 +1217,7 @@ module soc_top #(
   );
 
 
-  logic local_valid, local_ready, local_write, local_error;
   logic local_req_write, local_req_error;
-  logic [AXI_USER_BITS-1:0] local_req_user;
-  logic local_debug_q, local_mirror_aborted_q;
-  wire store_debug_mode = ASYNC_CPU_CLOCK ?
-      (use_incoming_payload ? local_req_user[0] : local_debug_q) : dbg_debug_mode;
   // debug_soc_rst drops the mirror's slice writes, so a store stops waiting for them.
   wire debug_store_room = !ASYNC_CPU_CLOCK || !store_debug_mode || debug_soc_rst ||
       (slice_req_ready && !mirror_hold_valid_q);
@@ -1224,14 +1227,12 @@ module soc_top #(
   logic [2:0] local_req_size, local_req_prot;
   logic [63:0] local_req_wdata;
   logic [7:0] local_req_wstrb;
-  logic [riscv_pkg::PhysAddrBits-1:0] local_addr;
   logic [2:0] local_prot;
   logic [63:0] local_wdata;
   logic [7:0] local_wstrb;
   logic local_resp_valid, local_resp_ready;
   logic [L2_LINE_BYTES*8-1:0] local_resp_data;
   logic [1:0] local_resp_status;
-  logic [2:0] local_state_q;
   logic local_fire, local_ok, local_bram, local_device, local_instruction;
   logic fast_bram_q;
   wire fast_bram_request = !local_req_error && !local_req_prot[2] &&
@@ -1273,7 +1274,6 @@ module soc_top #(
   // A fast BRAM access is accepted only in state 0 and a staged access runs
   // only in state 4, so the state alone selects the payload; the enables
   // still decide whether anything is read or written.
-  wire use_incoming_payload = local_state_q == 0;
   assign data_memory_address = use_incoming_payload ? local_req_addr : local_lane_addr;
   // Register files take replicated word writes; AXI permits the
   // unused lanes to be arbitrary, so reconstruct that view at this boundary.

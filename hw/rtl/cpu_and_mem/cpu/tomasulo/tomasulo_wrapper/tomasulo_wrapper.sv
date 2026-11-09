@@ -1678,6 +1678,7 @@ module tomasulo_wrapper #(
   riscv_pkg::fu_complete_t uncached_store_complete;
   logic uncached_store_result_ready;
   logic uncached_sc_success;
+  logic coh_sc_hold, coh_sc_head_addr_valid, coh_sc_head_is_cached, coh_sc_fire_success;
   // Resolve the reservation at the head, but do not announce successful
   // uncached SC until the AXI write response. Failed SC still returns 1
   // immediately and the commit-side discard removes its SQ entry.
@@ -2174,7 +2175,6 @@ module tomasulo_wrapper #(
   // DMA coherence port: admitted-line mirror, SC window, validation
   // table and the ROB's replay mask.
   // ===========================================================================
-  logic coh_sc_hold, coh_sc_head_addr_valid, coh_sc_head_is_cached, coh_sc_fire_success;
   logic coh_sc_head_query_match;
   logic [riscv_pkg::XLEN-1:0] coh_sc_head_addr;
   logic [riscv_pkg::XLEN-1:0] coh_lq_query_addr, coh_lq_inval_addr, coh_observe_addr;

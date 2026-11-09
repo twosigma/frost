@@ -727,6 +727,7 @@ module load_queue #(
   logic [ReorderBufferTagWidth-1:0] fast_rob_tag;
   amo_kind_e fast_amo_kind;
   logic [XLEN-1:0] fast_amo_rs2;
+  logic [XLEN-1:0] launch_mem_issue_addr;
   // Remember a committed store that overtook a delayed read. That old reply
   // can complete its load, but cannot replace the newer L0 bytes.
   logic fast_line_invalidated;
@@ -1012,6 +1013,7 @@ module load_queue #(
   // yet, so it waits one cycle before its first launch (coh_hold_valid_q);
   // that closes the window in which an atomic staged on the admission
   // decision edge could launch ahead of the port's holds.
+  logic [3:0] coherent_stage_take;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       coh_launch_hold_q <= 1'b0;
@@ -1787,6 +1789,7 @@ module load_queue #(
       (!sq_check_is_mmio_q || (sq_check_rob_tag_q == i_rob_head_tag)) &&
       !coh_launch_hold_q && !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
       !(coherent_local_hold);
+  logic sq_check_is_cached_region;
   assign sq_check_entry_issueable = sq_check_fault_eligible &&
       !(sq_check_is_amo_q && sq_check_is_cached_region &&
         !i_coherent_atomic_protected);
@@ -1927,6 +1930,7 @@ module load_queue #(
     assign unused_holder_protocol = ^{i_coherent_store_push, i_coherent_store_push_addr,
                                       i_coherent_atomic_live};
   end
+  logic sq_check_pma_ok;
   // Address faults are independent of the cut and same-sector holds.
   assign coherent_address_fault =
       riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q) != riscv_pkg::DFAULT_NONE ||
@@ -1951,7 +1955,6 @@ module load_queue #(
   logic older_amo_write_pending;
   logic sq_check_misaligned;
   logic misalign_bypass_fire;
-  logic sq_check_is_cached_region;
   logic sq_commit_check_block;
   // PMA faults use the staged fault path and block hits, forwarding, and
   // launches regardless of i_trap_misaligned_accesses. Access faults outrank
@@ -1963,8 +1966,10 @@ module load_queue #(
   logic sq_check_parked_fault;
   assign sq_check_parked_fault = sq_check_fault_eligible &&
       (riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q) != riscv_pkg::DFAULT_NONE);
-  logic sq_check_pma_ok;
   logic coherent_staged_normal;
+  logic issue_mem_uses_addr_update;
+  logic [IdxWidth-1:0] update_issue_payload_idx;
+  (* max_fanout = 32 *) logic sq_check_payload_en;
   if (1'b1) begin : gen_coherent_staged_class
     logic pma_ok_q, cached_q, misaligned_q, normal_q;
     wire stored_atomic = lq_is_amo[issue_mem_stored_idx] || lq_is_lr[issue_mem_stored_idx];
@@ -2112,7 +2117,6 @@ module load_queue #(
       (head_mem_update_found ? replace_update_head : replace_merged_scan);
   assign sq_check_replace = sq_check_pending && sq_check_gate_early &&
       (i_addr_update.valid ? replace_with_update : replace_without_update);
-  logic [3:0] coherent_stage_take;
   wire coherent_stage_replace;
   // Replacement takes the head age when a head entry is a candidate and the
   // scan winner's age groups otherwise, for the drain state and address-update
@@ -2319,7 +2323,6 @@ module load_queue #(
   logic sq_can_issue;
   logic stage_mem_issue;
   logic [IdxWidth-1:0] launch_mem_issue_idx;
-  logic [XLEN-1:0] launch_mem_issue_addr;
   riscv_pkg::mem_size_e launch_mem_issue_size;
   logic [XLEN-1:0] stage_mem_issue_addr;
   riscv_pkg::mem_size_e stage_mem_issue_size;
@@ -4279,8 +4282,6 @@ module load_queue #(
   // -----------------------------------------------------------------
   // Internal data: SQ check candidate index
   // -----------------------------------------------------------------
-  logic issue_mem_uses_addr_update;
-  logic [IdxWidth-1:0] update_issue_payload_idx;
   logic [MemSizeWidth-1:0] issue_mem_size_bits;
   logic issue_mem_is_fp;
   logic issue_mem_sign_ext;
@@ -4291,7 +4292,6 @@ module load_queue #(
   // Give each address copy its own enable for fanout. Separate, identical
   // sq_check_pending_copy flops keep these enables distinct while preserving
   // capture/replace behavior.
-  (* max_fanout = 32 *) logic sq_check_payload_en;
   (* max_fanout = 32 *) logic sq_check_payload_en_b;
   (* max_fanout = 32 *) logic sq_check_payload_en_c;
   (* max_fanout = 32 *) logic sq_check_payload_en_d;

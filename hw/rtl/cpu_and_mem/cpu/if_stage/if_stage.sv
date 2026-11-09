@@ -296,6 +296,7 @@ module if_stage #(
       slot2_prediction_used_for_fetch_mux_live || slot2_replay_request;
   assign slot2_staged_prediction_used_for_pc =
       slot2_staged_prediction_used_for_pc_live || slot2_replay_request;
+  (* keep = "true", max_fanout = 32 *) logic if_stage_stall_registered;
   assign slot2_predicted_target_for_pc = if_stage_stall_registered ? slot2_predicted_target_sc :
       slot2_predicted_target_for_pc_live;
   assign slot2_staged_predicted_target = if_stage_stall_registered ? slot2_predicted_target_sc :
@@ -472,7 +473,6 @@ module if_stage #(
   // The staged BTB lookup uses live valid, blocked by the registered stall.
   assign slot2_prediction_valid = !sel_nop_2;
 
-  (* keep = "true", max_fanout = 32 *) logic if_stage_stall_registered;
 
 `ifndef SYNTHESIS
   logic [7:0] instr_pc_metadata_canonical;
@@ -1727,6 +1727,7 @@ module if_stage #(
   logic [riscv_pkg::PdTargetSplit-1:0] pd_target_native_imm_saved_q;
   logic [riscv_pkg::PdTargetSplit-1:0] pd_target_compressed_imm_saved_q;
   logic [riscv_pkg::PdTargetSplit-1:0] pd_target_pc_low_saved_q;
+  logic [XLEN-1:0] instruction_pc;
   always_ff @(posedge i_clk) begin
     if (flush_for_c_ext_safe) begin
       pd_target_native_imm_saved_q     <= '0;
@@ -1966,7 +1967,6 @@ module if_stage #(
 
   // Slot-1 fall-through PC for RAS pushes: instruction_pc + 2 for RVC,
   // +4 for native. ID computes its own JAL/JALR link address.
-  logic [XLEN-1:0] instruction_pc;
   logic [XLEN-1:0] link_address;
 
   // Preserve the held instruction's size across flushes for the RAS link
