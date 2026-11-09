@@ -2114,8 +2114,12 @@ module cpu_ooo #(
   assign o_coherent_atomic_protected = coherent_atomic_active;
   assign coherent_exception_valid = trap_pending && !fence_class_quiesce &&
       (!coherent_atomic_active || !i_coherent_atomic_live);
+  // The ROB commits its head: its commit tag is head_tag whenever
+  // rob_commit_valid_raw is set, so the commit compares here and in the guard
+  // read head_tag, a register, and the commit valid applies last. A check
+  // below pins the identity.
   assign o_coherent_sc_commit = coherent_atomic_active &&
-      rob_commit_valid_raw && rob_commit_comb.tag == coherent_atomic_tag &&
+      rob_commit_valid_raw && head_tag == coherent_atomic_tag &&
       rob_commit_comb.is_sc && !rob_commit_comb.value[0];
 
   if (1'b1) begin : gen_coherent_atomic
@@ -2131,7 +2135,7 @@ module cpu_ooo #(
         .i_entry_wins(flush_all || lq_router_flush_all || trap_taken || xret_taken ||
             i_fatal_stop || step_done_set || step_done_q),
         .i_commit_valid(rob_commit_valid_raw),
-        .i_commit_tag(rob_commit_comb.tag),
+        .i_commit_tag(head_tag),
         .i_home_live(i_coherent_atomic_live),
         .i_own_fault(trap_taken),
         .o_active(coherent_atomic_active),
@@ -2150,6 +2154,8 @@ module cpu_ooo #(
         exception_pending_q <= 1'b1;
         exception_tag_q <= head_tag;
       end
+      if (reset_seen_q && !i_rst && rob_commit_valid_raw)
+        p_commit_tag_is_head_tag : assert (rob_commit_comb.tag == head_tag);
       if (reset_seen_q && !i_rst && coherent_atomic_active && !i_fatal_stop) begin
         if (!coherent_atomic_retired) assert (head_valid && head_tag == coherent_atomic_tag);
         if (trap_taken) begin
