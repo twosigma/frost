@@ -314,7 +314,11 @@ module coherence_home #(
   // way and the sector. forward_data_q holds the accepted forward's sector
   // until the forward buffer's G.
   logic forward_valid, forward_ready, forward_accept;
-  logic [FILLS-1:0] forward_pick, forward_later_q, forward_later;
+  logic [FILLS-1:0] forward_pick, forward_pick_q, forward_later_q;
+  // fill_forward_set[fill]: the fill enters FillInstall with a primary on
+  // this edge, so it may forward from the next cycle. Both of its uses apply
+  // it only while the home runs.
+  logic [FILLS-1:0] fill_forward_set;
   logic [COMPLETIONS-1:0] forward_slots;
   logic [WayBits-1:0] forward_way;
   coh_g_t forward_result;
@@ -1259,6 +1263,7 @@ module coherence_home #(
         !fill_error_q[fill] : i_mem_resp_valid && i_mem_resp_id == 5'(fill) && !i_mem_resp_error);
     wire forwarded = forward_accept && forward_pick[fill];
     wire [COMPLETIONS-1:0] forward_seat = forwarded ? fill_primary_q[fill] : '0;
+    assign fill_forward_set[fill] = install_entry && fill_primary_q[fill] != 0;
     // The phase's next state forms in kept nodes beside the two late
     // decisions, which select it last: allocation, which finds the fill in
     // FillFree, and update acceptance, which finds it in FillInvalidate or
@@ -1397,7 +1402,7 @@ module coherence_home #(
             fill_primary_q[fill] <= '0;
             fill_forward_q[fill] <= 1'b0;
           end
-          if (install_entry && fill_primary_q[fill] != 0) fill_forward_q[fill] <= 1'b1;
+          if (fill_forward_set[fill]) fill_forward_q[fill] <= 1'b1;
           if (allocate) begin
             fill_addr_q[fill] <= {decision_addr[ADDR_WIDTH-1:OffsetBits], {OffsetBits{1'b0}}};
             fill_old_addr_q[fill] <= array_addr;
@@ -1483,18 +1488,41 @@ module coherence_home #(
   end
 
   // Fills that may forward take turns: the first at or after the fill after
-  // the last one forwarded, else the first. The pick offers its primary's
-  // slot, its way and the primary's sector of its line, all from registers.
-  // The completion table accepts while its forward buffer is free; the slot
-  // then holds its grant, and the sector stays in forward_data_q until that
-  // grant's G. forward_later_q[fill] holds fill > the last fill forwarded,
-  // and holds every fill after the highest one forwards.
-  assign forward_later = fill_forward_q & forward_later_q;
-  always_comb begin
-    forward_pick = '0;
+  // the last one forwarded, else the first. forward_later_q[fill] holds fill
+  // > the last fill forwarded, and holds every fill after the highest one
+  // forwards. The pick offers its primary's slot, its way and the primary's
+  // sector of its line, all from registers. The completion table accepts
+  // while its forward buffer is free; the slot then holds its grant, and the
+  // sector stays in forward_data_q until that grant's G.
+  function automatic logic [FILLS-1:0] forward_turn(input logic [FILLS-1:0] ready,
+                                                    input logic [FILLS-1:0] later);
+    forward_turn = '0;
     for (int fill = FILLS - 1; fill >= 0; fill--)
-    if (|forward_later ? forward_later[fill] : fill_forward_q[fill])
-      forward_pick = FILLS'(1) << fill;
+    if (|(ready & later) ? ready[fill] && later[fill] : ready[fill])
+      forward_turn = FILLS'(1) << fill;
+  endfunction
+  function automatic logic [FILLS-1:0] forward_after(input logic [FILLS-1:0] pick);
+    for (int fill = 0; fill < FILLS; fill++)
+    forward_after[fill] = pick[FILLS-1] || (pick & ((FILLS'(1) << fill) - FILLS'(1))) != 0;
+  endfunction
+  // forward_pick_q holds the turn of the current state, formed from the
+  // next state: the fills that may forward, without an accepted forward's
+  // fill and with each install that begins with a primary, and the turn
+  // past an accepted forward's fill. An allocation finds its fill free, so
+  // it never clears a fill that may forward, and the late decision stays
+  // out of the pick.
+  logic [FILLS-1:0] forward_ready_next;
+  assign forward_ready_next = fill_forward_q | (run ? fill_forward_set : '0);
+  always_ff @(posedge i_clk) begin
+    if (i_rst) forward_pick_q <= '0;
+    else if (forward_accept)
+      forward_pick_q <= forward_turn(
+          forward_ready_next & ~forward_pick_q, forward_after(forward_pick_q)
+      );
+    else forward_pick_q <= forward_turn(forward_ready_next, forward_later_q);
+  end
+  assign forward_pick = forward_pick_q;
+  always_comb begin
     forward_slots  = '0;
     forward_way    = '0;
     forward_data   = '0;
@@ -1519,10 +1547,7 @@ module coherence_home #(
   always_ff @(posedge i_clk) begin
     if (forward_accept) forward_data_q <= forward_data;
     if (i_rst) forward_later_q <= '1;
-    else if (forward_accept)
-      for (int fill = 0; fill < FILLS; fill++)
-      forward_later_q[fill] <= forward_pick[FILLS-1] ||
-          (forward_pick & ((FILLS'(1) << fill) - FILLS'(1))) != 0;
+    else if (forward_accept) forward_later_q <= forward_after(forward_pick);
   end
 
   for (genvar fill = 0; fill < FILLS; fill++) begin : gen_fill_memory
@@ -1921,7 +1946,9 @@ module coherence_home #(
       assert ($onehot0({engine_r_ready, fill_r_ready}));
       assert ((park & wake) == 0);
       // The forward offers one fill that may forward, with its primary's
-      // slot and the fill's way and line sector.
+      // slot and the fill's way and line sector. The registered pick is the
+      // turn of the current state.
+      assert (forward_pick_q == forward_turn(fill_forward_q, forward_later_q));
       assert ($onehot0(forward_pick) && (forward_pick & ~fill_forward_q) == 0);
       assert ((forward_pick != 0) == (fill_forward_q != 0));
       assert (forward_valid == (run && fill_forward_q != 0));
