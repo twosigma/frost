@@ -724,8 +724,12 @@ for the array lookup, the state update and any write-back absorption.
 Otherwise the global issue gate ends after replay marking is effective. In
 both cases the matching-sector gate lasts through reply acceptance.
 
-The atomic guard computes active and retired state for permitted and blocked
-arming. Candidate validity and the entry veto select between those results.
+The atomic guard arms when idle on a candidate whose tag is the valid ROB
+head, unless an entry vetoes it in that cycle. An active guard retires on its
+commit and releases once retired or faulted with the home idle. The guard
+registers those inputs as they arrive, at the end of the ROB head's commit,
+trap and xRET logic, and forms its active and retired outputs from the
+registered values on the next cycle, which equals registering its next state.
 The atomic guard captures the candidate tag while idle and holds it while
 active. Only an active context qualifies the tag.
 

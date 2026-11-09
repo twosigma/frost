@@ -51,7 +51,7 @@ adapter wiring.
 |-----------|---------|--------|
 | `SPLIT_RS_DISPATCH` | 0 | 1: per-station dispatch packets for both slots, as the CPU uses. 0: the single-slot `i_rs_dispatch` bus, decoded by `rs_type`, for wrapper benches |
 | `ENABLE_DISPATCH_DONE_REPAIR` | 0 | Answers dispatch's done-repair queries from the ROB (see the [reservation station](../reservation_station/README.md#done-repair)) |
-| `ROB_SHARED_LINK_BANK` | 0 | Shares the ROB value memories' allocation link bank when dispatch guarantees at most one branch allocation per cycle; enabled by `cpu_ooo` |
+| `ROB_SHARED_LINK_BANK` | 0 | Shares the ROB value memories' allocation link bank when dispatch never allocates slot 2 behind a slot-1 branch; enabled by `cpu_ooo` |
 | `INT_RS_DEPTH` | 16 (`riscv_pkg::IntRsDepth`) | INT_RS entries: a power of two from 2 to 32, the ROB depth. It changes only INT_RS and the width of its occupancy count; port 1's window stays at eight entries, or the whole station if smaller |
 | `EARLY_LOAD_WAKEUP` | 1 (`riscv_pkg::EarlyLoadWakeup`) | [Early load wakeup](#early-load-wakeup) |
 | `PREPARE_LOAD_WHILE_BUSY` | 1 (`riscv_pkg::PrepareLoadWhileBusy`) | LQ: stage a load while the memory port is busy; the wrapper may separately permit unrelated L0 hits during buffered Normal stores and older Normal reads |
@@ -216,7 +216,12 @@ holding register can use the result's valid bit alone as its write enable
 (`ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`), and that register holds every valid
 ALU result for the CDB value restore above. The wrapper takes the JALR bit
 from the INT RS's `o_issue_is_jalr`, not from the issue packet, whose valid
-depends on this ready.
+depends on this ready. For the same reason it forms `alu_result_via_alu2`
+and both ALU adapters' input valids from the INT RS's `o_issue_staged` and
+`o_issue_2_staged`, with the adapters' pending bits applied last. Each
+equals its earlier form (for the ALU adapter, the shim's valid with the
+pending bit clear), since the pending bits that the ready terms read are low
+whenever the input can be valid.
 
 While the ALU adapter holds a result, the wrapper marks that entry in the
 ROB's `i_result_held`, a register with one bit per entry beside the adapter's

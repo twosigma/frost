@@ -47,6 +47,12 @@ priority-ordered pairs, then fours, then a root. Each merge lists its
 higher-priority input's packets before its lower one's and keeps the first two
 valid packets, so three levels give exactly the fixed-priority result.
 
+`o_grant` comes from the rule rather than from the tree: an FU is granted when
+its request is valid and fewer than two higher-priority requests are. Each
+grant then reads only the requests that outrank it, while the tree's lane-1
+selects read lower-priority requests too. The lane grants still select the
+live values.
+
 ```mermaid
 flowchart TB
     PM["MUL / MEM pair"] --> HIGH["Higher four: top two"]
@@ -106,7 +112,7 @@ completion the kill suppresses is discarded, not retried.
 
 The `cdb_arbiter` cocotb and formal targets check priority, grants, payload
 selection, and the kill against reference models; the formal target compares
-the tree with an independent flat priority encoder. Wrapper tests cover live,
+the tree and the grants with an independent flat priority encoder. Wrapper tests cover live,
 held, and injected ALU packets.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the

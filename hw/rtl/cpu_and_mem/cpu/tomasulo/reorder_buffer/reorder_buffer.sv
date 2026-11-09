@@ -47,10 +47,10 @@ module reorder_buffer #(
     // The full pipeline cannot complete that soon. Direct-drive unit tests can
     // disable the check through tests/Makefile.
     parameter bit DrainWindowCheck = 1'b1,
-    // Share one allocation link bank per value RAM. Requires at most one
-    // branch allocation per cycle, since the slots target different entries.
-    // cpu_ooo enables this; its dispatch blocks slot 2 behind a slot-1 branch.
-    // The default per-slot banks accept any allocation pair.
+    // Share one allocation link bank per value RAM. Its write port follows
+    // slot 1's branch flag, so slot 2 must not allocate while slot 1 carries a
+    // branch. cpu_ooo enables this; its dispatch blocks slot 2 behind a slot-1
+    // branch. The default per-slot banks accept any allocation pair.
     parameter bit SharedLinkBank   = 1'b0
 ) (
     input logic i_clk,
@@ -1475,7 +1475,8 @@ module reorder_buffer #(
   end else begin : g_value_shared_link
     // The shared-bank variant selects a link for branches and zero otherwise.
     // It keeps the same LVT staging and drain rule. Its single link write port
-    // forbids two branch allocations at different entries.
+    // follows slot 1's branch flag, so slot 2 must not allocate behind a slot-1
+    // branch.
     rob_link_value_ram #(
         .ADDR_WIDTH (ReorderBufferTagWidth),
         .DATA_WIDTH (FLEN),
@@ -1936,7 +1937,9 @@ module reorder_buffer #(
   // -------------------------------------------------------------------------
   // Compute done and exception for all four allocation combinations before
   // selecting by enables. Live completions override allocation; store
-  // completion sets done last. Reset clears both fields.
+  // completion sets done last. Reset clears both fields. Done's completions
+  // join after the allocation select, the branch update in the last gate:
+  // it arrives from INT RS port 0's issue, behind the CDB.
   logic alloc_done_value, alloc_done_value_2;
   assign alloc_done_value = i_alloc_req.is_jal || (!i_alloc_req.is_jalr &&
       (i_alloc_req.is_wfi || i_alloc_req.is_fence ||
@@ -1946,24 +1949,26 @@ module reorder_buffer #(
        i_alloc_req_2.is_fence_i || i_alloc_req_2.is_mret));
   logic [ReorderBufferDepth-1:0] done_next, exception_next;
   for (genvar entry = 0; entry < ReorderBufferDepth; entry++) begin : gen_control_next
-    wire alloc_here = tail_idx == ReorderBufferTagWidth'(entry);
-    wire alloc_here_2 = tail_idx_2 == ReorderBufferTagWidth'(entry);
-    wire cdb_here = i_cdb_write.valid && i_cdb_write.tag == ReorderBufferTagWidth'(entry);
-    wire cdb_here_2 = i_cdb_write_2.valid && i_cdb_write_2.tag == ReorderBufferTagWidth'(entry);
-    wire branch_here = i_branch_update.valid &&
+    wire  alloc_here = tail_idx == ReorderBufferTagWidth'(entry);
+    wire  alloc_here_2 = tail_idx_2 == ReorderBufferTagWidth'(entry);
+    wire  cdb_here = i_cdb_write.valid && i_cdb_write.tag == ReorderBufferTagWidth'(entry);
+    wire  cdb_here_2 = i_cdb_write_2.valid && i_cdb_write_2.tag == ReorderBufferTagWidth'(entry);
+    wire  completion_live = rob_valid[entry] && !i_flush_all;
+    (* keep = "true" *)logic done_cdb_completion;
+    (* keep = "true" *)logic branch_completion_here;
+    assign done_cdb_completion = completion_live && (cdb_here || cdb_here_2);
+    assign branch_completion_here = completion_live &&
         i_branch_update.tag == ReorderBufferTagWidth'(entry);
-    wire completion_live = rob_valid[entry] && !i_flush_all;
-    wire done_completion = completion_live && (cdb_here || cdb_here_2 || branch_here);
     wire exception_completion = completion_live &&
         ((cdb_here && i_cdb_write.exception) || (cdb_here_2 && i_cdb_write_2.exception));
     wire exception_hold = rob_exception[entry] || (i_replay_set_mask[entry] && rob_valid[entry]);
-    (* keep = "true" *) logic [3:0] done_alloc_cases, exception_alloc_cases;
+    (* keep = "true" *) logic [3:0] done_alloc_values, exception_alloc_cases;
     for (genvar choice = 0; choice < 4; choice++) begin : gen_alloc_case
       localparam bit Alloc1 = (choice & 1) != 0;
       localparam bit Alloc2 = (choice & 2) != 0;
-      assign done_alloc_cases[choice] = done_completion ||
-          ((Alloc2 && alloc_here_2) ? alloc_done_value_2 :
-           (Alloc1 && alloc_here) ? alloc_done_value : rob_done[entry]);
+      assign done_alloc_values[choice] =
+          (Alloc2 && alloc_here_2) ? alloc_done_value_2 :
+          (Alloc1 && alloc_here) ? alloc_done_value : rob_done[entry];
       assign exception_alloc_cases[choice] = exception_completion ||
           ((Alloc2 && alloc_here_2) ? alloc_legality_fault_data_2 :
            (Alloc1 && alloc_here) ? alloc_legality_fault_data : exception_hold);
@@ -1971,11 +1976,12 @@ module reorder_buffer #(
     (* keep = "true" *) logic store_completion_eligible;
     assign store_completion_eligible = completion_live &&
         i_store_complete_tag == ReorderBufferTagWidth'(entry);
-    (* keep = "true" *) wire done_without_store = alloc_en_2_control ?
-        (alloc_en_control ? done_alloc_cases[3] : done_alloc_cases[2]) :
-        (alloc_en_control ? done_alloc_cases[1] : done_alloc_cases[0]);
-    assign done_next[entry] = done_without_store ||
-        (i_store_complete_valid && store_completion_eligible);
+    (* keep = "true" *) wire done_allocated = alloc_en_2_control ?
+        (alloc_en_control ? done_alloc_values[3] : done_alloc_values[2]) :
+        (alloc_en_control ? done_alloc_values[1] : done_alloc_values[0]);
+    assign done_next[entry] = done_allocated || done_cdb_completion ||
+        (i_store_complete_valid && store_completion_eligible) ||
+        (i_branch_update.valid && branch_completion_here);
     assign exception_next[entry] = alloc_en_2_control ?
         (alloc_en_control ? exception_alloc_cases[3] : exception_alloc_cases[2]) :
         (alloc_en_control ? exception_alloc_cases[1] : exception_alloc_cases[0]);
@@ -3224,14 +3230,13 @@ module reorder_buffer #(
     end
   end : g_drain_window_check
 
-  // The shared link bank has one write port. Accepted slots target distinct
-  // entries, so at most one may be a branch. Rejected requests do not count.
+  // The shared link bank has one write port, which follows slot 1's branch
+  // flag (rob_link_value_ram's one-branch-allocation rule). Slot 2 must not be
+  // accepted while slot 1 carries a branch, whether or not slot 1 is accepted.
   if (SharedLinkBank) begin : g_shared_link_bank_check
     always @(posedge i_clk) begin
-      if (dbg_mask_seen_reset && i_rst_n && alloc_en && alloc_en_2 &&
-          i_alloc_req.is_branch && i_alloc_req_2.is_branch && (tail_idx != tail_idx_2)) begin
-        $error("Reorder Buffer: branch allocations at entries %0d and %0d in one cycle", tail_idx,
-               tail_idx_2);
+      if (dbg_mask_seen_reset && i_rst_n && alloc_en_2 && i_alloc_req.is_branch) begin
+        $error("Reorder Buffer: slot-2 allocation at entry %0d behind a slot-1 branch", tail_idx_2);
       end
     end
   end : g_shared_link_bank_check

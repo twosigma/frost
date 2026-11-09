@@ -1006,10 +1006,25 @@ module branch_prediction_controller #(
       slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken;
   // The staged select feeds the fetch-PC mux. The raw served-window guard
   // clears both prediction_common and i_slot2_valid, so the select is formed
-  // with the guard low and the guard applies last.
-  (* keep = "true" *) logic slot2_staged_prediction_used_for_pc_wcs0;
-  assign slot2_staged_prediction_used_for_pc_wcs0 = prediction_common_wcs0 && !i_branch_taken &&
-      !i_is_32bit_spanning && i_slot2_valid_wcs0 && slot2_staged_prediction_candidate_for_pc;
+  // with the guard low and the guard applies last. The BTB's taken results
+  // behind the slot-2 tag compares are the late terms: each candidate's taken
+  // bit meets its kept qualifier (permission, valid and size check) in the
+  // gate that the guard and IF's replay request join.
+  logic slot2_staged_gate_wcs0;
+  (* keep = "true" *)logic slot2_staged_plus2_qualifier_wcs0;
+  (* keep = "true" *)logic slot2_staged_plus4_qualifier_wcs0;
+  logic slot2_staged_prediction_used_for_pc_wcs0;
+  assign slot2_staged_gate_wcs0 = prediction_common_wcs0 && !i_branch_taken &&
+      !i_is_32bit_spanning && i_slot2_valid_wcs0;
+  assign slot2_staged_plus2_qualifier_wcs0 = slot2_staged_gate_wcs0 &&
+      i_slot2_plus2_candidate_valid &&
+      (!i_pc_2[1] || (i_slot2_is_compressed_plus2 == btb_compressed_2_plus2));
+  assign slot2_staged_plus4_qualifier_wcs0 = slot2_staged_gate_wcs0 &&
+      i_slot2_plus4_candidate_valid &&
+      (!i_pc_2_alt[1] || (i_slot2_is_compressed_plus4 == btb_compressed_2_plus4));
+  assign slot2_staged_prediction_used_for_pc_wcs0 =
+      (btb_predicted_taken_2_plus2 && slot2_staged_plus2_qualifier_wcs0) ||
+      (btb_predicted_taken_2_plus4 && slot2_staged_plus4_qualifier_wcs0);
   assign slot2_staged_prediction_used_for_pc =
       slot2_staged_prediction_used_for_pc_wcs0 && !i_window_cannot_serve_raw;
   assign slot2_live_fallback_used_for_pc =

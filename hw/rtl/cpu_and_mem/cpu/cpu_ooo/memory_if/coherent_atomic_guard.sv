@@ -35,39 +35,37 @@ module coherent_atomic_guard #(
     // The active context qualifies the tag.
     output logic [TAG_BITS-1:0] o_tag
 );
-  logic [1:0] context_choice[2];
-  logic [1:0] selected_context;
-  for (genvar arm_case = 0; arm_case < 2; arm_case++) begin : gen_arm_case
-    localparam bit CanArm = arm_case != 0;
-    (* keep = "true" *) logic [1:0] result;
-    logic active, retired;
-    always_comb begin
-      active  = o_active;
-      retired = o_retired;
-      if (!o_active && CanArm && i_head_valid && i_arm_tag == i_head_tag) begin
-        active  = 1'b1;
-        retired = 1'b0;
-      end
-      if (o_active && i_commit_valid && i_commit_tag == o_tag) retired = 1'b1;
-      if (o_active && o_retired && !i_home_live) active = 1'b0;
-      if (o_active && i_own_fault && !i_home_live) active = 1'b0;
-    end
-    assign result = {active, retired};
-    assign context_choice[arm_case] = result;
-  end
-  always_comb begin
-    selected_context = context_choice[0];
-    if (i_arm_valid && !i_entry_wins) selected_context = context_choice[1];
-  end
+  // The guard's inputs arrive at the end of the ROB head's commit, trap and
+  // xRET logic, so they are registered as they arrive and the guard forms
+  // its state from them on the next cycle. In closed form, an idle guard arms
+  // on an arm request whose tag is the valid ROB head with no winning entry;
+  // an active guard retires on its commit and releases once retired or
+  // faulted with the home idle. Applied to the registered previous state and
+  // inputs, that gives o_active and o_retired the values a next-state register
+  // would hold, on every cycle.
+  logic active_q, retired_q;
+  logic home_live_q, own_fault_q, commit_hit_q, arm_match_q, entry_wins_q;
+  logic arm_now_q;
+  assign arm_now_q = arm_match_q && !entry_wins_q;
+  assign o_active  = active_q ? (home_live_q || (!retired_q && !own_fault_q)) : arm_now_q;
+  assign o_retired = active_q ? (retired_q || commit_hit_q) : (retired_q && !arm_now_q);
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      o_active <= 1'b0;
-      o_retired <= 1'b0;
+      active_q <= 1'b0;
+      retired_q <= 1'b0;
+      arm_match_q <= 1'b0;
       o_tag <= '0;
     end else begin
+      active_q <= o_active;
+      retired_q <= o_retired;
+      arm_match_q <= i_arm_valid && i_head_valid && i_arm_tag == i_head_tag;
       if (!o_active) o_tag <= i_arm_tag;
-      {o_active, o_retired} <= selected_context;
     end
+    // Read only through active_q and arm_match_q, which reset clears.
+    home_live_q  <= i_home_live;
+    own_fault_q  <= i_own_fault;
+    commit_hit_q <= i_commit_valid && i_commit_tag == o_tag;
+    entry_wins_q <= i_entry_wins;
   end
 `ifndef SYNTHESIS
   logic reference_active, reference_retired;

@@ -42,13 +42,20 @@ module fu_cdb_adapter #(
     // Requires a grant for every valid output unless i_flush discards it,
     // with REGISTER_OUTPUT=0 and ALLOW_GRANT_REFILL=0. Pending stays zero.
     // The wrapper uses this for the two highest-priority CDB sources.
-    parameter bit ALWAYS_GRANTED = 1'b0
+    parameter bit ALWAYS_GRANTED = 1'b0,
+    // Take the input's partial-flush age compare from i_fu_result_younger,
+    // which a producer that selects the input tag late forms ahead of the
+    // select. It must equal the compare of i_fu_result.tag whenever
+    // i_fu_result.valid; otherwise i_fu_result_younger is ignored.
+    parameter bit INPUT_YOUNGER_PRECOMPUTED = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
 
     // FU result input (level signal: valid while result available)
     input riscv_pkg::fu_complete_t i_fu_result,
+    // i_fu_result.tag younger than i_flush_tag (INPUT_YOUNGER_PRECOMPUTED only)
+    input logic                    i_fu_result_younger,
 
     // CDB arbiter interface
     output riscv_pkg::fu_complete_t o_fu_complete,
@@ -110,9 +117,32 @@ module fu_cdb_adapter #(
   );
   // Filter incoming results even while pending: a squashed refill could
   // otherwise survive the flush and broadcast to a reused ROB tag.
-  assign partial_flush_input = i_flush_en & i_fu_result.valid & is_younger(
-      i_fu_result.tag, i_flush_tag, i_rob_head_tag
-  );
+  logic input_younger;
+  generate
+    if (INPUT_YOUNGER_PRECOMPUTED) begin : gen_input_younger_precomputed
+      assign input_younger = i_fu_result_younger;
+`ifndef SYNTHESIS
+      // The precomputed compare matters only for a valid input during a
+      // partial flush. Simulation samples settled values at the clock edge.
+`ifdef FORMAL
+      wire younger_reset_seen_q = 1'b1;
+      always_comb
+`else
+      logic younger_reset_seen_q = 1'b0;
+      always_ff @(posedge i_clk) if (!i_rst_n) younger_reset_seen_q <= 1'b1;
+      always @(posedge i_clk)
+`endif
+        if (younger_reset_seen_q && i_rst_n && i_fu_result.valid && i_flush_en)
+          p_input_younger_matches_tag :
+          assert (i_fu_result_younger == is_younger(i_fu_result.tag, i_flush_tag, i_rob_head_tag));
+`endif
+    end else begin : gen_input_younger_compare
+      assign input_younger = is_younger(i_fu_result.tag, i_flush_tag, i_rob_head_tag);
+      logic unused_input_younger;
+      assign unused_input_younger = i_fu_result_younger;
+    end
+  endgenerate
+  assign partial_flush_input = i_flush_en & i_fu_result.valid & input_younger;
 
   // ---------------------------------------------------------------------------
   // Output logic (combinational)

@@ -135,17 +135,18 @@ module coherent_local_completion_formal (
       .ALLOW_GRANT_REFILL(1'b0),
       .ALWAYS_GRANTED(1'b1)
   ) u_mem_adapter (
-      .i_clk           (i_clk),
-      .i_rst_n         (i_rst_n),
-      .i_fu_result     (mem_fu_to_adapter),
-      .o_fu_complete   (mem_adapter_to_arbiter),
-      .o_held_value    (),
-      .i_grant         (o_cdb_grant[3]),
-      .o_result_pending(mem_adapter_result_pending),
-      .i_flush         (speculative_flush_all),
-      .i_flush_en      (speculative_flush_en),
-      .i_flush_tag     (i_flush_tag),
-      .i_rob_head_tag  (head_tag)
+      .i_clk              (i_clk),
+      .i_rst_n            (i_rst_n),
+      .i_fu_result        (mem_fu_to_adapter),
+      .i_fu_result_younger(1'b0),
+      .o_fu_complete      (mem_adapter_to_arbiter),
+      .o_held_value       (),
+      .i_grant            (o_cdb_grant[3]),
+      .o_result_pending   (mem_adapter_result_pending),
+      .i_flush            (speculative_flush_all),
+      .i_flush_en         (speculative_flush_en),
+      .i_flush_tag        (i_flush_tag),
+      .i_rob_head_tag     (head_tag)
   );
   (* anyseq *) riscv_pkg::fu_complete_t competing;
   cdb_arbiter arbiter (

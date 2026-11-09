@@ -43,10 +43,12 @@ per slot). With `SharedLinkBank=0` (the module default), each copy has four
 banks and accepts any pair of allocations. With `SharedLinkBank=1`,
 `rob_link_value_ram` uses three: one allocation bank shared by both slots for
 link addresses, and one per CDB lane; a non-branch allocation selects zero
-through the LVT. The shared bank requires that two branch allocations in one
-cycle never target different entries. Only `cpu_ooo` enables it (through the
-wrapper's `ROB_SHARED_LINK_BANK`), because its dispatch never allocates slot
-2 behind a slot-1 branch; a simulation assertion checks this in the ROB. The
+through the LVT. The shared bank's write port follows slot 1's branch flag,
+so it requires that slot 2 never allocates while slot 1 carries a branch.
+Only `cpu_ooo` enables it (through the wrapper's `ROB_SHARED_LINK_BANK`),
+because its dispatch never allocates slot 2 behind a slot-1 branch
+(`rob_link_dispatch.sby` proves this); a simulation assertion checks it in the
+ROB. The
 head and head+1 copies of this memory also need the ROB's one-hot head masks
 to match their binary read addresses.
 

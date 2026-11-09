@@ -189,10 +189,15 @@ module reservation_station #(
     // Stage2 holds a JALR (o_issue.is_jalr without the issue packet), for
     // logic that feeds i_fu_ready.
     output logic                                                        o_issue_is_jalr,
+    // Stage2 holds a packet (o_issue.valid without i_fu_ready), for logic that
+    // feeds i_fu_ready or that applies it last.
+    output logic                                                        o_issue_staged,
 
     // Second issue port (DUAL_ISSUE only; tied off otherwise).
     output riscv_pkg::rs_issue_t       o_issue_2,
     input  logic                       i_fu_ready_2,
+    // Stage2b holds a packet (o_issue_2.valid without i_fu_ready_2).
+    output logic                       o_issue_2_staged,
     output logic                       o_issue_writes_cdb_hint_2,
     // Effective barrel amount captured on the same edge as port-1 operands.
     output logic                 [5:0] o_issue_shift_amount_2,
@@ -2183,6 +2188,8 @@ module reservation_station #(
   assign o_issue.is_jal = stage2_is_jal;
   assign o_issue.is_jalr = stage2_is_jalr;
   assign o_issue_is_jalr = stage2_is_jalr;
+  assign o_issue_staged = stage2_valid;
+  assign o_issue_2_staged = stage2b_valid;
   assign o_issue.branch_op = stage2_branch_op;
 
   assign o_issue_writes_cdb_hint = stage2_writes_cdb_hint;

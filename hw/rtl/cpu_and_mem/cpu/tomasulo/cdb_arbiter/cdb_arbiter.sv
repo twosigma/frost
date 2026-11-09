@@ -23,8 +23,9 @@
  *   MUL > MEM > ALU > ALU2 > DIV > FP_DIV > FP_MUL > FP_ADD
  *
  * A balanced merge tree carries the two highest-priority packets and their
- * one-hot FU grants at each node. Live ALU values bypass the tree for timing
- * and are restored at its outputs; held and test-injected values use the tree.
+ * one-hot FU grants at each node. o_grant follows the priority rule directly.
+ * Live ALU values bypass the tree for timing and are restored at its outputs;
+ * held and test-injected values use the tree.
  *
  * i_clk/i_rst_n exist only for the formal harness. Arbitration has no state
  * and adds no result latency.
@@ -206,8 +207,49 @@ module cdb_arbiter #(
 
   assign lane0_grant_raw = tree_root.first.grant;
   assign lane1_grant_raw = tree_root.second.grant;
-  assign o_grant_raw     = lane0_grant_raw | lane1_grant_raw;
-  assign o_grant         = i_kill ? '0 : o_grant_raw;
+
+  // An FU wins a lane when its request is valid with fewer than two valid
+  // higher-priority requests. Forming the grants from that rule, not from the
+  // lane grants, keeps lower-priority requests out of each grant's cone; the
+  // tree's lane-1 selects would otherwise read them.
+  function automatic logic two_or_more(input logic [riscv_pkg::NumFus-1:0] valids);
+    logic seen_one;
+    logic seen_two;
+    begin
+      seen_one = 1'b0;
+      seen_two = 1'b0;
+      for (int i = 0; i < riscv_pkg::NumFus; i++) begin
+        seen_two = seen_two || (seen_one && valids[i]);
+        seen_one = seen_one || valids[i];
+      end
+      two_or_more = seen_two;
+    end
+  endfunction
+
+  logic [riscv_pkg::NumFus-1:0] grant_by_rule;
+  logic [riscv_pkg::NumFus-1:0] higher;  // valid requests that outrank the current FU
+  always_comb begin
+    grant_by_rule = '0;
+    higher = '0;
+    grant_by_rule[riscv_pkg::FU_MUL] = i_fu_complete_1.valid;
+    higher[0] = i_fu_complete_1.valid;
+    grant_by_rule[riscv_pkg::FU_MEM] = i_fu_complete_3.valid && !two_or_more(higher);
+    higher[1] = i_fu_complete_3.valid;
+    grant_by_rule[riscv_pkg::FU_ALU] = i_fu_complete_0.valid && !two_or_more(higher);
+    higher[2] = i_fu_complete_0.valid;
+    grant_by_rule[riscv_pkg::FU_ALU2] = i_fu_complete_7.valid && !two_or_more(higher);
+    higher[3] = i_fu_complete_7.valid;
+    grant_by_rule[riscv_pkg::FU_DIV] = i_fu_complete_2.valid && !two_or_more(higher);
+    higher[4] = i_fu_complete_2.valid;
+    grant_by_rule[riscv_pkg::FU_FP_DIV] = i_fu_complete_6.valid && !two_or_more(higher);
+    higher[5] = i_fu_complete_6.valid;
+    grant_by_rule[riscv_pkg::FU_FP_MUL] = i_fu_complete_5.valid && !two_or_more(higher);
+    higher[6] = i_fu_complete_5.valid;
+    grant_by_rule[riscv_pkg::FU_FP_ADD] = i_fu_complete_4.valid && !two_or_more(higher);
+  end
+
+  assign o_grant_raw = grant_by_rule;
+  assign o_grant     = i_kill ? '0 : o_grant_raw;
 
   // Raw grants qualify live selects with request validity, independent of kill.
   logic lane0_select_alu_live;
@@ -443,6 +485,7 @@ module cdb_arbiter #(
     p_tree_lane0_valid_equiv : assert (tree_root.first.request.valid == f_ref_found0);
     p_tree_lane1_valid_equiv : assert (tree_root.second.request.valid == f_ref_found1);
     p_raw_grant_equiv : assert (o_grant_raw == (f_ref_g0 | f_ref_g1));
+    p_rule_grant_matches_lanes : assert (o_grant_raw == (lane0_grant_raw | lane1_grant_raw));
     p_kill_grant_equiv : assert (o_grant == (i_kill ? '0 : (f_ref_g0 | f_ref_g1)));
     p_lane0_visible_valid_equiv : assert (o_cdb.valid == (f_ref_found0 && !i_kill));
     p_lane1_visible_valid_equiv : assert (o_cdb_2.valid == (f_ref_found1 && !i_kill));

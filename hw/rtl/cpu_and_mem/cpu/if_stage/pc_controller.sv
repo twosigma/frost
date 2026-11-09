@@ -1362,13 +1362,12 @@ module pc_controller #(
       pc_reg_nonseq_wcs0_without_slot2 = o_pc_reg;
   end
 
-  // Select staged, sequential, or base data before the live slot-2 choice.
-  // The final mux prioritizes a redirect, then aliased live slot 2.
-  // On a redirect, the base value already holds its target.
-  (* keep = "true" *) logic pc_reg_live_candidate;
-  (* keep = "true" *) logic pc_reg_seq_candidate;
-  (* keep = "true" *) logic pc_reg_seq_candidate_wcs0;
-  (* keep = "true" *) logic [XLEN-1:0] pc_reg_staged_or_sequential;
+  // next_pc_reg prioritizes a redirect, then aliased live slot 2, then the
+  // staged slot-2 target, then sequential or base data. On a redirect, the
+  // base value already holds its target.
+  (* keep = "true" *)logic pc_reg_live_candidate;
+  (* keep = "true" *)logic pc_reg_seq_candidate;
+  (* keep = "true" *)logic pc_reg_seq_candidate_wcs0;
   assign pc_reg_live_redirect_permission =
       !trap_or_mret && !i_fence_i_flush && !i_branch_taken && !i_pd_redirect;
   assign pc_reg_live_candidate = i_slot1_aliases_slot2_candidate &&
@@ -1411,48 +1410,81 @@ module pc_controller #(
 `endif
   logic next_pc_reg_high_for_coverage;
 `ifdef FROST_XILINX_PRIMS
+  // The staged slot-2 select arrives last. Each bit forms its value for both
+  // values of that select, the staged arm in a LUT5 and the other arm in a
+  // LUT6, and the select picks one in the slice's MUXF7. The live candidate,
+  // the next-latest input, takes each LUT's highest pin.
   for (genvar bit_idx = 0; bit_idx < XLEN; bit_idx++) begin : gen_arch_pc_bit_mux
+    logic staged_arm, unstaged_arm;
+    // !permission ? base : live ? live target : staged target
     LUT5 #(
-        .INIT(32'hf5b1e4a0)
-    ) u_staged_seq (
-        .I0(i_slot2_staged_prediction_used_for_pc),
-        .I1(pc_reg_seq_candidate),
-        .I2(i_slot2_staged_predicted_target[bit_idx]),
-        .I3(seq_next_pc_reg[bit_idx]),
-        .I4(pc_reg_nonseq_wcs0_without_slot2[bit_idx]),
-        .O (pc_reg_staged_or_sequential[bit_idx])
-    );
-    LUT5 #(
-        .INIT(32'hF7D5A280)
-    ) u_final (
+        .INIT(32'hFA50D8D8)
+    ) u_staged_arm (
         .I0(pc_reg_live_redirect_permission),
-        .I1(pc_reg_live_candidate),
-        .I2(i_slot2_live_predicted_target[bit_idx]),
-        .I3(pc_reg_staged_or_sequential[bit_idx]),
-        .I4(pc_reg_nonseq_wcs0_without_slot2[bit_idx]),
+        .I1(i_slot2_staged_predicted_target[bit_idx]),
+        .I2(pc_reg_nonseq_wcs0_without_slot2[bit_idx]),
+        .I3(i_slot2_live_predicted_target[bit_idx]),
+        .I4(pc_reg_live_candidate),
+        .O (staged_arm)
+    );
+    // !permission ? base : live ? live target : sequential ? next : base
+    LUT6 #(
+        .INIT(64'hFFAA5500F780F780)
+    ) u_unstaged_arm (
+        .I0(pc_reg_live_redirect_permission),
+        .I1(pc_reg_seq_candidate),
+        .I2(seq_next_pc_reg[bit_idx]),
+        .I3(pc_reg_nonseq_wcs0_without_slot2[bit_idx]),
+        .I4(i_slot2_live_predicted_target[bit_idx]),
+        .I5(pc_reg_live_candidate),
+        .O (unstaged_arm)
+    );
+    (* dont_touch = "true" *) MUXF7 u_staged_select (
+        .I0(unstaged_arm),
+        .I1(staged_arm),
+        .S (i_slot2_staged_prediction_used_for_pc),
         .O (next_pc_reg[bit_idx])
     );
   end
   // The coverage copy takes its own last gate: flops that share a D net keep
   // reset in a LUT at D instead of on their R pins.
+  logic coverage_staged_arm, coverage_unstaged_arm;
   (* dont_touch = "true" *)
   LUT5 #(
-      .INIT(32'hF7D5A280)
-  ) u_coverage_final (
+      .INIT(32'hFA50D8D8)
+  ) u_coverage_staged_arm (
       .I0(pc_reg_live_redirect_permission),
-      .I1(pc_reg_live_candidate),
-      .I2(i_slot2_live_predicted_target[1]),
-      .I3(pc_reg_staged_or_sequential[1]),
-      .I4(pc_reg_nonseq_wcs0_without_slot2[1]),
+      .I1(i_slot2_staged_predicted_target[1]),
+      .I2(pc_reg_nonseq_wcs0_without_slot2[1]),
+      .I3(i_slot2_live_predicted_target[1]),
+      .I4(pc_reg_live_candidate),
+      .O (coverage_staged_arm)
+  );
+  (* dont_touch = "true" *)
+  LUT6 #(
+      .INIT(64'hFFAA5500F780F780)
+  ) u_coverage_unstaged_arm (
+      .I0(pc_reg_live_redirect_permission),
+      .I1(pc_reg_seq_candidate),
+      .I2(seq_next_pc_reg[1]),
+      .I3(pc_reg_nonseq_wcs0_without_slot2[1]),
+      .I4(i_slot2_live_predicted_target[1]),
+      .I5(pc_reg_live_candidate),
+      .O (coverage_unstaged_arm)
+  );
+  (* dont_touch = "true" *)
+  MUXF7 u_coverage_staged_select (
+      .I0(coverage_unstaged_arm),
+      .I1(coverage_staged_arm),
+      .S (i_slot2_staged_prediction_used_for_pc),
       .O (next_pc_reg_high_for_coverage)
   );
 `else
-  assign pc_reg_staged_or_sequential = i_slot2_staged_prediction_used_for_pc ?
-      i_slot2_staged_predicted_target :
-      pc_reg_seq_candidate ? seq_next_pc_reg : pc_reg_nonseq_wcs0_without_slot2;
   assign next_pc_reg = !pc_reg_live_redirect_permission ?
       pc_reg_nonseq_wcs0_without_slot2 : pc_reg_live_candidate ?
-      i_slot2_live_predicted_target : pc_reg_staged_or_sequential;
+      i_slot2_live_predicted_target : i_slot2_staged_prediction_used_for_pc ?
+      i_slot2_staged_predicted_target :
+      pc_reg_seq_candidate ? seq_next_pc_reg : pc_reg_nonseq_wcs0_without_slot2;
   assign next_pc_reg_high_for_coverage = next_pc_reg[1];
 `endif
 
