@@ -1911,11 +1911,30 @@ module csr_file #(
   assign read_addr_hi_onehot  = 16'(1) << i_csr_address[11:8];
   assign read_addr_mid_onehot = 16'(1) << i_csr_address[7:4];
   assign read_addr_lo_onehot  = 16'(1) << i_csr_address[3:0];
+  // Each machine counter entry (0xB0n: mcycle, minstret, mhpmcounter3..10)
+  // also answers its read-only user alias (0xC0n), which differs only in the
+  // high nibble, so one select and one OR term serve both addresses. The
+  // user-alias entries keep their place and read value with a zero select.
+  localparam logic [NumReadCsrs-1:0] One = NumReadCsrs'(1);
+  localparam logic [NumReadCsrs-1:0] ReadAnswersUserAlias =
+      (One << 4) | (One << 7) | (One << 53) | (One << 54) | (One << 59) |
+      (One << 60) | (One << 61) | (One << 62) | (One << 71) | (One << 72);
+  localparam logic [NumReadCsrs-1:0] ReadUserAliasEntry =
+      (One << 3) | (One << 6) | (One << 55) | (One << 56) | (One << 63) |
+      (One << 64) | (One << 65) | (One << 66) | (One << 73) | (One << 74);
   (* keep = "true" *) logic [NumReadCsrs-1:0] read_csr_select;
   for (genvar k = 0; k < int'(NumReadCsrs); k++) begin : gen_read_select
     localparam logic [11:0] Addr = ReadCsrAddrs[12*k+:12];
-    assign read_csr_select[k] = i_csr_read_enable && read_addr_hi_onehot[Addr[11:8]] &&
-        read_addr_mid_onehot[Addr[7:4]] && read_addr_lo_onehot[Addr[3:0]];
+    if (ReadUserAliasEntry[k]) begin : gen_alias_entry
+      assign read_csr_select[k] = 1'b0;
+    end else if (ReadAnswersUserAlias[k]) begin : gen_counter_entry
+      assign read_csr_select[k] = i_csr_read_enable &&
+          (read_addr_hi_onehot[Addr[11:8]] || read_addr_hi_onehot[4'hC]) &&
+          read_addr_mid_onehot[Addr[7:4]] && read_addr_lo_onehot[Addr[3:0]];
+    end else begin : gen_entry
+      assign read_csr_select[k] = i_csr_read_enable && read_addr_hi_onehot[Addr[11:8]] &&
+          read_addr_mid_onehot[Addr[7:4]] && read_addr_lo_onehot[Addr[3:0]];
+    end
   end
   logic [XLEN-1:0] read_csr_value[NumReadCsrs];
   always_comb begin
