@@ -542,6 +542,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="fence.i cost for JIT-style code generation in cached DDR",
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
     ),
+    "fencei_jit_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="fencei_jit_bench",
+        nic_mac_clocks=False,
+        description="fence.i and refetch cost for a JIT-style patch, fence.i and call loop",
+        extra_env=(("COCOTB_MAX_CYCLES", "60000000"),),
+    ),
     "smc_torture": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

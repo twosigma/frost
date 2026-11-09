@@ -36,6 +36,7 @@ any of them rebuilds.
 
 ### Build options
 
+|  |  and refetch cost in a JIT-style write,  and call loop: patch size sweep, straight-line and one-line-per-hop layouts, and a small patch inside a hot unmodified region |
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `RISCV_PREFIX` | `riscv64-linux-` | Toolchain prefix |
