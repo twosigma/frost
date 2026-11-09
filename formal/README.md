@@ -54,8 +54,9 @@ a job of their own, each with a 330-minute limit. The store-home job runs the ho
 ordered store tasks with a 240-minute limit. The L1D multi-endpoint job runs
 `coh_l1d_multi_bmc` alone, the L1D and bridges job runs the other L1D tasks
 and the AXI bridge targets, and the store-boundary job runs the other store-boundary
-targets, each with a 330-minute limit. The coherent-array equivalence job
-runs the `coherence_array_equiv` tasks with a 120-minute limit. The Coherence
+targets, each with a 330-minute limit. Two coherent-array equivalence jobs
+run the `coherence_array_equiv` tasks, the four-way tasks in one and the
+others in the other, each with a 120-minute limit. The Coherence
 job runs the other coherence tasks, including the hart maintenance covers,
 with a 240-minute limit. The Other tasks job has a 240-minute limit.
 Job limits include image setup.

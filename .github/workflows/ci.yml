@@ -1225,10 +1225,14 @@ jobs:
               coherence_array_equiv or coh_array4_port_bmc)) or
               (coherent_local_atomic and amo_cover)
             timeout_minutes: 240
-          # The coherent array's equivalence with its reference array, about an
-          # hour of BMC tasks.
+          # The coherent array's equivalence with its reference array: the
+          # one-way, UltraRAM and hit-port tasks with the cover, and the
+          # four-way tasks, each about an hour of BMC tasks.
           - shard: Coherence array equivalence
-            pytest_filter: coherence_array_equiv
+            pytest_filter: coherence_array_equiv and not coh_array_equiv4
+            timeout_minutes: 120
+          - shard: Coherence array equivalence four-way
+            pytest_filter: coh_array_equiv4
             timeout_minutes: 120
           # The home's ordered store tasks, which alone ran for about two
           # hours in the Coherence job and pushed it past its limit.
