@@ -626,6 +626,11 @@ FORMAL_TARGETS = [
         tasks=("result_pins_prove", "result_pins_xilinx_prove"),
     ),
     FormalTarget(
+        "lq_sector_copy.sby",
+        "The staged load's registered sector matches equal its entry's matches.",
+        tasks=("sector_copy_prove", "sector_copy_xilinx_prove"),
+    ),
+    FormalTarget(
         "lq_age_groups.sby",
         "Entry eligibility and grouped age selection match their direct equations.",
         tasks=("age_groups_prove", "age_groups_xilinx_prove"),
@@ -1714,6 +1719,11 @@ SBY_TASKS = [
     (
         "result_pins_xilinx_prove",
         "Completion, response and allocation INITs for arbitrary pin inputs.",
+    ),
+    ("sector_copy_prove", "Staged sector-match copy equals the indexed select."),
+    (
+        "sector_copy_xilinx_prove",
+        "Staged sector-match copy equals the indexed select with FDRE index cells.",
     ),
     ("coh_l0_flags_prove", "Coherent L0 next-state equality at 128 entries."),
     ("coh_l0_flags256_prove", "Coherent L0 next-state equality at 256 entries."),

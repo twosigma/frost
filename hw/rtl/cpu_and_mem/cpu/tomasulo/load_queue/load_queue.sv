@@ -1801,6 +1801,14 @@ module load_queue #(
   logic [DEPTH-1:0] entry_high_zero;
   logic [DEPTH-1:0][3:0] entry_holder_match_q;
   logic [DEPTH-1:0] entry_push_match_q;
+  // Each entry's next registered matches, and the staged load's own copy of
+  // its entry's matches, registered beside sq_check_idx from the next matches
+  // of the index it takes (formed below the staging capture), so the hold
+  // reads registers instead of a select by the index.
+  logic [DEPTH-1:0][3:0] entry_holder_match_d;
+  logic [DEPTH-1:0] entry_push_match_d;
+  logic [3:0] staged_holder_match_q;
+  logic staged_push_match_q;
   logic [3:0] holder_valid_prev_q;
   logic push_prev_q, atomic_prev_q;
   always_comb begin
@@ -1846,10 +1854,12 @@ module load_queue #(
           sector_q <= update_sector;
           high_zero_q <= update_high_zero;
         end
-        holder_match_q <= write ? update_holder_match : stored_holder_match;
+        holder_match_q <= entry_holder_match_d[entry];
         // The push itself arrives late; the hold applies it from push_prev_q.
-        push_match_q <= write ? update_push_match : stored_push_match;
+        push_match_q <= entry_push_match_d[entry];
       end
+      assign entry_holder_match_d[entry] = write ? update_holder_match : stored_holder_match;
+      assign entry_push_match_d[entry] = write ? update_push_match : stored_push_match;
       assign entry_sector[entry] = sector_q;
       assign entry_high_zero[entry] = high_zero_q;
       assign entry_holder_match_q[entry] = holder_match_q;
@@ -1873,7 +1883,7 @@ module load_queue #(
       coherent_sector_hold |= i_coherent_block_valid[holder] &&
             ((holder == 0 && atomic_edge) ||
              ((push_prev_q && !holder_valid_prev_q[holder]) ?
-              entry_push_match_q[sq_check_idx] : entry_holder_match_q[sq_check_idx][holder]));
+              staged_push_match_q : staged_holder_match_q[holder]));
     end
     // The registered match is exact for a staged load under the L1D's
     // holders, apart from the cycle an atomic starts or ends, where it holds
@@ -1900,6 +1910,9 @@ module load_queue #(
       p_sector_entry_address :
       assert (entry_sector[sq_check_idx] == sq_check_addr_q[SectorMsb:5] &&
               entry_high_zero[sq_check_idx] == (sq_check_addr_q[XLEN-1:SectorMsb+1] == '0));
+      p_staged_sector_copy :
+      assert (staged_holder_match_q == entry_holder_match_q[sq_check_idx] &&
+              staged_push_match_q == entry_push_match_q[sq_check_idx]);
       if (atomic_edge)
         p_sector_hold_covers : assert (coherent_sector_hold || !reference_sector_hold);
       else p_sector_hold_exact : assert (coherent_sector_hold == reference_sector_hold);
@@ -1908,6 +1921,8 @@ module load_queue #(
 `endif
   end else begin : gen_combinational_sector_match
     assign coherent_sector_hold = reference_sector_hold;
+    assign entry_holder_match_d = '0;
+    assign entry_push_match_d = '0;
     logic unused_holder_protocol;
     assign unused_holder_protocol = ^{i_coherent_store_push, i_coherent_store_push_addr,
                                       i_coherent_atomic_live};
@@ -4466,6 +4481,29 @@ module load_queue #(
       sq_check_is_amo_q     <= sq_check_is_amo_next;
       sq_check_fault_kind_q <= sq_check_fault_kind_next;
     end
+  end
+`endif
+
+  // The staged load's registered sector matches (REGISTERED_SECTOR_MATCH):
+  // the next matches of the entry sq_check_idx holds after this edge, with
+  // the late take selecting last, so after every edge they equal
+  // entry_holder_match_q and entry_push_match_q at sq_check_idx.
+  always_ff @(posedge i_clk) begin
+    staged_holder_match_q <= sq_check_payload_en ? entry_holder_match_d[sq_check_idx_next] :
+        entry_holder_match_d[sq_check_idx];
+    staged_push_match_q <= sq_check_payload_en ? entry_push_match_d[sq_check_idx_next] :
+        entry_push_match_d[sq_check_idx];
+  end
+`ifdef LQ_SECTOR_COPY_PROOF
+  // Local proof (lq_sector_copy.sby): from any state, after one edge the
+  // copies equal the select, for arbitrary take, index and next matches.
+  logic f_copy_past_valid = 1'b0;
+  always @(posedge i_clk) begin
+    f_copy_past_valid <= 1'b1;
+    if (f_copy_past_valid)
+      p_staged_sector_copy_local :
+      assert (staged_holder_match_q == entry_holder_match_q[sq_check_idx] &&
+              staged_push_match_q == entry_push_match_q[sq_check_idx]);
   end
 `endif
 
