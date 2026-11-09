@@ -1480,6 +1480,13 @@ module tomasulo_wrapper #(
   logic int_rs_issue_writes_cdb_hint_2;
   logic alu2_fu_busy;
 
+  // Both INT ports issue from stage2 when ready; the ready base is the part of
+  // their ready terms without the adapters' pending bits.
+  logic int_rs_issue_ready_base;
+  logic int_rs_issue_staged;
+  logic int_rs_issue_2_staged;
+  assign int_rs_issue_ready_base = i_rs_fu_ready && !i_backend_recovery_hold;
+
   // A result held in the ALU adapter blocks port 0 only while the ALU2 adapter
   // cannot carry port 0's next result. With the ALU2 adapter idle and port 1
   // presenting nothing, port 0 keeps issuing and its result passes through
@@ -1487,12 +1494,16 @@ module tomasulo_wrapper #(
   // JALR stays out: its branch update marks it done, so it can retire before
   // its link broadcast, which must not queue behind later port-0 results in
   // the lower-priority ALU2 slot.
-  assign alu_result_via_alu2 = alu_adapter_result_pending && !alu2_adapter_result_pending &&
-      !int_rs_issue_2_raw.valid && !int_rs_issue_is_jalr;
-  assign int_rs_fu_ready = i_rs_fu_ready & (~alu_adapter_result_pending | alu_result_via_alu2) &
-      ~i_backend_recovery_hold;
-  assign int_rs_fu_ready_2 = i_rs_fu_ready & ~alu2_adapter_result_pending &
-      ~i_backend_recovery_hold;
+  //
+  // Port 1 presents nothing unless stage2b holds a packet and the ready base
+  // is high: its ready is the ready base while the ALU2 adapter is idle, and
+  // the ALU2 adapter's pending bit, which clears this select anyway, joins
+  // last.
+  assign alu_result_via_alu2 = !alu2_adapter_result_pending && alu_adapter_result_pending &&
+      !int_rs_issue_is_jalr && !(int_rs_issue_2_staged && int_rs_issue_ready_base);
+  assign int_rs_fu_ready = int_rs_issue_ready_base &
+      (~alu_adapter_result_pending | alu_result_via_alu2);
+  assign int_rs_fu_ready_2 = int_rs_issue_ready_base & ~alu2_adapter_result_pending;
 
   // ===========================================================================
   // MUL/DIV Pipeline: MUL_RS issue -> shim -> adapters -> CDB arbiter slots 1,2
@@ -2370,18 +2381,22 @@ module tomasulo_wrapper #(
   // Commit permission (i_commit_hold) arrives late from cpu_ooo; the mask
   // joins the per-entry done bits instead, before the head read. The mask's
   // next state, which reads the late CDB grant, stays on the D input: mapped
-  // onto the flops' reset pin, it put the grant behind a slower pin.
+  // onto the flops' reset pin, it put the grant behind a slower pin. The tag
+  // decode with the full flush forms first, and the adapter's valid and the
+  // grant join last.
+  (* keep = "true" *) logic [riscv_pkg::ReorderBufferDepth-1:0] alu_result_held_select;
+  logic alu_result_ungranted;
+  always_comb begin
+    alu_result_held_select = '0;
+    if (!speculative_flush_all) alu_result_held_select[alu_adapter_to_arbiter.tag] = 1'b1;
+  end
+  assign alu_result_ungranted = alu_adapter_to_arbiter.valid && !o_cdb_grant[riscv_pkg::FU_ALU];
   (* extract_reset = "no" *) logic [riscv_pkg::ReorderBufferDepth-1:0] alu_result_held_q;
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      alu_result_held_q <= '0;
-    end else begin
-      alu_result_held_q <= '0;
-      if (!speculative_flush_all && alu_adapter_to_arbiter.valid &&
-          !o_cdb_grant[riscv_pkg::FU_ALU]) begin
-        alu_result_held_q[alu_adapter_to_arbiter.tag] <= 1'b1;
-      end
-    end
+    if (!i_rst_n) alu_result_held_q <= '0;
+    else
+      alu_result_held_q <= alu_result_held_select &
+          {riscv_pkg::ReorderBufferDepth{alu_result_ungranted}};
   end
   logic rob_head_next_result_held;
   assign rob_head_next_result_held = alu_adapter_result_pending &&
@@ -2854,8 +2869,10 @@ module tomasulo_wrapper #(
       .o_issue_writes_cdb_hint(int_rs_issue_writes_cdb_hint),
       .o_branch_predicate_tag(int_rs_branch_predicate_tag),
       .o_issue_is_jalr(int_rs_issue_is_jalr),
+      .o_issue_staged(int_rs_issue_staged),
       .o_issue_2(int_rs_issue_2_raw),
       .i_fu_ready_2(int_rs_fu_ready_2),
+      .o_issue_2_staged(int_rs_issue_2_staged),
       .o_issue_writes_cdb_hint_2(int_rs_issue_writes_cdb_hint_2),
       .o_issue_shift_amount_2(int_rs_issue_shift_amount_2),
       .o_next_issue_valid(),
@@ -2961,8 +2978,10 @@ module tomasulo_wrapper #(
       .o_issue_writes_cdb_hint(),
       .o_branch_predicate_tag(),
       .o_issue_is_jalr(),
+      .o_issue_staged(),
       .o_issue_2(),
       .i_fu_ready_2(1'b0),
+      .o_issue_2_staged(),
       .o_issue_writes_cdb_hint_2(),
       .o_issue_shift_amount_2(),
       .o_next_issue_valid(),
@@ -3188,8 +3207,10 @@ module tomasulo_wrapper #(
       .o_issue_writes_cdb_hint(),
       .o_branch_predicate_tag(),
       .o_issue_is_jalr(),
+      .o_issue_staged(),
       .o_issue_2(),
       .i_fu_ready_2(1'b0),
+      .o_issue_2_staged(),
       .o_issue_writes_cdb_hint_2(),
       .o_issue_shift_amount_2(),
       .o_next_issue_valid(mem_rs_next_issue_valid),
@@ -3433,8 +3454,10 @@ module tomasulo_wrapper #(
       .o_issue_writes_cdb_hint    (),
       .o_branch_predicate_tag     (),
       .o_issue_is_jalr            (),
+      .o_issue_staged             (),
       .o_issue_2                  (),
       .i_fu_ready_2               (1'b0),
+      .o_issue_2_staged           (),
       .o_issue_writes_cdb_hint_2  (),
       .o_issue_shift_amount_2     (),
       .o_next_issue_valid         (),
@@ -3480,10 +3503,35 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // ALU CDB Adapter: result holding register between ALU and CDB arbiter
   // ===========================================================================
+  // The input valids are formed from stage2 with the pending bits last. With
+  // the ALU adapter idle, port 0's ready is the ready base, so its result
+  // valid is stage2's packet with the CDB-write hint. The ALU2 adapter takes
+  // a valid input only while idle, which leaves its port-0 select as
+  // alu2_input_from_port0 at a high ready base; either port's ready is then
+  // the ready base. The payload follows alu_result_via_alu2.
+  logic alu_issue_staged_writes_cdb;
+  logic alu2_issue_staged_writes_cdb;
+  logic alu2_input_from_port0;
+  assign alu_issue_staged_writes_cdb = int_rs_issue_staged && int_rs_issue_writes_cdb_hint;
+  assign alu2_issue_staged_writes_cdb = int_rs_issue_2_staged && int_rs_issue_writes_cdb_hint_2;
+  assign alu2_input_from_port0 = alu_adapter_result_pending && !int_rs_issue_is_jalr &&
+      !int_rs_issue_2_staged;
+  // Both ports' stage2 tags against the partial flush, selected like the
+  // input valid's port: whenever the ALU2 adapter's input is valid,
+  // alu2_input_from_port0 equals alu_result_via_alu2, which selects the tag.
+  logic alu_issue_younger;
+  logic alu2_issue_younger;
+  logic alu2_input_younger;
+  assign alu_issue_younger  = is_younger(int_rs_issue_raw.rob_tag, i_flush_tag, head_tag);
+  assign alu2_issue_younger = is_younger(int_rs_issue_2_raw.rob_tag, i_flush_tag, head_tag);
+  assign alu2_input_younger = alu2_input_from_port0 ? alu_issue_younger : alu2_issue_younger;
   always_comb begin
-    alu_adapter_in       = alu_shim_out;
-    alu_adapter_in.valid = alu_shim_out.valid && !alu_adapter_result_pending;
-    alu2_adapter_in      = alu_result_via_alu2 ? alu_shim_out : alu2_shim_out;
+    alu_adapter_in = alu_shim_out;
+    alu_adapter_in.valid  = !alu_adapter_result_pending && int_rs_issue_ready_base &&
+        alu_issue_staged_writes_cdb;
+    alu2_adapter_in = alu_result_via_alu2 ? alu_shim_out : alu2_shim_out;
+    alu2_adapter_in.valid = !alu2_adapter_result_pending && int_rs_issue_ready_base &&
+        (alu2_input_from_port0 ? alu_issue_staged_writes_cdb : alu2_issue_staged_writes_cdb);
   end
 
   fu_cdb_adapter #(
@@ -3492,17 +3540,18 @@ module tomasulo_wrapper #(
       // checks.
       .ALLOW_GRANT_REFILL_PAYLOAD_WRITE(1'b0)
   ) u_alu_adapter (
-      .i_clk           (i_clk),
-      .i_rst_n         (i_rst_n),
-      .i_fu_result     (alu_adapter_in),
-      .o_fu_complete   (alu_adapter_to_arbiter),
-      .o_held_value    (alu_adapter_held_value),
-      .i_grant         (o_cdb_grant[0]),
-      .o_result_pending(alu_adapter_result_pending),
-      .i_flush         (speculative_flush_all),
-      .i_flush_en      (speculative_flush_en),
-      .i_flush_tag     (i_flush_tag),
-      .i_rob_head_tag  (head_tag)
+      .i_clk              (i_clk),
+      .i_rst_n            (i_rst_n),
+      .i_fu_result        (alu_adapter_in),
+      .i_fu_result_younger(1'b0),
+      .o_fu_complete      (alu_adapter_to_arbiter),
+      .o_held_value       (alu_adapter_held_value),
+      .i_grant            (o_cdb_grant[0]),
+      .o_result_pending   (alu_adapter_result_pending),
+      .i_flush            (speculative_flush_all),
+      .i_flush_en         (speculative_flush_en),
+      .i_flush_tag        (i_flush_tag),
+      .i_rob_head_tag     (head_tag)
   );
 
   // ===========================================================================
@@ -3526,19 +3575,23 @@ module tomasulo_wrapper #(
       // Pending deasserts int_rs_fu_ready_2 and alu_result_via_alu2, so
       // input-valid and pending are mutually exclusive. The held-payload write
       // enable can omit grant-refill checks.
-      .ALLOW_GRANT_REFILL_PAYLOAD_WRITE(1'b0)
+      .ALLOW_GRANT_REFILL_PAYLOAD_WRITE(1'b0),
+      // The input tag follows the late port select; alu2_input_younger forms
+      // the age compare from both ports' stage2 tags instead.
+      .INPUT_YOUNGER_PRECOMPUTED       (1'b1)
   ) u_alu2_adapter (
-      .i_clk           (i_clk),
-      .i_rst_n         (i_rst_n),
-      .i_fu_result     (alu2_adapter_in),
-      .o_fu_complete   (alu2_adapter_to_arbiter),
-      .o_held_value    (alu2_adapter_held_value),
-      .i_grant         (o_cdb_grant[riscv_pkg::FU_ALU2]),
-      .o_result_pending(alu2_adapter_result_pending),
-      .i_flush         (speculative_flush_all),
-      .i_flush_en      (speculative_flush_en),
-      .i_flush_tag     (i_flush_tag),
-      .i_rob_head_tag  (head_tag)
+      .i_clk              (i_clk),
+      .i_rst_n            (i_rst_n),
+      .i_fu_result        (alu2_adapter_in),
+      .i_fu_result_younger(alu2_input_younger),
+      .o_fu_complete      (alu2_adapter_to_arbiter),
+      .o_held_value       (alu2_adapter_held_value),
+      .i_grant            (o_cdb_grant[riscv_pkg::FU_ALU2]),
+      .o_result_pending   (alu2_adapter_result_pending),
+      .i_flush            (speculative_flush_all),
+      .i_flush_en         (speculative_flush_en),
+      .i_flush_tag        (i_flush_tag),
+      .i_rob_head_tag     (head_tag)
   );
 
 `ifndef SYNTHESIS
@@ -3632,17 +3685,18 @@ module tomasulo_wrapper #(
       .ALLOW_GRANT_REFILL(1'b0),
       .ALWAYS_GRANTED(1'b1)
   ) u_mul_adapter (
-      .i_clk           (i_clk),
-      .i_rst_n         (i_rst_n),
-      .i_fu_result     (mul_shim_out),
-      .o_fu_complete   (mul_adapter_to_arbiter),
-      .o_held_value    (),
-      .i_grant         (o_cdb_grant[1]),
-      .o_result_pending(mul_adapter_result_pending),
-      .i_flush         (speculative_flush_all),
-      .i_flush_en      (speculative_flush_en),
-      .i_flush_tag     (i_flush_tag),
-      .i_rob_head_tag  (head_tag)
+      .i_clk              (i_clk),
+      .i_rst_n            (i_rst_n),
+      .i_fu_result        (mul_shim_out),
+      .i_fu_result_younger(1'b0),
+      .o_fu_complete      (mul_adapter_to_arbiter),
+      .o_held_value       (),
+      .i_grant            (o_cdb_grant[1]),
+      .o_result_pending   (mul_adapter_result_pending),
+      .i_flush            (speculative_flush_all),
+      .i_flush_en         (speculative_flush_en),
+      .i_flush_tag        (i_flush_tag),
+      .i_rob_head_tag     (head_tag)
   );
 
   // ===========================================================================
@@ -3652,17 +3706,18 @@ module tomasulo_wrapper #(
       .ALLOW_GRANT_REFILL(1'b0),
       .REGISTER_OUTPUT(1'b1)
   ) u_div_adapter (
-      .i_clk           (i_clk),
-      .i_rst_n         (i_rst_n),
-      .i_fu_result     (div_shim_out),
-      .o_fu_complete   (div_adapter_to_arbiter),
-      .o_held_value    (),
-      .i_grant         (o_cdb_grant[2]),
-      .o_result_pending(div_adapter_result_pending),
-      .i_flush         (speculative_flush_all),
-      .i_flush_en      (speculative_flush_en),
-      .i_flush_tag     (i_flush_tag),
-      .i_rob_head_tag  (head_tag)
+      .i_clk              (i_clk),
+      .i_rst_n            (i_rst_n),
+      .i_fu_result        (div_shim_out),
+      .i_fu_result_younger(1'b0),
+      .o_fu_complete      (div_adapter_to_arbiter),
+      .o_held_value       (),
+      .i_grant            (o_cdb_grant[2]),
+      .o_result_pending   (div_adapter_result_pending),
+      .i_flush            (speculative_flush_all),
+      .i_flush_en         (speculative_flush_en),
+      .i_flush_tag        (i_flush_tag),
+      .i_rob_head_tag     (head_tag)
   );
 
   // ===========================================================================
@@ -3946,17 +4001,18 @@ module tomasulo_wrapper #(
       .ALLOW_GRANT_REFILL(1'b0),
       .ALWAYS_GRANTED(1'b1)
   ) u_mem_adapter (
-      .i_clk           (i_clk),
-      .i_rst_n         (i_rst_n),
-      .i_fu_result     (mem_fu_to_adapter),
-      .o_fu_complete   (mem_adapter_to_arbiter),
-      .o_held_value    (),
-      .i_grant         (o_cdb_grant[3]),
-      .o_result_pending(mem_adapter_result_pending),
-      .i_flush         (speculative_flush_all),
-      .i_flush_en      (speculative_flush_en),
-      .i_flush_tag     (i_flush_tag),
-      .i_rob_head_tag  (head_tag)
+      .i_clk              (i_clk),
+      .i_rst_n            (i_rst_n),
+      .i_fu_result        (mem_fu_to_adapter),
+      .i_fu_result_younger(1'b0),
+      .o_fu_complete      (mem_adapter_to_arbiter),
+      .o_held_value       (),
+      .i_grant            (o_cdb_grant[3]),
+      .o_result_pending   (mem_adapter_result_pending),
+      .i_flush            (speculative_flush_all),
+      .i_flush_en         (speculative_flush_en),
+      .i_flush_tag        (i_flush_tag),
+      .i_rob_head_tag     (head_tag)
   );
 
   // ===========================================================================
@@ -4477,17 +4533,18 @@ module tomasulo_wrapper #(
       .ALLOW_GRANT_REFILL(1'b0),
       .REGISTER_OUTPUT(1'b1)
   ) u_fp_adapter (
-      .i_clk           (i_clk),
-      .i_rst_n         (i_rst_n),
-      .i_fu_result     (fp_shim_out),
-      .o_fu_complete   (fp_adapter_to_arbiter),
-      .o_held_value    (),
-      .i_grant         (o_cdb_grant[4]),
-      .o_result_pending(fp_adapter_result_pending),
-      .i_flush         (speculative_flush_all),
-      .i_flush_en      (speculative_flush_en),
-      .i_flush_tag     (i_flush_tag),
-      .i_rob_head_tag  (head_tag)
+      .i_clk              (i_clk),
+      .i_rst_n            (i_rst_n),
+      .i_fu_result        (fp_shim_out),
+      .i_fu_result_younger(1'b0),
+      .o_fu_complete      (fp_adapter_to_arbiter),
+      .o_held_value       (),
+      .i_grant            (o_cdb_grant[4]),
+      .o_result_pending   (fp_adapter_result_pending),
+      .i_flush            (speculative_flush_all),
+      .i_flush_en         (speculative_flush_en),
+      .i_flush_tag        (i_flush_tag),
+      .i_rob_head_tag     (head_tag)
   );
 
   // ===========================================================================

@@ -216,7 +216,12 @@ holding register can use the result's valid bit alone as its write enable
 (`ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`), and that register holds every valid
 ALU result for the CDB value restore above. The wrapper takes the JALR bit
 from the INT RS's `o_issue_is_jalr`, not from the issue packet, whose valid
-depends on this ready.
+depends on this ready. For the same reason it forms `alu_result_via_alu2`
+and both ALU adapters' input valids from the INT RS's `o_issue_staged` and
+`o_issue_2_staged`, with the adapters' pending bits applied last. Each
+equals its earlier form (for the ALU adapter, the shim's valid with the
+pending bit clear), since the pending bits that the ready terms read are low
+whenever the input can be valid.
 
 While the ALU adapter holds a result, the wrapper marks that entry in the
 ROB's `i_result_held`, a register with one bit per entry beside the adapter's

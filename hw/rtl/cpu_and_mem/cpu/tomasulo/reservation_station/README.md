@@ -116,7 +116,9 @@ moves into stage 2 and its slot frees; the functional unit sees it on
 `o_issue` in the next cycle, with `o_issue.valid = stage2_valid && i_fu_ready`.
 If `i_fu_ready` drops, stage 2 holds the packet. `o_issue_is_jalr` repeats
 `o_issue.is_jalr` outside the packet, for logic that computes `i_fu_ready`
-from what stage 2 holds.
+from what stage 2 holds, and `o_issue_staged` (`o_issue_2_staged` for port
+1) gives the stage-2 valid bit alone, for logic that applies `i_fu_ready`
+last.
 
 ## Divide gate (MUL_RS)
 
