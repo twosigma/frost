@@ -881,6 +881,21 @@ jobs:
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             pytest tests/ -m synthesis -v
 
+  # Strict SystemVerilog check. The Yosys in the pinned ORFS image carries the
+  # slang plugin (yosys-slang), which enforces IEEE Std 1800-2017 rules that
+  # Verilator, Vivado and Yosys' own Verilog reader accept, such as a
+  # reference before its declaration. It needs Docker and Python only, so it
+  # runs on the runner without the frost image.
+  test-slang-frontend:
+    name: SystemVerilog Front End (yosys-slang)
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Read the RTL with yosys-slang
+        run: python3 tests/test_slang_frontend.py
+
   # The ordinary synthesis job checks the 1 GiB default. Check the widest
   # supported PA width, 128 GiB, with the same RTL build setting.
   test-pa-synthesis-width:
