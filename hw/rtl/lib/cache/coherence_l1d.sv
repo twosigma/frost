@@ -588,7 +588,8 @@ module coherence_l1d #(
   // LR and AMO reads waiting for completion, registered from allocation and
   // completion. A slot has no read to replace when it allocates. The flags
   // count LR and AMO reads only, so their completions leave out the hit
-  // path's answers and the shadow lookup's suppression, which apply to loads.
+  // path's answers, which complete loads. A shadow lookup completes nothing,
+  // as read_hit has it, whatever its slot holds by then.
   // A cycle completes at most one read by a hit and one by a fill, each in a
   // slot that registers name. The flags are computed without either, without
   // each and without both, and the late hit and fill events pick among them.
@@ -596,7 +597,7 @@ module coherence_l1d #(
   logic [7:0] held_amo, held_atomic, held_hit_slot, held_fill_slot;
   (* keep = "true" *) logic [3:0] amo_held_choice, atomic_read_held_choice;
   wire held_hit = active && ((phase_q == LookupWait && array_valid && operation_q == ReadOp &&
-      selected_kind_q != ReadAMO && array_hit) || phase_q == LocalReadReady);
+      selected_kind_q != ReadAMO && array_hit && !shadow_q) || phase_q == LocalReadReady);
   assign held_hit_slot = 8'd1 << (phase_q == LocalReadReady ? atomic_read_q : selected_read_q);
   assign held_fill_slot = 8'd1 << fill_read_slot;
   always_comb begin
@@ -1905,7 +1906,7 @@ module coherence_l1d #(
         local_hit_q <= array_hit && array_state == coherence_pkg::Modified;
         local_conflict_q <= request_live || same_line || lookup_wb_conflict ||
             pending_q || store_push;
-        if (operation_q == ReadOp && selected_kind_q == ReadAMO)
+        if (operation_q == ReadOp && selected_kind_q == ReadAMO && !(shadow_q && path_hit_q))
           rd_local_retry_q[selected_read_q] <= array_hit && array_state == coherence_pkg::Modified;
       end
       // A new read clears its slot's flag from the buffered write's mask, a
@@ -2562,11 +2563,16 @@ module coherence_l1d #(
               end
               SCOp: phase_q <= LocalCheck;
               default: begin
-                if (selected_kind_q == ReadAMO) begin
+                // A shadow lookup whose read the hit path holds answers
+                // nothing and decides nothing from its kind: the hit path
+                // answers, and the slot may hold a new read by now.
+                if (shadow_q && path_hit_q) begin
+                  phase_q <= Idle;
+                end else if (selected_kind_q == ReadAMO) begin
                   phase_q <= LocalCheck;
-                end else if (array_hit || (shadow_q && path_hit_q)) begin
-                  // A shadow lookup answers nothing: the hit path answers, or
-                  // a later lookup does.
+                end else if (array_hit) begin
+                  // A shadow lookup whose tags hit answers nothing either: a
+                  // later lookup does.
                   if (!shadow_q)
                     rd_data_q[selected_read_q] <=
                         array_data[64*rd_addr_q[selected_read_q][4:3]+:64];
