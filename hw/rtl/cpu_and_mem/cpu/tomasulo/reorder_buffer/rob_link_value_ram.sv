@@ -30,14 +30,17 @@
  * Allocation slot s writes code (i_alloc_branch[s] ? CodeLink : CodeZero) at
  * i_alloc_address[s] through the same one-cycle LVT staging, drain order and
  * staged override as mwp_dist_ram. The link bank writes in the allocation
- * cycle when either slot is an enabled branch; slot 2's enabled branch takes
- * the bank's single port.
+ * cycle when either slot is an enabled branch. Its single port takes slot 1's
+ * address and link when slot 1 carries a branch, enabled or not, and slot 2's
+ * otherwise, so the late allocation enables reach only the write enable.
  *
- * Two enabled branch allocations must target the same address; otherwise
- * slot 1's link is lost. cpu_ooo's dispatch allows at most one: slot 2 never
- * fires behind a slot-1 branch. With this restriction, reads match the
- * 4-port RAM cycle for cycle, including stale, duplicate-tag and drain-cycle
- * CDB writes.
+ * The one-branch-allocation rule: slot 2 never allocates while slot 1 carries
+ * a branch (!(i_alloc_enable[1] && i_alloc_branch[0])). cpu_ooo's dispatch
+ * produces it: slot 2 never fires behind a slot-1 branch, which
+ * rob_link_dispatch.sby proves (p_no_slot2_behind_branch), and the requests
+ * reach the ROB with their valids only cleared. With this rule, reads match
+ * the 4-port RAM cycle for cycle, including stale, duplicate-tag and
+ * drain-cycle CDB writes.
  *
  * ONEHOT_READ = 1 is the head-port variant (mwp_dist_ram_ohread's AND-OR LVT
  * read); i_read_onehot must equal 1 << i_read_address when the read is used.
@@ -91,8 +94,10 @@ module rob_link_value_ram #(
 
   assign link_write_slot2 = i_alloc_enable[1] && i_alloc_branch[1];
   assign link_write_enable = link_write_slot2 || (i_alloc_enable[0] && i_alloc_branch[0]);
-  assign link_write_address = link_write_slot2 ? i_alloc_address[1] : i_alloc_address[0];
-  assign link_write_data = link_write_slot2 ? i_alloc_link[1] : i_alloc_link[0];
+  // Under the one-branch-allocation rule, a write by slot 2 comes with slot 1's
+  // branch flag clear, and a write by slot 1 with it set.
+  assign link_write_address = i_alloc_branch[0] ? i_alloc_address[0] : i_alloc_address[1];
+  assign link_write_data = i_alloc_branch[0] ? i_alloc_link[0] : i_alloc_link[1];
 
   sdp_dist_ram #(
       .ADDR_WIDTH(ADDR_WIDTH),
@@ -241,13 +246,13 @@ module rob_link_value_ram #(
     end
   end
 
-  // The shared link bank cannot write two distinct addresses in one cycle.
+  // The one-branch-allocation rule: the link bank's port follows slot 1's
+  // branch flag, so slot 2 must not allocate while that flag is set.
   always @(posedge i_clk) begin
     if (i_check_enable && !$isunknown(
-            {i_alloc_enable, i_alloc_branch}
-        ) && (&(i_alloc_enable & i_alloc_branch)) &&
-            (i_alloc_address[0] != i_alloc_address[1])) begin
-      $error("rob_link_value_ram: two branch allocations at different addresses");
+            {i_alloc_enable[1], i_alloc_branch[0]}
+        ) && i_alloc_enable[1] && i_alloc_branch[0]) begin
+      $error("rob_link_value_ram: slot 2 allocates behind a slot-1 branch");
     end
   end
 `endif

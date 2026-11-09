@@ -47,10 +47,10 @@ module reorder_buffer #(
     // The full pipeline cannot complete that soon. Direct-drive unit tests can
     // disable the check through tests/Makefile.
     parameter bit DrainWindowCheck = 1'b1,
-    // Share one allocation link bank per value RAM. Requires at most one
-    // branch allocation per cycle, since the slots target different entries.
-    // cpu_ooo enables this; its dispatch blocks slot 2 behind a slot-1 branch.
-    // The default per-slot banks accept any allocation pair.
+    // Share one allocation link bank per value RAM. Its write port follows
+    // slot 1's branch flag, so slot 2 must not allocate while slot 1 carries a
+    // branch. cpu_ooo enables this; its dispatch blocks slot 2 behind a slot-1
+    // branch. The default per-slot banks accept any allocation pair.
     parameter bit SharedLinkBank   = 1'b0
 ) (
     input logic i_clk,
@@ -1475,7 +1475,8 @@ module reorder_buffer #(
   end else begin : g_value_shared_link
     // The shared-bank variant selects a link for branches and zero otherwise.
     // It keeps the same LVT staging and drain rule. Its single link write port
-    // forbids two branch allocations at different entries.
+    // follows slot 1's branch flag, so slot 2 must not allocate behind a slot-1
+    // branch.
     rob_link_value_ram #(
         .ADDR_WIDTH (ReorderBufferTagWidth),
         .DATA_WIDTH (FLEN),
@@ -3224,14 +3225,13 @@ module reorder_buffer #(
     end
   end : g_drain_window_check
 
-  // The shared link bank has one write port. Accepted slots target distinct
-  // entries, so at most one may be a branch. Rejected requests do not count.
+  // The shared link bank has one write port, which follows slot 1's branch
+  // flag (rob_link_value_ram's one-branch-allocation rule). Slot 2 must not be
+  // accepted while slot 1 carries a branch, whether or not slot 1 is accepted.
   if (SharedLinkBank) begin : g_shared_link_bank_check
     always @(posedge i_clk) begin
-      if (dbg_mask_seen_reset && i_rst_n && alloc_en && alloc_en_2 &&
-          i_alloc_req.is_branch && i_alloc_req_2.is_branch && (tail_idx != tail_idx_2)) begin
-        $error("Reorder Buffer: branch allocations at entries %0d and %0d in one cycle", tail_idx,
-               tail_idx_2);
+      if (dbg_mask_seen_reset && i_rst_n && alloc_en_2 && i_alloc_req.is_branch) begin
+        $error("Reorder Buffer: slot-2 allocation at entry %0d behind a slot-1 branch", tail_idx_2);
       end
     end
   end : g_shared_link_bank_check

@@ -20,8 +20,10 @@
  *
  * Both sides receive identical writes, subject to the assumptions below.
  * The reference gets allocation data `branch ? zext(link) : 0`. Assumptions:
- *   - SINGLE_BRANCH_CONTRACT: two enabled branch allocations in one cycle
- *     target the same address (weaker than "at most one per cycle").
+ *   - SINGLE_BRANCH_CONTRACT: the one-branch-allocation rule, slot 2 never
+ *     allocates while slot 1 carries a branch, enabled or not. Dispatch
+ *     proves it at its ROB outputs (rob_link_dispatch.sby,
+ *     p_no_slot2_behind_branch).
  *   - ONEHOT_READ: i_read_onehot == 1 << i_read_address, as required by the
  *     ROB head ports.
  *   - WATCH_READ: the read address is one arbitrary constant for the whole
@@ -125,8 +127,7 @@ module rob_link_value_equiv #(
 
   always_comb begin
     if (SINGLE_BRANCH_CONTRACT) begin
-      assume (!(i_alloc_enable[0] && i_alloc_branch[0] && i_alloc_enable[1] &&
-                i_alloc_branch[1] && (i_alloc_address[0] != i_alloc_address[1])));
+      assume (!(i_alloc_enable[1] && i_alloc_branch[0]));
     end
     if (ONEHOT_READ) assume (i_read_onehot == (RamDepth'(1) << i_read_address));
     if (WATCH_READ) assume (i_read_address == f_watch_address);
