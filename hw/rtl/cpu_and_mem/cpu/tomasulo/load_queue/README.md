@@ -160,7 +160,10 @@ Each coherent address slot stores PMA permission, Normal-memory classification
 and cache-region classification with its address. Stored and arriving payloads
 compute PMA permission before address-source selection. Staging selects the
 permission, Normal-memory class and cache-region class from the stored or arriving
-address. The captured Normal-memory class supplies L0-hit eligibility.
+address. The arriving address's permission is formed from its uncached,
+cached-DDR and device range checks, which meet the source select and the
+atomic flag in one final term. The captured Normal-memory class supplies
+L0-hit eligibility.
 Staging captures misalignment with the address and size. Fault checks apply
 the live trap setting to that captured result. The first candidate mask determines which
 address source wins ring order. Candidate presence is independent of

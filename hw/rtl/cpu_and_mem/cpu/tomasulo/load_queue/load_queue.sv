@@ -1953,12 +1953,21 @@ module load_queue #(
   if (1'b1) begin : gen_coherent_staged_class
     logic pma_ok_q, cached_q, misaligned_q, normal_q;
     wire stored_atomic = lq_is_amo[issue_mem_stored_idx] || lq_is_lr[issue_mem_stored_idx];
-    wire update_atomic = lq_is_amo[update_issue_payload_idx] || lq_is_lr[update_issue_payload_idx];
+    (* keep = "true" *) wire update_atomic =
+        lq_is_amo[update_issue_payload_idx] || lq_is_lr[update_issue_payload_idx];
     (* keep = "true" *) wire stored_permission =
         stored_atomic ? coherent_stored_class[2] : coherent_stored_class[1];
-    (* keep = "true" *) wire update_permission =
-        update_atomic ? coherent_update_class[2] : coherent_update_class[1];
-    wire selected_permission = issue_mem_uses_addr_update ? update_permission : stored_permission;
+    // The arriving address's range checks come last. Atomic permission is
+    // memory permission, the uncached or cached-DDR range, and data permission
+    // adds the device range (pma_atomic_ok, pma_data_ok), so the three kept
+    // checks meet the early source select and atomic flag in one term.
+    (* keep = "true" *) wire update_uncached_ok = (riscv_pkg::PmaUncachedBytes != 0) &&
+        ((i_addr_update.address - riscv_pkg::PmaUncachedBase) <= riscv_pkg::PmaUncachedBytes - 1);
+    (* keep = "true" *) wire update_cached_ok = riscv_pkg::pma_cached_ok(i_addr_update.address);
+    (* keep = "true" *) wire update_device_ok = riscv_pkg::pma_device_ok(i_addr_update.address);
+    (* keep = "true" *) wire selected_permission = issue_mem_uses_addr_update ?
+        (update_uncached_ok || update_cached_ok || (!update_atomic && update_device_ok)) :
+        stored_permission;
     wire [3:0] selected_class = issue_mem_uses_addr_update ?
         coherent_update_class : coherent_stored_class;
     (* keep = "true" *) wire stored_misaligned = is_load_misaligned(
@@ -1988,6 +1997,9 @@ module load_queue #(
     if (sim_reset_seen_q) begin
       p_stage_class_choice_exact : assert (selected_permission ==
           ((sq_check_is_amo_next || sq_check_is_lr_next) ? selected_class[2] : selected_class[1]));
+      p_update_range_split_exact : assert (
+          (update_uncached_ok || update_cached_ok) == coherent_update_class[2] &&
+          (update_uncached_ok || update_cached_ok || update_device_ok) == coherent_update_class[1]);
       p_stage_alignment_choice_exact : assert (selected_misaligned ==
           is_load_misaligned(sq_check_size_next, sq_check_addr_next));
     end
