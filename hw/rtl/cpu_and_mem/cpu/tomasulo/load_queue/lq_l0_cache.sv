@@ -55,8 +55,12 @@ module lq_l0_cache #(
 
     // Fill (write on memory response)
     input logic                              i_fill_valid,
-    // The same value as i_fill_valid, for the RAM write enables only.
+    // For the RAM write enables only: the fill's write without a late kill,
+    // and the kill (a store to the response's dword, or a coherent cut or
+    // DMA invalidation of its line). i_fill_write && !i_fill_kill equals
+    // i_fill_valid.
     input logic                              i_fill_write,
+    input logic                              i_fill_kill,
     input logic [                  XLEN-1:0] i_fill_addr,
     input logic [riscv_pkg::MemDataBits-1:0] i_fill_data,
 
@@ -164,14 +168,15 @@ module lq_l0_cache #(
   wire store_update = i_invalidate_valid && (|i_store_strb) &&
       ((&i_store_strb) || (valid[inv_index] && inv_tag_match));
   wire ram_write = store_update || i_fill_valid;
-  // The data and tag RAMs take the write through i_fill_write, which the LQ
-  // forms so the memory response enters at its last gate; the valid bits and
+  // The data and tag RAMs take the write through i_fill_write and the kill,
+  // which enters each write enable's last gate; the valid bits and
   // invalidation checks keep i_fill_valid.
-  wire ram_write_en = store_update || i_fill_write;
+  wire fill_ram_write = i_fill_write && !i_fill_kill;
+  wire ram_write_en = store_update || fill_ram_write;
   wire [IndexWidth-1:0] ram_index = store_update ? inv_index : fill_index;
   wire [TagWidth-1:0] ram_tag = store_update ? inv_tag : fill_tag;
   wire [63:0] ram_data = store_update ? i_store_data : i_fill_data;
-  wire [7:0] ram_strobe = store_update ? i_store_strb : {8{i_fill_write}};
+  wire [7:0] ram_strobe = store_update ? i_store_strb : {8{fill_ram_write}};
 
   // Duplicate the tag LUTRAM for independent lookup and invalidate reads.
   // Byte enables of their own avoid a read/modify/write mux on the store
@@ -200,9 +205,9 @@ module lq_l0_cache #(
       assign store_bank_sel[bank] = inv_bank == SelBits'(bank);
       assign store_bank_strb[bank] = i_store_strb & {8{store_bank_sel[bank]}};
       assign bank_tag_write[bank] = store_update ? store_bank_sel[bank] :
-          i_fill_write && fill_bank_sel[bank];
+          i_fill_write && fill_bank_sel[bank] && !i_fill_kill;
       assign bank_data_write[bank] = store_update ? store_bank_strb[bank] :
-          {8{i_fill_write && fill_bank_sel[bank]}};
+          {8{i_fill_write && fill_bank_sel[bank] && !i_fill_kill}};
       sdp_dist_ram #(
           .ADDR_WIDTH(BankBits),
           .DATA_WIDTH(TagWidth)
@@ -360,7 +365,7 @@ module lq_l0_cache #(
 `ifndef SYNTHESIS
   always_comb begin
     if (reset_seen_q && i_rst_n) begin
-      p_fill_write_matches_fill_valid : assert (i_fill_write == i_fill_valid);
+      p_fill_write_matches_fill_valid : assert ((i_fill_write && !i_fill_kill) == i_fill_valid);
     end
   end
 `endif
@@ -472,8 +477,8 @@ module lq_l0_cache #(
   always @(posedge i_clk) begin
     if (f_past_valid) assume (i_rst_n);
   end
-  // The LQ drives both fill inputs with the same value.
-  always_comb assume (i_fill_write == i_fill_valid);
+  // The LQ drives the fill write, less its kill, with the fill's value.
+  always_comb assume ((i_fill_write && !i_fill_kill) == i_fill_valid);
 
   // -------------------------------------------------------------------------
   // Assertions

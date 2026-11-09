@@ -35,6 +35,7 @@ async def test_capacity_and_coherence(dut: Any) -> None:
         "i_lookup_addr",
         "i_fill_valid",
         "i_fill_write",
+        "i_fill_kill",
         "i_fill_addr",
         "i_fill_data",
         "i_invalidate_valid",
@@ -62,6 +63,7 @@ async def test_capacity_and_coherence(dut: Any) -> None:
         line: int | None = None,
         flush: bool = False,
         store: tuple[int, int, int] | None = None,
+        kill: bool = False,
     ) -> None:
         if store is not None:
             invalidates = (store[0], invalidates[1])
@@ -75,8 +77,11 @@ async def test_capacity_and_coherence(dut: Any) -> None:
             and (store[2] == 255 or (prior is not None and prior[0] == store[0] // 8))
         )
         dut.i_lookup_addr.value = lookup
-        dut.i_fill_valid.value = fill is not None
+        # A killed fill (a store or coherent cut that hits it this cycle)
+        # presents its write but writes nothing.
+        dut.i_fill_valid.value = fill is not None and not kill
         dut.i_fill_write.value = fill is not None
+        dut.i_fill_kill.value = kill
         dut.i_fill_addr.value = fill[0] if fill else 0
         dut.i_fill_data.value = fill[1] if fill else 0
         for prefix, address in zip(("i_invalidate", "i_invalidate2"), invalidates):
@@ -114,7 +119,7 @@ async def test_capacity_and_coherence(dut: Any) -> None:
                     store[0] // 8,
                     (previous & ~mask) | (store[1] & mask),
                 )
-            elif fill:
+            elif fill and not kill:
                 entries[(fill[0] // 8) % depth] = (fill[0] // 8, fill[1])
             for port, address in enumerate(invalidates):
                 if port == 0 and update_store:
@@ -187,6 +192,7 @@ async def test_capacity_and_coherence(dut: Any) -> None:
             store=(other, rng.getrandbits(64), rng.randrange(256))
             if rng.randrange(2)
             else None,
+            kill=rng.randrange(8) == 0,
         )
         await cycle(address)
 
@@ -209,6 +215,7 @@ async def test_fill_collision_priorities(dut: Any) -> None:
         lookup_addr=0,
         fill_valid=0,
         fill_write=0,
+        fill_kill=0,
         fill_addr=0,
         fill_data=0,
         invalidate_valid=0,

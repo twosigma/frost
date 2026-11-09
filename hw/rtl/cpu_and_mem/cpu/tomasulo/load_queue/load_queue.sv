@@ -2607,6 +2607,10 @@ module load_queue #(
   logic                              cache_fill_response_valid;
   logic                              cache_fill_valid;
   logic                              cache_fill_write;
+  // The fill's RAM write enable without this cycle's store, cut and DMA
+  // compares, and those compares on their own as the fill's kill (formed with
+  // the fill permission below).
+  (* keep = "true" *) logic          cache_fill_pre, cache_fill_cut;
   logic [                  XLEN-1:0] cache_fill_addr;
   logic [riscv_pkg::MemDataBits-1:0] cache_fill_data;
 
@@ -2624,7 +2628,8 @@ module load_queue #(
 
       // Fill: on memory response
       .i_fill_valid(cache_fill_write),
-      .i_fill_write(cache_fill_write),
+      .i_fill_write(cache_fill_pre),
+      .i_fill_kill (cache_fill_cut),
       .i_fill_addr (cache_fill_addr),
       .i_fill_data (cache_fill_data),
 
@@ -3032,18 +3037,36 @@ module load_queue #(
   ) && !fast_line_invalidated && !fast_line_invalidate_now);
   // Per-source fill qualification supplies the L0 RAM write enables and
   // coherent valid bits. The default valid-bit path uses cache_fill_valid.
-  (* keep = "true" *) logic cache_fill_if_slot, cache_fill_if_fast;
+  logic cache_fill_if_slot, cache_fill_if_fast;
+  // Each source's fill permission without the kill's compares.
+  (* keep = "true" *) logic cache_fill_pre_slot, cache_fill_pre_fast;
   if (1'b1) begin : gen_coherent_fill_slot_permission
-    // The coherent invalidation, which arrives last, is selected for the
-    // response slot apart from the slot's other permission terms.
+    // A slot's fill permission leaves out this cycle's store, cut and DMA
+    // compares, which arrive last; the kill below applies them to the
+    // response slot alone.
     (* keep = "true" *) logic [CachedSlots-1:0] slot_permission;
     for (genvar slot = 0; slot < CachedSlots; slot++) begin : gen_slot
       assign slot_permission[slot] = cs_valid[slot] && !cs_drop[slot] &&
-          lq_valid[cs_idx[slot]] && !cs_is_lr[slot] && !cs_is_amo[slot] &&
-          !(cs_inval[slot] || cs_inval_now[slot]);
+          lq_valid[cs_idx[slot]] && !cs_is_lr[slot] && !cs_is_amo[slot] && !cs_inval[slot];
     end
-    assign cache_fill_if_slot = !i_flush_all && slot_permission[resp_slot] &&
+    assign cache_fill_pre_slot = !i_flush_all && slot_permission[resp_slot];
+    assign cache_fill_if_slot = cache_fill_pre_slot && !cs_inval_now[resp_slot] &&
         !cs_coh_inval_now[resp_slot];
+    // The kill compares the late store, cut and DMA addresses once each with
+    // the response slot's address, selected first by the early response id,
+    // or takes the fast read's store compare, and the L0 applies it at its
+    // write enables' last gate. For a cached response it equals
+    // cs_inval_now || cs_coh_inval_now at the response slot.
+    wire [XLEN-1:3] resp_slot_dword = cs_addr[resp_slot][XLEN-1:3];
+    assign cache_fill_cut = i_mem_read_is_cached ? (cs_valid[resp_slot] &&
+        ((i_cache_invalidate_valid && i_cache_invalidate_addr[XLEN-1:3] == resp_slot_dword) ||
+         (i_coh_inval_valid &&
+          i_coh_inval_addr[XLEN-1:CohLineLsb] == resp_slot_dword[XLEN-1:CohLineLsb]) ||
+         (i_coherent_cut_hold &&
+          i_coherent_cut_addr[XLEN-1:CohLineLsb] == resp_slot_dword[XLEN-1:CohLineLsb]))) :
+        (!CACHE_UNCACHED_DATA && fast_line_invalidate_now);
+    assign cache_fill_pre = i_mem_read_valid && !mem_response_error &&
+        (i_mem_read_is_cached ? cache_fill_pre_slot : cache_fill_pre_fast);
 `ifndef SYNTHESIS
 `ifdef FORMAL
     always_comb
@@ -3058,13 +3081,18 @@ module load_queue #(
     end
 `endif
   end
+  assign cache_fill_pre_fast = mem_outstanding && !i_flush_all && !drop_mem_response_pending &&
+      lq_valid[fast_idx] && !fast_is_mmio && !fast_is_lr && !fast_is_amo &&
+      (CACHE_UNCACHED_DATA || (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
+      fast_addr
+  ) && !fast_line_invalidated));
+  // The undivided fast-path permission, for the checks below.
   assign cache_fill_if_fast = mem_outstanding && !i_flush_all && !drop_mem_response_pending &&
       lq_valid[fast_idx] && !fast_is_mmio && !fast_is_lr && !fast_is_amo &&
       (CACHE_UNCACHED_DATA || (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
       fast_addr
   ) && !fast_line_invalidated && !fast_line_invalidate_now));
-  assign cache_fill_write = i_mem_read_valid && !mem_response_error &&
-      (i_mem_read_is_cached ? cache_fill_if_slot : cache_fill_if_fast);
+  assign cache_fill_write = cache_fill_pre && !cache_fill_cut;
   assign cache_fill_valid = cache_fill_response_valid && cache_fill_memory_type_ok &&
       !mem_response_error &&
       !issued_is_mmio && !issued_is_lr && !issued_is_amo &&
@@ -3072,6 +3100,8 @@ module load_queue #(
 `ifndef SYNTHESIS
   always_comb if (sim_reset_seen_q) begin
     p_cache_fill_write_exact : assert (cache_fill_write == cache_fill_valid);
+    p_cache_fill_split_exact : assert (cache_fill_write == (i_mem_read_valid &&
+        !mem_response_error && (i_mem_read_is_cached ? cache_fill_if_slot : cache_fill_if_fast)));
   end
 `endif
 `ifdef F_LQ_NORMAL_FILL_POLICY_PROOF
