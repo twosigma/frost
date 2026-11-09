@@ -400,8 +400,10 @@ module trap_unit #(
   logic [XLEN-1:0] exception_cause_q;
   logic [XLEN-1:0] exception_tval_q;
   logic [XLEN-1:0] exception_pc_q;
-  // Register the replay class with the exception, for timing.
+  // Register the replay and breakpoint classes with the exception, for
+  // timing: the take steering then needs no full-width cause compare.
   logic            exception_replay_q;
+  logic            exception_ebreak_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -419,6 +421,7 @@ module trap_unit #(
       exception_tval_q   <= i_exception_tval;
       exception_pc_q     <= i_exception_pc;
       exception_replay_q <= (i_exception_cause == riscv_pkg::ExcMemReplay);
+      exception_ebreak_q <= (i_exception_cause == riscv_pkg::ExcBreakpoint);
     end
   end
 
@@ -476,93 +479,90 @@ module trap_unit #(
   end
 
   // Trap cause with per-class priority (M: MEI>MSI>MTI then the undelegated
-  // supervisor classes SEI>SSI>STI; S: SEI>SSI>STI). Registered so it stays
-  // in step with the latches.
+  // supervisor classes SEI>SSI>STI, then LCOFI; S: SEI>SSI>STI>LCOFI).
+  // Registered so it stays in step with the latches. A one-hot copy of the
+  // held cause, registered with it, selects the source's pending and enable
+  // terms with one AND-OR instead of a compare of the full cause, for timing.
+  //   M one-hot: {LCOFI, STI, SSI, SEI, MTI, MSI, MEI}; S: {LCOFI, STI, SSI, SEI}.
   logic [XLEN-1:0] m_int_cause_comb, s_int_cause_comb;
   logic [XLEN-1:0] m_int_cause, s_int_cause;
+  logic [6:0] m_int_sel_comb, m_int_sel;
+  logic [3:0] s_int_sel_comb, s_int_sel;
   always_comb begin
-    if (meip_enabled) m_int_cause_comb = riscv_pkg::IntMachineExternal;
-    else if (msip_enabled) m_int_cause_comb = riscv_pkg::IntMachineSoftware;
-    else if (mtip_enabled) m_int_cause_comb = riscv_pkg::IntMachineTimer;
-    else if (seip_m_enabled) m_int_cause_comb = riscv_pkg::IntSupervisorExternal;
-    else if (ssip_m_enabled) m_int_cause_comb = riscv_pkg::IntSupervisorSoftware;
-    else if (stip_m_enabled) m_int_cause_comb = riscv_pkg::IntSupervisorTimer;
-    else if (lcof_m_enabled) m_int_cause_comb = riscv_pkg::IntLocalCounterOverflow;
-    else m_int_cause_comb = '0;
-    if (seip_s_enabled) s_int_cause_comb = riscv_pkg::IntSupervisorExternal;
-    else if (ssip_s_enabled) s_int_cause_comb = riscv_pkg::IntSupervisorSoftware;
-    else if (stip_s_enabled) s_int_cause_comb = riscv_pkg::IntSupervisorTimer;
-    else if (lcof_s_enabled) s_int_cause_comb = riscv_pkg::IntLocalCounterOverflow;
-    else s_int_cause_comb = '0;
+    m_int_sel_comb = '0;
+    if (meip_enabled) m_int_sel_comb[0] = 1'b1;
+    else if (msip_enabled) m_int_sel_comb[1] = 1'b1;
+    else if (mtip_enabled) m_int_sel_comb[2] = 1'b1;
+    else if (seip_m_enabled) m_int_sel_comb[3] = 1'b1;
+    else if (ssip_m_enabled) m_int_sel_comb[4] = 1'b1;
+    else if (stip_m_enabled) m_int_sel_comb[5] = 1'b1;
+    else if (lcof_m_enabled) m_int_sel_comb[6] = 1'b1;
+    s_int_sel_comb = '0;
+    if (seip_s_enabled) s_int_sel_comb[0] = 1'b1;
+    else if (ssip_s_enabled) s_int_sel_comb[1] = 1'b1;
+    else if (stip_s_enabled) s_int_sel_comb[2] = 1'b1;
+    else if (lcof_s_enabled) s_int_sel_comb[3] = 1'b1;
   end
+  function automatic logic [XLEN-1:0] m_sel_cause(input logic [6:0] sel);
+    m_sel_cause = '0;
+    if (sel[0]) m_sel_cause = riscv_pkg::IntMachineExternal;
+    if (sel[1]) m_sel_cause = riscv_pkg::IntMachineSoftware;
+    if (sel[2]) m_sel_cause = riscv_pkg::IntMachineTimer;
+    if (sel[3]) m_sel_cause = riscv_pkg::IntSupervisorExternal;
+    if (sel[4]) m_sel_cause = riscv_pkg::IntSupervisorSoftware;
+    if (sel[5]) m_sel_cause = riscv_pkg::IntSupervisorTimer;
+    if (sel[6]) m_sel_cause = riscv_pkg::IntLocalCounterOverflow;
+  endfunction
+  function automatic logic [XLEN-1:0] s_sel_cause(input logic [3:0] sel);
+    s_sel_cause = '0;
+    if (sel[0]) s_sel_cause = riscv_pkg::IntSupervisorExternal;
+    if (sel[1]) s_sel_cause = riscv_pkg::IntSupervisorSoftware;
+    if (sel[2]) s_sel_cause = riscv_pkg::IntSupervisorTimer;
+    if (sel[3]) s_sel_cause = riscv_pkg::IntLocalCounterOverflow;
+  endfunction
+  assign m_int_cause_comb = m_sel_cause(m_int_sel_comb);
+  assign s_int_cause_comb = s_sel_cause(s_int_sel_comb);
 
   // A held cause remains valid only while its own source is pending and
   // still targets this class. The aggregate source-live latch alone cannot
   // protect against a different source keeping a stale cause alive. Clear
   // the dropped cause so priority resolves to a live source on re-enable.
-  logic m_int_cause_source_pending;
-  always_comb begin
-    unique case (m_int_cause)
-      riscv_pkg::IntMachineExternal:      m_int_cause_source_pending = i_interrupts.meip;
-      riscv_pkg::IntMachineSoftware:      m_int_cause_source_pending = i_interrupts.msip;
-      riscv_pkg::IntMachineTimer:         m_int_cause_source_pending = i_interrupts.mtip;
-      riscv_pkg::IntSupervisorExternal:   m_int_cause_source_pending = seip && !deleg_sei;
-      riscv_pkg::IntSupervisorSoftware:   m_int_cause_source_pending = ssip && !deleg_ssi;
-      riscv_pkg::IntSupervisorTimer:      m_int_cause_source_pending = stip && !deleg_sti;
-      riscv_pkg::IntLocalCounterOverflow: m_int_cause_source_pending = lcofip && !deleg_lcof;
-      default:                            m_int_cause_source_pending = 1'b0;
-    endcase
-  end
-  logic s_int_cause_source_pending;
-  always_comb begin
-    unique case (s_int_cause)
-      riscv_pkg::IntSupervisorExternal:   s_int_cause_source_pending = seip && deleg_sei;
-      riscv_pkg::IntSupervisorSoftware:   s_int_cause_source_pending = ssip && deleg_ssi;
-      riscv_pkg::IntSupervisorTimer:      s_int_cause_source_pending = stip && deleg_sti;
-      riscv_pkg::IntLocalCounterOverflow: s_int_cause_source_pending = lcofip && deleg_lcof;
-      default:                            s_int_cause_source_pending = 1'b0;
-    endcase
-  end
+  logic m_int_cause_source_pending, s_int_cause_source_pending;
+  assign m_int_cause_source_pending = |(m_int_sel & {
+      lcofip && !deleg_lcof, stip && !deleg_sti, ssip && !deleg_ssi, seip && !deleg_sei,
+      i_interrupts.mtip, i_interrupts.msip, i_interrupts.meip});
+  assign s_int_cause_source_pending = |(s_int_sel & {
+      lcofip && deleg_lcof, stip && deleg_sti, ssip && deleg_ssi, seip && deleg_sei});
 
   always_ff @(posedge i_clk) begin
     // Retain the cause while its class is held and its source is pending.
     // The gated combinational cause becomes zero while masked, which would
     // otherwise leave the held interrupt ineligible on re-enable.
-    if (m_int_cause_comb != '0) m_int_cause <= m_int_cause_comb;
-    else if (m_int_pending && m_int_source_live && m_int_cause_source_pending)
-      m_int_cause <= m_int_cause;
-    else m_int_cause <= '0;
-    if (s_int_cause_comb != '0) s_int_cause <= s_int_cause_comb;
-    else if (s_int_pending && s_int_source_live && s_int_cause_source_pending)
-      s_int_cause <= s_int_cause;
-    else s_int_cause <= '0;
+    if (m_int_sel_comb != '0) begin
+      m_int_cause <= m_int_cause_comb;
+      m_int_sel   <= m_int_sel_comb;
+    end else if (!(m_int_pending && m_int_source_live && m_int_cause_source_pending)) begin
+      m_int_cause <= '0;
+      m_int_sel   <= '0;
+    end
+    if (s_int_sel_comb != '0) begin
+      s_int_cause <= s_int_cause_comb;
+      s_int_sel   <= s_int_sel_comb;
+    end else if (!(s_int_pending && s_int_source_live && s_int_cause_source_pending)) begin
+      s_int_cause <= '0;
+      s_int_sel   <= '0;
+    end
   end
 
   // Recheck enable and delegation at the take decision so CSR writes can
   // cancel a stale registered interrupt request.
-  logic m_latched_source_enabled;
-  always_comb begin
-    unique case (m_int_cause)
-      riscv_pkg::IntMachineExternal:      m_latched_source_enabled = mie_meie;
-      riscv_pkg::IntMachineSoftware:      m_latched_source_enabled = mie_msie;
-      riscv_pkg::IntMachineTimer:         m_latched_source_enabled = mie_mtie;
-      riscv_pkg::IntSupervisorExternal:   m_latched_source_enabled = mie_seie && !deleg_sei;
-      riscv_pkg::IntSupervisorSoftware:   m_latched_source_enabled = mie_ssie && !deleg_ssi;
-      riscv_pkg::IntSupervisorTimer:      m_latched_source_enabled = mie_stie && !deleg_sti;
-      riscv_pkg::IntLocalCounterOverflow: m_latched_source_enabled = mie_lcofie && !deleg_lcof;
-      default:                            m_latched_source_enabled = 1'b0;
-    endcase
-  end
-  logic s_latched_source_enabled;
-  always_comb begin
-    unique case (s_int_cause)
-      riscv_pkg::IntSupervisorExternal:   s_latched_source_enabled = mie_seie && deleg_sei;
-      riscv_pkg::IntSupervisorSoftware:   s_latched_source_enabled = mie_ssie && deleg_ssi;
-      riscv_pkg::IntSupervisorTimer:      s_latched_source_enabled = mie_stie && deleg_sti;
-      riscv_pkg::IntLocalCounterOverflow: s_latched_source_enabled = mie_lcofie && deleg_lcof;
-      default:                            s_latched_source_enabled = 1'b0;
-    endcase
-  end
+  logic m_latched_source_enabled, s_latched_source_enabled;
+  assign m_latched_source_enabled = |(m_int_sel & {
+      mie_lcofie && !deleg_lcof, mie_stie && !deleg_sti, mie_ssie && !deleg_ssi,
+      mie_seie && !deleg_sei, mie_mtie, mie_msie, mie_meie});
+  assign s_latched_source_enabled = |(s_int_sel & {
+      mie_lcofie && deleg_lcof, mie_stie && deleg_sti, mie_ssie && deleg_ssi,
+      mie_seie && deleg_sei});
 
   logic m_int_eligible, s_int_eligible;
   assign m_int_eligible = m_int_pending &&
@@ -611,7 +611,7 @@ module trap_unit #(
   // These routes take precedence over delegation.
   logic exception_ebreak_to_d, exception_in_debug;
   assign exception_ebreak_to_d = exception_pending && !i_debug_mode && dcsr_ebreak_here &&
-      (exception_cause_q == riscv_pkg::ExcBreakpoint);
+      exception_ebreak_q;
   // Memory-order replay (ExcMemReplay, raised after a DMA write invalidates
   // a line an in-flight load already read): the head restarts at its own PC
   // with no CSR or privilege effect, in any mode including Debug Mode (it is
@@ -666,7 +666,7 @@ module trap_unit #(
        (!d_int_take_ready && !m_int_take_ready && !s_int_take_ready && exception_enters_d));
   assign o_dbg_go_taken = take_trap_d && i_debug_mode;
   assign o_dbg_park_entry = exception_take && exception_in_debug;
-  assign o_dbg_park_exception = o_dbg_park_entry && (exception_cause_q != riscv_pkg::ExcBreakpoint);
+  assign o_dbg_park_exception = o_dbg_park_entry && !exception_ebreak_q;
   // dcsr.cause: haltreq beats step (spec priority); an ebreak entry is 1.
   assign o_dbg_cause = d_int_take_ready ? (i_dbg_haltreq ? riscv_pkg::DcsrCauseHaltreq :
                                                           riscv_pkg::DcsrCauseStep) :
@@ -716,13 +716,19 @@ module trap_unit #(
   logic interrupt_wins;
   assign interrupt_wins = m_int_take_ready || s_int_take_ready;
   // Decode the entry target separately from xRET selection, for timing.
-  // The resume-PC register consumes it only on a trap take.
+  // The resume-PC register consumes it only on a trap take, and the redirect
+  // register only on a trap or xRET take, so both selections leave out the
+  // take gates (stall and committed-store drain), which every take shares:
+  // the S side is chosen as trap_to_s chooses it, without take_trap.
+  logic target_to_s;
+  assign target_to_s = !d_int_take_ready && !m_int_take_ready &&
+      (s_int_take_ready || (exception_to_s && !exception_in_debug));
   always_comb begin
     if (d_int_take_ready) begin
       // Debug Mode: a halt entry parks the hart; go redirects where the
       // debug module asked.
       o_trap_entry_target = i_debug_mode ? i_dbg_go_target : XLEN'(riscv_pkg::DebugParkAddr);
-    end else if (exception_take && exception_replay) begin
+    end else if (!interrupt_wins && exception_replay) begin
       // Only when the replay is the trap being taken: an interrupt that
       // wins arbitration over a pending replay enters its vector (the
       // load re-executes after the handler, its PC is the epc).
@@ -732,7 +738,7 @@ module trap_unit #(
       // over a debug-routed ebreak enters its vector, and the ebreak
       // re-executes after the handler.
       o_trap_entry_target = XLEN'(riscv_pkg::DebugParkAddr);
-    end else if (trap_to_s) begin
+    end else if (target_to_s) begin
       if (i_stvec[1:0] == 2'b01 && interrupt_wins) begin
         o_trap_entry_target = {i_stvec[XLEN-1:2], 2'b00} + {{(XLEN - 6) {1'b0}}, s_vectored_offset};
       end else begin
@@ -747,12 +753,15 @@ module trap_unit #(
     end
   end
 
+  // An xRET takes exactly when its start is present, no trap is requested,
+  // and no trap was taken in the previous cycle, under the shared take gates.
+  logic xret_target_wins;
+  assign xret_target_wins = !trap_requested && !trap_taken_prev;
   always_comb begin
-    if (take_mret) trap_target_selected = i_mepc;
-    else if (take_sret) trap_target_selected = i_sepc;
-    else if (take_dret) trap_target_selected = i_dpc;
-    else if (take_trap) trap_target_selected = o_trap_entry_target;
-    else trap_target_selected = '0;
+    if (i_mret_start && xret_target_wins) trap_target_selected = i_mepc;
+    else if (i_sret_start && xret_target_wins) trap_target_selected = i_sepc;
+    else if (i_dret_start && xret_target_wins) trap_target_selected = i_dpc;
+    else trap_target_selected = o_trap_entry_target;
 
     // Retain high address bits so fetch faults on invalid targets.
     o_trap_target = trap_target_selected;
@@ -989,6 +998,16 @@ module trap_unit #(
       if ($past(!seip_s_enabled && !ssip_s_enabled && stip_s_enabled)) begin
         p_stip_s_priority : assert (s_int_cause == riscv_pkg::IntSupervisorTimer);
       end
+      // The registered breakpoint class matches the held exception cause.
+      if (exception_pending) begin
+        p_ebreak_class_matches_cause :
+        assert (exception_ebreak_q == (exception_cause_q == riscv_pkg::ExcBreakpoint));
+      end
+      // The one-hot select registers with the cause and names the same source.
+      p_m_cause_sel_consistent :
+      assert (((m_int_sel & (m_int_sel - 7'd1)) == '0) && (m_int_cause == m_sel_cause(m_int_sel)));
+      p_s_cause_sel_consistent :
+      assert (((s_int_sel & (s_int_sel - 4'd1)) == '0) && (s_int_cause == s_sel_cause(s_int_sel)));
       // LCOFI has the lowest priority in each class.
       if ($past(
               lcof_m_enabled && !meip_enabled && !msip_enabled && !mtip_enabled &&
