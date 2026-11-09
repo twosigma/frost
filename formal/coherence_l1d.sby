@@ -173,17 +173,19 @@ grantdata: select -assert-count 3 c:p_store_data_8 c:p_store_data_9 c:p_store_da
 grantdata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_8 c:p_store_data_9 c:p_store_data_10 %u %u %d
 turncovers: select -assert-count 4 c:p_stream_read_turn c:p_stream_empty_turn c:p_stream_probe_turn c:p_stream_cancel_turn
 turncovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_stream_read_turn c:p_stream_empty_turn c:p_stream_probe_turn c:p_stream_cancel_turn %u %u %u %d
-local: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_* c:p_atomic_context_identity c:p_atomic_read_identity %u %u %d
+local: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_* c:p_atomic_context_identity c:p_atomic_read_identity c:p_selected_kind %u %u %u %d
 local: chformal -assert -remove c:p_local_probe_data
-# Each owned task assumes nothing from the owner or sector tasks.
-owned: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_failed_owned c:p_owned_* %u %d
-owned: select -assert-count 12 t:$check r:FLAVOR=assert %i
+# Each owned task proves the local atomic lemmas, the read ownership lemmas and
+# the selected read's kind by 8-step induction and assumes nothing from the
+# owner or sector tasks.
+owned: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_failed_owned c:p_owned_* c:p_local_write_pending c:p_local_write_op c:p_local_amo_acquire c:p_local_acquired_amo c:p_local_phase c:p_local_granted c:p_local_acquired_sc c:p_local_active c:p_local_service c:p_local_failure c:p_selected_kind %u %u %u %u %u %u %u %u %u %u %u %u %d
+owned: select -assert-count 28 t:$check r:FLAVOR=assert %i
 streamowned: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_owned_* c:p_selected_kind %u %d
 streamowned: select -assert-count 14 t:$check r:FLAVOR=assert %i
-# The matching owned task proves this fact by unbounded induction.
-owner: chformal -assert2assume c:p_local_failed_owned
+# The matching owned task proves these facts by unbounded induction.
+owner: chformal -assert2assume c:p_local_failed_owned c:p_local_write_pending c:p_local_write_op c:p_local_amo_acquire c:p_local_acquired_amo c:p_local_phase c:p_local_granted c:p_local_acquired_sc c:p_local_active c:p_local_service c:p_local_failure c:p_selected_kind
 owner: chformal -assert -remove c:p_local_sector c:p_local_lookup_stable c:p_local_conflict_sample c:p_local_admit_sector
-owner: select -assert-count 19 t:$check r:FLAVOR=assert %i
+owner: select -assert-count 16 t:$check r:FLAVOR=assert %i
 owner: select -assert-count 2 c:p_local_lookup_owner c:p_local_sc_lookup %u t:$check %i r:FLAVOR=assert %i
 sector: select -assert-count 8 c:p_local_sector c:p_local_lookup_stable c:p_local_conflict_sample c:p_local_admit_sector c:p_local_lookup_owner c:p_local_service c:p_local_sc_lookup c:p_local_active
 sector: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_sector c:p_local_lookup_stable c:p_local_conflict_sample c:p_local_admit_sector c:p_local_lookup_owner c:p_local_service c:p_local_sc_lookup c:p_local_active %u %u %u %u %u %u %u %d

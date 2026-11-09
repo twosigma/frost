@@ -2316,7 +2316,8 @@ def test_local_sector_lemma_models_match() -> None:
 
     common = [
         "chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_* "
-        "c:p_atomic_context_identity c:p_atomic_read_identity %u %u %d",
+        "c:p_atomic_context_identity c:p_atomic_read_identity c:p_selected_kind "
+        "%u %u %u %d",
         "chformal -assert -remove c:p_local_probe_data",
     ]
     sector_names = (
@@ -2326,11 +2327,18 @@ def test_local_sector_lemma_models_match() -> None:
     )
     lemmas = "c:p_local_lookup_owner c:p_local_sc_lookup"
     role_check = f"select -assert-count 2 {lemmas} %u t:$check %i r:FLAVOR={{}} %i"
+    # The owned task proves these facts; the owner task assumes them.
+    owned_facts = (
+        "c:p_local_failed_owned c:p_local_write_pending c:p_local_write_op "
+        "c:p_local_amo_acquire c:p_local_acquired_amo c:p_local_phase "
+        "c:p_local_granted c:p_local_acquired_sc c:p_local_active "
+        "c:p_local_service c:p_local_failure c:p_selected_kind"
+    )
     owner_commands = common + [
-        "chformal -assert2assume c:p_local_failed_owned",
+        f"chformal -assert2assume {owned_facts}",
         "chformal -assert -remove c:p_local_sector c:p_local_lookup_stable "
         "c:p_local_conflict_sample c:p_local_admit_sector",
-        "select -assert-count 19 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 16 t:$check r:FLAVOR=assert %i",
         role_check.format("assert"),
     ]
     sector_commands = common + [
@@ -2343,10 +2351,14 @@ def test_local_sector_lemma_models_match() -> None:
         role_check.format("assume"),
     ]
     # An owned task's proof supports its owner task, so it assumes nothing back.
+    owned_names = owned_facts.split()
+    owned_names.insert(1, "c:p_owned_*")
     owned_commands = [
         "chformal -assert -remove t:$check r:FLAVOR=assert %i "
-        "c:p_local_failed_owned c:p_owned_* %u %d",
-        "select -assert-count 12 t:$check r:FLAVOR=assert %i",
+        + " ".join(owned_names)
+        + " %u" * (len(owned_names) - 1)
+        + " %d",
+        "select -assert-count 28 t:$check r:FLAVOR=assert %i",
     ]
     # Only these reads differ from the owner task's model: both expose the
     # request endpoint's phase, and neither changes its design logic.
