@@ -218,6 +218,9 @@ module coherence_home #(
   logic [RESULTS-1:0][8*LINE_BYTES-1:0] engine_update_data;
   logic [Clients-1:0] tag_valid, tag_ready, read_valid, read_ready;
   logic [Clients-1:0] update_valid, update_ready, probe_valid, probe_ready;
+  // The update arbiter's selected client, whose acceptance waits only on the
+  // array's readiness.
+  logic [Clients-1:0] update_selected;
   logic [Clients-1:0] ack_valid, ack_ready;
   logic [Clients-1:0][TagPacketBits-1:0] tag_payload;
   logic [Clients-1:0][ReadPacketBits-1:0] read_payload;
@@ -671,7 +674,7 @@ module coherence_home #(
       .o_ready(update_ready),
       .i_payload(update_payload),
       .o_valid(update_request_valid),
-      .o_selected(),
+      .o_selected(update_selected),
       .i_ready(update_request_ready && run),
 `ifdef COHERENCE_HOME_CONTROL
       .i_service_stop(!run),
@@ -1235,6 +1238,10 @@ module coherence_home #(
     end
   end
 
+  // An allocation's first phase: FillMemory without a victim, else
+  // FillRecall.
+  (* keep = "true" *) fill_phase_t fill_phase_allocated;
+  assign fill_phase_allocated = array_state == coherence_pkg::Invalid ? FillMemory : FillRecall;
   for (genvar fill = 0; fill < FILLS; fill++) begin : gen_fill
     localparam int unsigned Client = RESULTS + fill;
     coh_p_t probe;
@@ -1252,6 +1259,48 @@ module coherence_home #(
         !fill_error_q[fill] : i_mem_resp_valid && i_mem_resp_id == 5'(fill) && !i_mem_resp_error);
     wire forwarded = forward_accept && forward_pick[fill];
     wire [COMPLETIONS-1:0] forward_seat = forwarded ? fill_primary_q[fill] : '0;
+    // The phase's next state forms in kept nodes beside the two late
+    // decisions, which select it last: allocation, which finds the fill in
+    // FillFree, and update acceptance, which finds it in FillInvalidate or
+    // FillInstall. No other phase write applies in those phases.
+    (* keep = "true" *) fill_phase_t fill_phase_hold, fill_phase_updated;
+    (* keep = "true" *) logic fill_update_armed;
+    always_comb begin
+      fill_phase_hold = fill_phase_q[fill];
+      if (run) begin
+        if (fill_phase_q[fill] == FillReady && fill_seats_q[fill] == 0) fill_phase_hold = FillFree;
+        if (i_r_valid && fill_r_ready[fill] && reply.error) fill_phase_hold = FillFatal;
+        if (fill_phase_q[fill] == FillRecall && recall_phase_q[fill] == RecallDone &&
+            !(LINE_BYTES == 64 && !fill_sector_q[fill]) && fill_read_done_q[fill])
+          fill_phase_hold = FillDetach;
+        if (fill_phase_q[fill] == FillDetach) fill_phase_hold = FillInvalidate;
+        if (fill_phase_q[fill] == FillInvalidateWait && array_updated &&
+            array_updated_token == TokenBits'(Client))
+          fill_phase_hold = FillMemory;
+        if (fill_phase_q[fill] == FillMemory && fill_done_q[fill])
+          fill_phase_hold = fill_error_q[fill] ? FillFree : FillInstall;
+        // A successful response that arrives in FillMemory installs from
+        // the next cycle, beside the image capture below. A response that
+        // arrives in an earlier phase, and every error response, waits in
+        // fill_done_q for the transition above.
+        if (fill_phase_q[fill] == FillMemory && !fill_done_q[fill] && i_mem_resp_valid &&
+            i_mem_resp_id == 5'(fill) && !i_mem_resp_error)
+          fill_phase_hold = FillInstall;
+        if (fill_phase_q[fill] == FillInstallWait && array_updated &&
+            array_updated_token == TokenBits'(Client))
+          fill_phase_hold = FillReady;
+      end
+    end
+    assign fill_phase_updated = fill_phase_q[fill] == FillInvalidate ? FillInvalidateWait :
+        FillInstallWait;
+    assign fill_update_armed = run && update_selected[Client] &&
+        (fill_phase_q[fill] == FillInvalidate || fill_phase_q[fill] == FillInstall);
+    always_ff @(posedge i_clk) begin
+      if (i_rst) fill_phase_q[fill] <= FillFree;
+      else if (update_request_ready && fill_update_armed) fill_phase_q[fill] <= fill_phase_updated;
+      else if (allocate) fill_phase_q[fill] <= fill_phase_allocated;
+      else fill_phase_q[fill] <= fill_phase_hold;
+    end
     assign tag_valid[Client] = 1'b0;
     assign tag_payload[Client] = '0;
     assign read_valid[Client] = fill_phase_q[fill] == FillRecall && !fill_read_sent_q[fill];
@@ -1303,7 +1352,6 @@ module coherence_home #(
     end
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
-        fill_phase_q[fill] <= FillFree;
         fill_live_q[fill] <= 1'b0;
         fill_blocking_q[fill] <= 1'b0;
         recall_phase_q[fill] <= RecallDone;
@@ -1386,10 +1434,7 @@ module coherence_home #(
             fill_seats_q[fill][CompletionBits'(decision_tid)] <= 1'b0;
             fill_seat_count_q[fill] <= fill_seat_count_q[fill] - 1'b1 - 2'(forwarded);
           end
-          if (fill_phase_q[fill] == FillReady && fill_seats_q[fill] == 0) begin
-            fill_phase_q[fill] <= FillFree;
-            fill_live_q[fill]  <= 1'b0;
-          end
+          if (fill_phase_q[fill] == FillReady && fill_seats_q[fill] == 0) fill_live_q[fill] <= 1'b0;
           if (read_valid[Client] && read_ready[Client]) fill_read_sent_q[fill] <= 1'b1;
           if (array_data_valid && array_data_token == TokenBits'(Client))
             fill_read_done_q[fill] <= 1'b1;
@@ -1401,8 +1446,7 @@ module coherence_home #(
               if ((LINE_BYTES == 64 && reply.addr[5]) == 1'(sector))
                 fill_dirty_sectors_q[fill][sector] <= 1'b1;
             end
-            if (reply.error) fill_phase_q[fill] <= FillFatal;
-            else begin
+            if (!reply.error) begin
               if (reply.absorbed) begin
                 fill_ack_q[fill] <= absorbed_ack;
                 recall_phase_q[fill] <= RecallAck;
@@ -1410,54 +1454,29 @@ module coherence_home #(
             end
           end
           if (ack_valid[Client] && ack_ready[Client]) recall_phase_q[fill] <= RecallDone;
-          if (fill_phase_q[fill] == FillRecall && recall_phase_q[fill] == RecallDone) begin
-            if (LINE_BYTES == 64 && !fill_sector_q[fill]) begin
-              fill_sector_q[fill]  <= 1'b1;
-              recall_phase_q[fill] <= RecallOffer;
-            end else if (fill_read_done_q[fill]) fill_phase_q[fill] <= FillDetach;
+          if (fill_phase_q[fill] == FillRecall && recall_phase_q[fill] == RecallDone &&
+              LINE_BYTES == 64 && !fill_sector_q[fill]) begin
+            fill_sector_q[fill]  <= 1'b1;
+            recall_phase_q[fill] <= RecallOffer;
           end
-          if (fill_phase_q[fill] == FillDetach) fill_phase_q[fill] <= FillInvalidate;
-          if (fill_phase_q[fill] == FillInvalidateWait && array_updated &&
-              array_updated_token == TokenBits'(Client))
-            fill_phase_q[fill] <= FillMemory;
-          if (fill_phase_q[fill] == FillMemory && fill_done_q[fill]) begin
-            fill_phase_q[fill] <= fill_error_q[fill] ? FillFree : FillInstall;
-            if (fill_error_q[fill]) begin
-              fill_live_q[fill] <= 1'b0;
-              fill_blocking_q[fill] <= 1'b0;
-              fill_seats_q[fill] <= '0;
-              fill_seat_count_q[fill] <= '0;
-              fill_primary_q[fill] <= '0;
-            end
+          if (fill_phase_q[fill] == FillMemory && fill_done_q[fill] && fill_error_q[fill]) begin
+            fill_live_q[fill] <= 1'b0;
+            fill_blocking_q[fill] <= 1'b0;
+            fill_seats_q[fill] <= '0;
+            fill_seat_count_q[fill] <= '0;
+            fill_primary_q[fill] <= '0;
           end
-          // A successful response that arrives in FillMemory installs from
-          // the next cycle, beside the image capture above. A response that
-          // arrives in an earlier phase, and every error response, waits in
-          // fill_done_q for the transition above.
-          if (fill_phase_q[fill] == FillMemory && !fill_done_q[fill] && i_mem_resp_valid &&
-              i_mem_resp_id == 5'(fill) && !i_mem_resp_error)
-            fill_phase_q[fill] <= FillInstall;
           if (fill_phase_q[fill] == FillInstallWait) fill_woken_q[fill] <= 1'b1;
           if (fill_phase_q[fill] == FillInstallWait && array_updated &&
-              array_updated_token == TokenBits'(Client)) begin
-            fill_phase_q[fill] <= FillReady;
+              array_updated_token == TokenBits'(Client))
             fill_blocking_q[fill] <= 1'b0;
-          end
           // Allocation finds the fill free, where no update above applies, so
-          // its phase writes come last and the late decision selects them last.
+          // its writes come last and the late decision selects them last.
           if (allocate) begin
-            fill_phase_q[fill] <= array_state == coherence_pkg::Invalid ? FillMemory : FillRecall;
             fill_live_q[fill] <= 1'b1;
             fill_blocking_q[fill] <= 1'b1;
             recall_phase_q[fill] <= RecallOffer;
           end
-          // Update acceptance only applies in FillInvalidate or FillInstall,
-          // where no other phase write applies, so the late array readiness
-          // selects the phase last as well.
-          if (fill_phase_q[fill] == FillInvalidate && update_ready[Client])
-            fill_phase_q[fill] <= FillInvalidateWait;
-          if (fill_phase_q[fill] == FillInstall && update_ready[Client])
-            fill_phase_q[fill] <= FillInstallWait;
         end
       end
     end
