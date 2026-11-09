@@ -51,7 +51,8 @@ branch prediction, and the [Tomasulo guide](cpu_and_mem/cpu/tomasulo/README.md)
 for scheduling, execution, and commit.
 
 Sv39 translation uses a 16-entry ITLB, a 16-entry DTLB, a 512-entry
-second-level TLB, and one read-only page-table walker shared by both MMUs,
+second-level TLB with a 32-entry superpage side array, and one read-only
+page-table walker shared by both MMUs,
 with 4 KiB, 2 MiB, and 1 GiB pages.
 Software manages the accessed and dirty bits (Svade): an access that needs
 one set raises a page fault. `satp.ASID` is nine bits wide, and TLB entries

@@ -4066,8 +4066,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.mmu.test_l2tlb",
         hdl_toplevel_module="l2tlb",
         description=(
-            "Second-level TLB: ASID and global entries, every SFENCE.VMA form, "
-            "512-page residency and a random run against a reference"
+            "Second-level TLB: ASID and global entries, superpages, every SFENCE.VMA "
+            "form, 512-page and 32-superpage residency and a random run against a reference"
         ),
     ),
     "soc_vcu118": CocotbRunConfig(

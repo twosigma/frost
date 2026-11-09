@@ -14,13 +14,15 @@
 
 """The second-level TLB in front of the page-table walker.
 
-A model walker answers the array's misses from a table of page mappings. The
-tests check that a repeat request hits without reaching the walker, that
-entries separate by ASID and global bit, that superpage, faulting and discarded
-walks are not stored, that every SFENCE.VMA form (page, ASID, both, all)
-removes exactly what the privileged spec names, that a request waits out a
-flush, and that 512 resident pages all hit. A random run compares every hit
-against the entries a reference model says may still be present.
+A model walker answers the array's misses from a table of page mappings and
+superpage mappings. The tests check that a repeat request hits without reaching
+the walker, that entries separate by ASID and global bit, that faulting and
+discarded walks are not stored, that a 2 MiB or 1 GiB leaf answers every page
+of its region from the superpage side array, that every SFENCE.VMA form (page,
+ASID, both, all) removes exactly what the privileged spec names in both arrays,
+that a request waits out a flush, and that 512 resident pages and 32 resident
+superpages all hit. A random run compares every hit against the entries a
+reference model says may still be present.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from cocotb.triggers import RisingEdge, Timer
 
 SETS = 128
 WAYS = 4
+SP_ENTRIES = 32
 NONE, PAGE = 0, 2
 ASID_MASK = 0x1FF
 
@@ -108,6 +111,8 @@ class Bench:
         self.dut = dut
         self.latency = latency
         self.table: dict[tuple[int | None, int], Entry] = {}
+        # Superpages: (asid or None for global, level, vpn >> (9 * level)) -> Entry
+        self.supers: dict[tuple[int | None, int, int], Entry] = {}
         self.walks: list[tuple[int, int]] = []  # (asid, vpn) of each accepted walk
         self.asid = 0
         self._pending: tuple[int, int, int] | None = None  # (vpn, asid, countdown)
@@ -143,9 +148,15 @@ class Bench:
 
     def lookup_table(self, asid: int, vpn: int) -> Entry:
         """Return what the walker finds for vpn under asid."""
-        return self.table.get(
-            (asid, vpn), self.table.get((None, vpn), Entry(0, fault=PAGE))
-        )
+        for key in ((asid, vpn), (None, vpn)):
+            if key in self.table:
+                return self.table[key]
+        for level in (1, 2):
+            region = vpn >> (9 * level)
+            for skey in ((asid, level, region), (None, level, region)):
+                if skey in self.supers:
+                    return self.supers[skey]
+        return Entry(0, fault=PAGE)
 
     async def tick(self) -> None:
         """Advance one clock; run the model walker."""
@@ -283,15 +294,15 @@ async def asid_isolation_and_global_entries(dut: Any) -> None:
 
 
 @cocotb.test()
-async def superpage_fault_and_discarded_walks_are_not_stored(dut: Any) -> None:
-    """Only clean 4 KiB translations fill the array."""
+async def fault_and_discarded_walks_are_not_stored(dut: Any) -> None:
+    """Only clean translations fill the arrays."""
     b = Bench(dut)
     await b.reset()
     b.set_asid(1)
-    b.table[(1, 0x600)] = Entry(0x80200, level=1)
     b.table[(1, 0x601)] = Entry(0, fault=PAGE)
+    b.supers[(1, 1, 0x3)] = Entry(0, level=1, fault=PAGE)
     b.table[(1, 0x602)] = clean(0x80602)
-    for vpn in (0x600, 0x601):
+    for vpn in (0x601, 0x605, 0x7FF):
         for _ in range(2):
             _, _, walked = await b.request(vpn)
             assert walked, hex(vpn)
@@ -323,6 +334,114 @@ async def superpage_fault_and_discarded_walks_are_not_stored(dut: Any) -> None:
         assert not int(dut.o_resp_valid.value), "a discarded walk answered"
     _, _, walked = await b.request(0x602)
     assert walked, "a discarded walk filled the array"
+
+
+@cocotb.test()
+async def superpages_answer_every_page_of_their_region(dut: Any) -> None:
+    """Check that a 2 MiB or 1 GiB leaf fills the side array and answers its region."""
+    b = Bench(dut)
+    await b.reset()
+    b.set_asid(1)
+    two_m = Entry(0x80400, r=1, w=0, x=1, u=1, d=0, level=1)
+    b.supers[(1, 1, 0x43)] = two_m
+    entry, miss_cycles, walked = await b.request((0x43 << 9) | 0x005)
+    assert walked and entry == two_m
+    hit_cycles = 0
+    for offset in (0x005, 0x000, 0x1F0, 0x1FF):
+        entry, hit_cycles, walked = await b.request((0x43 << 9) | offset)
+        assert not walked and entry == two_m, (hex(offset), entry)
+        assert hit_cycles <= 4, hit_cycles
+    dut._log.info("superpage hit latency %d cycles, miss %d", hit_cycles, miss_cycles)
+    # The neighbouring 2 MiB regions are not covered.
+    for vpn in ((0x42 << 9) | 0x1FF, 0x44 << 9):
+        b.table[(1, vpn)] = clean(0x90000 + vpn)
+        entry, _, walked = await b.request(vpn)
+        assert walked and entry.level == 0, hex(vpn)
+    # Another ASID misses on the non-global superpage.
+    b.set_asid(2)
+    b.supers[(2, 1, 0x43)] = Entry(0x80600, level=1)
+    entry, _, walked = await b.request((0x43 << 9) | 0x100)
+    assert walked and entry.ppn == 0x80600
+    for asid, ppn in ((1, 0x80400), (2, 0x80600)):
+        b.set_asid(asid)
+        entry, _, walked = await b.request((0x43 << 9) | 0x077)
+        assert not walked and entry.ppn == ppn, asid
+    # A global 1 GiB leaf answers its region under every ASID.
+    giga = Entry(0xC0000, x=1, g=1, level=2)
+    b.supers[(None, 2, 0x5)] = giga
+    b.set_asid(3)
+    entry, _, walked = await b.request((0x5 << 18) | 0x12345)
+    assert walked and entry == giga
+    for asid in (0, 1, 3, ASID_MASK):
+        b.set_asid(asid)
+        for low in (0, 0x3FFFF, 0x2A000):
+            entry, _, walked = await b.request((0x5 << 18) | low)
+            assert not walked and entry == giga, (asid, hex(low))
+    b.supers[(None, 2, 0x6)] = giga
+    entry, _, walked = await b.request(0x6 << 18)
+    assert walked
+
+
+@cocotb.test()
+async def every_sfence_form_removes_superpages_by_region(dut: Any) -> None:
+    """Check that a page flush names any page of a region; ASID filters spare globals."""
+    b = Bench(dut)
+    await b.reset()
+    pages = {
+        # label: (asid, level, region, entry, probe vpn inside the region)
+        "A": (1, 1, 0x40, Entry(0x80A00, level=1), (0x40 << 9) | 0x011),
+        "B": (2, 1, 0x40, Entry(0x80B00, level=1), (0x40 << 9) | 0x022),
+        "C": (1, 2, 0x1, Entry(0xC0000, level=2), (0x1 << 18) | 0x333),
+        "G": (1, 2, 0x3, Entry(0x40000, level=2, g=1), (0x3 << 18) | 0x444),
+    }
+    cases = {
+        "none": (None, "ABCG"),
+        "asid1": (flush_cmd(asid=1), "BG"),
+        "pageA": (flush_cmd(vpn=(0x40 << 9) | 0x1FE), "CG"),
+        "pageG": (flush_cmd(vpn=(0x3 << 18) | 0x3FFFF), "ABC"),
+        "pageC_asid1": (flush_cmd(vpn=(0x1 << 18) | 0x777, asid=1), "ABG"),
+        "pageG_asid1": (flush_cmd(vpn=(0x3 << 18) | 0x10, asid=1), "ABCG"),
+        "pageA_asid2": (flush_cmd(vpn=(0x40 << 9) | 0x100, asid=2), "ACG"),
+        "outside": (flush_cmd(vpn=(0x41 << 9) | 0x011), "ABCG"),
+        "all": (flush_cmd(), ""),
+    }
+    for name, (cmd, survivors) in cases.items():
+        await b.flush(flush_cmd())
+        b.supers.clear()
+        for asid, level, region, e, _ in pages.values():
+            b.supers[(None if e.g else asid, level, region)] = e
+        for asid, _, _, _, probe in pages.values():
+            b.set_asid(asid)
+            await b.request(probe)
+        if cmd is not None:
+            await b.flush(cmd, cycles=3)
+        for label, (asid, _, _, _, probe) in pages.items():
+            b.set_asid(asid)
+            hit = await b.hits(probe ^ 0x7)
+            assert hit == (label in survivors), f"{name}: {label} hit={hit}"
+
+
+@cocotb.test()
+async def thirty_two_superpages_stay_resident(dut: Any) -> None:
+    """32 superpages fill the side array and all hit; the 33rd evicts one."""
+    b = Bench(dut, latency=2)
+    await b.reset()
+    b.set_asid(3)
+    for i in range(SP_ENTRIES):
+        level = 1 + (i % 2)
+        region = (0x100 + i) if level == 1 else (0x40 + i)
+        b.supers[(3, level, region)] = Entry(0x100000 + i, level=level)
+    probes = [(region << (9 * level)) | 0x9 for (_, level, region) in b.supers]
+    for vpn in probes:
+        _, _, walked = await b.request(vpn)
+        assert walked
+    for i, vpn in enumerate(probes):
+        entry, _, walked = await b.request(vpn + 1)
+        assert not walked and entry.ppn == 0x100000 + i, hex(vpn)
+    b.supers[(3, 1, 0x1FF)] = Entry(0x200000, level=1)
+    await b.request(0x1FF << 9)
+    assert await b.hits((0x1FF << 9) | 0x1)
+    assert not all([await b.hits(vpn) for vpn in probes])
 
 
 @cocotb.test()
@@ -426,42 +545,62 @@ async def random_requests_and_flushes_match_a_reference(dut: Any) -> None:
     rng = random.Random(7)
     asids = [0, 1, 2, 3, ASID_MASK]
     pool = [(s << 7) | rng.randrange(SETS) for s in range(6)] + [5, 6, 7, 133]
-    present: dict[tuple[int, int], Entry] = {}  # (asid filled under, vpn) -> entry
+    # Superpage regions: two 2 MiB regions and one 1 GiB region.
+    sp_regions = [(1, 0x100), (1, 0x101), (2, 0x5)]
+    sp_pool = [
+        (r << (9 * lv)) | rng.randrange(1 << (9 * lv))
+        for lv, r in sp_regions
+        for _ in range(3)
+    ]
+    # (asid filled under, level, vpn >> (9 * level)) -> entry
+    present: dict[tuple[int, int, int], Entry] = {}
     serial = 0x80000
-    hits = walks = 0
+    hits = walks = sp_hits = 0
 
     def candidates(asid: int, vpn: int) -> list[Entry]:
-        return [e for (a, v), e in present.items() if v == vpn and (a == asid or e.g)]
+        return [
+            e
+            for (a, lv, r), e in present.items()
+            if r == vpn >> (9 * lv) and (a == asid or e.g)
+        ]
 
     for _ in range(1500):
         action = rng.random()
         if action < 0.72:
             asid = rng.choice(asids)
-            vpn = rng.choice(pool)
+            vpn = rng.choice(pool + sp_pool)
             b.set_asid(asid)
-            if (asid, vpn) not in b.table and (None, vpn) not in b.table:
+            if vpn in pool:
+                if (asid, vpn) not in b.table and (None, vpn) not in b.table:
+                    serial += 1
+                    b.table[(asid, vpn)] = clean(serial, g=0)
+            elif b.lookup_table(asid, vpn).fault != NONE:
+                lv, r = next((lv, r) for lv, r in sp_regions if vpn >> (9 * lv) == r)
                 serial += 1
-                b.table[(asid, vpn)] = clean(serial, g=0)
+                b.supers[(asid, lv, r)] = Entry(serial, level=lv)
             cand = candidates(asid, vpn)
             entry, _, walked = await b.request(vpn)
             if walked:
                 walks += 1
-                if entry.fault == NONE and entry.level == 0:
-                    present[(asid, vpn)] = entry
+                if entry.fault == NONE:
+                    present[(asid, entry.level, vpn >> (9 * entry.level))] = entry
             else:
                 hits += 1
+                sp_hits += int(entry.level != 0)
                 assert entry in cand, (asid, vpn, entry, cand)
         elif action < 0.80:
-            vpn = rng.choice(pool)
             asid = rng.choice(asids)
             serial += 1
-            if rng.random() < 0.3:
-                b.table[(None, vpn)] = clean(serial, g=1)
+            g = int(rng.random() < 0.3)
+            if rng.random() < 0.7:
+                vpn = rng.choice(pool)
+                b.table[(None if g else asid, vpn)] = clean(serial, g=g)
             else:
-                b.table[(asid, vpn)] = clean(serial)
+                lv, r = rng.choice(sp_regions)
+                b.supers[(None if g else asid, lv, r)] = Entry(serial, level=lv, g=g)
         else:
             kind = rng.choice(("page", "asid", "both", "all"))
-            vpn = rng.choice(pool)
+            vpn = rng.choice(pool + sp_pool)
             asid = rng.choice(asids)
             cmd = {
                 "page": flush_cmd(vpn=vpn),
@@ -471,15 +610,17 @@ async def random_requests_and_flushes_match_a_reference(dut: Any) -> None:
             }[kind]
             await b.flush(cmd, cycles=rng.choice((1, 3)))
             for key in list(present):
-                a, v = key
+                a, lv, r = key
                 e = present[key]
+                covers = r == vpn >> (9 * lv)
                 kill = (
                     kind == "all"
-                    or (kind == "page" and v == vpn)
+                    or (kind == "page" and covers)
                     or (kind == "asid" and a == asid and not e.g)
-                    or (kind == "both" and v == vpn and a == asid and not e.g)
+                    or (kind == "both" and covers and a == asid and not e.g)
                 )
                 if kill:
                     del present[key]
-    dut._log.info("random run: %d hits, %d walks", hits, walks)
+    dut._log.info("random run: %d hits (%d superpage), %d walks", hits, sp_hits, walks)
     assert hits > 100
+    assert sp_hits > 20

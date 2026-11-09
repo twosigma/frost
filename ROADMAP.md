@@ -390,8 +390,10 @@ and targeted microbenchmarks give these items:
    second-level TLB, ASIDs with global pages, selective `sfence.vma`, and a
    walker cache of upper-level page-table pointers. An L1 miss that hits the
    second-level TLB costs three cycles; one that misses it walks, and the
-   walker cache takes the walk to one dependent read. Reach beyond 2 MiB, and
-   superpage entries in the second-level TLB, would be the next steps.
+   walker cache takes the walk to one dependent read. A 32-entry superpage
+   side array in the second-level TLB holds 2 MiB and 1 GiB leaves. Reach
+   beyond 2 MiB of 4 KiB pages, and Svnapot 64 KiB pages, would be the next
+   steps.
 4. Branch prediction. A misprediction costs about 7 cycles. The BTB has 256
    direct-mapped entries, and a 1024-entry two-way backing BTB behind it
    predicts the jumps, calls and returns it misses through a PD redirect, at

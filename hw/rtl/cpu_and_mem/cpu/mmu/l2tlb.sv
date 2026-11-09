@@ -22,11 +22,20 @@
  * and a discard input. A request looks up a 4-way, 128-set array (512 entries,
  * 2 MiB of 4 KiB pages) held in block RAM. A hit answers two cycles after the
  * request fires with the stored {PPN, RWXUD, G}; a miss goes to the walker, and
- * the clean 4 KiB translation it returns is stored on its way back. Superpage,
- * faulting and discarded walks are never stored: the L1 TLBs and the walker's
- * pointer cache already serve superpages in one read, and a PTE that changes
- * from invalid to valid is then seen by the next walk without SFENCE.VMA
- * (Svvptc), because this array holds no negative entries.
+ * the clean 4 KiB translation it returns is stored on its way back.
+ *
+ * Superpage leaves (2 MiB and 1 GiB) go to a separate fully associative side
+ * array of SP_ENTRIES entries. Its tags, ASIDs, global bits, levels and valid
+ * bits are flops, compared level-masked in the same cycle as the block RAM
+ * ways; its PPNs and permissions sit in distributed RAM, read in the next
+ * cycle at the registered index of the matching entry, so a superpage hit
+ * answers three cycles after the request fires. A fill takes the first free
+ * entry, else a round-robin victim. When an entry of each array matches (the
+ * mapping changed without SFENCE.VMA), the side array answers.
+ *
+ * Faulting and discarded walks are never stored, and neither array holds
+ * negative entries, so a PTE that changes from invalid to valid is seen by the
+ * next walk without SFENCE.VMA (Svvptc).
  *
  * Entries carry the ASID they were filled under and the leaf's global bit
  * (the walker ORs the bit over the levels it descended). A lookup matches an
@@ -39,7 +48,9 @@
  * Flush-all clears every valid bit in one cycle. A page flush reads the page's
  * set and clears the matching ways. An ASID flush, with or without a page,
  * scans the sets, two cycles for the first and one for each next, and clears
- * ways of that ASID that are not global. While a flush runs the array accepts
+ * ways of that ASID that are not global. The side array applies the same
+ * filter to every entry in the flush's first cycle; a page flush removes a
+ * superpage entry whose 2 MiB or 1 GiB region holds the page. While a flush runs the array accepts
  * no request, so no stale entry can answer. A flush that arrives during
  * another flush becomes a flush-all. A flush or discard aborts a lookup in
  * flight; the requester's own invalidate already drops that response.
@@ -47,6 +58,8 @@
 module l2tlb #(
     parameter int unsigned SETS = 128,
     parameter int unsigned WAYS = 4,
+    // Superpage side array entries (fully associative, at least 2).
+    parameter int unsigned SP_ENTRIES = 32,
     localparam int unsigned SetBits = $clog2(SETS),
     localparam int unsigned WayBits = $clog2(WAYS),
     localparam int unsigned VpnBits = riscv_pkg::Sv39VpnBits,
@@ -54,7 +67,13 @@ module l2tlb #(
     localparam int unsigned AsidW = riscv_pkg::AsidBits,
     localparam int unsigned PpnBits = riscv_pkg::PtePpnBits,
     // g, ASID, VPN tag, PPN, R W X U D
-    localparam int unsigned EntryBits = 1 + AsidW + TagBits + PpnBits + 5
+    localparam int unsigned EntryBits = 1 + AsidW + TagBits + PpnBits + 5,
+    localparam int unsigned SpIdxBits = $clog2(SP_ENTRIES),
+    localparam int unsigned FieldBits = riscv_pkg::Sv39VpnFieldBits,
+    // Superpage tag: VPN[2] and VPN[1]; a 1 GiB entry compares VPN[2] only.
+    localparam int unsigned SpTagBits = 2 * FieldBits,
+    // Side array payload in distributed RAM: 1 GiB flag, PPN, R W X U D
+    localparam int unsigned SpDataBits = 1 + PpnBits + 5
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -84,6 +103,7 @@ module l2tlb #(
     S_IDLE,
     S_CMP,    // the set was read at the request; compare the four ways
     S_RESP,   // present the registered hit
+    S_SPRD,   // read the matching superpage entry's PPN and permissions
     S_FWD,    // ask the walker
     S_WAIT,   // the walker is working; its response fills the array
     S_FL_RD,  // flush: first set read
@@ -191,6 +211,70 @@ module l2tlb #(
   logic hit_resp_valid_q;
 
   // ---------------------------------------------------------------------------
+  // Superpage side array
+  // ---------------------------------------------------------------------------
+  logic [SP_ENTRIES-1:0] sp_valid_q;
+  logic [SP_ENTRIES-1:0] sp_g_q;
+  logic [SP_ENTRIES-1:0] sp_giga_q;  // 1 GiB (level 2); else 2 MiB (level 1)
+  logic [AsidW-1:0] sp_asid_q[SP_ENTRIES];
+  logic [SpTagBits-1:0] sp_tag_q[SP_ENTRIES];
+  (* ram_style = "distributed" *) logic [SpDataBits-1:0] sp_data[SP_ENTRIES];
+  logic [SpIdxBits-1:0] sp_idx_q;  // the matching entry, read in S_SPRD
+  logic [SpIdxBits-1:0] sp_rr_q;
+  logic [SpIdxBits-1:0] sp_victim;
+  logic sp_fill_en;
+
+  // Level-masked region compare of VPN[2:1]: VPN[2] always, VPN[1] for a
+  // 2 MiB entry.
+  function automatic logic sp_covers(input logic [SpTagBits-1:0] tag, input logic giga,
+                                     input logic [SpTagBits-1:0] vpn_hi);
+    sp_covers = (tag[SpTagBits-1:FieldBits] == vpn_hi[SpTagBits-1:FieldBits]) &&
+        (giga || (tag[FieldBits-1:0] == vpn_hi[FieldBits-1:0]));
+  endfunction
+
+  logic [SP_ENTRIES-1:0] sp_hit;
+  always_comb begin
+    for (int e = 0; e < SP_ENTRIES; e++) begin
+      sp_hit[e] = sp_valid_q[e] && sp_covers(sp_tag_q[e], sp_giga_q[e], vpn_q[VpnBits-1:FieldBits])
+          && (sp_g_q[e] || (sp_asid_q[e] == asid_q));
+    end
+  end
+  logic sp_any_hit;
+  assign sp_any_hit = |sp_hit;
+  // Two entries match only when a mapping changed without SFENCE.VMA; the
+  // lowest index answers.
+  logic [SpIdxBits-1:0] sp_hit_idx;
+  always_comb begin
+    sp_hit_idx = '0;
+    for (int e = SP_ENTRIES - 1; e >= 0; e--) if (sp_hit[e]) sp_hit_idx = SpIdxBits'(e);
+  end
+
+  always_comb begin
+    sp_victim = sp_rr_q;
+    for (int e = SP_ENTRIES - 1; e >= 0; e--) if (!sp_valid_q[e]) sp_victim = SpIdxBits'(e);
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (sp_fill_en) begin
+      sp_data[sp_victim] <= {
+        i_ptw_resp.level == 2'd2,
+        i_ptw_resp.ppn,
+        i_ptw_resp.perm_r,
+        i_ptw_resp.perm_w,
+        i_ptw_resp.perm_x,
+        i_ptw_resp.perm_u,
+        i_ptw_resp.perm_d
+      };
+      sp_tag_q[sp_victim] <= i_ptw_resp.vpn[VpnBits-1:FieldBits];
+      sp_asid_q[sp_victim] <= asid_q;
+      sp_g_q[sp_victim] <= i_ptw_resp.perm_g;
+      sp_giga_q[sp_victim] <= (i_ptw_resp.level == 2'd2);
+    end
+  end
+  logic [SpDataBits-1:0] sp_rd;
+  assign sp_rd = sp_data[sp_idx_q];
+
+  // ---------------------------------------------------------------------------
   // Flush compare (state S_FL_CMP)
   // ---------------------------------------------------------------------------
   logic [WAYS-1:0] fl_kill;
@@ -202,12 +286,26 @@ module l2tlb #(
     end
   end
 
+  // The side array applies the filter to every entry in state S_FL_RD.
+  logic [SP_ENTRIES-1:0] sp_kill;
+  always_comb begin
+    for (int e = 0; e < SP_ENTRIES; e++) begin
+      sp_kill[e] = sp_valid_q[e] &&
+          (!fl_q.use_va || sp_covers(sp_tag_q[e], sp_giga_q[e], fl_q.vpn[VpnBits-1:FieldBits])) &&
+          (!fl_q.use_asid || (sp_asid_q[e] == fl_q.asid && !sp_g_q[e]));
+    end
+  end
+
   // ---------------------------------------------------------------------------
-  // Fill (state S_WAIT, clean 4 KiB response, no discard or flush this cycle)
+  // Fill (state S_WAIT, clean response, no discard or flush this cycle): a
+  // 4 KiB leaf to the set-associative array, a superpage to the side array.
   // ---------------------------------------------------------------------------
-  assign fill_en = (state_q == S_WAIT) && i_ptw_resp_valid &&
+  logic fill_ok;
+  assign fill_ok = (state_q == S_WAIT) && i_ptw_resp_valid &&
                    (i_ptw_resp.fault_kind == riscv_pkg::DFAULT_NONE) &&
-                   (i_ptw_resp.level == 2'd0) && !i_discard && !flush_start && !i_flush.en;
+                   !i_discard && !flush_start && !i_flush.en;
+  assign fill_en = fill_ok && (i_ptw_resp.level == 2'd0);
+  assign sp_fill_en = fill_ok && (i_ptw_resp.level == 2'd1 || i_ptw_resp.level == 2'd2);
   // The entry takes the ASID the walk was requested under.
   assign fill_entry = pack_entry(i_ptw_resp, asid_q);
 
@@ -225,6 +323,8 @@ module l2tlb #(
       state_q <= S_IDLE;
       valid_q <= '0;
       rr_q <= '0;
+      sp_valid_q <= '0;
+      sp_rr_q <= '0;
       hit_resp_valid_q <= 1'b0;
       fl_scan_q <= 1'b0;
     end else begin
@@ -233,6 +333,10 @@ module l2tlb #(
       if (fill_en) begin
         valid_q[victim][set_q] <= 1'b1;
         rr_q <= rr_q + 1'b1;
+      end
+      if (sp_fill_en) begin
+        sp_valid_q[sp_victim] <= 1'b1;
+        sp_rr_q <= (sp_rr_q == SpIdxBits'(SP_ENTRIES - 1)) ? '0 : sp_rr_q + 1'b1;
       end
 
       case (state_q)
@@ -245,7 +349,10 @@ module l2tlb #(
           end
         end
         S_CMP: begin
-          if (any_hit) begin
+          if (sp_any_hit) begin
+            sp_idx_q <= sp_hit_idx;
+            state_q  <= S_SPRD;
+          end else if (any_hit) begin
             hit_resp_q.fault_kind <= riscv_pkg::DFAULT_NONE;
             hit_resp_q.vpn <= vpn_q;
             hit_resp_q.ppn <= hit_entry[PpnBits+4:5];
@@ -263,10 +370,27 @@ module l2tlb #(
             state_q <= i_ptw_req_ready ? S_WAIT : S_FWD;
           end
         end
+        S_SPRD: begin
+          hit_resp_q.fault_kind <= riscv_pkg::DFAULT_NONE;
+          hit_resp_q.vpn <= vpn_q;
+          hit_resp_q.ppn <= sp_rd[PpnBits+4:5];
+          hit_resp_q.level <= sp_rd[SpDataBits-1] ? 2'd2 : 2'd1;
+          hit_resp_q.perm_r <= sp_rd[4];
+          hit_resp_q.perm_w <= sp_rd[3];
+          hit_resp_q.perm_x <= sp_rd[2];
+          hit_resp_q.perm_u <= sp_rd[1];
+          hit_resp_q.perm_d <= sp_rd[0];
+          hit_resp_q.perm_g <= sp_g_q[sp_idx_q];
+          hit_resp_valid_q <= 1'b1;
+          state_q <= S_RESP;
+        end
         S_RESP:  state_q <= S_IDLE;
         S_FWD:   if (i_ptw_req_ready) state_q <= S_WAIT;
         S_WAIT:  if (i_ptw_resp_valid) state_q <= S_IDLE;
-        S_FL_RD: state_q <= S_FL_CMP;
+        S_FL_RD: begin
+          for (int e = 0; e < SP_ENTRIES; e++) if (sp_kill[e]) sp_valid_q[e] <= 1'b0;
+          state_q <= S_FL_CMP;
+        end
         S_FL_CMP: begin
           for (int w = 0; w < WAYS; w++) if (fl_kill[w]) valid_q[w][set_q] <= 1'b0;
           if (fl_scan_q && set_q != SetBits'(SETS - 1)) begin
@@ -289,6 +413,7 @@ module l2tlb #(
       // Flushes win over everything above.
       if (flush_all_now) begin
         valid_q <= '0;
+        sp_valid_q <= '0;
         state_q <= S_IDLE;
         hit_resp_valid_q <= 1'b0;
       end else if (flush_start) begin
@@ -303,7 +428,7 @@ module l2tlb #(
 
   assign o_req_ready = (state_q == S_IDLE) && !i_discard && !i_flush.en && !flush_busy;
 
-  assign o_ptw_req_valid = (state_q == S_FWD) || ((state_q == S_CMP) && !any_hit);
+  assign o_ptw_req_valid = (state_q == S_FWD) || ((state_q == S_CMP) && !any_hit && !sp_any_hit);
   assign o_ptw_req_vpn = vpn_q;
 
   // The walker's response passes straight through; a hit answers from its register.
@@ -314,9 +439,11 @@ module l2tlb #(
 
 `ifdef FORMAL
   // Reference: for one watched page and lookup ASID, shadow the entries the
-  // array may legitimately hold (one non-global entry filled under the lookup
-  // ASID, one global entry), kill them with the same rules the privileged spec
-  // gives each flush form, and check every hit against them. The array's
+  // arrays may legitimately hold (one non-global entry filled under the lookup
+  // ASID and one global entry for the 4 KiB page, and the same pair for each
+  // superpage level whose region holds the page), kill them with the same
+  // rules the privileged spec gives each flush form, and check every hit
+  // against them. The array's
   // multi-cycle flush engine must finish before the next lookup, so a shadow
   // that dies at the flush's first cycle bounds every later hit.
   logic f_past_valid;
@@ -381,6 +508,63 @@ module l2tlb #(
     end
   end
 
+  // Superpage shadows, one per level (1 = 2 MiB, 2 = 1 GiB) and class: the
+  // latest non-global fill under the lookup ASID, and the latest global fill,
+  // whose region holds the watched page. Two live entries of one level and
+  // class cannot both cover the page: the lookup that led to the second fill
+  // lay in the same region and would have hit the first.
+  function automatic logic f_in_region(input logic giga, input logic [VpnBits-1:0] v);
+    f_in_region = (v[VpnBits-1:2*FieldBits] == f_vpn[VpnBits-1:2*FieldBits]) &&
+        (giga || (v[2*FieldBits-1:FieldBits] == f_vpn[2*FieldBits-1:FieldBits]));
+  endfunction
+
+  logic [1:0] f_sp_live_ng, f_sp_live_g;  // index 0: 2 MiB, 1: 1 GiB
+  logic [PpnBits-1:0] f_sp_ng_ppn[2], f_sp_g_ppn[2];
+  logic [4:0] f_sp_ng_perm[2], f_sp_g_perm[2];
+  logic [1:0] f_sp_kills_ng, f_sp_kills_g;
+  for (genvar l = 0; l < 2; l++) begin : g_f_sp
+    assign f_sp_kills_ng[l] = i_flush.en && (!i_flush.use_va || f_in_region(
+        l == 1, i_flush.vpn
+    )) && (!i_flush.use_asid || i_flush.asid == f_la);
+    assign f_sp_kills_g[l] = i_flush.en && !i_flush.use_asid && (!i_flush.use_va || f_in_region(
+        l == 1, i_flush.vpn
+    ));
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        f_sp_live_ng[l] <= 1'b0;
+        f_sp_live_g[l]  <= 1'b0;
+      end else begin
+        if (f_sp_kills_ng[l]) f_sp_live_ng[l] <= 1'b0;
+        if (f_sp_kills_g[l]) f_sp_live_g[l] <= 1'b0;
+        if (sp_fill_en && (i_ptw_resp.level == 2'(l + 1)) && f_in_region(
+                l == 1, i_ptw_resp.vpn
+            )) begin
+          if (i_ptw_resp.perm_g) begin
+            f_sp_live_g[l] <= 1'b1;
+            f_sp_g_ppn[l] <= i_ptw_resp.ppn;
+            f_sp_g_perm[l] <= {
+              i_ptw_resp.perm_r,
+              i_ptw_resp.perm_w,
+              i_ptw_resp.perm_x,
+              i_ptw_resp.perm_u,
+              i_ptw_resp.perm_d
+            };
+          end else if (asid_q == f_la) begin
+            f_sp_live_ng[l] <= 1'b1;
+            f_sp_ng_ppn[l] <= i_ptw_resp.ppn;
+            f_sp_ng_perm[l] <= {
+              i_ptw_resp.perm_r,
+              i_ptw_resp.perm_w,
+              i_ptw_resp.perm_x,
+              i_ptw_resp.perm_u,
+              i_ptw_resp.perm_d
+            };
+          end
+        end
+      end
+    end
+  end
+
   logic f_target;  // the lookup being compared is the watched one
   assign f_target = (state_q == S_CMP) && (vpn_q == f_vpn) && (asid_q == f_la);
 
@@ -404,32 +588,54 @@ module l2tlb #(
     hit_resp_q.perm_r, hit_resp_q.perm_w, hit_resp_q.perm_x, hit_resp_q.perm_u, hit_resp_q.perm_d
   };
   logic f_resp_ng_ok, f_resp_g_ok;
-  assign f_resp_ng_ok = f_live_ng && (hit_resp_q.ppn == f_ng_ppn) && (f_resp_perm == f_ng_perm) &&
-                        !hit_resp_q.perm_g;
-  assign f_resp_g_ok = f_live_g && (hit_resp_q.ppn == f_g_ppn) && (f_resp_perm == f_g_perm) &&
-                       hit_resp_q.perm_g;
+  assign f_resp_ng_ok = f_live_ng && (hit_resp_q.level == 2'd0) && (hit_resp_q.ppn == f_ng_ppn) &&
+                        (f_resp_perm == f_ng_perm) && !hit_resp_q.perm_g;
+  assign f_resp_g_ok = f_live_g && (hit_resp_q.level == 2'd0) && (hit_resp_q.ppn == f_g_ppn) &&
+                       (f_resp_perm == f_g_perm) && hit_resp_q.perm_g;
+  logic [1:0] f_resp_sp_ng_ok, f_resp_sp_g_ok;
+  for (genvar l = 0; l < 2; l++) begin : g_f_sp_resp
+    assign f_resp_sp_ng_ok[l] = f_sp_live_ng[l] && (hit_resp_q.level == 2'(l + 1)) &&
+        (hit_resp_q.ppn == f_sp_ng_ppn[l]) && (f_resp_perm == f_sp_ng_perm[l]) &&
+        !hit_resp_q.perm_g;
+    assign f_resp_sp_g_ok[l] = f_sp_live_g[l] && (hit_resp_q.level == 2'(l + 1)) &&
+        (hit_resp_q.ppn == f_sp_g_ppn[l]) && (f_resp_perm == f_sp_g_perm[l]) &&
+        hit_resp_q.perm_g;
+  end
 
   always_ff @(posedge i_clk) begin
     if (f_past_valid && !i_rst) begin
-      p_resp_data : assert (!f_resp_target || f_resp_ng_ok || f_resp_g_ok);
+      // A hit response, from either array, returns one of the entries the
+      // shadows hold, bit for bit and at its level.
+      p_resp_data :
+      assert (!f_resp_target || f_resp_ng_ok || f_resp_g_ok || (|f_resp_sp_ng_ok) ||
+              (|f_resp_sp_g_ok));
       p_resp_vpn : assert (state_q != S_RESP || hit_resp_q.vpn == vpn_q);
-      p_resp_level : assert (state_q != S_RESP || hit_resp_q.level == 2'd0);
+      p_resp_level : assert (state_q != S_RESP || hit_resp_q.level != 2'd3);
       // Soundness: a hit on the watched page and ASID is backed by a live
       // shadow, so no flushed or never-filled entry answers.
       p_hit_sound : assert (!(f_target && any_hit) || f_live_ng || f_live_g);
+      p_sp_hit_sound : assert (!(f_target && sp_any_hit) || (|f_sp_live_ng) || (|f_sp_live_g));
+      // A superpage hit never reaches the walker.
+      p_sp_hit_no_walk : assert (!(state_q == S_CMP && sp_any_hit) || !o_ptw_req_valid);
       // The answer is one of the entries the shadow holds, bit for bit.
       p_hit_data : assert (!(f_target && any_hit) || f_hit_ng_data || f_hit_g_data);
       // No lookup runs, and none is accepted, while a flush runs.
       p_no_lookup_in_flush : assert (!flush_busy || (!o_req_ready && state_q != S_CMP));
       p_no_ready_with_flush : assert (!i_flush.en || !o_req_ready);
-      // Only clean 4 KiB translations fill.
+      // Only clean translations fill: 4 KiB leaves the set-associative
+      // array, superpages (level 1 or 2: the level's bits differ) the side
+      // array.
       p_fill_clean :
       assert (!fill_en || (i_ptw_resp.fault_kind == riscv_pkg::DFAULT_NONE &&
                                           i_ptw_resp.level == 2'd0));
+      p_sp_fill_clean :
+      assert (!sp_fill_en || (i_ptw_resp.fault_kind == riscv_pkg::DFAULT_NONE &&
+                                             (^i_ptw_resp.level)));
       // No response leaves with a discard raised.
       p_no_resp_on_discard : assert (!i_discard || !o_resp_valid);
-      // A flush that names no page or ASID empties the array.
-      if ($past(flush_all_now) && !$past(i_rst)) p_flush_all_empties : assert (valid_q == '0);
+      // A flush that names no page or ASID empties both arrays.
+      if ($past(flush_all_now) && !$past(i_rst))
+        p_flush_all_empties : assert (valid_q == '0 && sp_valid_q == '0);
     end
   end
 
@@ -446,6 +652,13 @@ module l2tlb #(
       c_flush_page_asid : cover (f_kills_ng && i_flush.use_va && i_flush.use_asid && f_live_ng);
       c_asid_flush_spares_g : cover (i_flush.en && i_flush.use_asid && f_live_g && !f_kills_g);
       c_miss_after_flush : cover (f_target && !any_hit && !f_live_ng && !f_live_g);
+      c_sp_hit_2m : cover (f_resp_target && f_resp_sp_ng_ok[0]);
+      c_sp_hit_1g_g : cover (f_resp_target && f_resp_sp_g_ok[1]);
+      // A page flush naming another page of the region removes the superpage.
+      c_sp_flush_other_page :
+      cover (f_sp_kills_ng[0] && f_sp_live_ng[0] && i_flush.use_va && i_flush.vpn != f_vpn);
+      c_sp_asid_flush_spares_g :
+      cover (i_flush.en && i_flush.use_asid && f_sp_live_g[1] && !f_sp_kills_g[1]);
     end
   end
 `endif

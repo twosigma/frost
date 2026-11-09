@@ -14,9 +14,9 @@ smtbmc boolector
 [script]
 read -formal -sv riscv_pkg.sv
 read -formal -sv l2tlb.sv
-# A two-set, two-way array reaches fills, evictions and every flush form within
-# the depth.
-chparam -set SETS 2 -set WAYS 2 l2tlb
+# A two-set, two-way array and a two-entry superpage side array reach fills,
+# evictions and every flush form within the depth.
+chparam -set SETS 2 -set WAYS 2 -set SP_ENTRIES 2 l2tlb
 prep -top l2tlb
 
 [files]
