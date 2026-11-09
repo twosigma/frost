@@ -452,17 +452,15 @@ module dmmu (
       if (s1_can_load) begin
         if (s0_valid_q && !s0_killed) begin
           s1_valid_q <= 1'b1;
-          s1_q <= s0_q;
           s0_valid_q <= 1'b0;
           s1_walk_asked_q <= 1'b0;
         end else if (iss_can_bypass) begin
-          // Bypassed directly to S2, do not load S1
+          // Bypassed directly to S2: S1 stays empty.
           s1_valid_q <= 1'b0;
           s0_valid_q <= 1'b0;
           s1_walk_asked_q <= 1'b0;
         end else begin
           s1_valid_q <= i_iss_valid && i_active && !iss_killed;
-          s1_q <= iss_in;
           s0_valid_q <= 1'b0;
           s1_walk_asked_q <= 1'b0;
         end
@@ -482,6 +480,14 @@ module dmmu (
         end
       end
     end
+  end
+
+  // S1's payload loads on every edge where S1 can load: the skid's op, else
+  // the issue's, including one that bypasses to S2 and leaves S1 empty.
+  // Every use of the payload is qualified by s1_valid_q, or for the walk VPN
+  // by the walk request, so only s1_valid_q waits on the bypass verdict.
+  always_ff @(posedge i_clk) begin
+    if (s1_can_load) s1_q <= s0_valid_q && !s0_killed ? s0_q : iss_in;
   end
 
   // Sample issue while the skid is empty, then hold it while s0_valid_q is
