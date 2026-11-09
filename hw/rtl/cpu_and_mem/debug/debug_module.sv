@@ -543,7 +543,11 @@ module debug_module #(
       if (cmd_accept) reference_dirty[IdxA0+:3] = 3'b111;
     end
     always @(posedge i_clk) begin
-      if (!dm_rst) begin
+      if (
+`ifndef FORMAL
+          reset_seen_q &&
+`endif
+          !dm_rst) begin
         p_dirty_control_exact : assert (coherent_dirty_next == reference_dirty);
       end
     end

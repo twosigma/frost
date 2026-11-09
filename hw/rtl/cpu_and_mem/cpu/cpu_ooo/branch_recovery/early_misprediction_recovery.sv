@@ -232,6 +232,11 @@ module early_misprediction_recovery #(
   assign o_backend_recovery_hold = backend_recovery_hold_q;
 
 `ifndef SYNTHESIS
+`ifndef FORMAL
+  // Random-start simulation must observe reset before checking recovery state.
+  logic check_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) check_reset_seen_q <= 1'b1;
+`endif
   // Compare the combined hold with independently sampled fatal stop and
   // the early-only hold. The first edge establishes the register relation.
   logic backend_hold_reference_valid_q = 1'b0;
@@ -240,7 +245,11 @@ module early_misprediction_recovery #(
     backend_hold_reference_valid_q <= 1'b1;
     if (i_rst) fatal_hold_reference_q <= 1'b0;
     else fatal_hold_reference_q <= i_fatal_stop;
-    if (backend_hold_reference_valid_q) begin
+    if (
+`ifndef FORMAL
+        check_reset_seen_q &&
+`endif
+        backend_hold_reference_valid_q) begin
       p_backend_hold_exact :
       assert (o_backend_recovery_hold == (o_early_backend_recovery_hold || fatal_hold_reference_q));
     end
@@ -268,7 +277,11 @@ module early_misprediction_recovery #(
                                             !fence_i_flush && !mispredict_recovery_pending;
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst && !$isunknown(
+    if (
+`ifndef FORMAL
+        check_reset_seen_q &&
+`endif
+        !i_rst && !$isunknown(
             {branch_update.mispredicted, is_jalr_issue,
                               rs_issue_int.is_jalr, early_mispredict_fire,
                               early_mispredict_fire_reference,

@@ -1140,7 +1140,11 @@ module reservation_station #(
     );
 `ifndef SYNTHESIS
     always @(posedge i_clk) begin
-      if (i_rst_n) begin
+      if (
+`ifndef FORMAL
+          reset_seen_q &&
+`endif
+          i_rst_n) begin
         p_capacity_full_exact : assert (coherent_full == (count_next == CountWidth'(DEPTH)));
         p_capacity_two_exact :
         assert (coherent_full_for_2 == (count_next >= CountWidth'(DEPTH - 1)));
@@ -1327,7 +1331,11 @@ module reservation_station #(
     end
 `endif
 `ifndef SYNTHESIS
+`ifdef FORMAL
     always @(posedge i_clk) begin
+`else
+    always @(posedge i_clk) if (reset_seen_q) begin
+`endif
       p_alloc1_target_exact : assert (coherent_alloc1_target == index_to_onehot(free_idx));
       p_alloc2_target_exact : assert (coherent_alloc2_target == index_to_onehot(alloc_idx_2));
     end
@@ -2122,7 +2130,11 @@ module reservation_station #(
 `endif
 `ifndef SYNTHESIS
   always @(posedge i_clk) begin
-    if (i_rst_n && any_ready) assert (o_pre_issue_rob_tag == rs_rob_tag[issue_idx]);
+    if (
+`ifndef FORMAL
+        reset_seen_q &&
+`endif
+        i_rst_n && any_ready) assert (o_pre_issue_rob_tag == rs_rob_tag[issue_idx]);
   end
 `endif
   assign o_pre_issue_needs_lq = issue_fire && pl_mem_needs_lq;
@@ -2280,7 +2292,7 @@ module reservation_station #(
             .o_issue_2_onehot(reference_onehot)
         );
         always @(posedge i_clk) begin
-          if (!$isunknown(
+          if (reset_seen_q && !$isunknown(
                   {live_case, entry_ready[Issue2Window-1:0], rs_is_branch_class[Issue2Window-1:0]}
               ))
             p_issue_selection_exact :
@@ -2576,7 +2588,11 @@ module reservation_station #(
 `endif
 `ifndef SYNTHESIS
         always @(posedge i_clk) begin
-          if (i_rst_n && issue_fire_2) begin
+          if (
+`ifndef FORMAL
+              reset_seen_q &&
+`endif
+              i_rst_n && issue_fire_2) begin
             p_shift_capture_exact :
             assert (coherent_shift_amount ==
                 (issue2_shift_uses_imm_selected ? issue2_shift_imm_selected :
@@ -2960,7 +2976,11 @@ module reservation_station #(
   always @(posedge i_clk)
 `endif
   begin
-    if (i_rst_n) p_valid_next_exact : assert (rs_valid_next == reference_valid_next);
+    if (
+`ifndef FORMAL
+        reset_seen_q &&
+`endif
+        i_rst_n) p_valid_next_exact : assert (rs_valid_next == reference_valid_next);
   end
 `endif
 

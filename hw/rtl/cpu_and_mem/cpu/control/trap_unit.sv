@@ -762,8 +762,17 @@ module trap_unit #(
   // Formal Verification Properties
   // ===========================================================================
 `ifndef SYNTHESIS
+`ifndef FORMAL
+  // Registered resets can start deasserted with arbitrary state in simulation.
+  logic check_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (i_rst) check_reset_seen_q <= 1'b1;
+`endif
   always @(posedge i_clk) begin
-    if (!i_rst && i_amo_at_head && o_trap_taken)
+    if (
+`ifndef FORMAL
+        check_reset_seen_q &&
+`endif
+        !i_rst && i_amo_at_head && o_trap_taken)
       p_atomic_shield_selects_exception : assert (exception_take);
   end
 `endif
