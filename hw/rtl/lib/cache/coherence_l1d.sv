@@ -2745,13 +2745,10 @@ module coherence_l1d #(
               default: phase_q <= Idle;
             endcase
           end
-          ProbeAbsorb:
-          if (absorb_go) begin
-            if (probe_reply_eligible) begin
-              o_r_valid <= 1'b1;
-              phase_q <= Idle;
-            end else phase_q <= ProbeReply;
-          end
+          // The absorption waits on the home's W readiness, which arrives
+          // late, so an absorbed probe replies from ProbeReply, a cycle after
+          // its absorption, and that readiness reaches only this phase's exit.
+          ProbeAbsorb: if (absorb_go) phase_q <= ProbeReply;
           ProbeReply: begin
             if (probe_reply_eligible) begin
               o_r_valid <= 1'b1;
