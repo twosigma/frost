@@ -170,8 +170,8 @@ require write_done for a successful operation that grants permission.
 
 `LOCAL_PHASE_UPDATES` selects separate phase occupancy registers. Each
 handshake updates its departing and arriving phases. The default selects
-an encoded phase register. The L1D selects local phase updates for nonzero
-endpoints when stream requests are enabled. Both forms have the same
+an encoded phase register. The L1D selects local phase updates for every
+endpoint when stream requests are enabled. Both forms have the same
 handshake boundaries and payload lifetime. The endpoint equivalence harness
 compares both forms against an independent encoded reference after reset,
 including ready signals, phase occupancy and payloads on invalid cycles.

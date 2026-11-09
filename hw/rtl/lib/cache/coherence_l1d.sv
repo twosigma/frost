@@ -1073,7 +1073,7 @@ module coherence_l1d #(
         .SOURCE(0),
         .PORT_CLASS(0),
         .SLOT(ep),
-        .LOCAL_PHASE_UPDATES(StreamEnabled && ep != 0)
+        .LOCAL_PHASE_UPDATES(StreamEnabled)
     ) request (
         .i_clk(i_clk),
         .i_rst(i_rst),
