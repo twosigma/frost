@@ -678,15 +678,19 @@ module coherence_array #(
       end
     end
   end
-  always_ff @(posedge i_clk) begin
-    if (HIT_PORT && !i_rst) begin
-      c_hp_hit : cover (f_hp4_byte_q);
-      c_hp_beside_lookup : cover (hp_take && phase_q == Tags && tags_only_q);
-      c_hp_after_write :
-      cover (hp_take && $past(
-          update_fire && |i_update_mask && i_update_addr[OffsetBits+:SetBits] == hp_set
-      ));
-      c_hp_touch : cover (hp_touch_we);
+  // The hit port's covers exist only with the port, so the covers of an array
+  // without it have nothing to reach.
+  if (HIT_PORT) begin : gen_hp_covers
+    always_ff @(posedge i_clk) begin
+      if (!i_rst) begin
+        c_hp_hit : cover (f_hp4_byte_q);
+        c_hp_beside_lookup : cover (hp_take && phase_q == Tags && tags_only_q);
+        c_hp_after_write :
+        cover (hp_take && $past(
+            update_fire && |i_update_mask && i_update_addr[OffsetBits+:SetBits] == hp_set
+        ));
+        c_hp_touch : cover (hp_touch_we);
+      end
     end
   end
   logic f_updated_q, f_disjoint_q, f_overlap_q, f_tag_only_q;
