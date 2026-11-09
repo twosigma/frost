@@ -35,28 +35,37 @@ module coherent_atomic_guard #(
     // The active context qualifies the tag.
     output logic [TAG_BITS-1:0] o_tag
 );
-  // Next state in closed form. Arming needs an idle guard, an arm request
-  // whose tag is the valid ROB head, and no winning entry. An active guard
-  // retires on its commit and releases once retired or faulted with the home
-  // idle. The late inputs (i_entry_wins, i_own_fault, i_commit_valid) join
-  // the last gate; the arm match is kept.
-  (* keep = "true" *) logic arm_match;
-  logic arm_now;
-  logic [1:0] selected_context;
-  assign arm_match = i_arm_valid && i_head_valid && i_arm_tag == i_head_tag;
-  assign arm_now = arm_match && !i_entry_wins;
-  assign selected_context[1] = o_active ? (i_home_live || (!o_retired && !i_own_fault)) : arm_now;
-  assign selected_context[0] = o_active ? (o_retired || (i_commit_valid && i_commit_tag == o_tag)) :
-      (o_retired && !arm_now);
+  // The guard's inputs arrive at the end of the ROB head's commit, trap and
+  // xRET logic, so they are registered as they arrive and the guard forms
+  // its state from them on the next cycle. In closed form, an idle guard arms
+  // on an arm request whose tag is the valid ROB head with no winning entry;
+  // an active guard retires on its commit and releases once retired or
+  // faulted with the home idle. Applied to the registered previous state and
+  // inputs, that gives o_active and o_retired the values a next-state register
+  // would hold, on every cycle.
+  logic active_q, retired_q;
+  logic home_live_q, own_fault_q, commit_hit_q, arm_match_q, entry_wins_q;
+  logic arm_now_q;
+  assign arm_now_q = arm_match_q && !entry_wins_q;
+  assign o_active  = active_q ? (home_live_q || (!retired_q && !own_fault_q)) : arm_now_q;
+  assign o_retired = active_q ? (retired_q || commit_hit_q) : (retired_q && !arm_now_q);
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      o_active <= 1'b0;
-      o_retired <= 1'b0;
+      active_q <= 1'b0;
+      retired_q <= 1'b0;
+      arm_match_q <= 1'b0;
       o_tag <= '0;
     end else begin
+      active_q <= o_active;
+      retired_q <= o_retired;
+      arm_match_q <= i_arm_valid && i_head_valid && i_arm_tag == i_head_tag;
       if (!o_active) o_tag <= i_arm_tag;
-      {o_active, o_retired} <= selected_context;
     end
+    // Read only through active_q and arm_match_q, which reset clears.
+    home_live_q  <= i_home_live;
+    own_fault_q  <= i_own_fault;
+    commit_hit_q <= i_commit_valid && i_commit_tag == o_tag;
+    entry_wins_q <= i_entry_wins;
   end
 `ifndef SYNTHESIS
   logic reference_active, reference_retired;
