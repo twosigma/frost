@@ -48,9 +48,11 @@ In the CPU, the staged load's same-sector hold reads registered matches: each
 entry keeps its sector and registers its match against every coherent L1D
 holder from its next address, and against a store the CPU's write port pushes
 into the L1D's store buffer, so a record that turns valid with that push
-matches through the pushed line. Holder zero changes only when an atomic starts
-or ends, and in that cycle the hold covers every staged load. The raw LQ
-compares the staged address with the holders directly.
+matches through the pushed line. The staged load keeps its own copy of its
+entry's matches, registered with `sq_check_idx` from the next matches of the
+entry it takes, so the hold reads no select by the index. Holder zero changes
+only when an atomic starts or ends, and in that cycle the hold covers every
+staged load. The raw LQ compares the staged address with the holders directly.
 
 ## Allocation and capacity
 

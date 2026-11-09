@@ -1,0 +1,48 @@
+[tasks]
+sector_copy_prove portable
+sector_copy_xilinx_prove xilinx
+
+[options]
+mode prove
+depth 2
+
+[engines]
+smtbmc boolector
+
+[script]
+# The staged load's registered sector and holder matches equal its entry's
+# registered matches at sq_check_idx after every edge, from any state. The
+# copy's inputs (the take, the candidate index and every entry's next
+# matches) are cut, so the proof covers all of their values; the rest of
+# the load queue and its outputs fall away.
+xilinx: read_verilog -formal +/xilinx/cells_sim.v
+xilinx: read -define FROST_XILINX_PRIMS
+read -define LQ_SECTOR_COPY_PROOF
+read -formal -sv -D SYNTHESIS riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv coherent_l0_flags.sv lq_l0_cache.sv lq_issue_selector.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv coherent_lq_address_store.sv load_queue.sv
+chparam -set REGISTERED_SECTOR_MATCH 1 -set CACHE_NORMAL_MEMORY 1 -set MEM_RESPONSE_ERRORS 1 -set CACHE_UNCACHED_DATA 0 -set ENABLE_SQ_FORWARD_FAST_PATH 1 -set PREISSUE_CANDIDATES 1 -set PREISSUE_READY_PICK 1 -set PREISSUE_SEL_WIDTH 3 load_queue
+hierarchy -top load_queue
+delete t:*lq_l0_cache t:*mwp_dist_ram t:*sdp_dist_ram t:*coherent_lq_address_store
+hierarchy -top load_queue
+proc -noopt
+setattr -mod -unset keep_hierarchy
+flatten
+chformal -remove t:$check c:p_staged_sector_copy_local %d
+cutpoint w:sq_check_payload_en w:sq_check_idx_next w:entry_holder_match_d w:entry_push_match_d
+delete -port load_queue/o:*
+setundef -undriven -anyseq
+opt
+select -assert-count 1 t:$check
+select -assert-count 1 t:$check r:FLAVOR=assert %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_l0_flags.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_issue_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_candidate_select.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/coherent_lq_address_store.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv

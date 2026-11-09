@@ -20,12 +20,12 @@ smtbmc boolector
 [script]
 read -formal -sv riscv_pkg.sv
 read -formal -sv dtlb.sv
-# Match the IMMU's dtlb configuration: 16 entries, two ports and fetch checks
-# with data verdicts disabled. Set
+# Match the IMMU's dtlb configuration: 16 entries, two ports, fetch checks
+# with data verdicts disabled, and the PPN select tree with its PPN parts. Set
 # parameters before prep; Yosys 0.64 cannot reprocess a hierarchy after
 # changing its top's parameters.
-bmc_itlb: chparam -set NUM_ENTRIES 16 -set NUM_PORTS 2 -set FETCH_VERDICTS 1 -set DATA_VERDICTS 0 dtlb
-cover_itlb: chparam -set NUM_ENTRIES 16 -set NUM_PORTS 2 -set FETCH_VERDICTS 1 -set DATA_VERDICTS 0 dtlb
+bmc_itlb: chparam -set NUM_ENTRIES 16 -set NUM_PORTS 2 -set FETCH_VERDICTS 1 -set DATA_VERDICTS 0 -set PPN_SELECT_TREE 1 dtlb
+cover_itlb: chparam -set NUM_ENTRIES 16 -set NUM_PORTS 2 -set FETCH_VERDICTS 1 -set DATA_VERDICTS 0 -set PPN_SELECT_TREE 1 dtlb
 prep -top dtlb
 
 [files]

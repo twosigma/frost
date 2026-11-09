@@ -14,7 +14,9 @@ smtbmc boolector
 read -sv riscv_pkg.sv
 read_verilog -formal -D SYNTHESIS -D IMMU_PAGE_OFFSET_LOCAL_PROOF -sv immu.sv
 # Page-offset preservation is independent of the ITLB contents: allow arbitrary
-# answers on every cycle, including responses a real ITLB could not produce.
+# answers on every cycle, including responses a real ITLB could not produce,
+# within the output contract immu.sv assumes for its PPN parts (tlb.sby checks
+# it of the real ITLB).
 delete t:dtlb
 proc
 setundef -undriven -anyseq

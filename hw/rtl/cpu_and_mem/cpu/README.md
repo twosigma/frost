@@ -338,7 +338,10 @@ instruction-side instance disables unused data permission and PMA verdicts.
 Walk responses supply a separate successor candidate. A window within one page
 uses word 0's physical page and faults for both words.
 The word-1 address uses the sampled next-page VA on a fault from the separate
-page lookup. A captured selector chooses that address.
+page lookup. A captured selector chooses that address. A crossing window's
+word-1 page is captured as the hit's stored PPN bits and its superpage size,
+and the sampled next-page VA supplies a superpage's low page bits when the
+address is read.
 
 The data MMU caches the last clean page translation and its permissions.
 A matching eligible access enters the result stage in one cycle. Other
