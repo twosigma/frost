@@ -267,7 +267,9 @@ A store's address can reach the SQ before MEM_RS issues the store. When a store
 dispatches with its base register ready, `sq_early_addr_pipeline` registers the
 base and immediate, adds them in the next cycle, and writes the address into
 the store's SQ entry, matched by ROB tag. Each dispatch slot has its own
-registers, adders, and SQ update port.
+registers, adders, and SQ update port. Each sum's device-region flag is formed
+beside its adder: the test that the upper half is zero reads the operands bit by
+bit and waits only for the low half's carry.
 
 A store whose base is not ready becomes the slot's repair candidate. It waits
 for its base tag on the done-repair channels or either CDB lane, then writes

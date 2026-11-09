@@ -195,8 +195,19 @@ module lq_capture_equiv #(
   (* anyseq *) logic p_cached_hold;
   (* anyseq *) logic p_gate_early;
   (* anyseq *) logic p_found;
-  (* anyseq *) logic p_replace_with;
-  (* anyseq *) logic p_replace_without;
+  // The selector's replacement inputs for each drain state. The reference
+  // below forms replacement from them in the selector's own form: the head
+  // age when a head entry is a candidate, else the scan winner's age groups.
+  localparam int unsigned ReplaceGroups = (DEPTH + 2) / 3;
+  (* anyseq *) logic [1:0][ReplaceGroups-1:0] p_merged_older;
+  (* anyseq *) logic [1:0][ReplaceGroups-1:0] p_stored_older;
+  (* anyseq *) logic [1:0] p_head_found;
+  (* anyseq *) logic [1:0] p_head_stored_found;
+  (* anyseq *) logic p_staged_younger_head;
+  wire p_replace_with = p_head_found[i_sq_committed_empty] ? p_staged_younger_head :
+      |p_merged_older[i_sq_committed_empty];
+  wire p_replace_without = p_head_stored_found[i_sq_committed_empty] ? p_staged_younger_head :
+      |p_stored_older[i_sq_committed_empty];
   (* anyseq *) logic p_hit;
   (* anyseq *) logic p_hit_fast;
   (* anyseq *) logic p_hit_bypass;

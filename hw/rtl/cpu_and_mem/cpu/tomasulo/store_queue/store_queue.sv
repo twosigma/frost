@@ -1380,10 +1380,26 @@ module store_queue #(
   assign live_count_alloc_one = live_count_q + CountWidth'(alloc_room_1);
   assign live_count_alloc_both = live_count_q + CountWidth'(alloc_room_1) +
       CountWidth'(alloc_room_2);
+  // Count the removals in kept groups of six entries, each count one gate of
+  // its mask bits, so the subtractions below read the group counts directly
+  // instead of a serial count of the whole mask.
+  localparam int unsigned RemoveGroups = (DEPTH + 5) / 6;
+  localparam int unsigned RemovePaddedBits = 6 * RemoveGroups;
+  wire [RemovePaddedBits-1:0] live_remove_mask_padded = RemovePaddedBits'(live_remove_mask);
+  (* keep = "true" *) logic [RemoveGroups-1:0][2:0] live_remove_group_count;
+  always_comb begin
+    for (int g = 0; g < int'(RemoveGroups); g++) begin
+      live_remove_group_count[g] = '0;
+      for (int b = 0; b < 6; b++) begin
+        live_remove_group_count[g] = live_remove_group_count[g] +
+            3'(live_remove_mask_padded[6*g+b]);
+      end
+    end
+  end
   always_comb begin
     live_remove_count = '0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      live_remove_count = live_remove_count + CountWidth'(live_remove_mask[i]);
+    for (int g = 0; g < int'(RemoveGroups); g++) begin
+      live_remove_count = live_remove_count + CountWidth'(live_remove_group_count[g]);
     end
 
     live_count_if_none = live_count_q - live_remove_count;

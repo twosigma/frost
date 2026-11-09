@@ -60,8 +60,11 @@ connect -nounset -set p_issue_cdb_fire dut.issue_cdb_fire
 connect -nounset -set p_cached_hold dut.cached_launch_hold_q
 connect -nounset -set p_gate_early dut.sq_check_gate_early
 connect -nounset -set p_found dut.issue_mem_found
-connect -nounset -set p_replace_with dut.coherent_replace_with_update
-connect -nounset -set p_replace_without dut.coherent_replace_without_update
+connect -nounset -set p_merged_older dut.coherent_merged_older
+connect -nounset -set p_stored_older dut.coherent_stored_older
+connect -nounset -set p_head_found dut.coherent_head_found
+connect -nounset -set p_head_stored_found dut.coherent_head_stored_found
+connect -nounset -set p_staged_younger_head dut.staged_younger_than_head
 connect -nounset -set p_hit dut.cache_lookup_hit
 connect -nounset -set p_hit_fast dut.cache_hit_fast_path
 connect -nounset -set p_hit_bypass dut.cache_hit_bypass_fire
