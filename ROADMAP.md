@@ -180,6 +180,13 @@ add toggle coverage of control signals to the whole-SoC simulations, which
 slows them by about a quarter where full toggle coverage slows them about
 sixfold.
 
+Most of the eight-endpoint L1D's control assertions are proved without a
+depth bound. A few are checked only to a depth, among them the hit path's slot
+and answer checks and the prefetch acquisition window checks. Unbounded proofs
+of those need more endpoint protocol lemmas, such as that a failing or filled
+read is owned and unanswered and that endpoint 0 completes only after its
+installation.
+
 ## ASIC-ready RTL
 
 The RTL is portable: Xilinx primitives sit behind `FROST_XILINX_PRIMS`, and

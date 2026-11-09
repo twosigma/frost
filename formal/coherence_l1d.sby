@@ -147,12 +147,12 @@ streamscript: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:F
 streamscript: chformal -assert2assume c:p_prefetch_conflict_split
 unbounded: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 unbounded: chformal -assert2assume c:p_prefetch_conflict_split
-# The stream ownership task proves the read ownership lemmas and the selected
-# read's kind by 8-step induction and assumes nothing from this task. The
-# request endpoints' own checks run in their proofs.
+# The stream ownership task proves the read ownership lemmas, the selected
+# read's kind and the hit path's shadow rule by 8-step induction and assumes
+# nothing from this task. The request endpoints' own checks run in their proofs.
 unbounded: chformal -assert -remove t:$check r:FLAVOR=assert %i a:src=*coherence_request_endpoint.sv:* %i
-unbounded: select -assert-count 14 t:$check r:FLAVOR=assert %i c:p_owned_* c:p_selected_kind %u %i
-unbounded: chformal -assert2assume c:p_owned_* c:p_selected_kind
+unbounded: select -assert-count 17 t:$check r:FLAVOR=assert %i c:p_owned_* c:p_selected_kind c:p_path_shadowed %u %u %i
+unbounded: chformal -assert2assume c:p_owned_* c:p_selected_kind c:p_path_shadowed
 bulk: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
 bulk: select -assert-count 320 t:$check r:FLAVOR=assert %i
 outlier: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold %u %u %u %d
@@ -160,12 +160,13 @@ outlier: select -assert-count 4 t:$check r:FLAVOR=assert %i
 # The unbounded stream proof leaves out the four outlier assertions, which the
 # outlier task proves, and the assertions that PDR does not close: the pairwise
 # distinctness of live endpoint lines, the store record address and acquisition
-# checks, the prefetch window and atomic exclusion checks, the pending-probe
-# bound and a few others. Its read defines STREAM_UNBOUNDED_PROOF, which drops
-# the loop-generated ones; the others carry the p_bounded_ label prefix.
+# checks, the prefetch window, prefetch acquisition window and atomic exclusion
+# checks, the hit path's slot and answer checks, the pending-probe bound and a
+# few others. Its read defines STREAM_UNBOUNDED_PROOF, which drops the
+# loop-generated ones; the others carry the p_bounded_ label prefix.
 unbounded: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
 unbounded: chformal -assert -remove c:*p_bounded_* c:p_acquire_read_payload c:p_acquire_read_role c:p_atomic_no_load_endpoint c:p_atomic_single_owner c:p_atomic_store_exclusive c:p_block_zero_exact c:p_grant_live c:p_grant_prefetch_flag c:p_prefetch_hint_conflict c:p_prefetch_owner_conflict c:p_read_owned_exact c:p_request_payload c:p_store_acquire_once c:p_store_grant_head c:p_store_grant_head_exact c:p_store_head_address c:p_store_head_valid c:p_store_install_address c:p_store_read_service_bound c:p_store_yields_read
-unbounded: select -assert-count 175 t:$check r:FLAVOR=assert %i
+unbounded: select -assert-count 163 t:$check r:FLAVOR=assert %i
 conflict: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 conflict: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_conflict_split %d
 conflict: chformal -assume -remove
@@ -194,8 +195,8 @@ local: chformal -assert -remove c:p_local_probe_data
 # owner or sector tasks.
 owned: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_failed_owned c:p_owned_* c:p_local_write_pending c:p_local_write_op c:p_local_amo_acquire c:p_local_acquired_amo c:p_local_phase c:p_local_granted c:p_local_acquired_sc c:p_local_active c:p_local_service c:p_local_failure c:p_selected_kind %u %u %u %u %u %u %u %u %u %u %u %u %d
 owned: select -assert-count 28 t:$check r:FLAVOR=assert %i
-streamowned: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_owned_* c:p_selected_kind %u %d
-streamowned: select -assert-count 14 t:$check r:FLAVOR=assert %i
+streamowned: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_owned_* c:p_selected_kind c:p_path_shadowed %u %u %d
+streamowned: select -assert-count 17 t:$check r:FLAVOR=assert %i
 # The matching owned task proves these facts by unbounded induction.
 owner: chformal -assert2assume c:p_local_failed_owned c:p_local_write_pending c:p_local_write_op c:p_local_amo_acquire c:p_local_acquired_amo c:p_local_phase c:p_local_granted c:p_local_acquired_sc c:p_local_active c:p_local_service c:p_local_failure c:p_selected_kind
 owner: chformal -assert -remove c:p_local_sector c:p_local_lookup_stable c:p_local_conflict_sample c:p_local_admit_sector

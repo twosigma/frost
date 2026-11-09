@@ -1322,7 +1322,7 @@ SBY_TASKS = [
     ),
     (
         "coh_l1d_stream_owned_prove",
-        "Unbounded: read-slot ownership and the selected read's kind with eight endpoints, by induction.",
+        "Unbounded: read-slot ownership, the selected read's kind and shadow lookups with eight endpoints, by induction.",
     ),
     (
         "coh_l1d_stream_prove",
@@ -2510,15 +2510,15 @@ def test_stream_owned_lemma_model_matches() -> None:
         "read -formal -sv -D STREAM_UNBOUNDED_PROOF -D READ_OWNER_PROOF "
         "coherence_read_payload.sv coherence_l1d.sv"
     ) in model
-    lemmas = "c:p_owned_* c:p_selected_kind"
+    lemmas = "c:p_owned_* c:p_selected_kind c:p_path_shadowed"
     # The lemma task proves its lemmas from the design alone.
     assert [line for line in owned["[script]"] if assertion_command(line)] == [
-        f"chformal -assert -remove t:$check r:FLAVOR=assert %i {lemmas} %u %d",
-        "select -assert-count 14 t:$check r:FLAVOR=assert %i",
+        f"chformal -assert -remove t:$check r:FLAVOR=assert %i {lemmas} %u %u %d",
+        "select -assert-count 17 t:$check r:FLAVOR=assert %i",
     ]
     proof_commands = [line for line in proof["[script]"] if assertion_command(line)]
     assert (
-        f"select -assert-count 14 t:$check r:FLAVOR=assert %i {lemmas} %u %i"
+        f"select -assert-count 17 t:$check r:FLAVOR=assert %i {lemmas} %u %u %i"
         in proof_commands
     )
     assert f"chformal -assert2assume {lemmas}" in proof_commands

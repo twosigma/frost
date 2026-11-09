@@ -1557,7 +1557,9 @@ module coherence_l1d #(
         if (ep_request_valid[ep] && operation_q == PrefetchOp) begin
           assert (acquisition.opcode == coherence_pkg::GetS &&
               acquisition.size == 3 && acquisition.offset == 0 && acquisition.mask == 0);
+`ifndef STREAM_UNBOUNDED_PROOF
           assert (lookup_in_window && !prefetch_cancel && !lookup_conflict_q && !i_p_valid);
+`endif
           assert (ep >= MISSES - PrefetchCount && ep != 0);
         end
       end
@@ -1573,7 +1575,8 @@ module coherence_l1d #(
       if (active && phase_q == Acquire && operation_q == PrefetchOp) begin
         p_prefetch_acquire_guard : assert (prefetch_acquire_ok ==
             (!prefetch_cancel && !lookup_conflict_q && !i_p_valid && !load_acquire_block));
-        if (!prefetch_cancel) assert (lookup_in_window && !stream_replace);
+        if (!prefetch_cancel)
+          p_bounded_prefetch_acquire_window : assert (lookup_in_window && !stream_replace);
       end
       if (grant_read_hold) assert (!grant_ready && !read_failure && !ep_grant_valid[0]);
       if (grant_read_yield) begin
@@ -2967,7 +2970,9 @@ module coherence_l1d #(
       if (active && phase_q == LookupWait && array_valid && operation_q == GrantOp &&
           !array_hit && array_state == coherence_pkg::Modified)
         p_grant_victim_data : assert (array_data_valid);
-      if (active && phase_q == LookupWait && operation_q == ReadOp)
+      // A shadow lookup whose read the hit path holds decides nothing from the
+      // kind, and the hit path may have answered and freed the slot by then.
+      if (active && phase_q == LookupWait && operation_q == ReadOp && !(shadow_q && path_hit_q))
         p_selected_kind : assert (selected_kind_q == rd_kind_q[selected_read_q]);
       // A shadow lookup reads tags only; every other read hit has its data.
       if (active && phase_q == LookupWait && array_valid && operation_q == ReadOp && array_hit &&
@@ -2985,8 +2990,9 @@ module coherence_l1d #(
       // The hit path holds valid, unanswered load slots, one per stage. Its
       // answer is the slot's only completion, and a lookup of a slot whose
       // hit it holds is a shadow, which agrees with it.
-      p_path_slots : assert (f_path_slots_ok);
-      if (s4_valid_q) p_path_answer_once : assert (!rd_ready_q[s4_slot_q] && !f_path_other);
+      p_bounded_path_slots : assert (f_path_slots_ok);
+      if (s4_valid_q)
+        p_bounded_path_answer_once : assert (!rd_ready_q[s4_slot_q] && !f_path_other);
       if (active && operation_q == ReadOp && (phase_q == Lookup || phase_q == LookupWait) &&
           path_owned[selected_read_q])
         p_path_shadowed : assert (first_lookup ? shadow_now : shadow_q);
@@ -3243,11 +3249,21 @@ module coherence_l1d #(
 `ifdef STREAM_UNBOUNDED_PROOF
       // The stream tasks have no local atomic proof, so they state its failed
       // read ownership here. A read lookup's read also stays valid and unready,
-      // so its slot is not reallocated before LookupWait ends.
+      // so its slot is not reallocated before LookupWait ends. The hit path may
+      // answer a shadow lookup's read once it hits, and holds the hit from
+      // stage 4 on.
       if (fail_clear_q) p_owned_failed_read : assert (rd_owned_q[fail_clear_slot_q]);
-      if (active && operation_q == ReadOp && (phase_q == Lookup || phase_q == LookupWait))
+      if (active && operation_q == ReadOp && (phase_q == Lookup || phase_q == LookupWait) &&
+          !(first_lookup ? shadow_now : shadow_q))
         p_owned_lookup_read : assert (rd_valid_q[selected_read_q] &&
             !rd_ready_q[selected_read_q]);
+      if (active && operation_q == ReadOp && (phase_q == Lookup || phase_q == LookupWait) &&
+          shadow_q && !path_hit_q)
+        p_owned_shadow_read : assert (rd_valid_q[selected_read_q] &&
+            !rd_ready_q[selected_read_q]);
+      if (active && operation_q == ReadOp && (phase_q == Lookup || phase_q == LookupWait) &&
+          shadow_q && s4_valid_q && s4_slot_q == selected_read_q)
+        p_owned_shadow_hit : assert (path_hit_q);
 `endif
     end
 `endif
