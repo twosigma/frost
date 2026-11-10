@@ -410,7 +410,9 @@ failure. An endpoint accepts every acquisition while idle, so the
 controller reads the endpoint's idle state for acceptance. The lookup address,
 selected read slot and grant payload have no reset and capture on every Idle
 cycle, because nothing reads them until a selection leaves Idle. The read
-address joins that selection last.
+address joins that selection last. The priority conditions above a read are
+prepared separately, so read eligibility controls the final address selection
+without passing through the non-read address priority chain.
 
 Read status uses per-slot masks for allocation, response transfer, lookup
 results and grant completion. Completion and miss sets dominate allocation
