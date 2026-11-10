@@ -129,7 +129,7 @@ MACROS = (
     Macro("1w1r", 1024, 19, None),
     # L2 tags: 1 row of 4, a column for each way of a set
     Macro("1w1r", 1024, 18, None),
-    # The NIC's receive and transmit FIFOs
+    # The NIC's receive FIFO: 16 tiles for its 8,192 68-bit words
     Macro("1w1r", 512, 68, None),
     # The BTB's three slot-2 payload tables
     Macro("1w1r", 256, 36, None),
