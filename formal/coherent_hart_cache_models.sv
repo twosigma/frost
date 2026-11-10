@@ -120,6 +120,7 @@ module coherence_l1d #(
     output logic [ADDR_WIDTH-1:0] o_fatal_addr
 );
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
+  logic [2:0] record_count;
 `ifdef COH_MAINT_OWNED
   logic [6:0] f_maint_ep_phase;
   logic [3:0][5:0] f_seq_contributors;
@@ -139,7 +140,6 @@ module coherence_l1d #(
 `endif
   logic pending_q, tail_q, sent_q, granted_q, written_q, live, request_ready;
   logic pop, credit, accepted_q, acquire;
-  logic [2:0] record_count;
   logic [1:0] head_index;
   logic [3:0] record_valid, record_sealed;
   logic [3:0][ADDR_WIDTH-1:0] record_addr;
