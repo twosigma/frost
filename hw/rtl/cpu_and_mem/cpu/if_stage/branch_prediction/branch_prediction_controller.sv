@@ -197,12 +197,13 @@ module branch_prediction_controller #(
     output logic                       o_slot2_prediction_used_for_pc,
     // A copy of the slot-2 PC request for the fetch mux, for fanout.
     output logic                       o_slot2_prediction_used_for_fetch_mux,
-    // Separate staged and live redirect terms, for timing. The live term
-    // omits the alias check; pc_controller ANDs it back in at selection.
+    // Separate staged and live redirect terms. The complete live select
+    // includes the slot-1 alias, so pc_reg can use it directly.
     output logic                       o_slot2_staged_prediction_used_for_pc,
     output logic                       o_slot2_staged_prediction_used_for_capture,
     output logic                       o_slot1_aliases_slot2_candidate,
     output logic                       o_slot2_live_target_used_for_pc_cofactor,
+    output logic                       o_slot2_live_target_used_for_pc,
     output logic                       o_slot2_predicted_taken,
     output logic [riscv_pkg::XLEN-1:0] o_slot2_predicted_target,
     // pc_controller's copies of the slot-2 targets. They equal
@@ -969,36 +970,107 @@ module branch_prediction_controller #(
   assign slot2_prediction_permission_without_valid =
       prediction_common && !i_branch_taken && !i_is_32bit_spanning;
   assign slot2_prediction_permission = slot2_prediction_permission_without_valid && i_slot2_valid;
-  // A collapsed lead makes slot1_prediction_owned_by_slot2 equal the alias.
-  // The live fallback still requires a hit and taken direction. The +4
-  // candidate valid, which selects the staged slot-2 hit, settles late, so the
-  // candidate is formed for each value of it, with that position's staged hit,
-  // and the valid picks between the two last.
-  logic slot2_live_fallback_common;
-  (* keep = "true" *)logic slot2_prediction_candidate_plus2_pos;
-  (* keep = "true" *)logic slot2_prediction_candidate_plus4_pos;
-  assign slot2_live_fallback_common =
+  // Pair each late taken bit with an early valid/size qualifier. The live
+  // fallback has the same priority-selected staged miss for both the request
+  // and the live target select. Joining these three pairs in one LUT avoids
+  // putting candidate and position muxes after the live BTB result.
+  (* keep = "true" *)logic slot2_plus2_qualifier;
+  (* keep = "true" *)logic slot2_plus4_qualifier;
+  (* keep = "true" *)logic slot2_live_qualifier;
+  (* keep = "true" *)logic slot2_live_fallback_qualifier;
+  (* keep = "true" *)logic slot2_live_fallback_taken;
+  (* keep = "true" *)logic slot2_plus4_size_safe;
+  (* keep = "true" *)logic slot2_live_plus2_size_safe;
+  (* keep = "true" *)logic slot2_live_plus4_size_safe;
+  logic slot2_live_candidate_plus2_pos;
+  logic slot2_live_candidate_plus4_pos;
+  assign slot2_plus2_qualifier = i_slot2_plus2_candidate_valid &&
+      (!i_pc_2[1] || (i_slot2_is_compressed_plus2 == btb_compressed_2_plus2));
+  assign slot2_plus4_qualifier = i_slot2_plus4_candidate_valid &&
+      (!i_pc_2_alt[1] || (i_slot2_is_compressed_plus4 == btb_compressed_2_plus4));
+  assign slot2_live_qualifier =
+      i_lookup_lead_collapsed && slot1_aliases_slot2_candidate && btb_hit && !btb_hit_2;
+  assign slot2_live_fallback_qualifier =
       i_lookup_lead_collapsed && slot1_aliases_slot2_candidate && btb_hit &&
-      slot2_live_fallback_size_safe && dir_predicted_taken;
-  assign slot2_prediction_candidate_plus2_pos =
-      slot2_plus2_candidate_safe_taken || (slot2_live_fallback_common && !btb_hit_2_plus2);
-  assign slot2_prediction_candidate_plus4_pos =
-      slot2_plus2_candidate_safe_taken || slot2_plus4_safe_taken ||
-      (slot2_live_fallback_common && !btb_hit_2_plus4);
+      !(slot2_pc_use_alt ? btb_hit_2_plus4 : btb_hit_2_plus2);
+  assign slot2_live_fallback_taken = slot2_live_fallback_size_safe && dir_predicted_taken;
+  // The +4 candidate valid also selects the staged hit and the fallback's
+  // instruction size. It can arrive after the BTB results. Form the taken
+  // sums for each position first, without this valid in their size checks;
+  // the final gate then selects a sum and applies permission and ownership.
+  assign slot2_plus4_size_safe =
+      !i_pc_2_alt[1] || (i_slot2_is_compressed_plus4 == btb_compressed_2_plus4);
+  assign slot2_live_plus2_size_safe = !i_pc[1] || (i_slot2_is_compressed_plus2 == btb_compressed);
+  assign slot2_live_plus4_size_safe = !i_pc[1] || (i_slot2_is_compressed_plus4 == btb_compressed);
+`ifdef FROST_XILINX_PRIMS
+  LUT6 #(
+      .INIT(64'hfffff888f888f888)
+  ) u_slot2_candidate (
+      .I0(btb_predicted_taken_2_plus2),
+      .I1(slot2_plus2_qualifier),
+      .I2(btb_predicted_taken_2_plus4),
+      .I3(slot2_plus4_qualifier),
+      .I4(slot2_live_fallback_taken),
+      .I5(slot2_live_fallback_qualifier),
+      .O (slot2_prediction_candidate_for_pc)
+  );
+  LUT4 #(
+      .INIT(16'hf888)
+  ) u_slot2_live_plus2_candidate (
+      .I0(btb_predicted_taken_2_plus2),
+      .I1(slot2_plus2_qualifier),
+      .I2(dir_predicted_taken),
+      .I3(slot2_live_plus2_size_safe),
+      .O (slot2_live_candidate_plus2_pos)
+  );
+  LUT6 #(
+      .INIT(64'hfffff888f888f888)
+  ) u_slot2_live_plus4_candidate (
+      .I0(btb_predicted_taken_2_plus2),
+      .I1(slot2_plus2_qualifier),
+      .I2(btb_predicted_taken_2_plus4),
+      .I3(slot2_plus4_size_safe),
+      .I4(dir_predicted_taken),
+      .I5(slot2_live_plus4_size_safe),
+      .O (slot2_live_candidate_plus4_pos)
+  );
+  (* dont_touch = "true" *)
+  LUT6 #(
+      .INIT(64'hca00000000000000)
+  ) u_slot2_live_select (
+      .I0(slot2_live_candidate_plus2_pos),
+      .I1(slot2_live_candidate_plus4_pos),
+      .I2(slot2_pc_use_alt),
+      .I3(slot2_live_qualifier),
+      .I4(slot2_prediction_permission_without_valid),
+      .I5(i_slot2_valid),
+      .O (o_slot2_live_target_used_for_pc)
+  );
+`else
   assign slot2_prediction_candidate_for_pc =
-      slot2_pc_use_alt ? slot2_prediction_candidate_plus4_pos :
-      slot2_prediction_candidate_plus2_pos;
+      (btb_predicted_taken_2_plus2 && slot2_plus2_qualifier) ||
+      (btb_predicted_taken_2_plus4 && slot2_plus4_qualifier) ||
+      (slot2_live_fallback_taken && slot2_live_fallback_qualifier);
+  assign slot2_live_candidate_plus2_pos =
+      (btb_predicted_taken_2_plus2 && slot2_plus2_qualifier) ||
+      (dir_predicted_taken && slot2_live_plus2_size_safe);
+  assign slot2_live_candidate_plus4_pos =
+      (btb_predicted_taken_2_plus2 && slot2_plus2_qualifier) ||
+      (btb_predicted_taken_2_plus4 && slot2_plus4_size_safe) ||
+      (dir_predicted_taken && slot2_live_plus4_size_safe);
+  assign o_slot2_live_target_used_for_pc =
+      slot2_prediction_permission && slot2_live_qualifier &&
+      (slot2_pc_use_alt ? slot2_live_candidate_plus4_pos : slot2_live_candidate_plus2_pos);
+`endif
   assign o_slot2_prediction_used_for_pc =
       slot2_prediction_permission && slot2_prediction_candidate_for_pc;
-  // Duplicate the slot-2 request for the fetch-PC mux, for fanout. It reads
-  // the two position candidates directly, so the +4 valid selects in its gate.
+  // Duplicate the slot-2 request for the fetch-PC mux, for fanout.
   (* keep = "true", dont_touch = "true" *) logic slot2_prediction_used_for_fetch_mux;
-  assign slot2_prediction_used_for_fetch_mux = slot2_prediction_permission &&
-      (slot2_pc_use_alt ? slot2_prediction_candidate_plus4_pos :
-       slot2_prediction_candidate_plus2_pos);
+  assign slot2_prediction_used_for_fetch_mux =
+      slot2_prediction_permission && slot2_prediction_candidate_for_pc;
   assign o_slot2_prediction_used_for_fetch_mux = slot2_prediction_used_for_fetch_mux;
   // Split the slot-2 redirect into a staged-copy term and a live-lookup term
-  // with the alias factored out (pc_controller ANDs the alias back in).
+  // with the alias factored out for the reference cofactor output.
   // After a collapsed lead, slot1_prediction_owned_by_slot2 equals the alias
   // itself.  The target term keeps btb_hit so that it selects the reference
   // target even when the candidate valids are not one-hot.
@@ -1118,6 +1190,7 @@ module branch_prediction_controller #(
               slot2_staged_prediction_used_for_capture,
               slot2_live_target_used_for_pc,
               slot2_live_target_used_for_pc_cofactor,
+              o_slot2_live_target_used_for_pc,
               o_slot2_prediction_used_for_pc
             }
         )) begin
@@ -1136,6 +1209,8 @@ module branch_prediction_controller #(
       assert (slot2_live_target_used_for_pc ==
               (slot1_aliases_slot2_candidate &&
                slot2_live_target_used_for_pc_cofactor));
+      p_slot2_live_target_pc_select_exact :
+      assert (o_slot2_live_target_used_for_pc == slot2_live_target_used_for_pc);
     end
     if (o_slot2_prediction_used_for_pc && !$isunknown(
             {o_slot2_predicted_target, o_slot2_predicted_target_for_pc}

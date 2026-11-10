@@ -27,7 +27,7 @@ module decoded_bundle_queue #(
     parameter int unsigned DEPTH = 4,
     parameter int unsigned WIDTH = 32,
     parameter int unsigned SHADOW_WIDTH = 1,
-    // Apply the producer stall after selecting the next shadow, for timing.
+    // Keep the producer's two next values separate from its stall terms.
     // The producer supplies both next values and holds when
     // (i_stall_early || i_stall_late) && !i_stall_flush. All STALL_LATE_COPIES
     // bits must agree. i_shadow_next must remain the selected value for the
@@ -109,23 +109,40 @@ module decoded_bundle_queue #(
       ((count_q + (PtrBits + 1)'(push) - (PtrBits + 1)'(pop)) != '0);
   assign o_shadow = out_shadow_q;
   if (SPLIT_SHADOW_STALL) begin : gen_split_shadow_stall
-    // Select both next-shadow candidates before applying the stall, for timing.
+`ifdef FROST_XILINX_PRIMS
+    (* keep = "true" *) logic [STALL_LATE_COPIES-1:0] producer_hold_select;
+    for (genvar copy = 0; copy < STALL_LATE_COPIES; copy++) begin : gen_producer_stall
+      (* dont_touch = "true" *)
+      LUT3 #(
+          .INIT(8'h54)
+      ) u_stall (
+          .I0(i_stall_flush),
+          .I1(i_stall_early),
+          .I2(i_stall_late[copy]),
+          .O (producer_hold_select[copy])
+      );
+    end
+`else
+    // The generic form selects the queue head before the producer stall.
     (* keep = "true" *)logic [SHADOW_WIDTH-1:0] shadow_next_go;
     (* keep = "true" *)logic [SHADOW_WIDTH-1:0] shadow_next_hold;
     assign shadow_next_go   = nonempty_next ? head_shadow_next : i_shadow_next_go;
     assign shadow_next_hold = nonempty_next ? head_shadow_next : i_shadow_next_hold;
+`endif
     for (genvar b = 0; b < SHADOW_WIDTH; b++) begin : gen_shadow_stall_bit
       localparam int unsigned LateCopy = (b * STALL_LATE_COPIES) / SHADOW_WIDTH;
 `ifdef FROST_XILINX_PRIMS
+      // Apply queue ownership and producer data together. The producer-go
+      // bit and nonempty_next arrive after the grouped stall select.
       (* dont_touch = "true" *)
       LUT5 #(
-          .INIT(32'hfff10e00)
-      ) u_sel (
-          .I0(i_stall_late[LateCopy]),
-          .I1(i_stall_early),
-          .I2(i_stall_flush),
-          .I3(shadow_next_hold[b]),
-          .I4(shadow_next_go[b]),
+          .INIT(32'haaaacfc0)
+      ) u_shadow_next (
+          .I0(head_shadow_next[b]),
+          .I1(i_shadow_next_hold[b]),
+          .I2(producer_hold_select[LateCopy]),
+          .I3(i_shadow_next_go[b]),
+          .I4(nonempty_next),
           .O (o_shadow_next[b])
       );
 `else
