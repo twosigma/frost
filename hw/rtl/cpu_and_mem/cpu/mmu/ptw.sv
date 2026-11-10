@@ -13,7 +13,6 @@
  *    See the License for the specific language governing permissions and
  *    limitations under the License.
  */
-
 /*
  * ptw: Sv39 page-table walker.
  *
@@ -59,43 +58,42 @@ module ptw #(
     parameter int unsigned WALK_ID_BITS = 2,
     localparam int unsigned LineAddrLow = $clog2(LINE_BYTES)
 ) (
-    input logic i_clk,
-    input logic i_rst,
-
+`ifdef COH_MAINT_OWNED
+    output logic                 [                        2:0] o_maint_state,
+    output logic                 [ riscv_pkg::Sv39VpnBits-1:0] o_maint_vpn,
+    output logic                                               o_maint_error,
+    output logic                                               o_maint_poison,
+`endif
+    input  logic                                               i_clk,
+    input  logic                                               i_rst,
     // Root PPN, sampled at walk start. Committed satp access also raises
     // i_discard, preventing an older walk from answering across the change.
-    input logic [riscv_pkg::PtePpnBits-1:0] i_root_ppn,
-
+    input  logic                 [  riscv_pkg::PtePpnBits-1:0] i_root_ppn,
     // Walk request. Ready is a level: the FSM is idle and no discard is
     // arriving. The walker loads the request payload on every idle edge, so a
     // requester may change or withdraw a request that has not fired.
-    input  logic                              i_req_valid,
-    output logic                              o_req_ready,
-    input  logic [riscv_pkg::Sv39VpnBits-1:0] i_req_vpn,
-
+    input  logic                                               i_req_valid,
+    output logic                                               o_req_ready,
+    input  logic                 [ riscv_pkg::Sv39VpnBits-1:0] i_req_vpn,
     // Poison the walk in flight (and any response about to fire).
-    input logic i_discard,
-
+    input  logic                                               i_discard,
     // One-cycle response pulse.
-    output logic                 o_resp_valid,
-    output riscv_pkg::ptw_resp_t o_resp,
-
+    output logic                                               o_resp_valid,
+    output riscv_pkg::ptw_resp_t                               o_resp,
     // Line port (master, read-only): to the hierarchy's wup port.
-    output logic                               o_line_req_valid,
-    input  logic                               i_line_req_ready,
-    output logic [riscv_pkg::PhysAddrBits-1:0] o_line_req_addr,
-    output logic [           WALK_ID_BITS-1:0] o_line_req_id,
-    input  logic                               i_line_resp_valid,
-    input  logic                               i_line_resp_error = 1'b0,
-    input  logic [           WALK_ID_BITS-1:0] i_line_resp_id,
-    input  logic [           LINE_BYTES*8-1:0] i_line_resp_rdata
+    output logic                                               o_line_req_valid,
+    input  logic                                               i_line_req_ready,
+    output logic                 [riscv_pkg::PhysAddrBits-1:0] o_line_req_addr,
+    output logic                 [           WALK_ID_BITS-1:0] o_line_req_id,
+    input  logic                                               i_line_resp_valid,
+    input  logic                                               i_line_resp_error = 1'b0,
+    input  logic                 [           WALK_ID_BITS-1:0] i_line_resp_id,
+    input  logic                 [           LINE_BYTES*8-1:0] i_line_resp_rdata
 );
-
 `ifndef SYNTHESIS
   logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
 `endif
-
   // ---------------------------------------------------------------------------
   // Walk state
   // ---------------------------------------------------------------------------
@@ -106,14 +104,12 @@ module ptw #(
     PTW_DECODE,  // classify the captured PTE: answer, or descend a level
     PTW_RESP     // fire the response pulse (one cycle)
   } ptw_state_e;
-
   ptw_state_e state_q;
   logic [riscv_pkg::Sv39VpnBits-1:0] vpn_q;
   logic [1:0] level_q;  // 2 -> 1 -> 0
   logic [riscv_pkg::PtePpnBits-1:0] ptr_ppn_q;  // current table's PPN
   logic discard_q;  // walk poisoned; consume the read, answer nothing
   riscv_pkg::ptw_resp_t resp_q;
-
   // ---------------------------------------------------------------------------
   // Current PTE address and its PMA check
   // ---------------------------------------------------------------------------
@@ -127,24 +123,19 @@ module ptw #(
       default: vpn_field = vpn_q[8:0];
     endcase
   end
-
   logic [riscv_pkg::PtePpnBits+11:0] pte_pa;
   assign pte_pa = {ptr_ppn_q, 12'h000} | {{riscv_pkg::PtePpnBits{1'b0}}, vpn_field, 3'b000};
-
   logic pte_addr_ok;
   assign pte_addr_ok = riscv_pkg::pma_cached_ok(riscv_pkg::XLEN'(pte_pa));
-
   // Register the address check with ptr_ppn_q, for timing. VPN changes only
   // PA[11:3], so the range check depends solely on the table PPN.
   logic ptr_addr_ok_q;
-
   function automatic logic ppn_addr_ok(input logic [riscv_pkg::PtePpnBits-1:0] ppn);
     // Assign-to-name form: Yosys (read -formal) rejects return expressions.
     begin
       ppn_addr_ok = riscv_pkg::pma_cached_ok({8'b0, ppn, 12'h000});
     end
   endfunction
-
   // ---------------------------------------------------------------------------
   // Line request (read-only, single id, one walk in flight)
   // ---------------------------------------------------------------------------
@@ -159,7 +150,6 @@ module ptw #(
   assign o_line_req_valid = line_req_valid_q;
   assign o_line_req_addr = {pte_pa[riscv_pkg::PhysAddrBits-1:LineAddrLow], {LineAddrLow{1'b0}}};
   assign o_line_req_id = '0;
-
   // PTE extraction: dword index inside the line, captured at issue.
   localparam int unsigned PteSelBits = LineAddrLow - 3;
   logic [PteSelBits-1:0] pte_dword_sel_q;
@@ -168,7 +158,6 @@ module ptw #(
   logic [63:0] pte_live, pte_q, pte;
   assign pte_live = i_line_resp_rdata[pte_dword_sel_q*64+:64];
   assign pte = pte_q;
-
   // ---------------------------------------------------------------------------
   // PTE checks
   // ---------------------------------------------------------------------------
@@ -182,19 +171,15 @@ module ptw #(
   assign pte_a   = pte[riscv_pkg::PteFlagA];
   assign pte_d   = pte[riscv_pkg::PteFlagD];
   assign pte_ppn = pte[53:10];
-
   logic pte_reserved_bad;  // bits 63:54 must be zero (no Svnapot/Svpbmt)
   assign pte_reserved_bad = |pte[63:54];
-
   logic pte_is_leaf;
   assign pte_is_leaf = pte_r || pte_x;
-
   // V=0, the reserved W&!R encoding, or a non-leaf with D, A, or U set. The
   // privileged spec reserves those three bits in a non-leaf PTE, and a walk
   // that finds a reserved bit set raises a page fault.
   logic pte_invalid;
   assign pte_invalid = !pte_v || (!pte_r && pte_w) || (!pte_is_leaf && (pte_d || pte_a || pte_u));
-
   logic superpage_misaligned;
   always_comb begin
     unique case (level_q)
@@ -203,14 +188,12 @@ module ptw #(
       default: superpage_misaligned = 1'b0;
     endcase
   end
-
   // ---------------------------------------------------------------------------
   // FSM
   // ---------------------------------------------------------------------------
   assign o_req_ready = (state_q == PTW_IDLE) && !i_discard;
   assign o_resp_valid = (state_q == PTW_RESP) && !discard_q && !i_discard;
   assign o_resp = resp_q;
-
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       state_q <= PTW_IDLE;
@@ -220,7 +203,6 @@ module ptw #(
       if (i_discard) discard_q <= 1'b1;
       // Only entry into ISSUE or a held ISSUE can present a read next cycle.
       line_req_valid_q <= 1'b0;
-
       unique case (state_q)
         PTW_IDLE: begin
           discard_q     <= 1'b0;
@@ -235,7 +217,6 @@ module ptw #(
             line_req_valid_q <= ppn_addr_ok(i_root_ppn);
           end
         end
-
         PTW_ISSUE: begin
           line_req_valid_q <= ptr_addr_ok_q && !discard_q && !i_discard && !i_line_req_ready;
           // A walk poisoned on an earlier cycle has nothing in flight and
@@ -256,7 +237,6 @@ module ptw #(
             state_q         <= PTW_WAIT;
           end
         end
-
         PTW_WAIT: begin
           if (i_line_resp_valid) begin
             // Single-id master with one read in flight, so any response
@@ -273,7 +253,6 @@ module ptw #(
             end
           end
         end
-
         PTW_DECODE: begin
           begin
             resp_q     <= '0;
@@ -308,17 +287,14 @@ module ptw #(
             end
           end
         end
-
         PTW_RESP: begin
           // One-cycle pulse, suppressed when poisoned.
           state_q <= PTW_IDLE;
         end
-
         default: state_q <= PTW_IDLE;
       endcase
     end
   end
-
 `ifndef SYNTHESIS
   // Check the registered valid against its state-derived reference, including
   // a cycle in which a live discard coincides with a legal final request fire.
@@ -329,7 +305,6 @@ module ptw #(
     end
   end
 `endif
-
 `ifndef SYNTHESIS
 `ifndef FORMAL
   // ptr_addr_ok_q equals the live address check in every cycle the FSM uses it
@@ -341,7 +316,6 @@ module ptw #(
   end
 `endif
 `endif
-
 `ifndef SYNTHESIS
 `ifndef FORMAL
   // A response while idle, or a second response mid-walk, means the port
@@ -352,16 +326,13 @@ module ptw #(
   end
 `endif
 `endif
-
 `ifdef FORMAL
   // Compare PTE classification with a reference. The line port may respond
   // only while a read is outstanding.
   logic f_past_valid;
   initial f_past_valid = 1'b0;
   always_ff @(posedge i_clk) f_past_valid <= 1'b1;
-
   initial assume (i_rst);
-
   logic f_outstanding;  // a line read has fired and not yet answered
   always_ff @(posedge i_clk) begin
     if (i_rst) f_outstanding <= 1'b0;
@@ -369,13 +340,11 @@ module ptw #(
     else if (i_line_resp_valid) f_outstanding <= 1'b0;
   end
   always_comb if (i_line_resp_valid) assume (f_outstanding);
-
   // Request bookkeeping: the accepted VPN, and the last PTE read and its level.
   logic [riscv_pkg::Sv39VpnBits-1:0] f_req_vpn;
   always_ff @(posedge i_clk) begin
     if (i_req_valid && o_req_ready) f_req_vpn <= i_req_vpn;
   end
-
   logic [63:0] f_pte;
   logic [1:0] f_level;
   logic f_pte_seen;
@@ -387,7 +356,6 @@ module ptw #(
       f_pte_seen <= 1'b1;
     end else if (state_q == PTW_IDLE) f_pte_seen <= 1'b0;
   end
-
   // Reference classification of the last PTE read.
   logic f_g_reserved, f_g_invalid, f_g_leaf, f_g_misaligned, f_g_a0;
   always_comb begin
@@ -403,7 +371,6 @@ module ptw #(
     endcase
     f_g_a0 = !f_pte[6];
   end
-
   always_ff @(posedge i_clk) begin
     if (f_past_valid && !i_rst) begin
       // Ready rises only in idle, no read is presented while one is
@@ -445,7 +412,6 @@ module ptw #(
       end
     end
   end
-
   always_ff @(posedge i_clk) begin
     if (f_past_valid && !i_rst) begin
       c_ok_1g :
@@ -458,7 +424,6 @@ module ptw #(
     end
   end
 `endif
-
 `ifndef SYNTHESIS
 `ifdef FROST_COVERAGE
   // Discard cannot withdraw a registered read accepted on this edge.
@@ -476,5 +441,35 @@ module ptw #(
       i_line_resp_valid && i_line_resp_error && !discard_q && !i_discard);
 `endif
 `endif
-
+`ifdef COH_MAINT_OWNED
+  // The maintenance composition supplies a fixed root and valid leaf images.
+  // Its tasks prove these context facts; standalone walker tasks omit them.
+  logic f_maint_error = 0;
+  assign o_maint_state = state_q;
+  assign o_maint_vpn = vpn_q;
+  assign o_maint_error = f_maint_error;
+  assign o_maint_poison = discard_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) f_maint_error <= 0;
+    else begin
+      if (i_req_valid && o_req_ready) f_maint_error <= 0;
+      if (i_line_resp_valid) f_maint_error <= i_line_resp_error;
+      p_maint_ptw_state : assert (state_q <= PTW_RESP);
+      if (state_q == PTW_ISSUE)
+        p_maint_ptw_issue_valid : assert (line_req_valid_q == (ptr_addr_ok_q && !discard_q));
+      if (line_req_valid_q) p_maint_ptw_valid_issue : assert (state_q == PTW_ISSUE);
+      if (state_q != PTW_IDLE)
+        p_maint_ptw_root :
+        assert (level_q == 2 && ptr_ppn_q == i_root_ppn && ptr_addr_ok_q && vpn_q[26:18] == 0);
+      if (state_q == PTW_DECODE)
+        p_maint_ptw_pte : assert ((pte_q & 64'hfffffffffffffcdf) == 64'h200000cf);
+      if (state_q == PTW_RESP) begin
+        p_maint_ptw_vpn : assert (resp_q.vpn == vpn_q);
+        p_maint_ptw_fault :
+        assert (resp_q.fault_kind == (f_maint_error ?
+            riscv_pkg::DFAULT_ACCESS : riscv_pkg::DFAULT_NONE));
+      end
+    end
+  end
+`endif
 endmodule : ptw

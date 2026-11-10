@@ -13,7 +13,6 @@
  *    See the License for the specific language governing permissions and
  *    limitations under the License.
  */
-
 // Four ordered sector records. Only the youngest unsealed record combines.
 // Readiness reserves a record for the following cycle's registered write.
 module coherence_store_buffer #(
@@ -177,5 +176,30 @@ module coherence_store_buffer #(
       cover (o_acquired[o_head] && !o_sealed[o_head] && i_push && merge);
     end
   end
+`endif
+`ifdef COH_MAINT_OWNED
+  logic f_maint_records;
+  always_comb begin
+    f_maint_records = 1;
+    for (int age = 0; age < 4; age++) begin
+      if (o_valid[2'(o_head+2'(age))] != (age < o_count)) f_maint_records = 0;
+      if (o_valid[age] &&
+          (o_contributors[age] == 0 ||
+          o_contributors[age] > 32 ||
+          (o_contributors[age] == 32 &&
+          !o_sealed[age])))
+        f_maint_records = 0;
+    end
+  end
+  always_ff @(posedge i_clk)
+    if (!i_rst) begin
+      p_maint_owned_store_count : assert (o_count <= 4 && next_q == 2'(o_head + 2'(o_count)));
+      p_maint_owned_store_records : assert (f_maint_records);
+      if (i_push) p_maint_owned_store_credit : assert (!$past(i_rst) && $past(o_ready));
+      if (i_pop) p_maint_owned_store_pop : assert (o_valid[o_head] && o_sealed[o_head]);
+      if (i_seal) p_maint_owned_store_seal : assert (o_valid[i_seal_index]);
+      p_maint_owned_store_no_acquire :
+      assert (!i_acquire && !(i_pop && i_seal && i_seal_index == o_head));
+    end
 `endif
 endmodule

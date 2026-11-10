@@ -1,13 +1,17 @@
 [tasks]
-coh_hart_maint_prove proof
-coh_hart_maint_cover covers
-coh_hart_maint_four_bmc four bounded fourbmc
-coh_hart_maint_four_cover four covers
+coh_hart_maint_prove proof unbounded
+coh_hart_maint_owned_prove owned unbounded
+coh_hart_maint_cover covers base
+coh_hart_maint_four_bmc four bounded fourbmc base
+coh_hart_maint_four_cover four covers base
 
 [options]
 proof: mode prove
 proof: depth 32
 proof: aigsmt boolector
+owned: mode prove
+owned: depth 8
+owned: timeout 1200
 covers: mode cover
 covers: depth 160
 covers: vcd_sim on
@@ -22,30 +26,44 @@ bounded: aigsmt boolector
 
 [engines]
 proof: abc pdr -r
+owned: smtbmc boolector
 covers: btor btormc
 bounded: abc bmc3 -c
 
 [script]
 read -formal -sv riscv_pkg.sv cache_perf_pkg.sv coherence_pkg.sv
 # Component targets prove the service engine and walker properties separately.
-read -sv coherence_home_engine.sv ptw.sv
-read -sv coherence_store_buffer.sv coherence_request_endpoint.sv coherence_d_arbiter.sv
+base: read -sv coherence_home_engine.sv ptw.sv
+base: read -sv coherence_store_buffer.sv coherence_request_endpoint.sv coherence_d_arbiter.sv
+unbounded: read -sv -D COH_MAINT_OWNED ptw.sv
+unbounded: read -sv -D COH_MAINT_OWNED coherence_home_engine.sv coherence_store_buffer.sv coherence_request_endpoint.sv coherence_d_arbiter.sv
 # Reader assertions apply here without the standalone environment assumptions.
-read -sv -nosynthesis coherence_line_bridge.sv
-proof: read -formal -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
+base: read -sv -nosynthesis coherence_line_bridge.sv
+unbounded: read -sv -nosynthesis -D COH_MAINT_OWNED coherence_line_bridge.sv
+unbounded: read -formal -D COH_MAINT_OWNED -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
 coh_hart_maint_cover: read -formal -D COH_MAINT_COVER -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
 four: read -formal -D COH_MAINT_COVER -D COH_MAINT_FOUR -sv coherent_hart_cache_models.sv coherent_hart_cache.sv coherent_hart_cache_formal.sv
 covers: chparam -set COVER_MODE 1 coherent_hart_cache_formal
 bounded: chparam -set COVER_MODE 1 coherent_hart_cache_formal
 prep -flatten -top coherent_hart_cache_formal
 check -assert
-chformal -cover -remove c:*flatten_home* c:*flatten_walker* c:walker.* c:*bridge* c:*endpoint* c:*arbiter*
+# The induction task assumes nothing and proves all facts consumed by PDR.
+unbounded: select -assert-none t:$check r:FLAVOR=assume %i
+unbounded: select -assert-count 372 t:$check r:FLAVOR=assert %i
+owned: chformal -assert -remove t:$check r:FLAVOR=assert %i c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* c:*p_maint_seq_* c:*p_maint_if_* c:*p_maint_ppn_* c:*p_maint_fact_* c:*p_maint_ptw_* %u %u %u %u %u %u %u %d
+owned: select -assert-count 284 t:$check r:FLAVOR=assert %i
+proof: select -assert-count 284 t:$check r:FLAVOR=assert %i c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* c:*p_maint_seq_* c:*p_maint_if_* c:*p_maint_ppn_* c:*p_maint_fact_* c:*p_maint_ptw_* %u %u %u %u %u %u %u %i
+proof: chformal -assert2assume c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* c:*p_maint_seq_* c:*p_maint_if_* c:*p_maint_ppn_* c:*p_maint_fact_* c:*p_maint_ptw_*
+proof: select -assert-count 284 t:$check r:FLAVOR=assume %i
+proof: select -assert-count 88 t:$check r:FLAVOR=assert %i
+unbounded: chformal -cover -remove
+base: chformal -cover -remove c:*flatten_home* c:*flatten_walker* c:walker.* c:*bridge* c:*endpoint* c:*arbiter*
 four: chformal -cover -remove c:* c:*p_four_records* %d
 memory_map
 opt
-proof: techmap
-proof: opt -fast
-proof: setundef -anyseq
+unbounded: techmap
+unbounded: opt -fast
+unbounded: setundef -anyseq
 bounded: techmap
 bounded: opt -fast
 bounded: setundef -anyseq
