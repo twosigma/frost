@@ -237,7 +237,7 @@ class Bench:
 
     def check(self, got: dict[str, int], vpn: int) -> None:
         """Compare a response with the reference walk of current memory."""
-        want = self.mem.walk(ROOT >> 12, vpn)
+        want = self.mem.walk(int(self.dut.i_root_ppn.value), vpn)
         assert got["vpn"] == vpn
         assert got["fault"] == want["fault"], (hex(vpn), got, want)
         if want["fault"] == DFAULT_NONE:
@@ -493,3 +493,29 @@ async def replacement_in_both_arrays_matches_reference(dut: Any) -> None:
             b.check(await b.walk(vpn), vpn)
             read_counts.add(b.reads - before)
     assert read_counts == {1, 2, 3}, read_counts
+
+
+@cocotb.test()
+async def root_switch_discards_old_context(dut: Any) -> None:
+    """Identical VPNs under a new root cannot use the old cached pointers."""
+    b = Bench(dut, 199)
+    await b.reset()
+    vpn = (17 << 18) | (25 << 9) | 7
+    roots = (ROOT, ROOT + 0x40000)
+    for index, root in enumerate(roots):
+        upper, lower = table(100 + 2 * index), table(101 + 2 * index)
+        b.mem.write(root + 8 * 17, pte(upper >> 12, V))
+        b.mem.write(upper + 8 * 25, pte(lower >> 12, V))
+        b.mem.write(lower + 8 * 7, pte(0xA0000 + index, V | R | A))
+    b.check(await b.walk(vpn), vpn)
+    before = b.reads
+    b.check(await b.walk(vpn), vpn)
+    assert b.reads - before == 1
+
+    dut.i_root_ppn.value = roots[1] >> 12
+    await b.discard()
+    before = b.reads
+    got = await b.walk(vpn)
+    b.check(got, vpn)
+    assert got["ppn"] == 0xA0001
+    assert b.reads - before == 3
