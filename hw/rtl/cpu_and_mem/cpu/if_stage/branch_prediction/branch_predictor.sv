@@ -727,6 +727,7 @@ module branch_predictor #(
   end
 
 `ifndef SYNTHESIS
+  logic update_reset_seen_q = 1'b0;
   initial begin
     if (Slot2PayloadBits != $bits(slot2_payload_t)) begin
       $error("branch_predictor: Slot2PayloadBits does not match slot2_payload_t");
@@ -786,7 +787,6 @@ module branch_predictor #(
   // late RAM copies both match it, and that next_counter follows the
   // saturating-counter rule. The model computes its own next counter and never
   // reads next_counter.
-  logic update_reset_seen_q = 1'b0;
   logic reference_update_valid[BtbEntries];
   logic [TagBits-1:0] reference_update_tag[BtbEntries];
   logic [1:0] reference_update_counter[BtbEntries];

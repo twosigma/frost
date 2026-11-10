@@ -475,6 +475,7 @@ module if_stage #(
 
 
 `ifndef SYNTHESIS
+  logic coverage_reset_seen_q = 1'b0;
   logic [7:0] instr_pc_metadata_canonical;
   logic [7:0] active_pc_metadata_by_parity;
   logic [7:0] active_pc_metadata_by_parity_canonical;
@@ -1294,7 +1295,6 @@ module if_stage #(
       prev_was_compressed_at_lo_for_coverage_timing && pc_reg_high_for_coverage;
 
 `ifndef SYNTHESIS
-  logic coverage_reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) coverage_reset_seen_q <= 1'b1;
   end

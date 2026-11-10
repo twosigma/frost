@@ -321,6 +321,10 @@ module reorder_buffer #(
     output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_6
 );
 
+`ifndef SYNTHESIS
+  logic dbg_mask_seen_reset;
+`endif
+
   // ===========================================================================
   // Local Parameters (from package)
   // ===========================================================================
@@ -3036,7 +3040,6 @@ module reorder_buffer #(
   // The registered masks must mirror the binary pointers for FF and LVT
   // one-hot reads. Wait until reset has been observed: full-core simulation
   // may begin with i_rst_n high and uninitialized masks.
-  logic dbg_mask_seen_reset;
   initial dbg_mask_seen_reset = 1'b0;
   always @(posedge i_clk) if (!i_rst_n) dbg_mask_seen_reset <= 1'b1;
 `ifndef FORMAL

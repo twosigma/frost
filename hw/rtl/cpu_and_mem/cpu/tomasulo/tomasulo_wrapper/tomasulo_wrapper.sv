@@ -780,6 +780,10 @@ module tomasulo_wrapper #(
   assign cdb_kill = speculative_flush_all;
 
 `ifndef SYNTHESIS
+  // Arm diagnostic checks only after reset initializes the state.
+  /* verilator lint_off MULTIDRIVEN */
+  logic sc_check_armed;
+  /* verilator lint_on MULTIDRIVEN */
 `ifndef FORMAL
   always_comb begin
     if (sc_check_armed && !$isunknown(
@@ -2093,9 +2097,6 @@ module tomasulo_wrapper #(
 
   // Use shadow registers so these checks work in simulation and formal.
   // sc_check_armed suppresses checks until reset initializes the state.
-  /* verilator lint_off MULTIDRIVEN */  // power-up value plus the reset arm below
-  logic sc_check_armed;
-  /* verilator lint_on MULTIDRIVEN */
   logic sc_completion_valid_q;
   logic sc_completion_fire_q;
   logic sc_completion_flush_all_q;
@@ -2372,15 +2373,21 @@ module tomasulo_wrapper #(
   // Simulation samples settled values at the clock edge.
 `ifdef FORMAL
   wire int_issue_reset_seen_q = 1'b1;
-  always_comb
-`else
-  logic int_issue_reset_seen_q = 1'b0;
-  always_ff @(posedge i_clk) if (!i_rst_n) int_issue_reset_seen_q <= 1'b1;
-  always @(posedge i_clk)
-`endif
+  always_comb begin
     if (int_issue_reset_seen_q && i_rst_n)
       p_int_issue_valid_matches_station :
       assert (int_rs_issue_w.valid == (int_rs_issue_raw.valid && !i_backend_recovery_hold));
+  end
+`else
+  logic int_issue_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) if (!i_rst_n) int_issue_reset_seen_q <= 1'b1;
+  always @(posedge i_clk) begin
+    if (int_issue_reset_seen_q && i_rst_n)
+      p_int_issue_valid_matches_station :
+      assert (int_rs_issue_w.valid == (int_rs_issue_raw.valid && !i_backend_recovery_hold));
+  end
+`endif
+
 `endif
 
   // ===========================================================================

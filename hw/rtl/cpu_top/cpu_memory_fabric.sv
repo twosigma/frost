@@ -202,6 +202,8 @@ module cpu_memory_fabric #(
   end
   assign o_cache_ready = req_ready && cache_selected;
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+  logic axi_reset_seen_q = 1'b0;
 `ifdef FORMAL
   wire sim_reset_seen_q = 1'b1;
 `else
@@ -257,8 +259,6 @@ module cpu_memory_fabric #(
 
 `ifndef SYNTHESIS
   // Response ownership and lane metadata require both reset histories.
-  logic reset_seen_q = 1'b0;
-  logic axi_reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
     if (i_rst) reset_seen_q <= 1'b1;
     if (i_axi_rst) axi_reset_seen_q <= 1'b1;

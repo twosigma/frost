@@ -217,6 +217,10 @@ module frost_cache #(
     output cache_perf_pkg::cache_instance_perf_events_t o_perf_events,
     output cache_perf_pkg::cache_write_perf_events_t o_write_perf_events
 );
+
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+`endif
 `ifndef SYNTHESIS
   // Registers power up arbitrary and the reset can reach this module a few
   // cycles after the first edge, so the simulation checks begin at the first
@@ -2217,7 +2221,6 @@ module frost_cache #(
   assign o_write_perf_events = write_perf_events_q;
 
 `ifndef SYNTHESIS
-  logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
 
   // ---- Compare visible captures with references written only when enabled.

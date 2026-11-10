@@ -484,6 +484,7 @@ module misprediction_flush_controller #(
   assign o_flush_all                           = flush_all;
 
 `ifndef SYNTHESIS
+  logic restore_flush_copy_armed_q = 1'b0;
   // Reference decode: plain priority chains built from the individual
   // registered trap, xRET, and FENCE-class pulses and early_mispredict_active.
   logic ref_flush_all, ref_flush_en, ref_flush_pipeline, ref_frontend_state_flush;
@@ -539,7 +540,6 @@ module misprediction_flush_controller #(
     end
   end
 
-  logic restore_flush_copy_armed_q = 1'b0;
   always_ff @(posedge i_clk) begin
     if (i_rst) restore_flush_copy_armed_q <= 1'b1;
     if (restore_flush_copy_armed_q && !i_rst) begin

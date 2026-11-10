@@ -137,7 +137,7 @@ module axi_behavioral_memory #(
     if (USE_INIT_FILE) begin
       // Skip loading when the build supplies no DDR image.
       int init_fd;
-      init_fd = $fopen(INIT_FILE, "r");
+      init_fd = $fopen(string'(INIT_FILE), "r");
       if (init_fd != 0) begin
         $fclose(init_fd);
         $readmemh(INIT_FILE, memory);

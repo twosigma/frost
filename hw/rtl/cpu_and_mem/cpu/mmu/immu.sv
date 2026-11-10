@@ -145,7 +145,9 @@ module immu #(
   logic pc_noncanon;
   logic [NpBits-1:0] pc_np_va;
   logic [9:0] pc_plus4_lo;
-  assign pc_vpn = i_pc[38:12];
+  // Preserve unknown Sv39 bits above XLEN in the narrow Bare-only proof,
+  // while selecting the same VPN bits for ordinary Sv39 configurations.
+  assign pc_vpn = VpnBits'({{VpnBits{1'bx}}, i_pc} >> 12);
   assign pc_noncanon = !riscv_pkg::sv39_va_canonical(i_pc);
   assign pc_page_cross = &i_pc[11:2];
   assign pc_np_va = i_pc[XLEN-1:12] + 1'b1;
@@ -196,7 +198,7 @@ module immu #(
   logic tlb_install;
 
   assign tlb_vpn[0] = pc_vpn;
-  assign tlb_vpn[1] = np_va_q[VpnBits-1:0];
+  assign tlb_vpn[1] = VpnBits'({{VpnBits{1'bx}}, np_va_q});
   assign tlb_install = walk_resp_matches &&
       (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && !i_tlb_invalidate;
 
@@ -395,7 +397,9 @@ module immu #(
   );
   assign res1 = resolve_port(
       np_noncanon,
-      np_va_q[VpnBits-1:0],
+      VpnBits'({
+        {VpnBits{1'bx}}, np_va_q
+      }),
       tlb_hit[1],
       tlb_ppn[1],
       tlb_ppn_own[1],
@@ -650,7 +654,9 @@ module immu #(
   assign walk_needed = tag_match && !resolved_q && (miss0_q || miss1_q);
   assign o_walk_req_valid = i_active && !i_tlb_invalidate && walk_needed &&
                             !walk_outstanding_q && !walk_recheck_q;
-  assign o_walk_vpn = miss0_q ? key_va_q[38:12] : np_va_q[VpnBits-1:0];
+  assign o_walk_vpn = miss0_q ?
+      VpnBits'({{VpnBits{1'bx}}, key_va_q} >> 12) :
+      VpnBits'({{VpnBits{1'bx}}, np_va_q});
 
   always_ff @(posedge i_clk) begin
     if (i_rst || i_tlb_invalidate) begin
@@ -792,7 +798,9 @@ module immu #(
       if (o_walk_req_valid) begin
         p_walk_from_live_tag : assert (tag_match && !resolved_q);
         p_walk_vpn_exact :
-        assert (o_walk_vpn == (miss0_q ? key_va_q[38:12] : np_va_q[VpnBits-1:0]));
+        assert (o_walk_vpn ==
+            (miss0_q ? VpnBits'({{VpnBits{1'bx}}, key_va_q} >> 12) :
+             VpnBits'({{VpnBits{1'bx}}, np_va_q})));
       end
       if (walk_resp_arrived) begin
         p_walk_response_echo : assert (i_walk_resp.vpn == walk_vpn_q);

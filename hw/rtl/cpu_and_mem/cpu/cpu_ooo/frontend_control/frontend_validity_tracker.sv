@@ -137,6 +137,7 @@ module frontend_validity_tracker (
   assign id_valid_2 = id_valid_2_preflush && !dispatch_flush;
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
   always_comb begin
     if (!$isunknown(
             {id_valid_preflush, id_valid_2_preflush, dispatch_flush, id_valid, id_valid_2}
@@ -241,7 +242,6 @@ module frontend_validity_tracker (
   // Reference: the whole predicate in one register, compared with the split
   // form on every edge.
   logic if_unpredicted_indirect_reference_q;
-  logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
     if (i_rst) reset_seen_q <= 1'b1;
     if (i_rst || flush_pipeline) if_unpredicted_indirect_reference_q <= 1'b0;

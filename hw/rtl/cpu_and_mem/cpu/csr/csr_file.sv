@@ -2475,6 +2475,9 @@ module csr_file #(
 `endif
 
 `ifdef CSR_COMMIT_LOCAL_PROOF
+  logic f_old_next_mstatus_mie, f_old_next_mstatus_mpie, f_old_next_mstatus_mprv;
+  logic f_old_next_mstatus_sum, f_old_next_mstatus_mxr;
+  logic [1:0] f_old_next_mstatus_mpp, f_old_next_mstatus_fs, f_old_next_priv;
   // Reference for csr_commit_cofactor: f_old_* uses generic take-over-write
   // priority, from the trap inputs, for counters, CSR storage, mstatus, mie,
   // privilege, Debug Mode state, and translation invalidation. f_csr_legal
@@ -2508,11 +2511,8 @@ module csr_file #(
          (mstatus_mprv && (f_old_next_mstatus_mpp != mstatus_mpp)))));
 
   // mstatus, mie, and privilege next state: takes, then a CSR write.
-  logic f_old_next_mstatus_mie, f_old_next_mstatus_mpie, f_old_next_mstatus_mprv;
   logic f_old_next_mstatus_sie, f_old_next_mstatus_spie, f_old_next_mstatus_spp;
-  logic f_old_next_mstatus_sum, f_old_next_mstatus_mxr;
   logic f_old_next_mstatus_tvm, f_old_next_mstatus_tw, f_old_next_mstatus_tsr;
-  logic [1:0] f_old_next_mstatus_mpp, f_old_next_mstatus_fs, f_old_next_priv;
   logic f_old_next_mie_msie, f_old_next_mie_mtie, f_old_next_mie_meie;
   logic f_old_next_mie_ssie, f_old_next_mie_stie, f_old_next_mie_seie;
   always_comb begin
