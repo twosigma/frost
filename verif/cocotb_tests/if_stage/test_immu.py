@@ -1232,3 +1232,89 @@ async def test_full_flush_clears_refusal_memo(dut: Any) -> None:
     await _accept_request(dut, late_vpn)
     await _return_leaf(dut, late_leaf)
     _assert_window(dut, _translated_window(late_pc, late_leaf))
+
+
+@cocotb.test()
+async def test_wrong_path_refusal_expires_without_full_flush(dut: Any) -> None:
+    """A speculative invalid PTE expires even if execution never takes a trap."""
+    await _setup(dut)
+    dut.i_active.value = 1
+    refused_pc = 0x0008_0040
+    live_pc = 0x0008_2040
+    live_leaf = Leaf(vpn=live_pc >> 12, ppn=0x80020)
+    await _move_pc(dut, refused_pc)
+    await _cycle(dut)
+    await _accept_request(dut, refused_pc >> 12)
+    await _pulse_response(dut, vpn=refused_pc >> 12, fault_kind=DFAULT_PAGE)
+    assert int(dut.o_fault0.value) == 1
+
+    # Branch recovery changes the fetch PC without a full pipeline flush.
+    # Another hart can now publish an invalid-to-valid PTE store. Continue
+    # unrelated execution for longer than both negative-cache lifetimes.
+    await _move_pc(dut, live_pc)
+    await _cycle(dut)
+    await _accept_request(dut, live_leaf.vpn)
+    await _return_leaf(dut, live_leaf)
+    for _ in range(130):
+        await _cycle(dut)
+        _assert_window(dut, _translated_window(live_pc, live_leaf))
+        assert int(dut.o_walk_req_valid.value) == 0
+
+    await _move_pc(dut, refused_pc)
+    await _cycle(dut)
+    mapped = Leaf(vpn=refused_pc >> 12, ppn=0x80030)
+    await _accept_request(dut, mapped.vpn)
+    await _return_leaf(dut, mapped)
+    _assert_window(dut, _translated_window(refused_pc, mapped))
+
+
+@cocotb.test()
+async def test_held_refusal_expires_without_pc_change(dut: Any) -> None:
+    """A refused registered result cannot keep an invalid PTE indefinitely."""
+    await _setup(dut)
+    dut.i_active.value = 1
+    pc = 0x0009_0040
+    await _move_pc(dut, pc)
+    await _cycle(dut)
+    await _accept_request(dut, pc >> 12)
+    await _pulse_response(dut, vpn=pc >> 12, fault_kind=DFAULT_PAGE)
+    assert int(dut.o_fault0.value) == 1
+    await _wait_for_request(dut, pc >> 12, max_cycles=130)
+    _assert_invisible(dut)
+    mapped = Leaf(vpn=pc >> 12, ppn=0x80040)
+    await _accept_request(dut, mapped.vpn)
+    await _return_leaf(dut, mapped)
+    _assert_window(dut, _translated_window(pc, mapped))
+
+
+@cocotb.test()
+async def test_full_flush_drops_coincident_refusal(dut: Any) -> None:
+    """A fault arriving on a flush edge cannot become a retained fetch result."""
+    await _setup(dut)
+    dut.i_active.value = 1
+    for pc in (0x000A_0040, 0x000B_0FFC):
+        dut.i_tlb_invalidate.value = 1
+        await _cycle(dut)
+        dut.i_tlb_invalidate.value = 0
+        await _move_pc(dut, pc)
+        await _cycle(dut)
+        first = Leaf(vpn=pc >> 12, ppn=0x80050)
+        await _accept_request(dut, first.vpn)
+        if _page_cross(pc):
+            await _return_leaf(dut, first)
+            fault_vpn = first.vpn + 1
+            await _accept_request(dut, fault_vpn)
+        else:
+            fault_vpn = first.vpn
+        dut.i_full_flush.value = 1
+        await _pulse_response(dut, vpn=fault_vpn, fault_kind=DFAULT_PAGE)
+        _assert_invisible(dut)
+        dut.i_full_flush.value = 0
+        await _cycle(dut)
+        await _accept_request(dut, fault_vpn)
+        mapped = Leaf(vpn=fault_vpn, ppn=0x80060)
+        await _return_leaf(dut, mapped)
+        if _page_cross(pc):
+            _assert_window(dut, _translated_window(pc, first, leaf1=mapped))
+        else:
+            _assert_window(dut, _translated_window(pc, mapped))

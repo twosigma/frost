@@ -14,13 +14,13 @@
 
 """The page-table walker's walk cache against a reference Sv39 walk.
 
-Every response must equal a full walk of the current memory image. Software
-may change memory between walks in the two ways the privileged spec and
-Svvptc allow without a fence: an invalid PTE becomes valid (leaf or pointer),
-and a leaf changes (the walker caches no leaf). Any other change, such as
-retargeting a valid pointer, is followed by a discard (SFENCE.VMA or a satp
-access). The bench also counts line reads to show that the cache removes the
-upper-level reads of repeated walks.
+Every response must equal a full walk of the current memory image. An
+invalid PTE may become valid without a fence under Svvptc. The standalone
+walker also sees leaf edits immediately because it caches no leaves; in a
+complete CPU, software must synchronize valid-leaf edits with its TLBs as
+the privileged spec requires. A valid pointer change is followed by a
+discard (SFENCE.VMA or a satp access). The bench also counts line reads to
+show that the cache removes the upper-level reads of repeated walks.
 """
 
 from __future__ import annotations
@@ -467,3 +467,29 @@ async def random_walks_match_reference(dut: Any) -> None:
                 b.check(got, vpn)
             continue
         b.check(await b.walk(vpn), vpn)
+
+
+@cocotb.test()
+async def replacement_in_both_arrays_matches_reference(dut: Any) -> None:
+    """Exceed both production cache capacities and revisit evicted regions."""
+    b = Bench(dut, 198)
+    await b.reset()
+    pages = iter(range(300, 600))
+    vpns: list[int] = []
+    for root_slot in (1, 5, 63, 129, 300, 511):
+        upper = table(next(pages))
+        b.mem.write(ROOT + 8 * root_slot, pte(upper >> 12, V))
+        for middle_slot in range(20):
+            lower = table(next(pages))
+            b.mem.write(upper + 8 * middle_slot, pte(lower >> 12, V))
+            ppn = 0x90000 + len(vpns)
+            b.mem.write(lower + 8 * 7, pte(ppn, V | R | W | A | D))
+            vpns.append((root_slot << 18) | (middle_slot << 9) | 7)
+
+    read_counts = set()
+    for order in (vpns, list(reversed(vpns)), vpns[::7] + vpns[1::7]):
+        for vpn in order:
+            before = b.reads
+            b.check(await b.walk(vpn), vpn)
+            read_counts.add(b.reads - before)
+    assert read_counts == {1, 2, 3}, read_counts

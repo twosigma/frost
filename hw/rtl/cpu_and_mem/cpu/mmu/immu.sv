@@ -37,8 +37,8 @@
  * ITLB or the fault memo, but it bypasses into the live result only while its
  * saved key matches the live tag. An invalidate clears the ITLB, the memo, the
  * tag, and the outstanding walk, and ignores a response in the same cycle. A
- * full pipeline flush clears the memo and a registered fault, so no invalid
- * PTE outlives a trap (Svvptc).
+ * full pipeline flush clears the memo and registered verdicts. Refusals also
+ * expire periodically, including on wrong paths that never trap (Svvptc).
  */
 module immu #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
@@ -92,7 +92,21 @@ module immu #(
 
   localparam int unsigned VpnBits = riscv_pkg::Sv39VpnBits;
   localparam int unsigned PpnBits = riscv_pkg::PhysAddrBits - 12;
-  localparam int unsigned NpBits  = XLEN - riscv_pkg::Sv39PageOffsetBits;
+  localparam int unsigned NpBits = XLEN - riscv_pkg::Sv39PageOffsetBits;
+  localparam int unsigned FaultCacheEpochBits = 6;
+
+  // A free-running epoch bounds negative caching independently of traps,
+  // branch recovery, new fills, or the software's instruction stream. The
+  // memo and registered refusals each expire within 64 clocks. A refusal
+  // copied from the memo on its expiry edge can remain for one further
+  // epoch, so negative caching adds at most 128 clocks to visibility.
+  logic [FaultCacheEpochBits-1:0] fault_cache_epoch_q;
+  logic fault_cache_expire;
+  assign fault_cache_expire = &fault_cache_epoch_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) fault_cache_epoch_q <= '0;
+    else fault_cache_epoch_q <= fault_cache_epoch_q + 1'b1;
+  end
 
   // ---------------------------------------------------------------------------
   // Bare bypass (translation off).
@@ -255,10 +269,11 @@ module immu #(
   // ---------------------------------------------------------------------------
   // One-entry memo of the last faulting walk (resp_refused). A walk fault
   // depends on the page tables, not on privilege, so the memo carries no
-  // privilege tag. It holds a fault only until the next invalidate or full
-  // pipeline flush (Svvptc): an invalid PTE is never kept across a trap,
-  // xRET or FENCE-class flush. A fetch that uses the memo on the correct path
-  // traps, and that trap clears it, so a memo entry raises at most one fault,
+  // privilege tag. It holds a fault only until the next epoch expiry,
+  // invalidate or full pipeline flush (Svvptc). Expiry also bounds the
+  // lifetime of a wrong-path refusal that never causes a trap. A fetch that
+  // uses the memo on the correct path traps, and that trap clears it, so a
+  // memo entry raises at most one fault,
   // and the refetch after the handler walks again. A walk accepted before a
   // flush may read a PTE older than the stores the flush ordered, so its
   // fault does not fill the memo either. The xRET that returns from a
@@ -279,7 +294,7 @@ module immu #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (i_rst || i_tlb_invalidate || i_full_flush) begin
+    if (i_rst || i_tlb_invalidate || i_full_flush || fault_cache_expire) begin
       memo_valid_q <= 1'b0;
     end else if (resp_refused) begin
       memo_valid_q <= 1'b1;
@@ -666,11 +681,11 @@ module immu #(
       f1p_q <= f1p_d;
       after_ok_q <= after_ok_d;
     end
-    // A full flush also drops a registered fault (Svvptc): the result turns
-    // unresolved, so a refetch of the same window after the handler
-    // translates again. Only the resolution and fault bits change here, which
-    // keeps the term off the address-capture path.
-    if (!i_rst && i_full_flush && (f0_q || f1_q)) begin
+    // A full flush drops verdicts even when a refusal arrives on this edge.
+    // Epoch expiry drops a held refusal without disturbing clean hits.
+    // Only validity and fault bits change, keeping both terms off the
+    // address-capture path. Bare fetches continue to use the direct bypass.
+    if (!i_rst && (i_full_flush || (fault_cache_expire && (f0_q || f1_q)))) begin
       resolved_q <= 1'b0;
       miss0_q <= 1'b0;
       miss1_q <= 1'b0;
@@ -910,23 +925,38 @@ module immu #(
   logic f_memo_past_valid = 1'b0;
   logic f_accepted_since_flush_q;  // a walk was accepted after the last flush
   logic f_flush_since_fill_q;  // a flush or invalidate followed the last fill
+  logic [FaultCacheEpochBits:0] f_memo_age_q, f_fault_age_q;
   always @(posedge i_clk) begin
     if (i_rst || i_full_flush) f_accepted_since_flush_q <= 1'b0;
     else if (o_walk_req_valid && i_walk_req_ready) f_accepted_since_flush_q <= 1'b1;
-    if (i_rst || i_full_flush || i_tlb_invalidate) f_flush_since_fill_q <= 1'b1;
+    if (i_rst || i_full_flush || i_tlb_invalidate || fault_cache_expire)
+      f_flush_since_fill_q <= 1'b1;
     else if (resp_refused) f_flush_since_fill_q <= 1'b0;
+    if (i_rst || !memo_valid_q) f_memo_age_q <= '0;
+    else f_memo_age_q <= f_memo_age_q + 1'b1;
+    if (i_rst || !(f0_q || f1_q)) f_fault_age_q <= '0;
+    else f_fault_age_q <= f_fault_age_q + 1'b1;
   end
   always @(posedge i_clk) begin
     f_memo_past_valid <= 1'b1;
     if (!f_memo_past_valid) assume (i_rst);
     if (f_memo_past_valid && !$past(i_rst)) begin
-      if ($past(i_full_flush)) p_flush_clears_memo : assert (!memo_valid_q);
-      if ($past(resp_refused && !i_full_flush && !i_tlb_invalidate))
+      if ($past(i_full_flush || fault_cache_expire)) p_flush_clears_memo : assert (!memo_valid_q);
+      if ($past(resp_refused && !i_full_flush && !i_tlb_invalidate && !fault_cache_expire))
         p_memo_fill_after_flush : assert ($past(f_accepted_since_flush_q) && memo_valid_q);
       p_memo_needs_fault_since_flush : assert (!memo_valid_q || !f_flush_since_fill_q);
       // A registered fault does not survive a full flush either.
-      if ($past(i_full_flush && (f0_q || f1_q)))
+      if ($past(i_full_flush || (fault_cache_expire && (f0_q || f1_q))))
         p_flush_drops_registered_fault : assert (!resolved_q && !f0_q && !f1_q);
+      if (!i_rst)
+        p_fault_epoch_step :
+        assert (fault_cache_epoch_q == FaultCacheEpochBits'($past(fault_cache_epoch_q) + 1'b1));
+      if (memo_valid_q) begin
+        p_memo_age_bounded : assert (f_memo_age_q <= {1'b0, fault_cache_epoch_q});
+        p_memo_expiry_happened : assert (fault_cache_epoch_q != '0);
+      end
+      if (f0_q || f1_q)
+        p_registered_fault_age_bounded : assert (f_fault_age_q <= {1'b0, fault_cache_epoch_q});
     end
   end
 `endif

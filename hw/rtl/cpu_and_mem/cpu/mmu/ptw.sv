@@ -677,6 +677,116 @@ module ptw #(
     end
   endfunction
 
+  // Independent walk-address reference. Shadow entries are populated from
+  // the accepted request and the response line's independently selected PTE,
+  // rather than the DUT's VPN, pointer mux, level, or selected PTE register.
+  // Every issued read must follow this root-to-leaf path. This also checks
+  // the tag association and mux selection of a cached pointer.
+  logic [17:0] f_l1_tag  [  PwcL1N];
+  logic [ 8:0] f_root_tag[PwcRootN];
+  logic [riscv_pkg::PtePpnBits-1:0] f_l1_pointer[PwcL1N], f_root_pointer[PwcRootN];
+  logic [riscv_pkg::PtePpnBits-1:0] f_start_table, f_table_q;
+  logic [1:0] f_start_level, f_ref_level_q;
+  logic [riscv_pkg::PtePpnBits+11:0] f_ref_pa, f_last_pa_q;
+  logic [8:0] f_ref_index;
+  logic [63:0] f_ref_pte, f_last_pte_q;
+  logic f_context_valid_q;
+  logic [riscv_pkg::PtePpnBits-1:0] f_context_root_q;
+  logic f_replaced_l1_q, f_replaced_root_q;
+
+  always_comb begin
+    f_start_table = i_root_ppn;
+    f_start_level = 2'd2;
+    for (int e = 0; e < PwcRootN; e++) begin
+      if ((PWC_ROOT_ENTRIES != 0) && pwc_root_valid_q[e] &&
+          (f_root_tag[e] == i_req_vpn[26:18])) begin
+        f_start_table = f_root_pointer[e];
+        f_start_level = 2'd1;
+      end
+    end
+    for (int e = 0; e < PwcL1N; e++) begin
+      if ((PWC_L1_ENTRIES != 0) && pwc_l1_valid_q[e] && (f_l1_tag[e] == i_req_vpn[26:9])) begin
+        f_start_table = f_l1_pointer[e];
+        f_start_level = 2'd0;
+      end
+    end
+    case (f_ref_level_q)
+      2'd2: f_ref_index = f_req_vpn[26:18];
+      2'd1: f_ref_index = f_req_vpn[17:9];
+      default: f_ref_index = f_req_vpn[8:0];
+    endcase
+    f_ref_pa  = {f_table_q, 12'b0} + {{riscv_pkg::PtePpnBits{1'b0}}, f_ref_index, 3'b0};
+    f_ref_pte = i_line_resp_rdata[f_ref_pa[LineAddrLow-1:3]*64+:64];
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst || i_discard) f_context_valid_q <= 1'b0;
+    else if (i_req_valid && o_req_ready) begin
+      // The port contract requires a satp/root change to discard cached
+      // translations. Root values may otherwise vary between idle cycles.
+      if (f_context_valid_q) assume (i_root_ppn == f_context_root_q);
+      f_context_valid_q <= 1'b1;
+      f_context_root_q  <= i_root_ppn;
+    end
+    if (i_req_valid && o_req_ready) begin
+      f_table_q <= f_start_table;
+      f_ref_level_q <= f_start_level;
+    end else if (i_line_resp_valid && f_outstanding) begin
+      f_last_pa_q <= f_ref_pa;
+      f_last_pte_q <= f_ref_pte;
+      f_table_q <= f_ref_pte[53:10];
+      if (f_ref_level_q != 0) f_ref_level_q <= f_ref_level_q - 1'b1;
+    end
+    for (int e = 0; e < PwcL1N; e++) begin
+      if (pwc_l1_sel_q[e]) begin
+        f_l1_tag[e] <= f_req_vpn[26:9];
+        f_l1_pointer[e] <= f_last_pte_q[53:10];
+      end
+    end
+    for (int e = 0; e < PwcRootN; e++) begin
+      if (pwc_root_sel_q[e]) begin
+        f_root_tag[e] <= f_req_vpn[26:18];
+        f_root_pointer[e] <= f_last_pte_q[53:10];
+      end
+    end
+    if (i_rst) begin
+      f_replaced_l1_q   <= 1'b0;
+      f_replaced_root_q <= 1'b0;
+    end else begin
+      if (!i_discard && |(pwc_l1_sel_q & pwc_l1_valid_q)) f_replaced_l1_q <= 1'b1;
+      if (!i_discard && |(pwc_root_sel_q & pwc_root_valid_q)) f_replaced_root_q <= 1'b1;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (f_past_valid && !i_rst) begin
+      if (o_line_req_valid) begin
+        p_cached_read_level : assert (level_q == f_ref_level_q);
+        p_cached_read_address :
+        assert (o_line_req_addr ==
+                {f_ref_pa[riscv_pkg::PhysAddrBits-1:LineAddrLow], {LineAddrLow{1'b0}}});
+      end
+      if (state_q == PTW_DECODE) begin
+        p_reference_pte : assert (pte_q == f_last_pte_q);
+        p_reference_pte_address : assert (pte_pa == f_last_pa_q);
+      end
+      for (int e = 0; e < PwcL1N; e++) begin
+        if (pwc_l1_valid_q[e])
+          p_l1_provenance :
+          assert (pwc_l1_tag_q[e] == f_l1_tag[e] &&
+                  riscv_pkg::PtePpnBits'(pwc_l1_ppn_q[e]) == f_l1_pointer[e]);
+      end
+      for (int e = 0; e < PwcRootN; e++) begin
+        if (pwc_root_valid_q[e])
+          p_root_provenance :
+          assert (pwc_root_tag_q[e] == f_root_tag[e] &&
+                  riscv_pkg::PtePpnBits'(pwc_root_ppn_q[e]) == f_root_pointer[e]);
+      end
+      c_pwc_l1_replacement : cover (f_replaced_l1_q && o_resp_valid && o_resp.fault_kind == 0);
+      c_pwc_root_replacement : cover (f_replaced_root_q && o_resp_valid && o_resp.fault_kind == 0);
+    end
+  end
+
   // Every valid entry read from the watched line holds that line's pointer;
   // no two valid entries of an array share a tag.
   logic f_pwc_memory_ok, f_pwc_unique;

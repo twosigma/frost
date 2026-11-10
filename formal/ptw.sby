@@ -2,14 +2,17 @@
 bmc
 cover
 bmc_nopwc
+bmc_replace
 
 [options]
 bmc: mode bmc
 bmc: depth 24
 cover: mode cover
-cover: depth 26
+cover: depth 64
 bmc_nopwc: mode bmc
 bmc_nopwc: depth 16
+bmc_replace: mode bmc
+bmc_replace: depth 40
 
 [engines]
 smtbmc boolector
@@ -23,6 +26,7 @@ read -formal -sv ptw.sv
 bmc: chparam -set PWC_L1_ENTRIES 2 -set PWC_ROOT_ENTRIES 2 ptw
 cover: chparam -set PWC_L1_ENTRIES 2 -set PWC_ROOT_ENTRIES 2 ptw
 bmc_nopwc: chparam -set PWC_L1_ENTRIES 0 -set PWC_ROOT_ENTRIES 0 ptw
+bmc_replace: chparam -set PWC_L1_ENTRIES 1 -set PWC_ROOT_ENTRIES 1 ptw
 prep -top ptw
 
 [files]
