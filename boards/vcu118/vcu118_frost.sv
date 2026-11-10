@@ -21,7 +21,9 @@ module vcu118_frost #(
     parameter int unsigned CPU_CLK_HZ = 200_000_000,
     parameter int unsigned PERF_COUNTERS = 0,
     parameter int unsigned ENABLE_CACHED_TIER = 1,
-    parameter int unsigned USE_BEHAVIORAL_DDR = 0
+    parameter int unsigned USE_BEHAVIORAL_DDR = 0,
+    // The VCU118 L2 is 4 MiB, with the shared four-way geometry.
+    parameter int unsigned L2_CACHE_BYTES = 4 * 1024 * 1024
 ) (
     // Differential system clock SYSCLK1_300 (G31 / F31, Bank 47 in SLR1)
     input logic sysclk1_300_p,
@@ -268,6 +270,7 @@ module vcu118_frost #(
       .CLK_FREQ_HZ       (CPU_CLK_HZ),
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
+      .L2_CACHE_BYTES    (L2_CACHE_BYTES),
       .PERF_COUNTERS     (PERF_COUNTERS),
       .RAW_LOOPBACK      (0),
       .ENABLE_1G_ETH     (1)

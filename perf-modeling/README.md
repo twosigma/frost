@@ -327,6 +327,10 @@ assumptions expressed in core cycles.
 
 `cpu_top` passes eight L2 fills (`L2_NUM_MSHR`) and a 512-entry L0 with Normal read caching; the model keeps four L2 miss slots and 256 L0 entries, and a configuration file states the RTL's values, as the board data set does for its fills.
 
+`configs/vcu118_l2_4mib.json` selects the VCU118's 4 MiB L2 through
+`--config-file`. It overrides capacity only; the remaining settings retain
+the model defaults and do not calibrate the VCU118's memory latency.
+
 Caches reserve a victim way while a fill is pending. Same-line requests share a bounded miss record. The L1D and the L2 write a dirty victim back beside the replacement fill and hold its writeback slot until the lower level acknowledges it, as the L1D's frozen PutM slots and the home's detached victims do. Cache responses are pipelined at one per cycle after their configured latency.
 
 MEM_RS frees an entry when it issues one load or store per cycle (`reservation_station.sv`), and the LQ frees an entry when its result reaches the CDB stage (`load_queue.sv`). An ordinary store is done at issue and retires without waiting for memory. A committed store keeps its SQ entry until it drains: cached stores launch one at a time, at most every `store_drain_cycles`, into the L1D's store records, and the L1D's acknowledgement a cycle later frees the entry (`store_queue.sv`). The SQ is full while the records are, so SQ depth and the records' installation rate set a store stream's throughput.

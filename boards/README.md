@@ -1,8 +1,9 @@
 # FPGA Board Support
 
 The supported boards are Alveo X3522PV (X3) and VCU118. Both have 256 KiB
-BRAM, 16 KiB L1I, 128 KiB L1D and 2 MiB URAM L2. X3 exposes 1 GiB of DDR4;
-VCU118 exposes 2 GiB. X3 has 10GBASE-R Ethernet; VCU118 has a 1 Gb/s
+BRAM, 16 KiB L1I and 128 KiB L1D. X3 has a 2 MiB URAM L2 and exposes 1 GiB
+of DDR4; VCU118 has a 4 MiB URAM L2 and exposes 2 GiB of DDR4. Both L2s are
+four-way with 64-byte lines. X3 has 10GBASE-R Ethernet; VCU118 has a 1 Gb/s
 RJ-45 interface and 10GBASE-R on QSFP1 lane 0. Both NIC interfaces use
 coherent DMA. VCU118 also has SPI flash boot into OpenSBI and U-Boot. See the
 [FPGA guide](../fpga/README.md) for X3 usage
@@ -156,7 +157,8 @@ To support another Xilinx FPGA board:
    port to it, and pass `ENABLE_CACHED_TIER=1` and `USE_BEHAVIORAL_DDR=0`.
    Hold the CPU in reset until DDR calibration (`mem_ok`) and, if the memory
    has ECC, until the region has been written. The cached tier includes a
-   2 MiB UltraRAM L2, so the FPGA needs enough UltraRAM. A BRAM-only board
+   configurable UltraRAM L2 (`L2_CACHE_BYTES`, 2 MiB by default), so the FPGA
+   needs enough UltraRAM for its selected capacity. A BRAM-only board
    leaves the cached tier off and needs no DDR block design.
 5. Write a constraint file with the board's pin assignments, including the
    DDR pins unless a MIG `.prj` or board interface supplies them.

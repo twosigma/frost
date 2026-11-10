@@ -20,7 +20,7 @@
  * Sweep a region with independent loads, then a dependent pointer chase,
  * then cold stores. Evict the region before each pass. The default eviction
  * window targets 4 KiB caches. DDR_MLP_FULL_CACHE uses conflicting sets in
- * the 128 KiB L1D and 2 MiB L2.
+ * the 128 KiB L1D and configured L2 (2 MiB by default).
  *
  * Check the sum, final pointer, and sampled stores. Passing requires misses
  * on at least half the independent loads, overlapping misses in the

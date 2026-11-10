@@ -2070,6 +2070,7 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "fpu_test",
         "isa_test",
         "itlb_test",
+        "l2_capacity_chase",
         "linux_irq_active_ddr_test",
         "linux_irq_ddr_test",
         "linux_irq_stack_slot_test",
