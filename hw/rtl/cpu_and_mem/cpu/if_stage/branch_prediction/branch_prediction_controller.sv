@@ -800,11 +800,13 @@ module branch_prediction_controller #(
   // Slot-2 use requires clear prediction holdoff, while registered slot-1
   // metadata implies holdoff. Thus slot 2 has no older metadata to preserve
   // and kills metadata and handoff without a target comparison.
+  (* keep = "true" *) logic pd_redirect_target_matches_prediction;
+  assign pd_redirect_target_matches_prediction = o_predicted_target_r == i_pd_redirect_target;
   logic pd_redirect_kills_prediction_metadata;
   assign pd_redirect_kills_prediction_metadata =
       i_pd_redirect &&
       (!i_pd_redirect_taken || !o_prediction_used_r ||
-       (o_predicted_target_r != i_pd_redirect_target));
+       !pd_redirect_target_matches_prediction);
 
   // Every PD or slot-2 redirect kills the slot-1 pc_reg handoff, including
   // across a stall: the redirect outranks it in the next-PC mux. Registered
@@ -1136,16 +1138,45 @@ module branch_prediction_controller #(
   // clear it on reset, flush, a different-target PD redirect, or slot-2 use.
   // Slot 2 can win over a simultaneous younger live slot-1 prediction, so its
   // kill must remain even though old registered metadata implies holdoff.
-  // Compute hold/load and slot-2 kill separately for timing.
-  (* keep = "true" *)logic prediction_metadata_next_without_slot2;
+  // Prepare hold/load and PD's non-target permission first. The wide PD
+  // target match and late slot-2 candidate meet in the final gate.
+  (* keep = "true" *)logic prediction_metadata_before_target_match;
   (* keep = "true" *)logic slot2_metadata_kill_enable;
   logic prediction_metadata_next;
-  assign prediction_metadata_next_without_slot2 =
-      !i_flush && !pd_redirect_kills_prediction_metadata &&
-      ((!i_stall && i_fetch_progress) ? prediction_used_effective : o_prediction_used_r);
   assign slot2_metadata_kill_enable = slot2_prediction_permission && !i_stall;
-  assign prediction_metadata_next = prediction_metadata_next_without_slot2 &&
-      !(slot2_metadata_kill_enable && slot2_prediction_candidate_for_pc);
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *)
+  LUT6 #(
+      .INIT(64'h8c8c8f8c8c8c008c)
+  ) u_prediction_metadata_prepare (
+      .I0(i_pd_redirect_taken),
+      .I1(o_prediction_used_r),
+      .I2(i_pd_redirect),
+      .I3(i_fetch_progress),
+      .I4(i_stall),
+      .I5(prediction_used_effective),
+      .O (prediction_metadata_before_target_match)
+  );
+  (* dont_touch = "true" *)
+  LUT6 #(
+      .INIT(64'h000a0a0a00020202)
+  ) u_prediction_metadata_next (
+      .I0(prediction_metadata_before_target_match),
+      .I1(i_pd_redirect),
+      .I2(i_flush),
+      .I3(slot2_metadata_kill_enable),
+      .I4(slot2_prediction_candidate_for_pc),
+      .I5(pd_redirect_target_matches_prediction),
+      .O (prediction_metadata_next)
+  );
+`else
+  assign prediction_metadata_before_target_match =
+      ((!i_stall && i_fetch_progress) ? prediction_used_effective : o_prediction_used_r) &&
+      (!i_pd_redirect || (i_pd_redirect_taken && o_prediction_used_r));
+  assign prediction_metadata_next = prediction_metadata_before_target_match && !i_flush &&
+      !(slot2_metadata_kill_enable && slot2_prediction_candidate_for_pc) &&
+      (!i_pd_redirect || pd_redirect_target_matches_prediction);
+`endif
   always_ff @(posedge i_clk) begin
     if (i_reset) o_prediction_used_r <= 1'b0;
     else o_prediction_used_r <= prediction_metadata_next;

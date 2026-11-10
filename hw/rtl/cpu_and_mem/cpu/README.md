@@ -454,6 +454,11 @@ The shifted BTB payloads retain their one-gate row/forwarding selection for
 target data. Pending-PC relations use parallel raw-payload comparisons and
 select the relation after those same masks arrive.
 
+The prediction-metadata valid flag precomputes hold/load and the PD redirect's
+non-target permission. In the Xilinx implementation, the wide PD target match,
+flush and slot-2 suppression meet in one final LUT6. Same-target stalled PD
+redirects retain metadata under the same taken/valid conditions as before.
+
 ### Stalled slot-2 predictions
 
 A validated staged slot-2 candidate is captured with its packet on the first
