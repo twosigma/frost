@@ -107,9 +107,11 @@ replacement, one design for every target. The L1D inserts lines bimodally: a
 fill becomes its set's most recently used only one time in 32, or when a read
 waits on it or another miss of its set has not installed. A working set
 somewhat larger than the L1D so keeps part of itself resident instead of
-evicting each line just before its next use. The L1I reads every way's data
-at the tag decision, which keeps its hit latency at that of a direct-mapped
-cache. The L1D and the L2 read the selected way after the tag lookup.
+evicting each line just before its next use. The L1I and the L1D read every
+way's data at the tag decision, which keeps their hit latency at that of a
+direct-mapped cache, and the L1D's hit path reads a copy of the tags and every
+way's row of a load's set on one edge. The L2 reads the selected way after the
+tag lookup.
 
 The L2 uses 64-byte lines, following John Goodacre's design. The home maps
 each 32-byte request from the L1 caches, the page-table walker, and the DMA
@@ -179,6 +181,17 @@ line that an executed, unretired load has read, into one
 add toggle coverage of control signals to the whole-SoC simulations, which
 slows them by about a quarter where full toggle coverage slows them about
 sixfold.
+
+Most of the eight-endpoint L1D's control assertions are proved without a
+depth bound. A few are checked only to a depth, among them the hit path's slot
+and answer checks and the prefetch acquisition window checks. Unbounded proofs
+of those need more endpoint protocol lemmas, such as that a failing or filled
+read is owned and unanswered and that endpoint 0 completes only after its
+installation.
+
+Open: restore `coherence_store_boundary:bmc_four` to depth 120 with the
+L1D hit path, using additional lemmas or splitting the checks into smaller
+cones so the task fits its CI budget.
 
 ## ASIC-ready RTL
 
@@ -403,15 +416,16 @@ and targeted microbenchmarks give these items:
    first from the arriving line; requests that join its fill, and instruction,
    page-table and DMA reads, repeat the tag lookup and data read after the
    line installs.
-9. L1D read hits. The coherent L1D runs one operation at a time: reads,
-   store installs, grants and probes share one controller. In simulation a
-   read hit takes 11 cycles against 8 through the previous hierarchy, and the
-   L1D accepts a new read about every six cycles against about every two.
-   Workloads whose loads hit in the L1D or the L2 and that keep several loads
-   in flight wait on it. Reading the data array with the tags, returning hits
-   from that first stage, and keeping hits out of the controller that handles
-   misses and installs would cut the hit latency and let hits issue back to
-   back.
+9. L1D read hits. A hit path beside the coherent L1D's controller answers
+   loads that hit. Its answers still wait a cycle in the read slots' response
+   registers, which answering from its last stage would remove, and a variant
+   without that stage would be shorter again. It refuses a load whose arrival
+   meets a lookup that reads data, a probe or a holder of its sector;
+   retrying refused loads, and refusing only for probes to the load's sector,
+   would answer more of them. The controller still shadows a load that it
+   selects while the hit path holds it, which starting misses from the hit
+   path's tag result would avoid, and tags-only lookups would keep stores,
+   look-ahead stores and prefetch hints out of the data banks.
 
 ## Core area
 

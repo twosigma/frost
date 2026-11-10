@@ -46,9 +46,10 @@ class Stream(Private):
                     (self.get("o_read_id"), self.get("o_read_data"))
                 )
             events = self.get("o_perf_events")
-            combined = (events >> 13) & 1
-            self.accesses += ((events >> 11) & 1) + combined
-            self.hits += ((events >> 10) & 1) + combined
+            combined = (events >> 15) & 1
+            path_hit = (events >> 13) & 1
+            self.accesses += ((events >> 11) & 1) + combined + path_hit
+            self.hits += ((events >> 10) & 1) + combined + path_hit
             self.misses += (events >> 9) & 1
             self.combined += combined
             for ep in range(len(self.dut.o_d_valid)):

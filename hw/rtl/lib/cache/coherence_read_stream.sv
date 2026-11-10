@@ -25,6 +25,10 @@ module coherence_read_stream #(
     input logic i_demand_valid,
     input logic i_demand_miss,
     input logic [ADDR_WIDTH-1:0] i_demand_addr,
+    // A hit from a second source, compared separately, advances a confirmed
+    // stream in a cycle without a demand.
+    input logic i_hit_valid = 1'b0,
+    input logic [ADDR_WIDTH-1:0] i_hit_addr = '0,
     input logic i_consume,
     output logic o_valid,
     output logic [ADDR_WIDTH-1:0] o_addr,
@@ -36,13 +40,19 @@ module coherence_read_stream #(
   logic [ADDR_WIDTH-1:12] page_q;
   logic [6:0] frontier_q;
   logic [7:0] cursor_q, cursor_next;
-  logic same_sector, adjacent, advance;
+  logic same_sector, adjacent, advance, hit_adjacent, hit_advance, step;
+  logic [ADDR_WIDTH-1:0] step_addr;
 
   assign same_sector = seeded_q && i_demand_addr[ADDR_WIDTH-1:12] == page_q &&
       i_demand_addr[11:5] == frontier_q;
   assign adjacent = seeded_q && i_demand_addr[ADDR_WIDTH-1:12] == page_q &&
       {1'b0, i_demand_addr[11:5]} == {1'b0, frontier_q} + 8'd1;
   assign advance = i_demand_valid && adjacent && (confirmed_q || i_demand_miss);
+  assign hit_adjacent = seeded_q && i_hit_addr[ADDR_WIDTH-1:12] == page_q &&
+      {1'b0, i_hit_addr[11:5]} == {1'b0, frontier_q} + 8'd1;
+  assign hit_advance = i_hit_valid && !i_demand_valid && confirmed_q && hit_adjacent;
+  assign step = advance || hit_advance;
+  assign step_addr = advance ? i_demand_addr : i_hit_addr;
   assign o_replace = i_demand_valid && i_demand_miss && !same_sector && !adjacent;
   assign o_confirmed = confirmed_q;
   assign o_frontier = {page_q, frontier_q, 5'b0};
@@ -50,11 +60,17 @@ module coherence_read_stream #(
   assign o_valid = confirmed_q && !cursor_q[7] &&
       cursor_q > {1'b0, frontier_q} && cursor_q <= {1'b0, frontier_q} + 8'd8;
 
+  // The demand report and its miss arrive late, so the stepped cursor is
+  // formed for each step source from its registered address, and the report
+  // selects last.
+  logic [7:0] cursor_consumed, cursor_demand_step, cursor_hit_step;
   always_comb begin
-    cursor_next = cursor_q;
-    if (i_consume && o_valid) cursor_next = cursor_q + 8'd1;
-    if (advance && (!confirmed_q || cursor_next <= {1'b0, i_demand_addr[11:5]}))
-      cursor_next = {1'b0, i_demand_addr[11:5]} + 8'd1;
+    cursor_consumed = (i_consume && o_valid) ? cursor_q + 8'd1 : cursor_q;
+    cursor_demand_step = (!confirmed_q || cursor_consumed <= {1'b0, i_demand_addr[11:5]}) ?
+        {1'b0, i_demand_addr[11:5]} + 8'd1 : cursor_consumed;
+    cursor_hit_step = (!confirmed_q || cursor_consumed <= {1'b0, i_hit_addr[11:5]}) ?
+        {1'b0, i_hit_addr[11:5]} + 8'd1 : cursor_consumed;
+    cursor_next = advance ? cursor_demand_step : hit_advance ? cursor_hit_step : cursor_consumed;
   end
   always_ff @(posedge i_clk) begin
     if (i_rst || i_cancel) begin
@@ -73,10 +89,10 @@ module coherence_read_stream #(
       cursor_q <= {1'b0, i_demand_addr[11:5]} + 8'd1;
     end else begin
       cursor_q <= cursor_next;
-      if (advance) begin
+      if (step) begin
         confirmed_q <= confirmed_q || pair_seen_q;
         pair_seen_q <= 1'b1;
-        frontier_q  <= i_demand_addr[11:5];
+        frontier_q  <= step_addr[11:5];
       end
     end
   end
@@ -103,19 +119,20 @@ module coherence_read_stream #(
       end else begin
         if (o_confirmed && !$past(o_confirmed))
           assert ($past(advance && i_demand_miss && seeded_q && pair_seen_q));
-        if ($past(advance)) begin
-          assert (o_frontier == {$past(i_demand_addr[ADDR_WIDTH-1:5]), 5'b0});
+        if ($past(step)) begin
+          assert (o_frontier == {$past(step_addr[ADDR_WIDTH-1:5]), 5'b0});
           assert (pair_seen_q);
           assert (confirmed_q == $past(confirmed_q || pair_seen_q));
         end else begin
           assert ($stable(o_frontier));
           assert ($stable(pair_seen_q) && $stable(confirmed_q));
         end
-        if (!$past(advance || (i_consume && o_valid))) assert ($stable(cursor_q));
-        if ($past(i_consume && o_valid) && !$past(advance))
+        if (!$past(step || (i_consume && o_valid))) assert ($stable(cursor_q));
+        if ($past(i_consume && o_valid) && !$past(step))
           assert (cursor_q == $past(cursor_q) + 8'd1);
       end
       cover (o_valid && i_consume && advance);
+      cover (hit_advance);
       cover (confirmed_q && cursor_q == 128);
     end
   end
