@@ -25,9 +25,9 @@
  *   - seq_read: every word of 1 MiB, in order;
  *   - stride_read: one word in each 32-byte L1 line of 1 MiB;
  *   - streams_read: four interleaved sequential streams of 32 KiB;
- *   - streams_aliased_read: the same four streams 2 MiB apart, the L2's
- *     size, so at every step their lines share one set of the L1D and one
- *     of the L2, which a direct-mapped cache cannot hold;
+ *   - streams_aliased_read: the same four streams 2 MiB apart, so at every
+ *     step their lines share one set of the L1D and one of either supported
+ *     L2 capacity (2 or 4 MiB), which a direct-mapped cache cannot hold;
  *   - random_read: independent single-word loads, spread over 4 MiB;
  *   - record_read: two words, 32 bytes apart, of random 64-byte records;
  *   - chase: loads whose addresses depend on the previous load's value;

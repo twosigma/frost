@@ -5,7 +5,9 @@ coh_l1d_conflict_stream_prove stream multi conflict padded
 coh_l1d_bmc single control control_single
 coh_l1d_multi_bmc multi control control_multi padded
 coh_l1d_stream_bmc stream multi control_stream padded longbmc streamscript streambounded
+coh_l1d_stream_hold_bmc stream multi cadical padded longbmc streamscript payloadhold
 coh_l1d_stream_free_nostore_bmc stream multi control control_stream padded nostore streambounded
+coh_l1d_stream_free_nostore_hold_bmc stream multi control cadical padded nostore payloadhold
 coh_l1d_stream_free_bmc stream multi control control_stream padded bulk streambounded
 coh_l1d_stream_outlier_prove stream multi control padded pdr outlier
 coh_l1d_stream_owned_prove stream multi padded streamread epphase streamowned
@@ -37,7 +39,9 @@ coh_l1d_local_sector_prove single local sector
 coh_l1d_local_multi_sector_prove multi local sector padded
 coh_l1d_local_ways_sector_prove ways local sector padded
 coh_l1d_local_cover single localcovers covermode localscheduled
-coh_l1d_local_data_bmc single localschedule localscheduled
+coh_l1d_local_data_bmc single localschedule localscheduled localdata
+coh_l1d_local_hold_bmc single localschedule localscheduled localhold
+coh_l1d_local_control_bmc single localschedule localscheduled localcontrol
 coh_l1d_local_ways_prove ways local owner padded
 
 [options]
@@ -63,13 +67,12 @@ pathcovers: timeout 1800
 conflict: mode prove
 conflict: depth 2
 conflict: timeout 600
-# The eight-endpoint stream BMC reads the stream cover's scripted loads, so
-# its frames reach the speculative behavior; CI runs it in the hart
-# maintenance proof's job. All three eight-endpoint BMCs leave four payload
-# assertions to the independent unbounded outlier proof. Its free-input,
-# stores-enabled model includes both the scripted and store-free scenarios.
-# The free BMC with stores shares a CI job with the four-way hit-port array
-# BMC. Every bound and timeout is unchanged.
+# The eight-endpoint stream BMC reads the stream cover's scripted loads.
+# All three control BMCs leave four payload checks to the independent
+# unbounded outlier proof, whose free-input model covers each specialization.
+# Matching scripted and no-store hold tasks also check those four assertions
+# at the original bounds. No partition assumes facts from another partition.
+# The free BMC with stores shares a job with the four-way hit-port array BMC.
 longbmc: timeout 3600
 streamscript: depth 42
 nostore: depth 24
@@ -116,7 +119,9 @@ owner: abc pdr
 owned: smtbmc boolector
 streamowned: smtbmc boolector
 sector: smtbmc boolector
-localschedule: abc bmc3
+localdata: abc bmc3 -c
+localhold: abc bmc3 -c
+localcontrol: abc bmc3
 localcovers: smtbmc boolector
 
 [script]
@@ -161,6 +166,16 @@ control: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR
 control: chformal -assert2assume c:p_prefetch_conflict_split
 streamscript: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 streamscript: chformal -assert2assume c:p_prefetch_conflict_split
+# Preserve the complete 326-check stream scope before selecting a partition.
+# The independent outlier proof assumes no BMC or ownership assertions.
+streambounded: select -assert-count 326 t:$check r:FLAVOR=assert %i
+payloadhold: select -assert-count 326 t:$check r:FLAVOR=assert %i
+outlier: select -assert-count 326 t:$check r:FLAVOR=assert %i
+streambounded: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
+streambounded: select -assert-count 322 t:$check r:FLAVOR=assert %i
+payloadhold: select -assert-count 4 c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
+payloadhold: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold %u %u %u %d
+payloadhold: select -assert-count 4 t:$check r:FLAVOR=assert %i
 unbounded: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 unbounded: chformal -assert2assume c:p_prefetch_conflict_split
 # The stream ownership task proves the read ownership lemmas, the selected
@@ -169,12 +184,6 @@ unbounded: chformal -assert2assume c:p_prefetch_conflict_split
 unbounded: chformal -assert -remove t:$check r:FLAVOR=assert %i a:src=*coherence_request_endpoint.sv:* %i
 unbounded: select -assert-count 17 t:$check r:FLAVOR=assert %i c:p_owned_* c:p_selected_kind c:p_path_shadowed %u %u %i
 unbounded: chformal -assert2assume c:p_owned_* c:p_selected_kind c:p_path_shadowed
-# The outlier task proves the four payload checks without assuming any BMC
-# assertions. The BMCs retain every other check and assume no outlier facts.
-streambounded: select -assert-count 326 t:$check r:FLAVOR=assert %i
-outlier: select -assert-count 326 t:$check r:FLAVOR=assert %i
-streambounded: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
-streambounded: select -assert-count 322 t:$check r:FLAVOR=assert %i
 outlier: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold %u %u %u %d
 outlier: select -assert-count 4 t:$check r:FLAVOR=assert %i
 # The unbounded stream proof leaves out the four outlier assertions, which the
@@ -229,10 +238,22 @@ sector: chformal -assert2assume c:p_local_lookup_owner c:p_local_sc_lookup
 sector: select -assert-count 6 t:$check r:FLAVOR=assert %i
 sector: select -assert-count 2 c:p_local_lookup_owner c:p_local_sc_lookup %u t:$check %i r:FLAVOR=assume %i
 # Array behavior is arbitrary for controller induction. Real-array byte and
-# completion checks run in the bounded task and the array proofs.
+# completion checks run in the bounded tasks and the array proofs.
 owned: cutpoint w:array_ready w:array_valid w:array_hit w:array_state w:array_addr w:array_data w:array_way w:array_available w:update_ready
 local: cutpoint w:array_ready w:array_valid w:array_hit w:array_state w:array_addr w:array_data w:array_way w:array_available w:update_ready
 localcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_local_probe_cover c:p_local_fail_cover c:p_local_release_cover %u %u %d
+# Partition the scheduled real-array BMC without assuming any assertion. The
+# data task checks arbitrary-byte preservation and deferred probe data; the
+# hold task checks the wide payload identities. The control task keeps every
+# other assertion, including future additions. All three keep depth 80.
+localdata: select -assert-count 2 c:p_local_image c:p_local_probe_data
+localdata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_image c:p_local_probe_data %u %d
+localdata: select -assert-count 2 t:$check r:FLAVOR=assert %i
+localhold: select -assert-count 4 c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
+localhold: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold %u %u %u %d
+localhold: select -assert-count 4 t:$check r:FLAVOR=assert %i
+localcontrol: chformal -assert -remove c:p_local_image c:p_local_probe_data c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
+localcontrol: select -assert-min 1 t:$check r:FLAVOR=assert %i
 nostore: connect -set i_write_mask 8'h00
 memory_map
 conflict: select -assert-min 1 t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff

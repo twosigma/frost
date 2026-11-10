@@ -650,6 +650,50 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("COCOTB_MAX_CYCLES", "1500000"),
         ),
     ),
+    # Dependent-load latency over 1, 3, 4 and 5 MiB working sets: shows where the
+    # L2 capacity falls. The L2 size comes from FROST_VERILATOR_EXTRA_ARGS
+    # (-GL2_CACHE_BYTES=...). Measurement only, not part of the pytest sweep.
+    "l2_capacity_chase": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="l2_capacity_chase",
+        nic_mac_clocks=False,
+        rerun_after_reset=False,
+        description="Dependent-load latency over working sets around the L2 capacity",
+        extra_env=(("COCOTB_MAX_CYCLES", "400000000"),),
+        include_in_pytest=False,
+    ),
+    "l2_capacity_chase_smoke": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="l2_capacity_chase",
+        nic_mac_clocks=False,
+        description="Bounded dependent-load cycle check with the VCU118 4 MiB L2",
+        verilator_extra_args=("-GL2_CACHE_BYTES=4194304",),
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DL2CC_SIZES_KIB=8u,16u,32u"),
+            ("FROST_L2_CACHE_BYTES", "4194304"),
+            ("COCOTB_MAX_CYCLES", "1000000"),
+        ),
+    ),
+    "l2_capacity_chase_capacity": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_l2_capacity_chase",
+        hdl_toplevel_module="frost",
+        app_name="l2_capacity_chase",
+        nic_mac_clocks=False,
+        description="Warmed rings below and above L2 capacity check DDR read counts",
+        verilator_extra_args=(
+            "-GL1_CACHE_BYTES=4096",
+            "-GL1I_CACHE_BYTES=4096",
+            "-GL2_CACHE_BYTES=32768",
+            "-GL2_PREFETCH=0",
+        ),
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DL2CC_SIZES_KIB=8u,128u"),
+            ("FROST_L2_CACHE_BYTES", "32768"),
+            ("COCOTB_MAX_CYCLES", "3000000"),
+        ),
+    ),
     # The system with 32-byte L2 lines, equal to the L1s': no line-size
     # adapter and a 256-bit DDR port. Adjacent, so consecutive runs reuse one
     # build.

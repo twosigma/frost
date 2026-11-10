@@ -74,6 +74,7 @@ VALID_APPS = [
     "hello_world",
     "isa_test",
     "itlb_test",
+    "l2_capacity_chase",
     "linux_irq_active_ddr_test",
     "linux_boot",
     "linux_irq_ddr_test",
@@ -109,8 +110,18 @@ BOARD_SPECIFIC_APPS = {"bootrom": frozenset({"vcu118"})}
 BOARD_CONFIG = {
     # ``has_ddr``: the bitstream provides the JTAG DDR-load master and the
     # cached DDR region. A BRAM-only board sets it False and loads no DDR image.
-    "x3": {"clock_freq": 322265625, "coremark_iterations": 20000, "has_ddr": True},
-    "vcu118": {"clock_freq": 200000000, "coremark_iterations": 10800, "has_ddr": True},
+    "x3": {
+        "clock_freq": 322265625,
+        "coremark_iterations": 20000,
+        "has_ddr": True,
+        "l2_cache_bytes": 2 * 1024 * 1024,
+    },
+    "vcu118": {
+        "clock_freq": 200000000,
+        "coremark_iterations": 10800,
+        "has_ddr": True,
+        "l2_cache_bytes": 4 * 1024 * 1024,
+    },
 }
 
 # A divided-clock bitstream (build.py --cpu-clock-div) runs the CPU below the
@@ -270,12 +281,15 @@ def compile_app_for_board(
 
     ddr_bytes sets the application's physical aperture from board_ddr_bytes.
     linux_boot advertises that size or a smaller FROST_LINUX_MEM_SIZE override.
+    Cache-eviction programs use the board's L2 capacity unless explicitly
+    overridden by FROST_L2_CACHE_BYTES for a custom cache configuration.
     """
     env = os.environ.copy()
     if "RISCV_PREFIX" not in env:
         env["RISCV_PREFIX"] = default_riscv_prefix(PROJECT_ROOT)
 
     env["FPGA_CPU_CLK_FREQ"] = str(clock_freq)
+    env.setdefault("FROST_L2_CACHE_BYTES", str(BOARD_CONFIG[board]["l2_cache_bytes"]))
     if app_name == "linux_boot":
         env["FROST_LINUX_BOARD"] = board
     if ddr_bytes is not None:
