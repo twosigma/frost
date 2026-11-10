@@ -47,6 +47,17 @@ module eth10g_mac_tx #(
     input  logic        s_axis_tlast,
     input  logic        s_axis_tuser,
 
+    // Transmit checksum offload, off when i_csum_en is zero. Sampled with a
+    // frame's first accepted beat. The 16-bit ones-complement sum of the frame
+    // from byte i_csum_start to its end replaces the two bytes at byte
+    // i_csum_start + i_csum_offset, as for Linux CHECKSUM_PARTIAL: the field
+    // holds the pseudo-header sum on entry and is part of the sum. Both byte
+    // values must be even, the offset nonzero, and the field inside the frame;
+    // otherwise the frame goes out unchanged.
+    input logic       i_csum_en,
+    input logic [7:0] i_csum_start,
+    input logic [7:0] i_csum_offset,
+
     output logic [63:0] o_xgmii_data,
     output logic [ 7:0] o_xgmii_ctrl,
     output logic        o_drop
@@ -116,6 +127,129 @@ module eth10g_mac_tx #(
                (write_length + input_bytes > MAX_FRAME_BYTES);
   end
 
+  // ---- transmit checksum offload ------------------------------------------------------
+  // Ingress adds the frame's 16-bit words (first byte high) from the start byte
+  // on, four per beat. A finished frame keeps its sum and field position with
+  // its buffer; the read side patches the two field bytes into the word before
+  // the CRC sees it, so the FCS covers the new bytes. A zero result goes out as
+  // 0xffff, which is the same ones-complement value and is also valid for UDP.
+  logic csum_en_q;  // the frame being written
+  logic [7:0] csum_start_q;
+  logic [7:0] csum_offset_q;
+  logic [15:0] csum_acc_q;
+  logic csum_valid_q[2];  // per frame buffer
+  logic [15:0] csum_value_q[2];
+  logic [8:0] csum_pos_q[2];  // field byte position, start + offset
+
+  // The beat's sum is registered before it joins the accumulator, which takes
+  // the fold off the path from write_length. A frame's value reaches
+  // csum_value_q one cycle after its tlast beat; the read side first uses it
+  // one cycle after that, when buffer_full has started the frame and word 0
+  // is on its way out.
+  logic stage_beat_q;  // a beat was accepted last cycle
+  logic stage_stored_q;  // ... and went into the frame RAM
+  logic stage_last_q;  // ... and ended the frame
+  logic stage_buffer_q;  // frame buffer of that beat
+  logic [19:0] stage_sum_q;
+  logic stage_valid_q;
+  logic [8:0] stage_pos_q;
+
+  logic stored_beat;  // a beat that goes into the frame RAM
+  logic first_beat;
+  logic eff_en;
+  logic [7:0] eff_start;
+  logic [7:0] eff_offset;
+  logic [8:0] field_pos;
+  logic [19:0] beat_sum;
+  logic [19:0] total_sum;
+  logic [16:0] fold_one;
+  logic [15:0] fold_two;
+  logic [15:0] csum_final;
+  assign stored_beat = i_enable && s_axis_tvalid && s_axis_tready && !write_discard && !bad_beat;
+  assign first_beat  = (write_length == 0);
+  assign eff_en      = first_beat ? i_csum_en : csum_en_q;
+  assign eff_start   = first_beat ? i_csum_start : csum_start_q;
+  assign eff_offset  = first_beat ? i_csum_offset : csum_offset_q;
+  assign field_pos   = {1'b0, eff_start} + {1'b0, eff_offset};
+  always_comb begin
+    beat_sum = 20'd0;
+    for (int w = 0; w < 4; w++) begin
+      logic [7:0] hi, lo;
+      hi = s_axis_tkeep[2*w] ? s_axis_tdata[(2*w)*8+:8] : 8'h00;
+      lo = s_axis_tkeep[2*w+1] ? s_axis_tdata[(2*w+1)*8+:8] : 8'h00;
+      if (eff_en && (write_length + 2 * w) >= int'(eff_start)) beat_sum += {4'b0, hi, lo};
+    end
+    total_sum  = {4'b0, csum_acc_q} + stage_sum_q;
+    fold_one   = {1'b0, total_sum[15:0]} + {13'b0, total_sum[19:16]};
+    fold_two   = fold_one[15:0] + {15'b0, fold_one[16]};
+    csum_final = (fold_two == 16'hffff) ? 16'hffff : ~fold_two;
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      csum_en_q <= 0;
+      csum_start_q <= 0;
+      csum_offset_q <= 0;
+      csum_acc_q <= 0;
+      csum_valid_q[0] <= 0;
+      csum_valid_q[1] <= 0;
+      csum_value_q[0] <= 0;
+      csum_value_q[1] <= 0;
+      csum_pos_q[0] <= 0;
+      csum_pos_q[1] <= 0;
+      stage_beat_q <= 0;
+      stage_stored_q <= 0;
+      stage_last_q <= 0;
+      stage_buffer_q <= 0;
+      stage_sum_q <= 0;
+      stage_valid_q <= 0;
+      stage_pos_q <= 0;
+    end else begin
+      stage_beat_q <= i_enable && s_axis_tvalid && s_axis_tready;
+      stage_stored_q <= stored_beat;
+      stage_last_q <= s_axis_tlast;
+      stage_buffer_q <= write_buffer;
+      stage_sum_q <= beat_sum;
+      stage_valid_q <= eff_en && (eff_offset != 0) && !field_pos[0] && !eff_start[0] &&
+          (int'(field_pos) + 2 <= write_length + input_bytes);
+      stage_pos_q <= field_pos;
+      if (stored_beat && first_beat) begin
+        csum_en_q     <= i_csum_en;
+        csum_start_q  <= i_csum_start;
+        csum_offset_q <= i_csum_offset;
+      end
+      if (stage_beat_q) begin
+        if (stage_stored_q) csum_acc_q <= fold_two;
+        if (stage_last_q) begin
+          csum_acc_q <= 0;
+          if (stage_stored_q) begin
+            csum_valid_q[stage_buffer_q] <= stage_valid_q;
+            csum_value_q[stage_buffer_q] <= csum_final;
+            csum_pos_q[stage_buffer_q]   <= stage_pos_q;
+          end
+        end
+      end
+    end
+  end
+
+  // The word being sent is word fetch_word - 1 (word 0 is prefetched while /S/
+  // goes out). The field is even-aligned, so it never splits across two words.
+  logic [WordIndexWidth-1:0] current_word;
+  logic                      patch_hit;
+  logic [              63:0] patched_word;
+  logic [               2:0] patch_lane;
+  assign current_word = fetch_word - 1'b1;
+  assign patch_lane = csum_pos_q[read_buffer][2:0];
+  assign patch_hit    = (tx_state == TX_DATA) && csum_valid_q[read_buffer] &&
+      (current_word == WordIndexWidth'(csum_pos_q[read_buffer][8:3]));
+  always_comb begin
+    patched_word = payload_word;
+    if (patch_hit) begin
+      patched_word[patch_lane*8+:8] = csum_value_q[read_buffer][15:8];
+      patched_word[(patch_lane+3'd1)*8+:8] = csum_value_q[read_buffer][7:0];
+    end
+  end
+
   // A starting frame's buffer is full, so ingress cannot change its length
   // before its /T/ releases the buffer.
   int unsigned start_length;
@@ -159,7 +293,7 @@ module eth10g_mac_tx #(
   logic [31:0] prefix_crc[9];
   always_comb begin
     for (int lane = 0; lane < 8; lane++) begin
-      data_word[lane*8+:8] = payload_word[lane*8+:8] & {8{payload_lanes[lane]}};
+      data_word[lane*8+:8] = patched_word[lane*8+:8] & {8{payload_lanes[lane]}};
     end
     for (int count = 0; count < 9; count++) begin
       for (int crc_bit = 0; crc_bit < 32; crc_bit++) begin

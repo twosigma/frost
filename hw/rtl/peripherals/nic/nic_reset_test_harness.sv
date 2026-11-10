@@ -125,14 +125,16 @@ module nic_reset_test_harness #(
       .DATA_WIDTH(DATA_WIDTH),
       .DEPTH(DEPTH)
   ) c2t (
-      .i_clk  (i_clk),
-      .i_rst  (i_rst || core_rst_dom[0]),
-      .i_data (i_c2t_data),
+      .i_limit('0),
+      .o_occupancy(),
+      .i_clk(i_clk),
+      .i_rst(i_rst || core_rst_dom[0]),
+      .i_data(i_c2t_data),
       .i_valid(i_c2t_valid),
       .o_ready(o_c2t_ready),
-      .o_clk  (i_tx_clk),
-      .o_rst  (o_tx_domain_rst),
-      .o_data (o_t_data),
+      .o_clk(i_tx_clk),
+      .o_rst(o_tx_domain_rst),
+      .o_data(o_t_data),
       .o_valid(o_t_valid),
       .i_ready(i_t_ready)
   );
@@ -140,14 +142,16 @@ module nic_reset_test_harness #(
       .DATA_WIDTH(DATA_WIDTH),
       .DEPTH(DEPTH)
   ) r2c (
-      .i_clk  (i_rx_clk),
-      .i_rst  (o_rx_domain_rst),
-      .i_data (i_r_data),
+      .i_limit('0),
+      .o_occupancy(),
+      .i_clk(i_rx_clk),
+      .i_rst(o_rx_domain_rst),
+      .i_data(i_r_data),
       .i_valid(i_r_valid),
       .o_ready(o_r_ready),
-      .o_clk  (i_clk),
-      .o_rst  (i_rst || core_rst_dom[1]),
-      .o_data (o_c_data),
+      .o_clk(i_clk),
+      .o_rst(i_rst || core_rst_dom[1]),
+      .o_data(o_c_data),
       .o_valid(o_c_valid),
       .i_ready(i_c_ready)
   );

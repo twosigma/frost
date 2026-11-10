@@ -28,6 +28,12 @@
  * o_ready cannot allow overflow. READY_MARGIN reserves unused entries:
  * pushes stop when RAM holds DEPTH - READY_MARGIN words.
  *
+ * With DYNAMIC_LIMIT = 1, i_limit (write clock domain, clamped to DEPTH)
+ * lowers that cap to i_limit - READY_MARGIN words; i_limit = DEPTH gives the
+ * fixed-limit behavior. The limit is quasi-static: its source changes it only
+ * while the writer is idle or under a handshake, and the cap takes effect one
+ * write-clock cycle later. With DYNAMIC_LIMIT = 0 the port is ignored.
+ *
  * Resets are per side and synchronous in their domain. The write reset clears
  * the write pointer, the read-pointer synchronizer, and its decode; the read
  * reset clears the read pointer, the write-pointer synchronizer, the skid,
@@ -39,20 +45,24 @@
 module async_fifo #(
     parameter int unsigned DATA_WIDTH = 68,
     parameter int unsigned DEPTH = 512,
-    parameter int unsigned READY_MARGIN = 2
+    parameter int unsigned READY_MARGIN = 2,
+    parameter bit DYNAMIC_LIMIT = 1'b0
 ) (
     // Write side.
-    input  logic                  i_clk,
-    input  logic                  i_rst,
-    input  logic [DATA_WIDTH-1:0] i_data,
-    input  logic                  i_valid,
-    output logic                  o_ready,
+    input  logic                   i_clk,
+    input  logic                   i_rst,
+    input  logic [$clog2(DEPTH):0] i_limit,
+    input  logic [ DATA_WIDTH-1:0] i_data,
+    input  logic                   i_valid,
+    output logic                   o_ready,
+    // The write side's view of the occupancy (conservative: the read pointer lags).
+    output logic [$clog2(DEPTH):0] o_occupancy,
     // Read side.
-    input  logic                  o_clk,
-    input  logic                  o_rst,
-    output logic [DATA_WIDTH-1:0] o_data,
-    output logic                  o_valid,
-    input  logic                  i_ready
+    input  logic                   o_clk,
+    input  logic                   o_rst,
+    output logic [ DATA_WIDTH-1:0] o_data,
+    output logic                   o_valid,
+    input  logic                   i_ready
 );
   localparam int unsigned AddrBits = $clog2(DEPTH);
   localparam int unsigned PtrBits  = AddrBits + 1;
@@ -92,8 +102,31 @@ module async_fifo #(
   end
   logic [PtrBits-1:0] occupancy_w;
   assign occupancy_w = wptr_bin_q - rptr_bin_w;
+  assign o_occupancy = occupancy_w;
+  // The occupancy at which the writer stops.
+  logic [PtrBits-1:0] stop_at;
+  if (DYNAMIC_LIMIT) begin : gen_limit
+    logic [PtrBits-1:0] stop_at_q;
+    // No reset: the cap follows i_limit, which the caller holds valid through the reset.
+    always_ff @(posedge i_clk) begin
+      if (i_limit >= PtrBits'(DEPTH)) begin
+        stop_at_q <= PtrBits'(DEPTH - READY_MARGIN);
+      end else if (i_limit > PtrBits'(READY_MARGIN)) begin
+        stop_at_q <= i_limit - PtrBits'(READY_MARGIN);
+      end else begin
+        stop_at_q <= '0;
+      end
+    end
+    assign stop_at = stop_at_q;
+  end else begin : gen_fixed_limit
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic limit_unused;
+    /* verilator lint_on UNUSEDSIGNAL */
+    assign limit_unused = |i_limit;
+    assign stop_at = PtrBits'(DEPTH - READY_MARGIN);
+  end
   // The writer need not take this reset.
-  assign o_ready = !i_rst && (occupancy_w < PtrBits'(DEPTH - READY_MARGIN));
+  assign o_ready = !i_rst && (occupancy_w < stop_at);
   logic push;
   assign push = i_valid && o_ready;
   logic [PtrBits-1:0] wptr_next;
@@ -228,6 +261,21 @@ module async_fifo #(
 
   logic [PtrBits-1:0] f_occupancy;
   assign f_occupancy = wptr_bin_q - rptr_bin_q;
+  // With DYNAMIC_LIMIT, i_limit is a constant in READY_MARGIN + 1 .. DEPTH (the real limit is
+  // quasi-static: it changes only while the writer is idle).
+  (* anyconst *) logic [PtrBits-1:0] f_limit;
+  always_comb begin
+    if (DYNAMIC_LIMIT) begin
+      assume (f_limit > PtrBits'(READY_MARGIN) && f_limit <= PtrBits'(DEPTH));
+      assume (i_limit == f_limit);
+    end
+  end
+  always_comb begin
+    if (DYNAMIC_LIMIT && f_step >= 4'd6) begin
+      // The writer never takes occupancy past the limit less the margin.
+      f_limit_respected : assert (occupancy_w <= f_limit - PtrBits'(READY_MARGIN));
+    end
+  end
   always_comb begin
     if (f_step >= 4'd6) begin
       // Never more words in the RAM than it holds, never a read of an
@@ -294,6 +342,16 @@ module async_fifo #(
       cover_watched_delivered : cover (f_delivered);
       // The writer stops READY_MARGIN below the RAM's capacity.
       cover_full_and_stalled : cover ((f_occupancy == PtrBits'(DEPTH - READY_MARGIN)) && !i_ready);
+    end
+  end
+  // With a lowered limit the writer stalls at the limit, below the RAM's capacity.
+  if (DYNAMIC_LIMIT) begin : g_limit_cover
+    always @(posedge o_clk) begin
+      if (!o_rst) begin
+        cover_limit_and_stalled :
+        cover ((f_limit < PtrBits'(DEPTH)) &&
+            (f_occupancy == f_limit - PtrBits'(READY_MARGIN)) && !i_ready);
+      end
     end
   end
 `endif

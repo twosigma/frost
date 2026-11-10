@@ -33,6 +33,10 @@ module eth10g_mac_pcs #(
     output logic s_axis_tready,
     input logic s_axis_tlast,
     input logic s_axis_tuser,
+    // Transmit checksum offload request, see eth10g_mac_tx. Off when i_csum_en is zero.
+    input logic i_csum_en,
+    input logic [7:0] i_csum_start,
+    input logic [7:0] i_csum_offset,
     output logic [63:0] m_axis_tdata,
     output logic [7:0] m_axis_tkeep,
     output logic m_axis_tvalid,
@@ -42,9 +46,15 @@ module eth10g_mac_pcs #(
     output logic [63:0] o_tx_raw_data,
     output logic o_tx_raw_valid,
     output logic o_tx_link_ready,
+    // One XGMII word time, including the PCS/gearbox enable gaps, for external protocol timers.
+    output logic o_tx_word_tick,
     input logic [63:0] i_rx_raw_data,
     input logic i_rx_raw_valid,
     input logic i_rx_signal_ok,
+    // Decoded PCS words before the receive packet buffer, for MAC-control observers.
+    output logic [63:0] o_rx_xgmii_data,
+    output logic [7:0] o_rx_xgmii_ctrl,
+    output logic o_rx_xgmii_valid,
     output logic o_rx_locked,
     output logic o_rx_high_ber,
     output logic o_rx_local_fault,
@@ -59,6 +69,9 @@ module eth10g_mac_pcs #(
   logic [63:0] mac_tx_data, rs_tx_data, rx_data;
   logic [7:0] mac_tx_ctrl, rs_tx_ctrl, rx_ctrl;
   logic tx_enable, rx_enable, mac_tx_ready;
+  assign o_rx_xgmii_data  = rx_data;
+  assign o_rx_xgmii_ctrl  = rx_ctrl;
+  assign o_rx_xgmii_valid = rx_enable;
   logic [65:0] tx_block, rx_block;
   logic tx_block_valid, tx_block_ready, rx_block_valid, rx_slip;
   // Register RX fault levels before synchronization. TX resets to local fault.
@@ -92,7 +105,8 @@ module eth10g_mac_pcs #(
   );
   // Backpressure ingress until the TX-domain fault response has recovered.
   // Frames accepted before a later link failure can still be lost on the wire.
-  assign s_axis_tready = mac_tx_ready && o_tx_link_ready;
+  assign s_axis_tready  = mac_tx_ready && o_tx_link_ready;
+  assign o_tx_word_tick = tx_enable;
   eth10g_mac_tx #(
       .MAX_FRAME_BYTES(MAX_FRAME_BYTES)
   ) mac_tx (
@@ -105,6 +119,9 @@ module eth10g_mac_pcs #(
       .s_axis_tready(mac_tx_ready),
       .s_axis_tlast(s_axis_tlast),
       .s_axis_tuser(s_axis_tuser),
+      .i_csum_en(i_csum_en),
+      .i_csum_start(i_csum_start),
+      .i_csum_offset(i_csum_offset),
       .o_xgmii_data(mac_tx_data),
       .o_xgmii_ctrl(mac_tx_ctrl),
       .o_drop(o_tx_drop)

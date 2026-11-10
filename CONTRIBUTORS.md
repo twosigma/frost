@@ -88,3 +88,4 @@
   home's prefetcher, with a VCU118 board data set and its calibration tool
 - Moved signal declarations ahead of their first use across the RTL, as the
   SystemVerilog standard requires, and added a yosys-slang front-end check to CI
+- Implemented the Ethernet NIC offload engine (checksums, segmentation and scatter-gather), scalable ingress buffering, 802.3x flow control, telemetry and the matching Linux driver support
