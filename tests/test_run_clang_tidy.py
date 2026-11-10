@@ -15,6 +15,7 @@
 """Unit tests for the clang-tidy pre-commit wrapper."""
 
 import importlib.util
+import shlex
 import subprocess
 from pathlib import Path
 from types import ModuleType
@@ -82,6 +83,51 @@ def test_board_capacity_rejects_conflicting_cflags(
     monkeypatch.setenv("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=36")
     with pytest.raises(RuntimeError, match="conflicts"):
         wrapper.extract_flags_for_file("sw/apps/dma_torture/main.c", REPO_ROOT, "", "")
+
+
+@pytest.mark.parametrize("capacity", (2 << 20, 4 << 20))
+def test_l2_capacity_reaches_probe_geometry(
+    capacity: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Compile the actual probe layout at both board capacities within 64 MiB."""
+    monkeypatch.setenv("FROST_L2_CACHE_BYTES", str(capacity))
+    monkeypatch.delenv("EXTRA_CFLAGS", raising=False)
+    flags, _ = wrapper.extract_flags_for_file(
+        "sw/apps/lq_stale_slot_probe/main.c", REPO_ROOT, "", ""
+    )
+    capacity_flags = [
+        flag for flag in shlex.split(flags) if flag.startswith("-DCACHE_L2_BYTES=")
+    ]
+    assert capacity_flags == [f"-DCACHE_L2_BYTES={capacity}u"]
+    source = f"""
+#include "sw/apps/lq_stale_slot_probe/main.c"
+_Static_assert(L2_ALIAS == {capacity}ul, "probe must use the selected capacity");
+_Static_assert(L2_ALIAS_PASSES * (2ul << 20) / L2_WAY_BYTES >= 7,
+               "alias passes must evict all original tree-PLRU lines");
+_Static_assert(POOL_BASE + STALE_ITERS * 4096ul + L2_ALIAS_PASSES * L2_ALIAS <= MARK_BASE,
+               "pool aliases must not overlap markers");
+_Static_assert(MARK_BASE + L2_ALIAS_PASSES * L2_ALIAS + STALE_ITERS * 64ul <= OUT_BASE,
+               "marker aliases must not overlap results");
+_Static_assert(OUT_BASE + STALE_ITERS * 128ul <= 0x84000000ul,
+               "results must fit in the DDR simulation model");
+"""
+    result = subprocess.run(
+        [
+            "riscv64-linux-gcc",
+            "-fsyntax-only",
+            "-x",
+            "c",
+            f"-I{REPO_ROOT}",
+            f"-I{REPO_ROOT / 'sw/lib/include'}",
+            *capacity_flags,
+            "-",
+        ],
+        input=source,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _write_common_mk(root_dir: Path) -> None:
