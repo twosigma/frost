@@ -384,7 +384,7 @@ module coherence_l1d #(
   logic [EpSlots-1:0] pick_onehot, ep_read_fail, ep_fail, ep_fail_error;
   logic acquisition_store_q, acquisition_sc_q;
   logic [2:0] acquisition_read_q;
-  logic grant_valid, grant_ready, grant_turn, grant_read_failure, zero_grant_failed;
+  logic grant_valid, grant_ready, grant_accept, grant_read_failure, zero_grant_failed;
   logic grant_read_turn_q, grant_retry_q, grant_read_hold, grant_read_yield, load_acquire_block;
   logic atomic_sc_selected, read_selected, acquire_ready;
   logic [ADDR_WIDTH-1:0] lookup_nonread_addr;
@@ -412,7 +412,7 @@ module coherence_l1d #(
   logic [1:0] path_queue_valid_q, path_queue_valid_next;
   logic [1:0][ADDR_WIDTH-6:0] path_queue_q, path_queue_next;
 
-  assign read_failure = grant_ready && grant_read_failure;
+  assign read_failure = grant_accept && grant_read_failure;
   // A shadow lookup answers nothing when the hit path or the tags hit.
   assign shadow_skip = shadow_q && (path_hit_q || array_hit);
   assign read_hit = active && ((phase_q == LookupWait && array_valid &&
@@ -866,8 +866,7 @@ module coherence_l1d #(
     if (i_rst || prefetch_cancel) grant_read_turn_q <= 1'b0;
     else begin
       if ((grant_valid && grant_ready) ||
-          (active && phase_q == Idle && !probe_valid_q && !probe_priority && grant_read_hold &&
-           !twin_owed) ||
+          (active && phase_q == Idle && !probe_valid_q && !probe_priority && grant_read_hold) ||
           (active && phase_q == Lookup && operation_q == ReadOp)) grant_read_turn_q <= 1'b0;
       if (active && phase_q == UpdateWait && array_ready &&
           operation_q == GrantOp && grant_ep_q != '0)
@@ -1071,16 +1070,16 @@ module coherence_l1d #(
     end
   end
   assign o_r = reply_q;
-  // The controller's grant turn. An owed cbo.zero twin installs before any
-  // grant (the Idle selection takes it first), so the handshake also waits
-  // for it and a grant offered meanwhile stays in its endpoint. The Idle
-  // selection tests grant_turn after the twin, which is the same condition.
-  assign grant_turn = active && phase_q == Idle && !probe_valid_q && !probe_priority &&
+  assign grant_ready = active && phase_q == Idle && !probe_valid_q && !probe_priority &&
       !grant_read_hold;
-  assign grant_ready = grant_turn && !twin_owed;
-  // Endpoint 0 is never held for a read's turn.
+  // An owed cbo.zero twin installs before any grant (the Idle selection takes
+  // it first), so the endpoint handshake also waits for it: a grant offered
+  // meanwhile stays in its endpoint until the twin has installed.
+  assign grant_accept = grant_ready && !twin_owed;
+  // Endpoint 0 is never held for a read's turn; its failure also waits for
+  // an owed twin, as its handshake does.
   assign zero_grant_failed = active && phase_q == Idle && !probe_valid_q && !probe_priority &&
-      pick_onehot[0] && ep_fail[0] && !ep_store[0];
+      !twin_owed && pick_onehot[0] && ep_fail[0] && !ep_store[0];
   // Data-class request identities 0 to 7 are legal.
   if (MISSES < 1 || MISSES > 8) begin : gen_invalid_misses
     initial $fatal(1, "coherence_l1d: MISSES must be 1 to 8");
@@ -1126,7 +1125,7 @@ module coherence_l1d #(
       assign ep_request_valid[ep] = active && phase_q == Acquire && acq_ep_q == EpBits'(ep) &&
           (ep == 0 || !load_acquire_block);
     end
-    assign ep_grant_ready[ep] = grant_ready && pick_onehot[ep];
+    assign ep_grant_ready[ep] = grant_accept && pick_onehot[ep];
     if (ep > 0) begin : gen_load_done
       assign ep_done_valid[ep] = ld_done_q[ep];
       assign ep_done_status[ep] = ld_status_q[ep];
@@ -1671,7 +1670,7 @@ module coherence_l1d #(
         if (atomic_local_q) assert (!live[ep] || ld_line_q[ep] != atomic_addr_q[ADDR_WIDTH-1:5]);
         else assert (!live[ep]);
 `endif
-      if (grant_ready && grant_valid && grant_pick != '0) assert (wb_free);
+      if (grant_accept && grant_valid && grant_pick != '0) assert (wb_free);
       if (active && phase_q == LookupWait && array_valid && operation_q == GrantOp &&
           grant_ep_q != '0 && !array_hit && array_state == coherence_pkg::Modified)
         p_bounded_wb_free_lookup : assert (wb_free);
@@ -2570,7 +2569,7 @@ module coherence_l1d #(
                 operation_q <= ReadOp;
                 phase_q <= Lookup;
               end
-            end else if (grant_valid && grant_turn) begin
+            end else if (grant_valid && grant_ready) begin
               operation_q <= GrantOp;
               // A failed read completes from fail_clear_q a cycle later.
               if (grant_failure) begin
@@ -3032,7 +3031,7 @@ module coherence_l1d #(
         p_store_probe_exclusion : assert (!probe_valid_q);
         p_store_install_address : assert (update_addr_q == pending_addr_q);
       end
-      if (grant_ready && grant_valid && grant_is_store)
+      if (grant_accept && grant_valid && grant_is_store)
         p_store_grant_head : assert (store_acquired[store_head_index] &&
             store_ep[store_head_index] == grant_pick && grant.addr == pending_addr_q);
 `ifndef STREAM_UNBOUNDED_PROOF
@@ -3279,7 +3278,7 @@ module coherence_l1d #(
         p_zero_twin_owed : assert (twin_fill_q);
       // Idle selects an owed twin before any grant, so no endpoint hands over
       // a grant meanwhile: an accepted grant always becomes the GrantOp.
-      if (twin_owed) p_zero_twin_grant_wait : assert (!grant_ready);
+      if (twin_owed) p_zero_twin_grant_wait : assert (ep_grant_ready == '0 && !read_failure);
       // No store is performed twice: the twin installs once, as Modified zeros
       // over its whole sector, at its own address.
       if (active && phase_q == Update && operation_q == TwinOp)
@@ -3972,12 +3971,10 @@ module coherence_l1d #(
           operation_q == GrantOp && grant_ep_q != '0))
         assert (grant_read_turn_q == $past(!grant_prefetch_q && grant_demand_waiter));
       else if ($past((grant_valid && grant_ready) ||
-          (active && phase_q == Idle && !probe_valid_q && !probe_priority && grant_read_hold &&
-           !twin_owed) ||
+          (active && phase_q == Idle && !probe_valid_q && !probe_priority && grant_read_hold) ||
           (active && phase_q == Lookup && operation_q == ReadOp))) assert (!grant_read_turn_q);
       else assert ($stable(grant_read_turn_q));
-      if (local_turn_q && grant_valid && active && !twin_owed)
-        assert (grant_ready);
+      if (local_turn_q && grant_valid && active) assert (grant_ready);
       if (rd_candidate && &read_probe_count_q) assert (local_ready);
       if ($past(local_turn_q && active && !grant_valid && atomic_write_q))
         p_bounded_atomic_write_phase : assert (phase_q == Lookup && operation_q == AtomicWriteOp);
@@ -4025,9 +4022,9 @@ module coherence_l1d #(
       cover (tail_q && pending_q);
       cover (store_pop && tail_q && store_continue);
       cover (read_owed_q && pending_q && phase_q == Lookup && operation_q == ReadOp);
-      if ($past(active && grant_valid && grant_ready)) assert (operation_q == GrantOp);
+      if ($past(active && grant_valid && grant_accept)) assert (operation_q == GrantOp);
       if ($past(active && phase_q == Idle) && phase_q == Lookup && operation_q == GrantOp)
-        assert ($past(grant_valid && grant_ready));
+        assert ($past(grant_valid && grant_accept));
       if (active && phase_q == LookupWait && array_valid && operation_q == GrantOp)
         p_bounded_array_available : assert (array_available);
       if (o_r_valid && probe_q.opcode == coherence_pkg::ProbeInvalidate)
