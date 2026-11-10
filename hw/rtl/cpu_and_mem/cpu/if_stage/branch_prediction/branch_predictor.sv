@@ -563,21 +563,60 @@ module branch_predictor #(
   (* keep = "true" *)logic slot2_tag_2_alt_raw_matches;
   (* keep = "true" *)logic slot2_tag_2_rot_raw_matches;
   logic slot2_tag_2_forward_matches, slot2_tag_2_alt_forward_matches;
-  always_comb begin
-    lookup_payload_2 = '0;
-    lookup_payload_2_alt = '0;
-    slot2_stage_base_index_covered =
-        slot2_stage_ready_q && (lookup_index_2 == slot2_lookup_index_q);
-    slot2_stage_next_index_covered =
-        slot2_stage_ready_q && (lookup_index_2 == slot2_lookup_index_next_q);
+  assign slot2_stage_base_index_covered =
+      slot2_stage_ready_q && (lookup_index_2 == slot2_lookup_index_q);
+  assign slot2_stage_next_index_covered =
+      slot2_stage_ready_q && (lookup_index_2 == slot2_lookup_index_next_q);
 
-    if (slot2_stage_base_index_covered) begin
-      lookup_payload_2     = slot2_payload_2;
-      lookup_payload_2_alt = slot2_payload_2_alt;
-    end else if (slot2_stage_next_index_covered) begin
-      lookup_payload_2 = slot2_payload_2_rot;
-    end
+  // Select the raw, rotated or forwarded payload with early one-hot masks.
+  // The base row wins if both indices match. Uncovered rows still return
+  // zero; the late payload bits traverse one select before their consumers.
+  (* keep = "true" *)logic slot2_base_raw_select;
+  (* keep = "true" *)logic slot2_rot_raw_select;
+  (* keep = "true" *)logic slot2_forward_select;
+  (* keep = "true" *)logic slot2_alt_raw_select;
+  (* keep = "true" *)logic slot2_alt_forward_select;
+  assign slot2_base_raw_select = slot2_stage_base_index_covered && !slot2_forward_2_q;
+  assign slot2_rot_raw_select = !slot2_stage_base_index_covered &&
+      slot2_stage_next_index_covered && !slot2_forward_2_rot_q;
+  assign slot2_forward_select =
+      (slot2_stage_base_index_covered && slot2_forward_2_q) ||
+      (!slot2_stage_base_index_covered && slot2_stage_next_index_covered && slot2_forward_2_rot_q);
+  assign slot2_alt_raw_select = slot2_stage_base_index_covered && !slot2_forward_2_alt_q;
+  assign slot2_alt_forward_select = slot2_stage_base_index_covered && slot2_forward_2_alt_q;
+`ifdef FROST_XILINX_PRIMS
+  for (genvar bit_idx = 0; bit_idx < Slot2PayloadBits; bit_idx++) begin : gen_slot2_payload_select
+    (* dont_touch = "true" *)
+    LUT6 #(
+        .INIT(64'hfffff888f888f888)
+    ) u_plus2 (
+        .I0(slot2_payload_2_raw[bit_idx]),
+        .I1(slot2_base_raw_select),
+        .I2(slot2_payload_2_rot_raw[bit_idx]),
+        .I3(slot2_rot_raw_select),
+        .I4(slot2_payload_forward_q[bit_idx]),
+        .I5(slot2_forward_select),
+        .O (lookup_payload_2[bit_idx])
+    );
+    (* dont_touch = "true" *)
+    LUT4 #(
+        .INIT(16'hf888)
+    ) u_plus4 (
+        .I0(slot2_payload_2_alt_raw[bit_idx]),
+        .I1(slot2_alt_raw_select),
+        .I2(slot2_payload_forward_q[bit_idx]),
+        .I3(slot2_alt_forward_select),
+        .O (lookup_payload_2_alt[bit_idx])
+    );
   end
+`else
+  assign lookup_payload_2 = ({Slot2PayloadBits{slot2_base_raw_select}} & slot2_payload_2_raw) |
+      ({Slot2PayloadBits{slot2_rot_raw_select}} & slot2_payload_2_rot_raw) |
+      ({Slot2PayloadBits{slot2_forward_select}} & slot2_payload_forward_q);
+  assign lookup_payload_2_alt =
+      ({Slot2PayloadBits{slot2_alt_raw_select}} & slot2_payload_2_alt_raw) |
+      ({Slot2PayloadBits{slot2_alt_forward_select}} & slot2_payload_forward_q);
+`endif
 
   // Compare raw and forwarded tags separately in the same groups as slot 1.
   (* keep = "true" *) logic [4:0][TagCompareChunks-1:0] slot2_tag_equal_chunks;

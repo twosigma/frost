@@ -443,6 +443,8 @@ including the slot-1 alias check. Staged taken bits and the live fallback
 join parallel candidate qualifiers before the common prediction permission.
 For the live select, separate sums for each slot-2 position let the final
 gate apply the decoded +4 position with permission and ownership.
+The shifted BTB payloads use early row and forwarding masks to select each
+target in one gate before the pending-PC relation compares.
 
 ### Stalled slot-2 predictions
 
