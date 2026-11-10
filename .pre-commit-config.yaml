@@ -111,6 +111,14 @@ repos:
             asic/sram/macros/.*
           )$
 
+      - id: slang-frontend
+        name: Strict SystemVerilog elaboration (yosys-slang)
+        entry: python3 tests/slang_frontend.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [manual]
+
   # Copyright header check/insert
   # Contributor-owned files carry their own Apache-2.0 notices.
   - repo: https://github.com/Lucas-C/pre-commit-hooks

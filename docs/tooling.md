@@ -7,7 +7,7 @@ repository root:
 ```bash
 docker build -t frost .
 ./scripts/frost.py doctor      # read-only check of Docker, the image, submodules, file ownership, and the cache
-./scripts/frost.py check       # CI's lint and fast Python test jobs
+./scripts/frost.py check       # CI's lint and fast Python test jobs (including strict RTL elaboration)
 ```
 
 Rebuild the image whenever its inputs change. Vivado and the board tools run

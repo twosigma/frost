@@ -54,6 +54,70 @@ on a reset term outside an `always_ff` block that
 `combinational_reset_allowlist.txt` does not list, and on an entry whose term is
 gone.
 
+### Strict SystemVerilog elaboration
+
+The fast Python suite executes [`slang_frontend.py`](slang_frontend.py)
+inside FROST's pinned Yosys, without nested Docker. The dedicated CI job and
+manual hook use the same checker. A missing Yosys or `read_slang`, a source
+error, or any nonzero frontend exit fails the check; there are no tolerated
+source errors. Run it directly or through the manual hook:
+
+```bash
+./scripts/frost.py run python3 tests/slang_frontend.py
+./scripts/frost.py run pre-commit run slang-frontend --hook-stage manual
+./scripts/frost.py run python3 tests/slang_frontend.py --case 'formal/immu_bare/*'
+```
+
+Declarations must precede **every** reference, including assertion/debug
+code and primitive instances inside generates. Put parameters and localparams
+in dependency order. When fixing order, preserve initializers, attributes,
+and continuous assignments; never move declarations across preprocessor or
+generate scopes. Use the same rule in simulation and proof code.
+
+The checker uses full `read_slang --ast-compilation-only --error-limit=0`
+elaboration, with strict declaration checking. It checks `cpu_top` and
+`platform_top` under `SYNTHESIS` in all four combinations of
+`FROST_XILINX_PRIMS` and `FROST_SRAM_MACROS`. Typed primitive declarations
+cover LUT1–LUT6, LUT6_2, FDRE, MUXF7/8/9, and CARRY8. The SRAM views read
+the real wrappers and generated macro models. Two additional default-top
+cases import RTLIL processes with `--no-proc --best-effort-hierarchy
+--ignore-initial`; source initialization still receives semantic checking,
+while the import omits initial state and image-loading work.
+
+The same four simulation variants, without `SYNTHESIS`, check 20 independent
+module roots. Both whole-top simulation views in each variant are listed in
+[`slang/deferred.json`](slang/deferred.json) for phase 2: each currently has
+30 declaration diagnostics in `load_queue.sv`. Required simulation roots
+remain enabled while that shared dependency is being maintained.
+
+Formal views are extracted from every `.sby`: task tags, independent read
+commands and their `FORMAL`/`SYNTHESIS` defaults, persistent defines, include
+paths, and final-top parameter overrides are preserved and deduplicated.
+Secondary-module parameter rewrites, renames, cutpoints, and solver commands
+are outside this check. Child types deliberately deleted by a proof get
+typed interfaces from their actual module headers; other unknown modules
+fail. `$initstate` gets a typed extension declaration, and the asynchronous
+FIFO gets a containing standard global clocking scope for `$global_clock`.
+
+There are currently 555 distinct formal views (686 tasks): 517 required and
+38 deferred, representing 54 tasks. Their remaining declaration diagnostics
+are confined to `load_queue.sv`, `coherence_l1d.sv`, and
+`formal/coherent_hart_cache*`. The manifest lists each view, its tasks,
+source files, and diagnostic count. To recheck all deferred views as well:
+
+```bash
+./scripts/frost.py run python3 tests/slang_frontend.py --include-deferred --report /workspace/slang-results.json
+```
+
+Production synthesis views promote `implicit-net`, `port-width-expand`,
+`port-width-trunc`, `width-trunc`, `inferred-latch`, `case-overlap`,
+`case-incomplete`, `unconnected-input-port`, and `shift-count-overflow` to
+errors. Simulation and proof views retain their existing warning severities:
+their partial-port harnesses and narrow abstract geometries need a separate
+warning audit. Noisy sign/arithmetic and intentional empty-output warnings
+remain advisory throughout. This checker complements synthesis and proof
+execution; it does not use standalone `slang --lint-only`.
+
 ## Test runners
 
 ### `test_run_cocotb.py`
