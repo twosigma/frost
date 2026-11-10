@@ -817,8 +817,8 @@ static void test_rx_csum(void)
 }
 
 /* Loopback rate: frames of 64 to 1514 bytes, up to RATE_INFLIGHT in flight, one prepared TX buffer,
- * so the loop's own cost is a few memory accesses per frame. Prints bytes per cycle of the system
- * clock; the NIC runs at the SoC clock (100 MHz on the VCU118 build). */
+ * so the loop's own cost is a few memory accesses per frame. Counts CPU cycles with rdcycle;
+ * the displayed throughput is normalized to the reference frequency printed below. */
 #define RATE_FRAMES 64u
 #define RATE_INFLIGHT 8u
 static int rate_run(uint32_t RATE_LEN)

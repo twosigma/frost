@@ -526,6 +526,9 @@ final scan.
 | `nic_sg_loopback`, `nic_rate` | Full-system scatter-gather, checksum, segmentation and TX rate applications |
 | `nic_dma_stress` | Two rounds of 15 queued 1518- and 64-byte loopback frames per mode, each overlapping a 4 KiB DMA copy, in plain and burst modes, in both memory tiers; DMA must be busy at the first RX completion, every frame byte and copied word is checked, and MAC RX overflow must stay zero |
 
+The rate applications measure CPU cycles with `rdcycle`. Their bytes/cycle values use those
+counts; displayed Gb/s values use the fixed reference frequency printed in the output.
+
 Run with `./scripts/frost.py cocotb <target>`. The
 [NIC benches](../../../../verif/cocotb_tests/nic/) contain the detailed cases.
 The `async_fifo` formal target checks bounded ordering and occupancy under
