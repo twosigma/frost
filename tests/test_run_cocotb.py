@@ -3831,6 +3831,29 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Decoded bundles preserve FIFO order with a two-entry queue",
         verilator_extra_args=("-GWIDTH=32", "-GSHADOW_WIDTH=12", "-GDEPTH=2"),
     ),
+    "decoded_bundle_queue_split_stall": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.frontend.test_decoded_bundle_queue",
+        hdl_toplevel_module="decoded_bundle_queue",
+        description="Decoded shadow selection with separate producer stall terms",
+        verilator_extra_args=(
+            "-GWIDTH=32",
+            "-GSHADOW_WIDTH=11",
+            "-GSPLIT_SHADOW_STALL=1",
+            "-GSTALL_LATE_COPIES=3",
+        ),
+    ),
+    "decoded_bundle_queue_split_stall_depth2": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.frontend.test_decoded_bundle_queue",
+        hdl_toplevel_module="decoded_bundle_queue",
+        description="Decoded shadow selection with split stalls and a two-entry queue",
+        verilator_extra_args=(
+            "-GWIDTH=32",
+            "-GSHADOW_WIDTH=11",
+            "-GDEPTH=2",
+            "-GSPLIT_SHADOW_STALL=1",
+            "-GSTALL_LATE_COPIES=3",
+        ),
+    ),
     "perf_counter_aggregator": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.perf.test_perf_counter_aggregator",
         hdl_toplevel_module="perf_counter_aggregator",

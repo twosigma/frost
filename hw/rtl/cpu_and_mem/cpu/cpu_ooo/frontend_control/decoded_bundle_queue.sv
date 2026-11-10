@@ -27,7 +27,7 @@ module decoded_bundle_queue #(
     parameter int unsigned DEPTH = 4,
     parameter int unsigned WIDTH = 32,
     parameter int unsigned SHADOW_WIDTH = 1,
-    // Apply the producer stall after selecting the next shadow, for timing.
+    // Select both next-shadow outcomes before applying the producer's go bit.
     // The producer supplies both next values and holds when
     // (i_stall_early || i_stall_late) && !i_stall_flush. All STALL_LATE_COPIES
     // bits must agree. i_shadow_next must remain the selected value for the
@@ -109,7 +109,7 @@ module decoded_bundle_queue #(
       ((count_q + (PtrBits + 1)'(push) - (PtrBits + 1)'(pop)) != '0);
   assign o_shadow = out_shadow_q;
   if (SPLIT_SHADOW_STALL) begin : gen_split_shadow_stall
-    // Select both next-shadow candidates before applying the stall, for timing.
+    // The generic form selects the queue head before the producer stall.
     (* keep = "true" *)logic [SHADOW_WIDTH-1:0] shadow_next_go;
     (* keep = "true" *)logic [SHADOW_WIDTH-1:0] shadow_next_hold;
     assign shadow_next_go   = nonempty_next ? head_shadow_next : i_shadow_next_go;
@@ -117,15 +117,37 @@ module decoded_bundle_queue #(
     for (genvar b = 0; b < SHADOW_WIDTH; b++) begin : gen_shadow_stall_bit
       localparam int unsigned LateCopy = (b * STALL_LATE_COPIES) / SHADOW_WIDTH;
 `ifdef FROST_XILINX_PRIMS
+      logic shadow_if_go_zero, shadow_if_go_one;
+      // Form both outcomes before the late producer-go bit. Queue ownership
+      // and the producer stall share each LUT; the late stall uses I5.
       (* dont_touch = "true" *)
-      LUT5 #(
-          .INIT(32'hfff10e00)
-      ) u_sel (
-          .I0(i_stall_late[LateCopy]),
-          .I1(i_stall_early),
-          .I2(i_stall_flush),
-          .I3(shadow_next_hold[b]),
-          .I4(shadow_next_go[b]),
+      LUT6 #(
+          .INIT(64'h88d888d888d88888)
+      ) u_go_zero (
+          .I0(nonempty_next),
+          .I1(head_shadow_next[b]),
+          .I2(i_shadow_next_hold[b]),
+          .I3(i_stall_flush),
+          .I4(i_stall_early),
+          .I5(i_stall_late[LateCopy]),
+          .O (shadow_if_go_zero)
+      );
+      (* dont_touch = "true" *)
+      LUT6 #(
+          .INIT(64'hddd8ddd8ddd8dddd)
+      ) u_go_one (
+          .I0(nonempty_next),
+          .I1(head_shadow_next[b]),
+          .I2(i_shadow_next_hold[b]),
+          .I3(i_stall_flush),
+          .I4(i_stall_early),
+          .I5(i_stall_late[LateCopy]),
+          .O (shadow_if_go_one)
+      );
+      (* dont_touch = "true" *) MUXF7 u_sel (
+          .I0(shadow_if_go_zero),
+          .I1(shadow_if_go_one),
+          .S (i_shadow_next_go[b]),
           .O (o_shadow_next[b])
       );
 `else

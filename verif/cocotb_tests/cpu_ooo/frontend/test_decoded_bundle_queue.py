@@ -59,6 +59,13 @@ async def test_ownership_order_and_flush(dut: Any) -> None:
         dut.i_shadow_next.value = (
             packet + 1 if advance or reset or flush else packet
         ) & shadow_mask
+        dut.i_shadow_next_go.value = (packet + 1) & shadow_mask
+        dut.i_shadow_next_hold.value = packet & shadow_mask
+        stall_early = not advance and bool(rng.getrandbits(1))
+        stall_late = not advance and (not stall_early or bool(rng.getrandbits(1)))
+        dut.i_stall_early.value = stall_early
+        dut.i_stall_late.value = ((1 << len(dut.i_stall_late)) - 1) if stall_late else 0
+        dut.i_stall_flush.value = reset or flush
         dut.i_indirect.value = indirect
         dut.i_pop.value = pop
         await Timer(5, unit="ns")
