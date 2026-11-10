@@ -46,6 +46,8 @@ module eth10g_mac_pcs #(
     output logic [63:0] o_tx_raw_data,
     output logic o_tx_raw_valid,
     output logic o_tx_link_ready,
+    // One XGMII word time, including the PCS/gearbox enable gaps, for external protocol timers.
+    output logic o_tx_word_tick,
     input logic [63:0] i_rx_raw_data,
     input logic i_rx_raw_valid,
     input logic i_rx_signal_ok,
@@ -96,7 +98,8 @@ module eth10g_mac_pcs #(
   );
   // Backpressure ingress until the TX-domain fault response has recovered.
   // Frames accepted before a later link failure can still be lost on the wire.
-  assign s_axis_tready = mac_tx_ready && o_tx_link_ready;
+  assign s_axis_tready  = mac_tx_ready && o_tx_link_ready;
+  assign o_tx_word_tick = tx_enable;
   eth10g_mac_tx #(
       .MAX_FRAME_BYTES(MAX_FRAME_BYTES)
   ) mac_tx (

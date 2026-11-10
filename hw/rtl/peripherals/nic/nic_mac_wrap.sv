@@ -336,8 +336,7 @@ module nic_mac_wrap #(
   logic gmii_preamble_drop, gmii_rx_er_event;
   if (!GMII_MODE) begin : gen_10g_pcs
     assign gmii_preamble_drop = 1'b0;
-    assign tx_tick = 1'b1;
-    assign gmii_rx_er_event = 1'b0;
+    assign gmii_rx_er_event   = 1'b0;
     eth10g_mac_pcs #(
         .MAX_FRAME_BYTES(MAX_FRAME_BYTES)
     ) u_mac (
@@ -363,6 +362,7 @@ module nic_mac_wrap #(
         .o_tx_raw_data    (o_tx_raw_data),
         .o_tx_raw_valid   (o_tx_raw_valid),
         .o_tx_link_ready  (tx_link_ready),
+        .o_tx_word_tick   (tx_tick),
         .i_rx_raw_data    (rx_raw_data),
         .i_rx_raw_valid   (rx_raw_valid),
         .i_rx_signal_ok   (rx_signal_ok),

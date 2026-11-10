@@ -411,7 +411,8 @@ between the TX FIFO and the transmit MAC.
   enabled; its first two beats are held back until the opcode is known, and any other frame to
   those addresses is passed on unchanged. With PAUSE_CTRL bit 0 set, the pause_time loads a
   timer of 512-bit-time quanta (8 words at 10G, 64 byte times on GMII at any speed); pause_time 0
-  clears it. While it runs no new frame leaves the TX FIFO. A frame already started finishes, and
+  clears it. Word times follow the PCS enable, including gearbox gaps, rather than every raw
+  PMA clock. While it runs no new frame leaves the TX FIFO. A frame already started finishes, and
   the transmit MAC may still send up to two complete frames it took earlier. Frames the NIC
   generates itself are exempt. The interval is published with the completed frame's event and
   held until the next event. A TX-only restart rebases event detection so an expired interval

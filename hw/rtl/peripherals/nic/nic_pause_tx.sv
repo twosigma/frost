@@ -20,7 +20,8 @@
  *
  * Honouring received pause. A pause event from the receive half (i_pause_tog toggling, with
  * i_pause_quanta) loads a timer with pause_time quanta of 512 bit times: QTICKS = 8 words at
- * 10GBASE-R, 64 byte times on GMII (i_tick marks one byte time at 10, 100 or 1000 Mb/s). Quanta 0
+ * 10GBASE-R, 64 byte times on GMII (i_tick marks an enabled XGMII word or one GMII byte time).
+ * The PCS word enable accounts for encoded-line gearbox gaps. Quanta 0
  * clears it. While the timer runs, no new frame leaves the TX FIFO; a frame already started
  * finishes (and the MAC may still hold up to two complete frames it took earlier). The timer only
  * runs while i_rx_en (honour pause) is set. Frames generated here are exempt.

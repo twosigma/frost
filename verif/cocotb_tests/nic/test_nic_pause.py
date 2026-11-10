@@ -214,7 +214,8 @@ class Bench:
             "i_pause_interval": 0xFFFF,
         }.items():
             getattr(dut, name).value = value
-        mac_ps = 8000 if _gmii() else 6400
+        # The raw PMA clock carries encoded bits; the PCS advances 32 of every 33 cycles.
+        mac_ps = 8000 if _gmii() else 6206
         Clock(dut.i_clk, 6000, unit="ps").start()
         Clock(dut.i_tx_clk, mac_ps, unit="ps").start()
         Clock(dut.i_rx_clk, mac_ps, unit="ps").start()
@@ -328,6 +329,34 @@ class Bench:
 def quantum_ns() -> float:
     """512 bit times at the wire rate."""
     return 512.0 if _gmii() else 51.2
+
+
+@cocotb.test()
+async def pause_timer_counts_wire_word_enables(dut: Any) -> None:
+    """Measure the complete pause interval with a bound tighter than the PCS cadence gap."""
+    bench = Bench(dut)
+    await bench.start()
+    await bench.configure(CTRL_RX)
+    quanta = 256
+    bench.link.send(pause_frame(quanta))
+    for _ in range(2000):
+        await FallingEdge(dut.i_tx_clk)
+        if int(dut.tx_paused.value):
+            break
+    else:
+        raise AssertionError("the received pause never armed its timer")
+    started = get_sim_time("ns")
+    for _ in range(quanta * 70):
+        await FallingEdge(dut.i_tx_clk)
+        if not int(dut.tx_paused.value):
+            break
+    else:
+        raise AssertionError("pause timer did not expire")
+    elapsed = get_sim_time("ns") - started
+    expected = quanta * quantum_ns()
+    # The first word-time boundary is arbitrary; permit at most two raw clock cycles.
+    tolerance = 16.0 if _gmii() else 12.5
+    assert abs(elapsed - expected) <= tolerance, (elapsed, expected, tolerance)
 
 
 @cocotb.test()

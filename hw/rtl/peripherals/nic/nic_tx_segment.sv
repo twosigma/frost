@@ -261,7 +261,7 @@ module nic_tx_segment (
     for (int j = 0; j < 8; j++) if (4'(j) < in_bytes) in_masked[8*j+:8] = h_data[8*j+:8];
   end
 
-  logic in_fire;
+  logic in_fire, run_fire;
   always_comb begin
     case (state_q)
       S_IDLE:  h_ready = h_cfg_segment ? 1'b0 : (i_out_ready && !mg_busy && sk_empty);
@@ -273,6 +273,9 @@ module nic_tx_segment (
     endcase
   end
   assign in_fire = h_valid && h_ready;
+  // Qualify payload capture within RUN so bypass backpressure does not enter its controls.
+  assign run_fire = h_valid && (state_q == S_RUN) && !in_done_q &&
+      ((em_q == EM_END) || (acc_cnt_q <= 5'd8));
 
   // ---- header emission ---------------------------------------------------------------
   logic hdr_valid, hdr_fire, hdr_final;
@@ -472,7 +475,7 @@ module nic_tx_segment (
   assign n_out = pay_fire ? pay_n : 4'd0;
   assign cnt_after = pay_shortage ? 5'd0 : (acc_cnt_q - 5'(n_out));
   assign acc_shift = pay_shortage ? 128'd0 : (acc_q >> {n_out, 3'b000});
-  assign append = in_fire && (state_q == S_RUN) && (em_q != EM_END);
+  assign append = run_fire && (em_q != EM_END);
   always_comb begin
     acc_next = acc_shift;
     cnt_next = cnt_after;
@@ -491,7 +494,7 @@ module nic_tx_segment (
   assign hl_in_last = (hdr_len_q[2:0] == 3'd0) ? 4'd8 : {1'b0, hdr_len_q[2:0]};
   assign cap_short = in_fire && (state_q == S_CAP) &&
       ((in_last && !cap_final) || (in_last && cap_final && (in_bytes < hl_in_last)));
-  assign end_now = (state_q == S_RUN) && (em_q == EM_END) && (in_done_q || (in_fire && in_last));
+  assign end_now = (state_q == S_RUN) && (em_q == EM_END) && (in_done_q || (run_fire && in_last));
 
   always_ff @(posedge i_clk) begin
     if (i_rst || i_flush) begin
@@ -602,8 +605,8 @@ module nic_tx_segment (
           // Input beats join the accumulator (in EM_END they are excess).
           acc_q     <= acc_next;
           acc_cnt_q <= cnt_next;
-          if (in_fire) in_done_q <= in_last;
-          if (in_fire && (em_q == EM_END)) excess_q <= 1'b1;
+          if (run_fire) in_done_q <= in_last;
+          if (run_fire && (em_q == EM_END)) excess_q <= 1'b1;
 
           // The preparation pipeline.
           if (pp_active) pp_step_q <= pp_step_q + 5'd1;
