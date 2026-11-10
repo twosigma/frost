@@ -335,8 +335,8 @@ module prediction_release_formal #(
       // Every slot-2 request takes the staged select. The alias check and both
       // targets are arbitrary; the live select needs a request (above).
       .i_slot2_staged_prediction_used_for_pc(slot2_prediction_used_for_pc),
-      .i_slot1_aliases_slot2_candidate,
-      .i_slot2_live_target_used_for_pc_cofactor(slot2_live_target_used_for_pc_cofactor),
+      .i_slot2_live_target_used_for_pc(i_slot1_aliases_slot2_candidate &&
+                                      slot2_live_target_used_for_pc_cofactor),
       .i_slot2_staged_predicted_target(slot2_target_effective),
       .i_slot2_live_predicted_target,
       .i_slot2_staged_target_rel_pending(slot2_staged_target_rel_pending),
