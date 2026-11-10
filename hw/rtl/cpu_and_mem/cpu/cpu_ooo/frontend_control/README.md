@@ -70,10 +70,12 @@ instead: ID's target compare sets it late in the cycle, and dispatch only
 stores it in the branch's RS entry. `cpu_ooo` keeps further copies of the shadow's
 source-register fields (from `o_shadow_next`) for the INT and FP RAT lookups
 and the register files' commit-bypass compares.
-When ID supplies separate advance and hold data, each primitive shadow bit
-combines queue ownership with the stall terms for both values of that
-advance-data bit. The producer's data bit selects the final output in a MUXF7.
-The generic form uses the equivalent head-select and stall-select expression.
+When ID supplies separate next values for advancing and holding, the primitive
+implementation combines early and late stall terms once per late-stall group.
+Each shadow bit then selects head data, producer hold data, or producer advance
+data in one LUT5. Queue ownership and producer advance data reach that final
+selection directly. The generic form uses the equivalent head-select and
+stall-select expression.
 
 ## Verification
 
