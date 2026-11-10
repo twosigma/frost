@@ -356,7 +356,7 @@ module coherence_l1d #(
   logic grant_valid, grant_ready, grant_read_failure, zero_grant_failed;
   logic grant_read_turn_q, grant_retry_q, grant_read_hold, grant_read_yield, load_acquire_block;
   logic atomic_sc_selected, read_selected, acquire_ready;
-  logic [ADDR_WIDTH-1:0] lookup_other;
+  logic [ADDR_WIDTH-1:0] lookup_nonread_addr;
   (* keep = "true" *) logic lookup_other_valid;
   logic grant_demand_waiter, grant_touch_q;
   coh_g_t grant, grant_q;
@@ -2161,30 +2161,38 @@ module coherence_l1d #(
   assign atomic_sc_selected = atomic_q && atomic_sc_q && !request_live &&
       (!sc_home_q || (!any_live && wb_free));
   assign read_selected = rd_candidate && !(maint_eligible && maint_turn_q);
-  // The selected request's address, in the controller's Idle priority. A read
-  // joins last because its address settles last. A cycle that selects nothing
-  // captures a value no one reads.
+  // Prepare the priority above a read before its eligibility settles. The
+  // credited read turn also selects the read address when it has no candidate.
+  (* keep = "true" *) wire lookup_read_turn =
+      !probe_valid_q && !probe_priority && grant_read_hold;
+  (* keep = "true" *) wire lookup_read_enable =
+      !probe_valid_q && !probe_priority && !grant_valid &&
+      !(i_sc_valid && o_sc_ready) && !atomic_write_q && !atomic_sc_selected &&
+      !store_head_ready && !look_ready && !(maint_eligible && maint_turn_q);
+  assign lookup_other_valid = !(lookup_read_turn || (lookup_read_enable && rd_candidate));
+  // The non-read address follows the controller's Idle priority. When a read
+  // wins, its address replaces this value at the final selection, so its
+  // eligibility need not feed this priority chain as well.
   always_comb begin
-    lookup_other = hint_addr_q;
-    lookup_other_valid = 1'b1;
-    if (probe_valid_q) lookup_other = probe_q.addr;
-    else if (probe_priority) lookup_other = probe_in.addr;
-    else if (grant_read_hold) lookup_other_valid = 1'b0;
-    else if (grant_valid) lookup_other = grant.addr;
-    else if (i_sc_valid && o_sc_ready) lookup_other = i_sc_address;
-    else if (atomic_write_q || atomic_sc_selected) lookup_other = atomic_addr_q;
-    else if (store_head_ready) lookup_other = pending_addr_q;
-    else if (look_ready) lookup_other = look_addr_q;
-    else if (read_selected) lookup_other_valid = 1'b0;
+    lookup_nonread_addr = hint_addr_q;
+    if (probe_valid_q) lookup_nonread_addr = probe_q.addr;
+    else if (probe_priority) lookup_nonread_addr = probe_in.addr;
+    else if (grant_read_hold) begin
+      // The final selection supplies the read address.
+    end else if (grant_valid) lookup_nonread_addr = grant.addr;
+    else if (i_sc_valid && o_sc_ready) lookup_nonread_addr = i_sc_address;
+    else if (atomic_write_q || atomic_sc_selected) lookup_nonread_addr = atomic_addr_q;
+    else if (store_head_ready) lookup_nonread_addr = pending_addr_q;
+    else if (look_ready) lookup_nonread_addr = look_addr_q;
     else if (maint_eligible)
-      lookup_other = maint_line_q ? maint_addr_q : ADDR_WIDTH'(maint_set_q) << 5;
+      lookup_nonread_addr = maint_line_q ? maint_addr_q : ADDR_WIDTH'(maint_set_q) << 5;
   end
   // Lookup and grant payloads are read only after Idle hands them to the
   // controller, so they have no reset or stop term and capture every Idle
   // cycle.
   always_ff @(posedge i_clk) begin
     if (phase_q == Idle) begin
-      lookup_addr_q <= lookup_other_valid ? lookup_other : rd_selected_addr;
+      lookup_addr_q <= lookup_other_valid ? lookup_nonread_addr : rd_selected_addr;
       selected_read_q <= rd_pick;
       grant_q <= grant;
       grant_ep_q <= grant_pick;
