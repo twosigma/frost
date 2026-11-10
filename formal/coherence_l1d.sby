@@ -37,7 +37,9 @@ coh_l1d_local_sector_prove single local sector
 coh_l1d_local_multi_sector_prove multi local sector padded
 coh_l1d_local_ways_sector_prove ways local sector padded
 coh_l1d_local_cover single localcovers covermode localscheduled
-coh_l1d_local_data_bmc single localschedule localscheduled
+coh_l1d_local_data_bmc single localschedule localscheduled localdata
+coh_l1d_local_hold_bmc single localschedule localscheduled localhold
+coh_l1d_local_control_bmc single localschedule localscheduled localcontrol
 coh_l1d_local_ways_prove ways local owner padded
 
 [options]
@@ -115,7 +117,9 @@ owner: abc pdr
 owned: smtbmc boolector
 streamowned: smtbmc boolector
 sector: smtbmc boolector
-localschedule: abc bmc3
+localdata: abc bmc3 -c
+localhold: abc bmc3 -c
+localcontrol: abc bmc3
 localcovers: smtbmc boolector
 
 [script]
@@ -224,10 +228,22 @@ sector: chformal -assert2assume c:p_local_lookup_owner c:p_local_sc_lookup
 sector: select -assert-count 6 t:$check r:FLAVOR=assert %i
 sector: select -assert-count 2 c:p_local_lookup_owner c:p_local_sc_lookup %u t:$check %i r:FLAVOR=assume %i
 # Array behavior is arbitrary for controller induction. Real-array byte and
-# completion checks run in the bounded task and the array proofs.
+# completion checks run in the bounded tasks and the array proofs.
 owned: cutpoint w:array_ready w:array_valid w:array_hit w:array_state w:array_addr w:array_data w:array_way w:array_available w:update_ready
 local: cutpoint w:array_ready w:array_valid w:array_hit w:array_state w:array_addr w:array_data w:array_way w:array_available w:update_ready
 localcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_local_probe_cover c:p_local_fail_cover c:p_local_release_cover %u %u %d
+# Partition the scheduled real-array BMC without assuming any assertion. The
+# data task checks arbitrary-byte preservation and deferred probe data; the
+# hold task checks the wide payload identities. The control task keeps every
+# other assertion, including future additions. All three keep depth 80.
+localdata: select -assert-count 2 c:p_local_image c:p_local_probe_data
+localdata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_image c:p_local_probe_data %u %d
+localdata: select -assert-count 2 t:$check r:FLAVOR=assert %i
+localhold: select -assert-count 4 c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
+localhold: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold %u %u %u %d
+localhold: select -assert-count 4 t:$check r:FLAVOR=assert %i
+localcontrol: chformal -assert -remove c:p_local_image c:p_local_probe_data c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
+localcontrol: select -assert-min 1 t:$check r:FLAVOR=assert %i
 nostore: connect -set i_write_mask 8'h00
 memory_map
 conflict: select -assert-min 1 t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff

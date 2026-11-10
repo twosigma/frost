@@ -97,7 +97,7 @@ typed interfaces from their actual module headers; other unknown modules
 fail. `$initstate` gets a typed extension declaration, and the asynchronous
 FIFO gets a containing standard global clocking scope for `$global_clock`.
 
-All 561 distinct formal views (696 tasks) are required, including every
+All 561 distinct formal views (698 tasks) are required, including every
 hart-cache maintenance configuration. The complete matrix has 667 cases,
 with no deferred views or source-error exceptions. To record diagnostics
 and elapsed times for every case:
@@ -706,7 +706,14 @@ keeps depth 40 with a 180-minute allowance in a 200-minute job; the
 multi-endpoint control BMC has 300 minutes in its own 330-minute job. The
 L1D data tasks run in three jobs (330, 330 and 270 minutes), with each word
 variant taking its representative's measured allowance. The remaining L1D
-tasks and AXI bridges retain their 330-minute job.
+tasks and AXI bridges retain their 330-minute job. The scheduled local
+real-array checks keep all 80 cycles and run in three parallel 30-minute
+jobs: `coh_l1d_local_data_bmc` checks byte preservation and deferred probe
+data, `coh_l1d_local_hold_bmc` checks wide payload identities and holds, and
+`coh_l1d_local_control_bmc` checks every other assertion. All three retain
+the 1,200-second SBY limit and assume nothing from each other. A fast test
+checks that the models match the scheduled local cover, the assertion
+selections cover every property, and each task runs in exactly one CI job.
 
 The four-record store-boundary BMC runs to depth 114 with a 300-minute
 allowance in its own 330-minute job. Its depth-120 cover task reaches handoff
@@ -963,7 +970,7 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 | TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and runs 50 sequences from the crypto generator |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis |
-| Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, L1D control, L1D multi-endpoint, L1D data (three jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream and Other tasks jobs; and a separate job for the hart maintenance proof, its ownership induction and the other L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets |
+| Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, L1D control, L1D multi-endpoint, L1D data (three jobs), L1D local real-array (three jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream and Other tasks jobs; and a separate job for the hart maintenance proof, its ownership induction and the other L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in four chained jobs |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
 | Coverage | One job merges the coverage of the simulating jobs into a report |

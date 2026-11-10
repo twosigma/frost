@@ -1291,6 +1291,18 @@ jobs:
           - shard: Coherence L1D data stores and ways
             pytest_filter: coh_l1d_store_ or coh_l1d_ways_data
             timeout_minutes: 270
+          # The scheduled real-array checks keep all 80 frames, with disjoint
+          # property groups and no assumptions between them. Run them in
+          # parallel so their combined work does not delay the bridges.
+          - shard: Coherence L1D local data
+            pytest_filter: coh_l1d_local_data_bmc
+            timeout_minutes: 30
+          - shard: Coherence L1D local holds
+            pytest_filter: coh_l1d_local_hold_bmc
+            timeout_minutes: 30
+          - shard: Coherence L1D local control
+            pytest_filter: coh_l1d_local_control_bmc
+            timeout_minutes: 30
           # The remaining L1D covers, local and stream tasks, and AXI bridges.
           - shard: Coherence L1D and bridges
             pytest_filter: >-
@@ -1298,7 +1310,7 @@ jobs:
               (coherence_l1d and not (coh_l1d_stream_bmc or coh_l1d_stream_free or
               coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_data or
               coh_l1d_multi_data or coh_l1d_store_ or coh_l1d_ways_data or
-              (coh_l1d_local and prove)))
+              (coh_l1d_local and (prove or bmc))))
             timeout_minutes: 330
           # The four-record boundary BMC runs 114 frames with the hit path;
           # the intervening-load BMC keeps 140. Each has a job of its own.

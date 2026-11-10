@@ -327,6 +327,8 @@ FORMAL_TARGETS = [
             "coh_l1d_local_ways_sector_prove",
             "coh_l1d_local_cover",
             "coh_l1d_local_data_bmc",
+            "coh_l1d_local_hold_bmc",
+            "coh_l1d_local_control_bmc",
             "coh_l1d_local_ways_prove",
             "coh_l1d_cover",
             "coh_l1d_path_cover",
@@ -1428,7 +1430,18 @@ SBY_TASKS = [
         "coh_l1d_local_cover",
         "Local failure, completed update and deferred probe reply.",
     ),
-    ("coh_l1d_local_data_bmc", "Local atomic data and control through the real array."),
+    (
+        "coh_l1d_local_data_bmc",
+        "Local atomic arbitrary-byte preservation and deferred probe data through 80 real-array cycles.",
+    ),
+    (
+        "coh_l1d_local_hold_bmc",
+        "Local atomic payload identities and holds through 80 real-array cycles.",
+    ),
+    (
+        "coh_l1d_local_control_bmc",
+        "All other local scheduled assertions through 80 real-array cycles, without partition assumptions.",
+    ),
     (
         "store_saturation_bmc",
         "A delayed head preserves 33 younger same-byte stores through saturation and drain.",
@@ -2313,7 +2326,13 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             for geometry in ("", "_multi", "_ways")
             for part in ("", "_sector", "_owned")
         ]
-        + ["coh_l1d_stream_owned_prove", "coh_l1d_stream_prove"],
+        + [
+            "coh_l1d_stream_owned_prove",
+            "coh_l1d_stream_prove",
+            "coh_l1d_local_data_bmc",
+            "coh_l1d_local_hold_bmc",
+            "coh_l1d_local_control_bmc",
+        ],
     }
     for target_name, names in required.items():
         target = next(t for t in FORMAL_TARGETS if t.name == target_name)
@@ -2337,6 +2356,9 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherent_hart_cache_coh_hart_maint_owned_prove": "Hart maintenance",
         "coherence_l1d_coh_l1d_bmc": "Coherence L1D control",
         "coherence_l1d_coh_l1d_multi_bmc": "Coherence L1D multi-endpoint",
+        "coherence_l1d_coh_l1d_local_data_bmc": "Coherence L1D local data",
+        "coherence_l1d_coh_l1d_local_hold_bmc": "Coherence L1D local holds",
+        "coherence_l1d_coh_l1d_local_control_bmc": "Coherence L1D local control",
         "coherence_store_boundary_bmc_four": "Store boundary four records",
         "coherence_store_boundary_bmc_intervening": "Store boundary intervening load",
         "coherence_store_boundary_bmc_amo_same": "Store boundary AMO flow",
@@ -2430,6 +2452,75 @@ def l1d_task_config(task: str) -> dict[str, list[str]]:
 def assertion_command(line: str) -> bool:
     """Report whether an SBY script line selects or converts properties."""
     return line.startswith(("select -assert-", "chformal "))
+
+
+def test_local_data_partition_models_match() -> None:
+    """Keep every scheduled real-array assertion at its original depth."""
+    reference = l1d_task_config("coh_l1d_local_cover")
+    model = [line for line in reference["[script]"] if not assertion_command(line)]
+    assert (
+        "read -formal -sv -D LOCAL_ATOMIC_PROOF -D LOCAL_ATOMIC_COVER "
+        "coherence_read_payload.sv coherence_l1d.sv"
+    ) in model
+    data = "c:p_local_image c:p_local_probe_data"
+    hold = (
+        "c:p_grant_mux_exact c:p_local_image_stable "
+        "c:p_load_payload_held c:p_reply_hold"
+    )
+    commands = {
+        "data": [
+            f"select -assert-count 2 {data}",
+            f"chformal -assert -remove t:$check r:FLAVOR=assert %i {data} %u %d",
+            "select -assert-count 2 t:$check r:FLAVOR=assert %i",
+        ],
+        "hold": [
+            f"select -assert-count 4 {hold}",
+            f"chformal -assert -remove t:$check r:FLAVOR=assert %i {hold} %u %u %u %d",
+            "select -assert-count 4 t:$check r:FLAVOR=assert %i",
+        ],
+        # The complement includes unnamed checks and future assertions.
+        "control": [
+            f"chformal -assert -remove {data} {hold}",
+            "select -assert-min 1 t:$check r:FLAVOR=assert %i",
+        ],
+    }
+
+    def validate(part: str, task: dict[str, list[str]]) -> None:
+        assert task.keys() == reference.keys()
+        for section in task.keys() - {"[options]", "[engines]", "[script]"}:
+            assert task[section] == reference[section]
+        script = task["[script]"]
+        assert [line for line in script if assertion_command(line)] == commands[part]
+        assert [line for line in script if not assertion_command(line)] == model
+        options = dict(line.split(maxsplit=1) for line in task["[options]"])
+        options.setdefault("expect", "PASS")
+        assert options == {
+            "mode": "bmc",
+            "depth": "80",
+            "timeout": "1200",
+            "aigsmt": "boolector",
+            "expect": "PASS",
+        }
+        engine = "abc bmc3" if part == "control" else "abc bmc3 -c"
+        assert task["[engines]"] == [engine]
+
+    for part in commands:
+        task = l1d_task_config(f"coh_l1d_local_{part}_bmc")
+        validate(part, task)
+        for section, line in (
+            ("[script]", "chformal -assert2assume c:p_local_image"),
+            ("[script]", "chformal -assert -remove c:p_local_failure"),
+            ("[script]", "cutpoint w:array_data"),
+            ("[script]", "connect -set i_sc_valid 1'b0"),
+            ("[options]", "depth 79"),
+            ("[options]", "expect PASS,UNKNOWN,TIMEOUT"),
+            ("[options]", "smtc partition_only.smtc"),
+            ("[file partition_only.smtc]", "assume (= hidden 0)"),
+        ):
+            altered = {key: list(value) for key, value in task.items()}
+            altered.setdefault(section, []).append(line)
+            with pytest.raises(AssertionError):
+                validate(part, altered)
 
 
 def test_local_sector_lemma_models_match() -> None:
