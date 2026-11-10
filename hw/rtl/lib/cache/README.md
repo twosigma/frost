@@ -642,12 +642,13 @@ metadata.
 A primary GetS, LoadReserved or GetM, whose hit service would read the row
 and send no probe, is granted from the fill's line. Once the fill holds its
 line and its victim handling has let the install begin, the fill offers the
-primary's sector; fills that may forward take turns. Each fill records its
-primary's identity at allocation, so the forward's result comes from the
-fill's registers. The completion table accepts the forward while its forward
-buffer is free: the primary's slot leaves its seat and takes its result, its
-completion pin on the fill's way and the forward buffer on one edge, and its G
-follows as any buffered result's.
+primary's sector; fills that may forward take turns. The selector forms its
+blockers in groups of three ready/preferred pairs before reducing the groups.
+Each fill records its primary's identity at allocation, so the forward's
+result comes from the fill's registers. The completion table accepts the
+forward while its forward buffer is free: the primary's slot leaves its seat
+and takes its result, its completion pin on the fill's way and the forward
+buffer on one edge, and its G follows as any buffered result's.
 The fill blocks its whole line until the install completes, so a
 PutM, a probe or a replacement of the line waits for the install, and the
 G can precede it. Every other primary, and every waiter, takes the path
