@@ -40,10 +40,28 @@ module coherent_hart_cache_formal #(
   logic start_store, request_fence, imem_done, fetch, walk, discard;
   logic permit_lookup, permit_data, permit_update, permit_g, permit_c, permit_u;
   logic read_error;
+  logic store_sent_q, fence_seen_q, fence_sync, fence_done, pending, store_ready;
+`ifdef COH_MAINT_FOUR
+  logic [6:0] stores_launched_q;
+`else
+  logic [2:0] stores_launched_q;
+`endif
+  logic [3:0] store_holds;
+  logic if_ready, if_resp, if_error;
+  logic fetch_sector;
+  logic walk_ready, walk_resp, line_valid, line_ready, line_resp, line_error;
+  logic home_d_valid, home_d_ready, home_c_valid, home_c_ready;
+  coh_d_t demand;
+  coh_u_t release_message;
+  logic put_valid, put_ready;
+  logic accept_put, finish_put;
+  logic put_pending_q, put_ack_q, put_seen_q;
+  coh_w_t pending_put_q;
+  logic [1:0] if_owned, if_ungranted, if_tail;
   // The two RSW bits distinguish the installed PTE from its stale home copy.
   // The service-engine target proves the merge independently for every byte.
-  (* anyconst *) logic [1:0] arbitrary_stored_bits;
-  wire [1:0] stored_bits = COVER_MODE ? 2'd1 : arbitrary_stored_bits;
+  (* anyconst *)logic [1:0] arbitrary_stored_bits;
+  wire  [1:0] stored_bits = COVER_MODE ? 2'd1 : arbitrary_stored_bits;
   (* anyconst *) logic stored_global, two_stores, four_stores;
 `ifdef COH_MAINT_FOUR
   wire [6:0] store_goal = 7'd67;
@@ -168,15 +186,8 @@ module coherent_hart_cache_formal #(
         permit_lookup, permit_data, permit_update, permit_g, permit_c, permit_u,
         read_error, fetch_sector, accept_put, finish_put} = inputs;
   end
-  wire [63:0] stored_pte = 64'h200000cf | (64'(stored_bits) << 8) | (64'(stored_global) << 5);
-  wire [63:0] first_pte = store_goal > 1 ? stored_pte ^ 64'h300 : stored_pte;
-  logic store_sent_q, fence_seen_q, fence_sync, fence_done, pending, store_ready;
-`ifdef COH_MAINT_FOUR
-  logic [6:0] stores_launched_q;
-`else
-  logic [2:0] stores_launched_q;
-`endif
-  logic [ 3:0] store_holds;
+  wire  [63:0] stored_pte = 64'h200000cf | (64'(stored_bits) << 8) | (64'(stored_global) << 5);
+  wire  [63:0] first_pte = store_goal > 1 ? stored_pte ^ 64'h300 : stored_pte;
   logic [ 7:0] store_mask;
   logic [63:0] store_data_q;
   always_ff @(posedge i_clk) begin
@@ -199,13 +210,10 @@ module coherent_hart_cache_formal #(
     end
   end
   assign fence_sync = request_fence && store_sent_q && !pending && !(|store_mask);
-  logic if_ready, if_resp, if_error;
   logic [1:0] if_after_q;
-  logic fetch_sector;
   logic [3:0] if_response_id;
   wire [AddrWidth-1:0] fetch_addr = 32'h80000000 | (AddrWidth'(fetch_sector) << 5);
   logic [255:0] if_data;
-  logic walk_ready, walk_resp, line_valid, line_ready, line_resp, line_error;
   logic [AddrWidth-1:0] line_addr;
   logic [2:0] line_id, response_id;
   logic [255:0] line_data;
@@ -221,18 +229,14 @@ module coherent_hart_cache_formal #(
   logic [2:0] d_valid, d_ready, c_valid, c_ready;
   logic [2:0] g_ready, u_ready;
   logic [2:0][AddrWidth+311:0] demands;
-  logic [2:0][ AddrWidth+17:0] completions;
-  logic home_d_valid, home_d_ready, home_c_valid, home_c_ready;
-  coh_d_t demand;
+  logic [2:0][AddrWidth+17:0] completions;
   coh_c_t completion;
   coh_g_t grant;
-  coh_u_t release_message;
   logic g_valid, u_valid;
   logic p_valid, p_ready, r_valid, r_ready, wa_valid, wa_ready;
   logic [AddrWidth+29:0] probe;
   coh_r_t reply;
   logic [AddrWidth+10:0] ack;
-  logic put_valid, put_ready;
   logic [AddrWidth+259:0] put;
   coherent_hart_cache #(
       .ADDR_WIDTH(AddrWidth),
@@ -568,9 +572,6 @@ module coherent_hart_cache_formal #(
       if (completion_slot == 2'(n)) completed_grant = grant_q[n];
     end
   end
-  logic accept_put, finish_put;
-  logic put_pending_q, put_ack_q, put_seen_q;
-  coh_w_t pending_put_q;
   coh_wa_t put_ack;
   logic engine_wa_valid;
   logic [AddrWidth+10:0] engine_wa;
@@ -766,7 +767,6 @@ module coherent_hart_cache_formal #(
   end
   logic [1:0] competitors_q;
   logic delayed_g_q, delayed_c_q, delayed_u_q, absorbed_q;
-  logic [1:0] if_owned, if_ungranted, if_tail;
   logic ptw_owned, ptw_tail;
   always_comb begin
     if_owned = 0;
