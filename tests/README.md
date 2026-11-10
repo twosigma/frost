@@ -211,6 +211,11 @@ with 8, 16 and 32 KiB working sets and a 4 MiB L2 in the real-program shards.
 The CLI-only `l2_capacity_chase` entry retains its full-size working sets
 for capacity measurements; `FROST_VERILATOR_EXTRA_ARGS=-GL2_CACHE_BYTES=4194304`
 selects the VCU118 capacity for that run.
+`l2_capacity_chase_capacity` uses a 32 KiB L2 and 4 KiB private caches,
+checking that a warmed 8 KiB ring produces at most four DDR reads and a
+128 KiB ring produces at least 256 during its timed walk. Fast Python tests
+also compile and execute the C helpers against invalid sizes, short cycles,
+misaligned pointers and out-of-bounds pointers.
 Local Modified-sector AMO and SC cases hold each probe class across lookup,
 result, write and release, check exact reservations and preauthorization loss,
 and preserve installed bytes through accepted and absorbed dirty evictions.
