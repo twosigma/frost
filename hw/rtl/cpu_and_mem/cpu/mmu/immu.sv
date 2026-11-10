@@ -350,22 +350,38 @@ module immu #(
       input riscv_pkg::ptw_resp_t resp, input logic memo_valid, input logic [VpnBits-1:0] memo_vpn,
       input logic memo_page);
     port_res_t r;
-    logic resp_match, use_resp_leaf, have;
+    logic resp_match, use_resp_leaf, hit_valid, memo_match;
+    logic resp_hi_nonzero, resp_perm_ok, resp_pma_bad;
+    logic [PpnBits-1:0] resp_page_ppn;
+    (* keep = "true" *) logic non_hit_fault, non_hit_page;
+    logic non_hit_clean;
     logic e_hi_nonzero;
     logic [PpnBits-1:0] e_ppn;
     logic [1:0] e_level;
-    logic perm_ok, pma_bad;
     begin
       r = '0;
       resp_match = resp_valid && !invalidate && (resp.vpn == vpn);
       use_resp_leaf = resp_match && (resp.fault_kind == riscv_pkg::DFAULT_NONE);
-      have = (hit && !invalidate) || use_resp_leaf;
-      if (use_resp_leaf && !(hit && !invalidate)) begin
-        e_hi_nonzero = |resp.ppn[riscv_pkg::PtePpnBits-1:PpnBits];
-        e_ppn = ppn_from_resp(resp, vpn);
+      hit_valid = hit && !invalidate;
+      memo_match = memo_valid && !invalidate && (memo_vpn == vpn);
+      resp_hi_nonzero = |resp.ppn[riscv_pkg::PtePpnBits-1:PpnBits];
+      resp_page_ppn = ppn_from_resp(resp, vpn);
+      resp_perm_ok = resp.perm_x && (resp.perm_u == priv_u);
+      resp_pma_bad = resp_hi_nonzero ||
+          !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({resp_page_ppn, 12'h000}));
+
+      // Form the response/memo candidate independently of the ITLB hit.
+      // Apply the selected entry's permission/PMA verdict in the final mux.
+      non_hit_fault = resp_match ? (!use_resp_leaf || !resp_perm_ok || resp_pma_bad) : memo_match;
+      non_hit_page = resp_match ?
+          (use_resp_leaf ? !resp_perm_ok : (resp.fault_kind == riscv_pkg::DFAULT_PAGE)) :
+          (memo_match && memo_page);
+      non_hit_clean = use_resp_leaf && resp_perm_ok && !resp_pma_bad;
+
+      if (use_resp_leaf && !hit_valid) begin
+        e_hi_nonzero = resp_hi_nonzero;
+        e_ppn = resp_page_ppn;
         e_level = resp.level;
-        perm_ok = resp.perm_x && (resp.perm_u == priv_u);
-        pma_bad = e_hi_nonzero || !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({e_ppn, 12'h000}));
         r.own = own_from_resp(resp);
         r.giga = resp.level == 2'd2;
         r.mega = resp.level == 2'd1;
@@ -373,8 +389,6 @@ module immu #(
         e_hi_nonzero = hi_nonzero;
         e_ppn = ppn;
         e_level = level;
-        perm_ok = !tlb_perm_fault;
-        pma_bad = tlb_pma_bad;
         r.own = ppn_own;
         r.giga = giga;
         r.mega = mega;
@@ -382,30 +396,10 @@ module immu #(
       r.ppn = e_ppn;
       r.hi_nonzero = e_hi_nonzero;
       r.level = e_level;
-      if (noncanon) begin
-        r.resolved = 1'b1;
-        r.fault = 1'b1;
-        r.page = 1'b1;
-      end else if (have) begin
-        r.resolved = 1'b1;
-        if (!perm_ok) begin
-          r.fault = 1'b1;
-          r.page  = 1'b1;
-        end else if (pma_bad) begin
-          r.fault = 1'b1;
-          r.page  = 1'b0;
-        end else begin
-          r.clean_hit = 1'b1;
-        end
-      end else if (resp_match) begin
-        r.resolved = 1'b1;
-        r.fault = 1'b1;
-        r.page = (resp.fault_kind == riscv_pkg::DFAULT_PAGE);
-      end else if (memo_valid && !invalidate && (memo_vpn == vpn)) begin
-        r.resolved = 1'b1;
-        r.fault = 1'b1;
-        r.page = memo_page;
-      end
+      r.resolved = noncanon || hit_valid || resp_match || memo_match;
+      r.fault = noncanon || (hit_valid ? (tlb_perm_fault || tlb_pma_bad) : non_hit_fault);
+      r.page = noncanon || (hit_valid ? tlb_perm_fault : non_hit_page);
+      r.clean_hit = !noncanon && (hit_valid ? !(tlb_perm_fault || tlb_pma_bad) : non_hit_clean);
       resolve_port = r;
     end
   endfunction
