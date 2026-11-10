@@ -97,7 +97,7 @@ module immu #(
 
   // A free-running epoch bounds negative caching independently of traps,
   // branch recovery, new fills, or the software's instruction stream. The
-  // memo and registered refusals each expire within 64 clocks. A refusal
+  // memo and completed registered refusals expire within 64 clocks. A refusal
   // copied from the memo on its expiry edge can remain for one further
   // epoch, so negative caching adds at most 128 clocks to visibility.
   logic [FaultCacheEpochBits-1:0] fault_cache_epoch_q;

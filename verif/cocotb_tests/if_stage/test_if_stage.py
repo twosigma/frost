@@ -3880,7 +3880,7 @@ async def test_buffered_first_word_fault_keeps_priority_at_page_end(dut: Any) ->
     """Buffered native straddles retain the first word's cause and PC address."""
     await _setup_test(dut)
     pc = 0x0001_3FFC
-    owner = _word(lo=COMPRESSED_NOP, hi=ADD_INSTR_A & 0xFFFF)
+    owner = _word(lo=0xFA6D, hi=ADD_INSTR_A & 0xFFFF)
     for served_high in (0, 1):
         for page in (0, 1):
             dut.i_instr_fault0.value = 0
@@ -3891,7 +3891,7 @@ async def test_buffered_first_word_fault_keeps_priority_at_page_end(dut: Any) ->
                 dut,
                 current_word=owner,
                 next_word=ADD_INSTR_B,
-                current_sb=_sideband(compressed_lo=True),
+                current_sb=_sideband(compressed_lo=True, compressed_control_lo=True),
                 bank_sel=(pc >> 2) & 1,
                 served_high=served_high,
             )

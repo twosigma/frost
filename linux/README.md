@@ -149,8 +149,8 @@ synchronization for those mapping updates. Other PTE changes retain their
 existing address-translation synchronization requirements. No FROST translation
 structure retains an invalid PTE indefinitely: the TLBs install only
 fault-free walks, the walker reads page tables coherently through the L1D
-probe, and the instruction MMU expires both its fault memo and registered
-refusals every 64 clocks. Even a refusal copied from the memo on its expiry
+probe, and the instruction MMU expires both its fault memo and completed
+registered refusals every 64 clocks. Even a refusal copied from the memo on its expiry
 edge is dropped within 128 clocks. Trap, xRET and FENCE-class full flushes
 also drop memo entries and verdicts, including a response on the flush edge.
 
