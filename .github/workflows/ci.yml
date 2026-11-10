@@ -1303,11 +1303,16 @@ jobs:
           - shard: Coherence L1D local control
             pytest_filter: coh_l1d_local_control_bmc
             timeout_minutes: 30
+          # Keep the scripted stream's payload holds at the same depth as
+          # its control assertions, in parallel with the hart job.
+          - shard: Coherence L1D scripted holds
+            pytest_filter: coh_l1d_stream_hold_bmc
+            timeout_minutes: 75
           # The remaining L1D covers, local and stream tasks, and AXI bridges.
           - shard: Coherence L1D and bridges
             pytest_filter: >-
               axi_coherent_bridge or
-              (coherence_l1d and not (coh_l1d_stream_bmc or coh_l1d_stream_free or
+              (coherence_l1d and not (coh_l1d_stream_bmc or coh_l1d_stream_hold_bmc or coh_l1d_stream_free or
               coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_data or
               coh_l1d_multi_data or coh_l1d_store_ or coh_l1d_ways_data or
               (coh_l1d_local and (prove or bmc))))

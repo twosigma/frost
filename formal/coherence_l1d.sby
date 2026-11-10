@@ -4,7 +4,8 @@ coh_l1d_conflict_multi_prove multi conflict padded
 coh_l1d_conflict_stream_prove stream multi conflict padded
 coh_l1d_bmc single control control_single
 coh_l1d_multi_bmc multi control control_multi padded
-coh_l1d_stream_bmc stream multi control_stream padded longbmc streamscript
+coh_l1d_stream_bmc stream multi control_stream padded longbmc streamscript streamcontrol
+coh_l1d_stream_hold_bmc stream multi cadical padded longbmc streamscript streamhold
 coh_l1d_stream_free_nostore_bmc stream multi control control_stream padded nostore
 coh_l1d_stream_free_bmc stream multi control control_stream padded bulk
 coh_l1d_stream_outlier_prove stream multi control padded pdr outlier
@@ -164,6 +165,12 @@ control: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR
 control: chformal -assert2assume c:p_prefetch_conflict_split
 streamscript: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 streamscript: chformal -assert2assume c:p_prefetch_conflict_split
+# Keep every scripted-stream assertion at depth 42 in two independent groups.
+streamcontrol: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
+streamcontrol: select -assert-min 1 t:$check r:FLAVOR=assert %i
+streamhold: select -assert-count 4 c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
+streamhold: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold %u %u %u %d
+streamhold: select -assert-count 4 t:$check r:FLAVOR=assert %i
 unbounded: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 unbounded: chformal -assert2assume c:p_prefetch_conflict_split
 # The stream ownership task proves the read ownership lemmas, the selected
