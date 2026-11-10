@@ -63,7 +63,7 @@
  * Supply eight distinct conflicting lines in either configuration. */
 #define L2_ALIAS_PASSES (L2_ALIAS > 0x200000ul ? 4u : 2u)
 #define MARK_BASE (POOL_BASE + (L2_ALIAS_PASSES + 1ul) * L2_ALIAS)
-#define OUT_BASE (MARK_BASE + 3ul * L2_ALIAS)
+#define OUT_BASE (MARK_BASE + (L2_ALIAS_PASSES + 1ul) * L2_ALIAS)
 #define NPROBE 11u /* N and P1..P10 */
 #define SEED 0x9E3779B97F4A7C15ul
 

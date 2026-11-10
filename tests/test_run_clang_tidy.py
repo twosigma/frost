@@ -106,7 +106,7 @@ _Static_assert(L2_ALIAS_PASSES * (2ul << 20) / L2_WAY_BYTES >= 7,
                "alias passes must evict all original tree-PLRU lines");
 _Static_assert(POOL_BASE + STALE_ITERS * 4096ul + L2_ALIAS_PASSES * L2_ALIAS <= MARK_BASE,
                "pool aliases must not overlap markers");
-_Static_assert(MARK_BASE + 2ul * L2_ALIAS + STALE_ITERS * 64ul <= OUT_BASE,
+_Static_assert(MARK_BASE + L2_ALIAS_PASSES * L2_ALIAS + STALE_ITERS * 64ul <= OUT_BASE,
                "marker aliases must not overlap results");
 _Static_assert(OUT_BASE + STALE_ITERS * 128ul <= 0x84000000ul,
                "results must fit in the DDR simulation model");
