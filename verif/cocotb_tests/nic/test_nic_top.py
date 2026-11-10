@@ -34,10 +34,10 @@ from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge, Timer
 
 from cocotb_tests.axi.axil_model import AxilMaster
 from cocotb_tests.nic.dma_model import (
-    DD,
-    EOP,
+    DONE,
     ERR,
-    SOP,
+    FIRST,
+    LAST,
     Memory,
     desc_status,
     post_desc,
@@ -59,9 +59,22 @@ LINE = 32
 ID, CTRL, STATUS, MAC_LO, MAC_HI = 0x000, 0x004, 0x008, 0x00C, 0x010
 RX_BASE, RX_SIZE, RX_TAIL, RX_HEAD = 0x020, 0x024, 0x028, 0x02C
 TX_BASE, TX_SIZE, TX_TAIL, TX_HEAD = 0x030, 0x034, 0x038, 0x03C
-IRQ_STATUS, IRQ_MASK, RX_ITR, TX_ITR, TICK = 0x040, 0x044, 0x048, 0x04C, 0x050
+IRQ_STATUS, IRQ_MASK, RX_COALESCE, TX_COALESCE, TICK = 0x040, 0x044, 0x048, 0x04C, 0x050
 LINK, PHY_CTRL, PHY_STATUS, COUNTERS = 0x060, 0x064, 0x068, 0x080
 ABI_CTRL, RX_BASE64, TX_BASE64 = 0x06C, 0x070, 0x078
+RX_FIFO_LIMIT, RX_FIFO_DEPTH_REG = 0x014, 0x018
+RX_FIFO_LIMIT_MIN, RX_FIFO_LIMIT_DEFAULT = 8, 512
+NUM_COUNTERS = 21
+PAUSE_CTRL, PAUSE_HIGH_WATER, PAUSE_LOW_WATER, PAUSE_INTERVAL = (
+    0x01C,
+    0x130,
+    0x134,
+    0x138,
+)
+# ABI_CTRL bits, as nic_pkg and the NIC README document them.
+ABI_EXT_MODE, ABI_EXT_SUPPORTED, ABI_RX_CSUM = 0x1, 0x2, 0x4
+ABI_CSUM_SUPPORTED, ABI_SEGMENT_SUPPORTED, ABI_PAUSE_SUPPORTED = 0x8, 0x10, 0x20
+ABI_TX_LONG_SEGMENTS = 0x40
 CTRL_RX_EN, CTRL_TX_EN, CTRL_PROMISC, CTRL_RESET = 1, 2, 4, 0x100
 ST_RX_IDLE, ST_TX_IDLE, ST_RESET_BUSY, ST_RX_FIFO_EMPTY = 1, 2, 4, 8
 ST_RX_READY, ST_TX_READY, ST_RX_CONFIG_ERR, ST_TX_CONFIG_ERR = 0x10, 0x20, 0x40, 0x80
@@ -360,10 +373,10 @@ class _Nic:
             await self.cycles(10)
         raise AssertionError(f"STATUS never reached {what}: {await self.rd(STATUS):#x}")
 
-    async def wait_dd(self, ring: int, index: int, limit: int = 400000) -> int:
+    async def wait_done(self, ring: int, index: int, limit: int = 400000) -> int:
         for _ in range(limit // 20):
             s = desc_status(self.mem, ring, index)
-            if s & DD:
+            if s & DONE:
                 return s
             await self.cycles(20)
         raise AssertionError(f"descriptor {index} of ring {ring:#x} never completed")
@@ -413,7 +426,7 @@ class _Nic:
             self.rx_posted += 1
         await self.wr(RX_TAIL, self.rx_posted % (1 << RX_SIZE_LOG2))
 
-    async def send_tx(self, frame: bytes, flags: int = SOP | EOP) -> int:
+    async def send_tx(self, frame: bytes, flags: int = FIRST | LAST) -> int:
         i = self.tx_posted
         addr = (
             TX_BUF + (i % ((1 << TX_SIZE_LOG2) - 1)) * 0x4000 + self.rng.randrange(64)
@@ -501,36 +514,44 @@ async def test_extended_address_descriptor(dut: Any) -> None:
         nic.port.allocating_ranges.append((ring, ring + 32 * (1 << TX_SIZE_LOG2)))
         buf = 0x1_8030_0023
         frame = nic.frame(97)
-        assert await nic.rd(ABI_CTRL) == 0x2
-        await nic.wr(ABI_CTRL, 1)
-        assert await nic.rd(ABI_CTRL) == 0x3
+        # Idle: extended mode, checksum offload and segmentation supported; RX checksum off.
+        abi_idle = (
+            ABI_EXT_SUPPORTED
+            | ABI_CSUM_SUPPORTED
+            | ABI_SEGMENT_SUPPORTED
+            | ABI_PAUSE_SUPPORTED
+            | ABI_TX_LONG_SEGMENTS
+        )
+        assert await nic.rd(ABI_CTRL) == abi_idle
+        await nic.wr(ABI_CTRL, ABI_EXT_MODE)
+        assert await nic.rd(ABI_CTRL) == abi_idle | ABI_EXT_MODE
         await nic.wr64(TX_BASE64, ring)
         await nic.wr(TX_SIZE, TX_SIZE_LOG2)
         assert await nic.rd64(TX_BASE64) == ring
         nic.mem.write_bytes(buf, frame)
-        post_desc64(nic.mem, ring, 0, buf, len(frame) | SOP | EOP)
+        post_desc64(nic.mem, ring, 0, buf, len(frame) | FIRST | LAST)
         await nic.wr(CTRL, CTRL_TX_EN)
         await nic.wr(TX_TAIL, 1)
         for _ in range(20000):
             status = nic.mem.read_word32(ring + 12)
-            if status & DD:
+            if status & DONE:
                 break
             await nic.cycles(10)
         else:
             raise AssertionError("wide TX descriptor never completed")
-        assert status == DD
+        assert status == DONE
         assert not (status & (1 << 18))
-        assert nic.mem.read_word32(ring + 8) == len(frame) | SOP | EOP
+        assert nic.mem.read_word32(ring + 8) == len(frame) | FIRST | LAST
         assert any(a >= 0x1_0000_0000 for a in nic.port.seen_addrs)
         # A descriptor with a set bit above the configured PA width must
         # complete with ERR and never fetch the matching low-address buffer.
         invalid = (1 << int(dut.ADDR_WIDTH.value)) | (buf & 0xFFFF_FFFF)
-        post_desc64(nic.mem, ring, 1, invalid, len(frame) | SOP | EOP)
+        post_desc64(nic.mem, ring, 1, invalid, len(frame) | FIRST | LAST)
         before = list(nic.port.seen_addrs)
         await nic.wr(TX_TAIL, 2)
         for _ in range(20000):
             bad_status = nic.mem.read_word32(ring + 16 + 12)
-            if bad_status & DD:
+            if bad_status & DONE:
                 break
             await nic.cycles(10)
         else:
@@ -613,6 +634,75 @@ async def test_registers_and_bringup(dut: Any) -> None:
     nic.stop()
 
 
+@cocotb.skipif(not RAW_LOOPBACK, reason="runs in the RAW_LOOPBACK = 1 build")
+@cocotb.test()
+async def test_rx_fifo_limit_register(dut: Any) -> None:
+    """RX_FIFO_LIMIT resets to 512, clamps, is write-gated like RX_SIZE, and DEPTH reads the build."""
+    depth = int(dut.RX_FIFO_DEPTH.value)
+    default = min(RX_FIFO_LIMIT_DEFAULT, depth)
+    nic = await _start(dut, 11, loopback=False)
+    assert await nic.rd(RX_FIFO_DEPTH_REG) == depth
+    assert await nic.rd(RX_FIFO_LIMIT) == default
+    # DEPTH is read-only.
+    await nic.wr(RX_FIFO_DEPTH_REG, 4)
+    assert await nic.rd(RX_FIFO_DEPTH_REG) == depth
+    # A write is clamped to 8..depth; the readback is the value in effect.
+    for value, expected in (
+        (100, 100),
+        (0, RX_FIFO_LIMIT_MIN),
+        (7, RX_FIFO_LIMIT_MIN),
+        (2048, min(2048, depth)),
+        (0xFFFF_FFFF, depth),
+        (depth, depth),
+        (default, default),
+    ):
+        await nic.wr(RX_FIFO_LIMIT, value)
+        await nic.cycles(40)  # the crossing to the MAC clock completes
+        assert await nic.rd(RX_FIFO_LIMIT) == expected, (value, expected)
+    # With RX enabled the limit is frozen, like RX_SIZE.
+    await nic.program_rings()
+    await nic.wr(CTRL, CTRL_RX_EN | CTRL_TX_EN)
+    await nic.cycles(3)
+    assert await nic.rd(CTRL) & CTRL_RX_EN
+    await nic.wr(RX_FIFO_LIMIT, 64)
+    await nic.cycles(40)
+    assert await nic.rd(RX_FIFO_LIMIT) == default
+    # RESET returns the limit to its default.
+    await nic.wr(CTRL, 0)
+    await nic.wait_status(ST_RX_IDLE, ST_RX_IDLE, what="RX idle")
+    await nic.wr(RX_FIFO_LIMIT, 64)
+    await nic.cycles(40)
+    assert await nic.rd(RX_FIFO_LIMIT) == 64
+    await nic.wr(CTRL, CTRL_RESET)
+    await nic.wait_status(ST_RESET_BUSY, 0, what="RESET done")
+    assert await nic.rd(RX_FIFO_LIMIT) == default
+    # The 802.3x registers: reset values, clamping, the same write gate as the limit.
+    depth_cap = depth
+    assert await nic.rd(PAUSE_CTRL) == 0
+    assert await nic.rd(PAUSE_HIGH_WATER) == 0 and await nic.rd(PAUSE_LOW_WATER) == 0
+    assert await nic.rd(PAUSE_INTERVAL) == 0xFFFF
+    await nic.wr(PAUSE_CTRL, 0xFFFF_FFFF)
+    await nic.wr(PAUSE_HIGH_WATER, 0x7FFF_FFFF)
+    await nic.wr(PAUSE_LOW_WATER, 40)
+    await nic.wr(PAUSE_INTERVAL, 0)
+    await nic.cycles(100)
+    assert await nic.rd(PAUSE_CTRL) == 3
+    assert await nic.rd(PAUSE_HIGH_WATER) == depth_cap
+    assert await nic.rd(PAUSE_LOW_WATER) == 40
+    assert await nic.rd(PAUSE_INTERVAL) == 1
+    await nic.wr(PAUSE_INTERVAL, 0x1234)
+    await nic.cycles(100)
+    assert await nic.rd(PAUSE_INTERVAL) == 0x1234
+    await nic.wr(CTRL, CTRL_RESET)
+    await nic.wait_status(ST_RESET_BUSY, 0, what="RESET done")
+    assert await nic.rd(PAUSE_CTRL) == 0 and await nic.rd(PAUSE_INTERVAL) == 0xFFFF
+    # The counters run to index 20 and nothing is mapped after them.
+    for index in range(NUM_COUNTERS):
+        assert await nic.rd(COUNTERS + 8 * index) == 0, index
+    assert await nic.rd(COUNTERS + 8 * NUM_COUNTERS) == 0
+    nic.stop()
+
+
 @cocotb.skipif(not RAW_LOOPBACK, reason="needs the raw loopback")
 @cocotb.test()
 async def test_loopback_frames(dut: Any) -> None:
@@ -620,8 +710,8 @@ async def test_loopback_frames(dut: Any) -> None:
     nic = await _start(dut, 2, loopback=True)
     await nic.program_rings()
     await nic.post_rx(8)
-    await nic.wr(RX_ITR, 0)
-    await nic.wr(TX_ITR, 0)
+    await nic.wr(RX_COALESCE, 0)
+    await nic.wr(TX_COALESCE, 0)
     await nic.wr(IRQ_MASK, 0x1F)
     await nic.wr(CTRL, CTRL_RX_EN | CTRL_TX_EN)
     await nic.wait_carrier()
@@ -631,12 +721,12 @@ async def test_loopback_frames(dut: Any) -> None:
     for f in frames:
         await nic.send_tx(f)
     for i, f in enumerate(frames):
-        s = await nic.wait_dd(RX_RING, i)
+        s = await nic.wait_done(RX_RING, i)
         expected = f.ljust(60, b"\0")
-        assert s == DD | len(expected), f"RX descriptor {i}: {s:#x}"
+        assert s == DONE | len(expected), f"RX descriptor {i}: {s:#x}"
         assert nic.rx_frame(i) == expected, f"frame {i} differs"
-        assert desc_status(nic.mem, TX_RING, i) == DD
-    # The port model applies DD at request acceptance; counters and IRQs
+        assert desc_status(nic.mem, TX_RING, i) == DONE
+    # The port model applies DONE at request acceptance; counters and IRQs
     # follow the later status-write response. Wait for both responses to
     # drain before checking their completion events.
     await nic.wait_status(
@@ -659,14 +749,14 @@ async def test_loopback_frames(dut: Any) -> None:
     await nic.wr(IRQ_STATUS, IRQ_RX | IRQ_TX)
     assert await nic.rd(IRQ_STATUS) & (IRQ_RX | IRQ_TX) == 0
     # Moderation: RX raises after 3 completions, TX after a delay of 4 ticks.
-    await nic.wr(RX_ITR, (3 << 16) | 0xFFFF)
-    await nic.wr(TX_ITR, 4)
+    await nic.wr(RX_COALESCE, (3 << 16) | 0xFFFF)
+    await nic.wr(TX_COALESCE, 4)
     await nic.wr(TICK, 50)
     await nic.wr(IRQ_MASK, 0x1F)
     await nic.post_rx(4)
     for n in (70, 71, 72):
         await nic.send_tx(nic.frame(n))
-    await nic.wait_dd(RX_RING, 10)
+    await nic.wait_done(RX_RING, 10)
     await nic.wait_irq_bits(IRQ_RX | IRQ_TX)
     await nic.wait_status(ST_TX_IDLE, ST_TX_IDLE, what="TX idle")
     nic.stop()
@@ -696,8 +786,8 @@ async def test_wire_rx_filter_and_tx_capture(dut: Any) -> None:
     nic.wire.send(frames)
     taken = [f for f in frames if f[:6] != OTHER]
     for i, f in enumerate(taken):
-        s = await nic.wait_dd(RX_RING, i)
-        assert s == DD | len(f)
+        s = await nic.wait_done(RX_RING, i)
+        assert s == DONE | len(f)
         assert nic.rx_frame(i) == f
     for _ in range(50):
         await nic.cycles(50)
@@ -710,8 +800,8 @@ async def test_wire_rx_filter_and_tx_capture(dut: Any) -> None:
     await nic.wr(CTRL, CTRL_RX_EN | CTRL_TX_EN | CTRL_PROMISC)
     other = nic.frame(120, OTHER)
     nic.wire.send([other])
-    s = await nic.wait_dd(RX_RING, 2)
-    assert s == DD | 120 and nic.rx_frame(2) == other
+    s = await nic.wait_done(RX_RING, 2)
+    assert s == DONE | 120 and nic.rx_frame(2) == other
     # MAC drops: a bad FCS and a CRC-correct runt only advance the MAC totals
     # (neither is an overflow, so no RX_DROP); the next frame takes descriptor 3.
     mac_totals = [
@@ -725,8 +815,8 @@ async def test_wire_rx_filter_and_tx_capture(dut: Any) -> None:
     nic.wire.words.extend([nic.wire.IDLE] * 2)
     good = nic.frame(130)
     nic.wire.send([good])
-    s = await nic.wait_dd(RX_RING, 3)
-    assert s == DD | 130 and nic.rx_frame(3) == good
+    s = await nic.wait_done(RX_RING, 3)
+    assert s == DONE | 130 and nic.rx_frame(3) == good
     expected = [before[0], before[1] + 2, before[2] + 1]
     for _ in range(50):
         if [await nic.rd64(off) for off in mac_totals] == expected:
@@ -743,7 +833,7 @@ async def test_wire_rx_filter_and_tx_capture(dut: Any) -> None:
         if nic.wire.frames:
             break
     assert nic.wire.frames == [out]
-    assert desc_status(nic.mem, TX_RING, idx) == DD
+    assert desc_status(nic.mem, TX_RING, idx) == DONE
     nic.stop()
 
 
@@ -766,23 +856,23 @@ async def test_dma_error_responses(dut: Any) -> None:
     frames = [nic.frame(n) for n in (100, 200, 300)]
     for f in frames:
         await nic.send_tx(f)
-    statuses = [await nic.wait_dd(TX_RING, i) for i in range(3)]
-    assert statuses == [DD, DD | ERR, DD], [hex(s) for s in statuses]
+    statuses = [await nic.wait_done(TX_RING, i) for i in range(3)]
+    assert statuses == [DONE, DONE | ERR, DONE], [hex(s) for s in statuses]
     for i, f in enumerate((frames[0], frames[2])):
-        assert await nic.wait_dd(RX_RING, i) == DD | len(f)
+        assert await nic.wait_done(RX_RING, i) == DONE | len(f)
         assert nic.rx_frame(i) == f, f"RX frame {i} differs"
     # RX descriptor 2's buffer writes fail.
     nic.port.error_ranges = [(RX_BUF + 0x8000, RX_BUF + 0xC000)]
     more = [nic.frame(n) for n in (400, 500)]
     for f in more:
         await nic.send_tx(f)
-    s = await nic.wait_dd(RX_RING, 2)
-    assert s & (DD | ERR) == DD | ERR, hex(s)
-    assert await nic.wait_dd(RX_RING, 3) == DD | len(more[1])
+    s = await nic.wait_done(RX_RING, 2)
+    assert s & (DONE | ERR) == DONE | ERR, hex(s)
+    assert await nic.wait_done(RX_RING, 3) == DONE | len(more[1])
     assert nic.rx_frame(3) == more[1]
     assert (
-        desc_status(nic.mem, TX_RING, 3) == DD
-        and desc_status(nic.mem, TX_RING, 4) == DD
+        desc_status(nic.mem, TX_RING, 3) == DONE
+        and desc_status(nic.mem, TX_RING, 4) == DONE
     )
     nic.stop()
 
@@ -802,7 +892,7 @@ async def test_reset_mid_traffic(dut: Any) -> None:
     await nic.wait_carrier()
     for n in (9000, 9000, 9000, 9000):
         await nic.send_tx(nic.frame(n))
-    await nic.wait_dd(RX_RING, 0)
+    await nic.wait_done(RX_RING, 0)
     # Reset with an empty ring while frames are still arriving.
     await nic.cycles(500)
     await nic.wr(CTRL, CTRL_RESET)
@@ -825,8 +915,46 @@ async def test_reset_mid_traffic(dut: Any) -> None:
     await nic.wait_carrier()
     f = nic.frame(500)
     await nic.send_tx(f)
-    s = await nic.wait_dd(RX_RING, 0)
-    assert s == DD | 500 and nic.rx_frame(0) == f
+    s = await nic.wait_done(RX_RING, 0)
+    assert s == DONE | 500 and nic.rx_frame(0) == f
+    nic.stop()
+
+
+@cocotb.test()
+async def test_rx_domain_restart_replays_fifo_and_pause_configuration(dut: Any) -> None:
+    """A lost RX clock clears the MAC copy; the surviving CSRs must republish it."""
+    nic = await _start(dut, 194, loopback=False)
+    await nic.program_rings()
+    settings = ((0x014, 64), (0x01C, 3), (0x130, 20), (0x134, 4), (0x138, 0x456))
+    for offset, value in settings:
+        await nic.wr(offset, value)
+    await nic.cycles(100)
+    mac = dut.u_mac
+
+    def applied() -> tuple[int, ...]:
+        return tuple(
+            int(getattr(mac, name).value)
+            for name in (
+                "rx_limit_q",
+                "cfg_ctrl",
+                "cfg_high_water",
+                "cfg_low_water",
+                "cfg_interval",
+            )
+        )
+
+    expected = tuple(value for _, value in settings)
+    assert applied() == expected
+    dut.i_rx_clk_ok.value = 0
+    await nic.wait_status(ST_RX_READY, 0, what="RX clock loss")
+    await nic.cycles(80)
+    dut.i_rx_clk_ok.value = 1
+    await nic.wait_status(ST_RX_READY, ST_RX_READY, what="RX clock return")
+    await nic.cycles(100)
+    assert [await nic.rd(offset) for offset, _ in settings] == list(expected)
+    assert applied() == expected, (
+        "RX restart lost the applied FIFO or pause configuration"
+    )
     nic.stop()
 
 
@@ -873,8 +1001,8 @@ async def test_unrelated_mac_clocks(dut: Any) -> None:
     for f in outgoing:
         await nic.send_tx(f)
     for i, f in enumerate(incoming):
-        s = await nic.wait_dd(RX_RING, i)
-        assert s == DD | len(f), f"RX descriptor {i}: {s:#x}"
+        s = await nic.wait_done(RX_RING, i)
+        assert s == DONE | len(f), f"RX descriptor {i}: {s:#x}"
         assert nic.rx_frame(i) == f, f"RX frame {i} differs"
     for _ in range(4000):
         if len(nic.wire.frames) >= len(outgoing):
@@ -884,7 +1012,7 @@ async def test_unrelated_mac_clocks(dut: Any) -> None:
         len(f) for f in nic.wire.frames
     ]
     for i in range(len(outgoing)):
-        assert desc_status(nic.mem, TX_RING, i) == DD, f"TX descriptor {i}"
+        assert desc_status(nic.mem, TX_RING, i) == DONE, f"TX descriptor {i}"
     await nic.wait_status(
         ST_RX_IDLE | ST_TX_IDLE,
         ST_RX_IDLE | ST_TX_IDLE,

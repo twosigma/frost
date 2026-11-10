@@ -19,6 +19,8 @@ if NET_VENDOR_FROST
 config FROST_NET10G
 	tristate "FROST net10g 10GBASE-R Ethernet"
 	depends on OF && HAS_IOMEM && HAS_DMA
+	select PAGE_POOL
+	select NET_DEVLINK
 	help
 	  Driver for the 10GBASE-R Ethernet controller of the FROST SoC: a
 	  soft MAC/PCS with RX and TX descriptor rings in system memory

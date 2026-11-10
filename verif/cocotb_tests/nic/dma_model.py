@@ -203,14 +203,16 @@ class DmaModel:
 
 
 # Descriptor helpers. A descriptor is 16 bytes: word 0 buffer address, word 1
-# length and flags (SOP, EOP), word 2 status (RX received length, DD, TRUNC,
+# length and flags (FIRST, LAST), word 2 status (RX received length, DONE, TRUNC,
 # ERR, ABORT), word 3 reserved.
-DD = 1 << 16
+DONE = 1 << 16
+CMPL = 1 << 16
 TRUNC = 1 << 17
 ERR = 1 << 18
 ABORT = 1 << 19
-SOP = 1 << 16
-EOP = 1 << 17
+FIRST = 1 << 16
+LAST = 1 << 17
+PARAM = 1 << 18
 
 
 def desc_addr(base: int, index: int) -> int:
