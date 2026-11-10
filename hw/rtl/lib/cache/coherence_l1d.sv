@@ -384,7 +384,7 @@ module coherence_l1d #(
   logic [EpSlots-1:0] pick_onehot, ep_read_fail, ep_fail, ep_fail_error;
   logic acquisition_store_q, acquisition_sc_q;
   logic [2:0] acquisition_read_q;
-  logic grant_valid, grant_ready, grant_read_failure, zero_grant_failed;
+  logic grant_valid, grant_ready, grant_turn, grant_read_failure, zero_grant_failed;
   logic grant_read_turn_q, grant_retry_q, grant_read_hold, grant_read_yield, load_acquire_block;
   logic atomic_sc_selected, read_selected, acquire_ready;
   logic [ADDR_WIDTH-1:0] lookup_nonread_addr;
@@ -1071,10 +1071,13 @@ module coherence_l1d #(
     end
   end
   assign o_r = reply_q;
-  // An owed cbo.zero twin installs before any grant (the Idle selection
-  // takes it first), so a grant offered meanwhile waits in its endpoint.
-  assign grant_ready = active && phase_q == Idle && !probe_valid_q && !probe_priority &&
-      !grant_read_hold && !twin_owed;
+  // The controller's grant turn. An owed cbo.zero twin installs before any
+  // grant (the Idle selection takes it first), so the handshake also waits
+  // for it and a grant offered meanwhile stays in its endpoint. The Idle
+  // selection tests grant_turn after the twin, which is the same condition.
+  assign grant_turn = active && phase_q == Idle && !probe_valid_q && !probe_priority &&
+      !grant_read_hold;
+  assign grant_ready = grant_turn && !twin_owed;
   // Endpoint 0 is never held for a read's turn.
   assign zero_grant_failed = active && phase_q == Idle && !probe_valid_q && !probe_priority &&
       pick_onehot[0] && ep_fail[0] && !ep_store[0];
@@ -2567,7 +2570,7 @@ module coherence_l1d #(
                 operation_q <= ReadOp;
                 phase_q <= Lookup;
               end
-            end else if (grant_valid && grant_ready) begin
+            end else if (grant_valid && grant_turn) begin
               operation_q <= GrantOp;
               // A failed read completes from fail_clear_q a cycle later.
               if (grant_failure) begin
