@@ -85,11 +85,8 @@ cases import RTLIL processes with `--no-proc --best-effort-hierarchy
 --ignore-initial`; source initialization still receives semantic checking,
 while the import omits initial state and image-loading work.
 
-The same four simulation variants, without `SYNTHESIS`, check 20 independent
-module roots. Both whole-top simulation views in each variant are listed in
-[`slang/deferred.json`](slang/deferred.json) for phase 2: each currently has
-30 declaration diagnostics in `load_queue.sv`. Required simulation roots
-remain enabled while that shared dependency is being maintained.
+The same four simulation variants, without `SYNTHESIS`, check both complete
+tops and 22 independent module roots, including the load queue and L1D.
 
 Formal views are extracted from every `.sby`: task tags, independent read
 commands and their `FORMAL`/`SYNTHESIS` defaults, persistent defines, include
@@ -100,11 +97,12 @@ typed interfaces from their actual module headers; other unknown modules
 fail. `$initstate` gets a typed extension declaration, and the asynchronous
 FIFO gets a containing standard global clocking scope for `$global_clock`.
 
-There are currently 555 distinct formal views (686 tasks): 517 required and
-38 deferred, representing 54 tasks. Their remaining declaration diagnostics
-are confined to `load_queue.sv`, `coherence_l1d.sv`, and
-`formal/coherent_hart_cache*`. The manifest lists each view, its tasks,
-source files, and diagnostic count. To recheck all deferred views as well:
+There are currently 561 distinct formal views (695 tasks): 559 required and
+two deferred, representing three hart-cache tasks. Their 48 distinct printed
+source diagnostics are confined to `formal/coherent_hart_cache_formal.sv`
+and `formal/coherent_hart_cache_models.sv`, which are being maintained
+separately. [`slang/deferred.json`](slang/deferred.json) lists each deferred
+view, its tasks, source files, and diagnostic count. To audit them as well:
 
 ```bash
 ./scripts/frost.py run python3 tests/slang_frontend.py --include-deferred --report /workspace/slang-results.json

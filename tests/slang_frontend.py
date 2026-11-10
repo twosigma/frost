@@ -151,8 +151,7 @@ def top_cases(root: Path = ROOT) -> list[SlangCase]:
     return cases
 
 
-# Simulation roots whose implementation has no deferred declaration errors.
-# Whole CPU/platform roots remain listed in deferred.json until phase 2.
+# Additional simulation roots alongside the complete CPU/platform views.
 SIMULATION_MODULES = (
     "misprediction_flush_controller",
     "frontend_validity_tracker",
@@ -164,6 +163,8 @@ SIMULATION_MODULES = (
     "if_stage",
     "pc_controller",
     "pd_stage",
+    "load_queue",
+    "coherence_l1d",
     "lq_l0_cache",
     "reorder_buffer",
     "debug_module",
@@ -178,7 +179,7 @@ SIMULATION_MODULES = (
 
 
 def simulation_module_cases() -> list[SlangCase]:
-    """Gate simulation code in independent roots while whole-core debt is deferred."""
+    """Gate additional module roots alongside the complete CPU/platform views."""
     cases = []
     for base in top_cases():
         if not base.name.startswith("simulation/") or base.top != "platform_top":
@@ -486,7 +487,7 @@ def check(
     failures = sum(bool(r["returncode"] or r["errors"]) for r in results)
     seconds = sum(float(r["seconds"]) for r in results)
     print(
-        f"yosys-slang: {len(results) - failures}/{len(results)} cases passed in {seconds:.2f}s; {len(deferred)} phase-2 views",
+        f"yosys-slang: {len(results) - failures}/{len(results)} cases passed in {seconds:.2f}s; {len(deferred)} deferred views",
         flush=True,
     )
     return int(failures != 0)
@@ -499,7 +500,7 @@ def main() -> int:
     parser.add_argument(
         "--include-deferred",
         action="store_true",
-        help="also check the explicit phase-2 views",
+        help="also check the explicitly deferred views",
     )
     parser.add_argument(
         "--lower", action="store_true", help="also import RTLIL for selected cases"
