@@ -12,9 +12,9 @@ smtbmc boolector
 [script]
 # The staged load's registered sector and holder matches equal its entry's
 # registered matches at sq_check_idx after every edge, from any state. The
-# copy's inputs (the take, the candidate index and every entry's next
-# matches) are cut, so the proof covers all of their values; the rest of
-# the load queue and its outputs fall away.
+# take, raw address matches and stored sectors are cut. The candidate
+# index/source and both entry/staged next-match equations remain
+# connected, including the ring masks and their index encoding.
 xilinx: read_verilog -formal +/xilinx/cells_sim.v
 xilinx: read -define FROST_XILINX_PRIMS
 read -define LQ_SECTOR_COPY_PROOF
@@ -25,9 +25,10 @@ delete t:*lq_l0_cache t:*mwp_dist_ram t:*sdp_dist_ram t:*coherent_lq_address_sto
 hierarchy -top load_queue
 proc -noopt
 setattr -mod -unset keep_hierarchy
+setattr -unset keep_hierarchy
 flatten
 chformal -remove t:$check c:p_staged_sector_copy_local %d
-cutpoint w:sq_check_payload_en w:sq_check_idx_next w:entry_holder_match_d w:entry_push_match_d
+cutpoint w:sq_check_payload_en w:lq_addr_update_raw_match w:entry_sector w:entry_high_zero
 delete -port load_queue/o:*
 setundef -undriven -anyseq
 opt

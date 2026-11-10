@@ -1168,13 +1168,24 @@ module load_queue #(
   // qualify it with issue valid and combine it with stored lq_addr_valid.
   // ---------------------------------------------------------------------------
 
-  // Current-cycle match for address-valid and payload writes.
+  // Select the last matching entry before the address-update valid arrives.
+  // Entry flags and payloads retain the encoded write index. Staged copies
+  // prepare the winning write match before candidate-source selection.
+  logic [DEPTH-1:0] lq_addr_update_raw_match;
+  (* keep = "true" *) wire [DEPTH-1:0] lq_addr_update_priority_match;
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      lq_addr_update_match[i] = i_addr_update.valid &&
-                                lq_valid[i] &&
-                                !lq_addr_valid[i] &&
-                                (lq_rob_tag[i] == i_addr_update.rob_tag);
+      lq_addr_update_raw_match[i] = lq_valid[i] && !lq_addr_valid[i] &&
+          lq_rob_tag[i] == i_addr_update.rob_tag;
+      lq_addr_update_match[i] = i_addr_update.valid && lq_addr_update_raw_match[i];
+    end
+  end
+  for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_addr_update_priority
+    if (entry == DEPTH - 1) begin : gen_last
+      assign lq_addr_update_priority_match[entry] = lq_addr_update_raw_match[entry];
+    end else begin : gen_other
+      assign lq_addr_update_priority_match[entry] = lq_addr_update_raw_match[entry] &&
+          !(|lq_addr_update_raw_match[DEPTH-1:entry+1]);
     end
   end
 
@@ -1810,6 +1821,9 @@ module load_queue #(
   // reads registers instead of a select by the index.
   logic [DEPTH-1:0][3:0] entry_holder_match_d;
   logic [DEPTH-1:0] entry_push_match_d;
+  // Stored and updated matches meet only at the staged-copy selectors.
+  logic [DEPTH-1:0][4:0] staged_stored_matches;
+  logic [4:0] staged_updated_match;
   logic [3:0] staged_holder_match_q;
   logic staged_push_match_q;
   logic [3:0] holder_valid_prev_q;
@@ -1840,6 +1854,7 @@ module load_queue #(
             update_sector == i_coherent_block_addr[holder][SectorMsb:5];
     wire update_push_match = update_high_zero &&
         update_sector == i_coherent_store_push_addr[SectorMsb:5];
+    assign staged_updated_match = {update_push_match, update_holder_match};
     for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry
       logic [SectorBits-1:0] sector_q;
       logic high_zero_q;
@@ -1861,6 +1876,7 @@ module load_queue #(
         // The push itself arrives late; the hold applies it from push_prev_q.
         push_match_q <= entry_push_match_d[entry];
       end
+      assign staged_stored_matches[entry] = {stored_push_match, stored_holder_match};
       assign entry_holder_match_d[entry] = write ? update_holder_match : stored_holder_match;
       assign entry_push_match_d[entry] = write ? update_push_match : stored_push_match;
       assign entry_sector[entry] = sector_q;
@@ -1926,6 +1942,8 @@ module load_queue #(
     assign coherent_sector_hold = reference_sector_hold;
     assign entry_holder_match_d = '0;
     assign entry_push_match_d = '0;
+    assign staged_stored_matches = '0;
+    assign staged_updated_match = '0;
     logic unused_holder_protocol;
     assign unused_holder_protocol = ^{i_coherent_store_push, i_coherent_store_push_addr,
                                       i_coherent_atomic_live};
@@ -4485,18 +4503,77 @@ module load_queue #(
 `endif
 
   // The staged load's registered sector matches (REGISTERED_SECTOR_MATCH):
-  // the next matches of the entry sq_check_idx holds after this edge, with
-  // the late take selecting last, so after every edge they equal
+  // the next matches of the entry sq_check_idx holds after this edge. Prepare
+  // head and ring data independently of the candidate-source controls. Both
+  // selectors give stored/update heads the same index, even with repeated tags.
+  // Ring masks select at most one entry; an empty ring encodes index zero.
+  // The shared update match and capture take then select the result. They equal
   // entry_holder_match_q and entry_push_match_q at sq_check_idx.
+  (* keep = "true" *) wire staged_held_write_index = lq_addr_update_idx == sq_check_idx;
+  (* keep = "true" *) wire staged_held_write = lq_addr_update_we && staged_held_write_index;
+  wire staged_head_write = lq_addr_update_priority_match[head_mem_stored_idx];
+  wire staged_ring_write;
+  lq_match_gather #(
+      .DEPTH(DEPTH)
+  ) u_staged_ring_write (
+      .i_select(merged_scan_onehot),
+      .i_values(lq_addr_update_priority_match),
+      .o_match(staged_ring_write)
+  );
+  wire [4:0] staged_stored_ring, staged_merged_ring, staged_taken_stored;
+  wire staged_taken_write;
+  lq_staged_candidate_select #(
+      .WIDTH(5)
+  ) u_staged_candidate (
+      .i_head_data(staged_stored_matches[head_mem_stored_idx]),
+      .i_stored_data(staged_stored_ring),
+      .i_merged_data(staged_merged_ring),
+      .i_head_stored(head_mem_stored_found),
+      .i_head_update(head_mem_update_found),
+      .i_update_valid(i_addr_update.valid),
+      .i_head_write(staged_head_write),
+      .i_merged_write(staged_ring_write),
+      .o_stored_match(staged_taken_stored),
+      .o_write_match(staged_taken_write)
+  );
+  wire [4:0] staged_match_next;
+  for (genvar m = 0; m < 5; m++) begin : gen_staged_match_next
+    wire [DEPTH-1:0] values;
+    for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry
+      assign values[entry] = staged_stored_matches[entry][m];
+    end
+    lq_match_gather #(
+        .DEPTH(DEPTH)
+    ) u_stored_ring (
+        .i_select(stored_scan_onehot),
+        .i_values(values),
+        .o_match(staged_stored_ring[m])
+    );
+    lq_match_gather #(
+        .DEPTH(DEPTH)
+    ) u_merged_ring (
+        .i_select(merged_scan_onehot),
+        .i_values(values),
+        .o_match(staged_merged_ring[m])
+    );
+    lq_staged_match_select u_select (
+        .i_held_stored(staged_stored_matches[sq_check_idx][m]),
+        .i_taken_stored(staged_taken_stored[m]),
+        .i_held_write(staged_held_write),
+        .i_taken_write(staged_taken_write),
+        .i_updated(staged_updated_match[m]),
+        .i_take(sq_check_payload_en),
+        .o_match(staged_match_next[m])
+    );
+  end
   always_ff @(posedge i_clk) begin
-    staged_holder_match_q <= sq_check_payload_en ? entry_holder_match_d[sq_check_idx_next] :
-        entry_holder_match_d[sq_check_idx];
-    staged_push_match_q <= sq_check_payload_en ? entry_push_match_d[sq_check_idx_next] :
-        entry_push_match_d[sq_check_idx];
+    staged_holder_match_q <= staged_match_next[3:0];
+    staged_push_match_q <= staged_match_next[4];
   end
 `ifdef LQ_SECTOR_COPY_PROOF
   // Local proof (lq_sector_copy.sby): from any state, after one edge the
-  // copies equal the select, for arbitrary take, index and next matches.
+  // copies equal the selected entry for arbitrary take and raw address matches;
+  // candidate/index and entry/staged match producers remain connected.
   logic f_copy_past_valid = 1'b0;
   always @(posedge i_clk) begin
     f_copy_past_valid <= 1'b1;
@@ -6338,5 +6415,100 @@ module lq_entry_release (
 `else
   assign o_release = i_ready &&
       (i_issue_found ? i_issue_match : (i_bypass_source && i_bypass_match));
+`endif
+endmodule
+
+module lq_staged_match_select (
+    input logic i_held_stored,
+    input logic i_taken_stored,
+    input logic i_held_write,
+    input logic i_taken_write,
+    input logic i_updated,
+    input logic i_take,
+    output logic o_match
+);
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT6 #(
+      .INIT(64'hFFCC00CCFAFA0A0A)
+  ) u_staged_match_select (
+      .I0(i_held_stored),
+      .I1(i_taken_stored),
+      .I2(i_held_write),
+      .I3(i_taken_write),
+      .I4(i_updated),
+      .I5(i_take),
+      .O(o_match)
+  );
+`else
+  assign o_match = i_take ? (i_taken_write ? i_updated : i_taken_stored) :
+      (i_held_write ? i_updated : i_held_stored);
+`endif
+endmodule
+
+module lq_match_gather #(
+    parameter int unsigned DEPTH = 8,
+    localparam int unsigned Groups = (DEPTH + 2) / 3
+) (
+    input logic [DEPTH-1:0] i_select,
+    input logic [DEPTH-1:0] i_values,
+    output logic o_match
+);
+  (* keep = "true" *) wire [Groups-1:0] groups;
+  (* keep = "true" *) wire found = |i_select;
+  for (genvar group = 0; group < Groups; group++) begin : gen_group
+    localparam int unsigned Base = 3 * group;
+    localparam int unsigned Width = (DEPTH - Base >= 3) ? 3 : DEPTH - Base;
+    assign groups[group] = |(i_select[Base+:Width] & i_values[Base+:Width]);
+  end
+  assign o_match = found ? (|groups) : i_values[0];
+endmodule
+
+module lq_staged_candidate_select #(
+    parameter int unsigned WIDTH = 1
+) (
+    input logic [WIDTH-1:0] i_head_data,
+    input logic [WIDTH-1:0] i_stored_data,
+    input logic [WIDTH-1:0] i_merged_data,
+    input logic i_head_stored,
+    input logic i_head_update,
+    input logic i_update_valid,
+    input logic i_head_write,
+    input logic i_merged_write,
+    output logic [WIDTH-1:0] o_stored_match,
+    output logic o_write_match
+);
+  for (genvar bit_index = 0; bit_index < WIDTH; bit_index++) begin : gen_bit
+`ifdef FROST_XILINX_PRIMS
+    (* dont_touch = "true" *) LUT6 #(
+        .INIT(64'hAAAAAAF0AACCAACC)
+    ) u_candidate_data (
+        .I0(i_head_data[bit_index]),
+        .I1(i_stored_data[bit_index]),
+        .I2(i_merged_data[bit_index]),
+        .I3(i_head_stored),
+        .I4(i_head_update),
+        .I5(i_update_valid),
+        .O (o_stored_match[bit_index])
+    );
+`else
+    assign o_stored_match[bit_index] = i_head_stored ? i_head_data[bit_index] :
+        i_update_valid ? (i_head_update ? i_head_data[bit_index] : i_merged_data[bit_index]) :
+        i_stored_data[bit_index];
+`endif
+  end
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT5 #(
+      .INIT(32'hAAAC0000)
+  ) u_candidate_write (
+      .I0(i_head_write),
+      .I1(i_merged_write),
+      .I2(i_head_stored),
+      .I3(i_head_update),
+      .I4(i_update_valid),
+      .O (o_write_match)
+  );
+`else
+  assign o_write_match = i_update_valid &&
+      ((i_head_stored || i_head_update) ? i_head_write : i_merged_write);
 `endif
 endmodule

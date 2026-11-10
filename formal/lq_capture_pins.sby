@@ -16,7 +16,7 @@ portable: read -sv -D SYNTHESIS load_queue.sv
 xilinx: read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS load_queue.sv
 read -formal -sv lq_capture_pins.sv
 prep -top lq_capture_pins -flatten
-select -assert-count 4 t:$check r:FLAVOR=assert %i
+select -assert-count 8 t:$check r:FLAVOR=assert %i
 select -assert-none t:$assume t:$*ff* t:$*latch* t:$sr t:$mem* a:init
 select -assert-none t:$check r:FLAVOR=assume %i
 
