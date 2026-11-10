@@ -1221,7 +1221,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "btb_pending_relation.sby",
-        "Raw slot-2 typed relations match selected target relations including uncovered rows",
+        "Raw slot-2 relations match per-candidate targets including uncovered rows",
         tasks=("bmc", "bmc_btb_index1", "bmc_btb_index3"),
     ),
     FormalTarget(
