@@ -1220,6 +1220,11 @@ FORMAL_TARGETS = [
         tasks=("prove", "prove_xlen32", "prove_xlen72", "cover"),
     ),
     FormalTarget(
+        "btb_pending_relation.sby",
+        "Raw slot-2 typed relations match selected target relations including uncovered rows",
+        tasks=("bmc", "bmc_tiny", "bmc_small"),
+    ),
+    FormalTarget(
         "btb_tag_compare.sby",
         "Grouped BTB lookup and update comparisons match full-width tags",
         tasks=("bmc", "bmc_small_btb"),

@@ -337,6 +337,24 @@ module branch_prediction_controller #(
   end
   assign btb_invalidate_active = i_btb_invalidate || (btb_invalidate_hold_q != '0);
 
+  function automatic logic [4:0] pending_target_rel(
+      input logic [XLEN-1:0] target, input logic [XLEN-1:0] pending_pc,
+      input logic [XLEN-1:0] prev_pc, input logic [XLEN-1:0] prev_native_pc);
+    logic hw_equal, hw_below;
+    hw_equal = target[XLEN-1:1] == pending_pc[XLEN-1:1];
+    hw_below = target[XLEN-1:1] < pending_pc[XLEN-1:1];
+    // Fields in pc_pending_rel_t order: at, below, above, pred, pred_native.
+    pending_target_rel = {
+      hw_equal && (target[0] == pending_pc[0]),
+      hw_below,
+      !hw_below && !hw_equal,
+      target == prev_pc,
+      target == prev_native_pc
+    };
+  endfunction
+  logic ras_nonempty;
+  riscv_pkg::pc_pending_rel_t ras_top_rel_pending;
+
   // Preserve the predictor boundary for timing.
   (* keep_hierarchy = "yes" *)
   branch_predictor #(
@@ -376,6 +394,13 @@ module branch_prediction_controller #(
       .o_predicted_target_2_plus4(btb_predicted_target_2_plus4),
       .o_btb_entry_is_return_2_plus2(btb_entry_is_return_2_plus2),
       .o_btb_entry_is_return_2_plus4(btb_entry_is_return_2_plus4),
+
+      .i_pending_prediction_pc,
+      .i_pending_prediction_prev_pc,
+      .i_pending_prediction_prev_native_pc,
+      .i_ras_nonempty(ras_nonempty),
+      .i_ras_top_rel_pending(ras_top_rel_pending),
+      .o_slot2_typed_target_rel_pending(o_slot2_staged_target_rel_pending),
 
       // Update, through the staging registers above
       .i_update(btb_update_q),
@@ -513,7 +538,6 @@ module branch_prediction_controller #(
   // takes whose used prediction came from a typed entry and for the calls and
   // returns PD redirects for the backing BTB, so the stack moves only with
   // instructions that continue down the pipeline.
-  logic                  ras_nonempty;
   logic [      XLEN-1:0] ras_top;
   logic [RasPtrBits-1:0] ras_tos;
   logic [  RasPtrBits:0] ras_valid_count;
@@ -658,28 +682,9 @@ module branch_prediction_controller #(
   assign slot2_staged_typed_target_for_pc =
       (btb_entry_is_return_2 && ras_nonempty) ? ras_top : btb_predicted_target_2;
 
-  // How pc_controller's two slot-2 targets relate to the pending prediction's
-  // PC. The stack top and each BTB candidate target are related first, and
-  // the late +4 and return-type selects then pick a relation as they pick a
-  // target, so they skip the wide compares.
-  function automatic logic [4:0] pending_target_rel(
-      input logic [XLEN-1:0] target, input logic [XLEN-1:0] pending_pc,
-      input logic [XLEN-1:0] prev_pc, input logic [XLEN-1:0] prev_native_pc);
-    logic hw_equal, hw_below;
-    hw_equal = target[XLEN-1:1] == pending_pc[XLEN-1:1];
-    hw_below = target[XLEN-1:1] < pending_pc[XLEN-1:1];
-    // Fields in pc_pending_rel_t order: at, below, above, pred, pred_native.
-    pending_target_rel = {
-      hw_equal && (target[0] == pending_pc[0]),
-      hw_below,
-      !hw_below && !hw_equal,
-      target == prev_pc,
-      target == prev_native_pc
-    };
-  endfunction
-  riscv_pkg::pc_pending_rel_t ras_top_rel_pending, slot1_target_rel_pending;
-  riscv_pkg::pc_pending_rel_t slot2_plus2_target_rel_pending, slot2_plus4_target_rel_pending;
-  riscv_pkg::pc_pending_rel_t slot2_plus2_typed_rel_pending, slot2_plus4_typed_rel_pending;
+  // Relate the live target and RAS top here. The predictor relates raw
+  // staged payloads before its coverage and candidate selections.
+  riscv_pkg::pc_pending_rel_t slot1_target_rel_pending;
   assign ras_top_rel_pending = pending_target_rel(
       ras_top,
       i_pending_prediction_pc,
@@ -692,24 +697,24 @@ module branch_prediction_controller #(
       i_pending_prediction_prev_pc,
       i_pending_prediction_prev_native_pc
   );
-  assign slot2_plus2_target_rel_pending = pending_target_rel(
-      btb_predicted_target_2_plus2,
-      i_pending_prediction_pc,
-      i_pending_prediction_prev_pc,
-      i_pending_prediction_prev_native_pc
-  );
-  assign slot2_plus4_target_rel_pending = pending_target_rel(
+`ifdef FORMAL
+  // Contract proved by btb_pending_relation: the disable harness cuts the
+  // predictor, then binds its relation to this function of its old outputs.
+  (* keep = "true" *) logic [4:0] slot2_staged_rel_reference;
+  assign slot2_staged_rel_reference = slot2_pc_use_alt ?
+      ((btb_entry_is_return_2_plus4 && ras_nonempty) ? ras_top_rel_pending :
+       pending_target_rel(
       btb_predicted_target_2_plus4,
       i_pending_prediction_pc,
       i_pending_prediction_prev_pc,
       i_pending_prediction_prev_native_pc
-  );
-  assign slot2_plus2_typed_rel_pending = (btb_entry_is_return_2_plus2 && ras_nonempty) ?
-      ras_top_rel_pending : slot2_plus2_target_rel_pending;
-  assign slot2_plus4_typed_rel_pending = (btb_entry_is_return_2_plus4 && ras_nonempty) ?
-      ras_top_rel_pending : slot2_plus4_target_rel_pending;
-  assign o_slot2_staged_target_rel_pending =
-      slot2_pc_use_alt ? slot2_plus4_typed_rel_pending : slot2_plus2_typed_rel_pending;
+  )) : ((btb_entry_is_return_2_plus2 && ras_nonempty) ? ras_top_rel_pending : pending_target_rel(
+      btb_predicted_target_2_plus2,
+      i_pending_prediction_pc,
+      i_pending_prediction_prev_pc,
+      i_pending_prediction_prev_native_pc
+  ));
+`endif
   assign o_slot2_live_target_rel_pending =
       (btb_is_return && ras_nonempty) ? ras_top_rel_pending : slot1_target_rel_pending;
 

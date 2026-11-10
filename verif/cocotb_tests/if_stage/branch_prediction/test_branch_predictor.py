@@ -40,6 +40,11 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pc_2_lookup_base.value = 0
     dut.i_pc_2_base.value = 0
     dut.i_pc_2_use_alt.value = 0
+    dut.i_pending_prediction_pc.value = 0
+    dut.i_pending_prediction_prev_pc.value = 0
+    dut.i_pending_prediction_prev_native_pc.value = 0
+    dut.i_ras_nonempty.value = 0
+    dut.i_ras_top_rel_pending.value = 0
     dut.i_update.value = 0
     dut.i_update_pc.value = 0
     dut.i_update_target.value = 0
@@ -1082,3 +1087,87 @@ async def test_independent_indices_do_not_poison_each_other(dut: Any) -> None:
 
     await _lookup(dut, PC_B)
     _assert_slot1(dut, hit=True, taken=False, target=TARGET_B)
+
+
+def _pending_relation(target: int, pending: int, prev: int, prev_native: int) -> int:
+    """Pack the relation fields from an externally visible candidate target."""
+    target_half = target >> 1
+    pending_half = pending >> 1
+    return (
+        (int(target == pending) << 4)
+        | (int(target_half < pending_half) << 3)
+        | (int(target_half > pending_half) << 2)
+        | (int(target == prev) << 1)
+        | int(target == prev_native)
+    )
+
+
+@cocotb.test()
+async def test_pending_relation_matches_unqualified_targets_and_return_typing(
+    dut: Any,
+) -> None:
+    """Relate hits, rotated/forwarded payloads and uncovered rows before gating."""
+    await _setup_test(dut)
+    await _update(dut, pc=PC_A, target=TARGET_A, taken=True, ret=True)
+    await _update(dut, pc=PC_B, target=TARGET_B, taken=True)
+    await _update(
+        dut, pc=HIGH_CANONICAL_PC, target=HIGH_CANONICAL_TARGET, taken=True, ret=True
+    )
+    for lookup in (PC_A - 2, PC_A, HIGH_CANONICAL_PC - 2):
+        await _stage_slot2_images(dut, lookup)
+        # A same-index write forwards its target/type while the staged row
+        # still holds the old payload. Observe it before the next edge.
+        forwarded_target = (lookup & ~0xFFFF) | 0x3456
+        await _update(dut, pc=lookup + 2, target=forwarded_target, taken=True, ret=True)
+        dut.i_pc_2_base.value = lookup & MASK_XLEN
+        dut.i_pc_2_use_alt.value = 0
+        dut.i_pending_prediction_pc.value = forwarded_target
+        dut.i_ras_nonempty.value = 0
+        await _settle()
+        assert int(dut.o_predicted_target_2_plus2.value) == forwarded_target
+        assert int(dut.o_slot2_typed_target_rel_pending.value) == 0x10
+        for served in (lookup, lookup + 4, lookup + 16):
+            dut.i_pc_2_base.value = served & MASK_XLEN
+            for alt in (0, 1):
+                dut.i_pc_2_use_alt.value = alt
+                for nonempty in (0, 1):
+                    dut.i_ras_nonempty.value = nonempty
+                    for ras_relation in (0, 0x15, 0x1F):
+                        dut.i_ras_top_rel_pending.value = ras_relation
+                        for pending in (
+                            0,
+                            TARGET_A,
+                            TARGET_A | 1,
+                            TARGET_A + 2,
+                            TARGET_B - 2,
+                            HIGH_CANONICAL_TARGET,
+                            MASK_XLEN,
+                        ):
+                            prev = TARGET_A
+                            prev_native = HIGH_CANONICAL_TARGET
+                            dut.i_pending_prediction_pc.value = pending
+                            dut.i_pending_prediction_prev_pc.value = prev
+                            dut.i_pending_prediction_prev_native_pc.value = prev_native
+                            await _settle()
+                            target_signal = (
+                                dut.o_predicted_target_2_plus4
+                                if alt
+                                else dut.o_predicted_target_2_plus2
+                            )
+                            return_signal = (
+                                dut.o_btb_entry_is_return_2_plus4
+                                if alt
+                                else dut.o_btb_entry_is_return_2_plus2
+                            )
+                            target = int(target_signal.value)
+                            expected = (
+                                ras_relation
+                                if nonempty and int(return_signal.value)
+                                else _pending_relation(
+                                    target, pending, prev, prev_native
+                                )
+                            )
+                            assert (
+                                int(dut.o_slot2_typed_target_rel_pending.value)
+                                == expected
+                            )

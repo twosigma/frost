@@ -135,6 +135,11 @@ ID, or the decoded queue) and a conditional branch or JALR is unresolved,
 The BTB is indexed by PC[9:2]. Its tags include PC[1], so a lookup at one
 halfword of a word never hits an entry trained for the other. A hit predicts
 taken when the upper counter bit is set. The slot-1 lookup reads the fetch PC.
+To track a pending prediction, slot-2 raw rows and the forwarded payload each form their five-bit
+PC relation and apply return typing before coverage selects a row. An uncovered
+row relates a zero low target in the served PC's upper region. The controller
+receives the selected relation alongside the unchanged target outputs.
+
 Slot 2 has three BTB copies of its own, keyed by the PC of the instruction
 before it (+2 and +4, plus a copy rotated by one index for a slot 2 in the
 next word). They are read a cycle ahead, so the lookup adds no fetch cycle,

@@ -90,6 +90,15 @@ module branch_predictor #(
     output logic            o_btb_entry_is_return_2_plus2,
     output logic            o_btb_entry_is_return_2_plus4,
 
+    // Relation of the selected, return-typed target to the saved prediction.
+    // Like the target outputs, this remains defined on misses/uncovered rows.
+    input  logic [XLEN-1:0] i_pending_prediction_pc,
+    input  logic [XLEN-1:0] i_pending_prediction_prev_pc,
+    input  logic [XLEN-1:0] i_pending_prediction_prev_native_pc,
+    input  logic            i_ras_nonempty,
+    input  logic [     4:0] i_ras_top_rel_pending,
+    output logic [     4:0] o_slot2_typed_target_rel_pending,
+
     // Update interface: at most one selected training write per cycle
     input logic            i_update,             // Update BTB entry
     input logic [XLEN-1:0] i_update_pc,          // PC of branch instruction
@@ -616,6 +625,130 @@ module branch_predictor #(
   assign lookup_payload_2_alt =
       ({Slot2PayloadBits{slot2_alt_raw_select}} & slot2_payload_2_alt_raw) |
       ({Slot2PayloadBits{slot2_alt_forward_select}} & slot2_payload_forward_q);
+`endif
+
+  // Relate each raw payload before the late coverage masks. Return typing
+  // also precedes the masks, so the selected return flag skips the compares.
+  function automatic logic [4:0] pending_target_rel(input logic [XLEN-1:0] target);
+    logic hw_equal, hw_below;
+    hw_equal = target[XLEN-1:1] == i_pending_prediction_pc[XLEN-1:1];
+    hw_below = target[XLEN-1:1] < i_pending_prediction_pc[XLEN-1:1];
+    // pc_pending_rel_t order: at, below, above, pred, pred_native.
+    pending_target_rel = {
+      hw_equal && (target[0] == i_pending_prediction_pc[0]),
+      hw_below,
+      !hw_below && !hw_equal,
+      target == i_pending_prediction_prev_pc,
+      target == i_pending_prediction_prev_native_pc
+    };
+  endfunction
+  logic [3:0][4:0] slot2_raw_rel_pending;
+  (* keep = "true" *) logic [3:0][4:0] slot2_typed_rel_pending;
+  logic [3:0] slot2_raw_is_return;
+  (* keep = "true" *) logic [4:0] slot2_zero_rel_pending;
+  (* keep = "true" *) logic slot2_plus2_zero_select, slot2_plus4_zero_select;
+  logic [4:0] slot2_plus2_covered_rel_pending, slot2_plus2_zero_rel_pending;
+  logic [4:0] slot2_plus4_rel_pending;
+  assign slot2_raw_rel_pending[0] = pending_target_rel(
+      {i_pc_2_base[XLEN-1:TargetBits], slot2_payload_2_raw.target_hi, 1'b0}
+  );
+  assign slot2_raw_rel_pending[1] = pending_target_rel(
+      {i_pc_2_base[XLEN-1:TargetBits], slot2_payload_2_rot_raw.target_hi, 1'b0}
+  );
+  assign slot2_raw_rel_pending[2] = pending_target_rel(
+      {i_pc_2_base[XLEN-1:TargetBits], slot2_payload_2_alt_raw.target_hi, 1'b0}
+  );
+  assign slot2_raw_rel_pending[3] = pending_target_rel(
+      {i_pc_2_base[XLEN-1:TargetBits], slot2_payload_forward_q.target_hi, 1'b0}
+  );
+  assign slot2_raw_is_return = {
+    slot2_payload_forward_q.is_return,
+    slot2_payload_2_alt_raw.is_return,
+    slot2_payload_2_rot_raw.is_return,
+    slot2_payload_2_raw.is_return
+  };
+  for (genvar row = 0; row < 4; row++) begin : gen_slot2_raw_relation
+    assign slot2_typed_rel_pending[row] = (slot2_raw_is_return[row] && i_ras_nonempty) ?
+        i_ras_top_rel_pending : slot2_raw_rel_pending[row];
+  end
+  // An uncovered payload is zero, but its target retains the served PC's
+  // upper region. Its zero return flag never selects the RAS relation.
+  assign slot2_zero_rel_pending = pending_target_rel(
+      {i_pc_2_base[XLEN-1:TargetBits], {TargetBits{1'b0}}}
+  );
+  assign slot2_plus2_zero_select =
+      !slot2_stage_base_index_covered && !slot2_stage_next_index_covered;
+  assign slot2_plus4_zero_select = !slot2_stage_base_index_covered;
+`ifdef FROST_XILINX_PRIMS
+  for (genvar bit_idx = 0; bit_idx < 5; bit_idx++) begin : gen_slot2_relation_select
+    (* dont_touch = "true" *)
+    LUT6 #(
+        .INIT(64'hfffff888f888f888)
+    ) u_plus2 (
+        .I0(slot2_typed_rel_pending[0][bit_idx]),
+        .I1(slot2_base_raw_select),
+        .I2(slot2_typed_rel_pending[1][bit_idx]),
+        .I3(slot2_rot_raw_select),
+        .I4(slot2_typed_rel_pending[3][bit_idx]),
+        .I5(slot2_forward_select),
+        .O (slot2_plus2_covered_rel_pending[bit_idx])
+    );
+    LUT2 #(
+        .INIT(4'h8)
+    ) u_plus2_zero (
+        .I0(slot2_zero_rel_pending[bit_idx]),
+        .I1(slot2_plus2_zero_select),
+        .O (slot2_plus2_zero_rel_pending[bit_idx])
+    );
+    (* dont_touch = "true" *)
+    LUT6 #(
+        .INIT(64'hfffff888f888f888)
+    ) u_plus4 (
+        .I0(slot2_typed_rel_pending[2][bit_idx]),
+        .I1(slot2_alt_raw_select),
+        .I2(slot2_typed_rel_pending[3][bit_idx]),
+        .I3(slot2_alt_forward_select),
+        .I4(slot2_zero_rel_pending[bit_idx]),
+        .I5(slot2_plus4_zero_select),
+        .O (slot2_plus4_rel_pending[bit_idx])
+    );
+    (* dont_touch = "true" *)
+    LUT4 #(
+        .INIT(16'hf0ee)
+    ) u_position (
+        .I0(slot2_plus2_covered_rel_pending[bit_idx]),
+        .I1(slot2_plus2_zero_rel_pending[bit_idx]),
+        .I2(slot2_plus4_rel_pending[bit_idx]),
+        .I3(i_pc_2_use_alt),
+        .O (o_slot2_typed_target_rel_pending[bit_idx])
+    );
+  end
+`else
+  assign slot2_plus2_covered_rel_pending =
+      ({5{slot2_base_raw_select}} & slot2_typed_rel_pending[0]) |
+      ({5{slot2_rot_raw_select}} & slot2_typed_rel_pending[1]) |
+      ({5{slot2_forward_select}} & slot2_typed_rel_pending[3]);
+  assign slot2_plus2_zero_rel_pending = {5{slot2_plus2_zero_select}} & slot2_zero_rel_pending;
+  assign slot2_plus4_rel_pending =
+      ({5{slot2_alt_raw_select}} & slot2_typed_rel_pending[2]) |
+      ({5{slot2_alt_forward_select}} & slot2_typed_rel_pending[3]) |
+      ({5{slot2_plus4_zero_select}} & slot2_zero_rel_pending);
+  assign o_slot2_typed_target_rel_pending = i_pc_2_use_alt ? slot2_plus4_rel_pending :
+      (slot2_plus2_covered_rel_pending | slot2_plus2_zero_rel_pending);
+`endif
+`ifdef BTB_PENDING_REL_LOCAL_PROOF
+  always_comb begin
+    p_selected_typed_relation_matches_target :
+    assert (o_slot2_typed_target_rel_pending ==
+            (i_pc_2_use_alt ?
+             ((o_btb_entry_is_return_2_plus4 && i_ras_nonempty) ? i_ras_top_rel_pending :
+              pending_target_rel(
+        o_predicted_target_2_plus4
+    )) : ((o_btb_entry_is_return_2_plus2 && i_ras_nonempty) ? i_ras_top_rel_pending :
+          pending_target_rel(
+        o_predicted_target_2_plus2
+    ))));
+  end
 `endif
 
   // Compare raw and forwarded tags separately in the same groups as slot 1.
