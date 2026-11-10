@@ -981,6 +981,13 @@ module immu #(
                 !i_full_flush && !(fault_cache_expire && resolved_q && (f0_q || f1_q))
           ))
         p_first_fault_completes_window : assert (resolved_q && f0_q);
+      if ($past(
+              i_active && !i_tlb_invalidate && capture_en && pc_page_cross && res0.fault &&
+                !super_next_ok && (!np_sample_matches || !res1.resolved) && !i_full_flush &&
+                !(fault_cache_expire && resolved_q && (f0_q || f1_q))
+          ))
+        p_unknown_neighbor_stays_faulted :
+        assert (f1_q && (f1p_q == $past(res0.page)) && pa1_use_va_q);
     end
   end
 `endif

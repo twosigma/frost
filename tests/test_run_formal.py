@@ -1171,7 +1171,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "immu_memo.sby",
         "Instruction-MMU refusals expire within bounded time, full flushes drop "
-        "coincident faults, and memo fills follow walk acceptance (Svvptc)",
+        "coincident faults, first-word faults complete the window, and memo fills "
+        "follow walk acceptance (Svvptc)",
         tasks=("bmc", "prove"),
     ),
     FormalTarget(
