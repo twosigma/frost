@@ -259,8 +259,7 @@ module if_stage #(
   logic prediction_requires_pc_reg_handoff;  // Predicted op must still reach IF/PD/ID
   logic control_flow_to_halfword_pred;  // Prediction targets halfword address
 
-  // Slot-2 prediction, plus the staged and live parts of its redirect that
-  // pc_controller combines itself for timing.
+  // Slot-2 prediction and its separate staged and complete live target selects.
   logic slot2_predicted_taken;
   logic [XLEN-1:0] slot2_predicted_target;
   logic [XLEN-1:0] slot2_predicted_target_for_pc;
@@ -268,8 +267,7 @@ module if_stage #(
   logic slot2_prediction_used_for_pc;
   logic slot2_prediction_used_for_fetch_mux;
   logic slot2_staged_prediction_used_for_pc;
-  logic slot1_aliases_slot2_candidate;
-  logic slot2_live_target_used_for_pc_cofactor;
+  logic slot2_live_target_used_for_pc;
   logic [XLEN-1:0] slot2_staged_predicted_target;
   logic [XLEN-1:0] slot2_live_predicted_target;
   riscv_pkg::pc_pending_rel_t slot2_staged_target_rel_pending;
@@ -826,8 +824,9 @@ module if_stage #(
       .o_slot2_prediction_used_for_fetch_mux(slot2_prediction_used_for_fetch_mux_live),
       .o_slot2_staged_prediction_used_for_pc(slot2_staged_prediction_used_for_pc_live),
       .o_slot2_staged_prediction_used_for_capture(slot2_staged_prediction_used_for_capture),
-      .o_slot1_aliases_slot2_candidate(slot1_aliases_slot2_candidate),
-      .o_slot2_live_target_used_for_pc_cofactor(slot2_live_target_used_for_pc_cofactor),
+      .o_slot1_aliases_slot2_candidate(),
+      .o_slot2_live_target_used_for_pc_cofactor(),
+      .o_slot2_live_target_used_for_pc(slot2_live_target_used_for_pc),
       .o_slot2_predicted_taken(slot2_predicted_taken),
       .o_slot2_predicted_target(slot2_predicted_target),
       .o_slot2_predicted_target_for_pc(slot2_predicted_target_for_pc_live),
@@ -924,8 +923,7 @@ module if_stage #(
       .i_slot2_prediction_used_for_fetch_mux(slot2_prediction_used_for_fetch_mux),
       .i_slot2_predicted_target(slot2_predicted_target_for_pc),
       .i_slot2_staged_prediction_used_for_pc(slot2_staged_prediction_used_for_pc),
-      .i_slot1_aliases_slot2_candidate(slot1_aliases_slot2_candidate),
-      .i_slot2_live_target_used_for_pc_cofactor(slot2_live_target_used_for_pc_cofactor),
+      .i_slot2_live_target_used_for_pc(slot2_live_target_used_for_pc),
       .i_slot2_staged_predicted_target(slot2_staged_predicted_target),
       .i_slot2_live_predicted_target(slot2_live_predicted_target),
       .i_slot2_staged_target_rel_pending(slot2_staged_target_rel_pending),

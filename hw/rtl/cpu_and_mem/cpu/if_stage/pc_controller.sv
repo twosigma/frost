@@ -123,12 +123,11 @@ module pc_controller #(
     // The same select from its own LUT, for the fetch-PC mux's bit LUTs only.
     input  logic            i_slot2_prediction_used_for_fetch_mux,
     input  logic [XLEN-1:0] i_slot2_predicted_target,
-    // Separate staged and live slot-2 terms for timing. The live term omits
-    // i_slot1_aliases_slot2_candidate, which pc_reg applies at final selection.
+    // Separate staged and live slot-2 terms. The live select already includes
+    // the slot-1 alias and applies directly to pc_reg's target mux.
     // o_pc and control logic use the combined signals above.
     input  logic            i_slot2_staged_prediction_used_for_pc,
-    input  logic            i_slot1_aliases_slot2_candidate,
-    input  logic            i_slot2_live_target_used_for_pc_cofactor,
+    input  logic            i_slot2_live_target_used_for_pc,
     input  logic [XLEN-1:0] i_slot2_staged_predicted_target,
     input  logic [XLEN-1:0] i_slot2_live_predicted_target,
     output logic            o_slot2_redirect_q,
@@ -1374,8 +1373,7 @@ module pc_controller #(
   (* keep = "true" *)logic pc_reg_seq_candidate_wcs0;
   assign pc_reg_live_redirect_permission =
       !trap_or_mret && !i_fence_i_flush && !i_branch_taken && !i_pd_redirect;
-  assign pc_reg_live_candidate = i_slot1_aliases_slot2_candidate &&
-      i_slot2_live_target_used_for_pc_cofactor;
+  assign pc_reg_live_candidate = i_slot2_live_target_used_for_pc;
   // The sequential select with raw WCS forced to 0, then raw WCS applied as
   // the cancelled land arm (see pc_reg_land_on_pending_wcs0).
   assign pc_reg_seq_candidate_wcs0 =
@@ -2135,14 +2133,11 @@ module pc_controller #(
   // Live fallback has slot-2 priority: below redirects and above pending,
   // registered-prediction, and sequential choices.
   logic pc_mux_nested_reference_live_override;
-  logic [XLEN-1:0] pc_mux_nested_reference_if_alias;
   assign pc_mux_nested_reference_live_override =
-      i_slot2_live_target_used_for_pc_cofactor && !trap_or_mret && !i_fence_i_flush &&
+      i_slot2_live_target_used_for_pc && !trap_or_mret && !i_fence_i_flush &&
       !i_branch_taken && !i_pd_redirect;
-  assign pc_mux_nested_reference_if_alias = pc_mux_nested_reference_live_override ?
+  assign pc_mux_nested_reference = pc_mux_nested_reference_live_override ?
       i_slot2_live_predicted_target : pc_mux_nested_reference_without_live_slot2;
-  assign pc_mux_nested_reference = i_slot1_aliases_slot2_candidate ?
-      pc_mux_nested_reference_if_alias : pc_mux_nested_reference_without_live_slot2;
 
   always_comb begin
     p_pc_register_slot2_mux_matches_nested_original :
