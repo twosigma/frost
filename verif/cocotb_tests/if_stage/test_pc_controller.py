@@ -77,8 +77,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_slot2_prediction_used_for_fetch_mux.value = 0
     dut.i_slot2_predicted_target.value = 0
     dut.i_slot2_staged_prediction_used_for_pc.value = 0
-    dut.i_slot1_aliases_slot2_candidate.value = 0
-    dut.i_slot2_live_target_used_for_pc_cofactor.value = 0
+    dut.i_slot2_live_target_used_for_pc.value = 0
     dut.i_slot2_staged_predicted_target.value = 0
     dut.i_slot2_live_predicted_target.value = 0
     dut.i_slot2_staged_target_rel_pending.value = 0
@@ -191,8 +190,7 @@ def _drive_live_slot2_fallback(dut: Any, *, target: int) -> None:
     dut.i_slot2_prediction_used_for_pc.value = 1
     dut.i_slot2_prediction_used_for_fetch_mux.value = 1
     dut.i_slot2_predicted_target.value = target
-    dut.i_slot1_aliases_slot2_candidate.value = 1
-    dut.i_slot2_live_target_used_for_pc_cofactor.value = 1
+    dut.i_slot2_live_target_used_for_pc.value = 1
     dut.i_slot2_live_predicted_target.value = target
 
 
@@ -570,23 +568,22 @@ async def test_slot2_prediction_redirects_immediately_and_pulses_bubble(
 
 
 @cocotb.test()
-async def test_live_slot2_fallback_alias_selects_pc_reg_last_and_keeps_priority(
+async def test_live_slot2_fallback_selects_pc_reg_and_keeps_priority(
     dut: Any,
 ) -> None:
-    """The alias check picks the live slot-2 target last, below redirects."""
+    """The predictor's complete live select picks pc_reg below redirects."""
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
     await _start_word_stream_at(dut, BASE_PC)
 
-    # Without the alias, the live select alone cannot redirect pc_reg. The
-    # staged select is clear too, so pc_reg advances sequentially.
-    dut.i_slot2_live_target_used_for_pc_cofactor.value = 1
+    # Without a live select, an unqualified target cannot redirect pc_reg.
+    # The staged select is clear too, so pc_reg advances sequentially.
     dut.i_slot2_live_predicted_target.value = SLOT2_TARGET
     await _settle()
     assert dut.pc_reg_live_redirect_permission.value
     assert int(dut.next_pc_reg.value) == BASE_PC + 4
 
-    # Drive the alias and the combined slot-2 inputs too. The live target now
+    # Drive the complete live select and the combined slot-2 inputs. The target
     # wins in the same cycle, without a registered handoff.
     _drive_live_slot2_fallback(dut, target=SLOT2_TARGET)
     await _settle()
@@ -594,12 +591,12 @@ async def test_live_slot2_fallback_alias_selects_pc_reg_last_and_keeps_priority(
 
     # With one-hot slot-2 candidate valids, IF never sets the staged and live
     # selects together, but if both are set the live target still wins, as in
-    # the combined target mux. Without the alias, the staged target wins.
+    # the combined target mux. Clearing the live select lets the staged target win.
     dut.i_slot2_staged_prediction_used_for_pc.value = 1
     dut.i_slot2_staged_predicted_target.value = PRED_TARGET
     await _settle()
     assert int(dut.next_pc_reg.value) == SLOT2_TARGET
-    dut.i_slot1_aliases_slot2_candidate.value = 0
+    dut.i_slot2_live_target_used_for_pc.value = 0
     dut.i_slot2_predicted_target.value = PRED_TARGET
     await _settle()
     assert int(dut.next_pc_reg.value) == PRED_TARGET
