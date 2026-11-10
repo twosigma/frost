@@ -3235,8 +3235,18 @@ module coherence_l1d #(
 `endif
 `endif
 `ifdef L1D_ZERO_CHECKS
+  // A sector that a cbo.zero record holds, the lower record or its twin.
+  logic [3:0] f_zero_path_sector;
+  always_comb
+    for (int holder = 0; holder < 4; holder++)
+      f_zero_path_sector[holder] = store_valid[holder] &&
+          (store_zero[holder] || store_twin[holder]) &&
+          path_addr_q[ADDR_WIDTH-1:5] == store_addr[holder][ADDR_WIDTH-1:5];
   always_ff @(posedge i_clk)
     if (sim_reset_seen_q && !i_rst) begin
+      // The hit path takes no load to a sector whose zeros a cbo.zero record or
+      // its owed twin has yet to install, so no load answers stale bytes there.
+      if (path_take) p_zero_path_blocked : assert (f_zero_path_sector == '0);
       if (store_push && i_write_zero)
         p_zero_write_block : assert (i_address[5:0] == 0 && i_write_mask == 8'hff);
       // A GetMZero starts from a zero record. With 64-byte home lines it is a
