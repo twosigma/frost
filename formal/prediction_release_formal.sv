@@ -334,8 +334,12 @@ module prediction_release_formal #(
       .i_slot2_predicted_target(slot2_target_effective),
       // Every slot-2 request takes the staged select. The alias check and both
       // targets are arbitrary; the live select needs a request (above).
-      .i_slot2_staged_prediction_used_for_pc(slot2_prediction_used_for_pc),
-      .i_slot2_live_target_used_for_pc(i_slot1_aliases_slot2_candidate &&
+      // This harness supplies arbitrary complete requests. Valid=1/replay=0
+      // preserves that abstraction exactly through the cofactor interface.
+      .i_slot2_pc_valid(1'b1),
+      .i_slot2_pc_replay(1'b0),
+      .i_slot2_staged_pc_without_valid(slot2_prediction_used_for_pc),
+      .i_slot2_live_pc_without_valid(i_slot1_aliases_slot2_candidate &&
                                       slot2_live_target_used_for_pc_cofactor),
       .i_slot2_staged_predicted_target(slot2_target_effective),
       .i_slot2_live_predicted_target,

@@ -104,6 +104,13 @@ once, and `pc_reg` follows one cycle later, after the branch itself has been
 emitted; a taken slot-2 prediction moves both PCs at once. A two-instruction
 bundle advances `pc_reg` by 4, 6, or 8 bytes, a single instruction by 2 or 4.
 
+The architectural-PC mux receives raw live slot-2 validity and staged/live
+cofactors separately. The Xilinx implementation keeps saved replay in its
+no-live arm and applies raw live validity in the final F7. The
+complete staged select is replay OR (valid AND staged cofactor); the complete
+live select is valid AND live cofactor. Redirect and live/staged priorities
+remain the same.
+
 Reset loads both PCs with the boot address at their flops. `pc_controller`
 picks the next fetch PC in this priority: trap or xRET, FENCE-class flush
 (FENCE.I, SFENCE.VMA, or a
@@ -135,6 +142,11 @@ ID, or the decoded queue) and a conditional branch or JALR is unresolved,
 The BTB is indexed by PC[9:2]. Its tags include PC[1], so a lookup at one
 halfword of a word never hits an entry trained for the other. A hit predicts
 taken when the upper counter bit is set. The slot-1 lookup reads the fetch PC.
+To track a pending prediction, slot-2 raw rows and the forwarded payload each form their five-bit
+PC relation and apply return typing before coverage selects a row. An uncovered
+row relates a zero low target in the served PC's upper region. The controller
+receives the selected relation alongside the unchanged target outputs.
+
 Slot 2 has three BTB copies of its own, keyed by the PC of the instruction
 before it (+2 and +4, plus a copy rotated by one index for a slot 2 in the
 next word). They are read a cycle ahead, so the lookup adds no fetch cycle,
@@ -454,16 +466,26 @@ variable latency closes the gap between the two PCs, never pends.
 
 `pc_controller` registers how `pc_reg` relates to the saved PC one edge early,
 which keeps the wide compares out of the PC loop. For a slot-2 redirect,
-`branch_prediction_controller` relates the stack top and each BTB candidate
-target to the saved PC before its late selects pick the target.
-The controller also supplies `pc_reg`'s complete live slot-2 target select,
-including the slot-1 alias check. Staged taken bits and the live fallback
-join parallel candidate qualifiers before the common prediction permission.
-For the live select, separate sums for each slot-2 position let the final
-gate apply the decoded +4 position with permission, ownership, and full
-slot-2 validity.
-The shifted BTB payloads use early row and forwarding masks to select each
-target in one gate before the pending-PC relation compares.
+`branch_prediction_controller` relates the live BTB target and stack top.
+`branch_predictor` relates each raw or forwarded staged payload, then applies
+coverage to the candidate relations. The controller selects the position and
+applies the RAS relation in one final gate when the entry is a return and the
+stack is nonempty.
+
+The controller supplies staged and live slot-2 target cofactors, with the
+live cofactor including the slot-1 alias check. Staged taken bits and the live
+fallback join parallel candidate qualifiers before common prediction permission.
+Separate sums for each slot-2 position let the live cofactor select the decoded
++4 position with permission and ownership. IF passes full live validity and
+saved replay separately; pc_reg applies validity in the final data select.
+The shifted BTB payloads retain their one-gate row/forwarding selection for
+target data. Pending-PC relations use parallel raw-payload comparisons and
+select the relation after those same masks arrive.
+
+The prediction-metadata valid flag precomputes hold/load and the PD redirect's
+non-target permission. In the Xilinx implementation, the wide PD target match,
+flush and slot-2 suppression meet in one final LUT6. Same-target stalled PD
+redirects retain metadata under the same taken/valid conditions as before.
 
 ### Stalled slot-2 predictions
 
