@@ -1226,6 +1226,11 @@ FORMAL_TARGETS = [
         tasks=("prove", "prove_xlen32", "prove_xlen72", "cover"),
     ),
     FormalTarget(
+        "btb_pending_relation.sby",
+        "Raw slot-2 relations match per-candidate targets including uncovered rows",
+        tasks=("bmc", "bmc_btb_index1", "bmc_btb_index3"),
+    ),
+    FormalTarget(
         "btb_tag_compare.sby",
         "Grouped BTB lookup and update comparisons match full-width tags",
         tasks=("bmc", "bmc_small_btb"),
@@ -1288,7 +1293,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "async_fifo.sby",
-        "FIFO capacity, flow control, and data ordering across unrelated clocks",
+        "FIFO capacity, flow control, and data ordering across unrelated clocks, "
+        "and the runtime occupancy limit",
+        tasks=("bmc", "cover", "limit_bmc", "limit_cover"),
     ),
     FormalTarget(
         "aplic.sby",
@@ -1331,6 +1338,8 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("limit_bmc", "Bounded proof that the runtime occupancy limit caps the writer."),
+    ("limit_cover", "The writer stalls at a runtime limit below the RAM's capacity."),
     ("coh_l1d_conflict_prove", "Guarded conflict identity with one endpoint."),
     ("coh_l1d_conflict_multi_prove", "Guarded conflict identity with three endpoints."),
     (
@@ -2249,6 +2258,8 @@ SBY_TASKS = [
         "bmc_small_btb",
         "Bounded tag comparison with a 16-entry BTB and partial final group",
     ),
+    ("bmc_btb_index1", "Bounded relation checking with one BTB index bit"),
+    ("bmc_btb_index3", "Bounded relation checking with three BTB index bits"),
     ("bmc_four_way", "Bounded checking with four ways"),
     ("prove_four_way", "Unbounded safety checking with four ways"),
     ("bmc_xlen72", "Bounded Bare-output checking with local XLEN 72"),

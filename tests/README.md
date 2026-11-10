@@ -497,6 +497,17 @@ Register a bench in `TEST_REGISTRY`:
 Check discovery with `./scripts/frost.py cocotb --list-tests`, then run
 `./scripts/frost.py cocotb new_feature`.
 
+The NIC targets include `nic_tx_segment`, `nic_rx_fifo_limit`, `nic_top_rx_fifo`,
+`nic_pause_gmii`, `nic_pause_10g`, and `nic_pause_rx_wire`, alongside the engine and whole-NIC benches.
+Their registered tests cover segmentation headers, FIFO capacity, pause crossings, independent
+domain restarts, wire-side PAUSE validation during congestion, and cancellation under backpressure.
+`nic_sg_loopback` and `nic_rate` are
+registered real programs in both memory tiers. See the
+[NIC verification table](../hw/rtl/peripherals/nic/README.md#verification) for the target list.
+`test_frost_net10g_driver.py` checks packaging and the descriptor ABI, and compiles selected
+driver helpers against C fixtures for DMA teardown, reconfiguration and GSO fallback. It does
+not replace executing the kernel driver.
+
 ### Compliance and torture runners
 
 The architecture, riscv-tests ISA and benchmark, and riscv-torture programs

@@ -87,10 +87,11 @@ export LEC_CHECK = 0
 
 # The core holds the SRAM macros where asic/macro_placement.tcl puts them,
 # with a 120 um ring around them and an 800 um band for the logic between
-# the top band and the instruction memory's: 5.1 mm by 6.075 mm with the
-# macros' current sizes. The die adds 15 um on each side for the pins.
-export DIE_AREA = 0 0 5130 6105
-export CORE_AREA = 15 15 5115 6090
+# the top band and the instruction memory's: 5.1 mm by 8.075 mm with the
+# 8,192-word receive FIFO's sixteen SRAM tiles. The die adds 15 um on each
+# side for the pins.
+export DIE_AREA = 0 0 5130 8105
+export CORE_AREA = 15 15 5115 8090
 export MACRO_PLACEMENT_TCL = $(DESIGN_DIR)/macro_placement.tcl
 # The pins go on the left and right edges, which pass the logic band, not
 # on the top and bottom edges, which run along the macros.

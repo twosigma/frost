@@ -2098,7 +2098,9 @@ async def test_slot2_plus4_stall_replay(dut: Any, compressed: bool) -> None:
     dut.i_disable_branch_prediction.value = 0
     _drive_pipeline_ctrl(dut, {"stall": True})
     await _settle()
-    assert dut.slot2_staged_prediction_used_for_pc_live.value
+    # The live staged request is reconstructed from the new PC interface.
+    assert dut.slot2_prediction_valid.value
+    assert dut.slot2_staged_pc_without_valid.value
     assert dut.slot2_plus4_candidate_valid.value
     await _advance_cycle(dut)
     _drive_pipeline_ctrl(dut, {"stall": True, "stall_registered": True})
