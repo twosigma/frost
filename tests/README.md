@@ -97,15 +97,13 @@ typed interfaces from their actual module headers; other unknown modules
 fail. `$initstate` gets a typed extension declaration, and the asynchronous
 FIFO gets a containing standard global clocking scope for `$global_clock`.
 
-There are currently 561 distinct formal views (695 tasks): 559 required and
-two deferred, representing three hart-cache tasks. Their 48 distinct printed
-source diagnostics are confined to `formal/coherent_hart_cache_formal.sv`
-and `formal/coherent_hart_cache_models.sv`, which are being maintained
-separately. [`slang/deferred.json`](slang/deferred.json) lists each deferred
-view, its tasks, source files, and diagnostic count. To audit them as well:
+All 561 distinct formal views (696 tasks) are required, including every
+hart-cache maintenance configuration. The complete matrix has 667 cases,
+with no deferred views or source-error exceptions. To record diagnostics
+and elapsed times for every case:
 
 ```bash
-./scripts/frost.py run python3 tests/slang_frontend.py --include-deferred --report /workspace/slang-results.json
+./scripts/frost.py run python3 tests/slang_frontend.py --report /workspace/slang-results.json
 ```
 
 Production synthesis views promote `implicit-net`, `port-width-expand`,
