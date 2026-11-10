@@ -12,6 +12,9 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+# Filelist expansion is adapted from the original frontend checker.
+# Copyright 2026 John Goodacre
 
 """Strict yosys-slang elaboration shared by CI, fast checks, and the manual hook.
 
