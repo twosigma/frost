@@ -770,20 +770,26 @@ module ptw #(
         p_reference_pte : assert (pte_q == f_last_pte_q);
         p_reference_pte_address : assert (pte_pa == f_last_pa_q);
       end
-      for (int e = 0; e < PwcL1N; e++) begin
-        if (pwc_l1_valid_q[e])
-          p_l1_provenance :
-          assert (pwc_l1_tag_q[e] == f_l1_tag[e] &&
-                  riscv_pkg::PtePpnBits'(pwc_l1_ppn_q[e]) == f_l1_pointer[e]);
-      end
-      for (int e = 0; e < PwcRootN; e++) begin
-        if (pwc_root_valid_q[e])
-          p_root_provenance :
-          assert (pwc_root_tag_q[e] == f_root_tag[e] &&
-                  riscv_pkg::PtePpnBits'(pwc_root_ppn_q[e]) == f_root_pointer[e]);
-      end
       c_pwc_l1_replacement : cover (f_replaced_l1_q && o_resp_valid && o_resp.fault_kind == 0);
       c_pwc_root_replacement : cover (f_replaced_root_q && o_resp_valid && o_resp.fault_kind == 0);
+    end
+  end
+  // Give each named assertion its own elaboration scope. A procedural loop
+  // duplicates the label when the builtin formal frontend unrolls it.
+  for (genvar e = 0; e < PwcL1N; e++) begin : gen_ref_l1_provenance
+    always_ff @(posedge i_clk) begin
+      if (f_past_valid && !i_rst && pwc_l1_valid_q[e])
+        p_l1_provenance :
+        assert (pwc_l1_tag_q[e] == f_l1_tag[e] &&
+                riscv_pkg::PtePpnBits'(pwc_l1_ppn_q[e]) == f_l1_pointer[e]);
+    end
+  end
+  for (genvar e = 0; e < PwcRootN; e++) begin : gen_ref_root_provenance
+    always_ff @(posedge i_clk) begin
+      if (f_past_valid && !i_rst && pwc_root_valid_q[e])
+        p_root_provenance :
+        assert (pwc_root_tag_q[e] == f_root_tag[e] &&
+                riscv_pkg::PtePpnBits'(pwc_root_ppn_q[e]) == f_root_pointer[e]);
     end
   end
 
