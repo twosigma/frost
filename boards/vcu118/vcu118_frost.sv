@@ -22,7 +22,7 @@ module vcu118_frost #(
     parameter int unsigned PERF_COUNTERS = 0,
     parameter int unsigned ENABLE_CACHED_TIER = 1,
     parameter int unsigned USE_BEHAVIORAL_DDR = 0,
-    // The VCU118 L2 is 4 MiB: 136 of the 960 URAMs, inside the SLR1 CPU pblock.
+    // The VCU118 L2 is 4 MiB, with the shared four-way geometry.
     parameter int unsigned L2_CACHE_BYTES = 4 * 1024 * 1024
 ) (
     // Differential system clock SYSCLK1_300 (G31 / F31, Bank 47 in SLR1)

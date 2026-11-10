@@ -663,6 +663,20 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("COCOTB_MAX_CYCLES", "400000000"),),
         include_in_pytest=False,
     ),
+    "l2_capacity_chase_smoke": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="l2_capacity_chase",
+        nic_mac_clocks=False,
+        rerun_after_reset=False,
+        description="Bounded dependent-load cycle check with the VCU118 4 MiB L2",
+        verilator_extra_args=("-GL2_CACHE_BYTES=4194304",),
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DL2CC_SIZES_KIB=8u,16u,32u"),
+            ("FROST_L2_CACHE_BYTES", "4194304"),
+            ("COCOTB_MAX_CYCLES", "1000000"),
+        ),
+    ),
     # The system with 32-byte L2 lines, equal to the L1s': no line-size
     # adapter and a 256-bit DDR port. Adjacent, so consecutive runs reuse one
     # build.

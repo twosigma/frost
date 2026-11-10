@@ -31,10 +31,9 @@ module xilinx_frost_subsystem #(
     parameter int unsigned USE_BEHAVIORAL_DDR = 1,
     // L1 instruction-cache bytes; defaults to the X3 configuration.
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
-    // L2 line size (see frost.sv); the DDR AXI data width follows it.
-    // L2 capacity in bytes (see frost.sv); a board top that has the URAM and timing
-    // budget overrides it.
+    // L2 capacity in bytes (see frost.sv); board tops may override it.
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
+    // L2 line size (see frost.sv); the DDR AXI data width follows it.
     parameter int unsigned L2_LINE_BYTES = 64,
     parameter int unsigned L2_NUM_MSHR = 8,
     parameter int unsigned L2_PREFETCH_INFLIGHT = 3,
