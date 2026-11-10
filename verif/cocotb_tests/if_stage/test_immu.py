@@ -1380,6 +1380,10 @@ async def _slow_crossing_refusals(dut: Any, fault_kind: int) -> None:
         if int(dut.o_pa_valid.value):
             assert int(dut.o_fault0.value) == 1
             assert int(dut.o_fault0_page.value) == int(fault_kind == DFAULT_PAGE)
+            assert int(dut.o_fault1.value) == 1
+            assert int(dut.o_fault1_page.value) == int(fault_kind == DFAULT_PAGE)
+            assert int(dut.o_pa0.value) == pc & PHYS_MASK
+            assert int(dut.o_pa1.value) == _next_page_va(pc) & PHYS_MASK
             assert int(dut.o_walk_req_valid.value) == 0
             return
     raise AssertionError(
@@ -1397,3 +1401,55 @@ async def test_crossing_page_fault_completes_after_slow_walk(dut: Any) -> None:
 async def test_crossing_access_fault_completes_after_slow_walk(dut: Any) -> None:
     """Two slow PTE bus failures must still expose the first-word access fault."""
     await _slow_crossing_refusals(dut, DFAULT_ACCESS)
+
+
+async def _crossing_refusal_on_expiry(dut: Any, fault_kind: int) -> None:
+    """A warm faulting neighbor cannot discard the first page's response."""
+    await _setup(dut)
+    epoch_origin_ns = int(get_sim_time(unit="ns")) - 1
+    dut.i_active.value = 1
+    pc = 0x000F_3FFC
+    neighbor_pc = _next_page_va(pc)
+    neighbor = Leaf(vpn=neighbor_pc >> 12, ppn=0x80080, perm_x=0)
+    await _move_pc(dut, neighbor_pc)
+    await _cycle(dut)
+    await _accept_request(dut, neighbor.vpn)
+    await _return_leaf(dut, neighbor)
+    _assert_window(dut, _translated_window(neighbor_pc, neighbor))
+
+    await _move_pc(dut, pc)
+    await _cycle(dut)
+    await _accept_request(dut, pc >> 12)
+    for _ in range(80):
+        await _cycle(dut)
+    # Align solely from the external reset and clock schedule. The first
+    # word is missing while the warm neighbor supplies a partial fault.
+    while (
+        (int(get_sim_time(unit="ns")) - epoch_origin_ns) // CLOCK_PERIOD_NS
+    ) % 64 != 63:
+        await _cycle(dut)
+    await _pulse_response(dut, vpn=pc >> 12, fault_kind=fault_kind)
+    _assert_window(
+        dut,
+        Window(
+            pa0=pc & PHYS_MASK,
+            pa1=neighbor_pc & PHYS_MASK,
+            fault0=1,
+            fault0_page=int(fault_kind == DFAULT_PAGE),
+            fault1=1,
+            fault1_page=1,
+        ),
+    )
+    assert int(dut.o_walk_req_valid.value) == 0
+
+
+@cocotb.test()
+async def test_crossing_page_fault_completes_on_expiry_edge(dut: Any) -> None:
+    """A first-page refusal survives expiry when the neighbor faults in the TLB."""
+    await _crossing_refusal_on_expiry(dut, DFAULT_PAGE)
+
+
+@cocotb.test()
+async def test_crossing_access_fault_completes_on_expiry_edge(dut: Any) -> None:
+    """An access-fault response survives expiry beside a warm permission fault."""
+    await _crossing_refusal_on_expiry(dut, DFAULT_ACCESS)

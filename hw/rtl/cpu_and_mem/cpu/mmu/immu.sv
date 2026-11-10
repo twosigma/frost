@@ -695,12 +695,14 @@ module immu #(
       after_ok_q <= after_ok_d;
     end
     // A full flush drops verdicts even when a refusal arrives on this edge.
-    // Epoch expiry drops a held refusal without disturbing held clean hits.
+    // Epoch expiry drops a completed refusal without disturbing held clean hits.
+    // Partial fault bits do not expire: they are not visible, and clearing
+    // them could discard each first-page response aligned with an expiry.
     // If a clean retarget is captured as an old refusal expires, clear wins
     // and that capture retries on the next clock.
     // Only validity and fault bits change, keeping both terms off the
     // address-capture path. Bare fetches continue to use the direct bypass.
-    if (!i_rst && (i_full_flush || (fault_cache_expire && (f0_q || f1_q)))) begin
+    if (!i_rst && (i_full_flush || (fault_cache_expire && resolved_q && (f0_q || f1_q)))) begin
       resolved_q <= 1'b0;
       miss0_q <= 1'b0;
       miss1_q <= 1'b0;
@@ -951,7 +953,7 @@ module immu #(
     else if (resp_refused) f_flush_since_fill_q <= 1'b0;
     if (i_rst || !memo_valid_q) f_memo_age_q <= '0;
     else f_memo_age_q <= f_memo_age_q + 1'b1;
-    if (i_rst || !(f0_q || f1_q)) f_fault_age_q <= '0;
+    if (i_rst || !resolved_q || !(f0_q || f1_q)) f_fault_age_q <= '0;
     else f_fault_age_q <= f_fault_age_q + 1'b1;
   end
   always @(posedge i_clk) begin
@@ -963,7 +965,7 @@ module immu #(
         p_memo_fill_after_flush : assert ($past(f_accepted_since_flush_q) && memo_valid_q);
       p_memo_needs_fault_since_flush : assert (!memo_valid_q || !f_flush_since_fill_q);
       // A registered fault does not survive a full flush either.
-      if ($past(i_full_flush || (fault_cache_expire && (f0_q || f1_q))))
+      if ($past(i_full_flush || (fault_cache_expire && resolved_q && (f0_q || f1_q))))
         p_flush_drops_registered_fault : assert (!resolved_q && !f0_q && !f1_q);
       if (!i_rst)
         p_fault_epoch_step :
@@ -972,11 +974,11 @@ module immu #(
         p_memo_age_bounded : assert (f_memo_age_q <= {1'b0, fault_cache_epoch_q});
         p_memo_expiry_happened : assert (fault_cache_epoch_q != '0);
       end
-      if (f0_q || f1_q)
+      if (resolved_q && (f0_q || f1_q))
         p_registered_fault_age_bounded : assert (f_fault_age_q <= {1'b0, fault_cache_epoch_q});
       if ($past(
               i_active && !i_tlb_invalidate && capture_en && res0.fault &&
-                !i_full_flush && !(fault_cache_expire && (f0_q || f1_q))
+                !i_full_flush && !(fault_cache_expire && resolved_q && (f0_q || f1_q))
           ))
         p_first_fault_completes_window : assert (resolved_q && f0_q);
     end
