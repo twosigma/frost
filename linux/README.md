@@ -144,8 +144,9 @@ The generated DTB declares the
 [implemented extensions](../README.md#supported-risc-v-extensions), Sstc,
 Smaia, Ssaia, Svade, Svvptc, and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and the LP64D
 ABI. Svvptc tells Linux that a PTE changed from invalid to valid becomes
-visible to the walker without `sfence.vma`, so the kernel skips the
-`sfence.vma` it otherwise issues after each page fault. No FROST translation
+visible to the walker without `sfence.vma`, so the kernel can omit that
+synchronization for those mapping updates. Other PTE changes retain their
+existing address-translation synchronization requirements. No FROST translation
 structure retains an invalid PTE indefinitely: the TLBs install only
 fault-free walks, the walker reads page tables coherently through the L1D
 probe, and the instruction MMU expires both its fault memo and registered
