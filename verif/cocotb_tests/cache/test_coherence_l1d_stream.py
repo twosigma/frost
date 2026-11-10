@@ -298,6 +298,121 @@ class StreamPrivate(Private):
         )
 
 
+class MergeCount(StreamPrivate):
+    """Count read lookups, hit-path answers and the L1D's access events."""
+
+    # cache_instance_perf_events_t, least significant field first.
+    PERF_PATH_HIT, PERF_ACCESS, PERF_HIT, PERF_MISS = 13, 11, 10, 9
+
+    def __init__(self, dut: Any) -> None:
+        """Start empty counts."""
+        super().__init__(dut)
+        self.lookups = 0
+        self.shadows = 0
+        self.path_hits = 0
+        self.events = [0, 0, 0]
+
+    async def tick(self, count: int = 1) -> None:
+        """Count a read lookup at its response and each registered event.
+
+        A shadow lookup, of a read the hit path holds, counts apart. A
+        hit-path answer counts as an access and a hit.
+        """
+        for _ in range(count):
+            if not self.get("i_rst"):
+                if (
+                    self.get("phase_q") == 2
+                    and self.get("array_valid")
+                    and self.get("operation_q") == 0
+                ):
+                    if self.get("shadow_q"):
+                        self.shadows += 1
+                    else:
+                        self.lookups += 1
+                perf = self.get("o_perf_events")
+                path_hit = perf >> self.PERF_PATH_HIT & 1
+                self.path_hits += path_hit
+                self.events[0] += (perf >> self.PERF_ACCESS & 1) + path_hit
+                self.events[1] += (perf >> self.PERF_HIT & 1) + path_hit
+                self.events[2] += perf >> self.PERF_MISS & 1
+            await super().tick()
+
+    def clear_counts(self) -> None:
+        """Restart the counts and the recorded traffic."""
+        self.lookups = 0
+        self.shadows = 0
+        self.path_hits = 0
+        self.events = [0, 0, 0]
+        self.requests.clear()
+        self.responses.clear()
+        self.completed.clear()
+        self.completion_accepted.clear()
+
+
+@cocotb.test()
+async def same_sector_loads_share_a_lookup(dut: Any) -> None:
+    """Answer a sector's waiting loads from one lookup's row or one attachment.
+
+    The hit path answers loads of a resident sector itself; a merge takes only
+    the loads it does not hold. Loads of a missing sector miss the hit path,
+    and the grant answers every load attached to the endpoint.
+    """
+    b = MergeCount(dut)
+    base = 0x80006000
+    # A resident sector: the hit path and at most one lookup's row answer the
+    # loads, each once, as hits.
+    await b.reset()
+    await b.issue(0, base + 24)
+    await b.drain(1)
+    await b.set(i_read_ready=0)
+    await b.tick(10)
+    b.clear_counts()
+    for slot in range(1, 4):
+        await b.issue(slot, base + 8 * (slot - 1))
+    await b.tick(20)
+    await b.set(i_read_ready=1)
+    await b.tick(20)
+    assert sorted(b.responses) == [
+        (slot, b.word(base + 8 * (slot - 1)), 0) for slot in range(1, 4)
+    ]
+    dut._log.info(
+        "resident: lookups %d shadows %d path hits %d events %s",
+        b.lookups,
+        b.shadows,
+        b.path_hits,
+        b.events,
+    )
+    assert b.lookups <= 1, b.lookups
+    assert b.events == [3, 3, 0], b.events
+    assert not b.requests
+    if b.endpoints < 2:
+        return
+    # A missing sector: the first attachment attaches the loads behind it,
+    # and the grant answers every one.
+    await b.reset()
+    b.clear_counts()
+    await b.set(i_read_ready=0)
+    await b.issue(0, base + 0x100)
+    await b.requests_at_least(1)
+    for slot in range(1, 4):
+        await b.issue(slot, base + 0x100 + 8 * slot)
+    await b.tick(20)
+    assert b.get("rd_wait_q") & 0b1110 == 0b1110
+    dut._log.info(
+        "missing: lookups %d shadows %d before the grant", b.lookups, b.shadows
+    )
+    assert b.lookups <= 4, b.lookups
+    lookups = b.lookups
+    await b.drain(4)
+    assert sorted(b.responses) == [
+        (slot, b.word(base + 0x100 + 8 * slot), 0) for slot in range(4)
+    ]
+    assert len(b.requests) == 1
+    assert b.lookups == lookups
+    await b.tick(10)
+    assert b.events == [4, 0, 4], b.events
+
+
 @cocotb.test()
 async def demand_payloads_in_every_load_endpoint(dut: Any) -> None:
     """Preserve size and offset while ordinary reads occupy every load endpoint."""
@@ -764,7 +879,7 @@ async def accepted_hints_drain_for_exclusive_work(dut: Any) -> None:
 
 @cocotb.test()
 async def demand_turn_between_buffered_grants(dut: Any) -> None:
-    """Serve a fill waiter before accepting the next successful or failed grant."""
+    """Answer a fill waiter with its grant and serve a read before the next grant."""
     b = StreamPrivate(dut)
     if b.endpoints < 3:
         return
@@ -780,13 +895,18 @@ async def demand_turn_between_buffered_grants(dut: Any) -> None:
         assert b.get("rd_wait_q") & 4
         await b.send_grant(0)
         await b.send_grant(1, error=error)
+        # The first grant answers its own read and the waiter in read 2. The
+        # installation's turn serves the read that arrives during it.
+        await b.issue(3, base + 16)
         for _ in range(100):
             if b.get("phase_q") == 0 and b.get("grant_read_yield"):
                 assert b.get("grant_pick") == b.requests[1][0]
                 assert not b.get("grant_ready") and not b.get("read_failure")
                 assert not b.get("rd_ready_q") & 2
+                # Read 0's answer occupies the held response register.
+                assert b.get("rd_ready_q") & 4
                 await b.tick()
-                assert b.get("operation_q") == 0 and b.get("selected_read_q") == 2
+                assert b.get("operation_q") == 0 and b.get("selected_read_q") == 3
                 break
             await b.tick()
         else:
@@ -794,7 +914,7 @@ async def demand_turn_between_buffered_grants(dut: Any) -> None:
         for _ in range(100):
             if b.get("phase_q") == 0 and b.get("grant_valid") and b.get("grant_ready"):
                 assert not b.get("grant_read_turn_q")
-                assert b.get("rd_ready_q") & 4
+                assert b.get("rd_ready_q") & 8
                 await b.tick()
                 break
             await b.tick()
@@ -809,11 +929,12 @@ async def demand_turn_between_buffered_grants(dut: Any) -> None:
             raise AssertionError("A buffered grant failed to complete")
         await b.release(0)
         await b.release(1)
-        await b.drain(3)
+        await b.drain(4)
         assert sorted(b.responses) == [
             (0, b.word(base), 0),
             (1, 0 if error else b.word(base + 512), int(error)),
             (2, b.word(base + 8), 0),
+            (3, b.word(base + 16), 0),
         ]
         assert not b.get("o_fatal")
 
@@ -979,6 +1100,9 @@ async def empty_turn_and_probe_local_turn(dut: Any) -> None:
             await b.tick(40)
             await b.send_grant(0)
             await b.send_grant(1, error=error)
+            # The first grant answers read 2, its waiter; read 3 arrives
+            # during the installation and stays unanswered through the turn.
+            await b.issue(3, base + 16)
             if mode == "store":
                 await b.set(i_address=base, i_write_mask=255, i_write_data=123)
                 await b.tick()
@@ -1013,7 +1137,7 @@ async def empty_turn_and_probe_local_turn(dut: Any) -> None:
                 else:
                     assert not b.get("rd_candidate") and not b.get("grant_read_yield")
                 await b.tick()
-                assert not b.get("rd_ready_q") & 4
+                assert b.get("rd_ready_q") & 12 == 4
                 assert b.get("phase_q") == 0 and not b.get("grant_read_turn_q")
                 assert b.get("grant_ready")
             assert b.get("read_failure") == int(error)

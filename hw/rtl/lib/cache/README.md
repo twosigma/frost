@@ -419,9 +419,11 @@ WA. A store error stops the hart without read completion or error disposal.
 A demand grant on a load endpoint answers its load from the captured grant in
 the grant's first lookup cycle, before installation, so the answered read slot
 can hold a later read while the line installs; that read becomes selectable
-when the installation completes. Endpoint 0 answers its reads after
-installation. A load endpoint's Done, and the loads waiting on it, follow
-installation.
+when the installation completes. The same cycle answers every ordinary load
+attached to the endpoint, each from its own dword of the grant; a speculative
+grant answers its attached loads the same way. Endpoint 0 answers its reads
+after installation. A load endpoint's Done, and the waits of LR and other
+loads on it, follow installation.
 
 With stream look-ahead enabled, a successful demand installation
 with a reader waiting on that endpoint gives an eligible ordinary read one
@@ -436,8 +438,10 @@ selectable, a credited read may hit or attach to a live endpoint; its miss
 waits to start an acquisition.
 
 No two live endpoints hold the same sector. A load miss on a sector held by
-an endpoint waits for installation, or for release if the installed sector
-has been replaced, then looks up again. Load and lookahead acquisitions stop
+an endpoint attaches to it. The endpoint's grant answers an attached ordinary
+load; an attached LR waits for installation, and a read that attaches after
+installation, when the installed sector has been replaced, waits for release;
+each then looks up again. Load and lookahead acquisitions stop
 while an atomic is active or an AMO, SC or maintenance operation waits for
 admission. Contending eligible load misses and lookahead acquisitions alternate
 successful allocations. Permission lookups precede endpoint-allocation arbitration.
@@ -462,6 +466,22 @@ SC acceptance and local atomic admission do not read the SQ's write decode:
 the CPU presents an atomic only after its committed stores drain, so no store
 arrives beside them.
 
+An ordinary load's lookup also serves the other ordinary loads of its sector
+that are unanswered, unowned and not waiting, and that held their reads on
+the cycle before the response: a hit answers each from its own dword of the
+row, and an attachment attaches each to the same endpoint. The sector and
+hold comparisons register on that cycle, while the lookup's address holds. A
+store record, the atomic or a frozen write-back that holds the sector index,
+as in read selection, excludes every merge. A store that arrives on the
+sampled cycle or later reaches only reads allocated before it, which need not
+see it. A merge takes no slot that the hit path holds in stages 2 to 4: the
+sampled comparison leaves out the slots it will hold on the response cycle,
+so the hit path answers those slots itself. A shadow lookup's row answers
+nothing; its attachment, when both lookups miss, attaches the merged loads as
+any lookup's does. A grant answers only attached loads, which attached on a
+lookup at least three cycles after allocation, so the hit path has finished
+with them.
+
 A fatal stop reaches the L1D controller through one flop and takes effect on
 the cycle after it rises, so no selection or capture enable starts at the
 fatal logic. The CPU's retirement stop takes effect on the cycle after the
@@ -474,7 +494,7 @@ prepared separately, so read eligibility controls the final address selection
 without passing through the non-read address priority chain.
 
 Read status uses per-slot masks for allocation, response transfer, lookup
-results and grant completion. Completion and miss sets dominate allocation
+results, merges and grant completion. Completion and miss sets dominate allocation
 clears. Allocation sets dominate response clears of valid bits. A failed
 read completes on the cycle after its grant, from registers that hold its slot
 and error bit, and its waiters' waits end on the same cycle. Status outcomes
@@ -523,10 +543,11 @@ state unchanged. Accepted speculative identity lasts through U, including
 when a CPU load attaches to the endpoint.
 
 Speculative grants install Shared data through the ordinary victim and
-probe service. They do not own a read ID, modify demand response data or
-complete a CPU load. An attached load repeats permission lookup after
-installation. A clean speculative read error is disposed through C and U;
-an attached demand then retries and determines its own result. Dirty
+probe service. They own no read ID. In its first lookup cycle a speculative
+grant answers the ordinary loads attached to its endpoint; an attached LR
+repeats permission lookup after installation. A clean speculative read error
+is disposed through C and U; an attached demand then retries and determines
+its own result. Dirty
 writeback errors are fatal. Registered admitted LR or AMO work, selected
 atomics, SC, local maintenance, reset and fatal stop cancel unaccepted hints.
 A hint offered to its endpoint on the cycle a fatal stop rises is accepted,
@@ -606,10 +627,12 @@ prefetcher (see The home's prefetcher).
 
 L1D performance events count scalar CPU requests. CPU reads count at their
 first permission lookup; a read that the hit path answers counts as an access
-and a hit when it is answered, and its shadow lookup adds nothing. The first
-store in a record counts at its first permission lookup; each additional
-scalar that combines counts as an access and a buffer hit on acceptance, even
-before permission arrives. A combined
+and a hit when it is answered, and its shadow lookup adds nothing. A merged
+load without an earlier lookup counts as an access at its merge: a hit when
+the row answers it, a miss when it attaches. Its events wait for a cycle
+without another access event. The first store in a record counts at its first
+permission lookup; each additional scalar that combines counts as an access
+and a buffer hit on acceptance, even before permission arrives. A combined
 store and a tag lookup can contribute two accesses in one cycle. Cached SC
 counts its first definitive classification: a Modified hit, including a failed
 reservation, is a hit; a home acquisition is a permission miss. A first store
@@ -1048,8 +1071,9 @@ representative byte values, bounded controller transitions and CPU ownership.
 The `coherence_l1d` target also runs the L1D with three request endpoints and
 checks that no two live endpoints hold one sector, that no load endpoint is
 live beside a granted home atomic, that the hit path holds valid unanswered
-load slots and answers each at most once, that a lookup of a slot whose hit
-it holds is a shadow that agrees with it, that a local atomic excludes its sector and endpoint
+load slots and answers each at most once, also against grant answers and
+merges, that a lookup of a slot whose hit it holds is a shadow that agrees
+with it, that a local atomic excludes its sector and endpoint
 0 while blocking service, and that a load grant installs with a free WB
 slot. Its eight-endpoint stream tasks check speculative ownership and
 separation from demand response masks, and cover two accepted hints, demand

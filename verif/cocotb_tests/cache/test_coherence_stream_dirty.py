@@ -161,7 +161,11 @@ async def dirty_writeback_error_remains_fatal(dut: Any) -> None:
 
 @cocotb.test()
 async def installed_hint_evicted_before_attached_retry(dut: Any) -> None:
-    """Reacquire an installed hint evicted before its attached load or LR retries."""
+    """Answer an attached load from its hint's grant; reacquire for an attached LR.
+
+    The hint's sector is evicted before the LR retries, so the LR acquires it
+    again. The attached load needs no retry.
+    """
     b = DirtyStream(dut)
     for kind in (0, 1):
         await b.reset()
@@ -197,7 +201,11 @@ async def installed_hint_evicted_before_attached_retry(dut: Any) -> None:
             await b.tick()
             await b.set(i_g_valid=0)
 
-        await offer_grant(hint, 0)
+        # An LR's retry ignores the hint's data, so its grant carries zeros.
+        hint_data = (
+            0 if kind else sum(b.word(target + 8 * w) << (64 * w) for w in range(4))
+        )
+        await offer_grant(hint, hint_data)
         for _ in range(100):
             if (
                 b.get("operation_q") == 2
@@ -217,8 +225,13 @@ async def installed_hint_evicted_before_attached_retry(dut: Any) -> None:
             raise AssertionError("Conflicting grant did not install")
         await b.accept_completion(hint)
         await b.tick(40)
-        assert b.get("rd_wait_release_q") & 8
-        assert not b.get("rd_ready_q") & 8
+        if kind:
+            assert b.get("rd_wait_release_q") & 8
+            assert not b.get("rd_ready_q") & 8
+        else:
+            assert b.get("rd_ready_q") & 8 or (
+                b.get("o_read_valid") and b.get("o_read_id") == 3
+            )
         assert len([fields for _, fields in b.requests if fields[2] == target]) == 1
         await b.release(other)
         await b.release(hint)

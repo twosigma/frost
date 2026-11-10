@@ -223,8 +223,17 @@ module coherence_l1d #(
   logic read_miss;
   logic read_failure, read_hit, read_fill;
   // A load endpoint's grant answers its read once, in the grant's first
-  // Lookup cycle, from grant_q; installation follows.
-  logic grant_answer, grant_answered_q;
+  // Lookup cycle, from grant_q; installation follows. The same cycle answers
+  // every ordinary load attached to the endpoint, including a speculative
+  // endpoint's attached loads.
+  logic grant_answer, grant_service, grant_answered_q;
+  logic [7:0] grant_attached, grant_answer_slots;
+  // An ordinary load's lookup also serves the other unowned, unwaiting loads
+  // of its sector: a hit answers them from the same row, and an attachment
+  // attaches them to the same endpoint. The sector and hold comparisons
+  // register a cycle ahead, and leave out the slots the hit path holds.
+  logic [7:0] merge_sector_q, merge_slot, merge_hit_slots, merge_attach_slots;
+  logic merge_blocked_q, merge_hit, merge_attach;
   logic rd_candidate, rd_response, rd_load_miss;
   logic [2:0] rd_pick, rd_result, rd_rr_q, rd_response_rr_q, selected_read_q;
   logic pending_q, pending_miss_q;
@@ -436,8 +445,19 @@ module coherence_l1d #(
       (selected_kind_q == ReadAMO || !array_hit);
   // Endpoint 0's reads (LR, AMO, and loads with one endpoint) answer after
   // installation.
-  assign grant_answer = active && phase_q == Lookup && operation_q == GrantOp &&
-      grant_ep_q != '0 && !selected_grant_store && !grant_prefetch_q && !grant_answered_q;
+  assign grant_service = active && phase_q == Lookup && operation_q == GrantOp &&
+      grant_ep_q != '0 && !selected_grant_store && !grant_answered_q;
+  assign grant_answer = grant_service && !grant_prefetch_q;
+  // An attached load waits on its endpoint's current acquisition until
+  // installation, so its sector is the grant's. LR waits keep their own
+  // lookup after installation.
+  for (genvar slot = 0; slot < 8; slot++) begin : gen_grant_attached
+    assign grant_attached[slot] = Multi && rd_wait_q[slot] && !rd_wait_release_q[slot] &&
+        rd_wait_ep_q[slot] == grant_ep_q && rd_kind_q[slot] == ReadLoad &&
+        rd_valid_q[slot] && !rd_ready_q[slot];
+    assign grant_answer_slots[slot] = (grant_service && grant_attached[slot]) ||
+        (grant_answer && ld_read_q[grant_ep_q] == 3'(slot));
+  end
   assign read_fill = grant_answer || (active && phase_q == UpdateWait && array_ready &&
       operation_q == GrantOp && grant_ep_q == '0 && !selected_grant_store &&
       !acquisition_sc_q);
@@ -458,6 +478,7 @@ module coherence_l1d #(
       .i_hit_id(phase_q == LocalReadReady ? atomic_read_q : selected_read_q),
       .i_fill_valid(read_fill),
       .i_fill_id(fill_read_slot),
+      .i_answer_mask((grant_service ? grant_attached : 8'd0) | merge_hit_slots),
       .i_miss_valid(read_miss && !wait_attach),
       .i_path_valid(s4_valid_q),
       .i_path_id(s4_slot_q),
@@ -528,15 +549,52 @@ module coherence_l1d #(
     perf_outstanding += cache_perf_pkg::MissOutstandingBits'(
         atomic_q && atomic_sc_q && sc_home_q && !atomic_granted_q && !o_sc_result_valid);
   end
+  // A merged load counts as its own access: a hit when the lookup's row
+  // answers it, a miss when it attaches. Its events wait in these counts for
+  // cycles without a lookup event, so each cycle carries at most one access.
+  logic [7:0] perf_merge_new;
+  logic [3:0] perf_owed_hit_q, perf_owed_miss_q, perf_merge_hits, perf_merge_misses;
+  logic perf_emit_hit, perf_emit_miss;
+  always_comb begin
+    perf_merge_new = (merge_hit_slots | merge_attach_slots) & ~perf_read_seen_q;
+    perf_merge_hits = '0;
+    perf_merge_misses = '0;
+    for (int slot = 0; slot < 8; slot++) begin
+      perf_merge_hits += 4'(merge_hit_slots[slot] && !perf_read_seen_q[slot]);
+      perf_merge_misses += 4'(merge_attach_slots[slot] && !perf_read_seen_q[slot]);
+    end
+  end
+  assign perf_emit_miss = !perf_access && perf_owed_miss_q != 0;
+  assign perf_emit_hit = !perf_access && perf_owed_miss_q == 0 && perf_owed_hit_q != 0;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      perf_owed_hit_q <= '0;
+      perf_owed_miss_q <= '0;
+    end else begin
+      perf_owed_hit_q <= perf_owed_hit_q + perf_merge_hits - 4'(perf_emit_hit);
+      perf_owed_miss_q <= perf_owed_miss_q + perf_merge_misses - 4'(perf_emit_miss);
+    end
+  end
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst) begin
+      p_perf_owed_bound : assert (5'(perf_owed_hit_q) + 5'(perf_merge_hits) <= 5'd15 &&
+          5'(perf_owed_miss_q) + 5'(perf_merge_misses) <= 5'd15);
+    end
+`endif
+`endif
   // Allocation clears a slot's lookup history after its lookup update.
   for (genvar slot = 0; slot < 8; slot++) begin : gen_perf_read_flags
     wire lookup = perf_lookup && operation_q == ReadOp && selected_read_q == 3'(slot);
     (* keep = "true" *) logic [1:0] seen_choice, miss_choice;
     for (genvar allocated = 0; allocated < 2; allocated++) begin : gen_allocate_choice
       wire clear_slot = allocated != 0 && i_read_id == 3'(slot);
-      assign seen_choice[allocated] = !clear_slot && (perf_read_seen_q[slot] || lookup);
+      assign seen_choice[allocated] = !clear_slot &&
+          (perf_read_seen_q[slot] || lookup || perf_merge_new[slot]);
       assign miss_choice[allocated] = !clear_slot &&
-          (lookup ? !perf_hit : perf_read_miss_q[slot]);
+          (lookup ? !perf_hit : perf_merge_new[slot] ? merge_attach_slots[slot] :
+           perf_read_miss_q[slot]);
     end
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
@@ -561,11 +619,11 @@ module coherence_l1d #(
       o_perf_events <= '0;
       o_perf_events.store_combined <= store_combined;
       o_perf_events.store_combined_under_miss <= store_combined && perf_outstanding != 0;
-      o_perf_events.access <= perf_access;
-      o_perf_events.hit <= perf_hit;
-      o_perf_events.miss <= perf_access && !perf_hit;
+      o_perf_events.access <= perf_access || perf_emit_hit || perf_emit_miss;
+      o_perf_events.hit <= perf_hit || perf_emit_hit;
+      o_perf_events.miss <= (perf_access && !perf_hit) || perf_emit_miss;
       o_perf_events.miss_outstanding <= perf_outstanding;
-      o_perf_events.hit_under_miss <= perf_hit && perf_outstanding != 0;
+      o_perf_events.hit_under_miss <= (perf_hit || perf_emit_hit) && perf_outstanding != 0;
       o_perf_events.path_hit <= s4_valid_q;
       o_perf_events.path_hit_under_miss <= s4_valid_q && perf_outstanding != 0;
       o_perf_events.writeback <= active && phase_q == Freeze &&
@@ -610,12 +668,13 @@ module coherence_l1d #(
       if (f_past_valid) begin
         assert (perf_read_seen_q[slot] == $past(
             !i_rst && !(i_read_valid && i_read_id == 3'(slot)) &&
-            (perf_read_seen_q[slot] ||
+            (perf_read_seen_q[slot] || perf_merge_new[slot] ||
              (perf_lookup && operation_q == ReadOp && selected_read_q == 3'(slot)))));
         assert (perf_read_miss_q[slot] == $past(
             !i_rst && !(i_read_valid && i_read_id == 3'(slot)) &&
             ((perf_lookup && operation_q == ReadOp && selected_read_q == 3'(slot)) ?
-             !perf_hit : perf_read_miss_q[slot])));
+             !perf_hit : perf_merge_new[slot] ? merge_attach_slots[slot] :
+             perf_read_miss_q[slot])));
       end
     end
   end
@@ -896,7 +955,7 @@ module coherence_l1d #(
   // Idle clears the flag before each accepted grant enters Lookup.
   always_ff @(posedge i_clk) begin
     if (i_rst || phase_q == Idle) grant_answered_q <= 1'b0;
-    else if (grant_answer) grant_answered_q <= 1'b1;
+    else if (grant_service) grant_answered_q <= 1'b1;
   end
 
   assign maint_eligible = maint_q && !pending_q && !atomic_q && !any_live && wb_free;
@@ -1539,7 +1598,7 @@ module coherence_l1d #(
     for (genvar allocated = 0; allocated < 2; allocated++) begin : gen_allocate_choice
       wire clear_slot = allocated != 0 && i_read_id == 3'(slot);
       assign wait_choice[allocated] = Multi ? !clear_slot &&
-          ((rd_wait_q[slot] && !wait_ended) ||
+          ((rd_wait_q[slot] && !wait_ended) || merge_attach_slots[slot] ||
            (wait_attach && wait_attach_live && selected_read_q == 3'(slot))) : rd_wait_q[slot];
     end
     always_ff @(posedge i_clk) begin
@@ -1568,7 +1627,9 @@ module coherence_l1d #(
     for (int slot = 0; slot < 8; slot++)
     if (i_rst) rd_wait_ref_q[slot] <= 1'b0;
     else rd_wait_ref_q[slot] <= !(i_read_valid && i_read_id == 3'(slot)) &&
-        (rd_wait_ref[slot] || (Multi && wait_attach && selected_read_q == 3'(slot)));
+        (rd_wait_ref[slot] || (Multi && wait_attach && (selected_read_q == 3'(slot) ||
+         (wait_attach_live && selected_kind_q == ReadLoad && !merge_blocked_q &&
+          merge_slot[slot]))));
     if (sim_reset_seen_q && !i_rst) begin
       p_read_wait_exact : assert (rd_wait_q == rd_wait_ref);
       p_load_ep_free_exact : assert (load_ep_free == load_ep_free_ref);
@@ -1626,8 +1687,11 @@ module coherence_l1d #(
         if (active && phase_q == UpdateWait && array_ready && operation_q == TwinOp &&
             twin_ep_q == EpBits'(ep) && ep > 0) ld_done_q[ep] <= 1'b1;
       end
+      // A merged load takes the attachment of the lookup it joins. A slot's
+      // endpoint and release flag matter only while it waits.
       for (int slot = 0; slot < 8; slot++) begin
-        if (wait_attach && selected_read_q == 3'(slot)) begin
+        if (wait_attach && (selected_read_q == 3'(slot) ||
+            (selected_kind_q == ReadLoad && merge_slot[slot]))) begin
           rd_wait_ep_q[slot] <= same_line_ep;
           rd_wait_release_q[slot] <= installed_q[same_line_ep];
         end
@@ -1653,16 +1717,23 @@ module coherence_l1d #(
   always_ff @(posedge i_clk) begin
     for (int ep = 0; ep < EpSlots; ep++)
       if (i_rst || (ep_request_valid[ep] && ep_request_ready[ep])) answered_q[ep] <= 1'b0;
-      else if (grant_answer && grant_ep_q == EpBits'(ep)) answered_q[ep] <= 1'b1;
+      else if (grant_service && grant_ep_q == EpBits'(ep)) answered_q[ep] <= 1'b1;
     if (sim_reset_seen_q && !i_rst && Multi) begin
       if (phase_q == Lookup && operation_q == GrantOp && grant_ep_q != '0)
         p_grant_answer_flag : assert (grant_answered_q == answered_q[grant_ep_q]);
+      if (grant_service) p_grant_service_once : assert (!answered_q[grant_ep_q]);
       if (grant_answer) begin
         p_grant_answer_once : assert (!answered_q[grant_ep_q]);
         p_grant_answer_read : assert (live[grant_ep_q] && !ld_prefetch_q[grant_ep_q] &&
             rd_valid_q[ld_read_q[grant_ep_q]] && !rd_ready_q[ld_read_q[grant_ep_q]] &&
             rd_kind_q[ld_read_q[grant_ep_q]] == ReadLoad);
       end
+      // A speculative grant answers only attached loads, and the grant's
+      // sector is its endpoint's line.
+      for (int slot = 0; slot < 8; slot++)
+        if (grant_answer_slots[slot])
+          p_grant_answer_slot : assert (!(ld_prefetch_q[grant_ep_q] && !grant_attached[slot]) &&
+              grant_q.addr[ADDR_WIDTH-1:5] == ld_line_q[grant_ep_q]);
     end
   end
 `endif
@@ -1830,6 +1901,52 @@ module coherence_l1d #(
       .o_index(rd_pick),
       .o_address(rd_selected_addr)
   );
+
+  // Same-sector merging. A lookup address holds from Idle through the
+  // lookup, so the comparisons sampled a cycle before a LookupWait response
+  // use its address. A slot counts only if it held a read on that cycle, so a
+  // read allocated since then waits for its own lookup. The hold comparison
+  // follows the read selector's: a sector index that a store record, the
+  // atomic or a frozen write-back holds excludes every merge. A store that
+  // arrives on the sampled cycle or later reaches only reads allocated before
+  // it, which need not see it.
+  //
+  // The hit path answers the slots it holds in stages 2 to 4, so no merge
+  // takes them: the sampled comparison leaves out the slots the hit path holds
+  // on the next cycle, from its stage-1 take, its stage-2 slot and its stage-3
+  // hit. A slot in stage 1 was allocated on the previous cycle, so it held no
+  // read on the sampled cycle.
+  localparam int unsigned MergeBlockBits = 18;
+  logic merge_blocked;
+  logic [7:0] merge_path_next;
+  always_comb begin
+    merge_blocked = 1'b0;
+    for (int holder = 0; holder < 4; holder++)
+      merge_blocked |= o_block_valid[holder] && lookup_addr_q[5+:MergeBlockBits] ==
+          o_block_addr[holder][5+:MergeBlockBits];
+    for (int slot = 0; slot < 2; slot++)
+      merge_blocked |= wb_live[slot] &&
+          lookup_addr_q[5+:MergeBlockBits] == wb_addr[slot][5+:MergeBlockBits];
+  end
+  assign merge_path_next = (path_take ? 8'd1 << path_id_q : 8'd0) |
+      (s2_valid_q ? 8'd1 << s2_slot_q : 8'd0) | (s3_valid_q && path_hit ? 8'd1 << s3_slot_q : 8'd0);
+  always_ff @(posedge i_clk) begin
+    merge_blocked_q <= merge_blocked;
+    for (int slot = 0; slot < 8; slot++)
+      merge_sector_q[slot] <= rd_valid_q[slot] && !merge_path_next[slot] &&
+          rd_addr_q[slot][ADDR_WIDTH-1:5] == lookup_addr_q[ADDR_WIDTH-1:5];
+  end
+  for (genvar slot = 0; slot < 8; slot++) begin : gen_merge_slot
+    assign merge_slot[slot] = merge_sector_q[slot] && rd_valid_q[slot] && !rd_ready_q[slot] &&
+        rd_kind_q[slot] == ReadLoad && !rd_owned[slot] && !rd_wait_q[slot] &&
+        selected_read_q != 3'(slot);
+  end
+  assign merge_hit = read_hit && phase_q == LookupWait && selected_kind_q == ReadLoad &&
+      !merge_blocked_q;
+  assign merge_attach = wait_attach && wait_attach_live && selected_kind_q == ReadLoad &&
+      !merge_blocked_q;
+  assign merge_hit_slots = merge_hit ? merge_slot : '0;
+  assign merge_attach_slots = merge_attach ? merge_slot : '0;
 
   always_comb begin
     wb_free = 1'b0;
@@ -2757,9 +2874,10 @@ module coherence_l1d #(
             end
           end
           Lookup: begin
-            if (grant_answer)
-              rd_data_q[ld_read_q[grant_ep_q]] <=
-                  grant_q.data[64*rd_addr_q[ld_read_q[grant_ep_q]][4:3]+:64];
+            // Each answered slot selects its own dword of the captured grant.
+            for (int slot = 0; slot < 8; slot++)
+              if (grant_answer_slots[slot])
+                rd_data_q[slot] <= grant_q.data[64*rd_addr_q[slot][4:3]+:64];
             if (array_ready) phase_q <= LookupWait;
           end
           LookupWait:
@@ -2878,10 +2996,12 @@ module coherence_l1d #(
                   phase_q <= LocalCheck;
                 end else if (array_hit) begin
                   // A shadow lookup whose tags hit answers nothing either: a
-                  // later lookup does.
-                  if (!shadow_q)
-                    rd_data_q[selected_read_q] <=
-                        array_data[64*rd_addr_q[selected_read_q][4:3]+:64];
+                  // later lookup does. Otherwise the read and the merged
+                  // loads of its sector each take their own dword of the row;
+                  // a shadow lookup merges nothing.
+                  for (int slot = 0; slot < 8; slot++)
+                    if ((selected_read_q == 3'(slot) && !shadow_q) || merge_hit_slots[slot])
+                      rd_data_q[slot] <= array_data[64*rd_addr_q[slot][4:3]+:64];
                   phase_q <= Idle;
                 end else if (!Multi) begin
                   phase_q <= !request_live && wb_free ? Acquire : Idle;
@@ -3077,6 +3197,32 @@ module coherence_l1d #(
   end
 `ifndef SYNTHESIS
   logic [7:0] reference_ready_next, reference_error_next, reference_valid_next, reference_miss_next;
+`ifndef FORMAL
+  // A slot valid on two consecutive cycles holds one read, since a slot
+  // reallocates only after its response clears it, and a lookup's address
+  // holds from Idle through LookupWait. So the sampled sector comparison
+  // names the slots that held a read of the lookup's sector a cycle earlier,
+  // less the slots the hit path holds in stages 2 to 4.
+  logic [7:0] reference_valid_prev_q, reference_path;
+  assign reference_path = (s2_valid_q ? 8'd1 << s2_slot_q : 8'd0) |
+      (s3_valid_q ? 8'd1 << s3_slot_q : 8'd0) | (s4_valid_q ? 8'd1 << s4_slot_q : 8'd0);
+  logic [ADDR_WIDTH-1:0] reference_addr_prev_q[8];
+  always_ff @(posedge i_clk) begin
+    reference_valid_prev_q <= rd_valid_q;
+    reference_addr_prev_q <= rd_addr_q;
+    // A read reaches LookupWait through Lookup, which holds its address.
+    if (sim_reset_seen_q && !i_rst && active && phase_q == LookupWait &&
+        operation_q == ReadOp) begin
+      p_merge_blocked_exact : assert (merge_blocked_q == $past(merge_blocked));
+      for (int slot = 0; slot < 8; slot++)
+        if (rd_valid_q[slot])
+          p_merge_sector_exact : assert (merge_sector_q[slot] ==
+              (reference_valid_prev_q[slot] && rd_addr_q[slot] == reference_addr_prev_q[slot] &&
+               !reference_path[slot] &&
+               rd_addr_q[slot][ADDR_WIDTH-1:5] == lookup_addr_q[ADDR_WIDTH-1:5]));
+    end
+  end
+`endif
   always_ff @(posedge i_clk) if (sim_reset_seen_q && !i_rst) begin
     p_grant_live : assert (!grant_valid || live[grant_pick]);
     p_grant_sc_exclusive : assert (!(grant_valid && o_sc_ready));
@@ -3111,9 +3257,17 @@ module coherence_l1d #(
             end
             default: begin
               if (shadow_skip) begin
-              end else if (rd_kind_q[selected_read_q] != ReadAMO && array_hit)
+              end else if (rd_kind_q[selected_read_q] != ReadAMO && array_hit) begin
                 reference_ready_next[selected_read_q] = 1'b1;
-              else if (!(Multi && rd_kind_q[selected_read_q] != ReadAMO && same_line))
+                // A load's hit answers every unowned, unwaiting load of its
+                // sector that held its read a cycle earlier.
+                if (rd_kind_q[selected_read_q] == ReadLoad && !merge_blocked_q)
+                  for (int slot = 0; slot < 8; slot++)
+                    if (slot != int'(selected_read_q) && rd_valid_q[slot] && !rd_ready_q[slot] &&
+                        rd_kind_q[slot] == ReadLoad && !rd_owned[slot] && !rd_wait_q[slot] &&
+                        merge_sector_q[slot])
+                      reference_ready_next[slot] = 1'b1;
+              end else if (!(Multi && rd_kind_q[selected_read_q] != ReadAMO && same_line))
                 reference_miss_next[selected_read_q] = 1'b1;
             end
           endcase
@@ -3121,8 +3275,14 @@ module coherence_l1d #(
         LocalReadReady: reference_ready_next[atomic_read_q] = 1'b1;
         Lookup:
         if (operation_q == GrantOp && grant_ep_q != '0 && !selected_grant_store &&
-            !ld_prefetch_q[grant_ep_q] && !grant_answered_q)
-          reference_ready_next[ld_read_q[grant_ep_q]] = 1'b1;
+            !grant_answered_q) begin
+          if (!ld_prefetch_q[grant_ep_q]) reference_ready_next[ld_read_q[grant_ep_q]] = 1'b1;
+          for (int slot = 0; slot < 8; slot++)
+            if (Multi && rd_wait_q[slot] && !rd_wait_release_q[slot] &&
+                rd_wait_ep_q[slot] == grant_ep_q && rd_kind_q[slot] == ReadLoad &&
+                rd_valid_q[slot] && !rd_ready_q[slot])
+              reference_ready_next[slot] = 1'b1;
+        end
         UpdateWait:
         if (array_ready && operation_q == GrantOp && grant_ep_q == '0 &&
             !selected_grant_store && !acquisition_sc_q)
@@ -3151,7 +3311,9 @@ module coherence_l1d #(
         (phase_q == LocalReadReady ? atomic_read_q : selected_read_q) == s4_slot_q) ||
         (read_miss && selected_read_q == s4_slot_q) ||
         (read_fill && fill_read_slot == s4_slot_q) ||
-        (fail_clear_q && fail_clear_slot_q == s4_slot_q);
+        (fail_clear_q && fail_clear_slot_q == s4_slot_q) ||
+        grant_answer_slots[s4_slot_q] || merge_hit_slots[s4_slot_q] ||
+        merge_attach_slots[s4_slot_q];
   end
   always_ff @(posedge i_clk) begin
     if (sim_reset_seen_q && !i_rst) begin
@@ -3450,6 +3612,126 @@ module coherence_l1d #(
     end
 `endif
 `undef L1D_ZERO_CHECKS
+`endif
+  // Answer checks: simulation runs them always, and the formal answer tasks
+  // define READ_ANSWER_PROOF to check them alone. Every answer completes an
+  // unanswered read once, outside probe service, never while a hold that
+  // preceded the read's allocation remains, and with the read's own dword of
+  // the grant or row that answers it.
+`ifndef SYNTHESIS
+`ifdef FORMAL
+`ifdef READ_ANSWER_PROOF
+`define COHERENCE_L1D_ANSWER_CHECKS
+`endif
+`else
+`define COHERENCE_L1D_ANSWER_CHECKS
+`endif
+`endif
+`ifdef COHERENCE_L1D_ANSWER_CHECKS
+  logic [7:0] f_answer_failure, f_answer_completion, f_answer_held_q, f_answer_check_q;
+  logic [7:0] f_answer_hold_at_alloc, f_answer_hold_now;
+  logic [63:0] f_answer_data_q[8];
+  assign f_answer_failure = fail_clear_q ? 8'd1 << fail_clear_slot_q : 8'd0;
+  assign f_answer_completion = rd_complete & ~f_answer_failure;
+  always_comb begin
+    f_answer_hold_at_alloc = '0;
+    f_answer_hold_now = '0;
+    for (int slot = 0; slot < 8; slot++) begin
+      for (int holder = 0; holder < 4; holder++) begin
+        f_answer_hold_at_alloc[slot] |= o_block_valid[holder] &&
+            i_address[5+:MergeBlockBits] == o_block_addr[holder][5+:MergeBlockBits];
+        f_answer_hold_now[slot] |= o_block_valid[holder] &&
+            rd_addr_q[slot][5+:MergeBlockBits] == o_block_addr[holder][5+:MergeBlockBits];
+      end
+      for (int wb_slot = 0; wb_slot < 2; wb_slot++) begin
+        f_answer_hold_at_alloc[slot] |= wb_live[wb_slot] &&
+            i_address[5+:MergeBlockBits] == wb_addr[wb_slot][5+:MergeBlockBits];
+        f_answer_hold_now[slot] |= wb_live[wb_slot] &&
+            rd_addr_q[slot][5+:MergeBlockBits] == wb_addr[wb_slot][5+:MergeBlockBits];
+      end
+    end
+  end
+  // The slots the hit path holds in stages 2 to 4, which it answers itself.
+  logic [7:0] f_answer_path, f_answer_path_next_q;
+  assign f_answer_path = (s2_valid_q ? 8'd1 << s2_slot_q : 8'd0) |
+      (s3_valid_q ? 8'd1 << s3_slot_q : 8'd0) | (s4_valid_q ? 8'd1 << s4_slot_q : 8'd0);
+  // Each completion source's slots: hit, fill, failure, hit path, attached
+  // grant answers and merged hits. A slot takes at most one per cycle.
+  logic [5:0][7:0] f_answer_src;
+  logic [7:0] f_answer_multi;
+  assign f_answer_src[0] = read_hit ?
+      8'd1 << (phase_q == LocalReadReady ? atomic_read_q : selected_read_q) : 8'd0;
+  assign f_answer_src[1] = read_fill ? 8'd1 << fill_read_slot : 8'd0;
+  assign f_answer_src[2] = f_answer_failure;
+  assign f_answer_src[3] = s4_valid_q ? 8'd1 << s4_slot_q : 8'd0;
+  assign f_answer_src[4] = grant_service ? grant_attached : 8'd0;
+  assign f_answer_src[5] = merge_hit_slots;
+  always_comb begin
+    f_answer_multi = '0;
+    for (int slot = 0; slot < 8; slot++)
+      f_answer_multi[slot] = !$onehot0({f_answer_src[0][slot], f_answer_src[1][slot],
+          f_answer_src[2][slot], f_answer_src[3][slot], f_answer_src[4][slot],
+          f_answer_src[5][slot]});
+  end
+  // Per-slot violations; each check below covers all eight slots.
+  logic [7:0] f_answer_bad_merge, f_answer_bad_data, f_answer_bad_grant, f_answer_lost;
+  always_comb begin
+    for (int slot = 0; slot < 8; slot++) begin
+      f_answer_bad_merge[slot] = (merge_hit_slots[slot] || merge_attach_slots[slot]) &&
+          !(rd_addr_q[slot][ADDR_WIDTH-1:5] == lookup_addr_q[ADDR_WIDTH-1:5] &&
+            rd_kind_q[slot] == ReadLoad && operation_q == ReadOp &&
+            selected_read_q != 3'(slot));
+      f_answer_bad_data[slot] = f_answer_check_q[slot] && rd_valid_q[slot] &&
+          !(rd_ready_q[slot] && rd_data_q[slot] == f_answer_data_q[slot]);
+      f_answer_bad_grant[slot] = grant_answer_slots[slot] && !(rd_kind_q[slot] == ReadLoad &&
+          rd_addr_q[slot][ADDR_WIDTH-1:5] == grant_q.addr[ADDR_WIDTH-1:5] &&
+          !grant_q.error && grant_q.opcode != coherence_pkg::GrantFail);
+      f_answer_lost[slot] = Multi && grant_install && grant_ep_q != '0 &&
+          !selected_grant_store && rd_wait_q[slot] && !rd_wait_release_q[slot] &&
+          rd_wait_ep_q[slot] == grant_ep_q && rd_kind_q[slot] == ReadLoad &&
+          rd_valid_q[slot] && !rd_ready_q[slot];
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (sim_reset_seen_q && !i_rst && active) begin
+      p_answer_once : assert ((rd_complete & ~(rd_valid_q & ~rd_ready_q)) == '0);
+      p_answer_single_source : assert (f_answer_multi == '0);
+      // The hit path's answer is ordered at its stage-2 array read, which
+      // starts only outside probe service, so a probe may arrive before the
+      // answer; every other completion falls outside probe service.
+      p_answer_probe_order : assert ((f_answer_completion & ~f_answer_src[3]) == '0 ||
+          (!probe_valid_q && cut_phase_q == CutIdle));
+      p_answer_store_order : assert ((f_answer_completion & f_answer_held_q) == '0);
+      p_answer_merge_sector : assert (f_answer_bad_merge == '0);
+      p_answer_merge_row : assert (merge_hit_slots == '0 ||
+          (array_hit && array_data_valid && !shadow_q &&
+           array_addr[ADDR_WIDTH-1:5] == lookup_addr_q[ADDR_WIDTH-1:5]));
+      // No grant answer or merge takes a slot the hit path holds, so each
+      // slot completes once across the hit path and the answers; the merge's
+      // registered exclusion names exactly the hit path's slots.
+      p_answer_path_disjoint : assert (((grant_answer_slots | merge_hit_slots |
+          merge_attach_slots) & f_answer_path) == '0);
+      p_answer_path_next : assert (f_answer_path_next_q == f_answer_path);
+      p_answer_data : assert (f_answer_bad_data == '0);
+      // A grant answers only ordinary loads of its own sector, after a
+      // successful grant, and no attached load outlives the installation
+      // unanswered.
+      p_answer_grant_sector : assert (f_answer_bad_grant == '0);
+      p_answer_attached : assert (f_answer_lost == '0);
+    end
+    for (int slot = 0; slot < 8; slot++) begin
+      // A hold present at allocation lasts until no holder matches the read.
+      if (i_rst) f_answer_held_q[slot] <= 1'b0;
+      else if (i_read_valid && i_read_id == 3'(slot))
+        f_answer_held_q[slot] <= f_answer_hold_at_alloc[slot];
+      else if (!f_answer_hold_now[slot]) f_answer_held_q[slot] <= 1'b0;
+      f_answer_check_q[slot] <= !i_rst && (grant_answer_slots[slot] || merge_hit_slots[slot]);
+      f_answer_path_next_q[slot] <= !i_rst && merge_path_next[slot];
+      f_answer_data_q[slot] <= grant_answer_slots[slot] ?
+          grant_q.data[64*rd_addr_q[slot][4:3]+:64] : array_data[64*rd_addr_q[slot][4:3]+:64];
+    end
+  end
+`undef COHERENCE_L1D_ANSWER_CHECKS
 `endif
 `ifdef FORMAL
 `ifdef STORE_DATA_PROOF
@@ -3923,6 +4205,12 @@ module coherence_l1d #(
   logic f_turn_store_sent_q = 0, f_turn_probe_sent_q = 0;
   logic [3:0] f_turn_reply_age_q = 0;
   wire f_turn_store = f_turn_scenario == 1 && f_turn_sent_q == 2 && !f_turn_store_sent_q;
+  // The first grant answers read 2, its attached waiter, so a read the
+  // environment presents once, at a cycle it chooses, can use the turn.
+  (* anyseq *) logic f_turn_late_pick;
+  logic f_turn_late_sent_q = 0;
+  wire f_turn_late = f_turn_late_pick && !f_turn_late_sent_q && !f_turn_store &&
+      f_turn_cycle_q >= 30 && f_turn_cycle_q < 100;
   coh_p_t f_turn_probe;
   coh_d_t f_turn_first_q, f_turn_second_q;
   coh_g_t f_turn_grant;
@@ -3940,6 +4228,7 @@ module coherence_l1d #(
     if (f_turn_cycle_q != 127) f_turn_cycle_q <= f_turn_cycle_q + 1'b1;
     if (i_g_valid && o_g_ready) f_turn_sent_q <= f_turn_sent_q + 1'b1;
     if (f_turn_store) f_turn_store_sent_q <= 1;
+    if (f_turn_late) f_turn_late_sent_q <= 1;
     if (probe_capture) f_turn_probe_sent_q <= 1;
     if (o_r_valid && f_turn_reply_age_q < 12) f_turn_reply_age_q <= f_turn_reply_age_q + 1'b1;
     assume (f_turn_scenario <= 3);
@@ -3954,15 +4243,17 @@ module coherence_l1d #(
     assume (i_maint_valid == (f_turn_scenario == 3 && grant_read_turn_q && phase_q == Idle));
     assume (!i_wa_valid && !i_u_valid);
     assume (i_read_valid == (f_turn_cycle_q == 4 || f_turn_cycle_q == 5 ||
-        f_turn_cycle_q == 6));
-    assume (i_read_id == (f_turn_cycle_q == 4 ? 0 : f_turn_cycle_q == 5 ? 1 : 2));
+        f_turn_cycle_q == 6 || f_turn_late));
+    assume (i_read_id == (f_turn_cycle_q == 4 ? 0 : f_turn_cycle_q == 5 ? 1 :
+        f_turn_cycle_q == 6 ? 2 : 3));
     assume (i_address == ADDR_WIDTH'(32'h80000000 + (f_turn_store || f_turn_cycle_q == 4 ? 0 :
-        f_turn_cycle_q == 5 ? 64 : 8)));
+        f_turn_cycle_q == 5 ? 64 : f_turn_late ? 16 : 8)));
     assume (i_read_kind == ReadLoad && i_read_size == 3 && i_read_tag == 0);
     assume (i_d_ready == '1 && i_c_ready == 0 && !i_read_ready);
     assume (i_g_valid == (f_turn_cycle_q >= 35 && f_turn_sent_q < 2));
     assume (i_g == f_turn_grant);
-    p_stream_read_turn : cover (phase_q == Idle && grant_read_yield && rd_pick == 2);
+    p_stream_read_turn : cover (phase_q == Idle && grant_read_yield && rd_pick == 3 &&
+        rd_ready_q[2]);
     p_stream_cancel_turn : cover (phase_q == Idle && grant_read_hold &&
         prefetch_cancel && rd_candidate && !probe_priority && !probe_valid_q);
     p_stream_empty_turn : cover (phase_q == Idle && grant_read_hold &&
