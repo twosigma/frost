@@ -70,7 +70,7 @@ module coherent_l0_flags #(
         if (i_block)
           for (int entry = 0; entry < DEPTH; entry++) begin
             block_probe = IndexWidth'(entry);
-            if (block_probe[IndexWidth-1:3] == i_block_index[IndexWidth-1:3]) choice[entry] = 1'b0;
+            if ((block_probe >> 3) == (i_block_index >> 3)) choice[entry] = 1'b0;
           end
       end
       assign choices[2*stored+filled] = choice;
@@ -102,7 +102,7 @@ module coherent_l0_flags #(
     if (i_block)
       for (int entry = 0; entry < DEPTH; entry++) begin
         reference_probe = IndexWidth'(entry);
-        if (reference_probe[IndexWidth-1:3] == i_block_index[IndexWidth-1:3])
+        if ((reference_probe >> 3) == (i_block_index >> 3))
           reference[entry] = 1'b0;
       end
   end
