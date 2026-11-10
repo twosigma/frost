@@ -104,7 +104,7 @@ module frost_sram_1w1r #(
   localparam int unsigned Macro1024x64m8 = 2;  // L1D data
   localparam int unsigned Macro1024x19 = 3;  // L1D tags
   localparam int unsigned Macro1024x18 = 4;  // L2 tags
-  localparam int unsigned Macro512x68 = 5;  // NIC FIFOs
+  localparam int unsigned Macro512x68 = 5;  // NIC receive FIFO
   localparam int unsigned Macro256x36 = 6;  // BTB slot-2 payloads
   localparam int unsigned Macro128x64m8 = 7;  // L1I data
   localparam int unsigned Macro8192x28 = 8;  // Instruction memory, cold banks

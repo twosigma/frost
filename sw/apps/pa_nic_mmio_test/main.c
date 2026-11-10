@@ -21,6 +21,9 @@
 #include "nic.h"
 #include "uart.h"
 
+/* ABI_CTRL's wide-mode bits; bits 3 and 4 advertise checksum and segmentation offload. */
+#define NIC_ABI_WIDE_MASK (NIC_ABI_WIDE | NIC_ABI_WIDE_SUPPORTED)
+
 #ifndef FROST_DDR_CAPACITY_LOG2_BYTES
 #error FROST_DDR_CAPACITY_LOG2_BYTES must match the RTL build
 #endif
@@ -49,12 +52,12 @@ int main(void)
                 (NIC_STATUS_RX_IDLE | NIC_STATUS_TX_IDLE))
             break;
     }
-    if (wait == 100000u || nic_read(NIC_ABI_CTRL) != NIC_ABI_WIDE_SUPPORTED) {
+    if (wait == 100000u || (nic_read(NIC_ABI_CTRL) & NIC_ABI_WIDE_MASK) != NIC_ABI_WIDE_SUPPORTED) {
         uart_printf("PA NIC wide ABI unavailable\n");
         failures++;
     }
     nic_select_wide();
-    if (nic_read(NIC_ABI_CTRL) != (NIC_ABI_WIDE | NIC_ABI_WIDE_SUPPORTED)) {
+    if ((nic_read(NIC_ABI_CTRL) & NIC_ABI_WIDE_MASK) != (NIC_ABI_WIDE | NIC_ABI_WIDE_SUPPORTED)) {
         uart_printf("PA NIC wide ABI switch failed\n");
         failures++;
     }

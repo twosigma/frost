@@ -17,8 +17,8 @@
 /*
  * MAC/PCS clock crossings, packet FIFOs, resets, and raw loopback.
  *
- * Beats cross as 68-bit FIFO words {code, data} (nic_pkg beat code:
- * {last, bytes - 1}). Each domain's reset comes from nic_domain_reset
+ * RX beats cross as 68-bit FIFO words {code, data}; TX adds the abort bit and 15-bit checksum
+ * request for 84 bits (nic_pkg beat code: {last, bytes - 1}). Each domain's reset comes from nic_domain_reset
  * under the core-side controller's generation handshake; the FIFO half in
  * a domain resets with that domain, the core-side half with
  * i_core_rst_dom. The raw loopback (MAC_LOOPBACK: raw TX into raw RX with
@@ -31,9 +31,18 @@
  * levels are two-flop synchronized; MAC event pulses become 64-bit totals
  * in the core domain through Gray-coded counters that rebase while the
  * domain is not ready.
+ *
+ * The RX FIFO is RX_FIFO_DEPTH words deep and reports full at a runtime
+ * limit (i_rx_fifo_limit, 8..RX_FIFO_DEPTH words). A new limit crosses to the
+ * RX clock through a request/acknowledge mailbox: it is applied as one value
+ * and o_rx_fifo_limit_busy stays high until it has been, and a write is
+ * issued (i_rx_fifo_limit_wr) only while the mailbox is idle. The mailbox
+ * takes the RX FIFO's two resets, so a reset returns the limit to its
+ * default on both sides together.
  */
 module nic_mac_wrap #(
     parameter int unsigned FIFO_DEPTH = 512,
+    parameter int unsigned RX_FIFO_DEPTH = 512,
     parameter int MAX_FRAME_BYTES = 9216,
     // 1 = the raw TX-to-RX loopback behind MAC_LOOPBACK (a shared MAC clock);
     // 0 = no loopback path (independent TX and RX clocks).
@@ -43,25 +52,40 @@ module nic_mac_wrap #(
     parameter bit GMII_MODE = 1'b0
 ) (
     // Core domain.
-    input  logic       i_clk,
-    input  logic       i_rst,
-    input  logic       i_soft_rst,
-    input  logic [1:0] i_req,            // reset handshake (0 = TX, 1 = RX)
-    input  logic [1:0] i_gen,
-    output logic [1:0] o_in_reset,       // raw domain levels for the controller
+    input logic i_clk,
+    input logic i_rst,
+    input logic i_soft_rst,
+    input logic [1:0] i_req,  // reset handshake (0 = TX, 1 = RX)
+    input logic [1:0] i_gen,
+    output logic [1:0] o_in_reset,  // raw domain levels for the controller
     output logic [1:0] o_applied_gen,
     output logic [1:0] o_applied_valid,
-    input  logic [1:0] i_core_rst_dom,
-    input  logic       i_mac_loopback,
+    input logic [1:0] i_core_rst_dom,
+    input logic i_mac_loopback,
+    // Station address (quasi-static) and the 802.3x configuration, which crosses with the FIFO
+    // limit in one mailbox: {interval, low_water, high_water, tx_en, rx_en}.
+    input logic [47:0] i_station_mac,
+    input logic [1:0] i_pause_ctrl,
+    input logic [$clog2(RX_FIFO_DEPTH):0] i_pause_high_water,
+    input logic [$clog2(RX_FIFO_DEPTH):0] i_pause_low_water,
+    input logic [15:0] i_pause_interval,
 
-    input  logic        i_tx_valid,
-    output logic        o_tx_ready,
-    input  logic [63:0] i_tx_data,
-    input  logic [ 3:0] i_tx_code,
-    output logic        o_rx_valid,
-    input  logic        i_rx_ready,
-    output logic [63:0] o_rx_data,
-    output logic [ 3:0] o_rx_code,
+    input  logic                           i_tx_valid,
+    output logic                           o_tx_ready,
+    input  logic [                   63:0] i_tx_data,
+    input  logic [                    3:0] i_tx_code,
+    // The frame's checksum request {offset/2, start/2, enable}, with every beat.
+    input  logic [                   14:0] i_tx_csum,
+    // Set on a frame's last beat to drop the frame at the MAC (an abandoned frame).
+    input  logic                           i_tx_abort,
+    output logic                           o_rx_valid,
+    input  logic                           i_rx_ready,
+    output logic [                   63:0] o_rx_data,
+    output logic [                    3:0] o_rx_code,
+    // The RX FIFO's occupancy limit in words; a write pulse starts its crossing.
+    input  logic [$clog2(RX_FIFO_DEPTH):0] i_rx_fifo_limit,
+    input  logic                           i_rx_fifo_limit_wr,
+    output logic                           o_rx_fifo_limit_busy,
 
     output logic o_rx_locked,
     output logic o_rx_high_ber,
@@ -70,8 +94,9 @@ module nic_mac_wrap #(
     output logic o_tx_link_ready,
     output logic o_rx_signal_ok,
     // Totals in counter order: rx_overflow, rx_bad_frame, rx_bad_fcs,
-    // rx_bad_block, tx_drop, tx_bad_block.
-    output logic [5:0][63:0] o_totals,
+    // rx_bad_block, tx_drop, tx_bad_block, gmii_preamble_drop, gmii_rx_er,
+    // rx_pause, tx_pause, tx_paused_cycles.
+    output logic [10:0][63:0] o_totals,
 
     // MAC domains.
     input  logic        i_tx_clk,
@@ -113,23 +138,26 @@ module nic_mac_wrap #(
   );
 
   // ---- TX: core beats to the MAC ------------------------------------------------------
-  logic [67:0] t_word;
-  logic t_valid, t_ready;
+  // t_word = {abort[83], checksum request[82:68], code[67:64], data[63:0]}
+  logic [83:0] t_word, f_word;
+  logic t_valid, t_ready, f_valid, f_ready;
   async_fifo #(
-      .DATA_WIDTH(68),
+      .DATA_WIDTH(84),
       .DEPTH(FIFO_DEPTH)
   ) u_tx_fifo (
-      .i_clk  (i_clk),
+      .i_limit('0),
+      .o_occupancy(),
+      .i_clk(i_clk),
       // A soft reset of this domain clears the FIFO at run time.
-      .i_rst  (i_rst || i_core_rst_dom[0]),
-      .i_data ({i_tx_code, i_tx_data}),
+      .i_rst(i_rst || i_core_rst_dom[0]),
+      .i_data({i_tx_abort, i_tx_csum, i_tx_code, i_tx_data}),
       .i_valid(i_tx_valid),
       .o_ready(o_tx_ready),
-      .o_clk  (i_tx_clk),
-      .o_rst  (tx_rst),
-      .o_data (t_word),
-      .o_valid(t_valid),
-      .i_ready(t_ready)
+      .o_clk(i_tx_clk),
+      .o_rst(tx_rst),
+      .o_data(f_word),
+      .o_valid(f_valid),
+      .i_ready(f_ready)
   );
   logic [7:0] t_keep;
   assign t_keep = 8'hFF >> (3'd7 - t_word[66:64]);
@@ -144,19 +172,141 @@ module nic_mac_wrap #(
     for (int i = 0; i < 8; i++) if (m_keep[i]) m_bytes_m1 = 3'(i);
   end
   logic [67:0] r_word;
+  localparam int unsigned LimitBits = $clog2(RX_FIFO_DEPTH) + 1;
+  localparam logic [LimitBits-1:0] LimitDefault =
+      LimitBits'((nic_pkg::RxFifoLimitDefault < RX_FIFO_DEPTH) ?
+      nic_pkg::RxFifoLimitDefault : RX_FIFO_DEPTH);
+  // The configuration word: {interval[15:0], low_water, high_water, tx_en, rx_en, limit}.
+  localparam int unsigned CfgBits = 16 + 3 * LimitBits + 2;
+  localparam logic [CfgBits-1:0] CfgDefault = {
+    nic_pkg::PauseIntervalDefault, {2 * LimitBits{1'b0}}, 2'b00, LimitDefault
+  };
+  logic [CfgBits-1:0] rx_cfg_msg, rx_cfg_q;
+  logic rx_limit_msg_valid, rx_limit_ready;
+  /* verilator lint_off UNUSEDSIGNAL */
+  logic rx_limit_idle;
+  /* verilator lint_on UNUSEDSIGNAL */
+  cdc_mailbox #(
+      .WIDTH(CfgBits)
+  ) u_rx_limit (
+      .i_src_clk(i_clk),
+      // Match the RX FIFO's core half: this receiver must clear for either reset source.
+      .i_src_rst(i_rst || i_core_rst_dom[1]),
+      .i_src_data({
+        i_pause_interval, i_pause_low_water, i_pause_high_water, i_pause_ctrl, i_rx_fifo_limit
+      }),
+      .i_src_valid(i_rx_fifo_limit_wr),
+      .o_src_ready(rx_limit_ready),
+      .o_src_idle(rx_limit_idle),
+      .i_dst_clk(i_rx_clk),
+      .i_dst_rst(rx_rst),
+      .o_dst_data(rx_cfg_msg),
+      .o_dst_valid(rx_limit_msg_valid),
+      .i_dst_ready(1'b1)
+  );
+  assign o_rx_fifo_limit_busy = !rx_limit_ready;
+  always_ff @(posedge i_rx_clk) begin
+    if (rx_rst) rx_cfg_q <= CfgDefault;
+    else if (rx_limit_msg_valid) rx_cfg_q <= rx_cfg_msg;
+  end
+  logic [LimitBits-1:0] rx_limit_q, cfg_high_water, cfg_low_water;
+  logic [ 1:0] cfg_ctrl;
+  logic [15:0] cfg_interval;
+  assign {cfg_interval, cfg_low_water, cfg_high_water, cfg_ctrl, rx_limit_q} = rx_cfg_q;
+
+  // Effective thresholds: 0 selects three quarters / one quarter of the limit; high-water stays below
+  // the limit (the FIFO stops accepting at limit - 2) and low-water below high-water.
+  logic [LimitBits-1:0]
+      high_water_eff_q, low_water_eff_q, high_water_cap, high_water_next, low_water_next;
+  assign high_water_cap = rx_limit_q - LimitBits'(4);
+  always_comb begin
+    high_water_next = (cfg_high_water == '0) ? rx_limit_q - (rx_limit_q >> 2) : cfg_high_water;
+    if (high_water_next > high_water_cap) high_water_next = high_water_cap;
+    low_water_next = (cfg_low_water == '0) ? (rx_limit_q >> 2) : cfg_low_water;
+    if (low_water_next >= high_water_next) low_water_next = high_water_next >> 1;
+  end
+  always_ff @(posedge i_rx_clk) begin
+    high_water_eff_q <= high_water_next;
+    low_water_eff_q  <= low_water_next;
+  end
+
+  // Station address into the two MAC domains.
+  logic [47:0] mac_rx_s, mac_tx_s;
+  cdc_sync #(
+      .WIDTH(48)
+  ) u_mac_rx_sync (
+      .i_clk  (i_rx_clk),
+      .i_rst  (1'b0),
+      .i_async(i_station_mac),
+      .o_sync (mac_rx_s)
+  );
+  cdc_sync #(
+      .WIDTH(48)
+  ) u_mac_tx_sync (
+      .i_clk  (i_tx_clk),
+      .i_rst  (1'b0),
+      .i_async(i_station_mac),
+      .o_sync (mac_tx_s)
+  );
+
+  logic [$clog2(RX_FIFO_DEPTH):0] rx_occupancy;
+  logic pf_valid, pf_ready, pause_rx_ev, pause_rx_tog, want_pause;
+  logic [67:0] pf_word;
+  logic [15:0] pause_rx_interval;
+  logic [63:0] rx_wire_data;
+  logic [7:0] rx_wire_ctrl;
+  logic rx_wire_valid;
+  nic_pause_rx_wire #(
+      .MAX_FRAME_BYTES(MAX_FRAME_BYTES)
+  ) u_pause_wire (
+      .i_clk(i_rx_clk),
+      .i_rst(rx_rst),
+      .i_enable(rx_wire_valid),
+      .i_xgmii_data(rx_wire_data),
+      .i_xgmii_ctrl(rx_wire_ctrl),
+      .i_mac(mac_rx_s),
+      .o_pause_ev(pause_rx_ev),
+      .o_pause_tog(pause_rx_tog),
+      .o_pause_interval(pause_rx_interval)
+  );
+  nic_pause_rx #(
+      .OCC_BITS(LimitBits)
+  ) u_pause_rx (
+      .i_clk           (i_rx_clk),
+      .i_rst           (rx_rst),
+      .i_mac           (mac_rx_s),
+      .i_m_data        (m_data),
+      .i_m_code        ({m_last, m_bytes_m1}),
+      .i_m_valid       (m_valid),
+      .o_m_ready       (m_ready),
+      .o_f_valid       (pf_valid),
+      .o_f_word        (pf_word),
+      .i_f_ready       (pf_ready),
+      .i_occupancy     (rx_occupancy),
+      .i_high_water    (high_water_eff_q),
+      .i_low_water     (low_water_eff_q),
+      .i_tx_en         (cfg_ctrl[nic_pkg::PauseCtrlBitTx]),
+      .o_want_pause    (want_pause),
+      .o_pause_ev      (),
+      .o_pause_tog     (),
+      .o_pause_interval()
+  );
   async_fifo #(
       .DATA_WIDTH(68),
-      .DEPTH(FIFO_DEPTH)
+      .DEPTH(RX_FIFO_DEPTH),
+      .DYNAMIC_LIMIT(1'b1)
   ) u_rx_fifo (
-      .i_clk  (i_rx_clk),
-      .i_rst  (rx_rst),
-      .i_data ({m_last, m_bytes_m1, m_data}),
-      .i_valid(m_valid),
-      .o_ready(m_ready),
-      .o_clk  (i_clk),
+      .i_limit(rx_limit_q),
+      .o_occupancy(rx_occupancy),
+      .i_clk(i_rx_clk),
+      .i_rst(rx_rst),
+      .i_data(pf_word),
+      .i_valid(pf_valid),
+      .o_ready(pf_ready),
+      .o_clk(i_clk),
       // A soft reset of this domain clears the FIFO at run time.
-      .o_rst  (i_rst || i_core_rst_dom[1]),
-      .o_data (r_word),
+      .o_rst(i_rst || i_core_rst_dom[1]),
+      .o_data(r_word),
       .o_valid(o_rx_valid),
       .i_ready(i_rx_ready)
   );
@@ -196,7 +346,13 @@ module nic_mac_wrap #(
   logic rx_locked, rx_high_ber, rx_local_fault, rx_remote_fault, tx_link_ready;
   logic tx_drop, rx_bad_frame, rx_bad_fcs, rx_overflow, tx_bad_block, rx_bad_block;
   logic m_user;
+  logic tx_tick;
+  // GMII receive events (the 10GBASE-R PCS has none): a frame dropped in the preamble stage, and
+  // the first rx_er of a burst inside a frame.
+  logic gmii_preamble_drop, gmii_rx_er_event;
   if (!GMII_MODE) begin : gen_10g_pcs
+    assign gmii_preamble_drop = 1'b0;
+    assign gmii_rx_er_event   = 1'b0;
     eth10g_mac_pcs #(
         .MAX_FRAME_BYTES(MAX_FRAME_BYTES)
     ) u_mac (
@@ -209,7 +365,10 @@ module nic_mac_wrap #(
         .s_axis_tvalid    (t_valid),
         .s_axis_tready    (t_ready),
         .s_axis_tlast     (t_word[67]),
-        .s_axis_tuser     (1'b0),
+        .s_axis_tuser     (t_word[83]),
+        .i_csum_en        (t_word[68]),
+        .i_csum_start     ({t_word[75:69], 1'b0}),
+        .i_csum_offset    ({t_word[82:76], 1'b0}),
         .m_axis_tdata     (m_data),
         .m_axis_tkeep     (m_keep),
         .m_axis_tvalid    (m_valid),
@@ -219,9 +378,13 @@ module nic_mac_wrap #(
         .o_tx_raw_data    (o_tx_raw_data),
         .o_tx_raw_valid   (o_tx_raw_valid),
         .o_tx_link_ready  (tx_link_ready),
+        .o_tx_word_tick   (tx_tick),
         .i_rx_raw_data    (rx_raw_data),
         .i_rx_raw_valid   (rx_raw_valid),
         .i_rx_signal_ok   (rx_signal_ok),
+        .o_rx_xgmii_data  (rx_wire_data),
+        .o_rx_xgmii_ctrl  (rx_wire_ctrl),
+        .o_rx_xgmii_valid (rx_wire_valid),
         .o_rx_locked      (rx_locked),
         .o_rx_high_ber    (rx_high_ber),
         .o_rx_local_fault (rx_local_fault),
@@ -247,6 +410,7 @@ module nic_mac_wrap #(
     logic cur_tx_ctrl, gmii_tx_en_q, gmii_tx_er_q;
 
     assign gmii_tx_clk_en = i_rx_raw_valid;
+    assign tx_tick        = gmii_tx_clk_en;
     assign tx_xgmii_en    = gmii_tx_clk_en && (gmii_tx_lane_q == 3'd7);
     assign tx_link_ready  = rx_signal_ok;
     assign t_ready        = mac_tx_ready && tx_link_ready;
@@ -262,7 +426,10 @@ module nic_mac_wrap #(
         .s_axis_tvalid(t_valid && tx_link_ready),
         .s_axis_tready(mac_tx_ready),
         .s_axis_tlast (t_word[67]),
-        .s_axis_tuser (1'b0),
+        .s_axis_tuser (t_word[83]),
+        .i_csum_en    (t_word[68]),
+        .i_csum_start ({t_word[75:69], 1'b0}),
+        .i_csum_offset({t_word[82:76], 1'b0}),
         .o_xgmii_data (xgmii_tx_data),
         .o_xgmii_ctrl (xgmii_tx_ctrl),
         .o_drop       (tx_drop)
@@ -313,6 +480,7 @@ module nic_mac_wrap #(
     logic [63:0] rx_accum_data_q, xgmii_rx_data_q;
     logic [7:0] rx_accum_ctrl_q, xgmii_rx_ctrl_q;
     logic       xgmii_rx_en_q;
+    logic       gmii_er_prev_q;
 
     wire  [7:0] gmii_rxd = rx_raw_data[7:0];
     wire        gmii_rx_dv = rx_raw_data[8];
@@ -325,15 +493,23 @@ module nic_mac_wrap #(
     always_ff @(posedge i_rx_clk) begin
       if (rx_rst || !rx_signal_ok) begin
         gmii_rx_state_q <= GMII_RX_IDLE;
-        gmii_rx_lane_q  <= 3'd0;
+        gmii_rx_lane_q <= 3'd0;
         rx_accum_data_q <= 64'h0707_0707_0707_0707;
         rx_accum_ctrl_q <= 8'hff;
         xgmii_rx_data_q <= 64'h0707_0707_0707_0707;
         xgmii_rx_ctrl_q <= 8'hff;
-        xgmii_rx_en_q   <= 1'b0;
+        xgmii_rx_en_q <= 1'b0;
+        gmii_preamble_drop <= 1'b0;
+        gmii_rx_er_event <= 1'b0;
+        gmii_er_prev_q <= 1'b0;
       end else begin
         xgmii_rx_en_q <= 1'b0;
+        gmii_preamble_drop <= 1'b0;
+        gmii_rx_er_event <= 1'b0;
         if (gmii_rx_clk_en) begin
+          // One event per rx_er burst inside the frame's data enable
+          gmii_er_prev_q   <= gmii_rx_dv && gmii_rx_er;
+          gmii_rx_er_event <= gmii_rx_dv && gmii_rx_er && !gmii_er_prev_q;
           unique case (gmii_rx_state_q)
             GMII_RX_IDLE: begin
               if (gmii_rx_dv) begin
@@ -346,7 +522,8 @@ module nic_mac_wrap #(
                 end else if (!gmii_rx_er && (gmii_rxd == 8'h55)) begin
                   gmii_rx_state_q <= GMII_RX_PREAMBLE;
                 end else begin
-                  gmii_rx_state_q <= GMII_RX_WAIT_END;
+                  gmii_rx_state_q    <= GMII_RX_WAIT_END;
+                  gmii_preamble_drop <= 1'b1;
                 end
               end
             end
@@ -361,7 +538,8 @@ module nic_mac_wrap #(
                 gmii_rx_lane_q  <= 3'd0;
                 gmii_rx_state_q <= GMII_RX_DATA;
               end else if (gmii_rx_er || (gmii_rxd != 8'h55)) begin
-                gmii_rx_state_q <= GMII_RX_WAIT_END;
+                gmii_rx_state_q    <= GMII_RX_WAIT_END;
+                gmii_preamble_drop <= 1'b1;
               end
             end
 
@@ -407,6 +585,9 @@ module nic_mac_wrap #(
       end
     end
 
+    assign rx_wire_data  = xgmii_rx_data_q;
+    assign rx_wire_ctrl  = xgmii_rx_ctrl_q;
+    assign rx_wire_valid = xgmii_rx_en_q;
     eth10g_mac_rx #(
         .MAX_FRAME_BYTES(MAX_FRAME_BYTES)
     ) u_mac_rx (
@@ -438,6 +619,49 @@ module nic_mac_wrap #(
   /* verilator lint_on UNUSEDSIGNAL */
   assign m_user_unused = m_user;
 
+  // ---- 802.3x transmit side -------------------------------------------------------------------
+  logic tx_en_s, rx_en_s, want_pause_s, pause_tog_s;
+  logic [15:0] interval_cfg_s, pause_interval_s;
+  logic tx_paused, tx_pause_ev;
+  cdc_sync #(
+      .WIDTH(3)
+  ) u_pause_lvl_sync (
+      .i_clk  (i_tx_clk),
+      .i_rst  (1'b0),
+      .i_async({want_pause, cfg_ctrl}),
+      .o_sync ({want_pause_s, tx_en_s, rx_en_s})
+  );
+  cdc_sync #(
+      .WIDTH(33)
+  ) u_pause_bus_sync (
+      .i_clk  (i_tx_clk),
+      .i_rst  (1'b0),
+      .i_async({pause_rx_tog, pause_rx_interval, cfg_interval}),
+      .o_sync ({pause_tog_s, pause_interval_s, interval_cfg_s})
+  );
+  nic_pause_tx #(
+      .GMII_MODE(GMII_MODE)
+  ) u_pause_tx (
+      .i_clk           (i_tx_clk),
+      .i_rst           (tx_rst),
+      .i_tick          (tx_tick),
+      .i_mac           (mac_tx_s),
+      .i_rx_en         (rx_en_s),
+      .i_tx_en         (tx_en_s),
+      .i_interval_cfg  (interval_cfg_s),
+      .i_want_pause    (want_pause_s),
+      .i_pause_tog     (pause_tog_s),
+      .i_pause_interval(pause_interval_s),
+      .i_f_word        (f_word),
+      .i_f_valid       (f_valid),
+      .o_f_ready       (f_ready),
+      .o_t_word        (t_word),
+      .o_t_valid       (t_valid),
+      .i_t_ready       (t_ready),
+      .o_paused        (tx_paused),
+      .o_tx_pause_ev   (tx_pause_ev)
+  );
+
   // ---- status levels into the core domain ------------------------------------------------
   // Each level is registered in its own domain first (the MAC computes some
   // of them combinationally), so the synchronizers see flop outputs only.
@@ -465,14 +689,45 @@ module nic_mac_wrap #(
   );
 
   // ---- event totals -----------------------------------------------------------------------
-  logic [5:0] ev_pulse;
-  logic [5:0] ev_clk, ev_rst, ev_rebase;
-  assign ev_pulse = {tx_bad_block, tx_drop, rx_bad_block, rx_bad_fcs, rx_bad_frame, rx_overflow};
-  assign ev_clk = {i_tx_clk, i_tx_clk, i_rx_clk, i_rx_clk, i_rx_clk, i_rx_clk};
+  logic [10:0] ev_pulse;
+  logic [10:0] ev_clk, ev_rst, ev_rebase;
+  assign ev_pulse = {
+    tx_paused,
+    tx_pause_ev,
+    pause_rx_ev,
+    gmii_rx_er_event,
+    gmii_preamble_drop,
+    tx_bad_block,
+    tx_drop,
+    rx_bad_block,
+    rx_bad_fcs,
+    rx_bad_frame,
+    rx_overflow
+  };
+  assign ev_clk = {
+    i_tx_clk,
+    i_tx_clk,
+    i_rx_clk,
+    i_rx_clk,
+    i_rx_clk,
+    i_tx_clk,
+    i_tx_clk,
+    i_rx_clk,
+    i_rx_clk,
+    i_rx_clk,
+    i_rx_clk
+  };
   // Each counter takes its event's domain reset, and a soft reset rebases or
   // clears the totals at run time.
-  assign ev_rst = {tx_rst, tx_rst, rx_rst, rx_rst, rx_rst, rx_rst};
+  assign ev_rst = {
+    tx_rst, tx_rst, rx_rst, rx_rst, rx_rst, tx_rst, tx_rst, rx_rst, rx_rst, rx_rst, rx_rst
+  };
   assign ev_rebase = {
+    i_core_rst_dom[0],
+    i_core_rst_dom[0],
+    i_core_rst_dom[1],
+    i_core_rst_dom[1],
+    i_core_rst_dom[1],
     i_core_rst_dom[0],
     i_core_rst_dom[0],
     i_core_rst_dom[1],
@@ -480,7 +735,7 @@ module nic_mac_wrap #(
     i_core_rst_dom[1],
     i_core_rst_dom[1]
   };
-  for (genvar e = 0; e < 6; e++) begin : g_events
+  for (genvar e = 0; e < 11; e++) begin : g_events
     cdc_gray_count u_count (
         .i_src_clk   (ev_clk[e]),
         .i_src_rst   (ev_rst[e]),

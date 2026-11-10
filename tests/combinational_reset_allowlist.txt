@@ -69,6 +69,7 @@ hw/rtl/peripherals/nic/nic_mac_wrap.sv: ev_rebase
 hw/rtl/peripherals/nic/nic_mac_wrap.sv: ev_rst
 hw/rtl/peripherals/nic/nic_mac_wrap.sv: u_count.i_dst_rst
 hw/rtl/peripherals/nic/nic_mac_wrap.sv: u_rx_fifo.o_rst
+hw/rtl/peripherals/nic/nic_mac_wrap.sv: u_rx_limit.i_src_rst
 hw/rtl/peripherals/nic/nic_mac_wrap.sv: u_tx_fifo.i_rst
 hw/rtl/peripherals/nic/nic_reset_ctrl.sv: o_core_rst_next
 hw/rtl/soc_top/soc_axi_slave.sv: o_axi_arready

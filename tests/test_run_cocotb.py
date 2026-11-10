@@ -479,6 +479,20 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "NIC frame loopback through DDR rings, with completion and interrupt checks"
         ),
     ),
+    "nic_sg_loopback": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="nic_sg_loopback",
+        description=(
+            "NIC scatter-gather frames (several descriptors per frame) through the loopback"
+        ),
+    ),
+    "nic_rate": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="nic_rate",
+        description="NIC transmit rate with cold buffers against the DDR model latency",
+    ),
     "nic_dma_stress": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -3164,6 +3178,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "NIC transmit descriptors produce the right frame bytes and completions"
         ),
     ),
+    "nic_tx_segment": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_tx_segment",
+        hdl_toplevel_module="nic_tx_segment",
+        description="NIC frame segmentation offload cuts frames at the MSS with exact headers",
+    ),
     "vcu118_sgmii_link": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_vcu118_sgmii_link",
         hdl_toplevel_module="vcu118_sgmii_link",
@@ -3174,6 +3193,39 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="nic_mac_wrap",
         verilator_extra_args=("-GGMII_MODE=1",),
         description="GMII framing, rate enables, CRC errors and receive backpressure",
+    ),
+    "nic_rx_fifo_limit": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_rx_fifo_limit",
+        hdl_toplevel_module="nic_mac_wrap",
+        verilator_extra_args=("-GGMII_MODE=1", "-GRX_FIFO_DEPTH=8192"),
+        description=(
+            "NIC RX FIFO overflows at the runtime limit (512, 2048, 8192 words) and "
+            "the GMII preamble-discard and rx_er counters"
+        ),
+    ),
+    "nic_top_rx_fifo": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_top",
+        hdl_toplevel_module="nic_top",
+        verilator_extra_args=("-GRX_FIFO_DEPTH=8192",),
+        description="NIC registers and traffic with the 8192-word RX FIFO and its limit register",
+    ),
+    "nic_pause_rx_wire": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_pause_rx_wire",
+        hdl_toplevel_module="nic_pause_rx_wire",
+        verilator_extra_args=("-GMAX_FRAME_BYTES=128",),
+        description="PAUSE recognition before buffering: framing, length, CRC and header validation",
+    ),
+    "nic_pause_gmii": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_pause",
+        hdl_toplevel_module="nic_mac_wrap",
+        verilator_extra_args=("-GGMII_MODE=1", "-GRX_FIFO_DEPTH=2048"),
+        description="802.3x pause on the GMII path: consume, honour, pause refresh and release",
+    ),
+    "nic_pause_10g": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_pause",
+        hdl_toplevel_module="nic_mac_wrap",
+        verilator_extra_args=("-GRAW_LOOPBACK=0", "-GRX_FIFO_DEPTH=2048"),
+        description="802.3x pause on the 10GBASE-R path: consume, honour, pause refresh and release",
     ),
     "nic_top": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_top",

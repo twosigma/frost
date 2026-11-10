@@ -24,8 +24,8 @@
  * never loses an event: counting, timing and latching go on while masked.
  *
  * RX and TX are moderated notifications. W1C starts a new interval even if
- * the bit is zero. Completions (one pulse per DD write response) increment a
- * saturating count. The first snapshots ITR and TICK and starts a deadline;
+ * the bit is zero. Completions (one pulse per completion write response) increment a
+ * saturating count. The first snapshots COALESCE and TICK and starts a deadline;
  * later completions do not restart it. Notify at the count threshold or
  * deadline. max=0 disables the threshold; delay=0 notifies on completion.
  * TICK=0 counts as 1. Configuration changes apply to the next interval.
@@ -52,8 +52,8 @@ module nic_irq #(
     // Register values for the window's read mux.
     output logic [31:0] o_status,
     output logic [31:0] o_mask,
-    output logic [31:0] o_rx_itr,
-    output logic [31:0] o_tx_itr,
+    output logic [31:0] o_rx_coalesce,
+    output logic [31:0] o_tx_coalesce,
     output logic [31:0] o_tick,
 
     // Events (one-cycle pulses).
@@ -65,30 +65,30 @@ module nic_irq #(
 
     output logic o_irq
 );
-  logic wr_status, wr_mask, wr_rx_itr, wr_tx_itr, wr_tick, wr_mask_set, wr_mask_clr;
-  assign wr_status   = i_wr_en && (i_wr_offset == nic_pkg::IrqStatusOffset);
-  assign wr_mask     = i_wr_en && (i_wr_offset == nic_pkg::IrqMaskOffset);
-  assign wr_rx_itr   = i_wr_en && (i_wr_offset == nic_pkg::RxItrOffset);
-  assign wr_tx_itr   = i_wr_en && (i_wr_offset == nic_pkg::TxItrOffset);
-  assign wr_tick     = i_wr_en && (i_wr_offset == nic_pkg::TickOffset);
-  assign wr_mask_set = i_wr_en && (i_wr_offset == nic_pkg::IrqMaskSetOffset);
-  assign wr_mask_clr = i_wr_en && (i_wr_offset == nic_pkg::IrqMaskClrOffset);
+  logic wr_status, wr_mask, wr_rx_coalesce, wr_tx_coalesce, wr_tick, wr_mask_set, wr_mask_clr;
+  assign wr_status      = i_wr_en && (i_wr_offset == nic_pkg::IrqStatusOffset);
+  assign wr_mask        = i_wr_en && (i_wr_offset == nic_pkg::IrqMaskOffset);
+  assign wr_rx_coalesce = i_wr_en && (i_wr_offset == nic_pkg::RxCoalesceOffset);
+  assign wr_tx_coalesce = i_wr_en && (i_wr_offset == nic_pkg::TxCoalesceOffset);
+  assign wr_tick        = i_wr_en && (i_wr_offset == nic_pkg::TickOffset);
+  assign wr_mask_set    = i_wr_en && (i_wr_offset == nic_pkg::IrqMaskSetOffset);
+  assign wr_mask_clr    = i_wr_en && (i_wr_offset == nic_pkg::IrqMaskClrOffset);
 
   // ---- configuration registers ----------------------------------------------
   logic [nic_pkg::IrqBits-1:0] mask_q;
-  logic [31:0] rx_itr_q, tx_itr_q, tick_q;
+  logic [31:0] rx_coalesce_q, tx_coalesce_q, tick_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      mask_q   <= '0;
-      rx_itr_q <= '0;
-      tx_itr_q <= '0;
-      tick_q   <= TICK_DEFAULT;
+      mask_q        <= '0;
+      rx_coalesce_q <= '0;
+      tx_coalesce_q <= '0;
+      tick_q        <= TICK_DEFAULT;
     end else begin
       if (wr_mask) mask_q <= i_wr_data[nic_pkg::IrqBits-1:0];
       if (wr_mask_set) mask_q <= mask_q | i_wr_data[nic_pkg::IrqBits-1:0];
       if (wr_mask_clr) mask_q <= mask_q & ~i_wr_data[nic_pkg::IrqBits-1:0];
-      if (wr_rx_itr) rx_itr_q <= {8'b0, i_wr_data[23:0]};
-      if (wr_tx_itr) tx_itr_q <= {8'b0, i_wr_data[23:0]};
+      if (wr_rx_coalesce) rx_coalesce_q <= {8'b0, i_wr_data[23:0]};
+      if (wr_tx_coalesce) tx_coalesce_q <= {8'b0, i_wr_data[23:0]};
       if (wr_tick) tick_q <= i_wr_data;
     end
   end
@@ -101,8 +101,8 @@ module nic_irq #(
   };
 
   for (genvar d = 0; d < 2; d++) begin : gen_moderator
-    logic [23:0] itr;
-    assign itr = (d == 0) ? rx_itr_q[23:0] : tx_itr_q[23:0];
+    logic [23:0] coalesce;
+    assign coalesce = (d == 0) ? rx_coalesce_q[23:0] : tx_coalesce_q[23:0];
     logic [7:0] count_q, max_s;
     logic [15:0] delay_s, ticks_q;
     logic [31:0] tick_s, tick_cnt_q;
@@ -143,8 +143,8 @@ module nic_irq #(
           if (ack[d] || (!armed_q && !raise[d] && (count_q == 8'd0))) begin
             // First completion of an interval: snapshot and arm.
             armed_q    <= 1'b1;
-            max_s      <= itr[23:16];
-            delay_s    <= itr[15:0];
+            max_s      <= coalesce[23:16];
+            delay_s    <= coalesce[15:0];
             tick_s     <= (tick_q == 32'd0) ? 32'd1 : tick_q;
             tick_cnt_q <= '0;
             ticks_q    <= '0;
@@ -168,10 +168,10 @@ module nic_irq #(
     if (i_rst) irq_q <= 1'b0;
     else irq_q <= |(status_q & mask_q);
   end
-  assign o_irq    = irq_q;
-  assign o_status = {{(32 - nic_pkg::IrqBits) {1'b0}}, status_q};
-  assign o_mask   = {{(32 - nic_pkg::IrqBits) {1'b0}}, mask_q};
-  assign o_rx_itr = rx_itr_q;
-  assign o_tx_itr = tx_itr_q;
-  assign o_tick   = tick_q;
+  assign o_irq         = irq_q;
+  assign o_status      = {{(32 - nic_pkg::IrqBits) {1'b0}}, status_q};
+  assign o_mask        = {{(32 - nic_pkg::IrqBits) {1'b0}}, mask_q};
+  assign o_rx_coalesce = rx_coalesce_q;
+  assign o_tx_coalesce = tx_coalesce_q;
+  assign o_tick        = tick_q;
 endmodule : nic_irq
