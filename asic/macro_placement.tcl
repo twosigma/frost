@@ -165,7 +165,9 @@ set frost_l2_data [lsort -command frost_compare_slices \
 set frost_l2_tags [frost_macros {home\.array\.gen_tag_ultra\.}]
 set frost_data_memory [frost_macros {data_memory\.}]
 set frost_l1d_data [frost_macros {l1d\.array\.gen_data_bank}]
-set frost_l1d_tags [frost_macros {l1d\.array\.gen_tag_block\.}]
+# The L1D tags, then the hit path's copy of them.
+set frost_l1d_tags [concat [frost_macros {l1d\.array\.gen_tag_block\.}] \
+  [frost_macros {l1d\.array\.gen_hit_port\.}]]
 set frost_l1i_data [frost_macros {l1i\.gen_data_banks\.}]
 set frost_nic [frost_macros {u_[rt]x_fifo\.storage\.}]
 set frost_nic_rx [frost_macros {mac_rx\.g_memory_lane}]
@@ -221,8 +223,8 @@ set frost_bottom_top [expr { $frost_imem_y + max([frost_row_height $frost_imem_e
 # The top band: the L1D data in the middle, a row of four 64-bit slices for
 # each way's bank; at the left the L1I data, four banks of four slices, then the
 # NIC's FIFOs, the BTB's payload tables and the MAC's
-# receive lanes; at the right the L1D tags, the L2 tags and the MAC's transmit
-# frame buffer.
+# receive lanes; at the right the L1D tags, a row of four ways above a row of
+# their copy, the L2 tags and the MAC's transmit frame buffer.
 set frost_l1d_width [frost_grid_width $frost_l1d_data 4]
 set frost_l1d_x [expr { ($frost_core_width - $frost_l1d_width) / 2 }]
 set frost_l1d_y [expr { $frost_core_height - $frost_edge - \
@@ -242,12 +244,12 @@ set frost_left_width [expr { max([frost_grid_width $frost_l1i_data 4], \
   [frost_grid_width $frost_nic 2], [frost_grid_width $frost_btb 3], \
   [frost_grid_width $frost_nic_rx 4]) }]
 
-set frost_right_width [expr { max([frost_grid_width $frost_l1d_tags 2], \
+set frost_right_width [expr { max([frost_grid_width $frost_l1d_tags 4], \
   [frost_grid_width $frost_l2_tags 2], [frost_grid_width $frost_nic_tx 1]) }]
 set frost_tags_x [expr { $frost_core_width - $frost_edge - $frost_right_width }]
 set frost_right_y [expr { $frost_core_height - $frost_edge - \
-  [frost_grid_height $frost_l1d_tags 2] }]
-frost_place_grid $frost_l1d_tags $frost_tags_x $frost_right_y 2
+  [frost_grid_height $frost_l1d_tags 4] }]
+frost_place_grid $frost_l1d_tags $frost_tags_x $frost_right_y 4
 set frost_right_y [expr { $frost_right_y - $frost_gap - [frost_grid_height $frost_l2_tags 2] }]
 frost_place_grid $frost_l2_tags $frost_tags_x $frost_right_y 2
 set frost_right_y [expr { $frost_right_y - $frost_gap - [frost_grid_height $frost_nic_tx 1] }]

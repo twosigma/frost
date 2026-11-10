@@ -15,6 +15,10 @@ covers: vcd_sim on
 ordinary: depth 240
 deep: depth 360
 timeout 2400
+bmc_siblings: timeout 1800
+bmc_rows: timeout 2100
+bmc_conflict: timeout 2400
+bmc_pressure: timeout 2700
 bmc: aigsmt boolector
 
 [engines]

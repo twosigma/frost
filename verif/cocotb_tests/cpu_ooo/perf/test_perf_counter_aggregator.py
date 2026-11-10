@@ -145,6 +145,8 @@ IF_WIDTH_EVENTS_FIELDS = [
 CACHE_PERF_EVENTS_FIELDS = [
     ("l1i_store_combined", 1),
     ("l1i_store_combined_under_miss", 1),
+    ("l1i_path_hit", 1),
+    ("l1i_path_hit_under_miss", 1),
     ("l1i_access", 1),
     ("l1i_hit", 1),
     ("l1i_miss", 1),
@@ -155,6 +157,8 @@ CACHE_PERF_EVENTS_FIELDS = [
     ("l1i_conflict_stall", 1),
     ("l1d_store_combined", 1),
     ("l1d_store_combined_under_miss", 1),
+    ("l1d_path_hit", 1),
+    ("l1d_path_hit_under_miss", 1),
     ("l1d_access", 1),
     ("l1d_hit", 1),
     ("l1d_miss", 1),
@@ -165,6 +169,8 @@ CACHE_PERF_EVENTS_FIELDS = [
     ("l1d_conflict_stall", 1),
     ("l2_store_combined", 1),
     ("l2_store_combined_under_miss", 1),
+    ("l2_path_hit", 1),
+    ("l2_path_hit_under_miss", 1),
     ("l2_access", 1),
     ("l2_hit", 1),
     ("l2_miss", 1),
@@ -543,9 +549,12 @@ async def test_cache_counter_block_accumulates_snapshots_and_muxes(dut: Any) -> 
             "l2_access": True,
             "l1d_store_combined": True,
         },
+        # A hit-path hit counts as an L1D access and hit beside the
+        # controller's event.
         {
             "l1i_hit": True,
             "l1d_hit": True,
+            "l1d_path_hit": True,
             "l2_hit": True,
             "l1i_fetch_miss_stall": True,
         },
@@ -584,8 +593,8 @@ async def test_cache_counter_block_accumulates_snapshots_and_muxes(dut: Any) -> 
         PERF_L1I_HIT: 1,
         PERF_L1I_MISS: 1,
         PERF_L1I_WRITEBACK: 1,
-        PERF_L1D_ACCESS: 3,
-        PERF_L1D_HIT: 2,
+        PERF_L1D_ACCESS: 4,
+        PERF_L1D_HIT: 3,
         PERF_L1D_MISS: 1,
         PERF_L1D_WRITEBACK: 1,
         PERF_L2_ACCESS: 2,
@@ -609,10 +618,10 @@ async def test_cache_counter_block_accumulates_snapshots_and_muxes(dut: Any) -> 
         _drive_cache_perf_events(dut, {"l1d_access": True})
         await _advance_cycle(dut)
     await _finish_event_pipeline(dut)
-    assert await _read_counter(dut, PERF_L1D_ACCESS) == 3
+    assert await _read_counter(dut, PERF_L1D_ACCESS) == 4
 
     await _capture_snapshot(dut)
-    assert await _read_counter(dut, PERF_L1D_ACCESS) == 5
+    assert await _read_counter(dut, PERF_L1D_ACCESS) == 6
 
     # The second capture moved the first cache snapshot into the preceding
     # bank, which i_perf_cache_previous_select reads, so software can read both
@@ -623,7 +632,7 @@ async def test_cache_counter_block_accumulates_snapshots_and_muxes(dut: Any) -> 
         assert await _read_counter(dut, counter) == value
 
     dut.i_perf_cache_previous_select.value = 0
-    assert await _read_counter(dut, PERF_L1D_ACCESS) == 5
+    assert await _read_counter(dut, PERF_L1D_ACCESS) == 6
 
 
 @cocotb.test()

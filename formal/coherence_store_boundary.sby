@@ -27,13 +27,20 @@ bmc: mode bmc
 cover: mode cover
 ordinary: depth 80
 four: depth 120
+# Frame 113 finishes in about four hours with the hit path; the covers reach
+# handoff at 57 and drain at 92. Keep cover_four's search depth at 120.
+bmc_four: depth 114
 intervening: depth 140
 old: depth 80
 amo: depth 140
 sc: depth 140
 timeout 2400
-four: timeout 18000
+bmc_four: timeout 18000
+cover_four: timeout 7200
 intervening: timeout 14400
+bmc_amo_same: timeout 3300
+bmc_amo_other: timeout 4800
+bmc_sc: timeout 3600
 bmc: aigsmt boolector
 sticky: mode prove
 sticky: depth 2
