@@ -16,9 +16,9 @@ read_verilog -formal -D SYNTHESIS -sv branch_prediction_controller.sv
 delete t:branch_predictor t:direction_predictor t:return_address_stack
 proc
 # The separately proved btb_pending_relation contract preserves the original
-# per-candidate target/return abstraction; it adds no independent anyseq bit.
+# per-candidate target abstraction; it adds no independent anyseq bit.
 cd branch_prediction_controller
-connect -set o_slot2_staged_target_rel_pending slot2_staged_rel_reference
+connect -set btb_slot2_raw_target_rel_pending slot2_staged_raw_rel_reference
 cd ..
 setundef -undriven -anyseq
 opt

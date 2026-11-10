@@ -43,8 +43,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pending_prediction_pc.value = 0
     dut.i_pending_prediction_prev_pc.value = 0
     dut.i_pending_prediction_prev_native_pc.value = 0
-    dut.i_ras_nonempty.value = 0
-    dut.i_ras_top_rel_pending.value = 0
     dut.i_update.value = 0
     dut.i_update_pc.value = 0
     dut.i_update_target.value = 0
@@ -1103,10 +1101,8 @@ def _pending_relation(target: int, pending: int, prev: int, prev_native: int) ->
 
 
 @cocotb.test()
-async def test_pending_relation_matches_unqualified_targets_and_return_typing(
-    dut: Any,
-) -> None:
-    """Relate hits, rotated/forwarded payloads and uncovered rows before gating."""
+async def test_pending_relation_matches_unqualified_targets(dut: Any) -> None:
+    """Relate raw hits, rotated/forwarded payloads and uncovered rows."""
     await _setup_test(dut)
     await _update(dut, pc=PC_A, target=TARGET_A, taken=True, ret=True)
     await _update(dut, pc=PC_B, target=TARGET_B, taken=True)
@@ -1122,52 +1118,34 @@ async def test_pending_relation_matches_unqualified_targets_and_return_typing(
         dut.i_pc_2_base.value = lookup & MASK_XLEN
         dut.i_pc_2_use_alt.value = 0
         dut.i_pending_prediction_pc.value = forwarded_target
-        dut.i_ras_nonempty.value = 0
         await _settle()
         assert int(dut.o_predicted_target_2_plus2.value) == forwarded_target
-        assert int(dut.o_slot2_typed_target_rel_pending.value) == 0x10
+        assert int(dut.o_slot2_target_rel_pending.value) == 0x10
         for served in (lookup, lookup + 4, lookup + 16):
             dut.i_pc_2_base.value = served & MASK_XLEN
             for alt in (0, 1):
                 dut.i_pc_2_use_alt.value = alt
-                for nonempty in (0, 1):
-                    dut.i_ras_nonempty.value = nonempty
-                    for ras_relation in (0, 0x15, 0x1F):
-                        dut.i_ras_top_rel_pending.value = ras_relation
-                        for pending in (
-                            0,
-                            TARGET_A,
-                            TARGET_A | 1,
-                            TARGET_A + 2,
-                            TARGET_B - 2,
-                            HIGH_CANONICAL_TARGET,
-                            MASK_XLEN,
-                        ):
-                            prev = TARGET_A
-                            prev_native = HIGH_CANONICAL_TARGET
-                            dut.i_pending_prediction_pc.value = pending
-                            dut.i_pending_prediction_prev_pc.value = prev
-                            dut.i_pending_prediction_prev_native_pc.value = prev_native
-                            await _settle()
-                            target_signal = (
-                                dut.o_predicted_target_2_plus4
-                                if alt
-                                else dut.o_predicted_target_2_plus2
-                            )
-                            return_signal = (
-                                dut.o_btb_entry_is_return_2_plus4
-                                if alt
-                                else dut.o_btb_entry_is_return_2_plus2
-                            )
-                            target = int(target_signal.value)
-                            expected = (
-                                ras_relation
-                                if nonempty and int(return_signal.value)
-                                else _pending_relation(
-                                    target, pending, prev, prev_native
-                                )
-                            )
-                            assert (
-                                int(dut.o_slot2_typed_target_rel_pending.value)
-                                == expected
-                            )
+                for pending in (
+                    0,
+                    TARGET_A,
+                    TARGET_A | 1,
+                    TARGET_A + 2,
+                    TARGET_B - 2,
+                    HIGH_CANONICAL_TARGET,
+                    MASK_XLEN,
+                ):
+                    prev = TARGET_A
+                    prev_native = HIGH_CANONICAL_TARGET
+                    dut.i_pending_prediction_pc.value = pending
+                    dut.i_pending_prediction_prev_pc.value = prev
+                    dut.i_pending_prediction_prev_native_pc.value = prev_native
+                    await _settle()
+                    target_signal = (
+                        dut.o_predicted_target_2_plus4
+                        if alt
+                        else dut.o_predicted_target_2_plus2
+                    )
+                    expected = _pending_relation(
+                        int(target_signal.value), pending, prev, prev_native
+                    )
+                    assert int(dut.o_slot2_target_rel_pending.value) == expected
