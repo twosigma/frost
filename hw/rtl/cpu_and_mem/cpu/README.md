@@ -441,6 +441,8 @@ target to the saved PC before its late selects pick the target.
 The controller also supplies `pc_reg`'s complete live slot-2 target select,
 including the slot-1 alias check. Staged taken bits and the live fallback
 join parallel candidate qualifiers before the common prediction permission.
+For the live select, separate sums for each slot-2 position let the final
+gate apply the decoded +4 position with permission and ownership.
 
 ### Stalled slot-2 predictions
 

@@ -979,9 +979,11 @@ module branch_prediction_controller #(
   (* keep = "true" *)logic slot2_live_qualifier;
   (* keep = "true" *)logic slot2_live_fallback_qualifier;
   (* keep = "true" *)logic slot2_live_fallback_taken;
-  (* keep = "true" *)logic slot2_live_plus2_qualifier;
-  (* keep = "true" *)logic slot2_live_plus4_qualifier;
-  logic slot2_live_target_candidate;
+  (* keep = "true" *)logic slot2_plus4_size_safe;
+  (* keep = "true" *)logic slot2_live_plus2_size_safe;
+  (* keep = "true" *)logic slot2_live_plus4_size_safe;
+  logic slot2_live_candidate_plus2_pos;
+  logic slot2_live_candidate_plus4_pos;
   assign slot2_plus2_qualifier = i_slot2_plus2_candidate_valid &&
       (!i_pc_2[1] || (i_slot2_is_compressed_plus2 == btb_compressed_2_plus2));
   assign slot2_plus4_qualifier = i_slot2_plus4_candidate_valid &&
@@ -992,8 +994,14 @@ module branch_prediction_controller #(
       i_lookup_lead_collapsed && slot1_aliases_slot2_candidate && btb_hit &&
       !(slot2_pc_use_alt ? btb_hit_2_plus4 : btb_hit_2_plus2);
   assign slot2_live_fallback_taken = slot2_live_fallback_size_safe && dir_predicted_taken;
-  assign slot2_live_plus2_qualifier = slot2_live_qualifier && slot2_plus2_qualifier;
-  assign slot2_live_plus4_qualifier = slot2_live_qualifier && slot2_plus4_qualifier;
+  // The +4 candidate valid also selects the staged hit and the fallback's
+  // instruction size. It can arrive after the BTB results. Form the taken
+  // sums for each position first, without this valid in their size checks;
+  // the final gate then selects a sum and applies permission and ownership.
+  assign slot2_plus4_size_safe =
+      !i_pc_2_alt[1] || (i_slot2_is_compressed_plus4 == btb_compressed_2_plus4);
+  assign slot2_live_plus2_size_safe = !i_pc[1] || (i_slot2_is_compressed_plus2 == btb_compressed);
+  assign slot2_live_plus4_size_safe = !i_pc[1] || (i_slot2_is_compressed_plus4 == btb_compressed);
 `ifdef FROST_XILINX_PRIMS
   LUT6 #(
       .INIT(64'hfffff888f888f888)
@@ -1006,26 +1014,52 @@ module branch_prediction_controller #(
       .I5(slot2_live_fallback_qualifier),
       .O (slot2_prediction_candidate_for_pc)
   );
+  LUT4 #(
+      .INIT(16'hf888)
+  ) u_slot2_live_plus2_candidate (
+      .I0(btb_predicted_taken_2_plus2),
+      .I1(slot2_plus2_qualifier),
+      .I2(dir_predicted_taken),
+      .I3(slot2_live_plus2_size_safe),
+      .O (slot2_live_candidate_plus2_pos)
+  );
   LUT6 #(
       .INIT(64'hfffff888f888f888)
-  ) u_slot2_live_candidate (
+  ) u_slot2_live_plus4_candidate (
       .I0(btb_predicted_taken_2_plus2),
-      .I1(slot2_live_plus2_qualifier),
+      .I1(slot2_plus2_qualifier),
       .I2(btb_predicted_taken_2_plus4),
-      .I3(slot2_live_plus4_qualifier),
-      .I4(slot2_live_fallback_taken),
-      .I5(slot2_live_qualifier),
-      .O (slot2_live_target_candidate)
+      .I3(slot2_plus4_size_safe),
+      .I4(dir_predicted_taken),
+      .I5(slot2_live_plus4_size_safe),
+      .O (slot2_live_candidate_plus4_pos)
+  );
+  (* dont_touch = "true" *)
+  LUT5 #(
+      .INIT(32'hca000000)
+  ) u_slot2_live_select (
+      .I0(slot2_live_candidate_plus2_pos),
+      .I1(slot2_live_candidate_plus4_pos),
+      .I2(slot2_pc_use_alt),
+      .I3(slot2_live_qualifier),
+      .I4(slot2_prediction_permission),
+      .O (o_slot2_live_target_used_for_pc)
   );
 `else
   assign slot2_prediction_candidate_for_pc =
       (btb_predicted_taken_2_plus2 && slot2_plus2_qualifier) ||
       (btb_predicted_taken_2_plus4 && slot2_plus4_qualifier) ||
       (slot2_live_fallback_taken && slot2_live_fallback_qualifier);
-  assign slot2_live_target_candidate =
-      (btb_predicted_taken_2_plus2 && slot2_live_plus2_qualifier) ||
-      (btb_predicted_taken_2_plus4 && slot2_live_plus4_qualifier) ||
-      (slot2_live_fallback_taken && slot2_live_qualifier);
+  assign slot2_live_candidate_plus2_pos =
+      (btb_predicted_taken_2_plus2 && slot2_plus2_qualifier) ||
+      (dir_predicted_taken && slot2_live_plus2_size_safe);
+  assign slot2_live_candidate_plus4_pos =
+      (btb_predicted_taken_2_plus2 && slot2_plus2_qualifier) ||
+      (btb_predicted_taken_2_plus4 && slot2_plus4_size_safe) ||
+      (dir_predicted_taken && slot2_live_plus4_size_safe);
+  assign o_slot2_live_target_used_for_pc =
+      slot2_prediction_permission && slot2_live_qualifier &&
+      (slot2_pc_use_alt ? slot2_live_candidate_plus4_pos : slot2_live_candidate_plus2_pos);
 `endif
   assign o_slot2_prediction_used_for_pc =
       slot2_prediction_permission && slot2_prediction_candidate_for_pc;
@@ -1087,8 +1121,6 @@ module branch_prediction_controller #(
       slot2_prediction_permission && slot2_staged_prediction_candidate_for_pc;
   assign o_slot2_staged_prediction_used_for_capture = slot2_staged_prediction_used_for_capture;
   assign o_slot2_live_target_used_for_pc_cofactor = slot2_live_target_used_for_pc_cofactor;
-  assign o_slot2_live_target_used_for_pc =
-      slot2_prediction_permission && slot2_live_target_candidate;
   assign o_slot2_staged_predicted_target = slot2_staged_typed_target_for_pc;
   assign o_slot2_live_predicted_target = slot1_typed_target;
   assign o_slot2_prediction_used = o_slot2_prediction_used_for_pc && !i_stall;
