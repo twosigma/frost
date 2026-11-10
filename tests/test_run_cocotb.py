@@ -801,6 +801,119 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         include_in_pytest=False,
         extra_env=(("COCOTB_MAX_CYCLES", "40000000"),),
     ),
+    "cbo_zero_pages": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_pages",
+        nic_mac_clocks=False,
+        description=(
+            "Linux clear_page with cbo.zero in S-mode under Sv39: superpage and "
+            "4 KiB mappings, L2 evictions, fresh page-table pages"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "6000000"),),
+        verilator_extra_args=("--assert",),
+    ),
+    "cbo_zero_pages_board": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_pages",
+        nic_mac_clocks=False,
+        description=(
+            "cbo_zero_pages in the VCU118 shape: 4 MiB L2, CPU clock twice the "
+            "SoC clock and asynchronous to it, DDR latency jitter and reordering"
+        ),
+        include_in_pytest=False,
+        extra_env=(
+            ("COCOTB_MAX_CYCLES", "6000000"),
+            ("FROST_CPU_PERIOD_PS", "1500"),
+            ("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=36"),
+        ),
+        verilator_extra_args=(
+            "--assert",
+            "-DFROST_WIDE_DDR_TEST",
+            "-DFROST_DDR_CAPACITY_LOG2_BYTES=36",
+            "-GL2_CACHE_BYTES=4194304",
+            "-GDDR_MODEL_LATENCY_JITTER=24",
+            "-GDDR_MODEL_REORDER=1",
+        ),
+    ),
+    "cbo_zero_pages_board_ddr": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_pages",
+        nic_mac_clocks=False,
+        include_in_pytest=False,
+        description=(
+            "cbo_zero_pages_board with the whole program in cached DDR, fetched "
+            "through the L1I as kernel text is, on a shorter page schedule"
+        ),
+        extra_env=(
+            ("COCOTB_MAX_CYCLES", "6000000"),
+            ("FROST_CPU_PERIOD_PS", "1500"),
+            ("FROST_COCOTB_MEM_CONFIG", "ddr"),
+            (
+                "EXTRA_CFLAGS",
+                "-DFROST_DDR_CAPACITY_LOG2_BYTES=36 -DCBO_PAGES_ALIAS=6 "
+                "-DCBO_PAGES_ROUNDS=6 -DCBO_PAGES_PT_PAGES=8",
+            ),
+        ),
+        verilator_extra_args=(
+            "--assert",
+            "-DFROST_WIDE_DDR_TEST",
+            "-DFROST_DDR_CAPACITY_LOG2_BYTES=36",
+            "-GL2_CACHE_BYTES=4194304",
+            "-GDDR_MODEL_LATENCY_JITTER=24",
+            "-GDDR_MODEL_REORDER=1",
+        ),
+    ),
+    "cbo_zero_pages_thrash": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_pages",
+        nic_mac_clocks=False,
+        description=(
+            "cbo_zero_pages in the VCU118 shape with Modified upper sectors that "
+            "loads behind clear_page evict while the blocks' records are in "
+            "flight, and 32-byte freelist objects"
+        ),
+        extra_env=(
+            ("COCOTB_MAX_CYCLES", "6000000"),
+            ("FROST_CPU_PERIOD_PS", "1500"),
+            (
+                "EXTRA_CFLAGS",
+                "-DFROST_DDR_CAPACITY_LOG2_BYTES=36 -DCBO_PAGES_ALIAS=6 "
+                "-DCBO_PAGES_ROUNDS=4 -DCBO_PAGES_PT_PAGES=4 -DCBO_PAGES_OBJ=32ul "
+                "-DCBO_PAGES_THRASH=1",
+            ),
+        ),
+        verilator_extra_args=(
+            "--assert",
+            "-DFROST_WIDE_DDR_TEST",
+            "-DFROST_DDR_CAPACITY_LOG2_BYTES=36",
+            "-GL2_CACHE_BYTES=4194304",
+            "-GDDR_MODEL_LATENCY_JITTER=24",
+            "-GDDR_MODEL_REORDER=1",
+        ),
+    ),
+    "cbo_zero_pages_thrash_sync": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_pages",
+        nic_mac_clocks=False,
+        description=(
+            "cbo_zero_pages_thrash with one clock, the 2 MiB L2 and the in-order "
+            "DDR model"
+        ),
+        extra_env=(
+            ("COCOTB_MAX_CYCLES", "6000000"),
+            (
+                "EXTRA_CFLAGS",
+                "-DCBO_PAGES_ALIAS=6 -DCBO_PAGES_ROUNDS=4 -DCBO_PAGES_PT_PAGES=4 "
+                "-DCBO_PAGES_OBJ=32ul -DCBO_PAGES_THRASH=1",
+            ),
+        ),
+        verilator_extra_args=("--assert",),
+    ),
     "vm_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

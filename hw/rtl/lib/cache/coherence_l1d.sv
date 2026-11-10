@@ -866,7 +866,8 @@ module coherence_l1d #(
     if (i_rst || prefetch_cancel) grant_read_turn_q <= 1'b0;
     else begin
       if ((grant_valid && grant_ready) ||
-          (active && phase_q == Idle && !probe_valid_q && !probe_priority && grant_read_hold) ||
+          (active && phase_q == Idle && !probe_valid_q && !probe_priority && grant_read_hold &&
+           !twin_owed) ||
           (active && phase_q == Lookup && operation_q == ReadOp)) grant_read_turn_q <= 1'b0;
       if (active && phase_q == UpdateWait && array_ready &&
           operation_q == GrantOp && grant_ep_q != '0)
@@ -1070,8 +1071,10 @@ module coherence_l1d #(
     end
   end
   assign o_r = reply_q;
+  // An owed cbo.zero twin installs before any grant (the Idle selection
+  // takes it first), so a grant offered meanwhile waits in its endpoint.
   assign grant_ready = active && phase_q == Idle && !probe_valid_q && !probe_priority &&
-      !grant_read_hold;
+      !grant_read_hold && !twin_owed;
   // Endpoint 0 is never held for a read's turn.
   assign zero_grant_failed = active && phase_q == Idle && !probe_valid_q && !probe_priority &&
       pick_onehot[0] && ep_fail[0] && !ep_store[0];
@@ -3271,6 +3274,9 @@ module coherence_l1d #(
       end
       if (active && phase_q != Idle && operation_q == TwinOp)
         p_zero_twin_owed : assert (twin_fill_q);
+      // Idle selects an owed twin before any grant, so no endpoint hands over
+      // a grant meanwhile: an accepted grant always becomes the GrantOp.
+      if (twin_owed) p_zero_twin_grant_wait : assert (!grant_ready);
       // No store is performed twice: the twin installs once, as Modified zeros
       // over its whole sector, at its own address.
       if (active && phase_q == Update && operation_q == TwinOp)
@@ -3963,10 +3969,12 @@ module coherence_l1d #(
           operation_q == GrantOp && grant_ep_q != '0))
         assert (grant_read_turn_q == $past(!grant_prefetch_q && grant_demand_waiter));
       else if ($past((grant_valid && grant_ready) ||
-          (active && phase_q == Idle && !probe_valid_q && !probe_priority && grant_read_hold) ||
+          (active && phase_q == Idle && !probe_valid_q && !probe_priority && grant_read_hold &&
+           !twin_owed) ||
           (active && phase_q == Lookup && operation_q == ReadOp))) assert (!grant_read_turn_q);
       else assert ($stable(grant_read_turn_q));
-      if (local_turn_q && grant_valid && active) assert (grant_ready);
+      if (local_turn_q && grant_valid && active && !twin_owed)
+        assert (grant_ready);
       if (rd_candidate && &read_probe_count_q) assert (local_ready);
       if ($past(local_turn_q && active && !grant_valid && atomic_write_q))
         p_bounded_atomic_write_phase : assert (phase_q == Lookup && operation_q == AtomicWriteOp);

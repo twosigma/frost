@@ -1062,8 +1062,10 @@ Modified zeros over its whole sector (`TwinOp`), in its resident way or in a
 replaced one, and only then sends the endpoint's Done. The twin installs
 before any other local work, once a write-back slot is free for its victim
 and no frozen PutM holds its sector, as for any store; probes keep their
-priority meanwhile. A twin whose lower record received `GrantM`, or installed
-on a Modified hit, is an ordinary sealed store record.
+priority meanwhile, and a grant for another endpoint stays in that endpoint
+until the twin has installed, since the L1D accepts a grant only on a cycle
+that also starts its `GrantOp`. A twin whose lower record received
+`GrantM`, or installed on a Modified hit, is an ordinary sealed store record.
 
 **Invariant: each byte of the block is performed once.** The lower sector's
 zeros are performed at the lower record's installation and the upper
