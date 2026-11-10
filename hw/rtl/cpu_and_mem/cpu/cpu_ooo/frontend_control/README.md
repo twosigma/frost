@@ -70,6 +70,12 @@ instead: ID's target compare sets it late in the cycle, and dispatch only
 stores it in the branch's RS entry. `cpu_ooo` keeps further copies of the shadow's
 source-register fields (from `o_shadow_next`) for the INT and FP RAT lookups
 and the register files' commit-bypass compares.
+When ID supplies separate next values for advancing and holding, the primitive
+implementation combines early and late stall terms once per late-stall group.
+Each shadow bit then selects head data, producer hold data, or producer advance
+data in one LUT5. Queue ownership and producer advance data reach that final
+selection directly. The generic form uses the equivalent head-select and
+stall-select expression.
 
 ## Verification
 
@@ -81,6 +87,10 @@ and no producer overwrite before acceptance. The `decoded_bundle_queue` and
 bypass, wraparound, full queues, held bundles, reset, and flushes of live
 entries. Assertions in `cpu_ooo` check the integration rules in whole-core
 simulation.
+The `decoded_bundle_queue_split_stall` and
+`decoded_bundle_queue_split_stall_depth2` targets also drive the separate
+advance/hold values, early and late stall terms, and flush override, with
+three late-stall copies distributed across eleven shadow bits.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
