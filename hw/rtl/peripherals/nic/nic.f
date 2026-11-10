@@ -16,6 +16,7 @@ $(ROOT)/hw/rtl/peripherals/nic/nic_tx_segment.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_tx_engine.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_csr.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_pause_rx.sv
+$(ROOT)/hw/rtl/peripherals/nic/nic_pause_rx_wire.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_pause_tx.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_mac_wrap.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_top.sv

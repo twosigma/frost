@@ -17,6 +17,7 @@ driver ([`frost_net10g`](../../../../linux/frost-net10g/README.md)) follows.
 | `nic_csr.sv` | core | Register file: control, status, station address, rings, link and PHY registers, 64-bit counters |
 | `nic_irq.sv` | core | Interrupt status, mask, and per-direction completion moderation |
 | `nic_pause_rx.sv`, `nic_pause_tx.sv` | MAC | 802.3x flow control around the MACs (see Registers) |
+| `nic_pause_rx_wire.sv` | RX MAC | Validates PAUSE on decoded XGMII before packet storage, independently of host backpressure |
 | `nic_mac_wrap.sv` | MAC + core | The MAC/PCS in its two domains, the packet FIFOs, the domain resets, status synchronizers, event counters, and the raw loopback (`RAW_LOOPBACK`) |
 | `nic_dma_front.sv` | core | Both engines' requests onto the one DMA line port: eight entries with at most six per side, an order guard for a read and a write of one line, RX priority with a grant-counted bound, response steering, aperture refusal, and the RESET drain |
 | `nic_desc_fetch.sv` | core | One ring's descriptor supply: prefetch cursor, two-line cache, eligibility fixed when the read is requested |
@@ -402,14 +403,16 @@ cap from moving while the engine drains the FIFO. A software RESET returns the l
 sides together. An RX-only restart retains the core registers and replays the FIFO and pause
 configuration after READY returns; RX enable waits for that replay.
 
-**802.3x flow control.** Both ports (10GBASE-R and GMII/SGMII) share the logic, which sits
-outside the MACs: `nic_pause_rx` between the receive MAC and the ingress FIFO, `nic_pause_tx`
-between the TX FIFO and the transmit MAC.
+**802.3x flow control.** Both ports (10GBASE-R and GMII/SGMII) share the logic:
+`nic_pause_rx_wire` observes decoded XGMII, `nic_pause_rx` filters the receive MAC's host-facing
+stream before the ingress FIFO, and `nic_pause_tx` sits between the TX FIFO and transmit MAC.
 
-- *Receive.* A frame to 01-80-C2-00-00-01 or the station address with EtherType 0x8808 and
-  opcode 0x0001 is consumed (counted, never delivered to the host), whether or not pause is
-  enabled; its first two beats are held back until the opcode is known, and any other frame to
-  those addresses is passed on unchanged. With PAUSE_CTRL bit 0 set, the pause_time loads a
+- *Receive.* The wire observer validates preamble, length, control symbols and FCS, then counts
+  a frame to 01-80-C2-00-00-01 or the station address with EtherType 0x8808 and opcode 0x0001.
+  It progresses while the ingress FIFO is full or ordinary MAC packet storage overflows. The
+  host-facing filter consumes the same frame type, whether or not pause is enabled; its first
+  two beats are held until the opcode is known, and other frames pass unchanged. With
+  PAUSE_CTRL bit 0 set, the wire event's pause_time loads a
   timer of 512-bit-time quanta (8 words at 10G, 64 byte times on GMII at any speed); pause_time 0
   clears it. Word times follow the PCS enable, including gearbox gaps, rather than every raw
   PMA clock. While it runs no new frame leaves the TX FIFO. A frame already started finishes, and
@@ -428,10 +431,11 @@ between the TX FIFO and the transmit MAC.
   1500-byte MTU (1538 bytes with preamble and gap): our pause frame waiting behind a frame in
   transmission and one buffered in the MAC (2 x 1538 B), the pause frame itself (84 B), the PHY and
   cable round trip (assumed 2 us: 2.5 KB at 10 Gb/s, 0.25 KB at 1 Gb/s), the peer finishing the
-  frame it was sending (1538 B) and its response time (60 pause quanta, 480 B). That is about 7.7 KB
-  (960 words) at 10G and 5.5 KB (700 words) at 1G. The FIFO above high-water (128 words at the default
-  limit of 512, 2048 words at 8192) plus the 4096-word MAC buffer is at least 4224 words, four
-  times the need. Raise PAUSE_HIGH_WATER toward the limit for more buffering; do not set it so low that
+  frame it was sending (1538 B) and its assumed response time (60 pause quanta, 3840 B). That is
+  about 11.0 KB (1380 words) at 10G and 8.8 KB (1100 words) at 1G. The FIFO above high-water
+  (128 words at the default limit of 512, 2048 words at 8192) plus the 4096-word MAC buffer is at
+  least 4224 words, over three times the 10G estimate. Raise PAUSE_HIGH_WATER toward the limit
+  for more buffering; do not set it so low that
   the link pauses at idle.
 
 Use 32-bit loads and stores for the 32-bit register bank. A write updates a
@@ -518,7 +522,8 @@ final scan.
 | `nic_byte_pack`, `nic_byte_unpack` | Byte placement, alignment, truncation, and backpressure |
 | `nic_rx_engine`, `nic_tx_engine` | Rings, filtering, buffer and status ordering, malformed descriptors, aborts, and disables |
 | `nic_tx_segment` | IPv4/IPv6 and VLAN segmentation, header and checksum updates, short or excess input, and stalled frame boundaries |
-| `nic_pause_gmii`, `nic_pause_10g` | Pause reception, timer duration, generation, refresh, release, and publication of the interval with its completed-frame event |
+| `nic_pause_rx_wire` | Both XGMII starts, all termination lanes, enable gaps, CRC, length, header validation and partial-frame reset |
+| `nic_pause_gmii`, `nic_pause_10g` | Pause reception through blocked RX and MAC overflow, timer duration, generation, refresh, release, and publication of the interval with its completed-frame event |
 | `nic_rx_fifo_limit`, `nic_top_rx_fifo` | Runtime FIFO limits and the 8192-word configuration, including GMII receive diagnostic counters |
 | `nic_top` | Whole NIC with three clocks and raw loopback, AXI4-Lite register accesses with channel skew and response stalls, its AXI4 master against a reordering slave, and SLVERR on buffer reads and writes |
 | `nic_top_unrelated_clocks` | Independent TX and RX clocks with `RAW_LOOPBACK=0` |

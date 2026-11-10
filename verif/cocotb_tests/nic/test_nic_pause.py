@@ -332,6 +332,46 @@ def quantum_ns() -> float:
 
 
 @cocotb.test()
+async def pause_is_honoured_while_rx_data_is_blocked(dut: Any) -> None:
+    """Honour a later PAUSE while an ordinary frame is stalled."""
+    bench = Bench(dut)
+    await bench.start()
+    await bench.configure(CTRL_RX, limit=8)
+    bench.ready = False
+    body = data_frame(65, 1)
+    bench.link.send(body)
+    bench.link.send(pause_frame(0xFFFF))
+    await bench.drain_link()
+    assert bench.total(OVERFLOW) == 0
+    assert bench.total(RX_PAUSE) == 1, "PAUSE remained behind the stalled data frame"
+    assert int(dut.tx_paused.value)
+    bench.link.send(pause_frame(0))
+    await bench.drain_link()
+    assert bench.total(RX_PAUSE) == 2
+    assert not int(dut.tx_paused.value), "a stalled RX path prevented PAUSE release"
+    bench.ready = True
+    await ClockCycles(dut.i_clk, 1000)
+    assert bench.received == [body]
+    assert bench.total(RX_PAUSE) == 2, "draining the data path replayed a PAUSE"
+
+
+@cocotb.test()
+async def pause_is_honoured_after_mac_storage_overflows(dut: Any) -> None:
+    """PAUSE validation does not depend on reserving ordinary packet storage."""
+    bench = Bench(dut)
+    await bench.start()
+    await bench.configure(CTRL_RX, limit=8)
+    bench.ready = False
+    for tag in range(4):
+        bench.link.send(data_frame(8192, tag))
+    bench.link.send(pause_frame(0xFFFF))
+    await bench.drain_link()
+    assert bench.total(OVERFLOW) > 0
+    assert bench.total(RX_PAUSE) == 1, "MAC storage exhaustion discarded the PAUSE"
+    assert int(dut.tx_paused.value)
+
+
+@cocotb.test()
 async def pause_timer_counts_wire_word_enables(dut: Any) -> None:
     """Measure the complete pause interval with a bound tighter than the PCS cadence gap."""
     bench = Bench(dut)
@@ -393,7 +433,7 @@ async def pause_interval_is_published_with_its_event(dut: Any) -> None:
     bench = Bench(dut)
     await bench.start()
     await bench.configure(CTRL_RX)
-    source = dut.u_pause_rx
+    source = dut.u_pause_wire
     toggle = int(source.o_pause_tog.value)
     interval = int(source.o_pause_interval.value)
     seen = []

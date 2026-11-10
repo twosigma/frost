@@ -498,9 +498,10 @@ Check discovery with `./scripts/frost.py cocotb --list-tests`, then run
 `./scripts/frost.py cocotb new_feature`.
 
 The NIC targets include `nic_tx_segment`, `nic_rx_fifo_limit`, `nic_top_rx_fifo`,
-`nic_pause_gmii`, and `nic_pause_10g`, alongside the engine and whole-NIC benches.
+`nic_pause_gmii`, `nic_pause_10g`, and `nic_pause_rx_wire`, alongside the engine and whole-NIC benches.
 Their registered tests cover segmentation headers, FIFO capacity, pause crossings, independent
-domain restarts, and cancellation under backpressure. `nic_sg_loopback` and `nic_rate` are
+domain restarts, wire-side PAUSE validation during congestion, and cancellation under backpressure.
+`nic_sg_loopback` and `nic_rate` are
 registered real programs in both memory tiers. See the
 [NIC verification table](../hw/rtl/peripherals/nic/README.md#verification) for the target list.
 `test_frost_net10g_driver.py` checks packaging and the descriptor ABI, and compiles selected

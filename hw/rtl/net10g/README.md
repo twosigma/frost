@@ -68,6 +68,7 @@ top.
 | `m_axis_*` | `i_rx_clk` | Ordinary valid/ready packet output; can drain on every clock, including PCS block pauses |
 | `o_tx_raw_data`, `o_tx_raw_valid` | `i_tx_clk` | Startup qualification followed by one raw word every clock; no backpressure |
 | `o_tx_word_tick` | `i_tx_clk` | One enabled XGMII word time, including gearbox cadence; protocol timers use this for decoded wire time |
+| `o_rx_xgmii_data`, `o_rx_xgmii_ctrl`, `o_rx_xgmii_valid` | `i_rx_clk` | Decoded words before packet storage; control observers validate framing and FCS independently of packet-output backpressure |
 | `i_rx_raw_data`, `i_rx_raw_valid` | `i_rx_clk` | One raw word every clock during normal operation; valid permits startup/test gaps |
 | `i_rx_signal_ok` | `i_rx_clk` | Synchronized PMA/CDR readiness; deassert on signal or transceiver readiness loss |
 

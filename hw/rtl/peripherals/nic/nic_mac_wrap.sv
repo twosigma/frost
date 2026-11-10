@@ -253,6 +253,22 @@ module nic_mac_wrap #(
   logic pf_valid, pf_ready, pause_rx_ev, pause_rx_tog, want_pause;
   logic [67:0] pf_word;
   logic [15:0] pause_rx_interval;
+  logic [63:0] rx_wire_data;
+  logic [7:0] rx_wire_ctrl;
+  logic rx_wire_valid;
+  nic_pause_rx_wire #(
+      .MAX_FRAME_BYTES(MAX_FRAME_BYTES)
+  ) u_pause_wire (
+      .i_clk(i_rx_clk),
+      .i_rst(rx_rst),
+      .i_enable(rx_wire_valid),
+      .i_xgmii_data(rx_wire_data),
+      .i_xgmii_ctrl(rx_wire_ctrl),
+      .i_mac(mac_rx_s),
+      .o_pause_ev(pause_rx_ev),
+      .o_pause_tog(pause_rx_tog),
+      .o_pause_interval(pause_rx_interval)
+  );
   nic_pause_rx #(
       .OCC_BITS(LimitBits)
   ) u_pause_rx (
@@ -271,9 +287,9 @@ module nic_mac_wrap #(
       .i_low_water     (low_water_eff_q),
       .i_tx_en         (cfg_ctrl[nic_pkg::PauseCtrlBitTx]),
       .o_want_pause    (want_pause),
-      .o_pause_ev      (pause_rx_ev),
-      .o_pause_tog     (pause_rx_tog),
-      .o_pause_interval(pause_rx_interval)
+      .o_pause_ev      (),
+      .o_pause_tog     (),
+      .o_pause_interval()
   );
   async_fifo #(
       .DATA_WIDTH(68),
@@ -366,6 +382,9 @@ module nic_mac_wrap #(
         .i_rx_raw_data    (rx_raw_data),
         .i_rx_raw_valid   (rx_raw_valid),
         .i_rx_signal_ok   (rx_signal_ok),
+        .o_rx_xgmii_data  (rx_wire_data),
+        .o_rx_xgmii_ctrl  (rx_wire_ctrl),
+        .o_rx_xgmii_valid (rx_wire_valid),
         .o_rx_locked      (rx_locked),
         .o_rx_high_ber    (rx_high_ber),
         .o_rx_local_fault (rx_local_fault),
@@ -566,6 +585,9 @@ module nic_mac_wrap #(
       end
     end
 
+    assign rx_wire_data  = xgmii_rx_data_q;
+    assign rx_wire_ctrl  = xgmii_rx_ctrl_q;
+    assign rx_wire_valid = xgmii_rx_en_q;
     eth10g_mac_rx #(
         .MAX_FRAME_BYTES(MAX_FRAME_BYTES)
     ) u_mac_rx (

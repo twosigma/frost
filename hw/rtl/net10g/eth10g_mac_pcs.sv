@@ -51,6 +51,10 @@ module eth10g_mac_pcs #(
     input logic [63:0] i_rx_raw_data,
     input logic i_rx_raw_valid,
     input logic i_rx_signal_ok,
+    // Decoded PCS words before the receive packet buffer, for MAC-control observers.
+    output logic [63:0] o_rx_xgmii_data,
+    output logic [7:0] o_rx_xgmii_ctrl,
+    output logic o_rx_xgmii_valid,
     output logic o_rx_locked,
     output logic o_rx_high_ber,
     output logic o_rx_local_fault,
@@ -65,6 +69,9 @@ module eth10g_mac_pcs #(
   logic [63:0] mac_tx_data, rs_tx_data, rx_data;
   logic [7:0] mac_tx_ctrl, rs_tx_ctrl, rx_ctrl;
   logic tx_enable, rx_enable, mac_tx_ready;
+  assign o_rx_xgmii_data  = rx_data;
+  assign o_rx_xgmii_ctrl  = rx_ctrl;
+  assign o_rx_xgmii_valid = rx_enable;
   logic [65:0] tx_block, rx_block;
   logic tx_block_valid, tx_block_ready, rx_block_valid, rx_slip;
   // Register RX fault levels before synchronization. TX resets to local fault.

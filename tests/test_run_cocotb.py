@@ -3200,6 +3200,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GRX_FIFO_DEPTH=8192",),
         description="NIC registers and traffic with the 8192-word RX FIFO and its limit register",
     ),
+    "nic_pause_rx_wire": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_pause_rx_wire",
+        hdl_toplevel_module="nic_pause_rx_wire",
+        verilator_extra_args=("-GMAX_FRAME_BYTES=128",),
+        description="PAUSE recognition before buffering: framing, length, CRC and header validation",
+    ),
     "nic_pause_gmii": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_pause",
         hdl_toplevel_module="nic_mac_wrap",

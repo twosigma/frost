@@ -27,6 +27,8 @@
  * matched the destination is released to the FIFO unchanged, held beat first. Frames that do not
  * match pass straight through. The receive MAC publishes complete, CRC-checked frames only, each at
  * least 60 bytes long, so a held frame always has its second and third beats.
+ * The wrapper supplies transmit-side events with nic_pause_rx_wire, allowing
+ * event progress while this host-facing stream stalls.
  *
  * Pause decision. o_want_pause rises when the FIFO's occupancy reaches i_high_water and falls when it
  * drops to i_low_water (hysteresis), and stays low while i_tx_en is clear. The transmit half turns
