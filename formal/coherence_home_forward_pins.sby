@@ -1,0 +1,32 @@
+[tasks]
+coh_home_forward1_prove one portable
+coh_home_forward3_prove three portable
+coh_home_forward8_prove eight portable
+coh_home_forward1_xilinx_prove one xilinx
+coh_home_forward3_xilinx_prove three xilinx
+coh_home_forward8_xilinx_prove eight xilinx
+
+[options]
+mode prove
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+# Arbitrary ready/later masks: first ready in later, else first ready.
+xilinx: read_verilog -formal +/xilinx/cells_sim.v
+xilinx: read -define FROST_XILINX_PRIMS
+read -formal -sv -D SYNTHESIS cache_perf_pkg.sv coherence_pkg.sv coherence_home.sv coherence_home_forward_pins.sv
+one: chparam -set FILLS 1 coherence_home_forward_pins
+three: chparam -set FILLS 3 coherence_home_forward_pins
+eight: chparam -set FILLS 8 coherence_home_forward_pins
+prep -flatten -top coherence_home_forward_pins
+select -assert-count 1 t:$check r:FLAVOR=assert %i
+
+[files]
+../hw/rtl/lib/cache/cache_perf_pkg.sv
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_home.sv
+coherence_home_forward_pins.sv

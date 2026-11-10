@@ -50,7 +50,15 @@ holder from its next address, and against a store the CPU's write port pushes
 into the L1D's store buffer, so a record that turns valid with that push
 matches through the pushed line. The staged load keeps its own copy of its
 entry's matches, registered with `sq_check_idx` from the next matches of the
-entry it takes, so the hold reads no select by the index. Holder zero changes
+entry it takes, so the hold reads no select by the index. These copies read
+stored matches for the held index. For the candidate they prepare head data
+at the shared head index and gather stored/merged ring data before selecting
+the source. Empty rings retain the encoder's index-zero default. Raw head
+masks need not be one-hot: head data uses the encoded index even when tags
+repeat. Address-update valid and head priority select the prepared candidate
+data and write match; capture take then selects a stored or shared update match
+at the final selector. Entry flags and payloads keep their encoded writes.
+Holder zero changes
 only when an atomic starts or ends, and in that cycle the hold covers every
 staged load. The raw LQ compares the staged address with the holders directly.
 

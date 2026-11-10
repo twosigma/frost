@@ -353,6 +353,18 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "coherence_home_forward_pins.sby",
+        "Per-fill forward priority matches the reference for arbitrary ready/later masks.",
+        tasks=(
+            "coh_home_forward1_prove",
+            "coh_home_forward3_prove",
+            "coh_home_forward8_prove",
+            "coh_home_forward1_xilinx_prove",
+            "coh_home_forward3_xilinx_prove",
+            "coh_home_forward8_xilinx_prove",
+        ),
+    ),
+    FormalTarget(
         "coherence_home.sby",
         "The coherent home preserves pins, dirty replies, and victim ownership.",
         tasks=(
@@ -669,7 +681,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "lq_capture_pins.sby",
-        "Capture, in-flight, bypass-source and release LUT INITs match independent pin equations.",
+        "Capture, in-flight, release and staged-copy choices match independent pin equations.",
         tasks=("capture_pins_prove", "capture_pins_xilinx_prove"),
     ),
     FormalTarget(
@@ -1809,6 +1821,21 @@ SBY_TASKS = [
     (
         "coh_work_select_prove",
         "Ready work and circular priority match serial selection, last pick coded.",
+    ),
+    ("coh_home_forward1_prove", "One-fill forward choice matches the reference."),
+    ("coh_home_forward3_prove", "Three-fill forward choice matches the reference."),
+    ("coh_home_forward8_prove", "Eight-fill forward choice matches the reference."),
+    (
+        "coh_home_forward1_xilinx_prove",
+        "Primitive one-fill forward choice matches the reference.",
+    ),
+    (
+        "coh_home_forward3_xilinx_prove",
+        "Primitive three-fill forward choice matches the reference.",
+    ),
+    (
+        "coh_home_forward8_xilinx_prove",
+        "Primitive eight-fill forward choice matches the reference.",
     ),
     ("coh_home_control_prove", "Composed home ownership and independent memory debt."),
     ("coh_home_control64_prove", "Composed home ownership across sibling sectors."),
