@@ -204,6 +204,9 @@ module branch_prediction_controller #(
     output logic                       o_slot1_aliases_slot2_candidate,
     output logic                       o_slot2_live_target_used_for_pc_cofactor,
     output logic                       o_slot2_live_target_used_for_pc,
+    // Architectural-PC cofactors; IF forwards live validity and replay separately.
+    output logic                       o_slot2_staged_pc_without_valid,
+    output logic                       o_slot2_live_pc_without_valid,
     output logic                       o_slot2_predicted_taken,
     output logic [riscv_pkg::XLEN-1:0] o_slot2_predicted_target,
     // pc_controller's copies of the slot-2 targets. They equal
@@ -1099,16 +1102,15 @@ module branch_prediction_controller #(
       .O (slot2_live_candidate_plus4_pos)
   );
   (* dont_touch = "true" *)
-  LUT6 #(
-      .INIT(64'hca00000000000000)
-  ) u_slot2_live_select (
+  LUT5 #(
+      .INIT(32'hca000000)
+  ) u_slot2_live_without_valid (
       .I0(slot2_live_candidate_plus2_pos),
       .I1(slot2_live_candidate_plus4_pos),
       .I2(slot2_pc_use_alt),
       .I3(slot2_live_qualifier),
       .I4(slot2_prediction_permission_without_valid),
-      .I5(i_slot2_valid),
-      .O (o_slot2_live_target_used_for_pc)
+      .O (o_slot2_live_pc_without_valid)
   );
 `else
   assign slot2_prediction_candidate_for_pc =
@@ -1122,10 +1124,13 @@ module branch_prediction_controller #(
       (btb_predicted_taken_2_plus2 && slot2_plus2_qualifier) ||
       (btb_predicted_taken_2_plus4 && slot2_plus4_size_safe) ||
       (dir_predicted_taken && slot2_live_plus4_size_safe);
-  assign o_slot2_live_target_used_for_pc =
-      slot2_prediction_permission && slot2_live_qualifier &&
+  assign o_slot2_live_pc_without_valid =
+      slot2_prediction_permission_without_valid && slot2_live_qualifier &&
       (slot2_pc_use_alt ? slot2_live_candidate_plus4_pos : slot2_live_candidate_plus2_pos);
 `endif
+  assign o_slot2_live_target_used_for_pc = i_slot2_valid && o_slot2_live_pc_without_valid;
+  assign o_slot2_staged_pc_without_valid = prediction_common_wcs0 &&
+      !i_branch_taken && !i_is_32bit_spanning && slot2_staged_prediction_candidate_for_pc;
   assign o_slot2_prediction_used_for_pc =
       slot2_prediction_permission && slot2_prediction_candidate_for_pc;
   // Duplicate the slot-2 request for the fetch-PC mux, for fanout.
@@ -1140,15 +1145,16 @@ module branch_prediction_controller #(
   // target even when the candidate valids are not one-hot.
   assign slot2_staged_prediction_candidate_for_pc =
       slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken;
-  // The staged select feeds the fetch-PC mux. The raw served-window guard
+  // Compatibility staged select; IF consumes the cofactor instead, so these
+  // terms may be pruned when the complete output is unused. The raw served-window guard
   // clears both prediction_common and i_slot2_valid, so the select is formed
   // with the guard low and the guard applies last. The BTB's taken results
   // behind the slot-2 tag compares are the late terms: each candidate's taken
   // bit meets its kept qualifier (permission, valid and size check) in the
   // gate that the guard and IF's replay request join.
   logic slot2_staged_gate_wcs0;
-  (* keep = "true" *)logic slot2_staged_plus2_qualifier_wcs0;
-  (* keep = "true" *)logic slot2_staged_plus4_qualifier_wcs0;
+  logic slot2_staged_plus2_qualifier_wcs0;
+  logic slot2_staged_plus4_qualifier_wcs0;
   logic slot2_staged_prediction_used_for_pc_wcs0;
   assign slot2_staged_gate_wcs0 = prediction_common_wcs0 && !i_branch_taken &&
       !i_is_32bit_spanning && i_slot2_valid_wcs0;

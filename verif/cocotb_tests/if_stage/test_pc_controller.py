@@ -76,8 +76,10 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_slot2_prediction_used_for_pc.value = 0
     dut.i_slot2_prediction_used_for_fetch_mux.value = 0
     dut.i_slot2_predicted_target.value = 0
-    dut.i_slot2_staged_prediction_used_for_pc.value = 0
-    dut.i_slot2_live_target_used_for_pc.value = 0
+    dut.i_slot2_pc_valid.value = 1
+    dut.i_slot2_pc_replay.value = 0
+    dut.i_slot2_staged_pc_without_valid.value = 0
+    dut.i_slot2_live_pc_without_valid.value = 0
     dut.i_slot2_staged_predicted_target.value = 0
     dut.i_slot2_live_predicted_target.value = 0
     dut.i_slot2_staged_target_rel_pending.value = 0
@@ -180,7 +182,7 @@ def _drive_staged_slot2_prediction(dut: Any, *, target: int) -> None:
     dut.i_slot2_prediction_used_for_pc.value = 1
     dut.i_slot2_prediction_used_for_fetch_mux.value = 1
     dut.i_slot2_predicted_target.value = target
-    dut.i_slot2_staged_prediction_used_for_pc.value = 1
+    dut.i_slot2_staged_pc_without_valid.value = 1
     dut.i_slot2_staged_predicted_target.value = target
 
 
@@ -190,7 +192,7 @@ def _drive_live_slot2_fallback(dut: Any, *, target: int) -> None:
     dut.i_slot2_prediction_used_for_pc.value = 1
     dut.i_slot2_prediction_used_for_fetch_mux.value = 1
     dut.i_slot2_predicted_target.value = target
-    dut.i_slot2_live_target_used_for_pc.value = 1
+    dut.i_slot2_live_pc_without_valid.value = 1
     dut.i_slot2_live_predicted_target.value = target
 
 
@@ -592,11 +594,11 @@ async def test_live_slot2_fallback_selects_pc_reg_and_keeps_priority(
     # With one-hot slot-2 candidate valids, IF never sets the staged and live
     # selects together, but if both are set the live target still wins, as in
     # the combined target mux. Clearing the live select lets the staged target win.
-    dut.i_slot2_staged_prediction_used_for_pc.value = 1
+    dut.i_slot2_staged_pc_without_valid.value = 1
     dut.i_slot2_staged_predicted_target.value = PRED_TARGET
     await _settle()
     assert int(dut.next_pc_reg.value) == SLOT2_TARGET
-    dut.i_slot2_live_target_used_for_pc.value = 0
+    dut.i_slot2_live_pc_without_valid.value = 0
     dut.i_slot2_predicted_target.value = PRED_TARGET
     await _settle()
     assert int(dut.next_pc_reg.value) == PRED_TARGET
@@ -1211,3 +1213,35 @@ async def test_pending_predecessor_tag_redirect_kill_and_recapture(dut: Any) -> 
     assert int(dut.pending_prediction_prev_pc.value) == BRANCH_TARGET - 2
     assert int(dut.pending_prediction_prev_native_pc.value) == BRANCH_TARGET - 4
     _assert_pending_predecessor_relation(dut)
+
+
+@cocotb.test()
+async def test_raw_slot2_valid_and_replay_preserve_target_priority(dut: Any) -> None:
+    """Live validity suppresses both cofactors while saved replay still redirects."""
+    await _setup_test(dut)
+    await _clear_reset_holdoff(dut)
+    staged_target = SLOT2_TARGET | 2
+    live_target = PRED_TARGET | 2
+    dut.i_slot2_staged_predicted_target.value = staged_target
+    dut.i_slot2_live_predicted_target.value = live_target
+    for bits in range(16):
+        valid, staged, live, replay = [(bits >> bit) & 1 for bit in range(4)]
+        before = int(dut.o_pc_reg.value)
+        dut.i_slot2_pc_valid.value = valid
+        dut.i_slot2_pc_replay.value = replay
+        dut.i_slot2_staged_pc_without_valid.value = staged
+        dut.i_slot2_live_pc_without_valid.value = live
+        expected = (
+            live_target
+            if valid and live
+            else staged_target
+            if replay or (valid and staged)
+            else before + 4
+        )
+        await _advance_cycle(dut)
+        assert int(dut.o_pc_reg.value) == expected
+        assert int(dut.o_pc_reg_high_for_coverage.value) == ((expected >> 1) & 1)
+    dut.i_trap_taken.value = 1
+    dut.i_trap_target.value = TRAP_TARGET
+    await _advance_cycle(dut)
+    assert int(dut.o_pc_reg.value) == TRAP_TARGET

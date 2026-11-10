@@ -104,6 +104,13 @@ once, and `pc_reg` follows one cycle later, after the branch itself has been
 emitted; a taken slot-2 prediction moves both PCs at once. A two-instruction
 bundle advances `pc_reg` by 4, 6, or 8 bytes, a single instruction by 2 or 4.
 
+The architectural-PC mux receives raw live slot-2 validity and staged/live
+cofactors separately. Its no-live arm retains saved replay, and raw live
+validity selects between the no-live and valid arms in the final F7. The
+complete staged select is replay OR (valid AND staged cofactor); the complete
+live select is valid AND live cofactor. Redirect and live/staged priorities
+remain the same.
+
 Reset loads both PCs with the boot address at their flops. `pc_controller`
 picks the next fetch PC in this priority: trap or xRET, FENCE-class flush
 (FENCE.I, SFENCE.VMA, or a
