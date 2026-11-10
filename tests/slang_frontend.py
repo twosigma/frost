@@ -444,7 +444,6 @@ def check(
     *,
     patterns: list[str] | None = None,
     report: Path | None = None,
-    include_deferred: bool = False,
     lower: bool = False,
 ) -> int:
     """Run selected cases; missing Yosys/read_slang is a hard failure."""
@@ -459,14 +458,6 @@ def check(
         for c in top_cases()
         if c.name.startswith("synthesis/generic/")
     ]
-    deferred = {
-        r["name"] for r in json.loads((ROOT / "tests/slang/deferred.json").read_text())
-    }
-    stale = deferred - {c.name for c in cases}
-    if stale:
-        raise ValueError(f"stale deferred views: {sorted(stale)}")
-    if not include_deferred:
-        cases = [c for c in cases if c.name not in deferred]
     if lower:
         cases = [replace(c, ast_only=False) for c in cases]
     if patterns:
@@ -487,7 +478,7 @@ def check(
     failures = sum(bool(r["returncode"] or r["errors"]) for r in results)
     seconds = sum(float(r["seconds"]) for r in results)
     print(
-        f"yosys-slang: {len(results) - failures}/{len(results)} cases passed in {seconds:.2f}s; {len(deferred)} deferred views",
+        f"yosys-slang: {len(results) - failures}/{len(results)} cases passed in {seconds:.2f}s",
         flush=True,
     )
     return int(failures != 0)
@@ -497,11 +488,6 @@ def main() -> int:
     """Run the shared checker CLI with optional case selection and JSON evidence."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", action="append", help="case glob (repeatable)")
-    parser.add_argument(
-        "--include-deferred",
-        action="store_true",
-        help="also check the explicitly deferred views",
-    )
     parser.add_argument(
         "--lower", action="store_true", help="also import RTLIL for selected cases"
     )
@@ -515,7 +501,6 @@ def main() -> int:
         return check(
             patterns=args.case,
             report=args.report,
-            include_deferred=args.include_deferred,
             lower=args.lower,
         )
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
