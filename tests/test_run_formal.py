@@ -1222,7 +1222,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "btb_pending_relation.sby",
         "Raw slot-2 typed relations match selected target relations including uncovered rows",
-        tasks=("bmc", "bmc_tiny", "bmc_small"),
+        tasks=("bmc", "bmc_btb_index1", "bmc_btb_index3"),
     ),
     FormalTarget(
         "btb_tag_compare.sby",
@@ -2229,6 +2229,8 @@ SBY_TASKS = [
         "bmc_small_btb",
         "Bounded tag comparison with a 16-entry BTB and partial final group",
     ),
+    ("bmc_btb_index1", "Bounded relation checking with one BTB index bit"),
+    ("bmc_btb_index3", "Bounded relation checking with three BTB index bits"),
     ("bmc_four_way", "Bounded checking with four ways"),
     ("prove_four_way", "Unbounded safety checking with four ways"),
     ("bmc_xlen72", "Bounded Bare-output checking with local XLEN 72"),

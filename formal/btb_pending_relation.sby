@@ -1,7 +1,7 @@
 [tasks]
 bmc
-bmc_tiny
-bmc_small
+bmc_btb_index1
+bmc_btb_index3
 
 [options]
 mode bmc
@@ -13,8 +13,8 @@ smtbmc boolector
 [script]
 read -sv riscv_pkg.sv
 read_verilog -formal -D SYNTHESIS -D BTB_PENDING_REL_LOCAL_PROOF -sv branch_predictor.sv
-bmc_tiny: chparam -set BTB_INDEX_BITS 1 branch_predictor
-bmc_small: chparam -set BTB_INDEX_BITS 3 branch_predictor
+bmc_btb_index1: chparam -set BTB_INDEX_BITS 1 branch_predictor
+bmc_btb_index3: chparam -set BTB_INDEX_BITS 3 branch_predictor
 # The relation is combinational. Cut every unchanged RAM deliberately, so
 # its outputs and every uninitialized payload/control bit remain arbitrary.
 delete t:sdp_dist_ram t:sdp_block_ram
