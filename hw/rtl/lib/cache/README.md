@@ -410,7 +410,9 @@ failure. An endpoint accepts every acquisition while idle, so the
 controller reads the endpoint's idle state for acceptance. The lookup address,
 selected read slot and grant payload have no reset and capture on every Idle
 cycle, because nothing reads them until a selection leaves Idle. The read
-address joins that selection last.
+address joins that selection last. The priority conditions above a read are
+prepared separately, so read eligibility controls the final address selection
+without passing through the non-read address priority chain.
 
 Read status uses per-slot masks for allocation, response transfer, lookup
 results and grant completion. Completion and miss sets dominate allocation
@@ -640,12 +642,13 @@ metadata.
 A primary GetS, LoadReserved or GetM, whose hit service would read the row
 and send no probe, is granted from the fill's line. Once the fill holds its
 line and its victim handling has let the install begin, the fill offers the
-primary's sector; fills that may forward take turns. Each fill records its
-primary's identity at allocation, so the forward's result comes from the
-fill's registers. The completion table accepts the forward while its forward
-buffer is free: the primary's slot leaves its seat and takes its result, its
-completion pin on the fill's way and the forward buffer on one edge, and its G
-follows as any buffered result's.
+primary's sector; fills that may forward take turns. The selector forms its
+blockers in groups of three ready/preferred pairs before reducing the groups.
+Each fill records its primary's identity at allocation, so the forward's
+result comes from the fill's registers. The completion table accepts the
+forward while its forward buffer is free: the primary's slot leaves its seat
+and takes its result, its completion pin on the fill's way and the forward
+buffer on one edge, and its G follows as any buffered result's.
 The fill blocks its whole line until the install completes, so a
 PutM, a probe or a replacement of the line waits for the install, and the
 G can precede it. Every other primary, and every waiter, takes the path

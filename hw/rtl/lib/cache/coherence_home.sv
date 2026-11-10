@@ -2336,12 +2336,68 @@ module coherence_home_forward_turn_select #(
     input  logic [FILLS-1:0] i_later,
     output logic [FILLS-1:0] o_pick
 );
+  localparam int unsigned Groups = (FILLS + 2) / 3;
   for (genvar fill = 0; fill < FILLS; fill++) begin : gen_fill
     localparam logic [FILLS-1:0] Below = (FILLS'(1) << fill) - FILLS'(1);
     localparam logic [FILLS-1:0] Above = ~(Below | (FILLS'(1) << fill));
-    (* keep = "true" *)wire below_ready = |(i_ready & Below);
-    (* keep = "true" *)wire below_later = |(i_ready & i_later & Below);
-    (* keep = "true" *)wire above_later = |(i_ready & i_later & Above);
+    // Bound each blocker reduction before combining its groups. Sharing an
+    // unbounded suffix reduction can otherwise serialize the ready inputs.
+    (* keep = "true" *) wire [Groups-1:0] below_ready_groups;
+    (* keep = "true" *) wire [Groups-1:0] below_later_groups, above_later_groups;
+    for (genvar group_idx = 0; group_idx < Groups; group_idx++) begin : gen_group
+      wire [2:0] ready_below, ready_above, later;
+      for (genvar lane = 0; lane < 3; lane++) begin : gen_lane
+        localparam int unsigned Index = 3 * group_idx + lane;
+        if (Index < FILLS) begin : gen_present
+          assign ready_below[lane] = i_ready[Index] && Below[Index];
+          assign ready_above[lane] = i_ready[Index] && Above[Index];
+          assign later[lane] = i_later[Index];
+        end else begin : gen_padding
+          assign ready_below[lane] = 1'b0;
+          assign ready_above[lane] = 1'b0;
+          assign later[lane] = 1'b0;
+        end
+      end
+`ifdef FROST_XILINX_PRIMS
+      (* dont_touch = "true" *) LUT3 #(
+          .INIT(8'hfe)
+      ) u_below_ready (
+          .I0(ready_below[0]),
+          .I1(ready_below[1]),
+          .I2(ready_below[2]),
+          .O (below_ready_groups[group_idx])
+      );
+      (* dont_touch = "true" *) LUT6 #(
+          .INIT(64'hfffff888f888f888)
+      ) u_below_later (
+          .I0(ready_below[0]),
+          .I1(later[0]),
+          .I2(ready_below[1]),
+          .I3(later[1]),
+          .I4(ready_below[2]),
+          .I5(later[2]),
+          .O (below_later_groups[group_idx])
+      );
+      (* dont_touch = "true" *) LUT6 #(
+          .INIT(64'hfffff888f888f888)
+      ) u_above_later (
+          .I0(ready_above[0]),
+          .I1(later[0]),
+          .I2(ready_above[1]),
+          .I3(later[1]),
+          .I4(ready_above[2]),
+          .I5(later[2]),
+          .O (above_later_groups[group_idx])
+      );
+`else
+      assign below_ready_groups[group_idx] = |ready_below;
+      assign below_later_groups[group_idx] = |(ready_below & later);
+      assign above_later_groups[group_idx] = |(ready_above & later);
+`endif
+    end
+    (* keep = "true" *)wire below_ready = |below_ready_groups;
+    (* keep = "true" *)wire below_later = |below_later_groups;
+    (* keep = "true" *)wire above_later = |above_later_groups;
 `ifdef FROST_XILINX_PRIMS
     (* dont_touch = "true" *) LUT5 #(
         .INIT(32'h22270000)
