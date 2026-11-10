@@ -26,6 +26,12 @@
 #define IMAGE_VERSION 1u
 #define FLASH_STAGE_CAPACITY (0x100000u - 32u)
 
+/*
+ * The boot partition (FSBL, OpenSBI, device tree, U-Boot; four 1 MiB slots) starts above the
+ * FPGA configuration image: 64 MiB of the 128 MiB configuration flash holds the bitstream.
+ */
+#define FLASH_BOOT_BASE 0x04000000u
+
 typedef struct {
     uint32_t magic;
     uint32_t version;

@@ -1716,17 +1716,17 @@ UBOOT_PROMPT = "frost=> "
 FLASH_BOOT_TRANSCRIPT = (
     "FROST Core Boot ROM v1.0 (On-Chip BRAM @ 0x00000000)\n"
     "[BOOTROM] SYS_STATUS=0x46520300  SPI Flash JEDEC ID=0x20bb21\n"
-    "[BOOTROM] Loading FSBL (4568 bytes) from flash 0x03000020 -> SRAM 0x00004000...\n"
+    "[BOOTROM] Loading FSBL (4568 bytes) from flash 0x04000020 -> SRAM 0x00004000...\n"
     + ROM_VERIFIED
     + "FROST 2nd-Stage Bootloader (FSBL) v1.0 (SRAM @ 0x00004000)\n"
     "[FSBL] Waiting for DDR4 MIG calibration and hardware ECC scrub...\n"
     "[FSBL] DDR4 controller ready (SYS_STATUS=0x46520300)\n"
     "[FSBL] DDR4 2 GiB @ 0x80000000 verified and boot regions scrubbed.\n"
-    "[FSBL] Loading      OpenSBI ( 267864 bytes) flash 0x03100020 -> DRAM 0x80000000..."
+    "[FSBL] Loading      OpenSBI ( 267864 bytes) flash 0x04100020 -> DRAM 0x80000000..."
     " CRC OK (0x01234567)\n"
-    "[FSBL] Loading   DeviceTree (   3416 bytes) flash 0x03200020 -> DRAM 0x82200000..."
+    "[FSBL] Loading   DeviceTree (   3416 bytes) flash 0x04200020 -> DRAM 0x82200000..."
     " CRC OK (0x12345678)\n"
-    "[FSBL] Loading       U-Boot ( 582824 bytes) flash 0x03300020 -> DRAM 0x80200000..."
+    "[FSBL] Loading       U-Boot ( 582824 bytes) flash 0x04300020 -> DRAM 0x80200000..."
     " CRC OK (0x23456789)\n"
     + FSBL_READY
     + FSBL_HANDOFF
@@ -1820,16 +1820,16 @@ def test_flash_boot_uses_the_latest_rom_attempt() -> None:
         "[FSBL] HALT: Image header does not match its boot partition",
         "[FSBL] HALT: DRAM image CRC-32 mismatch",
         "[FSBL] HALT: OpenSBI returned unexpectedly",
-        "[BOOTROM] No valid FSBL header @ flash 0x03000000 (magic=0xffffffff ver=4294967295)",
+        "[BOOTROM] No valid FSBL header @ flash 0x04000000 (magic=0xffffffff ver=4294967295)",
         "[BOOTROM] Invalid FSBL bounds: load=0x00000000 len=4096 entry=0x00000000",
         "[BOOTROM] FSBL CRC-32 mismatch! expected=0x12345678 actual=0x87654321",
         "[FSBL] DRAM verify failed @ 0x80000000: exp=0xa5a55a5a700dcafe got=0x0000000000000000",
-        "[FSBL] Invalid OpenSBI header @ flash 0x03100000 (magic=0x00000000 ver=0 len=0)",
-        "[FSBL] Invalid DeviceTree header @ flash 0x03200000 (magic=0x00000000 ver=0 len=0)",
-        "[FSBL] Invalid U-Boot header @ flash 0x03300000 (magic=0x00000000 ver=0 len=0)",
-        "[FSBL] Loading      OpenSBI ( 267864 bytes) flash 0x03100020 -> DRAM 0x80000000..."
+        "[FSBL] Invalid OpenSBI header @ flash 0x04100000 (magic=0x00000000 ver=0 len=0)",
+        "[FSBL] Invalid DeviceTree header @ flash 0x04200000 (magic=0x00000000 ver=0 len=0)",
+        "[FSBL] Invalid U-Boot header @ flash 0x04300000 (magic=0x00000000 ver=0 len=0)",
+        "[FSBL] Loading      OpenSBI ( 267864 bytes) flash 0x04100020 -> DRAM 0x80000000..."
         " FAIL (exp=0x12345678 got=0x87654321)",
-        "[FSBL] Loading %-12s (  20480 bytes) flash 0x00041658 -> DRAM 0x03100020..."
+        "[FSBL] Loading %-12s (  20480 bytes) flash 0x00041658 -> DRAM 0x04100020..."
         " FAIL (exp=0x12345678 got=0x87654321)",
         "<<FAIL>>",
         "<<TRAP>>",

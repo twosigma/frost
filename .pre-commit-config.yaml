@@ -134,6 +134,7 @@ repos:
             verif/cocotb_tests/cache/test_(dma_test_engine|frost_cache)_wide\.py|
             perf-modeling/(frost_perf_model|board_workloads|calibration/trace_contract|tools/run_calibration|tools/board_calibration|tests/test_trace_contract)\.py|
             tests/test_pa_bridge_mutation\.py|
+            tests/test_vcu118_flash\.py|
             tests/test_slang_frontend\.py|
             verif/cocotb_tests/mmu/test_ptw_walk_cache\.py|
             verif/cocotb_tests/cache/test_coherence_cbo_zero\.py|

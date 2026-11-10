@@ -117,7 +117,8 @@ console, SPI flash commands and network loading through the Ethernet NICs.
 
 Flash boot requires a Rev 2.0 board with QSPI configuration memory; earlier
 revisions have BPI flash. The configuration flash holds the FPGA image at
-offset zero and the software stages below. Each software stage has a
+offset zero, in the first 64 MiB of the 128 MiB part, and the four
+software stages from `0x04000000`. Each software stage has a
 32-byte header with its load address, length, entry address and CRC-32.
 The boot stages reject invalid bounds and
 checksums. The ROM loads the FSBL at reset; the FSBL enters OpenSBI, which
@@ -126,10 +127,10 @@ path. The FSBL is a flash stage, not a standalone JTAG application.
 
 | Stage | Flash offset | Load address | Maximum payload |
 |---|---|---|---|
-| FSBL | `0x03000000` | `0x00004000` | 79 KiB |
-| OpenSBI | `0x03100000` | `0x80000000` | 1 MiB minus 32 bytes |
-| Device tree | `0x03200000` | `0x82200000` | 128 KiB |
-| U-Boot | `0x03300000` | `0x80200000` | 1 MiB minus 32 bytes |
+| FSBL | `0x04000000` | `0x00004000` | 79 KiB |
+| OpenSBI | `0x04100000` | `0x80000000` | 1 MiB minus 32 bytes |
+| Device tree | `0x04200000` | `0x82200000` | 128 KiB |
+| U-Boot | `0x04300000` | `0x80200000` | 1 MiB minus 32 bytes |
 
 Build the firmware and pack the software image from the repository root:
 
