@@ -514,7 +514,7 @@ def test_look_ahead_takes_the_highest_endpoints_and_demand_the_lowest(
     slots: int, expected: list[int]
 ) -> None:
     """Demand misses take endpoints from 1 up; hints fill the top slots only."""
-    l1d, loop, _lower = coherent_l1d(l1d_lookahead_slots=slots)
+    l1d, loop, _lower = coherent_l1d(l1d_hit_path=False, l1d_lookahead_slots=slots)
     for sector in range(3):
         idle(l1d, loop)
         assert l1d.submit(load(0x8000_0000 + 32 * sector, ident=sector))
@@ -533,13 +533,302 @@ def test_look_ahead_takes_the_highest_endpoints_and_demand_the_lowest(
 
 def test_controller_serves_one_lookup_at_a_time() -> None:
     """A read hit holds the controller through its tag and data reads."""
-    l1d, loop, _lower = coherent_l1d()
+    l1d, loop, _lower = coherent_l1d(l1d_hit_path=False)
     line = l1d._ways(0)[0]
     line.valid, line.tag = True, 0x8000_0000 // 32 // l1d.sets_count
     done: list[int] = []
     assert l1d.submit(load(0x8000_0000, done))
     assert not l1d.submit(load(0x8000_0008, done, 1))
     assert l1d.busy_until == l1d.lookup_cycles + l1d.data_cycles == 6
+
+
+def tick_l1d(l1d: Any, loop: Any, stop: int) -> None:
+    """Drive both L1D paths and the stream detector through stop, inclusive."""
+    while loop.cycle <= stop:
+        loop.run_ready()
+        l1d.step()
+        l1d.service_replays()
+        l1d.step_after_loads()
+        loop.cycle += 1
+
+
+def warm_l1d(l1d: Any, address: int) -> None:
+    """Install a clean sector without warming the CPU's L0."""
+    _, index, tag = l1d._set_and_tag(address)
+    way = l1d._victim(index)
+    assert way is not None
+    line = l1d._ways(index)[way]
+    line.valid, line.tag = True, tag
+
+
+@pytest.mark.parametrize("lanes,span", [(1, 4599), (2, 2296), (4, 1146)])
+def test_cached_load_chains_match_rtl_launch_spans(lanes: int, span: int) -> None:
+    """512 warm L1D loads, with L0 aliases, match the measured RTL launch windows."""
+
+    class LaunchPipeline(model.FrostPipeline):
+        def _issue(self) -> None:
+            old = {entry.op.op_id for entry in self.rob if entry.rs_issued}
+            super()._issue()
+            launches.extend(
+                self.loop.cycle
+                for entry in self.rob
+                if entry.rs_issued and entry.op.op_id not in old
+            )
+
+    builder = model.ProgramBuilder()
+    for index in range(512):
+        lane, node = index % lanes, index // lanes % 16
+        builder.emit(
+            "load",
+            4 * index,
+            0x8000_0000 + 4096 * node + 8 * lane,
+            (index - lanes,) if index >= lanes else (),
+        )
+    config = replace(model.ModelConfig(), l0_cache_depth=512, l2_mshrs=8)
+    pipeline = LaunchPipeline(config, builder.ops)
+    launches: list[int] = []
+    for op in builder.ops:
+        pipeline.fetch_state[pipeline._fetch_line(op.fetch_address)] = "ready"
+        if (
+            pipeline.memory.l1d._find(
+                *pipeline.memory.l1d._set_and_tag(op.data_address)[1:]
+            )
+            is None
+        ):
+            warm_l1d(pipeline.memory.l1d, op.data_address)
+    result = pipeline.run()
+    assert launches[-1] - launches[0] == span
+    assert result["memory"]["l1d"]["stats"]["hit_path_hits"] == 512
+
+
+def test_hit_path_answers_under_a_miss_and_shadows_only_the_selected_read() -> None:
+    """Hits overlap a controller miss; its shadow has no data read or second answer."""
+    l1d, loop, lower = coherent_l1d(l1d_lookahead_slots=0)
+    address = 0x8000_0000
+    warm_l1d(l1d, address)
+    answers: list[tuple[int, int, bool]] = []
+    for ident in range(4):
+        request = model.Request(
+            address,
+            False,
+            "l1d",
+            ident,
+            lambda ok, ident=ident: answers.append((ident, loop.cycle, ok)),
+        )
+        assert l1d.submit(request)
+        tick_l1d(l1d, loop, ident)
+    tick_l1d(l1d, loop, 12)
+    assert answers == [(ident, ident + 6, True) for ident in range(4)]
+    assert l1d.stats["shadow_lookups"] == 2
+    assert l1d.stats["controller_busy_cycles"] == 2 * l1d.lookup_cycles
+    assert l1d.stats["hits"] == l1d.stats["hit_path_hits"] == 4
+    assert not lower.requests and not l1d.reads
+
+    # A miss occupies the controller, but another set's hit port still runs.
+    miss = 0x8000_1000
+    assert l1d.submit(load(miss, ident=10))
+    tick_l1d(l1d, loop, 14)
+    assert miss // 32 in l1d.mshrs
+    arrival = loop.cycle
+    assert l1d.submit(
+        model.Request(
+            address,
+            False,
+            "l1d",
+            11,
+            lambda ok: answers.append((11, loop.cycle, ok)),
+        )
+    )
+    tick_l1d(l1d, loop, arrival + 6)
+    assert answers[-1] == (11, arrival + 6, True)
+    assert l1d.stats["misses"] == 1
+
+
+def test_shadow_miss_acquires_once_and_attached_load_replays_after_fill() -> None:
+    """Both misses follow the controller; an attached read gets no second hit offer."""
+    l1d, loop, lower = coherent_l1d(l1d_lookahead_slots=0)
+    done: list[int] = []
+    assert l1d.submit(load(0x8000_0000, done, 1))
+    tick_l1d(l1d, loop, 1)
+    assert l1d.submit(load(0x8000_0008, done, 2))
+    tick_l1d(l1d, loop, 12)
+    assert l1d.stats["misses"] == 1 and l1d.stats["mshr_merges"] == 1
+    assert len(lower.requests) == 1 and not done
+    lower.requests[0].complete(True)
+    tick_l1d(l1d, loop, 40)
+    assert sorted(done) == [0x8000_0000, 0x8000_0008]
+    assert l1d.stats["hit_path_hits"] == 0
+    assert l1d.stats["hit_path_offers"] == 2
+    assert not l1d.reads and not l1d._used_mshr_slots
+
+
+def test_stage_three_selection_shadows_a_hit_and_keeps_its_snapshot() -> None:
+    """A late controller selection cannot answer twice or lose a sampled hit."""
+    l1d, loop, lower = coherent_l1d(l1d_lookahead_slots=0)
+    address = 0x8000_0000
+    warm_l1d(l1d, address)
+    done: list[int] = []
+    l1d.busy_until = 3
+    assert l1d.submit(load(address, done))
+    tick_l1d(l1d, loop, 1)
+    # A later array change does not revoke a hit from the stage-1 image.
+    l1d._ways(0)[0].valid = False
+    tick_l1d(l1d, loop, 16)
+    assert done == [address]
+    assert l1d.stats["shadow_skips"] == 1
+    assert not lower.requests
+
+
+def test_tags_only_hit_after_a_path_miss_needs_a_later_data_lookup() -> None:
+    """If only the shadow sees an installation, it cannot return absent data."""
+    l1d, loop, _lower = coherent_l1d(l1d_lookahead_slots=0)
+    address = 0x8000_0000
+    done: list[int] = []
+    assert l1d.submit(load(address, done))
+    advance(loop, 1)  # the hit port samples an absent sector
+    loop.cycle = 1
+    warm_l1d(l1d, address)  # tags become resident before the controller lookup
+    l1d.service_replays()
+    assert l1d.busy_until == 5 and not done
+    tick_l1d(l1d, loop, 8)
+    assert not done
+    tick_l1d(l1d, loop, 16)
+    assert done == [address] and l1d.stats["hits"] == 1
+    assert not l1d.stats["hit_path_hits"]
+
+
+def test_read_slot_credit_is_held_until_the_response() -> None:
+    """Accepted misses consume finite read slots while endpoints await grants."""
+    l1d, loop, _lower = coherent_l1d(l1d_read_slots=2, l1d_lookahead_slots=0)
+    assert l1d.submit(load(0x8000_0000, ident=1))
+    tick_l1d(l1d, loop, 0)
+    assert l1d.submit(load(0x8000_1000, ident=2))
+    tick_l1d(l1d, loop, 12)
+    assert len(l1d.reads) == 2
+    assert not l1d.submit(load(0x8000_2000, ident=3))
+
+
+def test_hit_port_sees_a_fill_before_the_controller_finishes_update_wait() -> None:
+    """A grant's tag copy is visible on the cycle after its write edge."""
+    l1d, loop, lower = coherent_l1d(l1d_lookahead_slots=0)
+    address = 0x8000_0000
+    assert l1d.submit(load(address, ident=1))
+    tick_l1d(l1d, loop, 5)
+    lower.requests[0].complete(True)
+    tick_l1d(l1d, loop, 9)  # grant selects at 6, writes its image at 10
+    done: list[int] = []
+    assert l1d.submit(
+        model.Request(
+            address,
+            False,
+            "l1d",
+            2,
+            lambda ok: done.append(loop.cycle),
+        )
+    )
+    tick_l1d(l1d, loop, 20)
+    assert done == [16]
+    assert l1d.stats["hit_path_hits"] == 1
+    assert l1d.stats["misses"] == 1
+
+
+def test_hit_port_refuses_a_bank_claim_and_a_same_set_update() -> None:
+    """A refused one-shot offer falls back to a normal data lookup."""
+    for collision in ("claim", "update", "store", "writeback"):
+        l1d, loop, _lower = coherent_l1d(l1d_lookahead_slots=0)
+        address = 0x8000_0000
+        warm_l1d(l1d, address)
+        if collision == "claim":
+            l1d._array_claim_cycle = 1
+        elif collision == "update":
+            l1d._array_update = (1, 2, l1d._set_and_tag(address)[1])
+        elif collision == "store":
+            l1d.push_store(address)
+        else:
+            l1d._wb_lines[0] = address // 32
+        answers: list[int] = []
+        assert l1d.submit(load(address, answers))
+        # Run the offer before clearing its blocker, then allow fallback.
+        advance(loop, 1)
+        l1d.records.clear()
+        l1d._wb_lines.clear()
+        tick_l1d(l1d, loop, 12)
+        assert answers == [address]
+        assert l1d.stats["hit_path_refused"] == 1
+        assert not l1d.stats["hit_path_hits"]
+        assert l1d.stats["controller_busy_cycles"] == 6
+
+
+def test_hit_reports_advance_only_a_confirmed_stream_and_yield_to_demands() -> None:
+    """The two-entry second input drops overflow and never confirms a stream."""
+    l1d, loop, _lower = coherent_l1d()
+    stream = l1d.stream
+    stream.demand(0x8000_0000, True)
+    stream.demand(0x8000_0020, True)
+    l1d._hit_reports.append(0x8000_0040 // 32)
+    l1d._train_path_hits()
+    assert not stream.confirmed and stream.frontier == 1
+    stream.demand(0x8000_0040, True)
+    assert stream.confirmed
+    l1d._hit_reports.extend([0x8000_0060 // 32, 0x8000_0080 // 32])
+    l1d._demand_report_cycle = loop.cycle
+    l1d._new_hit_report = 0x8000_00A0 // 32
+    l1d._train_path_hits()
+    assert l1d.stats["hit_path_stream_drops"] == 1
+    assert stream.frontier == 2
+    loop.cycle += 1
+    l1d._train_path_hits()
+    assert stream.frontier == 3
+    loop.cycle += 1
+    l1d._train_path_hits()
+    assert stream.frontier == 4
+
+
+def test_controller_replacement_write_drops_a_concurrent_hit_port_touch() -> None:
+    """The single replacement write port gives an array hit priority in every set."""
+    l1d, loop, _lower = coherent_l1d(l1d_lookahead_slots=0)
+    controller_address, path_address = 0x8000_0000, 0x8000_0020
+    warm_l1d(l1d, controller_address)
+    warm_l1d(l1d, path_address)
+    assert l1d._read(load(controller_address, ident=1), True)
+    assert l1d.submit(load(path_address, ident=2))
+    tick_l1d(l1d, loop, 12)
+    assert l1d.stats["hit_path_touch_drops"] == 1
+    assert l1d.plru.get(1, 0) == 0
+
+
+def test_controller_touch_follows_an_earlier_hit_port_touch() -> None:
+    """Controller selection does not move its tag-result touch ahead of a hit."""
+    l1d, loop, _lower = coherent_l1d(l1d_lookahead_slots=0)
+    base = 0x8000_0000
+    tag = l1d._set_and_tag(base)[2]
+    for way, line in enumerate(l1d._ways(0)):
+        line.valid, line.dirty, line.tag = True, True, tag + way
+    loop.cycle = 5
+    assert l1d.submit(load(base + 2 * l1d.sets_count * 32, ident=1))
+    advance(loop, 5)
+    loop.run_ready()
+    l1d.push_store(base)
+    l1d.step()  # store selects at 6 and touches way 0 at 9
+    tick_l1d(l1d, loop, 14)  # hit port touches way 2 at 8
+    assert l1d.plru[0] == 7
+    assert l1d._victim(0) == 3
+
+
+def test_fallback_hit_reports_when_its_data_arrives_after_queued_hits() -> None:
+    """A controller hit reports after its data read, preserving stream input order."""
+    l1d, loop, _lower = coherent_l1d()
+    address = 0x8000_0000
+    for sector in range(3):
+        l1d.stream.demand(address + 32 * sector, True)
+    warm_l1d(l1d, address + 128)
+    assert l1d._read(load(address + 128), True)
+    loop.after(3, lambda: setattr(l1d, "_new_hit_report", (address + 96) // 32))
+    while loop.cycle <= 6:
+        loop.run_ready()
+        l1d._train_path_hits()
+        loop.cycle += 1
+    assert l1d.stream.frontier == 4
 
 
 def test_store_records_combine_by_sector_and_install_at_the_head() -> None:

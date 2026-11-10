@@ -31,7 +31,8 @@ Another project can swap ``SocTopModel`` (or ``DdrController``) while keeping
 
 Grounding snapshot: twosigma/frost main @ 410aa8f3e866fffb078fc8f7fd3672866d83d131
 (2026-10-22); the coherent L1D, the store drain, the home's prefetch agent,
-and MEM_RS and LQ release follow ade0de67.  See ``rtl_audit`` for exact
+and MEM_RS and LQ release follow ade0de67. The independent L1D hit path
+follows 4d2a20a3 (2026-11-10).  See ``rtl_audit`` for exact
 source locations and the boundary between source-proven configuration and
 modelling assumptions.
 
@@ -215,12 +216,18 @@ class ModelConfig:
     l1d_store_records: int = 4  # ordered 32-byte store records
     l1d_store_lookahead: bool = True  # one load endpoint lent to a younger store
     l1d_read_slots: int = 8  # CPU read slots, including reads waiting on a fill
+    l1d_hit_path: bool = True  # coherence_array HIT_PORT beside the controller
     store_drain_cycles: int = 3  # SQ launch interval for cached stores
     coherence_release_cycles: int = 4  # installation or GrantAck to U
     # Pipeline / cache timing abstraction.
     l1_tag_cycles: int = 1  # coherence_array TAG_READ_LATENCY
     l1_data_cycles: int = 2  # coherence_array DATA_READ_LATENCY
     l1_write_cycles: int = 1  # coherence_array DATA_WRITE_LATENCY
+    # RTL load microkernels at 4d2a20a3: MEM_RS launch to L1D arrival,
+    # ready slot to read response, and read response to registered CDB.
+    l1d_request_cycles: int = 1
+    l1d_response_cycles: int = 2
+    l1d_return_cycles: int = 2
     l2_tag_cycles: int = 3
     l2_data_cycles: int = 6
     cache_fill_cycles: int = 1
@@ -294,6 +301,12 @@ class ModelConfig:
             or self.store_drain_cycles < 1
             or self.l1_write_cycles < 1
             or self.coherence_release_cycles < 0
+            or min(
+                self.l1d_request_cycles,
+                self.l1d_response_cycles,
+                self.l1d_return_cycles,
+            )
+            < 0
             or self.l2_prefetch_streams < 1
             or self.l2_prefetch_inflight < 1
             or self.l2_prefetch_distance < 1
@@ -456,6 +469,7 @@ class MissStatus:
     wb_sent: bool = False
     granted: bool = False
     fill_ok: bool = True
+    replacement_touched: bool = False
 
 
 class SubmissionPort(Protocol):
@@ -701,7 +715,9 @@ class CacheLevel:
             evicted_line_address=evicted_line_address,
         )
         self.mshrs[line_address] = status
+        touches = self.stats["mru_allocations"]
         self._touch(set_index, victim_way, allocation=True)
+        status.replacement_touched = self.stats["mru_allocations"] != touches
         self.stats["misses"] += 1
         if needs_wb:
             self.stats["dirty_evictions"] += 1
@@ -1677,6 +1693,16 @@ class StoreRecord:
     writing: bool = False  # a head hit is updating the array
 
 
+@dataclass
+class L1dRead:
+    """A CPU read slot and its single offer to the L1D's hit port."""
+
+    request: Request
+    arrival: int
+    path_taken: bool = False
+    path_hit: bool = False
+
+
 class CoherentL1d(CacheLevel):
     """The coherent L1D (``coherence_l1d.sv``) behind the load and store queues.
 
@@ -1684,8 +1710,12 @@ class CoherentL1d(CacheLevel):
     a grant's installation, the head store, a load, a store look-ahead, and
     stream look-ahead last. Each operation holds the controller for its
     phases (Idle, Lookup, the array's tag and data reads, then Acquire, or
-    Update and its array write), so a read hit holds it for
-    l1_tag_cycles + l1_data_cycles + 3 cycles.
+    Update and its array write). The optional hit path reads a tag copy and
+    all ways' data independently, completing a hit's slot four cycles after
+    arrival. A controller selection while that path holds the read costs a
+    tags-only shadow lookup; only a miss on both paths acquires an endpoint.
+    A refused offer, or a read released by a fill, uses the controller's
+    l1_tag_cycles + l1_data_cycles + 3 cycle hit path.
 
     l1d_mshrs request endpoints carry acquisitions. Endpoint 0 carries the
     head store's GetM; endpoints 1 and up carry load misses, the lowest free
@@ -1716,12 +1746,23 @@ class CoherentL1d(CacheLevel):
             config.l1_tag_cycles,
             config.l1_data_cycles,
             config.cache_fill_cycles,
-            config.cache_response_cycles,
+            config.l1d_response_cycles,
             config.l1d_id_bits,
             bimodal_insert=config.l1d_bimodal_insert,
             buffered_writeback=True,
         )
         self.release_cycles = config.coherence_release_cycles
+        self.hit_path = config.l1d_hit_path
+        self.read_slots = config.l1d_read_slots
+        self.reads: dict[Any, L1dRead] = {}
+        self.pending_reads: deque[L1dRead] = deque()
+        self._last_read_arrival = -1
+        self._array_claim_cycle = -1
+        self._array_plru_cycles: set[int] = set()
+        self._array_update: tuple[int, int, int] | None = None
+        self._hit_reports: deque[int] = deque()
+        self._new_hit_report: int | None = None
+        self._demand_report_cycle = -1
         # Controller occupancy: Idle, Lookup, the array's tag read, and the
         # reply cycle; a hit adds the data read, an acquisition its Acquire
         # cycle, and an update its Update, array write and UpdateWait.
@@ -1755,10 +1796,36 @@ class CoherentL1d(CacheLevel):
     def _idle(self) -> bool:
         return self.loop.cycle >= self.busy_until
 
-    def _occupy(self, cycles: int) -> None:
+    def _occupy(
+        self,
+        cycles: int,
+        shadow: bool = False,
+        write_set: int | None = None,
+        touch: bool = False,
+        insert_touch: bool = False,
+    ) -> None:
         self.busy_until = self.loop.cycle + cycles
         self._last_accept_cycle = self.loop.cycle
         self.stats["controller_busy_cycles"] += cycles
+        # coherence_array: a normal lookup claims the data-bank read address
+        # in Tags. A shadow reads tags only. A same-set update also refuses
+        # the hit port, keeping its tag and data snapshot on one edge.
+        if not shadow:
+            self._array_claim_cycle = self.loop.cycle + self.lookup_cycles - 2
+        self._array_plru_cycles = {
+            cycle for cycle in self._array_plru_cycles if cycle >= self.loop.cycle
+        }
+        if touch:
+            self._array_plru_cycles.add(self.loop.cycle + self.lookup_cycles - 1)
+        if write_set is not None:
+            update_cycle = self.busy_until - self.update_cycles + self.lookup_cycles
+            self._array_update = (
+                update_cycle,
+                update_cycle + 1,
+                write_set,
+            )
+            if insert_touch:
+                self._array_plru_cycles.add(update_cycle)
 
     def _free(self, candidates: Iterable[int]) -> list[int]:
         return [ep for ep in candidates if ep not in self._used_mshr_slots]
@@ -1768,6 +1835,19 @@ class CoherentL1d(CacheLevel):
 
     def _wb_holds(self, line_address: int) -> bool:
         return line_address in self._wb_lines.values()
+
+    def _path_blocked(self, line_address: int) -> bool:
+        # The RTL's hit-port holder comparisons use address[5+:18].
+        sector = line_address & ((1 << 18) - 1)
+        holders = [record.line_address for record in self.records]
+        holders.extend(self._wb_lines.values())
+        return any(holder & ((1 << 18) - 1) == sector for holder in holders)
+
+    def _touch_controller(self, set_index: int, way: int) -> None:
+        if self.hit_path:
+            self.loop.after(self.lookup_cycles - 1, lambda: self._touch(set_index, way))
+        else:
+            self._touch(set_index, way)
 
     def step(self) -> None:
         """Start a grant's installation or a store operation, ahead of loads.
@@ -1782,6 +1862,7 @@ class CoherentL1d(CacheLevel):
 
     def step_after_loads(self) -> None:
         """Use an idle controller after this cycle's loads: deferred work, then hints."""
+        self._train_path_hits()
         if not self._idle():
             return
         self.read_turn = False
@@ -1790,14 +1871,34 @@ class CoherentL1d(CacheLevel):
         self._start_hint()
 
     def submit(self, request: Request) -> bool:
-        """Look up a load when the controller is idle.
+        """Capture a read slot, or use the old controller-only configuration.
 
-        A hit answers after the data read. A miss attaches to the endpoint
-        that holds its sector or acquires the lowest free load endpoint; a
-        miss that finds none waits, without another lookup, for one to free.
+        New loads get one hit-port offer in the following cycle. The
+        controller independently selects pending reads; it owns every miss
+        and any read whose hit-port offer was refused.
         """
         if request.is_write:
             raise ValueError("stores enter the coherent L1D through push_store")
+        if self.hit_path:
+            if (
+                len(self.reads) >= self.read_slots
+                or self._last_read_arrival == self.loop.cycle
+            ):
+                self.stats["input_backpressure"] += 1
+                return False
+            self._last_read_arrival = self.loop.cycle
+            complete = request.complete
+
+            def finish(ok: bool) -> None:
+                del self.reads[request.request_id]
+                complete(ok)
+
+            captured = dataclasses.replace(request, complete=finish)
+            read = L1dRead(captured, self.loop.cycle)
+            self.reads[request.request_id] = read
+            self.pending_reads.append(read)
+            self.loop.after(1, lambda: self._offer_path(read))
+            return True
         if not self._idle():
             self.stats["input_backpressure"] += 1
             return False
@@ -1809,13 +1910,116 @@ class CoherentL1d(CacheLevel):
 
     def service_replays(self) -> None:
         """Look up again, ahead of new loads, a load released by an installation."""
-        if not self._idle() or not self.replays:
+        if not self._idle():
             return
-        request = self.replays[0]
-        if self._eligible(request):
-            self.replays.popleft()
-            if not self._read(request, False):
-                self.replays.appendleft(request)
+        if self.replays:
+            request = self.replays[0]
+            if self._eligible(request):
+                self.replays.popleft()
+                if not self._read(request, False):
+                    self.replays.appendleft(request)
+        if not self._idle():
+            return
+        for read in list(self.pending_reads):
+            request = read.request
+            age = self.loop.cycle - read.arrival
+            if age < 1 or not self._eligible(request):
+                continue
+            # Stage 4 is excluded from selection. A stage-3 hit can still
+            # be selected; its first Lookup cycle in stage 4 is a shadow.
+            if read.path_hit:
+                if age >= 4:
+                    continue
+                self._occupy(self.lookup_cycles, shadow=True)
+                self.stats["shadow_lookups"] += 1
+                self.stats["shadow_skips"] += 1
+                self.pending_reads.remove(read)
+                self.read_turn = False
+                return
+            shadow = read.path_taken and age == 1
+            first = request.request_id not in self._looked_up
+            self._looked_up.add(request.request_id)
+            if self._read(request, first, shadow=shadow):
+                self.pending_reads.remove(read)
+            return
+
+    def _offer_path(self, read: L1dRead) -> None:
+        """Sample tags and all data ways on the stage-1 acceptance edge."""
+        request = read.request
+        line_address, set_index, tag = self._set_and_tag(request.address)
+        self.stats["hit_path_offers"] += 1
+        update = self._array_update
+        if (
+            self._path_blocked(line_address)
+            or self.loop.cycle == self._array_claim_cycle
+            or (
+                update is not None
+                and update[0] <= self.loop.cycle < update[1]
+                and update[2] == set_index
+            )
+        ):
+            self.stats["hit_path_refused"] += 1
+            return
+        read.path_taken = True
+        self.stats["hit_path_takes"] += 1
+        # The tag copy sees an installed line at the update edge, even
+        # while its way remains reserved until the controller finishes.
+        hit_way = next(
+            (
+                way
+                for way, line in enumerate(self._ways(set_index))
+                if line.valid and line.tag == tag
+            ),
+            None,
+        )
+        if hit_way is None:
+            return
+        read.path_hit = True
+        # Preserve the stage-1 image even if the controller replaces it
+        # before the answer. The stream report is from stage 3.
+        self.loop.after(2, lambda: self._path_hit(read, set_index, hit_way))
+        self.loop.after(3, lambda: self._answer_path(read))
+
+    def _path_hit(self, read: L1dRead, set_index: int, way: int) -> None:
+        if self.loop.cycle in self._array_plru_cycles:
+            self.stats["hit_path_touch_drops"] += 1
+        else:
+            self._touch(set_index, way)
+        line = self._ways(set_index)[way]
+        if line.prefetched:
+            self.stats["useful_lookaheads"] += 1
+        line.prefetched = False
+        self._new_hit_report = read.request.address // self.line_bytes
+
+    def _answer_path(self, read: L1dRead) -> None:
+        if read in self.pending_reads:
+            self.pending_reads.remove(read)
+        self.stats["hits"] += 1
+        self.stats["hit_path_hits"] += 1
+        self._respond(read.request)
+
+    def _train_path_hits(self) -> None:
+        # Two entries on coherence_read_stream's second input. Controller
+        # reports win, duplicate tail sectors collapse, and overflow drops
+        # a hit rather than delaying a load's answer.
+        sector = self._new_hit_report
+        duplicate = bool(self._hit_reports) and self._hit_reports[-1] == sector
+        if self._hit_reports and self._demand_report_cycle != self.loop.cycle:
+            address = self._hit_reports.popleft() * self.line_bytes
+            self.stream.demand(address, False)
+            self.stats["hit_path_stream_reports"] += 1
+        self._new_hit_report = None
+        if sector is None or not self.lookahead_endpoints or duplicate:
+            return
+        if len(self._hit_reports) == 2:
+            self.stats["hit_path_stream_drops"] += 1
+        else:
+            self._hit_reports.append(sector)
+
+    def _report_demand(self, address: int, miss: bool) -> None:
+        self._demand_report_cycle = self.loop.cycle
+        if self.stream.demand(address, miss):
+            self.hint = None
 
     def _eligible(self, request: Request) -> bool:
         line_address = request.address // self.line_bytes
@@ -1828,16 +2032,33 @@ class CoherentL1d(CacheLevel):
             self._free(self.load_endpoints)
         )
 
-    def _read(self, request: Request, first: bool) -> bool:
+    def _read(self, request: Request, first: bool, shadow: bool = False) -> bool:
         line_address, set_index, tag = self._set_and_tag(request.address)
         hit_way = self._find(set_index, tag)
-        if first and self.stream.demand(request.address, hit_way is None):
-            self.hint = None
+        if shadow:
+            self.stats["shadow_lookups"] += 1
+        if first and not (shadow and hit_way is not None):
+            if self.hit_path:
+                self.loop.after(
+                    self.lookup_cycles
+                    + (self.data_cycles if hit_way is not None else 0)
+                    - 1,
+                    lambda: self._report_demand(request.address, hit_way is None),
+                )
+            else:
+                self._report_demand(request.address, hit_way is None)
         self.read_turn = False
         if hit_way is not None:
-            self._occupy(self.lookup_cycles + self.data_cycles)
+            if shadow:
+                # A fill can make only the shadow's tags hit. It has no
+                # data; leave the read pending for a normal lookup later.
+                self._occupy(self.lookup_cycles, shadow=True)
+                self.stats["shadow_skips"] += 1
+                self._looked_up.discard(request.request_id)
+                return False
+            self._occupy(self.lookup_cycles + self.data_cycles, touch=True)
             line = self._ways(set_index)[hit_way]
-            self._touch(set_index, hit_way)
+            self._touch_controller(set_index, hit_way)
             if line.prefetched:
                 self.stats["useful_lookaheads"] += 1
             line.prefetched = False
@@ -1848,7 +2069,7 @@ class CoherentL1d(CacheLevel):
             return self._accepted(request)
         active = self.mshrs.get(line_address)
         if active is not None:
-            self._occupy(self.lookup_cycles)
+            self._occupy(self.lookup_cycles, shadow=shadow)
             active.waiters.append(request)
             self.stats["mshr_merges"] += 1
             if active.primary.source == "l1d_lookahead":
@@ -1858,7 +2079,7 @@ class CoherentL1d(CacheLevel):
         victim_way = self._victim(set_index)
         if not free or victim_way is None:
             # The miss's lookup finds no endpoint; it retries when one frees.
-            self._occupy(self.lookup_cycles)
+            self._occupy(self.lookup_cycles, shadow=shadow)
             self._waiting_for_endpoint.add(request.request_id)
             self.stats["mshr_backpressure"] += 1
             return False
@@ -1866,10 +2087,10 @@ class CoherentL1d(CacheLevel):
             request, line_address, set_index, victim_way, free[0]
         )
         if status is None:
-            self._occupy(self.lookup_cycles)
+            self._occupy(self.lookup_cycles, shadow=shadow)
             self._waiting_for_endpoint.add(request.request_id)
             return False
-        self._occupy(self.lookup_cycles + 1)
+        self._occupy(self.lookup_cycles + 1, shadow=shadow)
         return self._accepted(request)
 
     def _accepted(self, request: Request) -> bool:
@@ -1898,7 +2119,23 @@ class CoherentL1d(CacheLevel):
         self.grants.remove(status)
         victim_dirty = status.wb_slot is not None
         cycles = self.update_cycles + (self.data_cycles + 1 if victim_dirty else 0)
-        self._occupy(cycles)
+        self._occupy(
+            cycles,
+            write_set=status.set_index,
+            touch=self._ways(status.set_index)[status.way_index].valid,
+            insert_touch=(
+                status.replacement_touched
+                or status.primary.source == "l1d"
+                or bool(status.waiters)
+            ),
+        )
+        if self.hit_path:
+            if self._ways(status.set_index)[status.way_index].valid:
+                self._touch_controller(status.set_index, status.way_index)
+            self.loop.after(
+                cycles - self.update_cycles + self.lookup_cycles,
+                lambda: self._publish_grant(status),
+            )
         if status.primary.source == "l1d":
             # The demand grant answers its load in its Lookup cycle.
             self.loop.after(
@@ -1914,13 +2151,10 @@ class CoherentL1d(CacheLevel):
     def _install(self, status: MissStatus) -> None:
         if self.mshrs.get(status.line_address) is not status:
             return
-        _, _, tag = self._set_and_tag(status.line_address * self.line_bytes)
+        if not self.hit_path:
+            self._publish_grant(status)
         line = self._ways(status.set_index)[status.way_index]
-        line.tag = tag
-        line.valid = status.fill_ok
-        line.dirty = status.write_intent
         line.reserved_by = None
-        line.prefetched = status.primary.source == "l1d_lookahead"
         del self.mshrs[status.line_address]
         self.loop.after(
             self.release_cycles,
@@ -1937,6 +2171,15 @@ class CoherentL1d(CacheLevel):
             # Attached loads look up again; one takes a turn before more grants.
             self.replays.extend(status.waiters)
             self.read_turn = True
+
+    def _publish_grant(self, status: MissStatus) -> None:
+        """Write the tag/data image before ending the controller's update wait."""
+        _, _, tag = self._set_and_tag(status.line_address * self.line_bytes)
+        line = self._ways(status.set_index)[status.way_index]
+        line.tag = tag
+        line.valid = status.fill_ok
+        line.dirty = status.write_intent
+        line.prefetched = status.primary.source == "l1d_lookahead"
 
     def _release(self, slot: int, source: str) -> None:
         """End an endpoint's acquisition at U."""
@@ -2035,8 +2278,8 @@ class CoherentL1d(CacheLevel):
         self.read_turn = True
         hit_way = self._find(set_index, tag)
         if hit_way is not None and self._ways(set_index)[hit_way].dirty:
-            self._occupy(self.update_cycles)
-            self._touch(set_index, hit_way)
+            self._occupy(self.update_cycles, write_set=set_index, touch=True)
+            self._touch_controller(set_index, hit_way)
             head.writing = True
             self.stats["store_hits"] += 1
             self.loop.after(self.update_cycles - 1, self._pop_store)
@@ -2082,7 +2325,9 @@ class CoherentL1d(CacheLevel):
         self.read_turn = True
         hit_way = self._find(set_index, tag)
         if hit_way is not None and self._ways(set_index)[hit_way].dirty:
-            self._occupy(self.lookup_cycles)
+            self._occupy(self.lookup_cycles, touch=True)
+            if self.hit_path:
+                self._touch_controller(set_index, hit_way)
             record.checked = True
             return True
         self._acquire_store(record, free[0], "store_lookahead")
@@ -2101,9 +2346,11 @@ class CoherentL1d(CacheLevel):
             bytes_size=self.line_bytes,
         )
         hit_way = self._find(set_index, tag)
-        self._occupy(self.lookup_cycles + 1)
+        self._occupy(self.lookup_cycles + 1, touch=hit_way is not None)
         if hit_way is not None:
             # A Shared copy needs permission; it stays in its way.
+            if self.hit_path:
+                self._touch_controller(set_index, hit_way)
             line = self._ways(set_index)[hit_way]
             line.reserved_by = endpoint
             self._used_mshr_slots.add(endpoint)
@@ -2524,15 +2771,28 @@ class FrostPipeline:
                     is_write=False,
                     source="l1d",
                     request_id=op.op_id,
-                    complete=on_load_complete,
+                    complete=lambda ok, done=on_load_complete: self.loop.after(
+                        self.config.l1d_return_cycles, lambda: done(ok)
+                    ),
                     bytes_size=8,
                 )
-                if not self.memory.l1d.submit(request):
+                if self.config.l1d_request_cycles:
+                    self.loop.after(
+                        self.config.l1d_request_cycles,
+                        lambda request=request: self._submit_cached_load(request),
+                    )
+                elif not self.memory.l1d.submit(request):
                     self.stats["load_cache_backpressure"] += 1
                     continue
                 entry.issued = True
                 mem_issued += 1
                 self.stats["loads_issued"] += 1
+
+    def _submit_cached_load(self, request: Request) -> None:
+        """Send a launched load after its LQ/router stage, retrying on no credit."""
+        if not self.memory.l1d.submit(request):
+            self.stats["load_cache_backpressure"] += 1
+            self.loop.after(1, lambda: self._submit_cached_load(request))
 
     def _load_result(self, entry: RobEntry) -> None:
         """Free a load's LQ entry as its result enters the CDB stage.
@@ -2892,8 +3152,8 @@ def workload_memory_stress(seed: int, operations: int = 960) -> list[MicroOp]:
 def workload_coremark(seed: int, operations: int = 3600) -> list[MicroOp]:
     """Model CoreMark kernel micro-ops: list traversal, matrix ops, state machine & CRC.
 
-    Its data starts cold in DDR, so each L0 miss takes the coherent L1D's
-    one-at-a-time controller and the length sets how far the cold start
+    Its data starts cold in DDR. L0 misses use the coherent L1D's hit path
+    or controller, and the length sets how far the cold start
     weighs against the loops' steady state. The CI check compares the BRAM
     tier's ``coremark_bram`` instead.
     """
@@ -3560,6 +3820,10 @@ def rtl_audit() -> dict[str, Any]:
                 "source": "hw/rtl/lib/cache/coherence_l1d.sv:2143-2518; hw/rtl/lib/cache/coherence_array.sv:26-28, 186-194, 378-431 (ade0de67)",
             },
             {
+                "fact": "The L1D offers a new load to a tag-copy/all-way-data hit port in the following cycle and completes a hit slot four cycles after arrival. The controller keeps misses and stores; a selected read held by the hit path gets a tags-only shadow with no replacement touch or duplicate answer. The hit port refuses data-bank claims, same-set writes, probe service and blocked sectors. Hit reports train the stream detector through two entries, yielding to controller reports and dropping overflow.",
+                "source": "hw/rtl/lib/cache/coherence_l1d.sv:1990-2097; hw/rtl/lib/cache/coherence_array.sv:296-361; hw/rtl/lib/cache/README.md:511-525 (4d2a20a3)",
+            },
+            {
                 "fact": "Load misses take the lowest free load endpoint; a miss on a sector that a live endpoint holds attaches and looks up again after the installation; a demand grant answers its load in its Lookup cycle; each endpoint stays live through U.",
                 "source": "hw/rtl/lib/cache/coherence_l1d.sv:1218-1231, 1297-1315, 2233-2238, 2339-2351; hw/rtl/lib/cache/README.md:316, 350-355, 369-372 (ade0de67)",
             },
@@ -3576,7 +3840,7 @@ def rtl_audit() -> dict[str, Any]:
             "Explicit CpuTopModel + SocTopModel separation across the 6-bit-ID, 512-bit AXI4 boundary so downstream projects can replace SocTopModel or DdrController independently.",
             "Two-wide dispatch/retire, bounded ROB/RS/LQ/SQ with MEM_RS release at issue and LQ release at the result, out-of-order load/ALU completion, two-lane CDB contention, and committed stores draining from the SQ into the L1D's store records.",
             "Load Queue L0 Data Cache (256 dword entries) with 1-cycle CDB fast-path bypass and fill from L1D memory responses.",
-            "Coherent L1D with one controller, request endpoints held through U, attached loads that look up again after installation, stream look-ahead on the highest endpoints, four ordered store records with one lent endpoint, and buffered victim writebacks.",
+            "Coherent L1D with an independent four-cycle hit path, tags-only controller shadows, two-entry hit stream training, request endpoints held through U, attached loads that look up again after installation, stream look-ahead on the highest endpoints, four ordered store records with one lent endpoint, and buffered victim writebacks.",
             "Separate L1I and L1D caches; 32-byte to 64-byte sector adapter; L2 with the home's stream prefetch agent; fill ownership; coalescing; writeback slots; write intent; cache-line dirty state.",
             "Explicit cache lower transaction IDs ({type, slot}), 64-byte single-beat AXI transfers, soc_axi_slave physical address decode (DDR vs. local BRAM/MMIO), and a single-channel 512-bit AXI DDR model matching axi_behavioral_memory.sv.",
             "Deterministic workload generators, sweep driver, self-tests, and machine-readable bottleneck counters.",
