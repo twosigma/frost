@@ -30,7 +30,7 @@ from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 from cocotb_tests.nic.dma_model import (
     ABORT,
-    DD,
+    DONE,
     ERR,
     KIND_DESC,
     TRUNC,
@@ -39,6 +39,7 @@ from cocotb_tests.nic.dma_model import (
     desc_addr,
     desc_status,
     post_desc,
+    post_desc64,
 )
 
 RING = 0x8010_0000
@@ -188,6 +189,7 @@ async def _setup(
     for sig in (
         dut.i_enable,
         dut.i_wide_mode,
+        dut.i_rx_csum_en,
         dut.i_base,
         dut.i_size_log2,
         dut.i_tail,
@@ -242,7 +244,7 @@ async def test_frames_into_buffers(dut: Any) -> None:
     await env.wait_completions(ENTRIES - 1)
     await env.wait_idle()
     for i, (addr, f) in enumerate(frames):
-        assert desc_status(env.mem, RING, i) == DD | len(f), (
+        assert desc_status(env.mem, RING, i) == DONE | len(f), (
             f"desc {i} status {desc_status(env.mem, RING, i):#x}"
         )
         assert env.mem.read_bytes(addr, len(f)) == f, f"frame {i} data differs"
@@ -268,7 +270,7 @@ async def test_status_after_data_slow_memory(dut: Any) -> None:
         assert await env.push_frame(f, gap=0.0)
     await env.wait_completions(ENTRIES - 1)
     for i, (addr, f) in enumerate(frames):
-        assert desc_status(env.mem, RING, i) == DD | len(f)
+        assert desc_status(env.mem, RING, i) == DONE | len(f)
         assert env.mem.read_bytes(addr, len(f)) == f
     status_cycles = [r["cycle"] for r in env.model.log if r["kind"] == 2]
     assert status_cycles == sorted(status_cycles) and len(status_cycles) == ENTRIES - 1
@@ -318,7 +320,7 @@ async def test_filter(dut: Any) -> None:
     await env.wait_idle()
     taken = [f for f in frames if f[:6] != OTHER]
     for i, f in enumerate(taken):
-        assert desc_status(env.mem, RING, i) == DD | len(f)
+        assert desc_status(env.mem, RING, i) == DONE | len(f)
         assert env.mem.read_bytes(BUF + i * 0x1000 + 2, len(f)) == f
     assert env.filtered == 2
     assert int(dut.o_head.value) == 3
@@ -335,11 +337,11 @@ async def test_truncation_and_bad_descriptors(dut: Any) -> None:
     """
     env = await _setup(dut, 4)
     cases = [
-        (BUF + 5, 100, 300, DD | TRUNC | 300),
-        (BUF + 0x1000, 0, 80, DD | ERR | 80),
-        (0x1000_0000, 100, 90, DD | ERR | 90),
-        (0xBFFF_FFF0, 100, 70, DD | ERR | 70),
-        (BUF + 0x2000 + 31, 2048, 200, DD | 200),
+        (BUF + 5, 100, 300, DONE | TRUNC | 300),
+        (BUF + 0x1000, 0, 80, DONE | ERR | 80),
+        (0x1000_0000, 100, 90, DONE | ERR | 90),
+        (0xBFFF_FFF0, 100, 70, DONE | ERR | 70),
+        (BUF + 0x2000 + 31, 2048, 200, DONE | 200),
     ]
     frames = []
     for i, (addr, buf_len, length, _) in enumerate(cases):
@@ -381,7 +383,7 @@ async def test_ring_empty_holds_frame(dut: Any) -> None:
     await env.doorbell(1)
     assert await push
     await env.wait_completions(1)
-    assert desc_status(env.mem, RING, 0) == DD | 200
+    assert desc_status(env.mem, RING, 0) == DONE | 200
     assert env.mem.read_bytes(BUF + 9, 200) == f
     assert not env.model.violations, env.model.violations
     env.stop()
@@ -411,7 +413,7 @@ async def test_doorbell_rereads_posted_descriptor(dut: Any) -> None:
     assert env.mem.read_bytes(real, 90) == f1, (
         "frame 1 did not land at the posted buffer"
     )
-    assert desc_status(env.mem, RING, 1) == DD | 90
+    assert desc_status(env.mem, RING, 1) == DONE | 90
     env.check_written([(BUF + 1, 80), (real, 90)])
     assert len([r for r in env.model.log if r["kind"] == KIND_DESC]) >= 2, (
         "the line was not re-read after the doorbell"
@@ -422,7 +424,7 @@ async def test_doorbell_rereads_posted_descriptor(dut: Any) -> None:
 
 @cocotb.test()
 async def test_abort_mid_frame(dut: Any) -> None:
-    """A frame cut by a MAC-domain reset completes with DD|ERR|ABORT; the next is clean."""
+    """A frame cut by a MAC-domain reset completes with DONE|ERR|ABORT; the next is clean."""
     env = await _setup(dut, 7)
     env.post(0, BUF + 7, 4096)
     env.post(1, BUF + 0x1000 + 7, 4096)
@@ -441,7 +443,7 @@ async def test_abort_mid_frame(dut: Any) -> None:
     assert env.beats_taken <= taken_at_abort + 1
     await env.wait_completions(1)
     assert env.completions[0][0] & 0b110 == 0b110, f"flags {env.completions[0][0]:#b}"
-    assert desc_status(env.mem, RING, 0) & (DD | ERR | ABORT) == DD | ERR | ABORT
+    assert desc_status(env.mem, RING, 0) & (DONE | ERR | ABORT) == DONE | ERR | ABORT
     for _ in range(60):
         await FallingEdge(dut.i_clk)
     env.abort_source = False
@@ -450,7 +452,7 @@ async def test_abort_mid_frame(dut: Any) -> None:
     f1 = env.frame(120)
     assert await env.push_frame(f1)
     await env.wait_completions(2)
-    assert desc_status(env.mem, RING, 1) == DD | 120
+    assert desc_status(env.mem, RING, 1) == DONE | 120
     assert env.mem.read_bytes(BUF + 0x1000 + 7, 120) == f1
     assert env.completions[1] == (0, 120)
     assert int(dut.o_head.value) == 2
@@ -484,7 +486,7 @@ async def test_abort_after_last_beat_completes_cleanly(dut: Any) -> None:
     env.model.hold = False
     await env.wait_completions(1)
     assert env.completions == [(0, 96)], env.completions
-    assert desc_status(env.mem, RING, 0) == DD | 96
+    assert desc_status(env.mem, RING, 0) == DONE | 96
     assert env.mem.read_bytes(BUF + 3, 96) == f, "the frame was cut by the abort"
     dut.i_abort.value = 0
     assert not env.model.violations, env.model.violations
@@ -558,14 +560,14 @@ async def test_withdrawn_status_write_completes_nothing(dut: Any) -> None:
     assert await env.push_frame(f1, gap=0.0)
     await env.wait_completions(1)
     assert env.completions == [(0, 65)]
-    assert desc_status(env.mem, RING, 1) == DD | 65
+    assert desc_status(env.mem, RING, 1) == DONE | 65
     assert not env.model.violations, env.model.violations
     env.stop()
 
 
 @cocotb.test()
 async def test_stop_drains_without_completion(dut: Any) -> None:
-    """The RESET drain mid-frame reaches idle with every response in and no DD written."""
+    """The RESET drain mid-frame reaches idle with every response in and no DONE written."""
     env = await _setup(dut, 8)
     env.post(0, BUF + 3, 4096)
     env.post(1, BUF + 0x1000, 4096)
@@ -600,7 +602,7 @@ async def test_disable_finishes_frame(dut: Any) -> None:
     dut.i_enable.value = 0
     assert await push
     await env.wait_completions(1)
-    assert desc_status(env.mem, RING, 0) == DD | 1000
+    assert desc_status(env.mem, RING, 0) == DONE | 1000
     assert env.mem.read_bytes(BUF + 1, 1000) == f0
     await env.wait_idle()
     f1 = env.frame(100)
@@ -611,7 +613,7 @@ async def test_disable_finishes_frame(dut: Any) -> None:
     dut.i_enable.value = 1
     assert await push
     await env.wait_completions(2)
-    assert desc_status(env.mem, RING, 1) == DD | 100
+    assert desc_status(env.mem, RING, 1) == DONE | 100
     assert not env.model.violations, env.model.violations
     env.stop()
 
@@ -649,8 +651,8 @@ async def test_disable_in_the_admit_cycle_admits_nothing(dut: Any) -> None:
     assert await env.push_frame(f1)
     await env.wait_completions(2)
     await env.wait_idle()
-    assert desc_status(env.mem, RING, 0) == DD | 100
-    assert desc_status(env.mem, RING, 1) == DD | 120
+    assert desc_status(env.mem, RING, 0) == DONE | 100
+    assert desc_status(env.mem, RING, 1) == DONE | 120
     assert env.mem.read_bytes(BUF + 1, 100) == f0
     assert env.mem.read_bytes(BUF + 0x1000 + 1, 120) == f1
     assert env.completions == [(0, 100), (0, 120)]
@@ -658,3 +660,131 @@ async def test_disable_in_the_admit_cycle_admits_nothing(dut: Any) -> None:
     env.check_written([(BUF + 1, 100), (BUF + 0x1000 + 1, 120)])
     assert not env.model.violations, env.model.violations
     env.stop()
+
+
+CSUM_VALID = 1 << 20
+
+
+def internet_sum(data: bytes) -> int:
+    """Return the ones-complement sum of 16-bit big-endian words, an odd last byte high."""
+    if len(data) % 2:
+        data += bytes(1)
+    total = sum(int.from_bytes(data[i : i + 2], "big") for i in range(0, len(data), 2))
+    while total >> 16:
+        total = (total & 0xFFFF) + (total >> 16)
+    return total
+
+
+def memory_order(value: int) -> int:
+    """Return the sum as a little-endian CPU reads the bytes the NIC wrote."""
+    return int.from_bytes(value.to_bytes(2, "big"), "little")
+
+
+async def _rx_csum_case(
+    dut: Any, wide: bool, lengths: list[int], trunc_at: int | None = None
+) -> None:
+    env = await _setup(dut, 7 + int(wide))
+    dut.i_wide_mode.value = int(wide)
+    dut.i_rx_csum_en.value = 1
+    await FallingEdge(dut.i_clk)
+    frames = []
+    for i, length in enumerate(lengths):
+        addr = BUF + i * 0x3000 + env.rng.randrange(64)
+        buf_len = 40 if i == trunc_at else 9216
+        if wide:
+            post_desc64(env.mem, RING, i, addr, buf_len)
+        else:
+            post_desc(env.mem, RING, i, addr, buf_len)
+        frames.append((addr, env.frame(length) if length >= 6 else STATION[:length]))
+    await env.doorbell(len(lengths))
+    for _, f in frames:
+        assert await env.push_frame(f)
+    await env.wait_completions(len(lengths))
+    await env.wait_idle()
+    for i, (addr, f) in enumerate(frames):
+        base = desc_addr(RING, i)
+        if wide:
+            status = env.mem.read_word32(base + 12)
+            csum = env.mem.read_word32(base + 8) >> 16
+            low = env.mem.read_word32(base + 8) & 0xFFFF
+            assert low == (40 if i == trunc_at else 9216), (
+                f"desc {i} buffer length lost"
+            )
+        else:
+            status = env.mem.read_word32(base + 8)
+            csum = env.mem.read_word32(base + 12) & 0xFFFF
+        want_valid = len(f) >= 14 and i != trunc_at
+        assert bool(status & CSUM_VALID) == want_valid, (
+            f"desc {i} len {len(f)} status {status:#x}"
+        )
+        assert status & 0xFFFF == len(f)
+        assert status & DONE
+        if want_valid:
+            assert csum == memory_order(internet_sum(f[14:])), (
+                f"desc {i} len {len(f)}: csum {csum:#06x} want "
+                f"{memory_order(internet_sum(f[14:])):#06x}"
+            )
+    assert not env.model.violations, env.model.violations
+    env.stop()
+
+
+@cocotb.test()
+async def test_rx_checksum_legacy_layout(dut: Any) -> None:
+    """The frame sum from byte 14 lands in word 3 with the status in one write."""
+    await _rx_csum_case(dut, False, [60, 14, 15, 17, 22, 23, 61])
+
+
+@cocotb.test()
+async def test_rx_checksum_extended_layout(dut: Any) -> None:
+    """In the extended layout the sum rides in word 2 [31:16] beside the buffer length."""
+    await _rx_csum_case(dut, True, [60, 14, 15, 22, 61, 64])
+
+
+@cocotb.test()
+async def test_rx_checksum_sizes_and_short_frames(dut: Any) -> None:
+    """Short frames carry no valid sum; long odd and even frames match the reference."""
+    await _rx_csum_case(dut, False, [6, 13, 14, 1500, 1518, 9000, 8999])
+
+
+@cocotb.test()
+async def test_rx_checksum_truncated_frame_has_no_sum(dut: Any) -> None:
+    """A truncated frame reports TRUNC and no checksum."""
+    await _rx_csum_case(dut, False, [100, 100, 100], trunc_at=1)
+
+
+@cocotb.test()
+async def test_rx_rate_against_memory_latency(dut: Any) -> None:
+    """Characterise the engine's sustained bytes per cycle against a fixed write latency.
+
+    Beats arrive every cycle and an unconstrained memory model answers each write after
+    the same latency, so the rate shown is the engine's own. The 64-bit datapath tops out
+    at 8 bytes per cycle (6.4 Gb/s at 100 MHz).
+    """
+    rates = {}
+    frames = 6
+    for latency in (8, 24, 48, 96):
+        env = await _setup(dut, 60 + latency, latency=(latency, latency))
+        env.model.gap = 0.0
+        env.model.cap = 6  # the DMA front-end admits at most SIDE_CAP (6) per engine
+        payloads = [env.frame(1514) for _ in range(frames)]
+        for i in range(frames):
+            env.post(i, BUF + i * 0x3000, 9216)
+        await env.doorbell(frames)
+        start = cocotb.utils.get_sim_time("ns")
+        for p in payloads:
+            assert await env.push_frame(p, gap=0.0)
+        await env.wait_completions(frames, limit=200000)
+        elapsed = (cocotb.utils.get_sim_time("ns") - start) / 10.0
+        rates[latency] = frames * 1514 / elapsed
+        await env.wait_idle(limit=20000)
+        env.stop()
+        dut.i_rst.value = 1
+        for _ in range(4):
+            await RisingEdge(dut.i_clk)
+    dut._log.info(
+        "RX engine bytes/cycle by write latency: "
+        + ", ".join(
+            f"{lat} cycles -> {r:.2f} B/cycle ({r * 0.8:.2f} Gb/s at 100 MHz)"
+            for lat, r in rates.items()
+        )
+    )

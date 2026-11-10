@@ -465,7 +465,16 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
         $(ROOT)/hw/rtl/peripherals/nic/nic_desc_fetch.sv \
         $(ROOT)/hw/rtl/peripherals/nic/nic_byte_unpack.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_tx_beat_merge.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_tx_segment.sv \
         $(ROOT)/hw/rtl/peripherals/nic/nic_tx_engine.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_tx_segment)
+# NIC frame segmentation stage unit bench
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_tx_beat_merge.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_tx_segment.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),vcu118_sgmii_link)
 COMPILE_ARGS := $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \

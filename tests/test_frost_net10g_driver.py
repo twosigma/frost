@@ -194,3 +194,244 @@ def test_debian_module_build_matches_the_dkms_package() -> None:
     # in-tree build, which an external module build bypasses.
     assert 'for name in ("Makefile", f"{driver.name}.c")' in source
     assert helper.MODULE_INIT_SCRIPT.startswith("etc/init.d/S")
+
+
+def _define(name: str) -> str:
+    matches = re.findall(
+        rf"^#define {name}\s+(\S+)\s*$", DRIVER_SOURCE.read_text(), re.M
+    )
+    assert len(matches) == 1, f"{name}: {matches}"
+    return matches[0]
+
+
+def _group(pattern: str, text: str) -> str:
+    match = re.search(pattern, text)
+    assert match is not None, pattern
+    return match.group(1)
+
+
+def _ethtool_ops(source: str) -> str:
+    ops = re.search(r"ethtool_ops frost_ethtool_ops = \{(.*?)\n\};", source, re.S)
+    assert ops is not None
+    return ops.group(1)
+
+
+def test_driver_sizes_the_rings_from_ethtool() -> None:
+    """Both rings, the page pool and the buffer arrays follow per-device sizes."""
+    source = DRIVER_SOURCE.read_text()
+    assert _define("FROST_RING_DEFAULT") == "512"
+    assert _define("FROST_RING_MIN") == "64"
+    assert _define("FROST_RING_MAX") == "4096"
+    # The fixed-size constants are gone
+    for gone in ("FROST_RING_ENTRIES", "FROST_RING_LOG2", "FROST_RING_MASK"):
+        assert gone not in source
+    assert ".pool_size = priv->rx_entries," in source
+    assert "FROST_RING_BYTES(priv->rx_entries)" in source
+    assert "FROST_RING_BYTES(priv->tx_entries)" in source
+    assert (
+        "kvcalloc(priv->rx_entries" in source and "kvcalloc(priv->tx_entries" in source
+    )
+    # SIZE holds log2(entries); the write is read back and checked
+    assert "writel(ilog2(priv->rx_entries), priv->base + NET10G_RX_SIZE)" in source
+    assert "writel(ilog2(priv->tx_entries), priv->base + NET10G_TX_SIZE)" in source
+    assert "readl(priv->base + NET10G_RX_SIZE) != ilog2(priv->rx_entries)" in source
+    assert "readl(priv->base + NET10G_TX_SIZE) != ilog2(priv->tx_entries)" in source
+    ops = _ethtool_ops(source)
+    assert ".get_ringparam" in ops and ".set_ringparam" in ops
+    assert "priv->rx_entries = FROST_RING_DEFAULT;" in source
+    assert "priv->tx_entries = FROST_RING_DEFAULT;" in source
+
+
+def test_driver_ring_range_fits_the_nic_and_the_tx_queue_thresholds() -> None:
+    """The range stays inside nic_pkg's SIZE limits and above the TX wake threshold."""
+    pkg = (REPO_ROOT / "hw/rtl/peripherals/nic/nic_pkg.sv").read_text()
+    lo = int(_group(r"RingSizeLog2Min = (\d+);", pkg))
+    hi = int(_group(r"RingSizeLog2Max = (\d+);", pkg))
+    ring_min = int(_define("FROST_RING_MIN"))
+    for name in ("FROST_RING_MIN", "FROST_RING_MAX", "FROST_RING_DEFAULT"):
+        size = int(_define(name))
+        assert size & (size - 1) == 0, name
+        assert (1 << lo) <= size <= (1 << hi), name
+    # A TX ring must be able to reach FROST_TX_WAKE_DESCS free entries:
+    # MAX_SKB_FRAGS (17) + 3 + ceil(65536 / 9216) = 28 to stop, twice that to wake
+    assert 2 * (17 + 3 + -(-65536 // 9216)) < ring_min
+
+
+def test_driver_set_ringparam_rounds_up_and_restores_on_failure() -> None:
+    """Resize frees at the old size, rebuilds at the new one, and falls back on failure."""
+    source = DRIVER_SOURCE.read_text()
+    body = re.search(r"static int frost_set_ringparam\(.*?\n\}\n", source, re.S)
+    assert body is not None
+    text = body.group(0)
+    assert "roundup_pow_of_two(ring->rx_pending)" in text
+    assert "roundup_pow_of_two(ring->tx_pending)" in text
+    assert "ring->rx_pending < FROST_RING_MIN" in text and "return -EINVAL" in text
+    assert "frost_reconfigure(" in text
+    # A running interface goes through the stop and open paths, with the new sizes between them
+    reconf = re.search(r"static int frost_reconfigure\(.*?\n\}\n", source, re.S)
+    assert reconf is not None
+    text = reconf.group(0)
+    down = text.index("frost_down(ndev)")
+    assign = text.index("priv->rx_entries = rx;", down)
+    assert down < assign < text.index("err = frost_up(ndev)")
+    assert "priv->rx_entries = old_rx;" in text and "priv->tx_entries = old_tx;" in text
+    assert "priv->rx_fifo_limit = old_fifo;" in text
+    # A stop after a failed resize must not tear down rings that are not there
+    stop_match = re.search(r"static int frost_down\(.*?\n\}\n", source, re.S)
+    assert stop_match is not None
+    stop = stop_match.group(0)
+    assert stop.index("if (!priv->hw_up)") < stop.index("frost_quiesce(priv)")
+    assert "priv->hw_up = true;" in source and "priv->hw_up = false;" in stop
+
+
+def _snake(name: str) -> str:
+    return re.sub(r"(?<!^)([A-Z])", r"_\1", name).lower()
+
+
+def test_driver_exposes_every_hardware_counter_in_order() -> None:
+    """Ethtool -S lists each nic_pkg counter, read as 64 bits."""
+    pkg = (REPO_ROOT / "hw/rtl/peripherals/nic/nic_pkg.sv").read_text()
+    indexed = {
+        name: int(index)
+        for name, index in re.findall(r"localparam int unsigned (Cnt\w+) = (\d+);", pkg)
+    }
+    ordered = sorted(indexed, key=indexed.__getitem__)
+    assert [indexed[name] for name in ordered] == list(range(len(ordered)))
+    assert int(_group(r"NumCounters = (\d+);", pkg)) == len(ordered)
+    assert int(_define("NET10G_COUNTERS"), 16) == int(
+        _group(r"CounterBaseOffset = 12'h([0-9A-Fa-f]+);", pkg), 16
+    )
+    source = DRIVER_SOURCE.read_text()
+    table = re.search(
+        r"frost_stat_names\[\]\[ETH_GSTRING_LEN\] = \{(.*?)\n\};", source, re.S
+    )
+    assert table is not None
+    names = re.findall(r'"(\w+)"', table.group(1))
+    assert names == [_snake(name.removeprefix("Cnt")) for name in ordered]
+    ops = _ethtool_ops(source)
+    for hook in (".get_sset_count", ".get_strings", ".get_ethtool_stats"):
+        assert hook in ops
+    # The extended ABI reads the aligned doubleword at once, the legacy ABI re-reads the high half
+    reader = re.search(r"static u64 frost_read_counter\(.*?\n\}\n", source, re.S)
+    assert reader is not None
+    assert "readq(reg)" in reader.group(0)
+    assert "while (hi != readl(reg + 4))" in reader.group(0)
+
+
+def test_driver_rx_fifo_limit_matches_the_nic_registers() -> None:
+    """The driver's RX_FIFO_LIMIT constants are nic_pkg's."""
+    pkg = (REPO_ROOT / "hw/rtl/peripherals/nic/nic_pkg.sv").read_text()
+    for name, macro in (
+        ("RxFifoLimitOffset", "NET10G_RX_FIFO_LIMIT"),
+        ("RxFifoDepthOffset", "NET10G_RX_FIFO_DEPTH"),
+    ):
+        assert int(_define(macro), 16) == int(
+            _group(rf"{name} = 12'h([0-9A-Fa-f]+);", pkg), 16
+        )
+    assert _define("FROST_FIFO_LIMIT_MIN") == _group(r"RxFifoLimitMin = (\d+);", pkg)
+    assert _define("FROST_FIFO_LIMIT_DEFAULT") == _group(
+        r"RxFifoLimitDefault = (\d+);", pkg
+    )
+    assert _define("FROST_FIFO_WORD_BYTES") == "8"
+
+
+def test_driver_exposes_rx_fifo_bytes_as_a_devlink_runtime_parameter() -> None:
+    """rx_fifo_bytes is a runtime devlink parameter validated against the built depth."""
+    source = DRIVER_SOURCE.read_text()
+    param = re.search(r"frost_devlink_params\[\] = \{(.*?)\n\};", source, re.S)
+    assert param is not None
+    assert '"rx_fifo_bytes"' in param.group(1)
+    assert "DEVLINK_PARAM_TYPE_U32" in param.group(1)
+    assert "BIT(DEVLINK_PARAM_CMODE_RUNTIME)" in param.group(1)
+    validate = re.search(
+        r"static int frost_dl_rx_fifo_validate\(.*?\n\}\n", source, re.S
+    )
+    assert validate is not None
+    assert "priv->rx_fifo_depth * FROST_FIFO_WORD_BYTES" in validate.group(0)
+    assert "FROST_FIFO_LIMIT_MIN * FROST_FIFO_WORD_BYTES" in validate.group(0)
+    assert "% FROST_FIFO_WORD_BYTES" in validate.group(0)
+    # The set callback uses the ring-size path, under RTNL
+    setter = re.search(r"static int frost_dl_rx_fifo_set\(.*?\n\}\n", source, re.S)
+    assert setter is not None
+    text = setter.group(0)
+    assert (
+        text.index("rtnl_lock()")
+        < text.index("frost_reconfigure(")
+        < text.index("rtnl_unlock()")
+    )
+    assert "ctx->val.vu32 / FROST_FIFO_WORD_BYTES" in text
+    # RESET returns the limit to its default, so every open writes it back and reads it back
+    up = re.search(r"static int frost_up\(.*?\n\}\n", source, re.S)
+    assert up is not None
+    assert "frost_apply_fifo_limit(priv)" in up.group(0)
+    apply_fn = re.search(r"static int frost_apply_fifo_limit\(.*?\n\}\n", source, re.S)
+    assert apply_fn is not None
+    assert (
+        "writel(priv->rx_fifo_limit, priv->base + NET10G_RX_FIFO_LIMIT)"
+        in apply_fn.group(0)
+    )
+    assert "readl_poll_timeout(priv->base + NET10G_RX_FIFO_LIMIT" in apply_fn.group(0)
+    # Hardware without the register (depth reads 0) gets no parameter
+    assert "if (priv->rx_fifo_depth) {\n\t\terr = frost_devlink_init(priv);" in source
+    # Teardown unregisters before freeing, after the netdev is gone (devm runs in reverse order)
+    init = re.search(r"static int frost_devlink_init\(.*?\n\}\n", source, re.S)
+    assert init is not None
+    text = init.group(0)
+    assert text.index("frost_devlink_free") < text.index("frost_devlink_unregister")
+    assert re.search(r"^\tselect NET_DEVLINK$", KCONFIG.read_text(), re.M)
+
+
+def test_driver_pause_control_matches_the_nic_registers() -> None:
+    """Ethtool -A drives PAUSE_CTRL, reopening a running interface, with autoneg refused."""
+    pkg = (REPO_ROOT / "hw/rtl/peripherals/nic/nic_pkg.sv").read_text()
+    assert int(_define("NET10G_PAUSE_CTRL"), 16) == int(
+        _group(r"PauseCtrlOffset = 12'h([0-9A-Fa-f]+);", pkg), 16
+    )
+    assert (
+        _define("NET10G_PAUSE_RX") == f"BIT({_group(r'PauseCtrlBitRx = (\d+);', pkg)})"
+    )
+    assert (
+        _define("NET10G_PAUSE_TX") == f"BIT({_group(r'PauseCtrlBitTx = (\d+);', pkg)})"
+    )
+    # ABI_CTRL bit 5 advertises the registers (nic_csr builds the read value)
+    assert _define("NET10G_ABI_PAUSE_SUPPORTED") == "BIT(5)"
+    csr = (REPO_ROOT / "hw/rtl/peripherals/nic/nic_csr.sv").read_text()
+    assert (
+        "reg_word = {25'b0, 1'b1, 1'b1, 1'b1, 1'b1, rx_csum_q, 1'b1, wide_mode_q};"
+        in csr
+    )
+    source = DRIVER_SOURCE.read_text()
+    ops = _ethtool_ops(source)
+    assert ".get_pauseparam" in ops and ".set_pauseparam" in ops
+    setter = re.search(r"static int frost_set_pauseparam\(.*?\n\}\n", source, re.S)
+    assert setter is not None
+    text = setter.group(0)
+    assert "if (!priv->pause_abi)" in text and "return -EOPNOTSUPP" in text
+    assert "if (pause->autoneg)" in text and "return -EINVAL" in text
+    assert "frost_reconfigure(" in text
+    # Every open writes the bits back after RESET, and reads them back
+    apply_fn = re.search(r"static int frost_apply_fifo_limit\(.*?\n\}\n", source, re.S)
+    assert apply_fn is not None
+    assert "writel(priv->pause, priv->base + NET10G_PAUSE_CTRL)" in apply_fn.group(0)
+    assert "readl(priv->base + NET10G_PAUSE_CTRL) != priv->pause" in apply_fn.group(0)
+    # The three pause counters are listed after the GMII ones
+    assert '"rx_pause_frames"' in source and '"tx_paused_cycles"' in source
+
+
+def test_driver_splits_tx_segments_only_for_old_hardware() -> None:
+    """ABI_CTRL bit 6 lifts the 9216-byte segment split; hardware without it keeps it."""
+    source = DRIVER_SOURCE.read_text()
+    assert _define("NET10G_ABI_TX_LONG_SEGMENTS") == "BIT(6)"
+    assert _define("FROST_TX_DESC_MAX") == "9216"
+    probe = re.search(
+        r"priv->tx_desc_max = \(readl\(base \+ NET10G_ABI_CTRL\) &\s+NET10G_ABI_TX_LONG_SEGMENTS\) \?\s+FIELD_MAX\(NET10G_DESC_LEN\) : FROST_TX_DESC_MAX;",
+        source,
+    )
+    assert probe is not None
+    # The transmit path splits by the per-device limit, never the constant
+    xmit = re.search(r"static netdev_tx_t frost_start_xmit\(.*?\n\}\n", source, re.S)
+    assert xmit is not None
+    assert "FROST_TX_DESC_MAX" not in xmit.group(0)
+    assert xmit.group(0).count("priv->tx_desc_max") == 4
+    pkg = (REPO_ROOT / "hw/rtl/peripherals/nic/nic_pkg.sv").read_text()
+    assert "bit 6 reads one" in pkg
