@@ -1035,14 +1035,15 @@ module branch_prediction_controller #(
       .O (slot2_live_candidate_plus4_pos)
   );
   (* dont_touch = "true" *)
-  LUT5 #(
-      .INIT(32'hca000000)
+  LUT6 #(
+      .INIT(64'hca00000000000000)
   ) u_slot2_live_select (
       .I0(slot2_live_candidate_plus2_pos),
       .I1(slot2_live_candidate_plus4_pos),
       .I2(slot2_pc_use_alt),
       .I3(slot2_live_qualifier),
-      .I4(slot2_prediction_permission),
+      .I4(slot2_prediction_permission_without_valid),
+      .I5(i_slot2_valid),
       .O (o_slot2_live_target_used_for_pc)
   );
 `else
