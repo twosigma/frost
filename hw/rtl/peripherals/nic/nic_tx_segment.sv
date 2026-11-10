@@ -261,7 +261,7 @@ module nic_tx_segment (
     for (int j = 0; j < 8; j++) if (4'(j) < in_bytes) in_masked[8*j+:8] = h_data[8*j+:8];
   end
 
-  logic in_fire, run_fire;
+  logic in_fire, cap_fire, run_fire;
   always_comb begin
     case (state_q)
       S_IDLE:  h_ready = h_cfg_segment ? 1'b0 : (i_out_ready && !mg_busy && sk_empty);
@@ -273,7 +273,8 @@ module nic_tx_segment (
     endcase
   end
   assign in_fire = h_valid && h_ready;
-  // Qualify payload capture within RUN so bypass backpressure does not enter its controls.
+  // CAP is always ready; keep bypass backpressure out of header and payload capture controls.
+  assign cap_fire = h_valid && (state_q == S_CAP);
   assign run_fire = h_valid && (state_q == S_RUN) && !in_done_q &&
       ((em_q == EM_END) || (acc_cnt_q <= 5'd8));
 
@@ -492,7 +493,7 @@ module nic_tx_segment (
   logic end_now;
   assign cap_final = (cap_idx_q == hb_last_q);
   assign hl_in_last = (hdr_len_q[2:0] == 3'd0) ? 4'd8 : {1'b0, hdr_len_q[2:0]};
-  assign cap_short = in_fire && (state_q == S_CAP) &&
+  assign cap_short = cap_fire &&
       ((in_last && !cap_final) || (in_last && cap_final && (in_bytes < hl_in_last)));
   assign end_now = (state_q == S_RUN) && (em_q == EM_END) && (in_done_q || (run_fire && in_last));
 
@@ -511,7 +512,7 @@ module nic_tx_segment (
       cap_vld_q     <= 1'b0;
     end else begin
       o_err <= 1'b0;
-      cap_vld_q <= (state_q == S_CAP) && in_fire;
+      cap_vld_q <= cap_fire;
       case (state_q)
         S_IDLE: begin
           if (h_valid && !h_cfg_segment) begin
@@ -558,7 +559,7 @@ module nic_tx_segment (
 
         S_CAP: begin
           if (cap_vld_q) s0_q <= s0_q + 21'(cap_sum);
-          if (in_fire) begin
+          if (cap_fire) begin
             for (int j = 0; j < 8; j++)
             for (int b = 0; b < HbBeats; b++) if (cap_idx_q == 5'(b)) hb_q[8*b+j] <= h_data[8*j+:8];
             for (int w = 0; w < 4; w++)
@@ -681,7 +682,7 @@ module nic_tx_segment (
             EM_END: begin
               if (end_now) begin
                 state_q <= S_IDLE;
-                if (err_pending_q || excess_q || in_fire || (acc_cnt_q != 5'd0)) o_err <= 1'b1;
+                if (err_pending_q || excess_q || run_fire || (acc_cnt_q != 5'd0)) o_err <= 1'b1;
               end
             end
             default: em_q <= EM_WAIT;
