@@ -266,8 +266,8 @@ module if_stage #(
   logic slot2_prediction_used;
   logic slot2_prediction_used_for_pc;
   logic slot2_prediction_used_for_fetch_mux;
-  logic slot2_staged_prediction_used_for_pc;
-  logic slot2_live_target_used_for_pc;
+  logic slot2_staged_pc_without_valid;
+  logic slot2_live_pc_without_valid;
   logic [XLEN-1:0] slot2_staged_predicted_target;
   logic [XLEN-1:0] slot2_live_predicted_target;
   riscv_pkg::pc_pending_rel_t slot2_staged_target_rel_pending;
@@ -277,7 +277,6 @@ module if_stage #(
   logic slot2_prediction_used_live;
   logic slot2_prediction_used_for_pc_live;
   logic slot2_prediction_used_for_fetch_mux_live;
-  logic slot2_staged_prediction_used_for_pc_live;
   logic slot2_staged_prediction_used_for_capture;
   logic [XLEN-1:0] slot2_predicted_target_for_pc_live;
   logic [XLEN-1:0] slot2_staged_predicted_target_live;
@@ -292,8 +291,6 @@ module if_stage #(
   assign slot2_prediction_used_for_pc = slot2_prediction_used_for_pc_live || slot2_replay_request;
   assign slot2_prediction_used_for_fetch_mux =
       slot2_prediction_used_for_fetch_mux_live || slot2_replay_request;
-  assign slot2_staged_prediction_used_for_pc =
-      slot2_staged_prediction_used_for_pc_live || slot2_replay_request;
   (* keep = "true", max_fanout = 32 *) logic if_stage_stall_registered;
   assign slot2_predicted_target_for_pc = if_stage_stall_registered ? slot2_predicted_target_sc :
       slot2_predicted_target_for_pc_live;
@@ -822,11 +819,13 @@ module if_stage #(
       .o_slot2_prediction_used(slot2_prediction_used_live),
       .o_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc_live),
       .o_slot2_prediction_used_for_fetch_mux(slot2_prediction_used_for_fetch_mux_live),
-      .o_slot2_staged_prediction_used_for_pc(slot2_staged_prediction_used_for_pc_live),
+      .o_slot2_staged_prediction_used_for_pc(),
       .o_slot2_staged_prediction_used_for_capture(slot2_staged_prediction_used_for_capture),
       .o_slot1_aliases_slot2_candidate(),
       .o_slot2_live_target_used_for_pc_cofactor(),
-      .o_slot2_live_target_used_for_pc(slot2_live_target_used_for_pc),
+      .o_slot2_live_target_used_for_pc(),
+      .o_slot2_staged_pc_without_valid(slot2_staged_pc_without_valid),
+      .o_slot2_live_pc_without_valid(slot2_live_pc_without_valid),
       .o_slot2_predicted_taken(slot2_predicted_taken),
       .o_slot2_predicted_target(slot2_predicted_target),
       .o_slot2_predicted_target_for_pc(slot2_predicted_target_for_pc_live),
@@ -922,8 +921,10 @@ module if_stage #(
       .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot2_prediction_used_for_fetch_mux(slot2_prediction_used_for_fetch_mux),
       .i_slot2_predicted_target(slot2_predicted_target_for_pc),
-      .i_slot2_staged_prediction_used_for_pc(slot2_staged_prediction_used_for_pc),
-      .i_slot2_live_target_used_for_pc(slot2_live_target_used_for_pc),
+      .i_slot2_pc_valid(slot2_prediction_valid),
+      .i_slot2_pc_replay(slot2_replay_request),
+      .i_slot2_staged_pc_without_valid(slot2_staged_pc_without_valid),
+      .i_slot2_live_pc_without_valid(slot2_live_pc_without_valid),
       .i_slot2_staged_predicted_target(slot2_staged_predicted_target),
       .i_slot2_live_predicted_target(slot2_live_predicted_target),
       .i_slot2_staged_target_rel_pending(slot2_staged_target_rel_pending),
