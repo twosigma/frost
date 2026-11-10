@@ -91,12 +91,14 @@ _port_ids = {
 }
 
 # Packed cache_instance_perf_events_t layout, MSB first: two combining events,
-# access, hit, miss,
+# two L1D hit-path events, access, hit, miss,
 # writeback (1 bit each), the MissOutstandingBits-wide outstanding count, then
 # hit_under_miss, slot_full_stall, conflict_stall (1 bit each).
 PERF_FIELD_WIDTHS = {
     "store_combined": 1,
     "store_combined_under_miss": 1,
+    "path_hit": 1,
+    "path_hit_under_miss": 1,
     "access": 1,
     "hit": 1,
     "miss": 1,

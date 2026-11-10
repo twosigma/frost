@@ -3,8 +3,11 @@ coh_array_bmc bram bounded
 coh_array_uram_bmc uram bounded
 coh_array4_bmc bram bounded four undefined fourbram
 coh_array4_uram_bmc uram bounded four undefined
+coh_array_port_bmc bram bounded port
+coh_array4_port_bmc bram bounded four undefined port fourbram fourport
 coh_array_cover bram covers
 coh_array_uram_cover uram covers
+coh_array4_port_cover bram covers four port
 
 coh_array_select_prove selection
 coh_array_select4_prove selection four
@@ -22,6 +25,11 @@ fourbram: depth 24
 timeout 180
 bounded: timeout 1200
 four: timeout 1800
+# The one-way hit-port BMC takes about 19 minutes and has twice that.
+port: timeout 2400
+# The four-way hit-port BMC takes about 50 minutes for its 24 frames and
+# has twice that; CI runs it beside the free-input L1D stream BMC.
+fourport: timeout 6000
 bounded: aigsmt boolector
 
 [engines]
@@ -35,6 +43,7 @@ chparam -set CACHE_BYTES 64 -set WAYS 1 coherence_array
 uram: chparam -set ULTRA 1 coherence_array
 four: chparam -set CACHE_BYTES 256 -set WAYS 4 coherence_array
 wide: chparam -set ADDR_WIDTH 56 coherence_array
+port: chparam -set HIT_PORT 1 coherence_array
 ~selection: prep -top coherence_array
 # Out-of-range bits of the four-way selections are unreachable constants.
 undefined: memory_map

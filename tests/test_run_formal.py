@@ -36,15 +36,9 @@ FORMAL_DIR = "formal"
 
 # Per-task hang backstop in seconds; proof depth is set by each .sby file.
 SBY_TASK_TIMEOUT_S = 2400
-# The unchanged ROB BMC can take about an hour on a shared runner, the
-# hart maintenance proof, which models buffered store hits, can take over an
-# hour on a loaded machine, and the scripted and store-free eight-endpoint
-# L1D stream BMCs can take up to an hour. The free-input stream BMC with
-# stores runs 32 frames, and the four-record and intervening-load store
-# boundary BMCs run 120 and 140 frames. These tasks run in separate CI jobs.
-# The three-endpoint L1D control BMC can take about half an hour on a loaded
-# machine and stays in the Coherence job. Their proof depth and input
-# contracts stay unchanged; only the solver's wall-clock allowance differs.
+# Slow control, data and composed tasks have measured allowances in their
+# SBY files and separate CI jobs. Keep the runner's backstops in sync with
+# those files and document the budgets and depths in formal/README.md.
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "bmc"): 5400,
     ("csr_file", "bmc_perf_off"): 5400,
@@ -54,17 +48,32 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_stream_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_nostore_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_bmc"): 10800,
-    ("coherence_l1d", "coh_l1d_bmc"): 3600,
-    ("coherence_l1d", "coh_l1d_multi_bmc"): 14400,
-    ("coherence_l1d", "coh_l1d_store_multi_payload_bmc"): 3600,
+    ("coherence_array", "coh_array4_port_bmc"): 6000,
+    ("coherence_l1d", "coh_l1d_bmc"): 10800,
+    ("coherence_l1d", "coh_l1d_multi_bmc"): 18000,
+    ("coherence_l1d", "coh_l1d_data_bmc"): 3900,
+    ("coherence_l1d", "coh_l1d_data1_bmc"): 3900,
+    ("coherence_l1d", "coh_l1d_data2_bmc"): 3900,
+    ("coherence_l1d", "coh_l1d_data3_bmc"): 3900,
+    ("coherence_l1d", "coh_l1d_store_payload_bmc"): 900,
+    ("coherence_l1d", "coh_l1d_store_grant_bmc"): 1200,
+    ("coherence_l1d", "coh_l1d_store_multi_payload_bmc"): 1800,
     ("coherence_l1d", "coh_l1d_store_multi_grant_bmc"): 3600,
-    ("coherence_l1d", "coh_l1d_multi_data0_bmc"): 3600,
-    ("coherence_l1d", "coh_l1d_multi_data1_bmc"): 3600,
-    ("coherence_l1d", "coh_l1d_multi_data2_bmc"): 3600,
-    ("coherence_l1d", "coh_l1d_multi_data3_bmc"): 3600,
+    ("coherence_l1d", "coh_l1d_multi_data0_bmc"): 4200,
+    ("coherence_l1d", "coh_l1d_multi_data1_bmc"): 4200,
+    ("coherence_l1d", "coh_l1d_multi_data2_bmc"): 4200,
+    ("coherence_l1d", "coh_l1d_multi_data3_bmc"): 4200,
+    ("coherence_l1d", "coh_l1d_ways_data_bmc"): 5100,
     ("coherence_store_boundary", "bmc_four"): 18000,
     ("coherence_store_boundary", "cover_four"): 7200,
     ("coherence_store_boundary", "bmc_intervening"): 14400,
+    ("coherence_store_boundary", "bmc_amo_same"): 3300,
+    ("coherence_store_boundary", "bmc_amo_other"): 4800,
+    ("coherence_store_boundary", "bmc_sc"): 3600,
+    ("coherence_store_home", "bmc_siblings"): 1800,
+    ("coherence_store_home", "bmc_rows"): 2100,
+    ("coherence_store_home", "bmc_conflict"): 2400,
+    ("coherence_store_home", "bmc_pressure"): 2700,
 }
 
 
@@ -318,6 +327,7 @@ FORMAL_TARGETS = [
             "coh_l1d_local_data_bmc",
             "coh_l1d_local_ways_prove",
             "coh_l1d_cover",
+            "coh_l1d_path_cover",
             "coh_l1d_data_bmc",
             "coh_l1d_data1_bmc",
             "coh_l1d_data2_bmc",
@@ -330,6 +340,7 @@ FORMAL_TARGETS = [
             "coh_l1d_multi_data1_bmc",
             "coh_l1d_multi_data2_bmc",
             "coh_l1d_multi_data3_bmc",
+            "coh_l1d_ways_data_bmc",
         ),
     ),
     FormalTarget(
@@ -415,9 +426,11 @@ FORMAL_TARGETS = [
             "coh_array_plru_prove",
             "coh_array_plru_uram_prove",
             "coh_array_plru_bimodal_prove",
+            "coh_array_plru_port_prove",
             "coh_array_plru_cover",
             "coh_array_plru_uram_cover",
             "coh_array_plru_bimodal_cover",
+            "coh_array_plru_port_cover",
         ),
     ),
     FormalTarget(
@@ -432,8 +445,11 @@ FORMAL_TARGETS = [
             "coh_array_uram_bmc",
             "coh_array4_bmc",
             "coh_array4_uram_bmc",
+            "coh_array_port_bmc",
+            "coh_array4_port_bmc",
             "coh_array_cover",
             "coh_array_uram_cover",
+            "coh_array4_port_cover",
         ),
     ),
     FormalTarget(
@@ -450,6 +466,8 @@ FORMAL_TARGETS = [
             "coh_array_equiv_uram_bmc",
             "coh_array_equiv_uram_data5_bmc",
             "coh_array_equiv4_uram_bmc",
+            "coh_array_equiv_port_bmc",
+            "coh_array_equiv_port_data0_bmc",
             "coh_array_equiv_cover",
         ),
     ),
@@ -1329,7 +1347,7 @@ SBY_TASKS = [
     ),
     (
         "coh_l1d_stream_owned_prove",
-        "Unbounded: read-slot ownership and the selected read's kind with eight endpoints, by induction.",
+        "Unbounded: read-slot ownership, the selected read's kind and shadow lookups with eight endpoints, by induction.",
     ),
     (
         "coh_l1d_stream_prove",
@@ -1474,7 +1492,10 @@ SBY_TASKS = [
         "cover_pressure",
         "Two held dirty victims yield to a probing DMA request and a waiting load.",
     ),
-    ("bmc_four", "Four sector records preserve the production SQ and LQ handoff."),
+    (
+        "bmc_four",
+        "Four sector records preserve the production SQ and LQ handoff through 114 cycles.",
+    ),
     (
         "cover_four",
         "Four acknowledged holders drain with concurrent store acquisitions.",
@@ -1495,6 +1516,10 @@ SBY_TASKS = [
     (
         "coh_l1d_multi_data3_bmc",
         "Concurrent store acquisitions preserve array and probe bytes in word 3.",
+    ),
+    (
+        "coh_l1d_ways_data_bmc",
+        "Four-way array, probe and hit-path bytes in word 0 with three endpoints.",
     ),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
@@ -1557,6 +1582,10 @@ SBY_TASKS = [
         "Arbitrary-byte store and probe images in the production array.",
     ),
     ("coh_l1d_cover", "Buffered stores, ordered installation, probes and errors."),
+    (
+        "coh_l1d_path_cover",
+        "Hit-path answers, shadow lookups and the hit path's refusals with free inputs.",
+    ),
     ("coh_array_select_prove", "Conditional data selection with one way."),
     ("coh_array_select4_prove", "Conditional data selection with four ways."),
     ("coh_array_select56_prove", "Conditional data selection at 56 address bits."),
@@ -1580,6 +1609,14 @@ SBY_TASKS = [
     (
         "coh_array_plru_bimodal_cover",
         "Insertions that update replacement state under bimodal insertion.",
+    ),
+    (
+        "coh_array_plru_port_prove",
+        "Replacement equality with hit-port touches beside the array's writes.",
+    ),
+    (
+        "coh_array_plru_port_cover",
+        "Hit-port touches applied beside a hit and dropped under an array write.",
     ),
     (
         "coh_hart_maint_prove",
@@ -1869,6 +1906,9 @@ SBY_TASKS = [
     ("coh_array_uram_bmc", "Coherent array byte values through registered RAM ports."),
     ("coh_array4_bmc", "Coherent array byte values and held responses with four ways."),
     ("coh_array4_uram_bmc", "Four-way coherent array byte values in UltraRAM."),
+    ("coh_array_port_bmc", "Hit-port tags and byte values beside lookups, one way."),
+    ("coh_array4_port_bmc", "Hit-port tags and byte values beside lookups, four ways."),
+    ("coh_array4_port_cover", "Hit-port hits beside lookups and after writes."),
     ("coh_array_equiv_bmc", "Cycle equivalence with the reference array, one way."),
     ("coh_array_equiv_data0_bmc", "One-way response data equivalence in byte lane 0."),
     (
@@ -1897,6 +1937,14 @@ SBY_TASKS = [
         "UltraRAM response data equivalence in byte lane 5.",
     ),
     ("coh_array_equiv4_uram_bmc", "Four-way cycle equivalence in UltraRAM."),
+    (
+        "coh_array_equiv_port_bmc",
+        "Cycle equivalence with hit-port reads beside the lookups, one way.",
+    ),
+    (
+        "coh_array_equiv_port_data0_bmc",
+        "Byte lane 0 data equivalence with hit-port reads beside the lookups.",
+    ),
     ("coh_array_equiv_cover", "Compared data responses and insertions are reachable."),
     (
         "coh_arbiter24_prove",
@@ -2274,6 +2322,21 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     filters = {
         shard["shard"]: Expression.compile(shard["pytest_filter"]) for shard in shards
     }
+    dedicated_shards = {
+        "coherence_l1d_coh_l1d_bmc": "Coherence L1D control",
+        "coherence_l1d_coh_l1d_multi_bmc": "Coherence L1D multi-endpoint",
+        "coherence_store_boundary_bmc_four": "Store boundary four records",
+        "coherence_store_boundary_bmc_intervening": "Store boundary intervening load",
+        "coherence_store_boundary_bmc_amo_same": "Store boundary AMO flow",
+        "coherence_store_boundary_bmc_amo_other": "Store boundary AMO flow",
+        "coherence_store_boundary_bmc_sc": "Store boundary",
+    }
+    data_prefixes = (
+        "coh_l1d_data",
+        "coh_l1d_multi_data",
+        "coh_l1d_store_",
+        "coh_l1d_ways_data",
+    )
     result = subprocess.run(
         [
             sys.executable,
@@ -2316,6 +2379,11 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             if expression.evaluate(matches_keyword)
         ]
         assert len(matches) == 1, (node, matches)
+        for test_id, shard in dedicated_shards.items():
+            if node.endswith(f"[{test_id}]"):
+                assert matches == [shard], (node, matches)
+        if any(f"[coherence_l1d_{prefix}" in node for prefix in data_prefixes):
+            assert matches[0].startswith("Coherence L1D data"), (node, matches)
 
 
 def l1d_task_config(task: str) -> dict[str, list[str]]:
@@ -2510,15 +2578,15 @@ def test_stream_owned_lemma_model_matches() -> None:
         "read -formal -sv -D STREAM_UNBOUNDED_PROOF -D READ_OWNER_PROOF "
         "coherence_read_payload.sv coherence_l1d.sv"
     ) in model
-    lemmas = "c:p_owned_* c:p_selected_kind"
+    lemmas = "c:p_owned_* c:p_selected_kind c:p_path_shadowed"
     # The lemma task proves its lemmas from the design alone.
     assert [line for line in owned["[script]"] if assertion_command(line)] == [
-        f"chformal -assert -remove t:$check r:FLAVOR=assert %i {lemmas} %u %d",
-        "select -assert-count 14 t:$check r:FLAVOR=assert %i",
+        f"chformal -assert -remove t:$check r:FLAVOR=assert %i {lemmas} %u %u %d",
+        "select -assert-count 17 t:$check r:FLAVOR=assert %i",
     ]
     proof_commands = [line for line in proof["[script]"] if assertion_command(line)]
     assert (
-        f"select -assert-count 14 t:$check r:FLAVOR=assert %i {lemmas} %u %i"
+        f"select -assert-count 17 t:$check r:FLAVOR=assert %i {lemmas} %u %u %i"
         in proof_commands
     )
     assert f"chformal -assert2assume {lemmas}" in proof_commands
@@ -2748,11 +2816,35 @@ def test_fatal_frame_validation(
         ("coherent_hart_cache", "coh_hart_maint_prove", 7200),
         ("coherent_hart_cache", "coh_hart_maint_four_bmc", 7200),
         ("coherence_l1d", "coh_l1d_stream_bmc", 3600),
-        ("coherence_l1d", "coh_l1d_bmc", 3600),
+        ("coherence_l1d", "coh_l1d_bmc", 10800),
         ("coherence_store_boundary", "bmc_four", 18000),
         ("coherence_store_boundary", "bmc_intervening", 14400),
+        ("coherence_store_boundary", "bmc_amo_same", 3300),
+        ("coherence_store_boundary", "bmc_amo_other", 4800),
+        ("coherence_store_boundary", "bmc_sc", 3600),
+        ("coherence_store_home", "bmc_siblings", 1800),
+        ("coherence_store_home", "bmc_rows", 2100),
+        ("coherence_store_home", "bmc_conflict", 2400),
+        ("coherence_store_home", "bmc_pressure", 2700),
+        ("coherence_store_home", "cover_siblings", 2400),
         ("coherence_l1d", "coh_l1d_stream_free_bmc", 10800),
-        ("coherence_l1d", "coh_l1d_multi_bmc", 14400),
+        ("coherence_l1d", "coh_l1d_multi_bmc", 18000),
+        ("coherence_l1d", "coh_l1d_data_bmc", 3900),
+        ("coherence_l1d", "coh_l1d_data1_bmc", 3900),
+        ("coherence_l1d", "coh_l1d_data2_bmc", 3900),
+        ("coherence_l1d", "coh_l1d_data3_bmc", 3900),
+        ("coherence_l1d", "coh_l1d_multi_data0_bmc", 4200),
+        ("coherence_l1d", "coh_l1d_multi_data1_bmc", 4200),
+        ("coherence_l1d", "coh_l1d_multi_data2_bmc", 4200),
+        ("coherence_l1d", "coh_l1d_multi_data3_bmc", 4200),
+        ("coherence_l1d", "coh_l1d_store_payload_bmc", 900),
+        ("coherence_l1d", "coh_l1d_store_grant_bmc", 1200),
+        ("coherence_l1d", "coh_l1d_store_multi_payload_bmc", 1800),
+        ("coherence_l1d", "coh_l1d_store_multi_grant_bmc", 3600),
+        ("coherence_l1d", "coh_l1d_ways_data_bmc", 5100),
+        ("coherence_array", "coh_array_port_bmc", 2400),
+        ("coherence_array", "coh_array4_port_bmc", 6000),
+        ("coherence_store_boundary", "cover_four", 7200),
         ("csr_file", "cover", 2400),
         ("reorder_buffer", "cover", 2400),
         ("line_port_axi_bridge", "bmc_128g", 2400),
@@ -2765,7 +2857,7 @@ def test_formal_runner_task_timeout(
     expected_timeout: int,
     capture_output: bool,
 ) -> None:
-    """CLI and captured runs give only the slow BMC tasks extra wall time."""
+    """CLI and captured runs apply each task's measured wall-clock allowance."""
     target = next(target for target in FORMAL_TARGETS if target.name == target_name)
     assert task in target.tasks
     calls: list[dict[str, Any]] = []
