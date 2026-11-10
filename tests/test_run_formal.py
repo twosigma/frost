@@ -1287,7 +1287,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "async_fifo.sby",
-        "FIFO capacity, flow control, and data ordering across unrelated clocks",
+        "FIFO capacity, flow control, and data ordering across unrelated clocks, "
+        "and the runtime occupancy limit",
+        tasks=("bmc", "cover", "limit_bmc", "limit_cover"),
     ),
     FormalTarget(
         "aplic.sby",
@@ -1330,6 +1332,8 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("limit_bmc", "Bounded proof that the runtime occupancy limit caps the writer."),
+    ("limit_cover", "The writer stalls at a runtime limit below the RAM's capacity."),
     ("coh_l1d_conflict_prove", "Guarded conflict identity with one endpoint."),
     ("coh_l1d_conflict_multi_prove", "Guarded conflict identity with three endpoints."),
     (

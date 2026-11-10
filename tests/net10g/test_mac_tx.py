@@ -195,6 +195,76 @@ async def padding_crc_stalls_and_lane_endings(dut: Any) -> None:
     assert bench.disabled > 100
 
 
+def csum_reference(payload: bytes, start: int, offset: int) -> bytes:
+    """Return the frame with the ones-complement sum from start written at start+offset.
+
+    The sum covers 16-bit big-endian words from `start` to the end, with a zero
+    pad byte after an odd last byte, and includes the field's old value. A zero
+    result is sent as 0xffff. An unusable request leaves the frame unchanged.
+    """
+    pos = start + offset
+    if offset == 0 or start % 2 or offset % 2 or pos + 2 > len(payload):
+        return payload
+    total = 0
+    for i in range(start, len(payload), 2):
+        low = payload[i + 1] if i + 1 < len(payload) else 0
+        total += (payload[i] << 8) | low
+    while total >> 16:
+        total = (total & 0xFFFF) + (total >> 16)
+    value = 0xFFFF if total == 0xFFFF else (~total & 0xFFFF)
+    out = bytearray(payload)
+    out[pos] = value >> 8
+    out[pos + 1] = value & 0xFF
+    return bytes(out)
+
+
+@cocotb.test()
+async def transmit_checksum_offload(dut: Any) -> None:
+    """Check that the MAC writes the checksum into the frame and the FCS covers it.
+
+    Frames of many lengths, with the start and the field in every lane and
+    across beats, odd lengths, unusable requests that must pass unchanged, a
+    sum that folds to 0xffff, and back-to-back frames with different requests.
+    """
+    bench = TxBench(dut, 0xC5C5)
+    await bench.reset()
+    expected = []
+    cases = []
+    sizes = [2, 3, 20, 33, 34, 40, 59, 60, 61, 64, 65, 100, 1500, 1518]
+    sizes = [size for size in sizes if size <= MAX_FRAME_BYTES]
+    for size in sizes:
+        for _ in range(6):
+            start = 2 * bench.rng.randrange(0, min(size // 2 + 1, 100))
+            offset = 2 * bench.rng.randrange(0, 12)
+            cases.append((size, start, offset, bench.rng.random() < 0.9))
+    # The field at each lane of a word, with the start on a word boundary.
+    for lane in (0, 2, 4, 6):
+        cases.append((70, 16, 8 + lane, True))
+    # Requests that must leave the frame alone: odd values, the field past the end.
+    cases += [(40, 3, 6, True), (40, 4, 5, True), (40, 4, 40, True), (40, 4, 0, True)]
+    for size, start, offset, enable in cases:
+        payload = bench.rng.randbytes(size)
+        dut.i_csum_en.value = int(enable)
+        dut.i_csum_start.value = start
+        dut.i_csum_offset.value = offset
+        expected.append(
+            wire_frame(csum_reference(payload, start, offset) if enable else payload)
+        )
+        await bench.packet(payload)
+    # A frame whose words sum to 0xffff has no all-zero result: it goes out as 0xffff.
+    ones = bytearray(40)
+    ones[10:12] = b"\xff\xff"
+    dut.i_csum_en.value = 1
+    dut.i_csum_start.value = 4
+    dut.i_csum_offset.value = 6
+    expected.append(wire_frame(bytes(ones)))
+    await bench.packet(bytes(ones))
+    await bench.drain(len(expected))
+    dut.i_csum_en.value = 0
+    assert bench.frames == expected
+    assert bench.drops == 0
+
+
 @cocotb.test()
 async def malformed_abort_oversize_and_recovery(dut: Any) -> None:
     """Require invalid packets to disappear completely and recover cleanly."""

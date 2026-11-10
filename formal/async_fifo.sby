@@ -1,6 +1,8 @@
 [tasks]
 bmc
 cover
+limit_bmc
+limit_cover
 
 [options]
 multiclock on
@@ -8,6 +10,10 @@ bmc: mode bmc
 bmc: depth 30
 cover: mode cover
 cover: depth 30
+limit_bmc: mode bmc
+limit_bmc: depth 30
+limit_cover: mode cover
+limit_cover: depth 30
 
 [engines]
 smtbmc boolector
@@ -17,6 +23,8 @@ read -sv sdp_block_ram_dc.sv
 read -formal -sv cdc_sync.sv
 read -formal -sv async_fifo.sv
 chparam -set DEPTH 4 -set DATA_WIDTH 4 -set READY_MARGIN 1 async_fifo
+limit_bmc: chparam -set DYNAMIC_LIMIT 1 async_fifo
+limit_cover: chparam -set DYNAMIC_LIMIT 1 async_fifo
 prep -top async_fifo
 
 [files]

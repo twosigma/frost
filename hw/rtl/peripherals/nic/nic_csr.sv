@@ -29,7 +29,10 @@
  * direction that loses READY (its MAC domain resetting) is disabled. BASE
  * and SIZE are writable only while the direction is disabled and idle.
  * Writing either starts a new ring generation: TAIL returns to 0, and
- * o_*_restart resets the engine's HEAD and descriptor cache.
+ * o_*_restart resets the engine's HEAD and descriptor cache. RX_FIFO_LIMIT
+ * follows the same write rule, and an RX enable is refused while its
+ * crossing to the MAC clock is in flight (i_rx_fifo_limit_busy). Writes made meanwhile are sent
+ * after it.
  *
  * i_soft_rst is the RESET's core-domain reset: it clears the enables, the
  * rings and the counters; the station address, PROMISC and PHY_CTRL survive.
@@ -37,7 +40,8 @@
 module nic_csr #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter logic [63:0] APERTURE_BASE = 64'h8000_0000,
-    parameter logic [63:0] APERTURE_BYTES = 64'h4000_0000
+    parameter logic [63:0] APERTURE_BYTES = 64'h4000_0000,
+    parameter int unsigned RX_FIFO_DEPTH = 512
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -57,26 +61,33 @@ module nic_csr #(
     // The interrupt block's registers.
     input logic [31:0] i_irq_status,
     input logic [31:0] i_irq_mask,
-    input logic [31:0] i_rx_itr,
-    input logic [31:0] i_tx_itr,
+    input logic [31:0] i_rx_coalesce,
+    input logic [31:0] i_tx_coalesce,
     input logic [31:0] i_tick,
 
     // Control.
-    output logic                  o_rx_en,
-    output logic                  o_tx_en,
-    output logic                  o_wide_mode,
-    output logic                  o_promisc,
-    output logic [          47:0] o_mac,
-    output logic                  o_reset_req,
-    output logic [ADDR_WIDTH-1:0] o_rx_base,
-    output logic [ADDR_WIDTH-1:0] o_tx_base,
-    output logic [           4:0] o_rx_size_log2,
-    output logic [           4:0] o_tx_size_log2,
-    output logic [          15:0] o_rx_tail,
-    output logic [          15:0] o_tx_tail,
-    output logic                  o_rx_restart,
-    output logic                  o_tx_restart,
-    output logic [           3:0] o_phy_ctrl,
+    output logic                           o_rx_en,
+    output logic                           o_tx_en,
+    output logic                           o_wide_mode,
+    output logic                           o_rx_csum_en,
+    output logic                           o_promisc,
+    output logic [                   47:0] o_mac,
+    output logic                           o_reset_req,
+    output logic [         ADDR_WIDTH-1:0] o_rx_base,
+    output logic [         ADDR_WIDTH-1:0] o_tx_base,
+    output logic [                    4:0] o_rx_size_log2,
+    output logic [                    4:0] o_tx_size_log2,
+    output logic [                   15:0] o_rx_tail,
+    output logic [                   15:0] o_tx_tail,
+    output logic                           o_rx_restart,
+    output logic                           o_tx_restart,
+    output logic [                    3:0] o_phy_ctrl,
+    output logic [$clog2(RX_FIFO_DEPTH):0] o_rx_fifo_limit,
+    output logic                           o_rx_fifo_limit_wr,
+    output logic [                    1:0] o_pause_ctrl,
+    output logic [$clog2(RX_FIFO_DEPTH):0] o_pause_high_water,
+    output logic [$clog2(RX_FIFO_DEPTH):0] o_pause_low_water,
+    output logic [                   15:0] o_pause_interval,
 
     // Status.
     input logic [15:0] i_rx_head,
@@ -85,6 +96,7 @@ module nic_csr #(
     input logic        i_tx_idle,
     input logic        i_reset_busy,
     input logic        i_rx_fifo_empty,
+    input logic        i_rx_fifo_limit_busy,
     input logic        i_rx_ready,
     input logic        i_tx_ready,
     // {rx_clk_ok, tx_clk_ok, rx_signal_ok, tx_link_ready, rx_remote_fault,
@@ -100,9 +112,11 @@ module nic_csr #(
     input logic              i_tx_complete,
     input logic [ 2:0]       i_tx_complete_flags,
     input logic [15:0]       i_tx_complete_bytes,
+    input logic              i_segment_err,        // the segment stage dropped or repaired a frame
     // MAC-domain totals in counter order: rx_overflow, rx_bad_frame,
-    // rx_bad_fcs, rx_bad_block, tx_drop, tx_bad_block.
-    input logic [ 5:0][63:0] i_mac_totals,
+    // rx_bad_fcs, rx_bad_block, tx_drop, tx_bad_block, gmii_preamble_drop, gmii_rx_er,
+    // rx_pause, tx_pause, tx_paused_cycles.
+    input logic [10:0][63:0] i_mac_totals,
 
     // Events for the interrupt block (one-cycle pulses).
     output logic o_link_change,
@@ -111,11 +125,23 @@ module nic_csr #(
 );
   // ---- state -----------------------------------------------------------------------
   logic rx_en_q, tx_en_q, promisc_q, rx_cfg_err_q, tx_cfg_err_q;
-  logic wide_mode_q;
+  logic wide_mode_q, rx_csum_q;
   logic [47:0] mac_q;
-  logic [3:0] phy_ctrl_q;
+  logic [ 3:0] phy_ctrl_q;
   logic [ADDR_WIDTH-1:0] rx_base_q, tx_base_q;
   logic [4:0] rx_size_q, tx_size_q;
+  localparam int unsigned LimitBits = $clog2(RX_FIFO_DEPTH) + 1;
+  localparam logic [LimitBits-1:0] LimitDefault =
+      LimitBits'((nic_pkg::RxFifoLimitDefault < RX_FIFO_DEPTH) ?
+      nic_pkg::RxFifoLimitDefault : RX_FIFO_DEPTH);
+  logic [LimitBits-1:0] rx_limit_q, pause_high_water_q, pause_low_water_q;
+  logic cfg_pend_q;  // a write to the limit or pause registers has not been sent yet
+  logic [1:0] pause_ctrl_q;
+  logic [15:0] pause_interval_q;
+  assign o_pause_ctrl = pause_ctrl_q;
+  assign o_pause_high_water = pause_high_water_q;
+  assign o_pause_low_water = pause_low_water_q;
+  assign o_pause_interval = pause_interval_q;
   logic [15:0] rx_tail_q, tx_tail_q;
   logic [63:0] cnt_q[10];
   logic carrier_q;
@@ -124,6 +150,7 @@ module nic_csr #(
   assign o_rx_en = rx_en_q;
   assign o_tx_en = tx_en_q;
   assign o_wide_mode = wide_mode_q;
+  assign o_rx_csum_en = rx_csum_q;
   assign o_promisc = promisc_q;
   assign o_mac = mac_q;
   assign o_rx_base = rx_base_q;
@@ -133,6 +160,7 @@ module nic_csr #(
   assign o_rx_tail = rx_tail_q;
   assign o_tx_tail = tx_tail_q;
   assign o_phy_ctrl = phy_ctrl_q;
+  assign o_rx_fifo_limit = rx_limit_q;
 
   function automatic logic ring_ok(input logic [ADDR_WIDTH-1:0] base, input logic [4:0] size);
     logic [64:0] end_addr;
@@ -156,8 +184,10 @@ module nic_csr #(
   logic rx_enable_try, tx_enable_try, rx_enable_ok, tx_enable_ok;
   assign rx_enable_try = wr_ctrl && !reset_write && i_wr_data[nic_pkg::CtrlBitRxEn] && !rx_en_q;
   assign tx_enable_try = wr_ctrl && !reset_write && i_wr_data[nic_pkg::CtrlBitTxEn] && !tx_en_q;
-  assign rx_enable_ok  = ring_ok(rx_base_q, rx_size_q) && i_rx_ready;
-  assign tx_enable_ok  = ring_ok(tx_base_q, tx_size_q) && i_tx_ready;
+  assign rx_enable_ok = ring_ok(
+      rx_base_q, rx_size_q
+  ) && i_rx_ready && !i_rx_fifo_limit_busy && !o_rx_fifo_limit_wr && !cfg_pend_q;
+  assign tx_enable_ok = ring_ok(tx_base_q, tx_size_q) && i_tx_ready;
   logic rx_ring_writable, tx_ring_writable;
   assign rx_ring_writable = !reset_busy && (i_wr_en || i_wr64_en) && !rx_en_q && i_rx_idle;
   assign tx_ring_writable = !reset_busy && (i_wr_en || i_wr64_en) && !tx_en_q && i_tx_idle;
@@ -205,8 +235,16 @@ module nic_csr #(
       rx_base_q          <= '0;
       tx_base_q          <= '0;
       wide_mode_q        <= 1'b0;
+      rx_csum_q          <= 1'b0;
       rx_size_q          <= '0;
       tx_size_q          <= '0;
+      rx_limit_q         <= LimitDefault;
+      pause_ctrl_q       <= '0;
+      pause_high_water_q <= '0;
+      pause_low_water_q  <= '0;
+      pause_interval_q   <= nic_pkg::PauseIntervalDefault;
+      o_rx_fifo_limit_wr <= 1'b0;
+      cfg_pend_q         <= 1'b0;
       rx_tail_q          <= '0;
       tx_tail_q          <= '0;
       o_rx_restart       <= 1'b0;
@@ -221,10 +259,19 @@ module nic_csr #(
     end else begin
       o_rx_restart <= 1'b0;
       o_tx_restart <= 1'b0;
+      // A register written while an earlier value is still crossing is sent once that has landed.
+      o_rx_fifo_limit_wr <= 1'b0;
+      if (cfg_pend_q && !i_rx_fifo_limit_busy && !o_rx_fifo_limit_wr) begin
+        o_rx_fifo_limit_wr <= 1'b1;
+        cfg_pend_q         <= 1'b0;
+      end
+      // An RX-only reset clears the mailbox and the MAC-side configuration, while the CSRs
+      // survive. Replay their current values when the domain returns, before accepting RX_EN.
+      if (!i_rx_ready) cfg_pend_q <= 1'b1;
       o_reset_req <= reset_write;
       o_link_change <= carrier != carrier_q;
       carrier_q <= carrier;
-      o_desc_err    <= rx_err || rx_abort || tx_err || tx_abort ||
+      o_desc_err    <= rx_err || rx_abort || tx_err || tx_abort || i_segment_err ||
           (rx_enable_try && !rx_enable_ok) ||
           (tx_enable_try && !tx_enable_ok);
       o_rx_drop <= i_rx_filtered || rx_err || rx_abort || mac_overflow_event;
@@ -249,6 +296,10 @@ module nic_csr #(
       if (!i_rx_ready) rx_en_q <= 1'b0;
       if (!i_tx_ready) tx_en_q <= 1'b0;
 
+      // ABI_CTRL bit 2: the RX checksum, changed only while both directions are idle.
+      if (wr && (i_wr_offset == nic_pkg::AbiCtrlOffset) && !rx_en_q && !tx_en_q &&
+          i_rx_idle && i_tx_idle)
+        rx_csum_q <= i_wr_data[2];
       // Rings.
       if (wr && (i_wr_offset == nic_pkg::AbiCtrlOffset) && !rx_en_q && !tx_en_q &&
           i_rx_idle && i_tx_idle && (i_wr_data[0] != wide_mode_q)) begin
@@ -280,6 +331,37 @@ module nic_csr #(
         rx_size_q    <= i_wr_data[4:0];
         rx_tail_q    <= '0;
         o_rx_restart <= 1'b1;
+      end
+      // The limit is clamped to what the FIFO supports; a write while an earlier value is
+      // crossing to the MAC clock is retained in cfg_pend_q and sent after it.
+      if (rx_ring_writable && i_wr_en && (i_wr_offset == nic_pkg::RxFifoLimitOffset)) begin
+        if (i_wr_data > 32'(RX_FIFO_DEPTH)) rx_limit_q <= LimitBits'(RX_FIFO_DEPTH);
+        else if (i_wr_data < 32'(nic_pkg::RxFifoLimitMin))
+          rx_limit_q <= LimitBits'(nic_pkg::RxFifoLimitMin);
+        else rx_limit_q <= LimitBits'(i_wr_data);
+        cfg_pend_q <= 1'b1;
+      end
+      // The 802.3x registers follow the same rule and share the mailbox with the limit. A
+      // threshold of 0 keeps its default; others are clamped to the FIFO depth.
+      if (rx_ring_writable && i_wr_en) begin
+        if (i_wr_offset == nic_pkg::PauseCtrlOffset) begin
+          pause_ctrl_q <= i_wr_data[1:0];
+          cfg_pend_q   <= 1'b1;
+        end
+        if (i_wr_offset == nic_pkg::PauseHighWaterOffset) begin
+          pause_high_water_q <= LimitBits'(
+              (i_wr_data > 32'(RX_FIFO_DEPTH)) ? 32'(RX_FIFO_DEPTH) : i_wr_data);
+          cfg_pend_q <= 1'b1;
+        end
+        if (i_wr_offset == nic_pkg::PauseLowWaterOffset) begin
+          pause_low_water_q <= LimitBits'(
+              (i_wr_data > 32'(RX_FIFO_DEPTH)) ? 32'(RX_FIFO_DEPTH) : i_wr_data);
+          cfg_pend_q <= 1'b1;
+        end
+        if (i_wr_offset == nic_pkg::PauseIntervalOffset) begin
+          pause_interval_q <= (i_wr_data[15:0] == 16'h0) ? 16'h1 : i_wr_data[15:0];
+          cfg_pend_q       <= 1'b1;
+        end
       end
       if (wr && (i_wr_offset == nic_pkg::RxTailOffset)) rx_tail_q <= i_wr_data[15:0];
       if (tx_ring_writable && i_wr_en && !wide_mode_q &&
@@ -338,45 +420,56 @@ module nic_csr #(
 
   function automatic logic [31:0] reg_word(input logic [11:0] off);
     case (off)
-      nic_pkg::IdOffset:         reg_word = nic_pkg::IdValue;
-      nic_pkg::CtrlOffset:       reg_word = {23'b0, reset_busy, 5'b0, promisc_q, tx_en_q, rx_en_q};
-      nic_pkg::StatusOffset:     reg_word = status_word;
-      nic_pkg::MacLoOffset:      reg_word = mac_q[31:0];
-      nic_pkg::MacHiOffset:      reg_word = {16'b0, mac_q[47:32]};
-      nic_pkg::RxBaseOffset:     reg_word = rx_base_q[31:0];
-      nic_pkg::RxSizeOffset:     reg_word = {27'b0, rx_size_q};
-      nic_pkg::RxTailOffset:     reg_word = {16'b0, rx_tail_q};
-      nic_pkg::RxHeadOffset:     reg_word = {16'b0, i_rx_head};
-      nic_pkg::TxBaseOffset:     reg_word = tx_base_q[31:0];
-      nic_pkg::AbiCtrlOffset:    reg_word = {30'b0, 1'b1, wide_mode_q};
-      nic_pkg::RxBase64Offset:   reg_word = 32'(rx_base_q);
+      nic_pkg::IdOffset: reg_word = nic_pkg::IdValue;
+      nic_pkg::CtrlOffset: reg_word = {23'b0, reset_busy, 5'b0, promisc_q, tx_en_q, rx_en_q};
+      nic_pkg::StatusOffset: reg_word = status_word;
+      nic_pkg::MacLoOffset: reg_word = mac_q[31:0];
+      nic_pkg::MacHiOffset: reg_word = {16'b0, mac_q[47:32]};
+      nic_pkg::RxFifoLimitOffset: reg_word = 32'(rx_limit_q);
+      nic_pkg::PauseCtrlOffset: reg_word = 32'(pause_ctrl_q);
+      nic_pkg::PauseHighWaterOffset: reg_word = 32'(pause_high_water_q);
+      nic_pkg::PauseLowWaterOffset: reg_word = 32'(pause_low_water_q);
+      nic_pkg::PauseIntervalOffset: reg_word = 32'(pause_interval_q);
+      nic_pkg::RxFifoDepthOffset: reg_word = 32'(RX_FIFO_DEPTH);
+      nic_pkg::RxBaseOffset: reg_word = rx_base_q[31:0];
+      nic_pkg::RxSizeOffset: reg_word = {27'b0, rx_size_q};
+      nic_pkg::RxTailOffset: reg_word = {16'b0, rx_tail_q};
+      nic_pkg::RxHeadOffset: reg_word = {16'b0, i_rx_head};
+      nic_pkg::TxBaseOffset: reg_word = tx_base_q[31:0];
+      nic_pkg::AbiCtrlOffset:
+      reg_word = {25'b0, 1'b1, 1'b1, 1'b1, 1'b1, rx_csum_q, 1'b1, wide_mode_q};
+      nic_pkg::RxBase64Offset: reg_word = 32'(rx_base_q);
       nic_pkg::RxBase64HiOffset: reg_word = 32'(64'(rx_base_q) >> 32);
-      nic_pkg::TxBase64Offset:   reg_word = 32'(tx_base_q);
+      nic_pkg::TxBase64Offset: reg_word = 32'(tx_base_q);
       nic_pkg::TxBase64HiOffset: reg_word = 32'(64'(tx_base_q) >> 32);
-      nic_pkg::TxSizeOffset:     reg_word = {27'b0, tx_size_q};
-      nic_pkg::TxTailOffset:     reg_word = {16'b0, tx_tail_q};
-      nic_pkg::TxHeadOffset:     reg_word = {16'b0, i_tx_head};
-      nic_pkg::IrqStatusOffset:  reg_word = i_irq_status;
-      nic_pkg::IrqMaskOffset:    reg_word = i_irq_mask;
-      nic_pkg::RxItrOffset:      reg_word = i_rx_itr;
-      nic_pkg::TxItrOffset:      reg_word = i_tx_itr;
-      nic_pkg::TickOffset:       reg_word = i_tick;
-      nic_pkg::LinkOffset:       reg_word = link_word;
-      nic_pkg::PhyCtrlOffset:    reg_word = {28'b0, phy_ctrl_q};
-      nic_pkg::PhyStatusOffset:  reg_word = {27'b0, i_phy_status};
-      default:                   reg_word = '0;
+      nic_pkg::TxSizeOffset: reg_word = {27'b0, tx_size_q};
+      nic_pkg::TxTailOffset: reg_word = {16'b0, tx_tail_q};
+      nic_pkg::TxHeadOffset: reg_word = {16'b0, i_tx_head};
+      nic_pkg::IrqStatusOffset: reg_word = i_irq_status;
+      nic_pkg::IrqMaskOffset: reg_word = i_irq_mask;
+      nic_pkg::RxCoalesceOffset: reg_word = i_rx_coalesce;
+      nic_pkg::TxCoalesceOffset: reg_word = i_tx_coalesce;
+      nic_pkg::TickOffset: reg_word = i_tick;
+      nic_pkg::LinkOffset: reg_word = link_word;
+      nic_pkg::PhyCtrlOffset: reg_word = {28'b0, phy_ctrl_q};
+      nic_pkg::PhyStatusOffset: reg_word = {27'b0, i_phy_status};
+      default: reg_word = '0;
     endcase
   endfunction
 
   logic [63:0] counters[nic_pkg::NumCounters];
   always_comb begin
     for (int i = 0; i < 10; i++) counters[i] = cnt_q[i];
-    for (int i = 0; i < 6; i++) counters[10+i] = i_mac_totals[i];
+    for (int i = 0; i < 11; i++) counters[10+i] = i_mac_totals[i];
   end
 
+  // The counters are 8 bytes apart from CounterBaseOffset.
+  logic [8:0] counter_index;
+  assign counter_index = i_rd_offset[11:3] - 9'(nic_pkg::CounterBaseOffset >> 3);
   always_comb begin
-    if (i_rd_offset[11:7] == nic_pkg::CounterBaseOffset[11:7]) begin
-      o_rd_pair = counters[i_rd_offset[6:3]];
+    if (i_rd_offset[11:3] >= 9'(nic_pkg::CounterBaseOffset >> 3) &&
+        counter_index < 9'(nic_pkg::NumCounters)) begin
+      o_rd_pair = counters[counter_index[4:0]];
     end else begin
       o_rd_pair = {reg_word({i_rd_offset[11:3], 3'b100}), reg_word({i_rd_offset[11:3], 3'b000})};
     end
