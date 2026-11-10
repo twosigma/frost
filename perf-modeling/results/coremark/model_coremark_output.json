@@ -36,11 +36,15 @@
     "l1_write_cycles": 1,
     "l1d_bimodal_insert": true,
     "l1d_bytes": 131072,
+    "l1d_hit_path": true,
     "l1d_id_bits": 4,
     "l1d_lookahead_sectors": 8,
     "l1d_lookahead_slots": 2,
     "l1d_mshrs": 8,
     "l1d_read_slots": 8,
+    "l1d_request_cycles": 1,
+    "l1d_response_cycles": 2,
+    "l1d_return_cycles": 2,
     "l1d_store_lookahead": true,
     "l1d_store_records": 4,
     "l1d_ways": 4,
@@ -88,10 +92,10 @@
   },
   "cpu_top": {
     "axi_master": {
-      "inflight_cycles": 9280,
+      "inflight_cycles": 9840,
       "max_inflight": 4,
-      "read_beats": 116,
-      "responses": 116
+      "read_beats": 123,
+      "responses": 123
     },
     "l1d": {
       "occupancy": {
@@ -101,24 +105,32 @@
       },
       "stats": {
         "bimodal_untouched_allocations": 149,
-        "controller_busy_cycles": 9213,
-        "downstream_backpressure": 544,
+        "controller_busy_cycles": 6157,
+        "downstream_backpressure": 619,
         "fills_issued": 186,
-        "hits": 848,
-        "input_backpressure": 17531,
+        "hit_path_hits": 857,
+        "hit_path_offers": 1022,
+        "hit_path_refused": 78,
+        "hit_path_stream_reports": 857,
+        "hit_path_takes": 944,
+        "hit_path_touch_drops": 47,
+        "hits": 917,
         "installations": 186,
-        "lookahead_attached": 3,
-        "lookahead_issued": 27,
+        "lookahead_attached": 11,
+        "lookahead_issued": 49,
         "misses": 154,
         "mru_allocations": 5,
-        "mshr_backpressure": 3,
-        "mshr_merges": 3,
-        "store_acquisitions": 32,
+        "mshr_backpressure": 1,
+        "mshr_merges": 11,
+        "shadow_lookups": 426,
+        "shadow_skips": 412,
+        "store_acquisitions": 30,
         "store_hits": 267,
+        "store_lookaheads": 2,
         "store_records": 299,
         "store_records_installed": 299,
         "store_upgrades": 32,
-        "useful_lookaheads": 17
+        "useful_lookaheads": 39
       }
     },
     "l1i": {
@@ -134,71 +146,71 @@
         "writeback_slots": 0
       },
       "stats": {
-        "fills_issued": 116,
-        "hits": 106,
-        "input_backpressure": 16,
-        "misses": 116,
-        "mru_allocations": 116,
-        "mshr_backpressure": 528,
-        "mshr_merges": 26,
-        "prefetch_fills": 62,
-        "prefetch_resident": 26,
-        "useful_prefetches": 38
+        "fills_issued": 123,
+        "hits": 113,
+        "input_backpressure": 15,
+        "misses": 123,
+        "mru_allocations": 123,
+        "mshr_backpressure": 604,
+        "mshr_merges": 18,
+        "prefetch_fills": 68,
+        "prefetch_in_flight": 3,
+        "prefetch_resident": 7,
+        "useful_prefetches": 40
       }
     },
     "line_size_adapter": {
-      "backpressure": 544,
-      "requests": 730,
+      "backpressure": 619,
+      "requests": 805,
       "sector_0": 133,
       "sector_1": 53
     },
     "pipeline": {
       "max_occupancy": {
-        "int_rs": 16,
+        "int_rs": 15,
         "lq": 8,
         "mem_rs": 7,
         "rob": 32,
         "sq": 2,
-        "store_records": 2
+        "store_records": 3
       },
       "stats": {
         "branch_mispredicts": 3,
-        "cdb_contention": 1948,
+        "cdb_contention": 3779,
         "completed": 9328,
-        "dispatch_stall_lq": 2166,
-        "dispatch_stall_rob": 3497,
+        "dispatch_stall_lq": 1967,
+        "dispatch_stall_rob": 1105,
         "dispatched": 9328,
-        "early_load_tokens": 1746,
+        "early_load_tokens": 793,
         "frontend_recovery_stall": 6,
-        "l0_fills": 975,
-        "l0_hits": 2641,
-        "l0_misses": 18511,
+        "l0_fills": 1022,
+        "l0_hits": 2594,
+        "l0_misses": 1022,
         "l0_store_updates": 149,
-        "load_cache_backpressure": 17536,
-        "load_store_disambiguation_stall": 2977,
+        "load_store_disambiguation_stall": 3752,
         "loads_issued": 3616,
-        "retire_head_not_ready": 5758,
+        "retire_head_not_ready": 3148,
         "retired": 9328,
         "stores_drained": 299
       }
     },
     "prefetcher": {
-      "completed": 88,
-      "identity_stall": 32,
-      "issued": 88,
+      "completed": 78,
+      "identity_stall": 12,
+      "issued": 78,
       "observations": 186,
-      "room_stall": 2427,
-      "streams_allocated": 49
+      "room_stall": 2588,
+      "streams_allocated": 45
     }
   },
-  "cycles": 9741,
-  "ipc": 0.9576018889231085,
+  "cycles": 7631,
+  "ipc": 1.2223823876294064,
   "memory": {
     "axi": {
-      "inflight_cycles": 9280,
+      "inflight_cycles": 9840,
       "max_inflight": 4,
-      "read_beats": 116,
-      "responses": 116
+      "read_beats": 123,
+      "responses": 123
     },
     "ddr": {
       "configuration": {
@@ -219,10 +231,10 @@
       "inflight_writes": 0,
       "kind": "frost_single_channel_axi_ddr",
       "stats": {
-        "accepted": 116,
-        "completed": 116,
-        "read_completed": 116,
-        "reads": 116
+        "accepted": 123,
+        "completed": 123,
+        "read_completed": 123,
+        "reads": 123
       }
     },
     "l1d": {
@@ -233,24 +245,32 @@
       },
       "stats": {
         "bimodal_untouched_allocations": 149,
-        "controller_busy_cycles": 9213,
-        "downstream_backpressure": 544,
+        "controller_busy_cycles": 6157,
+        "downstream_backpressure": 619,
         "fills_issued": 186,
-        "hits": 848,
-        "input_backpressure": 17531,
+        "hit_path_hits": 857,
+        "hit_path_offers": 1022,
+        "hit_path_refused": 78,
+        "hit_path_stream_reports": 857,
+        "hit_path_takes": 944,
+        "hit_path_touch_drops": 47,
+        "hits": 917,
         "installations": 186,
-        "lookahead_attached": 3,
-        "lookahead_issued": 27,
+        "lookahead_attached": 11,
+        "lookahead_issued": 49,
         "misses": 154,
         "mru_allocations": 5,
-        "mshr_backpressure": 3,
-        "mshr_merges": 3,
-        "store_acquisitions": 32,
+        "mshr_backpressure": 1,
+        "mshr_merges": 11,
+        "shadow_lookups": 426,
+        "shadow_skips": 412,
+        "store_acquisitions": 30,
         "store_hits": 267,
+        "store_lookaheads": 2,
         "store_records": 299,
         "store_records_installed": 299,
         "store_upgrades": 32,
-        "useful_lookaheads": 17
+        "useful_lookaheads": 39
       }
     },
     "l1i": {
@@ -266,31 +286,32 @@
         "writeback_slots": 0
       },
       "stats": {
-        "fills_issued": 116,
-        "hits": 106,
-        "input_backpressure": 16,
-        "misses": 116,
-        "mru_allocations": 116,
-        "mshr_backpressure": 528,
-        "mshr_merges": 26,
-        "prefetch_fills": 62,
-        "prefetch_resident": 26,
-        "useful_prefetches": 38
+        "fills_issued": 123,
+        "hits": 113,
+        "input_backpressure": 15,
+        "misses": 123,
+        "mru_allocations": 123,
+        "mshr_backpressure": 604,
+        "mshr_merges": 18,
+        "prefetch_fills": 68,
+        "prefetch_in_flight": 3,
+        "prefetch_resident": 7,
+        "useful_prefetches": 40
       }
     },
     "line_size_adapter": {
-      "backpressure": 544,
-      "requests": 730,
+      "backpressure": 619,
+      "requests": 805,
       "sector_0": 133,
       "sector_1": 53
     },
     "prefetcher": {
-      "completed": 88,
-      "identity_stall": 32,
-      "issued": 88,
+      "completed": 78,
+      "identity_stall": 12,
+      "issued": 78,
       "observations": 186,
-      "room_stall": 2427,
-      "streams_allocated": 49
+      "room_stall": 2588,
+      "streams_allocated": 45
     },
     "soc": {
       "configuration": {
@@ -325,54 +346,53 @@
         "inflight_writes": 0,
         "kind": "frost_single_channel_axi_ddr",
         "stats": {
-          "accepted": 116,
-          "completed": 116,
-          "read_completed": 116,
-          "reads": 116
+          "accepted": 123,
+          "completed": 123,
+          "read_completed": 123,
+          "reads": 123
         }
       },
       "kind": "frost_soc_top",
       "stats": {
-        "ddr_reads_forwarded": 116
+        "ddr_reads_forwarded": 123
       }
     }
   },
   "micro_ops": 9328,
-  "micro_ops_per_second": 63547,
+  "micro_ops_per_second": 64289,
   "model_version": "1.0",
   "pipeline": {
     "max_occupancy": {
-      "int_rs": 16,
+      "int_rs": 15,
       "lq": 8,
       "mem_rs": 7,
       "rob": 32,
       "sq": 2,
-      "store_records": 2
+      "store_records": 3
     },
     "stats": {
       "branch_mispredicts": 3,
-      "cdb_contention": 1948,
+      "cdb_contention": 3779,
       "completed": 9328,
-      "dispatch_stall_lq": 2166,
-      "dispatch_stall_rob": 3497,
+      "dispatch_stall_lq": 1967,
+      "dispatch_stall_rob": 1105,
       "dispatched": 9328,
-      "early_load_tokens": 1746,
+      "early_load_tokens": 793,
       "frontend_recovery_stall": 6,
-      "l0_fills": 975,
-      "l0_hits": 2641,
-      "l0_misses": 18511,
+      "l0_fills": 1022,
+      "l0_hits": 2594,
+      "l0_misses": 1022,
       "l0_store_updates": 149,
-      "load_cache_backpressure": 17536,
-      "load_store_disambiguation_stall": 2977,
+      "load_store_disambiguation_stall": 3752,
       "loads_issued": 3616,
-      "retire_head_not_ready": 5758,
+      "retire_head_not_ready": 3148,
       "retired": 9328,
       "stores_drained": 299
     }
   },
   "retired": 9328,
   "seed": 11,
-  "simulated_cycles_per_second": 66361,
+  "simulated_cycles_per_second": 52593,
   "soc_top": {
     "configuration": {
       "bram_base": 0,
@@ -406,17 +426,17 @@
       "inflight_writes": 0,
       "kind": "frost_single_channel_axi_ddr",
       "stats": {
-        "accepted": 116,
-        "completed": 116,
-        "read_completed": 116,
-        "reads": 116
+        "accepted": 123,
+        "completed": 123,
+        "read_completed": 123,
+        "reads": 123
       }
     },
     "kind": "frost_soc_top",
     "stats": {
-      "ddr_reads_forwarded": 116
+      "ddr_reads_forwarded": 123
     }
   },
-  "wall_time_seconds": 0.146787,
+  "wall_time_seconds": 0.145093,
   "workload": "coremark"
 }
