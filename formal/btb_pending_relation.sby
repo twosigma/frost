@@ -1,0 +1,31 @@
+[tasks]
+bmc
+bmc_btb_index1
+bmc_btb_index3
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read_verilog -formal -D SYNTHESIS -D BTB_PENDING_REL_LOCAL_PROOF -sv branch_predictor.sv
+bmc_btb_index1: chparam -set BTB_INDEX_BITS 1 branch_predictor
+bmc_btb_index3: chparam -set BTB_INDEX_BITS 3 branch_predictor
+# The relation is combinational. Cut every unchanged RAM deliberately, so
+# its outputs and every uninitialized payload/control bit remain arbitrary.
+delete t:sdp_dist_ram t:sdp_block_ram
+proc
+setundef -undriven -anyseq
+opt
+prep -top branch_predictor
+select -assert-count 2 t:$check
+select -assert-none t:$assume a:init
+write_json prepared_model.json
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv

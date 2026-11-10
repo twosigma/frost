@@ -40,6 +40,9 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pc_2_lookup_base.value = 0
     dut.i_pc_2_base.value = 0
     dut.i_pc_2_use_alt.value = 0
+    dut.i_pending_prediction_pc.value = 0
+    dut.i_pending_prediction_prev_pc.value = 0
+    dut.i_pending_prediction_prev_native_pc.value = 0
     dut.i_update.value = 0
     dut.i_update_pc.value = 0
     dut.i_update_target.value = 0
@@ -1082,3 +1085,78 @@ async def test_independent_indices_do_not_poison_each_other(dut: Any) -> None:
 
     await _lookup(dut, PC_B)
     _assert_slot1(dut, hit=True, taken=False, target=TARGET_B)
+
+
+def _pending_relation(target: int, pending: int, prev: int, prev_native: int) -> int:
+    """Pack the relation fields from an externally visible candidate target."""
+    target_half = target >> 1
+    pending_half = pending >> 1
+    return (
+        (int(target == pending) << 4)
+        | (int(target_half < pending_half) << 3)
+        | (int(target_half > pending_half) << 2)
+        | (int(target == prev) << 1)
+        | int(target == prev_native)
+    )
+
+
+@cocotb.test()
+async def test_pending_relation_matches_unqualified_targets(dut: Any) -> None:
+    """Relate raw hits, rotated/forwarded payloads and uncovered rows."""
+    await _setup_test(dut)
+    await _update(dut, pc=PC_A, target=TARGET_A, taken=True, ret=True)
+    await _update(dut, pc=PC_B, target=TARGET_B, taken=True)
+    await _update(
+        dut, pc=HIGH_CANONICAL_PC, target=HIGH_CANONICAL_TARGET, taken=True, ret=True
+    )
+    for lookup in (PC_A - 2, PC_A, HIGH_CANONICAL_PC - 2):
+        await _stage_slot2_images(dut, lookup)
+        # A same-index write forwards its target/type while the staged row
+        # still holds the old payload. Observe it before the next edge.
+        forwarded_target = (lookup & ~0xFFFF) | 0x3456
+        await _update(dut, pc=lookup + 2, target=forwarded_target, taken=True, ret=True)
+        dut.i_pc_2_base.value = lookup & MASK_XLEN
+        dut.i_pc_2_use_alt.value = 0
+        dut.i_pending_prediction_pc.value = forwarded_target
+        await _settle()
+        assert int(dut.o_predicted_target_2_plus2.value) == forwarded_target
+        assert (
+            int(dut.o_slot2_plus2_covered_rel_pending.value)
+            | int(dut.o_slot2_plus2_zero_rel_pending.value)
+        ) == 0x10
+        for served in (lookup, lookup + 4, lookup + 16):
+            dut.i_pc_2_base.value = served & MASK_XLEN
+            for alt in (0, 1):
+                dut.i_pc_2_use_alt.value = alt
+                for pending in (
+                    0,
+                    TARGET_A,
+                    TARGET_A | 1,
+                    TARGET_A + 2,
+                    TARGET_B - 2,
+                    HIGH_CANONICAL_TARGET,
+                    MASK_XLEN,
+                ):
+                    prev = TARGET_A
+                    prev_native = HIGH_CANONICAL_TARGET
+                    dut.i_pending_prediction_pc.value = pending
+                    dut.i_pending_prediction_prev_pc.value = prev
+                    dut.i_pending_prediction_prev_native_pc.value = prev_native
+                    await _settle()
+                    target_signal = (
+                        dut.o_predicted_target_2_plus4
+                        if alt
+                        else dut.o_predicted_target_2_plus2
+                    )
+                    expected = _pending_relation(
+                        int(target_signal.value), pending, prev, prev_native
+                    )
+                    relation = (
+                        int(dut.o_slot2_plus4_rel_pending.value)
+                        if alt
+                        else (
+                            int(dut.o_slot2_plus2_covered_rel_pending.value)
+                            | int(dut.o_slot2_plus2_zero_rel_pending.value)
+                        )
+                    )
+                    assert relation == expected

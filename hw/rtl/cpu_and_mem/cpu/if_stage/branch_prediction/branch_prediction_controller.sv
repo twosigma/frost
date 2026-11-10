@@ -204,6 +204,9 @@ module branch_prediction_controller #(
     output logic                       o_slot1_aliases_slot2_candidate,
     output logic                       o_slot2_live_target_used_for_pc_cofactor,
     output logic                       o_slot2_live_target_used_for_pc,
+    // Architectural-PC cofactors; IF forwards live validity and replay separately.
+    output logic                       o_slot2_staged_pc_without_valid,
+    output logic                       o_slot2_live_pc_without_valid,
     output logic                       o_slot2_predicted_taken,
     output logic [riscv_pkg::XLEN-1:0] o_slot2_predicted_target,
     // pc_controller's copies of the slot-2 targets. They equal
@@ -337,6 +340,27 @@ module branch_prediction_controller #(
   end
   assign btb_invalidate_active = i_btb_invalidate || (btb_invalidate_hold_q != '0);
 
+  function automatic logic [4:0] pending_target_rel(
+      input logic [XLEN-1:0] target, input logic [XLEN-1:0] pending_pc,
+      input logic [XLEN-1:0] prev_pc, input logic [XLEN-1:0] prev_native_pc);
+    logic hw_equal, hw_below;
+    hw_equal = target[XLEN-1:1] == pending_pc[XLEN-1:1];
+    hw_below = target[XLEN-1:1] < pending_pc[XLEN-1:1];
+    // Fields in pc_pending_rel_t order: at, below, above, pred, pred_native.
+    pending_target_rel = {
+      hw_equal && (target[0] == pending_pc[0]),
+      hw_below,
+      !hw_below && !hw_equal,
+      target == prev_pc,
+      target == prev_native_pc
+    };
+  endfunction
+  logic ras_nonempty;
+  riscv_pkg::pc_pending_rel_t ras_top_rel_pending;
+  riscv_pkg::pc_pending_rel_t btb_slot2_plus2_covered_rel_pending;
+  riscv_pkg::pc_pending_rel_t btb_slot2_plus2_zero_rel_pending;
+  riscv_pkg::pc_pending_rel_t btb_slot2_plus4_rel_pending;
+
   // Preserve the predictor boundary for timing.
   (* keep_hierarchy = "yes" *)
   branch_predictor #(
@@ -376,6 +400,13 @@ module branch_prediction_controller #(
       .o_predicted_target_2_plus4(btb_predicted_target_2_plus4),
       .o_btb_entry_is_return_2_plus2(btb_entry_is_return_2_plus2),
       .o_btb_entry_is_return_2_plus4(btb_entry_is_return_2_plus4),
+
+      .i_pending_prediction_pc,
+      .i_pending_prediction_prev_pc,
+      .i_pending_prediction_prev_native_pc,
+      .o_slot2_plus2_covered_rel_pending(btb_slot2_plus2_covered_rel_pending),
+      .o_slot2_plus2_zero_rel_pending(btb_slot2_plus2_zero_rel_pending),
+      .o_slot2_plus4_rel_pending(btb_slot2_plus4_rel_pending),
 
       // Update, through the staging registers above
       .i_update(btb_update_q),
@@ -513,7 +544,6 @@ module branch_prediction_controller #(
   // takes whose used prediction came from a typed entry and for the calls and
   // returns PD redirects for the backing BTB, so the stack moves only with
   // instructions that continue down the pipeline.
-  logic                  ras_nonempty;
   logic [      XLEN-1:0] ras_top;
   logic [RasPtrBits-1:0] ras_tos;
   logic [  RasPtrBits:0] ras_valid_count;
@@ -658,58 +688,93 @@ module branch_prediction_controller #(
   assign slot2_staged_typed_target_for_pc =
       (btb_entry_is_return_2 && ras_nonempty) ? ras_top : btb_predicted_target_2;
 
-  // How pc_controller's two slot-2 targets relate to the pending prediction's
-  // PC. The stack top and each BTB candidate target are related first, and
-  // the late +4 and return-type selects then pick a relation as they pick a
-  // target, so they skip the wide compares.
-  function automatic logic [4:0] pending_target_rel(
-      input logic [XLEN-1:0] target, input logic [XLEN-1:0] pending_pc,
-      input logic [XLEN-1:0] prev_pc, input logic [XLEN-1:0] prev_native_pc);
-    logic hw_equal, hw_below;
-    hw_equal = target[XLEN-1:1] == pending_pc[XLEN-1:1];
-    hw_below = target[XLEN-1:1] < pending_pc[XLEN-1:1];
-    // Fields in pc_pending_rel_t order: at, below, above, pred, pred_native.
-    pending_target_rel = {
-      hw_equal && (target[0] == pending_pc[0]),
-      hw_below,
-      !hw_below && !hw_equal,
-      target == prev_pc,
-      target == prev_native_pc
-    };
-  endfunction
-  riscv_pkg::pc_pending_rel_t ras_top_rel_pending, slot1_target_rel_pending;
-  riscv_pkg::pc_pending_rel_t slot2_plus2_target_rel_pending, slot2_plus4_target_rel_pending;
-  riscv_pkg::pc_pending_rel_t slot2_plus2_typed_rel_pending, slot2_plus4_typed_rel_pending;
-  assign ras_top_rel_pending = pending_target_rel(
-      ras_top,
-      i_pending_prediction_pc,
-      i_pending_prediction_prev_pc,
-      i_pending_prediction_prev_native_pc
+  // Relate raw BTB payloads before their coverage selectors. Apply the
+  // RAS choice here, after those selectors, so a late stack comparison does
+  // not pass through the BTB row or position logic.
+  riscv_pkg::pc_pending_rel_t slot1_target_rel_pending;
+  (* keep = "true" *) logic ras_top_not_below_pending, ras_top_not_above_pending;
+  (* keep = "true" *) logic slot2_staged_uses_ras;
+  assign ras_top_not_below_pending = ras_top[XLEN-1:1] >= i_pending_prediction_pc[XLEN-1:1];
+  assign ras_top_not_above_pending = ras_top[XLEN-1:1] <= i_pending_prediction_pc[XLEN-1:1];
+  assign ras_top_rel_pending = {
+    ras_top == i_pending_prediction_pc,
+    !ras_top_not_below_pending,
+    !ras_top_not_above_pending,
+    ras_top == i_pending_prediction_prev_pc,
+    ras_top == i_pending_prediction_prev_native_pc
+  };
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *)
+  LUT4 #(
+      .INIT(16'hca00)
+  ) u_slot2_staged_uses_ras (
+      .I0(btb_entry_is_return_2_plus2),
+      .I1(btb_entry_is_return_2_plus4),
+      .I2(slot2_pc_use_alt),
+      .I3(ras_nonempty),
+      .O (slot2_staged_uses_ras)
   );
+  for (genvar bit_idx = 0; bit_idx < 5; bit_idx++) begin : gen_slot2_staged_relation
+    if (bit_idx == 3 || bit_idx == 2) begin : gen_order
+      // Use the noninverted comparator output and absorb its inversion in
+      // the final selector rather than adding a gate after the carry chain.
+      (* dont_touch = "true" *)
+      LUT6 #(
+          .INIT(64'h0000fffff0eef0ee)
+      ) u_relation (
+          .I0(btb_slot2_plus2_covered_rel_pending[bit_idx]),
+          .I1(btb_slot2_plus2_zero_rel_pending[bit_idx]),
+          .I2(btb_slot2_plus4_rel_pending[bit_idx]),
+          .I3(slot2_pc_use_alt),
+          .I4((bit_idx == 3) ? ras_top_not_below_pending : ras_top_not_above_pending),
+          .I5(slot2_staged_uses_ras),
+          .O (o_slot2_staged_target_rel_pending[bit_idx])
+      );
+    end else begin : gen_equal
+      (* dont_touch = "true" *)
+      LUT6 #(
+          .INIT(64'hffff0000f0eef0ee)
+      ) u_relation (
+          .I0(btb_slot2_plus2_covered_rel_pending[bit_idx]),
+          .I1(btb_slot2_plus2_zero_rel_pending[bit_idx]),
+          .I2(btb_slot2_plus4_rel_pending[bit_idx]),
+          .I3(slot2_pc_use_alt),
+          .I4(ras_top_rel_pending[bit_idx]),
+          .I5(slot2_staged_uses_ras),
+          .O (o_slot2_staged_target_rel_pending[bit_idx])
+      );
+    end
+  end
+`else
+  assign slot2_staged_uses_ras = ras_nonempty &&
+      (slot2_pc_use_alt ? btb_entry_is_return_2_plus4 : btb_entry_is_return_2_plus2);
+  assign o_slot2_staged_target_rel_pending = slot2_staged_uses_ras ?
+      ras_top_rel_pending : slot2_pc_use_alt ? btb_slot2_plus4_rel_pending :
+      (btb_slot2_plus2_covered_rel_pending | btb_slot2_plus2_zero_rel_pending);
+`endif
   assign slot1_target_rel_pending = pending_target_rel(
       btb_predicted_target,
       i_pending_prediction_pc,
       i_pending_prediction_prev_pc,
       i_pending_prediction_prev_native_pc
   );
-  assign slot2_plus2_target_rel_pending = pending_target_rel(
+`ifdef FORMAL
+  // Contract proved by btb_pending_relation: the disable harness cuts the
+  // predictor, then binds its relation to this function of its old outputs.
+  (* keep = "true" *) logic [4:0] slot2_plus2_raw_rel_reference, slot2_plus4_raw_rel_reference;
+  assign slot2_plus2_raw_rel_reference = pending_target_rel(
       btb_predicted_target_2_plus2,
       i_pending_prediction_pc,
       i_pending_prediction_prev_pc,
       i_pending_prediction_prev_native_pc
   );
-  assign slot2_plus4_target_rel_pending = pending_target_rel(
+  assign slot2_plus4_raw_rel_reference = pending_target_rel(
       btb_predicted_target_2_plus4,
       i_pending_prediction_pc,
       i_pending_prediction_prev_pc,
       i_pending_prediction_prev_native_pc
   );
-  assign slot2_plus2_typed_rel_pending = (btb_entry_is_return_2_plus2 && ras_nonempty) ?
-      ras_top_rel_pending : slot2_plus2_target_rel_pending;
-  assign slot2_plus4_typed_rel_pending = (btb_entry_is_return_2_plus4 && ras_nonempty) ?
-      ras_top_rel_pending : slot2_plus4_target_rel_pending;
-  assign o_slot2_staged_target_rel_pending =
-      slot2_pc_use_alt ? slot2_plus4_typed_rel_pending : slot2_plus2_typed_rel_pending;
+`endif
   assign o_slot2_live_target_rel_pending =
       (btb_is_return && ras_nonempty) ? ras_top_rel_pending : slot1_target_rel_pending;
 
@@ -795,11 +860,13 @@ module branch_prediction_controller #(
   // Slot-2 use requires clear prediction holdoff, while registered slot-1
   // metadata implies holdoff. Thus slot 2 has no older metadata to preserve
   // and kills metadata and handoff without a target comparison.
+  (* keep = "true" *) logic pd_redirect_target_matches_prediction;
+  assign pd_redirect_target_matches_prediction = o_predicted_target_r == i_pd_redirect_target;
   logic pd_redirect_kills_prediction_metadata;
   assign pd_redirect_kills_prediction_metadata =
       i_pd_redirect &&
       (!i_pd_redirect_taken || !o_prediction_used_r ||
-       (o_predicted_target_r != i_pd_redirect_target));
+       !pd_redirect_target_matches_prediction);
 
   // Every PD or slot-2 redirect kills the slot-1 pc_reg handoff, including
   // across a stall: the redirect outranks it in the next-PC mux. Registered
@@ -1035,16 +1102,15 @@ module branch_prediction_controller #(
       .O (slot2_live_candidate_plus4_pos)
   );
   (* dont_touch = "true" *)
-  LUT6 #(
-      .INIT(64'hca00000000000000)
-  ) u_slot2_live_select (
+  LUT5 #(
+      .INIT(32'hca000000)
+  ) u_slot2_live_without_valid (
       .I0(slot2_live_candidate_plus2_pos),
       .I1(slot2_live_candidate_plus4_pos),
       .I2(slot2_pc_use_alt),
       .I3(slot2_live_qualifier),
       .I4(slot2_prediction_permission_without_valid),
-      .I5(i_slot2_valid),
-      .O (o_slot2_live_target_used_for_pc)
+      .O (o_slot2_live_pc_without_valid)
   );
 `else
   assign slot2_prediction_candidate_for_pc =
@@ -1058,10 +1124,13 @@ module branch_prediction_controller #(
       (btb_predicted_taken_2_plus2 && slot2_plus2_qualifier) ||
       (btb_predicted_taken_2_plus4 && slot2_plus4_size_safe) ||
       (dir_predicted_taken && slot2_live_plus4_size_safe);
-  assign o_slot2_live_target_used_for_pc =
-      slot2_prediction_permission && slot2_live_qualifier &&
+  assign o_slot2_live_pc_without_valid =
+      slot2_prediction_permission_without_valid && slot2_live_qualifier &&
       (slot2_pc_use_alt ? slot2_live_candidate_plus4_pos : slot2_live_candidate_plus2_pos);
 `endif
+  assign o_slot2_live_target_used_for_pc = i_slot2_valid && o_slot2_live_pc_without_valid;
+  assign o_slot2_staged_pc_without_valid = prediction_common_wcs0 &&
+      !i_branch_taken && !i_is_32bit_spanning && slot2_staged_prediction_candidate_for_pc;
   assign o_slot2_prediction_used_for_pc =
       slot2_prediction_permission && slot2_prediction_candidate_for_pc;
   // Duplicate the slot-2 request for the fetch-PC mux, for fanout.
@@ -1076,15 +1145,16 @@ module branch_prediction_controller #(
   // target even when the candidate valids are not one-hot.
   assign slot2_staged_prediction_candidate_for_pc =
       slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken;
-  // The staged select feeds the fetch-PC mux. The raw served-window guard
+  // Compatibility staged select; IF consumes the cofactor instead, so these
+  // terms may be pruned when the complete output is unused. The raw served-window guard
   // clears both prediction_common and i_slot2_valid, so the select is formed
   // with the guard low and the guard applies last. The BTB's taken results
   // behind the slot-2 tag compares are the late terms: each candidate's taken
   // bit meets its kept qualifier (permission, valid and size check) in the
   // gate that the guard and IF's replay request join.
   logic slot2_staged_gate_wcs0;
-  (* keep = "true" *)logic slot2_staged_plus2_qualifier_wcs0;
-  (* keep = "true" *)logic slot2_staged_plus4_qualifier_wcs0;
+  logic slot2_staged_plus2_qualifier_wcs0;
+  logic slot2_staged_plus4_qualifier_wcs0;
   logic slot2_staged_prediction_used_for_pc_wcs0;
   assign slot2_staged_gate_wcs0 = prediction_common_wcs0 && !i_branch_taken &&
       !i_is_32bit_spanning && i_slot2_valid_wcs0;
@@ -1131,16 +1201,45 @@ module branch_prediction_controller #(
   // clear it on reset, flush, a different-target PD redirect, or slot-2 use.
   // Slot 2 can win over a simultaneous younger live slot-1 prediction, so its
   // kill must remain even though old registered metadata implies holdoff.
-  // Compute hold/load and slot-2 kill separately for timing.
-  (* keep = "true" *)logic prediction_metadata_next_without_slot2;
+  // Prepare hold/load and PD's non-target permission first. The wide PD
+  // target match and late slot-2 candidate meet in the final gate.
+  (* keep = "true" *)logic prediction_metadata_before_target_match;
   (* keep = "true" *)logic slot2_metadata_kill_enable;
   logic prediction_metadata_next;
-  assign prediction_metadata_next_without_slot2 =
-      !i_flush && !pd_redirect_kills_prediction_metadata &&
-      ((!i_stall && i_fetch_progress) ? prediction_used_effective : o_prediction_used_r);
   assign slot2_metadata_kill_enable = slot2_prediction_permission && !i_stall;
-  assign prediction_metadata_next = prediction_metadata_next_without_slot2 &&
-      !(slot2_metadata_kill_enable && slot2_prediction_candidate_for_pc);
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *)
+  LUT6 #(
+      .INIT(64'h8c8c8f8c8c8c008c)
+  ) u_prediction_metadata_prepare (
+      .I0(i_pd_redirect_taken),
+      .I1(o_prediction_used_r),
+      .I2(i_pd_redirect),
+      .I3(i_fetch_progress),
+      .I4(i_stall),
+      .I5(prediction_used_effective),
+      .O (prediction_metadata_before_target_match)
+  );
+  (* dont_touch = "true" *)
+  LUT6 #(
+      .INIT(64'h000a0a0a00020202)
+  ) u_prediction_metadata_next (
+      .I0(prediction_metadata_before_target_match),
+      .I1(i_pd_redirect),
+      .I2(i_flush),
+      .I3(slot2_metadata_kill_enable),
+      .I4(slot2_prediction_candidate_for_pc),
+      .I5(pd_redirect_target_matches_prediction),
+      .O (prediction_metadata_next)
+  );
+`else
+  assign prediction_metadata_before_target_match =
+      ((!i_stall && i_fetch_progress) ? prediction_used_effective : o_prediction_used_r) &&
+      (!i_pd_redirect || (i_pd_redirect_taken && o_prediction_used_r));
+  assign prediction_metadata_next = prediction_metadata_before_target_match && !i_flush &&
+      !(slot2_metadata_kill_enable && slot2_prediction_candidate_for_pc) &&
+      (!i_pd_redirect || pd_redirect_target_matches_prediction);
+`endif
   always_ff @(posedge i_clk) begin
     if (i_reset) o_prediction_used_r <= 1'b0;
     else o_prediction_used_r <= prediction_metadata_next;
