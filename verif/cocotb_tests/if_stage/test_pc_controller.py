@@ -1218,8 +1218,19 @@ async def test_pending_predecessor_tag_redirect_kill_and_recapture(dut: Any) -> 
 @cocotb.test()
 async def test_raw_slot2_valid_and_replay_preserve_target_priority(dut: Any) -> None:
     """Live validity suppresses both cofactors while saved replay still redirects."""
-    await _setup_test(dut)
+    clock = Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns")
+    clock.start()
+    _clear_inputs(dut)
+    dut.i_reset.value = 1
+    await RisingEdge(dut.i_clk)
+    await FallingEdge(dut.i_clk)
+    dut.i_reset.value = 0
+    await _settle()
     await _clear_reset_holdoff(dut)
+    await FallingEdge(dut.i_clk)
+    # Hold one PC state while checking the combinational interface. Clocked
+    # target delivery is already covered by the staged/live prediction tests.
+    clock.stop()
     staged_target = SLOT2_TARGET | 2
     live_target = PRED_TARGET | 2
     dut.i_slot2_staged_predicted_target.value = staged_target
@@ -1238,10 +1249,21 @@ async def test_raw_slot2_valid_and_replay_preserve_target_priority(dut: Any) -> 
             if replay or (valid and staged)
             else before + 4
         )
-        await _advance_cycle(dut)
-        assert int(dut.o_pc_reg.value) == expected
-        assert int(dut.o_pc_reg_high_for_coverage.value) == ((expected >> 1) & 1)
+        # The remaining ports carry the complete request and matching target.
+        # Keep them coherent while sweeping every new validity/cofactor case.
+        request = int(bool(replay or (valid and (staged or live))))
+        dut.i_slot2_valid.value = request
+        dut.i_slot2_prediction_used.value = request
+        dut.i_slot2_prediction_used_for_pc.value = request
+        dut.i_slot2_prediction_used_for_fetch_mux.value = request
+        dut.i_slot2_predicted_target.value = expected if request else 0
+        await _settle()
+        assert int(dut.next_pc_reg.value) == expected
+        assert int(dut.next_pc_reg_high_for_coverage.value) == ((expected >> 1) & 1)
     dut.i_trap_taken.value = 1
     dut.i_trap_target.value = TRAP_TARGET
+    await _settle()
+    assert int(dut.next_pc_reg.value) == TRAP_TARGET
+    clock.start()
     await _advance_cycle(dut)
     assert int(dut.o_pc_reg.value) == TRAP_TARGET

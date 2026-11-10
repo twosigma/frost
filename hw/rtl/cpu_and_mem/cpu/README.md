@@ -105,8 +105,8 @@ emitted; a taken slot-2 prediction moves both PCs at once. A two-instruction
 bundle advances `pc_reg` by 4, 6, or 8 bytes, a single instruction by 2 or 4.
 
 The architectural-PC mux receives raw live slot-2 validity and staged/live
-cofactors separately. Its no-live arm retains saved replay, and raw live
-validity selects between the no-live and valid arms in the final F7. The
+cofactors separately. The Xilinx implementation keeps saved replay in its
+no-live arm and applies raw live validity in the final F7. The
 complete staged select is replay OR (valid AND staged cofactor); the complete
 live select is valid AND live cofactor. Redirect and live/staged priorities
 remain the same.
@@ -453,12 +453,13 @@ which keeps the wide compares out of the PC loop. For a slot-2 redirect,
 coverage to the candidate relations. The controller selects the position and
 applies the RAS relation in one final gate when the entry is a return and the
 stack is nonempty.
-The controller also supplies `pc_reg`'s complete live slot-2 target select,
-including the slot-1 alias check. Staged taken bits and the live fallback
-join parallel candidate qualifiers before the common prediction permission.
-For the live select, separate sums for each slot-2 position let the final
-gate apply the decoded +4 position with permission, ownership, and full
-slot-2 validity.
+
+The controller supplies staged and live slot-2 target cofactors, with the
+live cofactor including the slot-1 alias check. Staged taken bits and the live
+fallback join parallel candidate qualifiers before common prediction permission.
+Separate sums for each slot-2 position let the live cofactor select the decoded
++4 position with permission and ownership. IF passes full live validity and
+saved replay separately; pc_reg applies validity in the final data select.
 The shifted BTB payloads retain their one-gate row/forwarding selection for
 target data. Pending-PC relations use parallel raw-payload comparisons and
 select the relation after those same masks arrive.
