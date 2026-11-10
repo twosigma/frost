@@ -1120,7 +1120,10 @@ async def test_pending_relation_matches_unqualified_targets(dut: Any) -> None:
         dut.i_pending_prediction_pc.value = forwarded_target
         await _settle()
         assert int(dut.o_predicted_target_2_plus2.value) == forwarded_target
-        assert int(dut.o_slot2_target_rel_pending.value) == 0x10
+        assert (
+            int(dut.o_slot2_plus2_covered_rel_pending.value)
+            | int(dut.o_slot2_plus2_zero_rel_pending.value)
+        ) == 0x10
         for served in (lookup, lookup + 4, lookup + 16):
             dut.i_pc_2_base.value = served & MASK_XLEN
             for alt in (0, 1):
@@ -1148,4 +1151,12 @@ async def test_pending_relation_matches_unqualified_targets(dut: Any) -> None:
                     expected = _pending_relation(
                         int(target_signal.value), pending, prev, prev_native
                     )
-                    assert int(dut.o_slot2_target_rel_pending.value) == expected
+                    relation = (
+                        int(dut.o_slot2_plus4_rel_pending.value)
+                        if alt
+                        else (
+                            int(dut.o_slot2_plus2_covered_rel_pending.value)
+                            | int(dut.o_slot2_plus2_zero_rel_pending.value)
+                        )
+                    )
+                    assert relation == expected

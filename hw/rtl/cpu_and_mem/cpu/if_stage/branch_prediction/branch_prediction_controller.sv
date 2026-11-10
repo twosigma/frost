@@ -354,7 +354,9 @@ module branch_prediction_controller #(
   endfunction
   logic ras_nonempty;
   riscv_pkg::pc_pending_rel_t ras_top_rel_pending;
-  riscv_pkg::pc_pending_rel_t btb_slot2_raw_target_rel_pending;
+  riscv_pkg::pc_pending_rel_t btb_slot2_plus2_covered_rel_pending;
+  riscv_pkg::pc_pending_rel_t btb_slot2_plus2_zero_rel_pending;
+  riscv_pkg::pc_pending_rel_t btb_slot2_plus4_rel_pending;
 
   // Preserve the predictor boundary for timing.
   (* keep_hierarchy = "yes" *)
@@ -399,7 +401,9 @@ module branch_prediction_controller #(
       .i_pending_prediction_pc,
       .i_pending_prediction_prev_pc,
       .i_pending_prediction_prev_native_pc,
-      .o_slot2_target_rel_pending(btb_slot2_raw_target_rel_pending),
+      .o_slot2_plus2_covered_rel_pending(btb_slot2_plus2_covered_rel_pending),
+      .o_slot2_plus2_zero_rel_pending(btb_slot2_plus2_zero_rel_pending),
+      .o_slot2_plus4_rel_pending(btb_slot2_plus4_rel_pending),
 
       // Update, through the staging registers above
       .i_update(btb_update_q),
@@ -712,22 +716,28 @@ module branch_prediction_controller #(
       // Use the noninverted comparator output and absorb its inversion in
       // the final selector rather than adding a gate after the carry chain.
       (* dont_touch = "true" *)
-      LUT3 #(
-          .INIT(8'h3a)
+      LUT6 #(
+          .INIT(64'h0000fffff0eef0ee)
       ) u_relation (
-          .I0(btb_slot2_raw_target_rel_pending[bit_idx]),
-          .I1((bit_idx == 3) ? ras_top_not_below_pending : ras_top_not_above_pending),
-          .I2(slot2_staged_uses_ras),
+          .I0(btb_slot2_plus2_covered_rel_pending[bit_idx]),
+          .I1(btb_slot2_plus2_zero_rel_pending[bit_idx]),
+          .I2(btb_slot2_plus4_rel_pending[bit_idx]),
+          .I3(slot2_pc_use_alt),
+          .I4((bit_idx == 3) ? ras_top_not_below_pending : ras_top_not_above_pending),
+          .I5(slot2_staged_uses_ras),
           .O (o_slot2_staged_target_rel_pending[bit_idx])
       );
     end else begin : gen_equal
       (* dont_touch = "true" *)
-      LUT3 #(
-          .INIT(8'hca)
+      LUT6 #(
+          .INIT(64'hffff0000f0eef0ee)
       ) u_relation (
-          .I0(btb_slot2_raw_target_rel_pending[bit_idx]),
-          .I1(ras_top_rel_pending[bit_idx]),
-          .I2(slot2_staged_uses_ras),
+          .I0(btb_slot2_plus2_covered_rel_pending[bit_idx]),
+          .I1(btb_slot2_plus2_zero_rel_pending[bit_idx]),
+          .I2(btb_slot2_plus4_rel_pending[bit_idx]),
+          .I3(slot2_pc_use_alt),
+          .I4(ras_top_rel_pending[bit_idx]),
+          .I5(slot2_staged_uses_ras),
           .O (o_slot2_staged_target_rel_pending[bit_idx])
       );
     end
@@ -736,7 +746,8 @@ module branch_prediction_controller #(
   assign slot2_staged_uses_ras = ras_nonempty &&
       (slot2_pc_use_alt ? btb_entry_is_return_2_plus4 : btb_entry_is_return_2_plus2);
   assign o_slot2_staged_target_rel_pending = slot2_staged_uses_ras ?
-      ras_top_rel_pending : btb_slot2_raw_target_rel_pending;
+      ras_top_rel_pending : slot2_pc_use_alt ? btb_slot2_plus4_rel_pending :
+      (btb_slot2_plus2_covered_rel_pending | btb_slot2_plus2_zero_rel_pending);
 `endif
   assign slot1_target_rel_pending = pending_target_rel(
       btb_predicted_target,
@@ -747,9 +758,15 @@ module branch_prediction_controller #(
 `ifdef FORMAL
   // Contract proved by btb_pending_relation: the disable harness cuts the
   // predictor, then binds its relation to this function of its old outputs.
-  (* keep = "true" *) logic [4:0] slot2_staged_raw_rel_reference;
-  assign slot2_staged_raw_rel_reference = pending_target_rel(
-      slot2_pc_use_alt ? btb_predicted_target_2_plus4 : btb_predicted_target_2_plus2,
+  (* keep = "true" *) logic [4:0] slot2_plus2_raw_rel_reference, slot2_plus4_raw_rel_reference;
+  assign slot2_plus2_raw_rel_reference = pending_target_rel(
+      btb_predicted_target_2_plus2,
+      i_pending_prediction_pc,
+      i_pending_prediction_prev_pc,
+      i_pending_prediction_prev_native_pc
+  );
+  assign slot2_plus4_raw_rel_reference = pending_target_rel(
+      btb_predicted_target_2_plus4,
       i_pending_prediction_pc,
       i_pending_prediction_prev_pc,
       i_pending_prediction_prev_native_pc

@@ -90,12 +90,14 @@ module branch_predictor #(
     output logic            o_btb_entry_is_return_2_plus2,
     output logic            o_btb_entry_is_return_2_plus4,
 
-    // Relation of the selected raw BTB target to the saved prediction.
+    // Per-candidate raw target relations to the saved prediction.
     // Like the target outputs, this remains defined on misses/uncovered rows.
     input  logic [XLEN-1:0] i_pending_prediction_pc,
     input  logic [XLEN-1:0] i_pending_prediction_prev_pc,
     input  logic [XLEN-1:0] i_pending_prediction_prev_native_pc,
-    output logic [     4:0] o_slot2_target_rel_pending,
+    output logic [     4:0] o_slot2_plus2_covered_rel_pending,
+    output logic [     4:0] o_slot2_plus2_zero_rel_pending,
+    output logic [     4:0] o_slot2_plus4_rel_pending,
 
     // Update interface: at most one selected training write per cycle
     input logic            i_update,             // Update BTB entry
@@ -643,8 +645,6 @@ module branch_predictor #(
   (* keep = "true" *) logic [3:0][4:0] slot2_raw_rel_pending;
   (* keep = "true" *) logic [4:0] slot2_zero_rel_pending;
   (* keep = "true" *) logic slot2_plus2_zero_select, slot2_plus4_zero_select;
-  logic [4:0] slot2_plus2_covered_rel_pending, slot2_plus2_zero_rel_pending;
-  logic [4:0] slot2_plus4_rel_pending;
   assign slot2_raw_rel_pending[0] = pending_target_rel(
       {i_pc_2_base[XLEN-1:TargetBits], slot2_payload_2_raw.target_hi, 1'b0}
   );
@@ -677,14 +677,14 @@ module branch_predictor #(
         .I3(slot2_rot_raw_select),
         .I4(slot2_raw_rel_pending[3][bit_idx]),
         .I5(slot2_forward_select),
-        .O (slot2_plus2_covered_rel_pending[bit_idx])
+        .O (o_slot2_plus2_covered_rel_pending[bit_idx])
     );
     LUT2 #(
         .INIT(4'h8)
     ) u_plus2_zero (
         .I0(slot2_zero_rel_pending[bit_idx]),
         .I1(slot2_plus2_zero_select),
-        .O (slot2_plus2_zero_rel_pending[bit_idx])
+        .O (o_slot2_plus2_zero_rel_pending[bit_idx])
     );
     (* dont_touch = "true" *)
     LUT6 #(
@@ -696,38 +696,31 @@ module branch_predictor #(
         .I3(slot2_alt_forward_select),
         .I4(slot2_zero_rel_pending[bit_idx]),
         .I5(slot2_plus4_zero_select),
-        .O (slot2_plus4_rel_pending[bit_idx])
+        .O (o_slot2_plus4_rel_pending[bit_idx])
     );
-    (* dont_touch = "true" *)
-    LUT4 #(
-        .INIT(16'hf0ee)
-    ) u_position (
-        .I0(slot2_plus2_covered_rel_pending[bit_idx]),
-        .I1(slot2_plus2_zero_rel_pending[bit_idx]),
-        .I2(slot2_plus4_rel_pending[bit_idx]),
-        .I3(i_pc_2_use_alt),
-        .O (o_slot2_target_rel_pending[bit_idx])
-    );
+
   end
 `else
-  assign slot2_plus2_covered_rel_pending =
+  assign o_slot2_plus2_covered_rel_pending =
       ({5{slot2_base_raw_select}} & slot2_raw_rel_pending[0]) |
       ({5{slot2_rot_raw_select}} & slot2_raw_rel_pending[1]) |
       ({5{slot2_forward_select}} & slot2_raw_rel_pending[3]);
-  assign slot2_plus2_zero_rel_pending = {5{slot2_plus2_zero_select}} & slot2_zero_rel_pending;
-  assign slot2_plus4_rel_pending =
+  assign o_slot2_plus2_zero_rel_pending = {5{slot2_plus2_zero_select}} & slot2_zero_rel_pending;
+  assign o_slot2_plus4_rel_pending =
       ({5{slot2_alt_raw_select}} & slot2_raw_rel_pending[2]) |
       ({5{slot2_alt_forward_select}} & slot2_raw_rel_pending[3]) |
       ({5{slot2_plus4_zero_select}} & slot2_zero_rel_pending);
-  assign o_slot2_target_rel_pending = i_pc_2_use_alt ? slot2_plus4_rel_pending :
-      (slot2_plus2_covered_rel_pending | slot2_plus2_zero_rel_pending);
+
 `endif
 `ifdef BTB_PENDING_REL_LOCAL_PROOF
   always_comb begin
-    p_selected_relation_matches_target :
-    assert (o_slot2_target_rel_pending == pending_target_rel(
-        i_pc_2_use_alt ? o_predicted_target_2_plus4 : o_predicted_target_2_plus2
+    p_plus2_relation_matches_target :
+    assert ((o_slot2_plus2_covered_rel_pending | o_slot2_plus2_zero_rel_pending) ==
+            pending_target_rel(
+        o_predicted_target_2_plus2
     ));
+    p_plus4_relation_matches_target :
+    assert (o_slot2_plus4_rel_pending == pending_target_rel(o_predicted_target_2_plus4));
   end
 `endif
 

@@ -443,8 +443,9 @@ variable latency closes the gap between the two PCs, never pends.
 which keeps the wide compares out of the PC loop. For a slot-2 redirect,
 `branch_prediction_controller` relates the live BTB target and stack top.
 `branch_predictor` relates each raw or forwarded staged payload, then applies
-coverage and position to select the raw relation. The controller applies the
-RAS relation last when the selected entry is a return and the stack is nonempty.
+coverage to the candidate relations. The controller selects the position and
+applies the RAS relation in one final gate when the entry is a return and the
+stack is nonempty.
 The controller also supplies `pc_reg`'s complete live slot-2 target select,
 including the slot-1 alias check. Staged taken bits and the live fallback
 join parallel candidate qualifiers before the common prediction permission.
