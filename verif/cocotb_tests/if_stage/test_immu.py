@@ -1404,7 +1404,7 @@ async def test_crossing_access_fault_completes_after_slow_walk(dut: Any) -> None
 
 
 async def _crossing_refusal_on_expiry(dut: Any, fault_kind: int) -> None:
-    """A warm faulting neighbor cannot discard the first page's response."""
+    """Check a warm neighbor cannot discard the first page's response."""
     await _setup(dut)
     epoch_origin_ns = int(get_sim_time(unit="ns")) - 1
     dut.i_active.value = 1
