@@ -668,7 +668,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="l2_capacity_chase",
         nic_mac_clocks=False,
-        rerun_after_reset=False,
         description="Bounded dependent-load cycle check with the VCU118 4 MiB L2",
         verilator_extra_args=("-GL2_CACHE_BYTES=4194304",),
         extra_env=(

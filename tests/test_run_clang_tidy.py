@@ -102,7 +102,9 @@ def test_l2_capacity_reaches_probe_geometry(
     source = f"""
 #include "sw/apps/lq_stale_slot_probe/main.c"
 _Static_assert(L2_ALIAS == {capacity}ul, "probe must use the selected capacity");
-_Static_assert(POOL_BASE + STALE_ITERS * 4096ul + 2ul * L2_ALIAS <= MARK_BASE,
+_Static_assert(L2_ALIAS_PASSES * (2ul << 20) / L2_WAY_BYTES >= 7,
+               "alias passes must evict all original tree-PLRU lines");
+_Static_assert(POOL_BASE + STALE_ITERS * 4096ul + L2_ALIAS_PASSES * L2_ALIAS <= MARK_BASE,
                "pool aliases must not overlap markers");
 _Static_assert(MARK_BASE + 2ul * L2_ALIAS + STALE_ITERS * 64ul <= OUT_BASE,
                "marker aliases must not overlap results");

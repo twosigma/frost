@@ -206,6 +206,11 @@ checks that a subsequent load cannot use their stale data from L0.
 `cached_store_burst_test` checks cached store bursts followed by traps,
 FENCE.I, SC and AMO. Its CPU monitor requires accepted-store overlap with
 trap and fence drain waits.
+`l2_capacity_chase_smoke` checks the dependent-load measurement program
+with 8, 16 and 32 KiB working sets and a 4 MiB L2 in the real-program shards.
+The CLI-only `l2_capacity_chase` entry retains its full-size working sets
+for capacity measurements; `FROST_VERILATOR_EXTRA_ARGS=-GL2_CACHE_BYTES=4194304`
+selects the VCU118 capacity for that run.
 Local Modified-sector AMO and SC cases hold each probe class across lookup,
 result, write and release, check exact reservations and preauthorization loss,
 and preserve installed bytes through accepted and absorbed dirty evictions.
