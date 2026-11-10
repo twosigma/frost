@@ -1308,6 +1308,9 @@ jobs:
           - shard: Coherence L1D scripted holds
             pytest_filter: coh_l1d_stream_hold_bmc
             timeout_minutes: 75
+          - shard: Coherence L1D no-store holds
+            pytest_filter: coh_l1d_stream_free_nostore_hold_bmc
+            timeout_minutes: 75
           # The remaining L1D covers, local and stream tasks, and AXI bridges.
           - shard: Coherence L1D and bridges
             pytest_filter: >-
@@ -1353,7 +1356,7 @@ jobs:
           - shard: Hart maintenance
             pytest_filter: >-
               coh_hart_maint_prove or coh_hart_maint_owned_prove or
-              coh_l1d_stream_bmc or coh_l1d_stream_free_nostore
+              coh_l1d_stream_bmc or coh_l1d_stream_free_nostore_bmc
             timeout_minutes: 330
           - shard: Other tasks
             pytest_filter: "not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or coherence_ or coherent_)"

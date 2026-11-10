@@ -49,6 +49,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_stream_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_hold_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_nostore_bmc"): 3600,
+    ("coherence_l1d", "coh_l1d_stream_free_nostore_hold_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_bmc"): 10800,
     ("coherence_array", "coh_array4_port_bmc"): 6000,
     ("coherence_l1d", "coh_l1d_bmc"): 10800,
@@ -314,6 +315,7 @@ FORMAL_TARGETS = [
             "coh_l1d_stream_hold_bmc",
             "coh_l1d_stream_free_bmc",
             "coh_l1d_stream_free_nostore_bmc",
+            "coh_l1d_stream_free_nostore_hold_bmc",
             "coh_l1d_stream_owned_prove",
             "coh_l1d_stream_prove",
             "coh_l1d_stream_outlier_prove",
@@ -1369,7 +1371,11 @@ SBY_TASKS = [
     ),
     (
         "coh_l1d_stream_free_nostore_bmc",
-        "All control and payload-hold checks with arbitrary inputs and no stores through 24 cycles.",
+        "Control checks with arbitrary inputs and no stores through 24 cycles, apart from four payload holds checked separately.",
+    ),
+    (
+        "coh_l1d_stream_free_nostore_hold_bmc",
+        "Payload identities and holds with arbitrary inputs and no stores through all 24 cycles.",
     ),
     ("coh_l1d_stream_cover", "Two speculative endpoints and demand attachment."),
     ("coh_l1d_turn_cover", "A demand retry between buffered load grants."),
@@ -2337,6 +2343,8 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             "coh_l1d_stream_prove",
             "coh_l1d_stream_bmc",
             "coh_l1d_stream_hold_bmc",
+            "coh_l1d_stream_free_nostore_bmc",
+            "coh_l1d_stream_free_nostore_hold_bmc",
             "coh_l1d_local_data_bmc",
             "coh_l1d_local_hold_bmc",
             "coh_l1d_local_control_bmc",
@@ -2363,6 +2371,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherent_hart_cache_coh_hart_maint_prove": "Hart maintenance",
         "coherent_hart_cache_coh_hart_maint_owned_prove": "Hart maintenance",
         "coherence_l1d_coh_l1d_stream_hold_bmc": "Coherence L1D scripted holds",
+        "coherence_l1d_coh_l1d_stream_free_nostore_hold_bmc": "Coherence L1D no-store holds",
         "coherence_l1d_coh_l1d_bmc": "Coherence L1D control",
         "coherence_l1d_coh_l1d_multi_bmc": "Coherence L1D multi-endpoint",
         "coherence_l1d_coh_l1d_local_data_bmc": "Coherence L1D local data",
@@ -2532,10 +2541,14 @@ def test_local_data_partition_models_match() -> None:
                 validate(part, altered)
 
 
-def test_scripted_stream_partition_models_match() -> None:
-    """Keep every scripted-stream assertion through all 42 cycles."""
-    bmc = l1d_task_config("coh_l1d_stream_bmc")
-    hold = l1d_task_config("coh_l1d_stream_hold_bmc")
+@pytest.mark.parametrize(
+    ("prefix", "depth", "scripted"),
+    (("stream", 42, True), ("stream_free_nostore", 24, False)),
+)
+def test_stream_partition_models_match(prefix: str, depth: int, scripted: bool) -> None:
+    """Keep every stream assertion at its original depth and input scope."""
+    bmc = l1d_task_config(f"coh_l1d_{prefix}_bmc")
+    hold = l1d_task_config(f"coh_l1d_{prefix}_hold_bmc")
     holds = (
         "c:p_grant_mux_exact c:p_local_image_stable "
         "c:p_load_payload_held c:p_reply_hold"
@@ -2565,11 +2578,17 @@ def test_scripted_stream_partition_models_match() -> None:
         for section in candidate.keys() - {"[options]", "[engines]", "[script]"}:
             assert candidate[section] == consumer[section]
         model = [line for line in consumer["[script]"] if not assertion_command(line)]
-        assert (
+        read = (
             "read -formal -sv -D STREAM_COVER -D STREAM_PASSIVE_CYCLES=24 "
             "coherence_read_payload.sv coherence_l1d.sv"
-        ) in model
+            if scripted
+            else "read -formal -sv coherence_read_payload.sv coherence_l1d.sv"
+        )
+        assert read in model
         assert not any(line.startswith("cutpoint ") for line in model)
+        assert [line for line in model if line.startswith("connect ")] == (
+            [] if scripted else ["connect -set i_write_mask 8'h00"]
+        )
         for role, task in (("hold", candidate), ("bmc", consumer)):
             assert [
                 line for line in task["[script]"] if assertion_command(line)
@@ -2581,7 +2600,7 @@ def test_scripted_stream_partition_models_match() -> None:
             options.setdefault("expect", "PASS")
             assert options == {
                 "mode": "bmc",
-                "depth": "42",
+                "depth": str(depth),
                 "timeout": "3600",
                 "aigsmt": "boolector",
                 "expect": "PASS",
@@ -2596,7 +2615,7 @@ def test_scripted_stream_partition_models_match() -> None:
         ("hold", "[script]", "chformal -assert -remove c:p_reply_hold"),
         ("hold", "[script]", "cutpoint w:array_data"),
         ("hold", "[options]", "smtc narrower.smtc"),
-        ("bmc", "[options]", "depth 41"),
+        ("bmc", "[options]", f"depth {depth - 1}"),
         ("bmc", "[options]", "expect PASS,UNKNOWN,TIMEOUT"),
         ("bmc", "[script]", "chformal -assert -remove c:p_atomic_single_owner"),
     ):
@@ -3092,6 +3111,7 @@ def test_fatal_frame_validation(
         ("coherent_hart_cache", "coh_hart_maint_four_bmc", 7200),
         ("coherence_l1d", "coh_l1d_stream_bmc", 3600),
         ("coherence_l1d", "coh_l1d_stream_hold_bmc", 3600),
+        ("coherence_l1d", "coh_l1d_stream_free_nostore_hold_bmc", 3600),
         ("coherence_l1d", "coh_l1d_bmc", 10800),
         ("coherence_store_boundary", "bmc_four", 18000),
         ("coherence_store_boundary", "bmc_intervening", 14400),
