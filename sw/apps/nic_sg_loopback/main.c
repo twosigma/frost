@@ -25,8 +25,8 @@
 /* Polling budgets count loop iterations: register waits read MMIO, and
  * descriptor and interrupt-flag waits poll memory. Short waits fit the
  * simulation budget. With CLK_SHARED = 0, reset, CDR and block lock
- * take hundreds of milliseconds; WAIT_LINK_TRANSCEIVER allows seconds at
- * 161 or 322 MHz. */
+ * take hundreds of milliseconds; WAIT_LINK_TRANSCEIVER allows seconds for
+ * transceiver bring-up. */
 #define WAIT_READY 4000u
 #define WAIT_CARRIER 12000u
 #define WAIT_LINK_TRANSCEIVER 20000000u

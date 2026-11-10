@@ -1748,7 +1748,7 @@ static int frost_probe(struct platform_device *pdev)
 	priv->pause_abi = !!(readl(base + NET10G_ABI_CTRL) & NET10G_ABI_PAUSE_SUPPORTED);
 	priv->tx_desc_max = (readl(base + NET10G_ABI_CTRL) & NET10G_ABI_TX_LONG_SEGMENTS) ?
 			    FIELD_MAX(NET10G_DESC_LEN) : FROST_TX_DESC_MAX;
-	priv->rx_fifo_limit = min(priv->rx_fifo_depth, (u32)FROST_FIFO_LIMIT_DEFAULT);
+	priv->rx_fifo_limit = min_t(u32, priv->rx_fifo_depth, FROST_FIFO_LIMIT_DEFAULT);
 	priv->rx_entries = FROST_RING_DEFAULT;
 	priv->tx_entries = FROST_RING_DEFAULT;
 	spin_lock_init(&priv->ctrl_lock);
