@@ -365,7 +365,9 @@ it; an invalid or faulting PTE never does (Svvptc), and the walk invalidate
 empties it. The cache is on the miss path only. The instruction MMU expires
 its fault memo and registered refusals every 64 clocks, so wrong-path faults
 cannot retain invalid PTEs indefinitely. Full flushes drop verdicts even
-when a response arrives on the flush edge. The [RTL overview](../../README.md) lists the supported
+when a response arrives on the flush edge. A clean retarget captured exactly
+as an old refusal expires retries one clock later; held clean translations
+remain valid. The [RTL overview](../../README.md) lists the supported
 page sizes, and the [cache README](../../lib/cache/README.md) describes the
 walker's port into the cache hierarchy.
 

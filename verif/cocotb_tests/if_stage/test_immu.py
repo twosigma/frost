@@ -29,6 +29,7 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer
+from cocotb.utils import get_sim_time
 
 
 CLOCK_PERIOD_NS = 10
@@ -741,7 +742,7 @@ async def test_translation_faults_and_refusal_memo(dut: Any) -> None:
         assert int(dut.o_walk_req_valid.value) == 0
 
     # A refused walk is memoized.  Revisiting its VPN resolves from the memo
-    # without asking again until an invalidate clears both TLB and memo.
+    # without asking again before epoch expiry, a full flush, or an invalidate.
     refused_pc = 0x0001_C040
     other_pc = 0x0001_E040
     refused_vpn = refused_pc >> 12
@@ -1318,3 +1319,38 @@ async def test_full_flush_drops_coincident_refusal(dut: Any) -> None:
             _assert_window(dut, _translated_window(pc, first, leaf1=mapped))
         else:
             _assert_window(dut, _translated_window(pc, mapped))
+
+
+@cocotb.test()
+async def test_expiring_refusal_retries_a_coincident_clean_retarget(dut: Any) -> None:
+    """Expiry takes priority over a new capture and retries it within one clock."""
+    await _setup(dut)
+    epoch_origin_ns = int(get_sim_time(unit="ns")) - 1
+    dut.i_active.value = 1
+    clean_pc = 0x000D_0040
+    clean = Leaf(vpn=clean_pc >> 12, ppn=0x80070)
+    await _move_pc(dut, clean_pc)
+    await _cycle(dut)
+    await _accept_request(dut, clean.vpn)
+    await _return_leaf(dut, clean)
+    refused_pc = 0x000C_0040
+    await _move_pc(dut, refused_pc)
+    await _cycle(dut)
+    await _accept_request(dut, refused_pc >> 12)
+    await _pulse_response(dut, vpn=refused_pc >> 12, fault_kind=DFAULT_PAGE)
+    assert int(dut.o_fault0.value) == 1
+
+    # Use only the external reset/clock schedule to align the new capture
+    # with the documented 64-clock epoch boundary. PC capture precedes IMMU
+    # result capture by one clock.
+    while (
+        (int(get_sim_time(unit="ns")) - epoch_origin_ns) // CLOCK_PERIOD_NS
+    ) % 64 != 62:
+        await _cycle(dut)
+    await _move_pc(dut, clean_pc)
+    await _cycle(dut)
+    _assert_invisible(dut)
+    assert int(dut.o_walk_req_valid.value) == 0
+    await _cycle(dut)
+    _assert_window(dut, _translated_window(clean_pc, clean))
+    assert int(dut.o_walk_req_valid.value) == 0

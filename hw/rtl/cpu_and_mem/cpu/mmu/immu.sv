@@ -682,7 +682,9 @@ module immu #(
       after_ok_q <= after_ok_d;
     end
     // A full flush drops verdicts even when a refusal arrives on this edge.
-    // Epoch expiry drops a held refusal without disturbing clean hits.
+    // Epoch expiry drops a held refusal without disturbing held clean hits.
+    // If a clean retarget is captured as an old refusal expires, clear wins
+    // and that capture retries on the next clock.
     // Only validity and fault bits change, keeping both terms off the
     // address-capture path. Bare fetches continue to use the direct bypass.
     if (!i_rst && (i_full_flush || (fault_cache_expire && (f0_q || f1_q)))) begin
