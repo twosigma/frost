@@ -441,16 +441,18 @@ variable latency closes the gap between the two PCs, never pends.
 
 `pc_controller` registers how `pc_reg` relates to the saved PC one edge early,
 which keeps the wide compares out of the PC loop. For a slot-2 redirect,
-`branch_prediction_controller` relates the stack top and each BTB candidate
-target to the saved PC before its late selects pick the target.
+`branch_prediction_controller` relates the live BTB target and stack top.
+`branch_predictor` relates each raw or forwarded staged payload and applies
+return typing before coverage and position select the relation.
 The controller also supplies `pc_reg`'s complete live slot-2 target select,
 including the slot-1 alias check. Staged taken bits and the live fallback
 join parallel candidate qualifiers before the common prediction permission.
 For the live select, separate sums for each slot-2 position let the final
 gate apply the decoded +4 position with permission, ownership, and full
 slot-2 validity.
-The shifted BTB payloads use early row and forwarding masks to select each
-target in one gate before the pending-PC relation compares.
+The shifted BTB payloads retain their one-gate row/forwarding selection for
+target data. Pending-PC relations use parallel raw-payload comparisons and
+select the relation after those same masks arrive.
 
 ### Stalled slot-2 predictions
 
