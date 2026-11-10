@@ -161,7 +161,8 @@ module dma_test_engine #(
       default: o_rd_pair = '0;
     endcase
   end
-  assign o_irq   = irq_q;
+  assign o_irq = irq_q;
+  logic a_fill_q, a_status_q, a_irq_q, a_burst_q;
   assign o_burst = a_burst_q;
 
   // ---------------------------------------------------------------------------
@@ -188,7 +189,6 @@ module dma_test_engine #(
   // The active transfer's copy of the programming registers, taken at START.
   logic [63:0] a_dst_q, a_status_addr_q;
   logic [31:0] a_pattern_q, a_status_value_q;
-  logic a_fill_q, a_status_q, a_irq_q, a_burst_q;
   logic mode_fill, mode_status;
   assign mode_fill   = mode_q[0];
   assign mode_status = mode_q[1];

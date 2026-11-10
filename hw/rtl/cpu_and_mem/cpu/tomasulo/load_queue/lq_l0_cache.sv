@@ -162,6 +162,16 @@ module lq_l0_cache #(
   logic lookup_hit_array;
   logic lookup_fill_bypass;
   logic lookup_invalidated;
+  // instead of allowing the wide tag equality to become a carry chain after
+  // the asynchronous tag RAM, on the same-cycle load-launch path.
+  localparam int unsigned TagChunks = (TagWidth + 2) / 3;
+  localparam int unsigned TagGroups = (TagChunks + 5) / 6;
+  (* keep = "true" *)logic [TagChunks-1:0] lookup_tag_chunks;
+  (* keep = "true" *)logic [TagGroups-1:0] lookup_tag_groups;
+  (* keep = "true" *) logic [TagChunks-1:0] inv_tag_chunks, inv2_tag_chunks;
+  (* keep = "true" *) logic [TagGroups-1:0] inv_tag_groups, inv2_tag_groups;
+  wire inv_tag_match = &inv_tag_groups;
+  wire inv2_tag_match = &inv2_tag_groups;
 
   // Known committed stores update matching L0 bytes; full
   // dwords may allocate. A coincident response fill can be dropped safely.
@@ -340,16 +350,6 @@ module lq_l0_cache #(
       valid[inv2_index] && inv2_tag_match &&
       !(store_update ? inv2_store_replaces : inv2_read_replaces);
   // Three-bit comparisons fit one LUT6. Keep two balanced reduction levels
-  // instead of allowing the wide tag equality to become a carry chain after
-  // the asynchronous tag RAM, on the same-cycle load-launch path.
-  localparam int unsigned TagChunks = (TagWidth + 2) / 3;
-  localparam int unsigned TagGroups = (TagChunks + 5) / 6;
-  (* keep = "true" *)logic [TagChunks-1:0] lookup_tag_chunks;
-  (* keep = "true" *)logic [TagGroups-1:0] lookup_tag_groups;
-  (* keep = "true" *) logic [TagChunks-1:0] inv_tag_chunks, inv2_tag_chunks;
-  (* keep = "true" *) logic [TagGroups-1:0] inv_tag_groups, inv2_tag_groups;
-  wire inv_tag_match = &inv_tag_groups;
-  wire inv2_tag_match = &inv2_tag_groups;
   for (genvar c = 0; c < TagChunks; c++) begin : gen_lookup_tag_chunk
     localparam int unsigned Bits = (TagWidth - 3 * c < 3) ? TagWidth - 3 * c : 3;
     assign lookup_tag_chunks[c] = tag_lookup_rd[3*c+:Bits] == lookup_tag[3*c+:Bits];

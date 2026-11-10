@@ -152,6 +152,16 @@ module fetch_provider #(
   logic accepted_now;
   assign accepted_now = o_instr_valid && !i_pipeline_stall;
 
+  // The ask's physical side, latched with the ask and re-sampled every cycle
+  // until the selected-VA result is visible. The core holds o_pc at the ask
+  // until then, so the live pair is the ask's.
+  logic [riscv_pkg::PhysAddrBits-1:0] ask_pa0_q, ask_pa1_q;
+  // Straddle and next-line values captured with the physical request.
+  logic [LineAddrBits-1:0] ask_line_next_q;
+  (* max_fanout = 64 *) logic ask_straddle_q;
+  logic ask_pa_valid_q;
+  logic ask_fault0_q, ask_fault0_page_q, ask_fault1_q, ask_fault1_page_q;
+  logic ask_after_ok_q;
   // PC movement after an unaccepted cycle is a redirect unless it follows
   // replay consumption. Leading slot-1 predictions use this detector; an
   // explicit pulse could abandon their still-owed branch window. Slot-2 and
@@ -208,16 +218,6 @@ module fetch_provider #(
     end
   end
 
-  // The ask's physical side, latched with the ask and re-sampled every cycle
-  // until the selected-VA result is visible. The core holds o_pc at the ask
-  // until then, so the live pair is the ask's.
-  logic [riscv_pkg::PhysAddrBits-1:0] ask_pa0_q, ask_pa1_q;
-  // Straddle and next-line values captured with the physical request.
-  logic [LineAddrBits-1:0] ask_line_next_q;
-  (* max_fanout = 64 *) logic ask_straddle_q;
-  logic ask_pa_valid_q;
-  logic ask_fault0_q, ask_fault0_page_q, ask_fault1_q, ask_fault1_page_q;
-  logic ask_after_ok_q;
   logic ask_pa_load;
   assign ask_pa_load = o_instr_valid || retarget_now || !ask_pa_valid_q;
 
@@ -302,6 +302,17 @@ module fetch_provider #(
     direct_tag_match = (stored_line >> DirectIndexBits) == (query_line >> DirectIndexBits);
   endfunction
 
+  // ---- Victim store ----------------------------------------------------------
+  // Each line lives in one place. Copying frees its victim entry; replacing
+  // a slot saves its old line. Do not refetch a line awaiting victim storage.
+  localparam int unsigned VictimLines   = (VICTIM_LINES > 0) ? VICTIM_LINES : 1;
+  localparam int unsigned VictimPtrBits = (VictimLines > 1) ? $clog2(VictimLines) : 1;
+  logic [VictimLines-1:0] vs_valid_q;
+  logic [LineAddrBits-1:0] vs_line_q[VictimLines];
+  logic [LineBits-1:0] vs_data_q[VictimLines];
+  logic [LineSbBits-1:0] vs_sb_q[VictimLines];
+  logic [31:0] direct_data_q[WordsPerLine][VictimLines];
+  logic [SbWidth-1:0] direct_sb_q[WordsPerLine][VictimLines];
   logic present0, present1, error_present0, error_present1;
   wire [DirectIndexBits-1:0] direct_idx0 = win_line0[DirectIndexBits-1:0];
   wire [DirectIndexBits-1:0] direct_idx1 = win_line1[DirectIndexBits-1:0];
@@ -590,17 +601,6 @@ module fetch_provider #(
   logic [1:0][LineAddrBits-1:0] fill_line_q;
   (* keep = "true" *) logic perf_miss_stall_q;
 
-  // ---- Victim store ----------------------------------------------------------
-  // Each line lives in one place. Copying frees its victim entry; replacing
-  // a slot saves its old line. Do not refetch a line awaiting victim storage.
-  localparam int unsigned VictimLines   = (VICTIM_LINES > 0) ? VICTIM_LINES : 1;
-  localparam int unsigned VictimPtrBits = (VictimLines > 1) ? $clog2(VictimLines) : 1;
-  logic [VictimLines-1:0] vs_valid_q;
-  logic [LineAddrBits-1:0] vs_line_q[VictimLines];
-  logic [LineBits-1:0] vs_data_q[VictimLines];
-  logic [LineSbBits-1:0] vs_sb_q[VictimLines];
-  logic [31:0] direct_data_q[WordsPerLine][VictimLines];
-  logic [SbWidth-1:0] direct_sb_q[WordsPerLine][VictimLines];
   logic [VictimPtrBits-1:0] vs_wr_ptr_q;
   // Hold evicted slot contents until the victim-store write, for timing.
   logic [1:0] ev_pending_q;
