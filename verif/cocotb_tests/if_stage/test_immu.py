@@ -1354,3 +1354,46 @@ async def test_expiring_refusal_retries_a_coincident_clean_retarget(dut: Any) ->
     await _cycle(dut)
     _assert_window(dut, _translated_window(clean_pc, clean))
     assert int(dut.o_walk_req_valid.value) == 0
+
+
+async def _slow_crossing_refusals(dut: Any, fault_kind: int) -> None:
+    """Refuse both pages with walks longer than the negative-cache lifetime."""
+    await _setup(dut)
+    dut.i_active.value = 1
+    pc = 0x000E_3FFC
+    await _move_pc(dut, pc)
+    await _cycle(dut)
+    for _ in range(4):
+        for _ in range(8):
+            if int(dut.o_walk_req_valid.value):
+                break
+            await _cycle(dut)
+        else:
+            raise AssertionError("unresolved crossing fetch stopped requesting walks")
+        vpn = int(dut.o_walk_vpn.value)
+        dut.i_walk_req_ready.value = 1
+        await _cycle(dut)
+        dut.i_walk_req_ready.value = 0
+        for _ in range(80):
+            await _cycle(dut)
+        await _pulse_response(dut, vpn=vpn, fault_kind=fault_kind)
+        if int(dut.o_pa_valid.value):
+            assert int(dut.o_fault0.value) == 1
+            assert int(dut.o_fault0_page.value) == int(fault_kind == DFAULT_PAGE)
+            assert int(dut.o_walk_req_valid.value) == 0
+            return
+    raise AssertionError(
+        "refusals expired alternately without exposing the first-word fault"
+    )
+
+
+@cocotb.test()
+async def test_crossing_page_fault_completes_after_slow_walk(dut: Any) -> None:
+    """Two invalid pages cannot livelock as their fault memos expire."""
+    await _slow_crossing_refusals(dut, DFAULT_PAGE)
+
+
+@cocotb.test()
+async def test_crossing_access_fault_completes_after_slow_walk(dut: Any) -> None:
+    """Two slow PTE bus failures must still expose the first-word access fault."""
+    await _slow_crossing_refusals(dut, DFAULT_ACCESS)

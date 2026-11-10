@@ -569,6 +569,7 @@ module immu #(
   logic miss0_d, miss1_d;
   logic resolved1;
   logic pa1_use_va_d;
+  logic first_fault_ends_window;
 
   always_comb begin
     pa0_d = res0.fault ? bare_pc : {res0.ppn, i_pc[11:0]};
@@ -605,6 +606,18 @@ module immu #(
       end
     end
 
+    // A first-word fault already determines the architectural outcome.
+    // Waiting for a missing neighbor could alternate two refused walks
+    // forever when either walk takes longer than negative-cache expiry.
+    // Mark the unknown neighbor faulting too, so no unvalidated PA is used.
+    first_fault_ends_window = pc_page_cross && res0.fault && !resolved1;
+    if (first_fault_ends_window) begin
+      resolved1 = 1'b1;
+      miss1_d = 1'b0;
+      f1_d = 1'b1;
+      f1p_d = res0.page;
+      pa1_use_va_d = 1'b1;
+    end
     resolved_d = res0.resolved && resolved1;
     after_ok_d = (pa0_d[11:5] != 7'h7F) || (pa0_d[4:2] == 3'b111);
   end
@@ -893,6 +906,8 @@ module immu #(
     else if (i_active && !i_tlb_invalidate && capture_en) begin
       if (!pc_page_cross) f_pa1_ppn_ref_q <= pa0_d[riscv_pkg::PhysAddrBits-1:12];
       else if (super_next_ok) f_pa1_ppn_ref_q <= super_next_ppn;
+      else if (res0.fault && (!np_sample_matches || !res1.resolved))
+        f_pa1_ppn_ref_q <= pc_np_va[PpnBits-1:0];
       else if (np_sample_matches) f_pa1_ppn_ref_q <= res1.fault ? np_va_q[PpnBits-1:0] : res1.ppn;
       else f_pa1_ppn_ref_q <= '0;
     end
@@ -959,6 +974,11 @@ module immu #(
       end
       if (f0_q || f1_q)
         p_registered_fault_age_bounded : assert (f_fault_age_q <= {1'b0, fault_cache_epoch_q});
+      if ($past(
+              i_active && !i_tlb_invalidate && capture_en && res0.fault &&
+                !i_full_flush && !(fault_cache_expire && (f0_q || f1_q))
+          ))
+        p_first_fault_completes_window : assert (resolved_q && f0_q);
     end
   end
 `endif
