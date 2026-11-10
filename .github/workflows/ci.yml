@@ -1222,6 +1222,7 @@ jobs:
               ((coherence_ or coherent_) and not
               (axi_coherent_bridge or coherence_l1d or coherence_store_boundary or
               coherence_store_home or coherent_local_atomic or coh_hart_maint_prove or
+              coh_hart_maint_owned_prove or
               coherence_array_equiv)) or
               (coherent_local_atomic and amo_cover)
             timeout_minutes: 240
@@ -1268,12 +1269,13 @@ jobs:
           - shard: Coherence L1D free stream
             pytest_filter: coh_l1d_stream_free_bmc
             timeout_minutes: 330
-          # The hart maintenance composition proof with four scalar stores
-          # takes about an hour, and the scripted and store-free eight-endpoint
-          # L1D stream BMCs take about an hour together, so they run in their
-          # own job.
+          # The hart maintenance composition proof and its ownership lemmas
+          # share a job with the scripted and store-free eight-endpoint L1D
+          # stream BMCs.
           - shard: Hart maintenance
-            pytest_filter: coh_hart_maint_prove or coh_l1d_stream_bmc or coh_l1d_stream_free_nostore
+            pytest_filter: >-
+              coh_hart_maint_prove or coh_hart_maint_owned_prove or
+              coh_l1d_stream_bmc or coh_l1d_stream_free_nostore
             timeout_minutes: 330
           - shard: Other tasks
             pytest_filter: "not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or coherence_ or coherent_)"

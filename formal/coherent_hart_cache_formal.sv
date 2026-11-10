@@ -13,9 +13,7 @@
  *    See the License for the specific language governing permissions and
  *    limitations under the License.
  */
-
 `include "coherence_types.svh"
-
 module coherent_hart_cache_formal #(
     parameter bit COVER_MODE = 0
 ) (
@@ -23,6 +21,19 @@ module coherent_hart_cache_formal #(
 );
   localparam int unsigned AddrWidth = riscv_pkg::PhysAddrBits;
   `FROST_COHERENCE_TYPES(AddrWidth)
+`ifdef COH_MAINT_OWNED
+  logic f_seq_ever_pop, f_seq_final;
+  logic [2:0] f_seq_pushed, f_seq_popped;
+  logic f_if_swept;
+  logic [2:0] f_walk_state;
+  logic [riscv_pkg::Sv39VpnBits-1:0] f_walk_vpn;
+  logic f_walk_error, f_walk_poison;
+  // Observation ports and helper state never drive functional inputs.
+  // p_maint_fact_* labels select original checks for the induction task.
+  logic [8+8+7+3*64-1:0] f_maint_view;
+  logic [3:0][AddrWidth+2:0] f_if_read_requests;
+  logic [4:0] f_maint_home_state;
+`endif
   logic past_valid = 0;
   wire  rst = !past_valid;
   always_ff @(posedge i_clk) past_valid <= 1;
@@ -324,6 +335,13 @@ module coherent_hart_cache_formal #(
       .o_walk_resp_error(line_error),
       .i_fence_sync(fence_sync),
       .i_imem_sync_done(imem_done),
+`ifdef COH_MAINT_OWNED
+      .i_maint_first(first_pte),
+      .i_maint_final(stored_pte),
+      .o_maint_view(f_maint_view),
+      .o_maint_read_requests(f_if_read_requests),
+      .o_maint_swept(f_if_swept),
+`endif
       .o_fence_done(fence_done),
       .o_l1i_perf_events(),
       .o_l1d_perf_events(),
@@ -337,6 +355,12 @@ module coherent_hart_cache_formal #(
       .i_clk,
       .i_rst(rst),
       .i_root_ppn(44'h80000),
+`ifdef COH_MAINT_OWNED
+      .o_maint_state(f_walk_state),
+      .o_maint_vpn(f_walk_vpn),
+      .o_maint_error(f_walk_error),
+      .o_maint_poison(f_walk_poison),
+`endif
       .i_req_valid(walk),
       .o_req_ready(walk_ready),
       .i_req_vpn(walk_vpn),
@@ -373,6 +397,10 @@ module coherent_hart_cache_formal #(
         .i_clk,
         .i_rst(rst),
         .i_fatal_stop(1'b0),
+`ifdef COH_MAINT_OWNED
+        .i_maint_final(stored_pte),
+        .i_maint_final_seen(f_seq_final),
+`endif
         .i_req_valid(request),
         .o_req_ready(requester_ready),
         .i_req_write(1'b0),
@@ -430,7 +458,6 @@ module coherent_hart_cache_formal #(
       .i_ready(home_c_ready),
       .o_payload(completion)
   );
-
   // IF0 and IF1 have separate completion slots; other classes share a third.
   // Each identity survives through U. The service engine probes the private
   // data image and merges dirty replies before producing G.
@@ -449,6 +476,11 @@ module coherent_hart_cache_formal #(
   logic [Slots-1:0][8:0] request_key, grant_key;
   logic [Slots-1:0][AddrWidth-1:0] request_address, grant_address;
   logic [Slots-1:0][5:0] grant_tid;
+`ifdef COH_MAINT_OWNED
+  logic [Slots-1:0][3:0] f_request_opcode;
+  logic [Slots-1:0][255:0] f_grant_data;
+  logic [Slots-1:0] f_grant_error;
+`endif
   for (genvar n = 0; n < Slots; n++) begin : gen_entry
     coh_d_t saved_request;
     coh_g_t saved_grant;
@@ -459,6 +491,11 @@ module coherent_hart_cache_formal #(
     assign grant_key[n] = saved_grant.q;
     assign grant_address[n] = saved_grant.addr;
     assign grant_tid[n] = saved_grant.tid;
+`ifdef COH_MAINT_OWNED
+    assign f_request_opcode[n] = saved_request.opcode;
+    assign f_grant_data[n] = saved_grant.data;
+    assign f_grant_error[n] = saved_grant.error;
+`endif
   end
   logic [Slots-1:0][Slots-1:0] predecessors_q;
   logic [Slots-1:0] home_live_q, grant_sent_q, complete_q, after_q, error_q;
@@ -602,9 +639,45 @@ module coherent_hart_cache_formal #(
       .o_result_valid(result_valid),
       .i_result_ready(result_ready),
       .o_result(result),
+`ifdef COH_MAINT_OWNED
+      .o_maint_state(f_maint_home_state),
+`endif
       .o_image(),
       .o_fatal()
   );
+`ifdef COH_MAINT_OWNED
+  // The ownership task proves these service-entry facts without assuming any
+  // other assertions. The composition proof can then use them as invariants.
+  logic f_maint_serving, f_maint_request, f_maint_tid, f_maint_grant;
+  always_comb begin
+    f_maint_serving = 1;
+    f_maint_request = 1;
+    f_maint_tid = 1;
+    f_maint_grant = 1;
+    for (int n = 0; n < Slots; n++) begin
+      if (state_q[n] == Serving) begin
+        if (engine_idle || engine_tid != 6'(n)) f_maint_serving = 0;
+        if (result.q != request_key[n] || result.addr != request_address[n]) f_maint_request = 0;
+      end
+      if (state_q[n] == Result || state_q[n] == Granted || state_q[n] == Completed) begin
+        if (grant_tid[n] != 6'(n)) f_maint_tid = 0;
+        if (grant_key[n] != request_key[n] || grant_address[n] != request_address[n])
+          f_maint_grant = 0;
+      end
+    end
+  end
+  always_ff @(posedge i_clk)
+    if (!rst) begin
+      if (!engine_idle)
+        p_maint_owned_engine : assert (engine_tid < Slots && state_q[2'(engine_tid)] == Serving);
+      p_maint_owned_serving : assert (f_maint_serving);
+      p_maint_owned_request : assert (f_maint_request);
+      p_maint_owned_tid : assert (f_maint_tid);
+      p_maint_owned_grant : assert (f_maint_grant);
+      if (result_valid && result_ready)
+        p_maint_owned_result : assert (result.tid < Slots && state_q[2'(result.tid)] == Serving);
+    end
+`endif
   always_ff @(posedge i_clk)
     if (!rst) begin
       if (!engine_idle) assert (engine_tid < Slots && state_q[2'(engine_tid)] == Serving);
@@ -619,11 +692,23 @@ module coherent_hart_cache_formal #(
         assert (grant_key[n] == request_key[n] && grant_address[n] == request_address[n]);
       end
       if (result_valid && !result.error)
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_result_shape :
         assert ((result.data & {4{result.addr[5] ? 64'hfffffffffffffcff : 64'hfffffffffffffcdf}}) ==
           (result.addr[5] ? {4{64'h200004cf}} : {4{64'h200000cf}}));
+`else
+        assert ((result.data & {4{result.addr[5] ? 64'hfffffffffffffcff : 64'hfffffffffffffcdf}}) ==
+          (result.addr[5] ? {4{64'h200004cf}} : {4{64'h200000cf}}));
+`endif
       if (g_valid && !grant.error)
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_grant_shape :
         assert ((grant.data & {4{grant.addr[5] ? 64'hfffffffffffffcff : 64'hfffffffffffffcdf}}) ==
           (grant.addr[5] ? {4{64'h200004cf}} : {4{64'h200000cf}}));
+`else
+        assert ((grant.data & {4{grant.addr[5] ? 64'hfffffffffffffcff : 64'hfffffffffffffcdf}}) ==
+          (grant.addr[5] ? {4{64'h200004cf}} : {4{64'h200000cf}}));
+`endif
     end
   always_ff @(posedge i_clk) begin
     if (rst) begin
@@ -642,16 +727,40 @@ module coherent_hart_cache_formal #(
         home_prefix_q <= 1;
         if (pending_put_q.data == {4{stored_pte}}) home_published_q <= 1;
       end
-      if (home_prefix_q) assert (home_data_q == {4{first_pte}} || home_data_q == {4{stored_pte}});
-      if (home_published_q) assert (home_data_q == {4{stored_pte}});
+      if (home_prefix_q)
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_prefix :
+        assert (home_data_q == {4{first_pte}} || home_data_q == {4{stored_pte}});
+`else
+        assert (home_data_q == {4{first_pte}} || home_data_q == {4{stored_pte}});
+`endif
+      if (home_published_q)
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_published : assert (home_data_q == {4{stored_pte}});
+`else
+        assert (home_data_q == {4{stored_pte}});
+`endif
       if (update_valid && address == 32'h80000000)
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_update :
         assert (update_data == {4{first_pte}} || update_data == {4{stored_pte}});
+`else
+        assert (update_data == {4{first_pte}} || update_data == {4{stored_pte}});
+`endif
       if (p_valid && p_ready)
         probe_needs_fresh_q <= address == 32'h80000000 &&
             store_sent_q && !pending && !home_published_q;
       if (r_valid && probe_needs_fresh_q) begin
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_probe_valid : assert (reply.data_valid);
+`else
         assert (reply.data_valid);
+`endif
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_probe_bits : assert (reply.data[9:8] == stored_bits);
+`else
         assert (reply.data[9:8] == stored_bits);
+`endif
       end
     end
   end
@@ -733,10 +842,23 @@ module coherent_hart_cache_formal #(
       if (fetch && if_ready) if_after_q[fetch_sector] <= fence_seen_q;
       if (if_resp) assert (if_response_id < 2);
       if (if_resp && if_after_q[if_response_id[0]] && !if_error && !if_response_id[0]) begin
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_if_bits : assert (if_data[9:8] == stored_bits);
+`else
         assert (if_data[9:8] == stored_bits);
+`endif
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_if_global : assert (if_data[5] == stored_global);
+`else
         assert (if_data[5] == stored_global);
+`endif
       end
-      if (if_resp && if_response_id[0] && !if_error) assert (if_data == {4{64'h200004cf}});
+      if (if_resp && if_response_id[0] && !if_error)
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_if_upper : assert (if_data == {4{64'h200004cf}});
+`else
+        assert (if_data == {4{64'h200004cf}});
+`endif
       if (line_valid && line_ready) begin
         line_live_q  <= 1;
         walk_after_q <= store_sent_q && !pending;
@@ -745,8 +867,16 @@ module coherent_hart_cache_formal #(
         assert (line_live_q);
         line_live_q <= 0;
         if (walk_after_q && !line_error) begin
+`ifdef COH_MAINT_OWNED
+          p_maint_fact_walk_bits_0 : assert (line_data[9:8] == stored_bits);
+`else
           assert (line_data[9:8] == stored_bits);
+`endif
+`ifdef COH_MAINT_OWNED
+          p_maint_fact_walk_global_0 : assert (line_data[5] == stored_global);
+`else
           assert (line_data[5] == stored_global);
+`endif
         end
       end
       if (walk && walk_ready) begin
@@ -761,11 +891,19 @@ module coherent_hart_cache_formal #(
         if (!discard) begin
           assert (walk_resp);
           assert (translation.fault_kind == riscv_pkg::DFAULT_ACCESS);
+`ifdef COH_MAINT_OWNED
+          p_maint_fact_vpn_1 : assert (translation.vpn == accepted_vpn_q);
+`else
           assert (translation.vpn == accepted_vpn_q);
+`endif
         end
       end
       if (walk_resp) begin
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_vpn_0 : assert (translation.vpn == accepted_vpn_q);
+`else
         assert (translation.vpn == accepted_vpn_q);
+`endif
         assert (translation.fault_kind == (last_error_q ? riscv_pkg::DFAULT_ACCESS :
             riscv_pkg::DFAULT_NONE));
       end
@@ -790,7 +928,12 @@ module coherent_hart_cache_formal #(
         if (walk_ready) drain_pending_q <= 0;
         if (drain_age_q != 3) drain_age_q <= drain_age_q + 1;
       end
-      if (drain_pending_q && drain_age_q >= 2 && !discard) assert (walk_ready);
+      if (drain_pending_q && drain_age_q >= 2 && !discard)
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_drain : assert (walk_ready);
+`else
+        assert (walk_ready);
+`endif
       cover (drain_pending_q && walk_ready);
       cover (discard && line_valid && line_ready);
       cover (discard && line_resp && line_error);
@@ -807,7 +950,6 @@ module coherent_hart_cache_formal #(
           store_absorbed_q && stored_global);
       cover (request_fence && store_sent_q && two_stores && $countones(store_holds) == 1);
       cover (fence_done && &competitors_q && delayed_g_q && delayed_c_q && delayed_u_q);
-
       if (put_valid && put_ready) begin
         put_pending_q <= 1;
         pending_put_q <= put;
@@ -858,7 +1000,11 @@ module coherent_hart_cache_formal #(
         competitors_q[demand.q[2:1]-1'b1] <= 1;
       if (result_valid && after_q[2'(result.tid)] && !result.error && result.q[8:7] == 0 &&
           result.q[6:5] != 0 && result.addr == 32'h80000000)
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_after_result : assert (result.data[9:8] == stored_bits);
+`else
         assert (result.data[9:8] == stored_bits);
+`endif
       if (result_valid && result_ready)
         assert (result.tid < Slots && state_q[2'(result.tid)] == Serving);
       if (home_c_valid) begin
@@ -872,4 +1018,389 @@ module coherent_hart_cache_formal #(
       if (r_valid && r_ready && reply.absorbed) absorbed_q <= 1;
     end
   end
+`ifdef COH_MAINT_OWNED
+  localparam logic [63:0] ShapeMask = 64'hfffffffffffff8df;
+  localparam logic [63:0] ShapeBase = 64'h200000cf;
+  logic f_request_types, f_grant_shapes;
+  always_comb begin
+    f_request_types = 1;
+    f_grant_shapes  = 1;
+    for (int n = 0; n < Slots; n++) begin
+      if (home_live_q[n]) begin
+        if (request_key[n] != 9'h000 &&
+            request_key[n] != 9'h020 &&
+            request_key[n] != 9'h022 &&
+            request_key[n] != 9'h040 &&
+            request_key[n] != 9'h042 &&
+            request_key[n] != 9'h162 &&
+            request_key[n] != 9'h164)
+          f_request_types = 0;
+        if (f_request_opcode[n] != (request_key[n][8:7] == 2 ?
+            coherence_pkg::DMARead :
+            request_key[n][6:5] == 2 ?
+            coherence_pkg::ReadOncePTW :
+            request_key[n][6:5] == 1 ?
+            coherence_pkg::ReadOnceIF :
+            coherence_pkg::GetM))
+          f_request_types = 0;
+        if (request_key[n][6:5] != 2 && error_q[n]) f_request_types = 0;
+      end
+      if ((state_q[n] == Result ||
+          state_q[n] == Granted ||
+          state_q[n] == Completed) &&
+          grant_key[n][6:5] != 2 &&
+          f_grant_error[n])
+        f_grant_shapes = 0;
+      if ((state_q[n] == Result || state_q[n] == Granted || state_q[n] == Completed) &&
+          !f_grant_error[n] && (f_grant_data[n] & {4{ShapeMask}}) != {4{ShapeBase}})
+        f_grant_shapes = 0;
+    end
+  end
+  always_ff @(posedge i_clk)
+    if (!rst) begin
+      if (result_valid && !result.error)
+        p_maint_data_result_shape : assert ((result.data & {4{ShapeMask}}) == {4{ShapeBase}});
+      if (g_valid && !grant.error)
+        p_maint_data_grant_shape : assert ((grant.data & {4{ShapeMask}}) == {4{ShapeBase}});
+      if (update_valid)
+        p_maint_data_update_shape : assert ((update_data & {4{ShapeMask}}) == {4{ShapeBase}});
+      p_maint_owned_request_types : assert (f_request_types);
+      p_maint_owned_grant_shapes : assert (f_grant_shapes);
+      if (|store_mask) p_maint_owned_store_shape : assert ((store_data_q & ShapeMask) == ShapeBase);
+      p_maint_owned_home_shape : assert ((home_data_q & {4{ShapeMask}}) == {4{ShapeBase}});
+      if (read_pending_q)
+        p_maint_owned_read_shape : assert ((read_data_q & {4{ShapeMask}}) == {4{ShapeBase}});
+      if (put_pending_q)
+        p_maint_owned_put_shape : assert ((pending_put_q.data & {4{ShapeMask}}) == {4{ShapeBase}});
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  logic f_maint_states, f_maint_predecessors, f_maint_order, f_maint_serviced, f_maint_serial;
+  logic [Slots-1:0] f_maint_advanced;
+  always_comb begin
+    f_maint_states = 1;
+    f_maint_predecessors = 1;
+    f_maint_order = 1;
+    f_maint_serviced = 1;
+    f_maint_serial = 1;
+    for (int n = 0; n < Slots; n++) begin
+      f_maint_advanced[n] = state_q[n] == Serving || state_q[n] == Result ||
+          state_q[n] == Granted || state_q[n] == Completed;
+      if (state_q[n] > Completed) f_maint_states = 0;
+      if (f_maint_advanced[n] && predecessors_q[n] != 0) f_maint_serviced = 0;
+    end
+    for (int n = 0; n < Slots; n++) begin
+      for (int m = 0; m < Slots; m++) begin
+        if (home_live_q[n] && predecessors_q[n][m] &&
+            (n == m || !home_live_q[m] || request_address[n] != request_address[m]))
+          f_maint_predecessors = 0;
+        if (n < m && home_live_q[n] && home_live_q[m] &&
+            request_address[n] == request_address[m]) begin
+          if (predecessors_q[n][m] == predecessors_q[m][n]) f_maint_order = 0;
+          if (f_maint_advanced[n] && f_maint_advanced[m]) f_maint_serial = 0;
+        end
+      end
+    end
+  end
+  always_ff @(posedge i_clk)
+    if (!rst) begin
+      p_maint_owned_states : assert (f_maint_states);
+      p_maint_owned_predecessors : assert (f_maint_predecessors);
+      p_maint_owned_order : assert (f_maint_order);
+      p_maint_owned_serviced : assert (f_maint_serviced);
+      p_maint_owned_serial : assert (f_maint_serial);
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  // Flags, high to low: pop, grant input, granted, written, resident,
+  // put, accepted put, data reply. Phases: WaitU through Idle, high to low.
+  logic [7:0] f_cache_flags;
+  logic [6:0] f_cache_phase;
+  logic [63:0] f_cache_value, f_cache_installed, f_cache_grant;
+  coh_g_t f_private_grant;
+  assign {
+    f_seq_ever_pop, f_seq_final, f_seq_pushed, f_seq_popped,
+    f_cache_flags, f_cache_phase, f_cache_value, f_cache_installed, f_cache_grant
+  } = f_maint_view;
+  assign f_private_grant = grant_q[2];
+  wire  f_private_live = home_live_q[2] && request_key[2] == 0;
+  wire  f_dirty = f_maint_home_state[2] && address == 32'h80000000;
+  logic f_private_context;
+  always_comb begin
+    f_private_context = 1;
+    if ((f_cache_phase[0] || f_cache_phase[1]) && f_private_live) f_private_context = 0;
+    if (f_cache_phase[2] &&
+        !(f_private_live &&
+        (state_q[2] == Queued ||
+        state_q[2] == Serving ||
+        state_q[2] == Result)))
+      f_private_context = 0;
+    if ((|f_cache_phase[5:3]) && !(f_private_live && state_q[2] == Granted)) f_private_context = 0;
+    if (f_cache_phase[6] && !(f_private_live && state_q[2] == Completed)) f_private_context = 0;
+    if ((|f_cache_phase[6:3]) && f_cache_grant != f_private_grant.data[63:0]) f_private_context = 0;
+  end
+  always_ff @(posedge i_clk)
+    if (!rst) begin
+      p_maint_ledger_private_context : assert (f_private_context);
+      if (f_private_live)
+        p_maint_ledger_private_address : assert (request_address[2] == 32'h80000000);
+      p_maint_ledger_put_exclusion : assert (!((put_pending_q || put_ack_q) && (|home_live_q)));
+      p_maint_ledger_put_phases : assert (!(put_pending_q && put_ack_q));
+      if (put_pending_q || put_ack_q)
+        p_maint_ledger_put_owner : assert (f_cache_flags[2] && f_cache_flags[1]);
+      if (put_pending_q)
+        p_maint_ledger_put_data : assert (pending_put_q.data == {4{f_cache_installed}});
+      if (put_ack_q) p_maint_ledger_ack_data : assert (home_data_q == {4{f_cache_installed}});
+      p_maint_ledger_reply_wait : assert (r_valid == f_maint_home_state[0]);
+      if (p_valid || r_valid) p_maint_ledger_no_reply_ack : assert (!wa_valid);
+      if (f_dirty) begin
+        p_maint_ledger_no_getm : assert (!(f_private_live && f_maint_advanced[2]));
+        p_maint_ledger_no_resident : assert (!f_cache_flags[3]);
+        p_maint_ledger_no_pop : assert (!f_cache_flags[7]);
+        p_maint_ledger_image : assert (update_data == {4{f_cache_installed}});
+        if (engine_idle || result_valid || update_pending_q)
+          p_maint_ledger_published : assert (home_data_q == {4{f_cache_installed}});
+      end
+      if (!f_cache_flags[3] && !f_cache_flags[2] && !f_cache_flags[0] && !put_pending_q && !f_dirty)
+        p_maint_ledger_home : assert (home_data_q == {4{f_cache_installed}});
+      if (read_pending_q && result.q == 0)
+        p_maint_ledger_getm_read : assert (read_data_q == {4{f_cache_installed}});
+      if (!engine_idle && result.q == 0 && f_maint_home_state[1])
+        p_maint_ledger_getm_image : assert (update_data == {4{f_cache_installed}});
+      if (f_private_live && (state_q[2] == Result || (state_q[2] == Granted && !f_cache_flags[4])))
+        p_maint_ledger_getm_grant : assert (f_private_grant.data == {4{f_cache_installed}});
+      if (f_cache_flags[6])
+        p_maint_ledger_grant_input : assert (f_cache_grant == f_cache_installed);
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  logic f_maint_keys;
+  always_comb begin
+    f_maint_keys = 1;
+    if (home_live_q[0] && request_key[0] != 9'h020) f_maint_keys = 0;
+    if (home_live_q[1] && request_key[1] != 9'h022) f_maint_keys = 0;
+    if (home_live_q[2] && (request_key[2] == 9'h020 || request_key[2] == 9'h022)) f_maint_keys = 0;
+  end
+  always_ff @(posedge i_clk) if (!rst) p_maint_owned_keys : assert (f_maint_keys);
+`endif
+`ifdef COH_MAINT_OWNED
+  always_ff @(posedge i_clk)
+    if (!rst) begin
+      p_maint_seq_launch_count :
+      assert (stores_launched_q <= store_goal &&
+          4'(f_seq_pushed) + 4'(|store_mask) == 4'(stores_launched_q));
+      if (|store_mask) begin
+        p_maint_seq_launch_mask : assert (store_mask == (stores_launched_q == 1 ? 8'hff : 8'h02));
+        p_maint_seq_launch_data :
+        assert (store_data_q == (stores_launched_q == 1 ? first_pte : stored_pte));
+      end
+      if (store_sent_q)
+        p_maint_seq_sent : assert (stores_launched_q == store_goal && store_mask == 0);
+      if (f_dirty || put_pending_q || put_ack_q) p_maint_seq_home_history : assert (f_seq_ever_pop);
+      if (store_sent_q && !pending)
+        p_maint_seq_store_drained : assert (f_seq_final && f_cache_installed == stored_pte);
+      if (home_published_q)
+        p_maint_seq_published : assert (f_seq_final && f_cache_installed == stored_pte);
+      if (update_valid && address == 32'h80000000)
+        p_maint_seq_update :
+        assert (update_data == {4{first_pte}} || update_data == {4{stored_pte}});
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  always_ff @(posedge i_clk)
+    if (!rst) begin
+      p_maint_seq_put_context : assert (f_cache_flags[1] == (put_pending_q || put_ack_q));
+      if (f_seq_final && !home_published_q)
+        p_maint_seq_latest_owner :
+        assert (f_cache_flags[3] ||
+            f_cache_flags[2] ||
+            f_cache_flags[0] ||
+            f_dirty ||
+            put_pending_q);
+      if (home_prefix_q)
+        p_maint_seq_prefix_copy :
+        assert (home_data_q == {4{first_pte}} || home_data_q == {4{stored_pte}});
+      if (home_published_q) p_maint_seq_final_copy : assert (home_data_q == {4{stored_pte}});
+      if (probe_needs_fresh_q && r_valid)
+        p_maint_seq_fresh_context :
+        assert (f_seq_final && !home_published_q && address == 32'h80000000);
+      if (r_valid && address == 32'h80000000 && f_seq_final && !home_published_q)
+        p_maint_seq_latest_reply : assert (reply.data_valid && reply.data == {4{stored_pte}});
+      if (probe_needs_fresh_q && r_valid)
+        p_maint_seq_fresh_reply : assert (reply.data_valid && reply.data[9:8] == stored_bits);
+      if (fence_seen_q || fence_done) p_maint_seq_fenced : assert (f_seq_final);
+      if ((|after_q) || (|if_after_q) || walk_after_q) p_maint_seq_after : assert (f_seq_final);
+      if (read_pending_q && address == 32'h80000000 && home_published_q)
+        p_maint_seq_final_read : assert (read_data_q == {4{stored_pte}});
+      if (!engine_idle &&
+          address == 32'h80000000 &&
+          f_maint_home_state[1] &&
+          !f_dirty &&
+          home_published_q)
+        p_maint_seq_final_clean_image : assert (update_data == {4{stored_pte}});
+      if (!engine_idle &&
+          address == 32'h80000000 &&
+          f_maint_home_state[1] &&
+          f_maint_home_state[3] &&
+          !f_dirty &&
+          f_seq_final)
+        p_maint_seq_clean_published : assert (home_published_q);
+      if (result_valid && !result.error && result.addr == 32'h80000000 && f_seq_final)
+        p_maint_seq_final_result : assert (result.data == {4{stored_pte}});
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  always_ff @(posedge i_clk)
+    if (!rst && f_seq_final && f_dirty && (engine_idle || result_valid || update_pending_q))
+      p_maint_seq_publish_marker : assert (home_published_q);
+`endif
+`ifdef COH_MAINT_OWNED
+  logic f_if_request_context, f_if_upper_grants;
+  always_comb begin
+    f_if_request_context = 1;
+    f_if_upper_grants = 1;
+    for (int n = 0; n < 4; n++) begin
+      if (f_if_read_requests[n][AddrWidth+:3] >= 3) begin
+        if (!home_live_q[n < 2 ? n : 2] ||
+            request_address[n < 2 ? n : 2] != f_if_read_requests[n][AddrWidth-1:0] ||
+            request_key[n < 2 ? n : 2] != (n < 2 ? 9'h020 | (9'(n) << 1) : 9'h040 | (9'(n-2) << 1)))
+          f_if_request_context = 0;
+        if (f_if_read_requests[n][AddrWidth+:3] == 3) begin
+          if (state_q[n < 2 ? n : 2] != Queued &&
+              state_q[n < 2 ? n : 2] != Serving &&
+              state_q[n < 2 ? n : 2] != Result)
+            f_if_request_context = 0;
+        end else if (state_q[n < 2 ? n : 2] != Granted && state_q[n < 2 ? n : 2] != Completed)
+          f_if_request_context = 0;
+      end
+    end
+    for (int n = 0; n < Slots; n++)
+    if ((state_q[n] == Result ||
+        state_q[n] == Granted ||
+        state_q[n] == Completed) &&
+        grant_address[n][5] &&
+        !f_grant_error[n] &&
+        f_grant_data[n] != {4{64'h200004cf}})
+      f_if_upper_grants = 0;
+  end
+  always_ff @(posedge i_clk)
+    if (!rst) begin
+      p_maint_if_request_context : assert (f_if_request_context);
+      p_maint_if_upper_grants : assert (f_if_upper_grants);
+      if (read_pending_q && address[5])
+        p_maint_if_upper_read : assert (read_data_q == {4{64'h200004cf}});
+      if (result_valid && result.addr[5] && !result.error)
+        p_maint_if_upper_result : assert (result.data == {4{64'h200004cf}});
+      if (g_valid && grant.addr[5] && !grant.error)
+        p_maint_if_upper_grant : assert (grant.data == {4{64'h200004cf}});
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  always_ff @(posedge i_clk)
+    if (!rst &&
+        !engine_idle &&
+        !f_maint_home_state[4] &&
+        !result.error &&
+        f_maint_home_state[3] &&
+        address == 32'h80000000 &&
+        !f_dirty &&
+        result.q != 0)
+      p_maint_seq_clean_owner :
+      assert (!f_cache_flags[3] && !f_cache_flags[2] && !f_cache_flags[5]);
+`endif
+`ifdef COH_MAINT_OWNED
+  logic f_if_no_install, f_if_latest_grants;
+  always_comb begin
+    f_if_no_install = 1;
+    f_if_latest_grants = 1;
+    for (int n = 0; n < Slots; n++)
+    if ((state_q[n] == Result ||
+        state_q[n] == Granted ||
+        state_q[n] == Completed) &&
+        request_address[n] == 32'h80000000 &&
+        request_key[n] != 0 &&
+        !f_grant_error[n]) begin
+      if (f_cache_flags[3] || f_cache_flags[5] || f_cache_flags[7]) f_if_no_install = 0;
+      if (f_seq_final && f_grant_data[n] != {4{stored_pte}}) f_if_latest_grants = 0;
+    end
+  end
+  always_ff @(posedge i_clk)
+    if (!rst) begin
+      p_maint_if_no_install : assert (f_if_no_install);
+      p_maint_if_latest_grants : assert (f_if_latest_grants);
+      if (g_valid && grant.q != 0 && grant.addr == 32'h80000000 && !grant.error && f_seq_final)
+        p_maint_if_latest_grant : assert (grant.data == {4{stored_pte}});
+      if (fence_done || fence_seen_q || (|if_after_q))
+        p_maint_if_fenced_epoch : assert (f_if_swept);
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  logic f_ppn_grants;
+  always_comb begin
+    f_ppn_grants = 1;
+    for (int n = 0; n < Slots; n++)
+    if ((state_q[n] == Result ||
+        state_q[n] == Granted ||
+        state_q[n] == Completed) &&
+        !f_grant_error[n] &&
+        (f_grant_data[n] & {4{64'hfffffffffffffcdf}}) != {4{grant_address[n][5] ?
+        64'h200004cf : 64'h200000cf}})
+      f_ppn_grants = 0;
+  end
+  always_ff @(posedge i_clk)
+    if (!rst) begin
+      p_maint_ppn_home : assert ((home_data_q & {4{64'hfffffffffffffcdf}}) == {4{64'h200000cf}});
+      if (read_pending_q)
+        p_maint_ppn_read :
+        assert ((read_data_q & {4{64'hfffffffffffffcdf}}) == {4{address[5] ?
+            64'h200004cf : 64'h200000cf}});
+      if (result_valid && !result.error)
+        p_maint_ppn_result :
+        assert ((result.data & {4{64'hfffffffffffffcdf}}) == {4{result.addr[5] ?
+            64'h200004cf : 64'h200000cf}});
+      p_maint_ppn_grants : assert (f_ppn_grants);
+      if (g_valid && !grant.error)
+        p_maint_ppn_grant :
+        assert ((grant.data & {4{64'hfffffffffffffcdf}}) == {4{grant.addr[5] ?
+            64'h200004cf : 64'h200000cf}});
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  logic f_walk_owners;
+  logic [2:0] f_walk_pending;
+  always_comb begin
+    f_walk_owners  = 1;
+    f_walk_pending = 0;
+    for (int n = 2; n < 4; n++) begin
+      if (f_if_read_requests[n][AddrWidth+:3] == 2 || f_if_read_requests[n][AddrWidth+:3] == 3)
+        f_walk_pending += 1'b1;
+      if (f_if_read_requests[n][AddrWidth+:3] != 0 &&
+          f_if_read_requests[n][AddrWidth-1:0] != 32'h80000000)
+        f_walk_owners = 0;
+    end
+    if (f_walk_pending + 3'(line_resp) > 1) f_walk_owners = 0;
+    if (line_live_q != ((f_walk_pending != 0) || line_resp)) f_walk_owners = 0;
+  end
+  always_ff @(posedge i_clk)
+    if (!rst) begin
+      p_maint_ptw_owners : assert (f_walk_owners);
+      p_maint_ptw_wait : assert (line_live_q == (f_walk_state == 2));
+      if (line_valid) p_maint_ptw_address : assert (line_addr == 32'h80000000);
+      if (f_walk_state != 0) begin
+        p_maint_ptw_vpn_context : assert (f_walk_vpn == accepted_vpn_q);
+        p_maint_ptw_error_context : assert (f_walk_error == last_error_q);
+        p_maint_ptw_poison_context : assert (f_walk_poison == poisoned_q);
+      end
+      if (line_resp && !line_error)
+        p_maint_ptw_line_image :
+        assert ((line_data & {4{64'hfffffffffffffcdf}}) == {4{64'h200000cf}});
+      if (drain_pending_q) begin
+        p_maint_ptw_drain_enter :
+        assert (f_walk_state == 0 || f_walk_state == 3 || f_walk_state == 4);
+        if (drain_age_q >= 1)
+          p_maint_ptw_drain_response : assert (f_walk_state == 0 || f_walk_state == 4);
+        if (drain_age_q >= 2) p_maint_ptw_drain_idle : assert (f_walk_state == 0);
+      end
+    end
+`endif
 endmodule

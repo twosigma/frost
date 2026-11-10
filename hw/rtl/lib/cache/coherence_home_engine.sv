@@ -13,9 +13,7 @@
  *    See the License for the specific language governing permissions and
  *    limitations under the License.
  */
-
 `include "coherence_types.svh"
-
 // A resident request owns its image until the completion credit returns.
 module coherence_home_engine #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -73,6 +71,9 @@ module coherence_home_engine #(
     output logic o_initial_error,
     output logic o_read_owner,
     output logic o_update_owner,
+`endif
+`ifdef COH_MAINT_OWNED
+    output logic [4:0] o_maint_state,
 `endif
     output logic o_fatal
 );
@@ -447,5 +448,100 @@ module coherence_home_engine #(
   end
 `endif
 `endif
-
+`ifdef COH_MAINT_OWNED
+  always_ff @(posedge i_clk)
+    if (!i_rst) begin
+      p_maint_owned_home_phase : assert (phase_q <= Fatal && probe_phase_q <= ProbeAck);
+      p_maint_owned_home_done : assert (!read_done_q || read_sent_q);
+      if (phase_q == Lookup)
+        p_maint_owned_home_lookup : assert (!read_sent_q && !read_done_q && !dirty_q && !error_q);
+      if (phase_q == Update || phase_q == UpdateWait || phase_q == Result)
+        if (!error_q)
+          p_maint_owned_home_image_live : assert (read_done_q && probe_phase_q == ProbeDone);
+      p_maint_owned_home_read_owner :
+      assert ((!i_read_ready) == ((phase_q == Service ||
+          phase_q == Fatal) &&
+          read_sent_q &&
+          !read_done_q));
+      p_maint_owned_home_update_owner : assert ((!i_update_ready) == (phase_q == UpdateWait));
+      if (i_decision_valid) p_maint_owned_home_decision : assert (deciding);
+      if (phase_q != Free) begin
+        p_maint_owned_home_type :
+        assert (request_q.opcode == (request_q.q[8:7] == 2 ?
+            coherence_pkg::DMARead :
+            request_q.q[6:5] == 2 ?
+            coherence_pkg::ReadOncePTW :
+            request_q.q[6:5] == 1 ?
+            coherence_pkg::ReadOnceIF :
+            coherence_pkg::GetM));
+        if (error_q)
+          p_maint_owned_home_initial_error :
+          assert (phase_q == Result && !read_sent_q && !read_done_q && !dirty_q);
+        p_maint_owned_home_opcode :
+        assert (request_q.opcode == coherence_pkg::GetM ||
+            request_q.opcode == coherence_pkg::ReadOnceIF ||
+            request_q.opcode == coherence_pkg::ReadOncePTW ||
+            request_q.opcode == coherence_pkg::DMARead);
+        if (request_q.opcode != coherence_pkg::ReadOncePTW)
+          p_maint_owned_home_error : assert (!error_q);
+      end
+      if (read_done_q || dirty_q)
+        p_maint_owned_image_shape :
+        assert ((image_q & {LINE_BYTES/8{64'hfffffffffffff8df}}) == {LINE_BYTES/8{64'h200000cf}});
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  assign o_maint_state = {
+    phase_q == Lookup,
+    probe_phase_q == ProbeDone,
+    dirty_q,
+    read_done_q,
+    phase_q == Service && probe_phase_q == ProbeWait
+  };
+  always_ff @(posedge i_clk)
+    if (!i_rst && phase_q != Free && request_q.opcode == coherence_pkg::GetM)
+      p_maint_ledger_getm_clean : assert (!dirty_q);
+  always_ff @(posedge i_clk)
+    if (!i_rst) begin
+      if (phase_q == Service ||
+          phase_q == Update ||
+          phase_q == UpdateWait ||
+          (phase_q == Result &&
+          !error_q))
+        p_maint_ledger_probe_address :
+        assert (probe_q.addr == request_q.addr && probe_q.tid == tid_q);
+      if (phase_q == Service && probe_phase_q == ProbeAck) begin
+        p_maint_ledger_ack_dirty : assert (dirty_q);
+        p_maint_ledger_ack_address :
+        assert (ack_q.addr == request_q.addr && request_q.addr == 32'h80000000);
+      end
+      if (phase_q == Service && request_q.opcode == coherence_pkg::GetM)
+        p_maint_ledger_no_probe : assert (probe_phase_q == ProbeDone);
+      if (phase_q == Update || phase_q == UpdateWait)
+        p_maint_ledger_update_dirty : assert (dirty_q);
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  always_ff @(posedge i_clk)
+    if (!i_rst && phase_q == Service && (probe_phase_q == ProbeOffer || probe_phase_q == ProbeWait))
+      p_maint_seq_probe_clean : assert (!dirty_q);
+`endif
+`ifdef COH_MAINT_OWNED
+  always_ff @(posedge i_clk)
+    if (!i_rst) begin
+      if (dirty_q) p_maint_if_dirty_base : assert (request_q.addr == 32'h80000000);
+      if (read_done_q && request_q.addr[5])
+        p_maint_if_upper_image : assert (image_q == {LINE_BYTES / 8{64'h200004cf}});
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  always_ff @(posedge i_clk) if (!i_rst) p_maint_seq_home_nonfatal : assert (phase_q != Fatal);
+`endif
+`ifdef COH_MAINT_OWNED
+  always_ff @(posedge i_clk)
+    if (!i_rst && (read_done_q || dirty_q))
+      p_maint_ppn_image :
+      assert ((image_q & {LINE_BYTES/8{64'hfffffffffffffcdf}}) == {LINE_BYTES/8{request_q.addr[5] ?
+          64'h200004cf : 64'h200000cf}});
+`endif
 endmodule

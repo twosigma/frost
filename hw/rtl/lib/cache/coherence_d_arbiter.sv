@@ -13,7 +13,6 @@
  *    See the License for the specific language governing permissions and
  *    limitations under the License.
  */
-
 // Selection and payload stay fixed throughout a stalled presentation.
 module coherence_d_arbiter #(
     parameter int unsigned WIDTH = 344,
@@ -202,5 +201,27 @@ module coherence_d_arbiter #(
     end
   end
 `endif
+`endif
+`ifdef COH_MAINT_OWNED
+  logic f_maint_later;
+  always_comb begin
+    f_maint_later = 1;
+    for (int n = 0; n < PORTS; n++) if (later_q[n] != (n >= int'(next_q))) f_maint_later = 0;
+  end
+  always_ff @(posedge i_clk)
+    if (!i_rst) begin
+      p_maint_owned_arb_indices : assert (selected_port_q < PORTS && next_q < PORTS);
+      p_maint_owned_arb_later : assert (f_maint_later);
+      p_maint_owned_arb_mask :
+      assert (selected_ports_q == (selected_q ? PORTS'(1) << selected_port_q : PORTS'(0)));
+      if (selected_q) begin
+        p_maint_owned_arb_live : assert (i_valid[selected_port_q]);
+        p_maint_owned_arb_payload : assert (payload_q == i_payload[selected_port_q]);
+      end
+      if (found)
+        p_maint_owned_arb_pick :
+        assert (pick_ports == PORTS'(1) << pick && pick_payload == i_payload[pick]);
+        else p_maint_owned_arb_empty : assert (pick_ports == '0);
+    end
 `endif
 endmodule

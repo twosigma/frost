@@ -13,11 +13,9 @@
  *    See the License for the specific language governing permissions and
  *    limitations under the License.
  */
-
 // Small cache contracts for the maintenance composition proof.
 // Data arrays and replacement are covered by their component targets.
 `include "coherence_types.svh"
-
 module coherence_l1d #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned CACHE_BYTES = 128 * 1024,
@@ -112,11 +110,22 @@ module coherence_l1d #(
     input logic i_u_valid,
     output logic o_u_ready,
     input logic [ADDR_WIDTH+14:0] i_u,
+`ifdef COH_MAINT_OWNED
+    input logic [63:0] i_maint_first,
+    i_maint_final,
+    output logic [8+8+7+3*64-1:0] o_maint_view,
+`endif
     output cache_perf_pkg::cache_instance_perf_events_t o_perf_events,
     output logic o_fatal,
     output logic [ADDR_WIDTH-1:0] o_fatal_addr
 );
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
+`ifdef COH_MAINT_OWNED
+  logic [6:0] f_maint_ep_phase;
+  logic [3:0][5:0] f_seq_contributors;
+  logic f_seq_ever_pop = 0, f_seq_final = 0;
+  logic [2:0] f_seq_pushed = 0, f_seq_popped = 0;
+`endif
 `ifdef COH_MAINT_FOUR
   logic four_records_q = 0;
   wire  install = four_records_q;
@@ -193,7 +202,11 @@ module coherence_l1d #(
       .o_data(record_data),
       .o_mask(record_mask),
       .o_tag(),
+`ifdef COH_MAINT_OWNED
+      .o_contributors(f_seq_contributors),
+`else
       .o_contributors(),
+`endif
       .o_ep()
   );
   assign o_pending_store = pending_q;
@@ -257,6 +270,9 @@ module coherence_l1d #(
       .i_u_valid,
       .o_u_ready,
       .i_u,
+`ifdef COH_MAINT_OWNED
+      .o_maint_phase(f_maint_ep_phase),
+`endif
       .o_live(live)
   );
   always_ff @(posedge i_clk) begin
@@ -274,9 +290,24 @@ module coherence_l1d #(
       grant_image_q <= 0;
     end else begin
       assert (!i_maint_valid);
-      if (written_q) assert (value_q == installed_value_q);
-      if (o_r_valid && reply_q.data_valid) assert (reply_q.data == {4{installed_value_q}});
-      if (o_w_valid) assert (put.data == {4{installed_value_q}});
+      if (written_q)
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_written : assert (value_q == installed_value_q);
+`else
+        assert (value_q == installed_value_q);
+`endif
+      if (o_r_valid && reply_q.data_valid)
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_reply : assert (reply_q.data == {4{installed_value_q}});
+`else
+        assert (reply_q.data == {4{installed_value_q}});
+`endif
+      if (o_w_valid)
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_put : assert (put.data == {4{installed_value_q}});
+`else
+        assert (put.data == {4{installed_value_q}});
+`endif
       if (|i_write_mask) assert (record_count < 4);
       if (acquire && request_ready) begin
         sent_q <= 1;
@@ -323,7 +354,11 @@ module coherence_l1d #(
       end
       if (o_c_valid[0]) assert (written_q && !granted_q);
       if (i_u_valid && o_u_ready) begin
+`ifdef COH_MAINT_OWNED
+        p_maint_fact_release : assert (written_q && value_q == installed_value_q);
+`else
         assert (written_q && value_q == installed_value_q);
+`endif
         sent_q <= 0;
         cover (written_q && !pending_q);
       end
@@ -336,9 +371,166 @@ module coherence_l1d #(
       cover (o_r_valid && i_r_ready && reply_q.absorbed);
     end
   end
-
+`ifdef COH_MAINT_OWNED
+  localparam logic [63:0] ShapeMask = 64'hfffffffffffff8df;
+  localparam logic [63:0] ShapeBase = 64'h200000cf;
+  logic   f_record_shapes;
+  coh_d_t f_demand;
+  assign f_demand = o_d[0];
+  always_comb begin
+    f_record_shapes = 1;
+    for (int n = 0; n < 4; n++)
+    for (int b = 0; b < 8; b++)
+    if (record_valid[n] && record_mask[n][b] &&
+            (record_data[n][8*b+:8] & ShapeMask[8*b+:8]) != ShapeBase[8*b+:8])
+      f_record_shapes = 0;
+  end
+  always_ff @(posedge i_clk)
+    if (!i_rst) begin
+      p_maint_owned_record_shapes : assert (f_record_shapes);
+      p_maint_owned_value_shape : assert ((value_q & ShapeMask) == ShapeBase);
+      p_maint_owned_installed_shape : assert ((installed_value_q & ShapeMask) == ShapeBase);
+      if (granted_q)
+        p_maint_owned_saved_grant_shape : assert ((grant_image_q & ShapeMask) == ShapeBase);
+      if (grant_valid)
+        p_maint_owned_endpoint_grant_shape :
+        assert ((grant_payload.data & {4{ShapeMask}}) == {4{ShapeBase}});
+      if (reply_valid_q && reply_q.data_valid)
+        p_maint_owned_reply_shape : assert ((reply_q.data & {4{ShapeMask}}) == {4{ShapeBase}});
+      if (live)
+        p_maint_owned_l1d_opcode :
+        assert (f_demand.opcode == coherence_pkg::GetM && f_demand.q == 0);
+      if (grant_valid) p_maint_owned_l1d_error : assert (!grant_payload.error);
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  assign o_maint_view = {
+    f_seq_ever_pop,
+    f_seq_final,
+    f_seq_pushed,
+    f_seq_popped,
+    {
+      pop,
+      grant_valid,
+      granted_q,
+      written_q,
+      resident_q,
+      put_q,
+      put_accepted_q,
+      reply_valid_q && reply_q.data_valid
+    },
+    f_maint_ep_phase,
+    value_q,
+    installed_value_q,
+    grant_payload.data[63:0]
+  };
+  always_ff @(posedge i_clk)
+    if (!i_rst) begin
+      if (reply_valid_q) begin
+        p_maint_ledger_reply_clean : assert (!reply_q.error);
+        if (reply_q.absorbed) p_maint_ledger_absorbed_data : assert (reply_q.data_valid);
+        if (reply_q.data_valid)
+          p_maint_ledger_reply_address : assert (reply_q.addr == request.addr);
+      end
+      p_maint_ledger_sent : assert (sent_q == live);
+      if (|f_maint_ep_phase[3:1])
+        p_maint_ledger_pregrant :
+        assert (!granted_q && !written_q && !resident_q && !put_q &&
+            !(reply_valid_q && reply_q.data_valid));
+      if (granted_q)
+        p_maint_ledger_granted_phase :
+        assert (f_maint_ep_phase[4] &&
+            !written_q &&
+            !resident_q &&
+            !put_q &&
+            !(reply_valid_q &&
+            reply_q.data_valid));
+      if (|f_maint_ep_phase[6:5]) p_maint_ledger_terminal : assert (written_q && !granted_q);
+      p_maint_ledger_value : assert (value_q == installed_value_q);
+      if (granted_q) p_maint_ledger_granted : assert (grant_image_q == installed_value_q);
+      if (reply_valid_q && reply_q.data_valid) begin
+        p_maint_ledger_reply_owner : assert (resident_q || put_q);
+        p_maint_ledger_reply : assert (reply_q.data == {4{installed_value_q}});
+      end
+      if (live) p_maint_ledger_address : assert (f_demand.addr == 32'h80000000);
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  // Retired contributors identify the first complete word and later byte writes.
+  // Only bytes selected by each record's mask carry a data invariant.
+  logic [7:0] f_seq_total;
+  logic f_seq_records;
+  always_comb begin
+    f_seq_total   = 0;
+    f_seq_records = 1;
+    for (int n = 0; n < 4; n++) begin
+      if (record_valid[n]) begin
+        f_seq_total += 8'(f_seq_contributors[n]);
+        if (record_mask[n][7:0] == 8'hff &&
+            record_data[n][63:0] != i_maint_first &&
+            record_data[n][63:0] != i_maint_final)
+          f_seq_records = 0;
+        if (record_mask[n][7:0] == 8'h02 && record_data[n][15:8] != i_maint_final[15:8])
+          f_seq_records = 0;
+        if (record_mask[n][7:0] != 8'hff && record_mask[n][7:0] != 8'h02) f_seq_records = 0;
+        if (record_data[n][15:8] != i_maint_final[15:8] &&
+            (head_index != 2'(n) ||
+                f_seq_ever_pop ||
+                f_seq_contributors[n] != 1 ||
+                record_mask[n][7:0] != 8'hff))
+          f_seq_records = 0;
+      end
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_seq_ever_pop <= 0;
+      f_seq_final <= 0;
+      f_seq_pushed <= 0;
+      f_seq_popped <= 0;
+    end else begin
+      if (|i_write_mask) f_seq_pushed <= f_seq_pushed + 1'b1;
+      if (pop) begin
+        f_seq_ever_pop <= 1;
+        f_seq_popped   <= f_seq_popped + 3'(f_seq_contributors[head_index]);
+        if (store_q[15:8] == i_maint_final[15:8]) f_seq_final <= 1;
+      end
+      p_maint_seq_count :
+      assert (f_seq_pushed <= 4 &&
+          f_seq_popped <= f_seq_pushed &&
+          f_seq_total + 8'(f_seq_popped) == 8'(f_seq_pushed));
+      p_maint_seq_pop_history : assert (f_seq_ever_pop == (f_seq_popped != 0));
+      p_maint_seq_records : assert (f_seq_records);
+      if (|i_write_mask) begin
+        p_maint_seq_input_mask : assert (i_write_mask == (f_seq_pushed == 0 ? 8'hff : 8'h02));
+        p_maint_seq_input_data :
+        assert (i_write_data == (f_seq_pushed == 0 ? i_maint_first : i_maint_final));
+      end
+      if (f_seq_pushed == 0)
+        p_maint_seq_initial : assert (!pending_q && !f_seq_ever_pop && !f_seq_final);
+      if (f_seq_pushed != 0 && !f_seq_ever_pop)
+        p_maint_seq_first_pending : assert (pending_q && mask_q == 8'hff);
+      if (f_seq_ever_pop)
+        p_maint_seq_installed :
+        assert (installed_value_q == i_maint_first || installed_value_q == i_maint_final);
+        else p_maint_seq_uninstalled : assert (installed_value_q == 64'h200000cf);
+      p_maint_seq_final :
+      assert (f_seq_final == (f_seq_ever_pop && installed_value_q == i_maint_final));
+      if (f_seq_pushed > 1 && !f_seq_final) p_maint_seq_final_pending : assert (pending_q);
+      if (f_seq_pushed != 0 && !pending_q && (f_seq_pushed > 1 || i_maint_first == i_maint_final))
+        p_maint_seq_drained : assert (f_seq_final);
+      if (resident_q || put_q || (reply_valid_q && reply_q.data_valid) || written_q)
+        p_maint_seq_owner_history : assert (f_seq_ever_pop);
+    end
+  end
+`endif
+`ifdef COH_MAINT_OWNED
+  always_ff @(posedge i_clk)
+    if (!i_rst && reply_valid_q && reply_q.addr == request.addr && (resident_q ||
+        (put_q && !put_accepted_q)))
+      p_maint_seq_reply_owner : assert (reply_q.data_valid);
+`endif
 endmodule
-
 // verilog_lint: waive module-filename
 module frost_cache #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -364,43 +556,46 @@ module frost_cache #(
 ) (
     input logic i_clk,
     input logic i_rst,
-
-    input  logic                    i_up_req_valid,
-    output logic                    o_up_req_ready,
-    input  logic                    i_up_req_write,
-    input  logic [  ADDR_WIDTH-1:0] i_up_req_addr,
-    input  logic [LINE_BYTES*8-1:0] i_up_req_wdata,
-    input  logic [  LINE_BYTES-1:0] i_up_req_wstrb,
-    input  logic [  UP_ID_BITS-1:0] i_up_req_id,
-    input  logic                    i_up_req_maintenance,
-    input  logic                    i_up_req_probe,
-    input  logic                    i_up_req_probe_inval,
-    input  logic                    i_probe_release_valid,
-    input  logic [  UP_ID_BITS-1:0] i_probe_release_id,
-    output logic                    o_up_resp_valid,
-    output logic [  UP_ID_BITS-1:0] o_up_resp_id,
+    input logic i_up_req_valid,
+    output logic o_up_req_ready,
+    input logic i_up_req_write,
+    input logic [ADDR_WIDTH-1:0] i_up_req_addr,
+    input logic [LINE_BYTES*8-1:0] i_up_req_wdata,
+    input logic [LINE_BYTES-1:0] i_up_req_wstrb,
+    input logic [UP_ID_BITS-1:0] i_up_req_id,
+    input logic i_up_req_maintenance,
+    input logic i_up_req_probe,
+    input logic i_up_req_probe_inval,
+    input logic i_probe_release_valid,
+    input logic [UP_ID_BITS-1:0] i_probe_release_id,
+    output logic o_up_resp_valid,
+    output logic [UP_ID_BITS-1:0] o_up_resp_id,
     output logic [LINE_BYTES*8-1:0] o_up_resp_rdata,
-    output logic                    o_up_resp_error,
-    output logic                    o_fatal_error,
-    output logic [  ADDR_WIDTH-1:0] o_fatal_addr,
-
-    input  logic i_writeback_all,
-    input  logic i_invalidate_all,
+    output logic o_up_resp_error,
+    output logic o_fatal_error,
+    output logic [ADDR_WIDTH-1:0] o_fatal_addr,
+    input logic i_writeback_all,
+    input logic i_invalidate_all,
     output logic o_maint_busy,
-
-    output logic                    o_down_req_valid,
-    input  logic                    i_down_req_ready,
-    output logic                    o_down_req_write,
-    output logic [  ADDR_WIDTH-1:0] o_down_req_addr,
+    output logic o_down_req_valid,
+    input logic i_down_req_ready,
+    output logic o_down_req_write,
+    output logic [ADDR_WIDTH-1:0] o_down_req_addr,
     output logic [LINE_BYTES*8-1:0] o_down_req_wdata,
-    output logic [  LINE_BYTES-1:0] o_down_req_wstrb,
+    output logic [LINE_BYTES-1:0] o_down_req_wstrb,
     output logic [DOWN_ID_BITS-1:0] o_down_req_id,
-    output logic                    o_down_req_maintenance,
-    input  logic                    i_down_resp_valid,
-    input  logic                    i_down_resp_error = 1'b0,
-    input  logic [DOWN_ID_BITS-1:0] i_down_resp_id,
-    input  logic [LINE_BYTES*8-1:0] i_down_resp_rdata,
-
+    output logic o_down_req_maintenance,
+    input logic i_down_resp_valid,
+    input logic i_down_resp_error = 1'b0,
+    input logic [DOWN_ID_BITS-1:0] i_down_resp_id,
+    input logic [LINE_BYTES*8-1:0] i_down_resp_rdata,
+`ifdef COH_MAINT_OWNED
+    input logic [63:0] i_maint_final,
+    input logic i_maint_final_seen,
+    output logic o_maint_swept,
+    output logic [1:0] o_maint_if_waiting,
+    output logic [1:0][ADDR_WIDTH-1:0] o_maint_if_address,
+`endif
     output cache_perf_pkg::cache_instance_perf_events_t o_perf_events,
     output cache_perf_pkg::cache_write_perf_events_t o_write_perf_events
 );
@@ -512,5 +707,67 @@ module frost_cache #(
       cover (&waiting_q);
     end
   end
-
+`ifdef COH_MAINT_OWNED
+  // The two instruction request slots only capture the harness's sector IDs.
+  always_ff @(posedge i_clk) if (!i_rst) p_maint_owned_if_ids : assert (id_q[0] < 2 && id_q[1] < 2);
+`endif
+`ifdef COH_MAINT_OWNED
+  assign o_maint_if_waiting = waiting_q;
+  assign o_maint_if_address = address_q;
+  logic f_if_upper;
+  always_comb begin
+    f_if_upper = 1;
+    for (int n = 0; n < 2; n++) begin
+      if (!$onehot0({demand_q[n], waiting_q[n], fill_q[n]})) f_if_upper = 0;
+      if (id_q[n][0] != address_q[n][5]) f_if_upper = 0;
+      if (live[n] && address_q[n] != 32'h80000000 && address_q[n] != 32'h80000020) f_if_upper = 0;
+      if (fill_q[n] && address_q[n][5] && !fill_error_q[n] && fill_data_q[n] != {4{64'h200004cf}})
+        f_if_upper = 0;
+    end
+  end
+  always_ff @(posedge i_clk)
+    if (!i_rst) begin
+      p_maint_if_upper_fill : assert (f_if_upper);
+      if (valid_q[1]) p_maint_if_upper_cached : assert (data_q[1] == {4{64'h200004cf}});
+      if (i_down_resp_valid && address_q[i_down_resp_id[0]][5] && !i_down_resp_error)
+        p_maint_if_upper_input : assert (i_down_resp_rdata == {4{64'h200004cf}});
+      if (i_down_resp_valid)
+        p_maint_if_response_owned : assert (i_down_resp_id < 2 && waiting_q[i_down_resp_id[0]]);
+      if (o_up_resp_valid && o_up_resp_id[0] && !o_up_resp_error)
+        p_maint_if_upper_output : assert (o_up_resp_rdata == {4{64'h200004cf}});
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  // This proof-only epoch stays set after the first completed invalidate sweep.
+  logic f_if_swept_final = 0;
+  logic f_if_final_fills;
+  assign o_maint_swept = f_if_swept_final;
+  always_comb begin
+    f_if_final_fills = 1;
+    for (int n = 0; n < 2; n++)
+    if (f_if_swept_final &&
+        fill_q[n] &&
+        !address_q[n][5] &&
+        !fill_error_q[n] &&
+        fill_data_q[n] != {4{i_maint_final}})
+      f_if_final_fills = 0;
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) f_if_swept_final <= 0;
+    else begin
+      if (sweep) f_if_swept_final <= 1;
+      if (busy_q || f_if_swept_final) p_maint_if_final_epoch : assert (i_maint_final_seen);
+      p_maint_if_final_fills : assert (f_if_final_fills);
+      if (f_if_swept_final && valid_q[0])
+        p_maint_if_final_cached : assert (data_q[0] == {4{i_maint_final}});
+      if (i_down_resp_valid &&
+          !address_q[i_down_resp_id[0]][5] &&
+          !i_down_resp_error &&
+          i_maint_final_seen)
+        p_maint_if_final_input : assert (i_down_resp_rdata == {4{i_maint_final}});
+      if (f_if_swept_final && o_up_resp_valid && !o_up_resp_id[0] && !o_up_resp_error)
+        p_maint_if_final_output : assert (o_up_resp_rdata == {4{i_maint_final}});
+    end
+  end
+`endif
 endmodule

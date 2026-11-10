@@ -13,9 +13,7 @@
  *    See the License for the specific language governing permissions and
  *    limitations under the License.
  */
-
 `include "coherence_types.svh"
-
 module coherent_hart_cache #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned CACHE_BYTES = 128 * 1024,
@@ -130,6 +128,13 @@ module coherent_hart_cache #(
     // Earlier writes to instruction memory outside the home have completed.
     input logic i_imem_sync_done = 1'b1,
     output logic o_fence_done,
+`ifdef COH_MAINT_OWNED
+    input logic [63:0] i_maint_first,
+    i_maint_final,
+    output logic [8+8+7+3*64-1:0] o_maint_view,
+    output logic [3:0][ADDR_WIDTH+2:0] o_maint_read_requests,
+    output logic o_maint_swept,
+`endif
     output cache_perf_pkg::cache_instance_perf_events_t o_l1i_perf_events,
     output cache_perf_pkg::cache_instance_perf_events_t o_l1d_perf_events,
     output logic o_fatal,
@@ -148,8 +153,14 @@ module coherent_hart_cache #(
   always_ff @(posedge i_clk) if (i_rst) sim_reset_seen_q <= 1'b1;
 `endif
 `endif
-
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
+`ifdef COH_MAINT_OWNED
+  logic [3:0][2:0] f_if_phase;
+  logic [3:0][ADDR_WIDTH-1:0] f_if_address;
+  logic [3:0][2:0] f_if_id;
+  logic [1:0] f_if_cache_waiting;
+  logic [1:0][ADDR_WIDTH-1:0] f_if_cache_address;
+`endif
   // D and C ports: the L1D's endpoints first, then two IF slots and two PTW
   // slots. G and U route by port class.
   localparam int unsigned Ports   = L1D_MISSES + 4;
@@ -343,11 +354,15 @@ module coherent_hart_cache #(
       .i_u_valid(i_u_valid && release_message.q[6:5] == 0),
       .o_u_ready(u_ready[0]),
       .i_u(i_u),
+`ifdef COH_MAINT_OWNED
+      .i_maint_first(i_maint_first),
+      .i_maint_final(i_maint_final),
+      .o_maint_view(o_maint_view),
+`endif
       .o_perf_events(o_l1d_perf_events),
       .o_fatal(l1d_fatal),
       .o_fatal_addr(l1d_fatal_addr)
   );
-
   frost_cache #(
       .ENABLE_RESPONSE_ERRORS(1'b1),
       .ADDR_WIDTH(ADDR_WIDTH),
@@ -372,6 +387,13 @@ module coherent_hart_cache #(
       .i_writeback_all(1'b0),
       .i_invalidate_all(l1i_invalidate),
       .o_maint_busy(l1i_busy),
+`ifdef COH_MAINT_OWNED
+      .i_maint_final(i_maint_final),
+      .i_maint_final_seen(o_maint_view[8+8+7+3*64-2]),
+      .o_maint_swept(o_maint_swept),
+      .o_maint_if_waiting(f_if_cache_waiting),
+      .o_maint_if_address(f_if_cache_address),
+`endif
       .i_up_req_valid(i_iup_req_valid),
       .o_up_req_ready(o_iup_req_ready),
       .i_up_req_write(1'b0),
@@ -414,6 +436,13 @@ module coherent_hart_cache #(
         .i_clk(i_clk),
         .i_rst(i_rst),
         .i_fatal_stop(i_fatal_stop),
+`ifdef COH_MAINT_OWNED
+        .i_maint_final(i_maint_final),
+        .i_maint_final_seen(o_maint_view[8+8+7+3*64-2]),
+        .o_maint_phase(f_if_phase[slot]),
+        .o_maint_address(f_if_address[slot]),
+        .o_maint_id(f_if_id[slot]),
+`endif
         .i_req_valid(if_slot_valid[slot]),
         .o_req_ready(if_slot_ready[slot]),
         .i_req_write(if_req_write),
@@ -453,6 +482,13 @@ module coherent_hart_cache #(
         .i_clk(i_clk),
         .i_rst(i_rst),
         .i_fatal_stop(i_fatal_stop),
+`ifdef COH_MAINT_OWNED
+        .i_maint_final(i_maint_final),
+        .i_maint_final_seen(o_maint_view[8+8+7+3*64-2]),
+        .o_maint_phase(f_if_phase[slot+2]),
+        .o_maint_address(f_if_address[slot+2]),
+        .o_maint_id(f_if_id[slot+2]),
+`endif
         .i_req_valid(walk_slot_valid[slot]),
         .o_req_ready(walk_slot_ready[slot]),
         .i_req_write(1'b0),
@@ -481,7 +517,6 @@ module coherent_hart_cache #(
         .i_u(i_u)
     );
   end
-
   // The serializer drains committed stores before requesting synchronization.
   // IF and PTW reads obtain dirty L1D bytes through the home's probes.
   assign l1i_invalidate = maint_state_q == FenceInvalidate;
@@ -590,11 +625,75 @@ module coherent_hart_cache #(
       if (maint_state_q == FenceWait && !i_imem_sync_done) f_mirror_wait_q <= 1;
     end
     if (!i_rst && o_fence_done) begin
+`ifdef COH_MAINT_OWNED
+      p_maint_fact_fence_done : assert (f_invalidated_q && f_busy_q && !l1i_busy);
+`else
       assert (f_invalidated_q && f_busy_q && !l1i_busy);
+`endif
       assert (!fence_dropped_q);
       if (!$past(o_fence_done)) assert ($past(i_imem_sync_done));
       cover (f_mirror_wait_q);
     end
   end
+`endif
+`ifdef COH_MAINT_OWNED
+  always_ff @(posedge i_clk)
+    if (!i_rst && maint_state_q != MaintIdle)
+      p_maint_seq_fence_owner : assert (o_maint_view[8+8+7+3*64-2]);
+`endif
+`ifdef COH_MAINT_OWNED
+  for (genvar n = 0; n < 4; n++) begin : gen_maint_read_observation
+    assign o_maint_read_requests[n] = {f_if_phase[n], f_if_address[n]};
+  end
+  logic f_if_context;
+  always_comb begin
+    f_if_context = f_if_cache_waiting == f_if_waiting_q;
+    for (int m = 0; m < 2; m++)
+    if (f_if_waiting_q[m] != ((f_if_live_q[0] && !f_if_responded_q[0] && f_if_id_q[0] == 3'(m)) ||
+        (f_if_live_q[1] && !f_if_responded_q[1] && f_if_id_q[1] == 3'(m))))
+      f_if_context = 0;
+    if (&(f_if_live_q & ~f_if_responded_q) && f_if_id_q[0] == f_if_id_q[1]) f_if_context = 0;
+    for (int n = 0; n < 2; n++) begin
+      if (f_if_live_q[n] != (f_if_phase[n] != 0)) f_if_context = 0;
+      if (f_if_phase[n] != 0 && (!f_if_live_q[n] || f_if_id[n] != f_if_id_q[n])) f_if_context = 0;
+      if (f_if_phase[n] != 0 && f_if_phase[n] <= 3 && f_if_responded_q[n]) f_if_context = 0;
+      if (f_if_phase[n] == 5 && !f_if_responded_q[n]) f_if_context = 0;
+      if (f_if_phase[n] == 4 && !f_if_responded_q[n] && !if_slot_resp[n]) f_if_context = 0;
+      if (f_if_live_q[n] && !f_if_responded_q[n]) begin
+        if (f_if_id_q[n] >= 2) f_if_context = 0;
+        else if (!f_if_cache_waiting[f_if_id_q[n][0]] ||
+            f_if_cache_address[f_if_id_q[n][0]] != f_if_address[n])
+          f_if_context = 0;
+      end
+      if (if_slot_resp[n] && (!f_if_live_q[n] ||
+          f_if_responded_q[n] ||
+          if_slot_id[n] != f_if_id_q[n]))
+        f_if_context = 0;
+    end
+  end
+  always_ff @(posedge i_clk)
+    if (!i_rst) begin
+      p_maint_if_context : assert (f_if_context);
+      p_maint_if_one_response : assert ($onehot0(if_slot_resp));
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  always_ff @(posedge i_clk)
+    if (!i_rst) begin
+      if (l1i_busy) p_maint_if_busy_final : assert (o_maint_view[8+8+7+3*64-2]);
+      if ((maint_state_q == FenceWait && !l1i_busy) ||
+          maint_state_q == FenceDone ||
+          maint_state_q == MaintGap)
+        p_maint_if_sweep_complete : assert (o_maint_swept);
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  always_ff @(posedge i_clk)
+    if (!i_rst) begin
+      if (maint_state_q == FenceWait || maint_state_q == FenceDone || maint_state_q == MaintGap)
+        p_maint_if_fence_history : assert (f_invalidated_q && f_busy_q);
+      if (maint_state_q == FenceDone || maint_state_q == MaintGap)
+        p_maint_if_fence_finished : assert (!l1i_busy);
+    end
 `endif
 endmodule

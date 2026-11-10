@@ -37,9 +37,9 @@ FORMAL_DIR = "formal"
 # Per-task hang backstop in seconds; proof depth is set by each .sby file.
 SBY_TASK_TIMEOUT_S = 2400
 # The unchanged ROB BMC can take about an hour on a shared runner, the
-# hart maintenance proof, which models buffered store hits, can take over an
-# hour on a loaded machine, and the scripted and store-free eight-endpoint
-# L1D stream BMCs can take up to an hour. The free-input stream BMC with
+# hart maintenance composition and four-record BMC retain a two-hour backstop,
+# and the scripted and store-free eight-endpoint L1D stream BMCs can take up
+# to an hour. The free-input stream BMC with
 # stores runs 32 frames, and the four-record and intervening-load store
 # boundary BMCs run 120 and 140 frames. These tasks run in separate CI jobs.
 # The three-endpoint L1D control BMC can take about half an hour on a loaded
@@ -162,9 +162,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherent_hart_cache.sby",
-        "Fence ordering and coherent instruction/PTE visibility with discarded walks.",
+        "Fence ordering and coherent instruction/PTE visibility, supported by independent data ownership lemmas.",
         tasks=(
             "coh_hart_maint_prove",
+            "coh_hart_maint_owned_prove",
             "coh_hart_maint_cover",
             "coh_hart_maint_four_bmc",
             "coh_hart_maint_four_cover",
@@ -1571,7 +1572,11 @@ SBY_TASKS = [
     ),
     (
         "coh_hart_maint_prove",
-        "Buffered store installation, fence invalidation and coherent reads.",
+        "Buffered store installation, fence invalidation and coherent reads, with proven cache image facts.",
+    ),
+    (
+        "coh_hart_maint_owned_prove",
+        "Independent image, fill and walker invariants plus 21 maintenance checks by induction.",
     ),
     (
         "coh_hart_maint_cover",
@@ -2218,6 +2223,10 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     root = Path(__file__).resolve().parents[1]
     registered = [name for name, _ in SBY_TASKS]
     required = {
+        "coherent_hart_cache": [
+            "coh_hart_maint_owned_prove",
+            "coh_hart_maint_prove",
+        ],
         "coherence_store_boundary": [
             f"{prefix}_amo_{sector}_{suffix}"
             for sector in ("same", "other")
@@ -2289,12 +2298,17 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             if expression.evaluate(matches_keyword)
         ]
         assert len(matches) == 1, (node, matches)
+        if any(
+            f"[coherent_hart_cache_{task}]" in node
+            for task in required["coherent_hart_cache"]
+        ):
+            assert matches == ["Hart maintenance"], (node, matches)
 
 
-def l1d_task_config(task: str) -> dict[str, list[str]]:
-    """Return a coherence_l1d.sby task's resolved sections, without comments."""
+def formal_task_config(target: str, task: str) -> dict[str, list[str]]:
+    """Return an SBY task's resolved sections, without comments."""
     result = subprocess.run(
-        ["sby", "--dumpcfg", "coherence_l1d.sby", task],
+        ["sby", "--dumpcfg", f"{target}.sby", task],
         cwd=Path(__file__).resolve().parents[1] / "formal",
         capture_output=True,
         text=True,
@@ -2313,6 +2327,11 @@ def l1d_task_config(task: str) -> dict[str, list[str]]:
         else:
             sections[section].append(line)
     return sections
+
+
+def l1d_task_config(task: str) -> dict[str, list[str]]:
+    """Return a coherence_l1d.sby task's resolved sections, without comments."""
+    return formal_task_config("coherence_l1d", task)
 
 
 def assertion_command(line: str) -> bool:
@@ -2505,6 +2524,85 @@ def test_stream_owned_lemma_model_matches() -> None:
         "expect": "PASS",
     }
     assert owned["[engines]"] == ["smtbmc boolector"]
+
+
+def test_hart_maintenance_lemma_model_matches() -> None:
+    """Keep the maintenance proof's lemmas independent on an identical model."""
+    owned = formal_task_config("coherent_hart_cache", "coh_hart_maint_owned_prove")
+    proof = formal_task_config("coherent_hart_cache", "coh_hart_maint_prove")
+    common = [
+        "select -assert-none t:$check r:FLAVOR=assume %i",
+        "select -assert-count 372 t:$check r:FLAVOR=assert %i",
+    ]
+    lemmas = (
+        "c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* "
+        "c:*p_maint_seq_* c:*p_maint_if_* c:*p_maint_ppn_* "
+        "c:*p_maint_fact_* c:*p_maint_ptw_*"
+    )
+    covers = "chformal -cover -remove"
+    owned_commands = common + [
+        f"chformal -assert -remove t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %d",
+        "select -assert-count 284 t:$check r:FLAVOR=assert %i",
+        covers,
+    ]
+    proof_commands = common + [
+        f"select -assert-count 284 t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %i",
+        f"chformal -assert2assume {lemmas}",
+        "select -assert-count 284 t:$check r:FLAVOR=assume %i",
+        "select -assert-count 88 t:$check r:FLAVOR=assert %i",
+        covers,
+    ]
+
+    def validate(lemma: dict[str, list[str]], consumer: dict[str, list[str]]) -> None:
+        assert lemma.keys() == consumer.keys()
+        for section in lemma.keys() - {"[options]", "[engines]", "[script]"}:
+            assert lemma[section] == consumer[section]
+        models = []
+        for config, commands, depth, timeout, engine in (
+            (lemma, owned_commands, "8", "1200", "smtbmc boolector"),
+            (consumer, proof_commands, "32", "7200", "abc pdr -r"),
+        ):
+            script = config["[script]"]
+            assert [line for line in script if assertion_command(line)] == commands
+            models.append([line for line in script if not assertion_command(line)])
+            options = dict(line.split(maxsplit=1) for line in config["[options]"])
+            options.setdefault("expect", "PASS")
+            expected = {
+                "mode": "prove",
+                "depth": depth,
+                "timeout": timeout,
+                "expect": "PASS",
+            }
+            if config is consumer:
+                expected["aigsmt"] = "boolector"
+            assert options == expected
+            assert config["[engines]"] == [engine]
+        assert models[0] == models[1]
+        assert (
+            "read -formal -D COH_MAINT_OWNED -sv coherent_hart_cache_models.sv "
+            "coherent_hart_cache.sv coherent_hart_cache_formal.sv"
+        ) in models[0]
+
+    validate(owned, proof)
+    for side, section, line in (
+        (0, "[script]", "chformal -assert2assume c:p_maint_owned_engine"),
+        (0, "[script]", "chformal -assume -remove"),
+        (0, "[options]", "smtc owned_only.smtc"),
+        (0, "[engines]", "abc bmc3"),
+        (0, "[file owned_only.smtc]", "assume (= hidden 0)"),
+        (1, "[script]", "chformal -assert -remove c:p_grant_address"),
+        (1, "[script]", "chformal -assert2assume c:p_extra"),
+        (1, "[script]", "chparam -set COVER_MODE 1 coherent_hart_cache_formal"),
+        (1, "[options]", "expect PASS,UNKNOWN,TIMEOUT"),
+        (1, "[options]", "mode bmc"),
+    ):
+        altered = [
+            {key: list(value) for key, value in config.items()}
+            for config in (owned, proof)
+        ]
+        altered[side].setdefault(section, []).append(line)
+        with pytest.raises(AssertionError):
+            validate(*altered)
 
 
 def timeout_log_tail(error: subprocess.TimeoutExpired) -> str:

@@ -13,9 +13,7 @@
  *    See the License for the specific language governing permissions and
  *    limitations under the License.
  */
-
 `include "coherence_types.svh"
-
 // A line request owns its identity until the home releases its completion.
 module coherence_line_bridge #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -26,6 +24,13 @@ module coherence_line_bridge #(
     parameter bit EARLY_RESPONSE = 1'b0,
     parameter bit CLEAN = 1'b0
 ) (
+`ifdef COH_MAINT_OWNED
+    input logic [63:0] i_maint_final,
+    input logic i_maint_final_seen,
+    output logic [2:0] o_maint_phase,
+    output logic [ADDR_WIDTH-1:0] o_maint_address,
+    output logic [ID_BITS-1:0] o_maint_id,
+`endif
     input logic i_clk,
     input logic i_rst,
     input logic i_fatal_stop,
@@ -257,6 +262,70 @@ module coherence_line_bridge #(
       cover ($past(phase_q == Complete));
       cover ($past(phase_q == Release));
     end
+  end
+`endif
+`ifdef COH_MAINT_OWNED
+  always_ff @(posedge i_clk)
+    if (!i_rst) begin
+      p_maint_owned_bridge_phase : assert (phase_q <= Release);
+      if (phase_q != Idle) begin
+        p_maint_owned_bridge_opcode :
+        assert (demand_q.opcode ==
+            (SOURCE == 2 ? coherence_pkg::DMARead :
+             PORT_CLASS == 2 ? coherence_pkg::ReadOncePTW : coherence_pkg::ReadOnceIF));
+        p_maint_owned_bridge_identity :
+        assert (demand_q.q[8:7] == 2'(SOURCE) && demand_q.q[6:5] == 2'(PORT_CLASS) &&
+            demand_q.q[4:1] == (SOURCE == 2 ? 4'(id_q) : 4'(SLOT)) && !demand_q.q[0]);
+        if (SOURCE == 2) p_maint_owned_dma_id : assert (id_q == i_req_id);
+      end
+      if (!$past(i_rst)) begin
+        if ($past(o_d_valid && !i_d_ready))
+          p_maint_owned_bridge_d_hold : assert (o_d_valid && o_d == $past(o_d));
+        if ($past(o_c_valid && !i_c_ready))
+          p_maint_owned_bridge_c_hold : assert (o_c_valid && o_c == $past(o_c));
+      end
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  assign o_maint_phase = phase_q;
+  assign o_maint_address = demand_q.addr;
+  assign o_maint_id = id_q;
+  if (SOURCE == 0) begin : gen_maint_payload
+    always_ff @(posedge i_clk)
+      if (!i_rst) begin
+        if (i_g_valid && o_g_ready)
+          p_maint_if_grant_address : assert (grant_in.addr == demand_q.addr);
+        if (o_resp_valid) p_maint_if_response_id : assert (o_resp_id == id_q);
+        if (o_resp_valid && !o_resp_error && demand_q.addr[5])
+          p_maint_if_upper_response : assert (o_resp_data == {4{64'h200004cf}});
+      end
+  end
+`endif
+`ifdef COH_MAINT_OWNED
+  if (SOURCE == 0) begin : gen_maint_latest_payload
+    always_ff @(posedge i_clk)
+      if (!i_rst &&
+          o_resp_valid &&
+          !o_resp_error &&
+          demand_q.addr == 32'h80000000 &&
+          i_maint_final_seen)
+        p_maint_if_latest_response : assert (o_resp_data == {4{i_maint_final}});
+  end
+`endif
+`ifdef COH_MAINT_OWNED
+  if (SOURCE == 0 && EARLY_RESPONSE) begin : gen_maint_response_phase
+    always_ff @(posedge i_clk)
+      if (!i_rst && o_resp_valid)
+        p_maint_if_response_phase : assert (phase_q == Complete);
+  end
+`endif
+`ifdef COH_MAINT_OWNED
+  if (SOURCE == 0) begin : gen_maint_walk_image
+    always_ff @(posedge i_clk)
+      if (!i_rst && o_resp_valid && !o_resp_error)
+        p_maint_ptw_response_image :
+        assert ((o_resp_data & {4{64'hfffffffffffffcdf}}) == {4{demand_q.addr[5] ?
+            64'h200004cf : 64'h200000cf}});
   end
 `endif
 endmodule

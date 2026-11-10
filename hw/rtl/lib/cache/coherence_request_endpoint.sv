@@ -13,9 +13,7 @@
  *    See the License for the specific language governing permissions and
  *    limitations under the License.
  */
-
 `include "coherence_types.svh"
-
 module coherence_request_endpoint #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned SOURCE = 0,
@@ -51,11 +49,12 @@ module coherence_request_endpoint #(
     input logic [ADDR_WIDTH+14:0] i_u,
 `ifdef FORMAL
     output logic [6:0] o_phase,
+    output logic [2:0] o_formal_phase,
+`endif
+`ifdef COH_MAINT_OWNED
+    output logic [6:0] o_maint_phase,
 `endif
     output logic o_live
-`ifdef FORMAL
-    , output logic [2:0] o_formal_phase
-`endif
 );
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
   typedef enum logic [2:0] {
@@ -73,8 +72,11 @@ module coherence_request_endpoint #(
 `ifdef FORMAL
   // Harnesses read the encoded phase in either form of the phase state.
   if (LOCAL_PHASE_UPDATES) begin : gen_formal_local_phase
-    assign o_formal_phase = {done_phase || send_c_phase || wait_u_phase,
-        wait_g_phase || grant_phase || wait_u_phase, send_d_phase || grant_phase || send_c_phase};
+    assign o_formal_phase = {
+      done_phase || send_c_phase || wait_u_phase,
+      wait_g_phase || grant_phase || wait_u_phase,
+      send_d_phase || grant_phase || send_c_phase
+    };
   end else begin : gen_formal_encoded_phase
     assign o_formal_phase = phase_q;
   end
@@ -113,7 +115,6 @@ module coherence_request_endpoint #(
   assign o_c_valid = send_c_phase;
   assign o_u_ready = wait_u_phase && release_in.q == demand_q.q &&
       release_in.tid == grant_q.tid && release_in.addr == demand_q.addr;
-
   if (LOCAL_PHASE_UPDATES) begin : gen_local_phases
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
@@ -201,7 +202,6 @@ module coherence_request_endpoint #(
       end
     end
   end
-
   localparam bit LegalIdentity =
       (SOURCE < 2 && ((PORT_CLASS == 0 && SLOT < 8) ||
                      ((PORT_CLASS == 1 || PORT_CLASS == 2) && SLOT < 2))) ||
@@ -252,5 +252,34 @@ module coherence_request_endpoint #(
       cover (o_u_ready && i_u_valid);
     end
   end
+`endif
+`ifdef COH_MAINT_OWNED
+  always_ff @(posedge i_clk)
+    if (!i_rst) begin
+      p_maint_owned_ep_phase :
+      assert ($onehot(
+          {
+            idle_phase,
+            send_d_phase,
+            wait_g_phase,
+            grant_phase,
+            done_phase,
+            send_c_phase,
+            wait_u_phase
+          }
+      ));
+      if (o_live) p_maint_owned_ep_identity : assert (demand_q.q == identity);
+      if (!$past(i_rst)) begin
+        if ($past(o_d_valid && !i_d_ready))
+          p_maint_owned_ep_d_hold : assert (o_d_valid && o_d == $past(o_d));
+        if ($past(o_c_valid && !i_c_ready))
+          p_maint_owned_ep_c_hold : assert (o_c_valid && o_c == $past(o_c));
+      end
+    end
+`endif
+`ifdef COH_MAINT_OWNED
+  assign o_maint_phase = {
+    wait_u_phase, send_c_phase, done_phase, grant_phase, wait_g_phase, send_d_phase, idle_phase
+  };
 `endif
 endmodule
