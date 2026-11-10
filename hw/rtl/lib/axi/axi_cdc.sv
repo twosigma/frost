@@ -125,6 +125,8 @@ module axi_cdc #(
       .DEPTH(DEPTH),
       .READY_MARGIN(0)
   ) aw_fifo (
+      .i_limit('0),
+      .o_occupancy(),
       .i_clk(i_src_clk),
       .i_rst(i_src_rst),
       .i_data({
@@ -168,14 +170,16 @@ module axi_cdc #(
       .DEPTH(DEPTH),
       .READY_MARGIN(0)
   ) w_fifo (
-      .i_clk  (i_src_clk),
-      .i_rst  (i_src_rst),
-      .i_data ({i_src_wdata, i_src_wstrb, i_src_wlast, i_src_wuser}),
+      .i_limit('0),
+      .o_occupancy(),
+      .i_clk(i_src_clk),
+      .i_rst(i_src_rst),
+      .i_data({i_src_wdata, i_src_wstrb, i_src_wlast, i_src_wuser}),
       .i_valid(i_src_wvalid),
       .o_ready(o_src_wready),
-      .o_clk  (i_dst_clk),
-      .o_rst  (i_dst_rst),
-      .o_data ({o_dst_wdata, o_dst_wstrb, o_dst_wlast, o_dst_wuser}),
+      .o_clk(i_dst_clk),
+      .o_rst(i_dst_rst),
+      .o_data({o_dst_wdata, o_dst_wstrb, o_dst_wlast, o_dst_wuser}),
       .o_valid(w_valid),
       .i_ready(i_dst_wready && !i_dst_rst)
   );
@@ -187,14 +191,16 @@ module axi_cdc #(
       .DEPTH(DEPTH),
       .READY_MARGIN(0)
   ) b_fifo (
-      .i_clk  (i_dst_clk),
-      .i_rst  (i_dst_rst),
-      .i_data ({i_dst_bid, i_dst_bresp, i_dst_buser}),
+      .i_limit('0),
+      .o_occupancy(),
+      .i_clk(i_dst_clk),
+      .i_rst(i_dst_rst),
+      .i_data({i_dst_bid, i_dst_bresp, i_dst_buser}),
       .i_valid(i_dst_bvalid),
       .o_ready(o_dst_bready),
-      .o_clk  (i_src_clk),
-      .o_rst  (i_src_rst),
-      .o_data ({o_src_bid, o_src_bresp, o_src_buser}),
+      .o_clk(i_src_clk),
+      .o_rst(i_src_rst),
+      .o_data({o_src_bid, o_src_bresp, o_src_buser}),
       .o_valid(b_valid),
       .i_ready(i_src_bready && !i_src_rst)
   );
@@ -206,6 +212,8 @@ module axi_cdc #(
       .DEPTH(DEPTH),
       .READY_MARGIN(0)
   ) ar_fifo (
+      .i_limit('0),
+      .o_occupancy(),
       .i_clk(i_src_clk),
       .i_rst(i_src_rst),
       .i_data({
@@ -249,14 +257,16 @@ module axi_cdc #(
       .DEPTH(DEPTH),
       .READY_MARGIN(0)
   ) r_fifo (
-      .i_clk  (i_dst_clk),
-      .i_rst  (i_dst_rst),
-      .i_data ({i_dst_rid, i_dst_rdata, i_dst_rresp, i_dst_rlast, i_dst_ruser}),
+      .i_limit('0),
+      .o_occupancy(),
+      .i_clk(i_dst_clk),
+      .i_rst(i_dst_rst),
+      .i_data({i_dst_rid, i_dst_rdata, i_dst_rresp, i_dst_rlast, i_dst_ruser}),
       .i_valid(i_dst_rvalid),
       .o_ready(o_dst_rready),
-      .o_clk  (i_src_clk),
-      .o_rst  (i_src_rst),
-      .o_data ({o_src_rid, o_src_rdata, o_src_rresp, o_src_rlast, o_src_ruser}),
+      .o_clk(i_src_clk),
+      .o_rst(i_src_rst),
+      .o_data({o_src_rid, o_src_rdata, o_src_rresp, o_src_rlast, o_src_ruser}),
       .o_valid(r_valid),
       .i_ready(i_src_rready && !i_src_rst)
   );

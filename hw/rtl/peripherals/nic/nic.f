@@ -11,7 +11,11 @@ $(ROOT)/hw/rtl/peripherals/nic/nic_byte_pack.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_byte_unpack.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_desc_fetch.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_rx_engine.sv
+$(ROOT)/hw/rtl/peripherals/nic/nic_tx_beat_merge.sv
+$(ROOT)/hw/rtl/peripherals/nic/nic_tx_segment.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_tx_engine.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_csr.sv
+$(ROOT)/hw/rtl/peripherals/nic/nic_pause_rx.sv
+$(ROOT)/hw/rtl/peripherals/nic/nic_pause_tx.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_mac_wrap.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_top.sv

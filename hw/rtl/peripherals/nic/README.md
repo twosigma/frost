@@ -16,11 +16,14 @@ driver ([`frost_net10g`](../../../../linux/frost-net10g/README.md)) follows.
 | `nic_top.sv` | all | The NIC: the core-domain blocks below around `nic_mac_wrap`, and a `line_port_axi_bridge` (from `hw/rtl/lib/cache`) that carries the DMA front end's line requests over AXI4. Faces the SoC with a 64-bit AXI4-Lite register slave through `axil_reg_bridge`, the AXI4 DMA master, and the interrupt, and the board with the MAC clocks, the raw PMA interface, and the PCS block lock |
 | `nic_csr.sv` | core | Register file: control, status, station address, rings, link and PHY registers, 64-bit counters |
 | `nic_irq.sv` | core | Interrupt status, mask, and per-direction completion moderation |
+| `nic_pause_rx.sv`, `nic_pause_tx.sv` | MAC | 802.3x flow control around the MACs (see Registers) |
 | `nic_mac_wrap.sv` | MAC + core | The MAC/PCS in its two domains, the packet FIFOs, the domain resets, status synchronizers, event counters, and the raw loopback (`RAW_LOOPBACK`) |
 | `nic_dma_front.sv` | core | Both engines' requests onto the one DMA line port: eight entries with at most six per side, an order guard for a read and a write of one line, RX priority with a grant-counted bound, response steering, aperture refusal, and the RESET drain |
 | `nic_desc_fetch.sv` | core | One ring's descriptor supply: prefetch cursor, two-line cache, eligibility fixed when the read is requested |
 | `nic_rx_engine.sv` | core | Frames from the RX FIFO into ring buffers: filter, `nic_byte_pack`, truncation, status writes |
 | `nic_tx_engine.sv` | core | Ring buffers into the TX FIFO: validation, reads through a reorder buffer, `nic_byte_unpack`, status writes |
+| `nic_tx_beat_merge.sv` | core | Joins discontiguous segments into a continuous stream of 8-byte beats |
+| `nic_tx_segment.sv` | core | Frame stream segmentation stage: cuts large frames at segment limits with header updates |
 | `nic_byte_pack.sv` | core | 8-byte beats to strobed 32-byte line writes at any byte address |
 | `nic_byte_unpack.sv` | core | 32-byte lines to 8-byte beats from any byte offset |
 | `nic_reset_ctrl.sv` | core | The RESET sequence and the per-domain reset generation handshake |
@@ -187,8 +190,8 @@ Descriptors are 16 bytes, two per 32-byte line:
 | Word | Contents |
 | --- | --- |
 | 0 | Buffer address, any byte alignment |
-| 1 | Length in `[15:0]`: the buffer length for RX, the frame length for TX. TX also sets SOP (bit 16) and EOP (bit 17) |
-| 2 | Status, written by hardware: `[15:0]` received length (RX), 16 DD, 17 TRUNC, 18 ERR, 19 ABORT |
+| 1 | Length in `[15:0]`: the buffer length for RX, the frame length for TX. TX also sets FIRST (bit 16) and LAST (bit 17) |
+| 2 | Status, written by hardware: `[15:0]` received length (RX), 16 DONE, 17 TRUNC, 18 ERR, 19 ABORT |
 | 3 | Reserved (ignored even if nonzero in legacy mode) |
 
 The reset-default layout above is ABI version 1. Writing ABI_CTRL bit 0
@@ -204,7 +207,7 @@ A ring has 2^SIZE entries at a 32-byte-aligned BASE in cached DDR. Software
 posts descriptors below TAIL, zeroing the status word: word 2 in the legacy
 layout or word 3 in the extended layout. Hardware consumes them in order
 from HEAD, one frame per descriptor, and writes that status word when it is
-done. Software polls DD in the same word; extended word 2 retains the
+done. Software polls DONE in the same word; extended word 2 retains the
 length and flags.
 
 `nic_desc_fetch` runs a prefetch cursor ahead of HEAD. When the cursor is
@@ -227,21 +230,35 @@ in a two-line window, and each time the window's lower line is complete it
 issues one line write with the strobes it collected. Bytes beyond the buffer
 length are dropped, and the status carries TRUNC with the full received
 length. A buffer of length 0 or not wholly inside cached DDR consumes the
-frame and completes with DD|ERR.
+frame and completes with DONE|ERR.
 
 The status write is issued only after every data write of the frame has been
 acknowledged, and each direction has one status write in flight at a time.
-DD therefore becomes visible in ring order, and a reader that sees DD and
+DONE therefore becomes visible in ring order, and a reader that sees DONE and
 then reads the buffer sees the data.
 
-`nic_tx_engine` validates a descriptor: length 1 to 9216, SOP and EOP both
+`nic_tx_engine` validates a descriptor: length 1 to 9216, FIRST and LAST both
 set (a frame occupies exactly one descriptor), and the buffer inside cached
-DDR. An invalid one completes with DD|ERR and sends nothing. A valid one's
+DDR. An invalid one completes with DONE|ERR and sends nothing. A valid one's
 buffer is read line by line in address order, with up to four reads in flight
 or waiting in a reorder buffer, and `nic_byte_unpack` turns the lines into
 beats, the last carrying the remaining bytes. The status write is issued when
-the last beat has entered the FIFO: DD means the buffer has been read, not
+the last beat has entered the FIFO: DONE means the buffer has been read, not
 that the frame reached the wire.
+
+**Segments and abandoned frames.** A frame may span several descriptors (FIRST on the first,
+LAST on the last). The first takes at most 9216 bytes unless a parameter descriptor precedes
+it; every later segment takes the full 16-bit length, up to 65535 bytes, and the frame total
+is bounded by the MAC's maximum frame (an oversize frame is dropped and counted) or by the
+segmentation stage. ABI_CTRL bit 6 reads one when the hardware has these limits and the abort below; the
+Linux driver then stops splitting segments at 9216 bytes. If a descriptor inside an open
+frame is rejected (length 0 or out of range, buffer outside DDR, duplicate FIRST), the engine
+abandons the frame: it flushes the merge and segmentation stages, closes any beat of the frame already
+in the TX FIFO with a one-byte last beat that carries an abort flag (`tuser` at the MAC, which
+drops the frame and counts it in TX_MAC_DROP), completes the rejected descriptor with
+DONE|ERR|ABORT (counted in TX_ABORTED), and never joins the frame's bytes to the next one.
+The segments before it keep their clean DONE; the remaining segments of the frame arrive with
+no frame open and complete with DONE|ERR.
 
 Packet data requests carry AxCACHE `0011`. Descriptor and status requests
 carry `1111`. The coherent home restricts packet data miss allocations to
@@ -275,13 +292,67 @@ engine hands it gets exactly one response.
 
 A MAC-domain reset outside a NIC RESET (a lost clock or a transceiver reset)
 abandons the frame in progress; the engines see it as the `i_abort` level.
-RX writes no more bytes and completes the descriptor with DD|ERR|ABORT once
+RX writes no more bytes and completes the descriptor with DONE|ERR|ABORT once
 its outstanding writes are acknowledged; a frame whose last beat has already
 arrived completes normally, since it needs nothing more from the MAC. TX
-pushes no more beats and completes with DD|ERR|ABORT after its outstanding
+pushes no more beats and completes with DONE|ERR|ABORT after its outstanding
 reads. Both resume at a frame boundary when the reset ends. The RESET drain
 (`i_stop`) abandons the frame without a completion and reaches idle once
 every response is in.
+
+## Buffer chaining and integrity offload
+
+These are the NIC's hardware offloads for Linux (`ethtool -k`: `tx-scatter-gather`,
+`tx-checksum-ip-generic`, `rx-checksumming`, `tcp-segmentation-offload`).
+
+**Transmit buffer chaining.** A frame is a chain of descriptors, the first with FIRST and the
+last with LAST, each pointing at a byte range of any alignment. `nic_byte_unpack` turns each
+range into beats and `nic_tx_beat_merge` joins the segments so a beat carries 8 bytes
+across a segment boundary. Each descriptor gets its own status write.
+
+**Transmit frame check / checksum.** The first descriptor's length word carries a request in the bits
+above LAST: `[24:18]` is the checksum start / 2 and `[31:25]` is the offset / 2 (zero offset
+means no request). This is Linux `CHECKSUM_PARTIAL`: the MAC sums the frame from start to
+its end and stores the result at start + offset, where the field holds the pseudo-header sum
+and is part of the sum (an all-zero result is stored as `0xFFFF`). The MAC's transmit
+frame RAMs hold the whole frame before sending (store and forward), so the sum is written
+ahead of the first byte on the wire, the frame CRC covers it, and nothing needs
+the frame's length in advance. A request is ignored when the start or offset is odd or the
+field lies beyond the frame.
+
+**Hardware frame segmentation.** A parameter descriptor ahead of a frame's chain makes the frame
+a segmented frame. The parameter descriptor has length 0, neither FIRST nor LAST, and bit 18 (PARAM) set; it
+carries no buffer. Word 0 `[13:0]` is the max segment size and `[31:16]` the payload length (the frame
+minus its headers, at most 65535). Its length word holds, above bit 18, `[25:19]` the L4
+offset / 2, `[29:26]` the transport header length / 4, `[30]` set for IPv6 and `[31]` set when a
+VLAN tag precedes the IP header (in the extended layout these are word 2 and word 0 is the
+low half of the address field). The parameter descriptor completes like any descriptor, with DONE and no
+error, and applies to the next frame only.
+
+`nic_tx_segment` cuts that frame, which arrives as one stream of headers then payload, into
+segments of at most MSS payload bytes. Each gets a copy of the headers with Linux's
+per-segment changes: IPv4 total length, identification (+1 a segment) and header checksum,
+or IPv6 payload length; the TCP sequence number (plus the payload sent so far), FIN and PSH
+only on the last segment, CWR only on the first, and the checksum field set to the
+pseudo-header sum plus the segment's TCP length. The software must write that field as
+the pseudo-header sum without the length. The MAC's checksum
+insertion, requested for every segment, then completes the TCP checksum over the segment.
+Headers up to 160 bytes are supported. A frame the stage cannot segment (MSS or payload 0,
+an oversize or inconsistent header, a frame shorter than its headers) is dropped; one whose
+payload differs from the declared length is padded with zeros or has the excess discarded.
+Either raises DESC_ERR. A segmented frame is the one place where a frame's status (DONE, the buffers
+were read) is written before every segment has left; the segments follow in order.
+
+**Receive integrity assist / checksum.** With ABI_CTRL bit 2 set, each RX status write is 8 bytes (descriptor
+words 2 and 3 together, so DONE never shows before the checksum) and carries the ones-complement
+sum of the frame from byte 14 to its end, with the status bit 20 (SUM_VALID) set for a frame
+that completed without error or truncation and reached byte 14. This is Linux
+`CHECKSUM_COMPLETE`: the kernel adds the pseudo-header and checks for zero, so it works for
+IPv4, IPv6 and any L4 protocol, VLAN tags and short-frame padding included. The checksum is
+the bytes in the order they sit in memory, so a little-endian CPU reads the kernel's folded
+sum: in word 3 `[15:0]` in the legacy layout, in word 2 `[31:16]` (the buffer length stays in
+`[15:0]`) in the extended layout. With bit 2 clear the status write is the 4-byte word of ABI
+version 1.
 
 ## Registers
 
@@ -295,15 +366,61 @@ bits:
 | `0x004` | CTRL | 0 RX_EN, 1 TX_EN, 2 PROMISC, 8 RESET (reads back as RESET_BUSY) |
 | `0x008` | STATUS | 0 RX_IDLE, 1 TX_IDLE, 2 RESET_BUSY, 3 RX_FIFO_EMPTY, 4 RX_READY, 5 TX_READY, 6 RX_CONFIG_ERR, 7 TX_CONFIG_ERR |
 | `0x00C`, `0x010` | MAC_LO, MAC_HI | Station address: bytes 0 to 3 in MAC_LO (byte 0 in `[7:0]`), bytes 4 and 5 in MAC_HI `[15:0]` |
+| `0x014` | RX_FIFO_LIMIT | Occupancy, in 8-byte FIFO words, at which the RX ingress FIFO reports full to the MAC. Resets to 512 (or the built depth, if smaller); a write is clamped to 8 through the built depth and the register reads back the value in effect. Writable only while RX is disabled and idle, like RX_SIZE; a write while the previous one is still crossing to the MAC clock is sent once that has landed, and an RX enable is refused until the crossings complete |
+| `0x018` | RX_FIFO_DEPTH | Read-only: the built depth of the RX ingress FIFO in words (8192 in the SoC) |
+| `0x01C` | PAUSE_CTRL | 0 honour received PAUSE frames (the transmitter stops for the pause time), 1 send pause and release frames from the RX FIFO occupancy. Writable only while RX is disabled and idle, like RX_FIFO_LIMIT (the same mailbox carries them); reset 0. ABI_CTRL bit 5 reads one when the register exists |
 | `0x020`–`0x02C` | RX_BASE, RX_SIZE, RX_TAIL, RX_HEAD | RX ring: base address, log2 of the entry count, producer index, consumer index (read-only) |
 | `0x030`–`0x03C` | TX_BASE, TX_SIZE, TX_TAIL, TX_HEAD | TX ring, same layout |
-| `0x040`–`0x058` | IRQ_STATUS, IRQ_MASK, RX_ITR, TX_ITR, TICK, IRQ_MASK_SET, IRQ_MASK_CLR | See [Interrupts](#interrupts) |
+| `0x040`–`0x058` | IRQ_STATUS, IRQ_MASK, RX_COALESCE, TX_COALESCE, TICK, IRQ_MASK_SET, IRQ_MASK_CLR | See [Interrupts](#interrupts) |
 | `0x060` | LINK | 0 RX_LOCKED, 1 RX_HIGH_BER, 2 RX_LOCAL_FAULT, 3 RX_REMOTE_FAULT, 4 TX_LINK_READY, 5 RX_SIGNAL_OK, 6 TX_CLK_OK, 7 RX_CLK_OK, 8 CARRIER (RX locked with no high BER or fault, and TX link ready) |
 | `0x064` | PHY_CTRL | 0 MAC_LOOPBACK, 1 PHY_RESET, 2 PMA_LOOPBACK, 3 TX_DISABLE |
 | `0x068` | PHY_STATUS | 0 CLK_SHARED, 1 GT_RESET_DONE, 2 CDR_LOCK, 3 MODULE_PRESENT, 4 LOS |
-| `0x06C` | ABI_CTRL | R: bit 0 extended mode, bit 1 extended mode supported; W: bit 0 selects mode only while both directions are disabled and idle |
+| `0x06C` | ABI_CTRL | R: bit 0 extended mode, bit 1 extended mode supported, bit 2 RX checksum enabled, bit 3 checksum offload supported, bit 4 packet segmentation supported; W: bits 0 and 2 change only while both directions are disabled and idle (bit 0 also clears the rings) |
 | `0x070`, `0x078` | RX_BASE64, TX_BASE64 | Aligned 64-bit ring bases; accept only one complete eight-byte store in extended mode. Partial writes and high bits beyond `ADDR_WIDTH` are ignored |
-| `0x080`–`0x0FF` | Counters | 64-bit counters in `nic_pkg` order: RX frames, bytes, filtered, truncated, descriptor errors, and aborts; TX frames, bytes, descriptor errors, and aborts; then the MAC's RX overflow, bad frame, bad FCS, and PCS bad block, and TX drop and PCS bad block |
+| `0x130`, `0x134`, `0x138` | PAUSE_HIGH_WATER, PAUSE_LOW_WATER, PAUSE_INTERVAL | Flow control high and low water thresholds in RX FIFO words (0 selects default relative to RX_FIFO_LIMIT) and pause duration. Same write rule as PAUSE_CTRL |
+| `0x080`–`0x127` | Counters | 64-bit counters in `nic_pkg` order: RX frames, bytes, filtered, truncated, descriptor errors, and aborts; TX frames, bytes, descriptor errors, and aborts; then the MAC's RX overflow, bad frame, bad FCS, and PCS bad block, and TX drop and PCS bad block; then the 802.3x counters: PAUSE frames received (consumed, not delivered), PAUSE frames sent (pause requests, refreshes and release), and TX MAC clock cycles spent paused by a received PAUSE; and, on the GMII port only (zero on 10GBASE-R), frames dropped in the GMII receiver's preamble stage (a first byte that is neither `0x55` nor SFD, a preamble byte other than `0x55`, or `rx_er` in the preamble) and `rx_er` bursts inside a frame (one event per run of consecutive `rx_er` symbols) |
+
+**RX ingress FIFO and its limit.** Received frames cross to the core clock through an
+asynchronous FIFO of 68-bit words (up to 8 frame bytes each) that the SoC builds 8192 words
+deep (about 64 KiB, 16 BRAM36 per NIC). The receive MAC stores whole frames in its own buffer
+(4096 words) and presents them to the FIFO; when the FIFO is full the MAC holds them, and a
+frame that fits in neither is dropped and counted in the MAC overflow counter. RX_FIFO_LIMIT
+makes the write side report full when occupancy reaches the limit (less the FIFO's two-entry
+margin), so one bitstream measures several effective depths; 512 is the original FIFO. The
+limit crosses to the RX clock through a request/acknowledge mailbox (`cdc_mailbox`) that takes the
+same two resets as the FIFO: the new value reaches the RX domain as one word, never as a mix
+of old and new bits, and the register block refuses an RX enable until the acknowledge returns
+(a second write meanwhile is sent after it). Gating the write on RX being disabled and idle also keeps the
+cap from moving while the engine drains the FIFO. A reset returns the limit to 512 on both sides together.
+
+**802.3x flow control.** Both ports (10GBASE-R and GMII/SGMII) share the logic, which sits
+outside the MACs: `nic_pause_rx` between the receive MAC and the ingress FIFO, `nic_pause_tx`
+between the TX FIFO and the transmit MAC.
+
+- *Receive.* A frame to 01-80-C2-00-00-01 or the station address with EtherType 0x8808 and
+  opcode 0x0001 is consumed (counted, never delivered to the host), whether or not pause is
+  enabled; its first two beats are held back until the opcode is known, and any other frame to
+  those addresses is passed on unchanged. With PAUSE_CTRL bit 0 set, the pause_time loads a
+  timer of 512-bit-time quanta (8 words at 10G, 64 byte times on GMII at any speed); pause_time 0
+  clears it. While it runs no new frame leaves the TX FIFO. A frame already started finishes, and
+  the transmit MAC may still send up to two complete frames it took earlier. Frames the NIC
+  generates itself are exempt.
+- *Transmit.* With PAUSE_CTRL bit 1 set, a pause request frame (pause_time PAUSE_INTERVAL, DA
+  01-80-C2-00-00-01, SA the station address) goes out between frames when the FIFO occupancy
+  reaches PAUSE_HIGH_WATER; while it stays above PAUSE_LOW_WATER the pause request is repeated every PAUSE_INTERVAL / 2;
+  when it falls to PAUSE_LOW_WATER a single release frame (pause_time 0) follows. Clearing the bit after a pause frame still
+  sends the release frame. Nothing is sent otherwise.
+- *Headroom.* The occupancy that counts is the FIFO's, measured against the runtime limit
+  (RX_FIFO_LIMIT), but the receive MAC's 4096-word store-and-forward buffer sits behind a full
+  FIFO and absorbs frames before any is lost. After high-water crosses, the link can still deliver, at
+  1500-byte MTU (1538 bytes with preamble and gap): our pause frame waiting behind a frame in
+  transmission and one buffered in the MAC (2 x 1538 B), the pause frame itself (84 B), the PHY and
+  cable round trip (assumed 2 us: 2.5 KB at 10 Gb/s, 0.25 KB at 1 Gb/s), the peer finishing the
+  frame it was sending (1538 B) and its response time (60 pause quanta, 480 B). That is about 7.7 KB
+  (960 words) at 10G and 5.5 KB (700 words) at 1G. The FIFO above high-water (128 words at the default
+  limit of 512, 2048 words at 8192) plus the 4096-word MAC buffer is at least 4224 words, four
+  times the need. Raise PAUSE_HIGH_WATER toward the limit for more buffering; do not set it so low that
+  the link pauses at idle.
 
 Use 32-bit loads and stores for the 32-bit register bank. A write updates a
 complete selected word. A byte or halfword store is replicated over the
@@ -363,8 +480,8 @@ notifications, not "descriptors are waiting". For each direction:
 - Acknowledging the bit (writing 1 to it in IRQ_STATUS, even when it reads 0)
   starts a new interval: it clears the notification, the completion count,
   and the timer.
-- Every completion (one per DD write response) in an interval counts,
-  saturating. The first one snapshots RX_ITR or TX_ITR (`0x048` / `0x04C`:
+- Every completion (one per DONE write response) in an interval counts,
+  saturating. The first one snapshots RX_COALESCE or TX_COALESCE (`0x048` / `0x04C`:
   `[15:0]` delay in ticks, `[23:16]` max count) and TICK (`0x050`: core cycles
   per tick, 0 counting as 1; it resets to `CLK_FREQ_HZ / 1_000_000`, about
   one microsecond), and starts the deadline, which later completions do not

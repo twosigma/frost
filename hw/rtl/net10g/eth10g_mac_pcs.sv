@@ -33,6 +33,10 @@ module eth10g_mac_pcs #(
     output logic s_axis_tready,
     input logic s_axis_tlast,
     input logic s_axis_tuser,
+    // Transmit checksum offload request, see eth10g_mac_tx. Off when i_csum_en is zero.
+    input logic i_csum_en,
+    input logic [7:0] i_csum_start,
+    input logic [7:0] i_csum_offset,
     output logic [63:0] m_axis_tdata,
     output logic [7:0] m_axis_tkeep,
     output logic m_axis_tvalid,
@@ -105,6 +109,9 @@ module eth10g_mac_pcs #(
       .s_axis_tready(mac_tx_ready),
       .s_axis_tlast(s_axis_tlast),
       .s_axis_tuser(s_axis_tuser),
+      .i_csum_en(i_csum_en),
+      .i_csum_start(i_csum_start),
+      .i_csum_offset(i_csum_offset),
       .o_xgmii_data(mac_tx_data),
       .o_xgmii_ctrl(mac_tx_ctrl),
       .o_drop(o_tx_drop)
