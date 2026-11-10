@@ -128,3 +128,15 @@ Board measurements form a data set in `results/` (README section 13): a manifest
 The capture is an event log, not an executable instruction trace. Dispatch includes speculative work. AXI traffic includes instruction fetches and writebacks as well as data requests. Cache hits need not produce AXI traffic. Aggregate events therefore cannot reconstruct instruction kinds, addresses before the caches, or register dependencies. Program replay requires those fields from an instruction trace or a workload generator.
 
 The replay loader rejects aggregate events. Instruction records require a fetch address and kind; loads and stores also require a data address. IDs are consecutive from zero, and dependencies name earlier instructions. Replay does not infer register dependencies or memory addresses from dispatch counts. A stored calibration with `model: null` validates observed events only and supplies no model IPC.
+
+### L1D hit-path stage calibration
+
+README section 12 and `results/l1d_hit_path/calibration.json` record the
+current hit-path comparison. Count MEM_RS launches, L1D arrivals, stage-4
+slot completions, read responses and CDB results separately: the four-cycle
+slot completion is only part of a dependent load's nine-cycle interval.
+Compare first-to-last launch spans on identical addresses and dependencies,
+with warm L1D sectors and deliberate L0 aliases for a cache-only chain.
+Random loads also exercise L0 and pipeline scheduling, so report their
+residual independently of the cache stage fit. The older VCU118 data set
+predates the hit path and explicitly selects the earlier model configuration.

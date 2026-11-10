@@ -11,7 +11,7 @@
     "Explicit CpuTopModel + SocTopModel separation across the 6-bit-ID, 512-bit AXI4 boundary so downstream projects can replace SocTopModel or DdrController independently.",
     "Two-wide dispatch/retire, bounded ROB/RS/LQ/SQ with MEM_RS release at issue and LQ release at the result, out-of-order load/ALU completion, two-lane CDB contention, and committed stores draining from the SQ into the L1D's store records.",
     "Load Queue L0 Data Cache (256 dword entries) with 1-cycle CDB fast-path bypass and fill from L1D memory responses.",
-    "Coherent L1D with one controller, request endpoints held through U, attached loads that look up again after installation, stream look-ahead on the highest endpoints, four ordered store records with one lent endpoint, and buffered victim writebacks.",
+    "Coherent L1D with an independent four-cycle hit path, tags-only controller shadows, two-entry hit stream training, request endpoints held through U, attached loads that look up again after installation, stream look-ahead on the highest endpoints, four ordered store records with one lent endpoint, and buffered victim writebacks.",
     "Separate L1I and L1D caches; 32-byte to 64-byte sector adapter; L2 with the home's stream prefetch agent; fill ownership; coalescing; writeback slots; write intent; cache-line dirty state.",
     "Explicit cache lower transaction IDs ({type, slot}), 64-byte single-beat AXI transfers, soc_axi_slave physical address decode (DDR vs. local BRAM/MMIO), and a single-channel 512-bit AXI DDR model matching axi_behavioral_memory.sv.",
     "Deterministic workload generators, sweep driver, self-tests, and machine-readable bottleneck counters."
@@ -70,6 +70,10 @@
     {
       "fact": "One L1D controller serves one operation at a time in Idle priority order (probe, grant, SC, atomic write, head store, lookahead store, read, maintenance, stream hint). A lookup passes Idle, Lookup, the array's tag read (1 cycle) and its reply; a hit adds the 2-cycle data read, an acquisition its Acquire cycle, and an installation or store update its Update, 1-cycle array write and UpdateWait.",
       "source": "hw/rtl/lib/cache/coherence_l1d.sv:2143-2518; hw/rtl/lib/cache/coherence_array.sv:26-28, 186-194, 378-431 (ade0de67)"
+    },
+    {
+      "fact": "The L1D offers a new load to a tag-copy/all-way-data hit port in the following cycle and completes a hit slot four cycles after arrival. The controller keeps misses and stores; a selected read held by the hit path gets a tags-only shadow with no replacement touch or duplicate answer. The hit port refuses data-bank claims, same-set writes, probe service and blocked sectors. Hit reports train the stream detector through two entries, yielding to controller reports and dropping overflow.",
+      "source": "hw/rtl/lib/cache/coherence_l1d.sv:1990-2097; hw/rtl/lib/cache/coherence_array.sv:296-361; hw/rtl/lib/cache/README.md:511-525 (4d2a20a3)"
     },
     {
       "fact": "Load misses take the lowest free load endpoint; a miss on a sector that a live endpoint holds attaches and looks up again after the installation; a demand grant answers its load in its Lookup cycle; each endpoint stays live through U.",
