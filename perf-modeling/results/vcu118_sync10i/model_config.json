@@ -1,5 +1,9 @@
 {
   "name": "vcu118_sync10i",
+  "l1d_hit_path": false,
+  "l1d_request_cycles": 0,
+  "l1d_response_cycles": 1,
+  "l1d_return_cycles": 0,
   "l2_mshrs": 8,
   "l2_tag_cycles": 6,
   "l2_data_cycles": 39,

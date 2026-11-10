@@ -13,7 +13,7 @@ This directory provides a **fast, cycle-approximate architectural performance mo
 
 2. **RTL Cycle Correlation**:
    - CoreMark has an aggregate IPC comparison against RTL. The Tomasulo microarchitectural suite and DDR MLP stress test have validated event captures without model IPC comparisons.
-   - CoreMark model IPC is **1.0045**, correlating within **+2.6%** of the hardware RTL's measured **0.9786 IPC** (239,452 cycles).
+   - The archived CoreMark comparison records model IPC **1.0045**, within **+2.6%** of that capture's **0.9786 IPC** (239,452 RTL cycles). These historical figures precede the current hit-path model; section 12 records its load-kernel calibration.
    - A VCU118 board data set (`results/vcu118_sync10i/`) compares the memory path with sequential, strided, store and chase benchmarks measured on an FPGA build under Linux (section 13).
    - Accurately models FROST-specific microarchitectural structures: the 256-entry Load Queue direct-mapped L0 Data Cache (`lq_l0_cache.sv`) with 1-cycle combinational fast-path bypass, early load wakeup (`EARLY_LOAD_WAKEUP = 1`), and the single-channel 512-bit AXI memory system.
 
@@ -26,8 +26,8 @@ This directory provides a **fast, cycle-approximate architectural performance mo
      stores and probes, connected to the shared L2 coherence home.
      `L2_NUM_MSHR` sets its fill count, eight on X3, and `L2_PREFETCH` enables
      data and instruction stream prefetching into the home.
-     The model's L1D follows the coherent L1D's controller, request
-     endpoints, stream look-ahead and store records, but not its hit path,
+     The model's L1D follows the coherent L1D's controller, independent
+     load hit path, request endpoints, stream look-ahead and store records,
      and its prefetcher
      follows the home's data prefetch agent (section 8). The L2 and L1I are
      generic line caches, so DDR forecasts need calibration against the
@@ -103,7 +103,7 @@ perf-modeling/
 
 ### Multi-Benchmark Verification Summary
 
-The archived RTL results cover three benchmarks under Verilator. CoreMark has a model IPC comparison; the other two captures validate event records:
+The archived RTL results and model comparison below precede the hit-path extension. They cover three benchmarks under Verilator. CoreMark has a model IPC comparison; the other two captures validate event records:
 
 | Benchmark | Workload Characteristic | Timed RTL Cycles | Retired Uops | Hardware RTL IPC | Calibrated Model IPC | Correlation Delta | Status |
 |---|---|---:|---:|---:|---:|---:|:---:|
@@ -331,9 +331,11 @@ Caches reserve a victim way while a fill is pending. Same-line requests share a 
 
 MEM_RS frees an entry when it issues one load or store per cycle (`reservation_station.sv`), and the LQ frees an entry when its result reaches the CDB stage (`load_queue.sv`). An ordinary store is done at issue and retires without waiting for memory. A committed store keeps its SQ entry until it drains: cached stores launch one at a time, at most every `store_drain_cycles`, into the L1D's store records, and the L1D's acknowledgement a cycle later frees the entry (`store_queue.sv`). The SQ is full while the records are, so SQ depth and the records' installation rate set a store stream's throughput.
 
-The L1D follows `coherence_l1d.sv` without its hit path. One controller serves one operation at a time: in its Idle priority, a grant's installation, the head store, a load, a lent store endpoint, then stream look-ahead. A lookup holds it for `l1_tag_cycles + 3` cycles (Idle, Lookup, the tag read and the reply), a hit for `l1_data_cycles` more, an acquisition for one more, and an installation or store update for `l1_write_cycles + 2` beyond the lookup; a dirty victim adds its data read and the freeze. `l1d_mshrs` request endpoints carry acquisitions: endpoint 0 the head store's GetM, the others load misses, the lowest free one first. A demand grant answers its load in its lookup cycle; loads that attached to the endpoint look up again after the installation, one of them ahead of the next grant. Each endpoint stays live until U, `coherence_release_cycles` after installation. Up to four store records hold committed stores; only the youngest unsealed record combines another store to its sector, a record seals at its head's lookup, and every record installs at the head, with one load endpoint lent to a younger record's GetM. A read of a sector with a buffered store waits.
+The L1D follows `coherence_l1d.sv` with `l1d_hit_path=true` by default. Eight `l1d_read_slots` accept at most one new load per cycle, independently of the controller. A load is offered once to the hit port in the following cycle; it samples a tag copy and every way's data together, completes a hit's read slot four cycles after arrival, and uses the normal serialized response port. The port refuses a controller data-bank claim, a same-set array update, or a sector held by buffered stores or frozen writebacks. A refused offer falls back to the controller. The path can answer hits while a miss or store occupies the controller. A hit-port replacement touch yields to an array replacement write, even to another set. `l1d_request_cycles=1` covers MEM_RS launch to L1D arrival, `l1d_response_cycles=2` covers a ready slot to the read response, and `l1d_return_cycles=2` covers the response to the CDB. Thus a dependent cached hit takes nine launch-to-launch cycles, including the four-cycle hit path. These stages apply to cached loads only; BRAM and L0 bypass them.
 
-Stream look-ahead follows `coherence_read_stream.sv`. Three adjacent demand sector misses confirm a stream, and the cursor runs up to `l1d_lookahead_sectors` sectors past the demand frontier, within a 4 KiB page. Hints use the highest `l1d_lookahead_slots` load endpoints, limited to `l1d_mshrs - 2` so one load endpoint stays demand-only (`PrefetchCount` is 2 for four or more endpoints and 1 for three), and demand may use every load endpoint. A hint waits for its window and an endpoint, takes the controller only when nothing else wants it, and its fill trains the L2 prefetcher like a demand miss. A change of `PrefetchCount` in the RTL is a change of `l1d_lookahead_slots`.
+One controller still serves one operation at a time: in its Idle priority, a grant's installation, the head store, a load, a lent store endpoint, then stream look-ahead. A read selected while the hit path holds it, including a stage-3 hit, uses a tags-only shadow lookup: it neither reads data nor touches replacement state, and answers nothing if either path hits. A double miss uses that lookup to enter the miss path; a shadow whose tags alone hit leaves its read pending for a later normal lookup. A lookup holds the controller for `l1_tag_cycles + 3` cycles (Idle, Lookup, the tag read and the reply), a hit for `l1_data_cycles` more, an acquisition for one more, and an installation or store update for `l1_write_cycles + 2` beyond the lookup; a dirty victim adds its data read and the freeze. `l1d_mshrs` request endpoints carry acquisitions: endpoint 0 the head store's GetM, the others load misses, the lowest free one first. A demand grant answers its load in its lookup cycle; loads that attached to the endpoint look up again after the installation, one of them ahead of the next grant. The hit port sees an installed tag/data image on the array write edge, while the way remains reserved through the controller's update wait. Each endpoint stays live until U, `coherence_release_cycles` after installation. Up to four store records hold committed stores; only the youngest unsealed record combines another store to its sector, a record seals at its head's lookup, and every record installs at the head, with one load endpoint lent to a younger record's GetM. A read of a sector with a buffered store waits. `l1d_hit_path=false` selects the earlier controller-only model. Probes, atomics and maintenance are still outside the workload model.
+
+Stream look-ahead follows `coherence_read_stream.sv`. Three adjacent demand sector misses confirm a stream. Hit-path hits enter a separate two-entry queue, with duplicate tail sectors suppressed; controller reports take priority, overflow drops a hit, and hits advance only a confirmed stream. The cursor runs up to `l1d_lookahead_sectors` sectors past the demand frontier, within a 4 KiB page. Hints use the highest `l1d_lookahead_slots` load endpoints, limited to `l1d_mshrs - 2` so one load endpoint stays demand-only (`PrefetchCount` is 2 for four or more endpoints and 1 for three), and demand may use every load endpoint. A hint waits for its window and an endpoint, takes the controller only when nothing else wants it, and its fill trains the L2 prefetcher like a demand miss. A change of `PrefetchCount` in the RTL is a change of `l1d_lookahead_slots`.
 
 The L2 prefetcher follows the home's data prefetch agent (`coherence_prefetch_agent.sv`, `l2_stream_prefetcher.sv`). Its four-entry stream table trains on every L1D request the L2 accepts, hits included, confirms a stream on two consecutive lines, and requests up to `l2_prefetch_distance` lines after its last line, never past the page. A request loads only while more than a quarter of the L2 miss slots are free and one of `l2_prefetch_inflight` identities is free; the home answers it after one lookup, and its identity returns `coherence_release_cycles` later while any fill continues. The home fills only when two ways of the set are available and, for a valid victim, every writeback slot is free; otherwise, or for a resident or in-flight line, the prefetch does nothing. The instruction prefetch table and the pause beside DMA traffic are not modeled.
 
@@ -408,6 +410,45 @@ CI captures the BRAM CoreMark timed region and compares its observed IPC with th
 
 The `coremark` workload keeps its data cold in DDR at 3,600 operations, for the memory sweeps. The `coremark_bram` workload's loads and stores to low BRAM bypass the L1D, so with the baseline's configuration it runs at IPC 0.9717 against the capture's 0.9682 (+0.4%).
 
+### L1D hit-path RTL calibration
+
+`results/l1d_hit_path/calibration.json` records load microkernels simulated on
+`4d2a20a3` in the pinned `frost` image (Verilator 5.052, cocotb 2.1.0).
+Code executes from BRAM and data from cached DDR. Chains traverse 16 nodes
+spaced 4 KiB apart, so their dwords alias in the 512-entry L0 while their
+sectors remain resident in the L1D. Each chain is warmed for two laps;
+the measured body contains 512 loads, interleaved across one, two or four
+independent chains. Random loads use 1,024 predetermined 8-byte addresses
+in 16 KiB, using seed 12345; the third pass is measured. The model
+uses the same addresses and dependencies, warm instruction fetches and L1D
+contents, and the RTL's 512-entry L0 and eight L2 fills.
+
+The cycle window runs from the first to the last MEM_RS load launch,
+excluding setup and final drain. The one-chain trace sets the path's stage
+latencies; chain concurrency and random loads check the resulting throughput.
+
+| Kernel | Loads | RTL cycles | Model cycles | Model / RTL minus 1 |
+|---|---:|---:|---:|---:|
+| Dependent chain | 512 | 4,599 | 4,599 | 0.0% |
+| Two chains | 512 | 2,296 | 2,296 | 0.0% |
+| Four chains | 512 | 1,146 | 1,146 | 0.0% |
+| Random 16 KiB loads | 1,024 | 1,325 | 1,090 | -17.7% |
+
+All 3,421 sampled RTL hit-path hits, including warm-up, complete their slot
+four cycles after L1D arrival. The first three windows contain no L0 hits;
+the random window mixes L0 and L1D hits and exposes the model's existing
+one-cycle L0 and approximate pipeline scheduling. Its residual remains an
+explicit limit; the calibrated L1D stages are not adjusted to fit it. The
+unit tests retain the three measured chain spans and exercise shadows,
+port refusals, read-slot credit, fill visibility and replays, replacement-write
+ordering, and stream-report ordering.
+
+BRAM CoreMark remains exactly 223,556 ticks with matching CRCs. Its newly
+captured timed window is 223,549 cycles and 226,801 retired micro-ops. The
+CI model workload remains 3,219 cycles and 3,128 retired micro-ops (IPC
+0.9717), within 4.22% of that RTL IPC; `calibration/ci_baseline.json` is
+unchanged.
+
 ## 13. Board calibration data sets
 
 A board data set records benchmarks measured on hardware, with the platform's model configuration. `tools/board_calibration.py` runs each benchmark's loop body from `board_workloads.py`, starting with every cache full of unrelated lines (modified ones behind store streams), measures the steady state once the body's warm-up share has retired, and writes each figure, the model's, and their residual to the set's `calibration.json`. Points marked `fit` set a configuration latency and match by construction; `--fit` searches those latencies again, and `--set FIELD=JSON` overrides a configuration field for a sensitivity study.
@@ -417,6 +458,8 @@ python3 perf-modeling/tools/board_calibration.py \
     --data-set perf-modeling/results/vcu118_sync10i \
     --out perf-modeling/results/vcu118_sync10i/calibration.json
 ```
+
+The board data set predates the L1D hit path. Its configuration explicitly disables that path and retains the earlier cached-load timing (`l1d_request_cycles=0`, `l1d_response_cycles=1`, `l1d_return_cycles=0`) for the historical controller-only comparison below; these figures do not calibrate the current hit path.
 
 `results/vcu118_sync10i/` holds benchmarks measured on 2026-11-08 on a VCU118 FPGA build of upstream `699b7068` with the board series: CPU at 200 MHz, the SoC, L2 home and DDR4 controller at 100 MHz, under Linux. It is an FPGA platform point: the half-rate home and controller set its latencies, so its absolute figures are not ASIC figures. Its configuration states the RTL's eight home fills, doubles the home's tag stage and C-to-U interval for the half-rate home, and fits two latencies: `l2_data_cycles` (39) to the 256 KiB dependent chain and `ddr.latency_cycles` (148) to the dependent DRAM chase. The board takes 0.54 DTLB misses per chase hop and the model has no page walker, so that DDR latency includes the walks.
 
@@ -433,12 +476,11 @@ python3 perf-modeling/tools/board_calibration.py \
 | Dependent DRAM chase | 818.6 ns | 820.2 ns | +0.2% | fit |
 | 256 KiB dependent chain | 181.9 ns | 182.0 ns | +0.1% | fit |
 
-The L1D's one-at-a-time controller sets the rate of the sector-adjacent streams: a sequential sector takes a missing lookup, three loads that attach to its endpoint and look up again after the installation, the installation and look-ahead lookups. With a lookup every cycle instead, the model reads 249 MB/s sequentially and 397 MB/s at a 16-byte stride. For the same reason, two more look-ahead endpoints add 4% to sequential reads with the home's prefetcher on and 21% with it off, and an LQ of 16 adds nothing without a wider ROB.
+In this historical configuration, the L1D's one-at-a-time controller sets the rate of the sector-adjacent streams: a sequential sector takes a missing lookup, three loads that attach to its endpoint and look up again after the installation, the installation and look-ahead lookups. With a lookup every cycle instead, the model reads 249 MB/s sequentially and 397 MB/s at a 16-byte stride. For the same reason, two more look-ahead endpoints add 4% to sequential reads with the home's prefetcher on and 21% with it off, and an LQ of 16 adds nothing without a wider ROB.
 
 With the home's prefetcher on, the model reads the sector-adjacent streams 18% to 42% faster than the board; with it off, 16% to 30% slower. The model's prefetcher follows the RTL's agent, so the board's hides less latency for a reason the model omits. Candidates are the home's lookup bandwidth (one service engine at half the CPU clock takes demand requests, prefetch lookups, writebacks and completions in turn, while the model's L2 takes a lookup every CPU cycle), the prefetch pause beside the board's Ethernet DMA, the identity's GrantAck, C and U round trip across the clock boundary, the registered room flag, and the DDR4 controller's bank, refresh and turnaround timing. Strided reads at 128 bytes, which neither mechanism covers, depend on the endpoints' lifetime; a DDR latency near 105 cycles matches them and leaves the chase short by about 90 cycles for each page walk, but makes the store streams 30% to 37% faster than the board, a second open item.
 
 ### Open items
 
-- The model has no L1D hit path. In the RTL a hit path beside the controller answers loads that hit, so the model's L1D takes every load through a controller lookup and answers hits later and fewer per cycle than the RTL. The board data set predates the hit path.
 - The model's default local BRAM read is 2 cycles, against 10 measured on the RTL (a dependent pointer chase through BRAM data, with its misses aliased in the L0, takes 10.0 cycles per load). The CI check sets 10 in its baseline.
 - The model's dependent L0 hit costs 1 cycle, against the RTL's 3 (the same chase with its nodes resident in the L0 takes 3.0 cycles per load).
