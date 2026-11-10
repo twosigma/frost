@@ -956,6 +956,7 @@ module fp_engine (
   // ===========================================================================
   // Fast paths for moves, comparisons, classification and integer conversion
   // ===========================================================================
+  logic [63:0] fast_i2f_int;
   logic is_fast_op;
   always_comb begin
     unique case (dec_q.cls)
@@ -1092,7 +1093,6 @@ module fp_engine (
     end
   end
 
-  logic [63:0] fast_i2f_int;
   always_comb begin
     if (dec_q.int_w) begin
       fast_i2f_int = dec_q.int_u ? {32'b0, opa_q[31:0]} : {{32{opa_q[31]}}, opa_q[31:0]};

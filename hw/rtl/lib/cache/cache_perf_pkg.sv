@@ -29,6 +29,10 @@ package cache_perf_pkg;
     // and a buffer hit independently of the tag-stage event in this cycle.
     logic store_combined;
     logic store_combined_under_miss;
+    // A read answered by the L1D's hit path, beside the controller, is an
+    // access and a hit independently of the tag-stage event in this cycle.
+    logic path_hit;
+    logic path_hit_under_miss;
     logic access;
     logic hit;
     logic miss;

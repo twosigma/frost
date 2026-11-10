@@ -86,3 +86,5 @@
   could take a word from the wrong fetch window
 - Extended the performance model to the coherent L1D, the store drain and the
   home's prefetcher, with a VCU118 board data set and its calibration tool
+- Moved signal declarations ahead of their first use across the RTL, as the
+  SystemVerilog standard requires, and added a yosys-slang front-end check to CI

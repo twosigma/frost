@@ -20,7 +20,9 @@
 // asserts for every grant installation (p_insert_lookup_way). With DATA_BYTE
 // set, response data is compared in that byte lane, in rows written since
 // the first reset (the data RAMs have no initial contents); every lane has
-// the same logic, so a lane keeps only its own data in the proof.
+// the same logic, so a lane keeps only its own data in the proof. With
+// HIT_PORT, arbitrary hit-port reads run beside the lookups; with one way,
+// whose replacement state is empty, they change no output of the lookups.
 module coherence_array_equiv #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned CACHE_BYTES = 64,
@@ -29,6 +31,7 @@ module coherence_array_equiv #(
     parameter bit ULTRA = 1'b0,
     // The compared byte lane of the response data, or -1 for none.
     parameter int DATA_BYTE = -1,
+    parameter bit HIT_PORT = 1'b0,
     localparam int unsigned LineBytes = 32,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
     localparam int unsigned Sets = CACHE_BYTES / (LineBytes * WAYS),
@@ -55,7 +58,9 @@ module coherence_array_equiv #(
     input logic i_update_insert,
     input logic i_update_touch,
     input logic [LineBytes-1:0] i_update_mask,
-    input logic [8*LineBytes-1:0] i_update_data
+    input logic [8*LineBytes-1:0] i_update_data,
+    input logic i_hp_valid,
+    input logic [ADDR_WIDTH-1:0] i_hp_addr
 );
   logic f_past_valid = 1'b0;
   logic init_done[2], req_ready[2], update_ready[2], resp_valid[2], resp_hit[2];
@@ -71,7 +76,8 @@ module coherence_array_equiv #(
       .CACHE_BYTES(CACHE_BYTES),
       .WAYS(WAYS),
       .BIMODAL_INSERT(BIMODAL_INSERT),
-      .ULTRA(ULTRA)
+      .ULTRA(ULTRA),
+      .HIT_PORT(HIT_PORT)
   ) array (
       .i_clk,
       .i_rst,
@@ -104,7 +110,12 @@ module coherence_array_equiv #(
       .i_update_insert,
       .i_update_touch,
       .i_update_mask,
-      .i_update_data
+      .i_update_data,
+      .i_hp_valid(HIT_PORT && i_hp_valid),
+      .i_hp_addr,
+      .o_hp_ready(),
+      .o_hp_hit(),
+      .o_hp_data()
   );
 
   coherence_array_reference #(

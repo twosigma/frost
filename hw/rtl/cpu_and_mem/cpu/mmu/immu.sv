@@ -128,6 +128,7 @@ module immu #(
   // compare. The terms are kept apart so that each output that takes the
   // match meets them in its last gate. A full match implies the same page,
   // so this equals same_page && (!pc_page_cross || key_va_q == i_pc).
+  logic pc_page_cross;
   (* keep = "true" *) logic same_page;
   (* keep = "true" *) logic pc_cross_key_ok;
   logic pc_low_ok, pc_match;
@@ -142,7 +143,6 @@ module immu #(
 
   logic [VpnBits-1:0] pc_vpn;
   logic pc_noncanon;
-  logic pc_page_cross;
   logic [NpBits-1:0] pc_np_va;
   logic [9:0] pc_plus4_lo;
   assign pc_vpn = i_pc[38:12];

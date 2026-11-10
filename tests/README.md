@@ -638,16 +638,27 @@ proves, and its assumptions.
 ./scripts/frost.py formal --task bmc               # one task on every target that declares it
 ```
 
-Each target and task is a separate pytest case. The timeout is 40 minutes,
-except for `csr_file:bmc`, `csr_file:bmc_perf_off`, and `reorder_buffer:bmc`,
-which have 90 minutes each, `coherent_hart_cache:coh_hart_maint_prove`,
-which has 120 minutes, `coherence_l1d:coh_l1d_stream_bmc` and
-`coherence_l1d:coh_l1d_stream_free_nostore_bmc`, which have 60 minutes each,
-`coherence_l1d:coh_l1d_stream_free_bmc`, which has 180 minutes,
-`coherence_store_boundary:bmc_four`, which has 300 minutes,
-`coherence_store_boundary:bmc_intervening`, which has 240 minutes,
-and `coherence_l1d:coh_l1d_multi_bmc`, which has 240 minutes.
-`--verbose` prints solver output.
+Each target and task is a separate pytest case. The runner's default timeout
+is 40 minutes; task-specific SBY and runner allowances are listed together in
+the [formal guide](../formal/README.md). The single-endpoint L1D control BMC
+keeps depth 40 with a 180-minute allowance in a 200-minute job; the
+multi-endpoint control BMC has 300 minutes in its own 330-minute job. The
+L1D data tasks run in three jobs (330, 330 and 270 minutes), with each word
+variant taking its representative's measured allowance. The remaining L1D
+tasks and AXI bridges retain their 330-minute job.
+
+The four-record store-boundary BMC runs to depth 114 with a 300-minute
+allowance in its own 330-minute job. Its depth-120 cover task reaches handoff
+at frame 57 and drain at frame 92; restoring the BMC to depth 120 is an open
+[verification item](../ROADMAP.md#verification). The intervening-load BMC
+keeps depth 140 and 240 minutes in its own 330-minute job. AMO flow tasks
+share a 180-minute job; SC and the remaining boundary cases share a
+240-minute job. Store-home BMCs and covers share a 240-minute job. The
+[formal guide](../formal/README.md) records every task's allowance and the
+other CI job limits. `--verbose` prints solver output.
+
+The independent `coherent_hart_cache:coh_hart_maint_owned_prove` induction
+has a 20-minute timeout in both SBY and the runner.
 
 ## Environment and output
 
@@ -891,7 +902,7 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 | TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and runs 50 sequences from the crypto generator |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis |
-| Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence, store-home, L1D multi-endpoint, L1D and bridges, store-boundary (three jobs), L1D free-stream and Other tasks jobs; and a separate job for the hart maintenance proof, its ownership induction and the other L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets |
+| Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, L1D control, L1D multi-endpoint, L1D data (three jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream and Other tasks jobs; and a separate job for the hart maintenance proof, its ownership induction and the other L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in four chained jobs |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
 | Coverage | One job merges the coverage of the simulating jobs into a report |

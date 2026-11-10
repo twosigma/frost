@@ -1513,13 +1513,26 @@ module coherence_home #(
   // out of the pick.
   logic [FILLS-1:0] forward_ready_next;
   assign forward_ready_next = fill_forward_q | (run ? fill_forward_set : '0);
+  // Prepare each fill's blockers before testing its ready bit. Acceptance
+  // chooses between the current turn and the turn after the accepted fill.
+  logic [FILLS-1:0] forward_pick_if_held, forward_pick_if_accepted;
+  coherence_home_forward_turn_select #(
+      .FILLS(FILLS)
+  ) u_forward_held (
+      .i_ready(forward_ready_next),
+      .i_later(forward_later_q),
+      .o_pick (forward_pick_if_held)
+  );
+  coherence_home_forward_turn_select #(
+      .FILLS(FILLS)
+  ) u_forward_accepted (
+      .i_ready(forward_ready_next & ~forward_pick_q),
+      .i_later(forward_after(forward_pick_q)),
+      .o_pick (forward_pick_if_accepted)
+  );
   always_ff @(posedge i_clk) begin
     if (i_rst) forward_pick_q <= '0;
-    else if (forward_accept)
-      forward_pick_q <= forward_turn(
-          forward_ready_next & ~forward_pick_q, forward_after(forward_pick_q)
-      );
-    else forward_pick_q <= forward_turn(forward_ready_next, forward_later_q);
+    else forward_pick_q <= forward_accept ? forward_pick_if_accepted : forward_pick_if_held;
   end
   assign forward_pick = forward_pick_q;
   always_comb begin
@@ -2312,4 +2325,37 @@ module coherence_home #(
   end
 `endif
 
+endmodule
+
+// Prefer the first ready fill in later, else the first ready fill. Each bit
+// tests ready after the blockers; later need not be a suffix or one-hot.
+module coherence_home_forward_turn_select #(
+    parameter int unsigned FILLS = 8
+) (
+    input  logic [FILLS-1:0] i_ready,
+    input  logic [FILLS-1:0] i_later,
+    output logic [FILLS-1:0] o_pick
+);
+  for (genvar fill = 0; fill < FILLS; fill++) begin : gen_fill
+    localparam logic [FILLS-1:0] Below = (FILLS'(1) << fill) - FILLS'(1);
+    localparam logic [FILLS-1:0] Above = ~(Below | (FILLS'(1) << fill));
+    (* keep = "true" *)wire below_ready = |(i_ready & Below);
+    (* keep = "true" *)wire below_later = |(i_ready & i_later & Below);
+    (* keep = "true" *)wire above_later = |(i_ready & i_later & Above);
+`ifdef FROST_XILINX_PRIMS
+    (* dont_touch = "true" *) LUT5 #(
+        .INIT(32'h22270000)
+    ) u_pick (
+        .I0(i_later[fill]),
+        .I1(below_later),
+        .I2(below_ready),
+        .I3(above_later),
+        .I4(i_ready[fill]),
+        .O (o_pick[fill])
+    );
+`else
+    assign o_pick[fill] = i_ready[fill] &&
+        (i_later[fill] ? !below_later : (!below_ready && !above_later));
+`endif
+  end
 endmodule

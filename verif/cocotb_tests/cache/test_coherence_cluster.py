@@ -133,12 +133,16 @@ class Cluster:
             self.cycle += 1
             if not self.get("i_rst"):
                 for name in ("l1d", "l2", "l2_write"):
+                    events: list[int]
                     if name == "l2_write":
-                        events = unpack(self.get("o_l2_write_perf"), (1, 5, 1, 1))
+                        events = list(unpack(self.get("o_l2_write_perf"), (1, 5, 1, 1)))
                     else:
-                        # The two combining fields precede the tag-stage fields.
+                        # The two combining fields and the L1D hit path's two
+                        # fields precede the tag-stage fields. A hit-path hit
+                        # is an access and a hit, as the counters count it.
                         fields = unpack(
-                            self.get(f"o_{name}_perf"), (1, 1, 1, 1, 1, 1, 5, 1, 1, 1)
+                            self.get(f"o_{name}_perf"),
+                            (1, 1, 1, 1, 1, 1, 1, 1, 5, 1, 1, 1),
                         )
                         combined = f"{name}_combined"
                         self.perf[combined] = [
@@ -147,7 +151,11 @@ class Cluster:
                                 self.perf[combined], fields[:2], strict=True
                             )
                         ]
-                        events = fields[2:]
+                        path_hit, path_hit_under_miss = fields[2:4]
+                        events = list(fields[4:])
+                        events[0] += path_hit
+                        events[1] += path_hit
+                        events[5] += path_hit_under_miss
                     self.perf[name] = [
                         a + b for a, b in zip(self.perf[name], events, strict=True)
                     ]
