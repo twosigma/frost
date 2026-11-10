@@ -25,6 +25,7 @@ module coherence_store_home_formal #(
 ) (
     input logic i_clk
 );
+  logic requested_q, granted_q, completed_q, completion_sent_q, finished_q;
   localparam int unsigned AddrWidth = 32;
   `FROST_COHERENCE_TYPES(AddrWidth)
   logic past_q = 0;
@@ -146,7 +147,6 @@ module coherence_store_home_formal #(
   coh_u_t agent_release;
   logic [5:0] agent_tid_q;
   logic agent_valid, agent_ready, agent_g_valid, agent_c_valid, agent_c_ready, agent_u_valid;
-  logic requested_q, granted_q, completed_q, completion_sent_q, finished_q;
   always_comb begin
     agent_request = '0;
     agent_request.opcode = bootstrap ? coherence_pkg::DMAWrite : coherence_pkg::DMARead;

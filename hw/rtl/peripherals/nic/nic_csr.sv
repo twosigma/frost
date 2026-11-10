@@ -350,9 +350,9 @@ module nic_csr #(
       nic_pkg::TxBaseOffset:     reg_word = tx_base_q[31:0];
       nic_pkg::AbiCtrlOffset:    reg_word = {30'b0, 1'b1, wide_mode_q};
       nic_pkg::RxBase64Offset:   reg_word = 32'(rx_base_q);
-      nic_pkg::RxBase64HiOffset: reg_word = 32'(rx_base_q >> 32);
+      nic_pkg::RxBase64HiOffset: reg_word = 32'(64'(rx_base_q) >> 32);
       nic_pkg::TxBase64Offset:   reg_word = 32'(tx_base_q);
-      nic_pkg::TxBase64HiOffset: reg_word = 32'(tx_base_q >> 32);
+      nic_pkg::TxBase64HiOffset: reg_word = 32'(64'(tx_base_q) >> 32);
       nic_pkg::TxSizeOffset:     reg_word = {27'b0, tx_size_q};
       nic_pkg::TxTailOffset:     reg_word = {16'b0, tx_tail_q};
       nic_pkg::TxHeadOffset:     reg_word = {16'b0, i_tx_head};

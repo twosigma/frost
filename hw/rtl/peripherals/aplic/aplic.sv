@@ -627,6 +627,7 @@ module aplic #(
   end
 
 `ifdef FORMAL
+  logic [NUM_SOURCES:1] f_raise;
   // ---------------------------------------------------------------------------
   // Formal properties (formal/aplic.sby). Inputs are arbitrary on every
   // cycle; reset is held in the first cycle and arbitrary after it. The
@@ -997,7 +998,6 @@ module aplic #(
 
   // f_raise[s]: a sourcecfg write in the last cycle left source s in an
   // edge mode and raised its rectified input.
-  logic [NUM_SOURCES:1] f_raise;
   always_comb begin
     for (int s = 1; s <= NUM_SOURCES; s++)
     f_raise[s] = f_edge_mode(sm_q[s]) && f_rectified(sm_q[s], f_src_p[s-1]) &&

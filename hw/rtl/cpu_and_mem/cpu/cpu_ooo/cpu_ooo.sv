@@ -551,6 +551,7 @@ module cpu_ooo #(
   logic dbg_rs_dispatch_src2_ready  /* verilator public_flat_rd */;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] dbg_rs_dispatch_src2_tag  /* verilator public_flat_rd */;
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
   logic dbg_rat_alloc_valid  /* verilator public_flat_rd */;
   logic dbg_rat_alloc_dest_rf  /* verilator public_flat_rd */;
   logic [riscv_pkg::RegAddrWidth-1:0] dbg_rat_alloc_dest_reg  /* verilator public_flat_rd */;
@@ -3394,7 +3395,6 @@ module cpu_ooo #(
   // for debug and these checks. When recovery ends, its flush has already
   // cleared pd_valid_q (and emptied the decoded queue), so even the preflush
   // candidates are low.
-  logic reset_seen_q = 1'b0;
   logic mispredict_recovery_pending_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin

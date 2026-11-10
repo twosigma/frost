@@ -400,6 +400,7 @@ module fetch_provider #(
   assign ddr_slot2_start_valid_lo_odd = ddr_sb_odd[riscv_pkg::ImemSbSlot2StartValidLo];
 
 `ifndef SYNTHESIS
+  logic ask_line_next_armed_q = 1'b0;
   // Reference word selection uses fetch_pa1 and the virtual word parity.
   logic [WordSelBits-1:0] word_sel1_ref;
   logic [SbWidth-1:0] ddr_sb1_ref;
@@ -539,7 +540,6 @@ module fetch_provider #(
       ask_pa1_q[riscv_pkg::PhysAddrBits-1:OffsetBits] : ask_line_next_q;
 
 `ifndef SYNTHESIS
-  logic ask_line_next_armed_q = 1'b0;
   always_ff @(posedge i_clk) begin
     if (i_rst) ask_line_next_armed_q <= 1'b1;
     if (ask_line_next_armed_q) begin

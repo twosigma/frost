@@ -63,6 +63,91 @@ module coherence_store_boundary_formal #(
   (* anyconst *) logic amo_prefix_same_sector;
   logic [3:0] step_q;
   logic atomic_complete_q, sc_written_q, guard_retired;
+  // Interfaces used by the ordered dispatch and retirement checks below.
+  logic [2:0] accepted_q, acknowledged_q;
+  wire coherent_head_protected, coherent_retire_hold;
+  logic old_request_q, old_complete_q, fresh_addressed_q;
+  wire retirement_hold = coherent_retire_hold;
+  wire commit_advance = advance && (Mode != 3 || step_q != 4 || old_request_q) &&
+      (step_q != 9 || !retirement_hold);
+  wire csr_commit_fire = 0, mispredict_recovery_pending = 0, i_fatal_stop = 0;
+  logic trap_mret_commit_hold_q;
+  wire commit_hold = csr_commit_fire || trap_mret_commit_hold_q ||
+      mispredict_recovery_pending || i_fatal_stop || coherent_retire_hold;
+  coh_d_t demand, demand_q;
+  riscv_pkg::fu_complete_t dependency_result;
+  logic home_atomic_write_lookup;
+  logic [Misses-1:0] home_live, home_granted, home_complete;
+  logic home_live_q, granted_q, complete_q;
+  logic l1_atomic_live;
+  logic [3:0][AddrWidth-1:0] l1_block_addr;
+  logic [3:0] l1_block_valid;
+  logic [Misses-1:0][AddrWidth+17:0] l1_c;
+  logic [Misses-1:0] l1_c_valid;
+  logic [AddrWidth-1:0] l1_cut_address;
+  logic l1_cut_hold;
+  logic l1_cut_inval_valid;
+  logic [Misses-1:0][AddrWidth+311:0] l1_d;
+  logic [Misses-1:0] l1_d_valid;
+  logic l1_fatal;
+  logic l1_g_ready;
+  logic l1_p_ready;
+  logic l1_pending_store;
+  logic [63:0] l1_read_data;
+  logic l1_read_error;
+  logic [2:0] l1_read_id;
+  logic l1_read_valid;
+  logic l1_sc_write_done;
+  logic l1_sc_write_pending;
+  logic [TagBits-1:0] l1_sc_write_tag;
+  logic l1_store_ready;
+  logic l1_u_ready;
+  logic l1_write_done;
+  logic l1_write_inflight;
+  logic local_owner;
+  logic lq_coherent_arm_valid;
+  riscv_pkg::fu_complete_t lq_fu_complete;
+  logic lq_l0_fill;
+  logic lq_mem_read_en;
+  logic [riscv_pkg::XLEN-1:0] lq_reservation_addr;
+  logic lq_reservation_valid;
+  logic [riscv_pkg::XLEN-1:0] lq_sq_check_addr;
+  logic [riscv_pkg::XLEN-1:0] lq_sq_check_addr_b;
+  logic [riscv_pkg::XLEN-1:0] lq_sq_check_addr_c;
+  logic [riscv_pkg::XLEN-1:0] lq_sq_check_addr_d;
+  logic lq_sq_check_capture_valid;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] lq_sq_check_rob_tag;
+  riscv_pkg::mem_size_e lq_sq_check_size;
+  logic protected_q;
+  logic home_g_valid, home_u_valid, reverse_store_grant;
+  logic rt_amo_mem_write_done;
+  logic rt_cached_read_held;
+  logic rt_coherent_write_atomic;
+  logic [XLEN-1:0] rt_data_mem_addr;
+  logic [riscv_pkg::MemStrbBits-1:0] rt_data_mem_cached_byte_wr_en;
+  logic [riscv_pkg::MemDataBits-1:0] rt_lq_mem_read_data;
+  logic rt_lq_mem_read_error;
+  logic [riscv_pkg::CachedLoadSlotBits-1:0] rt_lq_mem_read_id;
+  logic rt_lq_mem_read_is_cached;
+  logic rt_lq_mem_read_valid;
+  logic rt_lq_mem_request_valid;
+  logic rt_sq_mem_write_done;
+  logic [riscv_pkg::XLEN-1:0] sc_coherent_addr;
+  logic sc_coherent_arm_valid;
+  logic sc_coherent_result_ready;
+  logic [2:0] sc_coherent_size;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] sc_coherent_tag;
+  logic sc_coherent_valid;
+  riscv_pkg::fu_complete_t sc_sc_fu_complete;
+  logic [riscv_pkg::XLEN-1:0] sq_cache_invalidate_addr;
+  logic sq_cache_invalidate_valid;
+  logic sq_committed_empty;
+  logic sq_committed_empty_lq;
+  logic sq_committed_empty_trap;
+  logic sq_empty;
+  logic sq_mem_write_en;
+  logic sq_mem_write_is_cached;
+
   wire retire_atomic = step_q == 6 && (Mode == 1 || Mode == 2) && atomic_complete_q &&
       advance && (!LOCAL_PROGRESS || !commit_hold);
   wire commit_store = FOUR_STORES ? (step_q >= 6 && step_q <= 9) :
@@ -71,24 +156,17 @@ module coherence_store_boundary_formal #(
       ReorderBufferTagWidth'(step_q - 6) : (step_q == 4 ? 0 : step_q == 9 ? YoungerTag : AtomicTag);
   logic addressed_q, load_update_q, load_second_update_q;
   logic lr_addressed_q, lr_complete_q;
-  logic old_request_q, old_complete_q, fresh_addressed_q;
   logic [1:0] fresh_stage_q;
   wire fresh_alloc = Mode == 3 && fresh_stage_q == 1 && advance;
   wire fresh_issue = Mode == 3 && fresh_stage_q >= 2 && offer_load && !fresh_addressed_q;
-  wire retirement_hold = coherent_retire_hold;
   wire coherent_atomic_active = protected_q, coherent_atomic_retired = guard_retired;
   wire i_coherent_atomic_live = l1_atomic_live;
-  wire coherent_head_protected, coherent_retire_hold;
   assign coherent_head_protected = coherent_atomic_active && !coherent_atomic_retired;
   assign coherent_retire_hold = coherent_atomic_active && coherent_atomic_retired &&
       i_coherent_atomic_live;
-  wire csr_commit_fire = 0, mispredict_recovery_pending = 0, i_fatal_stop = 0;
-  wire commit_hold = csr_commit_fire || trap_mret_commit_hold_q ||
-      mispredict_recovery_pending || i_fatal_stop || coherent_retire_hold;
-  (* anyseq *) logic control_pending;
-  wire i_rst = rst, flush_all = 0, trap_pending = 0, mret_start = 0;
-  wire trap_drain_wait = control_pending, step_done_set = 0, step_done_q = 0;
-  logic trap_mret_commit_hold_q;
+  (* anyseq *)logic control_pending;
+  wire  i_rst = rst, flush_all = 0, trap_pending = 0, mret_start = 0;
+  wire  trap_drain_wait = control_pending, step_done_set = 0, step_done_q = 0;
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_all) trap_mret_commit_hold_q <= 1'b0;
     // A drain holds younger retirement. The protected cached SC retires
@@ -101,8 +179,6 @@ module coherence_store_boundary_formal #(
       // decides this cycle, the hold blocks the next one).
       step_done_set || step_done_q;
   end
-  wire commit_advance = advance && (Mode != 3 || step_q != 4 || old_request_q) &&
-      (step_q != 9 || !retirement_hold);
   wire pre_issue = (step_q >= 2 && offer_load &&
       (LocalLR ? !lr_addressed_q : (!addressed_q && Mode != 2))) || fresh_issue;
   wire [ReorderBufferTagWidth-1:0] pre_issue_tag = FOUR_STORES ? 4 : fresh_issue ? 3 : 2;
@@ -308,9 +384,6 @@ module coherence_store_boundary_formal #(
       end
     end
   end
-  logic protected_q;
-  logic local_owner;
-  logic home_atomic_write_lookup;
   logic [3:0] local_phase;
   logic extra_sent_q, extra_granted_q, probe_offered_q, probe_accepted_q;
   coh_d_t extra_demand_q;
@@ -350,7 +423,6 @@ module coherence_store_boundary_formal #(
   logic dependency_clear_reservation, dependency_snoop_invalidate;
   logic [3:0] competing_results_q;
   riscv_pkg::fu_complete_t completion_lq;
-  riscv_pkg::fu_complete_t dependency_result;
   if (LOCAL_PROGRESS) begin : gen_completion
     (* anyseq *) logic offer_competing_result;
     wire competing_result = local_owner && competing_results_q < 8 && offer_competing_result &&
@@ -435,11 +507,7 @@ module coherence_store_boundary_formal #(
       .o_retired(guard_retired),
       .o_tag(guard_tag)
   );
-  logic home_live_q, granted_q, complete_q;
-  logic [Misses-1:0] home_live, home_granted, home_complete;
   logic [Misses-1:0] home_d_ready;
-  logic home_g_valid, home_u_valid, reverse_store_grant;
-  coh_d_t demand, demand_q;
   coh_g_t grant;
   coh_u_t release_message;
   assign demand = l1_d[0];
@@ -566,7 +634,6 @@ module coherence_store_boundary_formal #(
     end
   end
   wire ordinary_write = |rt_data_mem_cached_byte_wr_en && !rt_coherent_write_atomic;
-  logic [2:0] accepted_q, acknowledged_q;
   always_ff @(posedge i_clk) begin
     if (rst) begin
       accepted_q <= 0;
@@ -613,24 +680,16 @@ module coherence_store_boundary_formal #(
   logic sq_dispatch_full_for_2;
   logic sq_sq_all_older_addrs_known;
   riscv_pkg::sq_forward_result_t sq_sq_forward;
-  logic sq_mem_write_en;
   logic [riscv_pkg::XLEN-1:0] sq_mem_write_addr;
   logic [riscv_pkg::MemDataBits-1:0] sq_mem_write_data;
   logic [riscv_pkg::MemStrbBits-1:0] sq_mem_write_byte_en;
   riscv_pkg::mem_size_e sq_mem_write_size;
   logic sq_mem_write_buffered;
   logic sq_mem_write_is_mmio;
-  logic sq_mem_write_is_cached;
   logic sq_uncached_store_pending;
   riscv_pkg::fu_complete_t sq_uncached_store_complete;
-  logic sq_cache_invalidate_valid;
-  logic [riscv_pkg::XLEN-1:0] sq_cache_invalidate_addr;
-  logic sq_empty;
   logic sq_dispatch_empty;
-  logic sq_committed_empty;
   logic sq_committed_empty_rob;
-  logic sq_committed_empty_trap;
-  logic sq_committed_empty_lq;
   logic [$clog2(DEPTH+1)-1:0] sq_count;
   logic [$clog2(DEPTH+1)-1:0] sq_dispatch_count;
   store_queue #(
@@ -711,7 +770,6 @@ module coherence_store_boundary_formal #(
       .o_count(sq_count),
       .o_dispatch_count(sq_dispatch_count)
   );
-  logic lq_coherent_arm_valid;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] lq_coherent_arm_tag;
   logic [1:0] lq_coherent_read_kind;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] lq_coherent_read_tag;
@@ -722,23 +780,12 @@ module coherence_store_boundary_formal #(
   logic lq_dispatch_full;
   logic lq_dispatch_full_for_2;
   logic lq_sq_check_valid;
-  logic lq_sq_check_capture_valid;
-  logic [riscv_pkg::XLEN-1:0] lq_sq_check_addr;
-  logic [riscv_pkg::XLEN-1:0] lq_sq_check_addr_b;
-  logic [riscv_pkg::XLEN-1:0] lq_sq_check_addr_c;
-  logic [riscv_pkg::XLEN-1:0] lq_sq_check_addr_d;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] lq_sq_check_rob_tag;
-  riscv_pkg::mem_size_e lq_sq_check_size;
-  logic lq_mem_read_en;
   logic lq_mem_addr_valid;
   logic [riscv_pkg::XLEN-1:0] lq_mem_read_addr;
   riscv_pkg::mem_size_e lq_mem_read_size;
   logic [riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_read_id;
   logic lq_mem_read_no_merge;
-  riscv_pkg::fu_complete_t lq_fu_complete;
   logic lq_fu_complete_staged;
-  logic lq_reservation_valid;
-  logic [riscv_pkg::XLEN-1:0] lq_reservation_addr;
   logic lq_amo_mem_write_en;
   logic [riscv_pkg::XLEN-1:0] lq_amo_mem_write_addr;
   logic [riscv_pkg::MemDataBits-1:0] lq_amo_mem_write_data;
@@ -754,7 +801,6 @@ module coherence_store_boundary_formal #(
   logic [$clog2(LqDepth+1)-1:0] lq_count;
   logic [$clog2(LqDepth+1)-1:0] lq_dispatch_count;
   logic lq_l0_hit;
-  logic lq_l0_fill;
   logic lq_mem_outstanding;
   logic lq_head_load_addr_pending;
   logic lq_head_load_sq_disambig;
@@ -913,24 +959,20 @@ module coherence_store_boundary_formal #(
   logic [1:0] rt_coherent_read_kind;
   logic [2:0] rt_coherent_read_size;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] rt_coherent_read_tag;
-  logic rt_coherent_write_atomic;
   logic rt_coherent_write_sc;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] rt_coherent_write_tag;
   logic rt_cached_read_ready;
-  logic rt_cached_read_held;
   logic rt_uncached_read_enable;
   riscv_pkg::mem_size_e rt_uncached_read_size;
   logic rt_uncached_read_ready;
   logic [riscv_pkg::MemStrbBits-1:0] rt_uncached_write_byte_en;
   riscv_pkg::mem_size_e rt_uncached_write_size;
   logic rt_uncached_write_buffered;
-  logic [XLEN-1:0] rt_data_mem_addr;
   logic [riscv_pkg::MemDataBits-1:0] rt_data_mem_wr_data;
   logic [riscv_pkg::MemStrbBits-1:0] rt_data_mem_per_byte_wr_en;
   logic [riscv_pkg::MemStrbBits-1:0] rt_data_mem_bram_byte_wr_en;
   logic rt_data_mem_bram_write_any;
   logic rt_data_mem_read_enable;
-  logic [riscv_pkg::MemStrbBits-1:0] rt_data_mem_cached_byte_wr_en;
   logic [riscv_pkg::MemDataBits-1:0] rt_data_mem_cached_wr_data;
   logic rt_data_mem_cached_read_enable;
   logic rt_data_mem_cached_read_sel;
@@ -944,17 +986,9 @@ module coherence_store_boundary_formal #(
   logic rt_mmio_fifo0_read_pulse;
   logic rt_mmio_fifo1_read_pulse;
   logic rt_mmio_uart_rx_ready_pulse;
-  logic rt_sq_mem_write_done;
   logic rt_sq_mem_write_error;
-  logic rt_amo_mem_write_done;
   logic rt_amo_mem_write_error;
-  logic rt_lq_mem_request_valid;
   logic rt_device_request_pending;
-  logic [riscv_pkg::MemDataBits-1:0] rt_lq_mem_read_data;
-  logic rt_lq_mem_read_valid;
-  logic rt_lq_mem_read_error;
-  logic rt_lq_mem_read_is_cached;
-  logic [riscv_pkg::CachedLoadSlotBits-1:0] rt_lq_mem_read_id;
   data_mem_request_router rt (
       .i_coherent_read_kind(lq_coherent_read_kind),
       .i_coherent_read_tag(lq_coherent_read_tag),
@@ -1045,44 +1079,19 @@ module coherence_store_boundary_formal #(
       .o_lq_mem_read_is_cached(rt_lq_mem_read_is_cached),
       .o_lq_mem_read_id(rt_lq_mem_read_id)
   );
-  logic l1_read_valid;
-  logic [2:0] l1_read_id;
-  logic [63:0] l1_read_data;
-  logic l1_read_error;
-  logic l1_write_done;
-  logic l1_write_inflight;
-  logic l1_store_ready;
-  logic l1_pending_store;
-  logic l1_sc_write_pending;
-  logic l1_atomic_live;
-  logic [3:0] l1_block_valid;
-  logic [3:0][AddrWidth-1:0] l1_block_addr;
   logic l1_sc_ready;
   logic l1_sc_result_valid;
   logic l1_sc_success;
   logic l1_sc_error;
-  logic l1_sc_write_done;
-  logic [TagBits-1:0] l1_sc_write_tag;
   logic l1_maint_done;
-  logic l1_cut_hold;
   logic l1_cut_admit_valid;
-  logic [AddrWidth-1:0] l1_cut_address;
-  logic l1_cut_inval_valid;
   logic l1_cut_release;
-  logic [Misses-1:0] l1_d_valid;
-  logic [Misses-1:0][AddrWidth+311:0] l1_d;
-  logic l1_p_ready;
   logic l1_r_valid;
   logic [AddrWidth+274:0] l1_r;
   logic l1_w_valid;
   logic [AddrWidth+259:0] l1_w;
   logic l1_wa_ready;
-  logic l1_g_ready;
-  logic [Misses-1:0] l1_c_valid;
-  logic [Misses-1:0][AddrWidth+17:0] l1_c;
-  logic l1_u_ready;
   cache_perf_pkg::cache_instance_perf_events_t l1_perf_events;
-  logic l1_fatal;
   logic [AddrWidth-1:0] l1_fatal_addr;
   coherence_l1d #(
       .CACHE_BYTES(FOUR_STORES ? 128 : 64),
@@ -1183,13 +1192,7 @@ module coherence_store_boundary_formal #(
   assign local_phase = 0;
   assign home_atomic_write_lookup = 0;
 `endif
-  logic sc_coherent_arm_valid;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sc_coherent_arm_tag;
-  logic sc_coherent_valid;
-  logic [riscv_pkg::XLEN-1:0] sc_coherent_addr;
-  logic [2:0] sc_coherent_size;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] sc_coherent_tag;
-  logic sc_coherent_result_ready;
   logic sc_sc_value_zero;
   logic sc_sc_head_query_match;
   logic sc_sc_head_addr_valid;
@@ -1197,7 +1200,6 @@ module coherence_store_boundary_formal #(
   logic sc_sc_head_is_cached;
   logic sc_sc_fire_success;
   logic sc_sc_pending;
-  riscv_pkg::fu_complete_t sc_sc_fu_complete;
   sc_pending_unit sc (
       .i_atomic_protected(protected_q),
       .i_reservation_size(LocalLR ? lq_reservation_size : 3'd3),

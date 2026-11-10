@@ -442,6 +442,12 @@ module cached_tier_adapter #(
   end
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+`ifdef FORMAL
+  wire sim_reset_seen_q = 1'b1;
+`else
+  wire sim_reset_seen_q = reset_seen_q;
+`endif
   // The accept state follows its unsplit definition, and each final LUT's INIT
   // gives the same bit as the portable form above.
   always_comb begin
@@ -521,12 +527,6 @@ module cached_tier_adapter #(
   assign o_write_inflight = pending_write_valid;
 
 `ifndef SYNTHESIS
-`ifdef FORMAL
-  wire sim_reset_seen_q = 1'b1;
-`else
-  wire sim_reset_seen_q = reset_seen_q;
-`endif
-  logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
   logic                  launch_check_q;
   logic [  SlotBits-1:0] launch_id_q;

@@ -96,6 +96,15 @@ module debug_module #(
     input logic i_slice_overflow  // pulse, one cycle late: a mirror push was refused
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+`ifdef FORMAL
+  wire dirty_check_enabled = 1'b1;
+`else
+  wire dirty_check_enabled = reset_seen_q;
+`endif
+`endif
+
   // ---------------------------------------------------------------------------
   // Constants
   // ---------------------------------------------------------------------------
@@ -543,11 +552,7 @@ module debug_module #(
       if (cmd_accept) reference_dirty[IdxA0+:3] = 3'b111;
     end
     always @(posedge i_clk) begin
-      if (
-`ifndef FORMAL
-          reset_seen_q &&
-`endif
-          !dm_rst) begin
+      if (dirty_check_enabled && !dm_rst) begin
         p_dirty_control_exact : assert (coherent_dirty_next == reference_dirty);
       end
     end
@@ -572,7 +577,6 @@ module debug_module #(
   assign o_ndmreset = ndmreset_q;
 
 `ifndef SYNTHESIS
-  logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
     if (dm_rst) reset_seen_q <= 1'b1;
     if (reset_seen_q && !dm_rst) begin

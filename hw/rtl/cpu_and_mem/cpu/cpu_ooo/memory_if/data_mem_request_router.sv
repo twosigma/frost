@@ -200,12 +200,12 @@ module data_mem_request_router #(
 );
 
 `ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
 `ifdef FORMAL
   wire sim_reset_seen_q = 1'b1;
 `else
   wire sim_reset_seen_q = reset_seen_q;
 `endif
-  logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (i_rst) reset_seen_q <= 1'b1;
 `endif
 

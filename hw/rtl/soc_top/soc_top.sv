@@ -273,6 +273,7 @@ module soc_top #(
     output logic                                                o_axi_rlast,
     output logic                  [          AXI_USER_BITS-1:0] o_axi_ruser
 );
+  logic local_fire, local_ok, local_bram, local_device, local_instruction;
   // Registered core reset combines external reset and ndmreset, for fanout.
   // Debug logic uses external reset alone so it survives debugger-requested
   // resets. Cache tags are swept on core reset.
@@ -1226,14 +1227,13 @@ module soc_top #(
   logic [riscv_pkg::PhysAddrBits-1:0] local_req_addr;
   logic [2:0] local_req_size, local_req_prot;
   logic [63:0] local_req_wdata;
-  logic [7:0] local_req_wstrb;
-  logic [2:0] local_prot;
+  logic [ 7:0] local_req_wstrb;
+  logic [ 2:0] local_prot;
   logic [63:0] local_wdata;
-  logic [7:0] local_wstrb;
+  logic [ 7:0] local_wstrb;
   logic local_resp_valid, local_resp_ready;
   logic [L2_LINE_BYTES*8-1:0] local_resp_data;
   logic [1:0] local_resp_status;
-  logic local_fire, local_ok, local_bram, local_device, local_instruction;
   logic fast_bram_q;
   wire fast_bram_request = !local_req_error && !local_req_prot[2] &&
       local_req_size <= 3 && 64'(local_req_addr) < 64'(MEM_SIZE_BYTES);
@@ -1312,17 +1312,16 @@ module soc_top #(
   assign dbg_bram_store_strb = data_memory_bram_byte_write_enable;
 
 `ifndef SYNTHESIS
-`ifndef FORMAL
+`ifdef FORMAL
+  wire bram_check_armed = 1'b1;
+`else
   // These checks use AXI-domain state; wait for that domain's first reset.
   logic bram_axi_reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (soc_axi_rst) bram_axi_reset_seen_q <= 1'b1;
+  wire bram_check_armed = bram_axi_reset_seen_q;
 `endif
   always @(posedge i_clk) begin
-    if (
-`ifndef FORMAL
-        bram_axi_reset_seen_q &&
-`endif
-        !soc_axi_rst) begin
+    if (bram_check_armed && !soc_axi_rst) begin
       assert (data_memory_bram_byte_write_enable ==
           ((fast_bram_fire || local_bram) ? data_memory_byte_write_enable : 8'b0));
       assert (dbg_bram_store == (|data_memory_bram_byte_write_enable));

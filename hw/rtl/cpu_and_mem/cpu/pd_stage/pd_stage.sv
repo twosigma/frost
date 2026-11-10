@@ -88,6 +88,13 @@ module pd_stage #(
   assign decomp_illegal = i_from_if_to_pd.rvc_extra_predecoded[22];
 
 `ifndef SYNTHESIS
+  logic pd_reset_seen_q = 1'b0;
+  logic pd_redirect_target_reference_armed = 1'b0;
+`ifdef FORMAL
+  wire pd_sim_reset_seen_q = 1'b1;
+`else
+  wire pd_sim_reset_seen_q = pd_reset_seen_q;
+`endif
   // Reference expansion of slot 1's raw parcel, which the checks below compare
   // with IF's predecoded fields. instruction_non_nop is the instruction PD
   // would register if it decoded the parcel itself.
@@ -676,7 +683,6 @@ module pd_stage #(
   assign pd_fall_through_sum = {1'b0, i_from_if_to_pd.program_counter[PdTargetSplit-1:0]} +
       (pd_sel_compressed ? (PdTargetSplit + 1)'(riscv_pkg::PcIncrementCompressed) :
                            (PdTargetSplit + 1)'(riscv_pkg::PcIncrement32bit));
-  logic pd_reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) pd_reset_seen_q <= 1'b1;
   end
@@ -728,11 +734,7 @@ module pd_stage #(
       pd_not_taken_candidate_payload_reference_q <= 1'b0;
       pd_redirect_candidate_payload_reference_armed <= 1'b1;
     end else begin
-      if (
-`ifndef FORMAL
-          pd_reset_seen_q &&
-`endif
-          pd_redirect_candidate_payload_reference_armed && !$isunknown(
+      if (pd_sim_reset_seen_q && pd_redirect_candidate_payload_reference_armed && !$isunknown(
               {
                 pd_taken_candidate_r,
                 pd_not_taken_candidate_r,
@@ -805,11 +807,7 @@ module pd_stage #(
       pd_redirect_reference_q <= 1'b0;
       pd_redirect_reference_armed <= 1'b1;
     end else begin
-      if (
-`ifndef FORMAL
-          pd_reset_seen_q &&
-`endif
-          pd_redirect_reference_armed && !$isunknown(
+      if (pd_sim_reset_seen_q && pd_redirect_reference_armed && !$isunknown(
               {pd_redirect_r, pd_redirect_reference_q, o_pd_redirect_taken,
                pd_redirect_taken_reference_q}
           )) begin
@@ -834,16 +832,11 @@ module pd_stage #(
   // alignment, stall hold, and the target, fall-through, and format
   // selection.
   logic [XLEN-1:0] pd_redirect_target_reference_q;
-  logic pd_redirect_target_reference_armed = 1'b0;
   always @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
       pd_redirect_target_reference_armed <= 1'b0;
     end else begin
-      if (
-`ifndef FORMAL
-          pd_reset_seen_q &&
-`endif
-          pd_redirect_target_reference_armed && !$isunknown(
+      if (pd_sim_reset_seen_q && pd_redirect_target_reference_armed && !$isunknown(
               {o_pd_redirect_target, pd_redirect_target_reference_q}
           )) begin
         p_pd_redirect_target_boundary_exact :
@@ -878,11 +871,7 @@ module pd_stage #(
     if (i_pipeline_ctrl.reset) begin
       pd_backing_decoded_reference_armed <= 1'b0;
     end else begin
-      if (
-`ifndef FORMAL
-          pd_reset_seen_q &&
-`endif
-          pd_backing_decoded_reference_armed && !$isunknown(
+      if (pd_sim_reset_seen_q && pd_backing_decoded_reference_armed && !$isunknown(
               {
                 pd_backing_redirect_r,
                 pd_backing_redirect_2_r,

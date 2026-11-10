@@ -229,6 +229,10 @@ module pc_controller #(
     output logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] o_npc_val
 );
 
+`ifndef SYNTHESIS
+  logic pending_rel_check_armed_q = 1'b0;
+`endif
+
   // ===========================================================================
   // Control Flow Tracker - Holdoff Signal Generation
   // ===========================================================================
@@ -1791,7 +1795,6 @@ module pc_controller #(
   };
 `ifndef SYNTHESIS
   // Arm after the first reset: system benches clock before asserting it.
-  logic pending_rel_check_armed_q = 1'b0;
   always_ff @(posedge i_clk) begin
     if (i_reset) pending_rel_check_armed_q <= 1'b1;
     if (pending_rel_check_armed_q && !i_reset && pending_prediction_valid && !$isunknown(

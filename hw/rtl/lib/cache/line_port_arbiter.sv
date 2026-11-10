@@ -155,26 +155,16 @@ module line_port_arbiter #(
     // Each bounded two-/three-port grant fits one LUT4/LUT6. Preserve that
     // mapping so live request validity crosses only one grant-selection
     // level before the payload mux and downstream coherence-ready check.
-    function automatic logic [63:0] grant_truth(input int winner);
-      logic [NUM_PORTS-1:0] requests, limits;
-      int selected;
-      for (int row = 0; row < 64; row++) begin
-        requests = NUM_PORTS'(row);
-        limits   = NUM_PORTS'(row >> NUM_PORTS);
-        selected = 0;
-        for (int port = int'(NUM_PORTS) - 1; port >= 0; port--) begin
-          if (requests[port]) selected = port;
-        end
-        for (int port = int'(NUM_PORTS) - 1; port >= 0; port--) begin
-          if (requests[port] && limits[port]) selected = port;
-        end
-        grant_truth[row] = selected == winner;
-      end
-    endfunction
+    // Fixed truth tables for {at_limit, i_up_req_valid}, including the
+    // idle port-0 payload selection. Keep constants in this generate scope.
+    localparam logic [15:0] Grant2Port0 = 16'hb3bb, Grant2Port1 = 16'h4c44;
+    localparam logic [63:0] Grant3Port0 = 64'hab03ab0bab23abab;
+    localparam logic [63:0] Grant3Port1 = 64'h44cc040444cc4444;
+    localparam logic [63:0] Grant3Port2 = 64'h103050f010101010;
     for (genvar port = 0; port < NUM_PORTS; port++) begin : gen_port
       if (NUM_PORTS == 2) begin : gen_lut4
         (* dont_touch = "true" *) LUT4 #(
-            .INIT(16'(grant_truth(port)))
+            .INIT((port == 0) ? Grant2Port0 : Grant2Port1)
         ) grant_lut (
             .I0(i_up_req_valid[0]),
             .I1(i_up_req_valid[1]),
@@ -184,7 +174,7 @@ module line_port_arbiter #(
         );
       end else begin : gen_lut6
         (* dont_touch = "true" *) LUT6 #(
-            .INIT(grant_truth(port))
+            .INIT((port == 0) ? Grant3Port0 : (port == 1) ? Grant3Port1 : Grant3Port2)
         ) grant_lut (
             .I0(i_up_req_valid[0]),
             .I1(i_up_req_valid[1]),

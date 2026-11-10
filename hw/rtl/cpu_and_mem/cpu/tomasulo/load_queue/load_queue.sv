@@ -319,6 +319,15 @@ module load_queue #(
     output logic o_head_load_bbs_capture_gap  // staging free; head not captured yet
 );
 
+`ifndef SYNTHESIS
+  logic reset_seen_q = 1'b0;
+`ifdef FORMAL
+  wire sim_reset_seen_q = 1'b1;
+`else
+  wire sim_reset_seen_q = reset_seen_q;
+`endif
+`endif
+
   // ===========================================================================
   // Local Parameters
   // ===========================================================================
@@ -704,6 +713,11 @@ module load_queue #(
   logic sq_check_entry_valid;
   logic sq_check_entry_issueable;
   logic sq_check_phase2;
+  logic [XLEN-1:0] sq_check_addr_next;
+  riscv_pkg::mem_size_e sq_check_size_next;
+  logic sq_check_is_lr_next;
+  logic sq_check_is_amo_next;
+  logic cache_lookup_hit, resp_bypass_ok, sq_check_cacheable;
 
   // The fast_* tracker owns the single uncached response. The legacy local
   // path returns one cycle after router acceptance and permits consecutive
@@ -1988,6 +2002,12 @@ module load_queue #(
   logic issue_mem_uses_addr_update;
   logic [IdxWidth-1:0] update_issue_payload_idx;
   (* max_fanout = 32 *) logic sq_check_payload_en;
+  // Give each address copy its own enable for fanout. Separate, identical
+  // sq_check_pending_copy flops keep these enables distinct while preserving
+  // capture/replace behavior.
+  (* max_fanout = 32 *) logic sq_check_payload_en_b;
+  (* max_fanout = 32 *) logic sq_check_payload_en_c;
+  (* max_fanout = 32 *) logic sq_check_payload_en_d;
   if (1'b1) begin : gen_coherent_staged_class
     logic pma_ok_q, cached_q, misaligned_q, normal_q;
     wire stored_atomic = lq_is_amo[issue_mem_stored_idx] || lq_is_lr[issue_mem_stored_idx];
@@ -2166,7 +2186,6 @@ module load_queue #(
   end
   wire [3:0] coherent_pending = {sq_check_pending_copy, sq_check_pending};
   logic coherent_stage_clear;
-  logic cache_lookup_hit, resp_bypass_ok, sq_check_cacheable;
   wire [3:0][1:0] coherent_take_code;
   wire [1:0] coherent_clear_code;
   wire coherent_fault_take, coherent_fault_clear;
@@ -3702,12 +3721,6 @@ module load_queue #(
   end
 `ifndef SYNTHESIS
   // The copies share next state; sequential checks start after local reset.
-`ifdef FORMAL
-  wire sim_reset_seen_q = 1'b1;
-`else
-  wire sim_reset_seen_q = reset_seen_q;
-`endif
-  logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) reset_seen_q <= 1'b1;
     if (reset_seen_q) begin
@@ -4307,21 +4320,11 @@ module load_queue #(
   logic issue_mem_is_lr;
   logic issue_mem_is_amo;
   riscv_pkg::data_fault_kind_e issue_mem_fault_kind;
-  // Give each address copy its own enable for fanout. Separate, identical
-  // sq_check_pending_copy flops keep these enables distinct while preserving
-  // capture/replace behavior.
-  (* max_fanout = 32 *) logic sq_check_payload_en_b;
-  (* max_fanout = 32 *) logic sq_check_payload_en_c;
-  (* max_fanout = 32 *) logic sq_check_payload_en_d;
   logic [IdxWidth-1:0] sq_check_idx_next;
   logic [ReorderBufferTagWidth-1:0] sq_check_rob_tag_next;
-  logic [XLEN-1:0] sq_check_addr_next;
-  riscv_pkg::mem_size_e sq_check_size_next;
   logic sq_check_is_fp_next;
   logic sq_check_sign_ext_next;
   logic sq_check_is_mmio_next;
-  logic sq_check_is_lr_next;
-  logic sq_check_is_amo_next;
   logic [1:0] sq_check_fault_kind_next;
   assign sq_check_payload_en = coherent_stage_take[0];
   // sq_check_capture with the pending bit taken from one copy.

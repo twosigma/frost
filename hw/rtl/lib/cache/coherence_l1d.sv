@@ -128,6 +128,9 @@ module coherence_l1d #(
     output logic o_fatal,
     output logic [ADDR_WIDTH-1:0] o_fatal_addr
 );
+`ifdef FORMAL
+  logic   f_past_valid = 1'b0;
+`endif
 `ifndef SYNTHESIS
   // Registers power up arbitrary and the reset can reach this module a few
   // cycles after the first edge, so the simulation checks begin at the first
@@ -3563,7 +3566,6 @@ module coherence_l1d #(
         grant_valid && grant_ready && f_turn_reply_age_q == 12);
   end
 `endif
-  logic   f_past_valid = 1'b0;
   // The covers skip the first sample, taken before the reset has acted.
   if (StreamEnabled) begin : gen_stream_covers
     always_ff @(posedge i_clk) begin
