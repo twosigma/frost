@@ -904,6 +904,8 @@ jobs:
           rm -f /tmp/frost-dev.tar
 
       - name: Read the RTL with yosys-slang
+        env:
+          FROST_SKIP_SUBMODULE_INIT: "1"
         run: |
           ./scripts/frost.py --image frost-dev:latest run python3 tests/slang_frontend.py
 

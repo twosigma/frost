@@ -58,7 +58,8 @@ gone.
 
 The fast Python suite executes [`slang_frontend.py`](slang_frontend.py)
 inside FROST's pinned Yosys, without nested Docker. The dedicated CI job and
-manual hook use the same checker. A missing Yosys or `read_slang`, a source
+manual hook use the same checker. The CI job reuses the FROST image artifact
+and skips unrelated submodule initialization. A missing Yosys or `read_slang`, a source
 error, or any nonzero frontend exit fails the check; there are no tolerated
 source errors. Run it directly or through the manual hook:
 
