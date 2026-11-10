@@ -569,7 +569,6 @@ module immu #(
   logic miss0_d, miss1_d;
   logic resolved1;
   logic pa1_use_va_d;
-  logic first_fault_ends_window;
 
   always_comb begin
     pa0_d = res0.fault ? bare_pc : {res0.ppn, i_pc[11:0]};
@@ -593,30 +592,21 @@ module immu #(
       if (super_next_ok) begin
         f1_d  = super_next_pma_bad;
         f1p_d = 1'b0;
-      end else if (np_sample_matches) begin
+      end else if (np_sample_matches && res1.resolved) begin
         pa1_use_va_d = res1.fault;
         f1_d = res1.fault;
         f1p_d = res1.page;
-        resolved1 = res1.resolved;
-        miss1_d = res0.resolved && !res1.resolved;
       end else begin
-        f1_d = 1'b0;
-        f1p_d = 1'b0;
-        resolved1 = 1'b0;
+        // A first-word fault determines the architectural outcome even
+        // while the neighbor is missing. Use a fault-marked VA placeholder
+        // for that neighbor, so no unvalidated physical read is authorized.
+        // Select the fallback directly, before the late first-word verdict.
+        f1_d = res0.fault;
+        f1p_d = res0.page;
+        pa1_use_va_d = res0.fault;
+        resolved1 = res0.fault;
+        miss1_d = np_sample_matches && res0.resolved && !res0.fault;
       end
-    end
-
-    // A first-word fault already determines the architectural outcome.
-    // Waiting for a missing neighbor could alternate two refused walks
-    // forever when either walk takes longer than negative-cache expiry.
-    // Mark the unknown neighbor faulting too, so no unvalidated PA is used.
-    first_fault_ends_window = pc_page_cross && res0.fault && !resolved1;
-    if (first_fault_ends_window) begin
-      resolved1 = 1'b1;
-      miss1_d = 1'b0;
-      f1_d = 1'b1;
-      f1p_d = res0.page;
-      pa1_use_va_d = 1'b1;
     end
     resolved_d = res0.resolved && resolved1;
     after_ok_d = (pa0_d[11:5] != 7'h7F) || (pa0_d[4:2] == 3'b111);
