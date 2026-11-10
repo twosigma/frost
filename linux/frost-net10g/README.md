@@ -33,6 +33,27 @@ the reset-default legacy descriptor layout and a 32-bit DMA mask. The
 hardware still rejects descriptors outside its configured DDR aperture;
 the kernel's memory map must describe only installed usable RAM.
 
+Offloads, reported by `ethtool -k <interface>`:
+
+| Feature | `ethtool -k` line | What the hardware does |
+|---|---|---|
+| Scatter-gather | `scatter-gather: on`, `tx-scatter-gather: on` | A frame is a chain of descriptors, one per skb segment, so the stack hands over fragments without copying them |
+| TX checksum | `tx-checksum-ip-generic: on` (`NETIF_F_HW_CSUM`) | The MAC inserts the checksum a `CHECKSUM_PARTIAL` skb asks for; the driver puts the start and offset in the first descriptor and falls back to `skb_checksum_help()` for an odd or distant field |
+| RX checksum | `rx-checksumming: on` | The NIC reports the sum of the frame after the Ethernet header and the driver sets `CHECKSUM_COMPLETE` |
+| TCP segmentation | `tcp-segmentation-offload: on`, `tx-tcp-segmentation: on`, `tx-tcp6-segmentation: on` | One parameter descriptor and one frame of up to 64 KB become MSS-sized segments with exact headers; the driver seeds the checksum with the pseudo-header sum without the length and sends skbs the stage cannot take (tunnels, headers over 160 bytes) to software GSO |
+| Interrupt moderation | `ethtool -c`, `ethtool -C rx-usecs N rx-frames N tx-usecs N tx-frames N` | The NIC's per-direction delay and completion count; 0 interrupts on the first completion |
+| 64-bit DMA | `highdma: on` | Extended descriptor layout (when the hardware offers it) |
+| Ring sizes | `ethtool -g`, `ethtool -G <interface> rx N tx N` | Power-of-two RX and TX rings from 64 to 4096 entries (default 512); other sizes round up, and a running interface is closed and reopened with the new rings |
+| Flow control | `ethtool -a`, `ethtool -A <interface> rx on tx on` | IEEE 802.3x pause on both ports: `rx on` makes the transmitter stop for the pause time of a received PAUSE frame, `tx on` sends high-water pause frames when the RX FIFO fills past three quarters of its limit (refreshed at half the pause time) and a release pause frame when it drains below a quarter. PAUSE frames are consumed by the MAC, counted (`rx_pause_frames`) and never reach the stack. Autoneg is off; absent on hardware without `ABI_CTRL` bit 5 |
+| RX FIFO size | `devlink dev param set platform/<dev> name rx_fifo_bytes value N cmode runtime` | The NIC's RX ingress FIFO occupancy limit in bytes (a multiple of 8, from 64 to the built depth, 64 KiB in the SoC; default 4096). `devlink dev` lists the device name. A running interface is closed and reopened with the new limit, as for ring sizes. Absent on hardware without `RX_FIFO_LIMIT` |
+| Hardware statistics | `ethtool -S` | The NIC's 64-bit counters (frames, bytes, filtered, truncated, descriptor errors, aborts, MAC overflow, bad frame, bad FCS, PCS bad blocks, TX drops, and on the GMII port the preamble-stage discards and `rx_er` bursts, which read 0 elsewhere); the RESET at each open clears them |
+| Loopback | `loopback: off` | MAC or PMA loopback, changed only while the interface is down |
+
+The checksum features appear when `ABI_CTRL` bit 3 (checksum offload supported) reads one (segmentation when bit 4 does too),
+and the driver sets bit 2 at each open so the NIC reports the RX checksum. `ethtool -K
+<interface> rx off tx off sg off` turns each off for comparison; `rx` and `tx` take effect
+on the next packet without reopening.
+
 | File | Contents |
 |---|---|
 | `frost_net10g.c` | The driver (GPL-2.0-only OR BSD-2-Clause; `MODULE_LICENSE("Dual BSD/GPL")`) |

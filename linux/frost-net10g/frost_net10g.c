@@ -34,10 +34,13 @@
  * it uses only long-standing interfaces rather than the newest spelling of one.
  */
 
+#include <linux/bitfield.h>
 #include <linux/dma-mapping.h>
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
 #include <linux/if_vlan.h>
+#include <linux/ip.h>
+#include <linux/ipv6.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
@@ -48,10 +51,15 @@
 #include <linux/platform_device.h>
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>
+#include <linux/tcp.h>
 #include <linux/timer.h>
 #include <linux/u64_stats_sync.h>
 #include <linux/unaligned.h>
+#include <net/checksum.h>
+#include <net/ip6_checksum.h>
+#include <net/devlink.h>
 #include <net/netdev_queues.h>
+#include <net/page_pool/helpers.h>
 
 /* Registers, 32 bits each */
 #define NET10G_ID			0x000
@@ -59,6 +67,9 @@
 #define NET10G_STATUS			0x008
 #define NET10G_MAC_LO			0x00c
 #define NET10G_MAC_HI			0x010
+#define NET10G_RX_FIFO_LIMIT		0x014
+#define NET10G_RX_FIFO_DEPTH		0x018
+#define NET10G_PAUSE_CTRL		0x01c
 #define NET10G_RX_BASE			0x020
 #define NET10G_RX_SIZE			0x024
 #define NET10G_RX_TAIL			0x028
@@ -72,6 +83,10 @@
 #define NET10G_LINK			0x060
 #define NET10G_PHY_CTRL			0x064
 #define NET10G_PHY_STATUS		0x068
+#define NET10G_RX_COALESCE		0x048
+#define NET10G_TX_COALESCE		0x04c
+#define NET10G_RX_ITR			NET10G_RX_COALESCE
+#define NET10G_TX_ITR			NET10G_TX_COALESCE
 #define NET10G_ABI_CTRL			0x06c
 #define NET10G_RX_BASE64		0x070
 #define NET10G_TX_BASE64		0x078
@@ -98,29 +113,134 @@
 #define NET10G_PHY_STATUS_CLK_SHARED	BIT(0)
 #define NET10G_ABI_EXTENDED		BIT(0)
 #define NET10G_ABI_EXTENDED_SUPPORTED	BIT(1)
+/*
+ * Checksum offload. Bit 3 reads one when the hardware inserts the TX checksum named in the
+ * first descriptor of a frame and can report the RX checksum; bit 2 turns the RX report on
+ * (RESET clears it).
+ */
+#define NET10G_ABI_RX_CSUM		BIT(2)
+#define NET10G_ABI_CSUM_SUPPORTED	BIT(3)
+/* Bit 6 reads one when a segment may carry up to 65535 bytes and a rejected one aborts its frame */
+#define NET10G_ABI_TX_LONG_SEGMENTS	BIT(6)
+/* Bit 5 reads one when the hardware has 802.3x pause (PAUSE_CTRL) */
+#define NET10G_ABI_PAUSE_SUPPORTED	BIT(5)
+/* PAUSE_CTRL: honour received PAUSE frames (bit 0), send pause and release frames (bit 1) */
+#define NET10G_PAUSE_RX			BIT(0)
+#define NET10G_PAUSE_TX			BIT(1)
+/* Bit 4 reads one when the hardware segments stream frames */
+#define NET10G_ABI_SEGMENT_SUPPORTED	BIT(4)
+
+/* Interrupt moderation, per direction: [15:0] delay in ticks (1 us by reset default), [23:16] max count */
+#define NET10G_COALESCE_DELAY		GENMASK(15, 0)
+#define NET10G_COALESCE_FRAMES		GENMASK(23, 16)
+#define NET10G_ITR_DELAY		NET10G_COALESCE_DELAY
+#define NET10G_ITR_FRAMES		NET10G_COALESCE_FRAMES
 
 /* TX frame flags and completion status (their word shifts with ABI mode) */
-#define NET10G_DESC_TX_SOP		BIT(16)
-#define NET10G_DESC_TX_EOP		BIT(17)
+#define NET10G_DESC_TX_FIRST		BIT(16)
+#define NET10G_DESC_TX_LAST		BIT(17)
+#define NET10G_DESC_TX_PARAM		BIT(18)
+#define NET10G_DESC_TX_SOP		NET10G_DESC_TX_FIRST
+#define NET10G_DESC_TX_EOP		NET10G_DESC_TX_LAST
+#define NET10G_DESC_TX_CTX		NET10G_DESC_TX_PARAM
+/*
+ * Hardware frame segmentation: a parameter descriptor ahead of the frame names its segmentation.
+ * Its length is 0 and its length word holds the L4 offset / 2, the transport header length / 4,
+ * the IP version and whether a VLAN tag precedes the IP header; its word 0 holds the max segment
+ * size and the payload length.
+ */
+#define NET10G_PARAM_L4OFF		GENMASK(25, 19)
+#define NET10G_PARAM_TCPHL		GENMASK(29, 26)
+#define NET10G_PARAM_IP6		BIT(30)
+#define NET10G_PARAM_VLAN		BIT(31)
+#define NET10G_PARAM_MSS		GENMASK(13, 0)
+#define NET10G_PARAM_PAYLOAD		GENMASK(31, 16)
+#define NET10G_CTX_L4OFF		NET10G_PARAM_L4OFF
+#define NET10G_CTX_TCPHL		NET10G_PARAM_TCPHL
+#define NET10G_CTX_IP6			NET10G_PARAM_IP6
+#define NET10G_CTX_VLAN			NET10G_PARAM_VLAN
+#define NET10G_CTX_MSS			NET10G_PARAM_MSS
+#define NET10G_CTX_PAYLOAD		NET10G_PARAM_PAYLOAD
+/* The most header bytes the segmentation stage holds */
+#define NET10G_SEGMENT_MAX_HDR		160
+#define NET10G_TSO_MAX_HDR		NET10G_SEGMENT_MAX_HDR
+/* TX checksum request, in the first descriptor's length word: start / 2 and offset / 2 */
+#define NET10G_DESC_TX_CSUM_START	GENMASK(24, 18)
+#define NET10G_DESC_TX_CSUM_OFFSET	GENMASK(31, 25)
 #define NET10G_DESC_LEN			GENMASK(15, 0)
-#define NET10G_DESC_DD			BIT(16)
+#define NET10G_DESC_DONE		BIT(16)
+#define NET10G_DESC_CMPL		NET10G_DESC_DONE
+#define NET10G_DESC_DD			NET10G_DESC_DONE
 #define NET10G_DESC_TRUNC		BIT(17)
 #define NET10G_DESC_ERR			BIT(18)
 #define NET10G_DESC_ABORT		BIT(19)
+/* RX: the checksum of the frame after the Ethernet header is valid (word 3 [15:0] in the
+ * legacy layout, word 2 [31:16] in the extended layout).
+ */
+#define NET10G_DESC_CSUM_VALID		BIT(20)
 
-/* Both rings: 128 entries, so at most 127 posted (TAIL == HEAD is empty) */
-#define FROST_RING_LOG2			7
-#define FROST_RING_ENTRIES		BIT(FROST_RING_LOG2)
-#define FROST_RING_MASK			(FROST_RING_ENTRIES - 1)
-#define FROST_RING_BYTES \
-	(FROST_RING_ENTRIES * sizeof(struct frost_desc))
+/*
+ * Each ring holds a power-of-two number of entries, so at most one fewer is posted (TAIL == HEAD is
+ * empty). ethtool -G sets them from FROST_RING_MIN to FROST_RING_MAX (the NIC takes 4 to 65536).
+ * The default RX depth absorbs bursts that arrive while the CPU is busy elsewhere; at 128 the NIC
+ * dropped frames under load.
+ */
+#define FROST_RING_DEFAULT		512
+#define FROST_RING_MIN			64
+#define FROST_RING_MAX			4096
+#define FROST_RING_BYTES(entries) \
+	((entries) * sizeof(struct frost_desc))
 #define FROST_RING_ALIGN_MASK		31	/* BASE is 32-byte aligned */
+
+/*
+ * RX ingress FIFO: 8-byte words. RX_FIFO_DEPTH reads the built depth (0 on hardware without the
+ * limit register); RX_FIFO_LIMIT, which RESET returns to FROST_FIFO_LIMIT_DEFAULT, is the
+ * occupancy at which the FIFO reports full to the MAC.
+ */
+#define FROST_FIFO_WORD_BYTES		8
+#define FROST_FIFO_LIMIT_MIN		8
+#define FROST_FIFO_LIMIT_DEFAULT	512
 
 #define FROST_MAX_MTU			9000
 #define FROST_POLL_US			1000
 #define FROST_RESET_TIMEOUT_US		USEC_PER_SEC
 #define FROST_ENABLE_TRIES		3
 #define FROST_REFILL_MS			100
+
+/*
+ * Default interrupt moderation, per direction: notify after the delay in microseconds or the
+ * frame count, whichever comes first. Measured on the VCU118 at MTU 1500, these raised bulk TX
+ * and request/response rates over notifying on every completion; longer delays cut
+ * request/response rates by a quarter.
+ */
+#define FROST_RX_COALESCE_US		20
+#define FROST_RX_COALESCE_FRAMES	8
+#define FROST_TX_COALESCE_US		50
+#define FROST_TX_COALESCE_FRAMES	16
+#define FROST_RX_ITR_US			FROST_RX_COALESCE_US
+#define FROST_RX_ITR_FRAMES		FROST_RX_COALESCE_FRAMES
+#define FROST_TX_ITR_US			FROST_TX_COALESCE_US
+#define FROST_TX_ITR_FRAMES		FROST_TX_COALESCE_FRAMES
+
+/*
+ * RX buffers come from a page pool and are recycled: the NIC writes a frame FROST_RX_HEADROOM
+ * bytes into a page, and the poll builds the skb around it. NET_IP_ALIGN keeps the IP header
+ * aligned, as __netdev_alloc_skb_ip_align() did.
+ */
+#define FROST_RX_HEADROOM		(NET_SKB_PAD + NET_IP_ALIGN)
+
+/*
+ * Older NICs accept at most 9216 bytes in one TX descriptor (nic_pkg::MaxFrameBytes, checked per
+ * descriptor in nic_tx_engine), so a longer segment goes out as several descriptors over the same
+ * mapping; with ABI_CTRL bit 6 a segment may carry 65535 bytes (priv->tx_desc_max). A segmented skb (at
+ * most GSO_LEGACY_MAX_SIZE) takes its parameter descriptor, its head and fragments, and up to
+ * GSO_LEGACY_MAX_SIZE / FROST_TX_DESC_MAX extra pieces on older NICs; the queue stop and wake
+ * thresholds below assume that worst case.
+ */
+#define FROST_TX_DESC_MAX		9216
+#define FROST_TX_STOP_DESCS		(MAX_SKB_FRAGS + 3 + \
+					 DIV_ROUND_UP(GSO_LEGACY_MAX_SIZE, FROST_TX_DESC_MAX))
+#define FROST_TX_WAKE_DESCS		(2 * FROST_TX_STOP_DESCS)
 
 /* One ring descriptor: 16 bytes, two per 32-byte line */
 struct frost_desc {
@@ -131,7 +251,8 @@ struct frost_desc {
 };
 
 struct frost_buf {
-	struct sk_buff *skb;
+	struct sk_buff *skb;	/* TX */
+	struct page *page;	/* RX */
 	dma_addr_t dma;
 	unsigned int len;	/* the mapped length */
 };
@@ -153,9 +274,24 @@ struct frost_priv {
 	bool link_refresh;	/* the next poll reads LINK */
 	bool broken;		/* a RESET did not complete; never cleared */
 	bool wide_abi;		/* selected only when hardware and DMA API support it */
+	bool csum_abi;		/* hardware checksum offload present */
+	bool segment_abi;	/* hardware frame segmentation present */
+	u32 rx_coalesce, tx_coalesce;	/* interrupt moderation, written at each open */
 	unsigned long reenables;	/* CTRL rewrites after a READY loss */
 
+	u32 rx_entries, tx_entries;	/* ring sizes, applied at the next open */
+	u32 rx_mask, tx_mask;		/* entries - 1 */
+	u32 rx_fifo_depth;	/* built RX FIFO depth in words; 0 without RX_FIFO_LIMIT */
+	u32 rx_fifo_limit;	/* RX FIFO limit in words, written at each open */
+	u32 pause;		/* NET10G_PAUSE_* bits, written at each open */
+	bool pause_abi;		/* hardware 802.3x pause present */
+	u32 tx_desc_max;	/* the longest TX segment one descriptor may carry */
+	struct devlink *devlink;
+	bool hw_up;		/* the rings are published: frost_up() completed */
+
 	unsigned int rx_buf_len;
+	unsigned int rx_truesize;	/* the page-pool allocation each RX buffer occupies */
+	struct page_pool *rx_pool;
 	struct frost_desc *rx_ring;
 	dma_addr_t rx_ring_dma;
 	struct frost_buf *rx_bufs;
@@ -167,6 +303,7 @@ struct frost_priv {
 	struct frost_buf *tx_bufs;
 	u32 tx_clean;		/* oldest posted descriptor */
 	u32 tx_head;		/* next descriptor to post */
+	bool tx_frame_err;	/* a segment of the frame being reaped failed */
 
 	struct u64_stats_sync rx_syncp;
 	u64_stats_t rx_packets;
@@ -195,6 +332,21 @@ static void frost_desc_post(const struct frost_priv *priv,
 	}
 }
 
+static void frost_param_post(const struct frost_priv *priv, struct frost_desc *desc,
+			     u32 word0, u32 flags)
+{
+	desc->word0 = cpu_to_le32(word0);
+	if (priv->wide_abi) {
+		desc->word1 = 0;
+		desc->word2 = cpu_to_le32(flags);
+	} else {
+		desc->word1 = cpu_to_le32(flags);
+		desc->word2 = 0;
+	}
+	desc->word3 = 0;
+}
+#define frost_ctx_post frost_param_post
+
 static u32 frost_desc_status(const struct frost_priv *priv,
 			     const struct frost_desc *desc)
 {
@@ -205,8 +357,8 @@ static u32 frost_desc_status(const struct frost_priv *priv,
 
 static u32 frost_tx_free(const struct frost_priv *priv)
 {
-	return FROST_RING_MASK -
-	       ((priv->tx_head - priv->tx_clean) & FROST_RING_MASK);
+	return priv->tx_mask -
+	       ((priv->tx_head - priv->tx_clean) & priv->tx_mask);
 }
 
 /*
@@ -255,9 +407,10 @@ static void frost_refill_timer(struct timer_list *t)
 }
 
 /*
- * Fill RX to 127 outstanding buffers; stop on allocation or mapping failure
+ * Fill RX to rx_mask outstanding buffers; stop on allocation failure
  * and return the number posted. Write only rx_tail, never a descriptor the
- * NIC may hold.
+ * NIC may hold. The page pool maps each page once, when it first allocates
+ * it, and keeps the mapping while the page is recycled.
  * The NIC uses reads accepted after TAIL covers the descriptor; dma_wmb()
  * orders its four words before the doorbell so those reads see the new data.
  */
@@ -265,28 +418,22 @@ static unsigned int frost_rx_fill(struct frost_priv *priv, gfp_t gfp)
 {
 	unsigned int posted = 0;
 
-	while (((priv->rx_tail + 1) & FROST_RING_MASK) != priv->rx_clean) {
+	while (((priv->rx_tail + 1) & priv->rx_mask) != priv->rx_clean) {
 		struct frost_desc *desc = &priv->rx_ring[priv->rx_tail];
 		struct frost_buf *buf = &priv->rx_bufs[priv->rx_tail];
-		struct sk_buff *skb;
+		struct page *page;
 		dma_addr_t dma;
 
-		skb = __netdev_alloc_skb_ip_align(priv->ndev, priv->rx_buf_len,
-						  gfp);
-		if (!skb)
+		page = page_pool_alloc_pages(priv->rx_pool, gfp | __GFP_NOWARN);
+		if (!page)
 			break;
-		dma = dma_map_single(priv->dev, skb->data, priv->rx_buf_len,
-				     DMA_FROM_DEVICE);
-		if (dma_mapping_error(priv->dev, dma)) {
-			dev_kfree_skb_any(skb);
-			break;
-		}
-		buf->skb = skb;
+		dma = page_pool_get_dma_addr(page) + FROST_RX_HEADROOM;
+		buf->page = page;
 		buf->dma = dma;
 		buf->len = priv->rx_buf_len;
 
 		frost_desc_post(priv, desc, dma, priv->rx_buf_len);
-		priv->rx_tail = (priv->rx_tail + 1) & FROST_RING_MASK;
+		priv->rx_tail = (priv->rx_tail + 1) & priv->rx_mask;
 		posted++;
 	}
 
@@ -311,23 +458,31 @@ static void frost_tx_reap(struct frost_priv *priv, int budget)
 		u32 status = frost_desc_status(priv, desc);
 
 		/*
-		 * The NIC writes DD once every buffer read it issued has
+		 * The NIC writes DONE once every buffer read it issued has
 		 * returned: the whole frame, or less with ERR or ABORT.
 		 */
-		if (!(status & NET10G_DESC_DD))
+		if (!(status & NET10G_DESC_DONE))
 			break;
-		dma_unmap_single(priv->dev, buf->dma, buf->len, DMA_TO_DEVICE);
+		/* A parameter descriptor has no buffer */
+		if (buf->len)
+			dma_unmap_single(priv->dev, buf->dma, buf->len, DMA_TO_DEVICE);
 		pkts++;
 		bytes += buf->len;
-		if (status & (NET10G_DESC_ERR | NET10G_DESC_ABORT)) {
-			errors++;
-		} else {
-			good++;
-			good_bytes += buf->len;
+		if (status & (NET10G_DESC_ERR | NET10G_DESC_ABORT))
+			priv->tx_frame_err = true;
+		/* Only a frame's last segment holds its skb: the frame is complete now. */
+		if (buf->skb) {
+			if (priv->tx_frame_err) {
+				errors++;
+			} else {
+				good += skb_is_gso(buf->skb) ? skb_shinfo(buf->skb)->gso_segs : 1;
+				good_bytes += buf->skb->len;
+			}
+			priv->tx_frame_err = false;
+			napi_consume_skb(buf->skb, budget);
+			buf->skb = NULL;
 		}
-		napi_consume_skb(buf->skb, budget);
-		buf->skb = NULL;
-		priv->tx_clean = (priv->tx_clean + 1) & FROST_RING_MASK;
+		priv->tx_clean = (priv->tx_clean + 1) & priv->tx_mask;
 	}
 
 	if (pkts) {
@@ -359,7 +514,8 @@ static int frost_rx_reap(struct frost_priv *priv, int budget)
 		struct frost_buf *buf = &priv->rx_bufs[priv->rx_clean];
 		u32 status = frost_desc_status(priv, desc);
 		u32 len = status & NET10G_DESC_LEN;
-		struct sk_buff *skb = buf->skb;
+		struct page *page = buf->page;
+		struct sk_buff *skb;
 
 		if (!(status & NET10G_DESC_DD))
 			break;
@@ -370,20 +526,41 @@ static int frost_rx_reap(struct frost_priv *priv, int budget)
 		 * loads (eth_type_trans() reads the header) after that load.
 		 */
 		dma_rmb();
-		dma_unmap_single(priv->dev, buf->dma, buf->len,
-				 DMA_FROM_DEVICE);
-		buf->skb = NULL;
-		priv->rx_clean = (priv->rx_clean + 1) & FROST_RING_MASK;
+		buf->page = NULL;
+		priv->rx_clean = (priv->rx_clean + 1) & priv->rx_mask;
 		work++;
 
 		if ((status & (NET10G_DESC_TRUNC | NET10G_DESC_ERR |
 			       NET10G_DESC_ABORT)) ||
 		    len < ETH_HLEN || len > buf->len) {
 			errors++;
-			dev_kfree_skb_any(skb);
+			page_pool_recycle_direct(priv->rx_pool, page);
 			continue;
 		}
+		dma_sync_single_for_cpu(priv->dev, buf->dma, len, DMA_FROM_DEVICE);
+		/* The skb takes the page; freeing the skb returns the page to the pool */
+		skb = napi_build_skb(page_address(page), priv->rx_truesize);
+		if (unlikely(!skb)) {
+			errors++;
+			page_pool_recycle_direct(priv->rx_pool, page);
+			continue;
+		}
+		skb_mark_for_recycle(skb);
+		skb_reserve(skb, FROST_RX_HEADROOM);
 		skb_put(skb, len);
+		if ((ndev->features & NETIF_F_RXCSUM) &&
+		    (status & NET10G_DESC_CSUM_VALID)) {
+			/*
+			 * The sum of the bytes after the Ethernet header, in the order they sit in
+			 * memory: the kernel's folded sum for this little-endian CPU.
+			 */
+			u32 sum = priv->wide_abi ?
+				  le32_to_cpu(READ_ONCE(desc->word2)) >> 16 :
+				  le32_to_cpu(READ_ONCE(desc->word3)) & 0xffff;
+
+			skb->csum = (__force __wsum)sum;
+			skb->ip_summed = CHECKSUM_COMPLETE;
+		}
 		skb->protocol = eth_type_trans(skb, ndev);
 		napi_gro_receive(&priv->napi, skb);
 		packets++;
@@ -469,7 +646,7 @@ static int frost_poll(struct napi_struct *napi, int budget)
 	 * Acknowledge before scanning: the scans find earlier completions,
 	 * and later ones reassert the bit for unmasking. A late acknowledgment
 	 * could erase a completion the scan missed. Writing 1 starts a new
-	 * moderation interval; ITR defaults to 0, raising the first completion.
+	 * moderation interval; COALESCE defaults to 0, raising on the first completion.
 	 * The read flushes the acknowledgment before descriptor loads.
 	 */
 	st = readl(priv->base + NET10G_IRQ_STATUS);
@@ -514,13 +691,17 @@ static int frost_poll(struct napi_struct *napi, int budget)
 static void frost_free_rings(struct frost_priv *priv)
 {
 	if (priv->rx_ring)
-		dma_free_coherent(priv->dev, FROST_RING_BYTES, priv->rx_ring,
+		dma_free_coherent(priv->dev, FROST_RING_BYTES(priv->rx_entries), priv->rx_ring,
 				  priv->rx_ring_dma);
 	if (priv->tx_ring)
-		dma_free_coherent(priv->dev, FROST_RING_BYTES, priv->tx_ring,
+		dma_free_coherent(priv->dev, FROST_RING_BYTES(priv->tx_entries), priv->tx_ring,
 				  priv->tx_ring_dma);
-	kfree(priv->rx_bufs);
-	kfree(priv->tx_bufs);
+	kvfree(priv->rx_bufs);
+	kvfree(priv->tx_bufs);
+	/* Pages still held by skbs return to the pool later; destroy waits for them */
+	if (priv->rx_pool)
+		page_pool_destroy(priv->rx_pool);
+	priv->rx_pool = NULL;
 	priv->rx_ring = NULL;
 	priv->tx_ring = NULL;
 	priv->rx_bufs = NULL;
@@ -529,15 +710,40 @@ static void frost_free_rings(struct frost_priv *priv)
 
 static int frost_alloc_rings(struct frost_priv *priv)
 {
+	/*
+	 * One RX buffer per page-pool allocation: headroom, the frame, and the
+	 * skb_shared_info that napi_build_skb() places at the end.
+	 */
+	unsigned int truesize = SKB_DATA_ALIGN(FROST_RX_HEADROOM + priv->rx_buf_len) +
+				SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+	struct page_pool_params pp = {
+		.order = get_order(truesize),
+		.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV,
+		.pool_size = priv->rx_entries,
+		.nid = NUMA_NO_NODE,
+		.dev = priv->dev,
+		.napi = &priv->napi,
+		.dma_dir = DMA_FROM_DEVICE,
+		.offset = FROST_RX_HEADROOM,
+		.max_len = priv->rx_buf_len,
+	};
+
+	priv->rx_truesize = PAGE_SIZE << pp.order;
+	priv->rx_pool = page_pool_create(&pp);
+	if (IS_ERR(priv->rx_pool)) {
+		priv->rx_pool = NULL;
+		return -ENOMEM;
+	}
+
 	/* dma_alloc_coherent() returns zeroed, page-aligned memory */
-	priv->rx_ring = dma_alloc_coherent(priv->dev, FROST_RING_BYTES,
+	priv->rx_ring = dma_alloc_coherent(priv->dev, FROST_RING_BYTES(priv->rx_entries),
 					   &priv->rx_ring_dma, GFP_KERNEL);
-	priv->tx_ring = dma_alloc_coherent(priv->dev, FROST_RING_BYTES,
+	priv->tx_ring = dma_alloc_coherent(priv->dev, FROST_RING_BYTES(priv->tx_entries),
 					   &priv->tx_ring_dma, GFP_KERNEL);
-	priv->rx_bufs = kcalloc(FROST_RING_ENTRIES, sizeof(*priv->rx_bufs),
-				GFP_KERNEL);
-	priv->tx_bufs = kcalloc(FROST_RING_ENTRIES, sizeof(*priv->tx_bufs),
-				GFP_KERNEL);
+	priv->rx_bufs = kvcalloc(priv->rx_entries, sizeof(*priv->rx_bufs),
+				 GFP_KERNEL);
+	priv->tx_bufs = kvcalloc(priv->tx_entries, sizeof(*priv->tx_bufs),
+				 GFP_KERNEL);
 	if (!priv->rx_ring || !priv->tx_ring || !priv->rx_bufs ||
 	    !priv->tx_bufs || (priv->rx_ring_dma & FROST_RING_ALIGN_MASK) ||
 	    (priv->tx_ring_dma & FROST_RING_ALIGN_MASK)) {
@@ -579,11 +785,9 @@ static void frost_reset_and_free(struct frost_priv *priv)
 	while (priv->rx_clean != priv->rx_tail) {
 		struct frost_buf *buf = &priv->rx_bufs[priv->rx_clean];
 
-		dma_unmap_single(priv->dev, buf->dma, buf->len,
-				 DMA_FROM_DEVICE);
-		dev_kfree_skb(buf->skb);
-		buf->skb = NULL;
-		priv->rx_clean = (priv->rx_clean + 1) & FROST_RING_MASK;
+		page_pool_put_full_page(priv->rx_pool, buf->page, false);
+		buf->page = NULL;
+		priv->rx_clean = (priv->rx_clean + 1) & priv->rx_mask;
 	}
 
 	while (priv->tx_clean != priv->tx_head) {
@@ -592,7 +796,7 @@ static void frost_reset_and_free(struct frost_priv *priv)
 		dma_unmap_single(priv->dev, buf->dma, buf->len, DMA_TO_DEVICE);
 		dev_kfree_skb(buf->skb);
 		buf->skb = NULL;
-		priv->tx_clean = (priv->tx_clean + 1) & FROST_RING_MASK;
+		priv->tx_clean = (priv->tx_clean + 1) & priv->tx_mask;
 		dropped++;
 	}
 	if (dropped) {
@@ -622,6 +826,35 @@ static void frost_quiesce(struct frost_priv *priv)
 	synchronize_irq(priv->irq);
 }
 
+/*
+ * RESET returned RX_FIFO_LIMIT and PAUSE_CTRL to their defaults. A write is ignored while a previous one is still
+ * crossing to the MAC clock, so repeat it until the read-back shows the value in effect.
+ */
+static int frost_apply_fifo_limit(struct frost_priv *priv)
+{
+	unsigned int tries;
+	u32 val = 0;
+
+	if (priv->pause_abi && priv->pause) {
+		writel(priv->pause, priv->base + NET10G_PAUSE_CTRL);
+		if (readl(priv->base + NET10G_PAUSE_CTRL) != priv->pause) {
+			netdev_err(priv->ndev, "pause control not accepted\n");
+			return -EIO;
+		}
+	}
+	if (!priv->rx_fifo_depth || priv->rx_fifo_limit == FROST_FIFO_LIMIT_DEFAULT)
+		return 0;
+	for (tries = 0; tries < FROST_ENABLE_TRIES; tries++) {
+		writel(priv->rx_fifo_limit, priv->base + NET10G_RX_FIFO_LIMIT);
+		if (!readl_poll_timeout(priv->base + NET10G_RX_FIFO_LIMIT, val,
+					val == priv->rx_fifo_limit, 1, FROST_POLL_US))
+			return 0;
+	}
+	netdev_err(priv->ndev, "RX FIFO limit not accepted (read %u, wanted %u words)\n", val,
+		   priv->rx_fifo_limit);
+	return -EIO;
+}
+
 static int frost_up(struct net_device *ndev)
 {
 	struct frost_priv *priv = netdev_priv(ndev);
@@ -635,10 +868,13 @@ static int frost_up(struct net_device *ndev)
 	if (priv->broken)
 		return -EIO;
 
+	priv->rx_mask = priv->rx_entries - 1;
+	priv->tx_mask = priv->tx_entries - 1;
 	priv->rx_clean = 0;
 	priv->rx_tail = 0;
 	priv->tx_clean = 0;
 	priv->tx_head = 0;
+	priv->tx_frame_err = false;
 	priv->rx_buf_len = ndev->mtu + ETH_HLEN + VLAN_HLEN;
 
 	err = frost_alloc_rings(priv);
@@ -687,8 +923,20 @@ static int frost_up(struct net_device *ndev)
 	writel(get_unaligned_le32(ndev->dev_addr), priv->base + NET10G_MAC_LO);
 	writel(get_unaligned_le16(ndev->dev_addr + 4),
 	       priv->base + NET10G_MAC_HI);
+	if (priv->csum_abi) {
+		/* RESET returned the layout to legacy and the RX checksum report off */
+		u32 abi = NET10G_ABI_RX_CSUM | (priv->wide_abi ? NET10G_ABI_EXTENDED : 0);
+
+		writel(abi, priv->base + NET10G_ABI_CTRL);
+		if ((readl(priv->base + NET10G_ABI_CTRL) & abi) != abi) {
+			netdev_err(ndev, "checksum offload mode refused\n");
+			err = -EIO;
+			goto err_reset;
+		}
+	}
 	if (priv->wide_abi) {
-		writel(NET10G_ABI_EXTENDED, priv->base + NET10G_ABI_CTRL);
+		if (!priv->csum_abi)
+			writel(NET10G_ABI_EXTENDED, priv->base + NET10G_ABI_CTRL);
 		if ((readl(priv->base + NET10G_ABI_CTRL) &
 		     (NET10G_ABI_EXTENDED | NET10G_ABI_EXTENDED_SUPPORTED)) !=
 		    (NET10G_ABI_EXTENDED | NET10G_ABI_EXTENDED_SUPPORTED)) {
@@ -704,8 +952,8 @@ static int frost_up(struct net_device *ndev)
 		writel(lower_32_bits(priv->tx_ring_dma),
 		       priv->base + NET10G_TX_BASE);
 	}
-	writel(FROST_RING_LOG2, priv->base + NET10G_RX_SIZE);
-	writel(FROST_RING_LOG2, priv->base + NET10G_TX_SIZE);
+	writel(ilog2(priv->rx_entries), priv->base + NET10G_RX_SIZE);
+	writel(ilog2(priv->tx_entries), priv->base + NET10G_TX_SIZE);
 	if ((priv->wide_abi ?
 	     readq(priv->base + NET10G_RX_BASE64) != priv->rx_ring_dma ||
 	     readq(priv->base + NET10G_TX_BASE64) != priv->tx_ring_dma :
@@ -713,12 +961,16 @@ static int frost_up(struct net_device *ndev)
 	     lower_32_bits(priv->rx_ring_dma) ||
 	     readl(priv->base + NET10G_TX_BASE) !=
 	     lower_32_bits(priv->tx_ring_dma)) ||
-	    readl(priv->base + NET10G_RX_SIZE) != FROST_RING_LOG2 ||
-	    readl(priv->base + NET10G_TX_SIZE) != FROST_RING_LOG2) {
+	    readl(priv->base + NET10G_RX_SIZE) != ilog2(priv->rx_entries) ||
+	    readl(priv->base + NET10G_TX_SIZE) != ilog2(priv->tx_entries)) {
 		netdev_err(ndev, "ring registers not accepted\n");
 		err = -EIO;
 		goto err_reset;
 	}
+
+	err = frost_apply_fifo_limit(priv);
+	if (err)
+		goto err_reset;
 
 	/* An empty RX ring would never produce the poll that refills it */
 	if (!frost_rx_fill(priv, GFP_KERNEL)) {
@@ -726,6 +978,8 @@ static int frost_up(struct net_device *ndev)
 		goto err_reset;
 	}
 
+	writel(priv->rx_coalesce, priv->base + NET10G_RX_COALESCE);
+	writel(priv->tx_coalesce, priv->base + NET10G_TX_COALESCE);
 	writel(NET10G_IRQ_ALL, priv->base + NET10G_IRQ_STATUS);
 	napi_enable(&priv->napi);
 
@@ -761,6 +1015,7 @@ static int frost_up(struct net_device *ndev)
 	}
 
 	netif_start_queue(ndev);
+	priv->hw_up = true;
 
 	/*
 	 * The device is still masked (RESET cleared IRQ_MASK). The first poll
@@ -781,9 +1036,15 @@ static int frost_down(struct net_device *ndev)
 {
 	struct frost_priv *priv = netdev_priv(ndev);
 
+	/* A failed ring resize leaves the interface up with no rings published */
+	if (!priv->hw_up)
+		return 0;
+
 	/*
 	 * The core has cleared netif_running() and deactivated the qdisc:
-	 * xmit is over and completions no longer wake the queue.
+	 * xmit is over and completions no longer wake the queue. A ring resize
+	 * calls this on a running interface; netif_tx_disable() waits for any
+	 * transmit in progress and stops the queue.
 	 */
 	netif_tx_disable(ndev);
 	spin_lock_bh(&priv->ctrl_lock);
@@ -792,6 +1053,7 @@ static int frost_down(struct net_device *ndev)
 
 	frost_quiesce(priv);
 	frost_reset_and_free(priv);
+	priv->hw_up = false;
 	return 0;
 }
 
@@ -800,18 +1062,91 @@ static netdev_tx_t frost_start_xmit(struct sk_buff *skb,
 {
 	struct frost_priv *priv = netdev_priv(ndev);
 	struct netdev_queue *txq = netdev_get_tx_queue(ndev, 0);
+	const skb_frag_t *frag;
 	struct frost_desc *desc;
 	struct frost_buf *buf;
-	dma_addr_t dma;
+	dma_addr_t dma[MAX_SKB_FRAGS + 1];
+	u32 seg_len[MAX_SKB_FRAGS + 1];
+	unsigned int nseg, ndesc, nmapped = 0, i;
+	u32 csum_req = 0, ctx0 = 0, ctx1 = 0;
+	bool head_mapped, is_gso = skb_is_gso(skb);
 
-	/* The queue stops at 0 free descriptors, so this should not happen */
-	if (unlikely(!frost_tx_free(priv))) {
-		netif_stop_subqueue(ndev, 0);
-		return NETDEV_TX_BUSY;
+	/*
+	 * Frame segmentation: the NIC cuts the frame at the MSS and adds each segment's TCP length to the
+	 * checksum field, which therefore starts as the pseudo-header sum without the length.
+	 * frost_features_check() has already sent unsuitable skbs to software GSO.
+	 */
+	if (is_gso) {
+		unsigned int l4 = skb_transport_offset(skb), tcphl = tcp_hdrlen(skb);
+		bool ip6 = vlan_get_protocol(skb) == htons(ETH_P_IPV6);
+
+		if (unlikely(skb_cow_head(skb, 0))) {
+			dev_kfree_skb_any(skb);
+			u64_stats_update_begin(&priv->tx_syncp);
+			u64_stats_inc(&priv->tx_dropped);
+			u64_stats_update_end(&priv->tx_syncp);
+			return NETDEV_TX_OK;
+		}
+		if (ip6)
+			tcp_hdr(skb)->check = ~csum_ipv6_magic(&ipv6_hdr(skb)->saddr,
+							       &ipv6_hdr(skb)->daddr, 0,
+							       IPPROTO_TCP, 0);
+		else
+			tcp_hdr(skb)->check = ~csum_tcpudp_magic(ip_hdr(skb)->saddr,
+								 ip_hdr(skb)->daddr, 0,
+								 IPPROTO_TCP, 0);
+		ctx0 = FIELD_PREP(NET10G_PARAM_MSS, skb_shinfo(skb)->gso_size) |
+		       FIELD_PREP(NET10G_PARAM_PAYLOAD, skb->len - l4 - tcphl);
+		ctx1 = NET10G_DESC_TX_PARAM | FIELD_PREP(NET10G_PARAM_L4OFF, l4 / 2) |
+		       FIELD_PREP(NET10G_PARAM_TCPHL, tcphl / 4) |
+		       (ip6 ? NET10G_PARAM_IP6 : 0) |
+		       (skb_network_offset(skb) == ETH_HLEN + VLAN_HLEN ? NET10G_PARAM_VLAN : 0);
 	}
 
-	dma = dma_map_single(priv->dev, skb->data, skb->len, DMA_TO_DEVICE);
-	if (unlikely(dma_mapping_error(priv->dev, dma))) {
+	/*
+	 * CHECKSUM_PARTIAL: the NIC sums from csum_start to the end of the frame and stores the
+	 * result at csum_start + csum_offset, as the kernel defines it (the field holds the
+	 * pseudo-header sum and is part of the sum). The request holds both in 16-bit units, so an
+	 * odd or far offset takes the software path.
+	 */
+	if (!is_gso && skb->ip_summed == CHECKSUM_PARTIAL) {
+		unsigned int start = skb_checksum_start_offset(skb);
+		unsigned int offset = skb->csum_offset;
+
+		if (priv->csum_abi && !(start & 1) && !(offset & 1) && offset &&
+		    start / 2 <= FIELD_MAX(NET10G_DESC_TX_CSUM_START) &&
+		    offset / 2 <= FIELD_MAX(NET10G_DESC_TX_CSUM_OFFSET)) {
+			csum_req = FIELD_PREP(NET10G_DESC_TX_CSUM_START, start / 2) |
+				   FIELD_PREP(NET10G_DESC_TX_CSUM_OFFSET, offset / 2);
+		} else if (skb_checksum_help(skb)) {
+			dev_kfree_skb_any(skb);
+			u64_stats_update_begin(&priv->tx_syncp);
+			u64_stats_inc(&priv->tx_dropped);
+			u64_stats_update_end(&priv->tx_syncp);
+			return NETDEV_TX_OK;
+		}
+	}
+
+	/*
+	 * One descriptor per tx_desc_max bytes of each non-empty segment: the linear head,
+	 * then each fragment.
+	 */
+	head_mapped = skb_headlen(skb) != 0;
+	nseg = head_mapped;
+	ndesc = DIV_ROUND_UP(skb_headlen(skb), priv->tx_desc_max);
+	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+		unsigned int size = skb_frag_size(&skb_shinfo(skb)->frags[i]);
+
+		nseg += size != 0;
+		ndesc += DIV_ROUND_UP(size, priv->tx_desc_max);
+	}
+
+	/* The queue stops with FROST_TX_STOP_DESCS free, so this should not happen */
+	if (unlikely(!nseg || frost_tx_free(priv) < ndesc + is_gso)) {
+		if (nseg) {
+			netif_stop_subqueue(ndev, 0);
+			return NETDEV_TX_BUSY;
+		}
 		dev_kfree_skb_any(skb);
 		u64_stats_update_begin(&priv->tx_syncp);
 		u64_stats_inc(&priv->tx_dropped);
@@ -819,24 +1154,85 @@ static netdev_tx_t frost_start_xmit(struct sk_buff *skb,
 		return NETDEV_TX_OK;
 	}
 
-	/*
-	 * No padding: the MAC pads short frames to 60 bytes. The four word
-	 * stores precede dma_wmb() and the doorbell, as for RX.
-	 */
-	desc = &priv->tx_ring[priv->tx_head];
-	buf = &priv->tx_bufs[priv->tx_head];
-	frost_desc_post(priv, desc, dma, skb->len | NET10G_DESC_TX_SOP |
-			NET10G_DESC_TX_EOP);
-	buf->skb = skb;
-	buf->dma = dma;
-	buf->len = skb->len;
+	/* Map every segment before posting any, so a failed mapping unwinds cleanly. */
+	if (head_mapped) {
+		dma[0] = dma_map_single(priv->dev, skb->data, skb_headlen(skb),
+					DMA_TO_DEVICE);
+		if (unlikely(dma_mapping_error(priv->dev, dma[0])))
+			goto map_fail;
+		seg_len[0] = skb_headlen(skb);
+		nmapped = 1;
+	}
+	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+		frag = &skb_shinfo(skb)->frags[i];
+		if (!skb_frag_size(frag))
+			continue;
+		dma[nmapped] = skb_frag_dma_map(priv->dev, frag, 0, skb_frag_size(frag),
+						DMA_TO_DEVICE);
+		if (unlikely(dma_mapping_error(priv->dev, dma[nmapped])))
+			goto map_fail;
+		seg_len[nmapped++] = skb_frag_size(frag);
+	}
 
-	netdev_tx_sent_queue(txq, buf->len);
-	priv->tx_head = (priv->tx_head + 1) & FROST_RING_MASK;
+	/*
+	 * No padding: the MAC pads short frames to 60 bytes. The first segment
+	 * carries FIRST, the last LAST and the skb. The stores precede dma_wmb()
+	 * and the doorbell, as for RX.
+	 */
+	if (is_gso) {
+		desc = &priv->tx_ring[priv->tx_head];
+		buf = &priv->tx_bufs[priv->tx_head];
+		frost_param_post(priv, desc, ctx0, ctx1);
+		buf->skb = NULL;
+		buf->dma = 0;
+		buf->len = 0;
+		priv->tx_head = (priv->tx_head + 1) & priv->tx_mask;
+	}
+	/*
+	 * A segment longer than tx_desc_max goes out in pieces over its one mapping. Only the
+	 * mapping's last piece records the mapping (dma, full length) for the unmap and BQL; the
+	 * others have length 0 there, as a parameter descriptor does.
+	 */
+	for (i = 0; i < nmapped; i++) {
+		u32 off;
+
+		for (off = 0; off < seg_len[i]; off += priv->tx_desc_max) {
+			u32 piece = min_t(u32, seg_len[i] - off, priv->tx_desc_max);
+			bool first = i == 0 && off == 0;
+			bool last_piece = off + piece == seg_len[i];
+			bool last = i == nmapped - 1 && last_piece;
+			unsigned int flags = (first ? NET10G_DESC_TX_FIRST | csum_req : 0) |
+					     (last ? NET10G_DESC_TX_LAST : 0);
+
+			desc = &priv->tx_ring[priv->tx_head];
+			buf = &priv->tx_bufs[priv->tx_head];
+			frost_desc_post(priv, desc, dma[i] + off, piece | flags);
+			buf->skb = last ? skb : NULL;
+			buf->dma = last_piece ? dma[i] : 0;
+			buf->len = last_piece ? seg_len[i] : 0;
+
+			netdev_tx_sent_queue(txq, buf->len);
+			priv->tx_head = (priv->tx_head + 1) & priv->tx_mask;
+		}
+	}
 	dma_wmb();
 	writel(priv->tx_head, priv->base + NET10G_TX_TAIL);
 
-	netif_subqueue_maybe_stop(ndev, 0, frost_tx_free(priv), 1, 1);
+	netif_subqueue_maybe_stop(ndev, 0, frost_tx_free(priv), FROST_TX_STOP_DESCS,
+				  FROST_TX_WAKE_DESCS);
+	return NETDEV_TX_OK;
+
+map_fail:
+	for (i = 0; i < nmapped; i++) {
+		if (head_mapped && i == 0)
+			dma_unmap_single(priv->dev, dma[0], seg_len[0], DMA_TO_DEVICE);
+		else
+			dma_unmap_page(priv->dev, dma[i], seg_len[i], DMA_TO_DEVICE);
+	}
+	dev_kfree_skb_any(skb);
+	u64_stats_update_begin(&priv->tx_syncp);
+	u64_stats_inc(&priv->tx_dropped);
+	u64_stats_update_end(&priv->tx_syncp);
 	return NETDEV_TX_OK;
 }
 
@@ -896,6 +1292,28 @@ static void frost_get_stats64(struct net_device *ndev,
 	} while (u64_stats_fetch_retry(&priv->tx_syncp, start));
 }
 
+/*
+ * The segmentation stage takes TCP over IPv4 or IPv6 behind an Ethernet header with at most one
+ * VLAN tag, headers up to NET10G_TSO_MAX_HDR bytes and an even L4 offset. Anything else is
+ * segmented by the stack before it reaches the driver.
+ */
+static netdev_features_t frost_features_check(struct sk_buff *skb, struct net_device *ndev,
+					      netdev_features_t features)
+{
+	if (skb_is_gso(skb)) {
+		unsigned int l3 = skb_network_offset(skb);
+		unsigned int hdr = skb_tcp_all_headers(skb);
+
+		if ((skb_shinfo(skb)->gso_type & ~(SKB_GSO_TCPV4 | SKB_GSO_TCPV6)) ||
+		    skb->encapsulation || (l3 != ETH_HLEN && l3 != ETH_HLEN + VLAN_HLEN) ||
+		    (skb_transport_offset(skb) & 1) || hdr > NET10G_TSO_MAX_HDR ||
+		    skb_shinfo(skb)->gso_size > FIELD_MAX(NET10G_CTX_MSS) || skb->len <= hdr ||
+		    skb->len - hdr > FIELD_MAX(NET10G_CTX_PAYLOAD))
+			features &= ~NETIF_F_GSO_MASK;
+	}
+	return features;
+}
+
 static const struct net_device_ops frost_netdev_ops = {
 	.ndo_open		= frost_up,
 	.ndo_stop		= frost_down,
@@ -906,6 +1324,7 @@ static const struct net_device_ops frost_netdev_ops = {
 	.ndo_change_mtu		= frost_change_mtu,
 	.ndo_set_features	= frost_set_features,
 	.ndo_get_stats64	= frost_get_stats64,
+	.ndo_features_check	= frost_features_check,
 };
 
 static void frost_get_drvinfo(struct net_device *ndev,
@@ -917,10 +1336,341 @@ static void frost_get_drvinfo(struct net_device *ndev,
 	strscpy(info->bus_info, dev_name(priv->dev), sizeof(info->bus_info));
 }
 
+/*
+ * Interrupt moderation: ethtool's usecs and max frames set the hardware's per-direction delay
+ * and completion count. A delay of 0 interrupts on the first completion, as at reset. The NIC
+ * applies a new setting from its next interval; a running interface is updated at once.
+ */
+static int frost_get_coalesce(struct net_device *ndev, struct ethtool_coalesce *ec,
+			      struct kernel_ethtool_coalesce *kernel_coal,
+			      struct netlink_ext_ack *extack)
+{
+	struct frost_priv *priv = netdev_priv(ndev);
+
+	ec->rx_coalesce_usecs = FIELD_GET(NET10G_COALESCE_DELAY, priv->rx_coalesce);
+	ec->rx_max_coalesced_frames = FIELD_GET(NET10G_COALESCE_FRAMES, priv->rx_coalesce);
+	ec->tx_coalesce_usecs = FIELD_GET(NET10G_COALESCE_DELAY, priv->tx_coalesce);
+	ec->tx_max_coalesced_frames = FIELD_GET(NET10G_COALESCE_FRAMES, priv->tx_coalesce);
+	return 0;
+}
+
+static int frost_set_coalesce(struct net_device *ndev, struct ethtool_coalesce *ec,
+			      struct kernel_ethtool_coalesce *kernel_coal,
+			      struct netlink_ext_ack *extack)
+{
+	struct frost_priv *priv = netdev_priv(ndev);
+
+	if (ec->rx_coalesce_usecs > FIELD_MAX(NET10G_COALESCE_DELAY) ||
+	    ec->tx_coalesce_usecs > FIELD_MAX(NET10G_COALESCE_DELAY) ||
+	    ec->rx_max_coalesced_frames > FIELD_MAX(NET10G_COALESCE_FRAMES) ||
+	    ec->tx_max_coalesced_frames > FIELD_MAX(NET10G_COALESCE_FRAMES))
+		return -EINVAL;
+
+	priv->rx_coalesce = FIELD_PREP(NET10G_COALESCE_DELAY, ec->rx_coalesce_usecs) |
+			    FIELD_PREP(NET10G_COALESCE_FRAMES, ec->rx_max_coalesced_frames);
+	priv->tx_coalesce = FIELD_PREP(NET10G_COALESCE_DELAY, ec->tx_coalesce_usecs) |
+			    FIELD_PREP(NET10G_COALESCE_FRAMES, ec->tx_max_coalesced_frames);
+	if (netif_running(ndev)) {
+		writel(priv->rx_coalesce, priv->base + NET10G_RX_COALESCE);
+		writel(priv->tx_coalesce, priv->base + NET10G_TX_COALESCE);
+	}
+	return 0;
+}
+
+/*
+ * Ring sizes: powers of two from FROST_RING_MIN to FROST_RING_MAX, applied by closing and
+ * reopening a running interface (the RX and TX rings, the page pool and the buffer arrays are
+ * rebuilt). A size that is not a power of two is rounded up, and a size outside the range is
+ * refused.
+ */
+static void frost_get_ringparam(struct net_device *ndev, struct ethtool_ringparam *ring,
+				struct kernel_ethtool_ringparam *kernel_ring,
+				struct netlink_ext_ack *extack)
+{
+	struct frost_priv *priv = netdev_priv(ndev);
+
+	ring->rx_max_pending = FROST_RING_MAX;
+	ring->tx_max_pending = FROST_RING_MAX;
+	ring->rx_pending = priv->rx_entries;
+	ring->tx_pending = priv->tx_entries;
+}
+
+/*
+ * Apply new ring sizes and RX FIFO limit. A running interface is closed and reopened with them
+ * (RESET clears the NIC's counters); a failed reopen restores the previous values. RTNL held.
+ */
+static int frost_reconfigure(struct net_device *ndev, u32 rx, u32 tx, u32 fifo, u32 pause)
+{
+	struct frost_priv *priv = netdev_priv(ndev);
+	u32 old_rx = priv->rx_entries, old_tx = priv->tx_entries, old_fifo = priv->rx_fifo_limit;
+	u32 old_pause = priv->pause;
+	int err;
+
+	ASSERT_RTNL();
+	if (rx == old_rx && tx == old_tx && fifo == old_fifo && pause == old_pause)
+		return 0;
+	if (priv->broken)
+		return -EIO;
+	if (!netif_running(ndev)) {
+		priv->rx_entries = rx;
+		priv->tx_entries = tx;
+		priv->rx_fifo_limit = fifo;
+		priv->pause = pause;
+		return 0;
+	}
+
+	/* The rings are freed at their old size, then rebuilt at the new one */
+	frost_down(ndev);
+	if (priv->broken)
+		return -EIO;
+	priv->rx_entries = rx;
+	priv->tx_entries = tx;
+	priv->rx_fifo_limit = fifo;
+	priv->pause = pause;
+	err = frost_up(ndev);
+	if (!err)
+		return 0;
+
+	netdev_err(ndev, "reconfiguration failed (%d), restoring rx %u tx %u FIFO %u words\n",
+		   err, old_rx, old_tx, old_fifo);
+	priv->rx_entries = old_rx;
+	priv->tx_entries = old_tx;
+	priv->rx_fifo_limit = old_fifo;
+	priv->pause = old_pause;
+	if (frost_up(ndev))
+		netdev_err(ndev, "restoring the previous settings failed; reopen the interface\n");
+	return err;
+}
+
+static int frost_set_ringparam(struct net_device *ndev, struct ethtool_ringparam *ring,
+			       struct kernel_ethtool_ringparam *kernel_ring,
+			       struct netlink_ext_ack *extack)
+{
+	struct frost_priv *priv = netdev_priv(ndev);
+
+	if (ring->rx_pending < FROST_RING_MIN || ring->tx_pending < FROST_RING_MIN ||
+	    ring->rx_pending > FROST_RING_MAX || ring->tx_pending > FROST_RING_MAX) {
+		NL_SET_ERR_MSG_FMT_MOD(extack, "ring sizes must be %u to %u",
+				       FROST_RING_MIN, FROST_RING_MAX);
+		return -EINVAL;
+	}
+	return frost_reconfigure(ndev, roundup_pow_of_two(ring->rx_pending),
+				 roundup_pow_of_two(ring->tx_pending), priv->rx_fifo_limit,
+				 priv->pause);
+}
+
+/* The NIC's 64-bit event counters (nic_pkg CntRxFrames ...), plain reads at 8-byte offsets */
+#define NET10G_COUNTERS			0x080
+
+static const char frost_stat_names[][ETH_GSTRING_LEN] = {
+	"rx_frames",
+	"rx_bytes",
+	"rx_filtered",
+	"rx_truncated",
+	"rx_desc_err",
+	"rx_aborted",
+	"tx_frames",
+	"tx_bytes",
+	"tx_desc_err",
+	"tx_aborted",
+	"rx_mac_overflow",
+	"rx_mac_bad_frame",
+	"rx_mac_bad_fcs",
+	"rx_pcs_bad_block",
+	"tx_mac_drop",
+	"tx_pcs_bad_block",
+	"rx_gmii_preamble_drop",
+	"rx_gmii_rx_er",
+	"rx_pause_frames",
+	"tx_pause_frames",
+	"tx_paused_cycles",
+};
+#define FROST_NUM_STATS			ARRAY_SIZE(frost_stat_names)
+
+static int frost_get_sset_count(struct net_device *ndev, int sset)
+{
+	if (sset != ETH_SS_STATS)
+		return -EOPNOTSUPP;
+	return FROST_NUM_STATS;
+}
+
+static void frost_get_strings(struct net_device *ndev, u32 stringset, u8 *data)
+{
+	if (stringset == ETH_SS_STATS)
+		memcpy(data, frost_stat_names, sizeof(frost_stat_names));
+}
+
+/*
+ * One aligned 64-bit read per counter in the extended ABI. The legacy ABI reads the two halves
+ * with 32-bit accesses, so the high half is read again to catch a carry between them.
+ */
+static u64 frost_read_counter(const struct frost_priv *priv, unsigned int index)
+{
+	void __iomem *reg = priv->base + NET10G_COUNTERS + 8 * index;
+	u32 hi, lo;
+
+	if (priv->wide_abi)
+		return readq(reg);
+	do {
+		hi = readl(reg + 4);
+		lo = readl(reg);
+	} while (hi != readl(reg + 4));
+	return ((u64)hi << 32) | lo;
+}
+
+static void frost_get_ethtool_stats(struct net_device *ndev, struct ethtool_stats *stats,
+				    u64 *data)
+{
+	struct frost_priv *priv = netdev_priv(ndev);
+	unsigned int i;
+
+	for (i = 0; i < FROST_NUM_STATS; i++)
+		data[i] = frost_read_counter(priv, i);
+}
+
+/*
+ * 802.3x pause: rx_pause honours PAUSE frames received (the transmitter stops for the pause time),
+ * tx_pause sends pause when the RX FIFO fills and release when it drains. Pause autonegotiation is not
+ * offered, so ethtool -A autoneg on is refused. Applied by reopening a running interface, as the
+ * hardware accepts the bits only while RX is disabled.
+ */
+static void frost_get_pauseparam(struct net_device *ndev, struct ethtool_pauseparam *pause)
+{
+	struct frost_priv *priv = netdev_priv(ndev);
+
+	pause->autoneg = 0;
+	pause->rx_pause = !!(priv->pause & NET10G_PAUSE_RX);
+	pause->tx_pause = !!(priv->pause & NET10G_PAUSE_TX);
+}
+
+static int frost_set_pauseparam(struct net_device *ndev, struct ethtool_pauseparam *pause)
+{
+	struct frost_priv *priv = netdev_priv(ndev);
+
+	if (!priv->pause_abi)
+		return -EOPNOTSUPP;
+	if (pause->autoneg)
+		return -EINVAL;
+	return frost_reconfigure(ndev, priv->rx_entries, priv->tx_entries, priv->rx_fifo_limit,
+				 (pause->rx_pause ? NET10G_PAUSE_RX : 0) |
+				 (pause->tx_pause ? NET10G_PAUSE_TX : 0));
+}
+
 static const struct ethtool_ops frost_ethtool_ops = {
+	.supported_coalesce_params = ETHTOOL_COALESCE_RX_USECS |
+				     ETHTOOL_COALESCE_RX_MAX_FRAMES |
+				     ETHTOOL_COALESCE_TX_USECS |
+				     ETHTOOL_COALESCE_TX_MAX_FRAMES,
 	.get_drvinfo	= frost_get_drvinfo,
 	.get_link	= ethtool_op_get_link,
+	.get_coalesce	= frost_get_coalesce,
+	.set_coalesce	= frost_set_coalesce,
+	.get_ringparam	= frost_get_ringparam,
+	.set_ringparam	= frost_set_ringparam,
+	.get_pauseparam	= frost_get_pauseparam,
+	.set_pauseparam	= frost_set_pauseparam,
+	.get_sset_count	= frost_get_sset_count,
+	.get_strings	= frost_get_strings,
+	.get_ethtool_stats = frost_get_ethtool_stats,
 };
+
+/*
+ * Devlink runtime parameter rx_fifo_bytes: the RX ingress FIFO's occupancy limit in bytes
+ * (8 bytes per word). ethtool has no knob for a MAC FIFO, so this driver-specific tunable is a
+ * devlink parameter: devlink dev param set platform/<dev> name rx_fifo_bytes value N cmode runtime.
+ * It reprograms the NIC through the same stop, rebuild and restart path as ethtool -G.
+ */
+enum {
+	FROST_DEVLINK_PARAM_RX_FIFO_BYTES = DEVLINK_PARAM_GENERIC_ID_MAX + 1,
+};
+
+static struct frost_priv *frost_devlink_priv(struct devlink *devlink)
+{
+	return *(struct frost_priv **)devlink_priv(devlink);
+}
+
+static int frost_dl_rx_fifo_get(struct devlink *devlink, u32 id, struct devlink_param_gset_ctx *ctx)
+{
+	ctx->val.vu32 = frost_devlink_priv(devlink)->rx_fifo_limit * FROST_FIFO_WORD_BYTES;
+	return 0;
+}
+
+static int frost_dl_rx_fifo_set(struct devlink *devlink, u32 id, struct devlink_param_gset_ctx *ctx,
+				struct netlink_ext_ack *extack)
+{
+	struct frost_priv *priv = frost_devlink_priv(devlink);
+	int err;
+
+	rtnl_lock();
+	err = frost_reconfigure(priv->ndev, priv->rx_entries, priv->tx_entries,
+				ctx->val.vu32 / FROST_FIFO_WORD_BYTES, priv->pause);
+	rtnl_unlock();
+	return err;
+}
+
+static int frost_dl_rx_fifo_validate(struct devlink *devlink, u32 id, union devlink_param_value val,
+				     struct netlink_ext_ack *extack)
+{
+	struct frost_priv *priv = frost_devlink_priv(devlink);
+	u32 min = FROST_FIFO_LIMIT_MIN * FROST_FIFO_WORD_BYTES;
+	u32 max = priv->rx_fifo_depth * FROST_FIFO_WORD_BYTES;
+
+	if (val.vu32 % FROST_FIFO_WORD_BYTES || val.vu32 < min || val.vu32 > max) {
+		NL_SET_ERR_MSG_FMT_MOD(extack, "rx_fifo_bytes must be a multiple of %u from %u to %u",
+				       FROST_FIFO_WORD_BYTES, min, max);
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static const struct devlink_param frost_devlink_params[] = {
+	DEVLINK_PARAM_DRIVER(FROST_DEVLINK_PARAM_RX_FIFO_BYTES, "rx_fifo_bytes",
+			     DEVLINK_PARAM_TYPE_U32, BIT(DEVLINK_PARAM_CMODE_RUNTIME),
+			     frost_dl_rx_fifo_get, frost_dl_rx_fifo_set, frost_dl_rx_fifo_validate),
+};
+
+static const struct devlink_ops frost_devlink_ops;
+
+static void frost_devlink_free(void *data)
+{
+	devlink_free(data);
+}
+
+static void frost_devlink_unregister(void *data)
+{
+	struct devlink *devlink = data;
+
+	devl_lock(devlink);
+	devl_unregister(devlink);
+	devl_params_unregister(devlink, frost_devlink_params, ARRAY_SIZE(frost_devlink_params));
+	devl_unlock(devlink);
+}
+
+static int frost_devlink_init(struct frost_priv *priv)
+{
+	struct device *dev = priv->dev;
+	struct devlink *devlink;
+	int err;
+
+	devlink = devlink_alloc(&frost_devlink_ops, sizeof(struct frost_priv *), dev);
+	if (!devlink)
+		return -ENOMEM;
+	*(struct frost_priv **)devlink_priv(devlink) = priv;
+	err = devm_add_action_or_reset(dev, frost_devlink_free, devlink);
+	if (err)
+		return err;
+
+	devl_lock(devlink);
+	err = devl_params_register(devlink, frost_devlink_params, ARRAY_SIZE(frost_devlink_params));
+	if (!err)
+		devl_register(devlink);
+	devl_unlock(devlink);
+	if (err)
+		return err;
+	priv->devlink = devlink;
+	/* Runs before the free above, and after the netdev is unregistered */
+	return devm_add_action_or_reset(dev, frost_devlink_unregister, devlink);
+}
 
 static int frost_probe(struct platform_device *pdev)
 {
@@ -970,6 +1720,15 @@ static int frost_probe(struct platform_device *pdev)
 	priv->base = base;
 	priv->irq = irq;
 	priv->wide_abi = wide_abi;
+	priv->csum_abi = !!(readl(base + NET10G_ABI_CTRL) & NET10G_ABI_CSUM_SUPPORTED);
+	priv->segment_abi = priv->csum_abi && !!(readl(base + NET10G_ABI_CTRL) & NET10G_ABI_SEGMENT_SUPPORTED);
+	priv->rx_fifo_depth = readl(base + NET10G_RX_FIFO_DEPTH);
+	priv->pause_abi = !!(readl(base + NET10G_ABI_CTRL) & NET10G_ABI_PAUSE_SUPPORTED);
+	priv->tx_desc_max = (readl(base + NET10G_ABI_CTRL) & NET10G_ABI_TX_LONG_SEGMENTS) ?
+			    FIELD_MAX(NET10G_DESC_LEN) : FROST_TX_DESC_MAX;
+	priv->rx_fifo_limit = min(priv->rx_fifo_depth, (u32)FROST_FIFO_LIMIT_DEFAULT);
+	priv->rx_entries = FROST_RING_DEFAULT;
+	priv->tx_entries = FROST_RING_DEFAULT;
 	spin_lock_init(&priv->ctrl_lock);
 	u64_stats_init(&priv->rx_syncp);
 	u64_stats_init(&priv->tx_syncp);
@@ -985,10 +1744,29 @@ static int frost_probe(struct platform_device *pdev)
 	ndev->min_mtu = ETH_MIN_MTU;
 	ndev->max_mtu = FROST_MAX_MTU;
 	/* MAC or PMA loopback, chosen by open from PHY_STATUS.CLK_SHARED */
-	ndev->hw_features |= NETIF_F_LOOPBACK;
+	ndev->hw_features |= NETIF_F_LOOPBACK | NETIF_F_SG;
+	ndev->features |= NETIF_F_SG;
+	/* The descriptors hold a 64-bit buffer address in the extended layout */
+	if (priv->wide_abi)
+		ndev->features |= NETIF_F_HIGHDMA;
+	if (priv->csum_abi) {
+		/* TX: the NIC inserts the sum named in the first descriptor; RX: CHECKSUM_COMPLETE */
+		ndev->hw_features |= NETIF_F_HW_CSUM | NETIF_F_RXCSUM;
+		ndev->features |= NETIF_F_HW_CSUM | NETIF_F_RXCSUM;
+	}
+	if (priv->segment_abi) {
+		/* Frame segmentation: the NIC takes up to 64 KB of payload per parameter descriptor */
+		ndev->hw_features |= NETIF_F_TSO | NETIF_F_TSO6;
+		ndev->features |= NETIF_F_TSO | NETIF_F_TSO6;
+		netif_set_tso_max_size(ndev, FIELD_MAX(NET10G_PARAM_PAYLOAD));
+	}
 
 	netif_napi_add(ndev, &priv->napi, frost_poll);
 	timer_setup(&priv->refill_timer, frost_refill_timer, 0);
+	priv->rx_coalesce = FIELD_PREP(NET10G_COALESCE_DELAY, FROST_RX_COALESCE_US) |
+			    FIELD_PREP(NET10G_COALESCE_FRAMES, FROST_RX_COALESCE_FRAMES);
+	priv->tx_coalesce = FIELD_PREP(NET10G_COALESCE_DELAY, FROST_TX_COALESCE_US) |
+			    FIELD_PREP(NET10G_COALESCE_FRAMES, FROST_TX_COALESCE_FRAMES);
 
 	writel(NET10G_IRQ_ALL, base + NET10G_IRQ_MASK_CLR);
 	err = devm_request_irq(dev, irq, frost_irq, 0, dev_name(dev), priv);
@@ -996,6 +1774,11 @@ static int frost_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, err, "cannot request IRQ %d\n", irq);
 
 	netif_carrier_off(ndev);
+	if (priv->rx_fifo_depth) {
+		err = frost_devlink_init(priv);
+		if (err)
+			return dev_err_probe(dev, err, "cannot register devlink\n");
+	}
 	err = devm_register_netdev(dev, ndev);
 	if (err)
 		return dev_err_probe(dev, err, "cannot register netdev\n");
