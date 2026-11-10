@@ -17,8 +17,8 @@
 /*
  * MAC/PCS clock crossings, packet FIFOs, resets, and raw loopback.
  *
- * Beats cross as 68-bit FIFO words {code, data} (nic_pkg beat code:
- * {last, bytes - 1}). Each domain's reset comes from nic_domain_reset
+ * RX beats cross as 68-bit FIFO words {code, data}; TX adds the abort bit and 15-bit checksum
+ * request for 84 bits (nic_pkg beat code: {last, bytes - 1}). Each domain's reset comes from nic_domain_reset
  * under the core-side controller's generation handshake; the FIFO half in
  * a domain resets with that domain, the core-side half with
  * i_core_rst_dom. The raw loopback (MAC_LOOPBACK: raw TX into raw RX with
@@ -190,6 +190,7 @@ module nic_mac_wrap #(
       .WIDTH(CfgBits)
   ) u_rx_limit (
       .i_src_clk(i_clk),
+      // Match the RX FIFO's core half: this receiver must clear for either reset source.
       .i_src_rst(i_rst || i_core_rst_dom[1]),
       .i_src_data({
         i_pause_interval, i_pause_low_water, i_pause_high_water, i_pause_ctrl, i_rx_fifo_limit

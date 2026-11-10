@@ -49,7 +49,13 @@ Offloads, reported by `ethtool -k <interface>`:
 | Hardware statistics | `ethtool -S` | The NIC's 64-bit counters (frames, bytes, filtered, truncated, descriptor errors, aborts, MAC overflow, bad frame, bad FCS, PCS bad blocks, TX drops, and on the GMII port the preamble-stage discards and `rx_er` bursts, which read 0 elsewhere); the RESET at each open clears them |
 | Loopback | `loopback: off` | MAC or PMA loopback, changed only while the interface is down |
 
-The checksum features appear when `ABI_CTRL` bit 3 (checksum offload supported) reads one (segmentation when bit 4 does too),
+Scatter-gather is offered only when `ABI_CTRL` bit 6 identifies hardware that accepts descriptor
+chains; older hardware receives linear packets. TX completion and reset release each mapping
+at its final descriptor piece, using the matching single-buffer or page DMA unmap operation.
+TCP segmentation also requires bits 3 and 4. IPv6 packets with extension headers use software
+segmentation so routing headers retain their final-destination checksum seed.
+
+The checksum features appear when `ABI_CTRL` bit 3 (checksum offload supported) reads one,
 and the driver sets bit 2 at each open so the NIC reports the RX checksum. `ethtool -K
 <interface> rx off tx off sg off` turns each off for comparison; `rx` and `tx` take effect
 on the next packet without reopening.

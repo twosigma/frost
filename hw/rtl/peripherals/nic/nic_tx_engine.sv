@@ -17,12 +17,12 @@
 /*
  * nic_tx_engine: ring buffers into the TX FIFO.
  *
- * One frame per descriptor, in ring order. Require length 1..MaxFrameBytes,
- * FIRST and LAST, and a buffer inside the aperture; otherwise complete with
- * DONE|ERR and send nothing. Read lines in address order, with up to four in
+ * One frame spans FIRST through LAST descriptors, in ring order. Require nonzero length,
+ * the expected FIRST flag, and a buffer inside the aperture; otherwise complete with
+ * DONE|ERR. Read lines in address order, with up to four in
  * flight or held in the reorder buffer. nic_byte_unpack feeds 8-byte FIFO
  * beats; the last carries the remaining bytes and the last flag.
- * After the last beat enters the FIFO, all reads have been consumed and the
+ * After the descriptor's last beat enters the merge stage, all reads have been consumed and the
  * status word can be written. Its response reports completion. DONE means the
  * buffer has been read, not that the frame reached the wire. Only one status
  * write is in flight.
@@ -35,7 +35,7 @@
  * holds of it, and the descriptor completes with DONE|ERR|ABORT. A frame's first segment is
  * at most MaxFrameBytes (65535 after a parameter descriptor); later segments may carry 65535.
  * i_enable low stops admission and descriptor fetching only; an admitted
- * frame finishes. BASE/SIZE change only while disabled and idle.
+ * descriptor finishes. BASE/SIZE change only while disabled and idle.
  */
 module nic_tx_engine #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -204,8 +204,8 @@ module nic_tx_engine #(
   logic in_frame_q;  // a frame has started and its LAST has not yet been admitted
   logic mg_in_ready, mg_out_valid, mg_out_ready;
   logic [63:0] mg_out_data;
-  logic [3:0] mg_out_code;
-  logic mg_flush;
+  logic [ 3:0] mg_out_code;
+  logic mg_flush, mg_busy, seg_busy;
   // A rejected descriptor inside an open frame abandons it: kill_q flushes the merge and segment
   // stages for a cycle, and inj_q closes the frame the FIFO already holds with an abort beat.
   logic kill_q, fifo_open_q, inj_q;
@@ -224,7 +224,7 @@ module nic_tx_engine #(
       .i_out_ready(mg_out_ready),
       .o_out_data (mg_out_data),
       .o_out_code (mg_out_code),
-      .o_busy     ()
+      .o_busy     (mg_busy)
   );
 
   // ---- frame context and the reorder buffer ----------------------------------------
@@ -266,9 +266,12 @@ module nic_tx_engine #(
   // takes the descriptor. Recheck i_enable in S_ADMIT so a disable cancels
   // admission before the descriptor is taken.
   logic consider, admit;
-  assign consider = (state_q == S_IDLE) && i_enable && !i_stop && !i_abort && df_desc_valid;
-  assign admit    = (state_q == S_ADMIT) && i_enable && !i_stop && !i_abort && df_desc_valid;
-  assign df_take  = admit;
+  // Retain the current frame until the entire pipeline drains. Continuations may proceed
+  // while that same frame is buffered, but a new frame's cancellation must not flush its predecessor.
+  assign consider = (state_q == S_IDLE) && i_enable && !i_stop && !i_abort &&
+      !mg_busy && (in_frame_q || !seg_busy) && df_desc_valid;
+  assign admit = (state_q == S_ADMIT) && i_enable && !i_stop && !i_abort && df_desc_valid;
+  assign df_take = admit;
   assign up_start = admit && desc_ok_q;
   // Lines covering [offset, offset + len): ((offset + len - 1) >> OffsetBits) + 1.
   logic [LineCountBits-1:0] n_lines_new;
@@ -320,7 +323,8 @@ module nic_tx_engine #(
       .o_out_data   (seg_out_data),
       .o_out_code   (seg_out_code),
       .o_out_csum   (seg_out_csum),
-      .o_err        (o_segment_err)
+      .o_err        (o_segment_err),
+      .o_busy       (seg_busy)
   );
   assign o_fifo_csum   = seg_out_csum;
   assign o_fifo_valid  = inj_q || (seg_out_valid && !mg_flush);

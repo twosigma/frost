@@ -63,7 +63,9 @@ module nic_tx_segment (
     output logic [ 3:0] o_out_code,
     output logic [14:0] o_out_csum,
 
-    output logic o_err
+    output logic o_err,
+    // Includes buffered input and output, so a later frame cannot cancel an earlier one.
+    output logic o_busy
 );
   localparam int unsigned HbBytes = 160;
   localparam int unsigned HbBeats = HbBytes / 8;
@@ -305,6 +307,7 @@ module nic_tx_segment (
   logic [1:0] sk_cnt_q;
   logic sk_push, sk_pop;
   assign sk_empty = (sk_cnt_q == 2'd0);
+  assign o_busy   = (state_q != S_IDLE) || h_valid || !sk_empty || mg_busy;
   assign sk_ready = (sk_cnt_q != 2'd2);
   assign sk_push  = (hdr_valid || pay_valid) && sk_ready;
   assign sk_pop   = !sk_empty && mg_ready;

@@ -56,6 +56,7 @@ class _Sink:
         self.gap = gap
         self.frames: list[bytes] = []
         self.first_csum: list[int] = []  # o_fifo_csum on each frame's first beat
+        self.csums: list[int] = []  # request on every accepted beat
         self.cut: list[bytes] = []
         self.aborted: list[bytes] = []  # frames closed by an abort beat
         self.current = bytearray()
@@ -81,6 +82,7 @@ class _Sink:
                 assert last or n == 8, "a nonfinal beat must carry 8 bytes"
                 if not self.current:
                     self.first_csum.append(int(dut.o_fifo_csum.value))
+                self.csums.append(int(dut.o_fifo_csum.value))
                 self.current += data[:n]
                 self.beats += 1
                 dut.i_fifo_ready.value = 1
@@ -241,6 +243,96 @@ async def test_frames_out(dut: Any) -> None:
         "the lines read are not exactly the buffers' lines"
     )
     assert int(dut.o_head.value) == len(plan)
+    assert not env.model.violations, env.model.violations
+    env.stop()
+
+
+@cocotb.test()
+async def test_frame_checksum_survives_a_stalled_merge_tail(dut: Any) -> None:
+    """A later FIRST cannot replace the request on the preceding frame's tail."""
+    env = await _setup(dut, 194, latency=(1, 2), sink_gap=0)
+    env.sink.stall = True
+    flags = (6 << 25) | (3 << 18)
+    head = env.place(0, BUF, 1, FIRST | flags)
+    tail = env.place(1, BUF + 0x100, 16, LAST)
+    next_frame = env.place(2, BUF + 0x200, 16)
+    await env.doorbell(3)
+    await env.wait_completions(2)
+    # The previous frame's two full beats fill the segment stage's input FIFO.
+    # Its merge tail waits while the next descriptor is available for admission.
+    for _ in range(100):
+        await FallingEdge(dut.i_clk)
+    env.sink.stall = False
+    await env.wait_completions(3)
+    for _ in range(2000):
+        await FallingEdge(dut.i_clk)
+        if len(env.sink.frames) == 2:
+            break
+    assert env.sink.frames == [head + tail, next_frame]
+    request = (6 << 8) | (3 << 1) | 1
+    assert env.sink.csums == [request] * 3 + [0] * 2
+    assert not env.model.violations, env.model.violations
+    env.stop()
+
+
+@cocotb.test()
+async def test_rejected_frame_preserves_earlier_completed_frames(dut: Any) -> None:
+    """Aborting a later chain cannot flush a valid frame still waiting in the segment stage."""
+    env = await _setup(dut, 195, latency=(1, 2), sink_gap=0)
+    env.sink.stall = True
+    earlier = env.place(0, BUF, 16)
+    env.place(1, BUF + 0x100, 5, FIRST)
+    env.place(2, 0x1000, 8, LAST)  # rejected continuation outside the aperture
+    later = env.place(3, BUF + 0x200, 16)
+    await env.doorbell(4)
+    await env.wait_completions(1)
+    # Allow a broken implementation to admit and abort the next frame while the
+    # preceding completed frame is retained entirely inside the segment stage.
+    for _ in range(100):
+        await FallingEdge(dut.i_clk)
+    env.sink.stall = False
+    await env.wait_completions(4)
+    for _ in range(2000):
+        await FallingEdge(dut.i_clk)
+        if len(env.sink.frames) == 2:
+            break
+    assert env.sink.frames == [earlier, later]
+    assert desc_status(env.mem, RING, 2) == DONE | ERR | ABORT
+    assert not env.model.violations, env.model.violations
+    env.stop()
+
+
+@cocotb.test()
+async def test_rejected_frame_preserves_segmented_output(dut: Any) -> None:
+    """Retain the tail of a completed segmented frame when the following chain is rejected."""
+    from cocotb_tests.nic.test_nic_tx_segment import Packet
+
+    env = await _setup(dut, 196, latency=(1, 1), sink_gap=0, status_latency=(1, 1))
+    pkt = Packet(env.rng, payload_len=3500, mss=1200)
+    word0, word1 = _param_words(pkt)
+    post_desc(env.mem, RING, 0, word0, word1)
+    env.mem.write_bytes(BUF, pkt.frame)
+    post_desc(env.mem, RING, 1, BUF, len(pkt.frame) | FIRST | LAST)
+    env.place(2, BUF + 0x10000, 5, FIRST)
+    env.place(3, 0x1000, 8, LAST)
+    later = env.place(4, BUF + 0x20000, 16)
+    await env.doorbell(5)
+    await env.wait_completions(2)
+    env.sink.stall = True
+    expected = pkt.segments()
+    assert len(env.sink.frames) < len(expected), (
+        "the test must stall pending segmented output"
+    )
+    for _ in range(100):
+        await FallingEdge(dut.i_clk)
+    env.sink.stall = False
+    await env.wait_completions(5)
+    for _ in range(4000):
+        await FallingEdge(dut.i_clk)
+        if len(env.sink.frames) == len(expected) + 1:
+            break
+    assert env.sink.frames == expected + [later]
+    assert desc_status(env.mem, RING, 3) == DONE | ERR | ABORT
     assert not env.model.violations, env.model.violations
     env.stop()
 

@@ -25,9 +25,9 @@
  * from the MAC completes with ABORT. The poll re-enables the direction at the
  * LINK event for the carrier's return (frost_reenable()).
  *
- * The driver assumes one CPU, the SoC's single hart, whether the kernel is
- * built uniprocessor or SMP: xmit and NAPI never interleave, and open and stop
- * touch the rings only while NAPI is disabled.
+ * The transmit queue lock serializes xmit and TX cleanup. Open and stop touch
+ * the rings with NAPI disabled; reconfiguration synchronizes TX again after
+ * the last poll, which may have woken the queue while the interface stays up.
  *
  * The source is built as a module for Debian's kernel (6.12 on Debian 13),
  * through DKMS on a Debian root and the same way for the kernel FROST packs, so
@@ -255,6 +255,7 @@ struct frost_buf {
 	struct page *page;	/* RX */
 	dma_addr_t dma;
 	unsigned int len;	/* the mapped length */
+	bool page_mapping;	/* TX: pair skb_frag_dma_map with dma_unmap_page */
 };
 
 struct frost_priv {
@@ -275,6 +276,7 @@ struct frost_priv {
 	bool broken;		/* a RESET did not complete; never cleared */
 	bool wide_abi;		/* selected only when hardware and DMA API support it */
 	bool csum_abi;		/* hardware checksum offload present */
+	bool sg_abi;		/* descriptor chaining, advertised by the long-segment ABI */
 	bool segment_abi;	/* hardware frame segmentation present */
 	u32 rx_coalesce, tx_coalesce;	/* interrupt moderation, written at each open */
 	unsigned long reenables;	/* CTRL rewrites after a READY loss */
@@ -444,6 +446,18 @@ static unsigned int frost_rx_fill(struct frost_priv *priv, gfp_t gfp)
 	return posted;
 }
 
+static void frost_tx_unmap(struct frost_priv *priv, struct frost_buf *buf)
+{
+	/* Parameter descriptors and nonfinal pieces do not own a mapping. */
+	if (!buf->len)
+		return;
+	if (buf->page_mapping)
+		dma_unmap_page(priv->dev, buf->dma, buf->len, DMA_TO_DEVICE);
+	else
+		dma_unmap_single(priv->dev, buf->dma, buf->len, DMA_TO_DEVICE);
+	buf->len = 0;
+}
+
 static void frost_tx_reap(struct frost_priv *priv, int budget)
 {
 	struct net_device *ndev = priv->ndev;
@@ -463,11 +477,9 @@ static void frost_tx_reap(struct frost_priv *priv, int budget)
 		 */
 		if (!(status & NET10G_DESC_DONE))
 			break;
-		/* A parameter descriptor has no buffer */
-		if (buf->len)
-			dma_unmap_single(priv->dev, buf->dma, buf->len, DMA_TO_DEVICE);
 		pkts++;
 		bytes += buf->len;
+		frost_tx_unmap(priv, buf);
 		if (status & (NET10G_DESC_ERR | NET10G_DESC_ABORT))
 			priv->tx_frame_err = true;
 		/* Only a frame's last segment holds its skb: the frame is complete now. */
@@ -777,6 +789,8 @@ static void frost_reset_and_free(struct frost_priv *priv)
 		 * requests fail visibly instead of the failure staying silent.
 		 */
 		priv->broken = true;
+		/* Returned skbs must not refer to NAPI after this detached netdev is freed. */
+		page_pool_disable_direct_recycling(priv->rx_pool);
 		netif_device_detach(ndev);
 		netif_carrier_off(ndev);
 		return;
@@ -793,11 +807,11 @@ static void frost_reset_and_free(struct frost_priv *priv)
 	while (priv->tx_clean != priv->tx_head) {
 		struct frost_buf *buf = &priv->tx_bufs[priv->tx_clean];
 
-		dma_unmap_single(priv->dev, buf->dma, buf->len, DMA_TO_DEVICE);
+		frost_tx_unmap(priv, buf);
+		dropped += !!buf->skb;
 		dev_kfree_skb(buf->skb);
 		buf->skb = NULL;
 		priv->tx_clean = (priv->tx_clean + 1) & priv->tx_mask;
-		dropped++;
 	}
 	if (dropped) {
 		u64_stats_update_begin(&priv->tx_syncp);
@@ -824,6 +838,8 @@ static void frost_quiesce(struct frost_priv *priv)
 	writel(NET10G_IRQ_ALL, priv->base + NET10G_IRQ_MASK_CLR);
 	readl(priv->base + NET10G_IRQ_MASK);
 	synchronize_irq(priv->irq);
+	/* A last completion can wake TX during a running reconfiguration. */
+	netif_tx_disable(priv->ndev);
 }
 
 /*
@@ -1210,6 +1226,7 @@ static netdev_tx_t frost_start_xmit(struct sk_buff *skb,
 			buf->skb = last ? skb : NULL;
 			buf->dma = last_piece ? dma[i] : 0;
 			buf->len = last_piece ? seg_len[i] : 0;
+			buf->page_mapping = !(head_mapped && i == 0);
 
 			netdev_tx_sent_queue(txq, buf->len);
 			priv->tx_head = (priv->tx_head + 1) & priv->tx_mask;
@@ -1295,7 +1312,8 @@ static void frost_get_stats64(struct net_device *ndev,
 /*
  * The segmentation stage takes TCP over IPv4 or IPv6 behind an Ethernet header with at most one
  * VLAN tag, headers up to NET10G_TSO_MAX_HDR bytes and an even L4 offset. Anything else is
- * segmented by the stack before it reaches the driver.
+ * segmented by the stack before it reaches the driver. IPv6 extension headers also take the
+ * software path: a routing header can change the pseudo-header's final destination.
  */
 static netdev_features_t frost_features_check(struct sk_buff *skb, struct net_device *ndev,
 					      netdev_features_t features)
@@ -1306,6 +1324,8 @@ static netdev_features_t frost_features_check(struct sk_buff *skb, struct net_de
 
 		if ((skb_shinfo(skb)->gso_type & ~(SKB_GSO_TCPV4 | SKB_GSO_TCPV6)) ||
 		    skb->encapsulation || (l3 != ETH_HLEN && l3 != ETH_HLEN + VLAN_HLEN) ||
+		    (vlan_get_protocol(skb) == htons(ETH_P_IPV6) &&
+		     skb_transport_offset(skb) != l3 + sizeof(struct ipv6hdr)) ||
 		    (skb_transport_offset(skb) & 1) || hdr > NET10G_TSO_MAX_HDR ||
 		    skb_shinfo(skb)->gso_size > FIELD_MAX(NET10G_CTX_MSS) || skb->len <= hdr ||
 		    skb->len - hdr > FIELD_MAX(NET10G_CTX_PAYLOAD))
@@ -1721,7 +1741,9 @@ static int frost_probe(struct platform_device *pdev)
 	priv->irq = irq;
 	priv->wide_abi = wide_abi;
 	priv->csum_abi = !!(readl(base + NET10G_ABI_CTRL) & NET10G_ABI_CSUM_SUPPORTED);
-	priv->segment_abi = priv->csum_abi && !!(readl(base + NET10G_ABI_CTRL) & NET10G_ABI_SEGMENT_SUPPORTED);
+	priv->sg_abi = !!(readl(base + NET10G_ABI_CTRL) & NET10G_ABI_TX_LONG_SEGMENTS);
+	priv->segment_abi = priv->sg_abi && priv->csum_abi &&
+			    !!(readl(base + NET10G_ABI_CTRL) & NET10G_ABI_SEGMENT_SUPPORTED);
 	priv->rx_fifo_depth = readl(base + NET10G_RX_FIFO_DEPTH);
 	priv->pause_abi = !!(readl(base + NET10G_ABI_CTRL) & NET10G_ABI_PAUSE_SUPPORTED);
 	priv->tx_desc_max = (readl(base + NET10G_ABI_CTRL) & NET10G_ABI_TX_LONG_SEGMENTS) ?
@@ -1744,8 +1766,12 @@ static int frost_probe(struct platform_device *pdev)
 	ndev->min_mtu = ETH_MIN_MTU;
 	ndev->max_mtu = FROST_MAX_MTU;
 	/* MAC or PMA loopback, chosen by open from PHY_STATUS.CLK_SHARED */
-	ndev->hw_features |= NETIF_F_LOOPBACK | NETIF_F_SG;
-	ndev->features |= NETIF_F_SG;
+	ndev->hw_features |= NETIF_F_LOOPBACK;
+	/* Older NICs require FIRST and LAST on the same descriptor. */
+	if (priv->sg_abi) {
+		ndev->hw_features |= NETIF_F_SG;
+		ndev->features |= NETIF_F_SG;
+	}
 	/* The descriptors hold a 64-bit buffer address in the extended layout */
 	if (priv->wide_abi)
 		ndev->features |= NETIF_F_HIGHDMA;
@@ -1806,5 +1832,5 @@ module_platform_driver(frost_driver);
 
 MODULE_DESCRIPTION("FROST net10g 10GBASE-R Ethernet driver");
 /* The DKMS package version: PACKAGE_VERSION in dkms.conf matches it */
-MODULE_VERSION("1.0");
+MODULE_VERSION("1.1");
 MODULE_LICENSE("Dual BSD/GPL");

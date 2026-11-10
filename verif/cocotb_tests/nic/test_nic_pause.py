@@ -331,6 +331,60 @@ def quantum_ns() -> float:
 
 
 @cocotb.test()
+async def tx_restart_does_not_replay_an_expired_pause(dut: Any) -> None:
+    """Rebase the surviving RX event toggle after TX reset without inventing a frame."""
+    bench = Bench(dut)
+    await bench.start()
+    await bench.configure(CTRL_RX)
+    bench.link.send(pause_frame(1))
+    await bench.drain_link()
+    await Timer(int(3 * quantum_ns()), unit="ns")
+    assert not int(dut.tx_paused.value)
+    assert bench.total(RX_PAUSE) == 1
+    await FallingEdge(dut.i_clk)
+    dut.i_gen.value = 1
+    dut.i_req.value = 1
+    dut.i_core_rst_dom.value = 1
+    await ClockCycles(dut.i_clk, 40)
+    await FallingEdge(dut.i_clk)
+    dut.i_req.value = 0
+    for _ in range(100):
+        await FallingEdge(dut.i_tx_clk)
+        assert not int(dut.tx_paused.value), (
+            "TX reset replayed the historical PAUSE interval"
+        )
+    dut.i_core_rst_dom.value = 0
+    await ClockCycles(dut.i_clk, 100)
+    assert bench.total(RX_PAUSE) == 1
+
+
+@cocotb.test()
+async def pause_interval_is_published_with_its_event(dut: Any) -> None:
+    """Hold the completed frame's interval until the next event."""
+    bench = Bench(dut)
+    await bench.start()
+    await bench.configure(CTRL_RX)
+    source = dut.u_pause_rx
+    toggle = int(source.o_pause_tog.value)
+    interval = int(source.o_pause_interval.value)
+    seen = []
+    for quanta in (5, 300, 0):
+        bench.link.send(pause_frame(quanta))
+    for _ in range(4000):
+        await FallingEdge(dut.i_rx_clk)
+        next_toggle = int(source.o_pause_tog.value)
+        next_interval = int(source.o_pause_interval.value)
+        if next_toggle != toggle:
+            seen.append(next_interval)
+        else:
+            assert next_interval == interval, "pause interval changed before its event"
+        toggle, interval = next_toggle, next_interval
+        if len(seen) == 3:
+            break
+    assert seen == [5, 300, 0]
+
+
+@cocotb.test()
 async def pause_frames_are_consumed_and_counted(dut: Any) -> None:
     """Consume a PAUSE frame to the multicast or the station address without delivering it."""
     bench = Bench(dut)

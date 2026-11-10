@@ -435,3 +435,193 @@ def test_driver_splits_tx_segments_only_for_old_hardware() -> None:
     assert xmit.group(0).count("priv->tx_desc_max") == 4
     pkg = (REPO_ROOT / "hw/rtl/peripherals/nic/nic_pkg.sv").read_text()
     assert "bit 6 reads one" in pkg
+
+
+def _run_driver_function(
+    tmp_path: Path, declarations: str, function: str, main: str
+) -> None:
+    """Execute an actual driver helper with DMA and skb inputs supplied by a small C harness."""
+    source = DRIVER_SOURCE.read_text()
+    body = re.search(rf"static [^\n]* {function}\(.*?\n\}}\n", source, re.S)
+    assert body is not None, function
+    program = tmp_path / "driver_test.c"
+    program.write_text(declarations + "\n" + body.group(0) + "\n" + main)
+    executable = tmp_path / "driver_test"
+    built = subprocess.run(
+        ["cc", "-std=c11", "-Wall", "-Werror", str(program), "-o", str(executable)],
+        capture_output=True,
+        text=True,
+    )
+    assert built.returncode == 0, built.stderr
+    subprocess.run([str(executable)], check=True, capture_output=True, text=True)
+
+
+def test_tx_unmap_matches_mapping_kind_and_skips_unmapped_descriptors(
+    tmp_path: Path,
+) -> None:
+    """Completion and reset share exactly-once teardown of head, fragment and parameter slots."""
+    _run_driver_function(
+        tmp_path,
+        r"""
+#include <assert.h>
+#include <stdbool.h>
+#define DMA_TO_DEVICE 1
+struct frost_priv { void *dev; };
+struct frost_buf { unsigned long dma; unsigned int len; bool page_mapping; };
+static int singles, pages;
+static void dma_unmap_single(void *dev, unsigned long dma, unsigned int len, int dir)
+{
+    assert(dev && dma == 123 && len == 17 && dir == DMA_TO_DEVICE);
+    singles++;
+}
+static void dma_unmap_page(void *dev, unsigned long dma, unsigned int len, int dir)
+{
+    assert(dev && dma == 456 && len == 32768 && dir == DMA_TO_DEVICE);
+    pages++;
+}
+""",
+        "frost_tx_unmap",
+        r"""
+int main(void)
+{
+    struct frost_priv priv = { .dev = &singles };
+    struct frost_buf buffers[] = {
+        {0, 0, false}, {123, 17, false}, {0, 0, true}, {456, 32768, true}
+    };
+    for (int i = 0; i < 4; i++) {
+        frost_tx_unmap(&priv, &buffers[i]);
+        frost_tx_unmap(&priv, &buffers[i]);
+    }
+    assert(singles == 1 && pages == 1);
+    return 0;
+}
+""",
+    )
+    source = DRIVER_SOURCE.read_text()
+    for function in ("frost_tx_reap", "frost_reset_and_free"):
+        body = re.search(rf"static void {function}\(.*?\n\}}\n", source, re.S)
+        assert body is not None and "frost_tx_unmap(priv, buf);" in body.group(0)
+
+
+def test_tso_uses_software_for_ipv6_extension_headers(tmp_path: Path) -> None:
+    """A routing header's final destination must not be replaced by the current IPv6 DA."""
+    _run_driver_function(
+        tmp_path,
+        r"""
+#include <assert.h>
+#include <stdint.h>
+#define SKB_GSO_TCPV4 1
+#define SKB_GSO_TCPV6 2
+#define NETIF_F_GSO_MASK 3
+#define ETH_HLEN 14
+#define VLAN_HLEN 4
+#define ETH_P_IPV6 0x86dd
+#define NET10G_TSO_MAX_HDR 160
+#define NET10G_CTX_MSS 16383
+#define NET10G_CTX_PAYLOAD 65535
+#define FIELD_MAX(x) (x)
+#define htons(x) (x)
+typedef uint64_t netdev_features_t;
+struct net_device { int unused; };
+struct ipv6hdr { char bytes[40]; };
+struct sk_buff { unsigned int len, l3, l4, hdr, protocol, encapsulation;
+                 unsigned int gso_type, gso_size; };
+#define skb_shinfo(skb) (skb)
+#define skb_is_gso(skb) ((skb)->gso_size != 0)
+#define skb_network_offset(skb) ((skb)->l3)
+#define skb_tcp_all_headers(skb) ((skb)->hdr)
+#define skb_transport_offset(skb) ((skb)->l4)
+#define vlan_get_protocol(skb) ((skb)->protocol)
+""",
+        "frost_features_check",
+        r"""
+int main(void)
+{
+    struct sk_buff skb = { .len = 3000, .l3 = 14, .l4 = 54, .hdr = 74,
+                          .protocol = ETH_P_IPV6, .gso_type = SKB_GSO_TCPV6,
+                          .gso_size = 1460 };
+    assert(frost_features_check(&skb, 0, 7) == 7);
+    /* Same TCP packet with a 24-byte IPv6 routing header. */
+    skb.l4 += 24;
+    skb.hdr += 24;
+    assert(frost_features_check(&skb, 0, 7) == 4);
+    /* Ordinary VLAN-tagged IPv6 remains eligible. */
+    skb.l3 = 18; skb.l4 = 58; skb.hdr = 78;
+    assert(frost_features_check(&skb, 0, 7) == 7);
+    /* IPv4 options remain eligible. */
+    skb.protocol = 0x0800; skb.l3 = 14; skb.l4 = 38; skb.hdr = 58;
+    skb.gso_type = SKB_GSO_TCPV4;
+    assert(frost_features_check(&skb, 0, 7) == 7);
+    return 0;
+}
+""",
+    )
+
+
+def test_legacy_hardware_does_not_advertise_descriptor_chaining() -> None:
+    """The long-segment capability identifies hardware that accepts FIRST..LAST chains."""
+    source = DRIVER_SOURCE.read_text()
+    assert (
+        "priv->sg_abi = !!(readl(base + NET10G_ABI_CTRL) & NET10G_ABI_TX_LONG_SEGMENTS);"
+        in source
+    )
+    assert "priv->segment_abi = priv->sg_abi && priv->csum_abi &&" in source
+    assert re.search(
+        r"if \(priv->sg_abi\) \{\s*ndev->hw_features \|= NETIF_F_SG;\s*ndev->features \|= NETIF_F_SG;\s*\}",
+        source,
+    )
+
+
+def test_reconfigure_stops_tx_after_the_last_napi_completion(tmp_path: Path) -> None:
+    """A completion racing with NAPI shutdown cannot leave the queue awake for ring teardown."""
+    _run_driver_function(
+        tmp_path,
+        r"""
+#include <assert.h>
+#include <stdbool.h>
+#define NET10G_IRQ_ALL 31
+#define NET10G_IRQ_MASK_CLR 0
+#define NET10G_IRQ_MASK 0
+static bool napi_disabled, stopped, irq_synced;
+struct frost_priv { int napi, refill_timer, irq; char *base; void *ndev; };
+static void napi_disable(int *napi)
+{
+    /* A poll that was already running completes and wakes the stopped queue. */
+    stopped = false;
+    napi_disabled = true;
+}
+static void timer_delete_sync(int *timer) { assert(napi_disabled); }
+static void writel(int value, char *reg) {}
+static int readl(char *reg) { return 0; }
+static void synchronize_irq(int irq) { irq_synced = true; }
+static void netif_tx_disable(void *ndev)
+{
+    assert(napi_disabled && irq_synced);
+    stopped = true;
+}
+""",
+        "frost_quiesce",
+        r"""
+int main(void)
+{
+    char reg;
+    struct frost_priv priv = { .base = &reg };
+    stopped = true;
+    frost_quiesce(&priv);
+    assert(stopped);
+    return 0;
+}
+""",
+    )
+
+
+def test_reset_timeout_detaches_the_page_pool_from_napi() -> None:
+    """Pinned DMA allocations may outlive the netdev after an unrecoverable RESET timeout."""
+    source = DRIVER_SOURCE.read_text()
+    body = re.search(r"static void frost_reset_and_free\(.*?\n\}\n", source, re.S)
+    assert body is not None
+    text = body.group(0)
+    timeout = text.index("priv->broken = true;")
+    detach = text.index("page_pool_disable_direct_recycling(priv->rx_pool);", timeout)
+    assert timeout < detach < text.index("netif_device_detach(ndev)", timeout)
+    assert detach < text.index("return;", timeout)

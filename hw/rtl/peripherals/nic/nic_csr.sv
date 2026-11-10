@@ -265,6 +265,9 @@ module nic_csr #(
         o_rx_fifo_limit_wr <= 1'b1;
         cfg_pend_q         <= 1'b0;
       end
+      // An RX-only reset clears the mailbox and the MAC-side configuration, while the CSRs
+      // survive. Replay their current values when the domain returns, before accepting RX_EN.
+      if (!i_rx_ready) cfg_pend_q <= 1'b1;
       o_reset_req <= reset_write;
       o_link_change <= carrier != carrier_q;
       carrier_q <= carrier;
@@ -329,8 +332,8 @@ module nic_csr #(
         rx_tail_q    <= '0;
         o_rx_restart <= 1'b1;
       end
-      // The limit is clamped to what the FIFO supports; a write while the previous one is still
-      // crossing to the MAC clock is ignored.
+      // The limit is clamped to what the FIFO supports; a write while an earlier value is
+      // crossing to the MAC clock is retained in cfg_pend_q and sent after it.
       if (rx_ring_writable && i_wr_en && (i_wr_offset == nic_pkg::RxFifoLimitOffset)) begin
         if (i_wr_data > 32'(RX_FIFO_DEPTH)) rx_limit_q <= LimitBits'(RX_FIFO_DEPTH);
         else if (i_wr_data < 32'(nic_pkg::RxFifoLimitMin))
@@ -436,9 +439,9 @@ module nic_csr #(
       nic_pkg::AbiCtrlOffset:
       reg_word = {25'b0, 1'b1, 1'b1, 1'b1, 1'b1, rx_csum_q, 1'b1, wide_mode_q};
       nic_pkg::RxBase64Offset: reg_word = 32'(rx_base_q);
-      nic_pkg::RxBase64HiOffset: reg_word = 32'(rx_base_q >> 32);
+      nic_pkg::RxBase64HiOffset: reg_word = 32'(64'(rx_base_q) >> 32);
       nic_pkg::TxBase64Offset: reg_word = 32'(tx_base_q);
-      nic_pkg::TxBase64HiOffset: reg_word = 32'(tx_base_q >> 32);
+      nic_pkg::TxBase64HiOffset: reg_word = 32'(64'(tx_base_q) >> 32);
       nic_pkg::TxSizeOffset: reg_word = {27'b0, tx_size_q};
       nic_pkg::TxTailOffset: reg_word = {16'b0, tx_tail_q};
       nic_pkg::TxHeadOffset: reg_word = {16'b0, i_tx_head};

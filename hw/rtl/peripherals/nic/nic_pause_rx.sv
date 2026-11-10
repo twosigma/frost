@@ -21,8 +21,9 @@
  * Pause frames. A frame whose destination is 01-80-C2-00-00-01 or the station address is held
  * back for its first beat (the destination is in that beat); its second beat carries the
  * EtherType and opcode. A MAC control PAUSE frame (EtherType 0x8808, opcode 0x0001) is consumed
- * here and never reaches the FIFO: o_pause_ev pulses at its last beat, and o_pause_interval, with a
- * toggle on o_pause_tog, carries its pause_time for the transmit side. Any other frame that
+ * here and never reaches the FIFO: o_pause_ev pulses at its last beat, when o_pause_interval and
+ * o_pause_tog publish its pause_time together for the transmit side. The interval then holds until
+ * the next completed pause frame, including while its successor's header arrives. Any other frame that
  * matched the destination is released to the FIFO unchanged, held beat first. Frames that do not
  * match pass straight through. The receive MAC publishes complete, CRC-checked frames only, each at
  * least 60 bytes long, so a held frame always has its second and third beats.
@@ -68,6 +69,7 @@ module nic_pause_rx #(
   logic at_start_q;
   logic [67:0] hold_q;
   logic [1:0] idx_q;  // the beat index inside a dropped frame, saturating at 3
+  logic [15:0] pause_interval_q;
 
   logic da_match, is_pause;
   assign da_match = (i_m_data[47:0] == 48'h0100_00C2_8001) || (i_m_data[47:0] == i_mac);
@@ -134,13 +136,14 @@ module nic_pause_rx #(
         S_DROP: begin
           if (i_m_valid) begin
             // Beat 2: bytes 16-17 are pause_time, high byte first.
-            if (idx_q == 2'd2) o_pause_interval <= {i_m_data[7:0], i_m_data[15:8]};
+            if (idx_q == 2'd2) pause_interval_q <= {i_m_data[7:0], i_m_data[15:8]};
             if (idx_q != 2'd3) idx_q <= idx_q + 2'd1;
             if (i_m_code[3]) begin
-              state_q     <= S_PASS;
-              at_start_q  <= 1'b1;
-              o_pause_ev  <= 1'b1;
-              o_pause_tog <= !o_pause_tog;
+              state_q          <= S_PASS;
+              at_start_q       <= 1'b1;
+              o_pause_ev       <= 1'b1;
+              o_pause_tog      <= !o_pause_tog;
+              o_pause_interval <= pause_interval_q;
             end
           end
         end

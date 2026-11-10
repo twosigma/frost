@@ -76,7 +76,9 @@ module nic_pause_tx #(
   assign o_paused = paused;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      tog_q   <= 1'b0;
+      // The RX domain may survive a TX-only reset. Its last event is the new baseline,
+      // so an old odd toggle must not restart an already expired pause timer.
+      tog_q   <= i_pause_tog;
       ev1_q   <= 1'b0;
       ev2_q   <= 1'b0;
       ev3_q   <= 1'b0;

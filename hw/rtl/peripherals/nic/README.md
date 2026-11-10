@@ -375,10 +375,17 @@ bits:
 | `0x060` | LINK | 0 RX_LOCKED, 1 RX_HIGH_BER, 2 RX_LOCAL_FAULT, 3 RX_REMOTE_FAULT, 4 TX_LINK_READY, 5 RX_SIGNAL_OK, 6 TX_CLK_OK, 7 RX_CLK_OK, 8 CARRIER (RX locked with no high BER or fault, and TX link ready) |
 | `0x064` | PHY_CTRL | 0 MAC_LOOPBACK, 1 PHY_RESET, 2 PMA_LOOPBACK, 3 TX_DISABLE |
 | `0x068` | PHY_STATUS | 0 CLK_SHARED, 1 GT_RESET_DONE, 2 CDR_LOCK, 3 MODULE_PRESENT, 4 LOS |
-| `0x06C` | ABI_CTRL | R: bit 0 extended mode, bit 1 extended mode supported, bit 2 RX checksum enabled, bit 3 checksum offload supported, bit 4 packet segmentation supported; W: bits 0 and 2 change only while both directions are disabled and idle (bit 0 also clears the rings) |
+| `0x06C` | ABI_CTRL | R: bit 0 extended mode, bit 1 extended mode supported, bit 2 RX checksum enabled, bit 3 checksum offload supported, bit 4 packet segmentation supported, bit 5 pause supported, bit 6 long TX segments with descriptor chaining and frame abort supported; W: bits 0 and 2 change only while both directions are disabled and idle (bit 0 also clears the rings) |
 | `0x070`, `0x078` | RX_BASE64, TX_BASE64 | Aligned 64-bit ring bases; accept only one complete eight-byte store in extended mode. Partial writes and high bits beyond `ADDR_WIDTH` are ignored |
 | `0x130`, `0x134`, `0x138` | PAUSE_HIGH_WATER, PAUSE_LOW_WATER, PAUSE_INTERVAL | Flow control high and low water thresholds in RX FIFO words (0 selects default relative to RX_FIFO_LIMIT) and pause duration. Same write rule as PAUSE_CTRL |
-| `0x080`–`0x127` | Counters | 64-bit counters in `nic_pkg` order: RX frames, bytes, filtered, truncated, descriptor errors, and aborts; TX frames, bytes, descriptor errors, and aborts; then the MAC's RX overflow, bad frame, bad FCS, and PCS bad block, and TX drop and PCS bad block; then the 802.3x counters: PAUSE frames received (consumed, not delivered), PAUSE frames sent (pause requests, refreshes and release), and TX MAC clock cycles spent paused by a received PAUSE; and, on the GMII port only (zero on 10GBASE-R), frames dropped in the GMII receiver's preamble stage (a first byte that is neither `0x55` nor SFD, a preamble byte other than `0x55`, or `rx_er` in the preamble) and `rx_er` bursts inside a frame (one event per run of consecutive `rx_er` symbols) |
+| `0x080`–`0x127` | Counters | 64-bit counters in `nic_pkg` order: RX frames, bytes, filtered, truncated, descriptor errors, and aborts; TX descriptor completions (`tx_frames`), bytes, descriptor errors, and aborts; the MAC's RX overflow, bad frame, bad FCS, and PCS bad block, and TX drop and PCS bad block; GMII preamble discards and `rx_er` bursts (zero on 10GBASE-R); then PAUSE frames received, PAUSE frames sent (requests, refreshes and releases), and TX MAC clock cycles spent paused |
+
+The TX engine counters track descriptor completions and their buffer bytes, including parameter
+descriptors in `tx_frames`. A scatter-gather frame uses several descriptors, and a segmented frame
+can produce several wire frames from one descriptor chain. These counters therefore differ from
+the Linux driver's packet counters. The GMII preamble counter counts a first byte other than
+`0x55` or SFD, a later preamble byte other than `0x55`, or `rx_er` in the preamble; the error
+counter counts each burst of consecutive `rx_er` symbols inside a frame.
 
 **RX ingress FIFO and its limit.** Received frames cross to the core clock through an
 asynchronous FIFO of 68-bit words (up to 8 frame bytes each) that the SoC builds 8192 words
@@ -386,12 +393,14 @@ deep (about 64 KiB, 16 BRAM36 per NIC). The receive MAC stores whole frames in i
 (4096 words) and presents them to the FIFO; when the FIFO is full the MAC holds them, and a
 frame that fits in neither is dropped and counted in the MAC overflow counter. RX_FIFO_LIMIT
 makes the write side report full when occupancy reaches the limit (less the FIFO's two-entry
-margin), so one bitstream measures several effective depths; 512 is the original FIFO. The
+margin), so the limit selects several effective depths; 512 is the original FIFO. The
 limit crosses to the RX clock through a request/acknowledge mailbox (`cdc_mailbox`) that takes the
 same two resets as the FIFO: the new value reaches the RX domain as one word, never as a mix
 of old and new bits, and the register block refuses an RX enable until the acknowledge returns
 (a second write meanwhile is sent after it). Gating the write on RX being disabled and idle also keeps the
-cap from moving while the engine drains the FIFO. A reset returns the limit to 512 on both sides together.
+cap from moving while the engine drains the FIFO. A software RESET returns the limit to 512 on both
+sides together. An RX-only restart retains the core registers and replays the FIFO and pause
+configuration after READY returns; RX enable waits for that replay.
 
 **802.3x flow control.** Both ports (10GBASE-R and GMII/SGMII) share the logic, which sits
 outside the MACs: `nic_pause_rx` between the receive MAC and the ingress FIFO, `nic_pause_tx`
@@ -404,7 +413,9 @@ between the TX FIFO and the transmit MAC.
   timer of 512-bit-time quanta (8 words at 10G, 64 byte times on GMII at any speed); pause_time 0
   clears it. While it runs no new frame leaves the TX FIFO. A frame already started finishes, and
   the transmit MAC may still send up to two complete frames it took earlier. Frames the NIC
-  generates itself are exempt.
+  generates itself are exempt. The interval is published with the completed frame's event and
+  held until the next event. A TX-only restart rebases event detection so an expired interval
+  from the surviving RX domain is not applied again.
 - *Transmit.* With PAUSE_CTRL bit 1 set, a pause request frame (pause_time PAUSE_INTERVAL, DA
   01-80-C2-00-00-01, SA the station address) goes out between frames when the FIFO occupancy
   reaches PAUSE_HIGH_WATER; while it stays above PAUSE_LOW_WATER the pause request is repeated every PAUSE_INTERVAL / 2;
@@ -505,9 +516,13 @@ final scan.
 | `nic_dma_front` | Tagged responses, fairness, aperture errors, drain, and the same-line order guard with its bound on waiting |
 | `nic_byte_pack`, `nic_byte_unpack` | Byte placement, alignment, truncation, and backpressure |
 | `nic_rx_engine`, `nic_tx_engine` | Rings, filtering, buffer and status ordering, malformed descriptors, aborts, and disables |
+| `nic_tx_segment` | IPv4/IPv6 and VLAN segmentation, header and checksum updates, short or excess input, and stalled frame boundaries |
+| `nic_pause_gmii`, `nic_pause_10g` | Pause reception, timer duration, generation, refresh, release, and publication of the interval with its completed-frame event |
+| `nic_rx_fifo_limit`, `nic_top_rx_fifo` | Runtime FIFO limits and the 8192-word configuration, including GMII receive diagnostic counters |
 | `nic_top` | Whole NIC with three clocks and raw loopback, AXI4-Lite register accesses with channel skew and response stalls, its AXI4 master against a reordering slave, and SLVERR on buffer reads and writes |
 | `nic_top_unrelated_clocks` | Independent TX and RX clocks with `RAW_LOOPBACK=0` |
 | `nic_loopback`, `nic_echo` | Full-system software tests in both memory tiers |
+| `nic_sg_loopback`, `nic_rate` | Full-system scatter-gather, checksum, segmentation and TX rate applications |
 | `nic_dma_stress` | Two rounds of 15 queued 1518- and 64-byte loopback frames per mode, each overlapping a 4 KiB DMA copy, in plain and burst modes, in both memory tiers; DMA must be busy at the first RX completion, every frame byte and copied word is checked, and MAC RX overflow must stay zero |
 
 Run with `./scripts/frost.py cocotb <target>`. The

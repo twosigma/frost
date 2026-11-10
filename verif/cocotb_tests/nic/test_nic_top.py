@@ -920,6 +920,44 @@ async def test_reset_mid_traffic(dut: Any) -> None:
     nic.stop()
 
 
+@cocotb.test()
+async def test_rx_domain_restart_replays_fifo_and_pause_configuration(dut: Any) -> None:
+    """A lost RX clock clears the MAC copy; the surviving CSRs must republish it."""
+    nic = await _start(dut, 194, loopback=False)
+    await nic.program_rings()
+    settings = ((0x014, 64), (0x01C, 3), (0x130, 20), (0x134, 4), (0x138, 0x456))
+    for offset, value in settings:
+        await nic.wr(offset, value)
+    await nic.cycles(100)
+    mac = dut.u_mac
+
+    def applied() -> tuple[int, ...]:
+        return tuple(
+            int(getattr(mac, name).value)
+            for name in (
+                "rx_limit_q",
+                "cfg_ctrl",
+                "cfg_high_water",
+                "cfg_low_water",
+                "cfg_interval",
+            )
+        )
+
+    expected = tuple(value for _, value in settings)
+    assert applied() == expected
+    dut.i_rx_clk_ok.value = 0
+    await nic.wait_status(ST_RX_READY, 0, what="RX clock loss")
+    await nic.cycles(80)
+    dut.i_rx_clk_ok.value = 1
+    await nic.wait_status(ST_RX_READY, ST_RX_READY, what="RX clock return")
+    await nic.cycles(100)
+    assert [await nic.rd(offset) for offset, _ in settings] == list(expected)
+    assert applied() == expected, (
+        "RX restart lost the applied FIFO or pause configuration"
+    )
+    nic.stop()
+
+
 @cocotb.skipif(RAW_LOOPBACK, reason="needs RAW_LOOPBACK = 0")
 @cocotb.test()
 async def test_unrelated_mac_clocks(dut: Any) -> None:
