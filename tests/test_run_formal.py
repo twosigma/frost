@@ -1350,11 +1350,11 @@ SBY_TASKS = [
     ),
     (
         "coh_l1d_stream_bmc",
-        "Speculative endpoint ownership and demand-state isolation along the scripted stream, with arbitrary replies after cycle 24.",
+        "Scripted stream control through 42 frames, with payload checks proved independently and arbitrary replies after cycle 24.",
     ),
     (
         "coh_l1d_stream_free_bmc",
-        "The same checks, except four outlier assertions, with arbitrary inputs, stores included, to depth 32.",
+        "Stream control with arbitrary inputs and stores through 32 frames, with payload checks proved independently.",
     ),
     (
         "coh_l1d_stream_owned_prove",
@@ -1366,11 +1366,11 @@ SBY_TASKS = [
     ),
     (
         "coh_l1d_stream_outlier_prove",
-        "Unbounded: grant multiplexer, local image, load payload and reply hold assertions.",
+        "Independent unbounded grant multiplexer, image, load payload and reply hold checks for the stream BMCs.",
     ),
     (
         "coh_l1d_stream_free_nostore_bmc",
-        "The same checks with arbitrary inputs and no stores, to depth 24.",
+        "Stream control with arbitrary inputs and no stores through 24 frames, with payload checks proved independently.",
     ),
     ("coh_l1d_stream_cover", "Two speculative endpoints and demand attachment."),
     ("coh_l1d_turn_cover", "A demand retry between buffered load grants."),
@@ -2324,7 +2324,14 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             for geometry in ("", "_multi", "_ways")
             for part in ("", "_sector", "_owned")
         ]
-        + ["coh_l1d_stream_owned_prove", "coh_l1d_stream_prove"],
+        + [
+            "coh_l1d_stream_owned_prove",
+            "coh_l1d_stream_prove",
+            "coh_l1d_stream_outlier_prove",
+            "coh_l1d_stream_bmc",
+            "coh_l1d_stream_free_nostore_bmc",
+            "coh_l1d_stream_free_bmc",
+        ],
     }
     for target_name, names in required.items():
         target = next(t for t in FORMAL_TARGETS if t.name == target_name)
@@ -2346,6 +2353,10 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     dedicated_shards = {
         "coherent_hart_cache_coh_hart_maint_prove": "Hart maintenance",
         "coherent_hart_cache_coh_hart_maint_owned_prove": "Hart maintenance",
+        "coherence_l1d_coh_l1d_stream_bmc": "Hart maintenance",
+        "coherence_l1d_coh_l1d_stream_free_nostore_bmc": "Hart maintenance",
+        "coherence_l1d_coh_l1d_stream_outlier_prove": "Hart maintenance",
+        "coherence_l1d_coh_l1d_stream_free_bmc": "Coherence L1D free stream",
         "coherence_l1d_coh_l1d_bmc": "Coherence L1D control",
         "coherence_l1d_coh_l1d_multi_bmc": "Coherence L1D multi-endpoint",
         "coherence_store_boundary_bmc_four": "Store boundary four records",
@@ -2628,6 +2639,213 @@ def test_stream_owned_lemma_model_matches() -> None:
         "expect": "PASS",
     }
     assert owned["[engines]"] == ["smtbmc boolector"]
+
+
+@pytest.mark.parametrize(
+    "task,depth,read",
+    (
+        (
+            "coh_l1d_stream_bmc",
+            "42",
+            "read -formal -sv -D STREAM_COVER -D STREAM_PASSIVE_CYCLES=24 "
+            "coherence_read_payload.sv coherence_l1d.sv",
+        ),
+        (
+            "coh_l1d_stream_free_nostore_bmc",
+            "24",
+            "read -formal -sv coherence_read_payload.sv coherence_l1d.sv",
+        ),
+        (
+            "coh_l1d_stream_free_bmc",
+            "32",
+            "read -formal -sv coherence_read_payload.sv coherence_l1d.sv",
+        ),
+        (
+            "coh_l1d_stream_outlier_prove",
+            "40",
+            "read -formal -sv coherence_read_payload.sv coherence_l1d.sv",
+        ),
+    ),
+)
+def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) -> None:
+    """Keep the full stream models, bounds and independent coverage split."""
+    bulk = task == "coh_l1d_stream_free_bmc"
+    outlier = task == "coh_l1d_stream_outlier_prove"
+    script = [
+        "read -sv coherence_read_stream.sv",
+        "read -sv cache_perf_pkg.sv",
+        "read -sv coherence_pkg.sv",
+        "read -sv coherence_request_endpoint.sv",
+        "read -sv coherence_put_endpoint.sv coherence_read_owners.sv "
+        "coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv "
+        "coherence_read_select.sv",
+        read,
+        "read -sv coherence_store_buffer.sv",
+        "read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv "
+        "coherence_array.sv",
+        "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d",
+        "chparam -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d",
+        "prep -flatten -top coherence_l1d",
+        "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
+        "chformal -assert2assume c:p_prefetch_conflict_split",
+    ]
+    script += ["select -assert-count 326 t:$check r:FLAVOR=assert %i"]
+    if outlier:
+        script += [
+            "chformal -assert -remove t:$check r:FLAVOR=assert %i "
+            "c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held "
+            "c:p_reply_hold %u %u %u %d",
+            "select -assert-count 4 t:$check r:FLAVOR=assert %i",
+        ]
+    else:
+        script += [
+            "chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable "
+            "c:p_load_payload_held c:p_reply_hold",
+            "select -assert-count 322 t:$check r:FLAVOR=assert %i",
+        ]
+    if task == "coh_l1d_stream_free_nostore_bmc":
+        script += ["connect -set i_write_mask 8'h00"]
+    script += [
+        "memory_map",
+        "opt",
+        "techmap",
+        "opt -fast",
+        "setundef -anyseq",
+        "opt_clean",
+    ]
+    files = [
+        "../hw/rtl/lib/cache/coherence_read_stream.sv",
+        "../hw/rtl/lib/ram/sdp_block_ram.sv",
+        "../hw/rtl/lib/ram/sdp_packed_tag_uram.sv",
+        "../hw/rtl/lib/ram/sdp_ram_byte_en.sv",
+        "../hw/rtl/lib/cache/coherence_pkg.sv",
+        "../hw/rtl/lib/cache/coherence_types.svh",
+        "../hw/rtl/lib/cache/coherence_array.sv",
+        "../hw/rtl/lib/cache/coherence_request_endpoint.sv",
+        "../hw/rtl/lib/cache/coherence_put_endpoint.sv",
+        "../hw/rtl/lib/cache/coherence_l1d.sv",
+        "../hw/rtl/lib/cache/coherence_read_owners.sv",
+        "../hw/rtl/lib/cache/coherence_miss_credit.sv",
+        "../hw/rtl/lib/cache/coherence_read_flags.sv",
+        "../hw/rtl/lib/cache/coherence_grant_select.sv",
+        "../hw/rtl/lib/cache/coherence_read_select.sv",
+        "../hw/rtl/lib/cache/coherence_read_payload.sv",
+        "../hw/rtl/lib/cache/cache_perf_pkg.sv",
+        "../hw/rtl/lib/cache/coherence_store_buffer.sv",
+    ]
+
+    def validate(config: dict[str, list[str]]) -> None:
+        assert config.keys() == {"[options]", "[engines]", "[script]", "[files]"}
+        options = dict(line.split(maxsplit=1) for line in config["[options]"])
+        options.setdefault("expect", "PASS")
+        assert options == {
+            "mode": "prove" if outlier else "bmc",
+            "depth": depth,
+            "timeout": "2400" if outlier else "10800" if bulk else "3600",
+            "aigsmt": "boolector",
+            "expect": "PASS",
+        }
+        assert config["[engines]"] == ["abc pdr" if outlier else "abc bmc3"]
+        assert config["[script]"] == script
+        assert config["[files]"] == files
+
+    config = l1d_task_config(task)
+    validate(config)
+    for section, line in (
+        ("[script]", "connect -set i_read_valid 1'b0"),
+        ("[script]", "connect -set i_write_mask 8'h00"),
+        ("[script]", "chformal -assert -remove"),
+        ("[script]", "delete c:p_path_shadowed"),
+        ("[options]", "depth 1"),
+        ("[options]", "expect PASS,UNKNOWN,TIMEOUT"),
+        ("[options]", "smtc hidden.smtc"),
+        ("[engines]", "abc bmc3 -F 1"),
+        ("[files]", "hidden.smtc"),
+        ("[file hidden.smtc]", "assume (= hidden 0)"),
+    ):
+        altered = {key: list(value) for key, value in config.items()}
+        altered.setdefault(section, []).append(line)
+        with pytest.raises(AssertionError):
+            validate(altered)
+
+
+def test_stream_payload_proof_model_covers_bmcs() -> None:
+    """The independent payload proof permits each bounded specialization."""
+    proof = l1d_task_config("coh_l1d_stream_outlier_prove")
+    model = [line for line in proof["[script]"] if not assertion_command(line)]
+    plain_read = "read -formal -sv coherence_read_payload.sv coherence_l1d.sv"
+    scripted_read = (
+        "read -formal -sv -D STREAM_COVER -D STREAM_PASSIVE_CYCLES=24 "
+        "coherence_read_payload.sv coherence_l1d.sv"
+    )
+    # Pin the only macro-dependent block as well as the SBY reads. A new
+    # use of either macro must revisit the model-inclusion argument.
+    expected_stimulus = """
+`ifdef STREAM_COVER
+`ifndef STREAM_PASSIVE_CYCLES
+`define STREAM_PASSIVE_CYCLES 127
+`endif
+  logic [6:0] f_stream_cycle_q = 0;
+  (* anyconst *) logic [1:0] f_stream_atomic;
+  logic f_stream_atomic_sent_q = 0;
+  wire f_stream_admit = f_stream_atomic != 0 && !f_stream_atomic_sent_q &&
+      phase_q == Acquire && operation_q == PrefetchOp &&
+      |(ep_request_valid & ep_request_ready);
+  always_ff @(posedge i_clk) begin
+    if (f_stream_cycle_q != 127) f_stream_cycle_q <= f_stream_cycle_q + 1'b1;
+    assume (i_rst == !f_past_valid);
+    assume (!i_fatal_stop && !i_maint_valid && !i_sc_valid && !i_sc_commit);
+    assume (i_write_mask == 0);
+    if (f_stream_cycle_q < `STREAM_PASSIVE_CYCLES)
+      assume (!i_p_valid && !i_wa_valid && !i_g_valid && !i_u_valid);
+    assume (f_stream_atomic <= 2);
+    if (f_stream_admit) f_stream_atomic_sent_q <= 1;
+    assume (i_read_valid == (f_stream_cycle_q == 4 || f_stream_cycle_q == 5 ||
+        f_stream_cycle_q == 6 || (f_stream_atomic == 0 && f_stream_cycle_q == 48) ||
+        f_stream_admit));
+    assume (i_read_id == (f_stream_cycle_q == 4 ? 0 : f_stream_cycle_q == 5 ? 1 :
+        f_stream_cycle_q == 6 ? 2 : 3));
+    assume (i_address == (f_stream_admit ? lookup_addr_q :
+        ADDR_WIDTH'(32'h80000000 + (f_stream_cycle_q == 4 ? 0 :
+        f_stream_cycle_q == 5 ? 32 : f_stream_cycle_q == 6 ? 64 : 96))));
+    assume (i_read_kind == (f_stream_admit ? f_stream_atomic : ReadLoad));
+    assume (i_read_size == 3 && i_read_tag == 0);
+    if (f_stream_cycle_q < `STREAM_PASSIVE_CYCLES)
+      assume (i_d_ready == 0 && i_c_ready == 0 && !i_read_ready);
+  end
+`endif
+"""
+    root = Path(__file__).resolve().parents[1] / "formal"
+    source = (root / "../hw/rtl/lib/cache/coherence_l1d.sv").read_text()
+    assert source.count("`ifdef STREAM_COVER\n") == 1
+    start = source.index("`ifdef STREAM_COVER\n")
+    end = source.index("`ifdef STREAM_TURN_COVER\n", start)
+    stimulus = source[start:end]
+    without_comments = "\n".join(
+        line.split("//", 1)[0] for line in stimulus.splitlines()
+    )
+    assert without_comments.split() == expected_stimulus.split()
+    for file in proof["[files]"]:
+        contents = (root / file).read_text().replace(stimulus, "", 1)
+        assert "STREAM_COVER" not in contents
+        assert "STREAM_PASSIVE_CYCLES" not in contents
+    # STREAM_COVER only adds ghost counters and input assumptions. The
+    # common interface assumptions and payload predicates are unchanged.
+    # Stores disabled by a constant tie are also a specialization of the
+    # unrestricted, stores-enabled proof; neither proof assumes BMC facts.
+    for task in (
+        "coh_l1d_stream_bmc",
+        "coh_l1d_stream_free_nostore_bmc",
+        "coh_l1d_stream_free_bmc",
+    ):
+        bounded = l1d_task_config(task)
+        assert bounded["[files]"] == proof["[files]"]
+        bounded_model = [
+            plain_read if line == scripted_read else line
+            for line in bounded["[script]"]
+            if not assertion_command(line) and line != "connect -set i_write_mask 8'h00"
+        ]
+        assert bounded_model == model
 
 
 def test_hart_maintenance_lemma_model_matches() -> None:
@@ -2924,6 +3142,8 @@ def test_fatal_frame_validation(
         ("coherent_hart_cache", "coh_hart_maint_owned_prove", 1200),
         ("coherent_hart_cache", "coh_hart_maint_four_bmc", 7200),
         ("coherence_l1d", "coh_l1d_stream_bmc", 3600),
+        ("coherence_l1d", "coh_l1d_stream_free_nostore_bmc", 3600),
+        ("coherence_l1d", "coh_l1d_stream_outlier_prove", 2400),
         ("coherence_l1d", "coh_l1d_bmc", 10800),
         ("coherence_store_boundary", "bmc_four", 18000),
         ("coherence_store_boundary", "bmc_intervening", 14400),
