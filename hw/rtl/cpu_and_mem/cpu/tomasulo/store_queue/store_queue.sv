@@ -881,15 +881,19 @@ module store_queue #(
     else address_is_cached = (addr >= CachedBase) && (addr < CachedLimit);
   endfunction
   (* keep = "true" *) logic [DEPTH-1:0] sq_cached_class;
+  (* keep = "true" *) logic [DEPTH-1:0] sq_precise_class, sq_plain_fast_class;
   for (genvar slot = 0; slot < DEPTH; slot++) begin : gen_cached_class
+    // Resolve PMA, SC and MMIO qualification before selecting the cursor.
+    wire normal_buffered = CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(sq_address[slot]);
     assign sq_cached_class[slot] = address_is_cached(sq_address[slot]);
+    assign sq_precise_class[slot] = (!normal_buffered || sq_is_sc[slot]) && !sq_cached_class[slot];
+    assign sq_plain_fast_class[slot] = (!PRECISE_UNCACHED ||
+        (normal_buffered && !sq_is_sc[slot])) && !sq_is_mmio[slot] && !sq_cached_class[slot];
   end
   assign o_uncached_store_pending = PRECISE_UNCACHED && sq_valid[drain_idx_q] &&
       !sq_committed[drain_idx_q] && !sq_sent[drain_idx_q] &&
       sq_addr_valid[drain_idx_q] && sq_data_valid[drain_idx_q] &&
-      (!(CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
-      sq_address[drain_idx_q]
-  )) || sq_is_sc[drain_idx_q]) && !mem_write_addr_cached_for_plain_next &&
+      sq_precise_class[drain_idx_q] &&
       (sq_rob_tag[drain_idx_q] == i_rob_head_tag);
   assign uncached_precommit_ready = o_uncached_store_pending &&
       uncached_armed_q && i_uncached_store_shield && i_head_side_effects_allowed &&
@@ -1021,11 +1025,7 @@ module store_queue #(
   // cached zero entry is one write; an uncached one completes on its eighth
   // beat.
   assign mem_write_completes_next = !drain_is_zero || drain_zero_cached || zero_beat_last;
-  assign mem_write_plain_fast_next = (!PRECISE_UNCACHED ||
-      ((CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
-      sq_address[drain_idx_q]
-  )) && !sq_is_sc[drain_idx_q])) && !sq_is_mmio[drain_idx_q] &&
-      !mem_write_addr_cached_for_plain_next;
+  assign mem_write_plain_fast_next = sq_plain_fast_class[drain_idx_q];
 
   // Serial launches require an empty pipeline. Plain BRAM launches may overlap
   // if the two-entry FIFO has room after the current bus push and done pop.
