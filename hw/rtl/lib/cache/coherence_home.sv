@@ -336,6 +336,7 @@ module coherence_home #(
   logic [ADDR_WIDTH+10:0] fill_ack_q[FILLS];
   logic [NUM_WB-1:0] wb_valid_q, wb_frozen_q, wb_sent_q;
   logic [ADDR_WIDTH-1:0] wb_addr_q[NUM_WB];
+  // Keep reply capture on the final data mux rather than a merged clock enable.
   logic [8*LINE_BYTES-1:0] wb_data_q[NUM_WB];
   logic [ADDR_WIDTH+259:0] put_q[Puts];
   logic [Puts-1:0] put_maintenance;
@@ -1699,6 +1700,32 @@ module coherence_home #(
       end
     end
   end
+  for (genvar wb = 0; wb < NUM_WB; wb++) begin : gen_wb_capture
+    for (genvar sector = 0; sector < LINE_BYTES / 32; sector++) begin : gen_sector
+      wire take_array = run && wb_take_array[wb][sector];
+      wire take_reply = run && wb_take_reply[wb][sector];
+      wire [255:0] array_or_held = take_array ? array_data[sector*256+:256] :
+          wb_data_q[wb][sector*256+:256];
+      wire [255:0] captured;
+      // The reply wins simultaneous captures, including when array data is
+      // present. The reset hold remains only at the flop.
+`ifdef FROST_XILINX_PRIMS
+      for (genvar bit_idx = 0; bit_idx < 256; bit_idx++) begin : gen_bit
+        (* DONT_TOUCH = "yes" *) LUT3 #(
+            .INIT(8'hca)
+        ) reply_last (
+            .I0(array_or_held[bit_idx]),
+            .I1(reply.data[bit_idx]),
+            .I2(take_reply),
+            .O (captured[bit_idx])
+        );
+      end
+`else
+      assign captured = take_reply ? reply.data : array_or_held;
+`endif
+      always_ff @(posedge i_clk) if (!i_rst) wb_data_q[wb][sector*256+:256] <= captured;
+    end
+  end
   // The AXI bridge can keep running through a CPU reset.
   assign o_mem_req_valid = memory_out_valid && !i_rst;
   assign {o_mem_req_write, o_mem_req_addr, o_mem_req_data, o_mem_req_id} = memory_out;
@@ -1725,15 +1752,6 @@ module coherence_home #(
           wb_frozen_q[wb_free_index] <= 1'b0;
           wb_sent_q[wb_free_index]   <= 1'b0;
           wb_addr_q[wb_free_index]   <= array_addr;
-        end
-        // At most one fill reads or recalls into a write-back slot at a time,
-        // so each sector takes the resident row or the dirty reply directly;
-        // the reply, which arrives last, wins and is selected last.
-        for (int wb = 0; wb < NUM_WB; wb++)
-        for (int sector = 0; sector < LINE_BYTES / 32; sector++) begin
-          if (wb_take_array[wb][sector])
-            wb_data_q[wb][sector*256+:256] <= array_data[sector*256+:256];
-          if (wb_take_reply[wb][sector]) wb_data_q[wb][sector*256+:256] <= reply.data;
         end
         for (int fill = 0; fill < FILLS; fill++) begin
           if (fill_phase_q[fill] == FillDetach && wb_valid_q[fill_wb_q[fill]] &&

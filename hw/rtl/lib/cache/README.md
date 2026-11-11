@@ -518,15 +518,17 @@ candidates use two-slot groups: each group combines its candidates, ownership
 and address comparisons in one step. The shared write-address exclusion
 qualifies the buffered-write result after ownership and candidate reduction.
 Circular priority selects a qualified slot and its address.
-With Xilinx primitives, sector comparisons use six three-bit equality groups
-and a balanced holder reduction. Winner selection prepares stored and
-forwarded contenders separately, including their circular precedence. The
-stored contenders apply their individual address exclusions in groups of
-three; the shared buffered-address exclusion applies in the final winner
-selection. The selected address uses a balanced two-level one-hot reduction.
-Load-miss demand excludes AMOs by kind, so its native selection does not
-depend on AMO permission. The generic implementation retains its existing
-four-state selection behavior.
+Sector comparisons use six three-bit equality groups followed by two halves
+and a balanced holder reduction. Circular priority prepares the winner for
+both outcomes of the shared buffered-address exclusion. Each slot compares
+its circular precedence with the other slots in groups of three. The index
+and address use balanced one-hot reductions; the buffered-address exclusion
+selects between the prepared results. Native LUTs preserve these bounded
+reductions and the selector's module boundary.
+The acquisition endpoint similarly prepares both grant-presence outcomes
+before selecting its update. An owed zero twin and a credited read turn hold
+that endpoint, and a returning twin lookup leaves it unchanged. Twin address
+selection stays ahead of grant selection.
 Loads also have a hit path beside the controller. In the cycle after a load
 arrives, the L1D offers it to the array's hit port from registers, unless a
 probe is in service, an owner holds its slot, or a holder blocks its sector

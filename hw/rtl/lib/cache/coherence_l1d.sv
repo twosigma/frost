@@ -350,7 +350,14 @@ module coherence_l1d #(
   logic [EpSlots-1:0] ep_done_valid, ep_write_done, ep_g_ready, ep_u_ready;
   logic [EpSlots-1:0][1:0] ep_done_status;
   logic [EpSlots-1:0][ADDR_WIDTH+274:0] ep_grant;
-  logic [EpBits-1:0] acq_ep_q, grant_ep_q, grant_pick;
+  // Preserve the final data selection instead of extracting a late enable.
+  // verilog_format: off
+`ifdef FROST_XILINX_PRIMS
+  (* extract_enable = "no", extract_reset = "yes", dont_touch = "true" *)
+`endif
+  // verilog_format: on
+  logic [EpBits-1:0] acq_ep_q;
+  logic [EpBits-1:0] grant_ep_q, grant_pick;
   logic any_live;
   logic [EpSlots-1:0] ep_store, ld_store_q, grant_offer;
   logic [EpSlots-1:0] store_grant_head_q;
@@ -387,7 +394,7 @@ module coherence_l1d #(
   logic grant_valid, grant_ready, grant_accept, grant_read_failure, zero_grant_failed;
   logic grant_read_turn_q, grant_retry_q, grant_read_hold, grant_read_yield, load_acquire_block;
   logic atomic_sc_selected, read_selected, acquire_ready;
-  logic [ADDR_WIDTH-1:0] lookup_nonread_addr;
+  logic [ADDR_WIDTH-1:0] lookup_prepared_addr;
   (* keep = "true" *) logic lookup_other_valid;
   logic grant_demand_waiter, grant_touch_q;
   coh_g_t grant, grant_q;
@@ -2306,6 +2313,77 @@ module coherence_l1d #(
 `endif
 `endif
 
+  // Prepare the complete acquisition-endpoint update for each grant-presence
+  // value. The grant arbitration result selects data after phase and operation
+  // decoding, rather than entering their priority chain or a register enable.
+  // An owed zero twin or credited read turn holds the acquisition endpoint;
+  // TwinOp also leaves it unchanged when its lookup returns.
+  (* keep = "true" *) logic [EpBits-1:0] acq_ep_choice[2];
+  wire [EpBits-1:0] acq_ep_next;
+  for (genvar choice = 0; choice < 2; choice++) begin : gen_acq_ep_choice
+    localparam bit GrantPresent = choice != 0;
+    wire acquisition_block = StreamEnabled && grant_retry_q && GrantPresent;
+    always_comb begin
+      acq_ep_choice[choice] = acq_ep_q;
+      if (active) begin
+        case (phase_q)
+          Idle: begin
+            if (!(probe_capture && probe_in.opcode != coherence_pkg::CheckSC) &&
+                !probe_valid_q && !probe_priority && !twin_owed && !grant_read_hold &&
+                !GrantPresent &&
+                !(i_sc_valid && !atomic_q && !pending_q && !request_live &&
+                  !o_sc_result_valid && i_atomic_protected) && !atomic_write_q) begin
+              if (atomic_sc_selected) acq_ep_choice[choice] = '0;
+              else if (!store_head_ready && look_ready)
+                acq_ep_choice[choice] = load_ep_index;
+            end
+          end
+          LookupWait: if (array_valid) begin
+            case (operation_q)
+              StoreOp: if (!(array_hit && array_state == coherence_pkg::Modified))
+                acq_ep_choice[choice] = '0;
+              PrefetchOp: if (!array_hit && prefetch_ep_free && !prefetch_cancel &&
+                  lookup_in_window && !lookup_conflict_q && !i_p_valid && !acquisition_block)
+                acq_ep_choice[choice] = prefetch_ep_index;
+              ProbeOp, GrantOp, LookaheadOp, TwinOp, AtomicWriteOp, MaintOp, SCOp: begin
+              end
+              default: begin
+                if (!(shadow_q && path_hit_q) && selected_kind_q != ReadAMO &&
+                    !array_hit && Multi && !same_line) begin
+                  if (selected_kind_q == ReadLR) acq_ep_choice[choice] = '0;
+                  else if (load_ep_free && !load_block && !acquisition_block &&
+                      !(look_available && !look_read_turn_q))
+                    acq_ep_choice[choice] = load_ep_index;
+                end
+              end
+            endcase
+          end
+          LocalCheck: if (local_decision && !local_hit_q && operation_q != SCOp)
+            acq_ep_choice[choice] = '0;
+          default: begin
+          end
+        endcase
+      end
+    end
+  end
+  for (genvar bit_index = 0; bit_index < EpBits; bit_index++) begin : gen_acq_ep_select
+`ifdef FROST_XILINX_PRIMS
+    (* dont_touch = "true" *) LUT3 #(.INIT(8'hca)) u_select (
+        .I0(acq_ep_choice[0][bit_index]),
+        .I1(acq_ep_choice[1][bit_index]),
+        .I2(grant_valid),
+        .O(acq_ep_next[bit_index])
+    );
+`else
+    assign acq_ep_next[bit_index] = grant_valid ? acq_ep_choice[1][bit_index] :
+        acq_ep_choice[0][bit_index];
+`endif
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) acq_ep_q <= '0;
+    else acq_ep_q <= acq_ep_next;
+  end
+
   // Idle selections shared by the controller and the lookup address.
   assign atomic_sc_selected = atomic_q && atomic_sc_q && !request_live &&
       (!sc_home_q || (!any_live && wb_free));
@@ -2321,28 +2399,27 @@ module coherence_l1d #(
   assign lookup_other_valid = !(lookup_read_turn || (lookup_read_enable && rd_candidate));
   // The non-read address follows the controller's Idle priority. When a read
   // wins, its address replaces this value at the final selection, so its
-  // eligibility need not feed this priority chain as well.
+  // eligibility need not feed this priority chain as well. The credited read
+  // turn also overrides this value, so its unused branch is omitted.
   always_comb begin
-    lookup_nonread_addr = hint_addr_q;
-    if (probe_valid_q) lookup_nonread_addr = probe_q.addr;
-    else if (probe_priority) lookup_nonread_addr = probe_in.addr;
-    else if (twin_owed) lookup_nonread_addr = pending_addr_q;
-    else if (grant_read_hold) begin
-      // The final selection supplies the read address.
-    end else if (grant_valid) lookup_nonread_addr = grant.addr;
-    else if (i_sc_valid && o_sc_ready) lookup_nonread_addr = i_sc_address;
-    else if (atomic_write_q || atomic_sc_selected) lookup_nonread_addr = atomic_addr_q;
-    else if (store_head_ready) lookup_nonread_addr = pending_addr_q;
-    else if (look_ready) lookup_nonread_addr = look_addr_q;
+    lookup_prepared_addr = hint_addr_q;
+    if (probe_valid_q) lookup_prepared_addr = probe_q.addr;
+    else if (probe_priority) lookup_prepared_addr = probe_in.addr;
+    else if (twin_owed) lookup_prepared_addr = pending_addr_q;
+    else if (grant_valid) lookup_prepared_addr = grant.addr;
+    else if (i_sc_valid && o_sc_ready) lookup_prepared_addr = i_sc_address;
+    else if (atomic_write_q || atomic_sc_selected) lookup_prepared_addr = atomic_addr_q;
+    else if (store_head_ready) lookup_prepared_addr = pending_addr_q;
+    else if (look_ready) lookup_prepared_addr = look_addr_q;
     else if (maint_eligible)
-      lookup_nonread_addr = maint_line_q ? maint_addr_q : ADDR_WIDTH'(maint_set_q) << 5;
+      lookup_prepared_addr = maint_line_q ? maint_addr_q : ADDR_WIDTH'(maint_set_q) << 5;
   end
   // Lookup and grant payloads are read only after Idle hands them to the
   // controller, so they have no reset or stop term and capture every Idle
   // cycle.
   always_ff @(posedge i_clk) begin
     if (phase_q == Idle) begin
-      lookup_addr_q <= lookup_other_valid ? lookup_nonread_addr : rd_selected_addr;
+      lookup_addr_q <= lookup_other_valid ? lookup_prepared_addr : rd_selected_addr;
       selected_read_q <= rd_pick;
       grant_q <= grant;
       grant_ep_q <= grant_pick;
@@ -2425,7 +2502,6 @@ module coherence_l1d #(
       acquisition_store_q <= 1'b0;
       acquisition_sc_q <= 1'b0;
       acquisition_read_q <= '0;
-      acq_ep_q <= '0;
       done_q <= 1'b0;
       written_q <= 1'b0;
       done_status_q <= coherence_pkg::Consumed;
@@ -2612,7 +2688,6 @@ module coherence_l1d #(
               phase_q <= Lookup;
             end else if (atomic_sc_selected) begin
               operation_q <= SCOp;
-              acq_ep_q <= '0;
               phase_q <= sc_home_q ? Acquire : Lookup;
             end else if (store_head_ready) begin
               operation_q <= StoreOp;
@@ -2621,7 +2696,6 @@ module coherence_l1d #(
             end else if (look_ready) begin
               operation_q <= LookaheadOp;
               store_selected_q <= look_index_q;
-              acq_ep_q <= load_ep_index;
               phase_q <= Lookup;
             end else if (read_selected) begin
               maint_turn_q <= 1'b1;
@@ -2707,7 +2781,6 @@ module coherence_l1d #(
                   phase_q <= Update;
                 end else begin
                   pending_miss_q <= 1'b1;
-                  acq_ep_q <= '0;
                   phase_q <= !request_live && ep0_wb_ok && !store_same_line_q ? Acquire : Idle;
                 end
               end
@@ -2732,7 +2805,6 @@ module coherence_l1d #(
               end
               PrefetchOp: begin
                 if (!array_hit && prefetch_ep_free && prefetch_accept) begin
-                  acq_ep_q <= prefetch_ep_index;
                   phase_q <= Acquire;
                 end else phase_q <= Idle;
               end
@@ -2780,11 +2852,9 @@ module coherence_l1d #(
                   // Wait for the endpoint already acquiring this line.
                   phase_q <= Idle;
                 end else if (selected_kind_q == ReadLR) begin
-                  acq_ep_q <= '0;
                   phase_q <= !request_live && ep0_wb_ok && !load_block ? Acquire : Idle;
                 end else if (load_ep_free && !load_block && !load_acquire_block &&
                     !(look_available && !look_read_turn_q)) begin
-                  acq_ep_q <= load_ep_index;
                   phase_q <= Acquire;
                 end else phase_q <= Idle;
               end
@@ -2817,7 +2887,6 @@ module coherence_l1d #(
                 sc_home_q <= 1'b1;
                 phase_q <= Idle;
               end else begin
-                acq_ep_q <= '0;
                 atomic_q <= 1'b1;
                 atomic_local_q <= 1'b0;
                 atomic_sc_q <= 1'b0;

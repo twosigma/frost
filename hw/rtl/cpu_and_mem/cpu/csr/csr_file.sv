@@ -1802,34 +1802,52 @@ module csr_file #(
         next_satp_mode_sv39 = 1'b1;
     end
   end
-  (* max_fanout = 16 *)logic fetch_translation_active_q;
-  logic fetch_translation_active_d;
-  if (COMMIT_EXCLUDES_CONTROL_TAKE) begin : gen_fetch_return_select
-    // MRET and SRET arrive through ROB-head selection. Prepare each complete
-    // fetch enable before those inputs, preserving CSR-write,
-    // debug-entry and trap-entry priority over every return.
-    (* keep = "true" *) logic with_mret, with_sret, without_return;
-    assign with_mret = next_satp_mode_sv39 &&
-        (status_csr_write ? (priv_q != riscv_pkg::PrivM) :
-         (!i_trap_enter_d && (i_trap_save_s ||
-          (!i_trap_save_m && (mstatus_mpp != riscv_pkg::PrivM)))));
-    assign with_sret = next_satp_mode_sv39 &&
-        (status_csr_write ? (priv_q != riscv_pkg::PrivM) :
-         (!i_trap_enter_d && (i_trap_save_s ||
-          !i_trap_save_m)));
-    assign without_return = next_satp_mode_sv39 &&
-        (status_csr_write ? (priv_q != riscv_pkg::PrivM) :
-         (!i_trap_enter_d && (i_trap_save_s ||
-          (!i_trap_save_m && (i_dret_taken ? (dcsr_prv != riscv_pkg::PrivM) :
-                                           (priv_q != riscv_pkg::PrivM))))));
-    assign fetch_translation_active_d = i_mret_taken ? with_mret :
-        i_sret_taken ? with_sret : without_return;
-  end else begin : gen_fetch_priv_decode
-    assign fetch_translation_active_d = next_satp_mode_sv39 && (next_priv != riscv_pkg::PrivM);
-  end
+  // Prepare the privilege predicate before the return controls arrive. CSR
+  // writes hold privilege; with excluded control takes they win over a take,
+  // while the default write guard lets the take win. Keep that priority here
+  // without selecting a two-bit privilege and decoding it afterward.
+  wire fetch_priv_not_m = priv_q != riscv_pkg::PrivM;
+  wire fetch_mpp_not_m = mstatus_mpp != riscv_pkg::PrivM;
+  wire fetch_dcsr_not_m = dcsr_prv != riscv_pkg::PrivM;
+  wire fetch_write_holds_priv = COMMIT_EXCLUDES_CONTROL_TAKE &&
+      i_csr_write_enable && i_csr_read_enable;
+  (* keep = "true" *) wire fetch_returns_enabled =
+      !(fetch_write_holds_priv || i_trap_enter_d || i_trap_save_s || i_trap_save_m);
+  (* keep = "true" *) wire fetch_override_not_m = fetch_write_holds_priv ?
+      fetch_priv_not_m : (!i_trap_enter_d && i_trap_save_s);
+  wire fetch_return_not_m;
+  wire fetch_translation_next;
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT6 #(
+      .INIT(64'hccffccf0ccffccaa)
+  ) u_fetch_return_priv (
+      .I0(fetch_priv_not_m),
+      .I1(fetch_mpp_not_m),
+      .I2(fetch_dcsr_not_m),
+      .I3(i_mret_taken),
+      .I4(i_sret_taken),
+      .I5(i_dret_taken),
+      .O (fetch_return_not_m)
+  );
+  (* dont_touch = "true" *) LUT4 #(
+      .INIT(16'hac00)
+  ) u_fetch_translation (
+      .I0(fetch_return_not_m),
+      .I1(fetch_override_not_m),
+      .I2(fetch_returns_enabled),
+      .I3(next_satp_mode_sv39),
+      .O (fetch_translation_next)
+  );
+`else
+  assign fetch_return_not_m = i_mret_taken ? fetch_mpp_not_m : i_sret_taken ? 1'b1 :
+      i_dret_taken ? fetch_dcsr_not_m : fetch_priv_not_m;
+  assign fetch_translation_next = next_satp_mode_sv39 &&
+      (fetch_returns_enabled ? fetch_return_not_m : fetch_override_not_m);
+`endif
+  (* max_fanout = 16 *) logic fetch_translation_active_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) fetch_translation_active_q <= 1'b0;
-    else fetch_translation_active_q <= fetch_translation_active_d;
+    else fetch_translation_active_q <= fetch_translation_next;
   end
   assign o_fetch_translation_active = fetch_translation_active_q;
 `ifndef SYNTHESIS
