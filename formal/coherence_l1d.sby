@@ -73,6 +73,7 @@ pathcovers: timeout 1800
 # The store cover reaches its last cover in about ten minutes.
 covers: timeout 1200
 zcovers: timeout 2400
+zsingle: vcd_sim on
 ~covermode: aigsmt boolector
 conflict: mode prove
 conflict: depth 2

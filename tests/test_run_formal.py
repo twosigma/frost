@@ -2624,6 +2624,7 @@ def test_zero_cover_keeps_reset_model() -> None:
             "mode": "cover",
             "depth": "80",
             "timeout": "2400",
+            "vcd_sim": "on",
         }
         assert task["[engines]"] == ["btor btormc"]
 
