@@ -979,8 +979,8 @@ module store_queue #(
   logic                                              mem_write_is_mmio_next;
   logic                                              mem_write_is_cached_next;
   logic                                              mem_write_launch_serial_next;
-  logic                                              mem_write_launch_pipelined_next;
-  logic                 [                       2:0] write_fifo_occupancy_after_current_bus;
+  (* keep = "true" *) logic mem_write_serial_qualified, mem_write_overlap_qualified;
+  logic [2:0] write_fifo_occupancy_after_current_bus;
 
   // Zero-block drain. A cached cbo.zero entry is one write at its block base,
   // which the L1D turns into the block's two sector records (see the cache
@@ -998,9 +998,15 @@ module store_queue #(
   logic drain_is_zero;
   logic drain_zero_cached;
   logic zero_beat_last;
+  (* keep = "true" *) logic [ZeroBeatBits-1:0] zero_beat_advance, zero_beat_local_next;
   assign drain_is_zero = sq_is_zero[drain_idx_q];
   assign drain_zero_cached = drain_is_zero && mem_write_addr_cached_for_plain_next;
   assign zero_beat_last = &zero_beat_q;
+  // The increment wraps after the last uncached beat. Cached zero writes
+  // restart immediately; neither case needs the cursor-completion mux here.
+  assign zero_beat_advance = drain_zero_cached ? '0 : zero_beat_q + ZeroBeatBits'(1);
+  assign zero_beat_local_next = mem_write_launch_qualified && drain_is_zero ?
+      zero_beat_advance : zero_beat_q;
 
   always_comb begin
     // Single-beat drains at every size (hw/rtl/README.md, "Data-tier bus contract"): doubles
@@ -1035,14 +1041,16 @@ module store_queue #(
       {1'b0, write_inflight_cnt} + {2'b0, o_mem_write_en} -
       {2'b0, (i_mem_write_done && (write_inflight_cnt != 2'd0))};
   assign mem_write_launch_serial_next = (write_inflight_cnt == 2'd0) && !o_mem_write_en;
-  assign mem_write_launch_pipelined_next =
-      mem_write_plain_fast_next && !write_inflight_special &&
+  // Prepare the serial and overlapping drain cofactors before the selected
+  // entry's Normal-memory classification chooses the overlapping case.
+  assign mem_write_serial_qualified = drain_without_credit && mem_write_launch_serial_next;
+  assign mem_write_overlap_qualified = drain_without_credit && !write_inflight_special &&
       (write_fifo_occupancy_after_current_bus < 3'd2);
   // Coherent credit includes this cycle's arriving write and reaches the SQ
   // after its local entry, ordering and FIFO checks. Prepare both decisions
   // without credit, then apply it last to launch and cursor completion.
-  assign mem_write_launch_qualified = drain_without_credit &&
-      (mem_write_launch_serial_next || mem_write_launch_pipelined_next);
+  assign mem_write_launch_qualified = mem_write_serial_qualified ||
+      (mem_write_plain_fast_next && mem_write_overlap_qualified);
   assign mem_write_complete_qualified = mem_write_launch_qualified && mem_write_completes_next;
   assign mem_write_fire_next = mem_write_launch_qualified && coherent_credit_ok;
   assign drain_complete_fire_next = mem_write_complete_qualified && coherent_credit_ok;
@@ -1085,8 +1093,8 @@ module store_queue #(
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all || (i_flush_en && flush_kill_base[drain_idx_q])) begin
       zero_beat_q <= '0;
-    end else if (mem_write_fire_next && drain_is_zero) begin
-      zero_beat_q <= mem_write_completes_next ? '0 : zero_beat_q + ZeroBeatBits'(1);
+    end else begin
+      zero_beat_q <= coherent_credit_ok ? zero_beat_local_next : zero_beat_q;
     end
   end
 

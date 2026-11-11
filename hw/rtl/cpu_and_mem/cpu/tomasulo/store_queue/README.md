@@ -91,6 +91,9 @@ power-of-two cached regions use a mask comparison; other maps retain the
 general range comparison, including empty or wrapping ranges.
 PMA, SC and MMIO qualification also precede cursor selection, which selects
 the prepared precise and buffered-write decisions with the cached decision.
+Serial and overlapping drain eligibility are prepared separately, so the
+selected entry's Normal-memory classification only chooses whether overlap
+is permitted.
 Every store is a single 64-bit beat: sub-dword data is replicated across the
 beat and the byte strobe selects the lanes. A `cbo.zero` entry keeps `rs1`
 as its address. A cached block drains as one write at the naturally aligned
@@ -103,8 +106,9 @@ entry. An uncached (BRAM) block drains as eight zero beats with every strobe
 set, at the block base plus 0, 8, ... 56. Its entry stays the drain cursor
 through all eight launches; each beat takes a completion-FIFO slot and
 invalidates its L0 dword, and only the eighth beat's completion frees the
-entry. The beat counter prepares its increment before the write handshake;
-the handshake selects hold, increment or restart at the register's data input.
+entry. The beat counter prepares its local next value before coherent credit
+selects advance or hold. Its fixed-width increment wraps after the eighth
+uncached beat; a cached zero write restarts it immediately.
 A precise uncached block reports its completion, and any beat's error,
 with the eighth response. The write outputs are registered,
 including `is_mmio` and `is_cached` flags that let the memory router steer the
