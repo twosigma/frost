@@ -678,7 +678,11 @@ in sector order.
 Fill waiter ranks are independent of the available-seat count. A balanced
 prefix network counts up to three eligible entries before each candidate. Each fill
 stores its occupied seat count beside the seat mask. Allocation, joining
-readers, handoff, a forward and error cleanup update both on the same edge. A joining
+readers, handoff, a forward and error cleanup update both on the same edge.
+Seat joins, retirements and error cleanup keep their priority over allocation. The mask prepares the
+allocation and non-allocation outcomes before selecting between them; zero
+fill images likewise clear through their data input.
+A joining
 engine uses one seat before the queued waiters. Ready work precedes other
 eligible work. Both classes compute their circular priorities independently
 before selecting an encoded winner. The prefetch slots share one place in

@@ -276,7 +276,8 @@ module coherence_home #(
   logic [FILLS-1:0][ADDR_WIDTH-1:0] fill_addr_q, fill_old_addr_q;
   logic [FILLS-1:0][WayBits-1:0] fill_way_q;
   logic [FILLS-1:0][WbBits-1:0] fill_wb_q;
-  logic [FILLS-1:0][8*LINE_BYTES-1:0] fill_image_q;
+  // A zero allocation clears the image as data; it is not a reset event.
+  (* extract_reset = "no" *) logic [FILLS-1:0][8*LINE_BYTES-1:0] fill_image_q;
   logic [FILLS-1:0] fill_victim_q, fill_sent_q, fill_done_q, fill_error_q;
   // A successful fill has woken its waiters. Set on the first FillInstallWait
   // cycle and cleared on allocation.
@@ -1272,6 +1273,35 @@ module coherence_home #(
         !fill_error_q[fill] : i_mem_resp_valid && i_mem_resp_id == 5'(fill) && !i_mem_resp_error);
     wire forwarded = forward_accept && forward_pick[fill];
     wire [COMPLETIONS-1:0] forward_seat = forwarded ? fill_primary_q[fill] : '0;
+    // Prepare both waiter-mask outcomes before the allocation decision.
+    // Joining, retiring and failed-fill cleanup retain their original
+    // priority over allocation.
+    (* keep = "true" *) logic [COMPLETIONS-1:0] seats_without_allocation, seats_with_allocation;
+    always_comb begin
+      seats_without_allocation = fill_seats_q[fill];
+      seats_with_allocation = lookup_prefetch_q ? '0 : COMPLETIONS'(1) << decision_tid;
+      if (run) begin
+        seats_without_allocation = (fill_seats_q[fill] | fill_add_seats[fill]) & ~forward_seat;
+        if (array_response && join_fill[fill]) begin
+          seats_without_allocation[CompletionBits'(decision_tid)] = 1'b1;
+          seats_with_allocation[CompletionBits'(decision_tid)] = 1'b1;
+        end
+        if (fill_phase_q[fill] == FillReady && pin_valid &&
+            fill_seats_q[fill][CompletionBits'(decision_tid)]) begin
+          seats_without_allocation[CompletionBits'(decision_tid)] = 1'b0;
+          seats_with_allocation[CompletionBits'(decision_tid)] = 1'b0;
+        end
+        if (fill_phase_q[fill] == FillMemory && fill_done_q[fill] && fill_error_q[fill]) begin
+          seats_without_allocation = '0;
+          seats_with_allocation = '0;
+        end
+      end
+    end
+    always_ff @(posedge i_clk) begin
+      if (i_rst) fill_seats_q[fill] <= '0;
+      else if (allocate) fill_seats_q[fill] <= seats_with_allocation;
+      else fill_seats_q[fill] <= seats_without_allocation;
+    end
     assign fill_forward_set[fill] = install_entry && fill_primary_q[fill] != 0;
     // The phase's next state forms in kept nodes beside the two late
     // decisions, which select it last: allocation, which finds the fill in
@@ -1384,7 +1414,6 @@ module coherence_home #(
         fill_sector_q[fill] <= 1'b0;
         fill_dirty_q[fill] <= 1'b0;
         fill_dirty_sectors_q[fill] <= '0;
-        fill_seats_q[fill] <= '0;
         fill_seat_count_q[fill] <= '0;
         fill_primary_q[fill] <= '0;
         fill_primary_upper_q[fill] <= 1'b0;
@@ -1410,7 +1439,6 @@ module coherence_home #(
         if (run) begin
           // A forward takes the primary's seat away on the edge it is
           // accepted, beside any seats added or released then.
-          fill_seats_q[fill] <= (fill_seats_q[fill] | fill_add_seats[fill]) & ~forward_seat;
           fill_seat_count_q[fill] <= fill_seat_count_q[fill] + fill_add_count[fill] - 2'(forwarded);
           if (forwarded) begin
             fill_primary_q[fill] <= '0;
@@ -1433,7 +1461,6 @@ module coherence_home #(
             fill_sector_q[fill] <= 1'b0;
             fill_dirty_q[fill] <= array_state == coherence_pkg::Modified;
             fill_dirty_sectors_q[fill] <= '0;
-            fill_seats_q[fill] <= lookup_prefetch_q ? '0 : COMPLETIONS'(1) << decision_tid;
             fill_seat_count_q[fill] <= lookup_prefetch_q ? 2'd0 : 2'd1;
             fill_primary_q[fill] <= forwardable ? COMPLETIONS'(1) << decision_tid : '0;
             fill_primary_upper_q[fill] <= LINE_BYTES == 64 && decision_addr[5];
@@ -1445,13 +1472,11 @@ module coherence_home #(
             fill_write_q[fill] <= decision_opcode == coherence_pkg::DMAWrite;
           end
           if (array_response && join_fill[fill]) begin
-            fill_seats_q[fill][CompletionBits'(decision_tid)] <= 1'b1;
             fill_seat_count_q[fill] <= fill_seat_count_q[fill] + fill_add_count[fill] + 1'b1 -
                 2'(forwarded);
           end
           if (fill_phase_q[fill] == FillReady && pin_valid &&
               fill_seats_q[fill][CompletionBits'(decision_tid)]) begin
-            fill_seats_q[fill][CompletionBits'(decision_tid)] <= 1'b0;
             fill_seat_count_q[fill] <= fill_seat_count_q[fill] - 1'b1 - 2'(forwarded);
           end
           if (fill_phase_q[fill] == FillReady && fill_seats_q[fill] == 0) fill_live_q[fill] <= 1'b0;
@@ -1482,7 +1507,6 @@ module coherence_home #(
           if (fill_phase_q[fill] == FillMemory && fill_done_q[fill] && fill_error_q[fill]) begin
             fill_live_q[fill] <= 1'b0;
             fill_blocking_q[fill] <= 1'b0;
-            fill_seats_q[fill] <= '0;
             fill_seat_count_q[fill] <= '0;
             fill_primary_q[fill] <= '0;
           end
