@@ -294,6 +294,8 @@ nostore: connect -set i_write_mask 8'h00
 # including zero writes, grant/release scheduling and addresses. Unrelated
 # maintenance, probe and atomic traffic stays idle, and consumers are ready.
 # Every witness is also legal in the unrestricted zero-control environment.
+# Remove only the tied ports so the backend cannot alias constants to inputs.
+zsingle: delete -input w:i_fatal_stop w:i_write_atomic w:i_write_sc w:i_sc_valid w:i_sc_commit w:i_maint_valid w:i_p_valid w:i_read_kind w:i_read_ready w:i_sc_result_ready w:i_d_ready w:i_c_ready w:i_r_ready w:i_w_ready w:i_cut_admit_ready w:i_cut_admit_clean w:i_cut_inval_done
 zsingle: connect -set i_fatal_stop 1'b0
 zsingle: connect -set i_write_atomic 1'b0
 zsingle: connect -set i_write_sc 1'b0

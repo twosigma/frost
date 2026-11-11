@@ -2621,8 +2621,10 @@ def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:
         "i_cut_admit_clean",
         "i_cut_inval_done",
     )
+    tied_inputs = idle_inputs + ("i_read_kind",) + ready_inputs
     profile = (
-        [f"connect -set {name} 1'b0" for name in idle_inputs]
+        ["delete -input " + " ".join(f"w:{name}" for name in tied_inputs)]
+        + [f"connect -set {name} 1'b0" for name in idle_inputs]
         + ["connect -set i_read_kind 2'b00"]
         + [f"connect -set {name} 1'b1" for name in ready_inputs]
     )
@@ -2661,6 +2663,7 @@ def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:
         ("[script]", "chformal -assert2assume c:p_zero_twin_install"),
         ("[script]", "cutpoint w:image_q"),
         ("[script]", "connect -set i_rst 1'b0"),
+        ("[script]", "delete -input w:i_rst"),
         ("[script]", "connect -set i_write_zero 1'b0"),
         ("[options]", "depth 79"),
         ("[options]", "skip 40"),
