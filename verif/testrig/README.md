@@ -63,6 +63,10 @@ comments; `--trace` replays it, and editing the words is the quickest way to
 narrow a bug down. `FROST_RVFI_DII_DEBUG=1` logs every record the harness
 collects, preamble included.
 
+The runner selects the two loopback TCP ports while holding both probe
+sockets open, then releases them for Sail and FROST to bind. This prevents
+the OS from assigning the same ephemeral port to both implementations.
+
 The NIC is instantiated with both MAC clocks and their clock-OK inputs
 held low (`nic_mac_clocks=False` in the `rvfi_dii` registry entry).
 Device loads and stores use the harness RAM. The NIC and DMA engine
