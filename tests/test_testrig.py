@@ -97,7 +97,9 @@ DEFAULT_TEST_INCLUDE = (
 # nondeterministic between the two: the cycle and time counters (FROST counts
 # clock cycles, Sail instructions); the interrupt enable and pending
 # registers, since an interrupt consumes an instruction slot in Sail's
-# RVFI-DII mode; stimecmp, whose timer compare depends on time; mtvec and
+# RVFI-DII mode; mideleg, whose LCOFI bit needs the --sscofpmf Sail view
+# (the dedicated trace checks its full WARL mask and RMW operations);
+# stimecmp, whose timer compare depends on time; mtvec and
 # stvec, whose reserved MODE values FROST and Sail legalize differently;
 # mcause and scause, whose WLRL cause codes FROST keeps as written and Sail
 # does not; and unnamed addresses, which include FROST's custom profiling
@@ -105,7 +107,7 @@ DEFAULT_TEST_INCLUDE = (
 DEFAULT_CSR_INCLUDE = (
     "^(fflags|frm|fcsr|instret|hpmcounter(1[1-9]|2[0-9]|3[01])|sstatus|scounteren|senvcfg|"
     "sscratch|sepc|stval|satp|mvendorid|marchid|mimpid|mhartid|mstatus|misa|"
-    "medeleg|mideleg|mcounteren|menvcfg|mscratch|mepc|mtval|pmpcfg[0-9]+|"
+    "medeleg|mcounteren|menvcfg|mscratch|mepc|mtval|pmpcfg[0-9]+|"
     "pmpaddr[0-9]+|minstret|mhpmcounter[0-9]+|mhpmevent(1[1-9]|2[0-9]|3[01])|mcountinhibit)$"
 )
 
