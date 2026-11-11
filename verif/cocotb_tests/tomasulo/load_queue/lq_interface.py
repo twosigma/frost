@@ -242,6 +242,7 @@ class LQInterface:
         self.dut.i_full_flush.value = 0
         self.dut.i_early_recovery_flush.value = 0
         self.dut.i_cache_invalidate_valid.value = 0
+        self.dut.i_cache_invalidate_block.value = 0
         self.dut.i_cache_invalidate_addr.value = 0
         self.dut.i_sc_clear_reservation.value = 0
         self.dut.i_reservation_snoop_invalidate.value = 0
@@ -440,14 +441,16 @@ class LQInterface:
         """Drive the router's "cached response held behind a fast beat" flag."""
         self.dut.i_cached_resp_held.value = 1 if held else 0
 
-    def drive_cache_invalidate(self, addr: int) -> None:
-        """Drive L0 cache invalidation for one address."""
+    def drive_cache_invalidate(self, addr: int, *, block: bool = False) -> None:
+        """Invalidate one dword, or its whole cbo.zero block."""
         self.dut.i_cache_invalidate_valid.value = 1
+        self.dut.i_cache_invalidate_block.value = int(block)
         self.dut.i_cache_invalidate_addr.value = addr & MASK_XLEN
 
     def clear_cache_invalidate(self) -> None:
         """Clear L0 cache invalidation."""
         self.dut.i_cache_invalidate_valid.value = 0
+        self.dut.i_cache_invalidate_block.value = 0
 
     def read_mem_request(self) -> dict:
         """Read memory read request outputs (and remember the launch)."""

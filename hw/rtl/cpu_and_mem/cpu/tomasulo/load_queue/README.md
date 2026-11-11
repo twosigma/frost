@@ -691,3 +691,8 @@ optimized structure equal to its reference form.
 See the [test runner](../../../../../../tests/README.md) and the
 [formal guide](../../../../../../formal/README.md) for commands, scope and
 assumptions.
+
+A cached response coincident with a `cbo.zero` block invalidation suppresses
+both the L0 RAM fill write and its valid bit for every dword in the block.
+`test_cached_response_with_zero_block_does_not_fill_l0` exercises all eight
+positions and verifies that a response from the adjacent block still fills.

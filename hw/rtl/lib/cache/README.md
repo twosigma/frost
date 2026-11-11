@@ -930,11 +930,11 @@ controls grants and releases around the real L1I, fetch provider and PTW. It che
 and walks, errors, reset, fatal stop and reuse of reader IDs before U.
 The whole-SoC program configurations use this hierarchy.
 `coherence_l1d_store_stream` checks ordered store installation, combining,
-independent
-grants, duplicate-sector exclusion and read turns. It also buffers a load grant
-while a `cbo.zero` lower sector installs and checks that the owed twin delays
-that grant's acceptance until both zero sectors have installed. A completed load grant
-supplies read service between resident stores while another read waits.
+independent grants, duplicate-sector exclusion and read turns. It buffers a
+successful load grant and an endpoint-zero LR error while a `cbo.zero` lower
+sector installs, and checks that neither completes until the owed twin has
+installed. A completed load grant supplies read service between resident stores
+while another read waits.
 `coherence_store_pressure`
 holds both dirty victim slots and delays endpoint releases while ordinary loads
 and probing DMA requests use the production home.
@@ -1090,7 +1090,8 @@ sector's at the twin's, both inside the `GetMZero`'s hold on the line:
 **Ordering.** Records install in program order at the head, and the twin
 installs before any younger record. Older stores to the block are older
 records, which install first, or combine into older records. Younger stores
-and loads in the block follow the twin. Fences, FENCE.I and SFENCE.VMA wait
+follow the twin, and each younger load waits for its sector record to install.
+Fences, FENCE.I and SFENCE.VMA wait
 for the records to install. A look-ahead `GetMZero` grants permission early
 but writes nothing visible before its records reach the head, as for a
 look-ahead `GetM`. The L1I keeps instruction copies until FENCE.I, as for any

@@ -3121,7 +3121,10 @@ module load_queue #(
     // cs_inval_now || cs_coh_inval_now at the response slot.
     wire [XLEN-1:3] resp_slot_dword = cs_addr[resp_slot][XLEN-1:3];
     assign cache_fill_cut = i_mem_read_is_cached ? (cs_valid[resp_slot] &&
-        ((i_cache_invalidate_valid && i_cache_invalidate_addr[XLEN-1:3] == resp_slot_dword) ||
+        ((i_cache_invalidate_valid &&
+          i_cache_invalidate_addr[XLEN-1:6] == resp_slot_dword[XLEN-1:6] &&
+          (i_cache_invalidate_block ||
+           i_cache_invalidate_addr[5:3] == resp_slot_dword[5:3])) ||
          (i_coh_inval_valid &&
           i_coh_inval_addr[XLEN-1:CohLineLsb] == resp_slot_dword[XLEN-1:CohLineLsb]) ||
          (i_coherent_cut_hold &&

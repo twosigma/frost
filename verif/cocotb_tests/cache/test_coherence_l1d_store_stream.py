@@ -215,6 +215,69 @@ async def cbo_zero_twin_preserves_buffered_load_grant(dut: Any) -> None:
 
 
 @cocotb.test()
+async def cbo_zero_twin_preserves_endpoint_zero_failure(dut: Any) -> None:
+    """Hold an endpoint-zero LR error while a borrowed zero grant owes its twin."""
+    b = Stream(dut)
+    await b.reset()
+    first, block, load = 0x80000000, 0x80000040, 0x80000080
+    await store(b, first, 0x1234)
+    await b.issued(first)
+    await b.wait("o_store_ready")
+    await b.tick()
+    await b.set(
+        i_address=block,
+        i_write_mask=255,
+        i_write_data=0,
+        i_write_zero=1,
+        i_write_tag=5,
+    )
+    await b.tick()
+    await b.set(i_write_mask=0, i_write_zero=0)
+    zero_ep, zero_demand = await b.issued(block)
+    assert zero_ep != 0 and zero_demand[0] == 10
+    # Retire the older record and return its U, freeing endpoint zero for LR.
+    # Keep the borrowed zero grant outstanding until that LR has acquired.
+    await b.grant(first)
+    await b.release(first)
+    await b.set(
+        i_address=load, i_read_valid=1, i_read_id=3, i_read_kind=1, i_read_size=3
+    )
+    await b.tick()
+    await b.set(i_read_valid=0)
+    load_ep, load_demand = await b.issued(load)
+    assert load_ep == 0 and load_demand[0] == 2
+    await b.set(
+        i_g_valid=1,
+        i_g=pack(
+            (3, 6),
+            (9, zero_demand[1]),
+            (6, 0),
+            (b.p, block),
+            (256, 0),
+            (1, 0),
+        ),
+    )
+    await b.wait("o_g_ready")
+    await b.tick()
+    await b.set(i_g_valid=0)
+    await b.grant(load, error=True)
+    await b.wait("twin_fill_q")
+    assert b.get("ep_grant_valid") & 1
+    assert not b.get("zero_grant_failed"), (
+        "Endpoint zero's failure must wait for the twin"
+    )
+    assert not b.get("done_q") and not b.get("ep_grant_ready")
+    await b.wait("o_pending_store", 0)
+    await b.release(block)
+    await b.release(load)
+    await b.tick(5)
+    assert b.installs == [first, block, block + 32]
+    assert b.read_results == [(3, 0)]
+    assert len([c for ep, c in b.completions if ep == 0 and c[2] == load]) == 1
+    assert not b.get("live") and not b.get("o_fatal")
+
+
+@cocotb.test()
 async def same_sector_and_home_set_keep_older_records_first(dut: Any) -> None:
     """Exclude younger duplicate sectors and conflicting home rows."""
     for younger in (0x80000000, 0x80000080):

@@ -5052,3 +5052,33 @@ async def test_busy_port_prepares_load_without_probe_or_launch(dut: Any) -> None
     dut_if.clear_mem_response()
     result = await wait_for_fu_complete(dut_if)
     assert result.valid and result.tag == 3 and result.value == 0x1234ABCD
+
+
+@cocotb.test()
+async def test_cached_response_with_zero_block_does_not_fill_l0(dut: Any) -> None:
+    """A same-cycle block invalidation kills every dword's fill write and valid bit."""
+    dut_if, model = await setup(dut)
+    block = 0x8000_4000
+    # Start with the upper sector to expose a dword-only kill immediately.
+    # The adjacent block is a control: its response must still fill.
+    for offset in (32, 0, 8, 16, 24, 40, 48, 56, 64):
+        await dut_if.reset_dut()
+        model = LQModel()
+        dut_if.drive_sq_empty(True)
+        dut_if.drive_mem_request_pending(False)
+        request = await _launch_cached(dut_if, model, 1, block + offset)
+        dut_if.drive_cache_invalidate(block, block=True)
+        dut_if.drive_mem_response(0x1234_5678, cached=True, slot=int(request["id"]))
+        await Timer(1, unit="ns")
+        keep = offset == 64
+        assert bool(dut.o_l0_fill.value) == keep
+        assert bool(dut.cache_fill_write.value) == keep, (
+            "The L0 RAM write kill must cover the same block as its valid bits",
+            offset,
+        )
+        await dut_if.step()
+        dut_if.clear_cache_invalidate()
+        dut_if.clear_mem_response()
+        result = await wait_for_fu_complete(dut_if)
+        assert result.valid and result.tag == 1 and result.value == 0x1234_5678
+        await accept_fu_complete(dut_if)

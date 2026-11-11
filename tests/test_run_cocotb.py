@@ -2040,7 +2040,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "load_queue": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.load_queue.test_load_queue",
         hdl_toplevel_module="load_queue",
-        description=("Load-queue ordering, completion, atomics, and recovery"),
+        description=(
+            "Load-queue ordering, completion, atomics, recovery and zero-block fill exclusion"
+        ),
     ),
     "load_queue_no_prepare_busy": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.load_queue.test_load_queue",
@@ -2665,7 +2667,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         python_test_module="cocotb_tests.cache.test_coherence_l1d_store_stream",
         hdl_toplevel_module="coherence_l1d",
-        description="Concurrent ordered store acquisitions, combining, probes, endpoint release and grants held by cbo.zero twins",
+        description="Concurrent ordered store acquisitions, combining, probes, endpoint release, load grants and LR errors held by cbo.zero twins",
     ),
     "coherence_l1d": CocotbRunConfig(
         verilator_extra_args=("--assert", "-GCACHE_BYTES=512"),
