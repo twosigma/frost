@@ -127,6 +127,8 @@ module coherence_home_engine #(
   logic absent_q;
   wire  prefetch = request_q.opcode == coherence_pkg::Prefetch;
   logic probe_matches, upper, run, needs_probe, needs_data;
+  localparam int unsigned ProbeAddrGroups = (ADDR_WIDTH + 7) / 8;
+  (* keep = "true" *) wire [ProbeAddrGroups-1:0] probe_addr_equal;
   logic reply_fire, reply_fatal, service_error, service_dirty, service_complete;
   logic data_complete, probe_complete, deciding;
   // Reset clears every register below and the home's arbiters, so internal
@@ -175,7 +177,12 @@ module coherence_home_engine #(
   assign o_read_valid = run && o_read_offer;
   assign o_p_valid = run && phase_q == Service && probe_phase_q == ProbeOffer;
   assign o_p = probe_q;
-  assign probe_matches = reply.tid == tid_q && reply.addr == probe_q.addr &&
+  // Keep each byte comparison parallel to the other address groups.
+  for (genvar chunk = 0; chunk < ProbeAddrGroups; chunk++) begin : gen_probe_addr_equal
+    localparam int unsigned Bits = ADDR_WIDTH - 8 * chunk < 8 ? ADDR_WIDTH - 8 * chunk : 8;
+    assign probe_addr_equal[chunk] = reply.addr[8*chunk+:Bits] == probe_q.addr[8*chunk+:Bits];
+  end
+  assign probe_matches = reply.tid == tid_q && (&probe_addr_equal) &&
       reply.epoch == probe_q.epoch && reply.hart == 0 &&
       (probe_q.opcode == coherence_pkg::CheckSC ? reply.opcode == coherence_pkg::CheckAck :
        reply.opcode == coherence_pkg::ProbeAck || reply.opcode == coherence_pkg::ProbeData);

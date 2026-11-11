@@ -277,7 +277,9 @@ module coherence_home #(
   logic [FILLS-1:0][WayBits-1:0] fill_way_q;
   logic [FILLS-1:0][WbBits-1:0] fill_wb_q;
   logic [FILLS-1:0][8*LINE_BYTES-1:0] fill_image_q;
-  logic [FILLS-1:0] fill_victim_q, fill_sent_q, fill_done_q, fill_error_q;
+  logic [FILLS-1:0] fill_victim_q, fill_sent_q, fill_error_q;
+  // Keep allocation's functional clear in the data path, separate from reset.
+  (* extract_reset = "no" *)logic [FILLS-1:0] fill_done_q;
   // A successful fill has woken its waiters. Set on the first FillInstallWait
   // cycle and cleared on allocation.
   logic [FILLS-1:0] fill_woken_q;
@@ -1248,9 +1250,16 @@ module coherence_home #(
   assign fill_phase_allocated = array_state == coherence_pkg::Invalid ? FillMemory : FillRecall;
   for (genvar fill = 0; fill < FILLS; fill++) begin : gen_fill
     localparam int unsigned Client = RESULTS + fill;
+    localparam int unsigned ProbeAddrGroups = (ADDR_WIDTH + 7) / 8;
     coh_p_t probe;
     coh_wa_t absorbed_ack;
-    wire probe_matches = reply.tid == FillTid + 6'(fill) && reply.addr == probe.addr &&
+    // Compare byte groups in parallel before combining packet identity.
+    (* keep = "true" *) wire [ProbeAddrGroups-1:0] probe_addr_equal;
+    for (genvar chunk = 0; chunk < ProbeAddrGroups; chunk++) begin : gen_probe_addr_equal
+      localparam int unsigned Bits = ADDR_WIDTH - 8 * chunk < 8 ? ADDR_WIDTH - 8 * chunk : 8;
+      assign probe_addr_equal[chunk] = reply.addr[8*chunk+:Bits] == probe.addr[8*chunk+:Bits];
+    end
+    wire probe_matches = reply.tid == FillTid + 6'(fill) && (&probe_addr_equal) &&
         reply.epoch == 0 && reply.hart == 0 &&
         (reply.opcode == coherence_pkg::ProbeAck || reply.opcode == coherence_pkg::ProbeData);
     wire allocate = run && array_response && decision_fill && fill_free_index == FillBits'(fill);
