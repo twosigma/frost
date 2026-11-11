@@ -29,6 +29,7 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer
+from cocotb.utils import get_sim_time
 
 
 CLOCK_PERIOD_NS = 10
@@ -180,6 +181,7 @@ def _drive_idle(dut: Any) -> None:
     dut.i_active.value = 0
     dut.i_priv_u.value = 0
     dut.i_tlb_invalidate.value = 0
+    dut.i_full_flush.value = 0
     dut.i_pc_update_en.value = 0
     dut.i_pc_d.value = 0
     dut.i_walk_req_ready.value = 0
@@ -740,7 +742,7 @@ async def test_translation_faults_and_refusal_memo(dut: Any) -> None:
         assert int(dut.o_walk_req_valid.value) == 0
 
     # A refused walk is memoized.  Revisiting its VPN resolves from the memo
-    # without asking again until an invalidate clears both TLB and memo.
+    # without asking again before epoch expiry, a full flush, or an invalidate.
     refused_pc = 0x0001_C040
     other_pc = 0x0001_E040
     refused_vpn = refused_pc >> 12
@@ -1158,3 +1160,296 @@ async def test_directed_straddle_instruction_fault_xtval(dut: Any) -> None:
     assert int(dut.o_fault0.value) == 0
     assert int(dut.o_fault1.value) == 1
     assert int(dut.o_fault1_page.value) == 0
+
+
+@cocotb.test()
+async def test_full_flush_clears_refusal_memo(dut: Any) -> None:
+    """Svvptc: a refused walk's memo does not outlive a trap, xRET or fence flush.
+
+    Software may map a page (an invalid-to-valid PTE store) in a fault handler
+    and return without sfence.vma. The refetch after the flush walks again
+    and sees the new leaf instead of the memoized fault.
+    """
+    await _setup(dut)
+    dut.i_active.value = 1
+    refused_pc = 0x0007_0040
+    refused_vpn = refused_pc >> 12
+    handler_pc = 0x0007_2040
+    handler_leaf = Leaf(vpn=handler_pc >> 12, ppn=0x1C)
+    expected_refusal = Window(
+        pa0=refused_pc,
+        pa1=_next_word_pa(refused_pc),
+        fault0=1,
+        fault0_page=1,
+        fault1=1,
+        fault1_page=1,
+        line_after_ok=1,
+    )
+
+    await _move_pc(dut, refused_pc)
+    await _cycle(dut)
+    await _accept_request(dut, refused_vpn)
+    await _pulse_response(dut, vpn=refused_vpn, fault_kind=DFAULT_PAGE)
+    _assert_window(dut, expected_refusal)
+
+    # The fault traps: the flush retargets fetch to the handler.
+    dut.i_full_flush.value = 1
+    await _move_pc(dut, handler_pc)
+    dut.i_full_flush.value = 0
+    await _cycle(dut)
+    await _accept_request(dut, handler_leaf.vpn)
+    await _return_leaf(dut, handler_leaf)
+    _assert_window(dut, _translated_window(handler_pc, handler_leaf))
+
+    # The handler maps the page and returns without sfence.vma.
+    mapped = Leaf(vpn=refused_vpn, ppn=0x80090)
+    dut.i_full_flush.value = 1
+    await _move_pc(dut, refused_pc)
+    dut.i_full_flush.value = 0
+    _assert_invisible(dut)
+    await _cycle(dut)
+    await _accept_request(dut, refused_vpn)
+    await _return_leaf(dut, mapped)
+    _assert_window(dut, _translated_window(refused_pc, mapped))
+
+    # A walk accepted before a flush may have read the PTE before the stores
+    # the flush ordered. Its fault reaches the live key but not the memo.
+    late_pc = 0x0007_4040
+    late_vpn = late_pc >> 12
+    await _move_pc(dut, late_pc)
+    await _cycle(dut)
+    await _accept_request(dut, late_vpn)
+    dut.i_full_flush.value = 1
+    await _cycle(dut)
+    dut.i_full_flush.value = 0
+    await _pulse_response(dut, vpn=late_vpn, fault_kind=DFAULT_PAGE)
+    await _move_pc(dut, handler_pc)
+    await _cycle(dut)
+    _assert_window(dut, _translated_window(handler_pc, handler_leaf))
+    await _move_pc(dut, late_pc)
+    _assert_invisible(dut)
+    await _cycle(dut)
+    late_leaf = Leaf(vpn=late_vpn, ppn=0x800A0)
+    await _accept_request(dut, late_vpn)
+    await _return_leaf(dut, late_leaf)
+    _assert_window(dut, _translated_window(late_pc, late_leaf))
+
+
+@cocotb.test()
+async def test_wrong_path_refusal_expires_without_full_flush(dut: Any) -> None:
+    """A speculative invalid PTE expires even if execution never takes a trap."""
+    await _setup(dut)
+    dut.i_active.value = 1
+    refused_pc = 0x0008_0040
+    live_pc = 0x0008_2040
+    live_leaf = Leaf(vpn=live_pc >> 12, ppn=0x80020)
+    await _move_pc(dut, refused_pc)
+    await _cycle(dut)
+    await _accept_request(dut, refused_pc >> 12)
+    await _pulse_response(dut, vpn=refused_pc >> 12, fault_kind=DFAULT_PAGE)
+    assert int(dut.o_fault0.value) == 1
+
+    # Branch recovery changes the fetch PC without a full pipeline flush.
+    # Another hart can now publish an invalid-to-valid PTE store. Continue
+    # unrelated execution for longer than both negative-cache lifetimes.
+    await _move_pc(dut, live_pc)
+    await _cycle(dut)
+    await _accept_request(dut, live_leaf.vpn)
+    await _return_leaf(dut, live_leaf)
+    for _ in range(130):
+        await _cycle(dut)
+        _assert_window(dut, _translated_window(live_pc, live_leaf))
+        assert int(dut.o_walk_req_valid.value) == 0
+
+    await _move_pc(dut, refused_pc)
+    await _cycle(dut)
+    mapped = Leaf(vpn=refused_pc >> 12, ppn=0x80030)
+    await _accept_request(dut, mapped.vpn)
+    await _return_leaf(dut, mapped)
+    _assert_window(dut, _translated_window(refused_pc, mapped))
+
+
+@cocotb.test()
+async def test_held_refusal_expires_without_pc_change(dut: Any) -> None:
+    """A refused registered result cannot keep an invalid PTE indefinitely."""
+    await _setup(dut)
+    dut.i_active.value = 1
+    pc = 0x0009_0040
+    await _move_pc(dut, pc)
+    await _cycle(dut)
+    await _accept_request(dut, pc >> 12)
+    await _pulse_response(dut, vpn=pc >> 12, fault_kind=DFAULT_PAGE)
+    assert int(dut.o_fault0.value) == 1
+    await _wait_for_request(dut, pc >> 12, max_cycles=130)
+    _assert_invisible(dut)
+    mapped = Leaf(vpn=pc >> 12, ppn=0x80040)
+    await _accept_request(dut, mapped.vpn)
+    await _return_leaf(dut, mapped)
+    _assert_window(dut, _translated_window(pc, mapped))
+
+
+@cocotb.test()
+async def test_full_flush_drops_coincident_refusal(dut: Any) -> None:
+    """A fault arriving on a flush edge cannot become a retained fetch result."""
+    await _setup(dut)
+    dut.i_active.value = 1
+    for pc in (0x000A_0040, 0x000B_0FFC):
+        dut.i_tlb_invalidate.value = 1
+        await _cycle(dut)
+        dut.i_tlb_invalidate.value = 0
+        await _move_pc(dut, pc)
+        await _cycle(dut)
+        first = Leaf(vpn=pc >> 12, ppn=0x80050)
+        await _accept_request(dut, first.vpn)
+        if _page_cross(pc):
+            await _return_leaf(dut, first)
+            fault_vpn = first.vpn + 1
+            await _accept_request(dut, fault_vpn)
+        else:
+            fault_vpn = first.vpn
+        dut.i_full_flush.value = 1
+        await _pulse_response(dut, vpn=fault_vpn, fault_kind=DFAULT_PAGE)
+        _assert_invisible(dut)
+        dut.i_full_flush.value = 0
+        await _cycle(dut)
+        await _accept_request(dut, fault_vpn)
+        mapped = Leaf(vpn=fault_vpn, ppn=0x80060)
+        await _return_leaf(dut, mapped)
+        if _page_cross(pc):
+            _assert_window(dut, _translated_window(pc, first, leaf1=mapped))
+        else:
+            _assert_window(dut, _translated_window(pc, mapped))
+
+
+@cocotb.test()
+async def test_expiring_refusal_retries_a_coincident_clean_retarget(dut: Any) -> None:
+    """Expiry takes priority over a new capture and retries it within one clock."""
+    await _setup(dut)
+    epoch_origin_ns = int(get_sim_time(unit="ns")) - 1
+    dut.i_active.value = 1
+    clean_pc = 0x000D_0040
+    clean = Leaf(vpn=clean_pc >> 12, ppn=0x80070)
+    await _move_pc(dut, clean_pc)
+    await _cycle(dut)
+    await _accept_request(dut, clean.vpn)
+    await _return_leaf(dut, clean)
+    refused_pc = 0x000C_0040
+    await _move_pc(dut, refused_pc)
+    await _cycle(dut)
+    await _accept_request(dut, refused_pc >> 12)
+    await _pulse_response(dut, vpn=refused_pc >> 12, fault_kind=DFAULT_PAGE)
+    assert int(dut.o_fault0.value) == 1
+
+    # Use only the external reset/clock schedule to align the new capture
+    # with the documented 64-clock epoch boundary. PC capture precedes IMMU
+    # result capture by one clock.
+    while (
+        (int(get_sim_time(unit="ns")) - epoch_origin_ns) // CLOCK_PERIOD_NS
+    ) % 64 != 62:
+        await _cycle(dut)
+    await _move_pc(dut, clean_pc)
+    await _cycle(dut)
+    _assert_invisible(dut)
+    assert int(dut.o_walk_req_valid.value) == 0
+    await _cycle(dut)
+    _assert_window(dut, _translated_window(clean_pc, clean))
+    assert int(dut.o_walk_req_valid.value) == 0
+
+
+async def _slow_crossing_refusals(dut: Any, fault_kind: int) -> None:
+    """Refuse both pages with walks longer than the negative-cache lifetime."""
+    await _setup(dut)
+    dut.i_active.value = 1
+    pc = 0x000E_3FFC
+    await _move_pc(dut, pc)
+    await _cycle(dut)
+    for _ in range(4):
+        for _ in range(8):
+            if int(dut.o_walk_req_valid.value):
+                break
+            await _cycle(dut)
+        else:
+            raise AssertionError("unresolved crossing fetch stopped requesting walks")
+        vpn = int(dut.o_walk_vpn.value)
+        dut.i_walk_req_ready.value = 1
+        await _cycle(dut)
+        dut.i_walk_req_ready.value = 0
+        for _ in range(80):
+            await _cycle(dut)
+        await _pulse_response(dut, vpn=vpn, fault_kind=fault_kind)
+        if int(dut.o_pa_valid.value):
+            assert int(dut.o_fault0.value) == 1
+            assert int(dut.o_fault0_page.value) == int(fault_kind == DFAULT_PAGE)
+            assert int(dut.o_fault1.value) == 1
+            assert int(dut.o_fault1_page.value) == int(fault_kind == DFAULT_PAGE)
+            assert int(dut.o_pa0.value) == pc & PHYS_MASK
+            assert int(dut.o_pa1.value) == _next_page_va(pc) & PHYS_MASK
+            assert int(dut.o_walk_req_valid.value) == 0
+            return
+    raise AssertionError(
+        "refusals expired alternately without exposing the first-word fault"
+    )
+
+
+@cocotb.test()
+async def test_crossing_page_fault_completes_after_slow_walk(dut: Any) -> None:
+    """Two invalid pages cannot livelock as their fault memos expire."""
+    await _slow_crossing_refusals(dut, DFAULT_PAGE)
+
+
+@cocotb.test()
+async def test_crossing_access_fault_completes_after_slow_walk(dut: Any) -> None:
+    """Two slow PTE bus failures must still expose the first-word access fault."""
+    await _slow_crossing_refusals(dut, DFAULT_ACCESS)
+
+
+async def _crossing_refusal_on_expiry(dut: Any, fault_kind: int) -> None:
+    """Check a warm neighbor cannot discard the first page's response."""
+    await _setup(dut)
+    epoch_origin_ns = int(get_sim_time(unit="ns")) - 1
+    dut.i_active.value = 1
+    pc = 0x000F_3FFC
+    neighbor_pc = _next_page_va(pc)
+    neighbor = Leaf(vpn=neighbor_pc >> 12, ppn=0x80080, perm_x=0)
+    await _move_pc(dut, neighbor_pc)
+    await _cycle(dut)
+    await _accept_request(dut, neighbor.vpn)
+    await _return_leaf(dut, neighbor)
+    _assert_window(dut, _translated_window(neighbor_pc, neighbor))
+
+    await _move_pc(dut, pc)
+    await _cycle(dut)
+    await _accept_request(dut, pc >> 12)
+    for _ in range(80):
+        await _cycle(dut)
+    # Align solely from the external reset and clock schedule. The first
+    # word is missing while the warm neighbor supplies a partial fault.
+    while (
+        (int(get_sim_time(unit="ns")) - epoch_origin_ns) // CLOCK_PERIOD_NS
+    ) % 64 != 63:
+        await _cycle(dut)
+    await _pulse_response(dut, vpn=pc >> 12, fault_kind=fault_kind)
+    _assert_window(
+        dut,
+        Window(
+            pa0=pc & PHYS_MASK,
+            pa1=neighbor_pc & PHYS_MASK,
+            fault0=1,
+            fault0_page=int(fault_kind == DFAULT_PAGE),
+            fault1=1,
+            fault1_page=1,
+        ),
+    )
+    assert int(dut.o_walk_req_valid.value) == 0
+
+
+@cocotb.test()
+async def test_crossing_page_fault_completes_on_expiry_edge(dut: Any) -> None:
+    """A first-page refusal survives expiry when the neighbor faults in the TLB."""
+    await _crossing_refusal_on_expiry(dut, DFAULT_PAGE)
+
+
+@cocotb.test()
+async def test_crossing_access_fault_completes_on_expiry_edge(dut: Any) -> None:
+    """An access-fault response survives expiry beside a warm permission fault."""
+    await _crossing_refusal_on_expiry(dut, DFAULT_ACCESS)

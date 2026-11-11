@@ -45,8 +45,12 @@
 
   mcountinhibit implements CY, IR and HPM3..8 and resets to zero.
   mhpmcounter3..8 have writable machine storage and read-only user aliases.
-  Each mhpmeventN selects its counter's fixed event with value N; other
-  writes select zero, which disables counting. Counter enables gate S/U
+  Each mhpmeventN selects its counter's fixed event with value N. Three
+  counters also accept a translation event: mhpmevent8=10 counts page-walker
+  busy cycles, mhpmevent7=11 counts SFENCE.VMA TLB invalidates, and
+  mhpmevent4=12 counts CSR-requested TLB invalidates (satp access, or an
+  MPRV/MPP change). Other writes select zero, which disables counting.
+  Counter enables gate S/U
   reads independently of event counting. Selected, uninhibited event inputs
   are sampled and added on the following cycle. Counter writes replace the
   count and discard the pending increment. Machine counters and selectors
@@ -99,6 +103,11 @@ module csr_file #(
     input logic       i_dtlb_miss = '0,
     input logic       i_l1d_miss = '0,
     input logic       i_sq_full_stall = '0,
+    // Translation events: the page walker is busy this cycle, and an
+    // SFENCE.VMA TLB invalidate begins (one pulse per invalidate window).
+    // CSR-requested invalidates are counted from o_csr_translation_flush_req.
+    input logic       i_walk_busy = '0,
+    input logic       i_sfence_tlb_flush = '0,
 
     // Pending inputs: registered IMSIC MEIP, registered timer, and software IRQ
     input riscv_pkg::interrupt_t i_interrupts,
@@ -217,9 +226,10 @@ module csr_file #(
     output logic o_priv_is_u,
 
     // One-cycle TLB/PTW invalidate pulse for any enabled committed satp
-    // access, or an mstatus/sstatus commit whose computed result changes
-    // SUM/MXR/MPRV (or MPP while MPRV=1). The ROB serializer separately
-    // drains committed stores and flushes the pipeline.
+    // access, or an mstatus commit whose computed result changes MPRV (or
+    // MPP while MPRV=1). SUM and MXR changes do not invalidate: lookups apply
+    // them live. The ROB serializer separately drains committed stores and
+    // flushes the pipeline.
     output logic o_csr_translation_flush_req,
 
     // Data-translation state, delayed one cycle. Every input change (satp,
@@ -1100,6 +1110,9 @@ module csr_file #(
   logic dtlb_miss_q;
   logic l1d_miss_q;
   logic sq_full_stall_q;
+  // The registered translation invalidate request (driven below), counted by
+  // mhpmevent4=12.
+  logic csr_translation_flush_req_q;
   (* keep = "true" *) logic [63:0] mhpmcounter3_accumulated;
   (* keep = "true" *) logic [63:0] mhpmcounter4_accumulated;
   (* keep = "true" *) logic [63:0] mhpmcounter5_accumulated;
@@ -1133,11 +1146,15 @@ module csr_file #(
       mhpmcounter4 <= 64'd0;
       mhpmevent4 <= 64'd0;
     end else begin
+      // Selector 12: CSR-requested TLB invalidates, one per request pulse.
       branch_mispredict_count_q <=
           (mcountinhibit_hpm4 || mhpmcounter4_write || mhpmevent4 == 0) ? 2'd0 :
+          (mhpmevent4 == 64'd12) ? {1'b0, csr_translation_flush_req_q} :
           i_branch_mispredict_count;
       mhpmcounter4 <= mhpmcounter4_write ? mhpmcounter4_new_value : mhpmcounter4_accumulated;
-      if (mhpmevent4_write) mhpmevent4 <= mhpmevent4_new_value == XLEN'(4) ? 64'd4 : 64'd0;
+      if (mhpmevent4_write)
+        mhpmevent4 <= (mhpmevent4_new_value == XLEN'(4))  ? 64'd4 :
+                      (mhpmevent4_new_value == XLEN'(12)) ? 64'd12 : 64'd0;
     end
   end
 
@@ -1175,11 +1192,14 @@ module csr_file #(
       mhpmcounter7 <= 64'd0;
       mhpmevent7   <= 64'd0;
     end else begin
+      // Selector 11: SFENCE.VMA TLB invalidates.
       l1d_miss_q <=
           (mcountinhibit_hpm7 || mhpmcounter7_write || mhpmevent7 == 0) ? 1'b0 :
-          i_l1d_miss;
+          (mhpmevent7 == 64'd11) ? i_sfence_tlb_flush : i_l1d_miss;
       mhpmcounter7 <= mhpmcounter7_write ? mhpmcounter7_new_value : mhpmcounter7_accumulated;
-      if (mhpmevent7_write) mhpmevent7 <= mhpmevent7_new_value == XLEN'(7) ? 64'd7 : 64'd0;
+      if (mhpmevent7_write)
+        mhpmevent7 <= (mhpmevent7_new_value == XLEN'(7))  ? 64'd7 :
+                      (mhpmevent7_new_value == XLEN'(11)) ? 64'd11 : 64'd0;
     end
   end
 
@@ -1189,11 +1209,14 @@ module csr_file #(
       mhpmcounter8 <= 64'd0;
       mhpmevent8 <= 64'd0;
     end else begin
+      // Selector 10: page-walker busy cycles.
       sq_full_stall_q <=
           (mcountinhibit_hpm8 || mhpmcounter8_write || mhpmevent8 == 0) ? 1'b0 :
-          i_sq_full_stall;
+          (mhpmevent8 == 64'd10) ? i_walk_busy : i_sq_full_stall;
       mhpmcounter8 <= mhpmcounter8_write ? mhpmcounter8_new_value : mhpmcounter8_accumulated;
-      if (mhpmevent8_write) mhpmevent8 <= mhpmevent8_new_value == XLEN'(8) ? 64'd8 : 64'd0;
+      if (mhpmevent8_write)
+        mhpmevent8 <= (mhpmevent8_new_value == XLEN'(8))  ? 64'd8 :
+                      (mhpmevent8_new_value == XLEN'(10)) ? 64'd10 : 64'd0;
     end
   end
 
@@ -1643,8 +1666,19 @@ module csr_file #(
   assign o_dbg_data_wdata = ddata_new_value[63:0];
 
   // Invalidate one cycle after every enabled satp access, including pure
-  // reads and Bare-to-Bare writes. For mstatus/sstatus, invalidate on changes
-  // to SUM/MXR/MPRV, or to MPP while MPRV is set.
+  // reads and Bare-to-Bare writes. For mstatus, invalidate on a change to
+  // MPRV, or to MPP while MPRV is set.
+  //
+  // SUM and MXR changes keep the TLBs and the walk in flight. They change
+  // permission checks only, and every lookup applies the live SUM and MXR to
+  // the raw R/W/X/U/D bits a TLB entry holds: the DTLB's per-entry verdicts,
+  // the data MMU's walk-response check, and the last-page buffer, which
+  // compares the SUM and MXR it captured. Walks return raw leaf permissions
+  // and never read SUM or MXR, and fetch checks use neither. The ROB still
+  // drains committed stores and flushes the pipeline after every mstatus or
+  // sstatus write, so no operation translated under the old bits survives.
+  // sstatus has no MPRV or MPP view, so an sstatus write alone never
+  // invalidates.
   // COMMIT_EXCLUDES_CONTROL_TAKE permits comparing the CSR result directly;
   // otherwise compare next state, where traps and xRET take priority.
   logic csr_translation_flush_req_d;
@@ -1655,22 +1689,19 @@ module csr_file #(
   // With control takes excluded, compare the complete CSR result before
   // commit qualification, including MPP's WARL mapping and old MPRV.
   assign csr_status_write_changes_translation =
-      (mstatus_new_value[riscv_pkg::MstatusSumBit] != mstatus_sum) ||
-      (mstatus_new_value[riscv_pkg::MstatusMxrBit] != mstatus_mxr) ||
-      ((i_csr_address == riscv_pkg::CsrMstatus) &&
-       ((mstatus_new_value[riscv_pkg::MstatusMprvBit] != mstatus_mprv) ||
-        (mstatus_mprv && (csr_written_mpp != mstatus_mpp))));
+      (i_csr_address == riscv_pkg::CsrMstatus) &&
+      ((mstatus_new_value[riscv_pkg::MstatusMprvBit] != mstatus_mprv) ||
+       (mstatus_mprv && (csr_written_mpp != mstatus_mpp)));
+  // Without excluded control takes, an xRET that coincides with an sstatus
+  // write can still change MPRV, so the next-state compare covers both CSRs.
   assign csr_translation_flush_req_d = i_csr_write_enable && i_csr_read_enable &&
       ((i_csr_address == riscv_pkg::CsrSatp) ||
        (((i_csr_address == riscv_pkg::CsrMstatus) ||
          (i_csr_address == riscv_pkg::CsrSstatus)) &&
         (COMMIT_EXCLUDES_CONTROL_TAKE ? csr_status_write_changes_translation :
-         ((next_mstatus_sum != mstatus_sum) ||
-          (next_mstatus_mxr != mstatus_mxr) ||
-          (next_mstatus_mprv != mstatus_mprv) ||
+         ((next_mstatus_mprv != mstatus_mprv) ||
           (mstatus_mprv && (next_mstatus_mpp != mstatus_mpp))))));
 
-  logic csr_translation_flush_req_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       csr_translation_flush_req_q <= 1'b0;
@@ -2501,13 +2532,13 @@ module csr_file #(
       csr_write_intent && !(i_trap_taken && !i_trap_to_d);
   assign f_old_mcycle_write = f_old_counter_write && (i_csr_address == riscv_pkg::CsrMcycle);
   assign f_old_minstret_write = f_old_counter_write && (i_csr_address == riscv_pkg::CsrMinstret);
+  // SUM and MXR are permission inputs applied at lookup, so only satp and the
+  // effective-privilege fields (MPRV, and MPP under MPRV) invalidate.
   assign f_old_translation_req = i_csr_write_enable && i_csr_read_enable &&
       ((i_csr_address == riscv_pkg::CsrSatp) ||
        (((i_csr_address == riscv_pkg::CsrMstatus) ||
          (i_csr_address == riscv_pkg::CsrSstatus)) &&
-        ((f_old_next_mstatus_sum != mstatus_sum) ||
-         (f_old_next_mstatus_mxr != mstatus_mxr) ||
-         (f_old_next_mstatus_mprv != mstatus_mprv) ||
+        ((f_old_next_mstatus_mprv != mstatus_mprv) ||
          (mstatus_mprv && (f_old_next_mstatus_mpp != mstatus_mpp)))));
 
   // mstatus, mie, and privilege next state: takes, then a CSR write.

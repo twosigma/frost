@@ -352,9 +352,13 @@ module coherent_hart_cache_formal #(
       .o_fatal(),
       .o_fatal_addr()
   );
+  // The walk cache is left out: this harness checks the walker's line
+  // traffic through the hart cache, and ptw.sby checks the walk cache.
   ptw #(
       .ENABLE_RESPONSE_ERRORS(1'b1),
-      .WALK_ID_BITS(3)
+      .WALK_ID_BITS(3),
+      .PWC_L1_ENTRIES(0),
+      .PWC_ROOT_ENTRIES(0)
   ) walker (
       .i_clk,
       .i_rst(rst),
@@ -369,6 +373,7 @@ module coherent_hart_cache_formal #(
       .o_req_ready(walk_ready),
       .i_req_vpn(walk_vpn),
       .i_discard(discard),
+      .o_busy(),
       .o_resp_valid(walk_resp),
       .o_resp(translation),
       .o_line_req_valid(line_valid),

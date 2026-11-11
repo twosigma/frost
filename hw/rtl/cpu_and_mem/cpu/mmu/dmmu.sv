@@ -809,6 +809,17 @@ module dmmu (
     // S2's split address rebuilds the resolution's address.
     p_resolve_addr_exact : assert (f_resolve_addr_ref == resolve_addr);
   end
+  // A clean walk leaf is checked with the live SUM, MXR and effective
+  // privilege, never with state from the walk: SUM and MXR changes keep the
+  // TLBs and the walk in flight, so no other check may cache them.
+  always_comb begin
+    logic f_walk_perm_ref;
+    f_walk_perm_ref = (i_walk_resp.perm_u ? (i_eff_priv_u || i_sum) : !i_eff_priv_u) &&
+        (s1_q.store_perms ? (i_walk_resp.perm_w && i_walk_resp.perm_d) :
+                            (i_walk_resp.perm_r || (i_mxr && i_walk_resp.perm_x)));
+    if (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE)
+      p_walk_leaf_perm_live : assert ((walk_fault == riscv_pkg::DFAULT_PAGE) == !f_walk_perm_ref);
+  end
 `endif
 
 `ifdef DMMU_CAPTURE_LOCAL_PROOF
@@ -852,6 +863,18 @@ module dmmu (
         p_lq_lookahead_tag : assert (o_iss_out_rob_tag == f_pre_tag_q);
       end
       if (f_last_clear_q) p_last_page_invalidation : assert (!last_valid_q);
+      // The last-page buffer survives SUM and MXR changes only through its
+      // captured-state compare: a bypass grants an access only when the
+      // live SUM, MXR and privilege equal those it captured and the raw
+      // leaf permissions allow the access under them.
+      if (iss_can_bypass) begin
+        p_bypass_live_permission :
+        assert ((i_sum == last_sum_q) && (i_mxr == last_mxr_q) &&
+                (i_eff_priv_u == last_priv_u_q) &&
+                (last_perm_u_q ? (i_eff_priv_u || i_sum) : !i_eff_priv_u) &&
+                (iss_in.store_perms ? (last_perm_w_q && last_perm_d_q) :
+                                      (last_perm_r_q || (i_mxr && last_perm_x_q))));
+      end
       cover (f_bypass_expected_q && o_iss_out_lq_capture_valid);
       cover (f_bypass_expected_q && o_iss_out_sq_capture_valid);
       cover (i_rst_n && !i_flush_all && s1_resolved && s1_killed && iss_can_bypass);

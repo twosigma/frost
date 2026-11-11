@@ -985,6 +985,7 @@ module if_stage #(
       .i_active(i_fetch_translation_active),
       .i_priv_u(i_fetch_priv_u),
       .i_tlb_invalidate(i_tlb_invalidate),
+      .i_full_flush(i_flush_all),
       .i_pc(pc),
       .o_pa0(o_fetch_pa0),
       .o_pa1(o_fetch_pa1),

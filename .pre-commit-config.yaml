@@ -135,6 +135,7 @@ repos:
             perf-modeling/(frost_perf_model|board_workloads|calibration/trace_contract|tools/run_calibration|tools/board_calibration|tests/test_trace_contract)\.py|
             tests/test_pa_bridge_mutation\.py|
             tests/test_slang_frontend\.py|
+            verif/cocotb_tests/mmu/test_ptw_walk_cache\.py|
             verif/cocotb_tests/nic/test_nic_tx_segment\.py|
             verif/cocotb_tests/nic/test_nic_(rx_fifo_limit|pause)\.py|
             fpga/flash/(make_flash_image|program_flash)\.py
@@ -159,6 +160,7 @@ repos:
             sw/apps/pa_nic_packet_test/main\.c|
             sw/apps/(fencei_bench/fencei_bench|smc_predict_test/smc_predict_test)\.c|
             sw/apps/(smc_stale_test/smc_stale_test|smc_torture/smc_torture)\.c|
+            sw/apps/sum_toggle_test/main\.c|
             sw/apps/nic_(rate|sg_loopback)/main\.c|
             sw/apps/l2_capacity_chase/main\.c|
             sw/apps/(bootrom/bootrom|fsbl/fsbl)\.c|
@@ -191,7 +193,7 @@ repos:
       - id: insert-license
         name: insert-license (Tcl/Makefile/Shell)
         files: (\.tcl$|Makefile$|\.mk$|\.sh$)
-        exclude: ^(linux/frost-(net10g|memerr)/|sw/apps/pa_(width|vm_fetch|dma|nic_mmio|nic_packet)_test/Makefile$|sw/apps/nic_(rate|sg_loopback)/Makefile$|sw/apps/l2_capacity_chase/Makefile$|sw/apps/(fencei_bench|smc_predict_test|smc_stale_test|smc_torture)/Makefile$|sw/apps/(bootrom|fsbl)/Makefile$|sw/uboot/Makefile$)
+        exclude: ^(linux/frost-(net10g|memerr)/|sw/apps/pa_(width|vm_fetch|dma|nic_mmio|nic_packet)_test/Makefile$|sw/apps/sum_toggle_test/Makefile$|sw/apps/nic_(rate|sg_loopback)/Makefile$|sw/apps/l2_capacity_chase/Makefile$|sw/apps/(fencei_bench|smc_predict_test|smc_stale_test|smc_torture)/Makefile$|sw/apps/(bootrom|fsbl)/Makefile$|sw/uboot/Makefile$)
         args:
           - --license-filepath=.license-header.txt
           - --comment-style=#

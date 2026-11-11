@@ -918,7 +918,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "ptw.sby",
-        "Page-table walk state matches reference PTE classification",
+        "Page-table walk state matches reference PTE classification, and the walk "
+        "cache holds only valid pointers that memory holds, cleared by every discard",
+        tasks=("bmc", "cover", "bmc_nopwc", "bmc_replace"),
     ),
     FormalTarget(
         "reorder_buffer.sby",
@@ -1170,6 +1172,13 @@ FORMAL_TARGETS = [
     FormalTarget(
         "immu_page_offset.sby",
         "Instruction translation preserves page offsets and visible outputs",
+        tasks=("bmc", "prove"),
+    ),
+    FormalTarget(
+        "immu_memo.sby",
+        "Instruction-MMU refusals expire within bounded time, full flushes drop "
+        "coincident faults, first-word faults complete the window, and memo fills "
+        "follow walk acceptance (Svvptc)",
         tasks=("bmc", "prove"),
     ),
     FormalTarget(
@@ -2253,6 +2262,8 @@ SBY_TASKS = [
     # Parameter-shape variants (chparam'd tops): the ITLB shape of the TLB.
     ("bmc_itlb", "Bounded checking of 16-entry 2-port ITLB fetch verdicts"),
     ("cover_itlb", "Cover checking in the 16-entry 2-port ITLB shape"),
+    ("bmc_nopwc", "Bounded checking of the page-table walker without its walk cache"),
+    ("bmc_replace", "Bounded checking through replacement in one-entry walk caches"),
     ("bmc_xlen32", "Bounded checking with a local 32-bit datapath"),
     (
         "bmc_small_btb",

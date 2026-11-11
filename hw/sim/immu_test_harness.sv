@@ -34,6 +34,7 @@ module immu_test_harness #(
     input logic i_active,
     input logic i_priv_u,
     input logic i_tlb_invalidate,
+    input logic i_full_flush,
 
     input logic i_pc_update_en,
     input logic [XLEN-1:0] i_pc_d,
@@ -98,6 +99,7 @@ module immu_test_harness #(
       .i_active(i_active),
       .i_priv_u(i_priv_u),
       .i_tlb_invalidate(i_tlb_invalidate),
+      .i_full_flush(i_full_flush),
       .i_pc(pc_q),
       .o_pa0(o_pa0),
       .o_pa1(o_pa1),

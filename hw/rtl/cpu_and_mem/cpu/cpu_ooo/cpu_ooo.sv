@@ -756,7 +756,7 @@ module cpu_ooo #(
   logic csr_mireg_illegal, csr_sireg_illegal, csr_stopei_illegal;
   logic csr_sret_illegal, csr_sfence_illegal, csr_wfi_illegal, csr_priv_is_u;
   // Registered translation-invalidate pulse from csr_file: every satp access,
-  // and an mstatus/sstatus write only when it changes translation. Through
+  // and an mstatus write only when it changes MPRV, or MPP under MPRV. Through
   // tlb_invalidate it clears both TLBs and discards the walk in flight; the
   // ROB serializer handles pipeline recovery separately.
   logic csr_translation_flush_req;
@@ -765,6 +765,17 @@ module cpu_ooo #(
   logic csr_translation_active, csr_mmu_sum, csr_mmu_mxr, csr_mmu_eff_priv_u;
   logic [43:0] csr_satp_root_ppn;
   logic tlb_invalidate;
+  // HPM translation events: the walker is busy, and an SFENCE.VMA invalidate
+  // window begins. The CSR request and the SFENCE window never overlap: each
+  // is separated from the other by a full flush.
+  logic ptw_busy;
+  logic sfence_tlb_flush_active, sfence_tlb_flush_active_q, sfence_tlb_flush_start;
+  assign sfence_tlb_flush_active = tlb_invalidate && !csr_translation_flush_req;
+  assign sfence_tlb_flush_start  = sfence_tlb_flush_active && !sfence_tlb_flush_active_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) sfence_tlb_flush_active_q <= 1'b0;
+    else sfence_tlb_flush_active_q <= sfence_tlb_flush_active;
+  end
   logic walk_req_valid, walk_req_ready;
   logic [riscv_pkg::Sv39VpnBits-1:0] walk_vpn;
   logic walk_resp_valid;
@@ -3805,6 +3816,8 @@ module cpu_ooo #(
       .i_branch_mispredict_count(commit_branch_mispredict_count),
       .i_itlb_miss(iwalk_req_valid && iwalk_req_ready),
       .i_dtlb_miss(walk_req_valid && walk_req_ready),
+      .i_walk_busy(ptw_busy),
+      .i_sfence_tlb_flush(sfence_tlb_flush_start),
       .i_l1d_miss(i_cache_perf_events.hierarchy.l1d.miss),
       .i_sq_full_stall(dispatch_status.sq_full ||
           (dispatch_status.slot2_block_lsq_full2 && from_id_to_ex_2.needs_sq &&
@@ -3947,6 +3960,7 @@ module cpu_ooo #(
       .o_req_ready(ptw_req_ready),
       .i_req_vpn(ptw_req_vpn),
       .i_discard(tlb_invalidate),
+      .o_busy(ptw_busy),
       .o_resp_valid(ptw_resp_valid),
       .o_resp(walk_resp),
       .o_line_req_valid(o_walk_line_req_valid),

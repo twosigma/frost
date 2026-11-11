@@ -1,12 +1,18 @@
 [tasks]
 bmc
 cover
+bmc_nopwc
+bmc_replace
 
 [options]
 bmc: mode bmc
-bmc: depth 16
+bmc: depth 24
 cover: mode cover
-cover: depth 18
+cover: depth 64
+bmc_nopwc: mode bmc
+bmc_nopwc: depth 16
+bmc_replace: mode bmc
+bmc_replace: depth 40
 
 [engines]
 smtbmc boolector
@@ -14,6 +20,13 @@ smtbmc boolector
 [script]
 read -formal -sv riscv_pkg.sv
 read -formal -sv ptw.sv
+# A small walk cache (two level-1 and two root entries) reaches fills, hits,
+# replacement and discards within the depth; bmc_nopwc checks the walker
+# without it.
+bmc: chparam -set PWC_L1_ENTRIES 2 -set PWC_ROOT_ENTRIES 2 ptw
+cover: chparam -set PWC_L1_ENTRIES 2 -set PWC_ROOT_ENTRIES 2 ptw
+bmc_nopwc: chparam -set PWC_L1_ENTRIES 0 -set PWC_ROOT_ENTRIES 0 ptw
+bmc_replace: chparam -set PWC_L1_ENTRIES 1 -set PWC_ROOT_ENTRIES 1 ptw
 prep -top ptw
 
 [files]

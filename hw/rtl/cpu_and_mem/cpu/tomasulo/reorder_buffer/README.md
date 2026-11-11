@@ -301,9 +301,9 @@ signal a cycle later, requests the flush:
 The extra cycle lets the CSR write land before the flush, and cpu_ooo stalls
 the trap unit from the shadow cycle through the flush. The CSR file requests
 the TLB and page-table-walker invalidate itself: for every `satp` access, and
-for an `mstatus` or `sstatus` write that changes SUM, MXR, or MPRV, or
-changes MPP while MPRV is set. The ROB's broader classification decides only
-the drain and the flush.
+for an `mstatus` write that changes MPRV, or changes MPP while MPRV is set.
+SUM and MXR changes need no invalidate, because every TLB lookup applies them
+live. The ROB's broader classification decides only the drain and the flush.
 
 ### xRET, WFI, and exceptions
 

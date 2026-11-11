@@ -109,8 +109,8 @@ The ROB marks a CSR instruction as a translation CSR at allocation: any
 `satp` access, or an `mstatus` or `sstatus` access that writes. Like FENCE.I
 and SFENCE.VMA, its retirement is followed by a full flush. The CSR file
 invalidates the TLBs and walker on its own: on every `satp` access, and on an
-`mstatus` or `sstatus` write that changes SUM, MXR, or MPRV (or MPP while MPRV
-is set).
+`mstatus` write that changes MPRV (or MPP while MPRV is set). SUM and MXR are
+applied at lookup, so their changes need only the full flush.
 
 Interrupts are held off until an AMO, MMIO read, or precise uncached store commits: for an AMO from one
 cycle after it reaches the ROB head, which is before its write can launch, and
