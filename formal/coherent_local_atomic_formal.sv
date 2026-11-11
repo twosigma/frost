@@ -123,13 +123,16 @@ module coherent_local_completion_formal (
 
 
   riscv_pkg::fu_complete_t mem_fu_to_adapter;
-  // Form each age before the late result select, then select one bit with the
-  // same priority as the packet. The adapter checks the selected age in simulation.
+  // Form each age independently, then qualify selected sources before the
+  // final valid reduction. The adapter checks surviving tags in simulation.
   (* keep = "true" *) logic mem_store_fault_younger;
   (* keep = "true" *) logic mem_sc_younger;
   (* keep = "true" *) logic mem_uncached_store_younger;
   (* keep = "true" *) logic mem_lq_younger;
-  logic mem_input_younger;
+  (* keep = "true" *) logic [3:0] mem_source_valid;
+  (* keep = "true" *) logic [3:0] mem_source_live;
+  logic mem_live_valid;
+  riscv_pkg::fu_complete_t mem_filtered_to_adapter;
   assign mem_store_fault_younger = is_younger(
       store_misalign_fu_complete_reg.tag, i_flush_tag, head_tag
   );
@@ -138,21 +141,49 @@ module coherent_local_completion_formal (
       uncached_store_complete.tag, i_flush_tag, head_tag
   );
   assign mem_lq_younger = is_younger(lq_fu_complete.tag, i_flush_tag, head_tag);
+  // Choose sources using their original valid bits, even when the chosen
+  // source is squashed. Qualification must never fall through to another source.
+  assign mem_source_valid[0] = store_misalign_fu_complete_reg.valid;
+  assign mem_source_valid[1] = !store_misalign_fu_complete_reg.valid && sc_valid_adapter_q;
+  assign mem_source_valid[2] = !store_misalign_fu_complete_reg.valid && !sc_valid_adapter_q &&
+      uncached_store_complete.valid;
+  assign mem_source_valid[3] = !store_misalign_fu_complete_reg.valid && !sc_valid_adapter_q &&
+      !uncached_store_complete.valid && lq_fu_complete.valid;
+  assign mem_source_live[0] = mem_source_valid[0] &&
+      !(speculative_flush_en && mem_store_fault_younger);
+  assign mem_source_live[1] = mem_source_valid[1] && !(speculative_flush_en && mem_sc_younger);
+  assign mem_source_live[2] = mem_source_valid[2] &&
+      !(speculative_flush_en && mem_uncached_store_younger);
+  assign mem_source_live[3] = mem_source_valid[3] && !(speculative_flush_en && mem_lq_younger);
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT4 #(
+      .INIT(16'hfffe)
+  ) u_mem_live_valid (
+      .I0(mem_source_live[0]),
+      .I1(mem_source_live[1]),
+      .I2(mem_source_live[2]),
+      .I3(mem_source_live[3]),
+      .O (mem_live_valid)
+  );
+`else
+  assign mem_live_valid = |mem_source_live;
+`endif
   always_comb begin
     if (store_misalign_fu_complete_reg.valid) begin
       mem_fu_to_adapter = store_misalign_fu_complete_reg;
-      mem_input_younger = mem_store_fault_younger;
     end else if (sc_valid_adapter_q) begin
       mem_fu_to_adapter = sc_fu_complete_reg;
       mem_fu_to_adapter.valid = 1'b1;
-      mem_input_younger = mem_sc_younger;
     end else if (uncached_store_complete.valid) begin
       mem_fu_to_adapter = uncached_store_complete;
-      mem_input_younger = mem_uncached_store_younger;
     end else begin
       mem_fu_to_adapter = lq_fu_complete;
-      mem_input_younger = mem_lq_younger;
     end
+  end
+  // Keep the raw packet for diagnostics; only the adapter sees the qualified valid.
+  always_comb begin
+    mem_filtered_to_adapter = mem_fu_to_adapter;
+    mem_filtered_to_adapter.valid = mem_live_valid;
   end
 
 
@@ -170,8 +201,9 @@ module coherent_local_completion_formal (
   ) u_mem_adapter (
       .i_clk              (i_clk),
       .i_rst_n            (i_rst_n),
-      .i_fu_result        (mem_fu_to_adapter),
-      .i_fu_result_younger(mem_input_younger),
+      .i_fu_result        (mem_filtered_to_adapter),
+      // Every remaining valid input is already not younger on a partial flush.
+      .i_fu_result_younger(1'b0),
       .o_fu_complete      (mem_adapter_to_arbiter),
       .o_held_value       (),
       .i_grant            (o_cdb_grant[3]),

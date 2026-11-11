@@ -37,7 +37,7 @@ cycle is not taken.
 | `ALLOW_GRANT_REFILL` | 1 | 0: a granted pending adapter goes idle and does not take a new input in the same cycle. |
 | `ALLOW_GRANT_REFILL_PAYLOAD_WRITE` | 1 | 0: `held_result` is written on every valid input, a simpler write enable. Legal only if a valid input never arrives while the adapter is pending. |
 | `ALWAYS_GRANTED` | 0 | 1: pending is constant zero. Requires `REGISTER_OUTPUT=0`, `ALLOW_GRANT_REFILL=0`, and a grant for every valid output except when full flush discards it. Simulation asserts that grant contract. |
-| `INPUT_YOUNGER_PRECOMPUTED` | 0 | 1: the input's partial-flush age check reads `i_fu_result_younger` instead of comparing `i_fu_result.tag`. The producer must drive the compare's value whenever the input is valid; simulation asserts it. Other settings ignore the port. |
+| `INPUT_YOUNGER_PRECOMPUTED` | 0 | 1: the input's partial-flush age check reads `i_fu_result_younger` instead of comparing `i_fu_result.tag`. The producer must drive the compare's value whenever the input and partial flush are both valid; simulation asserts it. Other settings ignore the port. |
 
 The wrapper's settings:
 
@@ -49,9 +49,13 @@ The wrapper's settings:
 
 The ALU2 and MEM adapters set `INPUT_YOUNGER_PRECOMPUTED`. ALU2's input tag
 follows the late choice between INT RS ports 0 and 1, so the wrapper compares
-both ports' stage-2 tags and selects the result. MEM compares each source's
-tag before selecting the packet, then selects the age with the same priority:
-store fault, SC, uncached store, then LQ.
+both ports' stage-2 tags and selects the result. MEM qualifies each source
+against the partial flush before its final valid reduction, preserving the
+original priority: store fault, SC, uncached store, then LQ. A squashed higher
+priority source still prevents a lower source from taking its place. MEM
+drives the age port to zero because every remaining valid input is not younger
+during a partial flush. The packet's payload and the raw diagnostic packet
+retain their original values.
 
 `REGISTER_OUTPUT` suits the long-latency units, where one more cycle costs
 little and the pass-through valid path hurts timing.
