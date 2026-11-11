@@ -12,8 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Fast checks of the TestRIG support code: RVFI-DII packets and the preamble."""
+"""Fast checks of TestRIG startup, RVFI-DII packets, and the preamble."""
 
+import errno
 import importlib
 import json
 import re
@@ -34,6 +35,38 @@ if str(VERIF_DIR) not in sys.path:
 rvfi_dii = importlib.import_module("testrig.rvfi_dii")
 preamble = importlib.import_module("testrig.preamble")
 test_testrig = importlib.import_module("test_testrig")
+
+
+def test_server_ports_survive_immediate_reuse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A released ephemeral port may be assigned to the very next bind."""
+    first_port: int | None = None
+
+    class ReusingSocket(socket.socket):
+        """Prefer the first probe's port whenever the kernel permits it."""
+
+        def bind(self, address: Any) -> None:
+            nonlocal first_port
+            if address[1] == 0 and first_port is not None:
+                try:
+                    super().bind((address[0], first_port))
+                    return
+                except OSError as error:
+                    if error.errno != errno.EADDRINUSE:
+                        raise
+            super().bind(address)
+            if first_port is None:
+                first_port = self.getsockname()[1]
+
+    monkeypatch.setattr(socket, "socket", ReusingSocket)
+    sail_port, frost_port = test_testrig.free_ports()
+    assert sail_port != frost_port
+    assert sail_port != 0 and frost_port != 0
+    # The implementations must be able to take ownership of both ports.
+    with (
+        socket.create_server(("127.0.0.1", sail_port)),
+        socket.create_server(("127.0.0.1", frost_port)),
+    ):
+        pass
 
 
 @pytest.mark.parametrize(

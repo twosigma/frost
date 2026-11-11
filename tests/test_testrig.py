@@ -110,11 +110,19 @@ DEFAULT_CSR_INCLUDE = (
 )
 
 
-def free_port() -> int:
-    """Return a TCP port that was free a moment ago."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
+def free_ports() -> tuple[int, int]:
+    """Choose distinct Sail and FROST ports while both reservations are held.
+
+    Closing the first probe before binding the second lets the OS assign
+    the same ephemeral port twice. Release both only after choosing the pair.
+    """
+    with (
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sail,
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as frost,
+    ):
+        sail.bind(("127.0.0.1", 0))
+        frost.bind(("127.0.0.1", 0))
+        return sail.getsockname()[1], frost.getsockname()[1]
 
 
 def tool_path(name: str, environment_variable: str) -> str:
@@ -237,8 +245,7 @@ def run(arguments: argparse.Namespace) -> int:
     sail_config = write_sail_config(
         arguments.ddr_capacity_log2_bytes, work_dir, sscofpmf=arguments.sscofpmf
     )
-    sail_port = free_port()
-    frost_port = free_port()
+    sail_port, frost_port = free_ports()
     ready_file = work_dir / "frost_ready"
     ready_file.unlink(missing_ok=True)
     frost_log = work_dir / "frost.log"

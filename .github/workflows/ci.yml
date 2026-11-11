@@ -1350,6 +1350,7 @@ jobs:
             pytest_filter: >-
               axi_coherent_bridge or
               (coherence_l1d and not (coh_l1d_stream_bmc or coh_l1d_stream_hold_bmc or coh_l1d_stream_free or
+              coh_l1d_stream_outlier_prove or
               coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_zero_multi_bmc or coh_l1d_data or
               coh_l1d_multi_data or coh_l1d_store_ or coh_l1d_ways_data or
               (coh_l1d_local and (prove or bmc))))
@@ -1386,11 +1387,12 @@ jobs:
             timeout_minutes: 330
           # The hart maintenance composition proof and its ownership lemmas
           # share a job with the scripted and store-free eight-endpoint L1D
-          # stream BMCs.
+          # stream BMCs and their independent unbounded payload proof.
           - shard: Hart maintenance
             pytest_filter: >-
               coh_hart_maint_prove or coh_hart_maint_owned_prove or
-              coh_l1d_stream_bmc or coh_l1d_stream_free_nostore_bmc
+              coh_l1d_stream_bmc or coh_l1d_stream_free_nostore_bmc or
+              coh_l1d_stream_outlier_prove
             timeout_minutes: 330
           - shard: Other tasks
             pytest_filter: "not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or coherence_ or coherent_)"
