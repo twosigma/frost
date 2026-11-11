@@ -2054,16 +2054,35 @@ module tomasulo_wrapper #(
   // while also holding it for a duplicate delivery.
   // Nonfaulting plain stores mark the ROB done directly without using the CDB.
   riscv_pkg::fu_complete_t mem_fu_to_adapter;
+  // Form each age before the late result select, then select one bit with the
+  // same priority as the packet. The adapter checks the selected age in simulation.
+  (* keep = "true" *) logic mem_store_fault_younger;
+  (* keep = "true" *) logic mem_sc_younger;
+  (* keep = "true" *) logic mem_uncached_store_younger;
+  (* keep = "true" *) logic mem_lq_younger;
+  logic mem_input_younger;
+  assign mem_store_fault_younger = is_younger(
+      store_misalign_fu_complete_reg.tag, i_flush_tag, head_tag
+  );
+  assign mem_sc_younger = is_younger(sc_fu_complete_reg.tag, i_flush_tag, head_tag);
+  assign mem_uncached_store_younger = is_younger(
+      uncached_store_complete.tag, i_flush_tag, head_tag
+  );
+  assign mem_lq_younger = is_younger(lq_fu_complete.tag, i_flush_tag, head_tag);
   always_comb begin
     if (store_misalign_fu_complete_reg.valid) begin
       mem_fu_to_adapter = store_misalign_fu_complete_reg;
+      mem_input_younger = mem_store_fault_younger;
     end else if (sc_valid_adapter_q) begin
       mem_fu_to_adapter = sc_fu_complete_reg;
       mem_fu_to_adapter.valid = 1'b1;
+      mem_input_younger = mem_sc_younger;
     end else if (uncached_store_complete.valid) begin
       mem_fu_to_adapter = uncached_store_complete;
+      mem_input_younger = mem_uncached_store_younger;
     end else begin
       mem_fu_to_adapter = lq_fu_complete;
+      mem_input_younger = mem_lq_younger;
     end
   end
 
@@ -4031,12 +4050,13 @@ module tomasulo_wrapper #(
   // full flush discards it, so pending state is unreachable.
   fu_cdb_adapter #(
       .ALLOW_GRANT_REFILL(1'b0),
-      .ALWAYS_GRANTED(1'b1)
+      .ALWAYS_GRANTED(1'b1),
+      .INPUT_YOUNGER_PRECOMPUTED(1'b1)
   ) u_mem_adapter (
       .i_clk              (i_clk),
       .i_rst_n            (i_rst_n),
       .i_fu_result        (mem_fu_to_adapter),
-      .i_fu_result_younger(1'b0),
+      .i_fu_result_younger(mem_input_younger),
       .o_fu_complete      (mem_adapter_to_arbiter),
       .o_held_value       (),
       .i_grant            (o_cdb_grant[3]),

@@ -47,9 +47,11 @@ The wrapper's settings:
 | MUL, MEM | 0 | 0 | 1 | 1 |
 | DIV, FP | 1 | 0 | 1 | 0 |
 
-Only the ALU2 adapter sets `INPUT_YOUNGER_PRECOMPUTED`: its input tag follows
-the late choice between INT RS ports 0 and 1, so the wrapper compares both
-ports' stage-2 tags and selects the result.
+The ALU2 and MEM adapters set `INPUT_YOUNGER_PRECOMPUTED`. ALU2's input tag
+follows the late choice between INT RS ports 0 and 1, so the wrapper compares
+both ports' stage-2 tags and selects the result. MEM compares each source's
+tag before selecting the packet, then selects the age with the same priority:
+store fault, SC, uncached store, then LQ.
 
 `REGISTER_OUTPUT` suits the long-latency units, where one more cycle costs
 little and the pass-through valid path hurts timing.
