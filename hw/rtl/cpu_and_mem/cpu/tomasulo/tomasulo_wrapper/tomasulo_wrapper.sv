@@ -3122,6 +3122,7 @@ module tomasulo_wrapper #(
     int_rs_issue_registered_1.valid = int_rs_issue_cdb_2_valid;
     int_rs_issue_registered_1.tag = int_rs_issue_cdb_2_tag;
   end
+  riscv_pkg::cdb_broadcast_t int_issue_merged_0, int_issue_merged_1;
   mem_wakeup_merge #(
       .FORMAL_STANDALONE_ENV(1'b0)
   ) u_int_issue_wakeup_merge (
@@ -3132,10 +3133,46 @@ module tomasulo_wrapper #(
       .i_load(lq_early_wakeup_load),
       .i_registered_0(int_rs_issue_registered_0),
       .i_registered_1(int_rs_issue_registered_1),
-      .o_wakeup_0(int_issue_wakeup_0),
-      .o_wakeup_1(int_issue_wakeup_1),
+      .o_wakeup_0(int_issue_merged_0),
+      .o_wakeup_1(int_issue_merged_1),
       .o_injected()
   );
+`ifdef FROST_XILINX_PRIMS
+  // Prepare load eligibility before applying the uncached-store completion
+  // that owns the same MEM result lane. Registered occupancy selects the
+  // packet payload independently, exactly as in the shared merge above.
+  (* keep = "true" *) logic int_issue_early_without_store_complete;
+  logic int_issue_valid_0, int_issue_valid_1;
+  assign int_issue_early_without_store_complete = EARLY_LOAD_WAKEUP &&
+      !sc_valid_wakeup_q && !store_misalign_fu_complete_reg.valid &&
+      !mem_adapter_result_pending && lq_fu_complete_staged && !lq_fu_complete.exception;
+  (* dont_touch = "true" *) LUT3 #(
+      .INIT(8'hae)
+  ) u_int_issue_valid_0 (
+      .I0(int_rs_issue_registered_0.valid),
+      .I1(int_issue_early_without_store_complete),
+      .I2(uncached_store_complete.valid),
+      .O (int_issue_valid_0)
+  );
+  (* dont_touch = "true" *) LUT4 #(
+      .INIT(16'haaea)
+  ) u_int_issue_valid_1 (
+      .I0(int_rs_issue_registered_1.valid),
+      .I1(int_rs_issue_registered_0.valid),
+      .I2(int_issue_early_without_store_complete),
+      .I3(uncached_store_complete.valid),
+      .O (int_issue_valid_1)
+  );
+  always_comb begin
+    int_issue_wakeup_0 = int_issue_merged_0;
+    int_issue_wakeup_1 = int_issue_merged_1;
+    int_issue_wakeup_0.valid = int_issue_valid_0;
+    int_issue_wakeup_1.valid = int_issue_valid_1;
+  end
+`else
+  assign int_issue_wakeup_0 = int_issue_merged_0;
+  assign int_issue_wakeup_1 = int_issue_merged_1;
+`endif
 
 `ifndef SYNTHESIS
   always_comb begin

@@ -375,6 +375,10 @@ the wrapper formal target.
 
 A pending uncached-store completion also inhibits early load wakeup: the
 early token may only announce the load selected for the actual MEM broadcast.
+The Xilinx INT issue path prepares the other load-eligibility conditions and
+applies the uncached-store completion in the final valid-bit selection.
+Packet payloads still come from the shared merge's registered-lane selection.
+No additional state or cycle is introduced; the generic path is unchanged.
 
 ## Early load wakeup
 

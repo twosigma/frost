@@ -518,6 +518,12 @@ candidates use two-slot groups: each group combines its candidates, ownership
 and address comparisons in one step. The shared write-address exclusion
 qualifies the buffered-write result after ownership and candidate reduction.
 Circular priority selects a qualified slot and its address.
+With Xilinx primitives, winner selection prepares all four combinations of
+the shared buffered-address exclusion and AMO permission, then applies those
+controls to the winner bits. Each candidate compares its circular precedence
+with the other slots in groups of three. Load-miss demand excludes AMOs by
+kind, so its native selection does not depend on AMO permission. The generic
+implementation retains its existing four-state selection behavior.
 Loads also have a hit path beside the controller. In the cycle after a load
 arrives, the L1D offers it to the array's hit port from registers, unless a
 probe is in service, an owner holds its slot, or a holder blocks its sector

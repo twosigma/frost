@@ -49,14 +49,17 @@ module coherence_read_select #(
   // Blocking compares 18 sector index bits. An alias with a held sector waits
   // for the holder like a match, and the holders do not wait for reads.
   localparam int unsigned BlockBits = 18;
-  logic [7:0] eligible, upper, first;
+  logic [7:0] eligible, first;
+`ifndef FROST_XILINX_PRIMS
+  logic [7:0] upper;
+  (* keep = "true" *) logic [7:0] first_upper, first_any;
+`endif
   (* keep = "true" *) logic [7:0] stored_candidates, write_candidates;
   (* keep = "true" *) logic [7:0] stored_miss_candidates, write_miss_candidates;
   (* keep = "true" *) logic [7:0] stored_blocked_mask;
   (* keep = "true" *) logic [3:0] stored_found, stored_miss_found;
   (* keep = "true" *) logic [2:0] write_found_groups, write_miss_groups;
   (* keep = "true" *) logic write_found, write_miss_found;
-  (* keep = "true" *) logic [7:0] first_upper, first_any;
   // i_addr is each slot's address after the buffered write forwards to it.
   // The comparisons use the stored addresses and the buffered write's address
   // separately, so the forwarding selection follows them.
@@ -94,10 +97,21 @@ module coherence_read_select #(
         (!i_miss[index] || i_miss_retry[index]);
     assign stored_candidates[index] = before_owner && !i_write_mask[index];
     assign write_candidates[index] = before_owner && i_write_mask[index];
+`ifdef FROST_XILINX_PRIMS
+    // A load miss has kind zero, so it never needs AMO protection. Keep that
+    // shared permission out of the miss decision entirely.
+    wire load_miss_candidate = i_valid[index] && !i_ready[index] && !i_waiting[index] &&
+        (!i_miss[index] || i_miss_retry[index]) && i_miss[index] &&
+        i_kind[2*index+:2] == 2'd0;
+    assign stored_miss_candidates[index] = load_miss_candidate && !i_write_mask[index];
+    assign write_miss_candidates[index] = load_miss_candidate && i_write_mask[index];
+`else
     assign stored_miss_candidates[index] = stored_candidates[index] &&
         i_miss[index] && i_kind[2*index+:2] == 2'd0;
     assign write_miss_candidates[index] = write_candidates[index] &&
         i_miss[index] && i_kind[2*index+:2] == 2'd0;
+`endif
+`ifndef FROST_XILINX_PRIMS
     if (index == 7) begin : gen_last
       assign upper[index] = eligible[index];
     end else begin : gen_before_last
@@ -110,8 +124,62 @@ module coherence_read_select #(
       assign first_upper[index] = upper[index] && !(|upper[index-1:0]);
       assign first_any[index] = eligible[index] && !(|eligible[index-1:0]);
     end
+`endif
   end
+`ifdef FROST_XILINX_PRIMS
+  // The buffered address and AMO permission are shared by all entries.
+  // Prepare the circular winner for their four combinations, then apply
+  // those two controls once at the end of each winner bit.
+  (* keep = "true" *) logic [7:0] prior_mask[8];
+  (* keep = "true" *) logic [7:0] first_choice[4];
+  for (genvar winner = 0; winner < 8; winner++) begin : gen_prior_mask
+    for (genvar contender = 0; contender < 8; contender++) begin : gen_contender
+      if (contender < winner) begin : gen_lower
+        assign prior_mask[winner][contender] =
+            i_round_robin <= 3'(contender) || i_round_robin > 3'(winner);
+      end else if (contender > winner) begin : gen_higher
+        assign prior_mask[winner][contender] =
+            i_round_robin > 3'(winner) && i_round_robin <= 3'(contender);
+      end else begin : gen_self
+        assign prior_mask[winner][contender] = 1'b0;
+      end
+    end
+  end
+  for (genvar choice = 0; choice < 4; choice++) begin : gen_shared_choice
+    logic [7:0] choice_eligible;
+    for (genvar index = 0; index < 8; index++) begin : gen_entry
+      wire choice_blocked = i_write_mask[index] ? 1'(choice % 2) : stored_blocked_mask[index];
+      assign choice_eligible[index] = i_valid[index] && !i_ready[index] &&
+          (i_kind[2*index+:2] != 2'd2 || 1'(choice / 2)) &&
+          !i_owned[index] && !i_waiting[index] &&
+          (!i_miss[index] || i_miss_retry[index]) && !choice_blocked;
+    end
+    for (genvar winner = 0; winner < 8; winner++) begin : gen_winner
+      // Three contender/precedence pairs fit one LUT. The final conjunction
+      // combines the three groups with this entry's eligibility.
+      (* keep = "true" *) logic [2:0] earlier;
+      assign earlier[0] = |(choice_eligible[2:0] & prior_mask[winner][2:0]);
+      assign earlier[1] = |(choice_eligible[5:3] & prior_mask[winner][5:3]);
+      assign earlier[2] = |(choice_eligible[7:6] & prior_mask[winner][7:6]);
+      assign first_choice[choice][winner] = choice_eligible[winner] && !(|earlier);
+    end
+  end
+  for (genvar winner = 0; winner < 8; winner++) begin : gen_winner_select
+    (* dont_touch = "true" *) LUT6 #(
+        .INIT(64'hff00f0f0ccccaaaa)
+    ) u_select (
+        .I0(first_choice[0][winner]),
+        .I1(first_choice[1][winner]),
+        .I2(first_choice[2][winner]),
+        .I3(first_choice[3][winner]),
+        .I4(write_blocked),
+        .I5(i_atomic_protected),
+        .O (first[winner])
+    );
+  end
+`else
   assign first = (|upper) ? first_upper : first_any;
+`endif
   // Apply ownership and stored-address exclusion together. Two slots have
   // six inputs, so each group fits one LUT. The final reduction has four
   // stored groups and the two shared buffered-write terms.
