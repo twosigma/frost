@@ -29,7 +29,7 @@ conformance bugs fixed for
 | [`atomics.py`](atomics.py) | Random A-extension tests (see [The A extension](#the-a-extension)) |
 | [`sail_frost.json`](sail_frost.json) | Sail settings that describe FROST |
 | [`traces/`](traces/) | Saved counterexamples, replayed in CI |
-| [`sscofpmf/controls.S`](sscofpmf/controls.S) | Deterministic Sscofpmf controls and implemented HPM aliases, replayed with `--sscofpmf` in CI |
+| [`sscofpmf/controls.S`](sscofpmf/controls.S) | Deterministic Sscofpmf delegation, controls and implemented HPM aliases, replayed with `--sscofpmf` in CI |
 
 Scalar cryptography traces use `--crypto 50`. The generator supplies full-width
 operands, source and destination aliases, dependencies, integer multiply and
@@ -203,13 +203,14 @@ different implementation choice:
 | `mstatus.VS` | Read-only zero: FROST has no V extension |
 | HPM counters | Machine counters 3..10 have storage; saved traces keep their selectors disabled. User aliases 3..10 are checked by the CSR and privilege benches; aliases 11..31 are absent |
 | Counter enables | `mcounteren`, `scounteren`: CY, TM, IR and HPM3..10; `mcountinhibit`: CY, IR and HPM3..10 |
-| Delegation | `medeleg` mask 0xB3FF, `mideleg` mask 0x2222 |
+| Delegation | `medeleg` mask 0xB3FF; `mideleg` mask 0x2222, checked in the Sscofpmf replay |
 | PMP | None |
 | LR/SC | 32-byte reservation set, cancelled by a store or AMO from the hart to it (FROST also cancels it on a trap; see [The A extension](#the-a-extension)) |
 | WFI | Completes at once |
 | Sail's CLINT | At 0x2B6D_93F1_0000, outside FROST's map at an address random sequences do not form; Sail requires one for Zicntr |
 
-The `--sscofpmf` replay compares OF and inhibit fields, `scountovf`,
+The `--sscofpmf` replay compares `mideleg`'s full WARL mask and register and
+immediate read-modify-write operations, OF and inhibit fields, `scountovf`,
 machine counter storage and user aliases 9/10 with event selectors disabled.
 Sail 0.16 enables Sscofpmf only when Zihpm is enabled, which also exposes
 user aliases 11..31 that FROST omits. This replay therefore enables Zihpm in
@@ -217,6 +218,15 @@ its generated configuration and accesses only implemented counters. Default
 random and saved-counterexample runs keep Zihpm disabled and continue to
 compare absent aliases. The CSR and privilege benches cover the full set
 of implemented aliases, event selection and counting.
+
+The default Sail view [forces `mideleg.LCOFI` to zero](https://github.com/riscv/sail-riscv/blob/0.16/model/core/interrupt_regs.sail#L122-L146) even with bit 13 in
+the configured delegation mask, so random generation excludes `mideleg`.
+The dedicated replay includes the minimized counterexample that sets bit 13
+and reads it back through CSRRSI. No destination-register bits are masked.
+The [Sscofpmf specification](https://docs.riscv.org/reference/isa/v20260120/priv/sscofpmf.html)
+assigns local counter overflow interrupt number 13 and specifies that
+`mideleg` controls its delegation to S-mode versus M-mode.
+
 Replay a counterexample from this view with `--sscofpmf --trace <file>`;
 the option cannot be combined with `--trace-dir`, `--atomics` or `--crypto`.
 
@@ -231,6 +241,7 @@ result depends on timing, out of the default run:
 |----------|-----|
 | `cycle`, `time`, `mcycle` | FROST counts clock cycles; Sail counts instructions |
 | `mie`, `mip`, `sie`, `sip` | Sail takes an interrupt in place of an instruction, which the trace cannot express |
+| `mideleg` | Sail requires Zihpm for LCOFI bit 13; the dedicated `--sscofpmf` replay checks the full register |
 | `stimecmp` | The Sstc timer compare depends on time |
 | `mtvec`, `stvec` | Reserved MODE values: FROST keeps the low bit, Sail keeps the old MODE |
 | `mcause`, `scause` | The cause code is WLRL: FROST keeps any value written, Sail keeps the old value when the code is one it does not support |

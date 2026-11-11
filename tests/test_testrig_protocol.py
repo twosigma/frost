@@ -139,6 +139,16 @@ def test_sail_ddr_capacity_matches_frost(
     }
 
 
+def test_default_csr_view_keeps_absent_hpm_aliases() -> None:
+    """Default generation checks absent aliases; Sscofpmf needs its own view."""
+    include = re.compile(test_testrig.DEFAULT_CSR_INCLUDE)
+    for counter in range(11, 32):
+        assert include.fullmatch(f"hpmcounter{counter}")
+    assert include.fullmatch("medeleg")
+    assert not include.fullmatch("mideleg")
+    assert not include.fullmatch("scountovf")
+
+
 def test_dii_packet_wire_layout() -> None:
     """Instruction word, time, and command sit where TestRIG puts them."""
     wire = bytes([0x13, 0x00, 0x10, 0x00, 0x01, 0x00, 0x01, 0x00])
@@ -261,3 +271,4 @@ def test_sail_config_validates(tmp_path: Path, sscofpmf: bool) -> None:
         check=True,
     ).stdout
     assert re.match(r"rv64imafdcb_zicboz_zicntr_zicond_zicsr_zifencei_zihintpause", isa)
+    assert ("zihpm" in isa.strip().split("_")) == sscofpmf

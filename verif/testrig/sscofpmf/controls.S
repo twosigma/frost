@@ -1,4 +1,26 @@
-# Deterministic Sscofpmf fields and counter aliases; selectors stay disabled.
+# Deterministic Sscofpmf delegation, fields and aliases; selectors stay disabled.
+# Minimized counterexample: LCOFI survives a write to a reserved mideleg bit.
+.4byte 0x000020b7 # lui x1, 2: LCOFI mask
+.4byte 0x3030a173 # csrrs x2, mideleg, x1
+.4byte 0x3030e173 # csrrsi x2, mideleg, 1: old value 0x2000
+.4byte 0x3030b1f3 # csrrc x3, mideleg, x1: clear LCOFI
+.4byte 0x30302273 # csrrs x4, mideleg, x0: zero
+# Probe the full WARL mask, then preserve the other bits while clearing LCOFI.
+.4byte 0xfff00093 # addi x1, x0, -1
+.4byte 0x30309173 # csrrw x2, mideleg, x1
+.4byte 0x303021f3 # csrrs x3, mideleg, x0: 0x2222
+.4byte 0x000020b7 # lui x1, 2
+.4byte 0x3030b173 # csrrc x2, mideleg, x1
+.4byte 0x30302273 # csrrs x4, mideleg, x0: 0x0222
+# Exercise immediate set, clear and write, including reserved bits.
+.4byte 0x30317173 # csrrci x2, mideleg, 2
+.4byte 0x303161f3 # csrrsi x3, mideleg, 2
+.4byte 0x30305273 # csrrwi x4, mideleg, 0
+.4byte 0x303fd173 # csrrwi x2, mideleg, 31
+.4byte 0x303021f3 # csrrs x3, mideleg, x0: 2
+.4byte 0x303ff273 # csrrci x4, mideleg, 31
+.4byte 0x303022f3 # csrrs x5, mideleg, x0: zero
+# Counter controls and aliases.
 .4byte 0xfff00313 # addi x6, x0, -1
 .4byte 0x03c31313 # slli x6, x6, 60: OF, MINH, SINH, UINH only
 .4byte 0x32331073 # CSR 0x323, op 1, x6, rd x0
