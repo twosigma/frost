@@ -139,6 +139,16 @@ jobs:
             pytest_filter: >-
               [debug_test] or [debug_fence_test] or [debug_openocd_test] or [bram_reload] or [instret_test] or
               [hello_world] or [uart_burst] or [uart_echo] or [print_clock_speed]
+          - name: Real Programs (Zicboz)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [cbo_zero_test] or [cbo_zero_test_assert] or [cbo_zero_test_equal_lines]
+          - name: Real Programs (Zicboz pages)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: "[cbo_zero_pages]"
+          - name: Real Programs (Zicboz eviction)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: "[cbo_zero_pages_thrash] or [cbo_zero_pages_thrash_sync]"
           # The complement keeps new non-CoreMark-PRO programs in CI.
           # Keep it in sync when moving a test into a named shard.
           - name: Real Programs (Runtime and other)
@@ -174,7 +184,10 @@ jobs:
               or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz] or [opensbi_smoke] or
               [isa_test_sram_macros] or [ddr_test_sram_macros] or [ddr_exec_test_sram_macros] or
               [nic_loopback_sram_macros] or [cache_counters_openocd] or [async_hello_world]
-              or [async_nic_loopback] or [async_dma_torture])
+              or [async_nic_loopback] or [async_dma_torture]
+              or [cbo_zero_test] or [cbo_zero_test_assert] or [cbo_zero_test_equal_lines]
+              or [cbo_zero_pages] or [cbo_zero_pages_thrash] or [cbo_zero_pages_thrash_sync]
+              or [cbo_zero_pages_board] or [cbo_zero_pages_board_ddr] or [cbo_zero_bench])
           - name: Real Programs (CoreMark-PRO / core)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: "[coremark_pro_core]"
@@ -190,6 +203,18 @@ jobs:
               [coremark_pro_cjpeg] or [coremark_pro_linear_alg] or [coremark_pro_parser] or
               [coremark_pro_radix2] or [coremark_pro_sha] or [coremark_pro_zip]
         include:
+          # These configurations already select their program layout and DDR
+          # geometry. Keep the long runs separate from the other programs.
+          - mem_config: bram
+            shard:
+              name: Real Programs (Zicboz large cache)
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: "[cbo_zero_pages_board] or [cbo_zero_pages_board_ddr]"
+          - mem_config: bram
+            shard:
+              name: Real Programs (Zicboz clearing benchmark)
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: "[cbo_zero_bench]"
           - mem_config: bram
             shard:
               name: Real Programs (DDR probes and fetch fuzz)

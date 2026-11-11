@@ -856,7 +856,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="cbo_zero_bench",
         nic_mac_clocks=False,
         description="Cycles to clear 64 KiB and 1 MiB of cached DDR: sd loop against cbo.zero",
-        include_in_pytest=False,
         extra_env=(("COCOTB_MAX_CYCLES", "40000000"),),
     ),
     "cbo_zero_pages": CocotbRunConfig(
@@ -880,7 +879,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "cbo_zero_pages in the VCU118 shape: 4 MiB L2, CPU clock twice the "
             "SoC clock and asynchronous to it, DDR latency jitter and reordering"
         ),
-        include_in_pytest=False,
         extra_env=(
             ("COCOTB_MAX_CYCLES", "6000000"),
             ("FROST_CPU_PERIOD_PS", "1500"),
@@ -900,7 +898,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="cbo_zero_pages",
         nic_mac_clocks=False,
-        include_in_pytest=False,
         description=(
             "cbo_zero_pages_board with the whole program in cached DDR, fetched "
             "through the L1I as kernel text is, on a shorter page schedule"
