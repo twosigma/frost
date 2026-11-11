@@ -409,9 +409,25 @@ module dmmu (
   // is the TLB's per-entry verdict, selected with the hit, so the capture
   // enable does not wait on the fault select.
   logic last_capture;
-  assign last_capture = s1_valid_q && !s1_killed && !(i_trap_misaligned && s1_misaligned) &&
-      !s1_noncanonical && (tlb_hit[0] ? tlb_clean_hit[0] :
-                           (walk_resp_for_s1 && (walk_fault == riscv_pkg::DFAULT_NONE)));
+  (* keep = "true" *) wire last_capture_qualified = s1_valid_q && !s1_killed &&
+      !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical;
+  (* keep = "true" *) wire last_capture_walk_good =
+      walk_resp_for_s1 && (walk_fault == riscv_pkg::DFAULT_NONE);
+  // Apply the hit's clean verdict after request and walk qualification.
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT4 #(
+      .INIT(16'ha280)
+  ) u_last_capture (
+      .I0(last_capture_qualified),
+      .I1(tlb_hit[0]),
+      .I2(tlb_clean_hit[0]),
+      .I3(last_capture_walk_good),
+      .O (last_capture)
+  );
+`else
+  assign last_capture = last_capture_qualified &&
+      (tlb_hit[0] ? tlb_clean_hit[0] : last_capture_walk_good);
+`endif
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all || i_tlb_invalidate || !i_active) begin
       last_valid_q <= 1'b0;
@@ -575,6 +591,16 @@ module dmmu (
   assign s2_leaf_applies = s1_valid_q && !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical;
   assign s2_fault_next   = s2_leaf_applies && tlb_hit[0] ? s2_leaf_fault : s2_fault_without_leaf;
 
+  // The DTLB selects the clean data-access verdict with the matching entry.
+  // Select that verdict directly instead of rebuilding its permission and
+  // page-attribute checks after selection.
+  (* keep = "true" *)wire s2_pa_leaf_selected = s2_leaf_applies && !s1_killed && tlb_hit[0];
+  // verilog_format: off
+  (* keep = "true" *) wire s2_pa_without_leaf =
+      s1_killed || (s2_fault_without_leaf == riscv_pkg::DFAULT_NONE);
+  // verilog_format: on
+  wire s2_pa_next = s2_pa_leaf_selected ? tlb_clean_hit[0] : s2_pa_without_leaf;
+
   // S2 holds an operation for one cycle and its readers wait for s2_valid_q, so
   // the payload loads every cycle and only the valid bit reads the bypass.
   always_ff @(posedge i_clk) begin
@@ -584,7 +610,7 @@ module dmmu (
     s2_tag_q <= s1_move ? s1_q.tag : iss_in.tag;
     s2_va_q <= s1_move ? s1_q.va : iss_in.va;
     s2_ppn_q <= s1_move ? resolve_ppn : last_ppn_q;
-    s2_pa_q <= !s1_move || resolve_pa;
+    s2_pa_q <= s2_pa_next;
     s2_fault_q <= s1_move ? riscv_pkg::data_fault_kind_e'(s2_fault_next) : riscv_pkg::DFAULT_NONE;
     s2_needs_sq_q <= s1_move ? s1_q.needs_sq : iss_in.needs_sq;
     s2_is_sc_q <= s1_move ? s1_q.is_sc : iss_in.is_sc;
