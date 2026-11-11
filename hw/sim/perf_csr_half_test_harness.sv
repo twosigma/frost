@@ -41,11 +41,17 @@ module perf_csr_half_test_harness #(
     input logic [1:0] i_hpm_branches,
     input logic [1:0] i_hpm_mispredicts,
     input logic [3:0] i_hpm_events,
-    // {SFENCE.VMA invalidate start, walker busy} for selectors 11 and 10.
+    // {SFENCE.VMA invalidate start, walker busy} for selectors 17 and 16.
     input logic [1:0] i_hpm_translation_events,
+    input logic [1:0] i_hpm_instret,
     input logic i_mret,
+    input logic i_sret,
     input logic i_trap,
-    output logic [8:0] o_counter_blocked,
+    output logic [riscv_pkg::CounterMaskBits-1:0] o_counter_blocked,
+    output logic [1:0] o_priv,
+    output logic o_lcof_pending,
+    output logic o_mideleg_lcof,
+    output logic [63:0] o_mie,
     output logic [63:0] o_reference,
     output logic [63:0] o_candidate,
     output logic [63:0] o_reference_comb,
@@ -71,8 +77,15 @@ module perf_csr_half_test_harness #(
   logic [7:0] selectors[2];
   logic captures[2], previous[2];
   logic [31:0] counter_count;
-  logic [ 8:0] counter_blocked[2];
+  logic [riscv_pkg::CounterMaskBits-1:0] counter_blocked[2];
   assign o_counter_blocked = counter_blocked[0];
+  logic [1:0] priv[2];
+  logic lcof_pending[2], mideleg_lcof[2];
+  logic [63:0] mie[2];
+  assign o_priv = priv[0];
+  assign o_lcof_pending = lcof_pending[0];
+  assign o_mideleg_lcof = mideleg_lcof[0];
+  assign o_mie = mie[0];
 
   always_comb begin
     raw_commit = '0;
@@ -169,7 +182,7 @@ module perf_csr_half_test_harness #(
         .i_csr_write_enable(o_read_enable),
         .o_csr_read_data(read_data[k]),
         .o_csr_read_data_comb(read_comb[k]),
-        .i_instruction_retired_count('0),
+        .i_instruction_retired_count(i_hpm_instret),
         .i_branch_retired_count(i_hpm_branches),
         .i_branch_mispredict_count(i_hpm_mispredicts),
         .i_itlb_miss(i_hpm_events[0]),
@@ -207,7 +220,7 @@ module perf_csr_half_test_harness #(
         .i_trap_save_s('0),
         .i_trap_enter_d('0),
         .i_mret_taken(i_mret),
-        .i_sret_taken('0),
+        .i_sret_taken(i_sret),
         .i_trap_to_d('0),
         .i_trap_dbg_cause('0),
         .i_dret_taken('0),
@@ -215,7 +228,7 @@ module perf_csr_half_test_harness #(
         .o_dbg_data_we(),
         .o_dbg_data_wdata(),
         .o_mstatus(),
-        .o_mie(),
+        .o_mie(mie[k]),
         .o_mtvec(),
         .o_mtvec_traps_misaligned(),
         .o_mepc(),
@@ -226,7 +239,9 @@ module perf_csr_half_test_harness #(
         .o_medeleg(),
         .o_mideleg_s(),
         .o_s_pending(),
-        .o_priv(),
+        .o_lcof_pending(lcof_pending[k]),
+        .o_mideleg_lcof(mideleg_lcof[k]),
+        .o_priv(priv[k]),
         .o_mcounteren(),
         .o_scounteren(),
         .o_counter_blocked(counter_blocked[k]),
@@ -277,6 +292,7 @@ module perf_csr_half_test_harness #(
       assert (selectors[0] == selectors[1]);
       assert (captures[0] == captures[1]);
       assert (previous[0] == previous[1]);
+      assert (lcof_pending[0] == lcof_pending[1]);
       if (o_read_enable && commit_q.csr_addr == riscv_pkg::CsrMperfData)
         assert (o_perf_half == o_perf_data[31:0]);
       if (o_read_enable && commit_q.csr_addr == riscv_pkg::CsrMperfDataH)

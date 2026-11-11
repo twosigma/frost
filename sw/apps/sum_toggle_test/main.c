@@ -306,7 +306,7 @@ int main(void)
     /* DTLB walks, ITLB walks and walker busy cycles; all modes may read them. */
     csr_write_imm(0x325, 5);
     csr_write_imm(0x326, 6);
-    csr_write_imm(0x328, 10);
+    csr_write_imm(0x328, 16); /* HPM8 = page-walker busy cycles */
     csr_write_imm(0x320, 0);
     csr_write_imm(0x306, 0x1ff);
     csr_write(medeleg, 0);

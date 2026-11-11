@@ -624,6 +624,12 @@ FORMAL_TARGETS = [
         tasks=("prove", "prove_integrated", "prove_perf_off"),
     ),
     FormalTarget(
+        "csr_sscofpmf.sby",
+        "Sscofpmf counter overflow, OF stickiness, inhibits, privilege attribution "
+        "and LCOFIP updates hold from arbitrary state",
+        tasks=("prove", "prove_integrated", "prove_perf_off"),
+    ),
+    FormalTarget(
         "pc_increment_relation.sby",
         "PC increment comparisons and selection match full-width arithmetic, including "
         "wraparound",
@@ -1330,18 +1336,6 @@ FORMAL_TARGETS = [
         "tomasulo_wrapper.sby",
         "Tomasulo commit and flush integration, including FP dispatch done repair",
         tasks=("bmc", "cover", "fp_repair_bmc"),
-    ),
-    FormalTarget(
-        "debug_go_pipeline.sby",
-        "Registered debug GO keeps its command or resume target, holds until "
-        "acknowledgement, and clears on acknowledgement or module reset",
-        tasks=("prove", "cover"),
-    ),
-    FormalTarget(
-        "debug_fetch_barrier.sby",
-        "Debug go follows fetch invalidation, preserves its target, and handles "
-        "withdrawal and reset without replay",
-        tasks=("prove", "cover"),
     ),
 ]
 
@@ -2323,7 +2317,26 @@ SBY_TASKS = [
 
 
 def test_formal_target_tasks_are_registered() -> None:
-    """Every declared task must participate in CLI and pytest execution."""
+    """Every SBY file and task must participate in CLI and pytest execution."""
+    formal_dir = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    files = [target.sby_file for target in FORMAL_TARGETS]
+    assert len(files) == len(set(files)), "Duplicate formal target registration"
+    assert set(files) == {path.name for path in formal_dir.glob("*.sby")}
+    for target in FORMAL_TARGETS:
+        text = (formal_dir / target.sby_file).read_text()
+        section = text.split("[tasks]", 1)[1].split("[", 1)[0]
+        declared = [
+            line.split()[0]
+            for raw in section.splitlines()
+            if (line := raw.split("#", 1)[0].strip())
+        ]
+        assert len(declared) == len(set(declared)), target.name
+        assert len(target.tasks) == len(set(target.tasks)), target.name
+        assert set(declared) == set(target.tasks), (
+            target.name,
+            sorted(set(declared) - set(target.tasks)),
+            sorted(set(target.tasks) - set(declared)),
+        )
     registered = {name for name, _ in SBY_TASKS}
     missing = {
         target.name: sorted(set(target.tasks) - registered)
@@ -2331,6 +2344,21 @@ def test_formal_target_tasks_are_registered() -> None:
         if set(target.tasks) - registered
     }
     assert not missing, f"Formal tasks would be silently skipped: {missing}"
+
+
+def test_formal_cli_rejects_empty_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A valid global task that a target does not declare cannot pass zero jobs."""
+    monkeypatch.setattr(
+        sys, "argv", ["test_run_formal.py", "--target", "csr_sscofpmf", "--task", "bmc"]
+    )
+
+    def unexpected_tool(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("An empty selection must fail before invoking a tool")
+
+    monkeypatch.setattr(subprocess, "run", unexpected_tool)
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 2
 
 
 def formal_task_timeout_s(target: str, task: str) -> int:
@@ -3601,6 +3629,16 @@ With pytest:
             print(f"  {task_name:8} - {task_desc}")
         return 0
 
+    targets = FORMAL_TARGETS
+    if args.target:
+        targets = [t for t in FORMAL_TARGETS if t.name == args.target]
+
+    tasks = SBY_TASKS
+    if args.task:
+        tasks = [(n, d) for n, d in SBY_TASKS if n == args.task]
+    if not any(name in target.tasks for target in targets for name, _ in tasks):
+        parser.error("the selected targets declare none of the requested tasks")
+
     try:
         result = subprocess.run(
             ["sby", "--version"], capture_output=True, text=True, timeout=10
@@ -3614,14 +3652,6 @@ With pytest:
         return 1
 
     runner = FormalRunner()
-
-    targets = FORMAL_TARGETS
-    if args.target:
-        targets = [t for t in FORMAL_TARGETS if t.name == args.target]
-
-    tasks = SBY_TASKS
-    if args.task:
-        tasks = [(n, d) for n, d in SBY_TASKS if n == args.task]
 
     failed = []
     passed = 0

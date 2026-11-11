@@ -127,6 +127,8 @@ module coherence_home_engine #(
   logic absent_q;
   wire  prefetch = request_q.opcode == coherence_pkg::Prefetch;
   logic probe_matches, upper, run, needs_probe, needs_data;
+  localparam int unsigned ProbeAddrGroups = (ADDR_WIDTH + 7) / 8;
+  (* keep = "true" *) wire [ProbeAddrGroups-1:0] probe_addr_equal;
   logic reply_fire, reply_fatal, service_error, service_dirty, service_complete;
   logic data_complete, probe_complete, deciding;
   // Reset clears every register below and the home's arbiters, so internal
@@ -175,10 +177,37 @@ module coherence_home_engine #(
   assign o_read_valid = run && o_read_offer;
   assign o_p_valid = run && phase_q == Service && probe_phase_q == ProbeOffer;
   assign o_p = probe_q;
-  assign probe_matches = reply.tid == tid_q && reply.addr == probe_q.addr &&
+  // Keep each byte comparison parallel to the other address groups.
+  for (genvar chunk = 0; chunk < ProbeAddrGroups; chunk++) begin : gen_probe_addr_equal
+    localparam int unsigned Bits = ADDR_WIDTH - 8 * chunk < 8 ? ADDR_WIDTH - 8 * chunk : 8;
+    assign probe_addr_equal[chunk] = reply.addr[8*chunk+:Bits] == probe_q.addr[8*chunk+:Bits];
+  end
+  (* keep = "true" *) wire probe_identity_matches = reply.tid == tid_q &&
       reply.epoch == probe_q.epoch && reply.hart == 0 &&
       (probe_q.opcode == coherence_pkg::CheckSC ? reply.opcode == coherence_pkg::CheckAck :
        reply.opcode == coherence_pkg::ProbeAck || reply.opcode == coherence_pkg::ProbeData);
+`ifdef FROST_XILINX_PRIMS
+  if (ProbeAddrGroups <= 5) begin : gen_probe_match_bounded
+    wire [4:0] address_groups = {{(5 - ProbeAddrGroups) {1'b1}}, probe_addr_equal};
+    // Apply the late address groups after the independent packet identity.
+    (* dont_touch = "true" *)
+    LUT6 #(
+        .INIT(64'h8000000000000000)
+    ) u_probe_matches (
+        .I0(probe_identity_matches),
+        .I1(address_groups[0]),
+        .I2(address_groups[1]),
+        .I3(address_groups[2]),
+        .I4(address_groups[3]),
+        .I5(address_groups[4]),
+        .O (probe_matches)
+    );
+  end else begin : gen_probe_match_wide
+    assign probe_matches = probe_identity_matches && (&probe_addr_equal);
+  end
+`else
+  assign probe_matches = probe_identity_matches && (&probe_addr_equal);
+`endif
   assign o_r_ready = run && phase_q == Service && probe_phase_q == ProbeWait && probe_matches;
   assign reply_fire = i_r_valid && o_r_ready;
   assign reply_fatal = reply_fire && reply.error &&

@@ -29,6 +29,7 @@ repository root:
     ./scripts/frost.py run python3 tests/test_testrig.py --tests 200 --include 'arith|mem'
     ./scripts/frost.py run python3 tests/test_testrig.py --trace counterexample.S
     ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
+    ./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf
 
 The image provides sail_riscv_sim and QCVEngine. Counterexamples go to
 --save-dir (tests/testrig_failures by default); replay one with --trace.
@@ -62,6 +63,7 @@ atomics = importlib.import_module("testrig.atomics")
 crypto = importlib.import_module("testrig.crypto")
 SAIL_CONFIG = REPO_ROOT / "verif" / "testrig" / "sail_frost.json"
 SAVED_TRACES_DIR = REPO_ROOT / "verif" / "testrig" / "traces"
+SSCOFPMF_TRACE = REPO_ROOT / "verif" / "testrig" / "sscofpmf" / "controls.S"
 DEFAULT_SAVE_DIR = TESTS_DIR / "testrig_failures"
 DEFAULT_LOG_DIR = TESTS_DIR / "testrig_logs"
 DEFAULT_DDR_CAPACITY_LOG2_BYTES = 30
@@ -87,8 +89,8 @@ DEFAULT_TEST_INCLUDE = (
     "float|float64|double|double64|csr|fencei|fencei64|pte|all|random)$"
 )
 
-# HPM event selectors 3..8 have implementation-defined WARL values, and Sail
-# cannot represent the partial set of user aliases 3..8. Those addresses
+# HPM event selectors 3..10 have implementation-defined WARL values, and Sail
+# cannot represent the partial set of user aliases 3..10. Those addresses
 # are checked by the CSR and privilege benches. Random traces leave their
 # selectors disabled, so machine counter storage can be compared.
 # CSRs the generators may access. Left out, as implementation-defined or
@@ -101,10 +103,10 @@ DEFAULT_TEST_INCLUDE = (
 # does not; and unnamed addresses, which include FROST's custom profiling
 # CSRs.
 DEFAULT_CSR_INCLUDE = (
-    "^(fflags|frm|fcsr|instret|hpmcounter(9|[12][0-9]|3[01])|sstatus|scounteren|senvcfg|"
+    "^(fflags|frm|fcsr|instret|hpmcounter(1[1-9]|2[0-9]|3[01])|sstatus|scounteren|senvcfg|"
     "sscratch|sepc|stval|satp|mvendorid|marchid|mimpid|mhartid|mstatus|misa|"
     "medeleg|mideleg|mcounteren|menvcfg|mscratch|mepc|mtval|pmpcfg[0-9]+|"
-    "pmpaddr[0-9]+|minstret|mhpmcounter[0-9]+|mhpmevent(9|[12][0-9]|3[01])|mcountinhibit)$"
+    "pmpaddr[0-9]+|minstret|mhpmcounter[0-9]+|mhpmevent(1[1-9]|2[0-9]|3[01])|mcountinhibit)$"
 )
 
 
@@ -128,14 +130,22 @@ def tool_path(name: str, environment_variable: str) -> str:
     return os.environ.get(environment_variable, name)
 
 
-def write_sail_config(capacity_log2_bytes: int, work_dir: Path) -> Path:
-    """Give Sail the same DDR aperture as the FROST RVFI-DII build."""
+def write_sail_config(
+    capacity_log2_bytes: int, work_dir: Path, *, sscofpmf: bool = False
+) -> Path:
+    """Match DDR capacity and enable Zihpm for the dedicated Sscofpmf trace."""
     if capacity_log2_bytes not in range(30, 38):
         raise ValueError("DDR capacity must be 1, 2, 4, 8, 16, 32, 64 or 128 GiB")
     lines = SAIL_CONFIG.read_text(encoding="utf-8").splitlines()
     config = json.loads(
         "\n".join(line for line in lines if not line.lstrip().startswith("//"))
     )
+    # Sail 0.16 makes Sscofpmf depend on Zihpm. Enabling Zihpm also
+    # exposes every user HPM alias, including FROST's absent 11..31.
+    # Only the dedicated trace can use this view: it accesses implemented
+    # counters and deterministic controls, with event selectors disabled.
+    if sscofpmf:
+        config["extensions"]["Zihpm"]["supported"] = True
     ddr_regions = [
         region
         for region in config["memory"]["regions"]
@@ -145,7 +155,8 @@ def write_sail_config(capacity_log2_bytes: int, work_dir: Path) -> Path:
     if len(ddr_regions) != 1:
         raise ValueError("Sail configuration must contain exactly one FROST DDR region")
     ddr_regions[0]["size"]["value"] = f"0x{1 << capacity_log2_bytes:x}"
-    path = work_dir / f"sail_frost_ddr{capacity_log2_bytes}.json"
+    suffix = "_sscofpmf" if sscofpmf else ""
+    path = work_dir / f"sail_frost_ddr{capacity_log2_bytes}{suffix}.json"
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     return path
 
@@ -231,7 +242,9 @@ def run(arguments: argparse.Namespace) -> int:
     save_dir.mkdir(parents=True, exist_ok=True)
     work_dir = Path(arguments.log_dir).resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
-    sail_config = write_sail_config(arguments.ddr_capacity_log2_bytes, work_dir)
+    sail_config = write_sail_config(
+        arguments.ddr_capacity_log2_bytes, work_dir, sscofpmf=arguments.sscofpmf
+    )
     sail_port, frost_port = free_ports()
     ready_file = work_dir / "frost_ready"
     ready_file.unlink(missing_ok=True)
@@ -298,6 +311,8 @@ def run(arguments: argparse.Namespace) -> int:
         ]
         if arguments.trace:
             command += ["-t", str(Path(arguments.trace).resolve())]
+        elif arguments.sscofpmf:
+            command += ["-t", str(SSCOFPMF_TRACE)]
         elif arguments.trace_dir:
             command += ["-d", str(Path(arguments.trace_dir).resolve())]
         elif arguments.crypto:
@@ -427,6 +442,13 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--trace", help="replay one saved trace instead")
     parser.add_argument("--trace-dir", help="replay every .S trace in a directory")
     parser.add_argument(
+        "--sscofpmf",
+        action="store_true",
+        help="replay deterministic Sscofpmf controls and implemented counters "
+        "with Sail's required Zihpm support enabled; use --trace to replay "
+        "a counterexample in this view",
+    )
+    parser.add_argument(
         "--crypto",
         type=int,
         default=0,
@@ -475,7 +497,14 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         default=600,
         help="seconds the engine waits for one test's trace (default 600)",
     )
-    return parser.parse_args(argv)
+    arguments = parser.parse_args(argv)
+    if arguments.sscofpmf and (
+        arguments.trace_dir or arguments.atomics or arguments.crypto
+    ):
+        parser.error(
+            "--sscofpmf cannot be combined with --trace-dir, --atomics or --crypto"
+        )
+    return arguments
 
 
 @pytest.mark.cocotb

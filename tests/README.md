@@ -97,8 +97,8 @@ typed interfaces from their actual module headers; other unknown modules
 fail. `$initstate` gets a typed extension declaration, and the asynchronous
 FIFO gets a containing standard global clocking scope for `$global_clock`.
 
-All 568 distinct formal views (709 tasks) are required, including every
-hart-cache maintenance configuration. The complete matrix has 674 cases,
+All 571 distinct formal views (712 tasks) are required, including every
+hart-cache maintenance configuration. The complete matrix has 677 cases,
 with no deferred views or source-error exceptions. To record diagnostics
 and elapsed times for every case:
 
@@ -676,6 +676,7 @@ provides Sail and the engine.
 ./scripts/frost.py run python3 tests/test_testrig.py --include '^(mem|pte)$' --tests 500
 ./scripts/frost.py run python3 tests/test_testrig.py --trace tests/testrig_failures/failure-<time>.S
 ./scripts/frost.py run python3 tests/test_testrig.py --trace-dir verif/testrig/traces
+./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf
 ./scripts/frost.py run python3 tests/test_testrig.py --crypto 50
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
 ```
@@ -720,8 +721,9 @@ proves, and its assumptions.
 ./scripts/frost.py formal --task bmc               # one task on every target that declares it
 ```
 
-Each target and task is a separate pytest case. The runner's default timeout
-is 40 minutes; task-specific SBY and runner allowances are listed together in
+Each target and task is a separate pytest case. Fast checks compare every SBY
+task list with the runner registration; selecting no matching task is an error.
+The default timeout is 40 minutes; task-specific SBY and runner allowances are listed together in
 the [formal guide](../formal/README.md). The single-endpoint L1D control BMC
 keeps depth 40 with a 180-minute allowance in a 200-minute job; the
 multi-endpoint control BMC has 300 minutes in its own 330-minute job. The
@@ -1001,7 +1003,7 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 | Architecture compliance | BRAM and DDR, in groups of extensions; excludes Zifencei on BRAM and F/D on DDR; F and D share three BRAM shards without coverage; the other groups collect coverage |
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
 | Torture | BRAM, DDR, and paged DDR |
-| TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and runs 50 sequences from the crypto generator |
+| TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and deterministic Sscofpmf controls, and runs 50 sequences from the crypto generator |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis |
 | Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, L1D control, L1D multi-endpoint, L1D data (three jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream and Other tasks jobs; and a separate job for the hart maintenance proof, its ownership induction, the independent unbounded stream payload proof and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets |

@@ -44,10 +44,12 @@ The diagram shows the X3 configuration; click it for the full-size version.
   itself: building bitstreams and programming and loading the board.
 - A cycle-approximate [performance model](perf-modeling/README.md) of the CPU
   and memory system for design-space sweeps, with RTL event capture and a
-  CoreMark IPC comparison against the RTL. Architectural HPM counters 3–8
+  CoreMark IPC comparison against the RTL. Architectural HPM counters 3–10
   report retired branches, mispredictions, instruction and data TLB walks,
-  L1D permission misses, and store-queue capacity stalls through Linux `perf`
-  and the OpenSBI PMU mapping. Optional custom profiling counters report
+  L1D permission misses, store-queue capacity stalls, cycles, and retired
+  instructions through Linux `perf` and the OpenSBI PMU mapping, with
+  Sscofpmf overflow interrupts for `perf record` sampling and per-privilege
+  filtering. Optional custom profiling counters report
   stall causes, occupancy, and cache traffic.
 - FreeRTOS and all nine EEMBC CoreMark-PRO workloads.
 - A [VS Code extension](tools/vscode-frost/README.md) that programs the FPGA,
@@ -154,6 +156,7 @@ every supported extension and privilege mode.
 | **Machine Mode** | M-mode privilege (mret, wfi, ecall, ebreak)    |
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
 | **Smaia, Ssaia** | AIA CSRs and machine/supervisor IMSIC files with 63 identities |
+| **Sscofpmf**     | HPM counter overflow (OF, `scountovf`, local counter-overflow interrupt 13) and MINH/SINH/UINH privilege filtering on counters 3..10 |
 | **Svade**        | Software-managed accessed and dirty bits: an access that needs one set raises a page fault |
 | **Svvptc**       | A PTE changed from invalid to valid becomes visible to the walker without `sfence.vma` |
 | **User Mode**    | U-mode privilege and system calls |

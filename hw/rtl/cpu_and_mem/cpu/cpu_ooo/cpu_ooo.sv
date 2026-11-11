@@ -46,7 +46,7 @@ module cpu_ooo #(
     parameter int unsigned DECODED_QUEUE_DEPTH = riscv_pkg::DecodedQueueDepth,
     // Profiling counters: perf_counter_aggregator, the wrapper's
     // tomasulo_perf_counters and the CSR file's mperf* state. With 0, the
-    // mperf* CSRs read zero. Architectural HPM3..8 consume their events
+    // mperf* CSRs read zero. Architectural HPM3..10 consume their events
     // independently of this profiling option.
     parameter int unsigned PERF_COUNTERS = 0,
     // The walker's line port carries the L1s' 32-byte lines.
@@ -334,6 +334,7 @@ module cpu_ooo #(
   logic if_slot1_is_indirect;
   (* max_fanout = 32 *) logic serializing_alloc_fire;
   logic csr_commit_fire;  // driven by commit_actions below
+  logic csr_irq_update_q;
   logic branch_resolved_correct;  // branch resolved correctly at execute time
   logic [riscv_pkg::CheckpointIdWidth-1:0] branch_resolved_checkpoint_id;  // its checkpoint
 
@@ -750,8 +751,9 @@ module cpu_ooo #(
   logic [15:0] csr_medeleg;
   logic [2:0] csr_mideleg_s;
   logic [2:0] csr_s_pending;
-  logic [8:0] csr_scounteren;
-  logic [8:0] csr_counter_blocked;
+  logic [riscv_pkg::CounterMaskBits-1:0] csr_scounteren;
+  logic [riscv_pkg::CounterMaskBits-1:0] csr_counter_blocked;
+  logic csr_lcof_pending, csr_mideleg_lcof;
   logic csr_stimecmp_blocked;
   logic csr_mireg_illegal, csr_sireg_illegal, csr_stopei_illegal;
   logic csr_sret_illegal, csr_sfence_illegal, csr_wfi_illegal, csr_priv_is_u;
@@ -1965,7 +1967,8 @@ module cpu_ooo #(
   riscv_pkg::exc_cause_t rob_trap_cause;
   riscv_pkg::exc_cause_t rob_trap_cause_remapped;
   logic [1:0] csr_priv;  // current privilege from csr_file (PrivM/PrivS/PrivU)
-  logic [8:0] csr_mcounteren;  // mcounteren CY/TM/IR/HPM3..8 from csr_file (S/U-mode counter gate)
+  // mcounteren CY/TM/IR/HPM3..10 from csr_file (S/U-mode counter gate)
+  logic [riscv_pkg::CounterMaskBits-1:0] csr_mcounteren;
   // Arbitrated trap cause for csr_file: interrupt code with bit XLEN-1 set,
   // or the remapped synchronous exception cause.
   logic [XLEN-1:0] trap_cause_internal;
@@ -3089,6 +3092,15 @@ module cpu_ooo #(
   logic csr_wb_arm;
   assign csr_wb_arm = csr_commit_fire && rob_commit.dest_valid;
 
+  // CSR storage consumes the registered commit bus. On that same edge the
+  // trap unit still samples the old interrupt priorities. Keep its M/S take
+  // quiet for the following cycle, so a write enabling a higher source cannot
+  // enter under the old cause or vector. This adds no ordinary CSR stall.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) csr_irq_update_q <= 1'b0;
+    else csr_irq_update_q <= csr_commit_fire;
+  end
+
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_all) begin
       bypass_p0_int_we_q <= 1'b0;
@@ -3859,6 +3871,8 @@ module cpu_ooo #(
       .o_medeleg(csr_medeleg),
       .o_mideleg_s(csr_mideleg_s),
       .o_s_pending(csr_s_pending),
+      .o_lcof_pending(csr_lcof_pending),
+      .o_mideleg_lcof(csr_mideleg_lcof),
       .o_priv(csr_priv),
       .o_mcounteren(csr_mcounteren),
       .o_scounteren(csr_scounteren),
@@ -3999,7 +4013,7 @@ module cpu_ooo #(
   // resuming even while interrupts are globally disabled); the trap unit
   // separately decides whether to take the interrupt.
   assign interrupt_pending = file_interrupts.meip || file_interrupts.mtip || file_interrupts.msip ||
-      (|csr_s_pending);
+      (|csr_s_pending) || csr_lcof_pending;
 
   function automatic logic [XLEN-1:0] retired_next_pc(
       input riscv_pkg::reorder_buffer_commit_t commit);
@@ -4350,6 +4364,7 @@ module cpu_ooo #(
       // with the CSR write (csr_file relies on that) and no stale younger
       // xRET can execute on the flush edge.
       .i_pipeline_stall(fence_class_quiesce),
+      .i_csr_irq_update(csr_irq_update_q),
       .i_sq_committed_empty(sq_committed_empty_for_trap),
       .o_trap_drain_wait(trap_drain_wait),
       .i_amo_at_head((amo_at_head_shield_q && !(step_done_q)) || coherent_atomic_active),
@@ -4370,10 +4385,13 @@ module cpu_ooo #(
       // that mip writes can raise.
       .i_interrupts('0),
       .i_s_pending('0),
+      .i_lcof_pending(1'b0),
 `else
       .i_interrupts(file_interrupts),
       .i_s_pending(csr_s_pending),
+      .i_lcof_pending(csr_lcof_pending),
 `endif
+      .i_mideleg_lcof(csr_mideleg_lcof),
       // Exception from the ROB head. i_pipeline_stall does not gate the trap
       // unit's exception latch, so mask the exception over the same T+1/T+2
       // window; otherwise a stale younger exception could survive the full

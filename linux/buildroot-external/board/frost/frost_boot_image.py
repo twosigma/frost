@@ -86,9 +86,9 @@ ISA_EXTENSIONS = (
     "i", "m", "a", "f", "d", "c",
     "zicsr", "zifencei", "zicntr",
     "zba", "zbb", "zbc", "zbs", "zbkb", "zbkc", "zicond", "zihintpause",
-    "smaia", "ssaia", "sstc", "svade", "svvptc",
+    "smaia", "ssaia", "sscofpmf", "sstc", "svade", "svvptc",
 )  # fmt: skip
-ISA_STRING = "rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbc_zbs_zbkb_zbkc_zicond_zihintpause_smaia_ssaia_sstc_svade_svvptc"
+ISA_STRING = "rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbc_zbs_zbkb_zbkc_zicond_zihintpause_smaia_ssaia_sscofpmf_sstc_svade_svvptc"
 
 # Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
 # and fails frost_nettest's idle checks. The initramfs needs no IPv6.
@@ -343,18 +343,24 @@ def gen_dts(
 \tpmu {{
 \t\tcompatible = "riscv,pmu";
 \t\t/* Fixed events: retired branches, branch mispredictions, ITLB walks,
-\t\t * DTLB walks, L1D permission misses, and SQ capacity stalls.
-\t\t * Counter N selects its event with mhpmeventN=N; zero disables it.
-\t\t * Raw translation events: 10 = page-walker busy cycles (counter 8),
-\t\t * 11 = SFENCE.VMA TLB invalidates (counter 7), 12 = CSR-requested TLB
-\t\t * invalidates (counter 4). */
-\t\triscv,event-to-mhpmcounters = <0x00000001 0x00000001 0x00000001>,
-\t\t\t\t      <0x00000002 0x00000002 0x00000004>,
+\t\t * DTLB walks, L1D permission misses, SQ capacity stalls, cycles, and
+\t\t * retired instructions on counters 3..10. Counter N selects its event
+\t\t * with mhpmeventN=N; zero disables it. With Sscofpmf, OpenSBI places
+\t\t * cycles and instructions on counters 9 and 10, which overflow and
+\t\t * filter by privilege; the fixed counters 0 and 2 do neither.
+\t\t * Raw translation events: 16 = page-walker busy cycles (counter 8),
+\t\t * 17 = SFENCE.VMA TLB invalidates (counter 7), 18 = CSR-requested TLB
+\t\t * invalidates (counter 4). They sit above the counter numbers, so no
+\t\t * raw selector names two events. */
+\t\triscv,event-to-mhpmcounters = <0x00000001 0x00000001 0x00000200>,
+\t\t\t\t      <0x00000002 0x00000002 0x00000400>,
 \t\t\t\t      <0x00000004 0x00000004 0x00000080>,
 \t\t\t\t      <0x00000005 0x00000005 0x00000008>,
 \t\t\t\t      <0x00000006 0x00000006 0x00000010>,
 \t\t\t\t      <0x00010021 0x00010021 0x00000020>;
-\t\triscv,event-to-mhpmevent = <0x00000004 0x00000000 0x00000007>,
+\t\triscv,event-to-mhpmevent = <0x00000001 0x00000000 0x00000009>,
+\t\t\t\t    <0x00000002 0x00000000 0x0000000a>,
+\t\t\t\t    <0x00000004 0x00000000 0x00000007>,
 \t\t\t\t    <0x00000005 0x00000000 0x00000003>,
 \t\t\t\t    <0x00000006 0x00000000 0x00000004>,
 \t\t\t\t    <0x00010021 0x00000000 0x00000005>;
@@ -364,9 +370,11 @@ def gen_dts(
 \t\t\t\t        <0x0 0x6 0xffffffff 0xffffffff 0x40>,
 \t\t\t\t        <0x0 0x7 0xffffffff 0xffffffff 0x80>,
 \t\t\t\t        <0x0 0x8 0xffffffff 0xffffffff 0x100>,
-\t\t\t\t        <0x0 0xa 0xffffffff 0xffffffff 0x100>,
-\t\t\t\t        <0x0 0xb 0xffffffff 0xffffffff 0x80>,
-\t\t\t\t        <0x0 0xc 0xffffffff 0xffffffff 0x10>;
+\t\t\t\t        <0x0 0x9 0xffffffff 0xffffffff 0x200>,
+\t\t\t\t        <0x0 0xa 0xffffffff 0xffffffff 0x400>,
+\t\t\t\t        <0x0 0x10 0xffffffff 0xffffffff 0x100>,
+\t\t\t\t        <0x0 0x11 0xffffffff 0xffffffff 0x80>,
+\t\t\t\t        <0x0 0x12 0xffffffff 0xffffffff 0x10>;
 \t}};
 
 \tsoc@0 {{

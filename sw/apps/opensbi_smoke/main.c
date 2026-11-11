@@ -103,6 +103,8 @@ static void check_eq(const char *name, uint64_t got, uint64_t want)
 #define IRQ_S_SOFT 1
 #define IRQ_S_TIMER 5
 #define IRQ_S_EXTERNAL 9
+#define IRQ_LCOF 13
+#define SIE_LCOFIE (1ul << IRQ_LCOF)
 
 /* ---- SBI ---- */
 struct sbiret {
@@ -141,6 +143,10 @@ static struct sbiret sbi_ecall(
 #define SBI_PMU_HW_CPU_CYCLES 1
 #define SBI_PMU_HW_INSTRUCTIONS 2
 #define SBI_PMU_START_FLAG_SET_INIT_VALUE 1ul
+#define SBI_PMU_STOP_FLAG_RESET 1ul
+#define SBI_PMU_CFG_FLAG_CLEAR_VALUE (1ul << 1)
+#define SBI_PMU_CFG_FLAG_AUTO_START (1ul << 2)
+#define SBI_PMU_CFG_FLAG_SET_SINH (1ul << 6)
 #define SBI_ERR_ALREADY_STARTED (-7)
 #define SBI_ERR_ALREADY_STOPPED (-8)
 #define SBI_FWFT_MISALIGNED_EXC_DELEG 0
@@ -149,6 +155,7 @@ static struct sbiret sbi_ecall(
 static volatile uint64_t g_timer_irqs, g_soft_irqs, g_external_irqs, g_external_claim;
 static volatile uint64_t g_last_cause, g_last_tval, g_last_epc, g_trap_count;
 static volatile uint64_t g_illegal_count;
+static volatile uint64_t g_lcof_irqs, g_lcof_ovf;
 
 struct frame {
     uint64_t x[31]; /* x1..x31 */
@@ -178,6 +185,12 @@ int handle_trap(struct frame *f)
         } else if (irq == IRQ_S_SOFT) {
             g_soft_irqs++;
             csr_clear(sip, SIE_SSIE);
+        } else if (irq == IRQ_LCOF) {
+            /* Linux's riscv-pmu-sbi order: stop, read scountovf, clear LCOFIP. */
+            sbi_ecall(SBI_EXT_PMU, 4, 10, 0x1, 0, 0);
+            g_lcof_ovf = csr_read(0xDA0);
+            csr_clear(sip, SIE_LCOFIE);
+            g_lcof_irqs++;
         } else if (irq == IRQ_S_EXTERNAL) {
             g_external_claim = APLIC_CLAIMI(APLIC_S_BASE);
             g_external_irqs++;
@@ -496,12 +509,13 @@ static uintptr_t code_s_alias(const void *p)
 /* ---- the run ---- */
 static void wait_irqs(volatile uint64_t *counter, uint64_t target)
 {
-    uint64_t start = csr_read(cycle);
+    /* Time, not cycle: section H stops the cycle counter through the SBI. */
+    uint64_t start = csr_read(time);
     while (*counter < target) {
         /* Poll with interrupts enabled. The handler can run after the counter
          * read and disarm its one-shot source; WFI there would sleep forever.
          * Polling also lets the timeout expire if no interrupt arrives. */
-        if (csr_read(cycle) - start > 20000000ul) {
+        if (csr_read(time) - start > 2000000ul) {
             g_failed = 1;
             puts_("  timeout waiting for an interrupt\n");
             return;
@@ -722,16 +736,23 @@ int main(unsigned long hartid, unsigned long fdt)
     r = sbi_ecall(SBI_EXT_FWFT, 0, SBI_FWFT_MISALIGNED_EXC_DELEG, 0, 0, 0);
     check_eq("fwft_set(MISALIGNED_EXC_DELEG, 0)", (uint64_t) r.error, 0);
 
-    /* H: SBI PMU on the fixed counters. */
+    /* H: SBI PMU. OpenSBI detects Sscofpmf by reading scountovf. Without
+     * Smcntrpmf it then refuses the fixed counters for cycles and
+     * instructions, so the DTB maps them to counters 9 and 10, which
+     * overflow and filter by privilege. */
     puts_("H: SBI PMU\n");
     r = sbi_ecall(SBI_EXT_PMU, 0, 0, 0, 0, 0);
     puts_("  counters ");
     puthex((uint64_t) r.value);
     puts_("\n");
-    check("at least the three fixed counters", r.error == 0 && r.value >= 3);
+    check("the fixed counters and HPM counters 3..10", r.error == 0 && r.value >= 11);
     r = sbi_ecall(SBI_EXT_PMU, 1, 0, 0, 0, 0);
     check("counter 0 is a hardware counter", r.error == 0 && ((uint64_t) r.value >> 63) == 0);
-    /* Stop cycle and instret before configuring them; both run from reset. */
+    r = sbi_ecall(SBI_EXT_PMU, 1, 9, 0, 0, 0);
+    check("counter 9 is hpmcounter9, 64 bits wide",
+          r.error == 0 && ((uint64_t) r.value & 0xFFF) == 0xC09 &&
+              (((uint64_t) r.value >> 12) & 0x3F) == 63);
+    /* Stop cycle and instret; both run from reset. */
     r = sbi_ecall(SBI_EXT_PMU, 4, 0, 0x5, 0, 0);
     check("counter_stop(cycle, instret)", r.error == 0 || r.error == SBI_ERR_ALREADY_STOPPED);
     uint64_t cy1 = csr_read(cycle);
@@ -739,37 +760,77 @@ int main(unsigned long hartid, unsigned long fdt)
         ;
     check("cycle is inhibited after the stop", csr_read(cycle) == cy1);
     r = sbi_ecall(SBI_EXT_PMU, 2, 0, 0x7, 0, SBI_PMU_HW_CPU_CYCLES);
-    check_eq("config_matching(HW_CPU_CYCLES) picks counter 0", (uint64_t) r.value, 0);
-    r = sbi_ecall(SBI_EXT_PMU, 2, 0, 0x7, 0, SBI_PMU_HW_INSTRUCTIONS);
-    check_eq("config_matching(HW_INSTRUCTIONS) picks counter 2", (uint64_t) r.value, 2);
-    r = sbi_ecall(SBI_EXT_PMU, 3, 0, 0x1, SBI_PMU_START_FLAG_SET_INIT_VALUE, 0x8000000000001000ul);
-    check_eq("counter_start(cycle, init 2^63 + 0x1000)", (uint64_t) r.error, 0);
-    uint64_t cy2 = csr_read(cycle);
-    check("cycle restarted from the initial value",
+    check("config_matching(HW_CPU_CYCLES) refuses the fixed counters", r.error != 0);
+    r = sbi_ecall(SBI_EXT_PMU, 2, 0, 0x7FF, 0, SBI_PMU_HW_CPU_CYCLES);
+    check_eq("config_matching(HW_CPU_CYCLES) picks counter 9", (uint64_t) r.value, 9);
+    r = sbi_ecall(SBI_EXT_PMU, 2, 0, 0x7FF, 0, SBI_PMU_HW_INSTRUCTIONS);
+    check_eq("config_matching(HW_INSTRUCTIONS) picks counter 10", (uint64_t) r.value, 10);
+    r = sbi_ecall(SBI_EXT_PMU, 3, 9, 0x1, SBI_PMU_START_FLAG_SET_INIT_VALUE, 0x8000000000001000ul);
+    check_eq("counter_start(9, init 2^63 + 0x1000)", (uint64_t) r.error, 0);
+    uint64_t cy2 = csr_read(0xC09);
+    check("hpmcounter9 counts cycles from the initial value",
           cy2 >= 0x8000000000001000ul && cy2 < 0x8000000000001000ul + 4096);
-    r = sbi_ecall(SBI_EXT_PMU, 3, 0, 0x4, SBI_PMU_START_FLAG_SET_INIT_VALUE, 0x8000000000000000ul);
-    check_eq("counter_start(instret, init 2^63)", (uint64_t) r.error, 0);
-    uint64_t ir1 = csr_read(instret);
+    r = sbi_ecall(SBI_EXT_PMU, 3, 10, 0x1, SBI_PMU_START_FLAG_SET_INIT_VALUE, 0x8000000000000000ul);
+    check_eq("counter_start(10, init 2^63)", (uint64_t) r.error, 0);
+    uint64_t ir1 = csr_read(0xC0A);
     for (volatile int i = 0; i < 100; i++)
         ;
-    uint64_t ir2 = csr_read(instret);
-    check("instret restarted from the initial value and counts",
+    uint64_t ir2 = csr_read(0xC0A);
+    check("hpmcounter10 counts instructions from the initial value",
           ir1 >= 0x8000000000000000ul && ir2 > ir1 && ir2 - ir1 < 100000);
-    r = sbi_ecall(SBI_EXT_PMU, 3, 0, 0x1, SBI_PMU_START_FLAG_SET_INIT_VALUE, 0);
+    r = sbi_ecall(SBI_EXT_PMU, 3, 9, 0x1, SBI_PMU_START_FLAG_SET_INIT_VALUE, 0);
     check_eq("starting a running counter reports ALREADY_STARTED",
              (uint64_t) r.error,
              (uint64_t) SBI_ERR_ALREADY_STARTED);
-    r = sbi_ecall(SBI_EXT_PMU, 4, 0, 0x5, 0, 0);
-    check_eq("counter_stop(cycle, instret) again", (uint64_t) r.error, 0);
-    uint64_t cy3 = csr_read(cycle);
-    uint64_t ir3 = csr_read(instret);
+    r = sbi_ecall(SBI_EXT_PMU, 4, 9, 0x3, 0, 0);
+    check_eq("counter_stop(9, 10) again", (uint64_t) r.error, 0);
+    uint64_t cy3 = csr_read(0xC09);
+    uint64_t ir3 = csr_read(0xC0A);
     for (volatile int i = 0; i < 100; i++)
         ;
-    check("both counters inhibited again", csr_read(cycle) == cy3 && csr_read(instret) == ir3);
-    r = sbi_ecall(SBI_EXT_PMU, 3, 0, 0x5, SBI_PMU_START_FLAG_SET_INIT_VALUE, 0x100);
-    check_eq("second start round", (uint64_t) r.error, 0);
-    check("counters run from the second initial value",
-          csr_read(cycle) >= 0x100 && csr_read(cycle) < 0x100 + 4096);
+    check("both counters inhibited again", csr_read(0xC09) == cy3 && csr_read(0xC0A) == ir3);
+    /* Release both (reset flag) so they can be matched again. */
+    r = sbi_ecall(SBI_EXT_PMU, 4, 9, 0x3, SBI_PMU_STOP_FLAG_RESET, 0);
+    check("counter_stop(9, 10, reset)", r.error == 0 || r.error == SBI_ERR_ALREADY_STOPPED);
+
+    /* SINH: an S-excluded cycles event does not count in S. */
+    r = sbi_ecall(SBI_EXT_PMU,
+                  2,
+                  0,
+                  0x7FF,
+                  SBI_PMU_CFG_FLAG_CLEAR_VALUE | SBI_PMU_CFG_FLAG_AUTO_START |
+                      SBI_PMU_CFG_FLAG_SET_SINH,
+                  SBI_PMU_HW_CPU_CYCLES);
+    check_eq("config_matching(cycles, SINH, auto start) picks counter 9", (uint64_t) r.value, 9);
+    uint64_t s1 = csr_read(0xC09);
+    for (volatile int i = 0; i < 100; i++)
+        ;
+    check("SINH: cycles do not count in S", csr_read(0xC09) == s1);
+    r = sbi_ecall(SBI_EXT_PMU, 4, 9, 0x1, SBI_PMU_STOP_FLAG_RESET, 0);
+    check_eq("counter_stop(9, reset)", (uint64_t) r.error, 0);
+
+    /* Overflow sampling, as Linux perf record runs it: start counter 10
+     * close to a wrap with OF cleared by the firmware; the delegated LCOFI
+     * reaches S, whose handler reads scountovf and clears sip.LCOFIP. */
+    r = sbi_ecall(SBI_EXT_PMU, 2, 0, 0x7FF, 0, SBI_PMU_HW_INSTRUCTIONS);
+    check_eq("config_matching(instructions) picks counter 10", (uint64_t) r.value, 10);
+    g_lcof_irqs = 0;
+    g_lcof_ovf = 0;
+    csr_set(sie, SIE_LCOFIE);
+    csr_set(sstatus, SSTATUS_SIE);
+    r = sbi_ecall(SBI_EXT_PMU, 3, 10, 0x1, SBI_PMU_START_FLAG_SET_INIT_VALUE, (uint64_t) 0 - 2000);
+    check_eq("counter_start(10, 2000 before the wrap)", (uint64_t) r.error, 0);
+    wait_irqs(&g_lcof_irqs, 1);
+    csr_clear(sstatus, SSTATUS_SIE);
+    csr_clear(sie, SIE_LCOFIE);
+    check_eq("one counter-overflow interrupt in S", g_lcof_irqs, 1);
+    /* OpenSBI parks unused counters with OF set (interrupt disabled) and
+     * clears OF when it starts one; counter 9 ran without wrapping. */
+    check("scountovf shows counter 10", (g_lcof_ovf >> 10) & 1);
+    check_eq("counter 9, started and not wrapped, keeps OF clear", g_lcof_ovf & (1ul << 9), 0);
+    check_eq("sip.LCOFIP cleared", csr_read(sip) & SIE_LCOFIE, 0);
+    r = sbi_ecall(SBI_EXT_PMU, 4, 10, 0x1, SBI_PMU_STOP_FLAG_RESET, 0);
+    check("counter_stop(10, reset)", r.error == 0 || r.error == SBI_ERR_ALREADY_STOPPED);
 
     puts_(g_failed ? "\n=== OpenSBI smoke FAILED ===\n<<FAIL>>\n"
                    : "\n=== OpenSBI smoke PASSED ===\n<<PASS>>\n");

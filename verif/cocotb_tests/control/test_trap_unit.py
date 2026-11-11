@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for trap-unit arbitration and committed-store drain behavior."""
+"""Trap arbitration, local counter overflow and committed-store drain checks."""
 
 from typing import Any
 
@@ -32,20 +32,30 @@ PRIV_M = 3
 
 def _drive_defaults(dut: Any) -> None:
     dut.i_pipeline_stall.value = 0
+    dut.i_csr_irq_update.value = 0
     dut.i_sq_committed_empty.value = 1
     dut.i_mstatus.value = 0
     dut.i_mie.value = 0
     dut.i_mtvec.value = 0x1000
     dut.i_mepc.value = 0x2000
+    dut.i_stvec.value = 0x5000
+    dut.i_sepc.value = 0x6000
     dut.i_mstatus_mie_direct.value = 0
+    dut.i_sstatus_sie_direct.value = 0
+    dut.i_mideleg_s.value = 0
+    dut.i_mideleg_lcof.value = 0
+    dut.i_medeleg.value = 0
     dut.i_priv.value = PRIV_M
     dut.i_interrupts.value = 0
+    dut.i_s_pending.value = 0
+    dut.i_lcof_pending.value = 0
     dut.i_exception_valid.value = 0
     dut.i_exception_cause.value = 0
     dut.i_exception_tval.value = 0
     dut.i_exception_pc.value = 0x3000
     dut.i_interrupt_pc.value = 0x4000
     dut.i_mret_start.value = 0
+    dut.i_sret_start.value = 0
     dut.i_wfi_start.value = 0
     dut.i_amo_at_head.value = 0
     dut.i_device_read_at_head.value = 0
@@ -467,14 +477,19 @@ async def test_interrupt_replay_collision_at_accepting_edge(dut: Any) -> None:
 
 @cocotb.test()
 async def test_wfi_wakes_with_local_interrupts_disabled(dut: Any) -> None:
-    """Each raw M/S source releases WFI without a trap when mie is zero."""
+    """Each raw M/S/local source releases WFI without a trap when mie is zero."""
     Clock(dut.i_clk, 10, unit="ns").start()
     await _reset(dut)
-    for port in (dut.i_interrupts, dut.i_s_pending):
-        for source in (1, 2, 4):
+    for port, sources in (
+        (dut.i_interrupts, (1, 2, 4)),
+        (dut.i_s_pending, (1, 2, 4)),
+        (dut.i_lcof_pending, (1,)),
+    ):
+        for source in sources:
             await FallingEdge(dut.i_clk)
             dut.i_interrupts.value = 0
             dut.i_s_pending.value = 0
+            dut.i_lcof_pending.value = 0
             dut.i_mie.value = 0
             dut.i_wfi_start.value = 1
             await FallingEdge(dut.i_clk)
@@ -491,3 +506,305 @@ async def test_wfi_wakes_with_local_interrupts_disabled(dut: Any) -> None:
                 await FallingEdge(dut.i_clk)
                 assert not int(dut.o_trap_taken.value)
             port.value = 0
+
+
+async def _lcofi_waiting(
+    dut: Any, priv: int, delegated: bool, vectored: bool = False
+) -> None:
+    """Hold LCOFI behind committed stores until its take has armed."""
+    await _reset(dut)
+    await FallingEdge(dut.i_clk)
+    dut.i_priv.value = priv
+    dut.i_mstatus_mie_direct.value = 1
+    dut.i_mstatus.value = MSTATUS_MIE | (1 << 1)
+    dut.i_sstatus_sie_direct.value = 1
+    dut.i_mie.value = 1 << 13
+    dut.i_mideleg_lcof.value = int(delegated)
+    dut.i_mtvec.value = 0x1000 | int(vectored)
+    dut.i_stvec.value = 0x5000 | int(vectored)
+    dut.i_sq_committed_empty.value = 0
+    dut.i_lcof_pending.value = 1
+    for _ in range(4):
+        await FallingEdge(dut.i_clk)
+        assert not int(dut.o_trap_taken.value)
+    assert int(dut.o_trap_drain_wait.value)
+
+
+@cocotb.test()
+async def test_lcofi_privilege_routing_and_vectors(dut: Any) -> None:
+    """Cause 13 reaches M or S with direct/vectored targets after stores drain."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    for priv, delegated in ((3, False), (1, False), (0, False), (1, True), (0, True)):
+        for vectored in (False, True):
+            await _lcofi_waiting(dut, priv, delegated, vectored)
+            dut.i_sq_committed_empty.value = 1
+            await Timer(1, unit="ns")
+            assert int(dut.o_trap_taken.value), (priv, delegated, vectored)
+            assert int(dut.o_trap_to_s.value) == delegated
+            assert int(dut.o_trap_cause.value) == (1 << 63) | 13
+            expected = (0x5000 if delegated else 0x1000) + (52 if vectored else 0)
+            assert int(dut.o_trap_target.value) == expected
+            assert int(dut.o_trap_entry_target.value) == expected
+            assert int(dut.o_trap_pc.value) == 0x4000
+            assert int(dut.o_trap_save_s.value) == delegated
+            assert int(dut.o_trap_save_m.value) == (not delegated)
+            await FallingEdge(dut.i_clk)
+
+
+@cocotb.test()
+async def test_lcofi_delegated_request_waits_above_s(dut: Any) -> None:
+    """An S-target LCOFI stays pending in M and becomes eligible on entering S."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    await _reset(dut)
+    await FallingEdge(dut.i_clk)
+    dut.i_priv.value = 3
+    dut.i_mstatus.value = MSTATUS_MIE | (1 << 1)
+    dut.i_sstatus_sie_direct.value = 1
+    dut.i_mstatus_mie_direct.value = 1
+    dut.i_mideleg_lcof.value = 1
+    dut.i_mie.value = 1 << 13
+    dut.i_lcof_pending.value = 1
+    for _ in range(6):
+        await FallingEdge(dut.i_clk)
+        assert not int(dut.o_trap_taken.value)
+    dut.i_priv.value = 1
+    for _ in range(6):
+        await FallingEdge(dut.i_clk)
+        if int(dut.o_trap_taken.value):
+            assert int(dut.o_trap_to_s.value)
+            assert int(dut.o_trap_cause.value) == (1 << 63) | 13
+            break
+    else:
+        raise AssertionError("delegated LCOFI did not become eligible in S")
+
+
+@cocotb.test()
+async def test_lcofi_cancellation_while_stores_drain(dut: Any) -> None:
+    """Clearing pending, local enable or global enable cancels an armed LCOFI."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    for delegated in (False, True):
+        for cancel in ("pending", "local_enable", "global_enable"):
+            await _lcofi_waiting(dut, 1 if delegated else 3, delegated)
+            if cancel == "pending":
+                dut.i_lcof_pending.value = 0
+            elif cancel == "local_enable":
+                dut.i_mie.value = 0
+            elif delegated:
+                dut.i_sstatus_sie_direct.value = 0
+                dut.i_mstatus.value = MSTATUS_MIE
+            else:
+                dut.i_mstatus_mie_direct.value = 0
+                dut.i_mstatus.value = 1 << 1
+            dut.i_sq_committed_empty.value = 1
+            await Timer(1, unit="ns")
+            assert not int(dut.o_trap_taken.value), (delegated, cancel)
+            for _ in range(5):
+                await FallingEdge(dut.i_clk)
+                assert not int(dut.o_trap_taken.value), (delegated, cancel)
+            dut.i_lcof_pending.value = 1
+            dut.i_mie.value = 1 << 13
+            dut.i_mstatus.value = MSTATUS_MIE | (1 << 1)
+            dut.i_mstatus_mie_direct.value = 1
+            dut.i_sstatus_sie_direct.value = 1
+            for _ in range(7):
+                await FallingEdge(dut.i_clk)
+                if int(dut.o_trap_taken.value):
+                    assert int(dut.o_trap_to_s.value) == delegated
+                    assert int(dut.o_trap_cause.value) == (1 << 63) | 13
+                    break
+            else:
+                raise AssertionError(("LCOFI failed to re-arm", delegated, cancel))
+            await FallingEdge(dut.i_clk)
+
+
+@cocotb.test()
+async def test_lcofi_redelegation_cancels_old_target(dut: Any) -> None:
+    """A held request follows the current delegation rather than its old class."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    for old_delegation in (False, True):
+        await _lcofi_waiting(dut, 1, old_delegation)
+        dut.i_mideleg_lcof.value = int(not old_delegation)
+        dut.i_sq_committed_empty.value = 1
+        await Timer(1, unit="ns")
+        assert not int(dut.o_trap_taken.value)
+        for _ in range(7):
+            await FallingEdge(dut.i_clk)
+            if int(dut.o_trap_taken.value):
+                assert int(dut.o_trap_to_s.value) == (not old_delegation)
+                assert int(dut.o_trap_cause.value) == (1 << 63) | 13
+                break
+        else:
+            raise AssertionError("redelegated LCOFI did not reach its new class")
+
+
+@cocotb.test()
+async def test_lcofi_priority_among_interrupts(dut: Any) -> None:
+    """Standard sources outrank LCOFI within a class; M-target interrupts outrank S."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    # Source tuples: machine pending bits, supervisor pending bits, cause.
+    sources = ((4, 0, 11), (1, 0, 3), (2, 0, 7), (0, 4, 9), (0, 1, 1), (0, 2, 5))
+    for delegated in (False, True):
+        for machine, supervisor, cause in sources:
+            if delegated and machine:
+                continue
+            await _lcofi_waiting(dut, 1, delegated, True)
+            dut.i_interrupts.value = machine
+            dut.i_s_pending.value = supervisor
+            dut.i_mideleg_s.value = 7 if delegated else 0
+            dut.i_mie.value = (1 << 13) | (1 << cause)
+            for _ in range(3):
+                await FallingEdge(dut.i_clk)
+            dut.i_sq_committed_empty.value = 1
+            await Timer(1, unit="ns")
+            assert int(dut.o_trap_taken.value)
+            assert int(dut.o_trap_to_s.value) == delegated
+            assert int(dut.o_trap_cause.value) == (1 << 63) | cause
+            assert (
+                int(dut.o_trap_target.value)
+                == (0x5000 if delegated else 0x1000) + 4 * cause
+            )
+    # A machine-target LCOFI outranks a supervisor-target external interrupt.
+    await _lcofi_waiting(dut, 1, False, True)
+    dut.i_mideleg_s.value = 4
+    dut.i_s_pending.value = 4
+    dut.i_mie.value = (1 << 13) | (1 << 9)
+    for _ in range(3):
+        await FallingEdge(dut.i_clk)
+    dut.i_sq_committed_empty.value = 1
+    await Timer(1, unit="ns")
+    assert int(dut.o_trap_taken.value)
+    assert not int(dut.o_trap_to_s.value)
+    assert int(dut.o_trap_cause.value) == (1 << 63) | 13
+
+
+@cocotb.test()
+async def test_withdrawn_lcofi_cannot_borrow_another_pending_source(dut: Any) -> None:
+    """A new source cannot keep the withdrawn LCOFI's registered cause live."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    for delegated in (False, True):
+        await _lcofi_waiting(dut, 1, delegated, True)
+        cause = 9 if delegated else 11
+        dut.i_lcof_pending.value = 0
+        dut.i_mie.value = (1 << 13) | (1 << cause)
+        if delegated:
+            dut.i_mideleg_s.value = 4
+            dut.i_s_pending.value = 4
+        else:
+            dut.i_interrupts.value = 4
+        dut.i_sq_committed_empty.value = 1
+        await Timer(1, unit="ns")
+        assert not int(dut.o_trap_taken.value)
+        for _ in range(7):
+            await FallingEdge(dut.i_clk)
+            if int(dut.o_trap_taken.value):
+                assert int(dut.o_trap_to_s.value) == delegated
+                assert int(dut.o_trap_cause.value) == (1 << 63) | cause
+                assert (
+                    int(dut.o_trap_target.value)
+                    == (0x5000 if delegated else 0x1000) + 4 * cause
+                )
+                break
+        else:
+            raise AssertionError("replacement interrupt did not become eligible")
+
+
+@cocotb.test()
+async def test_withdrawn_m_lcofi_allows_armed_s_interrupt(dut: Any) -> None:
+    """Current pending bits decide M/S arbitration when both classes are armed."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    await _lcofi_waiting(dut, 1, False, True)
+    dut.i_mideleg_s.value = 4
+    dut.i_s_pending.value = 4
+    dut.i_mie.value = (1 << 13) | (1 << 9)
+    for _ in range(4):
+        await FallingEdge(dut.i_clk)
+    dut.i_lcof_pending.value = 0
+    dut.i_sq_committed_empty.value = 1
+    await Timer(1, unit="ns")
+    assert int(dut.o_trap_taken.value)
+    assert int(dut.o_trap_to_s.value)
+    assert int(dut.o_trap_cause.value) == (1 << 63) | 9
+    assert int(dut.o_trap_target.value) == 0x5000 + 36
+
+
+@cocotb.test()
+async def test_csr_refresh_updates_priority_and_preserves_commit_hold(dut: Any) -> None:
+    """A write enabling SSI refreshes M/S cause and vector before the take."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    for delegated in (False, True):
+        for shield in (None, "i_amo_at_head", "i_device_read_at_head"):
+            await _lcofi_waiting(dut, 1, delegated, True)
+            # SSI is already pending, but its local enable is still clear.
+            dut.i_s_pending.value = 1
+            dut.i_mideleg_s.value = 1 if delegated else 0
+            for _ in range(2):
+                await FallingEdge(dut.i_clk)
+            if shield:
+                getattr(dut, shield).value = 1
+            # Model the post-write interval: enables have changed while the
+            # registered selection still names LCOFI.
+            dut.i_mie.value = (1 << 13) | (1 << 1)
+            dut.i_csr_irq_update.value = 1
+            dut.i_sq_committed_empty.value = 1
+            await Timer(1, unit="ns")
+            assert not int(dut.o_trap_taken.value)
+            assert int(dut.o_trap_drain_wait.value)
+            await FallingEdge(dut.i_clk)
+            assert not int(dut.o_trap_taken.value)
+            assert int(dut.o_trap_drain_wait.value)
+            dut.i_csr_irq_update.value = 0
+            await Timer(1, unit="ns")
+            if shield:
+                # A protected operation must be allowed to commit once the
+                # single refresh interval ends, before releasing its shield.
+                assert not int(dut.o_trap_taken.value)
+                assert not int(dut.o_trap_drain_wait.value)
+                for _ in range(2):
+                    await FallingEdge(dut.i_clk)
+                    assert not int(dut.o_trap_drain_wait.value)
+                getattr(dut, shield).value = 0
+                await Timer(1, unit="ns")
+            assert int(dut.o_trap_taken.value)
+            assert int(dut.o_trap_to_s.value) == delegated
+            assert int(dut.o_trap_cause.value) == (1 << 63) | 1
+            assert int(dut.o_trap_target.value) == (0x5000 if delegated else 0x1000) + 4
+
+
+@cocotb.test()
+async def test_csr_refresh_does_not_stall_other_control_takes(dut: Any) -> None:
+    """The refresh holds only a live M/S request, leaving other control takes free."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    for start, result, debug in (
+        ("i_mret_start", "o_mret_taken", False),
+        ("i_sret_start", "o_sret_taken", False),
+        ("i_dret_start", "o_dret_taken", True),
+    ):
+        await _reset(dut)
+        await FallingEdge(dut.i_clk)
+        dut.i_csr_irq_update.value = 1
+        dut.i_debug_mode.value = int(debug)
+        assert not int(dut.o_trap_drain_wait.value)
+        getattr(dut, start).value = 1
+        await Timer(1, unit="ns")
+        assert int(getattr(dut, result).value)
+
+    await _reset(dut)
+    await FallingEdge(dut.i_clk)
+    dut.i_csr_irq_update.value = 1
+    dut.i_exception_valid.value = 1
+    dut.i_exception_cause.value = 5
+    await FallingEdge(dut.i_clk)
+    assert int(dut.o_trap_taken.value)
+    assert int(dut.o_trap_cause.value) == 5
+
+    await _reset(dut)
+    await FallingEdge(dut.i_clk)
+    dut.i_csr_irq_update.value = 1
+    dut.i_dbg_haltreq.value = 1
+    for _ in range(5):
+        await FallingEdge(dut.i_clk)
+        if int(dut.o_trap_taken.value):
+            assert int(dut.o_trap_to_d.value)
+            break
+    else:
+        raise AssertionError("CSR refresh blocked debug entry")

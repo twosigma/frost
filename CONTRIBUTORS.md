@@ -91,3 +91,4 @@
 - Implemented the Ethernet NIC offload engine (checksums, segmentation and scatter-gather), scalable ingress buffering, 802.3x flow control, telemetry and the matching Linux driver support
 - Added mixed-tier store serialization coverage, the VCU118 4 MiB L2 configuration and a dependent-load cache-capacity measurement application
 - Preserved TLB entries across SUM/MXR changes, added Svvptc and translation events, and cached upper-level page-table pointers
+- Implemented Sscofpmf counter overflow, privilege filtering, delegated local interrupts, and programmable cycle and instruction counters

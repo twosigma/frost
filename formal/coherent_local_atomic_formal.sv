@@ -70,6 +70,18 @@ module coherent_local_completion_formal (
   wire [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag = '0, head_tag = 2;
   riscv_pkg::fu_complete_t mem_adapter_to_arbiter;
   logic [riscv_pkg::NumFus-1:0] o_cdb_grant;
+  function automatic logic is_younger(input logic [riscv_pkg::ReorderBufferTagWidth-1:0] entry_tag,
+                                      input logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag,
+                                      input logic [riscv_pkg::ReorderBufferTagWidth-1:0] head);
+    logic [riscv_pkg::ReorderBufferTagWidth:0] entry_age;
+    logic [riscv_pkg::ReorderBufferTagWidth:0] flush_age;
+    begin
+      entry_age  = {1'b0, entry_tag} - {1'b0, head};
+      flush_age  = {1'b0, flush_tag} - {1'b0, head};
+      is_younger = entry_age > flush_age;
+    end
+  endfunction
+
   riscv_pkg::fu_complete_t sc_fu_complete_reg;
   logic sc_completion_held;
   assign sc_completion_held = sc_fu_complete_reg.valid && store_misalign_fu_complete_reg.valid;
@@ -111,6 +123,51 @@ module coherent_local_completion_formal (
 
 
   riscv_pkg::fu_complete_t mem_fu_to_adapter;
+  // Form each age independently, then qualify selected sources before the
+  // final valid reduction. The adapter checks surviving tags in simulation.
+  (* keep = "true" *) logic mem_store_fault_younger;
+  (* keep = "true" *) logic mem_sc_younger;
+  (* keep = "true" *) logic mem_uncached_store_younger;
+  (* keep = "true" *) logic mem_lq_younger;
+  (* keep = "true" *) logic [3:0] mem_source_valid;
+  (* keep = "true" *) logic [3:0] mem_source_live;
+  logic mem_live_valid;
+  riscv_pkg::fu_complete_t mem_filtered_to_adapter;
+  assign mem_store_fault_younger = is_younger(
+      store_misalign_fu_complete_reg.tag, i_flush_tag, head_tag
+  );
+  assign mem_sc_younger = is_younger(sc_fu_complete_reg.tag, i_flush_tag, head_tag);
+  assign mem_uncached_store_younger = is_younger(
+      uncached_store_complete.tag, i_flush_tag, head_tag
+  );
+  assign mem_lq_younger = is_younger(lq_fu_complete.tag, i_flush_tag, head_tag);
+  // Choose sources using their original valid bits, even when the chosen
+  // source is squashed. Qualification must never fall through to another source.
+  assign mem_source_valid[0] = store_misalign_fu_complete_reg.valid;
+  assign mem_source_valid[1] = !store_misalign_fu_complete_reg.valid && sc_valid_adapter_q;
+  assign mem_source_valid[2] = !store_misalign_fu_complete_reg.valid && !sc_valid_adapter_q &&
+      uncached_store_complete.valid;
+  assign mem_source_valid[3] = !store_misalign_fu_complete_reg.valid && !sc_valid_adapter_q &&
+      !uncached_store_complete.valid && lq_fu_complete.valid;
+  assign mem_source_live[0] = mem_source_valid[0] &&
+      !(speculative_flush_en && mem_store_fault_younger);
+  assign mem_source_live[1] = mem_source_valid[1] && !(speculative_flush_en && mem_sc_younger);
+  assign mem_source_live[2] = mem_source_valid[2] &&
+      !(speculative_flush_en && mem_uncached_store_younger);
+  assign mem_source_live[3] = mem_source_valid[3] && !(speculative_flush_en && mem_lq_younger);
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT4 #(
+      .INIT(16'hfffe)
+  ) u_mem_live_valid (
+      .I0(mem_source_live[0]),
+      .I1(mem_source_live[1]),
+      .I2(mem_source_live[2]),
+      .I3(mem_source_live[3]),
+      .O (mem_live_valid)
+  );
+`else
+  assign mem_live_valid = |mem_source_live;
+`endif
   always_comb begin
     if (store_misalign_fu_complete_reg.valid) begin
       mem_fu_to_adapter = store_misalign_fu_complete_reg;
@@ -123,6 +180,12 @@ module coherent_local_completion_formal (
       mem_fu_to_adapter = lq_fu_complete;
     end
   end
+  // Keep the raw packet for diagnostics; only the adapter sees the qualified valid.
+  always_comb begin
+    mem_filtered_to_adapter = mem_fu_to_adapter;
+    mem_filtered_to_adapter.valid = mem_live_valid;
+  end
+
 
 
   assign lq_result_accepted = lq_fu_complete.valid &&
@@ -133,11 +196,13 @@ module coherent_local_completion_formal (
 
   fu_cdb_adapter #(
       .ALLOW_GRANT_REFILL(1'b0),
-      .ALWAYS_GRANTED(1'b1)
+      .ALWAYS_GRANTED(1'b1),
+      .INPUT_YOUNGER_PRECOMPUTED(1'b1)
   ) u_mem_adapter (
       .i_clk              (i_clk),
       .i_rst_n            (i_rst_n),
-      .i_fu_result        (mem_fu_to_adapter),
+      .i_fu_result        (mem_filtered_to_adapter),
+      // Every remaining valid input is already not younger on a partial flush.
       .i_fu_result_younger(1'b0),
       .o_fu_complete      (mem_adapter_to_arbiter),
       .o_held_value       (),

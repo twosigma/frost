@@ -57,10 +57,11 @@ selected with `FROST_LINUX_CROSS_COMPILE` or `--cross`, must be Linux-targeted
 with a PIE-capable linker: OpenSBI links position-independent.
 
 OpenSBI enters the payload in S-mode with `satp` Bare and `sstatus.SIE=0`. It
-delegates the SSI, STI, and SEI interrupts and the misaligned-fetch,
-breakpoint, U-mode ecall, and page-fault exceptions. It sets
-`mcounteren=0x7`, `scounteren=0x2`, and `menvcfg.STCE=1`, so S-mode can read
-all three fixed counters and U-mode starts with access to `time` only.
+delegates the SSI, STI, SEI, and local counter-overflow (LCOFI) interrupts and
+the misaligned-fetch, breakpoint, U-mode ecall, and page-fault exceptions. It
+sets `mcounteren` to all ones (0x7FF after WARL), `scounteren=0x2`, and
+`menvcfg.STCE=1`, so S-mode can read every counter and U-mode starts with
+access to `time` only.
 OpenSBI emulates misaligned loads and stores in M-mode until the kernel
 requests their delegation through FWFT.
 
@@ -142,7 +143,7 @@ directly through Sstc (`stimecmp`) instead of an SBI call.
 
 The generated DTB declares the
 [implemented extensions](../README.md#supported-risc-v-extensions), Sstc,
-Smaia, Ssaia, Svade, Svvptc, and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and the LP64D
+Smaia, Ssaia, Sscofpmf, Svade, Svvptc, and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and the LP64D
 ABI. Svvptc tells Linux that a PTE changed from invalid to valid becomes
 visible to the walker without `sfence.vma`, so the kernel can omit that
 synchronization for those mapping updates. Other PTE changes retain their
@@ -167,13 +168,35 @@ is an illegal instruction (`mcause` 2, `mtval` 0).
 
 | CSR | Behavior |
 |---|---|
-| `mcounteren`, `scounteren` | CY, TM, IR and HPM3..8 occupy bits 8:0; bits 31:9 read zero and ignore writes. Both reset to `0x1ff`. |
-| `mcountinhibit` (0x320) | CY (bit 0), IR (bit 2), and HPM3..8 (bits 8:3) inhibit their counters. TM and bits 31:9 read zero. |
+| `mcounteren`, `scounteren` | CY, TM, IR and HPM3..10 occupy bits 10:0; bits 31:11 read zero and ignore writes. Both reset to `0x7ff`. |
+| `mcountinhibit` (0x320) | CY (bit 0), IR (bit 2), and HPM3..10 (bits 10:3) inhibit their counters. TM and bits 31:11 read zero. |
 | `mcycle` (0xB00), `minstret` (0xB02) | Accept full 64-bit M-mode writes |
-| `mhpmcounter3`-`8` (0xB03-0xB08), `mhpmevent3`-`8` (0x323-0x328) | Writable machine counters. Selector N selects counter N's fixed event. Counters 8, 7 and 4 also accept the translation selectors 10, 11 and 12 (see below). All other writes select zero and disable counting. |
-| `mhpmcounter9`-`31`, `mhpmevent9`-`31` | Machine-mode reads return zero and writes are ignored. |
-| `hpmcounter3`-`8` (0xC03-0xC08) | Read-only aliases, gated by counter enables in S/U modes. |
-| `hpmcounter9`-`31` (0xC09-0xC1F) | Unimplemented; accesses raise illegal instruction at every privilege. |
+| `mhpmcounter3`-`10` (0xB03-0xB0A), `mhpmevent3`-`10` (0x323-0x32A) | Writable 64-bit machine counters. An event field (bits 55:0) of N selects counter N's fixed event; counters 8, 7 and 4 also accept the translation selectors 16, 17 and 18 (see below); any other value selects zero and disables counting. Bits 63:60 are the Sscofpmf OF, MINH, SINH and UINH bits; VSINH, VUINH and bits 57:56 read zero. |
+| `mhpmcounter11`-`31`, `mhpmevent11`-`31` | Machine-mode reads return zero and writes are ignored. |
+| `hpmcounter3`-`10` (0xC03-0xC0A) | Read-only aliases, gated by counter enables in S/U modes. |
+| `hpmcounter11`-`31` (0xC0B-0xC1F) | Unimplemented; accesses raise illegal instruction at every privilege. |
+| `scountovf` (0xDA0) | Sscofpmf: read-only OF bits 3..10. M reads all of them; S reads those set in `mcounteren`; U access is illegal. |
+
+Counters 9 and 10 count cycles and retired instructions like `mcycle` and
+`minstret`, with Sscofpmf overflow and privilege filtering. OpenSBI v1.9 with
+Sscofpmf but without Smcntrpmf does not fall back to the fixed counters for
+these events, so the DTB maps `cycles` to counter 9 and `instructions` to
+counter 10.
+
+### Sscofpmf
+
+A counter whose 64-bit count wraps sets its `mhpmevent` OF bit. If OF was
+clear, the wrap also sets `mip.LCOFIP` (interrupt 13), which `mideleg` bit 13
+routes to S-mode, where it appears in `sip`/`sie` and `stopi`. LCOFI has the
+lowest default priority, below STI. OpenSBI detects Sscofpmf by reading
+`scountovf`, delegates LCOFI, and programs MINH and the requested SINH/UINH
+filters; the kernel's `riscv-pmu-sbi` driver takes the overflow interrupt
+through the AIA `stopi` path, reads `scountovf`, and clears `sip.LCOFIP`.
+This is the mechanism `perf record` and `perf top` sample with. Retirement
+events (branches, mispredictions, instructions) count in the privilege the
+instruction retired in; the other events count in the privilege of the cycle
+they occur in. Debug Mode counts as M. Smcntrpmf is not implemented, so the
+fixed counters `mcycle` and `minstret` count in every privilege.
 
 OpenSBI's SBI PMU uses `mcountinhibit`, `mcycle`, and `minstret` to stop,
 start, and preload the fixed counters, and its privileged-version probe
@@ -183,17 +206,18 @@ decides whether to allow direct `rdcycle` and `rdinstret`.
 
 Userspace counts cycles and instructions through `perf_event_open`
 (`PERF_COUNT_HW_CPU_CYCLES`, `PERF_COUNT_HW_INSTRUCTIONS`), which Linux serves
-through the SBI PMU. The DTB's `riscv,pmu` node maps both events to the fixed
-counters. Standard events map retired branches, branch mispredictions,
+through the SBI PMU. The DTB's `riscv,pmu` node maps both events to
+counters 9 and 10. Standard events map retired branches, branch mispredictions,
 ITLB read misses, and L1D permission misses. Permission misses include
-atomic requests that require cache permission. Raw selectors 3 through 8
+atomic requests that require cache permission. Raw selectors 3 through 10
 select branches, mispredictions, ITLB walks, DTLB walks, L1D permission
-misses, and store-queue capacity stalls, respectively. DTLB walks include
+misses, store-queue capacity stalls, cycles, and retired instructions,
+respectively. DTLB walks include
 loads and stores; SQ stalls cover one source of backend stalls. These two
 events are exposed only through `riscv,raw-event-to-mhpmcounters`. Three raw
-translation selectors share those counters: 10 counts page-walker busy
-cycles on counter 8, 11 counts SFENCE.VMA TLB invalidates on counter 7, and
-12 counts CSR-requested TLB invalidates (any `satp` access, or an `mstatus`
+translation selectors share those counters: 16 counts page-walker busy
+cycles on counter 8, 17 counts SFENCE.VMA TLB invalidates on counter 7, and
+18 counts CSR-requested TLB invalidates (any `satp` access, or an `mstatus`
 write that changes MPRV, or MPP while MPRV is set) on counter 4. Walker busy
 cycles divided by ITLB plus DTLB walks give the mean walk latency. HPM
 storage and event counting are independent of the optional profiling

@@ -104,6 +104,7 @@ jobs:
             pytest_filter: >-
               [imsic_csr_test] or [imsic_msi_test] or [imsic_collision_test] or
               [timer_replay_test] or [imsic_aplic_coexist_test] or [aplic_test] or [sstc_test] or
+              [sscofpmf_test] or
               [ns16550_irq_console_test] or [wfi_mepc_test] or
               [wfi_drain_mepc_test] or [mret_timer_resume_test] or [mtimer_stress] or
               [wfi_lost_tick] or [irq_mie_window] or [ns16550_test] or [clint_test] or
@@ -151,7 +152,7 @@ jobs:
               [ad_fault_test] or [smode_test] or [csr_rmw_test] or [ptw_bus_fault_test] or
               [ptw_recovery_test] or [sum_toggle_test] or [imsic_csr_test] or [imsic_msi_test] or
               [imsic_collision_test] or [timer_replay_test] or [imsic_aplic_coexist_test] or
-              [aplic_test] or [sstc_test] or
+              [aplic_test] or [sstc_test] or [sscofpmf_test] or
               [ns16550_irq_console_test] or [wfi_mepc_test] or [wfi_drain_mepc_test] or
               [mret_timer_resume_test] or [mtimer_stress] or [wfi_lost_tick] or [irq_mie_window] or
               [ns16550_test] or [clint_test] or [linux_irq_ddr_test] or [linux_irq_active_ddr_test]
@@ -707,7 +708,8 @@ jobs:
 
   # TestRIG: QuickCheckVEngine runs instruction sequences on the Sail RISC-V
   # model and on the simulated SoC and compares every retired instruction
-  # (tests/test_testrig.py). The first shard replays the saved counterexamples.
+  # (tests/test_testrig.py). The first shard replays saved counterexamples and
+  # deterministic counter controls.
   # Every shard then draws its own random sequences, 100 per template, from the
   # engine's templates, and its own 200 A-extension tests from
   # verif/testrig/atomics.py, whose seed the log prints. A mismatch is shrunk
@@ -742,13 +744,15 @@ jobs:
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
 
-      - name: Replay the saved TestRIG counterexamples
+      - name: Replay saved TestRIG counterexamples and counter controls
         if: matrix.shard == 1
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --trace-dir verif/testrig/traces --continue-on-fail
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --crypto 50 --continue-on-fail
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --sscofpmf
 
       - name: Compare FROST with Sail on random instruction sequences
         run: |

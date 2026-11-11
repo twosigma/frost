@@ -7,15 +7,16 @@
   "base": {
     // FIOM must be writable whenever satp.MODE can leave Bare, as FROST's is.
     "writable_fiom": true,
-    // Machine counters 3..8 have storage. Selectors are disabled in saved
+    // Machine counters 3..10 have storage. Selectors are disabled in saved
     // traces, so microarchitectural event timing does not affect comparison.
-    "writable_hpm_counters": {"len": 32, "value": "0x0000_01F8"},
-    "mcounteren_writable_bits": {"len": 32, "value": "0x0000_01FF"},
-    "scounteren_writable_bits": {"len": 32, "value": "0x0000_01FF"},
-    "mcountinhibit": {"supported": true, "writable_bits": {"len": 32, "value": "0x0000_01FD"}},
-    // riscv_pkg::MedelegMask and FROST's three delegable interrupts.
+    "writable_hpm_counters": {"len": 32, "value": "0x0000_07F8"},
+    "mcounteren_writable_bits": {"len": 32, "value": "0x0000_07FF"},
+    "scounteren_writable_bits": {"len": 32, "value": "0x0000_07FF"},
+    "mcountinhibit": {"supported": true, "writable_bits": {"len": 32, "value": "0x0000_07FD"}},
+    // riscv_pkg::MedelegMask and FROST's delegable interrupts: SSI, STI, SEI
+    // and the Sscofpmf counter-overflow interrupt (13).
     "medeleg": {"delegatable_bits": {"len": 64, "value": "0x0000_0000_0000_B3FF"}},
-    "mideleg": {"delegatable_bits": {"len": "xlen", "value": "0x0000_0000_0000_0222"}},
+    "mideleg": {"delegatable_bits": {"len": "xlen", "value": "0x0000_0000_0000_2222"}},
     // FROST has no V extension, so mstatus.VS is read-only zero; FS takes all
     // four states.
     "mstatus": {"fs_legal_states": "ExtContext_FourState", "vs_legal_states": "ExtContext_Off"},
@@ -494,7 +495,7 @@
     "Zvkt": {"supported": false},
     "Ssccptr": {"supported": false},
     "Sdtrig": {"supported": false},
-    "Sscofpmf": {"supported": false},
+    "Sscofpmf": {"supported": true},
     "Sha": {"supported": false},
     "Shcounterenw": {"supported": false},
     "Sscounterenw": {"supported": false},

@@ -109,7 +109,9 @@ async def setup(dut: Any) -> CsrPathChecker:
         "hpm_mispredicts",
         "hpm_events",
         "hpm_translation_events",
+        "hpm_instret",
         "mret",
+        "sret",
         "trap",
     ):
         getattr(dut, "i_" + name).value = 0
@@ -334,7 +336,7 @@ async def test_hpm_event_selection_inhibit_and_aliases(dut: Any) -> None:
     """Counter selection, inhibition and aliases agree with supplied event counts."""
     s = await setup(dut)
     await s.access(0x320, (1 << 64) - 1, 1)
-    assert await s.access(0x320) == 0x1FD
+    assert await s.access(0x320) == 0x7FD
     await s.access(0x320, 0, 1)
     await s.idle(4, hpm_branches=2, hpm_mispredicts=1, hpm_events=15)
     await s.idle(3, hpm_branches=0, hpm_mispredicts=0, hpm_events=0)
@@ -375,12 +377,12 @@ async def test_hpm_event_selection_inhibit_and_aliases(dut: Any) -> None:
 
 @cocotb.test()
 async def test_hpm_translation_event_selectors(dut: Any) -> None:
-    """Selectors 10, 11 and 12 count walker busy cycles and TLB invalidates."""
+    """Selectors 16, 17 and 18 count walker busy cycles and TLB invalidates."""
     s = await setup(dut)
     off = dict(
         hpm_branches=0, hpm_mispredicts=0, hpm_events=0, hpm_translation_events=0
     )
-    for counter, selector in ((8, 10), (7, 11), (4, 12)):
+    for counter, selector in ((8, 16), (7, 17), (4, 18)):
         await s.access(0x320 + counter, selector, 1)
         assert await s.access(0x320 + counter) == selector
         await s.access(0xB00 + counter, 0, 1)
@@ -414,12 +416,20 @@ async def test_hpm_translation_event_selectors(dut: Any) -> None:
     await s.idle(3)
     assert await s.access(0xB04) == 4
     # Translation selectors are counter-specific: elsewhere they disable.
-    for counter in (3, 5, 6):
-        for selector in (10, 11, 12):
+    # Counters 9 and 10 own the selectors 9 and 10, so the translation events
+    # never alias a counter number.
+    for counter in (3, 5, 6, 9, 10):
+        for selector in (16, 17, 18):
             await s.access(0x320 + counter, selector, 1)
             assert await s.access(0x320 + counter) == 0
     await s.access(0x328, 9, 1)
     assert await s.access(0x328) == 0
+    await s.access(0x328, 10, 1)
+    assert await s.access(0x328) == 0
+    # Counter 8 keeps accepting only its own number and its translation selector.
+    for selector in (17, 18):
+        await s.access(0x328, selector, 1)
+        assert await s.access(0x328) == 0
     # Restoring the fixed selector restores the fixed event.
     await s.access(0x328, 8, 1)
     await s.access(0xB08, 0, 1)
@@ -434,10 +444,10 @@ async def test_hpm_privilege_enable_masks(dut: Any) -> None:
     s = await setup(dut)
     for priv, mcounteren, scounteren, expected in (
         (3, 0, 0, 0),
-        (1, 0x1FF, 0, 0),
-        (1, 7, 0x1FF, 0x1F8),
-        (0, 0x1FF, 0x155, 0x0AA),
-        (0, 0x0AA, 0x1FF, 0x155),
+        (1, 0x7FF, 0, 0),
+        (1, 7, 0x7FF, 0x7F8),
+        (0, 0x7FF, 0x555, 0x2AA),
+        (0, 0x2AA, 0x7FF, 0x555),
     ):
         await s.idle(trap=1)
         await s.idle(3, trap=0)
@@ -500,3 +510,226 @@ async def test_hpm_event_identity_and_pending_writes(dut: Any) -> None:
             await s.idle(1, **on)
             await s.idle(3, **off)
             assert await s.access(0xB00 + n) == 5 * increment
+
+
+# Sscofpmf (privileged spec, "Count Overflow and Mode-Based Filtering").
+MIP, SIP, MIE, SIE, MIDELEG, MVIP = 0x344, 0x144, 0x304, 0x104, 0x303, 0x309
+MTOPI, STOPI, SCOUNTOVF, MCOUNTEREN = 0xFB0, 0xDB0, 0xDA0, 0x306
+OF, MINH, SINH, UINH = 1 << 63, 1 << 62, 1 << 61, 1 << 60
+LCOF = 1 << 13
+MASK64 = (1 << 64) - 1
+EVENTS_OFF = dict(hpm_branches=0, hpm_mispredicts=0, hpm_events=0, hpm_instret=0)
+
+
+def event_on(n: int) -> dict[str, int]:
+    """Return inputs that raise only counter n's event (counter 9 counts every cycle)."""
+    on = dict(EVENTS_OFF)
+    if n == 3:
+        on["hpm_branches"] = 2
+    elif n == 4:
+        on["hpm_mispredicts"] = 1
+    elif 5 <= n <= 8:
+        on["hpm_events"] = 1 << (n - 5)
+    elif n == 10:
+        on["hpm_instret"] = 1
+    return on
+
+
+def event_increment(n: int) -> int:
+    """Return the per-cycle increment event_on(n) supplies."""
+    return 2 if n == 3 else 1
+
+
+async def enter_priv(s: CsrPathChecker, priv: int) -> None:
+    """Trap to M, then MRET to priv through mstatus.MPP."""
+    await s.idle(trap=1)
+    await s.idle(3, trap=0)
+    if priv != 3:
+        await s.access(0x300, priv << 11, 1)
+        await s.idle(mret=1)
+        await s.idle(3, mret=0)
+    assert int(s.dut.o_priv.value) == priv
+
+
+@cocotb.test()
+async def test_sscofpmf_event_fields_warl(dut: Any) -> None:
+    """OF and MINH/SINH/UINH are writable; VSINH, VUINH, WPRI and other selectors read 0."""
+    s = await setup(dut)
+    for n in range(3, 11):
+        await s.access(0x320 + n, MASK64, 1)
+        assert await s.access(0x320 + n) == OF | MINH | SINH | UINH
+        await s.access(0x320 + n, (0xF << 56) | n, 1)
+        assert await s.access(0x320 + n) == n
+        await s.access(0x320 + n, OF | SINH | n, 1)
+        assert await s.access(0x320 + n) == OF | SINH | n
+        await s.access(0x320 + n, (1 << 40) | n, 1)
+        assert await s.access(0x320 + n) == 0
+        await s.access(0x320 + n, 0, 1)
+    # The counters above 10 and their selectors stay read-only zero.
+    await s.access(0x32B, MASK64, 1)
+    assert await s.access(0x32B) == 0
+    await s.access(0xB0B, MASK64, 1)
+    assert await s.access(0xB0B) == 0
+
+
+@cocotb.test()
+async def test_sscofpmf_wrap_sets_of_and_lcofip(dut: Any) -> None:
+    """A wrap sets OF and raises LCOFIP only from OF=0; writes never overflow."""
+    s = await setup(dut)
+    for n in (3, 4, 5, 6, 7, 8, 10):
+        on, inc = event_on(n), event_increment(n)
+        await s.access(0x320 + n, n, 1)
+        await s.access(0xB00 + n, MASK64 - 1, 1)
+        await s.idle(2, **on)
+        await s.idle(3, **EVENTS_OFF)
+        assert await s.access(0xB00 + n) == (MASK64 - 1 + 2 * inc) & MASK64
+        assert await s.access(0x320 + n) == OF | n
+        assert await s.access(MIP) & LCOF
+        assert await s.access(SCOUNTOVF) == 1 << n
+        # Software clears LCOFIP; a second wrap with OF set raises nothing.
+        await s.access(MIP, LCOF, 3)
+        assert not await s.access(MIP) & LCOF
+        await s.access(0xB00 + n, MASK64 - 1, 1)
+        await s.idle(2, **on)
+        await s.idle(3, **EVENTS_OFF)
+        assert not await s.access(MIP) & LCOF
+        assert await s.access(0x320 + n) == OF | n
+        # Clearing OF re-arms the counter and clears its scountovf bit.
+        await s.access(0x320 + n, n, 1)
+        assert await s.access(SCOUNTOVF) == 0
+        await s.access(0x320 + n, 0, 1)
+    # Counter 9 counts cycles.
+    await s.access(0x329, 9, 1)
+    await s.access(0xB09, MASK64 - 19, 1)
+    await s.idle(30)
+    assert await s.access(0xB09) < 40
+    assert await s.access(0x329) == OF | 9
+    assert await s.access(MIP) & LCOF
+    await s.access(0x329, 0, 1)
+    await s.access(MIP, LCOF, 3)
+    # Counter writes never overflow, even from all ones to zero.
+    await s.access(0x324, 4, 1)
+    await s.access(0xB04, MASK64, 1)
+    await s.access(0xB04, 0, 1)
+    await s.idle(3)
+    assert await s.access(0x324) == 4
+    assert not await s.access(MIP) & LCOF
+
+
+@cocotb.test()
+async def test_sscofpmf_mode_filtering(dut: Any) -> None:
+    """Each xINH bit stops counting in its privilege only, for retire and cycle events."""
+    s = await setup(dut)
+    for priv in (3, 1, 0):
+        await enter_priv(s, priv)
+        for n in (3, 5, 10):
+            on, inc = event_on(n), event_increment(n)
+            for inh, inh_priv in ((0, None), (MINH, 3), (SINH, 1), (UINH, 0)):
+                await s.access(0x320 + n, inh | n, 1)
+                await s.access(0xB00 + n, 0, 1)
+                await s.idle(4, **on)
+                await s.idle(3, **EVENTS_OFF)
+                expected = 0 if inh_priv == priv else 4 * inc
+                assert await s.access(0xB00 + n) == expected, (priv, n, inh)
+            await s.access(0x320 + n, 0, 1)
+
+
+@cocotb.test()
+async def test_sscofpmf_sret_retirement_uses_previous_privilege(dut: Any) -> None:
+    """Count SRET in S and following retirements in U across the delayed input."""
+    s = await setup(dut)
+    for inhibit, expected in ((MINH | UINH, 1), (MINH | SINH, 2)):
+        await enter_priv(s, 3)
+        await s.access(0x32A, inhibit | 10, 1)
+        await s.access(0xB0A, 0, 1)
+        await enter_priv(s, 1)
+        # The core reports SRET's retirement one cycle after the return
+        # changes privilege. A following U pair arrives one cycle later.
+        await s.step(raw_valid=0, sret=1, hpm_instret=0)
+        assert int(dut.o_priv.value) == 0
+        await s.step(raw_valid=0, sret=0, hpm_instret=1)
+        await s.step(raw_valid=0, hpm_instret=2)
+        await s.idle(3, hpm_instret=0)
+        assert await s.access(0xC0A) == expected, (inhibit, expected)
+
+
+@cocotb.test()
+async def test_sscofpmf_scountovf_counter_enable_mask(dut: Any) -> None:
+    """M reads every scountovf bit; S reads only those mcounteren enables."""
+    s = await setup(dut)
+    await s.access(0x326, OF | 6, 1)
+    await s.access(0x32A, OF | 10, 1)
+    await s.access(MCOUNTEREN, 0x7FF & ~(1 << 6), 1)
+    assert await s.access(SCOUNTOVF) == (1 << 6) | (1 << 10)
+    await enter_priv(s, 1)
+    assert await s.access(SCOUNTOVF) == 1 << 10
+    await s.access(MCOUNTEREN, 0, 1)
+    assert await s.access(SCOUNTOVF) == 0
+    await s.access(MCOUNTEREN, 0x7FF, 1)
+    assert await s.access(SCOUNTOVF) == (1 << 6) | (1 << 10)
+    # scountovf is read-only: a write leaves the OF bits.
+    await s.access(SCOUNTOVF, 0, 1)
+    assert await s.access(SCOUNTOVF) == (1 << 6) | (1 << 10)
+
+
+@cocotb.test()
+async def test_sscofpmf_lcofi_delegation_and_topi(dut: Any) -> None:
+    """LCOFI uses mideleg/mie/mip bit 13, the sip/sie aliases, and the lowest topi priority."""
+    s = await setup(dut)
+    await s.access(MIDELEG, MASK64, 1)
+    assert await s.access(MIDELEG) == 0x2222
+    await s.access(MIDELEG, 0, 1)
+    await s.access(MIE, LCOF, 1)
+    assert int(dut.o_mie.value) & LCOF
+    await s.access(MIP, LCOF, 2)
+    assert await s.access(MIP) & LCOF
+    assert await s.access(MTOPI) == 0x000D_0001
+    assert await s.access(STOPI) == 0
+    assert await s.access(SIP) == 0 and await s.access(SIE) == 0
+    await s.access(SIP, 0, 1)  # Not delegated: no effect.
+    assert int(dut.o_lcof_pending.value) == 1
+    await s.access(MIDELEG, LCOF, 1)
+    assert int(dut.o_mideleg_lcof.value) == 1
+    assert await s.access(SIP) == LCOF and await s.access(SIE) == LCOF
+    assert await s.access(MTOPI) == 0
+    assert await s.access(STOPI) == 0x000D_0001
+    # SSI outranks LCOFI in both files.
+    await s.access(MIP, 1 << 1, 2)
+    await s.access(MIE, LCOF | (1 << 1), 1)
+    assert await s.access(MTOPI) == 0x0001_0001
+    assert await s.access(STOPI) == 0x000D_0001
+    await s.access(MIDELEG, LCOF | (1 << 1), 1)
+    assert await s.access(STOPI) == 0x0001_0001
+    await s.access(MIP, 1 << 1, 3)
+    # S clears LCOFIP through sip, and LCOFIE through sie, while delegated.
+    await s.access(SIP, LCOF, 3)
+    assert int(dut.o_lcof_pending.value) == 0
+    await s.access(SIP, LCOF, 2)
+    assert int(dut.o_lcof_pending.value) == 1
+    await s.access(SIE, 0, 1)
+    assert not int(dut.o_mie.value) & LCOF
+    # mvien bit 13 is read-only zero, so mvip bit 13 reads zero and its
+    # writes leave LCOFIP alone.
+    assert not await s.access(MVIP) & LCOF
+    await s.access(MVIP, 0, 1)
+    assert int(dut.o_lcof_pending.value) == 1
+    # A hardware set wins over a coincident software clear. The event stages
+    # on edge t, wraps the counter on edge t+1, and its registered request
+    # sets LCOFIP on edge t+2, where the mip clear launched at t+1 commits.
+    for clear_delay, expected in ((0, 1), (1, 0)):
+        await s.access(MIP, LCOF, 3)
+        await s.access(0x325, 5, 1)
+        await s.access(0xB05, MASK64, 1)
+        await s.step(raw_valid=0, hpm_events=1)
+        await s.idle(clear_delay, hpm_events=0)
+        await s.step(
+            raw_address=MIP,
+            raw_value=LCOF,
+            raw_op=3,
+            raw_valid=1,
+            raw_is_csr=1,
+            hpm_events=0,
+        )
+        await s.idle(3)
+        assert int(dut.o_lcof_pending.value) == expected, clear_delay
+    await s.access(0x325, 0, 1)
