@@ -84,6 +84,8 @@ A drain cursor points at the oldest entry not yet sent. It launches when that
 entry is eligible and has its address and data, and it never skips ahead.
 Cached and buffered Normal entries require commit; precise uncached entries require ROB-head
 permission and the shield.
+Entry, ordering and FIFO checks prepare launch and cursor completion before
+coherent store credit arrives. Credit qualifies both decisions last.
 Every store is a single 64-bit beat: sub-dword data is replicated across the
 beat and the byte strobe selects the lanes. A `cbo.zero` entry keeps `rs1`
 as its address. A cached block drains as one write at the naturally aligned

@@ -451,7 +451,6 @@ module store_queue #(
   assign write_completes_entry = write_fifo_completes0;
 
   // Drain-cursor entry readiness (committed + addr_valid + data_valid)
-  logic                drain_ready;
 
   // Head skip-advance and tail allocation targets.
   logic [PtrWidth-1:0] head_advance_target;
@@ -935,18 +934,21 @@ module store_queue #(
     end
   end
 
-  logic coherent_selected_sc, coherent_launch_ok;
+  logic coherent_selected_sc, coherent_order_ok, coherent_credit_ok;
+  logic drain_without_credit;
+  (* keep = "true" *) logic mem_write_launch_qualified, mem_write_complete_qualified;
   assign coherent_selected_sc = i_coherent_sc_pending && sq_is_sc[drain_idx_q] &&
       sq_rob_tag[drain_idx_q] == i_coherent_sc_tag;
-  assign coherent_launch_ok =
+  assign coherent_order_ok =
       ((!sq_is_sc[drain_idx_q] && mem_write_addr_cached_for_plain_next) ||
        !i_coherent_store_pending) &&
-      (!i_coherent_sc_pending || coherent_selected_sc) &&
-      (!mem_write_addr_cached_for_plain_next || i_coherent_store_ready || coherent_selected_sc);
-  assign drain_ready = sq_valid[drain_idx_q] &&
+      (!i_coherent_sc_pending || coherent_selected_sc);
+  assign coherent_credit_ok =
+      !mem_write_addr_cached_for_plain_next || i_coherent_store_ready || coherent_selected_sc;
+  assign drain_without_credit = sq_valid[drain_idx_q] &&
                        (sq_committed[drain_idx_q] || uncached_precommit_ready) &&
                        sq_addr_valid[drain_idx_q] && sq_data_valid[drain_idx_q] &&
-                       !sq_sent[drain_idx_q] && (coherent_launch_ok);
+                       !sq_sent[drain_idx_q] && coherent_order_ok;
 
   logic                 [       riscv_pkg::XLEN-1:0] mem_write_addr_next;
   logic                 [riscv_pkg::MemDataBits-1:0] mem_write_data_next;
@@ -1024,11 +1026,14 @@ module store_queue #(
   assign mem_write_launch_pipelined_next =
       mem_write_plain_fast_next && !write_inflight_special &&
       (write_fifo_occupancy_after_current_bus < 3'd2);
-  assign mem_write_fire_next =
-      drain_ready && (mem_write_launch_serial_next || mem_write_launch_pipelined_next);
-  assign drain_complete_fire_next = drain_ready && mem_write_completes_next &&
-                                    (mem_write_launch_serial_next ||
-                                     mem_write_launch_pipelined_next);
+  // Coherent credit includes this cycle's arriving write and reaches the SQ
+  // after its local entry, ordering and FIFO checks. Prepare both decisions
+  // without credit, then apply it last to launch and cursor completion.
+  assign mem_write_launch_qualified = drain_without_credit &&
+      (mem_write_launch_serial_next || mem_write_launch_pipelined_next);
+  assign mem_write_complete_qualified = mem_write_launch_qualified && mem_write_completes_next;
+  assign mem_write_fire_next = mem_write_launch_qualified && coherent_credit_ok;
+  assign drain_complete_fire_next = mem_write_complete_qualified && coherent_credit_ok;
 
   // Staging register for write_entry_idx and write_completes_entry, captured
   // alongside the write interface so they stay aligned with o_mem_write_en.
