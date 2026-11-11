@@ -112,6 +112,9 @@ static volatile unsigned long g_s_cause;           /* S handler: scause */
 static volatile unsigned long g_s_ovf;             /* S handler: scountovf */
 static volatile unsigned long g_s_value;           /* S body result */
 static volatile unsigned long g_priority_seen;
+static volatile unsigned long g_priority_lcof_first;
+static volatile unsigned long g_priority_ssi_first;
+static volatile unsigned long g_priority_store_bad;
 static volatile unsigned long g_priority_bad;
 static volatile unsigned long g_priority_after;
 static volatile unsigned long g_priority_store __attribute__((used));
@@ -224,7 +227,8 @@ __attribute__((naked, aligned(4))) static void s_clear_race_handler(void)
 /* Preserve the interrupted body and inspect only the first interrupt of each
  * phase. An LCOFI before the enable is allowed. It is stale priority if SSI
  * was enabled by that instruction, xepc is after it, and both sources remain
- * pending. Record topi as an independent description of the live priority. */
+ * pending. Record topi as an independent description of the live priority.
+ * If xepc names the store itself, that store must not yet be observable. */
 #define PRIORITY_TRAP_ASM(cause, epc, pending, enables, top, ret)                                  \
     "addi sp, sp, -64\n"                                                                           \
     "sd t0, 0(sp)\n"                                                                               \
@@ -244,6 +248,32 @@ __attribute__((naked, aligned(4))) static void s_clear_race_handler(void)
     "csrr t2, " pending "\n"                                                                       \
     "csrr t3, " enables "\n"                                                                       \
     "csrr t4, " top "\n"                                                                           \
+    "li t6, 0x8000000000000001\n"                                                                  \
+    "beq t0, t6, 3f\n"                                                                             \
+    "li t6, 0x800000000000000d\n"                                                                  \
+    "bne t0, t6, 4f\n"                                                                             \
+    "la t5, g_priority_lcof_first\n"                                                               \
+    "ld t6, 0(t5)\n"                                                                               \
+    "addi t6, t6, 1\n"                                                                             \
+    "sd t6, 0(t5)\n"                                                                               \
+    "j 4f\n"                                                                                       \
+    "3:\n"                                                                                         \
+    "la t5, g_priority_ssi_first\n"                                                                \
+    "ld t6, 0(t5)\n"                                                                               \
+    "addi t6, t6, 1\n"                                                                             \
+    "sd t6, 0(t5)\n"                                                                               \
+    "4:\n"                                                                                         \
+    "la t5, g_priority_after\n"                                                                    \
+    "ld t6, 0(t5)\n"                                                                               \
+    "bne t1, t6, 5f\n"                                                                             \
+    "la t5, g_priority_store\n"                                                                    \
+    "ld t6, 0(t5)\n"                                                                               \
+    "beqz t6, 5f\n"                                                                                \
+    "la t5, g_priority_store_bad\n"                                                                \
+    "ld t6, 0(t5)\n"                                                                               \
+    "addi t6, t6, 1\n"                                                                             \
+    "sd t6, 0(t5)\n"                                                                               \
+    "5:\n"                                                                                         \
     "li t6, 0x800000000000000d\n"                                                                  \
     "bne t0, t6, 2f\n"                                                                             \
     "la t5, g_priority_after\n"                                                                    \
@@ -603,6 +633,9 @@ int main(void)
     set_trap_handler(&m_priority_handler);
     csr_write(mideleg, 0);
     g_priority_bad = 0;
+    g_priority_lcof_first = 0;
+    g_priority_ssi_first = 0;
+    g_priority_store_bad = 0;
     g_priority_after = (unsigned long) &priority_m_after;
     for (unsigned long before = 1; before <= 128; before++) {
         csr_clear(mstatus, 1ul << 3);
@@ -610,22 +643,32 @@ int main(void)
         csr_write(mie, LCOF);
         csr_write(mip, 1ul << 1);
         g_priority_seen = 0;
+        g_priority_store = 0;
+        __asm__ volatile("" : : : "memory");
         csr_write_num(0xB09, 0ul - before);
         csr_write_num(0x329, 9);
         csr_set(mstatus, 1ul << 3);
         b_priority_m();
         csr_clear(mstatus, 1ul << 3);
         csr_write_num(0x329, 0);
+        if (g_priority_store != 1)
+            g_priority_store_bad++;
     }
     csr_write(mie, 0);
     csr_clear(mip, LCOF | (1ul << 1));
     ok &= report_priority("J mie-enable-refreshes-priority");
+    ok &= report("J first-LCOFI-covered", g_priority_lcof_first > 0, 1);
+    ok &= report("J first-SSI-covered", g_priority_ssi_first > 0, 1);
+    ok &= report("J store-precise", g_priority_store_bad, 0);
 
     /* K: Repeat at S privilege through the sie alias. */
     set_trap_handler(&m_trap_handler);
     csr_write(stvec, (unsigned long) &s_priority_handler);
     csr_write(mideleg, LCOF | (1ul << 1));
     g_priority_bad = 0;
+    g_priority_lcof_first = 0;
+    g_priority_ssi_first = 0;
+    g_priority_store_bad = 0;
     g_priority_after = (unsigned long) &priority_s_after;
     unsigned long unexpected = 0;
     for (unsigned long before = 1; before <= 128; before++) {
@@ -633,11 +676,15 @@ int main(void)
         csr_write(sie, LCOF);
         csr_write(mip, 1ul << 1);
         g_priority_seen = 0;
+        g_priority_store = 0;
+        __asm__ volatile("" : : : "memory");
         csr_write_num(0xB09, 0ul - before);
         csr_write_num(0x329, MINH | 9);
         csr_set(mstatus, 1ul << 1);
         if (run_at(&b_priority_s, PRIV_S) != 9)
             unexpected++;
+        if (g_priority_store != 1)
+            g_priority_store_bad++;
     }
     csr_clear(mstatus, 1ul << 1);
     csr_write(sie, 0);
@@ -646,6 +693,9 @@ int main(void)
     csr_clear(mip, LCOF | (1ul << 1));
     ok &= report("K priority-body-returned", unexpected, 0);
     ok &= report_priority("K sie-enable-refreshes-priority");
+    ok &= report("K first-LCOFI-covered", g_priority_lcof_first > 0, 1);
+    ok &= report("K first-SSI-covered", g_priority_ssi_first > 0, 1);
+    ok &= report("K store-precise", g_priority_store_bad, 0);
 
     uart_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
     for (;;) {
