@@ -4,11 +4,11 @@ coh_l1d_conflict_multi_prove multi conflict padded
 coh_l1d_conflict_stream_prove stream multi conflict padded
 coh_l1d_bmc single control control_single
 coh_l1d_multi_bmc multi control control_multi padded
-coh_l1d_stream_bmc stream multi control_stream padded longbmc streamscript payloadcontrol
+coh_l1d_stream_bmc stream multi control_stream padded longbmc streamscript streambounded
 coh_l1d_stream_hold_bmc stream multi cadical padded longbmc streamscript payloadhold
-coh_l1d_stream_free_nostore_bmc stream multi control control_stream padded nostore payloadcontrol
+coh_l1d_stream_free_nostore_bmc stream multi control control_stream padded nostore streambounded
 coh_l1d_stream_free_nostore_hold_bmc stream multi control cadical padded nostore payloadhold
-coh_l1d_stream_free_bmc stream multi control control_stream padded bulk
+coh_l1d_stream_free_bmc stream multi control control_stream padded bulk streambounded
 coh_l1d_stream_outlier_prove stream multi control padded pdr outlier
 coh_l1d_stream_owned_prove stream multi padded streamread epphase streamowned
 coh_l1d_stream_prove stream multi padded pdr unbounded streamread epphase
@@ -67,12 +67,12 @@ pathcovers: timeout 1800
 conflict: mode prove
 conflict: depth 2
 conflict: timeout 600
-# The eight-endpoint stream BMC reads the stream cover's scripted loads, so
-# its frames reach the speculative behavior; CI runs it in the hart
-# maintenance proof's job. The free-input stream BMCs are shallower: their
-# frames take about 1.3 times longer than the previous one. The free BMC with
-# stores leaves out four assertions that the outlier proof covers without a
-# depth bound, and shares a CI job with the four-way hit-port array BMC.
+# The eight-endpoint stream BMC reads the stream cover's scripted loads.
+# All three control BMCs leave four payload checks to the independent
+# unbounded outlier proof, whose free-input model covers each specialization.
+# Matching scripted and no-store hold tasks also check those four assertions
+# at the original bounds. No partition assumes facts from another partition.
+# The free BMC with stores shares a job with the four-way hit-port array BMC.
 longbmc: timeout 3600
 streamscript: depth 42
 nostore: depth 24
@@ -166,10 +166,13 @@ control: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR
 control: chformal -assert2assume c:p_prefetch_conflict_split
 streamscript: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 streamscript: chformal -assert2assume c:p_prefetch_conflict_split
-# Separate wide holds from control without assumptions between groups. Each
-# scripted or no-store pair keeps its original depth and input environment.
-payloadcontrol: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
-payloadcontrol: select -assert-min 1 t:$check r:FLAVOR=assert %i
+# Preserve the complete 326-check stream scope before selecting a partition.
+# The independent outlier proof assumes no BMC or ownership assertions.
+streambounded: select -assert-count 326 t:$check r:FLAVOR=assert %i
+payloadhold: select -assert-count 326 t:$check r:FLAVOR=assert %i
+outlier: select -assert-count 326 t:$check r:FLAVOR=assert %i
+streambounded: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
+streambounded: select -assert-count 322 t:$check r:FLAVOR=assert %i
 payloadhold: select -assert-count 4 c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
 payloadhold: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold %u %u %u %d
 payloadhold: select -assert-count 4 t:$check r:FLAVOR=assert %i
@@ -181,8 +184,6 @@ unbounded: chformal -assert2assume c:p_prefetch_conflict_split
 unbounded: chformal -assert -remove t:$check r:FLAVOR=assert %i a:src=*coherence_request_endpoint.sv:* %i
 unbounded: select -assert-count 17 t:$check r:FLAVOR=assert %i c:p_owned_* c:p_selected_kind c:p_path_shadowed %u %u %i
 unbounded: chformal -assert2assume c:p_owned_* c:p_selected_kind c:p_path_shadowed
-bulk: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
-bulk: select -assert-count 322 t:$check r:FLAVOR=assert %i
 outlier: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold %u %u %u %d
 outlier: select -assert-count 4 t:$check r:FLAVOR=assert %i
 # The unbounded stream proof leaves out the four outlier assertions, which the
