@@ -21,7 +21,9 @@ The diagram shows the X3 configuration; click it for the full-size version.
   driver for the memory error unit reports DDR ECC errors, scrubs corrected
   lines, and patrols memory in the background.
 - A 10 Gigabit Ethernet NIC with FROST's own MAC and PCS, descriptor-ring DMA
-  that is coherent with the data caches, and a Linux driver.
+  that is coherent with the data caches, and a Linux driver. It supports
+  scatter-gather transmit, checksum offload, TCP segmentation, configurable
+  receive buffering, 802.3x flow control, and packet and error counters.
 - Continuous testing on pull requests and pushes to `main`: the RISC-V
   architecture tests and random riscv-torture programs checked against Spike,
   the riscv-tests suites, and TestRIG, which compares FROST with the Sail
@@ -186,7 +188,8 @@ every supported extension and privilege mode.
   L1I, 128 KiB L1D, and 2 MiB L2, all four-way, and a 512-entry L0 cache in the
   load queue. The L1D holds 32-byte sectors in I, S or M states, with eight
   read slots and up to eight requests in flight to the L2, seven of them for
-  load misses. Four ordered store records install Modified-sector
+  load misses. A read-hit pipeline serves eligible loads while the controller
+  handles misses or stores. Four ordered store records install Modified-sector
   hits with masked writes and give waiting reads turns between stores.
   The L2's coherence home orders the L1s, page-table walks and DMA by sector
   and has eight fills with data and instruction stream prefetching. The build
@@ -260,10 +263,10 @@ architecture tests and riscv-torture programs against Spike reference
 results, the riscv-tests suites, TestRIG's instruction-by-instruction
 comparison with the Sail RISC-V model, unit benches for the CPU and SoC
 blocks, full programs from on-chip BRAM and from cached DDR, formal proofs,
-synthesis checks, the OpenROAD flow, the Ethernet MAC/PCS benches, and QEMU
-boots of the Linux images, and it merges the coverage of its simulations,
-cover points included, into one report. The
-[test guide](tests/README.md#ci-integration) has the details and the commands
+strict SystemVerilog elaboration and synthesis checks, the OpenROAD flow,
+the Ethernet MAC/PCS benches, and QEMU boots of the Linux images, and it
+merges the coverage of its simulations, cover points included, into one report.
+The [test guide](tests/README.md#ci-integration) has the details and the commands
 for each suite.
 
 ### Building Software
