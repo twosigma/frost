@@ -3223,6 +3223,7 @@ module reservation_station #(
       assign indexed_dispatch2_write[entry] = BROADCAST_FREE_SOURCE_VALUES ?
         (!rs_valid[entry] && alloc_sel_2[entry]) :
         (data_write_2_en && alloc_idx_2 == EntryIndexWidth'(entry));
+`ifndef FROST_XILINX_PRIMS
       assign indexed_src1_write_sel[entry] = indexed_write_select(
           indexed_dispatch1_write[entry],
           indexed_dispatch2_write[entry],
@@ -3236,6 +3237,7 @@ module reservation_station #(
           i_repair_valid_4,
           src1_cdb_pend[entry]
       );
+`endif
       assign indexed_src1_write_data[entry] = indexed_write_value(
           indexed_src1_write_sel[entry],
           dispatch_src1_stored_value,
@@ -3245,6 +3247,7 @@ module reservation_station #(
           indexed_delivery_1,
           indexed_delivery_4
       );
+`ifndef FROST_XILINX_PRIMS
       assign indexed_src2_write_sel[entry] = indexed_write_select(
           indexed_dispatch1_write[entry],
           indexed_dispatch2_write[entry],
@@ -3258,6 +3261,7 @@ module reservation_station #(
           i_repair_valid_5,
           src2_cdb_pend[entry]
       );
+`endif
       assign indexed_src2_write_data[entry] = indexed_write_value(
           indexed_src2_write_sel[entry],
           dispatch_src2_stored_value,
@@ -3267,7 +3271,74 @@ module reservation_station #(
           indexed_delivery_2,
           indexed_delivery_5
       );
+`ifdef FROST_XILINX_PRIMS
+      // Repair-valid arrives after the ROB lookup. Prepare the resident/CDB
+      // priority first, then apply both repair channels in each final select
+      // LUT. Pending delivery retains priority over every other write.
+      for (genvar source_index = 0; source_index < (HAS_SRC3 ? 3 : 2);
+          source_index++) begin : gen_native_select
+        wire ready, pending, repair1, repair2;
+        wire [ReorderBufferTagWidth-1:0] tag;
+        wire [5:0] selected;
+        wire live0 = i_cdb.valid && tag == i_cdb.tag;
+        wire live1 = i_cdb_2.valid && tag == i_cdb_2.tag;
+        (* keep = "true" *) wire resident_wait = rs_valid[entry] && !ready;
+        (* keep = "true" *) wire resident_live = resident_wait && (live0 || live1);
+        (* keep = "true" *) wire dispatch1_possible = !pending && !resident_live &&
+            !indexed_dispatch2_write[entry] && indexed_dispatch1_write[entry];
+        (* keep = "true" *) wire dispatch2_possible = !pending && !resident_live &&
+            indexed_dispatch2_write[entry];
+        (* keep = "true" *) wire repair1_blocks = resident_wait && repair_slot1_target_q[entry];
+        (* keep = "true" *) wire repair2_blocks = resident_wait && repair_slot2_target_q[entry];
+        (* keep = "true" *) wire repair1_possible = !pending && resident_wait &&
+            !live0 && !live1 && repair_slot1_target_q[entry];
+        (* keep = "true" *) wire repair2_possible = !pending && resident_wait &&
+            !live0 && !live1 && repair_slot2_target_q[entry];
+        (* keep = "true" *) wire pending1 = pending && repair_slot1_target_q[entry];
+        (* keep = "true" *) wire pending2 = pending && !repair_slot1_target_q[entry];
+        if (source_index == 0) begin : gen_source1
+          assign ready = rs_src1_ready[entry];
+          assign pending = src1_cdb_pend[entry];
+          assign repair1 = i_repair_valid_1;
+          assign repair2 = i_repair_valid_4;
+          assign tag = rs_src1_tag[entry];
+          assign indexed_src1_write_sel[entry] = selected;
+        end else if (source_index == 1) begin : gen_source2
+          assign ready = rs_src2_ready[entry];
+          assign pending = src2_cdb_pend[entry];
+          assign repair1 = i_repair_valid_2;
+          assign repair2 = i_repair_valid_5;
+          assign tag = rs_src2_tag[entry];
+          assign indexed_src2_write_sel[entry] = selected;
+        end else begin : gen_source3
+          assign ready = rs_src3_ready_q[entry];
+          assign pending = src3_cdb_pend[entry];
+          assign repair1 = i_repair_valid_3;
+          assign repair2 = i_repair_valid_6;
+          assign tag = rs_src3_tag[entry];
+          assign indexed_src3_write_sel[entry] = selected;
+        end
+        (* dont_touch = "true" *) LUT5 #(.INIT(32'h002a2a2a)) u_dispatch1 (
+            .I0(dispatch1_possible), .I1(repair1_blocks), .I2(repair1),
+            .I3(repair2_blocks), .I4(repair2), .O(selected[0])
+        );
+        (* dont_touch = "true" *) LUT5 #(.INIT(32'h002a2a2a)) u_dispatch2 (
+            .I0(dispatch2_possible), .I1(repair1_blocks), .I2(repair1),
+            .I3(repair2_blocks), .I4(repair2), .O(selected[1])
+        );
+        assign selected[2] = !pending && resident_wait && live0;
+        assign selected[3] = !pending && resident_wait && !live0 && live1;
+        (* dont_touch = "true" *) LUT3 #(.INIT(8'hea)) u_repair1 (
+            .I0(pending1), .I1(repair1_possible), .I2(repair1), .O(selected[4])
+        );
+        (* dont_touch = "true" *) LUT5 #(.INIT(32'haaeaeaea)) u_repair2 (
+            .I0(pending2), .I1(repair2_possible), .I2(repair2),
+            .I3(repair_slot1_target_q[entry]), .I4(repair1), .O(selected[5])
+        );
+      end
+`endif
       if (HAS_SRC3) begin : gen_src3
+`ifndef FROST_XILINX_PRIMS
         assign indexed_src3_write_sel[entry] = indexed_write_select(
             indexed_dispatch1_write[entry],
             indexed_dispatch2_write[entry],
@@ -3281,6 +3352,7 @@ module reservation_station #(
             i_repair_valid_6,
             src3_cdb_pend[entry]
         );
+`endif
         assign indexed_src3_write_data[entry] = indexed_write_value(
             indexed_src3_write_sel[entry],
             dispatch_src3_stored_value,

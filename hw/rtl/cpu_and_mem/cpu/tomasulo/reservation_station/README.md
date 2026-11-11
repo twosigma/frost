@@ -120,6 +120,12 @@ from what stage 2 holds, and `o_issue_staged` (`o_issue_2_staged` for port
 1) gives the stage-2 valid bit alone, for logic that applies `i_fu_ready`
 last.
 
+For indexed operand repair, the Xilinx implementation prepares resident,
+CDB and pending-delivery priority before applying the two ROB repair-valid
+inputs in the final write-select LUTs. Deferred CDB delivery still takes
+priority, followed by resident CDB, resident repair and dispatch writes.
+The generic write selection and the operand capture cycle are unchanged.
+
 ## Divide gate (MUL_RS)
 
 MUL_RS feeds a pipelined multiplier and a divider that takes one operation at
