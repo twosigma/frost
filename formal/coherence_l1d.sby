@@ -73,9 +73,6 @@ pathcovers: timeout 1800
 # The store cover reaches its last cover in about ten minutes.
 covers: timeout 1200
 zcovers: timeout 2400
-# Retain reset and every transition, but avoid repeatedly rejecting shallow
-# witnesses for a twin installation that freezes a Modified victim.
-zsingle: skip 40
 ~covermode: aigsmt boolector
 conflict: mode prove
 conflict: depth 2
@@ -129,7 +126,8 @@ cadical: abc bmc3 -c
 conflict: smtbmc boolector
 covers: smtbmc boolector
 pathcovers: smtbmc boolector
-zcovers: smtbmc boolector
+zsingle: btor btormc
+zlook: smtbmc boolector
 streamcovers: smtbmc boolector
 turncovers: smtbmc boolector
 owner: abc pdr

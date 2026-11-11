@@ -2597,7 +2597,7 @@ def test_zero_payload_partition_models_match() -> None:
 
 
 def test_zero_cover_keeps_reset_model() -> None:
-    """Delay cover queries without weakening the reset model or any safety task."""
+    """Keep every zero cover and its reset model when selecting the cover engine."""
     control = l1d_task_config("coh_l1d_zero_bmc")
     cover = l1d_task_config("coh_l1d_zero_cover")
     model = [line for line in control["[script]"] if not assertion_command(line)]
@@ -2624,9 +2624,8 @@ def test_zero_cover_keeps_reset_model() -> None:
             "mode": "cover",
             "depth": "80",
             "timeout": "2400",
-            "skip": "40",
         }
-        assert task["[engines]"] == ["smtbmc boolector"]
+        assert task["[engines]"] == ["btor btormc"]
 
     validate(cover)
     for section, line in (
@@ -2634,6 +2633,7 @@ def test_zero_cover_keeps_reset_model() -> None:
         ("[script]", "chformal -assert2assume c:p_zero_twin_install"),
         ("[script]", "cutpoint w:image_q"),
         ("[options]", "depth 79"),
+        ("[options]", "skip 40"),
         ("[options]", "expect PASS,UNKNOWN,TIMEOUT"),
         ("[file cover_only.smtc]", "assume (= hidden 0)"),
     ):
