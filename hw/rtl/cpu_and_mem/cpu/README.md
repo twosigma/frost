@@ -374,7 +374,16 @@ compare, then select) and starts
 at level 0 or level 1 on a hit, so it makes one or two dependent line reads
 instead of three. Only a valid non-leaf PTE that a walk descends through fills
 it; an invalid or faulting PTE never does (Svvptc), and the walk invalidate
-empties it. The cache is on the miss path only. The [RTL overview](../../README.md) lists the supported
+empties it. The cache is on the miss path only. The instruction MMU expires
+its fault memo and completed registered refusals every 64 clocks, so wrong-path faults
+cannot retain invalid PTEs indefinitely. Full flushes drop verdicts even
+when a response arrives on the flush edge. A clean retarget captured exactly
+as an old refusal expires retries one clock later; held clean translations
+remain valid. A known first-word fault completes a crossing window
+without waiting for a missing neighbor, so slow refused walks cannot
+alternate indefinitely as negative-cache entries expire. A partial result is
+not expired, preserving a first-page response that arrives on the expiry
+edge beside a warm faulting neighbor. The [RTL overview](../../README.md) lists the supported
 page sizes, and the [cache README](../../lib/cache/README.md) describes the
 walker's port into the cache hierarchy.
 

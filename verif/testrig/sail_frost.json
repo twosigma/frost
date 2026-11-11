@@ -439,7 +439,7 @@
     "Zcd": {"supported": true},
     "Sstc": {"supported": true},
     "Svade": {"supported": true},
-    // No translation structure keeps an invalid PTE past the next trap.
+    // Invalid-PTE refusals expire within bounded time, including on wrong paths.
     "Svvptc": {"supported": true},
     "Svbare": {"supported": true},
     "Sv39": {"supported": true},
