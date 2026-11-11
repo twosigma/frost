@@ -49,6 +49,8 @@
   (compares, FCLASS, conversions to integer, FMV.X.*) XLEN-correct. i_kill drops
   the operation in progress; the engine is idle again on the next cycle.
 */
+// Preserve the arithmetic engine's synthesis boundary.
+(* keep_hierarchy = "yes" *)
 module fp_engine (
     input logic i_clk,
     input logic i_rst_n,
