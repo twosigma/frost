@@ -91,9 +91,11 @@ power-of-two cached regions use a mask comparison; other maps retain the
 general range comparison, including empty or wrapping ranges.
 Each entry prepares its cached serial, uncached serial, buffered overlap and
 precise serial decisions independently of its address class. The cursor and
-all other conditions are included before the class bits select those decisions.
+entry-specific conditions are included before the class bits select those decisions.
 A precise uncommitted entry is uncached and cannot use buffered overlap, so
-its permission does not pass through the overlapping launch checks. Uncached
+its permission does not pass through the overlapping launch checks. Shared
+ROB-head permission and shield checks qualify the precise arm after its
+per-entry decisions have been reduced. Uncached
 completion includes the last-beat decision before address classification;
 every cached launch completes its entry. These are the same launch and
 completion conditions with no added state or cycles.

@@ -883,7 +883,7 @@ module store_queue #(
   (* keep = "true" *) logic [DEPTH-1:0] sq_cached_class;
   (* keep = "true" *) logic [DEPTH-1:0] sq_precise_class, sq_plain_fast_class;
   logic [DEPTH-1:0] drain_entry_ready, drain_sc_order_ok;
-  (* keep = "true" *) logic [DEPTH-1:0] pending_without_class, precommit_without_class;
+  (* keep = "true" *) logic [DEPTH-1:0] pending_without_class, precommit_local_ready;
   (* keep = "true" *) logic precommit_shared_ready;
   assign precommit_shared_ready = uncached_armed_q && i_uncached_store_shield &&
       i_head_side_effects_allowed && !i_flush_en && !i_flush_all &&
@@ -901,8 +901,8 @@ module store_queue #(
         (sq_is_sc[slot] && sq_rob_tag[slot] == i_coherent_sc_tag);
     assign pending_without_class[slot] = PRECISE_UNCACHED && drain_entry_ready[slot] &&
         !sq_committed[slot] && sq_rob_tag[slot] == i_rob_head_tag;
-    assign precommit_without_class[slot] = pending_without_class[slot] &&
-        precommit_shared_ready && (!sq_is_sc[slot] ||
+    assign precommit_local_ready[slot] = pending_without_class[slot] &&
+        (!sq_is_sc[slot] ||
             (uncached_sc_permit_q && uncached_sc_tag_q == sq_rob_tag[slot]));
   end
   assign o_uncached_store_pending = |(pending_without_class & sq_precise_class);
@@ -977,14 +977,16 @@ module store_queue #(
   logic                                              mem_write_is_cached_next;
   logic                                              mem_write_launch_serial_next;
   logic                                              mem_write_overlap_ready;
-  (* keep = "true" *) logic cached_launch_qualified, uncached_launch_qualified;
-  (* keep = "true" *) logic uncached_complete_qualified;
+  (* keep = "true" *) logic cached_launch_qualified, committed_uncached_launch;
+  (* keep = "true" *) logic committed_uncached_complete;
+  (* keep = "true" *) logic precise_launch_qualified, precise_complete_qualified;
   (* keep = "true" *) logic [DEPTH-1:0] cached_serial_local, uncached_serial_local;
-  (* keep = "true" *) logic [DEPTH-1:0] uncached_overlap_local, precise_serial_local;
+  (* keep = "true" *) logic [DEPTH-1:0] uncached_overlap_local, precise_entry_local;
   (* keep = "true" *)logic [DEPTH-1:0] uncached_serial_complete_local;
   (* keep = "true" *)logic [DEPTH-1:0] uncached_overlap_complete_local;
-  (* keep = "true" *)logic [DEPTH-1:0] precise_serial_complete_local;
-  (* keep = "true" *) logic [DEPTH-1:0] uncached_launch_terms, uncached_complete_terms;
+  (* keep = "true" *)logic [DEPTH-1:0] precise_entry_complete_local;
+  (* keep = "true" *) logic [DEPTH-1:0]
+      committed_uncached_launch_terms, committed_uncached_complete_terms;
   logic [2:0] write_fifo_occupancy_after_current_bus;
 
   // Zero-block drain. A cached cbo.zero entry is one write at its block base,
@@ -1051,7 +1053,8 @@ module store_queue #(
   // Prepare every non-address condition per entry. Cached writes always use
   // the serial arm and complete in one beat. Precise uncommitted writes are
   // uncached and cannot use the Normal-memory overlap arm. Their class bits
-  // therefore select these complete decisions after all other qualification.
+  // select these decisions after local qualification. The shared permission
+  // for precise writes applies after their per-entry reduction.
   for (genvar slot = 0; slot < DEPTH; slot++) begin : gen_drain_class_cofactors
     wire committed_ready = drain_entry_ready[slot] && sq_committed[slot] && drain_sc_order_ok[slot];
     wire uncached_last = !sq_is_zero[slot] || zero_beat_last;
@@ -1061,31 +1064,36 @@ module store_queue #(
         !i_coherent_store_pending;
     assign uncached_overlap_local[slot] = committed_ready && mem_write_overlap_ready &&
         !i_coherent_store_pending;
-    assign precise_serial_local[slot] = precommit_without_class[slot] &&
+    assign precise_entry_local[slot] = precommit_local_ready[slot] &&
         drain_sc_order_ok[slot] && mem_write_launch_serial_next && !i_coherent_store_pending;
     assign uncached_serial_complete_local[slot] = uncached_serial_local[slot] && uncached_last;
     assign uncached_overlap_complete_local[slot] = uncached_overlap_local[slot] && uncached_last;
-    assign precise_serial_complete_local[slot] = precise_serial_local[slot] && uncached_last;
-    assign uncached_launch_terms[slot] =
+    assign precise_entry_complete_local[slot] = precise_entry_local[slot] && uncached_last;
+    assign committed_uncached_launch_terms[slot] =
         (uncached_serial_local[slot] && !sq_cached_class[slot]) ||
-        (uncached_overlap_local[slot] && sq_plain_fast_class[slot]) ||
-        (precise_serial_local[slot] && sq_precise_class[slot]);
-    assign uncached_complete_terms[slot] =
+        (uncached_overlap_local[slot] && sq_plain_fast_class[slot]);
+    assign committed_uncached_complete_terms[slot] =
         (uncached_serial_complete_local[slot] && !sq_cached_class[slot]) ||
-        (uncached_overlap_complete_local[slot] && sq_plain_fast_class[slot]) ||
-        (precise_serial_complete_local[slot] && sq_precise_class[slot]);
+        (uncached_overlap_complete_local[slot] && sq_plain_fast_class[slot]);
   end
   assign cached_launch_qualified = |(cached_serial_local & sq_cached_class);
-  assign uncached_launch_qualified = |uncached_launch_terms;
-  assign uncached_complete_qualified = |uncached_complete_terms;
-  assign mem_write_precommit_fire_next = |(precise_serial_local & sq_precise_class);
-  assign mem_write_launch_qualified = cached_launch_qualified || uncached_launch_qualified;
-  assign mem_write_complete_qualified = cached_launch_qualified || uncached_complete_qualified;
+  assign committed_uncached_launch = |committed_uncached_launch_terms;
+  assign committed_uncached_complete = |committed_uncached_complete_terms;
+  assign precise_launch_qualified = |(precise_entry_local & sq_precise_class);
+  assign precise_complete_qualified = |(precise_entry_complete_local & sq_precise_class);
+  assign mem_write_precommit_fire_next = precommit_shared_ready && precise_launch_qualified;
+  assign mem_write_launch_qualified = cached_launch_qualified || committed_uncached_launch ||
+      mem_write_precommit_fire_next;
+  assign mem_write_complete_qualified = cached_launch_qualified || committed_uncached_complete ||
+      (precommit_shared_ready && precise_complete_qualified);
   // Coherent credit arrives after local qualification and applies only to
   // the cached arm. The other arms do not depend on that handshake.
-  assign mem_write_fire_next = uncached_launch_qualified ||
+  // Head permission likewise qualifies only the precise arm, after its
+  // cursor, SC, pipeline and address checks have all been reduced.
+  assign mem_write_fire_next = committed_uncached_launch || mem_write_precommit_fire_next ||
       (cached_launch_qualified && coherent_credit_ok);
-  assign drain_complete_fire_next = uncached_complete_qualified ||
+  assign drain_complete_fire_next = committed_uncached_complete ||
+      (precommit_shared_ready && precise_complete_qualified) ||
       (cached_launch_qualified && coherent_credit_ok);
 
   // Staging register for write_entry_idx and write_completes_entry, captured
