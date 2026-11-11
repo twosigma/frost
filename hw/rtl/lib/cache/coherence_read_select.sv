@@ -49,14 +49,14 @@ module coherence_read_select #(
   // Blocking compares 18 sector index bits. An alias with a held sector waits
   // for the holder like a match, and the holders do not wait for reads.
   localparam int unsigned BlockBits = 18;
-  logic [7:0] eligible, upper, first, status_eligible, missed_load;
+  logic [7:0] eligible, upper, first, status_eligible;
   (* keep = "true" *) logic [7:0] stored_eligible, write_eligible;
   (* keep = "true" *) logic write_found;
   // Each group fits one LUT, so a slot's eligibility reaches o_found in two
   // levels.
   (* keep = "true" *) logic [2:0] stored_found;
-  (* keep = "true" *) logic [2:0] stored_miss_found;
-  (* keep = "true" *) logic write_miss_found;
+  (* keep = "true" *) logic [7:0] miss_candidates;
+  (* keep = "true" *) logic [2:0] miss_found;
   (* keep = "true" *) logic [7:0] first_upper, first_any;
   // i_addr is each slot's address after the buffered write forwards to it.
   // The comparisons use the stored addresses and the buffered write's address
@@ -94,8 +94,10 @@ module coherence_read_select #(
         (!i_miss[index] || i_miss_retry[index]);
     assign stored_eligible[index] = available && !i_write_mask[index] && !stored_blocked;
     assign write_eligible[index] = available && i_write_mask[index];
-    assign missed_load[index] = status_eligible[index] && i_miss[index] &&
-        i_kind[2*index+:2] == 2'd0;
+    assign miss_candidates[index] =
+        (stored_eligible[index] || (write_eligible[index] && !write_blocked)) &&
+        !i_waiting[index] && (!i_miss[index] || i_miss_retry[index]) &&
+        i_miss[index] && i_kind[2*index+:2] == 2'd0;
     if (index == 7) begin : gen_last
       assign upper[index] = eligible[index];
     end else begin : gen_before_last
@@ -117,14 +119,12 @@ module coherence_read_select #(
   assign stored_found[2] = |(stored_eligible[7:6] & status_eligible[7:6]);
   assign write_found = |(write_eligible & status_eligible);
   assign o_found = |stored_found || (write_found && !write_blocked);
-  // The buffered address is shared by every forwarded slot. Reduce the
-  // stored and forwarded miss candidates separately, then apply its block
-  // comparison once, after the forwarded candidates have been reduced.
-  assign stored_miss_found[0] = |(stored_eligible[2:0] & missed_load[2:0]);
-  assign stored_miss_found[1] = |(stored_eligible[5:3] & missed_load[5:3]);
-  assign stored_miss_found[2] = |(stored_eligible[7:6] & missed_load[7:6]);
-  assign write_miss_found = |(write_eligible & missed_load);
-  assign o_load_miss = |stored_miss_found || (write_miss_found && !write_blocked);
+  // Prepare address, waiting and retry checks before applying ownership.
+  // Each three-slot ownership group fits one LUT, followed by the final OR.
+  assign miss_found[0] = |(miss_candidates[2:0] & ~i_owned[2:0]);
+  assign miss_found[1] = |(miss_candidates[5:3] & ~i_owned[5:3]);
+  assign miss_found[2] = |(miss_candidates[7:6] & ~i_owned[7:6]);
+  assign o_load_miss = |miss_found;
   always_comb begin
     o_index = '0;
     o_address = '0;

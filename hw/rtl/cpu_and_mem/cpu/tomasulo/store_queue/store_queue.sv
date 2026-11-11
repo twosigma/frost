@@ -726,6 +726,8 @@ module store_queue #(
   logic                mem_write_completes_next;
   logic                mem_write_plain_fast_next;
   logic                drain_complete_fire_next;
+  (* keep = "true" *)logic                write_inflight_special_hold;
+  logic                write_inflight_special_next;
 
   // Compute the next cursor both with and without a launch, then select with
   // drain_complete_fire_next for timing. The post-fire mask excludes only
@@ -1096,6 +1098,29 @@ module store_queue #(
       (precommit_shared_ready && precise_complete_qualified) ||
       (cached_launch_qualified && coherent_credit_ok);
 
+  // Resolve completion of the previous write independently of launch credit.
+  // A new launch wins over a simultaneous completion and supplies its class.
+  always_comb begin
+    write_inflight_special_hold = write_inflight_special;
+    if (i_mem_write_done && (write_inflight_cnt == 2'd1) && !o_mem_write_en)
+      write_inflight_special_hold = 1'b0;
+  end
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT3 #(
+      .INIT(8'h72)
+  ) u_write_inflight_special_select (
+      .I0(mem_write_fire_next),
+      .I1(mem_write_plain_fast_next),
+      .I2(write_inflight_special_hold),
+      .O (write_inflight_special_next)
+  );
+`else
+  always_comb begin
+    write_inflight_special_next = write_inflight_special_hold;
+    if (mem_write_fire_next) write_inflight_special_next = !mem_write_plain_fast_next;
+  end
+`endif
+
   // Staging register for write_entry_idx and write_completes_entry, captured
   // alongside the write interface so they stay aligned with o_mem_write_en.
   logic [IdxWidth-1:0] mem_write_entry_idx_stg;
@@ -1418,16 +1443,13 @@ module store_queue #(
           + (o_mem_write_en ? 2'd1 : 2'd0)
           - ((i_mem_write_done && (write_inflight_cnt != 2'd0)) ? 2'd1 : 2'd0);
 
+      // A special cached or MMIO write flies alone: its in-flight window
+      // blocks all further launches until completion.
+      write_inflight_special <= write_inflight_special_next;
       if (mem_write_fire_next) begin
-        // A special cached or MMIO write flies alone: it only launches
-        // through the serial arm, and its in-flight window blocks all further
-        // launches until completion.
-        write_inflight_special <= !mem_write_plain_fast_next;
         if (mem_write_completes_next) begin
           sq_sent[drain_idx_q] <= 1'b1;
         end
-      end else if (i_mem_write_done && (write_inflight_cnt == 2'd1) && !o_mem_write_en) begin
-        write_inflight_special <= 1'b0;
       end
 
       // -----------------------------------------------------------------

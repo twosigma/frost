@@ -134,6 +134,9 @@ oldest in-flight write. A cached or MMIO store
 launches only when no other write is in flight, and nothing else launches until
 it completes. A cached write completes once the L1D has ordered it, so a store
 miss does not hold up the drain for the line fill.
+The in-flight class resolves completion of the previous write before launch
+credit arrives. A new launch selects its class last and takes priority over
+a simultaneous completion, without adding state or cycles.
 
 Cached ordinary stores complete when captured in one of the L1D's four ordered
 sector records. Each scalar receives an acknowledgement, including scalars
