@@ -48,13 +48,15 @@ module coherence_store_buffer #(
     output logic [1:0] o_head,
     output logic [3:0] o_valid,
     output logic [3:0] o_sealed,
-    output logic [3:0] o_acquired,
+    // Allocation clears ownership before a later acquire can replace it.
+    // Keep this priority on the data input instead of a combined enable.
+    (* extract_reset = "no", extract_enable = "no" *) output logic [3:0] o_acquired,
     output logic [3:0][ADDR_WIDTH-1:0] o_addr,
     output logic [3:0][255:0] o_data,
     output logic [3:0][31:0] o_mask,
     output logic [3:0][TAG_BITS-1:0] o_tag,
     output logic [3:0][5:0] o_contributors,
-    output logic [3:0][EP_BITS-1:0] o_ep,
+    (* extract_reset = "no", extract_enable = "no" *) output logic [3:0][EP_BITS-1:0] o_ep,
     // A record of a cbo.zero block: every byte zero and masked, sealed.
     output logic [3:0] o_zero,
     // The upper record of a cbo.zero block, the twin of the record before it.

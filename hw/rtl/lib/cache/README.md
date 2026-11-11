@@ -481,7 +481,10 @@ the request through D, G, C and U, including channel backpressure. LR may attach
 fill; home AMO and SC acquisitions and local maintenance use the endpoint
 drain rules.
 
-An L1D grant belongs to a live request endpoint. SC acceptance requires
+An L1D grant belongs to a live request endpoint. Its endpoint compares the
+grant's full address in parallel byte groups before qualifying acceptance
+with the request identity and opcode. A partial final byte is included.
+SC acceptance requires
 endpoint 0 to be idle and excludes a selected grant. Grant processing and
 SC acceptance are mutually exclusive. Probe capture and service own local arbitration through R
 acceptance. Invalidation admission starts on P capture and keeps the captured

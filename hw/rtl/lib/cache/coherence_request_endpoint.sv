@@ -100,8 +100,16 @@ module coherence_request_endpoint #(
       request.q, request.opcode
   ) && request.addr[4:0] == 0;
   assign o_d_valid = send_d_phase;
+  // Grant acceptance feeds the home's completion handshake. Compare address
+  // groups in parallel, including a partial final byte in wider apertures.
+  localparam int unsigned GrantAddrGroups = (ADDR_WIDTH + 7) / 8;
+  (* keep = "true" *) wire [GrantAddrGroups-1:0] grant_addr_equal;
+  for (genvar chunk = 0; chunk < GrantAddrGroups; chunk++) begin : gen_grant_addr_equal
+    localparam int unsigned Bits = ADDR_WIDTH - 8 * chunk < 8 ? ADDR_WIDTH - 8 * chunk : 8;
+    assign grant_addr_equal[chunk] = grant_in.addr[8*chunk+:Bits] == demand_q.addr[8*chunk+:Bits];
+  end
   assign o_g_ready = wait_g_phase && grant_in.q == demand_q.q &&
-      grant_in.addr == demand_q.addr && grant_in.opcode <= coherence_pkg::GrantMZero;
+      (&grant_addr_equal) && grant_in.opcode <= coherence_pkg::GrantMZero;
   assign o_grant_valid = grant_phase;
   assign o_done_ready = done_phase && i_done_status <= coherence_pkg::Error &&
       ((i_done_status != coherence_pkg::Error && !grant_q.error) || i_error_disposed) &&
