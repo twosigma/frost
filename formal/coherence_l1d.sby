@@ -290,6 +290,27 @@ localcontrol: chformal -assert -remove c:p_local_image c:p_local_probe_data c:p_
 localcontrol: select -assert-min 1 t:$check r:FLAVOR=assert %i
 nostore: connect -set i_write_mask 8'h00
 ~zero: connect -set i_write_zero 1'b0
+# Cover-only public-input profile: ordinary loads and writes remain free,
+# including zero writes, grant/release scheduling and addresses. Unrelated
+# maintenance, probe and atomic traffic stays idle, and consumers are ready.
+# Every witness is also legal in the unrestricted zero-control environment.
+zsingle: connect -set i_fatal_stop 1'b0
+zsingle: connect -set i_write_atomic 1'b0
+zsingle: connect -set i_write_sc 1'b0
+zsingle: connect -set i_sc_valid 1'b0
+zsingle: connect -set i_sc_commit 1'b0
+zsingle: connect -set i_maint_valid 1'b0
+zsingle: connect -set i_p_valid 1'b0
+zsingle: connect -set i_read_kind 2'b00
+zsingle: connect -set i_read_ready 1'b1
+zsingle: connect -set i_sc_result_ready 1'b1
+zsingle: connect -set i_d_ready 1'b1
+zsingle: connect -set i_c_ready 1'b1
+zsingle: connect -set i_r_ready 1'b1
+zsingle: connect -set i_w_ready 1'b1
+zsingle: connect -set i_cut_admit_ready 1'b1
+zsingle: connect -set i_cut_admit_clean 1'b1
+zsingle: connect -set i_cut_inval_done 1'b1
 memory_map
 conflict: select -assert-min 1 t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff
 conflict: cutpoint t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff

@@ -2596,11 +2596,38 @@ def test_zero_payload_partition_models_match() -> None:
             validate(altered)
 
 
-def test_zero_cover_keeps_reset_model() -> None:
-    """Keep every zero cover and its reset model when selecting the cover engine."""
+def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:
+    """Keep every cover, reset and interface assumption under a public-input profile."""
     control = l1d_task_config("coh_l1d_zero_bmc")
     cover = l1d_task_config("coh_l1d_zero_cover")
     model = [line for line in control["[script]"] if not assertion_command(line)]
+    idle_inputs = (
+        "i_fatal_stop",
+        "i_write_atomic",
+        "i_write_sc",
+        "i_sc_valid",
+        "i_sc_commit",
+        "i_maint_valid",
+        "i_p_valid",
+    )
+    ready_inputs = (
+        "i_read_ready",
+        "i_sc_result_ready",
+        "i_d_ready",
+        "i_c_ready",
+        "i_r_ready",
+        "i_w_ready",
+        "i_cut_admit_ready",
+        "i_cut_admit_clean",
+        "i_cut_inval_done",
+    )
+    profile = (
+        [f"connect -set {name} 1'b0" for name in idle_inputs]
+        + ["connect -set i_read_kind 2'b00"]
+        + [f"connect -set {name} 1'b1" for name in ready_inputs]
+    )
+    connection_index = model.index("memory_map")
+    profiled_model = model[:connection_index] + profile + model[connection_index:]
     selected = (
         "c:p_zero_cover_twin c:p_zero_cover_twin_victim "
         "c:p_zero_cover_twin_wait c:p_zero_cover_fallback"
@@ -2612,7 +2639,7 @@ def test_zero_cover_keeps_reset_model() -> None:
             assert task[section] == control[section]
         assert [
             line for line in task["[script]"] if not assertion_command(line)
-        ] == model
+        ] == profiled_model
         assert [line for line in task["[script]"] if assertion_command(line)] == [
             "select -assert-count 5 c:p_zero_cover_* t:$check %i r:FLAVOR=cover %i",
             "chformal -cover -remove t:$check r:FLAVOR=cover %i "
@@ -2633,6 +2660,8 @@ def test_zero_cover_keeps_reset_model() -> None:
         ("[script]", "chformal -cover -remove c:p_zero_cover_twin_victim"),
         ("[script]", "chformal -assert2assume c:p_zero_twin_install"),
         ("[script]", "cutpoint w:image_q"),
+        ("[script]", "connect -set i_rst 1'b0"),
+        ("[script]", "connect -set i_write_zero 1'b0"),
         ("[options]", "depth 79"),
         ("[options]", "skip 40"),
         ("[options]", "expect PASS,UNKNOWN,TIMEOUT"),
@@ -2649,6 +2678,9 @@ def test_zero_cover_keeps_reset_model() -> None:
     ):
         options = l1d_task_config(task_name)["[options]"]
         assert all(not line.startswith("skip ") for line in options)
+        assert all(
+            line not in l1d_task_config(task_name)["[script]"] for line in profile
+        )
 
 
 def test_local_data_partition_models_match() -> None:
