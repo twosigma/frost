@@ -2066,11 +2066,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         f"lq_l0_cache_{depth}": CocotbRunConfig(
             python_test_module="cocotb_tests.tomasulo.load_queue.test_lq_l0_cache",
             hdl_toplevel_module="lq_l0_cache",
-            description=f"{depth}-entry L0 load-cache data and coherence",
+            description=f"{depth}-entry L0 load-cache data, coherence and cbo.zero block invalidation",
             verilator_extra_args=(f"-GDEPTH={depth}",),
             extra_env=(("FROST_TEST_L0_DEPTH", str(depth)),),
         )
-        for depth in (128, 256, 512)
+        for depth in (8, 128, 256, 512)
     },
     "store_queue": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.store_queue.test_store_queue",
@@ -2665,7 +2665,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         python_test_module="cocotb_tests.cache.test_coherence_l1d_store_stream",
         hdl_toplevel_module="coherence_l1d",
-        description="Concurrent ordered store acquisitions, combining, probes and endpoint release",
+        description="Concurrent ordered store acquisitions, combining, probes, endpoint release and grants held by cbo.zero twins",
     ),
     "coherence_l1d": CocotbRunConfig(
         verilator_extra_args=("--assert", "-GCACHE_BYTES=512"),
@@ -4461,6 +4461,7 @@ for _program in ("dma_torture", "nic_loopback", "itlb_test"):
 for _name, _config in tuple(TEST_REGISTRY.items()):
     if _config.hdl_toplevel_module == "frost" or _name in (
         "debug_module",
+        "lq_l0_cache_8",
         "lq_l0_cache_128",
         "lq_l0_cache_256",
         "lq_l0_cache_512",

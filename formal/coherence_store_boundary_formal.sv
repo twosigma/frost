@@ -140,7 +140,7 @@ module coherence_store_boundary_formal #(
   logic sc_coherent_valid;
   riscv_pkg::fu_complete_t sc_sc_fu_complete;
   logic [riscv_pkg::XLEN-1:0] sq_cache_invalidate_addr;
-  logic sq_cache_invalidate_valid;
+  logic sq_cache_invalidate_valid, sq_cache_invalidate_block;
   logic sq_committed_empty;
   logic sq_committed_empty_lq;
   logic sq_committed_empty_trap;
@@ -457,6 +457,7 @@ module coherence_store_boundary_formal #(
         .o_coherent_sc_tag(sc_coherent_tag),
         .i_coherent_sc_write_done(l1_sc_write_done),
         .sq_cache_invalidate_valid,
+        .sq_cache_invalidate_block,
         .lq_reservation_valid,
         .o_coherent_write_sc(sq_coherent_write_sc),
         .o_sq_mem_write_is_cached(sq_mem_write_is_cached),
@@ -674,7 +675,6 @@ module coherence_store_boundary_formal #(
 
   logic sq_coherent_write_sc;
   logic sq_coherent_write_zero;
-  logic sq_cache_invalidate_block;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_coherent_write_tag;
   logic sq_full;
   logic sq_full_for_2;

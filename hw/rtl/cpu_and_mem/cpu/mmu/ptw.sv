@@ -344,19 +344,24 @@ module ptw #(
   // PTW_DECODE descends through a pointer: select the entry that the fill
   // writes on the next edge (PTW_ISSUE always follows a descent).
   logic pwc_descend;
-  assign pwc_descend = !i_rst && (state_q == PTW_DECODE) && !discard_q && !i_discard &&
+  assign pwc_descend = (state_q == PTW_DECODE) && !discard_q && !i_discard &&
       !pte_reserved_bad && !pte_invalid && !pte_is_leaf && (level_q != 2'd0) &&
       ppn_addr_ok(
       pte_ppn
   ) && !(|pte_ppn[riscv_pkg::PtePpnBits-1:PwcPpnBits]);
   always_ff @(posedge i_clk) begin
-    for (int e = 0; e < PwcL1N; e++) begin
-      pwc_l1_sel_q[e] <= pwc_descend && (level_q == 2'd1) && (PWC_L1_ENTRIES != 0) &&
-          (32'(pwc_l1_repl_q) == e);
-    end
-    for (int e = 0; e < PwcRootN; e++) begin
-      pwc_root_sel_q[e] <= pwc_descend && (level_q == 2'd2) && (PWC_ROOT_ENTRIES != 0) &&
-          (32'(pwc_root_repl_q) == e);
+    if (i_rst) begin
+      pwc_l1_sel_q   <= '0;
+      pwc_root_sel_q <= '0;
+    end else begin
+      for (int e = 0; e < PwcL1N; e++) begin
+        pwc_l1_sel_q[e] <= pwc_descend && (level_q == 2'd1) && (PWC_L1_ENTRIES != 0) &&
+            (32'(pwc_l1_repl_q) == e);
+      end
+      for (int e = 0; e < PwcRootN; e++) begin
+        pwc_root_sel_q[e] <= pwc_descend && (level_q == 2'd2) && (PWC_ROOT_ENTRIES != 0) &&
+            (32'(pwc_root_repl_q) == e);
+      end
     end
   end
 

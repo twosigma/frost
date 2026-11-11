@@ -661,7 +661,10 @@ causes below it), waiting for the CDB, and already out of the LQ. See the
 The `load_queue` cocotb suite tests the queue in isolation,
 `load_queue_no_prepare_busy` reruns it with `PREPARE_LOAD_WHILE_BUSY=0`, and
 `load_queue_sq_forward` with `ENABLE_SQ_FORWARD_FAST_PATH=1`, as in the core.
-`lq_l0_cache_128`, `lq_l0_cache_256` and `lq_l0_cache_512` test the L0 alone, and
+`lq_l0_cache_8`, `lq_l0_cache_128`, `lq_l0_cache_256` and `lq_l0_cache_512`
+test the L0 alone, including a tag-blind `cbo.zero` block clear against every
+word's concurrent lookup and fill. The eight-word case covers an L0 whose
+entire capacity is one zero block, and
 `lq_stale_slot_probe` is a full-core program that drives two partial flushes
 and ROB-tag reuse against slow, reordered DDR responses. The wrapper and
 router suites (`tomasulo_coherence`, `data_mem_request_router` and others)

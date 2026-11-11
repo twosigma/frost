@@ -931,7 +931,9 @@ and walks, errors, reset, fatal stop and reuse of reader IDs before U.
 The whole-SoC program configurations use this hierarchy.
 `coherence_l1d_store_stream` checks ordered store installation, combining,
 independent
-grants, duplicate-sector exclusion and read turns. A completed load grant
+grants, duplicate-sector exclusion and read turns. It also buffers a load grant
+while a `cbo.zero` lower sector installs and checks that the owed twin delays
+that grant's acceptance until both zero sectors have installed. A completed load grant
 supplies read service between resident stores while another read waits.
 `coherence_store_pressure`
 holds both dirty victim slots and delays endpoint releases while ordinary loads

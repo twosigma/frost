@@ -2634,7 +2634,8 @@ def test_stream_partition_models_match(prefix: str, depth: int, scripted: bool) 
         assert read in model
         assert not any(line.startswith("cutpoint ") for line in model)
         assert [line for line in model if line.startswith("connect ")] == (
-            [] if scripted else ["connect -set i_write_mask 8'h00"]
+            ([] if scripted else ["connect -set i_write_mask 8'h00"])
+            + ["connect -set i_write_zero 1'b0"]
         )
         for role, task in (("hold", candidate), ("bmc", consumer)):
             assert [

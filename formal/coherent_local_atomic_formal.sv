@@ -24,6 +24,7 @@ module coherent_local_reservation_formal (
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_sc_tag,
     input logic i_coherent_sc_write_done,
     input logic sq_cache_invalidate_valid,
+    input logic sq_cache_invalidate_block,
     input logic lq_reservation_valid,
     input logic o_coherent_write_sc,
     input logic o_sq_mem_write_is_cached,
@@ -40,7 +41,10 @@ module coherent_local_reservation_formal (
   assign reservation_snoop_invalidate = sq_cache_invalidate_valid &&
       lq_reservation_valid &&
       !(o_coherent_write_sc && o_sq_mem_write_is_cached) &&
-      ((sq_cache_invalidate_addr[riscv_pkg::XLEN-1:5] == lq_reservation_addr[riscv_pkg::XLEN-1:5]));
+      ((sq_cache_invalidate_addr[riscv_pkg::XLEN-1:6] ==
+        lq_reservation_addr[riscv_pkg::XLEN-1:6]) &&
+       (sq_cache_invalidate_block ||
+        sq_cache_invalidate_addr[5] == lq_reservation_addr[5]));
   assign sc_discard = commit_bus_q_valid && commit_q_sc_failed;
   always_comb begin
     if (commit_bus_q_valid && commit_q_is_sc && !commit_q_sc_failed &&
