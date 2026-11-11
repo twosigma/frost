@@ -2602,6 +2602,113 @@ def test_zero_payload_partition_models_match() -> None:
             validate(altered)
 
 
+def test_zero_safety_models_reject_cover_constraints() -> None:
+    """Pin each safety environment independently of the cover's reference model."""
+    reads = [
+        "read -sv coherence_read_stream.sv",
+        "read -sv cache_perf_pkg.sv",
+        "read -sv coherence_pkg.sv",
+        "read -sv coherence_request_endpoint.sv",
+        "read -sv coherence_put_endpoint.sv coherence_read_owners.sv "
+        "coherence_miss_credit.sv coherence_read_flags.sv "
+        "coherence_grant_select.sv coherence_read_select.sv",
+    ]
+    files = [
+        "../hw/rtl/lib/cache/coherence_read_stream.sv",
+        "../hw/rtl/lib/ram/sdp_block_ram.sv",
+        "../hw/rtl/lib/ram/sdp_packed_tag_uram.sv",
+        "../hw/rtl/lib/ram/sdp_ram_byte_en.sv",
+    ] + [
+        f"../hw/rtl/lib/cache/{name}"
+        for name in (
+            "coherence_pkg.sv",
+            "coherence_types.svh",
+            "coherence_array.sv",
+            "coherence_request_endpoint.sv",
+            "coherence_put_endpoint.sv",
+            "coherence_l1d.sv",
+            "coherence_read_owners.sv",
+            "coherence_miss_credit.sv",
+            "coherence_read_flags.sv",
+            "coherence_grant_select.sv",
+            "coherence_read_select.sv",
+            "coherence_read_payload.sv",
+            "cache_perf_pkg.sv",
+            "coherence_store_buffer.sv",
+        )
+    ]
+    control_properties = [
+        "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
+        "chformal -assert2assume c:p_prefetch_conflict_split",
+        "select -assert-min 1 c:p_zero_* t:$check %i r:FLAVOR=assert %i",
+    ]
+    data = " ".join(f"c:p_store_data_{index}" for index in range(1, 6))
+    payload_properties = [
+        f"select -assert-count 5 {data}",
+        f"chformal -assert -remove t:$check r:FLAVOR=assert %i {data} %u %u %u %u %d",
+        "select -assert-count 5 t:$check r:FLAVOR=assert %i",
+    ]
+    for suffix, depth, timeout, engine in (
+        ("bmc", "40", "10800", "abc bmc3"),
+        ("multi_bmc", "30", "18000", "abc bmc3 -c"),
+        ("payload_bmc", "40", "1200", "abc bmc3 -c"),
+    ):
+        payload = suffix == "payload_bmc"
+        define = " -D STORE_DATA_PROOF" if payload else ""
+        endpoints = " -set MISSES 3" if suffix == "multi_bmc" else ""
+        script = (
+            reads
+            + [
+                f"read -formal -sv -D ZERO_WRITES{define} coherence_read_payload.sv coherence_l1d.sv",
+                "read -sv coherence_store_buffer.sv",
+                "read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv",
+                f"chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2{endpoints} coherence_l1d",
+                "prep -flatten -top coherence_l1d",
+            ]
+            + (payload_properties if payload else control_properties)
+            + [
+                "memory_map",
+                "opt",
+                "techmap",
+                "opt -fast",
+                "setundef -anyseq",
+                "opt_clean",
+            ]
+        )
+
+        def validate(task: dict[str, list[str]]) -> None:
+            assert task.keys() == {"[options]", "[engines]", "[script]", "[files]"}
+            assert dict(line.split(maxsplit=1) for line in task["[options]"]) == {
+                "mode": "bmc",
+                "depth": depth,
+                "timeout": timeout,
+                "aigsmt": "boolector",
+            }
+            assert task["[engines]"] == [engine]
+            assert task["[script]"] == script
+            assert task["[files]"] == files
+
+        safety = l1d_task_config(f"coh_l1d_zero_{suffix}")
+        validate(safety)
+        for section, line in (
+            ("[script]", "connect -set i_address 32'h80000000"),
+            ("[script]", "connect -set i_rst 1'b0"),
+            ("[script]", "delete -input w:i_rst"),
+            ("[script]", "cutpoint w:phase_q"),
+            ("[script]", "chformal -assume -remove"),
+            ("[script]", "chformal -assert2assume c:p_zero_twin_install"),
+            ("[options]", "skip 48"),
+            ("[options]", "smtc hidden.smtc"),
+            ("[engines]", "smtbmc boolector --smtc hidden.smtc"),
+            ("[files]", "hidden.smtc"),
+            ("[file hidden.smtc]", "assume (= hidden 0)"),
+        ):
+            altered = {key: list(value) for key, value in safety.items()}
+            altered.setdefault(section, []).append(line)
+            with pytest.raises(AssertionError):
+                validate(altered)
+
+
 def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:
     """Keep every cover, reset and interface assumption under a public-input profile."""
     control = l1d_task_config("coh_l1d_zero_bmc")
