@@ -968,7 +968,9 @@ module store_queue #(
   // launch order. Every zero write sets every strobe of its dword.
   localparam int unsigned ZeroBeatBits = $clog2(riscv_pkg::CboZeroBlockBytes / 8);
   localparam int unsigned ZeroBlockLsb = $clog2(riscv_pkg::CboZeroBlockBytes);
-  logic [ZeroBeatBits-1:0] zero_beat_q;
+  // The write handshake arrives after the drain checks. Keep its hold and
+  // restart decisions on the data input, with the increment prepared first.
+  (* extract_reset = "no", extract_enable = "no" *) logic [ZeroBeatBits-1:0] zero_beat_q;
   logic drain_is_zero;
   logic drain_zero_cached;
   logic zero_beat_last;

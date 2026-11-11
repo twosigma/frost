@@ -96,7 +96,9 @@ entry. An uncached (BRAM) block drains as eight zero beats with every strobe
 set, at the block base plus 0, 8, ... 56. Its entry stays the drain cursor
 through all eight launches; each beat takes a completion-FIFO slot and
 invalidates its L0 dword, and only the eighth beat's completion frees the
-entry. A precise uncached block reports its completion, and any beat's error,
+entry. The beat counter prepares its increment before the write handshake;
+the handshake selects hold, increment or restart at the register's data input.
+A precise uncached block reports its completion, and any beat's error,
 with the eighth response. The write outputs are registered,
 including `is_mmio` and `is_cached` flags that let the memory router steer the
 write without decoding the address again. `o_mem_write_buffered` identifies
