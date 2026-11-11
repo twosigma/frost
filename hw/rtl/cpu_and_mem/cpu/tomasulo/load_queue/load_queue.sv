@@ -3103,32 +3103,21 @@ module load_queue #(
   // Each source's fill permission without the kill's compares.
   (* keep = "true" *) logic cache_fill_pre_slot, cache_fill_pre_fast;
   if (1'b1) begin : gen_coherent_fill_slot_permission
-    // A slot's fill permission leaves out this cycle's store, cut and DMA
-    // compares, which arrive last; the kill below applies them to the
-    // response slot alone.
+    // Prepare permission and invalidation independently for every slot;
+    // the response id selects their single-bit results.
     (* keep = "true" *) logic [CachedSlots-1:0] slot_permission;
+    (* keep = "true" *) logic [CachedSlots-1:0] slot_cut;
     for (genvar slot = 0; slot < CachedSlots; slot++) begin : gen_slot
       assign slot_permission[slot] = cs_valid[slot] && !cs_drop[slot] &&
           lq_valid[cs_idx[slot]] && !cs_is_lr[slot] && !cs_is_amo[slot] && !cs_inval[slot];
+      assign slot_cut[slot] = cs_inval_now[slot] || cs_coh_inval_now[slot];
     end
     assign cache_fill_pre_slot = !i_flush_all && slot_permission[resp_slot];
     assign cache_fill_if_slot = cache_fill_pre_slot && !cs_inval_now[resp_slot] &&
         !cs_coh_inval_now[resp_slot];
-    // The kill compares the late store, cut and DMA addresses once each with
-    // the response slot's address, selected first by the early response id,
-    // or takes the fast read's store compare, and the L0 applies it at its
-    // write enables' last gate. For a cached response it equals
-    // cs_inval_now || cs_coh_inval_now at the response slot.
-    wire [XLEN-1:3] resp_slot_dword = cs_addr[resp_slot][XLEN-1:3];
-    assign cache_fill_cut = i_mem_read_is_cached ? (cs_valid[resp_slot] &&
-        ((i_cache_invalidate_valid &&
-          i_cache_invalidate_addr[XLEN-1:6] == resp_slot_dword[XLEN-1:6] &&
-          (i_cache_invalidate_block ||
-           i_cache_invalidate_addr[5:3] == resp_slot_dword[5:3])) ||
-         (i_coh_inval_valid &&
-          i_coh_inval_addr[XLEN-1:CohLineLsb] == resp_slot_dword[XLEN-1:CohLineLsb]) ||
-         (i_coherent_cut_hold &&
-          i_coherent_cut_addr[XLEN-1:CohLineLsb] == resp_slot_dword[XLEN-1:CohLineLsb]))) :
+    // Reuse the slot invalidation compares, including whole zero blocks.
+    // The L0 applies the selected kill at its write enables' last gate.
+    assign cache_fill_cut = i_mem_read_is_cached ? slot_cut[resp_slot] :
         (!CACHE_UNCACHED_DATA && fast_line_invalidate_now);
     assign cache_fill_pre = i_mem_read_valid && !mem_response_error &&
         (i_mem_read_is_cached ? cache_fill_pre_slot : cache_fill_pre_fast);

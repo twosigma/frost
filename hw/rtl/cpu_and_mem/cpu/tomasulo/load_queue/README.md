@@ -390,9 +390,9 @@ complete aligned dwords. FROST enables this option, while standalone
 The L0 is direct-mapped with 8-byte (dword) lines: valid bits in flip-flops,
 tags and data in LUTRAM. Above 64 entries the LUTRAMs are split into 64-entry
 banks, and each bank's write enable is one gate over bank selects decoded
-from the store and fill indices. A store, coherent cut or DMA invalidation
-that drops a response's fill this cycle is compared with that response's
-address alone and enters the same gate. The staged load looks it up
+from the store and fill indices. Store, coherent cut and DMA invalidations
+are compared with each cached slot before the response id selects the
+single-bit fill kill, which enters the same gate. The staged load looks it up
 combinationally alongside the SQ check, and a hit completes the load in the
 cycle the SQ answer allows. Every load size can hit, FLD included. Device
 loads, LRs and AMOs never hit or fill.
