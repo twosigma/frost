@@ -1259,9 +1259,32 @@ module coherence_home #(
       localparam int unsigned Bits = ADDR_WIDTH - 8 * chunk < 8 ? ADDR_WIDTH - 8 * chunk : 8;
       assign probe_addr_equal[chunk] = reply.addr[8*chunk+:Bits] == probe.addr[8*chunk+:Bits];
     end
-    wire probe_matches = reply.tid == FillTid + 6'(fill) && (&probe_addr_equal) &&
+    (* keep = "true" *) wire probe_identity_matches = reply.tid == FillTid + 6'(fill) &&
         reply.epoch == 0 && reply.hart == 0 &&
         (reply.opcode == coherence_pkg::ProbeAck || reply.opcode == coherence_pkg::ProbeData);
+    wire probe_matches;
+`ifdef FROST_XILINX_PRIMS
+    if (ProbeAddrGroups <= 5) begin : gen_probe_match_bounded
+      wire [4:0] address_groups = {{(5 - ProbeAddrGroups) {1'b1}}, probe_addr_equal};
+      // Apply the late address groups after the independent packet identity.
+      (* dont_touch = "true" *)
+      LUT6 #(
+          .INIT(64'h8000000000000000)
+      ) u_probe_matches (
+          .I0(probe_identity_matches),
+          .I1(address_groups[0]),
+          .I2(address_groups[1]),
+          .I3(address_groups[2]),
+          .I4(address_groups[3]),
+          .I5(address_groups[4]),
+          .O (probe_matches)
+      );
+    end else begin : gen_probe_match_wide
+      assign probe_matches = probe_identity_matches && (&probe_addr_equal);
+    end
+`else
+    assign probe_matches = probe_identity_matches && (&probe_addr_equal);
+`endif
     wire allocate = run && array_response && decision_fill && fill_free_index == FillBits'(fill);
     // The primary may take a forward: a GetS, LoadReserved or GetM, and not
     // a prefetch, whose decision allocates the fill.

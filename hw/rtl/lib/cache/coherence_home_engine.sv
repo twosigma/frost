@@ -182,10 +182,32 @@ module coherence_home_engine #(
     localparam int unsigned Bits = ADDR_WIDTH - 8 * chunk < 8 ? ADDR_WIDTH - 8 * chunk : 8;
     assign probe_addr_equal[chunk] = reply.addr[8*chunk+:Bits] == probe_q.addr[8*chunk+:Bits];
   end
-  assign probe_matches = reply.tid == tid_q && (&probe_addr_equal) &&
+  (* keep = "true" *) wire probe_identity_matches = reply.tid == tid_q &&
       reply.epoch == probe_q.epoch && reply.hart == 0 &&
       (probe_q.opcode == coherence_pkg::CheckSC ? reply.opcode == coherence_pkg::CheckAck :
        reply.opcode == coherence_pkg::ProbeAck || reply.opcode == coherence_pkg::ProbeData);
+`ifdef FROST_XILINX_PRIMS
+  if (ProbeAddrGroups <= 5) begin : gen_probe_match_bounded
+    wire [4:0] address_groups = {{(5 - ProbeAddrGroups) {1'b1}}, probe_addr_equal};
+    // Apply the late address groups after the independent packet identity.
+    (* dont_touch = "true" *)
+    LUT6 #(
+        .INIT(64'h8000000000000000)
+    ) u_probe_matches (
+        .I0(probe_identity_matches),
+        .I1(address_groups[0]),
+        .I2(address_groups[1]),
+        .I3(address_groups[2]),
+        .I4(address_groups[3]),
+        .I5(address_groups[4]),
+        .O (probe_matches)
+    );
+  end else begin : gen_probe_match_wide
+    assign probe_matches = probe_identity_matches && (&probe_addr_equal);
+  end
+`else
+  assign probe_matches = probe_identity_matches && (&probe_addr_equal);
+`endif
   assign o_r_ready = run && phase_q == Service && probe_phase_q == ProbeWait && probe_matches;
   assign reply_fire = i_r_valid && o_r_ready;
   assign reply_fatal = reply_fire && reply.error &&
