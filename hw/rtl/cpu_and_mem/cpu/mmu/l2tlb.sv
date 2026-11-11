@@ -316,6 +316,37 @@ module l2tlb #(
   end
 
   // ---------------------------------------------------------------------------
+  // Response register: it loads on every edge, from the side array's entry in
+  // S_SPRD and from the lowest hitting way otherwise, so neither compare
+  // reaches its enable. Only hit_resp_valid_q depends on the hit, and the
+  // register is read only in S_RESP, which follows the S_CMP hit or S_SPRD
+  // edge that loaded it.
+  // ---------------------------------------------------------------------------
+  always_ff @(posedge i_clk) begin
+    hit_resp_q.fault_kind <= riscv_pkg::DFAULT_NONE;
+    hit_resp_q.vpn <= vpn_q;
+    if (state_q == S_SPRD) begin
+      hit_resp_q.ppn <= sp_rd[PpnBits+4:5];
+      hit_resp_q.level <= sp_rd[SpDataBits-1] ? 2'd2 : 2'd1;
+      hit_resp_q.perm_r <= sp_rd[4];
+      hit_resp_q.perm_w <= sp_rd[3];
+      hit_resp_q.perm_x <= sp_rd[2];
+      hit_resp_q.perm_u <= sp_rd[1];
+      hit_resp_q.perm_d <= sp_rd[0];
+      hit_resp_q.perm_g <= sp_g_q[sp_idx_q];
+    end else begin
+      hit_resp_q.ppn <= hit_entry[PpnBits+4:5];
+      hit_resp_q.level <= 2'd0;
+      hit_resp_q.perm_r <= hit_entry[4];
+      hit_resp_q.perm_w <= hit_entry[3];
+      hit_resp_q.perm_x <= hit_entry[2];
+      hit_resp_q.perm_u <= hit_entry[1];
+      hit_resp_q.perm_d <= hit_entry[0];
+      hit_resp_q.perm_g <= ent_g(hit_entry);
+    end
+  end
+
+  // ---------------------------------------------------------------------------
   // Control
   // ---------------------------------------------------------------------------
   always_ff @(posedge i_clk) begin
@@ -353,16 +384,6 @@ module l2tlb #(
             sp_idx_q <= sp_hit_idx;
             state_q  <= S_SPRD;
           end else if (any_hit) begin
-            hit_resp_q.fault_kind <= riscv_pkg::DFAULT_NONE;
-            hit_resp_q.vpn <= vpn_q;
-            hit_resp_q.ppn <= hit_entry[PpnBits+4:5];
-            hit_resp_q.level <= 2'd0;
-            hit_resp_q.perm_r <= hit_entry[4];
-            hit_resp_q.perm_w <= hit_entry[3];
-            hit_resp_q.perm_x <= hit_entry[2];
-            hit_resp_q.perm_u <= hit_entry[1];
-            hit_resp_q.perm_d <= hit_entry[0];
-            hit_resp_q.perm_g <= ent_g(hit_entry);
             hit_resp_valid_q <= 1'b1;
             state_q <= S_RESP;
           end else begin
@@ -371,16 +392,6 @@ module l2tlb #(
           end
         end
         S_SPRD: begin
-          hit_resp_q.fault_kind <= riscv_pkg::DFAULT_NONE;
-          hit_resp_q.vpn <= vpn_q;
-          hit_resp_q.ppn <= sp_rd[PpnBits+4:5];
-          hit_resp_q.level <= sp_rd[SpDataBits-1] ? 2'd2 : 2'd1;
-          hit_resp_q.perm_r <= sp_rd[4];
-          hit_resp_q.perm_w <= sp_rd[3];
-          hit_resp_q.perm_x <= sp_rd[2];
-          hit_resp_q.perm_u <= sp_rd[1];
-          hit_resp_q.perm_d <= sp_rd[0];
-          hit_resp_q.perm_g <= sp_g_q[sp_idx_q];
           hit_resp_valid_q <= 1'b1;
           state_q <= S_RESP;
         end
