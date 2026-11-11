@@ -1802,10 +1802,30 @@ module csr_file #(
         next_satp_mode_sv39 = 1'b1;
     end
   end
-  (* max_fanout = 16 *) logic fetch_translation_active_q;
+  (* max_fanout = 16 *)logic fetch_translation_active_q;
+  logic fetch_translation_active_d;
+  if (COMMIT_EXCLUDES_CONTROL_TAKE) begin : gen_fetch_return_select
+    // MRET arrives through ROB-head selection. Prepare the complete fetch
+    // enable for either value before that input, preserving CSR-write,
+    // debug-entry and trap-entry priority over every return.
+    (* keep = "true" *) logic with_mret, without_mret;
+    assign with_mret = next_satp_mode_sv39 &&
+        (status_csr_write ? (priv_q != riscv_pkg::PrivM) :
+         (!i_trap_enter_d && (i_trap_save_s ||
+          (!i_trap_save_m && (mstatus_mpp != riscv_pkg::PrivM)))));
+    assign without_mret = next_satp_mode_sv39 &&
+        (status_csr_write ? (priv_q != riscv_pkg::PrivM) :
+         (!i_trap_enter_d && (i_trap_save_s ||
+          (!i_trap_save_m && (i_sret_taken ||
+           (i_dret_taken ? (dcsr_prv != riscv_pkg::PrivM) :
+                           (priv_q != riscv_pkg::PrivM)))))));
+    assign fetch_translation_active_d = i_mret_taken ? with_mret : without_mret;
+  end else begin : gen_fetch_priv_decode
+    assign fetch_translation_active_d = next_satp_mode_sv39 && (next_priv != riscv_pkg::PrivM);
+  end
   always_ff @(posedge i_clk) begin
     if (i_rst) fetch_translation_active_q <= 1'b0;
-    else fetch_translation_active_q <= next_satp_mode_sv39 && (next_priv != riscv_pkg::PrivM);
+    else fetch_translation_active_q <= fetch_translation_active_d;
   end
   assign o_fetch_translation_active = fetch_translation_active_q;
 `ifndef SYNTHESIS

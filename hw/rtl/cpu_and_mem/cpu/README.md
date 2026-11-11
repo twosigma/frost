@@ -443,6 +443,11 @@ rule. Trap entry updates the CSRs through one-hot enables from `trap_unit` (an
 M-side save, an S-side save, or Debug Mode entry), which it builds beside the
 take decision rather than from it.
 
+Fetch translation is registered from the next `satp` mode and privilege,
+so it changes on the same edge as a CSR write, trap or return. In the integrated
+profile, the CSR file prepares that complete flag for either MRET outcome and
+then selects with MRET, preserving write, debug and trap priority.
+
 A CSR instruction that accesses `satp`, or writes `mstatus` or `sstatus`, can
 change address translation or `mstatus.FS`, which ID's decode reads, so
 everything after it must be refetched under the new state. The ROB serializer
