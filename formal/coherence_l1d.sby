@@ -73,6 +73,9 @@ pathcovers: timeout 1800
 # The store cover reaches its last cover in about ten minutes.
 covers: timeout 1200
 zcovers: timeout 2400
+# Retain reset and every transition, but avoid repeatedly rejecting shallow
+# witnesses for a twin installation that freezes a Modified victim.
+zsingle: skip 40
 ~covermode: aigsmt boolector
 conflict: mode prove
 conflict: depth 2
@@ -238,6 +241,7 @@ zpayload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 
 zpayload: select -assert-count 5 t:$check r:FLAVOR=assert %i
 zcovers: select -assert-count 5 c:p_zero_cover_* t:$check %i r:FLAVOR=cover %i
 zsingle: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_twin c:p_zero_cover_twin_victim c:p_zero_cover_twin_wait c:p_zero_cover_fallback %u %u %u %d
+zsingle: select -assert-count 4 t:$check r:FLAVOR=cover %i
 zlook: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_lookahead %d
 zcovers: chformal -assert -remove
 payload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5

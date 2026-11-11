@@ -2596,6 +2596,60 @@ def test_zero_payload_partition_models_match() -> None:
             validate(altered)
 
 
+def test_zero_cover_keeps_reset_model() -> None:
+    """Delay cover queries without weakening the reset model or any safety task."""
+    control = l1d_task_config("coh_l1d_zero_bmc")
+    cover = l1d_task_config("coh_l1d_zero_cover")
+    model = [line for line in control["[script]"] if not assertion_command(line)]
+    selected = (
+        "c:p_zero_cover_twin c:p_zero_cover_twin_victim "
+        "c:p_zero_cover_twin_wait c:p_zero_cover_fallback"
+    )
+
+    def validate(task: dict[str, list[str]]) -> None:
+        assert task.keys() == control.keys()
+        for section in task.keys() - {"[options]", "[engines]", "[script]"}:
+            assert task[section] == control[section]
+        assert [
+            line for line in task["[script]"] if not assertion_command(line)
+        ] == model
+        assert [line for line in task["[script]"] if assertion_command(line)] == [
+            "select -assert-count 5 c:p_zero_cover_* t:$check %i r:FLAVOR=cover %i",
+            "chformal -cover -remove t:$check r:FLAVOR=cover %i "
+            f"{selected} %u %u %u %d",
+            "select -assert-count 4 t:$check r:FLAVOR=cover %i",
+            "chformal -assert -remove",
+        ]
+        assert dict(line.split(maxsplit=1) for line in task["[options]"]) == {
+            "mode": "cover",
+            "depth": "80",
+            "timeout": "2400",
+            "skip": "40",
+        }
+        assert task["[engines]"] == ["smtbmc boolector"]
+
+    validate(cover)
+    for section, line in (
+        ("[script]", "chformal -cover -remove c:p_zero_cover_twin_victim"),
+        ("[script]", "chformal -assert2assume c:p_zero_twin_install"),
+        ("[script]", "cutpoint w:image_q"),
+        ("[options]", "depth 79"),
+        ("[options]", "expect PASS,UNKNOWN,TIMEOUT"),
+        ("[file cover_only.smtc]", "assume (= hidden 0)"),
+    ):
+        altered = {key: list(value) for key, value in cover.items()}
+        altered.setdefault(section, []).append(line)
+        with pytest.raises(AssertionError):
+            validate(altered)
+    for task_name in (
+        "coh_l1d_zero_bmc",
+        "coh_l1d_zero_multi_bmc",
+        "coh_l1d_zero_payload_bmc",
+    ):
+        options = l1d_task_config(task_name)["[options]"]
+        assert all(not line.startswith("skip ") for line in options)
+
+
 def test_local_data_partition_models_match() -> None:
     """Keep every scheduled real-array assertion at its original depth."""
     reference = l1d_task_config("coh_l1d_local_cover")
