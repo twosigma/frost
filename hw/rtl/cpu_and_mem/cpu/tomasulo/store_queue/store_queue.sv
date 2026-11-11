@@ -719,15 +719,20 @@ module store_queue #(
   // one. Exclude a write launching this cycle when choosing the next cursor,
   // so consecutive stores can launch on consecutive cycles. Register the
   // cursor to address the drain data and flags.
-  logic [   DEPTH-1:0] drain_mask_base;
-  logic [   DEPTH-1:0] drain_mask_post_fire;
+  logic [DEPTH-1:0] drain_mask_base;
+  logic [DEPTH-1:0] drain_mask_post_fire;
 
-  logic                mem_write_fire_next;
-  logic                mem_write_completes_next;
-  logic                mem_write_plain_fast_next;
-  logic                drain_complete_fire_next;
-  (* keep = "true" *)logic                write_inflight_special_hold;
-  logic                write_inflight_special_next;
+  logic             mem_write_fire_next;
+  logic             mem_write_completes_next;
+  logic             mem_write_plain_fast_next;
+  logic             drain_complete_fire_next;
+  (* keep = "true" *)logic             write_inflight_special_hold;
+  logic             write_inflight_special_next;
+  (* keep = "true" *)logic [DEPTH-1:0] sq_sent_hold;
+  logic [DEPTH-1:0] sq_sent_next;
+`ifdef FROST_XILINX_PRIMS
+  (* keep = "true" *) logic [DEPTH-1:0] sq_sent_launch_local;
+`endif
 
   // Compute the next cursor both with and without a launch, then select with
   // drain_complete_fire_next for timing. The post-fire mask excludes only
@@ -965,6 +970,7 @@ module store_queue #(
   end
 
   logic coherent_selected_sc, coherent_credit_ok;
+  (* keep = "true" *) logic launch_without_store_ready, complete_without_store_ready;
   (* keep = "true" *) logic mem_write_launch_qualified, mem_write_complete_qualified;
   assign coherent_selected_sc = i_coherent_sc_pending && sq_is_sc[drain_idx_q] &&
       sq_rob_tag[drain_idx_q] == i_coherent_sc_tag;
@@ -1092,11 +1098,41 @@ module store_queue #(
   // the cached arm. The other arms do not depend on that handshake.
   // Head permission likewise qualifies only the precise arm, after its
   // cursor, SC, pipeline and address checks have all been reduced.
-  assign mem_write_fire_next = committed_uncached_launch || mem_write_precommit_fire_next ||
-      (cached_launch_qualified && coherent_credit_ok);
-  assign drain_complete_fire_next = committed_uncached_complete ||
+  assign launch_without_store_ready = committed_uncached_launch ||
+      (cached_launch_qualified && (!mem_write_addr_cached_for_plain_next || coherent_selected_sc));
+  assign complete_without_store_ready = committed_uncached_complete ||
+      (cached_launch_qualified && (!mem_write_addr_cached_for_plain_next || coherent_selected_sc));
+`ifdef FROST_XILINX_PRIMS
+  // The two shared permissions enter the final five-input selection directly.
+  (* dont_touch = "true" *)
+  LUT5 #(
+      .INIT(32'hfefaeeaa)
+  ) u_write_launch_select (
+      .I0(launch_without_store_ready),
+      .I1(precise_launch_qualified),
+      .I2(cached_launch_qualified),
+      .I3(precommit_shared_ready),
+      .I4(i_coherent_store_ready),
+      .O (mem_write_fire_next)
+  );
+  (* dont_touch = "true" *) LUT5 #(
+      .INIT(32'hfefaeeaa)
+  ) u_write_complete_select (
+      .I0(complete_without_store_ready),
+      .I1(precise_complete_qualified),
+      .I2(cached_launch_qualified),
+      .I3(precommit_shared_ready),
+      .I4(i_coherent_store_ready),
+      .O (drain_complete_fire_next)
+  );
+`else
+  assign mem_write_fire_next = launch_without_store_ready ||
+      (precommit_shared_ready && precise_launch_qualified) ||
+      (cached_launch_qualified && i_coherent_store_ready);
+  assign drain_complete_fire_next = complete_without_store_ready ||
       (precommit_shared_ready && precise_complete_qualified) ||
-      (cached_launch_qualified && coherent_credit_ok);
+      (cached_launch_qualified && i_coherent_store_ready);
+`endif
 
   // Resolve completion of the previous write independently of launch credit.
   // A new launch wins over a simultaneous completion and supplies its class.
@@ -1107,17 +1143,42 @@ module store_queue #(
   end
 `ifdef FROST_XILINX_PRIMS
   (* dont_touch = "true" *) LUT3 #(
-      .INIT(8'h72)
+      .INIT(8'h3a)
   ) u_write_inflight_special_select (
-      .I0(mem_write_fire_next),
+      .I0(write_inflight_special_hold),
       .I1(mem_write_plain_fast_next),
-      .I2(write_inflight_special_hold),
+      .I2(mem_write_fire_next),
       .O (write_inflight_special_next)
   );
 `else
   always_comb begin
     write_inflight_special_next = write_inflight_special_hold;
     if (mem_write_fire_next) write_inflight_special_next = !mem_write_plain_fast_next;
+  end
+`endif
+
+  // Allocation clears the previous owner's sent bit. A completing launch
+  // takes priority, with its cursor and completion checks prepared first.
+  always_comb begin
+    sq_sent_hold = sq_sent;
+    for (int slot = 0; slot < DEPTH; slot++) if (alloc_oh[slot]) sq_sent_hold[slot] = 1'b0;
+  end
+`ifdef FROST_XILINX_PRIMS
+  for (genvar slot = 0; slot < DEPTH; slot++) begin : gen_sent_select
+    assign sq_sent_launch_local[slot] = mem_write_completes_next && drain_idx_q == IdxWidth'(slot);
+    (* dont_touch = "true" *) LUT3 #(
+        .INIT(8'hea)
+    ) u_select (
+        .I0(sq_sent_hold[slot]),
+        .I1(sq_sent_launch_local[slot]),
+        .I2(mem_write_fire_next),
+        .O (sq_sent_next[slot])
+    );
+  end
+`else
+  always_comb begin
+    sq_sent_next = sq_sent_hold;
+    if (mem_write_fire_next) if (mem_write_completes_next) sq_sent_next[drain_idx_q] = 1'b1;
   end
 `endif
 
@@ -1350,7 +1411,6 @@ module store_queue #(
           sq_addr_valid[i] <= slot1_alloc_oh[i] ? i_alloc.addr_valid : i_alloc_2.addr_valid;
           sq_data_valid[i] <= 1'b0;
           sq_committed[i]  <= 1'b0;
-          sq_sent[i]       <= 1'b0;
         end
       end
 
@@ -1446,11 +1506,7 @@ module store_queue #(
       // A special cached or MMIO write flies alone: its in-flight window
       // blocks all further launches until completion.
       write_inflight_special <= write_inflight_special_next;
-      if (mem_write_fire_next) begin
-        if (mem_write_completes_next) begin
-          sq_sent[drain_idx_q] <= 1'b1;
-        end
-      end
+      sq_sent <= sq_sent_next;
 
       // -----------------------------------------------------------------
       // Head Advancement

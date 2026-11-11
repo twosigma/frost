@@ -86,6 +86,8 @@ Cached and buffered Normal entries require commit; precise uncached entries requ
 permission and the shield.
 Entry, ordering and FIFO checks prepare launch and cursor completion before
 coherent store credit arrives. Credit qualifies the cached arm last.
+Explicit store credit and precise-store permission enter the final launch and
+cursor-completion selection directly; implicit SC credit is prepared separately.
 Each stored address is classified in parallel with cursor selection. Aligned
 power-of-two cached regions use a mask comparison; other maps retain the
 general range comparison, including empty or wrapping ranges.
@@ -137,6 +139,9 @@ miss does not hold up the drain for the line fill.
 The in-flight class resolves completion of the previous write before launch
 credit arrives. A new launch selects its class last and takes priority over
 a simultaneous completion, without adding state or cycles.
+The sent bits likewise prepare allocation clearing, cursor selection and entry
+completion before launch arrives. A completing launch takes priority over a
+same-entry allocation clear.
 
 Cached ordinary stores complete when captured in one of the L1D's four ordered
 sector records. Each scalar receives an acknowledgement, including scalars

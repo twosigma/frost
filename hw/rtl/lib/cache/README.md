@@ -512,12 +512,11 @@ Allocation marks an empty slot valid. Read eligibility compares each physical sl
 writeback sectors on 18 sector index bits. An alias waits for its holder like
 a match, and holders do not wait for reads. The comparisons use the stored slot addresses and the
 buffered allocation's address, and the slot mask selects between their
-results. Availability reduces stored and buffered-write candidates separately.
-Both masks are qualified by endpoint ownership, waiting status and miss
-retry credits. The shared write-address exclusion qualifies the
-buffered-write availability result after the candidate reduction. Load-miss
-demand prepares address exclusion, waiting status and retry credits per slot,
-then applies ownership in three-slot groups before the final reduction.
+results. Availability and load-miss demand prepare waiting status and retry
+credits before applying ownership and address exclusion. Stored-address
+candidates use two-slot groups: each group combines its candidates, ownership
+and address comparisons in one step. The shared write-address exclusion
+qualifies the buffered-write result after ownership and candidate reduction.
 Circular priority selects a qualified slot and its address.
 Loads also have a hit path beside the controller. In the cycle after a load
 arrives, the L1D offers it to the array's hit port from registers, unless a
