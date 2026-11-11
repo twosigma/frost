@@ -1040,7 +1040,7 @@ the twin is an ordinary store record. Each condition is a registered sample,
 and none can appear while the controller serves the record, because only the
 controller starts acquisitions and freezes victims. With 32-byte L2 lines
 each sector is a whole line, so every zero record acquires with `GetMZero` on
-its own. A twin never acquires through look-ahead. A lower record may acquire
+its own. With 64-byte L2 lines a twin never acquires through look-ahead. A lower record may acquire
 through look-ahead under the same conditions, so cold blocks overlap their
 home transactions as ordinary stores do; the older-record condition keeps a
 look-ahead `GetMZero` from holding a sector that an older record still needs.

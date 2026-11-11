@@ -62,8 +62,9 @@ package coherence_pkg;
     GrantData = 3,
     GrantAck = 4,
     GrantFail = 5,
-    // A GrantM for a GetMZero whose home miss installed its 64-byte line as
-    // zeros: the upper sector's zeros are already performed at the home.
+    // A GetMZero grants Modified permission for both sectors of its 64-byte
+    // line. The requester installs both zero records before sending Done,
+    // whether the home found the line resident or allocated a zero fill.
     GrantMZero = 6
   } g_opcode_t;
   typedef enum logic [1:0] {

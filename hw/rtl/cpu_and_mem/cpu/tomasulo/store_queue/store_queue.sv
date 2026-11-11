@@ -18,8 +18,9 @@
  * Store queue with store-to-load forwarding. DEPTH ring entries allocate at the
  * tail in program order. An entry receives its address and data, commits with
  * the ROB, writes memory as one 64-bit beat, and frees when the write completes.
- * A cbo.zero entry keeps rs1 and writes its naturally aligned 64-byte block as
- * eight zero beats; only the last beat completes the entry.
+ * A cbo.zero entry keeps rs1 and writes its naturally aligned 64-byte block.
+ * A cached block launches once for the L1D to allocate both sector records; an
+ * uncached block uses eight zero beats and completes after the last response.
  * Cached and optional Normal buffered writes launch in order after commit.
  * PRECISE_UNCACHED otherwise waits
  * at the ROB head, launches behind the interrupt/debug shield and reports
@@ -301,7 +302,8 @@ module store_queue #(
   logic                 [                DEPTH-1:0] sq_committed;
   logic                 [                DEPTH-1:0] sq_sent;
   logic                 [                DEPTH-1:0] sq_is_sc;
-  // cbo.zero: write the 64-byte block containing sq_address as eight zero beats.
+  // cbo.zero: write the 64-byte block containing sq_address, through the L1D
+  // for cached memory or as eight zero beats for uncached memory.
   logic                 [                DEPTH-1:0] sq_is_zero;
 
   // Per-entry multi-bit fields
