@@ -353,6 +353,14 @@ free entry. A partial flush clears only entries younger than the flush tag,
 since an older SC may still be waiting for the head; a full flush clears the
 table.
 
+Store PMA classification keeps the page-offset carry separate from the
+permission decoder. For the default bounded map, the decoder classifies the
+low 33 address bits and applies the high-address match afterward, including
+the full-width wrap from the last page into page zero. Wider or relocated
+maps retain the full configured predicate. SC and `cbo.zero` select the
+atomic map, which excludes devices. Both implementations preserve the same
+combinational permission and fault priority.
+
 The MEM adapter's input gives priority to the registered store fault, then the
 registered SC result, then a held uncached-store completion, then the LQ
 result. (The SC result's valid bit has
