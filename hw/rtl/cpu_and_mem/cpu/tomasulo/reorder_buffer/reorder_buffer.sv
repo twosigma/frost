@@ -598,8 +598,9 @@ module reorder_buffer #(
   // translation: any satp access, and an mstatus/sstatus access with
   // architectural write intent. id_stage's mstatus.FS=Off check also relies
   // on this class: the full flush that ends every such write discards whatever
-  // ID decoded under the old FS value. menvcfg/senvcfg writes join the class
-  // for the same reason: ID's cbo.zero gate reads their CBZE bits.
+  // ID decoded under the old FS value. Legal menvcfg/senvcfg writes affect
+  // cbo.zero permission only at lower privilege, so they use ordinary CSR
+  // serialization. The privilege transition itself flushes the old decode.
   logic [ReorderBufferDepth-1:0] rob_f_csr_may_change_translation;
 
 
@@ -1159,9 +1160,7 @@ module reorder_buffer #(
           ((i_alloc_req.csr_addr == riscv_pkg::CsrSatp) ||
            (i_alloc_req.csr_write_intent &&
             ((i_alloc_req.csr_addr == riscv_pkg::CsrMstatus) ||
-             (i_alloc_req.csr_addr == riscv_pkg::CsrSstatus) ||
-             (i_alloc_req.csr_addr == riscv_pkg::CsrMenvcfg) ||
-             (i_alloc_req.csr_addr == riscv_pkg::CsrSenvcfg))));
+             (i_alloc_req.csr_addr == riscv_pkg::CsrSstatus))));
     end
     if (alloc_en_2_control) begin
       rob_f_store_like[tail_idx_2] <= i_alloc_req_2.is_store || i_alloc_req_2.is_fp_store ||
@@ -1197,9 +1196,7 @@ module reorder_buffer #(
           ((i_alloc_req_2.csr_addr == riscv_pkg::CsrSatp) ||
            (i_alloc_req_2.csr_write_intent &&
             ((i_alloc_req_2.csr_addr == riscv_pkg::CsrMstatus) ||
-             (i_alloc_req_2.csr_addr == riscv_pkg::CsrSstatus) ||
-             (i_alloc_req_2.csr_addr == riscv_pkg::CsrMenvcfg) ||
-             (i_alloc_req_2.csr_addr == riscv_pkg::CsrSenvcfg))));
+             (i_alloc_req_2.csr_addr == riscv_pkg::CsrSstatus))));
     end
   end
 

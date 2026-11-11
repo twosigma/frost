@@ -40,8 +40,8 @@ module id_stage #(
     input logic i_mstatus_fs_off,
     // cbo.zero is illegal in the current privilege mode: S without
     // menvcfg.CBZE, or U without both CBZE bits. cpu_ooo registers it like
-    // FS-Off; envcfg writes, traps and xRETs flush the decode that used the
-    // old value.
+    // FS-Off. Legal envcfg writes affect only lower privilege; traps, xRETs
+    // and debug transitions flush the decode that used the old permission.
     input logic i_cbo_zero_illegal,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex,
     // Next-edge value of o_from_id_to_ex (its register D), for a consumer

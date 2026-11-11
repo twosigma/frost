@@ -513,11 +513,10 @@ writeback sectors on 18 sector index bits. An alias waits for its holder like
 a match, and holders do not wait for reads. The comparisons use the stored slot addresses and the
 buffered allocation's address, and the slot mask selects between their
 results. Availability and load-miss demand prepare waiting status and retry
-credits before applying ownership and address exclusion. Stored-address
-candidates use two-slot groups: each group combines its candidates, ownership
-and address comparisons in one step. The shared write-address exclusion
-qualifies the buffered-write result after ownership and candidate reduction.
-Circular priority selects a qualified slot and its address.
+credits before applying ownership and address exclusion. Each slot prepares
+its stored-address and buffered-write candidates; groups of three reduce
+candidate presence and load-miss demand. Circular priority selects a qualified
+slot and its address.
 Sector comparisons use six three-bit equality groups followed by two halves
 and a balanced holder reduction. Circular priority prepares the winner for
 both outcomes of the shared buffered-address exclusion. Each slot compares

@@ -2098,16 +2098,10 @@ async def test_translation_csr_done_is_held_until_sq_drain(dut: Any) -> None:
 
 @cocotb.test()
 async def test_writing_status_csrs_wait_for_sq(dut: Any) -> None:
-    """Writing mstatus, sstatus or an envcfg CSR uses the translation-CSR drain path.
-
-    menvcfg and senvcfg hold the CBZE bits that ID's cbo.zero gate reads, so
-    their writes end with the same full flush.
-    """
+    """Writing mstatus or sstatus uses the translation-CSR drain path."""
     dut_if, _model = await setup_test(dut)
 
-    for case_index, csr_addr in enumerate(
-        (CSR_MSTATUS, CSR_SSTATUS, CSR_MENVCFG, CSR_SENVCFG)
-    ):
+    for case_index, csr_addr in enumerate((CSR_MSTATUS, CSR_SSTATUS)):
         dut_if.set_sq_committed_empty(False)
         tag = await drive_single_alloc(
             dut_if,
@@ -2156,27 +2150,42 @@ async def test_writing_status_csrs_wait_for_sq(dut: Any) -> None:
 
 @cocotb.test()
 async def test_nontranslation_csrs_do_not_wait_for_sq(dut: Any) -> None:
-    """Read-only mstatus and writing mie keep ordinary CSR timing."""
+    """Ordinary CSRs, including envcfg in either slot, retire without SQ drain."""
     dut_if, _model = await setup_test(dut)
     dut_if.set_sq_committed_empty(False)
 
     cases = (
-        (CSR_MSTATUS, False, 0b000),  # csrr
-        (CSR_MIE, True, 0b001),
+        (CSR_MSTATUS, False, 0b000, False),  # csrr
+        (CSR_MIE, True, 0b001, False),
+        (CSR_MENVCFG, True, 0b001, False),
+        (CSR_SENVCFG, True, 0b001, False),
+        (CSR_MENVCFG, True, 0b001, True),
+        (CSR_SENVCFG, True, 0b001, True),
     )
-    for case_index, (csr_addr, write_intent, csr_op) in enumerate(cases):
-        tag = await drive_single_alloc(
-            dut_if,
-            AllocationRequest(
-                pc=0x1300 + 4 * case_index,
-                dest_reg=7,
-                dest_valid=True,
-                is_csr=True,
-                csr_write_intent=write_intent,
-                csr_addr=csr_addr,
-                csr_op=csr_op,
-            ),
+    for case_index, (csr_addr, write_intent, csr_op, second_slot) in enumerate(cases):
+        request = AllocationRequest(
+            pc=0x1300 + 8 * case_index + 4,
+            dest_reg=7,
+            dest_valid=True,
+            is_csr=True,
+            csr_write_intent=write_intent,
+            csr_addr=csr_addr,
+            csr_op=csr_op,
         )
+        if second_slot:
+            older, younger = await drive_dual_alloc(
+                dut_if,
+                make_simple_alloc_request(pc=request.pc - 4, rd=6),
+                request,
+            )
+            assert older[0] and younger[0] and not older[2] and not younger[2]
+            tag = younger[1]
+            dut_if.drive_cdb_write(CDBWrite(tag=older[1], value=0))
+            await RisingEdge(dut_if.clock)
+            await FallingEdge(dut_if.clock)
+            dut_if.clear_cdb_write()
+        else:
+            tag = await drive_single_alloc(dut_if, request)
 
         dut_if.drive_cdb_write(CDBWrite(tag=tag, value=0))
         await RisingEdge(dut_if.clock)

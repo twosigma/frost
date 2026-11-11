@@ -286,8 +286,8 @@ module csr_file #(
 
     // Zicboz: cbo.zero is illegal in S without menvcfg.CBZE and in U without
     // both menvcfg.CBZE and senvcfg.CBZE. id_stage decodes it as illegal while
-    // set. Changes only on an envcfg write, a trap or an xRET, each followed
-    // by a full flush.
+    // set. A legal envcfg write affects only lower privilege. Traps, xRETs
+    // and debug transitions change the executing privilege and flush decode.
     output logic o_cbo_zero_illegal,
 
     // Debug Mode state for allocation legality, trap routing, halt reporting,
@@ -2137,6 +2137,11 @@ module csr_file #(
     f_minstret_value_q   <= csr_new_value;
   end
 
+  wire f_envcfg_legal_write = storage_csr_write &&
+      ((i_csr_address == riscv_pkg::CsrMenvcfg && priv_q == riscv_pkg::PrivM) ||
+       (i_csr_address == riscv_pkg::CsrSenvcfg &&
+        (priv_q == riscv_pkg::PrivM || priv_q == riscv_pkg::PrivS)));
+
   function automatic logic [XLEN-1:0] f_topi(input logic [XLEN-1:0] pending);
     integer best, rank;
     f_topi = '0;
@@ -2282,6 +2287,14 @@ module csr_file #(
       p_priv_valid : assert (priv_q != 2'b10);
       // The fetch duplicate must equal architectural privilege.
       p_fetch_priv_replica_exact : assert (fetch_priv_q == priv_q);
+
+      // Access privilege is enforced by the ROB, not by this standalone file.
+      // A legal envcfg write cannot change permission in the executing mode:
+      // menvcfg is M-only; senvcfg is M/S-only and gates only U.
+      if ($past(f_envcfg_legal_write) && priv_q == $past(priv_q)) begin
+        p_envcfg_write_preserves_current_cbo_gate :
+        assert (o_cbo_zero_illegal == $past(o_cbo_zero_illegal));
+      end
 
       // Debug Mode entry: dpc/dcsr record the resume state, priv
       // becomes M, and no M/S trap-stack register moves.

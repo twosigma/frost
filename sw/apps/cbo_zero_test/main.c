@@ -23,6 +23,8 @@
  * Younger loads see the zeros without a fence; a younger store to the block
  * lands over them; a dirty line is overwritten.
  *
+ * Adjacent envcfg writes, cbo.zero and privilege returns check the registered
+ * permission gate; lower-privilege envcfg writes must fault without a zero.
  * CBZE gate: cbo.zero is always legal in M, legal in S with menvcfg.CBZE,
  * and legal in U with menvcfg.CBZE and senvcfg.CBZE; otherwise it raises an
  * illegal-instruction exception and writes nothing.
@@ -87,13 +89,14 @@ static void uart_hex(unsigned long v)
 
 static volatile unsigned long g_cause;
 static volatile unsigned long g_tval;
+static volatile unsigned long g_epc;
 
 /* Three blocks each in low BRAM and cached DDR; tests zero the middle one. */
 static volatile uint64_t g_bram_buf[3 * BLOCK / 8] __attribute__((aligned(64)));
 static volatile uint64_t g_ddr_buf[3 * BLOCK / 8]
     __attribute__((aligned(64), section(".ddr_data")));
 
-/* M-mode bounce handler: record mcause and mtval once per case, set MPP=M and
+/* M-mode bounce handler: record mcause, mtval and mepc once per case, set MPP=M and
  * return to the mscratch continuation. */
 __attribute__((naked, aligned(4))) static void cbo_trap_handler(void)
 {
@@ -105,6 +108,9 @@ __attribute__((naked, aligned(4))) static void cbo_trap_handler(void)
                      "sd   t0, 0(t1)\n"
                      "csrr t0, mtval\n"
                      "la   t1, g_tval\n"
+                     "sd   t0, 0(t1)\n"
+                     "csrr t0, mepc\n"
+                     "la   t1, g_epc\n"
                      "sd   t0, 0(t1)\n"
                      "2:\n"
                      "csrr t0, mscratch\n"
@@ -122,12 +128,22 @@ static void report_line(int ok, const char *name)
     uart_hex(g_cause);
     uart_puts(" tval=");
     uart_hex(g_tval);
+    uart_puts(" epc=");
+    uart_hex(g_epc);
     uart_puts("\r\n");
 }
 
 static int expect(const char *name, unsigned long cause, unsigned long tval, int check_tval)
 {
     int ok = (g_cause == cause) && (!check_tval || g_tval == tval);
+    report_line(ok, name);
+    return ok;
+}
+
+/* Distinguish an illegal CSR from a fault in the following cbo.zero. */
+static int expect_pc(const char *name, void (*body)(void))
+{
+    int ok = g_epc == (unsigned long) body;
     report_line(ok, name);
     return ok;
 }
@@ -222,8 +238,113 @@ static unsigned long run_lower(unsigned long mpp, unsigned long rs1)
                      "1:\n"
                      :
                      : "r"(mpp), "r"((unsigned long) &lower_body), "r"(rs1)
-                     : "t0", "a0", "memory");
+                     : "t0", "t1", "t2", "t3", "a0", "memory");
     return g_cause;
+}
+
+/* Adjacent envcfg writes must not need a separate decode flush. These
+ * entries receive the block address in a0 and the new senvcfg value in a1. */
+__attribute__((naked)) static void s_env_zero(void)
+{
+    __asm__ volatile("csrw 0x10A, a1\n" CBO_ZERO_ASM("a0") "ecall\n j .\n");
+}
+
+__attribute__((naked)) static void s_env_return_u(void)
+{
+    __asm__ volatile("li t0, 0x100\n"
+                     "csrc sstatus, t0\n" /* SPP=U, before the envcfg write */
+                     "la t0, lower_body\n"
+                     "csrw sepc, t0\n"
+                     "csrw 0x10A, a1\n"
+                     "sret\n");
+}
+
+__attribute__((naked)) static void s_illegal_menv(void)
+{
+    __asm__ volatile("csrw 0x30A, a1\n" CBO_ZERO_ASM("a0") "ecall\n j .\n");
+}
+
+__attribute__((naked)) static void u_illegal_senv(void)
+{
+    __asm__ volatile("csrw 0x10A, a1\n" CBO_ZERO_ASM("a0") "ecall\n j .\n");
+}
+
+/* All status setup precedes menvcfg, which is immediately followed by MRET.
+ * The S entry can then write senvcfg immediately before cbo.zero or SRET. */
+static unsigned long run_env_entry(unsigned long mpp,
+                                   void (*body)(void),
+                                   unsigned long rs1,
+                                   unsigned long menv,
+                                   unsigned long senv)
+{
+    g_cause = ~0ul;
+    g_tval = ~0ul;
+    g_epc = ~0ul;
+    __asm__ volatile("la t0, 1f\n"
+                     "csrw mscratch, t0\n"
+                     "li t0, 0x1800\n"
+                     "csrc mstatus, t0\n"
+                     "slli t0, %0, 11\n"
+                     "csrs mstatus, t0\n"
+                     "csrw mepc, %1\n"
+                     "mv a0, %2\n"
+                     "mv a1, %4\n"
+                     "csrw 0x30A, %3\n"
+                     "mret\n"
+                     "1:\n"
+                     :
+                     : "r"(mpp), "r"((unsigned long) body), "r"(rs1), "r"(menv), "r"(senv)
+                     : "t0", "t1", "t2", "t3", "a0", "a1", "memory");
+    return g_cause;
+}
+
+static int envcfg_transition_cases(void)
+{
+    int ok = 1;
+    static const struct {
+        unsigned long mpp, menv, old_senv, new_senv, cause;
+        void (*body)(void);
+        const char *name;
+    } cases[] = {
+        {1, 0, 0, 0, CAUSE_ILLEGAL, lower_body, "E1 menv-mret-s-denied"},
+        {1, ENVCFG_CBZE, 0, 0, CAUSE_ECALL_S, lower_body, "E1 menv-mret-s-allowed"},
+        {0, 0, ENVCFG_CBZE, 0, CAUSE_ILLEGAL, lower_body, "E1 menv-mret-u-denied"},
+        {0, ENVCFG_CBZE, ENVCFG_CBZE, 0, CAUSE_ECALL_U, lower_body, "E1 menv-mret-u-allowed"},
+        {1, ENVCFG_CBZE, ENVCFG_CBZE, 0, CAUSE_ECALL_S, s_env_zero, "E1 senv-clear-s-zero"},
+        {1, ENVCFG_CBZE, 0, ENVCFG_CBZE, CAUSE_ECALL_S, s_env_zero, "E1 senv-set-s-zero"},
+        {1, ENVCFG_CBZE, ENVCFG_CBZE, 0, CAUSE_ILLEGAL, s_env_return_u, "E1 senv-sret-u-denied"},
+        {1, ENVCFG_CBZE, 0, ENVCFG_CBZE, CAUSE_ECALL_U, s_env_return_u, "E1 senv-sret-u-allowed"},
+    };
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        fill(g_bram_buf, 3 * BLOCK / 8);
+        csr_write_num(0x10A, cases[i].old_senv);
+        unsigned long cause = run_env_entry(cases[i].mpp,
+                                            cases[i].body,
+                                            (unsigned long) &g_bram_buf[BLOCK / 8],
+                                            cases[i].menv,
+                                            cases[i].new_senv);
+        ok &= expect(cases[i].name, cases[i].cause, 0, cases[i].cause == CAUSE_ILLEGAL);
+        ok &= check_blocks(cases[i].name, g_bram_buf, cause != CAUSE_ILLEGAL);
+    }
+    /* A lower-privilege envcfg write must fault before the following zero,
+     * and must not change the higher-privilege CSR. */
+    fill(g_bram_buf, 3 * BLOCK / 8);
+    run_env_entry(1, s_illegal_menv, (unsigned long) &g_bram_buf[BLOCK / 8], 0, ENVCFG_CBZE);
+    ok &= expect("E1 s-write-menv-illegal", CAUSE_ILLEGAL, 0, 0);
+    ok &= expect_pc("E1 s-write-menv-fault-pc", s_illegal_menv);
+    ok &= csr_read_num(0x30A) == 0;
+    ok &= check_blocks("E1 s-write-menv-no-zero", g_bram_buf, 0);
+    csr_write_num(0x10A, 0);
+    fill(g_bram_buf, 3 * BLOCK / 8);
+    run_env_entry(
+        0, u_illegal_senv, (unsigned long) &g_bram_buf[BLOCK / 8], ENVCFG_CBZE, ENVCFG_CBZE);
+    ok &= expect("E1 u-write-senv-illegal", CAUSE_ILLEGAL, 0, 0);
+    ok &= expect_pc("E1 u-write-senv-fault-pc", u_illegal_senv);
+    ok &= csr_read_num(0x10A) == 0;
+    ok &= check_blocks("E1 u-write-senv-no-zero", g_bram_buf, 0);
+    csr_write_num(0x30A, 0);
+    csr_write_num(0x10A, 0);
+    return ok;
 }
 
 /* ---- Sv39 tables in cached DDR, clear of the program image. ---- */
@@ -591,6 +712,8 @@ int main(void)
         ok &= expect("E m-cbze0", CAUSE_ECALL_M, 0, 0);
         ok &= check_blocks("E m-cbze0-block", g_bram_buf, 1);
     }
+
+    ok &= envcfg_transition_cases();
 
     /* F: untranslated access faults report rs1 itself. */
     {

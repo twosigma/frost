@@ -106,10 +106,12 @@ side effects are safe. The LQ and SQ order atomics instead (last row).
 | AMO / LR / SC | AMO and LR leave the LQ only at the ROB head, once committed SQ work and accepted coherent stores have drained. An SC issues from MEM_RS like a store but resolves only at the ROB head, after the committed stores drain (see the [wrapper](tomasulo_wrapper/README.md)). Atomics have no serializer state. |
 
 The ROB marks a CSR instruction as a translation CSR at allocation: any
-`satp` access, or an `mstatus`, `sstatus`, `menvcfg` or `senvcfg` access that
-writes. Like FENCE.I and SFENCE.VMA, its retirement is followed by a full
-flush, which discards instructions decoded under the old FS or CBZE value
-(ID reads both as registered gates). The CSR file
+`satp` access, or an `mstatus` or `sstatus` access that writes. Like FENCE.I
+and SFENCE.VMA, its retirement is followed by a full flush, which discards
+instructions decoded under the old FS value. Legal `menvcfg` and `senvcfg`
+writes use ordinary CSR serialization: their CBZE bits affect only lower
+privilege. The trap, xRET or debug transition flushes decode when the
+executing mode's `cbo.zero` permission changes. The CSR file
 invalidates the TLBs and walker on its own: on every `satp` access, and on an
 `mstatus` write that changes MPRV (or MPP while MPRV is set). SUM and MXR are
 applied at lookup, so their changes need only the full flush.

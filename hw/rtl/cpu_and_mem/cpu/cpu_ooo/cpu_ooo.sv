@@ -1042,9 +1042,10 @@ module cpu_ooo #(
     if (i_rst) id_mstatus_fs_off_q <= 1'b0;
     else id_mstatus_fs_off_q <= csr_mstatus_fs_off;
   end
-  // The Zicboz gate takes the same registered path. It changes only with
-  // privilege (trap, xRET) or an envcfg write, a translation-class CSR; each
-  // full flush discards the decode under the old value.
+  // The Zicboz gate takes the same registered path. A legal envcfg write
+  // affects only lower privilege, so the executing mode's permission changes
+  // only across trap, xRET or debug privilege transitions. Their full flush
+  // discards the decode under the old value.
   logic csr_cbo_zero_illegal;
   logic id_cbo_zero_illegal_q;
   always_ff @(posedge i_clk) begin
@@ -4478,9 +4479,7 @@ module cpu_ooo #(
       assert (!translation_csr_commit_shadow ||
               (rob_commit.csr_addr == riscv_pkg::CsrSatp) ||
               (rob_commit.csr_addr == riscv_pkg::CsrMstatus) ||
-              (rob_commit.csr_addr == riscv_pkg::CsrSstatus) ||
-              (rob_commit.csr_addr == riscv_pkg::CsrMenvcfg) ||
-              (rob_commit.csr_addr == riscv_pkg::CsrSenvcfg));
+              (rob_commit.csr_addr == riscv_pkg::CsrSstatus));
       p_fence_class_quiesce_blocks_control_take :
       assert (!fence_class_quiesce || !(trap_taken || xret_taken));
       p_csr_write_excludes_control_take : assert (!(csr_commit_fire && (trap_taken || xret_taken)));
