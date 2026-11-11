@@ -21,11 +21,12 @@
   legality at allocation; this module exports the required state.
 
   sstatus, sie, and sip are views of M-mode storage. sie/sip expose only
-  delegated supervisor bits at every privilege; sip permits writes only to
-  delegated SSIP. medeleg/mideleg use the package WARL masks: M-mode ECALL
-  and machine interrupts cannot delegate. menvcfg implements FIOM, CBZE and
-  STCE; senvcfg, required for S/U support, implements FIOM and CBZE. FIOM is
-  stored only (see riscv_pkg::EnvcfgFiomBit); CBZE gates cbo.zero below M.
+  delegated supervisor bits at every privilege; sip permits writes to
+  delegated SSIP and LCOFIP. medeleg/mideleg use the package WARL masks:
+  M-mode ECALL and the machine software, timer and external interrupt classes
+  cannot delegate. menvcfg implements FIOM, CBZE and STCE; senvcfg, required
+  for S/U support, implements FIOM and CBZE. FIOM is stored only (see
+  riscv_pkg::EnvcfgFiomBit); CBZE gates cbo.zero below M.
 
   mstatus.MPRV makes data accesses use MPP. MPP and dcsr.prv fold reserved
   2'b10 to U. FS resets to Initial and becomes Dirty on FP state writes;
@@ -67,7 +68,9 @@
   Retirement events (3 branches, 4 mispredictions, 10 instructions) take the
   privilege the instruction retired in; the others (5 ITLB walks, 6 DTLB
   walks, 7 L1D misses, 8 SQ-full cycles, 9 cycles) take the hart's privilege
-  in the cycle the event occurs. Debug Mode counts as M. A carry out of bit
+  in the cycle the event occurs. The registered CSR-requested translation
+  event uses its committing instruction's saved privilege. Debug Mode counts
+  as M. A carry out of bit
   63 sets OF on the wrapping edge; when OF was clear it also raises a count
   overflow request, which sets mip.LCOFIP (bit 13) one cycle later. CSR
   writes never cause overflow. LCOFIP is read-write in mip, and in sip when
@@ -3179,7 +3182,7 @@ module csr_file #(
   // names cells by source location and would merge the iterations.
   logic f_hpm_q_valid = 1'b0;
   logic [NumHpm-1:0] f_q_mhpmevent_write, f_q_mhpmcounter_write, f_q_hpm_overflow;
-  logic [NumHpm-1:0] f_q_hpm_of, f_q_hpm_select, f_q_mcountinhibit_hpm, f_q_hpm_mode_inhibit;
+  logic [NumHpm-1:0] f_q_hpm_of, f_q_hpm_select, f_q_mcountinhibit_hpm;
   logic [NumHpm-1:0] f_q_hpm_minh, f_q_hpm_sinh, f_q_hpm_uinh, f_q_hpm_lcof_request;
   logic [NumHpm-1:0][63:0] f_q_mhpmcounter;
   logic [NumHpm-1:0][1:0] f_q_hpm_count_q, f_q_hpm_event_count, f_q_hpm_event_priv;
@@ -3194,7 +3197,6 @@ module csr_file #(
     f_q_hpm_of <= hpm_of;
     f_q_hpm_select <= hpm_select;
     f_q_mcountinhibit_hpm <= mcountinhibit_hpm;
-    f_q_hpm_mode_inhibit <= hpm_mode_inhibit;
     f_q_hpm_minh <= hpm_minh;
     f_q_hpm_sinh <= hpm_sinh;
     f_q_hpm_uinh <= hpm_uinh;
@@ -3213,6 +3215,12 @@ module csr_file #(
   end
   for (genvar n = HpmFirst; n <= HpmLast; n++) begin : gen_f_sscofpmf
     localparam int unsigned K = n - HpmFirst;
+    // Reconstruct the decision from sampled controls and event privilege;
+    // copying the DUT's inhibit wire could hide an over-inhibited mode.
+    wire f_inhibited_ref =
+        (f_q_hpm_minh[K] && (f_q_hpm_event_priv[K] == riscv_pkg::PrivM)) ||
+        (f_q_hpm_sinh[K] && (f_q_hpm_event_priv[K] == riscv_pkg::PrivS)) ||
+        (f_q_hpm_uinh[K] && (f_q_hpm_event_priv[K] == riscv_pkg::PrivU));
     always @(posedge i_clk) begin
       if (!i_rst) begin
         // VSINH, VUINH, WPRI and the event field above the selector value
@@ -3241,15 +3249,16 @@ module csr_file #(
         // the xINH bit of the event's privilege stage zero.
         if (f_q_mcountinhibit_hpm[K] || !f_q_hpm_select[K] || f_q_mhpmcounter_write[K])
           assert (hpm_count_q[K] == 2'd0);
-        if ((f_q_hpm_minh[K] && (f_q_hpm_event_priv[K] == riscv_pkg::PrivM)) ||
-            (f_q_hpm_sinh[K] && (f_q_hpm_event_priv[K] == riscv_pkg::PrivS)) ||
-            (f_q_hpm_uinh[K] && (f_q_hpm_event_priv[K] == riscv_pkg::PrivU)))
-          assert (hpm_count_q[K] == 2'd0);
+        if (f_inhibited_ref) assert (hpm_count_q[K] == 2'd0);
         if (!f_q_mcountinhibit_hpm[K] && f_q_hpm_select[K] && !f_q_mhpmcounter_write[K] &&
-            !f_q_hpm_mode_inhibit[K])
+            !f_inhibited_ref)
           assert (hpm_count_q[K] == f_q_hpm_event_count[K]);
-        // Retirement events use the privilege of the retiring cycle.
-        assert (hpm_event_priv[K] == (HpmRetireEvent[K] ? f_q_priv : priv_q));
+        // Classify independently of the DUT's event mask. Counter 4's
+        // alternate event is also delayed by its committed CSR's register.
+        assert (hpm_event_priv[K] == (((n == 3) || (n == 4) || (n == 10)) ? f_q_priv : priv_q));
+        // Each request is exactly the independently checked wrap with old
+        // OF clear, including when a selector write changes OF on that edge.
+        assert (f_q_hpm_lcof_request[K] == (f_q_hpm_overflow[K] && !f_q_hpm_of[K]));
         // An mhpmevent write installs OF, the xINH bits and the selector.
         if (f_q_mhpmevent_write[K]) begin
           assert ({hpm_of[K], hpm_minh[K], hpm_sinh[K], hpm_uinh[K]} == f_q_csr_new_value[63:60]);
@@ -3268,11 +3277,14 @@ module csr_file #(
     if (f_hpm_q_valid && !i_rst) begin
       // A request is generated only on a wrap with OF clear, and registers
       // once before it sets LCOFIP.
-      p_lcof_request_registered : assert (hpm_lcof_request_q == |f_q_hpm_lcof_request);
+      p_lcof_request_registered : assert (hpm_lcof_request_q == |(f_q_hpm_overflow & ~f_q_hpm_of));
       if (f_q_hpm_lcof_request_q) p_lcof_request_sets_lcofip : assert (mip_lcofip);
       // Otherwise LCOFIP changes only through mip, or sip while delegated.
       if (!f_q_hpm_lcof_request_q && !f_q_lcofip_written)
         p_lcofip_stable : assert (mip_lcofip == f_q_mip_lcofip);
+      p_lcofip_update_exact :
+      assert (mip_lcofip == (f_q_hpm_lcof_request_q ||
+          (f_q_lcofip_written ? f_q_csr_new_value[riscv_pkg::MieLcofBit] : f_q_mip_lcofip)));
     end
     // A wrap with OF already set raises no request.
     p_of_set_no_request : assert (((hpm_overflow & hpm_of) & hpm_lcof_request) == '0);

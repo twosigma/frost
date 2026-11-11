@@ -111,6 +111,7 @@ async def setup(dut: Any) -> CsrPathChecker:
         "hpm_translation_events",
         "hpm_instret",
         "mret",
+        "sret",
         "trap",
     ):
         getattr(dut, "i_" + name).value = 0
@@ -631,6 +632,25 @@ async def test_sscofpmf_mode_filtering(dut: Any) -> None:
                 expected = 0 if inh_priv == priv else 4 * inc
                 assert await s.access(0xB00 + n) == expected, (priv, n, inh)
             await s.access(0x320 + n, 0, 1)
+
+
+@cocotb.test()
+async def test_sscofpmf_sret_retirement_uses_previous_privilege(dut: Any) -> None:
+    """Count SRET in S and following retirements in U across the delayed input."""
+    s = await setup(dut)
+    for inhibit, expected in ((MINH | UINH, 1), (MINH | SINH, 2)):
+        await enter_priv(s, 3)
+        await s.access(0x32A, inhibit | 10, 1)
+        await s.access(0xB0A, 0, 1)
+        await enter_priv(s, 1)
+        # The core reports SRET's retirement one cycle after the return
+        # changes privilege. A following U pair arrives one cycle later.
+        await s.step(raw_valid=0, sret=1, hpm_instret=0)
+        assert int(dut.o_priv.value) == 0
+        await s.step(raw_valid=0, sret=0, hpm_instret=1)
+        await s.step(raw_valid=0, hpm_instret=2)
+        await s.idle(3, hpm_instret=0)
+        assert await s.access(0xC0A) == expected, (inhibit, expected)
 
 
 @cocotb.test()

@@ -49,7 +49,7 @@ set valid_apps [list bootrom amo_irq_torture branch_pred_test c_ext_test call_st
                      ddr_smc_test ddr_test dma_torture freertos_demo fpu_assembly_test fpu_test \
                      hello_world isa_test itlb_test l2_capacity_chase linux_irq_active_ddr_test linux_boot linux_irq_ddr_test linux_irq_stack_slot_test lq_stale_slot_probe memerr_readback \
                      memory_test nic_echo nic_loopback opensbi_smoke packet_parser pde_return_hazard perf_off_test print_clock_speed ptw_coherence_test ras_stress_test ras_test \
-                     smode_test spanning_test sprintf_test strings_test tick_torture tomasulo_perf \
+                     smode_test spanning_test sprintf_test sscofpmf_test strings_test sum_toggle_test tick_torture tomasulo_perf \
                      tomasulo_test uart_echo umode_test vm_test]
 
 if { [lsearch -exact $valid_apps $software_application_name] == -1 } {

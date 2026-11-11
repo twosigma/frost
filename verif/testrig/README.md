@@ -29,6 +29,7 @@ conformance bugs fixed for
 | [`atomics.py`](atomics.py) | Random A-extension tests (see [The A extension](#the-a-extension)) |
 | [`sail_frost.json`](sail_frost.json) | Sail settings that describe FROST |
 | [`traces/`](traces/) | Saved counterexamples, replayed in CI |
+| [`sscofpmf/controls.S`](sscofpmf/controls.S) | Deterministic Sscofpmf controls and implemented HPM aliases, replayed with `--sscofpmf` in CI |
 
 Scalar cryptography traces use `--crypto 50`. The generator supplies full-width
 operands, source and destination aliases, dependencies, integer multiply and
@@ -47,6 +48,7 @@ repository root:
 ./scripts/frost.py run python3 tests/test_testrig.py --trace tests/testrig_failures/failure-<time>.S
 ./scripts/frost.py run python3 tests/test_testrig.py --trace-dir verif/testrig/traces
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200         # A-extension tests
+./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf           # deterministic counter controls
 ./scripts/frost.py run python3 tests/test_testrig.py --ddr-capacity-log2-bytes 37 --trace-dir verif/testrig/traces
 ```
 
@@ -84,6 +86,7 @@ its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 | `--tests` | 50 | Tests per template |
 | `--ddr-capacity-log2-bytes` | 30 (1 GiB) | Set the DDR aperture for both FROST and Sail; accepted values 30–37 (1–128 GiB) |
 | `--atomics` | 0 | Replay this many random A-extension tests instead of the templates |
+| `--sscofpmf` | off | Replay the deterministic counter-control trace with Sail Zihpm enabled; `--trace` selects a counterexample in this view |
 | `--seed` | random | Seed for `--atomics`; the runner prints the one it used |
 | `--test-length` | 200 | Maximum instructions per test |
 | `--include`, `--exclude` | see the runner | Template name regexes |
@@ -187,7 +190,7 @@ different implementation choice:
 
 | Setting | FROST |
 |---------|-------|
-| Extensions | RV64IMAFDC, B, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zicntr, Zicboz, S, U, Sv39, Svade, Svvptc, Sstc, Sscofpmf; `misa` read-only |
+| Extensions | RV64IMAFDC, B, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zicntr, Zicboz, S, U, Sv39, Svade, Svvptc, Sstc; Sscofpmf is enabled in the dedicated replay; `misa` read-only |
 | Memory regions | The PMA map: low BRAM, MMIO, APLIC, IMSIC, the rest of the device quadrant (stores only), and configurable DDR (1 GiB default), the only region page-table walks read |
 | Physical addresses | 64 bits wide, so an untranslated access beyond the memory map faults with its full address in `mtval` |
 | Misaligned accesses | Address-misaligned trap, after the PMA check |
@@ -201,6 +204,17 @@ different implementation choice:
 | LR/SC | 32-byte reservation set, cancelled by a store or AMO from the hart to it (FROST also cancels it on a trap; see [The A extension](#the-a-extension)) |
 | WFI | Completes at once |
 | Sail's CLINT | At 0x2B6D_93F1_0000, outside FROST's map at an address random sequences do not form; Sail requires one for Zicntr |
+
+The `--sscofpmf` replay compares OF and inhibit fields, `scountovf`,
+machine counter storage and user aliases 9/10 with event selectors disabled.
+Sail 0.16 enables Sscofpmf only when Zihpm is enabled, which also exposes
+user aliases 11..31 that FROST omits. This replay therefore enables Zihpm in
+its generated configuration and accesses only implemented counters. Default
+random and saved-counterexample runs keep Zihpm disabled and continue to
+compare absent aliases. The CSR and privilege benches cover the full set
+of implemented aliases, event selection and counting.
+Replay a counterexample from this view with `--sscofpmf --trace <file>`;
+the option cannot be combined with `--trace-dir`, `--atomics` or `--crypto`.
 
 ## What the comparison leaves out
 
@@ -216,7 +230,8 @@ result depends on timing, out of the default run:
 | `stimecmp` | The Sstc timer compare depends on time |
 | `mtvec`, `stvec` | Reserved MODE values: FROST keeps the low bit, Sail keeps the old MODE |
 | `mcause`, `scause` | The cause code is WLRL: FROST keeps any value written, Sail keeps the old value when the code is one it does not support |
-| `hpmcounter3..10`, `mhpmevent3..10`, `scountovf` | Sail cannot represent the partial user-alias set or the fixed-event WARL selectors; CSR and privilege benches check these addresses |
+| `hpmcounter3..10`, `mhpmevent3..10` | Sail cannot represent the partial user-alias set or the fixed-event WARL selectors; CSR and privilege benches check these addresses |
+| `scountovf` | The dedicated `--sscofpmf` replay checks OF shadows; Sail requires Zihpm for this register |
 | Unnamed CSR addresses | Include FROST's custom profiling CSRs |
 | The `atomic` and `memAmo` templates | They put traps between LR and SC (see [The A extension](#the-a-extension)); `--atomics` covers the A extension instead |
 | `unstructured` template | Random 32-bit words reach custom CSRs and other implementation-defined encodings |
