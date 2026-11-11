@@ -13,7 +13,9 @@ the CSR protocol, the counter numbering, and the C API.
 
 Architectural HPM counters 3–8 are available independently of `PERF_COUNTERS`.
 They count retired branches, mispredictions, instruction and data TLB walks,
-L1D permission misses, and store-queue capacity stalls. Linux `perf` accesses
+L1D permission misses, and store-queue capacity stalls. Selectors 10, 11 and
+12 instead count page-walker busy cycles (counter 8), SFENCE.VMA TLB
+invalidates (counter 7) and CSR-requested TLB invalidates (counter 4). Linux `perf` accesses
 them through the OpenSBI PMU mapping; the [Linux counter guide](../../../../../../linux/README.md#counters-and-mcounteren)
 describes their event selectors, enables and user aliases. The custom
 snapshot protocol below applies to the optional profiling counters.

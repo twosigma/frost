@@ -936,6 +936,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Committed DDR stores drain before satp and mstatus writes retire"
         ),
     ),
+    "sum_toggle_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="sum_toggle_test",
+        nic_mac_clocks=False,
+        description=(
+            "S-mode SUM and MXR toggles keep TLB entries and apply the live bits"
+        ),
+    ),
     "imsic_csr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -3458,6 +3467,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="ptw",
         description="Page-table bus errors at every level, discard and successful retry",
         verilator_extra_args=("-GENABLE_RESPONSE_ERRORS=1",),
+    ),
+    "ptw_walk_cache": CocotbRunConfig(
+        python_test_module="cocotb_tests.mmu.test_ptw_walk_cache",
+        hdl_toplevel_module="ptw",
+        description=(
+            "Walk-cache hits, discards and Svvptc-permitted page-table changes "
+            "against a reference Sv39 walk"
+        ),
     ),
     "soc_vcu118": CocotbRunConfig(
         python_test_module="cocotb_tests.axi.test_soc_vcu118",

@@ -31,11 +31,11 @@
 			compatible = "riscv";
 			mmu-type = "riscv,sv39";
 			riscv,isa-base = "rv64i";
-			riscv,isa = "rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbc_zbs_zbkb_zbkc_zicond_zihintpause_smaia_ssaia_sstc_svade";
+			riscv,isa = "rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbc_zbs_zbkb_zbkc_zicond_zihintpause_smaia_ssaia_sstc_svade_svvptc";
 			riscv,isa-extensions = "i", "m", "a", "f", "d", "c",
 				"zicsr", "zifencei", "zicntr", "zba", "zbb", "zbc",
 				"zbs", "zbkb", "zbkc", "zicond", "zihintpause", "smaia",
-				"ssaia", "sstc", "svade";
+				"ssaia", "sstc", "svade", "svvptc";
 
 			cpu0_intc: interrupt-controller {
 				#interrupt-cells = <0x01>;

@@ -97,8 +97,8 @@ typed interfaces from their actual module headers; other unknown modules
 fail. `$initstate` gets a typed extension declaration, and the asynchronous
 FIFO gets a containing standard global clocking scope for `$global_clock`.
 
-All 561 distinct formal views (700 tasks) are required, including every
-hart-cache maintenance configuration. The complete matrix has 667 cases,
+All 568 distinct formal views (709 tasks) are required, including every
+hart-cache maintenance configuration. The complete matrix has 674 cases,
 with no deferred views or source-error exceptions. To record diagnostics
 and elapsed times for every case:
 

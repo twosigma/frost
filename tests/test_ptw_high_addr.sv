@@ -21,6 +21,7 @@ module test_ptw_high_addr;
       .o_req_ready(req_ready),
       .i_req_vpn(req_vpn),
       .i_discard(1'b0),
+      .o_busy(),
       .o_resp_valid(resp_valid),
       .o_resp(resp),
       .o_line_req_valid(line_valid),
@@ -43,6 +44,9 @@ module test_ptw_high_addr;
     rst = 1'b0;
     req_valid = 1'b1;
     @(negedge clk);
+    req_valid = 1'b0;
+    // Two cycles of walk-cache lookup precede the first read.
+    repeat (2) @(negedge clk);
     assert (line_valid && line_addr == riscv_pkg::PhysAddrBits'(table_base + 64'h80))
     else
       $fatal(1, "high PTE address truncated or refused: valid=%b addr=%h", line_valid, line_addr);
@@ -57,9 +61,11 @@ module test_ptw_high_addr;
     req_valid = 1'b1;
     @(negedge clk);
     req_valid = 1'b0;
-    assert (!line_valid)
-    else $fatal(1, "out-of-range PTE line issued");
-    @(negedge clk);
+    repeat (3) begin
+      assert (!line_valid)
+      else $fatal(1, "out-of-range PTE line issued");
+      @(negedge clk);
+    end
     assert (resp_valid && resp.fault_kind == riscv_pkg::DFAULT_ACCESS && !line_valid)
     else $fatal(1, "out-of-range root did not access-fault");
     $finish;

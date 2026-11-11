@@ -3825,3 +3825,93 @@ async def test_fetch_fault_preserves_tags_with_arbitrary_metadata(dut: Any) -> N
     dut.i_instr_fault1.value = 0
     await _settle()
     assert not _read_if_packet(dut)["fetch_fault"]
+
+
+@cocotb.test()
+async def test_first_word_fault_wins_for_crossing_fetch_shapes(dut: Any) -> None:
+    """A first-word fault keeps its cause and address qualifier in every shape."""
+    await _setup_test(dut)
+    for compressed in (False, True):
+        owner = (
+            _word(lo=COMPRESSED_NOP, hi=COMPRESSED_NOP) if compressed else ADD_INSTR_A
+        )
+        sideband = _sideband(compressed_lo=compressed, compressed_hi=compressed)
+        for offset in (0, 2):
+            pc = 0x0001_3FFC + offset
+            for swapped in (False, True):
+                for served_high in (0, 1):
+                    for page in (0, 1):
+                        dut.i_instr_fault0.value = 0
+                        dut.i_instr_fault1.value = 0
+                        _drive_fetch(dut, current_word=NOP_INSTR)
+                        await _redirect_to(dut, pc)
+                        assert int(dut.pc_reg.value) == pc
+                        served_word = (pc >> 2) - int(swapped)
+                        _drive_fetch(
+                            dut,
+                            current_word=ADD_INSTR_B if swapped else owner,
+                            next_word=owner if swapped else ADD_INSTR_B,
+                            current_sb=0 if swapped else sideband,
+                            next_sb=sideband if swapped else 0,
+                            bank_sel=served_word & 1,
+                            served_high=served_high,
+                        )
+                        _drive_served_word_tags(dut, served_word)
+                        dut.i_instr_fault0.value = 1
+                        dut.i_instr_fault1.value = 1
+                        # Distinguish the first word's real cause from the
+                        # neighbor's cause; current-word priority must win.
+                        dut.i_instr_fault0_page.value = 1 - page if swapped else page
+                        dut.i_instr_fault1_page.value = page if swapped else 1 - page
+                        await _settle()
+                        assert not dut.use_instr_buffer.value
+                        assert (
+                            bool(dut.fetch_word_swapped_for_spanning.value) == swapped
+                        )
+                        packet = _read_if_packet(dut)
+                        assert packet["program_counter"] == pc
+                        assert packet["fetch_fault"]
+                        assert packet["fetch_fault_page"] == bool(page)
+                        assert not packet["fetch_fault_hi"]
+
+
+@cocotb.test()
+async def test_buffered_first_word_fault_keeps_priority_at_page_end(dut: Any) -> None:
+    """Buffered native straddles retain the first word's cause and PC address."""
+    await _setup_test(dut)
+    pc = 0x0001_3FFC
+    owner = _word(lo=0xFA6D, hi=ADD_INSTR_A & 0xFFFF)
+    for served_high in (0, 1):
+        for page in (0, 1):
+            dut.i_instr_fault0.value = 0
+            dut.i_instr_fault1.value = 0
+            _drive_fetch(dut, current_word=NOP_INSTR)
+            await _redirect_to(dut, pc)
+            _drive_fetch(
+                dut,
+                current_word=owner,
+                next_word=ADD_INSTR_B,
+                current_sb=_sideband(compressed_lo=True, compressed_control_lo=True),
+                bank_sel=(pc >> 2) & 1,
+                served_high=served_high,
+            )
+            dut.i_instr_fault0.value = 1
+            dut.i_instr_fault0_page.value = page
+            dut.i_instr_fault1.value = 1
+            dut.i_instr_fault1_page.value = 1 - page
+            await _settle()
+            assert not dut.slot2_valid.value
+            await _advance_cycle(dut)
+            assert int(dut.pc_reg.value) == pc + 2
+            assert dut.use_instr_buffer.value
+            # The live provider now has clean bytes. The buffered first
+            # word's fault must remain attached to the native ...FFE packet.
+            dut.i_instr_fault0.value = 0
+            dut.i_instr_fault1.value = 0
+            _drive_fetch(dut, current_word=ADD_INSTR_B, next_word=ADD_INSTR_C)
+            await _settle()
+            packet = _read_if_packet(dut)
+            assert packet["program_counter"] == pc + 2
+            assert packet["fetch_fault"]
+            assert packet["fetch_fault_page"] == bool(page)
+            assert not packet["fetch_fault_hi"]

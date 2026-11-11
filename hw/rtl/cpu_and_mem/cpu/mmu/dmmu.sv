@@ -409,9 +409,25 @@ module dmmu (
   // is the TLB's per-entry verdict, selected with the hit, so the capture
   // enable does not wait on the fault select.
   logic last_capture;
-  assign last_capture = s1_valid_q && !s1_killed && !(i_trap_misaligned && s1_misaligned) &&
-      !s1_noncanonical && (tlb_hit[0] ? tlb_clean_hit[0] :
-                           (walk_resp_for_s1 && (walk_fault == riscv_pkg::DFAULT_NONE)));
+  (* keep = "true" *) wire last_capture_qualified = s1_valid_q && !s1_killed &&
+      !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical;
+  (* keep = "true" *) wire last_capture_walk_good =
+      walk_resp_for_s1 && (walk_fault == riscv_pkg::DFAULT_NONE);
+  // Apply the hit's clean verdict after request and walk qualification.
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT4 #(
+      .INIT(16'ha280)
+  ) u_last_capture (
+      .I0(last_capture_qualified),
+      .I1(tlb_hit[0]),
+      .I2(tlb_clean_hit[0]),
+      .I3(last_capture_walk_good),
+      .O (last_capture)
+  );
+`else
+  assign last_capture = last_capture_qualified &&
+      (tlb_hit[0] ? tlb_clean_hit[0] : last_capture_walk_good);
+`endif
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all || i_tlb_invalidate || !i_active) begin
       last_valid_q <= 1'b0;
@@ -575,6 +591,16 @@ module dmmu (
   assign s2_leaf_applies = s1_valid_q && !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical;
   assign s2_fault_next   = s2_leaf_applies && tlb_hit[0] ? s2_leaf_fault : s2_fault_without_leaf;
 
+  // The DTLB selects the clean data-access verdict with the matching entry.
+  // Select that verdict directly instead of rebuilding its permission and
+  // page-attribute checks after selection.
+  (* keep = "true" *)wire s2_pa_leaf_selected = s2_leaf_applies && !s1_killed && tlb_hit[0];
+  // verilog_format: off
+  (* keep = "true" *) wire s2_pa_without_leaf =
+      s1_killed || (s2_fault_without_leaf == riscv_pkg::DFAULT_NONE);
+  // verilog_format: on
+  wire s2_pa_next = s2_pa_leaf_selected ? tlb_clean_hit[0] : s2_pa_without_leaf;
+
   // S2 holds an operation for one cycle and its readers wait for s2_valid_q, so
   // the payload loads every cycle and only the valid bit reads the bypass.
   always_ff @(posedge i_clk) begin
@@ -584,7 +610,7 @@ module dmmu (
     s2_tag_q <= s1_move ? s1_q.tag : iss_in.tag;
     s2_va_q <= s1_move ? s1_q.va : iss_in.va;
     s2_ppn_q <= s1_move ? resolve_ppn : last_ppn_q;
-    s2_pa_q <= !s1_move || resolve_pa;
+    s2_pa_q <= s2_pa_next;
     s2_fault_q <= s1_move ? riscv_pkg::data_fault_kind_e'(s2_fault_next) : riscv_pkg::DFAULT_NONE;
     s2_needs_sq_q <= s1_move ? s1_q.needs_sq : iss_in.needs_sq;
     s2_is_sc_q <= s1_move ? s1_q.is_sc : iss_in.is_sc;
@@ -809,6 +835,17 @@ module dmmu (
     // S2's split address rebuilds the resolution's address.
     p_resolve_addr_exact : assert (f_resolve_addr_ref == resolve_addr);
   end
+  // A clean walk leaf is checked with the live SUM, MXR and effective
+  // privilege, never with state from the walk: SUM and MXR changes keep the
+  // TLBs and the walk in flight, so no other check may cache them.
+  always_comb begin
+    logic f_walk_perm_ref;
+    f_walk_perm_ref = (i_walk_resp.perm_u ? (i_eff_priv_u || i_sum) : !i_eff_priv_u) &&
+        (s1_q.store_perms ? (i_walk_resp.perm_w && i_walk_resp.perm_d) :
+                            (i_walk_resp.perm_r || (i_mxr && i_walk_resp.perm_x)));
+    if (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE)
+      p_walk_leaf_perm_live : assert ((walk_fault == riscv_pkg::DFAULT_PAGE) == !f_walk_perm_ref);
+  end
 `endif
 
 `ifdef DMMU_CAPTURE_LOCAL_PROOF
@@ -852,6 +889,18 @@ module dmmu (
         p_lq_lookahead_tag : assert (o_iss_out_rob_tag == f_pre_tag_q);
       end
       if (f_last_clear_q) p_last_page_invalidation : assert (!last_valid_q);
+      // The last-page buffer survives SUM and MXR changes only through its
+      // captured-state compare: a bypass grants an access only when the
+      // live SUM, MXR and privilege equal those it captured and the raw
+      // leaf permissions allow the access under them.
+      if (iss_can_bypass) begin
+        p_bypass_live_permission :
+        assert ((i_sum == last_sum_q) && (i_mxr == last_mxr_q) &&
+                (i_eff_priv_u == last_priv_u_q) &&
+                (last_perm_u_q ? (i_eff_priv_u || i_sum) : !i_eff_priv_u) &&
+                (iss_in.store_perms ? (last_perm_w_q && last_perm_d_q) :
+                                      (last_perm_r_q || (i_mxr && last_perm_x_q))));
+      end
       cover (f_bypass_expected_q && o_iss_out_lq_capture_valid);
       cover (f_bypass_expected_q && o_iss_out_sq_capture_valid);
       cover (i_rst_n && !i_flush_all && s1_resolved && s1_killed && iss_can_bypass);

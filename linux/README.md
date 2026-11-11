@@ -142,8 +142,17 @@ directly through Sstc (`stimecmp`) instead of an SBI call.
 
 The generated DTB declares the
 [implemented extensions](../README.md#supported-risc-v-extensions), Sstc,
-Smaia, Ssaia, Svade, and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and the LP64D
-ABI.
+Smaia, Ssaia, Svade, Svvptc, and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and the LP64D
+ABI. Svvptc tells Linux that a PTE changed from invalid to valid becomes
+visible to the walker without `sfence.vma`, so the kernel can omit that
+synchronization for those mapping updates. Other PTE changes retain their
+existing address-translation synchronization requirements. No FROST translation
+structure retains an invalid PTE indefinitely: the TLBs install only
+fault-free walks, the walker reads page tables coherently through the L1D
+probe, and the instruction MMU expires both its fault memo and completed
+registered refusals every 64 clocks. Even a refusal copied from the memo on its expiry
+edge is dropped within 128 clocks. Trap, xRET and FENCE-class full flushes
+also drop memo entries and verdicts, including a response on the flush edge.
 
 ## Counters and mcounteren
 
@@ -161,7 +170,7 @@ is an illegal instruction (`mcause` 2, `mtval` 0).
 | `mcounteren`, `scounteren` | CY, TM, IR and HPM3..8 occupy bits 8:0; bits 31:9 read zero and ignore writes. Both reset to `0x1ff`. |
 | `mcountinhibit` (0x320) | CY (bit 0), IR (bit 2), and HPM3..8 (bits 8:3) inhibit their counters. TM and bits 31:9 read zero. |
 | `mcycle` (0xB00), `minstret` (0xB02) | Accept full 64-bit M-mode writes |
-| `mhpmcounter3`-`8` (0xB03-0xB08), `mhpmevent3`-`8` (0x323-0x328) | Writable machine counters. Selector N selects counter N's fixed event; all other writes select zero and disable counting. |
+| `mhpmcounter3`-`8` (0xB03-0xB08), `mhpmevent3`-`8` (0x323-0x328) | Writable machine counters. Selector N selects counter N's fixed event. Counters 8, 7 and 4 also accept the translation selectors 10, 11 and 12 (see below). All other writes select zero and disable counting. |
 | `mhpmcounter9`-`31`, `mhpmevent9`-`31` | Machine-mode reads return zero and writes are ignored. |
 | `hpmcounter3`-`8` (0xC03-0xC08) | Read-only aliases, gated by counter enables in S/U modes. |
 | `hpmcounter9`-`31` (0xC09-0xC1F) | Unimplemented; accesses raise illegal instruction at every privilege. |
@@ -181,7 +190,12 @@ atomic requests that require cache permission. Raw selectors 3 through 8
 select branches, mispredictions, ITLB walks, DTLB walks, L1D permission
 misses, and store-queue capacity stalls, respectively. DTLB walks include
 loads and stores; SQ stalls cover one source of backend stalls. These two
-events are exposed only through `riscv,raw-event-to-mhpmcounters`. HPM
+events are exposed only through `riscv,raw-event-to-mhpmcounters`. Three raw
+translation selectors share those counters: 10 counts page-walker busy
+cycles on counter 8, 11 counts SFENCE.VMA TLB invalidates on counter 7, and
+12 counts CSR-requested TLB invalidates (any `satp` access, or an `mstatus`
+write that changes MPRV, or MPP while MPRV is set) on counter 4. Walker busy
+cycles divided by ITLB plus DTLB walks give the mean walk latency. HPM
 storage and event counting are independent of the optional profiling
 counters. `frost_stress --counters` counts a child process
 running a fixed workload, from its exec to its exit, and the boot stress
