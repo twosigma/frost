@@ -2715,6 +2715,7 @@ def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:
     cover = l1d_task_config("coh_l1d_zero_cover")
     model = [line for line in control["[script]"] if not assertion_command(line)]
     idle_inputs = (
+        "i_read_valid",
         "i_fatal_stop",
         "i_write_atomic",
         "i_write_sc",
@@ -2769,7 +2770,7 @@ def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:
             "vcd_sim": "on",
             "skip": "48",
         }
-        assert task["[engines]"] == ["btor btormc"]
+        assert task["[engines]"] == ["smtbmc boolector"]
 
     validate(cover)
     for section, line in (
