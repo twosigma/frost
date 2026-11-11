@@ -572,6 +572,25 @@ def _print_result(result: TestResult) -> None:
 # =============================================================================
 
 
+@pytest.mark.parametrize(
+    ("mem_config", "excluded"),
+    (("bram", {"Zifencei"}), ("ddr", {"F", "D"})),
+)
+def test_arch_compliance_ci_coverage(mem_config: str, excluded: set[str]) -> None:
+    """Every supported extension reaches CI in each applicable memory tier."""
+    import yaml  # type: ignore[import-untyped]
+
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
+    jobs = workflow["jobs"]["test-arch-compliance"]["strategy"]["matrix"]["include"]
+    selected = {
+        extension
+        for job in jobs
+        if job["mem_config"] == mem_config
+        for extension in job["extensions"].split()
+    }
+    assert selected == set(SUPPORTED_EXTENSIONS) - excluded
+
+
 @pytest.mark.cocotb
 @pytest.mark.slow
 class TestArchCompliance:
