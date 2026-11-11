@@ -445,8 +445,9 @@ take decision rather than from it.
 
 Fetch translation is registered from the next `satp` mode and privilege,
 so it changes on the same edge as a CSR write, trap or return. In the integrated
-profile, the CSR file prepares that complete flag for either MRET outcome and
-then selects with MRET, preserving write, debug and trap priority.
+profile, the CSR file prepares that complete flag for MRET, SRET and neither
+return, then selects with the return inputs while preserving write, debug
+and trap priority.
 
 A CSR instruction that accesses `satp`, or writes `mstatus` or `sstatus`, can
 change address translation or `mstatus.FS`, which ID's decode reads, so
