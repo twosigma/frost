@@ -708,7 +708,8 @@ jobs:
 
   # TestRIG: QuickCheckVEngine runs instruction sequences on the Sail RISC-V
   # model and on the simulated SoC and compares every retired instruction
-  # (tests/test_testrig.py). The first shard replays the saved counterexamples.
+  # (tests/test_testrig.py). The first shard replays saved counterexamples and
+  # deterministic counter controls.
   # Every shard then draws its own random sequences, 100 per template, from the
   # engine's templates, and its own 200 A-extension tests from
   # verif/testrig/atomics.py, whose seed the log prints. A mismatch is shrunk
@@ -743,13 +744,15 @@ jobs:
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
 
-      - name: Replay the saved TestRIG counterexamples
+      - name: Replay saved TestRIG counterexamples and counter controls
         if: matrix.shard == 1
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --trace-dir verif/testrig/traces --continue-on-fail
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --crypto 50 --continue-on-fail
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --sscofpmf
 
       - name: Compare FROST with Sail on random instruction sequences
         run: |

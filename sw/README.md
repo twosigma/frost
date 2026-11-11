@@ -348,7 +348,7 @@ can be debugged and where each one first stops.
 | `spanning_test/` | 32-bit instructions that straddle a fetch-word boundary |
 | `sprintf_test/` | All 344 `sprintf`/`snprintf` checks against constant expected strings; the 2M-cycle simulation budget covers the measured 1.23M cycles in BRAM and DDR |
 | `sstc_test/` | Sstc: `menvcfg.STCE`, `stimecmp` access rules, and an S-mode timer interrupt through `stimecmp`; also the writable `menvcfg` and `senvcfg` bits |
-| `sscofpmf_test/` | Sscofpmf: `mhpmevent` OF/MINH/SINH/UINH fields, OF and `mip.LCOFIP` on a counter wrap, LCOFI taken in M and delegated to S, `scountovf` filtering by `mcounteren`, and per-privilege counting of instructions and cycles |
+| `sscofpmf_test/` | Sscofpmf: `mhpmevent` OF/MINH/SINH/UINH fields, OF and `mip.LCOFIP` on a counter wrap, LCOFI taken in M and delegated to S, `scountovf` filtering by `mcounteren`, per-privilege counting of instructions and cycles, and pending-clear races through `mip` and delegated `sip` |
 | `strings_test/` | `string.h`, `ctype.h`, and `stdlib.h` functions |
 | `tick_torture/` | CLINT timer re-arming, lost-tick detection, and `wfi` wakeup under DDR traffic |
 | `tomasulo_perf/` | IPC of dependent and independent integer and FP instruction chains, and of a load/AMO loop; `-DTOMASULO_PERF_ENABLE_PROFILE=1` adds profiling-counter reports and fails the run unless the head-load counter split adds up and the reserved counters read 0. Simulation allows 750,000 cycles for all 14 benchmarks and reports |

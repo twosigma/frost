@@ -35,8 +35,6 @@ rvfi_dii = importlib.import_module("testrig.rvfi_dii")
 preamble = importlib.import_module("testrig.preamble")
 test_testrig = importlib.import_module("test_testrig")
 
-SAIL_CONFIG = VERIF_DIR / "testrig" / "sail_frost.json"
-
 
 @pytest.mark.parametrize(
     ("kind", "pattern", "production_only"),
@@ -85,17 +83,22 @@ def test_platform_interface_matches_testrig_fixture(
 
 
 @pytest.mark.parametrize("capacity_log2_bytes", (30, 36, 37))
+@pytest.mark.parametrize("sscofpmf", (False, True))
 def test_sail_ddr_capacity_matches_frost(
-    tmp_path: Path, capacity_log2_bytes: int
+    tmp_path: Path, capacity_log2_bytes: int, sscofpmf: bool
 ) -> None:
     """The generated Sail region follows the FROST capacity selection."""
-    path = test_testrig.write_sail_config(capacity_log2_bytes, tmp_path)
+    path = test_testrig.write_sail_config(
+        capacity_log2_bytes, tmp_path, sscofpmf=sscofpmf
+    )
     config = json.loads(path.read_text(encoding="utf-8"))
     regions = config["memory"]["regions"]
     ddr = [region for region in regions if region["base"]["value"] == "0x80000000"]
     assert len(ddr) == 1
     assert int(ddr[0]["size"]["value"], 16) == 1 << capacity_log2_bytes
     assert len(regions) == len(test_testrig.atomics.load_regions())
+    assert config["extensions"]["Zihpm"]["supported"] == sscofpmf
+    assert config["extensions"]["Sscofpmf"]["supported"]
     assert config["platform"]["reservation"] == {
         "reservation_set_size_exp": 5,
         "require_exact_reservation_addr": False,
@@ -204,20 +207,22 @@ def test_preamble_ends_just_below_the_test() -> None:
     assert x31 == preamble.TEST_START_PC - 8
 
 
-def test_sail_config_validates() -> None:
+@pytest.mark.parametrize("sscofpmf", (False, True))
+def test_sail_config_validates(tmp_path: Path, sscofpmf: bool) -> None:
     """The FROST override merges into a configuration Sail accepts."""
     sail = shutil.which("sail_riscv_sim")
     if sail is None:
         pytest.skip("sail_riscv_sim is not installed (it is in the frost image)")
+    config = test_testrig.write_sail_config(30, tmp_path, sscofpmf=sscofpmf)
     result = subprocess.run(
-        [sail, "--config-override", str(SAIL_CONFIG), "--validate-config"],
+        [sail, "--config-override", str(config), "--validate-config"],
         capture_output=True,
         text=True,
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     isa = subprocess.run(
-        [sail, "--config-override", str(SAIL_CONFIG), "--print-isa-string"],
+        [sail, "--config-override", str(config), "--print-isa-string"],
         capture_output=True,
         text=True,
         check=True,

@@ -173,7 +173,7 @@ static void counter_tests(void)
     uart_puts("  all-ones write reads ");
     uart_hex64(a);
     uart_puts("\r\n");
-    check("CY, IR and HPM3..10 stick", a == 0x7FD);
+    check("CY, IR and HPM3-10 stick", a == 0x7FD);
     csr_write(0x320, 0);
     check("clears to 0", csr_read(0x320) == 0);
 

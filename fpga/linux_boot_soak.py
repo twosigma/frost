@@ -20,7 +20,7 @@ Boot Debian's pinned kernel with the Buildroot test initramfs
 (``linux/debian_kernel.py``). Require the modules'
 ``FROST_NET10G_MODULE_PASS <release>`` and ``FROST_MEMERR_MODULE_PASS
 <release>`` lines and ``FROST_USERSPACE_STRESS_PASS`` by login. Reject crashes, timeouts, and unavailable counters: the DTB maps cycle
-and instruction events to the SBI PMU's fixed counters. ``--login-only`` skips
+and instruction events to programmable HPM counters 9 and 10 through the SBI PMU. ``--login-only`` skips
 token and counter checks.
 
 The script reads the UART at 115200 8N1 through termios and sets the speed
@@ -214,7 +214,7 @@ def main() -> int:
                 and not args.login_only
                 and "counters=unavailable" in stress_line
             ):
-                # The boot image's DTB gives the SBI PMU both fixed counters,
+                # The boot image's DTB maps both events to HPM counters,
                 # so a FROST boot must be able to read them.
                 verdict = "FAIL(counters-unavailable)"
             print(f"boot {boot}: {verdict}  {stress_line}", flush=True)

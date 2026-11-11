@@ -1016,7 +1016,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description=(
             "Sscofpmf counter overflow, LCOFI in M and delegated to S, scountovf, "
-            "and privilege-mode filtering"
+            "privilege-mode filtering and pending-clear cancellation"
         ),
     ),
     "ns16550_irq_console_test": CocotbRunConfig(
@@ -2053,7 +2053,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "trap_unit": CocotbRunConfig(
         python_test_module="cocotb_tests.control.test_trap_unit",
         hdl_toplevel_module="trap_unit",
-        description="Trap, interrupt, and return arbitration with store draining",
+        description=(
+            "Trap, standard and counter-overflow interrupts, return arbitration "
+            "and store draining"
+        ),
     ),
     "packed_tag_uram_13": CocotbRunConfig(
         python_test_module="cocotb_tests.test_sdp_packed_tag_uram",
@@ -3889,8 +3892,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "perf_csr_half": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.perf.test_perf_csr_half",
         hdl_toplevel_module="perf_csr_half_test_harness",
-        description="Performance CSR half reads, HPM event selection, inhibition, "
-        "and privilege masks",
+        description=(
+            "Performance CSR half reads, HPM selection and inhibition, Sscofpmf "
+            "overflow/filtering, SRET attribution and privilege masks"
+        ),
     ),
     "ooo_pipeline_control": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.pipeline_control.test_ooo_pipeline_control",

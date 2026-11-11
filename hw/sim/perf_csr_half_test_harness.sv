@@ -41,10 +41,11 @@ module perf_csr_half_test_harness #(
     input logic [1:0] i_hpm_branches,
     input logic [1:0] i_hpm_mispredicts,
     input logic [3:0] i_hpm_events,
-    // {SFENCE.VMA invalidate start, walker busy} for selectors 11 and 10.
+    // {SFENCE.VMA invalidate start, walker busy} for selectors 17 and 16.
     input logic [1:0] i_hpm_translation_events,
     input logic [1:0] i_hpm_instret,
     input logic i_mret,
+    input logic i_sret,
     input logic i_trap,
     output logic [riscv_pkg::CounterMaskBits-1:0] o_counter_blocked,
     output logic [1:0] o_priv,
@@ -219,7 +220,7 @@ module perf_csr_half_test_harness #(
         .i_trap_save_s('0),
         .i_trap_enter_d('0),
         .i_mret_taken(i_mret),
-        .i_sret_taken('0),
+        .i_sret_taken(i_sret),
         .i_trap_to_d('0),
         .i_trap_dbg_cause('0),
         .i_dret_taken('0),
