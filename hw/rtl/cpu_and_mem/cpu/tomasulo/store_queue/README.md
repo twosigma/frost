@@ -86,6 +86,9 @@ Cached and buffered Normal entries require commit; precise uncached entries requ
 permission and the shield.
 Entry, ordering and FIFO checks prepare launch and cursor completion before
 coherent store credit arrives. Credit qualifies both decisions last.
+Each stored address is classified in parallel with cursor selection. Aligned
+power-of-two cached regions use a mask comparison; other maps retain the
+general range comparison, including empty or wrapping ranges.
 Every store is a single 64-bit beat: sub-dword data is replicated across the
 beat and the byte strobe selects the lanes. A `cbo.zero` entry keeps `rs1`
 as its address. A cached block drains as one write at the naturally aligned

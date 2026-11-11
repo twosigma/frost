@@ -866,6 +866,24 @@ module store_queue #(
   logic [ReorderBufferTagWidth-1:0] uncached_sc_tag_q;
   logic                             uncached_precommit_ready;
   logic                             mem_write_addr_cached_for_plain_next;
+  // Classify stored addresses in parallel with cursor selection. For an
+  // aligned power-of-two region, only the address bits outside its mask
+  // participate; other maps keep the general half-open range comparison.
+  localparam logic [XLEN-1:0] CachedBase = XLEN'(CACHED_BASE);
+  localparam logic [XLEN-1:0] CachedSize = XLEN'(CACHED_SIZE_BYTES);
+  localparam logic [XLEN-1:0] CachedLimit = CachedBase + CachedSize;
+  localparam logic [XLEN-1:0] CachedMask = CachedSize - 1'b1;
+  localparam bit CachedRegionAligned = CachedSize != 0 &&
+      (CachedSize & CachedMask) == 0 && (CachedBase & CachedMask) == 0 &&
+      CachedLimit > CachedBase;
+  function automatic logic address_is_cached(input logic [XLEN-1:0] addr);
+    if (CachedRegionAligned) address_is_cached = (addr & ~CachedMask) == CachedBase;
+    else address_is_cached = (addr >= CachedBase) && (addr < CachedLimit);
+  endfunction
+  (* keep = "true" *) logic [DEPTH-1:0] sq_cached_class;
+  for (genvar slot = 0; slot < DEPTH; slot++) begin : gen_cached_class
+    assign sq_cached_class[slot] = address_is_cached(sq_address[slot]);
+  end
   assign o_uncached_store_pending = PRECISE_UNCACHED && sq_valid[drain_idx_q] &&
       !sq_committed[drain_idx_q] && !sq_sent[drain_idx_q] &&
       sq_addr_valid[drain_idx_q] && sq_data_valid[drain_idx_q] &&
@@ -995,16 +1013,10 @@ module store_queue #(
     mem_write_byte_en_next = drain_is_zero ? '1 :
         gen_byte_en(mem_write_addr_next[2:0], riscv_pkg::mem_size_e'(sq_size[drain_idx_q]));
     mem_write_is_mmio_next = sq_is_mmio[drain_idx_q];
-    // Use XLEN casts: these parameters are 32-bit ints, so XLEN-wide part-selects
-    // would be out of range at RV64.
-    mem_write_is_cached_next =
-        (mem_write_addr_next >= XLEN'(CACHED_BASE)) &&
-        (mem_write_addr_next <  (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
+    mem_write_is_cached_next = address_is_cached(mem_write_addr_next);
   end
 
-  assign mem_write_addr_cached_for_plain_next =
-      (sq_address[drain_idx_q] >= XLEN'(CACHED_BASE)) &&
-      (sq_address[drain_idx_q] <  (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
+  assign mem_write_addr_cached_for_plain_next = sq_cached_class[drain_idx_q];
   // Every store is one beat and completes its entry, including DOUBLE. A
   // cached zero entry is one write; an uncached one completes on its eighth
   // beat.
