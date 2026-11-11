@@ -2654,6 +2654,7 @@ def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:
             "depth": "80",
             "timeout": "2400",
             "vcd_sim": "on",
+            "skip": "48",
         }
         assert task["[engines]"] == ["btor btormc"]
 

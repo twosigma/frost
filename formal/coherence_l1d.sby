@@ -74,6 +74,9 @@ pathcovers: timeout 1800
 covers: timeout 1200
 zcovers: timeout 2400
 zsingle: vcd_sim on
+# Keep every transition from reset, but query only the later cover window.
+# Reaching a dirty twin victim requires several completed transactions.
+zsingle: skip 48
 ~covermode: aigsmt boolector
 conflict: mode prove
 conflict: depth 2
