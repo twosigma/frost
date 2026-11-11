@@ -85,15 +85,18 @@ entry is eligible and has its address and data, and it never skips ahead.
 Cached and buffered Normal entries require commit; precise uncached entries require ROB-head
 permission and the shield.
 Entry, ordering and FIFO checks prepare launch and cursor completion before
-coherent store credit arrives. Credit qualifies both decisions last.
+coherent store credit arrives. Credit qualifies the cached arm last.
 Each stored address is classified in parallel with cursor selection. Aligned
 power-of-two cached regions use a mask comparison; other maps retain the
 general range comparison, including empty or wrapping ranges.
-PMA, SC and MMIO qualification also precede cursor selection, which selects
-the prepared precise and buffered-write decisions with the cached decision.
-Serial and overlapping drain eligibility are prepared separately, so the
-selected entry's Normal-memory classification only chooses whether overlap
-is permitted.
+Each entry prepares its cached serial, uncached serial, buffered overlap and
+precise serial decisions independently of its address class. The cursor and
+all other conditions are included before the class bits select those decisions.
+A precise uncommitted entry is uncached and cannot use buffered overlap, so
+its permission does not pass through the overlapping launch checks. Uncached
+completion includes the last-beat decision before address classification;
+every cached launch completes its entry. These are the same launch and
+completion conditions with no added state or cycles.
 Every store is a single 64-bit beat: sub-dword data is replicated across the
 beat and the byte strobe selects the lanes. A `cbo.zero` entry keeps `rs1`
 as its address. A cached block drains as one write at the naturally aligned
