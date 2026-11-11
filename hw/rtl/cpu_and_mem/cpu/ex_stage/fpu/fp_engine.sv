@@ -49,6 +49,12 @@
   (compares, FCLASS, conversions to integer, FMV.X.*) XLEN-correct. i_kill drops
   the operation in progress; the engine is idle again on the next cycle.
 */
+// Preserve the arithmetic engine's native synthesis boundary.
+// verilog_format: off
+`ifdef FROST_XILINX_PRIMS
+(* keep_hierarchy = "yes" *)
+`endif
+// verilog_format: on
 module fp_engine (
     input logic i_clk,
     input logic i_rst_n,
@@ -805,7 +811,8 @@ module fp_engine (
     endcase
   end
 
-  // Exponent arithmetic: one adder, E <= P + Q + cin.
+  // General exponent arithmetic. Normalization prepares its constant updates
+  // independently so its late conditions select data after arithmetic.
   typedef enum logic [1:0] {
     EP_E,
     EP_EX,
@@ -819,8 +826,7 @@ module fp_engine (
     EQ_LD,     // the selected operand's exponent
     EQ_NOTEX,  // ~EX (with cin: -EX)
     EQ_29,
-    EQ_63,
-    EQ_EMIN
+    EQ_63
   } eq_sel_e;
 
   ep_sel_e ep_sel;
@@ -829,6 +835,12 @@ module fp_engine (
   logic ex_load, ex_dec;
   logic signed [13:0] e_p, e_qv, e_sum;
   logic signed [13:0] sqrt_e_even;  // square-root exponent made even
+  logic e_norm_inc, e_norm_dec1, e_norm_dec8, e_norm_min;
+  (* keep = "true" *) logic signed [13:0] e_norm_inc_value;
+  (* keep = "true" *) logic signed [13:0] e_norm_dec1_value;
+  (* keep = "true" *) logic signed [13:0] e_norm_dec8_value;
+  wire e_norm_any;
+  wire signed [13:0] e_norm_result;
 
   always_comb begin
     unique case (ep_sel)
@@ -843,14 +855,61 @@ module fp_engine (
       EQ_NOTEX: e_qv = ~ex_q;
       EQ_29:    e_qv = 14'sd29;
       EQ_63:    e_qv = 14'sd63;
-      EQ_EMIN:  e_qv = emin_p;
       default:  e_qv = '0;
     endcase
   end
 
   assign e_sum = e_p + e_qv + $signed({13'b0, e_cin});
+  assign e_norm_inc_value = e_q + 14'sd1;
+  assign e_norm_dec1_value = e_q - 14'sd1;
+  assign e_norm_dec8_value = e_q - 14'sd8;
+`ifdef FROST_XILINX_PRIMS
+  (* dont_touch = "true" *) LUT4 #(
+      .INIT(16'hfffe)
+  ) u_e_norm_any (
+      .I0(e_norm_inc),
+      .I1(e_norm_dec1),
+      .I2(e_norm_dec8),
+      .I3(e_norm_min),
+      .O (e_norm_any)
+  );
+`else
+  assign e_norm_any = e_norm_inc || e_norm_dec1 || e_norm_dec8 || e_norm_min;
+`endif
+  for (genvar bit_index = 0; bit_index < 14; bit_index++) begin : gen_e_norm_result
+    wire partial;
+`ifdef FROST_XILINX_PRIMS
+    (* dont_touch = "true" *) LUT6 #(
+        .INIT(64'hfefcfaf0eeccaa00)
+    ) u_partial (
+        .I0(e_norm_inc_value[bit_index]),
+        .I1(e_norm_dec1_value[bit_index]),
+        .I2(e_norm_dec8_value[bit_index]),
+        .I3(e_norm_inc),
+        .I4(e_norm_dec1),
+        .I5(e_norm_dec8),
+        .O (partial)
+    );
+    (* dont_touch = "true" *) LUT5 #(
+        .INIT(32'hfcccaaaa)
+    ) u_select (
+        .I0(e_sum[bit_index]),
+        .I1(partial),
+        .I2(e_norm_min),
+        .I3(emin_p[bit_index]),
+        .I4(e_norm_any),
+        .O (e_norm_result[bit_index])
+    );
+`else
+    assign partial = (e_norm_inc && e_norm_inc_value[bit_index]) ||
+        (e_norm_dec1 && e_norm_dec1_value[bit_index]) ||
+        (e_norm_dec8 && e_norm_dec8_value[bit_index]);
+    assign e_norm_result[bit_index] = e_norm_any ?
+        (partial || (e_norm_min && emin_p[bit_index])) : e_sum[bit_index];
+`endif
+  end
   assign sqrt_e_even = e_q - $signed({13'b0, e_q[0]});
-  assign e_d = e_sqrt ? (sqrt_e_even >>> 1) : (e_load ? e_sum : e_q);
+  assign e_d = e_sqrt ? (sqrt_e_even >>> 1) : (e_load ? e_norm_result : e_q);
   assign ex_d = ex_load ? ld_exp : (ex_dec ? (ex_q - 14'sd1) : ex_q);
 
   // ===========================================================================
@@ -1410,7 +1469,7 @@ module fp_engine (
 
   // Keep the 113-bit zero test balanced before normalization selects the
   // exponent operation. Sharing partial reductions with the other R tests
-  // otherwise creates a deep chain ahead of the exponent adder.
+  // otherwise creates a deep chain before normalization selection.
   (* keep = "true" *) logic [18:0] r_nonzero_chunks;
   (* keep = "true" *) logic [3:0] r_nonzero_groups;
   logic r_nonzero;
@@ -1495,6 +1554,10 @@ module fp_engine (
     e_load = 1'b0;
     e_cin = 1'b0;
     e_sqrt = 1'b0;
+    e_norm_inc = 1'b0;
+    e_norm_dec1 = 1'b0;
+    e_norm_dec8 = 1'b0;
+    e_norm_min = 1'b0;
     ex_load = 1'b0;
     ex_dec = 1'b0;
     res_load = 1'b0;
@@ -1965,8 +2028,8 @@ module fp_engine (
 
       ST_BE_NORM: begin
         if (r_q[112]) begin
-          r_sel  = R_SHR1;
-          e_cin  = 1'b1;
+          r_sel = R_SHR1;
+          e_norm_inc = 1'b1;
           e_load = 1'b1;
         end else if (!r_nonzero) begin
           zero_res_d = 1'b1;
@@ -1974,18 +2037,17 @@ module fp_engine (
         end else if (!r_q[111] && (e_q > floor_p)) begin
           e_load = 1'b1;
           if (r_top8_zero && (e_q >= floor_step8_p)) begin
-            r_sel  = R_SHL8;
-            eq_sel = EQ_M8;
+            r_sel = R_SHL8;
+            e_norm_dec8 = 1'b1;
           end else begin
-            r_sel  = R_SHL1;
-            eq_sel = EQ_M1;
+            r_sel = R_SHL1;
+            e_norm_dec1 = 1'b1;
           end
         end else begin
           tiny_d = be_tiny;
           if (denorm_positive) begin
             // Subnormal result: shift right to the minimum exponent.
-            ep_sel = EP_ZERO;
-            eq_sel = EQ_EMIN;
+            e_norm_min = 1'b1;
             e_load = 1'b1;
             sh_x_d = 1'b0;
             sh_collapse_d = denorm_collapse;
@@ -2014,8 +2076,8 @@ module fp_engine (
 
       ST_BE_CARRY: begin
         if (r_q[112]) begin
-          r_sel  = R_SHR1;
-          e_cin  = 1'b1;
+          r_sel = R_SHR1;
+          e_norm_inc = 1'b1;
           e_load = 1'b1;
         end
         state_d = ST_BE_PACK;
