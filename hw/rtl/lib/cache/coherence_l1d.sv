@@ -1023,6 +1023,34 @@ module coherence_l1d #(
       lookup_addr_q[5+:SetBits] == atomic_addr_q[5+:SetBits];
   assign probe_reply_eligible = probe_q.opcode != coherence_pkg::ProbeInvalidate ||
       cut_phase_q == CutDone;
+  // Prepare the reply's set condition independently of the home's R readiness.
+  // A new reply wins over acceptance of an old reply on the same edge.
+  (* keep = "true" *) logic probe_reply_start;
+  always_comb begin
+    probe_reply_start = 1'b0;
+    if (active) begin
+      case (phase_q)
+        LookupWait: if (array_valid && operation_q == ProbeOp) begin
+          if (array_hit && !(array_state == coherence_pkg::Shared &&
+              probe_q.opcode == coherence_pkg::ProbeRead)) probe_reply_start = 1'b0;
+          else if (probe_absorbed_q) probe_reply_start = 1'b0;
+          else if (probe_reply_eligible) probe_reply_start = 1'b1;
+        end
+        Update: if (update_ready) begin
+          if (operation_q != ProbeOp) probe_reply_start = 1'b0;
+          else if (probe_absorbed_q) probe_reply_start = 1'b0;
+          else if (probe_reply_eligible) probe_reply_start = 1'b1;
+        end
+        ProbeReply: if (probe_reply_eligible) probe_reply_start = 1'b1;
+        default: ;
+      endcase
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) o_r_valid <= 1'b0;
+    else if (probe_reply_start) o_r_valid <= 1'b1;
+    else if (o_r_valid && i_r_ready) o_r_valid <= 1'b0;
+  end
   (* keep = "true" *) wire invalidate_eligible = active &&
       phase_q == Idle && !probe_valid_q && !o_r_valid && !local_turn_q &&
       probe_in.opcode == coherence_pkg::ProbeInvalidate;
@@ -2377,7 +2405,6 @@ module coherence_l1d #(
       probe_put_q <= 1'b0;
       probe_q <= '0;
       reply_q <= '0;
-      o_r_valid <= 1'b0;
       o_cut_release <= 1'b0;
       wb_selected_q <= 1'b0;
       wb_next_q <= 1'b0;
@@ -2497,7 +2524,6 @@ module coherence_l1d #(
       if (phase_q == Idle && !probe_valid_q) local_turn_q <= 1'b0;
       if (o_r_valid && i_r_ready) begin
         local_turn_q <= local_ready;
-        o_r_valid <= 1'b0;
         probe_valid_q <= 1'b0;
         if (probe_q.opcode == coherence_pkg::ProbeInvalidate) o_cut_release <= 1'b1;
       end
@@ -2652,7 +2678,6 @@ module coherence_l1d #(
                   phase_q <= Update;
                 end else if (probe_absorbed_q) phase_q <= ProbeAbsorb;
                 else if (probe_reply_eligible) begin
-                  o_r_valid <= 1'b1;
                   phase_q <= Idle;
                 end else phase_q <= ProbeReply;
               end
@@ -2856,7 +2881,6 @@ module coherence_l1d #(
             if (operation_q != ProbeOp) phase_q <= UpdateWait;
             else if (probe_absorbed_q) phase_q <= ProbeAbsorb;
             else if (probe_reply_eligible) begin
-              o_r_valid <= 1'b1;
               phase_q <= Idle;
             end else phase_q <= ProbeReply;
           end
@@ -2933,7 +2957,6 @@ module coherence_l1d #(
           ProbeAbsorb: if (absorb_go) phase_q <= ProbeReply;
           ProbeReply: begin
             if (probe_reply_eligible) begin
-              o_r_valid <= 1'b1;
               phase_q   <= Idle;
             end
           end

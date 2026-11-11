@@ -712,6 +712,9 @@ Its reply forms on the edge that applies its state update, or on the lookup
 edge when no state changes, once the required cut is done. A state-only array
 update needs no data-write wait. A held R preserves its payload and prevents
 another P capture.
+The reply's set condition is prepared from the lookup, update and reply phases
+before R readiness clears its valid bit. A simultaneous new reply takes priority
+over acceptance; reset clears the valid bit in its own flop.
 CheckSC samples the reservation after capture.
 Probe lookups read private data only for an M hit. A clean read probe leaves
 the tag and bytes untouched. A downgrade or invalidation updates the tag
