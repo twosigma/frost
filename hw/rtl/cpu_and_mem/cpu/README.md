@@ -364,8 +364,26 @@ The 16-entry ITLB and the data side's 16-entry DTLB share one read-only
 page-table walker in `cpu_ooo`; the data side wins when both ask. The walker
 never writes PTEs (Svade): a leaf with A=0, or a store to a leaf with D=0,
 raises a page fault for software to handle. SFENCE.VMA, `satp` accesses, and
-`mstatus`/`sstatus` writes that change translation flush both TLBs and discard
-any walk in flight. The [RTL overview](../../README.md) lists the supported
+`mstatus` writes that change MPRV (or MPP under MPRV) flush both TLBs and
+discard any walk in flight.
+
+The walker keeps a walk cache of upper-level pointers: 16 level-1 pointers
+(the level-0 table of a 2 MiB region) and 4 root pointers (the level-1 table
+of a 1 GiB region). A walk looks both up in two registered cycles (tag
+compare, then select) and starts
+at level 0 or level 1 on a hit, so it makes one or two dependent line reads
+instead of three. Only a valid non-leaf PTE that a walk descends through fills
+it; an invalid or faulting PTE never does (Svvptc), and the walk invalidate
+empties it. The cache is on the miss path only. The instruction MMU expires
+its fault memo and completed registered refusals every 64 clocks, so wrong-path faults
+cannot retain invalid PTEs indefinitely. Full flushes drop verdicts even
+when a response arrives on the flush edge. A clean retarget captured exactly
+as an old refusal expires retries one clock later; held clean translations
+remain valid. A known first-word fault completes a crossing window
+without waiting for a missing neighbor, so slow refused walks cannot
+alternate indefinitely as negative-cache entries expire. A partial result is
+not expired, preserving a first-page response that arrives on the expiry
+edge beside a warm faulting neighbor. The [RTL overview](../../README.md) lists the supported
 page sizes, and the [cache README](../../lib/cache/README.md) describes the
 walker's port into the cache hierarchy.
 
@@ -425,8 +443,12 @@ that FENCE.I uses, so it also drops the fetch provider's buffered lines. Across 
 Debug Mode, and xRET takes and ignores exceptions, so no younger instruction
 can overwrite the CSR write or act on the old translation. Separately,
 `csr_file` raises a one-cycle TLB and walker invalidate for every `satp`
-access, and for an `mstatus` or `sstatus` write only when SUM, MXR, or MPRV
-changes (or MPP while MPRV is set).
+access, and for an `mstatus` write only when MPRV changes (or MPP while MPRV
+is set). SUM and MXR changes keep the TLBs: entries hold the raw leaf
+permissions, and every lookup applies the live SUM, MXR and effective
+privilege, so the full flush alone retires the old permission state. Linux
+toggles SUM around every user copy, so this keeps both TLBs warm across
+syscalls.
 
 ## Subtle cases
 

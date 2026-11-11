@@ -1431,7 +1431,10 @@ read is a 32-byte ReadOnce.PTW transaction. One walker serves both TLBs
 through a requester mux in `cpu_ooo`, where the data side wins, and one walk
 is in flight at a time. Roots and interior pointers outside cached DDR return an
 access fault before a line request. Walks only read: an access that needs a
-PTE's A or D bit set takes a page fault (Svade).
+PTE's A or D bit set takes a page fault (Svade). The walker's walk cache of
+upper-level pointers removes one or two of the three reads of a walk; it
+holds only valid pointers and empties on SFENCE.VMA and `satp` accesses, so
+a newly valid PTE is read from the hierarchy by the next walk.
 
 The home probes L1D for every PTE read. Dirty resident data or an absorbed
 PutM overrides the home image, including when the home array returns after

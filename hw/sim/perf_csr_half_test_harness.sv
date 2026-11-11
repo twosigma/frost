@@ -41,6 +41,8 @@ module perf_csr_half_test_harness #(
     input logic [1:0] i_hpm_branches,
     input logic [1:0] i_hpm_mispredicts,
     input logic [3:0] i_hpm_events,
+    // {SFENCE.VMA invalidate start, walker busy} for selectors 11 and 10.
+    input logic [1:0] i_hpm_translation_events,
     input logic i_mret,
     input logic i_trap,
     output logic [8:0] o_counter_blocked,
@@ -174,6 +176,8 @@ module perf_csr_half_test_harness #(
         .i_dtlb_miss(i_hpm_events[1]),
         .i_l1d_miss(i_hpm_events[2]),
         .i_sq_full_stall(i_hpm_events[3]),
+        .i_walk_busy(i_hpm_translation_events[0]),
+        .i_sfence_tlb_flush(i_hpm_translation_events[1]),
         .i_interrupts('0),
         .i_mtime(i_mtime),
         .i_seip_line('0),

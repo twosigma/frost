@@ -40,8 +40,8 @@
  * VPN. The requesting MMU checks permissions at lookup, because SUM, MXR, and
  * the effective privilege are live CSR state, not walk state.
  *
- * i_discard (SFENCE.VMA, a satp access, or an mstatus/sstatus write that
- * changes translation) poisons the walk in flight: every outstanding line read
+ * i_discard (SFENCE.VMA, a satp access, or an mstatus write that changes MPRV,
+ * or MPP under MPRV) poisons the walk in flight: every outstanding line read
  * is still consumed, but no response fires. That keeps a translation read from
  * the old page tables from installing after the invalidate. The requester's
  * own pipeline flushes do not discard: a walk for a killed instruction still
@@ -51,32 +51,59 @@
  * satp.PPN may name any 44-bit root. The same address check refuses a bad root
  * pointer before the walk's first read and a bad interior pointer before the
  * next level's read.
+ *
+ * Walk cache. Two small fully associative arrays hold upper-level pointers:
+ * PWC_L1_ENTRIES level-1 pointers tagged by VPN[26:9] (the level-0 table for
+ * a 2 MiB region) and PWC_ROOT_ENTRIES root pointers tagged by VPN[26:18]
+ * (the level-1 table for a 1 GiB region). A walk spends two registered cycles
+ * (PTW_PWC compares the tags, PTW_PWC_SEL selects the pointer) looking both
+ * up, then starts at level 0 on a level-1 hit, at
+ * level 1 on a root hit, and at the root otherwise, so a hit saves two or one
+ * dependent line reads. Only a pointer that the walk descended through fills
+ * an entry: a valid non-leaf PTE with no reserved bits, at an address the
+ * cached-DDR check accepts, read by a walk that was not poisoned. Invalid and
+ * faulting PTEs never fill, so a PTE changed from invalid to valid is seen by
+ * the next walk without sfence.vma (Svvptc). Leaves are never cached here.
+ * i_discard clears both arrays, as SFENCE.VMA and satp accesses require; a
+ * valid pointer changed in memory is seen after the next SFENCE.VMA, which
+ * the privileged spec requires software to execute. Fills happen only on a
+ * miss of the same tag, so each tag occupies at most one entry; replacement
+ * is round robin. The cache sits entirely on the miss path: the TLB lookups
+ * and the request handshake are unchanged. Zero entries disable an array;
+ * with both zero the walker issues its first read straight from idle.
  */
 module ptw #(
     parameter bit ENABLE_RESPONSE_ERRORS = 1'b0,
     parameter int unsigned LINE_BYTES = 32,
     parameter int unsigned WALK_ID_BITS = 2,
+    parameter int unsigned PWC_L1_ENTRIES = 16,
+    parameter int unsigned PWC_ROOT_ENTRIES = 4,
     localparam int unsigned LineAddrLow = $clog2(LINE_BYTES)
 ) (
 `ifdef COH_MAINT_OWNED
-    output logic                 [                        2:0] o_maint_state,
-    output logic                 [ riscv_pkg::Sv39VpnBits-1:0] o_maint_vpn,
-    output logic                                               o_maint_error,
-    output logic                                               o_maint_poison,
+    output logic [                       2:0] o_maint_state,
+    output logic [riscv_pkg::Sv39VpnBits-1:0] o_maint_vpn,
+    output logic                              o_maint_error,
+    output logic                              o_maint_poison,
 `endif
-    input  logic                                               i_clk,
-    input  logic                                               i_rst,
+    input  logic                              i_clk,
+    input  logic                              i_rst,
     // Root PPN, sampled at walk start. Committed satp access also raises
     // i_discard, preventing an older walk from answering across the change.
-    input  logic                 [  riscv_pkg::PtePpnBits-1:0] i_root_ppn,
+    input  logic [ riscv_pkg::PtePpnBits-1:0] i_root_ppn,
     // Walk request. Ready is a level: the FSM is idle and no discard is
     // arriving. The walker loads the request payload on every idle edge, so a
     // requester may change or withdraw a request that has not fired.
-    input  logic                                               i_req_valid,
-    output logic                                               o_req_ready,
-    input  logic                 [ riscv_pkg::Sv39VpnBits-1:0] i_req_vpn,
+    input  logic                              i_req_valid,
+    output logic                              o_req_ready,
+    input  logic [riscv_pkg::Sv39VpnBits-1:0] i_req_vpn,
     // Poison the walk in flight (and any response about to fire).
-    input  logic                                               i_discard,
+    input  logic                              i_discard,
+
+    // A walk is in progress (the FSM is not idle), for the HPM walk-busy
+    // event. Registered state only.
+    output logic o_busy,
+
     // One-cycle response pulse.
     output logic                                               o_resp_valid,
     output riscv_pkg::ptw_resp_t                               o_resp,
@@ -102,7 +129,9 @@ module ptw #(
     PTW_ISSUE,   // present the current level's line read until it fires
     PTW_WAIT,    // wait for the line response; capture this level's PTE
     PTW_DECODE,  // classify the captured PTE: answer, or descend a level
-    PTW_RESP     // fire the response pulse (one cycle)
+    PTW_RESP,    // fire the response pulse (one cycle)
+    PTW_PWC,     // compare the walk cache tags with the VPN
+    PTW_PWC_SEL  // apply the registered match: choose the starting level
   } ptw_state_e;
   ptw_state_e state_q;
   logic [riscv_pkg::Sv39VpnBits-1:0] vpn_q;
@@ -189,11 +218,153 @@ module ptw #(
     endcase
   end
   // ---------------------------------------------------------------------------
+  // Walk cache (upper-level pointers)
+  // ---------------------------------------------------------------------------
+  // Entries keep the configured physical PPN width. A pointer with nonzero
+  // bits above it is never cached; the cached-DDR window lies below it.
+  localparam bit PwcEnabled = (PWC_L1_ENTRIES != 0) || (PWC_ROOT_ENTRIES != 0);
+  localparam int unsigned PwcL1N = (PWC_L1_ENTRIES != 0) ? PWC_L1_ENTRIES : 1;
+  localparam int unsigned PwcRootN = (PWC_ROOT_ENTRIES != 0) ? PWC_ROOT_ENTRIES : 1;
+  localparam int unsigned PwcL1IdxBits = (PwcL1N > 1) ? $clog2(PwcL1N) : 1;
+  localparam int unsigned PwcRootIdxBits = (PwcRootN > 1) ? $clog2(PwcRootN) : 1;
+  localparam int unsigned PwcPpnBits = riscv_pkg::PhysAddrBits - 12;
+
+  logic [PwcL1N-1:0] pwc_l1_valid_q;
+  logic [17:0] pwc_l1_tag_q[PwcL1N];  // VPN[26:9]
+  logic [PwcPpnBits-1:0] pwc_l1_ppn_q[PwcL1N];  // the level-0 table
+  logic [PwcL1IdxBits-1:0] pwc_l1_repl_q;
+  logic [PwcRootN-1:0] pwc_root_valid_q;
+  logic [8:0] pwc_root_tag_q[PwcRootN];  // VPN[26:18]
+  logic [PwcPpnBits-1:0] pwc_root_ppn_q[PwcRootN];  // the level-1 table
+  logic [PwcRootIdxBits-1:0] pwc_root_repl_q;
+
+  // Lookup in two registered steps, for timing: PTW_PWC compares the tags
+  // with the registered VPN and registers the one-hot match; PTW_PWC_SEL
+  // reduces it and selects the pointer with an AND-OR mux. Neither the VPN
+  // nor the arrays change between the two (no walk fills, and a discard ends
+  // the walk), so the registered match describes the arrays SEL reads.
+  logic [PwcL1N-1:0] pwc_l1_match_c, pwc_l1_match_q;
+  logic [PwcRootN-1:0] pwc_root_match_c, pwc_root_match_q;
+  logic pwc_l1_hit, pwc_root_hit;
+  logic [PwcPpnBits-1:0] pwc_l1_ppn, pwc_root_ppn;
+  always_comb begin
+    for (int e = 0; e < PwcL1N; e++) begin
+      pwc_l1_match_c[e] = (PWC_L1_ENTRIES != 0) && pwc_l1_valid_q[e] &&
+          (pwc_l1_tag_q[e] == vpn_q[26:9]);
+    end
+    for (int e = 0; e < PwcRootN; e++) begin
+      pwc_root_match_c[e] = (PWC_ROOT_ENTRIES != 0) && pwc_root_valid_q[e] &&
+          (pwc_root_tag_q[e] == vpn_q[26:18]);
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    pwc_l1_match_q   <= pwc_l1_match_c;
+    pwc_root_match_q <= pwc_root_match_c;
+  end
+  always_comb begin
+    pwc_l1_ppn   = '0;
+    pwc_root_ppn = '0;
+    for (int e = 0; e < PwcL1N; e++) begin
+      pwc_l1_ppn |= {PwcPpnBits{pwc_l1_match_q[e]}} & pwc_l1_ppn_q[e];
+    end
+    for (int e = 0; e < PwcRootN; e++) begin
+      pwc_root_ppn |= {PwcPpnBits{pwc_root_match_q[e]}} & pwc_root_ppn_q[e];
+    end
+  end
+  assign pwc_l1_hit   = |pwc_l1_match_q;
+  assign pwc_root_hit = |pwc_root_match_q;
+
+  // Fill when a walk that is not poisoned descends through a pointer: the
+  // pointer read at level 2 into the root array, at level 1 into the level-1
+  // array. PTW_DECODE records the descent (pwc_*_sel_q); the fill lands
+  // on the next edge, from the registered pointer and its registered address
+  // check, for timing. The pointer passed the reference classification and
+  // the address check, which is why PTW_PWC_SEL may set ptr_addr_ok_q for a
+  // hit. A discard on either cycle cancels the fill: it clears the valid
+  // bits with priority. PTW_DECODE registers the target entry one-hot
+  // (pwc_*_sel_q) with the pointer's address and high-bit checks, so each
+  // entry's write enable is a register, for timing. A select is set only
+  // when no discard is pending, and a discard in the fill cycle clears the
+  // valid bits with priority, so a cancelled write leaves an invalid entry.
+  logic [  PwcL1N-1:0] pwc_l1_sel_q;
+  logic [PwcRootN-1:0] pwc_root_sel_q;
+  logic pwc_fill_root, pwc_fill_l1;
+  assign pwc_fill_l1   = |pwc_l1_sel_q;
+  assign pwc_fill_root = |pwc_root_sel_q;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst || i_discard) begin
+      pwc_l1_valid_q   <= '0;
+      pwc_root_valid_q <= '0;
+    end else begin
+      pwc_l1_valid_q   <= pwc_l1_valid_q | pwc_l1_sel_q;
+      pwc_root_valid_q <= pwc_root_valid_q | pwc_root_sel_q;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    for (int e = 0; e < PwcL1N; e++) begin
+      if (pwc_l1_sel_q[e]) begin
+        pwc_l1_tag_q[e] <= vpn_q[26:9];
+        pwc_l1_ppn_q[e] <= ptr_ppn_q[PwcPpnBits-1:0];
+      end
+    end
+    for (int e = 0; e < PwcRootN; e++) begin
+      if (pwc_root_sel_q[e]) begin
+        pwc_root_tag_q[e] <= vpn_q[26:18];
+        pwc_root_ppn_q[e] <= ptr_ppn_q[PwcPpnBits-1:0];
+      end
+    end
+    if (i_rst) begin
+      pwc_l1_repl_q   <= '0;
+      pwc_root_repl_q <= '0;
+    end else begin
+      if (pwc_fill_l1)
+        pwc_l1_repl_q <= (32'(pwc_l1_repl_q) == PwcL1N - 1) ? '0 : pwc_l1_repl_q + 1'b1;
+      if (pwc_fill_root)
+        pwc_root_repl_q <= (32'(pwc_root_repl_q) == PwcRootN - 1) ? '0 : pwc_root_repl_q + 1'b1;
+    end
+  end
+
+  // ---------------------------------------------------------------------------
   // FSM
   // ---------------------------------------------------------------------------
   assign o_req_ready = (state_q == PTW_IDLE) && !i_discard;
   assign o_resp_valid = (state_q == PTW_RESP) && !discard_q && !i_discard;
   assign o_resp = resp_q;
+  assign o_busy = (state_q != PTW_IDLE);
+
+  // Capture the selected PTE on every cycle in PTW_WAIT: the response cycle
+  // is the last one, so PTW_DECODE sees the response's PTE. The enable is a
+  // state decode only, for timing.
+  always_ff @(posedge i_clk) begin
+    if (state_q == PTW_WAIT) pte_q <= pte_live;
+  end
+
+  // PTW_DECODE descends through a pointer: select the entry that the fill
+  // writes on the next edge (PTW_ISSUE always follows a descent).
+  logic pwc_descend;
+  assign pwc_descend = (state_q == PTW_DECODE) && !discard_q && !i_discard &&
+      !pte_reserved_bad && !pte_invalid && !pte_is_leaf && (level_q != 2'd0) &&
+      ppn_addr_ok(
+      pte_ppn
+  ) && !(|pte_ppn[riscv_pkg::PtePpnBits-1:PwcPpnBits]);
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      pwc_l1_sel_q   <= '0;
+      pwc_root_sel_q <= '0;
+    end else begin
+      for (int e = 0; e < PwcL1N; e++) begin
+        pwc_l1_sel_q[e] <= pwc_descend && (level_q == 2'd1) && (PWC_L1_ENTRIES != 0) &&
+            (32'(pwc_l1_repl_q) == e);
+      end
+      for (int e = 0; e < PwcRootN; e++) begin
+        pwc_root_sel_q[e] <= pwc_descend && (level_q == 2'd2) && (PWC_ROOT_ENTRIES != 0) &&
+            (32'(pwc_root_repl_q) == e);
+      end
+    end
+  end
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       state_q <= PTW_IDLE;
@@ -213,8 +384,42 @@ module ptw #(
           ptr_ppn_q     <= i_root_ppn;
           ptr_addr_ok_q <= ppn_addr_ok(i_root_ppn);
           if (i_req_valid && !i_discard) begin
+            if (PwcEnabled) begin
+              state_q <= PTW_PWC;
+            end else begin
+              state_q <= PTW_ISSUE;
+              line_req_valid_q <= ppn_addr_ok(i_root_ppn);
+            end
+          end
+        end
+
+        PTW_PWC: begin
+          // vpn_q, the root and its address check were captured on accept;
+          // the tag compare registers this cycle. A discard ends the walk
+          // before any read; the arrays clear on the same edge.
+          state_q <= (discard_q || i_discard) ? PTW_IDLE : PTW_PWC_SEL;
+        end
+
+        PTW_PWC_SEL: begin
+          // A discard now ends the walk too, so no match registered before
+          // it is used.
+          if (discard_q || i_discard) begin
+            state_q <= PTW_IDLE;
+          end else begin
             state_q <= PTW_ISSUE;
-            line_req_valid_q <= ppn_addr_ok(i_root_ppn);
+            if (pwc_l1_hit) begin
+              ptr_ppn_q        <= riscv_pkg::PtePpnBits'(pwc_l1_ppn);
+              ptr_addr_ok_q    <= 1'b1;
+              level_q          <= 2'd0;
+              line_req_valid_q <= 1'b1;
+            end else if (pwc_root_hit) begin
+              ptr_ppn_q        <= riscv_pkg::PtePpnBits'(pwc_root_ppn);
+              ptr_addr_ok_q    <= 1'b1;
+              level_q          <= 2'd1;
+              line_req_valid_q <= 1'b1;
+            end else begin
+              line_req_valid_q <= ptr_addr_ok_q;
+            end
           end
         end
         PTW_ISSUE: begin
@@ -248,7 +453,6 @@ module ptw #(
               resp_q.vpn <= vpn_q;
               state_q <= PTW_RESP;
             end else begin
-              pte_q   <= pte_live;
               state_q <= PTW_DECODE;
             end
           end
@@ -421,6 +625,249 @@ module ptw #(
       c_page : cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_PAGE);
       c_access : cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS);
       c_discarded_walk : cover ($past(discard_q) && (state_q == PTW_IDLE));
+    end
+  end
+
+  // Walk cache. The line port answers reads of one watched line with fixed
+  // data (an arbitrary but stable memory line). Every cached pointer read
+  // from that line must equal the pointer the line holds and be a valid
+  // non-leaf PTE: the cache never returns an invalid PTE or a value memory
+  // does not hold. The other properties: a discard empties the cache, only a
+  // walk accepted after the last discard fills it, a fill is a pointer the
+  // reference classification accepts at the walk's level, each tag occupies
+  // at most one entry, and a hit starts the walk at the level below with the
+  // cached table.
+  (* anyconst *) logic [riscv_pkg::PhysAddrBits-1:0] f_watch_line;
+  (* anyconst *) logic [LINE_BYTES*8-1:0] f_watch_data;
+  logic [riscv_pkg::PhysAddrBits-1:0] f_read_addr;
+  always_ff @(posedge i_clk) begin
+    if (o_line_req_valid && i_line_req_ready) f_read_addr <= o_line_req_addr;
+  end
+  always_comb begin
+    if (i_line_resp_valid && (f_read_addr == f_watch_line))
+      assume (i_line_resp_rdata == f_watch_data);
+    assume (f_watch_line[LineAddrLow-1:0] == '0);
+  end
+
+  logic f_discard_since_accept;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || i_discard) f_discard_since_accept <= 1'b1;
+    else if (i_req_valid && o_req_ready) f_discard_since_accept <= 1'b0;
+  end
+
+  // The PTE address each entry was filled from: the address PTW_DECODE
+  // classified, one cycle before the fill.
+  logic [riscv_pkg::PhysAddrBits-1:0] f_decode_src_q;
+  logic [riscv_pkg::PhysAddrBits-1:0] f_l1_src[PwcL1N];
+  logic [riscv_pkg::PhysAddrBits-1:0] f_root_src[PwcRootN];
+  always_ff @(posedge i_clk) begin
+    if (state_q == PTW_DECODE) f_decode_src_q <= pte_pa[riscv_pkg::PhysAddrBits-1:0];
+    if (pwc_fill_l1 && !i_rst) f_l1_src[pwc_l1_repl_q] <= f_decode_src_q;
+    if (pwc_fill_root && !i_rst) f_root_src[pwc_root_repl_q] <= f_decode_src_q;
+  end
+
+  function automatic logic [63:0] f_watched_pte(input logic [riscv_pkg::PhysAddrBits-1:0] pa);
+    begin
+      f_watched_pte = f_watch_data[pa[LineAddrLow-1:3]*64+:64];
+    end
+  endfunction
+  function automatic logic f_valid_pointer(input logic [63:0] p);
+    begin
+      f_valid_pointer = p[0] && !p[1] && !p[2] && !p[3] && !p[4] && !p[6] && !p[7] && !(|p[63:54]);
+    end
+  endfunction
+
+  // Independent walk-address reference. Shadow entries are populated from
+  // the accepted request and the response line's independently selected PTE,
+  // rather than the DUT's VPN, pointer mux, level, or selected PTE register.
+  // Every issued read must follow this root-to-leaf path. This also checks
+  // the tag association and mux selection of a cached pointer.
+  logic [17:0] f_l1_tag  [  PwcL1N];
+  logic [ 8:0] f_root_tag[PwcRootN];
+  logic [riscv_pkg::PtePpnBits-1:0] f_l1_pointer[PwcL1N], f_root_pointer[PwcRootN];
+  logic [riscv_pkg::PtePpnBits-1:0] f_start_table, f_table_q;
+  logic [1:0] f_start_level, f_ref_level_q;
+  logic [riscv_pkg::PtePpnBits+11:0] f_ref_pa, f_last_pa_q;
+  logic [8:0] f_ref_index;
+  logic [63:0] f_ref_pte, f_last_pte_q;
+  logic f_context_valid_q;
+  logic [riscv_pkg::PtePpnBits-1:0] f_context_root_q;
+  logic f_replaced_l1_q, f_replaced_root_q;
+
+  always_comb begin
+    f_start_table = i_root_ppn;
+    f_start_level = 2'd2;
+    for (int e = 0; e < PwcRootN; e++) begin
+      if ((PWC_ROOT_ENTRIES != 0) && pwc_root_valid_q[e] &&
+          (f_root_tag[e] == i_req_vpn[26:18])) begin
+        f_start_table = f_root_pointer[e];
+        f_start_level = 2'd1;
+      end
+    end
+    for (int e = 0; e < PwcL1N; e++) begin
+      if ((PWC_L1_ENTRIES != 0) && pwc_l1_valid_q[e] && (f_l1_tag[e] == i_req_vpn[26:9])) begin
+        f_start_table = f_l1_pointer[e];
+        f_start_level = 2'd0;
+      end
+    end
+    case (f_ref_level_q)
+      2'd2: f_ref_index = f_req_vpn[26:18];
+      2'd1: f_ref_index = f_req_vpn[17:9];
+      default: f_ref_index = f_req_vpn[8:0];
+    endcase
+    f_ref_pa  = {f_table_q, 12'b0} + {{riscv_pkg::PtePpnBits{1'b0}}, f_ref_index, 3'b0};
+    f_ref_pte = i_line_resp_rdata[f_ref_pa[LineAddrLow-1:3]*64+:64];
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst || i_discard) f_context_valid_q <= 1'b0;
+    else if (i_req_valid && o_req_ready) begin
+      // The port contract requires a satp/root change to discard cached
+      // translations. Root values may otherwise vary between idle cycles.
+      if (f_context_valid_q) assume (i_root_ppn == f_context_root_q);
+      f_context_valid_q <= 1'b1;
+      f_context_root_q  <= i_root_ppn;
+    end
+    if (i_req_valid && o_req_ready) begin
+      f_table_q <= f_start_table;
+      f_ref_level_q <= f_start_level;
+    end else if (i_line_resp_valid && f_outstanding) begin
+      f_last_pa_q <= f_ref_pa;
+      f_last_pte_q <= f_ref_pte;
+      f_table_q <= f_ref_pte[53:10];
+      if (f_ref_level_q != 0) f_ref_level_q <= f_ref_level_q - 1'b1;
+    end
+    for (int e = 0; e < PwcL1N; e++) begin
+      if (pwc_l1_sel_q[e]) begin
+        f_l1_tag[e] <= f_req_vpn[26:9];
+        f_l1_pointer[e] <= f_last_pte_q[53:10];
+      end
+    end
+    for (int e = 0; e < PwcRootN; e++) begin
+      if (pwc_root_sel_q[e]) begin
+        f_root_tag[e] <= f_req_vpn[26:18];
+        f_root_pointer[e] <= f_last_pte_q[53:10];
+      end
+    end
+    if (i_rst) begin
+      f_replaced_l1_q   <= 1'b0;
+      f_replaced_root_q <= 1'b0;
+    end else begin
+      if (!i_discard && |(pwc_l1_sel_q & pwc_l1_valid_q)) f_replaced_l1_q <= 1'b1;
+      if (!i_discard && |(pwc_root_sel_q & pwc_root_valid_q)) f_replaced_root_q <= 1'b1;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (f_past_valid && !i_rst) begin
+      if (o_line_req_valid) begin
+        p_cached_read_level : assert (level_q == f_ref_level_q);
+        p_cached_read_address :
+        assert (o_line_req_addr ==
+                {f_ref_pa[riscv_pkg::PhysAddrBits-1:LineAddrLow], {LineAddrLow{1'b0}}});
+      end
+      if (state_q == PTW_DECODE) begin
+        p_reference_pte : assert (pte_q == f_last_pte_q);
+        p_reference_pte_address : assert (pte_pa == f_last_pa_q);
+      end
+      c_pwc_l1_replacement : cover (f_replaced_l1_q && o_resp_valid && o_resp.fault_kind == 0);
+      c_pwc_root_replacement : cover (f_replaced_root_q && o_resp_valid && o_resp.fault_kind == 0);
+    end
+  end
+  // Name the per-entry scopes, leaving assertion names to the frontend.
+  // The builtin formal frontend duplicates explicit assertion labels even
+  // inside a generate loop.
+  for (genvar e = 0; e < PwcL1N; e++) begin : gen_ref_l1_provenance
+    always_ff @(posedge i_clk) begin
+      if (f_past_valid && !i_rst && pwc_l1_valid_q[e])
+        assert (pwc_l1_tag_q[e] == f_l1_tag[e] &&
+                riscv_pkg::PtePpnBits'(pwc_l1_ppn_q[e]) == f_l1_pointer[e]);
+    end
+  end
+  for (genvar e = 0; e < PwcRootN; e++) begin : gen_ref_root_provenance
+    always_ff @(posedge i_clk) begin
+      if (f_past_valid && !i_rst && pwc_root_valid_q[e])
+        assert (pwc_root_tag_q[e] == f_root_tag[e] &&
+                riscv_pkg::PtePpnBits'(pwc_root_ppn_q[e]) == f_root_pointer[e]);
+    end
+  end
+
+  // Every valid entry read from the watched line holds that line's pointer;
+  // no two valid entries of an array share a tag.
+  logic f_pwc_memory_ok, f_pwc_unique;
+  always_comb begin
+    logic [63:0] p;
+    f_pwc_memory_ok = 1'b1;
+    f_pwc_unique = 1'b1;
+    for (int e = 0; e < PwcL1N; e++) begin
+      p = f_watched_pte(f_l1_src[e]);
+      if ((PWC_L1_ENTRIES != 0) && pwc_l1_valid_q[e] &&
+          (f_l1_src[e][riscv_pkg::PhysAddrBits-1:LineAddrLow] ==
+           f_watch_line[riscv_pkg::PhysAddrBits-1:LineAddrLow]) &&
+          !(f_valid_pointer(
+              p
+          ) && (p[53:10] == 44'(pwc_l1_ppn_q[e]))))
+        f_pwc_memory_ok = 1'b0;
+      for (int o = 0; o < PwcL1N; o++) begin
+        if ((o > e) && pwc_l1_valid_q[e] && pwc_l1_valid_q[o] &&
+            (pwc_l1_tag_q[e] == pwc_l1_tag_q[o]))
+          f_pwc_unique = 1'b0;
+      end
+    end
+    for (int e = 0; e < PwcRootN; e++) begin
+      p = f_watched_pte(f_root_src[e]);
+      if ((PWC_ROOT_ENTRIES != 0) && pwc_root_valid_q[e] &&
+          (f_root_src[e][riscv_pkg::PhysAddrBits-1:LineAddrLow] ==
+           f_watch_line[riscv_pkg::PhysAddrBits-1:LineAddrLow]) &&
+          !(f_valid_pointer(
+              p
+          ) && (p[53:10] == 44'(pwc_root_ppn_q[e]))))
+        f_pwc_memory_ok = 1'b0;
+      for (int o = 0; o < PwcRootN; o++) begin
+        if ((o > e) && pwc_root_valid_q[e] && pwc_root_valid_q[o] &&
+            (pwc_root_tag_q[e] == pwc_root_tag_q[o]))
+          f_pwc_unique = 1'b0;
+      end
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (f_past_valid && !i_rst) begin
+      if ($past(i_discard) && !$past(i_rst)) begin
+        p_pwc_discard_clears : assert (!(|pwc_l1_valid_q) && !(|pwc_root_valid_q));
+      end
+      if (pwc_fill_l1 || pwc_fill_root) begin
+        p_pwc_fill_after_discard : assert (!f_discard_since_accept);
+        p_pwc_fill_valid_pointer :
+        assert (f_pte_seen && !f_g_reserved && !f_g_invalid && !f_g_leaf &&
+                (f_level == level_q + 2'd1) && (f_level != 2'd0) && (f_pte[53:10] == ptr_ppn_q));
+      end
+      p_pwc_matches_memory : assert (f_pwc_memory_ok);
+      p_pwc_unique : assert (f_pwc_unique);
+      // The match registered in PTW_PWC still describes the arrays and VPN
+      // that PTW_PWC_SEL reads.
+      if (state_q == PTW_PWC_SEL) begin
+        p_pwc_match_current :
+        assert ((pwc_l1_match_q == pwc_l1_match_c) && (pwc_root_match_q == pwc_root_match_c));
+      end
+      if (!$past(i_rst) && ($past(state_q) == PTW_PWC_SEL) && (state_q == PTW_ISSUE)) begin
+        if ($past(pwc_l1_hit)) begin
+          p_pwc_l1_hit_start :
+          assert (level_q == 2'd0 && ptr_ppn_q == riscv_pkg::PtePpnBits'($past(pwc_l1_ppn)));
+        end else if ($past(pwc_root_hit)) begin
+          p_pwc_root_hit_start :
+          assert (level_q == 2'd1 && ptr_ppn_q == riscv_pkg::PtePpnBits'($past(pwc_root_ppn)));
+        end else begin
+          p_pwc_miss_start : assert (level_q == 2'd2);
+        end
+      end
+      c_pwc_l1_hit : cover ((state_q == PTW_PWC_SEL) && pwc_l1_hit && !i_discard);
+      c_pwc_root_hit :
+      cover ((state_q == PTW_PWC_SEL) && !pwc_l1_hit && pwc_root_hit && !i_discard);
+      c_pwc_hit_leaf :
+      cover (o_resp_valid && (o_resp.fault_kind == riscv_pkg::DFAULT_NONE) &&
+             (o_resp.level == 2'd0) && (f_level == 2'd0) && !f_discard_since_accept &&
+             (|pwc_l1_valid_q));
     end
   end
 `endif

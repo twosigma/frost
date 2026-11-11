@@ -86,9 +86,9 @@ ISA_EXTENSIONS = (
     "i", "m", "a", "f", "d", "c",
     "zicsr", "zifencei", "zicntr",
     "zba", "zbb", "zbc", "zbs", "zbkb", "zbkc", "zicond", "zihintpause",
-    "smaia", "ssaia", "sstc", "svade",
+    "smaia", "ssaia", "sstc", "svade", "svvptc",
 )  # fmt: skip
-ISA_STRING = "rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbc_zbs_zbkb_zbkc_zicond_zihintpause_smaia_ssaia_sstc_svade"
+ISA_STRING = "rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbc_zbs_zbkb_zbkc_zicond_zihintpause_smaia_ssaia_sstc_svade_svvptc"
 
 # Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
 # and fails frost_nettest's idle checks. The initramfs needs no IPv6.
@@ -344,7 +344,10 @@ def gen_dts(
 \t\tcompatible = "riscv,pmu";
 \t\t/* Fixed events: retired branches, branch mispredictions, ITLB walks,
 \t\t * DTLB walks, L1D permission misses, and SQ capacity stalls.
-\t\t * Counter N selects its event with mhpmeventN=N; zero disables it. */
+\t\t * Counter N selects its event with mhpmeventN=N; zero disables it.
+\t\t * Raw translation events: 10 = page-walker busy cycles (counter 8),
+\t\t * 11 = SFENCE.VMA TLB invalidates (counter 7), 12 = CSR-requested TLB
+\t\t * invalidates (counter 4). */
 \t\triscv,event-to-mhpmcounters = <0x00000001 0x00000001 0x00000001>,
 \t\t\t\t      <0x00000002 0x00000002 0x00000004>,
 \t\t\t\t      <0x00000004 0x00000004 0x00000080>,
@@ -360,7 +363,10 @@ def gen_dts(
 \t\t\t\t        <0x0 0x5 0xffffffff 0xffffffff 0x20>,
 \t\t\t\t        <0x0 0x6 0xffffffff 0xffffffff 0x40>,
 \t\t\t\t        <0x0 0x7 0xffffffff 0xffffffff 0x80>,
-\t\t\t\t        <0x0 0x8 0xffffffff 0xffffffff 0x100>;
+\t\t\t\t        <0x0 0x8 0xffffffff 0xffffffff 0x100>,
+\t\t\t\t        <0x0 0xa 0xffffffff 0xffffffff 0x100>,
+\t\t\t\t        <0x0 0xb 0xffffffff 0xffffffff 0x80>,
+\t\t\t\t        <0x0 0xc 0xffffffff 0xffffffff 0x10>;
 \t}};
 
 \tsoc@0 {{

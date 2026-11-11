@@ -187,7 +187,7 @@ different implementation choice:
 
 | Setting | FROST |
 |---------|-------|
-| Extensions | RV64IMAFDC, B, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zicntr, S, U, Sv39, Svade, Sstc; `misa` read-only |
+| Extensions | RV64IMAFDC, B, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zicntr, S, U, Sv39, Svade, Svvptc, Sstc; `misa` read-only |
 | Memory regions | The PMA map: low BRAM, MMIO, APLIC, IMSIC, the rest of the device quadrant (stores only), and configurable DDR (1 GiB default), the only region page-table walks read |
 | Physical addresses | 64 bits wide, so an untranslated access beyond the memory map faults with its full address in `mtval` |
 | Misaligned accesses | Address-misaligned trap, after the PMA check |
