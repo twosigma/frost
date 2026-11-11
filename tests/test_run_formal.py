@@ -2543,6 +2543,59 @@ def assertion_command(line: str) -> bool:
     return line.startswith(("select -assert-", "chformal "))
 
 
+def test_zero_payload_partition_models_match() -> None:
+    """Keep zero control and byte payload checks at depth 40 without added assumptions."""
+    control = l1d_task_config("coh_l1d_zero_bmc")
+    payload = l1d_task_config("coh_l1d_zero_payload_bmc")
+    control_commands = [
+        "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
+        "chformal -assert2assume c:p_prefetch_conflict_split",
+        "select -assert-min 1 c:p_zero_* t:$check %i r:FLAVOR=assert %i",
+    ]
+    data = " ".join(f"c:p_store_data_{index}" for index in range(1, 6))
+    payload_commands = [
+        f"select -assert-count 5 {data}",
+        f"chformal -assert -remove t:$check r:FLAVOR=assert %i {data} %u %u %u %u %d",
+        "select -assert-count 5 t:$check r:FLAVOR=assert %i",
+    ]
+
+    def validate(part: dict[str, list[str]]) -> None:
+        assert part.keys() == control.keys()
+        for section in part.keys() - {"[options]", "[engines]", "[script]"}:
+            assert part[section] == control[section]
+        assert [
+            line for line in control["[script]"] if assertion_command(line)
+        ] == control_commands
+        assert [
+            line for line in part["[script]"] if assertion_command(line)
+        ] == payload_commands
+        assert [
+            line.replace(" -D STORE_DATA_PROOF", "")
+            for line in part["[script]"]
+            if not assertion_command(line)
+        ] == [line for line in control["[script]"] if not assertion_command(line)]
+        control_options = dict(line.split(maxsplit=1) for line in control["[options]"])
+        payload_options = dict(line.split(maxsplit=1) for line in part["[options]"])
+        assert control_options["mode"] == "bmc" and control_options["depth"] == "40"
+        assert payload_options == control_options | {"timeout": "1200"}
+        assert part["[engines]"] == ["abc bmc3 -c"]
+
+    validate(payload)
+    for section, line in (
+        ("[script]", "chformal -assert2assume c:p_zero_twin_install"),
+        ("[script]", "chformal -assert -remove c:p_store_data_5"),
+        ("[script]", "cutpoint w:image_q"),
+        ("[script]", "connect -set i_write_zero 1'b0"),
+        ("[options]", "depth 39"),
+        ("[options]", "expect PASS,UNKNOWN,TIMEOUT"),
+        ("[file partition_only.smtc]", "assume (= hidden 0)"),
+    ):
+        altered = {key: list(value) for key, value in payload.items()}
+        altered.setdefault(section, []).append(line)
+        with pytest.raises(AssertionError):
+            validate(altered)
+
+
 def test_local_data_partition_models_match() -> None:
     """Keep every scheduled real-array assertion at its original depth."""
     reference = l1d_task_config("coh_l1d_local_cover")

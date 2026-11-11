@@ -185,6 +185,7 @@ control: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR
 control: chformal -assert2assume c:p_prefetch_conflict_split
 zcontrol: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 zcontrol: chformal -assert2assume c:p_prefetch_conflict_split
+zcontrol: select -assert-min 1 c:p_zero_* t:$check %i r:FLAVOR=assert %i
 streamscript: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 streamscript: chformal -assert2assume c:p_prefetch_conflict_split
 # Separate wide holds from control without assumptions between groups. Each
@@ -229,8 +230,12 @@ pathcovers: chformal -assert -remove
 streamcovers: select -assert-count 4 c:*p_stream_two c:*p_stream_attach c:*p_stream_lr_admit c:*p_stream_amo_admit
 streamcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:*p_stream_two c:*p_stream_attach c:*p_stream_lr_admit c:*p_stream_amo_admit %u %u %u %d
 # Control assertions run in the control tasks; this task checks the datapath.
-# The zero payload task keeps the datapath and zero-line checks.
-zpayload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 c:p_zero_* %u %u %u %u %u %d
+# The zero-control tasks keep every zero-line assertion. The payload task
+# checks the five store payload assertions at the same depth, without
+# assuming any of the zero-control assertions or repeating them.
+zpayload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
+zpayload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 %u %u %u %u %d
+zpayload: select -assert-count 5 t:$check r:FLAVOR=assert %i
 zcovers: select -assert-count 5 c:p_zero_cover_* t:$check %i r:FLAVOR=cover %i
 zsingle: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_twin c:p_zero_cover_twin_victim c:p_zero_cover_twin_wait c:p_zero_cover_fallback %u %u %u %d
 zlook: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_lookahead %d
