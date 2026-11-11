@@ -32,6 +32,7 @@ PRIV_M = 3
 
 def _drive_defaults(dut: Any) -> None:
     dut.i_pipeline_stall.value = 0
+    dut.i_csr_irq_update.value = 0
     dut.i_sq_committed_empty.value = 1
     dut.i_mstatus.value = 0
     dut.i_mie.value = 0
@@ -724,3 +725,86 @@ async def test_withdrawn_m_lcofi_allows_armed_s_interrupt(dut: Any) -> None:
     assert int(dut.o_trap_to_s.value)
     assert int(dut.o_trap_cause.value) == (1 << 63) | 9
     assert int(dut.o_trap_target.value) == 0x5000 + 36
+
+
+@cocotb.test()
+async def test_csr_refresh_updates_priority_and_preserves_commit_hold(dut: Any) -> None:
+    """A write enabling SSI refreshes M/S cause and vector before the take."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    for delegated in (False, True):
+        for shield in (None, "i_amo_at_head", "i_device_read_at_head"):
+            await _lcofi_waiting(dut, 1, delegated, True)
+            # SSI is already pending, but its local enable is still clear.
+            dut.i_s_pending.value = 1
+            dut.i_mideleg_s.value = 1 if delegated else 0
+            for _ in range(2):
+                await FallingEdge(dut.i_clk)
+            if shield:
+                getattr(dut, shield).value = 1
+            # Model the post-write interval: enables have changed while the
+            # registered selection still names LCOFI.
+            dut.i_mie.value = (1 << 13) | (1 << 1)
+            dut.i_csr_irq_update.value = 1
+            dut.i_sq_committed_empty.value = 1
+            await Timer(1, unit="ns")
+            assert not int(dut.o_trap_taken.value)
+            assert int(dut.o_trap_drain_wait.value)
+            await FallingEdge(dut.i_clk)
+            assert not int(dut.o_trap_taken.value)
+            assert int(dut.o_trap_drain_wait.value)
+            dut.i_csr_irq_update.value = 0
+            await Timer(1, unit="ns")
+            if shield:
+                # A protected operation must be allowed to commit once the
+                # single refresh interval ends, before releasing its shield.
+                assert not int(dut.o_trap_taken.value)
+                assert not int(dut.o_trap_drain_wait.value)
+                for _ in range(2):
+                    await FallingEdge(dut.i_clk)
+                    assert not int(dut.o_trap_drain_wait.value)
+                getattr(dut, shield).value = 0
+                await Timer(1, unit="ns")
+            assert int(dut.o_trap_taken.value)
+            assert int(dut.o_trap_to_s.value) == delegated
+            assert int(dut.o_trap_cause.value) == (1 << 63) | 1
+            assert int(dut.o_trap_target.value) == (0x5000 if delegated else 0x1000) + 4
+
+
+@cocotb.test()
+async def test_csr_refresh_does_not_stall_other_control_takes(dut: Any) -> None:
+    """The refresh holds only a live M/S request, leaving other control takes free."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    for start, result, debug in (
+        ("i_mret_start", "o_mret_taken", False),
+        ("i_sret_start", "o_sret_taken", False),
+        ("i_dret_start", "o_dret_taken", True),
+    ):
+        await _reset(dut)
+        await FallingEdge(dut.i_clk)
+        dut.i_csr_irq_update.value = 1
+        dut.i_debug_mode.value = int(debug)
+        assert not int(dut.o_trap_drain_wait.value)
+        getattr(dut, start).value = 1
+        await Timer(1, unit="ns")
+        assert int(getattr(dut, result).value)
+
+    await _reset(dut)
+    await FallingEdge(dut.i_clk)
+    dut.i_csr_irq_update.value = 1
+    dut.i_exception_valid.value = 1
+    dut.i_exception_cause.value = 5
+    await FallingEdge(dut.i_clk)
+    assert int(dut.o_trap_taken.value)
+    assert int(dut.o_trap_cause.value) == 5
+
+    await _reset(dut)
+    await FallingEdge(dut.i_clk)
+    dut.i_csr_irq_update.value = 1
+    dut.i_dbg_haltreq.value = 1
+    for _ in range(5):
+        await FallingEdge(dut.i_clk)
+        if int(dut.o_trap_taken.value):
+            assert int(dut.o_trap_to_d.value)
+            break
+    else:
+        raise AssertionError("CSR refresh blocked debug entry")

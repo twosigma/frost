@@ -334,6 +334,7 @@ module cpu_ooo #(
   logic if_slot1_is_indirect;
   (* max_fanout = 32 *) logic serializing_alloc_fire;
   logic csr_commit_fire;  // driven by commit_actions below
+  logic csr_irq_update_q;
   logic branch_resolved_correct;  // branch resolved correctly at execute time
   logic [riscv_pkg::CheckpointIdWidth-1:0] branch_resolved_checkpoint_id;  // its checkpoint
 
@@ -3091,6 +3092,15 @@ module cpu_ooo #(
   logic csr_wb_arm;
   assign csr_wb_arm = csr_commit_fire && rob_commit.dest_valid;
 
+  // CSR storage consumes the registered commit bus. On that same edge the
+  // trap unit still samples the old interrupt priorities. Keep its M/S take
+  // quiet for the following cycle, so a write enabling a higher source cannot
+  // enter under the old cause or vector. This adds no ordinary CSR stall.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) csr_irq_update_q <= 1'b0;
+    else csr_irq_update_q <= csr_commit_fire;
+  end
+
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_all) begin
       bypass_p0_int_we_q <= 1'b0;
@@ -4354,6 +4364,7 @@ module cpu_ooo #(
       // with the CSR write (csr_file relies on that) and no stale younger
       // xRET can execute on the flush edge.
       .i_pipeline_stall(fence_class_quiesce),
+      .i_csr_irq_update(csr_irq_update_q),
       .i_sq_committed_empty(sq_committed_empty_for_trap),
       .o_trap_drain_wait(trap_drain_wait),
       .i_amo_at_head((amo_at_head_shield_q && !(step_done_q)) || coherent_atomic_active),

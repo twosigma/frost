@@ -366,7 +366,7 @@ count.
 | `rob_retire_ready` | Per-entry retirement eligibility (completion, two-wide, misprediction) equals the selected-field expressions, and both head masks stay one-hot; unbounded, assuming an initial reset |
 | `rob_retire_stall` | Retirement strobes and every performance event equal a reference built from the serializer's full commit stall |
 | `rob_start_cofactor` | CSR and xRET start signals equal the reference equations, the head mask stays one-hot, and CSR and xRET entries never take the CDB bypass; unbounded. Assumes an initial reset |
-| `trap_unit` | Traps, interrupts, xRETs, and debug entry: mutual exclusion, priority (debug over M over S), current pending/enable/delegation for each winning cause (including LCOFI), targets, nothing taken while the pipeline is stalled, and waiting for committed stores to drain; the split trap-entry target and take outputs equal the reference ones. Assumes the start events are mutually exclusive. `prove` shows that `csr_file`'s entry enables equal the take and steering outputs from arbitrary state |
+| `trap_unit` | Traps, interrupts, xRETs, and debug entry: mutual exclusion, priority (debug over M over S), current pending/enable/delegation for each winning cause (including LCOFI), targets, nothing taken while the pipeline is stalled, and waiting for committed stores to drain; the split trap-entry target and take outputs equal the reference ones. Assumes the start events are mutually exclusive. `prove` shows that `csr_file`'s entry enables equal the take and steering outputs, and that a post-CSR selection refresh cannot consume an architectural interrupt, from arbitrary state |
 
 ### Execution units and CDB
 
