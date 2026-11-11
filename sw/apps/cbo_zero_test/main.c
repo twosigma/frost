@@ -469,6 +469,40 @@ static int line_scope_cases(void)
         report(h_ok, "H5 store-zero-load");
         ok &= h_ok;
     }
+
+    /* H6: FROST invalidates an LR reservation in either sector when a
+     * cached cbo.zero launches. First prove that the same LR/SC pair can
+     * succeed without the zero, then check the failed SC leaves all zeros. */
+    {
+        int h_ok = 1;
+        for (int sector = 0; sector < 2; sector++) {
+            volatile uint64_t *b = (volatile uint64_t *) H_BLOCK(50 + sector);
+            volatile uint64_t *addr = b + 4 * sector;
+            unsigned long observed, status;
+            const unsigned long replacement = PATTERN ^ 0x1234ul;
+            for (int word = 0; word < 8; word++)
+                b[word] = PATTERN;
+            __asm__ volatile("fence rw, rw\n"
+                             "lr.d %[old], (%[addr])\n"
+                             "sc.d %[status], %[value], (%[addr])\n"
+                             "fence rw, rw\n"
+                             : [old] "=&r"(observed), [status] "=&r"(status)
+                             : [addr] "r"(addr), [value] "r"(replacement)
+                             : "memory");
+            h_ok &= observed == PATTERN && status == 0 && *addr == replacement;
+            __asm__ volatile(
+                "lr.d %[old], (%[addr])\n"
+                "mv t0, %[block]\n" CBO_ZERO_ASM("t0") "fence rw, rw\n"
+                                                       "sc.d %[status], %[value], (%[addr])\n"
+                                                       "fence rw, rw\n"
+                : [old] "=&r"(observed), [status] "=&r"(status)
+                : [addr] "r"(addr), [block] "r"(b), [value] "r"(PATTERN)
+                : "t0", "memory");
+            h_ok &= observed == replacement && status != 0 && block_zero(b, 0, 8);
+        }
+        report(h_ok, "H6 zero-clears-both-sector-reservations");
+        ok &= h_ok;
+    }
     return ok;
 }
 

@@ -826,7 +826,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description=(
             "Zicboz cbo.zero: 64-byte zeroing in DDR and BRAM, CBZE gating, "
-            "store faults with mtval = rs1"
+            "both-sector LR/SC invalidation, store faults with mtval = rs1"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
     ),

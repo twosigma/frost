@@ -265,7 +265,7 @@ can be debugged and where each one first stops.
 | `cache_counter_target/` | Makes L2 write fills with DMA, prints the cache counters from its own snapshot, then sleeps in `wfi` without touching the caches until a UART byte starts a second run, which the JTAG reader (`fpga/debug/cache_counters.py`) measures; runs from low BRAM in either memory configuration |
 | `call_stress/` | Repeated and nested calls and returns, built with compressed instructions |
 | `cbo_zero_bench/` | Cycles to clear 64 KiB and 1 MiB of cold and warm cached DDR with an `sd` loop and with `cbo.zero`; prints one `FROST_CBO_BENCH` line per run |
-| `cbo_zero_test/` | Zicboz `cbo.zero`: the 64-byte block containing an unaligned `rs1` in cached DDR and low BRAM, neighbours untouched, younger loads and stores in program order, the CBZE gate in S and U, and store access and page faults with `mtval` = `rs1` |
+| `cbo_zero_test/` | Zicboz `cbo.zero`: the 64-byte block containing an unaligned `rs1` in cached DDR and low BRAM, neighbours untouched, younger loads and stores in program order, LR/SC reservation invalidation in both cached sectors with successful no-zero controls, the CBZE gate in S and U, and store access and page faults with `mtval` = `rs1` |
 | `cf_ext_test/` | Compressed double-precision FP loads and stores (Zcd) |
 | `clint_test/` | SiFive CLINT alias: writes reach the native timer registers, and a timer interrupt armed through the alias fires |
 | `coremark/` | EEMBC CoreMark, built without the C extension by default; see its [README](apps/coremark/README.md) and [Spike tools](apps/coremark/iss/README.md) |
