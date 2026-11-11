@@ -33,6 +33,7 @@ def test_local_completion_uses_production_excerpts() -> None:
     ).read_text()
     proof = tokens((ROOT / "formal/coherent_local_atomic_formal.sv").read_text())
     boundaries = (
+        ("  function automatic logic is_younger(", "\n  endfunction"),
         ("  riscv_pkg::fu_complete_t sc_fu_complete_reg;", "\n`ifndef SYNTHESIS"),
         (
             '  (* dont_touch = "true" *)logic sc_valid_adapter_q;',
@@ -41,7 +42,7 @@ def test_local_completion_uses_production_excerpts() -> None:
         ("  riscv_pkg::fu_complete_t mem_fu_to_adapter;", "\n  // LQ yields"),
         ("  assign lq_result_accepted =", "\n\n`ifndef SYNTHESIS"),
         (
-            "  fu_cdb_adapter #(\n      .ALLOW_GRANT_REFILL(1'b0),\n      .ALWAYS_GRANTED(1'b1)\n  ) u_mem_adapter",
+            "  fu_cdb_adapter #(\n      .ALLOW_GRANT_REFILL(1'b0),\n      .ALWAYS_GRANTED(1'b1),\n      .INPUT_YOUNGER_PRECOMPUTED(1'b1)\n  ) u_mem_adapter",
             "\n\n  // ===",
         ),
     )

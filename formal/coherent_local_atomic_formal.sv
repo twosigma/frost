@@ -70,6 +70,18 @@ module coherent_local_completion_formal (
   wire [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag = '0, head_tag = 2;
   riscv_pkg::fu_complete_t mem_adapter_to_arbiter;
   logic [riscv_pkg::NumFus-1:0] o_cdb_grant;
+  function automatic logic is_younger(input logic [riscv_pkg::ReorderBufferTagWidth-1:0] entry_tag,
+                                      input logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag,
+                                      input logic [riscv_pkg::ReorderBufferTagWidth-1:0] head);
+    logic [riscv_pkg::ReorderBufferTagWidth:0] entry_age;
+    logic [riscv_pkg::ReorderBufferTagWidth:0] flush_age;
+    begin
+      entry_age  = {1'b0, entry_tag} - {1'b0, head};
+      flush_age  = {1'b0, flush_tag} - {1'b0, head};
+      is_younger = entry_age > flush_age;
+    end
+  endfunction
+
   riscv_pkg::fu_complete_t sc_fu_complete_reg;
   logic sc_completion_held;
   assign sc_completion_held = sc_fu_complete_reg.valid && store_misalign_fu_complete_reg.valid;
@@ -111,18 +123,38 @@ module coherent_local_completion_formal (
 
 
   riscv_pkg::fu_complete_t mem_fu_to_adapter;
+  // Form each age before the late result select, then select one bit with the
+  // same priority as the packet. The adapter checks the selected age in simulation.
+  (* keep = "true" *) logic mem_store_fault_younger;
+  (* keep = "true" *) logic mem_sc_younger;
+  (* keep = "true" *) logic mem_uncached_store_younger;
+  (* keep = "true" *) logic mem_lq_younger;
+  logic mem_input_younger;
+  assign mem_store_fault_younger = is_younger(
+      store_misalign_fu_complete_reg.tag, i_flush_tag, head_tag
+  );
+  assign mem_sc_younger = is_younger(sc_fu_complete_reg.tag, i_flush_tag, head_tag);
+  assign mem_uncached_store_younger = is_younger(
+      uncached_store_complete.tag, i_flush_tag, head_tag
+  );
+  assign mem_lq_younger = is_younger(lq_fu_complete.tag, i_flush_tag, head_tag);
   always_comb begin
     if (store_misalign_fu_complete_reg.valid) begin
       mem_fu_to_adapter = store_misalign_fu_complete_reg;
+      mem_input_younger = mem_store_fault_younger;
     end else if (sc_valid_adapter_q) begin
       mem_fu_to_adapter = sc_fu_complete_reg;
       mem_fu_to_adapter.valid = 1'b1;
+      mem_input_younger = mem_sc_younger;
     end else if (uncached_store_complete.valid) begin
       mem_fu_to_adapter = uncached_store_complete;
+      mem_input_younger = mem_uncached_store_younger;
     end else begin
       mem_fu_to_adapter = lq_fu_complete;
+      mem_input_younger = mem_lq_younger;
     end
   end
+
 
 
   assign lq_result_accepted = lq_fu_complete.valid &&
@@ -133,12 +165,13 @@ module coherent_local_completion_formal (
 
   fu_cdb_adapter #(
       .ALLOW_GRANT_REFILL(1'b0),
-      .ALWAYS_GRANTED(1'b1)
+      .ALWAYS_GRANTED(1'b1),
+      .INPUT_YOUNGER_PRECOMPUTED(1'b1)
   ) u_mem_adapter (
       .i_clk              (i_clk),
       .i_rst_n            (i_rst_n),
       .i_fu_result        (mem_fu_to_adapter),
-      .i_fu_result_younger(1'b0),
+      .i_fu_result_younger(mem_input_younger),
       .o_fu_complete      (mem_adapter_to_arbiter),
       .o_held_value       (),
       .i_grant            (o_cdb_grant[3]),
