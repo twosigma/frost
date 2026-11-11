@@ -13,16 +13,17 @@ The memories behind the RAM wrappers in
 [`hw/rtl/lib/ram`](../hw/rtl/lib/ram) are dual-port SRAM macros that
 [OpenRAM](https://github.com/VLSIDA/OpenRAM) generates for FreePDK45: the
 caches' data, the L1D's and the L2's tags, the data memory, the instruction
-memory, the NIC's FIFOs and MAC frame and packet buffers, and the BTB's
+memory, the NIC's ingress FIFO and MAC frame and packet buffers, and the BTB's
 slot-2 payload tables ([SRAM macros](#sram-macros)). The L2 holds 256 KiB,
 where the X3's holds 2 MiB, so that the flow fits CI's runners ([CI](#ci)).
 Arrays of 4,096 bits or less, such as the L1I's tags and the caches'
-replacement state, become flip-flops. The other memories larger than 4,096
-bits are mocked: each keeps a single row, built from flip-flops. They are
-arrays read without a clock,
-such as the BTB tags, the TAGE tables, the instruction memory's PC-metadata
-overlays, the MAC's packet descriptors, and banks of the ROB and the INT RS,
-which an ASIC would build from flip-flops or latches rather than SRAM.
+replacement state, become flip-flops. Memories larger than 4,096 bits
+without a matching macro are mocked: each keeps a single row, built from
+flip-flops. These include the 84-bit NIC transmit FIFO and arrays read
+without a clock, such as the BTB tags, the TAGE tables, the instruction
+memory's PC-metadata overlays, the MAC's packet
+descriptors, and banks of the ROB and the INT RS. An ASIC would build
+those asynchronous arrays from flip-flops or latches rather than SRAM.
 Their area and the paths through them are therefore missing. The summary
 lists the macros and every mocked memory with its dimensions.
 
@@ -87,8 +88,8 @@ the stage before it.
 | --- | --- |
 | Top module | `platform_top`, with `ENABLE_CACHED_TIER=1` and `USE_BEHAVIORAL_DDR=0`, so the cached tier ends at the DDR AXI port, and `L2_CACHE_BYTES=262144`, a 256 KiB L2 where the X3's holds 2 MiB, so that the flow fits CI's runners ([CI](#ci)); other parameters keep their defaults |
 | Defines | `SYNTHESIS`, and `FROST_SRAM_MACROS` for the [SRAM macros](#sram-macros); not `FROST_XILINX_PRIMS`, so every block uses its portable version |
-| Memories | The RAM wrappers' memories are SRAM macros. `SYNTH_MOCK_LARGE_MEMORIES=1`: other memories over 4,096 bits keep one row; smaller ones become flip-flops |
-| Die size | `DIE_AREA`: 5.13 by 6.105 mm; `CORE_AREA` leaves 15 um on each side. The core fits the macro placement |
+| Memories | Supported RAM wrapper shapes are SRAM macros. `SYNTH_MOCK_LARGE_MEMORIES=1`: memories over 4,096 bits without a matching macro keep one row; smaller ones become flip-flops |
+| Die size | `DIE_AREA`: 5.13 by 8.105 mm; `CORE_AREA` leaves 15 um on each side. The core fits the macro placement |
 | Macro placement | [`macro_placement.tcl`](macro_placement.tcl) (`MACRO_PLACEMENT_TCL`) |
 | Pin placement | `PLACE_PINS_ARGS`: the die's left and right edges only, which pass the logic band |
 | Power grid | The platform's, with [`sram_power.tcl`](sram_power.tcl) (`PRE_PDN_TCL`) connecting the macros' supply pins and [`check_power_grid.tcl`](check_power_grid.tcl) (`POST_PDN_TCL`) checking that everything placed reaches the grid |
@@ -134,7 +135,7 @@ these modules.
 | `sram_1w1r_1024x64_m8` | 1,024 x 64 | Bytes | 416.5 x 436.5 | 0.378 to 0.445 | 1.65 | 16 | L1D data, 1 row of 4 in each way's bank |
 | `sram_1w1r_1024x19` | 1,024 x 19 | | 263.4 x 261.0 | 0.306 to 0.373 | 1.38 | 8 | L1D tags and the hit path's copy of them, one each for each way |
 | `sram_1w1r_1024x18` | 1,024 x 18 | | 253.5 x 260.7 | 0.302 to 0.369 | 1.37 | 4 | L2 tags, 1 row of 4 ways |
-| `sram_1w1r_512x68` | 512 x 68 | | 436.7 x 245.7 | 0.384 to 0.451 | 1.67 | 2 | The NIC's receive and transmit FIFOs |
+| `sram_1w1r_512x68` | 512 x 68 | | 436.7 x 245.7 | 0.384 to 0.451 | 1.67 | 16 | The NIC's 8,192-word receive FIFO |
 | `sram_1w1r_256x36` | 256 x 36 | | 167.6 x 237.2 | 0.266 to 0.334 | 1.24 | 3 | The BTB's slot-2 payload tables |
 | `sram_1w1r_128x64_m8` | 128 x 64 | Bytes | 248.6 x 143.5 | 0.308 to 0.376 | 1.39 | 16 | L1I data, 1 row of 4 in each way's bank |
 | `sram_1w1r_8192x28` | 8,192 x 28 | | 665.7 x 877.4 | 0.466 to 0.533 | 1.97 | 4 | Instruction memory's cold banks, 2 rows in each parity's |
@@ -296,11 +297,13 @@ parity's cold, frontend-hot, and compressed banks side by side, two macros a
 bank, the even parity at the left and the odd parity, in mirror order, at
 the right. The top band holds the L1D data in the middle, a row of four
 macros for each way; at its left the L1I data, arranged the same way, then
-the NIC's FIFOs, the BTB's payload tables, and two rows of four receive
-packet macros; and at its right the L1D tags, a row of four with the hit
-path's copy in a second row, the L2 tags, and the transmit frame macro. The
-logic band is 800 um high, and the script stops the flow if the core leaves
-less than 600 um for it.
+eight rows of two receive FIFO tiles, the BTB's payload tables, and two rows
+of four receive packet macros; and at its right the L1D tags, a row of four
+with the hit path's copy in a second row, the L2 tags, and the transmit frame
+macro. The 5.1 mm by 8.075 mm core retains an approximately 800 um logic band with
+the larger ingress FIFO, and the script stops the flow if the core leaves
+less than 600 um for it. The 84-bit transmit FIFO has no matching SRAM
+macro and is reported among the mocked memories.
 Macros above one another stand 40 um apart and groups of macros 80 um.
 Macros side by side stand 62 um apart, because the cell rows between them
 take their power from the metal4 straps that cross the gap: the platform's
@@ -429,6 +432,9 @@ and their core port with `i_clk`, and the instruction memory's macros their
 write port and their read port, as the X3's block RAMs do.
 
 ## Results with the SRAM macros
+
+These measurements predate the larger ingress FIFO and current floorplan;
+their recorded die dimensions are retained below.
 
 The 256 KiB L2 column uses the default 3.103 ns core clock and 16 threads,
 with `PLACE_DENSITY_LB_ADDON=0.20` from an earlier `config.mk` rather than

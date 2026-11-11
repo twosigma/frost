@@ -45,6 +45,8 @@ module nic_top #(
     parameter logic [63:0] APERTURE_BYTES = 64'h4000_0000,
     parameter logic [31:0] TICK_DEFAULT = 32'd300,
     parameter int unsigned FIFO_DEPTH = 512,
+    // The RX ingress FIFO's built depth in words; RX_FIFO_LIMIT picks the occupancy it reports full at.
+    parameter int unsigned RX_FIFO_DEPTH = 512,
     parameter int MAX_FRAME_BYTES = 9216,
     parameter int unsigned STARVATION_LIMIT = 8,
     parameter int unsigned RAW_LOOPBACK = 1,
@@ -141,7 +143,7 @@ module nic_top #(
   end
 
   // ---- reset controller and the MAC domains -------------------------------------------
-  logic reset_req, stop_dma, soft_rst, reset_busy, front_idle, wide_mode;
+  logic reset_req, stop_dma, soft_rst, reset_busy, front_idle, wide_mode, rx_csum_en;
   logic [1:0] clk_ok, in_reset, applied_gen, applied_valid, req, gen, core_rst_dom, ready;
   // i_rst is the caller's next reset value, so rst_q matches its registered
   // reset. Compute nic_rst_q ahead of the edge to equal rst_q || soft_rst.
@@ -232,62 +234,81 @@ module nic_top #(
   logic tx_fifo_valid, tx_fifo_ready, rx_fifo_valid, rx_fifo_ready;
   logic [63:0] tx_fifo_data, rx_fifo_data;
   logic [3:0] tx_fifo_code, rx_fifo_code;
+  logic tx_fifo_abort;
+  logic [14:0] tx_fifo_csum;  // the frame's checksum request, with every TX beat
+  logic tx_segment_err;
   logic rx_locked, rx_high_ber, rx_local_fault, rx_remote_fault, tx_link_ready, rx_signal_ok;
-  logic [5:0][63:0] mac_totals;
+  logic [47:0] mac;  // the station address, which the MAC wrapper also takes
+  logic [10:0][63:0] mac_totals;
+  logic [1:0] pause_ctrl;
+  logic [$clog2(RX_FIFO_DEPTH):0] pause_high_water, pause_low_water;
+  logic [15:0] pause_interval;
+  logic [$clog2(RX_FIFO_DEPTH):0] rx_fifo_limit;
+  logic rx_fifo_limit_wr, rx_fifo_limit_busy;
   logic [3:0] phy_ctrl;
   assign o_phy_ctrl = phy_ctrl[3:1];
 
   nic_mac_wrap #(
       .FIFO_DEPTH(FIFO_DEPTH),
+      .RX_FIFO_DEPTH(RX_FIFO_DEPTH),
       .MAX_FRAME_BYTES(MAX_FRAME_BYTES),
       .RAW_LOOPBACK(RAW_LOOPBACK),
       .GMII_MODE(GMII_MODE)
   ) u_mac (
-      .i_clk            (i_clk),
-      .i_rst            (rst_q),
-      .i_soft_rst       (soft_rst),
-      .i_req            (req),
-      .i_gen            (gen),
-      .o_in_reset       (in_reset),
-      .o_applied_gen    (applied_gen),
-      .o_applied_valid  (applied_valid),
-      .i_core_rst_dom   (core_rst_dom),
-      .i_mac_loopback   (phy_ctrl[nic_pkg::PhyCtrlBitMacLoopback]),
-      .i_tx_valid       (tx_fifo_valid),
-      .o_tx_ready       (tx_fifo_ready),
-      .i_tx_data        (tx_fifo_data),
-      .i_tx_code        (tx_fifo_code),
-      .o_rx_valid       (rx_fifo_valid),
-      .i_rx_ready       (rx_fifo_ready),
-      .o_rx_data        (rx_fifo_data),
-      .o_rx_code        (rx_fifo_code),
-      .o_rx_locked      (rx_locked),
-      .o_rx_high_ber    (rx_high_ber),
-      .o_rx_local_fault (rx_local_fault),
-      .o_rx_remote_fault(rx_remote_fault),
-      .o_tx_link_ready  (tx_link_ready),
-      .o_rx_signal_ok   (rx_signal_ok),
-      .o_totals         (mac_totals),
-      .i_tx_clk         (i_tx_clk),
-      .i_rx_clk         (i_rx_clk),
-      .o_tx_raw_data    (o_tx_raw_data),
-      .o_tx_raw_valid   (o_tx_raw_valid),
-      .i_rx_raw_data    (i_rx_raw_data),
-      .i_rx_raw_valid   (i_rx_raw_valid),
-      .i_rx_signal_ok   (i_rx_signal_ok)
+      .i_clk               (i_clk),
+      .i_rst               (rst_q),
+      .i_soft_rst          (soft_rst),
+      .i_req               (req),
+      .i_gen               (gen),
+      .o_in_reset          (in_reset),
+      .o_applied_gen       (applied_gen),
+      .o_applied_valid     (applied_valid),
+      .i_core_rst_dom      (core_rst_dom),
+      .i_mac_loopback      (phy_ctrl[nic_pkg::PhyCtrlBitMacLoopback]),
+      .i_tx_valid          (tx_fifo_valid),
+      .o_tx_ready          (tx_fifo_ready),
+      .i_tx_data           (tx_fifo_data),
+      .i_tx_code           (tx_fifo_code),
+      .i_tx_csum           (tx_fifo_csum),
+      .i_tx_abort          (tx_fifo_abort),
+      .o_rx_valid          (rx_fifo_valid),
+      .i_rx_ready          (rx_fifo_ready),
+      .o_rx_data           (rx_fifo_data),
+      .o_rx_code           (rx_fifo_code),
+      .i_station_mac       (mac),
+      .i_pause_ctrl        (pause_ctrl),
+      .i_pause_high_water  (pause_high_water),
+      .i_pause_low_water   (pause_low_water),
+      .i_pause_interval    (pause_interval),
+      .i_rx_fifo_limit     (rx_fifo_limit),
+      .i_rx_fifo_limit_wr  (rx_fifo_limit_wr),
+      .o_rx_fifo_limit_busy(rx_fifo_limit_busy),
+      .o_rx_locked         (rx_locked),
+      .o_rx_high_ber       (rx_high_ber),
+      .o_rx_local_fault    (rx_local_fault),
+      .o_rx_remote_fault   (rx_remote_fault),
+      .o_tx_link_ready     (tx_link_ready),
+      .o_rx_signal_ok      (rx_signal_ok),
+      .o_totals            (mac_totals),
+      .i_tx_clk            (i_tx_clk),
+      .i_rx_clk            (i_rx_clk),
+      .o_tx_raw_data       (o_tx_raw_data),
+      .o_tx_raw_valid      (o_tx_raw_valid),
+      .i_rx_raw_data       (i_rx_raw_data),
+      .i_rx_raw_valid      (i_rx_raw_valid),
+      .i_rx_signal_ok      (i_rx_signal_ok)
   );
   // The block lock leaves as the status synchronizer's output register.
   assign o_rx_block_lock = rx_locked;
 
   // ---- registers and interrupts ----------------------------------------------------------
   logic rx_en, tx_en, promisc, rx_restart, tx_restart;
-  logic [47:0] mac;
   logic [ADDR_WIDTH-1:0] rx_base, tx_base;
   logic [4:0] rx_size, tx_size;
   logic [15:0] rx_tail, tx_tail, rx_head, tx_head;
   logic rx_idle, tx_idle;
   logic link_change, desc_err, rx_drop;
-  logic [31:0] irq_status, irq_mask, rx_itr, tx_itr, tick;
+  logic [31:0] irq_status, irq_mask, rx_coalesce, tx_coalesce, tick;
   logic rx_complete, tx_complete, rx_filtered;
   logic [2:0] rx_complete_flags, tx_complete_flags;
   logic [15:0] rx_complete_bytes, tx_complete_bytes;
@@ -310,7 +331,8 @@ module nic_top #(
   nic_csr #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .APERTURE_BASE(APERTURE_BASE),
-      .APERTURE_BYTES(APERTURE_BYTES)
+      .APERTURE_BYTES(APERTURE_BYTES),
+      .RX_FIFO_DEPTH(RX_FIFO_DEPTH)
   ) u_csr (
       .i_clk(i_clk),
       .i_rst(rst_q),
@@ -324,12 +346,13 @@ module nic_top #(
       .o_rd_pair(reg_rd_pair),
       .i_irq_status(irq_status),
       .i_irq_mask(irq_mask),
-      .i_rx_itr(rx_itr),
-      .i_tx_itr(tx_itr),
+      .i_rx_coalesce(rx_coalesce),
+      .i_tx_coalesce(tx_coalesce),
       .i_tick(tick),
       .o_rx_en(rx_en),
       .o_tx_en(tx_en),
       .o_wide_mode(wide_mode),
+      .o_rx_csum_en(rx_csum_en),
       .o_promisc(promisc),
       .o_mac(mac),
       .o_reset_req(reset_req),
@@ -342,12 +365,19 @@ module nic_top #(
       .o_rx_restart(rx_restart),
       .o_tx_restart(tx_restart),
       .o_phy_ctrl(phy_ctrl),
+      .o_rx_fifo_limit(rx_fifo_limit),
+      .o_rx_fifo_limit_wr(rx_fifo_limit_wr),
+      .o_pause_ctrl(pause_ctrl),
+      .o_pause_high_water(pause_high_water),
+      .o_pause_low_water(pause_low_water),
+      .o_pause_interval(pause_interval),
       .i_rx_head(rx_head),
       .i_tx_head(tx_head),
       .i_rx_idle(rx_idle),
       .i_tx_idle(tx_idle),
       .i_reset_busy(reset_busy),
       .i_rx_fifo_empty(!rx_fifo_valid),
+      .i_rx_fifo_limit_busy(rx_fifo_limit_busy),
       .i_rx_ready(ready[1]),
       .i_tx_ready(ready[0]),
       .i_link({
@@ -368,6 +398,7 @@ module nic_top #(
       .i_tx_complete(tx_complete),
       .i_tx_complete_flags(tx_complete_flags),
       .i_tx_complete_bytes(tx_complete_bytes),
+      .i_segment_err(tx_segment_err),
       .i_mac_totals(mac_totals),
       .o_link_change(link_change),
       .o_desc_err(desc_err),
@@ -384,8 +415,8 @@ module nic_top #(
       .i_wr_data    (reg_wr_data),
       .o_status     (irq_status),
       .o_mask       (irq_mask),
-      .o_rx_itr     (rx_itr),
-      .o_tx_itr     (tx_itr),
+      .o_rx_coalesce(rx_coalesce),
+      .o_tx_coalesce(tx_coalesce),
       .o_tick       (tick),
       .i_rx_done    (rx_complete),
       .i_tx_done    (tx_complete),
@@ -420,6 +451,7 @@ module nic_top #(
       .i_rst           (nic_rst_q),
       .i_enable        (rx_en),
       .i_wide_mode     (wide_mode),
+      .i_rx_csum_en    (rx_csum_en),
       .i_base          (rx_base),
       .i_size_log2     (rx_size),
       .i_tail          (rx_tail),
@@ -481,6 +513,9 @@ module nic_top #(
       .i_fifo_ready    (tx_fifo_ready),
       .o_fifo_data     (tx_fifo_data),
       .o_fifo_code     (tx_fifo_code),
+      .o_fifo_csum     (tx_fifo_csum),
+      .o_fifo_abort    (tx_fifo_abort),
+      .o_segment_err   (tx_segment_err),
       .o_req_valid     (req_valid[1]),
       .i_req_ready     (req_ready[1]),
       .o_req_write     (req_write[1]),

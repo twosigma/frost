@@ -37,8 +37,8 @@
  * ITLB or the fault memo, but it bypasses into the live result only while its
  * saved key matches the live tag. An invalidate clears the ITLB, the memo, the
  * tag, and the outstanding walk, and ignores a response in the same cycle. A
- * full pipeline flush clears the memo and a registered fault, so no invalid
- * PTE outlives a trap (Svvptc).
+ * full pipeline flush clears the memo and registered verdicts. Refusals also
+ * expire periodically, including on wrong paths that never trap (Svvptc).
  */
 module immu #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
@@ -92,7 +92,21 @@ module immu #(
 
   localparam int unsigned VpnBits = riscv_pkg::Sv39VpnBits;
   localparam int unsigned PpnBits = riscv_pkg::PhysAddrBits - 12;
-  localparam int unsigned NpBits  = XLEN - riscv_pkg::Sv39PageOffsetBits;
+  localparam int unsigned NpBits = XLEN - riscv_pkg::Sv39PageOffsetBits;
+  localparam int unsigned FaultCacheEpochBits = 6;
+
+  // A free-running epoch bounds negative caching independently of traps,
+  // branch recovery, new fills, or the software's instruction stream. The
+  // memo and completed registered refusals expire within 64 clocks. A refusal
+  // copied from the memo on its expiry edge can remain for one further
+  // epoch, so negative caching adds at most 128 clocks to visibility.
+  logic [FaultCacheEpochBits-1:0] fault_cache_epoch_q;
+  logic fault_cache_expire;
+  assign fault_cache_expire = &fault_cache_epoch_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) fault_cache_epoch_q <= '0;
+    else fault_cache_epoch_q <= fault_cache_epoch_q + 1'b1;
+  end
 
   // ---------------------------------------------------------------------------
   // Bare bypass (translation off).
@@ -255,10 +269,11 @@ module immu #(
   // ---------------------------------------------------------------------------
   // One-entry memo of the last faulting walk (resp_refused). A walk fault
   // depends on the page tables, not on privilege, so the memo carries no
-  // privilege tag. It holds a fault only until the next invalidate or full
-  // pipeline flush (Svvptc): an invalid PTE is never kept across a trap,
-  // xRET or FENCE-class flush. A fetch that uses the memo on the correct path
-  // traps, and that trap clears it, so a memo entry raises at most one fault,
+  // privilege tag. It holds a fault only until the next epoch expiry,
+  // invalidate or full pipeline flush (Svvptc). Expiry also bounds the
+  // lifetime of a wrong-path refusal that never causes a trap. A fetch that
+  // uses the memo on the correct path traps, and that trap clears it, so a
+  // memo entry raises at most one fault,
   // and the refetch after the handler walks again. A walk accepted before a
   // flush may read a PTE older than the stores the flush ordered, so its
   // fault does not fill the memo either. The xRET that returns from a
@@ -279,7 +294,7 @@ module immu #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (i_rst || i_tlb_invalidate || i_full_flush) begin
+    if (i_rst || i_tlb_invalidate || i_full_flush || fault_cache_expire) begin
       memo_valid_q <= 1'b0;
     end else if (resp_refused) begin
       memo_valid_q <= 1'b1;
@@ -335,22 +350,38 @@ module immu #(
       input riscv_pkg::ptw_resp_t resp, input logic memo_valid, input logic [VpnBits-1:0] memo_vpn,
       input logic memo_page);
     port_res_t r;
-    logic resp_match, use_resp_leaf, have;
+    logic resp_match, use_resp_leaf, hit_valid, memo_match;
+    logic resp_hi_nonzero, resp_perm_ok, resp_pma_bad;
+    logic [PpnBits-1:0] resp_page_ppn;
+    (* keep = "true" *) logic non_hit_fault, non_hit_page;
+    logic non_hit_clean;
     logic e_hi_nonzero;
     logic [PpnBits-1:0] e_ppn;
     logic [1:0] e_level;
-    logic perm_ok, pma_bad;
     begin
       r = '0;
       resp_match = resp_valid && !invalidate && (resp.vpn == vpn);
       use_resp_leaf = resp_match && (resp.fault_kind == riscv_pkg::DFAULT_NONE);
-      have = (hit && !invalidate) || use_resp_leaf;
-      if (use_resp_leaf && !(hit && !invalidate)) begin
-        e_hi_nonzero = |resp.ppn[riscv_pkg::PtePpnBits-1:PpnBits];
-        e_ppn = ppn_from_resp(resp, vpn);
+      hit_valid = hit && !invalidate;
+      memo_match = memo_valid && !invalidate && (memo_vpn == vpn);
+      resp_hi_nonzero = |resp.ppn[riscv_pkg::PtePpnBits-1:PpnBits];
+      resp_page_ppn = ppn_from_resp(resp, vpn);
+      resp_perm_ok = resp.perm_x && (resp.perm_u == priv_u);
+      resp_pma_bad = resp_hi_nonzero ||
+          !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({resp_page_ppn, 12'h000}));
+
+      // Form the response/memo candidate independently of the ITLB hit.
+      // Apply the selected entry's permission/PMA verdict in the final mux.
+      non_hit_fault = resp_match ? (!use_resp_leaf || !resp_perm_ok || resp_pma_bad) : memo_match;
+      non_hit_page = resp_match ?
+          (use_resp_leaf ? !resp_perm_ok : (resp.fault_kind == riscv_pkg::DFAULT_PAGE)) :
+          (memo_match && memo_page);
+      non_hit_clean = use_resp_leaf && resp_perm_ok && !resp_pma_bad;
+
+      if (use_resp_leaf && !hit_valid) begin
+        e_hi_nonzero = resp_hi_nonzero;
+        e_ppn = resp_page_ppn;
         e_level = resp.level;
-        perm_ok = resp.perm_x && (resp.perm_u == priv_u);
-        pma_bad = e_hi_nonzero || !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({e_ppn, 12'h000}));
         r.own = own_from_resp(resp);
         r.giga = resp.level == 2'd2;
         r.mega = resp.level == 2'd1;
@@ -358,8 +389,6 @@ module immu #(
         e_hi_nonzero = hi_nonzero;
         e_ppn = ppn;
         e_level = level;
-        perm_ok = !tlb_perm_fault;
-        pma_bad = tlb_pma_bad;
         r.own = ppn_own;
         r.giga = giga;
         r.mega = mega;
@@ -367,30 +396,10 @@ module immu #(
       r.ppn = e_ppn;
       r.hi_nonzero = e_hi_nonzero;
       r.level = e_level;
-      if (noncanon) begin
-        r.resolved = 1'b1;
-        r.fault = 1'b1;
-        r.page = 1'b1;
-      end else if (have) begin
-        r.resolved = 1'b1;
-        if (!perm_ok) begin
-          r.fault = 1'b1;
-          r.page  = 1'b1;
-        end else if (pma_bad) begin
-          r.fault = 1'b1;
-          r.page  = 1'b0;
-        end else begin
-          r.clean_hit = 1'b1;
-        end
-      end else if (resp_match) begin
-        r.resolved = 1'b1;
-        r.fault = 1'b1;
-        r.page = (resp.fault_kind == riscv_pkg::DFAULT_PAGE);
-      end else if (memo_valid && !invalidate && (memo_vpn == vpn)) begin
-        r.resolved = 1'b1;
-        r.fault = 1'b1;
-        r.page = memo_page;
-      end
+      r.resolved = noncanon || hit_valid || resp_match || memo_match;
+      r.fault = noncanon || (hit_valid ? (tlb_perm_fault || tlb_pma_bad) : non_hit_fault);
+      r.page = noncanon || (hit_valid ? tlb_perm_fault : non_hit_page);
+      r.clean_hit = !noncanon && (hit_valid ? !(tlb_perm_fault || tlb_pma_bad) : non_hit_clean);
       resolve_port = r;
     end
   endfunction
@@ -577,19 +586,22 @@ module immu #(
       if (super_next_ok) begin
         f1_d  = super_next_pma_bad;
         f1p_d = 1'b0;
-      end else if (np_sample_matches) begin
+      end else if (np_sample_matches && res1.resolved) begin
         pa1_use_va_d = res1.fault;
         f1_d = res1.fault;
         f1p_d = res1.page;
-        resolved1 = res1.resolved;
-        miss1_d = res0.resolved && !res1.resolved;
       end else begin
-        f1_d = 1'b0;
-        f1p_d = 1'b0;
-        resolved1 = 1'b0;
+        // A first-word fault determines the architectural outcome even
+        // while the neighbor is missing. Use a fault-marked VA placeholder
+        // for that neighbor, so no unvalidated physical read is authorized.
+        // Select the fallback directly, before the late first-word verdict.
+        f1_d = res0.fault;
+        f1p_d = res0.page;
+        pa1_use_va_d = res0.fault;
+        resolved1 = res0.fault;
+        miss1_d = np_sample_matches && res0.resolved && !res0.fault;
       end
     end
-
     resolved_d = res0.resolved && resolved1;
     after_ok_d = (pa0_d[11:5] != 7'h7F) || (pa0_d[4:2] == 3'b111);
   end
@@ -666,11 +678,15 @@ module immu #(
       f1p_q <= f1p_d;
       after_ok_q <= after_ok_d;
     end
-    // A full flush also drops a registered fault (Svvptc): the result turns
-    // unresolved, so a refetch of the same window after the handler
-    // translates again. Only the resolution and fault bits change here, which
-    // keeps the term off the address-capture path.
-    if (!i_rst && i_full_flush && (f0_q || f1_q)) begin
+    // A full flush drops verdicts even when a refusal arrives on this edge.
+    // Epoch expiry drops a completed refusal without disturbing held clean hits.
+    // Partial fault bits do not expire: they are not visible, and clearing
+    // them could discard each first-page response aligned with an expiry.
+    // If a clean retarget is captured as an old refusal expires, clear wins
+    // and that capture retries on the next clock.
+    // Only validity and fault bits change, keeping both terms off the
+    // address-capture path. Bare fetches continue to use the direct bypass.
+    if (!i_rst && (i_full_flush || (fault_cache_expire && resolved_q && (f0_q || f1_q)))) begin
       resolved_q <= 1'b0;
       miss0_q <= 1'b0;
       miss1_q <= 1'b0;
@@ -876,6 +892,8 @@ module immu #(
     else if (i_active && !i_tlb_invalidate && capture_en) begin
       if (!pc_page_cross) f_pa1_ppn_ref_q <= pa0_d[riscv_pkg::PhysAddrBits-1:12];
       else if (super_next_ok) f_pa1_ppn_ref_q <= super_next_ppn;
+      else if (res0.fault && (!np_sample_matches || !res1.resolved))
+        f_pa1_ppn_ref_q <= pc_np_va[PpnBits-1:0];
       else if (np_sample_matches) f_pa1_ppn_ref_q <= res1.fault ? np_va_q[PpnBits-1:0] : res1.ppn;
       else f_pa1_ppn_ref_q <= '0;
     end
@@ -910,23 +928,50 @@ module immu #(
   logic f_memo_past_valid = 1'b0;
   logic f_accepted_since_flush_q;  // a walk was accepted after the last flush
   logic f_flush_since_fill_q;  // a flush or invalidate followed the last fill
+  logic [FaultCacheEpochBits:0] f_memo_age_q, f_fault_age_q;
   always @(posedge i_clk) begin
     if (i_rst || i_full_flush) f_accepted_since_flush_q <= 1'b0;
     else if (o_walk_req_valid && i_walk_req_ready) f_accepted_since_flush_q <= 1'b1;
-    if (i_rst || i_full_flush || i_tlb_invalidate) f_flush_since_fill_q <= 1'b1;
+    if (i_rst || i_full_flush || i_tlb_invalidate || fault_cache_expire)
+      f_flush_since_fill_q <= 1'b1;
     else if (resp_refused) f_flush_since_fill_q <= 1'b0;
+    if (i_rst || !memo_valid_q) f_memo_age_q <= '0;
+    else f_memo_age_q <= f_memo_age_q + 1'b1;
+    if (i_rst || !resolved_q || !(f0_q || f1_q)) f_fault_age_q <= '0;
+    else f_fault_age_q <= f_fault_age_q + 1'b1;
   end
   always @(posedge i_clk) begin
     f_memo_past_valid <= 1'b1;
     if (!f_memo_past_valid) assume (i_rst);
     if (f_memo_past_valid && !$past(i_rst)) begin
-      if ($past(i_full_flush)) p_flush_clears_memo : assert (!memo_valid_q);
-      if ($past(resp_refused && !i_full_flush && !i_tlb_invalidate))
+      if ($past(i_full_flush || fault_cache_expire)) p_flush_clears_memo : assert (!memo_valid_q);
+      if ($past(resp_refused && !i_full_flush && !i_tlb_invalidate && !fault_cache_expire))
         p_memo_fill_after_flush : assert ($past(f_accepted_since_flush_q) && memo_valid_q);
       p_memo_needs_fault_since_flush : assert (!memo_valid_q || !f_flush_since_fill_q);
       // A registered fault does not survive a full flush either.
-      if ($past(i_full_flush && (f0_q || f1_q)))
+      if ($past(i_full_flush || (fault_cache_expire && resolved_q && (f0_q || f1_q))))
         p_flush_drops_registered_fault : assert (!resolved_q && !f0_q && !f1_q);
+      if (!i_rst)
+        p_fault_epoch_step :
+        assert (fault_cache_epoch_q == FaultCacheEpochBits'($past(fault_cache_epoch_q) + 1'b1));
+      if (memo_valid_q) begin
+        p_memo_age_bounded : assert (f_memo_age_q <= {1'b0, fault_cache_epoch_q});
+        p_memo_expiry_happened : assert (fault_cache_epoch_q != '0);
+      end
+      if (resolved_q && (f0_q || f1_q))
+        p_registered_fault_age_bounded : assert (f_fault_age_q <= {1'b0, fault_cache_epoch_q});
+      if ($past(
+              i_active && !i_tlb_invalidate && capture_en && res0.fault &&
+                !i_full_flush && !(fault_cache_expire && resolved_q && (f0_q || f1_q))
+          ))
+        p_first_fault_completes_window : assert (resolved_q && f0_q);
+      if ($past(
+              i_active && !i_tlb_invalidate && capture_en && pc_page_cross && res0.fault &&
+                !super_next_ok && (!np_sample_matches || !res1.resolved) && !i_full_flush &&
+                !(fault_cache_expire && resolved_q && (f0_q || f1_q))
+          ))
+        p_unknown_neighbor_stays_faulted :
+        assert (f1_q && (f1p_q == $past(res0.page)) && pa1_use_va_q);
     end
   end
 `endif

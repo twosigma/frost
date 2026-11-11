@@ -13,7 +13,8 @@ smtbmc boolector
 [script]
 read -sv riscv_pkg.sv
 read_verilog -formal -D SYNTHESIS -D IMMU_MEMO_LOCAL_PROOF -sv immu.sv
-# Svvptc: the fault memo is independent of the ITLB contents, so allow
+# Svvptc: refusal expiration and flush handling are independent of ITLB
+# contents, so allow
 # arbitrary ITLB answers and walker responses on every cycle.
 delete t:dtlb
 proc

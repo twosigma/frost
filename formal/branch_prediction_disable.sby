@@ -15,6 +15,15 @@ read_verilog -formal -D SYNTHESIS -sv branch_prediction_controller.sv
 # gates independently of lookup results.
 delete t:branch_predictor t:direction_predictor t:return_address_stack
 proc
+# The separately proved btb_pending_relation contract preserves the original
+# per-candidate target abstraction; it adds no independent anyseq bit.
+cd branch_prediction_controller
+# Only covered OR zero affects +2. Bind a canonical decomposition of that
+# contract without constraining any old target or return cutpoint.
+connect -set btb_slot2_plus2_covered_rel_pending slot2_plus2_raw_rel_reference
+connect -set btb_slot2_plus2_zero_rel_pending 5'b00000
+connect -set btb_slot2_plus4_rel_pending slot2_plus4_raw_rel_reference
+cd ..
 setundef -undriven -anyseq
 opt
 prep -top branch_prediction_controller

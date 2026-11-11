@@ -2571,3 +2571,77 @@ async def test_commit_cycle_registered_guard_survives_flush_after_head(
     assert write_req.en and write_req.addr == 0x3000, (
         "flush-cycle-committed store never drained after the flush"
     )
+
+
+# ============================================================================
+# Tier-matched store drain sequencing
+# ============================================================================
+@cocotb.test()
+async def test_mixed_tier_stores_do_not_overlap_in_flight(dut: Any) -> None:
+    """A store never launches behind an in-flight write of the other tier.
+
+    The router ORs the BRAM tier's fast done with the cached tier's done into the
+    queue's single write-done, so two tiers in flight could drop a done and hang
+    the drain. Cached stores are at DdrBase, BRAM stores below it.
+    """
+    dut_if, model = await setup(dut)
+    cached_base = 0x8000_4000
+    bram_base = 0x0000_4000
+    addrs = [
+        bram_base,
+        cached_base,
+        cached_base + 8,
+        bram_base + 8,
+        bram_base + 16,
+        cached_base + 16,
+    ]
+
+    for i, addr in enumerate(addrs):
+        await alloc_addr_data(
+            dut_if,
+            model,
+            rob_tag=i,
+            address=addr,
+            data=0x3333_0000 + i,
+            size=MEM_SIZE_DOUBLE,
+        )
+    for tag in list(range(1, len(addrs))) + [0]:
+        dut_if.drive_commit(tag)
+        model.commit(tag)
+        await dut_if.step()
+        dut_if.clear_commit()
+
+    # Each write is acknowledged two cycles after launch, like a slow tier.
+    in_flight: list[int] = []
+    launched: list[MemWriteReq] = []
+    prev_cached: bool | None = None
+    for cycle in range(12 * len(addrs)):
+        await Timer(1, unit="ns")
+        if in_flight and in_flight[0] <= cycle:
+            in_flight.pop(0)
+            dut_if.drive_mem_write_done()
+            model.mem_write_done()
+            model.advance_head()
+        else:
+            dut_if.clear_mem_write_done()
+        write_req = dut_if.read_mem_write()
+        if write_req.en:
+            is_cached = write_req.addr >= 0x8000_0000
+            assert not (
+                in_flight and prev_cached is not None and is_cached != prev_cached
+            ), (
+                f"Launched {'cached' if is_cached else 'BRAM'} store {write_req.addr:#x} "
+                f"behind {len(in_flight)} in-flight write(s) of the other tier"
+            )
+            launched.append(write_req)
+            prev_cached = is_cached
+            model.mem_write_initiate()
+            in_flight.append(cycle + 2)
+        await dut_if.step()
+        if len(launched) == len(addrs) and not in_flight:
+            break
+    dut_if.clear_mem_write_done()
+    await dut_if.step()
+    await dut_if.step()
+    assert [w.addr for w in launched] == addrs, "Stores must leave in program order"
+    assert dut_if.empty, "SQ should be empty after all stores drain"

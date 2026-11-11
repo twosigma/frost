@@ -389,6 +389,9 @@ module soc_top #(
   // coherent DMA port through the line-port arbiter it shares with the NIC;
   // its completion interrupt is APLIC source 3.
   localparam int unsigned DmaEngineBase = 32'h4002_0000;
+  // Both NICs build their RX ingress FIFO 8192 words deep (68 bits, about 16 BRAM36 each); the
+  // RX_FIFO_LIMIT register picks the occupancy it reports full at.
+  localparam int unsigned NicRxFifoDepth = 8192;
   // NIC @ 0x4003_0000, a 4 KiB window of 32-bit registers
   // (hw/rtl/peripherals/nic/nic_pkg.sv). It shares the coherent DMA port with
   // the test engine through a line-port arbiter; its interrupt is APLIC
@@ -652,14 +655,16 @@ module soc_top #(
         .DEPTH(8),
         .READY_MARGIN(0)
     ) messages (
-        .i_clk  (i_clk),
-        .i_rst  (soc_cpu_rst),
-        .i_data ({imsic_write_addr, imsic_write_data}),
+        .i_limit('0),
+        .o_occupancy(),
+        .i_clk(i_clk),
+        .i_rst(soc_cpu_rst),
+        .i_data({imsic_write_addr, imsic_write_data}),
         .i_valid(imsic_write),
         .o_ready(msi_ready),
-        .o_clk  (core_clk),
-        .o_rst  (o_cpu_rst),
-        .o_data (imsic_decode_payload),
+        .o_clk(core_clk),
+        .o_rst(o_cpu_rst),
+        .o_data(imsic_decode_payload),
         .o_valid(imsic_decode_write),
         .i_ready(1'b1)
     );
@@ -1503,6 +1508,7 @@ AxilPorts
         .APERTURE_BASE(64'(CACHED_BASE)),
         .APERTURE_BYTES(CACHED_SIZE_BYTES),
         .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000),
+        .RX_FIFO_DEPTH(NicRxFifoDepth),
         .RAW_LOOPBACK(RAW_LOOPBACK),
         .DMA_AXI_ADDR_BITS(DmaAxiAddrBits),
         .DMA_AXI_ID_BITS(DmaUpIdBits)
@@ -1657,6 +1663,7 @@ AxilPorts
           .APERTURE_BASE(64'(CACHED_BASE)),
           .APERTURE_BYTES(CACHED_SIZE_BYTES),
           .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000),
+          .RX_FIFO_DEPTH(NicRxFifoDepth),
           .RAW_LOOPBACK(1),
           .GMII_MODE(1'b1),
           .DMA_AXI_ADDR_BITS(DmaAxiAddrBits),
