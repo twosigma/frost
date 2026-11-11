@@ -80,10 +80,16 @@ class GmiiPeer:
                     frame.clear()
             cycle += 1
 
-    def inject(self, frame: bytes, error_byte: int = -1) -> None:
+    def inject(
+        self,
+        frame: bytes,
+        error_byte: int = -1,
+        extra_errors: tuple[int, ...] = (),
+    ) -> None:
         """Queue a GMII frame followed by the minimum Ethernet interpacket gap."""
+        errors = {error_byte, *extra_errors}
         self.symbols.extend(
-            byte | 0x100 | (0x200 if index == error_byte else 0)
+            byte | 0x100 | (0x200 if index in errors else 0)
             for index, byte in enumerate(frame)
         )
         self.symbols.extend([0] * 12)
@@ -127,6 +133,15 @@ async def gmii_frames_and_errors(dut: Any) -> None:
         "i_tx_valid": 0,
         "i_tx_data": 0,
         "i_tx_code": 0,
+        "i_tx_csum": 0,
+        "i_tx_abort": 0,
+        "i_station_mac": 0,
+        "i_pause_ctrl": 0,
+        "i_pause_high_water": 0,
+        "i_pause_low_water": 0,
+        "i_pause_interval": 0xFFFF,
+        "i_rx_fifo_limit": int(dut.RX_FIFO_DEPTH.value),
+        "i_rx_fifo_limit_wr": 0,
         "i_rx_ready": 0,
         "i_rx_raw_data": 0,
         "i_rx_raw_valid": 1,
@@ -171,3 +186,7 @@ async def gmii_frames_and_errors(dut: Any) -> None:
     totals = int(dut.o_totals.value)
     assert (totals >> 128) & ((1 << 64) - 1), "bad FCS was not counted"
     assert (totals >> 64) & ((1 << 64) - 1), "GMII receive error was not counted"
+    # The totals past the original six: the preamble-stage discards (the frame whose
+    # preamble breaks off at its second byte) and the rx_er burst inside a frame.
+    assert (totals >> (64 * 6)) & ((1 << 64) - 1) == 1
+    assert (totals >> (64 * 7)) & ((1 << 64) - 1) == 1

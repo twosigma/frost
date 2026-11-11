@@ -25,6 +25,14 @@
  * nic_byte_pack; bytes beyond the buffer length are dropped and set TRUNC.
  * After the last beat and all data responses, write descriptor word 2
  * (received length, DD, TRUNC, ERR, ABORT). Its response reports completion.
+ * With i_rx_csum_en (ABI_CTRL bit 2) the status write is 8 bytes and also carries
+ * the Internet checksum of the frame from byte 14 to its end (the bytes after the
+ * Ethernet header; Linux CHECKSUM_COMPLETE), in the order the bytes would sit in
+ * memory, so a little-endian CPU reads it as the kernel's folded sum. It is in
+ * word 3 [15:0] in the legacy layout and in word 2 [31:16] (the buffer length
+ * stays in [15:0]) in the extended layout, with RxStatusCsumValidBit set in the
+ * status word only for a frame that completed without error, truncation, or
+ * abort and reached byte 14.
  * Only one status write is in flight, preserving DD order while the next
  * frame's data may start.
  *
@@ -57,12 +65,13 @@ module nic_rx_engine #(
     // Configuration and control.
     input  logic                  i_enable,
     input  logic                  i_wide_mode,
+    input  logic                  i_rx_csum_en,
     input  logic [ADDR_WIDTH-1:0] i_base,
     input  logic [           4:0] i_size_log2,
     input  logic [          15:0] i_tail,
     input  logic                  i_restart,
     input  logic                  i_promisc,
-    input  logic [          47:0] i_mac,        // byte 0 in bits 7:0
+    input  logic [          47:0] i_mac,         // byte 0 in bits 7:0
     input  logic                  i_stop,
     input  logic                  i_abort,
     output logic [          15:0] o_head,
@@ -246,17 +255,50 @@ module nic_rx_engine #(
   // ---- requests: status write, then data writes, then descriptor reads ----------------
   logic st_valid, st_fire, data_fire;
   assign st_valid = (state_q == S_STATUS) && !dd_inflight_q && !i_stop;
+  // ---- the frame checksum (bytes 14 to the end, sixteen-bit big-endian words) --------
+  // The beats are 8-byte aligned, so each beat holds four whole words. The first
+  // beat is skipped and the second keeps only its last word. A final odd byte is
+  // the high half of its word (the next lane is masked to zero).
+  logic [31:0] csum_acc_q;
+  logic [15:0] csum_w[4];
+  logic [17:0] csum_beat_sum;
+  logic [3:0] csum_lane_keep;
+  always_comb begin
+    for (int w = 0; w < 4; w++) begin
+      logic lane0_ok, lane1_ok;
+      lane0_ok = (beat_bytes > 4'(2 * w));
+      lane1_ok = (beat_bytes > 4'(2 * w + 1));
+      csum_w[w] = {
+        lane0_ok ? i_fifo_data[16*w+:8] : 8'h00, lane1_ok ? i_fifo_data[16*w+8+:8] : 8'h00
+      };
+    end
+    csum_lane_keep = (frame_len_q == 16'd0) ? 4'b0000 : (frame_len_q == 16'd8) ? 4'b1000 : 4'b1111;
+    csum_beat_sum  = 18'd0;
+    for (int w = 0; w < 4; w++)
+    if (csum_lane_keep[w]) csum_beat_sum = csum_beat_sum + 18'(csum_w[w]);
+  end
+  logic [16:0] csum_fold1;
+  logic [15:0] csum_sum16, csum_field;
+  assign csum_fold1 = 17'(csum_acc_q[31:16]) + 17'(csum_acc_q[15:0]);
+  assign csum_sum16 = csum_fold1[15:0] + 16'(csum_fold1[16]);
+  assign csum_field = {csum_sum16[7:0], csum_sum16[15:8]};
+  logic csum_valid;
+  assign csum_valid = i_rx_csum_en && !err_q && !bad_desc_q && !abort_q && !trunc &&
+      (frame_len_q >= 16'd14);
+
   logic [31:0] status_word;
   assign status_word = {
-    12'b0,
+    11'b0,
+    csum_valid,
     abort_q,
     (err_q || bad_desc_q || abort_q),
     (trunc && !bad_desc_q && !abort_q),
     1'b1,
     frame_len_q
   };
-  logic [OffsetBits-1:0] status_off;
+  logic [OffsetBits-1:0] status_off, status_pair_off;
   assign status_off = status_addr_q[OffsetBits-1:0];
+  assign status_pair_off = {status_addr_q[OffsetBits-1:3], 3'b000};
   // Withdraw the packer's held write on abandonment. Writes already accepted
   // by the front-end still drain.
   logic pk_wr_present;
@@ -266,10 +308,19 @@ module nic_rx_engine #(
     if (st_valid) begin
       o_req_write = 1'b1;
       o_req_addr  = {status_addr_q[ADDR_WIDTH-1:OffsetBits], {OffsetBits{1'b0}}};
-      o_req_wdata = (LINE_BYTES * 8)'(status_word) << (8 * status_off);
-      o_req_wstrb = LINE_BYTES'(4'hF) << status_off;
-      o_req_kind  = nic_pkg::ReqKindStatus;
-      o_req_tag   = '0;
+      if (i_rx_csum_en) begin
+        // An 8-byte write of the descriptor's words 2 and 3, status and checksum
+        // together so that DD never shows before the checksum.
+        o_req_wdata = (LINE_BYTES * 8)'(i_wide_mode ?
+            {status_word, csum_field, buf_len_q} : {16'b0, csum_field, status_word}) <<
+            (8 * status_pair_off);
+        o_req_wstrb = LINE_BYTES'(8'hFF) << status_pair_off;
+      end else begin
+        o_req_wdata = (LINE_BYTES * 8)'(status_word) << (8 * status_off);
+        o_req_wstrb = LINE_BYTES'(4'hF) << status_off;
+      end
+      o_req_kind = nic_pkg::ReqKindStatus;
+      o_req_tag  = '0;
     end else if (pk_wr_present) begin
       o_req_write = 1'b1;
       o_req_addr  = pk_wr_addr;
@@ -312,6 +363,7 @@ module nic_rx_engine #(
       abort_q          <= 1'b0;
       stop_q           <= 1'b0;
       frame_len_q      <= '0;
+      csum_acc_q       <= '0;
       buf_len_q        <= '0;
       o_complete_flags <= '0;
       o_complete_bytes <= '0;
@@ -330,6 +382,7 @@ module nic_rx_engine #(
         o_complete_bytes <= dd_bytes_q;
       end
       if (beat_fire) frame_len_q <= frame_len_sum[16] ? 16'hFFFF : frame_len_sum[15:0];
+      if (beat_fire && (state_q == S_DATA)) csum_acc_q <= csum_acc_q + 32'(csum_beat_sum);
 
       case (state_q)
         S_IDLE: begin
@@ -340,6 +393,7 @@ module nic_rx_engine #(
             buf_addr_q    <= ADDR_WIDTH'(df_word0);
             buf_len_q     <= df_word1[15:0];
             frame_len_q   <= '0;
+            csum_acc_q    <= '0;
             err_q         <= 1'b0;
             abort_q       <= 1'b0;
             stop_q        <= 1'b0;

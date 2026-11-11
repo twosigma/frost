@@ -276,7 +276,7 @@ can be debugged and where each one first stops.
 | `ddr_bench/` | Memory-bound kernels on cold cached-DDR regions (sequential, strided, interleaved, interleaved within one cache set, random, dependent, copy, write), with cycles and cache-counter deltas per kernel; `DDR_BENCH_SHIFT` shrinks them for simulation |
 | `ddr_exec_test/` | Code in DDR: calls into BRAM, recursion, a body larger than the fetch buffer, cold and warm runs |
 | `ddr_heap_test/` | Multi-MiB `malloc` from the DDR heap, checked for address aliasing |
-| `ddr_mlp_test/` | Independent cold DDR loads must overlap their L1D misses, measured with the profiling counters; a pointer chase is the control. The default eviction window targets 4 KiB caches. `DDR_MLP_FULL_CACHE=1` uses conflicting sets for the 128 KiB L1D and 2 MiB L2; the CLI-only `ddr_mlp_test_full_cache` bench selects this mode |
+| `ddr_mlp_test/` | Independent cold DDR loads must overlap their L1D misses, measured with the profiling counters; a pointer chase is the control. The default eviction window targets 4 KiB caches. `DDR_MLP_FULL_CACHE=1` uses conflicting sets for the 128 KiB L1D and configured L2 (`FROST_L2_CACHE_BYTES`, 2 MiB by default); the CLI-only `ddr_mlp_test_full_cache` bench selects this mode |
 | `ddr_smc_test/` | Self-modifying code in DDR: store, `fence.i`, then execute cold and warm |
 | `ddr_test/` | Cached-DDR loads and stores, byte strobes, evictions, the preloaded `.ddr_rodata` image, and AMOs |
 | `debug_target/` | Debuggee with known symbols for the JTAG debug tests; waits for a debugger to write its flags |
@@ -304,7 +304,8 @@ can be debugged and where each one first stops.
 | `linux_irq_ddr_test/` | Linux-style timer interrupt path from `wfi` idle, with code, data, and stack in DDR |
 | `linux_irq_find_next_slot_test/` | Timer interrupts swept across a `_find_next_bit`-shaped loop whose saved-`ra` slot is poisoned |
 | `linux_irq_stack_slot_test/` | A timer interrupt inside a callee whose saved-`ra` stack slot was poisoned beforehand |
-| `lq_stale_slot_probe/` | Cached-load results must reach the right load across two partial flushes and ROB-tag reuse, with slow, reordered DDR responses |
+| `l2_capacity_chase/` | Dependent-load cycles over checked random cycles of 64-byte lines; `L2CC_SIZES_KIB` selects 1 to 16384 KiB working sets (default 1024, 3072, 4096, 5120). CI checks short rings with a 4 MiB L2 and DDR read counts below and above a reduced L2 capacity |
+| `lq_stale_slot_probe/` | Cached-load results must reach the right load across two partial flushes and ROB-tag reuse, with slow, reordered DDR responses; eviction aliases follow `FROST_L2_CACHE_BYTES` (2 MiB by default, 4 MiB on VCU118) |
 | `mem_divergence_probe/` | Cold versus warm reads of cached DDR (both dword halves, 64-bit reads, store forwarding) |
 | `memerr_readback/` | The memory error unit on the X3: the ECC reader is active and polling, and a DDR write and readback twice the L2's size reports no error |
 | `memerr_test/` | The memory error unit in simulation: DDR error responses injected by the model and ECC reports from the bench reach its counters, addresses, and APLIC interrupt; dependent conflict reads after FENCE.I evict the fatal-writeback line |

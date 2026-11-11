@@ -479,6 +479,20 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "NIC frame loopback through DDR rings, with completion and interrupt checks"
         ),
     ),
+    "nic_sg_loopback": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="nic_sg_loopback",
+        description=(
+            "NIC scatter-gather frames (several descriptors per frame) through the loopback"
+        ),
+    ),
+    "nic_rate": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="nic_rate",
+        description="NIC transmit rate with cold buffers against the DDR model latency",
+    ),
     "nic_dma_stress": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -634,6 +648,50 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(
             ("EXTRA_CFLAGS", "-DDDR_BENCH_SHIFT=4"),
             ("COCOTB_MAX_CYCLES", "1500000"),
+        ),
+    ),
+    # Dependent-load latency over 1, 3, 4 and 5 MiB working sets: shows where the
+    # L2 capacity falls. The L2 size comes from FROST_VERILATOR_EXTRA_ARGS
+    # (-GL2_CACHE_BYTES=...). Measurement only, not part of the pytest sweep.
+    "l2_capacity_chase": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="l2_capacity_chase",
+        nic_mac_clocks=False,
+        rerun_after_reset=False,
+        description="Dependent-load latency over working sets around the L2 capacity",
+        extra_env=(("COCOTB_MAX_CYCLES", "400000000"),),
+        include_in_pytest=False,
+    ),
+    "l2_capacity_chase_smoke": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="l2_capacity_chase",
+        nic_mac_clocks=False,
+        description="Bounded dependent-load cycle check with the VCU118 4 MiB L2",
+        verilator_extra_args=("-GL2_CACHE_BYTES=4194304",),
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DL2CC_SIZES_KIB=8u,16u,32u"),
+            ("FROST_L2_CACHE_BYTES", "4194304"),
+            ("COCOTB_MAX_CYCLES", "1000000"),
+        ),
+    ),
+    "l2_capacity_chase_capacity": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_l2_capacity_chase",
+        hdl_toplevel_module="frost",
+        app_name="l2_capacity_chase",
+        nic_mac_clocks=False,
+        description="Warmed rings below and above L2 capacity check DDR read counts",
+        verilator_extra_args=(
+            "-GL1_CACHE_BYTES=4096",
+            "-GL1I_CACHE_BYTES=4096",
+            "-GL2_CACHE_BYTES=32768",
+            "-GL2_PREFETCH=0",
+        ),
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DL2CC_SIZES_KIB=8u,128u"),
+            ("FROST_L2_CACHE_BYTES", "32768"),
+            ("COCOTB_MAX_CYCLES", "3000000"),
         ),
     ),
     # The system with 32-byte L2 lines, equal to the L1s': no line-size
@@ -3347,6 +3405,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "NIC transmit descriptors produce the right frame bytes and completions"
         ),
     ),
+    "nic_tx_segment": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_tx_segment",
+        hdl_toplevel_module="nic_tx_segment",
+        description="NIC frame segmentation offload cuts frames at the MSS with exact headers",
+    ),
     "vcu118_sgmii_link": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_vcu118_sgmii_link",
         hdl_toplevel_module="vcu118_sgmii_link",
@@ -3357,6 +3420,39 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="nic_mac_wrap",
         verilator_extra_args=("-GGMII_MODE=1",),
         description="GMII framing, rate enables, CRC errors and receive backpressure",
+    ),
+    "nic_rx_fifo_limit": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_rx_fifo_limit",
+        hdl_toplevel_module="nic_mac_wrap",
+        verilator_extra_args=("-GGMII_MODE=1", "-GRX_FIFO_DEPTH=8192"),
+        description=(
+            "NIC RX FIFO overflows at the runtime limit (512, 2048, 8192 words) and "
+            "the GMII preamble-discard and rx_er counters"
+        ),
+    ),
+    "nic_top_rx_fifo": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_top",
+        hdl_toplevel_module="nic_top",
+        verilator_extra_args=("-GRX_FIFO_DEPTH=8192",),
+        description="NIC registers and traffic with the 8192-word RX FIFO and its limit register",
+    ),
+    "nic_pause_rx_wire": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_pause_rx_wire",
+        hdl_toplevel_module="nic_pause_rx_wire",
+        verilator_extra_args=("-GMAX_FRAME_BYTES=128",),
+        description="PAUSE recognition before buffering: framing, length, CRC and header validation",
+    ),
+    "nic_pause_gmii": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_pause",
+        hdl_toplevel_module="nic_mac_wrap",
+        verilator_extra_args=("-GGMII_MODE=1", "-GRX_FIFO_DEPTH=2048"),
+        description="802.3x pause on the GMII path: consume, honour, pause refresh and release",
+    ),
+    "nic_pause_10g": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_pause",
+        hdl_toplevel_module="nic_mac_wrap",
+        verilator_extra_args=("-GRAW_LOOPBACK=0", "-GRX_FIFO_DEPTH=2048"),
+        description="802.3x pause on the 10GBASE-R path: consume, honour, pause refresh and release",
     ),
     "nic_top": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_top",

@@ -15,7 +15,7 @@
 # Places the SRAM macros (MACRO_PLACEMENT_TCL) in three bands across the
 # core, with the logic in a band between the top two:
 #
-#   top:    L1I, NIC FIFOs, BTB, RX | L1D data | L1D, L2 tags, NIC TX
+#   top:    L1I, NIC RX FIFO, BTB, RX | L1D data | L1D, L2 tags, NIC TX
 #   middle: the logic, with the pins on the core's left and right edges
 #   lower:  instruction memory, even parity | odd parity
 #   bottom: L2 data, slices 0-3 | data memory | L2 data, slices 4-7
@@ -222,7 +222,7 @@ set frost_bottom_top [expr { $frost_imem_y + max([frost_row_height $frost_imem_e
 
 # The top band: the L1D data in the middle, a row of four 64-bit slices for
 # each way's bank; at the left the L1I data, four banks of four slices, then the
-# NIC's FIFOs, the BTB's payload tables and the MAC's
+# NIC's receive FIFO, the BTB's payload tables and the MAC's
 # receive lanes; at the right the L1D tags, a row of four ways above a row of
 # their copy, the L2 tags and the MAC's transmit frame buffer.
 set frost_l1d_width [frost_grid_width $frost_l1d_data 4]

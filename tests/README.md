@@ -97,7 +97,7 @@ typed interfaces from their actual module headers; other unknown modules
 fail. `$initstate` gets a typed extension declaration, and the asynchronous
 FIFO gets a containing standard global clocking scope for `$global_clock`.
 
-All 561 distinct formal views (696 tasks) are required, including every
+All 561 distinct formal views (700 tasks) are required, including every
 hart-cache maintenance configuration. The complete matrix has 667 cases,
 with no deferred views or source-error exceptions. To record diagnostics
 and elapsed times for every case:
@@ -206,6 +206,16 @@ checks that a subsequent load cannot use their stale data from L0.
 `cached_store_burst_test` checks cached store bursts followed by traps,
 FENCE.I, SC and AMO. Its CPU monitor requires accepted-store overlap with
 trap and fence drain waits.
+`l2_capacity_chase_smoke` checks the dependent-load measurement program
+with 8, 16 and 32 KiB working sets and a 4 MiB L2 in the real-program shards.
+The CLI-only `l2_capacity_chase` entry retains its full-size working sets
+for capacity measurements; `FROST_VERILATOR_EXTRA_ARGS=-GL2_CACHE_BYTES=4194304`
+selects the VCU118 capacity for that run.
+`l2_capacity_chase_capacity` uses a 32 KiB L2 and 4 KiB private caches,
+checking that a warmed 8 KiB ring produces at most four DDR reads and a
+128 KiB ring produces at least 256 during its timed walk. Fast Python tests
+also compile and execute the C helpers against invalid sizes, short cycles,
+misaligned pointers and out-of-bounds pointers.
 Local Modified-sector AMO and SC cases hold each probe class across lookup,
 result, write and release, check exact reservations and preauthorization loss,
 and preserve installed bytes through accepted and absorbed dirty evictions.
@@ -497,6 +507,17 @@ Register a bench in `TEST_REGISTRY`:
 Check discovery with `./scripts/frost.py cocotb --list-tests`, then run
 `./scripts/frost.py cocotb new_feature`.
 
+The NIC targets include `nic_tx_segment`, `nic_rx_fifo_limit`, `nic_top_rx_fifo`,
+`nic_pause_gmii`, `nic_pause_10g`, and `nic_pause_rx_wire`, alongside the engine and whole-NIC benches.
+Their registered tests cover segmentation headers, FIFO capacity, pause crossings, independent
+domain restarts, wire-side PAUSE validation during congestion, and cancellation under backpressure.
+`nic_sg_loopback` and `nic_rate` are
+registered real programs in both memory tiers. See the
+[NIC verification table](../hw/rtl/peripherals/nic/README.md#verification) for the target list.
+`test_frost_net10g_driver.py` checks packaging and the descriptor ABI, and compiles selected
+driver helpers against C fixtures for DMA teardown, reconfiguration and GSO fallback. It does
+not replace executing the kernel driver.
+
 ### Compliance and torture runners
 
 The architecture, riscv-tests ISA and benchmark, and riscv-torture programs
@@ -706,7 +727,27 @@ keeps depth 40 with a 180-minute allowance in a 200-minute job; the
 multi-endpoint control BMC has 300 minutes in its own 330-minute job. The
 L1D data tasks run in three jobs (330, 330 and 270 minutes), with each word
 variant taking its representative's measured allowance. The remaining L1D
-tasks and AXI bridges retain their 330-minute job.
+tasks and AXI bridges retain their 330-minute job. The scheduled local
+real-array checks keep all 80 cycles and run in three parallel 30-minute
+jobs: `coh_l1d_local_data_bmc` checks byte preservation and deferred probe
+data, `coh_l1d_local_hold_bmc` checks wide payload identities and holds, and
+`coh_l1d_local_control_bmc` checks every other assertion. All three retain
+the 1,200-second SBY limit and assume nothing from each other. A fast test
+checks that the models match the scheduled local cover, the assertion
+selections cover every property, and each task runs in exactly one CI job.
+
+The scripted stream checks also use complementary property groups:
+`coh_l1d_stream_bmc` retains every assertion except four wide payload identity
+and hold assertions, checked by `coh_l1d_stream_hold_bmc` in a parallel
+75-minute job. Both keep the same scripted model, interface assumptions,
+42-cycle depth and 3,600-second limit, with no assumptions between groups.
+Fast tests enforce the model match and complete property coverage.
+
+The free-input no-store stream model uses the same partition at depth 24.
+`coh_l1d_stream_free_nostore_hold_bmc` checks the four payload holds in its
+own 75-minute job; `coh_l1d_stream_free_nostore_bmc` checks every other
+assertion. Both keep the original no-store constraint and 3,600-second
+limit, and the same fast tests guard their model and property coverage.
 
 The four-record store-boundary BMC runs to depth 114 with a 300-minute
 allowance in its own 330-minute job. Its depth-120 cover task reaches handoff
@@ -963,7 +1004,7 @@ pinned Docker image, except the ASIC flow, which runs in its own image:
 | TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and runs 50 sequences from the crypto generator |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis |
-| Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, L1D control, L1D multi-endpoint, L1D data (three jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream and Other tasks jobs; and a separate job for the hart maintenance proof, its ownership induction and the other L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets |
+| Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, L1D control, L1D multi-endpoint, L1D data (three jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream and Other tasks jobs; and a separate job for the hart maintenance proof, its ownership induction and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in four chained jobs |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
 | Coverage | One job merges the coverage of the simulating jobs into a report |

@@ -45,7 +45,12 @@
 #define CACHE_L1D_WAYS 4u
 /* Lines this far apart share an L1D set. */
 #define CACHE_L1D_WAY_BYTES (CACHE_L1D_BYTES / CACHE_L1D_WAYS)
+/* The L2 capacity of the build the program runs on: 2 MiB by default; the
+ * VCU118 board build uses 4 MiB (build the program with FROST_L2_CACHE_BYTES
+ * set, or -DCACHE_L2_BYTES=...). */
+#ifndef CACHE_L2_BYTES
 #define CACHE_L2_BYTES (2u * 1024u * 1024u)
+#endif
 #define CACHE_L2_WAYS 4u
 /* Lines this far apart share an L2 set. */
 #define CACHE_L2_WAY_BYTES (CACHE_L2_BYTES / CACHE_L2_WAYS)

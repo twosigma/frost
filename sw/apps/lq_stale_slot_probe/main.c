@@ -38,6 +38,7 @@
  * once. Recording each block's line 0 also checks that initialization held.
  */
 
+#include "cache_evict.h"
 #include "uart.h"
 #include <stdint.h>
 
@@ -45,16 +46,24 @@
 #define STALE_ITERS 512u
 #endif
 
-/* Cached DDR, inside the 64 MiB simulation model: 2 MiB of 4 KiB pool
- * blocks, their two L2 aliases (the L2 is 2 MiB, 4-way, so its ways are
- * 512 KiB), the marker lines with their aliases, and the result records; the
- * regions never overlap. */
-#define POOL_BASE 0x83000000ul /* aliases at 0x83200000 and 0x83400000 */
-#define L2_ALIAS 0x200000ul
+/* Cached DDR inside the 64 MiB simulation model: 2 MiB of 4 KiB pool
+ * blocks, L2 aliases, marker lines with their aliases, and result records.
+ * L2_ALIAS follows CACHE_L2_BYTES (FROST_L2_CACHE_BYTES at build time), with
+ * an explicit -DL2_ALIAS override available. Both supported capacities use
+ * four ways. A 4 MiB L2 starts the pool 32 MiB lower so every region fits.
+ * At 2 MiB the aliases are at 0x83200000 and 0x83400000, the markers at
+ * 0x83600000 (aliases to 0x83A00000) and the results at 0x83C00000. */
+#ifndef L2_ALIAS
+#define L2_ALIAS (1ul * CACHE_L2_BYTES)
+#endif
+#define POOL_BASE (L2_ALIAS > 0x200000ul ? 0x81000000ul : 0x83000000ul)
 #define L2_WAYS 4u
 #define L2_WAY_BYTES (L2_ALIAS / L2_WAYS)
-#define MARK_BASE 0x83600000ul /* aliases one L2 way apart, to 0x83A00000 */
-#define OUT_BASE 0x83C00000ul
+/* The 2 MiB pool contributes four lines per set at 2 MiB, two at 4 MiB.
+ * Supply eight distinct conflicting lines in either configuration. */
+#define L2_ALIAS_PASSES (L2_ALIAS > 0x200000ul ? 4u : 2u)
+#define MARK_BASE (POOL_BASE + (L2_ALIAS_PASSES + 1ul) * L2_ALIAS)
+#define OUT_BASE (MARK_BASE + (L2_ALIAS_PASSES + 1ul) * L2_ALIAS)
 #define NPROBE 11u /* N and P1..P10 */
 #define SEED 0x9E3779B97F4A7C15ul
 
@@ -100,10 +109,11 @@ static inline unsigned long ld64(unsigned long addr)
  * out of both cache levels. The alias sweeps replace L1D lines and cause
  * the home to evict their inclusive copies. Home eviction probes both
  * private sectors and merges dirty replies before writing the victim to DDR.
- * Two passes over the lines' L2 aliases evict them from L2. Each probed
- * line's L2 set holds four probed lines, and the two passes miss
- * there eight times, more than the five misses on other lines that evict an
- * installed line from a 4-way set. A marker's set may hold no probed line,
+ * At 2 MiB, each probed line's L2 set holds four probed lines; at 4 MiB,
+ * it holds two. Two or four passes respectively over their L2 aliases
+ * produce eight distinct misses per set, exceeding the seven needed to
+ * evict every prior line from a four-way tree-PLRU set. A marker's set may
+ * hold no probed line,
  * so each marker also reads the lines 1 to 2 * L2_WAYS - 1 L2 ways above it
  * (one of them pass 1's alias): with the passes, at least 2 * L2_WAYS - 1
  * misses in its set. The passes also sweep the L1D, which is much smaller
@@ -120,7 +130,7 @@ static void prepare_pool(void)
     }
     __asm__ volatile("fence" ::: "memory");
     __asm__ volatile("fence.i" ::: "memory");
-    for (unsigned pass = 1; pass <= 2; pass++) {
+    for (unsigned pass = 1; pass <= L2_ALIAS_PASSES; pass++) {
         unsigned long alias = pass * L2_ALIAS;
         for (unsigned long i = 0; i < STALE_ITERS; i++) {
             unsigned long blk = POOL_BASE + i * 4096ul;

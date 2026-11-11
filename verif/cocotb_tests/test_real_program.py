@@ -4804,7 +4804,7 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = RESTORE_WINDOW_STRESS_MAX_CYCLES
     elif app_name == "amo_irq_torture":
         max_cycles = AMO_IRQ_TORTURE_MAX_CYCLES
-    elif app_name in ("nic_loopback", "nic_echo"):
+    elif app_name in ("nic_loopback", "nic_sg_loopback", "nic_rate", "nic_echo"):
         max_cycles = NIC_LOOPBACK_MAX_CYCLES
     elif app_name == "tick_torture":
         max_cycles = TICK_TORTURE_MAX_CYCLES

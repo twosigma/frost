@@ -209,7 +209,7 @@ part works.
 | Board | FPGA | Ethernet | Cache hierarchy → main memory |
 |---|---|---|---|
 | Alveo X3522PV | UltraScale+ (xcux35) | 10GBASE-R | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
-| VCU118 Evaluation Board | Virtex UltraScale+ (xcvu9p) | 1 Gb/s RJ-45 and 10GBASE-R on QSFP1 lane 0 | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 2 GiB DDR4 |
+| VCU118 Evaluation Board | Virtex UltraScale+ (xcvu9p) | 1 Gb/s RJ-45 and 10GBASE-R on QSFP1 lane 0 | 128 KiB L1D + 16 KiB L1I → 4 MiB URAM L2 → 2 GiB DDR4 |
 
 See the [board guide](boards/README.md) for pinouts, clocking, and adding a board.
 

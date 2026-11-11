@@ -1297,15 +1297,34 @@ jobs:
           - shard: Coherence L1D zero multi-endpoint
             pytest_filter: coh_l1d_zero_multi_bmc
             timeout_minutes: 330
+          # The scheduled real-array checks keep all 80 frames, with disjoint
+          # property groups and no assumptions between them. Run them in
+          # parallel so their combined work does not delay the bridges.
+          - shard: Coherence L1D local data
+            pytest_filter: coh_l1d_local_data_bmc
+            timeout_minutes: 30
+          - shard: Coherence L1D local holds
+            pytest_filter: coh_l1d_local_hold_bmc
+            timeout_minutes: 30
+          - shard: Coherence L1D local control
+            pytest_filter: coh_l1d_local_control_bmc
+            timeout_minutes: 30
+          # Keep the scripted stream's payload holds at the same depth as
+          # its control assertions, in parallel with the hart job.
+          - shard: Coherence L1D scripted holds
+            pytest_filter: coh_l1d_stream_hold_bmc
+            timeout_minutes: 75
+          - shard: Coherence L1D no-store holds
+            pytest_filter: coh_l1d_stream_free_nostore_hold_bmc
+            timeout_minutes: 75
           # The remaining L1D covers, local and stream tasks, and AXI bridges.
           - shard: Coherence L1D and bridges
             pytest_filter: >-
               axi_coherent_bridge or
-              (coherence_l1d and not (coh_l1d_stream_bmc or coh_l1d_stream_free or
-              coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_zero_multi_bmc or
-              coh_l1d_data or
+              (coherence_l1d and not (coh_l1d_stream_bmc or coh_l1d_stream_hold_bmc or coh_l1d_stream_free or
+              coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_zero_multi_bmc or coh_l1d_data or
               coh_l1d_multi_data or coh_l1d_store_ or coh_l1d_ways_data or
-              (coh_l1d_local and prove)))
+              (coh_l1d_local and (prove or bmc))))
             timeout_minutes: 330
           # The four-record boundary BMC runs 114 frames with the hit path;
           # the intervening-load BMC keeps 140. Each has a job of its own.
@@ -1343,7 +1362,7 @@ jobs:
           - shard: Hart maintenance
             pytest_filter: >-
               coh_hart_maint_prove or coh_hart_maint_owned_prove or
-              coh_l1d_stream_bmc or coh_l1d_stream_free_nostore
+              coh_l1d_stream_bmc or coh_l1d_stream_free_nostore_bmc
             timeout_minutes: 330
           - shard: Other tasks
             pytest_filter: "not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or coherence_ or coherent_)"

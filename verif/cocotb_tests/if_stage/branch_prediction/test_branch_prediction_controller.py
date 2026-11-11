@@ -60,6 +60,9 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pc_2_alt.value = 0
     dut.i_pc_2_base.value = 0
     dut.i_lookup_lead_collapsed.value = 0
+    dut.i_pending_prediction_pc.value = 0
+    dut.i_pending_prediction_prev_pc.value = 0
+    dut.i_pending_prediction_prev_native_pc.value = 0
     dut.i_slot2_plus2_candidate_valid.value = 0
     dut.i_slot2_plus4_candidate_valid.value = 0
     dut.i_slot2_valid.value = 0
@@ -1003,6 +1006,9 @@ async def test_fixed_lead_live_taken_disagreement_has_no_duplicate_owner(
     dut.i_pc_2_alt.value = SLOT2_PC
     dut.i_pc_2_base.value = SLOT2_PC - 4
     dut.i_lookup_lead_collapsed.value = 0
+    dut.i_pending_prediction_pc.value = 0
+    dut.i_pending_prediction_prev_pc.value = 0
+    dut.i_pending_prediction_prev_native_pc.value = 0
     dut.i_slot2_plus4_candidate_valid.value = 1
     dut.i_slot2_valid.value = 1
     dut.i_slot2_valid_wcs0.value = 1
@@ -1061,6 +1067,26 @@ async def test_slot2_typed_return_predicts_the_stack_top(dut: Any) -> None:
     assert dut.o_slot2_predicted_taken.value
     assert int(dut.o_slot2_predicted_target.value) == TARGET_RAS_RETURN
     assert int(dut.o_slot2_staged_predicted_target.value) == TARGET_RAS_RETURN
+    # Exercise full-address equality, halfword ordering, and the two saved
+    # predecessors with a RAS target distinct from the BTB payload.
+    for pending in (
+        TARGET_RAS_RETURN - 2,
+        TARGET_RAS_RETURN,
+        TARGET_RAS_RETURN | 1,
+        TARGET_RAS_RETURN + 2,
+        TARGET_SLOT2,
+    ):
+        dut.i_pending_prediction_pc.value = pending
+        dut.i_pending_prediction_prev_pc.value = TARGET_RAS_RETURN
+        dut.i_pending_prediction_prev_native_pc.value = TARGET_SLOT2
+        await _settle()
+        expected = (
+            (int(TARGET_RAS_RETURN == pending) << 4)
+            | (int((TARGET_RAS_RETURN >> 1) < (pending >> 1)) << 3)
+            | (int((TARGET_RAS_RETURN >> 1) > (pending >> 1)) << 2)
+            | 2
+        )
+        assert int(dut.o_slot2_staged_target_rel_pending.value) == expected
     assert dut.o_slot2_predicted_is_return.value
     assert not dut.o_slot2_predicted_is_call.value
 

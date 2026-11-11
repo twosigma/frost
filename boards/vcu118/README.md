@@ -19,7 +19,11 @@
 The VCU118 target uses `xcvu9p-flga2104-2L-e`, the shared FROST subsystem,
 a USB-UART console, status LEDs, one DDR4 controller, and two Ethernet
 interfaces: RJ-45 and QSFP1 lane 0. It has 256 KiB of
-BRAM, a 16 KiB instruction cache, a 128 KiB data cache, and a 2 MiB L2 cache.
+BRAM, a 16 KiB instruction cache, a 128 KiB data cache, and a 4 MiB L2 cache.
+The L2 uses four ways, 16,384 sets and 64-byte lines. The board top passes
+`L2_CACHE_BYTES` through the shared subsystem; its default remains 2 MiB
+for other boards. The software loader sets `FROST_L2_CACHE_BYTES=4194304`
+for VCU118 applications so conflicting-set eviction uses the same geometry.
 
 ## Board integration
 
