@@ -3436,17 +3436,17 @@ module load_queue #(
       sq_do_forward ? fwd_bypass_value :
       cache_hit_bypass_value;
 
-  // Select response data last for timing. Preserve priority:
-  // issue > fault/response > forward/cache.
+  // Select response data last. Prepare the nonresponse fault arm without
+  // response qualification: a response replaces it at the final mux.
+  // Preserve priority: issue > response > fault > forward/cache.
   (* keep = "true" *) logic [FLEN-1:0] cdb_value_nonresponse;
   (* keep = "true" *) logic cdb_value_select_response;
   logic [FLEN-1:0] cdb_value_next;
   assign cdb_value_nonresponse = issue_cdb_found ? issue_cdb_result.value :
-      misalign_bypass_data_sel ? {{(FLEN - XLEN) {1'b0}}, sq_check_addr_q} :
+      coherent_address_fault ? {{(FLEN - XLEN) {1'b0}}, sq_check_addr_q} :
       (coherent_forward_ok) ?
       fwd_bypass_value : cache_hit_bypass_value;
-  assign cdb_value_select_response = !issue_cdb_found &&
-      !misalign_bypass_data_sel && resp_bypass_data_sel;
+  assign cdb_value_select_response = !issue_cdb_found && resp_bypass_data_sel;
   assign cdb_value_next = cdb_value_select_response ? resp_bypass_value : cdb_value_nonresponse;
 
 `ifndef SYNTHESIS

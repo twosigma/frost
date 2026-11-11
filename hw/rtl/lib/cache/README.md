@@ -286,6 +286,9 @@ newest unsealed record of the same sector. Byte masks select the most recent
 value of each written byte. A record holds at most 32 contributors and seals
 at that limit or when selected as the head for installation. A simultaneous
 contributor is included before sealing. A, B, A stores occupy separate records.
+New-record metadata decodes the next free record directly; combining selects
+the youngest record separately. A zero write always allocates and aligns its
+lower record to the 64-byte block.
 Launch credit reserves an arriving scalar without comparing its address or
 borrowing a simultaneous installation. The lookahead scheduler samples physical
 record conflicts before selecting by age. Queue changes invalidate that sample.

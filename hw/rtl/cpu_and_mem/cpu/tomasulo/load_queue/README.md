@@ -596,6 +596,9 @@ result waits in the data RAM. An AMO that does not fault completes through the
 data RAM, and nothing enters `cdb_stage` on a partial-flush cycle. When
 several results are ready, `cdb_stage` takes a queued completion first, then
 a memory response, a fault, an SQ forward, and an L0 hit.
+The payload mux prepares its nonresponse fault arm independently of the
+response decision, then selects a response at the final mux unless a queued
+completion has priority. This preserves the same capture edge and result.
 
 The completion-valid output is the stage-valid bit gated by `!i_flush_en`.
 Partial-flush tag comparisons determine whether the staged result is discarded.

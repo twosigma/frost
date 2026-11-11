@@ -131,32 +131,25 @@ module coherence_store_buffer #(
         twin_q[slot] <= 1'b0;
       end else begin
         if (i_pop && o_head == 2'(slot)) o_valid[slot] <= 1'b0;
+        // Allocation always targets next_q. Decode it directly, independently
+        // of the combining record's address and the zero-write choice.
+        if (allocate && next_q == 2'(slot)) begin
+          o_valid[slot] <= 1'b1;
+          o_sealed[slot] <= zero_in;
+          o_acquired[slot] <= 1'b0;
+          o_ep[slot] <= '0;
+          o_addr[slot] <= {i_addr[ADDR_WIDTH-1:6], i_addr[5] && !zero_in, 5'b0};
+          o_tag[slot] <= i_tag;
+          o_mask[slot] <= zero_in ? '1 : 32'(i_mask) << {i_addr[4:3], 3'b000};
+          o_contributors[slot] <= 6'd1;
+          zero_q[slot] <= zero_in;
+          twin_q[slot] <= 1'b0;
+        end
         if (i_push && write_index == 2'(slot)) begin
           if (zero_in) begin
-            o_valid[slot] <= 1'b1;
-            o_sealed[slot] <= 1'b1;
-            o_acquired[slot] <= 1'b0;
-            o_ep[slot] <= '0;
-            o_addr[slot] <= {i_addr[ADDR_WIDTH-1:6], 6'b000000};
-            o_tag[slot] <= i_tag;
-            o_mask[slot] <= '1;
             o_data[slot] <= '0;
-            o_contributors[slot] <= 6'd1;
-            zero_q[slot] <= 1'b1;
-            twin_q[slot] <= 1'b0;
           end else begin
-            if (!merge) begin
-              o_valid[slot] <= 1'b1;
-              o_sealed[slot] <= 1'b0;
-              o_acquired[slot] <= 1'b0;
-              o_ep[slot] <= '0;
-              o_addr[slot] <= {i_addr[ADDR_WIDTH-1:5], 5'b0};
-              o_tag[slot] <= i_tag;
-              o_mask[slot] <= 32'(i_mask) << {i_addr[4:3], 3'b000};
-              o_contributors[slot] <= 6'd1;
-              zero_q[slot] <= 1'b0;
-              twin_q[slot] <= 1'b0;
-            end else begin
+            if (merge) begin
               o_mask[slot] <= o_mask[slot] | (32'(i_mask) << {i_addr[4:3], 3'b000});
               o_contributors[slot] <= o_contributors[slot] + 6'd1;
               if (o_contributors[slot] == 31) o_sealed[slot] <= 1'b1;
