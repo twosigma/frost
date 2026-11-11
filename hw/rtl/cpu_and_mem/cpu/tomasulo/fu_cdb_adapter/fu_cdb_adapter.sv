@@ -45,8 +45,8 @@ module fu_cdb_adapter #(
     parameter bit ALWAYS_GRANTED = 1'b0,
     // Take the input's partial-flush age compare from i_fu_result_younger,
     // which a producer that selects the input tag late forms ahead of the
-    // select. It must equal the compare of i_fu_result.tag whenever
-    // i_fu_result.valid; otherwise i_fu_result_younger is ignored.
+    // select. It must equal the tag compare while i_fu_result.valid and
+    // i_flush_en are both set; otherwise i_fu_result_younger is ignored.
     parameter bit INPUT_YOUNGER_PRECOMPUTED = 1'b0
 ) (
     input logic i_clk,

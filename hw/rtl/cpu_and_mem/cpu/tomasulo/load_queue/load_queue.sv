@@ -3425,18 +3425,35 @@ module load_queue #(
       sq_do_forward ? fwd_bypass_value :
       cache_hit_bypass_value;
 
-  // Select response data last. Prepare the nonresponse fault arm without
-  // response qualification: a response replaces it at the final mux.
-  // Preserve priority: issue > response > fault > forward/cache.
-  (* keep = "true" *) logic [FLEN-1:0] cdb_value_nonresponse;
+  // Prepare the independent fault/cache arm before selecting late response
+  // and forwarding data. Preserve priority: issue > response > fault > forward/cache.
+  (* keep = "true" *) logic [FLEN-1:0] cdb_value_other;
   (* keep = "true" *) logic cdb_value_select_response;
+  (* keep = "true" *) logic cdb_value_select_forward;
   logic [FLEN-1:0] cdb_value_next;
-  assign cdb_value_nonresponse = issue_cdb_found ? issue_cdb_result.value :
+  assign cdb_value_other = issue_cdb_found ? issue_cdb_result.value :
       coherent_address_fault ? {{(FLEN - XLEN) {1'b0}}, sq_check_addr_q} :
-      (coherent_forward_ok) ?
-      fwd_bypass_value : cache_hit_bypass_value;
+      cache_hit_bypass_value;
   assign cdb_value_select_response = !issue_cdb_found && resp_bypass_data_sel;
-  assign cdb_value_next = cdb_value_select_response ? resp_bypass_value : cdb_value_nonresponse;
+  assign cdb_value_select_forward = !issue_cdb_found &&
+      !coherent_address_fault && coherent_forward_ok;
+`ifdef FROST_XILINX_PRIMS
+  for (genvar value_bit = 0; value_bit < FLEN; value_bit++) begin : gen_cdb_value
+    (* dont_touch = "true" *) LUT5 #(
+        .INIT(32'hf0f0ccaa)
+    ) u_select (
+        .I0(cdb_value_other[value_bit]),
+        .I1(fwd_bypass_value[value_bit]),
+        .I2(resp_bypass_value[value_bit]),
+        .I3(cdb_value_select_forward),
+        .I4(cdb_value_select_response),
+        .O (cdb_value_next[value_bit])
+    );
+  end
+`else
+  assign cdb_value_next = cdb_value_select_response ? resp_bypass_value :
+      cdb_value_select_forward ? fwd_bypass_value : cdb_value_other;
+`endif
 
 `ifndef SYNTHESIS
   if (1'b1) begin : gen_coherent_bypass_payload_check
