@@ -417,7 +417,10 @@ including exact major-interrupt selection in `mtopi` and `stopi`, read-only
 zero major priorities and `mvien`, and `mvip` aliases of software pending
 bits. The Sscofpmf local counter-overflow interrupt (13) has the lowest
 default priority in both; `mvip` bit 13 reads zero because `mvien` bit 13
-does. The ROB samples indirect-access legality at allocation. Serialized
+does. Interrupt takes recheck the selected source's current pending bit,
+local enable and delegation, so a `mip` or `sip` clear already in the CSR
+commit path cancels a stale registered request. The ROB samples
+indirect-access legality at allocation. Serialized
 select writes prevent a younger access from using stale legality. The files
 report `*topei` and their lines from their registers a cycle late. CSR commits
 never come in consecutive cycles, which a simulation assertion checks, so

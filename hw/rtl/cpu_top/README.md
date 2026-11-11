@@ -166,8 +166,8 @@ The hart implements `miselect`, `mireg`, `mtopei`, `mtopi`, `mvien`, `mvip`,
 `0x1ff` and map larger writes to `0x1ff`. Their implemented register decodes
 are flops written with the selects. Major priorities and `mvien` read zero.
 `mtopi` reports the highest pending, enabled, undelegated major interrupt in
-MEI, MSI, MTI, SEI, SSI, STI order. `stopi` reports delegated SEI, SSI, STI in
-that order. Both report priority 1 and ignore global interrupt enables.
+MEI, MSI, MTI, SEI, SSI, STI, LCOFI order. `stopi` reports delegated SEI, SSI,
+STI and LCOFI in that order. Both report priority 1 and ignore global interrupt enables.
 `mvip` exposes the software SSIP and SEIP bits and the software STIP bit while
 STCE is clear. A `*topei` write claims its reported identity; a pure read has
 no side effect. The [IMSIC guide](../peripherals/imsic/README.md) gives the

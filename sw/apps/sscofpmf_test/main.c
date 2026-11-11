@@ -29,6 +29,9 @@
  *   F  scountovf below M is masked by mcounteren; U access is illegal.
  *   G  MINH/SINH/UINH stop retired-instruction and cycle counting only in
  *      their own privilege.
+ *   H  A mip clear racing an overflow cannot deliver a stale LCOFI after
+ *      its pending bit has cleared.
+ *   I  The same race through delegated sip in S also cancels the take.
  *
  * Counter 10 counts retired instructions and counter 9 cycles. CSRs are
  * accessed by number so the test needs no Sscofpmf-aware assembler.
@@ -98,12 +101,14 @@ static void spin(int n)
 }
 
 /* ---- trap state ---- */
-static volatile unsigned long g_cause;     /* exception that ended a case */
-static volatile unsigned long g_int_cause; /* last M interrupt cause */
-static volatile unsigned long g_int_count; /* M interrupts taken */
-static volatile unsigned long g_s_cause;   /* S handler: scause */
-static volatile unsigned long g_s_ovf;     /* S handler: scountovf */
-static volatile unsigned long g_s_value;   /* S body result */
+static volatile unsigned long g_cause;             /* exception that ended a case */
+static volatile unsigned long g_int_cause;         /* last M interrupt cause */
+static volatile unsigned long g_int_count;         /* M interrupts taken */
+static volatile unsigned long g_stale_int_count;   /* Interrupts with LCOFIP clear */
+static volatile unsigned long g_stale_s_int_count; /* S interrupts with LCOFIP clear */
+static volatile unsigned long g_s_cause;           /* S handler: scause */
+static volatile unsigned long g_s_ovf;             /* S handler: scountovf */
+static volatile unsigned long g_s_value;           /* S body result */
 
 /*
  * M handler. An interrupt (only LCOFI is enabled in this test) is counted,
@@ -120,6 +125,15 @@ __attribute__((naked, aligned(4))) static void m_trap_handler(void)
                      "sd   t3, 24(sp)\n"
                      "csrr t0, mcause\n"
                      "bgez t0, 1f\n"
+                     "csrr t2, mip\n"
+                     "li   t1, 0x2000\n"
+                     "and  t2, t2, t1\n"
+                     "bnez t2, 3f\n"
+                     "la   t1, g_stale_int_count\n"
+                     "ld   t2, 0(t1)\n"
+                     "addi t2, t2, 1\n"
+                     "sd   t2, 0(t1)\n"
+                     "3:\n"
                      "la   t1, g_int_cause\n"
                      "sd   t0, 0(t1)\n"
                      "la   t1, g_int_count\n"
@@ -167,6 +181,31 @@ __attribute__((naked, aligned(4))) static void s_trap_handler(void)
                      "j    .\n");
 }
 
+/* Return to the S clear-race body after checking the live pending bit. */
+__attribute__((naked, aligned(4))) static void s_clear_race_handler(void)
+{
+    __asm__ volatile("addi sp, sp, -32\n"
+                     "sd   t0, 0(sp)\n"
+                     "sd   t1, 8(sp)\n"
+                     "sd   t2, 16(sp)\n"
+                     "csrr t0, sip\n"
+                     "li   t1, 0x2000\n"
+                     "and  t0, t0, t1\n"
+                     "bnez t0, 1f\n"
+                     "la   t1, g_stale_s_int_count\n"
+                     "ld   t2, 0(t1)\n"
+                     "addi t2, t2, 1\n"
+                     "sd   t2, 0(t1)\n"
+                     "1:\n"
+                     "li   t0, 0x2000\n"
+                     "csrc sip, t0\n"
+                     "ld   t0, 0(sp)\n"
+                     "ld   t1, 8(sp)\n"
+                     "ld   t2, 16(sp)\n"
+                     "addi sp, sp, 32\n"
+                     "sret\n");
+}
+
 /* Run fn at priv through MRET; the M handler returns here on its exception. */
 static unsigned long run_at(void (*fn)(void), int priv)
 {
@@ -208,6 +247,17 @@ __attribute__((naked)) static void b_read_scountovf(void)
 __attribute__((naked)) static void b_wait_lcofi(void)
 {
     __asm__ volatile("1: j 1b");
+}
+
+__attribute__((naked)) static void b_clear_race(void)
+{
+    __asm__ volatile("li   t0, 0x2000\n"
+                     "csrc sip, t0\n"
+                     "li   t0, 200\n"
+                     "1: addi t0, t0, -1\n"
+                     "bnez t0, 1b\n"
+                     "ecall\n"
+                     "j .");
 }
 
 /* Arm counter 10 (instret) `before` instructions from a wrap, with OF clear. */
@@ -364,6 +414,50 @@ int main(void)
     spin(20);
     ok &= report("G m-minh-instret", csr_read_num(0xB0A), 0);
     csr_write_num(0x32A, 0);
+
+    /* H: Sweep the cycle overflow across MIE enable and the following
+     * pending-bit clear. Each counter wraps once, so a handler must still
+     * see LCOFIP set unless a stale registered sample survived the clear.
+     * The clear may already be in the registered CSR commit path when the
+     * interrupt's commit hold rises. */
+    g_stale_int_count = 0;
+    csr_write(mie, LCOF);
+    for (unsigned long before = 1; before <= 128; before++) {
+        csr_clear(mstatus, 1ul << 3);
+        csr_write_num(0x329, 0);
+        csr_clear(mip, LCOF);
+        csr_write_num(0xB09, 0ul - before);
+        csr_write_num(0x329, 9);
+        csr_set(mstatus, 1ul << 3);
+        csr_clear(mip, LCOF);
+        spin(8);
+        csr_write_num(0x329, 0);
+        csr_clear(mstatus, 1ul << 3);
+    }
+    csr_write(mie, 0);
+    csr_clear(mip, LCOF);
+    ok &= report("H clear-cancels-pending-take", g_stale_int_count, 0);
+
+    /* I: Count S cycles only, so the offset starts at the privilege
+     * transition and sweeps across the S body's explicit sip clear. */
+    g_stale_s_int_count = 0;
+    csr_write(stvec, (unsigned long) &s_clear_race_handler);
+    csr_write(mideleg, LCOF);
+    csr_write(sie, LCOF);
+    for (unsigned long before = 1; before <= 128; before++) {
+        csr_write_num(0x329, 0);
+        csr_clear(mip, LCOF);
+        csr_write_num(0xB09, 0ul - before);
+        csr_write_num(0x329, MINH | 9);
+        csr_set(mstatus, 1ul << 1);
+        run_at(&b_clear_race, PRIV_S);
+    }
+    csr_clear(mstatus, 1ul << 1);
+    csr_write(sie, 0);
+    csr_write(mideleg, 0);
+    csr_write_num(0x329, 0);
+    csr_clear(mip, LCOF);
+    ok &= report("I sip-clear-cancels-pending-take", g_stale_s_int_count, 0);
 
     uart_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
     for (;;) {

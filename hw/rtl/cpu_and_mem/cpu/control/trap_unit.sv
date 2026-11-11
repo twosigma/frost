@@ -25,7 +25,7 @@
  * Interrupt eligibility is evaluated per target class:
  *   M-target (mideleg[i]=0, including all machine classes):
  *     pending && mie[i] && (priv < M || mstatus.MIE)
- *   S-target (mideleg[i]=1, supervisor classes only):
+ *   S-target (mideleg[i]=1, supervisor or local classes):
  *     pending && mie[i] && (priv == U || (priv == S && sstatus.SIE))
  * An armed M request takes priority over an armed S request. Within M,
  * priority is MEI > MSI > MTI > SEI > SSI > STI > LCOFI; within S,
@@ -554,15 +554,21 @@ module trap_unit #(
     end
   end
 
-  // Recheck enable and delegation at the take decision so CSR writes can
-  // cancel a stale registered interrupt request.
+  // Recheck the selected source's pending bit, enable and delegation at
+  // the take decision. A pending-bit clear can already be in the registered
+  // CSR commit path when interrupt arming raises the commit hold. Checking
+  // only the latched sample would take an interrupt after that clear.
+  // Combine these terms under the one-hot select; a different live source
+  // must not keep a withdrawn cause eligible.
   logic m_latched_source_enabled, s_latched_source_enabled;
   assign m_latched_source_enabled = |(m_int_sel & {
-      mie_lcofie && !deleg_lcof, mie_stie && !deleg_sti, mie_ssie && !deleg_ssi,
-      mie_seie && !deleg_sei, mie_mtie, mie_msie, mie_meie});
+      lcofip && mie_lcofie && !deleg_lcof, stip && mie_stie && !deleg_sti,
+      ssip && mie_ssie && !deleg_ssi, seip && mie_seie && !deleg_sei,
+      i_interrupts.mtip && mie_mtie, i_interrupts.msip && mie_msie,
+      i_interrupts.meip && mie_meie});
   assign s_latched_source_enabled = |(s_int_sel & {
-      mie_lcofie && deleg_lcof, mie_stie && deleg_sti, mie_ssie && deleg_ssi,
-      mie_seie && deleg_sei});
+      lcofip && mie_lcofie && deleg_lcof, stip && mie_stie && deleg_sti,
+      ssip && mie_ssie && deleg_ssi, seip && mie_seie && deleg_sei});
 
   logic m_int_eligible, s_int_eligible;
   assign m_int_eligible = m_int_pending &&
@@ -797,17 +803,15 @@ module trap_unit #(
   // Formal Verification Properties
   // ===========================================================================
 `ifndef SYNTHESIS
-`ifndef FORMAL
+`ifdef FORMAL
+  wire check_reset_seen_q = 1'b1;
+`else
   // Registered resets can start deasserted with arbitrary state in simulation.
   logic check_reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (i_rst) check_reset_seen_q <= 1'b1;
 `endif
   always @(posedge i_clk) begin
-    if (
-`ifndef FORMAL
-        check_reset_seen_q &&
-`endif
-        !i_rst && i_amo_at_head && o_trap_taken)
+    if (check_reset_seen_q && !i_rst && i_amo_at_head && o_trap_taken)
       p_atomic_shield_selects_exception : assert (exception_take);
   end
 `endif
@@ -975,7 +979,7 @@ module trap_unit #(
     end
 
     if (f_past_valid && !i_rst && $past(!i_rst)) begin
-      // M-class priority: MEI > MSI > MTI > (undelegated) SEI > SSI > STI.
+      // M-class priority: MEI > MSI > MTI > (undelegated) SEI > SSI > STI > LCOFI.
       if ($past(meip_enabled)) begin
         p_meip_priority : assert (m_int_cause == riscv_pkg::IntMachineExternal);
       end
@@ -988,7 +992,7 @@ module trap_unit #(
       if ($past(!meip_enabled && !msip_enabled && !mtip_enabled && seip_m_enabled)) begin
         p_seip_m_priority : assert (m_int_cause == riscv_pkg::IntSupervisorExternal);
       end
-      // S-class priority: SEI > SSI > STI.
+      // S-class priority: SEI > SSI > STI > LCOFI.
       if ($past(seip_s_enabled)) begin
         p_seip_s_priority : assert (s_int_cause == riscv_pkg::IntSupervisorExternal);
       end
@@ -1020,13 +1024,42 @@ module trap_unit #(
         p_lcof_s_priority : assert (s_int_cause == riscv_pkg::IntLocalCounterOverflow);
         p_vectored_lcof_s : assert (s_vectored_offset == 6'd52);
       end
-      // An LCOFI cause is taken only while it is enabled and routed to the
-      // class taking it (the take rechecks both, like the other sources).
+      // Independently name each cause's current input, enable and route.
+      // Another live source cannot justify a withdrawn registered cause.
+      if (take_trap_m) begin
+        p_m_take_source_current :
+        assert (((m_int_cause == riscv_pkg::IntMachineExternal) &&
+                  i_interrupts.meip && mie_meie) ||
+                ((m_int_cause == riscv_pkg::IntMachineSoftware) &&
+                  i_interrupts.msip && mie_msie) ||
+                ((m_int_cause == riscv_pkg::IntMachineTimer) &&
+                  i_interrupts.mtip && mie_mtie) ||
+                ((m_int_cause == riscv_pkg::IntSupervisorExternal) &&
+                  seip && mie_seie && !deleg_sei) ||
+                ((m_int_cause == riscv_pkg::IntSupervisorSoftware) &&
+                  ssip && mie_ssie && !deleg_ssi) ||
+                ((m_int_cause == riscv_pkg::IntSupervisorTimer) &&
+                  stip && mie_stie && !deleg_sti) ||
+                ((m_int_cause == riscv_pkg::IntLocalCounterOverflow) &&
+                  lcofip && mie_lcofie && !deleg_lcof));
+      end
+      if (take_trap_s) begin
+        p_s_take_source_current :
+        assert (((s_int_cause == riscv_pkg::IntSupervisorExternal) &&
+                  seip && mie_seie && deleg_sei) ||
+                ((s_int_cause == riscv_pkg::IntSupervisorSoftware) &&
+                  ssip && mie_ssie && deleg_ssi) ||
+                ((s_int_cause == riscv_pkg::IntSupervisorTimer) &&
+                  stip && mie_stie && deleg_sti) ||
+                ((s_int_cause == riscv_pkg::IntLocalCounterOverflow) &&
+                  lcofip && mie_lcofie && deleg_lcof));
+      end
+      // LCOFI explicitly rechecks the writable pending bit after a clear.
       if (take_trap_m && (m_int_cause == riscv_pkg::IntLocalCounterOverflow)) begin
-        p_lcof_m_take_qualified : assert (mie_lcofie && !deleg_lcof);
+        p_lcof_m_take_qualified : assert (lcofip && mie_lcofie && !deleg_lcof);
       end
       if (take_trap_s && (s_int_cause == riscv_pkg::IntLocalCounterOverflow)) begin
-        p_lcof_s_take_qualified : assert (mie_lcofie && deleg_lcof);
+        p_lcof_s_take_qualified : assert (lcofip && mie_lcofie && deleg_lcof);
       end
 
       // Vectored offset correctness (spot checks per class).
