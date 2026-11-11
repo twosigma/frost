@@ -21,7 +21,7 @@ cover: read -formal -sv trap_unit.sv
 # Entry-enable identities and atomic exception selection use arbitrary state.
 prove: read -formal -D TRAP_ENTRY_ENABLE_LOCAL_PROOF -sv trap_unit.sv
 prep -top trap_unit
-prove: select -assert-count 4 t:$check
+prove: select -assert-count 5 t:$check
 prove: select -assert-none t:$assume
 
 [files]

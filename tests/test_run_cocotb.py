@@ -1227,7 +1227,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description=(
             "Sscofpmf counter overflow, LCOFI in M and delegated to S, scountovf, "
-            "privilege-mode filtering and pending-clear cancellation"
+            "privilege-mode filtering, pending-clear cancellation and CSR priority refresh"
         ),
     ),
     "ns16550_irq_console_test": CocotbRunConfig(

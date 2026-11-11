@@ -61,6 +61,11 @@ module trap_unit #(
 
     // Pipeline control
     input logic i_pipeline_stall,
+    // High alongside the CSR storage update. Refresh registered interrupt
+    // selection before consuming it; the write may enable a higher source.
+    // Detection continues, and synchronous exceptions, debug and xRET remain
+    // independent of this interrupt-only window.
+    input logic i_csr_irq_update,
 
     // Full flushes must wait for committed stores to drain or the SQ would
     // discard architectural writes. o_trap_drain_wait also holds commit so a
@@ -604,9 +609,9 @@ module trap_unit #(
   // source re-latches when eligible again.
   logic m_int_take_ready, s_int_take_ready;
   assign m_int_take_ready = m_int_eligible && m_take_armed_q &&
-      !i_amo_at_head && !i_device_read_at_head;
+      !i_amo_at_head && !i_device_read_at_head && !i_csr_irq_update;
   assign s_int_take_ready = s_int_eligible && s_take_armed_q &&
-      !i_amo_at_head && !i_device_read_at_head;
+      !i_amo_at_head && !i_device_read_at_head && !i_csr_irq_update;
 
   // Exception delegation: decided from the registered exception cause (the
   // exception waits at the head with commit held, so priv and medeleg are
@@ -698,7 +703,9 @@ module trap_unit #(
        (!trap_taken_prev && (i_mret_start || i_sret_start || i_dret_start)));
 
   // Hold commit while a trap or xRET waits for stores to drain, so the
-  // committed set shrinks and the wait is bounded. Also hold during arming.
+  // committed set shrinks and the wait is bounded. Also hold during arming
+  // and a CSR selection refresh, keeping the registered commit hold through
+  // the first subsequent take even when the committed set is already empty.
   // Include raw interrupt samples: the ROB can release WFI a cycle before
   // registered eligibility rises. Otherwise the following instruction could
   // retire in that gap and advance the interrupt resume PC.
@@ -706,8 +713,8 @@ module trap_unit #(
       ((d_int_eligible || m_int_eligible || s_int_eligible || exception_pending ||
         i_mret_start || i_sret_start || i_dret_start) && !i_sq_committed_empty) ||
       ((d_int_pending_comb || d_int_eligible) && !d_take_armed_q) ||
-      ((m_int_pending_comb || m_int_eligible) && !m_take_armed_q) ||
-      ((s_int_pending_comb || s_int_eligible) && !s_take_armed_q);
+      ((m_int_pending_comb || m_int_eligible) && (!m_take_armed_q || i_csr_irq_update)) ||
+      ((s_int_pending_comb || s_int_eligible) && (!s_take_armed_q || i_csr_irq_update));
 
   assign o_trap_taken = take_trap;
   assign o_trap_to_s = trap_to_s;
@@ -825,6 +832,8 @@ module trap_unit #(
     assert (o_trap_save_s == (o_trap_taken && !o_trap_no_csr && !o_trap_to_d && o_trap_to_s));
     p_trap_enter_d_matches_steering :
     assert (o_trap_enter_d == (o_trap_taken && !o_trap_no_csr && o_trap_to_d));
+    p_csr_refresh_excludes_architectural_interrupt :
+    assert (!(i_csr_irq_update && (take_trap_m || take_trap_s)));
   end
 
 `ifndef TRAP_ENTRY_ENABLE_LOCAL_PROOF

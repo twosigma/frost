@@ -419,7 +419,12 @@ bits. The Sscofpmf local counter-overflow interrupt (13) has the lowest
 default priority in both; `mvip` bit 13 reads zero because `mvien` bit 13
 does. Interrupt takes recheck the selected source's current pending bit,
 local enable and delegation, so a `mip` or `sip` clear already in the CSR
-commit path cancels a stale registered request. The ROB samples
+commit path cancels a stale registered request. A registered post-CSR window
+also refreshes interrupt cause and vector selection before a take, so a write
+enabling a higher-priority source cannot enter under the old priority. The
+window retains the interrupt's commit hold, including when committed stores
+are already drained. It does not stall ordinary CSR retirement, exceptions,
+debug entry or xRET. The ROB samples
 indirect-access legality at allocation. Serialized
 select writes prevent a younger access from using stale legality. The files
 report `*topei` and their lines from their registers a cycle late. CSR commits

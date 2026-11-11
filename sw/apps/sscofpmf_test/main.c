@@ -32,6 +32,8 @@
  *   H  A mip clear racing an overflow cannot deliver a stale LCOFI after
  *      its pending bit has cleared.
  *   I  The same race through delegated sip in S also cancels the take.
+ *   J/K  Enabling an already-pending SSI during overflow arming refreshes
+ *      interrupt priority before entry in M and S.
  *
  * Counter 10 counts retired instructions and counter 9 cycles. CSRs are
  * accessed by number so the test needs no Sscofpmf-aware assembler.
@@ -109,6 +111,18 @@ static volatile unsigned long g_stale_s_int_count; /* S interrupts with LCOFIP c
 static volatile unsigned long g_s_cause;           /* S handler: scause */
 static volatile unsigned long g_s_ovf;             /* S handler: scountovf */
 static volatile unsigned long g_s_value;           /* S body result */
+static volatile unsigned long g_priority_seen;
+static volatile unsigned long g_priority_bad;
+static volatile unsigned long g_priority_after;
+static volatile unsigned long g_priority_store __attribute__((used));
+static volatile unsigned long g_priority_bad_cause;
+static volatile unsigned long g_priority_bad_epc;
+static volatile unsigned long g_priority_bad_pending;
+static volatile unsigned long g_priority_bad_enables;
+static volatile unsigned long g_priority_bad_top;
+extern char priority_m_after;
+extern char priority_s_after;
+
 
 /*
  * M handler. An interrupt (only LCOFI is enabled in this test) is counted,
@@ -206,6 +220,97 @@ __attribute__((naked, aligned(4))) static void s_clear_race_handler(void)
                      "sret\n");
 }
 
+
+/* Preserve the interrupted body and inspect only the first interrupt of each
+ * phase. An LCOFI before the enable is allowed. It is stale priority if SSI
+ * was enabled by that instruction, xepc is after it, and both sources remain
+ * pending. Record topi as an independent description of the live priority. */
+#define PRIORITY_TRAP_ASM(cause, epc, pending, enables, top, ret)                                  \
+    "addi sp, sp, -64\n"                                                                           \
+    "sd t0, 0(sp)\n"                                                                               \
+    "sd t1, 8(sp)\n"                                                                               \
+    "sd t2, 16(sp)\n"                                                                              \
+    "sd t3, 24(sp)\n"                                                                              \
+    "sd t4, 32(sp)\n"                                                                              \
+    "sd t5, 40(sp)\n"                                                                              \
+    "sd t6, 48(sp)\n"                                                                              \
+    "la t5, g_priority_seen\n"                                                                     \
+    "ld t6, 0(t5)\n"                                                                               \
+    "bnez t6, 2f\n"                                                                                \
+    "li t6, 1\n"                                                                                   \
+    "sd t6, 0(t5)\n"                                                                               \
+    "csrr t0, " cause "\n"                                                                         \
+    "csrr t1, " epc "\n"                                                                           \
+    "csrr t2, " pending "\n"                                                                       \
+    "csrr t3, " enables "\n"                                                                       \
+    "csrr t4, " top "\n"                                                                           \
+    "li t6, 0x800000000000000d\n"                                                                  \
+    "bne t0, t6, 2f\n"                                                                             \
+    "la t5, g_priority_after\n"                                                                    \
+    "ld t6, 0(t5)\n"                                                                               \
+    "bltu t1, t6, 2f\n"                                                                            \
+    "andi t6, t3, 2\n"                                                                             \
+    "beqz t6, 2f\n"                                                                                \
+    "li t5, 0x2002\n"                                                                              \
+    "and t6, t2, t5\n"                                                                             \
+    "bne t6, t5, 2f\n"                                                                             \
+    "la t5, g_priority_bad\n"                                                                      \
+    "ld t6, 0(t5)\n"                                                                               \
+    "addi t6, t6, 1\n"                                                                             \
+    "sd t6, 0(t5)\n"                                                                               \
+    "la t5, g_priority_bad_cause\n"                                                                \
+    "sd t0, 0(t5)\n"                                                                               \
+    "la t5, g_priority_bad_epc\n"                                                                  \
+    "sd t1, 0(t5)\n"                                                                               \
+    "la t5, g_priority_bad_pending\n"                                                              \
+    "sd t2, 0(t5)\n"                                                                               \
+    "la t5, g_priority_bad_enables\n"                                                              \
+    "sd t3, 0(t5)\n"                                                                               \
+    "la t5, g_priority_bad_top\n"                                                                  \
+    "sd t4, 0(t5)\n"                                                                               \
+    "2:\n"                                                                                         \
+    "li t0, 0x2002\n"                                                                              \
+    "csrc " pending ", t0\n"                                                                       \
+    "ld t0, 0(sp)\n"                                                                               \
+    "ld t1, 8(sp)\n"                                                                               \
+    "ld t2, 16(sp)\n"                                                                              \
+    "ld t3, 24(sp)\n"                                                                              \
+    "ld t4, 32(sp)\n"                                                                              \
+    "ld t5, 40(sp)\n"                                                                              \
+    "ld t6, 48(sp)\n"                                                                              \
+    "addi sp, sp, 64\n" ret "\n"
+
+__attribute__((naked, aligned(4))) static void m_priority_handler(void)
+{
+    __asm__ volatile(PRIORITY_TRAP_ASM("mcause", "mepc", "mip", "mie", "0xFB0", "mret"));
+}
+
+__attribute__((naked, aligned(4))) static void s_priority_handler(void)
+{
+    __asm__ volatile(PRIORITY_TRAP_ASM("scause", "sepc", "sip", "sie", "0xDB0", "sret"));
+}
+
+static int report_priority(const char *name)
+{
+    int ok = report(name, g_priority_bad, 0);
+    if (!ok) {
+        uart_puts("priority snapshot cause=");
+        uart_hex(g_priority_bad_cause);
+        uart_puts(" epc=");
+        uart_hex(g_priority_bad_epc);
+        uart_puts(" after=");
+        uart_hex(g_priority_after);
+        uart_puts(" pending=");
+        uart_hex(g_priority_bad_pending);
+        uart_puts(" enables=");
+        uart_hex(g_priority_bad_enables);
+        uart_puts(" top=");
+        uart_hex(g_priority_bad_top);
+        uart_puts("\r\n");
+    }
+    return ok;
+}
+
 /* Run fn at priv through MRET; the M handler returns here on its exception. */
 static unsigned long run_at(void (*fn)(void), int priv)
 {
@@ -258,6 +363,40 @@ __attribute__((naked)) static void b_clear_race(void)
                      "bnez t0, 1b\n"
                      "ecall\n"
                      "j .");
+}
+
+
+/* A ready store immediately after the enable also exercises the commit hold
+ * across the priority refresh. Register setup precedes the enable. */
+__attribute__((naked)) static void b_priority_m(void)
+{
+    __asm__ volatile("la t1, g_priority_store\n"
+                     "li t2, 1\n"
+                     ".rept 8\n nop\n .endr\n"
+                     "csrsi mie, 2\n"
+                     ".globl priority_m_after\n"
+                     "priority_m_after:\n"
+                     "sd t2, 0(t1)\n"
+                     "li t0, 20\n"
+                     "1: addi t0, t0, -1\n"
+                     "bnez t0, 1b\n"
+                     "ret\n");
+}
+
+__attribute__((naked)) static void b_priority_s(void)
+{
+    __asm__ volatile("la t1, g_priority_store\n"
+                     "li t2, 1\n"
+                     ".rept 8\n nop\n .endr\n"
+                     "csrsi sie, 2\n"
+                     ".globl priority_s_after\n"
+                     "priority_s_after:\n"
+                     "sd t2, 0(t1)\n"
+                     "li t0, 20\n"
+                     "1: addi t0, t0, -1\n"
+                     "bnez t0, 1b\n"
+                     "ecall\n"
+                     "j .\n");
 }
 
 /* Arm counter 10 (instret) `before` instructions from a wrap, with OF clear. */
@@ -458,6 +597,55 @@ int main(void)
     csr_write_num(0x329, 0);
     csr_clear(mip, LCOF);
     ok &= report("I sip-clear-cancels-pending-take", g_stale_s_int_count, 0);
+
+    /* J: SSIP is stable while disabled. Sweep a hardware overflow across
+     * the CSR that enables it; SSI must win if that CSR has executed. */
+    set_trap_handler(&m_priority_handler);
+    csr_write(mideleg, 0);
+    g_priority_bad = 0;
+    g_priority_after = (unsigned long) &priority_m_after;
+    for (unsigned long before = 1; before <= 128; before++) {
+        csr_clear(mstatus, 1ul << 3);
+        csr_write_num(0x329, 0);
+        csr_write(mie, LCOF);
+        csr_write(mip, 1ul << 1);
+        g_priority_seen = 0;
+        csr_write_num(0xB09, 0ul - before);
+        csr_write_num(0x329, 9);
+        csr_set(mstatus, 1ul << 3);
+        b_priority_m();
+        csr_clear(mstatus, 1ul << 3);
+        csr_write_num(0x329, 0);
+    }
+    csr_write(mie, 0);
+    csr_clear(mip, LCOF | (1ul << 1));
+    ok &= report_priority("J mie-enable-refreshes-priority");
+
+    /* K: Repeat at S privilege through the sie alias. */
+    set_trap_handler(&m_trap_handler);
+    csr_write(stvec, (unsigned long) &s_priority_handler);
+    csr_write(mideleg, LCOF | (1ul << 1));
+    g_priority_bad = 0;
+    g_priority_after = (unsigned long) &priority_s_after;
+    unsigned long unexpected = 0;
+    for (unsigned long before = 1; before <= 128; before++) {
+        csr_write_num(0x329, 0);
+        csr_write(sie, LCOF);
+        csr_write(mip, 1ul << 1);
+        g_priority_seen = 0;
+        csr_write_num(0xB09, 0ul - before);
+        csr_write_num(0x329, MINH | 9);
+        csr_set(mstatus, 1ul << 1);
+        if (run_at(&b_priority_s, PRIV_S) != 9)
+            unexpected++;
+    }
+    csr_clear(mstatus, 1ul << 1);
+    csr_write(sie, 0);
+    csr_write(mideleg, 0);
+    csr_write_num(0x329, 0);
+    csr_clear(mip, LCOF | (1ul << 1));
+    ok &= report("K priority-body-returned", unexpected, 0);
+    ok &= report_priority("K sie-enable-refreshes-priority");
 
     uart_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
     for (;;) {
