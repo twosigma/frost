@@ -109,6 +109,9 @@ module dmmu (
     output logic o_walk_req_valid,
     input logic i_walk_req_ready,
     output logic [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
+    // Registered: S1 holds an op without an accepted walk. o_walk_req_valid
+    // implies it, so the walk port may select o_walk_vpn from it alone.
+    output logic o_walk_hold,
     input logic i_walk_resp_valid,
     input riscv_pkg::ptw_resp_t i_walk_resp
 );
@@ -691,6 +694,7 @@ module dmmu (
       !s1_killed && !i_tlb_invalidate;
   assign o_walk_req_valid = s1_walk_eligible && !tlb_hit[0];
   assign o_walk_vpn = s1_q.va[38:12];
+  assign o_walk_hold = s1_valid_q && !s1_walk_asked_q;
 
   // ---------------------------------------------------------------------------
   // Early opportunistic ports: VA registered, lookup, result registered.

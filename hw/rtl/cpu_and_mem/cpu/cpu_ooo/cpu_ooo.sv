@@ -818,7 +818,7 @@ module cpu_ooo #(
     if (i_rst) sfence_tlb_flush_active_q <= 1'b0;
     else sfence_tlb_flush_active_q <= sfence_tlb_flush_active;
   end
-  logic walk_req_valid, walk_req_ready;
+  logic walk_req_valid, walk_req_ready, walk_hold;
   logic [riscv_pkg::Sv39VpnBits-1:0] walk_vpn;
   logic walk_resp_valid;
   riscv_pkg::ptw_resp_t walk_resp;
@@ -2538,6 +2538,7 @@ module cpu_ooo #(
       .o_walk_req_valid(walk_req_valid),
       .i_walk_req_ready(walk_req_ready),
       .o_walk_vpn(walk_vpn),
+      .o_walk_hold(walk_hold),
       .i_walk_resp_valid(walk_resp_valid),
       .i_walk_resp(walk_resp),
       .o_rob_full(rob_full),
@@ -4119,7 +4120,10 @@ module cpu_ooo #(
   // ===========================================================================
   // Page-Table Walker
   // ===========================================================================
-  // Data MMU requests take priority over instruction MMU requests. Record the
+  // Data MMU requests take priority over instruction MMU requests. The VPN
+  // select comes from registered state (walk_hold: the data MMU's S1 holds an
+  // op without an accepted walk), so the ROB-dependent data request valid
+  // stays off the L2 TLB read address; see walk_request_select. Record the
   // requesting side in walk_owner_i_q so only it receives the response; VPN
   // alone cannot distinguish requesters. TLB invalidate also discards the
   // walk and clears this routing bit. The line port goes to cache wup.
@@ -4129,25 +4133,42 @@ module cpu_ooo #(
   // priority; walk_owner_ma_q records it at acceptance in the same way, so a
   // walk accepted for a flushed instruction still answers its own requester.
   logic walk_owner_i_q;  // the walk in flight belongs to the instruction side
-  logic walk_owner_ma_q;  // the walk in flight belongs to the misaligned engine
-  assign ptw_req_valid = walk_req_valid || iwalk_req_valid || ma_walk_req_valid;
-  assign ptw_req_vpn = walk_req_valid ? walk_vpn : iwalk_req_valid ? iwalk_vpn : ma_walk_vpn;
-  assign walk_req_ready = ptw_req_ready;
-  assign iwalk_req_ready = ptw_req_ready && !walk_req_valid;
-  assign ma_walk_req_ready = ptw_req_ready && !walk_req_valid && !iwalk_req_valid;
+  logic core_ptw_req_valid, core_ptw_req_ready;
+  logic [riscv_pkg::Sv39VpnBits-1:0] core_ptw_req_vpn;
+  logic core_walk_owner_i;
+  walk_request_select u_walk_select (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_invalidate(tlb_invalidate),
+      .i_d_hold(walk_hold),
+      .i_d_valid(walk_req_valid),
+      .o_d_ready(walk_req_ready),
+      .i_d_vpn(walk_vpn),
+      .i_i_valid(iwalk_req_valid),
+      .o_i_ready(iwalk_req_ready),
+      .i_i_vpn(iwalk_vpn),
+      .o_valid(core_ptw_req_valid),
+      .i_ready(core_ptw_req_ready),
+      .o_vpn(core_ptw_req_vpn),
+      .o_owner_i(core_walk_owner_i)
+  );
+
+  assign ptw_req_valid = core_ptw_req_valid || (MISALIGNED_HW && ma_walk_req_valid);
+  assign ptw_req_vpn = core_ptw_req_valid ? core_ptw_req_vpn : ma_walk_vpn;
+  assign core_ptw_req_ready = ptw_req_ready;
+  assign ma_walk_req_ready = ptw_req_ready && !core_ptw_req_valid;
+
+  logic walk_owner_ma_q;
   always_ff @(posedge i_clk) begin
     if (i_rst || tlb_invalidate) begin
-      walk_owner_i_q  <= 1'b0;
       walk_owner_ma_q <= 1'b0;
     end else if (ptw_req_valid && ptw_req_ready) begin
-      walk_owner_i_q  <= !walk_req_valid && iwalk_req_valid;
-      // Constant without the engine, so the D and I response valids are
-      // exactly as they are without it.
-      walk_owner_ma_q <= MISALIGNED_HW && !walk_req_valid && !iwalk_req_valid;
+      walk_owner_ma_q <= MISALIGNED_HW && !core_ptw_req_valid;
     end
   end
-  assign walk_resp_valid = ptw_resp_valid && !walk_owner_i_q && !walk_owner_ma_q;
-  assign iwalk_resp_valid = ptw_resp_valid && walk_owner_i_q;
+
+  assign walk_resp_valid    = ptw_resp_valid && !core_walk_owner_i && !walk_owner_ma_q;
+  assign iwalk_resp_valid   = ptw_resp_valid && core_walk_owner_i && !walk_owner_ma_q;
   assign ma_walk_resp_valid = ptw_resp_valid && walk_owner_ma_q;
 
   // The second-level TLB answers repeat translations before the walker sees

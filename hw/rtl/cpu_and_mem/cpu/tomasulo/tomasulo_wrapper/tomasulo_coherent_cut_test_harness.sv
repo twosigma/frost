@@ -146,6 +146,7 @@ module tomasulo_coherent_cut_test_harness #(
     output logic o_walk_req_valid,
     input logic i_walk_req_ready,
     output logic [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
+    output logic o_walk_hold,
     input logic i_walk_resp_valid,
     input riscv_pkg::ptw_resp_t i_walk_resp,
     input logic i_widen_commit_ok,

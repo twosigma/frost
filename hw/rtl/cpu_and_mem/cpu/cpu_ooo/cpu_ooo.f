@@ -42,6 +42,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/control/trap_unit.sv
 # wrapper's list)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/ptw.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/l2tlb.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/walk_request_select.sv
 $(ROOT)/hw/rtl/lib/line_align.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/misaligned/ma_engine.sv
 
