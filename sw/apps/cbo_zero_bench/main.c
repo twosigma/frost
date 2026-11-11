@@ -137,8 +137,8 @@ int main(void)
 
     uart_puts("\r\n=== cbo.zero clear benchmark ===\r\n");
     /* Each method and size gets its own never-touched region, so the cold
-     * pass misses in the L1D and L2. The warm pass refills the region with
-     * a pattern first, so both passes overwrite nonzero data. */
+     * pass misses in the L1D and L2 and uses DDR's existing contents. The
+     * warm pass first writes a nonzero dword to every block. */
     static const unsigned long sizes[2] = {CBO_BENCH_SMALL, CBO_BENCH_LARGE};
     for (int size = 0; size < 2; size++) {
         for (int order = 0; order < 2; order++) {
