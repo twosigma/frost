@@ -16,18 +16,22 @@
     JALR mispredictions and traps recover at commit.
     Sv39 uses a 16-entry ITLB in IF and a 16-entry DTLB ahead of the
     eight-entry load and store queues. The load queue contains a direct-mapped
-    256-entry, eight-byte-granule L0 cache in FROST and receives store forwarding.
+    512-entry, eight-byte-granule L0 cache in FROST and receives store forwarding.
     Matching I and D badges connect the CPU to the system view below.
     Cached instruction fetch uses a two-line fetch buffer and 16 KiB L1I with
-    two miss slots; cached data uses a 128 KiB MSI L1D with eight request
-    endpoints and a two-entry ordered store buffer.
+    two miss slots; cached data uses a 128 KiB MSI L1D with eight read slots,
+    eight request endpoints (seven available for ordinary load misses) and
+    four ordered store records. A read-hit pipeline serves eligible loads
+    beside the controller's miss, store, grant and probe service.
     One shared page-table walker serves both TLBs. Its ReadOncePTW requests
     reach the L2 home, which probes L1D and merges dirty data. Instruction
     refills use ReadOnceIF through the same home. The NIC and DMA test engine
     use a 256-bit AXI4 mux and bridge in the SoC to reach coherent ingress.
     The home orders DMA through private-cache probes and load-queue cuts.
-    Tagged demand channels join L1D, instruction, walker and DMA requests at
-    the 2 MiB UltraRAM L2 home. The private sectors are 32 bytes and the home
+    Tagged channels join L1D, instruction, walker and DMA requests at the
+    2 MiB UltraRAM L2 home. A separate coherent prefetch agent follows data
+    and instruction streams and fills the L2. The home has eight fills.
+    The private sectors are 32 bytes and the home
     lines are 64 bytes. All three DDR caches are four-way. A 512-bit AXI4
     master reaches the board DDR4
     controller. Software sees a 1 GiB cached region at 0x80000000.
@@ -55,8 +59,10 @@
       hw/rtl/platform_top.sv + cpu_top/{cpu_top,frost_hart,frost_cluster_memory}.sv
         + soc_top/soc_top.sv: fetch buffer, memory, MMIO, debug.
       hw/rtl/lib/cache/coherent_hart_cache.sv: private caches and IF/PTW bridges.
+      hw/rtl/lib/cache/coherence_l1d.sv: read-hit pipeline and store records.
       hw/rtl/lib/cache/coherence_home.sv: shared home and victim recall.
       hw/rtl/lib/cache/coherence_home_engine.sv: probes and dirty-data merge.
+      hw/rtl/lib/cache/coherence_prefetch_agent.sv: data/instruction prefetch.
       hw/rtl/peripherals/nic/nic_top.sv: the NIC's register window, rings,
         DMA front and interrupt.
       hw/rtl/frost.sv, boards/{xilinx_frost_subsystem,x3/x3_frost}.sv:
@@ -211,7 +217,7 @@
     <path d="M 754 591 H 842" stroke="#4b8674"/>
     <text x="790" y="619" class="label">LQ · 8</text>
     <text x="790" y="646" class="small">+ L0 cache</text>
-    <text x="790" y="671" class="small">256 × 8 B</text>
+    <text x="790" y="671" class="small">512 × 8 B</text>
     <text x="790" y="712" class="label">SQ · 8</text>
     <path d="M 828 704 H 846 V 617 H 830" class="memlink" marker-end="url(#memory-arrow)"/>
   </g>
@@ -284,8 +290,8 @@
     <text x="462" y="1101" class="small">ReadOncePTW via home</text>
     <rect x="616" y="1016" width="244" height="100" rx="12" class="memory"/>
     <text x="738" y="1048" class="heading">L1D · 128 KiB</text>
-    <text x="738" y="1075" class="body">MSI · 4 store records</text>
-    <text x="738" y="1101" class="small">4-way · BRAM · 8 miss slots</text>
+    <text x="738" y="1075" class="body">Pipelined hits · 4 stores</text>
+    <text x="738" y="1101" class="small">4-way BRAM · 8 endpoints</text>
     <rect x="892" y="1016" width="244" height="100" rx="12" class="memory"/>
     <text x="1014" y="1048" class="heading">Coherent ingress</text>
     <text x="1014" y="1075" class="body">SoC AXI4 → line bridge</text>
@@ -298,7 +304,7 @@
     <path d="M 1014 1116 V 1144"/>
   </g>
   <rect x="64" y="1144" width="1072" height="50" rx="10" class="memory"/>
-  <text x="600" y="1176" class="label center">Coherent demands · L1D, ReadOnceIF, ReadOncePTW and DMA · home probes private data</text>
+  <text x="600" y="1176" class="label center">Coherent requests · L1D, IF, PTW, DMA and prefetch · home probes private data</text>
   <path d="M 226 1194 V 1222" class="memlink" marker-end="url(#memory-arrow)"/>
   <g id="l2-and-ddr" class="center">
     <rect x="64" y="1222" width="324" height="88" rx="12" class="memory"/>
