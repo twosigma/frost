@@ -242,6 +242,9 @@ module load_queue #(
     // =========================================================================
     input logic i_cache_invalidate_valid,
     input logic [riscv_pkg::XLEN-1:0] i_cache_invalidate_addr,
+    // With i_cache_invalidate_valid: a cached cbo.zero, which writes the whole
+    // 64-byte block at the address.
+    input logic i_cache_invalidate_block = 1'b0,
     input logic [63:0] i_cache_store_data = '0,
     input logic [7:0] i_cache_store_strb = '0,
     input logic i_l0_hit_allowed = 1'b0,
@@ -938,7 +941,9 @@ module load_queue #(
   always_comb begin
     for (int sl = 0; sl < int'(CachedSlots); sl++) begin
       cs_inval_now[sl] = cs_valid[sl] && i_cache_invalidate_valid &&
-          (i_cache_invalidate_addr[XLEN-1:3] == cs_addr[sl][XLEN-1:3]);
+          (i_cache_invalidate_addr[XLEN-1:6] == cs_addr[sl][XLEN-1:6]) &&
+          (i_cache_invalidate_block ||
+           i_cache_invalidate_addr[5:3] == cs_addr[sl][5:3]);
     end
   end
 
@@ -2692,6 +2697,7 @@ module load_queue #(
       // AMO serialization makes them exclusive; the cache does not require it.
       .i_invalidate_valid(i_cache_invalidate_valid),
       .i_invalidate_addr(i_cache_invalidate_addr),
+      .i_invalidate_block(i_cache_invalidate_block),
       .i_store_data(i_cache_store_data),
       .i_store_strb((CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(
           i_cache_invalidate_addr
@@ -2703,6 +2709,7 @@ module load_queue #(
       // invalidation because head serialization blocks younger loads.
       .i_lookup_invalidate_valid(i_cache_invalidate_valid),
       .i_lookup_invalidate_addr (i_cache_invalidate_addr),
+      .i_lookup_invalidate_block(i_cache_invalidate_block),
 
       // L0 survives pipeline flushes. Stores and DMA invalidate stale lines,
       // and response filtering prevents stale fills.
@@ -3096,29 +3103,21 @@ module load_queue #(
   // Each source's fill permission without the kill's compares.
   (* keep = "true" *) logic cache_fill_pre_slot, cache_fill_pre_fast;
   if (1'b1) begin : gen_coherent_fill_slot_permission
-    // A slot's fill permission leaves out this cycle's store, cut and DMA
-    // compares, which arrive last; the kill below applies them to the
-    // response slot alone.
+    // Prepare permission and invalidation independently for every slot;
+    // the response id selects their single-bit results.
     (* keep = "true" *) logic [CachedSlots-1:0] slot_permission;
+    (* keep = "true" *) logic [CachedSlots-1:0] slot_cut;
     for (genvar slot = 0; slot < CachedSlots; slot++) begin : gen_slot
       assign slot_permission[slot] = cs_valid[slot] && !cs_drop[slot] &&
           lq_valid[cs_idx[slot]] && !cs_is_lr[slot] && !cs_is_amo[slot] && !cs_inval[slot];
+      assign slot_cut[slot] = cs_inval_now[slot] || cs_coh_inval_now[slot];
     end
     assign cache_fill_pre_slot = !i_flush_all && slot_permission[resp_slot];
     assign cache_fill_if_slot = cache_fill_pre_slot && !cs_inval_now[resp_slot] &&
         !cs_coh_inval_now[resp_slot];
-    // The kill compares the late store, cut and DMA addresses once each with
-    // the response slot's address, selected first by the early response id,
-    // or takes the fast read's store compare, and the L0 applies it at its
-    // write enables' last gate. For a cached response it equals
-    // cs_inval_now || cs_coh_inval_now at the response slot.
-    wire [XLEN-1:3] resp_slot_dword = cs_addr[resp_slot][XLEN-1:3];
-    assign cache_fill_cut = i_mem_read_is_cached ? (cs_valid[resp_slot] &&
-        ((i_cache_invalidate_valid && i_cache_invalidate_addr[XLEN-1:3] == resp_slot_dword) ||
-         (i_coh_inval_valid &&
-          i_coh_inval_addr[XLEN-1:CohLineLsb] == resp_slot_dword[XLEN-1:CohLineLsb]) ||
-         (i_coherent_cut_hold &&
-          i_coherent_cut_addr[XLEN-1:CohLineLsb] == resp_slot_dword[XLEN-1:CohLineLsb]))) :
+    // Reuse the slot invalidation compares, including whole zero blocks.
+    // The L0 applies the selected kill at its write enables' last gate.
+    assign cache_fill_cut = i_mem_read_is_cached ? slot_cut[resp_slot] :
         (!CACHE_UNCACHED_DATA && fast_line_invalidate_now);
     assign cache_fill_pre = i_mem_read_valid && !mem_response_error &&
         (i_mem_read_is_cached ? cache_fill_pre_slot : cache_fill_pre_fast);
@@ -3426,19 +3425,18 @@ module load_queue #(
       sq_do_forward ? fwd_bypass_value :
       cache_hit_bypass_value;
 
-  // Prepare other sources before selecting the late response and forwarding
-  // data. Preserve priority: issue > fault > response > forward > cache.
+  // Prepare the independent fault/cache arm before selecting late response
+  // and forwarding data. Preserve priority: issue > response > fault > forward/cache.
   (* keep = "true" *) logic [FLEN-1:0] cdb_value_other;
   (* keep = "true" *) logic cdb_value_select_response;
   (* keep = "true" *) logic cdb_value_select_forward;
   logic [FLEN-1:0] cdb_value_next;
   assign cdb_value_other = issue_cdb_found ? issue_cdb_result.value :
-      misalign_bypass_data_sel ? {{(FLEN - XLEN) {1'b0}}, sq_check_addr_q} :
+      coherent_address_fault ? {{(FLEN - XLEN) {1'b0}}, sq_check_addr_q} :
       cache_hit_bypass_value;
-  assign cdb_value_select_response = !issue_cdb_found &&
-      !misalign_bypass_data_sel && resp_bypass_data_sel;
+  assign cdb_value_select_response = !issue_cdb_found && resp_bypass_data_sel;
   assign cdb_value_select_forward = !issue_cdb_found &&
-      !misalign_bypass_data_sel && coherent_forward_ok;
+      !coherent_address_fault && coherent_forward_ok;
 `ifdef FROST_XILINX_PRIMS
   for (genvar value_bit = 0; value_bit < FLEN; value_bit++) begin : gen_cdb_value
     (* dont_touch = "true" *) LUT5 #(

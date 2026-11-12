@@ -1034,7 +1034,8 @@ package riscv_pkg;
                                // MRET serial path; illegal outside Debug Mode
     CLMUL,                     // Zbc/Zbkc: low polynomial product
     CLMULH,                    // Zbc/Zbkc: high polynomial product
-    CLMULR                     // Zbc: reversed polynomial product
+    CLMULR,                    // Zbc: reversed polynomial product
+    CBO_ZERO                   // Zicboz: zero the 64-byte block containing rs1
   } instr_op_e;
 
   // Barrel-shifter controls decoded from operation bits:
@@ -1141,6 +1142,11 @@ package riscv_pkg;
   // and successor bits, so it already treats I/O like memory, and atomics to
   // devices fault.
   localparam int unsigned EnvcfgFiomBit = 0;
+  // CBZE (bit 7 of menvcfg and senvcfg, Zicboz): WARL {0,1}. cbo.zero is
+  // legal in M, in S with menvcfg.CBZE, and in U with both bits set.
+  localparam int unsigned EnvcfgCbzeBit = 7;
+  // Zicboz cache-block size in bytes: one L2 line, two L1D sectors.
+  localparam int unsigned CboZeroBlockBytes = 64;
   localparam bit [11:0] CsrMscratch = 12'h340;  // Machine scratch register
   localparam bit [11:0] CsrMepc = 12'h341;  // Machine exception PC
   localparam bit [11:0] CsrMcause = 12'h342;  // Machine trap cause
@@ -2746,6 +2752,8 @@ package riscv_pkg;
     logic                             is_fp;
     mem_size_e                        size;
     logic                             is_sc;       // Store-conditional
+    // cbo.zero: the entry keeps rs1 and writes the 64-byte block containing it
+    logic                             is_zero;
     logic                             addr_valid;  // Address already known at dispatch
     logic [XLEN-1:0]                  address;
     logic                             is_mmio;
@@ -2895,7 +2903,9 @@ package riscv_pkg;
       LR_D, SC_D,
       AMOSWAP_D, AMOADD_D, AMOXOR_D, AMOAND_D, AMOOR_D,
       AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D,
-      FENCE, FENCE_I, SFENCE_VMA:
+      FENCE, FENCE_I, SFENCE_VMA,
+      // Zicboz: a store-queue entry that writes a whole block
+      CBO_ZERO:
       get_rs_type = RS_MEM;
 
       // Every FP compute operation -> FP_RS

@@ -44,6 +44,13 @@ coh_l1d_local_hold_bmc single localschedule localscheduled localhold
 coh_l1d_local_control_bmc single localschedule localscheduled localcontrol
 coh_l1d_local_ways_prove ways local owner padded
 
+# cbo.zero writes: the zero-line control and data checks with zero writes on.
+coh_l1d_zero_bmc single zcontrol control_single zero
+coh_l1d_zero_multi_bmc multi zcontrol control_multi padded zero zmulti
+coh_l1d_zero_payload_bmc single data zpayload zero
+coh_l1d_zero_cover single zcovers zsingle covermode zero
+coh_l1d_zero_lookahead_cover multi zcovers zlook covermode zero padded
+
 [options]
 ~covermode: mode bmc
 ~covermode: depth 40
@@ -63,6 +70,13 @@ covermode: timeout 600
 # covers.
 pathcovers: depth 40
 pathcovers: timeout 1800
+# The store cover reaches its last cover in about ten minutes.
+covers: timeout 1200
+zcovers: timeout 2400
+zsingle: vcd_sim on
+# Keep every transition from reset, but query only the later cover window.
+# Reaching a dirty twin victim requires several completed transactions.
+zsingle: skip 48
 ~covermode: aigsmt boolector
 conflict: mode prove
 conflict: depth 2
@@ -102,6 +116,9 @@ coh_l1d_multi_data1_bmc: timeout 4200
 coh_l1d_multi_data2_bmc: timeout 4200
 coh_l1d_multi_data3_bmc: timeout 4200
 coh_l1d_ways_data_bmc: timeout 5100
+# The zero-write BMC with three endpoints stops short of the control BMC's
+# depth to stay inside its allowance with the extra write kind.
+zmulti: depth 30
 
 [engines]
 control_single: abc bmc3
@@ -113,6 +130,8 @@ cadical: abc bmc3 -c
 conflict: smtbmc boolector
 covers: smtbmc boolector
 pathcovers: smtbmc boolector
+zsingle: smtbmc boolector
+zlook: smtbmc boolector
 streamcovers: smtbmc boolector
 turncovers: smtbmc boolector
 owner: abc pdr
@@ -134,6 +153,9 @@ epphase: read -formal -sv coherence_request_endpoint.sv
 read -sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv
 control: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 streamread: read -formal -sv -D STREAM_UNBOUNDED_PROOF -D READ_OWNER_PROOF coherence_read_payload.sv coherence_l1d.sv
+zcontrol: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
+zcovers: read -formal -sv -D ZERO_WRITES coherence_read_payload.sv coherence_l1d.sv
+zpayload: read -formal -sv -D ZERO_WRITES -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
 streamscript: read -formal -sv -D STREAM_COVER -D STREAM_PASSIVE_CYCLES=24 coherence_read_payload.sv coherence_l1d.sv
 conflict: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
 streamcovers: read -formal -sv -D STREAM_COVER coherence_read_payload.sv coherence_l1d.sv
@@ -156,6 +178,8 @@ multi: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coh
 stream: chparam -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d
 turnstream: chparam -set STREAM_PREFETCH 1 coherence_l1d
 ways: chparam -set CACHE_BYTES 256 -set WAYS 4 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
+# Tasks that drive no cbo.zero writes build the L1D without the zero path.
+~zero: chparam -set ZERO_LINE 0 coherence_l1d
 ~conflict: prep -flatten -top coherence_l1d
 conflict: hierarchy -check -top coherence_l1d
 conflict: proc -noopt
@@ -164,6 +188,9 @@ conflict: opt_expr -keepdc -noclkinv
 # The matching conflict proof supplies this guarded, clocked identity.
 control: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 control: chformal -assert2assume c:p_prefetch_conflict_split
+zcontrol: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
+zcontrol: chformal -assert2assume c:p_prefetch_conflict_split
+zcontrol: select -assert-min 1 c:p_zero_* t:$check %i r:FLAVOR=assert %i
 streamscript: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 streamscript: chformal -assert2assume c:p_prefetch_conflict_split
 # Preserve the complete 326-check stream scope before selecting a partition.
@@ -209,6 +236,17 @@ pathcovers: chformal -assert -remove
 streamcovers: select -assert-count 4 c:*p_stream_two c:*p_stream_attach c:*p_stream_lr_admit c:*p_stream_amo_admit
 streamcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:*p_stream_two c:*p_stream_attach c:*p_stream_lr_admit c:*p_stream_amo_admit %u %u %u %d
 # Control assertions run in the control tasks; this task checks the datapath.
+# The zero-control tasks keep every zero-line assertion. The payload task
+# checks the five store payload assertions at the same depth, without
+# assuming any of the zero-control assertions or repeating them.
+zpayload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
+zpayload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 %u %u %u %u %d
+zpayload: select -assert-count 5 t:$check r:FLAVOR=assert %i
+zcovers: select -assert-count 5 c:p_zero_cover_* t:$check %i r:FLAVOR=cover %i
+zsingle: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_twin c:p_zero_cover_twin_victim c:p_zero_cover_twin_wait c:p_zero_cover_fallback %u %u %u %d
+zsingle: select -assert-count 4 t:$check r:FLAVOR=cover %i
+zlook: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_zero_cover_lookahead %d
+zcovers: chformal -assert -remove
 payload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
 payload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 %u %u %u %u %d
 arraydata: select -assert-count 4 c:p_store_data_6 c:p_store_data_7 c:p_store_data_path c:p_store_data_path_known
@@ -255,6 +293,31 @@ localhold: select -assert-count 4 t:$check r:FLAVOR=assert %i
 localcontrol: chformal -assert -remove c:p_local_image c:p_local_probe_data c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold
 localcontrol: select -assert-min 1 t:$check r:FLAVOR=assert %i
 nostore: connect -set i_write_mask 8'h00
+~zero: connect -set i_write_zero 1'b0
+# Cover-only public-input profile: scalar and zero writes, addresses and
+# grant/release scheduling remain free. Each event has a store-only scenario;
+# reads, maintenance, probes and atomics stay idle, and consumers are ready.
+# Every witness is also legal in the unrestricted zero-control environment.
+# Remove only the tied ports so the backend cannot alias constants to inputs.
+zsingle: delete -input w:i_read_valid w:i_fatal_stop w:i_write_atomic w:i_write_sc w:i_sc_valid w:i_sc_commit w:i_maint_valid w:i_p_valid w:i_read_kind w:i_read_ready w:i_sc_result_ready w:i_d_ready w:i_c_ready w:i_r_ready w:i_w_ready w:i_cut_admit_ready w:i_cut_admit_clean w:i_cut_inval_done
+zsingle: connect -set i_read_valid 1'b0
+zsingle: connect -set i_fatal_stop 1'b0
+zsingle: connect -set i_write_atomic 1'b0
+zsingle: connect -set i_write_sc 1'b0
+zsingle: connect -set i_sc_valid 1'b0
+zsingle: connect -set i_sc_commit 1'b0
+zsingle: connect -set i_maint_valid 1'b0
+zsingle: connect -set i_p_valid 1'b0
+zsingle: connect -set i_read_kind 2'b00
+zsingle: connect -set i_read_ready 1'b1
+zsingle: connect -set i_sc_result_ready 1'b1
+zsingle: connect -set i_d_ready 1'b1
+zsingle: connect -set i_c_ready 1'b1
+zsingle: connect -set i_r_ready 1'b1
+zsingle: connect -set i_w_ready 1'b1
+zsingle: connect -set i_cut_admit_ready 1'b1
+zsingle: connect -set i_cut_admit_clean 1'b1
+zsingle: connect -set i_cut_inval_done 1'b1
 memory_map
 conflict: select -assert-min 1 t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff
 conflict: cutpoint t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff

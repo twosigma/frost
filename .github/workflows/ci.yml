@@ -139,6 +139,16 @@ jobs:
             pytest_filter: >-
               [debug_test] or [debug_fence_test] or [debug_openocd_test] or [bram_reload] or [instret_test] or
               [hello_world] or [uart_burst] or [uart_echo] or [print_clock_speed]
+          - name: Real Programs (Zicboz)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [cbo_zero_test] or [cbo_zero_test_assert] or [cbo_zero_test_equal_lines]
+          - name: Real Programs (Zicboz pages)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: "[cbo_zero_pages]"
+          - name: Real Programs (Zicboz eviction)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: "[cbo_zero_pages_thrash] or [cbo_zero_pages_thrash_sync]"
           # The complement keeps new non-CoreMark-PRO programs in CI.
           # Keep it in sync when moving a test into a named shard.
           - name: Real Programs (Runtime and other)
@@ -174,7 +184,10 @@ jobs:
               or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz] or [opensbi_smoke] or
               [isa_test_sram_macros] or [ddr_test_sram_macros] or [ddr_exec_test_sram_macros] or
               [nic_loopback_sram_macros] or [cache_counters_openocd] or [async_hello_world]
-              or [async_nic_loopback] or [async_dma_torture])
+              or [async_nic_loopback] or [async_dma_torture]
+              or [cbo_zero_test] or [cbo_zero_test_assert] or [cbo_zero_test_equal_lines]
+              or [cbo_zero_pages] or [cbo_zero_pages_thrash] or [cbo_zero_pages_thrash_sync]
+              or [cbo_zero_pages_board] or [cbo_zero_pages_board_ddr] or [cbo_zero_bench])
           - name: Real Programs (CoreMark-PRO / core)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: "[coremark_pro_core]"
@@ -190,6 +203,18 @@ jobs:
               [coremark_pro_cjpeg] or [coremark_pro_linear_alg] or [coremark_pro_parser] or
               [coremark_pro_radix2] or [coremark_pro_sha] or [coremark_pro_zip]
         include:
+          # These configurations already select their program layout and DDR
+          # geometry. Keep the long runs separate from the other programs.
+          - mem_config: bram
+            shard:
+              name: Real Programs (Zicboz large cache)
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: "[cbo_zero_pages_board] or [cbo_zero_pages_board_ddr]"
+          - mem_config: bram
+            shard:
+              name: Real Programs (Zicboz clearing benchmark)
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: "[cbo_zero_bench]"
           - mem_config: bram
             shard:
               name: Real Programs (DDR probes and fetch fuzz)
@@ -477,8 +502,8 @@ jobs:
         # (tests/README.md#coverage).
         include:
           - {extensions: I B C, mem_config: bram, coverage: 1}
-          - {extensions: M A K Zicond privilege D_Zcd hints, mem_config: bram, coverage: 1}
-          - {extensions: I M hints, mem_config: ddr, coverage: 1}
+          - {extensions: M A K Zicond privilege D_Zcd hints CMO, mem_config: bram, coverage: 1}
+          - {extensions: I M hints CMO, mem_config: ddr, coverage: 1}
           - {extensions: B C A K Zicond Zifencei privilege D_Zcd, mem_config: ddr, coverage: 1}
           - {extensions: F D, mem_config: bram, shard: 1/3, coverage: 0}
           - {extensions: F D, mem_config: bram, shard: 2/3, coverage: 0}
@@ -1370,6 +1395,11 @@ jobs:
           - shard: Coherence L1D data stores and ways
             pytest_filter: coh_l1d_store_ or coh_l1d_ways_data
             timeout_minutes: 270
+          # The three-endpoint L1D control BMC with cbo.zero writes has the same
+          # five-hour budget and a job of its own.
+          - shard: Coherence L1D zero multi-endpoint
+            pytest_filter: coh_l1d_zero_multi_bmc
+            timeout_minutes: 330
           # The scheduled real-array checks keep all 80 frames, with disjoint
           # property groups and no assumptions between them. Run them in
           # parallel so their combined work does not delay the bridges.
@@ -1396,7 +1426,7 @@ jobs:
               axi_coherent_bridge or
               (coherence_l1d and not (coh_l1d_stream_bmc or coh_l1d_stream_hold_bmc or coh_l1d_stream_free or
               coh_l1d_stream_outlier_prove or
-              coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_data or
+              coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_zero_multi_bmc or coh_l1d_data or
               coh_l1d_multi_data or coh_l1d_store_ or coh_l1d_ways_data or
               (coh_l1d_local and (prove or bmc))))
             timeout_minutes: 330
@@ -1670,7 +1700,7 @@ jobs:
               boot() {
                 local bios="$1" log="$2" memory="$3"
                 timeout -k5 180 qemu-system-riscv64 -M virt -m "$memory" -nographic \
-                  -cpu rv64,sv57=off,sv48=off,zicbom=false,zicboz=false,v=false,h=false \
+                  -cpu rv64,sv57=off,sv48=off,zicbom=false,zicboz=true,cboz_blocksize=64,v=false,h=false \
                   -bios "$bios" -kernel /img/Image-debian \
                   -initrd /img/rootfs-frost.cpio \
                   -append "earlycon console=ttyS0 rdinit=/sbin/init ipv6.disable=1" \

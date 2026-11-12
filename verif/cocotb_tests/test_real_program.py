@@ -4833,6 +4833,10 @@ async def test_real_program(dut: Any) -> None:
     # Optional trap and MRET hang diagnostics.
     if os.environ.get("FROST_WEDGE_MONITOR") == "1":
         cocotb.start_soon(wedge_monitor(dut, uart_monitor))
+    if os.environ.get("FROST_HANG_PROBE"):
+        from cocotb_tests.hang_probe import hang_probe
+
+        cocotb.start_soon(hang_probe(dut, cpu_clock(dut)))
     cocotb.start_soon(ddr_write_watch(dut))
     cocotb.start_soon(l0_hit_watch(dut))
 

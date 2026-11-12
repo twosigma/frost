@@ -389,7 +389,7 @@ module coherence_home_completions #(
   // address, so acceptance does not wait for the tid to select a slot's
   // address; the slot matches reduce through kept nodes of at most six.
   assign result_slot = SlotBits'(result.tid);
-  wire result_opcode_ok = result.opcode <= coherence_pkg::GrantFail;
+  wire result_opcode_ok = result.opcode <= coherence_pkg::GrantMZero;
   localparam int unsigned ResultNodes = (SLOTS + 5) / 6;
   (* keep = "true" *) logic [SLOTS-1:0] result_addr_match, result_key_match, result_slot_match;
   (* keep = "true" *) logic [ResultNodes-1:0] result_nodes;
@@ -449,13 +449,20 @@ module coherence_home_completions #(
       assert (release_fire == (release_valid & release_ready));
     end
 `endif
+  // A GetMZero holds both sectors of its 64-byte line (see the cache README,
+  // Line-scope cbo.zero): it orders behind, and ahead of, every request to
+  // either sector.
+  wire incoming_line_zero = OffsetBits != 5 && incoming.opcode == coherence_pkg::GetMZero;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_work_eligible
     // A slot's L2 block matches the presented request's; the sector match
-    // adds the sector bit of a 64-byte line.
+    // adds the sector bit of a 64-byte line, which a GetMZero leaves out.
     assign incoming_blocks[slot] = (work_address[slot] >> OffsetBits) ==
         (incoming.addr >> OffsetBits);
     assign incoming_sectors[slot] = incoming_blocks[slot] &&
-        (OffsetBits == 5 || work_address[slot][5] == incoming.addr[5]);
+        (OffsetBits == 5 || work_address[slot][5] == incoming.addr[5] || incoming_line_zero ||
+         request_opcode(
+        work[slot]
+    ) == coherence_pkg::GetMZero);
     // The slot orders the presented request: same sector, neither a prefetch.
     assign incoming_orders[slot] = incoming_sectors[slot] && !slot_prefetch[slot] &&
         !incoming_prefetch;
@@ -966,7 +973,7 @@ module coherence_home_completions #(
       for (int slot = 0; slot < SLOTS; slot++)
       assert (result_hit[slot] == (result.tid == 6'(slot) && issued_q[slot] &&
           buffer_owned_q[slot] && !result_valid_q[slot] &&
-          result.opcode <= coherence_pkg::GrantFail && result.q == work_identity[slot] &&
+          result.opcode <= coherence_pkg::GrantMZero && result.q == work_identity[slot] &&
           result.addr == work_address[slot]));
       assert (int'(grant_next_q) < Buffers && int'(work_next_q) < WorkPositions);
       for (int position = 0; position < WorkPositions; position++)
@@ -1001,7 +1008,7 @@ module coherence_home_completions #(
       assert (o_g_valid == (|grant_valid));
       assert (grant_valid == grant_slot_held);
       if (grant_selected_q) begin
-        assert (grant_q.opcode <= coherence_pkg::GrantFail);
+        assert (grant_q.opcode <= coherence_pkg::GrantMZero);
         assert (grant_q.q == work_identity[grant_slot_q]);
         assert (grant_q.tid == 6'(grant_slot_q));
         assert (grant_q.addr == work_address[grant_slot_q]);
@@ -1028,14 +1035,17 @@ module coherence_home_completions #(
               work[slot]
           ) == coherence_pkg::GetS || request_opcode(
               work[slot]
-          ) == coherence_pkg::LoadReserved || request_opcode(
-              work[slot]
-          ) == coherence_pkg::GetM);
+          ) == coherence_pkg::LoadReserved || coherence_pkg::is_getm(
+              request_opcode(work[slot])
+          ));
           assert (!i_wake[slot] && !i_park[slot]);
           assert (!(work_selected_q && work_slot_q == SlotBits'(slot)));
           assert (forward_result.q == work_identity[slot] && forward_result.tid == 6'(slot) &&
               forward_result.addr == work_address[slot] && !forward_result.error);
           assert (forward_result.opcode == (request_opcode(
+              work[slot]
+          ) == coherence_pkg::GetMZero ? (LINE_BYTES == 64 ? coherence_pkg::GrantMZero :
+                                          coherence_pkg::GrantM) : request_opcode(
               work[slot]
           ) == coherence_pkg::GetM ? coherence_pkg::GrantM : coherence_pkg::GrantS));
         end
@@ -1058,7 +1068,7 @@ module coherence_home_completions #(
           if (buffer_owned_q[other]) assert (buffer_index_q[slot] != buffer_index_q[other]);
         end
         if (result_valid_q[slot]) begin
-          assert (grant_opcode(buffer_q[buffer_index_q[slot]]) <= coherence_pkg::GrantFail);
+          assert (grant_opcode(buffer_q[buffer_index_q[slot]]) <= coherence_pkg::GrantMZero);
           assert (buffer_owned_q[slot] && work_valid[slot]);
           assert (result_identity(
               buffer_q[buffer_index_q[slot]]
@@ -1106,9 +1116,9 @@ module coherence_home_completions #(
             work[slot]
         ) == coherence_pkg::GetS || request_opcode(
             work[slot]
-        ) == coherence_pkg::LoadReserved || request_opcode(
-            work[slot]
-        ) == coherence_pkg::GetM);
+        ) == coherence_pkg::LoadReserved || coherence_pkg::is_getm(
+            request_opcode(work[slot])
+        ));
         assert (predecessors_q[slot] == 0);
       end
       if (i_forward_valid) assert ((i_forward_slots & ~i_fill_primary) == 0);
@@ -1189,14 +1199,17 @@ module coherence_home_completions #(
               work[slot]
           ) == coherence_pkg::GetS || request_opcode(
               work[slot]
-          ) == coherence_pkg::LoadReserved || request_opcode(
-              work[slot]
-          ) == coherence_pkg::GetM);
+          ) == coherence_pkg::LoadReserved || coherence_pkg::is_getm(
+              request_opcode(work[slot])
+          ));
           assume (!i_wake[slot] && !i_park[slot]);
           assume (!(work_selected_q && work_slot_q == SlotBits'(slot)));
           assume (forward_result.q == work_identity[slot] && forward_result.tid == 6'(slot) &&
               forward_result.addr == work_address[slot] && !forward_result.error);
           assume (forward_result.opcode == (request_opcode(
+              work[slot]
+          ) == coherence_pkg::GetMZero ? (LINE_BYTES == 64 ? coherence_pkg::GrantMZero :
+                                          coherence_pkg::GrantM) : request_opcode(
               work[slot]
           ) == coherence_pkg::GetM ? coherence_pkg::GrantM : coherence_pkg::GrantS));
         end

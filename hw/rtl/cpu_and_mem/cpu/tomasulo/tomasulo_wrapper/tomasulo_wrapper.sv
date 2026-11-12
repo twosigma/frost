@@ -85,6 +85,7 @@ module tomasulo_wrapper #(
     output logic [1:0] o_coherent_read_kind,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_read_tag,
     output logic o_coherent_write_sc,
+    output logic o_coherent_write_zero,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_sq_write_tag,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coherent_amo_write_tag,
     input logic i_clk,
@@ -1600,6 +1601,7 @@ module tomasulo_wrapper #(
 
   logic sq_cache_invalidate_valid;
   logic [riscv_pkg::XLEN-1:0] sq_cache_invalidate_addr;
+  logic sq_cache_invalidate_block;
 
   // ===========================================================================
   // Atomics Wiring (LR/SC/AMO support)
@@ -1624,12 +1626,16 @@ module tomasulo_wrapper #(
       (i_coherent_sc_write_done);
 
   // Reservation snoop invalidation: SQ write to the reservation address. The
-  // reservation covers a 32-byte sector in cached memory.
+  // reservation covers a 32-byte sector in cached memory; a cached cbo.zero
+  // writes both sectors of its 64-byte block.
   logic reservation_snoop_invalidate;
   assign reservation_snoop_invalidate = sq_cache_invalidate_valid &&
       lq_reservation_valid &&
       !(o_coherent_write_sc && o_sq_mem_write_is_cached) &&
-      ((sq_cache_invalidate_addr[riscv_pkg::XLEN-1:5] == lq_reservation_addr[riscv_pkg::XLEN-1:5]));
+      ((sq_cache_invalidate_addr[riscv_pkg::XLEN-1:6] ==
+        lq_reservation_addr[riscv_pkg::XLEN-1:6]) &&
+       (sq_cache_invalidate_block ||
+        sq_cache_invalidate_addr[5] == lq_reservation_addr[5]));
   assign o_coherent_reservation_valid = lq_reservation_valid;
   assign o_coherent_reservation_addr = lq_reservation_addr;
 
@@ -1726,107 +1732,41 @@ module tomasulo_wrapper #(
   logic dmmu_store_fault;
   logic dmmu_store_ok;
 
-  // Store immediates are sign-extended S-immediates or zero (SC), so they can
-  // move the base by at most one 4 KiB page. The low 13-bit sum supplies the
-  // page carry and alignment bits. Legal store pages are [0, 0x3f], the
+  // Store immediates are sign-extended S-immediates or zero (SC, cbo.zero), so
+  // they can move the base by at most one 4 KiB page. The low 13-bit sum
+  // supplies the page carry and alignment bits. Legal store pages are [0, 0x3f], the
   // device quadrant, and [DdrBase, DdrLimit), as in riscv_pkg::pma_store_ok. The device quadrant
   // includes unserved addresses, whose writes the device bus ignores.
   //
   // A one-page move changes membership only at interval boundaries. The
-  // boundary checks below compute pma_store_ok(src1 + sext12(imm)). SC has a
-  // zero immediate and excludes device pages, yielding pma_atomic_ok(src1).
+  // boundary checks in the decoder compute pma_store_ok(src1 + sext12(imm)). SC and
+  // cbo.zero have a zero immediate and exclude device pages, yielding
+  // pma_atomic_ok(src1). cbo.zero's byte size never misaligns, and its
+  // 64-byte block stays inside the page and PMA region of src1.
   // Keep the 13-bit tap explicit for synthesis; sq_effective_addr retains the
   // full address for the SQ and xtval.
   (* keep = "true" *) logic [12:0] store_page_offset_sum;
-  logic store_base_z18;
-  logic store_base_z19;
-  logic store_base_z30;
-  logic store_base_z32;
-  logic store_base_ddr_ok;
-  logic store_base_page_lo6_zero;
-  logic store_base_page_lo6_ones;
-  logic store_base_page_tail_zero;
-  logic store_base_page_tail_ones;
-  logic store_base_pma_ok;
-  logic store_base_page_eq_0;
-  logic store_base_page_eq_3f;
-  logic store_base_page_eq_40;
-  logic store_base_page_eq_3ffff;
-  logic store_base_page_eq_40000;
-  logic store_base_page_eq_ddr_before;
-  logic store_base_page_eq_ddr_first;
-  logic store_base_page_eq_ddr_last;
-  logic store_base_page_eq_ddr_end;
-  logic store_base_page_eq_max;
-  logic store_page_inc_toggle;
-  logic store_page_dec_toggle;
-  (* keep = "true" *) logic store_pma_without_page_carry;
-  (* keep = "true" *) logic store_pma_with_page_carry;
   logic store_addr_pma_ok;
   logic store_addr_misaligned;
   logic mem_rs_issue_is_sc;
+  logic mem_rs_issue_is_cbo_zero;
+  logic mem_rs_issue_atomic_pma;
 
   assign store_page_offset_sum =
       {1'b0, o_mem_rs_issue.src1_value[11:0]} + {1'b0, o_mem_rs_issue.imm[11:0]};
-  assign store_base_z18 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:18]);
-  assign store_base_z19 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:19]);
-  assign store_base_z30 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:30]);
-  assign store_base_z32 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:32]);
-  assign store_base_ddr_ok = riscv_pkg::pma_cached_ok(
-      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0]
-  );
-  assign store_base_page_lo6_zero = !(|o_mem_rs_issue.src1_value[17:12]);
-  assign store_base_page_lo6_ones = &o_mem_rs_issue.src1_value[17:12];
-  assign store_base_page_tail_zero = !(|o_mem_rs_issue.src1_value[29:12]);
-  assign store_base_page_tail_ones = &o_mem_rs_issue.src1_value[29:12];
-
   assign mem_rs_issue_is_sc = (o_mem_rs_issue.op == riscv_pkg::SC_W) ||
       (o_mem_rs_issue.op == riscv_pkg::SC_D);
-  assign store_base_pma_ok = store_base_z18 || store_base_ddr_ok ||
-      (store_base_z32 && (o_mem_rs_issue.src1_value[31:30] == 2'b01) &&
-       !mem_rs_issue_is_sc);
-  assign store_base_page_eq_0 = store_base_z18 && store_base_page_lo6_zero;
-  assign store_base_page_eq_3f = store_base_z18 && store_base_page_lo6_ones;
-  assign store_base_page_eq_40 = store_base_z19 && o_mem_rs_issue.src1_value[18] &&
-      store_base_page_lo6_zero;
-  assign store_base_page_eq_3ffff = store_base_z30 && store_base_page_tail_ones;
-  assign store_base_page_eq_40000 = store_base_z32 &&
-      (o_mem_rs_issue.src1_value[31:30] == 2'b01) && store_base_page_tail_zero;
-  assign store_base_page_eq_ddr_before =
-      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:12] ==
-      (riscv_pkg::XLEN-12)'((riscv_pkg::DdrBase - 4096) >> 12);
-  assign store_base_page_eq_ddr_first =
-      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:12] ==
-      (riscv_pkg::XLEN-12)'(riscv_pkg::DdrBase >> 12);
-  assign store_base_page_eq_ddr_last =
-      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:12] ==
-      (riscv_pkg::XLEN-12)'((riscv_pkg::DdrLimit - 4096) >> 12);
-  assign store_base_page_eq_ddr_end =
-      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:12] ==
-      (riscv_pkg::XLEN-12)'(riscv_pkg::DdrLimit >> 12);
-  assign store_base_page_eq_max = &o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:12];
-
-  assign store_page_inc_toggle = store_base_page_eq_max || store_base_page_eq_3f ||
-      (!mem_rs_issue_is_sc && store_base_page_eq_3ffff) || store_base_page_eq_ddr_last ||
-      (mem_rs_issue_is_sc && store_base_page_eq_ddr_before);
-  assign store_page_dec_toggle = store_base_page_eq_0 || store_base_page_eq_40 ||
-      (!mem_rs_issue_is_sc && store_base_page_eq_40000) || store_base_page_eq_ddr_end ||
-      (mem_rs_issue_is_sc && store_base_page_eq_ddr_first);
-  // Without a carry, only a negative immediate changes the page. With a
-  // carry, only a nonnegative immediate does. Select between both cases.
-  assign store_pma_without_page_carry = store_base_pma_ok ^
-      (o_mem_rs_issue.imm[11] && store_page_dec_toggle);
-  assign store_pma_with_page_carry = store_base_pma_ok ^
-      (!o_mem_rs_issue.imm[11] && store_page_inc_toggle);
-  // The reduced page-carry decoder is specific to FROST's map. Other
-  // integrations use the full configured PMA predicate on the effective PA.
-  assign store_addr_pma_ok = riscv_pkg::PmaUsesFrostMap ?
-      (store_page_offset_sum[12] ? store_pma_with_page_carry : store_pma_without_page_carry) :
-      (mem_rs_issue_is_sc ? riscv_pkg::pma_atomic_ok(
-      sq_effective_addr
-  ) : riscv_pkg::pma_store_ok(
-      sq_effective_addr
-  ));
+  // SC and cbo.zero use the atomic PMA map, excluding all device pages.
+  assign mem_rs_issue_is_cbo_zero = o_mem_rs_issue.op == riscv_pkg::CBO_ZERO;
+  assign mem_rs_issue_atomic_pma = mem_rs_issue_is_sc || mem_rs_issue_is_cbo_zero;
+  coherent_store_pma store_pma (
+      .i_base(o_mem_rs_issue.src1_value),
+      .i_effective_addr(sq_effective_addr),
+      .i_imm_negative(o_mem_rs_issue.imm[11]),
+      .i_page_carry(store_page_offset_sum[12]),
+      .i_atomic(mem_rs_issue_atomic_pma),
+      .o_pma_ok(store_addr_pma_ok)
+  );
   assign store_addr_misaligned = is_mem_access_misaligned(
       riscv_pkg::mem_size_e'(o_mem_rs_issue.mem_size),
       {
@@ -1871,7 +1811,10 @@ module tomasulo_wrapper #(
   logic store_addr_misaligned_full_ref;
   logic store_misalign_issue_full_ref;
   logic store_issue_fire_full_ref;
-  assign store_addr_pma_ok_full_ref = mem_rs_issue_is_sc ? riscv_pkg::pma_atomic_ok(
+  assign store_addr_pma_ok_full_ref = ((o_mem_rs_issue.op == riscv_pkg::SC_W) ||
+                                       (o_mem_rs_issue.op == riscv_pkg::SC_D) ||
+                                       (o_mem_rs_issue.op == riscv_pkg::CBO_ZERO)) ?
+      riscv_pkg::pma_atomic_ok(
       sq_effective_addr
   ) : riscv_pkg::pma_store_ok(
       sq_effective_addr
@@ -1906,7 +1849,7 @@ module tomasulo_wrapper #(
             o_mem_rs_issue.imm[riscv_pkg::XLEN-1:12] ==
             {(riscv_pkg::XLEN - 12) {o_mem_rs_issue.imm[11]}}
         );
-        p_store_sc_imm_zero : assert (!mem_rs_issue_is_sc || (o_mem_rs_issue.imm == '0));
+        p_store_sc_imm_zero : assert (!mem_rs_issue_atomic_pma || (o_mem_rs_issue.imm == '0));
         if (o_mem_rs_issue.imm[riscv_pkg::XLEN-1:12] ==
             {(riscv_pkg::XLEN - 12) {o_mem_rs_issue.imm[11]}}) begin
           p_store_page_pma_exact : assert (store_addr_pma_ok === store_addr_pma_ok_full_ref);
@@ -3179,6 +3122,7 @@ module tomasulo_wrapper #(
     int_rs_issue_registered_1.valid = int_rs_issue_cdb_2_valid;
     int_rs_issue_registered_1.tag = int_rs_issue_cdb_2_tag;
   end
+  riscv_pkg::cdb_broadcast_t int_issue_merged_0, int_issue_merged_1;
   mem_wakeup_merge #(
       .FORMAL_STANDALONE_ENV(1'b0)
   ) u_int_issue_wakeup_merge (
@@ -3189,10 +3133,46 @@ module tomasulo_wrapper #(
       .i_load(lq_early_wakeup_load),
       .i_registered_0(int_rs_issue_registered_0),
       .i_registered_1(int_rs_issue_registered_1),
-      .o_wakeup_0(int_issue_wakeup_0),
-      .o_wakeup_1(int_issue_wakeup_1),
+      .o_wakeup_0(int_issue_merged_0),
+      .o_wakeup_1(int_issue_merged_1),
       .o_injected()
   );
+`ifdef FROST_XILINX_PRIMS
+  // Prepare load eligibility before applying the uncached-store completion
+  // that owns the same MEM result lane. Registered occupancy selects the
+  // packet payload independently, exactly as in the shared merge above.
+  (* keep = "true" *) logic int_issue_early_without_store_complete;
+  logic int_issue_valid_0, int_issue_valid_1;
+  assign int_issue_early_without_store_complete = EARLY_LOAD_WAKEUP &&
+      !sc_valid_wakeup_q && !store_misalign_fu_complete_reg.valid &&
+      !mem_adapter_result_pending && lq_fu_complete_staged && !lq_fu_complete.exception;
+  (* dont_touch = "true" *) LUT3 #(
+      .INIT(8'hae)
+  ) u_int_issue_valid_0 (
+      .I0(int_rs_issue_registered_0.valid),
+      .I1(int_issue_early_without_store_complete),
+      .I2(uncached_store_complete.valid),
+      .O (int_issue_valid_0)
+  );
+  (* dont_touch = "true" *) LUT4 #(
+      .INIT(16'haaea)
+  ) u_int_issue_valid_1 (
+      .I0(int_rs_issue_registered_1.valid),
+      .I1(int_rs_issue_registered_0.valid),
+      .I2(int_issue_early_without_store_complete),
+      .I3(uncached_store_complete.valid),
+      .O (int_issue_valid_1)
+  );
+  always_comb begin
+    int_issue_wakeup_0 = int_issue_merged_0;
+    int_issue_wakeup_1 = int_issue_merged_1;
+    int_issue_wakeup_0.valid = int_issue_valid_0;
+    int_issue_wakeup_1.valid = int_issue_valid_1;
+  end
+`else
+  assign int_issue_wakeup_0 = int_issue_merged_0;
+  assign int_issue_wakeup_1 = int_issue_merged_1;
+`endif
 
 `ifndef SYNTHESIS
   always_comb begin
@@ -4024,6 +4004,7 @@ module tomasulo_wrapper #(
       // L0 cache invalidation (from SQ)
       .i_cache_invalidate_valid(sq_cache_invalidate_valid),
       .i_cache_invalidate_addr(sq_cache_invalidate_addr),
+      .i_cache_invalidate_block(sq_cache_invalidate_block),
       .i_cache_store_data(o_sq_mem_write_data),
       .i_cache_store_strb(o_sq_mem_write_byte_en),
 
@@ -4114,6 +4095,7 @@ module tomasulo_wrapper #(
       r.is_fp       = dispatch.is_fp_mem;
       r.size        = dispatch.mem_size;
       r.is_sc       = (dispatch.op == riscv_pkg::SC_W) || (dispatch.op == riscv_pkg::SC_D);
+      r.is_zero     = dispatch.op == riscv_pkg::CBO_ZERO;
       r.addr_valid  = 1'b0;
       r.address     = '0;
       r.is_mmio     = 1'b0;
@@ -4247,7 +4229,7 @@ module tomasulo_wrapper #(
       .i_iss_needs_sq(o_mem_rs_issue.mem_needs_sq),
       .i_iss_store_perms(o_mem_rs_issue.mem_needs_sq || dmmu_iss_is_amo),
       .i_iss_is_sc(mem_rs_issue_is_sc),
-      .i_iss_atomic(dmmu_iss_is_amo || dmmu_iss_is_lr || mem_rs_issue_is_sc),
+      .i_iss_atomic(dmmu_iss_is_amo || dmmu_iss_is_lr || mem_rs_issue_atomic_pma),
       .i_iss_store_data(o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
       .i_iss_amo_rs2(o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
       .o_iss_out_valid(dmmu_out_valid),
@@ -4482,6 +4464,7 @@ module tomasulo_wrapper #(
       .i_coherent_sc_pending(i_coherent_sc_pending),
       .i_coherent_sc_tag(o_coherent_sc_tag),
       .o_coherent_write_sc(o_coherent_write_sc),
+      .o_coherent_write_zero(o_coherent_write_zero),
       .o_coherent_write_tag(o_coherent_sq_write_tag),
       .i_clk(i_clk),
       .i_rst_n(i_rst_n),
@@ -4565,6 +4548,7 @@ module tomasulo_wrapper #(
       // L0 cache invalidation (to LQ)
       .o_cache_invalidate_valid(sq_cache_invalidate_valid),
       .o_cache_invalidate_addr (sq_cache_invalidate_addr),
+      .o_cache_invalidate_block(sq_cache_invalidate_block),
 
       // SC discard (pipelined: uses commit_bus_q)
       .i_sc_discard        (sc_discard),
@@ -5663,4 +5647,183 @@ module issue_lane_tag_bit #(
   wire takes_load = LANE1 ? (i_cdb_valid && !i_cdb_2_valid) : !i_cdb_valid;
   assign o_tag = takes_load ? (i_take ? i_fired : i_held) : i_lane_tag;
 `endif
+endmodule
+
+// Keep the store page decoder as a native synthesis unit. Its carry tap and
+// permission result retain the wrapper's original combinational interface.
+// verilog_format: off
+`ifdef FROST_XILINX_PRIMS
+(* keep_hierarchy = "yes" *)
+`endif
+// verilog_format: on
+module coherent_store_pma (
+    input logic [riscv_pkg::XLEN-1:0] i_base,
+    input logic [riscv_pkg::XLEN-1:0] i_effective_addr,
+    input logic i_imm_negative,
+    input logic i_page_carry,
+    input logic i_atomic,
+    output logic o_pma_ok
+);
+  logic store_cmp_base_z18;
+  logic store_cmp_base_z19;
+  logic store_cmp_base_z30;
+  logic store_cmp_base_z32;
+  logic store_cmp_base_ddr_ok;
+  logic store_cmp_base_page_lo6_zero;
+  logic store_cmp_base_page_lo6_ones;
+  logic store_cmp_base_page_tail_zero;
+  logic store_cmp_base_page_tail_ones;
+  logic store_cmp_base_pma_ok;
+  logic store_cmp_base_page_eq_0;
+  logic store_cmp_base_page_eq_3f;
+  logic store_cmp_base_page_eq_40;
+  logic store_cmp_base_page_eq_3ffff;
+  logic store_cmp_base_page_eq_40000;
+  logic store_cmp_base_page_eq_ddr_before;
+  logic store_cmp_base_page_eq_ddr_first;
+  logic store_cmp_base_page_eq_ddr_last;
+  logic store_cmp_base_page_eq_ddr_end;
+  logic store_cmp_base_page_eq_max;
+  logic store_cmp_page_inc_toggle;
+  logic store_cmp_page_dec_toggle;
+  (* keep = "true" *)logic store_cmp_pma_no_carry;
+  (* keep = "true" *)logic store_cmp_pma_carry;
+
+  // Decode the bounded map before its high-address qualifier arrives. Other
+  // configurations retain the original full-address decoder.
+  localparam bit StorePmaLowCofactor = riscv_pkg::PmaUsesFrostMap &&
+      riscv_pkg::DdrLimit < 64'h2_0000_0000;
+  localparam int StorePmaHighBits = riscv_pkg::XLEN - 33;
+  localparam int StorePmaHighGroups = (StorePmaHighBits + 5) / 6;
+  logic [riscv_pkg::XLEN-1:0] store_pma_compare_address;
+  (* keep = "true" *) logic store_pma_compared_ok;
+
+  assign store_pma_compare_address = StorePmaLowCofactor ?
+      {{(riscv_pkg::XLEN-33){1'b0}}, i_base[32:0]} :
+      i_base;
+
+  assign store_cmp_base_z18 = !(|store_pma_compare_address[riscv_pkg::XLEN-1:18]);
+  assign store_cmp_base_z19 = !(|store_pma_compare_address[riscv_pkg::XLEN-1:19]);
+  assign store_cmp_base_z30 = !(|store_pma_compare_address[riscv_pkg::XLEN-1:30]);
+  assign store_cmp_base_z32 = !(|store_pma_compare_address[riscv_pkg::XLEN-1:32]);
+  assign store_cmp_base_ddr_ok = riscv_pkg::pma_cached_ok(
+      store_pma_compare_address[riscv_pkg::XLEN-1:0]
+  );
+  assign store_cmp_base_page_lo6_zero = !(|store_pma_compare_address[17:12]);
+  assign store_cmp_base_page_lo6_ones = &store_pma_compare_address[17:12];
+  assign store_cmp_base_page_tail_zero = !(|store_pma_compare_address[29:12]);
+  assign store_cmp_base_page_tail_ones = &store_pma_compare_address[29:12];
+
+  assign store_cmp_base_pma_ok = store_cmp_base_z18 || store_cmp_base_ddr_ok ||
+      (store_cmp_base_z32 && (store_pma_compare_address[31:30] == 2'b01) &&
+       !i_atomic);
+  assign store_cmp_base_page_eq_0 = store_cmp_base_z18 && store_cmp_base_page_lo6_zero;
+  assign store_cmp_base_page_eq_3f = store_cmp_base_z18 && store_cmp_base_page_lo6_ones;
+  assign store_cmp_base_page_eq_40 = store_cmp_base_z19 && store_pma_compare_address[18] &&
+      store_cmp_base_page_lo6_zero;
+  assign store_cmp_base_page_eq_3ffff = store_cmp_base_z30 && store_cmp_base_page_tail_ones;
+  assign store_cmp_base_page_eq_40000 = store_cmp_base_z32 &&
+      (store_pma_compare_address[31:30] == 2'b01) && store_cmp_base_page_tail_zero;
+  assign store_cmp_base_page_eq_ddr_before =
+      store_pma_compare_address[riscv_pkg::XLEN-1:12] ==
+      (riscv_pkg::XLEN-12)'((riscv_pkg::DdrBase - 4096) >> 12);
+  assign store_cmp_base_page_eq_ddr_first =
+      store_pma_compare_address[riscv_pkg::XLEN-1:12] ==
+      (riscv_pkg::XLEN-12)'(riscv_pkg::DdrBase >> 12);
+  assign store_cmp_base_page_eq_ddr_last =
+      store_pma_compare_address[riscv_pkg::XLEN-1:12] ==
+      (riscv_pkg::XLEN-12)'((riscv_pkg::DdrLimit - 4096) >> 12);
+  assign store_cmp_base_page_eq_ddr_end =
+      store_pma_compare_address[riscv_pkg::XLEN-1:12] ==
+      (riscv_pkg::XLEN-12)'(riscv_pkg::DdrLimit >> 12);
+  assign store_cmp_base_page_eq_max = &store_pma_compare_address[riscv_pkg::XLEN-1:12];
+
+  assign store_cmp_page_inc_toggle = store_cmp_base_page_eq_max || store_cmp_base_page_eq_3f ||
+      (!i_atomic && store_cmp_base_page_eq_3ffff) || store_cmp_base_page_eq_ddr_last ||
+      (i_atomic && store_cmp_base_page_eq_ddr_before);
+  assign store_cmp_page_dec_toggle = store_cmp_base_page_eq_0 || store_cmp_base_page_eq_40 ||
+      (!i_atomic && store_cmp_base_page_eq_40000) || store_cmp_base_page_eq_ddr_end ||
+      (i_atomic && store_cmp_base_page_eq_ddr_first);
+  // Without a carry, only a negative immediate changes the page. With a
+  // carry, only a nonnegative immediate does. Select between both cases.
+  assign store_cmp_pma_no_carry = store_cmp_base_pma_ok ^
+      (i_imm_negative && store_cmp_page_dec_toggle);
+  assign store_cmp_pma_carry = store_cmp_base_pma_ok ^
+      (!i_imm_negative && store_cmp_page_inc_toggle);
+  // The reduced page-carry decoder is specific to FROST's map. Other
+  // integrations use the full configured PMA predicate on the effective PA.
+  assign store_pma_compared_ok = riscv_pkg::PmaUsesFrostMap ?
+      (i_page_carry ? store_cmp_pma_carry : store_cmp_pma_no_carry) :
+      (i_atomic ? riscv_pkg::pma_atomic_ok(
+      i_effective_addr
+  ) : riscv_pkg::pma_store_ok(
+      i_effective_addr
+  ));
+  if (StorePmaLowCofactor) begin : gen_store_pma_cofactor
+    (* keep = "true" *) wire [StorePmaHighGroups-1:0] high_zero_groups;
+    (* keep = "true" *) wire [StorePmaHighGroups-1:0] high_one_groups;
+    (* keep = "true" *) wire high_zero;
+    (* keep = "true" *) wire high_ones;
+    wire low_page_ones;
+    wire positive_carry;
+    for (genvar group_index = 0; group_index < StorePmaHighGroups; group_index++) begin : gen_high
+      localparam int GroupBits = (StorePmaHighBits - group_index * 6) < 6 ?
+          StorePmaHighBits - group_index * 6 : 6;
+      localparam logic [5:0] OneMatch = 6'((1 << GroupBits) - 1);
+      wire [5:0] terms;
+      for (genvar bit_index = 0; bit_index < 6; bit_index++) begin : gen_bit
+        if (bit_index < GroupBits) assign terms[bit_index] = i_base[33+group_index*6+bit_index];
+        else assign terms[bit_index] = 1'b0;
+      end
+`ifdef FROST_XILINX_PRIMS
+      (* dont_touch = "true" *) LUT6 #(
+          .INIT(64'h1)
+      ) u_zero (
+          .I0(terms[0]),
+          .I1(terms[1]),
+          .I2(terms[2]),
+          .I3(terms[3]),
+          .I4(terms[4]),
+          .I5(terms[5]),
+          .O (high_zero_groups[group_index])
+      );
+      (* dont_touch = "true" *) LUT6 #(
+          .INIT(64'h1 << OneMatch)
+      ) u_one (
+          .I0(terms[0]),
+          .I1(terms[1]),
+          .I2(terms[2]),
+          .I3(terms[3]),
+          .I4(terms[4]),
+          .I5(terms[5]),
+          .O (high_one_groups[group_index])
+      );
+`else
+      assign high_zero_groups[group_index] = terms == 6'b0;
+      assign high_one_groups[group_index]  = terms == OneMatch;
+`endif
+    end
+    assign high_zero = &high_zero_groups;
+    assign high_ones = &high_one_groups;
+    assign low_page_ones = &i_base[32:12];
+    assign positive_carry = !i_imm_negative && i_page_carry;
+    // A positive move from the last full-width page wraps into legal page0.
+`ifdef FROST_XILINX_PRIMS
+    (* dont_touch = "true" *) LUT5 #(
+        .INIT(32'hf8888888)
+    ) u_allow (
+        .I0(store_pma_compared_ok),
+        .I1(high_zero),
+        .I2(high_ones),
+        .I3(low_page_ones),
+        .I4(positive_carry),
+        .O (o_pma_ok)
+    );
+`else
+    assign o_pma_ok = (high_zero && store_pma_compared_ok) ||
+        (high_ones && low_page_ones && positive_carry);
+`endif
+  end else begin : gen_store_pma_full_address
+    assign o_pma_ok = store_pma_compared_ok;
+  end
 endmodule

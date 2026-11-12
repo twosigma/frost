@@ -390,9 +390,9 @@ complete aligned dwords. FROST enables this option, while standalone
 The L0 is direct-mapped with 8-byte (dword) lines: valid bits in flip-flops,
 tags and data in LUTRAM. Above 64 entries the LUTRAMs are split into 64-entry
 banks, and each bank's write enable is one gate over bank selects decoded
-from the store and fill indices. A store, coherent cut or DMA invalidation
-that drops a response's fill this cycle is compared with that response's
-address alone and enters the same gate. The staged load looks it up
+from the store and fill indices. Store, coherent cut and DMA invalidations
+are compared with each cached slot before the response id selects the
+single-bit fill kill, which enters the same gate. The staged load looks it up
 combinationally alongside the SQ check, and a hit completes the load in the
 cycle the SQ answer allows. Every load size can hit, FLD included. Device
 loads, LRs and AMOs never hit or fill.
@@ -407,6 +407,7 @@ replace newer L0 store data. Each invalidation source has its own port:
 | Source | Granule | When |
 |--------|---------|------|
 | SQ store write | Dword | At launch, suppress same-cycle hits; update selected bytes for eligible Normal memory, otherwise invalidate |
+| SQ cached cbo.zero | 64-byte block (eight entries, tag-blind) | At launch, suppress same-cycle hits in the block and invalidate it; an in-flight load of the block fills no L0 entry |
 | AMO write | Dword | When the write completes |
 | DMA write | 32-byte line (four entries, tag-blind) | On the coherence port's invalidation edge; a same-cycle hit is suppressed |
 
@@ -595,6 +596,9 @@ result waits in the data RAM. An AMO that does not fault completes through the
 data RAM, and nothing enters `cdb_stage` on a partial-flush cycle. When
 several results are ready, `cdb_stage` takes a queued completion first, then
 a memory response, a fault, an SQ forward, and an L0 hit.
+The payload mux prepares its nonresponse fault arm independently of the
+response decision, then selects a response at the final mux unless a queued
+completion has priority. This preserves the same capture edge and result.
 
 The completion-valid output is the stage-valid bit gated by `!i_flush_en`.
 Partial-flush tag comparisons determine whether the staged result is discarded.
@@ -660,7 +664,10 @@ causes below it), waiting for the CDB, and already out of the LQ. See the
 The `load_queue` cocotb suite tests the queue in isolation,
 `load_queue_no_prepare_busy` reruns it with `PREPARE_LOAD_WHILE_BUSY=0`, and
 `load_queue_sq_forward` with `ENABLE_SQ_FORWARD_FAST_PATH=1`, as in the core.
-`lq_l0_cache_128`, `lq_l0_cache_256` and `lq_l0_cache_512` test the L0 alone, and
+`lq_l0_cache_8`, `lq_l0_cache_128`, `lq_l0_cache_256` and `lq_l0_cache_512`
+test the L0 alone, including a tag-blind `cbo.zero` block clear against every
+word's concurrent lookup and fill. The eight-word case covers an L0 whose
+entire capacity is one zero block, and
 `lq_stale_slot_probe` is a full-core program that drives two partial flushes
 and ROB-tag reuse against slow, reordered DDR responses. The wrapper and
 router suites (`tomasulo_coherence`, `data_mem_request_router` and others)
@@ -687,3 +694,8 @@ optimized structure equal to its reference form.
 See the [test runner](../../../../../../tests/README.md) and the
 [formal guide](../../../../../../formal/README.md) for commands, scope and
 assumptions.
+
+A cached response coincident with a `cbo.zero` block invalidation suppresses
+both the L0 RAM fill write and its valid bit for every dword in the block.
+`test_cached_response_with_zero_block_does_not_fill_l0` exercises all eight
+positions and verifies that a response from the adjacent block still fills.

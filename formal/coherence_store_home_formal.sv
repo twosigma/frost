@@ -248,6 +248,7 @@ module coherence_store_home_formal #(
       .i_write_data(write_data),
       .i_write_atomic('0),
       .i_write_sc('0),
+      .i_write_zero(1'b0),
       .i_write_tag('0),
       .o_write_done(done),
       .o_write_inflight(),

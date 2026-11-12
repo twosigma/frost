@@ -43,6 +43,10 @@ Two ordering rules decide which stores count:
 
 MMIO stores and store-conditionals never forward. An SC can fail and write
 nothing, so a load behind it waits for the SC to drain and then reads memory.
+A cbo.zero entry conflicts with every load in its 64-byte block, whatever
+the load's bytes, and never forwards: the load waits until the block's write
+frees the entry, then reads the zeros from memory. A younger store
+covering the load still forwards over the older block.
 
 On a full-flush cycle the scan can treat a squashed store's commit as visible.
 This is harmless because the LQ discards any forwarding result captured on a
@@ -80,8 +84,40 @@ A drain cursor points at the oldest entry not yet sent. It launches when that
 entry is eligible and has its address and data, and it never skips ahead.
 Cached and buffered Normal entries require commit; precise uncached entries require ROB-head
 permission and the shield.
+Entry, ordering and FIFO checks prepare launch and cursor completion before
+coherent store credit arrives. Credit qualifies the cached arm last.
+Explicit store credit and precise-store permission enter the final launch and
+cursor-completion selection directly; implicit SC credit is prepared separately.
+Each stored address is classified in parallel with cursor selection. Aligned
+power-of-two cached regions use a mask comparison; other maps retain the
+general range comparison, including empty or wrapping ranges.
+Each entry prepares its cached serial, uncached serial, buffered overlap and
+precise serial decisions independently of its address class. The cursor and
+entry-specific conditions are included before the class bits select those decisions.
+A precise uncommitted entry is uncached and cannot use buffered overlap, so
+its permission does not pass through the overlapping launch checks. Shared
+ROB-head permission and shield checks qualify the precise arm after its
+per-entry decisions have been reduced. Uncached
+completion includes the last-beat decision before address classification;
+every cached launch completes its entry. These are the same launch and
+completion conditions with no added state or cycles.
 Every store is a single 64-bit beat: sub-dword data is replicated across the
-beat and the byte strobe selects the lanes. The write outputs are registered,
+beat and the byte strobe selects the lanes. A `cbo.zero` entry keeps `rs1`
+as its address. A cached block drains as one write at the naturally aligned
+block base, with zero data, every strobe set and `o_coherent_write_zero`, which
+the L1D takes as the whole block (see the
+[cache library](../../../../lib/cache/README.md#line-scope-cbozero)); its
+launch invalidates the block's eight L0 dwords (`o_cache_invalidate_block`)
+and clears an LR reservation on either sector, and its completion frees the
+entry. An uncached (BRAM) block drains as eight zero beats with every strobe
+set, at the block base plus 0, 8, ... 56. Its entry stays the drain cursor
+through all eight launches; each beat takes a completion-FIFO slot and
+invalidates its L0 dword, and only the eighth beat's completion frees the
+entry. The beat counter prepares its local next value before coherent credit
+selects advance or hold. Its fixed-width increment wraps after the eighth
+uncached beat; a cached zero write restarts it immediately.
+A precise uncached block reports its completion, and any beat's error,
+with the eighth response. The write outputs are registered,
 including `is_mmio` and `is_cached` flags that let the memory router steer the
 write without decoding the address again. `o_mem_write_buffered` identifies
 an ordinary Normal store that has already retired; this distinguishes its
@@ -100,6 +136,12 @@ oldest in-flight write. A cached or MMIO store
 launches only when no other write is in flight, and nothing else launches until
 it completes. A cached write completes once the L1D has ordered it, so a store
 miss does not hold up the drain for the line fill.
+The in-flight class resolves completion of the previous write before launch
+credit arrives. A new launch selects its class last and takes priority over
+a simultaneous completion, without adding state or cycles.
+The sent bits likewise prepare allocation clearing, cursor selection and entry
+completion before launch arrives. A completing launch takes priority over a
+same-entry allocation clear.
 
 Cached ordinary stores complete when captured in one of the L1D's four ordered
 sector records. Each scalar receives an acknowledgement, including scalars

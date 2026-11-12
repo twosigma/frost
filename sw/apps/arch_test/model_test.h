@@ -36,6 +36,9 @@
 #define FLEN 64
 #endif
 
+// Zicboz: cbo.zero zeroes a 64-byte block (riscv_pkg::CboZeroBlockBytes).
+#define RVMODEL_CBZ_BLOCKSIZE 64
+
 //-----------------------------------------------------------------------
 // RVMODEL_BOOT: empty; the crt0_arch_test*.S startup files do the work.
 //-----------------------------------------------------------------------

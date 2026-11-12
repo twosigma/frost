@@ -334,8 +334,18 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     assert f"local-mac-address = [{packer.NIC_MAC_ADDRESS}];" in dts
     assert "clock-frequency = <300000000>;" in dts
     assert 'mmu-type = "riscv,sv39";' in dts
-    for ext in ("smaia", "ssaia", "sscofpmf", "sstc", "svade", "svvptc", "zicntr"):
+    for ext in (
+        "smaia",
+        "ssaia",
+        "sscofpmf",
+        "sstc",
+        "svade",
+        "svvptc",
+        "zicntr",
+        "zicboz",
+    ):
         assert f'"{ext}"' in dts and f"_{ext}" in packer.ISA_STRING
+    assert "riscv,cboz-block-size = <64>;" in dts
     assert "bootargs" not in dts and "initrd" not in dts
     # The SBI-v3 EVENT_GET_INFO probe only reports events present in OpenSBI's
     # hw_event_map, which comes from this node; without it perf_event_open, which
@@ -371,6 +381,31 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     assert "0x00020003" not in dts
     for event in (7, 8, 9, 10):
         assert f"<0x{event:08x} 0x{event:08x}" not in dts
+
+
+def test_vcu118_device_tree_isa_matches_the_boot_packer() -> None:
+    """The VCU118 tree lists the packer's extensions and the RTL's cbo.zero block.
+
+    On the VCU118, OpenSBI reads the flash DTB compiled from this source and
+    sets menvcfg.CBZE when it lists zicboz; Linux patches clear_page to cbo.zero
+    when the DTB it boots lists zicboz with riscv,cboz-block-size. Both trees
+    describe one CPU, so they list the same extensions and block size.
+    """
+    packer = _load_module(SBI_PACKER)
+    dts = (REPO_ROOT / "boards" / "vcu118" / "dts" / "frost_vcu118.dts").read_text()
+    base = re.search(r'riscv,isa-base = "([^"]+)";', dts)
+    isa = re.search(r'riscv,isa = "([^"]+)";', dts)
+    extensions = re.search(r"riscv,isa-extensions = (.*?);", dts, re.S)
+    block = re.search(r"riscv,cboz-block-size = <(\d+)>;", dts)
+    assert base is not None and isa is not None
+    assert extensions is not None and block is not None
+    assert base[1] == packer.ISA_BASE
+    assert isa[1] == packer.ISA_STRING
+    assert tuple(re.findall(r'"([^"]+)"', extensions[1])) == packer.ISA_EXTENSIONS
+    rtl = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv").read_text()
+    rtl_block = re.search(r"localparam int unsigned CboZeroBlockBytes = (\d+);", rtl)
+    assert rtl_block is not None
+    assert int(block[1]) == packer.CBOZ_BLOCK_BYTES == int(rtl_block[1])
 
 
 def test_sbi_packer_recognizes_linux_image_header() -> None:

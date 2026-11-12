@@ -31,6 +31,8 @@ module coherence_l1d #(
     parameter int unsigned HOME_CACHE_BYTES = 2 * 1024 * 1024,
     parameter int unsigned HOME_WAYS = 4,
     parameter int unsigned HOME_LINE_BYTES = 64,
+    // 0 removes the cbo.zero path: a build, or a proof task, that issues no zero writes.
+    parameter bit ZERO_LINE = 1'b1,
     parameter bit STREAM_PREFETCH = 1'b0,
     parameter int unsigned SIM_FAST_MAINT = 0,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
@@ -55,10 +57,19 @@ module coherence_l1d #(
     input logic [63:0] i_write_data,
     input logic i_write_atomic,
     input logic i_write_sc,
+    // The write is a cbo.zero of the 64-byte block at i_address, one
+    // operation that becomes the block's two sector records.
+    input logic i_write_zero = 1'b0,
     input logic [TAG_BITS-1:0] i_write_tag,
     output logic o_write_done,
     output logic o_write_inflight,
     output logic o_store_ready,
+    // A cbo.zero twin record turns valid on the next cycle without a write of
+    // its own; this pulse and address stand in for that write's push, so a
+    // load queue that registers its same-sector matches from pushes sees the
+    // twin as it sees every record.
+    output logic o_twin_push,
+    output logic [ADDR_WIDTH-1:0] o_twin_push_addr,
     output logic o_pending_store,
     output logic o_sc_write_pending,
     output logic o_atomic_live,
@@ -179,7 +190,8 @@ module coherence_l1d #(
     AtomicWriteOp,
     SCOp,
     PrefetchOp,
-    LookaheadOp
+    LookaheadOp,
+    TwinOp
   } operation_t;
   // One-hot state keeps each transition, including the W-dependent probe
   // absorption, to a single term of its next state.
@@ -226,6 +238,25 @@ module coherence_l1d #(
   logic [3:0][5:0] store_contributors;
   logic [3:0][EpBits-1:0] store_ep;
   logic store_seal, store_acquire, store_head_ready;
+  // cbo.zero records (see the cache README, Line-scope cbo.zero): zero
+  // records, the upper twins, and the twin waiting for a record.
+  logic [3:0] store_zero, store_twin;
+  logic store_twin_pending, store_twin_alloc;
+  // A GrantMZero grants both sectors of its block: the lower record installs
+  // from the grant, then the twin installs as Modified zeros (TwinOp) before
+  // the endpoint's Done. twin_fill_q owes that installation for endpoint
+  // twin_ep_q; the twin's victim takes the write-back slot twin_wb_slot.
+  logic grant_twin, twin_fill_q, twin_wb_ok, twin_wb_slot, twin_ready;
+  logic [EpBits-1:0] twin_ep_q;
+  logic twin_owed;
+  assign twin_owed = ZERO_LINE && twin_fill_q;
+  logic [1:0] store_twin_index;
+  logic [ADDR_WIDTH-1:0] store_twin_addr;
+  // A record's upper sector is held by a live endpoint, a frozen PutM or an
+  // older record, so its block cannot acquire with GetMZero. Registered.
+  logic [3:0] zero_sibling_conflict, zero_sibling_conflict_q;
+  // The selected record acquires with GetMZero, from the lookup's cycle.
+  logic zero_acquire, zero_acquire_q;
   logic look_found, look_valid_q, look_available, look_ready, borrowed_live, look_read_turn_q;
   logic look_priority_q, read_yield_look, look_retry;
   logic [1:0] look_priority_index_q;
@@ -360,7 +391,7 @@ module coherence_l1d #(
   logic [EpSlots-1:0] pick_onehot, ep_read_fail, ep_fail, ep_fail_error;
   logic acquisition_store_q, acquisition_sc_q;
   logic [2:0] acquisition_read_q;
-  logic grant_valid, grant_ready, grant_read_failure, zero_grant_failed;
+  logic grant_valid, grant_ready, grant_accept, grant_read_failure, zero_grant_failed;
   logic grant_read_turn_q, grant_retry_q, grant_read_hold, grant_read_yield, load_acquire_block;
   logic atomic_sc_selected, read_selected, acquire_ready;
   logic [ADDR_WIDTH-1:0] lookup_prepared_addr;
@@ -388,7 +419,7 @@ module coherence_l1d #(
   logic [1:0] path_queue_valid_q, path_queue_valid_next;
   logic [1:0][ADDR_WIDTH-6:0] path_queue_q, path_queue_next;
 
-  assign read_failure = grant_ready && grant_read_failure;
+  assign read_failure = grant_accept && grant_read_failure;
   // A shadow lookup answers nothing when the hit path or the tags hit.
   assign shadow_skip = shadow_q && (path_hit_q || array_hit);
   assign read_hit = active && ((phase_q == LookupWait && array_valid &&
@@ -865,7 +896,13 @@ module coherence_l1d #(
   assign maint_eligible = maint_q && !pending_q && !atomic_q && !any_live && wb_free;
   assign store_push = |i_write_mask && !i_write_atomic;
   assign store_pop = active && phase_q == UpdateWait && array_ready &&
-      (operation_q == StoreOp || (operation_q == GrantOp && selected_grant_store));
+      (operation_q == StoreOp || operation_q == TwinOp ||
+       (operation_q == GrantOp && selected_grant_store));
+  // The granted lower record's twin follows it in the buffer (the home grants
+  // GrantMZero only to a GetMZero, which requires that twin), so a build that
+  // issues no cbo.zero writes has no twin to install.
+  assign grant_twin = ZERO_LINE && operation_q == GrantOp && selected_grant_store &&
+      grant_q.opcode == coherence_pkg::GrantMZero && store_twin[store_next_index];
   assign store_seal = active && ((phase_q == Idle && !probe_valid_q && !probe_priority &&
       ((grant_valid && grant_ready && grant_is_store) ||
        (!grant_valid && !atomic_write_q && store_head_ready))) ||
@@ -875,7 +912,8 @@ module coherence_l1d #(
   coherence_store_buffer #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .TAG_BITS(TAG_BITS),
-      .EP_BITS(EpBits)
+      .EP_BITS(EpBits),
+      .ZERO_LINE(ZERO_LINE)
   ) store_buffer (
       .i_clk,
       .i_rst,
@@ -884,6 +922,7 @@ module coherence_l1d #(
       .i_addr(i_address),
       .i_data(i_write_data),
       .i_mask(i_write_mask),
+      .i_zero(store_push && i_write_zero),
       .i_tag(i_write_tag),
       .i_pop(store_pop),
       .i_seal(store_seal),
@@ -903,9 +942,27 @@ module coherence_l1d #(
       .o_mask(store_mask),
       .o_tag(store_tag),
       .o_contributors(store_contributors),
-      .o_ep(store_ep)
+      .o_ep(store_ep),
+      .o_zero(store_zero),
+      .o_twin(store_twin),
+      .o_twin_pending(store_twin_pending),
+      .o_twin_alloc(store_twin_alloc),
+      .o_twin_index(store_twin_index),
+      .o_twin_addr(store_twin_addr)
   );
   assign pending_q = store_count != 0;
+  // The twin's victim takes a write-back slot that holds nothing: endpoint
+  // 0's reserved slot when the twin is endpoint 0's, otherwise an unreserved one.
+  always_comb begin
+    twin_wb_ok = 1'b0;
+    twin_wb_slot = 1'b0;
+    for (int slot = 1; slot >= 0; slot--)
+    if (!wb_live[slot] && (!(wb_reserved_q && reserved_wb_q == 1'(slot)) || twin_ep_q == '0)) begin
+      twin_wb_ok = 1'b1;
+      twin_wb_slot = 1'(slot);
+    end
+  end
+  assign twin_ready = twin_owed && twin_wb_ok && !pending_blocked;
   assign tail_q = store_count > 1;
   assign store_next_index = store_head_index + 2'd1;
   // Head promotion and empty insertion capture the sector address directly.
@@ -931,24 +988,30 @@ module coherence_l1d #(
   // presents an atomic only after its committed stores drain, so no store
   // arrives beside SC acceptance or local atomic admission.
   assign o_store_ready = active && store_credit && !atomic_q && !maint_q && !i_maint_valid;
+  assign o_twin_push = store_twin_alloc;
+  assign o_twin_push_addr = store_twin_addr;
   assign o_write_inflight = store_ack || atomic_write_q;
   assign o_write_done = store_ack || atomic_done_q;
   assign o_block_valid = atomic_q ? 4'b0001 : store_valid;
   // Holder zero captures its address on each store or atomic ownership change.
   // Record 0 allocates when it is next and the store does not combine with
   // record 3, the youngest then. Combining into record 0 keeps its address.
+  // A cbo.zero write never combines.
   assign store_zero_alloc = 2'(store_head_index + 2'(store_count)) == 2'd0 &&
-      !(store_count != 0 && !store_sealed[3] &&
-        store_addr[3][ADDR_WIDTH-1:5] == i_address[ADDR_WIDTH-1:5]);
+      (i_write_zero || !(store_count != 0 && !store_sealed[3] &&
+        store_addr[3][ADDR_WIDTH-1:5] == i_address[ADDR_WIDTH-1:5]));
   assign o_block_addr = {store_addr[3:1], block_zero_addr_q};
+  // A lower zero record that is the only record waits for its twin, which
+  // allocates on the next cycle.
   assign store_head_ready = pending_q && !look_priority_q && !store_acquired[store_head_index] &&
       !pending_blocked && !(store_read_turn_q && read_waiting_q) &&
+      !(store_twin_pending && store_count == 3'd1) && !twin_owed &&
       (!pending_miss_q || (!request_live && ep0_wb_ok && !store_same_line_q));
   assign o_sc_ready = active && !atomic_q && !pending_q && !request_live &&
       !o_sc_result_valid && i_atomic_protected && phase_q == Idle && !grant_valid &&
       !probe_valid_q && !probe_priority;
   assign o_sc_write_tag = atomic_tag_q;
-  assign local_ready = grant_valid || atomic_write_q ||
+  assign local_ready = grant_valid || atomic_write_q || twin_ready ||
       (atomic_q && atomic_sc_q && !request_live && (!sc_home_q || (!any_live && wb_free))) ||
       store_head_ready || look_ready ||
       (rd_candidate && &read_probe_count_q) || maint_eligible ||
@@ -967,6 +1030,34 @@ module coherence_l1d #(
       lookup_addr_q[5+:SetBits] == atomic_addr_q[5+:SetBits];
   assign probe_reply_eligible = probe_q.opcode != coherence_pkg::ProbeInvalidate ||
       cut_phase_q == CutDone;
+  // Prepare the reply's set condition independently of the home's R readiness.
+  // A new reply wins over acceptance of an old reply on the same edge.
+  (* keep = "true" *) logic probe_reply_start;
+  always_comb begin
+    probe_reply_start = 1'b0;
+    if (active) begin
+      case (phase_q)
+        LookupWait: if (array_valid && operation_q == ProbeOp) begin
+          if (array_hit && !(array_state == coherence_pkg::Shared &&
+              probe_q.opcode == coherence_pkg::ProbeRead)) probe_reply_start = 1'b0;
+          else if (probe_absorbed_q) probe_reply_start = 1'b0;
+          else if (probe_reply_eligible) probe_reply_start = 1'b1;
+        end
+        Update: if (update_ready) begin
+          if (operation_q != ProbeOp) probe_reply_start = 1'b0;
+          else if (probe_absorbed_q) probe_reply_start = 1'b0;
+          else if (probe_reply_eligible) probe_reply_start = 1'b1;
+        end
+        ProbeReply: if (probe_reply_eligible) probe_reply_start = 1'b1;
+        default: ;
+      endcase
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) o_r_valid <= 1'b0;
+    else if (probe_reply_start) o_r_valid <= 1'b1;
+    else if (o_r_valid && i_r_ready) o_r_valid <= 1'b0;
+  end
   (* keep = "true" *) wire invalidate_eligible = active &&
       phase_q == Idle && !probe_valid_q && !o_r_valid && !local_turn_q &&
       probe_in.opcode == coherence_pkg::ProbeInvalidate;
@@ -1016,9 +1107,14 @@ module coherence_l1d #(
   assign o_r = reply_q;
   assign grant_ready = active && phase_q == Idle && !probe_valid_q && !probe_priority &&
       !grant_read_hold;
-  // Endpoint 0 is never held for a read's turn.
+  // An owed cbo.zero twin installs before any grant (the Idle selection takes
+  // it first), so the endpoint handshake also waits for it: a grant offered
+  // meanwhile stays in its endpoint until the twin has installed.
+  assign grant_accept = grant_ready && !twin_owed;
+  // Endpoint 0 is never held for a read's turn; its failure also waits for
+  // an owed twin, as its handshake does.
   assign zero_grant_failed = active && phase_q == Idle && !probe_valid_q && !probe_priority &&
-      pick_onehot[0] && ep_fail[0] && !ep_store[0];
+      !twin_owed && pick_onehot[0] && ep_fail[0] && !ep_store[0];
   // Data-class request identities 0 to 7 are legal.
   if (MISSES < 1 || MISSES > 8) begin : gen_invalid_misses
     initial $fatal(1, "coherence_l1d: MISSES must be 1 to 8");
@@ -1064,7 +1160,7 @@ module coherence_l1d #(
       assign ep_request_valid[ep] = active && phase_q == Acquire && acq_ep_q == EpBits'(ep) &&
           (ep == 0 || !load_acquire_block);
     end
-    assign ep_grant_ready[ep] = grant_ready && pick_onehot[ep];
+    assign ep_grant_ready[ep] = grant_accept && pick_onehot[ep];
     if (ep > 0) begin : gen_load_done
       assign ep_done_valid[ep] = ld_done_q[ep];
       assign ep_done_status[ep] = ld_status_q[ep];
@@ -1510,7 +1606,10 @@ module coherence_l1d #(
           ld_done_q[ep] <= 1'b1;
           ld_status_q[ep] <= ep_fail_error[ep] ? coherence_pkg::Error : coherence_pkg::Consumed;
         end
-        if (grant_install && grant_ep_q == EpBits'(ep) && ep > 0) ld_done_q[ep] <= 1'b1;
+        if (grant_install && grant_ep_q == EpBits'(ep) && ep > 0 && !grant_twin)
+          ld_done_q[ep] <= 1'b1;
+        if (active && phase_q == UpdateWait && array_ready && operation_q == TwinOp &&
+            twin_ep_q == EpBits'(ep) && ep > 0) ld_done_q[ep] <= 1'b1;
       end
       for (int slot = 0; slot < 8; slot++) begin
         if (wait_attach && selected_read_q == 3'(slot)) begin
@@ -1606,7 +1705,7 @@ module coherence_l1d #(
         if (atomic_local_q) assert (!live[ep] || ld_line_q[ep] != atomic_addr_q[ADDR_WIDTH-1:5]);
         else assert (!live[ep]);
 `endif
-      if (grant_ready && grant_valid && grant_pick != '0) assert (wb_free);
+      if (grant_accept && grant_valid && grant_pick != '0) assert (wb_free);
       if (active && phase_q == LookupWait && array_valid && operation_q == GrantOp &&
           grant_ep_q != '0 && !array_hit && array_state == coherence_pkg::Modified)
         p_bounded_wb_free_lookup : assert (wb_free);
@@ -1738,7 +1837,8 @@ module coherence_l1d #(
     acquisition.addr = {lookup_addr_q[ADDR_WIDTH-1:5], 5'b0};
     acquisition.offset = lookup_addr_q[4:0];
     if (operation_q == StoreOp || operation_q == LookaheadOp) begin
-      acquisition.opcode = coherence_pkg::GetM;
+      acquisition.opcode = (ZERO_LINE && zero_acquire_q) ? coherence_pkg::GetMZero :
+          coherence_pkg::GetM;
       acquisition.mask   = store_mask[store_selected_q];
     end else if (StreamEnabled && operation_q == PrefetchOp) begin
       acquisition.offset = '0;
@@ -1774,6 +1874,46 @@ module coherence_l1d #(
           store_addr[slot][ADDR_WIDTH-1:5]) look_owner_conflict[slot] = 1'b1;
     end
   end
+  // A lower zero record's upper sector, the sector its twin zeroes, held by a
+  // live endpoint, a frozen PutM or an older record. Only the controller
+  // starts acquisitions and freezes victims, so the registered sample covers
+  // the record's own lookup and acquisition; releases only clear it.
+  always_comb begin
+    zero_sibling_conflict = '0;
+    for (int slot = 0; slot < 4; slot++) begin
+      for (int ep = 0; ep < MISSES; ep++)
+      if (live[ep] && {store_addr[slot][ADDR_WIDTH-1:6], 1'b1} ==
+          (ep == 0 ? acquisition_q.addr[ADDR_WIDTH-1:5] : ld_line_q[ep]))
+        zero_sibling_conflict[slot] = 1'b1;
+      for (int wb_slot = 0; wb_slot < 2; wb_slot++)
+      if (wb_live[wb_slot] && wb_addr[wb_slot][ADDR_WIDTH-1:5] ==
+          {store_addr[slot][ADDR_WIDTH-1:6], 1'b1})
+        zero_sibling_conflict[slot] = 1'b1;
+      for (int older = 0; older < 4; older++)
+      if (store_valid[older] && 2'(2'(older) - store_head_index) <
+          2'(2'(slot) - store_head_index) &&
+          store_addr[older][ADDR_WIDTH-1:5] == {store_addr[slot][ADDR_WIDTH-1:6], 1'b1})
+        zero_sibling_conflict[slot] = 1'b1;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) zero_sibling_conflict_q <= '1;
+    else zero_sibling_conflict_q <= zero_sibling_conflict;
+  end
+  // With 64-byte home lines, a lower zero record acquires with GetMZero when
+  // its twin follows it and its upper sector is free; with 32-byte lines, every
+  // zero record does, since each sector is a whole home line.
+  assign zero_acquire = store_zero[store_selected_q] &&
+      (HOME_LINE_BYTES == 32 ||
+       (HOME_LINE_BYTES == 64 && !store_twin[store_selected_q] &&
+        store_valid[2'(store_selected_q + 2'd1)] && store_twin[2'(store_selected_q + 2'd1)] &&
+        !zero_sibling_conflict_q[store_selected_q]));
+  always_ff @(posedge i_clk) begin
+    if (i_rst) zero_acquire_q <= 1'b0;
+    else if (active && phase_q == LookupWait && array_valid &&
+        (operation_q == StoreOp || operation_q == LookaheadOp))
+      zero_acquire_q <= zero_acquire;
+  end
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       look_pair_conflict_q <= '0;
@@ -1799,6 +1939,14 @@ module coherence_l1d #(
   always_comb begin
     borrowed_live = |(live[EpSlots-1:1] & ep_store[EpSlots-1:1]);
     look_blocked = store_acquired | store_checked_q | ~store_valid | look_owner_conflict_q;
+    // With 64-byte home lines, a twin installs at the head, and a
+    // lower zero record looks ahead only with GetMZero: with its twin and its
+    // upper sector free.
+    if (HOME_LINE_BYTES == 64)
+      for (int slot = 0; slot < 4; slot++)
+      if (store_twin[slot] || (store_zero[slot] && (zero_sibling_conflict_q[slot] ||
+          !(store_valid[2'(2'(slot) + 2'd1)] && store_twin[2'(2'(slot) + 2'd1)]))))
+        look_blocked[slot] = 1'b1;
     if (!look_snapshot_valid_q) look_blocked = '1;
     for (int slot = 0; slot < 4; slot++) begin
       for (int older = 0; older < 4; older++)
@@ -1893,7 +2041,7 @@ module coherence_l1d #(
     end
   end
   assign store_continue = tail_q && tail_checked_q && !tail_wb_blocked_q &&
-      !(store_read_turn_q && read_waiting_q) &&
+      !(store_read_turn_q && read_waiting_q) && !(store_twin_pending && store_count == 3'd2) &&
       !i_p_valid && !probe_valid_q && !o_r_valid && !grant_valid &&
       !store_acquired[store_next_index];
   assign array_skip_data = active && phase_q == Lookup &&
@@ -1958,7 +2106,8 @@ module coherence_l1d #(
       // tag result. A grant needs the replaced line's data only to freeze a
       // Modified victim.
       .i_req_data_if_hit(!probe_launch && operation_q == ReadOp),
-      .i_req_data_if_victim_modified(!probe_launch && operation_q == GrantOp),
+      .i_req_data_if_victim_modified(!probe_launch &&
+          (operation_q == GrantOp || operation_q == TwinOp)),
       // A resident hint is not a CPU access and keeps the line's age, and a
       // shadow lookup leaves the age to the hit path.
       .i_req_no_touch((StreamEnabled && !probe_launch && operation_q == PrefetchOp) ||
@@ -1978,7 +2127,7 @@ module coherence_l1d #(
       .i_update_addr(update_addr_q),
       .i_update_way(way_q),
       .i_update_state(state_q),
-      .i_update_insert(operation_q == GrantOp),
+      .i_update_insert(operation_q == GrantOp || operation_q == TwinOp),
       .i_update_touch(grant_touch_q),
       .i_update_mask(update_mask_q),
       .i_update_data(image_q),
@@ -2167,6 +2316,8 @@ module coherence_l1d #(
   // Prepare the complete acquisition-endpoint update for each grant-presence
   // value. The grant arbitration result selects data after phase and operation
   // decoding, rather than entering their priority chain or a register enable.
+  // An owed zero twin or credited read turn holds the acquisition endpoint;
+  // TwinOp also leaves it unchanged when its lookup returns.
   (* keep = "true" *) logic [EpBits-1:0] acq_ep_choice[2];
   wire [EpBits-1:0] acq_ep_next;
   for (genvar choice = 0; choice < 2; choice++) begin : gen_acq_ep_choice
@@ -2178,7 +2329,8 @@ module coherence_l1d #(
         case (phase_q)
           Idle: begin
             if (!(probe_capture && probe_in.opcode != coherence_pkg::CheckSC) &&
-                !probe_valid_q && !probe_priority && !GrantPresent &&
+                !probe_valid_q && !probe_priority && !twin_owed && !grant_read_hold &&
+                !GrantPresent &&
                 !(i_sc_valid && !atomic_q && !pending_q && !request_live &&
                   !o_sc_result_valid && i_atomic_protected) && !atomic_write_q) begin
               if (atomic_sc_selected) acq_ep_choice[choice] = '0;
@@ -2193,7 +2345,7 @@ module coherence_l1d #(
               PrefetchOp: if (!array_hit && prefetch_ep_free && !prefetch_cancel &&
                   lookup_in_window && !lookup_conflict_q && !i_p_valid && !acquisition_block)
                 acq_ep_choice[choice] = prefetch_ep_index;
-              ProbeOp, GrantOp, LookaheadOp, AtomicWriteOp, MaintOp, SCOp: begin
+              ProbeOp, GrantOp, LookaheadOp, TwinOp, AtomicWriteOp, MaintOp, SCOp: begin
               end
               default: begin
                 if (!(shadow_q && path_hit_q) && selected_kind_q != ReadAMO &&
@@ -2239,9 +2391,9 @@ module coherence_l1d #(
   // Prepare the priority above a read before its eligibility settles. The
   // credited read turn also selects the read address when it has no candidate.
   (* keep = "true" *) wire lookup_read_turn =
-      !probe_valid_q && !probe_priority && grant_read_hold;
+      !probe_valid_q && !probe_priority && !twin_owed && grant_read_hold;
   (* keep = "true" *) wire lookup_read_enable =
-      !probe_valid_q && !probe_priority && !grant_valid &&
+      !probe_valid_q && !probe_priority && !twin_owed && !grant_valid &&
       !(i_sc_valid && o_sc_ready) && !atomic_write_q && !atomic_sc_selected &&
       !store_head_ready && !look_ready && !(maint_eligible && maint_turn_q);
   assign lookup_other_valid = !(lookup_read_turn || (lookup_read_enable && rd_candidate));
@@ -2253,6 +2405,7 @@ module coherence_l1d #(
     lookup_prepared_addr = hint_addr_q;
     if (probe_valid_q) lookup_prepared_addr = probe_q.addr;
     else if (probe_priority) lookup_prepared_addr = probe_in.addr;
+    else if (twin_owed) lookup_prepared_addr = pending_addr_q;
     else if (grant_valid) lookup_prepared_addr = grant.addr;
     else if (i_sc_valid && o_sc_ready) lookup_prepared_addr = i_sc_address;
     else if (atomic_write_q || atomic_sc_selected) lookup_prepared_addr = atomic_addr_q;
@@ -2277,6 +2430,8 @@ module coherence_l1d #(
     if (i_rst) begin
       phase_q <= Idle;
       operation_q <= ReadOp;
+      twin_fill_q <= 1'b0;
+      twin_ep_q <= '0;
       rd_valid_q <= '0;
       rd_ready_q <= '0;
       rd_miss_q <= '0;
@@ -2327,7 +2482,6 @@ module coherence_l1d #(
       probe_put_q <= 1'b0;
       probe_q <= '0;
       reply_q <= '0;
-      o_r_valid <= 1'b0;
       o_cut_release <= 1'b0;
       wb_selected_q <= 1'b0;
       wb_next_q <= 1'b0;
@@ -2375,8 +2529,12 @@ module coherence_l1d #(
       if (i_sc_commit) sc_committed_q <= 1'b1;
       if (!atomic_q && store_push && store_zero_alloc)
         block_zero_addr_q <= {i_address[ADDR_WIDTH-1:5], 5'b0};
-      if (active && phase_q == UpdateWait && array_ready && operation_q == GrantOp &&
-          grant_ep_q == '0) wb_reserved_q <= 1'b0;
+      // A cbo.zero twin allocates on a cycle without a write.
+      if (!atomic_q && store_twin_alloc && store_twin_index == 2'd0)
+        block_zero_addr_q <= store_twin_addr;
+      if (active && phase_q == UpdateWait && array_ready &&
+          ((operation_q == GrantOp && grant_ep_q == '0 && !grant_twin) ||
+           (operation_q == TwinOp && twin_ep_q == '0))) wb_reserved_q <= 1'b0;
       if (o_sc_result_valid && i_sc_result_ready) o_sc_result_valid <= 1'b0;
       if (!wb_selected_q) begin
         if (|wb_valid) begin
@@ -2442,7 +2600,6 @@ module coherence_l1d #(
       if (phase_q == Idle && !probe_valid_q) local_turn_q <= 1'b0;
       if (o_r_valid && i_r_ready) begin
         local_turn_q <= local_ready;
-        o_r_valid <= 1'b0;
         probe_valid_q <= 1'b0;
         if (probe_q.opcode == coherence_pkg::ProbeInvalidate) o_cut_release <= 1'b1;
       end
@@ -2498,6 +2655,14 @@ module coherence_l1d #(
               end else phase_q <= Lookup;
             end else if (probe_priority || probe_valid_q) begin
               // Probe ownership excludes local selection through R acceptance.
+            end else if (twin_owed) begin
+              // A GrantMZero's twin installs before other local work, once a
+              // write-back slot is free for its victim and no frozen PutM holds
+              // its sector, as for any store.
+              if (twin_ready) begin
+                operation_q <= TwinOp;
+                phase_q <= Lookup;
+              end
             end else if (grant_read_hold) begin
               // The credited turn leaves the circular pointer in place, so a
               // read that misses and cannot acquire keeps its next turn.
@@ -2587,7 +2752,6 @@ module coherence_l1d #(
                   phase_q <= Update;
                 end else if (probe_absorbed_q) phase_q <= ProbeAbsorb;
                 else if (probe_reply_eligible) begin
-                  o_r_valid <= 1'b1;
                   phase_q <= Idle;
                 end else phase_q <= ProbeReply;
               end
@@ -2595,7 +2759,7 @@ module coherence_l1d #(
                 if (array_available) begin
                   update_addr_q <= grant_q.addr;
                   image_q <= grant_q.data;
-                  state_q <= grant_q.opcode == coherence_pkg::GrantM ?
+                  state_q <= coherence_pkg::is_grantm(grant_q.opcode) ?
                       coherence_pkg::Modified : coherence_pkg::Shared;
                   if (selected_grant_store) begin
                     for (int index = 0; index < 32; index++)
@@ -2623,6 +2787,21 @@ module coherence_l1d #(
               LookaheadOp: begin
                 phase_q <= (!array_hit || array_state != coherence_pkg::Modified) &&
                     acquire_ready && !same_line && !look_retry ? Acquire : Idle;
+              end
+              // The twin installs its sector Modified with the block's zeros, in
+              // its resident way or in a replaced one whose Modified victim
+              // freezes into a free write-back slot.
+              TwinOp: begin
+                update_addr_q <= pending_addr_q;
+                image_q <= '0;
+                state_q <= coherence_pkg::Modified;
+                if (!array_hit && array_state == coherence_pkg::Modified) begin
+                  freeze_slot_q <= twin_wb_slot;
+                  freeze_addr_q <= array_addr;
+                  freeze_data_q <= array_data;
+                  freeze_maintenance_q <= 1'b0;
+                  phase_q <= Freeze;
+                end else phase_q <= Update;
               end
               PrefetchOp: begin
                 if (!array_hit && prefetch_ep_free && prefetch_accept) begin
@@ -2771,7 +2950,6 @@ module coherence_l1d #(
             if (operation_q != ProbeOp) phase_q <= UpdateWait;
             else if (probe_absorbed_q) phase_q <= ProbeAbsorb;
             else if (probe_reply_eligible) begin
-              o_r_valid <= 1'b1;
               phase_q <= Idle;
             end else phase_q <= ProbeReply;
           end
@@ -2782,7 +2960,11 @@ module coherence_l1d #(
                 // A load endpoint's read was answered in Lookup; its slot may
                 // hold a later read.
                 if (selected_grant_store) begin
-                  if (grant_ep_q == '0) begin
+                  // A GrantMZero's Done waits for its twin.
+                  if (grant_twin) begin
+                    twin_fill_q <= 1'b1;
+                    twin_ep_q <= grant_ep_q;
+                  end else if (grant_ep_q == '0) begin
                     done_q <= 1'b1;
                     written_q <= 1'b1;
                   end
@@ -2806,6 +2988,14 @@ module coherence_l1d #(
               StoreOp: begin
                 phase_q <= store_continue ? Lookup : Idle;
                 if (store_continue) store_selected_q <= store_next_index;
+              end
+              TwinOp: begin
+                twin_fill_q <= 1'b0;
+                if (twin_ep_q == '0) begin
+                  done_q <= 1'b1;
+                  written_q <= 1'b1;
+                end
+                phase_q <= Idle;
               end
               AtomicWriteOp: begin
                 atomic_write_q <= 1'b0;
@@ -2836,7 +3026,6 @@ module coherence_l1d #(
           ProbeAbsorb: if (absorb_go) phase_q <= ProbeReply;
           ProbeReply: begin
             if (probe_reply_eligible) begin
-              o_r_valid <= 1'b1;
               phase_q   <= Idle;
             end
           end
@@ -2876,7 +3065,8 @@ module coherence_l1d #(
         LookupWait:
         if (array_valid) begin
           case (operation_q)
-            ProbeOp, GrantOp, StoreOp, AtomicWriteOp, MaintOp, SCOp, LookaheadOp, PrefetchOp: begin
+            ProbeOp, GrantOp, StoreOp, AtomicWriteOp, MaintOp, SCOp, LookaheadOp, PrefetchOp,
+            TwinOp: begin
             end
             default: begin
               if (shadow_skip) begin
@@ -2933,7 +3123,7 @@ module coherence_l1d #(
         p_store_probe_exclusion : assert (!probe_valid_q);
         p_store_install_address : assert (update_addr_q == pending_addr_q);
       end
-      if (grant_ready && grant_valid && grant_is_store)
+      if (grant_accept && grant_valid && grant_is_store)
         p_store_grant_head : assert (store_acquired[store_head_index] &&
             store_ep[store_head_index] == grant_pick && grant.addr == pending_addr_q);
 `ifndef STREAM_UNBOUNDED_PROOF
@@ -3006,7 +3196,8 @@ module coherence_l1d #(
         insert_lookup_set_q <= array_addr[5+:SetBits];
         insert_lookup_way_q <= array_way;
       end
-      if (active && phase_q == Update && update_ready && operation_q == GrantOp)
+      if (active && phase_q == Update && update_ready &&
+          (operation_q == GrantOp || operation_q == TwinOp))
         insert_lookup_valid_q <= 1'b0;
     end
   end
@@ -3042,7 +3233,8 @@ module coherence_l1d #(
         p_store_yields_read : assert (operation_q != StoreOp);
       if (store_pop && operation_q == StoreOp && read_waiting_q)
         p_store_yield_stops_continuation : assert (!store_continue);
-      if (active && phase_q == Update && update_ready && operation_q == GrantOp) begin
+      if (active && phase_q == Update && update_ready &&
+          (operation_q == GrantOp || operation_q == TwinOp)) begin
         p_insert_lookup_valid : assert (insert_lookup_valid_q);
         p_insert_lookup_set : assert (update_addr_q[5+:SetBits] == insert_lookup_set_q);
         p_insert_lookup_way : assert (way_q == insert_lookup_way_q);
@@ -3052,7 +3244,8 @@ module coherence_l1d #(
           (operation_q == StoreOp || operation_q == LookaheadOp));
       if (active && phase_q == LookupWait && array_valid && operation_q == ProbeOp &&
           array_hit && array_state == coherence_pkg::Modified) assert (array_data_valid);
-      if (active && phase_q == LookupWait && array_valid && operation_q == GrantOp &&
+      if (active && phase_q == LookupWait && array_valid &&
+          (operation_q == GrantOp || operation_q == TwinOp) &&
           !array_hit && array_state == coherence_pkg::Modified)
         p_grant_victim_data : assert (array_data_valid);
       // A shadow lookup whose read the hit path holds decides nothing from the
@@ -3069,7 +3262,8 @@ module coherence_l1d #(
         p_skipped_array_data_unused : assert (
             ((operation_q == StoreOp || operation_q == LookaheadOp) && array_hit) ||
             (operation_q == ReadOp && (!array_hit || shadow_q)) ||
-            (operation_q == GrantOp && (array_hit || array_state != coherence_pkg::Modified)) ||
+            ((operation_q == GrantOp || operation_q == TwinOp) &&
+             (array_hit || array_state != coherence_pkg::Modified)) ||
             (operation_q == ProbeOp && (!array_hit || array_state != coherence_pkg::Modified)));
       end
       // The hit path holds valid, unanswered load slots, one per stage. Its
@@ -3121,6 +3315,96 @@ module coherence_l1d #(
     end
   end
 `endif
+  // cbo.zero checks run in simulation, and in the formal tasks that drive
+  // zero writes (ZERO_WRITES), so the other tasks keep their assertion sets.
+`ifndef SYNTHESIS
+`ifdef FORMAL
+`ifdef ZERO_WRITES
+`define L1D_ZERO_CHECKS
+`endif
+`else
+`define L1D_ZERO_CHECKS
+`endif
+`endif
+`ifdef L1D_ZERO_CHECKS
+  // A sector that a cbo.zero record holds, the lower record or its twin.
+  logic [3:0] f_zero_path_sector;
+  always_comb
+    for (int holder = 0; holder < 4; holder++)
+      f_zero_path_sector[holder] = store_valid[holder] &&
+          (store_zero[holder] || store_twin[holder]) &&
+          path_addr_q[ADDR_WIDTH-1:5] == store_addr[holder][ADDR_WIDTH-1:5];
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst) begin
+      // The hit path takes no load to a sector whose zeros a cbo.zero record or
+      // its owed twin has yet to install, so no load answers stale bytes there.
+      if (path_take) p_zero_path_blocked : assert (f_zero_path_sector == '0);
+      if (store_push && i_write_zero)
+        p_zero_write_block : assert (i_address[5:0] == 0 && i_write_mask == 8'hff);
+      // A GetMZero starts from a zero record. With 64-byte home lines it is a
+      // lower record whose twin follows it, and the registered sample of its
+      // upper sector still matches: no endpoint, frozen PutM or older record
+      // holds that sector.
+      if (|(ep_request_valid & ~live) && acquisition.opcode == coherence_pkg::GetMZero) begin
+        p_zero_acquire_record : assert ((operation_q == StoreOp || operation_q == LookaheadOp) &&
+            store_valid[store_selected_q] && store_zero[store_selected_q]);
+        if (HOME_LINE_BYTES == 64)
+          p_zero_acquire_line : assert (!store_twin[store_selected_q] &&
+              store_valid[2'(store_selected_q + 2'd1)] &&
+              store_twin[2'(store_selected_q + 2'd1)] &&
+              !zero_sibling_conflict[store_selected_q]);
+      end
+      // A twin installs at the head, never through look-ahead.
+      if (HOME_LINE_BYTES == 64 && store_acquire && operation_q == LookaheadOp)
+        p_zero_twin_no_lookahead : assert (!store_twin[store_selected_q]);
+      // A GrantMZero answers a lower record's GetMZero with 64-byte home lines
+      // and owes exactly that record's twin, which holds no endpoint.
+      if (store_pop && grant_twin) begin
+        p_zero_grant_twin : assert (HOME_LINE_BYTES == 64 && store_zero[store_head_index] &&
+            !store_twin[store_head_index] && store_valid[store_next_index] &&
+            store_twin[store_next_index] && !store_acquired[store_next_index]);
+        if (grant_ep_q == '0)
+          p_zero_grant_request : assert (acquisition_q.opcode == coherence_pkg::GetMZero);
+      end
+      // While the twin is owed, it is the head, its grant's endpoint is live
+      // and has not sent Done, and no other operation installs it.
+      if (twin_fill_q) begin
+        p_zero_twin_head : assert (pending_q && store_twin[store_head_index] &&
+            !store_acquired[store_head_index] && live[twin_ep_q]);
+        if (twin_ep_q == '0) p_zero_twin_done0 : assert (!done_q && wb_reserved_q);
+        else p_zero_twin_done : assert (!ld_done_q[twin_ep_q]);
+        if (active && phase_q != Idle)
+          p_zero_twin_only : assert (operation_q != StoreOp && operation_q != LookaheadOp);
+      end
+      if (active && phase_q != Idle && operation_q == TwinOp)
+        p_zero_twin_owed : assert (twin_fill_q);
+      // Idle selects an owed twin before any grant, so no endpoint hands over
+      // a grant meanwhile: an accepted grant always becomes the GrantOp.
+      if (twin_owed) p_zero_twin_grant_wait : assert (ep_grant_ready == '0 && !read_failure);
+      // No store is performed twice: the twin installs once, as Modified zeros
+      // over its whole sector, at its own address.
+      if (active && phase_q == Update && operation_q == TwinOp)
+        p_zero_twin_install : assert (update_mask_q == '1 && image_q == '0 &&
+            state_q == coherence_pkg::Modified &&
+            update_addr_q[ADDR_WIDTH-1:5] == pending_addr_q[ADDR_WIDTH-1:5]);
+      if (active && phase_q == Freeze && operation_q == TwinOp)
+        p_zero_twin_victim_slot : assert (!wb_live[freeze_slot_q] &&
+            !(wb_reserved_q && reserved_wb_q == freeze_slot_q && twin_ep_q != '0));
+    end
+`ifdef FORMAL
+  always_ff @(posedge i_clk)
+    if (!i_rst) begin
+      p_zero_cover_twin : cover (store_pop && operation_q == TwinOp);
+      p_zero_cover_twin_victim : cover (active && phase_q == Freeze && operation_q == TwinOp);
+      p_zero_cover_lookahead : cover (store_acquire && operation_q == LookaheadOp &&
+          zero_acquire_q);
+      p_zero_cover_twin_wait : cover (store_twin_pending && store_count == 3'd4);
+      p_zero_cover_fallback : cover (store_acquire && operation_q == StoreOp &&
+          store_zero[store_selected_q] && !store_twin[store_selected_q] && !zero_acquire_q);
+    end
+`endif
+`undef L1D_ZERO_CHECKS
+`endif
 `ifdef FORMAL
 `ifdef STORE_DATA_PROOF
   initial assert ($bits(ep_grant) == EpSlots * (ADDR_WIDTH + 275));
@@ -3166,7 +3450,8 @@ module coherence_l1d #(
     end else begin
       if (active && phase_q == Acquire && operation_q == StoreOp && ep_request_ready[0])
         f_acquired_store_q <= pending_addr_q;
-      if (request_live && acquisition_store_q && !written_q)
+      // An owed twin is the head while its lower record's acquisition is still live.
+      if (request_live && acquisition_store_q && !written_q && !twin_owed)
         p_store_data_1 : assert (pending_addr_q == f_acquired_store_q);
       if (active && phase_q == Update && update_ready) begin
         if (operation_q == StoreOp) begin
@@ -3286,7 +3571,7 @@ module coherence_l1d #(
       p_owned_distinct : assert (f_owner_distinct);
       p_owned_fail : assert (f_owner_fail);
       p_owned_pending : assert (f_owner_pending);
-      p_owned_operation : assert (operation_q <= LookaheadOp &&
+      p_owned_operation : assert (operation_q <= (ZERO_LINE ? TwinOp : LookaheadOp) &&
           (StreamEnabled || operation_q != PrefetchOp));
       p_owned_free : assert (!load_ep_free || f_owner_free);
       if (operation_q == LookaheadOp &&
@@ -3658,6 +3943,14 @@ module coherence_l1d #(
   end
   coh_g_t f_grant;
   assign f_grant = i_g;
+  // Each endpoint's live acquisition is a GetMZero.
+  logic [EpSlots-1:0] f_ep_zero_q;
+  always_ff @(posedge i_clk)
+    for (int ep = 0; ep < MISSES; ep++)
+    if (i_rst) f_ep_zero_q[ep] <= 1'b0;
+    else if (ep_request_valid[ep] && !live[ep])
+      f_ep_zero_q[ep] <= ZERO_LINE && acquisition.opcode == coherence_pkg::GetMZero &&
+          (ep == 0 || operation_q == LookaheadOp);
   logic [5:0] f_probe_age;
   logic [2:0] f_admit_age, f_inval_age;
   wire [ADDR_WIDTH+26:0] f_reply_signature = {
@@ -3699,6 +3992,9 @@ module coherence_l1d #(
           assume (store_launch_ready_q);
         end
       end
+      // The store queue's cbo.zero write: the block base, every strobe set.
+      if (i_write_zero)
+        assume (i_write_mask == 8'hff && !i_write_atomic && i_address[5:0] == 0);
       // The CPU's selected context serializes AMO and SC presentation.
       if (i_sc_valid) assume (!atomic_q && !amo_waiting);
       if (i_sc_valid && o_sc_ready) assume (!store_push);
@@ -3719,12 +4015,18 @@ module coherence_l1d #(
             probe_in.addr == acquisition_q.addr)
           assume (probe_in.tid == sc_tid_q);
       end
-      // The grant opcode follows each endpoint's captured owner.
+      // The grant opcode follows each endpoint's captured owner. A GetMZero
+      // may be granted GrantMZero with 64-byte home lines.
       for (int ep = 1; ep < MISSES; ep++)
       if (i_g_valid && ep_g_ready[ep] && !f_grant.error)
-        assume (f_grant.opcode == (ep_store[ep] ? coherence_pkg::GrantM : coherence_pkg::GrantS));
+        assume (f_grant.opcode == (ep_store[ep] ? coherence_pkg::GrantM : coherence_pkg::GrantS) ||
+            (HOME_LINE_BYTES == 64 && ep_store[ep] && f_ep_zero_q[ep] &&
+             f_grant.opcode == coherence_pkg::GrantMZero));
       if (i_g_valid && ep_g_ready[0] && !f_grant.error) begin
-        if (acquisition_q.opcode == coherence_pkg::GetM || acquisition_q.opcode ==
+        if (acquisition_q.opcode == coherence_pkg::GetMZero)
+          assume (f_grant.opcode == coherence_pkg::GrantM ||
+              (HOME_LINE_BYTES == 64 && f_grant.opcode == coherence_pkg::GrantMZero));
+        else if (acquisition_q.opcode == coherence_pkg::GetM || acquisition_q.opcode ==
             coherence_pkg::Atomic)
           assume (f_grant.opcode == coherence_pkg::GrantM);
           else if (acquisition_q.opcode == coherence_pkg::StoreConditional)
@@ -3818,13 +4120,13 @@ module coherence_l1d #(
 `endif
       if (atomic_q) assert (o_block_addr[0] == atomic_addr_q);
       if ($past(store_pop && tail_q)) assert (o_pending_store);
-      assert (store_ack == $past(store_push));
+      assert (store_ack == $past((store_push && !i_write_zero) || store_twin_alloc));
       cover (tail_q && pending_q);
       cover (store_pop && tail_q && store_continue);
       cover (read_owed_q && pending_q && phase_q == Lookup && operation_q == ReadOp);
-      if ($past(active && grant_valid && grant_ready)) assert (operation_q == GrantOp);
+      if ($past(active && grant_valid && grant_accept)) assert (operation_q == GrantOp);
       if ($past(active && phase_q == Idle) && phase_q == Lookup && operation_q == GrantOp)
-        assert ($past(grant_valid && grant_ready));
+        assert ($past(grant_valid && grant_accept));
       if (active && phase_q == LookupWait && array_valid && operation_q == GrantOp)
         p_bounded_array_available : assert (array_available);
       if (o_r_valid && probe_q.opcode == coherence_pkg::ProbeInvalidate)

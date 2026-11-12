@@ -819,6 +819,156 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "F/D instructions trap without memory effects when mstatus.FS is Off"
         ),
     ),
+    "cbo_zero_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_test",
+        nic_mac_clocks=False,
+        description=(
+            "Zicboz cbo.zero: 64-byte zeroing, adjacent CBZE writes/privilege returns, "
+            "both-sector LR/SC invalidation, store faults with mtval = rs1"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+    ),
+    "cbo_zero_test_assert": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_test",
+        nic_mac_clocks=False,
+        description=(
+            "cbo.zero with the cache, load-queue and store-queue assertions enabled"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+        verilator_extra_args=("--assert",),
+    ),
+    "cbo_zero_test_equal_lines": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_test",
+        nic_mac_clocks=False,
+        description="cbo.zero with 32-byte L2 lines and assertions enabled",
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+        verilator_extra_args=("--assert", "-GL2_LINE_BYTES=32"),
+    ),
+    "cbo_zero_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_bench",
+        nic_mac_clocks=False,
+        description="Cycles to clear 64 KiB and 1 MiB of cached DDR: sd loop against cbo.zero",
+        extra_env=(("COCOTB_MAX_CYCLES", "40000000"),),
+    ),
+    "cbo_zero_pages": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_pages",
+        nic_mac_clocks=False,
+        description=(
+            "Linux clear_page with cbo.zero in S-mode under Sv39: superpage and "
+            "4 KiB mappings, L2 evictions, fresh page-table pages"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "6000000"),),
+        verilator_extra_args=("--assert",),
+    ),
+    "cbo_zero_pages_board": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_pages",
+        nic_mac_clocks=False,
+        description=(
+            "cbo_zero_pages in the VCU118 shape: 4 MiB L2, CPU clock twice the "
+            "SoC clock and asynchronous to it, DDR latency jitter and reordering"
+        ),
+        extra_env=(
+            ("COCOTB_MAX_CYCLES", "6000000"),
+            ("FROST_CPU_PERIOD_PS", "1500"),
+            ("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=36"),
+        ),
+        verilator_extra_args=(
+            "--assert",
+            "-DFROST_WIDE_DDR_TEST",
+            "-DFROST_DDR_CAPACITY_LOG2_BYTES=36",
+            "-GL2_CACHE_BYTES=4194304",
+            "-GDDR_MODEL_LATENCY_JITTER=24",
+            "-GDDR_MODEL_REORDER=1",
+        ),
+    ),
+    "cbo_zero_pages_board_ddr": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_pages",
+        nic_mac_clocks=False,
+        description=(
+            "cbo_zero_pages_board with the whole program in cached DDR, fetched "
+            "through the L1I as kernel text is, on a shorter page schedule"
+        ),
+        extra_env=(
+            ("COCOTB_MAX_CYCLES", "6000000"),
+            ("FROST_CPU_PERIOD_PS", "1500"),
+            ("FROST_COCOTB_MEM_CONFIG", "ddr"),
+            (
+                "EXTRA_CFLAGS",
+                "-DFROST_DDR_CAPACITY_LOG2_BYTES=36 -DCBO_PAGES_ALIAS=6 "
+                "-DCBO_PAGES_ROUNDS=6 -DCBO_PAGES_PT_PAGES=8",
+            ),
+        ),
+        verilator_extra_args=(
+            "--assert",
+            "-DFROST_WIDE_DDR_TEST",
+            "-DFROST_DDR_CAPACITY_LOG2_BYTES=36",
+            "-GL2_CACHE_BYTES=4194304",
+            "-GDDR_MODEL_LATENCY_JITTER=24",
+            "-GDDR_MODEL_REORDER=1",
+        ),
+    ),
+    "cbo_zero_pages_thrash": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_pages",
+        nic_mac_clocks=False,
+        description=(
+            "cbo_zero_pages in the VCU118 shape with Modified upper sectors that "
+            "loads behind clear_page evict while the blocks' records are in "
+            "flight, and 32-byte freelist objects"
+        ),
+        extra_env=(
+            ("COCOTB_MAX_CYCLES", "6000000"),
+            ("FROST_CPU_PERIOD_PS", "1500"),
+            (
+                "EXTRA_CFLAGS",
+                "-DFROST_DDR_CAPACITY_LOG2_BYTES=36 -DCBO_PAGES_ALIAS=6 "
+                "-DCBO_PAGES_ROUNDS=4 -DCBO_PAGES_PT_PAGES=4 -DCBO_PAGES_OBJ=32ul "
+                "-DCBO_PAGES_THRASH=1",
+            ),
+        ),
+        verilator_extra_args=(
+            "--assert",
+            "-DFROST_WIDE_DDR_TEST",
+            "-DFROST_DDR_CAPACITY_LOG2_BYTES=36",
+            "-GL2_CACHE_BYTES=4194304",
+            "-GDDR_MODEL_LATENCY_JITTER=24",
+            "-GDDR_MODEL_REORDER=1",
+        ),
+    ),
+    "cbo_zero_pages_thrash_sync": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="cbo_zero_pages",
+        nic_mac_clocks=False,
+        description=(
+            "cbo_zero_pages_thrash with one clock, the 2 MiB L2 and the in-order "
+            "DDR model"
+        ),
+        extra_env=(
+            ("COCOTB_MAX_CYCLES", "6000000"),
+            (
+                "EXTRA_CFLAGS",
+                "-DCBO_PAGES_ALIAS=6 -DCBO_PAGES_ROUNDS=4 -DCBO_PAGES_PT_PAGES=4 "
+                "-DCBO_PAGES_OBJ=32ul -DCBO_PAGES_THRASH=1",
+            ),
+        ),
+        verilator_extra_args=("--assert",),
+    ),
     "vm_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1887,7 +2037,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "load_queue": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.load_queue.test_load_queue",
         hdl_toplevel_module="load_queue",
-        description=("Load-queue ordering, completion, atomics, and recovery"),
+        description=(
+            "Load-queue ordering, completion, atomics, recovery and zero-block fill exclusion"
+        ),
     ),
     "load_queue_no_prepare_busy": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.load_queue.test_load_queue",
@@ -1913,11 +2065,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         f"lq_l0_cache_{depth}": CocotbRunConfig(
             python_test_module="cocotb_tests.tomasulo.load_queue.test_lq_l0_cache",
             hdl_toplevel_module="lq_l0_cache",
-            description=f"{depth}-entry L0 load-cache data and coherence",
+            description=f"{depth}-entry L0 load-cache data, coherence and cbo.zero block invalidation",
             verilator_extra_args=(f"-GDEPTH={depth}",),
             extra_env=(("FROST_TEST_L0_DEPTH", str(depth)),),
         )
-        for depth in (128, 256, 512)
+        for depth in (8, 128, 256, 512)
     },
     "store_queue": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.store_queue.test_store_queue",
@@ -2515,7 +2667,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         python_test_module="cocotb_tests.cache.test_coherence_l1d_store_stream",
         hdl_toplevel_module="coherence_l1d",
-        description="Concurrent ordered store acquisitions, combining, probes and endpoint release",
+        description="Concurrent ordered store acquisitions, combining, probes, endpoint release, load grants and LR errors held by cbo.zero twins",
     ),
     "coherence_l1d": CocotbRunConfig(
         verilator_extra_args=("--assert", "-GCACHE_BYTES=512"),
@@ -2552,6 +2704,26 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="coherence_cluster_test_harness",
         description="The cluster with three L1D request endpoints: loads in flight beside "
         "stores, probes and DMA",
+    ),
+    "coherence_cbo_zero": CocotbRunConfig(
+        verilator_extra_args=("--assert",),
+        python_test_module="cocotb_tests.cache.test_coherence_cbo_zero",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Line-scope cbo.zero: zero fills without memory reads, a DMA write "
+        "between the zero fill and the L1D's install, a stale copy upgraded to Modified zeros, dirty blocks",
+    ),
+    "coherence_cbo_zero_misses": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GL1D_MISSES=3"),
+        python_test_module="cocotb_tests.cache.test_coherence_cbo_zero",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Line-scope cbo.zero with three L1D request endpoints and look-ahead",
+    ),
+    "coherence_cbo_zero_equal_lines": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GL1D_MISSES=3", "-GLINE_BYTES=32"),
+        python_test_module="cocotb_tests.cache.test_coherence_cbo_zero",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Line-scope cbo.zero with 32-byte home lines: two zero-filled lines "
+        "per block",
     ),
     "coherence_store_pressure": CocotbRunConfig(
         verilator_extra_args=(
@@ -4293,6 +4465,7 @@ for _program in ("dma_torture", "nic_loopback", "itlb_test"):
 for _name, _config in tuple(TEST_REGISTRY.items()):
     if _config.hdl_toplevel_module == "frost" or _name in (
         "debug_module",
+        "lq_l0_cache_8",
         "lq_l0_cache_128",
         "lq_l0_cache_256",
         "lq_l0_cache_512",

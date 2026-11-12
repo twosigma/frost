@@ -40,12 +40,14 @@ async def test_capacity_and_coherence(dut: Any) -> None:
         "i_fill_data",
         "i_invalidate_valid",
         "i_invalidate_addr",
+        "i_invalidate_block",
         "i_store_data",
         "i_store_strb",
         "i_invalidate2_valid",
         "i_invalidate2_addr",
         "i_lookup_invalidate_valid",
         "i_lookup_invalidate_addr",
+        "i_lookup_invalidate_block",
         "i_invalidate_line_valid",
         "i_invalidate_line_addr",
         "i_flush_all",
@@ -220,12 +222,14 @@ async def test_fill_collision_priorities(dut: Any) -> None:
         fill_data=0,
         invalidate_valid=0,
         invalidate_addr=0,
+        invalidate_block=0,
         store_data=0,
         store_strb=0,
         invalidate2_valid=0,
         invalidate2_addr=0,
         lookup_invalidate_valid=0,
         lookup_invalidate_addr=0,
+        lookup_invalidate_block=0,
         invalidate_line_valid=0,
         invalidate_line_addr=0,
         flush_all=0,
@@ -281,3 +285,68 @@ async def test_fill_collision_priorities(dut: Any) -> None:
     await step(lookup_addr=address + 8)
     assert int(dut.o_lookup_hit.value)
     assert int(dut.o_lookup_data.value) == 0x11223344, "displaced fill changed data"
+
+
+@cocotb.test()
+async def test_cbo_zero_block_invalidates_aliases_and_fills(dut: Any) -> None:
+    """A block clear suppresses all eight hits and wins over an arriving fill."""
+    depth = int(os.environ["FROST_TEST_L0_DEPTH"])
+
+    async def settle(**values: int) -> None:
+        for name, value in values.items():
+            getattr(dut, "i_" + name).value = value
+        await Timer(1, unit="ns")
+
+    async def tick(**values: int) -> None:
+        await settle(clk=0, **values)
+        await settle(clk=1)
+        await settle(clk=0)
+
+    for signal in dut:
+        if signal._name.startswith("i_"):
+            signal.value = 0
+    await tick(rst_n=0)
+    await tick(rst_n=1)
+    base = 0x80000000
+    block = base + (depth - 8) * 8
+    # The invalidation uses a different tag at the same eight indexes. Its
+    # tag-blind contract also prevents a coincident fill from recreating a hit.
+    alias = block + depth * 8
+    for lane in range(8):
+        for index in range(depth):
+            await tick(
+                fill_valid=1,
+                fill_write=1,
+                fill_addr=base + index * 8,
+                fill_data=index + 1,
+            )
+        await settle(
+            lookup_addr=block + lane * 8,
+            fill_addr=block + lane * 8,
+            fill_data=0xBAD,
+            invalidate_valid=1,
+            invalidate_addr=alias,
+            invalidate_block=1,
+            lookup_invalidate_valid=1,
+            lookup_invalidate_addr=alias,
+            lookup_invalidate_block=1,
+            store_strb=255,
+        )
+        assert not int(dut.o_lookup_hit.value), "A block clear must suppress a live hit"
+        await tick()
+        await settle(
+            fill_valid=0,
+            fill_write=0,
+            invalidate_valid=0,
+            invalidate_block=0,
+            lookup_invalidate_valid=0,
+            lookup_invalidate_block=0,
+            store_strb=0,
+        )
+        for word in range(8):
+            await settle(lookup_addr=block + word * 8)
+            assert not int(dut.o_lookup_hit.value), f"Block word {word} survived"
+        if depth > 8:
+            await settle(lookup_addr=base)
+            assert int(dut.o_lookup_hit.value), "The neighboring block must survive"
+            assert int(dut.o_lookup_data.value) == 1

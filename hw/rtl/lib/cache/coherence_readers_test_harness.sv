@@ -103,6 +103,8 @@ module coherence_readers_test_harness (
       .o_write_done(),
       .o_write_inflight(),
       .o_store_ready(),
+      .o_twin_push(),
+      .o_twin_push_addr(),
       .o_pending_store(),
       .o_sc_write_pending(),
       .o_atomic_live(),

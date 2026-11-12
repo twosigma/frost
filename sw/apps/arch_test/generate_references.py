@@ -119,7 +119,7 @@ def spike_env() -> Path:
 
 # gcc -march: must match what FROST's software builds may emit, including
 # compressed code, except for the tests in NO_COMPRESS_TESTS below.
-FROST_MARCH = "rv64imafdc_zicsr_zifencei_zba_zbb_zbc_zbs_zbkb_zbkc_zicond"
+FROST_MARCH = "rv64imafdc_zicsr_zifencei_zicboz_zba_zbb_zbc_zbs_zbkb_zbkc_zicond"
 
 # arch_test.h resumes at (mepc & ~3) + 8, requiring a 4-byte test op
 # plus two c.nops. Compression makes it resume mid-instruction and makes
@@ -147,7 +147,7 @@ def test_march(test_name: str) -> str:
 # execute (.option rvc; .align; .option norvc in arch_test.h) regardless
 # of the march, and a no-C Spike also changes misaligned-jump legality
 # (the privilege misalign references).
-SPIKE_ISA = "rv64imafdc_zicsr_zifencei_zba_zbb_zbc_zbs_zbkb_zbkc_zicond"
+SPIKE_ISA = "rv64imafdc_zicsr_zifencei_zicboz_zba_zbb_zbc_zbs_zbkb_zbkc_zicond"
 
 FROST_ABI = "lp64"
 
@@ -168,17 +168,21 @@ SUPPORTED_EXTENSIONS = [
     # as C.LD/C.SD, so Zcf is an RV32-only extension.
     "D_Zcd",
     "hints",
+    # Zicboz; the CMO directory's Zicbom tests are left out.
+    "CMO",
 ]
 
 # Allowed filename prefixes for extensions where only a subset of tests
 # applies. privilege: FROST implements M, S, and U modes but no hypervisor.
-# The envcfg tests are left out: they declare Zicbom, Zicboz, and Ssdtso, and
-# FROST's menvcfg implements only FIOM and STCE. The K directory supplies
+# The envcfg tests are left out: they declare Zicbom and Ssdtso, which FROST
+# does not implement. CMO supplies the Zicboz cbo.zero test; FROST has no
+# Zicbom. The K directory supplies
 # Zbkb's pack/packh/packw/brev8 tests; zip/unzip are RV32-only. The B
 # directory supplies the Zbc/Zbkc carry-less multiply tests.
 EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "privilege": {"ebreak", "ecall", "misalign"},
     "K": {"pack", "packh", "packw", "brev8"},
+    "CMO": {"cbo.zero"},
 }
 
 # Excluded by filename prefix: the C directory includes Zcb tests FROST
@@ -188,6 +192,31 @@ EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
 }
 
 RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
+
+# cbo.zero zeroes the 64-byte block around each signature slot, so the CMO
+# signatures depend on begin_signature modulo 64. FROST's begin_signature is
+# 4 KiB aligned (tests/test_arch_compliance.py checks it is block aligned);
+# the Spike env's 16-byte bound leaves it at 16 modulo 64. These references
+# are built with the bound raised to the block size, which leaves the
+# signature length unchanged.
+BLOCK_ALIGNED_SIGNATURE_EXTENSIONS = {"CMO"}
+CBO_BLOCK_ALIGN = 6  # log2 of riscv_pkg::CboZeroBlockBytes
+
+
+def block_aligned_env(env_dir: Path, out_dir: Path) -> Path:
+    """Copy the Spike env with begin_signature aligned to the cbo.zero block."""
+    shutil.copytree(env_dir, out_dir)
+    header = out_dir / "model_test.h"
+    text = header.read_text()
+    aligned, count = re.subn(
+        r"\.align\s+\d+\s*;(\s*\\?\s*)\.global\s+begin_signature",
+        rf".align {CBO_BLOCK_ALIGN};\1.global begin_signature",
+        text,
+    )
+    if count != 1:
+        sys.exit(f"Error: {header}: no single begin_signature bound to align")
+    header.write_text(aligned)
+    return out_dir
 
 
 def declares_rv64(test_src: Path) -> bool:
@@ -257,6 +286,11 @@ def generate_one_reference(
     defines = test_defines(test_src)
 
     with tempfile.TemporaryDirectory() as tmpdir:
+        if (
+            test_src.relative_to(SUITE_ROOT).parts[1]
+            in BLOCK_ALIGNED_SIGNATURE_EXTENSIONS
+        ):
+            env_dir = block_aligned_env(env_dir, Path(tmpdir) / "env")
         elf_path = Path(tmpdir) / "test.elf"
         sig_path = Path(tmpdir) / "test.sig"
         repaired_src = Path(tmpdir) / "test.S"

@@ -39,7 +39,11 @@ package coherence_pkg;
     ReadOncePTW = 6,
     DMARead = 7,
     DMAWrite = 8,
-    Prefetch = 9
+    Prefetch = 9,
+    // A GetM from the lower record of a cbo.zero block, which writes zeros to
+    // the whole 64-byte block. A home miss installs the line as dirty zeros
+    // without reading memory; otherwise it is a GetM.
+    GetMZero = 10
   } d_opcode_t;
   typedef enum logic [1:0] {
     ProbeRead = 0,
@@ -57,7 +61,11 @@ package coherence_pkg;
     GrantM = 2,
     GrantData = 3,
     GrantAck = 4,
-    GrantFail = 5
+    GrantFail = 5,
+    // A GetMZero grants Modified permission for both sectors of its 64-byte
+    // line. The requester installs both zero records before sending Done,
+    // whether the home found the line resident or allocated a zero fill.
+    GrantMZero = 6
   } g_opcode_t;
   typedef enum logic [1:0] {
     Invalid = 0,
@@ -91,8 +99,16 @@ package coherence_pkg;
   function automatic integer home_count(input integer harts, input integer fills);
     home_count = coherence_pkg::put_base(harts, fills) + 2 * harts;
   endfunction
+  // GetM and GetMZero both acquire Modified permission with data.
+  function automatic logic is_getm(input logic [3:0] opcode);
+    is_getm = opcode == coherence_pkg::GetM || opcode == coherence_pkg::GetMZero;
+  endfunction
+  // GrantM and GrantMZero both grant Modified permission with data.
+  function automatic logic is_grantm(input logic [2:0] opcode);
+    is_grantm = opcode == coherence_pkg::GrantM || opcode == coherence_pkg::GrantMZero;
+  endfunction
   function automatic logic irrevocable(input logic [3:0] opcode);
-    irrevocable = opcode == coherence_pkg::GetM || opcode == coherence_pkg::Atomic ||
+    irrevocable = coherence_pkg::is_getm(opcode) || opcode == coherence_pkg::Atomic ||
         opcode == coherence_pkg::StoreConditional;
   endfunction
   function automatic logic legal_q(input q_t q);
@@ -105,7 +121,8 @@ package coherence_pkg;
   endfunction
   function automatic logic legal_opcode(input q_t q, input logic [3:0] opcode);
     if (q.src < 2) begin
-      legal_opcode = (q.port_class == 0 && opcode <= coherence_pkg::StoreConditional) ||
+      legal_opcode = (q.port_class == 0 &&
+          (opcode <= coherence_pkg::StoreConditional || opcode == coherence_pkg::GetMZero)) ||
           (q.port_class == 1 && opcode == coherence_pkg::ReadOnceIF) ||
           (q.port_class == 2 && opcode == coherence_pkg::ReadOncePTW);
     end else begin

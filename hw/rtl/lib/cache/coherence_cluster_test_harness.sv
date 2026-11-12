@@ -50,6 +50,7 @@ module coherence_cluster_test_harness #(
     input logic [63:0] i_write_data,
     input logic i_write_atomic,
     input logic i_write_sc,
+    input logic i_write_zero = 1'b0,
     input logic [TAG_BITS-1:0] i_write_tag,
     output logic o_write_done,
     output logic o_write_inflight,
@@ -161,8 +162,9 @@ module coherence_cluster_test_harness #(
     if (i_rst) o_live_stores <= '0;
     else begin
       for (int ep = 0; ep < L1D_MISSES; ep++) begin
-        if (home_d_valid && home_d_ready && home_d.q.src == 0 &&
-            home_d.opcode == coherence_pkg::GetM && home_d.q.id == 4'(ep))
+        if (home_d_valid && home_d_ready && home_d.q.src == 0 && coherence_pkg::is_getm(
+                home_d.opcode
+            ) && home_d.q.id == 4'(ep))
           o_live_stores[ep] <= 1'b1;
         if (u_valid && u_ready && release_message.q.src == 0 && release_message.q.id == 4'(ep))
           o_live_stores[ep] <= 1'b0;
@@ -198,10 +200,13 @@ module coherence_cluster_test_harness #(
       .i_write_data(i_write_data),
       .i_write_atomic(i_write_atomic),
       .i_write_sc(i_write_sc),
+      .i_write_zero(i_write_zero),
       .i_write_tag(i_write_tag),
       .o_write_done(o_write_done),
       .o_write_inflight(o_write_inflight),
       .o_store_ready(o_store_ready),
+      .o_twin_push(),
+      .o_twin_push_addr(),
       .o_pending_store(o_pending_store),
       .o_sc_write_pending(o_sc_write_pending),
       .o_atomic_live(o_atomic_live),

@@ -82,6 +82,8 @@ SUPPORTED_EXTENSIONS = [
     # C.LD/C.SD, so Zcf is RV32-only.
     "D_Zcd",
     "hints",
+    # Zicboz; the CMO directory's Zicbom tests are left out.
+    "CMO",
 ]
 
 # Extensions FROST implements only in part: extension -> test-name prefixes to
@@ -89,11 +91,12 @@ SUPPORTED_EXTENSIONS = [
 # K supplies Zbkb tests (pack/packh/packw/brev8; zip and unzip are RV32-only).
 # B supplies Zbc/Zbkc tests. Zbkx, AES, SHA, SM3, and SM4 are unsupported.
 # privilege: FROST implements M, S, and U modes but no hypervisor. The envcfg
-# tests are left out: they declare Zicbom, Zicboz, and Ssdtso, and FROST's
-# menvcfg implements only FIOM and STCE.
+# tests are left out: they declare Zicbom and Ssdtso, which FROST does not
+# implement. CMO supplies the Zicboz cbo.zero test; FROST has no Zicbom.
 EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "K": {"pack", "packh", "packw", "brev8"},
     "privilege": {"ebreak", "ecall", "misalign"},
+    "CMO": {"cbo.zero"},
 }
 
 # Tests excluded by filename prefix. The C directory holds Zcb tests
@@ -101,6 +104,12 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
 EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
     "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
 }
+
+# cbo.zero signatures depend on begin_signature modulo the block size; their
+# Spike references use a block-aligned bound. Keep equal to
+# BLOCK_ALIGNED_SIGNATURE_EXTENSIONS in generate_references.py.
+BLOCK_ALIGNED_SIGNATURE_EXTENSIONS = {"CMO"}
+CBO_BLOCK_BYTES = 64
 
 # Tests with more than this many cases (inst_ labels) are too slow for
 # Verilator and are left out unless --no-sim-filter (CLI) or include_all=True
@@ -259,12 +268,8 @@ def compile_test(
     return result.returncode == 0, result.stdout + result.stderr
 
 
-def signature_location(elf: Path) -> tuple[int, int]:
-    """Return the low-BRAM byte address and the length of a test's signature.
-
-    RVMODEL_HALT (model_test.h) leaves the signature at frost_bram_signature,
-    and begin_signature and end_signature bound it.
-    """
+def elf_symbols(elf: Path) -> dict[str, int]:
+    """Return the addresses of an ELF's symbols."""
     nm = os.environ.get("RISCV_PREFIX", "riscv64-linux-") + "nm"
     symbols = {}
     for line in subprocess.run(
@@ -273,6 +278,21 @@ def signature_location(elf: Path) -> tuple[int, int]:
         fields = line.split()
         if len(fields) == 3:
             symbols[fields[2]] = int(fields[0], 16)
+    return symbols
+
+
+def signature_symbol(elf: Path, name: str) -> int:
+    """Return the address of one signature symbol."""
+    return elf_symbols(elf)[name]
+
+
+def signature_location(elf: Path) -> tuple[int, int]:
+    """Return the low-BRAM byte address and the length of a test's signature.
+
+    RVMODEL_HALT (model_test.h) leaves the signature at frost_bram_signature,
+    and begin_signature and end_signature bound it.
+    """
+    symbols = elf_symbols(elf)
     return (
         symbols["frost_bram_signature"],
         symbols["end_signature"] - symbols["begin_signature"],
@@ -440,6 +460,18 @@ def run_single_test(
             )
         return TestResult(test_name, extension, "FAIL", "Compilation failed")
 
+    # The CMO references assume a block-aligned begin_signature (see
+    # BLOCK_ALIGNED_SIGNATURE_EXTENSIONS in generate_references.py).
+    if extension in BLOCK_ALIGNED_SIGNATURE_EXTENSIONS:
+        begin = signature_symbol(ARCH_TEST_APP_DIR / "sw.elf", "begin_signature")
+        if begin % CBO_BLOCK_BYTES:
+            return TestResult(
+                test_name,
+                extension,
+                "FAIL",
+                f"begin_signature 0x{begin:x} is not {CBO_BLOCK_BYTES}-byte aligned",
+            )
+
     result = run_simulation(coverage_label=f"arch_{extension}_{test_name}")
     if result is None:
         return TestResult(
@@ -538,6 +570,25 @@ def _print_result(result: TestResult) -> None:
 # =============================================================================
 # Pytest Integration
 # =============================================================================
+
+
+@pytest.mark.parametrize(
+    ("mem_config", "excluded"),
+    (("bram", {"Zifencei"}), ("ddr", {"F", "D"})),
+)
+def test_arch_compliance_ci_coverage(mem_config: str, excluded: set[str]) -> None:
+    """Every supported extension reaches CI in each applicable memory tier."""
+    import yaml  # type: ignore[import-untyped]
+
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
+    jobs = workflow["jobs"]["test-arch-compliance"]["strategy"]["matrix"]["include"]
+    selected = {
+        extension
+        for job in jobs
+        if job["mem_config"] == mem_config
+        for extension in job["extensions"].split()
+    }
+    assert selected == set(SUPPORTED_EXTENSIONS) - excluded
 
 
 @pytest.mark.cocotb

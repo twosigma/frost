@@ -5,7 +5,7 @@ end fetches and decodes up to two instructions per cycle. The back end renames
 them, parks them in reservation stations (RS) until their operands are ready,
 executes them out of order, and retires them in program order from a 32-entry
 reorder buffer (ROB), so exceptions stay precise. The core implements RV64GCB
-plus Zicntr, Zicond, Zbc, Zbkb, Zbkc, and Zihintpause (see the
+plus Zicntr, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, and Zicboz (see the
 [ISA table](../../../../../README.md#supported-risc-v-extensions)).
 
 Dispatch, rename, the common data bus (CDB), and commit are all two wide. Four
@@ -107,7 +107,11 @@ side effects are safe. The LQ and SQ order atomics instead (last row).
 
 The ROB marks a CSR instruction as a translation CSR at allocation: any
 `satp` access, or an `mstatus` or `sstatus` access that writes. Like FENCE.I
-and SFENCE.VMA, its retirement is followed by a full flush. The CSR file
+and SFENCE.VMA, its retirement is followed by a full flush, which discards
+instructions decoded under the old FS value. Legal `menvcfg` and `senvcfg`
+writes use ordinary CSR serialization: their CBZE bits affect only lower
+privilege. The trap, xRET or debug transition flushes decode when the
+executing mode's `cbo.zero` permission changes. The CSR file
 invalidates the TLBs and walker on its own: on every `satp` access, and on an
 `mstatus` write that changes MPRV (or MPP while MPRV is set). SUM and MXR are
 applied at lookup, so their changes need only the full flush.

@@ -142,10 +142,10 @@ DMA requester has its own reset.
 
 | Encoding | Values |
 | --- | --- |
-| D opcode | 0 GetS, 1 GetM, 2 LoadReserved, 3 Atomic, 4 StoreConditional, 5 ReadOnceIF, 6 ReadOncePTW, 7 DMARead, 8 DMAWrite, 9 Prefetch |
+| D opcode | 0 GetS, 1 GetM, 2 LoadReserved, 3 Atomic, 4 StoreConditional, 5 ReadOnceIF, 6 ReadOncePTW, 7 DMARead, 8 DMAWrite, 9 Prefetch, 10 GetMZero |
 | P opcode | 0 ProbeRead, 1 ProbeInvalidate, 2 CheckSC |
 | R opcode | 0 ProbeAck, 1 ProbeData, 2 CheckAck |
-| G opcode | 0 GrantS, 1 GrantE, 2 GrantM, 3 GrantData, 4 GrantAck, 5 GrantFail |
+| G opcode | 0 GrantS, 1 GrantE, 2 GrantM, 3 GrantData, 4 GrantAck, 5 GrantFail, 6 GrantMZero |
 | C status | 0 Consumed, 1 Killed, 2 Error |
 | MESI state | 0 Invalid, 1 Exclusive, 2 Shared, 3 Modified |
 | Probe reason | 0 Read, 1 Write, 2 Replace, 3 Check |
@@ -154,7 +154,8 @@ Unlisted values are reserved. W, WA, C, and U implicitly mean PutM, PutAck,
 Done, and Release. Size is log2 bytes. Offset and mask select bytes within a
 sector. Hart write operands stay local; DMA writes use D.wdata and D.mask.
 ProbeData and data-bearing grants carry a complete sector. Error overrides
-permission installation. GrantFail grants no permission. These encodings
+permission installation. GrantFail grants no permission. GetMZero and
+GrantMZero carry a cbo.zero block (see Line-scope cbo.zero). These encodings
 describe messages; the endpoint library does not implement MESI transitions.
 
 `coherence_request_endpoint` reserves one request identity, a grant register,
@@ -285,6 +286,9 @@ newest unsealed record of the same sector. Byte masks select the most recent
 value of each written byte. A record holds at most 32 contributors and seals
 at that limit or when selected as the head for installation. A simultaneous
 contributor is included before sealing. A, B, A stores occupy separate records.
+New-record metadata decodes the next free record directly; combining selects
+the youngest record separately. A zero write always allocates and aligns its
+lower record to the 64-byte block.
 Launch credit reserves an arriving scalar without comparing its address or
 borrowing a simultaneous installation. The lookahead scheduler samples physical
 record conflicts before selecting by age. Queue changes invalidate that sample.
@@ -477,7 +481,10 @@ the request through D, G, C and U, including channel backpressure. LR may attach
 fill; home AMO and SC acquisitions and local maintenance use the endpoint
 drain rules.
 
-An L1D grant belongs to a live request endpoint. SC acceptance requires
+An L1D grant belongs to a live request endpoint. Its endpoint compares the
+grant's full address in parallel byte groups before qualifying acceptance
+with the request identity and opcode. A partial final byte is included.
+SC acceptance requires
 endpoint 0 to be idle and excludes a selected grant. Grant processing and
 SC acceptance are mutually exclusive. Probe capture and service own local arbitration through R
 acceptance. Invalidation admission starts on P capture and keeps the captured
@@ -505,11 +512,22 @@ Allocation marks an empty slot valid. Read eligibility compares each physical sl
 writeback sectors on 18 sector index bits. An alias waits for its holder like
 a match, and holders do not wait for reads. The comparisons use the stored slot addresses and the
 buffered allocation's address, and the slot mask selects between their
-results. Availability reduces stored and buffered-write candidates separately.
-Both masks are qualified by endpoint ownership, waiting status and miss
-retry credits. The shared write-address exclusion qualifies the
-buffered-write result.
-Circular priority selects a qualified slot and its address.
+results. Availability and load-miss demand prepare waiting status and retry
+credits before applying ownership and address exclusion. Each slot prepares
+its stored-address and buffered-write candidates; groups of three reduce
+candidate presence and load-miss demand. Circular priority selects a qualified
+slot and its address.
+Sector comparisons use six three-bit equality groups followed by two halves
+and a balanced holder reduction. Circular priority prepares the winner for
+both outcomes of the shared buffered-address exclusion. Each slot compares
+its circular precedence with the other slots in groups of three. The index
+and address use balanced one-hot reductions; the buffered-address exclusion
+selects between the prepared results. Native LUTs preserve these bounded
+reductions and the selector's module boundary.
+The acquisition endpoint similarly prepares both grant-presence outcomes
+before selecting its update. An owed zero twin and a credited read turn hold
+that endpoint, and a returning twin lookup leaves it unchanged. Twin address
+selection stays ahead of grant selection.
 Loads also have a hit path beside the controller. In the cycle after a load
 arrives, the L1D offers it to the array's hit port from registers, unless a
 probe is in service, an owner holds its slot, or a holder blocks its sector
@@ -670,7 +688,11 @@ in sector order.
 Fill waiter ranks are independent of the available-seat count. A balanced
 prefix network counts up to three eligible entries before each candidate. Each fill
 stores its occupied seat count beside the seat mask. Allocation, joining
-readers, handoff, a forward and error cleanup update both on the same edge. A joining
+readers, handoff, a forward and error cleanup update both on the same edge.
+Seat joins, retirements and error cleanup keep their priority over allocation. The mask prepares the
+allocation and non-allocation outcomes before selecting between them; zero
+fill images likewise clear through their data input.
+A joining
 engine uses one seat before the queued waiters. Ready work precedes other
 eligible work. Both classes compute their circular priorities independently
 before selecting an encoded winner. The prefetch slots share one place in
@@ -700,6 +722,9 @@ Its reply forms on the edge that applies its state update, or on the lookup
 edge when no state changes, once the required cut is done. A state-only array
 update needs no data-write wait. A held R preserves its payload and prevents
 another P capture.
+The reply's set condition is prepared from the lookup, update and reply phases
+before R readiness clears its valid bit. A simultaneous new reply takes priority
+over acceptance; reset clears the valid bit in its own flop.
 CheckSC samples the reservation after capture.
 Probe lookups read private data only for an M hit. A clean read probe leaves
 the tag and bytes untouched. A downgrade or invalidation updates the tag
@@ -929,9 +954,11 @@ controls grants and releases around the real L1I, fetch provider and PTW. It che
 and walks, errors, reset, fatal stop and reuse of reader IDs before U.
 The whole-SoC program configurations use this hierarchy.
 `coherence_l1d_store_stream` checks ordered store installation, combining,
-independent
-grants, duplicate-sector exclusion and read turns. A completed load grant
-supplies read service between resident stores while another read waits.
+independent grants, duplicate-sector exclusion and read turns. It buffers a
+successful load grant and an endpoint-zero LR error while a `cbo.zero` lower
+sector installs, and checks that neither completes until the owed twin has
+installed. A completed load grant supplies read service between resident stores
+while another read waits.
 `coherence_store_pressure`
 holds both dirty victim slots and delays endpoint releases while ordinary loads
 and probing DMA requests use the production home.
@@ -997,6 +1024,102 @@ successful disposal and a failed B with preserved dirty ownership.
 The controller bounds assume legal channel peers, cut admission within four
 cycles and invalidation acknowledgement within five cycles. They do not bound
 external memory response latency.
+
+### Line-scope cbo.zero
+
+`cbo.zero` zeroes a naturally aligned 64-byte block: two L1D sectors, one
+64-byte L2 line or two 32-byte ones. A cached block is one operation from the
+store queue to the home: one store-queue write, one pair of store records, one
+home request and one grant for both sectors, and a home miss installs the line
+as dirty zeros without reading memory. An uncached (BRAM) block keeps the eight
+8-byte beats of the data bus.
+
+**Store queue.** A cached zero entry launches one write: the block base, every
+strobe of its dword set, zero data and `zero` set. The L1D's done for that
+write completes the entry, and its slot in the in-order completion FIFO is the
+entry's only one. The launch invalidates all eight L0 dwords of the block (a
+tag-blind block invalidation), suppresses a same-cycle L0 hit in the block and
+the L0 fill of an in-flight load of it, and clears an LR reservation on either
+sector. Younger loads in the block wait for the entry to free, as for the
+eight-beat drain.
+
+**Store records.** The zero write allocates the lower sector's record, with
+every byte zero and masked, sealed, and marked zero. On the next cycle with a
+free record it allocates the upper sector's record the same way, marked as
+the twin of the lower one, and only then sends the write's done. Between the
+two allocations SQ launch readiness is low, so no store falls between the
+twin and the lower record, and the lower record cannot be selected for
+installation. Sealing keeps every later store out of both records, so each
+holds only the block's zeros. The twin carries no contributor of its own.
+Each record holds its sector against local loads until it installs. The
+twin has no write of its own, so the L1D pulses `o_twin_push` with the twin's
+address as its allocation edge; the CPU counts it as a store push, and the
+load queue's registered same-sector matches see the twin as they see every
+record, one cycle after its push.
+
+**Acquisition.** With 64-byte L2 lines the lower record acquires with
+`GetMZero` when its twin follows it and no live request endpoint, frozen PutM
+or older record holds the upper sector; otherwise it acquires with `GetM` and
+the twin is an ordinary store record. Each condition is a registered sample,
+and none can appear while the controller serves the record, because only the
+controller starts acquisitions and freezes victims. With 32-byte L2 lines
+each sector is a whole line, so every zero record acquires with `GetMZero` on
+its own. With 64-byte L2 lines a twin never acquires through look-ahead. A lower record may acquire
+through look-ahead under the same conditions, so cold blocks overlap their
+home transactions as ordinary stores do; the older-record condition keeps a
+look-ahead `GetMZero` from holding a sector that an older record still needs.
+
+**Home.** With 64-byte lines a `GetMZero` holds both sectors of its line: it
+waits for every earlier request to either sector, and every later request to
+either sector waits for its U. PutM is not ordered behind it, so a PutM of the
+upper sector that the L1D froze earlier still completes. Otherwise a
+`GetMZero` is a `GetM` for every rule of the home except the miss decision: a
+`GetMZero` whose decision allocates a fill starts that fill with a zero image
+and its memory read done, so no read is sent. The fill recalls and writes back
+a valid victim as any fill does, installs the line Modified, because only the
+L2 holds the zeros of the upper sector, and forwards the lower sector to its
+primary. Its grant, and a hit's, is `GrantMZero` with 64-byte lines and
+`GrantM` with 32-byte lines. The home's prefetcher does not train on
+`GetMZero`, which never reads memory.
+
+**Installation.** A `GrantMZero` grants Modified permission for both sectors.
+The L1D installs the lower record from the grant, then installs the twin as
+Modified zeros over its whole sector (`TwinOp`), in its resident way or in a
+replaced one, and only then sends the endpoint's Done. The twin installs
+before any other local work, once a write-back slot is free for its victim
+and no frozen PutM holds its sector, as for any store; probes keep their
+priority meanwhile, and a grant for another endpoint stays in that endpoint
+until the twin has installed, since the L1D accepts a grant only on a cycle
+that also starts its `GrantOp`. A twin whose lower record received
+`GrantM`, or installed on a Modified hit, is an ordinary sealed store record.
+
+**Invariant: each byte of the block is performed once.** The lower sector's
+zeros are performed at the lower record's installation and the upper
+sector's at the twin's, both inside the `GetMZero`'s hold on the line:
+
+- From the `GetMZero`'s dispatch to its U, the home serves no other request
+  to either sector and pins the line's way, so no DMA access, PTW or IF read,
+  probe or replacement observes the L2's zero image or the L1D's sectors
+  before both installations. The L2's zeros become visible only as values the
+  L1D's Modified sectors already hold.
+- The twin installs exactly once. A `GrantMZero` owes the twin that follows
+  the granted lower record; that twin holds only the block's upper zeros, has
+  no endpoint, and is installed by `TwinOp` alone: head store selection and
+  look-ahead skip it while it is owed.
+- A DMA write to the upper sector that the home orders after the `GetMZero`
+  probes the L1D's Modified zeros and merges over them; one ordered before it
+  is complete before the `GetMZero`'s decision. Neither can be overwritten by
+  a later installation of zeros, so the order 0, D, 0 cannot occur.
+
+**Ordering.** Records install in program order at the head, and the twin
+installs before any younger record. Older stores to the block are older
+records, which install first, or combine into older records. Younger stores
+follow the twin, and each younger load waits for its sector record to install.
+Fences, FENCE.I and SFENCE.VMA wait
+for the records to install. A look-ahead `GetMZero` grants permission early
+but writes nothing visible before its records reach the head, as for a
+look-ahead `GetM`. The L1I keeps instruction copies until FENCE.I, as for any
+store.
 
 ## The line cache
 
@@ -1528,6 +1651,7 @@ to answer.
 | --- | --- |
 | `coherence_prefetch*` | The prefetch agent against the home at 32- and 64-byte lines: data identities held at C and U, GrantAck at each lookup before the fill's memory response, fills that install on their own, a failed fill, reset and fatal stop, demands joining prefetch fills, dirty replacement, PutM beside live prefetches of its line, marked DMA fills, DMA responses before C and U, progress with every hart and DMA completion slot, every engine's result buffer and both PutM controls full, and instruction and data streams on one line |
 | `coherence_prefetch_contention*` | Demand latency and bandwidth with competing streams, dirty victims and DMA, with and without prefetch |
+| `coherence_cbo_zero*` | Line-scope cbo.zero on the hart-and-home cluster with one and three L1D endpoints and 64- and 32-byte home lines: zero fills that read no memory, a DMA write or read of the upper sector at every delay after a cbo.zero (a zero-filled block keeps the later write), a stale Shared copy that the twin upgrades to Modified zeros, dirty resident blocks, and back-to-back blocks with stores and loads in program order |
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, and dirty-L1D walker coherence |
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, a miss waiting for a way of its set, writeback and fill progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |

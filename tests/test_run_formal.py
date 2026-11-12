@@ -67,6 +67,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_multi_data2_bmc"): 4200,
     ("coherence_l1d", "coh_l1d_multi_data3_bmc"): 4200,
     ("coherence_l1d", "coh_l1d_ways_data_bmc"): 5100,
+    ("coherence_l1d", "coh_l1d_zero_bmc"): 10800,
+    ("coherence_l1d", "coh_l1d_zero_multi_bmc"): 18000,
     ("coherence_store_boundary", "bmc_four"): 18000,
     ("coherence_store_boundary", "cover_four"): 7200,
     ("coherence_store_boundary", "bmc_intervening"): 14400,
@@ -349,6 +351,11 @@ FORMAL_TARGETS = [
             "coh_l1d_multi_data2_bmc",
             "coh_l1d_multi_data3_bmc",
             "coh_l1d_ways_data_bmc",
+            "coh_l1d_zero_bmc",
+            "coh_l1d_zero_multi_bmc",
+            "coh_l1d_zero_payload_bmc",
+            "coh_l1d_zero_cover",
+            "coh_l1d_zero_lookahead_cover",
         ),
     ),
     FormalTarget(
@@ -1560,6 +1567,20 @@ SBY_TASKS = [
         "coh_l1d_ways_data_bmc",
         "Four-way array, probe and hit-path bytes in word 0 with three endpoints.",
     ),
+    (
+        "coh_l1d_zero_bmc",
+        "cbo.zero writes: GetMZero records, owed twin installation and control checks.",
+    ),
+    (
+        "coh_l1d_zero_multi_bmc",
+        "cbo.zero writes with three endpoints and look-ahead GetMZero.",
+    ),
+    ("coh_l1d_zero_payload_bmc", "Store byte values with cbo.zero writes."),
+    (
+        "coh_l1d_zero_cover",
+        "cbo.zero twin installation, victim, wait and fallback covers.",
+    ),
+    ("coh_l1d_zero_lookahead_cover", "A look-ahead GetMZero with three endpoints."),
     ("coh_l1d_data1_bmc", "Store and probe byte values in sector word 1."),
     ("coh_l1d_data2_bmc", "Store and probe byte values in sector word 2."),
     ("coh_l1d_data3_bmc", "Store and probe byte values in sector word 3."),
@@ -2528,6 +2549,258 @@ def assertion_command(line: str) -> bool:
     return line.startswith(("select -assert-", "chformal "))
 
 
+def test_zero_payload_partition_models_match() -> None:
+    """Keep zero control and byte payload checks at depth 40 without added assumptions."""
+    control = l1d_task_config("coh_l1d_zero_bmc")
+    payload = l1d_task_config("coh_l1d_zero_payload_bmc")
+    control_commands = [
+        "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
+        "chformal -assert2assume c:p_prefetch_conflict_split",
+        "select -assert-min 1 c:p_zero_* t:$check %i r:FLAVOR=assert %i",
+    ]
+    data = " ".join(f"c:p_store_data_{index}" for index in range(1, 6))
+    payload_commands = [
+        f"select -assert-count 5 {data}",
+        f"chformal -assert -remove t:$check r:FLAVOR=assert %i {data} %u %u %u %u %d",
+        "select -assert-count 5 t:$check r:FLAVOR=assert %i",
+    ]
+
+    def validate(part: dict[str, list[str]]) -> None:
+        assert part.keys() == control.keys()
+        for section in part.keys() - {"[options]", "[engines]", "[script]"}:
+            assert part[section] == control[section]
+        assert [
+            line for line in control["[script]"] if assertion_command(line)
+        ] == control_commands
+        assert [
+            line for line in part["[script]"] if assertion_command(line)
+        ] == payload_commands
+        assert [
+            line.replace(" -D STORE_DATA_PROOF", "")
+            for line in part["[script]"]
+            if not assertion_command(line)
+        ] == [line for line in control["[script]"] if not assertion_command(line)]
+        control_options = dict(line.split(maxsplit=1) for line in control["[options]"])
+        payload_options = dict(line.split(maxsplit=1) for line in part["[options]"])
+        assert control_options["mode"] == "bmc" and control_options["depth"] == "40"
+        assert payload_options == control_options | {"timeout": "1200"}
+        assert part["[engines]"] == ["abc bmc3 -c"]
+
+    validate(payload)
+    for section, line in (
+        ("[script]", "chformal -assert2assume c:p_zero_twin_install"),
+        ("[script]", "chformal -assert -remove c:p_store_data_5"),
+        ("[script]", "cutpoint w:image_q"),
+        ("[script]", "connect -set i_write_zero 1'b0"),
+        ("[options]", "depth 39"),
+        ("[options]", "expect PASS,UNKNOWN,TIMEOUT"),
+        ("[file partition_only.smtc]", "assume (= hidden 0)"),
+    ):
+        altered = {key: list(value) for key, value in payload.items()}
+        altered.setdefault(section, []).append(line)
+        with pytest.raises(AssertionError):
+            validate(altered)
+
+
+def test_zero_safety_models_reject_cover_constraints() -> None:
+    """Pin each safety environment independently of the cover's reference model."""
+    reads = [
+        "read -sv coherence_read_stream.sv",
+        "read -sv cache_perf_pkg.sv",
+        "read -sv coherence_pkg.sv",
+        "read -sv coherence_request_endpoint.sv",
+        "read -sv coherence_put_endpoint.sv coherence_read_owners.sv "
+        "coherence_miss_credit.sv coherence_read_flags.sv "
+        "coherence_grant_select.sv coherence_read_select.sv",
+    ]
+    files = [
+        "../hw/rtl/lib/cache/coherence_read_stream.sv",
+        "../hw/rtl/lib/ram/sdp_block_ram.sv",
+        "../hw/rtl/lib/ram/sdp_packed_tag_uram.sv",
+        "../hw/rtl/lib/ram/sdp_ram_byte_en.sv",
+    ] + [
+        f"../hw/rtl/lib/cache/{name}"
+        for name in (
+            "coherence_pkg.sv",
+            "coherence_types.svh",
+            "coherence_array.sv",
+            "coherence_request_endpoint.sv",
+            "coherence_put_endpoint.sv",
+            "coherence_l1d.sv",
+            "coherence_read_owners.sv",
+            "coherence_miss_credit.sv",
+            "coherence_read_flags.sv",
+            "coherence_grant_select.sv",
+            "coherence_read_select.sv",
+            "coherence_read_payload.sv",
+            "cache_perf_pkg.sv",
+            "coherence_store_buffer.sv",
+        )
+    ]
+    control_properties = [
+        "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
+        "chformal -assert2assume c:p_prefetch_conflict_split",
+        "select -assert-min 1 c:p_zero_* t:$check %i r:FLAVOR=assert %i",
+    ]
+    data = " ".join(f"c:p_store_data_{index}" for index in range(1, 6))
+    payload_properties = [
+        f"select -assert-count 5 {data}",
+        f"chformal -assert -remove t:$check r:FLAVOR=assert %i {data} %u %u %u %u %d",
+        "select -assert-count 5 t:$check r:FLAVOR=assert %i",
+    ]
+    for suffix, depth, timeout, engine in (
+        ("bmc", "40", "10800", "abc bmc3"),
+        ("multi_bmc", "30", "18000", "abc bmc3 -c"),
+        ("payload_bmc", "40", "1200", "abc bmc3 -c"),
+    ):
+        payload = suffix == "payload_bmc"
+        define = " -D STORE_DATA_PROOF" if payload else ""
+        endpoints = " -set MISSES 3" if suffix == "multi_bmc" else ""
+        script = (
+            reads
+            + [
+                f"read -formal -sv -D ZERO_WRITES{define} coherence_read_payload.sv coherence_l1d.sv",
+                "read -sv coherence_store_buffer.sv",
+                "read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv",
+                f"chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2{endpoints} coherence_l1d",
+                "prep -flatten -top coherence_l1d",
+            ]
+            + (payload_properties if payload else control_properties)
+            + [
+                "memory_map",
+                "opt",
+                "techmap",
+                "opt -fast",
+                "setundef -anyseq",
+                "opt_clean",
+            ]
+        )
+
+        def validate(task: dict[str, list[str]]) -> None:
+            assert task.keys() == {"[options]", "[engines]", "[script]", "[files]"}
+            assert dict(line.split(maxsplit=1) for line in task["[options]"]) == {
+                "mode": "bmc",
+                "depth": depth,
+                "timeout": timeout,
+                "aigsmt": "boolector",
+            }
+            assert task["[engines]"] == [engine]
+            assert task["[script]"] == script
+            assert task["[files]"] == files
+
+        safety = l1d_task_config(f"coh_l1d_zero_{suffix}")
+        validate(safety)
+        for section, line in (
+            ("[script]", "connect -set i_address 32'h80000000"),
+            ("[script]", "connect -set i_rst 1'b0"),
+            ("[script]", "delete -input w:i_rst"),
+            ("[script]", "cutpoint w:phase_q"),
+            ("[script]", "chformal -assume -remove"),
+            ("[script]", "chformal -assert2assume c:p_zero_twin_install"),
+            ("[options]", "skip 48"),
+            ("[options]", "smtc hidden.smtc"),
+            ("[engines]", "smtbmc boolector --smtc hidden.smtc"),
+            ("[files]", "hidden.smtc"),
+            ("[file hidden.smtc]", "assume (= hidden 0)"),
+        ):
+            altered = {key: list(value) for key, value in safety.items()}
+            altered.setdefault(section, []).append(line)
+            with pytest.raises(AssertionError):
+                validate(altered)
+
+
+def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:
+    """Keep every cover, reset and interface assumption under a public-input profile."""
+    control = l1d_task_config("coh_l1d_zero_bmc")
+    cover = l1d_task_config("coh_l1d_zero_cover")
+    model = [line for line in control["[script]"] if not assertion_command(line)]
+    idle_inputs = (
+        "i_read_valid",
+        "i_fatal_stop",
+        "i_write_atomic",
+        "i_write_sc",
+        "i_sc_valid",
+        "i_sc_commit",
+        "i_maint_valid",
+        "i_p_valid",
+    )
+    ready_inputs = (
+        "i_read_ready",
+        "i_sc_result_ready",
+        "i_d_ready",
+        "i_c_ready",
+        "i_r_ready",
+        "i_w_ready",
+        "i_cut_admit_ready",
+        "i_cut_admit_clean",
+        "i_cut_inval_done",
+    )
+    tied_inputs = idle_inputs + ("i_read_kind",) + ready_inputs
+    profile = (
+        ["delete -input " + " ".join(f"w:{name}" for name in tied_inputs)]
+        + [f"connect -set {name} 1'b0" for name in idle_inputs]
+        + ["connect -set i_read_kind 2'b00"]
+        + [f"connect -set {name} 1'b1" for name in ready_inputs]
+    )
+    connection_index = model.index("memory_map")
+    profiled_model = model[:connection_index] + profile + model[connection_index:]
+    selected = (
+        "c:p_zero_cover_twin c:p_zero_cover_twin_victim "
+        "c:p_zero_cover_twin_wait c:p_zero_cover_fallback"
+    )
+
+    def validate(task: dict[str, list[str]]) -> None:
+        assert task.keys() == control.keys()
+        for section in task.keys() - {"[options]", "[engines]", "[script]"}:
+            assert task[section] == control[section]
+        assert [
+            line for line in task["[script]"] if not assertion_command(line)
+        ] == profiled_model
+        assert [line for line in task["[script]"] if assertion_command(line)] == [
+            "select -assert-count 5 c:p_zero_cover_* t:$check %i r:FLAVOR=cover %i",
+            "chformal -cover -remove t:$check r:FLAVOR=cover %i "
+            f"{selected} %u %u %u %d",
+            "select -assert-count 4 t:$check r:FLAVOR=cover %i",
+            "chformal -assert -remove",
+        ]
+        assert dict(line.split(maxsplit=1) for line in task["[options]"]) == {
+            "mode": "cover",
+            "depth": "80",
+            "timeout": "2400",
+            "vcd_sim": "on",
+            "skip": "48",
+        }
+        assert task["[engines]"] == ["smtbmc boolector"]
+
+    validate(cover)
+    for section, line in (
+        ("[script]", "chformal -cover -remove c:p_zero_cover_twin_victim"),
+        ("[script]", "chformal -assert2assume c:p_zero_twin_install"),
+        ("[script]", "cutpoint w:image_q"),
+        ("[script]", "connect -set i_rst 1'b0"),
+        ("[script]", "delete -input w:i_rst"),
+        ("[script]", "connect -set i_write_zero 1'b0"),
+        ("[options]", "depth 79"),
+        ("[options]", "skip 40"),
+        ("[options]", "expect PASS,UNKNOWN,TIMEOUT"),
+        ("[file cover_only.smtc]", "assume (= hidden 0)"),
+    ):
+        altered = {key: list(value) for key, value in cover.items()}
+        altered.setdefault(section, []).append(line)
+        with pytest.raises(AssertionError):
+            validate(altered)
+    for task_name in (
+        "coh_l1d_zero_bmc",
+        "coh_l1d_zero_multi_bmc",
+        "coh_l1d_zero_payload_bmc",
+    ):
+        options = l1d_task_config(task_name)["[options]"]
+        assert all(not line.startswith("skip ") for line in options)
+        assert all(
+            line not in l1d_task_config(task_name)["[script]"] for line in profile
+        )
+
+
 def test_local_data_partition_models_match() -> None:
     """Keep every scheduled real-array assertion at its original depth."""
     reference = l1d_task_config("coh_l1d_local_cover")
@@ -2645,7 +2918,8 @@ def test_stream_partition_models_match(prefix: str, depth: int, scripted: bool) 
         assert read in model
         assert not any(line.startswith("cutpoint ") for line in model)
         assert [line for line in model if line.startswith("connect ")] == (
-            [] if scripted else ["connect -set i_write_mask 8'h00"]
+            ([] if scripted else ["connect -set i_write_mask 8'h00"])
+            + ["connect -set i_write_zero 1'b0"]
         )
         for role, task in (("hold", candidate), ("bmc", consumer)):
             assert [
@@ -2930,6 +3204,7 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         "coherence_array.sv",
         "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d",
         "chparam -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d",
+        "chparam -set ZERO_LINE 0 coherence_l1d",
         "prep -flatten -top coherence_l1d",
         "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
         "chformal -assert2assume c:p_prefetch_conflict_split",
@@ -2956,6 +3231,7 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
     if task.startswith("coh_l1d_stream_free_nostore_"):
         script += ["connect -set i_write_mask 8'h00"]
     script += [
+        "connect -set i_write_zero 1'b0",
         "memory_map",
         "opt",
         "techmap",

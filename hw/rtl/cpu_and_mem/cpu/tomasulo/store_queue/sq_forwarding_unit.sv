@@ -73,6 +73,8 @@ module sq_forwarding_unit #(
     input logic [DEPTH-1:0] sq_data_valid,
     input logic [DEPTH-1:0] sq_is_mmio,
     input logic [DEPTH-1:0] sq_is_sc,
+    // cbo.zero entries: their address names a 64-byte block (see Block 1).
+    input logic [DEPTH-1:0] sq_is_zero,
     input logic [DEPTH-1:0] sq_committed,
     input logic [(DEPTH*riscv_pkg::ReorderBufferTagWidth)-1:0] sq_rob_tag_flat,
     input logic [(DEPTH*riscv_pkg::XLEN)-1:0] sq_address_flat,
@@ -126,6 +128,8 @@ module sq_forwarding_unit #(
   end
 
   // Group the address comparison for timing; the last group holds the high bits.
+  // The dword index's low three bits select the dword within a 64-byte block,
+  // so the block comparison is the same tree without the first group's low bits.
   function automatic logic dword_addr_eq(input logic [DwordAddrWidth-1:0] lhs,
                                          input logic [DwordAddrWidth-1:0] rhs);
     logic [DwordAddrWidth-1:0] diff;
@@ -139,6 +143,22 @@ module sq_forwarding_unit #(
       group_has_diff[4] = |diff[24:20];
       group_has_diff[5] = |diff[DwordAddrWidth-1:25];
       dword_addr_eq = ~(|group_has_diff);
+    end
+  endfunction
+
+  function automatic logic block_addr_eq(input logic [DwordAddrWidth-1:0] lhs,
+                                         input logic [DwordAddrWidth-1:0] rhs);
+    logic [DwordAddrWidth-1:0] diff;
+    logic [5:0] group_has_diff;
+    begin
+      diff = lhs ^ rhs;
+      group_has_diff[0] = |diff[4:3];
+      group_has_diff[1] = |diff[9:5];
+      group_has_diff[2] = |diff[14:10];
+      group_has_diff[3] = |diff[19:15];
+      group_has_diff[4] = |diff[24:20];
+      group_has_diff[5] = |diff[DwordAddrWidth-1:25];
+      block_addr_eq = ~(|group_has_diff);
     end
   endfunction
 
@@ -248,10 +268,16 @@ module sq_forwarding_unit #(
         end
 
         // Overlap: same dword and intersecting 8-lane masks (a DOUBLE's mask
-        // is 8'hFF, the whole beat).
+        // is 8'hFF, the whole beat). A cbo.zero entry overlaps every load in
+        // its 64-byte block and never forwards. The load waits until the entry
+        // completes: after both cached sector records allocate or after the
+        // eighth uncached beat returns. Cached loads then also wait for the
+        // matching L1D record to install.
         if (sq_addr_valid[i]) begin
-          same_dword = dword_addr_eq(entry_address[XLEN-1:3], sq_check_dword_for_entry);
-          store_byte_mask = gen_byte_en(entry_address[2:0], entry_size);
+          same_dword = sq_is_zero[i] ?
+              block_addr_eq(entry_address[XLEN-1:3], sq_check_dword_for_entry) :
+              dword_addr_eq(entry_address[XLEN-1:3], sq_check_dword_for_entry);
+          store_byte_mask = sq_is_zero[i] ? '1 : gen_byte_en(entry_address[2:0], entry_size);
 
           if (same_dword && (|(store_byte_mask & load_byte_mask))) begin
             fwd_conflict_mask[i] = 1'b1;
@@ -260,7 +286,7 @@ module sq_forwarding_unit #(
             // lanes cover every lane the load reads. A store-conditional can
             // fail and write nothing, so its data must never reach a younger
             // load.
-            if (sq_data_valid[i] && !sq_is_mmio[i] && !sq_is_sc[i] &&
+            if (sq_data_valid[i] && !sq_is_mmio[i] && !sq_is_sc[i] && !sq_is_zero[i] &&
                 ((store_byte_mask & load_byte_mask) == load_byte_mask)) begin
               fwd_can_forward_mask[i] = 1'b1;
 `ifdef FORMAL

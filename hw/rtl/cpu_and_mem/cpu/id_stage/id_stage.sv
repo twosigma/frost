@@ -38,6 +38,11 @@ module id_stage #(
     // write-intending mstatus/sstatus access; its FENCE-class flush discards
     // the decode using the old value and refetches earlier instructions.
     input logic i_mstatus_fs_off,
+    // cbo.zero is illegal in the current privilege mode: S without
+    // menvcfg.CBZE, or U without both CBZE bits. cpu_ooo registers it like
+    // FS-Off. Legal envcfg writes affect only lower privilege; traps, xRETs
+    // and debug transitions flush the decode that used the old permission.
+    input logic i_cbo_zero_illegal,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex,
     // Next-edge value of o_from_id_to_ex (its register D), for a consumer
     // that keeps a registered copy of fields it selects against this output.
@@ -224,9 +229,15 @@ module id_stage #(
   // FS=Off makes F/D instructions illegal alongside decoder and PD errors.
   // The illegal INT_RS operation cannot issue an FP memory access, so a
   // memory fault cannot replace its illegal-instruction cause.
+  // The CBZE gate applies the same way: an illegal cbo.zero routes to INT_RS
+  // with no store-queue entry, so no store fault can replace its cause.
+  logic is_cbo_direct;
+  assign is_cbo_direct = (instruction.opcode == riscv_pkg::OPC_MISC_MEM) &&
+                         (instruction.funct3 == 3'b010);
   logic is_illegal_instruction;
   assign is_illegal_instruction = decoder_illegal | i_from_pd_to_id.illegal_instruction |
-                                  (i_mstatus_fs_off & is_fp_instruction_direct);
+                                  (i_mstatus_fs_off & is_fp_instruction_direct) |
+                                  (i_cbo_zero_illegal & is_cbo_direct);
 
   // Rounding mode: for FP operations funct3 (bits [14:12]) encodes rm.
   logic [2:0] fp_rm_direct;
@@ -700,9 +711,13 @@ module id_stage #(
   assign is_fp_instruction_direct_2 = is_fp_load_direct_2 | is_fp_store_direct_2 |
                                      is_fp_compute_direct_2 | is_fp_fma_direct_2;
 
+  logic is_cbo_direct_2;
+  assign is_cbo_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_MISC_MEM) &&
+                           (instruction_2.funct3 == 3'b010);
   logic is_illegal_instruction_2;
   assign is_illegal_instruction_2 = decoder_illegal_2 | i_from_pd_to_id_2.illegal_instruction |
-                                    (i_mstatus_fs_off & is_fp_instruction_direct_2);
+                                    (i_mstatus_fs_off & is_fp_instruction_direct_2) |
+                                    (i_cbo_zero_illegal & is_cbo_direct_2);
 
   logic [2:0] fp_rm_direct_2;
   assign fp_rm_direct_2 = instruction_2.funct3;

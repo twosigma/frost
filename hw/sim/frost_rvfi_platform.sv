@@ -499,6 +499,8 @@ module frost_rvfi_platform #(
 
   logic coherent_store_pending;
   logic coherent_store_ready;
+  logic coherent_twin_push;
+  logic [riscv_pkg::PhysAddrBits-1:0] coherent_twin_push_addr;
   logic coherent_sc_pending;
   logic coherent_atomic_live;
   logic [3:0] coherent_block_valid;
@@ -523,6 +525,7 @@ module frost_rvfi_platform #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_read_tag;
   logic coherent_write_atomic;
   logic coherent_write_sc;
+  logic coherent_write_zero;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_write_tag;
   logic coherent_atomic_protected;
   logic coherent_sc_commit;
@@ -792,6 +795,8 @@ module frost_rvfi_platform #(
   ) cpu_inst (
       .i_coherent_store_pending(coherent_store_pending),
       .i_coherent_store_ready(coherent_store_ready),
+      .i_coherent_twin_push(coherent_twin_push),
+      .i_coherent_twin_push_addr(riscv_pkg::XLEN'(coherent_twin_push_addr)),
       .i_coherent_sc_pending(coherent_sc_pending),
       .i_coherent_atomic_live(coherent_atomic_live),
       .i_coherent_block_valid(coherent_block_valid),
@@ -816,6 +821,7 @@ module frost_rvfi_platform #(
       .o_coherent_read_tag(coherent_read_tag),
       .o_coherent_write_atomic(coherent_write_atomic),
       .o_coherent_write_sc(coherent_write_sc),
+      .o_coherent_write_zero(coherent_write_zero),
       .o_coherent_write_tag(coherent_write_tag),
       .o_coherent_atomic_protected(coherent_atomic_protected),
       .o_coherent_sc_commit(coherent_sc_commit),
@@ -1996,10 +2002,13 @@ module frost_rvfi_platform #(
         .i_write_data(data_memory_cached_write_data),
         .i_write_atomic(coherent_write_atomic),
         .i_write_sc(coherent_write_sc),
+        .i_write_zero(coherent_write_zero),
         .i_write_tag(coherent_write_tag),
         .o_write_done(data_memory_cached_write_done),
         .o_write_inflight(data_memory_cached_write_inflight),
         .o_store_ready(coherent_store_ready),
+        .o_twin_push(coherent_twin_push),
+        .o_twin_push_addr(coherent_twin_push_addr),
         .o_pending_store(coherent_store_pending),
         .o_sc_write_pending(coherent_sc_pending),
         .o_atomic_live(coherent_atomic_live),
@@ -2768,6 +2777,8 @@ module frost_rvfi_platform #(
   end else begin : gen_no_cached_tier
     assign coherent_store_pending = '0;
     assign coherent_store_ready = 1;
+    assign coherent_twin_push = '0;
+    assign coherent_twin_push_addr = '0;
     assign coherent_sc_pending = '0;
     assign coherent_atomic_live = '0;
     assign coherent_block_valid = '0;
