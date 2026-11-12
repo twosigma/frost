@@ -1352,6 +1352,7 @@ FORMAL_TARGETS = [
         tasks=(
             "home_engine_twin32",
             "home_engine_twin64",
+            "home_engine_twin40",
         ),
     ),
     FormalTarget(
@@ -1360,6 +1361,7 @@ FORMAL_TARGETS = [
         tasks=(
             "home_twin_small",
             "home_twin_four",
+            "home_twin_addr40",
         ),
     ),
     FormalTarget(
@@ -2448,12 +2450,20 @@ SBY_TASKS = [
         "Home engine primitive form equals its portable form at 64-byte lines.",
     ),
     (
+        "home_engine_twin40",
+        "Home engine primitive form equals its portable form at 40-bit addresses.",
+    ),
+    (
         "home_twin_small",
         "Coherent home primitive form equals its portable form, one way, two fills.",
     ),
     (
         "home_twin_four",
         "Coherent home primitive form equals its portable form, four ways, three fills.",
+    ),
+    (
+        "home_twin_addr40",
+        "Coherent home primitive form equals its portable form at 40-bit addresses.",
     ),
     (
         "l1d_twin_single",

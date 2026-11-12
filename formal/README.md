@@ -192,11 +192,14 @@ flow compile only the portable branch, so nothing else would notice the two
 drifting apart. A primitive-twin target (`*_twin.sby`, plus the `xilinx` tasks in
 the older pins proofs) compares them directly. Its script reads the module twice,
 once as shipped and once with the macro defined and Yosys's `xilinx/cells_sim.v`
-primitive models, flattens both (memories become registers), and pairs registers
-and nets by name with `equiv_make`. It then proves
-with `equiv_simple` and `equiv_induct`, for any register state and any input,
-that every equivalence point whose cone holds a primitive cell has the same value
-in both forms. Registers are proved by induction over the points that feed them.
+primitive models, flattens both (memories become registers, enable and reset
+flops are unmapped), and pairs registers and nets by name with `equiv_make`.
+`equiv_simple` then proves that every equivalence point whose cone holds a
+primitive cell has the same value in both forms, for any input and any state in
+which the paired registers agree. A register that `equiv_make` cannot pair by name keeps independent
+state in the two copies, and any compared point that depends on it stays unproven
+and fails the task. Undefined constants are set to zero in
+both forms and initial values are dropped, so the comparison is two-state.
 Cells that come from the primitive models carry a `from_prim` attribute so the
 selection follows the primitives and not a hand-written signal list.
 
@@ -508,8 +511,8 @@ cycle counts, including early termination and setup cancellation.
 | `sc_head_query` | The coherence match and cached/uncached classification for the store-conditional at the ROB head equal direct comparisons of its selected address, from arbitrary table state |
 | `tlb` | Lookup, insert, and invalidate-all: a watched entry stays intact and every matching lookup hits it, no port hits while no entry is valid, invalidate-all clears everything, and the one-hot lookup select returns the lowest matching entry's fields. The DTLB uses 16 entries and 3 ports; the ITLB uses 16 entries and 2 ports with fetch permission, PMA and superpage-successor checks, data verdicts disabled, and the PPN select tree, whose PPN parts (the output contract `immu_page_offset` assumes) equal the selected entry's |
 | `uncached_read_capture` | The factored uncached-read pending-bit update preserves enqueue, downstream handoff, and reset priority from arbitrary state, with no assumptions |
-| `coherence_home_twin` | The home's probe-address match, writeback reply-capture select, and forward turn selects equal their portable form, at one way with two fills and four ways with three fills. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
-| `coherence_home_engine_twin` | The engine's probe-reply match (LUT6) equals its portable form at 32-byte and 64-byte lines |
+| `coherence_home_twin` | The home's probe-address match, writeback reply-capture select, and forward turn selects equal their portable form, at one way with two fills, four ways with three fills, and 40-bit addresses. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
+| `coherence_home_engine_twin` | The engine's probe-reply match (LUT6) equals its portable form at 32-byte and 64-byte lines and at 40-bit addresses, where all five address groups enter the LUT |
 | `coherence_l1d_twin` | The L1D acquisition-endpoint select (LUT3 per bit) equals its portable form with one and three miss slots. The read selector is compared by `coherence_control` |
 | `cached_tier_adapter_twin` | The read-slot valid, live, sent and open next-state LUTs equal their portable form, with and without split read requests |
 | `data_mem_request_router_twin` | The MMIO drain-accept gate (LUT4) equals its portable form |
