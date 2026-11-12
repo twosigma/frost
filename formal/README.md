@@ -184,6 +184,39 @@ the number of assertions with `select -assert-count` and reject assumptions
 and initial values with `select -assert-none`, so a proof cannot pass with
 its properties compiled out.
 
+### Primitive twins
+
+The FPGA build defines `FROST_XILINX_PRIMS`, which swaps portable logic for Xilinx
+LUT, MUXF, FDRE and CARRY8 instances. Simulation, most formal tasks and the ASIC
+flow compile only the portable branch, so nothing else would notice the two
+drifting apart. A primitive-twin target (`*_twin.sby`, plus the `xilinx` tasks in
+the older pins proofs) compares them directly. Its script reads the module twice,
+once as shipped and once with the macro defined and Yosys's `xilinx/cells_sim.v`
+primitive models, flattens both (memories become registers, enable and reset
+flops are unmapped), and pairs registers and nets by name with `equiv_make`.
+`equiv_simple` then proves that every equivalence point whose cone holds a
+primitive cell has the same value in both forms, for any input and any state in
+which the paired registers agree. A register that `equiv_make` cannot pair by name keeps independent
+state in the two copies, and any compared point that depends on it stays unproven
+and fails the task. Undefined constants are set to zero in
+both forms and initial values are dropped, so the comparison is two-state.
+Cells that come from the primitive models carry a `from_prim` attribute so the
+selection follows the primitives and not a hand-written signal list.
+
+Each task also fixes a floor on the number of points it compares with
+`select -assert-min`. A primitive whose output folds to a constant leaves no cell
+to find, and the floor turns that into a failure instead of a pass over nothing.
+Change the floor when an RTL edit adds or removes compared signals. A twin task
+passes the placeholder design in `prim_twin_done.sv` to SymbiYosys after the
+comparison, because the comparison itself runs in the Yosys script and ends in
+`equiv_status -assert`.
+
+`tests/test_prim_twins.py` lists every `FROST_XILINX_PRIMS` block in `hw/rtl` and
+fails on one that no registered check covers.
+
+CI runs these comparisons in a formal shard of their own, `Primitive forms`,
+which takes the `*_twin` targets and the read select's `xilinx` tasks.
+
 ## Targets
 
 Grouped by area; `--list-targets` shows each target's tasks.
@@ -224,6 +257,10 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `prediction_release` | Pending-prediction outputs are masked while nothing is pending, a ready handoff raises both prediction holdoffs, and the holdoffs, predecessor-PC tags, and lower-parcel lookup match their reference relations. Whenever a prediction will be pending, the registered `pc_reg` relations load next cycle's wide-compare values. In `bmc`, the instruction buffer takes only `pc_reg`'s word. See below |
 | `ras_checkpoint` | The return-address stack's outputs, next pointer, and count equal the reference equations, and so does every entry write: a push or swap writes its link address, a restore writes the saved top entry back, and nothing else changes |
 | `rvc_predecode` | The fill-time RV64C expansion and illegal flag equal the reference decompressor (`rvc_decompressor`) for all 65,536 16-bit parcels |
+| `branch_predictor_twin` | The branch predictor's slot-2 payload and relation selects (LUT6 per bit) equal their portable form. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
+| `pc_controller_twin` | The fetch-PC mux, architectural next-PC mux, pending-relation selects, the sequential-PC calculator's selects and relations, and the control-flow tracker's halfword step equal their portable forms, with and without the slot-2 pending-handoff exclusion. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
+| `control_flow_tracker_twin` | The tracker's halfword-next LUT6 equals its portable form |
+| `pd_target_candidate_twin` | The predecode target adder (CARRY8 with LUT2, LUT3, LUT5 and LUT6 helpers) and its saved-XOR select equal their portable form |
 
 `prediction_release` runs the real `pc_controller`, `c_ext_state`, and
 `slot2_prediction_capture` together. The harness replaces the PC-increment calculator with one whose PC
@@ -270,6 +307,7 @@ bits, so a type taken from a different source than its target would show.
 | `dispatch_admission` | Bundle, slot-2, station and checkpoint admission equal the reference equations, and a firing slot 2 never reads FP source 3 (so done-repair channel 6 stays idle). Assumes only FP_RS ops read FP source 3, which `instr_operand_classifier` checks. `bmc_queued` uses the CPU's `SLOT2_VALID_FROM_BUNDLE=1` and assumes the queue's slot-2 valid rule |
 | `instr_operand_classifier` | Decode's operand-class fields equal classification through the decoder's operation enum for every instruction bit pattern, injected NOPs, illegal flags, and fetch faults; only FP_RS ops read FP source 3 |
 | `register_alias_table` | x0 is never renamed; a rename records its ROB tag; an INT commit clears a mapping only if the mapping still holds the committing tag; reset clears mappings and checkpoints; a full flush clears the checkpoints and, unless a checkpoint restore coincides, the mappings; a reclaim-all restore frees every checkpoint |
+| `decoded_bundle_queue_twin` | The producer stall select and the shadow-next select (LUT3, LUT5 per bit) equal their portable form with the split shadow stall and four late copies |
 
 `decoded_bundle_queue` uses an 8-bit symbolic payload, so the check does not
 depend on decode fields. It also covers the registered head copy and a 3-bit
@@ -299,6 +337,7 @@ cycle; simulation asserts the last three. The split shadow select that
 | `rs_raw_pretag` | With the real early-wakeup merger, the MEM station's look-ahead candidates and ready vectors agree with its issue winner |
 | `rs_lq_prematch` | MEM_RS and the LQ connected through the real merger and translation select: every candidate match and the registered selected match equal a direct tag CAM; bounded and unbounded |
 | `tomasulo_wrapper` | The back end together (ROB, RAT, four stations, CDB arbiter, and memory queues): commit clears a rename only if no newer write renamed the register, a full flush or reset empties every structure, each station's copy of the CDB matches the bus, and the stations' ROB-tag rule holds with the real ROB allocator. See below |
+| `reservation_station_twin` | The indexed source-write selects (LUT5 and LUT3) in the INT-station configuration equal their portable form. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
 
 `reservation_station` checks the module's default parameters at BMC depth
 12; no production station uses exactly those defaults. The `*_tag_indexed`
@@ -354,6 +393,7 @@ readiness and tags.
 | `sq_live_count` | The live store count's next value equals the reference arithmetic for each allocation outcome |
 | `sq_repair_mmio` | The early-address repair's two parallel MMIO flags equal MMIO classification of the full base-plus-immediate sum, including overflow |
 | `store_queue` | Live-count consistency, write prerequisites (committed, address and data valid), in-flight bounds, forwarding, and that committed stores survive a partial flush. A cached cbo.zero entry leaves as one write at its block base, marked for the L1D and for a block-wide L0 invalidation, and that write completes it. An uncached entry's beat count belongs to the drain cursor's unsent zero entry; each zero beat writes eight zero bytes with every strobe inside the entry's block, and only the eighth beat completes the entry. Formal builds use a linear forwarding selector in place of the balanced tree, which Yosys mishandles, so the tree itself is not proved. Assumes, among other input rules, no allocation while the post-flush tail pullback is pending and no combinational commit pulse during a flush |
+| `store_queue_twin` | The write launch, write completion, in-flight special and final selects equal their portable forms |
 
 `load_queue_amo_compute` starts from arbitrary state, with no reset or
 admission assumptions, so it includes AMO states the queue cannot normally
@@ -378,6 +418,7 @@ count.
 | `rob_retire_stall` | Retirement strobes and every performance event equal a reference built from the serializer's full commit stall |
 | `rob_start_cofactor` | CSR and xRET start signals equal the reference equations, the head mask stays one-hot, and CSR and xRET entries never take the CDB bypass; unbounded. Assumes an initial reset |
 | `trap_unit` | Traps, interrupts, xRETs, and debug entry: mutual exclusion, priority (debug over M over S), current pending/enable/delegation for each winning cause (including LCOFI), targets, nothing taken while the pipeline is stalled, and waiting for committed stores to drain; the split trap-entry target and take outputs equal the reference ones. Assumes the start events are mutually exclusive. `prove` shows that `csr_file`'s entry enables equal the take and steering outputs, and that a post-CSR selection refresh cannot consume an architectural interrupt, from arbitrary state |
+| `csr_file_twin` | The fetch-return privilege select (LUT6, LUT4) equals its portable form |
 
 ### Execution units and CDB
 
@@ -395,6 +436,7 @@ count.
 | `int_muldiv_shim` | Every tracked integer or carry-less multiply aligns with its unit pipeline. MUL FIFO credits hold under back-pressure and flushes. Carry-less tracker entries preserve the issue tag, and the FIFO input selects the carry-less result. For the divider: `o_div_busy` is high exactly while it is not idle, a completion carries the tag of the latest divide, a kill frees it on the next cycle, and a squashed divide never completes. Runs with the word multiplier on and off (`*_fallback`) and direct completion enabled (`*_direct`). Independent per-source live histories check exact surviving completions and tags through flushes and tag reuse. Direct output payloads select the aligned arithmetic result. Assumes a reset on the first cycle and divides presented only while the divider is idle. Arithmetic values, the FIFO output sequence, and liveness are out of scope |
 | `mul_completion_tag` | Leaving the MUL result's tag unqualified on invalid cycles changes no adapter state, valid result, or arbiter input. Assumes one initial reset |
 | `mul_adapter_grant` | With the real CDB arbiter, the MUL adapter's local grant and the always-granted MUL and MEM adapters produce the same completions and pending bits as stateful adapters, under arbitrary competing results, flushes, and tags; unbounded |
+| `fp_engine_twin` | The normalisation any-bit and partial-select LUTs equal their portable form |
 
 `divider` compares results with Verilog division at 8 bits, where division is
 cheap for the solver; the divider uses the same RTL at both widths. A start
@@ -441,7 +483,7 @@ cycle counts, including early termination and setup cancellation.
 | `coherence_control` (`coh_grant_select*_prove`) | Grant validity, selected index, one-hot selection, read failure and packet attributes equal a credit-qualified priority scan for two, four and eight candidates, for arbitrary binary inputs; unbounded. Idle packet attributes come from endpoint zero. X/Z equivalence is outside this check |
 | `coherence_control` (`coh_read_owners*_prove`) | The read ownership mask equals an indexed endpoint scan for one, three, four and eight endpoints, including duplicate slot indices. Endpoint zero excludes stores and SC; nonzero endpoints exclude stores and installed requests. Arbitrary binary inputs; unbounded |
 | `coherence_control` (`coh_miss_credit*_prove`) | Shared writeback permission and retry credits equal the per-kind reference for one, three, four and eight endpoints. Arbitrary binary inputs; unbounded. Caller wiring and X/Z semantics are outside this helper proof |
-| `coherence_control` (`coh_read_select*_prove`) | Circular read selection, selected address and eligible load-miss reduction equal a direct reference at 32-bit and 64-bit addresses. Availability also equals the OR of qualified physical entries. The reference assumes each forwarded address matches the slot mask and stored or buffered-write address; binary inputs |
+| `coherence_control` (`coh_read_select*_prove`) | Circular read selection, selected address and eligible load-miss reduction equal a direct reference at 32-bit and 64-bit addresses, for portable and Xilinx-primitive (`*_xilinx_prove`) builds. Availability also equals the OR of qualified physical entries. The reference assumes each forwarded address matches the slot mask and stored or buffered-write address; binary inputs |
 | `coherence_read_payload` | Unbounded equality of every read-slot payload and all buffered-write exports with independent reference storage, using eight slots with 42-bit and 74-bit payload vectors. The harness assumes first-edge reset. Later resets, allocation inputs and payloads are arbitrary, including consecutive same-slot writes and payload changes without allocation. Stored slots use the reference buffer's prior mask and payload. Field packing is outside this check |
 | `coherent_debug_request_count` | Unbounded binary request-count equality at eight and four bits, including reset, holds and modulo wrap. Assumes initial reset. Writer request wiring and completion synchronization are outside this helper proof |
 | `coherent_rs_control` | Combinational equality of allocation and repair target masks, the selected ready vector, primary opcode mask, second-issue outputs, immediate-use, ROB-tag and writeback-hint selection, clear mask, shift amount, next count and active flush count with direct reservation-station expressions. The configurations use eight entries with three sources and lane-1 bypass disabled, sixteen integer entries with an eight-entry window, eight entries with a five-entry window, five entries with a partial primary group, and four multiply-station entries. Local state is arbitrary without environment assumptions. Sequential station lifetime and X/Z equivalence are outside this check |
@@ -472,6 +514,13 @@ cycle counts, including early termination and setup cancellation.
 | `sc_head_query` | The coherence match and cached/uncached classification for the store-conditional at the ROB head equal direct comparisons of its selected address, from arbitrary table state |
 | `tlb` | Lookup, insert, and invalidate-all: a watched entry stays intact and every matching lookup hits it, no port hits while no entry is valid, invalidate-all clears everything, and the one-hot lookup select returns the lowest matching entry's fields. The DTLB uses 16 entries and 3 ports; the ITLB uses 16 entries and 2 ports with fetch permission, PMA and superpage-successor checks, data verdicts disabled, and the PPN select tree, whose PPN parts (the output contract `immu_page_offset` assumes) equal the selected entry's |
 | `uncached_read_capture` | The factored uncached-read pending-bit update preserves enqueue, downstream handoff, and reset priority from arbitrary state, with no assumptions |
+| `coherence_home_twin` | The home's probe-address match, writeback reply-capture select, and forward turn selects equal their portable form, at one way with two fills, four ways with three fills, and 40-bit addresses. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
+| `coherence_home_engine_twin` | The engine's probe-reply match (LUT6) equals its portable form at 32-byte and 64-byte lines and at 40-bit addresses, where all five address groups enter the LUT |
+| `coherence_l1d_twin` | The L1D acquisition-endpoint select (LUT3 per bit) equals its portable form with one and three miss slots. The read selector is compared by `coherence_control` |
+| `cached_tier_adapter_twin` | The read-slot valid, live, sent and open next-state LUTs equal their portable form, with and without split read requests |
+| `data_mem_request_router_twin` | The MMIO drain-accept gate (LUT4) equals its portable form |
+| `dmmu_twin` | The last-capture select (LUT4) equals its portable form |
+| `immu_twin` | The physical-address-valid select (LUT5) equals its portable form |
 
 `coherence_observation` follows an arbitrary ROB tag, so it covers all 32 at
 XLEN 64: the pending observation, its table entry and line, cleanup on
@@ -537,6 +586,11 @@ FORMAL_TARGETS = [
 
 4. Add a row to the matching table above, with any assumptions or scope
    limits.
+5. A new `ifdef FROST_XILINX_PRIMS` block in `hw/rtl` needs a primitive-twin
+   task (see Primitive twins) or an entry in `NOT_COVERED` in
+   `tests/test_prim_twins.py`, with the reason. Copy a `*_twin.sby`, list the
+   module's sources and parameters, and set the `select -assert-min` floor to the
+   `Found N $equiv cells` count in the first verbose run's log.
 
 ## Yosys SVA Limitations
 

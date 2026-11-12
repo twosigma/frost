@@ -54,6 +54,11 @@ on a reset term outside an `always_ff` block that
 `combinational_reset_allowlist.txt` does not list, and on an entry whose term is
 gone.
 
+`test_prim_twins.py` lists every `FROST_XILINX_PRIMS` block in `hw/rtl` and fails
+on one that no formal task compares against its portable form. A block with no
+check yet goes in its `NOT_COVERED` table with a reason; the table shrinks as
+checks land and an entry for a block that gained one fails as stale.
+
 ### Strict SystemVerilog elaboration
 
 The fast Python suite executes [`slang_frontend.py`](slang_frontend.py)

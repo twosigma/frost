@@ -193,6 +193,12 @@ Open: restore `coherence_store_boundary:bmc_four` to depth 120 with the
 L1D hit path, using additional lemmas or splitting the checks into smaller
 cones so the task fits its CI budget.
 
+The FPGA build's hand-instantiated primitives are compared with their
+portable forms by [equivalence checks](formal/README.md#primitive-twins).
+Open: the primitive blocks in the load queue, the Tomasulo wrapper, the
+branch prediction controller and the SoC top have no comparison yet;
+`NOT_COVERED` in `tests/test_prim_twins.py` gives the reason for each.
+
 ## ASIC-ready RTL
 
 The RTL is portable: Xilinx primitives sit behind `FROST_XILINX_PRIMS`, and

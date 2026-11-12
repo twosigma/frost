@@ -22,6 +22,8 @@ coh_atomic_guard_prove guard
 coh_read_flags_prove flags
 coh_read_select_prove select
 coh_read_select64_prove select wide
+coh_read_select_xilinx_prove select xilinx
+coh_read_select64_xilinx_prove select wide xilinx
 coh_grant_select2_prove grant_select grant2
 coh_grant_select4_prove grant_select grant4
 coh_grant_select8_prove grant_select
@@ -61,6 +63,9 @@ credit: timeout 180
 smtbmc boolector
 
 [script]
+# Primitive-form proofs elaborate Yosys's cell models and define the macro.
+xilinx: read_verilog -formal +/xilinx/cells_sim.v
+xilinx: read -define FROST_XILINX_PRIMS
 arm_select: read -formal -sv coherent_atomic_select.sv
 arm_pair: read -formal -sv coherent_atomic_select.sv coherent_atomic_select_formal.sv
 arm_select_wide: chparam -set TAG_BITS 9 coherent_atomic_select

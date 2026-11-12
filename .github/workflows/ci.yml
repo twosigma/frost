@@ -1355,9 +1355,9 @@ jobs:
               (axi_coherent_bridge or coherence_l1d or coherence_store_boundary or
               coherence_store_home or coherent_local_atomic or coh_hart_maint_prove or
               coh_hart_maint_owned_prove or coherence_array_equiv or
-              coh_array4_port_bmc)) or
+              coh_array4_port_bmc or _twin or (coh_read_select and xilinx))) or
               (coherent_local_atomic and amo_cover)
-            timeout_minutes: 240
+            timeout_minutes: 300
           # The coherent array's equivalence with its reference array: the
           # one-way, UltraRAM and hit-port tasks with the cover, and the
           # four-way tasks, each about an hour of BMC tasks.
@@ -1424,7 +1424,7 @@ jobs:
           - shard: Coherence L1D and bridges
             pytest_filter: >-
               axi_coherent_bridge or
-              (coherence_l1d and not (coh_l1d_stream_bmc or coh_l1d_stream_hold_bmc or coh_l1d_stream_free or
+              (coherence_l1d and not (_twin or coh_l1d_stream_bmc or coh_l1d_stream_hold_bmc or coh_l1d_stream_free or
               coh_l1d_stream_outlier_prove or
               coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_zero_multi_bmc or coh_l1d_data or
               coh_l1d_multi_data or coh_l1d_store_ or coh_l1d_ways_data or
@@ -1469,8 +1469,13 @@ jobs:
               coh_l1d_stream_bmc or coh_l1d_stream_free_nostore_bmc or
               coh_l1d_stream_outlier_prove
             timeout_minutes: 330
+          # Every comparison of a block's hand-instantiated primitives with its
+          # portable form: the twin targets and the read select's primitive tasks.
+          - shard: Primitive forms
+            pytest_filter: _twin or (coh_read_select and xilinx)
+            timeout_minutes: 90
           - shard: Other tasks
-            pytest_filter: "not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or coherence_ or coherent_)"
+            pytest_filter: "not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or coherence_ or coherent_ or _twin)"
             timeout_minutes: 240
     steps:
       - name: Checkout repository

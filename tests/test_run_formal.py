@@ -513,6 +513,8 @@ FORMAL_TARGETS = [
             "coh_read_flags_prove",
             "coh_read_select_prove",
             "coh_read_select64_prove",
+            "coh_read_select_xilinx_prove",
+            "coh_read_select64_xilinx_prove",
             "coh_grant_select2_prove",
             "coh_grant_select4_prove",
             "coh_grant_select8_prove",
@@ -1344,6 +1346,103 @@ FORMAL_TARGETS = [
         "Tomasulo commit and flush integration, including FP dispatch done repair",
         tasks=("bmc", "cover", "fp_repair_bmc"),
     ),
+    FormalTarget(
+        "coherence_home_engine_twin.sby",
+        "Home engine: primitive and portable forms are equivalent.",
+        tasks=(
+            "home_engine_twin32",
+            "home_engine_twin64",
+            "home_engine_twin40",
+        ),
+    ),
+    FormalTarget(
+        "coherence_home_twin.sby",
+        "Home: primitive and portable forms are equivalent.",
+        tasks=(
+            "home_twin_small",
+            "home_twin_four",
+            "home_twin_addr40",
+        ),
+    ),
+    FormalTarget(
+        "coherence_l1d_twin.sby",
+        "L1D: primitive and portable forms are equivalent.",
+        tasks=(
+            "l1d_twin_single",
+            "l1d_twin_multi",
+        ),
+    ),
+    FormalTarget(
+        "decoded_bundle_queue_twin.sby",
+        "Decoded bundle queue: primitive and portable forms are equivalent.",
+        tasks=("dbq_twin",),
+    ),
+    FormalTarget(
+        "dmmu_twin.sby",
+        "Data MMU: primitive and portable forms are equivalent.",
+        tasks=("dmmu_twin",),
+    ),
+    FormalTarget(
+        "immu_twin.sby",
+        "Instruction MMU: primitive and portable forms are equivalent.",
+        tasks=("immu_twin",),
+    ),
+    FormalTarget(
+        "cached_tier_adapter_twin.sby",
+        "Cached tier adapter: primitive and portable forms are equivalent.",
+        tasks=(
+            "cached_tier_twin",
+            "cached_tier_unsplit",
+        ),
+    ),
+    FormalTarget(
+        "csr_file_twin.sby",
+        "CSR file: primitive and portable forms are equivalent.",
+        tasks=("csr_twin",),
+    ),
+    FormalTarget(
+        "fp_engine_twin.sby",
+        "FP engine: primitive and portable forms are equivalent.",
+        tasks=("fp_engine_twin",),
+    ),
+    FormalTarget(
+        "control_flow_tracker_twin.sby",
+        "Control-flow tracker: primitive and portable forms are equivalent.",
+        tasks=("cft_twin",),
+    ),
+    FormalTarget(
+        "pd_target_candidate_twin.sby",
+        "Predecode target candidate: primitive and portable forms are equivalent.",
+        tasks=("pdt_twin",),
+    ),
+    FormalTarget(
+        "data_mem_request_router_twin.sby",
+        "Data memory request router: primitive and portable forms are equivalent.",
+        tasks=("router_twin",),
+    ),
+    FormalTarget(
+        "branch_predictor_twin.sby",
+        "Branch predictor: primitive and portable forms are equivalent.",
+        tasks=("bp_twin",),
+    ),
+    FormalTarget(
+        "pc_controller_twin.sby",
+        "PC controller: primitive and portable forms are equivalent.",
+        tasks=(
+            "pc_controller_twin",
+            "pc_controller_twin_slot2",
+        ),
+    ),
+    FormalTarget(
+        "store_queue_twin.sby",
+        "Store queue: primitive and portable forms are equivalent.",
+        tasks=("sq_twin",),
+    ),
+    FormalTarget(
+        "reservation_station_twin.sby",
+        "Reservation station: primitive and portable forms are equivalent.",
+        tasks=("rs_twin_indexed",),
+    ),
 ]
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
@@ -1882,6 +1981,14 @@ SBY_TASKS = [
         "Coherent reads preserve blocked-slot circular priority.",
     ),
     ("coh_read_select64_prove", "Coherent read selection covers full-width addresses."),
+    (
+        "coh_read_select_xilinx_prove",
+        "Coherent read selection built from LUT primitives matches the reference.",
+    ),
+    (
+        "coh_read_select64_xilinx_prove",
+        "Primitive-form coherent read selection at full-width addresses.",
+    ),
     ("coh_l1d_bmc", "Coherent L1 pending ownership and independent probes."),
     (
         "coh_l1d_multi_bmc",
@@ -2334,6 +2441,98 @@ SBY_TASKS = [
     ),
     ("prove_wide", "Unbounded proof with 33 sources, two words of each bitmap"),
     ("prove_three_harts", "Unbounded proof with three harts and 8-bit priorities"),
+    (
+        "home_engine_twin32",
+        "Home engine primitive form equals its portable form at 32-byte lines.",
+    ),
+    (
+        "home_engine_twin64",
+        "Home engine primitive form equals its portable form at 64-byte lines.",
+    ),
+    (
+        "home_engine_twin40",
+        "Home engine primitive form equals its portable form at 40-bit addresses.",
+    ),
+    (
+        "home_twin_small",
+        "Coherent home primitive form equals its portable form, one way, two fills.",
+    ),
+    (
+        "home_twin_four",
+        "Coherent home primitive form equals its portable form, four ways, three fills.",
+    ),
+    (
+        "home_twin_addr40",
+        "Coherent home primitive form equals its portable form at 40-bit addresses.",
+    ),
+    (
+        "l1d_twin_single",
+        "L1D primitive form equals its portable form, one miss slot.",
+    ),
+    (
+        "l1d_twin_multi",
+        "L1D primitive form equals its portable form, three miss slots.",
+    ),
+    (
+        "dbq_twin",
+        "Decoded bundle queue primitive form equals its portable form with the split shadow stall.",
+    ),
+    (
+        "dmmu_twin",
+        "Data MMU primitive form equals its portable form.",
+    ),
+    (
+        "immu_twin",
+        "Instruction MMU primitive form equals its portable form.",
+    ),
+    (
+        "cached_tier_twin",
+        "Cached tier adapter primitive form equals its portable form with split read requests.",
+    ),
+    (
+        "cached_tier_unsplit",
+        "Cached tier adapter primitive form equals its portable form with one read request input.",
+    ),
+    (
+        "csr_twin",
+        "CSR file primitive form equals its portable form.",
+    ),
+    (
+        "fp_engine_twin",
+        "FP engine primitive form equals its portable form.",
+    ),
+    (
+        "cft_twin",
+        "Control-flow tracker primitive form equals its portable form.",
+    ),
+    (
+        "pdt_twin",
+        "Predecode target adder primitive form equals its portable form.",
+    ),
+    (
+        "router_twin",
+        "Router MMIO drain gate primitive form equals its portable form.",
+    ),
+    (
+        "bp_twin",
+        "Branch predictor primitive form equals its portable form.",
+    ),
+    (
+        "pc_controller_twin",
+        "PC controller, increment calculator and control-flow tracker primitive forms equal their portable forms.",
+    ),
+    (
+        "pc_controller_twin_slot2",
+        "Same with slot-2 pending handoff excluded.",
+    ),
+    (
+        "sq_twin",
+        "Store queue primitive form equals its portable form.",
+    ),
+    (
+        "rs_twin_indexed",
+        "Indexed-write reservation station primitive form equals its portable form.",
+    ),
 ]
 
 

@@ -240,11 +240,19 @@ def formal_cases(root: Path = ROOT) -> list[SlangCase]:
             parameters: dict[str, dict[str, str]] = defaultdict(dict)
             abstracts: set[str] = set()
             top = ""
+            # A script that resets the design (the primitive-twin comparisons
+            # read the module twice) holds one view per segment.
+            segments: list[tuple[str, list[ReadUnit], dict, set[str]]] = []
             for raw in sections["script"]:
                 line = _task_line(raw, tags)
                 # Yosys decimal Verilog literals contain a bare apostrophe.
                 words = line.split()
                 if not words:
+                    continue
+                if words[:2] == ["design", "-reset"]:
+                    if units and top:
+                        segments.append((top, units, parameters, abstracts))
+                    units, parameters, abstracts, top = [], defaultdict(dict), set(), ""
                     continue
                 if words[0] == "read" and "-define" in words:
                     persistent += [
@@ -317,21 +325,26 @@ def formal_cases(root: Path = ROOT) -> list[SlangCase]:
                         for w in words[1:]
                         if w.startswith("t:") and not w[2:].startswith("$")
                     )
-            if not units or not top:
-                raise ValueError(f"{sby}:{name}: missing read sets or top")
-            case = SlangCase(
-                f"formal/{sby.stem}/{name}",
-                top,
-                tuple(units),
-                tuple(sorted(parameters[top].items())),
-                tuple(sorted(abstracts)),
-                (f"{sby.name}:{name}",),
-            )
-            key = (case.top, case.units, case.parameters, case.abstracts)
-            if key in cases:
-                cases[key] = replace(cases[key], tasks=cases[key].tasks + case.tasks)
-            else:
-                cases[key] = case
+            segments.append((top, units, parameters, abstracts))
+            for index, (top, units, parameters, abstracts) in enumerate(segments):
+                if not units or not top:
+                    raise ValueError(f"{sby}:{name}: missing read sets or top")
+                case = SlangCase(
+                    f"formal/{sby.stem}/{name}"
+                    + (f"/{index + 1}" if len(segments) > 1 else ""),
+                    top,
+                    tuple(units),
+                    tuple(sorted(parameters[top].items())),
+                    tuple(sorted(abstracts)),
+                    (f"{sby.name}:{name}",),
+                )
+                key = (case.top, case.units, case.parameters, case.abstracts)
+                if key in cases:
+                    cases[key] = replace(
+                        cases[key], tasks=cases[key].tasks + case.tasks
+                    )
+                else:
+                    cases[key] = case
     return list(cases.values())
 
 

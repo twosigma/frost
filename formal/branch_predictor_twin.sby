@@ -1,0 +1,75 @@
+[tasks]
+bp_twin bp
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+# Primitive twin. Gold is the module as shipped; gate is the same sources with
+# FROST_XILINX_PRIMS defined and Yosys's Xilinx primitive models. Both are
+# flattened with memories as registers, enable and reset flops unmapped,
+# undefined constants zeroed and every named net kept, so equiv_make pairs
+# registers and signals by name. equiv_simple then proves each equivalence point
+# whose cone holds a primitive cell, for any register state and input.
+read -sv -D SYNTHESIS riscv_pkg.sv sdp_dist_ram.sv sdp_block_ram.sv backing_btb.sv branch_predictor.sv direction_predictor.sv tage_predictor.sv return_address_stack.sv
+hierarchy -check -top branch_predictor
+proc
+setattr -mod -unset keep_hierarchy *
+flatten
+memory_map
+setundef -zero
+setattr -unset init
+dffunmap
+# Keep every named net so that registers and signals pair by name.
+setattr -set keep 1 w:* w:$* %d
+opt_clean
+rename -top gold
+design -stash gold
+design -reset
+read_verilog -formal +/xilinx/cells_sim.v
+read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv sdp_dist_ram.sv sdp_block_ram.sv backing_btb.sv branch_predictor.sv direction_predictor.sv tage_predictor.sv return_address_stack.sv
+hierarchy -check -top branch_predictor
+proc
+setattr -mod -unset keep_hierarchy *
+# Mark every cell that comes from a Xilinx primitive model.
+setattr -set from_prim 1 $paramod*LUT*/* $paramod*MUXF*/* $paramod*CARRY*/* $paramod*FD*/* LUT*/* MUXF*/* CARRY*/* FD*/*
+flatten
+memory_map
+setundef -zero
+setattr -unset init
+dffunmap
+# Keep every named net so that registers and signals pair by name.
+setattr -set keep 1 w:* w:$* %d
+opt_clean
+rename -top gate
+design -stash gate
+design -reset
+design -copy-from gold -as gold gold
+design -copy-from gate -as gate gate
+equiv_make gold gate equiv
+hierarchy -top equiv
+# Prove every equivalence point whose cone holds a primitive cell.
+select -set prim t:* a:from_prim %i
+select -set blk @prim %co*:-$equiv[Y] t:$equiv %i
+# A primitive folded to a constant leaves no cell to find, so fix a floor on the count.
+bp_twin: select -assert-min 222 @blk
+equiv_simple @blk
+equiv_status -assert @blk
+design -reset
+read -formal -sv prim_twin_done.sv
+prep -top prim_twin_done
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/backing_btb.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/direction_predictor.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/tage_predictor.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/return_address_stack.sv
+prim_twin_done.sv

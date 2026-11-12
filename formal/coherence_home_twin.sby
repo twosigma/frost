@@ -1,0 +1,95 @@
+[tasks]
+home_twin_small small
+home_twin_four four
+home_twin_addr40 small addr40
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+# Primitive twin. Gold is the module as shipped; gate is the same sources with
+# FROST_XILINX_PRIMS defined and Yosys's Xilinx primitive models. Both are
+# flattened with memories as registers, enable and reset flops unmapped,
+# undefined constants zeroed and every named net kept, so equiv_make pairs
+# registers and signals by name. equiv_simple then proves each equivalence point
+# whose cone holds a primitive cell, for any register state and input.
+read -sv -D SYNTHESIS cache_perf_pkg.sv coherence_pkg.sv
+read -sv -D SYNTHESIS sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
+read -sv -D SYNTHESIS coherence_seat_select.sv coherence_work_select.sv coherence_home_endpoint.sv coherence_d_arbiter.sv coherence_home_completions.sv coherence_home_array.sv coherence_home_engine.sv coherence_home.sv
+small: chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 -set RESULTS 2 -set FILLS 2 -set PREFETCH_SLOTS 0 coherence_home
+four: chparam -set CACHE_BYTES 1024 -set WAYS 4 -set ULTRA 1 -set COMPLETIONS 4 -set RESULTS 3 -set FILLS 3 -set PREFETCH_RESERVE 1 -set PREFETCH_SLOTS 0 coherence_home
+addr40: chparam -set ADDR_WIDTH 40 coherence_home
+hierarchy -check -top coherence_home
+proc
+setattr -mod -unset keep_hierarchy *
+flatten
+memory_map
+setundef -zero
+setattr -unset init
+dffunmap
+# Keep every named net so that registers and signals pair by name.
+setattr -set keep 1 w:* w:$* %d
+opt_clean
+rename -top gold
+design -stash gold
+design -reset
+read_verilog -formal +/xilinx/cells_sim.v
+read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS cache_perf_pkg.sv coherence_pkg.sv
+read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
+read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS coherence_seat_select.sv coherence_work_select.sv coherence_home_endpoint.sv coherence_d_arbiter.sv coherence_home_completions.sv coherence_home_array.sv coherence_home_engine.sv coherence_home.sv
+small: chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 -set RESULTS 2 -set FILLS 2 -set PREFETCH_SLOTS 0 coherence_home
+four: chparam -set CACHE_BYTES 1024 -set WAYS 4 -set ULTRA 1 -set COMPLETIONS 4 -set RESULTS 3 -set FILLS 3 -set PREFETCH_RESERVE 1 -set PREFETCH_SLOTS 0 coherence_home
+addr40: chparam -set ADDR_WIDTH 40 coherence_home
+hierarchy -check -top coherence_home
+proc
+setattr -mod -unset keep_hierarchy *
+# Mark every cell that comes from a Xilinx primitive model.
+setattr -set from_prim 1 $paramod*LUT*/* $paramod*MUXF*/* $paramod*CARRY*/* $paramod*FD*/* LUT*/* MUXF*/* CARRY*/* FD*/*
+flatten
+memory_map
+setundef -zero
+setattr -unset init
+dffunmap
+# Keep every named net so that registers and signals pair by name.
+setattr -set keep 1 w:* w:$* %d
+opt_clean
+rename -top gate
+design -stash gate
+design -reset
+design -copy-from gold -as gold gold
+design -copy-from gate -as gate gate
+equiv_make gold gate equiv
+hierarchy -top equiv
+# Prove every equivalence point whose cone holds a primitive cell.
+select -set prim t:* a:from_prim %i
+select -set blk @prim %co*:-$equiv[Y] t:$equiv %i
+# A primitive folded to a constant leaves no cell to find, so fix a floor on the count.
+home_twin_small: select -assert-min 4296 @blk
+home_twin_four: select -assert-min 4870 @blk
+home_twin_addr40: select -assert-min 4328 @blk
+equiv_simple @blk
+equiv_status -assert @blk
+design -reset
+read -formal -sv prim_twin_done.sv
+prep -top prim_twin_done
+
+[files]
+../hw/rtl/lib/cache/coherence_seat_select.sv
+../hw/rtl/lib/cache/coherence_work_select.sv
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_home_array.sv
+../hw/rtl/lib/cache/coherence_home_engine.sv
+../hw/rtl/lib/cache/coherence_home_endpoint.sv
+../hw/rtl/lib/cache/coherence_home.sv
+../hw/rtl/lib/cache/coherence_home_completions.sv
+../hw/rtl/lib/cache/coherence_d_arbiter.sv
+../hw/rtl/lib/cache/cache_perf_pkg.sv
+prim_twin_done.sv
