@@ -1,0 +1,78 @@
+[tasks]
+rs_twin_indexed indexed
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+# Primitive twin. Gold is the module as shipped; gate is the same sources with
+# FROST_XILINX_PRIMS defined and Yosys's Xilinx primitive models. Both are
+# flattened with memories as registers, enable and reset flops unmapped,
+# undefined constants zeroed and every named net kept, so equiv_make pairs
+# registers and signals by name. equiv_simple then proves each equivalence point
+# whose cone holds a primitive cell, for any register state and input.
+read -sv -D SYNTHESIS riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rs_issue2_selector.sv coherent_rs_capacity.sv coherent_rs_issue2_selector.sv coherent_rs_payload_store.sv reservation_station.sv
+indexed: chparam -set PREPARE_ISSUE_CONTROLS 1 -set TAG_INDEXED_BRANCH_PAYLOAD 1 -set DUAL_ISSUE 1 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set TRACK_INT_WRITEBACK_HINT 1 -set SPECULATIVE_DATA_WRITES 1 -set BROADCAST_FREE_SOURCE_VALUES 1 -set ISSUE_CDB_TAG_SHADOW 1 -set ISSUE_CDB_META_ANCHORS 1 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 -set BRANCH_PREDICATE_TAG_ANCHOR 1 -set TRUST_DISPATCH_VALID 1 reservation_station
+hierarchy -top reservation_station
+proc
+setattr -mod -unset keep_hierarchy *
+flatten
+memory_map
+setundef -zero
+setattr -unset init
+dffunmap
+# Keep every named net so that registers and signals pair by name.
+setattr -set keep 1 w:* w:$* %d
+opt_clean
+rename -top gold
+design -stash gold
+design -reset
+read_verilog -formal +/xilinx/cells_sim.v
+read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rs_issue2_selector.sv coherent_rs_capacity.sv coherent_rs_issue2_selector.sv coherent_rs_payload_store.sv reservation_station.sv
+indexed: chparam -set PREPARE_ISSUE_CONTROLS 1 -set TAG_INDEXED_BRANCH_PAYLOAD 1 -set DUAL_ISSUE 1 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set TRACK_INT_WRITEBACK_HINT 1 -set SPECULATIVE_DATA_WRITES 1 -set BROADCAST_FREE_SOURCE_VALUES 1 -set ISSUE_CDB_TAG_SHADOW 1 -set ISSUE_CDB_META_ANCHORS 1 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 -set BRANCH_PREDICATE_TAG_ANCHOR 1 -set TRUST_DISPATCH_VALID 1 reservation_station
+hierarchy -top reservation_station
+proc
+setattr -mod -unset keep_hierarchy *
+# Mark every cell that comes from a Xilinx primitive model.
+setattr -set from_prim 1 $paramod*LUT*/* $paramod*MUXF*/* $paramod*CARRY*/* $paramod*FD*/* LUT*/* MUXF*/* CARRY*/* FD*/*
+flatten
+memory_map
+setundef -zero
+setattr -unset init
+dffunmap
+# Keep every named net so that registers and signals pair by name.
+setattr -set keep 1 w:* w:$* %d
+opt_clean
+rename -top gate
+design -stash gate
+design -reset
+design -copy-from gold -as gold gold
+design -copy-from gate -as gate gate
+equiv_make gold gate equiv
+hierarchy -top equiv
+# Prove every equivalence point whose cone holds a primitive cell.
+select -set prim t:* a:from_prim %i
+select -set blk @prim %co*:-$equiv[Y] t:$equiv %i
+# A primitive folded to a constant leaves no cell to find, so fix a floor on the count.
+rs_twin_indexed: select -assert-min 3168 @blk
+equiv_simple @blk
+equiv_status -assert @blk
+design -reset
+read -formal -sv prim_twin_done.sv
+prep -top prim_twin_done
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
+prim_twin_done.sv
