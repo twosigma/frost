@@ -208,6 +208,9 @@ passes the placeholder design in `prim_twin_done.sv` to SymbiYosys after the
 comparison, because the comparison itself runs in the Yosys script and ends in
 `equiv_status -assert`.
 
+`tests/test_prim_twins.py` lists every `FROST_XILINX_PRIMS` block in `hw/rtl` and
+fails on one that no registered check covers.
+
 ## Targets
 
 Grouped by area; `--list-targets` shows each target's tasks.
@@ -577,6 +580,11 @@ FORMAL_TARGETS = [
 
 4. Add a row to the matching table above, with any assumptions or scope
    limits.
+5. A new `ifdef FROST_XILINX_PRIMS` block in `hw/rtl` needs a primitive-twin
+   task (see Primitive twins) or an entry in `NOT_COVERED` in
+   `tests/test_prim_twins.py`, with the reason. Copy a `*_twin.sby`, list the
+   module's sources and parameters, and set the `select -assert-min` floor to the
+   `Found N $equiv cells` count in the first verbose run's log.
 
 ## Yosys SVA Limitations
 
