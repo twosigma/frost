@@ -214,6 +214,9 @@ comparison, because the comparison itself runs in the Yosys script and ends in
 `tests/test_prim_twins.py` lists every `FROST_XILINX_PRIMS` block in `hw/rtl` and
 fails on one that no registered check covers.
 
+CI runs these comparisons in a formal shard of their own, `Primitive forms`,
+which takes the `*_twin` targets and the read select's `xilinx` tasks.
+
 ## Targets
 
 Grouped by area; `--list-targets` shows each target's tasks.
