@@ -184,6 +184,30 @@ the number of assertions with `select -assert-count` and reject assumptions
 and initial values with `select -assert-none`, so a proof cannot pass with
 its properties compiled out.
 
+### Primitive twins
+
+The FPGA build defines `FROST_XILINX_PRIMS`, which swaps portable logic for Xilinx
+LUT, MUXF, FDRE and CARRY8 instances. Simulation, most formal tasks and the ASIC
+flow compile only the portable branch, so nothing else would notice the two
+drifting apart. A primitive-twin target (`*_twin.sby`, plus the `xilinx` tasks in
+the older pins proofs) compares them directly. Its script reads the module twice,
+once as shipped and once with the macro defined and Yosys's `xilinx/cells_sim.v`
+primitive models, flattens both (memories become registers), and pairs registers
+and nets by name with `equiv_make`. It then proves
+with `equiv_simple` and `equiv_induct`, for any register state and any input,
+that every equivalence point whose cone holds a primitive cell has the same value
+in both forms. Registers are proved by induction over the points that feed them.
+Cells that come from the primitive models carry a `from_prim` attribute so the
+selection follows the primitives and not a hand-written signal list.
+
+Each task also fixes a floor on the number of points it compares with
+`select -assert-min`. A primitive whose output folds to a constant leaves no cell
+to find, and the floor turns that into a failure instead of a pass over nothing.
+Change the floor when an RTL edit adds or removes compared signals. A twin task
+passes the placeholder design in `prim_twin_done.sv` to SymbiYosys after the
+comparison, because the comparison itself runs in the Yosys script and ends in
+`equiv_status -assert`.
+
 ## Targets
 
 Grouped by area; `--list-targets` shows each target's tasks.
@@ -441,7 +465,7 @@ cycle counts, including early termination and setup cancellation.
 | `coherence_control` (`coh_grant_select*_prove`) | Grant validity, selected index, one-hot selection, read failure and packet attributes equal a credit-qualified priority scan for two, four and eight candidates, for arbitrary binary inputs; unbounded. Idle packet attributes come from endpoint zero. X/Z equivalence is outside this check |
 | `coherence_control` (`coh_read_owners*_prove`) | The read ownership mask equals an indexed endpoint scan for one, three, four and eight endpoints, including duplicate slot indices. Endpoint zero excludes stores and SC; nonzero endpoints exclude stores and installed requests. Arbitrary binary inputs; unbounded |
 | `coherence_control` (`coh_miss_credit*_prove`) | Shared writeback permission and retry credits equal the per-kind reference for one, three, four and eight endpoints. Arbitrary binary inputs; unbounded. Caller wiring and X/Z semantics are outside this helper proof |
-| `coherence_control` (`coh_read_select*_prove`) | Circular read selection, selected address and eligible load-miss reduction equal a direct reference at 32-bit and 64-bit addresses. Availability also equals the OR of qualified physical entries. The reference assumes each forwarded address matches the slot mask and stored or buffered-write address; binary inputs |
+| `coherence_control` (`coh_read_select*_prove`) | Circular read selection, selected address and eligible load-miss reduction equal a direct reference at 32-bit and 64-bit addresses, for portable and Xilinx-primitive (`*_xilinx_prove`) builds. Availability also equals the OR of qualified physical entries. The reference assumes each forwarded address matches the slot mask and stored or buffered-write address; binary inputs |
 | `coherence_read_payload` | Unbounded equality of every read-slot payload and all buffered-write exports with independent reference storage, using eight slots with 42-bit and 74-bit payload vectors. The harness assumes first-edge reset. Later resets, allocation inputs and payloads are arbitrary, including consecutive same-slot writes and payload changes without allocation. Stored slots use the reference buffer's prior mask and payload. Field packing is outside this check |
 | `coherent_debug_request_count` | Unbounded binary request-count equality at eight and four bits, including reset, holds and modulo wrap. Assumes initial reset. Writer request wiring and completion synchronization are outside this helper proof |
 | `coherent_rs_control` | Combinational equality of allocation and repair target masks, the selected ready vector, primary opcode mask, second-issue outputs, immediate-use, ROB-tag and writeback-hint selection, clear mask, shift amount, next count and active flush count with direct reservation-station expressions. The configurations use eight entries with three sources and lane-1 bypass disabled, sixteen integer entries with an eight-entry window, eight entries with a five-entry window, five entries with a partial primary group, and four multiply-station entries. Local state is arbitrary without environment assumptions. Sequential station lifetime and X/Z equivalence are outside this check |
@@ -472,6 +496,9 @@ cycle counts, including early termination and setup cancellation.
 | `sc_head_query` | The coherence match and cached/uncached classification for the store-conditional at the ROB head equal direct comparisons of its selected address, from arbitrary table state |
 | `tlb` | Lookup, insert, and invalidate-all: a watched entry stays intact and every matching lookup hits it, no port hits while no entry is valid, invalidate-all clears everything, and the one-hot lookup select returns the lowest matching entry's fields. The DTLB uses 16 entries and 3 ports; the ITLB uses 16 entries and 2 ports with fetch permission, PMA and superpage-successor checks, data verdicts disabled, and the PPN select tree, whose PPN parts (the output contract `immu_page_offset` assumes) equal the selected entry's |
 | `uncached_read_capture` | The factored uncached-read pending-bit update preserves enqueue, downstream handoff, and reset priority from arbitrary state, with no assumptions |
+| `coherence_home_twin` | The home's probe-address match, writeback reply-capture select, and forward turn selects equal their portable form, at one way with two fills and four ways with three fills. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
+| `coherence_home_engine_twin` | The engine's probe-reply match (LUT6) equals its portable form at 32-byte and 64-byte lines |
+| `coherence_l1d_twin` | The L1D acquisition-endpoint select (LUT3 per bit) equals its portable form with one and three miss slots. The read selector is compared by `coherence_control` |
 
 `coherence_observation` follows an arbitrary ROB tag, so it covers all 32 at
 XLEN 64: the pending observation, its table entry and line, cleanup on

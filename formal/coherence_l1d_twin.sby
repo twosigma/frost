@@ -1,0 +1,99 @@
+[tasks]
+l1d_twin_single single
+l1d_twin_multi multi
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+# Primitive twin. Gold is the module as shipped; gate is the same sources with
+# FROST_XILINX_PRIMS defined and Yosys's Xilinx primitive models. Both are
+# flattened with memories as registers, enable and reset flops unmapped,
+# undefined constants zeroed and every named net kept, so equiv_make pairs
+# registers and signals by name. equiv_simple then proves each equivalence point
+# whose cone holds a primitive cell, for any register state and input.
+read -sv -D SYNTHESIS cache_perf_pkg.sv coherence_pkg.sv
+read -sv -D SYNTHESIS coherence_read_stream.sv coherence_request_endpoint.sv
+read -sv -D SYNTHESIS coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_payload.sv coherence_store_buffer.sv
+read -sv -D SYNTHESIS coherence_read_select.sv
+read -sv -D SYNTHESIS sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv coherence_l1d.sv
+single: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
+multi: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
+hierarchy -top coherence_l1d
+proc
+setattr -mod -unset keep_hierarchy *
+flatten
+memory_map
+setundef -zero
+setattr -unset init
+dffunmap
+# Keep every named net so that registers and signals pair by name.
+setattr -set keep 1 w:* w:$* %d
+opt_clean
+rename -top gold
+design -stash gold
+design -reset
+read_verilog -formal +/xilinx/cells_sim.v
+read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS cache_perf_pkg.sv coherence_pkg.sv
+read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS coherence_read_stream.sv coherence_request_endpoint.sv
+read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_payload.sv coherence_store_buffer.sv
+read -sv -D SYNTHESIS coherence_read_select.sv
+read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv coherence_l1d.sv
+single: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
+multi: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
+hierarchy -top coherence_l1d
+proc
+setattr -mod -unset keep_hierarchy *
+# Mark every cell that comes from a Xilinx primitive model.
+setattr -set from_prim 1 $paramod*LUT*/* $paramod*MUXF*/* $paramod*CARRY*/* $paramod*FD*/* LUT*/* MUXF*/* CARRY*/* FD*/*
+flatten
+memory_map
+setundef -zero
+setattr -unset init
+dffunmap
+# Keep every named net so that registers and signals pair by name.
+setattr -set keep 1 w:* w:$* %d
+opt_clean
+rename -top gate
+design -stash gate
+design -reset
+design -copy-from gold -as gold gold
+design -copy-from gate -as gate gate
+equiv_make gold gate equiv
+hierarchy -top equiv
+# Prove every equivalence point whose cone holds a primitive cell.
+select -set prim t:* a:from_prim %i
+select -set blk @prim %co*:-$equiv[Y] t:$equiv %i
+# A primitive folded to a constant leaves no cell to find, so fix a floor on the count.
+l1d_twin_single: select -assert-min 1 @blk
+l1d_twin_multi: select -assert-min 3446 @blk
+equiv_simple @blk
+equiv_status -assert @blk
+design -reset
+read -formal -sv prim_twin_done.sv
+prep -top prim_twin_done
+
+[files]
+../hw/rtl/lib/cache/coherence_read_stream.sv
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_array.sv
+../hw/rtl/lib/cache/coherence_request_endpoint.sv
+../hw/rtl/lib/cache/coherence_put_endpoint.sv
+../hw/rtl/lib/cache/coherence_l1d.sv
+../hw/rtl/lib/cache/coherence_read_owners.sv
+../hw/rtl/lib/cache/coherence_miss_credit.sv
+../hw/rtl/lib/cache/coherence_read_flags.sv
+../hw/rtl/lib/cache/coherence_grant_select.sv
+../hw/rtl/lib/cache/coherence_read_select.sv
+../hw/rtl/lib/cache/coherence_read_payload.sv
+../hw/rtl/lib/cache/cache_perf_pkg.sv
+../hw/rtl/lib/cache/coherence_store_buffer.sv
+prim_twin_done.sv

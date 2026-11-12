@@ -513,6 +513,8 @@ FORMAL_TARGETS = [
             "coh_read_flags_prove",
             "coh_read_select_prove",
             "coh_read_select64_prove",
+            "coh_read_select_xilinx_prove",
+            "coh_read_select64_xilinx_prove",
             "coh_grant_select2_prove",
             "coh_grant_select4_prove",
             "coh_grant_select8_prove",
@@ -1344,6 +1346,30 @@ FORMAL_TARGETS = [
         "Tomasulo commit and flush integration, including FP dispatch done repair",
         tasks=("bmc", "cover", "fp_repair_bmc"),
     ),
+    FormalTarget(
+        "coherence_home_engine_twin.sby",
+        "Home engine: primitive and portable forms are equivalent.",
+        tasks=(
+            "home_engine_twin32",
+            "home_engine_twin64",
+        ),
+    ),
+    FormalTarget(
+        "coherence_home_twin.sby",
+        "Home: primitive and portable forms are equivalent.",
+        tasks=(
+            "home_twin_small",
+            "home_twin_four",
+        ),
+    ),
+    FormalTarget(
+        "coherence_l1d_twin.sby",
+        "L1D: primitive and portable forms are equivalent.",
+        tasks=(
+            "l1d_twin_single",
+            "l1d_twin_multi",
+        ),
+    ),
 ]
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
@@ -1882,6 +1908,14 @@ SBY_TASKS = [
         "Coherent reads preserve blocked-slot circular priority.",
     ),
     ("coh_read_select64_prove", "Coherent read selection covers full-width addresses."),
+    (
+        "coh_read_select_xilinx_prove",
+        "Coherent read selection built from LUT primitives matches the reference.",
+    ),
+    (
+        "coh_read_select64_xilinx_prove",
+        "Primitive-form coherent read selection at full-width addresses.",
+    ),
     ("coh_l1d_bmc", "Coherent L1 pending ownership and independent probes."),
     (
         "coh_l1d_multi_bmc",
@@ -2334,6 +2368,30 @@ SBY_TASKS = [
     ),
     ("prove_wide", "Unbounded proof with 33 sources, two words of each bitmap"),
     ("prove_three_harts", "Unbounded proof with three harts and 8-bit priorities"),
+    (
+        "home_engine_twin32",
+        "Home engine primitive form equals its portable form at 32-byte lines.",
+    ),
+    (
+        "home_engine_twin64",
+        "Home engine primitive form equals its portable form at 64-byte lines.",
+    ),
+    (
+        "home_twin_small",
+        "Coherent home primitive form equals its portable form, one way, two fills.",
+    ),
+    (
+        "home_twin_four",
+        "Coherent home primitive form equals its portable form, four ways, three fills.",
+    ),
+    (
+        "l1d_twin_single",
+        "L1D primitive form equals its portable form, one miss slot.",
+    ),
+    (
+        "l1d_twin_multi",
+        "L1D primitive form equals its portable form, three miss slots.",
+    ),
 ]
 
 
