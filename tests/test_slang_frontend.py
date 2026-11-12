@@ -68,6 +68,26 @@ def test_formal_read_sets_preserve_task_defines_and_parameters(tmp_path: Path) -
     assert "-DPROOF=1" not in cover.units[0].options
 
 
+def test_formal_design_reset_splits_views(tmp_path: Path) -> None:
+    """A script that resets the design compares two views of one source."""
+    formal = tmp_path / "formal"
+    formal.mkdir()
+    (formal / "dut.sv").touch()
+    (formal / "twin.sby").write_text(
+        "[tasks]\nboth\n[script]\n"
+        "read -sv -D SYNTHESIS dut.sv\nchparam -set WIDTH 8 dut\n"
+        "hierarchy -top dut\ndesign -reset\n"
+        "read -sv -D SYNTHESIS -D MACRO dut.sv\nhierarchy -top dut\n"
+        "[files]\ndut.sv\n"
+    )
+    gold, gate = slang.formal_cases(tmp_path)
+    assert (gold.name, gate.name) == ("formal/twin/both/1", "formal/twin/both/2")
+    assert gold.parameters == (("WIDTH", "8"),)
+    assert gate.parameters == ()
+    assert "-DMACRO" not in gold.units[0].options
+    assert "-DMACRO" in gate.units[0].options
+
+
 def test_missing_tool_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """A missing frontend is a failure, never a pytest skip."""
     monkeypatch.setattr(slang.shutil, "which", lambda name: None)

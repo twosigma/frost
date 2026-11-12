@@ -17,7 +17,7 @@ smtbmc boolector
 # whose cone holds a primitive cell, for any register state and input.
 read -sv -D SYNTHESIS riscv_pkg.sv decoded_bundle_queue.sv
 chparam -set WIDTH 8 -set SHADOW_WIDTH 3 -set SPLIT_SHADOW_STALL 1 -set STALL_LATE_COPIES 4 decoded_bundle_queue
-hierarchy -top decoded_bundle_queue
+hierarchy -check -top decoded_bundle_queue
 proc
 setattr -mod -unset keep_hierarchy *
 flatten
@@ -34,7 +34,7 @@ design -reset
 read_verilog -formal +/xilinx/cells_sim.v
 read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv decoded_bundle_queue.sv
 chparam -set WIDTH 8 -set SHADOW_WIDTH 3 -set SPLIT_SHADOW_STALL 1 -set STALL_LATE_COPIES 4 decoded_bundle_queue
-hierarchy -top decoded_bundle_queue
+hierarchy -check -top decoded_bundle_queue
 proc
 setattr -mod -unset keep_hierarchy *
 # Mark every cell that comes from a Xilinx primitive model.

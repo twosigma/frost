@@ -18,7 +18,7 @@ smtbmc boolector
 # whose cone holds a primitive cell, for any register state and input.
 read -sv -D SYNTHESIS riscv_pkg.sv cached_tier_adapter.sv
 split: chparam -set SPLIT_READ_REQ 1 cached_tier_adapter
-hierarchy -top cached_tier_adapter
+hierarchy -check -top cached_tier_adapter
 proc
 setattr -mod -unset keep_hierarchy *
 flatten
@@ -35,7 +35,7 @@ design -reset
 read_verilog -formal +/xilinx/cells_sim.v
 read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv cached_tier_adapter.sv
 split: chparam -set SPLIT_READ_REQ 1 cached_tier_adapter
-hierarchy -top cached_tier_adapter
+hierarchy -check -top cached_tier_adapter
 proc
 setattr -mod -unset keep_hierarchy *
 # Mark every cell that comes from a Xilinx primitive model.

@@ -23,7 +23,7 @@ read -sv -D SYNTHESIS coherence_read_select.sv
 read -sv -D SYNTHESIS sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv coherence_l1d.sv
 single: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
 multi: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
-hierarchy -top coherence_l1d
+hierarchy -check -top coherence_l1d
 proc
 setattr -mod -unset keep_hierarchy *
 flatten
@@ -45,7 +45,7 @@ read -sv -D SYNTHESIS coherence_read_select.sv
 read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv coherence_l1d.sv
 single: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
 multi: chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d
-hierarchy -top coherence_l1d
+hierarchy -check -top coherence_l1d
 proc
 setattr -mod -unset keep_hierarchy *
 # Mark every cell that comes from a Xilinx primitive model.

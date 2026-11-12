@@ -23,7 +23,7 @@ read -sv -D SYNTHESIS coherence_seat_select.sv coherence_work_select.sv coherenc
 small: chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 -set RESULTS 2 -set FILLS 2 -set PREFETCH_SLOTS 0 coherence_home
 four: chparam -set CACHE_BYTES 1024 -set WAYS 4 -set ULTRA 1 -set COMPLETIONS 4 -set RESULTS 3 -set FILLS 3 -set PREFETCH_RESERVE 1 -set PREFETCH_SLOTS 0 coherence_home
 addr40: chparam -set ADDR_WIDTH 40 coherence_home
-hierarchy -top coherence_home
+hierarchy -check -top coherence_home
 proc
 setattr -mod -unset keep_hierarchy *
 flatten
@@ -44,7 +44,7 @@ read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS coherence_seat_select.sv coherence_w
 small: chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 -set RESULTS 2 -set FILLS 2 -set PREFETCH_SLOTS 0 coherence_home
 four: chparam -set CACHE_BYTES 1024 -set WAYS 4 -set ULTRA 1 -set COMPLETIONS 4 -set RESULTS 3 -set FILLS 3 -set PREFETCH_RESERVE 1 -set PREFETCH_SLOTS 0 coherence_home
 addr40: chparam -set ADDR_WIDTH 40 coherence_home
-hierarchy -top coherence_home
+hierarchy -check -top coherence_home
 proc
 setattr -mod -unset keep_hierarchy *
 # Mark every cell that comes from a Xilinx primitive model.

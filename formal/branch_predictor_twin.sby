@@ -16,7 +16,7 @@ smtbmc boolector
 # registers and signals by name. equiv_simple then proves each equivalence point
 # whose cone holds a primitive cell, for any register state and input.
 read -sv -D SYNTHESIS riscv_pkg.sv sdp_dist_ram.sv sdp_block_ram.sv backing_btb.sv branch_predictor.sv direction_predictor.sv tage_predictor.sv return_address_stack.sv
-hierarchy -top branch_predictor
+hierarchy -check -top branch_predictor
 proc
 setattr -mod -unset keep_hierarchy *
 flatten
@@ -32,7 +32,7 @@ design -stash gold
 design -reset
 read_verilog -formal +/xilinx/cells_sim.v
 read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv sdp_dist_ram.sv sdp_block_ram.sv backing_btb.sv branch_predictor.sv direction_predictor.sv tage_predictor.sv return_address_stack.sv
-hierarchy -top branch_predictor
+hierarchy -check -top branch_predictor
 proc
 setattr -mod -unset keep_hierarchy *
 # Mark every cell that comes from a Xilinx primitive model.

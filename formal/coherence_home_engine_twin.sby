@@ -21,7 +21,7 @@ read -sv -D SYNTHESIS coherence_pkg.sv coherence_home_engine.sv
 chparam -set LINE_BYTES 32 -set WAYS 1 coherence_home_engine
 wide: chparam -set LINE_BYTES 64 coherence_home_engine
 addr40: chparam -set ADDR_WIDTH 40 coherence_home_engine
-hierarchy -top coherence_home_engine
+hierarchy -check -top coherence_home_engine
 proc
 setattr -mod -unset keep_hierarchy *
 flatten
@@ -40,7 +40,7 @@ read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS coherence_pkg.sv coherence_home_engi
 chparam -set LINE_BYTES 32 -set WAYS 1 coherence_home_engine
 wide: chparam -set LINE_BYTES 64 coherence_home_engine
 addr40: chparam -set ADDR_WIDTH 40 coherence_home_engine
-hierarchy -top coherence_home_engine
+hierarchy -check -top coherence_home_engine
 proc
 setattr -mod -unset keep_hierarchy *
 # Mark every cell that comes from a Xilinx primitive model.
