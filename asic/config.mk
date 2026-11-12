@@ -127,3 +127,11 @@ export SKIP_ANTENNA_REPAIR_POST_DRT = 1
 # no DRC or antenna violations.
 export DETAILED_ROUTE_ARGS = -droute_end_iter 64 -verbose 1 \
   -drc_report_iter_step 5 -no_pin_access
+
+# Global placement without the I/O diverged at OpenROAD's default of 1.05
+# for the density penalty's largest growth per iteration: near iteration 470
+# the wirelength grew a hundredfold and the step ran to the 5,000-iteration
+# limit, hours later. At 1.03 the same netlist converges in about 1,000
+# iterations. ORFS passes these arguments to both global placement steps.
+# asic/orfs.py stops the flow if a placement diverges anyway.
+export GLOBAL_PLACEMENT_ARGS = -max_phi_coef 1.03

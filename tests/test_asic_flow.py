@@ -19,6 +19,7 @@ import math
 import os
 import re
 import subprocess
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -251,7 +252,7 @@ def test_cpu_clock_build_configuration_and_resume(
     assert "CPU clock configuration differs" in capsys.readouterr().err
     commands: list[list[str]] = []
 
-    def capture(command: list[str], *args: object) -> int:
+    def capture(command: list[str], *args: object, **kwargs: object) -> int:
         commands.append(command)
         return 1
 
@@ -260,6 +261,70 @@ def test_cpu_clock_build_configuration_and_resume(
     assert orfs.main(["run", "--from", "cts"]) == 1
     assert len(commands) == 1
     assert "FROST_CPU_CLOCK_PERIOD=1.3" in commands[0]
+
+
+def _nesterov_row(iteration: int, hpwl: float) -> str:
+    return f"{iteration:9d} |   0.9000 | {hpwl:.6e} |   +0.00% |  1.95e-17 |      \n"
+
+
+def test_placement_watchdog_accepts_a_converging_placement() -> None:
+    """A wirelength that settles near three times its start never stops the flow."""
+    watchdog = orfs.PlacementWatchdog()
+    assert (
+        watchdog.check("[INFO GPL-0084] ---- Execute Nesterov Global Placement.\n")
+        is None
+    )
+    for iteration in range(0, 2000, 10):
+        assert (
+            watchdog.check(_nesterov_row(iteration, 3.0e7 + 1.0e4 * iteration)) is None
+        )
+
+
+def test_placement_watchdog_stops_a_diverging_placement() -> None:
+    """A hundredfold wirelength stops the flow at once, not at the iteration cap."""
+    watchdog = orfs.PlacementWatchdog()
+    assert watchdog.check(_nesterov_row(0, 3.078199e7)) is None
+    reason = watchdog.check(_nesterov_row(550, 1.178e9))
+    assert reason is not None and "diverged" in reason
+
+
+def test_placement_watchdog_restarts_with_each_placement() -> None:
+    """Each placement's first row is its own baseline."""
+    watchdog = orfs.PlacementWatchdog()
+    assert watchdog.check(_nesterov_row(0, 3.0e7)) is None
+    watchdog.check("[INFO GPL-0084] ---- Execute Nesterov Global Placement.\n")
+    assert watchdog.check(_nesterov_row(0, 5.0e8)) is None
+    assert watchdog.check(_nesterov_row(900, 6.0e8)) is None
+
+
+def test_placement_watchdog_stops_at_openroads_iteration_limit() -> None:
+    """OpenROAD's warning that it hit the iteration limit stops the flow."""
+    watchdog = orfs.PlacementWatchdog()
+    line = "[WARNING GPL-1010] GPL reached the maximum number of iterations for nesterov 5000.\n"
+    assert watchdog.check(line) is not None
+
+
+def test_run_logged_stops_a_command_the_watchdog_rejects(tmp_path: Path) -> None:
+    """The command is terminated, and its output up to the end is still logged."""
+    child = (
+        "import signal, sys, time\n"
+        "def stop(*a):\n"
+        "    sys.stdout.write('child shutdown line\\n' * 20000)\n"
+        "    sys.stdout.flush()\n"
+        "    sys.exit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "print('        0 |   0.9993 |  3.078199e+07 |   +0.00% |  1.95e-17 |', flush=True)\n"
+        "print('      550 |   0.2604 |  1.177593e+09 |  +29.49% |  3.61e-07 |', flush=True)\n"
+        "time.sleep(600)\n"
+    )
+    log = tmp_path / "orfs.log"
+    status = orfs.run_logged(
+        [sys.executable, "-c", child], log, watchdog=orfs.PlacementWatchdog()
+    )
+    assert status == 1
+    text = log.read_text()
+    assert "diverged" in text
+    assert text.splitlines().count("child shutdown line") == 20000
 
 
 def test_clock_period_option_rejects_periods_the_sdc_refuses(

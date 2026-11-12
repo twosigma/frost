@@ -94,6 +94,7 @@ the stage before it.
 | Pin placement | `PLACE_PINS_ARGS`: the die's left and right edges only, which pass the logic band |
 | Power grid | The platform's, with [`sram_power.tcl`](sram_power.tcl) (`PRE_PDN_TCL`) connecting the macros' supply pins and [`check_power_grid.tcl`](check_power_grid.tcl) (`POST_PDN_TCL`) checking that everything placed reaches the grid |
 | Placement density | `PLACE_DENSITY_LB_ADDON=0.10`: the initial target is the lower bound plus a tenth of the remaining room and 0.01, leaving whitespace for routing around the SRAM macros |
+| Global placement | `GLOBAL_PLACEMENT_ARGS`: `-max_phi_coef 1.03`, which lets the density penalty grow more slowly than OpenROAD's 1.05 per iteration. At 1.05 the placement of the one-hart design diverges after about 470 iterations (the wirelength grows a hundredfold, reaches OpenROAD's 5,000-iteration limit, and takes hours); at 1.03 it converges in about 1,000. `run` stops the flow when the wirelength passes 30 times its first iteration's, or when OpenROAD reports its iteration limit (`GPL-1010`) |
 | Clock tree synthesis | `CTS_ARGS`: ORFS's default arguments, with the clock ports' nets as the roots ([Timing constraints](#timing-constraints)) |
 | Repairs after global routing | `SKIP_INCREMENTAL_REPAIR=1`: with 4 threads they add over two hours to global routing, 82 minutes of it repairing slew and capacitance over the routed wires and 49 the timing repair, and raise its peak memory from 15.6 to 21.1 GB, more than a CI job allows; the repairs after placement and clock tree synthesis still run |
 | Antenna repair after global routing | `SKIP_ANTENNA_REPAIR=1`: it finds nothing to repair, and the placement check after it needs 4.5 GB of memory |
@@ -698,22 +699,25 @@ mocks, so it cannot rank that family until real arrays replace the mocks.
 
 ## CI
 
-Four chained jobs run the flow on every pull request and every push to
+Five chained jobs run the flow on every pull request and every push to
 `main`, each resuming from the database of the one before:
 
 | Job | Runs | Extra swap |
 | --- | --- | ---: |
-| `ASIC Flow (synthesis to clock tree synthesis)` | `./asic/orfs.py run --target cts` | None |
+| `ASIC Flow (synthesis and floorplan)` | `./asic/orfs.py run --target floorplan` | None |
+| `ASIC Flow (placement and clock tree synthesis)` | `./asic/orfs.py run --from place --target cts` | 8 GiB |
 | `ASIC Flow (global routing)` | `./asic/orfs.py run --from grt --target grt` | 8 GiB |
 | `ASIC Flow (detailed routing)` | `./asic/orfs.py run --from route --target route` | 12 GiB |
 | `ASIC Flow (GDS and final report)` | `./asic/orfs.py run --from finish` | 16 GiB |
 
 The last job's step summary shows `summary.md`, and its `asic-flow-results`
-artifact holds the logs, reports, and summary of all four. The runners have
-four CPUs and 16 GB of memory, less than global routing, detailed routing,
-and the final report need, so their jobs add swap space. Each job also
+artifact holds the logs, reports, and summary of all five. The runners have
+four CPUs and 16 GB of memory, less than global placement (18 GB peak),
+global routing, detailed routing, and the final report need, so those jobs
+add swap space. Each job also
 deletes preinstalled toolchains to make room for the databases and has a
-six-hour limit. The allocations are set in the
+six-hour limit. On four cores, synthesis with floorplanning takes about
+three hours and placement with clock tree synthesis under three. The allocations are set in the
 [CI workflow](../.github/workflows/ci.yml).
 
 Detailed routing reuses the pin access saved in the global routing database.

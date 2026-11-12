@@ -199,10 +199,56 @@ def orfs_command(make_arguments: Sequence[str], *, uid: int, gid: int) -> list[s
     ]
 
 
+# Global placement's Nesterov table: iteration, overflow, then HPWL in um.
+NESTEROV_ROW = re.compile(r"^\s*(\d+) \|\s+[-\d.]+ \|\s+([-\d.]+e[+-]\d+) \|")
+# A placement that converges ends with a wirelength under about ten times its
+# first iteration's. One that diverges grows it a hundredfold and runs to
+# OpenROAD's 5,000-iteration limit (GPL-1010), hours later. This stops it in
+# minutes, and stops at once on the limit's warning.
+PLACEMENT_MAX_HPWL_GROWTH = 30.0
+PLACEMENT_ITERATION_LIMIT_WARNING = "GPL-1010"
+
+
+class PlacementWatchdog:
+    """Report when a global placement's Nesterov table shows it diverging."""
+
+    def __init__(self) -> None:
+        """Start without a placement's first wirelength."""
+        self.first_hpwl: float | None = None
+
+    def check(self, line: str) -> str | None:
+        """Return why the flow should stop after this log line, if it should."""
+        if PLACEMENT_ITERATION_LIMIT_WARNING in line:
+            return "global placement reached OpenROAD's iteration limit"
+        if "Execute Nesterov Global Placement" in line:
+            self.first_hpwl = None
+            return None
+        match = NESTEROV_ROW.match(line)
+        if match is None:
+            return None
+        iteration, hpwl = int(match.group(1)), float(match.group(2))
+        if self.first_hpwl is None:
+            self.first_hpwl = hpwl
+            return None
+        if hpwl > PLACEMENT_MAX_HPWL_GROWTH * self.first_hpwl:
+            return (
+                f"global placement diverged: wirelength {hpwl:.3e} um at iteration "
+                f"{iteration} is over {PLACEMENT_MAX_HPWL_GROWTH:g} times its "
+                f"first iteration's {self.first_hpwl:.3e} um"
+            )
+        return None
+
+
 def run_logged(
-    command: Sequence[str], log_path: Path, environment: dict[str, str] | None = None
+    command: Sequence[str],
+    log_path: Path,
+    environment: dict[str, str] | None = None,
+    watchdog: PlacementWatchdog | None = None,
 ) -> int:
-    """Run command, echoing its output and appending it to log_path."""
+    """Run command, echoing its output and appending it to log_path.
+
+    With a watchdog, stop the command when it reports a failure and return 1.
+    """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as log:
         log.write(f"$ {' '.join(command)}\n")
@@ -216,11 +262,26 @@ def run_logged(
             env=environment,
         ) as process:
             assert process.stdout is not None
+            stopped = False
             for line in process.stdout:
                 sys.stdout.write(line)
                 sys.stdout.flush()
                 log.write(line)
-            return process.wait()
+                reason = (
+                    watchdog.check(line)
+                    if watchdog is not None and not stopped
+                    else None
+                )
+                if reason is not None:
+                    message = f"Error: {reason}; stopping the flow\n"
+                    sys.stdout.write(message)
+                    log.write(message)
+                    # Keep reading until the command closes its output, so that
+                    # what it writes while stopping cannot fill the pipe.
+                    process.terminate()
+                    stopped = True
+            status = process.wait()
+            return 1 if stopped else status
 
 
 def default_clock_period() -> float:
@@ -342,6 +403,7 @@ def run(args: argparse.Namespace) -> int:
             gid=gid,
         ),
         log_path,
+        watchdog=PlacementWatchdog(),
     )
     summary_status = summarize(uid=uid, gid=gid)
     if status != 0:
