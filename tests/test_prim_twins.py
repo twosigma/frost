@@ -42,10 +42,8 @@ CPU = "cpu_and_mem/cpu/"
 LQ = CPU + "tomasulo/load_queue/load_queue.sv"
 MACRO = "FROST_XILINX_PRIMS"
 PRIMITIVE = re.compile(r"\b(?:LUT[1-6]|MUXF[789]|FD[RSCP]E|CARRY[48])\b")
-CONDITIONAL = re.compile(rf"^\s*`(ifdef|ifndef)\s+{MACRO}\b(.*)$")
-NESTED = re.compile(r"^\s*`(?:ifdef|ifndef)\b")
-ELSE = re.compile(r"^\s*`else\b")
-ENDIF = re.compile(r"^\s*`endif\b")
+DIRECTIVE = re.compile(r"^\s*`(ifdef|ifndef|elsif|else|endif)\b(.*)$")
+MACRO_USE = re.compile(rf"^\s*`(?:ifdef|ifndef|elsif)\s+{MACRO}\b")
 
 # sby file -> {RTL file: instance names it covers, or None for every block}.
 # The sby file must define the macro, read Yosys's cell models, list the RTL
@@ -151,43 +149,52 @@ NON_LOGIC: dict[str, str] = {
 
 
 def arms(text: str) -> list[tuple[int, str]]:
-    """Return (line, primitive arm text) for each FROST_XILINX_PRIMS block."""
-    lines = text.split("\n")
-    found: list[tuple[int, str]] = []
-    index = 0
-    while index < len(lines):
-        match = CONDITIONAL.match(lines[index])
-        if not match:
-            index += 1
+    """Return (line, primitive arm text) for each arm where the macro is defined.
+
+    A chain `ifdef MACRO ... else ...` has one such arm, `ifndef MACRO ... else
+    ...` has the arms after the first, and `ifdef OTHER ... elsif MACRO ...` has
+    the elsif arm. An ifndef without an else yields none: its text is portable
+    only, and the primitive arm is a separate ifdef block.
+    """
+    found: list[tuple[int, int, str]] = []
+    # One frame per open conditional: a list of [kind, macro?, start line, lines].
+    stack: list[list[list]] = []
+    for number, raw in enumerate(text.split("\n"), 1):
+        match = DIRECTIVE.match(raw)
+        kind = match.group(1) if match else None
+        # The line belongs to every enclosing arm; a chain's own directive
+        # belongs only to the chains around it.
+        closes = kind in ("elsif", "else", "endif")
+        for frame in stack[:-1] if closes else stack:
+            frame[-1][3].append(raw)
+        if kind is None:
             continue
-        negated = match.group(1) == "ifndef"
-        depth = 1
-        first: list[str] = [match.group(2)]
-        second: list[str] = []
-        current = first
-        has_else = False
-        scan = index + 1
-        while scan < len(lines) and depth:
-            line = lines[scan]
-            if NESTED.match(line):
-                depth += 1
-            elif ENDIF.match(line):
-                depth -= 1
-                if not depth:
-                    break
-            elif depth == 1 and ELSE.match(line):
-                current = second
-                has_else = True
-                scan += 1
-                continue
-            current.append(line)
-            scan += 1
-        # An ifndef with no else is portable-only text; its primitive arm is
-        # a separate ifdef block.
-        if not negated or has_else:
-            found.append((index + 1, "\n".join(second if negated else first)))
-        index = scan + 1
-    return found
+        assert match is not None
+        rest = match.group(2)
+        if kind in ("ifdef", "ifndef", "elsif"):
+            name = re.match(r"\s*(\w+)(.*)", rest)
+            condition = name.group(1) if name else ""
+            rest = name.group(2) if name else rest
+            arm = [kind, condition == MACRO, number, [rest]]
+            if kind == "elsif":
+                stack[-1].append(arm)
+            else:
+                stack.append([arm])
+        elif kind == "else":
+            stack[-1].append(["else", False, number, []])
+        else:
+            frame = stack.pop()
+            for position, arm in enumerate(frame):
+                first = frame[0]
+                defined = (
+                    (position == 0 and first[0] == "ifdef" and first[1])
+                    or (arm[0] == "elsif" and arm[1])
+                    or (position > 0 and first[0] == "ifndef" and first[1])
+                )
+                if defined:
+                    found.append((arm[2], number, "\n".join(arm[3])))
+    found.sort()
+    return [(start, body) for start, _, body in found]
 
 
 def code_lines(arm: str) -> list[str]:
@@ -246,6 +253,23 @@ def rtl_blocks() -> dict[str, list[str]]:
     return result
 
 
+def macro_uses_outside_directives() -> list[str]:
+    """Return RTL lines that use the macro in a form the scanner does not parse."""
+    problems = []
+    for path in sorted(RTL.rglob("*.sv*")):
+        text = re.sub(
+            r"/\*.*?\*/",
+            lambda m: "\n" * m.group(0).count("\n"),
+            path.read_text(),
+            flags=re.S,
+        )
+        for number, raw in enumerate(text.split("\n"), 1):
+            line = re.sub(r"//.*", "", raw)
+            if MACRO in line and not MACRO_USE.match(line):
+                problems.append(f"{path.relative_to(RTL)}:{number}: {raw.strip()}")
+    return problems
+
+
 def covered(file: str, name: str) -> bool:
     """Whether a registered check covers this block."""
     if name.startswith("nonlogic:"):
@@ -254,9 +278,14 @@ def covered(file: str, name: str) -> bool:
         if file not in files:
             continue
         names = files[file]
-        if names is None or name.split("#")[0] in names:
+        if names is None or name in names:
             return True
     return False
+
+
+def test_every_macro_use_is_a_parsed_directive() -> None:
+    """A form like `if defined(...)` would hide a block from the scanner."""
+    assert not macro_uses_outside_directives()
 
 
 def test_every_primitive_block_has_a_check() -> None:
@@ -299,7 +328,7 @@ def test_coverage_entries_name_real_blocks() -> None:
             if file not in blocks:
                 problems.append(f"{sby}: {file} has no primitive block")
                 continue
-            have = {name.split("#")[0] for name in blocks[file]}
+            have = set(blocks[file])
             problems += [
                 f"{sby}: {file}::{name}" for name in (names or ()) if name not in have
             ]
@@ -318,6 +347,22 @@ def test_covering_file_defines_the_macro(sby: str) -> None:
     for file in COVERAGE[sby]:
         assert Path(file).name in listed, f"{sby} does not list {file}"
     assert f'"{sby}"' in RUN_FORMAL.read_text(), f"{sby} is not registered"
+
+
+@pytest.mark.parametrize(
+    ("line", "parsed"),
+    [
+        ("`ifdef FROST_XILINX_PRIMS", True),
+        ("  `ifndef FROST_XILINX_PRIMS (* keep_hierarchy *)", True),
+        ("`elsif FROST_XILINX_PRIMS", True),
+        ("`ifdef FROST_XILINX_PRIMS_OTHER", False),
+        ("`if defined(FROST_XILINX_PRIMS)", False),
+        ("`ifdef (A && FROST_XILINX_PRIMS)", False),
+    ],
+)
+def test_directive_forms(line: str, parsed: bool) -> None:
+    """Only the forms the scanner understands count as parsed uses of the macro."""
+    assert bool(MACRO_USE.match(line)) is parsed
 
 
 @pytest.mark.parametrize(
@@ -349,6 +394,16 @@ def test_covering_file_defines_the_macro(sby: str) -> None:
             "`ifdef FROST_XILINX_PRIMS\n`ifdef OTHER\nLUT1 #(.INIT(2'h1)) u_in (.O(x));\n"
             "`endif\n`else\nassign x = 1;\n`endif",
             ["u_in"],
+        ),
+        (
+            "`ifdef OTHER\nassign x = 1;\n`elsif FROST_XILINX_PRIMS\n"
+            "LUT1 #(.INIT(2'h1)) u_e (.O(x));\n`endif",
+            ["u_e"],
+        ),
+        (
+            "`ifndef FROST_XILINX_PRIMS\nassign x = y;\n`elsif OTHER\n"
+            "LUT1 #(.INIT(2'h1)) u_b (.O(x));\n`else\nLUT1 #(.INIT(2'h1)) u_c (.O(x));\n`endif",
+            ["u_b", "u_c"],
         ),
         ("`ifdef SYNTHESIS\nLUT6 u (.O(x));\n`endif", []),
         ("// `ifdef FROST_XILINX_PRIMS in a comment", []),
