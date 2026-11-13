@@ -718,7 +718,17 @@ module dispatch #(
   logic dispatch_valid_2;
   logic slot2_fp_compute_serialized;
   assign slot2_fp_compute_serialized = (rs_type_2 == riscv_pkg::RS_FP);
-  assign dispatch_valid_2 = i_valid_2 && !i_flush && !slot2_fp_compute_serialized;
+  // Vector configuration also dispatches in slot 1 only, so at most one per
+  // cycle reaches the ROB and it never retires as slot 2. The decoded op
+  // comes straight from the ID register (an illegal one is held back too,
+  // which only moves it to slot 1).
+  logic slot2_vcfg_serialized;
+  assign slot2_vcfg_serialized =
+      (i_from_id_to_ex_2.instruction_operation == riscv_pkg::VSETVLI) ||
+      (i_from_id_to_ex_2.instruction_operation == riscv_pkg::VSETIVLI) ||
+      (i_from_id_to_ex_2.instruction_operation == riscv_pkg::VSETVL);
+  assign dispatch_valid_2 = i_valid_2 && !i_flush && !slot2_fp_compute_serialized &&
+      !slot2_vcfg_serialized;
 
   // Two slots targeting the same RS need two free entries; otherwise one suffices.
   logic rs_full_for_slot2;
@@ -828,7 +838,8 @@ module dispatch #(
       !(need_checkpoint_2 && !i_checkpoint_available);
   logic slot2_present_for_admission;
   assign slot2_present_for_admission = SLOT2_VALID_FROM_BUNDLE ?
-      (i_from_id_to_ex_2.is_real && !slot2_fp_compute_serialized) : dispatch_valid_2;
+      (i_from_id_to_ex_2.is_real && !slot2_fp_compute_serialized && !slot2_vcfg_serialized) :
+      dispatch_valid_2;
   // Decode resource ownership independently of the late RS-full flags.
   // Each three-product reduction fits a LUT6, so a full flag reaches bundle
   // admission through two LUTs rather than two RS muxes and serial gates.
@@ -1360,6 +1371,8 @@ module dispatch #(
 
     // ID predecodes flag-producing FP ops, excluding illegal ops and fetch faults.
     o_rob_alloc_req.has_fp_flags = op_has_fp_flags;
+    o_rob_alloc_req.is_vcfg = (op == riscv_pkg::VSETVLI) || (op == riscv_pkg::VSETIVLI) ||
+        (op == riscv_pkg::VSETVL);
 
     // With FS Off, ID routes F/D instructions to INT_RS as ILLEGAL. The ROB
     // also rejects them at allocation, including fflags, frm and fcsr accesses.
@@ -1419,6 +1432,8 @@ module dispatch #(
     '0;
 
     o_rob_alloc_req_2.has_fp_flags = op_has_fp_flags_2;
+    o_rob_alloc_req_2.is_vcfg = (op_2 == riscv_pkg::VSETVLI) || (op_2 == riscv_pkg::VSETIVLI) ||
+        (op_2 == riscv_pkg::VSETVL);
 
     o_rob_alloc_req_2.is_fp_instruction = i_from_id_to_ex_2.is_fp_instruction;
     o_rob_alloc_req_2.fp_dyn_rm = i_from_id_to_ex_2.is_fp_instruction &&

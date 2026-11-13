@@ -49,10 +49,20 @@
  * (DIVIDE_ISSUE_GATE) presents a divide only while the divider is idle, so
  * every divide issue starts unless a flush in the same cycle squashes it, and
  * the multiplies in the station keep issuing while divides wait there.
+ *
+ * With VECTOR set, VSETVLI, VSETIVLI and VSETVL go to the vector-config unit
+ * (vec_cfg_unit), whose result is registered the cycle after issue and held
+ * until the vector-config adapter (CDB slot 5) takes it. MUL_RS gates these
+ * ops like divides, and o_div_busy also covers a held vector-config result,
+ * so no result is ever dropped. The same registered result is presented as
+ * the side record of its ROB tag (o_vcfg_record). A flush covering the held
+ * operation kills it, as it kills a divide.
  */
 module int_muldiv_shim #(
     parameter bit SHORT_WORD_OPS = 1'b1,
-    parameter bit DIRECT_MUL = 1'b0
+    parameter bit DIRECT_MUL = 1'b0,
+    parameter bit VECTOR = 1'b0,
+    parameter int unsigned VLEN = 256
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -63,6 +73,8 @@ module int_muldiv_shim #(
     // FU completions to CDB adapters
     output riscv_pkg::fu_complete_t o_mul_fu_complete,  // -> adapter -> arbiter slot 1
     output riscv_pkg::fu_complete_t o_div_fu_complete,  // -> adapter -> arbiter slot 2
+    output riscv_pkg::fu_complete_t o_vcfg_fu_complete,  // -> adapter -> arbiter slot 5
+    output riscv_pkg::vcfg_record_t o_vcfg_record,  // the held result's side record
 
     // Back-pressure: no MUL credit or a short-operation tracker slot collision
     output logic o_fu_busy,
@@ -81,7 +93,8 @@ module int_muldiv_shim #(
 
     // MUL / DIV result consumed by downstream adapter
     input logic i_mul_accepted,
-    input logic i_div_accepted
+    input logic i_div_accepted,
+    input logic i_vcfg_accepted = 1'b0
 );
 
   // ---------------------------------------------------------------------------
@@ -536,7 +549,78 @@ module int_muldiv_shim #(
 
   // A divide never raises o_fu_busy: MUL_RS keeps divides back while
   // o_div_busy is high, so the multiplier never waits for the divider.
-  assign o_div_busy = !div_idle;
+  // ---------------------------------------------------------------------------
+  // Vector-config unit (VECTOR only)
+  // ---------------------------------------------------------------------------
+  logic vcfg_busy;
+  if (VECTOR) begin : gen_vcfg
+    logic is_vcfg, vcfg_start, vcfg_kill;
+    logic vill, rs1_x0;
+    logic [7:0] vtype;
+    logic [15:0] vlmax, vl;
+    assign is_vcfg = (i_rs_issue.op == riscv_pkg::VSETVLI) ||
+        (i_rs_issue.op == riscv_pkg::VSETIVLI) || (i_rs_issue.op == riscv_pkg::VSETVL);
+    assign vcfg_start = is_vcfg && i_rs_issue.valid && !(i_flush || (i_flush_en && is_younger(
+        i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
+    )));
+    vec_cfg_unit #(
+        .VLEN(VLEN)
+    ) u_vec_cfg_unit (
+        .i_op       (i_rs_issue.op),
+        .i_avl      (i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]),
+        .i_vtype    (i_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
+        .i_imm      (i_rs_issue.csr_addr),
+        .i_rs1_field(i_rs_issue.csr_imm),
+        .o_vill     (vill),
+        .o_vtype    (vtype),
+        .o_rs1_x0   (rs1_x0),
+        .o_vlmax    (vlmax),
+        .o_vl       (vl)
+    );
+    riscv_pkg::vcfg_record_t held_q;
+    assign vcfg_kill = held_q.valid && (i_flush || (i_flush_en && is_younger(
+        held_q.tag, i_flush_tag, i_rob_head_tag
+    )));
+    always_ff @(posedge i_clk) begin
+      if (!i_rst_n) held_q.valid <= 1'b0;
+      else if (vcfg_kill || i_vcfg_accepted) held_q.valid <= 1'b0;
+      else if (vcfg_start) held_q.valid <= 1'b1;
+      if (vcfg_start && !held_q.valid) begin
+        held_q.tag <= i_rs_issue.rob_tag;
+        held_q.vill <= vill;
+        held_q.vtype <= vtype;
+        held_q.rs1_x0 <= rs1_x0;
+        held_q.vlmax <= vlmax;
+        held_q.vl <= vl;
+      end
+    end
+    assign vcfg_busy = held_q.valid;
+    assign o_vcfg_record = held_q;
+    always_comb begin
+      o_vcfg_fu_complete.valid     = held_q.valid;
+      o_vcfg_fu_complete.tag       = held_q.tag;
+      o_vcfg_fu_complete.value     = riscv_pkg::FLEN'(held_q.vl);
+      o_vcfg_fu_complete.exception = 1'b0;
+      o_vcfg_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
+      o_vcfg_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
+    end
+`ifndef SYNTHESIS
+`ifndef FORMAL
+    logic vcfg_reset_seen_q = 1'b0;
+    always @(posedge i_clk) begin
+      if (!i_rst_n) vcfg_reset_seen_q <= 1'b1;
+      if (vcfg_reset_seen_q && i_rst_n && is_vcfg && i_rs_issue.valid && held_q.valid)
+        $error("int_muldiv_shim: vector-config op presented while a result is held");
+    end
+`endif
+`endif
+  end else begin : gen_no_vcfg
+    assign vcfg_busy = 1'b0;
+    assign o_vcfg_record = '0;
+    assign o_vcfg_fu_complete = '0;
+  end
+
+  assign o_div_busy = !div_idle || vcfg_busy;
   assign o_fu_busy  = mul_busy;
 
 `ifndef SYNTHESIS

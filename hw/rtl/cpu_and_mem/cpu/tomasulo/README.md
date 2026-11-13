@@ -132,8 +132,9 @@ Up to six completions compete for the two CDB lanes each cycle, and
 MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
 ```
 
-The FP engine completes on the `FP_ADD` slot; the `FP_DIV` and `FP_MUL` slots
-have no unit behind them. A completion that loses waits in its
+The FP engine completes on the `FP_ADD` slot; the vector-config unit
+(`vsetvli`, `vsetivli`, `vsetvl`, with the vector unit present) on the `FP_MUL`
+slot; the `FP_DIV` slot has no unit behind it. A completion that loses waits in its
 [`fu_cdb_adapter`](fu_cdb_adapter/README.md) and competes again the next
 cycle; the pipelined MUL path presents its result directly, and the divider
 holds its result until its adapter is free. On a full flush the arbiter's
@@ -210,7 +211,7 @@ instruction traps and its result never retires.
 The 64-bit fetch aligner delivers one or two instructions per cycle,
 compressed or full size, including pairs that straddle two fetch words. It
 drops slot 2 when slot 1 is control flow or serializing, when slot 2 is
-serializing or an FP compute op, or when slot 2 does not fit in the fetch
+serializing, an FP compute op or a vector instruction, or when slot 2 does not fit in the fetch
 window.
 
 Dispatch fires the pair as a unit after checking that every target structure

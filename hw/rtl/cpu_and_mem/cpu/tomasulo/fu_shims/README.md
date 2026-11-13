@@ -96,6 +96,13 @@ multiplies in the station issue past them, and every divide the station
 presents starts at once unless a flush in the same cycle squashes it. A
 station full of waiting divides does stop dispatch.
 
+With `VECTOR` set, the shim also runs `vsetvli`, `vsetivli` and `vsetvl`
+through `vec_cfg_unit`: their result (`vl` for rd, plus the new `vtype` and
+VLMAX for the commit) is registered the cycle after issue and held until the
+vector-config adapter (CDB slot 5) takes it. They share the divide gate:
+`o_div_busy` is also high while a vector-config result is held, and a flush
+covering the held operation drops it.
+
 The MUL completion's tag is unspecified while `valid` is low, and so are the
 DIV completion's tag and value, so each adapter must use them only with
 `valid`. `SHORT_WORD_OPS=0` sends MULW through the full-width multiplier
