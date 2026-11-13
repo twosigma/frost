@@ -535,7 +535,9 @@ takes any input byte or zero, for the gathers, slides and compress that the
 sequencer turns into byte indices, and a rotator for slides by whole bytes and
 the alignment of unit-stride data to and from memory.
 `vec_clmul_lane` is one 64-bit carry-less multiply lane for `vclmul` and
-`vclmulh`.
+`vclmulh`. `vec_ghash_group` builds `vghsh.vv` and `vgmul.vv` from four of these
+lanes: they form the partial products of the 128-bit operands, and one cycle
+folds the 256-bit product back modulo the GCM polynomial.
 `vec_aes_group` runs the Zvkned operations on one 128-bit element group: the
 encryption and decryption rounds, round zero, and both key-schedule steps,
 with S-box lookups, ShiftRows and the round key, and MixColumns or

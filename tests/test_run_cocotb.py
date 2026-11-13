@@ -2199,6 +2199,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "a Python model checked on the SHA-256 and SHA-512 digests of a test message"
         ),
     ),
+    "vec_ghash_group": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_ghash_group",
+        hdl_toplevel_module="vec_ghash_group",
+        description=(
+            "Vector GHASH element group (vghsh, vgmul) against the Zvkg algorithm, itself "
+            "checked against the GCM specification's multiplication"
+        ),
+    ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",
