@@ -16,6 +16,7 @@
 
 import ctypes
 from pathlib import Path
+import re
 import struct
 import subprocess
 import sys
@@ -28,6 +29,12 @@ packer = load_module("flash_packer", "fpga/flash/make_flash_image.py")
 programmer = load_module("flash_programmer", "fpga/flash/program_flash.py")
 
 
+TCL_HARNESS = (
+    "proc write_cfgmem {args} {puts $args}\n"
+    "set script [lindex $argv 4]\nset argv [lrange $argv 0 3]\nset argc 4\nsource $script\n"
+)
+
+
 def components(directory: Path) -> dict[str, Path]:
     """Create distinct payloads, including a minimal DTB envelope."""
     paths = {}
@@ -37,6 +44,21 @@ def components(directory: Path) -> dict[str, Path]:
         paths[name] = path
     paths["DTB"].write_bytes(struct.pack(">II", 0xD00DFEED, 40) + bytes(32))
     return paths
+
+
+def test_boot_base_agrees_across_the_flash_tools() -> None:
+    """The ROM header, the packer and the programmer place the boot partition together."""
+    header = (ROOT / "sw/lib/include/flash_boot.h").read_text()
+    match = re.search(r"#define FLASH_BOOT_BASE (0x[0-9a-fA-F]+)u", header)
+    assert match is not None
+    base = int(match.group(1), 16)
+    assert base == packer.FLASH_BASE_OFFSET == 0x0400_0000
+    assert [p["flash_abs_offset"] for p in packer.PARTITIONS] == [
+        base + 0x100000 * i for i in range(4)
+    ]
+    tcl = (ROOT / "fpga/flash/program_flash.tcl").read_text()
+    assert f"set boot_base 0x{base:08x}" in tcl
+    assert base >= 0x300_0000 + 0x100_0000  # clears a 51.9 MB bitstream with margin
 
 
 def test_flash_headers_and_padding(tmp_path: Path) -> None:
@@ -186,6 +208,34 @@ def test_cfgmem_uses_bitstream_conversion(tmp_path: Path, boot_only: bool) -> No
     assert result.returncode == 0, result.stderr
     assert "-loaddata" in result.stdout
     assert ("-loadbit" in result.stdout) == (not boot_only)
+
+
+def test_cfgmem_rejects_a_bitstream_that_reaches_the_boot_partition(
+    tmp_path: Path,
+) -> None:
+    """A configuration image larger than the space below the boot partition is refused."""
+    boot = tmp_path / "boot.bin"
+    boot.write_bytes(bytes(0x400000))
+    bit = tmp_path / "big.bit"
+    with bit.open("wb") as handle:
+        handle.truncate(0x0400_0001)
+    harness = tmp_path / "test.tcl"
+    harness.write_text(TCL_HARNESS)
+    result = subprocess.run(
+        [
+            "tclsh",
+            str(harness),
+            "prepare",
+            str(boot),
+            str(bit),
+            str(tmp_path / "o.bin"),
+            str(ROOT / "fpga/flash/program_flash.tcl"),
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert "exceeds the space below the boot partition" in result.stderr + result.stdout
 
 
 @pytest.mark.parametrize(

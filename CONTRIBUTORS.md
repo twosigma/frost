@@ -94,3 +94,4 @@
 - Implemented Sscofpmf counter overflow, privilege filtering, delegated local interrupts, and programmable cycle and instruction counters
 - Implemented 64-byte Zicboz block zeroing, its coherent cache protocol and grant handling, and the matching tests and firmware integration
 - Made the Vivado build steps finish when the launcher outlives Vivado, and explain a Vivado process that dies without an error line
+- Moved the VCU118 flash boot partition to 0x04000000 behind one shared constant, with a consistency test and a programmer check that the FPGA image fits below it
