@@ -1215,3 +1215,67 @@ async def local_write_survives_dirty_eviction(dut: Any) -> None:
                     evicted = True
                     break
             assert evicted and not b.get("o_fatal")
+
+
+def put_ack(b: Private, put: tuple, absorbed: bool) -> int:
+    """Pack the home's acknowledgement for a put record."""
+    return pack(
+        (1, put[0]),
+        (1, put[1]),
+        (1, put[2]),
+        (b.p, put[3]),
+        (1, absorbed),
+        (6, 1 if absorbed else 0),
+        (1, 0),
+    )
+
+
+@cocotb.test()
+async def absorbed_ack_during_idle_selection_keeps_puts_moving(dut: Any) -> None:
+    """Present a later put after a slot is cancelled on the edge the selector picks it."""
+    b = Private(dut)
+    await b.reset()
+    base = 0x80000000
+    # Six sectors compete for the four ways of one set: two dirty victims.
+    lines = [base + index * 128 for index in range(6)]
+    for index, address in enumerate(lines):
+        await store(b, address, 0x1000 + index)
+        await getm(b, address, 0)
+    assert b.get("wb_valid") == 3
+    await b.wait("o_w_valid")
+    first = unpack(b.get("o_w"), (1, 1, 1, b.p, 256, 1))
+    assert first[1] == 0 and b.get("wb_select_q") == 0
+    # A probe absorbs the unselected slot 1.
+    second = (0, 1, 0, (b.get("wb_addr") >> b.p) & ((1 << b.p) - 1))
+    await snapshot(b, second[3])
+    reply = unpack(b.get("o_r"), (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1))
+    assert reply[9] and reply[10] == 1 and reply[11] == 0
+    # W0 is accepted on one edge. On the next, the idle selector picks slot 1
+    # from its pre-edge valid while slot 1's absorbed acknowledgement cancels it.
+    await b.set(i_w_ready=1)
+    await b.tick()
+    await b.set(i_w_ready=0, i_wa_valid=1, i_wa=put_ack(b, second, True))
+    assert not b.get("wb_selected_q") and b.get("o_wa_ready")
+    await b.tick()
+    assert b.get("wb_selected_q") and b.get("wb_select_q") == 1
+    assert b.get("wb_valid") == 0
+    await b.set(i_wa_valid=1, i_wa=put_ack(b, first, False))
+    await b.wait("o_wa_ready")
+    await b.tick()
+    await b.set(i_wa_valid=0)
+    # Write back one dirty line: its put takes the lowest free slot, 0, and
+    # the maintenance waits until no put slot is live.
+    dirty = next(address for address in lines if address not in (first[3], second[3]))
+    await b.set(i_maint_valid=1, i_maint_line=1, i_maint_address=dirty)
+    await b.wait("o_w_valid")
+    put = unpack(b.get("o_w"), (1, 1, 1, b.p, 256, 1))
+    assert put[1] == 0 and put[3] == dirty and put[5]
+    await b.set(i_w_ready=1)
+    await b.tick()
+    await b.set(i_w_ready=0, i_wa_valid=1, i_wa=put_ack(b, put, False))
+    await b.wait("o_wa_ready")
+    await b.tick()
+    await b.set(i_wa_valid=0)
+    await b.wait("o_maint_done")
+    await b.set(i_maint_valid=0)
+    assert not b.get("wb_live") and not b.get("o_fatal")

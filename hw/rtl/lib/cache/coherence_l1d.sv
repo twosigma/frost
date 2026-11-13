@@ -367,6 +367,7 @@ module coherence_l1d #(
   (* keep = "true" *) logic grant_failure, grant_error;
   logic store_zero_alloc;
   logic [ADDR_WIDTH-1:0] block_zero_addr_q;
+  logic block_zero_late;
   logic wb_reserved_q;
   // Nonzero endpoint identity and completion state, used when MISSES > 1.
   logic [ADDR_WIDTH-6:0] ld_line_q[EpSlots];
@@ -1001,6 +1002,15 @@ module coherence_l1d #(
       (i_write_zero || !(store_count != 0 && !store_sealed[3] &&
         store_addr[3][ADDR_WIDTH-1:5] == i_address[ADDR_WIDTH-1:5]));
   assign o_block_addr = {store_addr[3:1], block_zero_addr_q};
+  // The cycles on which a record-0 allocation sets holder zero's address: no
+  // atomic owns holder zero and no twin allocates record 0, or an atomic's
+  // release (its U or LocalRelease) hands holder zero back to the buffer. An
+  // accepted SC or an atomic's start takes holder zero instead. Only early
+  // state enters here; the late push and combining terms apply last.
+  assign block_zero_late = !(local_decision && operation_q != SCOp) &&
+      ((active && phase_q == LocalRelease) || (!(i_sc_valid && o_sc_ready) &&
+       ((i_u_valid && ep_u_ready[0] && atomic_q && !atomic_local_q) ||
+        (!atomic_q && !(store_twin_alloc && store_twin_index == 2'd0)))));
   // A lower zero record that is the only record waits for its twin, which
   // allocates on the next cycle.
   assign store_head_ready = pending_q && !look_priority_q && !store_acquired[store_head_index] &&
@@ -1755,6 +1765,26 @@ module coherence_l1d #(
   end
   assign o_w_valid = active && wb_selected_q && wb_valid[wb_select_q];
   assign o_w = wb[wb_select_q];
+`ifndef SYNTHESIS
+`ifdef FORMAL
+`ifdef PUT_SELECT_PROOF
+`define FROST_L1D_PUT_SELECT_CHECK
+`endif
+`else
+`define FROST_L1D_PUT_SELECT_CHECK
+`endif
+`endif
+`ifdef FROST_L1D_PUT_SELECT_CHECK
+  // The W selection points at a slot that is not presenting a put for at
+  // most one cycle, as after that slot's cancellation on the edge that
+  // selected it. The formal check runs in its own task so the other tasks' selections keep
+  // their assertion counts; it starts from any state without a stale sample.
+  logic wb_stale_q = 1'b0;
+  always_ff @(posedge i_clk) wb_stale_q <= !i_rst && wb_selected_q && !wb_valid[wb_select_q];
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst && wb_stale_q) p_put_select_clears : assert (!wb_selected_q);
+`undef FROST_L1D_PUT_SELECT_CHECK
+`endif
   assign o_wa_ready = |wb_wa_ready;
   assign freeze = {1'b0, freeze_slot_q, 1'b0, freeze_addr_q, freeze_data_q, freeze_maintenance_q};
 
@@ -2527,8 +2557,6 @@ module coherence_l1d #(
       o_sc_write_done <= 1'b0;
       o_cut_release <= 1'b0;
       if (i_sc_commit) sc_committed_q <= 1'b1;
-      if (!atomic_q && store_push && store_zero_alloc)
-        block_zero_addr_q <= {i_address[ADDR_WIDTH-1:5], 5'b0};
       // A cbo.zero twin allocates on a cycle without a write.
       if (!atomic_q && store_twin_alloc && store_twin_index == 2'd0)
         block_zero_addr_q <= store_twin_addr;
@@ -2536,12 +2564,16 @@ module coherence_l1d #(
           ((operation_q == GrantOp && grant_ep_q == '0 && !grant_twin) ||
            (operation_q == TwinOp && twin_ep_q == '0))) wb_reserved_q <= 1'b0;
       if (o_sc_result_valid && i_sc_result_ready) o_sc_result_valid <= 1'b0;
+      // The idle selector samples wb_valid before the edge, so it can pick a
+      // slot that an absorbed acknowledgement cancels on the same edge. A
+      // selected slot that is not presenting a put is released on the next
+      // edge, so the other slot's put is presented.
       if (!wb_selected_q) begin
         if (|wb_valid) begin
           wb_selected_q <= 1'b1;
           wb_select_q   <= wb_valid[wb_next_q] ? wb_next_q : !wb_next_q;
         end
-      end else if ((o_w_valid && i_w_ready) ||
+      end else if (!wb_valid[wb_select_q] || (o_w_valid && i_w_ready) ||
           (i_wa_valid && o_wa_ready && ack.absorbed && ack.put_id == wb_select_q)) begin
         wb_selected_q <= 1'b0;
         wb_next_q <= !wb_select_q;
@@ -2551,8 +2583,7 @@ module coherence_l1d #(
         o_fatal_addr <= fatal_put.addr;
       end
       if (i_u_valid && ep_u_ready[0] && atomic_q && !atomic_local_q) begin
-        block_zero_addr_q <= store_push && store_zero_alloc ?
-            {i_address[ADDR_WIDTH-1:5], 5'b0} : store_addr[0];
+        block_zero_addr_q <= store_addr[0];
         atomic_q <= 1'b0;
         atomic_granted_q <= 1'b0;
       end
@@ -2918,8 +2949,7 @@ module coherence_l1d #(
           end
           LocalFail: if (o_sc_result_valid && i_sc_result_ready) phase_q <= LocalRelease;
           LocalRelease: begin
-            block_zero_addr_q <= store_push && store_zero_alloc ?
-                {i_address[ADDR_WIDTH-1:5], 5'b0} : store_addr[0];
+            block_zero_addr_q <= store_addr[0];
             atomic_q <= 1'b0;
             atomic_local_q <= 1'b0;
             atomic_granted_q <= 1'b0;
@@ -3032,6 +3062,11 @@ module coherence_l1d #(
           default: phase_q <= Idle;
         endcase
       end
+      // A pushed store that allocates record 0 sets holder zero's address,
+      // applied last so the late push and combining terms select only the
+      // final value (see block_zero_late).
+      if (block_zero_late && store_push && store_zero_alloc)
+        block_zero_addr_q <= {i_address[ADDR_WIDTH-1:5], 5'b0};
     end
   end
 `ifndef SYNTHESIS
