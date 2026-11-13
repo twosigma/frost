@@ -61,6 +61,8 @@
 #define MINH (1ul << 62)
 #define LCOF (1ul << 13)
 
+#define CACHED_BASE 0x80000000ul
+
 #define SEL_L1I_REFILL 19ul
 #define SEL_L2_DEMAND 20ul
 #define SEL_L2_PREFETCH 21ul
@@ -98,8 +100,6 @@ __asm__(".pushsection .ddr_text, \"ax\", @progbits\n"
 extern unsigned long hpm_body_short(unsigned long);
 extern unsigned long hpm_body_long(unsigned long);
 typedef unsigned long (*body_fn)(unsigned long);
-
-extern char _heap_start[];
 
 static volatile unsigned long run_count __attribute__((section(".ddr_data"))) = 0;
 static uintptr_t run_offset;
@@ -142,10 +142,11 @@ static unsigned long l1i_refills(body_fn body, int runs, unsigned long *sum)
     return csr_read_num(0xB03) - before;
 }
 
-/* Untouched cached memory above the heap start. */
+/* Untouched cached memory: 16 MiB into DDR, above the program's .ddr_*
+ * sections and inside the simulation's DDR model. */
 static uintptr_t region(uintptr_t offset)
 {
-    return (((uintptr_t) _heap_start + 0xFFFF) & ~(uintptr_t) 0xFFFF) + run_offset + offset;
+    return CACHED_BASE + 0x1000000 + run_offset + offset;
 }
 
 /* One load in each of `pages` pages, at a different line in each. */
@@ -165,7 +166,7 @@ int main(void)
     unsigned long run = run_count;
 
     run_count = run + 1;
-    run_offset = (uintptr_t) (run % 8) * 0x400000;
+    run_offset = (uintptr_t) (run % 4) * 0x400000;
     uart_printf("run %lu: HPM refill events L1I=%lu L2-demand=%lu L2-prefetch=%lu\r\n",
                 run,
                 SEL_L1I_REFILL,
