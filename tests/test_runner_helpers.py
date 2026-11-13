@@ -62,7 +62,9 @@ def test_arch_timeout_is_a_failure(
     reference = tmp_path / "add-01.reference_output"
     source.write_text("")
     reference.write_text("00000000\n")
-    monkeypatch.setattr(test_arch_compliance, "get_reference_path", lambda _: reference)
+    monkeypatch.setattr(
+        test_arch_compliance, "get_reference_path", lambda *_: reference
+    )
     monkeypatch.setattr(
         test_arch_compliance, "compile_test", lambda *_, **__: (True, "")
     )
@@ -99,7 +101,9 @@ def test_arch_checks_the_signature_the_bench_read(
     signature_file = tmp_path / "arch_signature.txt"
     source.write_text("")
     reference.write_text("00000001\n")
-    monkeypatch.setattr(test_arch_compliance, "get_reference_path", lambda _: reference)
+    monkeypatch.setattr(
+        test_arch_compliance, "get_reference_path", lambda *_: reference
+    )
     monkeypatch.setattr(test_arch_compliance, "SIGNATURE_FILE", signature_file)
     monkeypatch.setattr(
         test_arch_compliance, "compile_test", lambda *_, **__: (True, "")
@@ -155,7 +159,7 @@ def test_arch_missing_reference_fails_the_run(
     monkeypatch.setattr(
         test_arch_compliance,
         "get_reference_path",
-        lambda _: tmp_path / "fadd_b1-01.reference_output",
+        lambda *_: tmp_path / "fadd_b1-01.reference_output",
     )
 
     def compile_test(*_: object, **__: object) -> tuple[bool, str]:
