@@ -4707,6 +4707,53 @@ TEST_REGISTRY["memerr_test_seeded"] = replace(
     ),
 )
 
+# The vector bring-up programs (sw/apps/vec_*) on a core built with the vector
+# unit, at each supported vector length. They run once in each tier. They are
+# registered but left out of pytest and CI: they need the vector unit, which the
+# default build does not have; run one with
+# `./scripts/frost.py cocotb vec_smoke_v128`, and to include them, drop
+# include_in_pytest=False below. COCOTB_MAX_CYCLES is a ceiling of about ten
+# times each program's Spike instruction count at VLEN 128 (vec_string counted
+# with -DVT_QUICK; vec_dot_fp estimated); tighten it from the first simulation.
+VECTOR_BRING_UP_PROGRAMS = {
+    "vec_smoke": ("vsetvl and CSR configuration, VS states", 3_000_000, ""),
+    "vec_ldst": (
+        "vector loads and stores, segments, fault-only-first, faults",
+        50_000_000,
+        "",
+    ),
+    "vec_string": ("vector string routines", 180_000_000, "-DVT_QUICK"),
+    "vec_dot_int": ("integer dot products and multiply-accumulate", 16_000_000, ""),
+    "vec_dot_fp": ("floating-point dot products, Zvfh and Zvfhmin", 30_000_000, ""),
+    "vec_crypto": (
+        "AES, AES-GCM and SHA-256 with the vector crypto extensions",
+        90_000_000,
+        "",
+    ),
+    "vec_zvbb": (
+        "Zvbb and Zvbc bit manipulation and carry-less multiply",
+        23_000_000,
+        "",
+    ),
+}
+for _program, (_what, _budget, _cflags) in VECTOR_BRING_UP_PROGRAMS.items():
+    for _vlen in (128, 256, 512):
+        TEST_REGISTRY[f"{_program}_v{_vlen}"] = CocotbRunConfig(
+            python_test_module="cocotb_tests.test_real_program",
+            hdl_toplevel_module="frost",
+            app_name=_program,
+            nic_mac_clocks=False,
+            description=f"{_what}, with the vector unit at VLEN {_vlen}; CLI-only",
+            include_in_pytest=False,
+            rerun_after_reset=False,
+            verilator_extra_args=("-GVECTOR=1", f"-GVLEN={_vlen}"),
+            extra_env=(
+                ("VLEN", str(_vlen)),
+                ("COCOTB_MAX_CYCLES", str(_budget)),
+                *((("EXTRA_CFLAGS", _cflags),) if _cflags else ()),
+            ),
+        )
+
 # The full power-of-two raw-DDR capacity matrix. Keep the historical 64 GiB
 # entry above for existing callers; all entries use the same byte-level
 # bridge test, including the last representable line and +4 GiB separation.

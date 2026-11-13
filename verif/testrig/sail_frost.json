@@ -18,8 +18,8 @@
     // only in the --sscofpmf view; default generation excludes mideleg.
     "medeleg": {"delegatable_bits": {"len": 64, "value": "0x0000_0000_0000_B3FF"}},
     "mideleg": {"delegatable_bits": {"len": "xlen", "value": "0x0000_0000_0000_2222"}},
-    // FROST has no V extension, so mstatus.VS is read-only zero; FS takes all
-    // four states.
+    // Without the vector unit, mstatus.VS is read-only zero; FS takes all four
+    // states. The sail_frost_vlen*.json overlays turn the vector unit on.
     "mstatus": {"fs_legal_states": "ExtContext_FourState", "vs_legal_states": "ExtContext_Off"},
     // FROST writes 0 to mtval/stval for illegal instructions.
     "xtval_nonzero": {

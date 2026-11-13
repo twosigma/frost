@@ -44,6 +44,16 @@
     RVTEST_FP_ENABLE;                                                                              \
     .endm
 
+#define RVTEST_RV64UV                                                                              \
+    .macro init;                                                                                   \
+    RVTEST_VECTOR_ENABLE;                                                                          \
+    .endm
+
+#define RVTEST_RV64UVX                                                                             \
+    .macro init;                                                                                   \
+    RVTEST_ZVE32X_ENABLE;                                                                          \
+    .endm
+
 #define RVTEST_RV64M                                                                               \
     .macro init;                                                                                   \
     RVTEST_ENABLE_MACHINE;                                                                         \
@@ -74,6 +84,18 @@
     li a0, MSTATUS_FS &(MSTATUS_FS >> 1);                                                          \
     csrs mstatus, a0;                                                                              \
     csrwi fcsr, 0
+
+/* As upstream: the vector tests need FS and VS on and vcsr cleared. */
+#define RVTEST_VECTOR_ENABLE                                                                       \
+    li a0, (MSTATUS_VS & (MSTATUS_VS >> 1)) | (MSTATUS_FS & (MSTATUS_FS >> 1));                   \
+    csrs mstatus, a0;                                                                              \
+    csrwi fcsr, 0;                                                                                 \
+    csrwi vcsr, 0;
+
+#define RVTEST_ZVE32X_ENABLE                                                                       \
+    li a0, MSTATUS_VS &(MSTATUS_VS >> 1);                                                          \
+    csrs mstatus, a0;                                                                              \
+    csrwi vcsr, 0;
 
 #define INIT_XREG                                                                                  \
     li x1, 0;                                                                                      \

@@ -49,6 +49,7 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -61,7 +62,9 @@ if str(VERIF_DIR) not in sys.path:
     sys.path.insert(0, str(VERIF_DIR))
 atomics = importlib.import_module("testrig.atomics")
 crypto = importlib.import_module("testrig.crypto")
+vector = importlib.import_module("testrig.vector")
 SAIL_CONFIG = REPO_ROOT / "verif" / "testrig" / "sail_frost.json"
+DEFAULT_VECTOR_LENGTH = 128
 SAVED_TRACES_DIR = REPO_ROOT / "verif" / "testrig" / "traces"
 SSCOFPMF_TRACE = REPO_ROOT / "verif" / "testrig" / "sscofpmf" / "controls.S"
 DEFAULT_SAVE_DIR = TESTS_DIR / "testrig_failures"
@@ -132,16 +135,47 @@ def tool_path(name: str, environment_variable: str) -> str:
     return os.environ.get(environment_variable, name)
 
 
-def write_sail_config(
-    capacity_log2_bytes: int, work_dir: Path, *, sscofpmf: bool = False
-) -> Path:
-    """Match DDR capacity and enable Zihpm for the dedicated Sscofpmf trace."""
-    if capacity_log2_bytes not in range(30, 38):
-        raise ValueError("DDR capacity must be 1, 2, 4, 8, 16, 32, 64 or 128 GiB")
-    lines = SAIL_CONFIG.read_text(encoding="utf-8").splitlines()
-    config = json.loads(
+def load_sail_json(path: Path) -> dict[str, Any]:
+    """Read a Sail configuration file, which may carry // comment lines."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return json.loads(
         "\n".join(line for line in lines if not line.lstrip().startswith("//"))
     )
+
+
+def sail_vector_overlay(vlen: int) -> Path:
+    """Return the settings that turn on the vector unit at one vector length."""
+    if vlen not in vector.VECTOR_LENGTHS:
+        raise ValueError(f"VLEN must be one of {vector.VECTOR_LENGTHS}, got {vlen}")
+    return SAIL_CONFIG.with_name(f"sail_frost_vlen{vlen}.json")
+
+
+def merge_settings(base: dict[str, Any], overlay: dict[str, Any]) -> None:
+    """Merge overlay into base, replacing leaves and merging objects."""
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            merge_settings(base[key], value)
+        else:
+            base[key] = value
+
+
+def write_sail_config(
+    capacity_log2_bytes: int,
+    work_dir: Path,
+    *,
+    sscofpmf: bool = False,
+    vlen: int | None = None,
+) -> Path:
+    """Match DDR capacity, and enable Zihpm or the vector unit when asked.
+
+    Zihpm is for the dedicated Sscofpmf trace; the vector unit at `vlen` is for
+    the --vector traces, which FROST must be built for with -GVECTOR=1 -GVLEN.
+    """
+    if capacity_log2_bytes not in range(30, 38):
+        raise ValueError("DDR capacity must be 1, 2, 4, 8, 16, 32, 64 or 128 GiB")
+    config = load_sail_json(SAIL_CONFIG)
+    if vlen is not None:
+        merge_settings(config, load_sail_json(sail_vector_overlay(vlen)))
     # Sail 0.16 makes Sscofpmf depend on Zihpm. Enabling Zihpm also
     # exposes every user HPM alias, including FROST's absent 11..31.
     # Only the dedicated trace can use this view: it accesses implemented
@@ -157,7 +191,7 @@ def write_sail_config(
     if len(ddr_regions) != 1:
         raise ValueError("Sail configuration must contain exactly one FROST DDR region")
     ddr_regions[0]["size"]["value"] = f"0x{1 << capacity_log2_bytes:x}"
-    suffix = "_sscofpmf" if sscofpmf else ""
+    suffix = ("_sscofpmf" if sscofpmf else "") + (f"_v{vlen}" if vlen else "")
     path = work_dir / f"sail_frost_ddr{capacity_log2_bytes}{suffix}.json"
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     return path
@@ -180,7 +214,11 @@ def write_empty_images() -> list[Path]:
 
 
 def start_frost(
-    port: int, ready_file: Path, log_path: Path, capacity_log2_bytes: int
+    port: int,
+    ready_file: Path,
+    log_path: Path,
+    capacity_log2_bytes: int,
+    vlen: int | None = None,
 ) -> tuple[subprocess.Popen, Callable[[], None]]:
     """Build (if needed) and start the frost RVFI-DII simulation.
 
@@ -188,11 +226,13 @@ def start_frost(
     the next run reuses it.
     """
     base_config = TEST_REGISTRY["rvfi_dii"]
+    vector_args = ("-GVECTOR=1", f"-GVLEN={vlen}") if vlen else ()
     config = replace(
         base_config,
         verilator_extra_args=(
             *base_config.verilator_extra_args,
             f"-DFROST_DDR_CAPACITY_LOG2_BYTES={capacity_log2_bytes}",
+            *vector_args,
         ),
     )
     runner = CocotbRunner.from_config(config)
@@ -245,7 +285,10 @@ def run(arguments: argparse.Namespace) -> int:
     work_dir = Path(arguments.log_dir).resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
     sail_config = write_sail_config(
-        arguments.ddr_capacity_log2_bytes, work_dir, sscofpmf=arguments.sscofpmf
+        arguments.ddr_capacity_log2_bytes,
+        work_dir,
+        sscofpmf=arguments.sscofpmf,
+        vlen=arguments.vlen,
     )
     sail_port, frost_port = free_ports()
     ready_file = work_dir / "frost_ready"
@@ -254,7 +297,11 @@ def run(arguments: argparse.Namespace) -> int:
     sail_log = work_dir / "sail.log"
     images = write_empty_images()
     architecture = arguments.arch or (
-        ATOMICS_ARCHITECTURE if arguments.atomics else DEFAULT_ARCHITECTURE
+        ATOMICS_ARCHITECTURE
+        if arguments.atomics
+        else vector.ARCHITECTURE
+        if arguments.vector
+        else DEFAULT_ARCHITECTURE
     )
     sail = frost = engine = None
     status = 1
@@ -274,7 +321,11 @@ def run(arguments: argparse.Namespace) -> int:
             start_new_session=True,
         )
         frost, record_frost_build = start_frost(
-            frost_port, ready_file, frost_log, arguments.ddr_capacity_log2_bytes
+            frost_port,
+            ready_file,
+            frost_log,
+            arguments.ddr_capacity_log2_bytes,
+            arguments.vlen,
         )
         print(f"Building and starting the frost RVFI-DII simulation (log: {frost_log})")
         deadline = time.monotonic() + arguments.startup_timeout
@@ -328,6 +379,27 @@ def run(arguments: argparse.Namespace) -> int:
             crypto.write_tests(trace_dir, arguments.crypto, seed, arguments.test_length)
             print(
                 f"Wrote {arguments.crypto} scalar cryptography tests from seed {seed}",
+                flush=True,
+            )
+            command += ["-d", str(trace_dir)]
+        elif arguments.vector:
+            seed = (
+                arguments.seed
+                if arguments.seed is not None
+                else random.randrange(1 << 32)
+            )
+            trace_dir = work_dir / "vector"
+            shutil.rmtree(trace_dir, ignore_errors=True)
+            vector.write_tests(
+                trace_dir,
+                arguments.vector,
+                seed,
+                arguments.vector_length,
+                arguments.vlen,
+            )
+            print(
+                f"Wrote {arguments.vector} vector tests at VLEN {arguments.vlen} "
+                f"from seed {seed} (--seed {seed} regenerates them)",
                 flush=True,
             )
             command += ["-d", str(trace_dir)]
@@ -464,9 +536,31 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "tests from verif/testrig/atomics.py",
     )
     parser.add_argument(
+        "--vector",
+        type=int,
+        default=0,
+        help="replay this many random vector-instruction tests from "
+        "verif/testrig/vector.py, on a core built with the vector unit "
+        "(sets --vlen to 128 when it is not given)",
+    )
+    parser.add_argument(
+        "--vector-length",
+        type=int,
+        default=20,
+        help="random vector operation groups per --vector test (default 20)",
+    )
+    parser.add_argument(
+        "--vlen",
+        type=int,
+        choices=vector.VECTOR_LENGTHS,
+        help="build FROST with the vector unit at this vector length and give "
+        "Sail the same (needed to replay vector traces with --trace or "
+        "--trace-dir)",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
-        help="seed for --atomics or --crypto (default: random, printed)",
+        help="seed for --atomics, --crypto or --vector (default: random, printed)",
     )
     parser.add_argument(
         "--save-dir",
@@ -500,11 +594,25 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="seconds the engine waits for one test's trace (default 600)",
     )
     arguments = parser.parse_args(argv)
+    if arguments.vector < 0 or arguments.vector_length < 1:
+        parser.error(
+            "--vector must not be negative and --vector-length must be positive"
+        )
+    if arguments.vector and arguments.vlen is None:
+        arguments.vlen = DEFAULT_VECTOR_LENGTH
     if arguments.sscofpmf and (
-        arguments.trace_dir or arguments.atomics or arguments.crypto
+        arguments.trace_dir or arguments.atomics or arguments.crypto or arguments.vector
     ):
         parser.error(
-            "--sscofpmf cannot be combined with --trace-dir, --atomics or --crypto"
+            "--sscofpmf cannot be combined with --trace-dir, --atomics, --crypto "
+            "or --vector"
+        )
+    if arguments.vector and (
+        arguments.atomics or arguments.crypto or arguments.trace or arguments.trace_dir
+    ):
+        parser.error(
+            "--vector cannot be combined with --atomics, --crypto, --trace or "
+            "--trace-dir"
         )
     return arguments
 
