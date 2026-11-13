@@ -21,7 +21,10 @@
 
 TEST_SRC ?=
 
-# Architecture - matches common.mk RISCV_FLAGS -march value (see arch.mk)
+# Architecture - matches common.mk RISCV_FLAGS -march value (see arch.mk).
+# tests/test_riscv_vector_tests.py overrides ARCH with a vector -march, sets
+# EXTRA_INCLUDES to put the suite's test macros ahead of the scalar ones, and
+# passes the suite's compiler options in TEST_CFLAGS (ENV=p only).
 include ../../common/arch.mk
 ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zicboz_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause
 ABI  = $(FROST_INT_ABI)
@@ -54,9 +57,9 @@ ENV_SRC = env_v/entry.S env_v/vm.c env_v/string.c
 ENV_CFLAGS = -std=gnu99 -O2 -DENTROPY=$(ENTROPY) -Wno-implicit-function-declaration
 ENTROPY ?= 0x$(shell printf '%s' '$(TEST_SRC)' | cksum | cut -d' ' -f1 | xargs printf '%x')
 else ifeq ($(ENV),p)
-INCLUDES = -I. -Iriscv-tests/isa/macros/scalar -Iriscv-tests/env/p -Iriscv-tests/env
+INCLUDES = $(EXTRA_INCLUDES) -I. -Iriscv-tests/isa/macros/scalar -Iriscv-tests/env/p -Iriscv-tests/env
 ENV_SRC =
-ENV_CFLAGS =
+ENV_CFLAGS = $(TEST_CFLAGS)
 else
 $(error ENV must be one of: p, v (got '$(ENV)'))
 endif
