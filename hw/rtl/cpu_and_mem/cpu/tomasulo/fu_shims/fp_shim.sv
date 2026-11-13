@@ -149,6 +149,8 @@ module fp_shim #(
       .i_src1  (i_rs_issue.src1_value),
       .i_src2  (i_rs_issue.src2_value),
       .i_src3  (i_rs_issue.src3_value),
+      // Zfa FLI's constant index (dispatch places the rs1 field in imm).
+      .i_fli_index(i_rs_issue.imm[4:0]),
       .i_kill  (kill),
       .o_idle  (eng_idle),
       .o_done  (eng_done),

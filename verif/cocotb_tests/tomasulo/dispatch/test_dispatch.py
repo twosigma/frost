@@ -67,8 +67,12 @@ from .dispatch_interface import (
     RS_FP,
     RS_NONE,
     MEM_SIZE_BYTE,
+    MEM_SIZE_HALF,
     MEM_SIZE_WORD,
     MEM_SIZE_DOUBLE,
+    FLH,
+    FSH,
+    FLI_S,
 )
 
 # Major opcodes (instruction bits [6:0]), values from opc_e in riscv_pkg.
@@ -1053,6 +1057,58 @@ async def test_immediate_s_type(dut: Any) -> None:
     rs = dut_if.read_rs_dispatch()
     assert rs["use_imm"] == 1, "SW should use immediate"
     assert rs["imm"] == 100, f"Expected imm=100, got {rs['imm']}"
+
+
+@cocotb.test()
+async def test_zfhmin_half_memory_ops(dut: Any) -> None:
+    """FLH and FSH dispatch to MEM_RS as halfword accesses with their immediates."""
+    dut_if = await _setup(dut)
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=FLH,
+        immediate_i_type=6,
+        is_fp_load=1,
+        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD_FP, funct3=1),
+    )
+    await dut_if.step()
+    rs = dut_if.read_rs_dispatch()
+    assert rs["rs_type"] == RS_MEM, f"FLH rs_type {rs['rs_type']}"
+    assert rs["mem_size"] == MEM_SIZE_HALF, f"FLH mem_size {rs['mem_size']}"
+    assert rs["imm"] == 6, f"FLH imm {rs['imm']}"
+    assert rs["mem_signed"] == 0, "FLH is not a sign-extending load"
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=FSH,
+        immediate_s_type=10,
+        is_fp_store=1,
+        instruction=_make_instr(opcode=OPC_STORE_FP, funct3=1, source_reg_2=4),
+    )
+    await dut_if.step()
+    rs = dut_if.read_rs_dispatch()
+    assert rs["rs_type"] == RS_MEM, f"FSH rs_type {rs['rs_type']}"
+    assert rs["mem_size"] == MEM_SIZE_HALF, f"FSH mem_size {rs['mem_size']}"
+    assert rs["imm"] == 10, f"FSH imm {rs['imm']}"
+
+
+@cocotb.test()
+async def test_zfa_fli_index_in_imm(dut: Any) -> None:
+    """FLI.S reads no register and carries its rs1-field index in imm."""
+    dut_if = await _setup(dut)
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=FLI_S,
+        instruction=_make_instr(
+            dest_reg=3, opcode=OPC_OP_FP, funct7=0b1111000, source_reg_1=29, source_reg_2=1
+        ),
+    )
+    await dut_if.step()
+    rs = dut_if.read_rs_dispatch()
+    assert rs["rs_type"] == RS_FP, f"FLI.S rs_type {rs['rs_type']}"
+    assert rs["imm"] == 29, f"FLI.S imm {rs['imm']}"
+    assert rs["src1_ready"] == 1, "FLI.S has no register source"
 
 
 # =============================================================================

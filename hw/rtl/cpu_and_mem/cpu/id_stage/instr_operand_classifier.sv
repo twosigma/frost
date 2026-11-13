@@ -53,10 +53,15 @@ module instr_operand_classifier (
   } operand_class_t;
 
   operand_class_t raw_class, selected_class;
-  logic fp_int_input, fp_int_output, fp_two_sources;
-  assign fp_int_input = (i_instr.funct7[6:1] == 6'b110100) || (i_instr.funct7[6:1] == 6'b111100);
+  logic fp_int_input, fp_int_output, fp_two_sources, fp_no_source;
+  // FMV.H.X (1111010) and FMV.X.H (1110010) are the half-precision moves.
+  assign fp_int_input = (i_instr.funct7[6:1] == 6'b110100) ||
+      (i_instr.funct7[6:1] == 6'b111100) || (i_instr.funct7[6:1] == 6'b111101);
   assign fp_int_output = (i_instr.funct7[6:1] == 6'b110000) ||
-      (i_instr.funct7[6:1] == 6'b111000) || (i_instr.funct7[6:1] == 6'b101000);
+      (i_instr.funct7[6:1] == 6'b111000) || (i_instr.funct7[6:1] == 6'b101000) ||
+      (i_instr.funct7[6:1] == 6'b111001);
+  // Zfa FLI.S/FLI.D (funct7 1111000/1111001, rs2 00001): rs1 indexes a constant.
+  assign fp_no_source = (i_instr.funct7[6:1] == 6'b111100) && i_instr.source_reg_2[0];
   assign fp_two_sources = (i_instr.funct7[6:1] == 6'b000000) ||
       (i_instr.funct7[6:1] == 6'b000010) || (i_instr.funct7[6:1] == 6'b000100) ||
       (i_instr.funct7[6:1] == 6'b000110) || (i_instr.funct7[6:1] == 6'b001000) ||
@@ -131,7 +136,7 @@ module instr_operand_classifier (
       riscv_pkg::OPC_OP_FP: begin
         raw_class.has_int_dest = fp_int_output;
         raw_class.has_fp_dest = !fp_int_output;
-        raw_class.uses_int_rs1 = fp_int_input;
+        raw_class.uses_int_rs1 = fp_int_input && !fp_no_source;
         raw_class.uses_fp_rs1 = !fp_int_input;
         raw_class.uses_fp_rs2 = fp_two_sources;
         raw_class.has_fp_flags = 1'b1;
