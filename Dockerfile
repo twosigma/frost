@@ -39,6 +39,31 @@ RUN git clone https://github.com/CTSRD-CHERI/QuickCheckVEngine.git /tmp/qcvengin
     && install -D -m 0755 "$(cabal list-bin QCVEngine)" /opt/qcvengine/QCVEngine \
     && install -D -m 0644 LICENSE /opt/qcvengine/LICENSE
 
+# The riscv-vector-tests generator (tests/test_riscv_vector_tests.py) is a Go
+# program, so it builds in its own stage and the Go toolchain stays out of the
+# image. The Go release is checksummed, the suite and its test environment are
+# pinned by commit, and go.sum pins the Go modules the generator needs. Only the
+# suite tree with its built generator and merger is copied forward; the final
+# image builds the suite's Spike-based patcher (pspike) against its own Spike.
+FROM ubuntu:26.04 AS riscv_vector_tests
+ARG GO_VERSION=1.24.4
+ARG GO_SHA256=77e5da33bb72aeaef1ba4418b6fe511bc4d041873cbf82e5aa6318740df98717
+ARG RISCV_VECTOR_TESTS_COMMIT=f76bff121dce91b6b23e1d37be77a5e44af914c3
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates git curl make gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -fL -o /tmp/go.tar.gz https://dl.google.com/go/go${GO_VERSION}.linux-amd64.tar.gz \
+    && echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/go.tar.gz -C /usr/local && rm /tmp/go.tar.gz
+ENV PATH=/usr/local/go/bin:$PATH GOFLAGS=-mod=readonly
+RUN git clone https://github.com/chipsalliance/riscv-vector-tests.git /opt/riscv-vector-tests \
+    && cd /opt/riscv-vector-tests \
+    && git checkout ${RISCV_VECTOR_TESTS_COMMIT} \
+    && git submodule update --init --depth 1 \
+    && go version | grep -F "go${GO_VERSION} " \
+    && make build \
+    && rm -rf .git env/riscv-test-env/.git
+
 # Development and CI image. The core tools use pinned upstream releases.
 FROM ubuntu:26.04
 
@@ -407,6 +432,18 @@ RUN curl -fL -o /tmp/sail-riscv.tar.gz \
 COPY --from=qcvengine /opt/qcvengine/QCVEngine /usr/local/bin/QCVEngine
 COPY --from=qcvengine /opt/qcvengine/LICENSE /usr/local/share/doc/qcvengine/LICENSE
 RUN ! ldd /usr/local/bin/QCVEngine | grep -F "not found"
+
+# riscv-vector-tests (tests/test_riscv_vector_tests.py): the suite tree with its
+# generator and merger from the stage above, plus pspike, the Spike-based
+# patcher that records each test's expected results. pspike links against the
+# Spike installed earlier in this image.
+COPY --from=riscv_vector_tests /opt/riscv-vector-tests /opt/riscv-vector-tests
+RUN g++ -std=c++17 -O2 -I/usr/local/include -L/usr/local/lib \
+        /opt/riscv-vector-tests/pspike/pspike.cc -lriscv -lfesvr -Wl,-rpath,/usr/local/lib \
+        -o /opt/riscv-vector-tests/build/pspike \
+    && strip --strip-debug /opt/riscv-vector-tests/build/pspike \
+    && ! ldd /opt/riscv-vector-tests/build/pspike | grep -F "not found" \
+    && chmod -R a+rX /opt/riscv-vector-tests
 
 # Buildroot rejects Ubuntu 26.04's uutils install (upstream issue #12166).
 # GNU install is supplied by coreutils alongside it; select that implementation
