@@ -554,6 +554,20 @@ module cpu_top #(
   );
   // The SoC's coherent DMA port enters the cluster memory through the same
   // kind of link: requests take credits, responses are always taken.
+  // With stages, a request the cluster memory would refuse (coherence off or
+  // an address outside cached memory) is refused here instead, so it cannot
+  // wait in the link ahead of later requests.
+  logic dma_link_valid, dma_link_ready;
+  if (LinkStages == 0) begin : gen_dma_direct
+    assign dma_link_valid = i_coherent_req_valid;
+    assign o_coherent_req_ready = dma_link_ready;
+  end else begin : gen_dma_admission
+    wire dma_admissible = ENABLE_COHERENCE && (ENABLE_CACHED_TIER != 0) && riscv_pkg::pma_cached_ok(
+        riscv_pkg::XLEN'(i_coherent_req_addr)
+    ) && i_coherent_req_addr[4:0] == 0;
+    assign dma_link_valid = i_coherent_req_valid && dma_admissible;
+    assign o_coherent_req_ready = dma_link_ready && dma_admissible;
+  end
   coherence_link #(
       .WIDTH (1 + riscv_pkg::PhysAddrBits + 256 + 32 + 4 + 1),
       .STAGES(LinkStages),
@@ -562,8 +576,8 @@ module cpu_top #(
       .i_clk,
       .i_rst,
       .i_stopped(link_stop_cluster),
-      .i_valid(i_coherent_req_valid),
-      .o_ready(o_coherent_req_ready),
+      .i_valid(dma_link_valid),
+      .o_ready(dma_link_ready),
       .i_payload({
         i_coherent_req_write,
         i_coherent_req_addr,

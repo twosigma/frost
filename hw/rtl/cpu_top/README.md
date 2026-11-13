@@ -37,7 +37,7 @@ stage. Each channel uses one kind of `coherence_link`
 | P | home to hart | credit with one entry: the L1D serves one probe at a time |
 | G, U, WA | home to hart | always taken: the requester or put slot waits for each one |
 | fatal stop, L2 events | both | always taken |
-| coherent DMA request, response | SoC to cluster memory and back | credit, always taken |
+| coherent DMA request, response | SoC to cluster memory and back | credit (a request the ingress would refuse is refused before the link), always taken |
 | memory request, response | home to `cpu_memory_fabric` and back | credit, always taken |
 
 The hart's uncached data and instruction ports are not staged: they reach

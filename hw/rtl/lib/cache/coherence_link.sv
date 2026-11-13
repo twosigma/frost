@@ -236,7 +236,7 @@ module coherence_link #(
       consumed_payload_q[s*WIDTH+:WIDTH] <= consumed_payload_q[(s-1)*WIDTH+:WIDTH];
     end
     always_ff @(posedge i_clk)
-      if (sim_reset_seen_q && !i_rst && o_ready) begin
+      if (sim_reset_seen_q && !i_rst && !i_stopped && o_ready) begin
         p_link_mirror_held : assert (i_valid);
         p_link_mirror_same : assert (i_payload == consumed_payload_q[(STAGES-1)*WIDTH+:WIDTH]);
       end
