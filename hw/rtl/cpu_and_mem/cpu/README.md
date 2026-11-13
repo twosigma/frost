@@ -553,6 +553,14 @@ and a live-value table records per byte which port wrote it last; reads are
 registered and see the file before that edge's writes, and when two ports write
 one byte together the higher-numbered port wins.
 
+`vec_fma` is the vector unit's fused multiply-add for one IEEE 754 format,
+chosen by its exponent and fraction widths (FP16, FP32 or FP64). It computes
+multiply-add, multiply and add with a single rounding in any of the five
+rounding modes and returns the fflags bits, with canonical NaNs and tininess
+detected after rounding; the sequencer forms the vector forms by choosing
+operands and signs. Its fixed latency is fourteen cycles. The unit bench checks
+it bit for bit against Berkeley SoftFloat.
+
 ## Subtle cases
 
 These front-end hazards are easy to reintroduce. The code comments at each

@@ -2219,6 +2219,24 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Vector register file, 64 entries of 128 bits, 3 read and 3 write ports",
         verilator_extra_args=("-GDEPTH=64", "-GWIDTH=128", "-GNR=3", "-GNW=3"),
     ),
+    "vec_fma16": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fma",
+        hdl_toplevel_module="vec_fma",
+        description="Vector FP16 fused multiply-add, bit for bit against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=5", "-GFRAC=10"),
+    ),
+    "vec_fma32": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fma",
+        hdl_toplevel_module="vec_fma",
+        description="Vector FP32 fused multiply-add, bit for bit against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=8", "-GFRAC=23"),
+    ),
+    "vec_fma64": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fma",
+        hdl_toplevel_module="vec_fma",
+        description="Vector FP64 fused multiply-add, bit for bit against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=11", "-GFRAC=52"),
+    ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",
