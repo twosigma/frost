@@ -1,0 +1,23 @@
+[tasks]
+bmc
+bmc_64x8
+bmc_32x32
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv line_align.sv
+read -formal -sv line_align_check.sv
+bmc: chparam -set LINE_BYTES 32 -set DATA_BYTES 8 line_align_check
+bmc_64x8: chparam -set LINE_BYTES 64 -set DATA_BYTES 8 line_align_check
+bmc_32x32: chparam -set LINE_BYTES 32 -set DATA_BYTES 32 line_align_check
+prep -top line_align_check
+
+[files]
+../hw/rtl/lib/line_align.sv
+line_align_check.sv

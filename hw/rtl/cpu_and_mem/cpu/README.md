@@ -23,6 +23,7 @@ expands renaming, execution, result broadcast, and load/store ordering.
 | `pd_stage/` | Slot-1 instruction from the native word or its predecoded RVC expansion, early source fields, the PD branch redirect |
 | `id_stage/` | Decode for both slots |
 | `mmu/` | Instruction MMU (16-entry ITLB), data MMU (16-entry DTLB), shared page-table walker |
+| `misaligned/` | `ma_pkg`: split geometry, permission, region and fault-order checks for misaligned accesses |
 | `csr/` | CSR file; CSR instructions execute at commit |
 | `control/trap_unit.sv` | Traps, delegation, interrupts, Debug Mode entry |
 | `ex_stage/` | ALU, multiplier and divider, FPU, branch unit |
