@@ -23,7 +23,7 @@ expands renaming, execution, result broadcast, and load/store ordering.
 | `pd_stage/` | Slot-1 instruction from the native word or its predecoded RVC expansion, early source fields, the PD branch redirect |
 | `id_stage/` | Decode for both slots |
 | `mmu/` | Instruction MMU (16-entry ITLB), data MMU (16-entry DTLB), shared page-table walker |
-| `misaligned/` | `ma_pkg`: split geometry, permission, region and fault-order checks for misaligned accesses |
+| `misaligned/` | Misaligned-access engine (`ma_engine`) and its checks (`ma_pkg`) |
 | `csr/` | CSR file; CSR instructions execute at commit |
 | `control/trap_unit.sv` | Traps, delegation, interrupts, Debug Mode entry |
 | `ex_stage/` | ALU, multiplier and divider, FPU, branch unit |
@@ -387,6 +387,28 @@ not expired, preserving a first-page response that arrives on the expiry
 edge beside a warm faulting neighbor. The [RTL overview](../../README.md) lists the supported
 page sizes, and the [cache README](../../lib/cache/README.md) describes the
 walker's port into the cache hierarchy.
+
+## Misaligned accesses
+
+`misaligned/ma_engine.sv` performs one misaligned plain load or store in
+cacheable DDR as one or two 32-byte sector transactions. It is a standalone
+module with its own unit bench and formal target; the core does not
+instantiate it, and misaligned accesses raise the address-misaligned
+exception.
+
+An access is split at the first sector boundary it crosses. `ma_pkg` checks
+each part in architectural order: page fault, then access fault (a physical
+address outside the map), then region. Only cached DDR is served; another
+mapped region gives the address-misaligned exception. The lower part's
+verdict is decided first. The trap value is the original virtual address,
+except for a page or access fault of the upper part, which reports the upper
+part's first byte (the page base when the access crosses a page). The engine
+issues no memory request until both parts have passed, so a faulting store
+writes nothing. It then issues the lower sector's request before the upper
+one and waits for both responses. A load response error gives a load access
+fault with trap value zero; a store response error and a hart stop are
+terminal at once, with no further request. `lib/line_align.sv` moves the
+access between register order and the two sectors.
 
 ## Debug Mode
 

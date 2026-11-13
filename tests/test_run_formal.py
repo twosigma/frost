@@ -970,6 +970,13 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "ma_engine.sby",
+        "Misaligned-access engine: no memory request before both parts pass their "
+        "checks, lower sector first, one request and response per identity, one "
+        "completion, fault or write-back per access, and terminal fatal stops",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
         "alu_shift_hint.sby",
         "ALU shifts and rotates match the reference with captured shift amounts on or "
         "off",
