@@ -29,6 +29,8 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/branch_jump_unit.sv
 # CSR file and local AIA interrupt files
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/csr/csr.f
 
+-f $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vector.f
+
 $(ROOT)/hw/rtl/peripherals/imsic/imsic_priority.sv
 $(ROOT)/hw/rtl/peripherals/imsic/imsic_file.sv
 

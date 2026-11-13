@@ -51,7 +51,10 @@ module reorder_buffer #(
     // slot 1's branch flag, so slot 2 must not allocate while slot 1 carries a
     // branch. cpu_ooo enables this; its dispatch blocks slot 2 behind a slot-1
     // branch. The default per-slot banks accept any allocation pair.
-    parameter bit SharedLinkBank   = 1'b0
+    parameter bit SharedLinkBank = 1'b0,
+    // 1: the vector CSRs exist (vstart, vxsat, vxrm, vcsr, vl, vtype, vlenb)
+    // and are illegal while mstatus.VS is Off.
+    parameter bit VECTOR = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -239,6 +242,9 @@ module reorder_buffer #(
     // and stores out of the memory pipeline. CSR writes serialize; hardware
     // Dirty-setting only moves FS away from Off.
     input logic i_mstatus_fs_off,
+    // mstatus.VS == Off from csr_file; vector CSR accesses are illegal while
+    // it is set. Like FS, hardware only moves VS toward Dirty.
+    input logic i_mstatus_vs_off = 1'b1,
 
     // frm from csr_file. An FP instruction whose rm field selects the dynamic
     // rounding mode (dispatch pre-decodes it as the request's fp_dyn_rm)
@@ -463,7 +469,7 @@ module reorder_buffer #(
       riscv_pkg::CsrMperfSel, riscv_pkg::CsrMperfCtl, riscv_pkg::CsrMperfData,
       riscv_pkg::CsrMperfDataH, riscv_pkg::CsrMperfCount:
       csr_addr_exists = 1'b1;
-      default: csr_addr_exists = csr_is_mhpm(addr);
+      default: csr_addr_exists = csr_is_mhpm(addr) || csr_is_vector(addr);
     endcase
   endfunction
 
@@ -471,6 +477,14 @@ module reorder_buffer #(
   // including RV32-only counter high halves (0xC80-0xC82, 0xB80, 0xB82).
   // Zicsr also forbids write-intending accesses to read-only CSRs
   // (addr[11:10] == 2'b11).
+  // Vector CSRs, present only with the vector unit.
+  function automatic logic csr_is_vector(input logic [11:0] addr);
+    csr_is_vector = VECTOR && ((addr == riscv_pkg::CsrVstart) || (addr == riscv_pkg::CsrVxsat) ||
+        (addr == riscv_pkg::CsrVxrm) || (addr == riscv_pkg::CsrVcsr) ||
+        (addr == riscv_pkg::CsrVl) || (addr == riscv_pkg::CsrVtype) ||
+        (addr == riscv_pkg::CsrVlenb));
+  endfunction
+
   function automatic logic csr_static_illegal(input logic is_csr, input logic [11:0] addr,
                                               input logic write_intent);
     csr_static_illegal =
@@ -522,6 +536,7 @@ module reorder_buffer #(
           (req.is_wfi && i_wfi_illegal) ||
           csr_static_illegal(req.is_csr, req.csr_addr, req.csr_write_intent) ||
           (fs_gated_op(req.is_fp_instruction, req.is_csr, req.csr_addr) && i_mstatus_fs_off) ||
+          (req.is_csr && csr_is_vector(req.csr_addr) && i_mstatus_vs_off) ||
           (req.fp_dyn_rm && (i_frm > riscv_pkg::FRM_RMM));
     end
   endfunction

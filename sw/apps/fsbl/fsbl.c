@@ -17,15 +17,15 @@
 /*
  * FROST 2nd-Stage Bootloader (FSBL)
  *
- * Loaded by the Core Boot ROM (0x0000_0000) from SPI NOR flash (0x0300_0000)
+ * Loaded by the Core Boot ROM (0x0000_0000) from SPI NOR flash (0x0400_0000)
  * into on-chip executable SRAM at 0x0000_4000:
  *   1. Polls the DDR4 controller status for PHY calibration and hardware ECC
  *      scrub completion, then performs a DRAM address/data verification pass
  *      and zero-scrubs the boot payload apertures in DRAM.
  *   2. Reads and validates the SPI NOR flash image headers for:
- *        - OpenSBI (fw_jump.bin) @ flash 0x0310_0000 -> DRAM 0x8000_0000
- *        - Device Tree (frost.dtb) @ flash 0x0320_0000 -> DRAM 0x8220_0000
- *        - U-Boot Proper (u-boot.bin) @ flash 0x0330_0000 -> DRAM 0x8020_0000
+ *        - OpenSBI (fw_jump.bin) @ flash 0x0410_0000 -> DRAM 0x8000_0000
+ *        - Device Tree (frost.dtb) @ flash 0x0420_0000 -> DRAM 0x8220_0000
+ *        - U-Boot Proper (u-boot.bin) @ flash 0x0430_0000 -> DRAM 0x8020_0000
  *   3. Verifies IEEE 802.3 CRC-32 checksums on each loaded DRAM payload.
  *   4. Executes fence + fence.i and jumps to OpenSBI (0x8000_0000) with
  *      a0 = 0 (hartid) and a1 = 0x8220_0000 (DTB), which transitions to
@@ -55,9 +55,9 @@
 
 /* SPI NOR Flash commands and partition offsets */
 #define SPI_CMD_READ_4B 0x13u
-#define FLASH_OPENSBI_OFFSET 0x03100000u
-#define FLASH_DTB_OFFSET 0x03200000u
-#define FLASH_UBOOT_OFFSET 0x03300000u
+#define FLASH_OPENSBI_OFFSET (FLASH_BOOT_BASE + 0x100000u)
+#define FLASH_DTB_OFFSET (FLASH_BOOT_BASE + 0x200000u)
+#define FLASH_UBOOT_OFFSET (FLASH_BOOT_BASE + 0x300000u)
 
 /* DRAM layout */
 #define DRAM_BASE_ADDR 0x80000000UL

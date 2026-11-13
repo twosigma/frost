@@ -4,11 +4,13 @@ coh_l1d_conflict_multi_prove multi conflict padded
 coh_l1d_conflict_stream_prove stream multi conflict padded
 coh_l1d_bmc single control control_single
 coh_l1d_multi_bmc multi control control_multi padded
-coh_l1d_stream_bmc stream multi control_stream padded longbmc streamscript streambounded
+# The scripted and the free stream control BMCs use the cadical engine. On the
+# default engine their last frames pass or stall with unrelated logic changes.
+coh_l1d_stream_bmc stream multi cadical padded longbmc streamscript streambounded
 coh_l1d_stream_hold_bmc stream multi cadical padded longbmc streamscript payloadhold
 coh_l1d_stream_free_nostore_bmc stream multi control control_stream padded nostore streambounded
 coh_l1d_stream_free_nostore_hold_bmc stream multi control cadical padded nostore payloadhold
-coh_l1d_stream_free_bmc stream multi control control_stream padded bulk streambounded
+coh_l1d_stream_free_bmc stream multi control cadical padded bulk streambounded
 coh_l1d_stream_outlier_prove stream multi control padded pdr outlier
 coh_l1d_stream_owned_prove stream multi padded streamread epphase streamowned
 coh_l1d_stream_prove stream multi padded pdr unbounded streamread epphase

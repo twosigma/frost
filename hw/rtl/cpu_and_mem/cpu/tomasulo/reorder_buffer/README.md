@@ -90,7 +90,9 @@ The ROB decides at allocation whether an instruction is illegal and records
 it as an exception with cause `ExcIllegalInstr`. The check covers privilege
 level, counter enables, `mstatus` TVM, TW, and TSR, S-mode `stimecmp` access
 without `menvcfg.STCE`, Debug-only instructions and CSRs, unimplemented CSRs,
-writes to read-only CSRs, FP use while `mstatus.FS` is Off, and an FP
+writes to read-only CSRs, FP use while `mstatus.FS` is Off, vector CSR
+accesses while `mstatus.VS` is Off (with `VECTOR=1`; without it the vector
+CSRs do not exist), and an FP
 instruction with the dynamic rounding mode (rm = 111) while `frm` holds a
 reserved value (5 to 7), which traps like the reserved static modes do.
 Dispatch marks such an instruction with the request's `fp_dyn_rm` bit: an F/D

@@ -28,6 +28,7 @@ expands renaming, execution, result broadcast, and load/store ordering.
 | `control/trap_unit.sv` | Traps, delegation, interrupts, Debug Mode entry |
 | `ex_stage/` | ALU, multiplier and divider, FPU, branch unit |
 | `wb_stage/` | Register file module used for the INT and FP files |
+| `vector/` | Vector unit datapath blocks (see [Vector state](#vector-state)) |
 | `riscv_pkg.sv` | Shared parameters, types, and predecode functions |
 
 `cpu_ooo/cpu_ooo.f` is the authoritative CPU source list.
@@ -488,6 +489,98 @@ permissions, and every lookup applies the live SUM, MXR and effective
 privilege, so the full flush alone retires the old permission state. Linux
 toggles SUM around every user copy, so this keeps both TLBs warm across
 syscalls.
+
+## Vector state
+
+With `VECTOR=1`, `csr_file` holds the vector state: `mstatus.VS` (bits 10:9,
+with its `sstatus` view), `vstart`, `vxsat`, `vxrm`, `vcsr`, and the read-only
+`vl`, `vtype` and `vlenb`. VS resets to Off and has the four FS states. While it
+is Off, the ROB marks every vector CSR access illegal at allocation; writing
+`mstatus` or `sstatus` is followed by the full flush described above, so no
+younger instruction keeps a legality decision made under the old VS. A write
+to `vstart`, `vxsat`, `vxrm` or `vcsr` sets VS to Dirty, and SD is set while
+FS or VS is Dirty. A read that does not write, such as `csrr`, leaves VS
+unchanged. `vstart` keeps log2(`VLEN`) bits, `vlenb` reads `VLEN/8`, `vl` resets
+to 0 and `vtype` to vill. Vector instructions raise illegal-instruction.
+`misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
+elaboration while the vector instructions are not implemented, and bare-metal
+software enables the state by writing `mstatus.VS`. With `VECTOR=0` the vector CSRs do
+not exist and VS reads zero.
+
+The vector unit's datapath blocks live in `vector/`; the core does not
+instantiate them, and each has its own unit bench. `vec_int_lane` is one 64-bit integer lane: add, subtract and
+reverse subtract, the logical operations and `vandn`, signed and unsigned
+minimum and maximum, shifts and rotates, merge and move, the Zvbb bit and byte
+reversals and counts, and the eight compares, at SEW 8, 16, 32 or 64. Its
+result appears a fixed two cycles after the cycle that takes its input, for
+every operation and operand, as Zvkt requires. A 72-bit adder with a
+separator bit after each byte serves every element width: a separator inside
+an element propagates the carry, one at an element boundary stops it and
+yields the element's carry out, which the compares and minimum and maximum
+use. Compares write one bit per element to `o_mask`.
+`vec_mul_lane` forms each element's full product with the signedness the
+operation selects and returns the low or high half, or an accumulate; its full
+products feed the widening multiplies. `vec_mask_unit` runs the mask-register
+logical operations, `vcpop.m`, `vfirst.m`, `vmsbf.m`, `vmsif.m`, `vmsof.m`,
+`viota.m` and `vid.v` as a series of one-cycle steps, 64 mask bits or one
+64-bit word of elements each, keeping the running count, the first-bit flag and
+the element index from one step of an instruction to the next.
+`vec_red_unit` runs the integer reductions and the widening sums the same way,
+one 64-bit word of elements per step: inactive elements count as the
+operation's identity, elements are extended to 64 bits so one operation
+serves every element width, and a three-level tree reduces each word before it
+meets the running value.
+`vec_xbar` moves bytes within one element group: a crossbar whose output byte
+takes any input byte or zero, for the gathers, slides and compress that the
+sequencer turns into byte indices, and a rotator for slides by whole bytes and
+the alignment of unit-stride data to and from memory.
+`vec_clmul_lane` is one 64-bit carry-less multiply lane for `vclmul` and
+`vclmulh`. `vec_ghash_group` builds `vghsh.vv` and `vgmul.vv` from four of these
+lanes: they form the partial products of the 128-bit operands, and one cycle
+folds the 256-bit product back modulo the GCM polynomial.
+`vec_aes_group` runs the Zvkned operations on one 128-bit element group: the
+encryption and decryption rounds, round zero, and both key-schedule steps,
+with S-box lookups, ShiftRows and the round key, and MixColumns or
+InvMixColumns in three fixed cycles, so the timing does not depend on the data.
+`vec_sha2_group` runs `vsha2ms`, `vsha2cl` and `vsha2ch` on one element group of
+four 32-bit (SHA-256) or 64-bit (SHA-512) words: each round's sums use
+carry-save adders and one carry adder, and the two rounds, like the message
+schedule's two dependent word pairs, take four fixed cycles.
+`vec_vrf` is the vector register file: its depth, width and numbers of read and
+write ports are parameters, so it serves an architectural file or a larger
+physical one. Every write port has its own storage copy for every read port,
+and a live-value table records per byte which port wrote it last; reads are
+registered and see the file before that edge's writes, and when two ports write
+one byte together the higher-numbered port wins.
+
+`vec_fma` is the vector unit's fused multiply-add for one IEEE 754 format,
+chosen by its exponent and fraction widths (FP16, FP32 or FP64). It computes
+multiply-add, multiply and add with a single rounding in any of the five
+rounding modes and returns the fflags bits, with canonical NaNs and tininess
+detected after rounding; the sequencer forms the vector forms by choosing
+operands and signs. Its fixed latency is fourteen cycles. The unit bench checks
+it bit for bit against Berkeley SoftFloat.
+
+`vec_fp_misc` holds the same format's non-arithmetic operations: the
+comparisons behind `vmfeq`, `vmflt` and `vmfle` (with `vmfne`, `vmfgt` and
+`vmfge` formed by inverting or swapping), `vfmin` and `vfmax`, the three sign
+injections and `vfclass`, with the fflags each raises. Its latency is one
+cycle.
+
+The conversions are three blocks, each parameterized by its source and
+destination widths so one source serves every same-width, widening and
+narrowing form: `vec_f2i` converts a format to signed or unsigned integers of
+a given width with the RISC-V saturating results, `vec_i2f` converts integers
+to a format, and `vec_f2f` converts between two formats, exactly when
+widening and with rounding (including round to odd for `vfncvt.rod.f.f`) when
+narrowing. Their latencies are five, seven and eight cycles.
+
+`vec_fdivsqrt` is one iterative unit per format shared by `vfdiv`, `vfrdiv`
+and `vfsqrt`: after normalizing subnormal operands it runs a restoring digit
+recurrence through one subtractor, one result bit per cycle, and rounds like
+the other blocks. It takes one operation at a time, signals when it is free,
+and returns each result a fixed P + 10 cycles later (P is the format's
+precision: 21, 34 and 63 cycles for FP16, FP32 and FP64).
 
 ## Subtle cases
 
