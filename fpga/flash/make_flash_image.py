@@ -16,11 +16,11 @@
 """Pack multi-stage boot components into a single SPI NOR flash image for VCU118.
 
 SPI Flash Layout:
-  Offsets below 0x0300_0000: FPGA configuration image
-  Offset 0x0300_0000 (Rel +0x000000): FSBL       (load 0x0000_4000, entry 0x0000_4000)
-  Offset 0x0310_0000 (Rel +0x100000): OpenSBI    (load 0x8000_0000, entry 0x8000_0000)
-  Offset 0x0320_0000 (Rel +0x200000): DTB        (load 0x8220_0000, entry 0x8220_0000)
-  Offset 0x0330_0000 (Rel +0x300000): U-Boot     (load 0x8020_0000, entry 0x8020_0000)
+  Offsets below 0x0400_0000: FPGA configuration image (64 MiB)
+  Offset 0x0400_0000 (Rel +0x000000): FSBL       (load 0x0000_4000, entry 0x0000_4000)
+  Offset 0x0410_0000 (Rel +0x100000): OpenSBI    (load 0x8000_0000, entry 0x8000_0000)
+  Offset 0x0420_0000 (Rel +0x200000): DTB        (load 0x8220_0000, entry 0x8220_0000)
+  Offset 0x0430_0000 (Rel +0x300000): U-Boot     (load 0x8020_0000, entry 0x8020_0000)
 """
 
 import argparse
@@ -32,33 +32,34 @@ IMAGE_MAGIC_FROST = 0x54535246  # "FRST"
 IMAGE_VERSION = 1
 HEADER_SIZE = 32
 
-FLASH_BASE_OFFSET = 0x0300_0000
+# Must equal FLASH_BOOT_BASE in sw/lib/include/flash_boot.h.
+FLASH_BASE_OFFSET = 0x0400_0000
 
 PARTITIONS = [
     {
         "name": "FSBL",
-        "flash_abs_offset": 0x0300_0000,
+        "flash_abs_offset": 0x0400_0000,
         "load_addr": 0x0000_4000,
         "entry_addr": 0x0000_4000,
         "default_file": "sw/apps/fsbl/sw.bin",
     },
     {
         "name": "OpenSBI",
-        "flash_abs_offset": 0x0310_0000,
+        "flash_abs_offset": 0x0410_0000,
         "load_addr": 0x8000_0000,
         "entry_addr": 0x8000_0000,
         "default_file": "sw/uboot/build/opensbi/platform/generic/firmware/fw_jump.bin",
     },
     {
         "name": "DTB",
-        "flash_abs_offset": 0x0320_0000,
+        "flash_abs_offset": 0x0420_0000,
         "load_addr": 0x8220_0000,
         "entry_addr": 0x8220_0000,
         "default_file": "boards/vcu118/frost.dtb",
     },
     {
         "name": "U-Boot",
-        "flash_abs_offset": 0x0330_0000,
+        "flash_abs_offset": 0x0430_0000,
         "load_addr": 0x8020_0000,
         "entry_addr": 0x8020_0000,
         "default_file": "sw/uboot/u-boot.bin",
