@@ -16,14 +16,19 @@
 set mode [lindex $argv 0]
 if {$mode eq "prepare" && $argc == 4} {
     lassign [lrange $argv 1 end] boot bit cfg
+    # Must equal FLASH_BOOT_BASE in sw/lib/include/flash_boot.h; the bitstream occupies the space below it.
+    set boot_base 0x04000000
     if {![file isfile $boot] || [file size $boot] != 0x400000} {
         error "Expected a four-MiB boot image"
     }
     set options [list -format bin -size 128 -interface SPIx4 \
-        -loaddata [list up 0x03000000 $boot] -force]
+        -loaddata [list up $boot_base $boot] -force]
     if {$bit ne ""} {
         if {![file isfile $bit] || [file extension $bit] ne ".bit"} {
             error "Expected a .bit configuration file"
+        }
+        if {[file size $bit] > $boot_base} {
+            error "The configuration image exceeds the space below the boot partition"
         }
         lappend options -loadbit [list up 0 $bit]
     }
