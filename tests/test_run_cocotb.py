@@ -2207,6 +2207,177 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "checked against the GCM specification's multiplication"
         ),
     ),
+    "vec_vrf": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_vrf",
+        hdl_toplevel_module="vec_vrf",
+        description="Vector register file, 32 entries of 256 bits, 4 read and 2 write ports",
+        verilator_extra_args=("-GDEPTH=32", "-GWIDTH=256", "-GNR=4", "-GNW=2"),
+    ),
+    "vec_vrf_3w": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_vrf",
+        hdl_toplevel_module="vec_vrf",
+        description="Vector register file, 64 entries of 128 bits, 3 read and 3 write ports",
+        verilator_extra_args=("-GDEPTH=64", "-GWIDTH=128", "-GNR=3", "-GNW=3"),
+    ),
+    "vec_fma16": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fma",
+        hdl_toplevel_module="vec_fma",
+        description="Vector FP16 fused multiply-add, bit for bit against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=5", "-GFRAC=10"),
+    ),
+    "vec_fma32": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fma",
+        hdl_toplevel_module="vec_fma",
+        description="Vector FP32 fused multiply-add, bit for bit against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=8", "-GFRAC=23"),
+    ),
+    "vec_fma64": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fma",
+        hdl_toplevel_module="vec_fma",
+        description="Vector FP64 fused multiply-add, bit for bit against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=11", "-GFRAC=52"),
+    ),
+    "vec_fp_misc16": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fp_misc",
+        hdl_toplevel_module="vec_fp_misc",
+        description=(
+            "Vector FP16 compare, minimum, maximum, sign injection and classify, "
+            "against Berkeley SoftFloat"
+        ),
+        verilator_extra_args=("-GEXP=5", "-GFRAC=10"),
+    ),
+    "vec_fp_misc32": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fp_misc",
+        hdl_toplevel_module="vec_fp_misc",
+        description=(
+            "Vector FP32 compare, minimum, maximum, sign injection and classify, "
+            "against Berkeley SoftFloat"
+        ),
+        verilator_extra_args=("-GEXP=8", "-GFRAC=23"),
+    ),
+    "vec_fp_misc64": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fp_misc",
+        hdl_toplevel_module="vec_fp_misc",
+        description=(
+            "Vector FP64 compare, minimum, maximum, sign injection and classify, "
+            "against Berkeley SoftFloat"
+        ),
+        verilator_extra_args=("-GEXP=11", "-GFRAC=52"),
+    ),
+    "vec_f2i_f16_i8": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fcvt",
+        hdl_toplevel_module="vec_f2i",
+        description="Vector FP16 to 8-bit integer conversion, against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=5", "-GFRAC=10", "-GIW=8"),
+    ),
+    "vec_f2i_f16_i32": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fcvt",
+        hdl_toplevel_module="vec_f2i",
+        description="Vector FP16 to 32-bit integer conversion, against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=5", "-GFRAC=10", "-GIW=32"),
+    ),
+    "vec_f2i_f32_i32": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fcvt",
+        hdl_toplevel_module="vec_f2i",
+        description="Vector FP32 to 32-bit integer conversion, against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=8", "-GFRAC=23", "-GIW=32"),
+    ),
+    "vec_f2i_f32_i64": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fcvt",
+        hdl_toplevel_module="vec_f2i",
+        description="Vector FP32 to 64-bit integer conversion, against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=8", "-GFRAC=23", "-GIW=64"),
+    ),
+    "vec_f2i_f64_i32": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fcvt",
+        hdl_toplevel_module="vec_f2i",
+        description="Vector FP64 to 32-bit integer conversion, against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=11", "-GFRAC=52", "-GIW=32"),
+    ),
+    "vec_f2i_f64_i64": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fcvt",
+        hdl_toplevel_module="vec_f2i",
+        description="Vector FP64 to 64-bit integer conversion, against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=11", "-GFRAC=52", "-GIW=64"),
+    ),
+    "vec_i2f_i8_f16": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fcvt",
+        hdl_toplevel_module="vec_i2f",
+        description="Vector 8-bit integer to FP16 conversion, against Berkeley SoftFloat",
+        verilator_extra_args=("-GIW=8", "-GEXP=5", "-GFRAC=10"),
+    ),
+    "vec_i2f_i32_f16": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fcvt",
+        hdl_toplevel_module="vec_i2f",
+        description="Vector 32-bit integer to FP16 conversion, against Berkeley SoftFloat",
+        verilator_extra_args=("-GIW=32", "-GEXP=5", "-GFRAC=10"),
+    ),
+    "vec_i2f_i16_f32": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fcvt",
+        hdl_toplevel_module="vec_i2f",
+        description="Vector 16-bit integer to FP32 conversion, against Berkeley SoftFloat",
+        verilator_extra_args=("-GIW=16", "-GEXP=8", "-GFRAC=23"),
+    ),
+    "vec_i2f_i64_f32": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fcvt",
+        hdl_toplevel_module="vec_i2f",
+        description="Vector 64-bit integer to FP32 conversion, against Berkeley SoftFloat",
+        verilator_extra_args=("-GIW=64", "-GEXP=8", "-GFRAC=23"),
+    ),
+    "vec_i2f_i32_f64": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fcvt",
+        hdl_toplevel_module="vec_i2f",
+        description="Vector 32-bit integer to FP64 conversion, against Berkeley SoftFloat",
+        verilator_extra_args=("-GIW=32", "-GEXP=11", "-GFRAC=52"),
+    ),
+    "vec_i2f_i64_f64": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fcvt",
+        hdl_toplevel_module="vec_i2f",
+        description="Vector 64-bit integer to FP64 conversion, against Berkeley SoftFloat",
+        verilator_extra_args=("-GIW=64", "-GEXP=11", "-GFRAC=52"),
+    ),
+    "vec_f2f_f16_f32": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fcvt",
+        hdl_toplevel_module="vec_f2f",
+        description="Vector FP16 to FP32 conversion, against Berkeley SoftFloat",
+        verilator_extra_args=("-GSEXP=5", "-GSFRAC=10", "-GDEXP=8", "-GDFRAC=23"),
+    ),
+    "vec_f2f_f32_f64": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fcvt",
+        hdl_toplevel_module="vec_f2f",
+        description="Vector FP32 to FP64 conversion, against Berkeley SoftFloat",
+        verilator_extra_args=("-GSEXP=8", "-GSFRAC=23", "-GDEXP=11", "-GDFRAC=52"),
+    ),
+    "vec_f2f_f32_f16": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fcvt",
+        hdl_toplevel_module="vec_f2f",
+        description="Vector FP32 to FP16 conversion, against Berkeley SoftFloat",
+        verilator_extra_args=("-GSEXP=8", "-GSFRAC=23", "-GDEXP=5", "-GDFRAC=10"),
+    ),
+    "vec_f2f_f64_f32": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fcvt",
+        hdl_toplevel_module="vec_f2f",
+        description="Vector FP64 to FP32 conversion, against Berkeley SoftFloat",
+        verilator_extra_args=("-GSEXP=11", "-GSFRAC=52", "-GDEXP=8", "-GDFRAC=23"),
+    ),
+    "vec_fdivsqrt16": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fdivsqrt",
+        hdl_toplevel_module="vec_fdivsqrt",
+        description="Vector FP16 divide and square root, bit for bit against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=5", "-GFRAC=10"),
+    ),
+    "vec_fdivsqrt32": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fdivsqrt",
+        hdl_toplevel_module="vec_fdivsqrt",
+        description="Vector FP32 divide and square root, bit for bit against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=8", "-GFRAC=23"),
+    ),
+    "vec_fdivsqrt64": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fdivsqrt",
+        hdl_toplevel_module="vec_fdivsqrt",
+        description="Vector FP64 divide and square root, bit for bit against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=11", "-GFRAC=52"),
+    ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",

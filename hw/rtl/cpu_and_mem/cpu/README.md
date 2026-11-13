@@ -546,6 +546,41 @@ InvMixColumns in three fixed cycles, so the timing does not depend on the data.
 four 32-bit (SHA-256) or 64-bit (SHA-512) words: each round's sums use
 carry-save adders and one carry adder, and the two rounds, like the message
 schedule's two dependent word pairs, take four fixed cycles.
+`vec_vrf` is the vector register file: its depth, width and numbers of read and
+write ports are parameters, so it serves an architectural file or a larger
+physical one. Every write port has its own storage copy for every read port,
+and a live-value table records per byte which port wrote it last; reads are
+registered and see the file before that edge's writes, and when two ports write
+one byte together the higher-numbered port wins.
+
+`vec_fma` is the vector unit's fused multiply-add for one IEEE 754 format,
+chosen by its exponent and fraction widths (FP16, FP32 or FP64). It computes
+multiply-add, multiply and add with a single rounding in any of the five
+rounding modes and returns the fflags bits, with canonical NaNs and tininess
+detected after rounding; the sequencer forms the vector forms by choosing
+operands and signs. Its fixed latency is fourteen cycles. The unit bench checks
+it bit for bit against Berkeley SoftFloat.
+
+`vec_fp_misc` holds the same format's non-arithmetic operations: the
+comparisons behind `vmfeq`, `vmflt` and `vmfle` (with `vmfne`, `vmfgt` and
+`vmfge` formed by inverting or swapping), `vfmin` and `vfmax`, the three sign
+injections and `vfclass`, with the fflags each raises. Its latency is one
+cycle.
+
+The conversions are three blocks, each parameterized by its source and
+destination widths so one source serves every same-width, widening and
+narrowing form: `vec_f2i` converts a format to signed or unsigned integers of
+a given width with the RISC-V saturating results, `vec_i2f` converts integers
+to a format, and `vec_f2f` converts between two formats, exactly when
+widening and with rounding (including round to odd for `vfncvt.rod.f.f`) when
+narrowing. Their latencies are five, seven and eight cycles.
+
+`vec_fdivsqrt` is one iterative unit per format shared by `vfdiv`, `vfrdiv`
+and `vfsqrt`: after normalizing subnormal operands it runs a restoring digit
+recurrence through one subtractor, one result bit per cycle, and rounds like
+the other blocks. It takes one operation at a time, signals when it is free,
+and returns each result a fixed P + 10 cycles later (P is the format's
+precision: 21, 34 and 63 cycles for FP16, FP32 and FP64).
 
 ## Subtle cases
 
