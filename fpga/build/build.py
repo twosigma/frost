@@ -2906,8 +2906,7 @@ def run_x3_guided_place_candidate(
         if mode:
             command.extend(["", mode])
         print(f"\nX3 placement: {mode or step}; work directory: {work}", flush=True)
-        result = subprocess.run(command, cwd=work, env=environment)
-        if result.returncode != 0:
+        if run_vivado_step(command, work, environment) != 0:
             return False
         if step == "place" and not x3_place_cell_bloat_override_is_valid(
             work / log_name, "MEDIUM", cell_bloat_cells, cell_bloat_matches
@@ -3183,28 +3182,47 @@ def explain_silent_vivado_exit(log_path: Path, returncode: int) -> None:
     )
 
 
-def run_vivado_step(command: list[str], cwd: Path) -> int:
+def run_vivado_step(
+    command: list[str], cwd: Path, env: Mapping[str, str] | None = None
+) -> int:
     """Run one Vivado batch step and return its exit code.
 
     Vivado normally exits right after printing ``Exiting Vivado``. If the
     launcher process stays alive for ``VIVADO_EXIT_GRACE_S`` after that line, the
-    step is judged by its ``** DONE`` marker and the launcher is terminated, so a
-    stuck launcher cannot stall the whole build.
+    step is judged by a ``** DONE`` output line (Vivado also echoes the script's
+    own ``puts`` commands behind a ``#``, which do not count) and the launcher's
+    process group is terminated, so a stuck launcher cannot stall the whole build.
     """
     log_path = cwd / "vivado.log"
     if "-log" in command:
         log_path = cwd / command[command.index("-log") + 1]
-    process = subprocess.Popen(command, cwd=cwd)
+    options = {} if env is None else {"env": env}
+    process = subprocess.Popen(command, cwd=cwd, start_new_session=True, **options)
     try:
         returncode = _wait_for_vivado(process, log_path)
     except BaseException:
         # subprocess.run() kills its child on an interrupt; keep that behaviour.
-        process.kill()
+        _signal_launcher(process, signal.SIGKILL)
         process.wait()
         raise
     if returncode != 0:
         explain_silent_vivado_exit(log_path, returncode)
     return returncode
+
+
+def _signal_launcher(process: subprocess.Popen[bytes], sig: signal.Signals) -> None:
+    """Signal the launcher's whole process group: it spawns Vivado without exec."""
+    pid = getattr(process, "pid", None)
+    if isinstance(pid, int):
+        try:
+            os.killpg(pid, sig)
+        except ProcessLookupError:
+            pass
+        return
+    if sig == signal.SIGTERM:
+        process.terminate()
+    else:
+        process.kill()
 
 
 def _wait_for_vivado(process: subprocess.Popen[bytes], log_path: Path) -> int:
@@ -3233,12 +3251,12 @@ def _wait_for_vivado(process: subprocess.Popen[bytes], log_path: Path) -> int:
                 f"  Vivado finished but its launcher did not exit within "
                 f"{VIVADO_EXIT_GRACE_S:.0f} s; terminating it"
             )
-            process.terminate()
+            _signal_launcher(process, signal.SIGTERM)
             try:
                 process.wait(timeout=10.0)
             except subprocess.TimeoutExpired:
-                process.kill()
-            return 0 if "** DONE" in text else 1
+                _signal_launcher(process, signal.SIGKILL)
+            return 0 if re.search(r"^\*\* DONE", text, re.MULTILINE) else 1
 
 
 def generate_bitstream(

@@ -2584,6 +2584,7 @@ def _run_as_popen(run: Any) -> Any:
     """Adapt a fake ``subprocess.run`` body to the Popen call of run_vivado_step."""
 
     def popen(command: list[str], **kwargs: Any) -> Any:
+        kwargs.pop("start_new_session", None)
         returncode = run(command, **kwargs).returncode
         return SimpleNamespace(
             wait=lambda timeout=None: returncode,
@@ -3264,7 +3265,7 @@ def test_below_threshold_place_cannot_promote_or_start_physopt(
     original_popen = fleet.popen
 
     def failed_place(command: list[str], **kwargs: Any) -> Any:
-        if "start_new_session" not in kwargs:
+        if "stdout" not in kwargs:
             return single_step(command, **kwargs)
         process = original_popen(command, **kwargs)
         work_dir = kwargs["cwd"]
@@ -3564,7 +3565,7 @@ def test_guided_candidate_uses_fresh_reference_without_qualifying_itself(
                 (work / "post_opt.dcp").write_bytes(b"changed mid-run")
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(fpga_build.subprocess, "run", run)
+    _fake_vivado_run(monkeypatch, run)
     success, wns, prefix = fpga_build.run_x3_guided_place_candidate(
         tmp_path, "unused", **options
     )
@@ -5271,6 +5272,19 @@ def test_exit_marker_cleared_by_a_log_rewrite_restarts_the_grace_period(
     monkeypatch.setattr(fpga_build.time, "monotonic", lambda: float(next(clock)))
     assert fpga_build.run_vivado_step(["vivado"], tmp_path) == 0
     assert not launcher.terminated
+
+
+def test_echoed_done_command_does_not_count_as_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Vivado echoes the script's puts command behind a hash; only a real line counts."""
+    launcher = _StuckLauncher()
+    log = (
+        '#     puts "** DONE - synthesis complete"\n'
+        "INFO: Exiting Vivado at Tue Nov  3 13:37:14 2026...\n"
+    )
+    assert _launch_stuck_vivado(tmp_path, monkeypatch, launcher, log) == 1
+    assert launcher.terminated
 
 
 def test_launcher_still_running_before_vivado_exits_is_left_alone(
