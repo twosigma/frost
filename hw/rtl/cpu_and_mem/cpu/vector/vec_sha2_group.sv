@@ -32,20 +32,19 @@
   schedule's two dependent pairs of words do. Every result appears a fixed four
   cycles after the cycle that takes the input, for any data (Zvkt).
 */
-module vec_sha2_group
-  import vec_pkg::*;
-(
-    input  logic            i_clk,
-    input  logic            i_rst,
-    input  logic            i_valid,
-    input  sha_op_e         i_op,
-    input  logic            i_sew64,
-    input  logic    [255:0] i_vd,
-    input  logic    [255:0] i_vs2,
-    input  logic    [255:0] i_vs1,
-    output logic            o_valid,
-    output logic    [255:0] o_result
+module vec_sha2_group (
+    input  logic                     i_clk,
+    input  logic                     i_rst,
+    input  logic                     i_valid,
+    input  vec_pkg::sha_op_e         i_op,
+    input  logic                     i_sew64,
+    input  logic             [255:0] i_vd,
+    input  logic             [255:0] i_vs2,
+    input  logic             [255:0] i_vs1,
+    output logic                     o_valid,
+    output logic             [255:0] o_result
 );
+
 
   function automatic logic [63:0] ror(input logic [63:0] x, input int n, input logic w64);
     if (w64) ror = (x >> n) | (x << (64 - n));
@@ -92,7 +91,7 @@ module vec_sha2_group
   endfunction
 
   logic s0_valid, s0_w64;
-  sha_op_e s0_op;
+  vec_pkg::sha_op_e s0_op;
   logic [255:0] s0_vd, s0_vs2, s0_vs1;
   always_ff @(posedge i_clk) begin
     if (i_rst) s0_valid <= 1'b0;
@@ -117,8 +116,8 @@ module vec_sha2_group
     e   = word(s0_vs2, 1, s0_w64);
     b   = word(s0_vs2, 2, s0_w64);
     a   = word(s0_vs2, 3, s0_w64);
-    wk0 = word(s0_vs1, (s0_op == VS_CH) ? 2 : 0, s0_w64);
-    wk1 = word(s0_vs1, (s0_op == VS_CH) ? 3 : 1, s0_w64);
+    wk0 = word(s0_vs1, (s0_op == vec_pkg::VS_CH) ? 2 : 0, s0_w64);
+    wk1 = word(s0_vs1, (s0_op == vec_pkg::VS_CH) ? 3 : 1, s0_w64);
     for (int k = 0; k < 16; k++) w[k] = '0;
     for (int k = 0; k < 4; k++) begin
       w[k] = word(s0_vd, k, s0_w64);
@@ -136,33 +135,32 @@ module vec_sha2_group
     logic [63:0] s0, s1, maj, ch, hwk;
   } round_t;
   logic s1_valid, s1_w64;
-  sha_op_e s1_op;
-  round_t  s1_r;
-  logic [63:0] s1_m16[4], s1_m17[4], s1_w2, s1_w3, s1_w11, s1_w12, s1_sg3, s1_sg4;
+  vec_pkg::sha_op_e s1_op;
+  round_t s1_r;
+  logic [3:0][63:0] s1_m16, s1_m17;
+  logic [63:0] s1_w2, s1_w3, s1_w11, s1_w12, s1_sg3, s1_sg4;
   always_ff @(posedge i_clk) begin
     if (i_rst) s1_valid <= 1'b0;
     else s1_valid <= s0_valid;
     s1_op <= s0_op;
     s1_w64 <= s0_w64;
-    s1_r <= '{
-        a: a,
-        b: b,
-        c: c,
-        d: d,
-        e: e,
-        f: f,
-        g: g,
-        h: h,
-        wk1: wk1,
-        s0: big_sigma0(a, s0_w64),
-        s1: big_sigma1(e, s0_w64),
-        maj: (a & b) ^ (a & c) ^ (b & c),
-        ch: (e & f) ^ (~e & g),
-        hwk: h + wk0
-    };
+    s1_r.a <= a;
+    s1_r.b <= b;
+    s1_r.c <= c;
+    s1_r.d <= d;
+    s1_r.e <= e;
+    s1_r.f <= f;
+    s1_r.g <= g;
+    s1_r.h <= h;
+    s1_r.wk1 <= wk1;
+    s1_r.s0 <= big_sigma0(a, s0_w64);
+    s1_r.s1 <= big_sigma1(e, s0_w64);
+    s1_r.maj <= (a & b) ^ (a & c) ^ (b & c);
+    s1_r.ch <= (e & f) ^ (~e & g);
+    s1_r.hwk <= h + wk0;
     // W16 = s1(W14) + W9 + s0(W1) + W0; W17 = s1(W15) + W10 + s0(W2) + W1.
-    s1_m16 <= '{small_sigma1(w[14], s0_w64), w[9], small_sigma0(w[1], s0_w64), w[0]};
-    s1_m17 <= '{small_sigma1(w[15], s0_w64), w[10], small_sigma0(w[2], s0_w64), w[1]};
+    s1_m16 <= {small_sigma1(w[14], s0_w64), w[9], small_sigma0(w[1], s0_w64), w[0]};
+    s1_m17 <= {small_sigma1(w[15], s0_w64), w[10], small_sigma0(w[2], s0_w64), w[1]};
     // W18 = s1(W16) + W11 + s0(W3) + W2; W19 = s1(W17) + W12 + s0(W4) + W3.
     s1_w2 <= w[2];
     s1_w3 <= w[3];
@@ -174,7 +172,7 @@ module vec_sha2_group
 
   // Stage 2: first-round a and e; W16 and W17.
   logic s2_valid, s2_w64;
-  sha_op_e s2_op;
+  vec_pkg::sha_op_e s2_op;
   logic [63:0] s2_a1, s2_e1, s2_a, s2_b, s2_c, s2_e, s2_f, s2_g, s2_wk1;
   logic [63:0] s2_w16, s2_w17, s2_r18, s2_r19;
   always_ff @(posedge i_clk) begin
@@ -200,7 +198,7 @@ module vec_sha2_group
   // Stage 3: second-round terms on (a1, a, b, c, e1, e, f, g); sigma1 of
   // W16 and W17.
   logic s3_valid, s3_w64;
-  sha_op_e s3_op;
+  vec_pkg::sha_op_e s3_op;
   logic [63:0] s3_a1, s3_e1, s3_s0, s3_s1, s3_maj, s3_ch, s3_gwk, s3_c;
   logic [63:0] s3_w16, s3_w17, s3_sg16, s3_sg17, s3_r18, s3_r19;
   always_ff @(posedge i_clk) begin
@@ -227,14 +225,14 @@ module vec_sha2_group
   // Stage 4: second-round a and e, W18 and W19, and the packed result.
   logic [63:0] a2, e2, w18, w19;
   logic [255:0] result;
+  logic [3:0][63:0] r;
   assign a2  = sum5(s3_gwk, s3_s1, s3_ch, s3_s0, s3_maj);
   assign e2  = sum5(s3_gwk, s3_s1, s3_ch, s3_c, 64'd0);
   assign w18 = s3_sg16 + s3_r18;
   assign w19 = s3_sg17 + s3_r19;
   always_comb begin
-    logic [63:0] r[4];
-    if (s3_op == VS_MS) r = '{s3_w16, s3_w17, w18, w19};
-    else r = '{s3_e1, e2, s3_a1, a2};  // {f, e, b, a} after two rounds
+    if (s3_op == vec_pkg::VS_MS) r = {w19, w18, s3_w17, s3_w16};
+    else r = {a2, s3_a1, e2, s3_e1};  // {a, b, e, f} after two rounds: f in word 0
     result = '0;
     for (int k = 0; k < 4; k++) begin
       if (s3_w64) result[64*k+:64] = r[k];

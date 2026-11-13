@@ -35,32 +35,31 @@
   the instruction's result. Every step's outputs appear a fixed two cycles
   after the cycle that takes its input.
 */
-module vec_mask_unit
-  import vec_pkg::*;
-#(
+module vec_mask_unit #(
     // Mask bits per instruction at most (VLEN): sizes the counts.
     parameter int unsigned MAX_BITS = 512
 ) (
-    input  logic            i_clk,
-    input  logic            i_rst,
-    input  logic            i_valid,
-    input  logic            i_first,
-    input  mask_op_e        i_op,
-    input  sew_e            i_sew,
-    input  logic     [63:0] i_a,
-    input  logic     [63:0] i_b,
-    input  logic     [63:0] i_act,
-    output logic            o_valid,
-    output logic     [63:0] o_result,
-    output logic     [63:0] o_scalar
+    input  logic                     i_clk,
+    input  logic                     i_rst,
+    input  logic                     i_valid,
+    input  logic                     i_first,
+    input  vec_pkg::mask_op_e        i_op,
+    input  vec_pkg::sew_e            i_sew,
+    input  logic              [63:0] i_a,
+    input  logic              [63:0] i_b,
+    input  logic              [63:0] i_act,
+    output logic                     o_valid,
+    output logic              [63:0] o_result,
+    output logic              [63:0] o_scalar
 );
+
 
   localparam int unsigned CountBits = $clog2(MAX_BITS + 1);
 
   // Stage 0: input registers.
   logic s0_valid, s0_first;
-  mask_op_e s0_op;
-  sew_e s0_sew;
+  vec_pkg::mask_op_e s0_op;
+  vec_pkg::sew_e s0_sew;
   logic [63:0] s0_a, s0_b, s0_act;
   always_ff @(posedge i_clk) begin
     if (i_rst) s0_valid <= 1'b0;
@@ -86,14 +85,14 @@ module vec_mask_unit
     first_idx = 7'd0;
     for (int j = 63; j >= 0; j--) if (x[j]) first_idx = 7'(j);
     unique case (s0_op)
-      VK_AND:  logic_r = s0_a & s0_b;
-      VK_NAND: logic_r = ~(s0_a & s0_b);
-      VK_ANDN: logic_r = s0_a & ~s0_b;
-      VK_XOR:  logic_r = s0_a ^ s0_b;
-      VK_OR:   logic_r = s0_a | s0_b;
-      VK_NOR:  logic_r = ~(s0_a | s0_b);
-      VK_ORN:  logic_r = s0_a | ~s0_b;
-      default: logic_r = ~(s0_a ^ s0_b);  // VK_XNOR
+      vec_pkg::VK_AND: logic_r = s0_a & s0_b;
+      vec_pkg::VK_NAND: logic_r = ~(s0_a & s0_b);
+      vec_pkg::VK_ANDN: logic_r = s0_a & ~s0_b;
+      vec_pkg::VK_XOR: logic_r = s0_a ^ s0_b;
+      vec_pkg::VK_OR: logic_r = s0_a | s0_b;
+      vec_pkg::VK_NOR: logic_r = ~(s0_a | s0_b);
+      vec_pkg::VK_ORN: logic_r = s0_a | ~s0_b;
+      default: logic_r = ~(s0_a ^ s0_b);  // vec_pkg::VK_XNOR
     endcase
   end
 
@@ -105,9 +104,9 @@ module vec_mask_unit
     logic [7:0] bits;
     run = 4'd0;
     unique case (s0_sew)
-      SEW8: bits = x[7:0];
-      SEW16: bits = {4'b0, x[3:0]};
-      SEW32: bits = {6'b0, x[1:0]};
+      vec_pkg::SEW8: bits = x[7:0];
+      vec_pkg::SEW16: bits = {4'b0, x[3:0]};
+      vec_pkg::SEW32: bits = {6'b0, x[1:0]};
       default: bits = {7'b0, x[0]};
     endcase
     for (int k = 0; k < 8; k++) begin
@@ -118,8 +117,8 @@ module vec_mask_unit
   end
 
   logic s1_valid, s1_first, s1_any;
-  mask_op_e s1_op;
-  sew_e s1_sew;
+  vec_pkg::mask_op_e s1_op;
+  vec_pkg::sew_e s1_sew;
   logic [63:0] s1_act, s1_lowest, s1_below, s1_logic;
   logic [6:0] s1_pop, s1_first_idx;
   logic [3:0] s1_prefix[8];
@@ -156,9 +155,9 @@ module vec_mask_unit
   logic [63:0] result, scalar;
   always_comb begin
     unique case (s1_sew)
-      SEW8: step_elems = CountBits'(8);
-      SEW16: step_elems = CountBits'(4);
-      SEW32: step_elems = CountBits'(2);
+      vec_pkg::SEW8: step_elems = CountBits'(8);
+      vec_pkg::SEW16: step_elems = CountBits'(4);
+      vec_pkg::SEW32: step_elems = CountBits'(2);
       default: step_elems = CountBits'(1);
     endcase
     count_next = count_in;
@@ -169,11 +168,11 @@ module vec_mask_unit
     result     = '0;
     scalar     = '0;
     unique case (s1_op)
-      VK_CPOP: begin
+      vec_pkg::VK_CPOP: begin
         count_next = count_in + CountBits'(s1_pop);
         scalar = 64'(count_next);
       end
-      VK_FIRST: begin
+      vec_pkg::VK_FIRST: begin
         if (!found_in && s1_any) begin
           found_next = 1'b1;
           index_next = first_abs;
@@ -181,33 +180,35 @@ module vec_mask_unit
         base_next = base_in + CountBits'(64);
         scalar = found_next ? 64'(index_next) : '1;
       end
-      VK_SBF, VK_SIF, VK_SOF: begin
+      vec_pkg::VK_SBF, vec_pkg::VK_SIF, vec_pkg::VK_SOF: begin
         if (!found_in) begin
           unique case (s1_op)
-            VK_SBF:  result = s1_act & s1_below;
-            VK_SIF:  result = s1_act & (s1_below | s1_lowest);
+            vec_pkg::VK_SBF: result = s1_act & s1_below;
+            vec_pkg::VK_SIF: result = s1_act & (s1_below | s1_lowest);
             default: result = s1_lowest;
           endcase
         end
         found_next = found_in || s1_any;
       end
-      VK_IOTA: begin
+      vec_pkg::VK_IOTA: begin
         unique case (s1_sew)
-          SEW8:
+          vec_pkg::SEW8:
           for (int k = 0; k < 8; k++) result[8*k+:8] = 8'(count_in + CountBits'(s1_prefix[k]));
-          SEW16:
+          vec_pkg::SEW16:
           for (int k = 0; k < 4; k++) result[16*k+:16] = 16'(count_in + CountBits'(s1_prefix[k]));
-          SEW32:
+          vec_pkg::SEW32:
           for (int k = 0; k < 2; k++) result[32*k+:32] = 32'(count_in + CountBits'(s1_prefix[k]));
           default: result = 64'(count_in);
         endcase
         count_next = count_in + CountBits'(s1_word_pop);
       end
-      VK_ID: begin
+      vec_pkg::VK_ID: begin
         unique case (s1_sew)
-          SEW8: for (int k = 0; k < 8; k++) result[8*k+:8] = 8'(index_in + CountBits'(k));
-          SEW16: for (int k = 0; k < 4; k++) result[16*k+:16] = 16'(index_in + CountBits'(k));
-          SEW32: for (int k = 0; k < 2; k++) result[32*k+:32] = 32'(index_in + CountBits'(k));
+          vec_pkg::SEW8: for (int k = 0; k < 8; k++) result[8*k+:8] = 8'(index_in + CountBits'(k));
+          vec_pkg::SEW16:
+          for (int k = 0; k < 4; k++) result[16*k+:16] = 16'(index_in + CountBits'(k));
+          vec_pkg::SEW32:
+          for (int k = 0; k < 2; k++) result[32*k+:32] = 32'(index_in + CountBits'(k));
           default: result = 64'(index_in);
         endcase
         index_next = index_in + step_elems;

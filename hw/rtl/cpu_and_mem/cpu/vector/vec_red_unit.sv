@@ -32,65 +32,64 @@
   cycle, before it meets the running value; every step's output appears a
   fixed five cycles after the cycle that takes its input.
 */
-module vec_red_unit
-  import vec_pkg::*;
-(
-    input  logic           i_clk,
-    input  logic           i_rst,
-    input  logic           i_valid,
-    input  logic           i_first,
-    input  red_op_e        i_op,
-    input  sew_e           i_sew,
-    input  logic    [63:0] i_word,
-    input  logic    [ 7:0] i_act,
-    input  logic    [63:0] i_init,
-    output logic           o_valid,
-    output logic    [63:0] o_acc
+module vec_red_unit (
+    input  logic                    i_clk,
+    input  logic                    i_rst,
+    input  logic                    i_valid,
+    input  logic                    i_first,
+    input  vec_pkg::red_op_e        i_op,
+    input  vec_pkg::sew_e           i_sew,
+    input  logic             [63:0] i_word,
+    input  logic             [ 7:0] i_act,
+    input  logic             [63:0] i_init,
+    output logic                    o_valid,
+    output logic             [63:0] o_acc
 );
 
-  function automatic logic is_signed(input red_op_e op);
-    is_signed = (op == VR_MIN) || (op == VR_MAX) || (op == VR_WSUM);
+
+  function automatic logic is_signed(input vec_pkg::red_op_e op);
+    is_signed = (op == vec_pkg::VR_MIN) || (op == vec_pkg::VR_MAX) || (op == vec_pkg::VR_WSUM);
   endfunction
 
-  function automatic logic [63:0] identity(input red_op_e op);
+  function automatic logic [63:0] identity(input vec_pkg::red_op_e op);
     unique case (op)
-      VR_AND, VR_MINU: identity = '1;
-      VR_MIN: identity = 64'h7FFF_FFFF_FFFF_FFFF;
-      VR_MAX: identity = 64'h8000_0000_0000_0000;
+      vec_pkg::VR_AND, vec_pkg::VR_MINU: identity = '1;
+      vec_pkg::VR_MIN: identity = 64'h7FFF_FFFF_FFFF_FFFF;
+      vec_pkg::VR_MAX: identity = 64'h8000_0000_0000_0000;
       default: identity = '0;
     endcase
   endfunction
 
-  function automatic logic [63:0] combine(input red_op_e op, input logic [63:0] x,
+  function automatic logic [63:0] combine(input vec_pkg::red_op_e op, input logic [63:0] x,
                                           input logic [63:0] y);
     unique case (op)
-      VR_AND:  combine = x & y;
-      VR_OR:   combine = x | y;
-      VR_XOR:  combine = x ^ y;
-      VR_MINU: combine = (x < y) ? x : y;
-      VR_MIN:  combine = ($signed(x) < $signed(y)) ? x : y;
-      VR_MAXU: combine = (x > y) ? x : y;
-      VR_MAX:  combine = ($signed(x) > $signed(y)) ? x : y;
+      vec_pkg::VR_AND: combine = x & y;
+      vec_pkg::VR_OR: combine = x | y;
+      vec_pkg::VR_XOR: combine = x ^ y;
+      vec_pkg::VR_MINU: combine = (x < y) ? x : y;
+      vec_pkg::VR_MIN: combine = ($signed(x) < $signed(y)) ? x : y;
+      vec_pkg::VR_MAXU: combine = (x > y) ? x : y;
+      vec_pkg::VR_MAX: combine = ($signed(x) > $signed(y)) ? x : y;
       default: combine = x + y;  // the sums
     endcase
   endfunction
 
   // Extend element k of a word at a width (k wraps within the word's
   // elements; the caller substitutes the identity past the last one).
-  function automatic logic [63:0] element(input logic [63:0] word, input sew_e sew, input int k,
-                                          input logic sgn);
+  function automatic logic [63:0] element(input logic [63:0] word, input vec_pkg::sew_e sew,
+                                          input int k, input logic sgn);
     unique case (sew)
-      SEW8: element = sgn ? 64'($signed(word[8*k+:8])) : 64'(word[8*k+:8]);
-      SEW16: element = sgn ? 64'($signed(word[16*(k%4)+:16])) : 64'(word[16*(k%4)+:16]);
-      SEW32: element = sgn ? 64'($signed(word[32*(k%2)+:32])) : 64'(word[32*(k%2)+:32]);
+      vec_pkg::SEW8: element = sgn ? 64'($signed(word[8*k+:8])) : 64'(word[8*k+:8]);
+      vec_pkg::SEW16: element = sgn ? 64'($signed(word[16*(k%4)+:16])) : 64'(word[16*(k%4)+:16]);
+      vec_pkg::SEW32: element = sgn ? 64'($signed(word[32*(k%2)+:32])) : 64'(word[32*(k%2)+:32]);
       default: element = word;
     endcase
   endfunction
 
   // Stage 0: input registers.
   logic s0_valid, s0_first;
-  red_op_e s0_op;
-  sew_e s0_sew;
+  vec_pkg::red_op_e s0_op;
+  vec_pkg::sew_e s0_sew;
   logic [63:0] s0_word, s0_init;
   logic [7:0] s0_act;
   always_ff @(posedge i_clk) begin
@@ -110,9 +109,9 @@ module vec_red_unit
   logic [3:0] nelem;
   always_comb begin
     unique case (s0_sew)
-      SEW8: nelem = 4'd8;
-      SEW16: nelem = 4'd4;
-      SEW32: nelem = 4'd2;
+      vec_pkg::SEW8: nelem = 4'd8;
+      vec_pkg::SEW16: nelem = 4'd4;
+      vec_pkg::SEW32: nelem = 4'd2;
       default: nelem = 4'd1;
     endcase
     for (int k = 0; k < 8; k++)
@@ -125,17 +124,17 @@ module vec_red_unit
   logic [63:0] init_ext;
   always_comb begin
     logic sgn;
-    sew_e w;
+    vec_pkg::sew_e w;
     sgn = is_signed(s0_op);
     w   = s0_sew;
-    if (s0_op == VR_WSUMU || s0_op == VR_WSUM)
-      w = (s0_sew == SEW64) ? SEW64 : sew_e'(s0_sew + 2'd1);
+    if (s0_op == vec_pkg::VR_WSUMU || s0_op == vec_pkg::VR_WSUM)
+      w = (s0_sew == vec_pkg::SEW64) ? vec_pkg::SEW64 : vec_pkg::sew_e'(s0_sew + 2'd1);
     init_ext = element(s0_init, w, 0, sgn);
   end
 
   logic se_valid, se_first;
-  red_op_e se_op;
-  sew_e se_sew;
+  vec_pkg::red_op_e se_op;
+  vec_pkg::sew_e se_sew;
   logic [63:0] se_e[8], se_init;
   always_ff @(posedge i_clk) begin
     if (i_rst) se_valid <= 1'b0;
@@ -149,8 +148,8 @@ module vec_red_unit
 
   // Tree level 1.
   logic s1_valid, s1_first;
-  red_op_e s1_op;
-  sew_e s1_sew;
+  vec_pkg::red_op_e s1_op;
+  vec_pkg::sew_e s1_sew;
   logic [63:0] s1_l1[4], s1_init;
   always_ff @(posedge i_clk) begin
     if (i_rst) s1_valid <= 1'b0;
@@ -164,8 +163,8 @@ module vec_red_unit
 
   // Tree level 2.
   logic s2_valid, s2_first;
-  red_op_e s2_op;
-  sew_e s2_sew;
+  vec_pkg::red_op_e s2_op;
+  vec_pkg::sew_e s2_sew;
   logic [63:0] s2_l2[2], s2_init;
   always_ff @(posedge i_clk) begin
     if (i_rst) s2_valid <= 1'b0;
@@ -179,8 +178,8 @@ module vec_red_unit
 
   // Tree level 3.
   logic s3_valid, s3_first;
-  red_op_e s3_op;
-  sew_e s3_sew;
+  vec_pkg::red_op_e s3_op;
+  vec_pkg::sew_e s3_sew;
   logic [63:0] s3_word, s3_init;
   always_ff @(posedge i_clk) begin
     if (i_rst) s3_valid <= 1'b0;
@@ -197,14 +196,14 @@ module vec_red_unit
   assign acc_in   = s3_first ? s3_init : acc_q;
   assign acc_next = combine(s3_op, acc_in, s3_word);
   always_comb begin
-    sew_e w;
+    vec_pkg::sew_e w;
     w = s3_sew;
-    if (s3_op == VR_WSUMU || s3_op == VR_WSUM)
-      w = (s3_sew == SEW64) ? SEW64 : sew_e'(s3_sew + 2'd1);
+    if (s3_op == vec_pkg::VR_WSUMU || s3_op == vec_pkg::VR_WSUM)
+      w = (s3_sew == vec_pkg::SEW64) ? vec_pkg::SEW64 : vec_pkg::sew_e'(s3_sew + 2'd1);
     unique case (w)
-      SEW8: acc_cut = 64'(acc_next[7:0]);
-      SEW16: acc_cut = 64'(acc_next[15:0]);
-      SEW32: acc_cut = 64'(acc_next[31:0]);
+      vec_pkg::SEW8: acc_cut = 64'(acc_next[7:0]);
+      vec_pkg::SEW16: acc_cut = 64'(acc_next[15:0]);
+      vec_pkg::SEW32: acc_cut = 64'(acc_next[31:0]);
       default: acc_cut = acc_next;
     endcase
   end

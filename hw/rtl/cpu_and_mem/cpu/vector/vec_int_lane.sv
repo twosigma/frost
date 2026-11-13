@@ -32,28 +32,27 @@
   of the element below it. Subtraction adds the inverted operand with a
   carry-in of 1, so that bit is 1 exactly when a >= b, unsigned.
 */
-module vec_int_lane
-  import vec_pkg::*;
-(
-    input  logic           i_clk,
-    input  logic           i_rst,
-    input  logic           i_valid,
-    input  int_op_e        i_op,
-    input  sew_e           i_sew,
-    input  logic    [63:0] i_a,
-    input  logic    [63:0] i_b,
-    input  logic    [ 7:0] i_mask,
-    output logic           o_valid,
-    output logic    [63:0] o_result,
-    output logic    [ 7:0] o_mask
+module vec_int_lane (
+    input  logic                    i_clk,
+    input  logic                    i_rst,
+    input  logic                    i_valid,
+    input  vec_pkg::int_op_e        i_op,
+    input  vec_pkg::sew_e           i_sew,
+    input  logic             [63:0] i_a,
+    input  logic             [63:0] i_b,
+    input  logic             [ 7:0] i_mask,
+    output logic                    o_valid,
+    output logic             [63:0] o_result,
+    output logic             [ 7:0] o_mask
 );
+
 
   // --------------------------------------------------------------------------
   // Stage 0: input registers
   // --------------------------------------------------------------------------
   logic s0_valid;
-  int_op_e s0_op;
-  sew_e s0_sew;
+  vec_pkg::int_op_e s0_op;
+  vec_pkg::sew_e s0_sew;
   logic [63:0] s0_a, s0_b;
   logic [7:0] s0_mask;
   always_ff @(posedge i_clk) begin
@@ -67,21 +66,21 @@ module vec_int_lane
   end
 
   // Byte i starts an element.
-  function automatic logic [7:0] element_starts(input sew_e sew);
+  function automatic logic [7:0] element_starts(input vec_pkg::sew_e sew);
     unique case (sew)
-      SEW8: element_starts = 8'b1111_1111;
-      SEW16: element_starts = 8'b0101_0101;
-      SEW32: element_starts = 8'b0001_0001;
+      vec_pkg::SEW8: element_starts = 8'b1111_1111;
+      vec_pkg::SEW16: element_starts = 8'b0101_0101;
+      vec_pkg::SEW32: element_starts = 8'b0001_0001;
       default: element_starts = 8'b0000_0001;
     endcase
   endfunction
 
   // Byte i is the top byte of an element.
-  function automatic logic [7:0] element_tops(input sew_e sew);
+  function automatic logic [7:0] element_tops(input vec_pkg::sew_e sew);
     unique case (sew)
-      SEW8: element_tops = 8'b1111_1111;
-      SEW16: element_tops = 8'b1010_1010;
-      SEW32: element_tops = 8'b1000_1000;
+      vec_pkg::SEW8: element_tops = 8'b1111_1111;
+      vec_pkg::SEW16: element_tops = 8'b1010_1010;
+      vec_pkg::SEW32: element_tops = 8'b1000_1000;
       default: element_tops = 8'b1000_0000;
     endcase
   endfunction
@@ -94,8 +93,8 @@ module vec_int_lane
   assign tops   = element_tops(s0_sew);
 
   logic op_add, op_rsub;
-  assign op_add  = (s0_op == VI_ADD);
-  assign op_rsub = (s0_op == VI_RSUB);
+  assign op_add  = (s0_op == vec_pkg::VI_ADD);
+  assign op_rsub = (s0_op == vec_pkg::VI_RSUB);
 
   // Every non-add arithmetic use (sub, rsub, min/max, compares) subtracts.
   logic [63:0] add_x, add_y;
@@ -189,8 +188,8 @@ module vec_int_lane
   end
 
   logic s1_valid;
-  int_op_e s1_op;
-  sew_e s1_sew;
+  vec_pkg::int_op_e s1_op;
+  vec_pkg::sew_e s1_sew;
   logic [63:0] s1_a, s1_b, s1_sum, s1_shift;
   logic [7:0] s1_mask, s1_carry, s1_byte_eq;
   logic [3:0] s1_lz8[8], s1_tz8[8], s1_pop8[8];
@@ -199,10 +198,10 @@ module vec_int_lane
   logic [63:0] shift_sel;
   always_comb begin
     unique case (s0_op)
-      VI_SLL:  shift_sel = shl[s0_sew];
-      VI_SRL:  shift_sel = shr[s0_sew];
-      VI_SRA:  shift_sel = sra_r[s0_sew];
-      VI_ROL:  shift_sel = rol_r[s0_sew];
+      vec_pkg::VI_SLL: shift_sel = shl[s0_sew];
+      vec_pkg::VI_SRL: shift_sel = shr[s0_sew];
+      vec_pkg::VI_SRA: shift_sel = sra_r[s0_sew];
+      vec_pkg::VI_ROL: shift_sel = rol_r[s0_sew];
       default: shift_sel = ror_r[s0_sew];
     endcase
   end
@@ -251,44 +250,47 @@ module vec_int_lane
       end
     end
     unique case (s1_sew)
-      SEW8: el_eq = s1_byte_eq;
-      SEW16: for (int k = 0; k < 4; k++) el_eq[2*k+1] = &s1_byte_eq[2*k+:2];
-      SEW32: for (int k = 0; k < 2; k++) el_eq[4*k+3] = &s1_byte_eq[4*k+:4];
+      vec_pkg::SEW8: el_eq = s1_byte_eq;
+      vec_pkg::SEW16: for (int k = 0; k < 4; k++) el_eq[2*k+1] = &s1_byte_eq[2*k+:2];
+      vec_pkg::SEW32: for (int k = 0; k < 2; k++) el_eq[4*k+3] = &s1_byte_eq[4*k+:4];
       default: el_eq[7] = &s1_byte_eq;
     endcase
   end
 
-  // Replicate each element's flag (held at its top byte) to all its bytes.
-  function automatic logic [7:0] spread(input logic [7:0] at_top, input sew_e sew);
+  // Byte i of an element whose top byte is i | (SEW/8 - 1), and that
+  // element's index within the lane, i / (SEW/8).
+  function automatic int top_byte(input int i, input vec_pkg::sew_e sew);
     unique case (sew)
-      SEW8: spread = at_top;
-      SEW16: for (int k = 0; k < 4; k++) spread[2*k+:2] = {2{at_top[2*k+1]}};
-      SEW32: for (int k = 0; k < 2; k++) spread[4*k+:4] = {4{at_top[4*k+3]}};
-      default: spread = {8{at_top[7]}};
+      vec_pkg::SEW8: top_byte = i;
+      vec_pkg::SEW16: top_byte = i | 1;
+      vec_pkg::SEW32: top_byte = i | 3;
+      default: top_byte = 7;
     endcase
   endfunction
 
-  // Pack each element's flag (held at its top byte) into bit k for element k.
-  function automatic logic [7:0] pack(input logic [7:0] at_top, input sew_e sew);
-    pack = '0;
+  function automatic int element_index(input int i, input vec_pkg::sew_e sew);
     unique case (sew)
-      SEW8: pack = at_top;
-      SEW16: for (int k = 0; k < 4; k++) pack[k] = at_top[2*k+1];
-      SEW32: for (int k = 0; k < 2; k++) pack[k] = at_top[4*k+3];
-      default: pack[0] = at_top[7];
+      vec_pkg::SEW8: element_index = i;
+      vec_pkg::SEW16: element_index = i / 2;
+      vec_pkg::SEW32: element_index = i / 4;
+      default: element_index = 0;
     endcase
+  endfunction
+
+  // Replicate each element's flag (held at its top byte) to all its bytes.
+  function automatic logic [7:0] spread(input logic [7:0] at_top, input vec_pkg::sew_e sew);
+    for (int i = 0; i < 8; i++) spread[i] = at_top[top_byte(i, sew)];
+  endfunction
+
+  // Pack each element's flag (held at its top byte) into bit k for element k.
+  function automatic logic [7:0] pack(input logic [7:0] at_top, input vec_pkg::sew_e sew);
+    pack = '0;
+    for (int i = 0; i < 8; i++) if (top_byte(i, sew) == i) pack[element_index(i, sew)] = at_top[i];
   endfunction
 
   // The merge mask of each byte (element k's bit spread over its bytes).
   logic [7:0] merge_bytes;
-  always_comb begin
-    unique case (s1_sew)
-      SEW8: merge_bytes = s1_mask;
-      SEW16: for (int k = 0; k < 4; k++) merge_bytes[2*k+:2] = {2{s1_mask[k]}};
-      SEW32: for (int k = 0; k < 2; k++) merge_bytes[4*k+:4] = {4{s1_mask[k]}};
-      default: merge_bytes = {8{s1_mask[0]}};
-    endcase
-  end
+  always_comb for (int i = 0; i < 8; i++) merge_bytes[i] = s1_mask[element_index(i, s1_sew)];
 
   // Element counts from the per-byte counts.
   logic [63:0] count_clz, count_ctz, count_pop;
@@ -297,19 +299,19 @@ module vec_int_lane
     count_ctz = '0;
     count_pop = '0;
     unique case (s1_sew)
-      SEW8:
+      vec_pkg::SEW8:
       for (int k = 0; k < 8; k++) begin
         count_clz[8*k+:8] = 8'(s1_lz8[k]);
         count_ctz[8*k+:8] = 8'(s1_tz8[k]);
         count_pop[8*k+:8] = 8'(s1_pop8[k]);
       end
-      SEW16:
+      vec_pkg::SEW16:
       for (int k = 0; k < 4; k++) begin
         count_clz[16*k+:16] = 16'(s1_lz16[k]);
         count_ctz[16*k+:16] = 16'(s1_tz16[k]);
         count_pop[16*k+:16] = 16'(s1_pop16[k]);
       end
-      SEW32:
+      vec_pkg::SEW32:
       for (int k = 0; k < 2; k++) begin
         count_clz[32*k+:32] = 32'(s1_lz32[k]);
         count_ctz[32*k+:32] = 32'(s1_tz32[k]);
@@ -332,18 +334,20 @@ module vec_int_lane
   always_comb begin
     for (int i = 0; i < 8; i++) for (int j = 0; j < 8; j++) brev8_v[8*i+j] = s1_a[8*i+7-j];
     unique case (s1_sew)
-      SEW8: rev8_v = s1_a;
-      SEW16: for (int k = 0; k < 4; k++) rev8_v[16*k+:16] = {s1_a[16*k+:8], s1_a[16*k+8+:8]};
-      SEW32:
+      vec_pkg::SEW8: rev8_v = s1_a;
+      vec_pkg::SEW16:
+      for (int k = 0; k < 4; k++) rev8_v[16*k+:16] = {s1_a[16*k+:8], s1_a[16*k+8+:8]};
+      vec_pkg::SEW32:
       for (int k = 0; k < 2; k++)
       for (int j = 0; j < 4; j++) rev8_v[32*k+8*j+:8] = s1_a[32*k+8*(3-j)+:8];
       default: for (int j = 0; j < 8; j++) rev8_v[8*j+:8] = s1_a[8*(7-j)+:8];
     endcase
     // A bit reverse is the byte reverse of the per-byte bit reverse.
     unique case (s1_sew)
-      SEW8: brev_v = brev8_v;
-      SEW16: for (int k = 0; k < 4; k++) brev_v[16*k+:16] = {brev8_v[16*k+:8], brev8_v[16*k+8+:8]};
-      SEW32:
+      vec_pkg::SEW8: brev_v = brev8_v;
+      vec_pkg::SEW16:
+      for (int k = 0; k < 4; k++) brev_v[16*k+:16] = {brev8_v[16*k+:8], brev8_v[16*k+8+:8]};
+      vec_pkg::SEW32:
       for (int k = 0; k < 2; k++)
       for (int j = 0; j < 4; j++) brev_v[32*k+8*j+:8] = brev8_v[32*k+8*(3-j)+:8];
       default: for (int j = 0; j < 8; j++) brev_v[8*j+:8] = brev8_v[8*(7-j)+:8];
@@ -360,39 +364,40 @@ module vec_int_lane
     result = '0;
     mask_at_top = '0;
     unique case (s1_op)
-      VI_ADD, VI_SUB, VI_RSUB: result = s1_sum;
-      VI_AND: result = s1_a & s1_b;
-      VI_OR: result = s1_a | s1_b;
-      VI_XOR: result = s1_a ^ s1_b;
-      VI_ANDN: result = s1_a & ~s1_b;
-      VI_MINU, VI_MIN, VI_MAXU, VI_MAX: begin
+      vec_pkg::VI_ADD, vec_pkg::VI_SUB, vec_pkg::VI_RSUB: result = s1_sum;
+      vec_pkg::VI_AND: result = s1_a & s1_b;
+      vec_pkg::VI_OR: result = s1_a | s1_b;
+      vec_pkg::VI_XOR: result = s1_a ^ s1_b;
+      vec_pkg::VI_ANDN: result = s1_a & ~s1_b;
+      vec_pkg::VI_MINU, vec_pkg::VI_MIN, vec_pkg::VI_MAXU, vec_pkg::VI_MAX: begin
         logic [7:0] pick_a;
         unique case (s1_op)
-          VI_MINU: pick_a = ltu_bytes;
-          VI_MIN:  pick_a = lt_bytes;
-          VI_MAXU: pick_a = ~ltu_bytes;
+          vec_pkg::VI_MINU: pick_a = ltu_bytes;
+          vec_pkg::VI_MIN: pick_a = lt_bytes;
+          vec_pkg::VI_MAXU: pick_a = ~ltu_bytes;
           default: pick_a = ~lt_bytes;
         endcase
         for (int i = 0; i < 8; i++) result[8*i+:8] = pick_a[i] ? s1_a[8*i+:8] : s1_b[8*i+:8];
       end
-      VI_SLL, VI_SRL, VI_SRA, VI_ROL, VI_ROR: result = s1_shift;
-      VI_MERGE:
+      vec_pkg::VI_SLL, vec_pkg::VI_SRL, vec_pkg::VI_SRA, vec_pkg::VI_ROL, vec_pkg::VI_ROR:
+      result = s1_shift;
+      vec_pkg::VI_MERGE:
       for (int i = 0; i < 8; i++) result[8*i+:8] = merge_bytes[i] ? s1_b[8*i+:8] : s1_a[8*i+:8];
-      VI_MV: result = s1_b;
-      VI_BREV: result = brev_v;
-      VI_BREV8: result = brev8_v;
-      VI_REV8: result = rev8_v;
-      VI_CLZ: result = count_clz;
-      VI_CTZ: result = count_ctz;
-      VI_CPOP: result = count_pop;
-      VI_MSEQ: mask_at_top = el_eq;
-      VI_MSNE: mask_at_top = ~el_eq & element_tops(s1_sew);
-      VI_MSLTU: mask_at_top = el_ltu;
-      VI_MSLT: mask_at_top = el_lt;
-      VI_MSLEU: mask_at_top = el_ltu | el_eq;
-      VI_MSLE: mask_at_top = el_lt | el_eq;
-      VI_MSGTU: mask_at_top = ~(el_ltu | el_eq) & element_tops(s1_sew);
-      default: mask_at_top = ~(el_lt | el_eq) & element_tops(s1_sew);  // VI_MSGT
+      vec_pkg::VI_MV: result = s1_b;
+      vec_pkg::VI_BREV: result = brev_v;
+      vec_pkg::VI_BREV8: result = brev8_v;
+      vec_pkg::VI_REV8: result = rev8_v;
+      vec_pkg::VI_CLZ: result = count_clz;
+      vec_pkg::VI_CTZ: result = count_ctz;
+      vec_pkg::VI_CPOP: result = count_pop;
+      vec_pkg::VI_MSEQ: mask_at_top = el_eq;
+      vec_pkg::VI_MSNE: mask_at_top = ~el_eq & element_tops(s1_sew);
+      vec_pkg::VI_MSLTU: mask_at_top = el_ltu;
+      vec_pkg::VI_MSLT: mask_at_top = el_lt;
+      vec_pkg::VI_MSLEU: mask_at_top = el_ltu | el_eq;
+      vec_pkg::VI_MSLE: mask_at_top = el_lt | el_eq;
+      vec_pkg::VI_MSGTU: mask_at_top = ~(el_ltu | el_eq) & element_tops(s1_sew);
+      default: mask_at_top = ~(el_lt | el_eq) & element_tops(s1_sew);  // vec_pkg::VI_MSGT
     endcase
   end
 

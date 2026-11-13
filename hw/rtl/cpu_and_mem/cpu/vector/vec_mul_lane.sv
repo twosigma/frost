@@ -21,8 +21,8 @@
   vmulhu, vmulhsu) or z plus or minus the low bits (vmacc, vnmsac and, with
   the operands chosen by the sequencer, vmadd and vnmsub). o_wide holds the
   full products of the lane's elements at SEW 8, 16 and 32 for the widening
-  multiplies, element k at bits 2*SEW*k; vwmul, vwmulu and vwmulsu use VM_MULH,
-  VM_MULHU and VM_MULHSU for their signedness. Every result appears a fixed
+  multiplies, element k at bits 2*SEW*k; vwmul, vwmulu and vwmulsu use vec_pkg::VM_MULH,
+  vec_pkg::VM_MULHU and vec_pkg::VM_MULHSU for their signedness. Every result appears a fixed
   six cycles after the cycle that takes the input, whatever the operation
   and operands.
 
@@ -32,26 +32,25 @@
   the multipliers, which are followed by four register stages that synthesis
   places inside the DSP cascades.
 */
-module vec_mul_lane
-  import vec_pkg::*;
-(
-    input  logic            i_clk,
-    input  logic            i_rst,
-    input  logic            i_valid,
-    input  mul_op_e         i_op,
-    input  sew_e            i_sew,
-    input  logic    [ 63:0] i_x,
-    input  logic    [ 63:0] i_y,
-    input  logic    [ 63:0] i_z,
-    output logic            o_valid,
-    output logic    [ 63:0] o_result,
-    output logic    [127:0] o_wide
+module vec_mul_lane (
+    input  logic                     i_clk,
+    input  logic                     i_rst,
+    input  logic                     i_valid,
+    input  vec_pkg::mul_op_e         i_op,
+    input  vec_pkg::sew_e            i_sew,
+    input  logic             [ 63:0] i_x,
+    input  logic             [ 63:0] i_y,
+    input  logic             [ 63:0] i_z,
+    output logic                     o_valid,
+    output logic             [ 63:0] o_result,
+    output logic             [127:0] o_wide
 );
+
 
   // Stage 0: input registers.
   logic s0_valid;
-  mul_op_e s0_op;
-  sew_e s0_sew;
+  vec_pkg::mul_op_e s0_op;
+  vec_pkg::sew_e s0_sew;
   logic [63:0] s0_x, s0_y, s0_z;
   always_ff @(posedge i_clk) begin
     if (i_rst) s0_valid <= 1'b0;
@@ -68,11 +67,11 @@ module vec_mul_lane
   // the operands with their sign-extension bits, so the multipliers start
   // from registers.
   logic x_signed, y_signed;
-  assign x_signed = (s0_op == VM_MULH) || (s0_op == VM_MULHSU);
-  assign y_signed = (s0_op == VM_MULH);
+  assign x_signed = (s0_op == vec_pkg::VM_MULH) || (s0_op == vec_pkg::VM_MULHSU);
+  assign y_signed = (s0_op == vec_pkg::VM_MULH);
   logic sa_valid;
-  mul_op_e sa_op;
-  sew_e sa_sew;
+  vec_pkg::mul_op_e sa_op;
+  vec_pkg::sew_e sa_sew;
   logic [63:0] sa_x, sa_y, sa_z;
   logic [7:0] sa_xs, sa_ys;  // sign-extension bit of each byte's element
   always_ff @(posedge i_clk) begin
@@ -90,9 +89,9 @@ module vec_mul_lane
   end
 
   // Full products for each element width, from SEW+1-bit extended operands.
-  logic [ 15:0] p8  [8];
-  logic [ 31:0] p16 [4];
-  logic [ 63:0] p32 [2];
+  logic [7:0][15:0] p8;
+  logic [3:0][31:0] p16;
+  logic [1:0][63:0] p32;
   logic [127:0] p64;
   always_comb begin
     for (int e = 0; e < 8; e++) begin
@@ -133,12 +132,12 @@ module vec_mul_lane
   // synthesis places inside the DSP cascades of the wide products.
   localparam int MulStages = 4;
   logic pv[MulStages];
-  mul_op_e pop[MulStages];
-  sew_e psew[MulStages];
+  vec_pkg::mul_op_e pop[MulStages];
+  vec_pkg::sew_e psew[MulStages];
   logic [63:0] pz[MulStages];
-  logic [15:0] pp8[MulStages][8];
-  logic [31:0] pp16[MulStages][4];
-  logic [63:0] pp32[MulStages][2];
+  logic [7:0][15:0] pp8[MulStages];
+  logic [3:0][31:0] pp16[MulStages];
+  logic [1:0][63:0] pp32[MulStages];
   logic [127:0] pp64[MulStages];
   always_ff @(posedge i_clk) begin
     if (i_rst) for (int k = 0; k < MulStages; k++) pv[k] <= 1'b0;
@@ -164,12 +163,12 @@ module vec_mul_lane
     end
   end
   logic s2_valid;
-  mul_op_e s2_op;
-  sew_e s2_sew;
+  vec_pkg::mul_op_e s2_op;
+  vec_pkg::sew_e s2_sew;
   logic [63:0] s2_z;
-  logic [15:0] s2_p8[8];
-  logic [31:0] s2_p16[4];
-  logic [63:0] s2_p32[2];
+  logic [7:0][15:0] s2_p8;
+  logic [3:0][31:0] s2_p16;
+  logic [1:0][63:0] s2_p32;
   logic [127:0] s2_p64;
   assign s2_valid = pv[MulStages-1];
   assign s2_op = pop[MulStages-1];
@@ -188,19 +187,19 @@ module vec_mul_lane
     hi   = '0;
     wide = '0;
     unique case (s2_sew)
-      SEW8:
+      vec_pkg::SEW8:
       for (int e = 0; e < 8; e++) begin
         lo[8*e+:8] = s2_p8[e][7:0];
         hi[8*e+:8] = s2_p8[e][15:8];
         wide[16*e+:16] = s2_p8[e];
       end
-      SEW16:
+      vec_pkg::SEW16:
       for (int e = 0; e < 4; e++) begin
         lo[16*e+:16]   = s2_p16[e][15:0];
         hi[16*e+:16]   = s2_p16[e][31:16];
         wide[32*e+:32] = s2_p16[e];
       end
-      SEW32:
+      vec_pkg::SEW32:
       for (int e = 0; e < 2; e++) begin
         lo[32*e+:32]   = s2_p32[e][31:0];
         hi[32*e+:32]   = s2_p32[e][63:32];
@@ -218,9 +217,9 @@ module vec_mul_lane
   logic [7:0] tops;
   always_comb begin
     unique case (s2_sew)
-      SEW8: tops = 8'b1111_1111;
-      SEW16: tops = 8'b1010_1010;
-      SEW32: tops = 8'b1000_1000;
+      vec_pkg::SEW8: tops = 8'b1111_1111;
+      vec_pkg::SEW16: tops = 8'b1010_1010;
+      vec_pkg::SEW32: tops = 8'b1000_1000;
       default: tops = 8'b1000_0000;
     endcase
   end
@@ -228,7 +227,7 @@ module vec_mul_lane
   logic [63:0] acc_y;
   logic [71:0] ext_x, ext_y, ext_sum;
   logic [63:0] acc;
-  assign sub   = (s2_op == VM_NMSAC);
+  assign sub   = (s2_op == vec_pkg::VM_NMSAC);
   assign acc_y = sub ? ~lo : lo;
   always_comb begin
     for (int i = 0; i < 8; i++) begin
@@ -245,8 +244,8 @@ module vec_mul_lane
     if (i_rst) o_valid <= 1'b0;
     else o_valid <= s2_valid;
     unique case (s2_op)
-      VM_MUL: o_result <= lo;
-      VM_MULH, VM_MULHU, VM_MULHSU: o_result <= hi;
+      vec_pkg::VM_MUL: o_result <= lo;
+      vec_pkg::VM_MULH, vec_pkg::VM_MULHU, vec_pkg::VM_MULHSU: o_result <= hi;
       default: o_result <= acc;
     endcase
     o_wide <= wide;
