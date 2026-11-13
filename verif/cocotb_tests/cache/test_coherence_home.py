@@ -1315,13 +1315,13 @@ async def victim_claim_and_ordinary_put_are_exclusive(dut: Any) -> None:
         target = base + 16 * b.line
         await b.submit(0, target)
         for _ in range(100):
-            if int(dut.array.phase_q.value) == 4:
+            if int(dut.array.selecting.value):
                 break
             await b.tick()
         else:
             raise AssertionError("no pre-claim victim decision")
         way = int(dut.array.selected.value)
-        entry = int(dut.array.tags_q[way].value)
+        entry = int(dut.array.select_tags[way].value)
         low_bits = (b.line.bit_length() - 1) + len(dut.array.set_q)
         address = ((entry & ((1 << (b.p - low_bits)) - 1)) << low_bits) + 32 * sector
         changed = (1 << 255) | 0x13579

@@ -3760,7 +3760,7 @@ def test_hart_maintenance_lemma_model_matches() -> None:
     proof = formal_task_config("coherent_hart_cache", "coh_hart_maint_prove")
     common = [
         "select -assert-none t:$check r:FLAVOR=assume %i",
-        "select -assert-count 372 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 373 t:$check r:FLAVOR=assert %i",
     ]
     lemmas = (
         "c:*p_maint_owned_* c:p_maint_data_* c:*p_maint_ledger_* "
@@ -3770,13 +3770,13 @@ def test_hart_maintenance_lemma_model_matches() -> None:
     covers = "chformal -cover -remove"
     owned_commands = common + [
         f"chformal -assert -remove t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %d",
-        "select -assert-count 284 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 285 t:$check r:FLAVOR=assert %i",
         covers,
     ]
     proof_commands = common + [
-        f"select -assert-count 284 t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %i",
+        f"select -assert-count 285 t:$check r:FLAVOR=assert %i {lemmas} %u %u %u %u %u %u %u %i",
         f"chformal -assert2assume {lemmas}",
-        "select -assert-count 284 t:$check r:FLAVOR=assume %i",
+        "select -assert-count 285 t:$check r:FLAVOR=assume %i",
         "select -assert-count 88 t:$check r:FLAVOR=assert %i",
         covers,
     ]

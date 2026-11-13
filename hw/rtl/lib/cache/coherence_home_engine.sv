@@ -125,6 +125,10 @@ module coherence_home_engine #(
   logic [8*LINE_BYTES-1:0] image_q;
   logic [1:0] state_q;
   logic read_sent_q, read_done_q, dirty_q, failed_q, error_q, lookup_sent_q;
+  // The service needs only its row: no probe, so no reply, no merge and no
+  // update. Its data's arrival completes it, and the result is offered in
+  // that cycle with the arriving sector (early_result).
+  logic quick_q, early_result;
   // A prefetch's decision found no resident line (or a blocked one): it
   // goes to Result with nothing to read or probe. Cleared at the result
   // handshake.
@@ -235,7 +239,8 @@ module coherence_home_engine #(
   assign o_update_valid = run && phase_q == Update;
   assign o_update_data = image_q;
   assign o_update_mask = LINE_BYTES'(dirty_q ? 32'hffff_ffff : request_q.mask) << (upper ? 32 : 0);
-  assign o_result_valid = run && phase_q == Result;
+  assign early_result = phase_q == Service && quick_q && i_data_valid;
+  assign o_result_valid = run && (phase_q == Result || early_result);
   assign o_result = result;
   assign o_image = image_q[(upper ? 256 : 0)+:256];
   assign o_fatal = phase_q == Fatal;
@@ -246,7 +251,7 @@ module coherence_home_engine #(
     result.tid = tid_q;
     result.error = error_q;
     result.opcode = coherence_pkg::GrantData;
-    result.data = o_image;
+    result.data = early_result ? i_data[(upper ? 256 : 0)+:256] : o_image;
     case (request_q.opcode)
       coherence_pkg::GetS, coherence_pkg::LoadReserved: result.opcode = coherence_pkg::GrantS;
       coherence_pkg::GetM, coherence_pkg::Atomic: result.opcode = coherence_pkg::GrantM;
@@ -388,10 +393,32 @@ module coherence_home_engine #(
       end
     end
   end
+  // A resident decision sets quick_q for a service without a probe; new work
+  // clears it.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) quick_q <= 1'b0;
+    else if (run) begin
+      if (i_work_valid) quick_q <= 1'b0;
+      if (deciding && i_decision_valid && i_decision_resident)
+        quick_q <= needs_data && !needs_probe;
+    end
+  end
+`ifdef COH_MAINT_OWNED
+  // A quick service has no probe, so it is clean and error-free (for the
+  // ownership tasks, which read the engine with SYNTHESIS defined).
+  always_ff @(posedge i_clk)
+    if (!i_rst && quick_q)
+      p_maint_owned_home_quick :
+      assert (!needs_probe && needs_data && probe_phase_q == ProbeDone && !dirty_q && !error_q);
+`endif
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk)
     if (sim_reset_seen_q && !i_rst) begin
       assert (!read_done_q || read_sent_q);
+      // A quick service has no probe, so it is clean and error-free.
+      if (quick_q && phase_q == Service)
+        assert (probe_phase_q == ProbeDone && !dirty_q && !error_q && needs_data &&
+            request_q.opcode != coherence_pkg::DMAWrite);
       if (phase_q == Update || phase_q == UpdateWait)
         assert (read_done_q && probe_phase_q == ProbeDone);
       if (i_work_valid) assert (o_idle);

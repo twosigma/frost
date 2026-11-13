@@ -603,7 +603,15 @@ module coherent_hart_cache_formal #(
   assign home_d_ready = !rst && free_valid && !duplicate && !put_pending_q &&
       !put_ack_q && !(put_valid && put_ready);
   assign g_valid = !rst && grant_slot < Slots && state_q[grant_slot] == Result && permit_g;
-  assign result_ready = 1;
+  // The home's result arbiter may take a result on any cycle or stall it: an
+  // early offer may be taken in its data cycle or fall back to Result.
+`ifdef COH_MAINT_FOUR
+  // The four-record bounded tasks permit every handshake (see permit_*).
+  wire result_take = 1'b1;
+`else
+  (* anyseq *) logic result_take;
+`endif
+  assign result_ready = result_take;
   assign home_c_ready = !rst && completion_found && state_q[completion_slot] == Granted && permit_c;
   assign u_valid = !rst && release_slot < Slots && state_q[release_slot] == Completed && permit_u;
   assign release_message = {released_grant.q, released_grant.tid, released_grant.addr};

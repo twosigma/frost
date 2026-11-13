@@ -148,6 +148,19 @@ module coherence_home_array #(
   logic [SetBits-1:0] tag_raddr, tag_waddr;
   logic [TagEntryBits-1:0] tag_wdata;
   logic [TagEntryBits-1:0] tag_rdata[WAYS], tags_q[WAYS];
+  // With ULTRA the tag RAM's output is a fabric register that holds a read
+  // until the next lookup's data, so the selection reads it on the last
+  // tag-read cycle and the response follows on the next: no Select cycle.
+  // A block-RAM tag read follows its address and is copied to tags_q.
+  // SRAM macros (FROST_SRAM_MACROS) keep the Select cycle.
+`ifdef FROST_SRAM_MACROS
+  localparam bit FoldSelect = 1'b0;
+`else
+  localparam bit FoldSelect = ULTRA;
+`endif
+  logic [TagEntryBits-1:0] select_tags[WAYS];
+  // The selection cycle: the response's fields register on its edge.
+  logic selecting;
 `ifdef SYNTHESIS
   localparam int unsigned SimFastInit = 0;
   wire init_bulk_clear = 1'b0;
@@ -263,7 +276,7 @@ module coherence_home_array #(
   assign request_fire = i_req_valid && o_req_ready;
   assign o_resp_valid = phase_q == Reply;
   for (genvar way = 0; way < WAYS; way++) begin : gen_resp_tags
-    assign o_resp_tags[way] = tags_q[way][TagBits-1:0];
+    assign o_resp_tags[way] = select_tags[way][TagBits-1:0];
   end
   assign o_resp_token = token_q;
   assign o_resp_token_onehot = token_onehot_q;
@@ -493,13 +506,17 @@ module coherence_home_array #(
     end
   end
 
+  for (genvar way = 0; way < WAYS; way++) begin : gen_select_tags
+    assign select_tags[way] = FoldSelect ? tag_rdata[way] : tags_q[way];
+  end
+  assign selecting = FoldSelect ? phase_q == Tags && count_q == 1 : phase_q == Select;
   always_comb begin
     selected = victim(plru_q, ~i_exclude);
     hit = 1'b0;
     for (int way = WAYS - 1; way >= 0; way--)
-    if (tags_q[way][TagBits+:2] == 0 && !i_exclude[way]) selected = WayBits'(way);
+    if (select_tags[way][TagBits+:2] == 0 && !i_exclude[way]) selected = WayBits'(way);
     for (int way = 0; way < WAYS; way++) begin
-      if (tags_q[way][TagBits+:2] != 0 && tags_q[way][TagBits-1:0] == tag_q) begin
+      if (select_tags[way][TagBits+:2] != 0 && select_tags[way][TagBits-1:0] == tag_q) begin
         hit = 1'b1;
         selected = WayBits'(way);
       end
@@ -539,22 +556,22 @@ module coherence_home_array #(
           count_q <= count_q - 1'b1;
           if (count_q == 1) begin
             for (int way = 0; way < WAYS; way++) tags_q[way] <= tag_rdata[way];
-            phase_q <= Select;
+            phase_q <= FoldSelect ? Reply : Select;
           end
         end
-        Select: begin
-          o_resp_hit <= hit;
-          o_resp_available <= hit || !(&i_exclude);
-          o_resp_two_available <= $countones(~i_exclude) >= 2;
-          o_resp_way <= selected;
-          o_resp_addr <= {tags_q[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
-          o_resp_state <= tags_q[selected][TagBits+:2];
-          phase_q <= Reply;
-        end
+        Select: phase_q <= Reply;
         Reply: if (i_resp_ready) phase_q <= Idle;
         default: begin
         end
       endcase
+      if (selecting) begin
+        o_resp_hit <= hit;
+        o_resp_available <= hit || !(&i_exclude);
+        o_resp_two_available <= $countones(~i_exclude) >= 2;
+        o_resp_way <= selected;
+        o_resp_addr <= {select_tags[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
+        o_resp_state <= select_tags[selected][TagBits+:2];
+      end
       if (request_fire) begin
         set_q <= i_req_addr[OffsetBits+:SetBits];
         tag_q <= i_req_addr[ADDR_WIDTH-1:OffsetBits+SetBits];
@@ -576,6 +593,9 @@ module coherence_home_array #(
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
     if (sim_reset_seen_q && !i_rst) begin
+      // The held tag register still holds the selection's tags in the response.
+      if (FoldSelect && phase_q == Reply)
+        for (int way = 0; way < WAYS; way++) assert (tag_rdata[way] == tags_q[way]);
       if (read_fire) assert (int'(i_read_way) < WAYS);
       if (update_fire) assert (int'(i_update_way) < WAYS);
       if (o_resp_valid && i_resp_ready && i_resp_claim) assert (o_resp_available);
@@ -594,10 +614,11 @@ module coherence_home_array #(
   end
 `endif
 `ifdef COHERENCE_HOME_CONTROL
-  assign o_query_held = !i_rst && (phase_q == Select || phase_q == Reply);
+  assign o_query_held = !i_rst && (selecting || phase_q == Reply);
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
       if (phase_q == Reply && !o_resp_hit && o_resp_available) assert (!i_exclude[o_resp_way]);
+      if (FoldSelect) assert (phase_q != Select);
       if (phase_q == Reply && o_resp_two_available) assert (o_resp_available);
       if (phase_q == Tags || phase_q == Select || phase_q == Reply) begin
         assert (i_tag_owner[token_q]);
