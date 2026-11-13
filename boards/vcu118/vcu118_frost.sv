@@ -22,6 +22,10 @@ module vcu118_frost #(
     parameter int unsigned PERF_COUNTERS = 0,
     parameter int unsigned ENABLE_CACHED_TIER = 1,
     parameter int unsigned USE_BEHAVIORAL_DDR = 0,
+    // Misaligned loads and stores to cached DDR in hardware (frost
+    // MISALIGNED_HW); build.py --no-misaligned-hw turns it off. It needs the
+    // cached tier, so it is off without one.
+    parameter bit MISALIGNED_HW = 1'b1,
     // The VCU118 L2 is 4 MiB, with the shared four-way geometry.
     parameter int unsigned L2_CACHE_BYTES = 4 * 1024 * 1024
 ) (
@@ -272,9 +276,7 @@ module vcu118_frost #(
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
       .L2_CACHE_BYTES    (L2_CACHE_BYTES),
       .PERF_COUNTERS     (PERF_COUNTERS),
-      // Misaligned loads and stores to cached DDR in hardware; the engine
-      // needs the cached tier.
-      .MISALIGNED_HW     (ENABLE_CACHED_TIER != 0),
+      .MISALIGNED_HW     (MISALIGNED_HW && (ENABLE_CACHED_TIER != 0)),
       .RAW_LOOPBACK      (0),
       .ENABLE_1G_ETH     (1)
   ) u_frost_subsystem (

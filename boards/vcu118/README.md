@@ -24,9 +24,11 @@ The L2 uses four ways, 16,384 sets and 64-byte lines. The board top passes
 `L2_CACHE_BYTES` through the shared subsystem; its default remains 2 MiB
 for other boards. The software loader sets `FROST_L2_CACHE_BYTES=4194304`
 for VCU118 applications so conflicting-set eviction uses the same geometry.
-The build includes the misaligned-access engine (`MISALIGNED_HW`), which
-performs plain misaligned loads and stores to cached DDR in hardware, as on
-the X3.
+The build includes the misaligned-access engine (the top's `MISALIGNED_HW`
+generic, on by default), which performs plain misaligned loads and stores to
+cached DDR in hardware, as on the X3. `fpga/build/build.py vcu118
+--no-misaligned-hw` builds without it, and misaligned accesses then raise
+the address-misaligned exception.
 
 ## Board integration
 

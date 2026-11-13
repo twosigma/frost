@@ -3585,6 +3585,14 @@ Examples:
         "clock divider)",
     )
     parser.add_argument(
+        "--misaligned-hw",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="vcu118: perform misaligned loads and stores to cached DDR in hardware "
+        "(the board top's MISALIGNED_HW generic; default: on). The x3 build always "
+        "has it",
+    )
+    parser.add_argument(
         "--physopt-directive",
         choices=PHYS_OPT_DIRECTIVES,
         default="AggressiveExplore",
@@ -3750,6 +3758,10 @@ Examples:
     # The CLI is authoritative for the counters as well: synthesis reads
     # FROST_PERF_COUNTERS, and an inherited value must not change the netlist.
     os.environ["FROST_PERF_COUNTERS"] = "1" if functional_policy.perf_counters else "0"
+    # The VCU118 top's MISALIGNED_HW generic, also authoritative from the CLI.
+    if not args.misaligned_hw and board_name != "vcu118":
+        parser.error("--no-misaligned-hw is only supported for vcu118")
+    os.environ["FROST_MISALIGNED_HW"] = "1" if args.misaligned_hw else "0"
     if functional_policy.cpu_clock_div != 1:
         # The Vivado steps (synthesis generic, block-design clock rates) and
         # the quick-route probe count read the environment.

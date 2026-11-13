@@ -105,6 +105,14 @@ FROST_CPU_CLK_HZ=161132812 ./fpga/load_software/load_software.py x3 hello_world
 FROST_CPU_CLK_HZ=161132812 ./fpga/hw_regression.py --board x3 hello_world itlb_test
 ```
 
+## Misaligned accesses
+
+Both board builds perform plain misaligned loads and stores to cached DDR in
+hardware (the misaligned-access engine, `MISALIGNED_HW`). For the VCU118,
+`build.py vcu118 --no-misaligned-hw` leaves the engine out, and those accesses
+then raise the address-misaligned exception; the X3 build always has it. The
+setting is fixed at synthesis.
+
 ## Profiling counters
 
 `--perf-counters` includes the `mperf*` profiling counters. They are left out
