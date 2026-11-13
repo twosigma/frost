@@ -165,7 +165,7 @@ _CRYPTO = re.compile(r"v(aes|sha2|sm3|sm4|ghsh|gmul)")
 _BITMANIP = re.compile(r"v(andn|brev8?|rev8|clz|ctz|cpop_v|rol|ror|wsll|clmulh?)(_|$)")
 _LOAD_STORE = re.compile(r"v[ls][a-z0-9]*_v")
 _MASK_PERMUTE_REDUCE = re.compile(
-    r"v(m(and|nand|andn|or|nor|orn|xor|xnor|sbf|sif|sof)_mm|iota|id_v|cpop_m|first"
+    r"v(m(and|nand|andn|or|nor|orn|xor|xnor)_mm|m(sbf|sif|sof)_m|iota|id_v|cpop_m|first"
     r"|w?red|slide|rgather|compress|mv[1248]r|mv_[sx]_[sx]|fmv_[fs]_[sf]|fslide)"
 )
 
@@ -555,6 +555,8 @@ def test_instruction_classes() -> None:
         "vcpop_v-0": "bitmanip",
         "vcpop_m-0": "mask-permute-reduce",
         "vfirst_m-0": "mask-permute-reduce",
+        "vmsbf_m-0": "mask-permute-reduce",
+        "vmsof_m-1": "mask-permute-reduce",
         "vredsum_vs-0": "mask-permute-reduce",
         "vslidedown_vx-0": "mask-permute-reduce",
         "vfadd_vv-0": "float",

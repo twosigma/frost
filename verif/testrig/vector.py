@@ -21,8 +21,9 @@ words, as in atomics.py and crypto.py. Each trace
 2. zeroes v0..v31, vxrm and vxsat, because Sail does not reset them (FROST's
    vector registers are not reset either), and sets vtype with a non-x0 AVL,
    since ``vsetvli x0, x0`` is illegal while vtype.vill is set,
-3. runs random integer vector operations under random SEW, LMUL, tail and mask
-   policies, and AVLs, and
+3. runs random integer vector operations under random SEW, LMUL and AVL with
+   tail- and mask-undisturbed policies (agnostic elements may legally differ
+   between implementations, and the read-out compares every element), and
 4. reads vl and vtype, then moves every 64-bit element of v0..v31 into a scalar
    register with ``vmv.x.s`` and an in-place ``vslidedown.vi`` by one, then reads
    vxsat and vlenb.
@@ -223,7 +224,9 @@ def trace(rng: random.Random, vlen: int, length: int) -> list[str]:
     for _ in range(length):
         sew = rng.choice(list(SEW_FIELD))
         lmul = rng.choice(list(LMUL_FIELD))
-        tail_agnostic, mask_agnostic = rng.randrange(2), rng.randrange(2)
+        # Undisturbed policies: agnostic elements may legally differ between
+        # implementations, and the read-out compares every element exactly.
+        tail_agnostic, mask_agnostic = 0, 0
         avl = rng.choice(AVLS)
         body.append((_addi(BASE_AVL, 0, avl), f"addi a1, x0, {avl}"))
         body.append(

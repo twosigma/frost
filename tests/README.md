@@ -707,7 +707,7 @@ FROST_VERILATOR_EXTRA_ARGS='-GVECTOR=1 -GVLEN=128' \
 which must match the core's `-GVLEN`), `--pattern` (instruction names), `--class`
 and `--shard K/N`. The classes, with their test counts at VLEN 128, are
 `load-store` (487), `crypto` (24), `bitmanip` (63: Zvbb and Zvbc), `float`
-(1270), `mask-permute-reduce` (160) and `integer` (1046, everything else).
+(1270), `mask-permute-reduce` (163) and `integer` (1043, everything else).
 `--list` prints what a selection contains without building or running anything.
 Simulation runs share the build directory of `tests/`, so run one at a time (or
 one per checkout) and clean `tests/` before each invocation. Use

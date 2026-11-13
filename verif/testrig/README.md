@@ -316,7 +316,8 @@ states.
 
 Each test enables FS and VS, zeroes v0..v31, `vxrm` and `vxsat`, runs random
 integer vector operations (arithmetic, shifts, saturating and fixed-point
-forms, multiplies, divides, slides) under random `vtype` and AVL values, and
+forms, multiplies, divides, slides) under random SEW, LMUL and AVL values with tail- and mask-undisturbed
+policies (agnostic elements may legally differ between implementations), and
 then reads the state out. The zeroing is in the test, not the preamble,
 because Sail does not reset the vector registers and the first `vsetvli` must
 use a non-`x0` AVL while `vtype.vill` is set; both implementations execute it.
