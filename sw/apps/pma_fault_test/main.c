@@ -143,9 +143,6 @@ static int check_value(const char *name, unsigned long got, unsigned long want)
 
 /* In .ddr_data, so case L reaches the cached tier in both memory tiers. */
 static volatile uint64_t g_ddr_word __attribute__((section(".ddr_data")));
-/* Low BRAM keeps the address-misaligned exception; cached DDR performs a
- * misaligned access in hardware when the build has MISALIGNED_HW. */
-static volatile uint64_t g_bram_word;
 
 /* The ns16550 scratch register: a read/write device register with no side
  * effects. */
@@ -216,8 +213,12 @@ int main(void)
              "r"(wild));
     all_ok &= report3("G wild-lr", 5u, 0, wild, 0);
 
-    /* H1: an in-map misaligned load to low BRAM raises cause 4 with the address. */
-    unsigned long mis = (unsigned long) &g_bram_word + 1u;
+    /* H1: an in-map misaligned load to low BRAM raises cause 4 with the
+     * address. The word is on the stack, which is in low BRAM in every
+     * memory layout; cached DDR performs a misaligned access in hardware when
+     * the build has MISALIGNED_HW. */
+    volatile uint64_t mis_word = 0;
+    unsigned long mis = (unsigned long) &mis_word + 1u;
     RUN_CASE("mv   t1, %0\n"
              "lw   t2, 0(t1)",
              "r"(mis));

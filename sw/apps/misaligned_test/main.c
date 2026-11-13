@@ -41,7 +41,6 @@
 #define AREA_BYTES (3u * 4096u)
 
 static volatile uint8_t *const area = (volatile uint8_t *) DDR_AREA;
-static volatile uint64_t g_bram_word[2] __attribute__((aligned(16)));
 
 static int g_ok = 1;
 static int g_checks;
@@ -481,9 +480,11 @@ int main(void)
     /* Low BRAM keeps the exception: cause 4 or 6, mepc at the access, mtval
      * its address, and a store writes nothing. */
     {
-        volatile uint8_t *p = (volatile uint8_t *) g_bram_word + 3;
-        g_bram_word[0] = 0x1111111111111111ull;
-        g_bram_word[1] = 0x2222222222222222ull;
+        /* On the stack, which is in low BRAM in every memory layout. */
+        volatile uint64_t bram_word[2] __attribute__((aligned(16)));
+        volatile uint8_t *p = (volatile uint8_t *) bram_word + 3;
+        bram_word[0] = 0x1111111111111111ull;
+        bram_word[1] = 0x2222222222222222ull;
         g_cause = ~0ul;
         __asm__ volatile("la t0, 1f\n csrw mscratch, t0\n"
                          ".globl trig_bram_load\n trig_bram_load:\n lw t1, 0(%0)\n 1:\n"
@@ -503,7 +504,7 @@ int main(void)
                          : "r"(p)
                          : "t0", "memory");
         check(g_cause == 6u && g_epc == (unsigned long) trig_bram_store &&
-                  g_tval == (unsigned long) p && g_bram_word[0] == 0x1111111111111111ull,
+                  g_tval == (unsigned long) p && bram_word[0] == 0x1111111111111111ull,
               "bram store trap",
               g_tval,
               g_cause,

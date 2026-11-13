@@ -26,7 +26,7 @@ for other boards. The software loader sets `FROST_L2_CACHE_BYTES=4194304`
 for VCU118 applications so conflicting-set eviction uses the same geometry.
 The build includes the misaligned-access engine (`MISALIGNED_HW`), which
 performs plain misaligned loads and stores to cached DDR in hardware, as on
-the X3. That configuration has been built, but not yet run on a VCU118.
+the X3.
 
 ## Board integration
 

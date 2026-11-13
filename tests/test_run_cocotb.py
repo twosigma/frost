@@ -1511,6 +1511,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
     ),
+    # Without the misaligned-access engine, OpenSBI emulates the payload's
+    # misaligned loads and stores in DDR (phase F); with it, the hardware
+    # performs them.
+    "opensbi_smoke_no_misaligned_hw": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="opensbi_smoke",
+        rerun_after_reset=False,
+        description=(
+            "OpenSBI boot and SBI services, with OpenSBI emulating misaligned "
+            "accesses (no misaligned-access engine)"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
+        verilator_extra_args=("-GMISALIGNED_HW=0",),
+    ),
     "linux_irq_ddr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
