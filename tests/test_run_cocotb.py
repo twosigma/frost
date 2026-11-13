@@ -2166,6 +2166,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "sums over multi-step reductions against a Python model"
         ),
     ),
+    "vec_xbar": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_xbar",
+        hdl_toplevel_module="vec_xbar",
+        description="Vector byte crossbar and rotator over a 256-bit element group",
+        verilator_extra_args=("-GBYTES=32",),
+    ),
+    "vec_xbar_512": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_xbar",
+        hdl_toplevel_module="vec_xbar",
+        description="Vector byte crossbar and rotator over a 512-bit element group",
+        verilator_extra_args=("-GBYTES=64",),
+    ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",

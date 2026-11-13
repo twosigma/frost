@@ -530,6 +530,10 @@ one 64-bit word of elements per step: inactive elements count as the
 operation's identity, elements are extended to 64 bits so one operation
 serves every element width, and a three-level tree reduces each word before it
 meets the running value.
+`vec_xbar` moves bytes within one element group: a crossbar whose output byte
+takes any input byte or zero, for the gathers, slides and compress that the
+sequencer turns into byte indices, and a rotator for slides by whole bytes and
+the alignment of unit-stride data to and from memory.
 
 ## Subtle cases
 
