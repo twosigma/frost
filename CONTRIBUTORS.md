@@ -93,3 +93,4 @@
 - Preserved TLB entries across SUM/MXR changes, added Svvptc and translation events, and cached upper-level page-table pointers
 - Implemented Sscofpmf counter overflow, privilege filtering, delegated local interrupts, and programmable cycle and instruction counters
 - Implemented 64-byte Zicboz block zeroing, its coherent cache protocol and grant handling, and the matching tests and firmware integration
+- Made the Vivado build steps finish when the launcher outlives Vivado, and explain a Vivado process that dies without an error line
