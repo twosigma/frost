@@ -63,7 +63,21 @@ DEFAULT_SUITES = ("rv64i_m",)
 EXTENSION_SUITES: dict[str, tuple[str, ...]] = {
     "F": ("rv64i_m", "rv32i_m"),
     "D": ("rv64i_m", "rv32i_m"),
+    "Zvk": ("rv32i_m",),
 }
+
+# Extensions whose tests need the vector unit: the vector crypto tests. They
+# are left out of SUPPORTED_EXTENSIONS, and so out of CI, until FROST has one;
+# run them with `--extensions Zvk`, and to include them, add Zvk to
+# SUPPORTED_EXTENSIONS here and in generate_references.py and to a job of the
+# test-arch-compliance matrix in ci.yml (a fast test checks that CI covers every
+# supported extension).
+# Each test turns on mstatus.VS itself. VECTOR_ARCH replaces the Makefile's
+# ARCH; keep it equal to FROST_VECTOR_MARCH in generate_references.py.
+VECTOR_EXTENSIONS = {"Zvk"}
+VECTOR_ARCH = (
+    "rv64imafdcv_zicsr_zifencei_zvbb_zvbc_zvkg_zvkned_zvknhb_zvksed_zvksh_zvkt"
+)
 
 # The suite's extension directories that FROST runs.
 SUPPORTED_EXTENSIONS = [
@@ -101,9 +115,16 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
 
 # Tests excluded by filename prefix. The C directory holds Zcb tests
 # (clbu/clh/csb/cmul/...), which FROST does not implement.
+# Zvk: five of the 37 tests in the pinned suite trap on Spike at RV64 and then
+# loop at address 0. vandn.vx, vrol.vx and vror.vx load their scalar operand into
+# the register that holds the test's data pointer, and vsha2ch-e32 and
+# vsha2cl-e32 give the vector SHA-2 instructions overlapping operands, which are
+# illegal. The other 32 run.
 EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
     "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
+    "Zvk": {"vandn.vx", "vrol.vx", "vror.vx", "vsha2ch-e32", "vsha2cl-e32"},
 }
+
 
 # cbo.zero signatures depend on begin_signature modulo the block size; their
 # Spike references use a block-aligned bound. Keep equal to
@@ -239,7 +260,7 @@ def get_reference_path(test_src: Path) -> Path:
 
 
 def compile_test(
-    test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG
+    test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG, extension: str = ""
 ) -> tuple[bool, str]:
     """Compile an arch test; return (success, combined_make_output).
 
@@ -257,8 +278,9 @@ def compile_test(
     )
 
     rel_src = test_src.relative_to(ARCH_TEST_APP_DIR)
+    arch = [f"ARCH={VECTOR_ARCH}"] if extension in VECTOR_EXTENSIONS else []
     result = subprocess.run(
-        ["make", f"TEST_SRC={rel_src}", f"MEM_CONFIG={mem_config}"],
+        ["make", f"TEST_SRC={rel_src}", f"MEM_CONFIG={mem_config}", *arch],
         cwd=ARCH_TEST_APP_DIR,
         capture_output=True,
         text=True,
@@ -443,7 +465,7 @@ def run_single_test(
             "sw/apps/arch_test/generate_references.py",
         )
 
-    compiled, compile_out = compile_test(test_src, mem_config)
+    compiled, compile_out = compile_test(test_src, mem_config, extension)
     if not compiled:
         # In the bram and icache tiers, a linker region overflow means the test
         # does not fit in low BRAM (95 KiB of code, 1 KiB reserved for debug,
@@ -570,6 +592,33 @@ def _print_result(result: TestResult) -> None:
 # =============================================================================
 # Pytest Integration
 # =============================================================================
+
+
+def test_vector_tests_prepared_but_not_supported() -> None:
+    """The vector crypto tests have references and a matching reference build.
+
+    Zvk stays out of SUPPORTED_EXTENSIONS, and so out of CI, until FROST has the
+    vector unit; its Spike references and build settings are ready for then.
+    """
+    import importlib.util
+
+    path = ARCH_TEST_APP_DIR / "generate_references.py"
+    spec = importlib.util.spec_from_file_location("generate_references", path)
+    assert spec is not None and spec.loader is not None
+    generator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generator)
+
+    assert VECTOR_EXTENSIONS == generator.VECTOR_EXTENSIONS
+    assert VECTOR_ARCH == generator.FROST_VECTOR_MARCH
+    assert EXTENSION_SUITES == generator.EXTENSION_SUITES
+    assert EXTENSION_TEST_EXCLUDES == generator.EXTENSION_TEST_EXCLUDES
+    for extension in VECTOR_EXTENSIONS:
+        assert extension not in SUPPORTED_EXTENSIONS
+        assert extension not in generator.SUPPORTED_EXTENSIONS
+        tests = discover_tests(extension, include_all=True)
+        assert tests, f"no {extension} tests found"
+        missing = [t.name for t in tests if not get_reference_path(t).exists()]
+        assert not missing, f"no Spike reference for {missing}"
 
 
 @pytest.mark.parametrize(

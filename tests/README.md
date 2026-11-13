@@ -596,6 +596,18 @@ parts balanced by case count. A selected test with no committed reference
 fails; `sw/apps/arch_test/generate_references.py`, run in the frost image,
 generates references with the pinned Spike.
 
+The vector crypto tests (`rv32i_m/Zvk`, which also declare RV64) are prepared
+but not supported. Of the 37 in the pinned suite, 32 run: `vandn.vx`,
+`vrol.vx`, `vror.vx`, `vsha2ch-e32` and `vsha2cl-e32` trap on Spike (the first
+three overwrite their data pointer, the others use overlapping operands) and
+are excluded. `--extensions Zvk` builds them with a vector
+`-march` and compares them with Spike references at VLEN 128 (their signatures
+do not depend on the vector length), but `Zvk` is not in `SUPPORTED_EXTENSIONS`,
+so `--all` and CI skip it until FROST has the vector unit. To turn it on, add
+`Zvk` to `SUPPORTED_EXTENSIONS` in `test_arch_compliance.py` and
+`generate_references.py`, and to a job of the `test-arch-compliance` matrix in
+`ci.yml`.
+
 CI skips Zifencei in BRAM, because ordinary stores cannot reach the separate
 instruction BRAM, and F and D in DDR, to save runner time; the BRAM jobs
 cover FPU conformance. The F and D tests that do not fit low BRAM (the larger
@@ -709,6 +721,16 @@ this runs in the Fast Python job and needs no vector hardware.
 ./scripts/frost.py run pytest tests/test_vector_reference.py -v
 ```
 
+On a core built with the vector unit, the registry runs each program in
+simulation at each vector length as `vec_<program>_v<VLEN>`, for example
+`./scripts/frost.py cocotb vec_smoke_v128` (`VLEN` 128, 256 or 512; the programs
+are `vec_smoke`, `vec_ldst`, `vec_string`, `vec_dot_int`, `vec_dot_fp`,
+`vec_crypto` and `vec_zvbb`). These entries are command-line only
+(`include_in_pytest=False`) because the default build has no vector unit; their
+cycle budgets are ceilings to tighten after the first run. To put them in the
+default pytest collection, remove `include_in_pytest=False` from the loop under
+`VECTOR_BRING_UP_PROGRAMS` in `test_run_cocotb.py`.
+
 ### `test_riscv_torture.py`
 
 Runs a committed corpus of random RV64IMAFDC programs and compares each
@@ -750,9 +772,13 @@ provides Sail and the engine.
 ./scripts/frost.py run python3 tests/test_testrig.py --trace-dir verif/testrig/traces
 ./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf
 ./scripts/frost.py run python3 tests/test_testrig.py --crypto 50
+./scripts/frost.py run python3 tests/test_testrig.py --vector 100 --vlen 256
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
 ```
 
+`--vector N` replays random vector-instruction tests from `verif/testrig/vector.py`
+on a core built with the vector unit at `--vlen` (128, 256 or 512), against Sail
+configured for the same length; it needs a vector core, so no CI job runs it yet.
 Each run draws new sequences. `--atomics` replays random A-extension tests
 from `verif/testrig/atomics.py` in place of the engine's templates, from a
 seed the runner prints. A mismatch is shrunk to a short counterexample
