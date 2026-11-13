@@ -518,6 +518,13 @@ separator bit after each byte serves every element width: a separator inside
 an element propagates the carry, one at an element boundary stops it and
 yields the element's carry out, which the compares and minimum and maximum
 use. Compares write one bit per element to `o_mask`.
+`vec_mul_lane` forms each element's full product with the signedness the
+operation selects and returns the low or high half, or an accumulate; its full
+products feed the widening multiplies. `vec_mask_unit` runs the mask-register
+logical operations, `vcpop.m`, `vfirst.m`, `vmsbf.m`, `vmsif.m`, `vmsof.m`,
+`viota.m` and `vid.v` as a series of one-cycle steps, 64 mask bits or one
+64-bit word of elements each, keeping the running count, the first-bit flag and
+the element index from one step of an instruction to the next.
 
 ## Subtle cases
 

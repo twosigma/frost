@@ -2150,6 +2150,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "at every element width against a Python model, with a fixed latency"
         ),
     ),
+    "vec_mask_unit": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_mask_unit",
+        hdl_toplevel_module="vec_mask_unit",
+        description=(
+            "Vector mask unit: mask logical operations, vcpop, vfirst, vmsbf/vmsif/vmsof, "
+            "viota and vid over multi-step instructions against a Python model"
+        ),
+    ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",

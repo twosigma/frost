@@ -76,4 +76,25 @@ package vec_pkg;
     VM_NMSAC  = 3'd5   // low SEW bits of z - x * y
   } mul_op_e;
 
+  // Mask unit operations. The logical ones combine two mask registers bit by
+  // bit (a is vs2, b is vs1); the rest read mask bits a, qualified by the
+  // active bits (body within vl and the v0 mask).
+  typedef enum logic [3:0] {
+    VK_AND   = 4'd0,   // vmand
+    VK_NAND  = 4'd1,   // vmnand
+    VK_ANDN  = 4'd2,   // vmandn: a & ~b
+    VK_XOR   = 4'd3,   // vmxor
+    VK_OR    = 4'd4,   // vmor
+    VK_NOR   = 4'd5,   // vmnor
+    VK_ORN   = 4'd6,   // vmorn: a | ~b
+    VK_XNOR  = 4'd7,   // vmxnor
+    VK_CPOP  = 4'd8,   // vcpop.m: active set bits
+    VK_FIRST = 4'd9,   // vfirst.m: index of the first active set bit, or -1
+    VK_SBF   = 4'd10,  // vmsbf.m: set before first
+    VK_SIF   = 4'd11,  // vmsif.m: set including first
+    VK_SOF   = 4'd12,  // vmsof.m: set only first
+    VK_IOTA  = 4'd13,  // viota.m: count of earlier active set bits per element
+    VK_ID    = 4'd14   // vid.v: element index
+  } mask_op_e;
+
 endpackage
