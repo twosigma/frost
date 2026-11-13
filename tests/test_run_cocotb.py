@@ -2673,7 +2673,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("--assert", "-GCACHE_BYTES=512"),
         python_test_module="cocotb_tests.cache.test_coherence_l1d",
         hdl_toplevel_module="coherence_l1d",
-        description="Buffered store ordering, masked hits, read turns, grants, probes and frozen writebacks",
+        description="Buffered store ordering, masked hits, read turns, grants, probes, frozen writebacks and W selection after an absorbed put",
     ),
     "coherence_local_atomics": CocotbRunConfig(
         verilator_extra_args=(

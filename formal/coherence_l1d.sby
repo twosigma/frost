@@ -16,6 +16,7 @@ coh_l1d_stream_cover stream multi streamcovers covermode padded
 coh_l1d_turn_cover turnstream multi turncovers covermode padded
 coh_l1d_cover single covers covermode
 coh_l1d_path_cover single pathcovers covermode
+coh_l1d_put_select_prove single putselect
 coh_l1d_data_bmc single data arraydata word0
 coh_l1d_data1_bmc single data arraydata word1
 coh_l1d_data2_bmc single data arraydata word2
@@ -81,6 +82,10 @@ zsingle: skip 48
 conflict: mode prove
 conflict: depth 2
 conflict: timeout 600
+# The W-selector check is one-step inductive on the selector registers.
+putselect: mode prove
+putselect: depth 2
+putselect: timeout 600
 # The eight-endpoint stream BMC reads the stream cover's scripted loads.
 # All three control BMCs leave four payload checks to the independent
 # unbounded outlier proof, whose free-input model covers each specialization.
@@ -138,6 +143,7 @@ owner: abc pdr
 owned: smtbmc boolector
 streamowned: smtbmc boolector
 sector: smtbmc boolector
+putselect: smtbmc boolector
 localdata: abc bmc3 -c
 localhold: abc bmc3 -c
 localcontrol: abc bmc3
@@ -162,6 +168,7 @@ streamcovers: read -formal -sv -D STREAM_COVER coherence_read_payload.sv coheren
 turncovers: read -formal -sv -D STREAM_TURN_COVER coherence_read_payload.sv coherence_l1d.sv
 covers: read -formal -sv -D STORE_COVER -D STORE_DATA_PROOF coherence_read_payload.sv coherence_l1d.sv
 pathcovers: read -formal -sv coherence_read_payload.sv coherence_l1d.sv
+putselect: read -formal -sv -D PUT_SELECT_PROOF coherence_read_payload.sv coherence_l1d.sv
 word0: read -formal -sv -D STORE_DATA_PROOF -D STORE_BYTE_WORD=0 coherence_read_payload.sv coherence_l1d.sv
 word1: read -formal -sv -D STORE_DATA_PROOF -D STORE_BYTE_WORD=1 coherence_read_payload.sv coherence_l1d.sv
 word2: read -formal -sv -D STORE_DATA_PROOF -D STORE_BYTE_WORD=2 coherence_read_payload.sv coherence_l1d.sv
@@ -227,6 +234,12 @@ conflict: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVO
 conflict: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_prefetch_conflict_split %d
 conflict: chformal -assume -remove
 conflict: chformal -cover -remove
+# The W-selector task keeps only its own check, with no input assumptions.
+putselect: select -assert-count 1 c:p_put_select_clears t:$check %i r:FLAVOR=assert %i
+putselect: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_put_select_clears %d
+putselect: chformal -assume -remove
+putselect: chformal -cover -remove
+putselect: select -assert-count 1 t:$check r:FLAVOR=assert %i
 # The scripted store covers issue one load, which the hit path cannot take;
 # the hit-path covers run with free inputs and only the interface assumptions.
 covers: chformal -cover -remove c:c_path_*
@@ -324,6 +337,8 @@ conflict: cutpoint t:$dff t:$dffe t:$adff t:$adffe t:$sdff t:$sdffe t:$ff
 conflict: select -assert-none t:*ff* t:*FF* t:*latch*
 conflict: delete -output w:*
 conflict: opt_clean
+# Leave only the check's cone.
+putselect: delete -output w:*
 opt
 techmap
 opt -fast

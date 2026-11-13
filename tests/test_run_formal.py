@@ -338,6 +338,7 @@ FORMAL_TARGETS = [
             "coh_l1d_local_ways_prove",
             "coh_l1d_cover",
             "coh_l1d_path_cover",
+            "coh_l1d_put_select_prove",
             "coh_l1d_data_bmc",
             "coh_l1d_data1_bmc",
             "coh_l1d_data2_bmc",
@@ -1744,6 +1745,10 @@ SBY_TASKS = [
     (
         "coh_l1d_path_cover",
         "Hit-path answers, shadow lookups and the hit path's refusals with free inputs.",
+    ),
+    (
+        "coh_l1d_put_select_prove",
+        "The W selection releases a slot without a put on the next edge.",
     ),
     ("coh_array_select_prove", "Conditional data selection with one way."),
     ("coh_array_select4_prove", "Conditional data selection with four ways."),

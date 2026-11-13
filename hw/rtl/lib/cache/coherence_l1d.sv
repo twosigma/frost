@@ -1755,6 +1755,26 @@ module coherence_l1d #(
   end
   assign o_w_valid = active && wb_selected_q && wb_valid[wb_select_q];
   assign o_w = wb[wb_select_q];
+`ifndef SYNTHESIS
+`ifdef FORMAL
+`ifdef PUT_SELECT_PROOF
+`define FROST_L1D_PUT_SELECT_CHECK
+`endif
+`else
+`define FROST_L1D_PUT_SELECT_CHECK
+`endif
+`endif
+`ifdef FROST_L1D_PUT_SELECT_CHECK
+  // The W selection points at a slot without a put for at most one cycle: the
+  // cycle after that slot's cancellation on the edge that selected it. The
+  // formal check runs in its own task so the other tasks' selections keep
+  // their assertion counts; it starts from any state without a stale sample.
+  logic wb_stale_q = 1'b0;
+  always_ff @(posedge i_clk) wb_stale_q <= !i_rst && wb_selected_q && !wb_valid[wb_select_q];
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst && wb_stale_q) p_put_select_clears : assert (!wb_selected_q);
+`undef FROST_L1D_PUT_SELECT_CHECK
+`endif
   assign o_wa_ready = |wb_wa_ready;
   assign freeze = {1'b0, freeze_slot_q, 1'b0, freeze_addr_q, freeze_data_q, freeze_maintenance_q};
 
@@ -2536,12 +2556,16 @@ module coherence_l1d #(
           ((operation_q == GrantOp && grant_ep_q == '0 && !grant_twin) ||
            (operation_q == TwinOp && twin_ep_q == '0))) wb_reserved_q <= 1'b0;
       if (o_sc_result_valid && i_sc_result_ready) o_sc_result_valid <= 1'b0;
+      // The idle selector samples wb_valid before the edge, so it can pick a
+      // slot that an absorbed acknowledgement cancels on the same edge. A
+      // selected slot that holds no put is released on the next edge, so the
+      // other slot's put is presented.
       if (!wb_selected_q) begin
         if (|wb_valid) begin
           wb_selected_q <= 1'b1;
           wb_select_q   <= wb_valid[wb_next_q] ? wb_next_q : !wb_next_q;
         end
-      end else if ((o_w_valid && i_w_ready) ||
+      end else if (!wb_valid[wb_select_q] || (o_w_valid && i_w_ready) ||
           (i_wa_valid && o_wa_ready && ack.absorbed && ack.put_id == wb_select_q)) begin
         wb_selected_q <= 1'b0;
         wb_next_q <= !wb_select_q;
