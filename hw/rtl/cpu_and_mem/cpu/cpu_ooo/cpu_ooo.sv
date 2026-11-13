@@ -4088,7 +4088,9 @@ module cpu_ooo #(
       walk_owner_ma_q <= 1'b0;
     end else if (ptw_req_valid && ptw_req_ready) begin
       walk_owner_i_q  <= !walk_req_valid && iwalk_req_valid;
-      walk_owner_ma_q <= !walk_req_valid && !iwalk_req_valid;
+      // Constant without the engine, so the D and I response valids are
+      // exactly as they are without it.
+      walk_owner_ma_q <= MISALIGNED_HW && !walk_req_valid && !iwalk_req_valid;
     end
   end
   assign walk_resp_valid = ptw_resp_valid && !walk_owner_i_q && !walk_owner_ma_q;
