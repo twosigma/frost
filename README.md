@@ -28,7 +28,8 @@ The diagram shows the X3 configuration; click it for the full-size version.
   architecture tests and random riscv-torture programs checked against Spike,
   the riscv-tests suites, and TestRIG, which compares FROST with the Sail
   RISC-V model one instruction at a time on random sequences drawn anew on
-  every run. Formal proofs, unit benches for the hardware blocks, and whole
+  every run. The image also carries the riscv-vector-tests generator, and the
+  vector bring-up programs run on Spike on every change. Formal proofs, unit benches for the hardware blocks, and whole
   programs from BRAM and DDR run alongside, and CI merges simulation coverage,
   including cover points for microarchitectural corner cases, into one report.
 - A reusable CPU: `cpu_top` packages the core, its MMUs, and the caches as one
@@ -337,6 +338,7 @@ the image.
 | **Simulator** | Verilator / QEMU | 5.052 / 11.1.2 |
 | | Spike | `02b1dc182164bb73b19b050676dd89f0834f8b2e` |
 | | Sail RISC-V model / QuickCheckVEngine | 0.16 / `5e15965a819ca1be9f14d2e8e319e98fd89a557f` |
+| | riscv-vector-tests (built with Go) | `f76bff121dce91b6b23e1d37be77a5e44af914c3` (Go 1.24.4, build stage only) |
 | **Synthesis** | Yosys / sv2v | 0.70 / 0.0.13 |
 | **Formal** | SymbiYosys / Z3 / Boolector | 0.70 / 5.3.2 / 3.2.4 |
 | **Debug** | OpenOCD | 0.12.0 (Ubuntu package) |

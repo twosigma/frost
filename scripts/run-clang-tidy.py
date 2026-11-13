@@ -40,6 +40,9 @@ _COREMARK_PRO_CONTEXTS = {
     "frost_mith_main.c": ("INTERPOSE_CFLAGS", "core"),
     "frost_zip_darkmark_sim.c": ("MITH_CFLAGS", "zip-test"),
 }
+# Directories that hold only code shared by applications have no Makefile; their
+# files are checked with the flags of one application that builds them.
+_SHARED_CODE_CONTEXTS = {"vec_common": "vec_smoke"}
 
 
 def get_root_dir() -> Path:
@@ -187,7 +190,7 @@ def extract_flags_for_file(
         lib_include = root_dir / "sw" / "lib" / "include"
         return f"{default_flags} -I{lib_include}", default_clock
 
-    app_name = relative_path.parts[2]
+    app_name = _SHARED_CODE_CONTEXTS.get(relative_path.parts[2], relative_path.parts[2])
     app_dir = root_dir / "sw" / "apps" / app_name
     filename = relative_path.name
 

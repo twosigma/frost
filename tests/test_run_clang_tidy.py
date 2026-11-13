@@ -206,6 +206,29 @@ include ../../common/common.mk
     assert clock == "300000000"
 
 
+def test_extract_flags_for_shared_code_uses_the_building_app(tmp_path: Path) -> None:
+    """Shared vector-test code has no Makefile; it takes vec_smoke's flags."""
+    _write_common_mk(tmp_path)
+    app_dir = tmp_path / "sw" / "apps" / "vec_smoke"
+    app_dir.mkdir(parents=True)
+    (app_dir / "Makefile").write_text(
+        """\
+MABI := lp64f
+INCLUDE_DIR := ../vec_common
+include ../../common/common.mk
+"""
+    )
+    (tmp_path / "sw" / "apps" / "vec_common").mkdir()
+    default_flags, default_clock = wrapper.extract_flags_from_common_mk(tmp_path)
+
+    flags, _ = wrapper.extract_flags_for_file(
+        "sw/apps/vec_common/vec_test.h", tmp_path, default_flags, default_clock
+    )
+
+    assert "-mabi=lp64f" in flags
+    assert f"-I{tmp_path / 'sw' / 'apps' / 'vec_common'}" in flags
+
+
 def test_run_clang_tidy_builds_resolved_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

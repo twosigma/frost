@@ -16,6 +16,8 @@ regression run [natively](../fpga/README.md#hardware-regression) instead.
 | [`test_run_cocotb.py`](#test_run_cocotbpy) | Block benches, directed CPU tests, and applications in simulation |
 | [`test_arch_compliance.py`](#test_arch_compliancepy) | riscv-arch-test signatures against Spike references |
 | [`test_riscv_tests.py`](#test_riscv_testspy) | riscv-tests ISA suites and benchmarks |
+| [`test_riscv_vector_tests.py`](#test_riscv_vector_testspy) | Generated, self-checking vector instruction tests (riscv-vector-tests) on Spike or the simulated core |
+| [`test_vector_reference.py`](#test_vector_referencepy) | The vector bring-up programs on Spike at three vector lengths |
 | [`test_riscv_torture.py`](#test_riscv_torturepy) | Random RV64IMAFDC programs against Spike references |
 | [`test_testrig.py`](#test_testrigpy) | Random instruction sequences against the Sail RISC-V model, one instruction at a time (TestRIG) |
 | [`test_run_yosys.py`](#test_run_yosyspy) | Portable and Xilinx synthesis |
@@ -642,6 +644,65 @@ PMP (`pmpaddr`), and hardware A/D updates (`dirty`). In BRAM,
 `ISA_SKIP_TESTS_BRAM` also leaves out `fence_i` and `icache-alias`, which need
 DDR for instruction storage or page tables.
 
+### `test_riscv_vector_tests.py`
+
+Runs [riscv-vector-tests](https://github.com/chipsalliance/riscv-vector-tests),
+a generator of self-checking tests for the RISC-V vector extension: about
+3,000 tests per vector length, covering integer, fixed-point, floating-point
+(including half precision and bfloat16), mask, permute, reduction, slide and
+gather instructions, loads and stores, and Zvbb, Zvbc and the AES, SHA-2, GCM
+and SM3/SM4 vector crypto instructions. It has no tests for fault-only-first,
+`vstart`, tail and mask agnostic contents, or register overlap; the bring-up
+programs cover some of that. The image carries the generator, its merger and
+`pspike` in `/opt/riscv-vector-tests`. For each test, Spike records the expected
+results, the merger writes them into the test, and the finished test compares
+its own results.
+
+```bash
+./scripts/frost.py run python3 tests/test_riscv_vector_tests.py --list
+./scripts/frost.py run python3 tests/test_riscv_vector_tests.py --pattern '^vadd\.vv$'
+./scripts/frost.py run python3 tests/test_riscv_vector_tests.py --vlen 256 --shard 3/20
+```
+
+`--vlen` is 128 (the default), 256 or 512. `--pattern` is a regular expression
+on instruction names, and `--shard K/N` runs every N-th test of the sorted
+list. By default each test runs on Spike. A full run at VLEN 128 is 3,042 tests
+and takes about 10 minutes at four jobs (`--jobs`). `--workdir DIR` keeps the
+generated sources and binaries.
+
+`--rtl` builds each test for FROST (the DDR configuration, since the images
+are about 0.75 MB, through `sw/apps/riscv_tests` and its `riscv_test.h`) and
+runs it in simulation. It needs a core with the vector unit built at the same
+vector length:
+
+```bash
+./scripts/frost.py run make -C tests clean
+FROST_VERILATOR_EXTRA_ARGS='-GVECTOR=1 -GVLEN=128' \
+    ./scripts/frost.py run python3 tests/test_riscv_vector_tests.py --rtl --vlen 128 --pattern '^vadd\.vv$'
+```
+
+The pytest entry points run a sample of seven instruction forms on Spike at
+VLEN 128 and 256 in the Fast Python job, which guards the generator, the
+patcher and this wiring. The tests skip with a message when the image lacks
+`/opt/riscv-vector-tests`. The simulation entry point is marked `slow` and
+`cocotb`, and runs only with `FROST_RVV_TESTS_RTL=1` (and
+`FROST_RVV_TESTS_VLEN` for a length other than 128). No CI job runs it; to
+add one, run `--rtl` with `--vlen` and `--shard` in a job built with the
+vector parameters above.
+
+### `test_vector_reference.py`
+
+Builds the vector bring-up programs in `sw/apps/vec_*` for Spike and runs
+them: each program at 128, 256 and 512 bits, and the 128-bit build on 256- and
+512-bit Spike, plus `vec_dot_fp` without Zvfh. Each program checks itself and
+prints `<<PASS>>`. The same programs build for FROST with their ordinary
+`Makefile`s. A program that fails on Spike is wrong rather than the core, so
+this runs in the Fast Python job and needs no vector hardware.
+
+```bash
+./scripts/frost.py pytest tests/test_vector_reference.py -v
+```
+
 ### `test_riscv_torture.py`
 
 Runs a committed corpus of random RV64IMAFDC programs and compares each
@@ -1011,6 +1072,7 @@ pinned Docker image. The ASIC flow runs in its own
 | Architecture compliance | BRAM and DDR, in groups of extensions, including CMO's Zicboz `cbo.zero` case in both tiers; excludes Zifencei on BRAM and F/D on DDR; F and D share three BRAM shards without coverage; the other groups collect coverage; a fast check compares the workflow's groups with the runner's supported extensions |
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
 | Torture | BRAM, DDR, and paged DDR |
+| Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
 | TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and deterministic Sscofpmf controls, and runs 50 sequences from the crypto generator |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis |
