@@ -34,6 +34,10 @@ module coherence_home #(
     // PREFETCH_SLOTS); zero shares every slot.
     parameter int unsigned PREFETCH_SLOTS = coherence_pkg::PrefetchIds,
     parameter bit ULTRA = 1'b1,
+    // An engine's demand lookup reads its set's ways beside the tag read
+    // (coherence_home_array, UltraRAM only); 0 reads the hit row after the
+    // decision.
+    parameter bit PARALLEL_READ = 1'b1,
     parameter int unsigned SIM_FAST_MAINT = 0,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
     localparam int unsigned WbBits = NUM_WB > 1 ? $clog2(NUM_WB) : 1
@@ -237,6 +241,11 @@ module coherence_home #(
   logic [ADDR_WIDTH+10:0] ack_out;
   coh_g_t result;
   logic array_response, array_hit, array_available, array_claim;
+  // Parallel reads: an engine's demand lookup asks for one (lookup_spec), the
+  // response reports it in flight (array_spec), and the engine whose resident
+  // decision needs data takes it (engine_take_spec).
+  logic lookup_spec, array_spec;
+  logic [RESULTS-1:0] engine_take_spec;
   logic [TokenBits-1:0] array_token, array_data_token, array_updated_token, array_query_token;
   logic [(1 << TokenBits)-1:0] array_token_onehot;
   logic [ADDR_WIDTH-1:0] array_query, array_addr;
@@ -577,6 +586,8 @@ module coherence_home #(
         .i_decision_resident(decision_hit),
         .i_decision_way(array_way),
         .i_decision_state(array_state),
+        .i_decision_spec(array_spec),
+        .o_take_spec(engine_take_spec[engine]),
         .o_read_valid(engine_read[engine]),
         .o_read_offer(read_valid[engine]),
         .i_read_ready(read_ready[engine]),
@@ -770,6 +781,7 @@ module coherence_home #(
       .o_req_ready(tag_request_ready),
       .i_req_addr(tag_request.addr),
       .i_req_token(tag_request.token),
+      .i_req_spec(lookup_spec),
       .o_query_addr(array_query),
       .o_query_token(array_query_token),
       .i_exclude(array_exclude),
@@ -785,6 +797,8 @@ module coherence_home #(
       .o_resp_addr(array_addr),
       .o_resp_state(array_state),
       .o_resp_tags(array_tags),
+      .o_resp_spec(array_spec),
+      .i_resp_keep(|engine_take_spec),
       .i_read_valid(row_request_valid && run),
       .i_read_offer(row_request_valid),
       .o_read_ready(row_request_ready),
@@ -836,6 +850,10 @@ module coherence_home #(
     end
   end
   assign o_prefetch_room = prefetch_room_q;
+  // A demand engine's lookup reads its set's ways in parallel; a prefetch
+  // reads no data.
+  assign lookup_spec = PARALLEL_READ && int'(tag_request.token) < RESULTS &&
+      !engine_prefetch_q[ResultBits'(tag_request.token)];
   // Way exclusion uses the registered set comparisons below. The array reads
   // it in selection and response cycles, when the query has held since the
   // edge before, and no fill is allocated and no put accepted on that edge
@@ -2182,6 +2200,31 @@ module coherence_home #(
       reference_exclude[put_way_q[put]] = 1'b1;
   end
 `ifdef COHERENCE_HOME_CONTROL
+  // A parallel read that an engine takes (o_take_spec: Service with its read
+  // sent and no row read) delivers the engine's data within SpecBound cycles,
+  // beside the array's row-read service bounds (f_read_wait_q). Only the
+  // UltraRAM array reads in parallel.
+  localparam int unsigned SpecBound = 8;
+  logic [RESULTS-1:0] f_spec_wait_valid_q;
+  logic [3:0] f_spec_wait_q[RESULTS];
+  always_ff @(posedge i_clk) begin
+    if (i_rst) f_spec_wait_valid_q <= '0;
+    else
+      for (int engine = 0; engine < RESULTS; engine++) begin
+        if (f_spec_wait_valid_q[engine]) begin
+          f_spec_wait_q[engine] <= f_spec_wait_q[engine] + 1'b1;
+          assert (int'(f_spec_wait_q[engine]) < SpecBound);
+          assert (f_read_owner[engine]);
+        end
+        if (array_data_valid && array_data_token == TokenBits'(engine))
+          f_spec_wait_valid_q[engine] <= 1'b0;
+        if (engine_take_spec[engine]) begin
+          f_spec_wait_valid_q[engine] <= 1'b1;
+          f_spec_wait_q[engine] <= '0;
+        end
+      end
+    if (!i_rst && !ULTRA) assert (f_spec_wait_valid_q == '0);
+  end
   // The prefetch flags of the lookup belong to its owner from the tag port's
   // acceptance through the decision.
   always_ff @(posedge i_clk)

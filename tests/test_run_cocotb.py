@@ -3440,6 +3440,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GCACHE_BYTES=1024",
         ),
     ),
+    "coherence_home_rowread": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home",
+        hdl_toplevel_module="coherence_home",
+        description="The home with UltraRAM and the hit row read after the decision",
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=1024",
+            "-GPARALLEL_READ=0",
+        ),
+        extra_env=(("FROST_TEST_HOME_PARALLEL", "0"),),
+    ),
     "coherence_home_equal": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_home",
         hdl_toplevel_module="coherence_home",

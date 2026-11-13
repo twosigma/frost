@@ -40,6 +40,10 @@ module coherence_home_engine #(
     input logic i_decision_resident,
     input logic [WayBits-1:0] i_decision_way,
     input logic [1:0] i_decision_state,
+    // The decision's parallel read of the line's set is in flight: a resident
+    // decision that needs data takes it (o_take_spec) instead of a row read.
+    input logic i_decision_spec,
+    output logic o_take_spec,
     output logic o_read_valid,
     output logic o_read_offer,
     input logic i_read_ready,
@@ -173,6 +177,8 @@ module coherence_home_engine #(
   assign o_maintenance = request_q.maintenance;
   assign o_non_alloc = request_q.non_alloc;
   assign o_way = way_q;
+  assign o_take_spec = deciding && i_decision_valid && i_decision_resident && needs_data &&
+      i_decision_spec;
   assign o_read_offer = phase_q == Service && !read_sent_q;
   assign o_read_valid = run && o_read_offer;
   assign o_p_valid = run && phase_q == Service && probe_phase_q == ProbeOffer;
@@ -303,7 +309,7 @@ module coherence_home_engine #(
         else begin
           way_q <= i_decision_way;
           state_q <= i_decision_state;
-          read_sent_q <= !needs_data;
+          read_sent_q <= !needs_data || i_decision_spec;
           read_done_q <= !needs_data;
           probe_phase_q <= needs_probe ? ProbeOffer : ProbeDone;
           probe_q <= '0;

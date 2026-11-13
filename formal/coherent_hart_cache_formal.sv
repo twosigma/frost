@@ -562,6 +562,11 @@ module coherent_hart_cache_formal #(
   assign work_valid = !rst && service_slot < Slots && engine_idle &&
       state_q[service_slot] == Queued && predecessors_q[service_slot] == 0;
   logic lookup, decision_q, read_valid, read_pending_q, update_valid, update_pending_q;
+  // The home array's parallel read: any decision may report one in flight;
+  // a decision that takes it receives the row as a row read would, with no
+  // read request.
+  (* anyseq *)logic decision_spec;
+  logic take_spec;
   logic result_valid, result_ready;
   wire updated = update_pending_q && permit_update;
   logic [AddrWidth-1:0] address;
@@ -625,6 +630,8 @@ module coherent_hart_cache_formal #(
       .i_decision_resident(1'b1),
       .i_decision_way(1'b0),
       .i_decision_state(coherence_pkg::Shared),
+      .i_decision_spec(decision_spec),
+      .o_take_spec(take_spec),
       .o_read_valid(read_valid),
       .o_read_offer(),
       .i_read_ready(!read_pending_q),
@@ -972,7 +979,7 @@ module coherent_hart_cache_formal #(
       cover (put_pending_q && home_d_valid && demand.addr == pending_put_q.addr && !finish_put);
       cover (line_resp && walk_after_q && !line_error && put_seen_q);
       decision_q <= lookup && permit_lookup;
-      if (read_valid && !read_pending_q) begin
+      if ((read_valid && !read_pending_q) || take_spec) begin
         read_pending_q <= 1;
         read_data_q <= address[5] ? {4{64'h200004cf}} : home_data_q;
       end
