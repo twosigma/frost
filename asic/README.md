@@ -699,8 +699,14 @@ mocks, so it cannot rank that family until real arrays replace the mocks.
 
 ## CI
 
-Five chained jobs run the flow on every pull request and every push to
-`main`, each resuming from the database of the one before:
+Five chained jobs in their own workflow,
+[`.github/workflows/asic.yml`](../.github/workflows/asic.yml), run the flow on
+every pull request and every push to `main`, each resuming from the database
+of the one before. The flow takes about fifteen hours, so a push to `main`
+does not cancel a run in progress: the run finishes and the most recently
+queued run waits behind it (GitHub keeps one pending run, so an older pending
+run is cancelled). A new push to a pull request cancels that pull request's
+earlier run.
 
 | Job | Runs | Extra swap |
 | --- | --- | ---: |
@@ -718,7 +724,7 @@ add swap space. Each job also
 deletes preinstalled toolchains to make room for the databases and has a
 six-hour limit. On four cores, synthesis with floorplanning takes about
 three hours and placement with clock tree synthesis under three. The allocations are set in the
-[CI workflow](../.github/workflows/ci.yml).
+[ASIC workflow](../.github/workflows/asic.yml).
 
 Detailed routing reuses the pin access saved in the global routing database.
 On the same 256 KiB input with four threads, `-no_pin_access` cut its CPU
