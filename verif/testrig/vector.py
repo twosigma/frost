@@ -23,7 +23,8 @@ words, as in atomics.py and crypto.py. Each trace
    since ``vsetvli x0, x0`` is illegal while vtype.vill is set,
 3. runs random integer vector operations under random SEW, LMUL and AVL with
    tail- and mask-undisturbed policies (agnostic elements may legally differ
-   between implementations, and the read-out compares every element), and
+   between implementations, and the read-out compares every element; every
+   vsetvli in a trace, including the setup that shrinking keeps, is undisturbed), and
 4. reads vl and vtype, then moves every 64-bit element of v0..v31 into a scalar
    register with ``vmv.x.s`` and an in-place ``vslidedown.vi`` by one, then reads
    vxsat and vlenb.
@@ -211,8 +212,8 @@ def trace(rng: random.Random, vlen: int, length: int) -> list[str]:
         (_csrrs(0, CSR_MSTATUS, T0), "csrrs x0, mstatus, t0  # VS = Dirty"),
         (_addi(BASE_AVL, 0, -1), "addi a1, x0, -1"),
         (
-            _vsetvli(0, BASE_AVL, _vtype(64, 8, 1, 1)),
-            "vsetvli x0, a1, e64,m8,ta,ma",
+            _vsetvli(0, BASE_AVL, _vtype(64, 8, 0, 0)),
+            "vsetvli x0, a1, e64,m8,tu,mu",
         ),
     ]
     for group in (0, 8, 16, 24):
@@ -249,7 +250,7 @@ def trace(rng: random.Random, vlen: int, length: int) -> list[str]:
     ]
     readout.append((_addi(BASE_AVL, 0, -1), "addi a1, x0, -1"))
     readout.append(
-        (_vsetvli(0, BASE_AVL, _vtype(64, 1, 1, 1)), "vsetvli x0, a1, e64,m1,ta,ma")
+        (_vsetvli(0, BASE_AVL, _vtype(64, 1, 0, 0)), "vsetvli x0, a1, e64,m1,tu,mu")
     )
     # Each register is read in place: element 0, then slide down by one and read
     # element 0 again, so no scratch register is needed and all 32 are observed.
