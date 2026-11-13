@@ -1041,12 +1041,22 @@ module cpu_ooo #(
   // illegal while it is set; the ROB's allocation check reads it too.
   logic csr_mstatus_fs_off;
   logic csr_mstatus_vs_off;
+  // vl/vtype update of a committing vector-config instruction (registered
+  // commit bus), from the wrapper to the CSR file
+  riscv_pkg::vcfg_commit_t vcfg_commit;
   // Register FS-Off for decode timing. It differs from CSR state only when
   // FS enters or leaves Off, whose full flush discards that cycle's decode.
   logic id_mstatus_fs_off_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) id_mstatus_fs_off_q <= 1'b0;
     else id_mstatus_fs_off_q <= csr_mstatus_fs_off;
+  end
+  // VS-Off for decode, registered the same way; VS enters or leaves Off only
+  // through mstatus writes, whose full flush discards that cycle's decode.
+  logic id_mstatus_vs_off_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) id_mstatus_vs_off_q <= 1'b1;
+    else id_mstatus_vs_off_q <= csr_mstatus_vs_off;
   end
   // The Zicboz gate takes the same registered path. A legal envcfg write
   // affects only lower privilege, so the executing mode's permission changes
@@ -1070,6 +1080,7 @@ module cpu_ooo #(
       .i_pd_redirect_target(pd_redirect_target),
       .i_pd_redirect_slot2(pd_redirect_slot2),
       .i_mstatus_fs_off(id_mstatus_fs_off_q),
+      .i_mstatus_vs_off(id_mstatus_vs_off_q),
       .i_cbo_zero_illegal(id_cbo_zero_illegal_q),
       .o_from_id_to_ex(decoded_packet),
       .o_from_id_to_ex_next(decoded_packet_next),
@@ -2222,6 +2233,7 @@ module cpu_ooo #(
       .ROB_SHARED_LINK_BANK(1'b1),
       .PERF_COUNTERS(PERF_COUNTERS),
       .VECTOR(VECTOR),
+      .VLEN(VLEN),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
@@ -2319,6 +2331,7 @@ module cpu_ooo #(
 
       // Commit
       .o_commit(rob_commit),
+      .o_vcfg_commit(vcfg_commit),
       .o_commit_comb(rob_commit_comb),
       .o_commit_valid_raw(rob_commit_valid_raw),
       .o_commit_misprediction_raw(rob_commit_misprediction_raw),
@@ -3942,6 +3955,7 @@ module cpu_ooo #(
       .o_satp_root_ppn(csr_satp_root_ppn),
       .o_mstatus_fs_off(csr_mstatus_fs_off),
       .o_mstatus_vs_off(csr_mstatus_vs_off),
+      .i_vcfg_commit(vcfg_commit),
       .o_cbo_zero_illegal(csr_cbo_zero_illegal),
       .o_debug_mode(csr_debug_mode),
       .o_dcsr_step(csr_dcsr_step),
@@ -3973,6 +3987,10 @@ module cpu_ooo #(
     if (reset_seen_q && fs_off_checks_armed && !i_rst &&
         (csr_mstatus_fs_off != id_mstatus_fs_off_q)) begin
       p_fs_off_change_flushes_decode : assert (flush_all);
+    end
+    if (reset_seen_q && fs_off_checks_armed && !i_rst &&
+        (csr_mstatus_vs_off != id_mstatus_vs_off_q)) begin
+      p_vs_off_change_flushes_decode : assert (flush_all);
     end
     if (reset_seen_q && fs_off_checks_armed && !i_rst &&
         (csr_cbo_zero_illegal != id_cbo_zero_illegal_q)) begin

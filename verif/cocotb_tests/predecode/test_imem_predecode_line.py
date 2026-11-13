@@ -41,6 +41,7 @@ OPC_FMSUB = 0b1000111
 OPC_FNMSUB = 0b1001011
 OPC_FNMADD = 0b1001111
 OPC_OP_FP = 0b1010011
+OPC_OP_V = 0b1010111
 SPECIAL_OPCODES = (
     OPC_MISC_MEM,
     OPC_CSR,
@@ -50,13 +51,14 @@ SPECIAL_OPCODES = (
     OPC_FNMSUB,
     OPC_FNMADD,
     OPC_OP_FP,
+    OPC_OP_V,
 )
 NEAR_MISS_OPCODES = (
     0b0000011,  # LOAD (one bit from FMADD, two from MISC_MEM)
     0b0001011,  # custom-0 (one bit from MISC_MEM)
     0b0110011,  # OP
     0b1110111,  # one bit from CSR
-    0b1010111,  # one bit from OP_FP (V-extension space)
+    0b1011011,  # custom-2 (one bit from OP_FP)
     0b1000001,  # non-11 low bits next to FMADD
 )
 

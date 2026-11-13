@@ -38,6 +38,9 @@ module id_stage #(
     // write-intending mstatus/sstatus access; its FENCE-class flush discards
     // the decode using the old value and refetches earlier instructions.
     input logic i_mstatus_fs_off,
+    // mstatus.VS == Off (always set without the vector unit): vector
+    // instructions decode as illegal, as F/D instructions do with FS Off.
+    input logic i_mstatus_vs_off = 1'b1,
     // cbo.zero is illegal in the current privilege mode: S without
     // menvcfg.CBZE, or U without both CBZE bits. cpu_ooo registers it like
     // FS-Off. Legal envcfg writes affect only lower privilege; traps, xRETs
@@ -235,8 +238,11 @@ module id_stage #(
   assign is_cbo_direct = (instruction.opcode == riscv_pkg::OPC_MISC_MEM) &&
                          (instruction.funct3 == 3'b010);
   logic is_illegal_instruction;
+  logic is_vector_direct;
+  assign is_vector_direct = instruction.opcode == riscv_pkg::OPC_OP_V;
   assign is_illegal_instruction = decoder_illegal | i_from_pd_to_id.illegal_instruction |
                                   (i_mstatus_fs_off & is_fp_instruction_direct) |
+                                  (i_mstatus_vs_off & is_vector_direct) |
                                   (i_cbo_zero_illegal & is_cbo_direct);
 
   // Rounding mode: for FP operations funct3 (bits [14:12]) encodes rm.
@@ -715,8 +721,11 @@ module id_stage #(
   assign is_cbo_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_MISC_MEM) &&
                            (instruction_2.funct3 == 3'b010);
   logic is_illegal_instruction_2;
+  logic is_vector_direct_2;
+  assign is_vector_direct_2 = instruction_2.opcode == riscv_pkg::OPC_OP_V;
   assign is_illegal_instruction_2 = decoder_illegal_2 | i_from_pd_to_id_2.illegal_instruction |
                                     (i_mstatus_fs_off & is_fp_instruction_direct_2) |
+                                    (i_mstatus_vs_off & is_vector_direct_2) |
                                     (i_cbo_zero_illegal & is_cbo_direct_2);
 
   logic [2:0] fp_rm_direct_2;

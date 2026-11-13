@@ -56,7 +56,8 @@ package riscv_pkg;
     OPC_FMSUB     = 7'b1000111,  // FMSUB.S/D
     OPC_FNMSUB    = 7'b1001011,  // FNMSUB.S/D
     OPC_FNMADD    = 7'b1001111,  // FNMADD.S/D
-    OPC_OP_FP     = 7'b1010011   // Scalar FP operations (S/D)
+    OPC_OP_FP     = 7'b1010011,  // Scalar FP operations (S/D)
+    OPC_OP_V      = 7'b1010111   // Vector operations (vsetvl* decoded so far)
   } opc_e;
 
   // Instruction-memory predecode sideband bits, stored per 32-bit word.
@@ -162,14 +163,16 @@ package riscv_pkg;
     end
   endfunction
 
-  // Native instructions that use an FP compute unit: OP-FP + the four FMAs.
+  // Native instructions that never pair as slot 2: those that use an FP
+  // compute unit (OP-FP and the four FMAs) and vector instructions (OP-V).
   function automatic logic imem_native_fp_compute(input logic [6:0] opcode);
     begin
       imem_native_fp_compute = (opcode == 7'b1010011) ||  // OPC_OP_FP
       (opcode == 7'b1000011) ||  // OPC_FMADD
       (opcode == 7'b1000111) ||  // OPC_FMSUB
       (opcode == 7'b1001011) ||  // OPC_FNMSUB
-      (opcode == 7'b1001111);  // OPC_FNMADD
+      (opcode == 7'b1001111) ||  // OPC_FNMADD
+      (opcode == 7'b1010111);  // OPC_OP_V
     end
   endfunction
 
@@ -1035,7 +1038,10 @@ package riscv_pkg;
     CLMUL,                     // Zbc/Zbkc: low polynomial product
     CLMULH,                    // Zbc/Zbkc: high polynomial product
     CLMULR,                    // Zbc: reversed polynomial product
-    CBO_ZERO                   // Zicboz: zero the 64-byte block containing rs1
+    CBO_ZERO,                  // Zicboz: zero the 64-byte block containing rs1
+    VSETVLI,                   // V: set vl and vtype; AVL in rs1, vtype immediate
+    VSETIVLI,                  // V: set vl and vtype; AVL and vtype immediates
+    VSETVL                     // V: set vl and vtype; AVL in rs1, vtype in rs2
   } instr_op_e;
 
   // Barrel-shifter controls decoded from operation bits:
@@ -2466,6 +2472,9 @@ package riscv_pkg;
     logic [XLEN-1:0] csr_write_data;  // rs1 value or zero-ext immediate
     // FP flags validity
     logic has_fp_flags;  // Instruction produces FP flags
+    // vsetvli/vsetivli/vsetvl: retires alone (never beside a second entry)
+    // and updates vl and vtype at commit
+    logic is_vcfg;
   } reorder_buffer_alloc_req_t;
 
   typedef struct packed {
@@ -2818,6 +2827,30 @@ package riscv_pkg;
     fp_flags_t                        fp_flags;
   } fu_complete_t;
 
+  // Vector-config completion: what the CSR file needs at commit, kept per ROB
+  // tag in the wrapper's side record. vl and VLMAX are element counts.
+  typedef struct packed {
+    logic                             valid;
+    logic [ReorderBufferTagWidth-1:0] tag;
+    logic                             vill;
+    logic [7:0]                       vtype;   // vma, vta, vsew, vlmul (0 when vill)
+    logic                             rs1_x0;  // vsetvli/vsetvl with rs1 = x0
+    logic [15:0]                      vlmax;
+    logic [15:0]                      vl;
+  } vcfg_record_t;
+
+  // Commit update of vl and vtype for the CSR file, one per retired
+  // vector-config instruction. keep: rs1 = rd = x0 with a legal vtype, so
+  // the CSR file sets vl to min(vl, vlmax) instead of vl.
+  typedef struct packed {
+    logic        valid;
+    logic        vill;
+    logic [7:0]  vtype;
+    logic        keep;
+    logic [15:0] vlmax;
+    logic [15:0] vl;
+  } vcfg_commit_t;
+
   // ---------------------------------------------------------------------------
   // Dispatch Interface Structures
   // ---------------------------------------------------------------------------
@@ -2899,9 +2932,10 @@ package riscv_pkg;
       PAUSE:
       get_rs_type = RS_INT;
 
-      // Integer and carry-less multiply, divide -> MUL_RS
+      // Integer and carry-less multiply, divide, vector configuration -> MUL_RS
       CLMUL, CLMULH, CLMULR,
-      MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW:
+      MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW,
+      VSETVLI, VSETIVLI, VSETVL:
       get_rs_type = RS_MUL;
 
       // Memory operations -> MEM_RS (both INT and FP)
@@ -2964,6 +2998,8 @@ package riscv_pkg;
       // Integer and carry-less multiplication, division
       CLMUL, CLMULH, CLMULR,
       MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW,
+      // Vector configuration writes the new vl to rd
+      VSETVLI, VSETIVLI, VSETVL,
       // Integer loads
       LB, LH, LW, LBU, LHU, LWU, LD,
       // LR/AMO return memory data; SC returns success/failure status.
@@ -3084,7 +3120,8 @@ package riscv_pkg;
         FENCE, FENCE_I,
         WFI, MRET, SRET, DRET, SFENCE_VMA, PAUSE,
         CSRRWI, CSRRSI, CSRRCI,
-        ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT:
+        ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT,
+        VSETIVLI:
         uses_int_rs1 = 1'b0;
         default: uses_int_rs1 = 1'b1;
       endcase
@@ -3106,6 +3143,8 @@ package riscv_pkg;
         // Integer and carry-less multiplication, division
         CLMUL, CLMULH, CLMULR,
         MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW,
+        // vsetvl's vtype
+        VSETVL,
         // B-extension with rs2
         SH1ADD, SH2ADD, SH3ADD,
         BSET, BCLR, BINV, BEXT,

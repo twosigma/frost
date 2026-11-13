@@ -109,7 +109,8 @@ module instr_operand_classifier_equiv (
       riscv_pkg::DIV, riscv_pkg::DIVU,
       riscv_pkg::REM, riscv_pkg::REMU,
       riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,
-      riscv_pkg::REMW, riscv_pkg::REMUW:
+      riscv_pkg::REMW, riscv_pkg::REMUW,
+      riscv_pkg::VSETVLI, riscv_pkg::VSETIVLI, riscv_pkg::VSETVL:
       rs_type_pre = riscv_pkg::RS_MUL;
 
       riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
@@ -312,7 +313,8 @@ module instr_operand_classifier_equiv (
       riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
       riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
       riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D:
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D,
+      riscv_pkg::VSETVLI, riscv_pkg::VSETIVLI, riscv_pkg::VSETVL:
       has_int_dest_pre = 1'b1;
       default: has_int_dest_pre = 1'b0;
     endcase
@@ -382,7 +384,8 @@ module instr_operand_classifier_equiv (
       op_for_pre_decode != riscv_pkg::CSRRSI &&
       op_for_pre_decode != riscv_pkg::CSRRCI &&
       op_for_pre_decode != riscv_pkg::ILLEGAL &&
-      op_for_pre_decode != riscv_pkg::FETCH_FAULT);
+      op_for_pre_decode != riscv_pkg::FETCH_FAULT &&
+      op_for_pre_decode != riscv_pkg::VSETIVLI);
 
     case (op_for_pre_decode)
       riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT,
@@ -418,7 +421,8 @@ module instr_operand_classifier_equiv (
       riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
       riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
       riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
-      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D:
+      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D,
+      riscv_pkg::VSETVL:
       uses_int_rs2_pre = !uses_fp_rs2_pre;
       default: uses_int_rs2_pre = 1'b0;
     endcase
