@@ -23,8 +23,9 @@ words, as in atomics.py and crypto.py. Each trace
    since ``vsetvli x0, x0`` is illegal while vtype.vill is set,
 3. runs random integer vector operations under random SEW, LMUL, tail and mask
    policies, and AVLs, and
-4. moves every 64-bit element of v0..v30 into a scalar register with
-   ``vslidedown.vi`` and ``vmv.x.s``, after reading vl and vtype, and finally vlenb.
+4. reads vl and vtype, then moves every 64-bit element of v0..v31 into a scalar
+   register with ``vmv.x.s`` and an in-place ``vslidedown.vi`` by one, then reads
+   vxsat and vlenb.
 
 Step 4 is how a comparison sees vector state: RVFI-DII reports the integer
 destination of each instruction, and for a vector load or store only one
@@ -32,7 +33,7 @@ element of its data, so a register image cannot be read back through memory.
 The instructions are chosen to avoid reserved encodings: destination and
 source registers are multiples of LMUL, and widening or narrowing forms are
 left out and a masked operation never has vd = v0. A small share of operations
-still trap (for example vslidedown with vd = vs2), which both implementations
+may still trap on some register or mask combinations, which both implementations
 must report alike.
 """
 
@@ -63,7 +64,6 @@ T0 = 5
 BASE_AVL = 11  # a1: the AVL register
 VL_RESULT = 12  # a2: receives vl from vsetvli
 EXFIL = 13  # a3: receives vector elements
-SCRATCH_VECTOR = 31
 
 # Vector arithmetic encodings: name -> (funct6, funct3). funct3 selects the
 # operand kind: 0 OPIVV, 2 OPMVV, 3 OPIVI, 4 OPIVX, 6 OPMVX.
@@ -248,22 +248,23 @@ def trace(rng: random.Random, vlen: int, length: int) -> list[str]:
     readout.append(
         (_vsetvli(0, BASE_AVL, _vtype(64, 1, 1, 1)), "vsetvli x0, a1, e64,m1,ta,ma")
     )
-    for register in range(31):
-        for element in range(vlen // ELEMENT_BITS):
-            if element == 0:
-                readout.append(
-                    (_op_v(0x10, 1, register, 0, 2, EXFIL), f"vmv.x.s a3, v{register}")
-                )
-                continue
+    # Each register is read in place: element 0, then slide down by one and read
+    # element 0 again, so no scratch register is needed and all 32 are observed.
+    for register in range(32):
+        readout.append(
+            (_op_v(0x10, 1, register, 0, 2, EXFIL), f"vmv.x.s a3, v{register}")
+        )
+        for _ in range(1, vlen // ELEMENT_BITS):
             readout.append(
                 (
-                    _op_v(0x0F, 1, register, element, 3, SCRATCH_VECTOR),
-                    f"vslidedown.vi v31, v{register}, {element}",
+                    _op_v(0x0F, 1, register, 1, 3, register),
+                    f"vslidedown.vi v{register}, v{register}, 1",
                 )
             )
             readout.append(
-                (_op_v(0x10, 1, SCRATCH_VECTOR, 0, 2, EXFIL), "vmv.x.s a3, v31")
+                (_op_v(0x10, 1, register, 0, 2, EXFIL), f"vmv.x.s a3, v{register}")
             )
+    readout.append((_csrrs(EXFIL, CSR_VXSAT, 0), "csrr a3, vxsat"))
     readout.append((_csrrs(EXFIL, CSR_VLENB, 0), "csrr a3, vlenb"))
 
     lines = [f"# vector trace, VLEN {vlen}", ".noshrink"]

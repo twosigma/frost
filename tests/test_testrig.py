@@ -594,6 +594,10 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="seconds the engine waits for one test's trace (default 600)",
     )
     arguments = parser.parse_args(argv)
+    if arguments.vector < 0 or arguments.vector_length < 1:
+        parser.error(
+            "--vector must not be negative and --vector-length must be positive"
+        )
     if arguments.vector and arguments.vlen is None:
         arguments.vlen = DEFAULT_VECTOR_LENGTH
     if arguments.sscofpmf and (

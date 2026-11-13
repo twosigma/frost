@@ -138,9 +138,11 @@ NO_COMPRESS_TESTS = {
 
 # Extensions whose tests need the vector unit. They are not in
 # SUPPORTED_EXTENSIONS until FROST has one; generate their references with
-# --extensions Zvk. Each test turns on mstatus.VS itself. The tests' signatures
-# do not depend on VLEN (checked at 128, 256 and 512), so one Spike vector
-# length serves. Keep FROST_VECTOR_MARCH equal to VECTOR_ARCH in
+# --extensions Zvk. Each test turns on mstatus.VS itself. The references are
+# made at VLEN 128, and so are for a core at VLEN 128: the suite's macros skip a
+# case when AVL * SEW exceeds VLEN, so five of the tests (the SHA-2 and SM3 ones
+# at SEW 64 or large AVL) check little at 128. Another length needs references
+# made with its own zvl<N>b. Keep FROST_VECTOR_MARCH equal to VECTOR_ARCH in
 # tests/test_arch_compliance.py.
 VECTOR_EXTENSIONS = {"Zvk"}
 FROST_VECTOR_MARCH = (

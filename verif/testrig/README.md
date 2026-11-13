@@ -320,13 +320,14 @@ forms, multiplies, divides, slides) under random `vtype` and AVL values, and
 then reads the state out. The zeroing is in the test, not the preamble,
 because Sail does not reset the vector registers and the first `vsetvli` must
 use a non-`x0` AVL while `vtype.vill` is set; both implementations execute it.
-The read-out moves every 64-bit element of v0..v30 into a scalar register with
-`vslidedown.vi` and `vmv.x.s`, then reads `vl`, `vtype` and `vlenb`. This is
+The read-out first reads `vl` and `vtype`, then moves every 64-bit element of
+v0..v31 into a scalar register with `vmv.x.s` and an in-place `vslidedown.vi`
+by one, then reads `vxsat` and `vlenb`. This is
 how the comparison sees vector state: RVFI-DII carries integer destinations,
 and for a vector load or store only one element of its data, so a register
 image cannot be read back through memory. The setup and the read-out are
 `.noshrink` strands. Operands are drawn so that nearly all encodings are legal;
-a small share trap (`vslidedown` with `vd = vs2`, for example), which both
+a small share may still trap on some register or mask combinations, which both
 implementations must report alike.
 
 The unit tests in `tests/test_testrig_vector.py` check every generated word

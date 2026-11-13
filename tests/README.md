@@ -601,12 +601,14 @@ but not supported. Of the 37 in the pinned suite, 32 run: `vandn.vx`,
 `vrol.vx`, `vror.vx`, `vsha2ch-e32` and `vsha2cl-e32` trap on Spike (the first
 three overwrite their data pointer, the others use overlapping operands) and
 are excluded. `--extensions Zvk` builds them with a vector
-`-march` and compares them with Spike references at VLEN 128 (their signatures
-do not depend on the vector length), but `Zvk` is not in `SUPPORTED_EXTENSIONS`,
+`-march` and compares them with Spike references at VLEN 128, but `Zvk` is not in `SUPPORTED_EXTENSIONS`,
 so `--all` and CI skip it until FROST has the vector unit. To turn it on, add
 `Zvk` to `SUPPORTED_EXTENSIONS` in `test_arch_compliance.py` and
-`generate_references.py`, and to a job of the `test-arch-compliance` matrix in
-`ci.yml`.
+`generate_references.py`, to a job of the `test-arch-compliance` matrix in
+`ci.yml` (built with `FROST_VERILATOR_EXTRA_ARGS='-GVECTOR=1 -GVLEN=128'`), and
+remove the not-supported assertions in `test_vector_tests_prepared_but_not_supported`.
+The references are made at VLEN 128 and are for a core of that length: the suite
+skips cases whose AVL times SEW exceeds VLEN, so a few tests check little there.
 
 CI skips Zifencei in BRAM, because ordinary stores cannot reach the separate
 instruction BRAM, and F and D in DDR, to save runner time; the BRAM jobs
@@ -684,7 +686,7 @@ and the `vl` that `vsetvli` grants for an AVL between VLMAX and twice VLMAX
 
 `--vlen` is 128 (the default), 256 or 512. `--pattern` is a regular expression
 on instruction names, and `--shard K/N` runs every N-th test of the sorted
-list. By default each test runs on Spike. A full run at VLEN 128 is 3,042 tests
+list. By default each test runs on Spike. A full run at VLEN 128 is about 3,050 tests
 and takes about 10 minutes at four jobs (`--jobs`). `--workdir DIR` keeps the
 generated sources and binaries.
 
@@ -698,6 +700,36 @@ vector length:
 FROST_VERILATOR_EXTRA_ARGS='-GVECTOR=1 -GVLEN=128' \
     ./scripts/frost.py run python3 tests/test_riscv_vector_tests.py --rtl --vlen 128 --pattern '^vadd\.vv$'
 ```
+
+### Selecting tests for a simulation run
+
+`--rtl` takes the same selectors as the Spike run: `--vlen` (128, 256 or 512,
+which must match the core's `-GVLEN`), `--pattern` (instruction names), `--class`
+and `--shard K/N`. The classes, with their test counts at VLEN 128, are
+`load-store` (487), `crypto` (24), `bitmanip` (63: Zvbb and Zvbc), `float`
+(1270), `mask-permute-reduce` (160) and `integer` (1046, everything else).
+`--list` prints what a selection contains without building or running anything.
+Simulation runs share the build directory of `tests/`, so run one at a time (or
+one per checkout) and clean `tests/` before each invocation. Use
+`V='-GVECTOR=1 -GVLEN=128'` below, and the same value in `--vlen`:
+
+```bash
+# one instruction (all of its generated tests)
+FROST_VERILATOR_EXTRA_ARGS="$V" ./scripts/frost.py run python3 tests/test_riscv_vector_tests.py \
+    --rtl --vlen 128 --pattern '^vadd\.vv$'
+
+# one class, in 20 shards: run K = 1 to 20
+FROST_VERILATOR_EXTRA_ARGS="$V" ./scripts/frost.py run python3 tests/test_riscv_vector_tests.py \
+    --rtl --vlen 128 --class load-store --shard K/20
+
+# a full run at one vector length, in 40 shards: run K = 1 to 40
+FROST_VERILATOR_EXTRA_ARGS="$V" ./scripts/frost.py run python3 tests/test_riscv_vector_tests.py \
+    --rtl --vlen 128 --shard K/40
+```
+
+Replace `K` with the shard number. The same commands without `--rtl` run on
+Spike. Each shard prints one line per test and exits nonzero if any test fails,
+so a job per shard is enough for CI.
 
 The pytest entry points run a sample of seven instruction forms on Spike at
 VLEN 128 and 256 in the Fast Python job, which guards the generator, the

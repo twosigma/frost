@@ -60,9 +60,9 @@ def test_trace_shape(vlen: int) -> None:
     assert lines.count(".noshrink") == 2 and lines.count(".shrink") == 1
     tail = lines[len(lines) - 1 - lines[::-1].index(".noshrink") :]
     readout = [w for w in tail if "vmv.x.s" in w or "vslidedown" in w]
-    # v0..v30: one vmv.x.s per element, and a slide for every element but 0.
+    # v0..v31: one vmv.x.s per element, and a slide for every element but 0.
     elements = vlen // vector.ELEMENT_BITS
-    assert len(readout) == 31 * (2 * elements - 1)
+    assert len(readout) == 32 * (2 * elements - 1)
 
 
 def test_unsupported_vlen_rejected(tmp_path: Path) -> None:
@@ -142,7 +142,8 @@ def test_sail_vector_config_validates(tmp_path: Path, vlen: int) -> None:
         text=True,
         check=True,
     ).stdout
-    assert re.match(r"rv64imafdcbv?", isa.split("_")[0]) and "v" in isa.split("_")[0]
+    base = isa.split("_")[0]
+    assert base.startswith("rv64") and "v" in base[len("rv64") :], isa
     assert json.loads(config.read_text())["extensions"]["V"]["vlen_exp"] == (
         vlen.bit_length() - 1
     )
@@ -226,3 +227,24 @@ def test_traces_see_the_vector_length(tmp_path: Path) -> None:
     assert result.returncode != 0 or "Failure." in result.stdout.replace(
         "No Failure", ""
     )
+
+
+def test_arguments() -> None:
+    """--vector implies a vector length, and bad values are rejected."""
+    arguments = test_testrig.parse_arguments(["--vector", "3"])
+    assert arguments.vlen == 128 and arguments.vector == 3
+    assert test_testrig.parse_arguments(["--trace", "x.S", "--vlen", "256"]).vlen == 256
+    assert test_testrig.parse_arguments([]).vlen is None
+    for bad in (["--vector", "-1"], ["--vector", "2", "--vector-length", "0"]):
+        with pytest.raises(SystemExit):
+            test_testrig.parse_arguments(bad)
+    with pytest.raises(SystemExit):
+        test_testrig.parse_arguments(["--vector", "2", "--sscofpmf"])
+
+
+def test_readout_sees_every_register_and_vxsat() -> None:
+    """The read-out reads v31 and vxsat as well as the other registers."""
+    lines = vector.trace(random.Random(5), 128, 3)
+    tail = lines[len(lines) - 1 - lines[::-1].index(".noshrink") :]
+    text = "\n".join(tail)
+    assert "vmv.x.s a3, v31" in text and "csr" in text and "vxsat" in text

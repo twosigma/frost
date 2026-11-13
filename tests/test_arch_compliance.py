@@ -68,10 +68,12 @@ EXTENSION_SUITES: dict[str, tuple[str, ...]] = {
 
 # Extensions whose tests need the vector unit: the vector crypto tests. They
 # are left out of SUPPORTED_EXTENSIONS, and so out of CI, until FROST has one;
-# run them with `--extensions Zvk`, and to include them, add Zvk to
-# SUPPORTED_EXTENSIONS here and in generate_references.py and to a job of the
-# test-arch-compliance matrix in ci.yml (a fast test checks that CI covers every
-# supported extension).
+# run them with `--extensions Zvk` on a core built with
+# FROST_VERILATOR_EXTRA_ARGS='-GVECTOR=1 -GVLEN=128' (the references are for
+# VLEN 128), and to include them, add Zvk to SUPPORTED_EXTENSIONS here and in
+# generate_references.py, to a job of the test-arch-compliance matrix in ci.yml
+# (a fast test checks that CI covers every supported extension), and drop the
+# not-supported assertions in test_vector_tests_prepared_but_not_supported.
 # Each test turns on mstatus.VS itself. VECTOR_ARCH replaces the Makefile's
 # ARCH; keep it equal to FROST_VECTOR_MARCH in generate_references.py.
 VECTOR_EXTENSIONS = {"Zvk"}
@@ -613,8 +615,8 @@ def test_vector_tests_prepared_but_not_supported() -> None:
     assert EXTENSION_SUITES == generator.EXTENSION_SUITES
     assert EXTENSION_TEST_EXCLUDES == generator.EXTENSION_TEST_EXCLUDES
     for extension in VECTOR_EXTENSIONS:
-        assert extension not in SUPPORTED_EXTENSIONS
-        assert extension not in generator.SUPPORTED_EXTENSIONS
+        assert extension not in SUPPORTED_EXTENSIONS  # remove to turn Zvk on
+        assert extension not in generator.SUPPORTED_EXTENSIONS  # remove to turn Zvk on
         tests = discover_tests(extension, include_all=True)
         assert tests, f"no {extension} tests found"
         missing = [t.name for t in tests if not get_reference_path(t).exists()]
