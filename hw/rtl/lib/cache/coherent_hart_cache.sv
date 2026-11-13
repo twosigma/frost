@@ -29,7 +29,8 @@ module coherent_hart_cache #(
     parameter int unsigned HOME_LINE_BYTES = 64,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L1I_WAYS = 4,
-    parameter int unsigned SIM_FAST_MAINT = 0
+    parameter int unsigned SIM_FAST_MAINT = 0,
+    parameter bit WITHDRAW_ABSORBED_W = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -277,6 +278,7 @@ module coherent_hart_cache #(
       .HOME_WAYS(HOME_WAYS),
       .HOME_LINE_BYTES(HOME_LINE_BYTES),
       .STREAM_PREFETCH(L1D_STREAM_PREFETCH),
+      .WITHDRAW_ABSORBED_W(WITHDRAW_ABSORBED_W),
       .SIM_FAST_MAINT(SIM_FAST_MAINT)
   ) l1d (
       .i_clk(i_clk),

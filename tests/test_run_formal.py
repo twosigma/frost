@@ -79,6 +79,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_store_home", "bmc_rows"): 2100,
     ("coherence_store_home", "bmc_conflict"): 2400,
     ("coherence_store_home", "bmc_pressure"): 2700,
+    ("coherence_store_home", "link_bmc_siblings"): 2700,
+    ("coherence_store_home", "link_bmc_pressure"): 3600,
 }
 
 
@@ -156,6 +158,9 @@ FORMAL_TARGETS = [
             "cover_conflict",
             "bmc_pressure",
             "cover_pressure",
+            "link_bmc_siblings",
+            "link_bmc_pressure",
+            "link_cover_pressure",
         ),
     ),
     FormalTarget(
@@ -1497,6 +1502,15 @@ SBY_TASKS = [
     ),
     ("link_credit1_cover", "A credit link delivers four messages."),
     ("link_mirror1_cover", "A mirrored link completes four handshakes."),
+    (
+        "link_bmc_siblings",
+        "Production L1D and home through one-stage links preserve sibling-sector bytes.",
+    ),
+    (
+        "link_bmc_pressure",
+        "One-stage links under two dirty victims, delayed releases and a probing DMA read.",
+    ),
+    ("link_cover_pressure", "The pressure schedule completes through one-stage links."),
     ("limit_bmc", "Bounded proof that the runtime occupancy limit caps the writer."),
     ("limit_cover", "The writer stalls at a runtime limit below the RAM's capacity."),
     ("coh_l1d_conflict_prove", "Guarded conflict identity with one endpoint."),

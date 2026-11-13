@@ -19,6 +19,41 @@ fatal indications and addresses from the hart, shared cache and uncached
 adapter. It supplies cache performance events to the hart's counters.
 `ENABLE_CACHED_TIER=0` omits the L1 and L2 caches and ties off their channels.
 
+### Hart and cluster-memory links
+
+`MEMORY_LINK_STAGES` (default 0) puts that many register stages on every
+channel between `frost_hart` and `frost_cluster_memory`. At 0 every link is a
+wire and the tile is unchanged. Boards pass the parameter through
+`platform_top` and `frost`; the default simulation uses 0, and
+`MEMORY_LINK_STAGES=1 ./scripts/frost.py cocotb <test>` runs a test with one
+stage. Each channel uses one kind of `coherence_link`
+([cache library](../lib/cache/README.md#hart-and-home-links)):
+
+| Channel | Direction | Link kind |
+| --- | --- | --- |
+| D, C | hart to home | credit: the requester's handshake happens when the link takes the message |
+| R | hart to home | always taken: a reply always finds its prober waiting |
+| W | hart to home | mirrored: the put endpoint's handshake follows the home's acceptance |
+| P | home to hart | credit with one entry: the L1D serves one probe at a time |
+| G, U, WA | home to hart | always taken: the requester or put slot waits for each one |
+| fatal stop, L2 events | both | always taken |
+| coherent DMA request, response | SoC to cluster memory and back | credit, always taken |
+| memory request, response | home to `cpu_memory_fabric` and back | credit, always taken |
+
+The hart's uncached data and instruction ports are not staged: they reach
+`cpu_memory_fabric` directly, so Normal (BRAM) and Device accesses keep their
+latency. With stages, the L1D also stops presenting a put on W once a probe has
+absorbed it (`WITHDRAW_ABSORBED_W`), so no delayed copy of a cancelled put can
+reach the home.
+
+Each stage adds one cycle to every message on a staged channel: an L2 hit
+completes 2 cycles later (D and G), an L2 miss 4 (D, G and the memory request
+and response), an instruction refill or page-table read 4 (it also probes the
+L1D), a DMA access 2 (its probe), a home AMO 4 and a home SC 6. A put reaches
+the home 1 cycle later and holds its slot 2 cycles longer, and the W channel
+accepts one put per 2N+1 cycles for N stages. Fatal stops and L2 events arrive
+one cycle later per stage.
+
 ## Clock, reset and boot
 
 All ports are synchronous to the rising edge of `i_clk`. There are no clock crossings in `cpu_top`; the integrating wrapper must synchronize external controls and interrupt levels and provide a coherent snapshot of multibit inputs.

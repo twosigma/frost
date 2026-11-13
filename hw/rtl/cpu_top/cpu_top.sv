@@ -51,7 +51,10 @@ module cpu_top #(
     parameter bit ENABLE_COHERENCE = 1'b0,
     parameter int unsigned AXI_ID_BITS = 6,
     parameter int unsigned AXI_USER_BITS = 1,
-    parameter logic [2:0] AXI_MEMORY_PROT = 3'b011
+    parameter logic [2:0] AXI_MEMORY_PROT = 3'b011,
+    // Register stages on every channel between the hart and the cluster
+    // memory (see cpu_top/README.md). 0 connects them directly.
+    parameter int unsigned MEMORY_LINK_STAGES = 0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -345,6 +348,257 @@ module cpu_top #(
   logic coherent_u_ready;
   logic [riscv_pkg::PhysAddrBits+14:0] coherent_u;
 
+
+
+  // The links between the hart and the cluster memory (cpu_top/README.md,
+  // "Hart and cluster-memory links"). coherent_* name the hart's side of each
+  // channel and cm_* the cluster memory's side; with MEMORY_LINK_STAGES = 0
+  // every link is wires.
+  localparam int unsigned LinkStages = MEMORY_LINK_STAGES;
+  logic cm_d_valid, cm_d_ready, cm_p_valid, cm_p_ready, cm_r_valid, cm_r_ready;
+  logic cm_w_valid, cm_w_ready, cm_wa_valid, cm_wa_ready, cm_g_valid, cm_g_ready;
+  logic cm_c_valid, cm_c_ready, cm_u_valid, cm_u_ready;
+  logic [riscv_pkg::PhysAddrBits+311:0] cm_d;
+  logic [ riscv_pkg::PhysAddrBits+29:0] cm_p;
+  logic [riscv_pkg::PhysAddrBits+274:0] cm_r, cm_g;
+  logic [riscv_pkg::PhysAddrBits+259:0] cm_w;
+  logic [ riscv_pkg::PhysAddrBits+10:0] cm_wa;
+  logic [ riscv_pkg::PhysAddrBits+17:0] cm_c;
+  logic [ riscv_pkg::PhysAddrBits+14:0] cm_u;
+  logic cm_fatal_error, cm_cluster_fatal;
+  logic [riscv_pkg::PhysAddrBits-1:0] cm_cluster_fatal_addr;
+  cache_perf_pkg::cache_instance_perf_events_t cm_l2_perf_events;
+  cache_perf_pkg::cache_write_perf_events_t cm_l2_write_perf_events;
+  logic cm_dma_req_valid, cm_dma_req_ready, cm_dma_req_write, cm_dma_req_non_alloc;
+  logic [riscv_pkg::PhysAddrBits-1:0] cm_dma_req_addr;
+  logic [255:0] cm_dma_req_wdata, cm_dma_resp_rdata;
+  logic [31:0] cm_dma_req_wstrb;
+  logic [3:0] cm_dma_req_id, cm_dma_resp_id;
+  logic cm_dma_resp_valid, cm_dma_resp_error;
+  // After any failure a stopped receiver may drop what an always-kind link
+  // presents; the stop holds until reset.
+  logic link_stop_hart, link_stop_cluster;
+  assign link_stop_hart = o_fatal_error || cache_fatal || uncached_fatal || cm_cluster_fatal;
+  assign link_stop_cluster = link_stop_hart || cm_fatal_error;
+  // Hart to home: demands and completions take credits, probe replies are
+  // always taken, puts complete only when the home has consumed them.
+  coherence_link #(
+      .WIDTH (riscv_pkg::PhysAddrBits + 312),
+      .STAGES(LinkStages),
+      .KIND  (1)
+  ) link_d (
+      .i_clk,
+      .i_rst,
+      .i_stopped(link_stop_cluster),
+      .i_valid  (coherent_d_valid),
+      .o_ready  (coherent_d_ready),
+      .i_payload(coherent_d),
+      .o_valid  (cm_d_valid),
+      .i_ready  (cm_d_ready),
+      .o_payload(cm_d)
+  );
+  coherence_link #(
+      .WIDTH (riscv_pkg::PhysAddrBits + 18),
+      .STAGES(LinkStages),
+      .KIND  (1)
+  ) link_c (
+      .i_clk,
+      .i_rst,
+      .i_stopped(link_stop_cluster),
+      .i_valid  (coherent_c_valid),
+      .o_ready  (coherent_c_ready),
+      .i_payload(coherent_c),
+      .o_valid  (cm_c_valid),
+      .i_ready  (cm_c_ready),
+      .o_payload(cm_c)
+  );
+  coherence_link #(
+      .WIDTH (riscv_pkg::PhysAddrBits + 275),
+      .STAGES(LinkStages),
+      .KIND  (0)
+  ) link_r (
+      .i_clk,
+      .i_rst,
+      .i_stopped(link_stop_cluster),
+      .i_valid  (coherent_r_valid),
+      .o_ready  (coherent_r_ready),
+      .i_payload(coherent_r),
+      .o_valid  (cm_r_valid),
+      .i_ready  (cm_r_ready),
+      .o_payload(cm_r)
+  );
+  coherence_link #(
+      .WIDTH (riscv_pkg::PhysAddrBits + 260),
+      .STAGES(LinkStages),
+      .KIND  (2)
+  ) link_w (
+      .i_clk,
+      .i_rst,
+      .i_stopped(link_stop_cluster),
+      .i_valid  (coherent_w_valid),
+      .o_ready  (coherent_w_ready),
+      .i_payload(coherent_w),
+      .o_valid  (cm_w_valid),
+      .i_ready  (cm_w_ready),
+      .o_payload(cm_w)
+  );
+  // Home to hart: probes take one credit (the L1D serves one probe at a
+  // time), grants, releases and put acknowledgements are always taken.
+  coherence_link #(
+      .WIDTH(riscv_pkg::PhysAddrBits + 30),
+      .STAGES(LinkStages),
+      .KIND(1),
+      .CREDITS(1)
+  ) link_p (
+      .i_clk,
+      .i_rst,
+      .i_stopped(link_stop_hart),
+      .i_valid  (cm_p_valid),
+      .o_ready  (cm_p_ready),
+      .i_payload(cm_p),
+      .o_valid  (coherent_p_valid),
+      .i_ready  (coherent_p_ready),
+      .o_payload(coherent_p)
+  );
+  coherence_link #(
+      .WIDTH (riscv_pkg::PhysAddrBits + 275),
+      .STAGES(LinkStages),
+      .KIND  (0)
+  ) link_g (
+      .i_clk,
+      .i_rst,
+      .i_stopped(link_stop_hart),
+      .i_valid  (cm_g_valid),
+      .o_ready  (cm_g_ready),
+      .i_payload(cm_g),
+      .o_valid  (coherent_g_valid),
+      .i_ready  (coherent_g_ready),
+      .o_payload(coherent_g)
+  );
+  coherence_link #(
+      .WIDTH (riscv_pkg::PhysAddrBits + 15),
+      .STAGES(LinkStages),
+      .KIND  (0)
+  ) link_u (
+      .i_clk,
+      .i_rst,
+      .i_stopped(link_stop_hart),
+      .i_valid  (cm_u_valid),
+      .o_ready  (cm_u_ready),
+      .i_payload(cm_u),
+      .o_valid  (coherent_u_valid),
+      .i_ready  (coherent_u_ready),
+      .o_payload(coherent_u)
+  );
+  coherence_link #(
+      .WIDTH (riscv_pkg::PhysAddrBits + 11),
+      .STAGES(LinkStages),
+      .KIND  (0)
+  ) link_wa (
+      .i_clk,
+      .i_rst,
+      .i_stopped(link_stop_hart),
+      .i_valid  (cm_wa_valid),
+      .o_ready  (cm_wa_ready),
+      .i_payload(cm_wa),
+      .o_valid  (coherent_wa_valid),
+      .i_ready  (coherent_wa_ready),
+      .o_payload(coherent_wa)
+  );
+  // The fatal stop both ways and the L2's events: the stop holds until reset
+  // and the events are counted, so only their arrival moves.
+  coherence_link #(
+      .WIDTH (1),
+      .STAGES(LinkStages),
+      .KIND  (0)
+  ) link_fatal_in (
+      .i_clk,
+      .i_rst,
+      .i_stopped(1'b1),
+      .i_valid  (o_fatal_error),
+      .o_ready  (),
+      .i_payload(1'b0),
+      .o_valid  (cm_fatal_error),
+      .i_ready  (1'b1),
+      .o_payload()
+  );
+  coherence_link #(
+      .WIDTH (riscv_pkg::PhysAddrBits),
+      .STAGES(LinkStages),
+      .KIND  (0)
+  ) link_fatal_out (
+      .i_clk,
+      .i_rst,
+      .i_stopped(1'b1),
+      .i_valid  (cm_cluster_fatal),
+      .o_ready  (),
+      .i_payload(cm_cluster_fatal_addr),
+      .o_valid  (cluster_cache_fatal),
+      .i_ready  (1'b1),
+      .o_payload(cluster_cache_fatal_addr)
+  );
+  coherence_link #(
+      .WIDTH ($bits(cm_l2_perf_events) + $bits(cm_l2_write_perf_events)),
+      .STAGES(LinkStages),
+      .KIND  (0)
+  ) link_events (
+      .i_clk,
+      .i_rst,
+      .i_stopped(1'b1),
+      .i_valid  (1'b1),
+      .o_ready  (),
+      .i_payload({cm_l2_perf_events, cm_l2_write_perf_events}),
+      .o_valid  (),
+      .i_ready  (1'b1),
+      .o_payload({l2_perf_events, l2_write_perf_events})
+  );
+  // The SoC's coherent DMA port enters the cluster memory through the same
+  // kind of link: requests take credits, responses are always taken.
+  coherence_link #(
+      .WIDTH (1 + riscv_pkg::PhysAddrBits + 256 + 32 + 4 + 1),
+      .STAGES(LinkStages),
+      .KIND  (1)
+  ) link_dma_req (
+      .i_clk,
+      .i_rst,
+      .i_stopped(link_stop_cluster),
+      .i_valid(i_coherent_req_valid),
+      .o_ready(o_coherent_req_ready),
+      .i_payload({
+        i_coherent_req_write,
+        i_coherent_req_addr,
+        i_coherent_req_wdata,
+        i_coherent_req_wstrb,
+        i_coherent_req_id,
+        i_coherent_req_non_alloc
+      }),
+      .o_valid(cm_dma_req_valid),
+      .i_ready(cm_dma_req_ready),
+      .o_payload({
+        cm_dma_req_write,
+        cm_dma_req_addr,
+        cm_dma_req_wdata,
+        cm_dma_req_wstrb,
+        cm_dma_req_id,
+        cm_dma_req_non_alloc
+      })
+  );
+  coherence_link #(
+      .WIDTH (4 + 256 + 1),
+      .STAGES(LinkStages),
+      .KIND  (0)
+  ) link_dma_resp (
+      .i_clk,
+      .i_rst,
+      .i_stopped(1'b1),
+      .i_valid  (cm_dma_resp_valid),
+      .o_ready  (),
+      .i_payload({cm_dma_resp_id, cm_dma_resp_rdata, cm_dma_resp_error}),
+      .o_valid  (o_coherent_resp_valid),
+      .i_ready  (1'b1),
+      .o_payload({o_coherent_resp_id, o_coherent_resp_rdata, o_coherent_resp_error})
+  );
+
   frost_hart #(
       .CACHE_NORMAL_MEMORY(CACHE_NORMAL_MEMORY),
       .NORMAL_FETCH_LINES(NORMAL_FETCH_LINES),
@@ -362,6 +616,7 @@ module cpu_top #(
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
       .L2_WAYS(L2_WAYS),
       .SIM_FAST_MAINT(SIM_FAST_MAINT),
+      .WITHDRAW_ABSORBED_W(MEMORY_LINK_STAGES != 0),
       .PERF_COUNTERS(PERF_COUNTERS),
       .DATA_BYTES(L2_LINE_BYTES),
       .DATA_PROT(AXI_MEMORY_PROT)
@@ -466,48 +721,49 @@ module cpu_top #(
       .FETCH_BYTES(NormalFetchBytes),
       .AXI_ID_BITS(AXI_ID_BITS),
       .AXI_USER_BITS(AXI_USER_BITS),
-      .AXI_MEMORY_PROT(AXI_MEMORY_PROT)
+      .AXI_MEMORY_PROT(AXI_MEMORY_PROT),
+      .MEMORY_LINK_STAGES(MEMORY_LINK_STAGES)
   ) cluster_memory (
-      .i_coherent_d_valid(coherent_d_valid),
-      .o_coherent_d_ready(coherent_d_ready),
-      .i_coherent_d(coherent_d),
-      .o_coherent_p_valid(coherent_p_valid),
-      .i_coherent_p_ready(coherent_p_ready),
-      .o_coherent_p(coherent_p),
-      .i_coherent_r_valid(coherent_r_valid),
-      .o_coherent_r_ready(coherent_r_ready),
-      .i_coherent_r(coherent_r),
-      .i_coherent_w_valid(coherent_w_valid),
-      .o_coherent_w_ready(coherent_w_ready),
-      .i_coherent_w(coherent_w),
-      .o_coherent_wa_valid(coherent_wa_valid),
-      .i_coherent_wa_ready(coherent_wa_ready),
-      .o_coherent_wa(coherent_wa),
-      .o_coherent_g_valid(coherent_g_valid),
-      .i_coherent_g_ready(coherent_g_ready),
-      .o_coherent_g(coherent_g),
-      .i_coherent_c_valid(coherent_c_valid),
-      .o_coherent_c_ready(coherent_c_ready),
-      .i_coherent_c(coherent_c),
-      .o_coherent_u_valid(coherent_u_valid),
-      .i_coherent_u_ready(coherent_u_ready),
-      .o_coherent_u(coherent_u),
+      .i_coherent_d_valid(cm_d_valid),
+      .o_coherent_d_ready(cm_d_ready),
+      .i_coherent_d(cm_d),
+      .o_coherent_p_valid(cm_p_valid),
+      .i_coherent_p_ready(cm_p_ready),
+      .o_coherent_p(cm_p),
+      .i_coherent_r_valid(cm_r_valid),
+      .o_coherent_r_ready(cm_r_ready),
+      .i_coherent_r(cm_r),
+      .i_coherent_w_valid(cm_w_valid),
+      .o_coherent_w_ready(cm_w_ready),
+      .i_coherent_w(cm_w),
+      .o_coherent_wa_valid(cm_wa_valid),
+      .i_coherent_wa_ready(cm_wa_ready),
+      .o_coherent_wa(cm_wa),
+      .o_coherent_g_valid(cm_g_valid),
+      .i_coherent_g_ready(cm_g_ready),
+      .o_coherent_g(cm_g),
+      .i_coherent_c_valid(cm_c_valid),
+      .o_coherent_c_ready(cm_c_ready),
+      .i_coherent_c(cm_c),
+      .o_coherent_u_valid(cm_u_valid),
+      .i_coherent_u_ready(cm_u_ready),
+      .o_coherent_u(cm_u),
       .i_clk,
       .i_rst,
       .i_axi_rst,
-      .i_fatal_error(o_fatal_error),
-      .i_coherent_req_valid,
-      .o_coherent_req_ready,
-      .i_coherent_req_write,
-      .i_coherent_req_addr,
-      .i_coherent_req_wdata,
-      .i_coherent_req_wstrb,
-      .i_coherent_req_id,
-      .i_coherent_req_non_alloc,
-      .o_coherent_resp_valid,
-      .o_coherent_resp_id,
-      .o_coherent_resp_rdata,
-      .o_coherent_resp_error,
+      .i_fatal_error(cm_fatal_error),
+      .i_coherent_req_valid(cm_dma_req_valid),
+      .o_coherent_req_ready(cm_dma_req_ready),
+      .i_coherent_req_write(cm_dma_req_write),
+      .i_coherent_req_addr(cm_dma_req_addr),
+      .i_coherent_req_wdata(cm_dma_req_wdata),
+      .i_coherent_req_wstrb(cm_dma_req_wstrb),
+      .i_coherent_req_id(cm_dma_req_id),
+      .i_coherent_req_non_alloc(cm_dma_req_non_alloc),
+      .o_coherent_resp_valid(cm_dma_resp_valid),
+      .o_coherent_resp_id(cm_dma_resp_id),
+      .o_coherent_resp_rdata(cm_dma_resp_rdata),
+      .o_coherent_resp_error(cm_dma_resp_error),
       .i_data_req_valid(data_req_valid),
       .o_data_req_ready(data_req_ready),
       .i_data_req_write(data_req_write),
@@ -529,10 +785,10 @@ module cpu_top #(
       .o_fetch_resp_id(low_resp_id),
       .o_fetch_resp_data(low_resp_data),
       .o_fetch_resp_error(low_resp_error),
-      .o_cache_fatal(cluster_cache_fatal),
-      .o_cache_fatal_addr(cluster_cache_fatal_addr),
-      .o_l2_perf_events(l2_perf_events),
-      .o_l2_write_perf_events(l2_write_perf_events),
+      .o_cache_fatal(cm_cluster_fatal),
+      .o_cache_fatal_addr(cm_cluster_fatal_addr),
+      .o_l2_perf_events(cm_l2_perf_events),
+      .o_l2_write_perf_events(cm_l2_write_perf_events),
       .o_axi_idle,
       .o_axi_awvalid,
       .i_axi_awready,

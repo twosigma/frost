@@ -4461,6 +4461,41 @@ for _program in ("dma_torture", "nic_loopback", "itlb_test"):
             ),
         )
 
+# The memory-system programs with one register stage between the hart and the
+# cluster memory (cpu_top MEMORY_LINK_STAGES). The entries above use no
+# stages.
+MEMORY_LINK_PROGRAMS = (
+    "coremark",
+    "csr_test",
+    "ddr_bench",
+    "dma_torture",
+    "ddr_atomic_test",
+    "ptw_coherence_test",
+    "cached_store_burst_test",
+    "ddr_mlp_test",
+    "cbo_zero_test",
+    "cbo_zero_pages",
+)
+for _name in MEMORY_LINK_PROGRAMS:
+    _base_config = TEST_REGISTRY[_name]
+    TEST_REGISTRY[f"{_name}_link1"] = replace(
+        _base_config,
+        description=f"{_base_config.description}, with one register stage between the hart "
+        "and the cluster memory",
+        verilator_extra_args=(
+            *_base_config.verilator_extra_args,
+            "-GMEMORY_LINK_STAGES=1",
+        ),
+    )
+for _name in ("coherence_cluster_misses", "coherence_store_pressure"):
+    _base_config = TEST_REGISTRY[_name]
+    TEST_REGISTRY[f"{_name}_link1"] = replace(
+        _base_config,
+        description=f"{_base_config.description}, with one register stage between the L1D "
+        "and the home",
+        verilator_extra_args=(*_base_config.verilator_extra_args, "-GLINK_STAGES=1"),
+    )
+
 # CPU programs and the coherent control benches enable RTL assertions.
 for _name, _config in tuple(TEST_REGISTRY.items()):
     if _config.hdl_toplevel_module == "frost" or _name in (
