@@ -371,6 +371,15 @@ module cpu_top #(
   logic [ riscv_pkg::PhysAddrBits+17:0] cm_c;
   logic [ riscv_pkg::PhysAddrBits+14:0] cm_u;
   logic cm_fatal_error, cm_cluster_fatal;
+  // The hart's line client: line_* on the hart's side, cm_line_* on the
+  // cluster memory's.
+  logic line_d_valid, line_d_ready, line_g_valid, line_c_valid, line_c_ready, line_u_valid;
+  logic cm_line_d_valid, cm_line_d_ready, cm_line_g_valid, cm_line_g_ready;
+  logic cm_line_c_valid, cm_line_c_ready, cm_line_u_valid, cm_line_u_ready;
+  logic [riscv_pkg::PhysAddrBits+311:0] line_d, cm_line_d;
+  logic [riscv_pkg::PhysAddrBits+274:0] line_g, cm_line_g;
+  logic [riscv_pkg::PhysAddrBits+17:0] line_c, cm_line_c;
+  logic [riscv_pkg::PhysAddrBits+14:0] line_u, cm_line_u;
   logic [riscv_pkg::PhysAddrBits-1:0] cm_cluster_fatal_addr;
   cache_perf_pkg::cache_instance_perf_events_t cm_l2_perf_events;
   cache_perf_pkg::cache_write_perf_events_t cm_l2_write_perf_events;
@@ -494,6 +503,68 @@ module cpu_top #(
       .o_valid  (coherent_u_valid),
       .i_ready  (coherent_u_ready),
       .o_payload(coherent_u)
+  );
+  // The line client's demands and completions take credits; its grants and
+  // releases are always taken.
+  coherence_link #(
+      .WIDTH (riscv_pkg::PhysAddrBits + 312),
+      .STAGES(LinkStages),
+      .KIND  (1)
+  ) link_line_d (
+      .i_clk,
+      .i_rst,
+      .i_stopped(link_stop_cluster),
+      .i_valid  (line_d_valid),
+      .o_ready  (line_d_ready),
+      .i_payload(line_d),
+      .o_valid  (cm_line_d_valid),
+      .i_ready  (cm_line_d_ready),
+      .o_payload(cm_line_d)
+  );
+  coherence_link #(
+      .WIDTH (riscv_pkg::PhysAddrBits + 18),
+      .STAGES(LinkStages),
+      .KIND  (1)
+  ) link_line_c (
+      .i_clk,
+      .i_rst,
+      .i_stopped(link_stop_cluster),
+      .i_valid  (line_c_valid),
+      .o_ready  (line_c_ready),
+      .i_payload(line_c),
+      .o_valid  (cm_line_c_valid),
+      .i_ready  (cm_line_c_ready),
+      .o_payload(cm_line_c)
+  );
+  coherence_link #(
+      .WIDTH (riscv_pkg::PhysAddrBits + 275),
+      .STAGES(LinkStages),
+      .KIND  (0)
+  ) link_line_g (
+      .i_clk,
+      .i_rst,
+      .i_stopped(link_stop_hart),
+      .i_valid  (cm_line_g_valid),
+      .o_ready  (cm_line_g_ready),
+      .i_payload(cm_line_g),
+      .o_valid  (line_g_valid),
+      .i_ready  (1'b1),
+      .o_payload(line_g)
+  );
+  coherence_link #(
+      .WIDTH (riscv_pkg::PhysAddrBits + 15),
+      .STAGES(LinkStages),
+      .KIND  (0)
+  ) link_line_u (
+      .i_clk,
+      .i_rst,
+      .i_stopped(link_stop_hart),
+      .i_valid  (cm_line_u_valid),
+      .o_ready  (cm_line_u_ready),
+      .i_payload(cm_line_u),
+      .o_valid  (line_u_valid),
+      .i_ready  (1'b1),
+      .o_payload(line_u)
   );
   coherence_link #(
       .WIDTH (riscv_pkg::PhysAddrBits + 11),
@@ -670,6 +741,16 @@ module cpu_top #(
       .i_coherent_u_valid(coherent_u_valid),
       .o_coherent_u_ready(coherent_u_ready),
       .i_coherent_u(coherent_u),
+      .o_line_d_valid(line_d_valid),
+      .i_line_d_ready(line_d_ready),
+      .o_line_d(line_d),
+      .i_line_g_valid(line_g_valid),
+      .i_line_g(line_g),
+      .o_line_c_valid(line_c_valid),
+      .i_line_c_ready(line_c_ready),
+      .o_line_c(line_c),
+      .i_line_u_valid(line_u_valid),
+      .i_line_u(line_u),
       .i_clk,
       .i_rst,
       .i_boot_addr,
@@ -773,6 +854,16 @@ module cpu_top #(
       .o_coherent_u_valid(cm_u_valid),
       .i_coherent_u_ready(cm_u_ready),
       .o_coherent_u(cm_u),
+      .i_line_d_valid(cm_line_d_valid),
+      .o_line_d_ready(cm_line_d_ready),
+      .i_line_d(cm_line_d),
+      .o_line_g_valid(cm_line_g_valid),
+      .o_line_g(cm_line_g),
+      .i_line_c_valid(cm_line_c_valid),
+      .o_line_c_ready(cm_line_c_ready),
+      .i_line_c(cm_line_c),
+      .o_line_u_valid(cm_line_u_valid),
+      .o_line_u(cm_line_u),
       .i_clk,
       .i_rst,
       .i_axi_rst,

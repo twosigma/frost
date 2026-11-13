@@ -64,9 +64,11 @@ REFERENCES_DIR = SCRIPT_DIR / "references"
 # its subdirectories are not). This must match EXTENSION_SUITES in
 # tests/test_arch_compliance.py.
 DEFAULT_SUITES = ("rv64i_m",)
+# The vector crypto tests (Zvk) are under rv32i_m too, and declare RV64.
 EXTENSION_SUITES: dict[str, tuple[str, ...]] = {
     "F": ("rv64i_m", "rv32i_m"),
     "D": ("rv64i_m", "rv32i_m"),
+    "Zvk": ("rv32i_m",),
 }
 
 # The submodule's riscof env for the rv64 Spike reference build.
@@ -134,8 +136,25 @@ NO_COMPRESS_TESTS = {
 }
 
 
-def test_march(test_name: str) -> str:
+# Extensions whose tests need the vector unit. They are not in
+# SUPPORTED_EXTENSIONS until FROST has one; generate their references with
+# --extensions Zvk. Each test turns on mstatus.VS itself. The references are
+# made at VLEN 128, and so are for a core at VLEN 128: the suite's macros skip a
+# case when AVL * SEW exceeds VLEN, so five of the tests (the SHA-2 and SM3 ones
+# at SEW 64 or large AVL) check little at 128. Another length needs references
+# made with its own zvl<N>b. Keep FROST_VECTOR_MARCH equal to VECTOR_ARCH in
+# tests/test_arch_compliance.py.
+VECTOR_EXTENSIONS = {"Zvk"}
+FROST_VECTOR_MARCH = (
+    "rv64imafdcv_zicsr_zifencei_zvbb_zvbc_zvkg_zvkned_zvknhb_zvksed_zvksh_zvkt"
+)
+SPIKE_VECTOR_ISA = f"{FROST_VECTOR_MARCH}_zvl128b"
+
+
+def test_march(test_name: str, extension: str = "") -> str:
     """Return the gcc -march for one test (drops C for NO_COMPRESS_TESTS)."""
+    if extension in VECTOR_EXTENSIONS:
+        return FROST_VECTOR_MARCH
     march = FROST_MARCH
     if test_name in NO_COMPRESS_TESTS:
         march = march.replace("imafdc", "imafd")
@@ -187,9 +206,16 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
 
 # Excluded by filename prefix: the C directory includes Zcb tests FROST
 # does not implement.
+# Zvk: five of the 37 tests in the pinned suite trap on Spike at RV64 and then
+# loop at address 0. vandn.vx, vrol.vx and vror.vx load their scalar operand into
+# the register that holds the test's data pointer, and vsha2ch-e32 and
+# vsha2cl-e32 give the vector SHA-2 instructions overlapping operands, which are
+# illegal. The other 32 run.
 EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
     "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
+    "Zvk": {"vandn.vx", "vrol.vx", "vror.vx", "vsha2ch-e32", "vsha2cl-e32"},
 }
+
 
 RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
 
@@ -280,6 +306,7 @@ def generate_one_reference(
     "OK", "SKIP", or "ERROR".
     """
     test_name = test_src.stem
+    extension = test_src.relative_to(SUITE_ROOT).parts[1]
     ref_path = reference_path(test_src)
     ref_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -300,7 +327,7 @@ def generate_one_reference(
         # FLEN=64: FROST has the D extension (64-bit FP registers).
         cmd = [
             cc,
-            f"-march={test_march(test_name)}",
+            f"-march={test_march(test_name, extension)}",
             f"-mabi={FROST_ABI}",
             "-static",
             "-fno-pie",
@@ -336,7 +363,7 @@ def generate_one_reference(
         spike = os.environ.get("FROST_SPIKE", "spike")
         spike_cmd = [
             spike,
-            f"--isa={SPIKE_ISA}",
+            f"--isa={SPIKE_VECTOR_ISA if extension in VECTOR_EXTENSIONS else SPIKE_ISA}",
             f"+signature={sig_path}",
             "+signature-granularity=4",
             str(elf_path),

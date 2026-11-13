@@ -326,6 +326,12 @@ module coherence_home #(
   // this edge, so it may forward from the next cycle. Both of its uses apply
   // it only while the home runs.
   logic [FILLS-1:0] fill_forward_set;
+  // fill_forward_set split by its late term: forward_install_done[fill]
+  // enters FillInstall from a completed read, forward_install_candidate[fill]
+  // would enter it from this cycle's memory response if that response is
+  // valid and good. At most one fill is a candidate.
+  logic [FILLS-1:0] forward_install_done, forward_install_candidate;
+  logic forward_response_good;
   logic [COMPLETIONS-1:0] forward_slots;
   logic [WayBits-1:0] forward_way;
   coh_g_t forward_result;
@@ -1336,6 +1342,10 @@ module coherence_home #(
       else fill_seats_q[fill] <= seats_without_allocation;
     end
     assign fill_forward_set[fill] = install_entry && fill_primary_q[fill] != 0;
+    assign forward_install_done[fill] = fill_phase_q[fill] == FillMemory && fill_done_q[fill] &&
+        !fill_error_q[fill] && fill_primary_q[fill] != 0;
+    assign forward_install_candidate[fill] = fill_phase_q[fill] == FillMemory &&
+        !fill_done_q[fill] && i_mem_resp_id == 5'(fill) && fill_primary_q[fill] != 0;
     // The phase's next state forms in kept nodes beside the two late
     // decisions, which select it last: allocation, which finds the fill in
     // FillFree, and update acceptance, which finds it in FillInvalidate or
@@ -1583,28 +1593,28 @@ module coherence_home #(
   // past an accepted forward's fill. An allocation finds its fill free, so
   // it never clears a fill that may forward, and the late decision stays
   // out of the pick.
-  logic [FILLS-1:0] forward_ready_next;
-  assign forward_ready_next = fill_forward_q | (run ? fill_forward_set : '0);
-  // Prepare each fill's blockers before testing its ready bit. Acceptance
-  // chooses between the current turn and the turn after the accepted fill.
-  logic [FILLS-1:0] forward_pick_if_held, forward_pick_if_accepted;
-  coherence_home_forward_turn_select #(
+  // The turn forms for both outcomes of this cycle's memory response, which
+  // arrives late: without it, the fills that may forward are the registered
+  // ones and those installing from a completed read; with a valid and good
+  // response, also its candidate fill. The response and acceptance select
+  // among the four prepared turns last.
+  assign forward_response_good = run && i_mem_resp_valid && !i_mem_resp_error;
+  logic [FILLS-1:0] forward_pick_next;
+  coherence_home_forward_next #(
       .FILLS(FILLS)
-  ) u_forward_held (
-      .i_ready(forward_ready_next),
+  ) u_forward_next (
+      .i_ready_early(fill_forward_q | (run ? forward_install_done : '0)),
+      .i_ready_response(run ? forward_install_candidate : '0),
+      .i_response_good(forward_response_good),
       .i_later(forward_later_q),
-      .o_pick (forward_pick_if_held)
-  );
-  coherence_home_forward_turn_select #(
-      .FILLS(FILLS)
-  ) u_forward_accepted (
-      .i_ready(forward_ready_next & ~forward_pick_q),
-      .i_later(forward_after(forward_pick_q)),
-      .o_pick (forward_pick_if_accepted)
+      .i_pick(forward_pick_q),
+      .i_after_pick(forward_after(forward_pick_q)),
+      .i_accept(forward_accept),
+      .o_pick_next(forward_pick_next)
   );
   always_ff @(posedge i_clk) begin
     if (i_rst) forward_pick_q <= '0;
-    else forward_pick_q <= forward_accept ? forward_pick_if_accepted : forward_pick_if_held;
+    else forward_pick_q <= forward_pick_next;
   end
   assign forward_pick = forward_pick_q;
   always_comb begin
@@ -2433,6 +2443,76 @@ module coherence_home #(
   end
 `endif
 
+endmodule
+
+// The forward turn's next state. Acceptance chooses between the turn after
+// the accepted fill and the current one; a valid, good memory response adds
+// its candidate fill to the fills that may forward. Each of the four turns
+// forms from registered and early inputs, and the response and acceptance
+// select among them last.
+module coherence_home_forward_next #(
+    parameter int unsigned FILLS = 8
+) (
+    input  logic [FILLS-1:0] i_ready_early,
+    input  logic [FILLS-1:0] i_ready_response,
+    input  logic             i_response_good,
+    input  logic [FILLS-1:0] i_later,
+    input  logic [FILLS-1:0] i_pick,
+    input  logic [FILLS-1:0] i_after_pick,
+    input  logic             i_accept,
+    output logic [FILLS-1:0] o_pick_next
+);
+  logic [FILLS-1:0] held, held_response, accepted, accepted_response;
+  coherence_home_forward_turn_select #(
+      .FILLS(FILLS)
+  ) u_held (
+      .i_ready(i_ready_early),
+      .i_later(i_later),
+      .o_pick (held)
+  );
+  coherence_home_forward_turn_select #(
+      .FILLS(FILLS)
+  ) u_held_response (
+      .i_ready(i_ready_early | i_ready_response),
+      .i_later(i_later),
+      .o_pick (held_response)
+  );
+  coherence_home_forward_turn_select #(
+      .FILLS(FILLS)
+  ) u_accepted (
+      .i_ready(i_ready_early & ~i_pick),
+      .i_later(i_after_pick),
+      .o_pick (accepted)
+  );
+  coherence_home_forward_turn_select #(
+      .FILLS(FILLS)
+  ) u_accepted_response (
+      .i_ready((i_ready_early | i_ready_response) & ~i_pick),
+      .i_later(i_after_pick),
+      .o_pick (accepted_response)
+  );
+  for (genvar fill = 0; fill < FILLS; fill++) begin : gen_select
+`ifdef FROST_XILINX_PRIMS
+    // O = accept ? (good ? accepted_response : accepted)
+    //            : (good ? held_response : held)
+    (* dont_touch = "true" *)
+    LUT6 #(
+        .INIT(64'hAAAACCCCF0F0FF00)
+    ) u_next (
+        .I0(accepted_response[fill]),
+        .I1(accepted[fill]),
+        .I2(held_response[fill]),
+        .I3(held[fill]),
+        .I4(i_response_good),
+        .I5(i_accept),
+        .O (o_pick_next[fill])
+    );
+`else
+    assign o_pick_next[fill] = i_accept ?
+        (i_response_good ? accepted_response[fill] : accepted[fill]) :
+        (i_response_good ? held_response[fill] : held[fill]);
+`endif
+  end
 endmodule
 
 // Prefer the first ready fill in later, else the first ready fill. Each bit

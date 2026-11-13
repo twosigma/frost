@@ -20,8 +20,15 @@
 // later of the external response edge and the home's U. A read responds from
 // the cycle after its G, which carries its final data; a write responds after
 // its U.
+//
+// SOURCE and PORT_CLASS name the request identity's source and class: source
+// 2, class 3 for the SoC's DMA port, and a hart's source with class 3 for that
+// hart's line client, whose request ids must be legal for its class
+// (coherence_pkg::legal_q).
 module coherence_dma_ingress #(
     parameter int unsigned ADDR_WIDTH = 32,
+    parameter logic [1:0] SOURCE = 2'd2,
+    parameter logic [1:0] PORT_CLASS = 2'd3,
     // Admission credits: line slots held from acceptance through the later of
     // the external response and U. A power of two, 2 to 16.
     parameter int unsigned SLOTS = 4
@@ -116,7 +123,7 @@ module coherence_dma_ingress #(
   always_comb begin
     incoming = '0;
     incoming.opcode = i_req_write ? coherence_pkg::DMAWrite : coherence_pkg::DMARead;
-    incoming.q = {2'd2, 2'd3, i_req_id, 1'b0};
+    incoming.q = {SOURCE, PORT_CLASS, i_req_id, 1'b0};
     incoming.addr = i_req_addr;
     incoming.size = 3'd5;
     incoming.mask = i_req_mask;
@@ -376,8 +383,8 @@ module coherence_dma_ingress #(
           f_reference_request <= '0;
           f_reference_request.opcode <= i_req_write ? coherence_pkg::DMAWrite :
               coherence_pkg::DMARead;
-          f_reference_request.q.src <= 2;
-          f_reference_request.q.port_class <= 3;
+          f_reference_request.q.src <= SOURCE;
+          f_reference_request.q.port_class <= PORT_CLASS;
           f_reference_request.q.id <= i_req_id;
           f_reference_request.addr <= i_req_addr;
           f_reference_request.size <= 5;

@@ -1,0 +1,11 @@
+// Overlay on sail_frost.json for a FROST built with the vector unit at VLEN
+// 256 (tests/test_testrig.py --vlen 256). The three files differ only in
+// V.vlen_exp. misa.V is read-only, as FROST's misa is.
+{
+  "base": {
+    "mstatus": {"vs_legal_states": "ExtContext_FourState"}
+  },
+  "extensions": {
+    "V": {"support_level": "Full", "mutable_misa": false, "vlen_exp": 8}
+  }
+}

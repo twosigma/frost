@@ -125,7 +125,20 @@ module coherence_cluster_test_harness #(
     output logic [1:0] o_held_puts,
     output logic o_load_grant,
     output logic o_fatal,
-    output logic [ADDR_WIDTH-1:0] o_fatal_addr
+    output logic [ADDR_WIDTH-1:0] o_fatal_addr,
+    // The hart's line client (source 0, class 3), crossing LINK_STAGES as
+    // cpu_top places it.
+    input logic i_line_req_valid,
+    output logic o_line_req_ready,
+    input logic i_line_req_write,
+    input logic [ADDR_WIDTH-1:0] i_line_req_addr,
+    input logic [255:0] i_line_req_data,
+    input logic [31:0] i_line_req_mask,
+    input logic [3:0] i_line_req_id,
+    output logic o_line_resp_valid,
+    output logic [3:0] o_line_resp_id,
+    output logic [255:0] o_line_resp_data,
+    output logic o_line_resp_error
 );
   `FROST_COHERENCE_TYPES(ADDR_WIDTH)
   coh_d_t home_d;
@@ -157,6 +170,16 @@ module coherence_cluster_test_harness #(
   logic [L1D_MISSES-1:0][ ADDR_WIDTH+17:0] l1d_c;
   logic hart_fatal, home_fatal;
   logic [1:0] accepted_puts_q;
+  // The line client's channels: line_* on its side, home_line_* on the home's.
+  coh_d_t line_d, home_line_d;
+  coh_c_t line_c, home_line_c;
+  coh_g_t line_g;
+  coh_u_t line_u;
+  logic line_d_valid, line_d_ready, home_line_d_valid, home_line_d_ready;
+  logic line_c_valid, line_c_ready, home_line_c_valid, home_line_c_ready;
+  logic line_g_valid, line_g_ready, line_u_valid, line_u_ready;
+  wire grant_line = grant.q.src == 0 && grant.q.port_class == 3;
+  wire release_line = release_message.q.src == 0 && release_message.q.port_class == 3;
   logic [ADDR_WIDTH-1:0] hart_fatal_addr, home_fatal_addr;
   assign o_fatal = hart_fatal || home_fatal;
   assign o_fatal_addr = hart_fatal ? hart_fatal_addr : home_fatal_addr;
@@ -305,10 +328,10 @@ module coherence_cluster_test_harness #(
     assign l1d_wa_valid = wa_valid && !i_hold_wa;
     assign wa_ready = l1d_wa_ready;
     assign l1d_ack = ack;
-    assign l1d_g_valid = g_valid && grant.q.src == 0 && !i_hold_grant;
+    assign l1d_g_valid = g_valid && grant.q.src == 0 && !grant_line && !i_hold_grant;
     assign hart_g_ready = l1d_g_ready;
     assign l1d_grant = grant;
-    assign l1d_u_valid = u_valid && release_message.q.src == 0 && !i_hold_release;
+    assign l1d_u_valid = u_valid && release_message.q.src == 0 && !release_line && !i_hold_release;
     assign hart_u_ready = l1d_u_ready;
     assign l1d_release = release_message;
   end else begin : gen_links
@@ -461,7 +484,7 @@ module coherence_cluster_test_harness #(
         .i_clk,
         .i_rst,
         .i_stopped(o_fatal),
-        .i_valid  (g_valid && grant.q.src == 0 && !i_hold_grant),
+        .i_valid  (g_valid && grant.q.src == 0 && !grant_line && !i_hold_grant),
         .o_ready  (),
         .i_payload(grant),
         .o_valid  (link_g_valid),
@@ -478,7 +501,7 @@ module coherence_cluster_test_harness #(
         .i_clk,
         .i_rst,
         .i_stopped(o_fatal),
-        .i_valid  (u_valid && release_message.q.src == 0 && !i_hold_release),
+        .i_valid  (u_valid && release_message.q.src == 0 && !release_line && !i_hold_release),
         .o_ready  (),
         .i_payload(release_message),
         .o_valid  (link_u_valid),
@@ -488,15 +511,120 @@ module coherence_cluster_test_harness #(
     assign l1d_u_valid  = link_u_valid;
     assign hart_u_ready = 1'b1;
   end
+  coherence_dma_ingress #(
+      .ADDR_WIDTH(ADDR_WIDTH),
+      .SOURCE(2'd0),
+      .PORT_CLASS(2'd3),
+      .SLOTS(coherence_pkg::HartLineIds)
+  ) line_client (
+      .i_clk,
+      .i_rst,
+      .i_fatal_stop(i_fatal_stop || o_fatal),
+      .i_req_valid(i_line_req_valid),
+      .o_req_ready(o_line_req_ready),
+      .i_req_write(i_line_req_write),
+      .i_req_addr(i_line_req_addr),
+      .i_req_data(i_line_req_data),
+      .i_req_mask(i_line_req_mask),
+      .i_req_id(i_line_req_id),
+      .i_req_non_alloc(1'b0),
+      .o_resp_valid(o_line_resp_valid),
+      .o_resp_data(o_line_resp_data),
+      .o_resp_id(o_line_resp_id),
+      .o_resp_error(o_line_resp_error),
+      .o_d_valid(line_d_valid),
+      .i_d_ready(line_d_ready),
+      .o_d(line_d),
+      .i_g_valid(line_g_valid),
+      .o_g_ready(line_g_ready),
+      .i_g(line_g),
+      .o_c_valid(line_c_valid),
+      .i_c_ready(line_c_ready),
+      .o_c(line_c),
+      .i_u_valid(line_u_valid),
+      .o_u_ready(line_u_ready),
+      .i_u(line_u)
+  );
+  coherence_link #(
+      .WIDTH (ADDR_WIDTH + 312),
+      .STAGES(LINK_STAGES),
+      .KIND  (1)
+  ) link_line_d (
+      .i_clk,
+      .i_rst,
+      .i_stopped(o_fatal),
+      .i_valid  (line_d_valid),
+      .o_ready  (line_d_ready),
+      .i_payload(line_d),
+      .o_valid  (home_line_d_valid),
+      .i_ready  (home_line_d_ready),
+      .o_payload(home_line_d)
+  );
+  coherence_link #(
+      .WIDTH (ADDR_WIDTH + 18),
+      .STAGES(LINK_STAGES),
+      .KIND  (1)
+  ) link_line_c (
+      .i_clk,
+      .i_rst,
+      .i_stopped(o_fatal),
+      .i_valid  (line_c_valid),
+      .o_ready  (line_c_ready),
+      .i_payload(line_c),
+      .o_valid  (home_line_c_valid),
+      .i_ready  (home_line_c_ready),
+      .o_payload(home_line_c)
+  );
+  coherence_link #(
+      .WIDTH (ADDR_WIDTH + 275),
+      .STAGES(LINK_STAGES),
+      .KIND  (0)
+  ) link_line_g (
+      .i_clk,
+      .i_rst,
+      .i_stopped(o_fatal),
+      .i_valid  (g_valid && grant_line),
+      .o_ready  (),
+      .i_payload(grant),
+      .o_valid  (line_g_valid),
+      .i_ready  (line_g_ready),
+      .o_payload(line_g)
+  );
+  coherence_link #(
+      .WIDTH (ADDR_WIDTH + 15),
+      .STAGES(LINK_STAGES),
+      .KIND  (0)
+  ) link_line_u (
+      .i_clk,
+      .i_rst,
+      .i_stopped(o_fatal),
+      .i_valid  (u_valid && release_line),
+      .o_ready  (),
+      .i_payload(release_message),
+      .o_valid  (line_u_valid),
+      .i_ready  (line_u_ready),
+      .o_payload(line_u)
+  );
+`ifndef SYNTHESIS
+  // The client takes every G and U its always-taken links present.
+  logic line_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) line_reset_seen_q <= 1'b1;
+    if (line_reset_seen_q && !i_rst && !o_fatal && !i_fatal_stop) begin
+      if (line_g_valid) p_line_g_taken : assert (line_g_ready);
+      if (line_u_valid) p_line_u_taken : assert (line_u_ready);
+    end
+  end
+`endif
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 312),
-      .PORTS(L1D_MISSES + 1)
+      .PORTS(L1D_MISSES + 2)
   ) arbiter (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_valid({i_agent_valid, hart_d_valid}),
-      .o_ready({o_agent_ready, hart_d_ready}),
-      .i_payload({i_agent_d, hart_d}),
+      .i_valid({home_line_d_valid, i_agent_valid, hart_d_valid}),
+      .o_ready({home_line_d_ready, o_agent_ready, hart_d_ready}),
+      .i_payload({home_line_d, i_agent_d, hart_d}),
       .o_valid(home_d_valid),
       .o_selected(),
       .i_ready(home_d_ready),
@@ -507,21 +635,22 @@ module coherence_cluster_test_harness #(
   // agent must take it on that cycle.
   assign o_agent_g_valid = g_valid && grant.q.src >= 2;
   assign o_agent_g = grant;
-  assign g_ready = grant.q.src == 3 ? 1'b1 :
+  assign g_ready = grant.q.src == 3 || grant_line ? 1'b1 :
       grant.q.src == 2 ? i_agent_g_ready : hart_g_ready && !i_hold_grant;
   assign o_agent_u_valid = u_valid && release_message.q.src >= 2;
   assign o_agent_u = release_message;
-  assign u_ready = release_message.q.src >= 2 ? i_agent_u_ready : hart_u_ready && !i_hold_release;
+  assign u_ready = release_message.q.src >= 2 ? i_agent_u_ready :
+      release_line || (hart_u_ready && !i_hold_release);
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 18),
-      .PORTS(L1D_MISSES + 1),
+      .PORTS(L1D_MISSES + 2),
       .HOLD_VALID(1)
   ) completions (
       .i_clk,
       .i_rst,
-      .i_valid({i_agent_c_valid, hart_c_valid}),
-      .o_ready({o_agent_c_ready, hart_c_ready}),
-      .i_payload({i_agent_c, hart_c}),
+      .i_valid({home_line_c_valid, i_agent_c_valid, hart_c_valid}),
+      .o_ready({home_line_c_ready, o_agent_c_ready, hart_c_ready}),
+      .i_payload({home_line_c, i_agent_c, hart_c}),
       .o_valid(home_c_valid),
       .o_selected(),
       .i_ready(home_c_ready),

@@ -28,8 +28,9 @@ repository root:
     ./scripts/frost.py run python3 tests/test_riscv_vector_tests.py --list
 
 Without --rtl, each test runs on Spike as the suite's own reference check. A
-full run at VLEN 128 is 3042 tests (generation about two minutes, build and run
-about eight minutes at four jobs); --pattern and --shard select a part.
+full run at VLEN 128 is about 3050 tests (generation about two minutes, build and run
+about eight minutes at four jobs); --pattern, --class and --shard select a part,
+and --vlen selects the vector length.
 
 With --rtl, the tests are built for FROST (riscv_tests/riscv_test.h, the DDR
 memory configuration, because the images are large) and run in simulation on a
@@ -150,6 +151,45 @@ def parse_shard(spec: str) -> tuple[int, int]:
     return index, count
 
 
+# Instruction classes for sharding by kind. A test belongs to the first class
+# whose rule matches its mnemonic; "integer" takes the rest.
+INSTRUCTION_CLASSES = (
+    "load-store",
+    "crypto",
+    "bitmanip",
+    "float",
+    "mask-permute-reduce",
+    "integer",
+)
+_CRYPTO = re.compile(r"v(aes|sha2|sm3|sm4|ghsh|gmul)")
+_BITMANIP = re.compile(r"v(andn|brev8?|rev8|clz|ctz|cpop_v|rol|ror|wsll|clmulh?)(_|$)")
+_LOAD_STORE = re.compile(r"v[ls][a-z0-9]*_v")
+_MASK_PERMUTE_REDUCE = re.compile(
+    r"v(m(and|nand|andn|or|nor|orn|xor|xnor)_mm|m(sbf|sif|sof)_m|iota|id_v|cpop_m|first"
+    r"|w?red|slide|rgather|compress|mv[1248]r|mv_[sx]_[sx]|fmv_[fs]_[sf]|fslide)"
+)
+
+
+def instruction_class(test_name: str) -> str:
+    """Return the class of a generated test, such as vadd_vv-0 or vle8_v-3.
+
+    >>> [instruction_class(n) for n in ("vle8_v-0", "vfadd_vv-1", "vadd_vv-0")]
+    ['load-store', 'float', 'integer']
+    """
+    mnemonic = test_name.rsplit("-", 1)[0]
+    if _CRYPTO.match(mnemonic):
+        return "crypto"
+    if _BITMANIP.match(mnemonic):
+        return "bitmanip"
+    if mnemonic.startswith("vfirst") or _MASK_PERMUTE_REDUCE.match(mnemonic):
+        return "mask-permute-reduce"
+    if mnemonic.startswith(("vf", "vmf")):
+        return "float"
+    if _LOAD_STORE.fullmatch(mnemonic):
+        return "load-store"
+    return "integer"
+
+
 def select_shard(names: list[str], index: int, count: int) -> list[str]:
     """Return the names of shard `index` of `count`, dealing sorted names round robin.
 
@@ -182,6 +222,7 @@ def generate_tests(
     vlen: int,
     pattern: str,
     shard: tuple[int, int] | None = None,
+    instruction_kind: str | None = None,
 ) -> list[str]:
     """Run the generator into workdir/stage1 and return the selected test names.
 
@@ -222,12 +263,16 @@ def generate_tests(
         raise RuntimeError(f"generator failed:\n{result.stdout}{result.stderr}")
     makefrag = workdir / "Makefrag"
     names = parse_makefrag(makefrag.read_text()) if makefrag.is_file() else []
+    selected = [
+        n
+        for n in names
+        if instruction_kind is None or instruction_class(n) == instruction_kind
+    ]
     if shard is not None:
-        keep = set(select_shard(names, *shard))
-        for name in names:
-            if name not in keep:
-                (stage1 / f"{name}.S").unlink()
-        names = sorted(keep)
+        selected = select_shard(selected, *shard)
+    for name in set(names) - set(selected):
+        (stage1 / f"{name}.S").unlink()
+    names = sorted(selected)
     return names
 
 
@@ -324,11 +369,16 @@ def run_on_spike(workdir: Path, name: str, vlen: int) -> VectorTestResult:
 
 
 def prepare(
-    workdir: Path, vlen: int, pattern: str, shard: tuple[int, int] | None, jobs: int
+    workdir: Path,
+    vlen: int,
+    pattern: str,
+    shard: tuple[int, int] | None,
+    jobs: int,
+    instruction_kind: str | None = None,
 ) -> tuple[list[str], list[VectorTestResult]]:
     """Generate, patch and merge; return the test names and any failures."""
     workdir = workdir.resolve()
-    names = generate_tests(workdir, vlen, pattern, shard)
+    names = generate_tests(workdir, vlen, pattern, shard, instruction_kind)
     failures: list[VectorTestResult] = []
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         errors = list(pool.map(lambda n: build_and_patch(workdir, n, vlen), names))
@@ -350,10 +400,11 @@ def run_spike_tests(
     pattern: str,
     shard: tuple[int, int] | None = None,
     jobs: int = 4,
+    instruction_kind: str | None = None,
 ) -> list[VectorTestResult]:
     """Generate the selected tests and run each on Spike as the self-check."""
     workdir = workdir.resolve()
-    names, results = prepare(workdir, vlen, pattern, shard, jobs)
+    names, results = prepare(workdir, vlen, pattern, shard, jobs, instruction_kind)
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         results += list(pool.map(lambda n: run_on_spike(workdir, n, vlen), names))
     return results
@@ -395,13 +446,14 @@ def run_rtl_tests(
     shard: tuple[int, int] | None = None,
     max_cycles: str = DEFAULT_RTL_MAX_CYCLES,
     jobs: int = 4,
+    instruction_kind: str | None = None,
 ) -> list[VectorTestResult]:
     """Generate the selected tests and run each on a FROST simulation."""
     # Imported here: the simulator harness is needed only for the RTL run.
     from test_riscv_tests import check_pass_fail, run_simulation
 
     workdir = workdir.resolve()
-    names, results = prepare(workdir, vlen, pattern, shard, jobs)
+    names, results = prepare(workdir, vlen, pattern, shard, jobs, instruction_kind)
     for name in names:
         error = compile_for_frost(workdir / "stage2" / f"{name}.S", vlen)
         if error:
@@ -491,6 +543,43 @@ def test_reused_work_directory_and_relative_path(
     assert not any(r.name.startswith("vadd_vv") for r in second)
 
 
+def test_instruction_classes() -> None:
+    """Examples from each class land in it."""
+    examples = {
+        "vle8_v-0": "load-store",
+        "vlseg2e8ff_v-1": "load-store",
+        "vsse32_v-0": "load-store",
+        "vaesdf_vv-0": "crypto",
+        "vsha2ms_vv-2": "crypto",
+        "vclmul_vx-0": "bitmanip",
+        "vcpop_v-0": "bitmanip",
+        "vcpop_m-0": "mask-permute-reduce",
+        "vfirst_m-0": "mask-permute-reduce",
+        "vmsbf_m-0": "mask-permute-reduce",
+        "vmsof_m-1": "mask-permute-reduce",
+        "vredsum_vs-0": "mask-permute-reduce",
+        "vslidedown_vx-0": "mask-permute-reduce",
+        "vfadd_vv-0": "float",
+        "vmfeq_vv-0": "float",
+        "vadd_vv-0": "integer",
+        "vsll_vi-0": "integer",
+        "vsext_vf2-0": "integer",
+    }
+    for name, kind in examples.items():
+        assert instruction_class(name) == kind, name
+    assert set(examples.values()) == set(INSTRUCTION_CLASSES)
+
+
+@needs_suite
+def test_class_selection(tmp_path: Path) -> None:
+    """--class keeps only that class, and only its sources remain."""
+    names = generate_tests(
+        tmp_path, 128, r"^(vadd\.vv|vle8\.v|vfadd\.vv)$", None, "load-store"
+    )
+    assert names and all(n.startswith("vle8_v") for n in names)
+    assert sorted(p.stem for p in (tmp_path / "stage1").glob("*.S")) == names
+
+
 @needs_suite
 def test_sample_shard_changes_selection(tmp_path: Path) -> None:
     """Different shards of one pattern generate different tests."""
@@ -522,6 +611,12 @@ def main() -> int:
         "--vlen", type=int, choices=SUPPORTED_VLENS, default=DEFAULT_VLEN
     )
     parser.add_argument("--pattern", default=".*", help="regex on instruction names")
+    parser.add_argument(
+        "--class",
+        dest="instruction_kind",
+        choices=INSTRUCTION_CLASSES,
+        help="run only one class of instructions (see tests/README.md)",
+    )
     parser.add_argument("--shard", type=parse_shard, help="run shard K of N (1-based)")
     parser.add_argument("--jobs", type=int, default=4, help="parallel Spike jobs")
     parser.add_argument(
@@ -553,16 +648,29 @@ def main() -> int:
     workdir.mkdir(parents=True, exist_ok=True)
     try:
         if args.list:
-            for name in generate_tests(workdir, args.vlen, args.pattern, args.shard):
+            for name in generate_tests(
+                workdir, args.vlen, args.pattern, args.shard, args.instruction_kind
+            ):
                 print(name)
             return 0
         if args.rtl:
             results = run_rtl_tests(
-                workdir, args.vlen, args.pattern, args.shard, args.max_cycles, args.jobs
+                workdir,
+                args.vlen,
+                args.pattern,
+                args.shard,
+                args.max_cycles,
+                args.jobs,
+                args.instruction_kind,
             )
         else:
             results = run_spike_tests(
-                workdir, args.vlen, args.pattern, args.shard, args.jobs
+                workdir,
+                args.vlen,
+                args.pattern,
+                args.shard,
+                args.jobs,
+                args.instruction_kind,
             )
         return report(results)
     finally:

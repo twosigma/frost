@@ -322,6 +322,18 @@ module coherence_store_home_formal #(
       .o_held_puts(held_puts),
       .o_load_grant(load_grant),
       .o_fatal(fatal),
-      .o_fatal_addr()
+      .o_fatal_addr(),
+      // The line client stays idle in these proofs.
+      .i_line_req_valid(1'b0),
+      .o_line_req_ready(),
+      .i_line_req_write(1'b0),
+      .i_line_req_addr('0),
+      .i_line_req_data('0),
+      .i_line_req_mask('0),
+      .i_line_req_id('0),
+      .o_line_resp_valid(),
+      .o_line_resp_id(),
+      .o_line_resp_data(),
+      .o_line_resp_error()
   );
 endmodule
