@@ -93,6 +93,19 @@ module frost_cluster_memory #(
     input logic i_coherent_u_ready,
     output logic [riscv_pkg::PhysAddrBits+14:0] o_coherent_u,
 
+    // The hart's line client (source 0, class 3): D and C wait for
+    // acceptance; its G and U are always taken.
+    input logic i_line_d_valid,
+    output logic o_line_d_ready,
+    input logic [riscv_pkg::PhysAddrBits+311:0] i_line_d,
+    output logic o_line_g_valid,
+    output logic [riscv_pkg::PhysAddrBits+274:0] o_line_g,
+    input logic i_line_c_valid,
+    output logic o_line_c_ready,
+    input logic [riscv_pkg::PhysAddrBits+17:0] i_line_c,
+    output logic o_line_u_valid,
+    output logic [riscv_pkg::PhysAddrBits+14:0] o_line_u,
+
     // The hart's uncached and Device data requests.
     input logic i_data_req_valid,
     output logic o_data_req_ready,
@@ -319,54 +332,66 @@ module frost_cluster_memory #(
       assign pf_c = '0;
       assign pf_u_ready = 1'b0;
     end
+    // The hart's line client takes the arbiter's last port, so while it is
+    // idle the rotation among the other three is unchanged.
     coherence_d_arbiter #(
         .WIDTH((riscv_pkg::PhysAddrBits + 312)),
-        .PORTS(3)
+        .PORTS(4)
     ) demands (
         .i_clk(i_clk),
         .i_rst(i_rst),
-        .i_valid({pf_d_valid, dma_d_valid, i_coherent_d_valid}),
-        .o_ready({pf_d_ready, dma_d_ready, o_coherent_d_ready}),
-        .i_payload({pf_d, dma_d, i_coherent_d}),
+        .i_valid({i_line_d_valid, pf_d_valid, dma_d_valid, i_coherent_d_valid}),
+        .o_ready({o_line_d_ready, pf_d_ready, dma_d_ready, o_coherent_d_ready}),
+        .i_payload({i_line_d, pf_d, dma_d, i_coherent_d}),
         .o_valid(home_d_valid),
         .o_selected(),
         .i_ready(home_d_ready),
         .o_payload(home_d)
     );
-    assign o_coherent_g_valid = g_valid && grant.q.src == 0;
+    // Source 0 class 3 names the hart's line client, whose G and U are
+    // always taken.
+    wire grant_line = grant.q.port_class == 3;
+    wire release_line = release_message.q.port_class == 3;
+    assign o_coherent_g_valid = g_valid && grant.q.src == 0 && !grant_line;
     assign o_coherent_g = grant;
+    assign o_line_g_valid = g_valid && grant.q.src == 0 && grant_line;
+    assign o_line_g = grant;
     // The home takes a G from one of its prefetch completion slots as
     // accepted when it is presented, so source 3 must always be ready.
     assign g_ready = grant.q.src == 2 ? dma_g_ready : grant.q.src == 3 ? pf_g_ready :
-        i_coherent_g_ready;
-    assign o_coherent_u_valid = u_valid && release_message.q.src == 0;
+        (grant_line || i_coherent_g_ready);
+    assign o_coherent_u_valid = u_valid && release_message.q.src == 0 && !release_line;
     assign o_coherent_u = release_message;
+    assign o_line_u_valid = u_valid && release_message.q.src == 0 && release_line;
+    assign o_line_u = release_message;
     assign u_ready = release_message.q.src == 2 ? dma_u_ready :
-        release_message.q.src == 3 ? pf_u_ready : i_coherent_u_ready;
-    // All three C sources hold their offers until acceptance.
+        release_message.q.src == 3 ? pf_u_ready : (release_line || i_coherent_u_ready);
+    // Every C source holds its offer until acceptance; the line client takes
+    // the last port, as for D.
     coherence_d_arbiter #(
         .WIDTH(riscv_pkg::PhysAddrBits + 18),
-        .PORTS(3),
+        .PORTS(4),
         .HOLD_VALID(1)
     ) completions (
         .i_clk,
         .i_rst,
-        .i_valid({pf_c_valid, dma_c_valid, i_coherent_c_valid}),
-        .o_ready({pf_c_ready, dma_c_ready, o_coherent_c_ready}),
-        .i_payload({pf_c, dma_c, i_coherent_c}),
+        .i_valid({i_line_c_valid, pf_c_valid, dma_c_valid, i_coherent_c_valid}),
+        .o_ready({o_line_c_ready, pf_c_ready, dma_c_ready, o_coherent_c_ready}),
+        .i_payload({i_line_c, pf_c, dma_c, i_coherent_c}),
         .o_valid(home_c_valid),
         .o_selected(),
         .i_ready(home_c_ready),
         .o_payload(home_c)
     );
 `ifndef SYNTHESIS
-    logic [2:0] c_stalled_q;
+    logic [3:0] c_stalled_q;
     always_ff @(posedge i_clk) begin
-      c_stalled_q <= i_rst ? 3'b000 :
-          {pf_c_valid, dma_c_valid, i_coherent_c_valid} &
-          ~{pf_c_ready, dma_c_ready, o_coherent_c_ready};
+      c_stalled_q <= i_rst ? 4'b0000 :
+          {i_line_c_valid, pf_c_valid, dma_c_valid, i_coherent_c_valid} &
+          ~{o_line_c_ready, pf_c_ready, dma_c_ready, o_coherent_c_ready};
       if (sim_reset_seen_q && !i_rst)
-        assert ((c_stalled_q & ~{pf_c_valid, dma_c_valid, i_coherent_c_valid}) == 0);
+        assert ((c_stalled_q & ~{i_line_c_valid, pf_c_valid, dma_c_valid, i_coherent_c_valid}) ==
+                0);
     end
 `endif
     coherence_home #(
@@ -458,6 +483,12 @@ module frost_cluster_memory #(
     assign o_coherent_c_ready = '0;
     assign o_coherent_u_valid = '0;
     assign o_coherent_u = '0;
+    assign o_line_d_ready = '0;
+    assign o_line_g_valid = '0;
+    assign o_line_g = '0;
+    assign o_line_c_ready = '0;
+    assign o_line_u_valid = '0;
+    assign o_line_u = '0;
   end
 
   // The home's memory requests take credits and its memory responses are

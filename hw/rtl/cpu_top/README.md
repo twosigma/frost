@@ -10,8 +10,17 @@ uncached data and instruction ports.
 
 | Module | Contents |
 | --- | --- |
-| `frost_hart` | `cpu_ooo` with its MMUs, walker, L0 and IMSIC files; the instruction fetch providers; `coherent_hart_cache` with the S/M L1D, L1I, walker bridges and FENCE.I sequencing; and `cpu_uncached_adapter` |
+| `frost_hart` | `cpu_ooo` with its MMUs, walker, L0 and IMSIC files; the instruction fetch providers; `coherent_hart_cache` with the S/M L1D, L1I, walker bridges and FENCE.I sequencing; the line client; and `cpu_uncached_adapter` |
 | `frost_cluster_memory` | The DMA ingress queue; `coherence_home` with independent completions, the L2 array and victim ownership; and `cpu_memory_fabric` with its AXI master |
+
+The line client is a `coherence_dma_ingress` under the hart's own source and
+port class 3, with `LINE_CLIENT_IDS` (two) request identities. It makes
+sector reads and masked sector writes that the home serves as it serves DMA:
+it probes the hart's own L1D, merges dirty data and applies the byte mask. It
+has its own D, G, C and U channels. In `frost_cluster_memory` its D and C
+take the last port of the home's arbiters, so while it is idle the other
+ports' rotation is unchanged, and the home's G and U of source 0 class 3 go
+to it rather than to the L1D. Nothing in the hart issues requests on it.
 
 The D/P/R/W/WA/G/C/U channels carry requests, probes, dirty data, grants
 and completion ownership. Dirty data merges through L2. `cpu_top` latches
@@ -36,6 +45,7 @@ stage. Each channel uses one kind of `coherence_link`
 | W | hart to home | mirrored: the put endpoint's handshake follows the home's acceptance |
 | P | home to hart | credit with one entry: the L1D serves one probe at a time |
 | G, U, WA | home to hart | always taken: the requester or put slot waits for each one |
+| line client D, C; G, U | hart to home; home to hart | credit; always taken, as for the L1D's channels |
 | fatal stop, L2 events | both | always taken |
 | coherent DMA request, response | SoC to cluster memory and back | credit (a request the ingress would refuse is refused before the link), always taken |
 | memory request, response | home to `cpu_memory_fabric` and back | credit, always taken |
