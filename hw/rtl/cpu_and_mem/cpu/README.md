@@ -272,8 +272,8 @@ IF pairs two instructions only when all of these hold:
   one) and not a native SYSTEM, MISC-MEM, or AMO instruction (CSR accesses,
   ECALL, EBREAK, xRET, WFI, SFENCE.VMA, FENCE, FENCE.I, and atomics including
   LR/SC).
-- Slot 2 is not a native SYSTEM, MISC-MEM, AMO, or FP-compute (OP-FP or fused
-  multiply-add) instruction. It may be a branch or jump, but only the slot-2
+- Slot 2 is not a native SYSTEM, MISC-MEM, AMO, FP-compute (OP-FP or fused
+  multiply-add) or vector (OP-V) instruction. It may be a branch or jump, but only the slot-2
   BTB lookup or the backing BTB can predict it; the PD redirect's direction
   change covers slot 1 only.
 - Slot 2 fits in the window. A 32-bit slot 2 that would start in the upper
@@ -290,8 +290,9 @@ predecode puts CSR accesses in one serializing class with the other native
 SYSTEM, MISC-MEM, and AMO instructions, and that class never leads a pair.
 These instructions also retire alone at the ROB head, which keeps them out of
 slot 2. FP-compute instructions stay out of slot 2 to keep FP
-reservation-station back-pressure off the slot-1 dispatch path; the next
-bundle takes them as slot 1.
+reservation-station back-pressure off the slot-1 dispatch path, and vector
+instructions so that at most one reaches the ROB per cycle; the next bundle
+takes them as slot 1.
 
 Dispatch treats a bundle as a unit: slot 2 fires only with slot 1, and if slot
 2 lacks a resource the whole bundle waits. Because slot-1 control flow ends a
@@ -501,7 +502,21 @@ younger instruction keeps a legality decision made under the old VS. A write
 to `vstart`, `vxsat`, `vxrm` or `vcsr` sets VS to Dirty, and SD is set while
 FS or VS is Dirty. A read that does not write, such as `csrr`, leaves VS
 unchanged. `vstart` keeps log2(`VLEN`) bits, `vlenb` reads `VLEN/8`, `vl` resets
-to 0 and `vtype` to vill. Vector instructions raise illegal-instruction.
+to 0 and `vtype` to vill.
+
+`vsetvli`, `vsetivli` and `vsetvl` are the vector instructions implemented so
+far; every other vector encoding raises illegal-instruction, and while VS is
+Off (always, with `VECTOR=0`) ID decodes all of them as illegal, as it does F
+and D instructions with FS Off. They dispatch in slot 1 only and go to MUL_RS,
+which issues them through its divide gate to the vector-config unit
+(`vector/vec_cfg_unit.sv`) in the muldiv shim. The unit computes the new
+`vtype` (vill for a reserved or unsupported setting), VLMAX and `vl`
+(`min(AVL, VLMAX)`, or VLMAX when rs1 is x0), and returns `vl` to rd on CDB
+slot 5. The wrapper keeps the result per ROB tag; when the instruction retires
+(never beside a second instruction), the CSR file installs `vtype` and `vl`,
+clears `vstart` and sets VS to Dirty. With rs1 = rd = x0 it keeps
+`min(vl, VLMAX)` under the new `vtype`, as the specification requires.
+
 `misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
 elaboration while the vector instructions are not implemented, and bare-metal
 software enables the state by writing `mstatus.VS`. With `VECTOR=0` the vector CSRs do

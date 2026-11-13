@@ -100,9 +100,10 @@ module reservation_station #(
     // those outputs are zero. A dispatched tag must not already be live in
     // the station, including stage2.
     parameter bit TAG_INDEXED_BRANCH_PAYLOAD = 1'b0,
-    // MUL_RS only: block divide readiness while the divider or stage2 holds
-    // a divide. Every issued divide then finds the divider idle; multiplies
-    // can pass waiting divides. Requires DUAL_ISSUE=0.
+    // MUL_RS only: block the readiness of divides and vector-config ops while
+    // the divider or the vector-config unit holds one, or stage2 holds one.
+    // Every issued one then finds its unit idle; multiplies can pass waiting
+    // ones. Requires DUAL_ISSUE=0.
     parameter bit DIVIDE_ISSUE_GATE = 1'b0,
     // formal/reservation_station.sby uses free inputs and assumes dispatch
     // requirements. formal/tomasulo_wrapper.sby sets this to 0: its real
@@ -180,7 +181,8 @@ module reservation_station #(
     // =========================================================================
     output riscv_pkg::rs_issue_t                                        o_issue,
     input  logic                                                        i_fu_ready,
-    // DIVIDE_ISSUE_GATE only: the divider holds an operation or its result.
+    // DIVIDE_ISSUE_GATE only: the divider or the vector-config unit holds an
+    // operation or its result.
     input  logic                                                        i_divider_busy,
     output logic                                                        o_issue_writes_cdb_hint,
     // Same-edge copy of the stage2 ROB tag used only by branch-resolution
@@ -851,10 +853,13 @@ module reservation_station #(
     endcase
   endfunction
 
+  // Ops held back while the divider (or the vector-config unit, which shares
+  // the gate) holds an operation or an untaken result.
   function automatic logic rs_is_divide_op(riscv_pkg::instr_op_e op);
     case (op)
       riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
-      riscv_pkg::DIVW, riscv_pkg::DIVUW, riscv_pkg::REMW, riscv_pkg::REMUW:
+      riscv_pkg::DIVW, riscv_pkg::DIVUW, riscv_pkg::REMW, riscv_pkg::REMUW,
+      riscv_pkg::VSETVLI, riscv_pkg::VSETIVLI, riscv_pkg::VSETVL:
       rs_is_divide_op = 1'b1;
       default: rs_is_divide_op = 1'b0;
     endcase

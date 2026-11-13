@@ -28,7 +28,10 @@ functional unit takes it from stage 2.
 Each instance has two dispatch ports, one per dispatch slot. Slot 1 takes the
 lowest-index free entry. Slot 2 takes the next free entry, or the lowest one
 when slot 1 is not using this station. FP_RS ties slot 2 off, because
-dispatch never puts an FP compute op in slot 2.
+dispatch never puts an FP compute op in slot 2. MUL_RS's divide gate also
+holds back `vsetvli`, `vsetivli` and `vsetvl`, which share it with the
+divider: one of them issues only while neither unit holds an operation or an
+untaken result.
 
 `o_full` and `o_full_for_2` are registered. `o_full_for_2` means at most one
 entry is free; dispatch checks it when both slots target the same station.
@@ -129,7 +132,9 @@ The generic write selection and the operand capture cycle are unchanged.
 ## Divide gate (MUL_RS)
 
 MUL_RS feeds a pipelined multiplier and a divider that takes one operation at
-a time. `i_fu_ready` covers only the multiplier, since lowering it for a
+a time. The vector-config ops (`vsetvli`, `vsetivli`, `vsetvl`) count as
+divides here: the shim's single vector-config result register shares the
+gate. `i_fu_ready` covers only the multiplier, since lowering it for a
 waiting divide would also stop the multiplies behind it. Instead MUL_RS
 (`DIVIDE_ISSUE_GATE=1`) keeps a divide bit per entry, which stage 2 carries,
 and treats a divide entry as not ready while `i_divider_busy` is high or stage
