@@ -204,7 +204,7 @@ def _random_operations(
 
 
 def trace(rng: random.Random, vlen: int, length: int) -> list[str]:
-    """Return one trace's lines: setup (not shrunk), random body, read-out."""
+    """Return one trace's lines: the setup, a random body and the read-out; shrinking keeps the setup and read-out."""
     setup: list[tuple[int, str]] = [
         (_lui(T0, 6), "lui t0, 6"),
         (_csrrs(0, CSR_MSTATUS, T0), "csrrs x0, mstatus, t0  # FS = Dirty"),
