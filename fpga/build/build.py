@@ -3205,10 +3205,16 @@ def run_vivado_step(
         log_path = cwd / command[command.index("-log") + 1]
     # Vivado rewrites its log at start-up; a log left by an earlier step must not
     # be mistaken for this step's.
+    stale_log: str | None = None
     try:
         log_path.unlink(missing_ok=True)
     except OSError:
-        pass
+        # The old log could not be removed (it may still be held open). Keep its
+        # text so that its markers do not count until Vivado has rewritten it.
+        try:
+            stale_log = log_path.read_text(errors="replace")
+        except OSError:
+            pass
     options: dict[str, Any] = {} if env is None else {"env": env}
     if _has_process_groups():
         options["start_new_session"] = True
@@ -3229,11 +3235,14 @@ def run_vivado_step(
                         previous[sig] = signal.signal(sig, hang_up)
             except ValueError:  # not the main thread
                 pass
-        returncode = _wait_for_vivado(process, log_path)
+        returncode = _wait_for_vivado(process, log_path, stale_log)
     except BaseException:
         # subprocess.run() kills its child on an interrupt; keep that behaviour.
-        _signal_launcher(process, kill=True)
-        process.wait()
+        # A launcher that has not been reaped still owns its process id, so the
+        # signal cannot reach anything else; a reaped one is left alone.
+        if getattr(process, "returncode", None) is None:
+            _signal_launcher(process, kill=True)
+            process.wait()
         raise
     finally:
         for sig, handler in previous.items():
@@ -3263,8 +3272,14 @@ def _signal_launcher(process: subprocess.Popen[bytes], kill: bool) -> None:
         process.terminate()
 
 
-def _wait_for_vivado(process: subprocess.Popen[bytes], log_path: Path) -> int:
-    """Wait for a Vivado launcher, ending it once Vivado has long since exited."""
+def _wait_for_vivado(
+    process: subprocess.Popen[bytes], log_path: Path, stale_log: str | None = None
+) -> int:
+    """Wait for a Vivado launcher, ending it once Vivado has long since exited.
+
+    ``stale_log`` is the text of an earlier step's log that could not be removed;
+    the log is ignored while it still reads the same.
+    """
     exited_since: float | None = None
     while True:
         try:
@@ -3277,7 +3292,7 @@ def _wait_for_vivado(process: subprocess.Popen[bytes], log_path: Path) -> int:
             text = log_path.read_text(errors="replace")
         except OSError:
             continue
-        if "Exiting Vivado at" not in text:
+        if "Exiting Vivado at" not in text or text == stale_log:
             # Vivado rewrites the log at start-up, so a marker left by an earlier
             # step must not count towards this step's grace period.
             exited_since = None
@@ -3289,16 +3304,18 @@ def _wait_for_vivado(process: subprocess.Popen[bytes], log_path: Path) -> int:
                 f"  Vivado finished but its launcher did not exit within "
                 f"{VIVADO_EXIT_GRACE_S:.0f} s; terminating it"
             )
-            _signal_launcher(process, kill=False)
-            ended = True
-            try:
-                process.wait(timeout=10.0)
-            except subprocess.TimeoutExpired:
-                ended = False
-            # With groups a descendant may outlive the launcher or ignore SIGTERM.
-            if not ended or _has_process_groups():
+            if _has_process_groups():
+                # Vivado itself has exited. The launcher has not been reaped, so
+                # its group id is still its own: end the whole group at once,
+                # including a descendant that would outlive it or ignore SIGTERM.
                 _signal_launcher(process, kill=True)
-                process.wait()
+            else:
+                _signal_launcher(process, kill=False)
+                try:
+                    process.wait(timeout=10.0)
+                except subprocess.TimeoutExpired:
+                    _signal_launcher(process, kill=True)
+            process.wait()
             return 0 if re.search(r"^\*\* DONE", text, re.MULTILINE) else 1
 
 

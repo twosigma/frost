@@ -5208,19 +5208,35 @@ def platform(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) ->
 class _StuckLauncher:
     """A Vivado launcher process that does not exit until it is signalled."""
 
-    def __init__(self, waits_before_exit: int | None = None) -> None:
+    def __init__(
+        self,
+        waits_before_exit: int | None = None,
+        *,
+        exit_code: int = 0,
+        ignores_terminate: bool = False,
+        pid: int | None = None,
+    ) -> None:
         self.waits_before_exit = waits_before_exit
+        self.exit_code = exit_code
+        self.ignores_terminate = ignores_terminate
+        if pid is not None:
+            self.pid = pid
         self.waits = 0
         self.terminated = False
         self.killed = False
+        self.returncode: int | None = None
 
     def wait(self, timeout: float | None = None) -> int:
         self.waits += 1
-        if self.terminated or self.killed:
-            return -15
-        if self.waits_before_exit is not None and self.waits > self.waits_before_exit:
-            return 0
-        raise subprocess.TimeoutExpired("vivado", timeout or 0)
+        if self.killed:
+            self.returncode = -9
+        elif self.terminated and not self.ignores_terminate:
+            self.returncode = -15
+        elif self.waits_before_exit is not None and self.waits > self.waits_before_exit:
+            self.returncode = self.exit_code
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired("vivado", timeout or 0)
+        return self.returncode
 
     def terminate(self) -> None:
         self.terminated = True
@@ -5260,7 +5276,7 @@ def test_launcher_outliving_vivado_is_terminated_and_judged_by_done_marker(
     launcher = _StuckLauncher()
     log = f"{marker}\nINFO: Exiting Vivado at Tue Nov  3 13:37:14 2026...\n"
     assert _launch_stuck_vivado(tmp_path, monkeypatch, launcher, log) == expected
-    assert launcher.terminated
+    assert launcher.terminated or launcher.killed
     assert "launcher did not exit" in capsys.readouterr().out
 
 
@@ -5291,7 +5307,7 @@ def test_exit_marker_cleared_by_a_log_rewrite_restarts_the_grace_period(
     monkeypatch.setattr(fpga_build.subprocess, "Popen", popen)
     monkeypatch.setattr(fpga_build.time, "monotonic", lambda: float(next(clock)))
     assert fpga_build.run_vivado_step(["vivado"], tmp_path) == 0
-    assert not launcher.terminated
+    assert not launcher.terminated and not launcher.killed
 
 
 def test_echoed_done_command_does_not_count_as_done(
@@ -5304,7 +5320,7 @@ def test_echoed_done_command_does_not_count_as_done(
         "INFO: Exiting Vivado at Tue Nov  3 13:37:14 2026...\n"
     )
     assert _launch_stuck_vivado(tmp_path, monkeypatch, launcher, log) == 1
-    assert launcher.terminated
+    assert launcher.terminated or launcher.killed
 
 
 def test_real_launcher_group_is_ended_with_its_descendants(
@@ -5352,7 +5368,7 @@ def test_launcher_exiting_within_the_grace_period_is_not_terminated(
     launcher = _StuckLauncher(waits_before_exit=1)
     log = "** DONE\nINFO: Exiting Vivado at Tue Nov  3 13:37:14 2026...\n"
     assert _launch_stuck_vivado(tmp_path, monkeypatch, launcher, log) == 0
-    assert not launcher.terminated
+    assert not launcher.terminated and not launcher.killed
 
 
 def test_interrupted_vivado_step_kills_its_launcher(
@@ -5370,6 +5386,118 @@ def test_interrupted_vivado_step_kills_its_launcher(
     with pytest.raises(KeyboardInterrupt):
         _launch_stuck_vivado(tmp_path, monkeypatch, launcher, "Running route\n")
     assert launcher.killed
+
+
+_DONE_LOG = "** DONE\nINFO: Exiting Vivado at Tue Nov  3 13:37:14 2026...\n"
+
+
+def test_without_groups_a_launcher_that_ignores_terminate_is_killed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without process groups the launcher is terminated first, then killed."""
+    monkeypatch.delattr(fpga_build.os, "killpg", raising=False)
+    launcher = _StuckLauncher(ignores_terminate=True)
+    assert _launch_stuck_vivado(tmp_path, monkeypatch, launcher, _DONE_LOG) == 0
+    assert launcher.terminated and launcher.killed
+
+
+def test_without_groups_a_launcher_that_obeys_terminate_is_not_killed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A launcher that exits on terminate() needs no kill()."""
+    monkeypatch.delattr(fpga_build.os, "killpg", raising=False)
+    launcher = _StuckLauncher()
+    assert _launch_stuck_vivado(tmp_path, monkeypatch, launcher, _DONE_LOG) == 0
+    assert launcher.terminated and not launcher.killed
+
+
+def test_with_groups_the_group_is_killed_before_the_launcher_is_reaped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The group signal is sent while the launcher still owns its process id."""
+    launcher = _StuckLauncher(pid=4242)
+    calls: list[tuple[int, int, int | None]] = []
+
+    def killpg(pid: int, sig: int) -> None:
+        calls.append((pid, sig, launcher.returncode))
+        launcher.killed = True
+
+    monkeypatch.setattr(fpga_build.os, "killpg", killpg, raising=False)
+    assert _launch_stuck_vivado(tmp_path, monkeypatch, launcher, _DONE_LOG) == 0
+    assert calls == [(4242, fpga_build.signal.SIGKILL, None)]
+
+
+def test_interrupt_after_the_launcher_was_reaped_signals_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reaped launcher's process id may belong to another process by then."""
+    launcher = _StuckLauncher(pid=4242)
+    calls: list[int] = []
+
+    def killpg(pid: int, _sig: int) -> None:
+        calls.append(pid)
+
+    def reaped_then_interrupted(process: Any, *_args: Any) -> int:
+        process.returncode = 0
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(fpga_build.os, "killpg", killpg, raising=False)
+    monkeypatch.setattr(fpga_build, "_wait_for_vivado", reaped_then_interrupted)
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", lambda *_a, **_k: launcher)
+    with pytest.raises(KeyboardInterrupt):
+        fpga_build.run_vivado_step(["vivado"], tmp_path)
+    assert calls == []
+    assert not launcher.killed
+
+
+def _keep_log_in_place(monkeypatch: pytest.MonkeyPatch, log: Path) -> None:
+    """Make removing ``log`` fail, as when another process holds it open."""
+    real_unlink = Path.unlink
+
+    def unlink(self: Path, missing_ok: bool = False) -> None:
+        if self == log:
+            raise PermissionError("in use")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+
+def test_log_that_cannot_be_removed_does_not_decide_the_step(
+    platform: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Markers in an old log that stays in place do not count while it is unchanged."""
+    log = tmp_path / "vivado.log"
+    log.write_text(_DONE_LOG)
+    _keep_log_in_place(monkeypatch, log)
+    launcher = _StuckLauncher(waits_before_exit=40, exit_code=1)
+    clock = iter(range(0, 100_000, 60))
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", lambda *_a, **_k: launcher)
+    monkeypatch.setattr(fpga_build.time, "monotonic", lambda: float(next(clock)))
+    assert fpga_build.run_vivado_step(["vivado"], tmp_path) == 1
+    assert not launcher.terminated and not launcher.killed
+
+
+def test_rewritten_log_decides_the_step_after_a_failed_removal(
+    platform: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once Vivado has rewritten the log its own markers count again."""
+    log = tmp_path / "vivado.log"
+    log.write_text(_DONE_LOG)
+    _keep_log_in_place(monkeypatch, log)
+    launcher = _StuckLauncher()
+    original_wait = launcher.wait
+
+    def wait(timeout: float | None = None) -> int:
+        if launcher.waits == 2:
+            log.write_text("Running opt\n" + _DONE_LOG)
+        return original_wait(timeout)
+
+    launcher.wait = wait  # type: ignore[method-assign]
+    clock = iter(range(0, 100_000, 60))
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", lambda *_a, **_k: launcher)
+    monkeypatch.setattr(fpga_build.time, "monotonic", lambda: float(next(clock)))
+    assert fpga_build.run_vivado_step(["vivado"], tmp_path) == 0
+    assert launcher.terminated or launcher.killed
 
 
 def _fail_vivado(
