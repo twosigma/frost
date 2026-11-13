@@ -1478,11 +1478,11 @@ SBY_TASKS = [
     ),
     (
         "link_credit1_bmc",
-        "Credit link, one stage, three credits: order, payload and credit count, 40 frames.",
+        "Credit link, one stage, three credits: order, payload and credit count, 28 frames.",
     ),
     (
         "link_credit2_bmc",
-        "Credit link, two stages, five credits: order, payload and credit count, 40 frames.",
+        "Credit link, two stages, five credits: order, payload and credit count, 28 frames.",
     ),
     (
         "link_one1_prove",

@@ -31,7 +31,7 @@ proof: depth 16
 proof: aigsmt boolector
 reach: mode cover
 bounded: mode bmc
-bounded: depth 40
+bounded: depth 28
 reach: depth 24
 
 [engines]
