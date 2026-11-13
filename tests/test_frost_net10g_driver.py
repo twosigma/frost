@@ -625,3 +625,28 @@ def test_reset_timeout_detaches_the_page_pool_from_napi() -> None:
     detach = text.index("page_pool_disable_direct_recycling(priv->rx_pool);", timeout)
     assert timeout < detach < text.index("netif_device_detach(ndev)", timeout)
     assert detach < text.index("return;", timeout)
+
+
+def test_rx_buffers_share_pages_and_sync_only_where_needed() -> None:
+    """RX uses page-pool fragments, a copybreak tunable, and DMA syncs gated by dma_dev_need_sync()."""
+    source = DRIVER_SOURCE.read_text()
+    fill = re.search(r"static unsigned int frost_rx_fill\(.*?\n\}\n", source, re.S)
+    reap = re.search(r"static int frost_rx_reap\(.*?\n\}\n", source, re.S)
+    assert fill is not None and reap is not None
+    # a buffer that fits in half a page comes from a fragment; the offset lands in the descriptor address
+    assert "page_pool_alloc(priv->rx_pool, &off, &size," in fill.group(0)
+    assert "page_pool_get_dma_addr(page) + off + FROST_RX_HEADROOM" in fill.group(0)
+    # the CPU-side sync runs only when the DMA API needs it, with the fragment offset and headroom
+    sync = reap.group(0).index("if (dma_dev_need_sync(priv->dev))")
+    assert (
+        "page_pool_dma_sync_for_cpu(priv->rx_pool, page, buf->off + FROST_RX_HEADROOM, len)"
+        in reap.group(0)[sync:]
+    )
+    assert "dma_sync_single_for_cpu" not in source
+    # copybreak copies short frames and returns the fragment at once; the tunable is bounded
+    assert "len <= READ_ONCE(priv->rx_copybreak)" in reap.group(0)
+    assert "ETHTOOL_RX_COPYBREAK" in source
+    assert "page_pool_recycle_direct" not in source
+    # the pool's device-side sync spans the whole page so the last fragment syncs both frames
+    assert ".offset = 0," in source
+    assert "pp.max_len = PAGE_SIZE << pp.order;" in source
