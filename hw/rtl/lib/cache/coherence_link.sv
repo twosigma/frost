@@ -21,7 +21,8 @@
 //     (i_stopped, after a fatal error) may drop it.
 //   KIND 1 (credit): the sender's ready is a local credit count. Packets pass
 //     the pipe into a receiver-side buffer of CREDITS entries whose head is
-//     the receiver's view (the last pipe register when the buffer is empty);
+//     the receiver's view (the last pipe register when the buffer is empty,
+//     every arrival being written to the buffer as well);
 //     each pop returns a credit through STAGES registers. With CREDITS = 1 the
 //     packet waits in the last pipe register itself, so the view is a plain
 //     register. The sender's handshake happens when the link takes the packet.
@@ -154,9 +155,11 @@ module coherence_link #(
     assign o_valid = count_q != 0 || arrive;
     assign o_payload = count_q != 0 ? head_payload : payload_q[(STAGES-1)*WIDTH+:WIDTH];
     assign pop = o_valid && i_ready;
-    // An arrival is stored unless an empty buffer passes it straight through.
-    assign store = arrive && !(count_q == 0 && pop);
-    assign unload = pop && count_q != 0;
+    // Every arrival is written at the tail, so the buffer's write enable is
+    // the arriving valid register alone; a pop advances the head, also when
+    // an empty buffer passes the arrival straight through.
+    assign store = arrive;
+    assign unload = pop;
     always_ff @(posedge i_clk) begin
       valid_q[0] <= !i_rst && push;
       payload_q[0+:WIDTH] <= i_payload;
@@ -194,7 +197,7 @@ module coherence_link #(
         ) + int'(count_q) + $countones(
             return_q
         ) == int'(CREDITS));
-        if (store) p_link_credit_room : assert (int'(count_q) < int'(CREDITS) || unload);
+        if (store) p_link_credit_room : assert (int'(count_q) < int'(CREDITS));
       end
 `endif
   end else begin : gen_mirror
