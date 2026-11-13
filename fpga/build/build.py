@@ -3210,11 +3210,11 @@ def run_vivado_step(
     # build must be forwarded to it: turn them into an exception here.
     previous = {}
     try:
-        for sig in (signal.SIGHUP, signal.SIGTERM):
-            previous[sig] = signal.signal(sig, hang_up)
-    except ValueError:  # not the main thread
-        pass
-    try:
+        try:
+            for sig in (signal.SIGHUP, signal.SIGTERM):
+                previous[sig] = signal.signal(sig, hang_up)
+        except ValueError:  # not the main thread
+            pass
         returncode = _wait_for_vivado(process, log_path)
     except BaseException:
         # subprocess.run() kills its child on an interrupt; keep that behaviour.
@@ -3277,6 +3277,7 @@ def _wait_for_vivado(process: subprocess.Popen[bytes], log_path: Path) -> int:
                 pass
             # A descendant may outlive the launcher or ignore SIGTERM.
             _signal_launcher(process, signal.SIGKILL)
+            process.wait()
             return 0 if re.search(r"^\*\* DONE", text, re.MULTILINE) else 1
 
 
