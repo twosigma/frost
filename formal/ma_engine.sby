@@ -1,0 +1,25 @@
+[tasks]
+bmc
+cover
+
+[options]
+bmc: mode bmc
+bmc: depth 16
+cover: mode cover
+cover: depth 16
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -formal -sv ma_pkg.sv
+read -formal -sv line_align.sv
+read -formal -sv ma_engine.sv
+prep -top ma_engine
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/misaligned/ma_pkg.sv
+../hw/rtl/lib/line_align.sv
+../hw/rtl/cpu_and_mem/cpu/misaligned/ma_engine.sv

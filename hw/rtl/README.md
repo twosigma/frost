@@ -80,7 +80,7 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 | `cpu_and_mem/cpu/ex_stage/` | ALU, multiply/divide, FPU, and branch execution |
 | [lib/cache/](lib/cache/README.md) | Coherent L1 caches in `coherent_hart_cache.sv`, the shared L2 home in `coherence_home.sv`, DDR bridge, and simulation DDR model |
 | [lib/axi/](lib/axi/README.md) | AXI4 DMA interconnect, coherent ingress bridge and AXI4-Lite register bridge |
-| `lib/` | RAM, FIFO, and clock-domain-crossing primitives |
+| `lib/` | RAM, FIFO, and clock-domain-crossing primitives; `line_align.sv`, which moves an access between register order and a pair of cache lines |
 | [peripherals/imsic/](peripherals/imsic/README.md) | AIA IMSIC with machine and supervisor interrupt files in each CPU, with SoC MSI store decode |
 | [peripherals/nic/](peripherals/nic/README.md) | Ethernet NIC with coherent DMA |
 | [peripherals/aplic/](peripherals/aplic/README.md) | AIA APLIC with machine and supervisor domains, direct delivery and optional MSI forwarding |
