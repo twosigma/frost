@@ -18,8 +18,9 @@ pieces come before the second hart:
   take precise faults. The unit is a build option, and a configuration
   without it is unchanged. The vector state (`mstatus.VS` and the vector
   CSRs) is in place behind the `VECTOR` build parameter, and so are the
-  unit's datapath blocks with their unit benches. The core does not execute
-  vector instructions yet.
+  unit's datapath blocks with their unit benches. The core executes
+  `vsetvli`, `vsetivli` and `vsetvl`, and the X3 build includes the unit; the
+  other vector instructions are not executed yet.
 - Misaligned loads and stores in hardware. The CPU's misaligned-access
   engine performs them in cached DDR behind the `MISALIGNED_HW` build
   parameter, which is off by default; the builds and the test configuration

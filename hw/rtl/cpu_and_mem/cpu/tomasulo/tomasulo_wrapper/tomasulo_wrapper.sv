@@ -50,8 +50,11 @@ module tomasulo_wrapper #(
     // Disable back-end profiling counters and return zero when 0. cpu_ooo
     // passes its build option; the standalone default enables counters.
     parameter int unsigned PERF_COUNTERS = 1,
-    // 1: the vector CSRs exist and need mstatus.VS (reorder buffer legality).
+    // 1: the vector CSRs exist and need mstatus.VS (reorder buffer legality),
+    // and MUL_RS's shim runs vsetvli/vsetivli/vsetvl, whose results go out on
+    // CDB slot 5 and whose vl/vtype updates leave on o_vcfg_commit.
     parameter bit VECTOR = 1'b0,
+    parameter int unsigned VLEN = 256,
     // The LQ registers its same-sector matches from the coherent L1D's store
     // pushes and atomic state; cpu_ooo, which supplies both, enables it.
     parameter bit REGISTERED_SECTOR_MATCH = 1'b0
@@ -149,6 +152,8 @@ module tomasulo_wrapper #(
     // Commit Outputs (the internal commit buses, registered and combinational)
     // =========================================================================
     output riscv_pkg::reorder_buffer_commit_t o_commit,
+    // The vl/vtype update of a vector-config instruction on o_commit (VECTOR)
+    output riscv_pkg::vcfg_commit_t           o_vcfg_commit,
     output riscv_pkg::reorder_buffer_commit_t o_commit_comb,
     output logic                              o_commit_valid_raw,
     output logic                              o_commit_misprediction_raw,
@@ -874,6 +879,7 @@ module tomasulo_wrapper #(
   riscv_pkg::fu_complete_t alu_adapter_to_arbiter;
   riscv_pkg::fu_complete_t mul_adapter_to_arbiter;
   riscv_pkg::fu_complete_t div_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t vcfg_adapter_to_arbiter;
   riscv_pkg::fu_complete_t mem_adapter_to_arbiter;
   riscv_pkg::fu_complete_t fp_adapter_to_arbiter;
   riscv_pkg::fu_complete_t alu2_adapter_to_arbiter;
@@ -932,8 +938,8 @@ module tomasulo_wrapper #(
     cdb_arb_in_2 = div_adapter_to_arbiter.valid ? div_adapter_to_arbiter : i_fu_complete_2;
     cdb_arb_in_3 = mem_adapter_to_arbiter.valid ? mem_adapter_to_arbiter : i_fu_complete_3;
     cdb_arb_in_4 = fp_adapter_to_arbiter.valid ? fp_adapter_to_arbiter : i_fu_complete_4;
-    // Slots 5 and 6 have no unit behind them.
-    cdb_arb_in_5 = i_fu_complete_5;
+    // Slot 5 carries vector-config results (VECTOR); slot 6 has no unit.
+    cdb_arb_in_5 = vcfg_adapter_to_arbiter.valid ? vcfg_adapter_to_arbiter : i_fu_complete_5;
     cdb_arb_in_6 = i_fu_complete_6;
     cdb_arb_in_7 = alu2_adapter_to_arbiter.valid ? alu2_adapter_to_arbiter : i_fu_complete_7;
   end
@@ -1530,6 +1536,9 @@ module tomasulo_wrapper #(
   riscv_pkg::rs_issue_t    mul_rs_issue_w;  // MUL_RS issue output (internal)
   riscv_pkg::fu_complete_t mul_shim_out;  // shim MUL -> adapter
   riscv_pkg::fu_complete_t div_shim_out;  // shim DIV -> adapter
+  riscv_pkg::fu_complete_t vcfg_shim_out;  // shim vector-config -> adapter
+  riscv_pkg::vcfg_record_t vcfg_shim_record;
+  logic                    vcfg_adapter_result_pending;
   // mul/div_adapter_to_arbiter declared above (forward declaration)
   logic                    mul_adapter_result_pending;
   logic                    div_adapter_result_pending;
@@ -1549,6 +1558,10 @@ module tomasulo_wrapper #(
 
   logic div_result_accepted;
   assign div_result_accepted = !div_adapter_result_pending && div_shim_out.valid;
+
+  // The vector-config result moves to its registered adapter the same way.
+  logic vcfg_result_accepted;
+  assign vcfg_result_accepted = !vcfg_adapter_result_pending && vcfg_shim_out.valid;
 
   // ===========================================================================
   // MEM (Load) Pipeline: LQ -> adapter -> CDB arbiter slot 3
@@ -3745,22 +3758,79 @@ module tomasulo_wrapper #(
   // MUL/DIV Shim: translate rs_issue_t -> multiplier/divider -> fu_complete_t
   // ===========================================================================
   int_muldiv_shim #(
-      .DIRECT_MUL(1'b1)
+      .DIRECT_MUL(1'b1),
+      .VECTOR    (VECTOR),
+      .VLEN      (VLEN)
   ) u_muldiv_shim (
-      .i_clk            (i_clk),
-      .i_rst_n          (i_rst_n),
-      .i_rs_issue       (mul_rs_issue_w),
-      .o_mul_fu_complete(mul_shim_out),
-      .o_div_fu_complete(div_shim_out),
-      .o_fu_busy        (muldiv_busy),
-      .o_div_busy       (div_busy),
-      .i_flush          (speculative_flush_all),
-      .i_flush_en       (speculative_flush_en),
-      .i_flush_tag      (i_flush_tag),
-      .i_rob_head_tag   (head_tag),
-      .i_mul_accepted   (mul_result_accepted),
-      .i_div_accepted   (div_result_accepted)
+      .i_clk             (i_clk),
+      .i_rst_n           (i_rst_n),
+      .i_rs_issue        (mul_rs_issue_w),
+      .o_mul_fu_complete (mul_shim_out),
+      .o_div_fu_complete (div_shim_out),
+      .o_vcfg_fu_complete(vcfg_shim_out),
+      .o_vcfg_record     (vcfg_shim_record),
+      .o_fu_busy         (muldiv_busy),
+      .o_div_busy        (div_busy),
+      .i_flush           (speculative_flush_all),
+      .i_flush_en        (speculative_flush_en),
+      .i_flush_tag       (i_flush_tag),
+      .i_rob_head_tag    (head_tag),
+      .i_mul_accepted    (mul_result_accepted),
+      .i_div_accepted    (div_result_accepted),
+      .i_vcfg_accepted   (vcfg_result_accepted)
   );
+
+  // ===========================================================================
+  // Vector-config CDB adapter (slot 5) and per-tag side record (VECTOR)
+  // ===========================================================================
+  // The record of a ROB tag is written when its result moves into the
+  // adapter and read when that tag commits. A squashed instruction's record
+  // is never read: its tag's next allocation completes, and so rewrites the
+  // record, before it can commit. tag_is_vcfg marks the entries allocated as
+  // vector-config instructions.
+  if (VECTOR) begin : gen_vcfg_path
+    fu_cdb_adapter #(
+        .ALLOW_GRANT_REFILL(1'b0),
+        .REGISTER_OUTPUT(1'b1)
+    ) u_vcfg_adapter (
+        .i_clk              (i_clk),
+        .i_rst_n            (i_rst_n),
+        .i_fu_result        (vcfg_shim_out),
+        .i_fu_result_younger(1'b0),
+        .o_fu_complete      (vcfg_adapter_to_arbiter),
+        .o_held_value       (),
+        .i_grant            (o_cdb_grant[riscv_pkg::FU_FP_MUL]),
+        .o_result_pending   (vcfg_adapter_result_pending),
+        .i_flush            (speculative_flush_all),
+        .i_flush_en         (speculative_flush_en),
+        .i_flush_tag        (i_flush_tag),
+        .i_rob_head_tag     (head_tag)
+    );
+    riscv_pkg::vcfg_record_t vcfg_record_q[riscv_pkg::ReorderBufferDepth];
+    logic [riscv_pkg::ReorderBufferDepth-1:0] tag_is_vcfg_q;
+    always_ff @(posedge i_clk) begin
+      if (vcfg_result_accepted) vcfg_record_q[vcfg_shim_record.tag] <= vcfg_shim_record;
+      if (i_alloc_req.alloc_valid && o_alloc_resp.alloc_ready)
+        tag_is_vcfg_q[o_alloc_resp.alloc_tag] <= i_alloc_req.is_vcfg;
+      if (i_alloc_req_2.alloc_valid && o_alloc_resp_2.alloc_ready)
+        tag_is_vcfg_q[o_alloc_resp_2.alloc_tag] <= i_alloc_req_2.is_vcfg;
+    end
+    riscv_pkg::vcfg_record_t commit_record;
+    assign commit_record = vcfg_record_q[o_commit.tag];
+    always_comb begin
+      o_vcfg_commit.valid = o_commit.valid && tag_is_vcfg_q[o_commit.tag] && !o_commit.exception;
+      o_vcfg_commit.vill = commit_record.vill;
+      o_vcfg_commit.vtype = commit_record.vtype;
+      // rd = x0 leaves dest_valid clear.
+      o_vcfg_commit.keep = commit_record.rs1_x0 && !o_commit.dest_valid && !commit_record.vill;
+      o_vcfg_commit.vlmax = commit_record.vlmax;
+      o_vcfg_commit.vl = commit_record.vl;
+    end
+  end else begin : gen_no_vcfg_path
+    assign vcfg_adapter_to_arbiter = '0;
+    assign vcfg_adapter_result_pending = 1'b0;
+    assign o_vcfg_commit = '0;
+  end
 
   // ===========================================================================
   // MUL CDB Adapter: result pass-through -> CDB arbiter slot 1

@@ -1074,6 +1074,15 @@ module dispatch #(
       assert (!(slot2_can_fire && uses_fp_rs3_flag_2))
       else $error("dispatch: slot 2 fired with an FP source 3");
   end
+  // Predecode never pairs a vector instruction as slot 2 (OP-V is in its
+  // slot-1-only class), so a vector-config op never fires there.
+  always_ff @(posedge i_clk) begin
+    if (reset_seen_q && i_rst_n)
+      assert (!(slot2_can_fire &&
+                ((op_2 == riscv_pkg::VSETVLI) || (op_2 == riscv_pkg::VSETIVLI) ||
+                 (op_2 == riscv_pkg::VSETVL))))
+      else $error("dispatch: a vector-config instruction fired in slot 2");
+  end
 `endif
 
   // Register repair requests for the cycle after dispatch. Valid bits
@@ -1360,6 +1369,8 @@ module dispatch #(
 
     // ID predecodes flag-producing FP ops, excluding illegal ops and fetch faults.
     o_rob_alloc_req.has_fp_flags = op_has_fp_flags;
+    o_rob_alloc_req.is_vcfg = (op == riscv_pkg::VSETVLI) || (op == riscv_pkg::VSETIVLI) ||
+        (op == riscv_pkg::VSETVL);
 
     // With FS Off, ID routes F/D instructions to INT_RS as ILLEGAL. The ROB
     // also rejects them at allocation, including fflags, frm and fcsr accesses.
@@ -1419,6 +1430,8 @@ module dispatch #(
     '0;
 
     o_rob_alloc_req_2.has_fp_flags = op_has_fp_flags_2;
+    o_rob_alloc_req_2.is_vcfg = (op_2 == riscv_pkg::VSETVLI) || (op_2 == riscv_pkg::VSETIVLI) ||
+        (op_2 == riscv_pkg::VSETVL);
 
     o_rob_alloc_req_2.is_fp_instruction = i_from_id_to_ex_2.is_fp_instruction;
     o_rob_alloc_req_2.fp_dyn_rm = i_from_id_to_ex_2.is_fp_instruction &&

@@ -16,8 +16,8 @@ Lane 0 carries the highest-priority valid completion and lane 1 the next, so
 `o_grant` is 0-, 1-, or 2-hot. Inputs `i_fu_complete_0` to `_7` and the grant
 bits are numbered by `riscv_pkg::fu_type_e` (ALU, MUL, DIV, MEM, FP_ADD,
 FP_MUL, FP_DIV, ALU2), which is not the priority order. In the wrapper the FP
-engine completes on FP_ADD, and FP_MUL and FP_DIV have no unit behind them;
-only their test inputs drive them.
+engine completes on FP_ADD, the vector-config unit (with the vector unit) on
+FP_MUL, and FP_DIV has no unit behind it; only its test input drives it.
 
 ALU and ALU2 are the two single-cycle integer pipes fed by the dual-issue INT
 reservation station. Either can win either lane, so a stream of pure ALU work

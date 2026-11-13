@@ -50,6 +50,7 @@ OPC_FMSUB = 0b1000111
 OPC_FNMSUB = 0b1001011
 OPC_FNMADD = 0b1001111
 OPC_OP_FP = 0b1010011
+OPC_OP_V = 0b1010111
 OPC_BRANCH = 0b1100011
 OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
@@ -144,8 +145,8 @@ def native_serialize(opcode: int) -> bool:
 
 
 def native_fp_compute(opcode: int) -> bool:
-    """Return whether a native instruction opcode uses an FP compute unit."""
-    return opcode in {OPC_OP_FP, OPC_FMADD, OPC_FMSUB, OPC_FNMSUB, OPC_FNMADD}
+    """Return whether a native instruction never pairs as slot 2 (FP compute or vector)."""
+    return opcode in {OPC_OP_FP, OPC_FMADD, OPC_FMSUB, OPC_FNMSUB, OPC_FNMADD, OPC_OP_V}
 
 
 def native_control(opcode: int) -> bool:

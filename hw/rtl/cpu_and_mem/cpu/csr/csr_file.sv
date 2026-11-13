@@ -302,6 +302,9 @@ module csr_file #(
     output logic o_mstatus_fs_off,
     // mstatus.VS == Off (always 1 without the vector unit).
     output logic o_mstatus_vs_off,
+    // vl/vtype update of a committed vsetvli/vsetivli/vsetvl, from the
+    // registered commit bus (VECTOR). It also clears vstart and sets VS Dirty.
+    input riscv_pkg::vcfg_commit_t i_vcfg_commit = '0,
 
     // Zicboz: cbo.zero is illegal in S without menvcfg.CBZE and in U without
     // both menvcfg.CBZE and senvcfg.CBZE. id_stage decodes it as illegal while
@@ -1615,6 +1618,15 @@ module csr_file #(
         vl_q <= '0;
         vill_q <= 1'b1;
         vtype_low_q <= '0;
+      end else if (i_vcfg_commit.valid) begin
+        // A vector-config instruction never commits beside a CSR
+        // instruction, so this never meets a CSR write.
+        vill_q <= i_vcfg_commit.vill;
+        vtype_low_q <= i_vcfg_commit.vtype;
+        vl_q <= i_vcfg_commit.keep ?
+            ((vl_q > VlBits'(i_vcfg_commit.vlmax)) ? VlBits'(i_vcfg_commit.vlmax) : vl_q) :
+            VlBits'(i_vcfg_commit.vl);
+        vstart_q <= '0;
       end else if (vec_csr_write) begin
         unique case (i_csr_address)
           riscv_pkg::CsrVstart: vstart_q <= vec_new_value[VstartBits-1:0];
@@ -1637,7 +1649,7 @@ module csr_file #(
         mstatus_vs <= mstatus_new_value[riscv_pkg::MstatusVsLo+:2];
       else if (status_csr_write && (i_csr_address == riscv_pkg::CsrSstatus))
         mstatus_vs <= sstatus_new_value[riscv_pkg::MstatusVsLo+:2];
-      else if (vec_csr_write) mstatus_vs <= FsDirty;
+      else if (vec_csr_write || i_vcfg_commit.valid) mstatus_vs <= FsDirty;
     end
   end else begin : gen_no_vector_csrs
     assign vec_read_value = '0;
@@ -2428,6 +2440,10 @@ module csr_file #(
   // Structural constraints
   always_comb begin
     assume (!(i_trap_taken && i_mret_taken));
+    // A vector-config commit never meets a CSR instruction's write.
+    assume (!(i_vcfg_commit.valid && i_csr_write_enable));
+    // vl and VLMAX are element counts, at most VLEN (SEW 8, LMUL 8).
+    assume (i_vcfg_commit.vlmax <= 16'(VLEN) && i_vcfg_commit.vl <= i_vcfg_commit.vlmax);
     assume (!(i_trap_taken && i_sret_taken));
     // Debug Mode: DRET is one of the mutually exclusive xRETs and only
     // executes in Debug Mode (the ROB allocation check); a Debug Mode entry
@@ -2656,7 +2672,9 @@ module csr_file #(
       // register's old value (computed here independently of the RTL's RMW),
       // every other cycle keeps the value, and an access whose csr_op[1:0] is
       // 00 (no write intent) never changes it.
-      if ($past(f_vec_write && i_csr_address == riscv_pkg::CsrVstart)) begin
+      if ($past(VECTOR && i_vcfg_commit.valid)) begin
+        p_vstart_vcfg_clear : assert (vec_vstart == '0);
+      end else if ($past(f_vec_write && i_csr_address == riscv_pkg::CsrVstart)) begin
         p_vstart_write : assert (vec_vstart == $past(f_vstart_next[VstartBits-1:0]));
       end else begin
         p_vstart_stable : assert (vec_vstart == $past(vec_vstart));
@@ -2675,7 +2693,7 @@ module csr_file #(
       end else begin
         p_vxrm_stable : assert (vec_vxrm == $past(vec_vxrm));
       end
-      if ($past(i_csr_op[1:0] == 2'b00)) begin
+      if ($past(i_csr_op[1:0] == 2'b00 && !i_vcfg_commit.valid)) begin
         p_vec_read_only_access :
         assert ({vec_vstart, vec_vxsat, vec_vxrm, mstatus_vs} == $past(
             {vec_vstart, vec_vxsat, vec_vxrm, mstatus_vs}
@@ -2686,7 +2704,7 @@ module csr_file #(
 
       // A vector CSR write sets VS Dirty; a status CSR write installs VS;
       // nothing else, including a read-only vector CSR access, changes it.
-      if ($past(vec_csr_write)) begin
+      if ($past(vec_csr_write || (VECTOR && i_vcfg_commit.valid))) begin
         p_vs_dirty_set : assert (mstatus_vs == FsDirty);
       end else if ($past(
               status_csr_write && (i_csr_address == riscv_pkg::CsrMstatus ||
@@ -2740,6 +2758,8 @@ module csr_file #(
       // VS resets to Off and the vector CSRs to zero (vill aside).
       p_reset_vs :
       assert (mstatus_vs == FsOff && vec_vstart == '0 && !vec_vxsat && vec_vxrm == 2'b00);
+      p_reset_vl_vtype :
+      assert (vec_vl == '0 && vec_vtype == (VECTOR ? {1'b1, {(XLEN - 1) {1'b0}}} : '0));
       p_reset_priv : assert (priv_q == riscv_pkg::PrivM);
       p_reset_fetch_priv : assert (fetch_priv_q == riscv_pkg::PrivM);
       p_reset_sie : assert (!mstatus_sie && !mstatus_spie && !mstatus_spp);
@@ -2762,9 +2782,31 @@ module csr_file #(
       // exported gate signals are exactly FS==Off and VS==Off.
       p_sd_mirrors_fs : assert (mstatus[XLEN-1] == ((mstatus_fs == FsDirty) || vs_dirty));
       p_sstatus_sd : assert (sstatus[XLEN-1] == mstatus[XLEN-1]);
-      // vl and vtype keep their reset values (no instruction writes them).
-      p_vl_reset_value : assert (vec_vl == '0);
-      p_vtype_reset_value : assert (vec_vtype == (VECTOR ? {1'b1, {(XLEN - 1) {1'b0}}} : '0));
+      // Only a vector-config commit changes vl and vtype: vill alone for an
+      // illegal vtype, min(vl, VLMAX) for the keep form, the new vl otherwise.
+      if (!f_past_valid || $past(i_rst)) begin
+        // vl and vtype were just reset (p_reset_vl_vtype).
+      end else if ($past(VECTOR && i_vcfg_commit.valid)) begin
+        p_vtype_vcfg :
+        assert (vec_vtype == {$past(i_vcfg_commit.vill), 55'b0, $past(i_vcfg_commit.vtype)});
+        if ($past(i_vcfg_commit.keep)) begin
+          p_vl_vcfg_keep :
+          assert (XLEN'(vec_vl) == (($past(
+              XLEN'(vec_vl)
+          ) > $past(
+              XLEN'(i_vcfg_commit.vlmax)
+          )) ? $past(
+              XLEN'(i_vcfg_commit.vlmax)
+          ) : $past(
+              XLEN'(vec_vl)
+          )));
+        end else begin
+          p_vl_vcfg : assert (XLEN'(vec_vl) == $past(XLEN'(i_vcfg_commit.vl[VlBits-1:0])));
+        end
+      end else begin
+        p_vl_stable : assert (vec_vl == $past(vec_vl));
+        p_vtype_stable : assert (vec_vtype == $past(vec_vtype));
+      end
       // The vector read port answers exactly the vector CSR it is asked for.
       // A vector CSR read reaches the combinational output in its cycle and the
       // registered output on the next.

@@ -1181,7 +1181,7 @@ module reorder_buffer #(
       rob_f_ok_2wide_static[tail_idx] <=
           !(i_alloc_req.is_csr || i_alloc_req.is_fence || i_alloc_req.is_fence_i ||
             i_alloc_req.is_wfi || i_alloc_req.is_mret || i_alloc_req.is_amo ||
-            i_alloc_req.is_lr || i_alloc_req.is_sc);
+            i_alloc_req.is_lr || i_alloc_req.is_sc || i_alloc_req.is_vcfg);
       rob_f_is_sret[tail_idx] <= i_alloc_req.is_sret;
       rob_f_is_dret[tail_idx] <= i_alloc_req.is_dret;
       rob_f_is_sfence[tail_idx] <= i_alloc_req.is_sfence_vma;
@@ -1217,7 +1217,7 @@ module reorder_buffer #(
       rob_f_ok_2wide_static[tail_idx_2] <=
           !(i_alloc_req_2.is_csr || i_alloc_req_2.is_fence || i_alloc_req_2.is_fence_i ||
             i_alloc_req_2.is_wfi || i_alloc_req_2.is_mret || i_alloc_req_2.is_amo ||
-            i_alloc_req_2.is_lr || i_alloc_req_2.is_sc);
+            i_alloc_req_2.is_lr || i_alloc_req_2.is_sc || i_alloc_req_2.is_vcfg);
       rob_f_is_sret[tail_idx_2] <= i_alloc_req_2.is_sret;
       rob_f_is_dret[tail_idx_2] <= i_alloc_req_2.is_dret;
       rob_f_is_sfence[tail_idx_2] <= i_alloc_req_2.is_sfence_vma;

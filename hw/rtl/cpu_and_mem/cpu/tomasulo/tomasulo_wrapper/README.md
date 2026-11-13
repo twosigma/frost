@@ -194,8 +194,12 @@ every valid ALU result, which follows from the rule in the next section. The
 | 3 | MEM | 0 | 0 | `ALWAYS_GRANTED=1`: second priority on a two-lane bus; pending is constant zero |
 | 4 | FP | 0 | 1 | |
 
-Slots 5 and 6 (`FU_FP_MUL`, `FU_FP_DIV`) have no unit behind them; only their
-test inputs drive them.
+Slot 5 (`FU_FP_MUL`) carries the vector-config unit's results through its own
+registered adapter when `VECTOR` is set. The wrapper keeps a side record per ROB
+tag of each vector-config result (new `vtype`, `vl`, VLMAX, whether rs1 was
+x0) and, when that tag commits, presents the `vl`/`vtype` update to the CSR
+file on `o_vcfg_commit`. Slot 6 (`FU_FP_DIV`) has no unit behind it; only its
+test input drives it, as slot 5's does without the vector unit.
 
 With refill off, a granted adapter always returns to idle.
 `REGISTER_OUTPUT=1` removes the same-cycle pass-through, adding a cycle to
@@ -237,7 +241,8 @@ while either ALU adapter holds its result, and that the mask matches the
 adapter; formal checks both for the ALU adapter.
 
 Test inputs `i_fu_complete_0` to `i_fu_complete_7` feed the same slots in any
-cycle the slot's adapter presents nothing (always, for slots 5 and 6).
+cycle the slot's adapter presents nothing (always, for slot 6, and for slot 5
+without the vector unit).
 `cpu_ooo` ties them to zero.
 
 ## FP dispatch buffer
