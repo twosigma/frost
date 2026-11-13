@@ -718,17 +718,7 @@ module dispatch #(
   logic dispatch_valid_2;
   logic slot2_fp_compute_serialized;
   assign slot2_fp_compute_serialized = (rs_type_2 == riscv_pkg::RS_FP);
-  // Vector configuration also dispatches in slot 1 only, so at most one per
-  // cycle reaches the ROB and it never retires as slot 2. The decoded op
-  // comes straight from the ID register (an illegal one is held back too,
-  // which only moves it to slot 1).
-  logic slot2_vcfg_serialized;
-  assign slot2_vcfg_serialized =
-      (i_from_id_to_ex_2.instruction_operation == riscv_pkg::VSETVLI) ||
-      (i_from_id_to_ex_2.instruction_operation == riscv_pkg::VSETIVLI) ||
-      (i_from_id_to_ex_2.instruction_operation == riscv_pkg::VSETVL);
-  assign dispatch_valid_2 = i_valid_2 && !i_flush && !slot2_fp_compute_serialized &&
-      !slot2_vcfg_serialized;
+  assign dispatch_valid_2 = i_valid_2 && !i_flush && !slot2_fp_compute_serialized;
 
   // Two slots targeting the same RS need two free entries; otherwise one suffices.
   logic rs_full_for_slot2;
@@ -838,8 +828,7 @@ module dispatch #(
       !(need_checkpoint_2 && !i_checkpoint_available);
   logic slot2_present_for_admission;
   assign slot2_present_for_admission = SLOT2_VALID_FROM_BUNDLE ?
-      (i_from_id_to_ex_2.is_real && !slot2_fp_compute_serialized && !slot2_vcfg_serialized) :
-      dispatch_valid_2;
+      (i_from_id_to_ex_2.is_real && !slot2_fp_compute_serialized) : dispatch_valid_2;
   // Decode resource ownership independently of the late RS-full flags.
   // Each three-product reduction fits a LUT6, so a full flag reaches bundle
   // admission through two LUTs rather than two RS muxes and serial gates.
@@ -1084,6 +1073,15 @@ module dispatch #(
     if (reset_seen_q && i_rst_n)
       assert (!(slot2_can_fire && uses_fp_rs3_flag_2))
       else $error("dispatch: slot 2 fired with an FP source 3");
+  end
+  // Predecode never pairs a vector instruction as slot 2 (OP-V is in its
+  // slot-1-only class), so a vector-config op never fires there.
+  always_ff @(posedge i_clk) begin
+    if (reset_seen_q && i_rst_n)
+      assert (!(slot2_can_fire &&
+                ((op_2 == riscv_pkg::VSETVLI) || (op_2 == riscv_pkg::VSETIVLI) ||
+                 (op_2 == riscv_pkg::VSETVL))))
+      else $error("dispatch: a vector-config instruction fired in slot 2");
   end
 `endif
 
