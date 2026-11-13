@@ -2407,6 +2407,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Vector FP64 divide and square root, bit for bit against Berkeley SoftFloat",
         verilator_extra_args=("-GEXP=11", "-GFRAC=52"),
     ),
+    "vec_engine_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_engine",
+        hdl_toplevel_module="vec_engine",
+        description="Vector engine at VLEN 256: integer instructions against a model of their semantics",
+        verilator_extra_args=("-GVLEN=256",),
+    ),
+    "vec_engine_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_engine",
+        hdl_toplevel_module="vec_engine",
+        description="Vector engine at VLEN 128: integer instructions against a model of their semantics",
+        verilator_extra_args=("-GVLEN=128",),
+    ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",

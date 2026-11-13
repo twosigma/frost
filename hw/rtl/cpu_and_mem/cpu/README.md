@@ -597,6 +597,15 @@ the other blocks. It takes one operation at a time, signals when it is free,
 and returns each result a fixed P + 10 cycles later (P is the format's
 precision: 21, 34 and 63 cycles for FP16, FP32 and FP64).
 
+`vec_engine` puts the register file and the integer lanes together and
+executes committed vector instructions one at a time, register group by
+register group, with no overlap between instructions yet: the single-width
+integer arithmetic, logical, minimum and maximum, shift and Zvbb operations,
+the integer compares into a mask register, `vmerge` and `vmv.v.*`. Only active
+body elements are written (the register file's byte enables), so tail and
+inactive elements stay undisturbed. A read port and a byte-enabled write port
+serve the memory side. The core does not instantiate it yet.
+
 ## Subtle cases
 
 These front-end hazards are easy to reintroduce. The code comments at each

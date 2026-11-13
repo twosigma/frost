@@ -18,3 +18,4 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_i2f.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_f2f.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_fdivsqrt.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_cfg_unit.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_engine.sv
