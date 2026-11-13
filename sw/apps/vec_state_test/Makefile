@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Directed test: F/D instructions while mstatus.FS is Off.
+# Directed test: mstatus.VS and the vector CSRs, with and without the vector unit.
 SRC_C := ../../lib/src/uart.c main.c
 include ../../common/common.mk

@@ -3,6 +3,7 @@ bmc
 cover
 bmc_perf_off
 vector_bmc
+vector_cover
 
 [options]
 bmc: mode bmc
@@ -13,6 +14,8 @@ bmc_perf_off: mode bmc
 bmc_perf_off: depth 20
 vector_bmc: mode bmc
 vector_bmc: depth 20
+vector_cover: mode cover
+vector_cover: depth 25
 
 [engines]
 smtbmc boolector
@@ -24,6 +27,7 @@ read -formal -sv csr_file.sv
 bmc_perf_off: chparam -set PERF_COUNTERS 0 csr_file
 # The vector state (mstatus.VS and the vector CSRs) at VLEN 256.
 vector_bmc: chparam -set PERF_COUNTERS 0 -set VECTOR 1 -set VLEN 256 csr_file
+vector_cover: chparam -set PERF_COUNTERS 0 -set VECTOR 1 -set VLEN 256 csr_file
 prep -top csr_file
 
 [files]

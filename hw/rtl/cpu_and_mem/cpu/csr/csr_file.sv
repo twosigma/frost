@@ -30,15 +30,15 @@
 
   mstatus.MPRV makes data accesses use MPP. MPP and dcsr.prv fold reserved
   2'b10 to U. FS resets to Initial and becomes Dirty on FP state writes;
-  SD mirrors Dirty. misa is read-only RV64 IMAFDC+B+S+U, plus V when
-  VECTOR_ADVERTISE is set.
+  SD is set while FS or VS is Dirty. misa is read-only RV64 IMAFDC+B+S+U.
 
   VECTOR=1 adds the vector state: mstatus.VS and its sstatus view, vstart,
   vxsat, vxrm, vcsr, and the read-only vl, vtype and vlenb. VS resets to Off,
-  so vector instructions and vector CSR accesses are illegal until software
-  enables them; writes to vstart, vxsat, vxrm and vcsr set VS to Dirty, and SD
-  is set while FS or VS is Dirty. vl resets to 0 and vtype to vill. With
-  VECTOR=0 the vector CSRs do not exist and VS reads zero.
+  and vector CSR accesses are illegal while it is Off; vector instructions are
+  illegal in every state. Writes to vstart, vxsat, vxrm and vcsr set VS to
+  Dirty. vl resets to 0 and vtype to vill. With VECTOR=0 the vector CSRs do
+  not exist and VS reads zero. VECTOR_ADVERTISE would set misa.V; elaboration
+  rejects it because this build does not implement the vector instructions.
 
   Debug CSRs follow RISC-V Debug Spec 0.13.2 and require Debug Mode.
   dcsr implements ebreakm/ebreaks/ebreaku, step, and prv as writable fields;
@@ -495,7 +495,7 @@ module csr_file #(
     mstatus_low[riscv_pkg::MstatusTwBit] = mstatus_tw;
     mstatus_low[riscv_pkg::MstatusTsrBit] = mstatus_tsr;
   end
-  // SD (FS==Dirty mirror) at 63, SXL/UXL hardwired to 2 (64-bit) at
+  // SD (FS or VS Dirty) at 63, SXL/UXL hardwired to 2 (64-bit) at
   // [35:34]/[33:32]; the low word keeps the base field map with bit 31
   // reserved-0.
   assign mstatus = {fs_dirty || vs_dirty, 27'b0, 2'd2, 2'd2, mstatus_low};
@@ -1543,10 +1543,18 @@ module csr_file #(
   localparam int unsigned VstartBits = $clog2(VLEN);
   localparam int unsigned VlBits = $clog2(VLEN) + 1;
   logic [XLEN-1:0] vec_read_value;
+  // The vector registers as module-level signals, zero without the unit.
+  logic [VstartBits-1:0] vec_vstart;
+  logic vec_vxsat;
+  logic [1:0] vec_vxrm;
+  logic [VlBits-1:0] vec_vl;
+  logic [XLEN-1:0] vec_vtype;
   if (VECTOR) begin : gen_vector_csrs
     initial begin
       if (VLEN != 128 && VLEN != 256 && VLEN != 512)
         $fatal(1, "csr_file: VLEN must be 128, 256 or 512");
+      if (VECTOR_ADVERTISE)
+        $fatal(1, "csr_file: VECTOR_ADVERTISE needs the vector instructions, not implemented");
     end
     logic [VstartBits-1:0] vstart_q;
     logic vxsat_q;
@@ -1557,6 +1565,11 @@ module csr_file #(
     logic [XLEN-1:0] vec_current_value, vec_new_value, vtype_value;
     logic vec_addr_writable;
     assign vtype_value = {vill_q, 55'b0, vtype_low_q};
+    assign vec_vstart = vstart_q;
+    assign vec_vxsat = vxsat_q;
+    assign vec_vxrm = vxrm_q;
+    assign vec_vl = vl_q;
+    assign vec_vtype = vtype_value;
     always_comb begin
       vec_current_value = '0;
       vec_addr_writable = 1'b1;
@@ -1623,6 +1636,11 @@ module csr_file #(
   end else begin : gen_no_vector_csrs
     assign vec_read_value = '0;
     assign vec_csr_write = 1'b0;
+    assign vec_vstart = '0;
+    assign vec_vxsat = 1'b0;
+    assign vec_vxrm = 2'b00;
+    assign vec_vl = '0;
+    assign vec_vtype = '0;
     assign mstatus_vs = FsOff;
   end
   assign o_mstatus_vs_off = (mstatus_vs == FsOff);
@@ -2250,6 +2268,22 @@ module csr_file #(
   initial f_past_valid = 1'b0;
   always @(posedge i_clk) f_past_valid <= 1'b1;
 
+  // Zicsr update of one CSR's value: CSRRW/I writes, CSRRS/I sets and
+  // CSRRC/I clears bits; 00 (no write intent) keeps the value.
+  function automatic logic [XLEN-1:0] f_zicsr(input logic [2:0] op, input logic [XLEN-1:0] old,
+                                              input logic [XLEN-1:0] data);
+    unique case (op[1:0])
+      2'b01:   f_zicsr = data;
+      2'b10:   f_zicsr = old | data;
+      2'b11:   f_zicsr = old & ~data;
+      default: f_zicsr = old;
+    endcase
+  endfunction
+  wire [XLEN-1:0] f_vstart_next = f_zicsr(i_csr_op, XLEN'(vec_vstart), i_csr_write_data);
+  wire [XLEN-1:0] f_vxsat_next = f_zicsr(i_csr_op, XLEN'(vec_vxsat), i_csr_write_data);
+  wire [XLEN-1:0] f_vxrm_next = f_zicsr(i_csr_op, XLEN'(vec_vxrm), i_csr_write_data);
+  wire [XLEN-1:0] f_vcsr_next = f_zicsr(i_csr_op, XLEN'({vec_vxrm, vec_vxsat}), i_csr_write_data);
+
   // A committed minstret write in the previous cycle, and the value it wrote.
   logic f_minstret_written_q = 1'b0;
   logic [XLEN-1:0] f_minstret_value_q;
@@ -2589,6 +2623,44 @@ module csr_file #(
         p_mcounteren_stable : assert (mcounteren_q == $past(mcounteren_q));
       end
 
+      // Vector CSR storage: each write installs the Zicsr result over that
+      // register's old value (computed here independently of the RTL's RMW),
+      // every other cycle keeps the value, and an access whose csr_op[1:0] is
+      // 00 (no write intent) never changes it.
+      if ($past(vec_csr_write && i_csr_address == riscv_pkg::CsrVstart)) begin
+        p_vstart_write : assert (vec_vstart == $past(f_vstart_next[VstartBits-1:0]));
+      end else begin
+        p_vstart_stable : assert (vec_vstart == $past(vec_vstart));
+      end
+      if ($past(vec_csr_write && i_csr_address == riscv_pkg::CsrVxsat)) begin
+        p_vxsat_write : assert (vec_vxsat == $past(f_vxsat_next[0]));
+      end else if ($past(vec_csr_write && i_csr_address == riscv_pkg::CsrVcsr)) begin
+        p_vxsat_vcsr_write : assert (vec_vxsat == $past(f_vcsr_next[0]));
+      end else begin
+        p_vxsat_stable : assert (vec_vxsat == $past(vec_vxsat));
+      end
+      if ($past(vec_csr_write && i_csr_address == riscv_pkg::CsrVxrm)) begin
+        p_vxrm_write : assert (vec_vxrm == $past(f_vxrm_next[1:0]));
+      end else if ($past(vec_csr_write && i_csr_address == riscv_pkg::CsrVcsr)) begin
+        p_vxrm_vcsr_write : assert (vec_vxrm == $past(f_vcsr_next[2:1]));
+      end else begin
+        p_vxrm_stable : assert (vec_vxrm == $past(vec_vxrm));
+      end
+      if ($past(i_csr_op[1:0] == 2'b00)) begin
+        p_vec_read_only_access :
+        assert ({vec_vstart, vec_vxsat, vec_vxrm, mstatus_vs} == $past(
+            {vec_vstart, vec_vxsat, vec_vxrm, mstatus_vs}
+        ));
+      end
+      if ($past(vec_csr_write)) begin
+        p_vec_write_target :
+        assert ($past(
+            VECTOR && storage_csr_write && (i_csr_address == riscv_pkg::CsrVstart ||
+                i_csr_address == riscv_pkg::CsrVxsat || i_csr_address == riscv_pkg::CsrVxrm ||
+                i_csr_address == riscv_pkg::CsrVcsr)
+        ));
+      end
+
       // A vector CSR write sets VS Dirty; a status CSR write installs VS;
       // nothing else, including a read-only vector CSR access, changes it.
       if ($past(vec_csr_write)) begin
@@ -2642,6 +2714,9 @@ module csr_file #(
               (hpm_sinh == '0) && (hpm_uinh == '0) && (mhpmcounter == '0) && !hpm_lcof_request_q);
       // FS resets to Initial (not Off) so FP runs without OS setup.
       p_reset_fs : assert (mstatus_fs == FsInitial);
+      // VS resets to Off and the vector CSRs to zero (vill aside).
+      p_reset_vs :
+      assert (mstatus_vs == FsOff && vec_vstart == '0 && !vec_vxsat && vec_vxrm == 2'b00);
       p_reset_priv : assert (priv_q == riscv_pkg::PrivM);
       p_reset_fetch_priv : assert (fetch_priv_q == riscv_pkg::PrivM);
       p_reset_sie : assert (!mstatus_sie && !mstatus_spie && !mstatus_spp);
@@ -2664,6 +2739,23 @@ module csr_file #(
       // exported gate signals are exactly FS==Off and VS==Off.
       p_sd_mirrors_fs : assert (mstatus[XLEN-1] == ((mstatus_fs == FsDirty) || vs_dirty));
       p_sstatus_sd : assert (sstatus[XLEN-1] == mstatus[XLEN-1]);
+      // vl and vtype keep their reset values (no instruction writes them).
+      p_vl_reset_value : assert (vec_vl == '0);
+      p_vtype_reset_value : assert (vec_vtype == (VECTOR ? {1'b1, {(XLEN - 1) {1'b0}}} : '0));
+      // The vector read port answers exactly the vector CSR it is asked for.
+      if (VECTOR && i_csr_read_enable) begin
+        p_read_value :
+        assert (vec_read_value ==
+                ((i_csr_address == riscv_pkg::CsrVstart) ? XLEN'(vec_vstart) :
+                 (i_csr_address == riscv_pkg::CsrVxsat) ? XLEN'(vec_vxsat) :
+                 (i_csr_address == riscv_pkg::CsrVxrm) ? XLEN'(vec_vxrm) :
+                 (i_csr_address == riscv_pkg::CsrVcsr) ? XLEN'({vec_vxrm, vec_vxsat}) :
+                 (i_csr_address == riscv_pkg::CsrVl) ? XLEN'(vec_vl) :
+                 (i_csr_address == riscv_pkg::CsrVtype) ? vec_vtype :
+                 (i_csr_address == riscv_pkg::CsrVlenb) ? XLEN'(VLEN / 8) : '0));
+      end else begin
+        p_read_idle : assert (vec_read_value == '0);
+      end
       p_vs_off_export : assert (o_mstatus_vs_off == (mstatus_vs == FsOff));
       p_vs_view :
       assert (sstatus[riscv_pkg::MstatusVsLo+:2] == mstatus_vs &&
@@ -2758,8 +2850,20 @@ module csr_file #(
       cover_fs_off : cover (mstatus_fs == FsOff);
       cover_fs_dirty : cover (mstatus_fs == FsDirty);
       cover_fp_flags : cover (i_fp_flags_valid);
-      cover_vs_dirty : cover (VECTOR && f_past_valid && $past(vec_csr_write) && vs_dirty);
       cover_instret : cover (f_past_valid && instret_counter > 64'd0);
+    end
+  end
+
+  // Vector state covers: VS Dirty from a vector CSR write, and each writable
+  // vector CSR holding a nonzero value.
+  if (VECTOR) begin : gen_formal_vector_covers
+    always @(posedge i_clk) begin
+      if (!i_rst) begin
+        cover_vs_dirty_from_write : cover (f_past_valid && $past(vec_csr_write) && vs_dirty);
+        cover_vstart_set : cover (vec_vstart != '0);
+        cover_vcsr_set : cover (vec_vxsat && vec_vxrm == 2'b11);
+        cover_vs_clean : cover (mstatus_vs == 2'b10);
+      end
     end
   end
 
