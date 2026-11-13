@@ -246,7 +246,9 @@ static void test_vxrm_vxsat(void)
     VT_EQ(VT_CSR_READ(vxrm), 3, "vxrm is two bits");
     VT_CSR_WRITE(vxsat, 3);
     VT_EQ(VT_CSR_READ(vxsat), 1, "vxsat is one bit");
-    /* A saturating add sets vxsat: 0x7f + 0x7f at e8 saturates. */
+    /* A saturating add sets vxsat: 0x70 + 0x70 at e8 saturates. Clear it first, so the
+     * check cannot pass on the 1 left by the write above. */
+    VT_CSR_WRITE(vxsat, 0);
     unsigned long sat;
     __asm__ volatile("vsetivli x0, 1, e8, m1, ta, ma\n\t"
                      "vmv.v.i v1, 0x7\n\t"

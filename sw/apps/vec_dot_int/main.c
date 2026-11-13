@@ -117,7 +117,8 @@ static void test_int(void)
             VT_EQ(dot_i16(a.i16, b.i16, n), w64, "dot_i16");
             uint16_t m16 = 0;
             for (size_t i = 0; i < n; i++)
-                m16 = (uint16_t) (m16 + (uint16_t) ((uint16_t) a.i16[i] * (uint16_t) b.i16[i]));
+                m16 = (uint16_t) (m16 + (uint16_t) ((uint32_t) (uint16_t) a.i16[i] *
+                                                    (uint32_t) (uint16_t) b.i16[i]));
             VT_EQ((uint16_t) dot_i16_vmacc(a.i16, b.i16, n), m16, "dot_i16_vmacc");
 
             /* int32 */
