@@ -112,4 +112,15 @@ package vec_pkg;
     VR_WSUM  = 4'd9
   } red_op_e;
 
+  // AES element-group operations (Zvkned). State is vd, the round key vs2.
+  typedef enum logic [2:0] {
+    VA_EF  = 3'd0,  // vaesef: final encryption round
+    VA_EM  = 3'd1,  // vaesem: middle encryption round
+    VA_DF  = 3'd2,  // vaesdf: final decryption round
+    VA_DM  = 3'd3,  // vaesdm: middle decryption round
+    VA_Z   = 3'd4,  // vaesz: round-zero key addition
+    VA_KF1 = 3'd5,  // vaeskf1: next AES-128 round key
+    VA_KF2 = 3'd6   // vaeskf2: next AES-256 round key
+  } aes_op_e;
+
 endpackage

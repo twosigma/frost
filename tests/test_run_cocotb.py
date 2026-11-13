@@ -2183,6 +2183,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="vec_clmul_lane",
         description="Vector carry-less multiply lane (vclmul, vclmulh) against a Python model",
     ),
+    "vec_aes_group": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_aes_group",
+        hdl_toplevel_module="vec_aes_group",
+        description=(
+            "Vector AES element group: rounds, round zero and both key-schedule steps against "
+            "a Python AES model checked on the FIPS-197 examples"
+        ),
+    ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",
