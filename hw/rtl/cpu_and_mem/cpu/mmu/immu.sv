@@ -559,11 +559,16 @@ module immu #(
   logic [riscv_pkg::PhysAddrBits-1:0] pa0_d;
   logic [PpnBits-1:0] pa1_own_d;
   logic pa1_giga_d, pa1_mega_d;
-  logic resolved_d, f0_d, f0p_d, f1_d, f1p_d, after_ok_d;
-  logic miss0_d, miss1_d;
+  logic resolved_d, f0_d, f0p_d, f1p_d, after_ok_d;
+  logic miss0_d;
   logic resolved1;
-  logic pa1_use_va_d;
+  // The registered next-page verdict is known: the sample matches the live PC
+  // and port 1 resolved it.
+  logic nb_known;
+  assign nb_known = np_sample_matches && res1.resolved;
 
+  // word 1's fault (f1_q), its VA placeholder select (pa1_use_va_q) and the
+  // neighbor miss (miss1_q) are formed below, beside their registers.
   always_comb begin
     pa0_d = res0.fault ? bare_pc : {res0.ppn, i_pc[11:0]};
     // Word 1's page for a crossing window, in parts: the read side joins
@@ -574,32 +579,23 @@ module immu #(
     pa1_mega_d = super_next_ok ? super_next_mega : (np_sample_matches && res1.mega);
     f0_d = res0.fault;
     f0p_d = res0.page;
-    f1_d = res0.fault;
     f1p_d = res0.page;
     after_ok_d = 1'b1;
     miss0_d = !res0.resolved;
-    miss1_d = 1'b0;
     resolved1 = 1'b1;
-    pa1_use_va_d = 1'b0;
 
     if (pc_page_cross) begin
       if (super_next_ok) begin
-        f1_d  = super_next_pma_bad;
         f1p_d = 1'b0;
-      end else if (np_sample_matches && res1.resolved) begin
-        pa1_use_va_d = res1.fault;
-        f1_d = res1.fault;
+      end else if (nb_known) begin
         f1p_d = res1.page;
       end else begin
         // A first-word fault determines the architectural outcome even
         // while the neighbor is missing. Use a fault-marked VA placeholder
         // for that neighbor, so no unvalidated physical read is authorized.
         // Select the fallback directly, before the late first-word verdict.
-        f1_d = res0.fault;
         f1p_d = res0.page;
-        pa1_use_va_d = res0.fault;
         resolved1 = res0.fault;
-        miss1_d = np_sample_matches && res0.resolved && !res0.fault;
       end
     end
     resolved_d = res0.resolved && resolved1;
@@ -628,6 +624,158 @@ module immu #(
   assign pa1_ppn = !key_cross_q ? pa0_q[riscv_pkg::PhysAddrBits-1:12] :
       pa1_use_va_q ? np_va_q[PpnBits-1:0] : pa1_join;
 
+  // ---------------------------------------------------------------------------
+  // Next state of f1_q, pa1_use_va_q and miss1_q. Each takes the first-word
+  // fault (res0.fault), the last verdict the ITLB settles, and the superpage
+  // successor (super_next_ok, and for f1_q its PMA verdict). Everything else
+  // (the capture or hold choice, the flush clear, the crossing, the
+  // next-page verdict and the held value) is formed first, so these three
+  // late terms meet the rest in one final LUT per register. The registers
+  // load the next state on every clock and reset at the flop.
+  //
+  // f1_q and miss1_q clear on a deactivation, an invalidate, a full flush,
+  // or the epoch expiry of a completed refusal; pa1_use_va_q holds instead.
+  // On a capture, a crossing window takes word 1's verdict from the
+  // superpage successor first, then from the known next-page result, and
+  // otherwise from the first word, whose fault stands in for the missing
+  // neighbor. A neighbor still missing behind a clean first word is miss1.
+  // ---------------------------------------------------------------------------
+  logic capture_clear;
+  logic capture_take, capture_hold;
+  assign capture_clear = i_full_flush || (fault_cache_expire && resolved_q && (f0_q || f1_q));
+  assign capture_take  = capture_en && !capture_clear;
+  assign capture_hold  = i_active && !i_tlb_invalidate && !capture_en && !capture_clear;
+
+  // f1: with the successor, its PMA verdict; otherwise res0.fault when
+  // f1_take_fault, else f1_fixed.
+  (* keep = "true" *)logic f1_take_succ;
+  (* keep = "true" *)logic f1_take_fault;
+  (* keep = "true" *)logic f1_fixed;
+  assign f1_take_succ = capture_take && pc_page_cross;
+  assign f1_take_fault = capture_take && !(pc_page_cross && nb_known);
+  assign f1_fixed = (capture_hold && f1_q) || (f1_take_succ && nb_known && res1.fault);
+
+  // pa1_use_va: zero with the successor; otherwise res0.fault when
+  // pa1_take_fault, else pa1_fixed.
+  (* keep = "true" *)logic pa1_take_succ;
+  (* keep = "true" *)logic pa1_take_fault;
+  (* keep = "true" *)logic pa1_fixed;
+  assign pa1_take_succ = capture_en && pc_page_cross;
+  assign pa1_take_fault = pa1_take_succ && !nb_known;
+  assign pa1_fixed = capture_en ? (pa1_take_succ && nb_known && res1.fault) : pa1_use_va_q;
+
+  // miss1: held, or a capture of a crossing whose neighbor is unknown behind
+  // a resolved first word, when that word is clean and has no successor.
+  (* keep = "true" *)logic miss1_hold;
+  (* keep = "true" *)logic miss1_take;
+  assign miss1_hold = capture_hold && miss1_q;
+  assign miss1_take = capture_take && pc_page_cross && np_sample_matches && !res1.resolved &&
+      res0.resolved;
+
+  logic f1_next, pa1_use_va_next, miss1_next;
+`ifdef FROST_XILINX_PRIMS
+  // I0 res0.fault, I1 super_next_ok, I2 super_next_pma_bad, I3 f1_take_succ,
+  // I4 f1_take_fault, I5 f1_fixed: (I3 && I1) ? I2 : (I4 ? I0 : I5).
+  (* dont_touch = "true" *)
+  LUT6 #(
+      .INIT(64'hE2AAF3FFE2AAC000)
+  ) u_f1_next (
+      .I0(res0.fault),
+      .I1(super_next_ok),
+      .I2(super_next_pma_bad),
+      .I3(f1_take_succ),
+      .I4(f1_take_fault),
+      .I5(f1_fixed),
+      .O (f1_next)
+  );
+  // I0 res0.fault, I1 super_next_ok, I2 pa1_take_succ, I3 pa1_take_fault,
+  // I4 pa1_fixed: (I2 && I1) ? 0 : (I3 ? I0 : I4).
+  (* dont_touch = "true" *)
+  LUT5 #(
+      .INIT(32'h2A3F2A00)
+  ) u_pa1_use_va_next (
+      .I0(res0.fault),
+      .I1(super_next_ok),
+      .I2(pa1_take_succ),
+      .I3(pa1_take_fault),
+      .I4(pa1_fixed),
+      .O (pa1_use_va_next)
+  );
+  // I0 res0.fault, I1 super_next_ok, I2 miss1_hold, I3 miss1_take:
+  // I2 || (I3 && !I0 && !I1).
+  (* dont_touch = "true" *)
+  LUT4 #(
+      .INIT(16'hF1F0)
+  ) u_miss1_next (
+      .I0(res0.fault),
+      .I1(super_next_ok),
+      .I2(miss1_hold),
+      .I3(miss1_take),
+      .O (miss1_next)
+  );
+`else
+  assign f1_next = (f1_take_succ && super_next_ok) ? super_next_pma_bad :
+      (f1_take_fault ? res0.fault : f1_fixed);
+  assign pa1_use_va_next = (pa1_take_succ && super_next_ok) ? 1'b0 :
+      (pa1_take_fault ? res0.fault : pa1_fixed);
+  assign miss1_next = miss1_hold || (miss1_take && !res0.fault && !super_next_ok);
+`endif
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f1_q <= 1'b0;
+      pa1_use_va_q <= 1'b0;
+      miss1_q <= 1'b0;
+    end else begin
+      f1_q <= f1_next;
+      pa1_use_va_q <= pa1_use_va_next;
+      miss1_q <= miss1_next;
+    end
+  end
+
+`ifdef IMMU_CAPTURE_NEXT_LOCAL_PROOF
+  // The capture's reference form: word 1's verdicts selected in priority
+  // order, then the register's clear, capture or hold. The next states above
+  // must equal it for every register state and input.
+  logic f_f1_d, f_pa1_use_va_d, f_miss1_d;
+  logic f_f1_next, f_pa1_use_va_next, f_miss1_next;
+  always_comb begin
+    f_f1_d = res0.fault;
+    f_pa1_use_va_d = 1'b0;
+    f_miss1_d = 1'b0;
+    if (pc_page_cross) begin
+      if (super_next_ok) begin
+        f_f1_d = super_next_pma_bad;
+      end else if (np_sample_matches && res1.resolved) begin
+        f_pa1_use_va_d = res1.fault;
+        f_f1_d = res1.fault;
+      end else begin
+        f_f1_d = res0.fault;
+        f_pa1_use_va_d = res0.fault;
+        f_miss1_d = np_sample_matches && res0.resolved && !res0.fault;
+      end
+    end
+    f_pa1_use_va_next = pa1_use_va_q;
+    f_f1_next = f1_q;
+    f_miss1_next = miss1_q;
+    if (!i_active || i_tlb_invalidate) begin
+      f_f1_next = 1'b0;
+      f_miss1_next = 1'b0;
+    end else if (capture_en) begin
+      f_pa1_use_va_next = f_pa1_use_va_d;
+      f_f1_next = f_f1_d;
+      f_miss1_next = f_miss1_d;
+    end
+    if (i_full_flush || (fault_cache_expire && resolved_q && (f0_q || f1_q))) begin
+      f_f1_next = 1'b0;
+      f_miss1_next = 1'b0;
+    end
+    p_f1_next_exact : assert (f1_next == f_f1_next);
+    p_pa1_use_va_next_exact : assert (pa1_use_va_next == f_pa1_use_va_next);
+    p_miss1_next_exact : assert (miss1_next == f_miss1_next);
+  end
+`endif
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       key_valid_q <= 1'b0;
@@ -637,25 +785,20 @@ module immu #(
       np_va_q <= '0;
       resolved_q <= 1'b0;
       miss0_q <= 1'b0;
-      miss1_q <= 1'b0;
       pa0_q <= '0;
       pa1_own_q <= '0;
       pa1_giga_q <= 1'b0;
       pa1_mega_q <= 1'b0;
-      pa1_use_va_q <= 1'b0;
       f0_q <= 1'b0;
       f0p_q <= 1'b0;
-      f1_q <= 1'b0;
       f1p_q <= 1'b0;
       after_ok_q <= 1'b0;
     end else if (!i_active || i_tlb_invalidate) begin
       key_valid_q <= 1'b0;
       resolved_q <= 1'b0;
       miss0_q <= 1'b0;
-      miss1_q <= 1'b0;
       f0_q <= 1'b0;
       f0p_q <= 1'b0;
-      f1_q <= 1'b0;
       f1p_q <= 1'b0;
       after_ok_q <= 1'b0;
     end else if (capture_en) begin
@@ -666,15 +809,12 @@ module immu #(
       np_va_q <= pc_np_va;
       resolved_q <= resolved_d;
       miss0_q <= miss0_d;
-      miss1_q <= miss1_d;
       pa0_q <= pa0_d;
       pa1_own_q <= pa1_own_d;
       pa1_giga_q <= pa1_giga_d;
       pa1_mega_q <= pa1_mega_d;
-      pa1_use_va_q <= pa1_use_va_d;
       f0_q <= f0_d;
       f0p_q <= f0p_d;
-      f1_q <= f1_d;
       f1p_q <= f1p_d;
       after_ok_q <= after_ok_d;
     end
@@ -689,10 +829,8 @@ module immu #(
     if (!i_rst && (i_full_flush || (fault_cache_expire && resolved_q && (f0_q || f1_q)))) begin
       resolved_q <= 1'b0;
       miss0_q <= 1'b0;
-      miss1_q <= 1'b0;
       f0_q <= 1'b0;
       f0p_q <= 1'b0;
-      f1_q <= 1'b0;
       f1p_q <= 1'b0;
     end
   end
