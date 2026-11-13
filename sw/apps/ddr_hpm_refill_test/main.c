@@ -20,11 +20,12 @@
  * and mhpmevent5=21 its prefetch line reads (L2 prefetch misses).
  *
  *   L  Cold L1I loops. Two straight-line bodies in cached DDR span 8 and 24
- *      32-byte lines. After fence.i each run refills its lines plus the same
- *      fetch tail (the fetch provider's next-line prefetch), so the long
- *      body refills exactly 16 lines more than the short one. Running a body
- *      three times after one fence.i refills as many lines as running it
- *      once, and MINH stops the count in M.
+ *      32-byte lines, each followed by eight stub lines that hold a ret.
+ *      After fence.i the stubs run first, so the lines the fetch path reads
+ *      past a body's ret (wrong-path fetch and the fetch provider's
+ *      next-line prefetch) are resident, and a run of the body then refills
+ *      exactly its own lines. Running it three times refills them once, and
+ *      MINH stops the count in M.
  *   D  L2-missing scattered reads: one load in each of 32 untouched 4 KiB
  *      pages reads exactly 32 lines from memory on demand, with no prefetch
  *      (the prefetchers stay within a page and need a stream). Reading the
@@ -36,8 +37,8 @@
  *      mip.LCOFIP and the scountovf bit, and keeps counting past the wrap.
  *
  * The program, its stack and its counter reads stay in low BRAM, so only
- * the bodies and the data regions use the cached tier. A run count in
- * .ddr_data, which a reset keeps, gives each run its own untouched lines.
+ * the bodies and the data regions use the cached tier. A run count in DDR,
+ * which a reset keeps, gives each run its own untouched lines.
  * CSRs are accessed by number.
  */
 
@@ -72,36 +73,37 @@
 #define SCATTER_PAGES 32ul
 #define STREAM_LINES 128ul /* two 4 KiB pages of 64-byte lines */
 
+#define STUB_LINES 8ul
+
 /* Straight-line bodies, 64-byte aligned, without compressed instructions: a
- * body of N 32-byte lines holds 8N - 1 addi and a ret. A 128-byte gap of
- * zeros follows each one, so both bodies see the same fetch tail. */
+ * body of N 32-byte lines holds 8N - 1 addi and a ret. STUB_LINES lines
+ * follow it, each a ret and seven nops. */
+#define REFILL_BODY(name, lines)                                                                   \
+    ".balign 64\n"                                                                                 \
+    ".globl " #name "\n" #name ":\n"                                                               \
+    ".rept 8 * " #lines " - 1\n"                                                                   \
+    "addi a0, a0, 1\n"                                                                             \
+    ".endr\n"                                                                                      \
+    "ret\n"                                                                                        \
+    ".rept 8\n"                                                                                    \
+    "ret\n"                                                                                        \
+    ".rept 7\n"                                                                                    \
+    "nop\n"                                                                                        \
+    ".endr\n"                                                                                      \
+    ".endr\n"
 __asm__(".pushsection .ddr_text, \"ax\", @progbits\n"
         ".option push\n"
-        ".option norvc\n"
-        ".balign 64\n"
-        ".globl hpm_body_short\n"
-        "hpm_body_short:\n"
-        ".rept 8 * 8 - 1\n"
-        "addi a0, a0, 1\n"
-        ".endr\n"
-        "ret\n"
-        ".fill 32, 4, 0\n"
-        ".balign 64\n"
-        ".globl hpm_body_long\n"
-        "hpm_body_long:\n"
-        ".rept 8 * 24 - 1\n"
-        "addi a0, a0, 1\n"
-        ".endr\n"
-        "ret\n"
-        ".fill 32, 4, 0\n"
-        ".option pop\n"
-        ".popsection\n");
+        ".option norvc\n" REFILL_BODY(hpm_body_short, 8)
+            REFILL_BODY(hpm_body_long, 24) ".option pop\n"
+                                           ".popsection\n");
 
 extern unsigned long hpm_body_short(unsigned long);
 extern unsigned long hpm_body_long(unsigned long);
 typedef unsigned long (*body_fn)(unsigned long);
 
-static volatile unsigned long run_count __attribute__((section(".ddr_data"))) = 0;
+/* The run count: a DDR word a reset keeps, read and written through its address
+ * (the medany code model cannot reach DDR symbols from low BRAM text). */
+#define RUN_COUNT (*(volatile unsigned long *) (CACHED_BASE + 0xF00000))
 static uintptr_t run_offset;
 
 static int ok = 1;
@@ -130,11 +132,16 @@ static void fence_i(void)
     __asm__ volatile("fence\n fence.i" ::: "memory");
 }
 
-/* L1I refills over `runs` runs of a body after fence.i. */
-static unsigned long l1i_refills(body_fn body, int runs, unsigned long *sum)
+/* L1I refills over `runs` runs of a body of `lines` lines after fence.i, with
+ * its stub lines run first. */
+static unsigned long l1i_refills(body_fn body, unsigned long lines, int runs, unsigned long *sum)
 {
     fence_i();
-    settle(64);
+    for (unsigned long i = 0; i < STUB_LINES; i++) {
+        volatile body_fn stub = (body_fn) ((uintptr_t) body + (lines + i) * 32);
+        *sum += stub(*sum);
+    }
+    settle(256);
     unsigned long before = csr_read_num(0xB03);
     for (int r = 0; r < runs; r++)
         *sum += body(*sum);
@@ -163,9 +170,9 @@ int main(void)
     volatile body_fn short_body = hpm_body_short;
     volatile body_fn long_body = hpm_body_long;
     unsigned long sum = 0;
-    unsigned long run = run_count;
+    unsigned long run = RUN_COUNT;
 
-    run_count = run + 1;
+    RUN_COUNT = run + 1;
     run_offset = (uintptr_t) (run % 4) * 0x400000;
     uart_printf("run %lu: HPM refill events L1I=%lu L2-demand=%lu L2-prefetch=%lu\r\n",
                 run,
@@ -181,20 +188,17 @@ int main(void)
     expect_eq("selector-5", csr_read_num(0x325), SEL_L2_PREFETCH);
 
     /* L: cold L1I loops. A first pass brings both bodies into the L2. */
-    (void) l1i_refills(short_body, 1, &sum);
-    (void) l1i_refills(long_body, 1, &sum);
-    unsigned long r_short = l1i_refills(short_body, 1, &sum);
-    unsigned long r_long = l1i_refills(long_body, 1, &sum);
-    unsigned long r_long3 = l1i_refills(long_body, 3, &sum);
+    (void) l1i_refills(short_body, SHORT_LINES, 1, &sum);
+    (void) l1i_refills(long_body, LONG_LINES, 1, &sum);
+    unsigned long r_short = l1i_refills(short_body, SHORT_LINES, 1, &sum);
+    unsigned long r_long = l1i_refills(long_body, LONG_LINES, 1, &sum);
+    unsigned long r_long3 = l1i_refills(long_body, LONG_LINES, 3, &sum);
     uart_printf("L1I refills: short=%lu long=%lu long_x3=%lu\r\n", r_short, r_long, r_long3);
-    report("L short-covers-its-lines",
-           r_short,
-           SHORT_LINES,
-           r_short >= SHORT_LINES && r_short <= SHORT_LINES + 2);
-    expect_eq("L long-minus-short", r_long - r_short, LONG_LINES - SHORT_LINES);
-    expect_eq("L warm-reruns-refill-nothing", r_long3, r_long);
+    expect_eq("L short-refills-its-lines", r_short, SHORT_LINES);
+    expect_eq("L long-refills-its-lines", r_long, LONG_LINES);
+    expect_eq("L warm-reruns-refill-nothing", r_long3, LONG_LINES);
     csr_write_num(0x323, MINH | SEL_L1I_REFILL);
-    expect_eq("L minh-stops-m", l1i_refills(long_body, 1, &sum), 0);
+    expect_eq("L minh-stops-m", l1i_refills(long_body, LONG_LINES, 1, &sum), 0);
     csr_write_num(0x323, SEL_L1I_REFILL);
 
     /* D: one demand read per untouched page, then none for the same lines. */
