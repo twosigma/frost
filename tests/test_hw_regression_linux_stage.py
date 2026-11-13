@@ -2098,6 +2098,8 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "tomasulo_test",
         "uart_echo",
         "umode_test",
+        # The vector test program runs where the build has the vector unit.
+        *(["vec_vsetvl_test"] if board == "x3" else []),
         "vm_test",
         "coremark_pro",
         "linux_boot",

@@ -419,6 +419,16 @@ module instr_decoder (
         o_instr_op = riscv_pkg::FNMADD_D;
       else o_illegal = 1'b1;
 
+      // Vector configuration (OP-V, funct3 111): vsetvli (bit 31 clear),
+      // vsetivli (bits 31:30 set), vsetvl (bits 31:25 = 1000000). Every other
+      // vector encoding is illegal so far. With VS Off, ID marks these illegal.
+      riscv_pkg::OPC_OP_V:
+      if (i_instr.funct3 != 3'b111) o_illegal = 1'b1;
+      else if (!i_instr.funct7[6]) o_instr_op = riscv_pkg::VSETVLI;
+      else if (i_instr.funct7[6:5] == 2'b11) o_instr_op = riscv_pkg::VSETIVLI;
+      else if (i_instr.funct7 == 7'b1000000) o_instr_op = riscv_pkg::VSETVL;
+      else o_illegal = 1'b1;
+
       // FP arithmetic operations (R-type format)
       // funct7 determines the operation, funct3 is rounding mode (or sub-operation)
       riscv_pkg::OPC_OP_FP:

@@ -469,6 +469,9 @@ module x3_frost #(
       .PERF_COUNTERS(PERF_COUNTERS),
       // Misaligned loads and stores to cached DDR in hardware.
       .MISALIGNED_HW(1'b1),
+      // The vector unit, at a vector length of 256 bits.
+      .VECTOR(1'b1),
+      .VLEN(256),
       // The transceiver's TX and RX clocks are independent, so the NIC has no
       // raw loopback; its self-test loopback is the transceiver's PMA
       // loopback (PHY_CTRL PMA_LOOPBACK).

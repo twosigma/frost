@@ -40,6 +40,9 @@ module xilinx_frost_subsystem #(
     // Register stages on every channel between the hart and the cluster
     // memory (cpu_top MEMORY_LINK_STAGES); 0 connects them directly.
     parameter int unsigned MEMORY_LINK_STAGES = 0,
+    // The vector unit and its vector length in bits (frost VECTOR, VLEN)
+    parameter bit VECTOR = 1'b0,
+    parameter int unsigned VLEN = 256,
     // Optional boot-hang UART classifier. Leave off for interactive testing.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
     // Profiling counters (see frost.sv); the board top passes its generic.
@@ -348,6 +351,8 @@ module xilinx_frost_subsystem #(
       .L2_NUM_MSHR(L2_NUM_MSHR),
       .L2_PREFETCH_INFLIGHT(L2_PREFETCH_INFLIGHT),
       .MEMORY_LINK_STAGES(MEMORY_LINK_STAGES),
+      .VECTOR(VECTOR),
+      .VLEN(VLEN),
       .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE),
       .PERF_COUNTERS(PERF_COUNTERS),
       .MISALIGNED_HW(MISALIGNED_HW),

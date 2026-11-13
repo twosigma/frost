@@ -872,6 +872,35 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=512"),),
         include_in_pytest=False,
     ),
+    "vec_vsetvl_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_vsetvl_test",
+        nic_mac_clocks=False,
+        description=(
+            "vsetvli, vsetivli and vsetvl with the vector unit at VLEN 256: rd, vl, vtype and "
+            "vstart against a reference model, keep forms, VS Dirty and the VS-Off trap"
+        ),
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=256"),
+    ),
+    "vec_vsetvl_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_vsetvl_test",
+        nic_mac_clocks=False,
+        description="vsetvl* with the vector unit at VLEN 128; CLI-only",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=128"),
+        include_in_pytest=False,
+    ),
+    "vec_vsetvl_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_vsetvl_test",
+        nic_mac_clocks=False,
+        description="vsetvl* with the vector unit at VLEN 512; CLI-only",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=512"),
+        include_in_pytest=False,
+    ),
     "cbo_zero_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
