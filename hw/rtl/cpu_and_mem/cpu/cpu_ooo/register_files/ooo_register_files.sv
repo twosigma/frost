@@ -32,7 +32,11 @@ module ooo_register_files #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     // Use same-edge copies of packet source fields for bypass compares, for
     // fanout. i_bypass_src_addr must equal the read addresses.
-    parameter bit SEPARATE_BYPASS_ADDR = 1'b0
+    parameter bit SEPARATE_BYPASS_ADDR = 1'b0,
+    // One more read port on each file, for a reader outside dispatch (the
+    // misaligned-access engine). It has no write bypass: the reader reads only
+    // after every write it depends on has landed.
+    parameter bit EXTRA_READ_PORT = 1'b0
 ) (
     input logic i_clk,
 
@@ -81,7 +85,12 @@ module ooo_register_files #(
     output logic [riscv_pkg::FpWidth-1:0] o_fp_rf_dispatch_rs3_data,
     output logic [riscv_pkg::FpWidth-1:0] o_fp_rf_dispatch_rs1_data_2,
     output logic [riscv_pkg::FpWidth-1:0] o_fp_rf_dispatch_rs2_data_2,
-    output logic [riscv_pkg::FpWidth-1:0] o_fp_rf_dispatch_rs3_data_2
+    output logic [riscv_pkg::FpWidth-1:0] o_fp_rf_dispatch_rs3_data_2,
+
+    // Extra read port (EXTRA_READ_PORT): both files at one address.
+    input  logic [                   4:0] i_extra_read_addr,
+    output logic [              XLEN-1:0] o_extra_int_read_data,
+    output logic [riscv_pkg::FpWidth-1:0] o_extra_fp_read_data
 );
 
   localparam int unsigned FpW = riscv_pkg::FpWidth;
@@ -340,5 +349,41 @@ module ooo_register_files #(
   assign o_fp_rf_dispatch_rs1_data_2 = fp_rf_dispatch_rs1_data_2;
   assign o_fp_rf_dispatch_rs2_data_2 = fp_rf_dispatch_rs2_data_2;
   assign o_fp_rf_dispatch_rs3_data_2 = fp_rf_dispatch_rs3_data_2;
+
+  // Copies of both files for the extra read port, written like the files
+  // above.
+  if (EXTRA_READ_PORT) begin : gen_extra_read
+    generic_regfile #(
+        .DATA_WIDTH(XLEN),
+        .NUM_READ_PORTS(1),
+        .NUM_WRITE_PORTS(IntRfWrPorts),
+        .HARDWIRE_ZERO(1)
+    ) extra_int_regfile_inst (
+        .i_clk,
+        .i_write_enable(int_rf_write_enable),
+        .i_write_addr(int_rf_write_addr),
+        .i_write_data(int_rf_write_data),
+        .i_stall(1'b0),
+        .i_read_addr(i_extra_read_addr),
+        .o_read_data(o_extra_int_read_data)
+    );
+    generic_regfile #(
+        .DATA_WIDTH(FpW),
+        .NUM_READ_PORTS(1),
+        .NUM_WRITE_PORTS(FpRfWrPorts),
+        .HARDWIRE_ZERO(0)
+    ) extra_fp_regfile_inst (
+        .i_clk,
+        .i_write_enable(fp_rf_write_enable),
+        .i_write_addr(fp_rf_write_addr),
+        .i_write_data(fp_rf_write_data),
+        .i_stall(1'b0),
+        .i_read_addr(i_extra_read_addr),
+        .o_read_data(o_extra_fp_read_data)
+    );
+  end else begin : gen_no_extra_read
+    assign o_extra_int_read_data = '0;
+    assign o_extra_fp_read_data  = '0;
+  end
 
 endmodule : ooo_register_files

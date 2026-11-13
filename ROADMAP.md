@@ -18,9 +18,11 @@ pieces come before the second hart:
   take precise faults. The unit is a build option, and a configuration
   without it is unchanged. The vector state (`mstatus.VS` and the vector
   CSRs) is in place behind the `VECTOR` build parameter.
-- Misaligned loads and stores in hardware. FROST raises an
-  address-misaligned exception on them today and leaves the access to
-  firmware.
+- Misaligned loads and stores in hardware. The CPU's misaligned-access
+  engine performs them in cached DDR behind the `MISALIGNED_HW` build
+  parameter, which is off by default; the builds and the test configuration
+  turn it on next. Until then FROST raises an address-misaligned exception
+  and leaves the access to firmware.
 
 ## SMP
 

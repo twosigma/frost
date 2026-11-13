@@ -128,6 +128,14 @@ module trap_unit #(
     input logic [XLEN-1:0] i_exception_cause,
     input logic [XLEN-1:0] i_exception_tval,
     input logic [XLEN-1:0] i_exception_pc,
+    // Misaligned-access assist: the exception is a plain load or store's
+    // address-misaligned exception that the misaligned-access engine performs.
+    // Its take writes no CSR, like a memory-order replay, redirects to the
+    // instruction's fall-through PC (i_exception_next_pc) and raises
+    // o_assist_start. Latched with the exception.
+    input logic i_exception_assist = 1'b0,
+    input logic [XLEN-1:0] i_exception_next_pc = '0,
+    output logic o_assist_start,
     input logic [XLEN-1:0] i_interrupt_pc,
 
     // xRET trap-return requests (mutually exclusive; SRET follows the exact
@@ -409,6 +417,8 @@ module trap_unit #(
   // timing: the take steering then needs no full-width cause compare.
   logic            exception_replay_q;
   logic            exception_ebreak_q;
+  logic            exception_assist_q;
+  logic [XLEN-1:0] exception_next_pc_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -421,12 +431,14 @@ module trap_unit #(
       // corrupts MPP and mcause for a U-mode trap.
       exception_pending <= 1'b0;
     end else if (i_exception_valid) begin
-      exception_pending  <= 1'b1;
-      exception_cause_q  <= i_exception_cause;
-      exception_tval_q   <= i_exception_tval;
-      exception_pc_q     <= i_exception_pc;
-      exception_replay_q <= (i_exception_cause == riscv_pkg::ExcMemReplay);
-      exception_ebreak_q <= (i_exception_cause == riscv_pkg::ExcBreakpoint);
+      exception_pending   <= 1'b1;
+      exception_cause_q   <= i_exception_cause;
+      exception_tval_q    <= i_exception_tval;
+      exception_pc_q      <= i_exception_pc;
+      exception_replay_q  <= (i_exception_cause == riscv_pkg::ExcMemReplay);
+      exception_ebreak_q  <= (i_exception_cause == riscv_pkg::ExcBreakpoint);
+      exception_assist_q  <= i_exception_assist;
+      exception_next_pc_q <= i_exception_next_pc;
     end
   end
 
@@ -629,9 +641,14 @@ module trap_unit #(
   // not a park entry).
   logic exception_replay;
   assign exception_replay = exception_pending && exception_replay_q;
-  assign exception_in_debug = exception_pending && i_debug_mode && !exception_replay;
+  // Misaligned-access assist: like a replay, no CSR or privilege effect in
+  // any mode, but the redirect goes past the instruction.
+  logic exception_assist;
+  assign exception_assist = exception_pending && exception_assist_q;
+  assign exception_in_debug = exception_pending && i_debug_mode && !exception_replay &&
+      !exception_assist;
   assign exception_to_s = (i_priv != riscv_pkg::PrivM) && i_medeleg[exception_cause_q[3:0]] &&
-      !exception_ebreak_to_d && !exception_replay;
+      !exception_ebreak_to_d && !exception_replay && !exception_assist;
 
   logic trap_requested, take_trap;
   assign trap_requested =
@@ -654,7 +671,8 @@ module trap_unit #(
   assign exception_take = take_trap && !d_int_take_ready && !m_int_take_ready && !s_int_take_ready;
   assign o_trap_to_d = (take_trap_d && !i_debug_mode) || (exception_take && exception_ebreak_to_d);
   assign o_trap_no_csr = (take_trap_d && i_debug_mode) ||
-      (exception_take && (exception_in_debug || exception_replay));
+      (exception_take && (exception_in_debug || exception_replay || exception_assist));
+  assign o_assist_start = exception_take && exception_assist;
   // csr_file's entry enables, built from the take's terms rather than from
   // take_trap and the steering above, so the late take-ready terms feed them
   // directly. Each side saves on its own interrupt take unless a higher class
@@ -665,7 +683,7 @@ module trap_unit #(
   logic exception_saves_m, exception_saves_s, exception_enters_d;
   assign take_gate = !i_pipeline_stall && i_sq_committed_empty;
   assign exception_saves_m = exception_pending && !exception_to_s && !exception_ebreak_to_d &&
-      !exception_in_debug && !exception_replay;
+      !exception_in_debug && !exception_replay && !exception_assist;
   assign exception_saves_s = exception_pending && exception_to_s && !exception_in_debug;
   assign exception_enters_d = exception_ebreak_to_d && !exception_replay;
   assign o_trap_save_m = take_gate && !d_int_take_ready &&
@@ -746,6 +764,9 @@ module trap_unit #(
       // wins arbitration over a pending replay enters its vector (the
       // load re-executes after the handler, its PC is the epc).
       o_trap_entry_target = exception_pc_q;
+    end else if (!interrupt_wins && exception_assist) begin
+      // The engine performs the instruction; fetch resumes past it.
+      o_trap_entry_target = exception_next_pc_q;
     end else if ((exception_ebreak_to_d || exception_in_debug) && !interrupt_wins) begin
       // Likewise only when the exception is taken: an interrupt that wins
       // over a debug-routed ebreak enters its vector, and the ebreak

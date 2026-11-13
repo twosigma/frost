@@ -104,6 +104,9 @@ module platform_top #(
     parameter bit VECTOR = 1'b0,
     parameter int unsigned VLEN = 256,
     parameter bit VECTOR_ADVERTISE = 1'b0,
+    // Misaligned plain loads and stores to cached DDR run on the hart's
+    // misaligned-access engine instead of trapping (cpu_ooo MISALIGNED_HW).
+    parameter bit MISALIGNED_HW = 1'b0,
     // SoC clock frequency; sets the NIC's default TICK (cycles per
     // microsecond).
     parameter int unsigned CLK_FREQ_HZ = 322265625,
@@ -378,6 +381,7 @@ module platform_top #(
       .VECTOR(VECTOR),
       .VLEN(VLEN),
       .VECTOR_ADVERTISE(VECTOR_ADVERTISE),
+      .MISALIGNED_HW(MISALIGNED_HW),
       .MEMORY_LINK_STAGES(MEMORY_LINK_STAGES),
       .ENABLE_COHERENCE(ENABLE_CACHED_TIER != 0)
   ) cpu (

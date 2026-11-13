@@ -166,6 +166,20 @@ module reorder_buffer #(
     // cpu_ooo: an interrupt must not flush an AMO whose memory write may
     // already be in flight (see trap_unit.i_amo_at_head).
     output logic o_head_is_amo,
+    // The head memory instruction's fields, read while it waits with an
+    // exception: funct3 (size and sign), instruction bits [24:20] (rs2 of a
+    // store), destination, store and FP flags, LR/SC/AMO, and its
+    // fall-through PC. Dispatch writes csr_op and csr_addr for every
+    // instruction, so the funct3 and rs2 come from those fields.
+    output logic [2:0] o_head_mem_funct3,
+    output logic [4:0] o_head_mem_rs2,
+    output logic [riscv_pkg::RegAddrWidth-1:0] o_head_dest_reg,
+    output logic o_head_dest_rf,
+    output logic o_head_dest_valid,
+    output logic o_head_mem_store,
+    output logic o_head_mem_fp_store,
+    output logic o_head_mem_atomic,
+    output logic [riscv_pkg::XLEN-1:0] o_head_fallthrough_pc,
     // Register-file bypass enables, qualified externally by the corresponding
     // raw commit fire. They are unspecified when that fire is low.
     output logic o_head_bypass_int_we_early,
@@ -2482,6 +2496,15 @@ module reorder_buffer #(
   // AMO interrupt shield source: the one-hot FF read of the head's is_amo
   // flag, valid-qualified and registered in cpu_ooo before use.
   assign o_head_is_amo = head_f_is_amo;
+  assign o_head_mem_funct3 = head_csr_op;
+  assign o_head_mem_rs2 = head_csr_addr[4:0];
+  assign o_head_dest_reg = head_dest_reg;
+  assign o_head_dest_rf = head_dest_rf;
+  assign o_head_dest_valid = head_dest_valid;
+  assign o_head_mem_store = head_is_store;
+  assign o_head_mem_fp_store = head_is_fp_store;
+  assign o_head_mem_atomic = head_is_amo || head_is_lr || head_is_sc;
+  assign o_head_fallthrough_pc = head_fallthrough_pc;
   // A replay flag is only set on an entry without a stored exception (and
   // an exceptional completion clears it), so it selects the cause outright.
   assign o_trap_cause = head_replay ?
