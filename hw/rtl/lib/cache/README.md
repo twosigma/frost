@@ -242,7 +242,8 @@ credit and sequence bits reset with the tile, so no message survives reset.
 - Credit (`KIND = 1`): the sender's ready is a credit count, and the message
   waits in a receiver buffer of `CREDITS` entries (default `2*STAGES+1`, which
   sustains one message per cycle). The sender's handshake happens when the
-  link takes the message, before the receiver sees it. D and C use it, as do
+  link takes the message, before the receiver sees it; the credits appear
+  on the cycle after reset, so the link is not ready in reset. D and C use it, as do
   the coherent DMA request and the home's memory request. P uses one credit:
   the probe waits in the last stage register, and the L1D serves one probe at
   a time.

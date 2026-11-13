@@ -23,7 +23,9 @@
 //     the pipe into a receiver-side buffer of CREDITS entries whose head is
 //     the receiver's view (the last pipe register when the buffer is empty,
 //     every arrival being written to the buffer as well);
-//     each pop returns a credit through STAGES registers. With CREDITS = 1 the
+//     each pop returns a credit through STAGES registers. The credits appear
+//     on the cycle after reset, so the sender sees no ready in reset. With
+//     CREDITS = 1 the
 //     packet waits in the last pipe register itself, so the view is a plain
 //     register. The sender's handshake happens when the link takes the packet.
 //   KIND 2 (mirror): the sender keeps presenting its offer until its own
@@ -89,7 +91,7 @@ module coherence_link #(
         p_link_always_taken : assert (i_ready);
 `endif
   end else if (KIND == 1 && CREDITS == 1) begin : gen_credit_one
-    logic credit_q, push, pop, hold;
+    logic credit_q, reset_q, push, pop, hold;
     logic [STAGES-1:0] valid_q, return_q;
     logic [STAGES*WIDTH-1:0] payload_q;
     assign o_ready = credit_q;
@@ -100,7 +102,11 @@ module coherence_link #(
     assign hold = o_valid && !i_ready;
     always_ff @(posedge i_clk) begin
       return_q[0] <= !i_rst && pop;
-      if (i_rst) credit_q <= 1'b1;
+      // The credit appears on the cycle after reset, so the link is not
+      // ready while it is in reset.
+      reset_q <= i_rst;
+      if (i_rst) credit_q <= 1'b0;
+      else if (reset_q) credit_q <= 1'b1;
       else if (push) credit_q <= 1'b0;
       else if (return_q[STAGES-1]) credit_q <= 1'b1;
     end
@@ -130,7 +136,7 @@ module coherence_link #(
     // One packet at most is in the link: a held credit, a packet in the pipe
     // or the view, or a pop returning.
     always_ff @(posedge i_clk)
-      if (sim_reset_seen_q && !i_rst)
+      if (sim_reset_seen_q && !i_rst && !reset_q)
         p_link_one_credit :
         assert (int'(credit_q) + $countones(valid_q) + $countones(return_q) == 1);
 `endif
@@ -142,7 +148,7 @@ module coherence_link #(
     logic [ STAGES*WIDTH-1:0] payload_q;
     logic [CREDITS*WIDTH-1:0] buffer_q;
     logic [IndexBits-1:0] head_q, tail_q;
-    logic push, arrive, pop, store, unload;
+    logic push, arrive, pop, store, unload, reset_q;
     logic [WIDTH-1:0] head_payload;
     always_comb begin
       head_payload = '0;
@@ -167,13 +173,17 @@ module coherence_link #(
       for (int index = 0; index < int'(CREDITS); index++)
       if (store && tail_q == IndexBits'(index))
         buffer_q[index*WIDTH+:WIDTH] <= payload_q[(STAGES-1)*WIDTH+:WIDTH];
+      // The credits appear on the cycle after reset, so the link is not ready
+      // while it is in reset.
+      reset_q <= i_rst;
       if (i_rst) begin
-        credits_q <= CountBits'(CREDITS);
+        credits_q <= '0;
         head_q <= '0;
         tail_q <= '0;
         count_q <= '0;
       end else begin
-        credits_q <= credits_q - CountBits'(push) + CountBits'(return_q[STAGES-1]);
+        credits_q <= reset_q ? CountBits'(CREDITS) :
+            credits_q - CountBits'(push) + CountBits'(return_q[STAGES-1]);
         if (store) tail_q <= tail_q == IndexBits'(CREDITS - 1) ? '0 : tail_q + 1'b1;
         if (unload) head_q <= head_q == IndexBits'(CREDITS - 1) ? '0 : head_q + 1'b1;
         count_q <= count_q + CountBits'(store) - CountBits'(unload);
@@ -190,7 +200,7 @@ module coherence_link #(
     // Credits held, packets in flight, buffered and credits returning add up
     // to CREDITS, so no store meets a full buffer.
     always_ff @(posedge i_clk)
-      if (sim_reset_seen_q && !i_rst) begin
+      if (sim_reset_seen_q && !i_rst && !reset_q) begin
         p_link_credit_sum :
         assert (int'(credits_q) + $countones(
             valid_q

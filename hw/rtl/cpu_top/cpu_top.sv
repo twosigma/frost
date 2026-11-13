@@ -566,10 +566,10 @@ module cpu_top #(
     wire dma_admissible = ENABLE_COHERENCE && (ENABLE_CACHED_TIER != 0) && riscv_pkg::pma_cached_ok(
         riscv_pkg::XLEN'(i_coherent_req_addr)
     ) && i_coherent_req_addr[4:0] == 0;
-    // As in the ingress, the port is not ready in reset: the DMA requester
-    // can leave its own reset first.
-    assign dma_link_valid = i_coherent_req_valid && dma_admissible && !i_rst;
-    assign o_coherent_req_ready = dma_link_ready && dma_admissible && !i_rst;
+    // The link has no credit in reset, so, as the ingress, the port is not
+    // ready then: the DMA requester can leave its own reset first.
+    assign dma_link_valid = i_coherent_req_valid && dma_admissible;
+    assign o_coherent_req_ready = dma_link_ready && dma_admissible;
   end
   coherence_link #(
       .WIDTH (1 + riscv_pkg::PhysAddrBits + 256 + 32 + 4 + 1),
