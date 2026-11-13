@@ -1248,6 +1248,8 @@ async def absorbed_ack_during_idle_selection_keeps_puts_moving(dut: Any) -> None
     # A probe absorbs the unselected slot 1.
     second = (0, 1, 0, (b.get("wb_addr") >> b.p) & ((1 << b.p) - 1))
     await snapshot(b, second[3])
+    reply = unpack(b.get("o_r"), (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1))
+    assert reply[9] and reply[10] == 1 and reply[11] == 0
     # W0 is accepted on one edge. On the next, the idle selector picks slot 1
     # from its pre-edge valid while slot 1's absorbed acknowledgement cancels it.
     await b.set(i_w_ready=1)

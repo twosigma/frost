@@ -1765,9 +1765,9 @@ module coherence_l1d #(
 `endif
 `endif
 `ifdef FROST_L1D_PUT_SELECT_CHECK
-  // The W selection points at a slot without a put for at most one cycle: the
-  // cycle after that slot's cancellation on the edge that selected it. The
-  // formal check runs in its own task so the other tasks' selections keep
+  // The W selection points at a slot that is not presenting a put for at
+  // most one cycle, as after that slot's cancellation on the edge that
+  // selected it. The formal check runs in its own task so the other tasks' selections keep
   // their assertion counts; it starts from any state without a stale sample.
   logic wb_stale_q = 1'b0;
   always_ff @(posedge i_clk) wb_stale_q <= !i_rst && wb_selected_q && !wb_valid[wb_select_q];
@@ -2558,8 +2558,8 @@ module coherence_l1d #(
       if (o_sc_result_valid && i_sc_result_ready) o_sc_result_valid <= 1'b0;
       // The idle selector samples wb_valid before the edge, so it can pick a
       // slot that an absorbed acknowledgement cancels on the same edge. A
-      // selected slot that holds no put is released on the next edge, so the
-      // other slot's put is presented.
+      // selected slot that is not presenting a put is released on the next
+      // edge, so the other slot's put is presented.
       if (!wb_selected_q) begin
         if (|wb_valid) begin
           wb_selected_q <= 1'b1;
