@@ -357,3 +357,4 @@ CI's TestRIG jobs replays all of them before its random run.
 | [`lrsc_jump.S`](traces/lrsc_jump.S) | A JAL, JALR, or taken branch between LR and SC keeps the reservation |
 | [`lrsc_older_store.S`](traces/lrsc_older_store.S) | An older store to the other word of the reserved doubleword drains before LR and permits the following SC |
 | [`pte_nonleaf_dau.S`](traces/pte_nonleaf_dau.S) | A non-leaf PTE with D, A, or U set raises a page fault |
+| [`ssnpm_pmm.S`](traces/ssnpm_pmm.S) | `senvcfg.PMM` WARL (01 keeps the old value); with MPRV and MPP = U, tagged loads, stores and AMOs under Bare (PMLEN 16 and 7) and Sv39, masked faults with the transformed `mtval`, and no masking with MXR set or PMM = 00 |

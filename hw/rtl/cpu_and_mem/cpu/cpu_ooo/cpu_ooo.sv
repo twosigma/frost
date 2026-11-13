@@ -805,6 +805,7 @@ module cpu_ooo #(
   // Registered translation state from csr_file, and the data MMU's walker
   // port between the wrapper and the ptw below.
   logic csr_translation_active, csr_mmu_sum, csr_mmu_mxr, csr_mmu_eff_priv_u;
+  riscv_pkg::pm_mode_t csr_mmu_pm_mode;
   logic [43:0] csr_satp_root_ppn;
   logic csr_menvcfg_pbmte;
   logic tlb_invalidate;
@@ -2531,6 +2532,7 @@ module cpu_ooo #(
       .i_mmu_sum(csr_mmu_sum),
       .i_mmu_mxr(csr_mmu_mxr),
       .i_mmu_eff_priv_u(csr_mmu_eff_priv_u),
+      .i_mmu_pm_mode(csr_mmu_pm_mode),
       .i_csr_translation_flush_req(csr_translation_flush_req),
       .o_tlb_invalidate(tlb_invalidate),
       .i_csr_tlb_flush_all_req(csr_tlb_flush_all_req),
@@ -3837,15 +3839,20 @@ module cpu_ooo #(
       // address of the faulting portion of the instruction (the PC, or PC + 2
       // for a page-straddling instruction whose second halfword faulted),
       // parked in the value slot by the INT ALU shim.
-      // Misaligned and PMA access faults on data, and data
-      // page faults: tval = the faulting data virtual
-      // address, parked in the entry's value slot by the LQ bypass or the
-      // store fault strobe.
       riscv_pkg::ExcInstrAccessFault[$bits(
           rob_trap_cause
       )-1:0], riscv_pkg::ExcInstrPageFault[$bits(
           rob_trap_cause
-      )-1:0], riscv_pkg::ExcLoadAddrMisalign[$bits(
+      )-1:0]:
+      csr_trap_value = rob_trap_value;
+      // Misaligned and PMA access faults on data, and data
+      // page faults: tval = the faulting data virtual
+      // address, parked in the entry's value slot by the LQ bypass or the
+      // store fault strobe. Under Ssnpm pointer masking it is the
+      // transformed address (riscv_pkg "Pointer masking"); the mode and
+      // translation state are those the access used: both change only at
+      // serializing points, and none lies between an access and its trap.
+      riscv_pkg::ExcLoadAddrMisalign[$bits(
           rob_trap_cause
       )-1:0], riscv_pkg::ExcStoreAddrMisalign[$bits(
           rob_trap_cause
@@ -3858,7 +3865,7 @@ module cpu_ooo #(
       )-1:0], riscv_pkg::ExcStorePageFault[$bits(
           rob_trap_cause
       )-1:0]:
-      csr_trap_value = rob_trap_value;
+      csr_trap_value = riscv_pkg::pm_tval(rob_trap_value, csr_mmu_pm_mode, csr_translation_active);
       default: csr_trap_value = '0;
     endcase
   end
@@ -4065,6 +4072,7 @@ module cpu_ooo #(
       .o_mmu_sum(csr_mmu_sum),
       .o_mmu_mxr(csr_mmu_mxr),
       .o_mmu_eff_priv_u(csr_mmu_eff_priv_u),
+      .o_mmu_pm_mode(csr_mmu_pm_mode),
       .o_fetch_translation_active(csr_fetch_translation_active),
       .o_fetch_priv_u(csr_fetch_priv_u),
       .o_satp_root_ppn(csr_satp_root_ppn),
