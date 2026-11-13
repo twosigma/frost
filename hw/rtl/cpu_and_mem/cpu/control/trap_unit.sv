@@ -431,13 +431,17 @@ module trap_unit #(
       // corrupts MPP and mcause for a U-mode trap.
       exception_pending <= 1'b0;
     end else if (i_exception_valid) begin
-      exception_pending   <= 1'b1;
-      exception_cause_q   <= i_exception_cause;
-      exception_tval_q    <= i_exception_tval;
-      exception_pc_q      <= i_exception_pc;
-      exception_replay_q  <= (i_exception_cause == riscv_pkg::ExcMemReplay);
-      exception_ebreak_q  <= (i_exception_cause == riscv_pkg::ExcBreakpoint);
-      exception_assist_q  <= i_exception_assist;
+      exception_pending <= 1'b1;
+      exception_cause_q <= i_exception_cause;
+      exception_tval_q <= i_exception_tval;
+      exception_pc_q <= i_exception_pc;
+      exception_replay_q <= (i_exception_cause == riscv_pkg::ExcMemReplay);
+      exception_ebreak_q <= (i_exception_cause == riscv_pkg::ExcBreakpoint);
+      // An assist is only ever a misaligned load or store, so it never
+      // coincides with a replay or an ebreak.
+      exception_assist_q  <= i_exception_assist &&
+          ((i_exception_cause == riscv_pkg::ExcLoadAddrMisalign) ||
+           (i_exception_cause == riscv_pkg::ExcStoreAddrMisalign));
       exception_next_pc_q <= i_exception_next_pc;
     end
   end
