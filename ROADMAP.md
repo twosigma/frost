@@ -3,6 +3,24 @@
 [Prof. John Goodacre](https://github.com/goodacre-manchester) is helping to
 set the direction of this roadmap. The sections are in priority order.
 
+## RVA23 profile and the vector extension
+
+FROST is working toward the RVA23U64 user profile with the RVA22S64
+supervisor profile, which does not require the hypervisor extension. The
+remaining scalar and supervisor extensions are in progress. Two larger pieces
+come before the second hart:
+
+- A vector unit. The profile requires V with Zvfhmin, Zvbb, and Zvkt; vector
+  cryptography follows, and Zvbc and Zvfh are candidates. The vector length
+  is a build parameter from 128 to 512 bits; 512 bits is one L2 line. Vector
+  loads and stores go through the coherent memory system, so they are
+  ordered with the scalar load and store queues and the caches, and they
+  take precise faults. The unit is a build option, and a configuration
+  without it is unchanged.
+- Misaligned loads and stores in hardware. FROST raises an
+  address-misaligned exception on them today and leaves the access to
+  firmware.
+
 ## SMP
 
 Two harts on the X3, sharing one L2, with RVWMO litmus tests and Debian
