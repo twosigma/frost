@@ -49,6 +49,11 @@ module cpu_ooo #(
     // mperf* CSRs read zero. Architectural HPM3..10 consume their events
     // independently of this profiling option.
     parameter int unsigned PERF_COUNTERS = 0,
+    // Vector unit: VECTOR=1 adds the vector state, VLEN is the vector
+    // register width (128, 256 or 512), and VECTOR_ADVERTISE sets misa.V.
+    parameter bit VECTOR = 1'b0,
+    parameter int unsigned VLEN = 256,
+    parameter bit VECTOR_ADVERTISE = 1'b0,
     // The walker's line port carries the L1s' 32-byte lines.
     localparam int unsigned WalkLineBytes = 32
 ) (
@@ -1035,6 +1040,7 @@ module cpu_ooo #(
   // mstatus.FS == Off from csr_file. ID decodes every F/D instruction as
   // illegal while it is set; the ROB's allocation check reads it too.
   logic csr_mstatus_fs_off;
+  logic csr_mstatus_vs_off;
   // Register FS-Off for decode timing. It differs from CSR state only when
   // FS enters or leaves Off, whose full flush discards that cycle's decode.
   logic id_mstatus_fs_off_q;
@@ -2215,6 +2221,7 @@ module cpu_ooo #(
       // alloc_valid cleared, so the ROB value RAMs can share one link bank.
       .ROB_SHARED_LINK_BANK(1'b1),
       .PERF_COUNTERS(PERF_COUNTERS),
+      .VECTOR(VECTOR),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
@@ -2297,6 +2304,7 @@ module cpu_ooo #(
       .i_mcounteren(csr_mcounteren),
       // mstatus.FS == Off, sampled for FP legality at ROB allocation
       .i_mstatus_fs_off(csr_mstatus_fs_off),
+      .i_mstatus_vs_off(csr_mstatus_vs_off),
 
       .o_cdb_grant(cdb_grant),
       .o_cdb(cdb_out),
@@ -3834,7 +3842,10 @@ module cpu_ooo #(
       .XLEN(XLEN),
       .COMMIT_EXCLUDES_CONTROL_TAKE(1'b1),
       .UsePerfCsrHalf(1'b1),
-      .PERF_COUNTERS(PERF_COUNTERS)
+      .PERF_COUNTERS(PERF_COUNTERS),
+      .VECTOR(VECTOR),
+      .VLEN(VLEN),
+      .VECTOR_ADVERTISE(VECTOR_ADVERTISE)
   ) csr_file_inst (
       .i_clk,
       .i_rst,
@@ -3930,6 +3941,7 @@ module cpu_ooo #(
       .o_fetch_priv_u(csr_fetch_priv_u),
       .o_satp_root_ppn(csr_satp_root_ppn),
       .o_mstatus_fs_off(csr_mstatus_fs_off),
+      .o_mstatus_vs_off(csr_mstatus_vs_off),
       .o_cbo_zero_illegal(csr_cbo_zero_illegal),
       .o_debug_mode(csr_debug_mode),
       .o_dcsr_step(csr_dcsr_step),

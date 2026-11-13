@@ -42,6 +42,7 @@ SBY_TASK_TIMEOUT_S = 2400
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "bmc"): 5400,
     ("csr_file", "bmc_perf_off"): 5400,
+    ("csr_file", "vector_bmc"): 5400,
     ("reorder_buffer", "bmc"): 5400,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
@@ -946,8 +947,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "csr_file.sby",
-        "CSR state and access behavior with profiling counters on or off",
-        tasks=("bmc", "cover", "bmc_perf_off"),
+        "CSR state and access behavior with profiling counters on or off, and "
+        "with the vector state",
+        tasks=("bmc", "cover", "bmc_perf_off", "vector_bmc", "vector_cover"),
     ),
     FormalTarget(
         "tlb.sby",
@@ -2507,6 +2509,8 @@ SBY_TASKS = [
         "Cover checking of INT station features at eight-entry capacity",
     ),
     ("bmc_perf_off", "Bounded model checking with the profiling counters left out"),
+    ("vector_bmc", "Bounded model checking with the vector state present"),
+    ("vector_cover", "Cover search with the vector state present"),
     (
         "prove_harts3",
         "Unbounded proof with three harts, 191 interrupt identities, and no APLIC "

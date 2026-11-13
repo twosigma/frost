@@ -99,6 +99,11 @@ module platform_top #(
     parameter int unsigned POWER_ON_RESET_ENABLE = 1,
     // CPU profiling counters (see cpu_ooo); disabled in production.
     parameter int unsigned PERF_COUNTERS = 0,
+    // Vector unit: VECTOR=1 adds the vector state, VLEN is the vector
+    // register width (128, 256 or 512), and VECTOR_ADVERTISE sets misa.V.
+    parameter bit VECTOR = 1'b0,
+    parameter int unsigned VLEN = 256,
+    parameter bit VECTOR_ADVERTISE = 1'b0,
     // SoC clock frequency; sets the NIC's default TICK (cycles per
     // microsecond).
     parameter int unsigned CLK_FREQ_HZ = 322265625,
@@ -370,6 +375,9 @@ module platform_top #(
       .L2_LINE_BYTES(L2_LINE_BYTES),
       .SIM_FAST_MAINT(SIM_FAST_MAINT),
       .PERF_COUNTERS(PERF_COUNTERS),
+      .VECTOR(VECTOR),
+      .VLEN(VLEN),
+      .VECTOR_ADVERTISE(VECTOR_ADVERTISE),
       .MEMORY_LINK_STAGES(MEMORY_LINK_STAGES),
       .ENABLE_COHERENCE(ENABLE_CACHED_TIER != 0)
   ) cpu (

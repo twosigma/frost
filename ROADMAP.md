@@ -16,7 +16,8 @@ come before the second hart:
   loads and stores go through the coherent memory system, so they are
   ordered with the scalar load and store queues and the caches, and they
   take precise faults. The unit is a build option, and a configuration
-  without it is unchanged.
+  without it is unchanged. The vector state (`mstatus.VS` and the vector
+  CSRs) is in place behind the `VECTOR` build parameter.
 - Misaligned loads and stores in hardware. FROST raises an
   address-misaligned exception on them today and leaves the access to
   firmware.
