@@ -394,7 +394,7 @@ walker's port into the cache hierarchy.
 `misaligned/ma_engine.sv` performs one misaligned plain load or store in
 cacheable DDR as one or two 32-byte sector transactions. `cpu_ooo`
 instantiates it when the `MISALIGNED_HW` parameter is set (default off; the
-X3 build and the simulation default set it), which needs the cached tier;
+X3 and VCU118 builds and the simulation default set it), which needs the cached tier;
 elaboration rejects it without one.
 Without the engine, every misaligned access raises the address-misaligned
 exception.

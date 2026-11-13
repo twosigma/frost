@@ -746,7 +746,7 @@ SIM_FAST_MAINT ?= 1
 #   MEMORY_LINK_STAGES=1 ./scripts/frost.py cocotb ddr_bench
 MEMORY_LINK_STAGES ?= 0
 # Misaligned loads and stores to cached DDR in hardware (frost MISALIGNED_HW),
-# as the X3 build has them. The engine needs the cached tier, so the default
+# as the board builds have them. The engine needs the cached tier, so the default
 # follows ENABLE_CACHED_TIER.
 MISALIGNED_HW ?= $(if $(filter 0,$(ENABLE_CACHED_TIER)),0,1)
 ifeq ($(TOPLEVEL),frost)

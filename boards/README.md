@@ -5,9 +5,8 @@ BRAM, 16 KiB L1I and 128 KiB L1D. X3 has a 2 MiB URAM L2 and exposes 1 GiB
 of DDR4; VCU118 has a 4 MiB URAM L2 and exposes 2 GiB of DDR4. Both L2s are
 four-way with 64-byte lines. X3 has 10GBASE-R Ethernet; VCU118 has a 1 Gb/s
 RJ-45 interface and 10GBASE-R on QSFP1 lane 0. Both NIC interfaces use
-coherent DMA. X3 performs plain misaligned loads and stores to cached DDR in
-hardware (`MISALIGNED_HW`); VCU118 raises the address-misaligned exception on
-them. VCU118 also has SPI flash boot into OpenSBI and U-Boot. See the
+coherent DMA. Both perform plain misaligned loads and stores to cached DDR in
+hardware (`MISALIGNED_HW`). VCU118 also has SPI flash boot into OpenSBI and U-Boot. See the
 [FPGA guide](../fpga/README.md) for X3 usage
 and the [VCU118 guide](vcu118/README.md) for its board integration and usage.
 

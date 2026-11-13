@@ -22,10 +22,10 @@ pieces come before the second hart:
   vector instructions yet.
 - Misaligned loads and stores in hardware. The CPU's misaligned-access
   engine performs plain misaligned loads and stores to cached DDR in the X3
-  build and in simulation (`MISALIGNED_HW`); elsewhere they raise the
-  address-misaligned exception. TestRIG does not check the engine yet: its
-  build leaves the engine out until its RVFI-DII recorder reports the
-  engine's retirements and writes.
+  and VCU118 builds and in simulation (`MISALIGNED_HW`); elsewhere they
+  raise the address-misaligned exception. TestRIG does not check the engine
+  yet: its build leaves the engine out until its RVFI-DII recorder reports
+  the engine's retirements and writes.
 
 ## SMP
 

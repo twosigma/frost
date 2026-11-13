@@ -107,12 +107,7 @@ VALID_APPS = [
     "vm_test",
 ]
 
-# misaligned_test needs the misaligned-access engine (MISALIGNED_HW), which
-# only the X3 build has.
-BOARD_SPECIFIC_APPS = {
-    "bootrom": frozenset({"vcu118"}),
-    "misaligned_test": frozenset({"x3"}),
-}
+BOARD_SPECIFIC_APPS = {"bootrom": frozenset({"vcu118"})}
 
 # Clock frequency in Hz; CoreMark iterations target about 10 seconds.
 BOARD_CONFIG = {

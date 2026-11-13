@@ -272,6 +272,9 @@ module vcu118_frost #(
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
       .L2_CACHE_BYTES    (L2_CACHE_BYTES),
       .PERF_COUNTERS     (PERF_COUNTERS),
+      // Misaligned loads and stores to cached DDR in hardware; the engine
+      // needs the cached tier.
+      .MISALIGNED_HW     (ENABLE_CACHED_TIER != 0),
       .RAW_LOOPBACK      (0),
       .ENABLE_1G_ETH     (1)
   ) u_frost_subsystem (
