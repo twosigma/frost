@@ -1,0 +1,40 @@
+[tasks]
+line_link0_bmc
+line_link1_bmc
+line_link1_four_bmc
+line_link1_cover
+
+[options]
+~line_link1_cover: mode bmc
+line_link0_bmc: depth 16
+line_link1_bmc: depth 14
+line_link1_four_bmc: depth 12
+~line_link1_cover: timeout 4200
+line_link1_cover: mode cover
+line_link1_cover: depth 24
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv coherence_pkg.sv
+read -formal -sv -D COHERENCE_ARBITER_COMPOSED coherence_d_arbiter.sv
+read -formal -sv coherence_dma_ingress.sv
+read -formal -sv coherence_link.sv
+read -formal -sv line_client_link.sv
+line_link0_bmc: chparam -set STAGES 0 line_client_link
+line_link1_bmc: chparam -set STAGES 1 line_client_link
+line_link1_four_bmc: chparam -set STAGES 1 -set IDS 4 line_client_link
+# The client's own simultaneous-handshake cover needs three live slots.
+line_link1_cover: chparam -set STAGES 1 -set IDS 4 line_client_link
+prep -top line_client_link
+memory_map
+opt
+
+[files]
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_dma_ingress.sv
+../hw/rtl/lib/cache/coherence_d_arbiter.sv
+../hw/rtl/lib/cache/coherence_link.sv
+line_client_link.sv

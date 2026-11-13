@@ -3,6 +3,8 @@ coh_dma_ingress_prove
 coh_dma_ingress_cover
 coh_dma_ingress_soc_prove soc
 coh_dma_ingress_soc_cover soc
+coh_line_client_prove line
+coh_line_client_cover line
 
 [options]
 coh_dma_ingress_prove: mode prove
@@ -15,6 +17,10 @@ coh_dma_ingress_soc_cover: mode cover
 coh_dma_ingress_soc_cover: depth 48
 coh_dma_ingress_soc_prove: timeout 900
 coh_dma_ingress_soc_cover: timeout 600
+coh_line_client_prove: mode prove
+coh_line_client_prove: depth 6
+coh_line_client_cover: mode cover
+coh_line_client_cover: depth 16
 ~soc: timeout 180
 
 [engines]
@@ -26,6 +32,10 @@ read -formal -sv -D COHERENCE_ARBITER_COMPOSED coherence_d_arbiter.sv
 ~coh_dma_ingress_soc_cover: read -formal -sv coherence_dma_ingress.sv
 coh_dma_ingress_soc_cover: read -formal -sv -D COHERENCE_DMA_SOC_COVER coherence_dma_ingress.sv
 soc: chparam -set SLOTS 8 coherence_dma_ingress
+# The simultaneous response, request, demand and release cover needs three
+# live slots, so the line client's cover uses four.
+coh_line_client_prove: chparam -set SOURCE 0 -set SLOTS 2 coherence_dma_ingress
+coh_line_client_cover: chparam -set SOURCE 0 -set SLOTS 4 coherence_dma_ingress
 coh_dma_ingress_soc_cover: chformal -assert -remove
 prep -top coherence_dma_ingress
 memory_map
