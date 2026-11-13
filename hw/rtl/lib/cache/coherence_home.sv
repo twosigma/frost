@@ -209,7 +209,7 @@ module coherence_home #(
   logic [RESULTS-1:0] engine_r_ready;
   logic [RESULTS-1:0] engine_update;
   logic [RESULTS-1:0] engine_result, engine_result_ready, engine_fatal;
-  logic [RESULTS-1:0][ADDR_WIDTH-1:0] engine_addr;
+  logic [RESULTS-1:0][ADDR_WIDTH-1:0] engine_addr, engine_lookup_addr;
   logic [RESULTS-1:0][5:0] engine_tid;
   logic [RESULTS-1:0][3:0] engine_opcode;
   logic [RESULTS-1:0] engine_maintenance, engine_counted_q;
@@ -221,6 +221,8 @@ module coherence_home #(
   logic [RESULTS-1:0][LINE_BYTES-1:0] engine_update_mask;
   logic [RESULTS-1:0][8*LINE_BYTES-1:0] engine_update_data;
   logic [Clients-1:0] tag_valid, tag_ready, read_valid, read_ready;
+  // The tag arbiter's held selection.
+  logic [Clients-1:0] tag_selected;
   logic [Clients-1:0] update_valid, update_ready, probe_valid, probe_ready;
   // The update arbiter's selected client, whose acceptance waits only on the
   // array's readiness.
@@ -577,6 +579,7 @@ module coherence_home #(
         .o_idle(engine_idle[engine]),
         .o_lookup_valid(engine_lookup[engine]),
         .i_lookup_ready(tag_ready[engine]),
+        .o_lookup_addr(engine_lookup_addr[engine]),
         .o_addr(engine_addr[engine]),
         .o_tid(engine_tid[engine]),
         .o_opcode(engine_opcode[engine]),
@@ -637,7 +640,7 @@ module coherence_home #(
       end
     end
     assign tag_valid[engine] = engine_lookup[engine];
-    assign tag_payload[engine] = {TokenBits'(engine), engine_addr[engine]};
+    assign tag_payload[engine] = {TokenBits'(engine), engine_lookup_addr[engine]};
     assign read_payload[engine] = {TokenBits'(engine), engine_way[engine], engine_addr[engine]};
     assign update_valid[engine] = engine_update[engine];
     assign update_payload[engine] = {
@@ -680,7 +683,7 @@ module coherence_home #(
       .o_ready(tag_ready),
       .i_payload(tag_payload),
       .o_valid(tag_request_valid),
-      .o_selected(),
+      .o_selected(tag_selected),
       .i_ready(tag_request_ready && run),
 `ifdef COHERENCE_HOME_CONTROL
       .i_service_stop(!run),
@@ -1010,6 +1013,34 @@ module coherence_home #(
       (array_state == coherence_pkg::Invalid || wb_two_free_q));
   assign fill_pre = decision_from_engine && !array_hit && array_available && fill_free_any &&
       state_allows_fill && prefetch_fill_ok;
+`ifndef SYNTHESIS
+  // An engine whose offer the tag arbiter holds is in Lookup with its lookup
+  // unsent (the control invariant, checked in simulation too).
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst)
+      for (int engine = 0; engine < RESULTS; engine++)
+        if (tag_selected[engine]) assert (!engine_idle[engine] && (engine_lookup[engine] || !run));
+`endif
+`ifdef COHERENCE_HOME_DISPATCH_COVER
+  // A dispatch-cycle offer that loses the tag arbiter to another client is
+  // offered again from Lookup and wins while another client's lookup waits.
+  logic [RESULTS-1:0] f_dispatch_q, f_lost_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_dispatch_q <= '0;
+      f_lost_q <= '0;
+    end else begin
+      for (int engine = 0; engine < RESULTS; engine++) begin
+        f_dispatch_q[engine] <= engine_idle[engine] && tag_valid[engine];
+        if (f_dispatch_q[engine] && !tag_selected[engine] && |tag_selected)
+          f_lost_q[engine] <= 1'b1;
+        if (tag_valid[engine] && tag_ready[engine]) f_lost_q[engine] <= 1'b0;
+        cover (tag_valid[engine] && tag_ready[engine] && f_lost_q[engine] &&
+            |(tag_valid & ~(Clients'(1) << engine)));
+      end
+    end
+  end
+`endif
   // The registered phase flags and the one-hot response token match their
   // encodings outside reset. Every formal task but the local seat proof
   // checks this, including those read with SYNTHESIS defined, which makes the
@@ -2226,9 +2257,14 @@ module coherence_home #(
     if (!i_rst && !ULTRA) assert (f_spec_wait_valid_q == '0);
   end
   // The prefetch flags of the lookup belong to its owner from the tag port's
-  // acceptance through the decision.
+  // acceptance through the decision. An engine whose offer the tag arbiter
+  // holds is in Lookup with its lookup not yet sent: a dispatch-cycle offer
+  // is held from the cycle the engine enters Lookup.
   always_ff @(posedge i_clk)
     if (!i_rst) begin
+      for (int engine = 0; engine < RESULTS; engine++)
+      if (tag_selected[engine])
+        assert (!engine_idle[engine] && !f_tag_owner[engine] && (engine_lookup[engine] || !run));
       for (int engine = 0; engine < RESULTS; engine++)
       if (f_tag_owner[engine])
         assert (lookup_prefetch_q == engine_prefetch_q[engine] &&

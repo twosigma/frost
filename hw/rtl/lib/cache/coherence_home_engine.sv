@@ -31,6 +31,8 @@ module coherence_home_engine #(
     output logic o_idle,
     output logic o_lookup_valid,
     input logic i_lookup_ready,
+    // The lookup's address: the work's on its dispatch cycle, then o_addr.
+    output logic [ADDR_WIDTH-1:0] o_lookup_addr,
     output logic [ADDR_WIDTH-1:0] o_addr,
     output logic [5:0] o_tid,
     output logic [3:0] o_opcode,
@@ -174,7 +176,12 @@ module coherence_home_engine #(
   assign o_read_owner   = (phase_q == Service || phase_q == Fatal) && read_sent_q && !read_done_q;
   assign o_update_owner = phase_q == UpdateWait;
 `endif
-  assign o_lookup_valid = run && phase_q == Lookup && !lookup_sent_q;
+  // A dispatched request offers its lookup on its work's cycle. A selecting
+  // arbiter holds the offer from its next cycle, when the engine is in
+  // Lookup with the same address.
+  wire dispatch_lookup = phase_q == Free && i_work_valid && !i_work_error;
+  assign o_lookup_valid = run && ((phase_q == Lookup && !lookup_sent_q) || dispatch_lookup);
+  assign o_lookup_addr = phase_q == Free ? work_in.addr : request_q.addr;
   assign o_addr = request_q.addr;
   assign o_tid = tid_q;
   assign o_opcode = request_q.opcode;

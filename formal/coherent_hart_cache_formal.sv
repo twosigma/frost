@@ -630,6 +630,7 @@ module coherent_hart_cache_formal #(
       .o_idle(engine_idle),
       .o_lookup_valid(lookup),
       .i_lookup_ready(permit_lookup),
+      .o_lookup_addr(),
       .o_addr(address),
       .o_tid(engine_tid),
       .o_opcode(),

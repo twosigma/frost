@@ -433,6 +433,7 @@ FORMAL_TARGETS = [
             "coh_home_victim_cover",
             "coh_home_error_cover",
             "coh_home_prefetch_cover",
+            "coh_home_dispatch_cover",
         ),
     ),
     FormalTarget(
@@ -2207,6 +2208,10 @@ SBY_TASKS = [
         "Prefetch fills that install, gain a seat or fail; reserve and no-fill decisions.",
     ),
     ("coh_home_fill_cover", "Fill installation, forward and waiter wake reachability."),
+    (
+        "coh_home_dispatch_cover",
+        "A dispatch-cycle lookup offer that loses the tag arbiter and wins from Lookup.",
+    ),
     ("coh_home_array_prove", "Independent L2 ports preserve watched bytes."),
     *[
         (
