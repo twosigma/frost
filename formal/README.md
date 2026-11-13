@@ -66,8 +66,8 @@ the listed L1D store-data BMCs keep depth 40.
 | `coherence_store_home` | `bmc_rows` | 2,100 / 35 |
 | `coherence_store_home` | `bmc_conflict` | 2,400 / 40 |
 | `coherence_store_home` | `bmc_pressure` | 2,700 / 45 |
-| `coherence_store_home` | `link_bmc_siblings` | 3,300 / 55 |
-| `coherence_store_home` | `link_bmc_pressure` | 3,600 / 60 |
+| `coherence_store_home` | `link_bmc_siblings` | 7,200 / 120 |
+| `coherence_store_home` | `link_bmc_pressure` | 9,000 / 150 |
 
 CI assigns the CSR profiling-on, CSR profiling-off and reorder-buffer tasks
 to separate jobs with 120-minute limits. These jobs also run selected

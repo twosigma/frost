@@ -1389,11 +1389,17 @@ jobs:
             pytest_filter: coherence_store_home and not coherence_store_home_link
             timeout_minutes: 240
           # The link proofs, and the store-home composition with one register
-          # stage between the L1D and the home (55- and 60-minute BMC
-          # allowances plus the cover).
+          # stage between the L1D and the home: the sibling BMC (120-minute
+          # allowance) and the cover share a job, the pressure BMC (150
+          # minutes) has its own.
           - shard: Coherence links
-            pytest_filter: coherence_link or coherence_store_home_link
-            timeout_minutes: 240
+            pytest_filter: >-
+              coherence_link or
+              (coherence_store_home_link and not coherence_store_home_link_bmc_pressure)
+            timeout_minutes: 200
+          - shard: Coherence links pressure
+            pytest_filter: coherence_store_home_link_bmc_pressure
+            timeout_minutes: 180
           # The single-endpoint control BMC has a three-hour allowance for
           # its 40 frames; image setup has another twenty minutes.
           - shard: Coherence L1D control

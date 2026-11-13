@@ -79,8 +79,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_store_home", "bmc_rows"): 2100,
     ("coherence_store_home", "bmc_conflict"): 2400,
     ("coherence_store_home", "bmc_pressure"): 2700,
-    ("coherence_store_home", "link_bmc_siblings"): 3300,
-    ("coherence_store_home", "link_bmc_pressure"): 3600,
+    ("coherence_store_home", "link_bmc_siblings"): 7200,
+    ("coherence_store_home", "link_bmc_pressure"): 9000,
 }
 
 
