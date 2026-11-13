@@ -97,4 +97,19 @@ package vec_pkg;
     VK_ID    = 4'd14   // vid.v: element index
   } mask_op_e;
 
+  // Reduction unit operations: vred* over SEW elements, and the widening sums
+  // vwredsumu/vwredsum into a 2*SEW accumulator.
+  typedef enum logic [3:0] {
+    VR_SUM   = 4'd0,
+    VR_AND   = 4'd1,
+    VR_OR    = 4'd2,
+    VR_XOR   = 4'd3,
+    VR_MINU  = 4'd4,
+    VR_MIN   = 4'd5,
+    VR_MAXU  = 4'd6,
+    VR_MAX   = 4'd7,
+    VR_WSUMU = 4'd8,
+    VR_WSUM  = 4'd9
+  } red_op_e;
+
 endpackage

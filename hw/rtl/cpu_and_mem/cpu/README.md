@@ -525,6 +525,11 @@ logical operations, `vcpop.m`, `vfirst.m`, `vmsbf.m`, `vmsif.m`, `vmsof.m`,
 `viota.m` and `vid.v` as a series of one-cycle steps, 64 mask bits or one
 64-bit word of elements each, keeping the running count, the first-bit flag and
 the element index from one step of an instruction to the next.
+`vec_red_unit` runs the integer reductions and the widening sums the same way,
+one 64-bit word of elements per step: inactive elements count as the
+operation's identity, elements are extended to 64 bits so one operation
+serves every element width, and a three-level tree reduces each word before it
+meets the running value.
 
 ## Subtle cases
 

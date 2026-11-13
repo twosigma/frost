@@ -2158,6 +2158,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "viota and vid over multi-step instructions against a Python model"
         ),
     ),
+    "vec_red_unit": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_red_unit",
+        hdl_toplevel_module="vec_red_unit",
+        description=(
+            "Vector reduction unit: sums, logical reductions, minimum, maximum and widening "
+            "sums over multi-step reductions against a Python model"
+        ),
+    ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",
