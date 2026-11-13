@@ -108,11 +108,10 @@ VALID_APPS = [
     "vm_test",
 ]
 
-# The vector test programs need the vector unit: vec_arith_test runs on both
-# boards' builds (which have it), vec_vsetvl_test so far on the X3's.
+# The vector test programs need the vector unit, which the X3 build has.
 BOARD_SPECIFIC_APPS = {
     "bootrom": frozenset({"vcu118"}),
-    "vec_arith_test": frozenset({"x3", "vcu118"}),
+    "vec_arith_test": frozenset({"x3"}),
     "vec_vsetvl_test": frozenset({"x3"}),
 }
 
