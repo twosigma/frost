@@ -292,6 +292,14 @@ can be debugged and where each one first stops.
 | `fpu_test/` | Subnormals, fused multiply-add, rounding, and conversions |
 | `freertos_demo/` | FreeRTOS V11.3.2 tasks passing data through a queue and sharing the UART under a mutex, while worker tasks increment one counter with `amoadd.w` and the 1 ms tick time-slices them; a tick inside a critical section must defer its task switch |
 | `vec_state_test/` | Vector state: with `VEC_VLEN` set, `mstatus.VS` reset to Off, vector CSR accesses illegal while it is Off, `vlenb`, `vl` and `vtype` reset values, `vstart` width, `vxrm`/`vxsat`/`vcsr` aliasing, VS Dirty and SD on writes but not on reads, the `sstatus.VS` view, and illegal writes to `vl`, `vtype` and `vlenb`; with `VEC_VLEN=0`, a core without the vector unit |
+| `vec_common/` | Shared by the vector bring-up programs below: the check and trap-recording helpers in `vec_test.h` (UART output on FROST, HTIF console on Spike with `-DVT_SPIKE`), and the Spike start-up, linker script and makefile in `spike/` |
+| `vec_smoke/` | `vsetvli`, `vsetivli` and `vsetvl` for every SEW and LMUL, reserved `vtype` setting `vill`, `vstart`, `vxrm`, `vxsat` and `vcsr`, `mstatus.VS` states, and read-only vector CSRs trapping |
+| `vec_ldst/` | Unit-stride, mask, whole-register, strided, indexed and segment loads and stores, fault-only-first, masked forms, and precise faults reporting `vstart` and `mtval` |
+| `vec_string/` | Vector `memcpy`, `memmove`, `memset`, `memcmp`, `strlen`, `strchr` and `strcpy` for lengths 0 to 300, including strings that end at the last mapped byte; `-DVT_QUICK` steps lengths by 7 for simulation |
+| `vec_dot_int/` | int8, uint8, mixed-sign, int16, int32 and int64 dot products and per-lane multiply-accumulate with tail-undisturbed policy |
+| `vec_dot_fp/` | float32 and float64 dot products bit-exact against a scalar model, and float16 with Zvfh or, with `-DVT_NO_ZVFH`, through conversions only |
+| `vec_crypto/` | AES-128 and AES-256 key schedule, encryption and decryption, AES-GCM, and a SHA-256 block, against published answers and a scalar implementation |
+| `vec_zvbb/` | Zvbb and Zvbc: `vandn`, rotates, bit and byte reversal, count leading and trailing zeros, population count, `vwsll`, and carry-less multiply |
 | `fs_off_test/` | F/D instructions with `mstatus.FS` Off: illegal-instruction ahead of access and misaligned faults, no device read by a trapping FP load, and `mstatus.FS` writes, through `mstatus` or `sstatus`, that apply from the next instruction |
 | `hello_world/` | Prints a greeting and the cycle-count delta once a second; the program the bitstream boots |
 | `instret_test/` | `minstret` counts NOPs, `mret`, `fence.i`, `sfence.vma`, a timer-ended `wfi`, and timer takes across a device load; 96 WFI deadlines and 48 device-load deadlines at four padding phases cover AXI latency, with each take's count equal to the instructions before `mepc` |
@@ -337,7 +345,7 @@ can be debugged and where each one first stops.
 | `ras_stress_test/` | Return-address-stack stress: calls mixed with branches, data-dependent calls, and function pointers |
 | `ras_test/` | Return-address stack: deep nesting, overflow and underflow, coroutine swaps, compressed returns, and calls at halfword offsets |
 | `restore_window_stress/` | Timer interrupts swept across 800 Linux-style M-mode exception returns; none may be taken between `csrci` and `mret`. Simulation allows 1.5M cycles for cold DDR and restore latency |
-| `riscv_tests/` | Upstream riscv-tests ISA suites, built per test with `TEST_SRC`, and benchmarks, built with `Makefile.bench` |
+| `riscv_tests/` | Upstream riscv-tests ISA suites, built per test with `TEST_SRC`, and benchmarks, built with `Makefile.bench`; also builds the generated riscv-vector-tests for `tests/test_riscv_vector_tests.py --rtl` |
 | `riscv_torture/` | Committed riscv-torture random tests compared with Spike register signatures; built per test with `TEST_SRC` |
 | `rv64_amo_test/` | Doubleword AMOs, LR.D/SC.D, and word AMOs on a dword cell, with full 64-bit value checks |
 | `rv64_smoke/` | The smallest RV64I program: W-form operations, 6-bit shift amounts, and 64-bit loads and stores |

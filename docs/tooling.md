@@ -39,7 +39,9 @@ The Linux boot emulator is QEMU 11.1.2.
 
 The extension build uses Node.js 26.12.1 and npm 12.2.1. TestRIG uses the
 Sail RISC-V 0.16 reference model. QuickCheckVEngine builds with GHC 9.10.3
-and cabal-install 3.18.2.0 on Ubuntu 26.04.
+and cabal-install 3.18.2.0 on Ubuntu 26.04. The riscv-vector-tests generator
+(`tests/test_riscv_vector_tests.py`) builds with Go 1.24.4 in its own stage;
+the image keeps the generator, its merger and `pspike`, not the Go toolchain.
 
 Vivado runs on the host and is validated with 2025.2. Native Python scripts
 need Python 3.12 or later. The VS Code extension needs VS Code 1.106 or
@@ -122,6 +124,14 @@ the language lockfiles consistent. Some constraints that are easy to break:
   it must report. The image build fails when a base-image change or an
   archive update brings another release; update the ARG and the README row,
   then run `debug_openocd_test`.
+- riscv-vector-tests builds in its own stage with the Go release in
+  `GO_VERSION`, whose archive checksum is `GO_SHA256`; `go.sum` in the suite
+  pins its Go modules, and `RISCV_VECTOR_TESTS_COMMIT` pins the suite and,
+  through its submodule entry, the riscv-test-env it uses. `pspike` is built in
+  the final image against its Spike, so a Spike update rebuilds it. The suite's
+  Go code needs a C compiler for its TestFloat cases, which the build stage
+  installs. After an update, run
+  `./scripts/frost.py run python3 tests/test_riscv_vector_tests.py --pattern '^vadd\.vv$'`.
 - QuickCheckVEngine builds in its own stage with Ubuntu's GHC, which must
   report `GHC_VERSION`; `QCVENGINE_HACKAGE_INDEX_STATE` fixes its Haskell
   dependencies. A Sail release can change the configuration schema or its

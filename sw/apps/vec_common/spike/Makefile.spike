@@ -1,0 +1,23 @@
+# Build one bring-up program for the Spike reference run:
+#   make -f ../vec_common/spike/Makefile.spike VLEN=256
+# from inside the program's directory. Output: $(BUILD)/sw_vlen$(VLEN).elf
+# (BUILD defaults to build). Every .S file in the directory is linked in, except
+# sw.S, the disassembly an ordinary FROST build of the program leaves there.
+VLEN ?= 128
+BUILD ?= build
+EXTRA_SRC ?= $(filter-out sw.S,$(wildcard *.S))
+RISCV_PREFIX ?= riscv64-linux-
+CC := $(RISCV_PREFIX)gcc
+COMMON := ../vec_common
+EXTS ?= zicsr_zifencei_zfh_zvfh_zvfhmin_zvbb_zvbc_zvkt_zvkg_zvkned_zvknhb_zvksed_zvksh
+MARCH := rv64imafdcv_$(EXTS)_zvl$(VLEN)b
+CFLAGS := -march=$(MARCH) -mabi=lp64d -mcmodel=medany -O2 -Wall -Wextra \
+          -nostdlib -nostartfiles -ffreestanding -static -fno-pie -no-pie \
+          -fno-stack-protector -fno-asynchronous-unwind-tables -fno-tree-vectorize -fno-tree-slp-vectorize -ffp-contract=off -DVT_SPIKE \
+          -I$(COMMON) $(EXTRA_CFLAGS)
+OUT := $(BUILD)/sw_vlen$(VLEN).elf
+all: $(OUT)
+$(OUT): main.c $(EXTRA_SRC) $(COMMON)/vec_test.h $(COMMON)/spike/crt0_spike.S $(COMMON)/spike/link_spike.ld
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -Wl,--no-warn-rwx-segments -T $(COMMON)/spike/link_spike.ld $(COMMON)/spike/crt0_spike.S main.c $(EXTRA_SRC) -o $@ -lgcc
+	$(RISCV_PREFIX)objdump -d $@ > $(BUILD)/sw_vlen$(VLEN).S

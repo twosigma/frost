@@ -27,7 +27,9 @@ conformance bugs fixed for
 | [`rvfi_dii.py`](rvfi_dii.py) | RVFI-DII packet formats |
 | [`preamble.py`](preamble.py) | Instructions FROST runs after each reset, before a test |
 | [`atomics.py`](atomics.py) | Random A-extension tests (see [The A extension](#the-a-extension)) |
+| [`vector.py`](vector.py) | Random vector-instruction tests (see [The vector extension](#the-vector-extension)) |
 | [`sail_frost.json`](sail_frost.json) | Sail settings that describe FROST |
+| `sail_frost_vlen128.json`, `sail_frost_vlen256.json`, `sail_frost_vlen512.json` | Overlays on `sail_frost.json` that turn on the vector unit at one vector length; they differ only in `V.vlen_exp` |
 | [`traces/`](traces/) | Saved counterexamples, replayed in CI |
 | [`sscofpmf/controls.S`](sscofpmf/controls.S) | Deterministic Sscofpmf delegation, controls and implemented HPM aliases, replayed with `--sscofpmf` in CI |
 
@@ -91,7 +93,9 @@ its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 | `--ddr-capacity-log2-bytes` | 30 (1 GiB) | Set the DDR aperture for both FROST and Sail; accepted values 30–37 (1–128 GiB) |
 | `--atomics` | 0 | Replay this many random A-extension tests instead of the templates |
 | `--sscofpmf` | off | Replay the deterministic counter-control trace with Sail Zihpm enabled; `--trace` selects a counterexample in this view |
-| `--seed` | random | Seed for `--atomics`; the runner prints the one it used |
+| `--vector` | 0 | Replay this many random vector-instruction tests on a core built with the vector unit (see [The vector extension](#the-vector-extension)) |
+| `--vlen` | 128 with `--vector` | Build FROST with the vector unit at this vector length (128, 256 or 512) and configure Sail to match; needed to replay vector traces with `--trace` or `--trace-dir` |
+| `--seed` | random | Seed for `--atomics`, `--crypto` and `--vector`; the runner prints the one it used |
 | `--test-length` | 200 | Maximum instructions per test |
 | `--include`, `--exclude` | see the runner | Template name regexes |
 | `--csr-include` | see the runner | CSRs the templates may access |
@@ -299,6 +303,40 @@ from `sail_frost.json`.
 
 The tests come from a seed: `--seed` repeats a run, and without it the runner
 picks one and prints it. They are written to `tests/testrig_logs/atomics/`.
+
+## The vector extension
+
+QuickCheckVEngine has no vector templates, so `--vector N` replays N tests
+from [`vector.py`](vector.py) as raw instruction words, as `--atomics` does.
+It needs a core built with the vector unit, which the runner requests with
+`-GVECTOR=1 -GVLEN=<--vlen>`, and a Sail configuration for the same length:
+`sail_frost.json` with the matching `sail_frost_vlen*.json` overlay, which
+turns V on, makes `misa.V` read-only, and lets `mstatus.VS` take all four
+states.
+
+Each test enables FS and VS, zeroes v0..v31, `vxrm` and `vxsat`, runs random
+integer vector operations (arithmetic, shifts, saturating and fixed-point
+forms, multiplies, divides, slides) under random SEW, LMUL and AVL values with tail- and mask-undisturbed
+policies (agnostic elements may legally differ between implementations), and
+then reads the state out. The zeroing is in the test, not the preamble,
+because Sail does not reset the vector registers and the first `vsetvli` must
+use a non-`x0` AVL while `vtype.vill` is set; both implementations execute it.
+The read-out first reads `vl` and `vtype`, then moves every 64-bit element of
+v0..v31 into a scalar register with `vmv.x.s` and an in-place `vslidedown.vi`
+by one, then reads `vxsat` and `vlenb`. This is
+how the comparison sees vector state: RVFI-DII carries integer destinations,
+and for a vector load or store only one element of its data, so a register
+image cannot be read back through memory. The setup and the read-out are
+`.noshrink` strands. Operands are drawn so that nearly all encodings are legal;
+a small share may still trap on some register or mask combinations, which both
+implementations must report alike.
+
+The unit tests in `tests/test_testrig_vector.py` check every generated word
+against the assembler, the three Sail configurations, and, with two Sail
+instances, that the traces agree at each vector length and disagree between
+two. No CI job replays `--vector` until the core has a vector unit; to turn
+one on, add a TestRIG shard that runs `test_testrig.py --vector 100 --vlen 128`
+(and 256 and 512).
 
 ## Saved counterexamples
 
