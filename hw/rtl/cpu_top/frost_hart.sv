@@ -841,6 +841,10 @@ module frost_hart #(
   // A failed engine write joins the cache's fatal report.
   assign o_cache_fatal = hart_cache_fatal || ma_fatal;
   assign o_cache_fatal_addr = hart_cache_fatal ? hart_cache_fatal_addr : ma_fatal_addr;
+  // The engine's sector requests need the cached tier's line client.
+  if (MISALIGNED_HW && ENABLE_CACHED_TIER == 0) begin : gen_misaligned_needs_cache
+    initial $fatal(1, "frost_hart: MISALIGNED_HW needs ENABLE_CACHED_TIER");
+  end
   if (ENABLE_CACHED_TIER != 0) begin : gen_line_client
     coherence_dma_ingress #(
         .ADDR_WIDTH(riscv_pkg::PhysAddrBits),

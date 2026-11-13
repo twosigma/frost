@@ -4131,8 +4131,9 @@ module cpu_ooo #(
     logic [XLEN-1:0] ma_wb_data, ma_fault_tval, ma_lc_req_addr;
     logic [ma_pkg::CauseBits-1:0] ma_fault_cause;
     logic [riscv_pkg::PhysAddrBits-1:0] ma_fatal_addr_q;
+    // Debug Mode keeps the exception, so a program-buffer access parks.
     assign ma_exception_assist = coherent_exception_valid && !ma_fault_pending_q &&
-        !rob_head_mem_atomic &&
+        !rob_head_mem_atomic && !csr_debug_mode &&
         ((rob_trap_cause == riscv_pkg::ExcLoadAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]) ||
          (rob_trap_cause == riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]));
     ma_engine #(
@@ -4165,7 +4166,9 @@ module cpu_ooo #(
         .o_rf_read_en(),
         .o_rf_read_fp(ma_rf_read_fp),
         .o_rf_read_addr(ma_rf_read_addr),
-        .i_rf_read_data(ma_rf_read_fp ? ma_extra_fp_read_data[XLEN-1:0] : ma_extra_int_read_data),
+        // The integer file's RAM does not hold x0 at zero; readers substitute it.
+        .i_rf_read_data(ma_rf_read_fp ? ma_extra_fp_read_data[XLEN-1:0] :
+                        (ma_rf_read_addr == 5'd0) ? '0 : ma_extra_int_read_data),
         .o_wb_valid(ma_wb_valid),
         .o_wb_fp(ma_wb_fp),
         .o_wb_rd(ma_wb_rd),

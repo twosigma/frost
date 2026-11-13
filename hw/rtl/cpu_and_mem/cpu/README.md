@@ -393,11 +393,14 @@ walker's port into the cache hierarchy.
 
 `misaligned/ma_engine.sv` performs one misaligned plain load or store in
 cacheable DDR as one or two 32-byte sector transactions. `cpu_ooo`
-instantiates it when the `MISALIGNED_HW` parameter is set (default off).
-Without it, every misaligned access raises the address-misaligned exception.
+instantiates it when the `MISALIGNED_HW` parameter is set (default off),
+which needs the cached tier; elaboration rejects it without one.
+Without the engine, every misaligned access raises the address-misaligned
+exception.
 
 With the engine, a plain load or store whose address-misaligned exception
-reaches the ROB head is an assist. LR, SC and AMOs keep the exception. The
+reaches the ROB head is an assist. LR, SC and AMOs keep the exception, and
+so does any access in Debug Mode, which parks as before. The
 trap unit takes an assist like a memory replay, without CSR effects: it
 flushes the pipeline, redirects fetch to the instruction after the access and
 starts the engine with the head's address, size, sign, register numbers and

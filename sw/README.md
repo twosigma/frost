@@ -311,7 +311,7 @@ can be debugged and where each one first stops.
 | `memerr_readback/` | The memory error unit on the X3: the ECC reader is active and polling, and a DDR write and readback twice the L2's size reports no error |
 | `memerr_test/` | The memory error unit in simulation: DDR error responses injected by the model and ECC reports from the bench reach its counters, addresses, and APLIC interrupt; dependent conflict reads after FENCE.I evict the fatal-writeback line |
 | `memory_test/` | Arena allocator and `malloc`/`free`/`calloc`/`realloc`, including coalescing and overflow rejection |
-| `misaligned_test/` | Misaligned loads and stores in cached DDR checked byte by byte (all sizes, FP and compressed forms, across doubleword, sector, line and page boundaries), a load to `x0`, the `minstret` count, the address-misaligned trap in low BRAM, and accesses under timer interrupts at varying phases; needs `MISALIGNED_HW` |
+| `misaligned_test/` | Misaligned loads and stores in cached DDR checked byte by byte (all sizes, FP and compressed forms, across doubleword, sector, line and page boundaries), a load to and a store of `x0`, the `minstret` count, the address-misaligned trap in low BRAM, and accesses under timer interrupts at varying phases; needs `MISALIGNED_HW` |
 | `mret_drain_deadlock/` | `mret` right after cached-DDR stores must wait for them to drain, then continue |
 | `mret_timer_resume_test/` | A timer pending as `mret` drops to U-mode must save the U-mode entry point in `mepc` |
 | `mtimer_stress/` | Frequent timer interrupts swept across 20,000 memory/ALU loop iterations and `mret`; a deadlock times out within the default 500,000-cycle simulation budget |

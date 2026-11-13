@@ -22,10 +22,11 @@
  * FLW), each store against the bytes it must change and the neighbours it
  * must keep, across a doubleword, a 32-byte sector, a 64-byte line and a 4 KiB
  * page, and with compressed and FP forms. A misaligned load to x0 writes
- * nothing, and an access retires as exactly one instruction. In low BRAM a
- * misaligned access still raises the address-misaligned exception with the
- * access's address as the trap value. Last, misaligned accesses run while
- * timer interrupts arrive at varying phases.
+ * nothing, a store of x0 writes zeros, and an access retires as exactly one
+ * instruction. In low BRAM a misaligned access still raises the
+ * address-misaligned exception with the access's address as the trap value.
+ * Last, misaligned accesses run while timer interrupts arrive at varying
+ * phases.
  */
 
 #include <stdint.h>
@@ -307,6 +308,16 @@ int main(void)
                          : "memory");
         misaligned_delta = after - before;
         check(misaligned_delta == aligned_delta, "instret", 0x101, misaligned_delta, aligned_delta);
+    }
+
+    /* A store of x0 writes zeros. */
+    {
+        unsigned long offset = 0x123;
+        __asm__ volatile("sd x0, 0(%0)" : : "r"(area + offset) : "memory");
+        for (unsigned int k = 0; k < 8; k++)
+            ref[offset + k] = 0;
+        for (unsigned long i = offset - 8u; i < offset + 16u; i++)
+            check(area[i] == ref[i], "x0 store byte", i, area[i], ref[i]);
     }
 
     /* Low BRAM keeps the exception: cause 4 or 6, mepc at the access, mtval
