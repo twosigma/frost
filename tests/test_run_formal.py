@@ -100,6 +100,23 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "coherence_link.sby",
+        "Hart and home links: wires at zero stages; order, payload, latency and credits per kind.",
+        tasks=(
+            "link_zero_prove",
+            "link_always1_prove",
+            "link_always2_prove",
+            "link_credit1_bmc",
+            "link_credit2_bmc",
+            "link_one1_prove",
+            "link_one2_prove",
+            "link_mirror1_prove",
+            "link_mirror2_prove",
+            "link_credit1_cover",
+            "link_mirror1_cover",
+        ),
+    ),
+    FormalTarget(
         "coherence_prefetch_pause.sby",
         "DMA credits and seven idle cycles gate prefetch admission.",
         tasks=("pf_pause_prove", "pf_pause_cover"),
@@ -1448,6 +1465,38 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("link_zero_prove", "A link with no stages is wires."),
+    ("link_always1_prove", "Always-taken link, one stage: order, payload and latency."),
+    (
+        "link_always2_prove",
+        "Always-taken link, two stages: order, payload and latency.",
+    ),
+    (
+        "link_credit1_bmc",
+        "Credit link, one stage, three credits: order, payload and credit count, 40 frames.",
+    ),
+    (
+        "link_credit2_bmc",
+        "Credit link, two stages, five credits: order, payload and credit count, 40 frames.",
+    ),
+    (
+        "link_one1_prove",
+        "One-credit link, one stage: order, payload and a single message.",
+    ),
+    (
+        "link_one2_prove",
+        "One-credit link, two stages: order, payload and a single message.",
+    ),
+    (
+        "link_mirror1_prove",
+        "Mirrored link, one stage: each acceptance completes one sender handshake.",
+    ),
+    (
+        "link_mirror2_prove",
+        "Mirrored link, two stages: each acceptance completes one sender handshake.",
+    ),
+    ("link_credit1_cover", "A credit link delivers four messages."),
+    ("link_mirror1_cover", "A mirrored link completes four handshakes."),
     ("limit_bmc", "Bounded proof that the runtime occupancy limit caps the writer."),
     ("limit_cover", "The writer stalls at a runtime limit below the RAM's capacity."),
     ("coh_l1d_conflict_prove", "Guarded conflict identity with one endpoint."),
