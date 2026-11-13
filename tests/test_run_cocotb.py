@@ -2237,6 +2237,33 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Vector FP64 fused multiply-add, bit for bit against Berkeley SoftFloat",
         verilator_extra_args=("-GEXP=11", "-GFRAC=52"),
     ),
+    "vec_fp_misc16": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fp_misc",
+        hdl_toplevel_module="vec_fp_misc",
+        description=(
+            "Vector FP16 compare, minimum, maximum, sign injection and classify, "
+            "against Berkeley SoftFloat"
+        ),
+        verilator_extra_args=("-GEXP=5", "-GFRAC=10"),
+    ),
+    "vec_fp_misc32": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fp_misc",
+        hdl_toplevel_module="vec_fp_misc",
+        description=(
+            "Vector FP32 compare, minimum, maximum, sign injection and classify, "
+            "against Berkeley SoftFloat"
+        ),
+        verilator_extra_args=("-GEXP=8", "-GFRAC=23"),
+    ),
+    "vec_fp_misc64": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fp_misc",
+        hdl_toplevel_module="vec_fp_misc",
+        description=(
+            "Vector FP64 compare, minimum, maximum, sign injection and classify, "
+            "against Berkeley SoftFloat"
+        ),
+        verilator_extra_args=("-GEXP=11", "-GFRAC=52"),
+    ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",

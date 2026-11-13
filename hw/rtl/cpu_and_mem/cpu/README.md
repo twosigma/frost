@@ -561,6 +561,12 @@ detected after rounding; the sequencer forms the vector forms by choosing
 operands and signs. Its fixed latency is fourteen cycles. The unit bench checks
 it bit for bit against Berkeley SoftFloat.
 
+`vec_fp_misc` holds the same format's non-arithmetic operations: the
+comparisons behind `vmfeq`, `vmflt` and `vmfle` (with `vmfne`, `vmfgt` and
+`vmfge` formed by inverting or swapping), `vfmin` and `vfmax`, the three sign
+injections and `vfclass`, with the fflags each raises. Its latency is one
+cycle.
+
 ## Subtle cases
 
 These front-end hazards are easy to reintroduce. The code comments at each
