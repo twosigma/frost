@@ -36,6 +36,7 @@ module frost_hart #(
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
     parameter int unsigned L2_WAYS = 4,
     parameter int unsigned SIM_FAST_MAINT = 0,
+    parameter bit WITHDRAW_ABSORBED_W = 1'b0,
     parameter int unsigned PERF_COUNTERS = 0,
     // Vector unit: VECTOR=1 adds the vector state, VLEN is the vector
     // register width (128, 256 or 512), and VECTOR_ADVERTISE sets misa.V.
@@ -641,7 +642,8 @@ module frost_hart #(
         .HOME_WAYS(L2_WAYS),
         .HOME_LINE_BYTES(DATA_BYTES),
         .L1D_STREAM_PREFETCH(StreamPrefetch),
-        .SIM_FAST_MAINT(SIM_FAST_MAINT)
+        .SIM_FAST_MAINT(SIM_FAST_MAINT),
+        .WITHDRAW_ABSORBED_W(WITHDRAW_ABSORBED_W)
     ) hart_cache (
         .i_clk(i_clk),
         .i_rst(i_rst),

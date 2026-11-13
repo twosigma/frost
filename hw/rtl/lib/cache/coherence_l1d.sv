@@ -35,6 +35,11 @@ module coherence_l1d #(
     parameter bit ZERO_LINE = 1'b1,
     parameter bit STREAM_PREFETCH = 1'b0,
     parameter int unsigned SIM_FAST_MAINT = 0,
+    // An absorbed put slot stops presenting W. Set when register stages
+    // separate the L1D from the home (cpu_top MEMORY_LINK_STAGES), so that
+    // no delayed copy of an absorbed put can reach the home after its
+    // cancellation.
+    parameter bit WITHDRAW_ABSORBED_W = 1'b0,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
     localparam int unsigned Sets = CACHE_BYTES / (32 * WAYS),
     localparam int unsigned SetBits = $clog2(Sets)
@@ -1763,7 +1768,8 @@ module coherence_l1d #(
     );
     assign wb_ready[slot] = wb_selected_q && wb_select_q == 1'(slot) && i_w_ready;
   end
-  assign o_w_valid = active && wb_selected_q && wb_valid[wb_select_q];
+  assign o_w_valid = active && wb_selected_q && wb_valid[wb_select_q] &&
+      !(WITHDRAW_ABSORBED_W && wb_absorbed[wb_select_q]);
   assign o_w = wb[wb_select_q];
 `ifndef SYNTHESIS
 `ifdef FORMAL

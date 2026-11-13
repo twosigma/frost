@@ -80,6 +80,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_store_home", "bmc_rows"): 2100,
     ("coherence_store_home", "bmc_conflict"): 2400,
     ("coherence_store_home", "bmc_pressure"): 2700,
+    ("coherence_store_home", "link_bmc_siblings"): 7200,
+    ("coherence_store_home", "link_bmc_pressure"): 8700,
 }
 
 
@@ -100,6 +102,23 @@ class FormalTarget:
 # Registry of formal verification targets.
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
+    FormalTarget(
+        "coherence_link.sby",
+        "Hart and home links: wires at zero stages; order, payload, latency and credits per kind.",
+        tasks=(
+            "link_zero_prove",
+            "link_always1_prove",
+            "link_always2_prove",
+            "link_credit1_bmc",
+            "link_credit2_bmc",
+            "link_one1_prove",
+            "link_one2_prove",
+            "link_mirror1_prove",
+            "link_mirror2_prove",
+            "link_credit1_cover",
+            "link_mirror1_cover",
+        ),
+    ),
     FormalTarget(
         "coherence_prefetch_pause.sby",
         "DMA credits and seven idle cycles gate prefetch admission.",
@@ -140,6 +159,9 @@ FORMAL_TARGETS = [
             "cover_conflict",
             "bmc_pressure",
             "cover_pressure",
+            "link_bmc_siblings",
+            "link_bmc_pressure",
+            "link_cover_pressure",
         ),
     ),
     FormalTarget(
@@ -960,6 +982,25 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "line_align.sby",
+        "Line alignment matches a byte-by-byte reference for extract and place, and a "
+        "placed access reads back, for 32- and 64-byte lines",
+        tasks=("bmc", "bmc_64x8", "bmc_32x32"),
+    ),
+    FormalTarget(
+        "ma_pkg.sby",
+        "Misaligned-access split geometry, fault outcome, trap value and load value "
+        "match direct references",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "ma_engine.sby",
+        "Misaligned-access engine: no memory request before both parts pass their "
+        "checks, lower sector first, one request and response per identity, one "
+        "completion, fault or write-back per access, and terminal fatal stops",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
         "alu_shift_hint.sby",
         "ALU shifts and rotates match the reference with captured shift amounts on or "
         "off",
@@ -1450,6 +1491,47 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("link_zero_prove", "A link with no stages is wires."),
+    ("link_always1_prove", "Always-taken link, one stage: order, payload and latency."),
+    (
+        "link_always2_prove",
+        "Always-taken link, two stages: order, payload and latency.",
+    ),
+    (
+        "link_credit1_bmc",
+        "Credit link, one stage, three credits: order, payload and credit count, 28 frames.",
+    ),
+    (
+        "link_credit2_bmc",
+        "Credit link, two stages, five credits: order, payload and credit count, 28 frames.",
+    ),
+    (
+        "link_one1_prove",
+        "One-credit link, one stage: order, payload and a single message.",
+    ),
+    (
+        "link_one2_prove",
+        "One-credit link, two stages: order, payload and a single message.",
+    ),
+    (
+        "link_mirror1_prove",
+        "Mirrored link, one stage: each acceptance completes one sender handshake.",
+    ),
+    (
+        "link_mirror2_prove",
+        "Mirrored link, two stages: each acceptance completes one sender handshake.",
+    ),
+    ("link_credit1_cover", "A credit link delivers four messages."),
+    ("link_mirror1_cover", "A mirrored link completes four handshakes."),
+    (
+        "link_bmc_siblings",
+        "Production L1D and home through one-stage links preserve sibling-sector bytes.",
+    ),
+    (
+        "link_bmc_pressure",
+        "One-stage links under two dirty victims, delayed releases and a probing DMA read.",
+    ),
+    ("link_cover_pressure", "The pressure schedule completes through one-stage links."),
     ("limit_bmc", "Bounded proof that the runtime occupancy limit caps the writer."),
     ("limit_cover", "The writer stalls at a runtime limit below the RAM's capacity."),
     ("coh_l1d_conflict_prove", "Guarded conflict identity with one endpoint."),
@@ -2350,6 +2432,8 @@ SBY_TASKS = [
     ("bmc_xilinx_2port", "Bounded two-port arbitration with Xilinx primitives"),
     ("bmc_queued", "Bounded check with decoded-queue admission contract"),
     ("bmc", "Check assertions up to the configured depth"),
+    ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
+    ("bmc_32x32", "Line alignment with 32-byte lines and 32 data bytes."),
     ("cover", "Search for reachable cover scenarios"),
     ("prove", "Prove safety assertions without a depth bound"),
     ("prove_depth2", "Unbounded proof of the two-entry decoded bundle queue"),
@@ -3145,8 +3229,9 @@ def test_stream_partition_models_match(prefix: str, depth: int, scripted: bool) 
                 "aigsmt": "boolector",
                 "expect": "PASS",
             }
+            # The scripted control task also uses the CaDiCaL-based engine.
             assert task["[engines]"] == [
-                "abc bmc3 -c" if role == "hold" else "abc bmc3"
+                "abc bmc3 -c" if role == "hold" or scripted else "abc bmc3"
             ]
 
     validate(hold, bmc)
@@ -3398,6 +3483,8 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
     bulk = task == "coh_l1d_stream_free_bmc"
     outlier = task == "coh_l1d_stream_outlier_prove"
     hold = task.endswith("_hold_bmc")
+    # The scripted control task uses the CaDiCaL-based engine, as the holds do.
+    cadical = hold or task == "coh_l1d_stream_bmc"
     script = [
         "read -sv coherence_read_stream.sv",
         "read -sv cache_perf_pkg.sv",
@@ -3480,7 +3567,7 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
             "expect": "PASS",
         }
         assert config["[engines]"] == [
-            "abc pdr" if outlier else "abc bmc3 -c" if hold else "abc bmc3"
+            "abc pdr" if outlier else "abc bmc3 -c" if cadical else "abc bmc3"
         ]
         assert config["[script]"] == script
         assert config["[files]"] == files

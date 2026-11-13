@@ -48,7 +48,7 @@ import time
 import uuid
 import zipfile
 from pathlib import Path
-from typing import TextIO, TypedDict
+from typing import Any, TextIO, TypedDict
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sw" / "apps"))
 from riscv_toolchain import default_riscv_prefix  # noqa: E402
@@ -63,6 +63,8 @@ BOARD_DESIGN_DIR = Path(__file__).resolve().parent
 # Limit concurrent Vivado processes to bound memory use (about 8 GB per worker).
 # This is separate from each process's thread count.
 DEFAULT_MAX_JOBS = 12
+VIVADO_EXIT_GRACE_S = 120.0
+VIVADO_POLL_S = 5.0
 
 # X3 defaults to AlternateRoutability to limit MUXF7/MUXF8 routing congestion.
 BOARD_CONFIG = {
@@ -2905,8 +2907,7 @@ def run_x3_guided_place_candidate(
         if mode:
             command.extend(["", mode])
         print(f"\nX3 placement: {mode or step}; work directory: {work}", flush=True)
-        result = subprocess.run(command, cwd=work, env=environment)
-        if result.returncode != 0:
+        if run_vivado_step(command, work, environment) != 0:
             return False
         if step == "place" and not x3_place_cell_bloat_override_is_valid(
             work / log_name, "MEDIUM", cell_bloat_cells, cell_bloat_matches
@@ -3088,10 +3089,10 @@ def run_step(
             + "\n"
         )
         (work_dir / "phys_opt_iteration.json").unlink(missing_ok=True)
-    result = subprocess.run(vivado_command, cwd=work_dir)
+    returncode = run_vivado_step(vivado_command, work_dir)
 
-    if result.returncode != 0:
-        print(f"\n  [FAIL] {step} / {directive} (exit code {result.returncode})")
+    if returncode != 0:
+        print(f"\n  [FAIL] {step} / {directive} (exit code {returncode})")
         return False, None, ""
 
     timing_rpt = work_dir / f"{tcl_report_prefix}_timing.rpt"
@@ -3156,6 +3157,168 @@ def run_step(
     return True, wns, report_prefix
 
 
+def explain_silent_vivado_exit(log_path: Path, returncode: int) -> None:
+    """Say so when a failed Vivado step left no ERROR line and no ``Exiting Vivado``.
+
+    That log ends mid-run: the process was killed from outside (another session
+    stopping Vivado, the OOM killer) or crashed, and the plain "exit code 1" would
+    otherwise look like an unexplained tool failure.
+    """
+    try:
+        lines = log_path.read_text(errors="replace").splitlines()
+    except OSError:
+        print(
+            f"  Vivado exited with code {returncode} and its log {log_path} cannot be read"
+        )
+        return
+    if any(line.startswith("ERROR:") for line in lines):
+        return
+    if any("Exiting Vivado at" in line for line in lines):
+        return
+    last = next((line for line in reversed(lines) if line.strip()), "")
+    print(
+        f"  Vivado exited with code {returncode} with no ERROR line and no 'Exiting Vivado' in "
+        f"{log_path}: the process ended abnormally (killed from outside or crashed); "
+        f"the log stops at: {last[:160]}"
+    )
+
+
+def _has_process_groups() -> bool:
+    """Return whether a step can run in its own session and be signalled as a group."""
+    return hasattr(os, "killpg")
+
+
+def run_vivado_step(
+    command: list[str], cwd: Path, env: Mapping[str, str] | None = None
+) -> int:
+    """Run one Vivado batch step and return its exit code.
+
+    Vivado normally exits right after printing ``Exiting Vivado``. If the
+    launcher process stays alive for ``VIVADO_EXIT_GRACE_S`` after that line, the
+    step is judged by a ``** DONE`` output line (Vivado also echoes the script's
+    own ``puts`` commands behind a ``#``, which do not count) and the launcher
+    (with its process group, where the platform has groups) is terminated, so a
+    stuck launcher cannot stall the whole build.
+    """
+    log_path = cwd / "vivado.log"
+    if "-log" in command:
+        log_path = cwd / command[command.index("-log") + 1]
+    # Vivado rewrites its log at start-up; a log left by an earlier step must not
+    # be mistaken for this step's.
+    stale_log: str | None = None
+    try:
+        log_path.unlink(missing_ok=True)
+    except OSError:
+        # The old log could not be removed (it may still be held open). Keep its
+        # text so that its markers do not count until Vivado has rewritten it.
+        try:
+            stale_log = log_path.read_text(errors="replace")
+        except OSError:
+            pass
+    options: dict[str, Any] = {} if env is None else {"env": env}
+    if _has_process_groups():
+        options["start_new_session"] = True
+    process = subprocess.Popen(command, cwd=cwd, **options)
+
+    def hang_up(signum: int, _frame: object) -> None:
+        raise SystemExit(128 + signum)
+
+    previous: dict[int, Any] = {}
+    try:
+        if _has_process_groups():
+            # The step runs in its own session, so a hangup or termination aimed
+            # at this build must be forwarded to it: turn them into an exception.
+            try:
+                for name in ("SIGHUP", "SIGTERM"):
+                    sig = getattr(signal, name, None)
+                    if sig is not None:
+                        previous[sig] = signal.signal(sig, hang_up)
+            except ValueError:  # not the main thread
+                pass
+        returncode = _wait_for_vivado(process, log_path, stale_log)
+    except BaseException:
+        # subprocess.run() kills its child on an interrupt; keep that behaviour.
+        # A launcher that has not been reaped still owns its process id, so the
+        # signal cannot reach anything else; a reaped one is left alone.
+        if getattr(process, "returncode", None) is None:
+            _signal_launcher(process, kill=True)
+            process.wait()
+        raise
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+    if returncode != 0:
+        explain_silent_vivado_exit(log_path, returncode)
+    return returncode
+
+
+def _signal_launcher(process: subprocess.Popen[bytes], kill: bool) -> None:
+    """Terminate (or kill) the launcher, and its whole group where there are groups.
+
+    The launcher spawns Vivado without exec, so on POSIX the step's own session
+    is signalled; elsewhere only the launcher process is.
+    """
+    pid = getattr(process, "pid", None)
+    if _has_process_groups() and isinstance(pid, int):
+        sig = getattr(signal, "SIGKILL" if kill else "SIGTERM")
+        try:
+            os.killpg(pid, sig)
+        except ProcessLookupError:
+            pass
+        return
+    if kill:
+        process.kill()
+    else:
+        process.terminate()
+
+
+def _wait_for_vivado(
+    process: subprocess.Popen[bytes], log_path: Path, stale_log: str | None = None
+) -> int:
+    """Wait for a Vivado launcher, ending it once Vivado has long since exited.
+
+    ``stale_log`` is the text of an earlier step's log that could not be removed;
+    the log is ignored while it still reads the same.
+    """
+    exited_since: float | None = None
+    while True:
+        try:
+            returncode = process.wait(timeout=VIVADO_POLL_S)
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            return returncode
+        try:
+            text = log_path.read_text(errors="replace")
+        except OSError:
+            continue
+        if "Exiting Vivado at" not in text or text == stale_log:
+            # Vivado rewrites the log at start-up, so a marker left by an earlier
+            # step must not count towards this step's grace period.
+            exited_since = None
+            continue
+        if exited_since is None:
+            exited_since = time.monotonic()
+        elif time.monotonic() - exited_since > VIVADO_EXIT_GRACE_S:
+            print(
+                f"  Vivado finished but its launcher did not exit within "
+                f"{VIVADO_EXIT_GRACE_S:.0f} s; terminating it"
+            )
+            if _has_process_groups():
+                # Vivado itself has exited. The launcher has not been reaped, so
+                # its group id is still its own: end the whole group at once,
+                # including a descendant that would outlive it or ignore SIGTERM.
+                _signal_launcher(process, kill=True)
+            else:
+                _signal_launcher(process, kill=False)
+                try:
+                    process.wait(timeout=10.0)
+                except subprocess.TimeoutExpired:
+                    _signal_launcher(process, kill=True)
+            process.wait()
+            return 0 if re.search(r"^\*\* DONE", text, re.MULTILINE) else 1
+
+
 def generate_bitstream(
     script_dir: Path,
     board_name: str,
@@ -3194,8 +3357,7 @@ def generate_bitstream(
         "0",
     ]
 
-    result = subprocess.run(vivado_command, cwd=main_work)
-    if result.returncode != 0:
+    if run_vivado_step(vivado_command, main_work) != 0:
         print("Error: Bitstream generation failed")
         return False
 

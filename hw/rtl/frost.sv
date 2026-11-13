@@ -71,6 +71,9 @@ module frost #(
     parameter int unsigned L2_PREFETCH_INFLIGHT = 3,
     // L2 line size is 32 or 64 bytes. Each AXI beat carries one L2 line.
     parameter int unsigned L2_LINE_BYTES = 64,
+    // Register stages on every channel between the hart and the cluster
+    // memory (cpu_top MEMORY_LINK_STAGES); 0 connects them directly.
+    parameter int unsigned MEMORY_LINK_STAGES = 0,
     // Simulation-only coherent-array reset and L1I maintenance acceleration.
     // Set to 1 only by the cocotb sim build, never for boards.
     parameter int unsigned SIM_FAST_MAINT = 0,
@@ -361,6 +364,7 @@ module frost #(
       .L2_PREFETCH(L2_PREFETCH),
       .L2_PREFETCH_DISTANCE(L2_PREFETCH_DISTANCE),
       .L2_PREFETCH_INFLIGHT(L2_PREFETCH_INFLIGHT),
+      .MEMORY_LINK_STAGES(MEMORY_LINK_STAGES),
       .L2_NUM_WB(L2_NUM_WB),
       .L2_LINE_BYTES(L2_LINE_BYTES),
       .SIM_FAST_MAINT(SIM_FAST_MAINT),

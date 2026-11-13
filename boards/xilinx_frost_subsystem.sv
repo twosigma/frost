@@ -37,6 +37,9 @@ module xilinx_frost_subsystem #(
     parameter int unsigned L2_LINE_BYTES = 64,
     parameter int unsigned L2_NUM_MSHR = 8,
     parameter int unsigned L2_PREFETCH_INFLIGHT = 3,
+    // Register stages on every channel between the hart and the cluster
+    // memory (cpu_top MEMORY_LINK_STAGES); 0 connects them directly.
+    parameter int unsigned MEMORY_LINK_STAGES = 0,
     // Optional boot-hang UART classifier. Leave off for interactive testing.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
     // Profiling counters (see frost.sv); the board top passes its generic.
@@ -341,6 +344,7 @@ module xilinx_frost_subsystem #(
       .L2_LINE_BYTES(L2_LINE_BYTES),
       .L2_NUM_MSHR(L2_NUM_MSHR),
       .L2_PREFETCH_INFLIGHT(L2_PREFETCH_INFLIGHT),
+      .MEMORY_LINK_STAGES(MEMORY_LINK_STAGES),
       .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE),
       .PERF_COUNTERS(PERF_COUNTERS),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),

@@ -204,7 +204,8 @@ within a completion is rejected. A failed WA leaves its dependency pending.
 `coherence_put_endpoint` freezes one full sector until WA. HART and SLOT
 select one of two slots per hart. An ordinary W transfer wins a simultaneous
 absorption claim. An absorbed slot keeps W presented, and the home must mask
-ordinary selection until the absorbed WA handshake cancels it. WA ready
+ordinary selection until the absorbed WA handshake cancels it. The L1D stops presenting an absorbed slot when register
+stages separate it from the home (see Hart and home links). WA ready
 certifies removal of that exact slot on the edge. `o_cancel_valid` reports
 successful cancellation; another slot may keep the shared W port valid.
 Ordinary WA is accepted only after W. Error WA preserves the frozen bytes
@@ -223,6 +224,53 @@ simultaneous refill. Separate instances hold P and R independently of demand
 and PutM slots. Probe service, grant production, completion delivery, and
 release delivery require independent service resources. Debug halt and WFI
 must not stop those resources in an integration.
+
+### Hart and home links
+
+`coherence_link` carries one channel between the hart and the cluster memory
+through `STAGES` register stages; at `STAGES = 0` it is wires for every kind.
+cpu_top's `MEMORY_LINK_STAGES` sets the count. Payload registers have no reset
+and load every cycle, except the one-entry credit kind's last register; valid,
+credit and sequence bits reset with the tile, so no message survives reset.
+
+- Always (`KIND = 0`): a pipe with no ready. The receiver must take every
+  message it presents, except after a fatal stop, when it may drop it. R, G,
+  U and WA use it: the home's prober waits in ProbeWait from its P handshake;
+  a request endpoint or line bridge waits in WaitG from its D handshake and in
+  WaitU from its C handshake; a put slot is Accepted from its W handshake, or
+  Present and absorbed with the absorbing tid, before its WA can arrive.
+- Credit (`KIND = 1`): the sender's ready is a credit count, and the message
+  waits in a receiver buffer of `CREDITS` entries (default `2*STAGES+1`, which
+  sustains one message per cycle). The sender's handshake happens when the
+  link takes the message, before the receiver sees it; the credits appear
+  on the cycle after reset, so the link is not ready in reset. D and C use it, as do
+  the coherent DMA request and the home's memory request. P uses one credit:
+  the probe waits in the last stage register, and the L1D serves one probe at
+  a time.
+- Mirror (`KIND = 2`): the sender presents its offer as without the link; the
+  receiver sees a copy `STAGES` cycles old, tagged with a sequence bit that
+  toggles on each completed sender handshake, and its acceptance returns
+  through `STAGES` registers as the sender's ready. A copy of an offer already
+  accepted is masked. W uses it, so a put stays Present, and a probe can still
+  absorb it, until the home has really taken it. The home takes no W of a
+  sector while a probe of that sector is outstanding (from the P handshake to
+  the R consumption) and issues no probe of a sector while it holds a put of
+  it (from W to WA), so no probe reaches the L1D between the home's acceptance
+  and the put endpoint's handshake.
+- With stages, the L1D does not present a put slot once a probe has absorbed
+  it (`WITHDRAW_ABSORBED_W`). The last delayed copy of the absorbed offer
+  reaches the home before the absorbing reply does, while the home still
+  masks the sector; without this rule a copy could arrive after the home's
+  mask ends at the absorbed WA.
+
+A home message emitted after another one's handshake still arrives after it:
+G, U and WA take exactly `STAGES` cycles and P at least that many, and the
+home probes a sector only after the earlier G, U and WA of that sector. A
+probe can now arrive after a G, U or WA of a different sector emitted later.
+Without stages the same order arises when the L1D holds off P (busy with an
+earlier probe or local work) while its endpoints take G, U and WA, which they
+do independently of probe service; a grant that installs and evicts the
+probed sector meets the probe through absorption, as without stages.
 
 ## Coherent one-hart cache path
 
