@@ -258,7 +258,7 @@ can be debugged and where each one first stops.
 |-----|-------------|
 | `ad_fault_test/` | Sv39 A/D faults: after a live PTE's A or D bit is cleared and fenced, the next access that needs the bit must page-fault (the walker never sets A or D) |
 | `amo_irq_torture/` | Timer interrupts swept across cached-DDR AMO bursts; counts every update to catch lost or duplicated ones |
-| `arch_test/` | riscv-arch-test cases, whose signatures the bench reads from low BRAM and compares with committed Spike references; built per test with `TEST_SRC`; see the [architecture-test runner](../tests/README.md#test_arch_compliancepy) |
+| `arch_test/` | riscv-arch-test cases, whose signatures the bench reads from low BRAM and compares with committed Spike references (Sail references for the misaligned load and store tests in the DDR tier); built per test with `TEST_SRC`; see the [architecture-test runner](../tests/README.md#test_arch_compliancepy) |
 | `branch_pred_test/` | Self-checking branch, loop, call, and indirect-jump cases in assembly |
 | `btb_mode_alias_test/` | One address holds a taken `beq` under Sv39 S-mode fetch and an `addi` under bare M-mode fetch, or the reverse: after S-mode training and a trap, or M-mode training and an `mret` or `sret`, the other mode's BTB entry must not redirect the `addi` |
 | `c_ext_test/` | Calls and returns through mixed 16- and 32-bit code, plus value checks of the RV64C-only encodings |

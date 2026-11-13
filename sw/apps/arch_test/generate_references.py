@@ -24,17 +24,27 @@ references/<suite>/<extension>/<test>.reference_output. Each test is built
 from a copy with its malformed data constants repaired (repair_constants.py),
 as the FROST build does.
 
-Run it inside the frost Docker image, which pins Spike, so the
+The DDR tier performs misaligned loads and stores in hardware (the CPU's
+misaligned-access engine), which the pinned Spike cannot model. The eight
+privilege tests of the load and store address-misaligned trap therefore have
+a second reference for that tier, references_ddr/<suite>/<extension>/<test>,
+from the Sail model that TestRIG uses (verif/testrig/sail_frost.json, with
+misaligned loads and stores supported in the DDR region). --ddr-misaligned
+generates those; --all generates both sets.
+
+Run it inside the frost Docker image, which pins Spike and Sail, so the
 references are reproducible.
 
 Usage:
     ./generate_references.py --extensions I M A
     ./generate_references.py --all
+    ./generate_references.py --ddr-misaligned
     ./generate_references.py --test rv64i_m/I/src/add-01.S
     ./generate_references.py --test rv32i_m/F/src/fadd_b1-01.S
 """
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -54,6 +64,17 @@ from repair_constants import repair  # noqa: E402
 ARCH_TEST_DIR = SCRIPT_DIR / "riscv-arch-test"
 SUITE_ROOT = ARCH_TEST_DIR / "riscv-test-suite"
 REFERENCES_DIR = SCRIPT_DIR / "references"
+DDR_REFERENCES_DIR = SCRIPT_DIR / "references_ddr"
+SAIL_CONFIG = SCRIPT_DIR.parents[2] / "verif" / "testrig" / "sail_frost.json"
+DDR_BASE = 0x8000_0000
+
+# Tests whose DDR-tier reference comes from Sail with misaligned loads and
+# stores supported in DDR; their Spike references (bram tier) expect the
+# trap. Keep equal to DDR_MISALIGNED_TESTS in tests/test_arch_compliance.py.
+DDR_MISALIGNED_TESTS = {
+    f"rv64i_m/privilege/src/misalign-{op}-01.S"
+    for op in ("lh", "lhu", "lw", "lwu", "ld", "sh", "sw", "sd")
+}
 
 # Suite directories under riscv-test-suite that each extension's tests come
 # from. rv64i_m holds the RV64 tests. The F and D tests that RV32 and RV64
@@ -295,19 +316,44 @@ def test_defines(test_src: Path) -> list[str]:
     return [f"-D{name}=True" for name in names]
 
 
+def sail_ddr_misaligned_config(out_dir: Path) -> Path:
+    """Write sail_frost.json with misaligned loads and stores allowed in DDR.
+
+    Every other region keeps its address-misaligned exception, as FROST's
+    misaligned-access engine serves only cached DDR.
+    """
+    text = re.sub(r"^\s*//.*$", "", SAIL_CONFIG.read_text(), flags=re.M)
+    config = json.loads(text)
+    ddr = [
+        r
+        for r in config["memory"]["regions"]
+        if int(r["base"]["value"], 16) == DDR_BASE
+    ]
+    if len(ddr) != 1:
+        sys.exit(f"Error: {SAIL_CONFIG}: expected one region at {DDR_BASE:#x}")
+    ddr[0]["attributes"]["misaligned_exceptions"]["load_store"] = {"None": None}
+    path = out_dir / "sail_ddr_misaligned.json"
+    path.write_text(json.dumps(config))
+    return path
+
+
 def generate_one_reference(
     test_src: Path,
     env_dir: Path,
     verbose: bool = False,
+    model: str = "spike",
 ) -> tuple[str, str, str]:
-    """Compile a test for Spike, run it, and save the signature.
+    """Compile a test, run it on Spike (or Sail), and save the signature.
 
+    model "sail" writes the DDR-tier reference of a DDR_MISALIGNED_TESTS test.
     Returns (test_name, status, message) where status is
     "OK", "SKIP", or "ERROR".
     """
     test_name = test_src.stem
     extension = test_src.relative_to(SUITE_ROOT).parts[1]
     ref_path = reference_path(test_src)
+    if model == "sail":
+        ref_path = DDR_REFERENCES_DIR / ref_path.relative_to(REFERENCES_DIR)
     ref_path.parent.mkdir(parents=True, exist_ok=True)
 
     defines = test_defines(test_src)
@@ -360,30 +406,43 @@ def generate_one_reference(
 
         # spike_env checks alignment for FLEN=64 signature stores. Deliberate
         # misalignment tests install the framework trap handler.
-        spike = os.environ.get("FROST_SPIKE", "spike")
-        spike_cmd = [
-            spike,
-            f"--isa={SPIKE_VECTOR_ISA if extension in VECTOR_EXTENSIONS else SPIKE_ISA}",
-            f"+signature={sig_path}",
-            "+signature-granularity=4",
-            str(elf_path),
-        ]
+        if model == "sail":
+            label = "Sail"
+            run_cmd = [
+                os.environ.get("FROST_SAIL_RISCV_SIM", "sail_riscv_sim"),
+                "--config-override",
+                str(sail_ddr_misaligned_config(Path(tmpdir))),
+                "--test-signature",
+                str(sig_path),
+                "--signature-granularity",
+                "4",
+                str(elf_path),
+            ]
+        else:
+            label = "Spike"
+            run_cmd = [
+                os.environ.get("FROST_SPIKE", "spike"),
+                f"--isa={SPIKE_VECTOR_ISA if extension in VECTOR_EXTENSIONS else SPIKE_ISA}",
+                f"+signature={sig_path}",
+                "+signature-granularity=4",
+                str(elf_path),
+            ]
         try:
             result = subprocess.run(
-                spike_cmd,
+                run_cmd,
                 capture_output=True,
                 text=True,
                 timeout=60,
             )
         except subprocess.TimeoutExpired:
-            return test_name, "SKIP", "Spike timed out"
+            return test_name, "SKIP", f"{label} timed out"
 
         if result.returncode != 0:
             msg = result.stderr.strip().split("\n")[-1] if result.stderr else "unknown"
-            return test_name, "ERROR", f"Spike failed: {msg}"
+            return test_name, "ERROR", f"{label} failed: {msg}"
 
         if not sig_path.exists() or sig_path.stat().st_size == 0:
-            return test_name, "ERROR", "Spike produced no signature"
+            return test_name, "ERROR", f"{label} produced no signature"
 
         shutil.copy2(sig_path, ref_path)
 
@@ -406,6 +465,11 @@ def main() -> int:
     group.add_argument("--extensions", nargs="+", metavar="EXT")
     group.add_argument("--all", action="store_true")
     group.add_argument("--test", metavar="PATH")
+    group.add_argument(
+        "--ddr-misaligned",
+        action="store_true",
+        help="generate only the Sail DDR-tier references of DDR_MISALIGNED_TESTS",
+    )
     parser.add_argument("--parallel", type=int, default=8, metavar="N")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
@@ -424,6 +488,9 @@ def main() -> int:
         return 1
 
     env_dir = spike_env()
+
+    if args.ddr_misaligned:
+        return generate_ddr_misaligned(env_dir, args.verbose)
 
     # Single test mode
     if args.test:
@@ -492,7 +559,27 @@ def main() -> int:
     print()
     print(f"Total: {total_ok} OK, {total_skip} SKIP, {total_error} ERROR")
     print(f"References stored in: {REFERENCES_DIR}/")
+    if args.all and generate_ddr_misaligned(env_dir, args.verbose) != 0:
+        return 1
     return 1 if total_error > 0 else 0
+
+
+def generate_ddr_misaligned(env_dir: Path, verbose: bool) -> int:
+    """Generate the Sail DDR-tier references of DDR_MISALIGNED_TESTS."""
+    if not shutil.which(os.environ.get("FROST_SAIL_RISCV_SIM", "sail_riscv_sim")):
+        print(
+            "Error: sail_riscv_sim not found in PATH. Run this script in the frost image."
+        )
+        return 1
+    errors = 0
+    for rel in sorted(DDR_MISALIGNED_TESTS):
+        name, status, msg = generate_one_reference(
+            SUITE_ROOT / rel, env_dir, verbose, model="sail"
+        )
+        print(f"{name:40s} {status}  (Sail, DDR) {msg}")
+        errors += status != "OK"
+    print(f"References stored in: {DDR_REFERENCES_DIR}/")
+    return 1 if errors else 0
 
 
 if __name__ == "__main__":

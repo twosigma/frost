@@ -556,7 +556,8 @@ point is marked `slow`:
 
 Runs the implemented parts of riscv-arch-test and compares each test's
 signature with a committed Spike reference under
-`sw/apps/arch_test/references/`, which mirrors the suite's directory layout.
+`sw/apps/arch_test/references/`, which mirrors the suite's directory layout
+(eight DDR-tier exceptions, described below, compare with Sail).
 At the end of a test, `RVMODEL_HALT` (`sw/apps/arch_test/model_test.h`)
 prints `<<PASS>>` over the UART, and the bench then reads the signature from
 the data copy of low BRAM. The `bram` and `icache` tiers keep the signature
@@ -594,15 +595,21 @@ runs leave out tests with more than 5,000 cases (`SIM_MAX_TEST_CASES`) unless
 you pass `--no-sim-filter`; `--test` runs any one test. In the `bram` and
 `icache` tiers, a test too large for low BRAM (95 KiB of code, 1 KiB reserved
 for debug, and 160 KiB of data and stack) reports SKIP; the `ddr` tier still
-runs it. In the `ddr` tier, extension runs leave out the eight privilege
-tests of the load and store address-misaligned trap (`misalign-lh` through
-`misalign-sd`): there the misaligned-access engine performs those accesses,
-and the references, made with a Spike that traps them, expect the trap. The
-`bram` and `icache` tiers keep their data in low BRAM, which still traps, and
-run them (`MEM_CONFIG_TEST_EXCLUDES`). `--shard K/N` runs part K of N of each
+runs it. `--shard K/N` runs part K of N of each
 selected extension, with the parts balanced by case count. A selected test with no committed reference
 fails; `sw/apps/arch_test/generate_references.py`, run in the frost image,
 generates references with the pinned Spike.
+
+In the `ddr` tier the misaligned-access engine performs misaligned loads and
+stores, which the pinned Spike cannot model, while low BRAM still traps them.
+The eight privilege tests of the load and store address-misaligned trap
+(`misalign-lh` through `misalign-sd`, `DDR_MISALIGNED_TESTS`) therefore use a
+second reference in that tier, under `sw/apps/arch_test/references_ddr/`,
+generated with the image's Sail model: the TestRIG configuration
+(`verif/testrig/sail_frost.json`) with misaligned loads and stores supported
+in the DDR region (`generate_references.py --ddr-misaligned`; `--all` makes
+both sets). The `bram` and `icache` tiers, whose data is in low BRAM, compare
+them with the Spike references, which record the trap.
 
 The vector crypto tests (`rv32i_m/Zvk`, which also declare RV64) are prepared
 but not supported. Of the 37 in the pinned suite, 32 run: `vandn.vx`,

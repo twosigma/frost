@@ -23,10 +23,9 @@ pieces come before the second hart:
 - Misaligned loads and stores in hardware. The CPU's misaligned-access
   engine performs plain misaligned loads and stores to cached DDR in the X3
   build and in simulation (`MISALIGNED_HW`); elsewhere they raise the
-  address-misaligned exception. Two checks remain: TestRIG, whose build
-  leaves the engine out until its RVFI-DII recorder reports the engine's
-  retirements and writes, and arch-test references for the DDR tier from a
-  reference model that performs misaligned accesses.
+  address-misaligned exception. TestRIG does not check the engine yet: its
+  build leaves the engine out until its RVFI-DII recorder reports the
+  engine's retirements and writes.
 
 ## SMP
 
