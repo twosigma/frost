@@ -1,0 +1,79 @@
+/*
+ *    Copyright 2026 Two Sigma Open Source, LLC
+ *
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *    Unless required by applicable law or agreed to in writing, software
+ *    distributed under the License is distributed on an "AS IS" BASIS,
+ *    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *    See the License for the specific language governing permissions and
+ *    limitations under the License.
+ */
+
+/*
+  Types shared by the vector unit's datapath blocks.
+*/
+package vec_pkg;
+
+  // Element width: SEW = 8 << sew.
+  typedef enum logic [1:0] {
+    SEW8  = 2'd0,
+    SEW16 = 2'd1,
+    SEW32 = 2'd2,
+    SEW64 = 2'd3
+  } sew_e;
+
+  // Integer lane operations. Operand a is the vs2 element, b the vs1 element
+  // or the scalar operand; compares produce one mask bit per element.
+  typedef enum logic [4:0] {
+    VI_ADD   = 5'd0,   // a + b
+    VI_SUB   = 5'd1,   // a - b
+    VI_RSUB  = 5'd2,   // b - a
+    VI_AND   = 5'd3,
+    VI_OR    = 5'd4,
+    VI_XOR   = 5'd5,
+    VI_ANDN  = 5'd6,   // a & ~b (Zvbb vandn)
+    VI_MINU  = 5'd7,
+    VI_MIN   = 5'd8,
+    VI_MAXU  = 5'd9,
+    VI_MAX   = 5'd10,
+    VI_SLL   = 5'd11,  // a << b[log2(SEW)-1:0]
+    VI_SRL   = 5'd12,
+    VI_SRA   = 5'd13,
+    VI_ROL   = 5'd14,  // Zvbb rotates
+    VI_ROR   = 5'd15,
+    VI_MERGE = 5'd16,  // mask ? b : a
+    VI_MV    = 5'd17,  // b
+    VI_BREV  = 5'd18,  // Zvbb: bit reverse within the element
+    VI_BREV8 = 5'd19,  // Zvbb: bit reverse within each byte
+    VI_REV8  = 5'd20,  // Zvbb: byte reverse within the element
+    VI_CLZ   = 5'd21,
+    VI_CTZ   = 5'd22,
+    VI_CPOP  = 5'd23,
+    VI_MSEQ  = 5'd24,  // mask = a == b
+    VI_MSNE  = 5'd25,
+    VI_MSLTU = 5'd26,  // mask = a < b
+    VI_MSLT  = 5'd27,
+    VI_MSLEU = 5'd28,  // mask = a <= b
+    VI_MSLE  = 5'd29,
+    VI_MSGTU = 5'd30,  // mask = a > b
+    VI_MSGT  = 5'd31
+  } int_op_e;
+
+  // Multiply lane operations. x and y are the multiplicand elements and z
+  // the addend; the sequencer picks them from vs1, vs2 and vd (vmacc and
+  // vmadd differ only in that choice).
+  typedef enum logic [2:0] {
+    VM_MUL    = 3'd0,  // low SEW bits of x * y
+    VM_MULH   = 3'd1,  // high SEW bits, signed x signed
+    VM_MULHU  = 3'd2,  // high SEW bits, unsigned x unsigned
+    VM_MULHSU = 3'd3,  // high SEW bits, signed x x unsigned y
+    VM_MACC   = 3'd4,  // low SEW bits of z + x * y
+    VM_NMSAC  = 3'd5   // low SEW bits of z - x * y
+  } mul_op_e;
+
+endpackage

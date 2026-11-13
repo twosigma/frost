@@ -27,6 +27,7 @@ expands renaming, execution, result broadcast, and load/store ordering.
 | `control/trap_unit.sv` | Traps, delegation, interrupts, Debug Mode entry |
 | `ex_stage/` | ALU, multiplier and divider, FPU, branch unit |
 | `wb_stage/` | Register file module used for the INT and FP files |
+| `vector/` | Vector unit datapath blocks (see [Vector state](#vector-state)) |
 | `riscv_pkg.sv` | Shared parameters, types, and predecode functions |
 
 `cpu_ooo/cpu_ooo.f` is the authoritative CPU source list.
@@ -478,9 +479,22 @@ to `vstart`, `vxsat`, `vxrm` or `vcsr` sets VS to Dirty, and SD is set while
 FS or VS is Dirty. A read that does not write, such as `csrr`, leaves VS
 unchanged. `vstart` keeps log2(`VLEN`) bits, `vlenb` reads `VLEN/8`, `vl` resets
 to 0 and `vtype` to vill. Vector instructions raise illegal-instruction.
-`misa.V` is set only with `VECTOR_ADVERTISE=1`; with 0, bare-metal software
-enables the state by writing `mstatus.VS`. With `VECTOR=0` the vector CSRs do
+`misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
+elaboration while the vector instructions are not implemented, and bare-metal
+software enables the state by writing `mstatus.VS`. With `VECTOR=0` the vector CSRs do
 not exist and VS reads zero.
+
+The vector unit's datapath blocks live in `vector/`; the core does not
+instantiate them, and each has its own unit bench. `vec_int_lane` is one 64-bit integer lane: add, subtract and
+reverse subtract, the logical operations and `vandn`, signed and unsigned
+minimum and maximum, shifts and rotates, merge and move, the Zvbb bit and byte
+reversals and counts, and the eight compares, at SEW 8, 16, 32 or 64. Its
+result appears a fixed two cycles after the cycle that takes its input, for
+every operation and operand, as Zvkt requires. A 72-bit adder with a
+separator bit after each byte serves every element width: a separator inside
+an element propagates the carry, one at an element boundary stops it and
+yields the element's carry out, which the compares and minimum and maximum
+use. Compares write one bit per element to `o_mask`.
 
 ## Subtle cases
 

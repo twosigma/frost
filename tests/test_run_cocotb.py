@@ -2133,6 +2133,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=("Integer ALU results with captured shift amounts enabled"),
         verilator_extra_args=("-GUSE_SHIFT_AMOUNT_HINT=1",),
     ),
+    "vec_int_lane": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_int_lane",
+        hdl_toplevel_module="vec_int_lane",
+        description=(
+            "Vector integer lane: arithmetic, logic, shifts, Zvbb and compares at every "
+            "element width against a Python model, with a fixed latency"
+        ),
+    ),
+    "vec_mul_lane": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_mul_lane",
+        hdl_toplevel_module="vec_mul_lane",
+        description=(
+            "Vector multiply lane: low, high and accumulate results and widening products "
+            "at every element width against a Python model, with a fixed latency"
+        ),
+    ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",
