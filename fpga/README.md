@@ -380,6 +380,7 @@ samples before the fetch fault.
 | `Synth 8-11241` error | A name is used before its declaration, or never declared, so Vivado assumed an implicit net. Declare it before its first use. Verilator binds a later declaration, but inside a generate block Vivado gives the use its own net, which leaves the use or the declaration undriven |
 | `Synth 8-605` error | The build treats this Vivado warning as an error. Declare each signal before any generated primitive instance that uses it; a later declaration can leave the primitive on an undriven implicit net |
 | `Synth 8-324` error | An array or vector index is out of range. The build rejects this because synthesis can replace the read with a don't-care while simulation silently truncates the index. Check index widths; for a two-entry vector indexed by an `int p` loop variable, use `p ^ 1` for the other entry, since `~p` is negative |
+| Step "ended abnormally" | The Vivado step exited non-zero with no `ERROR:` line and no `Exiting Vivado` line in its log, so the process was killed from outside (another session, the out-of-memory killer) or crashed. The message names the last log line; check `dmesg` and free memory, then rerun from that step |
 | Application does not run | The CPU clock setting (`FROST_CPU_CLK_HZ`), that the program fits in low BRAM, and that any DDR image was loaded |
 
 To add a board, follow the
