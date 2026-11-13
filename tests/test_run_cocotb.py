@@ -2178,6 +2178,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Vector byte crossbar and rotator over a 512-bit element group",
         verilator_extra_args=("-GBYTES=64",),
     ),
+    "vec_clmul_lane": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_clmul_lane",
+        hdl_toplevel_module="vec_clmul_lane",
+        description="Vector carry-less multiply lane (vclmul, vclmulh) against a Python model",
+    ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",

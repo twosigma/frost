@@ -534,6 +534,8 @@ meets the running value.
 takes any input byte or zero, for the gathers, slides and compress that the
 sequencer turns into byte indices, and a rotator for slides by whole bytes and
 the alignment of unit-stride data to and from memory.
+`vec_clmul_lane` is one 64-bit carry-less multiply lane for `vclmul` and
+`vclmulh`.
 
 ## Subtle cases
 
