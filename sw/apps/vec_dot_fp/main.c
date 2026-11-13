@@ -23,6 +23,11 @@
  * from bit patterns, so every sum is exact and the checks do not depend on
  * scalar float16 support. Build with -ffp-contract=off. Define VT_NO_ZVFH to
  * skip the Zvfh kernels on a Zvfhmin-only target.
+ *
+ * The per-lane models assume that vsetvli returns min(AVL, VLMAX) for each strip.
+ * The specification also lets an implementation return a smaller vl when
+ * VLMAX < AVL < 2 * VLMAX, which would move elements between lanes and change the
+ * rounding of the float sums.
  */
 
 #include "vec_test.h"

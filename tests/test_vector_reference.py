@@ -134,3 +134,19 @@ def test_dot_fp_without_zvfh_on_spike(tmp_path: Path) -> None:
         extensions=ZVFHMIN_EXTENSIONS,
         extra_cflags="-DVT_NO_ZVFH",
     )
+
+
+def test_stale_disassembly_is_not_linked(tmp_path: Path) -> None:
+    """The disassembly a FROST build leaves in a program's directory is not linked."""
+    apps = tmp_path / "apps"
+    for name in ("vec_common", "vec_zvbb"):
+        shutil.copytree(APPS_DIR / name, apps / name)
+    (apps / "vec_zvbb" / "sw.S").write_text("this is not assembly\n")
+    build = subprocess.run(
+        ["make", "-s", "-f", SPIKE_MAKEFILE, f"BUILD={tmp_path / 'build'}"],
+        cwd=apps / "vec_zvbb",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert build.returncode == 0, build.stderr[-1000:]

@@ -1,10 +1,11 @@
 # Build one bring-up program for the Spike reference run:
 #   make -f ../vec_common/spike/Makefile.spike VLEN=256
 # from inside the program's directory. Output: $(BUILD)/sw_vlen$(VLEN).elf
-# (BUILD defaults to build). Every .S file in the directory is linked in.
+# (BUILD defaults to build). Every .S file in the directory is linked in, except
+# sw.S, the disassembly an ordinary FROST build of the program leaves there.
 VLEN ?= 128
 BUILD ?= build
-EXTRA_SRC ?= $(wildcard *.S)
+EXTRA_SRC ?= $(filter-out sw.S,$(wildcard *.S))
 RISCV_PREFIX ?= riscv64-linux-
 CC := $(RISCV_PREFIX)gcc
 COMMON := ../vec_common
