@@ -1390,7 +1390,7 @@ jobs:
             timeout_minutes: 240
           # The link proofs, and the store-home composition with one register
           # stage between the L1D and the home: the sibling BMC (120-minute
-          # allowance) and the cover share a job, the pressure BMC (150
+          # allowance) and the cover share a job, the pressure BMC (145
           # minutes) has its own.
           - shard: Coherence links
             pytest_filter: >-
