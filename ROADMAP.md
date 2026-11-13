@@ -5,22 +5,25 @@ set the direction of this roadmap. The sections are in priority order.
 
 ## RVA23 profile and the vector extension
 
-FROST is working toward the RVA23U64 user profile with the RVA22S64
-supervisor profile, which does not require the hypervisor extension. The
-remaining scalar and supervisor extensions are in progress. Two larger pieces
-come before the second hart:
+FROST is working toward the RVA23 profile without the hypervisor extension:
+the RVA23U64 user profile and every RVA23S64 supervisor extension except H.
+The remaining scalar and supervisor extensions are in progress. Two larger
+pieces come before the second hart:
 
-- A vector unit. The profile requires V with Zvfhmin, Zvbb, and Zvkt; vector
-  cryptography follows, and Zvbc and Zvfh are candidates. The vector length
+- A vector unit. The profile requires V with Zvfhmin, Zvbb, and Zvkt; Zvbc,
+  Zvfh and vector cryptography follow. The vector length
   is a build parameter from 128 to 512 bits; 512 bits is one L2 line. Vector
   loads and stores go through the coherent memory system, so they are
   ordered with the scalar load and store queues and the caches, and they
   take precise faults. The unit is a build option, and a configuration
   without it is unchanged. The vector state (`mstatus.VS` and the vector
-  CSRs) is in place behind the `VECTOR` build parameter.
+  CSRs) is in place behind the `VECTOR` build parameter, and so are the
+  unit's datapath blocks with their unit benches. The core does not execute
+  vector instructions yet.
 - Misaligned loads and stores in hardware. FROST raises an
   address-misaligned exception on them today and leaves the access to
-  firmware.
+  firmware. The engine that will perform them is in place with its proofs
+  and is not connected to the core yet.
 
 ## SMP
 
@@ -214,7 +217,7 @@ cones so the task fits its CI budget.
 
 The FPGA build's hand-instantiated primitives are compared with their
 portable forms by [equivalence checks](formal/README.md#primitive-twins).
-Open: the primitive blocks in the load queue, the Tomasulo wrapper, the
+Open: a few primitive blocks in the load queue, the Tomasulo wrapper, the
 branch prediction controller and the SoC top have no comparison yet;
 `NOT_COVERED` in `tests/test_prim_twins.py` gives the reason for each.
 
@@ -260,13 +263,13 @@ for an ASIC, the RTL also needs:
    FreePDK45 is not a manufacturable process, so the flow shows that the RTL
    maps onto standard cells and SRAM macros and estimates its area and
    timing; it does not replace a foundry flow.
-4. Clock domains. `cpu_top` runs on the same clock as `soc_top`. An optional
-   asynchronous boundary around it, with AXI4 clock-domain crossings on its
-   memory master and DMA ingress and synchronizers for its interrupts, timer
-   and reset, would let the CPU cluster run on its own clock, as an ASIC with
-   an independent CPU clock or a multi-die FPGA with the cluster on its own
-   die needs. The X3 keeps one clock, which spares its cache misses the
-   crossing's latency.
+4. Clock domains. By default `cpu_top` runs on the same clock as `soc_top`.
+   With `ASYNC_CPU_CLOCK=1` the CPU cluster runs on its own clock behind an
+   asynchronous boundary in `soc_top`: asynchronous FIFOs on its memory
+   master and DMA ingress, and synchronizers for its interrupts, timer and
+   reset, as an ASIC with an independent CPU clock or a multi-die FPGA with
+   the cluster on its own die needs. The X3 keeps one clock, which spares its
+   cache misses the crossing's latency.
 
 ## Single-core performance
 
@@ -378,15 +381,16 @@ and targeted microbenchmarks give these items:
 2. Data translation. A last-page bypass sends eligible translated accesses
    directly to DMMU stage S2. Other translated accesses use S1 and S2.
    Reducing that path would improve cross-page translation latency.
-3. TLB reach. The DTLB and ITLB have 16 entries each. A DTLB miss costs
-   about 50 cycles and an ITLB miss about 58. Without ASIDs, every context
-   switch flushes both. A larger DTLB, ASID support, and a page-walk cache for
-   upper-level page-table entries would each help. A design is ready: an
-   8-entry cache of non-leaf entries in the walker, a 32-entry fully
-   associative DTLB, and ASIDs with global pages and selective `sfence.vma`.
-   In simulation the walker cache takes a miss in a chain of 20 or more pages
-   from 93 to 37 cycles, and the larger DTLB takes chains of up to 32 pages
-   to 5 cycles.
+3. TLB reach. The DTLB and ITLB have 16 entries each. The walker keeps a
+   cache of upper-level page-table pointers, 16 for 2 MiB regions and 4 for
+   1 GiB regions, so a walk that hits it makes one or two dependent reads
+   instead of three. In simulation a dependent load that misses the DTLB
+   takes about 35 cycles against 5 on a hit, and an instruction page visit
+   that misses the ITLB about 51 against 20. Without ASIDs, every context
+   switch flushes both TLBs. A larger DTLB and ASID support would each help.
+   A design is ready: a 32-entry fully associative DTLB, which in simulation
+   takes chains of up to 32 pages to 5 cycles, and ASIDs with global pages
+   and selective `sfence.vma`.
 4. Branch prediction. A misprediction costs about 7 cycles. The BTB has 256
    direct-mapped entries, and a 1024-entry two-way backing BTB behind it
    predicts the jumps, calls and returns it misses through a PD redirect, at
@@ -435,8 +439,8 @@ and targeted microbenchmarks give these items:
    flight or one read slot per line for loads to the same line would let one
    stream keep more lines in flight. Dependent loads are also slower than
    through the previous hierarchy: in simulation an L2 hit takes 36 cycles
-   against 23, a DRAM miss about 6 cycles more, and a page-table walk 29
-   cycles more. The L1D answers a load from its grant, and registered stages
+   against 23 and a DRAM miss about 6 cycles more. The L1D answers a load
+   from its grant, and registered stages
    and arbitration add the rest. The home grants the load or store that misses
    first from the arriving line; requests that join its fill, and instruction,
    page-table and DMA reads, repeat the tag lookup and data read after the
@@ -499,7 +503,7 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   meets timing
 - A redesign three or four instructions wide, sized first with a
   performance model
-- The V and H extensions
+- The hypervisor (H) extension
 - CHERI capabilities (RVY), following version 0.9.10.1 of the RISC-V CHERI
   specification, with a capability tag controller and a software
   revoker, so that the toolchains and Linux work for other RISC-V CHERI
