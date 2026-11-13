@@ -22,6 +22,7 @@ from decimal import Decimal
 from pathlib import Path
 import re
 import subprocess
+import time
 import sys
 import zipfile
 from types import SimpleNamespace
@@ -5225,9 +5226,13 @@ def _launch_stuck_vivado(
     log_text: str,
 ) -> int:
     """Run run_vivado_step against a fake launcher, advancing 60 s per clock read."""
-    (tmp_path / "vivado.log").write_text(log_text)
     clock = iter(range(0, 10_000, 60))
-    monkeypatch.setattr(fpga_build.subprocess, "Popen", lambda *_a, **_k: launcher)
+
+    def popen(*_args: Any, **_kwargs: Any) -> _StuckLauncher:
+        (tmp_path / "vivado.log").write_text(log_text)
+        return launcher
+
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", popen)
     monkeypatch.setattr(fpga_build.time, "monotonic", lambda: float(next(clock)))
     return fpga_build.run_vivado_step(["vivado"], tmp_path)
 
@@ -5254,7 +5259,6 @@ def test_exit_marker_cleared_by_a_log_rewrite_restarts_the_grace_period(
     """A marker from an earlier step that Vivado overwrites does not start the clock."""
     log = tmp_path / "vivado.log"
     stale = "** DONE\nINFO: Exiting Vivado at Tue Nov  3 13:37:14 2026...\n"
-    log.write_text(stale)
     launcher = _StuckLauncher(waits_before_exit=5)
 
     original_wait = launcher.wait
@@ -5268,7 +5272,12 @@ def test_exit_marker_cleared_by_a_log_rewrite_restarts_the_grace_period(
 
     launcher.wait = wait  # type: ignore[method-assign]
     clock = iter(range(0, 10_000, 100))
-    monkeypatch.setattr(fpga_build.subprocess, "Popen", lambda *_a, **_k: launcher)
+
+    def popen(*_args: Any, **_kwargs: Any) -> _StuckLauncher:
+        log.write_text(stale)
+        return launcher
+
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", popen)
     monkeypatch.setattr(fpga_build.time, "monotonic", lambda: float(next(clock)))
     assert fpga_build.run_vivado_step(["vivado"], tmp_path) == 0
     assert not launcher.terminated
@@ -5285,6 +5294,35 @@ def test_echoed_done_command_does_not_count_as_done(
     )
     assert _launch_stuck_vivado(tmp_path, monkeypatch, launcher, log) == 1
     assert launcher.terminated
+
+
+def test_real_launcher_group_is_ended_with_its_descendants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wrapper that spawns Vivado without exec leaves nothing running."""
+    pid_file = tmp_path / "child.pid"
+    script = tmp_path / "launcher.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        "trap '' TERM\n"
+        f"sleep 300 & echo $! > {pid_file}\n"
+        "printf '** DONE\\nINFO: Exiting Vivado at now...\\n' > vivado.log\n"
+        "wait\n"
+    )
+    script.chmod(0o755)
+    monkeypatch.setattr(fpga_build, "VIVADO_EXIT_GRACE_S", 0.0)
+    monkeypatch.setattr(fpga_build, "VIVADO_POLL_S", 0.3)
+    assert fpga_build.run_vivado_step([str(script)], tmp_path) == 0
+    child = int(pid_file.read_text())
+    for _ in range(50):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(child, 9)
+        pytest.fail("the launcher's descendant survived")
 
 
 def test_launcher_still_running_before_vivado_exits_is_left_alone(
@@ -5327,9 +5365,13 @@ def _fail_vivado(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, log_text: str, returncode: int = 1
 ) -> int:
     """Run run_vivado_step against a launcher that exits at once with a failure."""
-    (tmp_path / "vivado.log").write_text(log_text)
     launcher = SimpleNamespace(wait=lambda timeout=None: returncode)
-    monkeypatch.setattr(fpga_build.subprocess, "Popen", lambda *_a, **_k: launcher)
+
+    def popen(*_args: Any, **_kwargs: Any) -> Any:
+        (tmp_path / "vivado.log").write_text(log_text)
+        return launcher
+
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", popen)
     return fpga_build.run_vivado_step(["vivado"], tmp_path)
 
 

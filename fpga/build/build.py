@@ -64,6 +64,7 @@ BOARD_DESIGN_DIR = Path(__file__).resolve().parent
 # This is separate from each process's thread count.
 DEFAULT_MAX_JOBS = 12
 VIVADO_EXIT_GRACE_S = 120.0
+VIVADO_POLL_S = 5.0
 
 # X3 defaults to AlternateRoutability to limit MUXF7/MUXF8 routing congestion.
 BOARD_CONFIG = {
@@ -3196,8 +3197,23 @@ def run_vivado_step(
     log_path = cwd / "vivado.log"
     if "-log" in command:
         log_path = cwd / command[command.index("-log") + 1]
+    # Vivado rewrites its log at start-up; a log left by an earlier step must not
+    # be mistaken for this step's.
+    log_path.unlink(missing_ok=True)
     options = {} if env is None else {"env": env}
     process = subprocess.Popen(command, cwd=cwd, start_new_session=True, **options)
+
+    def hang_up(signum: int, _frame: object) -> None:
+        raise SystemExit(128 + signum)
+
+    # The step runs in its own session, so a hangup or termination aimed at this
+    # build must be forwarded to it: turn them into an exception here.
+    previous = {}
+    try:
+        for sig in (signal.SIGHUP, signal.SIGTERM):
+            previous[sig] = signal.signal(sig, hang_up)
+    except ValueError:  # not the main thread
+        pass
     try:
         returncode = _wait_for_vivado(process, log_path)
     except BaseException:
@@ -3205,6 +3221,9 @@ def run_vivado_step(
         _signal_launcher(process, signal.SIGKILL)
         process.wait()
         raise
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
     if returncode != 0:
         explain_silent_vivado_exit(log_path, returncode)
     return returncode
@@ -3230,7 +3249,7 @@ def _wait_for_vivado(process: subprocess.Popen[bytes], log_path: Path) -> int:
     exited_since: float | None = None
     while True:
         try:
-            returncode = process.wait(timeout=5.0)
+            returncode = process.wait(timeout=VIVADO_POLL_S)
         except subprocess.TimeoutExpired:
             pass
         else:
@@ -3255,7 +3274,9 @@ def _wait_for_vivado(process: subprocess.Popen[bytes], log_path: Path) -> int:
             try:
                 process.wait(timeout=10.0)
             except subprocess.TimeoutExpired:
-                _signal_launcher(process, signal.SIGKILL)
+                pass
+            # A descendant may outlive the launcher or ignore SIGTERM.
+            _signal_launcher(process, signal.SIGKILL)
             return 0 if re.search(r"^\*\* DONE", text, re.MULTILINE) else 1
 
 
