@@ -3222,6 +3222,9 @@ def _wait_for_vivado(process: subprocess.Popen[bytes], log_path: Path) -> int:
         except OSError:
             continue
         if "Exiting Vivado at" not in text:
+            # Vivado rewrites the log at start-up, so a marker left by an earlier
+            # step must not count towards this step's grace period.
+            exited_since = None
             continue
         if exited_since is None:
             exited_since = time.monotonic()

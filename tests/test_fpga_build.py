@@ -5247,6 +5247,32 @@ def test_launcher_outliving_vivado_is_terminated_and_judged_by_done_marker(
     assert "launcher did not exit" in capsys.readouterr().out
 
 
+def test_exit_marker_cleared_by_a_log_rewrite_restarts_the_grace_period(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A marker from an earlier step that Vivado overwrites does not start the clock."""
+    log = tmp_path / "vivado.log"
+    stale = "** DONE\nINFO: Exiting Vivado at Tue Nov  3 13:37:14 2026...\n"
+    log.write_text(stale)
+    launcher = _StuckLauncher(waits_before_exit=5)
+
+    original_wait = launcher.wait
+
+    def wait(timeout: float | None = None) -> int:
+        if launcher.waits == 1:
+            log.write_text("Running route\n")
+        if launcher.waits == 3:
+            log.write_text(stale)
+        return original_wait(timeout)
+
+    launcher.wait = wait  # type: ignore[method-assign]
+    clock = iter(range(0, 10_000, 100))
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", lambda *_a, **_k: launcher)
+    monkeypatch.setattr(fpga_build.time, "monotonic", lambda: float(next(clock)))
+    assert fpga_build.run_vivado_step(["vivado"], tmp_path) == 0
+    assert not launcher.terminated
+
+
 def test_launcher_still_running_before_vivado_exits_is_left_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
