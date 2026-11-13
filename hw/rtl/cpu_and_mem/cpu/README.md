@@ -540,6 +540,10 @@ the alignment of unit-stride data to and from memory.
 encryption and decryption rounds, round zero, and both key-schedule steps,
 with S-box lookups, ShiftRows and the round key, and MixColumns or
 InvMixColumns in three fixed cycles, so the timing does not depend on the data.
+`vec_sha2_group` runs `vsha2ms`, `vsha2cl` and `vsha2ch` on one element group of
+four 32-bit (SHA-256) or 64-bit (SHA-512) words: each round's sums use
+carry-save adders and one carry adder, and the two rounds, like the message
+schedule's two dependent word pairs, take four fixed cycles.
 
 ## Subtle cases
 

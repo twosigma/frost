@@ -2191,6 +2191,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "a Python AES model checked on the FIPS-197 examples"
         ),
     ),
+    "vec_sha2_group": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_sha2_group",
+        hdl_toplevel_module="vec_sha2_group",
+        description=(
+            "Vector SHA-2 element group: vsha2ms, vsha2cl and vsha2ch at SEW 32 and 64 against "
+            "a Python model checked on the SHA-256 and SHA-512 digests of a test message"
+        ),
+    ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",

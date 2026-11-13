@@ -123,4 +123,11 @@ package vec_pkg;
     VA_KF2 = 3'd6   // vaeskf2: next AES-256 round key
   } aes_op_e;
 
+  // SHA-2 element-group operations (Zvknha, Zvknhb).
+  typedef enum logic [1:0] {
+    VS_MS = 2'd0,  // vsha2ms: four message-schedule words
+    VS_CL = 2'd1,  // vsha2cl: two rounds with the low message words
+    VS_CH = 2'd2   // vsha2ch: two rounds with the high message words
+  } sha_op_e;
+
 endpackage
