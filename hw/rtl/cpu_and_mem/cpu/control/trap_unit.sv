@@ -685,7 +685,7 @@ module trap_unit #(
   assign exception_saves_m = exception_pending && !exception_to_s && !exception_ebreak_to_d &&
       !exception_in_debug && !exception_replay && !exception_assist;
   assign exception_saves_s = exception_pending && exception_to_s && !exception_in_debug;
-  assign exception_enters_d = exception_ebreak_to_d && !exception_replay;
+  assign exception_enters_d = exception_ebreak_to_d && !exception_replay && !exception_assist;
   assign o_trap_save_m = take_gate && !d_int_take_ready &&
       (m_int_take_ready || (!s_int_take_ready && exception_saves_m));
   assign o_trap_save_s = take_gate && !d_int_take_ready && !m_int_take_ready &&

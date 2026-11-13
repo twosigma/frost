@@ -975,45 +975,50 @@ module cpu_ooo #(
   // FP data width, also used below by the commit-side write-port packing.
   localparam int unsigned FpW = riscv_pkg::FpWidth;
 
-  logic [XLEN-1:0] int_rf_dispatch_rs1_data;
-  logic [XLEN-1:0] int_rf_dispatch_rs2_data;
-  logic [XLEN-1:0] int_rf_dispatch_rs1_data_2;
-  logic [XLEN-1:0] int_rf_dispatch_rs2_data_2;
-  logic [ FpW-1:0] fp_rf_dispatch_rs1_data;
-  logic [ FpW-1:0] fp_rf_dispatch_rs2_data;
-  logic [ FpW-1:0] fp_rf_dispatch_rs3_data;
-  logic [ FpW-1:0] fp_rf_dispatch_rs1_data_2;
-  logic [ FpW-1:0] fp_rf_dispatch_rs2_data_2;
-  logic [ FpW-1:0] fp_rf_dispatch_rs3_data_2;
+  logic [              XLEN-1:0] int_rf_dispatch_rs1_data;
+  logic [              XLEN-1:0] int_rf_dispatch_rs2_data;
+  logic [              XLEN-1:0] int_rf_dispatch_rs1_data_2;
+  logic [              XLEN-1:0] int_rf_dispatch_rs2_data_2;
+  logic [               FpW-1:0] fp_rf_dispatch_rs1_data;
+  logic [               FpW-1:0] fp_rf_dispatch_rs2_data;
+  logic [               FpW-1:0] fp_rf_dispatch_rs3_data;
+  logic [               FpW-1:0] fp_rf_dispatch_rs1_data_2;
+  logic [               FpW-1:0] fp_rf_dispatch_rs2_data_2;
+  logic [               FpW-1:0] fp_rf_dispatch_rs3_data_2;
 
   // Registered write enables and addresses for the register-file bypass,
   // computed below after commit_actions.
-  logic            bypass_p0_int_we_q;
-  logic            bypass_p1_int_we_q;
-  logic            bypass_p0_fp_we_q;
-  logic            bypass_p1_fp_we_q;
+  logic                          bypass_p0_int_we_q;
+  logic                          bypass_p1_int_we_q;
+  logic                          bypass_p0_fp_we_q;
+  logic                          bypass_p1_fp_we_q;
   // Cap bypass-address fanout for replication.
-  (* max_fanout = 48 *)logic [     4:0] bypass_p0_addr_q;
-  (* max_fanout = 48 *)logic [     4:0] bypass_p1_addr_q;
+  (* max_fanout = 48 *)logic [                   4:0] bypass_p0_addr_q;
+  (* max_fanout = 48 *)logic [                   4:0] bypass_p1_addr_q;
+
+  // The misaligned-access engine's register-file read port (MISALIGNED_HW).
+  logic [                   4:0] ma_rf_read_addr;
+  logic [              XLEN-1:0] ma_extra_int_read_data;
+  logic [riscv_pkg::FpWidth-1:0] ma_extra_fp_read_data;
 
   // Regfile write ports (driven by commit_actions, consumed by
   // ooo_register_files) and retire status.
-  logic            port0_int_we;
-  logic [     4:0] port0_int_addr;
-  logic [XLEN-1:0] port0_int_data;
-  logic            port0_fp_we;
-  logic [     4:0] port0_fp_addr;
-  logic [ FpW-1:0] port0_fp_data;
-  logic            port1_int_we;
-  logic [     4:0] port1_int_addr;
-  logic [XLEN-1:0] port1_int_data;
-  logic            port1_fp_we;
-  logic [     4:0] port1_fp_addr;
-  logic [ FpW-1:0] port1_fp_data;
-  logic [     1:0] instruction_retired_count;
+  logic                          port0_int_we;
+  logic [                   4:0] port0_int_addr;
+  logic [              XLEN-1:0] port0_int_data;
+  logic                          port0_fp_we;
+  logic [                   4:0] port0_fp_addr;
+  logic [               FpW-1:0] port0_fp_data;
+  logic                          port1_int_we;
+  logic [                   4:0] port1_int_addr;
+  logic [              XLEN-1:0] port1_int_data;
+  logic                          port1_fp_we;
+  logic [                   4:0] port1_fp_addr;
+  logic [               FpW-1:0] port1_fp_data;
+  logic [                   1:0] instruction_retired_count;
   // An instruction retired without a registered ROB commit in the previous
   // cycle: xRET, a taken-over WFI, FENCE.I, or SFENCE.VMA.
-  logic            retired_without_commit_q;
+  logic                          retired_without_commit_q;
 
   ooo_register_files #(
       .XLEN(XLEN),
@@ -2004,11 +2009,9 @@ module cpu_ooo #(
   logic ma_busy, ma_hold, ma_shield, ma_done, ma_wb_arm, ma_wb_fp_arm, ma_walk_req_valid;
   logic ma_walk_req_ready, ma_walk_resp_valid, ma_rf_read_fp, ma_assist_start;
   logic ma_fault_pending_q, ma_exception_assist, ma_wb_valid_q, ma_wb_fp_q;
-  logic [4:0] ma_rf_read_addr, ma_wb_rd_arm, ma_wb_rd_q;
+  logic [4:0] ma_wb_rd_arm, ma_wb_rd_q;
   logic [riscv_pkg::FpWidth-1:0] ma_wb_data_arm, ma_wb_data_q;
   logic [riscv_pkg::Sv39VpnBits-1:0] ma_walk_vpn;
-  logic [XLEN-1:0] ma_extra_int_read_data;
-  logic [riscv_pkg::FpWidth-1:0] ma_extra_fp_read_data;
   logic [XLEN-1:0] ma_fault_tval_q, ma_fault_pc_q;
   riscv_pkg::exc_cause_t ma_fault_cause_q;
   // Register-bypass and direction-training field pre-decodes from the ROB

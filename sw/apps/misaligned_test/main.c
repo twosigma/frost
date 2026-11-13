@@ -24,7 +24,8 @@
  * page, and with compressed and FP forms. A misaligned load to x0 writes
  * nothing, and an access retires as exactly one instruction. In low BRAM a
  * misaligned access still raises the address-misaligned exception with the
- * access's address as the trap value.
+ * access's address as the trap value. Last, misaligned accesses run while
+ * timer interrupts arrive at varying phases.
  */
 
 #include <stdint.h>
@@ -196,6 +197,73 @@ __attribute__((naked, aligned(4))) static void bounce_handler(void)
 
 extern char trig_bram_load[], trig_bram_store[];
 
+static volatile uint32_t g_irq;
+
+/* Timer handler: count, re-arm 300 to 555 cycles ahead (longer than the
+ * trap round trip, about as long as an engine access), and MRET. */
+__attribute__((naked, aligned(4))) static void timer_handler(void)
+{
+    __asm__ volatile("addi sp, sp, -32\n"
+                     "sd   t0, 0(sp)\n"
+                     "sd   t1, 8(sp)\n"
+                     "sd   t2, 16(sp)\n"
+                     "la   t0, g_irq\n"
+                     "lw   t1, 0(t0)\n"
+                     "andi t2, t1, 0xff\n"
+                     "addi t2, t2, 300\n"
+                     "addi t1, t1, 1\n"
+                     "sw   t1, 0(t0)\n"
+                     "li   t0, 0x40000010\n" /* MTIME_LO */
+                     "lw   t1, 0(t0)\n"
+                     "add  t1, t1, t2\n"
+                     "li   t0, 0x40000018\n" /* MTIMECMP_LO; MTIMECMP_HI is 0 */
+                     "sw   t1, 0(t0)\n"
+                     "ld   t0, 0(sp)\n"
+                     "ld   t1, 8(sp)\n"
+                     "ld   t2, 16(sp)\n"
+                     "addi sp, sp, 32\n"
+                     "mret\n");
+}
+
+/* Misaligned stores and loads while timer interrupts arrive at varying
+ * phases: an interrupt waits for the engine, and no result is lost or
+ * written twice. */
+static void check_under_interrupts(void)
+{
+    set_trap_handler(&timer_handler);
+    MTIMECMP_HI = 0;
+    MTIMECMP_LO = (uint32_t) rdmtime() + 50;
+    enable_timer_interrupt();
+    enable_interrupts();
+    for (unsigned long i = 0; i < 200; i++) {
+        unsigned long offset = 0x200 + (i * 37u) % 0x600u;
+        if ((offset & 7u) == 0)
+            offset++;
+        uint64_t value = 0x9E3779B97F4A7C15ull * (i + 1u);
+        __asm__ volatile("sd %0, 0(%1)" : : "r"(value), "r"(area + offset) : "memory");
+        for (unsigned int k = 0; k < 8; k++)
+            ref[offset + k] = (uint8_t) (value >> (8u * k));
+        uint64_t got;
+        int64_t word;
+        __asm__ volatile("ld %0, 0(%1)" : "=r"(got) : "r"(area + offset) : "memory");
+        check(got == value, "ld under interrupts", offset, got, value);
+        __asm__ volatile("lw %0, 1(%1)" : "=r"(word) : "r"(area + offset) : "memory");
+        check(word == sext(ref_bytes(offset + 1u, 4), 32),
+              "lw under interrupts",
+              offset + 1u,
+              (uint64_t) word,
+              (uint64_t) sext(ref_bytes(offset + 1u, 4), 32));
+    }
+    disable_interrupts();
+    disable_timer_interrupt();
+    check(g_irq >= 20u, "timer interrupts", 0, g_irq, 20u);
+    for (unsigned long i = 0; i < AREA_BYTES; i++)
+        if (area[i] != ref[i]) {
+            check(0, "area byte", i, area[i], ref[i]);
+            break;
+        }
+}
+
 int main(void)
 {
     uart_printf("\n=== Misaligned load/store test ===\n");
@@ -272,6 +340,8 @@ int main(void)
               g_cause,
               6u);
     }
+
+    check_under_interrupts();
 
     uart_printf("%d checks\n", g_checks);
     uart_printf(g_ok ? "<<PASS>>\n" : "<<FAIL>>\n");
