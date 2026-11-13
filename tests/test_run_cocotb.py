@@ -2207,6 +2207,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "checked against the GCM specification's multiplication"
         ),
     ),
+    "vec_vrf": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_vrf",
+        hdl_toplevel_module="vec_vrf",
+        description="Vector register file, 32 entries of 256 bits, 4 read and 2 write ports",
+        verilator_extra_args=("-GDEPTH=32", "-GWIDTH=256", "-GNR=4", "-GNW=2"),
+    ),
+    "vec_vrf_3w": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_vrf",
+        hdl_toplevel_module="vec_vrf",
+        description="Vector register file, 64 entries of 128 bits, 3 read and 3 write ports",
+        verilator_extra_args=("-GDEPTH=64", "-GWIDTH=128", "-GNR=3", "-GNW=3"),
+    ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",

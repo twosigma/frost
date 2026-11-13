@@ -546,6 +546,12 @@ InvMixColumns in three fixed cycles, so the timing does not depend on the data.
 four 32-bit (SHA-256) or 64-bit (SHA-512) words: each round's sums use
 carry-save adders and one carry adder, and the two rounds, like the message
 schedule's two dependent word pairs, take four fixed cycles.
+`vec_vrf` is the vector register file: its depth, width and numbers of read and
+write ports are parameters, so it serves an architectural file or a larger
+physical one. Every write port has its own storage copy for every read port,
+and a live-value table records per byte which port wrote it last; reads are
+registered and see the file before that edge's writes, and when two ports write
+one byte together the higher-numbered port wins.
 
 ## Subtle cases
 

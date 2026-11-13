@@ -10,3 +10,4 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_clmul_lane.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_aes_group.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_sha2_group.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_ghash_group.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_vrf.sv
