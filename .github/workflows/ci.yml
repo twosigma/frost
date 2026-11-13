@@ -150,6 +150,18 @@ jobs:
           - name: Real Programs (Zicboz eviction)
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: "[cbo_zero_pages_thrash] or [cbo_zero_pages_thrash_sync]"
+          # One register stage between the hart and the cluster memory, as
+          # the X3 builds it (MEMORY_LINK_STAGES=1).
+          - name: Real Programs (Memory link stage, DDR programs)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [ddr_bench_link1] or [ddr_atomic_test_link1] or [ddr_mlp_test_link1]
+          - name: Real Programs (Memory link stage, other programs)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [coremark_link1] or [csr_test_link1] or [dma_torture_link1] or
+              [ptw_coherence_test_link1] or [cached_store_burst_test_link1] or
+              [cbo_zero_test_link1] or [cbo_zero_pages_link1]
           # The complement keeps new non-CoreMark-PRO programs in CI.
           # Keep it in sync when moving a test into a named shard.
           - name: Real Programs (Runtime and other)
@@ -188,7 +200,11 @@ jobs:
               or [async_nic_loopback] or [async_dma_torture]
               or [cbo_zero_test] or [cbo_zero_test_assert] or [cbo_zero_test_equal_lines]
               or [cbo_zero_pages] or [cbo_zero_pages_thrash] or [cbo_zero_pages_thrash_sync]
-              or [cbo_zero_pages_board] or [cbo_zero_pages_board_ddr] or [cbo_zero_bench])
+              or [cbo_zero_pages_board] or [cbo_zero_pages_board_ddr] or [cbo_zero_bench]
+              or [ddr_bench_link1] or [ddr_atomic_test_link1] or [ddr_mlp_test_link1]
+              or [coremark_link1] or [csr_test_link1] or [dma_torture_link1]
+              or [ptw_coherence_test_link1] or [cached_store_burst_test_link1]
+              or [cbo_zero_test_link1] or [cbo_zero_pages_link1])
           - name: Real Programs (CoreMark-PRO / core)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: "[coremark_pro_core]"
@@ -1006,7 +1022,7 @@ jobs:
             pytest_filter: >-
               ((coherence_ or coherent_) and not
               (axi_coherent_bridge or coherence_l1d or coherence_store_boundary or
-              coherence_store_home or coherent_local_atomic or coh_hart_maint_prove or
+              coherence_store_home or coherence_link or coherent_local_atomic or coh_hart_maint_prove or
               coh_hart_maint_owned_prove or coherence_array_equiv or
               coh_array4_port_bmc or _twin or (coh_read_select and xilinx))) or
               (coherent_local_atomic and amo_cover)
@@ -1023,8 +1039,20 @@ jobs:
           # The home's store BMC allowances plus twice main's cover times
           # use about three quarters of this job.
           - shard: Coherence store home
-            pytest_filter: coherence_store_home
+            pytest_filter: coherence_store_home and not coherence_store_home_link
             timeout_minutes: 240
+          # The link proofs, and the store-home composition with one register
+          # stage between the L1D and the home: the sibling BMC (120-minute
+          # allowance) and the cover share a job, the pressure BMC (145
+          # minutes) has its own.
+          - shard: Coherence links
+            pytest_filter: >-
+              coherence_link or
+              (coherence_store_home_link and not coherence_store_home_link_bmc_pressure)
+            timeout_minutes: 200
+          - shard: Coherence links pressure
+            pytest_filter: coherence_store_home_link_bmc_pressure
+            timeout_minutes: 180
           # The single-endpoint control BMC has a three-hour allowance for
           # its 40 frames; image setup has another twenty minutes.
           - shard: Coherence L1D control
