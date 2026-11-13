@@ -1,0 +1,27 @@
+[tasks]
+bmc
+bmc_fills3
+bmc_xilinx
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv cache_perf_pkg.sv coherence_pkg.sv
+bmc_xilinx: read_verilog -formal +/xilinx/cells_sim.v
+bmc_xilinx: read -formal -sv -D FROST_XILINX_PRIMS coherence_home.sv
+~bmc_xilinx: read -formal -sv coherence_home.sv
+read -formal -sv home_forward_next_equiv.sv
+bmc_fills3: chparam -set FILLS 3 home_forward_next_equiv
+prep -top home_forward_next_equiv
+
+[files]
+home_forward_next_equiv.sv
+../hw/rtl/lib/cache/cache_perf_pkg.sv
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_home.sv

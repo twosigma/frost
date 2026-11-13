@@ -999,6 +999,13 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover"),
     ),
     FormalTarget(
+        "home_forward_next_equiv.sby",
+        "The home's forward-turn next state, formed for both outcomes of the memory "
+        "response and selected last, equals the single-ready-set form at eight and "
+        "three fills, portable and primitive",
+        tasks=("bmc", "bmc_fills3", "bmc_xilinx"),
+    ),
+    FormalTarget(
         "alu_shift_hint.sby",
         "ALU shifts and rotates match the reference with captured shift amounts on or "
         "off",
@@ -2430,6 +2437,7 @@ SBY_TASKS = [
     ("bmc_xilinx_2port", "Bounded two-port arbitration with Xilinx primitives"),
     ("bmc_queued", "Bounded check with decoded-queue admission contract"),
     ("bmc", "Check assertions up to the configured depth"),
+    ("bmc_fills3", "Forward-turn equivalence with three fills."),
     ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
     ("bmc_32x32", "Line alignment with 32-byte lines and 32 data bytes."),
     ("cover", "Search for reachable cover scenarios"),
