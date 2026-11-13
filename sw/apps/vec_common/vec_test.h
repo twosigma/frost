@@ -24,6 +24,18 @@
  * -DVT_SPIKE (the reference run that proves a program correct before RTL
  * exists).
  *
+ * The programs pin choices that the specification leaves to the implementation, because
+ * they judge a particular design, and Spike and Sail make the same choices:
+ *  - vsetvli returns VLMAX when VLMAX < AVL < 2 * VLMAX (the specification allows less);
+ *  - every vtype whose SEW exceeds LMUL * ELEN, or that sets a reserved bit, sets vill
+ *    (the specification lets an implementation support more, or trap instead);
+ *  - a fault-only-first load that faults at element k > 0 returns vl = k exactly, where
+ *    the specification lets it return fewer;
+ *  - access faults write the faulting element's address to mtval;
+ *  - mstatus.VS = Initial reads back as Initial until a vector instruction changes state.
+ * A core that makes another legal choice fails these checks; change the check, not the core,
+ * if the design decision changes.
+ *
  * Fault-only-first and precise-fault cases need a mapped page followed by an
  * unmapped one: vt_fault_page() returns the last 4 KiB page below the first
  * unmapped address. On Spike that is the end of the 4 MiB RAM region; on FROST it
