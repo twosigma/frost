@@ -17,20 +17,22 @@
 /*
   One 64-bit carry-less multiply lane of the vector unit (Zvbc vclmul and
   vclmulh, SEW 64): the 128-bit carry-less product of a and b, returned as its
-  low half, or its high half when i_high is set. The product is built as eight
+  low half, or its high half when i_high is set, and whole on o_product for the
+  GHASH block. The product is built as eight
   partial XORs of eight shifted copies of a each, combined in the next cycle,
   and appears a fixed two cycles after the cycle that takes the input, for
   every operand.
 */
 module vec_clmul_lane (
-    input  logic        i_clk,
-    input  logic        i_rst,
-    input  logic        i_valid,
-    input  logic        i_high,
-    input  logic [63:0] i_a,
-    input  logic [63:0] i_b,
-    output logic        o_valid,
-    output logic [63:0] o_result
+    input  logic         i_clk,
+    input  logic         i_rst,
+    input  logic         i_valid,
+    input  logic         i_high,
+    input  logic [ 63:0] i_a,
+    input  logic [ 63:0] i_b,
+    output logic         o_valid,
+    output logic [ 63:0] o_result,
+    output logic [127:0] o_product
 );
 
   logic s0_valid, s0_high;
@@ -71,7 +73,8 @@ module vec_clmul_lane (
   always_ff @(posedge i_clk) begin
     if (i_rst) o_valid <= 1'b0;
     else o_valid <= s1_valid;
-    o_result <= s1_high ? product[127:64] : product[63:0];
+    o_result  <= s1_high ? product[127:64] : product[63:0];
+    o_product <= product;
   end
 
 endmodule
