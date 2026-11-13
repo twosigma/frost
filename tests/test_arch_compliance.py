@@ -617,6 +617,9 @@ def test_vector_tests_prepared_but_not_supported() -> None:
     for extension in VECTOR_EXTENSIONS:
         assert extension not in SUPPORTED_EXTENSIONS  # remove to turn Zvk on
         assert extension not in generator.SUPPORTED_EXTENSIONS  # remove to turn Zvk on
+    if not SUITE_ROOT.is_dir():
+        pytest.skip("riscv-arch-test submodule is not checked out")
+    for extension in VECTOR_EXTENSIONS:
         tests = discover_tests(extension, include_all=True)
         assert tests, f"no {extension} tests found"
         missing = [t.name for t in tests if not get_reference_path(t).exists()]
