@@ -282,6 +282,8 @@ static void test_clmul(void)
     }
     vt_checks++;
     /* vx form. */
+    /* Element 1 of abuf is all ones (fill case 1), so both halves of the product with x are
+     * nonzero. */
     uint64_t x = 0x8000000000000001ull, lo, hi;
     uint64_t vlo, vhi;
     __asm__ volatile("vsetivli x0, 1, e64, m1, ta, ma\n\t"
@@ -291,9 +293,10 @@ static void test_clmul(void)
                      "vmv.x.s %0, v9\n\t"
                      "vmv.x.s %1, v10\n\t"
                      : "=&r"(vlo), "=&r"(vhi)
-                     : "r"(abuf), "r"(x)
+                     : "r"(abuf + 8), "r"(x)
                      : "v8", "v9", "v10", "memory");
-    clmul128(get(abuf, 0, 8), x, &lo, &hi);
+    clmul128(get(abuf, 1, 8), x, &lo, &hi);
+    VT_EQ(lo != 0 && hi != 0, 1, "vclmul.vx operands give nonzero products");
     VT_EQ(vlo, lo, "vclmul.vx");
     VT_EQ(vhi, hi, "vclmulh.vx");
 }

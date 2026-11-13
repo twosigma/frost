@@ -103,6 +103,10 @@ SAMPLE_PATTERN = (
 )
 
 
+# Subdirectories of the work directory that one run fills.
+PIPELINE_DIRECTORIES = ("stage1", "stage2", "patch", "bin1", "bin2")
+
+
 def suite_available() -> bool:
     """Return whether the image carries the generator, merger and patcher."""
     return all(
@@ -182,8 +186,14 @@ def generate_tests(
     """Run the generator into workdir/stage1 and return the selected test names.
 
     With a shard, the stage-1 sources of the other shards are removed so the
-    later steps see only this shard's tests.
+    later steps see only this shard's tests. Output of an earlier run in the
+    same directory is cleared first, as the suite's Makefile does, because the
+    merger takes every stage-1 source it finds.
     """
+    workdir = workdir.resolve()
+    for stale in PIPELINE_DIRECTORIES:
+        shutil.rmtree(workdir / stale, ignore_errors=True)
+    (workdir / "Makefrag").unlink(missing_ok=True)
     stage1 = workdir / "stage1"
     stage1.mkdir(parents=True, exist_ok=True)
     result = run_tool(
@@ -317,6 +327,7 @@ def prepare(
     workdir: Path, vlen: int, pattern: str, shard: tuple[int, int] | None, jobs: int
 ) -> tuple[list[str], list[VectorTestResult]]:
     """Generate, patch and merge; return the test names and any failures."""
+    workdir = workdir.resolve()
     names = generate_tests(workdir, vlen, pattern, shard)
     failures: list[VectorTestResult] = []
     with ThreadPoolExecutor(max_workers=jobs) as pool:
@@ -341,6 +352,7 @@ def run_spike_tests(
     jobs: int = 4,
 ) -> list[VectorTestResult]:
     """Generate the selected tests and run each on Spike as the self-check."""
+    workdir = workdir.resolve()
     names, results = prepare(workdir, vlen, pattern, shard, jobs)
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         results += list(pool.map(lambda n: run_on_spike(workdir, n, vlen), names))
@@ -388,6 +400,7 @@ def run_rtl_tests(
     # Imported here: the simulator harness is needed only for the RTL run.
     from test_riscv_tests import check_pass_fail, run_simulation
 
+    workdir = workdir.resolve()
     names, results = prepare(workdir, vlen, pattern, shard, jobs)
     for name in names:
         error = compile_for_frost(workdir / "stage2" / f"{name}.S", vlen)
@@ -466,6 +479,19 @@ def test_spike_sample(vlen: int, tmp_path: Path) -> None:
 
 
 @needs_suite
+def test_reused_work_directory_and_relative_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative work directory works, and a rerun there starts clean."""
+    monkeypatch.chdir(tmp_path)
+    first = run_spike_tests(Path("work"), 128, r"^vadd\.vv$", jobs=2)
+    assert first and all(r.passed for r in first)
+    second = run_spike_tests(Path("work"), 128, r"^vsub\.vv$", jobs=2)
+    assert second and all(r.passed for r in second)
+    assert not any(r.name.startswith("vadd_vv") for r in second)
+
+
+@needs_suite
 def test_sample_shard_changes_selection(tmp_path: Path) -> None:
     """Different shards of one pattern generate different tests."""
     first = generate_tests(tmp_path / "a", 128, SAMPLE_PATTERN, (1, 4))
@@ -520,7 +546,9 @@ def main() -> int:
 
     own_workdir = args.workdir is None
     workdir = (
-        Path(tempfile.mkdtemp(prefix="rvv_tests_")) if own_workdir else args.workdir
+        Path(tempfile.mkdtemp(prefix="rvv_tests_"))
+        if own_workdir
+        else args.workdir.resolve()
     )
     workdir.mkdir(parents=True, exist_ok=True)
     try:

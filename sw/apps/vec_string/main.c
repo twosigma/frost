@@ -71,9 +71,12 @@ static void test_memcpy(void)
 
 static void test_memmove(void)
 {
-    /* Every overlap: dst below src, equal, above src, by 1..70 bytes. */
+    /* Every overlap: dst below src, equal, above src, by up to 70 bytes. */
+    static const int deltas[] = {-70, -57, -44, -31, -18, -13, -5, -3, -2, -1, 0,
+                                 1,   2,   3,   5,   13,  18,  31, 44, 57, 70};
     for (unsigned n = 0; n <= 200; n += (n < 20 ? 1 : 7)) {
-        for (int delta = -70; delta <= 70; delta += (delta > -3 && delta < 3) ? 1 : 13) {
+        for (unsigned di = 0; di < sizeof deltas / sizeof deltas[0]; di++) {
+            int delta = deltas[di];
             fill_random(a_, sizeof a_);
             memcpy(ref, a_, sizeof a_);
             uint8_t *s = a_ + 100;

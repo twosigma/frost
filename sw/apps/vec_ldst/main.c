@@ -286,7 +286,7 @@ static void whole_register(void)
                 memcpy(exp_ + i * (EEW / 8), base + (long) i * stride, EEW / 8);                   \
             CHECK_MEM("strided load e" #EEW " m" #LM);                                             \
             /* Store the dense source with a stride. Zero stride writes every element to the       \
-             * same place: the last one wins. */                                                   \
+             * same place, in no defined order: any one of them may be left there. */              \
             uint8_t *obase = dst + 2048;                                                           \
             clear_dst();                                                                           \
             __asm__ volatile("vsetvli %0, %1, e" #EEW ", m" #LM ", ta, ma\n\t"                     \
@@ -300,7 +300,12 @@ static void whole_register(void)
                 memcpy(exp_ + 2048 + (long) i * stride, src + i * (EEW / 8), EEW / 8);             \
             vt_checks++;                                                                           \
             {                                                                                      \
-                if (memcmp(dst + 1024, exp_ + 1024, 1024 + 1024) != 0) {                           \
+                int same = memcmp(dst + 1024, exp_ + 1024, 1024 + 1024) == 0;                      \
+                for (unsigned i = 0; stride == 0 && !same && i < vl; i++) {                        \
+                    memcpy(exp_ + 2048, src + i * (EEW / 8), EEW / 8);                             \
+                    same = memcmp(dst + 1024, exp_ + 1024, 1024 + 1024) == 0;                      \
+                }                                                                                  \
+                if (!same) {                                                                       \
                     vt_fail_head("strided store e" #EEW " m" #LM, __LINE__);                       \
                     vt_puts("\r\n");                                                               \
                 }                                                                                  \

@@ -700,7 +700,7 @@ prints `<<PASS>>`. The same programs build for FROST with their ordinary
 this runs in the Fast Python job and needs no vector hardware.
 
 ```bash
-./scripts/frost.py pytest tests/test_vector_reference.py -v
+./scripts/frost.py run pytest tests/test_vector_reference.py -v
 ```
 
 ### `test_riscv_torture.py`
