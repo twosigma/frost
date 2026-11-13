@@ -24,10 +24,9 @@
  * scalar float16 support. Build with -ffp-contract=off. Define VT_NO_ZVFH to
  * skip the Zvfh kernels on a Zvfhmin-only target.
  *
- * The per-lane models assume that vsetvli returns min(AVL, VLMAX) for each strip.
- * The specification also lets an implementation return a smaller vl when
- * VLMAX < AVL < 2 * VLMAX, which would move elements between lanes and change the
- * rounding of the float sums.
+ * The per-lane models ask vsetvli for each strip's vl, because the specification lets an
+ * implementation return fewer than VLMAX elements when VLMAX < AVL < 2 * VLMAX, which moves
+ * elements between lanes and changes the rounding of the float sums.
  */
 
 #include "vec_test.h"
@@ -72,6 +71,19 @@ static uint16_t int_to_f16(int v)
     return (uint16_t) ((sign << 15) | ((unsigned) (p + 15) << 10) | mant);
 }
 
+/* The vl that vsetvli grants for an application vector length, at e32 or e64 with LMUL 1. The
+ * specification lets an implementation grant fewer than VLMAX elements when
+ * VLMAX < AVL < 2 * VLMAX, so the per-lane models below follow the strips the hardware takes. */
+static unsigned long strip_vl(unsigned long avl, unsigned sew)
+{
+    unsigned long vl;
+    if (sew == 32)
+        __asm__ volatile("vsetvli %0, %1, e32, m1, tu, ma" : "=r"(vl) : "r"(avl));
+    else
+        __asm__ volatile("vsetvli %0, %1, e64, m1, tu, ma" : "=r"(vl) : "r"(avl));
+    return vl;
+}
+
 static void test_f32(unsigned long n)
 {
     unsigned long lanes = vt_vlenb() / 4;
@@ -86,8 +98,11 @@ static void test_f32(unsigned long n)
     }
     VT_EQ(bits32(dot_f32_ord(fa, fb, n)), bits32(acc), "dot_f32_ord");
     float lane[64] = {0};
-    for (unsigned long i = 0; i < n; i++)
-        lane[i % lanes] = __builtin_fmaf(fa[i], fb[i], lane[i % lanes]);
+    for (unsigned long done = 0, vl; done < n; done += vl) {
+        vl = strip_vl(n - done, 32);
+        for (unsigned long i = 0; i < vl; i++)
+            lane[i] = __builtin_fmaf(fa[done + i], fb[done + i], lane[i]);
+    }
     float sum = 0.0f;
     for (unsigned long j = 0; j < lanes; j++)
         sum = sum + lane[j];
@@ -108,8 +123,11 @@ static void test_f64(unsigned long n)
     }
     VT_EQ(bits64(dot_f64_ord(da, db, n)), bits64(acc), "dot_f64_ord");
     double lane[64] = {0};
-    for (unsigned long i = 0; i < n; i++)
-        lane[i % lanes] = __builtin_fma(da[i], db[i], lane[i % lanes]);
+    for (unsigned long done = 0, vl; done < n; done += vl) {
+        vl = strip_vl(n - done, 64);
+        for (unsigned long i = 0; i < vl; i++)
+            lane[i] = __builtin_fma(da[done + i], db[done + i], lane[i]);
+    }
     double sum = 0.0;
     for (unsigned long j = 0; j < lanes; j++)
         sum = sum + lane[j];

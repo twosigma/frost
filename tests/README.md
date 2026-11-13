@@ -658,6 +658,12 @@ programs cover some of that. The image carries the generator, its merger and
 results, the merger writes them into the test, and the finished test compares
 its own results.
 
+The expected results are what Spike computes, compared as whole destination
+registers, so a core that makes a different legal choice where the
+specification leaves one open can fail a test: the tail bits of a mask result,
+and the `vl` that `vsetvli` grants for an AVL between VLMAX and twice VLMAX
+(Spike grants VLMAX).
+
 ```bash
 ./scripts/frost.py run python3 tests/test_riscv_vector_tests.py --list
 ./scripts/frost.py run python3 tests/test_riscv_vector_tests.py --pattern '^vadd\.vv$'

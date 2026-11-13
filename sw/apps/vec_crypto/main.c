@@ -275,6 +275,7 @@ static void test_aes_kat(void)
     CHECK_BYTES(out, want, 16, "scalar AES-128 known answer");
     memset(rk, 0, sizeof rk);
     aes128_expand_rvv(key, (uint8_t (*)[16]) rk);
+    memset(out, 0xa5, 16); /* A kernel that writes nothing must not match. */
     aes_encrypt_rvv(rk, 10, pt, out);
     CHECK_BYTES(out, want, 16, "vector AES-128 known answer");
     hex_to_bytes("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", key, 32);
@@ -284,9 +285,11 @@ static void test_aes_kat(void)
     CHECK_BYTES(out, want, 16, "scalar AES-256 known answer");
     memset(rk, 0, sizeof rk);
     aes256_expand_rvv(key, (uint8_t (*)[16]) rk);
+    memset(out, 0xa5, 16);
     aes_encrypt_rvv(rk, 14, pt, out);
     CHECK_BYTES(out, want, 16, "vector AES-256 known answer");
     uint8_t back[16];
+    memset(back, 0x5a, 16);
     aes_decrypt_rvv(rk, 14, out, back);
     CHECK_BYTES(back, pt, 16, "vector AES-256 decrypt");
 }
@@ -308,6 +311,8 @@ static void test_aes_random(void)
                 aes128_expand_rvv(key, (uint8_t (*)[16]) rkv);
             CHECK_BYTES(rkv, rkr, 16 * (rounds + 1), "key schedule");
             aes_encrypt_ref(rkr, rounds, pt, a);
+            memset(b, 0xa5, 16);
+            memset(back, 0x5a, 16);
             aes_encrypt_rvv(rkv, rounds, pt, b);
             CHECK_BYTES(b, a, 16, "AES encrypt");
             aes_decrypt_rvv(rkv, rounds, b, back);
@@ -331,6 +336,8 @@ static void test_gcm_kat(void)
     memset(&k, 0, sizeof k);
     k.rounds = 10;
     aes128_expand_rvv(key, (uint8_t (*)[16]) k.rk);
+    memset(ct, 0xa5, sizeof ct);
+    memset(tag, 0x5a, sizeof tag);
     gcm_encrypt(enc_vec, ghash_vec, &k, iv, 0, 0, pt, 16, ct, tag);
     CHECK_BYTES(ct, want_ct, 16, "vector GCM test case 2 ciphertext");
     CHECK_BYTES(tag, want_tag, 16, "vector GCM test case 2 tag");
@@ -360,6 +367,8 @@ static void test_gcm_random(void)
         else
             aes128_expand_rvv(key, (uint8_t (*)[16]) kv.rk);
         gcm_encrypt(enc_ref, ghash_ref, &kr, iv, aad, alen, pt, n, ct_r, tag_r);
+        memset(ct_v, 0xa5, sizeof ct_v);
+        memset(tag_v, 0x5a, sizeof tag_v);
         gcm_encrypt(enc_vec, ghash_vec, &kv, iv, aad, alen, pt, n, ct_v, tag_v);
         CHECK_BYTES(ct_v, ct_r, n, "GCM ciphertext");
         CHECK_BYTES(tag_v, tag_r, 16, "GCM tag");
