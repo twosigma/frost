@@ -367,6 +367,7 @@ module coherence_l1d #(
   (* keep = "true" *) logic grant_failure, grant_error;
   logic store_zero_alloc;
   logic [ADDR_WIDTH-1:0] block_zero_addr_q;
+  logic block_zero_late;
   logic wb_reserved_q;
   // Nonzero endpoint identity and completion state, used when MISSES > 1.
   logic [ADDR_WIDTH-6:0] ld_line_q[EpSlots];
@@ -1001,6 +1002,15 @@ module coherence_l1d #(
       (i_write_zero || !(store_count != 0 && !store_sealed[3] &&
         store_addr[3][ADDR_WIDTH-1:5] == i_address[ADDR_WIDTH-1:5]));
   assign o_block_addr = {store_addr[3:1], block_zero_addr_q};
+  // The cycles on which a record-0 allocation sets holder zero's address: no
+  // atomic owns holder zero and no twin allocates record 0, or an atomic's
+  // release (its U or LocalRelease) hands holder zero back to the buffer. An
+  // accepted SC or an atomic's start takes holder zero instead. Only early
+  // state enters here; the late push and combining terms apply last.
+  assign block_zero_late = !(local_decision && operation_q != SCOp) &&
+      ((active && phase_q == LocalRelease) || (!(i_sc_valid && o_sc_ready) &&
+       ((i_u_valid && ep_u_ready[0] && atomic_q && !atomic_local_q) ||
+        (!atomic_q && !(store_twin_alloc && store_twin_index == 2'd0)))));
   // A lower zero record that is the only record waits for its twin, which
   // allocates on the next cycle.
   assign store_head_ready = pending_q && !look_priority_q && !store_acquired[store_head_index] &&
@@ -2547,8 +2557,6 @@ module coherence_l1d #(
       o_sc_write_done <= 1'b0;
       o_cut_release <= 1'b0;
       if (i_sc_commit) sc_committed_q <= 1'b1;
-      if (!atomic_q && store_push && store_zero_alloc)
-        block_zero_addr_q <= {i_address[ADDR_WIDTH-1:5], 5'b0};
       // A cbo.zero twin allocates on a cycle without a write.
       if (!atomic_q && store_twin_alloc && store_twin_index == 2'd0)
         block_zero_addr_q <= store_twin_addr;
@@ -2575,8 +2583,7 @@ module coherence_l1d #(
         o_fatal_addr <= fatal_put.addr;
       end
       if (i_u_valid && ep_u_ready[0] && atomic_q && !atomic_local_q) begin
-        block_zero_addr_q <= store_push && store_zero_alloc ?
-            {i_address[ADDR_WIDTH-1:5], 5'b0} : store_addr[0];
+        block_zero_addr_q <= store_addr[0];
         atomic_q <= 1'b0;
         atomic_granted_q <= 1'b0;
       end
@@ -2942,8 +2949,7 @@ module coherence_l1d #(
           end
           LocalFail: if (o_sc_result_valid && i_sc_result_ready) phase_q <= LocalRelease;
           LocalRelease: begin
-            block_zero_addr_q <= store_push && store_zero_alloc ?
-                {i_address[ADDR_WIDTH-1:5], 5'b0} : store_addr[0];
+            block_zero_addr_q <= store_addr[0];
             atomic_q <= 1'b0;
             atomic_local_q <= 1'b0;
             atomic_granted_q <= 1'b0;
@@ -3056,6 +3062,11 @@ module coherence_l1d #(
           default: phase_q <= Idle;
         endcase
       end
+      // A pushed store that allocates record 0 sets holder zero's address,
+      // applied last so the late push and combining terms select only the
+      // final value (see block_zero_late).
+      if (block_zero_late && store_push && store_zero_alloc)
+        block_zero_addr_q <= {i_address[ADDR_WIDTH-1:5], 5'b0};
     end
   end
 `ifndef SYNTHESIS
