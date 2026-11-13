@@ -30,7 +30,12 @@ module coherence_cluster_test_harness #(
     parameter int unsigned HOME_RESULTS = 8,
     parameter int unsigned HOME_FILLS = 8,
     parameter int unsigned HOME_PREFETCH_SLOTS = coherence_pkg::PrefetchIds,
-    parameter bit L1D_STREAM_PREFETCH = 1'b0
+    parameter bit L1D_STREAM_PREFETCH = 1'b0,
+    // Register stages between the L1D and the home, as cpu_top's
+    // MEMORY_LINK_STAGES places them. With stages, the grant, put-ack and
+    // release holds delay the home's side, because the L1D side of those
+    // links takes every message.
+    parameter int unsigned LINK_STAGES = 0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -138,6 +143,18 @@ module coherence_cluster_test_harness #(
   logic p_valid, p_ready, r_valid, r_ready, w_valid, w_ready, wa_valid, wa_ready;
   logic g_valid, g_ready, hart_g_ready, home_c_valid, home_c_ready;
   logic u_valid, u_ready, hart_u_ready;
+  // The L1D's side of each channel; equal to the home's side without stages.
+  coh_p_t  l1d_probe;
+  coh_r_t  l1d_reply;
+  coh_w_t  l1d_put;
+  coh_wa_t l1d_ack;
+  coh_g_t  l1d_grant;
+  coh_u_t  l1d_release;
+  logic l1d_p_valid, l1d_p_ready, l1d_r_valid, l1d_r_ready, l1d_w_valid, l1d_w_ready;
+  logic l1d_wa_valid, l1d_wa_ready, l1d_g_valid, l1d_g_ready, l1d_u_valid, l1d_u_ready;
+  logic [L1D_MISSES-1:0] l1d_d_valid, l1d_d_ready, l1d_c_valid, l1d_c_ready;
+  logic [L1D_MISSES-1:0][ADDR_WIDTH+311:0] l1d_d;
+  logic [L1D_MISSES-1:0][ ADDR_WIDTH+17:0] l1d_c;
   logic hart_fatal, home_fatal;
   logic [1:0] accepted_puts_q;
   logic [ADDR_WIDTH-1:0] hart_fatal_addr, home_fatal_addr;
@@ -180,7 +197,8 @@ module coherence_cluster_test_harness #(
       .HOME_CACHE_BYTES(HOME_CACHE_BYTES),
       .HOME_WAYS(HOME_WAYS),
       .HOME_LINE_BYTES(LINE_BYTES),
-      .STREAM_PREFETCH(L1D_STREAM_PREFETCH)
+      .STREAM_PREFETCH(L1D_STREAM_PREFETCH),
+      .WITHDRAW_ABSORBED_W(LINK_STAGES != 0)
   ) hart (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -239,34 +257,237 @@ module coherence_cluster_test_harness #(
       .o_cut_inval_valid(o_cut_inval_valid),
       .i_cut_inval_done(i_cut_inval_done),
       .o_cut_release(o_cut_release),
-      .o_d_valid(hart_d_valid),
-      .i_d_ready(hart_d_ready),
-      .o_d(hart_d),
-      .i_p_valid(p_valid),
-      .o_p_ready(p_ready),
-      .i_p(probe),
-      .o_r_valid(r_valid),
-      .i_r_ready(r_ready),
-      .o_r(reply),
-      .o_w_valid(w_valid),
-      .i_w_ready(w_ready),
-      .o_w(put),
-      .i_wa_valid(wa_valid && !i_hold_wa),
-      .o_wa_ready(wa_ready),
-      .i_wa(ack),
-      .i_g_valid(g_valid && grant.q.src == 0 && !i_hold_grant),
-      .o_g_ready(hart_g_ready),
-      .i_g(grant),
-      .o_c_valid(hart_c_valid),
-      .i_c_ready(hart_c_ready),
-      .o_c(hart_c),
-      .i_u_valid(u_valid && release_message.q.src == 0 && !i_hold_release),
-      .o_u_ready(hart_u_ready),
-      .i_u(release_message),
+      .o_d_valid(l1d_d_valid),
+      .i_d_ready(l1d_d_ready),
+      .o_d(l1d_d),
+      .i_p_valid(l1d_p_valid),
+      .o_p_ready(l1d_p_ready),
+      .i_p(l1d_probe),
+      .o_r_valid(l1d_r_valid),
+      .i_r_ready(l1d_r_ready),
+      .o_r(l1d_reply),
+      .o_w_valid(l1d_w_valid),
+      .i_w_ready(l1d_w_ready),
+      .o_w(l1d_put),
+      .i_wa_valid(l1d_wa_valid),
+      .o_wa_ready(l1d_wa_ready),
+      .i_wa(l1d_ack),
+      .i_g_valid(l1d_g_valid),
+      .o_g_ready(l1d_g_ready),
+      .i_g(l1d_grant),
+      .o_c_valid(l1d_c_valid),
+      .i_c_ready(l1d_c_ready),
+      .o_c(l1d_c),
+      .i_u_valid(l1d_u_valid),
+      .o_u_ready(l1d_u_ready),
+      .i_u(l1d_release),
       .o_perf_events(o_l1d_perf),
       .o_fatal(hart_fatal),
       .o_fatal_addr(hart_fatal_addr)
   );
+  if (LINK_STAGES == 0) begin : gen_direct
+    // The L1D's endpoints meet the home's arbiters directly.
+    assign hart_d_valid = l1d_d_valid;
+    assign l1d_d_ready = hart_d_ready;
+    assign hart_d = l1d_d;
+    assign hart_c_valid = l1d_c_valid;
+    assign l1d_c_ready = hart_c_ready;
+    assign hart_c = l1d_c;
+    assign l1d_p_valid = p_valid;
+    assign p_ready = l1d_p_ready;
+    assign l1d_probe = probe;
+    assign r_valid = l1d_r_valid;
+    assign l1d_r_ready = r_ready;
+    assign reply = l1d_reply;
+    assign w_valid = l1d_w_valid;
+    assign l1d_w_ready = w_ready;
+    assign put = l1d_put;
+    assign l1d_wa_valid = wa_valid && !i_hold_wa;
+    assign wa_ready = l1d_wa_ready;
+    assign l1d_ack = ack;
+    assign l1d_g_valid = g_valid && grant.q.src == 0 && !i_hold_grant;
+    assign hart_g_ready = l1d_g_ready;
+    assign l1d_grant = grant;
+    assign l1d_u_valid = u_valid && release_message.q.src == 0 && !i_hold_release;
+    assign hart_u_ready = l1d_u_ready;
+    assign l1d_release = release_message;
+  end else begin : gen_links
+    // As in cpu_top: the L1D's demands and completions merge on its side,
+    // then cross one credit link each; the home's arbiters see a single hart
+    // port at index 0 and nothing at the others.
+    logic d_valid, d_ready, c_valid, c_ready, link_d_valid, link_c_valid;
+    logic link_g_valid, link_u_valid, link_wa_valid;
+    logic [ADDR_WIDTH+311:0] d_payload, linked_d;
+    logic [ADDR_WIDTH+17:0] c_payload, linked_c;
+    coherence_d_arbiter #(
+        .WIDTH(ADDR_WIDTH + 312),
+        .PORTS(L1D_MISSES)
+    ) l1d_demands (
+        .i_clk,
+        .i_rst,
+        .i_valid(l1d_d_valid),
+        .o_ready(l1d_d_ready),
+        .i_payload(l1d_d),
+        .o_valid(d_valid),
+        .o_selected(),
+        .i_ready(d_ready),
+        .o_payload(d_payload)
+    );
+    coherence_d_arbiter #(
+        .WIDTH(ADDR_WIDTH + 18),
+        .PORTS(L1D_MISSES),
+        .HOLD_VALID(1)
+    ) l1d_completions (
+        .i_clk,
+        .i_rst,
+        .i_valid(l1d_c_valid),
+        .o_ready(l1d_c_ready),
+        .i_payload(l1d_c),
+        .o_valid(c_valid),
+        .o_selected(),
+        .i_ready(c_ready),
+        .o_payload(c_payload)
+    );
+    coherence_link #(
+        .WIDTH (ADDR_WIDTH + 312),
+        .STAGES(LINK_STAGES),
+        .KIND  (1)
+    ) link_d (
+        .i_clk,
+        .i_rst,
+        .i_stopped(o_fatal),
+        .i_valid  (d_valid),
+        .o_ready  (d_ready),
+        .i_payload(d_payload),
+        .o_valid  (link_d_valid),
+        .i_ready  (hart_d_ready[0]),
+        .o_payload(linked_d)
+    );
+    coherence_link #(
+        .WIDTH (ADDR_WIDTH + 18),
+        .STAGES(LINK_STAGES),
+        .KIND  (1)
+    ) link_c (
+        .i_clk,
+        .i_rst,
+        .i_stopped(o_fatal),
+        .i_valid  (c_valid),
+        .o_ready  (c_ready),
+        .i_payload(c_payload),
+        .o_valid  (link_c_valid),
+        .i_ready  (hart_c_ready[0]),
+        .o_payload(linked_c)
+    );
+    always_comb begin
+      hart_d_valid = '0;
+      hart_d = '0;
+      hart_c_valid = '0;
+      hart_c = '0;
+      hart_d_valid[0] = link_d_valid;
+      hart_d[0] = linked_d;
+      hart_c_valid[0] = link_c_valid;
+      hart_c[0] = linked_c;
+    end
+    coherence_link #(
+        .WIDTH(ADDR_WIDTH + 30),
+        .STAGES(LINK_STAGES),
+        .KIND(1),
+        .CREDITS(1)
+    ) link_p (
+        .i_clk,
+        .i_rst,
+        .i_stopped(o_fatal),
+        .i_valid  (p_valid),
+        .o_ready  (p_ready),
+        .i_payload(probe),
+        .o_valid  (l1d_p_valid),
+        .i_ready  (l1d_p_ready),
+        .o_payload(l1d_probe)
+    );
+    coherence_link #(
+        .WIDTH (ADDR_WIDTH + 275),
+        .STAGES(LINK_STAGES),
+        .KIND  (0)
+    ) link_r (
+        .i_clk,
+        .i_rst,
+        .i_stopped(o_fatal),
+        .i_valid  (l1d_r_valid),
+        .o_ready  (l1d_r_ready),
+        .i_payload(l1d_reply),
+        .o_valid  (r_valid),
+        .i_ready  (r_ready),
+        .o_payload(reply)
+    );
+    coherence_link #(
+        .WIDTH (ADDR_WIDTH + 260),
+        .STAGES(LINK_STAGES),
+        .KIND  (2)
+    ) link_w (
+        .i_clk,
+        .i_rst,
+        .i_stopped(o_fatal),
+        .i_valid  (l1d_w_valid),
+        .o_ready  (l1d_w_ready),
+        .i_payload(l1d_put),
+        .o_valid  (w_valid),
+        .i_ready  (w_ready),
+        .o_payload(put)
+    );
+    // The holds stall the home's side; the links' L1D side takes every
+    // message they present.
+    coherence_link #(
+        .WIDTH (ADDR_WIDTH + 11),
+        .STAGES(LINK_STAGES),
+        .KIND  (0)
+    ) link_wa (
+        .i_clk,
+        .i_rst,
+        .i_stopped(o_fatal),
+        .i_valid  (wa_valid && !i_hold_wa),
+        .o_ready  (),
+        .i_payload(ack),
+        .o_valid  (link_wa_valid),
+        .i_ready  (l1d_wa_ready),
+        .o_payload(l1d_ack)
+    );
+    assign l1d_wa_valid = link_wa_valid;
+    assign wa_ready = 1'b1;
+    coherence_link #(
+        .WIDTH (ADDR_WIDTH + 275),
+        .STAGES(LINK_STAGES),
+        .KIND  (0)
+    ) link_g (
+        .i_clk,
+        .i_rst,
+        .i_stopped(o_fatal),
+        .i_valid  (g_valid && grant.q.src == 0 && !i_hold_grant),
+        .o_ready  (),
+        .i_payload(grant),
+        .o_valid  (link_g_valid),
+        .i_ready  (l1d_g_ready),
+        .o_payload(l1d_grant)
+    );
+    assign l1d_g_valid  = link_g_valid;
+    assign hart_g_ready = 1'b1;
+    coherence_link #(
+        .WIDTH (ADDR_WIDTH + 15),
+        .STAGES(LINK_STAGES),
+        .KIND  (0)
+    ) link_u (
+        .i_clk,
+        .i_rst,
+        .i_stopped(o_fatal),
+        .i_valid  (u_valid && release_message.q.src == 0 && !i_hold_release),
+        .o_ready  (),
+        .i_payload(release_message),
+        .o_valid  (link_u_valid),
+        .i_ready  (l1d_u_ready),
+        .o_payload(l1d_release)
+    );
+    assign l1d_u_valid  = link_u_valid;
+    assign hart_u_ready = 1'b1;
+  end
   coherence_d_arbiter #(
       .WIDTH(ADDR_WIDTH + 312),
       .PORTS(L1D_MISSES + 1)

@@ -38,6 +38,10 @@ module frost_cluster_memory #(
     parameter int unsigned AXI_ID_BITS = 6,
     parameter int unsigned AXI_USER_BITS = 1,
     parameter logic [2:0] AXI_MEMORY_PROT = 3'b011,
+    // Register stages between the home and cpu_memory_fabric, which carries
+    // the hart's uncached traffic and stays beside the hart (cpu_top
+    // MEMORY_LINK_STAGES). 0 connects them directly.
+    parameter int unsigned MEMORY_LINK_STAGES = 0,
     // DMA ingress uses 32-byte lines and 4-bit ids.
     localparam int unsigned L1LineBytes = 32,
     localparam int unsigned LineIdBits = 4
@@ -456,6 +460,45 @@ module frost_cluster_memory #(
     assign o_coherent_u = '0;
   end
 
+  // The home's memory requests take credits and its memory responses are
+  // always taken; f_* name the fabric's side.
+  logic f_req_valid, f_req_ready, f_req_write;
+  logic [riscv_pkg::PhysAddrBits-1:0] f_req_addr;
+  logic [L2_LINE_BYTES*8-1:0] f_req_wdata, f_resp_rdata;
+  logic [L2_LINE_BYTES-1:0] f_req_wstrb;
+  logic [DdrAxiIdBits-1:0] f_req_id, f_resp_id;
+  logic f_resp_valid, f_resp_error;
+  coherence_link #(
+      .WIDTH (1 + riscv_pkg::PhysAddrBits + L2_LINE_BYTES * 9 + DdrAxiIdBits),
+      .STAGES(MEMORY_LINK_STAGES),
+      .KIND  (1)
+  ) link_down_req (
+      .i_clk,
+      .i_rst,
+      .i_stopped(1'b0),
+      .i_valid  (down_req_valid),
+      .o_ready  (down_req_ready),
+      .i_payload({down_req_write, down_req_addr, down_req_wdata, down_req_wstrb, down_req_id}),
+      .o_valid  (f_req_valid),
+      .i_ready  (f_req_ready),
+      .o_payload({f_req_write, f_req_addr, f_req_wdata, f_req_wstrb, f_req_id})
+  );
+  coherence_link #(
+      .WIDTH (DdrAxiIdBits + L2_LINE_BYTES * 8 + 1),
+      .STAGES(MEMORY_LINK_STAGES),
+      .KIND  (0)
+  ) link_down_resp (
+      .i_clk,
+      .i_rst,
+      .i_stopped(1'b0),
+      .i_valid  (f_resp_valid),
+      .o_ready  (),
+      .i_payload({f_resp_id, f_resp_rdata, f_resp_error}),
+      .o_valid  (down_resp_valid),
+      .i_ready  (1'b1),
+      .o_payload({down_resp_id, down_resp_rdata, down_resp_error})
+  );
+
   cpu_memory_fabric #(
       .FETCH_BYTES(FETCH_BYTES),
       .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
@@ -467,17 +510,17 @@ module frost_cluster_memory #(
       .i_clk,
       .i_rst,
       .i_axi_rst,
-      .i_cache_valid(down_req_valid),
-      .o_cache_ready(down_req_ready),
-      .i_cache_write(down_req_write),
-      .i_cache_addr(down_req_addr),
-      .i_cache_wdata(down_req_wdata),
-      .i_cache_wstrb(down_req_wstrb),
-      .i_cache_id(down_req_id),
-      .o_cache_resp_valid(down_resp_valid),
-      .o_cache_resp_id(down_resp_id),
-      .o_cache_resp_data(down_resp_rdata),
-      .o_cache_resp_error(down_resp_error),
+      .i_cache_valid(f_req_valid),
+      .o_cache_ready(f_req_ready),
+      .i_cache_write(f_req_write),
+      .i_cache_addr(f_req_addr),
+      .i_cache_wdata(f_req_wdata),
+      .i_cache_wstrb(f_req_wstrb),
+      .i_cache_id(f_req_id),
+      .o_cache_resp_valid(f_resp_valid),
+      .o_cache_resp_id(f_resp_id),
+      .o_cache_resp_data(f_resp_rdata),
+      .o_cache_resp_error(f_resp_error),
       .i_data_valid(i_data_req_valid),
       .o_data_ready(o_data_req_ready),
       .i_data_write(i_data_req_write),

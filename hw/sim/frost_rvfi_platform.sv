@@ -59,6 +59,9 @@ module frost_rvfi_platform #(
     // leaves out the line-size adapter. Every DDR AXI transfer carries one L2
     // line in a single beat.
     parameter int unsigned L2_LINE_BYTES = 64,
+    // Accepted for the production interface; this fixture has no cluster
+    // memory and so no links between it and the hart.
+    parameter int unsigned MEMORY_LINK_STAGES = 0,
     // Simulation-only fast cache maintenance for fence.i (see frost_cache).
     // 0 = FPGA (cycle-accurate maintenance FSM); non-zero = sim fast path.
     parameter int unsigned SIM_FAST_MAINT = 0,
