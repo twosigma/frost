@@ -98,6 +98,11 @@ module frost_rvfi_platform #(
     parameter int unsigned POWER_ON_RESET_ENABLE = 1,
     // CPU profiling counters (see cpu_ooo); disabled in production.
     parameter int unsigned PERF_COUNTERS = 0,
+    // Vector state (see cpu_ooo): VECTOR=1 adds it, VLEN is the vector
+    // register width, and VECTOR_ADVERTISE sets misa.V.
+    parameter bit VECTOR = 1'b0,
+    parameter int unsigned VLEN = 256,
+    parameter bit VECTOR_ADVERTISE = 1'b0,
     // Core clock frequency; sets the NIC's default TICK (cycles per
     // microsecond).
     parameter int unsigned CLK_FREQ_HZ = 322265625,
@@ -790,6 +795,9 @@ module frost_rvfi_platform #(
       .CACHED_BASE(64'(CACHED_BASE)),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
       .PERF_COUNTERS(PERF_COUNTERS),
+      .VECTOR(VECTOR),
+      .VLEN(VLEN),
+      .VECTOR_ADVERTISE(VECTOR_ADVERTISE),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
