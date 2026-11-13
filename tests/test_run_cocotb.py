@@ -861,6 +861,26 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
         verilator_extra_args=("--assert",),
     ),
+    "svnapot_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svnapot_test",
+        nic_mac_clocks=False,
+        description=(
+            "Svnapot: a 64 KiB NAPOT range in S and U (loads, stores, AMOs, fetch), the "
+            "second-level TLB, reserved N encodings, remap after per-page sfence.vma, Svade"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
+    ),
+    "svnapot_test_assert": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svnapot_test",
+        nic_mac_clocks=False,
+        description="Svnapot with the cache, load-queue and store-queue assertions enabled",
+        extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
+        verilator_extra_args=("--assert",),
+    ),
     "pm_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

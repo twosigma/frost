@@ -36,11 +36,14 @@
  *     PTE read also returns DFAULT_ACCESS without interpreting its data.
  *   - reserved bits, V=0, W&!R, a non-leaf with D, A, or U set, a non-leaf
  *     at level 0, a misaligned superpage, or A=0 => DFAULT_PAGE. Reserved
- *     bits are bit 63 (N: no Svnapot), bits 60:54, PBMT (62:61) in a non-leaf,
+ *     bits are bit 63 (N, Svnapot) outside a level-0 leaf with PPN[3:0] =
+ *     1000, bits 60:54, PBMT (62:61) in a non-leaf,
  *     PBMT = 3 in a leaf, and a nonzero PBMT in a leaf while menvcfg.PBMTE,
  *     sampled when the walk starts, is clear (Svpbmt).
  *   - a leaf with PBMT = NC or IO over cached DDR that has no uncached alias
  *     (riscv_pkg "Svpbmt") => DFAULT_ACCESS.
+ * A NAPOT leaf (Svnapot, 64 KiB) answers the 4 KiB page walked: its PPN[3:0]
+ * is VPN[3:0], and it computes the alias below from that PPN.
  * A clean leaf answers DFAULT_NONE with {pbmt, ppn, level, RWXUD} and echoes
  * the VPN. For NC or IO over cached DDR the PPN is the alias's, which the TLBs
  * store with the field; the MMUs make such a page MMIO. The requesting MMU checks
@@ -214,13 +217,25 @@ module ptw #(
   assign pte_ppn = pte[53:10];
   logic pte_is_leaf;
   assign pte_is_leaf = pte_r || pte_x;
-  // Reserved bits: N (63, no Svnapot) and 60:54 always; PBMT (62:61) in a
-  // non-leaf, the reserved PBMT 3 in a leaf, and any PBMT while PBMTE is
+  // Svnapot: N (bit 63) is legal only in a level-0 leaf whose PPN[3:0] is
+  // 1000, a 64 KiB NAPOT range; every other encoding with N set (a non-leaf,
+  // a superpage, another PPN[3:0]) is reserved. A NAPOT leaf translates the
+  // page walked with PPN[3:0] replaced by VPN[3:0] (VA[15:12]), and that 4 KiB
+  // page is what the TLBs install, so their format is unchanged. SFENCE.VMA
+  // covering every 4 KiB page of the range (or rs1 = x0), which the spec asks
+  // software for when it changes a NAPOT range, removes each such entry.
+  logic pte_napot_ok;
+  assign pte_napot_ok = pte_is_leaf && (level_q == 2'd0) && (pte_ppn[3:0] == 4'b1000);
+  logic [riscv_pkg::PtePpnBits-1:0] leaf_ppn;
+  assign leaf_ppn = pte[riscv_pkg::PteNapotBit] ? {pte_ppn[riscv_pkg::PtePpnBits-1:4], vpn_q[3:0]} :
+      pte_ppn;
+  // Reserved bits: N outside a NAPOT leaf, and 60:54 always; PBMT (62:61) in
+  // a non-leaf, the reserved PBMT 3 in a leaf, and any PBMT while PBMTE is
   // clear (Svpbmt then behaves as if absent, its bits reserved).
   logic [1:0] pte_pbmt;
   assign pte_pbmt = pte[riscv_pkg::PtePbmtLsb+:2];
   logic pte_reserved_bad;
-  assign pte_reserved_bad = pte[63] || (|pte[60:54]) ||
+  assign pte_reserved_bad = (pte[riscv_pkg::PteNapotBit] && !pte_napot_ok) || (|pte[60:54]) ||
       ((pte_pbmt != riscv_pkg::PbmtPma) &&
        (!pte_is_leaf || !pbmte_q || (pte_pbmt == riscv_pkg::PbmtReserved)));
   // V=0, the reserved W&!R encoding, or a non-leaf with D, A, or U set. The
@@ -502,13 +517,13 @@ module ptw #(
             end else if (pte_is_leaf) begin
               if (superpage_misaligned || !pte_a) begin
                 resp_q.fault_kind <= riscv_pkg::DFAULT_PAGE;
-              end else if (riscv_pkg::pbmt_leaf_access_fault(pte_ppn, pte_pbmt)) begin
+              end else if (riscv_pkg::pbmt_leaf_access_fault(leaf_ppn, pte_pbmt)) begin
                 // NC or IO over DDR without an uncached alias.
                 resp_q.fault_kind <= riscv_pkg::DFAULT_ACCESS;
               end else begin
                 resp_q.fault_kind <= riscv_pkg::DFAULT_NONE;
                 resp_q.pbmt       <= pte_pbmt;
-                resp_q.ppn        <= riscv_pkg::pbmt_leaf_ppn(pte_ppn, pte_pbmt);
+                resp_q.ppn        <= riscv_pkg::pbmt_leaf_ppn(leaf_ppn, pte_pbmt);
                 resp_q.level      <= level_q;
                 resp_q.perm_r     <= pte_r;
                 resp_q.perm_w     <= pte_w;
@@ -611,17 +626,25 @@ module ptw #(
   // disabled extension fault it, and whether it names DDR without an alias.
   logic [1:0] f_g_pbmt;
   logic f_g_pbmt_reserved, f_g_pbmt_ddr, f_g_pbmt_no_alias;
+  // Svnapot: a valid NAPOT leaf, and the PPN the walk answers for a leaf.
+  logic f_g_napot;
+  logic [riscv_pkg::PtePpnBits-1:0] f_g_ppn;
   always_comb begin
     f_g_leaf = f_pte[1] || f_pte[3];
     f_g_pbmt = f_pte[62:61];
     // Svpbmt chapter: a non-leaf PBMT must be zero, a leaf PBMT of 3 is
     // reserved, and with menvcfg.PBMTE clear the bits are reserved.
     f_g_pbmt_reserved = (f_g_pbmt != 2'd0) && (!f_g_leaf || !f_pbmte || (f_g_pbmt == 2'd3));
-    f_g_reserved = f_pte[63] || (|f_pte[60:54]) || f_g_pbmt_reserved;
-    f_g_pbmt_ddr = riscv_pkg::pma_cached_ok({8'b0, f_pte[53:10], 12'h000});
+    // Svnapot table: N = 1 names a 64 KiB range only in a level-0 leaf with
+    // ppn[0][3:0] = 1000; every other N = 1 encoding is reserved. The
+    // translation of such a leaf takes ppn[0][3:0] from vpn[0][3:0].
+    f_g_napot = f_pte[63] && f_g_leaf && (f_level == 2'd0) && (f_pte[13:10] == 4'b1000);
+    f_g_reserved = (f_pte[63] && !f_g_napot) || (|f_pte[60:54]) || f_g_pbmt_reserved;
+    f_g_ppn = f_g_napot ? {f_pte[53:14], f_req_vpn[3:0]} : f_pte[53:10];
+    f_g_pbmt_ddr = riscv_pkg::pma_cached_ok({8'b0, f_g_ppn, 12'h000});
     f_g_pbmt_no_alias = (f_g_pbmt != 2'd0) && f_g_pbmt_ddr &&
         !(riscv_pkg::PbmtAliasEnabled &&
-          ({f_pte[53:10], 12'h000} < 56'(riscv_pkg::PbmtAliasCoverLimit)));
+          ({f_g_ppn, 12'h000} < 56'(riscv_pkg::PbmtAliasCoverLimit)));
     // D (7), A (6), and U (4) are reserved in a non-leaf PTE.
     f_g_invalid = !f_pte[0] || (!f_pte[1] && f_pte[2]) ||
                   (!f_g_leaf && (f_pte[7] || f_pte[6] || f_pte[4]));
@@ -670,16 +693,22 @@ module ptw #(
           if ((f_g_pbmt != 2'd0) && f_g_pbmt_ddr) begin
             p_ok_alias_ppn :
             assert (o_resp.ppn ==
-                    (f_pte[53:10] | riscv_pkg::PtePpnBits'(riscv_pkg::PbmtAliasOffset >> 12)));
-            p_ok_alias_moved : assert (o_resp.ppn != f_pte[53:10]);
+                    (f_g_ppn | riscv_pkg::PtePpnBits'(riscv_pkg::PbmtAliasOffset >> 12)));
+            p_ok_alias_moved : assert (o_resp.ppn != f_g_ppn);
             p_ok_alias_uncached : assert (!riscv_pkg::pma_cached_ok({8'b0, o_resp.ppn, 12'h000}));
             p_ok_alias_window : assert (riscv_pkg::pma_pbmt_alias_ok({8'b0, o_resp.ppn, 12'h000}));
             p_ok_alias_real :
             assert (riscv_pkg::pbmt_alias_real(
                 {8'b0, o_resp.ppn, 12'h000}
-            ) == {8'b0, f_pte[53:10], 12'h000});
+            ) == {8'b0, f_g_ppn, 12'h000});
           end else begin
-            p_ok_ppn : assert (o_resp.ppn == f_pte[53:10]);
+            p_ok_ppn : assert (o_resp.ppn == f_g_ppn);
+          end
+          // Svnapot: a NAPOT answer is a level-0 translation of the walked
+          // page inside the PTE's 64 KiB range.
+          if (f_g_napot) begin
+            p_ok_napot_level : assert (o_resp.level == 2'd0);
+            p_ok_napot_page : assert (o_resp.ppn[3:0] == f_req_vpn[3:0]);
           end
         end
         if (o_resp.fault_kind == riscv_pkg::DFAULT_PAGE) begin
