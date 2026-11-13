@@ -470,10 +470,13 @@
     "Zacas": {"supported": false},
     "Zama16b": {"supported": false},
     "Zawrs": {"supported": false},
-    "Zfa": {"supported": false},
+    // Zfa (FLI, FMINM/FMAXM, FROUND/FROUNDNX, FCVTMOD.W.D, FLEQ/FLTQ; FMVH/FMVP
+    // are RV32-only) and Zfhmin (FLH/FSH, FMV.X.H/FMV.H.X, FCVT between H and
+    // S/D) are implemented; full Zfh is not.
+    "Zfa": {"supported": true},
     "Zfbfmin": {"supported": false},
     "Zfh": {"supported": false},
-    "Zfhmin": {"supported": false},
+    "Zfhmin": {"supported": true},
     "Zcb": {"supported": false},
     "Zcmop": {"supported": false},
     "Zbc": {"supported": true},
