@@ -340,6 +340,7 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
         "sscofpmf",
         "ssnpm",
         "sstc",
+        "ssu64xl",
         "svade",
         "svnapot",
         "svpbmt",
