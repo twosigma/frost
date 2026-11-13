@@ -286,6 +286,8 @@ static void test_mstatus_vs(void)
      * instruction must raise illegal instruction; turn it on at Initial and
      * a state-changing instruction must leave it Dirty. */
     __asm__ volatile("csrc mstatus, %0" : : "r"(VT_MSTATUS_VS));
+    /* FS is turned off for the SD check below: SD is also set when FS is Dirty. */
+    __asm__ volatile("csrc mstatus, %0" : : "r"(VT_MSTATUS_FS));
     vt_trap_clear();
     __asm__ volatile("vsetivli x0, 1, e8, m1, ta, ma");
     VT_EQ(vt_trap_count, 1, "vsetivli with VS off traps");
@@ -294,11 +296,12 @@ static void test_mstatus_vs(void)
     VT_CSR_WRITE(mstatus, VT_CSR_READ(mstatus) | (1ul << 9)); /* VS = Initial */
     __asm__ volatile("csrr %0, mstatus" : "=r"(ms));
     VT_EQ((ms >> 9) & 3, 1, "VS = Initial reads back");
+    VT_EQ(ms >> 63, 0, "SD clear while VS is Initial and FS is Off");
     __asm__ volatile("vsetivli x0, 1, e8, m1, ta, ma\n\tvmv.v.i v3, 5");
     __asm__ volatile("csrr %0, mstatus" : "=r"(ms));
     VT_EQ((ms >> 9) & 3, 3, "VS = Dirty after a vector write");
     VT_EQ(ms >> 63, 1, "SD set when VS is Dirty");
-    __asm__ volatile("csrs mstatus, %0" : : "r"(VT_MSTATUS_VS));
+    __asm__ volatile("csrs mstatus, %0" : : "r"(VT_MSTATUS_VS | VT_MSTATUS_FS));
 }
 
 static void test_misa(void)
