@@ -3654,6 +3654,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Page-table bus errors at every level, discard and successful retry",
         verilator_extra_args=("-GENABLE_RESPONSE_ERRORS=1",),
     ),
+    "ma_engine": CocotbRunConfig(
+        python_test_module="cocotb_tests.misaligned.test_ma_engine",
+        hdl_toplevel_module="ma_engine",
+        description=(
+            "Misaligned-access engine against a reference: faults and trap values, "
+            "split sector requests, loaded values and stored bytes"
+        ),
+        verilator_extra_args=("--assert",),
+    ),
     "ptw_walk_cache": CocotbRunConfig(
         python_test_module="cocotb_tests.mmu.test_ptw_walk_cache",
         hdl_toplevel_module="ptw",

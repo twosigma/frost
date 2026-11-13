@@ -538,6 +538,10 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cache/cache.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),ma_engine)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/misaligned/misaligned.f
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),ptw)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \

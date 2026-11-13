@@ -980,6 +980,25 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "line_align.sby",
+        "Line alignment matches a byte-by-byte reference for extract and place, and a "
+        "placed access reads back, for 32- and 64-byte lines",
+        tasks=("bmc", "bmc_64x8", "bmc_32x32"),
+    ),
+    FormalTarget(
+        "ma_pkg.sby",
+        "Misaligned-access split geometry, fault outcome, trap value and load value "
+        "match direct references",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "ma_engine.sby",
+        "Misaligned-access engine: no memory request before both parts pass their "
+        "checks, lower sector first, one request and response per identity, one "
+        "completion, fault or write-back per access, and terminal fatal stops",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
         "alu_shift_hint.sby",
         "ALU shifts and rotates match the reference with captured shift amounts on or "
         "off",
@@ -2411,6 +2430,8 @@ SBY_TASKS = [
     ("bmc_xilinx_2port", "Bounded two-port arbitration with Xilinx primitives"),
     ("bmc_queued", "Bounded check with decoded-queue admission contract"),
     ("bmc", "Check assertions up to the configured depth"),
+    ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
+    ("bmc_32x32", "Line alignment with 32-byte lines and 32 data bytes."),
     ("cover", "Search for reachable cover scenarios"),
     ("prove", "Prove safety assertions without a depth bound"),
     ("prove_depth2", "Unbounded proof of the two-entry decoded bundle queue"),
