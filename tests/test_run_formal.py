@@ -72,6 +72,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_ways_data_bmc"): 5100,
     ("coherence_l1d", "coh_l1d_zero_bmc"): 10800,
     ("coherence_l1d", "coh_l1d_zero_multi_bmc"): 18000,
+    ("coherence_l1d", "coh_l1d_zero_cover"): 14400,
     ("coherence_store_boundary", "bmc_four"): 18000,
     ("coherence_store_boundary", "cover_four"): 7200,
     ("coherence_store_boundary", "bmc_intervening"): 14400,
@@ -3138,7 +3139,7 @@ def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:
         assert dict(line.split(maxsplit=1) for line in task["[options]"]) == {
             "mode": "cover",
             "depth": "80",
-            "timeout": "2400",
+            "timeout": "14400",
             "vcd_sim": "on",
             "skip": "48",
         }
