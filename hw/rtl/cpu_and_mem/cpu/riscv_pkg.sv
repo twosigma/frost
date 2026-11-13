@@ -1673,13 +1673,15 @@ package riscv_pkg;
   // the covered DDR range (which also bounds every higher bit).
   function automatic logic pma_pbmt_alias_ok(input logic [XLEN-1:0] addr);
     logic [XLEN-1:0] real_addr;
-    real_addr = addr & ~XLEN'(PbmtAliasOffset);
+    real_addr = addr;
+    real_addr[PbmtAliasBit] = 1'b0;
     pma_pbmt_alias_ok = PbmtAliasEnabled && addr[PbmtAliasBit] &&
         (real_addr >= XLEN'(DdrBase)) && (real_addr < XLEN'(PbmtAliasCoverLimit));
   endfunction
   // The DDR address an alias names.
   function automatic logic [XLEN-1:0] pbmt_alias_real(input logic [XLEN-1:0] addr);
-    pbmt_alias_real = addr & ~XLEN'(PbmtAliasOffset);
+    pbmt_alias_real = addr;
+    pbmt_alias_real[PbmtAliasBit] = 1'b0;
   endfunction
 
   function automatic logic pma_device_ok(input logic [XLEN-1:0] addr);

@@ -344,7 +344,7 @@ async def test_pbmt_pages_refuse_fetch(dut: Any) -> None:
         (0x0000_6040, Leaf(vpn=0x6, ppn=0x80123 | alias, pbmt=1)),
         (0x0000_7080, Leaf(vpn=0x7, ppn=0x80124 | alias, pbmt=2)),
         (0x0000_8100, Leaf(vpn=0x8, ppn=0x00010, pbmt=1)),
-        (0x0060_3000, Leaf(vpn=0x600, ppn=0x80200 | alias, level=1, pbmt=2)),
+        (0x0060_3000, Leaf(vpn=0x603, ppn=0x80200 | alias, level=1, pbmt=2)),
         (0x0000_9040, Leaf(vpn=0x9, ppn=0x80125)),
     )
     dut.i_active.value = 1

@@ -853,8 +853,8 @@ module dmmu (
   end
   // The PBMT field of the leaf that resolves S1: the DTLB hit's, else the walk's.
   logic f_resolve_unc;
-  assign f_resolve_unc = tlb_hit[0] ? (tlb_pbmt[0] != 2'd0) :
-      (walk_resp_for_s1 && (i_walk_resp.pbmt != 2'd0));
+  assign f_resolve_unc = s1_valid_q && !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical &&
+      (tlb_hit[0] ? (tlb_pbmt[0] != 2'd0) : (walk_resp_for_s1 && (i_walk_resp.pbmt != 2'd0)));
   always_comb begin
     logic [riscv_pkg::XLEN-1:0] f_resolve_addr_ref;
     f_resolve_addr_ref = s1_q.va;

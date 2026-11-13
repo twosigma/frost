@@ -670,11 +670,12 @@ module ptw #(
           if ((f_g_pbmt != 2'd0) && f_g_pbmt_ddr) begin
             p_ok_alias_ppn :
             assert (o_resp.ppn ==
-                    (f_pte[53:10] | riscv_pkg::PtePpnBits'(riscv_pkg::PbmtAliasOffset >> 12)) &&
-                    o_resp.ppn != f_pte[53:10] &&
-                    !riscv_pkg::pma_cached_ok({8'b0, o_resp.ppn, 12'h000}) &&
-                    riscv_pkg::pma_pbmt_alias_ok({8'b0, o_resp.ppn, 12'h000}) &&
-                    riscv_pkg::pbmt_alias_real({8'b0, o_resp.ppn, 12'h000}) ==
+                    (f_pte[53:10] | riscv_pkg::PtePpnBits'(riscv_pkg::PbmtAliasOffset >> 12)));
+            p_ok_alias_moved : assert (o_resp.ppn != f_pte[53:10]);
+            p_ok_alias_uncached : assert (!riscv_pkg::pma_cached_ok({8'b0, o_resp.ppn, 12'h000}));
+            p_ok_alias_window : assert (riscv_pkg::pma_pbmt_alias_ok({8'b0, o_resp.ppn, 12'h000}));
+            p_ok_alias_real :
+            assert (riscv_pkg::pbmt_alias_real({8'b0, o_resp.ppn, 12'h000}) ==
                     {8'b0, f_pte[53:10], 12'h000});
           end else begin
             p_ok_ppn : assert (o_resp.ppn == f_pte[53:10]);
