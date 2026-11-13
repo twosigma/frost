@@ -122,7 +122,7 @@ module vec_unit #(
       if (pop) head_q <= head_q + 1'b1;
       count_q <= count_q + ($clog2(Depth) + 1)'(push) - ($clog2(Depth) + 1)'(pop);
       issued_q <= pop;
-      // Two places of slack cover the commit bus's registered delay.
+      // Two spare entries cover the commit bus's registered delay.
       o_commit_hold <= (count_q + ($clog2(Depth) + 1)'(push)) >= ($clog2(Depth) + 1)'(Depth - 2);
     end
   end
