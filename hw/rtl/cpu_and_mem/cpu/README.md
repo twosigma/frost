@@ -567,6 +567,14 @@ comparisons behind `vmfeq`, `vmflt` and `vmfle` (with `vmfne`, `vmfgt` and
 injections and `vfclass`, with the fflags each raises. Its latency is one
 cycle.
 
+The conversions are three blocks, each parameterized by its source and
+destination widths so one source serves every same-width, widening and
+narrowing form: `vec_f2i` converts a format to signed or unsigned integers of
+a given width with the RISC-V saturating results, `vec_i2f` converts integers
+to a format, and `vec_f2f` converts between two formats, exactly when
+widening and with rounding (including round to odd for `vfncvt.rod.f.f`) when
+narrowing. Their latencies are five, seven and eight cycles.
+
 ## Subtle cases
 
 These front-end hazards are easy to reintroduce. The code comments at each

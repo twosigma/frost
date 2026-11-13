@@ -13,3 +13,6 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_ghash_group.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_vrf.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_fma.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_fp_misc.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_f2i.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_i2f.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_f2f.sv
