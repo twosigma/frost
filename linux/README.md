@@ -146,7 +146,7 @@ directly through Sstc (`stimecmp`) instead of an SBI call.
 
 The generated DTB declares the
 [implemented extensions](../README.md#supported-risc-v-extensions), Sstc,
-Smaia, Ssaia, Sscofpmf, Svade, Svvptc, and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and the LP64D
+Smaia, Ssaia, Sscofpmf, Svade, Svpbmt, Svvptc, and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and the LP64D
 ABI. Svvptc tells Linux that a PTE changed from invalid to valid becomes
 visible to the walker without `sfence.vma`, so the kernel can omit that
 synchronization for those mapping updates. Other PTE changes retain their
@@ -157,6 +157,16 @@ probe, and the instruction MMU expires both its fault memo and completed
 registered refusals every 64 clocks. Even a refusal copied from the memo on its expiry
 edge is dropped within 128 clocks. Trap, xRET and FENCE-class full flushes
 also drop memo entries and verdicts, including a response on the flush edge.
+
+Svpbmt: OpenSBI sets `menvcfg.PBMTE` when the DTB lists `svpbmt`, and Linux
+then maps `ioremap` regions with PBMT = IO and write-combining or
+non-coherent-DMA remaps with PBMT = NC (`_PAGE_IO_SVPBMT`,
+`_PAGE_NOCACHE_SVPBMT`, patched in by the kernel's alternatives). Device pages
+are uncached by their PMA already, so every MMIO driver behaves as before; an
+NC or IO page over DDR is read and written uncached, at the ROB head and in
+program order, through the coherent DMA port, so it stays coherent with the
+linear map's cacheable view of the same frame. `/proc/cpuinfo` lists
+`svpbmt` in its `isa` line.
 
 ## Counters and mcounteren
 

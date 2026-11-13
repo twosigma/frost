@@ -159,6 +159,7 @@ every supported extension and privilege mode.
 | **Smaia, Ssaia** | AIA CSRs and machine/supervisor IMSIC files with 63 identities |
 | **Sscofpmf**     | HPM counter overflow (OF, `scountovf`, local counter-overflow interrupt 13) and MINH/SINH/UINH privilege filtering on counters 3..10 |
 | **Svade**        | Software-managed accessed and dirty bits: an access that needs one set raises a page fault |
+| **Svpbmt**       | PTE bits 62:61 under `menvcfg.PBMTE`: NC and IO pages are uncached, in order at the ROB head and coherent with cacheable views; AMO/LR/SC and fetch on them are access faults |
 | **Svvptc**       | A PTE changed from invalid to valid becomes visible to the walker without `sfence.vma` |
 | **User Mode**    | U-mode privilege and system calls |
 
