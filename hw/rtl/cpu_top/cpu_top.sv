@@ -48,6 +48,11 @@ module cpu_top #(
     parameter int unsigned L2_LINE_BYTES = 64,
     parameter int unsigned SIM_FAST_MAINT = 0,
     parameter int unsigned PERF_COUNTERS = 0,
+    // Vector unit: VECTOR=1 adds the vector state, VLEN is the vector
+    // register width (128, 256 or 512), and VECTOR_ADVERTISE sets misa.V.
+    parameter bit VECTOR = 1'b0,
+    parameter int unsigned VLEN = 256,
+    parameter bit VECTOR_ADVERTISE = 1'b0,
     parameter bit ENABLE_COHERENCE = 1'b0,
     parameter int unsigned AXI_ID_BITS = 6,
     parameter int unsigned AXI_USER_BITS = 1,
@@ -363,6 +368,9 @@ module cpu_top #(
       .L2_WAYS(L2_WAYS),
       .SIM_FAST_MAINT(SIM_FAST_MAINT),
       .PERF_COUNTERS(PERF_COUNTERS),
+      .VECTOR(VECTOR),
+      .VLEN(VLEN),
+      .VECTOR_ADVERTISE(VECTOR_ADVERTISE),
       .DATA_BYTES(L2_LINE_BYTES),
       .DATA_PROT(AXI_MEMORY_PROT)
   ) hart (

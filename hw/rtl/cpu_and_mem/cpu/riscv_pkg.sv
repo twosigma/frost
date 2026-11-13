@@ -1213,6 +1213,15 @@ package riscv_pkg;
   localparam bit [11:0] CsrFrm = 12'h002;  // FP rounding mode
   localparam bit [11:0] CsrFcsr = 12'h003;  // FP control/status (frm[7:5] + fflags[4:0])
 
+  // V extension: vector CSRs (present only in builds with the vector unit)
+  localparam bit [11:0] CsrVstart = 12'h008;  // First element to execute
+  localparam bit [11:0] CsrVxsat = 12'h009;  // Fixed-point saturation flag
+  localparam bit [11:0] CsrVxrm = 12'h00A;  // Fixed-point rounding mode
+  localparam bit [11:0] CsrVcsr = 12'h00F;  // vxrm[2:1] + vxsat[0]
+  localparam bit [11:0] CsrVl = 12'hC20;  // Vector length (read-only)
+  localparam bit [11:0] CsrVtype = 12'hC21;  // Vector type (read-only)
+  localparam bit [11:0] CsrVlenb = 12'hC22;  // VLEN/8 (read-only)
+
   // F extension: Rounding modes
   typedef enum bit [2:0] {
     FRM_RNE = 3'b000,  // Round to Nearest, ties to Even
@@ -1275,6 +1284,8 @@ package riscv_pkg;
   localparam int unsigned MstatusSpieBit = 5;  // Supervisor Previous Interrupt Enable
   localparam int unsigned MstatusMpieBit = 7;  // Machine Previous Interrupt Enable
   localparam int unsigned MstatusSppBit = 8;  // Supervisor Previous Privilege (1 bit: U/S)
+  // mstatus.VS occupies [10:9] and mstatus.FS [14:13].
+  localparam int unsigned MstatusVsLo = 9;
   // mstatus.MPP occupies [12:11]; mstatus.MPRV is bit 17.
   localparam int unsigned MstatusMppLo = 11;
   localparam int unsigned MstatusMprvBit = 17;

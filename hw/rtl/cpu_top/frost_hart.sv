@@ -37,6 +37,11 @@ module frost_hart #(
     parameter int unsigned L2_WAYS = 4,
     parameter int unsigned SIM_FAST_MAINT = 0,
     parameter int unsigned PERF_COUNTERS = 0,
+    // Vector unit: VECTOR=1 adds the vector state, VLEN is the vector
+    // register width (128, 256 or 512), and VECTOR_ADVERTISE sets misa.V.
+    parameter bit VECTOR = 1'b0,
+    parameter int unsigned VLEN = 256,
+    parameter bit VECTOR_ADVERTISE = 1'b0,
     // The uncached data port: one beat of the outgoing AXI data bus (cpu_top
     // L2_LINE_BYTES), and the tile's AXI protection domain.
     parameter int unsigned DATA_BYTES = 64,
@@ -284,6 +289,9 @@ module frost_hart #(
       .CACHED_BASE(CachedBase),
       .CACHED_SIZE_BYTES(CachedSizeBytes),
       .PERF_COUNTERS(PERF_COUNTERS),
+      .VECTOR(VECTOR),
+      .VLEN(VLEN),
+      .VECTOR_ADVERTISE(VECTOR_ADVERTISE),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),

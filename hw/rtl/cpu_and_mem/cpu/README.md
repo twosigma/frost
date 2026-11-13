@@ -466,6 +466,22 @@ privilege, so the full flush alone retires the old permission state. Linux
 toggles SUM around every user copy, so this keeps both TLBs warm across
 syscalls.
 
+## Vector state
+
+With `VECTOR=1`, `csr_file` holds the vector state: `mstatus.VS` (bits 10:9,
+with its `sstatus` view), `vstart`, `vxsat`, `vxrm`, `vcsr`, and the read-only
+`vl`, `vtype` and `vlenb`. VS resets to Off and has the four FS states. While it
+is Off, the ROB marks every vector CSR access illegal at allocation; writing
+`mstatus` or `sstatus` is followed by the full flush described above, so no
+younger instruction keeps a legality decision made under the old VS. A write
+to `vstart`, `vxsat`, `vxrm` or `vcsr` sets VS to Dirty, and SD is set while
+FS or VS is Dirty. A read that does not write, such as `csrr`, leaves VS
+unchanged. `vstart` keeps log2(`VLEN`) bits, `vlenb` reads `VLEN/8`, `vl` resets
+to 0 and `vtype` to vill. Vector instructions raise illegal-instruction.
+`misa.V` is set only with `VECTOR_ADVERTISE=1`; with 0, bare-metal software
+enables the state by writing `mstatus.VS`. With `VECTOR=0` the vector CSRs do
+not exist and VS reads zero.
+
 ## Subtle cases
 
 These front-end hazards are easy to reintroduce. The code comments at each

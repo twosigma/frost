@@ -924,8 +924,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "csr_file.sby",
-        "CSR state and access behavior with profiling counters on or off",
-        tasks=("bmc", "cover", "bmc_perf_off"),
+        "CSR state and access behavior with profiling counters on or off, and "
+        "with the vector state",
+        tasks=("bmc", "cover", "bmc_perf_off", "vector_bmc"),
     ),
     FormalTarget(
         "tlb.sby",

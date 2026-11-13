@@ -819,6 +819,45 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "F/D instructions trap without memory effects when mstatus.FS is Off"
         ),
     ),
+    "vec_state_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_state_test",
+        nic_mac_clocks=False,
+        description="Without the vector unit, mstatus.VS reads zero and vector CSRs trap",
+    ),
+    "vec_state_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_state_test",
+        nic_mac_clocks=False,
+        description=(
+            "Vector state with the vector unit at VLEN 256: mstatus.VS, the vector CSRs "
+            "and their legality"
+        ),
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=256"),
+        extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=256"),),
+    ),
+    "vec_state_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_state_test",
+        nic_mac_clocks=False,
+        description="Vector state with the vector unit at VLEN 128; CLI-only",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=128"),
+        extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=128"),),
+        include_in_pytest=False,
+    ),
+    "vec_state_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_state_test",
+        nic_mac_clocks=False,
+        description="Vector state with the vector unit at VLEN 512; CLI-only",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=512"),
+        extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=512"),),
+        include_in_pytest=False,
+    ),
     "cbo_zero_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
