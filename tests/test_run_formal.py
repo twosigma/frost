@@ -3483,8 +3483,9 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
     bulk = task == "coh_l1d_stream_free_bmc"
     outlier = task == "coh_l1d_stream_outlier_prove"
     hold = task.endswith("_hold_bmc")
-    # The scripted control task uses the CaDiCaL-based engine, as the holds do.
-    cadical = hold or task == "coh_l1d_stream_bmc"
+    # The scripted and free control tasks use the CaDiCaL-based engine, as the
+    # holds do.
+    cadical = hold or bulk or task == "coh_l1d_stream_bmc"
     script = [
         "read -sv coherence_read_stream.sv",
         "read -sv cache_perf_pkg.sv",
