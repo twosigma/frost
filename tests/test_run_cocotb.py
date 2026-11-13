@@ -2699,6 +2699,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="coherence_cluster_test_harness",
         description="One hart, DMA, pending stores, recalls, and atomic ownership",
     ),
+    "coherence_line_client": CocotbRunConfig(
+        verilator_extra_args=("--assert",),
+        python_test_module="cocotb_tests.cache.test_coherence_line_client",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="The hart's line client: sector reads see dirty L1D data, masked "
+        "sector writes replace L1D copies, two identities in flight, mixed with L1D traffic",
+    ),
     "coherence_cluster_misses": CocotbRunConfig(
         verilator_extra_args=("--assert", "-GL1D_MISSES=3"),
         python_test_module="cocotb_tests.cache.test_coherence_cluster",
@@ -4497,7 +4504,11 @@ for _name in MEMORY_LINK_PROGRAMS:
             "-GMEMORY_LINK_STAGES=1",
         ),
     )
-for _name in ("coherence_cluster_misses", "coherence_store_pressure"):
+for _name in (
+    "coherence_cluster_misses",
+    "coherence_store_pressure",
+    "coherence_line_client",
+):
     _base_config = TEST_REGISTRY[_name]
     TEST_REGISTRY[f"{_name}_link1"] = replace(
         _base_config,

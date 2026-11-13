@@ -42,7 +42,10 @@ module frost_hart #(
     // L2_LINE_BYTES), and the tile's AXI protection domain.
     parameter int unsigned DATA_BYTES = 64,
     parameter logic [2:0] DATA_PROT = 3'b011,
-    // Instruction and walker requests use 32-byte lines.
+    // Request identities of the hart's line client: a power of two from 2 to
+    // coherence_pkg::HartLineIds.
+    parameter int unsigned LINE_CLIENT_IDS = 2,
+    // Instruction, walker and line-client requests use 32-byte lines.
     localparam int unsigned L1LineBytes = 32,
     localparam int unsigned LineIdBits = 4,
     // Bytes per uncached instruction fetch: a 32-byte line with the Normal
@@ -120,6 +123,19 @@ module frost_hart #(
     input logic i_coherent_u_valid,
     output logic o_coherent_u_ready,
     input logic [riscv_pkg::PhysAddrBits+14:0] i_coherent_u,
+
+    // The line client's channels: D and C hold until accepted; G and U are
+    // always taken.
+    output logic o_line_d_valid,
+    input logic i_line_d_ready,
+    output logic [riscv_pkg::PhysAddrBits+311:0] o_line_d,
+    input logic i_line_g_valid,
+    input logic [riscv_pkg::PhysAddrBits+274:0] i_line_g,
+    output logic o_line_c_valid,
+    input logic i_line_c_ready,
+    output logic [riscv_pkg::PhysAddrBits+17:0] o_line_c,
+    input logic i_line_u_valid,
+    input logic [riscv_pkg::PhysAddrBits+14:0] i_line_u,
 
     // Uncached and Device data, from the uncached adapter.
     output logic o_data_req_valid,
@@ -781,6 +797,87 @@ module frost_hart #(
       end
     end
   end
+
+  // The hart's line client: sector reads and masked sector writes with the
+  // home's DMA-style service (probe, dirty merge, masked update), under the
+  // hart's own source and port class 3. Nothing in the hart issues requests
+  // on it, so its request port is held idle.
+  logic line_req_valid, line_req_ready, line_req_write;
+  logic [riscv_pkg::PhysAddrBits-1:0] line_req_addr;
+  logic [L1LineBytes*8-1:0] line_req_wdata, line_resp_rdata;
+  logic [L1LineBytes-1:0] line_req_wstrb;
+  logic [LineIdBits-1:0] line_req_id, line_resp_id;
+  logic line_resp_valid, line_resp_error, line_g_ready, line_u_ready;
+  assign line_req_valid = 1'b0;
+  assign line_req_write = 1'b0;
+  assign line_req_addr = '0;
+  assign line_req_wdata = '0;
+  assign line_req_wstrb = '0;
+  assign line_req_id = '0;
+  if (ENABLE_CACHED_TIER != 0) begin : gen_line_client
+    coherence_dma_ingress #(
+        .ADDR_WIDTH(riscv_pkg::PhysAddrBits),
+        .SOURCE(2'd0),
+        .PORT_CLASS(2'd3),
+        .SLOTS(LINE_CLIENT_IDS)
+    ) line_client (
+        .i_clk,
+        .i_rst,
+        .i_fatal_stop(i_fatal_stop),
+        .i_req_valid(line_req_valid),
+        .o_req_ready(line_req_ready),
+        .i_req_write(line_req_write),
+        .i_req_addr(line_req_addr),
+        .i_req_data(line_req_wdata),
+        .i_req_mask(line_req_wstrb),
+        .i_req_id(line_req_id),
+        .i_req_non_alloc(1'b0),
+        .o_resp_valid(line_resp_valid),
+        .o_resp_data(line_resp_rdata),
+        .o_resp_id(line_resp_id),
+        .o_resp_error(line_resp_error),
+        .o_d_valid(o_line_d_valid),
+        .i_d_ready(i_line_d_ready),
+        .o_d(o_line_d),
+        .i_g_valid(i_line_g_valid),
+        .o_g_ready(line_g_ready),
+        .i_g(i_line_g),
+        .o_c_valid(o_line_c_valid),
+        .i_c_ready(i_line_c_ready),
+        .o_c(o_line_c),
+        .i_u_valid(i_line_u_valid),
+        .o_u_ready(line_u_ready),
+        .i_u(i_line_u)
+    );
+  end else begin : gen_no_line_client
+    assign line_req_ready = 1'b0;
+    assign line_resp_valid = 1'b0;
+    assign line_resp_rdata = '0;
+    assign line_resp_id = '0;
+    assign line_resp_error = 1'b0;
+    assign line_g_ready = 1'b1;
+    assign line_u_ready = 1'b1;
+    assign o_line_d_valid = 1'b0;
+    assign o_line_d = '0;
+    assign o_line_c_valid = 1'b0;
+    assign o_line_c = '0;
+  end
+  if (LINE_CLIENT_IDS < 2 || LINE_CLIENT_IDS > coherence_pkg::HartLineIds ||
+      (LINE_CLIENT_IDS & (LINE_CLIENT_IDS - 1)) != 0) begin : gen_invalid_line_client
+    initial $fatal(1, "frost_hart: LINE_CLIENT_IDS must be a power of two, 2 to HartLineIds");
+  end
+`ifndef SYNTHESIS
+  // G and U cross on always-taken links: the client must match every one.
+  logic line_reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) line_reset_seen_q <= 1'b1;
+    if (line_reset_seen_q && !i_rst && !i_fatal_stop) begin
+      if (i_line_g_valid) p_line_g_taken : assert (line_g_ready);
+      if (i_line_u_valid) p_line_u_taken : assert (line_u_ready);
+      if (line_req_valid) p_line_id_legal : assert (int'(line_req_id) < LINE_CLIENT_IDS);
+    end
+  end
+`endif
 
   if (ENABLE_CACHED_TIER == 0) begin : gen_no_coherent_channels
     assign o_coherent_d_valid = '0;

@@ -80,6 +80,9 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_store_home", "bmc_conflict"): 2400,
     ("coherence_store_home", "bmc_pressure"): 2700,
     ("coherence_store_home", "link_bmc_siblings"): 7200,
+    ("line_client_link", "line_link0_bmc"): 4200,
+    ("line_client_link", "line_link1_bmc"): 4200,
+    ("line_client_link", "line_link1_four_bmc"): 4200,
     ("coherence_store_home", "link_bmc_pressure"): 8700,
 }
 
@@ -431,12 +434,15 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_dma_ingress.sby",
-        "DMA issue order, opaque identities, independent completion, and reset ownership.",
+        "DMA issue order, opaque identities, independent completion, and reset ownership; "
+        "the same for the hart's two-identity line client.",
         tasks=(
             "coh_dma_ingress_prove",
             "coh_dma_ingress_cover",
             "coh_dma_ingress_soc_prove",
             "coh_dma_ingress_soc_cover",
+            "coh_line_client_prove",
+            "coh_line_client_cover",
         ),
     ),
     FormalTarget(
@@ -980,6 +986,25 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "line_client_link.sby",
+        "The hart's line client through its links at zero and one stage against an "
+        "abstract home: legal identities, never one already live, C after G, every "
+        "always-taken G and U taken, one response per request",
+        tasks=(
+            "line_link0_bmc",
+            "line_link1_bmc",
+            "line_link1_four_bmc",
+            "line_link1_cover",
+        ),
+    ),
+    FormalTarget(
+        "home_forward_next_equiv.sby",
+        "The home's forward-turn next state, formed for both outcomes of the memory "
+        "response and selected last, equals the single-ready-set form at eight and "
+        "three fills, portable and primitive",
+        tasks=("bmc", "bmc_fills3", "bmc_xilinx"),
+    ),
+    FormalTarget(
         "line_align.sby",
         "Line alignment matches a byte-by-byte reference for extract and place, and a "
         "placed access reads back, for 32- and 64-byte lines",
@@ -997,13 +1022,6 @@ FORMAL_TARGETS = [
         "checks, lower sector first, one request and response per identity, one "
         "completion, fault or write-back per access, and terminal fatal stops",
         tasks=("bmc", "cover"),
-    ),
-    FormalTarget(
-        "home_forward_next_equiv.sby",
-        "The home's forward-turn next state, formed for both outcomes of the memory "
-        "response and selected last, equals the single-ready-set form at eight and "
-        "three fills, portable and primitive",
-        tasks=("bmc", "bmc_fills3", "bmc_xilinx"),
     ),
     FormalTarget(
         "alu_shift_hint.sby",
@@ -2437,8 +2455,23 @@ SBY_TASKS = [
     ("bmc_xilinx_2port", "Bounded two-port arbitration with Xilinx primitives"),
     ("bmc_queued", "Bounded check with decoded-queue admission contract"),
     ("bmc", "Check assertions up to the configured depth"),
-    ("bmc_fills3", "Forward-turn equivalence with three fills."),
     ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
+    ("bmc_fills3", "Forward-turn equivalence with three fills."),
+    ("line_link0_bmc", "Line client and links at zero stages, two identities."),
+    (
+        "coh_line_client_prove",
+        "Ingress under a hart source and class 3 with two identities.",
+    ),
+    (
+        "coh_line_client_cover",
+        "Ingress reachability under a hart source with two identities.",
+    ),
+    ("line_link1_bmc", "Line client and links at one stage, two identities."),
+    ("line_link1_four_bmc", "Line client and links at one stage, four identities."),
+    (
+        "line_link1_cover",
+        "Line client at one stage reaches two live identities and a write response.",
+    ),
     ("bmc_32x32", "Line alignment with 32-byte lines and 32 data bytes."),
     ("cover", "Search for reachable cover scenarios"),
     ("prove", "Prove safety assertions without a depth bound"),

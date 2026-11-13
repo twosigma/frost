@@ -21,6 +21,10 @@ package coherence_pkg;
   localparam int unsigned DataBits = 256;
   // Prefetch identities: source 3, class 3, IDs 0 to PrefetchIds - 1.
   localparam int unsigned PrefetchIds = 4;
+  // Hart line-client identities: a hart's source, class 3, IDs 0 to
+  // HartLineIds - 1. They make DMARead and DMAWrite requests and share the
+  // home's main completion partition with the hart and DMA identities.
+  localparam int unsigned HartLineIds = 2;
 
   typedef struct packed {
     logic [1:0] src;
@@ -114,7 +118,8 @@ package coherence_pkg;
   function automatic logic legal_q(input q_t q);
     if (q.src < 2) begin
       legal_q = (q.port_class == 0 && q.id < 8) ||
-          (q.port_class == 1 && q.id < 2) || (q.port_class == 2 && q.id < 2);
+          (q.port_class == 1 && q.id < 2) || (q.port_class == 2 && q.id < 2) ||
+          (q.port_class == 3 && int'(q.id) < coherence_pkg::HartLineIds);
     end else begin
       legal_q = q.port_class == 3 && (q.src == 2 || int'(q.id) < coherence_pkg::PrefetchIds);
     end
@@ -124,7 +129,9 @@ package coherence_pkg;
       legal_opcode = (q.port_class == 0 &&
           (opcode <= coherence_pkg::StoreConditional || opcode == coherence_pkg::GetMZero)) ||
           (q.port_class == 1 && opcode == coherence_pkg::ReadOnceIF) ||
-          (q.port_class == 2 && opcode == coherence_pkg::ReadOncePTW);
+          (q.port_class == 2 && opcode == coherence_pkg::ReadOncePTW) ||
+          (q.port_class == 3 && (opcode == coherence_pkg::DMARead ||
+          opcode == coherence_pkg::DMAWrite));
     end else begin
       legal_opcode = (q.src == 2 && (opcode == coherence_pkg::DMARead ||
           opcode == coherence_pkg::DMAWrite)) || (q.src == 3 && opcode == coherence_pkg::Prefetch);

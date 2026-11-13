@@ -16,7 +16,7 @@ benches compose these modules independently of the CPU hierarchy.
 | `coherent_hart_cache.sv` | CPU private L1D and L1I, instruction and walker bridges, and maintenance arbitration |
 | `coherence_l1d.sv` | MSI data cache with probes, tagged reads and four ordered store records |
 | `coherence_home.sv` | Shared L2 home with sector ordering, dirty-data merge, configurable fills, lookup-only Prefetch service and streaming DMA placement |
-| `coherence_dma_ingress.sv` | Independent DMA request lifetimes, read responses at grant and write responses after release |
+| `coherence_dma_ingress.sv` | Independent request lifetimes, read responses at grant and write responses after release, for the SoC's DMA port and a hart's line client |
 | `frost_cache.sv` | Generic line cache, used by the CPU L1I and the component hierarchy benches |
 | `frost_hart_cache.sv` | Private caches in the line-cache component hierarchy: the L1D and the L1I, the walker port's coherence sequencer, the probe injection register that the walker and DMA probes share into the L1D, and `fence.i` sequencing |
 | `frost_cluster_cache.sv` | Shared level in the line-cache component hierarchy: the L1D, walker, L1I, and DMA ports and the stream prefetcher over the arbiter tree, the DMA coherence sequencer, the line-size adapter, and the L2 |
@@ -111,7 +111,11 @@ and every payload bit during a stall. Addresses name aligned 32-byte sectors.
 Request identity q contains src 2, port_class 2, id 4, and epoch 1. Sources
 0 and 1 name harts, 2 names DMA, and 3 names prefetch. Classes 0, 1, 2, and 3
 name data, instruction fetch, page-table walk, and agent traffic. Hart data
-IDs are 0 through 7, and fetch and walk IDs are 0 and 1. DMA IDs are opaque
+IDs are 0 through 7, and fetch and walk IDs are 0 and 1. A hart's class 3 is
+its line client, with IDs 0 through `HartLineIds - 1` (two) and only DMARead
+and DMAWrite requests, which the home serves as DMA: it probes the hart's own
+L1D, merges dirty data and applies the write mask. A line client's request
+keeps same-sector ordering until its U, as hart requests do. DMA IDs are opaque
 four-bit values; prefetch IDs are 0 through 3, one for each request endpoint
 of the prefetch agent. Admission limits are the ingress's credits for DMA,
 eight in the cluster, and the agent's endpoints for prefetch:
@@ -119,7 +123,10 @@ eight in the cluster, and the agent's endpoints for prefetch:
 identity. Admission arbitration is external to the endpoint slots.
 
 Home tid is six bits. For H harts, `completion_count(H)` is `12*H+12`: twelve
-identities per hart, eight DMA credits and four prefetch identities. The
+identities per hart, eight DMA credits and four prefetch identities. Line-client
+requests share the main partition with the hart's other requests and DMA;
+when every main slot is live a request waits on D, and the live slots finish
+without new D admission. The
 last four slots take only prefetch requests, as many as the prefetch
 identities, so a prefetch never takes a hart or DMA slot.
 `fill_base(H)` equals this count, `put_base(H,F)` adds F fill controls, and
@@ -1700,6 +1707,7 @@ to answer.
 | `coherence_prefetch*` | The prefetch agent against the home at 32- and 64-byte lines: data identities held at C and U, GrantAck at each lookup before the fill's memory response, fills that install on their own, a failed fill, reset and fatal stop, demands joining prefetch fills, dirty replacement, PutM beside live prefetches of its line, marked DMA fills, DMA responses before C and U, progress with every hart and DMA completion slot, every engine's result buffer and both PutM controls full, and instruction and data streams on one line |
 | `coherence_prefetch_contention*` | Demand latency and bandwidth with competing streams, dirty victims and DMA, with and without prefetch |
 | `coherence_cbo_zero*` | Line-scope cbo.zero on the hart-and-home cluster with one and three L1D endpoints and 64- and 32-byte home lines: zero fills that read no memory, a DMA write or read of the upper sector at every delay after a cbo.zero (a zero-filled block keeps the later write), a stale Shared copy that the twin upgrades to Modified zeros, dirty resident blocks, and back-to-back blocks with stores and loads in program order |
+| `coherence_line_client*` | The hart's line client on the hart-and-home cluster at zero and one link stage: a sector read returns the L1D's dirty bytes, a masked sector write replaces only its bytes and later L1D reads see them, both identities in flight at once, a line read beside a DMA write, and random line reads and writes mixed with L1D loads and stores against a byte-level reference |
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, and dirty-L1D walker coherence |
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, a miss waiting for a way of its set, writeback and fill progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
