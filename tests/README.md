@@ -235,6 +235,9 @@ response rotation and byte-write preservation.
 
 `debug_test` exercises JTAG control, memory access and BRAM instruction
 mirroring. The debugger executes both words of an aligned doubleword patch.
+It steps over a misaligned `ld` and `sd` to DDR, each retiring as one
+instruction through the misaligned-access engine, and checks that the same
+load from the program buffer, in Debug Mode, reports an exception.
 `debug_fence_test` warms BRAM instructions, patches both executed words,
 executes FENCE.I and calls the patch in one command. It stalls the mirror
 through programming-port backpressure and checks fence completion ordering.
@@ -591,8 +594,13 @@ runs leave out tests with more than 5,000 cases (`SIM_MAX_TEST_CASES`) unless
 you pass `--no-sim-filter`; `--test` runs any one test. In the `bram` and
 `icache` tiers, a test too large for low BRAM (95 KiB of code, 1 KiB reserved
 for debug, and 160 KiB of data and stack) reports SKIP; the `ddr` tier still
-runs it. `--shard K/N` runs part K of N of each selected extension, with the
-parts balanced by case count. A selected test with no committed reference
+runs it. In the `ddr` tier, extension runs leave out the eight privilege
+tests of the load and store address-misaligned trap (`misalign-lh` through
+`misalign-sd`): there the misaligned-access engine performs those accesses,
+and the references, made with a Spike that traps them, expect the trap. The
+`bram` and `icache` tiers keep their data in low BRAM, which still traps, and
+run them (`MEM_CONFIG_TEST_EXCLUDES`). `--shard K/N` runs part K of N of each
+selected extension, with the parts balanced by case count. A selected test with no committed reference
 fails; `sw/apps/arch_test/generate_references.py`, run in the frost image,
 generates references with the pinned Spike.
 
@@ -653,10 +661,13 @@ supervisor in `sw/apps/riscv_tests/env_v/`. The virtual environment needs DDR,
 and it sets page-table A and D bits from page faults (Svade).
 
 `ISA_SKIP_TESTS` leaves out tests for behavior FROST does not implement:
-misaligned accesses in hardware (`ma_data`), debug triggers (`breakpoint`),
-PMP (`pmpaddr`), and hardware A/D updates (`dirty`). In BRAM,
-`ISA_SKIP_TESTS_BRAM` also leaves out `fence_i` and `icache-alias`, which need
-DDR for instruction storage or page tables.
+debug triggers (`breakpoint`), PMP (`pmpaddr`), and hardware A/D updates
+(`dirty`). In BRAM, `ISA_SKIP_TESTS_BRAM` also leaves out `fence_i` and
+`icache-alias`, which need DDR for instruction storage or page tables, and
+`ma_data`: misaligned accesses are performed in hardware only in cached DDR,
+and low BRAM raises the address-misaligned exception. In DDR, `ma_data` runs
+in both environments; under `--env v` its accesses cross demand-paged Sv39
+pages.
 
 ### `test_riscv_vector_tests.py`
 
@@ -920,6 +931,7 @@ has a 20-minute timeout in both SBY and the runner.
 | `FROST_ASYNC_CPU_CLOCK` | `1` enables the independent CPU boundary in Yosys synthesis tests |
 | `FROST_NIC_MAC_CLOCKS` | For the whole-SoC program and TestRIG benches, overrides the registry or runner default: `0` holds both NIC MAC clocks and their clock-OK inputs low with an access guard; `1` starts the clocks. The ISA, torture, and TestRIG runners default to `0` |
 | `MEMORY_LINK_STAGES` | Register stages between the hart and the cluster memory in `frost` builds (default 0). The `*_link1` registry entries run the memory-system programs with one stage |
+| `MISALIGNED_HW` | Builds `frost` with the misaligned-access engine, as the X3 has it: plain misaligned loads and stores to cached DDR are performed in hardware (default 1, and 0 when `ENABLE_CACHED_TIER=0`). The registry entries that disable the cached tier also set it to 0 |
 | `SIM_FAST_MAINT` | Clears coherent-array tags, coherence states and replacement bits in one simulation cycle and enables fast L1I invalidation (default 1). Data RAM is not cleared. Hardware uses 0. Coherent fences leave dirty L1D data available to home probes. The Physical address aperture (1 GiB / Bare access) CI job uses 0 with randomized start values to cover the real reset sweep |
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to

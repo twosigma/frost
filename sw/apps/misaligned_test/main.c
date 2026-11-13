@@ -25,8 +25,10 @@
  * nothing, a store of x0 writes zeros, and an access retires as exactly one
  * instruction. In low BRAM a misaligned access still raises the
  * address-misaligned exception with the access's address as the trap value.
- * Last, misaligned accesses run while timer interrupts arrive at varying
- * phases.
+ * Under Sv39 (S-mode data accesses through MPRV), accesses cross into
+ * read-only, unmapped and user pages, with the trap value and the unchanged
+ * memory of a faulting store checked. Last, misaligned accesses run while
+ * timer interrupts arrive at varying phases.
  */
 
 #include <stdint.h>
@@ -198,6 +200,162 @@ __attribute__((naked, aligned(4))) static void bounce_handler(void)
 
 extern char trig_bram_load[], trig_bram_store[];
 
+/* Sv39 through an MPRV window: M-mode code, data accesses translated at S.
+ * VA 0x40_0000 + n * 4 KiB maps frame n of FRAMES with these leaves: */
+#define PT_ROOT 0x83010000ul
+#define PT_L1 0x83011000ul
+#define PT_L0 0x83012000ul
+#define FRAMES 0x83020000ul
+#define VA_BASE 0x00400000ul
+#define PTE_V (1ul << 0)
+#define PTE_R (1ul << 1)
+#define PTE_W (1ul << 2)
+#define PTE_U (1ul << 4)
+#define PTE_A (1ul << 6)
+#define PTE_D (1ul << 7)
+#define PTE_PPN(pa) ((((unsigned long) (pa)) >> 12) << 10)
+#define SATP_SV39 (8ul << 60)
+#define CAUSE_LOAD_PAGE_FAULT 13ul
+#define CAUSE_STORE_PAGE_FAULT 15ul
+static const unsigned long g_leaf_flags[7] = {
+    PTE_R | PTE_W | PTE_A | PTE_D,         /* 0: read-write */
+    PTE_R | PTE_A,                         /* 1: read-only */
+    0,                                     /* 2: unmapped */
+    PTE_R | PTE_W | PTE_A | PTE_D,         /* 3: read-write */
+    PTE_R | PTE_W | PTE_U | PTE_A | PTE_D, /* 4: user page, no access at S without SUM */
+    0,                                     /* 5: unmapped */
+    0,                                     /* 6: unmapped */
+};
+
+static uint8_t frame_byte(unsigned long offset)
+{
+    return (uint8_t) (offset * 73u + (offset >> 12) * 41u + 3u);
+}
+
+static uint64_t frame_bytes(unsigned long offset, unsigned int count)
+{
+    uint64_t value = 0;
+    for (unsigned int i = 0; i < count; i++)
+        value |= (uint64_t) frame_byte(offset + i) << (8u * i);
+    return value;
+}
+
+/* One access at S through the MPRV window. A fault resumes at label 1 through
+ * the bounce handler; MPRV is cleared on both paths. */
+#define MPRV_ON                                                                                    \
+    "li t1, 0x1800\n csrc mstatus, t1\n li t1, 0x0800\n csrs mstatus, t1\n"                        \
+    "li t1, 0x20000\n csrs mstatus, t1\n"
+#define MPRV_OFF "1:\n li t1, 0x20000\n csrc mstatus, t1\n"
+
+static uint64_t s_ld(unsigned long va)
+{
+    uint64_t value = 0xBAD0BAD0BAD0BAD0ull;
+    g_cause = ~0ul;
+    __asm__ volatile("la t0, 1f\n csrw mscratch, t0\n" MPRV_ON "ld %0, 0(%1)\n" MPRV_OFF
+                     : "+r"(value)
+                     : "r"(va)
+                     : "t0", "t1", "memory");
+    return value;
+}
+
+static uint64_t s_lw(unsigned long va)
+{
+    uint64_t value = 0xBAD0BAD0BAD0BAD0ull;
+    g_cause = ~0ul;
+    __asm__ volatile("la t0, 1f\n csrw mscratch, t0\n" MPRV_ON "lwu %0, 0(%1)\n" MPRV_OFF
+                     : "+r"(value)
+                     : "r"(va)
+                     : "t0", "t1", "memory");
+    return value;
+}
+
+static void s_sd(unsigned long va, uint64_t value)
+{
+    g_cause = ~0ul;
+    __asm__ volatile("la t0, 1f\n csrw mscratch, t0\n" MPRV_ON "sd %0, 0(%1)\n" MPRV_OFF
+                     :
+                     : "r"(value), "r"(va)
+                     : "t0", "t1", "memory");
+}
+
+static void check_fault(const char *what, unsigned long cause, unsigned long tval)
+{
+    check(g_cause == cause && g_tval == tval, what, g_tval, g_cause, tval);
+}
+
+/* Translated misaligned accesses: across a page into each kind of upper
+ * page, with the lower page unmapped, and with both unmapped. A fault of the
+ * upper page reports that page's base; any other reports the access's
+ * address. A faulting store changes nothing. */
+static void check_sv39(void)
+{
+    volatile unsigned long *root = (volatile unsigned long *) PT_ROOT;
+    volatile unsigned long *l1 = (volatile unsigned long *) PT_L1;
+    volatile unsigned long *l0 = (volatile unsigned long *) PT_L0;
+    volatile uint8_t *frames = (volatile uint8_t *) FRAMES;
+    for (int i = 0; i < 512; i++) {
+        root[i] = 0;
+        l1[i] = 0;
+        l0[i] = 0;
+    }
+    root[0] = PTE_PPN(PT_L1) | PTE_V;
+    l1[2] = PTE_PPN(PT_L0) | PTE_V; /* VA 0x40_0000 */
+    for (unsigned long n = 0; n < 7; n++)
+        if (g_leaf_flags[n] != 0)
+            l0[n] = PTE_PPN(FRAMES + n * 4096u) | PTE_V | g_leaf_flags[n];
+    for (unsigned long i = 0; i < 7u * 4096u; i++)
+        frames[i] = frame_byte(i);
+    __asm__ volatile("fence rw, rw\n csrw satp, %0\n sfence.vma"
+                     :
+                     : "r"(SATP_SV39 | (PT_ROOT >> 12))
+                     : "memory");
+
+    const unsigned long page = 4096u;
+    uint64_t got;
+
+    /* Read-write into read-only: the load is performed. */
+    got = s_ld(VA_BASE + page - 3u);
+    check(g_cause == ~0ul && got == frame_bytes(page - 3u, 8),
+          "sv39 ld across pages",
+          page - 3u,
+          got,
+          frame_bytes(page - 3u, 8));
+    /* ... and the store faults on the upper page and writes nothing. */
+    s_sd(VA_BASE + page - 5u, 0x0102030405060708ull);
+    check_fault("sv39 sd into read-only page", CAUSE_STORE_PAGE_FAULT, VA_BASE + page);
+    for (unsigned long i = page - 8u; i < page + 8u; i++)
+        check(frames[i] == frame_byte(i), "sv39 faulting sd byte", i, frames[i], frame_byte(i));
+    /* Into an unmapped page. */
+    got = s_ld(VA_BASE + 2u * page - 2u);
+    check_fault("sv39 ld into unmapped page", CAUSE_LOAD_PAGE_FAULT, VA_BASE + 2u * page);
+    check(got == 0xBAD0BAD0BAD0BAD0ull,
+          "sv39 faulting ld writes nothing",
+          0,
+          got,
+          0xBAD0BAD0BAD0BAD0ull);
+    /* Out of an unmapped page into a mapped one: the lower part's fault. */
+    s_lw(VA_BASE + 3u * page - 2u);
+    check_fault("sv39 lw from unmapped page", CAUSE_LOAD_PAGE_FAULT, VA_BASE + 3u * page - 2u);
+    /* Into a user page, at S without SUM. */
+    s_lw(VA_BASE + 4u * page - 1u);
+    check_fault("sv39 lw into user page", CAUSE_LOAD_PAGE_FAULT, VA_BASE + 4u * page);
+    /* Both pages unmapped: the lower one is reported. */
+    s_lw(VA_BASE + 6u * page - 2u);
+    check_fault("sv39 lw across unmapped pages", CAUSE_LOAD_PAGE_FAULT, VA_BASE + 6u * page - 2u);
+    /* A store across a line inside a read-write page is performed. */
+    s_sd(VA_BASE + 3u * page + 0x7Cu, 0x8877665544332211ull);
+    check(g_cause == ~0ul, "sv39 sd across a line", 0x7Cu, g_cause, ~0ul);
+    got = s_ld(VA_BASE + 3u * page + 0x7Cu);
+    check(got == 0x8877665544332211ull, "sv39 ld after sd", 0x7Cu, got, 0x8877665544332211ull);
+    for (unsigned long i = 0; i < 8; i++) {
+        unsigned long pa_off = 3u * page + 0x7Cu + i;
+        uint8_t want = (uint8_t) (0x8877665544332211ull >> (8u * i));
+        check(frames[pa_off] == want, "sv39 sd byte", pa_off, frames[pa_off], want);
+    }
+
+    __asm__ volatile("csrw satp, zero\n sfence.vma" ::: "memory");
+}
+
 static volatile uint32_t g_irq;
 
 /* Timer handler: count, re-arm 300 to 555 cycles ahead (longer than the
@@ -352,6 +510,7 @@ int main(void)
               6u);
     }
 
+    check_sv39();
     check_under_interrupts();
 
     uart_printf("%d checks\n", g_checks);

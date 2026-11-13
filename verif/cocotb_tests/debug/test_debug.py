@@ -72,6 +72,7 @@ from cocotb_tests.debug.jtag_dtm import (
     JtagDriver,
     addi,
     load,
+    store,
 )
 from cocotb_tests.test_real_program import (
     CLK_PERIOD_NS,
@@ -139,6 +140,50 @@ async def _reset(dut: Any) -> None:
 
 def _cause(dcsr: int) -> int:
     return (dcsr & DCSR_CAUSE_MASK) >> DCSR_CAUSE_SHIFT
+
+
+async def _misaligned_steps(dm: DebugModule, patch_addr: int, resume_pc: int) -> None:
+    """Step over a misaligned ld and sd to DDR, then try one in Debug Mode."""
+    lo, mid, hi = 0x0123456789ABCDEF, 0x8877665544332211, 0xF0E0D0C0B0A09080
+    for offset, value in ((0, lo), (8, mid), (16, hi)):
+        await dm.write_mem(DDR_SCRATCH_ADDR + offset, 8, value)
+    saved_regs = {n: await dm.read_gpr(n) for n in (5, 6, 7)}
+    saved_patch = await dm.read_mem(patch_addr, 8)
+    saved_dcsr = await dm.read_dcsr()
+    stored = 0x1122334455667788
+    # ld t1, 1(t0); sd t2, 9(t0), with t0 at the DDR scratch area.
+    await dm.write_mem(
+        patch_addr, 8, load(6, 5, 8, imm=1) | (store(7, 5, 8, imm=9) << 32)
+    )
+    await dm.write_gpr(5, DDR_SCRATCH_ADDR)
+    await dm.write_gpr(6, 0)
+    await dm.write_gpr(7, stored)
+    await dm.write_dpc(patch_addr)
+    await dm.set_step(True)
+    for expected in (patch_addr + 4, patch_addr + 8):
+        dpc = await dm.step()
+        dcsr = await dm.read_dcsr()
+        assert dpc == expected and _cause(dcsr) == DCSR_CAUSE_STEP, (
+            f"misaligned step: dpc={dpc:#x} expected {expected:#x} dcsr={dcsr:#x}"
+        )
+    want = (lo >> 8) | ((mid & 0xFF) << 56)
+    got = await dm.read_gpr(6)
+    assert got == want, f"misaligned ld: {got:#x} expected {want:#x}"
+    want_mid = (mid & 0xFF) | ((stored << 8) & 0xFFFF_FFFF_FFFF_FF00)
+    want_hi = (hi & ~0xFF) | (stored >> 56)
+    got_mid = await dm.read_mem(DDR_SCRATCH_ADDR + 8, 8)
+    got_hi = await dm.read_mem(DDR_SCRATCH_ADDR + 16, 8)
+    assert (got_mid, got_hi) == (want_mid, want_hi), (
+        f"misaligned sd: {got_mid:#x} {got_hi:#x} expected {want_mid:#x} {want_hi:#x}"
+    )
+    await dm.write_dcsr(saved_dcsr)
+    await dm.write_dpc(resume_pc)
+    for n, value in saved_regs.items():
+        await dm.write_gpr(n, value)
+    await dm.write_mem(patch_addr, 8, saved_patch)
+    # Debug Mode: the same misaligned load from the program buffer faults.
+    await dm.read_mem(DDR_SCRATCH_ADDR + 1, 8, expect=CMDERR_EXCEPTION)
+    assert (await dm.cmderr()) == 0
 
 
 @cocotb.test()
@@ -314,6 +359,14 @@ async def test_debug(dut: Any) -> None:
     await dm.write_mem(DDR_SCRATCH_ADDR + 8, 4, 0xFEEDFACE)
     assert (await dm.read_mem(DDR_SCRATCH_ADDR, 8)) == 0x0123456789ABCDEF
     assert (await dm.read_mem(DDR_SCRATCH_ADDR + 8, 4)) == 0xFEEDFACE
+
+    # ---- Misaligned accesses: single steps, and none in Debug Mode -----------
+    # With the misaligned-access engine (MISALIGNED_HW, the default), a step
+    # over a misaligned load or store to DDR retires it as one instruction and
+    # halts at the next. In Debug Mode the access keeps its exception, so a
+    # program buffer's misaligned load reports cmderr 3.
+    if os.environ.get("MISALIGNED_HW", "1") != "0":
+        await _misaligned_steps(dm, patch_addr, dpc)
 
     # ---- A progbuf exception: unmapped address -> cmderr 3 -------------------
     await dm.read_mem(0xDEAD_0000_0000, 8, expect=CMDERR_EXCEPTION)

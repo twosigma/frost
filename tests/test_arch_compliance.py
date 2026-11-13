@@ -127,6 +127,26 @@ EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
     "Zvk": {"vandn.vx", "vrol.vx", "vror.vx", "vsha2ch-e32", "vsha2cl-e32"},
 }
 
+# Tests excluded in one memory tier, by extension and filename prefix. In
+# cached DDR the misaligned-access engine performs misaligned loads and
+# stores, so the privilege tests of their address-misaligned trap apply only
+# to the bram and icache tiers, whose data is in low BRAM; their references
+# expect the trap. The misaligned branch and jump tests run in every tier.
+MEM_CONFIG_TEST_EXCLUDES: dict[str, dict[str, set[str]]] = {
+    "ddr": {
+        "privilege": {
+            "misalign-lh",
+            "misalign-lhu",
+            "misalign-lw",
+            "misalign-lwu",
+            "misalign-ld",
+            "misalign-sh",
+            "misalign-sw",
+            "misalign-sd",
+        },
+    },
+}
+
 
 # cbo.zero signatures depend on begin_signature modulo the block size; their
 # Spike references use a block-aligned bound. Keep equal to
@@ -554,6 +574,8 @@ def run_extension_tests(
         raise ValueError(PARALLEL_UNSAFE_MESSAGE)
 
     tests = discover_tests(extension, include_all=include_all)
+    tier_excludes = MEM_CONFIG_TEST_EXCLUDES.get(mem_config, {}).get(extension, set())
+    tests = [t for t in tests if t.stem.removesuffix("-01") not in tier_excludes]
     if shard is not None:
         tests = select_shard(tests, *shard)
     if not tests:
