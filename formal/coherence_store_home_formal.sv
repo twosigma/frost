@@ -21,7 +21,10 @@
 module coherence_store_home_formal #(
     parameter int unsigned SECTOR_CASE = 0,
     parameter bit PRESSURE = 1'b0,
-    parameter bit COVER_MODE = 1'b0
+    parameter bit COVER_MODE = 1'b0,
+    // Register stages between the L1D and the home; each stage adds a few
+    // cycles to every round trip, so the progress bound grows with it.
+    parameter int unsigned LINK_STAGES = 0
 ) (
     input logic i_clk
 );
@@ -104,7 +107,7 @@ module coherence_store_home_formal #(
       assert (acknowledged_q <= sent_q);
       if (!PRESSURE && SECTOR_CASE == 2) assert ($countones(live_stores) <= 1);
       p_home_store_bounded_progress :
-      assert (cycle_q < (PRESSURE || SECTOR_CASE == 2 ? 340 : 220) ||
+      assert (cycle_q < (PRESSURE || SECTOR_CASE == 2 ? 340 : 220) + 60 * LINK_STAGES ||
           (finished_q && (!PRESSURE || (read_done_q && pressure_seen_q && load_grant_q))));
     end
   end
@@ -228,7 +231,8 @@ module coherence_store_home_formal #(
       .HOME_COMPLETIONS(4),
       .HOME_RESULTS(2),
       .HOME_FILLS(2),
-      .HOME_PREFETCH_SLOTS(0)
+      .HOME_PREFETCH_SLOTS(0),
+      .LINK_STAGES(LINK_STAGES)
   ) cluster (
       .i_clk(i_clk),
       .i_rst(rst),

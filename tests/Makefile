@@ -740,11 +740,16 @@ DDR_MODEL_LATENCY ?= 80
 # Accelerate coherent-array reset, L1I invalidation and component-cache maintenance.
 # The RTL default is 0; board builds leave it disabled.
 SIM_FAST_MAINT ?= 1
+# Register stages between the hart and the cluster memory (cpu_top
+# MEMORY_LINK_STAGES). The default simulation uses 0; to run a test with one
+# stage:
+#   MEMORY_LINK_STAGES=1 ./scripts/frost.py cocotb ddr_bench
+MEMORY_LINK_STAGES ?= 0
 ifeq ($(TOPLEVEL),frost)
 ifneq ($(strip $(FROST_CPU_PERIOD_PS)),)
 	EXTRA_ARGS += -GASYNC_CPU_CLOCK=1
 endif
-	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GENABLE_CACHED_TIER=$(ENABLE_CACHED_TIER) -GDDR_MODEL_BYTES=$(DDR_MODEL_BYTES) -GDDR_MODEL_LATENCY=$(DDR_MODEL_LATENCY) -GSIM_FAST_MAINT=$(SIM_FAST_MAINT)
+	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GENABLE_CACHED_TIER=$(ENABLE_CACHED_TIER) -GDDR_MODEL_BYTES=$(DDR_MODEL_BYTES) -GDDR_MODEL_LATENCY=$(DDR_MODEL_LATENCY) -GSIM_FAST_MAINT=$(SIM_FAST_MAINT) -GMEMORY_LINK_STAGES=$(MEMORY_LINK_STAGES)
 endif
 
 # Optional per-test Verilator args supplied by test_run_cocotb.py. They are
