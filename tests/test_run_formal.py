@@ -972,9 +972,10 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "ptw.sby",
-        "Page-table walk state matches reference PTE classification, and the walk "
+        "Page-table walk state matches reference PTE classification, including the "
+        "Svpbmt reserved encodings, PBMTE and the uncached alias, and the walk "
         "cache holds only valid pointers that memory holds, cleared by every discard",
-        tasks=("bmc", "cover", "bmc_nopwc", "bmc_replace"),
+        tasks=("bmc", "cover", "bmc_nopwc", "bmc_replace", "bmc_wide", "cover_wide"),
     ),
     FormalTarget(
         "reorder_buffer.sby",
@@ -2538,6 +2539,8 @@ SBY_TASKS = [
     ),
     ("bmc_nopwc", "Bounded checking of the page-table walker without its walk cache"),
     ("bmc_replace", "Bounded checking through replacement in one-entry walk caches"),
+    ("bmc_wide", "Bounded walker checking with the 64 GiB DDR map and its Svpbmt alias gap"),
+    ("cover_wide", "Svpbmt alias and no-alias reachability with the 64 GiB DDR map"),
     ("bmc_xlen32", "Bounded checking with a local 32-bit datapath"),
     (
         "bmc_small_btb",

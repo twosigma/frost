@@ -26,6 +26,14 @@
  * cycle. Eligible last-page hits enter S2 directly from issue.
  * Faults carry the VA for xtval instead of a PA; the wrapper routes
  * them to the LQ for loads/LR/AMOs or the store fault strobe for stores/SC.
+ *
+ * Svpbmt. An NC or IO leaf over DDR carries the uncached alias's PPN from the
+ * walker; with its PBMT field that makes it a device page, so every op on it
+ * takes the MMIO path (o_iss_out_is_mmio) with the alias PA, and AMOs, LR and
+ * SC on it are access faults. A PMA leaf over the alias window is an access
+ * fault (the window is outside the PMA map). An NC or IO leaf over low BRAM
+ * keeps its PA and is MMIO by its field. The DTLB's per-entry checks apply
+ * this on a hit, the walk-response checks here on a walk.
  */
 module dmmu (
     input logic i_clk,
@@ -202,6 +210,7 @@ module dmmu (
   logic [2:0] tlb_hi_nonzero;
   logic [2:0] tlb_r, tlb_w, tlb_x, tlb_u, tlb_d;
   logic [2:0] tlb_device_page;
+  logic [2:0][1:0] tlb_pbmt;
   // Per-entry permission and atomic PMA checks. Port 0 uses S1's access type;
   // the early ports request store permissions.
   logic [2:0] tlb_perm_ok, tlb_atomic_page, tlb_clean_hit;
@@ -236,15 +245,19 @@ module dmmu (
   logic [riscv_pkg::XLEN-1:0] tlb_pa, walk_pa;
   assign tlb_pa  = riscv_pkg::XLEN'({tlb_ppn[0], s1_q.va[11:0]});
   assign walk_pa = riscv_pkg::XLEN'({walk_ppn, s1_q.va[11:0]});
-  logic walk_device_page;
-  assign walk_device_page = riscv_pkg::pma_device_ok(walk_pa);
+  // A walk leaf's device and atomic page checks, with the Svpbmt field: NC or
+  // IO over memory without an alias (low BRAM) is a device page without AMOs.
+  logic walk_unc, walk_device_page, walk_atomic_page;
+  assign walk_unc = i_walk_resp.pbmt != riscv_pkg::PbmtPma;
+  assign walk_device_page = riscv_pkg::pma_device_ok(walk_pa) ||
+      (walk_unc && (riscv_pkg::pma_atomic_ok(walk_pa) || riscv_pkg::pma_pbmt_alias_ok(walk_pa)));
+  assign walk_atomic_page = !walk_unc && riscv_pkg::pma_atomic_ok(walk_pa);
 
   // PMA permits BRAM and cached DDR for all access types, plus device windows
   // for non-atomic loads and stores. DTLB hits use per-entry checks; walk
   // responses are checked here.
-  function automatic logic leaf_pma_ok(input logic [riscv_pkg::XLEN-1:0] pa,
-                                       input logic device_page);
-    leaf_pma_ok = riscv_pkg::pma_atomic_ok(pa) || (device_page && !s1_q.atomic);
+  function automatic logic leaf_pma_ok(input logic atomic_page, input logic device_page);
+    leaf_pma_ok = atomic_page || (device_page && !s1_q.atomic);
   endfunction
 
   riscv_pkg::data_fault_kind_e tlb_fault, walk_fault;
@@ -268,7 +281,7 @@ module dmmu (
           )) begin
         walk_fault = riscv_pkg::DFAULT_PAGE;
       end else if ((|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:PpnBits]) || !leaf_pma_ok(
-              walk_pa, walk_device_page
+              walk_atomic_page, walk_device_page
           )) begin
         walk_fault = riscv_pkg::DFAULT_ACCESS;
       end
@@ -462,7 +475,7 @@ module dmmu (
         last_perm_u_q    <= i_walk_resp.perm_u;
         last_perm_d_q    <= i_walk_resp.perm_d;
         last_is_mmio_q   <= walk_is_mmio;
-        last_atomic_ok_q <= riscv_pkg::pma_atomic_ok(walk_pa);
+        last_atomic_ok_q <= walk_atomic_page;
       end
     end
   end
@@ -741,6 +754,10 @@ module dmmu (
 
   logic [1:0] early_ok_q;
   logic [riscv_pkg::XLEN-1:0] early_pa_q[2];
+  // The MMIO class of an early store is the hit's device-page verdict, which
+  // covers Svpbmt NC and IO pages; without them it equals the device-quadrant
+  // decode of an in-map PA.
+  logic [1:0] early_mmio_q;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       early_ok_q <= '0;
@@ -749,14 +766,15 @@ module dmmu (
     end
     early_pa_q[0] <= early_pa_c[0];
     early_pa_q[1] <= early_pa_c[1];
+    early_mmio_q  <= tlb_device_page[2:1];
   end
 
   assign o_early_ok = early_ok_q[0];
   assign o_early_pa = early_pa_q[0];
-  assign o_early_is_mmio = riscv_pkg::pma_device_quadrant(early_pa_q[0]);
+  assign o_early_is_mmio = early_mmio_q[0];
   assign o_early2_ok = early_ok_q[1];
   assign o_early2_pa = early_pa_q[1];
-  assign o_early2_is_mmio = riscv_pkg::pma_device_quadrant(early_pa_q[1]);
+  assign o_early2_is_mmio = early_mmio_q[1];
 
   // ---------------------------------------------------------------------------
   // DTLB
@@ -785,6 +803,7 @@ module dmmu (
       .o_perm_u(tlb_u),
       .o_perm_d(tlb_d),
       .o_level(),
+      .o_pbmt(tlb_pbmt),
       .o_device_page(tlb_device_page),
       .i_perm_store({2'b11, s1_q.store_perms}),
       .i_perm_priv_u(i_eff_priv_u),
@@ -817,17 +836,25 @@ module dmmu (
   logic [2:0] f_tlb_device_page_ref, f_tlb_perm_ok_ref, f_tlb_atomic_page_ref;
   always_comb begin
     for (int p = 0; p < 3; p++) begin
-      f_tlb_device_page_ref[p] = riscv_pkg::pma_device_ok(riscv_pkg::XLEN'({tlb_ppn[p], 12'h000}));
+      f_tlb_device_page_ref[p] =
+          riscv_pkg::pma_device_ok(riscv_pkg::XLEN'({tlb_ppn[p], 12'h000})) ||
+          (tlb_hit[p] && (tlb_pbmt[p] != 2'd0) &&
+           (riscv_pkg::pma_memory_ok(riscv_pkg::XLEN'({tlb_ppn[p], 12'h000})) ||
+            riscv_pkg::pma_pbmt_alias_ok(riscv_pkg::XLEN'({tlb_ppn[p], 12'h000}))));
       // The hit's permission check (port 0 with the S1 op's access type, the
       // early slots as stores) and atomic PMA; both are clear on a miss.
       f_tlb_perm_ok_ref[p] = tlb_hit[p] &&
           (tlb_u[p] ? (i_eff_priv_u || i_sum) : !i_eff_priv_u) &&
           (((p != 0) || s1_q.store_perms) ? (tlb_w[p] && tlb_d[p]) :
                                             (tlb_r[p] || (i_mxr && tlb_x[p])));
-      f_tlb_atomic_page_ref[p] = tlb_hit[p] &&
+      f_tlb_atomic_page_ref[p] = tlb_hit[p] && (tlb_pbmt[p] == 2'd0) &&
           riscv_pkg::pma_atomic_ok(riscv_pkg::XLEN'({tlb_ppn[p], 12'h000}));
     end
   end
+  // The PBMT field of the leaf that resolves S1: the DTLB hit's, else the walk's.
+  logic f_resolve_unc;
+  assign f_resolve_unc = tlb_hit[0] ? (tlb_pbmt[0] != 2'd0) :
+      (walk_resp_for_s1 && (i_walk_resp.pbmt != 2'd0));
   always_comb begin
     logic [riscv_pkg::XLEN-1:0] f_resolve_addr_ref;
     f_resolve_addr_ref = s1_q.va;
@@ -837,12 +864,22 @@ module dmmu (
     assert (tlb_perm_ok == f_tlb_perm_ok_ref && tlb_atomic_page == f_tlb_atomic_page_ref);
     p_mmio_capture_exact : assert (s2_mmio_next == (s1_resolved ? resolve_is_mmio : s2_is_mmio_q));
     p_fault_capture_exact : assert (s2_fault_next == resolve_fault);
+    // A clean op is MMIO on the device quadrant, or with an NC or IO field
+    // over low BRAM or over the uncached alias of DDR.
     p_resolve_mmio_exact :
     assert (resolve_is_mmio ==
         ((resolve_fault == riscv_pkg::DFAULT_NONE) &&
-         riscv_pkg::pma_device_quadrant(
-        resolve_addr
-    )));
+         (riscv_pkg::pma_device_quadrant(resolve_addr) ||
+          (f_resolve_unc && (riscv_pkg::pma_memory_ok(resolve_addr) ||
+                             riscv_pkg::pma_pbmt_alias_ok(resolve_addr))))));
+    // NC and IO pages: an AMO, LR or SC never resolves clean, and a clean op
+    // on one is MMIO, so nothing on them reaches L0 or the L1D. (The walker
+    // proof shows such a leaf never names cached DDR: p_ok_alias_ppn.)
+    if ((resolve_fault == riscv_pkg::DFAULT_NONE) && s1_valid_q && resolve_now &&
+        !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical && f_resolve_unc) begin
+      p_pbmt_no_atomic : assert (!s1_q.atomic);
+      p_pbmt_is_mmio : assert (resolve_is_mmio);
+    end
     // S2's split address rebuilds the resolution's address.
     p_resolve_addr_exact : assert (f_resolve_addr_ref == resolve_addr);
   end

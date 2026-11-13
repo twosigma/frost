@@ -265,6 +265,7 @@ module perf_csr_half_test_harness #(
         .o_fetch_translation_active(),
         .o_fetch_priv_u(),
         .o_satp_root_ppn(),
+        .o_menvcfg_pbmte(),
         .o_mstatus_fs_off(),
         .o_cbo_zero_illegal(),
         .o_debug_mode(),

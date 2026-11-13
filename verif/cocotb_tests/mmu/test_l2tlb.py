@@ -55,11 +55,13 @@ class Entry:
     g: int = 0
     level: int = 0
     fault: int = NONE
+    pbmt: int = 0  # Svpbmt field: 0 PMA, 1 NC, 2 IO
 
 
 def pack_resp(vpn: int, e: Entry) -> int:
     """Pack a riscv_pkg::ptw_resp_t."""
     fields = (
+        (e.pbmt, 2),
         (e.fault, 2),
         (vpn, 27),
         (e.ppn, 44),
@@ -89,7 +91,8 @@ def unpack_resp(resp: int) -> tuple[int, Entry]:
     ppn = (resp >> 8) & ((1 << 44) - 1)
     vpn = (resp >> 52) & ((1 << 27) - 1)
     fault = (resp >> 79) & 3
-    return vpn, Entry(ppn, r, w, x, u, d, g, level, fault)
+    pbmt = (resp >> 81) & 3
+    return vpn, Entry(ppn, r, w, x, u, d, g, level, fault, pbmt)
 
 
 def flush_cmd(vpn: int | None = None, asid: int | None = None) -> int:
@@ -261,6 +264,49 @@ async def repeat_request_hits_after_two_cycles(dut: Any) -> None:
         hit_cycles,
         miss_cycles,
     )
+
+
+@cocotb.test()
+async def hits_keep_the_pbmt_field(dut: Any) -> None:
+    """Svpbmt: a hit in either array returns the stored PBMT field and PPN.
+
+    The walker hands NC and IO leaves over DDR the alias PPN (bit 30 for the
+    default DDR, PPN bit 18); the arrays store both, so a hit answers the walk
+    it stored bit for bit, for 4 KiB pages, 2 MiB and 1 GiB superpages, global
+    or not, and a page next to an NC page keeps its own PMA field.
+    """
+    b = Bench(dut)
+    await b.reset()
+    b.set_asid(3)
+    alias = 1 << 18
+    mappings = {
+        0x1100: clean(0x80110 | alias, pbmt=1),
+        0x1101: clean(0x80111 | alias, pbmt=2, x=1),
+        0x1102: clean(0x80112),
+        0x1103: clean(0x00010, pbmt=1),  # low BRAM keeps its PPN
+        0x1104: clean(0x80114 | alias, pbmt=2, g=1),
+    }
+    for vpn, e in mappings.items():
+        b.table[(None if e.g else 3, vpn)] = e
+    b.supers[(3, 1, 0x21)] = Entry(0x80400 | alias, level=1, pbmt=2)
+    b.supers[(None, 2, 0x5)] = Entry(0x80000 | alias, level=2, pbmt=1, g=1)
+    probes = list(mappings) + [(0x21 << 9) | 0x044, (0x5 << 18) | 0x2A5A5]
+    for vpn in probes:
+        entry, _, walked = await b.request(vpn)
+        assert walked and entry == b.lookup_table(3, vpn), (hex(vpn), entry)
+    for _ in range(2):
+        for vpn in probes:
+            entry, _, walked = await b.request(vpn)
+            assert not walked and entry == b.lookup_table(3, vpn), (hex(vpn), entry)
+    # Other pages of the superpages hit with the same field.
+    entry, _, walked = await b.request((0x21 << 9) | 0x1FF)
+    assert not walked and entry.pbmt == 2 and entry.level == 1
+    entry, _, walked = await b.request((0x5 << 18) | 0x3FFFF)
+    assert not walked and entry.pbmt == 1 and entry.level == 2
+    # A global NC superpage answers another ASID with its field.
+    b.set_asid(9)
+    entry, _, walked = await b.request((0x5 << 18) | 0x1)
+    assert not walked and entry.pbmt == 1 and entry.g == 1
 
 
 @cocotb.test()

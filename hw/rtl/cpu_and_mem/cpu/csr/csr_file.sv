@@ -24,9 +24,11 @@
   delegated supervisor bits at every privilege; sip permits writes to
   delegated SSIP and LCOFIP. medeleg/mideleg use the package WARL masks:
   M-mode ECALL and the machine software, timer and external interrupt classes
-  cannot delegate. menvcfg implements FIOM, CBZE and STCE; senvcfg, required
-  for S/U support, implements FIOM and CBZE. FIOM is stored only (see
-  riscv_pkg::EnvcfgFiomBit); CBZE gates cbo.zero below M.
+  cannot delegate. menvcfg implements FIOM, CBZE, PBMTE and STCE; senvcfg,
+  required for S/U support, implements FIOM and CBZE. FIOM is stored only (see
+  riscv_pkg::EnvcfgFiomBit); CBZE gates cbo.zero below M. PBMTE goes to the
+  page-table walker (o_menvcfg_pbmte), which accepts Svpbmt PTE encodings only
+  while it is set.
 
   mstatus.MPRV makes data accesses use MPP. MPP and dcsr.prv fold reserved
   2'b10 to U. FS resets to Initial and becomes Dirty on FP state writes;
@@ -304,6 +306,10 @@ module csr_file #(
     // also raises o_csr_translation_flush_req, which discards any walk in
     // flight.
     output logic [43:0] o_satp_root_ppn,
+    // menvcfg.PBMTE for the walker (registered storage). Software executes
+    // sfence.vma after changing it (Svpbmt), which discards the walk in
+    // flight and the translations the TLBs hold.
+    output logic o_menvcfg_pbmte,
 
     // mstatus.FS == Off. id_stage decodes every F/D instruction as illegal
     // while it is set, and the reorder buffer's allocation check traps them
@@ -2091,6 +2097,7 @@ module csr_file #(
 `endif
   assign o_fetch_priv_u  = (fetch_priv_q == riscv_pkg::PrivU);
   assign o_satp_root_ppn = satp_ppn;
+  assign o_menvcfg_pbmte = menvcfg_pbmte;
 
   // ==========================================================================
   // CSR Read Multiplexer

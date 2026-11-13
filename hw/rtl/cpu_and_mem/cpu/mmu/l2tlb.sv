@@ -21,8 +21,11 @@
  * request handshake, a one-cycle response pulse with the requested VPN echoed,
  * and a discard input. A request looks up a 4-way, 128-set array (512 entries,
  * 2 MiB of 4 KiB pages) held in block RAM. A hit answers two cycles after the
- * request fires with the stored {PPN, RWXUD, G}; a miss goes to the walker, and
- * the clean 4 KiB translation it returns is stored on its way back.
+ * request fires with the stored {PBMT, PPN, RWXUD, G}; a miss goes to the
+ * walker, and the clean 4 KiB translation it returns is stored on its way back.
+ * Both arrays keep the leaf's Svpbmt field beside its permissions, and the PPN
+ * the walker returned (the uncached alias's for NC or IO over DDR), so a hit
+ * answers exactly the walk it stored.
  *
  * Superpage leaves (2 MiB and 1 GiB) go to a separate fully associative side
  * array of SP_ENTRIES entries. Its tags, ASIDs, global bits, levels and valid
@@ -66,14 +69,16 @@ module l2tlb #(
     localparam int unsigned TagBits = VpnBits - SetBits,
     localparam int unsigned AsidW = riscv_pkg::AsidBits,
     localparam int unsigned PpnBits = riscv_pkg::PtePpnBits,
-    // g, ASID, VPN tag, PPN, R W X U D
-    localparam int unsigned EntryBits = 1 + AsidW + TagBits + PpnBits + 5,
+    // Per-entry attributes: PBMT (2), R W X U D
+    localparam int unsigned PermBits = 7,
+    // g, ASID, VPN tag, PPN, PBMT, R W X U D
+    localparam int unsigned EntryBits = 1 + AsidW + TagBits + PpnBits + PermBits,
     localparam int unsigned SpIdxBits = $clog2(SP_ENTRIES),
     localparam int unsigned FieldBits = riscv_pkg::Sv39VpnFieldBits,
     // Superpage tag: VPN[2] and VPN[1]; a 1 GiB entry compares VPN[2] only.
     localparam int unsigned SpTagBits = 2 * FieldBits,
-    // Side array payload in distributed RAM: 1 GiB flag, PPN, R W X U D
-    localparam int unsigned SpDataBits = 1 + PpnBits + 5
+    // Side array payload in distributed RAM: 1 GiB flag, PPN, PBMT, R W X U D
+    localparam int unsigned SpDataBits = 1 + PpnBits + PermBits
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -135,6 +140,7 @@ module l2tlb #(
       asid,
       r.vpn[VpnBits-1:SetBits],
       r.ppn,
+      r.pbmt,
       r.perm_r,
       r.perm_w,
       r.perm_x,
@@ -259,6 +265,7 @@ module l2tlb #(
       sp_data[sp_victim] <= {
         i_ptw_resp.level == 2'd2,
         i_ptw_resp.ppn,
+        i_ptw_resp.pbmt,
         i_ptw_resp.perm_r,
         i_ptw_resp.perm_w,
         i_ptw_resp.perm_x,
@@ -326,7 +333,8 @@ module l2tlb #(
     hit_resp_q.fault_kind <= riscv_pkg::DFAULT_NONE;
     hit_resp_q.vpn <= vpn_q;
     if (state_q == S_SPRD) begin
-      hit_resp_q.ppn <= sp_rd[PpnBits+4:5];
+      hit_resp_q.ppn <= sp_rd[PpnBits+PermBits-1:PermBits];
+      hit_resp_q.pbmt <= sp_rd[6:5];
       hit_resp_q.level <= sp_rd[SpDataBits-1] ? 2'd2 : 2'd1;
       hit_resp_q.perm_r <= sp_rd[4];
       hit_resp_q.perm_w <= sp_rd[3];
@@ -335,7 +343,8 @@ module l2tlb #(
       hit_resp_q.perm_d <= sp_rd[0];
       hit_resp_q.perm_g <= sp_g_q[sp_idx_q];
     end else begin
-      hit_resp_q.ppn <= hit_entry[PpnBits+4:5];
+      hit_resp_q.ppn <= hit_entry[PpnBits+PermBits-1:PermBits];
+      hit_resp_q.pbmt <= hit_entry[6:5];
       hit_resp_q.level <= 2'd0;
       hit_resp_q.perm_r <= hit_entry[4];
       hit_resp_q.perm_w <= hit_entry[3];
@@ -478,7 +487,7 @@ module l2tlb #(
 
   logic f_live_ng, f_live_g;
   logic [PpnBits-1:0] f_ng_ppn, f_g_ppn;
-  logic [4:0] f_ng_perm, f_g_perm;
+  logic [PermBits-1:0] f_ng_perm, f_g_perm;
 
   logic f_kills_ng, f_kills_g;
   assign f_kills_ng = i_flush.en && (!i_flush.use_va || i_flush.vpn == f_vpn) &&
@@ -498,6 +507,7 @@ module l2tlb #(
           f_live_g <= 1'b1;
           f_g_ppn <= i_ptw_resp.ppn;
           f_g_perm <= {
+            i_ptw_resp.pbmt,
             i_ptw_resp.perm_r,
             i_ptw_resp.perm_w,
             i_ptw_resp.perm_x,
@@ -508,6 +518,7 @@ module l2tlb #(
           f_live_ng <= 1'b1;
           f_ng_ppn <= i_ptw_resp.ppn;
           f_ng_perm <= {
+            i_ptw_resp.pbmt,
             i_ptw_resp.perm_r,
             i_ptw_resp.perm_w,
             i_ptw_resp.perm_x,
@@ -531,7 +542,7 @@ module l2tlb #(
 
   logic [1:0] f_sp_live_ng, f_sp_live_g;  // index 0: 2 MiB, 1: 1 GiB
   logic [PpnBits-1:0] f_sp_ng_ppn[2], f_sp_g_ppn[2];
-  logic [4:0] f_sp_ng_perm[2], f_sp_g_perm[2];
+  logic [PermBits-1:0] f_sp_ng_perm[2], f_sp_g_perm[2];
   logic [1:0] f_sp_kills_ng, f_sp_kills_g;
   for (genvar l = 0; l < 2; l++) begin : g_f_sp
     assign f_sp_kills_ng[l] = i_flush.en && (!i_flush.use_va || f_in_region(
@@ -554,6 +565,7 @@ module l2tlb #(
             f_sp_live_g[l] <= 1'b1;
             f_sp_g_ppn[l] <= i_ptw_resp.ppn;
             f_sp_g_perm[l] <= {
+              i_ptw_resp.pbmt,
               i_ptw_resp.perm_r,
               i_ptw_resp.perm_w,
               i_ptw_resp.perm_x,
@@ -564,6 +576,7 @@ module l2tlb #(
             f_sp_live_ng[l] <= 1'b1;
             f_sp_ng_ppn[l] <= i_ptw_resp.ppn;
             f_sp_ng_perm[l] <= {
+              i_ptw_resp.pbmt,
               i_ptw_resp.perm_r,
               i_ptw_resp.perm_w,
               i_ptw_resp.perm_x,
@@ -580,12 +593,12 @@ module l2tlb #(
   assign f_target = (state_q == S_CMP) && (vpn_q == f_vpn) && (asid_q == f_la);
 
   logic f_hit_ng_data, f_hit_g_data;
-  assign f_hit_ng_data = f_live_ng && (hit_entry[PpnBits+4:5] == f_ng_ppn) &&
-                         (hit_entry[4:0] == f_ng_perm) && !ent_g(
+  assign f_hit_ng_data = f_live_ng && (hit_entry[PpnBits+PermBits-1:PermBits] == f_ng_ppn) &&
+                         (hit_entry[PermBits-1:0] == f_ng_perm) && !ent_g(
       hit_entry
   );
-  assign f_hit_g_data = f_live_g && (hit_entry[PpnBits+4:5] == f_g_ppn) &&
-                        (hit_entry[4:0] == f_g_perm) && ent_g(
+  assign f_hit_g_data = f_live_g && (hit_entry[PpnBits+PermBits-1:PermBits] == f_g_ppn) &&
+                        (hit_entry[PermBits-1:0] == f_g_perm) && ent_g(
       hit_entry
   );
 
@@ -594,9 +607,15 @@ module l2tlb #(
   // global bit, and echoes the requested VPN.
   logic f_resp_target;
   assign f_resp_target = (state_q == S_RESP) && (vpn_q == f_vpn) && (asid_q == f_la) && !i_discard;
-  logic [4:0] f_resp_perm;
+  // The PBMT field is compared with the permissions: a hit keeps it.
+  logic [PermBits-1:0] f_resp_perm;
   assign f_resp_perm = {
-    hit_resp_q.perm_r, hit_resp_q.perm_w, hit_resp_q.perm_x, hit_resp_q.perm_u, hit_resp_q.perm_d
+    hit_resp_q.pbmt,
+    hit_resp_q.perm_r,
+    hit_resp_q.perm_w,
+    hit_resp_q.perm_x,
+    hit_resp_q.perm_u,
+    hit_resp_q.perm_d
   };
   logic f_resp_ng_ok, f_resp_g_ok;
   assign f_resp_ng_ok = f_live_ng && (hit_resp_q.level == 2'd0) && (hit_resp_q.ppn == f_ng_ppn) &&
@@ -665,6 +684,10 @@ module l2tlb #(
       c_miss_after_flush : cover (f_target && !any_hit && !f_live_ng && !f_live_g);
       c_sp_hit_2m : cover (f_resp_target && f_resp_sp_ng_ok[0]);
       c_sp_hit_1g_g : cover (f_resp_target && f_resp_sp_g_ok[1]);
+      // Svpbmt: a 4 KiB hit and a superpage hit return a stored NC or IO field.
+      c_hit_pbmt : cover (f_resp_target && f_resp_ng_ok && hit_resp_q.pbmt != 2'd0);
+      c_sp_hit_pbmt :
+      cover (f_resp_target && (|f_resp_sp_ng_ok) && hit_resp_q.pbmt == riscv_pkg::PbmtIo);
       // A page flush naming another page of the region removes the superpage.
       c_sp_flush_other_page :
       cover (f_sp_kills_ng[0] && f_sp_live_ng[0] && i_flush.use_va && i_flush.vpn != f_vpn);

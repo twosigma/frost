@@ -31,6 +31,16 @@
  * checks to the MMU. The MMU uses the high-PPN flag to reject leaves outside
  * the configured physical width.
  *
+ * Svpbmt. Each entry keeps the leaf's PBMT field and returns it on a hit
+ * (o_pbmt). NC and IO leaves over DDR arrive with the uncached alias's PPN;
+ * the alias window is outside the PMA map, so the entry records at install
+ * that it is an NC or IO alias page, and the per-entry checks make it a
+ * device page (the MMIO path, no L0 or L1D) without AMOs; fetch fails the PMA
+ * check of the alias. A PMA leaf over the window stays an access fault. Over
+ * low BRAM (memory without an alias) the checks apply the field the same way:
+ * a device page, no AMOs, LR or SC, no instruction fetch. Over a device
+ * window it changes nothing.
+ *
  * Lookups are combinational. Walks install on misses using the echoed VPN;
  * installs do not remove overlapping entries. Software that changes mappings
  * without SFENCE.VMA can observe prior translations, as the privileged spec
@@ -77,6 +87,8 @@ module dtlb #(
     // ITLB derive the next page's PA inside a superpage without a second
     // lookup.
     output logic [NUM_PORTS-1:0][1:0] o_level,
+    // The hit entry's PBMT field (zero on a miss).
+    output logic [NUM_PORTS-1:0][1:0] o_pbmt,
     // o_ppn is a device-window page (riscv_pkg::pma_device_page_ok).
     output logic [NUM_PORTS-1:0] o_device_page,
     // Data permissions: stores require W and D; loads require R or X with
@@ -131,6 +143,12 @@ module dtlb #(
   logic [PpnBits-1:0] e_ppn[NUM_ENTRIES];
   logic [NUM_ENTRIES-1:0] e_ppn_hi_nonzero;
   logic [NUM_ENTRIES-1:0] e_r, e_w, e_x, e_u, e_d;
+  // Svpbmt field, and its nonzero test (NC or IO), formed at install.
+  logic [1:0] e_pbmt[NUM_ENTRIES];
+  logic [NUM_ENTRIES-1:0] e_unc;
+  // NC or IO over the uncached alias of DDR. The window's boundaries are 1 GiB
+  // aligned, so the whole page is inside it or outside it.
+  logic [NUM_ENTRIES-1:0] e_alias;
   // Address-space tag: an entry hits for lookups under its ASID, or for every
   // ASID when it is global.
   logic [riscv_pkg::AsidBits-1:0] e_asid[NUM_ENTRIES];
@@ -272,24 +290,28 @@ module dtlb #(
         endcase
         leaf_ppn[p][e] = ppn;
         leaf_next_ppn[p][e] = next_ppn;
-        leaf_device_page[p][e] = DATA_VERDICTS &&
-            riscv_pkg::pma_device_ok(riscv_pkg::XLEN'({ppn, 12'h000}));
+        // NC or IO over low BRAM (memory without an alias): a device page
+        // without AMOs. Over DDR the alias PPN already decodes as a device.
+        leaf_device_page[p][e] = DATA_VERDICTS && (e_alias[e] ||
+            riscv_pkg::pma_device_ok(riscv_pkg::XLEN'({ppn, 12'h000})) ||
+            (e_unc[e] && riscv_pkg::pma_atomic_ok(riscv_pkg::XLEN'({ppn, 12'h000}))));
         leaf_permissions[p][e] = DATA_VERDICTS &&
             leaf_perm_ok(i_perm_store[p], e_r[e], e_w[e], e_x[e], e_u[e], e_d[e]);
-        leaf_atomic_page[p][e] = DATA_VERDICTS &&
+        leaf_atomic_page[p][e] = DATA_VERDICTS && !e_unc[e] &&
             riscv_pkg::pma_atomic_ok(riscv_pkg::XLEN'({ppn, 12'h000}));
         leaf_clean[p][e] = leaf_permissions[p][e] && !e_ppn_hi_nonzero[e] &&
             (leaf_atomic_page[p][e] || (leaf_device_page[p][e] && !i_perm_atomic[p]));
-        leaf_fetch_next_ok[p][e] = FETCH_VERDICTS && e_x[e] &&
+        // Instruction fetch from an NC or IO page is an access fault.
+        leaf_fetch_next_ok[p][e] = FETCH_VERDICTS && e_x[e] && !e_unc[e] &&
             (e_u[e] == i_fetch_priv_u) && !e_ppn_hi_nonzero[e] &&
             riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({ppn, 12'h000})) &&
             (((e_level[e] == 2'd2) && !(&i_lookup_vpn[p][17:0])) ||
              ((e_level[e] == 2'd1) && !(&i_lookup_vpn[p][8:0])));
         leaf_fetch_perm_fault[p][e] = FETCH_VERDICTS && !(e_x[e] && (e_u[e] == i_fetch_priv_u));
-        leaf_fetch_pma_bad[p][e] = FETCH_VERDICTS &&
-            (e_ppn_hi_nonzero[e] || !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({ppn, 12'h000})));
-        leaf_fetch_next_pma_bad[p][e] = FETCH_VERDICTS &&
-            !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({next_ppn, 12'h000}));
+        leaf_fetch_pma_bad[p][e] = FETCH_VERDICTS && (e_ppn_hi_nonzero[e] || e_unc[e] ||
+            !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({ppn, 12'h000})));
+        leaf_fetch_next_pma_bad[p][e] = FETCH_VERDICTS && (e_unc[e] ||
+            !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({next_ppn, 12'h000})));
       end
     end
   end
@@ -318,6 +340,7 @@ module dtlb #(
       o_perm_u[p] = 1'b0;
       o_perm_d[p] = 1'b0;
       o_level[p] = 2'd0;
+      o_pbmt[p] = 2'd0;
       o_fetch_perm_fault[p] = |fetch_perm_groups[p];
       o_fetch_pma_bad[p] = |fetch_pma_groups[p];
       o_fetch_next_pma_bad[p] = |fetch_next_pma_groups[p];
@@ -331,6 +354,7 @@ module dtlb #(
         o_perm_u[p] |= lowest_match[p][e] && e_u[e];
         o_perm_d[p] |= lowest_match[p][e] && e_d[e];
         o_level[p] |= {2{lowest_match[p][e]}} & e_level[e];
+        o_pbmt[p] |= {2{lowest_match[p][e]}} & e_pbmt[e];
         if (FETCH_VERDICTS && !PPN_SELECT_TREE) begin
           o_fetch_next_ppn[p] |= {PpnBits{lowest_match[p][e]}} & leaf_next_ppn[p][e];
         end
@@ -451,6 +475,10 @@ module dtlb #(
       e_x[repl_ptr_q] <= i_install.perm_x;
       e_u[repl_ptr_q] <= i_install.perm_u;
       e_d[repl_ptr_q] <= i_install.perm_d;
+      e_pbmt[repl_ptr_q] <= i_install.pbmt;
+      e_unc[repl_ptr_q] <= i_install.pbmt != riscv_pkg::PbmtPma;
+      e_alias[repl_ptr_q] <= (i_install.pbmt != riscv_pkg::PbmtPma) &&
+          riscv_pkg::pma_pbmt_alias_ok(riscv_pkg::XLEN'({i_install.ppn, 12'h000}));
       repl_ptr_q <= repl_ptr_q + 1'b1;
     end
   end
@@ -469,7 +497,7 @@ module dtlb #(
     logic ref_device_page, ref_ppn_hi_nonzero, ref_r, ref_w, ref_x, ref_u, ref_d;
     logic ref_perm_ok, ref_atomic_page;
     logic ref_fetch_perm_fault, ref_fetch_pma_bad, ref_fetch_next_pma_bad, ref_fetch_next_ok;
-    logic [1:0] ref_level;
+    logic [1:0] ref_level, ref_pbmt;
     logic [PpnBits-1:0] ref_own;
     logic ref_giga, ref_mega;
     always_comb begin
@@ -484,6 +512,7 @@ module dtlb #(
       ref_perm_ok = 1'b0;
       ref_atomic_page = 1'b0;
       ref_level = 2'd0;
+      ref_pbmt = 2'd0;
       ref_fetch_perm_fault = 1'b0;
       ref_fetch_pma_bad = 1'b0;
       ref_fetch_next_pma_bad = 1'b0;
@@ -515,14 +544,20 @@ module dtlb #(
               ref_next_ppn = e_ppn[e];
             end
           endcase
+          ref_pbmt = e_pbmt[e];
+          // Svpbmt: NC or IO over memory without an alias (low BRAM) is a
+          // device page without AMOs, and never fetchable.
           ref_device_page = DATA_VERDICTS &&
-              riscv_pkg::pma_device_ok(riscv_pkg::XLEN'({ref_ppn, 12'h000}));
+              (riscv_pkg::pma_device_ok(riscv_pkg::XLEN'({ref_ppn, 12'h000})) ||
+               ((e_pbmt[e] != 2'd0) &&
+                (riscv_pkg::pma_memory_ok(riscv_pkg::XLEN'({ref_ppn, 12'h000})) ||
+                 riscv_pkg::pma_pbmt_alias_ok(riscv_pkg::XLEN'({ref_ppn, 12'h000})))));
           ref_ppn_hi_nonzero = e_ppn_hi_nonzero[e];
           {ref_r, ref_w, ref_x, ref_u, ref_d} = {e_r[e], e_w[e], e_x[e], e_u[e], e_d[e]};
           ref_perm_ok = DATA_VERDICTS &&
               (e_u[e] ? (i_perm_priv_u || i_perm_sum) : !i_perm_priv_u) &&
               (i_perm_store[gp] ? (e_w[e] && e_d[e]) : (e_r[e] || (i_perm_mxr && e_x[e])));
-          ref_atomic_page = DATA_VERDICTS &&
+          ref_atomic_page = DATA_VERDICTS && (e_pbmt[e] == 2'd0) &&
               riscv_pkg::pma_atomic_ok(riscv_pkg::XLEN'({ref_ppn, 12'h000}));
           ref_level = e_level[e];
           ref_giga = e_level[e] == 2'd2;
@@ -532,9 +567,9 @@ module dtlb #(
           if (ref_mega) ref_own[8:0] = '0;
           // Reference fetch checks use the selected entry's fields.
           ref_fetch_perm_fault = !(e_x[e] && (e_u[e] == i_fetch_priv_u));
-          ref_fetch_pma_bad = e_ppn_hi_nonzero[e] ||
+          ref_fetch_pma_bad = e_ppn_hi_nonzero[e] || (e_pbmt[e] != 2'd0) ||
               !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({ref_ppn, 12'h000}));
-          ref_fetch_next_pma_bad =
+          ref_fetch_next_pma_bad = (e_pbmt[e] != 2'd0) ||
               !riscv_pkg::pma_fetch_ok(riscv_pkg::XLEN'({ref_next_ppn, 12'h000}));
           ref_fetch_next_ok = !ref_fetch_perm_fault && !ref_fetch_pma_bad &&
               (((ref_level == 2'd2) && !(&i_lookup_vpn[gp][17:0])) ||
@@ -551,9 +586,9 @@ module dtlb #(
       assert (match[gp] == ref_match && o_hit[gp] == (|ref_match));
       assert ({o_ppn[gp], o_device_page[gp], o_ppn_hi_nonzero[gp], o_perm_r[gp], o_perm_w[gp],
                o_perm_x[gp], o_perm_u[gp], o_perm_d[gp], o_level[gp], o_perm_ok[gp],
-               o_atomic_page[gp]} ==
+               o_atomic_page[gp], o_pbmt[gp]} ==
               {ref_ppn, ref_device_page, ref_ppn_hi_nonzero, ref_r, ref_w, ref_x, ref_u, ref_d,
-               ref_level, ref_perm_ok, ref_atomic_page});
+               ref_level, ref_perm_ok, ref_atomic_page, ref_pbmt});
       // The clean-hit verdict is the hit's data checks.
       assert (o_clean_hit[gp] == (o_hit[gp] && o_perm_ok[gp] && !o_ppn_hi_nonzero[gp] &&
           (o_atomic_page[gp] || (o_device_page[gp] && !i_perm_atomic[gp]))));
@@ -637,6 +672,9 @@ module dtlb #(
                 e_x[f_slot] == f_watch.perm_x && e_u[f_slot] == f_watch.perm_u &&
                 e_d[f_slot] == f_watch.perm_d);
         p_watch_tag : assert (e_g[f_slot] == f_watch.perm_g && e_asid[f_slot] == f_watch_asid);
+        // Svpbmt: the entry keeps the installed field, and its nonzero test.
+        p_watch_pbmt :
+        assert (e_pbmt[f_slot] == f_watch.pbmt && e_unc[f_slot] == (f_watch.pbmt != 2'd0));
       end
       // Flush everything leaves nothing valid (and therefore nothing can hit).
       if ($past(i_flush.en && !i_flush.use_va && !i_flush.use_asid) && $past(i_rst_n)) begin
@@ -686,6 +724,12 @@ module dtlb #(
     if (f_past_valid && i_rst_n) begin
       c_watch_hit : cover (f_watch_live && o_hit[0] && f_masked_match(i_lookup_vpn[0]));
       c_super_1g : cover (f_watch_live && (f_watch.level == 2'd2) && o_hit[0]);
+      // A hit on an NC or IO superpage returns its field.
+      c_pbmt_super_hit :
+      cover (f_watch_live && (f_watch.level != 2'd0) && (f_watch.pbmt != 2'd0) && o_hit[0] &&
+             f_masked_match(
+          i_lookup_vpn[0]
+      ) && (o_pbmt[0] == f_watch.pbmt));
       c_global_other_asid :
       cover (f_watch_live && f_watch.perm_g && (f_watch_asid != i_asid) && o_hit[0] &&
              f_masked_match(

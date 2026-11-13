@@ -35,10 +35,18 @@
  *     uncached memory or devices. With ENABLE_RESPONSE_ERRORS, a failed
  *     PTE read also returns DFAULT_ACCESS without interpreting its data.
  *   - reserved bits, V=0, W&!R, a non-leaf with D, A, or U set, a non-leaf
- *     at level 0, a misaligned superpage, or A=0 => DFAULT_PAGE.
- * A clean leaf answers DFAULT_NONE with {ppn, level, RWXUD} and echoes the
- * VPN. The requesting MMU checks permissions at lookup, because SUM, MXR, and
- * the effective privilege are live CSR state, not walk state.
+ *     at level 0, a misaligned superpage, or A=0 => DFAULT_PAGE. Reserved
+ *     bits are bit 63 (N: no Svnapot), bits 60:54, PBMT (62:61) in a non-leaf,
+ *     PBMT = 3 in a leaf, and a nonzero PBMT in a leaf while menvcfg.PBMTE,
+ *     sampled when the walk starts, is clear (Svpbmt).
+ *   - a leaf with PBMT = NC or IO over cached DDR that has no uncached alias
+ *     (riscv_pkg "Svpbmt") => DFAULT_ACCESS.
+ * A clean leaf answers DFAULT_NONE with {pbmt, ppn, level, RWXUD} and echoes
+ * the VPN. For NC or IO over cached DDR the PPN is the alias's, which the TLBs
+ * store with the field; the MMUs make such a page MMIO. The requesting MMU checks
+ * permissions at lookup, because SUM, MXR, and the effective privilege are
+ * live CSR state, not walk state. The walk cache holds only pointers, whose
+ * PBMT field is zero (a nonzero one faults), so it carries no PBMT.
  *
  * i_discard (SFENCE.VMA, a satp access, or an mstatus write that changes MPRV,
  * or MPP under MPRV) poisons the walk in flight: every outstanding line read
@@ -91,6 +99,9 @@ module ptw #(
     // Root PPN, sampled at walk start. Committed satp access also raises
     // i_discard, preventing an older walk from answering across the change.
     input  logic [ riscv_pkg::PtePpnBits-1:0] i_root_ppn,
+    // menvcfg.PBMTE, sampled with the root at walk start. Software executes
+    // sfence.vma after changing it, which discards the walk in flight.
+    input  logic                              i_pbmte = 1'b0,
     // Walk request. Ready is a level: the FSM is idle and no discard is
     // arriving. The walker loads the request payload on every idle edge, so a
     // requester may change or withdraw a request that has not fired.
@@ -138,6 +149,7 @@ module ptw #(
   logic [1:0] level_q;  // 2 -> 1 -> 0
   logic [riscv_pkg::PtePpnBits-1:0] ptr_ppn_q;  // current table's PPN
   logic discard_q;  // walk poisoned; consume the read, answer nothing
+  logic pbmte_q;  // menvcfg.PBMTE for this walk
   riscv_pkg::ptw_resp_t resp_q;
   // ---------------------------------------------------------------------------
   // Current PTE address and its PMA check
@@ -200,10 +212,17 @@ module ptw #(
   assign pte_a   = pte[riscv_pkg::PteFlagA];
   assign pte_d   = pte[riscv_pkg::PteFlagD];
   assign pte_ppn = pte[53:10];
-  logic pte_reserved_bad;  // bits 63:54 must be zero (no Svnapot/Svpbmt)
-  assign pte_reserved_bad = |pte[63:54];
   logic pte_is_leaf;
   assign pte_is_leaf = pte_r || pte_x;
+  // Reserved bits: N (63, no Svnapot) and 60:54 always; PBMT (62:61) in a
+  // non-leaf, the reserved PBMT 3 in a leaf, and any PBMT while PBMTE is
+  // clear (Svpbmt then behaves as if absent, its bits reserved).
+  logic [1:0] pte_pbmt;
+  assign pte_pbmt = pte[riscv_pkg::PtePbmtLsb+:2];
+  logic pte_reserved_bad;
+  assign pte_reserved_bad = pte[63] || (|pte[60:54]) ||
+      ((pte_pbmt != riscv_pkg::PbmtPma) &&
+       (!pte_is_leaf || !pbmte_q || (pte_pbmt == riscv_pkg::PbmtReserved)));
   // V=0, the reserved W&!R encoding, or a non-leaf with D, A, or U set. The
   // privileged spec reserves those three bits in a non-leaf PTE, and a walk
   // that finds a reserved bit set raises a page fault.
@@ -394,6 +413,7 @@ module ptw #(
           vpn_q         <= i_req_vpn;
           level_q       <= 2'd2;
           g_acc_q       <= 1'b0;
+          pbmte_q       <= i_pbmte;
           ptr_ppn_q     <= i_root_ppn;
           ptr_addr_ok_q <= ppn_addr_ok(i_root_ppn);
           if (i_req_valid && !i_discard) begin
@@ -482,9 +502,13 @@ module ptw #(
             end else if (pte_is_leaf) begin
               if (superpage_misaligned || !pte_a) begin
                 resp_q.fault_kind <= riscv_pkg::DFAULT_PAGE;
+              end else if (riscv_pkg::pbmt_leaf_access_fault(pte_ppn, pte_pbmt)) begin
+                // NC or IO over DDR without an uncached alias.
+                resp_q.fault_kind <= riscv_pkg::DFAULT_ACCESS;
               end else begin
                 resp_q.fault_kind <= riscv_pkg::DFAULT_NONE;
-                resp_q.ppn        <= pte_ppn;
+                resp_q.pbmt       <= pte_pbmt;
+                resp_q.ppn        <= riscv_pkg::pbmt_leaf_ppn(pte_ppn, pte_pbmt);
                 resp_q.level      <= level_q;
                 resp_q.perm_r     <= pte_r;
                 resp_q.perm_w     <= pte_w;
@@ -563,8 +587,12 @@ module ptw #(
   always_comb if (i_line_resp_valid) assume (f_outstanding);
   // Request bookkeeping: the accepted VPN, and the last PTE read and its level.
   logic [riscv_pkg::Sv39VpnBits-1:0] f_req_vpn;
+  logic f_pbmte;  // menvcfg.PBMTE when the walk was accepted
   always_ff @(posedge i_clk) begin
-    if (i_req_valid && o_req_ready) f_req_vpn <= i_req_vpn;
+    if (i_req_valid && o_req_ready) begin
+      f_req_vpn <= i_req_vpn;
+      f_pbmte   <= i_pbmte;
+    end
   end
   logic [63:0] f_pte;
   logic [1:0] f_level;
@@ -579,9 +607,21 @@ module ptw #(
   end
   // Reference classification of the last PTE read.
   logic f_g_reserved, f_g_invalid, f_g_leaf, f_g_misaligned, f_g_a0;
+  // Svpbmt: the leaf's PBMT field, whether the reserved encodings or a
+  // disabled extension fault it, and whether it names DDR without an alias.
+  logic [1:0] f_g_pbmt;
+  logic f_g_pbmt_reserved, f_g_pbmt_ddr, f_g_pbmt_no_alias;
   always_comb begin
-    f_g_reserved = |f_pte[63:54];
     f_g_leaf = f_pte[1] || f_pte[3];
+    f_g_pbmt = f_pte[62:61];
+    // Svpbmt chapter: a non-leaf PBMT must be zero, a leaf PBMT of 3 is
+    // reserved, and with menvcfg.PBMTE clear the bits are reserved.
+    f_g_pbmt_reserved = (f_g_pbmt != 2'd0) && (!f_g_leaf || !f_pbmte || (f_g_pbmt == 2'd3));
+    f_g_reserved = f_pte[63] || (|f_pte[60:54]) || f_g_pbmt_reserved;
+    f_g_pbmt_ddr = riscv_pkg::pma_cached_ok({8'b0, f_pte[53:10], 12'h000});
+    f_g_pbmt_no_alias = (f_g_pbmt != 2'd0) && f_g_pbmt_ddr &&
+        !(riscv_pkg::PbmtAliasEnabled &&
+          ({f_pte[53:10], 12'h000} < 56'(riscv_pkg::PbmtAliasCoverLimit)));
     // D (7), A (6), and U (4) are reserved in a non-leaf PTE.
     f_g_invalid = !f_pte[0] || (!f_pte[1] && f_pte[2]) ||
                   (!f_g_leaf && (f_pte[7] || f_pte[6] || f_pte[4]));
@@ -615,19 +655,50 @@ module ptw #(
         if (o_resp.fault_kind == riscv_pkg::DFAULT_NONE) begin
           p_ok_is_clean_leaf :
           assert (f_pte_seen && !f_g_reserved && !f_g_invalid && f_g_leaf &&
-                  !f_g_misaligned && !f_g_a0);
+                  !f_g_misaligned && !f_g_a0 && !f_g_pbmt_no_alias);
           p_ok_payload :
-          assert (o_resp.ppn == f_pte[53:10] && o_resp.level == f_level &&
+          assert (o_resp.level == f_level &&
                   o_resp.perm_r == f_pte[1] && o_resp.perm_w == f_pte[2] &&
                   o_resp.perm_x == f_pte[3] && o_resp.perm_u == f_pte[4] &&
                   o_resp.perm_d == f_pte[7]);
+          // The PBMT field reaches the fill unchanged; it is never the
+          // reserved 3 and is zero while PBMTE was clear.
+          p_ok_pbmt :
+          assert (o_resp.pbmt == f_g_pbmt && o_resp.pbmt != 2'd3 && (f_pbmte || o_resp.pbmt == 0));
+          // The PPN is the PTE's, except NC or IO over DDR, which answers the
+          // alias: in the alias window, never cached DDR, naming the same bytes.
+          if ((f_g_pbmt != 2'd0) && f_g_pbmt_ddr) begin
+            p_ok_alias_ppn :
+            assert (o_resp.ppn ==
+                    (f_pte[53:10] | riscv_pkg::PtePpnBits'(riscv_pkg::PbmtAliasOffset >> 12)) &&
+                    o_resp.ppn != f_pte[53:10] &&
+                    !riscv_pkg::pma_cached_ok({8'b0, o_resp.ppn, 12'h000}) &&
+                    riscv_pkg::pma_pbmt_alias_ok({8'b0, o_resp.ppn, 12'h000}) &&
+                    riscv_pkg::pbmt_alias_real({8'b0, o_resp.ppn, 12'h000}) ==
+                    {8'b0, f_pte[53:10], 12'h000});
+          end else begin
+            p_ok_ppn : assert (o_resp.ppn == f_pte[53:10]);
+          end
         end
         if (o_resp.fault_kind == riscv_pkg::DFAULT_PAGE) begin
           p_page_has_reason :
           assert (f_pte_seen && (f_g_reserved || f_g_invalid ||
                                  (f_g_leaf && (f_g_misaligned || f_g_a0)) ||
                                  (!f_g_leaf && (f_level == 2'd0))));
+          p_page_pbmt_zero : assert (o_resp.pbmt == 2'd0);
         end
+        // An access fault comes from a refused PTE address (no PTE was read
+        // for it) or from NC or IO over DDR without an alias.
+        if (o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS && f_pte_seen &&
+            ($past(state_q) == PTW_DECODE)) begin
+          p_access_pbmt_reason :
+          assert (!f_g_reserved && !f_g_invalid && f_g_leaf && !f_g_misaligned && !f_g_a0 &&
+                  f_g_pbmt_no_alias);
+        end
+        // A reserved PBMT, or any PBMT while PBMTE was clear, never answers
+        // a translation.
+        if (f_pte_seen && f_g_pbmt_reserved && ($past(state_q) == PTW_DECODE))
+          p_pbmt_reserved_faults : assert (o_resp.fault_kind == riscv_pkg::DFAULT_PAGE);
         // ACCESS needs no PTE: the pointer address was refused.
         p_no_misalign_kind : assert (o_resp.fault_kind != riscv_pkg::DFAULT_MISALIGN);
       end
@@ -641,6 +712,27 @@ module ptw #(
       cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_NONE && o_resp.level == 2'd0);
       c_page : cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_PAGE);
       c_access : cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS);
+      // Svpbmt: an NC and an IO leaf over DDR answer the alias, a PBMT 3 leaf
+      // and a PBMT leaf under PBMTE = 0 fault, and so does a non-leaf PBMT.
+      c_pbmt_nc_alias :
+      cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_NONE &&
+             o_resp.pbmt == riscv_pkg::PbmtNc && f_g_pbmt_ddr);
+      c_pbmt_io_alias :
+      cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_NONE &&
+             o_resp.pbmt == riscv_pkg::PbmtIo && f_g_pbmt_ddr && o_resp.level == 2'd1);
+      c_pbmt_reserved_fault :
+      cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_PAGE && f_g_leaf &&
+             f_g_pbmt == 2'd3 && f_pbmte);
+      c_pbmte_off_fault :
+      cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_PAGE && f_g_leaf &&
+             f_g_pbmt == riscv_pkg::PbmtNc && !f_pbmte && !f_g_invalid && !f_g_a0);
+      // Only a DDR window wider than 2 GiB has addresses without an alias.
+      if (riscv_pkg::DdrCapacityLog2Bytes >= 32)
+        c_pbmt_no_alias_fault :
+        cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS && f_g_pbmt_no_alias);
+      c_pbmt_nonleaf_fault :
+      cover (o_resp_valid && o_resp.fault_kind == riscv_pkg::DFAULT_PAGE && !f_g_leaf &&
+             f_g_pbmt != 2'd0 && !f_g_invalid);
       c_discarded_walk : cover ($past(discard_q) && (state_q == PTW_IDLE));
     end
   end

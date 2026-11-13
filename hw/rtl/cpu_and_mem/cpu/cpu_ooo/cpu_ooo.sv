@@ -806,6 +806,7 @@ module cpu_ooo #(
   // port between the wrapper and the ptw below.
   logic csr_translation_active, csr_mmu_sum, csr_mmu_mxr, csr_mmu_eff_priv_u;
   logic [43:0] csr_satp_root_ppn;
+  logic csr_menvcfg_pbmte;
   logic tlb_invalidate;
   // HPM translation events: the walker is busy, and an SFENCE.VMA invalidate
   // window begins. The CSR request and the SFENCE window never overlap: each
@@ -4067,6 +4068,7 @@ module cpu_ooo #(
       .o_fetch_translation_active(csr_fetch_translation_active),
       .o_fetch_priv_u(csr_fetch_priv_u),
       .o_satp_root_ppn(csr_satp_root_ppn),
+      .o_menvcfg_pbmte(csr_menvcfg_pbmte),
       .o_mstatus_fs_off(csr_mstatus_fs_off),
       .o_mstatus_vs_off(csr_mstatus_vs_off),
       .i_vcfg_commit(vcfg_commit),
@@ -4212,6 +4214,7 @@ module cpu_ooo #(
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_root_ppn(csr_satp_root_ppn),
+      .i_pbmte(csr_menvcfg_pbmte),
       .i_req_valid(l2_ptw_req_valid),
       .o_req_ready(l2_ptw_req_ready),
       .i_req_vpn(l2_ptw_req_vpn),
