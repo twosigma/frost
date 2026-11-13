@@ -1641,7 +1641,7 @@ module csr_file #(
     end
   end else begin : gen_no_vector_csrs
     assign vec_read_value = '0;
-    assign vec_csr_write = 1'b0;
+    assign vec_csr_write  = 1'b0;
 `ifdef FORMAL
     assign vec_vstart = '0;
     assign vec_vxsat = 1'b0;
@@ -2890,16 +2890,21 @@ module csr_file #(
   if (VECTOR) begin : gen_formal_vector_covers
     always @(posedge i_clk) begin
       if (!i_rst) begin
-        cover_vs_dirty_from_write : cover (f_past_valid && $past(vec_csr_write) && vs_dirty);
+        cover_vs_dirty_from_write :
+        cover (f_past_valid && $past(!i_rst && vec_csr_write) && vs_dirty);
         cover_vstart_set : cover (vec_vstart != '0);
         cover_vcsr_set : cover (vec_vxsat && vec_vxrm == 2'b11);
         cover_vs_clean : cover (mstatus_vs == 2'b10);
         cover_vxsat_direct_write :
-        cover (f_past_valid && $past(f_vec_write && i_csr_address == riscv_pkg::CsrVxsat));
+        cover (f_past_valid && $past(
+            !i_rst && f_vec_write && i_csr_address == riscv_pkg::CsrVxsat
+        ));
         cover_vxrm_direct_write :
-        cover (f_past_valid && $past(f_vec_write && i_csr_address == riscv_pkg::CsrVxrm));
+        cover (f_past_valid && $past(!i_rst && f_vec_write && i_csr_address == riscv_pkg::CsrVxrm));
         cover_vstart_write :
-        cover (f_past_valid && $past(f_vec_write && i_csr_address == riscv_pkg::CsrVstart));
+        cover (f_past_valid && $past(
+            !i_rst && f_vec_write && i_csr_address == riscv_pkg::CsrVstart
+        ));
       end
     end
   end
