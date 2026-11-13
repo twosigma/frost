@@ -49,7 +49,9 @@ reach the home.
 Each stage adds one cycle to every message on a staged channel: an L2 hit
 completes 2 cycles later (D and G), an L2 miss 4 (D, G and the memory request
 and response), an instruction refill or page-table read 4 (it also probes the
-L1D), a DMA access 2 (its probe), a home AMO 4 and a home SC 6. A put reaches
+L1D), a home AMO 4 and a home SC 6. A coherent DMA access completes 4
+cycles later (its request, its probe of the L1D and its response), and 2 more
+when it misses the L2. A put reaches
 the home 1 cycle later and holds its slot 2 cycles longer, and the W channel
 accepts one put per 2N+1 cycles for N stages. Fatal stops and L2 events arrive
 one cycle later per stage.

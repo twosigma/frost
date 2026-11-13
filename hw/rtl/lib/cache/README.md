@@ -266,9 +266,11 @@ credit and sequence bits reset with the tile, so no message survives reset.
 A home message emitted after another one's handshake still arrives after it:
 G, U and WA take exactly `STAGES` cycles and P at least that many, and the
 home probes a sector only after the earlier G, U and WA of that sector. A
-probe can now arrive after a G, U or WA of a different sector emitted later,
-which the L1D already allows by refusing P while its endpoints take G, U and
-WA.
+probe can now arrive after a G, U or WA of a different sector emitted later.
+Without stages the same order arises when the L1D holds off P (busy with an
+earlier probe or local work) while its endpoints take G, U and WA, which they
+do independently of probe service; a grant that installs and evicts the
+probed sector meets the probe through absorption, as without stages.
 
 ## Coherent one-hart cache path
 

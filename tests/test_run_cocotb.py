@@ -102,6 +102,7 @@ MAKEFILE_BUILD_VARIABLES = (
     "DDR_MODEL_BYTES",
     "DDR_MODEL_LATENCY",
     "SIM_FAST_MAINT",
+    "MEMORY_LINK_STAGES",
 )
 
 # FROST_COVERAGE=1 builds simulations with line coverage and the cover points,

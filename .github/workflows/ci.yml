@@ -1389,7 +1389,7 @@ jobs:
             pytest_filter: coherence_store_home and not coherence_store_home_link
             timeout_minutes: 240
           # The link proofs, and the store-home composition with one register
-          # stage between the L1D and the home (45- and 60-minute BMC
+          # stage between the L1D and the home (55- and 60-minute BMC
           # allowances plus the cover).
           - shard: Coherence links
             pytest_filter: coherence_link or coherence_store_home_link
