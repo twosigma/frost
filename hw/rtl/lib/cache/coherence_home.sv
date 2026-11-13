@@ -2031,6 +2031,11 @@ module coherence_home #(
           write_filling
       ));
       o_perf_events.writeback <= |(memory_valid[FILLS+:NUM_WB] & memory_ready[FILLS+:NUM_WB]);
+      // L2 misses that read memory: memory accepts a fill's line read once
+      // (zero fills send none), split by the fill's prefetch flag.
+      o_perf_events.fill <= |(memory_valid[0+:FILLS] & memory_ready[0+:FILLS] & ~fill_prefetch_q);
+      o_perf_events.fill_prefetch <= |(memory_valid[0+:FILLS] & memory_ready[0+:FILLS] &
+                                       fill_prefetch_q);
       o_perf_events.slot_full_stall <= run && array_response && decision_retry && !retry_park;
       o_perf_events.conflict_stall <= run && array_response && decision_blocked;
       o_write_perf_events.write_fill <= run && array_response && decision_fill &&

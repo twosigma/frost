@@ -2176,6 +2176,10 @@ module frost_cache #(
       perf_events_q.slot_full_stall <= stall_full && t_plain && !t_maint_q;
       perf_events_q.conflict_stall <= (stall_conflict || stall_ways || stall_wb_snapshot) &&
           t_plain && !t_maint_q;
+      // An allocation that needs a fill requests its line from below once
+      // (a whole-line write allocates without one); this cache does not
+      // prefetch.
+      perf_events_q.fill <= w_counts_miss && w_is_alloc && w_needs_fill_q;
     end
   end
   assign o_perf_events = perf_events_q;

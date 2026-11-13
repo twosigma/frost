@@ -176,7 +176,7 @@ is an illegal instruction (`mcause` 2, `mtval` the instruction's bits).
 | `mcounteren`, `scounteren` | CY, TM, IR and HPM3..10 occupy bits 10:0; bits 31:11 read zero and ignore writes. Both reset to `0x7ff`. |
 | `mcountinhibit` (0x320) | CY (bit 0), IR (bit 2), and HPM3..10 (bits 10:3) inhibit their counters. TM and bits 31:11 read zero. |
 | `mcycle` (0xB00), `minstret` (0xB02) | Accept full 64-bit M-mode writes |
-| `mhpmcounter3`-`10` (0xB03-0xB0A), `mhpmevent3`-`10` (0x323-0x32A) | Writable 64-bit machine counters. An event field (bits 55:0) of N selects counter N's fixed event; counters 8, 7 and 4 also accept the translation selectors 16, 17 and 18 (see below); any other value selects zero and disables counting. Bits 63:60 are the Sscofpmf OF, MINH, SINH and UINH bits; VSINH, VUINH and bits 57:56 read zero. |
+| `mhpmcounter3`-`10` (0xB03-0xB0A), `mhpmevent3`-`10` (0x323-0x32A) | Writable 64-bit machine counters. An event field (bits 55:0) of N selects counter N's fixed event; counters 8, 7 and 4 also accept the translation selectors 16, 17 and 18, and counters 3, 6 and 5 the cache refill selectors 19, 20 and 21 (see below); any other value selects zero and disables counting. Bits 63:60 are the Sscofpmf OF, MINH, SINH and UINH bits; VSINH, VUINH and bits 57:56 read zero. |
 | `mhpmcounter11`-`31`, `mhpmevent11`-`31` | Machine-mode reads return zero and writes are ignored. |
 | `hpmcounter3`-`10` (0xC03-0xC0A) | Read-only aliases, gated by counter enables in S/U modes. |
 | `hpmcounter11`-`31` (0xC0B-0xC1F) | Unimplemented; accesses raise illegal instruction at every privilege (Zihpm: "Accessing an unimplemented counter may cause an illegal-instruction exception or may return a constant value"). |
@@ -224,7 +224,17 @@ translation selectors share those counters: 16 counts page-walker busy
 cycles on counter 8, 17 counts SFENCE.VMA TLB invalidates on counter 7, and
 18 counts CSR-requested TLB invalidates (any `satp` access, or an `mstatus`
 write that changes MPRV, or MPP while MPRV is set) on counter 4. Walker busy
-cycles divided by ITLB plus DTLB walks give the mean walk latency. HPM
+cycles divided by ITLB plus DTLB walks give the mean walk latency. Three raw
+cache refill selectors follow: 19 counts L1I refills (lines the L1I requests
+from the L2, including the fetch provider's next-line prefetches) on counter
+3, 20 counts L2 demand misses (lines the coherence home reads from memory for
+CPU and DMA requests) on counter 6, and 21 counts L2 prefetch misses (lines
+the L2 prefetcher reads from memory) on counter 5. The generic
+`L1-icache-load-misses`, `LLC-load-misses` and `LLC-prefetch-misses` events
+map to them; `perf stat -e r13,r14,r15` names them as raw events. A counter
+counts either its fixed event or its alternate selector, so selector 19
+replaces branches on counter 3, and 20 and 21 replace the DTLB and ITLB walks.
+HPM
 storage and event counting are independent of the optional profiling
 counters. `frost_stress --counters` counts a child process
 running a fixed workload, from its exec to its exit, and the boot stress

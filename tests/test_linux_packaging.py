@@ -394,7 +394,19 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     # counter 4.
     assert "<0x0 0x10 0xffffffff 0xffffffff 0x100>" in dts
     assert "<0x0 0x11 0xffffffff 0xffffffff 0x80>" in dts
-    assert "<0x0 0x12 0xffffffff 0xffffffff 0x10>;" in dts
+    assert "<0x0 0x12 0xffffffff 0xffffffff 0x10>," in dts
+    # Cache refill selectors: L1I refills on counter 3, L2 demand misses on
+    # counter 6, L2 prefetch misses on counter 5, with the generic
+    # L1-icache-load-misses, LLC-load-misses and LLC-prefetch-misses events.
+    assert "<0x0 0x13 0xffffffff 0xffffffff 0x08>," in dts
+    assert "<0x0 0x14 0xffffffff 0xffffffff 0x40>," in dts
+    assert "<0x0 0x15 0xffffffff 0xffffffff 0x20>;" in dts
+    assert "<0x00010009 0x00010009 0x00000008>" in dts
+    assert "<0x00010011 0x00010011 0x00000040>" in dts
+    assert "<0x00010015 0x00010015 0x00000020>;" in dts
+    assert "<0x00010009 0x00000000 0x00000013>" in dts
+    assert "<0x00010011 0x00000000 0x00000014>" in dts
+    assert "<0x00010015 0x00000000 0x00000015>;" in dts
     assert "0x00020003" not in dts
     for event in (7, 8, 9, 10):
         assert f"<0x{event:08x} 0x{event:08x}" not in dts

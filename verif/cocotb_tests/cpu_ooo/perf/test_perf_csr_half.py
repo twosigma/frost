@@ -109,6 +109,7 @@ async def setup(dut: Any) -> CsrPathChecker:
         "hpm_mispredicts",
         "hpm_events",
         "hpm_translation_events",
+        "hpm_refill_events",
         "hpm_instret",
         "mret",
         "sret",
@@ -436,6 +437,95 @@ async def test_hpm_translation_event_selectors(dut: Any) -> None:
     await s.idle(3, hpm_events=8, hpm_translation_events=1)
     await s.idle(3, **off)
     assert await s.access(0xB08) == 3
+
+
+@cocotb.test()
+async def test_hpm_cache_refill_event_selectors(dut: Any) -> None:
+    """Selectors 19, 20 and 21 count L1I refills and L2 demand and prefetch misses."""
+    s = await setup(dut)
+    off = dict(hpm_branches=0, hpm_mispredicts=0, hpm_events=0, hpm_refill_events=0)
+    # (counter, selector, refill input bit)
+    refill = ((3, 19, 0), (6, 20, 1), (5, 21, 2))
+    for counter, selector, _ in refill:
+        await s.access(0x320 + counter, selector, 1)
+        assert await s.access(0x320 + counter) == selector
+        await s.access(0xB00 + counter, 0, 1)
+    # The fixed events no longer reach the reselected counters.
+    await s.idle(4, hpm_branches=2, hpm_mispredicts=1, hpm_events=15)
+    await s.idle(3, **off)
+    for counter, _, _ in refill:
+        assert await s.access(0xB00 + counter) == 0
+    # Each refill input reaches only its own counter, one count per cycle:
+    # input k raises 3 + k events, and the counters keep their counts.
+    for k, (_, _, bit) in enumerate(refill):
+        await s.idle(3 + k, hpm_refill_events=1 << bit)
+        await s.idle(3, **off)
+        for j, (other, _, _) in enumerate(refill):
+            assert await s.access(0xB00 + other) == (3 + j if j <= k else 0), (k, other)
+    # All three at once, beside the fixed events on the other counters.
+    for counter, _, _ in refill:
+        await s.access(0xB00 + counter, 0, 1)
+    await s.idle(7, hpm_refill_events=7, hpm_mispredicts=1, hpm_events=15)
+    await s.idle(3, **off)
+    for counter, _, _ in refill:
+        assert await s.access(0xB00 + counter) == 7
+    # The refill selectors are counter-specific: elsewhere they disable.
+    for counter in (4, 7, 8, 9, 10):
+        for selector in (19, 20, 21):
+            await s.access(0x320 + counter, selector, 1)
+            assert await s.access(0x320 + counter) == 0
+    for counter, selector, _ in refill:
+        for other in (19, 20, 21):
+            if other != selector:
+                await s.access(0x320 + counter, other, 1)
+                assert await s.access(0x320 + counter) == 0
+    # Restoring the fixed selector restores the fixed event.
+    await s.access(0x323, 3, 1)
+    await s.access(0xB03, 0, 1)
+    await s.idle(3, hpm_branches=2, hpm_refill_events=1)
+    await s.idle(3, **off)
+    assert await s.access(0xB03) == 6
+    # Sscofpmf: a refill event wraps its counter, sets OF and raises LCOFIP.
+    for counter, selector, bit in refill:
+        await s.access(0x320 + counter, selector, 1)
+        await s.access(0xB00 + counter, MASK64 - 1, 1)
+        await s.idle(2, hpm_refill_events=1 << bit)
+        await s.idle(3, **off)
+        assert await s.access(0xB00 + counter) == 0
+        assert await s.access(0x320 + counter) == OF | selector
+        assert await s.access(SCOUNTOVF) == 1 << counter
+        assert await s.access(MIP) & LCOF
+        await s.access(MIP, LCOF, 3)
+        await s.access(0x320 + counter, 0, 1)
+
+
+@cocotb.test()
+async def test_hpm_cache_refill_events_take_cycle_privilege(dut: Any) -> None:
+    """Refill events filter by the privilege of their cycle, counter 3's included."""
+    s = await setup(dut)
+    for priv in (3, 1, 0):
+        await enter_priv(s, priv)
+        for counter, selector, bit in ((3, 19, 0), (6, 20, 1), (5, 21, 2)):
+            for inh, inh_priv in ((0, None), (MINH, 3), (SINH, 1), (UINH, 0)):
+                await s.access(0x320 + counter, inh | selector, 1)
+                await s.access(0xB00 + counter, 0, 1)
+                await s.idle(4, hpm_refill_events=1 << bit)
+                await s.idle(3, hpm_refill_events=0)
+                expected = 0 if inh_priv == priv else 4
+                assert await s.access(0xB00 + counter) == expected, (priv, counter, inh)
+            await s.access(0x320 + counter, 0, 1)
+    # Across SRET (S to U) a refill in the first U cycle counts as U, where a
+    # retirement in that cycle would count as S.
+    for inhibit, expected in ((MINH | UINH, 0), (MINH | SINH, 1)):
+        await enter_priv(s, 3)
+        await s.access(0x323, inhibit | 19, 1)
+        await s.access(0xB03, 0, 1)
+        await enter_priv(s, 1)
+        await s.step(raw_valid=0, sret=1, hpm_refill_events=0)
+        assert int(dut.o_priv.value) == 0
+        await s.step(raw_valid=0, sret=0, hpm_refill_events=1)
+        await s.idle(3, hpm_refill_events=0)
+        assert await s.access(0xC03) == expected, (inhibit, expected)
 
 
 @cocotb.test()

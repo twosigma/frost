@@ -843,6 +843,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "on faulting, unmapped and supervisor-only addresses"
         ),
     ),
+    "ddr_hpm_refill_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ddr_hpm_refill_test",
+        nic_mac_clocks=False,
+        description=(
+            "HPM cache refill events: cold L1I loops, L2-missing scattered reads "
+            "and streams (demand and prefetch), MINH and counter overflow"
+        ),
+    ),
     "zawrs_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

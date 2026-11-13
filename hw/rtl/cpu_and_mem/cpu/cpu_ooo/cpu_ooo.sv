@@ -3995,6 +3995,16 @@ module cpu_ooo #(
     end
   end
 
+  // Cache refill events for the HPM counters, registered here so that the
+  // route from the L1I and the home to the counters ends at a flop. csr_file
+  // inhibits counting until a selector write, so the flops need no reset.
+  logic hpm_l1i_refill_q, hpm_l2_demand_miss_q, hpm_l2_prefetch_miss_q;
+  always_ff @(posedge i_clk) begin
+    hpm_l1i_refill_q <= i_cache_perf_events.hierarchy.l1i.fill;
+    hpm_l2_demand_miss_q <= i_cache_perf_events.hierarchy.l2.fill;
+    hpm_l2_prefetch_miss_q <= i_cache_perf_events.hierarchy.l2.fill_prefetch;
+  end
+
   csr_file #(
       .XLEN(XLEN),
       .COMMIT_EXCLUDES_CONTROL_TAKE(1'b1),
@@ -4021,6 +4031,9 @@ module cpu_ooo #(
       .i_dtlb_miss(walk_req_valid && walk_req_ready),
       .i_walk_busy(ptw_busy),
       .i_sfence_tlb_flush(sfence_tlb_flush_start),
+      .i_l1i_refill(hpm_l1i_refill_q),
+      .i_l2_demand_miss(hpm_l2_demand_miss_q),
+      .i_l2_prefetch_miss(hpm_l2_prefetch_miss_q),
       .i_l1d_miss(i_cache_perf_events.hierarchy.l1d.miss),
       .i_sq_full_stall(dispatch_status.sq_full ||
           (dispatch_status.slot2_block_lsq_full2 && from_id_to_ex_2.needs_sq &&

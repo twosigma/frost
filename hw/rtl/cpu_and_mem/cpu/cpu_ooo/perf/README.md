@@ -16,7 +16,12 @@ They count retired branches, mispredictions, instruction and data TLB walks,
 L1D permission misses, store-queue capacity stalls, cycles, and retired
 instructions; Sscofpmf adds overflow and privilege filtering to each. Selectors
 16, 17 and 18 instead count page-walker busy cycles (counter 8), SFENCE.VMA TLB
-invalidates (counter 7) and CSR-requested TLB invalidates (counter 4). Linux `perf` accesses
+invalidates (counter 7) and CSR-requested TLB invalidates (counter 4); selectors
+19, 20 and 21 count L1I refills (counter 3), L2 demand misses (counter 6) and L2
+prefetch misses (counter 5), where an L2 miss is a line the coherence home reads
+from memory. The refill events take the `fill` and `fill_prefetch` fields of
+`cache_perf_pkg::cache_instance_perf_events_t`, registered once more in
+`cpu_ooo`. Linux `perf` accesses
 them through the OpenSBI PMU mapping; the [Linux counter guide](../../../../../../linux/README.md#counters-and-mcounteren)
 describes their event selectors, enables and user aliases. The custom
 snapshot protocol below applies to the optional profiling counters.
