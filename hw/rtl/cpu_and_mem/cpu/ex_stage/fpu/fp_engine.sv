@@ -682,7 +682,8 @@ module fp_engine (
   (* rom_style = "distributed" *) op_dec_t dec_q;
   logic [2:0] rm_q;
   logic [63:0] opa_q, opb_q, opc_q;
-  logic [4:0] fli_q;
+  // Zfa FLI constant, looked up at capture so the fast result path selects a register.
+  logic [63:0] fli_q;
 
   fp_class_t ca_q, cb_q, cc_q;
   logic signed [13:0] ea_q, eb_q, ec_q;
@@ -1442,7 +1443,7 @@ module fp_engine (
         else fast_res = dec_q.int_w ? {{32{opa_q[31]}}, opa_q[31:0]} : opa_q;
       end
       CL_MVFX: begin
-        if (dec_q.alt) fast_res = fli_value(fli_q, dec_q.dst_d);
+        if (dec_q.alt) fast_res = fli_q;
         else if (dec_q.dst_d) fast_res = opa_q;
         else if (dec_q.dst_h) fast_res = {48'hFFFF_FFFF_FFFF, opa_q[15:0]};
         else fast_res = {32'hFFFF_FFFF, opa_q[31:0]};
@@ -2400,7 +2401,7 @@ module fp_engine (
       opa_q <= i_src1;
       opb_q <= i_src2;
       opc_q <= i_src3;
-      fli_q <= i_fli_index;
+      fli_q <= fli_value(i_fli_index, i_op == riscv_pkg::FLI_D);
     end
     if (state_q == ST_DEC1) begin
       // Only operand A can be half precision (the Zfhmin conversions).
