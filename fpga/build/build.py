@@ -48,7 +48,7 @@ import time
 import uuid
 import zipfile
 from pathlib import Path
-from typing import TextIO, TypedDict
+from typing import Any, TextIO, TypedDict
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sw" / "apps"))
 from riscv_toolchain import default_riscv_prefix  # noqa: E402
@@ -3183,6 +3183,11 @@ def explain_silent_vivado_exit(log_path: Path, returncode: int) -> None:
     )
 
 
+def _has_process_groups() -> bool:
+    """Return whether a step can run in its own session and be signalled as a group."""
+    return hasattr(os, "killpg")
+
+
 def run_vivado_step(
     command: list[str], cwd: Path, env: Mapping[str, str] | None = None
 ) -> int:
@@ -3191,34 +3196,43 @@ def run_vivado_step(
     Vivado normally exits right after printing ``Exiting Vivado``. If the
     launcher process stays alive for ``VIVADO_EXIT_GRACE_S`` after that line, the
     step is judged by a ``** DONE`` output line (Vivado also echoes the script's
-    own ``puts`` commands behind a ``#``, which do not count) and the launcher's
-    process group is terminated, so a stuck launcher cannot stall the whole build.
+    own ``puts`` commands behind a ``#``, which do not count) and the launcher
+    (with its process group, where the platform has groups) is terminated, so a
+    stuck launcher cannot stall the whole build.
     """
     log_path = cwd / "vivado.log"
     if "-log" in command:
         log_path = cwd / command[command.index("-log") + 1]
     # Vivado rewrites its log at start-up; a log left by an earlier step must not
     # be mistaken for this step's.
-    log_path.unlink(missing_ok=True)
-    options = {} if env is None else {"env": env}
-    process = subprocess.Popen(command, cwd=cwd, start_new_session=True, **options)
+    try:
+        log_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    options: dict[str, Any] = {} if env is None else {"env": env}
+    if _has_process_groups():
+        options["start_new_session"] = True
+    process = subprocess.Popen(command, cwd=cwd, **options)
 
     def hang_up(signum: int, _frame: object) -> None:
         raise SystemExit(128 + signum)
 
-    # The step runs in its own session, so a hangup or termination aimed at this
-    # build must be forwarded to it: turn them into an exception here.
-    previous = {}
+    previous: dict[int, Any] = {}
     try:
-        try:
-            for sig in (signal.SIGHUP, signal.SIGTERM):
-                previous[sig] = signal.signal(sig, hang_up)
-        except ValueError:  # not the main thread
-            pass
+        if _has_process_groups():
+            # The step runs in its own session, so a hangup or termination aimed
+            # at this build must be forwarded to it: turn them into an exception.
+            try:
+                for name in ("SIGHUP", "SIGTERM"):
+                    sig = getattr(signal, name, None)
+                    if sig is not None:
+                        previous[sig] = signal.signal(sig, hang_up)
+            except ValueError:  # not the main thread
+                pass
         returncode = _wait_for_vivado(process, log_path)
     except BaseException:
         # subprocess.run() kills its child on an interrupt; keep that behaviour.
-        _signal_launcher(process, signal.SIGKILL)
+        _signal_launcher(process, kill=True)
         process.wait()
         raise
     finally:
@@ -3229,19 +3243,24 @@ def run_vivado_step(
     return returncode
 
 
-def _signal_launcher(process: subprocess.Popen[bytes], sig: signal.Signals) -> None:
-    """Signal the launcher's whole process group: it spawns Vivado without exec."""
+def _signal_launcher(process: subprocess.Popen[bytes], kill: bool) -> None:
+    """Terminate (or kill) the launcher, and its whole group where there are groups.
+
+    The launcher spawns Vivado without exec, so on POSIX the step's own session
+    is signalled; elsewhere only the launcher process is.
+    """
     pid = getattr(process, "pid", None)
-    if isinstance(pid, int):
+    if _has_process_groups() and isinstance(pid, int):
+        sig = getattr(signal, "SIGKILL" if kill else "SIGTERM")
         try:
             os.killpg(pid, sig)
         except ProcessLookupError:
             pass
         return
-    if sig == signal.SIGTERM:
-        process.terminate()
-    else:
+    if kill:
         process.kill()
+    else:
+        process.terminate()
 
 
 def _wait_for_vivado(process: subprocess.Popen[bytes], log_path: Path) -> int:
@@ -3270,14 +3289,16 @@ def _wait_for_vivado(process: subprocess.Popen[bytes], log_path: Path) -> int:
                 f"  Vivado finished but its launcher did not exit within "
                 f"{VIVADO_EXIT_GRACE_S:.0f} s; terminating it"
             )
-            _signal_launcher(process, signal.SIGTERM)
+            _signal_launcher(process, kill=False)
+            ended = True
             try:
                 process.wait(timeout=10.0)
             except subprocess.TimeoutExpired:
-                pass
-            # A descendant may outlive the launcher or ignore SIGTERM.
-            _signal_launcher(process, signal.SIGKILL)
-            process.wait()
+                ended = False
+            # With groups a descendant may outlive the launcher or ignore SIGTERM.
+            if not ended or _has_process_groups():
+                _signal_launcher(process, kill=True)
+                process.wait()
             return 0 if re.search(r"^\*\* DONE", text, re.MULTILINE) else 1
 
 

@@ -5195,6 +5195,16 @@ def test_vcu118_rejects_unsupported_clock_options(
     assert expected in capsys.readouterr().err
 
 
+@pytest.fixture(params=("groups", "no_groups"))
+def platform(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Run a test with and without POSIX process groups and signal names."""
+    if request.param == "no_groups":
+        monkeypatch.delattr(fpga_build.os, "killpg", raising=False)
+        monkeypatch.delattr(fpga_build.signal, "SIGHUP", raising=False)
+        monkeypatch.delattr(fpga_build.signal, "SIGKILL", raising=False)
+    return str(request.param)
+
+
 class _StuckLauncher:
     """A Vivado launcher process that does not exit until it is signalled."""
 
@@ -5239,6 +5249,7 @@ def _launch_stuck_vivado(
 
 @pytest.mark.parametrize(("marker", "expected"), (("** DONE", 0), ("", 1)))
 def test_launcher_outliving_vivado_is_terminated_and_judged_by_done_marker(
+    platform: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -5254,7 +5265,7 @@ def test_launcher_outliving_vivado_is_terminated_and_judged_by_done_marker(
 
 
 def test_exit_marker_cleared_by_a_log_rewrite_restarts_the_grace_period(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    platform: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A marker from an earlier step that Vivado overwrites does not start the clock."""
     log = tmp_path / "vivado.log"
@@ -5284,7 +5295,7 @@ def test_exit_marker_cleared_by_a_log_rewrite_restarts_the_grace_period(
 
 
 def test_echoed_done_command_does_not_count_as_done(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    platform: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Vivado echoes the script's puts command behind a hash; only a real line counts."""
     launcher = _StuckLauncher()
@@ -5326,7 +5337,7 @@ def test_real_launcher_group_is_ended_with_its_descendants(
 
 
 def test_launcher_still_running_before_vivado_exits_is_left_alone(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    platform: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Without "Exiting Vivado" in the log a long step keeps its launcher."""
     launcher = _StuckLauncher(waits_before_exit=50)
@@ -5335,7 +5346,7 @@ def test_launcher_still_running_before_vivado_exits_is_left_alone(
 
 
 def test_launcher_exiting_within_the_grace_period_is_not_terminated(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    platform: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A launcher that follows Vivado out promptly keeps its own exit code."""
     launcher = _StuckLauncher(waits_before_exit=1)
@@ -5345,7 +5356,7 @@ def test_launcher_exiting_within_the_grace_period_is_not_terminated(
 
 
 def test_interrupted_vivado_step_kills_its_launcher(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    platform: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Ctrl-C during a step stops the launcher, as subprocess.run() does."""
 
@@ -5376,6 +5387,7 @@ def _fail_vivado(
 
 
 def test_failed_step_without_error_or_exit_line_reports_abnormal_end(
+    platform: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -5397,6 +5409,7 @@ def test_failed_step_without_error_or_exit_line_reports_abnormal_end(
     ),
 )
 def test_failed_step_with_error_or_exit_line_is_not_called_abnormal(
+    platform: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -5408,6 +5421,7 @@ def test_failed_step_with_error_or_exit_line_is_not_called_abnormal(
 
 
 def test_successful_step_prints_no_abnormal_end_note(
+    platform: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -5417,7 +5431,23 @@ def test_successful_step_prints_no_abnormal_end_note(
     assert capsys.readouterr().out == ""
 
 
+def test_normal_step_starts_a_session_only_where_there_are_groups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    """A step that exits at once works with and without process groups."""
+    seen: dict[str, Any] = {}
+
+    def popen(command: list[str], **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return SimpleNamespace(wait=lambda timeout=None: 0)
+
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", popen)
+    assert fpga_build.run_vivado_step(["vivado"], tmp_path) == 0
+    assert seen.get("start_new_session", False) == (platform == "groups")
+
+
 def test_failed_step_with_unreadable_log_says_so(
+    platform: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
