@@ -2360,6 +2360,24 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Vector FP64 to FP32 conversion, against Berkeley SoftFloat",
         verilator_extra_args=("-GSEXP=11", "-GSFRAC=52", "-GDEXP=8", "-GDFRAC=23"),
     ),
+    "vec_fdivsqrt16": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fdivsqrt",
+        hdl_toplevel_module="vec_fdivsqrt",
+        description="Vector FP16 divide and square root, bit for bit against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=5", "-GFRAC=10"),
+    ),
+    "vec_fdivsqrt32": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fdivsqrt",
+        hdl_toplevel_module="vec_fdivsqrt",
+        description="Vector FP32 divide and square root, bit for bit against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=8", "-GFRAC=23"),
+    ),
+    "vec_fdivsqrt64": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_fdivsqrt",
+        hdl_toplevel_module="vec_fdivsqrt",
+        description="Vector FP64 divide and square root, bit for bit against Berkeley SoftFloat",
+        verilator_extra_args=("-GEXP=11", "-GFRAC=52"),
+    ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",

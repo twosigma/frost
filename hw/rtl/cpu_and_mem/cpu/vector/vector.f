@@ -16,3 +16,4 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_fp_misc.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_f2i.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_i2f.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_f2f.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_fdivsqrt.sv

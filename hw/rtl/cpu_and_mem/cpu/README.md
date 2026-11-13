@@ -575,6 +575,13 @@ to a format, and `vec_f2f` converts between two formats, exactly when
 widening and with rounding (including round to odd for `vfncvt.rod.f.f`) when
 narrowing. Their latencies are five, seven and eight cycles.
 
+`vec_fdivsqrt` is one iterative unit per format shared by `vfdiv`, `vfrdiv`
+and `vfsqrt`: after normalizing subnormal operands it runs a restoring digit
+recurrence through one subtractor, one result bit per cycle, and rounds like
+the other blocks. It takes one operation at a time, signals when it is free,
+and returns each result a fixed P + 10 cycles later (P is the format's
+precision: 21, 34 and 63 cycles for FP16, FP32 and FP64).
+
 ## Subtle cases
 
 These front-end hazards are easy to reintroduce. The code comments at each
