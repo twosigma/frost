@@ -1279,7 +1279,8 @@ module csr_file #(
   // including counter 3's L1I refill event; counter 4's registered
   // CSR-requested invalidate keeps the retirement timing.
   localparam logic [NumHpm-1:0] HpmRetireEvent = 8'b1000_0011;
-  localparam logic [NumHpm-1:0] HpmAltRetireEvent = 8'b0000_0010;
+  // Counters 9 and 10 have no alternate; 10 keeps the retirement timing.
+  localparam logic [NumHpm-1:0] HpmAltRetireEvent = 8'b1000_0010;
   logic [1:0] retire_priv_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) retire_priv_q <= riscv_pkg::PrivM;
