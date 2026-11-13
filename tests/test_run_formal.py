@@ -42,6 +42,7 @@ SBY_TASK_TIMEOUT_S = 2400
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("csr_file", "bmc"): 5400,
     ("csr_file", "bmc_perf_off"): 5400,
+    ("csr_file", "vector_bmc"): 5400,
     ("reorder_buffer", "bmc"): 5400,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
@@ -952,8 +953,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "csr_file.sby",
-        "CSR state and access behavior with profiling counters on or off",
-        tasks=("bmc", "cover", "bmc_perf_off"),
+        "CSR state and access behavior with profiling counters on or off, and "
+        "with the vector state",
+        tasks=("bmc", "cover", "bmc_perf_off", "vector_bmc", "vector_cover"),
     ),
     FormalTarget(
         "tlb.sby",
@@ -2548,6 +2550,8 @@ SBY_TASKS = [
         "Cover checking of INT station features at eight-entry capacity",
     ),
     ("bmc_perf_off", "Bounded model checking with the profiling counters left out"),
+    ("vector_bmc", "Bounded model checking with the vector state present"),
+    ("vector_cover", "Cover search with the vector state present"),
     (
         "prove_harts3",
         "Unbounded proof with three harts, 191 interrupt identities, and no APLIC "
@@ -3266,8 +3270,9 @@ def test_stream_partition_models_match(prefix: str, depth: int, scripted: bool) 
                 "aigsmt": "boolector",
                 "expect": "PASS",
             }
+            # The scripted control task also uses the CaDiCaL-based engine.
             assert task["[engines]"] == [
-                "abc bmc3 -c" if role == "hold" else "abc bmc3"
+                "abc bmc3 -c" if role == "hold" or scripted else "abc bmc3"
             ]
 
     validate(hold, bmc)
@@ -3519,6 +3524,9 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
     bulk = task == "coh_l1d_stream_free_bmc"
     outlier = task == "coh_l1d_stream_outlier_prove"
     hold = task.endswith("_hold_bmc")
+    # The scripted and free control tasks use the CaDiCaL-based engine, as the
+    # holds do.
+    cadical = hold or bulk or task == "coh_l1d_stream_bmc"
     script = [
         "read -sv coherence_read_stream.sv",
         "read -sv cache_perf_pkg.sv",
@@ -3601,7 +3609,7 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
             "expect": "PASS",
         }
         assert config["[engines]"] == [
-            "abc pdr" if outlier else "abc bmc3 -c" if hold else "abc bmc3"
+            "abc pdr" if outlier else "abc bmc3 -c" if cadical else "abc bmc3"
         ]
         assert config["[script]"] == script
         assert config["[files]"] == files

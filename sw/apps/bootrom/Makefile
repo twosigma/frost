@@ -13,7 +13,7 @@
 #    limitations under the License.
 
 # FROST Core Boot ROM: executes at reset from 0x0000_0000 in on-chip BRAM,
-# loads the 2nd-Stage Bootloader (FSBL) from SPI NOR flash (0x0300_0000) into
+# loads the 2nd-Stage Bootloader (FSBL) from SPI NOR flash (0x0400_0000) into
 # on-chip SRAM (0x0000_4000), verifies its IEEE CRC-32 checksum, and jumps to it.
 FPGA_CPU_CLK_FREQ ?= 200000000
 

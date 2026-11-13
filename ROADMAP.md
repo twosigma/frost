@@ -5,10 +5,10 @@ set the direction of this roadmap. The sections are in priority order.
 
 ## RVA23 profile and the vector extension
 
-FROST is working toward the RVA23U64 user profile with the RVA22S64
-supervisor profile, which does not require the hypervisor extension. The
-remaining scalar and supervisor extensions are in progress. Two larger pieces
-come before the second hart:
+FROST is working toward the RVA23 profile without the hypervisor extension:
+the RVA23U64 user profile and every RVA23S64 supervisor extension except H.
+The remaining scalar and supervisor extensions are in progress. Two larger
+pieces come before the second hart:
 
 - A vector unit. The profile requires V with Zvfhmin, Zvbb, and Zvkt; vector
   cryptography follows, and Zvbc and Zvfh are candidates. The vector length
@@ -16,7 +16,8 @@ come before the second hart:
   loads and stores go through the coherent memory system, so they are
   ordered with the scalar load and store queues and the caches, and they
   take precise faults. The unit is a build option, and a configuration
-  without it is unchanged.
+  without it is unchanged. The vector state (`mstatus.VS` and the vector
+  CSRs) is in place behind the `VECTOR` build parameter.
 - Misaligned loads and stores in hardware. FROST raises an
   address-misaligned exception on them today and leaves the access to
   firmware.
@@ -498,7 +499,7 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   meets timing
 - A redesign three or four instructions wide, sized first with a
   performance model
-- The V and H extensions
+- The hypervisor (H) extension
 - CHERI capabilities (RVY), following version 0.9.10.1 of the RISC-V CHERI
   specification, with a capability tag controller and a software
   revoker, so that the toolchains and Linux work for other RISC-V CHERI

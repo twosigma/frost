@@ -50,6 +50,8 @@ module tomasulo_wrapper #(
     // Disable back-end profiling counters and return zero when 0. cpu_ooo
     // passes its build option; the standalone default enables counters.
     parameter int unsigned PERF_COUNTERS = 1,
+    // 1: the vector CSRs exist and need mstatus.VS (reorder buffer legality).
+    parameter bit VECTOR = 1'b0,
     // The LQ registers its same-sector matches from the coherent L1D's store
     // pushes and atomic state; cpu_ooo, which supplies both, enables it.
     parameter bit REGISTERED_SECTOR_MATCH = 1'b0
@@ -220,6 +222,7 @@ module tomasulo_wrapper #(
     // mstatus.FS == Off, sampled by the ROB's FP-op legality check at
     // allocation.
     input logic                                  i_mstatus_fs_off,
+    input logic                                  i_mstatus_vs_off = 1'b1,
     input logic                                  i_trap_misaligned_accesses,
 
     // =========================================================================
@@ -2428,7 +2431,8 @@ module tomasulo_wrapper #(
       (alu_adapter_to_arbiter.tag == riscv_pkg::ReorderBufferTagWidth'(head_tag + 1'b1));
 
   reorder_buffer #(
-      .SharedLinkBank(ROB_SHARED_LINK_BANK)
+      .SharedLinkBank(ROB_SHARED_LINK_BANK),
+      .VECTOR(VECTOR)
   ) u_rob (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
@@ -2526,6 +2530,7 @@ module tomasulo_wrapper #(
       .i_debug_mode                   (i_debug_mode),
       .i_mcounteren                   (i_mcounteren),
       .i_mstatus_fs_off               (i_mstatus_fs_off),
+      .i_mstatus_vs_off               (i_mstatus_vs_off),
       .i_frm                          (i_frm_csr),
       .i_commit_hold                  (i_commit_hold),
       .i_result_held                  (alu_result_held_q),

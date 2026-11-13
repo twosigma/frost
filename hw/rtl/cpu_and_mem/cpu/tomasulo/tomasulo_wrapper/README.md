@@ -59,6 +59,7 @@ adapter wiring.
 | `L0_CACHE_DEPTH` | 128 (`riscv_pkg::LqL0Depth`) | LQ L0 entries; FROST passes 512 with Normal read caching |
 | `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, `0x4000_0000` | Cached (DDR) region, for LQ and SQ tier tagging |
 | `PERF_COUNTERS` | 1 | 0 leaves out `tomasulo_perf_counters`; `o_perf_counter_data` then reads zero |
+| `VECTOR` | 0 | 1 makes the vector CSRs legal at ROB allocation while `mstatus.VS` is not Off |
 
 `cpu_ooo` sets `SPLIT_RS_DISPATCH=1`, `ENABLE_DISPATCH_DONE_REPAIR=1`, and
 `ROB_SHARED_LINK_BANK=1`, and passes its own values for the rest. Its
