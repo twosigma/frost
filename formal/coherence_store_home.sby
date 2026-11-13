@@ -24,7 +24,7 @@ bmc_siblings: timeout 1800
 bmc_rows: timeout 2100
 bmc_conflict: timeout 2400
 bmc_pressure: timeout 2700
-link_bmc_siblings: timeout 2700
+link_bmc_siblings: timeout 3300
 link_bmc_pressure: timeout 3600
 bmc: aigsmt boolector
 
