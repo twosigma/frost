@@ -116,8 +116,9 @@ module csr_file #(
     // Vector register width in bits: 128, 256 or 512. Sets vlenb and the
     // vstart width.
     parameter int unsigned VLEN = 256,
-    // 1 sets misa.V. Builds with an incomplete vector unit leave it 0, and
-    // software enables the unit through mstatus.VS.
+    // 1 would set misa.V. Elaboration rejects it while the vector
+    // instructions are not implemented; software enables the vector state
+    // through mstatus.VS.
     parameter bit VECTOR_ADVERTISE = 1'b0
 ) (
     input logic i_clk,
@@ -1543,12 +1544,15 @@ module csr_file #(
   localparam int unsigned VstartBits = $clog2(VLEN);
   localparam int unsigned VlBits = $clog2(VLEN) + 1;
   logic [XLEN-1:0] vec_read_value;
-  // The vector registers as module-level signals, zero without the unit.
+`ifdef FORMAL
+  // The vector registers as module-level signals for the properties, zero
+  // without the unit.
   logic [VstartBits-1:0] vec_vstart;
   logic vec_vxsat;
   logic [1:0] vec_vxrm;
   logic [VlBits-1:0] vec_vl;
   logic [XLEN-1:0] vec_vtype;
+`endif
   if (VECTOR) begin : gen_vector_csrs
     initial begin
       if (VLEN != 128 && VLEN != 256 && VLEN != 512)
@@ -1565,11 +1569,13 @@ module csr_file #(
     logic [XLEN-1:0] vec_current_value, vec_new_value, vtype_value;
     logic vec_addr_writable;
     assign vtype_value = {vill_q, 55'b0, vtype_low_q};
+`ifdef FORMAL
     assign vec_vstart = vstart_q;
     assign vec_vxsat = vxsat_q;
     assign vec_vxrm = vxrm_q;
     assign vec_vl = vl_q;
     assign vec_vtype = vtype_value;
+`endif
     always_comb begin
       vec_current_value = '0;
       vec_addr_writable = 1'b1;
@@ -1636,11 +1642,13 @@ module csr_file #(
   end else begin : gen_no_vector_csrs
     assign vec_read_value = '0;
     assign vec_csr_write = 1'b0;
+`ifdef FORMAL
     assign vec_vstart = '0;
     assign vec_vxsat = 1'b0;
     assign vec_vxrm = 2'b00;
     assign vec_vl = '0;
     assign vec_vtype = '0;
+`endif
     assign mstatus_vs = FsOff;
   end
   assign o_mstatus_vs_off = (mstatus_vs == FsOff);
@@ -2283,6 +2291,27 @@ module csr_file #(
   wire [XLEN-1:0] f_vxsat_next = f_zicsr(i_csr_op, XLEN'(vec_vxsat), i_csr_write_data);
   wire [XLEN-1:0] f_vxrm_next = f_zicsr(i_csr_op, XLEN'(vec_vxrm), i_csr_write_data);
   wire [XLEN-1:0] f_vcsr_next = f_zicsr(i_csr_op, XLEN'({vec_vxrm, vec_vxsat}), i_csr_write_data);
+  // A vector CSR write, derived from the commit inputs alone: a committed
+  // access with write intent to vstart, vxsat, vxrm or vcsr that no trap
+  // entry suppresses.
+  wire f_vec_write = VECTOR && i_csr_write_enable && i_csr_read_enable &&
+      (COMMIT_EXCLUDES_CONTROL_TAKE || !(i_trap_save_m || i_trap_save_s)) &&
+      (i_csr_op[1:0] != 2'b00) &&
+      (i_csr_address == riscv_pkg::CsrVstart || i_csr_address == riscv_pkg::CsrVxsat ||
+       i_csr_address == riscv_pkg::CsrVxrm || i_csr_address == riscv_pkg::CsrVcsr);
+  // The value a read of a vector CSR returns.
+  wire [XLEN-1:0] f_vec_read =
+      (i_csr_address == riscv_pkg::CsrVstart) ? XLEN'(vec_vstart) :
+      (i_csr_address == riscv_pkg::CsrVxsat) ? XLEN'(vec_vxsat) :
+      (i_csr_address == riscv_pkg::CsrVxrm) ? XLEN'(vec_vxrm) :
+      (i_csr_address == riscv_pkg::CsrVcsr) ? XLEN'({vec_vxrm, vec_vxsat}) :
+      (i_csr_address == riscv_pkg::CsrVl) ? XLEN'(vec_vl) :
+      (i_csr_address == riscv_pkg::CsrVtype) ? vec_vtype :
+      (i_csr_address == riscv_pkg::CsrVlenb) ? XLEN'(VLEN / 8) : '0;
+  wire f_vec_addr = (i_csr_address == riscv_pkg::CsrVstart) ||
+      (i_csr_address == riscv_pkg::CsrVxsat) || (i_csr_address == riscv_pkg::CsrVxrm) ||
+      (i_csr_address == riscv_pkg::CsrVcsr) || (i_csr_address == riscv_pkg::CsrVl) ||
+      (i_csr_address == riscv_pkg::CsrVtype) || (i_csr_address == riscv_pkg::CsrVlenb);
 
   // A committed minstret write in the previous cycle, and the value it wrote.
   logic f_minstret_written_q = 1'b0;
@@ -2627,21 +2656,21 @@ module csr_file #(
       // register's old value (computed here independently of the RTL's RMW),
       // every other cycle keeps the value, and an access whose csr_op[1:0] is
       // 00 (no write intent) never changes it.
-      if ($past(vec_csr_write && i_csr_address == riscv_pkg::CsrVstart)) begin
+      if ($past(f_vec_write && i_csr_address == riscv_pkg::CsrVstart)) begin
         p_vstart_write : assert (vec_vstart == $past(f_vstart_next[VstartBits-1:0]));
       end else begin
         p_vstart_stable : assert (vec_vstart == $past(vec_vstart));
       end
-      if ($past(vec_csr_write && i_csr_address == riscv_pkg::CsrVxsat)) begin
+      if ($past(f_vec_write && i_csr_address == riscv_pkg::CsrVxsat)) begin
         p_vxsat_write : assert (vec_vxsat == $past(f_vxsat_next[0]));
-      end else if ($past(vec_csr_write && i_csr_address == riscv_pkg::CsrVcsr)) begin
+      end else if ($past(f_vec_write && i_csr_address == riscv_pkg::CsrVcsr)) begin
         p_vxsat_vcsr_write : assert (vec_vxsat == $past(f_vcsr_next[0]));
       end else begin
         p_vxsat_stable : assert (vec_vxsat == $past(vec_vxsat));
       end
-      if ($past(vec_csr_write && i_csr_address == riscv_pkg::CsrVxrm)) begin
+      if ($past(f_vec_write && i_csr_address == riscv_pkg::CsrVxrm)) begin
         p_vxrm_write : assert (vec_vxrm == $past(f_vxrm_next[1:0]));
-      end else if ($past(vec_csr_write && i_csr_address == riscv_pkg::CsrVcsr)) begin
+      end else if ($past(f_vec_write && i_csr_address == riscv_pkg::CsrVcsr)) begin
         p_vxrm_vcsr_write : assert (vec_vxrm == $past(f_vcsr_next[2:1]));
       end else begin
         p_vxrm_stable : assert (vec_vxrm == $past(vec_vxrm));
@@ -2652,14 +2681,8 @@ module csr_file #(
             {vec_vstart, vec_vxsat, vec_vxrm, mstatus_vs}
         ));
       end
-      if ($past(vec_csr_write)) begin
-        p_vec_write_target :
-        assert ($past(
-            VECTOR && storage_csr_write && (i_csr_address == riscv_pkg::CsrVstart ||
-                i_csr_address == riscv_pkg::CsrVxsat || i_csr_address == riscv_pkg::CsrVxrm ||
-                i_csr_address == riscv_pkg::CsrVcsr)
-        ));
-      end
+      // The RTL's write enable equals the one derived from the inputs.
+      p_vec_write_enable : assert (vec_csr_write == f_vec_write);
 
       // A vector CSR write sets VS Dirty; a status CSR write installs VS;
       // nothing else, including a read-only vector CSR access, changes it.
@@ -2743,6 +2766,14 @@ module csr_file #(
       p_vl_reset_value : assert (vec_vl == '0);
       p_vtype_reset_value : assert (vec_vtype == (VECTOR ? {1'b1, {(XLEN - 1) {1'b0}}} : '0));
       // The vector read port answers exactly the vector CSR it is asked for.
+      // A vector CSR read reaches the combinational output in its cycle and the
+      // registered output on the next.
+      if (VECTOR && i_csr_read_enable && f_vec_addr) begin
+        p_read_comb_output : assert (o_csr_read_data_comb == f_vec_read);
+      end
+      if ($past(VECTOR && i_csr_read_enable && f_vec_addr)) begin
+        p_read_registered_output : assert (o_csr_read_data == $past(f_vec_read));
+      end
       if (VECTOR && i_csr_read_enable) begin
         p_read_value :
         assert (vec_read_value ==
@@ -2863,6 +2894,12 @@ module csr_file #(
         cover_vstart_set : cover (vec_vstart != '0);
         cover_vcsr_set : cover (vec_vxsat && vec_vxrm == 2'b11);
         cover_vs_clean : cover (mstatus_vs == 2'b10);
+        cover_vxsat_direct_write :
+        cover (f_past_valid && $past(f_vec_write && i_csr_address == riscv_pkg::CsrVxsat));
+        cover_vxrm_direct_write :
+        cover (f_past_valid && $past(f_vec_write && i_csr_address == riscv_pkg::CsrVxrm));
+        cover_vstart_write :
+        cover (f_past_valid && $past(f_vec_write && i_csr_address == riscv_pkg::CsrVstart));
       end
     end
   end
