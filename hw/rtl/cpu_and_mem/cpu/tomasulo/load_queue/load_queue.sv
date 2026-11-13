@@ -2050,8 +2050,10 @@ module load_queue #(
     end
     // Svpbmt: the uncached alias of DDR is outside the PMA map, so an
     // untranslated access there faults; the data MMU sends an NC or IO access
-    // there only as MMIO, which this check then accepts.
-    assign sq_check_pma_ok = pma_ok_q || (pbmt_alias_q && sq_check_is_mmio_q);
+    // there only as an MMIO load, which this check then accepts (atomics
+    // there keep their access fault).
+    assign sq_check_pma_ok = pma_ok_q ||
+        (pbmt_alias_q && sq_check_is_mmio_q && !(sq_check_is_amo_q || sq_check_is_lr_q));
     assign sq_check_is_cached_region = cached_q;
     assign coherent_staged_misaligned = misaligned_q;
     assign coherent_staged_normal = normal_q;
