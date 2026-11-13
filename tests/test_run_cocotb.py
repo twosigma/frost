@@ -820,6 +820,45 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "F/D instructions trap without memory effects when mstatus.FS is Off"
         ),
     ),
+    "vec_state_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_state_test",
+        nic_mac_clocks=False,
+        description="Without the vector unit, mstatus.VS reads zero and vector CSRs trap",
+    ),
+    "vec_state_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_state_test",
+        nic_mac_clocks=False,
+        description=(
+            "Vector state with the vector unit at VLEN 256: mstatus.VS, the vector CSRs "
+            "and their legality"
+        ),
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=256"),
+        extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=256"),),
+    ),
+    "vec_state_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_state_test",
+        nic_mac_clocks=False,
+        description="Vector state with the vector unit at VLEN 128; CLI-only",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=128"),
+        extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=128"),),
+        include_in_pytest=False,
+    ),
+    "vec_state_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_state_test",
+        nic_mac_clocks=False,
+        description="Vector state with the vector unit at VLEN 512; CLI-only",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=512"),
+        extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=512"),),
+        include_in_pytest=False,
+    ),
     "cbo_zero_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -2094,6 +2133,79 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="int_alu_shim",
         description=("Integer ALU results with captured shift amounts enabled"),
         verilator_extra_args=("-GUSE_SHIFT_AMOUNT_HINT=1",),
+    ),
+    "vec_int_lane": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_int_lane",
+        hdl_toplevel_module="vec_int_lane",
+        description=(
+            "Vector integer lane: arithmetic, logic, shifts, Zvbb and compares at every "
+            "element width against a Python model, with a fixed latency"
+        ),
+    ),
+    "vec_mul_lane": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_mul_lane",
+        hdl_toplevel_module="vec_mul_lane",
+        description=(
+            "Vector multiply lane: low, high and accumulate results and widening products "
+            "at every element width against a Python model, with a fixed latency"
+        ),
+    ),
+    "vec_mask_unit": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_mask_unit",
+        hdl_toplevel_module="vec_mask_unit",
+        description=(
+            "Vector mask unit: mask logical operations, vcpop, vfirst, vmsbf/vmsif/vmsof, "
+            "viota and vid over multi-step instructions against a Python model"
+        ),
+    ),
+    "vec_red_unit": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_red_unit",
+        hdl_toplevel_module="vec_red_unit",
+        description=(
+            "Vector reduction unit: sums, logical reductions, minimum, maximum and widening "
+            "sums over multi-step reductions against a Python model"
+        ),
+    ),
+    "vec_xbar": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_xbar",
+        hdl_toplevel_module="vec_xbar",
+        description="Vector byte crossbar and rotator over a 256-bit element group",
+        verilator_extra_args=("-GBYTES=32",),
+    ),
+    "vec_xbar_512": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_xbar",
+        hdl_toplevel_module="vec_xbar",
+        description="Vector byte crossbar and rotator over a 512-bit element group",
+        verilator_extra_args=("-GBYTES=64",),
+    ),
+    "vec_clmul_lane": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_clmul_lane",
+        hdl_toplevel_module="vec_clmul_lane",
+        description="Vector carry-less multiply lane (vclmul, vclmulh) against a Python model",
+    ),
+    "vec_aes_group": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_aes_group",
+        hdl_toplevel_module="vec_aes_group",
+        description=(
+            "Vector AES element group: rounds, round zero and both key-schedule steps against "
+            "a Python AES model checked on the FIPS-197 examples"
+        ),
+    ),
+    "vec_sha2_group": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_sha2_group",
+        hdl_toplevel_module="vec_sha2_group",
+        description=(
+            "Vector SHA-2 element group: vsha2ms, vsha2cl and vsha2ch at SEW 32 and 64 against "
+            "a Python model checked on the SHA-256 and SHA-512 digests of a test message"
+        ),
+    ),
+    "vec_ghash_group": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_ghash_group",
+        hdl_toplevel_module="vec_ghash_group",
+        description=(
+            "Vector GHASH element group (vghsh, vgmul) against the Zvkg algorithm, itself "
+            "checked against the GCM specification's multiplication"
+        ),
     ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",

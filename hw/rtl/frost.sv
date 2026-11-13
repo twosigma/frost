@@ -101,6 +101,11 @@ module frost #(
     parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd322_265_625,
     // mperf* CSRs; disabled in production (build.py --perf-counters enables them).
     parameter int unsigned PERF_COUNTERS = 0,
+    // Vector unit: VECTOR=1 adds the vector state, VLEN is the vector
+    // register width (128, 256 or 512), and VECTOR_ADVERTISE sets misa.V.
+    parameter bit VECTOR = 1'b0,
+    parameter int unsigned VLEN = 256,
+    parameter bit VECTOR_ADVERTISE = 1'b0,
     // RISC-V debug transport: 1 = generic JTAG TAP on the
     // i_jtag_* pins (simulation, portable synthesis); 0 = the DTM's BSCAN
     // bundle comes from the board's BSCANE2 primitives (i_dtm_bscan_*).
@@ -380,6 +385,9 @@ module frost #(
       .POWER_ON_RESET_ENABLE(1),
 `endif
       .PERF_COUNTERS(PERF_COUNTERS),
+      .VECTOR(VECTOR),
+      .VLEN(VLEN),
+      .VECTOR_ADVERTISE(VECTOR_ADVERTISE),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
