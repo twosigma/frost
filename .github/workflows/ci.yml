@@ -24,11 +24,15 @@ on:
 permissions:
   contents: read
 
-# Cancel an in-progress run when a newer push arrives for the same PR or ref.
-# The ASIC flow is in asic.yml and is not cancelled on main.
+# A run takes longer than the gap between pushes to main, so a newer push must
+# not cancel it. On main, a started run finishes; the most recently queued run
+# waits behind it, and GitHub keeps only one pending run per group, so a run
+# still pending when another run is queued is cancelled in its favour. A pull
+# request keeps one run, and a newer push to it cancels the old one. The ASIC
+# flow in asic.yml follows the same rule.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Keep in sync with Dockerfile.
