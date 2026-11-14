@@ -944,6 +944,13 @@ has a 20-minute timeout in both SBY and the runner.
 | `FROST_CPU_PERIOD_PS` | Enables `ASYNC_CPU_CLOCK=1` in `frost` builds; the real-program and debug benches drive the independent CPU clock with this period in ps |
 | `FROST_CPU_PHASE_PS` | Initial CPU clock phase in ps when the independent clock is selected; default 700 |
 | `FROST_ASYNC_CPU_CLOCK` | `1` enables the independent CPU boundary in Yosys synthesis tests |
+| `FROST_REUSE_DIR` | Turns on [reuse](#reusing-formal-and-synthesis-results) of formal and synthesis passes, with pass markers in this directory (a relative path starts at the repository root); unset or empty, every task runs and no marker is read or written |
+| `FROST_REUSE_TOOLS_ID` | The tool image's identity, required with `FROST_REUSE_DIR` (`python3 tests/ci_reuse.py image-id --image <image>`) |
+| `FROST_REUSE_FORCE` | `true` or `1` runs every task and refreshes its marker |
+| `FROST_REUSE_MAIN_RUN` | The count of `main` runs; markers are reused only within a block of ten counts, and not in its first run |
+| `FROST_REUSE_MAIN_LIFETIME` | The run that started the count of `main` runs; markers of another lifetime are not reused |
+| `FROST_REUSE_CANARY_SEED` | Run number (on `main`, the count of `main` runs) that selects the canary tasks |
+| `FROST_REUSE_REPORT` | File that collects one JSON line per task: proved, reused, canary, failed |
 | `FROST_NIC_MAC_CLOCKS` | For the whole-SoC program and TestRIG benches, overrides the registry or runner default: `0` holds both NIC MAC clocks and their clock-OK inputs low with an access guard; `1` starts the clocks. The ISA, torture, and TestRIG runners default to `0` |
 | `MEMORY_LINK_STAGES` | Register stages between the hart and the cluster memory in `frost` builds (default 0). The `*_link1` registry entries run the memory-system programs with one stage |
 | `MISALIGNED_HW` | Builds `frost` with the misaligned-access engine, as the X3 has it: plain misaligned loads and stores to cached DDR are performed in hardware (default 1, and 0 when `ENABLE_CACHED_TIER=0`). The registry entries that disable the cached tier also set it to 0 |
@@ -1172,8 +1179,8 @@ again; adding any other label starts nothing. Pushes to `main` run every job.
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
 | TestRIG | Four jobs at the default 1 GiB aperture with new random sequences against Sail, each with 100 per template from the engine's templates and 200 from the A-extension generator; the first also replays the saved counterexamples and deterministic Sscofpmf controls, and runs 50 sequences from the crypto generator |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
-| Tooling | Lint, fast Python tests and synthesis |
-| Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, hart and home links (two jobs), L1D control, L1D multi-endpoint, L1D data (three jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream, vector CSR, line client links, memory management (page table walker, TLBs, MMUs, interrupt controllers), load queue and Other tasks jobs, the last being where new small equivalence proofs go; and a separate job for the hart maintenance proof, its ownership induction, the independent unbounded stream payload proof and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets |
+| Tooling | Lint, fast Python tests and synthesis; the two full-chip synthesis targets [reuse](#reusing-formal-and-synthesis-results) earlier passes |
+| Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, hart and home links (two jobs), L1D control, L1D multi-endpoint, L1D data (three jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream, vector CSR, line client links, memory management (page table walker, TLBs, MMUs, interrupt controllers), load queue and Other tasks jobs, the last being where new small equivalence proofs go; and a separate job for the hart maintenance proof, its ownership induction, the independent unbounded stream payload proof and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in five chained jobs of a separate workflow, which a newer push to `main` does not cancel |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
 | Coverage | One job merges the coverage of the 20 jobs that contribute to it into a report |
@@ -1253,3 +1260,74 @@ The pytest markers:
 
 The `pytest` shortcut collects only `tests/test_run_cocotb.py`; select the
 other markers with `./scripts/frost.py run pytest tests -m <marker>`.
+
+### Reusing formal and synthesis results
+
+Formal proofs and synthesis are deterministic, so a CI job skips a formal task,
+or one of the two full-chip synthesis targets of `test_run_yosys.py`, when its
+inputs are unchanged since a run in which it passed. `tests/ci_reuse.py`
+computes a key for each one, a SHA-256 over:
+
+- for a formal task, the `.sby` file and the path and content of every file
+  in its `[files]` section; for synthesis, the Yosys script the test
+  generates, every `read_verilog` source (including the sv2v conversion of the
+  NIC), and every file other than Python and Markdown in the working
+  directory, the source directories and the `-I` directories, where Yosys
+  resolves includes and `$readmemh` names;
+- the task's timeout, and the source of `tests/test_run_formal.py` or
+  `tests/test_run_yosys.py` without its top-level `test_*` functions and the
+  registry tables, whose entries for the task enter the key by value;
+- `tests/conftest.py`, the pytest settings in `pyproject.toml`, other pytest
+  configuration files (present or absent), and `scripts/frost.py`;
+- the identity of the tool image (a digest of its layers and environment,
+  which the image build job computes and each job checks after loading the
+  image), a schema version and a salt constant in `tests/ci_reuse.py`.
+
+A `[files]` entry must be one relative path to a file in the repository, and
+a synthesis source or include directory must lie in the repository or the
+test's temporary directory; anything else fails the test. The key does not
+depend on the checkout's location or on the order of the `[files]` lines.
+
+A pass marker is written only after the task passes in that job, its key
+recomputed after the run is unchanged, and the tool's output ends with
+SymbiYosys's `DONE (PASS, rc=0)` (for synthesis, Yosys's end-of-script line).
+A failure, timeout, cancellation or skip writes none. Markers are small JSON
+files in `.ci-reuse/`, saved in the Actions cache as one entry per job and run.
+Runs on `main` read only `main`'s entries; a pull request reads its own and
+`main`'s, and its entries are visible to that pull request only. A lost entry
+only means that its tasks are proved again.
+
+The key covers the inputs a change normally touches, not every conceivable
+one; a missed input is bounded three ways:
+
+- **Canary.** In every run, a task with a marker is proved again when a hash of
+  its name modulo 20 equals the run's number modulo 20 (on `main`, the count
+  of `main` runs). A canary that fails fails its job, names the run that wrote
+  the marker, and removes the marker.
+- **Every tenth `main` run.** The gate job counts pushes to `main` in the
+  Actions cache (a rerun keeps its run's count). When no earlier count is
+  restored or the count cannot be kept, the gate still succeeds and the run
+  turns reuse off: every task and target is proved, no marker is read or
+  written, and each job's summary says so. A marker records the count of the
+  run that wrote it, and a `main` run reuses only markers of its own block of
+  ten counts written at or before its own count, while the first run of each
+  block reuses nothing, so whatever that run did not finish stays due in the
+  next runs: a stale pass is reported by at most nine consecutive `main` runs.
+  A lost count starts again at 0 with a new lifetime (the run that restarted
+  it); markers of an earlier lifetime are not reused.
+- **Forcing.** Run the workflow manually on a branch with `reprove` set, or
+  push to `main` a head commit whose message contains `[reprove]` (a pull
+  request's commits do not carry it to the run). Changing `SALT` in
+  `tests/ci_reuse.py` makes every key new; change `SCHEMA` when the meaning of
+  a key or a marker changes.
+
+A forced proof, or the proof at a new block, of a task with a marker that
+fails is reported as a canary failure. A formal job decides on the runner, before downloading the
+image, whether it needs it: it does not when its last recorded selection of
+tests (for the same `-k` expression, test modules, workflow and image) holds
+only formal tasks that all have markers it reuses, none of them a canary. Every job's summary lists each task as proved, reused
+(with a link to the run that proved it), proved again as a canary, or failed,
+and says when the run proves everything again.
+
+The formal and synthesis jobs check out the repository without submodules and
+set `FROST_SKIP_SUBMODULE_INIT=1`; none of their inputs is in a submodule.
