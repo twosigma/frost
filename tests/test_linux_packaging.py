@@ -344,6 +344,8 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
         "svvptc",
         "zicntr",
         "zicboz",
+        "zfa",
+        "zfhmin",
     ):
         assert f'"{ext}"' in dts and f"_{ext}" in packer.ISA_STRING
     assert "riscv,cboz-block-size = <64>;" in dts
