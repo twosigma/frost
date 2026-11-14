@@ -462,10 +462,12 @@
     "Ziccrse": {"supported": false},
     "Zicfilp": {"supported": false},
     "Zicfiss": {"supported": false},
-    "Zihintntl": {"supported": false},
+    // ntl.* and c.ntl.* are add/c.add x0 hints and retire as no-ops.
+    "Zihintntl": {"supported": true},
     "Zihpm": {"supported": false},
     "Zilx": {"supported": false},
-    "Zimop": {"supported": false},
+    // No implemented extension redefines them: mop.r.n and mop.rr.n write zero to rd.
+    "Zimop": {"supported": true},
     "Zabha": {"supported": false},
     "Zacas": {"supported": false},
     "Zama16b": {"supported": false},
@@ -474,8 +476,10 @@
     "Zfbfmin": {"supported": false},
     "Zfh": {"supported": false},
     "Zfhmin": {"supported": false},
-    "Zcb": {"supported": false},
-    "Zcmop": {"supported": false},
+    // c.lbu/lhu/lh/sb/sh, c.zext.b/h/w, c.sext.b/h, c.not and c.mul expand in predecode.
+    "Zcb": {"supported": true},
+    // c.mop.n (n odd, 1-15) writes no register.
+    "Zcmop": {"supported": true},
     "Zbc": {"supported": true},
     "Zbkc": {"supported": true},
     "Zbkx": {"supported": false},

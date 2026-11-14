@@ -147,7 +147,8 @@ directly through Sstc (`stimecmp`) instead of an SBI call.
 The generated DTB declares the
 [implemented extensions](../README.md#supported-risc-v-extensions), Sstc,
 Smaia, Ssaia, Sscofpmf, Sstvala, Svade, Svvptc, and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and the LP64D
-ABI. Svvptc tells Linux that a PTE changed from invalid to valid becomes
+ABI. Linux 6.12 reports the listed Zihintntl, Zimop, Zcb, and Zcmop in `/proc/cpuinfo`
+and through `riscv_hwprobe` (`RISCV_HWPROBE_EXT_ZIHINTNTL`, `_ZIMOP`, `_ZCB`, `_ZCMOP`). Svvptc tells Linux that a PTE changed from invalid to valid becomes
 visible to the walker without `sfence.vma`, so the kernel can omit that
 synchronization for those mapping updates. Other PTE changes retain their
 existing address-translation synchronization requirements. No FROST translation

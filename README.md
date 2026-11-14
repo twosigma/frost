@@ -144,6 +144,8 @@ every supported extension and privilege mode.
 | **F**            | Single-precision floating-point (32-bit)       |
 | **D**            | Double-precision floating-point (64-bit)       |
 | **C**            | Compressed instructions (16-bit encodings) |
+| **Zcb**          | Compressed byte/halfword loads and stores, `c.zext.*`, `c.sext.*`, `c.not`, `c.mul`, expanded at instruction fill |
+| **Zcmop**        | Compressed may-be-operations `c.mop.n`, which write no register |
 | **B**            | Bit manipulation (B = Zba + Zbb + Zbs)         |
 | **Zicsr**        | CSR access instructions                        |
 | **Zicntr**       | Base counters (cycle, time, instret)           |
@@ -153,6 +155,8 @@ every supported extension and privilege mode.
 | **Zbc**          | Carry-less multiplication (clmul, clmulh, clmulr) |
 | **Zbkc**         | Carry-less multiplication for crypto (clmul, clmulh) |
 | **Zihintpause**  | Pause hint for spin-wait loops                 |
+| **Zihintntl**    | Non-temporal locality hints (`ntl.*`, `c.ntl.*`), retired as no-ops |
+| **Zimop**        | May-be-operations `mop.r.n`/`mop.rr.n`, which write zero to rd |
 | **Zicboz**       | Cache-block zero (`cbo.zero`, 64-byte blocks of cached DDR and low BRAM) |
 | **Machine Mode** | M-mode privilege (mret, wfi, ecall, ebreak)    |
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
