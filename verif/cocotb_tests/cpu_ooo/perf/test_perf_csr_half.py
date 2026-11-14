@@ -733,3 +733,25 @@ async def test_sscofpmf_lcofi_delegation_and_topi(dut: Any) -> None:
         await s.idle(3)
         assert int(dut.o_lcof_pending.value) == expected, clear_delay
     await s.access(0x325, 0, 1)
+
+
+@cocotb.test()
+async def test_pbmte_readback_and_rmw(dut: Any) -> None:
+    """Keep PBMTE writable without disturbing the CBO controls or senvcfg."""
+    s = await setup(dut)
+    menvcfg, senvcfg = 0x30A, 0x10A
+    pbmte = 1 << 62
+    cbo = 0xD1
+    assert await s.access(menvcfg) == 0
+    await s.access(menvcfg, pbmte | cbo, 1)
+    assert await s.access(menvcfg) == pbmte | cbo
+    await s.access(menvcfg, pbmte, 3)
+    assert await s.access(menvcfg) == cbo
+    await s.access(menvcfg, pbmte, 2)
+    assert await s.access(menvcfg) == pbmte | cbo
+    await s.access(senvcfg, pbmte | cbo, 1)
+    assert await s.access(senvcfg) == cbo
+    assert await s.access(menvcfg) == pbmte | cbo
+    await s.step(rst=1, raw_valid=0)
+    await s.step(rst=0)
+    assert await s.access(menvcfg) == 0

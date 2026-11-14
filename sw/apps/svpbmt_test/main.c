@@ -25,7 +25,8 @@
  * NC and IO pages are uncached: FROST sends their loads and stores, at the ROB
  * head and in program order, through the uncached alias of DDR into the
  * coherent DMA port, so they read and write the bytes a cacheable mapping of
- * the same frame sees (both views stay coherent without a CMO). PMA overrides
+ * the same frame sees after device completion. Adjacent mixed-view accesses
+ * also run with and without the Svpbmt fence/flush/fence sequence. PMA overrides
  * on NC and IO pages (norm:Svpbmt_impl_may_override_pmas): AMOs and SC take a
  * store access fault (7), LR a load access fault (5), cbo.zero a store access
  * fault (7), instruction fetch an instruction access fault (1). The TLBs keep
@@ -295,6 +296,143 @@ static int no_atomics(const char *name, unsigned long va)
     return ok;
 }
 
+
+/* The store and load are adjacent in the unfenced case. Delaying the store
+ * value lets the younger load run while the older store waits for its data. */
+#define ALIAS_PAIR(store, middle, load)                                                            \
+    __asm__ volatile("la t0, 1f\n"                                                                 \
+                     "csrw mscratch, t0\n"                                                         \
+                     "li t0, 0x1800\n"                                                             \
+                     "csrc mstatus, t0\n"                                                          \
+                     "li t0, 0x0800\n"                                                             \
+                     "csrs mstatus, t0\n"                                                          \
+                     "csrs mstatus, %[mprv]\n"                                                     \
+                     "mv t4, %[value]\n"                                                           \
+                     ".rept 6\n divu t4, t4, %[one]\n .endr\n" store                               \
+                     " t4, 0(%[store_va])\n" middle load " %[out], 0(%[load_va])\n"                \
+                     "1: csrc mstatus, %[mprv]\n"                                                  \
+                     : [out] "+&r"(out)                                                            \
+                     : [store_va] "r"(store_va),                                                   \
+                       [load_va] "r"(load_va),                                                     \
+                       [flush_va] "r"(flush_va),                                                   \
+                       [value] "r"(value),                                                         \
+                       [one] "r"(1ul),                                                             \
+                       [mprv] "r"(MSTATUS_MPRV)                                                    \
+                     : "t0", "t1", "t2", "t3", "t4", "memory")
+
+#define ALIAS_SYNC "fence iorw, iorw\n .insn i 0x0f, 2, x0, %[flush_va], 2\n fence iorw, iorw\n"
+#define ALIAS_CASE(n, store, load)                                                                 \
+    case n:                                                                                        \
+        if (ordered) {                                                                             \
+            ALIAS_PAIR(store, ALIAS_SYNC, load);                                                   \
+        } else {                                                                                   \
+            ALIAS_PAIR(store, "", load);                                                           \
+        }                                                                                          \
+        break
+
+static unsigned long alias_pair(unsigned long store_va,
+                                unsigned long load_va,
+                                unsigned long flush_va,
+                                unsigned long value,
+                                int sizes,
+                                int ordered)
+{
+    unsigned long out = 0;
+    g_cause = NO_TRAP;
+    g_tval = NO_TRAP;
+    switch (sizes) {
+        ALIAS_CASE(0, "sd", "ld");
+        ALIAS_CASE(1, "sb", "ld");
+        ALIAS_CASE(2, "sd", "lbu");
+        ALIAS_CASE(3, "sw", "lhu");
+        ALIAS_CASE(4, "sh", "lwu");
+    }
+    return out;
+}
+
+static unsigned long byte_mask(unsigned int bytes)
+{
+    return bytes == 8 ? ~0ul : (1ul << (bytes * 8)) - 1;
+}
+
+/* Both CBO addresses name the same frame. The sequence must work with either
+ * address, in either direction, including when the accesses differ in size.
+ * Without it, a load may see the old value, but the store must persist. */
+static int alias_orders(void)
+{
+    static const unsigned int store_bytes[] = {8, 1, 8, 4, 2};
+    static const unsigned int load_bytes[] = {8, 8, 1, 2, 4};
+    unsigned int cases = 0, stale = 0, failed = 0;
+    for (unsigned long pg = PG_NC; pg <= PG_IO; pg++) {
+        l0[PG_PLAIN] = PTE_PPN(FRAME(pg)) | RWAD;
+        sfence_all();
+        for (int reverse = 0; reverse < 2; reverse++) {
+            for (int ordered = 0; ordered < 2; ordered++) {
+                for (int flush_unc = 0; flush_unc < (ordered ? 2 : 1); flush_unc++) {
+                    for (int sizes = 0; sizes < 5; sizes++) {
+                        for (unsigned long off = 0; off <= 64; off += 8) {
+                            unsigned long cached = VA_4K(PG_PLAIN) + off;
+                            unsigned long uncached = VA_4K(pg) + off;
+                            volatile unsigned long *pa =
+                                (volatile unsigned long *) (FRAME(pg) + off);
+                            unsigned long old = 0x123456789abcdef0ul ^ (cases << 8);
+                            unsigned long value = ~old;
+                            unsigned long mask = byte_mask(store_bytes[sizes]);
+                            unsigned long final = (old & ~mask) | (value & mask);
+                            unsigned long load_mask = byte_mask(load_bytes[sizes]);
+                            *pa = old;
+                            __asm__ volatile("fence iorw, iorw" ::: "memory");
+                            access_s(K_LD, cached, 0);
+                            access_s(K_LD, uncached, 0);
+                            unsigned long got = alias_pair(reverse ? cached : uncached,
+                                                           reverse ? uncached : cached,
+                                                           flush_unc ? uncached : cached,
+                                                           value,
+                                                           sizes,
+                                                           ordered);
+                            int good = g_cause == NO_TRAP;
+                            if (ordered)
+                                good &= got == (final & load_mask);
+                            else {
+                                good &= got == (final & load_mask) || got == (old & load_mask);
+                                stale += got == (old & load_mask);
+                            }
+                            __asm__ volatile("fence iorw, iorw" ::: "memory");
+                            good &= *pa == final;
+                            if (!good) {
+                                failed++;
+                                uart_printf("[FAIL] alias-order pg=%lu reverse=%d ordered=%d "
+                                            "flush_unc=%d sizes=%d off=%lu got=%lx want=%lx "
+                                            "cause=%lx tval=%lx final=%lx\r\n",
+                                            pg,
+                                            reverse,
+                                            ordered,
+                                            flush_unc,
+                                            sizes,
+                                            off,
+                                            got,
+                                            final & load_mask,
+                                            g_cause,
+                                            g_tval,
+                                            *pa);
+                            }
+                            cases++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    l0[PG_PLAIN] = PTE_PPN(FRAME(PG_PLAIN)) | RWAD;
+    sfence_all();
+    uart_printf("%s alias-orders cases=%u stale-unfenced=%u failed=%u\r\n",
+                failed ? "[FAIL]" : "[PASS]",
+                cases,
+                stale,
+                failed);
+    return failed == 0;
+}
+
 int main(void)
 {
     int ok = 1;
@@ -307,7 +445,7 @@ int main(void)
         for (int i = 0; i < 512; i++)
             ((volatile uint64_t *) FRAME(p))[i] = 0;
 
-    /* A: PBMTE = 0. Svpbmt is absent: any PBMT field faults. */
+    /* A: PBMTE = 0. Svpbmt is absent: any nonzero PBMT field faults. */
     csr_write(0x30A, ENVCFG_CBZE);
     __asm__ volatile("csrw satp, %0\n sfence.vma" : : "r"(SATP_SV39 | (PT_ROOT >> 12)));
     {
@@ -379,6 +517,8 @@ int main(void)
         access_s(K_LD, VA_4K(PG_FILL0 + i), 0);
     ok &= no_atomics("E io-2m-l2tlb", VA_MEGA + 0x5000);
     ok &= coherent_pair("E nc-l2tlb", VA_4K(PG_NC), (volatile uint64_t *) FRAME(PG_NC), 0xE0E0ul);
+
+    ok &= alias_orders();
 
     /* F: an NC page over low BRAM: uncached loads and stores, no AMOs, no
      * fetch. */
