@@ -84,11 +84,6 @@ hw/rtl/soc_top/soc_axi_slave.sv: o_ddr_axi_rready
 hw/rtl/soc_top/soc_axi_slave.sv: o_ddr_axi_wvalid
 hw/rtl/soc_top/soc_axi_slave.sv: o_local_resp_ready
 hw/rtl/soc_top/soc_axi_slave.sv: o_local_valid
-# Svpbmt alias transfers: like reg_axil_done, rst_core ends a wait whose
-# coherent DMA port is reset by soc_axi_rst, not rst_core.
-hw/rtl/soc_top/soc_top.sv: alias_done
-hw/rtl/soc_top/soc_top.sv: alias_rdata
-hw/rtl/soc_top/soc_top.sv: alias_status
 hw/rtl/soc_top/soc_top.sv: core_reset.i_arst
 hw/rtl/soc_top/soc_top.sv: debug_store_done
 hw/rtl/soc_top/soc_top.sv: debug_store_room

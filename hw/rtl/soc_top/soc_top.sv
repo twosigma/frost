@@ -638,7 +638,7 @@ module soc_top #(
   // address (state 6 below), never a local memory or register.
   wire local_pbmt_alias = riscv_pkg::pma_pbmt_alias_ok(riscv_pkg::XLEN'(local_addr));
   logic local_alias;
-  logic alias_done;  // the alias transfer answered (or rst_core dropped it)
+  logic alias_done;  // the alias transfer answered or its registered abort fired
   logic [1:0] alias_status;
   logic [63:0] alias_rdata;  // the addressed dword of an alias read
   wire local_imsic_pending = local_state_q == 4 && local_write && !local_pbmt_alias &&
@@ -1777,8 +1777,8 @@ AxilPorts
     // for streaming placement (way 0) in the L2; the hart's L0 and L1D never
     // hold the bytes through the alias. The local bus has one access in
     // flight, so the master has one transfer and needs one ID. rst_core
-    // resets the DMA interconnect; the transfer then ends with OKAY and zero
-    // data, as the register slaves do.
+    // resets the DMA interconnect; a registered abort ends the local wait
+    // with OKAY and zero data.
     localparam int unsigned AliasLaneLsb = 3;
     localparam int unsigned AliasLaneMsb = $clog2(DmaAxiDataBits / 8) - 1;
     logic alias_aw_q, alias_w_q, alias_ar_q;
@@ -1787,6 +1787,12 @@ AxilPorts
         riscv_pkg::XLEN'(local_addr)
     );
     wire alias_wait = local_state_q == 6;
+    logic alias_aborted_q;
+    always_ff @(posedge i_clk) begin
+      if (soc_axi_rst) alias_aborted_q <= 1'b0;
+      else if (rst_core) alias_aborted_q <= 1'b1;
+      else if (!alias_wait) alias_aborted_q <= 1'b0;
+    end
     always_ff @(posedge i_clk) begin
       if (soc_axi_rst || rst_core) begin
         alias_aw_q <= 1'b0;
@@ -1831,10 +1837,10 @@ AxilPorts
     assign up_rready[AliasPort] = alias_wait && !local_write && !alias_ar_q;
     wire alias_b_fire = up_bvalid[AliasPort] && up_bready[AliasPort];
     wire alias_r_fire = up_rvalid[AliasPort] && up_rready[AliasPort];
-    assign alias_done = alias_wait && !soc_axi_rst && (rst_core || alias_b_fire || alias_r_fire);
-    assign alias_status = rst_core ? 2'b00 : alias_b_fire ? up_bresp[AliasPort] :
+    assign alias_done = alias_wait && (alias_aborted_q || alias_b_fire || alias_r_fire);
+    assign alias_status = alias_aborted_q ? 2'b00 : alias_b_fire ? up_bresp[AliasPort] :
         up_rresp[AliasPort];
-    assign alias_rdata = rst_core ? 64'd0 : 64'(up_rdata[AliasPort] >>
+    assign alias_rdata = alias_aborted_q ? 64'd0 : 64'(up_rdata[AliasPort] >>
         {local_addr[AliasLaneMsb:AliasLaneLsb], 6'b000000});
 
     axi_mux #(
