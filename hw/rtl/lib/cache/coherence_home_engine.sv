@@ -248,11 +248,12 @@ module coherence_home_engine #(
         request_q.mask[byte_idx%32] && in_upper;
     assign image_dma_idle[byte_idx] = complete_other && dma_byte;
     assign image_dma_ready[byte_idx] = (complete_other || complete_on_ack) && dma_byte;
-    // The image holds through reset, as the rest of the engine's state does in
-    // its reset branch; the reset is not one of the late terms.
-    assign image_enable_idle[byte_idx] = !i_rst && run &&
+    // The image is a data register with no reset: a service loads every byte
+    // it later reads (the simulation check below covers the first service
+    // after a reset).
+    assign image_enable_idle[byte_idx] = run &&
         (data_write || reply_write || image_dma_idle[byte_idx]);
-    assign image_enable_ready[byte_idx] = !i_rst && run &&
+    assign image_enable_ready[byte_idx] = run &&
         (data_write || reply_write || image_dma_ready[byte_idx]);
     assign image_byte_next[byte_idx] = image_dma[byte_idx] ?
         request_q.wdata[8*(byte_idx%32)+:8] :
@@ -287,13 +288,13 @@ module coherence_home_engine #(
     end
   end
 `ifdef ENGINE_IMAGE_NEXT_LOCAL_PROOF
-  // The image's reference next state: the original writes in their original
-  // order. The byte enables and selects above must equal it for every state
-  // and input.
+  // The image's reference next state outside reset: the original writes in
+  // their original order. The byte enables and selects above must equal it
+  // for every state and input with reset low.
   logic [8*LINE_BYTES-1:0] f_image_next, f_image_new;
   always_comb begin
     f_image_next = image_q;
-    if (!i_rst && run) begin
+    if (run) begin
       if (i_data_valid)
         for (int sector = 0; sector < LINE_BYTES / 32; sector++)
         if (!dirty_q || (sector != int'(upper)))
@@ -308,8 +309,37 @@ module coherence_home_engine #(
     for (int byte_idx = 0; byte_idx < LINE_BYTES; byte_idx++)
     f_image_new[8*byte_idx+:8] = image_enable[byte_idx] ? image_byte_next[byte_idx] :
         image_q[8*byte_idx+:8];
-    p_image_next_exact : assert (f_image_new == f_image_next);
+    if (!i_rst) p_image_next_exact : assert (f_image_new == f_image_next);
   end
+`endif
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // The image has no reset, so a reset may leave or write any bytes. Every
+  // byte a result or an update reads after a reset has been written since
+  // that reset: a data-carrying result's sector, and the update's masked
+  // bytes.
+  logic [LINE_BYTES-1:0] sim_image_written_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) sim_image_written_q <= '0;
+    else sim_image_written_q <= sim_image_written_q | image_enable;
+  end
+  wire [LINE_BYTES-1:0] sim_result_bytes = LINE_BYTES'(32'hffff_ffff) << (upper ? 32 : 0);
+  wire sim_result_reads_image = o_result_valid && !error_q && (
+      request_q.opcode == coherence_pkg::GetS ||
+      request_q.opcode == coherence_pkg::LoadReserved || coherence_pkg::is_getm(
+      request_q.opcode
+  ) || request_q.opcode == coherence_pkg::Atomic || request_q.opcode ==
+      coherence_pkg::StoreConditional || request_q.opcode == coherence_pkg::ReadOnceIF ||
+      request_q.opcode == coherence_pkg::ReadOncePTW || request_q.opcode == coherence_pkg::DMARead);
+  always_ff @(posedge i_clk) begin
+    if (sim_reset_seen_q && !i_rst) begin
+      if (sim_result_reads_image)
+        p_result_image_loaded : assert ((sim_result_bytes & ~sim_image_written_q) == 0);
+      if (o_update_valid)
+        p_update_image_loaded : assert ((o_update_mask & ~sim_image_written_q) == 0);
+    end
+  end
+`endif
 `endif
   assign o_wa_valid = run && phase_q == Service && probe_phase_q == ProbeAck;
   assign o_wa = ack_q;
