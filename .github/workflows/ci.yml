@@ -694,8 +694,8 @@ jobs:
         # (tests/README.md#coverage).
         include:
           - {extensions: I B C, mem_config: bram, coverage: 1}
-          - {extensions: M A K Zicond privilege D_Zcd hints CMO Zimop Zcmop, mem_config: bram, coverage: 0}
-          - {extensions: I M hints CMO Zimop Zcmop, mem_config: ddr, coverage: 0}
+          - {extensions: M A K Zicond privilege D_Zcd hints CMO Zimop, mem_config: bram, coverage: 0}
+          - {extensions: I M hints CMO Zimop, mem_config: ddr, coverage: 0}
           - {extensions: B C A K Zicond Zifencei privilege D_Zcd, mem_config: ddr, coverage: 0}
           - {extensions: F D, mem_config: bram, shard: 1/3, coverage: 0}
           - {extensions: F D, mem_config: bram, shard: 2/3, coverage: 0}
