@@ -431,7 +431,7 @@ def update_readme_utilization(
             re.escape(README_UTIL_START) + r".*?" + re.escape(README_UTIL_END),
             re.DOTALL,
         )
-        new_content = pattern.sub(new_section, readme_content)
+        new_content = pattern.sub(lambda _match: new_section, readme_content)
     else:
         # Insert after the Supported FPGA Boards table.
         match = re.search(
