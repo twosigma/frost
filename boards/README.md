@@ -99,9 +99,9 @@ not change. N = 2 divides in the BUFG_GTs. N = 3 and 4 need CPU/4 dividers of
 MMCM on the 300 MHz input instead (300 MHz / 8 × 34.375 / 4N); the CPU clock
 channel still runs. Load software with the matching clock. The
 `PERF_COUNTERS` generic includes the profiling counters (`--perf-counters`).
-The X3 build includes the vector unit (`VECTOR`, at a `VLEN` of 256 bits) and
-the VCU118 build does not, so the loader accepts the vector test programs for
-the X3 only.
+The X3 build includes the vector unit (`VECTOR`, at a `VLEN` of 256 bits); the
+loader's board list for each vector test program names the boards whose builds
+include it.
 
 ## JTAG-based software loading
 

@@ -900,6 +900,26 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GVECTOR=1", "-GVLEN=512"),
         include_in_pytest=False,
     ),
+    "vec_arith_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_arith_test",
+        nic_mac_clocks=False,
+        description=(
+            "Vector integer arithmetic through the engine at VLEN 256, checked by identities, "
+            "vmv.x.s, vcpop.m and vfirst.m"
+        ),
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=256"),
+    ),
+    "vec_arith_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_arith_test",
+        nic_mac_clocks=False,
+        description="Vector integer arithmetic at VLEN 128; CLI-only",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=128"),
+        include_in_pytest=False,
+    ),
     "cbo_zero_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -2418,6 +2438,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="vec_fdivsqrt",
         description="Vector FP64 divide and square root, bit for bit against Berkeley SoftFloat",
         verilator_extra_args=("-GEXP=11", "-GFRAC=52"),
+    ),
+    "vec_engine_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_engine",
+        hdl_toplevel_module="vec_engine",
+        description="Vector engine at VLEN 256: integer instructions against a model of their semantics",
+        verilator_extra_args=("-GVLEN=256",),
+    ),
+    "vec_engine_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_engine",
+        hdl_toplevel_module="vec_engine",
+        description="Vector engine at VLEN 128: integer instructions against a model of their semantics",
+        verilator_extra_args=("-GVLEN=128",),
     ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",

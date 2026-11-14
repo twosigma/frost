@@ -534,6 +534,20 @@ slot 5. The wrapper keeps the result per ROB tag; when the instruction retires
 clears `vstart` and sets VS to Dirty. With rs1 = rd = x0 it keeps
 `min(vl, VLMAX)` under the new `vtype`, as the specification requires.
 
+The vector integer instructions listed for `vec_engine` below also execute.
+ID decodes them as `VARITH` (or `VARITH_X` with a scalar operand), which
+dispatch sends to INT_RS only to hand the scalar operand to the ROB; legality
+that depends on `vtype` (vill, register-group alignment, mask-destination
+overlap, a masked write of v0) is decided at allocation from the `vtype` in
+effect at that point, which a tracker beside the rename checkpoints keeps
+(vector arithmetic waits at dispatch while a register-form `vsetvl` leaves it
+unknown). When one retires, `vec_unit` queues it with its scalar and the
+architectural `vl`, `vtype` and `vstart`, and the engine executes it after
+commit; the CSR file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
+and `vfirst.m` execute at the ROB head once the unit is idle and return their
+result on CDB slot 6. The other vector instructions, and every vector load and
+store, are still illegal.
+
 `misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
 elaboration while the vector instructions are not implemented, and bare-metal
 software enables the state by writing `mstatus.VS`. With `VECTOR=0` the vector CSRs do
@@ -613,6 +627,15 @@ recurrence through one subtractor, one result bit per cycle, and rounds like
 the other blocks. It takes one operation at a time, signals when it is free,
 and returns each result a fixed P + 10 cycles later (P is the format's
 precision: 21, 34 and 63 cycles for FP16, FP32 and FP64).
+
+`vec_engine` puts the register file and the integer lanes together and
+executes committed vector instructions one at a time, register group by
+register group, with no overlap between instructions yet: the single-width
+integer arithmetic, logical, minimum and maximum, shift and Zvbb operations,
+the integer compares into a mask register, `vmerge` and `vmv.v.*`. Only active
+body elements are written (the register file's byte enables), so tail and
+inactive elements stay undisturbed. A read port and a byte-enabled write port
+serve the memory side.
 
 ## Subtle cases
 
