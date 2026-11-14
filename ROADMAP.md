@@ -469,6 +469,13 @@ and targeted microbenchmarks give these items:
    selects while the hit path holds it, which starting misses from the hit
    path's tag result would avoid, and tags-only lookups would keep stores,
    look-ahead stores and prefetch hints out of the data banks.
+10. Compressed code. Linux and its user space are built with the C
+    extension. CoreMark's score uses a build without compressed instructions;
+    built with them (`COREMARK_COMPRESSED=1`) it takes about 10% more cycles
+    in simulation. How much of that comes from fetch and prediction on 16-bit
+    instructions and how much from different code generation has not been
+    separated. Measuring fetch coverage, packet formation and prediction on
+    compressed code, then improving them, is open.
 
 ## Core area
 
