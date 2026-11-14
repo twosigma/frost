@@ -793,8 +793,10 @@ module cpu_ooo #(
   logic csr_sret_illegal, csr_sfence_illegal, csr_wfi_illegal, csr_priv_is_u;
   // Registered translation-invalidate pulse from csr_file: every satp access,
   // and an mstatus write only when it changes MPRV, or MPP under MPRV. Through
-  // tlb_invalidate it clears both TLBs and discards the walk in flight; the
-  // ROB serializer handles pipeline recovery separately.
+  // tlb_invalidate it drops the IMMU's registered result and the DMMU's
+  // last-page buffer and discards the walk in flight; TLB entries leave
+  // through tlb_flush. The ROB serializer handles
+  // pipeline recovery separately.
   logic csr_translation_flush_req;
   // Registered pulse beside it for a satp root switch or MPRV change: the
   // TLBs drop every entry. A satp write that keeps the root (an ASID change)
@@ -4123,16 +4125,21 @@ module cpu_ooo #(
   // Data MMU requests take priority over instruction MMU requests. The VPN
   // select comes from registered state (walk_hold: the data MMU's S1 holds an
   // op without an accepted walk), so the ROB-dependent data request valid
-  // stays off the L2 TLB read address; see walk_request_select. Record the
-  // requesting side in walk_owner_i_q so only it receives the response; VPN
-  // alone cannot distinguish requesters. TLB invalidate also discards the
-  // walk and clears this routing bit. The line port goes to cache wup.
+  // stays off the L2 TLB read address; see walk_request_select. The select
+  // records the requesting side (core_walk_owner_i) so only it receives the
+  // response; VPN alone cannot distinguish requesters. TLB invalidate also
+  // discards the walk and clears the routing bits. The line port goes to
+  // cache wup.
   logic ptw_req_valid, ptw_req_ready, ptw_resp_valid;
   logic [riscv_pkg::Sv39VpnBits-1:0] ptw_req_vpn;
-  // The misaligned-access engine is a third requester at the lowest
-  // priority; walk_owner_ma_q records it at acceptance in the same way, so a
-  // walk accepted for a flushed instruction still answers its own requester.
-  logic walk_owner_i_q;  // the walk in flight belongs to the instruction side
+  // The misaligned-access engine is a third requester. It takes the port
+  // while it asks and no data op waits in S1 (walk_hold), ahead of the
+  // instruction side. Both terms come from flops, so the VPN select reads
+  // neither MMU's request valid, and the ROB head and S1 kill stay off the
+  // L2 TLB read address. The engine runs at the ROB head with the data MMU empty, and it
+  // asks once per page of one access, so the instruction side waits at most
+  // that long. walk_owner_ma_q records the engine at acceptance, so a walk
+  // accepted for a flushed instruction still answers its own requester.
   logic core_ptw_req_valid, core_ptw_req_ready;
   logic [riscv_pkg::Sv39VpnBits-1:0] core_ptw_req_vpn;
   logic core_walk_owner_i;
@@ -4153,17 +4160,19 @@ module cpu_ooo #(
       .o_owner_i(core_walk_owner_i)
   );
 
-  assign ptw_req_valid = core_ptw_req_valid || (MISALIGNED_HW && ma_walk_req_valid);
-  assign ptw_req_vpn = core_ptw_req_valid ? core_ptw_req_vpn : ma_walk_vpn;
-  assign core_ptw_req_ready = ptw_req_ready;
-  assign ma_walk_req_ready = ptw_req_ready && !core_ptw_req_valid;
+  logic ma_walk_select;
+  assign ma_walk_select = MISALIGNED_HW && ma_walk_req_valid && !walk_hold;
+  assign ptw_req_valid = ma_walk_select || core_ptw_req_valid;
+  assign ptw_req_vpn = ma_walk_select ? ma_walk_vpn : core_ptw_req_vpn;
+  assign core_ptw_req_ready = ptw_req_ready && !ma_walk_select;
+  assign ma_walk_req_ready = ptw_req_ready && ma_walk_select;
 
   logic walk_owner_ma_q;
   always_ff @(posedge i_clk) begin
     if (i_rst || tlb_invalidate) begin
       walk_owner_ma_q <= 1'b0;
     end else if (ptw_req_valid && ptw_req_ready) begin
-      walk_owner_ma_q <= MISALIGNED_HW && !core_ptw_req_valid;
+      walk_owner_ma_q <= ma_walk_select;
     end
   end
 

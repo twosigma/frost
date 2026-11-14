@@ -45,10 +45,10 @@
  * flush here.
  *
  * Flushes arrive as riscv_pkg::tlb_flush_t (see its comment for the forms).
- * Flush-all clears every valid bit in one cycle. A page flush reads the page's
- * set and clears the matching ways. An ASID flush, with or without a page,
- * scans the sets, two cycles for the first and one for each next, and clears
- * ways of that ASID that are not global. The side array applies the same
+ * Flush-all clears every valid bit in one cycle. A page flush, with or without
+ * an ASID, reads the page's set and clears the matching ways. An ASID flush
+ * without a page scans the sets, two cycles for the first and one for each
+ * next, and clears ways of that ASID that are not global. The side array applies the same
  * filter to every entry in the flush's first cycle; a page flush removes a
  * superpage entry whose 2 MiB or 1 GiB region holds the page. While a flush runs the array accepts
  * no request, so no stale entry can answer. A flush that arrives during

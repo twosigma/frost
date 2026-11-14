@@ -76,7 +76,8 @@ in `frost_hart.sv`.
   [translation-changing CSR writes](#csr-writes), and the interrupt resume PC
   (the PC an interrupt saves, which trap entry and xRET preset to their target
   because an interrupt can arrive before the first instruction there retires);
-- the page-table walker's request mux, where the data side wins;
+- the page-table walker's request select (`walk_request_select.sv` and the
+  misaligned-access engine's turn);
 - the Debug Mode single-step engine and the status bits the debug module
   reads;
 - a reset-done counter, and the `dbg_*` signals that cocotb tests read.
@@ -368,7 +369,13 @@ accesses use the lookup stage followed by the result stage. Reset, full flush,
 translation disable and TLB invalidation clear the last-page buffer.
 
 The 16-entry ITLB and the data side's 16-entry DTLB share one read-only
-page-table walker in `cpu_ooo`; the data side wins when both ask. The walker
+page-table walker in `cpu_ooo`. `walk_request_select` picks the requester from
+registered state: the data side while its S1 holds an op without a walk, the
+instruction side otherwise. An instruction request that the data side turned
+away, in a cycle where the port was ready and the data op did not ask, goes
+first in the next cycle.
+The misaligned-access engine, which runs at the ROB head with the data MMU
+empty, takes the port while it asks. The walker
 never writes PTEs (Svade): a leaf with A=0, or a store to a leaf with D=0,
 raises a page fault for software to handle. SFENCE.VMA, `satp` accesses, and
 `mstatus` writes that change MPRV (or MPP under MPRV) discard any walk in
@@ -414,8 +421,9 @@ its own ASID, or a global entry under any ASID.
   both to the ROB when it issues, and the ROB serializer keeps the instruction
   at the head until they have arrived. The ROB exports the head's filter for
   the length of the SFENCE window.
-- In the second-level TLB, a page flush reads one set, an ASID flush scans all
-  128 sets, and flush-all clears the valid bits in one cycle. The superpage
+- In the second-level TLB, a page flush (with or without an ASID) reads one
+  set, an ASID flush without a page scans all 128 sets, and flush-all clears
+  the valid bits in one cycle. The superpage
   side array applies the flush's filter to all its entries in the flush's
   first cycle; a page flush removes the superpage whose region holds the page.
   While a flush runs the arrays accept no request.

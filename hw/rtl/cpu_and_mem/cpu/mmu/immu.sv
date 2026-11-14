@@ -35,8 +35,9 @@
  * An accepted walk records the key it was issued for. Retargets, privilege
  * changes, and mode changes do not cancel it: a late response still fills the
  * ITLB or the fault memo, but it bypasses into the live result only while its
- * saved key matches the live tag. An invalidate clears the ITLB, the memo, the
- * tag, and the outstanding walk, and ignores a response in the same cycle. A
+ * saved key matches the live tag. An invalidate clears the memo, the tag, and
+ * the outstanding walk, and ignores a response in the same cycle; ITLB entries
+ * leave through the flush command (i_tlb_flush). A
  * full pipeline flush clears the memo and registered verdicts. Refusals also
  * expire periodically, including on wrong paths that never trap (Svvptc).
  */
