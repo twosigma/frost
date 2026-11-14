@@ -268,10 +268,13 @@ module lq_issue_selector #(
       // reads. AMOs require an empty committed SQ because their LQ write
       // path is invisible to SQ disambiguation. LRs require it so that no
       // store older than the LR writes after the LR sets its reservation
-      // (load queue README, "LR and SC").
+      // (load queue README, "LR and SC"). The per-entry block applies here
+      // too: no older AMO is pending at the head, but a retired vector memory
+      // instruction can still be accessing memory.
       head_mem_stored_onehot[i] =
           lq_valid[i] &&
           rob_head_match_q[i] &&
+          !blocked_by_amo_phys_q[i] &&
           lq_addr_valid[i] &&
           !lq_issued[i] &&
           !lq_data_valid[i] &&
@@ -281,6 +284,7 @@ module lq_issue_selector #(
       head_mem_update_onehot[i] =
           lq_valid[i] &&
           rob_head_match_q[i] &&
+          !blocked_by_amo_phys_q[i] &&
           addr_update_pre_match_q[i] &&
           !lq_issued[i] &&
           !lq_data_valid[i] &&

@@ -103,8 +103,9 @@ compares `i_pre_issue_direct_tag` instead.
 [`lq_issue_selector.sv`](lq_issue_selector.sv) scans in ring order from
 `head_idx` and finds, in parallel: the first entry holding a result, which
 moves into `cdb_stage`; the first entry ready for memory (address known or
-arriving, not issued, not staged, not fenced by an older AMO); and the ROB-head
-load if it is ready for memory, which wins. A device load may be staged before
+arriving, not issued, not staged, not fenced by an older AMO or held behind a
+vector memory instruction); and the ROB-head load if it is ready for memory and
+not held, which wins. A device load may be staged before
 it reaches the ROB head, but device loads, LRs and AMOs neither probe the SQ
 nor leave the LQ until they are at the head.
 
@@ -478,7 +479,9 @@ old value and `rs2`, spend a cycle in `AMO_COMPUTE`, and enter
 `AMO_WRITE_ACTIVE`; MIN and MAX compare during the capture and enter
 `AMO_WRITE_ACTIVE` directly. The write uses the LQ's own port
 (`o_amo_mem_write_*`, with a registered cached-tier flag) and stays
-stable until `i_amo_mem_write_done`. Only then does the AMO complete with the
+stable until `i_amo_mem_write_done`. The request router launches a cached AMO
+write from a register armed in the cycle the write appears, so it reaches the
+L1D one cycle later than a store would, from a flop. Only then does the AMO complete with the
 old value, invalidate its L0 line, and release younger loads. `.W` forms
 compute on the addressed word and return it sign-extended; the write
 replicates the word across the beat.
@@ -510,6 +513,23 @@ spends invalid, and allocation never reuses an entry on the edge that frees
 it, so no stale dependency reaches a new load. A fenced load cannot launch,
 forward or hit the L0, and if it is staged it gives up the staging register
 (`older_amo_write_pending`) so the AMO can reach the memory port.
+
+### Vector range holds
+
+Vector loads and stores do not pass through the LQ or SQ; the vector unit's
+memory table lists them in program order with the physical range each one
+touches (up to two pages, as 32-byte sector spans), or an unknown range until
+it is computed. [`vec_hold_rows.sv`](../../vector/vec_hold_rows.sv) gives each LQ
+entry a second row: the table entries older than it, built in the entry's first
+valid cycle like the AMO row (retired table entries count as older without a
+tag compare), and cleared bit by bit as table entries finish. An entry is held
+while a row entry is live and its range is unknown, the entry's own address is
+unknown, or the two ranges share a sector; LRs and AMOs are held by every older
+live entry. The hold joins the older-AMO bit in one registered per-entry block,
+`issue_block_q`, which the issue selector reads in place of the AMO block
+(including for the ROB-head entry, since a retired vector store can still be
+writing) and which releases a staged entry like the AMO fence does. With the
+table idle the hold is always 0.
 
 ## Coherent memory interface
 

@@ -15,7 +15,7 @@ smtbmc boolector
 # undefined constants zeroed and every named net kept, so equiv_make pairs
 # registers and signals by name. equiv_simple then proves each equivalence point
 # whose cone holds a primitive cell, for any register state and input.
-read -sv -D SYNTHESIS riscv_pkg.sv sdp_dist_ram.sv sq_forwarding_unit.sv store_queue.sv
+read -sv -D SYNTHESIS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv sq_forwarding_unit.sv store_queue.sv
 hierarchy -check -top store_queue
 proc
 setattr -mod -unset keep_hierarchy *
@@ -31,7 +31,7 @@ rename -top gold
 design -stash gold
 design -reset
 read_verilog -formal +/xilinx/cells_sim.v
-read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv sdp_dist_ram.sv sq_forwarding_unit.sv store_queue.sv
+read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv sq_forwarding_unit.sv store_queue.sv
 hierarchy -check -top store_queue
 proc
 setattr -mod -unset keep_hierarchy *
@@ -65,6 +65,7 @@ prep -top prim_twin_done
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_hold_rows.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/sq_forwarding_unit.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv
