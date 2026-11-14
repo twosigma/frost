@@ -211,6 +211,7 @@ module perf_csr_half_test_harness #(
         .o_mireg_illegal(),
         .o_sireg_illegal(),
         .o_stopei_illegal(),
+        .o_mstatus_vs_off(),
         .i_trap_taken(i_trap),
         .i_trap_to_s('0),
         .i_trap_pc('0),
