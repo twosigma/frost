@@ -1174,9 +1174,6 @@ package riscv_pkg;
   localparam bit [1:0] EnvcfgCbieIllegal = 2'b00;
   localparam bit [1:0] EnvcfgCbieFlush = 2'b01;
   localparam bit [1:0] EnvcfgCbieInval = 2'b11;
-  // menvcfg.PBMTE (bit 62, Svpbmt): WARL {0,1}. csr_file stores it for the
-  // page-table walker; the walker reads it once Svpbmt lands.
-  localparam int unsigned MenvcfgPbmteBit = 62;
   // Zicbom cache-block size in bytes: the Zicboz block, one L2 line.
   localparam int unsigned CboMgmtBlockBytes = CboZeroBlockBytes;
   // A Zicbom operation's kind: the low bits of its funct12.

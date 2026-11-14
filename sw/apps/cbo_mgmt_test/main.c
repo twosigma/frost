@@ -24,7 +24,7 @@
  * M (S needs menvcfg.CBCFE, U needs both). CBIE (bits 5:4) is WARL {00, 01, 11}:
  * cbo.inval is illegal in S with menvcfg.CBIE = 00 and in U with either CBIE =
  * 00, and a write of the reserved 10 reads back 00. M always executes all
- * three. menvcfg.PBMTE (bit 62) is writable; senvcfg has no PBMTE.
+ * three. menvcfg.PBMTE (bit 62) reads zero: FROST has no Svpbmt.
  *
  * Permissions: a CMO is permitted where a load is (R, or X with MXR; A must be
  * set; D is ignored), so a read-only or D-clear page is fine where cbo.zero
@@ -70,6 +70,8 @@
 #define CBO_FLUSH_ASM(reg) ".insn i 0x0F, 2, x0, " reg ", 2\n"
 
 enum cbo_op { OP_INVAL = 0, OP_CLEAN = 1, OP_FLUSH = 2 };
+/* The encoding of an op with rs1 = a0 (x10), as the lower-privilege bodies use. */
+#define CBO_A0_BITS(op) (((unsigned long) (op) << 20) | (10ul << 15) | (2ul << 12) | 0x0Ful)
 static const char *const op_name[3] = {"inval", "clean", "flush"};
 
 #define csr_read_num(num)                                                                          \
@@ -375,7 +377,7 @@ int main(void)
     }
 
     /* C: CSR fields. CBIE is WARL {00, 01, 11}: 10 reads back 00. CBCFE and
-     * CBIE read back in both CSRs; PBMTE only in menvcfg. */
+     * CBIE read back in both CSRs; menvcfg.PBMTE stays zero. */
     {
         int c_ok = 1;
         for (unsigned long v = 0; v < 4; v++) {
@@ -388,7 +390,7 @@ int main(void)
         csr_write_num(0x30A, ENVCFG_CBCFE | ENVCFG_CBIE(3) | ENVCFG_CBZE | MENVCFG_PBMTE);
         c_ok &= (csr_read_num(0x30A) &
                  (ENVCFG_CBCFE | ENVCFG_CBIE_MASK | ENVCFG_CBZE | MENVCFG_PBMTE)) ==
-                (ENVCFG_CBCFE | ENVCFG_CBIE(3) | ENVCFG_CBZE | MENVCFG_PBMTE);
+                (ENVCFG_CBCFE | ENVCFG_CBIE(3) | ENVCFG_CBZE);
         csr_write_num(0x10A, ~0ul);
         c_ok &= csr_read_num(0x10A) == (ENVCFG_CBCFE | ENVCFG_CBIE(3) | ENVCFG_CBZE | 1ul);
         /* A set or clear of the reserved pattern through csrs/csrc: 01 | 10 = 11. */
@@ -437,7 +439,8 @@ int main(void)
                 csr_write_num(0x30A, cases[i].menv);
                 csr_write_num(0x10A, cases[i].senv);
                 run_lower(cases[i].mpp, op, (unsigned long) &g_bram_buf[BLOCK / 8] + 5);
-                ok &= expect(cases[i].name, op, want, 0, want == CAUSE_ILLEGAL);
+                /* Sstvala: an illegal op's mtval holds its instruction bits. */
+                ok &= expect(cases[i].name, op, want, CBO_A0_BITS(op), want == CAUSE_ILLEGAL);
                 ok &= check_intact(cases[i].name, op, g_bram_buf);
             }
         }
