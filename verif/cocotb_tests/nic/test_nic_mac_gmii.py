@@ -36,6 +36,8 @@ class GmiiPeer:
         """Bind the MAC boundary and initialize the packet queues."""
         self.dut = dut
         self.period = 1
+        # The PCS status_vector, driven on raw receive data bits 25:10 (a level)
+        self.status = 0
         self.symbols: deque[int] = deque()
         self.transmitted: deque[bytes] = deque()
         self.received: deque[bytes] = deque()
@@ -50,7 +52,7 @@ class GmiiPeer:
             self.dut.i_rx_raw_valid.value = int(enabled)
             self.dut.i_rx_raw_data.value = (
                 self.symbols.popleft() if enabled and self.symbols else 0
-            )
+            ) | (self.status << 10)
             await RisingEdge(self.dut.i_rx_clk)
             if enabled:
                 value = int(self.dut.o_tx_raw_data.value)

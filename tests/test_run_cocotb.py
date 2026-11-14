@@ -3964,6 +3964,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "the GMII preamble-discard and rx_er counters"
         ),
     ),
+    "nic_rx_preamble_er": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_rx_preamble_er",
+        hdl_toplevel_module="nic_mac_wrap",
+        verilator_extra_args=(
+            "-GGMII_MODE=1",
+            "-GRX_FIFO_DEPTH=8192",
+            "-GRX_PREAMBLE_ER_TOLERANT=1",
+        ),
+        description="GMII receive keeps a frame whose preamble holds one lone rx_er",
+    ),
+    "vcu118_phy_mdio": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_vcu118_phy_mdio",
+        hdl_toplevel_module="vcu118_phy_mdio",
+        verilator_extra_args=("-GRST_BIT=6", "-GSETTLE_BIT=5", "-GPOLL_BIT=9"),
+        description="DP83867 bootstrap writes and the RECR/FCS counter polls over MDIO",
+    ),
     "nic_top_rx_fifo": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_top",
         hdl_toplevel_module="nic_top",

@@ -90,33 +90,36 @@ module nic_csr #(
     output logic [                   15:0] o_pause_interval,
 
     // Status.
-    input logic [15:0] i_rx_head,
-    input logic [15:0] i_tx_head,
-    input logic        i_rx_idle,
-    input logic        i_tx_idle,
-    input logic        i_reset_busy,
-    input logic        i_rx_fifo_empty,
-    input logic        i_rx_fifo_limit_busy,
-    input logic        i_rx_ready,
-    input logic        i_tx_ready,
+    input logic [                    15:0] i_rx_head,
+    input logic [                    15:0] i_tx_head,
+    input logic                            i_rx_idle,
+    input logic                            i_tx_idle,
+    input logic                            i_reset_busy,
+    input logic                            i_rx_fifo_empty,
+    input logic                            i_rx_fifo_limit_busy,
+    input logic                            i_rx_ready,
+    input logic                            i_tx_ready,
     // {rx_clk_ok, tx_clk_ok, rx_signal_ok, tx_link_ready, rx_remote_fault,
     //  rx_local_fault, rx_high_ber, rx_locked}
-    input logic [ 7:0] i_link,
-    input logic [ 4:0] i_phy_status,
+    input logic [                     7:0] i_link,
+    input logic [                     4:0] i_phy_status,
+    // PHY management counters {toggle, FCS, RECR} from the board's MDIO poll (asynchronous to
+    // i_clk: the values hold still while the toggle changes).
+    input logic [nic_pkg::PhyDiagBits-1:0] i_phy_diag,
 
     // Completions and drops from the engines.
-    input logic              i_rx_complete,
-    input logic [ 2:0]       i_rx_complete_flags,  // {ABORT, ERR, TRUNC}
-    input logic [15:0]       i_rx_complete_bytes,
-    input logic              i_rx_filtered,
-    input logic              i_tx_complete,
-    input logic [ 2:0]       i_tx_complete_flags,
-    input logic [15:0]       i_tx_complete_bytes,
-    input logic              i_segment_err,        // the segment stage dropped or repaired a frame
+    input logic i_rx_complete,
+    input logic [2:0] i_rx_complete_flags,  // {ABORT, ERR, TRUNC}
+    input logic [15:0] i_rx_complete_bytes,
+    input logic i_rx_filtered,
+    input logic i_tx_complete,
+    input logic [2:0] i_tx_complete_flags,
+    input logic [15:0] i_tx_complete_bytes,
+    input logic i_segment_err,  // the segment stage dropped or repaired a frame
     // MAC-domain totals in counter order: rx_overflow, rx_bad_frame,
     // rx_bad_fcs, rx_bad_block, tx_drop, tx_bad_block, gmii_preamble_drop, gmii_rx_er,
-    // rx_pause, tx_pause, tx_paused_cycles.
-    input logic [10:0][63:0] i_mac_totals,
+    // rx_pause, tx_pause, tx_paused_cycles, then nic_pkg CntRxGmiiErPreamble .. CntPcsRxnotintable.
+    input logic [nic_pkg::NumMacTotals-1:0][63:0] i_mac_totals,
 
     // Events for the interrupt block (one-cycle pulses).
     output logic o_link_change,
@@ -457,19 +460,56 @@ module nic_csr #(
     endcase
   endfunction
 
+  // ---- the PHY's own receive-error and FCS counters, as polled over MDIO ----------------------
+  // The board toggles diag[32] after it has updated diag[31:0]; the values are stable for the
+  // whole poll interval, so they are taken one synchronised toggle later.
+  logic diag_tog_s, diag_tog_q;
+  logic [63:0] phy_rxerr_last_q, phy_rxerr_sum_q, phy_fcs_last_q, phy_fcs_sum_q, phy_polls_q;
+  cdc_sync u_diag_tog_sync (
+      .i_clk  (i_clk),
+      .i_rst  (1'b0),
+      .i_async(i_phy_diag[nic_pkg::PhyDiagBits-1]),
+      .o_sync (diag_tog_s)
+  );
+  always_ff @(posedge i_clk) begin
+    diag_tog_q <= diag_tog_s;
+    if (i_rst || i_soft_rst) begin
+      phy_rxerr_last_q <= '0;
+      phy_rxerr_sum_q  <= '0;
+      phy_fcs_last_q   <= '0;
+      phy_fcs_sum_q    <= '0;
+      phy_polls_q      <= '0;
+    end else if (diag_tog_s != diag_tog_q) begin
+      phy_rxerr_last_q <= 64'(i_phy_diag[15:0]);
+      phy_rxerr_sum_q  <= phy_rxerr_sum_q + 64'(i_phy_diag[15:0]);
+      phy_fcs_last_q   <= 64'(i_phy_diag[31:16]);
+      phy_fcs_sum_q    <= phy_fcs_sum_q + 64'(i_phy_diag[31:16]);
+      phy_polls_q      <= phy_polls_q + 64'd1;
+    end
+  end
+
   logic [63:0] counters[nic_pkg::NumCounters];
   always_comb begin
     for (int i = 0; i < 10; i++) counters[i] = cnt_q[i];
-    for (int i = 0; i < 11; i++) counters[10+i] = i_mac_totals[i];
+    for (int i = 0; i < nic_pkg::NumMacTotals; i++) counters[10+i] = i_mac_totals[i];
+    counters[nic_pkg::CntPhyRxErrLast] = phy_rxerr_last_q;
+    counters[nic_pkg::CntPhyRxErrSum] = phy_rxerr_sum_q;
+    counters[nic_pkg::CntPhyFcsLast] = phy_fcs_last_q;
+    counters[nic_pkg::CntPhyFcsSum] = phy_fcs_sum_q;
+    counters[nic_pkg::CntPhyPolls] = phy_polls_q;
   end
 
   // The counters are 8 bytes apart from CounterBaseOffset.
-  logic [8:0] counter_index;
+  logic [8:0] counter_index, counter_ext_index;
   assign counter_index = i_rd_offset[11:3] - 9'(nic_pkg::CounterBaseOffset >> 3);
+  assign counter_ext_index = i_rd_offset[11:3] - 9'(nic_pkg::CounterExtBaseOffset >> 3);
   always_comb begin
     if (i_rd_offset[11:3] >= 9'(nic_pkg::CounterBaseOffset >> 3) &&
-        counter_index < 9'(nic_pkg::NumCounters)) begin
-      o_rd_pair = counters[counter_index[4:0]];
+        counter_index < 9'(nic_pkg::NumBaseCounters)) begin
+      o_rd_pair = counters[counter_index[5:0]];
+    end else if (i_rd_offset[11:3] >= 9'(nic_pkg::CounterExtBaseOffset >> 3) &&
+        counter_ext_index < 9'(nic_pkg::NumCounters - nic_pkg::NumBaseCounters)) begin
+      o_rd_pair = counters[6'(counter_ext_index[5:0])+6'(nic_pkg::NumBaseCounters)];
     end else begin
       o_rd_pair = {reg_word({i_rd_offset[11:3], 3'b100}), reg_word({i_rd_offset[11:3], 3'b000})};
     end

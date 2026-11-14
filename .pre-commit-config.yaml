@@ -140,7 +140,8 @@ repos:
             verif/cocotb_tests/cache/test_coherence_cbo_zero\.py|
             verif/cocotb_tests/hang_probe\.py|
             verif/cocotb_tests/nic/test_nic_tx_segment\.py|
-            verif/cocotb_tests/nic/test_nic_(rx_fifo_limit|pause)\.py|
+            verif/cocotb_tests/nic/test_nic_(rx_fifo_limit|pause|rx_preamble_er)\.py|
+            verif/cocotb_tests/nic/test_vcu118_phy_mdio\.py|
             verif/cocotb_tests/mmu/test_(ptw_walk_cache|l2tlb)\.py|
             fpga/flash/(make_flash_image|program_flash)\.py
           )$

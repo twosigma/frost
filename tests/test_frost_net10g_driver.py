@@ -307,6 +307,20 @@ def test_driver_exposes_every_hardware_counter_in_order() -> None:
     assert int(_define("NET10G_COUNTERS"), 16) == int(
         _group(r"CounterBaseOffset = 12'h([0-9A-Fa-f]+);", pkg), 16
     )
+    # The counters from NumBaseCounters on continue at CounterExtBaseOffset, past the pause registers
+    num_base = int(_group(r"NumBaseCounters = (\d+);", pkg))
+    assert int(_define("FROST_NUM_BASE_COUNTERS")) == num_base
+    ext = int(_group(r"CounterExtBaseOffset = 12'h([0-9A-Fa-f]+);", pkg), 16)
+    assert int(_define("NET10G_COUNTERS_EXT"), 16) == ext
+    base = int(_group(r"CounterBaseOffset = 12'h([0-9A-Fa-f]+);", pkg), 16)
+    registers = [
+        int(value, 16)
+        for value in re.findall(r"Offset = 12'h([0-9A-Fa-f]+);", pkg)
+        if int(value, 16) not in (base, ext)
+    ]
+    first_span = range(base, base + 8 * num_base)
+    ext_span = range(ext, ext + 8 * (len(ordered) - num_base))
+    assert not [r for r in registers if r in first_span or r in ext_span]
     source = DRIVER_SOURCE.read_text()
     table = re.search(
         r"frost_stat_names\[\]\[ETH_GSTRING_LEN\] = \{(.*?)\n\};", source, re.S

@@ -102,7 +102,9 @@ module nic_rx_engine #(
     output logic        o_complete,        // a status write's response returned
     output logic [ 2:0] o_complete_flags,  // {ABORT, ERR, TRUNC}
     output logic [15:0] o_complete_bytes,  // received length
-    output logic        o_filtered         // a frame was rejected by the filter
+    output logic        o_filtered,        // a frame was rejected by the filter
+    // Level: a frame waits in the FIFO and no descriptor is cached (the ring is empty or being fetched).
+    output logic        o_desc_starved
 );
   localparam int unsigned OffsetBits = $clog2(LINE_BYTES);
 
@@ -222,6 +224,8 @@ module nic_rx_engine #(
   assign accept  = i_promisc || i_fifo_data[0] || (i_fifo_data[47:0] == i_mac);
   assign desc_ok = (df_word1[15:0] != 16'd0) && in_aperture(df_word0, df_word1[15:0]);
   logic consider, admit;
+  assign o_desc_starved = (state_q == S_IDLE) && i_enable && !i_stop && !i_abort && i_fifo_valid &&
+      !df_desc_valid;
   assign consider = (state_q == S_IDLE) && i_enable && !i_stop && !i_abort && i_fifo_valid &&
       df_desc_valid;
   assign admit = (state_q == S_ADMIT) && i_enable && !i_stop && !i_abort && df_desc_valid;

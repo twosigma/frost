@@ -140,7 +140,43 @@ package nic_pkg;
   localparam int unsigned CntRxPauseFrames = 18;
   localparam int unsigned CntTxPauseFrames = 19;
   localparam int unsigned CntTxPausedCycles = 20;
-  localparam int unsigned NumCounters = 21;
+  // Receive diagnostics (sync #18). Zero on the 10GBASE-R port except RxMacOverflowNoDesc.
+  // GMII rx_er by position: the preamble (before a valid SFD), and the carrier-extend/false-carrier
+  // cycles outside a frame (rx_dv = 0); CntRxGmiiRxEr above counts rx_er inside a frame. Short IFG:
+  // a frame that began fewer than 12 byte times after the previous frame's data enable fell.
+  // PreambleErAccepted: frames kept although a lone rx_er hit their preamble (the
+  // RX_PREAMBLE_ER_TOLERANT parameter). RxMacOverflowNoDesc: MAC overflows that happened while the RX
+  // engine held a frame with no descriptor available. The Pcs* counters count the Xilinx 1G PCS/PMA
+  // status_vector bits that carry events: link synchronisation lost (bit 1 falling), RUDI(/C/) (bit 2
+  // rising), RUDI(INVALID) (bit 4 rising), RXDISPERR (bit 5) and RXNOTINTABLE (bit 6) cycles.
+  localparam int unsigned CntRxGmiiErPreamble = 21;
+  localparam int unsigned CntRxGmiiErCarrierExt = 22;
+  localparam int unsigned CntRxGmiiShortIfg = 23;
+  localparam int unsigned CntRxGmiiPreambleErAccepted = 24;
+  localparam int unsigned CntRxMacOverflowNoDesc = 25;
+  localparam int unsigned CntPcsSyncLoss = 26;
+  localparam int unsigned CntPcsRudiC = 27;
+  localparam int unsigned CntPcsRudiInvalid = 28;
+  localparam int unsigned CntPcsRxdisperr = 29;
+  localparam int unsigned CntPcsRxnotintable = 30;
+  // DP83867 receive-error and FCS counters, read over MDIO by the PHY bootstrap sequencer (1G port
+  // only): the last value read, the sum of all values read (the PHY counters may clear on read),
+  // and the number of completed polls.
+  localparam int unsigned CntPhyRxErrLast = 31;
+  localparam int unsigned CntPhyRxErrSum = 32;
+  localparam int unsigned CntPhyFcsLast = 33;
+  localparam int unsigned CntPhyFcsSum = 34;
+  localparam int unsigned CntPhyPolls = 35;
+  localparam int unsigned NumCounters = 36;
+  // The first NumBaseCounters counters sit at CounterBaseOffset + 8 * index; the registers from
+  // PauseHighWaterOffset follow them, so the diagnostics continue at CounterExtBaseOffset
+  // + 8 * (index - NumBaseCounters).
+  localparam int unsigned NumBaseCounters = 21;
+  localparam logic [11:0] CounterExtBaseOffset = 12'h140;
+  // MAC-domain totals (nic_mac_wrap o_totals) are counters CntRxMacOverflow .. CntPcsRxnotintable in order.
+  localparam int unsigned NumMacTotals = 21;
+  // Width of the PHY management diagnostic bus into the NIC: {toggle, FCS counter, RECR counter}.
+  localparam int unsigned PhyDiagBits = 33;
 
   // Interrupt block registers.
   localparam logic [11:0] IrqStatusOffset = 12'h040;  // RW1C

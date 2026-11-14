@@ -1521,6 +1521,9 @@ static int frost_set_ringparam(struct net_device *ndev, struct ethtool_ringparam
 
 /* The NIC's 64-bit event counters (nic_pkg CntRxFrames ...), plain reads at 8-byte offsets */
 #define NET10G_COUNTERS			0x080
+/* The pause registers follow the first 21 counters, so counter 21 on starts at NET10G_COUNTERS_EXT */
+#define FROST_NUM_BASE_COUNTERS		21
+#define NET10G_COUNTERS_EXT		0x140
 
 static const char frost_stat_names[][ETH_GSTRING_LEN] = {
 	"rx_frames",
@@ -1544,6 +1547,21 @@ static const char frost_stat_names[][ETH_GSTRING_LEN] = {
 	"rx_pause_frames",
 	"tx_pause_frames",
 	"tx_paused_cycles",
+	"rx_gmii_er_preamble",
+	"rx_gmii_er_carrier_ext",
+	"rx_gmii_short_ifg",
+	"rx_gmii_preamble_er_accepted",
+	"rx_mac_overflow_no_desc",
+	"pcs_sync_loss",
+	"pcs_rudi_c",
+	"pcs_rudi_invalid",
+	"pcs_rxdisperr",
+	"pcs_rxnotintable",
+	"phy_rx_err_last",
+	"phy_rx_err_sum",
+	"phy_fcs_last",
+	"phy_fcs_sum",
+	"phy_polls",
 };
 #define FROST_NUM_STATS			ARRAY_SIZE(frost_stat_names)
 
@@ -1566,7 +1584,9 @@ static void frost_get_strings(struct net_device *ndev, u32 stringset, u8 *data)
  */
 static u64 frost_read_counter(const struct frost_priv *priv, unsigned int index)
 {
-	void __iomem *reg = priv->base + NET10G_COUNTERS + 8 * index;
+	void __iomem *reg = index < FROST_NUM_BASE_COUNTERS ?
+			    priv->base + NET10G_COUNTERS + 8 * index :
+			    priv->base + NET10G_COUNTERS_EXT + 8 * (index - FROST_NUM_BASE_COUNTERS);
 	u32 hi, lo;
 
 	if (priv->wide_abi)

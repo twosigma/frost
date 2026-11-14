@@ -564,6 +564,28 @@ async def test_extended_address_descriptor(dut: Any) -> None:
         nic.stop()
 
 
+COUNTERS_EXT = 0x140
+NUM_BASE_COUNTERS, NUM_ALL_COUNTERS = 21, 36
+PAUSE_HIGH_WATER_OFF, PAUSE_LOW_WATER_OFF, PAUSE_INTERVAL_OFF = 0x130, 0x134, 0x138
+
+
+@cocotb.skipif(not RAW_LOOPBACK, reason="runs in the RAW_LOOPBACK = 1 build")
+@cocotb.test()
+async def test_counter_map_leaves_the_pause_registers_alone(dut: Any) -> None:
+    """Counters 21 and up continue at 0x140; the pause registers at 0x130 read as registers."""
+    nic = await _start(dut, 1, loopback=False)
+    for index in range(NUM_ALL_COUNTERS):
+        offset = (
+            COUNTERS + 8 * index
+            if index < NUM_BASE_COUNTERS
+            else COUNTERS_EXT + 8 * (index - NUM_BASE_COUNTERS)
+        )
+        assert await nic.rd64(offset) == 0, f"counter {index} at {offset:#x}"
+    assert await nic.rd(PAUSE_INTERVAL_OFF) == 0xFFFF
+    assert await nic.rd(PAUSE_HIGH_WATER_OFF) == 0
+    assert await nic.rd(PAUSE_LOW_WATER_OFF) == 0
+
+
 @cocotb.skipif(not RAW_LOOPBACK, reason="runs in the RAW_LOOPBACK = 1 build")
 @cocotb.test()
 async def test_registers_and_bringup(dut: Any) -> None:

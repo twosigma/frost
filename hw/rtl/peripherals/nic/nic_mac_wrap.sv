@@ -50,7 +50,11 @@ module nic_mac_wrap #(
     parameter int unsigned RAW_LOOPBACK = 1,
     // 0 = 10GBASE-R 64b/66b PCS + gearbox; 1 = 8-bit GMII serializer/deserializer
     // for 10/100/1000BASE-T SGMII PCS/PMA cores.
-    parameter bit GMII_MODE = 1'b0
+    parameter bit GMII_MODE = 1'b0,
+    // GMII only: 1 = a frame whose preamble holds one lone rx_er (before a valid SFD) is accepted, the
+    // errored byte counted as a preamble byte; 0 = it is dropped (rx_gmii_preamble_drop). Both
+    // count the rx_er in rx_gmii_er_preamble.
+    parameter bit RX_PREAMBLE_ER_TOLERANT = 1'b0
 ) (
     // Core domain.
     input logic i_clk,
@@ -94,10 +98,13 @@ module nic_mac_wrap #(
     output logic o_rx_remote_fault,
     output logic o_tx_link_ready,
     output logic o_rx_signal_ok,
+    // Core-domain level: the RX engine holds a frame and has no descriptor (counts MAC overflows
+    // that happen meanwhile as dropped for "descriptor not available").
+    input logic i_rx_desc_starved,
     // Totals in counter order: rx_overflow, rx_bad_frame, rx_bad_fcs,
     // rx_bad_block, tx_drop, tx_bad_block, gmii_preamble_drop, gmii_rx_er,
-    // rx_pause, tx_pause, tx_paused_cycles.
-    output logic [10:0][63:0] o_totals,
+    // rx_pause, tx_pause, tx_paused_cycles, then nic_pkg CntRxGmiiErPreamble .. CntPcsRxnotintable.
+    output logic [nic_pkg::NumMacTotals-1:0][63:0] o_totals,
 
     // MAC domains.
     input  logic        i_tx_clk,
@@ -452,9 +459,19 @@ module nic_mac_wrap #(
   // GMII receive events (the 10GBASE-R PCS has none): a frame dropped in the preamble stage, and
   // the first rx_er of a burst inside a frame.
   logic gmii_preamble_drop, gmii_rx_er_event;
+  // Further GMII diagnostics: rx_er in the preamble, rx_er with the data enable low (carrier extend,
+  // false carrier), a short inter-frame gap, a frame kept despite a lone preamble rx_er, and the PCS
+  // status_vector events (sync lost, RUDI /C/, RUDI INVALID, RXDISPERR, RXNOTINTABLE).
+  logic gmii_er_preamble_event, gmii_er_ext_event, gmii_short_ifg_event, gmii_pre_accept_event;
+  logic [4:0] pcs_event;
   if (!GMII_MODE) begin : gen_10g_pcs
     assign gmii_preamble_drop = 1'b0;
-    assign gmii_rx_er_event   = 1'b0;
+    assign gmii_rx_er_event = 1'b0;
+    assign gmii_er_preamble_event = 1'b0;
+    assign gmii_er_ext_event = 1'b0;
+    assign gmii_short_ifg_event = 1'b0;
+    assign gmii_pre_accept_event = 1'b0;
+    assign pcs_event = '0;
     eth10g_mac_pcs #(
         .MAX_FRAME_BYTES(MAX_FRAME_BYTES)
     ) u_mac (
@@ -502,6 +519,7 @@ module nic_mac_wrap #(
     // 1G GMII adapter around eth10g_mac_tx and eth10g_mac_rx.
     // o_tx_raw_data[9:0] = {gmii_tx_er, gmii_tx_en, gmii_txd[7:0]}, o_tx_raw_valid = sgmii_clk_en
     // rx_raw_data[9:0]   = {gmii_rx_er, gmii_rx_dv, gmii_rxd[7:0]}, rx_raw_valid   = sgmii_clk_en
+    // rx_raw_data[25:10] = the PCS/PMA status_vector (a level in the RX clock domain)
     logic [63:0] xgmii_tx_data;
     logic [ 7:0] xgmii_tx_ctrl;
     logic        mac_tx_ready;
@@ -581,16 +599,46 @@ module nic_mac_wrap #(
     logic [2:0] gmii_rx_lane_q;
     logic [63:0] rx_accum_data_q, xgmii_rx_data_q;
     logic [7:0] rx_accum_ctrl_q, xgmii_rx_ctrl_q;
-    logic       xgmii_rx_en_q;
-    logic       gmii_er_prev_q;
+    logic xgmii_rx_en_q;
+    logic gmii_er_prev_q, gmii_er_pre_prev_q, gmii_er_ext_prev_q;
+    // A lone rx_er has been taken as a preamble byte in this frame's preamble.
+    logic       pre_er_seen_q;
+    // Byte times since the data enable fell (saturating); frames are counted short below 12.
+    logic [3:0] ifg_cnt_q;
+    logic ifg_valid_q, gmii_dv_prev_q;
 
-    wire  [7:0] gmii_rxd = rx_raw_data[7:0];
-    wire        gmii_rx_dv = rx_raw_data[8];
-    wire        gmii_rx_er = rx_raw_data[9];
-    wire        gmii_rx_clk_en = rx_raw_valid;
+    wire  [ 7:0] gmii_rxd = rx_raw_data[7:0];
+    wire         gmii_rx_dv = rx_raw_data[8];
+    wire         gmii_rx_er = rx_raw_data[9];
+    wire         gmii_rx_clk_en = rx_raw_valid;
+    wire  [15:0] pcs_status = rx_raw_data[25:10];
     /* verilator lint_off UNUSEDSIGNAL */
-    wire        rx_raw_unused = |rx_raw_data[63:10];
+    wire         rx_raw_unused = |rx_raw_data[63:26];
     /* verilator lint_on UNUSEDSIGNAL */
+
+    // PCS status_vector events, one per rx clock (the vector is a level in this domain). Bit 1 is
+    // link synchronisation, 2 RUDI(/C/), 4 RUDI(INVALID), 5 RXDISPERR, 6 RXNOTINTABLE.
+    logic [ 1:0] pcs_prev_q;
+    logic        pcs_sync_prev_q;
+    always_ff @(posedge i_rx_clk) begin
+      if (rx_rst) begin
+        pcs_prev_q <= '0;
+        pcs_event  <= '0;
+      end else begin
+        pcs_prev_q <= {pcs_status[4], pcs_status[2]};
+        pcs_event <= {
+          pcs_status[6],
+          pcs_status[5],
+          pcs_status[4] && !pcs_prev_q[1],
+          pcs_status[2] && !pcs_prev_q[0],
+          pcs_sync_prev_q && !pcs_status[1]
+        };
+      end
+    end
+    always_ff @(posedge i_rx_clk) begin
+      if (rx_rst) pcs_sync_prev_q <= 1'b0;
+      else pcs_sync_prev_q <= pcs_status[1];
+    end
 
     always_ff @(posedge i_rx_clk) begin
       if (rx_rst || !rx_signal_ok) begin
@@ -604,18 +652,56 @@ module nic_mac_wrap #(
         gmii_preamble_drop <= 1'b0;
         gmii_rx_er_event <= 1'b0;
         gmii_er_prev_q <= 1'b0;
+        gmii_er_pre_prev_q <= 1'b0;
+        gmii_er_ext_prev_q <= 1'b0;
+        gmii_er_preamble_event <= 1'b0;
+        gmii_er_ext_event <= 1'b0;
+        gmii_short_ifg_event <= 1'b0;
+        gmii_pre_accept_event <= 1'b0;
+        pre_er_seen_q <= 1'b0;
+        ifg_cnt_q <= '0;
+        ifg_valid_q <= 1'b0;
+        gmii_dv_prev_q <= 1'b0;
       end else begin
         xgmii_rx_en_q <= 1'b0;
         gmii_preamble_drop <= 1'b0;
         gmii_rx_er_event <= 1'b0;
+        gmii_er_preamble_event <= 1'b0;
+        gmii_er_ext_event <= 1'b0;
+        gmii_short_ifg_event <= 1'b0;
+        gmii_pre_accept_event <= 1'b0;
         if (gmii_rx_clk_en) begin
-          // One event per rx_er burst inside the frame's data enable
-          gmii_er_prev_q   <= gmii_rx_dv && gmii_rx_er;
-          gmii_rx_er_event <= gmii_rx_dv && gmii_rx_er && !gmii_er_prev_q;
+          // One event per rx_er burst: inside the frame's data enable (after its SFD), in its
+          // preamble (data enable with the receiver before the SFD), or outside it (carrier extend).
+          gmii_er_prev_q <= gmii_rx_dv && gmii_rx_er && (gmii_rx_state_q == GMII_RX_DATA);
+          gmii_rx_er_event <= gmii_rx_dv && gmii_rx_er && (gmii_rx_state_q == GMII_RX_DATA) &&
+              !gmii_er_prev_q;
+          gmii_er_pre_prev_q <= gmii_rx_dv && gmii_rx_er &&
+              (gmii_rx_state_q == GMII_RX_IDLE || gmii_rx_state_q == GMII_RX_PREAMBLE ||
+               gmii_rx_state_q == GMII_RX_WAIT_END);
+          gmii_er_preamble_event <= gmii_rx_dv && gmii_rx_er &&
+              (gmii_rx_state_q == GMII_RX_IDLE || gmii_rx_state_q == GMII_RX_PREAMBLE) &&
+              !gmii_er_pre_prev_q;
+          gmii_er_ext_prev_q <= !gmii_rx_dv && gmii_rx_er;
+          gmii_er_ext_event <= !gmii_rx_dv && gmii_rx_er && !gmii_er_ext_prev_q;
+          // Inter-frame gap in byte times, from the data enable's fall to the next rise.
+          gmii_dv_prev_q <= gmii_rx_dv;
+          if (gmii_rx_dv) begin
+            ifg_cnt_q <= '0;
+            if (!gmii_dv_prev_q && ifg_valid_q && ifg_cnt_q < 4'd12) gmii_short_ifg_event <= 1'b1;
+            ifg_valid_q <= 1'b1;
+          end else if (ifg_cnt_q != 4'd15) begin
+            ifg_cnt_q <= ifg_cnt_q + 4'd1;
+          end
           unique case (gmii_rx_state_q)
             GMII_RX_IDLE: begin
               if (gmii_rx_dv) begin
-                if (!gmii_rx_er && (gmii_rxd == 8'hd5)) begin
+                pre_er_seen_q <= 1'b0;
+                if (RX_PREAMBLE_ER_TOLERANT && gmii_rx_er) begin
+                  // A lone rx_er on the first preamble byte is taken as a preamble byte
+                  pre_er_seen_q   <= 1'b1;
+                  gmii_rx_state_q <= GMII_RX_PREAMBLE;
+                end else if (!gmii_rx_er && (gmii_rxd == 8'hd5)) begin
                   xgmii_rx_data_q <= 64'hd555_5555_5555_55fb;
                   xgmii_rx_ctrl_q <= 8'h01;
                   xgmii_rx_en_q   <= 1'b1;
@@ -636,9 +722,12 @@ module nic_mac_wrap #(
               end else if (!gmii_rx_er && (gmii_rxd == 8'hd5)) begin
                 xgmii_rx_data_q <= 64'hd555_5555_5555_55fb;
                 xgmii_rx_ctrl_q <= 8'h01;
-                xgmii_rx_en_q   <= 1'b1;
-                gmii_rx_lane_q  <= 3'd0;
+                xgmii_rx_en_q <= 1'b1;
+                gmii_rx_lane_q <= 3'd0;
                 gmii_rx_state_q <= GMII_RX_DATA;
+                gmii_pre_accept_event <= pre_er_seen_q;
+              end else if (RX_PREAMBLE_ER_TOLERANT && gmii_rx_er && !pre_er_seen_q) begin
+                pre_er_seen_q <= 1'b1;
               end else if (gmii_rx_er || (gmii_rxd != 8'h55)) begin
                 gmii_rx_state_q    <= GMII_RX_WAIT_END;
                 gmii_preamble_drop <= 1'b1;
@@ -833,9 +922,27 @@ module nic_mac_wrap #(
   );
 
   // ---- event totals -----------------------------------------------------------------------
-  logic [10:0] ev_pulse;
-  logic [10:0] ev_clk, ev_rst, ev_rebase;
+  // The RX engine's descriptor-starved level, synchronised into the RX domain, qualifies overflows.
+  logic desc_starved_s, overflow_no_desc;
+  cdc_sync u_desc_starved_sync (
+      .i_clk  (i_rx_clk),
+      .i_rst  (1'b0),
+      .i_async(i_rx_desc_starved),
+      .o_sync (desc_starved_s)
+  );
+  assign overflow_no_desc = rx_overflow && desc_starved_s;
+
+  localparam int unsigned NumEv = nic_pkg::NumMacTotals;
+  logic [NumEv-1:0] ev_pulse;
+  logic [NumEv-1:0] ev_clk, ev_rst, ev_rebase;
+  // Event sources in o_totals order, with their clock domain: 1 = RX MAC clock, 0 = TX MAC clock.
   assign ev_pulse = {
+    pcs_event,
+    overflow_no_desc,
+    gmii_pre_accept_event,
+    gmii_short_ifg_event,
+    gmii_er_ext_event,
+    gmii_er_preamble_event,
     tx_paused,
     tx_pause_ev,
     pause_rx_ev,
@@ -848,38 +955,21 @@ module nic_mac_wrap #(
     rx_bad_frame,
     rx_overflow
   };
-  assign ev_clk = {
-    i_tx_clk,
-    i_tx_clk,
-    i_rx_clk,
-    i_rx_clk,
-    i_rx_clk,
-    i_tx_clk,
-    i_tx_clk,
-    i_rx_clk,
-    i_rx_clk,
-    i_rx_clk,
-    i_rx_clk
+  localparam logic [NumEv-1:0] EvIsRx = {
+    {5{1'b1}},  // pcs_event
+    {5{1'b1}},  // overflow_no_desc, pre_accept, short_ifg, er_ext, er_preamble
+    1'b0,  // tx_paused
+    1'b0,  // tx_pause_ev
+    {3{1'b1}},  // pause_rx_ev, gmii_rx_er, gmii_preamble_drop
+    {2{1'b0}},  // tx_bad_block, tx_drop
+    {4{1'b1}}  // rx_bad_block, rx_bad_fcs, rx_bad_frame, rx_overflow
   };
   // Each counter takes its event's domain reset, and a soft reset rebases or
   // clears the totals at run time.
-  assign ev_rst = {
-    tx_rst, tx_rst, rx_rst, rx_rst, rx_rst, tx_rst, tx_rst, rx_rst, rx_rst, rx_rst, rx_rst
-  };
-  assign ev_rebase = {
-    i_core_rst_dom[0],
-    i_core_rst_dom[0],
-    i_core_rst_dom[1],
-    i_core_rst_dom[1],
-    i_core_rst_dom[1],
-    i_core_rst_dom[0],
-    i_core_rst_dom[0],
-    i_core_rst_dom[1],
-    i_core_rst_dom[1],
-    i_core_rst_dom[1],
-    i_core_rst_dom[1]
-  };
-  for (genvar e = 0; e < 11; e++) begin : g_events
+  for (genvar e = 0; e < NumEv; e++) begin : g_events
+    assign ev_clk[e]    = EvIsRx[e] ? i_rx_clk : i_tx_clk;
+    assign ev_rst[e]    = EvIsRx[e] ? rx_rst : tx_rst;
+    assign ev_rebase[e] = EvIsRx[e] ? i_core_rst_dom[1] : i_core_rst_dom[0];
     cdc_gray_count u_count (
         .i_src_clk   (ev_clk[e]),
         .i_src_rst   (ev_rst[e]),
