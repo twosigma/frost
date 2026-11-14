@@ -379,7 +379,7 @@ module frost_cache #(
   // Maintenance / sweep control (drives the tag and data ports while active)
   // ===========================================================================
   typedef enum logic [2:0] {
-    M_SWEEP,        // reset/invalidate-all: clear every set's tags
+    M_SWEEP,        // reset/invalidate-all: clear line validity
     M_IDLE,         // the request pipeline runs
     M_FLUSH_SCAN,   // writeback-all: present the walk's set to the tags
     M_FLUSH_CHECK,  // examine the set; pick its lowest dirty way, if any
@@ -430,26 +430,50 @@ module frost_cache #(
     logic [WAYS-1:0] valid_q[NumSets];
     logic [WAYS-1:0] valid_rd_q;
     always_ff @(posedge i_clk) begin
-      if (mstate_q == M_SWEEP) begin
+      if (i_rst) begin
+        for (int s = 0; s < int'(NumSets); s++) valid_q[s] <= '0;
+      end else if (mstate_q == M_SWEEP) begin
         for (int s = 0; s < int'(NumSets); s++) valid_q[s] <= '0;
       end else begin
         for (int w = 0; w < int'(WAYS); w++)
         if (tag_we[w]) valid_q[tag_waddr][w] <= tag_wdata[TagEntryBits-1];
       end
     end
-    always_ff @(posedge i_clk) valid_rd_q <= valid_q[tag_raddr];
+    always_ff @(posedge i_clk) begin
+      if (i_rst) valid_rd_q <= '0;
+      else valid_rd_q <= valid_q[tag_raddr];
+    end
     assign tag_rdata_valid = valid_rd_q;
 `ifdef CACHE_FLASH_PROOF
     // formal/cache_flash_valid.sby. With SIM_FAST_MAINT the RAM's valid bits
     // are bulk-cleared in the same sweep cycle, so once a sweep has cleared
-    // both and its read has left the read register, every tag read returns
-    // the RAM's valid bits from the flip-flops. Without SIM_FAST_MAINT an
-    // invalidate-all sweep lasts one cycle.
+    // both after reset and its read has left the read register, every tag
+    // read returns the RAM's valid bits from the flip-flops. Without
+    // SIM_FAST_MAINT an invalidate-all sweep lasts one cycle.
     logic proof_swept_q = 1'b0, proof_swept2_q = 1'b0, proof_inval_q = 1'b0;
+    logic proof_past_valid_q = 1'b0;
+    logic [NumSets*WAYS-1:0] proof_valid_bits;
+    for (genvar s = 0; s < int'(NumSets); s++) begin : gen_proof_valid_bits
+      assign proof_valid_bits[s*WAYS+:WAYS] = valid_q[s];
+    end
     always_ff @(posedge i_clk) begin
-      if (mstate_q == M_SWEEP) proof_swept_q <= 1'b1;
-      proof_swept2_q <= proof_swept_q;
-      proof_inval_q  <= (mstate_q == M_IDLE) && i_invalidate_all && pipeline_idle && !i_rst;
+      proof_past_valid_q <= 1'b1;
+      if (i_rst) begin
+        proof_swept_q  <= 1'b0;
+        proof_swept2_q <= 1'b0;
+      end else begin
+        if (mstate_q == M_SWEEP) proof_swept_q <= 1'b1;
+        proof_swept2_q <= proof_swept_q;
+      end
+      proof_inval_q <= (mstate_q == M_IDLE) && i_invalidate_all && pipeline_idle && !i_rst;
+      if (proof_past_valid_q) begin
+        if ($past(i_rst || (mstate_q == M_SWEEP))) assert (proof_valid_bits == '0);
+        if ($past(i_rst)) begin
+          assert (valid_rd_q == '0);
+        end else begin
+          assert (valid_rd_q == $past(valid_q[tag_raddr]));
+        end
+      end
     end
     always_comb begin
       if ((SIM_FAST_MAINT != 0) && proof_swept2_q) assert (valid_rd_q == tag_ram_valid);

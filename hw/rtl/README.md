@@ -462,7 +462,7 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `USE_BEHAVIORAL_DDR` | `1` | 1 ends the tier in the simulation DDR model; 0 exports the bridge's AXI master on `o_ddr_axi_*` |
 | `frost.sv` | `DDR_MODEL_BYTES` / `DDR_MODEL_LATENCY` | `64 MiB` / `80` | DDR model size and access latency in cycles (simulation) |
 | `frost.sv` | `DDR_MODEL_LATENCY_JITTER` / `DDR_MODEL_REORDER` | `0` / `0` | DDR model per-transaction latency jitter, and out-of-order completion across ids (simulation); `FROST_DDR_MODEL_SEED` draws these and the latency for a test run ([tests/README.md](../../tests/README.md#environment-and-output)) |
-| `frost.sv` | `SIM_FAST_MAINT` | `0` | Simulation only: 1 clears coherent-array tags, states and replacement bits in one cycle and accelerates L1I maintenance; 0 keeps the per-set reset sweep |
+| `frost.sv` | `SIM_FAST_MAINT` | `0` | Simulation only: 1 clears coherent-array tags, states and replacement bits in one cycle and accelerates the L1I reset sweep; 0 keeps the per-set reset sweep. L1I invalidate-all clears valid flip-flops in one cycle in either mode |
 | `frost.sv` | `FETCH_VALID_FUZZ` | `0` | Simulation only: 1 delays local instruction AXI responses to exercise variable fetch latency |
 | `frost.sv` | `L1D_NUM_MSHR` | `8` | L1D request endpoints, 1 to 8: one for stores, LR and atomics, the rest for load misses in flight |
 | `frost.sv` | `PERF_COUNTERS` | `0` | 1 builds the `mperf*` profiling counters |

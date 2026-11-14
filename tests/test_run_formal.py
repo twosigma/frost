@@ -774,8 +774,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "cache_flash_valid.sby",
-        "Flash-invalidate valid flip-flops return the tag RAM's valid bits, and an "
-        "invalidate-all sweep lasts one cycle",
+        "Flash-invalidate valid flip-flops reset and clear together, reads return the "
+        "pre-write bits, and an invalidate-all sweep lasts one cycle",
         tasks=("bmc_fast", "bmc_fast_ways1", "bmc_hw", "cover_fast"),
     ),
     FormalTarget(
