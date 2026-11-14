@@ -366,6 +366,10 @@ The data MMU caches the last clean page translation and its permissions.
 A matching eligible access enters the result stage in one cycle. Other
 accesses use the lookup stage followed by the result stage. Reset, full flush,
 translation disable and TLB invalidation clear the last-page buffer.
+The issue VA is the base-plus-offset sum. The lookup stage's advance, which
+depends on the DTLB hit, and the skid choice for the lookup stage each select
+between a held VA and that sum in one LUT per bit after the full sum, so
+neither enters the adder's operands.
 
 The 16-entry ITLB and the data side's 16-entry DTLB share one read-only
 page-table walker in `cpu_ooo`; the data side wins when both ask. The walker
