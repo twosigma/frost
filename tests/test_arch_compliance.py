@@ -670,10 +670,13 @@ def test_ddr_misaligned_references() -> None:
 
     assert DDR_MISALIGNED_TESTS == generator.DDR_MISALIGNED_TESTS
     assert DDR_REFERENCES_DIR == generator.DDR_REFERENCES_DIR
-    privilege = {
-        t.relative_to(SUITE_ROOT).as_posix() for t in discover_tests("privilege")
-    }
-    assert DDR_MISALIGNED_TESTS <= privilege
+    # The suite's sources are in the riscv-arch-test submodule. The references
+    # are in this repository and are checked without it.
+    if SUITE_ROOT.is_dir():
+        privilege = {
+            t.relative_to(SUITE_ROOT).as_posix() for t in discover_tests("privilege")
+        }
+        assert DDR_MISALIGNED_TESTS <= privilege
     for rel in sorted(DDR_MISALIGNED_TESTS):
         src = SUITE_ROOT / rel
         ddr, bram = get_reference_path(src, "ddr"), get_reference_path(src, "bram")
