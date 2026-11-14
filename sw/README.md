@@ -53,7 +53,7 @@ any of them rebuilds.
 | `GENERATE_IMEM_INIT` | `0` | `1` also writes the split instruction-BRAM init files for Vivado |
 
 `-march` is `rv64` followed by `FROST_MARCH_EXTENSIONS`, which defaults to
-`imafdc_zicsr_zicntr_zifencei_zicboz_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause`. An app
+`imafdc_zicsr_zicntr_zihpm_zifencei_zicbop_zicboz_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause_zawrs`. An app
 sets it, or `APP_TUNE_FLAGS`, before including `common.mk`. The `FROST_DEBUG=1`
 flags come after the tuning flags, so debug builds stay debuggable. Backends
 that build their own flags take the names from `common/arch.mk`:
@@ -264,6 +264,7 @@ can be debugged and where each one first stops.
 | `c_ext_test/` | Calls and returns through mixed 16- and 32-bit code, plus value checks of the RV64C-only encodings |
 | `cache_counter_target/` | Makes L2 write fills with DMA, prints the cache counters from its own snapshot, then sleeps in `wfi` without touching the caches until a UART byte starts a second run, which the JTAG reader (`fpga/debug/cache_counters.py`) measures; runs from low BRAM in either memory configuration |
 | `call_stress/` | Repeated and nested calls and returns, built with compressed instructions |
+| `cbo_mgmt_test/` | Zicbom `cbo.clean`, `cbo.flush` and `cbo.inval` as ordered no-ops: data unchanged in cached DDR and low BRAM, device windows a no-op, the CBCFE and CBIE gates in S and U, CBIE's WARL readback, load-permission translation (read-only, D-clear and X-with-MXR pages execute), store page and access faults with `mtval` = `rs1`, and program order with loads, stores and the DMA engine |
 | `cbo_zero_bench/` | Cycles to clear 64 KiB and 1 MiB of cold and warm cached DDR with an `sd` loop and with `cbo.zero`; prints one `FROST_CBO_BENCH` line per run |
 | `cbo_zero_test/` | Zicboz `cbo.zero`: the 64-byte block containing an unaligned `rs1` in cached DDR and low BRAM, neighbours untouched, younger loads and stores in program order, LR/SC reservation invalidation in both cached sectors with successful no-zero controls, the CBZE gate across adjacent environment-CSR writes and privilege returns, forbidden lower-privilege CSR accesses with exact fault PCs, and store access and page faults with `mtval` = `rs1` |
 | `cf_ext_test/` | Compressed double-precision FP loads and stores (Zcd) |
@@ -380,3 +381,6 @@ can be debugged and where each one first stops.
 | `wfi_seed_recovery/` | Mispredicted `jr` jumps with `wfi` on the wrong path; the bench checks that a wrong-path `wfi` at the ROB head during recovery does not set the interrupt resume PC |
 | `window_skip_repro/` | After a branch trained taken resolves not-taken, fetch must not skip the fall-through window; all 6,000 calls run with a 4M-cycle simulation budget (8M with fetch-latency fuzzing) |
 | `writecount_probe/` | `lr.w` sign extension on both dword halves in the Linux `i_writecount` sequence, with `sc.w` and `amoadd.w` |
+| `zawrs_test/` | Zawrs: `wrs.nto`/`wrs.sto` in M, S and U with `mstatus.TW`, LR/SC around `wrs.nto`, and the Linux `__cmpwait` loop |
+| `zicbop_test/` | Zicbop: `prefetch.i/r/w` (ORI with `rd` = x0) retire with no exception and no state change in M, S and U, on null, device, beyond-DDR, non-canonical, unmapped and supervisor-only addresses |
+| `zihpm_test/` | Zihpm: `hpmcounter3`..`31` privilege gating by `mcounteren`/`scounteren` in M, S and U, shadows of `mhpmcounter`, M-only and zero-only counters |
