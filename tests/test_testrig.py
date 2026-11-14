@@ -633,7 +633,11 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             "--vector or --fp-ext"
         )
     if arguments.vector and (
-        arguments.atomics or arguments.crypto or arguments.trace or arguments.trace_dir or arguments.fp_ext
+        arguments.atomics
+        or arguments.crypto
+        or arguments.trace
+        or arguments.trace_dir
+        or arguments.fp_ext
     ):
         parser.error(
             "--vector cannot be combined with --atomics, --crypto, --trace, "
