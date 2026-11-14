@@ -9,7 +9,7 @@ depth 1
 smtbmc boolector
 
 [script]
-read -formal -sv riscv_pkg.sv
+read -formal -sv riscv_pkg.sv vec_hold_rows.sv
 read -sv sdp_dist_ram.sv
 read -sv mwp_dist_ram.sv
 read -sv load_unit.sv
@@ -26,6 +26,7 @@ select -assert-count 2 t:$check
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_hold_rows.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv

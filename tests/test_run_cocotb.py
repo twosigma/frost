@@ -2496,6 +2496,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Vector engine at VLEN 256: integer instructions against a model of their semantics",
         verilator_extra_args=("-GVLEN=256",),
     ),
+    "vec_hold_rows": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_hold_rows",
+        hdl_toplevel_module="vec_hold_rows",
+        description=(
+            "Range-ordering holds of a scalar queue against the vector memory table, "
+            "against a reference model"
+        ),
+    ),
+    "vec_hold_rows_direct": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_hold_rows",
+        hdl_toplevel_module="vec_hold_rows",
+        description=(
+            "Range-ordering holds with per-entry address inputs (the store queue's "
+            "form), against a reference model"
+        ),
+        verilator_extra_args=("-GDIRECT_ADDR=1",),
+    ),
     "vec_engine_v128": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_engine",
         hdl_toplevel_module="vec_engine",
@@ -2967,6 +2984,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_stream_order",
         hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
         description="Speculative fills, same-address load replay and attached LR reservation suppression across a coherent cut",
+        verilator_extra_args=("--assert", "-GDIRECT_CACHE_READS=1", "-GCACHE_MISSES=8"),
+    ),
+    "hitpath_probe_order": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_hitpath_probe_order",
+        hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
+        description="Same-address load order across an invalidating probe and the L1D hit path",
         verilator_extra_args=("--assert", "-GDIRECT_CACHE_READS=1", "-GCACHE_MISSES=8"),
     ),
     "coherent_cut_fabric": CocotbRunConfig(

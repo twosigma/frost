@@ -4,6 +4,9 @@
 # Package dependency
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 
+# Range-ordering holds against the vector memory table
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_hold_rows.sv
+
 # RAM primitives (LQ data and address LUTRAMs, L0 arrays)
 $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv
 $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram.sv

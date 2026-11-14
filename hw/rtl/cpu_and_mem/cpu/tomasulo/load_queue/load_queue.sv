@@ -95,6 +95,10 @@ module load_queue #(
     // Address Update (from MEM_RS issue path: base + imm, pre-computed)
     // =========================================================================
     input riscv_pkg::lq_addr_update_t i_addr_update,
+    // The vector memory table (idle: every entry dead), for range-ordering
+    // holds: an entry does not issue while an older live vector memory
+    // instruction overlaps it or has an unknown range (vec_hold_rows)
+    input riscv_pkg::vmt_view_t i_vmt = '0,
 
     // MEM_RS look-ahead one cycle before i_addr_update, used to register the
     // address CAM match for timing.
@@ -563,6 +567,10 @@ module load_queue #(
   logic [DEPTH-1:0] older_amo_dep_q[DEPTH];
   logic [DEPTH-1:0] older_amo_dep_d[DEPTH];
   logic [DEPTH-1:0] older_amo_block_q;
+  // The issue selector's per-entry block: an older pending AMO or an older
+  // overlapping vector memory instruction, registered together.
+  logic [DEPTH-1:0] issue_block_q;
+  logic [DEPTH-1:0] vec_hold_d;
   logic [DEPTH-1:0] older_amo_block_d;
   logic [DEPTH-1:0] pending_amo_phys;
   logic [DEPTH-1:0] dep_done_oh;
@@ -1547,7 +1555,7 @@ module load_queue #(
         .addr_update_pre_match_q(addr_update_pre_match_q),
         .rob_head_match_q(rob_head_match_q),
         .lq_rob_tag_flat(lq_rob_tag_flat),
-        .blocked_by_amo_phys_q(older_amo_block_q),
+        .blocked_by_amo_phys_q(issue_block_q),
         .head_idx(head_idx),
         .i_sq_committed_empty(i_sq_committed_empty),
         .i_staged_younger(staged_younger_than_entry),
@@ -2373,10 +2381,11 @@ module load_queue #(
   assign sq_no_older_store = sq_check_no_older_store_q || i_sq_empty;
   assign sq_commit_interlock = sq_commit_check_block && sq_check_phase2;
 
-  // SQ disambiguation cannot see AMO writes held in the LQ. Select the staged
-  // entry's registered older-AMO block bit. Program-order allocation prevents
-  // an older AMO from appearing after the entry stages.
-  assign older_amo_write_pending = |(older_amo_block_q & sq_check_in_flight_mask);
+  // SQ disambiguation cannot see AMO writes held in the LQ, nor vector memory
+  // accesses. Select the staged entry's registered block bit (an older pending
+  // AMO or a vector range hold). Program-order allocation prevents an older AMO
+  // or vector memory instruction from appearing after the entry stages.
+  assign older_amo_write_pending = |(issue_block_q & sq_check_in_flight_mask);
 
   // A staged head AMO with the committed queue empty cannot have older SQ
   // stores at all (committed == older-than-head; everything uncommitted is
@@ -3890,6 +3899,26 @@ module load_queue #(
 `endif
 
   // ===========================================================================
+  // Range-ordering holds against the vector memory table
+  // ===========================================================================
+  vec_hold_rows #(
+      .DEPTH(DEPTH)
+  ) u_vec_hold (
+      .i_clk      (i_clk),
+      .i_rst      (!i_rst_n),
+      .i_valid    (lq_valid),
+      .i_tag_flat (lq_rob_tag_flat),
+      .i_atomic   (lq_is_amo | lq_is_lr),
+      .i_head_tag (i_rob_head_tag),
+      .i_upd_valid(lq_addr_update_we),
+      .i_upd_idx  (lq_addr_update_idx),
+      .i_upd_addr (i_addr_update.address),
+      .i_upd_size (2'(lq_size[lq_addr_update_idx])),
+      .i_vmt      (i_vmt),
+      .o_hold_d   (vec_hold_d)
+  );
+
+  // ===========================================================================
   // Older-AMO dependency masks
   // ===========================================================================
   // Each row records unfinished AMOs older than its LQ entry. Only allocation
@@ -3943,11 +3972,13 @@ module load_queue #(
       dep_identity_valid_q <= '0;
       dep_head_q <= '0;
       older_amo_block_q <= '0;
+      issue_block_q <= '0;
       for (int unsigned i = 0; i < DEPTH; i++) begin
         older_amo_dep_q[i] <= '0;
       end
     end else begin
       older_amo_block_q <= older_amo_block_d;
+      issue_block_q <= older_amo_block_d | vec_hold_d;
       for (int unsigned i = 0; i < DEPTH; i++) begin
         older_amo_dep_q[i] <= older_amo_dep_d[i];
       end
