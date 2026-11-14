@@ -1128,30 +1128,44 @@ module coherence_home #(
     assign fill_add_count[fill] = join_live ? count_live : count_idle;
   end
   // Parking: the seats taken for each value of join_live, joined across
-  // fills before join_live selects.
-  (* keep = "true" *) logic [COMPLETIONS-1:0] park_live, park_idle;
+  // fills in two halves before join_live selects, so the select and the last
+  // join share one LUT.
+  localparam int unsigned ParkLow = (FILLS + 1) / 2;
+  (* keep = "true" *) logic [COMPLETIONS-1:0] park_live_low, park_live_high;
+  (* keep = "true" *) logic [COMPLETIONS-1:0] park_idle_low, park_idle_high;
   always_comb begin
-    park_live = '0;
-    park_idle = '0;
+    park_live_low  = '0;
+    park_live_high = '0;
+    park_idle_low  = '0;
+    park_idle_high = '0;
     for (int fill = 0; fill < FILLS; fill++) begin
-      park_live |= fill_add_live[fill];
-      park_idle |= fill_add_idle[fill];
+      if (fill < int'(ParkLow)) begin
+        park_live_low |= fill_add_live[fill];
+        park_idle_low |= fill_add_idle[fill];
+      end else begin
+        park_live_high |= fill_add_live[fill];
+        park_idle_high |= fill_add_idle[fill];
+      end
     end
   end
   for (genvar slot = 0; slot < COMPLETIONS; slot++) begin : gen_park
 `ifdef FROST_XILINX_PRIMS
-    // I0 join_live, I1 park_live, I2 park_idle: I0 ? I1 : I2.
+    // I0 join_live, I1 park_live_low, I2 park_live_high, I3 park_idle_low,
+    // I4 park_idle_high: I0 ? (I1 || I2) : (I3 || I4).
     (* dont_touch = "true" *)
-    LUT3 #(
-        .INIT(8'hD8)
+    LUT5 #(
+        .INIT(32'hFDFDFDA8)
     ) u_park (
         .I0(join_live),
-        .I1(park_live[slot]),
-        .I2(park_idle[slot]),
+        .I1(park_live_low[slot]),
+        .I2(park_live_high[slot]),
+        .I3(park_idle_low[slot]),
+        .I4(park_idle_high[slot]),
         .O (park[slot])
     );
 `else
-    assign park[slot] = join_live ? park_live[slot] : park_idle[slot];
+    assign park[slot] = join_live ? park_live_low[slot] || park_live_high[slot] :
+        park_idle_low[slot] || park_idle_high[slot];
 `endif
   end
 `ifdef HOME_SEAT_NEXT_LOCAL_PROOF
