@@ -413,6 +413,17 @@ module tomasulo_coherent_cut_test_harness #(
       .i_coh_inval_slot('0),
       .i_coh_release_valid(cut_release),
       .i_coh_release_slot('0),
+      // The head memory instruction's fields serve only cpu_ooo's
+      // misaligned-access engine.
+      .o_head_mem_funct3(),
+      .o_head_mem_rs2(),
+      .o_head_dest_reg(),
+      .o_head_dest_rf(),
+      .o_head_dest_valid(),
+      .o_head_mem_store(),
+      .o_head_mem_fp_store(),
+      .o_head_mem_atomic(),
+      .o_head_fallthrough_pc(),
       .*
   );
   coherence_l1d #(
