@@ -25,7 +25,7 @@ timeout 180
 smtbmc boolector
 
 [script]
-read -sv riscv_pkg.sv
+read -sv riscv_pkg.sv vec_hold_rows.sv
 sc: read -formal -sv -D COHERENT_SC_LOCAL_PROOF sc_pending_unit.sv
 sc_small: chparam -set CACHED_BASE 8192 -set CACHED_SIZE_BYTES 4096 sc_pending_unit
 sc_offset: chparam -set CACHED_BASE 2147483680 -set CACHED_SIZE_BYTES 8192 sc_pending_unit
@@ -54,6 +54,7 @@ address_class: prep -flatten -top coherent_lq_address_store
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_hold_rows.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv
