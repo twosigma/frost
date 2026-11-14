@@ -435,8 +435,11 @@ issues no memory request until both parts have passed, so a faulting store
 writes nothing. It then issues the lower sector's request before the upper
 one and waits for both responses. A load response error gives a load access
 fault with trap value zero; a store response error and a hart stop are
-terminal at once, with no further request. `lib/line_align.sv` moves the
-access between register order and the two sectors.
+terminal at once, with no further request. A hart stop also makes an idle
+engine busy until reset. The registered dispatch hold samples the stop on
+the same edge as the engine, so neither dispatch slot allocates in that
+terminal state. `lib/line_align.sv` moves the access between register order
+and the two sectors.
 
 ## Debug Mode
 

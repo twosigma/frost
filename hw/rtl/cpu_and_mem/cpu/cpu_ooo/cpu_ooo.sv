@@ -4312,7 +4312,7 @@ module cpu_ooo #(
         else if (trap_taken) ma_fault_pending_q <= 1'b0;
         ma_wb_valid_q <= ma_wb_arm;
         ma_done_q <= ma_done;
-        ma_hold_q <= ma_assist_start || ma_hold;
+        ma_hold_q <= ma_assist_start || ma_hold || i_fatal_stop;
       end
     end
     // Payloads: no reset; each is read only with its valid.
@@ -4335,8 +4335,9 @@ module cpu_ooo #(
     // Dispatch waits from the take until the register write has landed;
     // interrupts and halts wait while the engine runs or its fault is
     // pending. Dispatch sees ma_hold_q, a flop that covers ma_hold from the
-    // cycle after the take and holds one cycle longer, so no decode reaches
-    // the allocation enables.
+    // cycle after the take and holds one cycle longer. It also samples a
+    // fatal stop on the same edge as the engine, which enters its terminal
+    // busy state even from idle, so no decode reaches the allocation enables.
     assign ma_hold = ma_busy || ma_fault_pending_q || ma_wb_valid_q || ma_done_q;
     assign ma_shield = ma_busy || ma_fault_pending_q;
 `ifndef SYNTHESIS
