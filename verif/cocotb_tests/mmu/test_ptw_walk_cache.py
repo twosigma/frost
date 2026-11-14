@@ -21,6 +21,11 @@ complete CPU, software must synchronize valid-leaf edits with its TLBs as
 the privileged spec requires. A valid pointer change is followed by a
 discard (SFENCE.VMA or a satp access). The bench also counts line reads to
 show that the cache removes the upper-level reads of repeated walks.
+
+The reference applies Svpbmt too: with PBMTE clear any PBMT field faults; with
+it set, PBMT 3 and a non-leaf PBMT fault, and an NC or IO leaf over DDR answers
+the uncached alias's PPN (riscv_pkg "Svpbmt": bit 30 for the 1 GiB DDR the
+default build uses) and the field.
 """
 
 from __future__ import annotations
@@ -39,16 +44,20 @@ LINE_BYTES = 32
 DFAULT_NONE, DFAULT_PAGE, DFAULT_ACCESS = 0, 2, 3
 V, R, W, X, U, G, A, D = 1, 2, 4, 8, 16, 32, 64, 128
 ROOT = 0x8010_0000
+# riscv_pkg::PbmtAliasOffset >> 12 for the default 1 GiB DDR (alias bit 30).
+ALIAS_PPN_BIT = 1 << 18
+PBMT_NC, PBMT_IO, PBMT_RES = 1, 2, 3
 
 
-def pte(ppn: int, flags: int) -> int:
-    """Return an Sv39 PTE."""
-    return (ppn << 10) | flags
+def pte(ppn: int, flags: int, pbmt: int = 0) -> int:
+    """Return an Sv39 PTE, with an Svpbmt field in bits 62:61."""
+    return (pbmt << 61) | (ppn << 10) | flags
 
 
 def unpack(resp: int) -> dict[str, int]:
-    """Split a ptw_resp_t: {fault, vpn, ppn, level, r, w, x, u, d, g}."""
+    """Split a ptw_resp_t: {pbmt, fault, vpn, ppn, level, r, w, x, u, d, g}."""
     return {
+        "pbmt": (resp >> 81) & 3,
         "fault": (resp >> 79) & 3,
         "vpn": (resp >> 52) & ((1 << 27) - 1),
         "ppn": (resp >> 8) & ((1 << 44) - 1),
@@ -80,7 +89,7 @@ class Memory:
             data |= self.read(base + 8 * i) << (64 * i)
         return data
 
-    def walk(self, root_ppn: int, vpn: int) -> dict[str, int]:
+    def walk(self, root_ppn: int, vpn: int, pbmte: int = 0) -> dict[str, int]:
         """Walk Sv39 page tables with FROST's fault classification."""
         ptr = root_ppn
         glob = 0  # a global bit on any level makes the translation global
@@ -92,8 +101,14 @@ class Memory:
             e = self.read(addr)
             r, w, x = (e >> 1) & 1, (e >> 2) & 1, (e >> 3) & 1
             leaf = r or x
+            pbmt = (e >> 61) & 3
+            # Bit 63 (N) and bits 60:54 are reserved; so is PBMT in a
+            # non-leaf, PBMT 3, and any PBMT while PBMTE is clear.
+            pbmt_bad = pbmt != 0 and (not leaf or not pbmte or pbmt == PBMT_RES)
             if (
-                (e >> 54)
+                (e >> 63)
+                or (e >> 54) & 0x7F
+                or pbmt_bad
                 or not e & V
                 or (w and not r)
                 or (not leaf and e & (U | A | D))
@@ -107,7 +122,10 @@ class Memory:
                 perms = (r << 4) | (w << 3) | (x << 2) | (((e >> 4) & 1) << 1)
                 perms |= (e >> 7) & 1
                 perms = (perms << 1) | glob | ((e >> 5) & 1)
+                if pbmt and DDR_BASE <= (ppn << 12) < DDR_LIMIT:
+                    ppn |= ALIAS_PPN_BIT
                 return {
+                    "pbmt": pbmt,
                     "fault": DFAULT_NONE,
                     "vpn": vpn,
                     "ppn": ppn,
@@ -131,6 +149,7 @@ class Bench:
         self.rng = random.Random(seed)
         self.reads = 0
         self.discard_now = False
+        self.pbmte = 0
         Clock(dut.i_clk, 10, unit="ns").start()
         cocotb.start_soon(self._responder())
 
@@ -139,6 +158,7 @@ class Bench:
         d = self.dut
         d.i_rst.value = 1
         d.i_root_ppn.value = ROOT >> 12
+        d.i_pbmte.value = self.pbmte
         d.i_req_valid.value = 0
         d.i_req_vpn.value = 0
         d.i_discard.value = 0
@@ -240,11 +260,13 @@ class Bench:
 
     def check(self, got: dict[str, int], vpn: int) -> None:
         """Compare a response with the reference walk of current memory."""
-        want = self.mem.walk(int(self.dut.i_root_ppn.value), vpn)
+        want = self.mem.walk(
+            int(self.dut.i_root_ppn.value), vpn, int(self.dut.i_pbmte.value)
+        )
         assert got["vpn"] == vpn
         assert got["fault"] == want["fault"], (hex(vpn), got, want)
         if want["fault"] == DFAULT_NONE:
-            for key in ("ppn", "level", "perms"):
+            for key in ("pbmt", "ppn", "level", "perms"):
                 assert got[key] == want[key], (hex(vpn), key, got, want)
 
 
@@ -534,3 +556,78 @@ async def root_switch_discards_old_context(dut: Any) -> None:
     b.check(got, vpn)
     assert got["ppn"] == 0xA0001
     assert b.reads - before == 3
+
+
+@cocotb.test()
+async def pbmt_encodings_faults_and_alias(dut: Any) -> None:
+    """Svpbmt in the walker: PBMTE, reserved encodings, the alias PPN, superpages.
+
+    With PBMTE clear every PBMT field is a page fault. With it set, PBMT 3 in a
+    leaf and any PBMT in a pointer are page faults; NC and IO leaves over DDR
+    answer the alias PPN and the field at every level (4 KiB, 2 MiB, 1 GiB);
+    over memory outside DDR (low BRAM) or a device page they keep their PPN.
+    A pointer with PBMT set never fills the walk cache.
+    """
+    b = Bench(dut, 77)
+    await b.reset()
+    m = b.mem
+    flags = V | R | W | A | D
+    m.write(ROOT + 8 * 40, pte(table(60) >> 12, V))
+    m.write(table(60), pte(table(61) >> 12, V))
+    leaves = {
+        0: pte(0x90100, flags),  # PMA
+        1: pte(0x90101, flags, PBMT_NC),
+        2: pte(0x90102, flags, PBMT_IO),
+        3: pte(0x90103, flags, PBMT_RES),
+        4: pte(0x00010, flags | X, PBMT_NC),  # low BRAM: no alias
+        5: pte(0x40000, flags, PBMT_IO),  # MMIO page: no alias
+        6: pte(0x90106, flags, PBMT_NC) | (1 << 63),  # N (no Svnapot)
+        7: pte(0x90107, flags, PBMT_IO) | (1 << 58),  # reserved bit
+    }
+    for i, e in leaves.items():
+        m.write(table(61) + 8 * i, e)
+    # 2 MiB IO and 1 GiB NC leaves over DDR.
+    m.write(table(60) + 8 * 9, pte(0x80200, flags, PBMT_IO))
+    m.write(ROOT + 8 * 41, pte(0x80000, flags | X, PBMT_NC))
+    # A pointer with PBMT set (reserved in a non-leaf), whatever lies below.
+    m.write(table(60) + 8 * 10, pte(table(62) >> 12, V, PBMT_NC))
+    m.write(table(62), pte(0x90200, flags))
+    vpns = [(40 << 18) | i for i in leaves]
+    vpns += [(40 << 18) | (9 << 9) | 0x33, (41 << 18) | 0x12345, (40 << 18) | (10 << 9)]
+
+    for pbmte in (0, 1, 0, 1):
+        dut.i_pbmte.value = pbmte
+        await b.discard()
+        for vpn in vpns:
+            got = await b.walk(vpn)
+            b.check(got, vpn)
+            pbmt_field = None
+            for i, e in leaves.items():
+                if vpn == (40 << 18) | i:
+                    pbmt_field = (e >> 61) & 3
+            if pbmte == 0 and pbmt_field:
+                assert got["fault"] == DFAULT_PAGE, (hex(vpn), got)
+        # Spot checks that do not rely on the reference.
+        nc = await b.walk((40 << 18) | 1)
+        io_mega = await b.walk((40 << 18) | (9 << 9) | 0x33)
+        nc_giga = await b.walk((41 << 18) | 0x12345)
+        bram = await b.walk((40 << 18) | 4)
+        if pbmte:
+            assert nc["fault"] == DFAULT_NONE and nc["pbmt"] == PBMT_NC
+            assert nc["ppn"] == 0x90101 | ALIAS_PPN_BIT
+            assert io_mega["pbmt"] == PBMT_IO and io_mega["level"] == 1
+            assert io_mega["ppn"] == 0x80200 | ALIAS_PPN_BIT
+            assert nc_giga["pbmt"] == PBMT_NC and nc_giga["level"] == 2
+            assert nc_giga["ppn"] == 0x80000 | ALIAS_PPN_BIT
+            assert bram["pbmt"] == PBMT_NC and bram["ppn"] == 0x00010
+        else:
+            for got in (nc, io_mega, nc_giga, bram):
+                assert got["fault"] == DFAULT_PAGE and got["pbmt"] == 0
+        # The reserved encodings fault whatever PBMTE says.
+        for i in (3, 6, 7):
+            assert (await b.walk((40 << 18) | i))["fault"] == DFAULT_PAGE
+        bad = await b.walk((40 << 18) | (10 << 9))
+        assert bad["fault"] == DFAULT_PAGE
+        # The PBMT pointer was not cached: a cached one would let this walk
+        # start below it and find the valid leaf there.
+        assert (await b.walk((40 << 18) | (10 << 9)))["fault"] == DFAULT_PAGE

@@ -870,6 +870,27 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="Without the vector unit, mstatus.VS reads zero and vector CSRs trap",
     ),
+    "svpbmt_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        description=(
+            "Svpbmt: PBMTE and reserved-encoding page faults, NC and IO pages over DDR "
+            "(4 KiB and 2 MiB) and low BRAM coherent with cacheable views, AMO/LR/SC/"
+            "cbo.zero/fetch access faults, the field kept in both TLB levels"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+    ),
+    "svpbmt_test_assert": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="svpbmt_test",
+        nic_mac_clocks=False,
+        description="Svpbmt with the cache, load-queue and store-queue assertions enabled",
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+        verilator_extra_args=("--assert",),
+    ),
     "vec_state_test_v256": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

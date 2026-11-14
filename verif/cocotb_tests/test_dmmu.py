@@ -37,6 +37,12 @@ XLEN_MASK = (1 << 64) - 1
 FLUSH_ALL = 1 << 38
 DDR_CAPACITY_LOG2_BYTES = int(os.environ.get("FROST_DDR_CAPACITY_LOG2_BYTES", "30"))
 DDR_LIMIT = 0x8000_0000 + (1 << DDR_CAPACITY_LOG2_BYTES)
+# riscv_pkg "Svpbmt": the uncached alias of DDR sets one bit above it.
+ALIAS_BIT = 30 if DDR_CAPACITY_LOG2_BYTES <= 30 else DDR_CAPACITY_LOG2_BYTES
+ALIAS_OFFSET = 1 << ALIAS_BIT
+ALIAS_COVER_LIMIT = (
+    DDR_LIMIT if DDR_CAPACITY_LOG2_BYTES <= 30 else 1 << DDR_CAPACITY_LOG2_BYTES
+)
 
 
 @dataclass(frozen=True)
@@ -53,10 +59,12 @@ class Leaf:
     d: int = 1
     g: int = 0
     fault: int = NONE
+    pbmt: int = 0  # Svpbmt field: 0 PMA, 1 NC, 2 IO
 
     def packed(self) -> int:
         """Pack the leaf as a riscv_pkg::ptw_resp_t."""
         fields = (
+            (self.pbmt, 2),
             (self.fault, 2),
             (self.vpn, 27),
             (self.ppn, 44),
@@ -94,6 +102,12 @@ class Op:
     trap_misaligned: int = 1
 
 
+def _alias_ok(pa: int) -> bool:
+    """Return whether a PA is in the Svpbmt uncached alias of DDR."""
+    real = pa & ~ALIAS_OFFSET
+    return bool(pa & ALIAS_OFFSET) and 0x8000_0000 <= real < ALIAS_COVER_LIMIT
+
+
 def _device_ok(pa: int) -> bool:
     """Return whether a PA is in the MMIO, APLIC, or IMSIC device windows."""
     return (
@@ -123,14 +137,15 @@ def _expected(op: Op, leaf: Leaf) -> tuple[int, int, int]:
     pa = ((leaf.ppn << 12) & ~((1 << offset_bits) - 1)) | (
         va & ((1 << offset_bits) - 1)
     )
-    mapped = (
-        pa < 0x40000
-        or 0x8000_0000 <= pa < DDR_LIMIT
-        or (not op.atomic and _device_ok(pa))
-    )
+    memory = pa < 0x40000 or 0x8000_0000 <= pa < DDR_LIMIT
+    # Svpbmt: NC or IO over low BRAM, or over the uncached alias of DDR the
+    # walker gives NC and IO leaves, is a device page without atomics. The
+    # alias is outside the PMA map, so a PMA leaf there is an access fault.
+    device = _device_ok(pa) or (leaf.pbmt != 0 and (memory or _alias_ok(pa)))
+    mapped = (memory and not leaf.pbmt) or (not op.atomic and device)
     if not mapped:
         return va, ACCESS, 0
-    return pa, NONE, int(_device_ok(pa))
+    return pa, NONE, int(device)
 
 
 async def _cycle(dut: Any) -> None:
@@ -390,6 +405,83 @@ async def test_hit_and_walk_resolution_matrix(dut: Any) -> None:
             dut.i_walk_resp_valid.value = 0
             await _cycle(dut)
             assert not int(dut.o_iss_out_valid.value), "resolution duplicated"
+
+
+@cocotb.test()
+async def test_pbmt_pages_take_the_mmio_path(dut: Any) -> None:
+    """Svpbmt: NC and IO leaves resolve as MMIO, refuse atomics, keep their PA.
+
+    The walker gives an NC or IO leaf over DDR the alias PPN; the DMMU must
+    classify it MMIO (loads at the ROB head, no L0, stores after B), refuse
+    AMO, LR and SC with an access fault, and return the alias PA, from a walk
+    response, from a DTLB hit and from the last-page buffer. An NC leaf over
+    low BRAM keeps its BRAM PA and is MMIO by its field. Superpages and Zicbom
+    ops on them resolve the same way.
+    """
+    await _setup(dut)
+    base_op = Op()
+    leaf = Leaf(vpn=base_op.va >> 12)
+    alias_ppn = 0x8_0123 | (ALIAS_OFFSET >> 12)
+    nc = replace(leaf, ppn=alias_ppn, pbmt=1)
+    io = replace(leaf, ppn=alias_ppn, pbmt=2)
+    bram = replace(leaf, ppn=0x10, pbmt=1)
+    device = replace(leaf, ppn=0x40000, pbmt=2)
+    mega = replace(leaf, level=1, ppn=0x80200 | (ALIAS_OFFSET >> 12), pbmt=2)
+    giga = replace(leaf, level=2, ppn=0x80000 | (ALIAS_OFFSET >> 12), pbmt=1)
+    load, store = base_op, replace(base_op, needs_sq=1, store=1)
+    amo = replace(base_op, store=1, atomic=1)
+    lr = replace(base_op, atomic=1)
+    sc = replace(base_op, needs_sq=1, store=1, is_sc=1, atomic=1)
+    cmo = replace(base_op, needs_sq=1, size=0)
+    cases = []
+    for page in (nc, io, bram, device):
+        for op in (load, store, amo, lr, sc, cmo):
+            cases.append((op, page))
+    # A PMA leaf over the alias window is outside the map.
+    for op in (load, store, cmo):
+        cases.append((op, replace(nc, pbmt=0)))
+    for op in (load, store, amo):
+        cases.append((replace(op, va=0x0123_4568), mega))
+        cases.append((replace(op, va=0x1234_5678), giga))
+    for via_walk in (False, True):
+        for op, page in cases:
+            page = replace(page, vpn=(op.va >> 12) & VPN_MASK)
+            _, fault, mmio = _expected(op, page)
+            if page.pbmt == 0:
+                assert fault == ACCESS, (op, page)
+            elif not op.atomic:
+                assert fault == NONE and mmio == 1, (op, page)
+            else:
+                assert fault == ACCESS, (op, page)
+            await _clear(dut)
+            if not via_walk:
+                await _install(dut, page)
+            _issue(dut, op)
+            await _cycle(dut)
+            dut.i_iss_valid.value = 0
+            if via_walk:
+                _response(dut, page)
+            await _cycle(dut)
+            _check(dut, op, page)
+            dut.i_walk_resp_valid.value = 0
+            await _cycle(dut)
+    # The last-page buffer keeps the MMIO class: back-to-back loads of an NC
+    # page after one resolution bypass S1 and still resolve as MMIO.
+    for page in (nc, bram):
+        page = replace(page, vpn=(load.va >> 12) & VPN_MASK)
+        await _clear(dut)
+        await _install(dut, page)
+        for i in range(4):
+            op = replace(load, va=load.va + 8 * i, tag=4 + i)
+            _issue(dut, op)
+            await _cycle(dut)
+            dut.i_iss_valid.value = 0
+            for _ in range(3):
+                if int(dut.o_iss_out_valid.value):
+                    break
+                await _cycle(dut)
+            _check(dut, op, page)
+            await _cycle(dut)
 
 
 @cocotb.test()

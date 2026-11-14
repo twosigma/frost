@@ -60,6 +60,7 @@ class Leaf:
     perm_w: int = 0
     perm_d: int = 1
     perm_g: int = 0
+    pbmt: int = 0  # Svpbmt field: fetch from an NC or IO page is an access fault
 
 
 @dataclass(frozen=True)
@@ -145,7 +146,7 @@ def _resolve_word(va: int, leaf: Leaf | None, priv_u: int) -> tuple[int, int, in
         return va & PHYS_MASK, 1, 1
     ppn20 = _materialized_ppn(leaf, vpn)
     physical_page = ppn20 << 12
-    if leaf.ppn >> PHYS_PPN_BITS or not _fetch_pma_ok(physical_page):
+    if leaf.ppn >> PHYS_PPN_BITS or leaf.pbmt or not _fetch_pma_ok(physical_page):
         return va & PHYS_MASK, 1, 0
     return physical_page | (va & 0xFFF), 0, 0
 
@@ -189,6 +190,7 @@ def _drive_idle(dut: Any) -> None:
     dut.i_flush_asid.value = 0
     dut.i_asid.value = 0
     dut.i_walk_resp_perm_g.value = 0
+    dut.i_walk_resp_pbmt.value = 0
     dut.i_full_flush.value = 0
     dut.i_pc_update_en.value = 0
     dut.i_pc_d.value = 0
@@ -270,7 +272,9 @@ def _drive_response(
     perm_w: int = 0,
     perm_d: int = 1,
     perm_g: int = 0,
+    pbmt: int = 0,
 ) -> None:
+    dut.i_walk_resp_pbmt.value = pbmt
     dut.i_walk_resp_perm_g.value = perm_g
     dut.i_walk_resp_fault_kind.value = fault_kind
     dut.i_walk_resp_vpn.value = vpn & VPN_MASK
@@ -321,7 +325,48 @@ async def _return_leaf(dut: Any, leaf: Leaf) -> None:
         perm_w=leaf.perm_w,
         perm_d=leaf.perm_d,
         perm_g=leaf.perm_g,
+        pbmt=leaf.pbmt,
     )
+
+
+@cocotb.test()
+async def test_pbmt_pages_refuse_fetch(dut: Any) -> None:
+    """Svpbmt: fetch from an NC or IO page is an instruction access fault.
+
+    The walk response faults the window (not a page fault), and so does the
+    ITLB hit after the install: the entry keeps the field. NC and IO leaves
+    over DDR (the walker's alias PPN), over the low BRAM code region and a
+    2 MiB IO superpage all refuse; a PMA leaf of the same frame fetches.
+    """
+    await _setup(dut)
+    alias = (
+        1 << (30 if DDR_CAPACITY_LOG2_BYTES <= 30 else DDR_CAPACITY_LOG2_BYTES)
+    ) >> 12
+    cases = (
+        (0x0000_6040, Leaf(vpn=0x6, ppn=0x80123 | alias, pbmt=1)),
+        (0x0000_7080, Leaf(vpn=0x7, ppn=0x80124 | alias, pbmt=2)),
+        (0x0000_8100, Leaf(vpn=0x8, ppn=0x00010, pbmt=1)),
+        (0x0060_3000, Leaf(vpn=0x603, ppn=0x80200 | alias, level=1, pbmt=2)),
+        (0x0000_9040, Leaf(vpn=0x9, ppn=0x80125)),
+    )
+    dut.i_active.value = 1
+    for pc, leaf in cases:
+        await _move_pc(dut, pc)
+        await _cycle(dut)
+        await _accept_request(dut, leaf.vpn)
+        await _return_leaf(dut, leaf)
+        want = _translated_window(pc, leaf)
+        _assert_window(dut, want)
+        assert int(dut.o_fault0.value) == int(leaf.pbmt != 0), (hex(pc), leaf)
+        assert int(dut.o_fault0_page.value) == 0
+        # Elsewhere and back: the ITLB hit answers the same.
+        await _move_pc(dut, 0x0000_0040)
+        await _cycle(dut)
+        await _move_pc(dut, pc + 8)
+        await _cycle(dut)
+        await _settle()
+        assert int(dut.o_walk_req_valid.value) == 0, "the ITLB lost the entry"
+        _assert_window(dut, _translated_window(pc + 8, leaf))
 
 
 @cocotb.test()

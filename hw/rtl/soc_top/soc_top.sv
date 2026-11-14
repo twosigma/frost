@@ -633,7 +633,15 @@ module soc_top #(
   logic local_debug_q, local_mirror_aborted_q;
   logic [riscv_pkg::PhysAddrBits-1:0] local_addr;
   logic [2:0] local_state_q;
-  wire local_imsic_pending = local_state_q == 4 && local_write &&
+  // Svpbmt: an access to the uncached alias of DDR (riscv_pkg "Svpbmt"). It
+  // reaches the coherent DMA port as one single-beat transfer of the real DDR
+  // address (state 6 below), never a local memory or register.
+  wire local_pbmt_alias = riscv_pkg::pma_pbmt_alias_ok(riscv_pkg::XLEN'(local_addr));
+  logic local_alias;
+  logic alias_done;  // the alias transfer answered (or rst_core dropped it)
+  logic [1:0] alias_status;
+  logic [63:0] alias_rdata;  // the addressed dword of an alias read
+  wire local_imsic_pending = local_state_q == 4 && local_write && !local_pbmt_alias &&
       local_addr[31:21] == ImsicWindowSel;
   assign aplic_msi_ready = !imsic_cpu_write &&
       (!ASYNC_CPU_CLOCK || (!local_imsic_pending && msi_ready));
@@ -1266,12 +1274,15 @@ module soc_top #(
   assign local_fire = local_state_q == 4 && !soc_axi_rst && debug_store_room &&
       (!ASYNC_CPU_CLOCK || !local_imsic_pending || soc_cpu_rst || msi_ready);
   assign local_bram = 64'(local_addr) < 64'(MEM_SIZE_BYTES);
-  assign local_device = riscv_pkg::pma_device_ok(riscv_pkg::XLEN'(local_addr));
+  // The alias window is outside the PMA map: it is never a register, BRAM or
+  // device-quadrant store, only the DMA transfer of state 6.
+  assign local_device = riscv_pkg::pma_device_ok(riscv_pkg::XLEN'(local_addr)) && !local_pbmt_alias;
+  assign local_alias = (ENABLE_CACHED_TIER != 0) && local_pbmt_alias;
   assign local_instruction = local_prot[2];
   assign local_ok = !local_error &&
       (local_instruction ? !local_write && 64'(local_addr) < (64'd1 << ImemByteAddrWidth) :
-       local_bram || local_device ||
-       (local_write && riscv_pkg::pma_device_quadrant(
+       local_bram || local_device || local_alias ||
+       (local_write && !local_pbmt_alias && riscv_pkg::pma_device_quadrant(
       riscv_pkg::XLEN'(local_addr)
   )));
   wire [riscv_pkg::PhysAddrBits-1:0] local_lane_addr = local_line ?
@@ -1285,14 +1296,15 @@ module soc_top #(
   assign data_memory_write_data = use_incoming_payload ? local_req_wdata[63:0] :
       (local_device && local_size <= 2) ?
       {2{local_addr[2] ? local_wdata[63:32] : local_wdata[31:0]}} : local_wdata;
-  wire local_register_store = local_fire && local_write && local_ok && !local_axil;
+  wire local_register_store = local_fire && local_write && local_ok && !local_axil && !local_alias;
   assign data_memory_byte_write_enable = fast_bram_fire && local_req_write ?
       local_req_wstrb[7:0] : local_register_store ? local_wstrb : '0;
   wire fast_bram_store = fast_bram_fire && local_req_write;
   wire staged_bram_store = local_fire && local_write && local_ok && local_bram;
   assign data_memory_bram_byte_write_enable =
       ({8{fast_bram_store}} & local_req_wstrb) | ({8{staged_bram_store}} & local_wstrb);
-  assign data_memory_read_enable = local_fire && !local_write && local_ok && !local_instruction;
+  assign data_memory_read_enable = local_fire && !local_write && local_ok && !local_instruction &&
+      !local_alias;
   // Instruction reads always use the registered local request. The fast
   // acceptance path serves data only; its arbitration must not retarget the
   // instruction RAM and its legacy metadata banks on unused read cycles.
@@ -1370,10 +1382,14 @@ module soc_top #(
         local_wdata <= local_req_wdata;
         local_wstrb <= local_req_wstrb;
       end else if (local_fire) begin
-        local_state_q <= local_axil ? 5 : 1;
+        local_state_q <= local_axil ? 5 : (local_alias && local_ok) ? 6 : 1;
         local_read_instruction_q <= local_instruction;
-        local_read_device_q <= local_device;
+        // An alias read returns through the MMIO read register.
+        local_read_device_q <= local_device || local_alias;
         local_resp_status <= local_ok ? 2'b00 : 2'b11;
+      end else if (alias_done) begin
+        local_state_q <= 1;
+        local_resp_status <= alias_status;
       end else if (reg_axil_done) begin
         local_state_q <= 1;
         local_resp_status <= rst_core ? 2'b00 : local_write ?
@@ -1470,7 +1486,9 @@ AxilPorts
     // zero-extended at the ingress. The bridge uses the CPU clock
     // when ASYNC_CPU_CLOCK is set. Paired resets cover both DMA domains.
     // The common-clock profile resets all four blocks with rst_core.
-    localparam int unsigned DmaPorts = (ENABLE_1G_ETH != 0) ? 3 : 2;
+    // The last port carries the hart's Svpbmt NC and IO accesses to DDR.
+    localparam int unsigned DmaPorts = (ENABLE_1G_ETH != 0) ? 4 : 3;
+    localparam int unsigned AliasPort = DmaPorts - 1;
     localparam int unsigned DmaAxiAddrBits = 64;
     localparam int unsigned DmaAxiDataBits = 8 * L1LineBytes;
     // The NIC's ids, 3 bits; the engine's 2-bit ids are zero-extended.
@@ -1748,6 +1766,76 @@ AxilPorts
       assign o_nic_1g_phy_ctrl = '0;
       assign o_nic_1g_rx_block_lock = 1'b0;
     end
+
+    // Svpbmt NC and IO accesses to DDR (the local bus's state 6). The hart
+    // sends them to the uncached alias (riscv_pkg "Svpbmt"); this master
+    // turns each into one single-beat AXI transfer of its size at the real
+    // DDR address, into the coherent DMA port beside the NIC. The home
+    // orders it with every cached copy: a read collects dirty L1D data, a
+    // write invalidates the L1D copies and merges its bytes, and the B or R
+    // comes back only after that. AxCACHE 0000 (Device Non-bufferable) asks
+    // for streaming placement (way 0) in the L2; the hart's L0 and L1D never
+    // hold the bytes through the alias. The local bus has one access in
+    // flight, so the master has one transfer and needs one ID. rst_core
+    // resets the DMA interconnect; the transfer then ends with OKAY and zero
+    // data, as the register slaves do.
+    localparam int unsigned AliasLaneLsb = 3;
+    localparam int unsigned AliasLaneMsb = $clog2(DmaAxiDataBits / 8) - 1;
+    logic alias_aw_q, alias_w_q, alias_ar_q;
+    wire alias_start = local_fire && local_alias && local_ok;
+    wire [riscv_pkg::XLEN-1:0] alias_real_addr = riscv_pkg::pbmt_alias_real(
+        riscv_pkg::XLEN'(local_addr)
+    );
+    wire alias_wait = local_state_q == 6;
+    always_ff @(posedge i_clk) begin
+      if (soc_axi_rst || rst_core) begin
+        alias_aw_q <= 1'b0;
+        alias_w_q  <= 1'b0;
+        alias_ar_q <= 1'b0;
+      end else if (alias_start) begin
+        alias_aw_q <= local_write;
+        alias_w_q  <= local_write;
+        alias_ar_q <= !local_write;
+      end else begin
+        if (up_awready[AliasPort]) alias_aw_q <= 1'b0;
+        if (up_wready[AliasPort]) alias_w_q <= 1'b0;
+        if (up_arready[AliasPort]) alias_ar_q <= 1'b0;
+      end
+    end
+    assign up_awvalid[AliasPort] = alias_aw_q;
+    assign up_awid[AliasPort] = '0;
+    assign up_awaddr[AliasPort] = DmaAxiAddrBits'(alias_real_addr);
+    assign up_awlen[AliasPort] = 8'd0;
+    assign up_awsize[AliasPort] = local_size;
+    assign up_awburst[AliasPort] = 2'b01;
+    assign up_awlock[AliasPort] = 1'b0;
+    assign up_awcache[AliasPort] = 4'b0000;
+    assign up_awprot[AliasPort] = local_prot;
+    assign up_awqos[AliasPort] = 4'd0;
+    assign up_wvalid[AliasPort] = alias_w_q;
+    assign up_wdata[AliasPort] = {(DmaAxiDataBits / 64) {local_wdata}};
+    assign up_wstrb[AliasPort] = (DmaAxiDataBits / 8)'(local_wstrb) <<
+        {local_addr[AliasLaneMsb:AliasLaneLsb], 3'b000};
+    assign up_wlast[AliasPort] = 1'b1;
+    assign up_bready[AliasPort] = alias_wait && local_write && !alias_aw_q && !alias_w_q;
+    assign up_arvalid[AliasPort] = alias_ar_q;
+    assign up_arid[AliasPort] = '0;
+    assign up_araddr[AliasPort] = DmaAxiAddrBits'(alias_real_addr);
+    assign up_arlen[AliasPort] = 8'd0;
+    assign up_arsize[AliasPort] = local_size;
+    assign up_arburst[AliasPort] = 2'b01;
+    assign up_arlock[AliasPort] = 1'b0;
+    assign up_arcache[AliasPort] = 4'b0000;
+    assign up_arprot[AliasPort] = local_prot;
+    assign up_arqos[AliasPort] = 4'd0;
+    assign up_rready[AliasPort] = alias_wait && !local_write && !alias_ar_q;
+    wire alias_b_fire = up_bvalid[AliasPort] && up_bready[AliasPort];
+    wire alias_r_fire = up_rvalid[AliasPort] && up_rready[AliasPort];
+    assign alias_done = alias_wait && !soc_axi_rst && (rst_core || alias_b_fire || alias_r_fire);
+    assign alias_status = rst_core ? 2'b00 : alias_b_fire ? up_bresp[AliasPort] :
+        up_rresp[AliasPort];
+    assign alias_rdata = rst_core ? 64'd0 : 64'(up_rdata[AliasPort] >>
+        {local_addr[AliasLaneMsb:AliasLaneLsb], 6'b000000});
 
     axi_mux #(
         .NUM_PORTS(DmaPorts),
@@ -2180,6 +2268,10 @@ AxilPorts
     );
 `endif
   end else begin : gen_no_dma
+    // No DMA port: local_alias is never set, so state 6 is never entered.
+    assign alias_done = 1'b0;
+    assign alias_status = 2'b11;
+    assign alias_rdata = '0;
     assign reg_axil_awready = '0;
     assign reg_axil_wready = '0;
     assign reg_axil_bvalid = '0;
@@ -2639,9 +2731,11 @@ AxilPorts
 
   // The local access logic already qualifies this pulse against MMIO bounds.
   assign mmio_read_capture = mmio_read_pulse;
-  assign mmio_response_capture = mmio_read_capture || reg_axil_read_capture;
+  wire alias_read_capture = alias_done && !local_write;
+  assign mmio_response_capture = mmio_read_capture || reg_axil_read_capture || alias_read_capture;
   assign mmio_response_data = reg_axil_read_capture ?
-      (rst_core ? 64'b0 : reg_axil_rdata[reg_axil_port_q]) : mmio_read_data_comb;
+      (rst_core ? 64'b0 : reg_axil_rdata[reg_axil_port_q]) :
+      alias_read_capture ? alias_rdata : mmio_read_data_comb;
 
   // Capture the performed MMIO read on mmio_read_pulse. Each case selects
   // an aligned dword {word at +4, word at +0}; addr[2] selects a 32-bit result
