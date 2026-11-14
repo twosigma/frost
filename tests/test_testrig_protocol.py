@@ -115,6 +115,87 @@ def test_platform_interface_matches_testrig_fixture(
     assert fixture == production
 
 
+def _balanced(text: str, start: int) -> int:
+    """Index just past the parenthesis group that opens at text[start]."""
+    depth = 0
+    for index in range(start, len(text)):
+        if text[index] == "(":
+            depth += 1
+        elif text[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    raise AssertionError("unbalanced parentheses")
+
+
+def _split_top_level(text: str) -> list[str]:
+    """Split on commas that are not inside (), [] or {}."""
+    parts, depth, current = [], 0, ""
+    for char in text:
+        depth += char in "([{"
+        depth -= char in ")]}"
+        if char == "," and depth == 0:
+            parts.append(current)
+            current = ""
+        else:
+            current += char
+    parts.append(current)
+    return [part for part in parts if part.strip()]
+
+
+def test_platform_connects_every_cpu_ooo_port() -> None:
+    """Every cpu_ooo output and every input without a default is connected.
+
+    The platform builds with Verilator warnings fatal, so a port added to
+    cpu_ooo and not named here only shows up in the TestRIG job. Inputs that
+    have a default may be left unnamed.
+    """
+
+    def strip(text: str) -> str:
+        return re.sub(r"//[^\n]*|/\*.*?\*/", "", text, flags=re.S)
+
+    rtl = strip(
+        (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv").read_text(
+            encoding="utf-8"
+        )
+    )
+    header = re.search(r"\bmodule\s+cpu_ooo\s*#\s*\(", rtl)
+    assert header is not None
+    ports_open = rtl.index("(", _balanced(rtl, header.end() - 1))
+    ports_text = rtl[ports_open + 1 : _balanced(rtl, ports_open) - 1]
+    ports = set()
+    for declaration in _split_top_level(ports_text):
+        # A default is a "=" outside any dimension or expression.
+        flat = re.sub(r"\[[^\]]*\]|\([^)]*\)", "", declaration)
+        name_part, has_default, _ = flat.partition("=")
+        name_part = name_part.strip()
+        assert re.match(r"(input|output|inout)\b", name_part), declaration
+        if name_part.startswith("input") and has_default:
+            continue  # may be left at its default
+        ports.add(re.findall(r"\w+", name_part)[-1])
+    assert len(ports) > 100
+
+    platform = strip(
+        (REPO_ROOT / "hw/sim/frost_rvfi_platform.sv").read_text(encoding="utf-8")
+    )
+    instance = re.search(r"\bcpu_ooo\s*#\s*\(", platform)
+    assert instance is not None
+    after_parameters = _balanced(platform, instance.end() - 1)
+    pins_open = platform.index("(", after_parameters)
+    pins_text = platform[pins_open : _balanced(platform, pins_open)]
+    assert ".*" not in pins_text, "name every cpu_ooo port explicitly"
+    # Only associations at the top level of the pin list count, not member
+    # references such as cpu_inst.o_x inside another pin's expression.
+    top_level, depth = "", 0
+    for char in pins_text[1:-1]:
+        if depth == 0:
+            top_level += char
+        depth += char in "([{"
+        depth -= char in ")]}"
+    connected = set(re.findall(r"\.(\w+)\s*(?:,|$|\()", top_level))
+    assert ports - connected == set()
+
+
 @pytest.mark.parametrize("capacity_log2_bytes", (30, 36, 37))
 @pytest.mark.parametrize("sscofpmf", (False, True))
 def test_sail_ddr_capacity_matches_frost(
