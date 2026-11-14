@@ -25,11 +25,12 @@ Head and tail pointers carry an extra wrap bit to tell full from empty.
 
 Multi-bit fields live in distributed RAM: PC, fall-through PC, destination
 register, checkpoint ID, head metadata, value, exception cause, FP flags,
-branch target, and the CSR address, op, and write data. A RAM with several
+branch target, the CSR address, op, and write data, and the instruction
+bits. A RAM with several
 write ports keeps one bank per port and a live value table (LVT) that records
 which bank holds each entry's newest value. Allocation-only fields have two
 write ports, one per dispatch slot, and share one packed memory and LVT (the
-head+1 copy leaves out the CSR fields). The FP-flag and exception-cause RAMs
+head+1 copy leaves out the CSR fields and the instruction bits). The FP-flag and exception-cause RAMs
 add one port per CDB lane. The branch target is split by producer: JAL
 targets go into an allocation-written RAM, and branch and JALR targets into a
 single-port RAM written on branch update, and the head selects between the
@@ -340,7 +341,10 @@ full flush removes it. `o_trap_value` is the entry's value field, where the
 producer parks the faulting virtual address for instruction access and page
 faults (the INT ALU shim) and for misaligned, access, and page faults on
 data (the load and store paths). cpu_ooo writes it to `mtval` or `stval` for
-those causes.
+those causes. `o_trap_insn` is the head entry's instruction bits, which
+dispatch stores in the head-only allocation memory (a compressed
+instruction's 16 bits zero-extended). cpu_ooo writes them to `mtval` or
+`stval` for an illegal-instruction exception, whichever stage raised it.
 
 For the misaligned-access engine, the ROB also presents the head's memory
 fields: funct3 and the store's `rs2` (from the `csr_op` and `csr_addr` fields,

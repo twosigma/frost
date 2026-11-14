@@ -111,6 +111,7 @@ module tomasulo_coherent_cut_test_harness #(
     output logic [riscv_pkg::XLEN-1:0] o_head_next_retired_next_pc,
     output riscv_pkg::exc_cause_t o_trap_cause,
     output logic [riscv_pkg::XLEN-1:0] o_trap_value,
+    output logic [31:0] o_trap_insn,
     input logic i_trap_taken,
     output logic o_mret_start,
     output logic o_mret_start_is_sret,
@@ -409,8 +410,10 @@ module tomasulo_coherent_cut_test_harness #(
       .i_lq_mem_read_error(DIRECT_CACHE_READS ? cache_read_error : i_lq_mem_read_error),
       .i_lq_mem_read_id(DIRECT_CACHE_READS ? cache_read_id : i_lq_mem_read_id),
       .i_lq_mem_read_is_cached(DIRECT_CACHE_READS || i_lq_mem_read_is_cached),
-      // No vector unit here: nothing reads the vector-config in-flight flag.
+      // No vector unit here: nothing reads the vector-config in-flight flag,
+      // and the vector memory table is empty.
       .o_vcfg_in_flight(),
+      .i_vmt('0),
       .i_coherent_cut_hold(cut_hold),
       .i_coh_admit_valid(cut_admit && !i_probe_delay_admit),
       .i_coh_admit_slot('0),

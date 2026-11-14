@@ -2744,6 +2744,94 @@ async def test_flush_reuse_clears_alloc_illegal(dut: Any) -> None:
     assert dut_if.empty
 
 
+@cocotb.test()
+async def test_trap_insn_follows_reallocated_head(dut: Any) -> None:
+    """o_trap_insn is the trapping head's own bits, from either write port.
+
+    Two illegal entries allocated behind a branch are flushed, and their tags
+    are reallocated: slot 1 to a legal instruction and slot 2 to an illegal
+    one with different bits. The trap reports the slot-2 reallocation's bits.
+    After a full flush, a slot-1 illegal entry reports its own bits.
+    """
+    dut_if, model = await setup_test(dut)
+
+    dut.i_priv.value = PRIV_U
+    dut.i_priv_is_u.value = 1
+
+    def illegal_csr(pc: int, csr_addr: int, insn_bits: int) -> AllocationRequest:
+        return AllocationRequest(
+            pc=pc,
+            dest_reg=10,
+            dest_valid=True,
+            is_csr=True,
+            csr_addr=csr_addr,
+            insn_bits=insn_bits,
+        )
+
+    branch = make_branch_request(pc=0x2600, predicted_taken=False)
+    branch_tag = await drive_single_alloc(dut_if, branch)
+    assert model.allocate(branch) == branch_tag
+
+    # Wrong path: two illegal CSR reads in U.
+    wrong_1_req = illegal_csr(0x2604, CSR_MSTATUS, 0x30002573)
+    wrong_2_req = illegal_csr(0x2608, CSR_SATP, 0x18002673)
+    (_, wrong_1, _), (_, wrong_2, _) = await drive_dual_alloc(
+        dut_if, wrong_1_req, wrong_2_req
+    )
+    model.allocate(wrong_1_req, exception=True, exc_cause=EXC_ILLEGAL_INSTR)
+    model.allocate(wrong_2_req, exception=True, exc_cause=EXC_ILLEGAL_INSTR)
+
+    await dut_if.partial_flush(branch_tag)
+    model.flush_partial(branch_tag)
+
+    # The correct path reuses both tags: a legal slot 1, an illegal slot 2.
+    legal = AllocationRequest(
+        pc=0x2700, dest_reg=11, dest_valid=True, insn_bits=0x00000013
+    )
+    right = illegal_csr(0x2704, CSR_MSTATUS, 0x30002773)
+    (_, tag_1, _), (_, tag_2, _) = await drive_dual_alloc(dut_if, legal, right)
+    assert (tag_1, tag_2) == (wrong_1, wrong_2)
+    assert model.allocate(legal) == tag_1
+    assert model.allocate(right, exception=True, exc_cause=EXC_ILLEGAL_INSTR) == tag_2
+
+    dut_if.drive_branch_update(BranchUpdate(tag=branch_tag, taken=False, target=0))
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_branch_update()
+    for tag in (tag_1, tag_2):
+        dut_if.drive_cdb_write(CDBWrite(tag=tag, value=0x1234))
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        dut_if.clear_cdb_write()
+
+    for _ in range(10):
+        if dut_if.trap_pending:
+            break
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+    assert dut_if.trap_pending, "Reallocated slot-2 illegal entry did not trap"
+    assert dut_if.head_tag == tag_2
+    assert dut_if.trap_pc == right.pc
+    assert dut_if.trap_cause == EXC_ILLEGAL_INSTR
+    assert int(dut.o_trap_insn.value) == 0x30002773
+
+    await dut_if.full_flush()
+    model.flush_all()
+    assert dut_if.empty
+
+    single = illegal_csr(0x2800, CSR_SATP, 0x0000_9C7D)
+    tag = await drive_single_alloc(dut_if, single)
+    dut_if.drive_cdb_write(CDBWrite(tag=tag, value=0))
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+    await RisingEdge(dut_if.clock)
+    assert dut_if.trap_pending, "Slot-1 illegal entry did not trap"
+    assert dut_if.trap_pc == single.pc
+    assert dut_if.trap_cause == EXC_ILLEGAL_INSTR
+    assert int(dut.o_trap_insn.value) == 0x0000_9C7D
+
+
 # =============================================================================
 # Constrained Random Tests
 # =============================================================================

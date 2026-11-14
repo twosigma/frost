@@ -105,6 +105,7 @@ PD_TO_ID_FIELDS = [
     ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
     ("ras_checkpoint_top", XLEN),
     ("bp_dir_idx", BP_DIR_IDX_BITS),
+    ("raw_parcel", 16),
 ]
 
 # from_id_to_ex_t
@@ -169,6 +170,7 @@ ID_TO_EX_FIELDS = [
     ("uses_fp_rs2", 1),
     ("uses_fp_rs3", 1),
     ("is_real", 1),
+    ("insn_bits", 32),
 ]
 
 # from_ex_comb_t
@@ -233,6 +235,7 @@ ROB_ALLOC_REQ_FIELDS = [
     ("is_vcfg", 1),
     ("is_varith", 1),
     ("vec_illegal", 1),
+    ("insn_bits", 32),
 ]
 
 # reorder_buffer_commit_t

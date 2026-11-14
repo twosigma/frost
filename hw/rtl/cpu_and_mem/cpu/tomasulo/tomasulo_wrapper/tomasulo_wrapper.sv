@@ -156,6 +156,9 @@ module tomasulo_wrapper #(
     output riscv_pkg::vcfg_commit_t           o_vcfg_commit,
     // Some ROB entry is a vector-config instruction (registered)
     output logic                              o_vcfg_in_flight,
+    // The vector memory table, for the load and store queues' range-ordering
+    // holds (all entries dead while the vector unit has no memory accesses)
+    input  riscv_pkg::vmt_view_t              i_vmt = '0,
     output riscv_pkg::reorder_buffer_commit_t o_commit_comb,
     output logic                              o_commit_valid_raw,
     output logic                              o_commit_misprediction_raw,
@@ -206,6 +209,7 @@ module tomasulo_wrapper #(
     output logic                  [        riscv_pkg::XLEN-1:0] o_head_next_retired_next_pc,
     output riscv_pkg::exc_cause_t                               o_trap_cause,
     output logic                  [        riscv_pkg::XLEN-1:0] o_trap_value,
+    output logic                  [                       31:0] o_trap_insn,
     input  logic                                                i_trap_taken,
     output logic                                                o_mret_start,
     output logic                                                o_mret_start_is_sret,
@@ -2576,6 +2580,7 @@ module tomasulo_wrapper #(
       .o_head_next_retired_next_pc    (o_head_next_retired_next_pc),
       .o_trap_cause                   (o_trap_cause),
       .o_trap_value                   (o_trap_value),
+      .o_trap_insn                    (o_trap_insn),
       .i_trap_taken                   (i_trap_taken),
       .o_mret_start                   (o_mret_start),
       .o_mret_start_is_sret           (o_mret_start_is_sret),
@@ -4040,6 +4045,7 @@ module tomasulo_wrapper #(
       // Address update (from MEM_RS issue; under active translation it is
       // the data MMU's S2 packet: a PA, or the VA with a fault)
       .i_addr_update(lq_addr_update_final),
+      .i_vmt(i_vmt),
 
       // The look-ahead tag precedes each valid address-update packet by one
       // cycle. Active translation selects a surviving S1 tag or live issue tag.
@@ -4620,6 +4626,7 @@ module tomasulo_wrapper #(
 
       // Address update (from MEM_RS issue)
       .i_addr_update              (sq_addr_update),
+      .i_vmt                      (i_vmt),
       .i_addr_update_capture_valid(sq_addr_update_capture_valid),
 
       // Data update (from MEM_RS issue)

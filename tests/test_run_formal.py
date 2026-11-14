@@ -865,6 +865,12 @@ FORMAL_TARGETS = [
         tasks=("bmc", "prove", "cover"),
     ),
     FormalTarget(
+        "dmmu_va_next.sby",
+        "Data-MMU S1 load and S2 VA next states, selected after the issue address, "
+        "equal the whole-payload selects, portable and primitive forms",
+        tasks=("bmc", "bmc_xilinx"),
+    ),
+    FormalTarget(
         "rs_alloc_parallel.sby",
         "Parallel RS allocation indices match the serial free-entry search",
         tasks=("bmc4", "bmc8", "bmc16", "bmc32"),
@@ -917,6 +923,12 @@ FORMAL_TARGETS = [
         "Decoded bundles preserve FIFO order through bypass, backpressure, flush, and "
         "wraparound",
         tasks=("prove", "prove_depth2", "cover"),
+    ),
+    FormalTarget(
+        "vec_hold_rows.sby",
+        "Vector range holds: a scalar entry is held exactly while an older live "
+        "vector memory table entry overlaps it or has an unknown range",
+        tasks=("vhold_lq_bmc", "vhold_sq_bmc", "cover"),
     ),
     FormalTarget(
         "cl_multiplier.sby",
@@ -1013,6 +1025,14 @@ FORMAL_TARGETS = [
         "response and selected last, equals the single-ready-set form at eight and "
         "three fills, portable and primitive",
         tasks=("bmc", "bmc_fills3", "bmc_xilinx"),
+    ),
+    FormalTarget(
+        "home_seat_next_equiv.sby",
+        "The home's fill waiter masks, seat counts, parking and fill images, formed "
+        "for both values of the decision's late term and selected last, equal the "
+        "original form for any state and input, at two, three and eight fills, "
+        "portable and primitive",
+        tasks=("bmc_seat2", "bmc_seat3", "bmc", "bmc_xilinx"),
     ),
     FormalTarget(
         "line_align.sby",
@@ -2471,9 +2491,19 @@ SBY_TASKS = [
     ("bmc_2port", "Bounded two-port arbitration equivalence"),
     ("bmc_xilinx_2port", "Bounded two-port arbitration with Xilinx primitives"),
     ("bmc_queued", "Bounded check with decoded-queue admission contract"),
+    (
+        "vhold_lq_bmc",
+        "Vector range holds with the load queue's address-update port, 8 frames.",
+    ),
+    (
+        "vhold_sq_bmc",
+        "Vector range holds with the store queue's per-entry addresses, 8 frames.",
+    ),
     ("bmc", "Check assertions up to the configured depth"),
     ("bmc_64x8", "Line alignment with 64-byte lines and 8 data bytes."),
     ("bmc_fills3", "Forward-turn equivalence with three fills."),
+    ("bmc_seat2", "Seat next-state equivalence with two fills."),
+    ("bmc_seat3", "Seat next-state equivalence with three fills and four ways."),
     ("line_link0_bmc", "Line client and links at zero stages, two identities."),
     (
         "coh_line_client_prove",

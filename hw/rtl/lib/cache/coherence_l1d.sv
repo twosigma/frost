@@ -3419,6 +3419,11 @@ module coherence_l1d #(
       end
       if (active && phase_q != Idle && operation_q == TwinOp)
         p_zero_twin_owed : assert (twin_fill_q);
+      // The prepared acquisition-endpoint update keeps the endpoint through an
+      // owed twin's Idle cycles and through TwinOp, as the controller does.
+      if (active && ((phase_q == Idle && twin_owed) ||
+                     (phase_q != Idle && operation_q == TwinOp)))
+        p_zero_twin_keeps_acquire_ep : assert (acq_ep_next == acq_ep_q);
       // Idle selects an owed twin before any grant, so no endpoint hands over
       // a grant meanwhile: an accepted grant always becomes the GrantOp.
       if (twin_owed) p_zero_twin_grant_wait : assert (ep_grant_ready == '0 && !read_failure);

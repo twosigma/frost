@@ -156,6 +156,7 @@ class AllocationRequest:
     csr_op: int = 0
     csr_write_data: int = 0
     has_fp_flags: bool = False
+    insn_bits: int = 0
 
     def __post_init__(self) -> None:
         """Derive the default link_addr from pc and is_compressed."""
