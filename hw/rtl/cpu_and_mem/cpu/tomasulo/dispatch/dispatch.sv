@@ -405,7 +405,7 @@ module dispatch #(
       // Zfa FLI: the rs1 field indexes the engine's constant table.
       riscv_pkg::FLI_S, riscv_pkg::FLI_D: begin
         use_imm = 1'b0;
-        imm     = {{(riscv_pkg::XLEN - 5){1'b0}}, i_from_id_to_ex.instruction.source_reg_1};
+        imm     = {{(riscv_pkg::XLEN - 5) {1'b0}}, i_from_id_to_ex.instruction.source_reg_1};
       end
 
       // AUIPC: ID precomputed PC + imm_u, so the ALU materializes it like LUI
@@ -630,7 +630,7 @@ module dispatch #(
       // Zfa FLI: constant index (see slot 1).
       riscv_pkg::FLI_S, riscv_pkg::FLI_D: begin
         use_imm_2 = 1'b0;
-        imm_2     = {{(riscv_pkg::XLEN - 5){1'b0}}, i_from_id_to_ex_2.instruction.source_reg_1};
+        imm_2     = {{(riscv_pkg::XLEN - 5) {1'b0}}, i_from_id_to_ex_2.instruction.source_reg_1};
       end
 
       // AUIPC: precomputed PC + imm_u (see slot 1).

@@ -138,12 +138,11 @@ static uint64_t minmax64(uint64_t a, uint64_t b, bool is_max)
 /* Zfa FLI constants, single precision; the double table widens them except
  * for the minimum normal (index 1), whose value differs by precision. */
 static const uint32_t fli_s[32] = {
-    0xBF800000U, 0x00800000U, 0x37800000U, 0x38000000U, 0x3B800000U, 0x3C000000U,
-    0x3D800000U, 0x3E000000U, 0x3E800000U, 0x3EA00000U, 0x3EC00000U, 0x3EE00000U,
-    0x3F000000U, 0x3F200000U, 0x3F400000U, 0x3F600000U, 0x3F800000U, 0x3FA00000U,
-    0x3FC00000U, 0x3FE00000U, 0x40000000U, 0x40200000U, 0x40400000U, 0x40800000U,
-    0x41000000U, 0x41800000U, 0x43000000U, 0x43800000U, 0x47000000U, 0x47800000U,
-    0x7F800000U, 0x7FC00000U};
+    0xBF800000U, 0x00800000U, 0x37800000U, 0x38000000U, 0x3B800000U, 0x3C000000U, 0x3D800000U,
+    0x3E000000U, 0x3E800000U, 0x3EA00000U, 0x3EC00000U, 0x3EE00000U, 0x3F000000U, 0x3F200000U,
+    0x3F400000U, 0x3F600000U, 0x3F800000U, 0x3FA00000U, 0x3FC00000U, 0x3FE00000U, 0x40000000U,
+    0x40200000U, 0x40400000U, 0x40800000U, 0x41000000U, 0x41800000U, 0x43000000U, 0x43800000U,
+    0x47000000U, 0x47800000U, 0x7F800000U, 0x7FC00000U};
 
 static uint64_t fli_d(unsigned idx)
 {
@@ -354,8 +353,7 @@ int fp_softfloat_ref(
     } else if (OP("FMINM_D") || OP("FMAXM_D")) {
         uint64_t m = minmax64(a, b, OP("FMAXM_D"));
         r = (is_nan64(a) || is_nan64(b)) ? 0x7FF8000000000000ULL : m;
-    }
-    else if (OP("FROUND_S"))
+    } else if (OP("FROUND_S"))
         r = box32(f32_roundToInt(f32v(as), (uint_fast8_t) rm, false).v);
     else if (OP("FROUNDNX_S"))
         r = box32(f32_roundToInt(f32v(as), (uint_fast8_t) rm, true).v);

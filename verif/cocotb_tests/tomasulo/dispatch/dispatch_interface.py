@@ -970,11 +970,12 @@ _ZFA_FP_DEST = frozenset(
     )
 )  # fmt: skip
 _ZFA_INT_DEST = frozenset(
-    _INSTR_OPS[name]
-    for name in ("FCVTMOD_W_D", "FLEQ_S", "FLTQ_S", "FLEQ_D", "FLTQ_D")
+    _INSTR_OPS[name] for name in ("FCVTMOD_W_D", "FLEQ_S", "FLTQ_S", "FLEQ_D", "FLTQ_D")
 )
 _FLI_OPS = frozenset({_INSTR_OPS["FLI_S"], _INSTR_OPS["FLI_D"]})
-_FP_EXT_COMPUTE = _ZFHMIN_FP_DEST | _ZFA_FP_DEST | _ZFA_INT_DEST | {_INSTR_OPS["FMV_X_H"]}
+_FP_EXT_COMPUTE = (
+    _ZFHMIN_FP_DEST | _ZFA_FP_DEST | _ZFA_INT_DEST | {_INSTR_OPS["FMV_X_H"]}
+)
 _FP_EXT_TWO_SOURCES = frozenset(
     _INSTR_OPS[name]
     for name in (

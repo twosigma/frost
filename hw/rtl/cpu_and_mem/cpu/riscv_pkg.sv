@@ -3160,8 +3160,7 @@ package riscv_pkg;
       // INT to FP bit move -> FP fd
       FMV_W_X, FMV_D_X, FMV_H_X,
       // Zfa
-      FLI_S, FLI_D, FMINM_S, FMAXM_S, FMINM_D, FMAXM_D,
-      FROUND_S, FROUNDNX_S, FROUND_D, FROUNDNX_D:
+      FLI_S, FLI_D, FMINM_S, FMAXM_S, FMINM_D, FMAXM_D, FROUND_S, FROUNDNX_S, FROUND_D, FROUNDNX_D:
       has_fp_dest = 1'b1;
 
       default: has_fp_dest = 1'b0;
@@ -3245,9 +3244,7 @@ package riscv_pkg;
         WFI, MRET, SRET, DRET, SFENCE_VMA, PAUSE,
         CSRRWI, CSRRSI, CSRRCI,
         // Zfa FLI: rs1 is the constant index, not a register
-        FLI_S, FLI_D,
-        ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT,
-        VSETIVLI, VARITH, VTOX:
+        FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI, VARITH, VTOX:
         uses_int_rs1 = 1'b0;
         default: uses_int_rs1 = 1'b1;
       endcase

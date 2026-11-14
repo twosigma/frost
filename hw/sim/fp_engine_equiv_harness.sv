@@ -393,9 +393,9 @@ module fp_engine_equiv_harness #(
     begin
       h = raw[15:0];
       case (class_sel)
-        4'd12: h[14:10] = 5'd0;  // zero or subnormal
-        4'd13: h[14:10] = 5'd31;  // infinity or NaN
-        4'd14: h[14:10] = raw[20] ? 5'd30 : 5'd1;  // largest or smallest normal binade
+        4'd12:   h[14:10] = 5'd0;  // zero or subnormal
+        4'd13:   h[14:10] = 5'd31;  // infinity or NaN
+        4'd14:   h[14:10] = raw[20] ? 5'd30 : 5'd1;  // largest or smallest normal binade
         default: ;
       endcase
       shape_h = {box_raw ? raw[63:16] ^ 48'h1234_5678_9ABC : 48'hFFFF_FFFF_FFFF, h};
@@ -688,20 +688,20 @@ module fp_engine_equiv_harness #(
   // Units
   // ===========================================================================
   fp_engine u_engine (
-      .i_clk   (i_clk),
-      .i_rst_n (i_rst_n),
-      .i_start (eng_start),
-      .i_op    (cur_op),
-      .i_rm    (cur_rm),
-      .i_src1  (cur_a),
-      .i_src2  (cur_b),
-      .i_src3  (cur_c),
+      .i_clk      (i_clk),
+      .i_rst_n    (i_rst_n),
+      .i_start    (eng_start),
+      .i_op       (cur_op),
+      .i_rm       (cur_rm),
+      .i_src1     (cur_a),
+      .i_src2     (cur_b),
+      .i_src3     (cur_c),
       .i_fli_index(cur_a[4:0]),
-      .i_kill  (eng_kill),
-      .o_idle  (eng_idle),
-      .o_done  (eng_done),
-      .o_result(eng_result),
-      .o_flags (eng_flags)
+      .i_kill     (eng_kill),
+      .o_idle     (eng_idle),
+      .o_done     (eng_done),
+      .o_result   (eng_result),
+      .o_flags    (eng_flags)
   );
 
 endmodule : fp_engine_equiv_harness

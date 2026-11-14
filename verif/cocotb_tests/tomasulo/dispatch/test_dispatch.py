@@ -1101,7 +1101,11 @@ async def test_zfa_fli_index_in_imm(dut: Any) -> None:
         valid=True,
         instruction_operation=FLI_S,
         instruction=_make_instr(
-            dest_reg=3, opcode=OPC_OP_FP, funct7=0b1111000, source_reg_1=29, source_reg_2=1
+            dest_reg=3,
+            opcode=OPC_OP_FP,
+            funct7=0b1111000,
+            source_reg_1=29,
+            source_reg_2=1,
         ),
     )
     await dut_if.step()

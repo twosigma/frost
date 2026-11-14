@@ -549,6 +549,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         default=0,
         help="replay this many Zfhmin/Zfa tests from verif/testrig/fp_ext.py",
     )
+    parser.add_argument(
         "--atomics",
         type=int,
         default=0,

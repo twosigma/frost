@@ -196,7 +196,8 @@ module instr_operand_classifier_equiv (
 
     case (op_for_pre_decode)
       riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
-      riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::FSH, riscv_pkg::SC_W, riscv_pkg::SC_D, riscv_pkg::CBO_ZERO:
+      riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::FSH,
+      riscv_pkg::SC_W, riscv_pkg::SC_D, riscv_pkg::CBO_ZERO:
       needs_sq_pre = 1'b1;
       default: needs_sq_pre = 1'b0;
     endcase

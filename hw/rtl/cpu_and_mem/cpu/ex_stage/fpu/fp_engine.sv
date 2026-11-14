@@ -502,8 +502,7 @@ module fp_engine (
     logic box_ok;  // upper 32 (single) or 48 (half) bits all ones
   } fp_class_t;
 
-  function automatic fp_class_t classify(input logic [63:0] v, input logic is_d,
-                                         input logic is_h);
+  function automatic fp_class_t classify(input logic [63:0] v, input logic is_d, input logic is_h);
     fp_class_t c;
     logic [10:0] e;
     logic [51:0] f;
@@ -889,10 +888,10 @@ module fp_engine (
   } b_sel_e;
 
   typedef enum logic [1:0] {
-    K_D,   // column 59
-    K_S,   // column 88
-    K_INT, // column 48
-    K_H    // column 101
+    K_D,  // column 59
+    K_S,  // column 88
+    K_INT,  // column 48
+    K_H  // column 101
   } const_sel_e;
 
   typedef enum logic [2:0] {
@@ -1154,7 +1153,7 @@ module fp_engine (
       FF_ZERO: fp_frac = '0;
       FF_ONES: fp_frac = '1;
       FF_QNAN: fp_frac = {1'b1, 51'b0};
-      FF_LD:   fp_frac = ld_frac;
+      FF_LD: fp_frac = ld_frac;
       default:
       fp_frac = dec_q.dst_d ? r_q[110:59] :
           (dec_q.dst_h ? {r_q[110:101], 42'b0} : {r_q[110:88], 29'b0});
@@ -1468,8 +1467,9 @@ module fp_engine (
   end
 
   logic [63:0] res_calc;
-  assign res_calc = res_is_fp ? pack_fp(fp_sign, fp_expf, fp_frac, dec_q.dst_d, dec_q.dst_h) :
-      int_res;
+  assign res_calc = res_is_fp ? pack_fp(
+      fp_sign, fp_expf, fp_frac, dec_q.dst_d, dec_q.dst_h
+  ) : int_res;
 
   assign res_d = (state_q == ST_DEC1 && is_fast_op) ? fast_res :
       (state_q == ST_I2F_ROUND) ? fast_i2f_res : (!res_load ? res_q : res_calc);
@@ -1963,7 +1963,7 @@ module fp_engine (
             ep_sel = EP_ZERO;
             eq_sel = EQ_63;
             sh_x_d = 1'b0;
-            ret_d = RET_F2I;
+            ret_d  = RET_F2I;
             if (f2i_diff[13]) begin
               sh_collapse_d = (f2i_diff <= -14'sd21);
               sh_cnt_d = f2i_lshift;
@@ -2176,7 +2176,7 @@ module fp_engine (
 
       ST_F2I_LSHIFT: begin
         if (sh_collapse_q) begin
-          r_sel = R_CLEAR;
+          r_sel   = R_CLEAR;
           state_d = ST_F2I_RPREP;
         end else begin
           r_sel = sh_step8 ? R_SHL8 : R_SHL1;
@@ -2186,17 +2186,16 @@ module fp_engine (
       end
 
       ST_F2I_RPREP: begin
-        round_up_d = riscv_pkg::fp_compute_round_up(
-            f2i_rm, ib_guard, ib_round, ib_sticky, r_q[48], sr_q
-        );
+        round_up_d =
+            riscv_pkg::fp_compute_round_up(f2i_rm, ib_guard, ib_round, ib_sticky, r_q[48], sr_q);
         inexact_d = ib_guard || ib_round || ib_sticky;
         state_d = ST_F2I_ROUND;
       end
 
       ST_F2I_ROUND: begin
-        b_sel   = round_up_q ? B_CONST : B_ZERO;
-        k_sel   = K_INT;
-        r_sel   = R_SUM;
+        b_sel = round_up_q ? B_CONST : B_ZERO;
+        k_sel = K_INT;
+        r_sel = R_SUM;
         // FROUND renormalizes the rounded integer (E = 63) as an FP value,
         // without the rounding bits below it.
         if (dec_q.cls == CL_RND) a_sel = A_TRUNC;
@@ -2365,8 +2364,8 @@ module fp_engine (
         flags_d  = '0;
         if (zero_res_q) begin
           fp_sign = eff_sub_q ? (rm_q == riscv_pkg::FRM_RDN) : sr_q;
-          fe_sel  = FE_ZERO;
-          ff_sel  = FF_ZERO;
+          fe_sel = FE_ZERO;
+          ff_sel = FF_ZERO;
           // Only FROUNDNX reaches a zero result inexact.
           flags_d.nx = inexact_q && fround_nx;
         end else if (e_q > emax_p) begin

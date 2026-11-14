@@ -40,13 +40,25 @@ ROUNDS = {
     "fround.d": (0x21, 4),
     "froundnx.d": (0x21, 5),
 }
-MINMAX = {"fminm.s": (0x14, 2), "fmaxm.s": (0x14, 3), "fminm.d": (0x15, 2), "fmaxm.d": (0x15, 3)}
-COMPARES = {"fleq.s": (0x50, 4), "fltq.s": (0x50, 5), "fleq.d": (0x51, 4), "fltq.d": (0x51, 5)}
+MINMAX = {
+    "fminm.s": (0x14, 2),
+    "fmaxm.s": (0x14, 3),
+    "fminm.d": (0x15, 2),
+    "fmaxm.d": (0x15, 3),
+}
+COMPARES = {
+    "fleq.s": (0x50, 4),
+    "fltq.s": (0x50, 5),
+    "fleq.d": (0x51, 4),
+    "fltq.d": (0x51, 5),
+}
 
 
 def op_fp(funct7: int, rs2: int, rs1: int, funct3: int, rd: int) -> int:
     """Encode an OP-FP instruction."""
-    return (funct7 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | 0x53
+    return (
+        (funct7 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | 0x53
+    )
 
 
 def i_type(opcode: int, funct3: int, rd: int, rs1: int, imm: int) -> int:
@@ -161,7 +173,11 @@ def _near_half_double(rng: random.Random) -> int:
     exponent = 1023 + rng.randint(-28, 19)
     fraction = rng.getrandbits(52)
     if rng.random() < 0.3:  # guard bit is fraction bit 41
-        fraction = (fraction & ~((1 << 42) - 1)) | (1 << 41) | rng.choice((0, 1, (1 << 41) - 1))
+        fraction = (
+            (fraction & ~((1 << 42) - 1))
+            | (1 << 41)
+            | rng.choice((0, 1, (1 << 41) - 1))
+        )
     return (rng.getrandbits(1) << 63) | (exponent << 52) | fraction
 
 
@@ -234,19 +250,28 @@ def _one(trace: Trace, rng: random.Random) -> None:
         # FLH / FSH at an aligned offset; an odd offset traps (misaligned).
         offset = 2 * rng.randrange(64)
         trace.li(TMP, _half(rng))
-        trace.emit(s_type(0x23, 1, BASE_REG, TMP, offset), f"sh x{TMP}, {offset}(x{BASE_REG})")
-        trace.emit(i_type(0x07, 1, 3, BASE_REG, offset), f"flh f3, {offset}(x{BASE_REG})")
+        trace.emit(
+            s_type(0x23, 1, BASE_REG, TMP, offset), f"sh x{TMP}, {offset}(x{BASE_REG})"
+        )
+        trace.emit(
+            i_type(0x07, 1, 3, BASE_REG, offset), f"flh f3, {offset}(x{BASE_REG})"
+        )
         trace.observe(3)
         _fp_source(trace, rng, 4, rng.choice("hsd"))
         store = 2 * rng.randrange(64)
         trace.emit(s_type(0x27, 1, BASE_REG, 4, store), f"fsh f4, {store}(x{BASE_REG})")
-        trace.emit(i_type(0x03, 5, RES, BASE_REG, store), f"lhu x{RES}, {store}(x{BASE_REG})")
+        trace.emit(
+            i_type(0x03, 5, RES, BASE_REG, store), f"lhu x{RES}, {store}(x{BASE_REG})"
+        )
         if rng.random() < 0.05:
             trace.emit(i_type(0x07, 1, 3, BASE_REG, offset + 1), "flh f3, odd offset")
     elif kind == 6:
         index = rng.randrange(32)
         funct7 = rng.choice((FMV_W_X, FMV_D_X))
-        trace.emit(op_fp(funct7, 1, index, 0, 5), f"fli.{'s' if funct7 == FMV_W_X else 'd'} f5, {index}")
+        trace.emit(
+            op_fp(funct7, 1, index, 0, 5),
+            f"fli.{'s' if funct7 == FMV_W_X else 'd'} f5, {index}",
+        )
         trace.observe(5)
     elif kind == 7:
         name = rng.choice(tuple(MINMAX))
@@ -281,15 +306,24 @@ def _one(trace: Trace, rng: random.Random) -> None:
         # FCVTMOD.W.D with an rm other than RTZ, all illegal.
         choice = rng.randrange(3)
         if choice == 0:
-            funct7, rs2 = rng.choice(tuple(CONVERSIONS.values()) + tuple(ROUNDS.values()))
-            trace.emit(op_fp(funct7, rs2, 1, rng.choice((5, 6)), 2), "reserved static rm")
+            funct7, rs2 = rng.choice(
+                tuple(CONVERSIONS.values()) + tuple(ROUNDS.values())
+            )
+            trace.emit(
+                op_fp(funct7, rs2, 1, rng.choice((5, 6)), 2), "reserved static rm"
+            )
         elif choice == 1:
             trace.frm(rng.choice((5, 6, 7)))
-            funct7, rs2 = rng.choice(tuple(CONVERSIONS.values()) + tuple(ROUNDS.values()))
+            funct7, rs2 = rng.choice(
+                tuple(CONVERSIONS.values()) + tuple(ROUNDS.values())
+            )
             trace.emit(op_fp(funct7, rs2, 1, 7, 2), "DYN with reserved frm")
             trace.frm(0)
         else:
-            trace.emit(op_fp(0x61, 8, 1, rng.choice((0, 2, 3, 4, 7)), RES), "fcvtmod.w.d rm != rtz")
+            trace.emit(
+                op_fp(0x61, 8, 1, rng.choice((0, 2, 3, 4, 7)), RES),
+                "fcvtmod.w.d rm != rtz",
+            )
 
 
 def write_tests(directory: Path, count: int, seed: int, length: int) -> list[Path]:
@@ -303,9 +337,17 @@ def write_tests(directory: Path, count: int, seed: int, length: int) -> list[Pat
         # mstatus.FS = Dirty, and x9 = 0x8000_1000 in cached DDR.
         trace.emit((0x6 << 12) | (5 << 7) | 0x37, "lui x5, 0x6")
         trace.emit(i_type(0x73, 2, 0, 5, 0x300), "csrrs x0, mstatus, x5")
-        trace.emit((0x80001 << 12) | (BASE_REG << 7) | 0x37, f"lui x{BASE_REG}, 0x80001")
-        trace.emit((32 << 20) | (BASE_REG << 15) | (1 << 12) | (BASE_REG << 7) | 0x13, "slli x9, x9, 32")
-        trace.emit((32 << 20) | (BASE_REG << 15) | (5 << 12) | (BASE_REG << 7) | 0x13, "srli x9, x9, 32")
+        trace.emit(
+            (0x80001 << 12) | (BASE_REG << 7) | 0x37, f"lui x{BASE_REG}, 0x80001"
+        )
+        trace.emit(
+            (32 << 20) | (BASE_REG << 15) | (1 << 12) | (BASE_REG << 7) | 0x13,
+            "slli x9, x9, 32",
+        )
+        trace.emit(
+            (32 << 20) | (BASE_REG << 15) | (5 << 12) | (BASE_REG << 7) | 0x13,
+            "srli x9, x9, 32",
+        )
         trace.lines.append(".shrink")
         while len(trace.lines) < length:
             _one(trace, rng)

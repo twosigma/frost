@@ -63,8 +63,6 @@ DEFAULT_SUITES = ("rv64i_m",)
 EXTENSION_SUITES: dict[str, tuple[str, ...]] = {
     "F": ("rv64i_m", "rv32i_m"),
     "D": ("rv64i_m", "rv32i_m"),
-    "F": ("rv64i_m", "rv32i_m"),
-    "D": ("rv64i_m", "rv32i_m"),
     "Zvk": ("rv32i_m",),
     # The Zfh tests live in rv32i_m and declare RV64 too.
     "Zfh": ("rv32i_m",),
@@ -124,8 +122,14 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     # Zfh supplies the Zfhmin tests (FLH/FSH, FMV.X.H/FMV.H.X, FCVT between H and
     # S/D); FROST has no other Zfh instruction.
     "Zfh": {
-        "flh", "fsh", "fmv.x.h", "fmv.h.x",
-        "fcvt.s.h", "fcvt.h.s", "fcvt.d.h", "fcvt.h.d",
+        "flh",
+        "fsh",
+        "fmv.x.h",
+        "fmv.h.x",
+        "fcvt.s.h",
+        "fcvt.h.s",
+        "fcvt.d.h",
+        "fcvt.h.d",
     },
 }
 

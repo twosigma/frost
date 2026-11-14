@@ -561,7 +561,7 @@ module instr_decoder (
           5'b01000:
           if (i_instr.funct3 == 3'b001) o_instr_op = riscv_pkg::FCVTMOD_W_D;
           else o_illegal = 1'b1;
-          default:  o_illegal = 1'b1;
+          default: o_illegal = 1'b1;
         endcase
 
         // Convert signed/unsigned integer to FP (fd = float(rs1)). rs2 selects
