@@ -1,0 +1,26 @@
+[tasks]
+bmc
+bmc_xilinx
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read -sv -D SYNTHESIS dtlb.sv
+bmc_xilinx: read_verilog -formal +/xilinx/cells_sim.v
+bmc_xilinx: read -formal -D SYNTHESIS -D FROST_XILINX_PRIMS -D DMMU_VA_NEXT_LOCAL_PROOF -sv dmmu.sv
+~bmc_xilinx: read -formal -D SYNTHESIS -D DMMU_VA_NEXT_LOCAL_PROOF -sv dmmu.sv
+prep -top dmmu
+select -assert-none t:$assume a:init
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-count 2 t:$check r:FLAVOR=assert %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/dmmu.sv
