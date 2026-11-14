@@ -1504,6 +1504,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="A pending timer interrupt is taken in a one-instruction MIE "
         "window",
     ),
+    "irq_take_hold_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="irq_take_hold_test",
+        nic_mac_clocks=False,
+        description="Machine timer interrupts are taken promptly in device store "
+        "loops and during an LR/SC increment loop, and every increment lands once",
+        extra_env=(("COCOTB_MAX_CYCLES", "400000"),),
+    ),
     "ns16550_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

@@ -304,6 +304,8 @@ can be debugged and where each one first stops.
 | `hello_world/` | Prints a greeting and the cycle-count delta once a second; the program the bitstream boots |
 | `instret_test/` | `minstret` counts NOPs, `mret`, `fence.i`, `sfence.vma`, a timer-ended `wfi`, and timer takes across a device load; 96 WFI deadlines and 48 device-load deadlines at four padding phases cover AXI latency, with each take's count equal to the instructions before `mepc` |
 | `irq_mie_window/` | A pending timer interrupt must be taken when a `csrsi`/`csrci` pair opens `mstatus.MIE` for one instruction |
+| `irq_take_hold_test/` | Machine timer interrupts taken within 500 cycles in loops of back-to-back device stores, and during an LR/SC increment loop on uncached BRAM (bram) or cached DDR (ddr) with every increment landing once |
+| `irq_take_latency/` | Delegated STI, LCOFI and SEI take latency in S-mode across device, atomic, fence, SIE-toggle, DDR-miss and WFI loops; every interrupt is taken, including between back-to-back device stores and after a cached store before a device read |
 | `isa_test/` | Self-checks for RV64IMAFDCB, Zicsr, Zicntr, Zifencei, Zicond, Zbc, Zbkb, Zbkc, and Zihintpause, plus M-mode CSRs and traps |
 | `itlb_test/` | Sv39 instruction translation in S- and U-mode: superpages, page-crossing instructions, fetch faults, `sfence.vma` and `satp` changes |
 | `jal_target_seam/` | A 4-byte `jal` entered as a taken-branch target at dword offset 4; needs the cached fetch path (`FROST_COCOTB_MEM_CONFIG=ddr`) |
@@ -360,7 +362,6 @@ can be debugged and where each one first stops.
 | `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, supervisor CSRs, counter permissions, CSR existence (illegal CSRs, writable machine HPM counter 3, zero-only counter 31, and user-alias permissions), and interrupts |
 | `spanning_test/` | 32-bit instructions that straddle a fetch-word boundary |
 | `sprintf_test/` | All 344 `sprintf`/`snprintf` checks against constant expected strings; the 2M-cycle simulation budget covers the measured 1.23M cycles in BRAM and DDR |
-| `irq_take_latency/` | Delegated STI, LCOFI and SEI take latency in S-mode across device, atomic, fence, SIE-toggle, DDR-miss and WFI loops; every interrupt is taken, including between back-to-back device stores and after a cached store before a device read |
 | `sstc_test/` | Sstc: `menvcfg.STCE`, `stimecmp` access rules, and an S-mode timer interrupt through `stimecmp`; also the writable `menvcfg` and `senvcfg` bits |
 | `sscofpmf_test/` | Sscofpmf: `mhpmevent` OF/MINH/SINH/UINH fields, OF and `mip.LCOFIP` on a counter wrap, LCOFI taken in M and delegated to S, `scountovf` filtering by `mcounteren`, per-privilege counting of instructions and cycles, pending-clear races through `mip` and delegated `sip`, and interrupt priority after enabling a pending SSI through `mie`/`sie` |
 | `sstvala_test/` | Sstvala: every illegal-instruction source in M, S and U, delegated and not, writes the faulting instruction's bits to `mtval` or `stval` (a compressed instruction's 16 bits zero-extended), including an instruction second in its fetch pair, one across a line or page boundary, and one reached after a mispredicted branch |
