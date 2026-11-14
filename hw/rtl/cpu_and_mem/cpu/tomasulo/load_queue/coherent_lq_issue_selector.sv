@@ -141,7 +141,9 @@ module coherent_lq_issue_selector #(
           !blocked_by_amo_phys_q[index];
       wire update_ok = addr_update_pre_match_q[index] && atomic_ok &&
           !blocked_by_amo_phys_q[index];
-      wire head_ok = rob_head_match_q[index] &&
+      // The block also covers the head: no older AMO is pending there, but a
+      // retired vector memory instruction can still be accessing memory.
+      wire head_ok = rob_head_match_q[index] && !blocked_by_amo_phys_q[index] &&
           (!(lq_is_lr[index] || lq_is_amo[index]) || 1'(drained));
       (* keep = "true" *) wire [4:0] class_ready = {
         head_ok && addr_update_pre_match_q[index],
