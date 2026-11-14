@@ -179,13 +179,13 @@ int main(void)
     set_trap_handler(&m_trap_handler);
 
     /* A: menvcfg and senvcfg reset to 0. menvcfg implements FIOM, CBIE, CBCFE,
-     * CBZE, PBMTE and STCE, senvcfg FIOM, CBIE, CBCFE and CBZE. */
+     * CBZE and STCE, senvcfg FIOM, CBIE, CBCFE and CBZE. */
     ok &= report("A menvcfg-reset", csr_read_num(0x30A), 0);
     ok &= report("A senvcfg-reset", csr_read_num(0x10A), 0);
     csr_write_num(0x30A, ~0ul);
     ok &= report("A menvcfg-warl",
                  csr_read_num(0x30A),
-                 MENVCFG_STCE | MENVCFG_PBMTE | ENVCFG_CBZE | ENVCFG_CBCFE | ENVCFG_CBIE |
+                 MENVCFG_STCE | ENVCFG_CBZE | ENVCFG_CBCFE | ENVCFG_CBIE |
                      ENVCFG_FIOM);
     csr_write_num(0x30A, 0);
     ok &= report("A menvcfg-clear", csr_read_num(0x30A), 0);
