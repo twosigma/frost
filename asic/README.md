@@ -706,7 +706,8 @@ of the one before. The flow takes about fifteen hours, so a push to `main`
 does not cancel a run in progress: the run finishes and the most recently
 queued run waits behind it (GitHub keeps one pending run, so an older pending
 run is cancelled). A new push to a pull request cancels that pull request's
-earlier run.
+earlier run. Adding the label starts the flow, and adding any other label
+starts nothing.
 
 | Job | Runs | Extra swap |
 | --- | --- | ---: |

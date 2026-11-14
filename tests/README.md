@@ -1153,6 +1153,12 @@ The [CI workflow](../.github/workflows/ci.yml) runs these checks in the
 pinned Docker image. The ASIC flow runs in its own
 [workflow](../.github/workflows/asic.yml) and its own image:
 
+On a pull request, only Lint and the fast Python tests run by default. The
+remaining jobs of the CI workflow run when the pull request has the `run-ci`
+label, and the ASIC flow runs when it has the `run-asic` label. Adding a label
+starts the corresponding run, and later pushes to the pull request run it
+again; adding any other label starts nothing. Pushes to `main` run every job.
+
 | Suite | Configurations |
 | --- | --- |
 | Cocotb applications | BRAM and DDR where supported; the three longest CoreMark-PRO workloads run in jobs of their own and the other six share one; the memory-system programs with one register stage between the hart and the cluster memory (`*_link1`) have two shards |
