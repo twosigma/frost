@@ -2080,6 +2080,10 @@ module cpu_ooo #(
   logic [XLEN-1:0] trap_cause_internal;
   logic [XLEN-1:0] rob_trap_value;
   logic [31:0] rob_trap_insn;
+  // The head's exception is a bus-response access fault, and its virtual
+  // address (tomasulo_wrapper).
+  logic rob_head_bus_fault;
+  logic [XLEN-1:0] rob_head_bus_fault_va;
   logic rob_trap_taken_ack;
   logic mret_start, mret_done_ack;
   logic [XLEN-1:0] mepc_value;
@@ -2457,6 +2461,8 @@ module cpu_ooo #(
       .o_trap_cause(rob_trap_cause),
       .o_trap_value(rob_trap_value),
       .o_trap_insn(rob_trap_insn),
+      .o_head_bus_fault(rob_head_bus_fault),
+      .o_head_bus_fault_va(rob_head_bus_fault_va),
       .i_trap_taken(rob_trap_taken_ack),
       .o_mret_start(mret_start),
       .o_mret_start_is_sret(mret_start_is_sret),
@@ -3808,7 +3814,9 @@ module cpu_ooo #(
   //   - Instruction access/page faults and data misaligned/access/page
   //     faults: the faulting virtual address, parked in the head entry's CDB
   //     value slot (unused for an exception) and exposed as rob_trap_value.
-  //     The per-cause comments below say who parks it.
+  //     The per-cause comments below say who parks it. A data access fault
+  //     from a bus response takes the address from the wrapper instead
+  //     (rob_head_bus_fault).
   //   - Illegal instruction (Sstvala), from any source: decode, PD's RVC
   //     check, ID's FS/CBO/Svinval/Zawrs gates, and the privilege, CSR and
   //     rounding-mode faults the ROB raises at allocation: the faulting
@@ -3838,16 +3846,21 @@ module cpu_ooo #(
           rob_trap_cause
       )-1:0], riscv_pkg::ExcStoreAddrMisalign[$bits(
           rob_trap_cause
-      )-1:0], riscv_pkg::ExcLoadAccessFault[$bits(
-          rob_trap_cause
-      )-1:0], riscv_pkg::ExcStoreAccessFault[$bits(
-          rob_trap_cause
       )-1:0], riscv_pkg::ExcLoadPageFault[$bits(
           rob_trap_cause
       )-1:0], riscv_pkg::ExcStorePageFault[$bits(
           rob_trap_cause
       )-1:0]:
       csr_trap_value = rob_trap_value;
+      // A bus-response access fault (a failed fill, or an SLVERR or DECERR
+      // response) leaves zero in the value slot; the wrapper's table of
+      // issue addresses gives its virtual address.
+      riscv_pkg::ExcLoadAccessFault[$bits(
+          rob_trap_cause
+      )-1:0], riscv_pkg::ExcStoreAccessFault[$bits(
+          rob_trap_cause
+      )-1:0]:
+      csr_trap_value = rob_head_bus_fault ? rob_head_bus_fault_va : rob_trap_value;
       riscv_pkg::ExcIllegalInstr[$bits(rob_trap_cause)-1:0]: csr_trap_value = XLEN'(rob_trap_insn);
       default: csr_trap_value = '0;
     endcase

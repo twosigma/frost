@@ -7,12 +7,8 @@ set the direction of this roadmap. The sections are in priority order.
 
 FROST is working toward the RVA23 profile without the hypervisor extension:
 the RVA23U64 user profile and every RVA23S64 supervisor extension except H.
-The remaining scalar and supervisor extensions are in progress. Sstvala's
-illegal-instruction values are implemented: `mtval` and `stval` hold the
-faulting instruction's bits. Its access-fault values remain: a failed bus
-response on a load, a store or a misaligned access reports zero in `mtval`
-or `stval`, where Sstvala requires the faulting address. Two larger pieces
-come before the second hart:
+The remaining scalar and supervisor extensions are in progress. Two larger
+pieces come before the second hart:
 
 - A vector unit. The profile requires V with Zvfhmin, Zvbb, and Zvkt; Zvbc,
   Zvfh and vector cryptography follow. The vector length

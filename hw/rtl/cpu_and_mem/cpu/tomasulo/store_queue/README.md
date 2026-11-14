@@ -133,7 +133,8 @@ Normal read-cache policy applies.
 With `PRECISE_UNCACHED=0`, plain BRAM stores complete one
 cycle after launch with up to two writes in flight. In `cpu_top`, every
 Normal/Device store keeps its SQ entry until B. A precise store's
-SLVERR/DECERR becomes cause 7; successful SC completion is likewise delayed
+SLVERR/DECERR becomes cause 7, whose trap value, the store's virtual
+address, the wrapper supplies; successful SC completion is likewise delayed
 until B. A failed buffered Normal store retains ownership and raises the
 tile's fatal indication. Completions carry no tag,
 so the memory side must return them in launch order: each one frees the

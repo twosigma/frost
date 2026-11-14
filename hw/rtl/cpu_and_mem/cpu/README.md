@@ -434,7 +434,9 @@ part's first byte (the page base when the access crosses a page). The engine
 issues no memory request until both parts have passed, so a faulting store
 writes nothing. It then issues the lower sector's request before the upper
 one and waits for both responses. A load response error gives a load access
-fault with trap value zero; a store response error and a hart stop are
+fault whose trap value is the first byte of the lowest failed part: the
+original virtual address when the lower part failed, otherwise the upper
+part's first byte. A store response error and a hart stop are
 terminal at once, with no further request. `lib/line_align.sv` moves the
 access between register order and the two sectors.
 
@@ -805,7 +807,7 @@ pending source with no interrupt latched.
 checks the load and store access faults that result, their trap values
 and PCs, and that access succeeds once the mapping is repaired. Two loads
 of adjacent L1D sectors then share one failed L2 fill, and the test checks
-the older load's access fault. Its registry entry injects the bus errors in
+the older load's access fault and its address in `mtval`. Its registry entry injects the bus errors in
 the simulated DDR model.
 
 `ptw_recovery_test` sweeps the cycle in which a branch resolves while a
