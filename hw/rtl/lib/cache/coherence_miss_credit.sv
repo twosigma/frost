@@ -34,9 +34,11 @@ module coherence_miss_credit #(
 );
   (* keep = "true" *) logic load_grant_waiting;
   assign load_grant_waiting = SLOTS > 1 && i_load_grant_waiting;
-  (* keep = "true" *) wire zero_wb_ok =
+  (* keep = "true" *) wire zero_wb_ok;
+  assign zero_wb_ok =
       i_wb_free && !(load_grant_waiting && |i_wb_live);
-  (* keep = "true" *) wire lr_base =
+  (* keep = "true" *) wire lr_base;
+  assign lr_base =
       !i_request_live && i_wb_free && !i_atomic && !i_drain;
   (* keep = "true" *) logic [3:0] retry;
   if (SLOTS == 1) begin : gen_single
