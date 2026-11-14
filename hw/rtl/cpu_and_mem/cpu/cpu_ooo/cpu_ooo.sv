@@ -54,6 +54,10 @@ module cpu_ooo #(
     parameter bit VECTOR = 1'b0,
     parameter int unsigned VLEN = 256,
     parameter bit VECTOR_ADVERTISE = 1'b0,
+    // Misaligned plain loads and stores to cached DDR run on the
+    // misaligned-access engine instead of trapping (misaligned/ma_engine.sv).
+    // Its sector requests leave through the o_ma_line_* port.
+    parameter bit MISALIGNED_HW = 1'b0,
     // The walker's line port carries the L1s' 32-byte lines.
     localparam int unsigned WalkLineBytes = 32
 ) (
@@ -181,6 +185,22 @@ module cpu_ooo #(
     input logic i_walk_line_resp_error = 1'b0,
     input logic [1:0] i_walk_line_resp_id,
     input logic [WalkLineBytes*8-1:0] i_walk_line_resp_rdata,
+    // Misaligned-access engine's line-client port (MISALIGNED_HW): 32-byte
+    // sector reads and masked writes, request identities 0 and 1.
+    output logic o_ma_line_req_valid,
+    input logic i_ma_line_req_ready = 1'b0,
+    output logic o_ma_line_req_write,
+    output logic [riscv_pkg::PhysAddrBits-1:0] o_ma_line_req_addr,
+    output logic [255:0] o_ma_line_req_data,
+    output logic [31:0] o_ma_line_req_mask,
+    output logic [3:0] o_ma_line_req_id,
+    input logic i_ma_line_resp_valid = 1'b0,
+    input logic [3:0] i_ma_line_resp_id = '0,
+    input logic [255:0] i_ma_line_resp_data = '0,
+    input logic i_ma_line_resp_error = 1'b0,
+    // A failed engine write: sticky until reset.
+    output logic o_ma_fatal,
+    output logic [riscv_pkg::PhysAddrBits-1:0] o_ma_fatal_addr,
     // Data memory interface
     input logic [riscv_pkg::MemDataBits-1:0] i_data_mem_rd_data,
     output logic [XLEN-1:0] o_data_mem_addr,
@@ -955,49 +975,55 @@ module cpu_ooo #(
   // FP data width, also used below by the commit-side write-port packing.
   localparam int unsigned FpW = riscv_pkg::FpWidth;
 
-  logic [XLEN-1:0] int_rf_dispatch_rs1_data;
-  logic [XLEN-1:0] int_rf_dispatch_rs2_data;
-  logic [XLEN-1:0] int_rf_dispatch_rs1_data_2;
-  logic [XLEN-1:0] int_rf_dispatch_rs2_data_2;
-  logic [ FpW-1:0] fp_rf_dispatch_rs1_data;
-  logic [ FpW-1:0] fp_rf_dispatch_rs2_data;
-  logic [ FpW-1:0] fp_rf_dispatch_rs3_data;
-  logic [ FpW-1:0] fp_rf_dispatch_rs1_data_2;
-  logic [ FpW-1:0] fp_rf_dispatch_rs2_data_2;
-  logic [ FpW-1:0] fp_rf_dispatch_rs3_data_2;
+  logic [              XLEN-1:0] int_rf_dispatch_rs1_data;
+  logic [              XLEN-1:0] int_rf_dispatch_rs2_data;
+  logic [              XLEN-1:0] int_rf_dispatch_rs1_data_2;
+  logic [              XLEN-1:0] int_rf_dispatch_rs2_data_2;
+  logic [               FpW-1:0] fp_rf_dispatch_rs1_data;
+  logic [               FpW-1:0] fp_rf_dispatch_rs2_data;
+  logic [               FpW-1:0] fp_rf_dispatch_rs3_data;
+  logic [               FpW-1:0] fp_rf_dispatch_rs1_data_2;
+  logic [               FpW-1:0] fp_rf_dispatch_rs2_data_2;
+  logic [               FpW-1:0] fp_rf_dispatch_rs3_data_2;
 
   // Registered write enables and addresses for the register-file bypass,
   // computed below after commit_actions.
-  logic            bypass_p0_int_we_q;
-  logic            bypass_p1_int_we_q;
-  logic            bypass_p0_fp_we_q;
-  logic            bypass_p1_fp_we_q;
+  logic                          bypass_p0_int_we_q;
+  logic                          bypass_p1_int_we_q;
+  logic                          bypass_p0_fp_we_q;
+  logic                          bypass_p1_fp_we_q;
   // Cap bypass-address fanout for replication.
-  (* max_fanout = 48 *)logic [     4:0] bypass_p0_addr_q;
-  (* max_fanout = 48 *)logic [     4:0] bypass_p1_addr_q;
+  (* max_fanout = 48 *)logic [                   4:0] bypass_p0_addr_q;
+  (* max_fanout = 48 *)logic [                   4:0] bypass_p1_addr_q;
+
+  // The misaligned-access engine's register-file read port (MISALIGNED_HW).
+  logic [                   4:0] ma_rf_read_addr;
+  logic [              XLEN-1:0] ma_extra_int_read_data;
+  logic [riscv_pkg::FpWidth-1:0] ma_extra_fp_read_data;
 
   // Regfile write ports (driven by commit_actions, consumed by
   // ooo_register_files) and retire status.
-  logic            port0_int_we;
-  logic [     4:0] port0_int_addr;
-  logic [XLEN-1:0] port0_int_data;
-  logic            port0_fp_we;
-  logic [     4:0] port0_fp_addr;
-  logic [ FpW-1:0] port0_fp_data;
-  logic            port1_int_we;
-  logic [     4:0] port1_int_addr;
-  logic [XLEN-1:0] port1_int_data;
-  logic            port1_fp_we;
-  logic [     4:0] port1_fp_addr;
-  logic [ FpW-1:0] port1_fp_data;
-  logic [     1:0] instruction_retired_count;
+  logic                          port0_int_we;
+  logic [                   4:0] port0_int_addr;
+  logic [              XLEN-1:0] port0_int_data;
+  logic                          port0_fp_we;
+  logic [                   4:0] port0_fp_addr;
+  logic [               FpW-1:0] port0_fp_data;
+  logic                          port1_int_we;
+  logic [                   4:0] port1_int_addr;
+  logic [              XLEN-1:0] port1_int_data;
+  logic                          port1_fp_we;
+  logic [                   4:0] port1_fp_addr;
+  logic [               FpW-1:0] port1_fp_data;
+  logic [                   1:0] instruction_retired_count;
   // An instruction retired without a registered ROB commit in the previous
   // cycle: xRET, a taken-over WFI, FENCE.I, or SFENCE.VMA.
-  logic            retired_without_commit_q;
+  logic                          retired_without_commit_q;
 
   ooo_register_files #(
       .XLEN(XLEN),
-      .SEPARATE_BYPASS_ADDR(1'b1)
+      .SEPARATE_BYPASS_ADDR(1'b1),
+      .EXTRA_READ_PORT(MISALIGNED_HW)
   ) ooo_register_files_inst (
       .i_clk,
       .i_port0_int_we  (port0_int_we),
@@ -1030,7 +1056,10 @@ module cpu_ooo #(
       .o_fp_rf_dispatch_rs3_data  (fp_rf_dispatch_rs3_data),
       .o_fp_rf_dispatch_rs1_data_2(fp_rf_dispatch_rs1_data_2),
       .o_fp_rf_dispatch_rs2_data_2(fp_rf_dispatch_rs2_data_2),
-      .o_fp_rf_dispatch_rs3_data_2(fp_rf_dispatch_rs3_data_2)
+      .o_fp_rf_dispatch_rs3_data_2(fp_rf_dispatch_rs3_data_2),
+      .i_extra_read_addr(ma_rf_read_addr),
+      .o_extra_int_read_data(ma_extra_int_read_data),
+      .o_extra_fp_read_data(ma_extra_fp_read_data)
   );
 
   // ===========================================================================
@@ -2006,6 +2035,22 @@ module cpu_ooo #(
   logic [XLEN-1:0] rob_trap_pc;
   logic rob_head_is_wfi;  // ROB head decodes as WFI (drives the WFI interrupt-resume-PC seed)
   logic rob_head_is_amo;  // ROB head decodes as AMO (drives the trap unit's AMO interrupt shield)
+  // The head memory instruction's fields, for the misaligned-access engine.
+  logic [2:0] rob_head_mem_funct3;
+  logic [4:0] rob_head_mem_rs2;
+  logic [riscv_pkg::RegAddrWidth-1:0] rob_head_dest_reg;
+  logic rob_head_dest_rf, rob_head_dest_valid, rob_head_mem_store, rob_head_mem_fp_store;
+  logic rob_head_mem_atomic;
+  logic [XLEN-1:0] rob_head_fallthrough_pc;
+  // Misaligned-access engine state (declared here, driven with the engine).
+  logic ma_busy, ma_hold, ma_shield, ma_done, ma_wb_arm, ma_wb_fp_arm, ma_walk_req_valid;
+  logic ma_walk_req_ready, ma_walk_resp_valid, ma_rf_read_fp, ma_assist_start;
+  logic ma_fault_pending_q, ma_exception_assist, ma_wb_valid_q, ma_wb_fp_q;
+  logic [4:0] ma_wb_rd_arm, ma_wb_rd_q;
+  logic [riscv_pkg::FpWidth-1:0] ma_wb_data_arm, ma_wb_data_q;
+  logic [riscv_pkg::Sv39VpnBits-1:0] ma_walk_vpn;
+  logic [XLEN-1:0] ma_fault_tval_q, ma_fault_pc_q;
+  riscv_pkg::exc_cause_t ma_fault_cause_q;
   // Register-bypass and direction-training field pre-decodes from the ROB
   // (early head/head+1 field conjunctions; see the reorder_buffer ports).
   logic rob_head_bypass_int_we_early;
@@ -2387,6 +2432,15 @@ module cpu_ooo #(
       .o_trap_pc(rob_trap_pc),
       .o_head_is_wfi(rob_head_is_wfi),
       .o_head_is_amo(rob_head_is_amo),
+      .o_head_mem_funct3(rob_head_mem_funct3),
+      .o_head_mem_rs2(rob_head_mem_rs2),
+      .o_head_dest_reg(rob_head_dest_reg),
+      .o_head_dest_rf(rob_head_dest_rf),
+      .o_head_dest_valid(rob_head_dest_valid),
+      .o_head_mem_store(rob_head_mem_store),
+      .o_head_mem_fp_store(rob_head_mem_fp_store),
+      .o_head_mem_atomic(rob_head_mem_atomic),
+      .o_head_fallthrough_pc(rob_head_fallthrough_pc),
       .o_head_bypass_int_we_early(rob_head_bypass_int_we_early),
       .o_head_bypass_fp_we_early(rob_head_bypass_fp_we_early),
       .o_head_next_bypass_int_we_early(rob_head_next_bypass_int_we_early),
@@ -2429,7 +2483,7 @@ module cpu_ooo #(
       .i_flush_tag(flush_tag),
       .i_flush_all(flush_all),
       .i_flush_after_head_commit(commit_recovery_flush_after_head),
-      .i_backend_recovery_hold(backend_recovery_hold || (step_done_q)),
+      .i_backend_recovery_hold(backend_recovery_hold || (step_done_q) || ma_hold),
       .i_slow_write_inflight(slow_write_inflight),
       .i_uncached_read_busy(VARIABLE_UNCACHED && !i_uncached_read_request_ready),
       .i_coh_admit_valid(i_coh_admit_valid),
@@ -2710,7 +2764,8 @@ module cpu_ooo #(
   // Debug Mode entry, whatever its cause: an ebreak stepped into, or a
   // simultaneous haltreq, wins its own cause.
   assign step_done_set = step_armed_q && !step_done_q &&
-      (rob_commit_valid_raw || xret_taken || (trap_taken && !trap_to_d && !trap_no_csr));
+      (rob_commit_valid_raw || xret_taken || (trap_taken && !trap_to_d && !trap_no_csr) ||
+       ma_done);
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       step_armed_q     <= 1'b0;
@@ -2918,7 +2973,9 @@ module cpu_ooo #(
 
       // Flush / early-recovery hold
       .i_flush(dispatch_flush),
-      .i_hold (early_backend_recovery_hold),
+      // The misaligned-access engine also holds dispatch: the router's hold
+      // alone drops the RS write but still allocates the ROB entry.
+      .i_hold (early_backend_recovery_hold || ma_hold),
 
       // Dispatch profiling status
       .o_status(dispatch_status),
@@ -3134,6 +3191,10 @@ module cpu_ooo #(
       .i_rob_commit_valid(rob_commit_valid),
       .i_csr_read_data(csr_read_data),
       .i_retired_without_commit(retired_without_commit_q),
+      .i_aux_wb_valid(ma_wb_valid_q),
+      .i_aux_wb_fp(ma_wb_fp_q),
+      .i_aux_wb_rd(ma_wb_rd_q),
+      .i_aux_wb_data(ma_wb_data_q),
       .o_port0_int_we(port0_int_we),
       .o_port0_int_addr(port0_int_addr),
       .o_port0_int_data(port0_int_data),
@@ -3181,8 +3242,10 @@ module cpu_ooo #(
       // Use ROB predecodes for timing. They equal commit fields whenever raw
       // fire is high.
       bypass_p0_int_we_q <= (csr_wb_arm && |rob_commit.dest_reg) ||
-          (rob_commit_valid_raw && rob_head_bypass_int_we_early);
-      bypass_p0_fp_we_q <= rob_commit_valid_raw && rob_head_bypass_fp_we_early;
+          (rob_commit_valid_raw && rob_head_bypass_int_we_early) ||
+          (ma_wb_arm && !ma_wb_fp_arm && |ma_wb_rd_arm);
+      bypass_p0_fp_we_q <= (rob_commit_valid_raw && rob_head_bypass_fp_we_early) ||
+          (ma_wb_arm && ma_wb_fp_arm);
       bypass_p1_int_we_q <= rob_commit_2_valid_raw && rob_head_next_bypass_int_we_early;
       bypass_p1_fp_we_q <= rob_commit_2_valid_raw && rob_head_next_bypass_fp_we_early;
     end
@@ -3192,7 +3255,8 @@ module cpu_ooo #(
   // The CSR delayed writeback never overlaps a commit write (asserted in
   // commit_actions), so the csr arm can take priority on port 0.
   always_ff @(posedge i_clk) begin
-    bypass_p0_addr_q <= csr_wb_arm ? rob_commit.dest_reg : rob_commit_comb.dest_reg;
+    bypass_p0_addr_q <= csr_wb_arm ? rob_commit.dest_reg :
+        ma_wb_arm ? ma_wb_rd_arm : rob_commit_comb.dest_reg;
     bypass_p1_addr_q <= rob_commit_comb_2.dest_reg;
   end
 
@@ -3998,7 +4062,7 @@ module cpu_ooo #(
       .i_fp_flags(rob_commit_fp_flags_merged),
       .i_fp_flags_valid(rob_commit_any_fp_flags_valid),
       .i_fp_flags_wb_valid(rob_commit_any_fp_flags_valid),
-      .i_fp_dest_write(rob_commit_any_fp_dest_write),
+      .i_fp_dest_write(rob_commit_any_fp_dest_write || (ma_wb_valid_q && ma_wb_fp_q)),
       .i_fp_flags_ma('0),
       .i_fp_flags_ma_valid(1'b0),
       .o_frm(frm_csr),
@@ -4041,17 +4105,30 @@ module cpu_ooo #(
   // walk and clears this routing bit. The line port goes to cache wup.
   logic ptw_req_valid, ptw_req_ready, ptw_resp_valid;
   logic [riscv_pkg::Sv39VpnBits-1:0] ptw_req_vpn;
+  // The misaligned-access engine is a third requester at the lowest
+  // priority; walk_owner_ma_q records it at acceptance in the same way, so a
+  // walk accepted for a flushed instruction still answers its own requester.
   logic walk_owner_i_q;  // the walk in flight belongs to the instruction side
-  assign ptw_req_valid = walk_req_valid || iwalk_req_valid;
-  assign ptw_req_vpn = walk_req_valid ? walk_vpn : iwalk_vpn;
+  logic walk_owner_ma_q;  // the walk in flight belongs to the misaligned engine
+  assign ptw_req_valid = walk_req_valid || iwalk_req_valid || ma_walk_req_valid;
+  assign ptw_req_vpn = walk_req_valid ? walk_vpn : iwalk_req_valid ? iwalk_vpn : ma_walk_vpn;
   assign walk_req_ready = ptw_req_ready;
   assign iwalk_req_ready = ptw_req_ready && !walk_req_valid;
+  assign ma_walk_req_ready = ptw_req_ready && !walk_req_valid && !iwalk_req_valid;
   always_ff @(posedge i_clk) begin
-    if (i_rst || tlb_invalidate) walk_owner_i_q <= 1'b0;
-    else if (ptw_req_valid && ptw_req_ready) walk_owner_i_q <= !walk_req_valid;
+    if (i_rst || tlb_invalidate) begin
+      walk_owner_i_q  <= 1'b0;
+      walk_owner_ma_q <= 1'b0;
+    end else if (ptw_req_valid && ptw_req_ready) begin
+      walk_owner_i_q  <= !walk_req_valid && iwalk_req_valid;
+      // Constant without the engine, so the D and I response valids are
+      // exactly as they are without it.
+      walk_owner_ma_q <= MISALIGNED_HW && !walk_req_valid && !iwalk_req_valid;
+    end
   end
-  assign walk_resp_valid  = ptw_resp_valid && !walk_owner_i_q;
+  assign walk_resp_valid = ptw_resp_valid && !walk_owner_i_q && !walk_owner_ma_q;
   assign iwalk_resp_valid = ptw_resp_valid && walk_owner_i_q;
+  assign ma_walk_resp_valid = ptw_resp_valid && walk_owner_ma_q;
 
   ptw #(
       .ENABLE_RESPONSE_ERRORS(VARIABLE_UNCACHED),
@@ -4088,6 +4165,173 @@ module cpu_ooo #(
     else csr_done_q <= csr_start;
   end
   assign csr_done_ack = csr_done_q;
+
+  // ===========================================================================
+  // Misaligned-Access Engine (MISALIGNED_HW)
+  // ===========================================================================
+  // A plain load or store whose address-misaligned exception reaches the ROB
+  // head is an assist: the trap unit takes it without CSR effects, flushes,
+  // redirects fetch past it and starts the engine with the head's fields.
+  // While the engine runs, dispatch is held and interrupts and halt requests
+  // wait (the AMO shield input). On completion the engine writes the load's
+  // register through commit_actions' port 0 and the instruction counts as
+  // retired; on a fault its exception is taken as the instruction's own.
+  // LR, SC and AMOs keep their exceptions.
+  logic ma_done_q;
+  if (MISALIGNED_HW) begin : gen_misaligned
+    logic ma_fault, ma_wb_valid, ma_wb_fp, ma_lc_req_valid, ma_lc_req_id, ma_fatal_error;
+    logic [4:0] ma_wb_rd;
+    logic [XLEN-1:0] ma_wb_data, ma_fault_tval, ma_lc_req_addr;
+    logic [ma_pkg::CauseBits-1:0] ma_fault_cause;
+    logic [riscv_pkg::PhysAddrBits-1:0] ma_fatal_addr_q;
+    // Debug Mode keeps the exception, so a program-buffer access parks.
+    assign ma_exception_assist = coherent_exception_valid && !ma_fault_pending_q &&
+        !rob_head_mem_atomic && !csr_debug_mode &&
+        ((rob_trap_cause == riscv_pkg::ExcLoadAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]) ||
+         (rob_trap_cause == riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]));
+    ma_engine #(
+        .LC_ID_BITS(1)
+    ) engine (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_start(ma_assist_start),
+        .i_va(rob_trap_value),
+        .i_size(riscv_pkg::mem_size_e'(rob_head_mem_funct3[1:0])),
+        .i_unsigned(rob_head_mem_funct3[2]),
+        // The ROB marks integer and FP stores with separate flags.
+        .i_store(rob_head_mem_store || rob_head_mem_fp_store),
+        .i_fp(rob_head_mem_fp_store || (!rob_head_mem_store && rob_head_dest_rf)),
+        .i_rd(rob_head_dest_reg),
+        .i_rd_valid(rob_head_dest_valid),
+        .i_rs2(rob_head_mem_rs2),
+        .i_older_vector_mem_done(1'b1),
+        .i_translate(csr_translation_active),
+        .i_eff_priv_u(csr_mmu_eff_priv_u),
+        .i_sum(csr_mmu_sum),
+        .i_mxr(csr_mmu_mxr),
+        .i_fatal_stop(i_fatal_stop),
+        .o_busy(ma_busy),
+        .o_done(ma_done),
+        .o_fault(ma_fault),
+        .o_fault_cause(ma_fault_cause),
+        .o_fault_tval(ma_fault_tval),
+        .o_fatal_error(ma_fatal_error),
+        .o_rf_read_en(),
+        .o_rf_read_fp(ma_rf_read_fp),
+        .o_rf_read_addr(ma_rf_read_addr),
+        // The integer file's RAM does not hold x0 at zero; readers substitute it.
+        .i_rf_read_data(ma_rf_read_fp ? ma_extra_fp_read_data[XLEN-1:0] :
+                        (ma_rf_read_addr == 5'd0) ? '0 : ma_extra_int_read_data),
+        .o_wb_valid(ma_wb_valid),
+        .o_wb_fp(ma_wb_fp),
+        .o_wb_rd(ma_wb_rd),
+        .o_wb_data(ma_wb_data),
+        .o_walk_req_valid(ma_walk_req_valid),
+        .i_walk_req_ready(ma_walk_req_ready),
+        .o_walk_vpn(ma_walk_vpn),
+        .i_walk_resp_valid(ma_walk_resp_valid),
+        .i_walk_resp(walk_resp),
+        .o_lc_req_valid(ma_lc_req_valid),
+        .i_lc_req_ready(i_ma_line_req_ready),
+        .o_lc_req_write(o_ma_line_req_write),
+        .o_lc_req_addr(ma_lc_req_addr),
+        .o_lc_req_data(o_ma_line_req_data),
+        .o_lc_req_mask(o_ma_line_req_mask),
+        .o_lc_req_id(ma_lc_req_id),
+        .i_lc_resp_valid(i_ma_line_resp_valid),
+        .i_lc_resp_id(i_ma_line_resp_id[0]),
+        .i_lc_resp_error(i_ma_line_resp_error),
+        .i_lc_resp_data(i_ma_line_resp_data)
+    );
+    assign o_ma_line_req_valid = ma_lc_req_valid;
+    assign o_ma_line_req_addr = ma_lc_req_addr[riscv_pkg::PhysAddrBits-1:0];
+    assign o_ma_line_req_id = 4'(ma_lc_req_id);
+    assign ma_wb_arm = ma_wb_valid;
+    assign ma_wb_fp_arm = ma_wb_fp;
+    assign ma_wb_rd_arm = ma_wb_rd;
+    assign ma_wb_data_arm = riscv_pkg::FpWidth'(ma_wb_data);
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        ma_fault_pending_q <= 1'b0;
+        ma_wb_valid_q <= 1'b0;
+        ma_done_q <= 1'b0;
+      end else begin
+        if (ma_fault) ma_fault_pending_q <= 1'b1;
+        else if (trap_taken) ma_fault_pending_q <= 1'b0;
+        ma_wb_valid_q <= ma_wb_arm;
+        ma_done_q <= ma_done;
+      end
+    end
+    // Payloads: no reset; each is read only with its valid.
+    always_ff @(posedge i_clk) begin
+      if (ma_fault) begin
+        ma_fault_cause_q <= riscv_pkg::exc_cause_t'(ma_fault_cause);
+        ma_fault_tval_q  <= ma_fault_tval;
+      end
+      if (ma_assist_start) ma_fault_pc_q <= rob_trap_pc;
+      if (ma_wb_arm) begin
+        ma_wb_fp_q   <= ma_wb_fp_arm;
+        ma_wb_rd_q   <= ma_wb_rd_arm;
+        ma_wb_data_q <= ma_wb_data_arm;
+      end
+      if (ma_lc_req_valid && i_ma_line_req_ready && o_ma_line_req_write)
+        ma_fatal_addr_q <= o_ma_line_req_addr;
+    end
+    assign o_ma_fatal = ma_fatal_error;
+    assign o_ma_fatal_addr = ma_fatal_addr_q;
+    // Dispatch waits from the take until the register write has landed;
+    // interrupts and halts wait while the engine runs or its fault is
+    // pending.
+    assign ma_hold = ma_busy || ma_fault_pending_q || ma_wb_valid_q || ma_done_q;
+    assign ma_shield = ma_busy || ma_fault_pending_q;
+`ifndef SYNTHESIS
+    logic ma_reset_seen_q = 1'b0;
+    always_ff @(posedge i_clk) begin
+      if (i_rst) ma_reset_seen_q <= 1'b1;
+      if (ma_reset_seen_q && !i_rst) begin
+        // The engine starts only from an idle state with an empty ROB behind
+        // the flush, and its register read follows every commit write.
+        if (ma_assist_start) p_ma_start_idle : assert (!ma_busy && !ma_fault_pending_q);
+        if (ma_busy) p_ma_no_commit : assert (!rob_commit_valid_raw && !csr_wb_pending);
+        // Dispatch allocates nothing while the engine holds it, so no ROB
+        // entry is left without its reservation-station or queue entry.
+        if (ma_hold)
+          p_ma_no_alloc : assert (!rob_alloc_req.alloc_valid && !rob_alloc_req_2.alloc_valid);
+      end
+    end
+`endif
+  end else begin : gen_no_misaligned
+    assign ma_exception_assist = 1'b0;
+    assign ma_busy = 1'b0;
+    assign ma_done = 1'b0;
+    assign ma_hold = 1'b0;
+    assign ma_shield = 1'b0;
+    assign ma_walk_req_valid = 1'b0;
+    assign ma_walk_vpn = '0;
+    assign ma_rf_read_fp = 1'b0;
+    assign ma_rf_read_addr = '0;
+    assign ma_wb_arm = 1'b0;
+    assign ma_wb_fp_arm = 1'b0;
+    assign ma_wb_rd_arm = '0;
+    assign ma_wb_data_arm = '0;
+    assign ma_fault_pending_q = 1'b0;
+    assign ma_wb_valid_q = 1'b0;
+    assign ma_done_q = 1'b0;
+    assign ma_wb_fp_q = 1'b0;
+    assign ma_wb_rd_q = '0;
+    assign ma_wb_data_q = '0;
+    assign ma_fault_cause_q = '0;
+    assign ma_fault_tval_q = '0;
+    assign ma_fault_pc_q = '0;
+    assign o_ma_line_req_valid = 1'b0;
+    assign o_ma_line_req_write = 1'b0;
+    assign o_ma_line_req_addr = '0;
+    assign o_ma_line_req_data = '0;
+    assign o_ma_line_req_mask = '0;
+    assign o_ma_line_req_id = '0;
+    assign o_ma_fatal = 1'b0;
+    assign o_ma_fatal_addr = '0;
+  end
 
   // MEPC for MRET
   assign mepc_value = csr_mepc;
@@ -4316,7 +4560,7 @@ module cpu_ooo #(
   always_ff @(posedge i_clk) begin
     retired_without_commit_q <= !i_rst &&
         (xret_taken || (trap_taken && !trap_no_csr && resume_pc_past_wfi_q) ||
-         (fence_class_flush_event && !translation_csr_commit_shadow && !trap_taken));
+         (fence_class_flush_event && !translation_csr_commit_shadow && !trap_taken) || ma_done);
   end
 
 `ifndef SYNTHESIS
@@ -4457,7 +4701,8 @@ module cpu_ooo #(
       .i_csr_irq_update(csr_irq_update_q),
       .i_sq_committed_empty(sq_committed_empty_for_trap),
       .o_trap_drain_wait(trap_drain_wait),
-      .i_amo_at_head((amo_at_head_shield_q && !(step_done_q)) || coherent_atomic_active),
+      .i_amo_at_head((amo_at_head_shield_q && !(step_done_q)) || coherent_atomic_active ||
+                     ma_shield),
       .i_device_read_at_head(device_read_shield_q),
       .i_mstatus(csr_mstatus),
       .i_mie(csr_mie),
@@ -4486,12 +4731,19 @@ module cpu_ooo #(
       // unit's exception latch, so mask the exception over the same T+1/T+2
       // window; otherwise a stale younger exception could survive the full
       // flush and be taken at T+3.
-      .i_exception_valid(coherent_exception_valid),
-      .i_exception_cause({
-        {(XLEN - $bits(rob_trap_cause_remapped)) {1'b0}}, rob_trap_cause_remapped
-      }),
-      .i_exception_tval(csr_trap_value),
-      .i_exception_pc(rob_trap_pc),
+      // An engine fault is the misaligned instruction's exception; the ROB
+      // holds nothing then.
+      .i_exception_valid(coherent_exception_valid || ma_fault_pending_q),
+      .i_exception_cause(ma_fault_pending_q ? {{(XLEN - $bits(
+          ma_fault_cause_q
+      )) {1'b0}}, ma_fault_cause_q} : {{(XLEN - $bits(
+          rob_trap_cause_remapped
+      )) {1'b0}}, rob_trap_cause_remapped}),
+      .i_exception_tval(ma_fault_pending_q ? ma_fault_tval_q : csr_trap_value),
+      .i_exception_pc(ma_fault_pending_q ? ma_fault_pc_q : rob_trap_pc),
+      .i_exception_assist(ma_exception_assist),
+      .i_exception_next_pc(rob_head_fallthrough_pc),
+      .o_assist_start(ma_assist_start),
       .i_interrupt_pc(interrupt_resume_pc),
       .i_mret_start(mret_start && !mret_start_is_sret && !mret_start_is_dret),
       .i_sret_start(mret_start && mret_start_is_sret),
