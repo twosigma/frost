@@ -1406,6 +1406,8 @@ module dispatch #(
                                    i_vtype_spec[8]) ||
         (o_rob_alloc_req.is_varith &&
          i_vec_lmul_illegal[i_vtype_spec[2] ? 2'd0 : i_vtype_spec[1:0]]);
+    // Sstvala: raw instruction bits, the illegal-instruction xtval.
+    o_rob_alloc_req.insn_bits = i_from_id_to_ex.insn_bits;
 
     // With FS Off, ID routes F/D instructions to INT_RS as ILLEGAL. The ROB
     // also rejects them at allocation, including fflags, frm and fcsr accesses.
@@ -1470,6 +1472,7 @@ module dispatch #(
     // Vector instructions never dispatch in slot 2.
     o_rob_alloc_req_2.is_varith = 1'b0;
     o_rob_alloc_req_2.vec_illegal = 1'b0;
+    o_rob_alloc_req_2.insn_bits = i_from_id_to_ex_2.insn_bits;
 
     o_rob_alloc_req_2.is_fp_instruction = i_from_id_to_ex_2.is_fp_instruction;
     o_rob_alloc_req_2.fp_dyn_rm = i_from_id_to_ex_2.is_fp_instruction &&
