@@ -356,7 +356,11 @@ The word-1 address uses the sampled next-page VA on a fault from the separate
 page lookup. A captured selector chooses that address. A crossing window's
 word-1 page is captured as the hit's stored PPN bits and its superpage size,
 and the sampled next-page VA supplies a superpage's low page bits when the
-address is read.
+address is read. The first-word fault is the last verdict the ITLB settles, so
+the registers that take it on a capture (word 1's fault and its cause, the
+VA-placeholder select and the neighbor-miss flag) form their clear, capture or hold choice,
+the crossing and the next-page verdict first, and take the first-word fault
+and the superpage successor in one final LUT each.
 
 The data MMU caches the last clean page translation and its permissions.
 A matching eligible access enters the result stage in one cycle. Other
