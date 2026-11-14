@@ -250,6 +250,61 @@ int main(void)
         check("last vtype wins", read_vtype(), 0x018);
     }
 
+    /* The register fields that are immediates in vsetvli (bits 24:20, part of
+     * vtypei) and vsetivli (bits 19:15, the AVL) must not make the instruction
+     * wait for that register. Here they name s3 (x19), written by an instruction
+     * that completes behind a divide at the ROB head and so has broadcast its
+     * result, but not retired, when the vector-config instruction dispatches. */
+    {
+        unsigned long rd, q;
+        __asm__ volatile("li t1, 1000000007\n"
+                         "li t2, 3\n"
+                         "div %1, t1, t2\n"
+                         "li s3, 1\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         ".insn i 0x57, 7, %0, x0, 0x013\n" /* vsetvli rd, x0, e32 m8 */
+                         : "=r"(rd), "=&r"(q)
+                         :
+                         : "t1", "t2", "s3", "memory");
+        check_state(
+            "vsetvli behind a done producer of its vtypei bits", rd, ref_vlmax(0x013), 0x013);
+        __asm__ volatile("li t1, 1000000007\n"
+                         "li t2, 3\n"
+                         "div %1, t1, t2\n"
+                         "li s3, 1\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         "nop\n"
+                         ".insn i 0x57, 7, %0, x19, %2\n" /* vsetivli rd, 19, e32 m1 */
+                         : "=r"(rd), "=&r"(q)
+                         : "i"(0x010 - 0x400)
+                         : "t1", "t2", "s3", "memory");
+        check_state("vsetivli behind a done producer of its AVL bits",
+                    rd,
+                    min_ul(19, ref_vlmax(0x010)),
+                    0x010);
+    }
+
     check("VS Dirty after vsetvl", csr_read(mstatus) & MSTATUS_VS, VS_DIRTY);
 
     uart_printf(g_ok ? "<<PASS>>\n" : "<<FAIL>>\n");

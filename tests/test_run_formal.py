@@ -865,6 +865,12 @@ FORMAL_TARGETS = [
         tasks=("bmc", "prove", "cover"),
     ),
     FormalTarget(
+        "dmmu_va_next.sby",
+        "Data-MMU S1 load and S2 VA next states, selected after the issue address, "
+        "equal the whole-payload selects, portable and primitive forms",
+        tasks=("bmc", "bmc_xilinx"),
+    ),
+    FormalTarget(
         "rs_alloc_parallel.sby",
         "Parallel RS allocation indices match the serial free-entry search",
         tasks=("bmc4", "bmc8", "bmc16", "bmc32"),
