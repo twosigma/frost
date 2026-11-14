@@ -418,6 +418,38 @@ def test_x3_place_provenance_records_manual_bloat_targets() -> None:
     )
 
 
+@pytest.mark.parametrize("identifier", (r"\cache[0] ", r"\bucket ", r"\1 "))
+def test_readme_refresh_preserves_literal_placement_identifiers(
+    tmp_path: Path, identifier: str
+) -> None:
+    """Escaped RTL names are literal report text, not regex replacement syntax."""
+    script_dir = tmp_path / "fpga/build"
+    work_dir = script_dir / "x3/work"
+    work_dir.mkdir(parents=True)
+    _write_stage_utilization(work_dir, "post_place", 42)
+    (work_dir / "post_place_vivado.log").write_text(
+        "# Command line : vivado -tclargs x3 place ExtraPostPlacementOpt input.dcp 0\n"
+        f"Set CELL_BLOAT_FACTOR LOW on 1 cell(s) matching '*top/{identifier}'\n"
+    )
+    prefix, suffix = "# FROST\n\n", "\n\n## Following section\n"
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        prefix
+        + timing_util_summary.README_UTIL_START
+        + "\nstale table\n"
+        + timing_util_summary.README_UTIL_END
+        + suffix
+    )
+    utilization = timing_util_summary.collect_all_board_utilization(script_dir)
+    section = timing_util_summary.format_readme_utilization_section(utilization)
+    assert identifier in section
+
+    assert timing_util_summary.update_readme_utilization(script_dir, utilization)
+    assert readme.read_text() == prefix + section + suffix
+    assert timing_util_summary.update_readme_utilization(script_dir, utilization)
+    assert readme.read_text() == prefix + section + suffix
+
+
 def test_hello_world_compile_replaces_obsolete_init_images(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
