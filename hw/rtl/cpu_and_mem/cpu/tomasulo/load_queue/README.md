@@ -369,6 +369,18 @@ cancels the request with no response owed. From N+2 until the load commits,
 interrupts wait; exceptions stay enabled. Arming only adds a precondition: the
 flush, write-port and drain conditions are checked again at accept.
 
+A take that is already armed goes first. While the trap unit reports an armed
+interrupt or halt take (`o_int_take_armed`), the device shield is down and no
+AMO, LR, SC, coherent atomic or misaligned-access engine holds the head,
+cpu_ooo holds back the next device access: the router keeps the parked request
+but does not report it pending, so the shield does not rise and the request
+does not arm, and a precise uncached store does not raise the shield either.
+The take follows once committed stores drain, and its flush cancels the parked
+access, which executes again after the handler. The hold bounds interrupt
+latency in loops of closely spaced device accesses, where each access would
+raise the shield again before the take found it down with the committed stores
+drained. An access already under the shield completes before the take.
+
 While the shield defers an interrupt, the trap unit holds commit only while
 that interrupt arms. A parked Device read waits for older committed stores
 to complete before arming. Progress requires those stores and the read's
