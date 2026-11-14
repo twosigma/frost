@@ -174,6 +174,15 @@ location. The NIC's `dma-coherent` property keeps its normal DMA buffers
 cacheable; its IO register mappings exercise PBMT without using the DDR alias.
 `/proc/cpuinfo` lists `svpbmt` in its `isa` line.
 
+Ssnpm: the DTB lists `ssnpm`, so Linux 6.13 and later (`CONFIG_RISCV_ISA_SUPM`)
+offer user pointer masking (Supm): `prctl(PR_SET_TAGGED_ADDR_CTRL,
+PR_TAGGED_ADDR_ENABLE | PMLEN << 24)` sets `senvcfg.PMM` for the process, and
+the kernel grants the smallest of FROST's PMLEN 7 and 16 that covers the
+request (HWASAN's 8 tag bits get 16). U-mode loads, stores, AMOs, LR/SC and
+CBOs then ignore the top PMLEN address bits; instruction fetch and the kernel's
+own accesses are never masked. `riscv_hwprobe` reports `RISCV_HWPROBE_EXT_SUPM`
+and `/proc/cpuinfo` lists `ssnpm`.
+
 ## Counters and mcounteren
 
 FROST implements `cycle`, `time`, and `instret` as 64-bit Zicntr CSRs; `time`

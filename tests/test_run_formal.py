@@ -1063,6 +1063,12 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "pointer_masking.sby",
+        "Ssnpm: the MEM_RS base transform gives the Sv39 canonical check, the Bare PMA "
+        "decodes and xtval the ignore transformation's result, and senvcfg.PMM is WARL",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
         "divider.sby",
         "Divider arithmetic at 8 bits and setup, completion, and cancellation at 64 bits",
         tasks=("bmc_width8", "prove_width64", "cover_width8"),

@@ -255,6 +255,11 @@ module tomasulo_wrapper #(
     input  logic                                               i_mmu_sum,
     input  logic                                               i_mmu_mxr,
     input  logic                                               i_mmu_eff_priv_u,
+    // Ssnpm pointer-masking mode of data accesses (registered in csr_file;
+    // see riscv_pkg "Pointer masking"). It changes only after a senvcfg write
+    // commits (ID holds younger instructions until then) or with a full
+    // flush.
+    input  riscv_pkg::pm_mode_t                                i_mmu_pm_mode,
     // The CSR file's registered translation-invalidate pulse. With the ROB's
     // SFENCE.VMA window it invalidates the DTLB and walker. Pipeline recovery
     // for the CSR write is separate: the ROB serializer classifies the CSR at
@@ -1709,6 +1714,22 @@ module tomasulo_wrapper #(
   logic sc_pending;
   // Forward declaration (assigned in SQ address section below)
   logic [riscv_pkg::XLEN-1:0] sq_effective_addr;
+  // The MEM_RS issue base after the Ssnpm transform (riscv_pkg "Pointer
+  // masking"): every address adder and the store page decoder take it, so
+  // the transformed address reaches the MMU, PMA checks, LQ and SQ alike.
+  // Only bits [XLEN-1:XLEN-16] can differ from src1.
+  logic [riscv_pkg::XLEN-1:0] mem_rs_issue_base;
+  assign mem_rs_issue_base = riscv_pkg::pm_base_transform(
+      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0], i_mmu_pm_mode
+  );
+  // The SC table records the SC's address from its issue packet's src1
+  // (an SC has no immediate): it sees the transformed base too, so its
+  // reservation compare and fault address match the LR's.
+  riscv_pkg::rs_issue_t sc_mem_rs_issue;
+  always_comb begin
+    sc_mem_rs_issue = o_mem_rs_issue;
+    sc_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] = mem_rs_issue_base;
+  end
 
   // Compare ROB ages for FP pending-dispatch and store-fault flush guards.
   function automatic logic is_younger(input logic [riscv_pkg::ReorderBufferTagWidth-1:0] entry_tag,
@@ -1808,7 +1829,7 @@ module tomasulo_wrapper #(
   assign mem_rs_issue_is_cmo = (o_mem_rs_issue.op == riscv_pkg::CBO_CLEAN) ||
       (o_mem_rs_issue.op == riscv_pkg::CBO_FLUSH) || (o_mem_rs_issue.op == riscv_pkg::CBO_INVAL);
   coherent_store_pma store_pma (
-      .i_base(o_mem_rs_issue.src1_value),
+      .i_base(mem_rs_issue_base),
       .i_effective_addr(sq_effective_addr),
       .i_imm_negative(o_mem_rs_issue.imm[11]),
       .i_page_carry(store_page_offset_sum[12]),
@@ -2327,7 +2348,7 @@ module tomasulo_wrapper #(
       .i_lq_fu_complete                (lq_fu_complete),
       .i_sc_completion_pending         (sc_fu_complete_reg.valid),
       .i_store_misalign_fu_complete_reg(store_misalign_fu_complete_reg),
-      .i_mem_rs_issue                  (o_mem_rs_issue),
+      .i_mem_rs_issue                  (sc_mem_rs_issue),
       .i_sq_effective_addr             (sq_effective_addr),
       .i_sct_alloc_addr_valid          (!i_translation_active),
       .i_sct_addr_fill_valid           (dmmu_store_ok && dmmu_out_is_sc),
@@ -3981,7 +4002,7 @@ module tomasulo_wrapper #(
   logic [riscv_pkg::XLEN-1:0] lq_effective_addr;
   // Keep the full AGU address for xtval. The LQ checks PMA and alignment
   // before launch, so downstream decodes see only in-map addresses.
-  assign lq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
+  assign lq_effective_addr = mem_rs_issue_base + o_mem_rs_issue.imm;
 
   // MMIO detection: only the zero-extended 01 address quadrant
   // [0x4000_0000, 0x8000_0000). Upper DDR addresses can have the same low
@@ -4279,6 +4300,18 @@ module tomasulo_wrapper #(
   riscv_pkg::sq_addr_update_t sq_early_addr_update_2;
   logic sq_early_addr_capture_valid;
   logic sq_early_addr_capture_valid_2;
+  // While Ssnpm pointer masking is on, stores take no early address: the
+  // pipeline adds the untransformed dispatch base. Their addresses arrive
+  // at MEM_RS issue, as for any store the pipeline does not cover. The mode
+  // changes only with a full flush or after a senvcfg write commits, so no
+  // candidate from the other mode survives the change.
+  riscv_pkg::sq_alloc_req_t sq_early_alloc_req, sq_early_alloc_req_2;
+  always_comb begin
+    sq_early_alloc_req = sq_alloc_req;
+    sq_early_alloc_req.valid = sq_alloc_req.valid && !i_mmu_pm_mode[1];
+    sq_early_alloc_req_2 = sq_alloc_req_2;
+    sq_early_alloc_req_2.valid = sq_alloc_req_2.valid && !i_mmu_pm_mode[1];
+  end
   sq_early_addr_pipeline sq_early_addr_pipeline_inst (
       .i_clk                          (i_clk),
       .i_rst_n                        (i_rst_n),
@@ -4310,8 +4343,8 @@ module tomasulo_wrapper #(
       .i_bypass_value_6               (bypass_value_6),
       .i_mem_rs_dispatch              (mem_rs_dispatch),
       .i_mem_rs_dispatch_2            (mem_rs_dispatch_2),
-      .i_sq_alloc_req                 (sq_alloc_req),
-      .i_sq_alloc_req_2               (sq_alloc_req_2),
+      .i_sq_alloc_req                 (sq_early_alloc_req),
+      .i_sq_alloc_req_2               (sq_early_alloc_req_2),
       .i_sq_full                      (o_sq_full),
       .i_sq_full_for_2                (o_sq_full_for_2),
       .o_sq_early_addr_update         (sq_early_addr_update),
@@ -4518,7 +4551,7 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Keep the full store address for xtval. Without translation, store_pma_issue
   // rejects out-of-map stores before their SQ entries can drain.
-  assign sq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
+  assign sq_effective_addr = mem_rs_issue_base + o_mem_rs_issue.imm;
 
   logic sq_addr_is_mmio;
   // MMIO quadrant test; see lq_addr_is_mmio above.
@@ -4882,6 +4915,10 @@ module tomasulo_wrapper #(
   // These checks constrain translation to the inactive bypass path.
   always_comb assume (!i_translation_active);
   always_comb assume (!i_csr_translation_flush_req);
+  // Ssnpm: any mode csr_file produces, changing only with a full flush. (A
+  // senvcfg write changes it with ID held until the write commits, which
+  // leaves the back end equally free of younger operations.)
+  always_comb assume (i_mmu_pm_mode != 2'b01);
 
   reg f_past_valid;
   initial f_past_valid = 1'b0;
@@ -4889,6 +4926,7 @@ module tomasulo_wrapper #(
 
   always @(posedge i_clk) begin
     if (f_past_valid) assume (i_rst_n);
+    if (f_past_valid && !$past(i_flush_all)) assume (i_mmu_pm_mode == $past(i_mmu_pm_mode));
   end
 
   // Model dispatch's registered query channels to check that E1 repair

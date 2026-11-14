@@ -162,6 +162,7 @@ every supported extension and privilege mode.
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
 | **Smaia, Ssaia** | AIA CSRs and machine/supervisor IMSIC files with 63 identities |
 | **Sscofpmf**     | HPM counter overflow (OF, `scountovf`, local counter-overflow interrupt 13) and MINH/SINH/UINH privilege filtering on counters 3..10 |
+| **Ssnpm**        | Pointer masking for U-mode (`senvcfg.PMM`, PMLEN 7 and 16): explicit U-mode accesses, including AMOs, LR/SC and CBOs, ignore the top PMLEN address bits (sign-extended under Sv39, zero-extended under Bare); Linux offers it as Supm through `prctl(PR_SET_TAGGED_ADDR_CTRL)` |
 | **Sstvala**      | An illegal-instruction exception writes the faulting instruction's bits to `mtval` or `stval`, a compressed instruction's 16 bits zero-extended |
 | **Svade**        | Software-managed accessed and dirty bits: an access that needs one set raises a page fault |
 | **Svpbmt**       | PTE bits 62:61 under `menvcfg.PBMTE`: NC and IO pages use the uncached path at the ROB head; DDR mappings require a configured alias into the coherent DMA port. AMO/LR/SC, `cbo.zero` and fetch on NC or IO pages are access faults |

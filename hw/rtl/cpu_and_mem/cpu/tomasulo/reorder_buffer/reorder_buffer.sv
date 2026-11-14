@@ -646,8 +646,8 @@ module reorder_buffer #(
   // architectural write intent. id_stage's mstatus.FS=Off check also relies
   // on this class: the full flush that ends every such write discards whatever
   // ID decoded under the old FS value. Legal menvcfg/senvcfg writes affect
-  // cbo.zero permission only at lower privilege, so they use ordinary CSR
-  // serialization. The privilege transition itself flushes the old decode.
+  // cbo.zero permission and senvcfg.PMM pointer masking only at lower
+  // privilege, so they use ordinary CSR serialization. The privilege transition itself flushes the old decode.
   logic [ReorderBufferDepth-1:0] rob_f_csr_may_change_translation;
 
 

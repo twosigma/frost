@@ -533,7 +533,9 @@
     "Svrsw60t59b": {"supported": false},
     "Svnapot": {"supported": false},
     "Svukte": {"supported": false},
-    "Ssnpm": {"supported": false},
+    // Ssnpm: senvcfg.PMM with PMLEN 7 and 16; a reserved or unsupported
+    // write keeps the old value on both (traces/ssnpm_pmm.S).
+    "Ssnpm": {"supported": true, "supported_pmlen_7": true, "supported_pmlen_16": true},
     "Smnpm": {"supported": false},
     "Smmpm": {"supported": false},
     "Smcntrpmf": {"supported": false},
