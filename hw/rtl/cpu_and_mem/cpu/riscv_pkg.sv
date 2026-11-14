@@ -2841,6 +2841,35 @@ package riscv_pkg;
     fp_flags_t                        fp_flags;
   } fu_complete_t;
 
+  // The vector memory table as the load and store queues see it: one entry
+  // per vector memory instruction in flight, in program order. An entry is
+  // live from dispatch until the instruction completes; retired entries are
+  // older than anything in the ROB; until its range is known an entry overlaps
+  // everything. A range is up to two segments (one per page): a physical page
+  // number and the first and last 32-byte sector index in that page.
+  localparam int unsigned VmtDepth   = 4;
+  localparam int unsigned VmtPpnBits = PhysAddrBits - 12;
+  typedef struct packed {
+    logic                  valid;
+    logic [VmtPpnBits-1:0] ppn;
+    logic [6:0]            s_lo;
+    logic [6:0]            s_hi;
+  } vmt_seg_t;
+  typedef struct packed {
+    logic                             live;
+    logic                             retired;
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    logic                             range_known;
+    // Two named segments: Yosys does not select within packed arrays of
+    // structs.
+    vmt_seg_t                         seg1;
+    vmt_seg_t                         seg0;
+  } vmt_entry_t;
+  // The table as a flat vector, entry t at [VmtEntryBits*t +: VmtEntryBits]
+  // (Yosys does not select members of packed arrays of structs).
+  localparam int unsigned VmtEntryBits = 3 + ReorderBufferTagWidth + 2 * (1 + VmtPpnBits + 14);
+  typedef logic [VmtDepth*VmtEntryBits-1:0] vmt_view_t;
+
   // Vector-config completion: what the CSR file needs at commit, kept per ROB
   // tag in the wrapper's side record. vl and VLMAX are element counts.
   typedef struct packed {

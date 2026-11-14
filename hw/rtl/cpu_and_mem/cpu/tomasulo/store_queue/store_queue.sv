@@ -90,6 +90,10 @@ module store_queue #(
     // Address Update (from MEM_RS issue path: base + imm, pre-computed)
     // =========================================================================
     input riscv_pkg::sq_addr_update_t i_addr_update,
+    // The vector memory table (idle: every entry dead), for range-ordering
+    // holds: an entry does not drain while an older live vector memory
+    // instruction overlaps it or has an unknown range (vec_hold_rows)
+    input riscv_pkg::vmt_view_t i_vmt = '0,
     // Payload capture may remain valid for a faulted store. sq_addr_valid alone
     // exposes the address, so a hidden write is harmless and simplifies timing.
     input logic i_addr_update_capture_valid,
@@ -890,6 +894,35 @@ module store_queue #(
   (* keep = "true" *) logic [DEPTH-1:0] sq_cached_class;
   (* keep = "true" *) logic [DEPTH-1:0] sq_precise_class, sq_plain_fast_class;
   logic [DEPTH-1:0] drain_entry_ready, drain_sc_order_ok;
+  // Range-ordering holds against the vector memory table, registered. An SC
+  // waits for every older live vector memory instruction.
+  logic [DEPTH-1:0] vec_hold_d, vec_hold_q;
+  vec_hold_rows #(
+      .DEPTH(DEPTH),
+      .DIRECT_ADDR(1'b1),
+      .BLOCK_LSB($clog2(riscv_pkg::CboZeroBlockBytes))
+  ) u_vec_hold (
+      .i_clk       (i_clk),
+      .i_rst       (!i_rst_n),
+      .i_valid     (sq_valid),
+      .i_tag_flat  (sq_rob_tag_flat),
+      .i_atomic    (sq_is_sc),
+      .i_head_tag  (i_rob_head_tag),
+      .i_upd_valid (1'b0),
+      .i_upd_idx   ('0),
+      .i_upd_addr  ('0),
+      .i_upd_size  ('0),
+      .i_addr_flat (sq_address_flat),
+      .i_size_flat (sq_size_flat),
+      .i_addr_valid(sq_addr_valid),
+      .i_block_flat(sq_is_zero),
+      .i_vmt       (i_vmt),
+      .o_hold_d    (vec_hold_d)
+  );
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) vec_hold_q <= '0;
+    else vec_hold_q <= vec_hold_d;
+  end
   (* keep = "true" *) logic [DEPTH-1:0] pending_without_class, precommit_local_ready;
   (* keep = "true" *) logic precommit_shared_ready;
   assign precommit_shared_ready = uncached_armed_q && i_uncached_store_shield &&
@@ -903,7 +936,7 @@ module store_queue #(
     assign sq_plain_fast_class[slot] = (!PRECISE_UNCACHED ||
         (normal_buffered && !sq_is_sc[slot])) && !sq_is_mmio[slot] && !sq_cached_class[slot];
     assign drain_entry_ready[slot] = drain_idx_q == IdxWidth'(slot) && sq_valid[slot] &&
-        sq_addr_valid[slot] && sq_data_valid[slot] && !sq_sent[slot];
+        sq_addr_valid[slot] && sq_data_valid[slot] && !sq_sent[slot] && !vec_hold_q[slot];
     assign drain_sc_order_ok[slot] = !i_coherent_sc_pending ||
         (sq_is_sc[slot] && sq_rob_tag[slot] == i_coherent_sc_tag);
     assign pending_without_class[slot] = PRECISE_UNCACHED && drain_entry_ready[slot] &&

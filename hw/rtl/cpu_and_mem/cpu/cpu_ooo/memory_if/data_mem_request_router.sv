@@ -339,10 +339,21 @@ module data_mem_request_router #(
   // single launch pulse, so amo_variable_inflight blocks repeats until done.
   // VARIABLE_UNCACHED extends this ownership to the uncached AXI adapter;
   // only the legacy local-memory path completes an AMO combinationally.
+  // A cached AMO write launches from a register armed the cycle before: the
+  // LQ holds its address, data and enable until done, so the launch sees the
+  // same request one cycle later, and the store-record push it drives starts
+  // at a flop instead of the LQ's atomic state decode. Atomics take one more
+  // cycle; scalar stores are unchanged. A fatal stop still blocks the launch.
   logic amo_variable_inflight;
   logic amo_uncached_write_launch;
-  assign amo_cached_write_launch =
-      amo_mem_write_en && amo_mem_write_is_cached && !amo_variable_inflight;
+  logic amo_cached_launch_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) amo_cached_launch_q <= 1'b0;
+    else
+      amo_cached_launch_q <= amo_mem_write_en && amo_mem_write_is_cached &&
+          !amo_variable_inflight && !amo_cached_launch_q;
+  end
+  assign amo_cached_write_launch = amo_cached_launch_q && !i_block_new_requests;
   assign amo_uncached_write_launch = VARIABLE_UNCACHED && amo_mem_write_en &&
       !amo_mem_write_is_cached && !amo_variable_inflight;
 
