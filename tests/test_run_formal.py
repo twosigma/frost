@@ -1239,7 +1239,7 @@ FORMAL_TARGETS = [
         "axi_mux.sby",
         "AXI4 rules on every port, W in AW-grant order, and B and R steered by port, "
         "unbounded",
-        tasks=("prove", "prove_soc", "cover"),
+        tasks=("prove", "prove_soc", "prove_soc4", "cover"),
     ),
     FormalTarget(
         "line_size_adapter.sby",
@@ -2461,6 +2461,7 @@ SBY_TASKS = [
         "Unbounded proof at SoC bus widths; AXI bridge uses four bursts and IDs per direction",
     ),
     ("bmc_soc", "Bounded check with SoC burst and line-ID capacities"),
+    ("prove_soc4", "Unbounded proof of the four-port SoC AXI mux"),
     (
         "prove_soc8_0",
         "Eight-burst AXI bridge safety, assertion partition 0 of four",
