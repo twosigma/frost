@@ -566,11 +566,12 @@ the vector memory instructions in flight in program order for the load and
 store queues' range holds, marks an entry retired on the edge the ROB head
 passes it, and frees entries that a flush removes. Its registered "no live
 retired entry" output holds the serializer's FENCE, FENCE.I and SFENCE.VMA
-drain, the store-conditional unit and the misaligned-access engine's start.
-The unit does not perform vector loads and stores yet: each raises
-illegal-instruction when it reaches the ROB head, and the trap's flush frees
-its entry. The other vector instructions, and the strided, indexed, segment
-and fault-only-first loads and stores, are still illegal.
+drain, the store-conditional unit's firing and arming, and the
+misaligned-access engine before its first access. The unit does not perform
+vector loads and stores: each raises illegal-instruction when it reaches the
+ROB head, and the trap's flush frees its entry. The other vector
+instructions, and the strided, indexed, segment and fault-only-first loads
+and stores, are illegal.
 
 `misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
 elaboration while the vector instructions are not implemented, and bare-metal

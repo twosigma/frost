@@ -32,7 +32,7 @@
   next-state bits, so on the edge an instruction retires the term already
   reads 0: a FENCE, SFENCE.VMA, SC or misaligned access that reaches the ROB
   head after a vector memory instruction waits for that instruction's
-  accesses to finish (rule V-O4).
+  accesses to finish before it drains, arms or accesses memory (rule V-O4).
 */
 module vec_vmt #(
     localparam int unsigned VMT  = riscv_pkg::VmtDepth,
@@ -53,7 +53,9 @@ module vec_vmt #(
     // instructions retire alone)
     input  logic                                 i_commit_valid,
     input  logic                 [TagW-1:0]      i_commit_tag,
-    // Flush: full, or partial (entries younger than i_flush_tag)
+    // Flush: full, or partial (entries younger than i_flush_tag, which is a
+    // live instruction at or after the head; a recovery behind an instruction
+    // that has already retired arrives as a full flush)
     input  logic                                 i_flush_all,
     input  logic                                 i_flush_en,
     input  logic                 [TagW-1:0]      i_flush_tag,

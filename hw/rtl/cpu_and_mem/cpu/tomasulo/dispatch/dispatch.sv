@@ -1379,7 +1379,7 @@ module dispatch #(
         (op == riscv_pkg::VSETVL);
     o_rob_alloc_req.is_varith = (op == riscv_pkg::VARITH) || (op == riscv_pkg::VARITH_X);
     // A vector-to-scalar op (VTOX) is illegal only under vill. The vector
-    // unit does not execute loads and stores (VLOAD, VSTORE) yet: they raise
+    // unit does not perform loads and stores (VLOAD, VSTORE): they raise
     // illegal-instruction when they reach the head.
     o_rob_alloc_req.vec_illegal = (o_rob_alloc_req.is_varith && riscv_pkg::vector_arith_illegal(
                                    i_vtype_spec, 32'(i_from_id_to_ex.instruction))) ||

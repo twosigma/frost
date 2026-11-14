@@ -5033,10 +5033,10 @@ module cpu_ooo #(
         .o_idle(vec_idle)
     );
     // A vector load or store takes an entry when it dispatches (slot 1 only)
-    // and retires on the edge the ROB head passes it. There is no memory unit
-    // yet: the range and completion ports are idle, so an entry is freed only
-    // by the flush that follows its illegal-instruction trap or that removes
-    // it from a wrong path.
+    // and retires on the edge the ROB head passes it. No memory unit drives
+    // the range and completion ports, so an entry is freed by the flush that
+    // follows its illegal-instruction trap or that removes it from a wrong
+    // path.
     vec_vmt u_vmt (
         .i_clk(i_clk),
         .i_rst(i_rst),
@@ -5047,8 +5047,11 @@ module cpu_ooo #(
         .o_alloc_idx(),
         .i_commit_valid(rob_commit_comb.valid),
         .i_commit_tag(rob_commit_comb.tag),
-        .i_flush_all(flush_all),
-        .i_flush_en(flush_en),
+        // Commit-time recovery flushes behind a branch that has already
+        // retired, so its tag is not a live instruction: it removes every
+        // unretired entry, as in the wrapper's speculative full flush.
+        .i_flush_all(flush_all || commit_recovery_flush_after_head),
+        .i_flush_en(flush_en && !commit_recovery_flush_after_head),
         .i_flush_tag(flush_tag),
         .i_head_tag(head_tag),
         .i_range_valid(1'b0),

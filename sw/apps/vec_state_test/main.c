@@ -230,6 +230,47 @@ static unsigned long vmem_wrong_path(void)
     return sum;
 }
 
+/* An indirect jump alternates between a vector load, which traps, and scalar
+ * code with fences. Each time it goes to the scalar code its prediction is the
+ * vector load, which is fetched on the wrong path and discarded by the jump's
+ * recovery at commit. Returns the sum of the values the scalar code loads;
+ * every fence must complete. */
+static unsigned long vmem_jump_wrong_path(void)
+{
+    unsigned long sum;
+    reset_records();
+    __asm__ volatile("la   t0, 6f\n"
+                     "csrw mscratch, t0\n"
+                     "mv   t5, %1\n"
+                     "li   %0, 0\n"
+                     "la   a1, 8f\n"
+                     "la   a2, 7f\n"
+                     "li   a3, 12\n"
+                     "2:\n"
+                     "andi a4, a3, 1\n"
+                     "mv   a5, a2\n"
+                     "beqz a4, 3f\n"
+                     "mv   a5, a1\n"
+                     "3:\n"
+                     "jalr x0, 0(a5)\n"
+                     "8:\n" VLE32_V1 "\n"
+                     "j    6f\n"
+                     "7:\n"
+                     "fence\n"
+                     "ld   a4, 8(t5)\n"
+                     "sd   a4, 16(t5)\n"
+                     "fence\n"
+                     "ld   a4, 16(t5)\n"
+                     "add  %0, %0, a4\n"
+                     "6:\n"
+                     "addi a3, a3, -1\n"
+                     "bnez a3, 2b\n"
+                     : "=&r"(sum)
+                     : "r"(g_vbuf)
+                     : "t0", "t1", "t2", "t3", "t5", "a1", "a2", "a3", "a4", "a5", "memory");
+    return sum;
+}
+
 static void set_vs(unsigned long vs)
 {
     csr_clear(mstatus, MSTATUS_VS);
@@ -277,6 +318,8 @@ int main(void)
     check_vmem_illegal("without the unit");
     fill_vbuf();
     check_eq("wrong-path vector load", vmem_wrong_path(), 16 * 0x0202020202020202ul);
+    fill_vbuf();
+    check_eq("jump-target vector load", vmem_jump_wrong_path(), 6 * 0x0202020202020202ul);
 #else
     check_eq("VS resets Off", vs_field(), VS_OFF);
     check_all_illegal("with VS Off");
@@ -334,10 +377,12 @@ int main(void)
     check_illegal("csrw vlenb", RUN_TRIGGER("csrw 0xC22, zero"));
     check_eq("rejected writes leave VS", vs_field(), VS_CLEAN);
 
-    /* The vector unit does not execute loads and stores yet. */
+    /* The vector unit does not perform loads and stores. */
     check_vmem_illegal("with VS on");
     fill_vbuf();
     check_eq("wrong-path vector load", vmem_wrong_path(), 16 * 0x0202020202020202ul);
+    fill_vbuf();
+    check_eq("jump-target vector load", vmem_jump_wrong_path(), 6 * 0x0202020202020202ul);
     check_eq("vector loads and stores leave VS", vs_field(), VS_CLEAN);
 
     set_vs(VS_OFF);

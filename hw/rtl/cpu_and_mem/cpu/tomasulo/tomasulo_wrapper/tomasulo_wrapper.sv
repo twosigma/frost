@@ -157,7 +157,7 @@ module tomasulo_wrapper #(
     // Some ROB entry is a vector-config instruction (registered)
     output logic                              o_vcfg_in_flight,
     // The vector memory table, for the load and store queues' range-ordering
-    // holds (all entries dead while the vector unit has no memory accesses)
+    // holds (all entries dead in a core without the vector unit)
     input  riscv_pkg::vmt_view_t              i_vmt = '0,
     // No retired vector memory instruction is still accessing memory
     // (registered); FENCE, FENCE.I, SFENCE.VMA and SC wait for it (V-O4)

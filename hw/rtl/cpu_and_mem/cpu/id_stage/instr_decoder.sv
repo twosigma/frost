@@ -26,14 +26,15 @@ module instr_decoder (
     output logic                 o_illegal
 );
 
-  // The vector load and store forms decoded so far, for an instruction with a
+  // The vector load and store forms decoded as VLOAD and VSTORE, for an instruction with a
   // vector width (riscv_pkg::is_vector_mem): mew 0 and unit-stride
   // addressing (mop 00), then by lumop/sumop (bits 24:20):
   //   00000 unit-stride, one field (nf 0);
   //   01000 whole-register, nf 0, 1, 3 or 7 (1, 2, 4 or 8 registers),
   //         unmasked; a store only with width 000;
   //   01011 mask (vlm.v, vsm.v), nf 0, unmasked, width 000.
-  // Strided, indexed, segment and fault-only-first forms are not decoded.
+  // Strided, indexed, segment and fault-only-first forms are illegal. Rules
+  // that depend on the register numbers or vtype are not checked here.
   function automatic logic vector_mem_ok(input logic [31:0] insn, input logic is_store);
     logic [2:0] nf, width;
     logic [4:0] umop;
