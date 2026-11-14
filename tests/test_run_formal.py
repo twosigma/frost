@@ -1273,7 +1273,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "immu_capture_next.sby",
-        "Instruction-MMU word-1 fault, VA placeholder and neighbor-miss next "
+        "Instruction-MMU word-1 fault, cause, VA placeholder and neighbor-miss next "
         "states equal the priority-ordered capture reference, portable and "
         "primitive forms",
         tasks=("bmc", "bmc_xilinx"),
