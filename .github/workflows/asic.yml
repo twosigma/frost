@@ -304,12 +304,13 @@ jobs:
           df -h / /mnt
 
       # Detailed routing reuses global routing's pin access (asic/config.mk).
+      # It peaks at about 29 GiB, in its first iteration.
       - name: Add swap space
         run: |
           swapfile=/mnt/asic-flow.swap
-          if ! sudo fallocate -l 12G "$swapfile"; then
+          if ! sudo fallocate -l 24G "$swapfile"; then
             swapfile=/asic-flow.swap
-            sudo fallocate -l 12G "$swapfile"
+            sudo fallocate -l 24G "$swapfile"
           fi
           sudo chmod 600 "$swapfile"
           sudo mkswap "$swapfile"
@@ -374,12 +375,13 @@ jobs:
           nproc
           df -h / /mnt
 
+      # The final report peaks at about 39 GiB.
       - name: Add swap space
         run: |
           swapfile=/mnt/asic-flow.swap
-          if ! sudo fallocate -l 16G "$swapfile"; then
+          if ! sudo fallocate -l 32G "$swapfile"; then
             swapfile=/asic-flow.swap
-            sudo fallocate -l 16G "$swapfile"
+            sudo fallocate -l 32G "$swapfile"
           fi
           sudo chmod 600 "$swapfile"
           sudo mkswap "$swapfile"
