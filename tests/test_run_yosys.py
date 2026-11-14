@@ -23,8 +23,11 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from collections.abc import Callable
 
 import pytest
+
+import ci_reuse
 
 
 def _compile_hello_world(root_dir: Path) -> bool:
@@ -151,6 +154,18 @@ SYNTHESIS_TARGETS = [
 DESIGN_FILELISTS = {
     "frost": "hw/rtl/frost.f",
 }
+
+
+def synthesis_reuse_key(
+    root: Path, test_id: str, script: str, temp_dir: Path, timeout: int, tools_id: str
+) -> str:
+    """Return a Yosys run's reuse key, failing the test if it cannot be computed."""
+    try:
+        return ci_reuse.synthesis_key(
+            root, test_id, script, root / "tests", temp_dir, timeout, tools_id
+        )
+    except ci_reuse.ReuseKeyError as error:
+        pytest.fail(f"Cannot compute the reuse key of {test_id}: {error}")
 
 
 class YosysRunner:
@@ -295,6 +310,7 @@ class YosysRunner:
         *,
         top_module: str = "platform_top",
         parameters: dict[str, int] | None = None,
+        reuse_hook: Callable[[str, Path, int, bool], None] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run Yosys synthesis on the design.
 
@@ -302,6 +318,9 @@ class YosysRunner:
             capture_output: If True, capture stdout/stderr. If False, stream to console.
             synth_command: Yosys synthesis command (e.g., "synth", "synth_xilinx",
                           "synth_intel_alm", "synth_ice40").
+            reuse_hook: Called with the Yosys script, the directory of the
+                converted sources, the timeout and False before Yosys runs, and
+                with True after it returns. It may skip the test before the run.
         """
         if not self.filelist.exists():
             raise FileNotFoundError(f"Filelist not found: {self.filelist}")
@@ -369,6 +388,8 @@ class YosysRunner:
                 "select -assert-none t:$dlatch* t:$adlatch* t:$_DLATCH* t:LD*"
             )
             script_content = "\n".join(yosys_script)
+            if reuse_hook is not None:
+                reuse_hook(script_content, Path(temp_dir), timeout_sec, False)
 
             result = subprocess.run(
                 ["yosys", "-p", script_content],
@@ -377,6 +398,8 @@ class YosysRunner:
                 cwd=self.test_dir,
                 timeout=timeout_sec,
             )
+            if reuse_hook is not None:
+                reuse_hook(script_content, Path(temp_dir), timeout_sec, True)
 
         return result
 
@@ -479,6 +502,28 @@ class TestYosysSynthesis:
     ) -> None:
         """Run synthesis for a specific target and check for errors."""
         runner = YosysRunner()
+        test_id = f"test_synthesis[{target_name}]"
+        # In CI, skip a target that passed before with the same key
+        # (tests/README.md, "Reusing formal and synthesis results").
+        reuse = ci_reuse.Reuse.from_env(runner.root_dir, "synthesis")
+        state: dict[str, Any] = {}
+
+        def reuse_hook(script: str, temp_dir: Path, timeout: int, after: bool) -> None:
+            """Skip a reusable run; after a run, check its key is unchanged."""
+            assert reuse is not None
+            key = synthesis_reuse_key(
+                runner.root_dir, test_id, script, temp_dir, timeout, reuse.tools_id
+            )
+            if after:
+                state["stable"] = key == state["key"]
+                return
+            decision = reuse.decide(test_id, key)
+            state.update(key=key, decision=decision)
+            if decision.action == "reuse":
+                assert decision.marker is not None
+                reuse.report(test_id, "reused", key, decision.marker)
+                origin = ci_reuse.describe_origin(decision.marker["origin"])
+                pytest.skip(f"Passed with the same key in {origin}")
 
         try:
             subprocess.run(["yosys", "-V"], capture_output=True, check=True)
@@ -489,8 +534,63 @@ class TestYosysSynthesis:
             print(f"\nRunning Yosys synthesis for {description}...")
 
         try:
+            state["completed"] = self.synthesize(
+                runner,
+                target_name,
+                synth_command,
+                capsys,
+                reuse_hook if reuse is not None else None,
+            )
+        except pytest.fail.Exception as failure:
+            if reuse is not None and "decision" in state:
+                # A canary, or a forced run, of a target with a marker.
+                if state["decision"].marker is not None:
+                    reuse.store.drop(test_id)
+                    reuse.report(test_id, "canary-failed", state["key"])
+                    origin = ci_reuse.describe_origin(
+                        state["decision"].marker["origin"]
+                    )
+                    pytest.fail(
+                        f"CANARY: {test_id} had a pass marker for this exact key "
+                        f"from {origin} but did not pass now. The key misses an "
+                        "input of the run, or the tools are not what the key "
+                        f"says.\n{failure}"
+                    )
+                reuse.report(test_id, "failed", state["key"])
+            raise
+        if reuse is not None:
+            if not state.get("stable"):
+                reuse.report(test_id, "failed", state["key"])
+                pytest.fail(f"The inputs of {test_id} changed while it ran")
+            if not state.get("completed"):
+                # Only a run that printed Yosys's end-of-script line earns a
+                # marker, and an earlier marker for this key no longer stands.
+                reuse.store.drop(test_id)
+                reuse.report(test_id, "proved-without-marker", state["key"])
+                return
+            reuse.store.record_pass(
+                test_id, state["key"], ci_reuse.environment_origin()
+            )
+            status = "canary" if state["decision"].action == "canary" else "proved"
+            reuse.report(test_id, status, state["key"])
+
+    @staticmethod
+    def synthesize(
+        runner: YosysRunner,
+        target_name: str,
+        synth_command: str,
+        capsys: Any,
+        reuse_hook: Callable[[str, Path, int, bool], None] | None,
+    ) -> bool:
+        """Run one synthesis target and fail the test unless it succeeds.
+
+        Return whether Yosys exited with 0 and printed its end-of-script line.
+        """
+        try:
             result = runner.run_synthesis(
-                capture_output=True, synth_command=synth_command
+                capture_output=True,
+                synth_command=synth_command,
+                reuse_hook=reuse_hook,
             )
 
             has_error, error_lines = runner.check_for_errors(result)
@@ -512,6 +612,7 @@ class TestYosysSynthesis:
                     error_lines
                 )
                 pytest.fail(error_msg)
+            return result.returncode == 0 and "End of script" in (result.stdout or "")
 
         except subprocess.TimeoutExpired:
             timeout_sec = _get_timeout_seconds(synth_command)
