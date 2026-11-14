@@ -43,6 +43,9 @@ module frost_hart #(
     parameter bit VECTOR = 1'b0,
     parameter int unsigned VLEN = 256,
     parameter bit VECTOR_ADVERTISE = 1'b0,
+    // Misaligned plain loads and stores to cached DDR run on the hart's
+    // misaligned-access engine instead of trapping (cpu_ooo MISALIGNED_HW).
+    parameter bit MISALIGNED_HW = 1'b0,
     // The uncached data port: one beat of the outgoing AXI data bus (cpu_top
     // L2_LINE_BYTES), and the tile's AXI protection domain.
     parameter int unsigned DATA_BYTES = 64,
@@ -167,6 +170,16 @@ module frost_hart #(
     input logic [NormalFetchBytes*8-1:0] i_fetch_resp_data,
     input logic i_fetch_resp_error
 );
+  // The line client's request port (driven by cpu_ooo's misaligned-access
+  // engine) and the fatal reports joined into o_cache_fatal.
+  logic line_req_valid, line_req_ready, line_req_write;
+  logic [riscv_pkg::PhysAddrBits-1:0] line_req_addr;
+  logic [L1LineBytes*8-1:0] line_req_wdata, line_resp_rdata;
+  logic [L1LineBytes-1:0] line_req_wstrb;
+  logic [LineIdBits-1:0] line_req_id, line_resp_id;
+  logic line_resp_valid, line_resp_error, line_g_ready, line_u_ready;
+  logic hart_cache_fatal, ma_fatal;
+  logic [riscv_pkg::PhysAddrBits-1:0] hart_cache_fatal_addr, ma_fatal_addr;
   logic [riscv_pkg::XLEN-1:0] program_counter;
   logic [63:0] instruction, bram_fetch_instr_by_parity, instruction_high;
   logic instruction_window_high;
@@ -309,6 +322,7 @@ module frost_hart #(
       .VECTOR(VECTOR),
       .VLEN(VLEN),
       .VECTOR_ADVERTISE(VECTOR_ADVERTISE),
+      .MISALIGNED_HW(MISALIGNED_HW),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
@@ -400,6 +414,19 @@ module frost_hart #(
       .i_walk_line_resp_error(walk_line_resp_error),
       .i_walk_line_resp_id(walk_line_resp_id[1:0]),
       .i_walk_line_resp_rdata(walk_line_resp_rdata),
+      .o_ma_line_req_valid(line_req_valid),
+      .i_ma_line_req_ready(line_req_ready),
+      .o_ma_line_req_write(line_req_write),
+      .o_ma_line_req_addr(line_req_addr),
+      .o_ma_line_req_data(line_req_wdata),
+      .o_ma_line_req_mask(line_req_wstrb),
+      .o_ma_line_req_id(line_req_id),
+      .i_ma_line_resp_valid(line_resp_valid),
+      .i_ma_line_resp_id(line_resp_id),
+      .i_ma_line_resp_data(line_resp_rdata),
+      .i_ma_line_resp_error(line_resp_error),
+      .o_ma_fatal(ma_fatal),
+      .o_ma_fatal_addr(ma_fatal_addr),
       .o_fence_i_flush(fence_i_flush),
       .o_data_mem_addr(cpu_data_mem_addr_xlen),
       .o_data_mem_wr_data(data_memory_write_data),
@@ -760,12 +787,12 @@ module frost_hart #(
         .o_fence_done(fence_i_sync_done),
         .o_l1i_perf_events(o_l1i_perf_events),
         .o_l1d_perf_events(o_l1d_perf_events),
-        .o_fatal(o_cache_fatal),
-        .o_fatal_addr(o_cache_fatal_addr)
+        .o_fatal(hart_cache_fatal),
+        .o_fatal_addr(hart_cache_fatal_addr)
     );
   end else begin : gen_no_cached_tier
-    assign o_cache_fatal = 1'b0;
-    assign o_cache_fatal_addr = '0;
+    assign hart_cache_fatal = 1'b0;
+    assign hart_cache_fatal_addr = '0;
     assign o_l1d_perf_events = '0;
     assign o_l1i_perf_events = '0;
     assign iup_req_ready = 1'b0;
@@ -808,20 +835,16 @@ module frost_hart #(
 
   // The hart's line client: sector reads and masked sector writes with the
   // home's DMA-style service (probe, dirty merge, masked update), under the
-  // hart's own source and port class 3. Nothing in the hart issues requests
-  // on it, so its request port is held idle.
-  logic line_req_valid, line_req_ready, line_req_write;
-  logic [riscv_pkg::PhysAddrBits-1:0] line_req_addr;
-  logic [L1LineBytes*8-1:0] line_req_wdata, line_resp_rdata;
-  logic [L1LineBytes-1:0] line_req_wstrb;
-  logic [LineIdBits-1:0] line_req_id, line_resp_id;
-  logic line_resp_valid, line_resp_error, line_g_ready, line_u_ready;
-  assign line_req_valid = 1'b0;
-  assign line_req_write = 1'b0;
-  assign line_req_addr = '0;
-  assign line_req_wdata = '0;
-  assign line_req_wstrb = '0;
-  assign line_req_id = '0;
+  // hart's own source and port class 3. The misaligned-access engine in
+  // cpu_ooo issues its requests (MISALIGNED_HW); otherwise it stays idle.
+  // Its request signals are declared with the cpu_ooo port map above.
+  // A failed engine write joins the cache's fatal report.
+  assign o_cache_fatal = hart_cache_fatal || ma_fatal;
+  assign o_cache_fatal_addr = hart_cache_fatal ? hart_cache_fatal_addr : ma_fatal_addr;
+  // The engine's sector requests need the cached tier's line client.
+  if (MISALIGNED_HW && ENABLE_CACHED_TIER == 0) begin : gen_misaligned_needs_cache
+    initial $fatal(1, "frost_hart: MISALIGNED_HW needs ENABLE_CACHED_TIER");
+  end
   if (ENABLE_CACHED_TIER != 0) begin : gen_line_client
     coherence_dma_ingress #(
         .ADDR_WIDTH(riscv_pkg::PhysAddrBits),

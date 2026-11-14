@@ -81,10 +81,13 @@ module int_alu_shim #(
                           (i_rs_issue.op == riscv_pkg::CSRRSI) ||
                           (i_rs_issue.op == riscv_pkg::CSRRCI);
 
+  // CSR register ops, and vector arithmetic with a scalar operand, hand rs1
+  // to the ROB (a CSR's write operand; the vector engine's scalar).
   logic is_csr_reg_op;
   assign is_csr_reg_op = (i_rs_issue.op == riscv_pkg::CSRRW) ||
                           (i_rs_issue.op == riscv_pkg::CSRRS) ||
-                          (i_rs_issue.op == riscv_pkg::CSRRC);
+                          (i_rs_issue.op == riscv_pkg::CSRRC) ||
+                          (i_rs_issue.op == riscv_pkg::VARITH_X);
 
   logic is_ecall_op;
   logic is_ebreak_op;

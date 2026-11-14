@@ -198,8 +198,10 @@ Slot 5 (`FU_FP_MUL`) carries the vector-config unit's results through its own
 registered adapter when `VECTOR` is set. The wrapper keeps a side record per ROB
 tag of each vector-config result (new `vtype`, `vl`, VLMAX, whether rs1 was
 x0) and, when that tag commits, presents the `vl`/`vtype` update to the CSR
-file on `o_vcfg_commit`. Slot 6 (`FU_FP_DIV`) has no unit behind it; only its
-test input drives it, as slot 5's does without the vector unit.
+file on `o_vcfg_commit`. Slot 6 (`FU_FP_DIV`) has no adapter: cpu_ooo drives its
+test input with the vector unit's vector-to-scalar results (held until granted)
+and ties it to zero without the unit; slot 5's test input does the same without
+the unit.
 
 With refill off, a granted adapter always returns to idle.
 `REGISTER_OUTPUT=1` removes the same-cycle pass-through, adding a cycle to

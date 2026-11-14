@@ -127,6 +127,17 @@ EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
     "Zvk": {"vandn.vx", "vrol.vx", "vror.vx", "vsha2ch-e32", "vsha2cl-e32"},
 }
 
+# The DDR tier performs misaligned loads and stores in hardware (the CPU's
+# misaligned-access engine); low BRAM traps them. The privilege tests of that
+# trap therefore have a DDR-tier reference from Sail with misaligned loads and
+# stores supported in DDR, under references_ddr/. Keep equal to
+# DDR_MISALIGNED_TESTS in generate_references.py.
+DDR_REFERENCES_DIR = ARCH_TEST_APP_DIR / "references_ddr"
+DDR_MISALIGNED_TESTS = {
+    f"rv64i_m/privilege/src/misalign-{op}-01.S"
+    for op in ("lh", "lhu", "lw", "lwu", "ld", "sh", "sw", "sd")
+}
+
 
 # cbo.zero signatures depend on begin_signature modulo the block size; their
 # Spike references use a block-aligned bound. Keep equal to
@@ -151,6 +162,11 @@ ARCH_SIM_TIMEOUT_SEC = int(os.environ.get("FROST_ARCH_SIM_TIMEOUT_SEC", "3600"))
 #   ddr    - code, data, and signature in DDR (also exercises the D-side cached
 #            tier on every load and store); the default.
 MEM_CONFIGS = ("bram", "icache", "ddr")
+# Low BRAM is Harvard: outside Debug Mode, CPU stores reach only its data
+# copy, never the instruction copy that fetch reads (hw/rtl/README.md), so
+# self-modifying code cannot run there. These extensions run in the icache
+# and ddr tiers, where code lives in DDR.
+BRAM_UNSUPPORTED_EXTENSIONS = frozenset({"Zifencei"})
 DEFAULT_MEM_CONFIG = "ddr"
 PARALLEL_UNSAFE_MESSAGE = (
     "parallel execution is disabled: workers share application outputs, memory-image "
@@ -249,16 +265,23 @@ def select_shard(tests: list[Path], shard: int, shard_count: int) -> list[Path]:
     return sorted(members[shard - 1])
 
 
-def get_reference_path(test_src: Path) -> Path:
+def get_reference_path(test_src: Path, mem_config: str = "bram") -> Path:
     """Return the reference signature path for a test source file.
 
     References live under references/{suite}/{extension}/{test}.reference_output
     and come from generate_references.py, run with the image's pinned Spike. The
-    suite name comes from the test's own path.
+    suite name comes from the test's own path. In the ddr tier, the
+    DDR_MISALIGNED_TESTS use their Sail reference under references_ddr/.
     """
     # Path shape: .../riscv-test-suite/{SUITE}/{EXT}/src/[{subdir}/]{test}.S
-    suite_name, ext_name = test_src.relative_to(SUITE_ROOT).parts[:2]
-    return REFERENCES_DIR / suite_name / ext_name / f"{test_src.stem}.reference_output"
+    rel = test_src.relative_to(SUITE_ROOT)
+    suite_name, ext_name = rel.parts[:2]
+    root = (
+        DDR_REFERENCES_DIR
+        if mem_config == "ddr" and rel.as_posix() in DDR_MISALIGNED_TESTS
+        else REFERENCES_DIR
+    )
+    return root / suite_name / ext_name / f"{test_src.stem}.reference_output"
 
 
 def compile_test(
@@ -456,7 +479,7 @@ def run_single_test(
     """Build, simulate, and verify a single arch test in the given mem config."""
     test_name = test_src.stem
 
-    ref_path = get_reference_path(test_src)
+    ref_path = get_reference_path(test_src, mem_config)
     if not ref_path.exists():
         # A FAIL, so tests that a suite update adds cannot pass unchecked.
         return TestResult(
@@ -465,6 +488,15 @@ def run_single_test(
             "FAIL",
             f"No reference output ({ref_path.name}); generate it with "
             "sw/apps/arch_test/generate_references.py",
+        )
+
+    if mem_config == "bram" and extension in BRAM_UNSUPPORTED_EXTENSIONS:
+        return TestResult(
+            test_name,
+            extension,
+            "SKIP",
+            "self-modifying code needs code in DDR (low BRAM is Harvard); "
+            "run with --mem-config ddr",
         )
 
     compiled, compile_out = compile_test(test_src, mem_config, extension)
@@ -626,9 +658,33 @@ def test_vector_tests_prepared_but_not_supported() -> None:
         assert not missing, f"no Spike reference for {missing}"
 
 
+def test_ddr_misaligned_references() -> None:
+    """The DDR-tier misalign tests have Sail references that differ from Spike's."""
+    import importlib.util
+
+    path = ARCH_TEST_APP_DIR / "generate_references.py"
+    spec = importlib.util.spec_from_file_location("generate_references", path)
+    assert spec is not None and spec.loader is not None
+    generator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generator)
+
+    assert DDR_MISALIGNED_TESTS == generator.DDR_MISALIGNED_TESTS
+    assert DDR_REFERENCES_DIR == generator.DDR_REFERENCES_DIR
+    privilege = {
+        t.relative_to(SUITE_ROOT).as_posix() for t in discover_tests("privilege")
+    }
+    assert DDR_MISALIGNED_TESTS <= privilege
+    for rel in sorted(DDR_MISALIGNED_TESTS):
+        src = SUITE_ROOT / rel
+        ddr, bram = get_reference_path(src, "ddr"), get_reference_path(src, "bram")
+        assert ddr.is_relative_to(DDR_REFERENCES_DIR) and ddr.exists(), rel
+        assert bram.is_relative_to(REFERENCES_DIR) and bram.exists(), rel
+        assert ddr.read_text() != bram.read_text(), f"{rel}: Sail and Spike agree"
+
+
 @pytest.mark.parametrize(
     ("mem_config", "excluded"),
-    (("bram", {"Zifencei"}), ("ddr", {"F", "D"})),
+    (("bram", BRAM_UNSUPPORTED_EXTENSIONS), ("ddr", {"F", "D"})),
 )
 def test_arch_compliance_ci_coverage(mem_config: str, excluded: set[str]) -> None:
     """Every supported extension reaches CI in each applicable memory tier."""

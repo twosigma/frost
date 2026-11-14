@@ -166,6 +166,20 @@ module reorder_buffer #(
     // cpu_ooo: an interrupt must not flush an AMO whose memory write may
     // already be in flight (see trap_unit.i_amo_at_head).
     output logic o_head_is_amo,
+    // The head memory instruction's fields, read while it waits with an
+    // exception: funct3 (size and sign), instruction bits [24:20] (rs2 of a
+    // store), destination, store and FP flags, LR/SC/AMO, and its
+    // fall-through PC. Dispatch writes csr_op and csr_addr for every
+    // instruction, so the funct3 and rs2 come from those fields.
+    output logic [2:0] o_head_mem_funct3,
+    output logic [4:0] o_head_mem_rs2,
+    output logic [riscv_pkg::RegAddrWidth-1:0] o_head_dest_reg,
+    output logic o_head_dest_rf,
+    output logic o_head_dest_valid,
+    output logic o_head_mem_store,
+    output logic o_head_mem_fp_store,
+    output logic o_head_mem_atomic,
+    output logic [riscv_pkg::XLEN-1:0] o_head_fallthrough_pc,
     // Register-file bypass enables, qualified externally by the corresponding
     // raw commit fire. They are unspecified when that fire is low.
     output logic o_head_bypass_int_we_early,
@@ -299,7 +313,9 @@ module reorder_buffer #(
     // stay set for a cycle after retirement frees room.
     output logic                                      o_full_for_2,
     output logic                                      o_empty,
-    output logic [riscv_pkg::ReorderBufferTagWidth:0] o_count,       // Number of valid entries
+    // Registered: some valid entry is a vector-config instruction
+    output logic                                      o_vcfg_in_flight,
+    output logic [riscv_pkg::ReorderBufferTagWidth:0] o_count,           // Number of valid entries
 
     // Head entry information (for external commit coordination)
     output logic                        [riscv_pkg::ReorderBufferTagWidth-1:0] o_head_tag,
@@ -537,7 +553,7 @@ module reorder_buffer #(
           csr_static_illegal(req.is_csr, req.csr_addr, req.csr_write_intent) ||
           (fs_gated_op(req.is_fp_instruction, req.is_csr, req.csr_addr) && i_mstatus_fs_off) ||
           (req.is_csr && csr_is_vector(req.csr_addr) && i_mstatus_vs_off) ||
-          (req.fp_dyn_rm && (i_frm > riscv_pkg::FRM_RMM));
+          (req.fp_dyn_rm && (i_frm > riscv_pkg::FRM_RMM)) || req.vec_illegal;
     end
   endfunction
 
@@ -607,6 +623,7 @@ module reorder_buffer #(
   // and return PC; SFENCE.VMA also sets is_fence_i and opens the serializer's
   // o_sfence_window.
   logic [ReorderBufferDepth-1:0] rob_f_is_sret;
+  logic [ReorderBufferDepth-1:0] rob_f_is_vcfg;
   logic [ReorderBufferDepth-1:0] rob_f_is_dret;
   logic [ReorderBufferDepth-1:0] rob_f_is_sfence;
   // Conservative allocation-time class of CSRs that may change address
@@ -1167,8 +1184,10 @@ module reorder_buffer #(
       rob_f_ok_2wide_static[tail_idx] <=
           !(i_alloc_req.is_csr || i_alloc_req.is_fence || i_alloc_req.is_fence_i ||
             i_alloc_req.is_wfi || i_alloc_req.is_mret || i_alloc_req.is_amo ||
-            i_alloc_req.is_lr || i_alloc_req.is_sc || i_alloc_req.is_vcfg);
+            i_alloc_req.is_lr || i_alloc_req.is_sc || i_alloc_req.is_vcfg ||
+            i_alloc_req.is_varith);
       rob_f_is_sret[tail_idx] <= i_alloc_req.is_sret;
+      rob_f_is_vcfg[tail_idx] <= i_alloc_req.is_vcfg;
       rob_f_is_dret[tail_idx] <= i_alloc_req.is_dret;
       rob_f_is_sfence[tail_idx] <= i_alloc_req.is_sfence_vma;
       rob_f_csr_may_change_translation[tail_idx] <= i_alloc_req.is_csr &&
@@ -1203,8 +1222,10 @@ module reorder_buffer #(
       rob_f_ok_2wide_static[tail_idx_2] <=
           !(i_alloc_req_2.is_csr || i_alloc_req_2.is_fence || i_alloc_req_2.is_fence_i ||
             i_alloc_req_2.is_wfi || i_alloc_req_2.is_mret || i_alloc_req_2.is_amo ||
-            i_alloc_req_2.is_lr || i_alloc_req_2.is_sc || i_alloc_req_2.is_vcfg);
+            i_alloc_req_2.is_lr || i_alloc_req_2.is_sc || i_alloc_req_2.is_vcfg ||
+            i_alloc_req_2.is_varith);
       rob_f_is_sret[tail_idx_2] <= i_alloc_req_2.is_sret;
+      rob_f_is_vcfg[tail_idx_2] <= i_alloc_req_2.is_vcfg;
       rob_f_is_dret[tail_idx_2] <= i_alloc_req_2.is_dret;
       rob_f_is_sfence[tail_idx_2] <= i_alloc_req_2.is_sfence_vma;
       rob_f_csr_may_change_translation[tail_idx_2] <= i_alloc_req_2.is_csr &&
@@ -2482,6 +2503,15 @@ module reorder_buffer #(
   // AMO interrupt shield source: the one-hot FF read of the head's is_amo
   // flag, valid-qualified and registered in cpu_ooo before use.
   assign o_head_is_amo = head_f_is_amo;
+  assign o_head_mem_funct3 = head_csr_op;
+  assign o_head_mem_rs2 = head_csr_addr[4:0];
+  assign o_head_dest_reg = head_dest_reg;
+  assign o_head_dest_rf = head_dest_rf;
+  assign o_head_dest_valid = head_dest_valid;
+  assign o_head_mem_store = head_is_store;
+  assign o_head_mem_fp_store = head_is_fp_store;
+  assign o_head_mem_atomic = head_is_amo || head_is_lr || head_is_sc;
+  assign o_head_fallthrough_pc = head_fallthrough_pc;
   // A replay flag is only set on an entry without a stored exception (and
   // an exceptional completion clears it), so it selects the cause outright.
   assign o_trap_cause = head_replay ?
@@ -3818,5 +3848,11 @@ module reorder_buffer #(
     end
   end
 `endif
+
+  // Vector-config instructions in flight, for the vtype tracker's resync.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) o_vcfg_in_flight <= 1'b0;
+    else o_vcfg_in_flight <= |(rob_valid & rob_f_is_vcfg);
+  end
 
 endmodule : reorder_buffer

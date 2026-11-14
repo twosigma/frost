@@ -252,6 +252,9 @@ static uint64_t g_l2_low[512] __attribute__((aligned(4096)));  /* VPN2 = 0 */
 static uint64_t g_l2_mmio[512] __attribute__((aligned(4096))); /* VPN2 = 1 */
 static uint64_t g_l2_ddr[512] __attribute__((aligned(4096)));  /* VPN2 = 2 */
 
+/* A low-BRAM data address, identity-mapped under Sv39 for the FWFT checks. */
+#define BRAM_DATA_VA 0x20000ul
+
 static uint64_t megapage(uint64_t pa, uint64_t flags)
 {
     return ((pa >> 12) << 10) | flags | PTE_A | PTE_D | PTE_V;
@@ -269,6 +272,7 @@ static void enable_sv39(void)
     g_root[2] = table(g_l2_ddr);
     g_l2_ddr[1] = megapage(PAYLOAD_PA, PTE_RWX);             /* identity */
     g_l2_mmio[0] = megapage(0x40000000ul, PTE_R | PTE_W);    /* UART/CLINT */
+    g_l2_low[0] = megapage(0, PTE_R | PTE_W);                /* low BRAM */
     g_l2_low[0x80] = megapage(PAYLOAD_PA, PTE_RWX);          /* S alias */
     g_l2_low[0x100] = megapage(PAYLOAD_PA, PTE_RWX | PTE_U); /* U alias */
     uint64_t satp = (8ul << 60) | ((uint64_t) (uintptr_t) g_root >> 12);
@@ -720,19 +724,24 @@ int main(unsigned long hartid, unsigned long fdt)
     check_eq("fwft_set(MISALIGNED_EXC_DELEG, 1)", (uint64_t) r.error, 0);
     r = sbi_ecall(SBI_EXT_FWFT, 1, SBI_FWFT_MISALIGNED_EXC_DELEG, 0, 0, 0);
     check("fwft_get reads it back", r.error == 0 && r.value == 1);
+    /* Low BRAM raises the exception in every build; cached DDR performs the
+     * access in hardware when the build has MISALIGNED_HW. */
+    volatile uint64_t *bram = (volatile uint64_t *) BRAM_DATA_VA;
+    uint64_t bram_before = bram[0];
     g_last_cause = ~0ul;
     __asm__ volatile(".option push\n.option norvc\nlw %0, 1(%1)\n.option pop\n"
                      : "=r"(dummy)
-                     : "r"(g_buf)
+                     : "r"(bram)
                      : "memory");
     check_eq("misaligned load now traps to S", g_last_cause, CAUSE_MISALIGNED_LOAD);
-    check_eq("stval carries the misaligned VA", g_last_tval, (uint64_t) (uintptr_t) g_buf + 1);
+    check_eq("stval carries the misaligned VA", g_last_tval, BRAM_DATA_VA + 1);
     g_last_cause = ~0ul;
     __asm__ volatile(".option push\n.option norvc\nsw %0, 1(%1)\n.option pop\n"
                      :
-                     : "r"(dummy), "r"(g_buf)
+                     : "r"(~bram_before), "r"(bram)
                      : "memory");
     check_eq("misaligned store now traps to S", g_last_cause, CAUSE_MISALIGNED_STORE);
+    check_eq("and writes nothing", bram[0], bram_before);
     r = sbi_ecall(SBI_EXT_FWFT, 0, SBI_FWFT_MISALIGNED_EXC_DELEG, 0, 0, 0);
     check_eq("fwft_set(MISALIGNED_EXC_DELEG, 0)", (uint64_t) r.error, 0);
 

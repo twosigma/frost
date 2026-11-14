@@ -331,6 +331,12 @@ faults (the INT ALU shim) and for misaligned, access, and page faults on
 data (the load and store paths). cpu_ooo writes it to `mtval` or `stval` for
 those causes.
 
+For the misaligned-access engine, the ROB also presents the head's memory
+fields: funct3 and the store's `rs2` (from the `csr_op` and `csr_addr` fields,
+which dispatch writes for every instruction), the destination register, file
+and valid bit, the integer and FP store flags, an LR/SC/AMO flag, and the
+fall-through PC.
+
 ### Memory-order replay
 
 When a DMA write invalidates a line, the wrapper's

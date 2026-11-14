@@ -160,7 +160,8 @@ module instr_operand_classifier_equiv (
       riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D:
       rs_type_pre = riscv_pkg::RS_FP;
 
-      riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::SRET, riscv_pkg::DRET:
+      riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::SRET, riscv_pkg::DRET,
+      riscv_pkg::VTOX:
       rs_type_pre = riscv_pkg::RS_NONE;
 
       default: rs_type_pre = riscv_pkg::RS_INT;
@@ -314,7 +315,7 @@ module instr_operand_classifier_equiv (
       riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
       riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
       riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D,
-      riscv_pkg::VSETVLI, riscv_pkg::VSETIVLI, riscv_pkg::VSETVL:
+      riscv_pkg::VSETVLI, riscv_pkg::VSETIVLI, riscv_pkg::VSETVL, riscv_pkg::VTOX:
       has_int_dest_pre = 1'b1;
       default: has_int_dest_pre = 1'b0;
     endcase
@@ -385,7 +386,9 @@ module instr_operand_classifier_equiv (
       op_for_pre_decode != riscv_pkg::CSRRCI &&
       op_for_pre_decode != riscv_pkg::ILLEGAL &&
       op_for_pre_decode != riscv_pkg::FETCH_FAULT &&
-      op_for_pre_decode != riscv_pkg::VSETIVLI);
+      op_for_pre_decode != riscv_pkg::VSETIVLI &&
+      op_for_pre_decode != riscv_pkg::VARITH &&
+      op_for_pre_decode != riscv_pkg::VTOX);
 
     case (op_for_pre_decode)
       riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT,

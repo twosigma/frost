@@ -32,7 +32,10 @@ flowchart LR
 ```
 
 Signature suites compare architectural results with Spike references
-committed to the repository, so Spike is needed only to regenerate them.
+committed to the repository, so Spike is needed only to regenerate them. The
+architecture tests of misaligned loads and stores in the DDR tier, where
+FROST performs those accesses in hardware, compare with references from the
+Sail model instead.
 
 ## Directory Structure
 

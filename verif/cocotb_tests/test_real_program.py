@@ -4810,6 +4810,10 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = TICK_TORTURE_MAX_CYCLES
     elif app_name == "mem_divergence_probe":
         max_cycles = MEM_DIVERGENCE_PROBE_MAX_CYCLES
+    elif app_name == "misaligned_test":
+        # Several hundred engine accesses and the timer-interrupt section,
+        # at DDR model latencies up to 160 cycles.
+        max_cycles = int(os.environ.get("COCOTB_MAX_CYCLES", 2000000))
     elif app_name == "linux_irq_active_ddr_test":
         # Allow for timer ticks and sentinel spin-waits.
         max_cycles = int(os.environ.get("COCOTB_MAX_CYCLES", 2000000))

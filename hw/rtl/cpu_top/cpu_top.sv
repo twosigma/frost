@@ -53,6 +53,9 @@ module cpu_top #(
     parameter bit VECTOR = 1'b0,
     parameter int unsigned VLEN = 256,
     parameter bit VECTOR_ADVERTISE = 1'b0,
+    // Misaligned plain loads and stores to cached DDR run on the hart's
+    // misaligned-access engine instead of trapping (cpu_ooo MISALIGNED_HW).
+    parameter bit MISALIGNED_HW = 1'b0,
     parameter bit ENABLE_COHERENCE = 1'b0,
     parameter int unsigned AXI_ID_BITS = 6,
     parameter int unsigned AXI_USER_BITS = 1,
@@ -714,6 +717,7 @@ module cpu_top #(
       .VECTOR(VECTOR),
       .VLEN(VLEN),
       .VECTOR_ADVERTISE(VECTOR_ADVERTISE),
+      .MISALIGNED_HW(MISALIGNED_HW),
       .DATA_BYTES(L2_LINE_BYTES),
       .DATA_PROT(AXI_MEMORY_PROT)
   ) hart (

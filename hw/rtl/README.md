@@ -468,6 +468,7 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `PERF_COUNTERS` | `0` | 1 builds the `mperf*` profiling counters |
 | `frost.sv` | `VECTOR` / `VLEN` | `0` / `256` | 1 builds the vector state: `mstatus.VS` and the vector CSRs; `VLEN` is the vector register width, 128, 256 or 512 bits ([CPU README](cpu_and_mem/cpu/README.md#vector-state)) |
 | `frost.sv` | `VECTOR_ADVERTISE` | `0` | 1 would set `misa.V`; elaboration rejects it while the vector instructions are not implemented, and software enables the vector state through `mstatus.VS` |
+| `frost.sv` | `MISALIGNED_HW` | `0` | 1 builds the misaligned-access engine: plain misaligned loads and stores to cached DDR are performed in hardware instead of raising the address-misaligned exception; needs `ENABLE_CACHED_TIER`. The X3 build and the simulation default set it ([CPU README](cpu_and_mem/cpu/README.md#misaligned-accesses)) |
 | `frost.sv` | `DEBUG_JTAG_TAP` | `1` | 1 uses the generic TAP on `i_jtag_*`; 0 takes the BSCAN bundle from the board |
 | `frost.sv` | `RAW_LOOPBACK` | `1` | 1 builds the NIC's raw TX-to-RX loopback, which needs one clock on both MAC clock ports; 0 for a transceiver's independent clocks |
 | `cpu_ooo.sv` | `MMIO_ADDR` | `32'h4000_0000` (`riscv_pkg::MmioWindowAddr`) | MMIO window base; the UART RX data and FIFO pop registers are fixed offsets from it |

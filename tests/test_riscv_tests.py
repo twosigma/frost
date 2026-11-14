@@ -111,11 +111,6 @@ PARALLEL_UNSAFE_MESSAGE = (
 
 # ISA exclusions applied in every tier.
 ISA_SKIP_TESTS: dict[str, set[str]] = {
-    "rv64ui": {
-        # Needs misaligned loads and stores done in hardware; FROST traps them
-        # (the test environment installs a trap vector).
-        "ma_data",
-    },
     "rv64mi": {
         "breakpoint",  # Requires debug trigger module
         "pmpaddr",  # PMP not implemented on FROST
@@ -139,6 +134,9 @@ ISA_SKIP_TESTS_BRAM: dict[str, set[str]] = {
         # invalidate applies to the cached DDR L1I, so the test is meaningful
         # only in ddr.
         "fence_i",
+        # Misaligned loads and stores are performed in hardware only in cached
+        # DDR; low BRAM raises the address-misaligned exception.
+        "ma_data",
     },
     "rv64si": {
         # The walker's line port reaches only cached DDR. Low-BRAM page

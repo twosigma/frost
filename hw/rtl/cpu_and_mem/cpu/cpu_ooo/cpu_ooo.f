@@ -4,6 +4,7 @@
 # Shared cache and CPU types.
 $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/misaligned/ma_pkg.sv
 
 # Pipeline Stage 1: Instruction Fetch (IF)
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.f
@@ -40,6 +41,8 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/control/trap_unit.sv
 # Page-table walker shared by both MMUs (the data MMU and DTLB are in the
 # wrapper's list)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/ptw.sv
+$(ROOT)/hw/rtl/lib/line_align.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/misaligned/ma_engine.sv
 
 # cpu_ooo glue submodules
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/pipeline_control/ooo_pipeline_control.sv

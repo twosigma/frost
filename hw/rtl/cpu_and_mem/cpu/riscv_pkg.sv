@@ -1041,7 +1041,13 @@ package riscv_pkg;
     CBO_ZERO,                  // Zicboz: zero the 64-byte block containing rs1
     VSETVLI,                   // V: set vl and vtype; AVL in rs1, vtype immediate
     VSETIVLI,                  // V: set vl and vtype; AVL and vtype immediates
-    VSETVL                     // V: set vl and vtype; AVL in rs1, vtype in rs2
+    VSETVL,                    // V: set vl and vtype; AVL in rs1, vtype in rs2
+    VARITH,                    // V: vector arithmetic with no scalar operand; the engine
+                               // executes it after commit, INT_RS only completes it
+    VARITH_X,                  // V: vector arithmetic with rs1 as its scalar operand, which
+                               // INT_RS passes to the ROB for the engine
+    VTOX                       // V: vmv.x.s, vcpop.m, vfirst.m: executed at the ROB head
+                               // once the engine is idle; no reservation station
   } instr_op_e;
 
   // Barrel-shifter controls decoded from operation bits:
@@ -2102,6 +2108,9 @@ package riscv_pkg;
     logic uses_fp_rs2;
     logic uses_fp_rs3;
     logic is_real;
+    // Vector arithmetic (OP-V other than vsetvl*), for the hold while the
+    // vtype at dispatch is unknown
+    logic is_varith;
   } id_dispatch_ctrl_t;
 
   // Control-flow feedback consumed by the front-end.
@@ -2475,6 +2484,11 @@ package riscv_pkg;
     // vsetvli/vsetivli/vsetvl: retires alone (never beside a second entry)
     // and updates vl and vtype at commit
     logic is_vcfg;
+    // Vector arithmetic (VARITH, VARITH_X): retires alone and goes to the
+    // vector engine at commit; vec_illegal: illegal under the vtype in
+    // effect at its place in program order (decided at dispatch)
+    logic is_varith;
+    logic vec_illegal;
   } reorder_buffer_alloc_req_t;
 
   typedef struct packed {
@@ -2897,6 +2911,36 @@ package riscv_pkg;
     logic slot2_pred_taken;  // Slot-2 BTB predicted-taken accepted (the 1-bubble redirect)
   } if_width_events_t;
 
+  // A vector arithmetic instruction (one the decoder accepted) is illegal
+  // under vtype vt ({vill, vtype[7:0]}) when vtype is vill, when a register
+  // group is not aligned to LMUL, when a mask destination overlaps a source
+  // group anywhere but at its first register, or when a masked instruction
+  // other than a compare writes v0.
+  function automatic logic vector_arith_illegal(input logic [8:0] vt, input logic [31:0] insn);
+    logic [2:0] vlmul, funct3;
+    logic [5:0] funct6;
+    logic [4:0] vd, vs1, vs2, align;
+    logic mask_dest, uses_vs1, masked;
+    vlmul = vt[2:0];
+    funct3 = insn[14:12];
+    funct6 = insn[31:26];
+    vd = insn[11:7];
+    vs1 = insn[19:15];
+    vs2 = insn[24:20];
+    masked = !insn[25];
+    mask_dest = (funct3 != 3'b010) && (funct6[5:3] == 3'b011);
+    uses_vs1 = (funct3 == 3'b000);
+    // LMUL 2, 4, 8 align groups to 2, 4, 8 registers; fractional LMUL to 1.
+    align = vlmul[2] ? 5'd0 : 5'((1 << vlmul[1:0]) - 1);
+    vector_arith_illegal = vt[8] ||
+        ((vs2 & align) != 5'd0) ||
+        (uses_vs1 && ((vs1 & align) != 5'd0)) ||
+        (!mask_dest && ((vd & align) != 5'd0)) ||
+        (mask_dest && (vd > vs2) && (vd <= (vs2 | align))) ||
+        (mask_dest && uses_vs1 && (vd > vs1) && (vd <= (vs1 | align))) ||
+        (masked && !mask_dest && (vd == 5'd0));
+  endfunction
+
   // ---------------------------------------------------------------------------
   // Instruction Routing Table
   // ---------------------------------------------------------------------------
@@ -2972,7 +3016,8 @@ package riscv_pkg;
 
       // Instructions that don't need RS (dispatch directly to Reorder Buffer).
       // SRET and DRET ride the MRET machinery.
-      JAL, WFI, MRET, SRET, DRET: get_rs_type = RS_NONE;
+      // VTOX completes from the vector unit at the ROB head.
+      JAL, WFI, MRET, SRET, DRET, VTOX: get_rs_type = RS_NONE;
 
       default: get_rs_type = RS_INT;  // Default fallback
     endcase
@@ -2998,8 +3043,9 @@ package riscv_pkg;
       // Integer and carry-less multiplication, division
       CLMUL, CLMULH, CLMULR,
       MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW,
-      // Vector configuration writes the new vl to rd
-      VSETVLI, VSETIVLI, VSETVL,
+      // Vector configuration writes the new vl to rd; vector-to-scalar ops
+      // write their result
+      VSETVLI, VSETIVLI, VSETVL, VTOX,
       // Integer loads
       LB, LH, LW, LBU, LHU, LWU, LD,
       // LR/AMO return memory data; SC returns success/failure status.
@@ -3110,6 +3156,7 @@ package riscv_pkg;
 
   // Integer rs1 use, excluding FP sources, immediate-only fields, and
   // operations with no source. SFENCE.VMA ignores its operands (flush-all).
+
   function automatic logic uses_int_rs1(instr_op_e op);
     if (uses_fp_rs1(op)) begin
       uses_int_rs1 = 1'b0;
@@ -3121,7 +3168,7 @@ package riscv_pkg;
         WFI, MRET, SRET, DRET, SFENCE_VMA, PAUSE,
         CSRRWI, CSRRSI, CSRRCI,
         ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT,
-        VSETIVLI:
+        VSETIVLI, VARITH, VTOX:
         uses_int_rs1 = 1'b0;
         default: uses_int_rs1 = 1'b1;
       endcase

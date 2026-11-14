@@ -26,6 +26,41 @@ module instr_decoder (
     output logic                 o_illegal
 );
 
+  // The vector arithmetic encodings implemented so far (see vec_engine).
+  function automatic logic vector_arith_ok(input logic [5:0] funct6, input logic [2:0] funct3,
+                                           input logic vm, input logic [4:0] vs1,
+                                           input logic [4:0] vs2);
+    logic vv, vx, vi;
+    vv = funct3 == 3'b000;
+    vx = funct3 == 3'b100;
+    vi = funct3 == 3'b011;
+    vector_arith_ok = 1'b0;
+    if (funct3 == 3'b010) begin
+      // vbrev8, vrev8, vbrev, vclz, vctz, vcpop.v
+      vector_arith_ok = (funct6 == 6'b010010) &&
+          ((vs1 == 5'b01000) || (vs1 == 5'b01001) || (vs1 == 5'b01010) ||
+           (vs1 == 5'b01100) || (vs1 == 5'b01101) || (vs1 == 5'b01110));
+    end else if (vv || vx || vi) begin
+      unique case (funct6)
+        // vadd, vand, vor, vxor, vmseq, vmsne, vmsleu, vmsle, vsll, vsrl, vsra,
+        // vror (and vror.vi with imm[5] clear)
+        6'b000000, 6'b001001, 6'b001010, 6'b001011, 6'b011000, 6'b011001, 6'b011100,
+        6'b011101, 6'b100101, 6'b101000, 6'b101001, 6'b010100:
+        vector_arith_ok = 1'b1;
+        // vandn, vsub, vminu, vmin, vmaxu, vmax, vmsltu, vmslt
+        6'b000001, 6'b000010, 6'b000100, 6'b000101, 6'b000110, 6'b000111, 6'b011010, 6'b011011:
+        vector_arith_ok = vv || vx;
+        // vrsub, vmsgtu, vmsgt
+        6'b000011, 6'b011110, 6'b011111: vector_arith_ok = vx || vi;
+        // vrol (.vv, .vx); with .vi this is vror.vi with imm[5] set
+        6'b010101: vector_arith_ok = 1'b1;
+        // vmerge (vm = 0) and vmv.v.* (vm = 1, vs2 = 0)
+        6'b010111: vector_arith_ok = !vm || (vs2 == 5'd0);
+        default: vector_arith_ok = 1'b0;
+      endcase
+    end
+  endfunction
+
   always_comb begin
     o_instr_op = riscv_pkg::ADDI;
     o_illegal  = 1'b0;
@@ -423,8 +458,25 @@ module instr_decoder (
       // vsetivli (bits 31:30 set), vsetvl (bits 31:25 = 1000000). Every other
       // vector encoding is illegal so far. With VS Off, ID marks these illegal.
       riscv_pkg::OPC_OP_V:
-      if (i_instr.funct3 != 3'b111) o_illegal = 1'b1;
-      else if (!i_instr.funct7[6]) o_instr_op = riscv_pkg::VSETVLI;
+      if (i_instr.funct3 == 3'b010 && i_instr.funct7[6:1] == 6'b010000 &&
+          (i_instr.source_reg_1 == 5'b10000 || i_instr.source_reg_1 == 5'b10001 ||
+           (i_instr.source_reg_1 == 5'b00000 && i_instr.funct7[0]))) begin
+        // vcpop.m, vfirst.m, vmv.x.s (unmasked only)
+        o_instr_op = riscv_pkg::VTOX;
+      end else if (i_instr.funct3 != 3'b111) begin
+        // Vector arithmetic the engine executes: OPIVV (000), OPIVX (100),
+        // OPIVI (011) by funct6 with each form the specification defines, and
+        // the Zvbb unary group (OPMVV 010, funct6 010010, by its vs1 code).
+        if (vector_arith_ok(
+                i_instr.funct7[6:1],
+                i_instr.funct3,
+                i_instr.funct7[0],
+                i_instr.source_reg_1,
+                i_instr.source_reg_2
+            ))
+          o_instr_op = (i_instr.funct3 == 3'b100) ? riscv_pkg::VARITH_X : riscv_pkg::VARITH;
+        else o_illegal = 1'b1;
+      end else if (!i_instr.funct7[6]) o_instr_op = riscv_pkg::VSETVLI;
       else if (i_instr.funct7[6:5] == 2'b11) o_instr_op = riscv_pkg::VSETIVLI;
       else if (i_instr.funct7 == 7'b1000000) o_instr_op = riscv_pkg::VSETVL;
       else o_illegal = 1'b1;

@@ -416,6 +416,21 @@ module cpu_tb
       .i_uncached_write_done(1'b0),
       .i_uncached_write_status(2'b00),
       .i_uncached_write_inflight(1'b0),
+      // The misaligned-access engine is not built here (MISALIGNED_HW=0); its
+      // line requests and fatal report stay idle.
+      .o_ma_line_req_valid(),
+      .i_ma_line_req_ready(1'b0),
+      .o_ma_line_req_write(),
+      .o_ma_line_req_addr(),
+      .o_ma_line_req_data(),
+      .o_ma_line_req_mask(),
+      .o_ma_line_req_id(),
+      .i_ma_line_resp_valid(1'b0),
+      .i_ma_line_resp_id('0),
+      .i_ma_line_resp_data('0),
+      .i_ma_line_resp_error(1'b0),
+      .o_ma_fatal(),
+      .o_ma_fatal_addr(),
       .*
   );
 

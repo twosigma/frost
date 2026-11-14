@@ -231,6 +231,8 @@ ROB_ALLOC_REQ_FIELDS = [
     ("csr_write_data", XLEN),
     ("has_fp_flags", 1),
     ("is_vcfg", 1),
+    ("is_varith", 1),
+    ("vec_illegal", 1),
 ]
 
 # reorder_buffer_commit_t

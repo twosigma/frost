@@ -103,6 +103,9 @@ module frost_rvfi_platform #(
     parameter bit VECTOR = 1'b0,
     parameter int unsigned VLEN = 256,
     parameter bit VECTOR_ADVERTISE = 1'b0,
+    // Misaligned plain loads and stores to cached DDR run on the hart's
+    // misaligned-access engine instead of trapping (cpu_ooo MISALIGNED_HW).
+    parameter bit MISALIGNED_HW = 1'b0,
     // Core clock frequency; sets the NIC's default TICK (cycles per
     // microsecond).
     parameter int unsigned CLK_FREQ_HZ = 322265625,
@@ -377,6 +380,9 @@ module frost_rvfi_platform #(
   // unmapped page on both sides (the store-issue page split in
   // tomasulo_wrapper).
   initial begin
+    // The RVFI-DII recorder sees ROB commits and store-queue writes only; an
+    // access the misaligned-access engine performs has neither.
+    if (MISALIGNED_HW) $fatal(1, "frost_rvfi_platform: TestRIG needs MISALIGNED_HW=0");
     if ((MmioAddr != {riscv_pkg::MmioFirstPage, 12'h000}) ||
         ((MmioAddr + MmioSizeBytes) != {riscv_pkg::MmioLastPage + 20'd1, 12'h000}) ||
         ({AplicWindowSel, 22'h00_0000} != {riscv_pkg::AplicFirstPage, 12'h000}) ||
@@ -798,6 +804,7 @@ module frost_rvfi_platform #(
       .VECTOR(VECTOR),
       .VLEN(VLEN),
       .VECTOR_ADVERTISE(VECTOR_ADVERTISE),
+      .MISALIGNED_HW(MISALIGNED_HW),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
@@ -843,6 +850,21 @@ module frost_rvfi_platform #(
       .o_uncached_write_byte_en(),
       .o_uncached_write_size(),
       .o_uncached_write_buffered(),
+      // The misaligned-access engine is not built in this platform
+      // (MISALIGNED_HW=0); its line requests and fatal report stay idle.
+      .o_ma_line_req_valid(),
+      .i_ma_line_req_ready(1'b0),
+      .o_ma_line_req_write(),
+      .o_ma_line_req_addr(),
+      .o_ma_line_req_data(),
+      .o_ma_line_req_mask(),
+      .o_ma_line_req_id(),
+      .i_ma_line_resp_valid(1'b0),
+      .i_ma_line_resp_id('0),
+      .i_ma_line_resp_data('0),
+      .i_ma_line_resp_error(1'b0),
+      .o_ma_fatal(),
+      .o_ma_fatal_addr(),
       .i_clk,
       .i_rst(cpu_cache_rst),
       .o_pc(cpu_pc_xlen),

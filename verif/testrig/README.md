@@ -176,7 +176,9 @@ simulation only:
   them; this also drops the access fault of an instruction page-table walk
   that reads outside DDR, which the default templates never produce;
 - misaligned loads and stores always trap; production FROST traps them only
-  once `mtvec` has a nonzero base;
+  once `mtvec` has a nonzero base, and performs plain ones to cached DDR in
+  its misaligned-access engine (`MISALIGNED_HW`), which this build leaves out
+  because the recorder sees no retirement for them;
 - WFI completes at once, and no interrupt is ever taken;
 - loads and stores to the MMIO, APLIC and IMSIC windows read and write a RAM
   instead of the devices; the PMA admits loads throughout all three windows,

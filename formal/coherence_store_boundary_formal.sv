@@ -71,9 +71,11 @@ module coherence_store_boundary_formal #(
   wire commit_advance = advance && (Mode != 3 || step_q != 4 || old_request_q) &&
       (step_q != 9 || !retirement_hold);
   wire csr_commit_fire = 0, mispredict_recovery_pending = 0, i_fatal_stop = 0;
+  wire vec_commit_hold = 0;  // no vector unit in this proof
   logic trap_mret_commit_hold_q;
   wire commit_hold = csr_commit_fire || trap_mret_commit_hold_q ||
-      mispredict_recovery_pending || i_fatal_stop || coherent_retire_hold;
+      mispredict_recovery_pending || i_fatal_stop || coherent_retire_hold ||
+      vec_commit_hold;
   coh_d_t demand, demand_q;
   riscv_pkg::fu_complete_t dependency_result;
   logic home_atomic_write_lookup;

@@ -20,7 +20,9 @@ it probes the hart's own L1D, merges dirty data and applies the byte mask. It
 has its own D, G, C and U channels. In `frost_cluster_memory` its D and C
 take the last port of the home's arbiters, so while it is idle the other
 ports' rotation is unchanged, and the home's G and U of source 0 class 3 go
-to it rather than to the L1D. Nothing in the hart issues requests on it.
+to it rather than to the L1D. With `MISALIGNED_HW` set, the CPU's
+misaligned-access engine issues its sector reads and writes on it; otherwise
+nothing in the hart uses it.
 
 The D/P/R/W/WA/G/C/U channels carry requests, probes, dirty data, grants
 and completion ownership. Dirty data merges through L2. `cpu_top` latches
@@ -135,7 +137,10 @@ External reads and writes complete only on their R or B response. Backpressure h
 
 Misaligned loads, stores and atomics trap in the CPU before issuing an AXI
 request, including before firmware installs `mtvec`. The standalone interface
-does not split misaligned accesses into multiple transactions.
+does not split misaligned accesses into multiple transactions. With
+`MISALIGNED_HW` set, plain misaligned loads and stores to cached DDR are
+performed by the CPU's misaligned-access engine through the coherent line
+client instead; other regions still trap.
 
 RRESP/BRESP SLVERR and DECERR propagate as access faults for data reads,
 precise uncached stores/AMOs, instruction fetch and page-table walks.

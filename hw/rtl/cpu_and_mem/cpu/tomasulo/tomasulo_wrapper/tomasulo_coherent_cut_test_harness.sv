@@ -405,6 +405,8 @@ module tomasulo_coherent_cut_test_harness #(
       .i_lq_mem_read_error(DIRECT_CACHE_READS ? cache_read_error : i_lq_mem_read_error),
       .i_lq_mem_read_id(DIRECT_CACHE_READS ? cache_read_id : i_lq_mem_read_id),
       .i_lq_mem_read_is_cached(DIRECT_CACHE_READS || i_lq_mem_read_is_cached),
+      // No vector unit here: nothing reads the vector-config in-flight flag.
+      .o_vcfg_in_flight(),
       .i_coherent_cut_hold(cut_hold),
       .i_coh_admit_valid(cut_admit && !i_probe_delay_admit),
       .i_coh_admit_slot('0),
@@ -417,6 +419,17 @@ module tomasulo_coherent_cut_test_harness #(
       // configuration commits.
       .i_mstatus_vs_off(1'b1),
       .o_vcfg_commit(),
+      // The head memory instruction's fields serve only cpu_ooo's
+      // misaligned-access engine.
+      .o_head_mem_funct3(),
+      .o_head_mem_rs2(),
+      .o_head_dest_reg(),
+      .o_head_dest_rf(),
+      .o_head_dest_valid(),
+      .o_head_mem_store(),
+      .o_head_mem_fp_store(),
+      .o_head_mem_atomic(),
+      .o_head_fallthrough_pc(),
       .*
   );
   coherence_l1d #(

@@ -103,6 +103,7 @@ MAKEFILE_BUILD_VARIABLES = (
     "DDR_MODEL_LATENCY",
     "SIM_FAST_MAINT",
     "MEMORY_LINK_STAGES",
+    "MISALIGNED_HW",
 )
 
 # FROST_COVERAGE=1 builds simulations with line coverage and the cover points,
@@ -255,6 +256,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             verilator_extra_args=(
                 "--assert",
                 "-GENABLE_CACHED_TIER=0",
+                "-GMISALIGNED_HW=0",
                 "-GUSE_BEHAVIORAL_DDR=0",
             ),
         )
@@ -283,7 +285,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         include_in_pytest=False,
         description="Power-on reset and paired reset with stopped CPU or SoC clocks",
         extra_env=(("FROST_CPU_PERIOD_PS", "7000"),),
-        verilator_extra_args=("-GENABLE_CACHED_TIER=0",),
+        verilator_extra_args=("-GENABLE_CACHED_TIER=0", "-GMISALIGNED_HW=0"),
     ),
     # Real-program tests on the frost toplevel.
     "branch_pred_test": CocotbRunConfig(
@@ -811,6 +813,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         )
         for bits in range(31, 37)
     },
+    "misaligned_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="misaligned_test",
+        nic_mac_clocks=False,
+        description=(
+            "Misaligned loads and stores of every size and form across a doubleword, "
+            "sector, line and page in cached DDR, under timer interrupts, and the "
+            "exception low BRAM keeps"
+        ),
+    ),
     "fs_off_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -886,6 +899,26 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="vsetvl* with the vector unit at VLEN 512; CLI-only",
         verilator_extra_args=("-GVECTOR=1", "-GVLEN=512"),
+        include_in_pytest=False,
+    ),
+    "vec_arith_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_arith_test",
+        nic_mac_clocks=False,
+        description=(
+            "Vector integer arithmetic through the engine at VLEN 256, checked by identities, "
+            "vmv.x.s, vcpop.m and vfirst.m"
+        ),
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=256"),
+    ),
+    "vec_arith_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_arith_test",
+        nic_mac_clocks=False,
+        description="Vector integer arithmetic at VLEN 128; CLI-only",
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=128"),
         include_in_pytest=False,
     ),
     "cbo_zero_test": CocotbRunConfig(
@@ -1107,7 +1140,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="debug_target",
         description=(
-            "JTAG debug control, register and memory access, stepping, and reset"
+            "JTAG debug control, register and memory access, stepping (including "
+            "misaligned accesses), and reset"
         ),
     ),
     "debug_fence_test": CocotbRunConfig(
@@ -1525,6 +1559,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "OpenSBI boot, SBI services and delegated APLIC interrupts (fixed memory layout)"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
+    ),
+    # Without the misaligned-access engine, OpenSBI emulates the payload's
+    # misaligned loads and stores in DDR (phase F); with it, the hardware
+    # performs them.
+    "opensbi_smoke_no_misaligned_hw": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="opensbi_smoke",
+        rerun_after_reset=False,
+        description=(
+            "OpenSBI boot and SBI services, with OpenSBI emulating misaligned "
+            "accesses (no misaligned-access engine)"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
+        verilator_extra_args=("-GMISALIGNED_HW=0",),
     ),
     "linux_irq_ddr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -2005,6 +2054,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=(
             "+define+FROST_RVFI_DII",
             "-DFROST_WIDE_DDR_TEST",
+            # The RVFI-DII recorder sees no misaligned-access engine retirement.
+            "-GMISALIGNED_HW=0",
             "-GL1_CACHE_BYTES=4096",
             "-GL1I_CACHE_BYTES=4096",
             "-GL2_CACHE_BYTES=16384",
@@ -2406,6 +2457,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="vec_fdivsqrt",
         description="Vector FP64 divide and square root, bit for bit against Berkeley SoftFloat",
         verilator_extra_args=("-GEXP=11", "-GFRAC=52"),
+    ),
+    "vec_engine_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_engine",
+        hdl_toplevel_module="vec_engine",
+        description="Vector engine at VLEN 256: integer instructions against a model of their semantics",
+        verilator_extra_args=("-GVLEN=256",),
+    ),
+    "vec_engine_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_engine",
+        hdl_toplevel_module="vec_engine",
+        description="Vector engine at VLEN 128: integer instructions against a model of their semantics",
+        verilator_extra_args=("-GVLEN=128",),
     ),
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",

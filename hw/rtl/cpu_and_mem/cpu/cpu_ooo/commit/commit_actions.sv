@@ -18,8 +18,11 @@
  * Commit-time register writes, CSR handshakes, and retirement accounting.
  *
  * Route two ROB commits to the integer and FP files. Delayed CSR writeback
- * uses port 0 one cycle after commit. Count instructions whose own flush
- * masks their registered commit through i_retired_without_commit.
+ * uses port 0 one cycle after commit. A write from outside the ROB
+ * (i_aux_wb_*, the misaligned-access engine's load result) also uses port 0,
+ * to either file, in a cycle with no commit or CSR writeback. Count
+ * instructions whose own flush masks their registered commit through
+ * i_retired_without_commit.
  */
 
 module commit_actions #(
@@ -28,13 +31,18 @@ module commit_actions #(
     input logic i_clk,
     input logic i_rst,
 
-    input riscv_pkg::reorder_buffer_commit_t            i_rob_commit,
-    input riscv_pkg::reorder_buffer_commit_t            i_rob_commit_2,
-    input logic                                         i_rob_commit_valid,
-    input logic                              [XLEN-1:0] i_csr_read_data,
+    input riscv_pkg::reorder_buffer_commit_t                          i_rob_commit,
+    input riscv_pkg::reorder_buffer_commit_t                          i_rob_commit_2,
+    input logic                                                       i_rob_commit_valid,
+    input logic                              [              XLEN-1:0] i_csr_read_data,
     // Registered in cpu_ooo: an instruction retired without a ROB commit in
     // the previous cycle.
-    input logic                                         i_retired_without_commit,
+    input logic                                                       i_retired_without_commit,
+    // Registered port-0 write from outside the ROB.
+    input logic                                                       i_aux_wb_valid = 1'b0,
+    input logic                                                       i_aux_wb_fp = 1'b0,
+    input logic                              [                   4:0] i_aux_wb_rd = '0,
+    input logic                              [riscv_pkg::FpWidth-1:0] i_aux_wb_data = '0,
 
     // Regfile write ports (port 0 = slot 1 + delayed CSR, port 1 = slot 2).
     output logic                          o_port0_int_we,
@@ -108,16 +116,25 @@ module commit_actions #(
   // a write. Bypass qualifiers can differ from write enables during full
   // flush, which also squashes the consuming dispatch (ooo_register_files).
   always_comb begin
-    port0_int_we   = 1'b0;
+    port0_int_we = 1'b0;
     port0_int_addr = '0;
-    port0_int_data = csr_wb_pending ? csr_read_data : rob_commit.value[XLEN-1:0];
-    port0_fp_we    = 1'b0;
-    port0_fp_addr  = '0;
-    port0_fp_data  = rob_commit.value;
+    port0_int_data = csr_wb_pending ? csr_read_data :
+        i_aux_wb_valid ? i_aux_wb_data[XLEN-1:0] : rob_commit.value[XLEN-1:0];
+    port0_fp_we = 1'b0;
+    port0_fp_addr = '0;
+    port0_fp_data = i_aux_wb_valid ? i_aux_wb_data : rob_commit.value;
 
     if (csr_wb_pending) begin
       port0_int_we   = 1'b1;
       port0_int_addr = csr_wb_dest_reg;
+    end else if (i_aux_wb_valid) begin
+      if (i_aux_wb_fp) begin
+        port0_fp_we   = 1'b1;
+        port0_fp_addr = i_aux_wb_rd;
+      end else begin
+        port0_int_we   = 1'b1;
+        port0_int_addr = i_aux_wb_rd;
+      end
     end else if (rob_commit_valid && rob_commit.dest_valid && !rob_commit.exception &&
                  !rob_commit.is_csr) begin
       if (rob_commit.dest_rf == 1'b0) begin
@@ -158,6 +175,9 @@ module commit_actions #(
     if (reset_seen_q && !i_rst && csr_wb_pending) begin
       assert (!rob_commit.valid && !rob_commit_2.valid)
       else $error("CSR delayed writeback overlapped a commit write port");
+    end
+    if (reset_seen_q && !i_rst && i_aux_wb_valid) begin
+      p_aux_wb_alone : assert (!csr_wb_pending && !rob_commit_valid && !rob_commit_2.valid);
     end
     // Retirement without a registered commit raises a full flush, masking the
     // commit bus when i_retired_without_commit arrives.
