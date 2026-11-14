@@ -95,3 +95,4 @@
 - Implemented 64-byte Zicboz block zeroing, its coherent cache protocol and grant handling, and the matching tests and firmware integration
 - Made the Vivado build steps finish when the launcher outlives Vivado, and explain a Vivado process that dies without an error line
 - Moved the VCU118 flash boot partition to 0x04000000 behind one shared constant, with a consistency test and a programmer check that the FPGA image fits below it
+- Made the architecture-test runner report Zifencei as SKIP in the BRAM tier, where self-modifying code cannot run, so a full BRAM run ends with a clean summary
