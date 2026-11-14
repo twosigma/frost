@@ -488,7 +488,7 @@ clock edges and the driven cold-reset pulse's four CPU edges. The CPU wait
 also covers a slow or delayed CPU clock. A local reset register's random
 initial value cannot enable the checks. Runtime `$error` diagnostics are
 immediate assertion actions, so they obey the same simulator control.
-Static parameter checks remain active at elaboration. The control and the
+Static parameter checks remain active from time zero. The control and the
 diagnostic wrappers are absent from synthesis and formal verification.
 
 Consistency checks that depend on reset state and functional cover points
