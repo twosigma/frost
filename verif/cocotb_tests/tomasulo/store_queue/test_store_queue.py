@@ -3069,6 +3069,89 @@ async def test_cbo_mgmt_orders_after_older_writes(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_cbo_mgmt_reused_rob_tag_keeps_store_data(dut: Any) -> None:
+    """A store whose ROB tag a committed, undrained CMO still holds keeps its data.
+
+    A Zicbom entry is never data-valid and frees only when it drains, so it can
+    outlive its ROB tag. A younger store that reuses the tag writes its own
+    payload, in a slot below the CMO's across the ring wrap, and forwards and
+    drains that payload.
+    """
+    dut_if, model = await setup(dut)
+
+    # Advance the empty SQ's physical head/tail to slot 7: the CMO takes slot 7
+    # and the store slot 0, whose last payload was the first store's.
+    for tag in range(7):
+        await alloc_addr_data(
+            dut_if, model, rob_tag=tag, address=0x8000 + 8 * tag, data=0x1000 + tag
+        )
+        await commit_and_write(dut_if, model, rob_tag=tag)
+    assert dut_if.empty, "SQ should be empty before the wrapped allocation"
+
+    reused = 9
+    store_addr = 0x0003_FF28
+    store_data = 0xBF58_476D_1CE4_E5B9
+    # The L1D holds a store record, so the committed CMO cannot drain.
+    dut.i_coherent_store_pending.value = 1
+    await alloc_cmo(
+        dut_if, rob_tag=reused, address=0x8000_0040, kind=CMO_FLUSH, junk_data=0
+    )
+    dut_if.drive_commit(reused)
+    await dut_if.step()
+    dut_if.clear_commit()
+    for _ in range(4):
+        await dut_if.step()
+    assert dut_if.count == 1, "The committed CMO waits for the L1D store record"
+
+    # The ROB has wrapped: a new store takes the CMO's tag.
+    dut_if.drive_rob_head_tag(reused)
+    await alloc_addr_data(
+        dut_if,
+        model,
+        rob_tag=reused,
+        address=store_addr,
+        data=store_data,
+        size=MEM_SIZE_DOUBLE,
+    )
+    dut_if.drive_sq_check(
+        addr=store_addr, rob_tag=(reused + 1) & MASK_TAG, size=MEM_SIZE_DOUBLE
+    )
+    await dut_if.step()
+    fwd = dut_if.read_sq_forward()
+    dut_if.clear_sq_check()
+    assert fwd.match and fwd.can_forward, "The store forwards to a younger load"
+    assert fwd.data == store_data, f"Forwarded 0x{fwd.data:x}, want 0x{store_data:x}"
+
+    dut_if.drive_commit(reused)
+    await dut_if.step()
+    dut_if.clear_commit()
+    dut.i_coherent_store_pending.value = 0
+    write_req = None
+    done_next = False
+    for _ in range(40):
+        await Timer(1, unit="ns")
+        if done_next:
+            dut_if.drive_mem_write_done()
+            done_next = False
+        else:
+            dut_if.clear_mem_write_done()
+        req = dut_if.read_mem_write()
+        if req.en:
+            write_req = req
+            done_next = True
+        await dut_if.step()
+        if write_req is not None and not done_next and dut_if.empty:
+            break
+    dut_if.clear_mem_write_done()
+    assert write_req is not None, "The store must write after the CMO frees"
+    assert write_req.addr == store_addr, f"Write to 0x{write_req.addr:x}"
+    assert write_req.data == store_data, (
+        f"The store wrote 0x{write_req.data:x}, want 0x{store_data:x}: its payload "
+        "went to the CMO that holds the same ROB tag"
+    )
+
+
+@cocotb.test()
 async def test_cbo_mgmt_forwarding_waits_in_block(dut: Any) -> None:
     """A younger load in a pending CMO's block matches without forwarding.
 

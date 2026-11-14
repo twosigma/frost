@@ -299,6 +299,19 @@ module coherence_home #(
   logic work_nofill, array_two_available;
   logic [FILLS-1:0][LINE_BYTES/32-1:0] fill_dirty_sectors_q;
   logic [COMPLETIONS-1:0] fill_seats_q[FILLS], fill_add_seats[FILLS];
+  // A reading decision can join a fill: join_live (the decision's late part:
+  // a running array response for a reader) and join_ready[fill] (the fill's
+  // registered part). The seats a fill takes are formed for both values of
+  // join_live, fill_add_live and fill_add_idle, and join_live selects last.
+  (* keep = "true" *) logic join_live;
+  logic [FILLS-1:0] join_ready;
+  logic [COMPLETIONS-1:0] fill_add_live[FILLS], fill_add_idle[FILLS];
+  logic [COMPLETIONS-1:0] fill_eligible[FILLS];
+`ifdef HOME_SEAT_NEXT_LOCAL_PROOF
+  // The seats each fill takes in the reference form: one selection given
+  // whether the fill joins.
+  logic [COMPLETIONS-1:0] f_add_reference[FILLS];
+`endif
   logic [1:0] fill_seat_count_q[FILLS], fill_add_count[FILLS];
   // Forwarding a fill's line to its primary request. fill_primary_q[fill] is
   // the primary's seat while it waits for its forward: a GetS, LoadReserved
@@ -980,10 +993,12 @@ module coherence_home #(
   assign fill_pre = decision_from_engine && !array_hit && array_available && fill_free_any &&
       state_allows_fill && prefetch_fill_ok;
   // The registered phase flags and the one-hot response token match their
-  // encodings outside reset. Every formal task checks this, including those
-  // read with SYNTHESIS defined, which makes the checks inductive; simulation
-  // checks them once a reset has been seen.
-`ifdef FORMAL
+  // encodings outside reset. Every formal task but the local seat proof
+  // checks this, including those read with SYNTHESIS defined, which makes the
+  // checks inductive; simulation checks them once a reset has been seen.
+`ifdef HOME_SEAT_NEXT_LOCAL_PROOF
+  // The seat proof checks only its own combinational equalities.
+`elsif FORMAL
   `define HOME_DECISION_CHECKS
   wire decision_reset_seen = !i_rst;
 `elsif SYNTHESIS
@@ -1064,17 +1079,18 @@ module coherence_home #(
 
   // Parked readers own metadata seats, including readers with predecessors.
   // A demand fill's primary owns the first; a forward gives it up.
+  assign join_live = run && array_response && decision_reader;
   for (genvar fill = 0; fill < FILLS; fill++) begin : gen_seats
     logic [COMPLETIONS-1:0] eligible;
-    logic enabled, joining;
+    logic enabled;
+    logic [1:0] count_live, count_idle;
     assign enabled = run && fill_phase_q[fill] != FillFree &&
         fill_phase_q[fill] != FillReady && fill_phase_q[fill] != FillInstallWait &&
         !fill_error_q[fill];
-    assign join_fill[fill] = array_response && fill_phase_q[fill] != FillFree &&
+    assign join_ready[fill] = fill_phase_q[fill] != FillFree &&
         fill_phase_q[fill] != FillReady && fill_phase_q[fill] != FillInstallWait &&
-        !fill_error_q[fill] && fill_seat_count_q[fill] < 3 && fill_block_q[fill] &&
-        decision_reader;
-    assign joining = run && array_response && join_fill[fill];
+        !fill_error_q[fill] && fill_seat_count_q[fill] < 3 && fill_block_q[fill];
+    assign join_fill[fill] = array_response && join_ready[fill] && decision_reader;
     for (genvar slot = 0; slot < COMPLETIONS; slot++) begin : gen_eligible
       if (PREFETCH_SLOTS != 0 && slot >= COMPLETIONS - PREFETCH_SLOTS) begin : gen_prefetch_slot
         // A prefetch slot holds only Prefetches, which take no seat.
@@ -1087,22 +1103,83 @@ module coherence_home #(
         );
       end
     end
+    // A join takes a seat. With join_live the fill joins exactly when it is
+    // ready to, so the live selection reserves that seat by join_ready.
     coherence_seat_select #(
         .SLOTS(COMPLETIONS)
     ) selector (
         .i_eligible(eligible),
         .i_occupied_count(fill_seat_count_q[fill]),
-        .i_join(joining),
-        .o_selected(fill_add_seats[fill]),
-        .o_selected_count(fill_add_count[fill])
+        .i_join(join_ready[fill]),
+        .o_selected(fill_add_live[fill]),
+        .o_selected_count(count_live)
     );
+    coherence_seat_select #(
+        .SLOTS(COMPLETIONS)
+    ) idle_selector (
+        .i_eligible(eligible),
+        .i_occupied_count(fill_seat_count_q[fill]),
+        .i_join(1'b0),
+        .o_selected(fill_add_idle[fill]),
+        .o_selected_count(count_idle)
+    );
+    assign fill_eligible[fill]  = eligible;
+    assign fill_add_seats[fill] = join_live ? fill_add_live[fill] : fill_add_idle[fill];
+    assign fill_add_count[fill] = join_live ? count_live : count_idle;
   end
+  // Parking: the seats taken for each value of join_live, joined across
+  // fills in two halves before join_live selects, so the select and the last
+  // join share one LUT.
+  localparam int unsigned ParkLow = (FILLS + 1) / 2;
+  (* keep = "true" *) logic [COMPLETIONS-1:0] park_live_low, park_live_high;
+  (* keep = "true" *) logic [COMPLETIONS-1:0] park_idle_low, park_idle_high;
   always_comb begin
-    park = '0;
+    park_live_low  = '0;
+    park_live_high = '0;
+    park_idle_low  = '0;
+    park_idle_high = '0;
+    for (int fill = 0; fill < FILLS; fill++) begin
+      if (fill < int'(ParkLow)) begin
+        park_live_low |= fill_add_live[fill];
+        park_idle_low |= fill_add_idle[fill];
+      end else begin
+        park_live_high |= fill_add_live[fill];
+        park_idle_high |= fill_add_idle[fill];
+      end
+    end
+  end
+  for (genvar slot = 0; slot < COMPLETIONS; slot++) begin : gen_park
+`ifdef FROST_XILINX_PRIMS
+    // I0 join_live, I1 park_live_low, I2 park_live_high, I3 park_idle_low,
+    // I4 park_idle_high: I0 ? (I1 || I2) : (I3 || I4).
+    (* dont_touch = "true" *)
+    LUT5 #(
+        .INIT(32'hFDFDFDA8)
+    ) u_park (
+        .I0(join_live),
+        .I1(park_live_low[slot]),
+        .I2(park_live_high[slot]),
+        .I3(park_idle_low[slot]),
+        .I4(park_idle_high[slot]),
+        .O (park[slot])
+    );
+`else
+    assign park[slot] = join_live ? park_live_low[slot] || park_live_high[slot] :
+        park_idle_low[slot] || park_idle_high[slot];
+`endif
+  end
+`ifdef HOME_SEAT_NEXT_LOCAL_PROOF
+  always_comb begin
+    logic [COMPLETIONS-1:0] f_park;
+    f_park = '0;
+    for (int fill = 0; fill < FILLS; fill++) f_park |= f_add_reference[fill];
+    p_park_exact : assert (park == f_park);
+  end
+`endif
+  always_comb begin
     wake = '0;
     wake_error = '0;
     for (int fill = 0; fill < FILLS; fill++) begin
-      park |= fill_add_seats[fill];
       // A successful fill's wake leaves out a primary that waits for its
       // forward; an error wakes every seat with the error.
       if (fill_wake[fill]) begin
@@ -1307,40 +1384,168 @@ module coherence_home #(
     // Every fill that a GetMZero's decision allocates is a zero fill.
     wire zero_fill = !lookup_prefetch_q && decision_opcode == coherence_pkg::GetMZero;
     assign fill_zero_alloc[fill] = allocate && zero_fill;
+    // The fill image: the memory response's data, or zero from a zero fill's
+    // allocation (it sends no read, so no response for its identity arrives),
+    // which takes priority. The allocation decision settles last, so the
+    // clear is the decision ANDed with this fill's other allocation terms in
+    // one LUT, and each image bit's next state takes the clear in its last.
+    // The image holds through reset, at the flop.
+    (* keep = "true" *)
+    wire image_clear_ready = run && array_response &&
+        fill_free_index == FillBits'(fill) && zero_fill;
+    wire image_take = i_mem_resp_valid && i_mem_resp_id == 5'(fill);
+    wire image_clear;
+    logic [8*LINE_BYTES-1:0] image_next;
+`ifdef FROST_XILINX_PRIMS
+    // I0 decision_fill, I1 image_clear_ready: I0 && I1.
+    (* dont_touch = "true" *)
+    LUT2 #(
+        .INIT(4'h8)
+    ) u_image_clear (
+        .I0(decision_fill),
+        .I1(image_clear_ready),
+        .O (image_clear)
+    );
+    for (genvar bit_idx = 0; bit_idx < 8 * LINE_BYTES; bit_idx++) begin : gen_image_bit
+      // I0 image_clear, I1 image_take, I2 response bit, I3 held bit:
+      // I0 ? 0 : (I1 ? I2 : I3).
+      (* dont_touch = "true" *)
+      LUT4 #(
+          .INIT(16'h5140)
+      ) u_image_next (
+          .I0(image_clear),
+          .I1(image_take),
+          .I2(i_mem_resp_data[bit_idx]),
+          .I3(fill_image_q[fill][bit_idx]),
+          .O (image_next[bit_idx])
+      );
+    end
+`else
+    assign image_clear = decision_fill && image_clear_ready;
+    assign image_next  = image_clear ? '0 : image_take ? i_mem_resp_data : fill_image_q[fill];
+`endif
+    always_ff @(posedge i_clk) if (!i_rst) fill_image_q[fill] <= image_next;
+`ifdef HOME_SEAT_NEXT_LOCAL_PROOF
+    // The image's reference next state: the response, then the zero fill's
+    // clear, held through reset.
+    logic [8*LINE_BYTES-1:0] f_image_next;
+    always_comb begin
+      f_image_next = fill_image_q[fill];
+      if (!i_rst) begin
+        if (i_mem_resp_valid && i_mem_resp_id == 5'(fill)) f_image_next = i_mem_resp_data;
+        if (run && fill_zero_alloc[fill]) f_image_next = '0;
+      end
+      if (!i_rst) assert (image_next == f_image_next);
+    end
+`endif
     // The fill enters FillInstall on this edge.
     wire install_entry = fill_phase_q[fill] == FillMemory && (fill_done_q[fill] ?
         !fill_error_q[fill] : i_mem_resp_valid && i_mem_resp_id == 5'(fill) && !i_mem_resp_error);
     wire forwarded = forward_accept && forward_pick[fill];
     wire [COMPLETIONS-1:0] forward_seat = forwarded ? fill_primary_q[fill] : '0;
-    // Prepare both waiter-mask outcomes before the allocation decision.
-    // Joining, retiring and failed-fill cleanup retain their original
-    // priority over allocation.
-    (* keep = "true" *) logic [COMPLETIONS-1:0] seats_without_allocation, seats_with_allocation;
+    // The waiter mask's next state, prepared for both allocation outcomes and
+    // both values of join_live (the decision's late reader term), which
+    // select last. Joining, retiring and failed-fill cleanup retain their
+    // original priority over allocation. With join_live low no fill joins and
+    // the seats taken are fill_add_idle; with it high a fill joins exactly when
+    // join_ready and takes fill_add_live.
+    (* keep = "true" *) logic [COMPLETIONS-1:0] seats_idle, seats_live;
+    (* keep = "true" *) logic [COMPLETIONS-1:0] seats_alloc_idle, seats_alloc_live;
+    logic [COMPLETIONS-1:0] seats_next;
     always_comb begin
-      seats_without_allocation = fill_seats_q[fill];
-      seats_with_allocation = lookup_prefetch_q ? '0 : COMPLETIONS'(1) << decision_tid;
+      seats_idle = fill_seats_q[fill];
+      seats_live = fill_seats_q[fill];
+      seats_alloc_idle = lookup_prefetch_q ? '0 : COMPLETIONS'(1) << decision_tid;
+      seats_alloc_live = seats_alloc_idle;
       if (run) begin
-        seats_without_allocation = (fill_seats_q[fill] | fill_add_seats[fill]) & ~forward_seat;
-        if (array_response && join_fill[fill]) begin
-          seats_without_allocation[CompletionBits'(decision_tid)] = 1'b1;
-          seats_with_allocation[CompletionBits'(decision_tid)] = 1'b1;
+        seats_idle = (fill_seats_q[fill] | fill_add_idle[fill]) & ~forward_seat;
+        seats_live = (fill_seats_q[fill] | fill_add_live[fill]) & ~forward_seat;
+        if (join_ready[fill]) begin
+          seats_live[CompletionBits'(decision_tid)] = 1'b1;
+          seats_alloc_live[CompletionBits'(decision_tid)] = 1'b1;
         end
         if (fill_phase_q[fill] == FillReady && pin_valid &&
             fill_seats_q[fill][CompletionBits'(decision_tid)]) begin
-          seats_without_allocation[CompletionBits'(decision_tid)] = 1'b0;
-          seats_with_allocation[CompletionBits'(decision_tid)] = 1'b0;
+          seats_idle[CompletionBits'(decision_tid)] = 1'b0;
+          seats_live[CompletionBits'(decision_tid)] = 1'b0;
+          seats_alloc_idle[CompletionBits'(decision_tid)] = 1'b0;
+          seats_alloc_live[CompletionBits'(decision_tid)] = 1'b0;
         end
         if (fill_phase_q[fill] == FillMemory && fill_done_q[fill] && fill_error_q[fill]) begin
-          seats_without_allocation = '0;
-          seats_with_allocation = '0;
+          seats_idle = '0;
+          seats_live = '0;
+          seats_alloc_idle = '0;
+          seats_alloc_live = '0;
         end
       end
     end
+    for (genvar slot = 0; slot < COMPLETIONS; slot++) begin : gen_seat_next
+`ifdef FROST_XILINX_PRIMS
+      // I0 join_live, I1 allocate, I2 seats_idle, I3 seats_live,
+      // I4 seats_alloc_idle, I5 seats_alloc_live:
+      // I1 ? (I0 ? I5 : I4) : (I0 ? I3 : I2).
+      (* dont_touch = "true" *)
+      LUT6 #(
+          .INIT(64'hFEDCBA9876543210)
+      ) u_seat_next (
+          .I0(join_live),
+          .I1(allocate),
+          .I2(seats_idle[slot]),
+          .I3(seats_live[slot]),
+          .I4(seats_alloc_idle[slot]),
+          .I5(seats_alloc_live[slot]),
+          .O (seats_next[slot])
+      );
+`else
+      assign seats_next[slot] = allocate ?
+          (join_live ? seats_alloc_live[slot] : seats_alloc_idle[slot]) :
+          (join_live ? seats_live[slot] : seats_idle[slot]);
+`endif
+    end
     always_ff @(posedge i_clk) begin
       if (i_rst) fill_seats_q[fill] <= '0;
-      else if (allocate) fill_seats_q[fill] <= seats_with_allocation;
-      else fill_seats_q[fill] <= seats_without_allocation;
+      else fill_seats_q[fill] <= seats_next;
     end
+`ifdef HOME_SEAT_NEXT_LOCAL_PROOF
+    // The reference form: one seat selection given whether this fill joins,
+    // then the waiter mask's update with allocation selected last.
+    logic f_joining;
+    logic [1:0] f_count;
+    logic [COMPLETIONS-1:0] f_without, f_with;
+    assign f_joining = run && array_response && join_fill[fill];
+    coherence_seat_select #(
+        .SLOTS(COMPLETIONS)
+    ) f_selector (
+        .i_eligible(fill_eligible[fill]),
+        .i_occupied_count(fill_seat_count_q[fill]),
+        .i_join(f_joining),
+        .o_selected(f_add_reference[fill]),
+        .o_selected_count(f_count)
+    );
+    always_comb begin
+      f_without = fill_seats_q[fill];
+      f_with = lookup_prefetch_q ? '0 : COMPLETIONS'(1) << decision_tid;
+      if (run) begin
+        f_without = (fill_seats_q[fill] | f_add_reference[fill]) & ~forward_seat;
+        if (array_response && join_fill[fill]) begin
+          f_without[CompletionBits'(decision_tid)] = 1'b1;
+          f_with[CompletionBits'(decision_tid)] = 1'b1;
+        end
+        if (fill_phase_q[fill] == FillReady && pin_valid &&
+            fill_seats_q[fill][CompletionBits'(decision_tid)]) begin
+          f_without[CompletionBits'(decision_tid)] = 1'b0;
+          f_with[CompletionBits'(decision_tid)] = 1'b0;
+        end
+        if (fill_phase_q[fill] == FillMemory && fill_done_q[fill] && fill_error_q[fill]) begin
+          f_without = '0;
+          f_with = '0;
+        end
+      end
+      assert (fill_add_seats[fill] == f_add_reference[fill]);
+      assert (fill_add_count[fill] == f_count);
+      assert (seats_next == (allocate ? f_with : f_without));
+    end
+`endif
     assign fill_forward_set[fill] = install_entry && fill_primary_q[fill] != 0;
     assign forward_install_done[fill] = fill_phase_q[fill] == FillMemory && fill_done_q[fill] &&
         !fill_error_q[fill] && fill_primary_q[fill] != 0;
@@ -1472,13 +1677,9 @@ module coherence_home #(
         if (o_mem_req_valid && i_mem_req_ready && o_mem_req_id == 5'(fill))
           fill_sent_q[fill] <= 1'b1;
         if (i_mem_resp_valid && i_mem_resp_id == 5'(fill)) begin
-          fill_image_q[fill] <= i_mem_resp_data;
           fill_done_q[fill]  <= 1'b1;
           fill_error_q[fill] <= i_mem_resp_error;
         end
-        // A zero fill's image is zero from allocation; it sends no read, so no
-        // response for its identity arrives.
-        if (run && fill_zero_alloc[fill]) fill_image_q[fill] <= '0;
         if (run) begin
           // A forward takes the primary's seat away on the edge it is
           // accepted, beside any seats added or released then.
@@ -2222,7 +2423,8 @@ module coherence_home #(
       end
     end
 `endif
-`ifdef FORMAL
+`ifdef HOME_SEAT_NEXT_LOCAL_PROOF
+`elsif FORMAL
   logic f_past_valid = 1'b0;
   logic [31:0] f_memory_pending_q;
 `ifdef COHERENCE_HOME_PREFETCH_COVER
