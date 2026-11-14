@@ -331,8 +331,8 @@ module coherence_home #(
   logic [8:0] fill_primary_ident_q[FILLS];
   logic [5:0] fill_primary_tid_q[FILLS];
   logic [FILLS-1:0] fill_primary_getm_q;
-  // A zero fill serves a GetMZero miss: its image starts as zeros with its
-  // memory read done, so it reads no memory, and it installs Modified, since
+  // A zero fill serves a GetMZero miss: it starts with its memory read done
+  // and its image clears on the next edge, so it reads no memory, and it installs Modified, since
   // only the L2 holds the zeros of the sector its primary does not own.
   logic [FILLS-1:0] fill_zero_q, fill_zero_alloc;
   // The forward on offer: a fill that may forward, its primary's slot, its
@@ -2386,8 +2386,8 @@ module coherence_home #(
           end
         end
         if (fill_wake[fill] && !fill_error_q[fill]) assert ((wake & fill_primary_q[fill]) == 0);
-        // A zero fill reads no memory: its read is done from allocation, with
-        // a zero image, and it is a demand GetMZero's fill.
+        // A zero fill reads no memory: its read is done from allocation, its
+        // image is zero from the next edge, and it is a demand GetMZero's fill.
         if (fill_phase_q[fill] != FillFree && fill_zero_q[fill]) begin
           assert (fill_sent_q[fill] && fill_done_q[fill] && !fill_error_q[fill]);
           assert (!fill_prefetch_q[fill] && !fill_write_q[fill] && fill_primary_getm_q[fill]);

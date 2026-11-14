@@ -645,8 +645,10 @@ DMA, whose four-bit ingress ID occupies q.id. `coherence_dma_ingress` has
 `SLOTS` admission credits, eight in the cluster, and holds each opaque ID
 until its slot frees. It presents requests in acceptance order without waiting for earlier
 grants or releases. Each slot independently owns its request, grant, completion,
-release and external response. G matches the full q and address; U also matches
-the granted tid. A slot offers C from the cycle after its G, and a fair
+release and external response. G matches a slot by q alone: every live slot's q holds the
+ingress's source, class and epoch 0 with a distinct ID. U also matches the
+granted tid. An assertion checks that a matched G or U carries its slot's
+address and a G its grant opcode. A slot offers C from the cycle after its G, and a fair
 arbiter captures the selected slot's C metadata and holds its presentation. A read's G carries its
 final data, so the read responds from the cycle after its G; a write responds
 on the cycle after its U. One response goes out per cycle, the U's slot first,
@@ -1137,8 +1139,8 @@ waits for every earlier request to either sector, and every later request to
 either sector waits for its U. PutM is not ordered behind it, so a PutM of the
 upper sector that the L1D froze earlier still completes. Otherwise a
 `GetMZero` is a `GetM` for every rule of the home except the miss decision: a
-`GetMZero` whose decision allocates a fill starts that fill with a zero image
-and its memory read done, so no read is sent. The fill recalls and writes back
+`GetMZero` whose decision allocates a fill starts that fill with its memory read
+done and clears its image on the next edge, so no read is sent. The fill recalls and writes back
 a valid victim as any fill does, installs the line Modified, because only the
 L2 holds the zeros of the upper sector, and forwards the lower sector to its
 primary. Its grant, and a hit's, is `GrantMZero` with 64-byte lines and
