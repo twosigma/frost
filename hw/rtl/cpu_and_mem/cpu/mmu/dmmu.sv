@@ -502,8 +502,36 @@ module dmmu (
   // the issue's, including one that bypasses to S2 and leaves S1 empty.
   // Every use of the payload is qualified by s1_valid_q, or for the walk VPN
   // by the walk request, so only s1_valid_q waits on the bypass verdict.
+  // The issue VA is the base-plus-offset sum formed before this module. The
+  // skid choice selects in one LUT per bit after the full sum, and the
+  // primitive keeps the choice and the load enable out of the adder's
+  // operands, where they would run the whole carry chain.
+  logic s1_take_s0;
+  assign s1_take_s0 = s0_valid_q && !s0_killed;
+  logic [riscv_pkg::XLEN-1:0] s1_load_va;
+  for (genvar b = 0; b < riscv_pkg::XLEN; b++) begin : gen_s1_load_va
+`ifdef FROST_XILINX_PRIMS
+    // I0 ? I2 : I1.
+    (* dont_touch = "true" *)
+    LUT3 #(
+        .INIT(8'hE4)
+    ) u_s1_load_va (
+        .I0(s1_take_s0),
+        .I1(iss_in.va[b]),
+        .I2(s0_q.va[b]),
+        .O (s1_load_va[b])
+    );
+`else
+    assign s1_load_va[b] = s1_take_s0 ? s0_q.va[b] : iss_in.va[b];
+`endif
+  end
+  iss_payload_t s1_load;
+  always_comb begin
+    s1_load = s1_take_s0 ? s0_q : iss_in;
+    s1_load.va = s1_load_va;
+  end
   always_ff @(posedge i_clk) begin
-    if (s1_can_load) s1_q <= s0_valid_q && !s0_killed ? s0_q : iss_in;
+    if (s1_can_load) s1_q <= s1_load;
   end
 
   // Sample issue while the skid is empty, then hold it while s0_valid_q is
@@ -601,6 +629,40 @@ module dmmu (
   // verilog_format: on
   wire s2_pa_next = s2_pa_leaf_selected ? tlb_clean_hit[0] : s2_pa_without_leaf;
 
+  // S2's VA takes S1's VA when S1 advances, else the issue address, which is
+  // the base-plus-offset sum formed before this module. s1_move settles after
+  // the DTLB hit, so it selects in one LUT per bit after the full sum. The
+  // primitive keeps the select out of the adder's operands, where it would
+  // run the whole carry chain.
+  logic [riscv_pkg::XLEN-1:0] s2_va_next;
+  for (genvar b = 0; b < riscv_pkg::XLEN; b++) begin : gen_s2_va_next
+`ifdef FROST_XILINX_PRIMS
+    // I0 ? I2 : I1.
+    (* dont_touch = "true" *)
+    LUT3 #(
+        .INIT(8'hE4)
+    ) u_s2_va_next (
+        .I0(s1_move),
+        .I1(iss_in.va[b]),
+        .I2(s1_q.va[b]),
+        .O (s2_va_next[b])
+    );
+`else
+    assign s2_va_next[b] = s1_move ? s1_q.va[b] : iss_in.va[b];
+`endif
+  end
+
+`ifdef DMMU_VA_NEXT_LOCAL_PROOF
+  // S1's and S2's next payloads equal the whole-payload selects, for every
+  // register state and input.
+  always_comb begin
+    p_s1_next_exact :
+    assert ((s1_can_load ? s1_load : s1_q) ==
+            (s1_can_load ? (s0_valid_q && !s0_killed ? s0_q : iss_in) : s1_q));
+    p_s2_va_next_exact : assert (s2_va_next == (s1_move ? s1_q.va : iss_in.va));
+  end
+`endif
+
   // S2 holds an operation for one cycle and its readers wait for s2_valid_q, so
   // the payload loads every cycle and only the valid bit reads the bypass.
   always_ff @(posedge i_clk) begin
@@ -608,7 +670,7 @@ module dmmu (
     if (!i_rst_n || i_flush_all) s2_valid_q <= 1'b0;
     else s2_valid_q <= s1_move || iss_can_bypass;
     s2_tag_q <= s1_move ? s1_q.tag : iss_in.tag;
-    s2_va_q <= s1_move ? s1_q.va : iss_in.va;
+    s2_va_q <= s2_va_next;
     s2_ppn_q <= s1_move ? resolve_ppn : last_ppn_q;
     s2_pa_q <= s2_pa_next;
     s2_fault_q <= s1_move ? riscv_pkg::data_fault_kind_e'(s2_fault_next) : riscv_pkg::DFAULT_NONE;

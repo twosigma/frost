@@ -745,8 +745,16 @@ prefix network counts up to three eligible entries before each candidate. Each f
 stores its occupied seat count beside the seat mask. Allocation, joining
 readers, handoff, a forward and error cleanup update both on the same edge.
 Seat joins, retirements and error cleanup keep their priority over allocation. The mask prepares the
-allocation and non-allocation outcomes before selecting between them; zero
-fill images likewise clear through their data input.
+allocation and non-allocation outcomes before selecting between them. Whether a decision is a
+reader that can join a fill is the decision's last term to settle, so each
+fill's added seats and their count, its mask and the parked set are formed for both
+values of that term (a fill that is ready to join reserves the joining seat in
+one selection and not in the other), and the term selects last.
+A fill's image takes the memory response or the zero fill's clear, through
+its data input. The clear is registered: it takes effect on the edge after the
+zero fill's allocation, while the fill waits in FillMemory or FillRecall and
+neither installs nor forwards, so the allocation decision reaches one flop per
+fill rather than the image bits.
 A joining
 engine uses one seat before the queued waiters. Ready work precedes other
 eligible work. Both classes compute their circular priorities independently

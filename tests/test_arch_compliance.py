@@ -162,6 +162,11 @@ ARCH_SIM_TIMEOUT_SEC = int(os.environ.get("FROST_ARCH_SIM_TIMEOUT_SEC", "3600"))
 #   ddr    - code, data, and signature in DDR (also exercises the D-side cached
 #            tier on every load and store); the default.
 MEM_CONFIGS = ("bram", "icache", "ddr")
+# Low BRAM is Harvard: outside Debug Mode, CPU stores reach only its data
+# copy, never the instruction copy that fetch reads (hw/rtl/README.md), so
+# self-modifying code cannot run there. These extensions run in the icache
+# and ddr tiers, where code lives in DDR.
+BRAM_UNSUPPORTED_EXTENSIONS = frozenset({"Zifencei"})
 DEFAULT_MEM_CONFIG = "ddr"
 PARALLEL_UNSAFE_MESSAGE = (
     "parallel execution is disabled: workers share application outputs, memory-image "
@@ -485,6 +490,15 @@ def run_single_test(
             "sw/apps/arch_test/generate_references.py",
         )
 
+    if mem_config == "bram" and extension in BRAM_UNSUPPORTED_EXTENSIONS:
+        return TestResult(
+            test_name,
+            extension,
+            "SKIP",
+            "self-modifying code needs code in DDR (low BRAM is Harvard); "
+            "run with --mem-config ddr",
+        )
+
     compiled, compile_out = compile_test(test_src, mem_config, extension)
     if not compiled:
         # In the bram and icache tiers, a linker region overflow means the test
@@ -670,7 +684,7 @@ def test_ddr_misaligned_references() -> None:
 
 @pytest.mark.parametrize(
     ("mem_config", "excluded"),
-    (("bram", {"Zifencei"}), ("ddr", {"F", "D"})),
+    (("bram", BRAM_UNSUPPORTED_EXTENSIONS), ("ddr", {"F", "D"})),
 )
 def test_arch_compliance_ci_coverage(mem_config: str, excluded: set[str]) -> None:
     """Every supported extension reaches CI in each applicable memory tier."""

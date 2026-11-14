@@ -1960,6 +1960,9 @@ package riscv_pkg;
     logic [XLEN-1:0] ras_checkpoint_top;
     // Predict-time bimodal index carried to commit for training.
     logic [BpDirIdxBits-1:0] bp_dir_idx;
+    // The raw 16-bit parcel at the instruction's start; ID forms Sstvala's
+    // insn_bits from it for a compressed instruction.
+    logic [15:0] raw_parcel;
   } from_pd_to_id_t;
 
   // Clocked signals passed from Instruction Decode (ID) stage to Execute (EX) stage
@@ -2056,6 +2059,9 @@ package riscv_pkg;
     // Set for program instructions, including NOP; clear for PD bubbles.
     // Used by dispatch validity and slot-2 presence checks.
     logic is_real;
+    // Sstvala: the raw instruction bits ({16'b0, parcel} for a compressed
+    // instruction), carried to the ROB for illegal-instruction xtval.
+    logic [31:0] insn_bits;
   } from_id_to_ex_t;
 
   // Control fields of from_id_to_ex_t, with matching names and types.
@@ -2489,6 +2495,9 @@ package riscv_pkg;
     // effect at its place in program order (decided at dispatch)
     logic is_varith;
     logic vec_illegal;
+    // Sstvala: the instruction's raw bits (a compressed parcel zero-extended),
+    // xtval for an illegal-instruction exception.
+    logic [31:0] insn_bits;
   } reorder_buffer_alloc_req_t;
 
   typedef struct packed {
@@ -2840,6 +2849,35 @@ package riscv_pkg;
     exc_cause_t                       exc_cause;
     fp_flags_t                        fp_flags;
   } fu_complete_t;
+
+  // The vector memory table as the load and store queues see it: one entry
+  // per vector memory instruction in flight, in program order. An entry is
+  // live from dispatch until the instruction completes; retired entries are
+  // older than anything in the ROB; until its range is known an entry overlaps
+  // everything. A range is up to two segments (one per page): a physical page
+  // number and the first and last 32-byte sector index in that page.
+  localparam int unsigned VmtDepth   = 4;
+  localparam int unsigned VmtPpnBits = PhysAddrBits - 12;
+  typedef struct packed {
+    logic                  valid;
+    logic [VmtPpnBits-1:0] ppn;
+    logic [6:0]            s_lo;
+    logic [6:0]            s_hi;
+  } vmt_seg_t;
+  typedef struct packed {
+    logic                             live;
+    logic                             retired;
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    logic                             range_known;
+    // Two named segments: Yosys does not select within packed arrays of
+    // structs.
+    vmt_seg_t                         seg1;
+    vmt_seg_t                         seg0;
+  } vmt_entry_t;
+  // The table as a flat vector, entry t at [VmtEntryBits*t +: VmtEntryBits]
+  // (Yosys does not select members of packed arrays of structs).
+  localparam int unsigned VmtEntryBits = 3 + ReorderBufferTagWidth + 2 * (1 + VmtPpnBits + 14);
+  typedef logic [VmtDepth*VmtEntryBits-1:0] vmt_view_t;
 
   // Vector-config completion: what the CSR file needs at commit, kept per ROB
   // tag in the wrapper's side record. vl and VLMAX are element counts.

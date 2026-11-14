@@ -210,6 +210,10 @@ The composed stream bench checks reservation suppression when a cut overtakes
 an attached LR response. The `coherent_cut` bench delays old load responses
 across acceptance, acknowledgement and installation of partial stores, then
 checks that a subsequent load cannot use their stale data from L0.
+`hitpath_probe_order` sweeps an invalidating probe across a younger load's
+L1D hit path, then issues an older load to the same word, which reads the
+new value; a younger load that read the old value must replay instead of
+retiring.
 `cached_store_burst_test` checks cached store bursts followed by traps,
 FENCE.I, SC and AMO. Its CPU monitor requires accepted-store overlap with
 trap and fence drain waits.
@@ -628,7 +632,8 @@ The references are made at VLEN 128 and are for a core of that length: the suite
 skips cases whose AVL times SEW exceeds VLEN, so a few tests check little there.
 
 CI skips Zifencei in BRAM, because ordinary stores cannot reach the separate
-instruction BRAM, and F and D in DDR, to save runner time; the BRAM jobs
+instruction BRAM (the runner reports it as SKIP there, so `--all --mem-config
+bram` still ends cleanly), and F and D in DDR, to save runner time; the BRAM jobs
 cover FPU conformance. The F and D tests that do not fit low BRAM (the larger
 `*_b8` and `*_b9` arithmetic sets) and those above 5,000 cases (the `*_b1`
 fused multiply-adds and the `*_b11` adds and subtracts) therefore run only
