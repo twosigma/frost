@@ -10,7 +10,7 @@ depth 2
 abc pdr
 
 [script]
-read -sv riscv_pkg.sv
+read -sv riscv_pkg.sv vec_hold_rows.sv
 xilinx: read_verilog -formal +/xilinx/cells_sim.v
 portable: read -sv -D SYNTHESIS load_queue.sv
 xilinx: read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS load_queue.sv
@@ -22,5 +22,6 @@ select -assert-none t:$check r:FLAVOR=assume %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_hold_rows.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
 lq_result_pins.sv

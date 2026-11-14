@@ -2464,6 +2464,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Vector engine at VLEN 256: integer instructions against a model of their semantics",
         verilator_extra_args=("-GVLEN=256",),
     ),
+    "vec_hold_rows": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_hold_rows",
+        hdl_toplevel_module="vec_hold_rows",
+        description=(
+            "Range-ordering holds of a scalar queue against the vector memory table, "
+            "against a reference model"
+        ),
+    ),
+    "vec_hold_rows_direct": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_hold_rows",
+        hdl_toplevel_module="vec_hold_rows",
+        description=(
+            "Range-ordering holds with per-entry address inputs (the store queue's "
+            "form), against a reference model"
+        ),
+        verilator_extra_args=("-GDIRECT_ADDR=1",),
+    ),
     "vec_engine_v128": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_engine",
         hdl_toplevel_module="vec_engine",

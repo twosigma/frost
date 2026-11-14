@@ -1,0 +1,30 @@
+[tasks]
+vhold_lq_bmc
+vhold_sq_bmc
+cover
+
+[options]
+vhold_lq_bmc: mode bmc
+vhold_lq_bmc: depth 8
+vhold_sq_bmc: mode bmc
+vhold_sq_bmc: depth 8
+cover: mode cover
+cover: depth 16
+timeout 1800
+
+[engines]
+cover: smtbmc boolector
+vhold_lq_bmc: abc bmc3
+vhold_sq_bmc: abc bmc3
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -formal -sv vec_hold_rows.sv
+read -formal -sv vec_hold_rows_formal.sv
+vhold_sq_bmc: chparam -set DIRECT_ADDR 1 vec_hold_rows_formal
+prep -top vec_hold_rows_formal
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_hold_rows.sv
+vec_hold_rows_formal.sv

@@ -82,6 +82,11 @@ set.
 
 A drain cursor points at the oldest entry not yet sent. It launches when that
 entry is eligible and has its address and data, and it never skips ahead.
+An entry also waits while an older vector memory instruction that overlaps it,
+or whose range is not known yet, is still live in the vector unit's memory
+table; an SC waits for every older live one (the load queue README, "Vector
+range holds", describes the rows; the SQ registers the hold before the drain
+check).
 Cached and buffered Normal entries require commit; precise uncached entries require ROB-head
 permission and the shield.
 Entry, ordering and FIFO checks prepare launch and cursor completion before
