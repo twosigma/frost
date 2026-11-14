@@ -147,13 +147,17 @@ every supported extension and privilege mode.
 | **B**            | Bit manipulation (B = Zba + Zbb + Zbs)         |
 | **Zicsr**        | CSR access instructions                        |
 | **Zicntr**       | Base counters (cycle, time, instret)           |
+| **Zihpm**        | Performance counters `hpmcounter3`-`10`, gated by `mcounteren`/`scounteren` |
 | **Zifencei**     | Instruction fence                              |
 | **Zicond**       | Conditional zero                               |
 | **Zbkb**         | Bit manipulation for crypto                    |
 | **Zbc**          | Carry-less multiplication (clmul, clmulh, clmulr) |
 | **Zbkc**         | Carry-less multiplication for crypto (clmul, clmulh) |
 | **Zihintpause**  | Pause hint for spin-wait loops                 |
+| **Zawrs**        | `wrs.nto`/`wrs.sto` retire at once; `wrs.nto` traps below M with `mstatus.TW` set |
 | **Zicboz**       | Cache-block zero (`cbo.zero`, 64-byte blocks of cached DDR and low BRAM) |
+| **Zicbom**       | Cache-block management (`cbo.clean`, `cbo.flush`, `cbo.inval` on 64-byte blocks), ordered no-ops while every bus master is coherent; the device tree lists it with `riscv,cbom-block-size = <64>` |
+| **Zicbop**       | Cache-block prefetch hints (`prefetch.i/r/w`), executed as no-ops |
 | **Machine Mode** | M-mode privilege (mret, wfi, ecall, ebreak)    |
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
 | **Smaia, Ssaia** | AIA CSRs and machine/supervisor IMSIC files with 63 identities |

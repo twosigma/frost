@@ -833,6 +833,36 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "F/D instructions trap without memory effects when mstatus.FS is Off"
         ),
     ),
+    "zicbop_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="zicbop_test",
+        nic_mac_clocks=False,
+        description=(
+            "Zicbop: prefetch.i/r/w retire with no exception in M, S and U, "
+            "on faulting, unmapped and supervisor-only addresses"
+        ),
+    ),
+    "zawrs_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="zawrs_test",
+        nic_mac_clocks=False,
+        description=(
+            "Zawrs: wrs.nto/wrs.sto in M, S and U with mstatus.TW, LR/SC "
+            "around wrs.nto, and the Linux __cmpwait loop"
+        ),
+    ),
+    "zihpm_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="zihpm_test",
+        nic_mac_clocks=False,
+        description=(
+            "Zihpm: hpmcounter3-31 gating by mcounteren/scounteren in M, S and U, "
+            "shadows of mhpmcounter, M-only and zero-only counters"
+        ),
+    ),
     "vec_state_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

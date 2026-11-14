@@ -46,6 +46,8 @@ module id_stage #(
     // FS-Off. Legal envcfg writes affect only lower privilege; traps, xRETs
     // and debug transitions flush the decode that used the old permission.
     input logic i_cbo_zero_illegal,
+    // Zawrs: wrs.nto is illegal below M while mstatus.TW is set.
+    input logic i_wrs_nto_illegal,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex,
     // Next-edge value of o_from_id_to_ex (its register D), for a consumer
     // that keeps a registered copy of fields it selects against this output.
@@ -237,13 +239,18 @@ module id_stage #(
   logic is_cbo_direct;
   assign is_cbo_direct = (instruction.opcode == riscv_pkg::OPC_MISC_MEM) &&
                          (instruction.funct3 == 3'b010);
+  logic is_wrs_nto_direct;
+  assign is_wrs_nto_direct = (instruction.opcode == riscv_pkg::OPC_CSR) &&
+                             (instruction.funct3 == 3'b000) &&
+                             ({instruction.funct7, instruction.source_reg_2} == 12'h00D);
   logic is_illegal_instruction;
   logic is_vector_direct;
   assign is_vector_direct = instruction.opcode == riscv_pkg::OPC_OP_V;
   assign is_illegal_instruction = decoder_illegal | i_from_pd_to_id.illegal_instruction |
                                   (i_mstatus_fs_off & is_fp_instruction_direct) |
                                   (i_mstatus_vs_off & is_vector_direct) |
-                                  (i_cbo_zero_illegal & is_cbo_direct);
+                                  (i_cbo_zero_illegal & is_cbo_direct) |
+                                  (i_wrs_nto_illegal & is_wrs_nto_direct);
 
   // Rounding mode: for FP operations funct3 (bits [14:12]) encodes rm.
   logic [2:0] fp_rm_direct;
@@ -720,13 +727,18 @@ module id_stage #(
   logic is_cbo_direct_2;
   assign is_cbo_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_MISC_MEM) &&
                            (instruction_2.funct3 == 3'b010);
+  logic is_wrs_nto_direct_2;
+  assign is_wrs_nto_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_CSR) &&
+                               (instruction_2.funct3 == 3'b000) &&
+                               ({instruction_2.funct7, instruction_2.source_reg_2} == 12'h00D);
   logic is_illegal_instruction_2;
   logic is_vector_direct_2;
   assign is_vector_direct_2 = instruction_2.opcode == riscv_pkg::OPC_OP_V;
   assign is_illegal_instruction_2 = decoder_illegal_2 | i_from_pd_to_id_2.illegal_instruction |
                                     (i_mstatus_fs_off & is_fp_instruction_direct_2) |
                                     (i_mstatus_vs_off & is_vector_direct_2) |
-                                    (i_cbo_zero_illegal & is_cbo_direct_2);
+                                    (i_cbo_zero_illegal & is_cbo_direct_2) |
+                                    (i_wrs_nto_illegal & is_wrs_nto_direct_2);
 
   logic [2:0] fp_rm_direct_2;
   assign fp_rm_direct_2 = instruction_2.funct3;

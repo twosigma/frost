@@ -356,6 +356,14 @@ module instr_decoder (
             12'b0001000_00101: o_instr_op = riscv_pkg::WFI;
             // DRET: return from Debug Mode - encoding 0x7B200073
             12'b0111101_10010: o_instr_op = riscv_pkg::DRET;
+            // Zawrs WRS.NTO (0x00D00073) and WRS.STO (0x01D00073), rs1 = rd = 0.
+            // FROST never stalls (the stall is optional), so both retire as
+            // the no-operand PAUSE hint. id_stage makes WRS.NTO illegal below
+            // M while mstatus.TW is set.
+            12'b0000000_01101, 12'b0000000_11101:
+            if (i_instr.source_reg_1 == 5'b0 && i_instr.dest_reg == 5'b0)
+              o_instr_op = riscv_pkg::PAUSE;
+            else o_illegal = 1'b1;
             default: o_illegal = 1'b1;
           endcase
         riscv_pkg::CSR_RW: o_instr_op = riscv_pkg::CSRRW;  // Atomic read/write

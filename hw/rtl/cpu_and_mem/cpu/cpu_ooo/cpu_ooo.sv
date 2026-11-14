@@ -1109,6 +1109,15 @@ module cpu_ooo #(
     if (i_rst) id_cbo_zero_illegal_q <= 1'b0;
     else id_cbo_zero_illegal_q <= csr_cbo_zero_illegal;
   end
+  // Zawrs: wrs.nto is illegal below M while mstatus.TW is set. TW changes only
+  // through an mstatus write (translation class), the privilege only on a trap
+  // or xRET; each is a full flush.
+  logic csr_wrs_nto_illegal;
+  logic id_wrs_nto_illegal_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) id_wrs_nto_illegal_q <= 1'b0;
+    else id_wrs_nto_illegal_q <= csr_wrs_nto_illegal;
+  end
 
   id_stage #(
       .XLEN(XLEN)
@@ -1123,6 +1132,7 @@ module cpu_ooo #(
       .i_mstatus_fs_off(id_mstatus_fs_off_q),
       .i_mstatus_vs_off(id_mstatus_vs_off_q),
       .i_cbo_zero_illegal(id_cbo_zero_illegal_q),
+      .i_wrs_nto_illegal(id_wrs_nto_illegal_q),
       .o_from_id_to_ex(decoded_packet),
       .o_from_id_to_ex_next(decoded_packet_next),
       .o_from_id_to_ex_next_go(decoded_packet_next_go),
@@ -4056,6 +4066,7 @@ module cpu_ooo #(
       .o_vec_vtype(csr_vec_vtype),
       .o_vec_vstart(csr_vec_vstart),
       .o_cbo_zero_illegal(csr_cbo_zero_illegal),
+      .o_wrs_nto_illegal(csr_wrs_nto_illegal),
       .o_debug_mode(csr_debug_mode),
       .o_dcsr_step(csr_dcsr_step),
       .o_dcsr_ebreak(csr_dcsr_ebreak),
@@ -4094,6 +4105,10 @@ module cpu_ooo #(
     if (reset_seen_q && fs_off_checks_armed && !i_rst &&
         (csr_cbo_zero_illegal != id_cbo_zero_illegal_q)) begin
       p_cbo_zero_gate_change_flushes_decode : assert (flush_all);
+    end
+    if (reset_seen_q && fs_off_checks_armed && !i_rst &&
+        (csr_wrs_nto_illegal != id_wrs_nto_illegal_q)) begin
+      p_wrs_nto_gate_change_flushes_decode : assert (flush_all);
     end
   end
 `endif

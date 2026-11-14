@@ -177,7 +177,7 @@ is an illegal instruction (`mcause` 2, `mtval` 0).
 | `mhpmcounter3`-`10` (0xB03-0xB0A), `mhpmevent3`-`10` (0x323-0x32A) | Writable 64-bit machine counters. An event field (bits 55:0) of N selects counter N's fixed event; counters 8, 7 and 4 also accept the translation selectors 16, 17 and 18 (see below); any other value selects zero and disables counting. Bits 63:60 are the Sscofpmf OF, MINH, SINH and UINH bits; VSINH, VUINH and bits 57:56 read zero. |
 | `mhpmcounter11`-`31`, `mhpmevent11`-`31` | Machine-mode reads return zero and writes are ignored. |
 | `hpmcounter3`-`10` (0xC03-0xC0A) | Read-only aliases, gated by counter enables in S/U modes. |
-| `hpmcounter11`-`31` (0xC0B-0xC1F) | Unimplemented; accesses raise illegal instruction at every privilege. |
+| `hpmcounter11`-`31` (0xC0B-0xC1F) | Unimplemented; accesses raise illegal instruction at every privilege (Zihpm: "Accessing an unimplemented counter may cause an illegal-instruction exception or may return a constant value"). |
 | `scountovf` (0xDA0) | Sscofpmf: read-only OF bits 3..10. M reads all of them; S reads those set in `mcounteren`; U access is illegal. |
 
 Counters 9 and 10 count cycles and retired instructions like `mcycle` and

@@ -377,3 +377,6 @@ can be debugged and where each one first stops.
 | `wfi_seed_recovery/` | Mispredicted `jr` jumps with `wfi` on the wrong path; the bench checks that a wrong-path `wfi` at the ROB head during recovery does not set the interrupt resume PC |
 | `window_skip_repro/` | After a branch trained taken resolves not-taken, fetch must not skip the fall-through window; all 6,000 calls run with a 4M-cycle simulation budget (8M with fetch-latency fuzzing) |
 | `writecount_probe/` | `lr.w` sign extension on both dword halves in the Linux `i_writecount` sequence, with `sc.w` and `amoadd.w` |
+| `zawrs_test/` | Zawrs: `wrs.nto`/`wrs.sto` in M, S and U with `mstatus.TW`, LR/SC around `wrs.nto`, and the Linux `__cmpwait` loop |
+| `zicbop_test/` | Zicbop: `prefetch.i/r/w` (ORI with `rd` = x0) retire with no exception and no state change in M, S and U, on null, device, beyond-DDR, non-canonical, unmapped and supervisor-only addresses |
+| `zihpm_test/` | Zihpm: `hpmcounter3`..`31` privilege gating by `mcounteren`/`scounteren` in M, S and U, shadows of `mhpmcounter`, M-only and zero-only counters |

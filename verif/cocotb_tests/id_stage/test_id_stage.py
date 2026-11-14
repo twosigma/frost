@@ -248,6 +248,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pd_redirect_slot2.value = 0
     dut.i_mstatus_fs_off.value = 0
     dut.i_cbo_zero_illegal.value = 0
+    dut.i_wrs_nto_illegal.value = 0
 
 
 async def _setup_test(dut: Any) -> None:
@@ -1073,3 +1074,85 @@ async def test_btb_target_check_for_direct_branches(dut: Any) -> None:
     await _advance_cycle(dut)
     packet = _read_id_packet(dut)
     assert packet["btb_correct_non_jalr"] is False
+
+
+WRS_NTO = 0x00D00073
+WRS_STO = 0x01D00073
+
+
+@cocotb.test()
+async def test_zawrs_decode_and_tw_gate(dut: Any) -> None:
+    """wrs.nto and wrs.sto retire as PAUSE; the TW gate makes only wrs.nto illegal.
+
+    i_wrs_nto_illegal (mstatus.TW below M) turns wrs.nto into the neutral
+    illegal class in either slot and leaves wrs.sto alone. Nonzero rs1 or rd,
+    and the neighbouring funct12 values, are illegal.
+    """
+    await _setup_test(dut)
+    for slot2 in (False, True):
+        for raw in (WRS_NTO, WRS_STO):
+            for gate in (0, 1):
+                _drive_pd_packet(
+                    dut, {"program_counter": BASE_PC, "instruction": raw}, slot2=slot2
+                )
+                _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+                dut.i_wrs_nto_illegal.value = gate
+                await _advance_cycle(dut)
+                packet = _read_id_packet(dut, slot2=slot2)
+                name = f"{raw:#x} gate={gate} slot2={slot2}"
+                illegal = bool(gate) and raw == WRS_NTO
+                assert packet["is_illegal_instruction"] is illegal, name
+                assert packet["rs_type"] == RS_INT, name
+                assert packet["has_int_dest"] is False, name
+                assert (
+                    packet["uses_int_rs1"] is False and packet["uses_int_rs2"] is False
+                )
+                assert packet["is_fence"] is False and packet["is_fence_i"] is False, (
+                    name
+                )
+                if not illegal:
+                    assert packet["instruction_operation"] == PAUSE, name
+
+    reserved = (
+        WRS_NTO | (5 << 15),  # rs1 != 0
+        WRS_STO | (1 << 7),  # rd != 0
+        0x00C00073,  # funct12 0x00C
+        0x00E00073,  # funct12 0x00E
+        0x02D00073,  # funct12 0x02D
+    )
+    for raw in reserved:
+        _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": raw})
+        _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=True)
+        await _advance_cycle(dut)
+        packet = _read_id_packet(dut)
+        assert packet["is_illegal_instruction"] is True, hex(raw)
+        assert packet["rs_type"] == RS_INT, hex(raw)
+
+
+@cocotb.test()
+async def test_zicbop_prefetches_decode_as_ori_to_x0(dut: Any) -> None:
+    """prefetch.i/r/w are ORI with rd = x0: legal in either slot, no memory class.
+
+    They take ORI's INT_RS class (rs1 read, x0 destination), never the
+    illegal or load/store classes, so they cannot fault.
+    """
+    await _setup_test(dut)
+    ori_op = _INSTR_OPS["ORI"]
+    for low in (0b00000, 0b00001, 0b00011):  # prefetch.i, .r, .w
+        for offset in (0, 64, -64, 2016, -2048):
+            raw = _pack_i(
+                imm=offset | low, rs1=10, funct3=0b110, rd=0, opcode=0b0010011
+            )
+            for slot2 in (False, True):
+                _drive_pd_packet(
+                    dut, {"program_counter": BASE_PC, "instruction": raw}, slot2=slot2
+                )
+                _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+                await _advance_cycle(dut)
+                packet = _read_id_packet(dut, slot2=slot2)
+                name = f"{raw:#010x} slot2={slot2}"
+                assert packet["is_illegal_instruction"] is False, name
+                assert packet["instruction_operation"] == ori_op, name
+                assert packet["rs_type"] == RS_INT, name
+                assert packet["needs_lq"] is False and packet["needs_sq"] is False, name
+                assert packet["is_load_instruction"] is False, name

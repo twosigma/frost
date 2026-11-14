@@ -264,6 +264,7 @@ module perf_csr_half_test_harness #(
         .o_satp_root_ppn(),
         .o_mstatus_fs_off(),
         .o_cbo_zero_illegal(),
+        .o_wrs_nto_illegal(),
         .o_debug_mode(),
         .o_dcsr_step(),
         .o_dcsr_ebreak(),
