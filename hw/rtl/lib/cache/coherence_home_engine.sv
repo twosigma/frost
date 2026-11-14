@@ -223,125 +223,6 @@ module coherence_home_engine #(
   assign service_error = error_q || (reply_fire && reply.error);
   assign service_dirty = dirty_q || (reply_fire && reply.data_valid);
   assign service_complete = phase_q == Service && data_complete && probe_complete && !reply_fatal;
-  // The line image's byte writes. The write-ack handshake's ready is the
-  // last term to settle: it completes a service waiting in ProbeAck, which
-  // merges a DMA write. Each byte's enable and its DMA select are formed for
-  // both values of that ready and select it last. service_complete is
-  // complete_other || (complete_on_ack && i_wa_ready): a service in ProbeAck
-  // completes only with the ready, and every other completion path is
-  // independent of it.
-  logic complete_other, complete_on_ack;
-  assign complete_other = phase_q == Service && data_complete && !reply_fatal &&
-      (probe_phase_q == ProbeDone || (reply_fire && (reply.error || (!reply.absorbed &&
-       (probe_q.opcode != coherence_pkg::CheckSC || !reply.sc_valid)))));
-  assign complete_on_ack = phase_q == Service && data_complete && probe_phase_q == ProbeAck &&
-      !reply_fatal;
-  (* keep = "true" *) logic [LINE_BYTES-1:0] image_enable_idle, image_enable_ready;
-  (* keep = "true" *) logic [LINE_BYTES-1:0] image_dma_idle, image_dma_ready;
-  logic [LINE_BYTES-1:0] image_enable, image_dma;
-  logic [LINE_BYTES-1:0][7:0] image_byte_next;
-  for (genvar byte_idx = 0; byte_idx < LINE_BYTES; byte_idx++) begin : gen_image_byte
-    localparam int unsigned Sector = byte_idx / 32;
-    wire in_upper = Sector == 32'(upper);
-    wire data_write = i_data_valid && (!dirty_q || !in_upper);
-    wire reply_write = reply_fire && reply.data_valid && in_upper;
-    wire dma_byte = request_q.opcode == coherence_pkg::DMAWrite && !service_error &&
-        request_q.mask[byte_idx%32] && in_upper;
-    assign image_dma_idle[byte_idx] = complete_other && dma_byte;
-    assign image_dma_ready[byte_idx] = (complete_other || complete_on_ack) && dma_byte;
-    // The image is a data register with no reset: a service loads every byte
-    // it later reads (the simulation check below covers the first service
-    // after a reset).
-    assign image_enable_idle[byte_idx] = run &&
-        (data_write || reply_write || image_dma_idle[byte_idx]);
-    assign image_enable_ready[byte_idx] = run &&
-        (data_write || reply_write || image_dma_ready[byte_idx]);
-    assign image_byte_next[byte_idx] = image_dma[byte_idx] ?
-        request_q.wdata[8*(byte_idx%32)+:8] :
-        reply_write ? reply.data[8*(byte_idx%32)+:8] : i_data[8*byte_idx+:8];
-`ifdef FROST_XILINX_PRIMS
-    // I0 i_wa_ready, I1 the value with it, I2 the value without it: I0 ? I1 : I2.
-    (* dont_touch = "true" *)
-    LUT3 #(
-        .INIT(8'hD8)
-    ) u_enable (
-        .I0(i_wa_ready),
-        .I1(image_enable_ready[byte_idx]),
-        .I2(image_enable_idle[byte_idx]),
-        .O (image_enable[byte_idx])
-    );
-    (* dont_touch = "true" *)
-    LUT3 #(
-        .INIT(8'hD8)
-    ) u_dma (
-        .I0(i_wa_ready),
-        .I1(image_dma_ready[byte_idx]),
-        .I2(image_dma_idle[byte_idx]),
-        .O (image_dma[byte_idx])
-    );
-`else
-    assign image_enable[byte_idx] = i_wa_ready ? image_enable_ready[byte_idx] :
-        image_enable_idle[byte_idx];
-    assign image_dma[byte_idx] = i_wa_ready ? image_dma_ready[byte_idx] : image_dma_idle[byte_idx];
-`endif
-    always_ff @(posedge i_clk) begin
-      if (image_enable[byte_idx]) image_q[8*byte_idx+:8] <= image_byte_next[byte_idx];
-    end
-  end
-`ifdef ENGINE_IMAGE_NEXT_LOCAL_PROOF
-  // The image's reference next state outside reset: the original writes in
-  // their original order. The byte enables and selects above must equal it
-  // for every state and input with reset low.
-  logic [8*LINE_BYTES-1:0] f_image_next, f_image_new;
-  always_comb begin
-    f_image_next = image_q;
-    if (run) begin
-      if (i_data_valid)
-        for (int sector = 0; sector < LINE_BYTES / 32; sector++)
-        if (!dirty_q || (sector != int'(upper)))
-          f_image_next[sector*256+:256] = i_data[sector*256+:256];
-      if (i_r_valid && o_r_ready && reply.data_valid)
-        f_image_next[(upper ? 256 : 0)+:256] = reply.data;
-      if (service_complete && request_q.opcode == coherence_pkg::DMAWrite && !service_error)
-        for (int byte_idx = 0; byte_idx < 32; byte_idx++)
-        if (request_q.mask[byte_idx])
-          f_image_next[(upper ? 256 : 0)+8*byte_idx+:8] = request_q.wdata[8*byte_idx+:8];
-    end
-    for (int byte_idx = 0; byte_idx < LINE_BYTES; byte_idx++)
-    f_image_new[8*byte_idx+:8] = image_enable[byte_idx] ? image_byte_next[byte_idx] :
-        image_q[8*byte_idx+:8];
-    if (!i_rst) p_image_next_exact : assert (f_image_new == f_image_next);
-  end
-`endif
-`ifndef SYNTHESIS
-`ifndef FORMAL
-  // The image has no reset, so a reset may leave or write any bytes. Every
-  // byte a result or an update reads after a reset has been written since
-  // that reset: a data-carrying result's sector, and the update's masked
-  // bytes.
-  logic [LINE_BYTES-1:0] sim_image_written_q;
-  always_ff @(posedge i_clk) begin
-    if (i_rst) sim_image_written_q <= '0;
-    else sim_image_written_q <= sim_image_written_q | image_enable;
-  end
-  wire [LINE_BYTES-1:0] sim_result_bytes = LINE_BYTES'(32'hffff_ffff) << (upper ? 32 : 0);
-  wire sim_result_reads_image = o_result_valid && !error_q && (
-      request_q.opcode == coherence_pkg::GetS ||
-      request_q.opcode == coherence_pkg::LoadReserved || coherence_pkg::is_getm(
-      request_q.opcode
-  ) || request_q.opcode == coherence_pkg::Atomic || request_q.opcode ==
-      coherence_pkg::StoreConditional || request_q.opcode == coherence_pkg::ReadOnceIF ||
-      request_q.opcode == coherence_pkg::ReadOncePTW || request_q.opcode == coherence_pkg::DMARead);
-  always_ff @(posedge i_clk) begin
-    if (sim_reset_seen_q && !i_rst) begin
-      if (sim_result_reads_image)
-        p_result_image_loaded : assert ((sim_result_bytes & ~sim_image_written_q) == 0);
-      if (o_update_valid)
-        p_update_image_loaded : assert ((o_update_mask & ~sim_image_written_q) == 0);
-    end
-  end
-`endif
-`endif
   assign o_wa_valid = run && phase_q == Service && probe_phase_q == ProbeAck;
   assign o_wa = ack_q;
   assign o_update_valid = run && phase_q == Update;
@@ -441,10 +322,18 @@ module coherence_home_engine #(
         end
       end
       if (o_read_valid && i_read_ready) read_sent_q <= 1'b1;
-      if (i_data_valid) read_done_q <= 1'b1;
+      if (i_data_valid) begin
+        read_done_q <= 1'b1;
+        for (int sector = 0; sector < LINE_BYTES / 32; sector++)
+        if (!dirty_q || (sector != int'(upper)))
+          image_q[sector*256+:256] <= i_data[sector*256+:256];
+      end
       if (o_p_valid && i_p_ready) probe_phase_q <= ProbeWait;
       if (i_r_valid && o_r_ready) begin
-        if (reply.data_valid) dirty_q <= 1'b1;
+        if (reply.data_valid) begin
+          image_q[(upper ? 256 : 0)+:256] <= reply.data;
+          dirty_q <= 1'b1;
+        end
         if (reply.error) begin
           if (reply.data_valid || reply.absorbed || reply.state == coherence_pkg::Modified ||
               state_q == coherence_pkg::Modified || coherence_pkg::is_getm(
@@ -476,6 +365,11 @@ module coherence_home_engine #(
       end
       if (o_wa_valid && i_wa_ready) probe_phase_q <= ProbeDone;
       if (service_complete) begin
+        if (request_q.opcode == coherence_pkg::DMAWrite && !service_error) begin
+          for (int byte_idx = 0; byte_idx < 32; byte_idx++)
+          if (request_q.mask[byte_idx])
+            image_q[(upper ? 256 : 0)+8*byte_idx+:8] <= request_q.wdata[8*byte_idx+:8];
+        end
         phase_q <= !service_error &&
             (service_dirty || request_q.opcode == coherence_pkg::DMAWrite) ? Update : Result;
       end
@@ -510,8 +404,7 @@ module coherence_home_engine #(
       if (absent_q) assert (phase_q == Result && prefetch);
     end
 `endif
-`ifdef ENGINE_IMAGE_NEXT_LOCAL_PROOF
-`elsif FORMAL
+`ifdef FORMAL
 `ifndef COHERENCE_HOME_CONTROL
   logic f_past_valid = 1'b0;
   (* anyconst *) logic [4:0] f_byte;

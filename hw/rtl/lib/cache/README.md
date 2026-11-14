@@ -752,11 +752,7 @@ fill's added seats and their count, its mask and the parked set are formed for b
 values of that term (a fill that is ready to join reserves the joining seat in
 one selection and not in the other), and the term selects last.
 A fill's image takes the memory response or the zero fill's clear, and the
-clear, which follows the allocation decision, enters each image bit last. An
-engine's line image takes the array's data, the probe reply's sector and a DMA
-write's bytes; the write-ack ready that completes a DMA service settles last,
-so each byte's enable and DMA select are formed for both of its values and it
-selects them last.
+clear, which follows the allocation decision, enters each image bit last.
 A joining
 engine uses one seat before the queued waiters. Ready work precedes other
 eligible work. Both classes compute their circular priorities independently

@@ -1015,14 +1015,6 @@ FORMAL_TARGETS = [
         tasks=("bmc_seat2", "bmc_seat3", "bmc", "bmc_xilinx"),
     ),
     FormalTarget(
-        "home_engine_image_equiv.sby",
-        "A home engine's line-image byte enables and DMA selects, formed for both "
-        "values of the write-ack ready and selected last, equal the ordered "
-        "writes for any state and input with reset low, at 64- and 32-byte lines, "
-        "portable and primitive",
-        tasks=("bmc", "bmc_line32", "bmc_xilinx"),
-    ),
-    FormalTarget(
         "line_align.sby",
         "Line alignment matches a byte-by-byte reference for extract and place, and a "
         "placed access reads back, for 32- and 64-byte lines",
@@ -2484,7 +2476,6 @@ SBY_TASKS = [
     ("bmc_fills3", "Forward-turn equivalence with three fills."),
     ("bmc_seat2", "Seat next-state equivalence with two fills."),
     ("bmc_seat3", "Seat next-state equivalence with three fills and four ways."),
-    ("bmc_line32", "Bounded equivalence with 32-byte lines."),
     ("line_link0_bmc", "Line client and links at zero stages, two identities."),
     (
         "coh_line_client_prove",
