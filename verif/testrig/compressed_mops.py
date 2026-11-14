@@ -15,9 +15,10 @@
 """Random Zcb, Zcmop, Zimop and Zihintntl traces with full-width operands.
 
 x8 and x9 (rs1' 000 and 001) hold cached-DDR addresses and are the only
-bases of the Zcb loads and stores, which no instruction overwrites; every
-other register starts with a corner or random 64-bit value. A few reserved
-neighbours of the new encodings trap between the cases.
+bases of the Zcb loads and stores, which no instruction overwrites. The
+other registers in x1..x15 start with a corner or random 64-bit value;
+x16..x31 retain the TestRIG preamble values until written. A few reserved
+neighbours of these encodings trap between the cases.
 """
 
 import random

@@ -98,8 +98,8 @@ package riscv_pkg;
   localparam int unsigned ImemSbIsIndirectHi = 79;
 
   // Predecode is word-local: each halfword's fields depend only on that
-  // halfword; native classes use its low seven bits. imem_predecode and
-  // the L1I fill path use these functions. The offline mirror is
+  // halfword; native classes use its opcode and, for serialization, funct3.
+  // imem_predecode and the L1I fill path use these functions. The mirror is
   // sw/common/generate_imem_predecode_init.py, for Vivado power-up images.
   // Use opcode literals because Yosys cannot resolve package-function enums.
 
