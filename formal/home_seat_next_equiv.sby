@@ -1,0 +1,49 @@
+[tasks]
+bmc_seat2 small
+bmc_seat3 four
+bmc
+bmc_xilinx xilinx
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+# The fill waiter masks', parking's and fill images' next state, with the decision's late
+# reader or allocation term selected last, equal the reference form (one seat selection
+# given whether each fill joins) for any register state and input.
+read -sv -D SYNTHESIS cache_perf_pkg.sv coherence_pkg.sv
+read -sv -D SYNTHESIS sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
+read -sv -D SYNTHESIS coherence_seat_select.sv coherence_work_select.sv coherence_home_endpoint.sv coherence_d_arbiter.sv coherence_home_completions.sv coherence_home_array.sv coherence_home_engine.sv
+xilinx: read_verilog -formal +/xilinx/cells_sim.v
+xilinx: read -formal -sv -D SYNTHESIS -D FROST_XILINX_PRIMS -D HOME_SEAT_NEXT_LOCAL_PROOF coherence_home.sv
+~xilinx: read -formal -sv -D SYNTHESIS -D HOME_SEAT_NEXT_LOCAL_PROOF coherence_home.sv
+small: chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 -set RESULTS 2 -set FILLS 2 -set PREFETCH_SLOTS 0 coherence_home
+four: chparam -set CACHE_BYTES 1024 -set WAYS 4 -set ULTRA 1 -set COMPLETIONS 4 -set RESULTS 3 -set FILLS 3 -set PREFETCH_RESERVE 1 -set PREFETCH_SLOTS 0 coherence_home
+prep -top coherence_home
+select -assert-none t:$check r:FLAVOR=assume %i
+# Four equalities per fill (added seats, their count, mask, image) and one
+# for parking.
+small: select -assert-count 9 t:$check r:FLAVOR=assert %i
+four: select -assert-count 13 t:$check r:FLAVOR=assert %i
+bmc: select -assert-count 33 t:$check r:FLAVOR=assert %i
+xilinx: select -assert-count 33 t:$check r:FLAVOR=assert %i
+
+[files]
+../hw/rtl/lib/cache/coherence_seat_select.sv
+../hw/rtl/lib/cache/coherence_work_select.sv
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_home_array.sv
+../hw/rtl/lib/cache/coherence_home_engine.sv
+../hw/rtl/lib/cache/coherence_home_endpoint.sv
+../hw/rtl/lib/cache/coherence_home.sv
+../hw/rtl/lib/cache/coherence_home_completions.sv
+../hw/rtl/lib/cache/coherence_d_arbiter.sv
+../hw/rtl/lib/cache/cache_perf_pkg.sv

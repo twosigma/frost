@@ -746,7 +746,13 @@ stores its occupied seat count beside the seat mask. Allocation, joining
 readers, handoff, a forward and error cleanup update both on the same edge.
 Seat joins, retirements and error cleanup keep their priority over allocation. The mask prepares the
 allocation and non-allocation outcomes before selecting between them; zero
-fill images likewise clear through their data input.
+fill images likewise clear through their data input. Whether a decision is a
+reader that can join a fill is the decision's last term to settle, so each
+fill's added seats and their count, its mask and the parked set are formed for both
+values of that term (a fill that is ready to join reserves the joining seat in
+one selection and not in the other), and the term selects last.
+A fill's image takes the memory response or the zero fill's clear, and the
+clear, which follows the allocation decision, enters each image bit last.
 A joining
 engine uses one seat before the queued waiters. Ready work precedes other
 eligible work. Both classes compute their circular priorities independently
