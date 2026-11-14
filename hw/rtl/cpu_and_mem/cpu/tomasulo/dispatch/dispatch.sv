@@ -1543,11 +1543,15 @@ module dispatch #(
     if (uses_int_rs1) o_int_rs_dispatch.src1_ready = int_src1_ready;
     if (uses_int_rs2) o_int_rs_dispatch.src2_ready = int_src2_ready;
 
-    // MUL_RS: M-extension operations always consume integer rs1/rs2.
-    o_mul_rs_dispatch.src1_ready = int_src1_ready;
+    // MUL_RS: M-extension operations consume integer rs1 and rs2; the
+    // vector-config operations do not always (vsetvli has no rs2, vsetivli
+    // neither source). An unused source stays ready, as in INT_RS: the done
+    // repair is requested only for used sources, so a tag left waiting on a
+    // producer that has already broadcast would never wake.
+    o_mul_rs_dispatch.src1_ready = !uses_int_rs1 || int_src1_ready;
     o_mul_rs_dispatch.src1_tag   = int_src1_tag;
     o_mul_rs_dispatch.src1_value = mul_use1_mask ? int_src1_read : '0;
-    o_mul_rs_dispatch.src2_ready = int_src2_ready;
+    o_mul_rs_dispatch.src2_ready = !uses_int_rs2 || int_src2_ready;
     o_mul_rs_dispatch.src2_tag   = int_src2_tag;
     o_mul_rs_dispatch.src2_value = mul_use2_mask ? int_src2_read : '0;
 
@@ -1686,11 +1690,11 @@ module dispatch #(
     if (uses_int_rs1_2) o_int_rs_dispatch_2.src1_ready = int_src1_2_ready;
     if (uses_int_rs2_2) o_int_rs_dispatch_2.src2_ready = int_src2_2_ready;
 
-    // MUL_RS slot-2: M-extension always consumes integer rs1/rs2.
-    o_mul_rs_dispatch_2.src1_ready = int_src1_2_ready;
+    // MUL_RS slot-2: unused sources stay ready, as in slot 1.
+    o_mul_rs_dispatch_2.src1_ready = !uses_int_rs1_2 || int_src1_2_ready;
     o_mul_rs_dispatch_2.src1_tag   = int_src1_2_tag;
     o_mul_rs_dispatch_2.src1_value = mul_use1_mask_2 ? int_src1_2_read : '0;
-    o_mul_rs_dispatch_2.src2_ready = int_src2_2_ready;
+    o_mul_rs_dispatch_2.src2_ready = !uses_int_rs2_2 || int_src2_2_ready;
     o_mul_rs_dispatch_2.src2_tag   = int_src2_2_tag;
     o_mul_rs_dispatch_2.src2_value = mul_use2_mask_2 ? int_src2_2_read : '0;
 
