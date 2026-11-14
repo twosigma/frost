@@ -249,6 +249,7 @@ module frost_rvfi_platform #(
     input  logic        i_nic_1g_rx_raw_valid = 1'b0,
     input  logic        i_nic_1g_rx_signal_ok = 1'b0,
     input  logic [ 4:0] i_nic_1g_phy_status = '0,
+    input  logic [32:0] i_nic_1g_phy_diag = '0,
     output logic [ 3:1] o_nic_1g_phy_ctrl,
     output logic        o_nic_1g_rx_block_lock,
     output logic        o_spi_cs_n,
