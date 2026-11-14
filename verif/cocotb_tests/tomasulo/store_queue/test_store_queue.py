@@ -3108,6 +3108,44 @@ async def test_cbo_mgmt_forwarding_waits_in_block(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_cbo_mgmt_blocks_forwarding_from_newer_store(dut: Any) -> None:
+    """A store between a CMO and a younger load of its block does not forward.
+
+    The load follows the CMO, so it waits for it even where the newer store
+    covers every byte the load reads. With no CMO, the same store forwards.
+    """
+    dut_if, model = await setup(dut)
+
+    block = 0x8000_0300
+    await alloc_cmo(dut_if, rob_tag=2, address=block + 0x11, kind=CMO_CLEAN)
+    await alloc_addr_data(
+        dut_if, model, rob_tag=3, address=block, data=0x2222, size=MEM_SIZE_DOUBLE
+    )
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_check(addr=block, rob_tag=6, size=MEM_SIZE_DOUBLE)
+    await dut_if.step()
+    fwd = dut_if.read_sq_forward()
+    assert fwd.match, "The load conflicts with the CMO and the store"
+    assert not fwd.can_forward, "No store forwards past an older CMO of the block"
+    dut_if.clear_sq_check()
+
+    # Outside the CMO's block, a covering store still forwards.
+    await alloc_addr_data(
+        dut_if,
+        model,
+        rob_tag=4,
+        address=block + CBO_BLOCK,
+        data=0x4444,
+        size=MEM_SIZE_DOUBLE,
+    )
+    dut_if.drive_sq_check(addr=block + CBO_BLOCK, rob_tag=6, size=MEM_SIZE_DOUBLE)
+    await dut_if.step()
+    fwd = dut_if.read_sq_forward()
+    assert fwd.match and fwd.can_forward, "A store outside the block forwards"
+    dut_if.clear_sq_check()
+
+
+@cocotb.test()
 async def test_cbo_mgmt_partial_flush_removes_uncommitted(dut: Any) -> None:
     """A partial flush removes an uncommitted CMO and keeps a committed one."""
     dut_if, _model = await setup(dut)

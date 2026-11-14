@@ -48,7 +48,8 @@ the load's bytes, and never forwards: the load waits until the block's write
 frees the entry, then reads the zeros from memory. A younger store
 covering the load still forwards over the older block. A Zicbom entry
 (`cbo.clean`, `cbo.flush`, `cbo.inval`) takes the same block conflict, so a
-younger load of its block waits until the entry frees.
+younger load of its block waits until the entry frees, even where a store
+between them covers the load.
 
 On a full-flush cycle the scan can treat a squashed store's commit as visible.
 This is harmless because the LQ discards any forwarding result captured on a
