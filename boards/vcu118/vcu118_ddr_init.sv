@@ -73,9 +73,8 @@ module vcu118_ddr_init #(
   assign running = started_q && !done_q;
 
   // Address and data channels operate independently according to the AXI4 specification.
-  // Each is bounded by the region end and outstanding response capability. The valid flags are
-  // registered: the wide counter compares end at a flop, so no long chain reaches the AXI sink
-  // (a handshake takes two cycles, which a one-time scrub does not mind).
+  // Each is bounded by the region end and outstanding response capability.
+  // Registered valid flags hold until accepted, with an idle cycle after each transfer.
   logic aw_valid_q, w_valid_q;
   logic aw_want, w_want;
   assign aw_want = running && (aw_q != BurstBits'(TotalBursts))

@@ -285,7 +285,8 @@ create_pblock pblock_slr2
 resize_pblock pblock_slr2 -add {SLR2}
 add_cells_to_pblock [get_pblocks pblock_slr2] [get_cells -quiet {u_frost_subsystem u_clock_gen gen_real_ddr.ddr_subsystem gen_real_ddr.u_ddr_init}]
 
-# Slow or asynchronous board I/O that no clock bounds: the reset button and UART receive pin
-# (synchronised or sampled by the design), and the LEDs, UART transmit pin and PHY management/reset pins.
+# The reset button and UART receive input are asynchronous to the receiving logic.
+# Output exceptions cover status LEDs, UART transmit and PHY bootstrap/reset signals.
+# The PHY bootstrap is write-only; its MDIO data is sampled against MDC.
 set_false_path -from [get_ports {cpu_reset i_uart_rx}]
 set_false_path -to [get_ports {gpio_led[*] o_uart_tx o_phy_mdc o_phy_rst_n io_phy_mdio}]
