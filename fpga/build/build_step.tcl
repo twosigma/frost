@@ -961,17 +961,6 @@ if {$step eq "synth"} {
         lappend synth_args -generic PERF_COUNTERS=1
         puts "Profiling counters included (generic PERF_COUNTERS)"
     }
-    # build.py --no-misaligned-hw (vcu118 only) exports FROST_MISALIGNED_HW=0,
-    # and the VCU118 top takes it as MISALIGNED_HW.
-    set misaligned_hw [getenv_default FROST_MISALIGNED_HW 1]
-    if {$misaligned_hw ne "0" && $misaligned_hw ne "1"} {
-        puts "Error: FROST_MISALIGNED_HW must be 0 or 1 (got '$misaligned_hw')"
-        exit 1
-    }
-    if {$misaligned_hw eq "0"} {
-        lappend synth_args -generic MISALIGNED_HW=0
-        puts "Misaligned-access engine left out (generic MISALIGNED_HW=0)"
-    }
     # A name used before its declaration becomes an implicit net. Verilator
     # binds the later declaration, but inside a generate block Vivado gives the
     # use its own net, so either the use or the declaration is left undriven.
