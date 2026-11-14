@@ -377,6 +377,11 @@ __attribute__((naked)) static void b_sfence_vma(void)
     __asm__ volatile("sfence.vma\n ecall\n j .");
 }
 
+__attribute__((naked)) static void b_fence_i(void)
+{
+    __asm__ volatile("fence.i\n ecall\n j .");
+}
+
 __attribute__((naked)) static void b_wfi(void)
 {
     __asm__ volatile("wfi\n ecall\n j .");
@@ -719,6 +724,14 @@ int main(void)
     /* I: SFENCE.VMA in U is illegal. */
     cause = run_at_priv(&b_sfence_vma, PRIV_U);
     all_ok &= report("I sfence-illegal-in-U", cause, 2u);
+
+    /* FENCE.I completes in S and U, including when TVM is set. */
+    csr_set(mstatus, 1ul << 20);
+    cause = run_at_priv(&b_fence_i, PRIV_S);
+    all_ok &= report("fence.i-completes-in-S", cause, 9u);
+    cause = run_at_priv(&b_fence_i, PRIV_U);
+    all_ok &= report("fence.i-completes-in-U", cause, 8u);
+    csr_clear(mstatus, 1ul << 20);
 
     /* J: WFI in U is illegal (matches the pinned Spike). */
     cause = run_at_priv(&b_wfi, PRIV_U);

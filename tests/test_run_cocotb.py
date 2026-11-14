@@ -1166,7 +1166,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.debug.test_debug_fence",
         hdl_toplevel_module="frost",
         app_name="debug_target",
-        description="Program-buffer BRAM patch with delayed mirror and fence completion",
+        description=(
+            "Program-buffer BRAM and cached patches, delayed mirror and fence completion"
+        ),
     ),
     "debug_progbuf_btb_test": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug_progbuf_btb",
@@ -1370,7 +1372,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="smode_test",
         nic_mac_clocks=False,
-        description=("Supervisor-mode traps, returns, delegation, and CSR permissions"),
+        description=(
+            "Supervisor-mode traps, returns, delegation, CSR permissions, "
+            "and fence.i in S and U"
+        ),
     ),
     "csr_rmw_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

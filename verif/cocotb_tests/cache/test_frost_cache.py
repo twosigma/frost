@@ -1239,6 +1239,33 @@ async def test_fence_sync_invalidates_stale_l1i(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_fence_waits_for_inflight_instruction_fill(dut: Any) -> None:
+    """A held instruction fill drains before a fence publishes a patch."""
+    await _setup(dut)
+    model = ReferenceModel(dut)
+    full = (1 << LINE_BYTES) - 1
+    addr = FENCE2_BASE + 0x40000 + 13 * LINE_BYTES
+
+    await FallingEdge(dut.i_clk)
+    dut.i_down_hold.value = 1
+    await _fire_read(dut, "iup", addr)
+    wdata = _line_int(bytes([(0x91 + 5 * b) & 0xFF for b in range(LINE_BYTES)]))
+    model.write_line(addr, wdata, full)
+    await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
+
+    fence = cocotb.start_soon(_fence_sync(dut))
+    for _ in range(20):
+        await FallingEdge(dut.i_clk)
+        assert not int(dut.o_fence_done.value), "fence passed a held instruction fill"
+    dut.i_down_hold.value = 0
+    await fence
+
+    for _ in range(2):
+        got = await _port_transaction(dut, "iup", write=False, addr=addr)
+        assert got == model.read_line(addr), "pre-fence fill survived invalidation"
+
+
+@cocotb.test()
 async def test_walker_sees_dirty_l1d_lines(dut: Any) -> None:
     """The walker port is coherent with the L1D without any fence.
 

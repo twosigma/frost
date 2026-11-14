@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check a BRAM patch within one Debug-Mode program-buffer command."""
+"""Check BRAM and cached code patches within Debug-Mode program-buffer commands."""
 
 import os
 from typing import Any
@@ -111,4 +111,31 @@ async def test_debug_fence(dut: Any) -> None:
     )
     await observer
     assert (await dm.read_gpr(5)) == 40, "stale instruction word survived FENCE.I"
+    await ClockCycles(dut.i_clk, 10)
+
+
+@cocotb.test()
+@takes_last_edge
+async def test_debug_fence_cached_patch(dut: Any) -> None:
+    """A Debug-Mode fence publishes a patch after warming the L1I."""
+    start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
+    start_cpu_clock(dut)
+    cocotb.start_soon(generate_divided_clock(dut))
+    await _reset(dut)
+    jtag = JtagDriver(dut, half_period=4)
+    await jtag.reset()
+    dm = DebugModule(Dtm(jtag, idle_cycles=1), cocotb.log)
+    await dm.activate()
+    await dm.halt()
+
+    patch = 0x80020000
+    await dm.write_mem(patch, 8, addi(5, 0, 1) | (addi(5, 5, 2) << 32))
+    await dm.write_mem(patch + 8, 4, 0x00008067)
+    await dm.write_gpr(dm.S0, patch)
+    await dm.write_gpr(dm.S1, addi(5, 0, 17) | (addi(5, 5, 23) << 32))
+    call_patch = (dm.S0 << 15) | (1 << 7) | 0x67
+    await dm.exec_progbuf(
+        [call_patch, store(dm.S1, dm.S0, 8), INSN_FENCE_I, call_patch]
+    )
+    assert (await dm.read_gpr(5)) == 40, "stale cached instructions survived FENCE.I"
     await ClockCycles(dut.i_clk, 10)

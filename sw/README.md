@@ -358,7 +358,7 @@ can be debugged and where each one first stops.
 | `smc_predict_test/` | A `ret`, a `j` and an always-taken `beq`, each trained and then rewritten as an `addi`, must not follow their old predictions after `fence.i` |
 | `smc_stale_test/` | Rewritten code that is dirty in the L1D over an older L2 copy runs after `fence.i` |
 | `smc_torture/` | Random code mutation under trained predictors: leaf functions in DDR are trained, then patched in place or regenerated in a new layout, and after each `fence.i` an interpreter checks them; `-DSMC_SEED=<n>` varies the stream |
-| `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, supervisor CSRs, counter permissions, CSR existence (illegal CSRs, writable machine HPM counter 3, zero-only counter 31, and user-alias permissions), and interrupts |
+| `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, `fence.i` in S and U, supervisor CSRs, counter permissions, CSR existence (illegal CSRs, writable machine HPM counter 3, zero-only counter 31, and user-alias permissions), and interrupts |
 | `spanning_test/` | 32-bit instructions that straddle a fetch-word boundary |
 | `sprintf_test/` | All 344 `sprintf`/`snprintf` checks against constant expected strings; the 2M-cycle simulation budget covers the measured 1.23M cycles in BRAM and DDR |
 | `sstc_test/` | Sstc: `menvcfg.STCE`, `stimecmp` access rules, and an S-mode timer interrupt through `stimecmp`; also the writable `menvcfg` and `senvcfg` bits |
