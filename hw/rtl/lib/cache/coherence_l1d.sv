@@ -199,8 +199,10 @@ module coherence_l1d #(
     TwinOp
   } operation_t;
   // One-hot state keeps each transition, including the W-dependent probe
-  // absorption, to a single term of its next state.
-  (* fsm_encoding = "one_hot" *) phase_t phase_q;
+  // absorption, to a single term of its next state. The Idle bit enables the
+  // lookup and grant captures, several hundred flops that the per-slot answer
+  // selections spread out, so the state bits replicate.
+  (* fsm_encoding = "one_hot", max_fanout = 64 *) phase_t phase_q;
   cut_phase_t cut_phase_q;
   operation_t operation_q;
   logic active;
