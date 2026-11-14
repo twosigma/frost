@@ -405,6 +405,8 @@ module tomasulo_coherent_cut_test_harness #(
       .i_lq_mem_read_error(DIRECT_CACHE_READS ? cache_read_error : i_lq_mem_read_error),
       .i_lq_mem_read_id(DIRECT_CACHE_READS ? cache_read_id : i_lq_mem_read_id),
       .i_lq_mem_read_is_cached(DIRECT_CACHE_READS || i_lq_mem_read_is_cached),
+      // No vector unit here: nothing reads the vector-config in-flight flag.
+      .o_vcfg_in_flight(),
       .i_coherent_cut_hold(cut_hold),
       .i_coh_admit_valid(cut_admit && !i_probe_delay_admit),
       .i_coh_admit_slot('0),
