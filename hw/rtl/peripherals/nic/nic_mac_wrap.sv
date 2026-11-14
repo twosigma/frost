@@ -139,26 +139,84 @@ module nic_mac_wrap #(
 
   // ---- TX: core beats to the MAC ------------------------------------------------------
   // t_word = {abort[83], checksum request[82:68], code[67:64], data[63:0]}
+  //
+  // The data FIFO carries 68-bit beats {code, data}. The two per-frame fields travel apart:
+  // the checksum request (constant across a frame, used from its first beat) crosses in a
+  // small side FIFO, one entry per frame pushed with the first beat, and an abort is the
+  // closing beat's code TxAbortCode (a non-final beat of one byte, which a frame never
+  // contains), decoded back to {last, one byte} plus the abort flag after the crossing. The
+  // first beat of a frame leaves the data FIFO together with its side entry.
+  localparam logic [3:0] TxAbortCode = 4'b0000;
+  localparam int unsigned TxCsumDepth = 32;
   logic [83:0] t_word, f_word;
   logic t_valid, t_ready, f_valid, f_ready;
+  // The write half of both TX FIFOs clears for either reset source, as the RX FIFO's core
+  // half does, so one term feeds the data and side FIFOs.
+  logic tx_wr_rst;
+  assign tx_wr_rst = i_rst || i_core_rst_dom[0];
+
+  // Write side: the side entry is pushed with the first beat; both FIFOs must have room for it.
+  logic tx_wr_first_q, tx_data_ready, tx_csum_ready, tx_beat_ok, tx_beat_fire;
+  assign tx_beat_ok   = !tx_wr_first_q || tx_csum_ready;
+  assign o_tx_ready   = tx_data_ready && tx_beat_ok;
+  assign tx_beat_fire = i_tx_valid && o_tx_ready;
+  always_ff @(posedge i_clk) begin
+    if (tx_wr_rst) tx_wr_first_q <= 1'b1;
+    else if (tx_beat_fire) tx_wr_first_q <= i_tx_code[3] || i_tx_abort;
+  end
+
+  logic [67:0] f_beat;
+  logic [14:0] f_csum;
+  logic f_beat_valid, f_beat_ready, f_csum_valid, f_csum_pop;
   async_fifo #(
-      .DATA_WIDTH(84),
+      .DATA_WIDTH(68),
       .DEPTH(FIFO_DEPTH)
   ) u_tx_fifo (
       .i_limit('0),
       .o_occupancy(),
       .i_clk(i_clk),
       // A soft reset of this domain clears the FIFO at run time.
-      .i_rst(i_rst || i_core_rst_dom[0]),
-      .i_data({i_tx_abort, i_tx_csum, i_tx_code, i_tx_data}),
-      .i_valid(i_tx_valid),
-      .o_ready(o_tx_ready),
+      .i_rst(tx_wr_rst),
+      .i_data({i_tx_abort ? TxAbortCode : i_tx_code, i_tx_data}),
+      .i_valid(i_tx_valid && tx_beat_ok),
+      .o_ready(tx_data_ready),
       .o_clk(i_tx_clk),
       .o_rst(tx_rst),
-      .o_data(f_word),
-      .o_valid(f_valid),
-      .i_ready(f_ready)
+      .o_data(f_beat),
+      .o_valid(f_beat_valid),
+      .i_ready(f_beat_ready)
   );
+  async_fifo #(
+      .DATA_WIDTH(15),
+      .DEPTH(TxCsumDepth)
+  ) u_tx_csum_fifo (
+      .i_limit('0),
+      .o_occupancy(),
+      .i_clk(i_clk),
+      .i_rst(tx_wr_rst),
+      .i_data(i_tx_csum),
+      .i_valid(i_tx_valid && tx_wr_first_q && tx_data_ready),
+      .o_ready(tx_csum_ready),
+      .o_clk(i_tx_clk),
+      .o_rst(tx_rst),
+      .o_data(f_csum),
+      .o_valid(f_csum_valid),
+      .i_ready(f_csum_pop)
+  );
+
+  // Read side: a frame's first beat waits for its side entry, which pops with that beat.
+  logic tx_rd_first_q, f_abort;
+  logic [3:0] f_code;
+  assign f_abort      = (f_beat[67:64] == TxAbortCode);
+  assign f_code       = f_abort ? 4'b1000 : f_beat[67:64];
+  assign f_valid      = f_beat_valid && (!tx_rd_first_q || f_csum_valid);
+  assign f_beat_ready = f_ready && (!tx_rd_first_q || f_csum_valid);
+  assign f_csum_pop   = f_valid && f_ready && tx_rd_first_q;
+  assign f_word       = {f_abort, f_csum, f_code, f_beat[63:0]};
+  always_ff @(posedge i_tx_clk) begin
+    if (tx_rst) tx_rd_first_q <= 1'b1;
+    else if (f_valid && f_ready) tx_rd_first_q <= f_code[3];
+  end
   logic [7:0] t_keep;
   assign t_keep = 8'hFF >> (3'd7 - t_word[66:64]);
 
