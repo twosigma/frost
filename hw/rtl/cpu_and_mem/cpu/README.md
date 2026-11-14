@@ -436,13 +436,15 @@ its own ASID, or a global entry under any ASID.
   While a flush runs the arrays accept no request.
 
 Svpbmt. The walker checks a leaf's PBMT field (PTE bits 62:61) against
-`menvcfg.PBMTE`, sampled when the walk starts: with PBMTE clear any PBMT is a
-page fault, and with it set PBMT 3 in a leaf and any PBMT in a non-leaf are
+`menvcfg.PBMTE`, sampled when the walk starts: with PBMTE clear any nonzero PBMT is a
+page fault, and with it set PBMT 3 in a leaf and any nonzero PBMT in a non-leaf are
 page faults, as are bit 63 (no Svnapot) and bits 60:54. An NC or IO leaf over
 cached DDR answers the PPN of the uncached alias of DDR (riscv_pkg "Svpbmt":
 bit 30 for DDR up to 1 GiB, bit c for a 2^c-byte window of c >= 32, which
 leaves its top 2 GiB without an alias and makes an NC or IO leaf there an
-access fault). The alias window is not in the PMA map (an untranslated
+access fault). A 2 GiB DDR window has no alias in the current 32-bit physical
+map, so NC and IO leaves over DDR fault in that configuration. The alias
+window is not in the PMA map (an untranslated
 access or a PMA leaf there faults as before); an NC or IO leaf over it is a
 device page in the DTLB's per-entry checks and the walk-response checks, so
 the DMMU classifies the op MMIO, the load queue's PMA check accepts the window
@@ -452,7 +454,10 @@ stores drain, stores retired after their bus response. NC executes as IO,
 which is stronger than RVWMO. soc_top sends an
 alias access as one single-beat transfer of the real DDR address through the
 coherent DMA port, so the home probes the L1D and merges dirty data first:
-NC and IO views stay coherent with cacheable views of the same frame. The
+the transfer observes the cacheable copy of the same frame. Switching
+between cacheable and uncached views requires the Svpbmt sequence
+`fence iorw, iorw; cbo.flush; fence iorw, iorw`, with the flush naming that
+location. The
 walk response carries the field (`ptw_resp_t.pbmt`); the second-level TLB
 (4 KiB array and superpage array), the DTLB and the ITLB store it and return
 it on a hit. Over low BRAM, which has no alias, the DTLB's per-entry checks

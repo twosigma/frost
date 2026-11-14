@@ -41,7 +41,7 @@
  *     sampled when the walk starts, is clear (Svpbmt).
  *   - a leaf with PBMT = NC or IO over cached DDR that has no uncached alias
  *     (riscv_pkg "Svpbmt") => DFAULT_ACCESS.
- * A clean leaf answers DFAULT_NONE with {pbmt, ppn, level, RWXUD} and echoes
+ * A clean leaf answers DFAULT_NONE with {pbmt, ppn, level, RWXUDG} and echoes
  * the VPN. For NC or IO over cached DDR the PPN is the alias's, which the TLBs
  * store with the field; the MMUs make such a page MMIO. The requesting MMU checks
  * permissions at lookup, because SUM, MXR, and the effective privilege are

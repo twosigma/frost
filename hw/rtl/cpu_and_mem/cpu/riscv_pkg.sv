@@ -1681,8 +1681,8 @@ package riscv_pkg;
   //     [2**c + 2**31, 2**(c+1)). The top 2 GiB of the DDR window,
   //     [2**c, 2**c + 2**31), has no alias: the walker answers an NC or IO
   //     leaf there with an access fault (an implementation PMA override,
-  //     norm:Svpbmt_impl_may_override_pmas). The VCU118's 64 GiB window
-  //     (c = 36) aliases its first 62 GiB, which holds the board's 2 GiB.
+  //     norm:Svpbmt_impl_may_override_pmas). For example, a 64 GiB window
+  //     (c = 36) aliases its first 62 GiB.
   //   c = 31, or a map other than FROST's: no alias; every NC or IO leaf
   //     over DDR is an access fault.
   localparam bit PbmtAliasEnabled = PmaUsesFrostMap && (DdrCapacityLog2Bytes != 31);

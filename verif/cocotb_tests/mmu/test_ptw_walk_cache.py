@@ -22,8 +22,8 @@ the privileged spec requires. A valid pointer change is followed by a
 discard (SFENCE.VMA or a satp access). The bench also counts line reads to
 show that the cache removes the upper-level reads of repeated walks.
 
-The reference applies Svpbmt too: with PBMTE clear any PBMT field faults; with
-it set, PBMT 3 and a non-leaf PBMT fault, and an NC or IO leaf over DDR answers
+The reference applies Svpbmt too: with PBMTE clear any nonzero PBMT field faults; with
+it set, PBMT 3 and a nonzero non-leaf PBMT fault, and an NC or IO leaf over DDR answers
 the uncached alias's PPN (riscv_pkg "Svpbmt": bit 30 for the 1 GiB DDR the
 default build uses) and the field.
 """
@@ -103,7 +103,7 @@ class Memory:
             leaf = r or x
             pbmt = (e >> 61) & 3
             # Bit 63 (N) and bits 60:54 are reserved; so is PBMT in a
-            # non-leaf, PBMT 3, and any PBMT while PBMTE is clear.
+            # non-leaf, PBMT 3, and any nonzero PBMT while PBMTE is clear.
             pbmt_bad = pbmt != 0 and (not leaf or not pbmte or pbmt == PBMT_RES)
             if (
                 (e >> 63)
@@ -562,8 +562,8 @@ async def root_switch_discards_old_context(dut: Any) -> None:
 async def pbmt_encodings_faults_and_alias(dut: Any) -> None:
     """Svpbmt in the walker: PBMTE, reserved encodings, the alias PPN, superpages.
 
-    With PBMTE clear every PBMT field is a page fault. With it set, PBMT 3 in a
-    leaf and any PBMT in a pointer are page faults; NC and IO leaves over DDR
+    With PBMTE clear every nonzero PBMT field is a page fault. With it set, PBMT 3 in a
+    leaf and any nonzero PBMT in a pointer are page faults; NC and IO leaves over DDR
     answer the alias PPN and the field at every level (4 KiB, 2 MiB, 1 GiB);
     over memory outside DDR (low BRAM) or a device page they keep their PPN.
     A pointer with PBMT set never fills the walk cache.

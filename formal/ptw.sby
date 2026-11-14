@@ -24,8 +24,7 @@ cover_wide: depth 64
 smtbmc boolector
 
 [script]
-# The wide tasks use the VCU118's 64 GiB DDR window, whose top 2 GiB has no
-# Svpbmt alias.
+# The wide tasks use a 64 GiB DDR window, whose top 2 GiB has no Svpbmt alias.
 ~wide: read -formal -sv riscv_pkg.sv
 ~wide: read -formal -sv ptw.sv
 wide: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=36 riscv_pkg.sv

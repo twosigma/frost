@@ -165,10 +165,14 @@ then maps `ioremap` regions with PBMT = IO and write-combining or
 non-coherent-DMA remaps with PBMT = NC (`_PAGE_IO_SVPBMT`,
 `_PAGE_NOCACHE_SVPBMT`, patched in by the kernel's alternatives). Device pages
 are uncached by their PMA already, so every MMIO driver behaves as before; an
-NC or IO page over DDR is read and written uncached, at the ROB head and in
-program order, through the coherent DMA port, so it stays coherent with the
-linear map's cacheable view of the same frame. `/proc/cpuinfo` lists
-`svpbmt` in its `isa` line.
+NC or IO page over DDR uses the configured uncached alias, at the ROB head and
+in program order, through the coherent DMA port. A 2 GiB DDR aperture has no
+alias in the current physical map and rejects those DDR mappings. For wider
+apertures, the top 2 GiB also has no alias. Switching between cacheable and
+uncached views requires `fence iorw, iorw; cbo.flush; fence iorw, iorw` for the
+location. The NIC's `dma-coherent` property keeps its normal DMA buffers
+cacheable; its IO register mappings exercise PBMT without using the DDR alias.
+`/proc/cpuinfo` lists `svpbmt` in its `isa` line.
 
 ## Counters and mcounteren
 
