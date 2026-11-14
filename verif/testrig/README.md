@@ -204,7 +204,7 @@ different implementation choice:
 | Memory regions | The PMA map: low BRAM, MMIO, APLIC, IMSIC, the rest of the device quadrant (stores only), and configurable DDR (1 GiB default), the only region page-table walks read |
 | Physical addresses | 64 bits wide, so an untranslated access beyond the memory map faults with its full address in `mtval` |
 | Misaligned accesses | Address-misaligned trap, after the PMA check |
-| `mtval` | 0 for illegal instructions |
+| `mtval` | The faulting instruction's bits for illegal instructions (Sstvala) |
 | `mstatus.FS` | Dirty when an FP instruction raises a flag, even one already set |
 | `mstatus.VS` | Read-only zero: FROST has no V extension |
 | HPM counters | Machine counters 3..10 have storage; saved traces keep their selectors disabled. User aliases 3..10 are checked by the CSR and privilege benches; aliases 11..31 are absent |
