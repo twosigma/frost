@@ -112,10 +112,21 @@ static void report(const char *name, int ok)
                 g_tval);
 }
 
-/* The trigger raised illegal-instruction at its own PC with mtval 0. */
+/* Sstvala: mtval holds the faulting instruction's bits, a compressed
+ * instruction's 16 bits zero-extended. */
+static unsigned long insn_bits_at(unsigned long pc)
+{
+    unsigned long lo = *(volatile unsigned short *) pc;
+    if ((lo & 3u) != 3u)
+        return lo;
+    return lo | ((unsigned long) *(volatile unsigned short *) (pc + 2) << 16);
+}
+
+/* The trigger raised illegal-instruction at its own PC with mtval its bits. */
 static int illegal_at(const char *trigger)
 {
-    return g_cause == 2u && g_epc == (unsigned long) trigger && g_tval == 0u;
+    return g_cause == 2u && g_epc == (unsigned long) trigger &&
+           g_tval == insn_bits_at((unsigned long) trigger);
 }
 
 int main(void)

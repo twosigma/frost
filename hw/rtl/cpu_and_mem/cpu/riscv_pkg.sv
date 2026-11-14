@@ -1960,6 +1960,9 @@ package riscv_pkg;
     logic [XLEN-1:0] ras_checkpoint_top;
     // Predict-time bimodal index carried to commit for training.
     logic [BpDirIdxBits-1:0] bp_dir_idx;
+    // The raw 16-bit parcel at the instruction's start; ID forms Sstvala's
+    // insn_bits from it for a compressed instruction.
+    logic [15:0] raw_parcel;
   } from_pd_to_id_t;
 
   // Clocked signals passed from Instruction Decode (ID) stage to Execute (EX) stage
@@ -2056,6 +2059,9 @@ package riscv_pkg;
     // Set for program instructions, including NOP; clear for PD bubbles.
     // Used by dispatch validity and slot-2 presence checks.
     logic is_real;
+    // Sstvala: the raw instruction bits ({16'b0, parcel} for a compressed
+    // instruction), carried to the ROB for illegal-instruction xtval.
+    logic [31:0] insn_bits;
   } from_id_to_ex_t;
 
   // Control fields of from_id_to_ex_t, with matching names and types.
@@ -2489,6 +2495,9 @@ package riscv_pkg;
     // effect at its place in program order (decided at dispatch)
     logic is_varith;
     logic vec_illegal;
+    // Sstvala: the instruction's raw bits (a compressed parcel zero-extended),
+    // xtval for an illegal-instruction exception.
+    logic [31:0] insn_bits;
   } reorder_buffer_alloc_req_t;
 
   typedef struct packed {

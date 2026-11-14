@@ -862,6 +862,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=128"),),
         include_in_pytest=False,
     ),
+    "sstvala_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="sstvala_test",
+        nic_mac_clocks=False,
+        description=(
+            "Sstvala: mtval/stval hold the faulting instruction bits for every "
+            "illegal-instruction source in M, S and U, delegated and not"
+        ),
+    ),
     "vec_state_test_v512": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
