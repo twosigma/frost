@@ -6,7 +6,9 @@ as simulation. The targets cover the fetch stage, the out-of-order back end
 units, the MMU and caches, the NIC's clock-crossing FIFO, the APLIC, and the
 IMSIC. Each `.sby` file in this directory is one target, registered in
 `FORMAL_TARGETS` in `tests/test_run_formal.py`, and CI runs every task of every
-target. Most properties live in the RTL module they check, under
+target. A CI job skips a task whose inputs are unchanged since a run in which
+it passed ([reuse in CI](../tests/README.md#reusing-formal-and-synthesis-results)).
+Most properties live in the RTL module they check, under
 `ifdef FORMAL`. The `.sv` harnesses in this directory hold the proofs that
 connect several modules or compare two instances of one.
 
@@ -404,7 +406,7 @@ readiness and tags.
 | `vec_lmul_legality_equiv` | Dispatch's vector legality, the LMUL class of the vtype selecting among `vec_lmul_legality`'s four classes of slot 1's instruction with vill added, equals `riscv_pkg::vector_arith_illegal` and the vill rule for vector-to-scalar ops, for every vtype, instruction, operation and other dispatch input. Assumes the class input carries the classes of slot 1's own instruction, which a `cpu_ooo` simulation assertion checks. Combinational |
 | `vec_hold_rows` | Range-ordering holds against the vector memory table, driven by a ghost program (two allocations a cycle, frees, flush tag rollback, retirement only as the head passes, ranges fixed once known, addresses written once and confined to four pages, the sequence starting anywhere so tags wrap): a scalar entry is held whenever an older live table entry has an unknown range, the entry's address is unknown, a byte is shared, or the entry is atomic, and a hold always has such a cause once the registered overlap has settled. Two scalar and two table entries, 8 frames, with the load queue's update port and with the store queue's per-entry addresses; covers reach slot-2 allocation behind a table entry, free and reallocation, unknown-to-known release, tag wrap and a retired table entry |
 | `sq_repair_mmio` | The early-address repair's two parallel MMIO flags equal MMIO classification of the full base-plus-immediate sum, including overflow |
-| `store_queue` | Live-count consistency, write prerequisites (committed, address and data valid), in-flight bounds, forwarding, and that committed stores survive a partial flush. A cached cbo.zero entry leaves as one write at its block base, marked for the L1D and for a block-wide L0 invalidation, and that write completes it. An uncached entry's beat count belongs to the drain cursor's unsent zero entry; each zero beat writes eight zero bytes with every strobe inside the entry's block, and only the eighth beat completes the entry. Formal builds use a linear forwarding selector in place of the balanced tree, which Yosys mishandles, so the tree itself is not proved. Assumes, among other input rules, no allocation while the post-flush tail pullback is pending and no combinational commit pulse during a flush |
+| `store_queue` | Live-count consistency, write prerequisites (committed, address and data valid), in-flight bounds, forwarding, and that committed stores survive a partial flush. A cached cbo.zero entry leaves as one write at its block base, marked for the L1D and for a block-wide L0 invalidation, and that write completes it. An uncached entry's beat count belongs to the drain cursor's unsent zero entry; each zero beat writes eight zero bytes with every strobe inside the entry's block, and only the eighth beat completes the entry. A Zicbom entry never becomes data-valid, so it is never written; it is released only as the committed drain cursor with no write in flight or on the bus and no sent entry left, and frees on the next cycle; covers reach a Zicbom entry freeing and a flush or inval block pulse. Formal builds use a linear forwarding selector in place of the balanced tree, which Yosys mishandles, so the tree itself is not proved. Assumes, among other input rules, no allocation while the post-flush tail pullback is pending and no combinational commit pulse during a flush |
 | `store_queue_twin` | The write launch, write completion, in-flight special and final selects equal their portable forms |
 | `line_align` | Extract and place in `line_align` equal a byte-by-byte reference for arbitrary lines, data, offsets and byte counts, and a placed access reads back unchanged, for 32-byte lines with 8 data bytes (`bmc`), 64-byte lines (`bmc_64x8`) and 32 data bytes (`bmc_32x32`) |
 | `ma_engine` | The misaligned-access engine from reset with an arbitrary walker, register file and line client: no sector request before both parts pass their checks, the lower sector issued first and an upper one only for a split access, each identity issued once with a stable payload, every check recorded before a request, completion only after every response, a load's response error reported as a load access fault with a zero trap value after every response, at most one completion or fault and one register write per access, a store's masks covering exactly its bytes, nothing completed, faulted or requested on the edge that samples a hart stop or receives a failed write, and a failed write or hart stop terminal from the next cycle. Assumes starts only while idle and one response per issued identity, at least a cycle after its request |
@@ -591,7 +593,11 @@ cycles, which clears arbitrary memory history.
    target or `prediction_release.sby` for an integration proof). Read every
    source whose properties must be active with `read -formal -sv`. A plain
    `read -sv` compiles its assertions out, and a proof can then pass
-   vacuously.
+   vacuously. List every file the task reads in `[files]`, one path per
+   line: SymbiYosys copies them into the task's source directory, and CI's
+   reuse key holds these files, so a file the task reads without listing it
+   is not in the key. Includes, `$readmemh` names and script reads name
+   listed files without a directory.
 3. Add a `FormalTarget` entry in `tests/test_run_formal.py`, listing `prove` in
    `tasks` when the `.sby` defines it. Register any new task names in
    `SBY_TASKS` so CLI and pytest runs include them; the fast Python tests fail
