@@ -26,9 +26,14 @@
  * reserved dynamic rounding mode, a missing CSR, a write to a read-only CSR,
  * M-level CSRs and xRETs below M, SRET with TSR, WFI and wrs.nto with TW,
  * SFENCE.VMA and satp with TVM, Zicbom/Zicboz with the menvcfg enables clear,
- * counters gated by mcounteren, and S-level instructions in U. Each case
- * checks the cause, xepc and xtval; the delegated cases check scause, sepc
- * and stval and that mtval is untouched.
+ * counters gated by mcounteren, and S-level instructions in U. Further cases
+ * place the faulting instruction second in its fetch pair, across a 64-byte
+ * line, across a 4 KiB page, in a page's last halfword, and at the target
+ * of a taken branch whose fall-through holds another illegal instruction.
+ * Each case checks the cause, xepc and xtval; the delegated cases check
+ * scause, sepc and stval, then that the S handler's ECALL reaches M (that
+ * trap writes mtval, so it cannot show that the delegated trap left mtval
+ * alone).
  */
 
 #include <stdint.h>
@@ -142,6 +147,29 @@ BODY(b_rdcycle, ".word 0xc00027f3")
 BODY(b_sstatus, ".word 0x100027f3")
 BODY(b_sfence_w_inval, ".word 0x18000073")
 
+/* A case placed at a byte offset from an alignment boundary. The padding
+ * before the label is never executed. */
+#define BODY_AT(name, align, skip, insn)                                                           \
+    extern char name[];                                                                            \
+    __asm__(".text\n.balign " #align "\n.skip " #skip "\n.global " #name "\n" #name ":\n" insn     \
+            "\n.option push\n.option norvc\nlui t6, 0xfffff\necall\nj .\n.option pop\n");
+
+/* The faulting instruction second in its fetch pair: after a native
+ * addi t6, x0, 1, and after a c.nop (a compressed case, and a native one
+ * that starts mid-word). */
+BODY(b_slot2_native, ".word 0x00100f93\n.word 0xfedcba8b")
+BODY(b_slot2_c, ".half 0x0001\n.half 0x001c")
+BODY(b_slot2_mid, ".half 0x0001\n.word 0xfedcba8b")
+/* A native case across a 64-byte line and across a 4 KiB page, and a
+ * compressed case in a page's last halfword. */
+BODY_AT(b_line_cross, 64, 62, ".word 0xfedcba8b")
+BODY_AT(b_page_cross, 4096, 4094, ".word 0x0ff027f3")
+BODY_AT(b_page_end_c, 4096, 4094, ".half 0x9c7d")
+/* beq x0, x0 skips a custom-0 word to a missing-CSR read. A not-taken
+ * prediction sends the custom-0 word down the wrong path first; a taken
+ * one does not, and the case then checks only the target's trap. */
+BODY(b_mispredict, ".word 0x00000463\n.word 0xfedcba8b\n.word 0x0ff027f3")
+
 static void run_mode(unsigned long mpp, const void *body)
 {
     __asm__ volatile("la   t0, 1f\n"
@@ -169,16 +197,18 @@ static unsigned long insn_bits_at(const void *pc)
 
 static const char *const mode_name[4] = {"U", "S", "?", "M"};
 
-/* Run one case in mode and check the M-mode (or, delegated, the S-mode) trap. */
-static int run_case(const char *name, unsigned long mode, const void *body, int delegated)
+/* Run body in mode and check the M-mode (or, delegated, the S-mode) trap
+ * taken by the instruction at fault. */
+static int run_case_at(
+    const char *name, unsigned long mode, const void *body, const void *fault, int delegated)
 {
-    unsigned long want = insn_bits_at(body);
+    unsigned long want = insn_bits_at(fault);
     int ok;
     g_mcause = g_mtval = g_mepc = ~0ul;
     g_scause = g_stval = g_sepc = ~0ul;
     run_mode(mode, body);
     if (delegated) {
-        ok = g_scause == CAUSE_ILLEGAL && g_stval == want && g_sepc == (unsigned long) body &&
+        ok = g_scause == CAUSE_ILLEGAL && g_stval == want && g_sepc == (unsigned long) fault &&
              g_mcause == CAUSE_ECALL_S && g_mtval == 0;
         uart_puts(ok ? "[PASS] " : "[FAIL] ");
         uart_printf("%s mode=%s delegated scause=%lu stval=0x%lx sepc=0x%lx want=0x%lx "
@@ -192,7 +222,7 @@ static int run_case(const char *name, unsigned long mode, const void *body, int 
                     g_mcause,
                     g_mtval);
     } else {
-        ok = g_mcause == CAUSE_ILLEGAL && g_mtval == want && g_mepc == (unsigned long) body;
+        ok = g_mcause == CAUSE_ILLEGAL && g_mtval == want && g_mepc == (unsigned long) fault;
         uart_puts(ok ? "[PASS] " : "[FAIL] ");
         uart_printf("%s mode=%s mcause=%lu mtval=0x%lx mepc=0x%lx want=0x%lx\r\n",
                     name,
@@ -203,6 +233,12 @@ static int run_case(const char *name, unsigned long mode, const void *body, int 
                     want);
     }
     return ok;
+}
+
+/* Run one case whose first instruction traps. */
+static int run_case(const char *name, unsigned long mode, const void *body, int delegated)
+{
+    return run_case_at(name, mode, body, body, delegated);
 }
 
 int main(void)
@@ -284,6 +320,17 @@ int main(void)
     ok &= run_case("rdcycle CY=0", MODE_S, b_rdcycle, 0);
     ok &= run_case("rdcycle CY=0", MODE_U, b_rdcycle, 0);
 
+    /* Placement in the fetch stream, and recovery from a mispredicted branch. */
+    for (unsigned long mode = 0; mode < 4; mode += 3) {
+        ok &= run_case_at("slot 2 native", mode, b_slot2_native, b_slot2_native + 4, 0);
+        ok &= run_case_at("slot 2 compressed", mode, b_slot2_c, b_slot2_c + 2, 0);
+        ok &= run_case_at("slot 2 mid-word", mode, b_slot2_mid, b_slot2_mid + 2, 0);
+        ok &= run_case("line crossing", mode, b_line_cross, 0);
+        ok &= run_case("page crossing", mode, b_page_cross, 0);
+        ok &= run_case("page end compressed", mode, b_page_end_c, 0);
+        ok &= run_case_at("after mispredict", mode, b_mispredict, b_mispredict + 8, 0);
+    }
+
     /* Delegated to S: stval gets the bits, mtval is untouched. */
     csr_write(medeleg, 1ul << CAUSE_ILLEGAL);
     ok &= run_case("csrr mscratch", MODE_S, b_mscratch, 1);
@@ -294,6 +341,8 @@ int main(void)
     csr_set(mstatus, MSTATUS_TVM);
     ok &= run_case("sfence.vma TVM", MODE_S, b_sfence, 1);
     csr_clear(mstatus, MSTATUS_TVM);
+    ok &= run_case_at("slot 2 compressed", MODE_U, b_slot2_c, b_slot2_c + 2, 1);
+    ok &= run_case("page crossing", MODE_S, b_page_cross, 1);
     csr_write(medeleg, 0);
 
     uart_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");

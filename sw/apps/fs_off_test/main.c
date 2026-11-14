@@ -18,9 +18,10 @@
  * F/D instructions while mstatus.FS is Off.
  *
  * With FS Off every F/D instruction raises illegal-instruction (mcause 2,
- * mtval 0) before it touches memory: an FP load reads no device register, and
- * no address fault takes the place of the illegal-instruction cause. A write
- * to mstatus.FS applies to the next instruction.
+ * mtval the instruction's bits) before it touches memory: an FP load reads
+ * no device register, and no address fault takes the place of the
+ * illegal-instruction cause. A write to mstatus.FS applies to the next
+ * instruction.
  *
  * The mtvec handler records mcause, mepc and mtval for the first trap and
  * returns to the continuation in mscratch. An ecall follows each trigger,
