@@ -1159,9 +1159,35 @@ jobs:
           - shard: Primitive forms
             pytest_filter: _twin or (coh_read_select and xilinx)
             timeout_minutes: 90
+          # The vector CSR state: the vector BMC alone is about forty minutes,
+          # and new vector proofs join it.
+          - shard: Vector
+            pytest_filter: csr_file_vector
+            timeout_minutes: 75
+          # The line client link BMCs and cover.
+          - shard: Line client links
+            pytest_filter: line_client_link
+            timeout_minutes: 90
+          # Page table walker, TLBs, instruction and data MMUs, and the
+          # interrupt controllers.
+          - shard: Memory management
+            pytest_filter: >-
+              (ptw or tlb or imsic or aplic or immu or dmmu) and not
+              (coherence_ or coherent_ or _twin)
+            timeout_minutes: 75
+          # The load queue and its helper blocks.
+          - shard: Load queue
+            pytest_filter: (load_queue or lq_) and not (coherence_ or coherent_ or _twin)
+            timeout_minutes: 60
+          # Everything not named above: new small equivalence proofs and block
+          # proofs go here unless they belong to one of the areas above.
           - shard: Other tasks
-            pytest_filter: "not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or coherence_ or coherent_ or _twin)"
-            timeout_minutes: 240
+            pytest_filter: >-
+              not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or
+              coherence_ or coherent_ or _twin or csr_file_vector or
+              line_client_link or ptw or tlb or imsic or aplic or immu or dmmu or
+              load_queue or lq_)
+            timeout_minutes: 120
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
