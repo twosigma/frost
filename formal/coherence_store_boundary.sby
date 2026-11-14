@@ -57,7 +57,7 @@ cover: smtbmc boolector
 
 [script]
 read -sv coherence_read_stream.sv
-read -sv riscv_pkg.sv
+read -sv riscv_pkg.sv vec_hold_rows.sv
 read -sv cache_perf_pkg.sv
 read -sv coherence_pkg.sv
 read -sv sdp_dist_ram.sv
@@ -142,6 +142,7 @@ check -assert
 ../hw/rtl/lib/cache/coherence_read_stream.sv
 coherence_store_boundary_formal.sv
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_hold_rows.sv
 ../hw/rtl/lib/cache/cache_perf_pkg.sv
 ../hw/rtl/lib/cache/coherence_pkg.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv

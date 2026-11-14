@@ -21,7 +21,7 @@ cover: smtbmc boolector
 fp_repair_bmc: smtbmc --nopresat boolector
 
 [script]
-read -formal -sv riscv_pkg.sv
+read -formal -sv riscv_pkg.sv vec_hold_rows.sv
 read -formal -sv sdp_dist_ram.sv
 read -formal -sv mwp_dist_ram.sv
 read -formal -sv mwp_dist_ram_ohread.sv
@@ -72,6 +72,7 @@ prep -top tomasulo_wrapper
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_hold_rows.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv

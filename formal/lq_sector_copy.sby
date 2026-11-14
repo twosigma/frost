@@ -18,7 +18,7 @@ smtbmc boolector
 xilinx: read_verilog -formal +/xilinx/cells_sim.v
 xilinx: read -define FROST_XILINX_PRIMS
 read -define LQ_SECTOR_COPY_PROOF
-read -formal -sv -D SYNTHESIS riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv coherent_l0_flags.sv lq_l0_cache.sv lq_issue_selector.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv coherent_lq_address_store.sv load_queue.sv
+read -formal -sv -D SYNTHESIS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv coherent_l0_flags.sv lq_l0_cache.sv lq_issue_selector.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv coherent_lq_address_store.sv load_queue.sv
 chparam -set REGISTERED_SECTOR_MATCH 1 -set CACHE_NORMAL_MEMORY 1 -set MEM_RESPONSE_ERRORS 1 -set CACHE_UNCACHED_DATA 0 -set ENABLE_SQ_FORWARD_FAST_PATH 1 -set PREISSUE_CANDIDATES 1 -set PREISSUE_READY_PICK 1 -set PREISSUE_SEL_WIDTH 3 load_queue
 hierarchy -top load_queue
 delete t:*lq_l0_cache t:*mwp_dist_ram t:*sdp_dist_ram t:*coherent_lq_address_store
@@ -37,6 +37,7 @@ select -assert-count 1 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/vector/vec_hold_rows.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv
