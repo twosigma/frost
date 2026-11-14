@@ -17,9 +17,13 @@ name: CI
 on:
   push:
     branches: [main]
+  # A pull request starts no run by itself. Adding the run-ci label to it
+  # starts one run on its current head; any other label starts a run that
+  # skips every job but the selection. To run again after a later push,
+  # remove the label and add it again, or start a manual run on the branch.
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, labeled]
+    types: [labeled]
   # A manual run on a branch can prove every formal task and synthesis target
   # again instead of reusing earlier passes (tests/README.md).
   workflow_dispatch:
@@ -37,10 +41,10 @@ permissions:
 # not cancel it. On main, a started run finishes; the most recently queued run
 # waits behind it, and GitHub keeps only one pending run per group, so a run
 # still pending when another run is queued is cancelled in its favour. A pull
-# request keeps one run, and a newer push to it cancels the old one. The ASIC
-# flow in asic.yml follows the same rule. Adding a label other than run-ci
-# starts a run in a group of its own, so it does not cancel the pull request's
-# run.
+# request keeps one run: adding run-ci again cancels the run an earlier
+# labelling started. The ASIC flow in asic.yml follows the same rule. Adding a
+# label other than run-ci starts a run in a group of its own, so it does not
+# cancel the pull request's run.
 concurrency:
   group: >-
     ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{
@@ -62,10 +66,10 @@ env:
   FROST_REUSE_REF: ${{ github.ref_name }}
 
 jobs:
-  # On a pull request, only Lint and Fast Python Tests run unless the pull
-  # request carries the run-ci label. Every other job depends on this one and
-  # tests its output; pushes to main always run everything. Adding some other
-  # label starts a run that also skips them.
+  # A pull request's run does its jobs only when the label that started it is
+  # run-ci. Every other job depends on this one, directly or through the image
+  # build, and tests its output; pushes to main and manual runs always run
+  # everything.
   gate:
     name: Select jobs
     runs-on: ubuntu-26.04
@@ -159,6 +163,8 @@ jobs:
   build-docker:
     name: Build Docker Image
     runs-on: ubuntu-26.04
+    needs: gate
+    if: ${{ needs.gate.outputs.full == 'true' }}
     outputs:
       tools_id: ${{ steps.identity.outputs.tools_id }}
     steps:
