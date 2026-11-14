@@ -336,9 +336,13 @@ module store_queue #(
     sq_data_wr_idx = '0;
     // Reset and a full flush clear entry validity on this edge, so a
     // coincident payload write remains hidden.
+    // A Zicbom entry is never data-valid and frees only when it drains, so
+    // after commit it can still hold a ROB tag that a younger store reuses.
+    // It takes no payload, as in the control CAM below.
     if (i_data_update_capture_valid) begin
       for (int i = 0; i < DEPTH; i++) begin
-        if (sq_valid[i] && !sq_data_valid[i] && sq_rob_tag[i] == i_data_update.rob_tag) begin
+        if (sq_valid[i] && !sq_data_valid[i] && !sq_is_cmo[i] &&
+            sq_rob_tag[i] == i_data_update.rob_tag) begin
           sq_data_we     = 1'b1;
           sq_data_wr_idx = IdxWidth'(i);
         end
