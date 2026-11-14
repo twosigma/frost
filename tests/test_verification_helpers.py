@@ -44,6 +44,24 @@ rob_interface = importlib.import_module(
 config = importlib.import_module("config")
 
 
+@pytest.mark.parametrize("top", ("frost", "soc_top"))
+def test_simulation_assertions_require_system_control(
+    monkeypatch: pytest.MonkeyPatch, top: str
+) -> None:
+    """A missing control fails the system bench; standalone checks stay active."""
+    control = importlib.import_module("cocotb_tests.sim_assertions")
+    monkeypatch.setattr(
+        control.cocotb, "top", SimpleNamespace(_name=top), raising=False
+    )
+    monkeypatch.setattr(control.ctypes, "CDLL", lambda _: SimpleNamespace())
+    monkeypatch.delenv("FROST_STARTUP_BASELINE", raising=False)
+    if top == "frost":
+        with pytest.raises(AttributeError, match="frost_sim_assertions_enable"):
+            control.enable_simulation_assertions()
+    else:
+        control.enable_simulation_assertions()
+
+
 @pytest.mark.parametrize("nics", (0, 1, 2))
 @pytest.mark.parametrize("reset_asserted", (False, True))
 def test_program_start_preserves_checker_and_production_history(

@@ -22,6 +22,8 @@ import cocotb
 
 def enable_simulation_assertions() -> None:
     """Enable runtime checks after the bench has applied a complete reset."""
+    if cocotb.top._name != "frost":
+        return
     simulator = ctypes.CDLL(None)
     if os.environ.get("FROST_STARTUP_BASELINE") == "1" and not hasattr(
         simulator, "frost_sim_assertions_enable"
