@@ -413,6 +413,10 @@ module tomasulo_coherent_cut_test_harness #(
       .i_coh_inval_slot('0),
       .i_coh_release_valid(cut_release),
       .i_coh_release_slot('0),
+      // No vector unit in this harness: VS reads as Off and no vector
+      // configuration commits.
+      .i_mstatus_vs_off(1'b1),
+      .o_vcfg_commit(),
       .*
   );
   coherence_l1d #(
