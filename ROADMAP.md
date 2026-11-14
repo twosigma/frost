@@ -204,8 +204,8 @@ programs, the RISC-V architecture tests and riscv-tests, riscv-torture
 programs against Spike, TestRIG against the Sail model in four parallel CI
 jobs, and Debian on the X3. Every CI job that simulates the whole SoC draws
 its own DDR model latency, jitter, and completion order from a seed that a
-failing test's output names. CI merges the line coverage of those
-simulations, the toggle coverage of the unit benches, and the counts of
+failing test's output names. CI merges the line coverage of the
+simulations that contribute most to it, the toggle coverage of the unit benches, and the counts of
 cover points for microarchitectural corner cases, such as a DMA write to a
 line that an executed, unretired load has read, into one
 [report](tests/README.md#coverage) of what the tests reach. Local runs can
@@ -519,3 +519,7 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   cores also apply to FROST
 - Zbkx, Zknh, Zkne, Zknd, Zksh, and Zksed, together with Zbkb and Zbkc,
   complete the Zkn and Zks scalar cryptography suites.
+- The Integrated Matrix Extension (Zvvm), after the vector unit is
+  complete. Its matrix multiply-accumulate and tile load and store
+  instructions keep matrix tiles in the vector registers, so it would
+  reuse the vector unit's register file, multipliers and memory path.
