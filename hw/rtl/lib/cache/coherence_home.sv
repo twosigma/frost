@@ -1392,7 +1392,8 @@ module coherence_home #(
     // one LUT, and each image bit's next state takes the clear in its last.
     // The image holds through reset, at the flop.
     (* keep = "true" *)
-    wire image_clear_ready = run && array_response &&
+    wire image_clear_ready;
+    assign image_clear_ready = run && array_response &&
         fill_free_index == FillBits'(fill) && zero_fill;
     wire image_take = i_mem_resp_valid && i_mem_resp_id == 5'(fill);
     wire image_clear;

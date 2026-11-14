@@ -430,7 +430,8 @@ module reservation_station #(
   // stored ready bit is still clear. A dispatch repair bypass already supplies
   // the value and ready bit, so it needs no deferred capture.
   (* keep = "true" *)
-  wire dispatch_src1_cdb_defer_if_unready =
+  wire dispatch_src1_cdb_defer_if_unready;
+  assign dispatch_src1_cdb_defer_if_unready =
       ((i_cdb.valid && dispatch_src1_tag == i_cdb.tag) ||
        (i_cdb_2.valid && dispatch_src1_tag == i_cdb_2.tag)) &&
       !(DISPATCH_REPAIR_BYPASS && done_repair_match(
@@ -438,7 +439,8 @@ module reservation_station #(
   ));
   wire dispatch_src1_cdb_defer = !dispatch_src1_ready && dispatch_src1_cdb_defer_if_unready;
   (* keep = "true" *)
-  wire dispatch_src2_cdb_defer_if_unready =
+  wire dispatch_src2_cdb_defer_if_unready;
+  assign dispatch_src2_cdb_defer_if_unready =
       ((i_cdb.valid && dispatch_src2_tag == i_cdb.tag) ||
        (i_cdb_2.valid && dispatch_src2_tag == i_cdb_2.tag)) &&
       !(DISPATCH_REPAIR_BYPASS && done_repair_match(
@@ -446,7 +448,8 @@ module reservation_station #(
   ));
   wire dispatch_src2_cdb_defer = !dispatch_src2_ready && dispatch_src2_cdb_defer_if_unready;
   (* keep = "true" *)
-  wire dispatch_src3_cdb_defer_if_unready =
+  wire dispatch_src3_cdb_defer_if_unready;
+  assign dispatch_src3_cdb_defer_if_unready =
       ((i_cdb.valid && dispatch_src3_tag == i_cdb.tag) ||
        (i_cdb_2.valid && dispatch_src3_tag == i_cdb_2.tag)) &&
       !(DISPATCH_REPAIR_BYPASS && done_repair_match(
@@ -528,7 +531,8 @@ module reservation_station #(
 
   // Slot-2 deferred CDB capture.
   (* keep = "true" *)
-  wire dispatch_src1_cdb_defer_if_unready_2 =
+  wire dispatch_src1_cdb_defer_if_unready_2;
+  assign dispatch_src1_cdb_defer_if_unready_2 =
       ((i_cdb.valid && dispatch_src1_tag_2 == i_cdb.tag) ||
        (i_cdb_2.valid && dispatch_src1_tag_2 == i_cdb_2.tag)) &&
       !(DISPATCH_REPAIR_BYPASS && done_repair_match(
@@ -536,7 +540,8 @@ module reservation_station #(
   ));
   wire dispatch_src1_cdb_defer_2 = !dispatch_src1_ready_2 && dispatch_src1_cdb_defer_if_unready_2;
   (* keep = "true" *)
-  wire dispatch_src2_cdb_defer_if_unready_2 =
+  wire dispatch_src2_cdb_defer_if_unready_2;
+  assign dispatch_src2_cdb_defer_if_unready_2 =
       ((i_cdb.valid && dispatch_src2_tag_2 == i_cdb.tag) ||
        (i_cdb_2.valid && dispatch_src2_tag_2 == i_cdb_2.tag)) &&
       !(DISPATCH_REPAIR_BYPASS && done_repair_match(
@@ -544,7 +549,8 @@ module reservation_station #(
   ));
   wire dispatch_src2_cdb_defer_2 = !dispatch_src2_ready_2 && dispatch_src2_cdb_defer_if_unready_2;
   (* keep = "true" *)
-  wire dispatch_src3_cdb_defer_if_unready_2 =
+  wire dispatch_src3_cdb_defer_if_unready_2;
+  assign dispatch_src3_cdb_defer_if_unready_2 =
       ((i_cdb.valid && dispatch_src3_tag_2 == i_cdb.tag) ||
        (i_cdb_2.valid && dispatch_src3_tag_2 == i_cdb_2.tag)) &&
       !(DISPATCH_REPAIR_BYPASS && done_repair_match(
