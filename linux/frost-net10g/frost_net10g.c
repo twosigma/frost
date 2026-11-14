@@ -183,9 +183,12 @@
  * Each ring holds a power-of-two number of entries, so at most one fewer is posted (TAIL == HEAD is
  * empty). ethtool -G sets them from FROST_RING_MIN to FROST_RING_MAX (the NIC takes 4 to 65536).
  * The default RX depth absorbs bursts that arrive while the CPU is busy elsewhere; at 128 the NIC
- * dropped frames under load.
+ * dropped frames under load, and at 512 a slow-start burst on a 30 ms path starved the ring
+ * (retransmits at 215-230 Mb/s on eth0; 4096 entries with the full RX FIFO ran at 260 Mb/s with
+ * none). TX keeps 512.
  */
-#define FROST_RING_DEFAULT		512
+#define FROST_RX_RING_DEFAULT		4096
+#define FROST_TX_RING_DEFAULT		512
 #define FROST_RING_MIN			64
 #define FROST_RING_MAX			4096
 #define FROST_RING_BYTES(entries) \
@@ -195,7 +198,8 @@
 /*
  * RX ingress FIFO: 8-byte words. RX_FIFO_DEPTH reads the built depth (0 on hardware without the
  * limit register); RX_FIFO_LIMIT, which RESET returns to FROST_FIFO_LIMIT_DEFAULT, is the
- * occupancy at which the FIFO reports full to the MAC.
+ * occupancy at which the FIFO reports full to the MAC. The driver programs the built depth
+ * (64 KiB in the SoC), so the MAC's store-and-forward buffer absorbs a burst before the ring does.
  */
 #define FROST_FIFO_WORD_BYTES		8
 #define FROST_FIFO_LIMIT_MIN		8
@@ -1810,10 +1814,11 @@ static int frost_probe(struct platform_device *pdev)
 	priv->pause_abi = !!(readl(base + NET10G_ABI_CTRL) & NET10G_ABI_PAUSE_SUPPORTED);
 	priv->tx_desc_max = (readl(base + NET10G_ABI_CTRL) & NET10G_ABI_TX_LONG_SEGMENTS) ?
 			    FIELD_MAX(NET10G_DESC_LEN) : FROST_TX_DESC_MAX;
-	priv->rx_fifo_limit = min_t(u32, priv->rx_fifo_depth, FROST_FIFO_LIMIT_DEFAULT);
+	/* The whole built FIFO; hardware without the limit register keeps the reset value */
+	priv->rx_fifo_limit = priv->rx_fifo_depth ? priv->rx_fifo_depth : FROST_FIFO_LIMIT_DEFAULT;
 	priv->rx_copybreak = FROST_RX_COPYBREAK_DEFAULT;
-	priv->rx_entries = FROST_RING_DEFAULT;
-	priv->tx_entries = FROST_RING_DEFAULT;
+	priv->rx_entries = FROST_RX_RING_DEFAULT;
+	priv->tx_entries = FROST_TX_RING_DEFAULT;
 	spin_lock_init(&priv->ctrl_lock);
 	u64_stats_init(&priv->rx_syncp);
 	u64_stats_init(&priv->tx_syncp);

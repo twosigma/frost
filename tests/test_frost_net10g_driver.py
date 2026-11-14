@@ -219,7 +219,8 @@ def _ethtool_ops(source: str) -> str:
 def test_driver_sizes_the_rings_from_ethtool() -> None:
     """Both rings, the page pool and the buffer arrays follow per-device sizes."""
     source = DRIVER_SOURCE.read_text()
-    assert _define("FROST_RING_DEFAULT") == "512"
+    assert _define("FROST_RX_RING_DEFAULT") == "4096"
+    assert _define("FROST_TX_RING_DEFAULT") == "512"
     assert _define("FROST_RING_MIN") == "64"
     assert _define("FROST_RING_MAX") == "4096"
     # The fixed-size constants are gone
@@ -238,8 +239,8 @@ def test_driver_sizes_the_rings_from_ethtool() -> None:
     assert "readl(priv->base + NET10G_TX_SIZE) != ilog2(priv->tx_entries)" in source
     ops = _ethtool_ops(source)
     assert ".get_ringparam" in ops and ".set_ringparam" in ops
-    assert "priv->rx_entries = FROST_RING_DEFAULT;" in source
-    assert "priv->tx_entries = FROST_RING_DEFAULT;" in source
+    assert "priv->rx_entries = FROST_RX_RING_DEFAULT;" in source
+    assert "priv->tx_entries = FROST_TX_RING_DEFAULT;" in source
 
 
 def test_driver_ring_range_fits_the_nic_and_the_tx_queue_thresholds() -> None:
@@ -248,7 +249,12 @@ def test_driver_ring_range_fits_the_nic_and_the_tx_queue_thresholds() -> None:
     lo = int(_group(r"RingSizeLog2Min = (\d+);", pkg))
     hi = int(_group(r"RingSizeLog2Max = (\d+);", pkg))
     ring_min = int(_define("FROST_RING_MIN"))
-    for name in ("FROST_RING_MIN", "FROST_RING_MAX", "FROST_RING_DEFAULT"):
+    for name in (
+        "FROST_RING_MIN",
+        "FROST_RING_MAX",
+        "FROST_RX_RING_DEFAULT",
+        "FROST_TX_RING_DEFAULT",
+    ):
         size = int(_define(name))
         assert size & (size - 1) == 0, name
         assert (1 << lo) <= size <= (1 << hi), name
@@ -333,6 +339,22 @@ def test_driver_rx_fifo_limit_matches_the_nic_registers() -> None:
         r"RxFifoLimitDefault = (\d+);", pkg
     )
     assert _define("FROST_FIFO_WORD_BYTES") == "8"
+
+
+def test_driver_defaults_the_rx_fifo_to_the_built_depth_and_the_rx_ring_to_4096() -> (
+    None
+):
+    """Sync #18: the MAC FIFO limit starts at the built depth, not the 4 KiB reset value."""
+    source = DRIVER_SOURCE.read_text()
+    assert (
+        "priv->rx_fifo_limit = priv->rx_fifo_depth ? priv->rx_fifo_depth : "
+        "FROST_FIFO_LIMIT_DEFAULT;" in source
+    )
+    # The reset value stays the register default, so a write is skipped only when they agree
+    assert "priv->rx_fifo_limit == FROST_FIFO_LIMIT_DEFAULT" in source
+    # The RX default fits the ring range and exceeds the TX default
+    assert int(_define("FROST_RX_RING_DEFAULT")) <= int(_define("FROST_RING_MAX"))
+    assert int(_define("FROST_RX_RING_DEFAULT")) > int(_define("FROST_TX_RING_DEFAULT"))
 
 
 def test_driver_exposes_rx_fifo_bytes_as_a_devlink_runtime_parameter() -> None:
