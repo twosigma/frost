@@ -2932,3 +2932,196 @@ async def test_cbo_zero_survives_partial_flush_mid_block(dut: Any) -> None:
         f"Unexpected writes {[hex(w.addr) for w in writes]}"
     )
     assert dut_if.empty
+
+
+# ============================================================================
+# Zicbom: cbo.clean/flush/inval entries free without a write, in order
+# ============================================================================
+CMO_INVAL = 0
+CMO_CLEAN = 1
+CMO_FLUSH = 2
+
+
+async def alloc_cmo(
+    dut_if: SQInterface,
+    rob_tag: int,
+    address: int,
+    kind: int,
+    is_mmio: bool = False,
+    junk_data: int = MASK64,
+) -> None:
+    """Allocate a Zicbom entry and supply its rs1 address and src2 value.
+
+    MEM_RS sends a data update for every SQ entry; a Zicbom entry ignores it.
+    """
+    dut_if.drive_alloc(rob_tag, size=MEM_SIZE_BYTE, is_cmo=True, cmo_kind=kind)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.drive_addr_update(rob_tag, address, is_mmio=is_mmio)
+    dut_if.drive_data_update(rob_tag, junk_data)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.clear_data_update()
+
+
+@cocotb.test()
+async def test_cbo_mgmt_frees_without_write(dut: Any) -> None:
+    """Each Zicbom kind frees once committed, with no write on the bus.
+
+    In cached DDR, low BRAM and a device window alike, the entry frees on its
+    own; flush and inval pulse the block-wide L0 invalidation at rs1, clean
+    pulses nothing. An uncommitted entry never frees.
+    """
+    dut_if, _model = await setup(dut)
+
+    tag = 1
+    for address, is_mmio in (
+        (0x8000_0040 + 0x13, False),
+        (0x0000_1040 + 0x2F, False),
+        (0x4000_0010 + 0x05, True),
+    ):
+        for kind in (CMO_CLEAN, CMO_FLUSH, CMO_INVAL):
+            await alloc_cmo(dut_if, tag, address, kind, is_mmio=is_mmio)
+            for _ in range(6):
+                await dut_if.step()
+                assert not dut_if.read_mem_write().en, "An uncommitted CMO never writes"
+            assert dut_if.count == 1, "An uncommitted CMO stays live"
+            dut_if.drive_commit(tag)
+            await dut_if.step()
+            dut_if.clear_commit()
+            pulses: list[tuple[int, int]] = []
+            for _ in range(10):
+                await Timer(1, unit="ns")
+                assert not dut_if.read_mem_write().en, "A CMO never writes"
+                inv = dut_if.read_cache_invalidate()
+                if inv["valid"]:
+                    pulses.append(
+                        (inv["addr"], int(dut.o_cache_invalidate_block.value))
+                    )
+                await dut_if.step()
+            assert dut_if.empty, f"kind {kind} at 0x{address:x} must free"
+            if kind == CMO_CLEAN:
+                assert pulses == [], f"clean pulses no L0 invalidation: {pulses}"
+            else:
+                assert pulses == [(address, 1)], (
+                    f"kind {kind} pulses one block invalidation at rs1: {pulses}"
+                )
+            tag = (tag + 1) & MASK_TAG
+
+
+@cocotb.test()
+async def test_cbo_mgmt_orders_after_older_writes(dut: Any) -> None:
+    """A CMO frees only after older writes complete and no L1D store is pending.
+
+    A younger store writes only after the CMO frees.
+    """
+    dut_if, model = await setup(dut)
+
+    block = 0x8000_0200
+    await alloc_addr_data(
+        dut_if, model, rob_tag=1, address=block + 8, data=0x11, size=MEM_SIZE_DOUBLE
+    )
+    await alloc_cmo(dut_if, rob_tag=2, address=block + 0x21, kind=CMO_FLUSH)
+    await alloc_addr_data(
+        dut_if, model, rob_tag=3, address=block + 0x10, data=0x33, size=MEM_SIZE_DOUBLE
+    )
+    events: list[tuple[int, str]] = []
+    pending: list[int] = []
+    prev_count = dut_if.count
+    for cycle in range(120):
+        if cycle < 3:
+            dut_if.drive_commit(cycle + 1)
+        else:
+            dut_if.clear_commit()
+        await Timer(1, unit="ns")
+        # The L1D holds the older store's record for a while after its done.
+        dut.i_coherent_store_pending.value = 1 if 8 <= cycle < 20 else 0
+        if pending and pending[0] <= cycle:
+            pending.pop(0)
+            dut_if.drive_mem_write_done()
+        else:
+            dut_if.clear_mem_write_done()
+        write_req = dut_if.read_mem_write()
+        if write_req.en:
+            events.append((cycle, f"write 0x{write_req.addr:x}"))
+            pending.append(cycle + 6)
+        await dut_if.step()
+        count = dut_if.count
+        if count != prev_count:
+            events.append((cycle, f"count {count}"))
+            prev_count = count
+        if dut_if.empty and not pending:
+            break
+    dut_if.clear_mem_write_done()
+    dut.i_coherent_store_pending.value = 0
+    await dut_if.step()
+
+    names = [e[1] for e in events]
+    assert names == [
+        f"write 0x{block + 8:x}",
+        "count 2",
+        "count 1",
+        f"write 0x{block + 0x10:x}",
+        "count 0",
+    ], f"Unexpected order {events}"
+    cmo_free = next(c for c, n in events if n == "count 1")
+    assert cmo_free >= 20, f"The CMO waits for the pending L1D store record: {events}"
+
+
+@cocotb.test()
+async def test_cbo_mgmt_forwarding_waits_in_block(dut: Any) -> None:
+    """A younger load in a pending CMO's block matches without forwarding.
+
+    Loads outside the block, and older loads, see no conflict.
+    """
+    dut_if, _model = await setup(dut)
+
+    rs1 = 0x8000_0105
+    block = rs1 & ~(CBO_BLOCK - 1)
+    await alloc_cmo(dut_if, rob_tag=3, address=rs1, kind=CMO_CLEAN)
+    dut_if.drive_rob_head_tag(0)
+
+    for offset, size in (
+        (0, MEM_SIZE_BYTE),
+        (0x3C, MEM_SIZE_WORD),
+        (0x38, MEM_SIZE_DOUBLE),
+    ):
+        dut_if.drive_sq_check(addr=block + offset, rob_tag=6, size=size)
+        await dut_if.step()
+        fwd = dut_if.read_sq_forward()
+        assert fwd.match, f"Load at +0x{offset:x} must wait for the CMO"
+        assert not fwd.can_forward, "A CMO never forwards"
+        dut_if.clear_sq_check()
+
+    for addr in (block - 8, block + CBO_BLOCK):
+        dut_if.drive_sq_check(addr=addr, rob_tag=6, size=MEM_SIZE_DOUBLE)
+        await dut_if.step()
+        assert not dut_if.read_sq_forward().match, (
+            f"Load at 0x{addr:x} is outside the block"
+        )
+        dut_if.clear_sq_check()
+
+    dut_if.drive_sq_check(addr=block, rob_tag=2, size=MEM_SIZE_DOUBLE)
+    await dut_if.step()
+    assert not dut_if.read_sq_forward().match, "An older load ignores the CMO"
+    dut_if.clear_sq_check()
+
+
+@cocotb.test()
+async def test_cbo_mgmt_partial_flush_removes_uncommitted(dut: Any) -> None:
+    """A partial flush removes an uncommitted CMO and keeps a committed one."""
+    dut_if, _model = await setup(dut)
+
+    await alloc_cmo(dut_if, rob_tag=1, address=0x8000_0000, kind=CMO_INVAL)
+    await alloc_cmo(dut_if, rob_tag=4, address=0x8000_0040, kind=CMO_FLUSH)
+    dut_if.drive_rob_head_tag(1)
+    dut_if.drive_commit(1)
+    await dut_if.step()
+    dut_if.clear_commit()
+    dut_if.drive_partial_flush(flush_tag=2)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+    for _ in range(8):
+        await dut_if.step()
+        assert not dut_if.read_mem_write().en
+    assert dut_if.empty, "The committed CMO frees and the flushed one is gone"

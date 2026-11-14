@@ -537,7 +537,10 @@
     "Sv48": {"supported": false},
     "Sv57": {"supported": false},
     "Ssqosid": {"supported": false},
-    "Svpbmt": {"supported": false},
+    // menvcfg.PBMTE is writable. FROST's walker still faults PTE bits 62:61
+    // (Svpbmt commit 4 adds the PBMT walk), so a trace that sets PBMTE and
+    // then maps a PBMT page diverges until then.
+    "Svpbmt": {"supported": true},
     "Stateen": {"Smstateen": {"supported": false}, "Ssstateen": {"supported": false}}
   }
 }

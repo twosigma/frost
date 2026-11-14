@@ -16,12 +16,15 @@
 
 /*
   Combinational decoder for RV64GCB (Zba/Zbb/Zbs), Zicond, Zbc, Zbkb, Zbkc, Zicsr,
-  Zicboz, and M/S/U-mode privileged instructions. Compressed instructions arrive
+  Zicboz, Zicbom, and M/S/U-mode privileged instructions. Compressed instructions arrive
   already expanded. o_instr_op selects the operation; o_illegal flags any
   encoding not decoded here, including reserved FP rounding modes.
  */
 module instr_decoder (
     input  riscv_pkg::instr_t    i_instr,
+    // cbo.inval executes as cbo.flush (CBIE = 01 at a less privileged level,
+    // see csr_file), so it decodes as CBO_FLUSH.
+    input  logic                 i_cbo_inval_flush = 1'b0,
     output riscv_pkg::instr_op_e o_instr_op,
     output logic                 o_illegal
 );
@@ -321,12 +324,18 @@ module instr_decoder (
         else o_instr_op = riscv_pkg::FENCE;  // FENCE (memory ordering)
         3'b001: o_instr_op = riscv_pkg::FENCE_I;  // FENCE.I (instruction fetch ordering)
         // CBO.ZERO (Zicboz) is 0x0040A00F with any rs1: funct12 0x004, rd x0.
-        // The Zicbom encodings (cbo.clean/flush/inval) stay illegal.
+        // Zicbom: CBO.INVAL funct12 0x000, CBO.CLEAN 0x001, CBO.FLUSH 0x002,
+        // each with rd x0 and any rs1. Other funct12 values are illegal.
         3'b010:
-        if (i_instr.funct7 == 7'b0000000 && i_instr.source_reg_2 == 5'b00100 &&
-            i_instr.dest_reg == 5'b0)
-          o_instr_op = riscv_pkg::CBO_ZERO;
-        else o_illegal = 1'b1;
+        if (i_instr.funct7 != 7'b0000000 || i_instr.dest_reg != 5'b0) o_illegal = 1'b1;
+        else
+          unique case (i_instr.source_reg_2)
+            5'b00100: o_instr_op = riscv_pkg::CBO_ZERO;
+            5'b00000: o_instr_op = i_cbo_inval_flush ? riscv_pkg::CBO_FLUSH : riscv_pkg::CBO_INVAL;
+            5'b00001: o_instr_op = riscv_pkg::CBO_CLEAN;
+            5'b00010: o_instr_op = riscv_pkg::CBO_FLUSH;
+            default:  o_illegal = 1'b1;
+          endcase
         default: o_illegal = 1'b1;
       endcase
 

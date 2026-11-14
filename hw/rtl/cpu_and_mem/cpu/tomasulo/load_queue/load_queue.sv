@@ -748,13 +748,18 @@ module load_queue #(
   // Remember a committed store that overtook a delayed read. That old reply
   // can complete its load, but cannot replace the newer L0 bytes.
   logic fast_line_invalidated;
+  // A block invalidation (cached cbo.zero, cbo.flush, cbo.inval) covers the
+  // whole 64-byte block, as for the cached slots below.
   wire fast_line_invalidate_now = i_cache_invalidate_valid &&
-      i_cache_invalidate_addr[XLEN-1:3] == fast_addr[XLEN-1:3];
+      (i_cache_invalidate_addr[XLEN-1:6] == fast_addr[XLEN-1:6]) &&
+      (i_cache_invalidate_block || i_cache_invalidate_addr[5:3] == fast_addr[5:3]);
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) fast_line_invalidated <= 1'b0;
     else if (fast_capture)
       fast_line_invalidated <= i_cache_invalidate_valid &&
-          i_cache_invalidate_addr[XLEN-1:3] == launch_mem_issue_addr[XLEN-1:3];
+          (i_cache_invalidate_addr[XLEN-1:6] == launch_mem_issue_addr[XLEN-1:6]) &&
+          (i_cache_invalidate_block ||
+           i_cache_invalidate_addr[5:3] == launch_mem_issue_addr[5:3]);
     else if (mem_outstanding && fast_line_invalidate_now) fast_line_invalidated <= 1'b1;
   end
 

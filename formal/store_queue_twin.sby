@@ -56,7 +56,8 @@ hierarchy -top equiv
 select -set prim t:* a:from_prim %i
 select -set blk @prim %co*:-$equiv[Y] t:$equiv %i
 # A primitive folded to a constant leaves no cell to find, so fix a floor on the count.
-sq_twin: select -assert-min 25 @blk
+# o_cache_invalidate_valid ORs two registers (Zicbom's pulse), so it is no point.
+sq_twin: select -assert-min 24 @blk
 equiv_simple @blk
 equiv_status -assert @blk
 design -reset
