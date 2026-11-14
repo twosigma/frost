@@ -1108,6 +1108,12 @@ FORMAL_TARGETS = [
         tasks=("prove",),
     ),
     FormalTarget(
+        "sq_early_sq_copy.sby",
+        "The store queue's early-address copy equals the packet's field without translation "
+        "and the translation select with tomasulo_wrapper's final OR",
+        tasks=("prove",),
+    ),
+    FormalTarget(
         "served_window_coverage.sby",
         "Fetch-window coverage matches full-address comparisons for 32/64-bit "
         "addresses and portable/Xilinx implementations",

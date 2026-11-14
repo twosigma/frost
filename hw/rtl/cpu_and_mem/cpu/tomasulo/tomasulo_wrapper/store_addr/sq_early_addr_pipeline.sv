@@ -668,6 +668,27 @@ module sq_early_addr_pipeline (
     end
 `endif
   end
+`ifdef SQ_EARLY_SQ_COPY_PROOF
+  // The store queue's copies, for any register state: each equals the packet's
+  // field without translation and zero with it, and the store queue's packet as
+  // tomasulo_wrapper forms it (copy OR the MMU's, masked by translation) equals
+  // the translation select of the MMU's and the pipeline's packets.
+  (* anyseq *) logic [1:0][riscv_pkg::XLEN-1:0] f_mmu_pa;
+  (* anyseq *) logic [1:0] f_mmu_is_mmio;
+  for (genvar slot = 0; slot < 2; slot++) begin : gen_sq_copy_proof
+    wire riscv_pkg::sq_addr_update_t packet =
+        slot == 0 ? o_sq_early_addr_update : o_sq_early_addr_update_2;
+    always_comb begin
+      assert ({o_sq_early_sq_address[slot], o_sq_early_sq_is_mmio[slot]} ==
+          (i_translation_active ? '0 : {packet.address, packet.is_mmio}));
+      assert ((o_sq_early_sq_address[slot] |
+          (f_mmu_pa[slot] & {riscv_pkg::XLEN{i_translation_active}})) ==
+          (i_translation_active ? f_mmu_pa[slot] : packet.address));
+      assert ((o_sq_early_sq_is_mmio[slot] | (f_mmu_is_mmio[slot] & i_translation_active)) ==
+          (i_translation_active ? f_mmu_is_mmio[slot] : packet.is_mmio));
+    end
+  end
+`endif
   always_comb begin
     o_sq_early_addr_update = sq_early_addr_update;
     o_sq_early_addr_update.address = address_final[0];
