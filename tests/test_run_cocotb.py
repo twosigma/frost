@@ -2954,6 +2954,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Speculative fills, same-address load replay and attached LR reservation suppression across a coherent cut",
         verilator_extra_args=("--assert", "-GDIRECT_CACHE_READS=1", "-GCACHE_MISSES=8"),
     ),
+    "hitpath_probe_order": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_hitpath_probe_order",
+        hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
+        description="Same-address load order across an invalidating probe and the L1D hit path",
+        verilator_extra_args=("--assert", "-GDIRECT_CACHE_READS=1", "-GCACHE_MISSES=8"),
+    ),
     "coherent_cut_fabric": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_cut_fabric",
         hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
