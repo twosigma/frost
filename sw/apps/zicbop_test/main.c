@@ -198,7 +198,8 @@ int main(void)
         root[1] = PTE_PPN(0x80000000ul) | PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D;
     }
     __asm__ volatile("csrw satp, %0\n sfence.vma" : : "r"(SATP_SV39 | (PT_ROOT >> 12)) : "memory");
-    ok &= run_case("sv39-u-on-s-page", 0, (unsigned long) &g_ddr_word - 0x80000000ul + 0x40000000ul);
+    ok &=
+        run_case("sv39-u-on-s-page", 0, (unsigned long) &g_ddr_word - 0x80000000ul + 0x40000000ul);
     __asm__ volatile("csrw satp, zero\n sfence.vma" ::: "memory");
 
     uart_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
