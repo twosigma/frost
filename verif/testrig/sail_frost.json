@@ -477,9 +477,11 @@
     "Zabha": {"supported": false},
     "Zacas": {"supported": false},
     "Zama16b": {"supported": false},
-    // FROST retires wrs.nto and wrs.sto at once. Sail's nop form skips the
-    // mstatus.TW check, so wrs.nto waits (platform.max_time_to_wait) and then
-    // traps below M with TW set, as FROST does; wrs.sto never traps.
+    // FROST retires wrs.nto and wrs.sto at once and traps wrs.nto below M
+    // with TW set. Sail's nop form skips the mstatus.TW check. With it, Sail
+    // retires wrs.nto at once when no reservation is valid, and otherwise
+    // waits (platform.max_time_to_wait) and then traps below M with TW set,
+    // as FROST does; wrs.sto never traps.
     "Zawrs": {"supported": true, "nto": {"is_nop": false}, "sto": {"is_nop": true}},
     "Zfa": {"supported": false},
     "Zfbfmin": {"supported": false},

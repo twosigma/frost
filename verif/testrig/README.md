@@ -213,7 +213,7 @@ different implementation choice:
 | PMP | None |
 | LR/SC | 32-byte reservation set, cancelled by a store or AMO from the hart to it (FROST also cancels it on a trap; see [The A extension](#the-a-extension)) |
 | WFI | Completes at once |
-| Zawrs | `wrs.nto` and `wrs.sto` complete at once; `wrs.nto` below M with `mstatus.TW` set raises illegal-instruction (Sail first waits `platform.max_time_to_wait`) |
+| Zawrs | `wrs.nto` and `wrs.sto` complete at once; `wrs.nto` below M with `mstatus.TW` set raises illegal-instruction. Sail traps it only while a reservation is valid, after waiting `platform.max_time_to_wait`, and otherwise retires it |
 | Sail's CLINT | At 0x2B6D_93F1_0000, outside FROST's map at an address random sequences do not form; Sail requires one for Zicntr |
 
 The `--sscofpmf` replay compares `mideleg`'s full WARL mask and register and

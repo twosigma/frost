@@ -187,7 +187,7 @@ reports the extension and its 64-byte block through `riscv_hwprobe`, all from
 the `zicboz` entry and `riscv,cboz-block-size` in its own DTB. A kernel DTB that
 lists `zicboz` needs a flash DTB that lists it too: `cbo.zero` in supervisor
 mode requires `menvcfg.CBZE`. In the same way, OpenSBI sets `menvcfg.CBCFE`
-and `menvcfg.CBIE` to 11 when the flash DTB lists `zicbom`, which
+and sets `menvcfg.CBIE` to 11 when the flash DTB lists `zicbom`, which
 `cbo.clean`, `cbo.flush` and `cbo.inval` in supervisor mode require.
 
 The Linux build can compose the test initramfs with the driver modules and

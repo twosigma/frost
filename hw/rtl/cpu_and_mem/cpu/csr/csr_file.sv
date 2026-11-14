@@ -337,8 +337,8 @@ module csr_file #(
     output logic o_cbo_inval_illegal,
     output logic o_cbo_inval_flush,
 
-    // Zawrs: wrs.nto is illegal below M while mstatus.TW is set (it never
-    // stalls, so any bounded time limit has expired). id_stage decodes it as
+    // Zawrs: wrs.nto is illegal below M while mstatus.TW is set (FROST's
+    // bounded time limit is zero, as for WFI). id_stage decodes it as
     // illegal while set. Changes only on an mstatus write (a translation-class
     // CSR), a trap or an xRET, each followed by a full flush.
     output logic o_wrs_nto_illegal,
