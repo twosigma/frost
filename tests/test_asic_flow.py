@@ -306,16 +306,16 @@ def test_placement_watchdog_stops_at_openroads_iteration_limit() -> None:
 
 def test_run_logged_stops_a_command_the_watchdog_rejects(tmp_path: Path) -> None:
     """The command is terminated, and its output up to the end is still logged."""
+    # SIGTERM is blocked until the child waits for it: a handler that ran
+    # inside print()'s own flush would find stdout busy and fail to write.
     child = (
-        "import signal, sys, time\n"
-        "def stop(*a):\n"
-        "    sys.stdout.write('child shutdown line\\n' * 20000)\n"
-        "    sys.stdout.flush()\n"
-        "    sys.exit(0)\n"
-        "signal.signal(signal.SIGTERM, stop)\n"
+        "import signal, sys\n"
+        "signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})\n"
         "print('        0 |   0.9993 |  3.078199e+07 |   +0.00% |  1.95e-17 |', flush=True)\n"
         "print('      550 |   0.2604 |  1.177593e+09 |  +29.49% |  3.61e-07 |', flush=True)\n"
-        "time.sleep(600)\n"
+        "signal.sigwait({signal.SIGTERM})\n"
+        "sys.stdout.write('child shutdown line\\n' * 20000)\n"
+        "sys.stdout.flush()\n"
     )
     log = tmp_path / "orfs.log"
     status = orfs.run_logged(
