@@ -31,6 +31,8 @@ from typing import Any
 
 import pytest
 
+import ci_reuse
+
 # Path to the formal/ directory relative to the repository root
 FORMAL_DIR = "formal"
 
@@ -3857,6 +3859,21 @@ def timeout_log_tail(error: subprocess.TimeoutExpired) -> str:
     return "\n".join(output.splitlines()[-40:])
 
 
+def formal_reuse_key(root: Path, target: FormalTarget, task: str, tools_id: str) -> str:
+    """Return a task's reuse key, failing the test if it cannot be computed."""
+    test_id = f"{target.name}_{task}"
+    try:
+        registry = ci_reuse.FormalRegistry(root)
+        entry = registry.tasks.get(test_id)
+        if entry is None or entry.sby_file != target.sby_file:
+            raise ci_reuse.ReuseKeyError(f"{test_id} is not in the registry")
+        if registry.timeout(entry) != formal_task_timeout_s(target.name, task):
+            raise ci_reuse.ReuseKeyError(f"{test_id}: the key holds another timeout")
+        return ci_reuse.formal_task_key(root, test_id, tools_id, registry)
+    except ci_reuse.ReuseKeyError as error:
+        pytest.fail(f"Cannot compute the reuse key of {test_id}: {error}")
+
+
 def fatal_frame_completed(output: str) -> bool:
     """Require a complete frame-139 evaluation of fatal status."""
     # ABC's nonzero start-frame summary can report zero completed frames.
@@ -4192,10 +4209,67 @@ class TestFormalVerification:
             pytest.fail("sby (SymbiYosys) not installed - required for formal tests")
 
         runner = FormalRunner()
+        test_id = f"{target.name}_{task_name}"
+        # In CI, skip a task that passed before with the same key
+        # (tests/README.md, "Reusing formal and synthesis results").
+        reuse = ci_reuse.Reuse.from_env(runner.root_dir, "formal")
+        decision = None
+        key = ""
+        if reuse is not None:
+            key = formal_reuse_key(runner.root_dir, target, task_name, reuse.tools_id)
+            decision = reuse.decide(test_id, key)
+            if decision.action == "reuse":
+                assert decision.marker is not None
+                reuse.report(test_id, "reused", key, decision.marker)
+                origin = ci_reuse.describe_origin(decision.marker["origin"])
+                pytest.skip(f"Passed with the same key in {origin}")
 
         with capsys.disabled():
             print(f"\nRunning formal {task_name}: {target.description}...")
 
+        try:
+            summary = self.prove(runner, target, task_name, capsys)
+        except BaseException as error:
+            if reuse is not None and decision is not None:
+                if decision.marker is not None:
+                    # A canary, or a forced run, of a task with a marker.
+                    reuse.store.drop(test_id)
+                    reuse.report(test_id, "canary-failed", key)
+                    origin = ci_reuse.describe_origin(decision.marker["origin"])
+                    pytest.fail(
+                        f"CANARY: {test_id} had a pass marker for this exact key "
+                        f"from {origin} but did not pass now. The key misses an "
+                        "input of the task, or the tools are not what the key "
+                        f"says.\n{error}"
+                    )
+                reuse.report(test_id, "failed", key)
+            raise
+        if reuse is not None and decision is not None:
+            if (
+                formal_reuse_key(runner.root_dir, target, task_name, reuse.tools_id)
+                != key
+            ):
+                reuse.report(test_id, "failed", key)
+                pytest.fail(f"The inputs of {test_id} changed while it ran")
+            if summary != "PASS":
+                # The test passes as before, but only a PASS summary earns a
+                # marker, and an earlier marker for this key no longer stands.
+                reuse.store.drop(test_id)
+                reuse.report(test_id, "proved-without-marker", key)
+                return
+            reuse.store.record_pass(test_id, key, ci_reuse.environment_origin())
+            status = "canary" if decision.action == "canary" else "proved"
+            reuse.report(test_id, status, key)
+
+    @staticmethod
+    def prove(
+        runner: FormalRunner, target: FormalTarget, task_name: str, capsys: Any
+    ) -> str:
+        """Run one task, fail the test unless it passes, and return its status.
+
+        The status is PASS when SymbiYosys's last summary line is
+        "DONE (PASS, rc=0)" and it exits with 0, and UNKNOWN otherwise.
+        """
         try:
             result = runner.run_formal(target, task_name, capture_output=True)
             has_error, error_lines = runner.check_for_errors(result)
@@ -4219,6 +4293,11 @@ class TestFormalVerification:
                     + "\n".join(error_lines)
                 )
                 pytest.fail(error_msg)
+            output = (result.stdout or "") + (result.stderr or "")
+            done = [line for line in output.splitlines() if "DONE (" in line]
+            if result.returncode == 0 and done and "DONE (PASS, rc=0)" in done[-1]:
+                return "PASS"
+            return "UNKNOWN"
 
         except subprocess.TimeoutExpired as error:
             pytest.fail(
