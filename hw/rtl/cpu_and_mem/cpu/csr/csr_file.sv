@@ -337,6 +337,12 @@ module csr_file #(
     output logic o_cbo_inval_illegal,
     output logic o_cbo_inval_flush,
 
+    // Zawrs: wrs.nto is illegal below M while mstatus.TW is set (FROST's
+    // bounded time limit is zero, as for WFI). id_stage decodes it as
+    // illegal while set. Changes only on an mstatus write (a translation-class
+    // CSR), a trap or an xRET, each followed by a full flush.
+    output logic o_wrs_nto_illegal,
+
     // Debug Mode state for allocation legality, trap routing, halt reporting,
     // and single stepping. Changes require a flushing trap/DRET or a
     // head-serialized CSR write.
@@ -683,6 +689,7 @@ module csr_file #(
       (gate_priv_is_s && (menvcfg_cbie != riscv_pkg::EnvcfgCbieInval)) ||
       (gate_priv_is_u && ((menvcfg_cbie != riscv_pkg::EnvcfgCbieInval) ||
                           (senvcfg_cbie != riscv_pkg::EnvcfgCbieInval)));
+  assign o_wrs_nto_illegal = (gate_priv_is_s || gate_priv_is_u) && mstatus_tw;
   logic [XLEN-1:0] sscratch;
   logic [XLEN-1:0] sepc;  // bit 0 forced 0, like mepc
   logic [XLEN-1:0] scause;
@@ -2941,6 +2948,10 @@ module csr_file #(
       p_cbie_warl :
       assert (menvcfg[5:4] != 2'b10 && senvcfg[5:4] != 2'b10 &&
               !(CBO_INVAL_AS_FLUSH && (menvcfg[5:4] == 2'b11 || senvcfg[5:4] == 2'b11)));
+      // wrs.nto legality: M always; S and U only with mstatus.TW clear.
+      p_wrs_nto_gate_export :
+      assert (o_wrs_nto_illegal == ((priv_q != riscv_pkg::PrivM) &&
+                                    mstatus[riscv_pkg::MstatusTwBit]));
 
       // mtvec MODE: bit 1 always 0, bit 0 can be 0 (Direct) or 1 (Vectored).
       p_mtvec_aligned : assert (mtvec[1] == 1'b0);

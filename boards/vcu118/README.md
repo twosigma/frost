@@ -186,7 +186,9 @@ then zeroes pages with `cbo.zero`, sets `senvcfg.CBZE` for user space and
 reports the extension and its 64-byte block through `riscv_hwprobe`, all from
 the `zicboz` entry and `riscv,cboz-block-size` in its own DTB. A kernel DTB that
 lists `zicboz` needs a flash DTB that lists it too: `cbo.zero` in supervisor
-mode requires `menvcfg.CBZE`.
+mode requires `menvcfg.CBZE`. In the same way, OpenSBI sets `menvcfg.CBCFE`
+and sets `menvcfg.CBIE` to 11 when the flash DTB lists `zicbom`; without them
+`cbo.clean`, `cbo.flush` and `cbo.inval` are illegal in supervisor mode.
 
 The Linux build can compose the test initramfs with the driver modules and
 startup scripts for its pinned Debian kernel, then wrap it as `rootfs.uimg`:

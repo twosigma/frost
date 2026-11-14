@@ -267,6 +267,7 @@ module perf_csr_half_test_harness #(
         .o_cbo_cf_illegal(),
         .o_cbo_inval_illegal(),
         .o_cbo_inval_flush(),
+        .o_wrs_nto_illegal(),
         .o_debug_mode(),
         .o_dcsr_step(),
         .o_dcsr_ebreak(),

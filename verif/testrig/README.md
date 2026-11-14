@@ -200,7 +200,7 @@ different implementation choice:
 
 | Setting | FROST |
 |---------|-------|
-| Extensions | RV64IMAFDC, B, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zicntr, Zicboz, Zicbom, S, U, Sv39, Svade, Svvptc, Sstc; Sscofpmf is enabled in the dedicated replay; `misa` read-only |
+| Extensions | RV64IMAFDC, B, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zicntr, Zicboz, Zicbom, Zicbop, Zawrs, S, U, Sv39, Svade, Svvptc, Sstc; Sscofpmf is enabled in the dedicated replay; `misa` read-only |
 | Memory regions | The PMA map: low BRAM, MMIO, APLIC, IMSIC, the rest of the device quadrant (stores only), and configurable DDR (1 GiB default), the only region page-table walks read |
 | Physical addresses | 64 bits wide, so an untranslated access beyond the memory map faults with its full address in `mtval` |
 | Misaligned accesses | Address-misaligned trap, after the PMA check |
@@ -213,6 +213,7 @@ different implementation choice:
 | PMP | None |
 | LR/SC | 32-byte reservation set, cancelled by a store or AMO from the hart to it (FROST also cancels it on a trap; see [The A extension](#the-a-extension)) |
 | WFI | Completes at once |
+| Zawrs | `wrs.nto` and `wrs.sto` complete at once; `wrs.nto` below M with `mstatus.TW` set raises illegal-instruction. Sail traps it only while a reservation is valid, after waiting `platform.max_time_to_wait`, and otherwise retires it |
 | Sail's CLINT | At 0x2B6D_93F1_0000, outside FROST's map at an address random sequences do not form; Sail requires one for Zicntr |
 
 The `--sscofpmf` replay compares `mideleg`'s full WARL mask and register and
