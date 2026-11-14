@@ -2065,6 +2065,7 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "ddr_smc_test",
         "ddr_test",
         "dma_torture",
+        "fencei_jit_bench",
         "freertos_demo",
         "fpu_assembly_test",
         "fpu_test",
