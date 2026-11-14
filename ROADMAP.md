@@ -21,10 +21,11 @@ pieces come before the second hart:
   unit's datapath blocks with their unit benches. The core executes
   `vsetvli`, `vsetivli` and `vsetvl`, and the X3 build includes the unit; the
   other vector instructions are not executed yet.
-- Misaligned loads and stores in hardware. FROST raises an
-  address-misaligned exception on them today and leaves the access to
-  firmware. The engine that will perform them is in place with its proofs
-  and is not connected to the core yet.
+- Misaligned loads and stores in hardware. The CPU's misaligned-access
+  engine performs them in cached DDR behind the `MISALIGNED_HW` build
+  parameter, which is off by default; the builds and the test configuration
+  turn it on next. Until then FROST raises an address-misaligned exception
+  and leaves the access to firmware.
 
 ## SMP
 

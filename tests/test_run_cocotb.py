@@ -811,6 +811,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         )
         for bits in range(31, 37)
     },
+    "misaligned_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="misaligned_test",
+        nic_mac_clocks=False,
+        description=(
+            "Misaligned loads and stores of every size and form across a doubleword, "
+            "sector, line and page in cached DDR, under timer interrupts, and the "
+            "exception low BRAM keeps"
+        ),
+        verilator_extra_args=("-GMISALIGNED_HW=1",),
+    ),
     "fs_off_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
