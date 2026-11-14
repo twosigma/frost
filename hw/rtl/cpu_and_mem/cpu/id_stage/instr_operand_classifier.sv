@@ -167,8 +167,11 @@ module instr_operand_classifier (
           raw_class.is_fence_i = 1'b1;
           raw_class.is_sfence_vma = 1'b1;
         end else if ({i_instr.funct7, i_instr.source_reg_2} != 12'h000 &&
-                     {i_instr.funct7, i_instr.source_reg_2} != 12'h001) begin
-          raw_class.rs_type = riscv_pkg::RS_NONE;  // Legal xRET / WFI.
+                     {i_instr.funct7, i_instr.source_reg_2} != 12'h001 &&
+                     {i_instr.funct7, i_instr.source_reg_2[3:0]} != 11'b0000000_1101) begin
+          // Legal xRET / WFI. ECALL, EBREAK and Zawrs WRS.NTO/WRS.STO (both
+          // PAUSE) keep the INT_RS class.
+          raw_class.rs_type = riscv_pkg::RS_NONE;
         end
       end
       // Vector configuration (funct3 111): rd, AVL in rs1 (not vsetivli),

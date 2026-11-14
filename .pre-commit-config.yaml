@@ -165,6 +165,7 @@ repos:
             sw/apps/sum_toggle_test/main\.c|
             sw/apps/sscofpmf_test/main\.c|
             sw/apps/cbo_zero_(test|bench|pages)/main\.c|
+            sw/apps/(zicbop_test|zawrs_test|zihpm_test)/main\.c|
             sw/apps/nic_(rate|sg_loopback)/main\.c|
             sw/apps/l2_capacity_chase/main\.c|
             sw/apps/(bootrom/bootrom|fsbl/fsbl)\.c|
@@ -197,7 +198,7 @@ repos:
       - id: insert-license
         name: insert-license (Tcl/Makefile/Shell)
         files: (\.tcl$|Makefile$|\.mk$|\.sh$)
-        exclude: ^(linux/frost-(net10g|memerr)/|sw/apps/pa_(width|vm_fetch|dma|nic_mmio|nic_packet)_test/Makefile$|sw/apps/sum_toggle_test/Makefile$|sw/apps/nic_(rate|sg_loopback)/Makefile$|sw/apps/l2_capacity_chase/Makefile$|sw/apps/(fencei_bench|smc_predict_test|smc_stale_test|smc_torture|sscofpmf_test|cbo_zero_test|cbo_zero_bench|cbo_zero_pages)/Makefile$|sw/apps/(bootrom|fsbl)/Makefile$|sw/uboot/Makefile$)
+        exclude: ^(linux/frost-(net10g|memerr)/|sw/apps/pa_(width|vm_fetch|dma|nic_mmio|nic_packet)_test/Makefile$|sw/apps/sum_toggle_test/Makefile$|sw/apps/nic_(rate|sg_loopback)/Makefile$|sw/apps/l2_capacity_chase/Makefile$|sw/apps/(fencei_bench|smc_predict_test|smc_stale_test|smc_torture|sscofpmf_test|cbo_zero_test|cbo_zero_bench|cbo_zero_pages)/Makefile$|sw/apps/(zicbop_test|zawrs_test|zihpm_test)/Makefile$|sw/apps/(bootrom|fsbl)/Makefile$|sw/uboot/Makefile$)
         args:
           - --license-filepath=.license-header.txt
           - --comment-style=#

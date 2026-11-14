@@ -342,10 +342,26 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
         "svade",
         "svvptc",
         "zicntr",
+        "zihpm",
+        "zawrs",
+        "zicbop",
         "zicboz",
+        "zicbom",
+        "zic64b",
+        "ziccif",
+        "ziccrse",
+        "ziccamoa",
+        "zicclsm",
+        "za64rs",
+        "zkt",
+        "ssccptr",
+        "sstvecd",
+        "sscounterenw",
     ):
         assert f'"{ext}"' in dts and f"_{ext}" in packer.ISA_STRING
+    assert "riscv,cbom-block-size = <64>;" in dts
     assert "riscv,cboz-block-size = <64>;" in dts
+    assert "riscv,cbop-block-size = <64>;" in dts
     assert "bootargs" not in dts and "initrd" not in dts
     # The SBI-v3 EVENT_GET_INFO probe only reports events present in OpenSBI's
     # hw_event_map, which comes from this node; without it perf_event_open, which
@@ -397,8 +413,15 @@ def test_vcu118_device_tree_isa_matches_the_boot_packer() -> None:
     isa = re.search(r'riscv,isa = "([^"]+)";', dts)
     extensions = re.search(r"riscv,isa-extensions = (.*?);", dts, re.S)
     block = re.search(r"riscv,cboz-block-size = <(\d+)>;", dts)
+    prefetch_block = re.search(r"riscv,cbop-block-size = <(\d+)>;", dts)
+    management_block = re.search(r"riscv,cbom-block-size = <(\d+)>;", dts)
     assert base is not None and isa is not None
     assert extensions is not None and block is not None
+    assert prefetch_block is not None and management_block is not None
+    assert (
+        int(management_block[1]) == packer.CBOM_BLOCK_BYTES == packer.CBOZ_BLOCK_BYTES
+    )
+    assert int(prefetch_block[1]) == packer.CBOP_BLOCK_BYTES == packer.CBOZ_BLOCK_BYTES
     assert base[1] == packer.ISA_BASE
     assert isa[1] == packer.ISA_STRING
     assert tuple(re.findall(r'"([^"]+)"', extensions[1])) == packer.ISA_EXTENSIONS

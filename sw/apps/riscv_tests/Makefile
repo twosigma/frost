@@ -26,7 +26,7 @@ TEST_SRC ?=
 # EXTRA_INCLUDES to put the suite's test macros ahead of the scalar ones, and
 # passes the suite's compiler options in TEST_CFLAGS (ENV=p only).
 include ../../common/arch.mk
-ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zicboz_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause
+ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zihpm_zifencei_zicbop_zicboz_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause_zawrs
 ABI  = $(FROST_INT_ABI)
 # RV64 medlow sign-extends lui, so it cannot address the DDR image at
 # 0x8xxx_xxxx. Use medany to avoid truncated relocations.

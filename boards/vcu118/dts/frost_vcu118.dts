@@ -31,13 +31,20 @@
 			compatible = "riscv";
 			mmu-type = "riscv,sv39";
 			riscv,isa-base = "rv64i";
-			riscv,isa = "rv64imafdc_zicsr_zifencei_zicntr_zicboz_zba_zbb_zbc_zbs_zbkb_zbkc_zicond_zihintpause_smaia_ssaia_sscofpmf_sstc_svade_svvptc";
+			riscv,isa = "rv64imafdc_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintpause_zihpm_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_sstc_sstvecd_svade_svvptc";
 			riscv,isa-extensions = "i", "m", "a", "f", "d", "c",
-				"zicsr", "zifencei", "zicntr", "zicboz", "zba", "zbb",
-				"zbc", "zbs", "zbkb", "zbkc", "zicond", "zihintpause",
-				"smaia", "ssaia", "sscofpmf", "sstc", "svade", "svvptc";
+				"zic64b", "zicbom", "zicbop", "zicboz", "ziccamoa", "ziccif",
+				"zicclsm", "ziccrse", "zicntr", "zicond", "zicsr", "zifencei",
+				"zihintpause", "zihpm", "za64rs", "zawrs", "zba", "zbb",
+				"zbc", "zbkb", "zbkc", "zbs", "zkt", "smaia",
+				"ssaia", "ssccptr", "sscofpmf", "sscounterenw", "sstc", "sstvecd",
+				"svade", "svvptc";
+			/* cbo.clean/flush/inval act on one 64-byte L2 line; every bus master is coherent. */
+			riscv,cbom-block-size = <64>;
 			/* cbo.zero zeroes one 64-byte L2 line. */
 			riscv,cboz-block-size = <64>;
+			/* Prefetch hints name 64-byte blocks (they execute as no-ops). */
+			riscv,cbop-block-size = <64>;
 
 			cpu0_intc: interrupt-controller {
 				#interrupt-cells = <0x01>;
