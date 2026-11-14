@@ -64,9 +64,9 @@ sets `mcounteren` to all ones (0x7FF after WARL), `scounteren=0x2`, and
 access to `time` only.
 Plain misaligned loads and stores to cached DDR complete in hardware, with no
 trap, in builds with the misaligned-access engine (`MISALIGNED_HW`, on in the
-X3 and VCU118 builds and in simulation). Elsewhere, and for LR, SC and AMOs,
-they raise the address-misaligned exception, and OpenSBI emulates them in
-M-mode until the kernel requests their delegation through FWFT.
+X3 build and in simulation). Elsewhere, and for LR, SC and AMOs, they raise
+the address-misaligned exception, and OpenSBI emulates them in M-mode until
+the kernel requests their delegation through FWFT.
 
 ## Memory map
 

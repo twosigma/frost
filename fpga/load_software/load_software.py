@@ -108,9 +108,11 @@ VALID_APPS = [
     "vm_test",
 ]
 
-# vec_vsetvl_test needs the vector unit, which only the X3 build has.
+# vec_vsetvl_test needs the vector unit and misaligned_test the misaligned-access
+# engine (MISALIGNED_HW), which only the X3 build has.
 BOARD_SPECIFIC_APPS = {
     "bootrom": frozenset({"vcu118"}),
+    "misaligned_test": frozenset({"x3"}),
     "vec_vsetvl_test": frozenset({"x3"}),
 }
 

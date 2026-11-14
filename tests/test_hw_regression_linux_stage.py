@@ -2077,7 +2077,7 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "lq_stale_slot_probe",
         "memerr_readback",
         "memory_test",
-        "misaligned_test",
+        *(["misaligned_test"] if board == "x3" else []),
         "nic_loopback",
         "opensbi_smoke",
         "packet_parser",

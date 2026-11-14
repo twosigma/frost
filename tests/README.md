@@ -940,7 +940,7 @@ has a 20-minute timeout in both SBY and the runner.
 | `FROST_ASYNC_CPU_CLOCK` | `1` enables the independent CPU boundary in Yosys synthesis tests |
 | `FROST_NIC_MAC_CLOCKS` | For the whole-SoC program and TestRIG benches, overrides the registry or runner default: `0` holds both NIC MAC clocks and their clock-OK inputs low with an access guard; `1` starts the clocks. The ISA, torture, and TestRIG runners default to `0` |
 | `MEMORY_LINK_STAGES` | Register stages between the hart and the cluster memory in `frost` builds (default 0). The `*_link1` registry entries run the memory-system programs with one stage |
-| `MISALIGNED_HW` | Builds `frost` with the misaligned-access engine, as the board builds have it: plain misaligned loads and stores to cached DDR are performed in hardware (default 1, and 0 when `ENABLE_CACHED_TIER=0`). The registry entries that disable the cached tier also set it to 0 |
+| `MISALIGNED_HW` | Builds `frost` with the misaligned-access engine, as the X3 has it: plain misaligned loads and stores to cached DDR are performed in hardware (default 1, and 0 when `ENABLE_CACHED_TIER=0`). The registry entries that disable the cached tier also set it to 0 |
 | `SIM_FAST_MAINT` | Clears coherent-array tags, coherence states and replacement bits in one simulation cycle and enables fast L1I invalidation (default 1). Data RAM is not cleared. Hardware uses 0. Coherent fences leave dirty L1D data available to home probes. The Physical address aperture (1 GiB / Bare access) CI job uses 0 with randomized start values to cover the real reset sweep |
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to
