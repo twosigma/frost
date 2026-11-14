@@ -1078,14 +1078,16 @@ module dispatch #(
       assert (!(slot2_can_fire && uses_fp_rs3_flag_2))
       else $error("dispatch: slot 2 fired with an FP source 3");
   end
-  // Predecode never pairs a vector instruction as slot 2 (OP-V is in its
-  // slot-1-only class), so a vector-config op never fires there.
+  // Predecode never pairs a vector instruction as slot 2 (OP-V and the
+  // vector loads and stores are in its slot-1-only class), so a vector-config
+  // op or a vector load or store never fires there.
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n)
       assert (!(slot2_can_fire &&
                 ((op_2 == riscv_pkg::VSETVLI) || (op_2 == riscv_pkg::VSETIVLI) ||
-                 (op_2 == riscv_pkg::VSETVL))))
-      else $error("dispatch: a vector-config instruction fired in slot 2");
+                 (op_2 == riscv_pkg::VSETVL) || (op_2 == riscv_pkg::VLOAD) ||
+                 (op_2 == riscv_pkg::VSTORE))))
+      else $error("dispatch: a vector-config, load or store instruction fired in slot 2");
   end
 `endif
 
@@ -1376,10 +1378,13 @@ module dispatch #(
     o_rob_alloc_req.is_vcfg = (op == riscv_pkg::VSETVLI) || (op == riscv_pkg::VSETIVLI) ||
         (op == riscv_pkg::VSETVL);
     o_rob_alloc_req.is_varith = (op == riscv_pkg::VARITH) || (op == riscv_pkg::VARITH_X);
-    // A vector-to-scalar op (VTOX) is illegal only under vill.
+    // A vector-to-scalar op (VTOX) is illegal only under vill. The vector
+    // unit does not execute loads and stores (VLOAD, VSTORE) yet: they raise
+    // illegal-instruction when they reach the head.
     o_rob_alloc_req.vec_illegal = (o_rob_alloc_req.is_varith && riscv_pkg::vector_arith_illegal(
                                    i_vtype_spec, 32'(i_from_id_to_ex.instruction))) ||
-        ((op == riscv_pkg::VTOX) && i_vtype_spec[8]);
+        ((op == riscv_pkg::VTOX) && i_vtype_spec[8]) || (op == riscv_pkg::VLOAD) ||
+        (op == riscv_pkg::VSTORE);
     // Sstvala: raw instruction bits, the illegal-instruction xtval.
     o_rob_alloc_req.insn_bits = i_from_id_to_ex.insn_bits;
 

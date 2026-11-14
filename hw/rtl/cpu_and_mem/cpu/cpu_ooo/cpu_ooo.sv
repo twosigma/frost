@@ -1085,6 +1085,14 @@ module cpu_ooo #(
   logic vec_commit_hold;
   logic vec_idle;
   riscv_pkg::fu_complete_t vec_vtox_complete;  // CDB slot 6
+  // The vector memory table as the load and store queues see it, and its
+  // registered "no live retired entry" (rule V-O4: FENCE, FENCE.I,
+  // SFENCE.VMA, SC and the misaligned-access engine wait for it).
+  riscv_pkg::vmt_view_t vec_vmt_view;
+  logic vec_vmem_quiet;
+  // Every vector memory table entry is live (registered): a vector load or
+  // store waits at dispatch.
+  logic vec_vmt_full;
   // Register FS-Off for decode timing. It differs from CSR state only when
   // FS enters or leaves Off, whose full flush discards that cycle's decode.
   logic id_mstatus_fs_off_q;
@@ -1249,6 +1257,7 @@ module cpu_ooo #(
         c.is_real = d.is_real;
         c.is_varith = (d.instruction.opcode == riscv_pkg::OPC_OP_V) &&
             (d.instruction.funct3 != 3'b111);
+        c.is_vmem = riscv_pkg::is_vector_mem(d.instruction.opcode, d.instruction.funct3);
         id_ctrl_of = c;
       endfunction
       assign producer_ctrl_next_go = id_ctrl_of(decoded_packet_next_go);
@@ -1303,6 +1312,8 @@ module cpu_ooo #(
         producer_ctrl.is_real = decoded_packet.is_real;
         producer_ctrl.is_varith = (decoded_packet.instruction.opcode == riscv_pkg::OPC_OP_V) &&
             (decoded_packet.instruction.funct3 != 3'b111);
+        producer_ctrl.is_vmem = riscv_pkg::is_vector_mem(decoded_packet.instruction.opcode,
+                                                         decoded_packet.instruction.funct3);
         producer_ctrl_2.is_load_instruction = decoded_packet_2.is_load_instruction;
         producer_ctrl_2.is_load_unsigned = decoded_packet_2.is_load_unsigned;
         producer_ctrl_2.instruction_operation = decoded_packet_2.instruction_operation;
@@ -1347,6 +1358,8 @@ module cpu_ooo #(
         producer_ctrl_2.is_real = decoded_packet_2.is_real;
         producer_ctrl_2.is_varith = (decoded_packet_2.instruction.opcode == riscv_pkg::OPC_OP_V) &&
             (decoded_packet_2.instruction.funct3 != 3'b111);
+        producer_ctrl_2.is_vmem = riscv_pkg::is_vector_mem(decoded_packet_2.instruction.opcode,
+                                                           decoded_packet_2.instruction.funct3);
         producer_ctrl_next.is_load_instruction = decoded_packet_next.is_load_instruction;
         producer_ctrl_next.is_load_unsigned = decoded_packet_next.is_load_unsigned;
         producer_ctrl_next.instruction_operation = decoded_packet_next.instruction_operation;
@@ -1393,6 +1406,8 @@ module cpu_ooo #(
         producer_ctrl_next.is_varith =
             (decoded_packet_next.instruction.opcode == riscv_pkg::OPC_OP_V) &&
             (decoded_packet_next.instruction.funct3 != 3'b111);
+        producer_ctrl_next.is_vmem = riscv_pkg::is_vector_mem(
+            decoded_packet_next.instruction.opcode, decoded_packet_next.instruction.funct3);
         producer_ctrl_next_2.is_load_instruction = decoded_packet_next_2.is_load_instruction;
         producer_ctrl_next_2.is_load_unsigned = decoded_packet_next_2.is_load_unsigned;
         producer_ctrl_next_2.instruction_operation = decoded_packet_next_2.instruction_operation;
@@ -1439,6 +1454,8 @@ module cpu_ooo #(
         producer_ctrl_next_2.is_varith =
             (decoded_packet_next_2.instruction.opcode == riscv_pkg::OPC_OP_V) &&
             (decoded_packet_next_2.instruction.funct3 != 3'b111);
+        producer_ctrl_next_2.is_vmem = riscv_pkg::is_vector_mem(
+            decoded_packet_next_2.instruction.opcode, decoded_packet_next_2.instruction.funct3);
       end
       // An unpredicted JALR in either slot. While it is queued it counts as
       // pending for the control-flow serialization stall.
@@ -1647,10 +1664,11 @@ module cpu_ooo #(
         from_id_to_ex_2.uses_fp_rs3 = queue_ctrl_2.uses_fp_rs3;
         from_id_to_ex_2.is_real = queue_ctrl_2.is_real;
       end
-      // Vector arithmetic also waits while the vtype at dispatch is unknown.
+      // Vector arithmetic also waits while the vtype at dispatch is unknown,
+      // and a vector load or store while the vector memory table is full.
       assign id_valid_preflush = queue_valid &&
           !(csr_in_flight || csr_wb_pending || serializing_alloc_fire) &&
-          !(queue_ctrl.is_varith && !vec_vtype_valid);
+          !(queue_ctrl.is_varith && !vec_vtype_valid) && !(queue_ctrl.is_vmem && vec_vmt_full);
       assign id_valid_2_preflush = id_valid_preflush && from_id_to_ex_2.is_real;
       assign id_valid = id_valid_preflush && !dispatch_flush;
       assign id_valid_2 = id_valid_2_preflush && !dispatch_flush;
@@ -2407,6 +2425,8 @@ module cpu_ooo #(
       .o_commit(rob_commit),
       .o_vcfg_commit(vcfg_commit),
       .o_vcfg_in_flight(vec_vcfg_in_flight),
+      .i_vmt(vec_vmt_view),
+      .i_vmem_quiet(vec_vmem_quiet),
       .o_commit_comb(rob_commit_comb),
       .o_commit_valid_raw(rob_commit_valid_raw),
       .o_commit_misprediction_raw(rob_commit_misprediction_raw),
@@ -4212,7 +4232,7 @@ module cpu_ooo #(
         .i_rd(rob_head_dest_reg),
         .i_rd_valid(rob_head_dest_valid),
         .i_rs2(rob_head_mem_rs2),
-        .i_older_vector_mem_done(1'b1),
+        .i_older_vector_mem_done(vec_vmem_quiet),
         .i_translate(csr_translation_active),
         .i_eff_priv_u(csr_mmu_eff_priv_u),
         .i_sum(csr_mmu_sum),
@@ -5012,7 +5032,39 @@ module cpu_ooo #(
         .o_commit_hold(vec_commit_hold),
         .o_idle(vec_idle)
     );
+    // A vector load or store takes an entry when it dispatches (slot 1 only)
+    // and retires on the edge the ROB head passes it. There is no memory unit
+    // yet: the range and completion ports are idle, so an entry is freed only
+    // by the flush that follows its illegal-instruction trap or that removes
+    // it from a wrong path.
+    vec_vmt u_vmt (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_alloc_valid (vec_alloc && ((from_id_to_ex.instruction_operation == riscv_pkg::VLOAD) ||
+                                      (from_id_to_ex.instruction_operation == riscv_pkg::VSTORE))),
+        .i_alloc_tag(rob_alloc_resp.alloc_tag),
+        .o_full(vec_vmt_full),
+        .o_alloc_idx(),
+        .i_commit_valid(rob_commit_comb.valid),
+        .i_commit_tag(rob_commit_comb.tag),
+        .i_flush_all(flush_all),
+        .i_flush_en(flush_en),
+        .i_flush_tag(flush_tag),
+        .i_head_tag(head_tag),
+        .i_range_valid(1'b0),
+        .i_range_idx('0),
+        .i_range_seg0('0),
+        .i_range_seg1('0),
+        .i_done_valid(1'b0),
+        .i_done_idx('0),
+        .o_view(vec_vmt_view),
+        .o_gen(),
+        .o_quiet_q(vec_vmem_quiet)
+    );
   end else begin : gen_no_vector_unit
+    assign vec_vmt_view = '0;
+    assign vec_vmem_quiet = 1'b1;
+    assign vec_vmt_full = 1'b0;
     assign vec_vtype_spec = '0;
     assign vec_vtype_valid = 1'b1;
     assign vec_varith_commit = 1'b0;

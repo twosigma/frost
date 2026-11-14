@@ -248,7 +248,10 @@ stateDiagram-v2
 ```
 
 State names omit the RTL's `SERIAL_` prefix. `SQ empty` means committed
-stores have drained (`i_sq_committed_empty`). `sync fence` is FENCE.I or
+stores have drained (`i_sq_committed_empty`); the wrapper also holds it low
+while a retired vector memory instruction is still accessing memory, so the
+serializer's FENCE, FENCE.I, SFENCE.VMA, CSR-translation and xRET drains wait
+for those accesses too (`i_vmem_quiet`). `sync fence` is FENCE.I or
 SFENCE.VMA (the ROB treats SFENCE.VMA as a subtype of FENCE.I). `permit`
 means retirement is allowed: no commit hold, early-recovery pulse, or flush.
 `xRET` covers MRET, SRET, and DRET. A comma joins conditions that must all

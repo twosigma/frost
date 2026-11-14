@@ -159,6 +159,9 @@ module tomasulo_wrapper #(
     // The vector memory table, for the load and store queues' range-ordering
     // holds (all entries dead while the vector unit has no memory accesses)
     input  riscv_pkg::vmt_view_t              i_vmt = '0,
+    // No retired vector memory instruction is still accessing memory
+    // (registered); FENCE, FENCE.I, SFENCE.VMA and SC wait for it (V-O4)
+    input  logic                              i_vmem_quiet = 1'b1,
     output riscv_pkg::reorder_buffer_commit_t o_commit_comb,
     output logic                              o_commit_valid_raw,
     output logic                              o_commit_misprediction_raw,
@@ -2303,7 +2306,7 @@ module tomasulo_wrapper #(
       .i_flush_en                      (i_flush_en),
       .i_flush_tag                     (i_flush_tag),
       .i_head_tag                      (head_tag),
-      .i_sq_committed_empty            (sq_committed_empty),
+      .i_sq_committed_empty            (sq_committed_empty && i_vmem_quiet),
       .i_lq_reservation_valid          (lq_reservation_valid),
       .i_lq_reservation_addr           (lq_reservation_addr),
       .i_mem_adapter_result_pending    (mem_adapter_result_pending),
@@ -2515,7 +2518,8 @@ module tomasulo_wrapper #(
       .i_widen_commit_ok        (i_widen_commit_ok && !rob_head_next_result_held),
 
       // External coordination
-      .i_sq_committed_empty           (sq_committed_empty_rob),
+      // The serializer's drain also waits for retired vector memory accesses.
+      .i_sq_committed_empty           (sq_committed_empty_rob && i_vmem_quiet),
       .i_fence_i_sync_done            (i_fence_i_sync_done),
       .o_fence_i_sync_req             (o_fence_i_sync_req),
       .o_sfence_window                (rob_sfence_window),

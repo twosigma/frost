@@ -22,3 +22,4 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_engine.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_vtype_tracker.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_unit.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_hold_rows.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/vector/vec_vmt.sv

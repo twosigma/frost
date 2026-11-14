@@ -273,7 +273,8 @@ IF pairs two instructions only when all of these hold:
   ECALL, EBREAK, xRET, WFI, SFENCE.VMA, FENCE, FENCE.I, and atomics including
   LR/SC).
 - Slot 2 is not a native SYSTEM, MISC-MEM, AMO, FP-compute (OP-FP or fused
-  multiply-add) or vector (OP-V) instruction. It may be a branch or jump, but only the slot-2
+  multiply-add) or vector instruction (OP-V, or LOAD-FP and STORE-FP with a
+  vector width). It may be a branch or jump, but only the slot-2
   BTB lookup or the backing BTB can predict it; the PD redirect's direction
   change covers slot 1 only.
 - Slot 2 fits in the window. A 32-bit slot 2 that would start in the upper
@@ -554,8 +555,22 @@ unknown). When one retires, `vec_unit` queues it with its scalar and the
 architectural `vl`, `vtype` and `vstart`, and the engine executes it after
 commit; the CSR file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
 and `vfirst.m` execute at the ROB head once the unit is idle and return their
-result on CDB slot 6. The other vector instructions, and every vector load and
-store, are still illegal.
+result on CDB slot 6.
+
+ID decodes the unit-stride (one field), whole-register and mask loads and
+stores as `VLOAD` and `VSTORE` (illegal with VS Off); they dispatch in slot 1
+only and go to INT_RS, which hands the rs1 base to the ROB. Each takes an
+entry in the vector memory table (`vector/vec_vmt.sv`) at dispatch, and
+dispatch holds the next one while all four entries are live. The table lists
+the vector memory instructions in flight in program order for the load and
+store queues' range holds, marks an entry retired on the edge the ROB head
+passes it, and frees entries that a flush removes. Its registered "no live
+retired entry" output holds the serializer's FENCE, FENCE.I and SFENCE.VMA
+drain, the store-conditional unit and the misaligned-access engine's start.
+The unit does not perform vector loads and stores yet: each raises
+illegal-instruction when it reaches the ROB head, and the trap's flush frees
+its entry. The other vector instructions, and the strided, indexed, segment
+and fault-only-first loads and stores, are still illegal.
 
 `misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
 elaboration while the vector instructions are not implemented, and bare-metal

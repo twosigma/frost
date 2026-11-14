@@ -26,6 +26,35 @@ module instr_decoder (
     output logic                 o_illegal
 );
 
+  // The vector load and store forms decoded so far, for an instruction with a
+  // vector width (riscv_pkg::is_vector_mem): mew 0 and unit-stride
+  // addressing (mop 00), then by lumop/sumop (bits 24:20):
+  //   00000 unit-stride, one field (nf 0);
+  //   01000 whole-register, nf 0, 1, 3 or 7 (1, 2, 4 or 8 registers),
+  //         unmasked; a store only with width 000;
+  //   01011 mask (vlm.v, vsm.v), nf 0, unmasked, width 000.
+  // Strided, indexed, segment and fault-only-first forms are not decoded.
+  function automatic logic vector_mem_ok(input logic [31:0] insn, input logic is_store);
+    logic [2:0] nf, width;
+    logic [4:0] umop;
+    logic vm;
+    nf = insn[31:29];
+    vm = insn[25];
+    umop = insn[24:20];
+    width = insn[14:12];
+    vector_mem_ok = 1'b0;
+    if (!insn[28] && (insn[27:26] == 2'b00)) begin
+      unique case (umop)
+        5'b00000: vector_mem_ok = nf == 3'd0;
+        5'b01000:
+        vector_mem_ok = vm && ((nf == 3'd0) || (nf == 3'd1) || (nf == 3'd3) || (nf == 3'd7)) &&
+            (!is_store || (width == 3'b000));
+        5'b01011: vector_mem_ok = vm && (nf == 3'd0) && (width == 3'b000);
+        default: vector_mem_ok = 1'b0;
+      endcase
+    end
+  endfunction
+
   // The vector arithmetic encodings implemented so far (see vec_engine).
   function automatic logic vector_arith_ok(input logic [5:0] funct6, input logic [2:0] funct3,
                                            input logic vm, input logic [4:0] vs1,
@@ -408,20 +437,34 @@ module instr_decoder (
 
       // FLW/FLD - Load floating-point word/double (I-type format)
       // Uses integer rs1 for address, writes to FP rd
+      // Vector loads share the opcode, with a vector width (VLOAD).
       riscv_pkg::OPC_LOAD_FP:
       if (i_instr.funct3 == 3'b010) begin  // width=W (32-bit)
         o_instr_op = riscv_pkg::FLW;
       end else if (i_instr.funct3 == 3'b011) begin  // width=D (64-bit)
         o_instr_op = riscv_pkg::FLD;
+      end else if (riscv_pkg::is_vector_mem(
+              i_instr.opcode, i_instr.funct3
+          ) && vector_mem_ok(
+              32'(i_instr), 1'b0
+          )) begin
+        o_instr_op = riscv_pkg::VLOAD;
       end else o_illegal = 1'b1;
 
       // FSW/FSD - Store floating-point word/double (S-type format)
       // Uses integer rs1 for address, FP rs2 for data
+      // Vector stores share the opcode, with a vector width (VSTORE).
       riscv_pkg::OPC_STORE_FP:
       if (i_instr.funct3 == 3'b010) begin  // width=W (32-bit)
         o_instr_op = riscv_pkg::FSW;
       end else if (i_instr.funct3 == 3'b011) begin  // width=D (64-bit)
         o_instr_op = riscv_pkg::FSD;
+      end else if (riscv_pkg::is_vector_mem(
+              i_instr.opcode, i_instr.funct3
+          ) && vector_mem_ok(
+              32'(i_instr), 1'b1
+          )) begin
+        o_instr_op = riscv_pkg::VSTORE;
       end else o_illegal = 1'b1;
 
       // Fused multiply-add variants (R4-type format)
