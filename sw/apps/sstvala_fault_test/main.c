@@ -21,7 +21,8 @@
  * instruction fetch there an instruction access fault, and mtval (or stval
  * when medeleg delegates the cause) holds the faulting virtual address:
  *
- *   - loads of every width, LR and AMOs in M, S and U, delegated and not;
+ *   - doubleword, word and byte loads, LR and AMOs in M, S and U, delegated
+ *     and not;
  *   - the same accesses through Sv39 from S and U, where the virtual address
  *     (VA_ERR) differs from the physical one;
  *   - misaligned loads the misaligned-access engine performs (when the build
