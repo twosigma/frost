@@ -450,7 +450,9 @@
     "H": {"supported": false},
     "Zibi": {"supported": false},
     "Zic64b": {"supported": false},
-    "Zicbom": {"supported": false},
+    // cbo.clean/flush/inval on 64-byte blocks; menvcfg/senvcfg CBIE and CBCFE.
+    // Every FROST master is coherent, so they change no data, as in Sail.
+    "Zicbom": {"supported": true},
     "Zicbop": {"supported": false},
     // cbo.zero zeroes 64-byte blocks (platform.cache_block_size_exp) of low
     // BRAM and cached DDR, the regions marked supports_cbo_zero above.

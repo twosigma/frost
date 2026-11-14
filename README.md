@@ -154,6 +154,7 @@ every supported extension and privilege mode.
 | **Zbkc**         | Carry-less multiplication for crypto (clmul, clmulh) |
 | **Zihintpause**  | Pause hint for spin-wait loops                 |
 | **Zicboz**       | Cache-block zero (`cbo.zero`, 64-byte blocks of cached DDR and low BRAM) |
+| **Zicbom**       | Cache-block management (`cbo.clean`, `cbo.flush`, `cbo.inval` on 64-byte blocks), ordered no-ops while every bus master is coherent; the device tree does not list it yet |
 | **Machine Mode** | M-mode privilege (mret, wfi, ecall, ebreak)    |
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
 | **Smaia, Ssaia** | AIA CSRs and machine/supervisor IMSIC files with 63 identities |
