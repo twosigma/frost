@@ -643,8 +643,8 @@ locally. Each CI job runs a group of extensions in one tier, and three jobs
 share F and D through `--shard K/3`, so that no job runs much longer than an
 hour. `FROST_ARCH_SIM_TIMEOUT_SEC=1200` fails a hung test there after 20
 minutes; the runner's default limit of an hour is sized for the largest
-tests in DDR. The F and D jobs run without coverage, and the others collect
-line coverage and cover points.
+tests in DDR. Only the first BRAM group (I B C) collects line coverage and cover
+points.
 
 In many of the pinned F and D sources, most `NAN_BOXED` data constants run
 the intended hex value together with its own decimal digits, less the first:
@@ -1165,7 +1165,7 @@ again; adding any other label starts nothing. Pushes to `main` run every job.
 | Zicboz applications | Basic, page and eviction configurations have separate BRAM/DDR shards. The two 4 MiB cache configurations select their own BRAM or DDR program layout in one additional shard; the clearing benchmark has its own shard. A fast collection check requires every registered `cbo_zero_*` configuration in exactly one shard per supported tier |
 | Cocotb unit benches, DDR probes, fetch fuzzers, programs on the SRAM macros, OpenSBI smoke, cache counters over OpenOCD | BRAM only: tier-independent or fixed-layout runs |
 | Physical address apertures | Software boundary, fetch, translation, DMA, and NIC checks at 1, 64, and 128 GiB; generic synthesis at 128 GiB, with the Yosys job covering the 1 GiB default |
-| Architecture compliance | BRAM and DDR, in groups of extensions, including CMO's Zicboz `cbo.zero` case in both tiers; excludes Zifencei on BRAM and F/D on DDR; F and D share three BRAM shards without coverage; the other groups collect coverage; a fast check compares the workflow's groups with the runner's supported extensions |
+| Architecture compliance | BRAM and DDR, in groups of extensions, including CMO's Zicboz `cbo.zero` case in both tiers; excludes Zifencei on BRAM and F/D on DDR; F and D share three BRAM shards; only the I B C group in BRAM collects coverage; a fast check compares the workflow's groups with the runner's supported extensions |
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
@@ -1175,7 +1175,7 @@ again; adding any other label starts nothing. Pushes to `main` run every job.
 | Formal verification | CSR profiling-on/off and ROB jobs; Coherence, coherent-array equivalence (two jobs), store-home, hart and home links (two jobs), L1D control, L1D multi-endpoint, L1D data (three jobs), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store-boundary (four jobs), L1D free-stream, vector CSR, line client links, memory management (page table walker, TLBs, MMUs, interrupt controllers), load queue and Other tasks jobs, the last being where new small equivalence proofs go; and a separate job for the hart maintenance proof, its ownership induction, the independent unbounded stream payload proof and the scripted control and store-free L1D stream BMCs; see the [formal guide](../formal/README.md) for budgets |
 | ASIC flow | [OpenROAD](../asic/README.md) from synthesis to GDS on Nangate45, with OpenRAM's SRAM macros, in five chained jobs of a separate workflow, which a newer push to `main` does not cancel |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
-| Coverage | One job merges the coverage of the simulating jobs into a report |
+| Coverage | One job merges the coverage of the 20 jobs that contribute to it into a report |
 
 The software aperture tests also have registry entries for 2, 4, 8, 16,
 and 32 GiB, available through `./scripts/frost.py cocotb <test_name>`.
@@ -1201,10 +1201,21 @@ differs from the model's by more than the tolerance in
 `perf-modeling/calibration/ci_baseline.json`, and it prints the figures and
 deltas either way.
 
-The simulating jobs build with `FROST_COVERAGE=1`, except the CoreMark-PRO
-workloads, the F and D architecture-test jobs, and the riscv-tests
-benchmarks: long runs of compute code, which line coverage would slow by about
-a third while adding little that the other jobs miss. The unit-bench job also
+The report covers 20 of the simulating jobs, chosen so that it keeps 99.9% of
+the line, branch and cover points that every job together would reach, with no
+cover point lost. They are Arch Tests (I B C / bram); the Real Programs jobs
+Debug and UART, OpenSBI smoke, Runtime and other, and SRAM macros in BRAM and
+C library and RTOS, DMA NIC and coherence, Interrupts, Memory link stage (other
+programs) and Privilege and MMU in DDR; four Physical address aperture jobs
+(1 GiB / Bare access, 1 GiB / Unit boundaries, 128 GiB / DMA, 128 GiB / NIC);
+riscv-tests (all suites / bram / p); riscv-torture (ddr / paged); TestRIG
+shards 1, 2 and 4; and the unit-bench job. A model build with coverage takes
+about 2.3 times as long and a simulation about a quarter longer, so the other
+jobs build without it. A job selects coverage through the `coverage` field of
+its matrix entry, which sets `FROST_COVERAGE` and enables the merge and upload
+steps. When a change adds a job or moves tests between jobs, check the points
+the report reaches and move the field if a job it relied on no longer
+contributes. The unit-bench job also
 sets `FROST_COVERAGE_TOGGLE=1`. Toggle coverage stays out of the whole-SoC
 jobs, which the full set would slow about sixfold, and the control set is
 for local runs. Each job merges its files into a `coverage-job-*` artifact,
