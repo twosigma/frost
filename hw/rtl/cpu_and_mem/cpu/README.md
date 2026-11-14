@@ -807,7 +807,10 @@ pending source with no interrupt latched.
 checks the load and store access faults that result, their trap values
 and PCs, and that access succeeds once the mapping is repaired. Two loads
 of adjacent L1D sectors then share one failed L2 fill, and the test checks
-the older load's access fault and its address in `mtval`. Its registry entry injects the bus errors in
+the older load's access fault and its address in `mtval`. `sstvala_fault_test`
+checks the address of every bus-response access fault software can provoke
+in simulation, in each privilege mode, delegated and not, bare and through
+Sv39. Its registry entry injects the bus errors in
 the simulated DDR model.
 
 `ptw_recovery_test` sweeps the cycle in which a branch resolves while a

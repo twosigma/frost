@@ -872,6 +872,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "illegal-instruction source in M, S and U, delegated and not"
         ),
     ),
+    "sstvala_fault_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="sstvala_fault_test",
+        nic_mac_clocks=False,
+        description=(
+            "Sstvala: access faults from failed bus responses (loads, LR, AMOs, "
+            "misaligned loads, fetches) report the virtual address in mtval/stval, "
+            "bare and Sv39, in M, S and U, delegated and not"
+        ),
+        extra_env=(
+            (
+                "COCOTB_PLUSARGS",
+                "+axi_error_check=0 +axi_rd_error_addr=3000000",
+            ),
+        ),
+    ),
     "vec_state_test_v512": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
