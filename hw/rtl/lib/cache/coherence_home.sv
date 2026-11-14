@@ -993,9 +993,9 @@ module coherence_home #(
   assign fill_pre = decision_from_engine && !array_hit && array_available && fill_free_any &&
       state_allows_fill && prefetch_fill_ok;
   // The registered phase flags and the one-hot response token match their
-  // encodings outside reset. Every formal task checks this, including those
-  // read with SYNTHESIS defined, which makes the checks inductive; simulation
-  // checks them once a reset has been seen.
+  // encodings outside reset. Every formal task but the local seat proof
+  // checks this, including those read with SYNTHESIS defined, which makes the
+  // checks inductive; simulation checks them once a reset has been seen.
 `ifdef HOME_SEAT_NEXT_LOCAL_PROOF
   // The seat proof checks only its own combinational equalities.
 `elsif FORMAL

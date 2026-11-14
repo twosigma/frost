@@ -748,7 +748,7 @@ Seat joins, retirements and error cleanup keep their priority over allocation. T
 allocation and non-allocation outcomes before selecting between them; zero
 fill images likewise clear through their data input. Whether a decision is a
 reader that can join a fill is the decision's last term to settle, so each
-fill's seats, its seat count, its mask and the parked set are formed for both
+fill's added seats and their count, its mask and the parked set are formed for both
 values of that term (a fill that is ready to join reserves the joining seat in
 one selection and not in the other), and the term selects last.
 A joining
