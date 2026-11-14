@@ -100,7 +100,7 @@ module nic_pause_tx #(
   logic f_at_start_q;
 
   // The configured pause interval arrives whole (a mailbox message from the core). A zero
-  // interval keeps the previous one, as before.
+  // interval keeps the previous one.
   always_ff @(posedge i_clk) begin
     if (i_rst) interval_q <= 16'hFFFF;
     else if (i_interval_cfg != '0) interval_q <= i_interval_cfg;

@@ -414,6 +414,22 @@ set nic_s9 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of
 set_max_delay -datapath_only 3.0 -from $nic_s9 -to [get_cells -of_objects $nic_d9]
 set_bus_skew 3.0 -from $nic_s9 -to [get_cells -of_objects $nic_d9]
 
+# The checksum side FIFO has a separate Gray pointer in each direction.
+foreach nic_sync {sync_rptr sync_wptr} {
+    set nic_csum_d [get_pins -hierarchical -filter "NAME =~ \"*/u_tx_csum_fifo/$nic_sync/stage_q_reg\[0\]*/D\""]
+    set nic_csum_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_csum_d]]]
+    set_max_delay -datapath_only 3.0 -from $nic_csum_s -to [get_cells -of_objects $nic_csum_d]
+    set_bus_skew 3.0 -from $nic_csum_s -to [get_cells -of_objects $nic_csum_d]
+}
+
+# A mailbox holds its payload until acknowledgement. Bound that payload
+# before the synchronized request can cause the destination to sample it.
+foreach nic_mbx {u_rx_limit u_mac_rx_mbx u_tx_cfg_mbx u_pause_ev_mbx} {
+    set nic_payload [get_cells -hierarchical -filter "NAME =~ \"*/$nic_mbx/payload_q_reg*\""]
+    set nic_capture [get_cells -hierarchical -filter "NAME =~ \"*/$nic_mbx/o_dst_data_reg*\""]
+    set_max_delay -datapath_only 3.0 -from $nic_payload -to $nic_capture
+}
+
 # Bound single-bit status, reset-handshake, and PHY-control crossings to the
 # first cdc_sync stage, from each launch clock. RXRESETDONE uses RX USRCLK2;
 # PLL lock and power good have no launch clock. No bus-skew bound is needed.

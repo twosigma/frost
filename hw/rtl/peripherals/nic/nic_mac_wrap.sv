@@ -17,8 +17,9 @@
 /*
  * MAC/PCS clock crossings, packet FIFOs, resets, and raw loopback.
  *
- * RX beats cross as 68-bit FIFO words {code, data}; TX adds the abort bit and 15-bit checksum
- * request for 84 bits (nic_pkg beat code: {last, bytes - 1}). Each domain's reset comes from nic_domain_reset
+ * RX and TX beats cross as 68-bit FIFO words {code, data}. TX checksum requests cross
+ * once per frame in a side FIFO, and a reserved beat code marks an abort.
+ * The ordinary nic_pkg beat code is {last, bytes - 1}. Each domain's reset comes from nic_domain_reset
  * under the core-side controller's generation handshake; the FIFO half in
  * a domain resets with that domain, the core-side half with
  * i_core_rst_dom. The raw loopback (MAC_LOOPBACK: raw TX into raw RX with
@@ -62,8 +63,8 @@ module nic_mac_wrap #(
     output logic [1:0] o_applied_valid,
     input logic [1:0] i_core_rst_dom,
     input logic i_mac_loopback,
-    // Station address (quasi-static) and the 802.3x configuration, which crosses with the FIFO
-    // limit in one mailbox: {interval, low_water, high_water, tx_en, rx_en}.
+    // Station address and pause interval cross to their consumers through mailboxes.
+    // The RX configuration mailbox carries {low_water, high_water, tx_en, rx_en, limit}.
     input logic [47:0] i_station_mac,
     input logic [1:0] i_pause_ctrl,
     input logic [$clog2(RX_FIFO_DEPTH):0] i_pause_high_water,
