@@ -259,7 +259,10 @@ The lint hooks in `check` can modify files, so review the diff afterwards.
 Use `./scripts/frost.py lint` for lint alone, or add `--fail-fast` to `check`
 to stop at the first failing phase.
 
-CI runs on pushes and pull requests to `main`. It runs the RISC-V
+CI runs on pushes and pull requests to `main`. On a pull request, Lint and the
+fast Python tests run by default and the rest runs when the pull request has
+the `run-ci` label. The OpenROAD flow runs on a pull request with the
+`run-asic` label. Pushes to `main` run everything. The full run covers the RISC-V
 architecture tests and riscv-torture programs against Spike reference
 results, the riscv-tests suites, TestRIG's instruction-by-instruction
 comparison with the Sail RISC-V model, unit benches for the CPU and SoC
