@@ -1161,11 +1161,12 @@ The [CI workflow](../.github/workflows/ci.yml) runs these checks in the
 pinned Docker image. The ASIC flow runs in its own
 [workflow](../.github/workflows/asic.yml) and its own image:
 
-On a pull request, only Lint and the fast Python tests run by default. The
-remaining jobs of the CI workflow run when the pull request has the `run-ci`
-label, and the ASIC flow runs when it has the `run-asic` label. Adding a label
-starts the corresponding run, and later pushes to the pull request run it
-again; adding any other label starts nothing. Pushes to `main` run every job.
+A pull request starts no run by itself. Adding the `run-ci` label runs the CI
+workflow on the pull request's current head, and `run-asic` runs the ASIC
+flow; adding any other label starts nothing. To run again after a later push,
+remove the label and add it again, or start a manual run of the workflow on
+the branch. Pushes to `main` run every job. `./scripts/frost.py check` runs the
+Lint and Fast Python Tests jobs locally.
 
 | Suite | Configurations |
 | --- | --- |
