@@ -18,8 +18,8 @@
  * nic_pause_tx: the transmit half of IEEE 802.3x flow control, in the TX MAC clock domain,
  * between the TX FIFO and the transmit MAC.
  *
- * Honouring received pause. A pause event from the receive half (i_pause_tog toggling, with
- * i_pause_quanta) loads a timer with pause_time quanta of 512 bit times: QTICKS = 8 words at
+ * Honouring received pause. A pause event from the receive half (i_pause_ev, one cycle, with
+ * i_pause_interval) loads a timer with pause_time quanta of 512 bit times: QTICKS = 8 words at
  * 10GBASE-R, 64 byte times on GMII (i_tick marks an enabled XGMII word or one GMII byte time).
  * The PCS word enable accounts for encoded-line gearbox gaps. Quanta 0
  * clears it. While the timer runs, no new frame leaves the TX FIFO; a frame already started
@@ -51,7 +51,7 @@ module nic_pause_tx #(
     input logic        i_tx_en,
     input logic [15:0] i_interval_cfg,
     input logic        i_want_pause,
-    input logic        i_pause_tog,
+    input logic        i_pause_ev,
     input logic [15:0] i_pause_interval,
 
     // TX FIFO side: {abort, csum[14:0], code[3:0], data[63:0]}.
@@ -70,28 +70,18 @@ module nic_pause_tx #(
   localparam int unsigned TimerBits = 16 + QShift;
 
   // ---- received pause: the timer -----------------------------------------------------------
-  logic tog_q, ev1_q, ev2_q, ev3_q;
   logic [TimerBits-1:0] timer_q;
   logic paused;
   assign paused   = (timer_q != '0);
   assign o_paused = paused;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      // The RX domain may survive a TX-only reset. Its last event is the new baseline,
-      // so an old odd toggle must not restart an already expired pause timer.
-      tog_q   <= i_pause_tog;
-      ev1_q   <= 1'b0;
-      ev2_q   <= 1'b0;
-      ev3_q   <= 1'b0;
+      // The event mailbox resets with either MAC domain, so no event from before a TX-only
+      // reset arrives after it.
       timer_q <= '0;
     end else begin
-      tog_q <= i_pause_tog;
-      ev1_q <= (i_pause_tog != tog_q);
-      ev2_q <= ev1_q;
-      ev3_q <= ev2_q;
       if (!i_rx_en) timer_q <= '0;
-      // The interval bus has settled two cycles after the toggle is seen.
-      else if (ev3_q) timer_q <= TimerBits'(i_pause_interval) << QShift;
+      else if (i_pause_ev) timer_q <= TimerBits'(i_pause_interval) << QShift;
       else if (paused && i_tick) timer_q <= timer_q - 1'b1;
     end
   end
@@ -106,14 +96,14 @@ module nic_pause_tx #(
   gen_e gen_q;
   logic pause_sent_q, kind_release_q;
   logic [TimerBits-2:0] refresh_q;
-  logic [15:0] cfg_interval_q, interval_q;
+  logic [15:0] interval_q;
   logic f_at_start_q;
 
-  // The configured pause interval crosses as a plain bus: use it once two consecutive samples agree.
+  // The configured pause interval arrives whole (a mailbox message from the core). A zero
+  // interval keeps the previous one, as before.
   always_ff @(posedge i_clk) begin
-    cfg_interval_q <= i_interval_cfg;
-    if (i_interval_cfg == cfg_interval_q && i_interval_cfg != '0) interval_q <= i_interval_cfg;
     if (i_rst) interval_q <= 16'hFFFF;
+    else if (i_interval_cfg != '0) interval_q <= i_interval_cfg;
   end
 
   logic want, refresh_zero, pend_pause, pend_release, pending;
