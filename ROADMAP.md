@@ -11,8 +11,10 @@ The remaining scalar and supervisor extensions are in progress. Sstvala's
 illegal-instruction values are implemented: `mtval` and `stval` hold the
 faulting instruction's bits. Its access-fault values remain: a failed bus
 response on a load, a store or a misaligned access reports zero in `mtval`
-or `stval`, where Sstvala requires the faulting address. Two larger pieces
-come before the second hart:
+or `stval`, where Sstvala requires the faulting address. `hpmcounter11`-`31`
+raise illegal-instruction in every privilege mode; making them read zero in
+M-mode, as the reference models do, would let the TestRIG comparison run with
+Zihpm enabled. Two larger pieces come before the second hart:
 
 - A vector unit. The profile requires V with Zvfhmin, Zvbb, and Zvkt; Zvbc,
   Zvfh and vector cryptography follow. The vector length
