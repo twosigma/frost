@@ -70,6 +70,8 @@
 #define CBO_FLUSH_ASM(reg) ".insn i 0x0F, 2, x0, " reg ", 2\n"
 
 enum cbo_op { OP_INVAL = 0, OP_CLEAN = 1, OP_FLUSH = 2 };
+/* The encoding of an op with rs1 = a0 (x10), as the lower-privilege bodies use. */
+#define CBO_A0_BITS(op) (((unsigned long) (op) << 20) | (10ul << 15) | (2ul << 12) | 0x0Ful)
 static const char *const op_name[3] = {"inval", "clean", "flush"};
 
 #define csr_read_num(num)                                                                          \
@@ -437,7 +439,8 @@ int main(void)
                 csr_write_num(0x30A, cases[i].menv);
                 csr_write_num(0x10A, cases[i].senv);
                 run_lower(cases[i].mpp, op, (unsigned long) &g_bram_buf[BLOCK / 8] + 5);
-                ok &= expect(cases[i].name, op, want, 0, want == CAUSE_ILLEGAL);
+                /* Sstvala: an illegal op's mtval holds its instruction bits. */
+                ok &= expect(cases[i].name, op, want, CBO_A0_BITS(op), want == CAUSE_ILLEGAL);
                 ok &= check_intact(cases[i].name, op, g_bram_buf);
             }
         }
