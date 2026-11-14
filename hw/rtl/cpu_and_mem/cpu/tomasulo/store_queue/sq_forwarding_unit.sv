@@ -306,8 +306,9 @@ module sq_forwarding_unit #(
   assign fwd_found_match     = |fwd_conflict_mask;
   // An older conflicting Zicbom entry vetoes forwarding from any store, so
   // the load follows the operation (cmo.adoc, norm:ppo_overlap_2).
-  logic fwd_cmo_conflict;
+  logic fwd_cmo_conflict, fwd_can_fwd_ordered;
   assign fwd_cmo_conflict = |(fwd_conflict_mask & sq_is_cmo);
+  assign fwd_can_fwd_ordered = fwd_can_fwd && !fwd_cmo_conflict;
 
   // Block 2: the newest conflicting store wins, ranked by ring distance from
   // i_sq_head_idx. Ring order is allocation order, which is program order.
@@ -390,8 +391,7 @@ module sq_forwarding_unit #(
     end else begin
       o_sq_all_older_addrs_known <= i_sq_check_capture_valid ? fwd_all_older_known : 1'b0;
       o_sq_forward.match         <= i_sq_check_capture_valid ? fwd_found_match : 1'b0;
-      o_sq_forward.can_forward   <= i_sq_check_capture_valid ? fwd_can_fwd && !fwd_cmo_conflict :
-                                                                1'b0;
+      o_sq_forward.can_forward   <= i_sq_check_capture_valid ? fwd_can_fwd_ordered : 1'b0;
     end
   end
 

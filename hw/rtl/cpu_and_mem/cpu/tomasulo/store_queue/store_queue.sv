@@ -1077,17 +1077,29 @@ module store_queue #(
   // only L0-cached memory with no coherent invalidation of its own).
   // A Zicbom entry has no data and never sets sq_data_valid, so drain_ready,
   // the write launch and the precise uncached path never select it.
+  // The entry is sent and the drain cursor passes it on the cycle it
+  // fires; it frees on the next cycle from registered state (cmo_free_q), as
+  // a completed write frees from the write FIFO head. A second Zicbom entry
+  // fires only after the first has freed.
   logic drain_is_cmo;
   logic cmo_drain_fire;
   logic cmo_inval_pulse_q;
+  logic cmo_free_q;
+  logic [IdxWidth-1:0] cmo_free_idx_q;
   assign drain_is_cmo = sq_is_cmo[drain_idx_q];
   assign cmo_drain_fire = drain_is_cmo && sq_valid[drain_idx_q] && sq_committed[drain_idx_q] &&
       sq_addr_valid[drain_idx_q] && !sq_sent[drain_idx_q] &&
       (write_inflight_cnt == 2'd0) && !o_mem_write_en &&
-      !i_coherent_store_pending && !i_coherent_sc_pending;
+      !i_coherent_store_pending && !i_coherent_sc_pending && !cmo_free_q;
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all) cmo_inval_pulse_q <= 1'b0;
-    else cmo_inval_pulse_q <= cmo_drain_fire && (sq_cmo_kind[drain_idx_q] != riscv_pkg::CMO_CLEAN);
+    if (!i_rst_n || i_flush_all) begin
+      cmo_inval_pulse_q <= 1'b0;
+      cmo_free_q <= 1'b0;
+    end else begin
+      cmo_inval_pulse_q <= cmo_drain_fire && (sq_cmo_kind[drain_idx_q] != riscv_pkg::CMO_CLEAN);
+      cmo_free_q <= cmo_drain_fire;
+    end
+    if (cmo_drain_fire) cmo_free_idx_q <= drain_idx_q;
   end
 
   always_comb begin
@@ -1167,7 +1179,8 @@ module store_queue #(
   // cursor, SC, pipeline and address checks have all been reduced.
   assign launch_without_store_ready = committed_uncached_launch ||
       (cached_launch_qualified && (!mem_write_addr_cached_for_plain_next || coherent_selected_sc));
-  // A Zicbom entry frees itself without a write (cmo_drain_fire).
+  // A Zicbom entry completes at the drain cursor without a write
+  // (cmo_drain_fire) and frees on the next cycle (cmo_free_q).
   assign complete_without_store_ready = committed_uncached_complete || cmo_drain_fire ||
       (cached_launch_qualified && (!mem_write_addr_cached_for_plain_next || coherent_selected_sc));
 `ifdef FROST_XILINX_PRIMS
@@ -1310,7 +1323,7 @@ module store_queue #(
   // size because stores do not cross dwords; MMIO invalidation is harmless.
   // A cached zero write's pulse covers its whole block (o_cache_invalidate_block).
   // A cbo.flush or cbo.inval pulses the same block invalidation, without a
-  // write, on the cycle after it frees (o_mem_write_en is low then).
+  // write, on the cycle after it fires, as it frees (o_mem_write_en is low then).
   assign o_cache_invalidate_valid = o_mem_write_en || cmo_inval_pulse_q;
   assign o_cache_invalidate_addr = o_mem_write_addr;
 
@@ -1579,7 +1592,8 @@ module store_queue #(
       // blocks all further launches until completion.
       write_inflight_special <= write_inflight_special_next;
       sq_sent <= sq_sent_next;
-      // A Zicbom entry is sent as it frees (no write follows).
+      // A Zicbom entry is sent as it fires (no write follows) and frees on
+      // the next cycle.
       if (cmo_drain_fire) sq_sent[drain_idx_q] <= 1'b1;
 
       // -----------------------------------------------------------------
@@ -1656,7 +1670,7 @@ module store_queue #(
     for (int unsigned i = 0; i < DEPTH; i++) begin
       live_remove_mask[i] = (i_flush_en && flush_kill_base[i]) ||
                             sc_discard_remove_mask[i] ||
-                            (cmo_drain_fire && (drain_idx_q == IdxWidth'(i))) ||
+                            (cmo_free_q && (cmo_free_idx_q == IdxWidth'(i))) ||
                             (drain_remove_valid && (write_entry_idx == IdxWidth'(i)));
     end
   end
@@ -1769,8 +1783,8 @@ module store_queue #(
         sq_valid[write_entry_idx] <= 1'b0;
       end
 
-      // A Zicbom entry frees itself at the drain cursor (no write in flight).
-      if (cmo_drain_fire) sq_valid[drain_idx_q] <= 1'b0;
+      // A Zicbom entry frees the cycle after it fires at the drain cursor.
+      if (cmo_free_q) sq_valid[cmo_free_idx_q] <= 1'b0;
     end
   end
 
@@ -2124,8 +2138,9 @@ module store_queue #(
   end
 
   // Zicbom entries: never data-valid, so never written (p_write_needs_data);
-  // one frees only as the committed drain cursor, with no write in flight or
-  // on the bus and no sent entry left, so every older store has completed.
+  // one fires only as the committed drain cursor, with no write in flight or
+  // on the bus and no sent entry left, so every older store has completed,
+  // and the entry it fired frees on the next cycle.
   always_comb begin
     if (i_rst_n) begin
       p_cmo_has_no_data : assert (!(|(sq_valid & sq_is_cmo & sq_data_valid)));
@@ -2135,6 +2150,10 @@ module store_queue #(
         p_cmo_frees_after_writes : assert (write_inflight_cnt == 2'd0 && !o_mem_write_en);
         p_cmo_frees_oldest : assert (!(|(sq_valid & sq_sent)));
         p_cmo_frees_without_write : assert (!mem_write_fire_next);
+      end
+      if (cmo_free_q) begin
+        p_cmo_free_is_sent_cmo :
+        assert (sq_valid[cmo_free_idx_q] && sq_is_cmo[cmo_free_idx_q] && sq_sent[cmo_free_idx_q]);
       end
     end
   end

@@ -51,7 +51,6 @@ static void uart_hex(unsigned long v)
 
 #define MIP_STIP (1ul << 5)
 #define MENVCFG_STCE (1ul << 63)
-#define MENVCFG_PBMTE (1ul << 62)
 #define ENVCFG_CBZE (1ul << 7)
 #define ENVCFG_CBCFE (1ul << 6)
 #define ENVCFG_CBIE (3ul << 4)
@@ -185,8 +184,7 @@ int main(void)
     csr_write_num(0x30A, ~0ul);
     ok &= report("A menvcfg-warl",
                  csr_read_num(0x30A),
-                 MENVCFG_STCE | ENVCFG_CBZE | ENVCFG_CBCFE | ENVCFG_CBIE |
-                     ENVCFG_FIOM);
+                 MENVCFG_STCE | ENVCFG_CBZE | ENVCFG_CBCFE | ENVCFG_CBIE | ENVCFG_FIOM);
     csr_write_num(0x30A, 0);
     ok &= report("A menvcfg-clear", csr_read_num(0x30A), 0);
     csr_write_num(0x10A, ~0ul);

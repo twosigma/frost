@@ -130,9 +130,11 @@ data: it never becomes data-valid, so the write launch never selects it.
 Every bus master in FROST reaches DDR through the coherent home, so the
 operations have no data effect, and the entry completes as an ordered no-op:
 committed, at the drain cursor, with no write in flight or on the bus and no
-L1D store record pending, it frees itself without a write. Every older store
-has then completed, and the next entry drains behind it. A flush or inval
-pulses the block-wide L0 invalidation at `rs1` on the cycle after it frees.
+L1D store record pending, it is marked sent without a write and frees on the
+next cycle from registered state, as a completed write does. Every older
+store has then completed, and the next entry drains behind it; a second
+Zicbom entry waits until the first has freed. A flush or inval pulses the
+block-wide L0 invalidation at `rs1` on the cycle it frees.
 The ROB marks a Zicbom op done at issue wherever its block lies: cached DDR,
 low BRAM or a device window. The write outputs are registered,
 including `is_mmio` and `is_cached` flags that let the memory router steer the
