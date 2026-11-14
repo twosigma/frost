@@ -2079,6 +2079,7 @@ module cpu_ooo #(
   // or the remapped synchronous exception cause.
   logic [XLEN-1:0] trap_cause_internal;
   logic [XLEN-1:0] rob_trap_value;
+  logic [31:0] rob_trap_insn;
   logic rob_trap_taken_ack;
   logic mret_start, mret_done_ack;
   logic [XLEN-1:0] mepc_value;
@@ -2455,6 +2456,7 @@ module cpu_ooo #(
       .o_head_next_retired_next_pc(rob_head_next_retired_next_pc),
       .o_trap_cause(rob_trap_cause),
       .o_trap_value(rob_trap_value),
+      .o_trap_insn(rob_trap_insn),
       .i_trap_taken(rob_trap_taken_ack),
       .o_mret_start(mret_start),
       .o_mret_start_is_sret(mret_start_is_sret),
@@ -3807,10 +3809,14 @@ module cpu_ooo #(
   //     faults: the faulting virtual address, parked in the head entry's CDB
   //     value slot (unused for an exception) and exposed as rob_trap_value.
   //     The per-cause comments below say who parks it.
+  //   - Illegal instruction (Sstvala), from any source: decode, PD's RVC
+  //     check, ID's FS/CBO/Svinval/Zawrs gates, and the privilege, CSR and
+  //     rounding-mode faults the ROB raises at allocation: the faulting
+  //     instruction's bits, a compressed instruction's 16 bits zero-extended,
+  //     stored with the ROB entry at allocation (rob_trap_insn).
   //   - Everything else FROST raises here: 0, which the privileged spec
-  //     permits. That is ECALL, illegal instruction (including the MRET/CSR
-  //     privilege faults the ROB re-causes as ExcIllegalInstr), and the
-  //     ExcMemReplay pseudo-cause, which writes no CSR.
+  //     permits. That is ECALL and the ExcMemReplay pseudo-cause, which
+  //     writes no CSR.
   logic [XLEN-1:0] csr_trap_value;
   always_comb begin
     unique case (rob_trap_cause)
@@ -3842,6 +3848,7 @@ module cpu_ooo #(
           rob_trap_cause
       )-1:0]:
       csr_trap_value = rob_trap_value;
+      riscv_pkg::ExcIllegalInstr[$bits(rob_trap_cause)-1:0]: csr_trap_value = XLEN'(rob_trap_insn);
       default: csr_trap_value = '0;
     endcase
   end

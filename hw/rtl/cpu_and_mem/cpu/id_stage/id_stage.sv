@@ -124,6 +124,12 @@ module id_stage #(
   // substituted instruction; operation and operand decoders select the NOP
   // class at their outputs.
   assign instruction = i_from_pd_to_id.inject_nop ? riscv_pkg::NOP : i_from_pd_to_id.instruction;
+  // Sstvala: the raw instruction bits, xtval for an illegal-instruction
+  // exception: a compressed instruction's 16-bit parcel zero-extended, or the
+  // 32-bit instruction (PD's native instruction is its raw word).
+  logic [31:0] insn_bits;
+  assign insn_bits = i_from_pd_to_id.is_compressed ? {16'b0, i_from_pd_to_id.raw_parcel} :
+                                                     i_from_pd_to_id.instruction;
   assign link_address_precomputed =
       i_from_pd_to_id.program_counter +
       (i_from_pd_to_id.is_compressed ? riscv_pkg::PcIncrementCompressed :
@@ -441,6 +447,7 @@ module id_stage #(
       o_from_id_to_ex.immediate_u_type <= immediate_u_type;
       o_from_id_to_ex.immediate_s_type <= immediate_s_type;
       o_from_id_to_ex.immediate_i_type <= immediate_i_type;
+      o_from_id_to_ex.insn_bits <= insn_bits;
     end
   end
 
@@ -561,6 +568,7 @@ module id_stage #(
       n.immediate_u_type = immediate_u_type;
       n.immediate_s_type = immediate_s_type;
       n.immediate_i_type = immediate_i_type;
+      n.insn_bits = insn_bits;
     end
     id_next_for = n;
   endfunction
@@ -618,6 +626,10 @@ module id_stage #(
   logic                 [XLEN-1:0] pc_relative_precomputed_2;
   assign instruction_2 = i_from_pd_to_id_2.inject_nop ? riscv_pkg::NOP :
                                                         i_from_pd_to_id_2.instruction;
+  // Sstvala raw instruction bits (see slot 1).
+  logic [31:0] insn_bits_2;
+  assign insn_bits_2 = i_from_pd_to_id_2.is_compressed ?
+      {16'b0, i_from_pd_to_id_2.raw_parcel} : i_from_pd_to_id_2.instruction;
   assign link_address_precomputed_2 =
       i_from_pd_to_id_2.program_counter +
       (i_from_pd_to_id_2.is_compressed ? riscv_pkg::PcIncrementCompressed :
@@ -895,6 +907,7 @@ module id_stage #(
       o_from_id_to_ex_2.immediate_u_type <= immediate_u_type_2;
       o_from_id_to_ex_2.immediate_s_type <= immediate_s_type_2;
       o_from_id_to_ex_2.immediate_i_type <= immediate_i_type_2;
+      o_from_id_to_ex_2.insn_bits <= insn_bits_2;
     end
   end
 
@@ -1015,6 +1028,7 @@ module id_stage #(
       n.immediate_u_type = immediate_u_type_2;
       n.immediate_s_type = immediate_s_type_2;
       n.immediate_i_type = immediate_i_type_2;
+      n.insn_bits = insn_bits_2;
     end
     id_next_2_for = n;
   endfunction

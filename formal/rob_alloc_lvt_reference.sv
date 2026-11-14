@@ -18,7 +18,7 @@ module rob_alloc_lvt_reference #(
     parameter int unsigned HeadMetaWidth = 24,
     localparam int unsigned NextWidth =
         2*riscv_pkg::XLEN + riscv_pkg::RegAddrWidth + riscv_pkg::CheckpointIdWidth + HeadMetaWidth,
-    localparam int unsigned HeadWidth = NextWidth + riscv_pkg::XLEN + 15
+    localparam int unsigned HeadWidth = NextWidth + riscv_pkg::XLEN + 15 + 32
 ) (
     input logic i_clk,
     input logic alloc_en,
@@ -51,6 +51,7 @@ module rob_alloc_lvt_reference #(
   logic [12-1:0] head_csr_addr;
   logic [3-1:0] head_csr_op;
   logic [riscv_pkg::XLEN-1:0] head_csr_write_data;
+  logic [31:0] head_insn_bits;
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (riscv_pkg::ReorderBufferTagWidth),
       .DATA_WIDTH     (riscv_pkg::XLEN),
@@ -232,6 +233,20 @@ module rob_alloc_lvt_reference #(
       .i_read_onehot  (head_clear_mask),
       .o_read_data    (head_csr_write_data)
   );
+
+  mwp_dist_ram_ohread #(
+      .ADDR_WIDTH     (riscv_pkg::ReorderBufferTagWidth),
+      .DATA_WIDTH     (32),
+      .NUM_WRITE_PORTS(2)
+  ) u_reference_insn_bits (
+      .i_clk,
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({i_alloc_req_2.insn_bits, i_alloc_req.insn_bits}),
+      .i_read_address (head_idx),
+      .i_read_onehot  (head_clear_mask),
+      .o_read_data    (head_insn_bits)
+  );
   assign o_head = {
     head_pc,
     head_fallthrough_pc,
@@ -240,7 +255,8 @@ module rob_alloc_lvt_reference #(
     head_meta_rd_data,
     head_csr_addr,
     head_csr_op,
-    head_csr_write_data
+    head_csr_write_data,
+    head_insn_bits
   };
   assign o_next = {
     head_next_pc,
