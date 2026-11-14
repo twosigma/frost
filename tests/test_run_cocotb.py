@@ -1389,6 +1389,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Sstc timer access controls and delegated supervisor timer interrupts"
         ),
     ),
+    "irq_take_latency": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="irq_take_latency",
+        rerun_after_reset=False,
+        nic_mac_clocks=False,
+        description=(
+            "Delegated STI, LCOFI and SEI take latency in S-mode across device, "
+            "atomic, fence, SIE-toggle, DDR-miss and WFI instruction mixes, including "
+            "back-to-back device stores and a cached store before a device read"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "1500000"),),
+    ),
     "sscofpmf_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1549,6 +1562,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description="A pending timer interrupt is taken in a one-instruction MIE "
         "window",
+    ),
+    "irq_take_hold_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="irq_take_hold_test",
+        nic_mac_clocks=False,
+        description="Machine timer interrupts are taken promptly in device store "
+        "loops and during an LR/SC increment loop, and every increment lands once",
+        extra_env=(("COCOTB_MAX_CYCLES", "400000"),),
     ),
     "ns16550_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
