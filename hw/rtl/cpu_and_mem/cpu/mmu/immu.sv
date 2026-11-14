@@ -634,7 +634,9 @@ module immu #(
   // load the next state on every clock and reset at the flop.
   //
   // f1_q and miss1_q clear on a deactivation, an invalidate, a full flush,
-  // or the epoch expiry of a completed refusal; pa1_use_va_q holds instead.
+  // or the epoch expiry of a completed refusal. pa1_use_va_q holds on a
+  // deactivation or an invalidate, and the flush and expiry leave its capture
+  // or hold unchanged.
   // On a capture, a crossing window takes word 1's verdict from the
   // superpage successor first, then from the known next-page result, and
   // otherwise from the first word, whose fault stands in for the missing
