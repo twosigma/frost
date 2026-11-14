@@ -21,6 +21,9 @@ from cocotb.clock import Clock
 
 from .dispatch_interface import (
     DispatchInterface,
+    _INSTR_OPS,
+    pack_rat_lookup,
+    unpack_rs_dispatch,
     pack_instr_t,
     # Op codes
     ADD,
@@ -1714,3 +1717,89 @@ async def test_slot2_precomputed_immediates(dut: Any) -> None:
     )
     assert slot2_rs["predicted_target_ok"] == 1
     assert slot2_rs["is_compressed"] == 1
+
+
+@cocotb.test()
+async def test_extension_unused_sources_are_ready(dut: Any) -> None:
+    """Both slots ignore stale RAT tags on every unused Zfhmin/Zfa source."""
+    dut_if = await _setup(dut)
+    cases = [
+        ("FLH", "i", False, RS_MEM),
+        ("FSH", "i", True, RS_MEM),
+        ("FMV_H_X", "i", False, RS_FP),
+        ("FMV_X_H", "f", False, RS_FP),
+        *[
+            (name, "f", False, RS_FP)
+            for name in (
+                "FCVT_S_H",
+                "FCVT_D_H",
+                "FCVT_H_S",
+                "FCVT_H_D",
+                "FROUND_S",
+                "FROUND_D",
+                "FROUNDNX_S",
+                "FROUNDNX_D",
+                "FCVTMOD_W_D",
+            )
+        ],
+        *[
+            (name, "f", True, RS_FP)
+            for name in (
+                "FMINM_S",
+                "FMINM_D",
+                "FMAXM_S",
+                "FMAXM_D",
+                "FLEQ_S",
+                "FLEQ_D",
+                "FLTQ_S",
+                "FLTQ_D",
+            )
+        ],
+        ("FLI_S", "", False, RS_FP),
+        ("FLI_D", "", False, RS_FP),
+    ]
+    for slot2 in (False, True):
+        suffix = "_2" if slot2 else ""
+        for src in ("int_src1", "int_src2", "fp_src1", "fp_src2", "fp_src3"):
+            signal = getattr(dut, "i_" + src + suffix, None)
+            if signal is not None:
+                signal.value = pack_rat_lookup(1, 17, 0xDEAD)
+        for name, first, second, station in cases:
+            # Slot 1's harmless integer operation supplies no sibling rename.
+            dut_if.drive_instruction(
+                valid=True,
+                instruction_operation=ADDI,
+                instruction=_make_instr(opcode=OPC_OP_IMM),
+            )
+            dut_if.drive_instruction_2(valid=False)
+            drive = dut_if.drive_instruction_2 if slot2 else dut_if.drive_instruction
+            drive(
+                valid=True,
+                instruction_operation=_INSTR_OPS[name],
+                rs1_addr=8,
+                rs2_addr=9,
+                is_fp_instruction=1,
+                is_fp_load=int(name == "FLH"),
+                is_fp_store=int(name == "FSH"),
+                instruction=_make_instr(
+                    dest_reg=3, source_reg_1=8, source_reg_2=9, opcode=OPC_OP_FP
+                ),
+            )
+            await dut_if.step()
+            signal = getattr(
+                dut,
+                ("o_fp_rs_dispatch" if station == RS_FP else "o_mem_rs_dispatch")
+                + suffix,
+            )
+            packet = unpack_rs_dispatch(int(signal.value))
+            # FP compute in slot 2 waits to become slot 1 before allocation.
+            assert bool(packet["valid"]) == (not slot2 or station != RS_FP), (
+                name,
+                slot2,
+            )
+            expected = (int(not first), int(not second), 1)
+            actual = tuple(packet[f"src{n}_ready"] for n in (1, 2, 3))
+            assert actual == expected, (name, slot2, actual, expected)
+            for n, ready in enumerate(expected, 1):
+                if not ready:
+                    assert packet[f"src{n}_tag"] == 17, (name, slot2, n)

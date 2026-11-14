@@ -1057,7 +1057,7 @@ package riscv_pkg;
     FCVT_H_S,                  // Convert single to half
     FCVT_D_H,                  // Convert half to double
     FCVT_H_D,                  // Convert double to half
-    // Zfa (RV64, with F and D; FLI.H needs Zfh and FMVH/FMVP are RV32-only).
+    // Zfa with F and D. FLI.H needs Zfh or Zvfh; D high-half moves need RV32.
     FLI_S,                     // Load one of 32 single-precision constants
     FLI_D,                     // Load one of 32 double-precision constants
     FMINM_S,                   // Minimum, NaN if either operand is NaN
@@ -3252,7 +3252,7 @@ package riscv_pkg;
   endfunction
 
   // Instructions that read integer rs2: branches, R-type integer ALU,
-  // integer stores, AMO/SC. FP stores (FSW/FSD) read FP rs2 for their data
+  // integer stores, AMO/SC. FP stores (FSH/FSW/FSD) read FP rs2 for their data
   // instead.
   function automatic logic uses_int_rs2(instr_op_e op);
     if (uses_fp_rs2(op)) begin

@@ -1402,7 +1402,7 @@ module dispatch #(
     o_rob_alloc_req.is_fp_instruction = i_from_id_to_ex.is_fp_instruction;
 
     // The ROB rejects dynamic rounding with frm in 5-7. Legal F/D ops without
-    // an rm field have funct3 <= 011, so funct3 == DYN identifies rm users.
+    // an rm field have funct3 <= 101, so funct3 == DYN identifies rm users.
     o_rob_alloc_req.fp_dyn_rm = i_from_id_to_ex.is_fp_instruction &&
         (i_from_id_to_ex.instruction.funct3 == riscv_pkg::FRM_DYN);
   end

@@ -830,7 +830,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="fs_off_test",
         nic_mac_clocks=False,
         description=(
-            "F/D instructions trap without memory effects when mstatus.FS is Off"
+            "F/D, Zfhmin and Zfa FS legality, dirty state and halfword forwarding"
         ),
     ),
     "vec_state_test": CocotbRunConfig(
@@ -2544,7 +2544,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.ex_stage.test_fp_engine",
         hdl_toplevel_module="fp_engine_equiv_harness",
         description=(
-            "F/D compute results and flags match Berkeley SoftFloat, including "
+            "F/D, Zfhmin and Zfa results and flags match their references, including "
             "cancellation"
         ),
     ),

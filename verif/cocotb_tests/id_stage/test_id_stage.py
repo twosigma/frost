@@ -1073,3 +1073,59 @@ async def test_btb_target_check_for_direct_branches(dut: Any) -> None:
     await _advance_cycle(dut)
     packet = _read_id_packet(dut)
     assert packet["btb_correct_non_jalr"] is False
+
+
+@cocotb.test()
+async def test_extension_encodings_and_operands(dut: Any) -> None:
+    """Zfhmin/Zfa and their adjacent F/D encodings select the right registers."""
+    await _setup_test(dut)
+    # name, funct7, rs2, funct3, first source (f/i/none), second source, FP dest
+    cases = [
+        ("FMV_X_H", 0x72, 0, 0, "f", False, False),
+        ("FMV_H_X", 0x7A, 0, 0, "i", False, True),
+        ("FCVT_S_H", 0x20, 2, 0, "f", False, True),
+        ("FCVT_D_H", 0x21, 2, 0, "f", False, True),
+        ("FCVT_H_S", 0x22, 0, 0, "f", False, True),
+        ("FCVT_H_D", 0x22, 1, 0, "f", False, True),
+        ("FLI_S", 0x78, 1, 0, "", False, True),
+        ("FLI_D", 0x79, 1, 0, "", False, True),
+        ("FCVTMOD_W_D", 0x61, 8, 1, "f", False, False),
+        ("FMV_X_W", 0x70, 0, 0, "f", False, False),
+        ("FMV_X_D", 0x71, 0, 0, "f", False, False),
+        ("FMV_W_X", 0x78, 0, 0, "i", False, True),
+        ("FMV_D_X", 0x79, 0, 0, "i", False, True),
+        ("FCVT_S_D", 0x20, 1, 0, "f", False, True),
+        ("FCVT_D_S", 0x21, 0, 0, "f", False, True),
+        ("FCVT_W_D", 0x61, 0, 1, "f", False, False),
+    ]
+    for fmt, bit in (("S", 0), ("D", 1)):
+        for op, sub in (("FMIN", 0), ("FMAX", 1), ("FMINM", 2), ("FMAXM", 3)):
+            cases.append((f"{op}_{fmt}", 0x14 | bit, 2, sub, "f", True, True))
+        for op, sub in (("FLE", 0), ("FLT", 1), ("FEQ", 2), ("FLEQ", 4), ("FLTQ", 5)):
+            cases.append((f"{op}_{fmt}", 0x50 | bit, 2, sub, "f", True, False))
+        for op, rs2 in (("FROUND", 4), ("FROUNDNX", 5)):
+            cases.append((f"{op}_{fmt}", 0x20 | bit, rs2, 0, "f", False, True))
+    for slot2 in (False, True):
+        for name, funct7, rs2, funct3, first, second, fp_dest in cases:
+            word = _pack_r(
+                funct7=funct7, rs2=rs2, rs1=8, funct3=funct3, rd=3, opcode=OPC_OP_FP
+            )
+            for fs_off in (False, True):
+                dut.i_mstatus_fs_off.value = fs_off
+                _drive_pd_packet(dut, {}, slot2=not slot2)
+                _drive_pd_packet(
+                    dut, {"program_counter": BASE_PC, "instruction": word}, slot2=slot2
+                )
+                await _advance_cycle(dut)
+                packet = _read_id_packet(dut, slot2=slot2)
+                assert packet["is_illegal_instruction"] == fs_off, (name, slot2)
+                assert packet["has_fp_dest"] == (fp_dest and not fs_off), name
+                assert packet["has_int_dest"] == (not fp_dest and not fs_off), name
+                assert packet["uses_fp_rs1"] == (first == "f" and not fs_off), name
+                assert packet["uses_int_rs1"] == (first == "i" and not fs_off), name
+                assert packet["uses_fp_rs2"] == (second and not fs_off), name
+                assert not packet["uses_int_rs2"] and not packet["uses_fp_rs3"], name
+                if not fs_off:
+                    assert packet["instruction_operation"] == _INSTR_OPS[name], name
+                    assert packet["rs_type"] == RS_FP, name
+    dut.i_mstatus_fs_off.value = 0
