@@ -92,38 +92,48 @@ def run_startup_sweep(
         if not baseline:
             arguments.append("+verilator+noassert")
         started = time.monotonic()
-        result = subprocess.run(
-            arguments,
-            cwd=Path(__file__).resolve().parent,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=120,
-        )
-        (output / f"seed_{seed}.log").write_text(result.stdout)
+        try:
+            result = subprocess.run(
+                arguments,
+                cwd=Path(__file__).resolve().parent,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=120,
+            )
+            returncode, transcript = result.returncode, result.stdout
+        except subprocess.TimeoutExpired as exc:
+            captured = exc.stdout or b""
+            transcript = (
+                captured.decode(errors="replace")
+                if isinstance(captured, bytes)
+                else captured
+            ) + "\nAssertionError: startup simulation exceeded 120 seconds\n"
+            returncode = 124
+        (output / f"seed_{seed}.log").write_text(transcript)
         try:
             cases = ElementTree.parse(report).findall(".//testcase")
         except (OSError, ElementTree.ParseError):
             cases = []
         passed = (
-            result.returncode == 0
-            and "STARTUP_SMOKE_PASS" in result.stdout
+            returncode == 0
+            and "STARTUP_SMOKE_PASS" in transcript
             and bool(cases)
             and not any(
                 case.find("failure") is not None or case.find("error") is not None
                 for case in cases
             )
-            and (baseline or "Simulation assertions armed after reset" in result.stdout)
+            and (baseline or "Simulation assertions armed after reset" in transcript)
         )
         return {
             "seed": seed,
             "passed": passed,
-            "returncode": result.returncode,
+            "returncode": returncode,
             "seconds": round(time.monotonic() - started, 3),
             "errors": [
                 line
-                for line in result.stdout.splitlines()
+                for line in transcript.splitlines()
                 if "%Error" in line or "AssertionError" in line
             ],
         }
@@ -141,9 +151,11 @@ def run_startup_sweep(
                     flush=True,
                 )
     elapsed = time.monotonic() - started
+    with binary.open("rb") as executable:
+        digest = hashlib.file_digest(executable, "sha256").hexdigest()
     summary = {
         "binary": str(binary),
-        "sha256": hashlib.file_digest(binary.open("rb"), "sha256").hexdigest(),
+        "sha256": digest,
         "baseline": baseline,
         "workers": workers,
         "seconds": round(elapsed, 3),
@@ -165,7 +177,12 @@ def main() -> int:
     )
     parser.add_argument("--binary", type=Path, default=Path("tests/sim_build/Vtop"))
     parser.add_argument("--output", type=Path, default=Path("tests/startup_sweep"))
-    parser.add_argument("--count", type=int, default=200)
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=200,
+        help="integer seeds 1 through COUNT, plus the fixed regression seed",
+    )
     parser.add_argument("--workers", type=int, choices=(1, 2), default=2)
     parser.add_argument(
         "--baseline",

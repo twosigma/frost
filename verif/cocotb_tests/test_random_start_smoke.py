@@ -37,10 +37,11 @@ from cocotb_tests.test_real_program import (
 
 def load_startup_loop(dut: Any) -> None:
     """Install a two-word self loop without initializing unused image storage."""
-    soc = dut.cpu_and_memory_subsystem.soc
+    platform = dut.cpu_and_memory_subsystem
+    soc = platform.soc if hasattr(platform, "soc") else platform
     assert int(soc.rst_core.value), "startup loop load requires system reset"
-    if not hasattr(soc, "instruction_memory"):
-        # The trace-injection platform has no instruction image.
+    if hasattr(platform, "u_rvfi_dii"):
+        # An empty injected stream supplies C.NOP instructions.
         return
     memory = soc.instruction_memory
     model = _load_imem_predecode_model()
@@ -76,6 +77,13 @@ def load_startup_loop(dut: Any) -> None:
 @cocotb.test()
 async def startup_smoke(dut: Any) -> None:
     """Apply the program bench's reset, then run 300 system clock cycles."""
+    platform = dut.cpu_and_memory_subsystem
+    soc = platform.soc if hasattr(platform, "soc") else platform
+    if hasattr(platform, "u_rvfi_dii"):
+        harness = platform.u_rvfi_dii
+        harness.dii_count.value = Immediate(0)
+        harness.event_target.value = Immediate(1024)
+        harness.hang_limit.value = Immediate(10000)
     await prepare_program_start(dut)
     dut.i_uart_rx.value = 1
     dut.i_external_interrupt.value = 0
@@ -83,9 +91,8 @@ async def startup_smoke(dut: Any) -> None:
     start_cpu_clock(dut)
     cocotb.start_soon(generate_divided_clock(dut, image_loader=load_startup_loop))
     if os.environ.get("FROST_NIC_MAC_CLOCKS", "1") == "0":
-        hold_nic_without_mac_clocks(
-            dut, (dut.cpu_and_memory_subsystem.soc.nic_access_q,)
-        )
+        accesses = (soc.nic_access_q,) if hasattr(soc, "nic_access_q") else ()
+        hold_nic_without_mac_clocks(dut, accesses)
     else:
         start_nic_mac_clocks(dut, edges_without_delay=True)
     for _ in range(RESET_CYCLES):

@@ -512,6 +512,23 @@ reset reaches them. Runtime assertions stay enabled across warm resets;
 their local reset conditions apply during those resets. Unit benches start
 with assertions enabled and drive reset at their module boundaries.
 
+After building a system test with `FROST_RANDOM_START_SEED` set, reuse its
+model for a short startup sweep:
+
+```bash
+./scripts/frost.py run python3 tests/random_start_sweep.py \
+    --test hello_world --count 200 --workers 2
+```
+
+Use the registry entry and environment that produced the model. Each process
+applies reset, installs a small instruction loop, and runs 300 system cycles.
+The sweep passes seeds 1 through 200 and a fixed regression seed as runtime
+arguments; it does not rebuild. It requires successful assertion arming, a
+completion marker, and a fresh passing cocotb report. Per-seed logs and XML
+reports, executable digest, failures, and elapsed time go to
+`tests/startup_sweep/` (override with `--output`). `--baseline` measures an
+older model with checks enabled from its first evaluation.
+
 This is a two-state power-up test. It does not model metastability, reset
 recovery or removal timing, SRAM analog behavior, or power-domain sequencing.
 Sparse external-memory models return their defined default for absent keys.
