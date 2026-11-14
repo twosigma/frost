@@ -235,6 +235,9 @@ response rotation and byte-write preservation.
 
 `debug_test` exercises JTAG control, memory access and BRAM instruction
 mirroring. The debugger executes both words of an aligned doubleword patch.
+It steps over a misaligned `ld` and `sd` to DDR, each retiring as one
+instruction through the misaligned-access engine, and checks that the same
+load from the program buffer, in Debug Mode, reports an exception.
 `debug_fence_test` warms BRAM instructions, patches both executed words,
 executes FENCE.I and calls the patch in one command. It stalls the mirror
 through programming-port backpressure and checks fence completion ordering.
@@ -350,7 +353,9 @@ branch-delay and walker-discard matrix. Their SFENCE.VMA operations drain
 committed stores, invalidate L1I and flush fetch and translation state.
 
 `opensbi_smoke` uses a twenty-million-cycle budget for firmware boot and
-its S-mode payload.
+its S-mode payload. Its misaligned loads and stores to DDR (phase F) run on
+the misaligned-access engine; `opensbi_smoke_no_misaligned_hw` builds without
+the engine, so OpenSBI emulates them, as it does for low BRAM.
 
 `mmu_reach` is a manual benchmark, excluded from the pytest application
 matrix. It runs dependent data and instruction chains at 1, 4, 16, 20, 32,
@@ -379,7 +384,7 @@ of its memory and ALU loop.
 | Entries that run once | Reason |
 | --- | --- |
 | `coremark_pro_loops`, `coremark_pro_nnet`, `lq_stale_slot_probe` | Run time |
-| `opensbi_smoke` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
+| `opensbi_smoke`, `opensbi_smoke_no_misaligned_hw` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
 | `amo_irq_torture_sim`, `coremark`, `coremark_link1`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |
 
 Entries with `nic_mac_clocks=False` run as on a board with no NIC link
@@ -553,7 +558,8 @@ point is marked `slow`:
 
 Runs the implemented parts of riscv-arch-test and compares each test's
 signature with a committed Spike reference under
-`sw/apps/arch_test/references/`, which mirrors the suite's directory layout.
+`sw/apps/arch_test/references/`, which mirrors the suite's directory layout
+(eight DDR-tier exceptions, described below, compare with Sail).
 At the end of a test, `RVMODEL_HALT` (`sw/apps/arch_test/model_test.h`)
 prints `<<PASS>>` over the UART, and the bench then reads the signature from
 the data copy of low BRAM. The `bram` and `icache` tiers keep the signature
@@ -591,10 +597,21 @@ runs leave out tests with more than 5,000 cases (`SIM_MAX_TEST_CASES`) unless
 you pass `--no-sim-filter`; `--test` runs any one test. In the `bram` and
 `icache` tiers, a test too large for low BRAM (95 KiB of code, 1 KiB reserved
 for debug, and 160 KiB of data and stack) reports SKIP; the `ddr` tier still
-runs it. `--shard K/N` runs part K of N of each selected extension, with the
-parts balanced by case count. A selected test with no committed reference
+runs it. `--shard K/N` runs part K of N of each
+selected extension, with the parts balanced by case count. A selected test with no committed reference
 fails; `sw/apps/arch_test/generate_references.py`, run in the frost image,
 generates references with the pinned Spike.
+
+In the `ddr` tier the misaligned-access engine performs misaligned loads and
+stores, which the pinned Spike cannot model, while low BRAM still traps them.
+The eight privilege tests of the load and store address-misaligned trap
+(`misalign-lh` through `misalign-sd`, `DDR_MISALIGNED_TESTS`) therefore use a
+second reference in that tier, under `sw/apps/arch_test/references_ddr/`,
+generated with the image's Sail model: the TestRIG configuration
+(`verif/testrig/sail_frost.json`) with misaligned loads and stores supported
+in the DDR region (`generate_references.py --ddr-misaligned`; `--all` makes
+both sets). The `bram` and `icache` tiers, whose data is in low BRAM, compare
+them with the Spike references, which record the trap.
 
 The vector crypto tests (`rv32i_m/Zvk`, which also declare RV64) are prepared
 but not supported. Of the 37 in the pinned suite, 32 run: `vandn.vx`,
@@ -653,10 +670,13 @@ supervisor in `sw/apps/riscv_tests/env_v/`. The virtual environment needs DDR,
 and it sets page-table A and D bits from page faults (Svade).
 
 `ISA_SKIP_TESTS` leaves out tests for behavior FROST does not implement:
-misaligned accesses in hardware (`ma_data`), debug triggers (`breakpoint`),
-PMP (`pmpaddr`), and hardware A/D updates (`dirty`). In BRAM,
-`ISA_SKIP_TESTS_BRAM` also leaves out `fence_i` and `icache-alias`, which need
-DDR for instruction storage or page tables.
+debug triggers (`breakpoint`), PMP (`pmpaddr`), and hardware A/D updates
+(`dirty`). In BRAM, `ISA_SKIP_TESTS_BRAM` also leaves out `fence_i` and
+`icache-alias`, which need DDR for instruction storage or page tables, and
+`ma_data`: misaligned accesses are performed in hardware only in cached DDR,
+and low BRAM raises the address-misaligned exception. In DDR, `ma_data` runs
+in both environments; under `--env v` its accesses cross demand-paged Sv39
+pages.
 
 ### `test_riscv_vector_tests.py`
 
@@ -920,6 +940,7 @@ has a 20-minute timeout in both SBY and the runner.
 | `FROST_ASYNC_CPU_CLOCK` | `1` enables the independent CPU boundary in Yosys synthesis tests |
 | `FROST_NIC_MAC_CLOCKS` | For the whole-SoC program and TestRIG benches, overrides the registry or runner default: `0` holds both NIC MAC clocks and their clock-OK inputs low with an access guard; `1` starts the clocks. The ISA, torture, and TestRIG runners default to `0` |
 | `MEMORY_LINK_STAGES` | Register stages between the hart and the cluster memory in `frost` builds (default 0). The `*_link1` registry entries run the memory-system programs with one stage |
+| `MISALIGNED_HW` | Builds `frost` with the misaligned-access engine, as the X3 has it: plain misaligned loads and stores to cached DDR are performed in hardware (default 1, and 0 when `ENABLE_CACHED_TIER=0`). The registry entries that disable the cached tier also set it to 0 |
 | `SIM_FAST_MAINT` | Clears coherent-array tags, coherence states and replacement bits in one simulation cycle and enables fast L1I invalidation (default 1). Data RAM is not cleared. Hardware uses 0. Coherent fences leave dirty L1D data available to home probes. The Physical address aperture (1 GiB / Bare access) CI job uses 0 with randomized start values to cover the real reset sweep |
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to

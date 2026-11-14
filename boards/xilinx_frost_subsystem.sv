@@ -47,6 +47,9 @@ module xilinx_frost_subsystem #(
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
     // Profiling counters (see frost.sv); the board top passes its generic.
     parameter int unsigned PERF_COUNTERS = 0,
+    // Misaligned loads and stores in hardware (frost MISALIGNED_HW); needs
+    // ENABLE_CACHED_TIER.
+    parameter bit MISALIGNED_HW = 1'b0,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
     parameter int unsigned DECODED_QUEUE_DEPTH = riscv_pkg::DecodedQueueDepth,
@@ -352,6 +355,7 @@ module xilinx_frost_subsystem #(
       .VLEN(VLEN),
       .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE),
       .PERF_COUNTERS(PERF_COUNTERS),
+      .MISALIGNED_HW(MISALIGNED_HW),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
       .DECODED_QUEUE_DEPTH(DECODED_QUEUE_DEPTH),

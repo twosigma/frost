@@ -25,7 +25,7 @@ expands renaming, execution, result broadcast, and load/store ordering.
 | `mmu/` | Instruction MMU (16-entry ITLB), data MMU (16-entry DTLB), shared page-table walker |
 | `misaligned/` | Misaligned-access engine (`ma_engine`) and its checks (`ma_pkg`) |
 | `csr/` | CSR file; CSR instructions execute at commit |
-| `control/trap_unit.sv` | Traps, delegation, interrupts, Debug Mode entry |
+| `control/trap_unit.sv` | Traps, delegation, interrupts, Debug Mode entry, and the no-CSR take that starts the misaligned-access engine |
 | `ex_stage/` | ALU, multiplier and divider, FPU, branch unit |
 | `wb_stage/` | Register file module used for the INT and FP files |
 | `vector/` | Vector unit datapath blocks (see [Vector state](#vector-state)) |
@@ -45,8 +45,8 @@ walker (`mmu/ptw`), and these glue submodules from [`cpu_ooo/`](cpu_ooo/):
 | `ooo_pipeline_control` | `pipeline_control/` | Front-end stalls, CSR and control-flow serialization, unresolved-branch tracking, post-flush holdoff, the registered trap and xRET redirect, prediction disable |
 | `frontend_validity_tracker` | `frontend_control/` | Marks which IF/PD/ID packets are real instructions and classifies unpredicted control flow ([README](cpu_ooo/frontend_control/README.md)) |
 | `decoded_bundle_queue` | `frontend_control/` | Queue of decoded two-instruction bundles between ID and dispatch, four deep by default ([README](cpu_ooo/frontend_control/README.md)) |
-| `ooo_register_files` | `register_files/` | INT and FP architectural register files, two write ports each for two-wide commit, and a bypass that forwards a same-cycle commit to dispatch |
-| `commit_actions` | `commit/` | Register writes at commit, the delayed CSR writeback, the retire valid, and the instret increment |
+| `ooo_register_files` | `register_files/` | INT and FP architectural register files, two write ports each for two-wide commit, and a bypass that forwards a same-cycle commit to dispatch; with `EXTRA_READ_PORT`, one more read port on each file for the misaligned-access engine |
+| `commit_actions` | `commit/` | Register writes at commit, the delayed CSR writeback, the misaligned-access engine's load result on port 0, the retire valid, and the instret increment |
 | `branch_resolution` | `branch_recovery/` | Resolves conditional branches and JALRs from INT_RS with `branch_jump_unit` and reports them to the ROB, ignoring a branch whose checkpoint was reused. A JAL resolves when the ROB allocates it |
 | `early_misprediction_recovery` | `branch_recovery/` | For a mispredicted conditional branch that holds a checkpoint, redirects fetch and restores the RAT the cycle after it resolves, instead of at commit |
 | `misprediction_flush_controller` | `branch_recovery/` | Commit-time mispredictions, full and partial flush priority, checkpoint restore and free |
@@ -397,10 +397,28 @@ walker's port into the cache hierarchy.
 ## Misaligned accesses
 
 `misaligned/ma_engine.sv` performs one misaligned plain load or store in
-cacheable DDR as one or two 32-byte sector transactions. It is a standalone
-module with its own unit bench and formal target; the core does not
-instantiate it, and misaligned accesses raise the address-misaligned
+cacheable DDR as one or two 32-byte sector transactions. `cpu_ooo`
+instantiates it when the `MISALIGNED_HW` parameter is set (default off; the
+X3 build and the simulation default set it), which needs the cached tier;
+elaboration rejects it without one.
+Without the engine, every misaligned access raises the address-misaligned
 exception.
+
+With the engine, a plain load or store whose address-misaligned exception
+reaches the ROB head is an assist. LR, SC and AMOs keep the exception, and
+so does any access in Debug Mode, which parks as before. The
+trap unit takes an assist like a memory replay, without CSR effects: it
+flushes the pipeline, redirects fetch to the instruction after the access and
+starts the engine with the head's address, size, sign, register numbers and
+FP flag. While the engine runs, dispatch is held, so nothing younger enters
+the ROB, and interrupts and halt requests wait behind the same shield as an
+AMO. The engine reads a store's data through an extra read port on each
+register file, translates through the page-table walker when translation is
+on, and makes its sector requests on the hart's line client. A load's result
+is written through commit port 0, one cycle after completion, and the access
+counts as one retired instruction (`minstret` and a single step). If a part
+faults, the engine's exception is taken as the instruction's own, with its
+cause and trap value, and `mepc` or `sepc` holds the access's PC.
 
 An access is split at the first sector boundary it crosses. `ma_pkg` checks
 each part in architectural order: page fault, then access fault (a physical
@@ -521,6 +539,20 @@ slot 5. The wrapper keeps the result per ROB tag; when the instruction retires
 clears `vstart` and sets VS to Dirty. With rs1 = rd = x0 it keeps
 `min(vl, VLMAX)` under the new `vtype`, as the specification requires.
 
+The vector integer instructions listed for `vec_engine` below also execute.
+ID decodes them as `VARITH` (or `VARITH_X` with a scalar operand), which
+dispatch sends to INT_RS only to hand the scalar operand to the ROB; legality
+that depends on `vtype` (vill, register-group alignment, mask-destination
+overlap, a masked write of v0) is decided at allocation from the `vtype` in
+effect at that point, which a tracker beside the rename checkpoints keeps
+(vector arithmetic waits at dispatch while a register-form `vsetvl` leaves it
+unknown). When one retires, `vec_unit` queues it with its scalar and the
+architectural `vl`, `vtype` and `vstart`, and the engine executes it after
+commit; the CSR file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
+and `vfirst.m` execute at the ROB head once the unit is idle and return their
+result on CDB slot 6. The other vector instructions, and every vector load and
+store, are still illegal.
+
 `misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
 elaboration while the vector instructions are not implemented, and bare-metal
 software enables the state by writing `mstatus.VS`. With `VECTOR=0` the vector CSRs do
@@ -600,6 +632,15 @@ recurrence through one subtractor, one result bit per cycle, and rounds like
 the other blocks. It takes one operation at a time, signals when it is free,
 and returns each result a fixed P + 10 cycles later (P is the format's
 precision: 21, 34 and 63 cycles for FP16, FP32 and FP64).
+
+`vec_engine` puts the register file and the integer lanes together and
+executes committed vector instructions one at a time, register group by
+register group, with no overlap between instructions yet: the single-width
+integer arithmetic, logical, minimum and maximum, shift and Zvbb operations,
+the integer compares into a mask register, `vmerge` and `vmv.v.*`. Only active
+body elements are written (the register file's byte enables), so tail and
+inactive elements stay undisturbed. A read port and a byte-enabled write port
+serve the memory side.
 
 ## Subtle cases
 

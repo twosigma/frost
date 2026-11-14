@@ -103,6 +103,9 @@ module frost_rvfi_platform #(
     parameter bit VECTOR = 1'b0,
     parameter int unsigned VLEN = 256,
     parameter bit VECTOR_ADVERTISE = 1'b0,
+    // Misaligned plain loads and stores to cached DDR run on the hart's
+    // misaligned-access engine instead of trapping (cpu_ooo MISALIGNED_HW).
+    parameter bit MISALIGNED_HW = 1'b0,
     // Core clock frequency; sets the NIC's default TICK (cycles per
     // microsecond).
     parameter int unsigned CLK_FREQ_HZ = 322265625,
@@ -377,6 +380,9 @@ module frost_rvfi_platform #(
   // unmapped page on both sides (the store-issue page split in
   // tomasulo_wrapper).
   initial begin
+    // The RVFI-DII recorder sees ROB commits and store-queue writes only; an
+    // access the misaligned-access engine performs has neither.
+    if (MISALIGNED_HW) $fatal(1, "frost_rvfi_platform: TestRIG needs MISALIGNED_HW=0");
     if ((MmioAddr != {riscv_pkg::MmioFirstPage, 12'h000}) ||
         ((MmioAddr + MmioSizeBytes) != {riscv_pkg::MmioLastPage + 20'd1, 12'h000}) ||
         ({AplicWindowSel, 22'h00_0000} != {riscv_pkg::AplicFirstPage, 12'h000}) ||
@@ -798,6 +804,7 @@ module frost_rvfi_platform #(
       .VECTOR(VECTOR),
       .VLEN(VLEN),
       .VECTOR_ADVERTISE(VECTOR_ADVERTISE),
+      .MISALIGNED_HW(MISALIGNED_HW),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),

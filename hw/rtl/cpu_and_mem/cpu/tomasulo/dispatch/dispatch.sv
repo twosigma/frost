@@ -47,10 +47,14 @@ module dispatch #(
     // =========================================================================
     // Instruction Input (from ID stage pipeline register)
     // =========================================================================
-    input riscv_pkg::from_id_to_ex_t i_from_id_to_ex,
+    input riscv_pkg::from_id_to_ex_t       i_from_id_to_ex,
+    // The vtype in effect at slot 1's place in program order ({vill, vtype}),
+    // for vector arithmetic legality; cpu_ooo holds vector arithmetic while
+    // it is unknown
+    input logic                      [8:0] i_vtype_spec = 9'd0,
     // Bundle-valid candidate, not yet qualified by flush. Dispatch applies
     // i_flush (below) as the only recovery qualification.
-    input logic                      i_valid,
+    input logic                            i_valid,
 
     // Slot 2 is a preflush candidate. An absent slot 2 leaves admission to slot 1.
     input riscv_pkg::from_id_to_ex_t i_from_id_to_ex_2,
@@ -1371,6 +1375,11 @@ module dispatch #(
     o_rob_alloc_req.has_fp_flags = op_has_fp_flags;
     o_rob_alloc_req.is_vcfg = (op == riscv_pkg::VSETVLI) || (op == riscv_pkg::VSETIVLI) ||
         (op == riscv_pkg::VSETVL);
+    o_rob_alloc_req.is_varith = (op == riscv_pkg::VARITH) || (op == riscv_pkg::VARITH_X);
+    // A vector-to-scalar op (VTOX) is illegal only under vill.
+    o_rob_alloc_req.vec_illegal = (o_rob_alloc_req.is_varith && riscv_pkg::vector_arith_illegal(
+                                   i_vtype_spec, 32'(i_from_id_to_ex.instruction))) ||
+        ((op == riscv_pkg::VTOX) && i_vtype_spec[8]);
 
     // With FS Off, ID routes F/D instructions to INT_RS as ILLEGAL. The ROB
     // also rejects them at allocation, including fflags, frm and fcsr accesses.
@@ -1432,6 +1441,9 @@ module dispatch #(
     o_rob_alloc_req_2.has_fp_flags = op_has_fp_flags_2;
     o_rob_alloc_req_2.is_vcfg = (op_2 == riscv_pkg::VSETVLI) || (op_2 == riscv_pkg::VSETIVLI) ||
         (op_2 == riscv_pkg::VSETVL);
+    // Vector instructions never dispatch in slot 2.
+    o_rob_alloc_req_2.is_varith = 1'b0;
+    o_rob_alloc_req_2.vec_illegal = 1'b0;
 
     o_rob_alloc_req_2.is_fp_instruction = i_from_id_to_ex_2.is_fp_instruction;
     o_rob_alloc_req_2.fp_dyn_rm = i_from_id_to_ex_2.is_fp_instruction &&

@@ -171,13 +171,21 @@ module instr_operand_classifier (
           raw_class.rs_type = riscv_pkg::RS_NONE;  // Legal xRET / WFI.
         end
       end
-      // Vector configuration (the only legal OP-V encodings so far): rd, AVL
-      // in rs1 (not vsetivli), vtype in rs2 (vsetvl only), MUL_RS.
-      riscv_pkg::OPC_OP_V: begin
+      // Vector configuration (funct3 111): rd, AVL in rs1 (not vsetivli),
+      // vtype in rs2 (vsetvl only), MUL_RS. Vector arithmetic: no rd, rs1
+      // only as the .vx scalar, INT_RS (which hands the scalar to the ROB).
+      riscv_pkg::OPC_OP_V:
+      if (i_instr.funct3 == 3'b111) begin
         raw_class.has_int_dest = 1'b1;
         raw_class.uses_int_rs1 = i_instr.funct7[6:5] != 2'b11;
         raw_class.uses_int_rs2 = i_instr.funct7 == 7'b1000000;
         raw_class.rs_type = riscv_pkg::RS_MUL;
+      end else if (i_instr.funct3 == 3'b010 && i_instr.funct7[6:1] == 6'b010000) begin
+        // vmv.x.s, vcpop.m, vfirst.m: rd only, completed at the ROB head
+        raw_class.has_int_dest = 1'b1;
+        raw_class.rs_type = riscv_pkg::RS_NONE;
+      end else begin
+        raw_class.uses_int_rs1 = i_instr.funct3 == 3'b100;
       end
       default: ;  // Illegal opcode: i_illegal selects the neutral class.
     endcase
