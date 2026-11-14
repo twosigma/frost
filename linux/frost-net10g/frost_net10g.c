@@ -224,8 +224,8 @@
 
 /*
  * RX buffers come from a page pool and are recycled: the NIC writes a frame FROST_RX_HEADROOM
- * bytes into a page, and the poll builds the skb around it. NET_IP_ALIGN keeps the IP header
- * aligned, as __netdev_alloc_skb_ip_align() did.
+ * bytes into a fragment, and the poll copies the frame or builds the skb around it.
+ * NET_IP_ALIGN keeps the IP header aligned.
  */
 #define FROST_RX_HEADROOM		(NET_SKB_PAD + NET_IP_ALIGN)
 
@@ -261,7 +261,8 @@ struct frost_desc {
 struct frost_buf {
 	struct sk_buff *skb;	/* TX */
 	struct page *page;	/* RX */
-	unsigned int off;	/* RX: the buffer's offset in its page (0 or half a page) */
+	unsigned int off;	/* RX: the buffer's offset in its page */
+	unsigned int truesize;	/* RX: the allocated fragment size, including pool padding */
 	dma_addr_t dma;
 	unsigned int len;	/* the mapped length */
 	bool page_mapping;	/* TX: pair skb_frag_dma_map with dma_unmap_page */
@@ -301,7 +302,7 @@ struct frost_priv {
 	bool hw_up;		/* the rings are published: frost_up() completed */
 
 	unsigned int rx_buf_len;
-	unsigned int rx_truesize;	/* the page-pool fragment each RX buffer occupies */
+	unsigned int rx_truesize;	/* the requested page-pool fragment size */
 	unsigned int rx_copybreak;	/* frames up to this length are copied and the fragment recycled */
 	struct page_pool *rx_pool;
 	struct frost_desc *rx_ring;
@@ -422,7 +423,7 @@ static void frost_refill_timer(struct timer_list *t)
  * Fill RX to rx_mask outstanding buffers; stop on allocation failure
  * and return the number posted. Write only rx_tail, never a descriptor the
  * NIC may hold. The page pool maps each page once, when it first allocates
- * it, and keeps the mapping while the page is recycled. Two buffers share a
+ * it, and keeps the mapping while the page is recycled. Buffers share a
  * page when a buffer fits in half of one (page_pool fragments).
  * The NIC uses reads accepted after TAIL covers the descriptor; dma_wmb()
  * orders its four words before the doorbell so those reads see the new data.
@@ -438,13 +439,14 @@ static unsigned int frost_rx_fill(struct frost_priv *priv, gfp_t gfp)
 		struct page *page;
 		dma_addr_t dma;
 
-		/* Half a page per buffer when two fit, else the whole page (size is rewritten) */
+		/* The pool can append unused space to the final fragment. */
 		page = page_pool_alloc(priv->rx_pool, &off, &size, gfp | __GFP_NOWARN);
 		if (!page)
 			break;
 		dma = page_pool_get_dma_addr(page) + off + FROST_RX_HEADROOM;
 		buf->page = page;
 		buf->off = off;
+		buf->truesize = size;
 		buf->dma = dma;
 		buf->len = priv->rx_buf_len;
 
@@ -576,7 +578,7 @@ static int frost_rx_reap(struct frost_priv *priv, int budget)
 			}
 		} else {
 			/* The skb takes the fragment; freeing the skb returns it to the pool */
-			skb = napi_build_skb(va, priv->rx_truesize);
+			skb = napi_build_skb(va, buf->truesize);
 			if (likely(skb)) {
 				skb_mark_for_recycle(skb);
 				skb_reserve(skb, FROST_RX_HEADROOM);
@@ -752,8 +754,8 @@ static int frost_alloc_rings(struct frost_priv *priv)
 {
 	/*
 	 * One RX buffer: headroom, the frame, and the skb_shared_info that napi_build_skb()
-	 * places at the end. A buffer that fits in half a page shares its page with a second
-	 * one (page_pool fragments, 2048 bytes each at 1500 MTU); a larger one takes
+	 * places at the end. At 1500 MTU two buffers share a page; smaller MTUs can fit
+	 * more fragments. A buffer larger than half a page takes
 	 * 2^order pages. The pool syncs a split page for the device as a whole when its last
 	 * fragment returns, so the sync range is the page, from offset 0, and the CPU-side
 	 * sync in the poll adds the fragment offset and headroom. Both syncs run only where
@@ -1893,5 +1895,5 @@ module_platform_driver(frost_driver);
 
 MODULE_DESCRIPTION("FROST net10g 10GBASE-R Ethernet driver");
 /* The DKMS package version: PACKAGE_VERSION in dkms.conf matches it */
-MODULE_VERSION("1.1");
+MODULE_VERSION("1.2");
 MODULE_LICENSE("Dual BSD/GPL");
