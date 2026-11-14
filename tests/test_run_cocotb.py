@@ -3986,6 +3986,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GRX_FIFO_DEPTH=8192",),
         description="NIC registers and traffic with the 8192-word RX FIFO and its limit register",
     ),
+    "nic_top_gmii_diag": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_top_gmii_diag",
+        hdl_toplevel_module="nic_top",
+        verilator_extra_args=("-GGMII_MODE=1", "-GRX_PREAMBLE_ER_TOLERANT=1"),
+        description="NIC GMII diagnostic counters 21-35 read back, PHY poll bus and RESET",
+    ),
     "nic_pause_rx_wire": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_pause_rx_wire",
         hdl_toplevel_module="nic_pause_rx_wire",

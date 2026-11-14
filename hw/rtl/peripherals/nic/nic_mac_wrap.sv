@@ -697,8 +697,9 @@ module nic_mac_wrap #(
             GMII_RX_IDLE: begin
               if (gmii_rx_dv) begin
                 pre_er_seen_q <= 1'b0;
-                if (RX_PREAMBLE_ER_TOLERANT && gmii_rx_er) begin
-                  // A lone rx_er on the first preamble byte is taken as a preamble byte
+                if (RX_PREAMBLE_ER_TOLERANT && gmii_rx_er && gmii_rxd == 8'h55) begin
+                  // A lone errored 0x55 on the first preamble byte is taken as a preamble byte;
+                  // an errored 0xd5 (the SFD) or any other errored byte drops the frame
                   pre_er_seen_q   <= 1'b1;
                   gmii_rx_state_q <= GMII_RX_PREAMBLE;
                 end else if (!gmii_rx_er && (gmii_rxd == 8'hd5)) begin
@@ -726,7 +727,8 @@ module nic_mac_wrap #(
                 gmii_rx_lane_q <= 3'd0;
                 gmii_rx_state_q <= GMII_RX_DATA;
                 gmii_pre_accept_event <= pre_er_seen_q;
-              end else if (RX_PREAMBLE_ER_TOLERANT && gmii_rx_er && !pre_er_seen_q) begin
+              end else if (RX_PREAMBLE_ER_TOLERANT && gmii_rx_er && gmii_rxd == 8'h55 &&
+                         !pre_er_seen_q) begin
                 pre_er_seen_q <= 1'b1;
               end else if (gmii_rx_er || (gmii_rxd != 8'h55)) begin
                 gmii_rx_state_q    <= GMII_RX_WAIT_END;

@@ -58,3 +58,27 @@ async def lone_preamble_error_is_tolerated(dut: Any) -> None:
     assert _total(dut, PREAMBLE_DROP) == 2
     # Three lone errors, the two separate errors of the next preamble, and the error on the SFD.
     assert _total(dut, ER_PREAMBLE) == 3 + 2 + 1
+
+
+@cocotb.test()
+async def errored_sfd_is_never_a_preamble_byte(dut: Any) -> None:
+    """Drop the frame on an rx_er at the SFD whatever the first destination byte is."""
+    peer = await _start(dut)
+    peer.ready = True
+    for first in (0xD5, 0x55):
+        payload = bytes([first]) + bytes(range(1, 80))
+        wire = _wire_frame(payload)
+        dropped = _total(dut, PREAMBLE_DROP)
+        accepted = _total(dut, PRE_ACCEPT)
+        peer.received.clear()
+        # The SFD (byte 7) errored: the frame is dropped at once, so the first destination byte
+        # (0xd5 would otherwise be taken for the SFD, 0x55 for another preamble byte) starts nothing.
+        peer.inject(wire, error_byte=7)
+        # An errored 0xd5 as the first preamble byte (short preamble) also drops.
+        peer.inject(b"\xd5" + wire[1:], error_byte=0)
+        # A clean frame follows and is delivered whole.
+        peer.inject(wire)
+        await ClockCycles(dut.i_clk, 4000)
+        assert [bytes(frame) for frame in peer.received] == [payload], hex(first)
+        assert _total(dut, PREAMBLE_DROP) - dropped == 2, hex(first)
+        assert _total(dut, PRE_ACCEPT) == accepted, hex(first)
