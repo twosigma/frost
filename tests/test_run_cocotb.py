@@ -1320,6 +1320,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Sstc timer access controls and delegated supervisor timer interrupts"
         ),
     ),
+    "irq_take_latency": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="irq_take_latency",
+        rerun_after_reset=False,
+        nic_mac_clocks=False,
+        description=(
+            "Delegated STI, LCOFI and SEI take latency in S-mode across device, "
+            "atomic, fence, SIE-toggle, DDR-miss and WFI instruction mixes, including "
+            "back-to-back device stores and a cached store before a device read"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "1500000"),),
+    ),
     "sscofpmf_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
