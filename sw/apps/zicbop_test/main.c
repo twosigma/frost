@@ -189,14 +189,16 @@ int main(void)
         ok &= run_case("sv39-ddr", mpp, (unsigned long) &g_ddr_word);
         __asm__ volatile("csrw satp, zero\n sfence.vma" ::: "memory");
     }
-    /* U-mode prefetch of a supervisor-only page. */
-    build_tables(0);
+    /* U-mode prefetch of a supervisor-only page: VA 0x4000_0000 aliases DDR
+     * without PTE_U, and the identity maps keep U code and stack reachable
+     * in either memory configuration. */
+    build_tables(PTE_U);
     {
         volatile unsigned long *root = (volatile unsigned long *) PT_ROOT;
-        root[0] |= PTE_U; /* U code and stack in low BRAM */
+        root[1] = PTE_PPN(0x80000000ul) | PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D;
     }
     __asm__ volatile("csrw satp, %0\n sfence.vma" : : "r"(SATP_SV39 | (PT_ROOT >> 12)) : "memory");
-    ok &= run_case("sv39-u-on-s-page", 0, (unsigned long) &g_ddr_word);
+    ok &= run_case("sv39-u-on-s-page", 0, (unsigned long) &g_ddr_word - 0x80000000ul + 0x40000000ul);
     __asm__ volatile("csrw satp, zero\n sfence.vma" ::: "memory");
 
     uart_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
