@@ -21,6 +21,7 @@ from typing import Any
 
 import cocotb
 from cocotb.triggers import Timer
+from cocotb_tests.if_stage.rvc_spec import expand as spec_expand
 
 
 OPC_LUI = 0b0110111
@@ -226,6 +227,22 @@ def _assert_decode(
     assert int(dut.o_instr_expanded.value) == expanded
     assert bool(dut.o_is_compressed.value) is compressed
     assert bool(dut.o_illegal.value) is illegal
+
+
+@cocotb.test()
+async def test_all_parcels_against_specification(dut: Any) -> None:
+    """Every 16-bit input agrees with the independent RV64C/Zcb/Zcmop oracle."""
+    for raw in range(1 << 16):
+        _drive(dut, raw)
+        await _settle()
+        expected = spec_expand(raw)
+        assert bool(dut.o_illegal.value) == (expected is None), f"0x{raw:04x}"
+        assert bool(dut.o_is_compressed.value) == (raw & 3 != 3), f"0x{raw:04x}"
+        if expected is not None:
+            assert int(dut.o_instr_expanded.value) == expected, f"0x{raw:04x}"
+        assert (int(dut.o_instr_expanded.value), bool(dut.o_illegal.value)) == (
+            _PREDECODE.rvc_expand(raw)
+        ), f"Python mirror 0x{raw:04x}"
 
 
 @cocotb.test()

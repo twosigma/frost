@@ -230,7 +230,7 @@ SUPPORTED_EXTENSIONS = [
     # (TEST_CMOP_OP: mv destreg, swreg) and stores it, so its signature holds
     # link-map addresses that differ between the Spike and FROST builds.
     # c.mop.1-15 are compared with Sail in verif/testrig/traces and checked
-    # in the rvc_decompressor tests.
+    # by the full-core mops and exhaustive rvc_decompressor tests.
 ]
 
 # Allowed filename prefixes for extensions where only a subset of tests
