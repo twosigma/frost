@@ -278,6 +278,12 @@ module coherence_home #(
   logic [FILLS-1:0][WbBits-1:0] fill_wb_q;
   // A zero allocation clears the image as data; it is not a reset event.
   (* extract_reset = "no" *) logic [FILLS-1:0][8*LINE_BYTES-1:0] fill_image_q;
+  // A memory response loads its fill's image on the response edge, so the
+  // image is the only source an install or a forward reads. A zero fill
+  // clears its image on the edge after its allocation, from zero_clear_q, so
+  // the allocation decision stays off the image's 8 * LINE_BYTES resets; no
+  // reader looks at the image in that cycle (see the assertions).
+  logic [FILLS-1:0] zero_clear_q;
   logic [FILLS-1:0] fill_victim_q, fill_sent_q, fill_error_q;
   // Keep allocation's functional clear in the data path, separate from reset.
   (* extract_reset = "no" *)logic [FILLS-1:0] fill_done_q;
@@ -1472,13 +1478,9 @@ module coherence_home #(
         if (o_mem_req_valid && i_mem_req_ready && o_mem_req_id == 5'(fill))
           fill_sent_q[fill] <= 1'b1;
         if (i_mem_resp_valid && i_mem_resp_id == 5'(fill)) begin
-          fill_image_q[fill] <= i_mem_resp_data;
           fill_done_q[fill]  <= 1'b1;
           fill_error_q[fill] <= i_mem_resp_error;
         end
-        // A zero fill's image is zero from allocation; it sends no read, so no
-        // response for its identity arrives.
-        if (run && fill_zero_alloc[fill]) fill_image_q[fill] <= '0;
         if (run) begin
           // A forward takes the primary's seat away on the edge it is
           // accepted, beside any seats added or released then.
@@ -1566,6 +1568,19 @@ module coherence_home #(
           end
         end
       end
+    end
+    // The image loads the memory response on the response edge, so installs
+    // and forwards read the image alone and the response data reaches no
+    // per-fill selection. Its load enable replicates beside the image's flops.
+    // The clear comes from a register, so the allocation decision stays off
+    // the image's resets. A zero fill sends no read, so no response for its
+    // identity arrives while it clears.
+    (* max_fanout = 64 *) logic resp_take;
+    assign resp_take = i_mem_resp_valid && i_mem_resp_id == 5'(fill);
+    always_ff @(posedge i_clk) begin
+      zero_clear_q[fill] <= !i_rst && fill_zero_alloc[fill];
+      if (resp_take) fill_image_q[fill] <= i_mem_resp_data;
+      if (zero_clear_q[fill]) fill_image_q[fill] <= '0;
     end
   end
 
@@ -2195,7 +2210,15 @@ module coherence_home #(
           assert (fill_sent_q[fill] && fill_done_q[fill] && !fill_error_q[fill]);
           assert (!fill_prefetch_q[fill] && !fill_write_q[fill] && fill_primary_getm_q[fill]);
           if (fill_phase_q[fill] != FillReady && fill_phase_q[fill] != FillInstallWait)
-            assert (fill_image_q[fill] == '0);
+            assert (zero_clear_q[fill] || fill_image_q[fill] == '0);
+        end
+        // The zero image clears on the edge after allocation, while the fill
+        // waits on memory or recalls its victim and offers no update or
+        // forward; and a zero fill never takes a response.
+        if (zero_clear_q[fill]) begin
+          assert (fill_zero_q[fill] && !fill_forward_q[fill]);
+          assert (!(i_mem_resp_valid && i_mem_resp_id == 5'(fill)));
+          assert (fill_phase_q[fill] == FillMemory || fill_phase_q[fill] == FillRecall);
         end
         if (memory_valid[fill]) assert (!fill_zero_q[fill]);
         if (fill_phase_q[fill] != FillFree) assert (int'(fill_way_q[fill]) < WAYS);
@@ -2247,7 +2270,7 @@ module coherence_home #(
       if (i_mem_resp_valid && i_mem_resp_id == 5'(fill))
         f_fill_byte_q[fill] <= i_mem_resp_data[8*f_byte+:8];
       if (run && fill_zero_alloc[fill]) f_fill_byte_q[fill] <= '0;
-      if (!i_rst && fill_done_q[fill]) begin
+      if (!i_rst && fill_done_q[fill] && !zero_clear_q[fill]) begin
         assert (fill_image_q[fill][8*f_byte+:8] == f_fill_byte_q[fill]);
         if (forward_pick[fill] &&
             (LINE_BYTES != 64 || f_byte[OffsetBits-1] == fill_primary_upper_q[fill]))
