@@ -431,8 +431,9 @@ module eth10g_mac_rx #(
   // The length memory has a registered read port, sampling the next descriptor's
   // slot on every clock, so the memory maps to a register file or flops with a
   // registered output. A length written on the edge that samples it is passed
-  // through, so read_length is the slot's current length on every clock and the
-  // reader sees the same value as an asynchronous read.
+  // through, so every available descriptor presents the same length as an
+  // asynchronous read. Reset clears descriptor_avail; the read register
+  // refreshes before the reader can capture another descriptor.
   always_comb begin
     next_descriptor_read = descriptor_read;
     if (reader_capture && reader_last) next_descriptor_read = descriptor_read + 1'b1;
