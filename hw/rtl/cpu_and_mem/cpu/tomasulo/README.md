@@ -134,7 +134,9 @@ MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
 
 The FP engine completes on the `FP_ADD` slot; the vector-config unit
 (`vsetvli`, `vsetivli`, `vsetvl`, with the vector unit present) on the `FP_MUL`
-slot; the `FP_DIV` slot has no unit behind it. A completion that loses waits in its
+slot; and, with the vector unit, `vmv.x.s`, `vcpop.m` and `vfirst.m` on the
+`FP_DIV` slot, through its test input, which cpu_ooo drives from the vector
+unit. A completion that loses waits in its
 [`fu_cdb_adapter`](fu_cdb_adapter/README.md) and competes again the next
 cycle; the pipelined MUL path presents its result directly, and the divider
 holds its result until its adapter is free. On a full flush the arbiter's

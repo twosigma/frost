@@ -154,6 +154,8 @@ module tomasulo_wrapper #(
     output riscv_pkg::reorder_buffer_commit_t o_commit,
     // The vl/vtype update of a vector-config instruction on o_commit (VECTOR)
     output riscv_pkg::vcfg_commit_t           o_vcfg_commit,
+    // Some ROB entry is a vector-config instruction (registered)
+    output logic                              o_vcfg_in_flight,
     output riscv_pkg::reorder_buffer_commit_t o_commit_comb,
     output logic                              o_commit_valid_raw,
     output logic                              o_commit_misprediction_raw,
@@ -2584,6 +2586,7 @@ module tomasulo_wrapper #(
       .o_full                         (o_rob_full),
       .o_full_for_2                   (o_rob_full_for_2),
       .o_empty                        (o_rob_empty),
+      .o_vcfg_in_flight               (o_vcfg_in_flight),
       .o_count                        (o_rob_count),
       .o_head_tag                     (o_head_tag),
       .o_head_valid                   (o_head_valid),

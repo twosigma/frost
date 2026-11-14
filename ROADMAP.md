@@ -19,8 +19,10 @@ pieces come before the second hart:
   without it is unchanged. The vector state (`mstatus.VS` and the vector
   CSRs) is in place behind the `VECTOR` build parameter, and so are the
   unit's datapath blocks with their unit benches. The core executes
-  `vsetvli`, `vsetivli` and `vsetvl`, and the X3 build includes the unit; the
-  other vector instructions are not executed yet.
+  `vsetvli`, `vsetivli` and `vsetvl`, the vector integer arithmetic, logical,
+  compare and Zvbb instructions, and `vmv.x.s`, `vcpop.m` and `vfirst.m`, and
+  the X3 build includes the unit; vector loads and stores and the other
+  instruction families are not executed yet.
 - Misaligned loads and stores in hardware. The CPU's misaligned-access
   engine performs plain misaligned loads and stores to cached DDR in the X3
   build and in simulation (`MISALIGNED_HW`); elsewhere they raise the

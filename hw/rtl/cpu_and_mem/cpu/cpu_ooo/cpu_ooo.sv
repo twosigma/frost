@@ -1073,6 +1073,18 @@ module cpu_ooo #(
   // vl/vtype update of a committing vector-config instruction (registered
   // commit bus), from the wrapper to the CSR file
   riscv_pkg::vcfg_commit_t vcfg_commit;
+  // Vector unit (VECTOR): the vtype at dispatch and whether it is known, the
+  // ROB's vector-config-in-flight bit, the architectural vector state, the
+  // retirement of vector arithmetic, the unit's commit hold and idle state.
+  logic [8:0] vec_vtype_spec;
+  logic vec_vtype_valid;
+  logic vec_vcfg_in_flight;
+  logic [15:0] csr_vec_vl, csr_vec_vstart;
+  logic [8:0] csr_vec_vtype;
+  logic vec_varith_commit;
+  logic vec_commit_hold;
+  logic vec_idle;
+  riscv_pkg::fu_complete_t vec_vtox_complete;  // CDB slot 6
   // Register FS-Off for decode timing. It differs from CSR state only when
   // FS enters or leaves Off, whose full flush discards that cycle's decode.
   logic id_mstatus_fs_off_q;
@@ -1235,6 +1247,8 @@ module cpu_ooo #(
         c.uses_fp_rs2 = d.uses_fp_rs2;
         c.uses_fp_rs3 = d.uses_fp_rs3;
         c.is_real = d.is_real;
+        c.is_varith = (d.instruction.opcode == riscv_pkg::OPC_OP_V) &&
+            (d.instruction.funct3 != 3'b111);
         id_ctrl_of = c;
       endfunction
       assign producer_ctrl_next_go = id_ctrl_of(decoded_packet_next_go);
@@ -1287,6 +1301,8 @@ module cpu_ooo #(
         producer_ctrl.uses_fp_rs2 = decoded_packet.uses_fp_rs2;
         producer_ctrl.uses_fp_rs3 = decoded_packet.uses_fp_rs3;
         producer_ctrl.is_real = decoded_packet.is_real;
+        producer_ctrl.is_varith = (decoded_packet.instruction.opcode == riscv_pkg::OPC_OP_V) &&
+            (decoded_packet.instruction.funct3 != 3'b111);
         producer_ctrl_2.is_load_instruction = decoded_packet_2.is_load_instruction;
         producer_ctrl_2.is_load_unsigned = decoded_packet_2.is_load_unsigned;
         producer_ctrl_2.instruction_operation = decoded_packet_2.instruction_operation;
@@ -1329,6 +1345,8 @@ module cpu_ooo #(
         producer_ctrl_2.uses_fp_rs2 = decoded_packet_2.uses_fp_rs2;
         producer_ctrl_2.uses_fp_rs3 = decoded_packet_2.uses_fp_rs3;
         producer_ctrl_2.is_real = decoded_packet_2.is_real;
+        producer_ctrl_2.is_varith = (decoded_packet_2.instruction.opcode == riscv_pkg::OPC_OP_V) &&
+            (decoded_packet_2.instruction.funct3 != 3'b111);
         producer_ctrl_next.is_load_instruction = decoded_packet_next.is_load_instruction;
         producer_ctrl_next.is_load_unsigned = decoded_packet_next.is_load_unsigned;
         producer_ctrl_next.instruction_operation = decoded_packet_next.instruction_operation;
@@ -1372,6 +1390,9 @@ module cpu_ooo #(
         producer_ctrl_next.uses_fp_rs2 = decoded_packet_next.uses_fp_rs2;
         producer_ctrl_next.uses_fp_rs3 = decoded_packet_next.uses_fp_rs3;
         producer_ctrl_next.is_real = decoded_packet_next.is_real;
+        producer_ctrl_next.is_varith =
+            (decoded_packet_next.instruction.opcode == riscv_pkg::OPC_OP_V) &&
+            (decoded_packet_next.instruction.funct3 != 3'b111);
         producer_ctrl_next_2.is_load_instruction = decoded_packet_next_2.is_load_instruction;
         producer_ctrl_next_2.is_load_unsigned = decoded_packet_next_2.is_load_unsigned;
         producer_ctrl_next_2.instruction_operation = decoded_packet_next_2.instruction_operation;
@@ -1415,6 +1436,9 @@ module cpu_ooo #(
         producer_ctrl_next_2.uses_fp_rs2 = decoded_packet_next_2.uses_fp_rs2;
         producer_ctrl_next_2.uses_fp_rs3 = decoded_packet_next_2.uses_fp_rs3;
         producer_ctrl_next_2.is_real = decoded_packet_next_2.is_real;
+        producer_ctrl_next_2.is_varith =
+            (decoded_packet_next_2.instruction.opcode == riscv_pkg::OPC_OP_V) &&
+            (decoded_packet_next_2.instruction.funct3 != 3'b111);
       end
       // An unpredicted JALR in either slot. While it is queued it counts as
       // pending for the control-flow serialization stall.
@@ -1623,8 +1647,10 @@ module cpu_ooo #(
         from_id_to_ex_2.uses_fp_rs3 = queue_ctrl_2.uses_fp_rs3;
         from_id_to_ex_2.is_real = queue_ctrl_2.is_real;
       end
+      // Vector arithmetic also waits while the vtype at dispatch is unknown.
       assign id_valid_preflush = queue_valid &&
-          !(csr_in_flight || csr_wb_pending || serializing_alloc_fire);
+          !(csr_in_flight || csr_wb_pending || serializing_alloc_fire) &&
+          !(queue_ctrl.is_varith && !vec_vtype_valid);
       assign id_valid_2_preflush = id_valid_preflush && from_id_to_ex_2.is_real;
       assign id_valid = id_valid_preflush && !dispatch_flush;
       assign id_valid_2 = id_valid_2_preflush && !dispatch_flush;
@@ -2334,7 +2360,7 @@ module cpu_ooo #(
       .i_fu_complete_3('0),
       .i_fu_complete_4('0),
       .i_fu_complete_5('0),
-      .i_fu_complete_6('0),
+      .i_fu_complete_6(vec_vtox_complete),
       .i_fu_complete_7('0),
 
       // ROB allocation
@@ -2379,6 +2405,7 @@ module cpu_ooo #(
       // Commit
       .o_commit(rob_commit),
       .o_vcfg_commit(vcfg_commit),
+      .o_vcfg_in_flight(vec_vcfg_in_flight),
       .o_commit_comb(rob_commit_comb),
       .o_commit_valid_raw(rob_commit_valid_raw),
       .o_commit_misprediction_raw(rob_commit_misprediction_raw),
@@ -2397,7 +2424,8 @@ module cpu_ooo #(
       // Commit-time branch recovery is registered for timing; hold the ROB
       // during that recovery cycle so younger wrong-path entries cannot retire.
       .i_commit_hold(csr_commit_fire || trap_mret_commit_hold_q ||
-                     mispredict_recovery_pending || i_fatal_stop || coherent_retire_hold),
+                     mispredict_recovery_pending || i_fatal_stop || coherent_retire_hold ||
+                     vec_commit_hold),
 
       // ROB external coordination
       .o_csr_start(csr_start),
@@ -2804,6 +2832,7 @@ module cpu_ooo #(
       // inputs, which is the contract RAW_INT_RF_VALUES needs.
       .RAW_INT_RF_VALUES(1'b1)
   ) u_dispatch (
+      .i_vtype_spec(vec_vtype_spec),
       .i_clk,
       .i_rst_n(rst_n),
 
@@ -4022,6 +4051,10 @@ module cpu_ooo #(
       .o_mstatus_fs_off(csr_mstatus_fs_off),
       .o_mstatus_vs_off(csr_mstatus_vs_off),
       .i_vcfg_commit(vcfg_commit),
+      .i_varith_commit(vec_varith_commit),
+      .o_vec_vl(csr_vec_vl),
+      .o_vec_vtype(csr_vec_vtype),
+      .o_vec_vstart(csr_vec_vstart),
       .o_cbo_zero_illegal(csr_cbo_zero_illegal),
       .o_debug_mode(csr_debug_mode),
       .o_dcsr_step(csr_dcsr_step),
@@ -4913,5 +4946,72 @@ module cpu_ooo #(
   assign dbg_ila_ooo_commit_tag = rob_commit_comb.tag;
   assign dbg_ila_ooo_idex_fetch_fault = from_id_to_ex.is_fetch_fault;
 `endif
+
+  // ===========================================================================
+  // Vector unit (VECTOR): the vtype tracker for dispatch and the unit that
+  // takes vector arithmetic at retirement
+  // ===========================================================================
+  if (VECTOR) begin : gen_vector_unit
+    if (DECODED_QUEUE_DEPTH == 0) begin : gen_vector_needs_queue
+      initial $fatal(1, "cpu_ooo: VECTOR needs the decoded queue (DECODED_QUEUE_DEPTH > 0)");
+    end
+    logic vec_alloc;
+    assign vec_alloc = rob_alloc_req.alloc_valid && rob_alloc_resp.alloc_ready;
+    vec_vtype_tracker #(
+        .VLEN(VLEN)
+    ) u_vtype_tracker (
+        .i_clk           (i_clk),
+        .i_rst           (i_rst),
+        .i_alloc         (vec_alloc && rob_alloc_req.is_vcfg),
+        .i_alloc_op      (from_id_to_ex.instruction_operation),
+        .i_alloc_imm     (from_id_to_ex.csr_address),
+        .i_ckpt_save     (checkpoint_save),
+        .i_ckpt_id       (checkpoint_id),
+        .i_restore       (checkpoint_restore),
+        .i_restore_id    (checkpoint_restore_id),
+        .i_flush_all     (flush_all),
+        .i_vcfg_in_flight(vec_vcfg_in_flight),
+        .i_arch_vtype    (csr_vec_vtype),
+        .o_vtype         (vec_vtype_spec),
+        .o_valid         (vec_vtype_valid)
+    );
+    vec_unit #(
+        .VLEN(VLEN)
+    ) u_vec_unit (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_alloc(vec_alloc),
+        .i_alloc_tag(rob_alloc_resp.alloc_tag),
+        .i_alloc_is_varith(rob_alloc_req.is_varith),
+        .i_alloc_insn(32'(from_id_to_ex.instruction)),
+        .i_alloc_2(rob_alloc_req_2.alloc_valid && rob_alloc_resp_2.alloc_ready),
+        .i_alloc_tag_2(rob_alloc_resp_2.alloc_tag),
+        .i_commit_valid(rob_commit.valid),
+        .i_commit_tag(rob_commit.tag),
+        .i_commit_exception(rob_commit.exception),
+        .i_commit_value(rob_commit.value[63:0]),
+        .i_vl(csr_vec_vl),
+        .i_vtype(csr_vec_vtype),
+        .i_vstart(csr_vec_vstart),
+        .i_alloc_is_vtox(from_id_to_ex.instruction_operation == riscv_pkg::VTOX),
+        .i_head_tag(head_tag),
+        .i_rob_empty(rob_empty),
+        .i_head_safe       (!flush_all && !commit_recovery_flush_after_head &&
+                            !mispredict_recovery_pending),
+        .i_flush_all(flush_all),
+        .i_grant(cdb_grant[riscv_pkg::FU_FP_DIV]),
+        .o_vtox_complete(vec_vtox_complete),
+        .o_varith_commit(vec_varith_commit),
+        .o_commit_hold(vec_commit_hold),
+        .o_idle(vec_idle)
+    );
+  end else begin : gen_no_vector_unit
+    assign vec_vtype_spec = '0;
+    assign vec_vtype_valid = 1'b1;
+    assign vec_varith_commit = 1'b0;
+    assign vec_commit_hold = 1'b0;
+    assign vec_idle = 1'b1;
+    assign vec_vtox_complete = '0;
+  end
 
 endmodule : cpu_ooo
