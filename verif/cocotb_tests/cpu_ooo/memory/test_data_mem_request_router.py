@@ -1082,12 +1082,18 @@ async def test_amo_cached_write_handshake(dut: Any) -> None:
     adapter must see a single-cycle cached byte-enable pulse (it re-enqueues on
     every non-zero strobe cycle), the new value on o_data_mem_cached_wr_data
     that same cycle, and the AMO done only when the adapter reports completion.
+    The launch comes from a register, one cycle after the enable.
     """
     await _setup_test(dut)
     dut.i_amo_mem_write_en.value = 1
     dut.i_amo_mem_write_addr.value = CACHED_ADDR
     dut.i_amo_mem_write_is_cached.value = 1
     dut.i_amo_mem_write_data.value = 0xCAFEF00D
+    await _settle()
+    # The enable's own cycle arms the launch register: nothing reaches the cache.
+    assert int(dut.o_data_mem_cached_byte_wr_en.value) == 0
+    assert int(dut.o_amo_mem_write_done.value) == 0
+    await _advance_cycle(dut)
     await _settle()
     # Launch cycle: masked off BRAM, single word-wide strobe to the cache, with
     # the AMO new value on the cached write-data bus. No done yet.

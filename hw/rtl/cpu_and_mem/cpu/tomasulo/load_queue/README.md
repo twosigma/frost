@@ -478,7 +478,9 @@ old value and `rs2`, spend a cycle in `AMO_COMPUTE`, and enter
 `AMO_WRITE_ACTIVE`; MIN and MAX compare during the capture and enter
 `AMO_WRITE_ACTIVE` directly. The write uses the LQ's own port
 (`o_amo_mem_write_*`, with a registered cached-tier flag) and stays
-stable until `i_amo_mem_write_done`. Only then does the AMO complete with the
+stable until `i_amo_mem_write_done`. The request router launches a cached AMO
+write from a register armed in the cycle the write appears, so it reaches the
+L1D one cycle later than a store would, from a flop. Only then does the AMO complete with the
 old value, invalidate its L0 line, and release younger loads. `.W` forms
 compute on the addressed word and return it sign-extended; the write
 replicates the word across the beat.
