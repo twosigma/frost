@@ -30,6 +30,7 @@ module tomasulo_coherent_cut_test_harness #(
     parameter bit DIRECT_CACHE_READS = 1'b0,
     parameter int unsigned CACHE_MISSES = 1
 ) (
+    input riscv_pkg::vmt_view_t i_vmt = '0,
     input logic i_coherent_store_pending = 1'b0,
     input logic i_coherent_store_ready = 1'b1,
     input logic i_coherent_sc_pending = 1'b0,
@@ -406,10 +407,10 @@ module tomasulo_coherent_cut_test_harness #(
       .i_lq_mem_read_error(DIRECT_CACHE_READS ? cache_read_error : i_lq_mem_read_error),
       .i_lq_mem_read_id(DIRECT_CACHE_READS ? cache_read_id : i_lq_mem_read_id),
       .i_lq_mem_read_is_cached(DIRECT_CACHE_READS || i_lq_mem_read_is_cached),
-      // No vector unit here: nothing reads the vector-config in-flight flag,
-      // and the vector memory table is empty.
+      // The fixture supplies the vector memory table independently and does
+      // not consume the vector-config in-flight flag.
       .o_vcfg_in_flight(),
-      .i_vmt('0),
+      .i_vmt(i_vmt),
       .i_coherent_cut_hold(cut_hold),
       .i_coh_admit_valid(cut_admit && !i_probe_delay_admit),
       .i_coh_admit_slot('0),

@@ -493,6 +493,14 @@ address joins that selection last. The priority conditions above a read are
 prepared separately, so read eligibility controls the final address selection
 without passing through the non-read address priority chain.
 
+Ready read slots share one response register in circular slot order. Each
+selection advances the pointer past that slot. A continuously ready slot has
+at most seven other responses ahead of it among the eight read IDs, including
+an occupied response register. A consumed ID reused for another read cannot
+pass that slot again. Consumer backpressure holds the response register and
+can extend the wait in cycles; it does not extend this bound on transfers.
+Grant answers, merged answers and read-hit answers use this same order.
+
 Read status uses per-slot masks for allocation, response transfer, lookup
 results, merges and grant completion. Completion and miss sets dominate allocation
 clears. Allocation sets dominate response clears of valid bits. A failed

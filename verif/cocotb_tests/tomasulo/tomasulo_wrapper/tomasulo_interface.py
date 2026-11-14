@@ -424,6 +424,8 @@ class TomasuloInterface:
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
         self._reset_coherent_cache()
+        if hasattr(self.dut, "i_vmt"):
+            self.dut.i_vmt.value = 0
         # ROB allocation
         self.dut.i_alloc_req.value = 0
         self.dut.i_alloc_req_2.value = 0

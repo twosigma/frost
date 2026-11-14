@@ -2961,7 +2961,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherent_stream_order": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_stream_order",
         hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
-        description="Speculative fills, same-address load replay and attached LR reservation suppression across a coherent cut",
+        description="Speculative fills, load replay, attached signed and unsigned extraction, vector holds, flush recovery and LR cuts",
         verilator_extra_args=("--assert", "-GDIRECT_CACHE_READS=1", "-GCACHE_MISSES=8"),
     ),
     "hitpath_probe_order": CocotbRunConfig(
@@ -3047,7 +3047,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         python_test_module="cocotb_tests.cache.test_coherence_l1d_stream",
         hdl_toplevel_module="coherence_l1d",
-        description="Speculative ownership, atomic admission, demand attachment and bounded grant deferral with 8 endpoints",
+        description="Speculative ownership, attached data and response fairness, store/probe races and grant deferral with 8 endpoints",
     ),
     "coherence_stream_dirty": CocotbRunConfig(
         verilator_extra_args=(

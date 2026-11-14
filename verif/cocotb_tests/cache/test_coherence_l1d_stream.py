@@ -1453,3 +1453,242 @@ async def answered_read_id_reuse_during_installation(dut: Any) -> None:
         assert b.responses == [(0, b.word(base), 0), (0, b.word(second), 0)]
         assert len(b.requests) == first + (1 if same_line else 2)
         assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def attached_sizes_and_offsets(dut: Any) -> None:
+    """Select each attached load's dword for every aligned size and sector offset."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 2:
+        return
+    cases = [(size, offset) for size in range(4) for offset in range(0, 32, 1 << size)]
+    for first in range(0, len(cases), 7):
+        await b.reset()
+        base = 0x80006000 + first * 256
+        await b.issue(0, base)
+        await b.requests_at_least(1)
+        batch = cases[first : first + 7]
+        for slot, (size, offset) in enumerate(batch, 1):
+            await b.issue(slot, base + offset, size=size)
+        await b.tick(25)
+        mask = ((1 << (len(batch) + 1)) - 1) & ~1
+        assert b.get("rd_wait_q") & mask == mask
+        await b.drain(len(batch) + 1)
+        assert sorted(b.responses) == [(0, b.word(base), 0)] + [
+            (slot, b.word((base + offset) & ~7), 0)
+            for slot, (_, offset) in enumerate(batch, 1)
+        ]
+        assert len(b.requests) == 1
+
+
+@cocotb.test()
+async def attached_answers_bound_a_ready_hit(dut: Any) -> None:
+    """Serve a ready hit within seven competing transfers, including reused IDs."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 2:
+        return
+    for stalled in (False, True):
+        await b.reset()
+        resident, missing = 0x80004000, 0x80004080
+        await b.issue(7, resident)
+        await b.drain(1)
+        await b.tick(10)
+        b.requests.clear()
+        b.responses.clear()
+        b.completed.clear()
+        b.completion_accepted.clear()
+        await b.set(i_read_ready=0)
+        await b.issue(0, missing)
+        await b.requests_at_least(1)
+        for slot in range(1, 7):
+            await b.issue(slot, missing + 8 * (slot % 4))
+        await b.tick(25)
+        assert b.get("rd_wait_q") & 0x7E == 0x7E
+        await b.send_grant(0)
+        await b.issue(7, resident + 8)
+        take = hit = None
+        for _ in range(80):
+            if b.get("path_take") and b.get("path_id_q") == 7:
+                take = b.cycles
+            if b.get("s4_valid_q") and b.get("s4_slot_q") == 7:
+                hit = b.cycles
+            if b.get("rd_ready_q") & 128:
+                break
+            await b.tick()
+        else:
+            raise AssertionError("Unrelated hit did not become ready")
+        assert take is not None and hit == take + 3
+        await b.tick(17 if stalled else 0)
+        ahead = []
+        reuse = None
+        for cycle in range(160):
+            await b.set(
+                i_read_ready=int(not stalled or cycle % 3 == 0),
+                i_read_valid=int(reuse is not None),
+                i_read_id=reuse if reuse is not None else 0,
+                i_address=resident + 16,
+                i_read_kind=0,
+                i_read_size=3,
+            )
+            accepted = b.get("o_read_valid") and b.get("i_read_ready")
+            slot = b.get("o_read_id") if accepted else -1
+            if accepted and slot == 7:
+                assert b.get("o_read_data") == b.word(resident + 8)
+                assert not b.get("o_read_error")
+                break
+            if accepted:
+                ahead.append(slot)
+                assert len(ahead) <= 7
+                assert b.get("o_read_data") == b.word(missing + 8 * (slot % 4))
+                assert not b.get("o_read_error")
+            await b.tick()
+            # Reuse on the next edge, while observing every response transfer.
+            reuse = slot if accepted else None
+        else:
+            raise AssertionError("Competing responses starved a ready hit")
+        assert ahead == list(range(7)), ahead
+        dut._log.info(
+            "ready hit: %d competing transfers, stalled=%s", len(ahead), stalled
+        )
+
+
+@cocotb.test()
+async def stores_between_request_and_attached_load(dut: Any) -> None:
+    """Order byte stores on either side of a load beside an outstanding sector request."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 3:
+        return
+    base = 0x80006000
+    stored = 0xFEDCBA9876543210
+    for store_first in (False, True):
+        for size in range(4):
+            for offset in range(0, 8, 1 << size):
+                await b.reset()
+                await b.set(i_read_ready=1)
+                await b.issue(0, base)
+                await b.requests_at_least(1)
+                if not store_first:
+                    await b.issue(1, base + 8 + offset, size=size)
+                    await b.tick(25)
+                    assert b.get("rd_wait_q") & 2
+                mask = ((1 << (1 << size)) - 1) << offset
+                await b.wait("o_store_ready")
+                await b.set(i_address=base + 8, i_write_mask=mask, i_write_data=stored)
+                await b.tick()
+                await b.set(i_write_mask=0)
+                if store_first:
+                    await b.issue(1, base + 8 + offset, size=size)
+                    await b.tick(25)
+                    assert not b.get("rd_wait_q") & 2
+                    assert not any(slot == 1 for slot, _, _ in b.responses)
+                await b.grant(0)
+                await b.release(0)
+                await b.requests_at_least(2)
+                assert b.requests[1][1][0] == 1
+                await b.grant(1)
+                await b.release(1)
+                await b.tick(60)
+                byte_mask = sum(
+                    255 << (8 * lane) for lane in range(8) if mask >> lane & 1
+                )
+                merged = (b.word(base + 8) & ~byte_mask) | (stored & byte_mask)
+                expected = merged if store_first else b.word(base + 8)
+                assert sorted(b.responses) == [(0, b.word(base), 0), (1, expected, 0)]
+                await b.issue(2, base + 8 + offset, size=size)
+                await b.tick(40)
+                assert b.responses[-1] == (2, merged, 0)
+
+
+@cocotb.test()
+async def attached_grant_beside_probe(dut: Any) -> None:
+    """Serialize probe service and attached grant answers at each arrival skew."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 2:
+        return
+    base = 0x80007000
+    for opcode in (0, 1):
+        for skew in range(-3, 4):
+            await b.reset()
+            await b.set(i_cut_admit_ready=1, i_cut_admit_clean=1, i_cut_inval_done=1)
+            await b.issue(0, base)
+            await b.requests_at_least(1)
+            await b.issue(1, base + 8)
+            await b.issue(2, base + 24, size=0)
+            await b.tick(25)
+            assert b.get("rd_wait_q") & 6 == 6
+            probe = pack(
+                (2, opcode),
+                (6, 17),
+                (1, 0),
+                (b.p, base),
+                (2, 2),
+                (2, 0),
+                (9, 0),
+                (5, 0),
+                (3, 3),
+            )
+            if skew < 0:
+                await b.set(i_p_valid=1, i_p=probe)
+                await b.wait("o_p_ready")
+                await b.tick()
+                await b.set(i_p_valid=0)
+                await b.tick(-skew)
+                await b.send_grant(0)
+            else:
+                await b.send_grant(0)
+                await b.tick(skew)
+                await b.set(i_p_valid=1, i_p=probe)
+                await b.wait("o_p_ready")
+                await b.tick()
+                await b.set(i_p_valid=0)
+            await b.wait("o_r_valid")
+            await b.tick(5)
+            await b.set(i_r_ready=1)
+            await b.tick()
+            await b.set(i_r_ready=0)
+            ep = b.requests[0][0]
+            for _ in range(100):
+                if b.get("o_c_valid") >> ep & 1:
+                    break
+                await b.tick()
+            else:
+                raise AssertionError("Grant did not finish beside the probe")
+            await b.release(0)
+            await b.set(i_read_ready=1)
+            await b.tick(40)
+            assert sorted(b.responses) == [
+                (0, b.word(base), 0),
+                (1, b.word(base + 8), 0),
+                (2, b.word(base + 24), 0),
+            ]
+            assert not b.get("o_fatal")
+
+
+@cocotb.test()
+async def attached_loads_retry_after_demand_error(dut: Any) -> None:
+    """Return an owner's error once and let attached loads acquire their own result."""
+    b = StreamPrivate(dut)
+    if b.endpoints < 2:
+        return
+    await b.reset()
+    base = 0x80007800
+    await b.set(i_read_ready=1)
+    await b.issue(0, base)
+    await b.requests_at_least(1)
+    await b.issue(1, base + 8, size=1)
+    await b.issue(2, base + 16, size=2)
+    await b.tick(25)
+    assert b.get("rd_wait_q") & 6 == 6
+    await b.grant(0, error=True)
+    await b.tick(30)
+    assert b.responses == [(0, 0, 1)]
+    assert len(b.requests) == 1
+    await b.release(0)
+    await b.drain(3)
+    assert sorted(b.responses) == [
+        (0, 0, 1),
+        (1, b.word(base + 8), 0),
+        (2, b.word(base + 16), 0),
+    ]
+    assert len(b.requests) == 2
+    assert not b.get("o_fatal")
