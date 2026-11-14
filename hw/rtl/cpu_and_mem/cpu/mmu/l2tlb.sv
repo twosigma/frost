@@ -54,6 +54,11 @@
  * no request, so no stale entry can answer. A flush that arrives during
  * another flush becomes a flush-all. A flush or discard aborts a lookup in
  * flight; the requester's own invalidate already drops that response.
+ *
+ * SETS and WAYS must be powers of two, each at least 2: the set index and tag
+ * are fixed bit fields of the VPN, and the way replacement pointer wraps by
+ * overflow. SP_ENTRIES may be any count of at least 2. cpu_ooo leaves the
+ * module out when L2TLB_SETS is 0.
  */
 module l2tlb #(
     parameter int unsigned SETS = 128,
@@ -111,6 +116,12 @@ module l2tlb #(
   } state_e;
 
   state_e state_q;
+
+  initial begin
+    if (SETS < 2 || (SETS & (SETS - 1)) != 0) $fatal(1, "l2tlb: SETS must be a power of two >= 2");
+    if (WAYS < 2 || (WAYS & (WAYS - 1)) != 0) $fatal(1, "l2tlb: WAYS must be a power of two >= 2");
+    if (SP_ENTRIES < 2) $fatal(1, "l2tlb: SP_ENTRIES must be at least 2");
+  end
 
   logic [VpnBits-1:0] vpn_q;
   logic [AsidW-1:0] asid_q;
