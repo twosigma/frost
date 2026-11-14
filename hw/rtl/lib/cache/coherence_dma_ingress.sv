@@ -525,9 +525,15 @@ module coherence_dma_ingress #(
       // U that names a slot by identity carries that slot's address and, for
       // G, its grant opcode. coherence_home_completions proves the G's q,
       // tid and address equal its slot's accepted D, and the endpoint sends
-      // U from the same D.
+      // U from the same D. The ingress's own tasks, whose G and U are free
+      // inputs, assume it; a composition that produces G and U checks it.
+`ifdef COHERENCE_DMA_INGRESS_CONTRACT
       assume (&contract_g_ok);
       assume (&contract_u_ok);
+`else
+      assert (&contract_g_ok);
+      assert (&contract_u_ok);
+`endif
       f_outstanding <= f_outstanding + CountBits'(accept_request) - CountBits'(pulse_free) -
           CountBits'(|release_free);
       if (pulse_free) begin

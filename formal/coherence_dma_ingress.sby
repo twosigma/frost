@@ -29,8 +29,8 @@ smtbmc boolector
 [script]
 read -sv coherence_pkg.sv
 read -formal -sv -D COHERENCE_ARBITER_COMPOSED coherence_d_arbiter.sv
-~coh_dma_ingress_soc_cover: read -formal -sv coherence_dma_ingress.sv
-coh_dma_ingress_soc_cover: read -formal -sv -D COHERENCE_DMA_SOC_COVER coherence_dma_ingress.sv
+~coh_dma_ingress_soc_cover: read -formal -sv -D COHERENCE_DMA_INGRESS_CONTRACT coherence_dma_ingress.sv
+coh_dma_ingress_soc_cover: read -formal -sv -D COHERENCE_DMA_INGRESS_CONTRACT -D COHERENCE_DMA_SOC_COVER coherence_dma_ingress.sv
 soc: chparam -set SLOTS 8 coherence_dma_ingress
 # The simultaneous response, request, demand and release cover needs three
 # live slots, so the line client's cover uses four.
