@@ -75,6 +75,9 @@ module sq_forwarding_unit #(
     input logic [DEPTH-1:0] sq_is_sc,
     // cbo.zero entries: their address names a 64-byte block (see Block 1).
     input logic [DEPTH-1:0] sq_is_zero,
+    // Zicbom entries, a subset of sq_is_zero here: a younger load of the
+    // block waits for an older one even where a newer store covers it.
+    input logic [DEPTH-1:0] sq_is_cmo = '0,
     input logic [DEPTH-1:0] sq_committed,
     input logic [(DEPTH*riscv_pkg::ReorderBufferTagWidth)-1:0] sq_rob_tag_flat,
     input logic [(DEPTH*riscv_pkg::XLEN)-1:0] sq_address_flat,
@@ -301,6 +304,11 @@ module sq_forwarding_unit #(
 
   assign fwd_all_older_known = ~(|fwd_addr_unknown_mask);
   assign fwd_found_match     = |fwd_conflict_mask;
+  // An older conflicting Zicbom entry vetoes forwarding from any store, so
+  // the load follows the operation (cmo.adoc, norm:ppo_overlap_2).
+  logic fwd_cmo_conflict, fwd_can_fwd_ordered;
+  assign fwd_cmo_conflict = |(fwd_conflict_mask & sq_is_cmo);
+  assign fwd_can_fwd_ordered = fwd_can_fwd && !fwd_cmo_conflict;
 
   // Block 2: the newest conflicting store wins, ranked by ring distance from
   // i_sq_head_idx. Ring order is allocation order, which is program order.
@@ -383,7 +391,7 @@ module sq_forwarding_unit #(
     end else begin
       o_sq_all_older_addrs_known <= i_sq_check_capture_valid ? fwd_all_older_known : 1'b0;
       o_sq_forward.match         <= i_sq_check_capture_valid ? fwd_found_match : 1'b0;
-      o_sq_forward.can_forward   <= i_sq_check_capture_valid ? fwd_can_fwd : 1'b0;
+      o_sq_forward.can_forward   <= i_sq_check_capture_valid ? fwd_can_fwd_ordered : 1'b0;
     end
   end
 
