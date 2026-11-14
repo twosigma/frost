@@ -17,7 +17,8 @@
 /*
  * Dynamic rounding mode directed test. An FP instruction whose rm field is
  * DYN (111) reads frm, and frm values 5 to 7 are reserved: FROST raises
- * illegal-instruction with mcause 2, mepc at the instruction and mtval 0.
+ * illegal-instruction with mcause 2, mepc at the instruction and mtval the
+ * instruction's bits (Sstvala).
  * The destination and fflags must remain unchanged. Static rounding modes
  * and instructions without an rm field ignore frm.
  *
@@ -154,11 +155,21 @@ static void report_values(void)
     uart_puts("\r\n");
 }
 
+/* Sstvala: mtval holds the faulting instruction's bits, a compressed
+ * instruction's 16 bits zero-extended. */
+static unsigned long insn_bits_at(unsigned long pc)
+{
+    unsigned long lo = *(volatile unsigned short *) pc;
+    if ((lo & 3u) != 3u)
+        return lo;
+    return lo | ((unsigned long) *(volatile unsigned short *) (pc + 2) << 16);
+}
+
 /* The instruction trapped as illegal, at its own PC, and wrote nothing. */
 static int expect_illegal(const char *name)
 {
-    int ok = (g_cause == 2u) && (g_epc == g_insn_pc) && (g_tval == 0u) && (g_ft0 == SENTINEL) &&
-             (g_t4 == SENTINEL) && (g_fflags == 0u);
+    int ok = (g_cause == 2u) && (g_epc == g_insn_pc) && (g_tval == insn_bits_at(g_insn_pc)) &&
+             (g_ft0 == SENTINEL) && (g_t4 == SENTINEL) && (g_fflags == 0u);
     uart_puts(ok ? "[PASS] " : "[FAIL] ");
     uart_puts(name);
     report_values();

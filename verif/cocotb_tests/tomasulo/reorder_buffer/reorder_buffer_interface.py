@@ -41,10 +41,11 @@ from cocotb_tests.cpu_structs import (
 # SystemVerilog packed structs place the first field at the highest bits.
 
 # reorder_buffer_alloc_req_t contains five XLEN fields: pc,
-# predicted_target, branch_target, link_addr, and csr_write_data. The other
-# fields occupy 53 bits, so the complete width is 373 (53 + 5*64).
-# alloc_valid is always the MSB (ALLOC_REQ_WIDTH - 1).
-ALLOC_REQ_WIDTH = 53 + (5 * XLEN)
+# predicted_target, branch_target, link_addr, and csr_write_data, and the
+# 32-bit Sstvala insn_bits. The other fields occupy 53 bits, so the complete
+# width is 405 (53 + 32 + 5*64). alloc_valid is always the MSB
+# (ALLOC_REQ_WIDTH - 1).
+ALLOC_REQ_WIDTH = 53 + 32 + (5 * XLEN)
 
 
 def pack_alloc_request(req: AllocationRequest) -> int:
@@ -53,6 +54,8 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     bit = 0
 
     # Pack from LSB to MSB (reverse order of struct declaration)
+    val |= (getattr(req, "insn_bits", 0) & 0xFFFFFFFF) << bit
+    bit += 32
     val |= (1 if getattr(req, "vec_illegal", False) else 0) << bit
     bit += 1
     val |= (1 if getattr(req, "is_varith", False) else 0) << bit

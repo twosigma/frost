@@ -31,11 +31,11 @@
 			compatible = "riscv";
 			mmu-type = "riscv,sv39";
 			riscv,isa-base = "rv64i";
-			riscv,isa = "rv64imafdc_zicsr_zifencei_zicntr_zicboz_zba_zbb_zbc_zbs_zbkb_zbkc_zicond_zihintpause_smaia_ssaia_sscofpmf_sstc_svade_svvptc";
+			riscv,isa = "rv64imafdc_zicsr_zifencei_zicntr_zicboz_zba_zbb_zbc_zbs_zbkb_zbkc_zicond_zihintpause_smaia_ssaia_sscofpmf_sstc_sstvala_svade_svvptc";
 			riscv,isa-extensions = "i", "m", "a", "f", "d", "c",
 				"zicsr", "zifencei", "zicntr", "zicboz", "zba", "zbb",
 				"zbc", "zbs", "zbkb", "zbkc", "zicond", "zihintpause",
-				"smaia", "ssaia", "sscofpmf", "sstc", "svade", "svvptc";
+				"smaia", "ssaia", "sscofpmf", "sstc", "sstvala", "svade", "svvptc";
 			/* cbo.zero zeroes one 64-byte L2 line. */
 			riscv,cboz-block-size = <64>;
 

@@ -203,6 +203,10 @@ module reorder_buffer #(
     // and for data misaligned, access, and page faults, the producer parks the
     // faulting virtual address here and cpu_ooo writes it to mtval or stval.
     output logic [riscv_pkg::XLEN-1:0] o_trap_value,
+    // Sstvala: the head entry's raw instruction bits (a compressed parcel
+    // zero-extended), stored at allocation. cpu_ooo writes them to mtval or
+    // stval for an illegal-instruction exception, whatever raised it.
+    output logic [31:0] o_trap_insn,
     input logic i_trap_taken,  // Trap unit has taken the trap
 
     // xRET coordination. o_mret_start covers MRET, SRET, and DRET;
@@ -699,6 +703,7 @@ module reorder_buffer #(
   logic [11:0] head_csr_addr;
   logic [2:0] head_csr_op;
   logic [XLEN-1:0] head_csr_write_data;
+  logic [31:0] head_insn_bits;
   logic [XLEN-1:0] head_fallthrough_pc;
 
   // Head+1 ("slot 2") fields for widen-commit, read by parallel distributed
@@ -1247,7 +1252,9 @@ module reorder_buffer #(
   // fall-through PC for interrupt resume, FENCE.I and branch redirects.
   localparam int unsigned AllocNextWidth =
       2 * XLEN + RegAddrWidth + CheckpointIdWidth + HeadMetaWidth;
-  localparam int unsigned AllocHeadWidth = AllocNextWidth + 12 + 3 + XLEN;
+  // The head-only fields add the CSR address, operation and write data, and
+  // the Sstvala instruction bits.
+  localparam int unsigned AllocHeadWidth = AllocNextWidth + 12 + 3 + XLEN + 32;
 
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH(ReorderBufferTagWidth),
@@ -1271,7 +1278,8 @@ module reorder_buffer #(
           alloc_head_meta_data_2,
           i_alloc_req_2.csr_addr,
           i_alloc_req_2.csr_op,
-          i_alloc_req_2.csr_write_data
+          i_alloc_req_2.csr_write_data,
+          i_alloc_req_2.insn_bits
         },
         {
           i_alloc_req.pc,
@@ -1281,7 +1289,8 @@ module reorder_buffer #(
           alloc_head_meta_data,
           i_alloc_req.csr_addr,
           i_alloc_req.csr_op,
-          i_alloc_req.csr_write_data
+          i_alloc_req.csr_write_data,
+          i_alloc_req.insn_bits
         }
       }),
       .i_read_address(head_idx),
@@ -1294,7 +1303,8 @@ module reorder_buffer #(
         head_meta_rd_data,
         head_csr_addr,
         head_csr_op,
-        head_csr_write_data
+        head_csr_write_data,
+        head_insn_bits
       })
   );
 
@@ -2517,6 +2527,7 @@ module reorder_buffer #(
   assign o_trap_cause = head_replay ?
       riscv_pkg::ExcMemReplay[riscv_pkg::ExcCauseWidth-1:0] : head_exc_cause;
   assign o_trap_value = head_value[XLEN-1:0];
+  assign o_trap_insn = head_insn_bits;
 
   // These match commit-packet write enables on a raw fire. Slot 2 needs no
   // CSR or exception exclusion here because its retirement gate applies them.
@@ -3818,7 +3829,8 @@ module reorder_buffer #(
   );
   always_comb begin
     assert ({head_pc, head_fallthrough_pc, head_dest_reg, head_checkpoint_id,
-             head_meta_rd_data, head_csr_addr, head_csr_op, head_csr_write_data} ==
+             head_meta_rd_data, head_csr_addr, head_csr_op, head_csr_write_data,
+             head_insn_bits} ==
             f_alloc_head_reference);
     assert ({head_next_pc, head_next_fallthrough_pc, head_next_dest_reg,
              head_next_checkpoint_id, head_next_meta_rd_data} == f_alloc_next_reference);

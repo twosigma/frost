@@ -965,6 +965,8 @@ module pd_stage #(
       o_from_pd_to_id.ras_checkpoint_top <= i_from_if_to_pd.ras_checkpoint_top;
       // Carry the predict-time bimodal index through to commit.
       o_from_pd_to_id.bp_dir_idx <= i_from_if_to_pd.bp_dir_idx;
+      // Raw start parcel, for Sstvala's illegal-instruction xtval.
+      o_from_pd_to_id.raw_parcel <= i_from_if_to_pd.raw_parcel;
     end
   end
 
@@ -1012,6 +1014,7 @@ module pd_stage #(
       o_from_pd_to_id_2.ras_checkpoint_top <= i_from_if_to_pd_2.ras_checkpoint_top;
       // Carry the predict-time bimodal index through to commit.
       o_from_pd_to_id_2.bp_dir_idx <= i_from_if_to_pd_2.bp_dir_idx;
+      o_from_pd_to_id_2.raw_parcel <= i_from_if_to_pd_2.raw_parcel;
     end
   end
 

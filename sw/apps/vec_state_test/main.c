@@ -116,10 +116,20 @@ static void check_eq(const char *name, unsigned long got, unsigned long want)
     check(name, got == want, got, want);
 }
 
-/* The trigger at `pc` raised illegal-instruction with mtval 0. */
+/* Sstvala: mtval holds the faulting instruction's bits, a compressed
+ * instruction's 16 bits zero-extended. */
+static unsigned long insn_bits_at(unsigned long pc)
+{
+    unsigned long lo = *(volatile unsigned short *) pc;
+    if ((lo & 3u) != 3u)
+        return lo;
+    return lo | ((unsigned long) *(volatile unsigned short *) (pc + 2) << 16);
+}
+
+/* The trigger at `pc` raised illegal-instruction with mtval its instruction bits. */
 static void check_illegal(const char *name, unsigned long pc)
 {
-    int ok = g_cause == 2u && g_epc == pc && g_tval == 0u;
+    int ok = g_cause == 2u && g_epc == pc && g_tval == insn_bits_at(pc);
     check(name, ok, g_cause, 2u);
 }
 

@@ -67,6 +67,8 @@
 
 #define PATTERN 0xA5A5C3C3F00F1234ul
 
+/* Sstvala: a denied cbo.zero (a0) leaves its instruction bits in mtval. */
+#define CBO_ZERO_A0 0x0045200ful
 /* cbo.zero (rs1): MISC-MEM, funct3 010, funct12 0x004, rd x0. */
 #define CBO_ZERO_ASM(reg) ".insn i 0x0F, 2, x0, " reg ", 4\n"
 
@@ -323,7 +325,7 @@ static int envcfg_transition_cases(void)
                                             (unsigned long) &g_bram_buf[BLOCK / 8],
                                             cases[i].menv,
                                             cases[i].new_senv);
-        ok &= expect(cases[i].name, cases[i].cause, 0, cases[i].cause == CAUSE_ILLEGAL);
+        ok &= expect(cases[i].name, cases[i].cause, CBO_ZERO_A0, cases[i].cause == CAUSE_ILLEGAL);
         ok &= check_blocks(cases[i].name, g_bram_buf, cause != CAUSE_ILLEGAL);
     }
     /* A lower-privilege envcfg write must fault before the following zero,
@@ -701,7 +703,8 @@ int main(void)
             csr_write_num(0x30A, cases[i].menv);
             csr_write_num(0x10A, cases[i].senv);
             cause = run_lower(cases[i].mpp, (unsigned long) &g_bram_buf[BLOCK / 8] + 5);
-            ok &= expect(cases[i].name, cases[i].cause, 0, cases[i].cause == CAUSE_ILLEGAL);
+            ok &=
+                expect(cases[i].name, cases[i].cause, CBO_ZERO_A0, cases[i].cause == CAUSE_ILLEGAL);
             ok &= check_blocks(cases[i].name, g_bram_buf, cause != CAUSE_ILLEGAL);
         }
         csr_write_num(0x30A, 0);
