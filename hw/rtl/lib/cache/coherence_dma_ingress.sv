@@ -116,6 +116,9 @@ module coherence_dma_ingress #(
   function automatic logic [3:0] packet_id(input coh_d_t packet);
     packet_id = packet.q.id;
   endfunction
+  function automatic logic [8:0] packet_identity(input coh_d_t packet);
+    packet_identity = packet.q;
+  endfunction
   function automatic logic packet_write(input coh_d_t packet);
     packet_write = packet.opcode == coherence_pkg::DMAWrite;
   endfunction
@@ -155,16 +158,41 @@ module coherence_dma_ingress #(
   assign o_g_ready = |grant_match;
   assign o_u_ready = |release_match;
 
+  // G and U match a slot by identity. Each live slot holds a distinct ID
+  // (occupied_q admits an ID once until its slot frees), and every slot's q
+  // carries the same source, port class and epoch, so q names at most one
+  // live slot. The home refuses a D whose q matches a live home slot and
+  // sends that slot's G and U from the D it accepted, with the D's address,
+  // so the address and the grant opcode are checked as the home's contract
+  // below rather than compared on the ready and load-enable paths.
+`ifndef SYNTHESIS
+  logic [SLOTS-1:0] contract_g_ok, contract_u_ok;
+`endif
+  wire identity_fields_g = grant_in.q.src == SOURCE && grant_in.q.port_class == PORT_CLASS &&
+      grant_in.q.epoch == 1'b0;
+  wire identity_fields_u = release_in.q.src == SOURCE && release_in.q.port_class == PORT_CLASS &&
+      release_in.q.epoch == 1'b0;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_slot
     coh_d_t request_packet;
     assign request_packet = packet_q[slot];
-    assign grant_match[slot] = phase_q[slot] == Sent &&
-        grant_in.q == request_packet.q && grant_in.addr == request_packet.addr &&
-        grant_in.opcode == (request_packet.opcode == coherence_pkg::DMAWrite ?
-            coherence_pkg::GrantAck : coherence_pkg::GrantData);
-    assign release_match[slot] = phase_q[slot] == WaitRelease &&
-        release_in.q == request_packet.q && release_in.addr == request_packet.addr &&
-        release_in.tid == tid_q[slot];
+    assign grant_match[slot] = phase_q[slot] == Sent && identity_fields_g &&
+        grant_in.q.id == packet_id(
+        request_packet
+    );
+    assign release_match[slot] = phase_q[slot] == WaitRelease && identity_fields_u &&
+        release_in.q.id == packet_id(
+        request_packet
+    ) && release_in.tid == tid_q[slot];
+`ifndef SYNTHESIS
+    // The home's contract: a G or U that names this slot carries its
+    // address, and a G carries the grant opcode of its request.
+    assign contract_g_ok[slot] = !(i_g_valid && grant_match[slot]) ||
+        (grant_in.addr == request_packet.addr &&
+         grant_in.opcode == (request_packet.opcode == coherence_pkg::DMAWrite ?
+             coherence_pkg::GrantAck : coherence_pkg::GrantData));
+    assign contract_u_ok[slot] = !(i_u_valid && release_match[slot]) ||
+        release_in.addr == request_packet.addr;
+`endif
     // A read may respond once its G data is held; the U's slot responds next
     // when it has not responded, and frees now when it has.
     assign early_due[slot] = request_packet.opcode != coherence_pkg::DMAWrite &&
@@ -324,6 +352,11 @@ module coherence_dma_ingress #(
       if (accept_demand) assert (phase_q[queue_q[head_q]] == Queued);
       if (o_resp_valid) assert (phase_q[response_slot_q] != Free && responded_q[response_slot_q]);
       assert ($onehot0(pick_onehot));
+`ifndef FORMAL
+      // The home's side of the identity match; the formal tasks assume it.
+      assert (&contract_g_ok);
+      assert (&contract_u_ok);
+`endif
       for (int slot = 0; slot < SLOTS; slot++) begin
         if (phase_q[slot] == Respond) assert (responded_q[slot]);
         if (responded_q[slot])
@@ -488,6 +521,13 @@ module coherence_dma_ingress #(
       f_released <= '0;
     end else begin
       if (accept_request) assume (i_req_addr[4:0] == 0);
+      // The home's contract (checked as an assertion in simulation): a G or
+      // U that names a slot by identity carries that slot's address and, for
+      // G, its grant opcode. coherence_home_completions proves the G's q,
+      // tid and address equal its slot's accepted D, and the endpoint sends
+      // U from the same D.
+      assume (&contract_g_ok);
+      assume (&contract_u_ok);
       f_outstanding <= f_outstanding + CountBits'(accept_request) - CountBits'(pulse_free) -
           CountBits'(|release_free);
       if (pulse_free) begin
@@ -539,6 +579,16 @@ module coherence_dma_ingress #(
         assert (f_completed[slot] == (phase_q[slot] >= WaitRelease));
         assert (f_released[slot] == (phase_q[slot] == Respond));
         if (f_queued[slot]) begin
+          // Every live slot's q has the fixed source, port class and epoch,
+          // so the identity match is the full q comparison.
+          assert (packet_identity(
+              packet_q[slot]
+          ) == {SOURCE, PORT_CLASS, packet_id(
+              packet_q[slot]
+          ), 1'b0});
+          assert (grant_match[slot] == (phase_q[slot] == Sent && grant_in.q == packet_identity(
+              packet_q[slot]
+          )));
           assert (occupied_q[packet_id(packet_q[slot])]);
           if (packet_id(packet_q[slot]) == f_id) assert (packet_q[slot] == f_payload);
           for (int other = slot + 1; other < SLOTS; other++)
