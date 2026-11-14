@@ -100,7 +100,7 @@ module instr_operand_classifier_equiv (
       riscv_pkg::CSRRC, riscv_pkg::CSRRWI,
       riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
       riscv_pkg::ECALL, riscv_pkg::EBREAK, riscv_pkg::ILLEGAL,
-      riscv_pkg::PAUSE:
+      riscv_pkg::PAUSE, riscv_pkg::MOP:
       rs_type_pre = riscv_pkg::RS_INT;
 
       riscv_pkg::CLMUL, riscv_pkg::CLMULH, riscv_pkg::CLMULR,
@@ -314,6 +314,7 @@ module instr_operand_classifier_equiv (
       riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
       riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
       riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
+      riscv_pkg::MOP,
       riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D,
       riscv_pkg::VSETVLI, riscv_pkg::VSETIVLI, riscv_pkg::VSETVL, riscv_pkg::VTOX:
       has_int_dest_pre = 1'b1;
@@ -381,6 +382,7 @@ module instr_operand_classifier_equiv (
       op_for_pre_decode != riscv_pkg::DRET &&
       op_for_pre_decode != riscv_pkg::SFENCE_VMA &&
       op_for_pre_decode != riscv_pkg::PAUSE &&
+      op_for_pre_decode != riscv_pkg::MOP &&
       op_for_pre_decode != riscv_pkg::CSRRWI &&
       op_for_pre_decode != riscv_pkg::CSRRSI &&
       op_for_pre_decode != riscv_pkg::CSRRCI &&

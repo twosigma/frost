@@ -419,7 +419,8 @@ async def test_rvc_fields_come_from_predecode_through_packet_lifecycle(
         (0x7181, 0xFFFE01B7, False),  # C.LUI x3, -32
         (0x7101, 0xE0010113, False),  # C.ADDI16SP -512 (rd == x2)
         (0x9002, 0x00100073, False),  # C.EBREAK
-        (0x9C41, 0x00000000, True),  # Reserved RV64 arithmetic sub-op
+        (0x9C41, 0x02840433, False),  # Zcb C.MUL x8, x8, x8
+        (0x9C79, 0x00000000, True),  # Reserved Zcb unary selector 110
         (0xC004, 0x00942023, False),  # C.SW x9, 0(x8)
         (0x8182, 0x00018067, False),  # C.JR x3
         (0x9182, 0x000180E7, False),  # C.JALR x3

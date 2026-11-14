@@ -176,6 +176,19 @@ package riscv_pkg;
     end
   endfunction
 
+  // Bits [24:20] of a Zcb unary expansion (quadrant 1, bits [15:10]=100111,
+  // [6:5]=11), selected by bits [4:2]: the C.ZEXT.B and C.NOT immediates
+  // (0xff, -1), the SEXT.B/SEXT.H funct12 low bits, and x0 for ZEXT.H and
+  // ZEXT.W. The reserved [4:2]=110/111 expand to zero.
+  function automatic logic [4:0] imem_rvc_zcb_unary_bits24_20(input logic [2:0] sel);
+    unique case (sel)
+      3'b000, 3'b101: imem_rvc_zcb_unary_bits24_20 = 5'b11111;
+      3'b001: imem_rvc_zcb_unary_bits24_20 = 5'b00100;
+      3'b011: imem_rvc_zcb_unary_bits24_20 = 5'b00101;
+      default: imem_rvc_zcb_unary_bits24_20 = 5'b00000;
+    endcase
+  endfunction
+
   // Return {expanded instruction[21], expanded instruction[19:15]}, i.e.
   // {rs2[1], rs1}, for one RVC parcel. These bits match the literal expansion,
   // including unused fields, illegal encodings and hints. The two wrappers
@@ -250,6 +263,15 @@ package riscv_pkg;
               rs1 = rs1_prime;
               rs2 = rs2_prime;
             end
+            3'b100: begin  // Zcb; reserved forms expand to zero
+              if (!parcel[12] && !parcel[11]) begin  // C.LBU / C.LHU / C.LH
+                rs1 = rs1_prime;
+                rs2 = {3'b000, parcel[5], parcel[6] && !parcel[10]};
+              end else if (!parcel[12] && (!parcel[10] || !parcel[6])) begin  // C.SB / C.SH
+                rs1 = rs1_prime;
+                rs2 = rs2_prime;
+              end
+            end
             default: begin  // Reserved encoding expands to zero.
               rs1 = 5'd0;
               rs2 = 5'd0;
@@ -289,14 +311,18 @@ package riscv_pkg;
                   rs1 = rs1_prime;
                   rs2 = shamt;
                 end
-                default: begin  // C.SUB / C.XOR / C.OR / C.AND / C.SUBW / C.ADDW
-                  if (!parcel[12] || !parcel[6]) begin
+                default: begin  // C.SUB/XOR/OR/AND, C.SUBW/ADDW, Zcb C.MUL and unary
+                  if (!parcel[12] || !parcel[6] || !parcel[5]) begin
                     rs1 = rs1_prime;
                     rs2 = rs2_prime;
+                  end else if (!(parcel[4] && parcel[3])) begin
+                    // Zcb unary forms: rs1 = rd'; bits [24:20] hold the
+                    // immediate or the funct12 low bits.
+                    rs1 = rs1_prime;
+                    rs2 = imem_rvc_zcb_unary_bits24_20(parcel[4:2]);
                   end
-                  // With parcel[12]=1, [6:5]=00/01 are C.SUBW/C.ADDW with the
-                  // same register shape while [6:5]=10/11 stay reserved (zero
-                  // expansion).
+                  // With parcel[12]=1, [6:5]=11 and [4:2]=110/111 stay
+                  // reserved (zero expansion).
                 end
               endcase
             end
@@ -384,10 +410,10 @@ package riscv_pkg;
   // rvc_decompressor's expansion, including reserved encodings; a quadrant-3
   // (native) parcel returns zero.
   function automatic logic [4:0] imem_rvc_bits24_20(input logic [15:0] c, input logic rd_is_x2);
-    logic arithmetic_reserved;
+    logic zcb_unary;
     logic ebreak;
     begin
-      arithmetic_reserved = c[12] && (&c[11:10]) && c[6];
+      zcb_unary = c[12] && (&c[11:10]) && (&c[6:5]);
       ebreak = c[12] && (c[11:7] == 5'd0) && (c[6:2] == 5'd0);
       imem_rvc_bits24_20 = 5'd0;
       unique case (c[1:0])
@@ -397,6 +423,11 @@ package riscv_pkg;
             3'b001, 3'b011: imem_rvc_bits24_20 = {c[11:10], 3'b000};
             3'b010: imem_rvc_bits24_20 = {c[11:10], c[6], 2'b00};
             3'b101, 3'b110, 3'b111: imem_rvc_bits24_20 = {2'b01, c[4:2]};
+            // Zcb: C.LBU/C.LHU/C.LH uimm, C.SB/C.SH rs2'; reserved forms zero
+            3'b100:
+            imem_rvc_bits24_20 = c[12] ? 5'd0 :
+                !c[11] ? {3'b000, c[5], c[6] && !c[10]} :
+                (!c[10] || !c[6]) ? {2'b01, c[4:2]} : 5'd0;
             default: imem_rvc_bits24_20 = 5'd0;
           endcase
         end
@@ -405,7 +436,7 @@ package riscv_pkg;
             3'b000, 3'b001, 3'b010: imem_rvc_bits24_20 = c[6:2];
             3'b011: imem_rvc_bits24_20 = rd_is_x2 ? {c[6], 4'b0000} : {5{c[12]}};
             3'b100:
-            imem_rvc_bits24_20 = arithmetic_reserved ? 5'd0 :
+            imem_rvc_bits24_20 = zcb_unary ? imem_rvc_zcb_unary_bits24_20(c[4:2]) :
                 ((&c[11:10]) ? {2'b01, c[4:2]} : c[6:2]);
             3'b101: imem_rvc_bits24_20 = {c[11], c[5:3], c[12]};
             default: imem_rvc_bits24_20 = 5'd0;
@@ -459,6 +490,8 @@ package riscv_pkg;
     logic [ 7:0] imm_swsp;
     logic [11:0] imm_sdsp;
     logic [ 5:0] shamt6;
+    logic [11:0] imm_lb;
+    logic [11:0] imm_lh;
     begin
       i_rd_is_x2 = (i_instr_compressed[11:7] == 5'd2);
       quadrant = i_instr_compressed[1:0];
@@ -520,6 +553,8 @@ package riscv_pkg;
       imm_swsp = {i_instr_compressed[8:7], i_instr_compressed[12:9], 2'b00};
       imm_sdsp = {3'b0, i_instr_compressed[9:7], i_instr_compressed[12:10], 3'b000};
       shamt6 = {i_instr_compressed[12], i_instr_compressed[6:2]};
+      imm_lb = {10'b0, i_instr_compressed[5], i_instr_compressed[6]};
+      imm_lh = {10'b0, i_instr_compressed[5], 1'b0};
       // Default outputs: zero instruction for reserved encodings.
       o_instr_expanded = 32'b0;
       o_illegal = 1'b0;
@@ -550,6 +585,28 @@ package riscv_pkg;
             o_instr_expanded = {
               imm_ld_sd[11:5], rs2_prime, rs1_prime, 3'b011, imm_ld_sd[4:0], OpcStore
             };  // C.SD
+            3'b100: begin  // Zcb loads and stores; reserved forms expand to zero
+              unique case (i_instr_compressed[12:10])
+                3'b000:
+                o_instr_expanded = {imm_lb, rs1_prime, 3'b100, rd_prime, OpcLoad};  // C.LBU
+                3'b001:  // C.LHU (bit 6 = 0) / C.LH (bit 6 = 1)
+                o_instr_expanded = {
+                  imm_lh, rs1_prime, i_instr_compressed[6] ? 3'b001 : 3'b101, rd_prime, OpcLoad
+                };
+                3'b010:
+                o_instr_expanded = {
+                  7'b0, rs2_prime, rs1_prime, 3'b000, imm_lb[4:0], OpcStore
+                };  // C.SB
+                3'b011: begin  // C.SH (bit 6 = 1 is reserved)
+                  if (!i_instr_compressed[6])
+                    o_instr_expanded = {
+                      7'b0, rs2_prime, rs1_prime, 3'b001, imm_lh[4:0], OpcStore
+                    };
+                  else o_illegal = 1'b1;
+                end
+                default: o_illegal = 1'b1;
+              endcase
+            end
             default: o_illegal = 1'b1;  // Reserved encoding
           endcase
         end
@@ -571,7 +628,11 @@ package riscv_pkg;
                 if (imm_addi16sp == 12'b0) o_illegal = 1'b1;
               end else begin  // C.LUI (rd=0 is a HINT: lui x0)
                 o_instr_expanded = {imm_lui, rd_full, OpcLui};
-                if ({i_instr_compressed[12], i_instr_compressed[6:2]} == 6'b0) o_illegal = 1'b1;
+                if ({i_instr_compressed[12], i_instr_compressed[6:2]} == 6'b0) begin
+                  // Zcmop C.MOP.n: rd = n odd in 1..15; writes no register.
+                  if (!rd_full[4] && rd_full[0]) o_instr_expanded = 32'h0000_0013;
+                  else o_illegal = 1'b1;
+                end
               end
             end
             3'b100: begin
@@ -594,7 +655,27 @@ package riscv_pkg;
                       o_instr_expanded = {
                         7'b0000000, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp32
                       };  // C.ADDW
-                      default: o_illegal = 1'b1;  // [6:5]=10/11 stay reserved
+                      2'b10:
+                      o_instr_expanded = {
+                        7'b0000001, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp
+                      };  // Zcb C.MUL
+                      2'b11: begin  // Zcb unary forms; [4:2]=110/111 stay reserved
+                        unique case (i_instr_compressed[4:2])
+                          3'b000:  // C.ZEXT.B = andi rd', rd', 0xff
+                          o_instr_expanded = {12'h0ff, rs1_prime, 3'b111, rs1_prime, OpcOpImm};
+                          3'b001:  // C.SEXT.B
+                          o_instr_expanded = {12'h604, rs1_prime, 3'b001, rs1_prime, OpcOpImm};
+                          3'b010:  // C.ZEXT.H = zext.h (RV64 encoding)
+                          o_instr_expanded = {12'h080, rs1_prime, 3'b100, rs1_prime, OpcOp32};
+                          3'b011:  // C.SEXT.H
+                          o_instr_expanded = {12'h605, rs1_prime, 3'b001, rs1_prime, OpcOpImm};
+                          3'b100:  // C.ZEXT.W = add.uw rd', rd', x0
+                          o_instr_expanded = {12'h080, rs1_prime, 3'b000, rs1_prime, OpcOp32};
+                          3'b101:  // C.NOT = xori rd', rd', -1
+                          o_instr_expanded = {12'hfff, rs1_prime, 3'b100, rs1_prime, OpcOpImm};
+                          default: o_illegal = 1'b1;
+                        endcase
+                      end
                     endcase
                   end else begin
                     unique case (i_instr_compressed[6:5])
@@ -1046,8 +1127,11 @@ package riscv_pkg;
                                // executes it after commit, INT_RS only completes it
     VARITH_X,                  // V: vector arithmetic with rs1 as its scalar operand, which
                                // INT_RS passes to the ROB for the engine
-    VTOX                       // V: vmv.x.s, vcpop.m, vfirst.m: executed at the ROB head
+    VTOX,                      // V: vmv.x.s, vcpop.m, vfirst.m: executed at the ROB head
                                // once the engine is idle; no reservation station
+    // Zimop MOP.R.n / MOP.RR.n: no extension redefines them, so each writes
+    // zero to rd. It reads no register and selects no ALU result group.
+    MOP
   } instr_op_e;
 
   // Barrel-shifter controls decoded from operation bits:
@@ -3101,6 +3185,8 @@ package riscv_pkg;
       FCLASS_S, FCLASS_D,
       // FP to INT conversion -> INT rd
       FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D, FCVT_L_S, FCVT_LU_S, FCVT_L_D, FCVT_LU_D,
+      // Zimop: writes zero to rd
+      MOP,
       // FP to INT bit move -> INT rd
       FMV_X_W, FMV_X_D:
       has_int_dest = 1'b1;
@@ -3205,6 +3291,7 @@ package riscv_pkg;
         FENCE, FENCE_I,
         WFI, MRET, SRET, DRET, SFENCE_VMA, PAUSE,
         CSRRWI, CSRRSI, CSRRCI,
+        MOP,
         ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT,
         VSETIVLI, VARITH, VTOX:
         uses_int_rs1 = 1'b0;

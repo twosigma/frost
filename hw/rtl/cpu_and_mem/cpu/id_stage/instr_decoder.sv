@@ -16,8 +16,8 @@
 
 /*
   Combinational decoder for RV64GCB (Zba/Zbb/Zbs), Zicond, Zbc, Zbkb, Zbkc, Zicsr,
-  Zicboz, and M/S/U-mode privileged instructions. Compressed instructions arrive
-  already expanded. o_instr_op selects the operation; o_illegal flags any
+  Zicboz, Zimop, and M/S/U-mode privileged instructions. Compressed instructions
+  arrive already expanded. o_instr_op selects the operation; o_illegal flags any
   encoding not decoded here, including reserved FP rounding modes.
  */
 module instr_decoder (
@@ -358,6 +358,15 @@ module instr_decoder (
             12'b0111101_10010: o_instr_op = riscv_pkg::DRET;
             default: o_illegal = 1'b1;
           endcase
+        // Zimop: MOP.R.n is 1 n[4] 00 n[3:2] 0111 n[1:0] rs1 100 rd and
+        // MOP.RR.n is 1 n[2] 00 n[1:0] 1 rs2 rs1 100 rd. FROST implements no
+        // extension that redefines them, so each writes zero to rd. Other
+        // funct3=100 encodings (the hypervisor loads and stores) are illegal.
+        3'b100:
+        if (i_instr.funct7[6] && i_instr.funct7[4:3] == 2'b00 &&
+            (i_instr.funct7[0] || i_instr.source_reg_2[4:2] == 3'b111))
+          o_instr_op = riscv_pkg::MOP;
+        else o_illegal = 1'b1;
         riscv_pkg::CSR_RW: o_instr_op = riscv_pkg::CSRRW;  // Atomic read/write
         riscv_pkg::CSR_RS: o_instr_op = riscv_pkg::CSRRS;  // Atomic read and set bits
         riscv_pkg::CSR_RC: o_instr_op = riscv_pkg::CSRRC;  // Atomic read and clear bits

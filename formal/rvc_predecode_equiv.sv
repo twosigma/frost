@@ -14,8 +14,9 @@
  *    limitations under the License.
  */
 
-// The fill-time RV64C expansion must equal the independent reference decoder
-// for every 16-bit parcel, including reserved and native encodings.
+// The fill-time RV64C expansion (with Zcb and Zcmop) must equal the
+// independent reference decoder for every 16-bit parcel, including reserved
+// and native encodings.
 module rvc_predecode_equiv;
   (* anyconst *) logic [15:0] parcel;
   logic [31:0] expanded;
@@ -25,7 +26,17 @@ module rvc_predecode_equiv;
       .o_instr_expanded(expanded),
       .o_illegal(illegal)
   );
+  // The stored source fields equal the expansion's: bits [24:20], rs1 and
+  // rs2[1], for every compressed parcel including reserved ones.
+  logic rd_is_x2;
+  logic [5:0] source_fields;
+  assign rd_is_x2 = parcel[11:7] == 5'd2;
+  assign source_fields = riscv_pkg::imem_rvc_source_fields(parcel, rd_is_x2);
   always_comb begin
     assert (riscv_pkg::imem_rvc_expand(parcel) == {illegal, expanded});
+    if (parcel[1:0] != 2'b11) begin
+      assert (riscv_pkg::imem_rvc_bits24_20(parcel, rd_is_x2) == expanded[24:20]);
+      assert (source_fields == {expanded[21], expanded[19:15]});
+    end
   end
 endmodule

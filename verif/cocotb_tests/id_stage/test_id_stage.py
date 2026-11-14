@@ -1073,3 +1073,64 @@ async def test_btb_target_check_for_direct_branches(dut: Any) -> None:
     await _advance_cycle(dut)
     packet = _read_id_packet(dut)
     assert packet["btb_correct_non_jalr"] is False
+
+
+def _mop_r(n: int, rd: int, rs1: int) -> int:
+    """Encode Zimop MOP.R.n: 1 n[4] 00 n[3:2] 0111 n[1:0] rs1 100 rd 1110011."""
+    funct12 = (1 << 11) | (((n >> 4) & 1) << 10) | (((n >> 2) & 3) << 6) | (0b0111 << 2) | (n & 3)
+    return _pack_i(imm=funct12, rs1=rs1, funct3=0b100, rd=rd, opcode=0b1110011)
+
+
+def _mop_rr(n: int, rd: int, rs1: int, rs2: int) -> int:
+    """Encode Zimop MOP.RR.n: 1 n[2] 00 n[1:0] 1 rs2 rs1 100 rd 1110011."""
+    funct7 = (1 << 6) | (((n >> 2) & 1) << 5) | ((n & 3) << 1) | 1
+    return _pack_r(funct7=funct7, rs2=rs2, rs1=rs1, funct3=0b100, rd=rd, opcode=0b1110011)
+
+
+@cocotb.test()
+async def test_zimop_and_zihintntl_decode(dut: Any) -> None:
+    """MOP.R.n and MOP.RR.n write zero to rd from INT_RS without operands or CSR access.
+
+    Their funct3=100 SYSTEM neighbours (the hypervisor loads and near misses of
+    the MOP masks) stay illegal, and the Zihintntl hints are ADD x0 writes.
+    """
+    await _setup_test(dut)
+    mops = [(f"mop.r.{n}", _mop_r(n, 10, 11)) for n in range(32)]
+    mops += [(f"mop.rr.{n}", _mop_rr(n, 12, 13, 14)) for n in range(8)]
+    for name, instruction in mops:
+        for slot2 in (False, True):
+            _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": instruction}, slot2=slot2)
+            _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+            await _advance_cycle(dut)
+            packet = _read_id_packet(dut, slot2=slot2)
+            where = f"{name} slot2={slot2}"
+            assert packet["is_illegal_instruction"] is False, where
+            assert packet["instruction_operation"] == _INSTR_OPS["MOP"], where
+            assert packet["is_csr_instruction"] is False, where
+            assert packet["rs_type"] == RS_INT, where
+            assert packet["has_int_dest"] is True, where
+            assert packet["uses_int_rs1"] is False, where
+            assert packet["uses_int_rs2"] is False, where
+            assert packet["needs_sq"] is False and packet["needs_lq"] is False, where
+
+    for name, bad in (
+        ("hlv.b", 0x6005C573),
+        ("mop.r with bit 28", _mop_r(0, 10, 11) | (1 << 28)),
+        ("mop.r with bits 25:22 = 0110", _mop_r(0, 10, 11) & ~(1 << 22)),
+        ("mop.rr with bit 31 clear", _mop_rr(0, 10, 11, 12) & ~(1 << 31)),
+    ):
+        _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": bad})
+        _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=True)
+        await _advance_cycle(dut)
+        packet = _read_id_packet(dut)
+        assert packet["is_illegal_instruction"] is True, name
+        assert packet["is_csr_instruction"] is False, name
+
+    for rs2, name in ((2, "ntl.p1"), (3, "ntl.pall"), (4, "ntl.s1"), (5, "ntl.all")):
+        instruction = _pack_r(funct7=0, rs2=rs2, rs1=0, funct3=0, rd=0, opcode=0b0110011)
+        _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": instruction})
+        _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=True)
+        await _advance_cycle(dut)
+        packet = _read_id_packet(dut)
+        assert packet["is_illegal_instruction"] is False, name
+        assert packet["instruction_operation"] == _INSTR_OPS["ADD"], name
