@@ -1384,6 +1384,60 @@ module coherence_home #(
     // Every fill that a GetMZero's decision allocates is a zero fill.
     wire zero_fill = !lookup_prefetch_q && decision_opcode == coherence_pkg::GetMZero;
     assign fill_zero_alloc[fill] = allocate && zero_fill;
+    // The fill image: the memory response's data, or zero from a zero fill's
+    // allocation (it sends no read, so no response for its identity arrives),
+    // which takes priority. The allocation decision settles last, so the
+    // clear is the decision ANDed with this fill's other allocation terms in
+    // one LUT, and each image bit's next state takes the clear in its last.
+    // The image holds through reset, at the flop.
+    (* keep = "true" *)
+    wire image_clear_ready = run && array_response &&
+        fill_free_index == FillBits'(fill) && zero_fill;
+    wire image_take = i_mem_resp_valid && i_mem_resp_id == 5'(fill);
+    wire image_clear;
+    logic [8*LINE_BYTES-1:0] image_next;
+`ifdef FROST_XILINX_PRIMS
+    // I0 decision_fill, I1 image_clear_ready: I0 && I1.
+    (* dont_touch = "true" *)
+    LUT2 #(
+        .INIT(4'h8)
+    ) u_image_clear (
+        .I0(decision_fill),
+        .I1(image_clear_ready),
+        .O (image_clear)
+    );
+    for (genvar bit_idx = 0; bit_idx < 8 * LINE_BYTES; bit_idx++) begin : gen_image_bit
+      // I0 image_clear, I1 image_take, I2 response bit, I3 held bit:
+      // I0 ? 0 : (I1 ? I2 : I3).
+      (* dont_touch = "true" *)
+      LUT4 #(
+          .INIT(16'h5140)
+      ) u_image_next (
+          .I0(image_clear),
+          .I1(image_take),
+          .I2(i_mem_resp_data[bit_idx]),
+          .I3(fill_image_q[fill][bit_idx]),
+          .O (image_next[bit_idx])
+      );
+    end
+`else
+    assign image_clear = decision_fill && image_clear_ready;
+    assign image_next  = image_clear ? '0 : image_take ? i_mem_resp_data : fill_image_q[fill];
+`endif
+    always_ff @(posedge i_clk) if (!i_rst) fill_image_q[fill] <= image_next;
+`ifdef HOME_SEAT_NEXT_LOCAL_PROOF
+    // The image's reference next state: the response, then the zero fill's
+    // clear, held through reset.
+    logic [8*LINE_BYTES-1:0] f_image_next;
+    always_comb begin
+      f_image_next = fill_image_q[fill];
+      if (!i_rst) begin
+        if (i_mem_resp_valid && i_mem_resp_id == 5'(fill)) f_image_next = i_mem_resp_data;
+        if (run && fill_zero_alloc[fill]) f_image_next = '0;
+      end
+      if (!i_rst) assert (image_next == f_image_next);
+    end
+`endif
     // The fill enters FillInstall on this edge.
     wire install_entry = fill_phase_q[fill] == FillMemory && (fill_done_q[fill] ?
         !fill_error_q[fill] : i_mem_resp_valid && i_mem_resp_id == 5'(fill) && !i_mem_resp_error);
@@ -1623,13 +1677,9 @@ module coherence_home #(
         if (o_mem_req_valid && i_mem_req_ready && o_mem_req_id == 5'(fill))
           fill_sent_q[fill] <= 1'b1;
         if (i_mem_resp_valid && i_mem_resp_id == 5'(fill)) begin
-          fill_image_q[fill] <= i_mem_resp_data;
           fill_done_q[fill]  <= 1'b1;
           fill_error_q[fill] <= i_mem_resp_error;
         end
-        // A zero fill's image is zero from allocation; it sends no read, so no
-        // response for its identity arrives.
-        if (run && fill_zero_alloc[fill]) fill_image_q[fill] <= '0;
         if (run) begin
           // A forward takes the primary's seat away on the edge it is
           // accepted, beside any seats added or released then.

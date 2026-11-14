@@ -1008,11 +1008,19 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "home_seat_next_equiv.sby",
-        "The home's fill waiter masks, seat counts and parking, formed for both "
-        "values of the decision's reader term and selected last, equal one seat "
-        "selection given whether each fill joins, for any state and input, at "
-        "two, three and eight fills, portable and primitive",
+        "The home's fill waiter masks, seat counts, parking and fill images, formed "
+        "for both values of the decision's late term and selected last, equal the "
+        "original form for any state and input, at two, three and eight fills, "
+        "portable and primitive",
         tasks=("bmc_seat2", "bmc_seat3", "bmc", "bmc_xilinx"),
+    ),
+    FormalTarget(
+        "home_engine_image_equiv.sby",
+        "A home engine's line-image byte enables and DMA selects, formed for both "
+        "values of the write-ack ready and selected last, equal the ordered "
+        "writes for any state and input, at 64- and 32-byte lines, portable and "
+        "primitive",
+        tasks=("bmc", "bmc_line32", "bmc_xilinx"),
     ),
     FormalTarget(
         "line_align.sby",
@@ -2476,6 +2484,7 @@ SBY_TASKS = [
     ("bmc_fills3", "Forward-turn equivalence with three fills."),
     ("bmc_seat2", "Seat next-state equivalence with two fills."),
     ("bmc_seat3", "Seat next-state equivalence with three fills and four ways."),
+    ("bmc_line32", "Bounded equivalence with 32-byte lines."),
     ("line_link0_bmc", "Line client and links at zero stages, two identities."),
     (
         "coh_line_client_prove",
