@@ -19,6 +19,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled]
 
 # The workflow only reads source and publishes its own artifacts.
 permissions:
@@ -29,9 +30,13 @@ permissions:
 # waits behind it, and GitHub keeps only one pending run per group, so a run
 # still pending when another run is queued is cancelled in its favour. A pull
 # request keeps one run, and a newer push to it cancels the old one. The ASIC
-# flow in asic.yml follows the same rule.
+# flow in asic.yml follows the same rule. Adding a label other than run-ci
+# starts a run in a group of its own, so it does not cancel the pull request's
+# run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: >-
+    ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{
+    github.event.action == 'labeled' && github.event.label.name != 'run-ci' && '-label' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -41,6 +46,35 @@ env:
   SBY_VERSION: "0.70"
 
 jobs:
+  # On a pull request, only Lint and Fast Python Tests run unless the pull
+  # request carries the run-ci label. Every other job depends on this one and
+  # tests its output; pushes to main always run everything. Adding some other
+  # label starts a run that also skips them.
+  gate:
+    name: Select jobs
+    runs-on: ubuntu-26.04
+    outputs:
+      full: ${{ steps.select.outputs.full }}
+    steps:
+      - name: Decide whether the full set of jobs runs
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          ADDED: ${{ github.event.label.name }}
+          LABELED: ${{ contains(github.event.pull_request.labels.*.name, 'run-ci') }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then
+            full=true
+          elif [ "$ACTION" = labeled ] && [ "$ADDED" != run-ci ]; then
+            full=false
+          elif [ "$LABELED" = true ]; then
+            full=true
+          else
+            full=false
+          fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+
   # Shared image for all jobs.
   build-docker:
     name: Build Docker Image
@@ -78,7 +112,8 @@ jobs:
   test-verilator:
     name: Cocotb ${{ matrix.shard.name }} (Verilator / ${{ matrix.mem_config }})
     runs-on: ubuntu-26.04
-    needs: build-docker
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -360,7 +395,8 @@ jobs:
   test-pa-width:
     name: Physical address aperture (${{ matrix.capacity_gib }} GiB / ${{ matrix.shard.name }})
     runs-on: ubuntu-26.04
-    needs: build-docker
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -453,7 +489,8 @@ jobs:
   test-net10g:
     name: Ethernet MAC/PCS (cocotb and synthesis)
     runs-on: ubuntu-26.04
-    needs: build-docker
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
     timeout-minutes: 35
     env:
       FROST_SKIP_SUBMODULE_INIT: "1"
@@ -512,7 +549,8 @@ jobs:
     name: Arch Tests (${{ matrix.extensions }} / ${{ matrix.mem_config }}${{ matrix.shard && format(' / {0}', matrix.shard) || '' }})
     runs-on: ubuntu-26.04
     timeout-minutes: 120
-    needs: build-docker
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -587,7 +625,8 @@ jobs:
   test-riscv-tests:
     name: riscv-tests (${{ matrix.label || matrix.suites }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
     runs-on: ubuntu-26.04
-    needs: build-docker
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -657,7 +696,8 @@ jobs:
   test-riscv-benchmarks:
     name: riscv-tests Benchmarks (${{ matrix.benchmarks }} / ${{ matrix.mem_config }})
     runs-on: ubuntu-26.04
-    needs: build-docker
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -698,7 +738,8 @@ jobs:
   test-riscv-torture:
     name: riscv-torture Tests (${{ matrix.mem_config }}${{ matrix.paged && ' / paged' || '' }})
     runs-on: ubuntu-26.04
-    needs: build-docker
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -763,7 +804,8 @@ jobs:
   test-testrig:
     name: TestRIG (FROST vs Sail / ${{ matrix.shard }}/4)
     runs-on: ubuntu-26.04
-    needs: build-docker
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -847,6 +889,7 @@ jobs:
     runs-on: ubuntu-26.04
     needs:
       - build-docker
+      - gate
       - test-verilator
       - test-pa-width
       - test-arch-compliance
@@ -854,7 +897,7 @@ jobs:
       - test-riscv-torture
       - test-testrig
     # Report what the finished jobs reached even when some of them failed.
-    if: ${{ !cancelled() && needs.build-docker.result == 'success' }}
+    if: ${{ !cancelled() && needs.build-docker.result == 'success' && needs.gate.outputs.full == 'true' }}
     timeout-minutes: 30
     env:
       FROST_SKIP_SUBMODULE_INIT: "1"
@@ -908,7 +951,8 @@ jobs:
   test-synthesis:
     name: Yosys Synthesis Check
     runs-on: ubuntu-26.04
-    needs: build-docker
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -936,7 +980,8 @@ jobs:
   test-slang-frontend:
     name: SystemVerilog Front End (yosys-slang)
     runs-on: ubuntu-26.04
-    needs: build-docker
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
     timeout-minutes: 5
     steps:
       - name: Checkout repository
@@ -964,7 +1009,8 @@ jobs:
   test-pa-synthesis-width:
     name: PA synthesis aperture (${{ matrix.capacity_log2_bytes }} log2 bytes)
     runs-on: ubuntu-26.04
-    needs: build-docker
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -998,7 +1044,8 @@ jobs:
   test-formal:
     name: Formal Verification (${{ matrix.shard }})
     runs-on: ubuntu-26.04
-    needs: build-docker
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
@@ -1290,7 +1337,8 @@ jobs:
   build-frost-linux-mmu:
     name: Build FROST MMU Linux Image (Debian kernel + Buildroot userspace + OpenSBI)
     runs-on: ubuntu-26.04
-    needs: build-docker
+    needs: [build-docker, gate]
+    if: ${{ needs.gate.outputs.full == 'true' }}
     # Allow for cold toolchain and package downloads as well as compilation.
     timeout-minutes: 60
     env:
@@ -1377,7 +1425,8 @@ jobs:
   linux-boot-qemu-mmu:
     name: QEMU MMU Linux Boot (bundled and FROST OpenSBI)
     runs-on: ubuntu-26.04
-    needs: [build-docker, build-frost-linux-mmu]
+    needs: [build-docker, gate, build-frost-linux-mmu]
+    if: ${{ needs.gate.outputs.full == 'true' }}
     timeout-minutes: 20
     steps:
       - name: Checkout repository
