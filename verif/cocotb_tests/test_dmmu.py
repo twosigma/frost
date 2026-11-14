@@ -80,6 +80,7 @@ class Op:
     needs_sq: int = 0
     store: int = 0
     is_sc: int = 0
+    is_cmo: int = 0
     atomic: int = 0
     data: int = 0xFEDC_BA98_7654_3210
     amo_rs2: int = 0x1234_5678_9ABC_DEF0
@@ -152,6 +153,7 @@ async def _setup(dut: Any) -> None:
         "i_iss_needs_sq",
         "i_iss_store_perms",
         "i_iss_is_sc",
+        "i_iss_is_cmo",
         "i_iss_atomic",
         "i_iss_store_data",
         "i_iss_amo_rs2",
@@ -200,6 +202,7 @@ def _issue(dut: Any, op: Op) -> None:
     dut.i_iss_needs_sq.value = op.needs_sq
     dut.i_iss_store_perms.value = op.store
     dut.i_iss_is_sc.value = op.is_sc
+    dut.i_iss_is_cmo.value = op.is_cmo
     dut.i_iss_atomic.value = op.atomic
     dut.i_iss_store_data.value = op.data
     dut.i_iss_amo_rs2.value = op.amo_rs2
@@ -218,6 +221,7 @@ def _present_payload(dut: Any, op: Op) -> None:
     dut.i_iss_needs_sq.value = op.needs_sq
     dut.i_iss_store_perms.value = op.store
     dut.i_iss_is_sc.value = op.is_sc
+    dut.i_iss_is_cmo.value = op.is_cmo
     dut.i_iss_atomic.value = op.atomic
     dut.i_iss_store_data.value = op.data
     dut.i_iss_amo_rs2.value = op.amo_rs2
@@ -233,6 +237,7 @@ def _check(dut: Any, op: Op, leaf: Leaf) -> None:
         "o_iss_out_is_mmio": expected_mmio,
         "o_iss_out_needs_sq": op.needs_sq,
         "o_iss_out_is_sc": op.is_sc,
+        "o_iss_out_is_cmo": op.is_cmo,
         "o_iss_out_store_data": op.data,
         "o_iss_out_amo_rs2": op.amo_rs2,
         "o_iss_out_lq_capture_valid": 1 - op.needs_sq,
@@ -328,6 +333,28 @@ async def test_hit_and_walk_resolution_matrix(dut: Any) -> None:
         (
             replace(base_op, va=0xC000_0018, store=1, atomic=1),
             replace(base_leaf, level=2, ppn=0x40000),
+        ),
+        # Zicbom: SQ-resident with load permissions (D and W ignored, R or X
+        # with MXR needed), echoed for the wrapper; device windows resolve.
+        (replace(base_op, needs_sq=1, is_cmo=1, size=0), base_leaf),
+        (replace(base_op, needs_sq=1, is_cmo=1, size=0), replace(base_leaf, w=0, d=0)),
+        (replace(base_op, needs_sq=1, is_cmo=1, size=0), replace(base_leaf, r=0, x=1)),
+        (
+            replace(base_op, needs_sq=1, is_cmo=1, size=0, mxr=1),
+            replace(base_leaf, r=0, x=1),
+        ),
+        (replace(base_op, needs_sq=1, is_cmo=1, size=0), replace(base_leaf, u=1)),
+        (
+            replace(base_op, needs_sq=1, is_cmo=1, size=0),
+            replace(base_leaf, ppn=0x40000),
+        ),
+        (
+            replace(base_op, needs_sq=1, is_cmo=1, size=0),
+            replace(base_leaf, ppn=0x44000),
+        ),
+        (
+            replace(base_op, needs_sq=1, is_cmo=1, size=0),
+            replace(base_leaf, ppn=DDR_LIMIT >> 12),
         ),
     ]
     for via_walk in (False, True):
