@@ -25,7 +25,8 @@
  * without a valid reservation from lr.d; then the Linux __cmpwait shape
  * (lr.d, compare, wrs.nto, loop) in S, which must return once the watched
  * word holds the expected value, and an SC after wrs.nto that still sees its
- * reservation.
+ * reservation. A trapping wrs.nto leaves its instruction bits in mtval
+ * (Sstvala).
  */
 
 #include <stdint.h>
@@ -39,15 +40,20 @@
 #define CAUSE_ECALL_M 11ul
 
 #define MSTATUS_TW (1ul << 21)
+#define WRS_NTO_BITS 0x00d00073ul
 
 static volatile unsigned long g_cause;
 static volatile unsigned long g_a0;
+static volatile unsigned long g_tval;
 static volatile uint64_t g_word __attribute__((aligned(64), section(".ddr_data")));
 
 __attribute__((naked, aligned(4))) static void zawrs_trap_handler(void)
 {
     __asm__ volatile("csrr t0, mcause\n"
                      "la   t1, g_cause\n"
+                     "sd   t0, 0(t1)\n"
+                     "csrr t0, mtval\n"
+                     "la   t1, g_tval\n"
                      "sd   t0, 0(t1)\n"
                      "la   t1, g_a0\n"
                      "sd   a0, 0(t1)\n"
@@ -66,8 +72,8 @@ __attribute__((naked, aligned(4))) static void zawrs_trap_handler(void)
                                "j .\n");                                                           \
     }
 
-/* wrs.nto = 0x00d00073, wrs.sto = 0x01d00073 (the default -march has no
- * zawrs). */
+/* wrs.nto = 0x00d00073, wrs.sto = 0x01d00073, as words so the bodies
+ * assemble with any -march. */
 #define WRS_NTO ".word 0x00d00073\n"
 #define WRS_STO ".word 0x01d00073\n"
 BODY(body_nto, WRS_NTO)
@@ -90,6 +96,7 @@ run_mode(unsigned long mpp, void (*body)(void), unsigned long a0, unsigned long 
 {
     g_cause = ~0ul;
     g_a0 = ~0ul;
+    g_tval = ~0ul;
     __asm__ volatile("la   t0, 1f\n"
                      "csrw mscratch, t0\n"
                      "li   t0, 0x1800\n"
@@ -112,9 +119,15 @@ static const char *const mode_name[4] = {"U", "S", "?", "M"};
 
 static int check(const char *name, unsigned long mpp, int tw, unsigned long want)
 {
-    int ok = g_cause == want;
+    int ok = g_cause == want && (want != CAUSE_ILLEGAL || g_tval == WRS_NTO_BITS);
     uart_puts(ok ? "[PASS] " : "[FAIL] ");
-    uart_printf("%s mode=%s tw=%d cause=%lu want=%lu\r\n", name, mode_name[mpp], tw, g_cause, want);
+    uart_printf("%s mode=%s tw=%d cause=%lu want=%lu tval=0x%lx\r\n",
+                name,
+                mode_name[mpp],
+                tw,
+                g_cause,
+                want,
+                g_tval);
     return ok;
 }
 
