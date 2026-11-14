@@ -35,6 +35,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIRS = ("hw", "boards")
 SUFFIXES = (".sv", ".v", ".svh")
 NET_KINDS = r"(?:wire|tri|tri0|tri1|triand|trior|trireg|wand|wor|uwire|supply0|supply1)"
+# The start of the next port in a module header.
+PORT_DIRECTION = re.compile(r"\s*(?:input|output|inout|ref)\b")
 # One or more attribute instances, then a net kind. `@(*)` is not an attribute.
 ATTRIBUTED_NET = re.compile(rf"(?:\(\*(?!\)).*?\*\)\s*)+{NET_KINDS}\b", re.S)
 
@@ -53,11 +55,16 @@ def strip_comments(text: str) -> str:
 def has_initialiser(text: str, start: int) -> bool:
     """Report whether the declaration starting at `start` has a top-level `=`."""
     depth = 0
-    for char in text[start:]:
+    for position in range(start, len(text)):
+        char = text[position]
+        if char == "," and depth == 0 and PORT_DIRECTION.match(text, position + 1):
+            return False
         if char in "([{":
             depth += 1
         elif char in ")]}":
             depth -= 1
+            if depth < 0:
+                return False
         elif depth == 0 and char == ";":
             return False
         elif depth == 0 and char == "=":
@@ -105,3 +112,5 @@ def test_checker_recognises_the_forbidden_form() -> None:
     assert find_offenders('(* ASYNC_REG = "TRUE" *) logic [1:0] s = \'0;\n') == []
     assert find_offenders("wire z = a; // (* keep *) wire w = b;\n") == []
     assert find_offenders("always @(*) q = a;\nwire z;\n") == []
+    ports = "module m(input a, (* keep *) wire b, input c = 1'b0);\n"
+    assert find_offenders(ports) == []
