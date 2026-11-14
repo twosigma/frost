@@ -33,6 +33,10 @@ conformance bugs fixed for
 | [`traces/`](traces/) | Saved counterexamples, replayed in CI |
 | [`sscofpmf/controls.S`](sscofpmf/controls.S) | Deterministic Sscofpmf delegation, controls and implemented HPM aliases, replayed with `--sscofpmf` in CI |
 
+Random Zcb, Zcmop, Zimop and Zihintntl traces use `--zcb 50` ([`compressed_mops.py`](compressed_mops.py)): full-width operands, Zcb loads and stores on two
+cached-DDR bases, every C.MOP.n, MOP.R.n and MOP.RR.n, the NTL hints, integer traffic, and reserved
+neighbours that trap. A saved trace, `traces/zcb_zimop_zcmop_ntl.S`, runs every new encoding once.
+
 Scalar cryptography traces use `--crypto 50`. The generator supplies full-width
 operands, source and destination aliases, dependencies, integer multiply and
 divide traffic, taken branches, and environment calls. `--seed` makes these
@@ -234,7 +238,7 @@ assigns local counter overflow interrupt number 13 and specifies that
 `mideleg` controls its delegation to S-mode versus M-mode.
 
 Replay a counterexample from this view with `--sscofpmf --trace <file>`;
-the option cannot be combined with `--trace-dir`, `--atomics` or `--crypto`.
+the option cannot be combined with `--trace-dir`, `--atomics`, `--crypto` or `--zcb`.
 
 ## What the comparison leaves out
 
