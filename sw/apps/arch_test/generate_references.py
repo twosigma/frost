@@ -214,7 +214,7 @@ SUPPORTED_EXTENSIONS = [
     # as C.LD/C.SD, so Zcf is an RV32-only extension.
     "D_Zcd",
     "hints",
-    # Zicboz; the CMO directory's Zicbom tests are left out.
+    # Zicboz's cbo.zero; the pinned suite has no RV64 Zicbom tests.
     "CMO",
     # Zfa (F and D forms), and the Zfhmin subset of Zfh.
     "F_Zfa",
@@ -224,9 +224,8 @@ SUPPORTED_EXTENSIONS = [
 
 # Allowed filename prefixes for extensions where only a subset of tests
 # applies. privilege: FROST implements M, S, and U modes but no hypervisor.
-# The envcfg tests are left out: they declare Zicbom and Ssdtso, which FROST
-# does not implement. CMO supplies the Zicboz cbo.zero test; FROST has no
-# Zicbom. The K directory supplies
+# The envcfg tests are left out: they declare Ssdtso, which FROST does not
+# implement. CMO supplies the Zicboz cbo.zero test. The K directory supplies
 # Zbkb's pack/packh/packw/brev8 tests; zip/unzip are RV32-only. The B
 # directory supplies the Zbc/Zbkc carry-less multiply tests.
 EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
