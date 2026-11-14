@@ -713,14 +713,14 @@ earlier run.
 | `ASIC Flow (synthesis and floorplan)` | `./asic/orfs.py run --target floorplan` | None |
 | `ASIC Flow (placement and clock tree synthesis)` | `./asic/orfs.py run --from place --target cts` | 8 GiB |
 | `ASIC Flow (global routing)` | `./asic/orfs.py run --from grt --target grt` | 8 GiB |
-| `ASIC Flow (detailed routing)` | `./asic/orfs.py run --from route --target route` | 12 GiB |
-| `ASIC Flow (GDS and final report)` | `./asic/orfs.py run --from finish` | 16 GiB |
+| `ASIC Flow (detailed routing)` | `./asic/orfs.py run --from route --target route` | 24 GiB |
+| `ASIC Flow (GDS and final report)` | `./asic/orfs.py run --from finish` | 32 GiB |
 
 The last job's step summary shows `summary.md`, and its `asic-flow-results`
 artifact holds the logs, reports, and summary of all five. The runners have
 four CPUs and 16 GB of memory, less than global placement (18 GB peak),
-global routing, detailed routing, and the final report need, so those jobs
-add swap space. Each job also
+global routing, detailed routing (29 GiB peak), and the final report (39 GiB
+peak) need, so those jobs add swap space. Each job also
 deletes preinstalled toolchains to make room for the databases and has a
 six-hour limit. On four cores, synthesis with floorplanning takes about
 three hours and placement with clock tree synthesis under three. The allocations are set in the
