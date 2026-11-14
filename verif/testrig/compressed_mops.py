@@ -29,11 +29,15 @@ def _i(imm: int, rs1: int, funct3: int, rd: int, opcode: int) -> int:
 
 
 def _r(funct7: int, rs2: int, rs1: int, funct3: int, rd: int, opcode: int) -> int:
-    return (funct7 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
+    return (
+        (funct7 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
+    )
 
 
 def _mop_r(n: int, rd: int, rs1: int) -> int:
-    funct12 = (1 << 11) | ((n >> 4) & 1) << 10 | ((n >> 2) & 3) << 6 | 0b0111 << 2 | (n & 3)
+    funct12 = (
+        (1 << 11) | ((n >> 4) & 1) << 10 | ((n >> 2) & 3) << 6 | 0b0111 << 2 | (n & 3)
+    )
     return _i(funct12, rs1, 4, rd, 0x73)
 
 
@@ -57,13 +61,19 @@ def _case(rng: random.Random) -> tuple[int, str]:
     kind = rng.randrange(12)
     if kind == 0:  # c.lbu
         base, rd, uimm = rng.randrange(2), rng.choice(DATA_PRIME), rng.randrange(4)
-        return 0x8000 | base << 7 | (uimm & 1) << 6 | (uimm >> 1) << 5 | rd << 2, "c.lbu"
+        return 0x8000 | base << 7 | (uimm & 1) << 6 | (
+            uimm >> 1
+        ) << 5 | rd << 2, "c.lbu"
     if kind == 1:  # c.lhu / c.lh
         base, rd, signed = rng.randrange(2), rng.choice(DATA_PRIME), rng.randrange(2)
-        return 0x8400 | base << 7 | signed << 6 | rng.randrange(2) << 5 | rd << 2, "c.lh(u)"
+        return 0x8400 | base << 7 | signed << 6 | rng.randrange(
+            2
+        ) << 5 | rd << 2, "c.lh(u)"
     if kind == 2:  # c.sb
         base, rs2, uimm = rng.randrange(2), rng.choice(ANY_PRIME), rng.randrange(4)
-        return 0x8800 | base << 7 | (uimm & 1) << 6 | (uimm >> 1) << 5 | rs2 << 2, "c.sb"
+        return 0x8800 | base << 7 | (uimm & 1) << 6 | (
+            uimm >> 1
+        ) << 5 | rs2 << 2, "c.sb"
     if kind == 3:  # c.sh
         base, rs2 = rng.randrange(2), rng.choice(ANY_PRIME)
         return 0x8C00 | base << 7 | rng.randrange(2) << 5 | rs2 << 2, "c.sh"
@@ -71,7 +81,9 @@ def _case(rng: random.Random) -> tuple[int, str]:
         sel = rng.randrange(6)
         return 0x9C61 | rng.choice(DATA_PRIME) << 7 | sel << 2, f"c.unary.{sel}"
     if kind == 6:  # c.mul
-        return 0x9C41 | rng.choice(DATA_PRIME) << 7 | rng.choice(ANY_PRIME) << 2, "c.mul"
+        return 0x9C41 | rng.choice(DATA_PRIME) << 7 | rng.choice(
+            ANY_PRIME
+        ) << 2, "c.mul"
     if kind == 7:  # c.mop.n
         n = rng.randrange(1, 16, 2)
         return 0x6001 | n << 7, f"c.mop.{n}"
@@ -90,7 +102,14 @@ def _case(rng: random.Random) -> tuple[int, str]:
     if kind == 10:  # integer traffic: add / xor / sub
         funct7, funct3 = rng.choice(((0, 0), (0, 4), (0x20, 0)))
         return (
-            _r(funct7, rng.randrange(32), rng.randrange(32), funct3, rng.choice(WRITABLE), 0x33),
+            _r(
+                funct7,
+                rng.randrange(32),
+                rng.randrange(32),
+                funct3,
+                rng.choice(WRITABLE),
+                0x33,
+            ),
             "integer traffic",
         )
     return rng.choice(RESERVED), "reserved"
@@ -101,11 +120,24 @@ def write_tests(directory: Path, count: int, seed: int, length: int) -> list[Pat
     rng = random.Random(seed)
     directory.mkdir(parents=True, exist_ok=True)
     paths = []
-    corners = [0, 1, 1 << 63, (1 << 64) - 1, 0xAAAAAAAAAAAAAAAA, 0x5555555555555555, 0x80, 0xFF80]
+    corners = [
+        0,
+        1,
+        1 << 63,
+        (1 << 64) - 1,
+        0xAAAAAAAAAAAAAAAA,
+        0x5555555555555555,
+        0x80,
+        0xFF80,
+    ]
     for index in range(count):
         lines = [f"# Zcb/Zcmop/Zimop/Zihintntl test {index}, seed {seed}", ".noshrink"]
         for register in range(1, 16):
-            value = corners[register - 1] if register <= len(corners) else rng.getrandbits(64)
+            value = (
+                corners[register - 1]
+                if register <= len(corners)
+                else rng.getrandbits(64)
+            )
             # Eight unsigned bytes avoid assembler-dependent constant expansion.
             lines.append(f".4byte {_i(value >> 56, 0, 0, register, 0x13):#010x}")
             for shift in range(48, -1, -8):
@@ -116,7 +148,9 @@ def write_tests(directory: Path, count: int, seed: int, length: int) -> list[Pat
         for base in (8, 9):  # 0x8000_0000 + 8-aligned offset below 2 KiB
             lines.append(f".4byte {_i(1, 0, 0, base, 0x13):#010x}")
             lines.append(f".4byte {_i(31, base, 1, base, 0x13):#010x}")
-            lines.append(f".4byte {_i(rng.randrange(0, 2040, 8), base, 0, base, 0x13):#010x}")
+            lines.append(
+                f".4byte {_i(rng.randrange(0, 2040, 8), base, 0, base, 0x13):#010x}"
+            )
         lines.append(".shrink")
         for _ in range(length):
             word, name = _case(rng)

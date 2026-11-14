@@ -850,7 +850,12 @@ async def test_zcmop_forms_expand_to_nop_and_neighbours_stay_reserved(dut: Any) 
 @cocotb.test()
 async def test_zihintntl_c_ntl_forms_are_legal_add_x0_hints(dut: Any) -> None:
     """C.NTL.P1/PALL/S1/ALL are c.add x0, x2..x5: legal hints writing x0."""
-    for rs2, name in ((2, "c.ntl.p1"), (3, "c.ntl.pall"), (4, "c.ntl.s1"), (5, "c.ntl.all")):
+    for rs2, name in (
+        (2, "c.ntl.p1"),
+        (3, "c.ntl.pall"),
+        (4, "c.ntl.s1"),
+        (5, "c.ntl.all"),
+    ):
         raw = 0x9002 | (rs2 << 2)
         _drive(dut, raw)
         await _settle()

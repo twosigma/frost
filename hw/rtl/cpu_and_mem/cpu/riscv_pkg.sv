@@ -436,8 +436,8 @@ package riscv_pkg;
             3'b000, 3'b001, 3'b010: imem_rvc_bits24_20 = c[6:2];
             3'b011: imem_rvc_bits24_20 = rd_is_x2 ? {c[6], 4'b0000} : {5{c[12]}};
             3'b100:
-            imem_rvc_bits24_20 = zcb_unary ? imem_rvc_zcb_unary_bits24_20(c[4:2]) :
-                ((&c[11:10]) ? {2'b01, c[4:2]} : c[6:2]);
+            imem_rvc_bits24_20 = zcb_unary ?
+                imem_rvc_zcb_unary_bits24_20(c[4:2]) : ((&c[11:10]) ? {2'b01, c[4:2]} : c[6:2]);
             3'b101: imem_rvc_bits24_20 = {c[11], c[5:3], c[12]};
             default: imem_rvc_bits24_20 = 5'd0;
           endcase
@@ -587,8 +587,7 @@ package riscv_pkg;
             };  // C.SD
             3'b100: begin  // Zcb loads and stores; reserved forms expand to zero
               unique case (i_instr_compressed[12:10])
-                3'b000:
-                o_instr_expanded = {imm_lb, rs1_prime, 3'b100, rd_prime, OpcLoad};  // C.LBU
+                3'b000: o_instr_expanded = {imm_lb, rs1_prime, 3'b100, rd_prime, OpcLoad};  // C.LBU
                 3'b001:  // C.LHU (bit 6 = 0) / C.LH (bit 6 = 1)
                 o_instr_expanded = {
                   imm_lh, rs1_prime, i_instr_compressed[6] ? 3'b001 : 3'b101, rd_prime, OpcLoad
@@ -599,9 +598,7 @@ package riscv_pkg;
                 };  // C.SB
                 3'b011: begin  // C.SH (bit 6 = 1 is reserved)
                   if (!i_instr_compressed[6])
-                    o_instr_expanded = {
-                      7'b0, rs2_prime, rs1_prime, 3'b001, imm_lh[4:0], OpcStore
-                    };
+                    o_instr_expanded = {7'b0, rs2_prime, rs1_prime, 3'b001, imm_lh[4:0], OpcStore};
                   else o_illegal = 1'b1;
                 end
                 default: o_illegal = 1'b1;

@@ -219,14 +219,15 @@ module rvc_decompressor (
           };  // C.SD
           3'b100: begin  // Zcb loads and stores; reserved forms expand to zero
             unique case (i_instr_compressed[12:10])
-              3'b000:
-              o_instr_expanded = {imm_lb, rs1_prime, 3'b100, rd_prime, OpcLoad};  // C.LBU
+              3'b000: o_instr_expanded = {imm_lb, rs1_prime, 3'b100, rd_prime, OpcLoad};  // C.LBU
               3'b001:  // C.LHU (bit 6 = 0) / C.LH (bit 6 = 1)
               o_instr_expanded = {
                 imm_lh, rs1_prime, i_instr_compressed[6] ? 3'b001 : 3'b101, rd_prime, OpcLoad
               };
               3'b010:
-              o_instr_expanded = {7'b0, rs2_prime, rs1_prime, 3'b000, imm_lb[4:0], OpcStore};  // C.SB
+              o_instr_expanded = {
+                7'b0, rs2_prime, rs1_prime, 3'b000, imm_lb[4:0], OpcStore
+              };  // C.SB
               3'b011: begin  // C.SH (bit 6 = 1 is reserved)
                 if (!i_instr_compressed[6])
                   o_instr_expanded = {7'b0, rs2_prime, rs1_prime, 3'b001, imm_lh[4:0], OpcStore};

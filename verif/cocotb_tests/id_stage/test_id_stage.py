@@ -1077,14 +1077,22 @@ async def test_btb_target_check_for_direct_branches(dut: Any) -> None:
 
 def _mop_r(n: int, rd: int, rs1: int) -> int:
     """Encode Zimop MOP.R.n: 1 n[4] 00 n[3:2] 0111 n[1:0] rs1 100 rd 1110011."""
-    funct12 = (1 << 11) | (((n >> 4) & 1) << 10) | (((n >> 2) & 3) << 6) | (0b0111 << 2) | (n & 3)
+    funct12 = (
+        (1 << 11)
+        | (((n >> 4) & 1) << 10)
+        | (((n >> 2) & 3) << 6)
+        | (0b0111 << 2)
+        | (n & 3)
+    )
     return _pack_i(imm=funct12, rs1=rs1, funct3=0b100, rd=rd, opcode=0b1110011)
 
 
 def _mop_rr(n: int, rd: int, rs1: int, rs2: int) -> int:
     """Encode Zimop MOP.RR.n: 1 n[2] 00 n[1:0] 1 rs2 rs1 100 rd 1110011."""
     funct7 = (1 << 6) | (((n >> 2) & 1) << 5) | ((n & 3) << 1) | 1
-    return _pack_r(funct7=funct7, rs2=rs2, rs1=rs1, funct3=0b100, rd=rd, opcode=0b1110011)
+    return _pack_r(
+        funct7=funct7, rs2=rs2, rs1=rs1, funct3=0b100, rd=rd, opcode=0b1110011
+    )
 
 
 @cocotb.test()
@@ -1099,7 +1107,11 @@ async def test_zimop_and_zihintntl_decode(dut: Any) -> None:
     mops += [(f"mop.rr.{n}", _mop_rr(n, 12, 13, 14)) for n in range(8)]
     for name, instruction in mops:
         for slot2 in (False, True):
-            _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": instruction}, slot2=slot2)
+            _drive_pd_packet(
+                dut,
+                {"program_counter": BASE_PC, "instruction": instruction},
+                slot2=slot2,
+            )
             _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
             await _advance_cycle(dut)
             packet = _read_id_packet(dut, slot2=slot2)
@@ -1127,7 +1139,9 @@ async def test_zimop_and_zihintntl_decode(dut: Any) -> None:
         assert packet["is_csr_instruction"] is False, name
 
     for rs2, name in ((2, "ntl.p1"), (3, "ntl.pall"), (4, "ntl.s1"), (5, "ntl.all")):
-        instruction = _pack_r(funct7=0, rs2=rs2, rs1=0, funct3=0, rd=0, opcode=0b0110011)
+        instruction = _pack_r(
+            funct7=0, rs2=rs2, rs1=0, funct3=0, rd=0, opcode=0b0110011
+        )
         _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": instruction})
         _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=True)
         await _advance_cycle(dut)
