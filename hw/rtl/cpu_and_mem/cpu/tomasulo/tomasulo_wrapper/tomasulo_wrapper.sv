@@ -2914,6 +2914,30 @@ module tomasulo_wrapper #(
     int_rs_issue_cdb_tag   <= issue_cdb_tag_next;
     int_rs_issue_cdb_2_tag <= issue_cdb_2_tag_next;
   end
+  // Per-bank register copies of the issue tags for INT_RS's entry compares:
+  // the same D as the tags above, one copy per quarter of the entries. Keep
+  // and equivalent_register_removal hold them apart; without dont_touch,
+  // max_fanout may replicate each further. The single tags keep their other
+  // readers (the registered issue packets and checks).
+  localparam int unsigned IntRsTagBanks = (INT_RS_DEPTH >= 4) ? 4 : INT_RS_DEPTH;
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
+  logic [IntRsTagBanks-1:0][riscv_pkg::ReorderBufferTagWidth-1:0] int_rs_issue_cdb_tag_bank;
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
+  logic [IntRsTagBanks-1:0][riscv_pkg::ReorderBufferTagWidth-1:0] int_rs_issue_cdb_2_tag_bank;
+  always_ff @(posedge i_clk) begin
+    for (int bank = 0; bank < int'(IntRsTagBanks); bank++) begin
+      int_rs_issue_cdb_tag_bank[bank]   <= issue_cdb_tag_next;
+      int_rs_issue_cdb_2_tag_bank[bank] <= issue_cdb_2_tag_next;
+    end
+  end
+`ifdef FORMAL
+  // Equal from the first clock on; this prunes unequal initial states.
+  always_comb
+    for (int bank = 0; bank < int'(IntRsTagBanks); bank++) begin
+      assume (int_rs_issue_cdb_tag_bank[bank] == int_rs_issue_cdb_tag);
+      assume (int_rs_issue_cdb_2_tag_bank[bank] == int_rs_issue_cdb_2_tag);
+    end
+`endif
 `ifndef SYNTHESIS
   always_comb
     if (i_rst_n && sc_check_armed) begin
@@ -2975,6 +2999,7 @@ module tomasulo_wrapper #(
       .ISSUE2_WINDOW(riscv_pkg::IntRsIssue2Window),
       .ISSUE_CDB_TAG_SHADOW(1'b1),
       .ISSUE_CDB_META_ANCHORS(1'b1),
+      .ISSUE_CDB_TAG_BANKS(IntRsTagBanks),
       .CAPTURE_PRIMARY_EFFECTIVE_OPERANDS(1'b1),
       .BRANCH_PREDICATE_TAG_ANCHOR(1'b1),
       // Dispatch checks full for slot 1 and full_for_2 when both slots target
@@ -3005,6 +3030,8 @@ module tomasulo_wrapper #(
       .i_cdb_2(int_rs_cdb_1),
       .i_issue_cdb_valid(EARLY_LOAD_WAKEUP ? int_issue_wakeup_0.valid : int_rs_issue_cdb_valid),
       .i_issue_cdb_tag(int_rs_issue_cdb_tag),
+      .i_issue_cdb_tag_bank(int_rs_issue_cdb_tag_bank),
+      .i_issue_cdb_2_tag_bank(int_rs_issue_cdb_2_tag_bank),
       .i_issue_cdb_2_valid(EARLY_LOAD_WAKEUP ? int_issue_wakeup_1.valid : int_rs_issue_cdb_2_valid),
       .i_issue_cdb_2_tag(int_rs_issue_cdb_2_tag),
       .i_repair_valid_1(int_done_repair_valid_1),

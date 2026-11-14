@@ -68,6 +68,12 @@ module reservation_station #(
     // register merging. Committed writes use normal tags, so both banks must
     // match for every valid entry.
     parameter bit ISSUE_CDB_TAG_SHADOW = 1'b0,
+    // With ISSUE_CDB_META_ANCHORS, the number of register copies of the issue
+    // tags (i_issue_cdb_tag_bank, i_issue_cdb_2_tag_bank). Each holds the same
+    // value as i_issue_cdb_tag / i_issue_cdb_2_tag; entry e's issue compares
+    // read copy e * ISSUE_CDB_TAG_BANKS / DEPTH, so each copy has a share of
+    // the entries' load. 1 uses the single tag.
+    parameter int unsigned ISSUE_CDB_TAG_BANKS = 1,
     // Use separate valid/tag inputs for issue bypass. Their lane identities
     // match i_cdb and i_cdb_2, which supply resident wakeup and deferred capture.
     // When disabled, issue bypass also uses i_cdb and i_cdb_2.
@@ -158,6 +164,10 @@ module reservation_station #(
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_issue_cdb_tag,
     input logic                                        i_issue_cdb_2_valid,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_issue_cdb_2_tag,
+    input logic [ISSUE_CDB_TAG_BANKS-1:0][riscv_pkg::ReorderBufferTagWidth-1:0]
+        i_issue_cdb_tag_bank = '0,
+    input logic [ISSUE_CDB_TAG_BANKS-1:0][riscv_pkg::ReorderBufferTagWidth-1:0]
+        i_issue_cdb_2_tag_bank = '0,
 
     // Registered ROB-done repair wakeups from dispatch. These carry operands
     // whose CDB broadcast happened before the consumer was dispatched.
@@ -1419,6 +1429,30 @@ module reservation_station #(
   assign issue_cdb_tag = ISSUE_CDB_META_ANCHORS ? i_issue_cdb_tag : i_cdb.tag;
   assign issue_cdb_2_valid = ISSUE_CDB_META_ANCHORS ? i_issue_cdb_2_valid : i_cdb_2.valid;
   assign issue_cdb_2_tag = ISSUE_CDB_META_ANCHORS ? i_issue_cdb_2_tag : i_cdb_2.tag;
+  // Each entry's issue tags: its bank's register copy, or the single tag.
+  logic [ReorderBufferTagWidth-1:0] entry_cdb_tag[DEPTH];
+  logic [ReorderBufferTagWidth-1:0] entry_cdb_2_tag[DEPTH];
+  for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry_cdb_tag
+    if (ISSUE_CDB_META_ANCHORS && ISSUE_CDB_TAG_BANKS > 1) begin : gen_bank
+      localparam int unsigned Bank = entry * ISSUE_CDB_TAG_BANKS / DEPTH;
+      assign entry_cdb_tag[entry] = i_issue_cdb_tag_bank[Bank];
+      assign entry_cdb_2_tag[entry] = i_issue_cdb_2_tag_bank[Bank];
+    end else begin : gen_single
+      assign entry_cdb_tag[entry] = issue_cdb_tag;
+      assign entry_cdb_2_tag[entry] = issue_cdb_2_tag;
+    end
+  end
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // The copies hold the same value as the single tags once clocked.
+  always @(posedge i_clk)
+    if (reset_seen_q && i_rst_n && ISSUE_CDB_META_ANCHORS && ISSUE_CDB_TAG_BANKS > 1)
+      for (int bank = 0; bank < int'(ISSUE_CDB_TAG_BANKS); bank++) begin
+        p_issue_cdb_tag_bank_equal : assert (i_issue_cdb_tag_bank[bank] == i_issue_cdb_tag);
+        p_issue_cdb_2_tag_bank_equal : assert (i_issue_cdb_2_tag_bank[bank] == i_issue_cdb_2_tag);
+      end
+`endif
+`endif
   // 3-bit selector encodes 0=none, 1..6=repair channel index.
   logic [2:0] src1_repair_sel[DEPTH];
   logic [2:0] src2_repair_sel[DEPTH];
@@ -1431,15 +1465,15 @@ module reservation_station #(
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
       src1_cdb_bypass[i] = issue_cdb_valid && !rs_src1_ready[i] && !src1_cdb_pend[i] &&
-          (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[i] : rs_src1_tag[i]) == issue_cdb_tag;
+          (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[i] : rs_src1_tag[i]) == entry_cdb_tag[i];
       src2_cdb_bypass[i] = issue_cdb_valid && !rs_src2_ready[i] && !src2_cdb_pend[i] &&
-          (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[i] : rs_src2_tag[i]) == issue_cdb_tag;
+          (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[i] : rs_src2_tag[i]) == entry_cdb_tag[i];
       src1_cdb_bypass_l1[i] = LANE1_ISSUE_BYPASS && issue_cdb_2_valid && !rs_src1_ready[i] &&
           !src1_cdb_pend[i] &&
-          (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[i] : rs_src1_tag[i]) == issue_cdb_2_tag;
+          (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[i] : rs_src1_tag[i]) == entry_cdb_2_tag[i];
       src2_cdb_bypass_l1[i] = LANE1_ISSUE_BYPASS && issue_cdb_2_valid && !rs_src2_ready[i] &&
           !src2_cdb_pend[i] &&
-          (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[i] : rs_src2_tag[i]) == issue_cdb_2_tag;
+          (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[i] : rs_src2_tag[i]) == entry_cdb_2_tag[i];
       src1_repair_sel[i] = 3'd0;
       src2_repair_sel[i] = 3'd0;
       if (ISSUE_REPAIR_BYPASS && !ALLOC_INDEXED_REPAIR && !rs_src1_ready[i]) begin
@@ -1474,9 +1508,9 @@ module reservation_station #(
       end
       if (HAS_SRC3) begin
         src3_cdb_bypass[i] = issue_cdb_valid && !rs_src3_ready[i] && !src3_cdb_pend[i] &&
-            rs_src3_tag[i] == issue_cdb_tag;
+            rs_src3_tag[i] == entry_cdb_tag[i];
         src3_cdb_bypass_l1[i] = LANE1_ISSUE_BYPASS && issue_cdb_2_valid &&
-            !rs_src3_ready[i] && !src3_cdb_pend[i] && rs_src3_tag[i] == issue_cdb_2_tag;
+            !rs_src3_ready[i] && !src3_cdb_pend[i] && rs_src3_tag[i] == entry_cdb_2_tag[i];
         src3_repair_sel[i] = 3'd0;
         if (ISSUE_REPAIR_BYPASS && !ALLOC_INDEXED_REPAIR && !rs_src3_ready[i]) begin
           if (i_repair_valid_1 && rs_src3_tag[i] == i_repair_tag_1) begin
@@ -1538,25 +1572,25 @@ module reservation_station #(
           (rs_src1_ready[entry] || (src1_repair_sel[entry] != 3'd0) ||
            (Valid0 && !rs_src1_ready[entry] && !src1_cdb_pend[entry] &&
             (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[entry] : rs_src1_tag[entry]) ==
-                issue_cdb_tag) ||
+                entry_cdb_tag[entry]) ||
            (LANE1_ISSUE_BYPASS && Valid1 &&
             !rs_src1_ready[entry] && !src1_cdb_pend[entry] &&
             (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[entry] : rs_src1_tag[entry]) ==
-                issue_cdb_2_tag)) &&
+                entry_cdb_2_tag[entry])) &&
           (rs_src2_ready[entry] || (src2_repair_sel[entry] != 3'd0) ||
            (Valid0 && !rs_src2_ready[entry] && !src2_cdb_pend[entry] &&
             (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[entry] : rs_src2_tag[entry]) ==
-                issue_cdb_tag) ||
+                entry_cdb_tag[entry]) ||
            (LANE1_ISSUE_BYPASS && Valid1 &&
             !rs_src2_ready[entry] && !src2_cdb_pend[entry] &&
             (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[entry] : rs_src2_tag[entry]) ==
-                issue_cdb_2_tag)) &&
+                entry_cdb_2_tag[entry])) &&
           (rs_src3_ready[entry] || (src3_repair_sel[entry] != 3'd0) ||
            (HAS_SRC3 && Valid0 && !rs_src3_ready[entry] && !src3_cdb_pend[entry] &&
-            rs_src3_tag[entry] == issue_cdb_tag) ||
+            rs_src3_tag[entry] == entry_cdb_tag[entry]) ||
            (HAS_SRC3 && LANE1_ISSUE_BYPASS && Valid1 &&
             !rs_src3_ready[entry] && !src3_cdb_pend[entry] &&
-            rs_src3_tag[entry] == issue_cdb_2_tag));
+            rs_src3_tag[entry] == entry_cdb_2_tag[entry]));
       end
     end
 `ifdef COHERENT_RS_CONTROL_LOCAL_PROOF
