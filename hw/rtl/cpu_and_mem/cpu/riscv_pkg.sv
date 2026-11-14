@@ -1046,8 +1046,14 @@ package riscv_pkg;
                                // executes it after commit, INT_RS only completes it
     VARITH_X,                  // V: vector arithmetic with rs1 as its scalar operand, which
                                // INT_RS passes to the ROB for the engine
-    VTOX                       // V: vmv.x.s, vcpop.m, vfirst.m: executed at the ROB head
+    VTOX,                      // V: vmv.x.s, vcpop.m, vfirst.m: executed at the ROB head
                                // once the engine is idle; no reservation station
+    // Zicbom: clean, flush or invalidate the 64-byte block containing rs1.
+    // id_stage decodes cbo.inval as CBO_FLUSH while CBIE selects a flush, so
+    // CBO_INVAL always means an invalidate.
+    CBO_CLEAN,
+    CBO_FLUSH,
+    CBO_INVAL
   } instr_op_e;
 
   // Barrel-shifter controls decoded from operation bits:
@@ -1159,6 +1165,26 @@ package riscv_pkg;
   localparam int unsigned EnvcfgCbzeBit = 7;
   // Zicboz cache-block size in bytes: one L2 line, two L1D sectors.
   localparam int unsigned CboZeroBlockBytes = 64;
+  // Zicbom (menvcfg and senvcfg). CBIE (bits 5:4) is WARL {00, 01, 11}: 00
+  // makes cbo.inval illegal below the CSR's level, 01 executes it as a flush
+  // and 11 as an invalidate. A write of the reserved 10 stores 00, as Spike
+  // does. CBCFE (bit 6) enables cbo.clean and cbo.flush below M.
+  localparam int unsigned EnvcfgCbieLsb = 4;
+  localparam int unsigned EnvcfgCbcfeBit = 6;
+  localparam bit [1:0] EnvcfgCbieIllegal = 2'b00;
+  localparam bit [1:0] EnvcfgCbieFlush = 2'b01;
+  localparam bit [1:0] EnvcfgCbieInval = 2'b11;
+  // menvcfg.PBMTE (bit 62, Svpbmt): WARL {0,1}. csr_file stores it for the
+  // page-table walker; the walker reads it once Svpbmt lands.
+  localparam int unsigned MenvcfgPbmteBit = 62;
+  // Zicbom cache-block size in bytes: the Zicboz block, one L2 line.
+  localparam int unsigned CboMgmtBlockBytes = CboZeroBlockBytes;
+  // A Zicbom operation's kind: the low bits of its funct12.
+  typedef enum logic [1:0] {
+    CMO_INVAL = 2'b00,
+    CMO_CLEAN = 2'b01,
+    CMO_FLUSH = 2'b10
+  } cmo_kind_e;
   localparam bit [11:0] CsrMscratch = 12'h340;  // Machine scratch register
   localparam bit [11:0] CsrMepc = 12'h341;  // Machine exception PC
   localparam bit [11:0] CsrMcause = 12'h342;  // Machine trap cause
@@ -2788,6 +2814,10 @@ package riscv_pkg;
     logic                             is_sc;       // Store-conditional
     // cbo.zero: the entry keeps rs1 and writes the 64-byte block containing it
     logic                             is_zero;
+    // cbo.clean/flush/inval: the entry keeps rs1, names the 64-byte block
+    // containing it and writes no data (see store_queue)
+    logic                             is_cmo;
+    cmo_kind_e                        cmo_kind;
     logic                             addr_valid;  // Address already known at dispatch
     logic [XLEN-1:0]                  address;
     logic                             is_mmio;
@@ -2993,8 +3023,9 @@ package riscv_pkg;
       AMOSWAP_D, AMOADD_D, AMOXOR_D, AMOAND_D, AMOOR_D,
       AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D,
       FENCE, FENCE_I, SFENCE_VMA,
-      // Zicboz: a store-queue entry that writes a whole block
-      CBO_ZERO:
+      // Zicboz: a store-queue entry that writes a whole block. Zicbom: a
+      // store-queue entry that names a block
+      CBO_ZERO, CBO_CLEAN, CBO_FLUSH, CBO_INVAL:
       get_rs_type = RS_MEM;
 
       // Every FP compute operation -> FP_RS

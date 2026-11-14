@@ -323,9 +323,11 @@ module dispatch #(
   always_comb begin
     mem_size_defaulted = 1'b0;
     case (op)
-      // cbo.zero takes the byte size, so its rs1 is never misaligned; the SQ
+      // cbo.zero and the Zicbom ops take the byte size, so rs1 never
+      // misaligns (cmo.adoc, norm:no_addr_misaligned_excep); the SQ
       // entry's zero-block flag widens the write to the whole block.
-      riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB, riscv_pkg::CBO_ZERO:
+      riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB, riscv_pkg::CBO_ZERO, riscv_pkg::CBO_CLEAN,
+      riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
       mem_size = riscv_pkg::MEM_SIZE_BYTE;
       riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH: mem_size = riscv_pkg::MEM_SIZE_HALF;
       riscv_pkg::LW, riscv_pkg::LWU, riscv_pkg::SW, riscv_pkg::FLW, riscv_pkg::FSW,
@@ -549,7 +551,8 @@ module dispatch #(
   always_comb begin
     mem_size_2_defaulted = 1'b0;
     case (op_2)
-      riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB, riscv_pkg::CBO_ZERO:
+      riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB, riscv_pkg::CBO_ZERO, riscv_pkg::CBO_CLEAN,
+      riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
       mem_size_2 = riscv_pkg::MEM_SIZE_BYTE;
       riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH: mem_size_2 = riscv_pkg::MEM_SIZE_HALF;
       riscv_pkg::LW, riscv_pkg::LWU, riscv_pkg::SW, riscv_pkg::FLW, riscv_pkg::FSW,

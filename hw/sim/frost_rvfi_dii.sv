@@ -198,6 +198,13 @@ module frost_rvfi_dii #(
 
   localparam logic [15:0] CNop = 16'h0001;
 
+  // cbo.inval/clean/flush: MISC-MEM, funct3 010, rd x0, funct12 0x000..0x002.
+  function automatic logic insn_is_cbo_mgmt(input int unsigned index);
+    logic [31:0] insn;
+    insn = (index < MaxInsns) ? dii_insn[index] : 32'h0;
+    return (insn[6:0] == 7'h0F) && (insn[14:12] == 3'b010) && (insn[11:7] == 5'd0) &&
+        (insn[31:20] <= 12'h002);
+  endfunction
   function automatic int unsigned insn_length(input logic [31:0] insn);
     insn_length = (insn[1:0] == 2'b11) ? 4 : 2;
   endfunction
@@ -385,12 +392,14 @@ module frost_rvfi_dii #(
       int unsigned n;
       n = event_count;
 
-      // Stores the SQ accepted at last cycle's commit, slot 1 first.
-      if (i_sq_commit_valid) begin
+      // Stores the SQ accepted at last cycle's commit, slot 1 first. A Zicbom
+      // op (cbo.clean/flush/inval) is an SQ entry that writes nothing, so its
+      // record has no memory write to wait for.
+      if (i_sq_commit_valid && !insn_is_cbo_mgmt(prev_commit_index)) begin
         store_queue.push_back(prev_commit_index);
         if (prev_commit_index < MaxEvents) rvfi_record[prev_commit_index].store_pending <= 1'b1;
       end
-      if (i_sq_commit_valid_2) begin
+      if (i_sq_commit_valid_2 && !insn_is_cbo_mgmt(prev_commit_2_index)) begin
         store_queue.push_back(prev_commit_2_index);
         if (prev_commit_2_index < MaxEvents) rvfi_record[prev_commit_2_index].store_pending <= 1'b1;
       end

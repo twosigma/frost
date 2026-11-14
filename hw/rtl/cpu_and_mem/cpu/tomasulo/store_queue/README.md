@@ -46,7 +46,9 @@ nothing, so a load behind it waits for the SC to drain and then reads memory.
 A cbo.zero entry conflicts with every load in its 64-byte block, whatever
 the load's bytes, and never forwards: the load waits until the block's write
 frees the entry, then reads the zeros from memory. A younger store
-covering the load still forwards over the older block.
+covering the load still forwards over the older block. A Zicbom entry
+(`cbo.clean`, `cbo.flush`, `cbo.inval`) takes the same block conflict, so a
+younger load of its block waits until the entry frees.
 
 On a full-flush cycle the scan can treat a squashed store's commit as visible.
 This is harmless because the LQ discards any forwarding result captured on a
@@ -117,7 +119,16 @@ entry. The beat counter prepares its local next value before coherent credit
 selects advance or hold. Its fixed-width increment wraps after the eighth
 uncached beat; a cached zero write restarts it immediately.
 A precise uncached block reports its completion, and any beat's error,
-with the eighth response. The write outputs are registered,
+with the eighth response. A Zicbom entry keeps `rs1` and its kind and has no
+data: it never becomes data-valid, so the write launch never selects it.
+Every bus master in FROST reaches DDR through the coherent home, so the
+operations have no data effect, and the entry completes as an ordered no-op:
+committed, at the drain cursor, with no write in flight or on the bus and no
+L1D store record pending, it frees itself without a write. Every older store
+has then completed, and the next entry drains behind it. A flush or inval
+pulses the block-wide L0 invalidation at `rs1` on the cycle after it frees.
+The ROB marks a Zicbom op done at issue wherever its block lies: cached DDR,
+low BRAM or a device window. The write outputs are registered,
 including `is_mmio` and `is_cached` flags that let the memory router steer the
 write without decoding the address again. `o_mem_write_buffered` identifies
 an ordinary Normal store that has already retired; this distinguishes its

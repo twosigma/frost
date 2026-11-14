@@ -23,7 +23,8 @@ module instr_operand_classifier_equiv (
     input riscv_pkg::instr_t i_instr,
     input logic i_inject_nop,
     input logic i_pd_illegal,
-    input logic i_fetch_fault
+    input logic i_fetch_fault,
+    input logic i_cbo_inval_flush
 );
   riscv_pkg::instr_t instruction;
   riscv_pkg::instr_op_e instruction_operation;
@@ -33,6 +34,7 @@ module instr_operand_classifier_equiv (
   assign is_fetch_fault = i_fetch_fault;
   instr_decoder decoder (
       .i_instr(instruction),
+      .i_cbo_inval_flush(i_cbo_inval_flush),
       .o_instr_op(instruction_operation),
       .o_illegal(decoder_illegal)
   );
@@ -133,7 +135,7 @@ module instr_operand_classifier_equiv (
       riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
       riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D,
       riscv_pkg::FENCE, riscv_pkg::FENCE_I, riscv_pkg::SFENCE_VMA,
-      riscv_pkg::CBO_ZERO:
+      riscv_pkg::CBO_ZERO, riscv_pkg::CBO_CLEAN, riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
       rs_type_pre = riscv_pkg::RS_MEM;
 
       riscv_pkg::FADD_S, riscv_pkg::FSUB_S,
@@ -168,7 +170,8 @@ module instr_operand_classifier_equiv (
     endcase
 
     case (op_for_pre_decode)
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD, riscv_pkg::CBO_ZERO:
+      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD, riscv_pkg::CBO_ZERO,
+      riscv_pkg::CBO_CLEAN, riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
       is_int_store_pre = 1'b1;
       default: is_int_store_pre = 1'b0;
     endcase
@@ -189,7 +192,8 @@ module instr_operand_classifier_equiv (
 
     case (op_for_pre_decode)
       riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
-      riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::SC_W, riscv_pkg::SC_D, riscv_pkg::CBO_ZERO:
+      riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::SC_W, riscv_pkg::SC_D, riscv_pkg::CBO_ZERO,
+      riscv_pkg::CBO_CLEAN, riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
       needs_sq_pre = 1'b1;
       default: needs_sq_pre = 1'b0;
     endcase

@@ -41,6 +41,8 @@ def pack_sq_alloc(
     address: int = 0,
     is_mmio: bool = False,
     is_zero: bool = False,
+    is_cmo: bool = False,
+    cmo_kind: int = 0,
 ) -> int:
     """Pack sq_alloc_req_t into bit vector (LSB-first matching SV packed struct)."""
     val = 0
@@ -50,6 +52,10 @@ def pack_sq_alloc(
     val |= (address & MASK_XLEN) << bit
     bit += XLEN
     val |= (1 if addr_valid else 0) << bit
+    bit += 1
+    val |= (cmo_kind & 0x3) << bit
+    bit += 2
+    val |= (1 if is_cmo else 0) << bit
     bit += 1
     val |= (1 if is_zero else 0) << bit
     bit += 1
@@ -205,6 +211,8 @@ class SQInterface:
         address: int = 0,
         is_mmio: bool = False,
         is_zero: bool = False,
+        is_cmo: bool = False,
+        cmo_kind: int = 0,
     ) -> None:
         """Drive allocation request."""
         self.dut.i_alloc.value = pack_sq_alloc(
@@ -217,6 +225,8 @@ class SQInterface:
             address=address,
             is_mmio=is_mmio,
             is_zero=is_zero,
+            is_cmo=is_cmo,
+            cmo_kind=cmo_kind,
         )
 
     def drive_alloc_2(
@@ -229,6 +239,8 @@ class SQInterface:
         address: int = 0,
         is_mmio: bool = False,
         is_zero: bool = False,
+        is_cmo: bool = False,
+        cmo_kind: int = 0,
     ) -> None:
         """Drive slot-2 allocation request."""
         self.dut.i_alloc_2.value = pack_sq_alloc(
@@ -241,6 +253,8 @@ class SQInterface:
             address=address,
             is_mmio=is_mmio,
             is_zero=is_zero,
+            is_cmo=is_cmo,
+            cmo_kind=cmo_kind,
         )
 
     def clear_alloc(self) -> None:
