@@ -86,12 +86,12 @@ ISA_EXTENSIONS = (
     "i", "m", "a", "f", "d", "c",
     "zicsr", "zifencei", "zicntr", "zicboz",
     "zba", "zbb", "zbc", "zbs", "zbkb", "zbkc", "zicond", "zihintpause",
-    "smaia", "ssaia", "sscofpmf", "sstc", "svade", "svvptc",
+    "smaia", "ssaia", "sscofpmf", "sstc", "sstvala", "svade", "svvptc",
 )  # fmt: skip
 # Zicboz block size: cbo.zero zeroes one 64-byte L2 line
 # (riscv_pkg::CboZeroBlockBytes).
 CBOZ_BLOCK_BYTES = 64
-ISA_STRING = "rv64imafdc_zicsr_zifencei_zicntr_zicboz_zba_zbb_zbc_zbs_zbkb_zbkc_zicond_zihintpause_smaia_ssaia_sscofpmf_sstc_svade_svvptc"
+ISA_STRING = "rv64imafdc_zicsr_zifencei_zicntr_zicboz_zba_zbb_zbc_zbs_zbkb_zbkc_zicond_zihintpause_smaia_ssaia_sscofpmf_sstc_sstvala_svade_svvptc"
 
 # Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
 # and fails frost_nettest's idle checks. The initramfs needs no IPv6.

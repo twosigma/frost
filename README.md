@@ -159,6 +159,7 @@ every supported extension and privilege mode.
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
 | **Smaia, Ssaia** | AIA CSRs and machine/supervisor IMSIC files with 63 identities |
 | **Sscofpmf**     | HPM counter overflow (OF, `scountovf`, local counter-overflow interrupt 13) and MINH/SINH/UINH privilege filtering on counters 3..10 |
+| **Sstvala**      | An illegal-instruction exception writes the faulting instruction's bits to `mtval` or `stval`, a compressed instruction's 16 bits zero-extended |
 | **Svade**        | Software-managed accessed and dirty bits: an access that needs one set raises a page fault |
 | **Svvptc**       | A PTE changed from invalid to valid becomes visible to the walker without `sfence.vma` |
 | **User Mode**    | U-mode privilege and system calls |
