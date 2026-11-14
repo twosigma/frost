@@ -1123,3 +1123,42 @@ async def test_asid_wrap_and_reuse_after_flush(dut: Any) -> None:
     await _install(dut, leaf_new)
     assert await _probe(dut, 0x1FF, leaf_new)
     assert await _probe(dut, 0, leaf_lo)
+
+
+@cocotb.test()
+async def test_asid_follows_the_pulse_by_one_cycle(dut: Any) -> None:
+    """The old address space never answers once the delayed ASID arrives.
+
+    In the core the CSR file's translation-changed pulse comes in the cycle
+    after the satp write, and the DMMU's ASID (the registered translation
+    state) changes one cycle after the pulse. An access issued with the pulse
+    looks the DTLB up in the first cycle under the new ASID and must miss; the
+    pulse has already dropped the last-page buffer.
+    """
+    await _setup(dut)
+    await _clear(dut)
+    leaf_old = Leaf(vpn=0x400, ppn=0x80000)
+    leaf_new = Leaf(vpn=0x400, ppn=0x81000)
+    await _switch_asid(dut, 1)
+    # Install under ASID 1 and leave the page in the last-page buffer.
+    await _prime_last_page(dut, leaf_old, Op(va=0x400010, tag=1))
+    # The pulse, with the old ASID still applied, and an access issued beside
+    # it. In the next cycle the access looks the DTLB up under the new ASID.
+    op = Op(va=0x400028, tag=2)
+    dut.i_tlb_invalidate.value = 1
+    _issue(dut, op)
+    await _cycle(dut)
+    dut.i_tlb_invalidate.value = 0
+    dut.i_iss_valid.value = 0
+    dut.i_asid.value = 2
+    await Timer(1, unit="ns")
+    assert not int(dut.o_iss_out_valid.value), "the last-page buffer answered"
+    assert int(dut.o_walk_req_valid.value), "an ASID 1 entry answered under ASID 2"
+    _response(dut, leaf_new)
+    await _cycle(dut)
+    _check(dut, op, leaf_new)
+    dut.i_walk_resp_valid.value = 0
+    await _cycle(dut)
+    # Each address space keeps its own entry.
+    assert await _probe(dut, 2, leaf_new)
+    assert await _probe(dut, 1, leaf_old)
