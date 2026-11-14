@@ -390,7 +390,8 @@ is described under "Address-space IDs and SFENCE.VMA" below.
 A 4-way, 128-set second-level TLB (`l2tlb.sv`, 512 entries, 2 MiB of 4 KiB
 pages, block RAM) sits between the two MMUs and the walker. An L1 TLB miss
 that hits there is answered two cycles after the request fires, in place of
-a walk of one to three dependent line reads. It stores the clean 4 KiB
+a walk of one to three dependent line reads; a miss reaches the walker one
+cycle later than it would without the array. It stores the clean 4 KiB
 translations that the walker returns. Clean 2 MiB and 1 GiB leaves go to a
 32-entry fully associative superpage side array beside it (`SP_ENTRIES`):
 tags, ASIDs, global bits and levels in flops, compared level-masked in the
@@ -399,7 +400,8 @@ read in the next cycle, so a superpage hit answers three cycles after the
 request fires for any page of its region. Neither array holds negative
 entries, so a PTE that changes from invalid to valid is seen without
 SFENCE.VMA (Svvptc). SUM and MXR stay out of the entries, so toggling them
-needs no flush. `cpu_ooo` takes `L2TLB_SETS` (0 removes both arrays).
+needs no flush. `cpu_ooo` takes `L2TLB_SETS` (0 removes both arrays; any
+other value must be a power of two, as must the way count).
 
 ### Address-space IDs and SFENCE.VMA
 

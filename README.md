@@ -186,8 +186,10 @@ every supported extension and privilege mode.
   bimodal and a tagged path-history direction predictor, and an 8-entry
   return stack. A mispredicted conditional branch redirects fetch and
   restores the rename tables the cycle after it resolves.
-- Sv39 virtual memory with hardware page-table walks and separate 16-entry
-  instruction and data TLBs. Intra-page instruction translation uses the
+- Sv39 virtual memory with hardware page-table walks, separate 16-entry
+  instruction and data TLBs backed by a 512-entry second-level TLB and a
+  32-entry superpage array, and nine-bit ASIDs with global pages and
+  selective `sfence.vma`. Intra-page instruction translation uses the
   live page offset without a fetch bubble; eligible data accesses use a
   last-page translation bypass.
 - Separate instruction and data paths into a cache hierarchy. On X3: 16 KiB

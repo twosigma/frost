@@ -394,12 +394,17 @@ and targeted microbenchmarks give these items:
    Reducing that path would improve cross-page translation latency.
 3. TLB reach. The DTLB and ITLB have 16 entries each, backed by a 512-entry
    second-level TLB, ASIDs with global pages, selective `sfence.vma`, and a
-   walker cache of upper-level page-table pointers. An L1 miss that hits the
-   second-level TLB costs three cycles; one that misses it walks, and the
-   walker cache takes the walk to one dependent read. A 32-entry superpage
-   side array in the second-level TLB holds 2 MiB and 1 GiB leaves. Reach
-   beyond 2 MiB of 4 KiB pages, and Svnapot 64 KiB pages, would be the next
-   steps.
+   walker cache of upper-level page-table pointers. In simulation a
+   dependent load that misses the DTLB and hits the second-level TLB takes 7
+   cycles against 5 on a DTLB hit, and an instruction page visit that misses
+   the ITLB and hits it takes 23 against 20. A miss in both walks, and the
+   walker cache takes the walk to one dependent read; the second-level lookup
+   comes first, so a dependent load that walks takes 36 cycles, one more than
+   without the array. Starting the walk in parallel with the second-level
+   lookup and cancelling it on a hit would remove that cycle. A 32-entry
+   superpage side array in the second-level TLB holds 2 MiB and 1 GiB leaves.
+   Reach beyond 2 MiB of 4 KiB pages, and Svnapot 64 KiB pages, would be the
+   next steps.
 4. Branch prediction. A misprediction costs about 7 cycles. The BTB has 256
    direct-mapped entries, and a 1024-entry two-way backing BTB behind it
    predicts the jumps, calls and returns it misses through a PD redirect, at
