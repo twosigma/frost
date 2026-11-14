@@ -174,6 +174,9 @@ module fp_shim #(
   // loses it. This also forbids issue in a squashed start's decode cycle.
   always @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n && i_rs_issue.valid && !eng_idle) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("fp_shim: issue of tag %0d while the engine is busy", i_rs_issue.rob_tag);
     end
   end

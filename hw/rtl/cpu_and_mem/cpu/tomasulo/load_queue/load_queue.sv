@@ -4967,6 +4967,9 @@ module load_queue #(
           ((sq_check_addr_q[SqCheckCopyMsb:3] !== sq_check_addr_q_b) ||
            (sq_check_addr_q[SqCheckCopyMsb:3] !== sq_check_addr_q_c) ||
            (sq_check_addr_q[SqCheckCopyMsb:3] !== sq_check_addr_q_d)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: phase-identical SQ address anchors diverged");
       // Flush-cycle requests are legal; allocation gates reject them like the ROB.
       if (i_alloc_2.valid && i_alloc.valid && full_for_2)
@@ -4974,17 +4977,30 @@ module load_queue #(
       if (i_alloc_2.valid && !i_alloc.valid && full)
         $warning("LQ: slot-2 alloc attempted alone when full");
       if (i_flush_all && accept_mem_response)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: accepted memory response during full flush");
-      if (i_flush_all && cache_fill_valid) $error("LQ: filled L0 cache during full flush");
+      if (i_flush_all && cache_fill_valid)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
+        $error("LQ: filled L0 cache during full flush");
       // Never full-flush an active AMO write: memory could change after its
       // instruction is squashed, then trap recovery could execute it again. The
       // trap unit's AMO interrupt shield prevents this. COMPUTE may cancel
       // because it has not launched a write (load queue README, "AMO sequence").
       if (i_flush_all && (amo_state == AMO_WRITE_ACTIVE || o_amo_mem_write_en))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: full flush while an AMO memory write is in flight (orphaned write)");
       // Only one AMO may await computation or write completion. AMO_IDLE capture
       // gating also protects the payload against invalid overlapping responses.
       if (accept_mem_response && issued_is_amo && (amo_state != AMO_IDLE))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: overlapping AMO response arrived while an owner was active");
       // Each live cached slot must name its launched entry: valid, issued, and
       // holding the saved ROB tag. Live slots and new launches cannot share an
@@ -4994,6 +5010,9 @@ module load_queue #(
         if (cs_valid[sl] && !cs_drop[sl] &&
             !(lq_valid[cs_idx[sl]] && lq_issued[cs_idx[sl]] &&
               (lq_rob_tag[cs_idx[sl]] == cs_rob_tag[sl])))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error(
               "LQ: live cached slot %0d (tag %0d) names entry %0d (valid %0d issued %0d tag %0d)",
               sl,
@@ -5006,9 +5025,15 @@ module load_queue #(
         for (int sl2 = sl + 1; sl2 < int'(CachedSlots); sl2++) begin
           if (cs_valid[sl] && !cs_drop[sl] && cs_valid[sl2] && !cs_drop[sl2] &&
               (cs_idx[sl] == cs_idx[sl2]))
+`ifdef FROST_SIM_ASSERTIONS
+            assert (1'b0) else
+`endif
             $error("LQ: live cached slots %0d and %0d both name entry %0d", sl, sl2, cs_idx[sl]);
         end
         if (mem_read_en && cs_valid[sl] && !cs_drop[sl] && (cs_idx[sl] == launch_mem_issue_idx))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error(
               "LQ: launch of entry %0d while live cached slot %0d still names it",
               launch_mem_issue_idx,
@@ -5018,6 +5043,9 @@ module load_queue #(
       if (mem_read_en &&
           !(lq_valid[launch_mem_issue_idx] && !lq_issued[launch_mem_issue_idx] &&
             (lq_rob_tag[launch_mem_issue_idx] == sq_check_rob_tag_q)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "LQ: launch of entry %0d (valid %0d issued %0d tag %0d) from a staged copy tagged %0d",
             launch_mem_issue_idx,
@@ -5028,6 +5056,9 @@ module load_queue #(
         );
       if (accept_mem_response && resp_from_slot &&
           (cs_rob_tag[resp_slot] != lq_rob_tag[issued_idx]))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "LQ: cached response of slot %0d (tag %0d) accepted by entry %0d holding tag %0d",
             resp_slot,
@@ -5036,6 +5067,9 @@ module load_queue #(
             lq_rob_tag[issued_idx]
         );
       if (accept_mem_response && !resp_from_slot && (fast_rob_tag != lq_rob_tag[fast_idx]))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "LQ: fast-tier response (tag %0d) accepted by entry %0d holding tag %0d",
             fast_rob_tag,
@@ -5048,6 +5082,9 @@ module load_queue #(
       // rely on this timing.
       for (int unsigned i = 0; i < DEPTH; i++) begin
         if (lq_valid[i] && lq_issued[i] && !lq_data_valid[i] && !lq_is_amo[i] && !sim_resp_owned[i])
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error(
               "LQ: launched load in entry %0d (tag %0d) owes a response but has no owner",
               i,
@@ -5056,29 +5093,62 @@ module load_queue #(
       end
       // Slot-1 and slot-2 must never target the same physical entry.
       if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);
       if (!$onehot0(slot1_alloc_oh) || !$onehot0(slot2_alloc_oh))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: allocation steering is not onehot-or-zero");
       if ((|slot1_alloc_oh) != slot1_alloc_en || (|slot2_alloc_oh) != slot2_alloc_en)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: allocation steering lost or invented an accepted request");
       if (|(slot1_alloc_oh & slot2_alloc_oh))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: slot-1 and slot-2 onehot allocation pulses overlap");
       if (slot2_alloc_en != slot2_alloc_en_reference)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: expanded slot-2 allocation enable differs from the reference");
       if (slot2_alloc_oh != slot2_alloc_oh_reference)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: expanded slot-2 allocation pulses differ from the reference");
       if (alloc_oh != (slot1_alloc_oh | slot2_alloc_oh))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: merged allocation pulses differ from the slot pulses");
       if (dispatch_full_next != (dispatch_count_next == CountWidth'(DEPTH)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: expanded dispatch-full prediction differs from the count reference");
       if (dispatch_full_for_2_next != (dispatch_count_next >= CountWidth'(DEPTH - 1)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: expanded dispatch-full-for-2 prediction differs from the count reference");
       if (accept_mem_response && dep_replaced_oh[issued_idx])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: memory response collided with a new physical generation");
       // COMPUTE retains only amo_entry_idx after releasing its response slot.
       // Reallocation could make its validity check pass for another instruction.
       // A live slot cannot be reallocated; check that invariant here.
       if ((amo_state == AMO_COMPUTE) && dep_replaced_oh[amo_entry_idx])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: AMO compute owner's entry %0d was reallocated under it", amo_entry_idx);
       // The compact-kind write must have drained before launch snapshots it.
       // This is guaranteed by the intervening address/SQ-check staging edge.
@@ -5086,21 +5156,36 @@ module load_queue #(
         if (amo_kind_alloc_present_q[0] &&
             dep_replaced_oh[amo_kind_alloc_idx_q[0]] &&
             (amo_kind_alloc_idx_q[0] == launch_mem_issue_idx))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("LQ: slot-1 AMO-kind write had not drained before launch");
         if (amo_kind_alloc_present_q[1] &&
             dep_replaced_oh[amo_kind_alloc_idx_q[1]] &&
             (amo_kind_alloc_idx_q[1] == launch_mem_issue_idx))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("LQ: slot-2 AMO-kind write had not drained before launch");
       end
       if (amo_state == AMO_WRITE_ACTIVE && amo_is_minmax_q &&
           (amo_minmax_selected_relation === 2'b11))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: active AMO MIN/MAX has an impossible {equal, less-than} relation");
       if (amo_state == AMO_WRITE_ACTIVE && amo_is_minmax_q &&
           amo_minmax_selected_relation[1] && amo_minmax_select_old_active)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: active AMO MIN/MAX selected old on equality");
       if (amo_state == AMO_WRITE_ACTIVE && amo_is_minmax_q &&
           (amo_write_value !==
            (amo_minmax_select_old_active ? amo_old_value : amo_minmax_rs2_q)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("LQ: active AMO MIN/MAX write no longer matches its captured relation");
     end
   end

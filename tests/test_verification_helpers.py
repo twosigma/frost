@@ -46,7 +46,7 @@ config = importlib.import_module("config")
 
 @pytest.mark.parametrize("nics", (0, 1, 2))
 @pytest.mark.parametrize("reset_asserted", (False, True))
-def test_program_start_initializes_only_checker_history(
+def test_program_start_preserves_checker_and_production_history(
     monkeypatch: pytest.MonkeyPatch, nics: int, reset_asserted: bool
 ) -> None:
     """Startup settles without clocks and preserves arbitrary production state."""
@@ -110,14 +110,8 @@ def test_program_start_initializes_only_checker_history(
         settled = True
 
     monkeypatch.setattr(real_program, "Timer", initial_evaluation)
-    if nics and not reset_asserted:
-        with pytest.raises(AssertionError, match="requires system reset"):
-            asyncio.run(real_program.prepare_program_start(dut))
-        assert all(front.reset_seen_q.value == 1 for front in fronts)
-    else:
-        history = asyncio.run(real_program.prepare_program_start(dut))
-        assert history == tuple(front.reset_seen_q for front in fronts)
-        assert all(seen.value == 0 for seen in history)
+    asyncio.run(real_program.prepare_program_start(dut))
+    assert all(front.reset_seen_q.value == 1 for front in fronts)
     assert settled
     assert soc.rst_core.value == 0
     assert soc.production_state.value == 0xA5

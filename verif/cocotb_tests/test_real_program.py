@@ -271,6 +271,15 @@ async def _release_power_on_reset(dut: Any, cpu_reset: Any) -> None:
     dut.i_power_on_rst.value = 0
 
 
+async def _arm_simulation_assertions(cpu_reset: Any) -> None:
+    """Wait for the driven CPU reset as well as the system reset interval."""
+    from cocotb_tests.sim_assertions import enable_simulation_assertions
+
+    await cpu_reset
+    await Timer(1, unit="ps")
+    enable_simulation_assertions()
+
+
 async def wait_for_power_on_reset(dut: Any) -> None:
     """Keep system reset held through a slow or delayed CPU's cold reset."""
     while int(dut.i_power_on_rst.value):
@@ -377,8 +386,8 @@ def initialize_wrapper_resets(dut: Any) -> None:
             signal.value = Immediate((1 << len(signal)) - 1)
 
 
-async def prepare_program_start(dut: Any) -> tuple[Any, ...]:
-    """Settle startup events before initializing verification history and clocks."""
+async def prepare_program_start(dut: Any) -> None:
+    """Settle startup events before driving clocks and cold reset."""
     for name in (
         "i_clk",
         "i_cpu_clk",
@@ -397,24 +406,14 @@ async def prepare_program_start(dut: Any) -> tuple[Any, ...]:
         dut.i_power_on_rst.value = Immediate(0)
     initialize_wrapper_resets(dut)
     await Timer(1, unit="ps")
-    if not hasattr(dut, "cpu_and_memory_subsystem"):
-        return ()
-    soc = dut.cpu_and_memory_subsystem.soc
-    if not hasattr(soc, "gen_cached_tier"):
-        return ()
-    assert int(soc.reset_request_soc.value), "NIC startup requires system reset"
-    # Initial simulator edges can arm this history from an arbitrary local
-    # reset. The checker starts unarmed before the first driven clock edge.
-    nic_fronts = [soc.gen_cached_tier.nic.u_front]
-    if hasattr(soc.gen_cached_tier, "gen_nic_1g"):
-        nic_fronts.append(soc.gen_cached_tier.gen_nic_1g.nic_1g.u_front)
-    history = tuple(front.reset_seen_q for front in nic_fronts)
-    for seen in history:
-        seen.value = Immediate(0)
-    return history
 
 
-async def generate_divided_clock(dut: Any, *, core_clock: Any | None = None) -> None:
+async def generate_divided_clock(
+    dut: Any,
+    *,
+    core_clock: Any | None = None,
+    image_loader: Callable[[Any], None] = load_program_images,
+) -> None:
     """Generate i_clk_div4 with four times i_clk's period and aligned rising edges.
 
     The dc_fifo crosses binary pointers without Gray coding and requires
@@ -448,7 +447,8 @@ async def generate_divided_clock(dut: Any, *, core_clock: Any | None = None) -> 
         level ^= 1
         divided.value = level
     await ReadWrite()
-    load_program_images(dut)
+    image_loader(dut)
+    cocotb.start_soon(_arm_simulation_assertions(cpu_reset))
     while True:
         await clock_edge
         await clock_edge
@@ -4743,7 +4743,7 @@ async def run_uart_echo_interaction(
 @takes_last_edge
 async def test_real_program(dut: Any) -> None:
     """Reset and run the loaded program NUM_RUNS times, checking UART each run."""
-    reset_history = await prepare_program_start(dut)
+    await prepare_program_start(dut)
     start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
     start_cpu_clock(dut)
     if trace_path := os.environ.get("FROST_MMU_REACH_TRACE"):
@@ -4904,8 +4904,6 @@ async def test_real_program(dut: Any) -> None:
             for _ in range(RESET_CYCLES):
                 await RisingEdge(dut.i_clk)
             await wait_for_power_on_reset(dut)
-            for seen in reset_history:
-                assert int(seen.value), "NIC response checker did not observe reset"
             # Output qualifiers are arbitrary before the first completed reset.
             uart_monitor.clear()
             if line_monitor is not None:

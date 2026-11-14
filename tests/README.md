@@ -482,8 +482,17 @@ packing functions in `sw/common/generate_imem_predecode_init.py`, including
 the scalar metadata copies and the SRAM tiles. The image load does not repeat
 on warm reset.
 
+System simulations start with Verilator runtime assertions disabled before
+the first HDL evaluation. The shared bench enables them after eighteen SoC
+clock edges and the driven cold-reset pulse's four CPU edges. The CPU wait
+also covers a slow or delayed CPU clock. A local reset register's random
+initial value cannot enable the checks. Runtime `$error` diagnostics are
+immediate assertion actions, so they obey the same simulator control.
+Static parameter checks remain active at elaboration. The control and the
+diagnostic wrappers are absent from synthesis and formal verification.
+
 Consistency checks that depend on reset state and functional cover points
-arm after their local reset has been sampled. Coherent cache, load-queue, L0
+also require their local reset history. Coherent cache, load-queue, L0
 and CPU memory-interface checks use local reset history for combinational and
 clocked assertions. AXI response checks require both CPU and transport reset
 histories. NIC engine, descriptor and DMA-front checks require both the
@@ -498,11 +507,10 @@ reset tied inactive uses configuration initializers and does not arm the DTM own
 assertions. Transport verification requires a power-on reset pulse.
 
 The whole-SoC program bench holds clocks low through the initial HDL
-evaluation. Before starting clocks, it clears NIC response-checker history
-that a synthetic startup event can arm from arbitrary reset state. System
-reset must be asserted at that boundary, and the checker must observe a
-driven reset before the program starts. Production registers keep their
-seeded state. Warm resets do not clear the checker's history.
+evaluation. Production registers keep their seeded state until the driven
+reset reaches them. Runtime assertions stay enabled across warm resets;
+their local reset conditions apply during those resets. Unit benches start
+with assertions enabled and drive reset at their module boundaries.
 
 This is a two-state power-up test. It does not model metastability, reset
 recovery or removal timing, SRAM analog behavior, or power-domain sequencing.

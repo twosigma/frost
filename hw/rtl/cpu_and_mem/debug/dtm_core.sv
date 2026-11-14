@@ -253,8 +253,14 @@ module dtm_core (
       dmi_outstanding_q <= 1'b0;
     end else if (power_on_reset_seen_q) begin
       if (o_dmi_req_valid && dmi_outstanding_q && !i_dmi_resp_valid)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("dtm_core: DMI request issued while one is outstanding");
       if (i_dmi_resp_valid && !dmi_outstanding_q && !o_dmi_req_valid)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("dtm_core: DMI response without a request");
       if (o_dmi_req_valid) dmi_outstanding_q <= 1'b1;
       else if (i_dmi_resp_valid) dmi_outstanding_q <= 1'b0;

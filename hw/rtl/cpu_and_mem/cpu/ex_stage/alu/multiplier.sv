@@ -131,6 +131,15 @@ module multiplier #(
   // module's real depth has to match it exactly.
   initial begin
     p_mul_pipe_depth_matches :
+`ifdef FROST_SIM_ASSERTIONS
+    if (!((1 + TiledStages + 1) == riscv_pkg::MulPipeDepth))
+      $fatal(
+          1,
+          "multiplier depth %0d != riscv_pkg::MulPipeDepth %0d",
+          1 + TiledStages + 1,
+          riscv_pkg::MulPipeDepth
+      );
+`else
     assert ((1 + TiledStages + 1) == riscv_pkg::MulPipeDepth)
     else
       $fatal(
@@ -139,6 +148,7 @@ module multiplier #(
           1 + TiledStages + 1,
           riscv_pkg::MulPipeDepth
       );
+`endif
   end
 `endif
 

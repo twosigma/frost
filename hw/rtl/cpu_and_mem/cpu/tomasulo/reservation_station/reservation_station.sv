@@ -3675,7 +3675,8 @@ module reservation_station #(
       $error("BROADCAST_FREE_SOURCE_VALUES requires SPECULATIVE_DATA_WRITES");
     if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS && HAS_SRC3)
       $error("CAPTURE_PRIMARY_EFFECTIVE_OPERANDS requires HAS_SRC3=0");
-    if (DIVIDE_ISSUE_GATE && DUAL_ISSUE) $error("DIVIDE_ISSUE_GATE requires DUAL_ISSUE=0");
+    if (DIVIDE_ISSUE_GATE && DUAL_ISSUE)
+      $error("DIVIDE_ISSUE_GATE requires DUAL_ISSUE=0");
   end
 
   always @(posedge i_clk) begin
@@ -3690,6 +3691,9 @@ module reservation_station #(
       // Slot-1 and slot-2 must never target the same physical entry.
       if (dispatch_fire && dispatch_fire_2 && !i_flush_all && !i_flush_en &&
           (free_idx == alloc_idx_2))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("RS: slot-1 and slot-2 alloc collide on entry %0d", free_idx);
 
       // The slot-2 value select must equal the binary allocation decode on
@@ -3701,10 +3705,16 @@ module reservation_station #(
 
       // Loading stage2 requires a ready entry.
       if (issue_fire && !entry_ready[issue_idx])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("RS: issue fired for non-ready entry %0d", issue_idx);
 
       // The divide gate reads stage2's divide bit in place of its opcode.
       if (DIVIDE_ISSUE_GATE && stage2_valid && (stage2_is_divide != rs_is_divide_op(stage2_op)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("RS: stage2 divide bit %0d disagrees with its opcode", stage2_is_divide);
 
       if (ALLOC_INDEXED_REPAIR) begin
@@ -3717,6 +3727,9 @@ module reservation_station #(
 
         for (int i = 0; i < DEPTH; i++) begin
           if ((repair_slot1_target_q[i] || repair_slot2_target_q[i]) && !rs_valid[i])
+`ifdef FROST_SIM_ASSERTIONS
+            assert (1'b0) else
+`endif
             $error("RS: indexed-repair target %0d is not resident", i);
 
           // The wrapper response channels must remain aligned with the
