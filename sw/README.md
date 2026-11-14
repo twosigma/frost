@@ -53,7 +53,7 @@ any of them rebuilds.
 | `GENERATE_IMEM_INIT` | `0` | `1` also writes the split instruction-BRAM init files for Vivado |
 
 `-march` is `rv64` followed by `FROST_MARCH_EXTENSIONS`, which defaults to
-`imafdc_zicsr_zicntr_zifencei_zicboz_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause`. An app
+`imafdc_zicsr_zicntr_zihpm_zifencei_zicbop_zicboz_zba_zbb_zbc_zbs_zicond_zbkb_zbkc_zihintpause_zawrs`. An app
 sets it, or `APP_TUNE_FLAGS`, before including `common.mk`. The `FROST_DEBUG=1`
 flags come after the tuning flags, so debug builds stay debuggable. Backends
 that build their own flags take the names from `common/arch.mk`:
