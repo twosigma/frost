@@ -204,6 +204,15 @@ async def test_directed_encodings(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_all_parcels_match_python_sideband(dut: Any) -> None:
+    """All 65,536 parcels match the Python sideband in both word positions."""
+    words: list[int] = []
+    for parcel in range(1 << 16):
+        words.extend((parcel | 0x45010000, (parcel << 16) | 0x4501))
+    await _check_words(dut, words)
+
+
+@cocotb.test()
 async def test_system_pairability(dut: Any) -> None:
     """SYSTEM funct3=100 pairs in either parcel; CSR and privileged forms do not."""
     words = []
