@@ -1252,7 +1252,7 @@ jobs:
           # The vector CSR state: the vector BMC alone is about forty minutes,
           # and new vector proofs join it.
           - shard: Vector
-            pytest_filter: csr_file_vector
+            pytest_filter: csr_file_vector or vec_lmul_legality
             timeout_minutes: 75
           # The line client link BMCs and cover.
           - shard: Line client links
@@ -1275,8 +1275,8 @@ jobs:
             pytest_filter: >-
               not (csr_file_bmc or reorder_buffer_bmc or axi_coherent_bridge or
               coherence_ or coherent_ or _twin or csr_file_vector or
-              line_client_link or ptw or tlb or imsic or aplic or immu or dmmu or
-              load_queue or lq_)
+              vec_lmul_legality or line_client_link or ptw or tlb or imsic or aplic or
+              immu or dmmu or load_queue or lq_)
             timeout_minutes: 120
     steps:
       - name: Checkout repository

@@ -925,6 +925,12 @@ FORMAL_TARGETS = [
         tasks=("prove", "prove_depth2", "cover"),
     ),
     FormalTarget(
+        "vec_lmul_legality_equiv.sby",
+        "Queued LMUL classes and vector-memory rejection equal the arithmetic, VTOX "
+        "and VLOAD/VSTORE legality rules for every vtype, instruction and operation",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
         "vec_hold_rows.sby",
         "Vector range holds: a scalar entry is held exactly while an older live "
         "vector memory table entry overlaps it or has an unknown range",

@@ -551,7 +551,11 @@ that depends on `vtype` (vill, register-group alignment, mask-destination
 overlap, a masked write of v0) is decided at allocation from the `vtype` in
 effect at that point, which a tracker beside the rename checkpoints keeps
 (vector arithmetic waits at dispatch while a register-form `vsetvl` leaves it
-unknown). When one retires, `vec_unit` queues it with its scalar and the
+unknown). The register-number rules depend on `vtype` only through LMUL, so
+`vector/vec_lmul_legality.sv` evaluates them from the instruction bits for
+each LMUL class (1 or fractional, 2, 4, 8) before the decoded queue, which
+carries the four results beside slot 1; dispatch selects the class of the
+tracked `vtype` and adds vill. When one retires, `vec_unit` queues it with its scalar and the
 architectural `vl`, `vtype` and `vstart`, and the engine executes it after
 commit; the CSR file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
 and `vfirst.m` execute at the ROB head once the unit is idle and return their
@@ -569,7 +573,10 @@ retired entry" output holds the serializer's FENCE, FENCE.I and SFENCE.VMA
 drain, the store-conditional unit's firing and arming, and the
 misaligned-access engine before its first access. The unit does not perform
 vector loads and stores: each raises illegal-instruction when it reaches the
-ROB head, and the trap's flush frees its entry. The other vector
+ROB head, and the trap's flush frees its entry. `vec_lmul_legality` decides
+this rejection from the decoded operation before the queue, excluding decode
+illegality and fetch faults. A separate bit travels beside the four LMUL
+classes, and dispatch includes it without consulting `vtype`. The other vector
 instructions, and the strided, indexed, segment and fault-only-first loads
 and stores, are illegal.
 
