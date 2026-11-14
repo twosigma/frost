@@ -146,7 +146,7 @@ directly through Sstc (`stimecmp`) instead of an SBI call.
 
 The generated DTB declares the
 [implemented extensions](../README.md#supported-risc-v-extensions), Sstc,
-Smaia, Ssaia, Sscofpmf, Svade, Svvptc, and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and the LP64D
+Smaia, Ssaia, Sscofpmf, Sstvala, Svade, Svvptc, and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and the LP64D
 ABI. Svvptc tells Linux that a PTE changed from invalid to valid becomes
 visible to the walker without `sfence.vma`, so the kernel can omit that
 synchronization for those mapping updates. Other PTE changes retain their
@@ -167,7 +167,7 @@ instructions at every privilege level.
 Two WARL registers gate counter access below M-mode. S-mode needs the
 counter's bit set in `mcounteren` (0x306); U-mode needs it set in both
 `mcounteren` and `scounteren` (0x106). M-mode is never gated. A blocked access
-is an illegal instruction (`mcause` 2, `mtval` 0).
+is an illegal instruction (`mcause` 2, `mtval` the instruction's bits).
 
 | CSR | Behavior |
 |---|---|
