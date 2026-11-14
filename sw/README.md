@@ -360,6 +360,7 @@ can be debugged and where each one first stops.
 | `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, supervisor CSRs, counter permissions, CSR existence (illegal CSRs, writable machine HPM counter 3, zero-only counter 31, and user-alias permissions), and interrupts |
 | `spanning_test/` | 32-bit instructions that straddle a fetch-word boundary |
 | `sprintf_test/` | All 344 `sprintf`/`snprintf` checks against constant expected strings; the 2M-cycle simulation budget covers the measured 1.23M cycles in BRAM and DDR |
+| `irq_take_latency/` | Delegated STI, LCOFI and SEI take latency in S-mode across device, atomic, fence, SIE-toggle, DDR-miss and WFI loops; every interrupt is taken, including between back-to-back device stores and after a cached store before a device read |
 | `sstc_test/` | Sstc: `menvcfg.STCE`, `stimecmp` access rules, and an S-mode timer interrupt through `stimecmp`; also the writable `menvcfg` and `senvcfg` bits |
 | `sscofpmf_test/` | Sscofpmf: `mhpmevent` OF/MINH/SINH/UINH fields, OF and `mip.LCOFIP` on a counter wrap, LCOFI taken in M and delegated to S, `scountovf` filtering by `mcounteren`, per-privilege counting of instructions and cycles, pending-clear races through `mip` and delegated `sip`, and interrupt priority after enabling a pending SSI through `mie`/`sie` |
 | `strings_test/` | `string.h`, `ctype.h`, and `stdlib.h` functions |

@@ -193,6 +193,10 @@ module data_mem_request_router #(
     // High while a device-quadrant request is held. cpu_ooo raises its
     // device-read interrupt shield from it.
     output logic                                     o_device_request_pending,
+    // cpu_ooo: an interrupt take is armed and the shield is down. The held
+    // device request stays parked and unpending, so it neither raises the
+    // shield nor arms, and the interrupt's flush cancels it.
+    input  logic                                     i_device_start_hold = 1'b0,
     output logic [       riscv_pkg::MemDataBits-1:0] o_lq_mem_read_data,
     output logic                                     o_lq_mem_read_valid,
     output logic                                     o_lq_mem_read_error,
@@ -514,8 +518,10 @@ module data_mem_request_router #(
     end
   end
 
-  // The pending indication uses only the held valid bit and address.
-  assign o_device_request_pending = lq_mem_request_valid && lq_pending_request_requires_drain;
+  // The pending indication uses only the held valid bit and address, and the
+  // registered interrupt hold from cpu_ooo.
+  assign o_device_request_pending = lq_mem_request_valid && lq_pending_request_requires_drain &&
+      !i_device_start_hold;
 
   // Delay o_device_request_pending by one cycle. cpu_ooo's interrupt shield
   // sets from the same signal and shares reset/flush, so it is already set
