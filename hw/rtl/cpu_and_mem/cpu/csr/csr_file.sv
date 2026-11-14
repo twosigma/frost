@@ -2100,9 +2100,11 @@ module csr_file #(
   wire fetch_dcsr_not_m = dcsr_prv != riscv_pkg::PrivM;
   wire fetch_write_holds_priv = COMMIT_EXCLUDES_CONTROL_TAKE &&
       i_csr_write_enable && i_csr_read_enable;
-  (* keep = "true" *) wire fetch_returns_enabled =
+  (* keep = "true" *) wire fetch_returns_enabled;
+  assign fetch_returns_enabled =
       !(fetch_write_holds_priv || i_trap_enter_d || i_trap_save_s || i_trap_save_m);
-  (* keep = "true" *) wire fetch_override_not_m = fetch_write_holds_priv ?
+  (* keep = "true" *) wire fetch_override_not_m;
+  assign fetch_override_not_m = fetch_write_holds_priv ?
       fetch_priv_not_m : (!i_trap_enter_d && i_trap_save_s);
   wire fetch_return_not_m;
   wire fetch_translation_next;

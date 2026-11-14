@@ -424,10 +424,11 @@ module dmmu (
   // is the TLB's per-entry verdict, selected with the hit, so the capture
   // enable does not wait on the fault select.
   logic last_capture;
-  (* keep = "true" *) wire last_capture_qualified = s1_valid_q && !s1_killed &&
+  (* keep = "true" *)wire  last_capture_qualified;
+  assign last_capture_qualified = s1_valid_q && !s1_killed &&
       !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical;
-  (* keep = "true" *) wire last_capture_walk_good =
-      walk_resp_for_s1 && (walk_fault == riscv_pkg::DFAULT_NONE);
+  (* keep = "true" *) wire last_capture_walk_good;
+  assign last_capture_walk_good = walk_resp_for_s1 && (walk_fault == riscv_pkg::DFAULT_NONE);
   // Apply the hit's clean verdict after request and walk qualification.
 `ifdef FROST_XILINX_PRIMS
   (* dont_touch = "true" *) LUT4 #(
@@ -637,9 +638,11 @@ module dmmu (
   // The DTLB selects the clean data-access verdict with the matching entry.
   // Select that verdict directly instead of rebuilding its permission and
   // page-attribute checks after selection.
-  (* keep = "true" *)wire s2_pa_leaf_selected = s2_leaf_applies && !s1_killed && tlb_hit[0];
+  (* keep = "true" *) wire s2_pa_leaf_selected;
+  assign s2_pa_leaf_selected = s2_leaf_applies && !s1_killed && tlb_hit[0];
   // verilog_format: off
-  (* keep = "true" *) wire s2_pa_without_leaf =
+  (* keep = "true" *) wire s2_pa_without_leaf;
+  assign s2_pa_without_leaf =
       s1_killed || (s2_fault_without_leaf == riscv_pkg::DFAULT_NONE);
   // verilog_format: on
   wire s2_pa_next = s2_pa_leaf_selected ? tlb_clean_hit[0] : s2_pa_without_leaf;

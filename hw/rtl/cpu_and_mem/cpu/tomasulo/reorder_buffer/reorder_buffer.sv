@@ -2046,7 +2046,8 @@ module reorder_buffer #(
     (* keep = "true" *) logic store_completion_eligible;
     assign store_completion_eligible = completion_live &&
         i_store_complete_tag == ReorderBufferTagWidth'(entry);
-    (* keep = "true" *) wire done_allocated = alloc_en_2_control ?
+    (* keep = "true" *) wire done_allocated;
+    assign done_allocated = alloc_en_2_control ?
         (alloc_en_control ? done_alloc_values[3] : done_alloc_values[2]) :
         (alloc_en_control ? done_alloc_values[1] : done_alloc_values[0]);
     assign done_next[entry] = done_allocated || done_cdb_completion ||

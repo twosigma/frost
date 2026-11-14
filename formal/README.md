@@ -6,7 +6,9 @@ as simulation. The targets cover the fetch stage, the out-of-order back end
 units, the MMU and caches, the NIC's clock-crossing FIFO, the APLIC, and the
 IMSIC. Each `.sby` file in this directory is one target, registered in
 `FORMAL_TARGETS` in `tests/test_run_formal.py`, and CI runs every task of every
-target. Most properties live in the RTL module they check, under
+target. A CI job skips a task whose inputs are unchanged since a run in which
+it passed ([reuse in CI](../tests/README.md#reusing-formal-and-synthesis-results)).
+Most properties live in the RTL module they check, under
 `ifdef FORMAL`. The `.sv` harnesses in this directory hold the proofs that
 connect several modules or compare two instances of one.
 
@@ -591,7 +593,11 @@ cycles, which clears arbitrary memory history.
    target or `prediction_release.sby` for an integration proof). Read every
    source whose properties must be active with `read -formal -sv`. A plain
    `read -sv` compiles its assertions out, and a proof can then pass
-   vacuously.
+   vacuously. List every file the task reads in `[files]`, one path per
+   line: SymbiYosys copies them into the task's source directory, and CI's
+   reuse key holds these files, so a file the task reads without listing it
+   is not in the key. Includes, `$readmemh` names and script reads name
+   listed files without a directory.
 3. Add a `FormalTarget` entry in `tests/test_run_formal.py`, listing `prove` in
    `tasks` when the `.sby` defines it. Register any new task names in
    `SBY_TASKS` so CLI and pytest runs include them; the fast Python tests fail
