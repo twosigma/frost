@@ -490,6 +490,39 @@ async def test_privileged_auto_predecode_routes(dut: Any) -> None:
     assert rs["mem_needs_sq"] == 0
 
 
+@cocotb.test()
+async def test_sfence_vma_carries_operands_and_register_flags(dut: Any) -> None:
+    """SFENCE.VMA waits for rs1/rs2 and flags which of them is not x0.
+
+    The immediate carries the flags the ROB needs to pick the flush form:
+    bit 0 is set when rs1 is a register other than x0 (a page is named), bit 1
+    when rs2 is one (an ASID is named).
+    """
+    dut_if = await _setup(dut)
+    page, asid = 0x0000_0040_0000_3000, 0x2A5
+    for rs1, rs2 in ((0, 0), (5, 0), (0, 6), (5, 6)):
+        dut_if.drive_int_src1(renamed=0, tag=0, value=page)
+        dut_if.drive_int_src2(renamed=0, tag=0, value=asid)
+        dut_if.drive_instruction(
+            valid=True,
+            rs1_addr=rs1,
+            rs2_addr=rs2,
+            instruction_operation=SFENCE_VMA,
+            instruction=_make_instr(
+                opcode=0b1110011, source_reg_1=rs1, source_reg_2=rs2
+            ),
+        )
+        await dut_if.step()
+        rs = dut_if.read_rs_dispatch()
+        assert rs["valid"] == 1 and rs["rs_type"] == RS_MEM
+        assert rs["imm"] == (int(rs2 != 0) << 1) | int(rs1 != 0), (rs1, rs2)
+        assert rs["src1_ready"] == 1 and rs["src2_ready"] == 1
+        if rs1:
+            assert rs["src1_value"] == page
+        if rs2:
+            assert rs["src2_value"] == asid
+
+
 # =============================================================================
 # Source Operand Resolution Tests
 # =============================================================================

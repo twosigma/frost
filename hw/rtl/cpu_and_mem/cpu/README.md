@@ -22,7 +22,7 @@ expands renaming, execution, result broadcast, and load/store ordering.
 | `if_stage/` | Fetch PC control, branch prediction, instruction alignment |
 | `pd_stage/` | Slot-1 instruction from the native word or its predecoded RVC expansion, early source fields, the PD branch redirect |
 | `id_stage/` | Decode for both slots |
-| `mmu/` | Instruction MMU (16-entry ITLB), data MMU (16-entry DTLB), shared page-table walker |
+| `mmu/` | Instruction MMU (16-entry ITLB), data MMU (16-entry DTLB), 512-entry second-level TLB with a 32-entry superpage side array, shared page-table walker |
 | `misaligned/` | Misaligned-access engine (`ma_engine`) and its checks (`ma_pkg`) |
 | `csr/` | CSR file; CSR instructions execute at commit |
 | `control/trap_unit.sv` | Traps, delegation, interrupts, Debug Mode entry, and the no-CSR take that starts the misaligned-access engine |
@@ -371,8 +371,54 @@ The 16-entry ITLB and the data side's 16-entry DTLB share one read-only
 page-table walker in `cpu_ooo`; the data side wins when both ask. The walker
 never writes PTEs (Svade): a leaf with A=0, or a store to a leaf with D=0,
 raises a page fault for software to handle. SFENCE.VMA, `satp` accesses, and
-`mstatus` writes that change MPRV (or MPP under MPRV) flush both TLBs and
-discard any walk in flight.
+`mstatus` writes that change MPRV (or MPP under MPRV) discard any walk in
+flight and clear the walker's pointer cache; which TLB entries they remove
+is described under "Address-space IDs and SFENCE.VMA" below.
+
+A 4-way, 128-set second-level TLB (`l2tlb.sv`, 512 entries, 2 MiB of 4 KiB
+pages, block RAM) sits between the two MMUs and the walker. An L1 TLB miss
+that hits there is answered two cycles after the request fires, in place of
+a walk of one to three dependent line reads. It stores the clean 4 KiB
+translations that the walker returns. Clean 2 MiB and 1 GiB leaves go to a
+32-entry fully associative superpage side array beside it (`SP_ENTRIES`):
+tags, ASIDs, global bits and levels in flops, compared level-masked in the
+same cycle as the block RAM ways, and PPNs and permissions in distributed RAM,
+read in the next cycle, so a superpage hit answers three cycles after the
+request fires for any page of its region. Neither array holds negative
+entries, so a PTE that changes from invalid to valid is seen without
+SFENCE.VMA (Svvptc). SUM and MXR stay out of the entries, so toggling them
+needs no flush. `cpu_ooo` takes `L2TLB_SETS` (0 removes both arrays).
+
+### Address-space IDs and SFENCE.VMA
+
+`satp.ASID` is nine bits wide (ASIDLEN = 9): writing all ones to the field and
+reading it back, the way Linux probes it, returns `0x1FF`. Every L1 and L2 TLB
+entry carries the ASID it was installed under and the leaf's global bit (the
+walker ORs the bit over the levels it descended). A lookup matches an entry of
+its own ASID, or a global entry under any ASID.
+
+- A `satp` write that changes the ASID leaves every entry in place, so a
+  context switch between two address spaces whose pages are resident walks
+  nothing. The walker's pointer cache is untagged and still empties.
+- A `satp` write that changes the root under the same ASID flushes every
+  entry, for software that never assigns ASIDs. An `mstatus` write that
+  changes MPRV (or MPP under MPRV) flushes every entry.
+- SFENCE.VMA reads rs1 (the virtual address) and rs2 (the ASID) exactly as the
+  privileged spec defines. rs1 = x0 and rs2 = x0 flush everything; rs1 only
+  flushes the entries covering that page in every ASID, global included;
+  rs2 only flushes the entries of that ASID that are not global; both flush
+  the non-global entries of that ASID covering that page. A superpage entry
+  covers every page it maps.
+- The operands travel with the SFENCE.VMA: dispatch tags the instruction with
+  which registers are not x0, the MEM_RS holds it for rs1 and rs2 and hands
+  both to the ROB when it issues, and the ROB serializer keeps the instruction
+  at the head until they have arrived. The ROB exports the head's filter for
+  the length of the SFENCE window.
+- In the second-level TLB, a page flush reads one set, an ASID flush scans all
+  128 sets, and flush-all clears the valid bits in one cycle. The superpage
+  side array applies the flush's filter to all its entries in the flush's
+  first cycle; a page flush removes the superpage whose region holds the page.
+  While a flush runs the arrays accept no request.
 
 The walker keeps a walk cache of upper-level pointers: 16 level-1 pointers
 (the level-0 table of a 2 MiB region) and 4 root pointers (the level-1 table
@@ -505,9 +551,11 @@ pipeline flush follows one cycle after that. It is the same FENCE-class flush
 that FENCE.I uses, so it also drops the fetch provider's buffered lines. Across those two cycles `cpu_ooo` blocks trap,
 Debug Mode, and xRET takes and ignores exceptions, so no younger instruction
 can overwrite the CSR write or act on the old translation. Separately,
-`csr_file` raises a one-cycle TLB and walker invalidate for every `satp`
-access, and for an `mstatus` write only when MPRV changes (or MPP while MPRV
-is set). SUM and MXR changes keep the TLBs: entries hold the raw leaf
+`csr_file` raises a one-cycle translation-changed pulse (it drops the MMUs'
+registered results and discards the walker's walk) for every `satp` access, and
+for an `mstatus` write only when MPRV changes (or MPP while MPRV is set). A
+second pulse asks the TLBs to drop every entry when the `satp` root changes
+under the same ASID, or MPRV changes. SUM and MXR changes keep the TLBs: entries hold the raw leaf
 permissions, and every lookup applies the live SUM, MXR and effective
 privilege, so the full flush alone retires the old permission state. Linux
 toggles SUM around every user copy, so this keeps both TLBs warm across

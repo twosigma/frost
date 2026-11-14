@@ -247,23 +247,32 @@ module tomasulo_wrapper #(
     // change only with a full flush (translation CSR write, trap, or xRET).
     // The page-table walker is in cpu_ooo, reached through the walk ports.
     // =========================================================================
-    input  logic                                              i_translation_active,
-    input  logic                                              i_mmu_sum,
-    input  logic                                              i_mmu_mxr,
-    input  logic                                              i_mmu_eff_priv_u,
+    input  logic                                               i_translation_active,
+    input  logic                                               i_mmu_sum,
+    input  logic                                               i_mmu_mxr,
+    input  logic                                               i_mmu_eff_priv_u,
     // The CSR file's registered translation-invalidate pulse. With the ROB's
     // SFENCE.VMA window it invalidates the DTLB and walker. Pipeline recovery
     // for the CSR write is separate: the ROB serializer classifies the CSR at
     // allocation and drains committed stores before it retires.
-    input  logic                                              i_csr_translation_flush_req,
+    input  logic                                               i_csr_translation_flush_req,
     // The DTLB flash-invalidate, exported for the walker's discard input:
     // the SFENCE.VMA window OR i_csr_translation_flush_req.
-    output logic                                              o_tlb_invalidate,
-    output logic                                              o_walk_req_valid,
-    input  logic                                              i_walk_req_ready,
-    output logic                 [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
-    input  logic                                              i_walk_resp_valid,
-    input  riscv_pkg::ptw_resp_t                              i_walk_resp,
+    output logic                                               o_tlb_invalidate,
+    // Satp root switch or MPRV change: flush every TLB entry (with no filter).
+    input  logic                                               i_csr_tlb_flush_all_req,
+    // The TLB flush command: the retiring SFENCE.VMA's filter, or flush-all
+    // for i_csr_tlb_flush_all_req.
+    output riscv_pkg::tlb_flush_t                              o_tlb_flush,
+    // satp.ASID that translations are tagged with (registered with the rest
+    // of the translation bundle).
+    input  logic                  [   riscv_pkg::AsidBits-1:0] i_mmu_asid,
+    output logic                                               o_walk_req_valid,
+    input  logic                                               i_walk_req_ready,
+    output logic                  [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
+    output logic                                               o_walk_hold,
+    input  logic                                               i_walk_resp_valid,
+    input  riscv_pkg::ptw_resp_t                               i_walk_resp,
 
     // Widen-commit back-pressure: asserted when the downstream slot-2
     // retire path can accept a second commit this cycle.  cpu_ooo holds it
@@ -2455,9 +2464,30 @@ module tomasulo_wrapper #(
   assign rob_head_next_result_held = alu_adapter_result_pending &&
       (alu_adapter_to_arbiter.tag == riscv_pkg::ReorderBufferTagWidth'(head_tag + 1'b1));
 
+  // SFENCE.VMA operands reach the ROB when the MEM_RS issues the operation:
+  // rs1 gives the page, rs2 the ASID, and the dispatch immediate says whether
+  // each register is other than x0.
+  riscv_pkg::tlb_flush_t rob_sfence_flush;
+  logic sfence_cap_valid;
+  assign sfence_cap_valid = o_mem_rs_issue.valid && (o_mem_rs_issue.op == riscv_pkg::SFENCE_VMA);
+  logic [riscv_pkg::Sv39VpnBits+riscv_pkg::AsidBits+1:0] sfence_cap_data;
+  assign sfence_cap_data = {
+    o_mem_rs_issue.src2_value[riscv_pkg::AsidBits-1:0],
+    o_mem_rs_issue.src1_value[12+:riscv_pkg::Sv39VpnBits],
+    o_mem_rs_issue.imm[1:0]
+  };
+  always_comb begin
+    o_tlb_flush = rob_sfence_flush;
+    if (i_csr_tlb_flush_all_req) begin
+      o_tlb_flush = '0;
+      o_tlb_flush.en = 1'b1;
+    end
+  end
+
   reorder_buffer #(
       .SharedLinkBank(ROB_SHARED_LINK_BANK),
-      .VECTOR(VECTOR)
+      .VECTOR(VECTOR),
+      .SfenceOperands(1'b1)
   ) u_rob (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
@@ -2515,6 +2545,10 @@ module tomasulo_wrapper #(
       .i_fence_i_sync_done            (i_fence_i_sync_done),
       .o_fence_i_sync_req             (o_fence_i_sync_req),
       .o_sfence_window                (rob_sfence_window),
+      .o_sfence_flush                 (rob_sfence_flush),
+      .i_sfence_cap_valid             (sfence_cap_valid),
+      .i_sfence_cap_tag               (o_mem_rs_issue.rob_tag),
+      .i_sfence_cap_data              (sfence_cap_data),
       .o_csr_start                    (o_csr_start),
       .i_csr_done                     (i_csr_done),
       .o_trap_pending                 (o_trap_pending),
@@ -4319,6 +4353,8 @@ module tomasulo_wrapper #(
       .i_flush_tag(i_flush_tag),
       .i_head_tag(head_tag),
       .i_tlb_invalidate(o_tlb_invalidate),
+      .i_tlb_flush(o_tlb_flush),
+      .i_asid(i_mmu_asid),
       .i_iss_valid(dmmu_iss_valid),
       .i_iss_rob_tag(o_mem_rs_issue.rob_tag),
       .i_iss_va(lq_effective_addr),
@@ -4356,6 +4392,7 @@ module tomasulo_wrapper #(
       .o_walk_req_valid(o_walk_req_valid),
       .i_walk_req_ready(i_walk_req_ready),
       .o_walk_vpn(o_walk_vpn),
+      .o_walk_hold(o_walk_hold),
       .i_walk_resp_valid(i_walk_resp_valid),
       .i_walk_resp(i_walk_resp)
   );

@@ -54,7 +54,10 @@ module reorder_buffer #(
     parameter bit SharedLinkBank = 1'b0,
     // 1: the vector CSRs exist (vstart, vxsat, vxrm, vcsr, vl, vtype, vlenb)
     // and are illegal while mstatus.VS is Off.
-    parameter bit VECTOR = 1'b0
+    parameter bit VECTOR = 1'b0,
+    // Keep the SFENCE.VMA rs1/rs2 values per entry and export the retiring
+    // SFENCE.VMA's TLB filter. Without it every SFENCE.VMA flushes all entries.
+    parameter bit SfenceOperands = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -296,6 +299,14 @@ module reorder_buffer #(
     output logic o_translation_csr_commit_shadow,
     // Head SFENCE.VMA is holding the cache-sync window (TLB invalidate).
     output logic o_sfence_window,
+    // The retiring SFENCE.VMA's TLB filter; en equals o_sfence_window.
+    output riscv_pkg::tlb_flush_t o_sfence_flush,
+    // The MEM_RS issued an SFENCE.VMA with its operands. Data layout:
+    // [0] rs1 is not x0, [1] rs2 is not x0, [2+:27] rs1 page number,
+    // [29+:9] rs2 ASID.
+    input logic i_sfence_cap_valid,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_sfence_cap_tag,
+    input logic [riscv_pkg::Sv39VpnBits+riscv_pkg::AsidBits+1:0] i_sfence_cap_data,
 
     // =========================================================================
     // Early Misprediction Recovery
@@ -2354,6 +2365,50 @@ module reorder_buffer #(
   // ===========================================================================
   // Serialize CSR, fence, WFI, xRET and exceptional heads.
 
+  // SFENCE.VMA filters: captured per entry when the MEM_RS issues the
+  // operation, read at the head. The serializer holds the SFENCE.VMA until
+  // they are present. sfence_cmd_q registers the head's filter, which stays
+  // pinned during the sync, so it is valid throughout the window.
+  localparam int unsigned SfenceDataWidth = riscv_pkg::Sv39VpnBits + riscv_pkg::AsidBits + 2;
+  logic sfence_ops_ready;
+  riscv_pkg::tlb_flush_t sfence_cmd_q;
+  if (SfenceOperands) begin : g_sfence_ops
+    logic head_ops_ready;
+    logic [SfenceDataWidth-1:0] head_ops_data;
+    sfence_operand_store #(
+        .DEPTH(ReorderBufferDepth)
+    ) sfence_operand_store_inst (
+        .i_clk(i_clk),
+        .i_rst_n(i_rst_n),
+        .i_alloc_valid(alloc_en_control),
+        .i_alloc_tag(tail_idx),
+        .i_alloc_valid_2(alloc_en_2_control),
+        .i_alloc_tag_2(tail_idx_2),
+        .i_cap_valid(i_sfence_cap_valid),
+        .i_cap_live(rob_valid[i_sfence_cap_tag] && rob_f_is_sfence[i_sfence_cap_tag]),
+        .i_cap_tag(i_sfence_cap_tag),
+        .i_cap_data(i_sfence_cap_data),
+        .i_head_idx(head_idx),
+        .o_head_ready(head_ops_ready),
+        .o_head_data(head_ops_data)
+    );
+    assign sfence_ops_ready = head_ops_ready;
+    always_ff @(posedge i_clk) begin
+      sfence_cmd_q.use_va   <= head_ops_data[0];
+      sfence_cmd_q.use_asid <= head_ops_data[1];
+      sfence_cmd_q.vpn      <= head_ops_data[2+:riscv_pkg::Sv39VpnBits];
+      sfence_cmd_q.asid     <= head_ops_data[2+riscv_pkg::Sv39VpnBits+:riscv_pkg::AsidBits];
+      sfence_cmd_q.en       <= 1'b0;
+    end
+  end else begin : g_no_sfence_ops
+    assign sfence_ops_ready = 1'b1;
+    assign sfence_cmd_q     = '0;
+  end
+  always_comb begin
+    o_sfence_flush    = sfence_cmd_q;
+    o_sfence_flush.en = o_sfence_window;
+  end
+
   // rob_serializer supplies the state and stall signals.
   logic native_fence_commit_event;
   logic translation_csr_commit_event_q;
@@ -2383,6 +2438,7 @@ module reorder_buffer #(
       .head_is_lr                      (head_f_is_lr),
       .head_is_sfence                  (head_f_is_sfence),
       .head_csr_may_change_translation (head_f_csr_may_change_translation),
+      .i_sfence_ops_ready              (sfence_ops_ready),
       .o_serial_state                  (serial_state),
       .o_sfence_window                 (o_sfence_window),
       .o_native_fence_commit_event     (native_fence_commit_event),

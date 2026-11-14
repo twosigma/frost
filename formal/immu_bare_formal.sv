@@ -47,6 +47,8 @@ module immu_bare_formal #(
       .i_active(1'b0),
       .i_priv_u(1'b0),
       .i_tlb_invalidate(1'b0),
+      .i_tlb_flush('0),
+      .i_asid('0),
       .i_pc(pc),
       .o_pa0(pa0),
       .o_pa1(pa1),

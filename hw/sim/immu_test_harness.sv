@@ -35,6 +35,15 @@ module immu_test_harness #(
     input logic i_priv_u,
     input logic i_tlb_invalidate,
     input logic i_full_flush,
+    // TLB flush filter. i_tlb_invalidate also flushes every entry, so a test
+    // that sets only it sees a flush-all. i_keep_entries turns the pulse into
+    // a pure "translation changed" event (a satp ASID switch).
+    input logic i_keep_entries,
+    input logic i_flush_use_va,
+    input logic [riscv_pkg::Sv39VpnBits-1:0] i_flush_vpn,
+    input logic i_flush_use_asid,
+    input logic [riscv_pkg::AsidBits-1:0] i_flush_asid,
+    input logic [riscv_pkg::AsidBits-1:0] i_asid,
 
     input logic i_pc_update_en,
     input logic [XLEN-1:0] i_pc_d,
@@ -63,7 +72,8 @@ module immu_test_harness #(
     input logic i_walk_resp_perm_w,
     input logic i_walk_resp_perm_x,
     input logic i_walk_resp_perm_u,
-    input logic i_walk_resp_perm_d
+    input logic i_walk_resp_perm_d,
+    input logic i_walk_resp_perm_g
 );
 
   logic [XLEN-1:0] pc_q;
@@ -87,6 +97,16 @@ module immu_test_harness #(
     walk_resp.perm_x = i_walk_resp_perm_x;
     walk_resp.perm_u = i_walk_resp_perm_u;
     walk_resp.perm_d = i_walk_resp_perm_d;
+    walk_resp.perm_g = i_walk_resp_perm_g;
+  end
+
+  riscv_pkg::tlb_flush_t tlb_flush;
+  always_comb begin
+    tlb_flush.en       = i_tlb_invalidate && !i_keep_entries;
+    tlb_flush.use_va   = i_flush_use_va;
+    tlb_flush.vpn      = i_flush_vpn;
+    tlb_flush.use_asid = i_flush_use_asid;
+    tlb_flush.asid     = i_flush_asid;
   end
 
   immu #(
@@ -99,6 +119,8 @@ module immu_test_harness #(
       .i_active(i_active),
       .i_priv_u(i_priv_u),
       .i_tlb_invalidate(i_tlb_invalidate),
+      .i_tlb_flush(tlb_flush),
+      .i_asid(i_asid),
       .i_full_flush(i_full_flush),
       .i_pc(pc_q),
       .o_pa0(o_pa0),

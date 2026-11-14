@@ -351,6 +351,7 @@ can be debugged and where each one first stops.
 | `rv64_smoke/` | The smallest RV64I program: W-form operations, 6-bit shift amounts, and 64-bit loads and stores |
 | `satp_drain_test/` | A store committed just before a `satp` or `mstatus` write must drain before that write retires and flushes the pipeline |
 | `sum_toggle_test/` | S-mode SUM and MXR toggles against resident TLB entries: the live bits decide every access, no toggle walks a page table, and the toggle cost is reported |
+| `asid_test/` | S-mode `satp.ASID`, global pages and the SFENCE.VMA forms against resident TLB entries: two address spaces keep separate entries for one VA, a context switch walks nothing when both are resident, the global page serves every ASID, and each SFENCE.VMA form flushes exactly what the privileged spec names; reports ASIDLEN the way Linux probes it |
 | `served_window_resteer/` | A BTB-predicted loop branch to an upper-half target; `served_window_resteer_fetch_fuzz` uses uncached Normal fetches and requires AXI fuzz delays and predicted-target waits on each reset run, with count/sum checks across 2,000 iterations. The IF-stage unit bench explicitly checks stale-window rejection and retry |
 | `slot2_fault_test/` | A fetch fault on the second instruction of a fetch pair, one whose bytes encode a NOP included, must trap at that instruction with exact `mepc` and `mtval` |
 | `smc_fencei_test/` | Self-modifying code with `fence.i` across store-to-fence gaps, warm and cold L1D, and tight loops |

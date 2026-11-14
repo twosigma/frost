@@ -10,5 +10,6 @@ $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
 
 # Serializing-instruction FSM and the reorder buffer itself
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_serializer.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/sfence_operand_store.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_link_value_ram.sv

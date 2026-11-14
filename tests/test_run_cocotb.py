@@ -1198,6 +1198,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "S-mode SUM and MXR toggles keep TLB entries and apply the live bits"
         ),
     ),
+    "asid_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="asid_test",
+        nic_mac_clocks=False,
+        description=(
+            "satp.ASID, global pages and the SFENCE.VMA forms against live TLB entries"
+        ),
+    ),
     "imsic_csr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -4051,6 +4060,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Walk-cache hits, discards and Svvptc-permitted page-table changes "
             "against a reference Sv39 walk"
+        ),
+    ),
+    "l2tlb": CocotbRunConfig(
+        python_test_module="cocotb_tests.mmu.test_l2tlb",
+        hdl_toplevel_module="l2tlb",
+        description=(
+            "Second-level TLB: ASID and global entries, superpages, every SFENCE.VMA "
+            "form, 512-page and 32-superpage residency and a random run against a reference"
         ),
     ),
     "soc_vcu118": CocotbRunConfig(

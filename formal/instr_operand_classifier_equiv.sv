@@ -379,7 +379,6 @@ module instr_operand_classifier_equiv (
       op_for_pre_decode != riscv_pkg::MRET &&
       op_for_pre_decode != riscv_pkg::SRET &&
       op_for_pre_decode != riscv_pkg::DRET &&
-      op_for_pre_decode != riscv_pkg::SFENCE_VMA &&
       op_for_pre_decode != riscv_pkg::PAUSE &&
       op_for_pre_decode != riscv_pkg::CSRRWI &&
       op_for_pre_decode != riscv_pkg::CSRRSI &&
@@ -409,6 +408,7 @@ module instr_operand_classifier_equiv (
       riscv_pkg::ROL, riscv_pkg::ROR,
       riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
       riscv_pkg::PACK, riscv_pkg::PACKH,
+      riscv_pkg::SFENCE_VMA,
       riscv_pkg::ADDW, riscv_pkg::SUBW,
       riscv_pkg::SLLW, riscv_pkg::SRLW, riscv_pkg::SRAW,
       riscv_pkg::ADD_UW, riscv_pkg::SH1ADD_UW,

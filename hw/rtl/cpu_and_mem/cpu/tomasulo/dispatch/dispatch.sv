@@ -439,6 +439,14 @@ module dispatch #(
         imm     = i_from_id_to_ex.pc_relative_precomputed;
       end
 
+      // SFENCE.VMA: the entry's immediate says which filters are in use, so the
+      // ROB can tell x0 ("all") from a register that holds zero.
+      //   imm[0]: rs1 is not x0 (address filter), imm[1]: rs2 is not x0 (ASID).
+      riscv_pkg::SFENCE_VMA: begin
+        use_imm = 1'b0;
+        imm     = {{(riscv_pkg::XLEN - 2) {1'b0}}, (|i_rs2_addr), (|i_rs1_addr)};
+      end
+
       default: begin
         use_imm = 1'b0;
         imm     = '0;

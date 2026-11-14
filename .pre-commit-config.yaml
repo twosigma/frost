@@ -140,6 +140,7 @@ repos:
             verif/cocotb_tests/hang_probe\.py|
             verif/cocotb_tests/nic/test_nic_tx_segment\.py|
             verif/cocotb_tests/nic/test_nic_(rx_fifo_limit|pause)\.py|
+            verif/cocotb_tests/mmu/test_(ptw_walk_cache|l2tlb)\.py|
             fpga/flash/(make_flash_image|program_flash)\.py
           )$
         args:
@@ -167,6 +168,7 @@ repos:
             sw/apps/cbo_zero_(test|bench|pages)/main\.c|
             sw/apps/nic_(rate|sg_loopback)/main\.c|
             sw/apps/l2_capacity_chase/main\.c|
+            sw/apps/(sum_toggle_test|asid_test)/main\.c|
             sw/apps/(bootrom/bootrom|fsbl/fsbl)\.c|
             linux/frost-net10g/.*|
             linux/frost-memerr/.*|
@@ -186,6 +188,7 @@ repos:
             boards/vcu118/vcu118_(clock|eth1g)\.sv|
             hw/rtl/lib/cache/coherence_prefetch_agent\.sv|
             hw/rtl/peripherals/nic/nic_tx_(segment|beat_merge)\.sv|
+            hw/rtl/cpu_and_mem/cpu/(mmu/(l2tlb|walk_request_select)|tomasulo/reorder_buffer/sfence_operand_store)\.sv|
             hw/rtl/peripherals/nic/nic_pause_(rx|tx)\.sv|
             perf-modeling/rtl/frost_perf_probe\.sv|
             asic/sram/macros/.*
@@ -197,7 +200,7 @@ repos:
       - id: insert-license
         name: insert-license (Tcl/Makefile/Shell)
         files: (\.tcl$|Makefile$|\.mk$|\.sh$)
-        exclude: ^(linux/frost-(net10g|memerr)/|sw/apps/pa_(width|vm_fetch|dma|nic_mmio|nic_packet)_test/Makefile$|sw/apps/sum_toggle_test/Makefile$|sw/apps/nic_(rate|sg_loopback)/Makefile$|sw/apps/l2_capacity_chase/Makefile$|sw/apps/(fencei_bench|smc_predict_test|smc_stale_test|smc_torture|sscofpmf_test|cbo_zero_test|cbo_zero_bench|cbo_zero_pages)/Makefile$|sw/apps/(bootrom|fsbl)/Makefile$|sw/uboot/Makefile$)
+        exclude: ^(linux/frost-(net10g|memerr)/|sw/apps/pa_(width|vm_fetch|dma|nic_mmio|nic_packet)_test/Makefile$|sw/apps/sum_toggle_test/Makefile$|sw/apps/nic_(rate|sg_loopback)/Makefile$|sw/apps/l2_capacity_chase/Makefile$|sw/apps/(fencei_bench|smc_predict_test|smc_stale_test|smc_torture|sscofpmf_test|cbo_zero_test|cbo_zero_bench|cbo_zero_pages)/Makefile$|sw/apps/(sum_toggle_test|asid_test)/Makefile$|sw/apps/(bootrom|fsbl)/Makefile$|sw/uboot/Makefile$)
         args:
           - --license-filepath=.license-header.txt
           - --comment-style=#

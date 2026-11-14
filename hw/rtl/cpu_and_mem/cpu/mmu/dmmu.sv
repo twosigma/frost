@@ -41,9 +41,15 @@ module dmmu (
     // nonzero). The LQ and wrapper alignment checks use the same input.
     input logic i_trap_misaligned,
 
-    // Clears every DTLB entry: SFENCE.VMA, or the CSR file's translation
-    // invalidate. The walker discards its walk in flight on the same signal.
+    // Translation changed: an SFENCE.VMA window, or the CSR file's
+    // translation-change pulse (satp access, MPRV change). It drops the
+    // last-page buffer, holds back walk requests and installs, and the walker
+    // discards its walk in flight on the same signal. It does not empty the
+    // DTLB: entries are ASID-tagged, and i_tlb_flush names what to remove.
     input logic i_tlb_invalidate,
+    input riscv_pkg::tlb_flush_t i_tlb_flush,
+    // satp.ASID, registered with the other translation state.
+    input logic [riscv_pkg::AsidBits-1:0] i_asid,
 
     // Pipeline kills.
     input logic i_flush_all,
@@ -103,6 +109,9 @@ module dmmu (
     output logic o_walk_req_valid,
     input logic i_walk_req_ready,
     output logic [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
+    // Registered: S1 holds an op without an accepted walk. o_walk_req_valid
+    // implies it, so the walk port may select o_walk_vpn from it alone.
+    output logic o_walk_hold,
     input logic i_walk_resp_valid,
     input riscv_pkg::ptw_resp_t i_walk_resp
 );
@@ -685,6 +694,7 @@ module dmmu (
       !s1_killed && !i_tlb_invalidate;
   assign o_walk_req_valid = s1_walk_eligible && !tlb_hit[0];
   assign o_walk_vpn = s1_q.va[38:12];
+  assign o_walk_hold = s1_valid_q && !s1_walk_asked_q;
 
   // ---------------------------------------------------------------------------
   // Early opportunistic ports: VA registered, lookup, result registered.
@@ -761,7 +771,8 @@ module dmmu (
   ) u_dtlb (
       .i_clk(i_clk),
       .i_rst_n(i_rst_n),
-      .i_invalidate_all(i_tlb_invalidate),
+      .i_flush(i_tlb_flush),
+      .i_asid(i_asid),
       .i_install_valid(tlb_install),
       .i_install(i_walk_resp),
       .i_lookup_vpn(tlb_vpn),

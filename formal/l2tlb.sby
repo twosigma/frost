@@ -1,0 +1,34 @@
+[tasks]
+bmc
+cover
+walk_select_prove walk_select
+walk_select_cover walk_select
+
+[options]
+bmc: mode bmc
+bmc: depth 13
+cover: mode cover
+cover: depth 14
+walk_select_prove: mode prove
+walk_select_prove: depth 4
+walk_select_cover: mode cover
+walk_select_cover: depth 8
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+~walk_select: read -formal -sv l2tlb.sv
+# A two-set, two-way array and a two-entry superpage side array reach fills,
+# evictions and every flush form within the depth.
+~walk_select: chparam -set SETS 2 -set WAYS 2 -set SP_ENTRIES 2 l2tlb
+~walk_select: prep -top l2tlb
+# The shared walk port's registered VPN select in front of the L2 TLB.
+walk_select: read -formal -sv walk_request_select.sv
+walk_select: prep -top walk_request_select
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/l2tlb.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/walk_request_select.sv

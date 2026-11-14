@@ -963,6 +963,14 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover", "bmc_itlb", "cover_itlb"),
     ),
     FormalTarget(
+        "l2tlb.sby",
+        "Second-level TLB hits are backed by a fill no flush has removed, return the "
+        "filled data, and never run during a flush; the shared walk port selects "
+        "its VPN from registered state and delays an instruction walk one cycle "
+        "at most",
+        tasks=("bmc", "cover", "walk_select_prove", "walk_select_cover"),
+    ),
+    FormalTarget(
         "ptw.sby",
         "Page-table walk state matches reference PTE classification, and the walk "
         "cache holds only valid pointers that memory holds, cleared by every discard",
@@ -2523,6 +2531,11 @@ SBY_TASKS = [
     # Parameter-shape variants (chparam'd tops): the ITLB shape of the TLB.
     ("bmc_itlb", "Bounded checking of 16-entry 2-port ITLB fetch verdicts"),
     ("cover_itlb", "Cover checking in the 16-entry 2-port ITLB shape"),
+    ("walk_select_prove", "Induction proof of the shared walk port's VPN select"),
+    (
+        "walk_select_cover",
+        "Cover a select refusal and the instruction priority after it",
+    ),
     ("bmc_nopwc", "Bounded checking of the page-table walker without its walk cache"),
     ("bmc_replace", "Bounded checking through replacement in one-entry walk caches"),
     ("bmc_xlen32", "Bounded checking with a local 32-bit datapath"),

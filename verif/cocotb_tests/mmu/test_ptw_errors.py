@@ -109,7 +109,7 @@ async def access_fault_at_each_level_and_successful_retry(dut: Any) -> None:
                 error=depth == fail_at,
             )
         s = await b.step()
-        assert s["resp_valid"] and (s["resp"] >> 78) == 3
+        assert s["resp_valid"] and (s["resp"] >> 79) == 3
         await b.step()
         # The retry rewrites the root slot, so empty the walk cache first, as
         # software's sfence.vma does after changing a valid pointer.
@@ -120,7 +120,7 @@ async def access_fault_at_each_level_and_successful_retry(dut: Any) -> None:
         await b.line(0x80000000, (0x80000 << 10) | 0xCF)
         await b.step()
         s = await b.step()
-        assert s["resp_valid"] and (s["resp"] >> 78) == 0
+        assert s["resp_valid"] and (s["resp"] >> 79) == 0
         await b.step()
 
 
@@ -137,7 +137,7 @@ async def discarded_error_drains_without_faulting_the_next_request(dut: Any) -> 
     await b.line(0x80000000, (0x80000 << 10) | 0xCF)
     await b.step()
     s = await b.step()
-    assert s["resp_valid"] and (s["resp"] >> 78) == 0
+    assert s["resp_valid"] and (s["resp"] >> 79) == 0
 
 
 @cocotb.test()
@@ -174,5 +174,5 @@ async def discard_on_accept_drains_once_before_retry(dut: Any) -> None:
         await b.line(0x80000000, (0x80000 << 10) | 0xCF)
         await b.step()
         s = await b.step()
-        assert s["resp_valid"] and (s["resp"] >> 78) == 0
-        assert (s["resp"] >> 7) & ((1 << 44) - 1) == 0x80000
+        assert s["resp_valid"] and (s["resp"] >> 79) == 0
+        assert (s["resp"] >> 8) & ((1 << 44) - 1) == 0x80000
