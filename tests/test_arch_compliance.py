@@ -100,6 +100,8 @@ SUPPORTED_EXTENSIONS = [
     "hints",
     # Zicboz; the CMO directory's Zicbom tests are left out.
     "CMO",
+    "Zimop",
+    "Zcmop",
 ]
 
 # Extensions FROST implements only in part: extension -> test-name prefixes to
@@ -115,15 +117,14 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "CMO": {"cbo.zero"},
 }
 
-# Tests excluded by filename prefix. The C directory holds Zcb tests
-# (clbu/clh/csb/cmul/...), which FROST does not implement.
+# Tests excluded by filename prefix. The C directory's Zcb tests
+# (clbu/clh/csb/cmul/...) run: FROST implements Zcb.
 # Zvk: five of the 37 tests in the pinned suite trap on Spike at RV64 and then
 # loop at address 0. vandn.vx, vrol.vx and vror.vx load their scalar operand into
 # the register that holds the test's data pointer, and vsha2ch-e32 and
 # vsha2cl-e32 give the vector SHA-2 instructions overlapping operands, which are
 # illegal. The other 32 run.
 EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
-    "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
     "Zvk": {"vandn.vx", "vrol.vx", "vror.vx", "vsha2ch-e32", "vsha2cl-e32"},
 }
 

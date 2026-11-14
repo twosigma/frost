@@ -44,6 +44,12 @@ TEST_NAME = $(basename $(notdir $(TEST_SRC)))
 ifneq ($(filter $(TEST_NAME),$(NO_COMPRESS_TESTS)),)
 ARCH := $(subst imafdc,imafd,$(ARCH))
 endif
+# Zcb, Zimop and Zcmop tests add those extensions; the other tests keep their
+# code layout. Keep equal to ZC_MOP_TEST_PREFIXES in generate_references.py.
+ZC_MOP_TESTS = clbu% clh% cmul% cnot% csb% csext% csh% czext% mop.% c.mop.%
+ifneq ($(filter $(ZC_MOP_TESTS),$(TEST_NAME)),)
+ARCH := $(ARCH)_zcb_zimop_zcmop
+endif
 
 # Same toolchain prefix as common.mk.
 RISCV_PREFIX ?= riscv64-linux-

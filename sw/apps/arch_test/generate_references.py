@@ -171,6 +171,19 @@ FROST_VECTOR_MARCH = (
 )
 SPIKE_VECTOR_ISA = f"{FROST_VECTOR_MARCH}_zvl128b"
 
+# Zcb, Zimop and Zcmop tests (by filename prefix) build and run with these
+# extensions added, so the other tests keep their code layout and
+# references. Keep ZC_MOP_TESTS in the Makefile equal.
+ZC_MOP_TEST_PREFIXES = (
+    "clbu", "clh", "cmul", "cnot", "csb", "csext", "csh", "czext", "mop.", "c.mop.",
+)  # fmt: skip
+ZC_MOP_EXTENSIONS = "_zcb_zimop_zcmop"
+
+
+def is_zc_mop_test(test_name: str) -> bool:
+    """Return whether a test needs the Zcb/Zimop/Zcmop march and Spike ISA."""
+    return test_name.startswith(ZC_MOP_TEST_PREFIXES)
+
 
 def test_march(test_name: str, extension: str = "") -> str:
     """Return the gcc -march for one test (drops C for NO_COMPRESS_TESTS)."""
@@ -179,6 +192,8 @@ def test_march(test_name: str, extension: str = "") -> str:
     march = FROST_MARCH
     if test_name in NO_COMPRESS_TESTS:
         march = march.replace("imafdc", "imafd")
+    if is_zc_mop_test(test_name):
+        march += ZC_MOP_EXTENSIONS
     return march
 
 
@@ -210,6 +225,8 @@ SUPPORTED_EXTENSIONS = [
     "hints",
     # Zicboz; the CMO directory's Zicbom tests are left out.
     "CMO",
+    "Zimop",
+    "Zcmop",
 ]
 
 # Allowed filename prefixes for extensions where only a subset of tests
@@ -225,15 +242,14 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "CMO": {"cbo.zero"},
 }
 
-# Excluded by filename prefix: the C directory includes Zcb tests FROST
-# does not implement.
+# Excluded by filename prefix. The C directory's Zcb tests run: FROST
+# implements Zcb.
 # Zvk: five of the 37 tests in the pinned suite trap on Spike at RV64 and then
 # loop at address 0. vandn.vx, vrol.vx and vror.vx load their scalar operand into
 # the register that holds the test's data pointer, and vsha2ch-e32 and
 # vsha2cl-e32 give the vector SHA-2 instructions overlapping operands, which are
 # illegal. The other 32 run.
 EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
-    "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
     "Zvk": {"vandn.vx", "vrol.vx", "vror.vx", "vsha2ch-e32", "vsha2cl-e32"},
 }
 
@@ -420,9 +436,14 @@ def generate_one_reference(
             ]
         else:
             label = "Spike"
+            spike_isa = (
+                SPIKE_VECTOR_ISA
+                if extension in VECTOR_EXTENSIONS
+                else f"{SPIKE_ISA}{ZC_MOP_EXTENSIONS if is_zc_mop_test(test_name) else ''}"
+            )
             run_cmd = [
                 os.environ.get("FROST_SPIKE", "spike"),
-                f"--isa={SPIKE_VECTOR_ISA if extension in VECTOR_EXTENSIONS else SPIKE_ISA}",
+                f"--isa={spike_isa}",
                 f"+signature={sig_path}",
                 "+signature-granularity=4",
                 str(elf_path),
