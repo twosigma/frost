@@ -311,7 +311,10 @@ module coherence_l1d #(
   // probe_valid_q selects the cut address on its way to the load queue's
   // fill checks; replicas keep each copy's load small.
   (* max_fanout = 32 *) logic probe_valid_q;
-  logic probe_absorbed_q, probe_put_q;
+  // These select 260-bit payloads (the probe reply data and the absorbed
+  // write-back), so each copy's load stays small.
+  (* max_fanout = 32 *) logic probe_absorbed_q;
+  (* max_fanout = 32 *) logic probe_put_q;
   logic probe_capture, probe_launch, probe_reply_eligible;
   logic local_ready, local_turn_q, probe_priority;
   logic [1:0] read_probe_count_q;
@@ -328,7 +331,9 @@ module coherence_l1d #(
   assign probe_put = wb[probe_put_q];
   coh_w_t freeze;
   logic wb_free, wb_free_slot, wb_match, wb_match_slot;
-  logic wb_selected_q, wb_select_q, wb_next_q, reserved_wb_q;
+  logic wb_selected_q, wb_next_q, reserved_wb_q;
+  // wb_select_q picks the W payload; its copies sit beside the output mux.
+  (* max_fanout = 32 *) logic wb_select_q;
   logic [ADDR_WIDTH-1:0] lookup_addr_q;
   logic [255:0] image_q;
   logic [1:0] state_q;
