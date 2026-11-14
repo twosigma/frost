@@ -271,36 +271,18 @@ set_property CASCADE_HEIGHT 1 [get_cells -quiet -hierarchical -filter {PRIMITIVE
 # -----------------------------------------------------------------------------
 # 9. Asynchronous Clock Domain Crossings
 # -----------------------------------------------------------------------------
-# The CPU and MAC trees use explicit CDC constraints below. Keep them in
-# one group so the mailbox and Gray-bus bounds are not masked by a clock cut.
+# Cut paths between independent clock trees (CPU/div4 MMCM, freerun,
+# DDR4, QSFP1 GTY, and SGMII).
 set_clock_groups -asynchronous \
-    -group [concat \
-        [get_clocks -include_generated_clocks -of_objects [get_pins -quiet u_clock_gen/u_mmcm/CLKOUT*]] \
-        [get_clocks -include_generated_clocks -of_objects [get_ports i_qsfp1_refclk_p]] \
-        [get_clocks -include_generated_clocks -of_objects [get_ports i_sgmii_clk_p]]] \
+    -group [get_clocks -include_generated_clocks -of_objects [get_pins -quiet u_clock_gen/u_mmcm/CLKOUT*]] \
     -group [get_clocks -include_generated_clocks -of_objects [get_pins -quiet u_clock_gen/u_bufg_freerun_150/O]] \
-    -group [get_clocks -include_generated_clocks -of_objects [get_ports default_250mhz_clk_clk_p]]
+    -group [get_clocks -include_generated_clocks -of_objects [get_ports default_250mhz_clk_clk_p]] \
+    -group [get_clocks -include_generated_clocks -of_objects [get_ports i_qsfp1_refclk_p]] \
+    -group [get_clocks -include_generated_clocks -of_objects [get_ports i_sgmii_clk_p]]
 
 # Explicit CDC synchronizer and reset-synchronizer false paths (covers TXUSRCLK2 <-> RXUSRCLK2 as well)
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg[0]/D"}]
-set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/stage_q_reg[0]*/D" &&
-    NAME !~ "*/u_tx_fifo/sync_*/*" && NAME !~ "*/u_tx_csum_fifo/sync_*/*" &&
-    NAME !~ "*/u_rx_fifo/sync_*/*"}]
-
-# Bound each FIFO's Gray bus separately in each direction.
-foreach nic_fifo [get_cells -hierarchical -filter {NAME =~ "*/u_tx_fifo" || NAME =~ "*/u_tx_csum_fifo" || NAME =~ "*/u_rx_fifo"}] {
-    foreach nic_sync {sync_rptr sync_wptr} {
-        set nic_d [get_pins -hierarchical -filter "NAME =~ \"$nic_fifo/$nic_sync/stage_q_reg\[0\]*/D\""]
-        set nic_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d]]]
-        set_max_delay -datapath_only 3.0 -from $nic_s -to [get_cells -of_objects $nic_d]
-        set_bus_skew 3.0 -from $nic_s -to [get_cells -of_objects $nic_d]
-    }
-}
-foreach nic_mbx {u_rx_limit u_mac_rx_mbx u_tx_cfg_mbx u_pause_ev_mbx} {
-    set nic_payload [get_cells -hierarchical -filter "NAME =~ \"*/$nic_mbx/payload_q_reg*\""]
-    set nic_capture [get_cells -hierarchical -filter "NAME =~ \"*/$nic_mbx/o_dst_data_reg*\""]
-    set_max_delay -datapath_only 3.0 -from $nic_payload -to $nic_capture
-}
+set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/stage_q_reg[0]*/D"}]
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/chain_q_reg*/PRE"}]
 set_false_path -to [get_cells -quiet -hierarchical -filter {NAME =~ "*u_startup*"}]
 set_false_path -from [get_cells -quiet -hierarchical -filter {NAME =~ "*u_startup*"}]
