@@ -23,15 +23,16 @@
  * build, or a cable to a link partner that returns frames. TX and RX run
  * together at full duplex.
  *
- * Software keeps both 256-entry rings full and does as little per-frame work
- * as it can: every TX descriptor points at one prepared buffer, RX
- * descriptors are reposted in place, every frame's length and outcome are
+ * The default build keeps up to 255 descriptors pending in each 256-entry
+ * ring: every TX descriptor points at one prepared buffer, RX
+ * descriptors follow the producer index, every frame's length and outcome are
  * checked, and one frame in SAMPLE_EVERY is compared byte for byte. The
  * result reports frames, elapsed time on the 200 MHz timebase, and rates in
  * Gb/s: frame bytes (no preamble, FCS or gap) and wire bytes (+24 per frame).
  * The 10GBASE-R MAC rate is 10 Gb/s on the wire.
  *
- * Print <<PASS>> when every frame arrived intact, otherwise <<FAIL>>. Rings
+ * Print <<PASS>> when lengths, statuses, sampled data and counters pass,
+ * otherwise <<FAIL>>. Rings
  * and buffers use fixed DDR addresses above the program image.
  */
 #include <stdint.h>
@@ -47,11 +48,16 @@
 #define STALL_TICKS (2u * TIMEBASE_HZ) /* abort a run that moves nothing for 2 s */
 
 #define DDR_SCRATCH 0x81800000u
+#ifdef NIC_BENCH_QUICK
+#define LOG2_ENTRIES 3u
+#define BATCH 4u
+#else
 #define LOG2_ENTRIES 8u
+#define BATCH 16u /* descriptors per doorbell */
+#endif
 #define ENTRIES (1u << LOG2_ENTRIES)
 #define BUF_STRIDE 0x4000u /* 16 KiB per RX buffer: a jumbo frame with room */
 #define RX_BUF_LEN 9216u
-#define BATCH 16u /* descriptors per doorbell */
 #define SAMPLE_EVERY 32u
 static volatile struct nic_desc *const rx_ring = (volatile struct nic_desc *) (DDR_SCRATCH);
 static volatile struct nic_desc *const tx_ring =
@@ -85,7 +91,7 @@ static int wait_status(uint32_t mask, uint32_t value, uint32_t budget)
     return 0;
 }
 
-static void post_rx(uint32_t n)
+static void prepare_rx(uint32_t n)
 {
     for (uint32_t k = 0; k < n; k++) {
         uint32_t i = g_rx_posted % ENTRIES;
@@ -94,6 +100,11 @@ static void post_rx(uint32_t n)
         rx_ring[i].status = 0;
         g_rx_posted++;
     }
+}
+
+static void post_rx(uint32_t n)
+{
+    prepare_rx(n);
     __asm__ volatile("fence w, o" ::: "memory");
     nic_write(NIC_RX_TAIL, g_rx_posted % ENTRIES);
 }
@@ -114,6 +125,13 @@ static int bringup(void)
         uart_printf("not READY: STATUS %x LINK %x\n", nic_read(NIC_STATUS), nic_read(NIC_LINK));
         return 0;
     }
+#ifdef NIC_BENCH_QUICK
+    nic_write(NIC_PHY_CTRL, NIC_PHY_CTRL_MAC_LOOPBACK);
+    nic_write(NIC_CTRL, NIC_CTRL_RESET);
+    if (!wait_status(NIC_STATUS_RESET_BUSY, 0, WAIT_READY) ||
+        !wait_status(ready, ready, WAIT_READY))
+        return 0;
+#endif
     nic_write(NIC_MAC_LO,
               (uint32_t) station[0] | ((uint32_t) station[1] << 8) | ((uint32_t) station[2] << 16) |
                   ((uint32_t) station[3] << 24));
@@ -230,7 +248,7 @@ static int run(uint32_t len, uint32_t n)
             g_tx_done++;
             moved = 1;
         }
-        /* RX completions: check, then repost the same descriptor. */
+        /* RX completions: check, then fill the next producer slot. */
         while (g_rx_reaped != rx_target) {
             uint32_t i = g_rx_reaped % ENTRIES;
             uint32_t st = rx_ring[i].status;
@@ -251,10 +269,8 @@ static int run(uint32_t len, uint32_t n)
                 }
             }
             rx_count++;
-            rx_ring[i].len = RX_BUF_LEN;
-            rx_ring[i].status = 0;
             g_rx_reaped++;
-            g_rx_posted++;
+            prepare_rx(1);
             pending_rx++;
             moved = 1;
             if (pending_rx == BATCH) {
@@ -312,7 +328,7 @@ static int run(uint32_t len, uint32_t n)
                 tx_bad,
                 stalled ? " STALLED" : "");
     return !stalled && got == n && !bad_status && !bad_data && !tx_bad && !d_overflow && !d_fcs &&
-           !d_frame && !d_trunc && !d_desc && !d_drop;
+           !d_frame && !d_pcs && !d_trunc && !d_desc && !d_drop;
 }
 
 int main(void)
@@ -325,6 +341,11 @@ int main(void)
     static const struct {
         uint32_t len, n;
     } plan[] = {
+#ifdef NIC_BENCH_QUICK
+        {64u, 41u},
+        {128u, 17u},
+        {9000u, 3u},
+#else
         {64u, 200000u},
         {128u, 200000u},
         {256u, 100000u},
@@ -333,6 +354,7 @@ int main(void)
         {1514u, 50000u},
         {4096u, 20000u},
         {9000u, 10000u},
+#endif
     };
     int ok = 1;
     for (uint32_t k = 0; k < sizeof(plan) / sizeof(plan[0]); k++) {

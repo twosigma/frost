@@ -474,6 +474,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("nic_loopback", "NIC frame loopback through DDR rings", True),
         )
     },
+    "nic_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="nic_bench",
+        description="NIC benchmark ring replenishment and jumbo frames through loopback",
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DNIC_BENCH_QUICK"),
+            ("COCOTB_MAX_CYCLES", "4000000"),
+        ),
+    ),
     "nic_loopback": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
