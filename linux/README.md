@@ -62,8 +62,11 @@ the misaligned-fetch, breakpoint, U-mode ecall, and page-fault exceptions. It
 sets `mcounteren` to all ones (0x7FF after WARL), `scounteren=0x2`, and
 `menvcfg.STCE=1`, so S-mode can read every counter and U-mode starts with
 access to `time` only.
-OpenSBI emulates misaligned loads and stores in M-mode until the kernel
-requests their delegation through FWFT.
+Plain misaligned loads and stores to cached DDR complete in hardware, with no
+trap, in builds with the misaligned-access engine (`MISALIGNED_HW`, on in the
+X3 build and in simulation). Elsewhere, and for LR, SC and AMOs, they raise
+the address-misaligned exception, and OpenSBI emulates them in M-mode until
+the kernel requests their delegation through FWFT.
 
 ## Memory map
 

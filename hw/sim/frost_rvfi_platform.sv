@@ -380,6 +380,9 @@ module frost_rvfi_platform #(
   // unmapped page on both sides (the store-issue page split in
   // tomasulo_wrapper).
   initial begin
+    // The RVFI-DII recorder sees ROB commits and store-queue writes only; an
+    // access the misaligned-access engine performs has neither.
+    if (MISALIGNED_HW) $fatal(1, "frost_rvfi_platform: TestRIG needs MISALIGNED_HW=0");
     if ((MmioAddr != {riscv_pkg::MmioFirstPage, 12'h000}) ||
         ((MmioAddr + MmioSizeBytes) != {riscv_pkg::MmioLastPage + 20'd1, 12'h000}) ||
         ({AplicWindowSel, 22'h00_0000} != {riscv_pkg::AplicFirstPage, 12'h000}) ||

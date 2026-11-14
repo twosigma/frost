@@ -2044,6 +2044,8 @@ module cpu_ooo #(
   logic [XLEN-1:0] rob_head_fallthrough_pc;
   // Misaligned-access engine state (declared here, driven with the engine).
   logic ma_busy, ma_hold, ma_shield, ma_done, ma_wb_arm, ma_wb_fp_arm, ma_walk_req_valid;
+  // Registered: completion as seen by single step, and the dispatch hold.
+  logic ma_done_q, ma_hold_q;
   logic ma_walk_req_ready, ma_walk_resp_valid, ma_rf_read_fp, ma_assist_start;
   logic ma_fault_pending_q, ma_exception_assist, ma_wb_valid_q, ma_wb_fp_q;
   logic [4:0] ma_wb_rd_arm, ma_wb_rd_q;
@@ -2483,7 +2485,7 @@ module cpu_ooo #(
       .i_flush_tag(flush_tag),
       .i_flush_all(flush_all),
       .i_flush_after_head_commit(commit_recovery_flush_after_head),
-      .i_backend_recovery_hold(backend_recovery_hold || (step_done_q) || ma_hold),
+      .i_backend_recovery_hold(backend_recovery_hold || (step_done_q) || ma_hold_q),
       .i_slow_write_inflight(slow_write_inflight),
       .i_uncached_read_busy(VARIABLE_UNCACHED && !i_uncached_read_request_ready),
       .i_coh_admit_valid(i_coh_admit_valid),
@@ -2765,7 +2767,7 @@ module cpu_ooo #(
   // simultaneous haltreq, wins its own cause.
   assign step_done_set = step_armed_q && !step_done_q &&
       (rob_commit_valid_raw || xret_taken || (trap_taken && !trap_to_d && !trap_no_csr) ||
-       ma_done);
+       ma_done_q);
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       step_armed_q     <= 1'b0;
@@ -2975,7 +2977,7 @@ module cpu_ooo #(
       .i_flush(dispatch_flush),
       // The misaligned-access engine also holds dispatch: the router's hold
       // alone drops the RS write but still allocates the ROB entry.
-      .i_hold (early_backend_recovery_hold || ma_hold),
+      .i_hold (early_backend_recovery_hold || ma_hold_q),
 
       // Dispatch profiling status
       .o_status(dispatch_status),
@@ -4177,7 +4179,6 @@ module cpu_ooo #(
   // register through commit_actions' port 0 and the instruction counts as
   // retired; on a fault its exception is taken as the instruction's own.
   // LR, SC and AMOs keep their exceptions.
-  logic ma_done_q;
   if (MISALIGNED_HW) begin : gen_misaligned
     logic ma_fault, ma_wb_valid, ma_wb_fp, ma_lc_req_valid, ma_lc_req_id, ma_fatal_error;
     logic [4:0] ma_wb_rd;
@@ -4255,11 +4256,13 @@ module cpu_ooo #(
         ma_fault_pending_q <= 1'b0;
         ma_wb_valid_q <= 1'b0;
         ma_done_q <= 1'b0;
+        ma_hold_q <= 1'b0;
       end else begin
         if (ma_fault) ma_fault_pending_q <= 1'b1;
         else if (trap_taken) ma_fault_pending_q <= 1'b0;
         ma_wb_valid_q <= ma_wb_arm;
         ma_done_q <= ma_done;
+        ma_hold_q <= ma_assist_start || ma_hold;
       end
     end
     // Payloads: no reset; each is read only with its valid.
@@ -4281,7 +4284,9 @@ module cpu_ooo #(
     assign o_ma_fatal_addr = ma_fatal_addr_q;
     // Dispatch waits from the take until the register write has landed;
     // interrupts and halts wait while the engine runs or its fault is
-    // pending.
+    // pending. Dispatch sees ma_hold_q, a flop that covers ma_hold from the
+    // cycle after the take and holds one cycle longer, so no decode reaches
+    // the allocation enables.
     assign ma_hold = ma_busy || ma_fault_pending_q || ma_wb_valid_q || ma_done_q;
     assign ma_shield = ma_busy || ma_fault_pending_q;
 `ifndef SYNTHESIS
@@ -4295,8 +4300,9 @@ module cpu_ooo #(
         if (ma_busy) p_ma_no_commit : assert (!rob_commit_valid_raw && !csr_wb_pending);
         // Dispatch allocates nothing while the engine holds it, so no ROB
         // entry is left without its reservation-station or queue entry.
-        if (ma_hold)
+        if (ma_hold_q)
           p_ma_no_alloc : assert (!rob_alloc_req.alloc_valid && !rob_alloc_req_2.alloc_valid);
+        if (ma_hold) p_ma_hold_registered : assert (ma_hold_q);
       end
     end
 `endif
@@ -4305,6 +4311,7 @@ module cpu_ooo #(
     assign ma_busy = 1'b0;
     assign ma_done = 1'b0;
     assign ma_hold = 1'b0;
+    assign ma_hold_q = 1'b0;
     assign ma_shield = 1'b0;
     assign ma_walk_req_valid = 1'b0;
     assign ma_walk_vpn = '0;

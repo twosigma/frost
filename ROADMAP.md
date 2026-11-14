@@ -24,10 +24,11 @@ pieces come before the second hart:
   the X3 build includes the unit; vector loads and stores and the other
   instruction families are not executed yet.
 - Misaligned loads and stores in hardware. The CPU's misaligned-access
-  engine performs them in cached DDR behind the `MISALIGNED_HW` build
-  parameter, which is off by default; the builds and the test configuration
-  turn it on next. Until then FROST raises an address-misaligned exception
-  and leaves the access to firmware.
+  engine performs plain misaligned loads and stores to cached DDR in the X3
+  build and in simulation (`MISALIGNED_HW`); elsewhere they raise the
+  address-misaligned exception. TestRIG does not check the engine yet: its
+  build leaves the engine out until its RVFI-DII recorder reports the
+  engine's retirements and writes.
 
 ## SMP
 
