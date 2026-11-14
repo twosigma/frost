@@ -17,9 +17,14 @@ name: ASIC Flow
 on:
   push:
     branches: [main]
+  # A pull request starts no run by itself. Adding the run-asic label to it
+  # starts one run of the flow on its current head; any other label starts a
+  # run that skips the flow. To run again after a later push, remove the
+  # label and add it again, or start a manual run on the branch.
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, labeled]
+    types: [labeled]
+  workflow_dispatch:
 
 # The workflow only reads source and publishes its own artifacts.
 permissions:
@@ -29,10 +34,10 @@ permissions:
 # pushes to main, so a newer push must not cancel it. On main, a started run
 # finishes; the most recently queued run waits behind it, and GitHub keeps only
 # one pending run per group, so a run still pending when another run is queued
-# is cancelled in its favour. A pull request keeps one run, and a
-# newer push to it cancels the old one. A pull request runs the flow only
-# while it carries the run-asic label; adding some other label starts a run in
-# a group of its own, so it does not cancel the pull request's run.
+# is cancelled in its favour. A pull request keeps one run: adding run-asic
+# again cancels the run an earlier labelling started. Adding some other label
+# starts a run in a group of its own, so it does not cancel the pull request's
+# run.
 concurrency:
   group: >-
     ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{
@@ -46,11 +51,10 @@ env:
   SBY_VERSION: "0.70"
 
 jobs:
-  # On a pull request the flow runs only when the pull request carries the
-  # run-asic label. The image build depends on this job's output and the
-  # chained jobs depend on the image build, so they are skipped with it.
-  # Pushes to main always run the flow. Adding some other label starts a run
-  # that skips it.
+  # A pull request's run does the flow only when the label that started it is
+  # run-asic. The image build depends on this job's output and the chained
+  # jobs depend on the image build, so they are skipped with it. Pushes to
+  # main and manual runs always run the flow.
   gate:
     name: Select jobs (ASIC Flow)
     runs-on: ubuntu-26.04
