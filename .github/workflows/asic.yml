@@ -19,6 +19,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled]
 
 # The workflow only reads source and publishes its own artifacts.
 permissions:
@@ -29,9 +30,13 @@ permissions:
 # finishes; the most recently queued run waits behind it, and GitHub keeps only
 # one pending run per group, so a run still pending when another run is queued
 # is cancelled in its favour. A pull request keeps one run, and a
-# newer push to it cancels the old one.
+# newer push to it cancels the old one. A pull request runs the flow only
+# while it carries the run-asic label; adding some other label starts a run in
+# a group of its own, so it does not cancel the pull request's run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: >-
+    ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{
+    github.event.action == 'labeled' && github.event.label.name != 'run-asic' && '-label' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -41,10 +46,42 @@ env:
   SBY_VERSION: "0.70"
 
 jobs:
+  # On a pull request the flow runs only when the pull request carries the
+  # run-asic label. The image build depends on this job's output and the
+  # chained jobs depend on the image build, so they are skipped with it.
+  # Pushes to main always run the flow. Adding some other label starts a run
+  # that skips it.
+  gate:
+    name: Select jobs (ASIC Flow)
+    runs-on: ubuntu-26.04
+    outputs:
+      run: ${{ steps.select.outputs.run }}
+    steps:
+      - name: Decide whether the flow runs
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          ADDED: ${{ github.event.label.name }}
+          LABELED: ${{ contains(github.event.pull_request.labels.*.name, 'run-asic') }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then
+            run=true
+          elif [ "$ACTION" = labeled ] && [ "$ADDED" != run-asic ]; then
+            run=false
+          elif [ "$LABELED" = true ]; then
+            run=true
+          else
+            run=false
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
   # The frost image that prepares the sources for the flow.
   build-docker:
     name: Build Docker Image (ASIC Flow)
     runs-on: ubuntu-26.04
+    needs: gate
+    if: ${{ needs.gate.outputs.run == 'true' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
