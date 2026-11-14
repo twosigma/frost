@@ -2072,10 +2072,12 @@ module cpu_ooo #(
   // shield in the cycle the previous access releases it, while the store's
   // commit still clears the SQ's registered committed-empty status. The take
   // then never finds both open, and every interrupt (D, M or S) starves for
-  // as long as the loop runs.
+  // as long as the loop runs. The hold applies only while the AMO-class
+  // shield is down: under that shield the take waits for the head anyway, and
+  // an SC at the head may be a precise uncached store that needs the shield
+  // to complete. See trap_amo_shield below.
   logic int_take_armed;
   logic device_start_hold;
-  assign device_start_hold = int_take_armed && !device_read_shield_q;
   // Precomputed next PCs from ungated ROB fields, for timing. Each equals
   // retired_next_pc of its commit packet whenever that commit is valid.
   logic [XLEN-1:0] rob_head_retired_next_pc;
@@ -4696,6 +4698,17 @@ module cpu_ooo #(
     else amo_at_head_shield_q <= rob_head_is_amo && head_valid;
   end
 
+  // The trap unit's AMO-class shield: an AMO, LR or SC at the head, a coherent
+  // atomic, or the misaligned-access engine.
+  logic trap_amo_shield;
+  assign trap_amo_shield = (amo_at_head_shield_q && !(step_done_q)) || coherent_atomic_active ||
+      ma_shield;
+  // The shield counts as down in the cycle a commit clears it. The commit is
+  // the shielded access's own, so nothing launched still needs the shield,
+  // and a device store right behind it would otherwise keep it up.
+  assign device_start_hold = int_take_armed && !trap_amo_shield &&
+      (!device_read_shield_q || rob_commit_valid);
+
   // Hold interrupts from before a device read or uncached store is accepted
   // through its commit. Uncached stores arm their shield in the SQ;
   // (see trap_unit.i_device_read_at_head). The router stages the request before
@@ -4727,8 +4740,7 @@ module cpu_ooo #(
       .i_csr_irq_update(csr_irq_update_q),
       .i_sq_committed_empty(sq_committed_empty_for_trap),
       .o_trap_drain_wait(trap_drain_wait),
-      .i_amo_at_head((amo_at_head_shield_q && !(step_done_q)) || coherent_atomic_active ||
-                     ma_shield),
+      .i_amo_at_head(trap_amo_shield),
       .i_device_read_at_head(device_read_shield_q),
       .o_int_take_armed(int_take_armed),
       .i_mstatus(csr_mstatus),
