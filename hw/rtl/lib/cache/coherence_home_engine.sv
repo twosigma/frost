@@ -228,7 +228,8 @@ module coherence_home_engine #(
   // merges a DMA write. Each byte's enable and its DMA select are formed for
   // both values of that ready and select it last. service_complete is
   // complete_other || (complete_on_ack && i_wa_ready): a service in ProbeAck
-  // completes only with the ready, any other only without it.
+  // completes only with the ready, and every other completion path is
+  // independent of it.
   logic complete_other, complete_on_ack;
   assign complete_other = phase_q == Service && data_complete && !reply_fatal &&
       (probe_phase_q == ProbeDone || (reply_fire && (reply.error || (!reply.absorbed &&

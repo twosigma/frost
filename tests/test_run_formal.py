@@ -1018,8 +1018,8 @@ FORMAL_TARGETS = [
         "home_engine_image_equiv.sby",
         "A home engine's line-image byte enables and DMA selects, formed for both "
         "values of the write-ack ready and selected last, equal the ordered "
-        "writes for any state and input, at 64- and 32-byte lines, portable and "
-        "primitive",
+        "writes for any state and input with reset low, at 64- and 32-byte lines, "
+        "portable and primitive",
         tasks=("bmc", "bmc_line32", "bmc_xilinx"),
     ),
     FormalTarget(
