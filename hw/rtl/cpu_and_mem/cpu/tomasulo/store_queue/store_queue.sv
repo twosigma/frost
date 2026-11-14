@@ -706,9 +706,10 @@ module store_queue #(
       .sq_is_mmio                (sq_is_mmio),
       .sq_is_sc                  (sq_is_sc),
       // A Zicbom entry takes the zero entry's block conflict and never
-      // forwards, so a younger load of its block waits for it to free
-      // (cmo.adoc, norm:ppo_overlap_2).
+      // forwards, and no newer store forwards past it, so a younger load of
+      // its block waits for it to free (cmo.adoc, norm:ppo_overlap_2).
       .sq_is_zero                (sq_is_zero | sq_is_cmo),
+      .sq_is_cmo                 (sq_is_cmo),
       .sq_committed              (sq_committed),
       .sq_rob_tag_flat           (sq_rob_tag_flat),
       .sq_address_flat           (sq_address_flat),
