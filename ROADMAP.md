@@ -519,3 +519,7 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   cores also apply to FROST
 - Zbkx, Zknh, Zkne, Zknd, Zksh, and Zksed, together with Zbkb and Zbkc,
   complete the Zkn and Zks scalar cryptography suites.
+- The Integrated Matrix Extension (Zvvm), after the vector unit is
+  complete. Its matrix multiply-accumulate and tile load and store
+  instructions keep matrix tiles in the vector registers, so it would
+  reuse the vector unit's register file, multipliers and memory path.
