@@ -139,9 +139,12 @@ def indirect_parcel(parcel: int) -> bool:
     )
 
 
-def native_serialize(opcode: int) -> bool:
-    """Return whether a native instruction opcode must serialize dispatch."""
-    return opcode in {OPC_CSR, OPC_MISC_MEM, OPC_AMO}
+def native_serialize(parcel: int) -> bool:
+    """Return whether a native instruction's first parcel prevents pairing."""
+    opcode = parcel & 0x7F
+    return opcode in {OPC_MISC_MEM, OPC_AMO} or (
+        opcode == OPC_CSR and ((parcel >> 12) & 7) != 4
+    )
 
 
 def native_fp_compute(opcode: int) -> bool:
@@ -552,8 +555,8 @@ def make_sideband(word: int) -> int:
     compressed_hi = (hi & 0x3) != 0b11
     compressed_control_lo = compressed_control(lo)
     compressed_control_hi = compressed_control(hi)
-    native_serialize_lo = native_serialize(opcode_lo)
-    native_serialize_hi = native_serialize(opcode_hi)
+    native_serialize_lo = native_serialize(lo)
+    native_serialize_hi = native_serialize(hi)
     native_fp_compute_lo = native_fp_compute(opcode_lo)
     native_fp_compute_hi = native_fp_compute(opcode_hi)
 

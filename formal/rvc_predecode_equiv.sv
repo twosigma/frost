@@ -32,11 +32,19 @@ module rvc_predecode_equiv;
   logic [5:0] source_fields;
   assign rd_is_x2 = parcel[11:7] == 5'd2;
   assign source_fields = riscv_pkg::imem_rvc_source_fields(parcel, rd_is_x2);
+  logic [riscv_pkg::ImemSidebandWidth-1:0] paired_sideband;
+  assign paired_sideband = riscv_pkg::imem_make_sideband({parcel, parcel});
   always_comb begin
     assert (riscv_pkg::imem_rvc_expand(parcel) == {illegal, expanded});
     if (parcel[1:0] != 2'b11) begin
       assert (riscv_pkg::imem_rvc_bits24_20(parcel, rd_is_x2) == expanded[24:20]);
       assert (source_fields == {expanded[21], expanded[19:15]});
+    end
+    if (parcel[6:0] == 7'h73) begin
+      assert (paired_sideband[riscv_pkg::ImemSbNativeSerializeLo] == (parcel[14:12] != 3'b100));
+      assert (paired_sideband[riscv_pkg::ImemSbNativeSerializeHi] == (parcel[14:12] != 3'b100));
+      assert (paired_sideband[riscv_pkg::ImemSbAllowsSlot2AfterLo] == (parcel[14:12] == 3'b100));
+      assert (paired_sideband[riscv_pkg::ImemSbSlot2StartValidHi] == (parcel[14:12] == 3'b100));
     end
   end
 endmodule

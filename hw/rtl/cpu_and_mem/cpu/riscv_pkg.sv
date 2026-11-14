@@ -143,13 +143,14 @@ package riscv_pkg;
   endfunction
 
   // Native serializing class, which never pairs in a fetch bundle: SYSTEM
-  // (OPC_CSR: CSR accesses, ECALL, EBREAK, xRET, WFI, SFENCE.VMA), MISC-MEM,
-  // and AMO.
-  function automatic logic imem_native_serialize(input logic [6:0] opcode);
+  // except funct3=100 (Zimop), MISC-MEM, and AMO. The first parcel contains
+  // both the opcode and funct3, including instructions spanning words.
+  function automatic logic imem_native_serialize(input logic [15:0] parcel);
     begin
-      imem_native_serialize = (opcode == 7'b1110011) ||  // OPC_CSR
-      (opcode == 7'b0001111) ||  // OPC_MISC_MEM
-      (opcode == 7'b0101111);  // OPC_AMO
+      imem_native_serialize = ((parcel[6:0] == 7'b1110011) &&
+                               (parcel[14:12] != 3'b100)) ||
+      (parcel[6:0] == 7'b0001111) ||  // OPC_MISC_MEM
+      (parcel[6:0] == 7'b0101111);  // OPC_AMO
     end
   endfunction
 
@@ -808,8 +809,8 @@ package riscv_pkg;
       sb[ImemSbIsCompressedHi] = (word[17:16] != 2'b11);
       compressed_control_lo = imem_compressed_control(word[15:0]);
       compressed_control_hi = imem_compressed_control(word[31:16]);
-      sb[ImemSbNativeSerializeLo] = imem_native_serialize(word[6:0]);
-      sb[ImemSbNativeSerializeHi] = imem_native_serialize(word[22:16]);
+      sb[ImemSbNativeSerializeLo] = imem_native_serialize(word[15:0]);
+      sb[ImemSbNativeSerializeHi] = imem_native_serialize(word[31:16]);
       native_fp_compute_lo = imem_native_fp_compute(word[6:0]);
       native_fp_compute_hi = imem_native_fp_compute(word[22:16]);
       // Control flow terminates the bundle; serializing instructions cannot

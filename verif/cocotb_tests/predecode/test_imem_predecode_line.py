@@ -88,8 +88,8 @@ def _assert_pc_bundle_bits(word: int, sideband: int) -> None:
     hi = (word >> 16) & 0xFFFF
     compressed_lo = (lo & 0x3) != 0b11
     compressed_hi = (hi & 0x3) != 0b11
-    serialize_lo = _GENERATOR.native_serialize(lo & 0x7F)
-    serialize_hi = _GENERATOR.native_serialize(hi & 0x7F)
+    serialize_lo = _GENERATOR.native_serialize(lo)
+    serialize_hi = _GENERATOR.native_serialize(hi)
     allows_lo = (compressed_lo and not _GENERATOR.compressed_control(lo)) or (
         not compressed_lo
         and not _GENERATOR.native_control(lo & 0x7F)
@@ -200,6 +200,25 @@ async def test_directed_encodings(dut: Any) -> None:
     # Boundary words.
     words.extend([0x0000_0000, 0xFFFF_FFFF, 0xAAAA_AAAA, 0x5555_5555])
 
+    await _check_words(dut, words)
+
+
+@cocotb.test()
+async def test_system_pairability(dut: Any) -> None:
+    """SYSTEM funct3=100 pairs in either parcel; CSR and privileged forms do not."""
+    words = []
+    for rd in range(32):
+        for funct3 in range(8):
+            parcel = 0x73 | (rd << 7) | (funct3 << 12)
+            for word in (parcel | 0x81C00000, (parcel << 16) | 0x0001):
+                sideband = _GENERATOR.make_sideband(word)
+                bit = (
+                    _GENERATOR.SB_NATIVE_SERIALIZE_LO
+                    if word & 3 == 3
+                    else _GENERATOR.SB_NATIVE_SERIALIZE_HI
+                )
+                assert bool(sideband & (1 << bit)) == (funct3 != 4)
+                words.append(word)
     await _check_words(dut, words)
 
 

@@ -788,7 +788,7 @@ module instruction_aligner #(
   logic slot2_bram_unsafe;
   assign slot2_bram_unsafe = !o_use_instr_buffer && fetch_word_swapped_slot2;
   // Slot 1 leads a pair only when its AllowsSlot2After bit is set: it is
-  // neither control flow nor a native serializing instruction (SYSTEM,
+  // neither control flow nor a native serializing instruction (SYSTEM except Zimop,
   // MISC-MEM, or AMO opcode). A CSR instruction broadcasts only its write
   // operand on the CDB; the value it reads reaches the register file through
   // the delayed writeback at commit, and younger instructions are held out of
