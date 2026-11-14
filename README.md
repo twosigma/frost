@@ -149,6 +149,7 @@ every supported extension and privilege mode.
 | **B**            | Bit manipulation (B = Zba + Zbb + Zbs)         |
 | **Zicsr**        | CSR access instructions                        |
 | **Zicntr**       | Base counters (cycle, time, instret)           |
+| **Zihpm**        | Performance counters `hpmcounter3`-`10`, gated by `mcounteren`/`scounteren` |
 | **Zifencei**     | Instruction fence                              |
 | **Zicond**       | Conditional zero                               |
 | **Zbkb**         | Bit manipulation for crypto                    |
@@ -157,7 +158,10 @@ every supported extension and privilege mode.
 | **Zihintpause**  | Pause hint for spin-wait loops                 |
 | **Zihintntl**    | Non-temporal locality hints (`ntl.*`, `c.ntl.*`), retired as no-ops |
 | **Zimop**        | May-be-operations `mop.r.n`/`mop.rr.n`, which write zero to rd |
+| **Zawrs**        | `wrs.nto`/`wrs.sto` retire at once; `wrs.nto` traps below M with `mstatus.TW` set |
 | **Zicboz**       | Cache-block zero (`cbo.zero`, 64-byte blocks of cached DDR and low BRAM) |
+| **Zicbom**       | Cache-block management (`cbo.clean`, `cbo.flush`, `cbo.inval` on 64-byte blocks), ordered no-ops while every bus master is coherent; the device tree lists it with `riscv,cbom-block-size = <64>` |
+| **Zicbop**       | Cache-block prefetch hints (`prefetch.i/r/w`), executed as no-ops |
 | **Machine Mode** | M-mode privilege (mret, wfi, ecall, ebreak)    |
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
 | **Smaia, Ssaia** | AIA CSRs and machine/supervisor IMSIC files with 63 identities |
@@ -165,6 +169,7 @@ every supported extension and privilege mode.
 | **Sstvala**      | An illegal-instruction exception writes the faulting instruction's bits to `mtval` or `stval`, a compressed instruction's 16 bits zero-extended |
 | **Svade**        | Software-managed accessed and dirty bits: an access that needs one set raises a page fault |
 | **Svvptc**       | A PTE changed from invalid to valid becomes visible to the walker without `sfence.vma` |
+| **Zic64b, Ziccif, Ziccrse, Ziccamoa, Zicclsm, Za64rs, Zkt, Ssccptr, Sstvecd, Sscounterenw** | RVA22 profile properties: 64-byte cache blocks, instruction fetch, LR/SC, AMOs and misaligned loads and stores in cached memory (in hardware on the X3, emulated by OpenSBI on the VCU118), reservation sets of at most 64 bytes, data-independent latency for the Zkt instructions, page-table walks of cached memory, direct-mode `stvec`, and a writable `scounteren` bit for each counter that is not read-only zero |
 | **User Mode**    | U-mode privilege and system calls |
 
 ### Microarchitecture

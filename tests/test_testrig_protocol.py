@@ -352,7 +352,7 @@ def test_sail_config_validates(tmp_path: Path, sscofpmf: bool) -> None:
         check=True,
     ).stdout
     assert re.match(
-        r"rv64imafdcb_zicboz_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause",
+        r"rv64imafdcb_zicbom_zicbop_zicboz_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause",
         isa,
     )
     assert ("zihpm" in isa.strip().split("_")) == sscofpmf
