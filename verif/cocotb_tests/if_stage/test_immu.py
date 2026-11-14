@@ -339,7 +339,9 @@ async def test_pbmt_pages_refuse_fetch(dut: Any) -> None:
     2 MiB IO superpage all refuse; a PMA leaf of the same frame fetches.
     """
     await _setup(dut)
-    alias = (1 << (30 if DDR_CAPACITY_LOG2_BYTES <= 30 else DDR_CAPACITY_LOG2_BYTES)) >> 12
+    alias = (
+        1 << (30 if DDR_CAPACITY_LOG2_BYTES <= 30 else DDR_CAPACITY_LOG2_BYTES)
+    ) >> 12
     cases = (
         (0x0000_6040, Leaf(vpn=0x6, ppn=0x80123 | alias, pbmt=1)),
         (0x0000_7080, Leaf(vpn=0x7, ppn=0x80124 | alias, pbmt=2)),

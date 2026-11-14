@@ -249,8 +249,13 @@ module dmmu (
   // IO over memory without an alias (low BRAM) is a device page without AMOs.
   logic walk_unc, walk_device_page, walk_atomic_page;
   assign walk_unc = i_walk_resp.pbmt != riscv_pkg::PbmtPma;
-  assign walk_device_page = riscv_pkg::pma_device_ok(walk_pa) ||
-      (walk_unc && (riscv_pkg::pma_atomic_ok(walk_pa) || riscv_pkg::pma_pbmt_alias_ok(walk_pa)));
+  assign walk_device_page = riscv_pkg::pma_device_ok(
+      walk_pa
+  ) || (walk_unc && (riscv_pkg::pma_atomic_ok(
+      walk_pa
+  ) || riscv_pkg::pma_pbmt_alias_ok(
+      walk_pa
+  )));
   assign walk_atomic_page = !walk_unc && riscv_pkg::pma_atomic_ok(walk_pa);
 
   // PMA permits BRAM and cached DDR for all access types, plus device windows
@@ -836,11 +841,10 @@ module dmmu (
   logic [2:0] f_tlb_device_page_ref, f_tlb_perm_ok_ref, f_tlb_atomic_page_ref;
   always_comb begin
     for (int p = 0; p < 3; p++) begin
-      f_tlb_device_page_ref[p] =
-          riscv_pkg::pma_device_ok(riscv_pkg::XLEN'({tlb_ppn[p], 12'h000})) ||
-          (tlb_hit[p] && (tlb_pbmt[p] != 2'd0) &&
-           (riscv_pkg::pma_memory_ok(riscv_pkg::XLEN'({tlb_ppn[p], 12'h000})) ||
-            riscv_pkg::pma_pbmt_alias_ok(riscv_pkg::XLEN'({tlb_ppn[p], 12'h000}))));
+      f_tlb_device_page_ref[p] = riscv_pkg::pma_device_ok(riscv_pkg::XLEN'({tlb_ppn[p], 12'h000}))
+          || (tlb_hit[p] && (tlb_pbmt[p] != 2'd0) &&
+              (riscv_pkg::pma_memory_ok(riscv_pkg::XLEN'({tlb_ppn[p], 12'h000})) ||
+               riscv_pkg::pma_pbmt_alias_ok(riscv_pkg::XLEN'({tlb_ppn[p], 12'h000}))));
       // The hit's permission check (port 0 with the S1 op's access type, the
       // early slots as stores) and atomic PMA; both are clear on a miss.
       f_tlb_perm_ok_ref[p] = tlb_hit[p] &&
@@ -869,9 +873,13 @@ module dmmu (
     p_resolve_mmio_exact :
     assert (resolve_is_mmio ==
         ((resolve_fault == riscv_pkg::DFAULT_NONE) &&
-         (riscv_pkg::pma_device_quadrant(resolve_addr) ||
-          (f_resolve_unc && (riscv_pkg::pma_memory_ok(resolve_addr) ||
-                             riscv_pkg::pma_pbmt_alias_ok(resolve_addr))))));
+         (riscv_pkg::pma_device_quadrant(
+        resolve_addr
+    ) || (f_resolve_unc && (riscv_pkg::pma_memory_ok(
+        resolve_addr
+    ) || riscv_pkg::pma_pbmt_alias_ok(
+        resolve_addr
+    ))))));
     // NC and IO pages: an AMO, LR or SC never resolves clean, and a clean op
     // on one is MMIO, so nothing on them reaches L0 or the L1D. (The walker
     // proof shows such a leaf never names cached DDR: p_ok_alias_ppn.)

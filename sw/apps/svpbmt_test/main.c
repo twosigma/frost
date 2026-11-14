@@ -170,8 +170,7 @@ static unsigned long access_s(int kind, unsigned long va, unsigned long val)
                      "1:\n"
                      "csrc mstatus, %[bits]\n"
                      : [out] "+r"(out)
-                     : [va] "r"(va), [val] "r"(val), [k] "r"((unsigned long) kind),
-                       [bits] "r"(bits)
+                     : [va] "r"(va), [val] "r"(val), [k] "r"((unsigned long) kind), [bits] "r"(bits)
                      : "t0", "t1", "t2", "t3", "memory");
     return out;
 }
@@ -261,7 +260,8 @@ static void build_tables(void)
 /* Coherence of an uncached page with the cacheable view of its frame: a
  * cacheable store (dirty in the L1D) is what the uncached load returns, and an
  * uncached store is what the next cacheable load returns. */
-static int coherent_pair(const char *name, unsigned long va, volatile uint64_t *pa, unsigned long seed)
+static int
+coherent_pair(const char *name, unsigned long va, volatile uint64_t *pa, unsigned long seed)
 {
     int ok = 1;
     for (int i = 0; i < 4; i++) {
@@ -351,9 +351,10 @@ int main(void)
     ok &= coherent_pair("C io", VA_4K(PG_IO), (volatile uint64_t *) FRAME(PG_IO), 0xC0DE0002ul);
     ok &= coherent_pair(
         "C io-2m", VA_MEGA + 0x7000, (volatile uint64_t *) (MEGA_FRAME + 0x7000), 0xC0DE0003ul);
-    ok &= coherent_pair(
-        "C io-2m-high", VA_MEGA + 0x1FF000, (volatile uint64_t *) (MEGA_FRAME + 0x1FF000),
-        0xC0DE0004ul);
+    ok &= coherent_pair("C io-2m-high",
+                        VA_MEGA + 0x1FF000,
+                        (volatile uint64_t *) (MEGA_FRAME + 0x1FF000),
+                        0xC0DE0004ul);
 
     /* D: PMA overrides. The first access of each page walked in C, so the
      * DTLB hit keeps the field: AMOs, LR, SC and cbo.zero are access faults,
@@ -387,7 +388,8 @@ int main(void)
         for (int i = 0; i < 4; i++) {
             unsigned long a = 0xF00D0000ul + (unsigned long) i;
             g_bram_page[i * 9] = a;
-            f_ok &= expect_value("F bram-nc-load", access_s(K_LD, va + (unsigned long) i * 72, 0), a);
+            f_ok &=
+                expect_value("F bram-nc-load", access_s(K_LD, va + (unsigned long) i * 72, 0), a);
             access_s(K_SD, va + (unsigned long) i * 72, ~a);
             f_ok &= expect_value("F bram-nc-store", g_bram_page[i * 9], ~a);
         }
@@ -428,7 +430,8 @@ int main(void)
         access_s(K_LD, VA_4K(PG_FILL0) + 0x10, 0);
         ok &= expect_trap("G pma-leaf-alias-load", K_LD, CAUSE_LOAD_ACCESS, VA_4K(PG_FILL0) + 0x10);
         access_s(K_SD, VA_4K(PG_FILL0) + 0x18, 1);
-        ok &= expect_trap("G pma-leaf-alias-store", K_SD, CAUSE_STORE_ACCESS, VA_4K(PG_FILL0) + 0x18);
+        ok &=
+            expect_trap("G pma-leaf-alias-store", K_SD, CAUSE_STORE_ACCESS, VA_4K(PG_FILL0) + 0x18);
         l0[PG_FILL0] = PTE_PPN(FRAME(PG_FILL0)) | RWAD;
         sfence_all();
     }

@@ -260,7 +260,9 @@ class Bench:
 
     def check(self, got: dict[str, int], vpn: int) -> None:
         """Compare a response with the reference walk of current memory."""
-        want = self.mem.walk(int(self.dut.i_root_ppn.value), vpn, int(self.dut.i_pbmte.value))
+        want = self.mem.walk(
+            int(self.dut.i_root_ppn.value), vpn, int(self.dut.i_pbmte.value)
+        )
         assert got["vpn"] == vpn
         assert got["fault"] == want["fault"], (hex(vpn), got, want)
         if want["fault"] == DFAULT_NONE:

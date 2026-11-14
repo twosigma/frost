@@ -40,7 +40,9 @@ DDR_LIMIT = 0x8000_0000 + (1 << DDR_CAPACITY_LOG2_BYTES)
 # riscv_pkg "Svpbmt": the uncached alias of DDR sets one bit above it.
 ALIAS_BIT = 30 if DDR_CAPACITY_LOG2_BYTES <= 30 else DDR_CAPACITY_LOG2_BYTES
 ALIAS_OFFSET = 1 << ALIAS_BIT
-ALIAS_COVER_LIMIT = DDR_LIMIT if DDR_CAPACITY_LOG2_BYTES <= 30 else 1 << DDR_CAPACITY_LOG2_BYTES
+ALIAS_COVER_LIMIT = (
+    DDR_LIMIT if DDR_CAPACITY_LOG2_BYTES <= 30 else 1 << DDR_CAPACITY_LOG2_BYTES
+)
 
 
 @dataclass(frozen=True)
@@ -392,7 +394,7 @@ async def test_pbmt_pages_take_the_mmio_path(dut: Any) -> None:
     await _setup(dut)
     base_op = Op()
     leaf = Leaf(vpn=base_op.va >> 12)
-    alias_ppn = (0x8_0123 | (ALIAS_OFFSET >> 12))
+    alias_ppn = 0x8_0123 | (ALIAS_OFFSET >> 12)
     nc = replace(leaf, ppn=alias_ppn, pbmt=1)
     io = replace(leaf, ppn=alias_ppn, pbmt=2)
     bram = replace(leaf, ppn=0x10, pbmt=1)
@@ -403,7 +405,7 @@ async def test_pbmt_pages_take_the_mmio_path(dut: Any) -> None:
     amo = replace(base_op, store=1, atomic=1)
     lr = replace(base_op, atomic=1)
     sc = replace(base_op, needs_sq=1, store=1, is_sc=1, atomic=1)
-    cmo = replace(base_op, needs_sq=1, is_cmo=1, size=0)
+    cmo = replace(base_op, needs_sq=1, size=0)
     cases = []
     for page in (nc, io, bram, device):
         for op in (load, store, amo, lr, sc, cmo):

@@ -579,10 +579,11 @@ module dtlb #(
         end
       end
     end
-`ifdef FORMAL
     always_ff @(posedge i_clk) begin
+`ifdef FORMAL
+      if (1'b1) begin
 `else
-    always_ff @(posedge i_clk) if (lookup_reset_seen_q) begin
+      if (lookup_reset_seen_q) begin
 `endif
       // Leave this generated assertion unnamed for Yosys's frontend.
       assert (match[gp] == ref_match && o_hit[gp] == (|ref_match));
@@ -602,6 +603,7 @@ module dtlb #(
                  o_fetch_next_ok[gp], o_fetch_next_ppn[gp]} ==
                 {ref_fetch_perm_fault, ref_fetch_pma_bad, ref_fetch_next_pma_bad,
                  ref_fetch_next_ok, ref_next_ppn});
+      end
       end
     end
   end

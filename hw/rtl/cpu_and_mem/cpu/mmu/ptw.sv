@@ -675,8 +675,9 @@ module ptw #(
             p_ok_alias_uncached : assert (!riscv_pkg::pma_cached_ok({8'b0, o_resp.ppn, 12'h000}));
             p_ok_alias_window : assert (riscv_pkg::pma_pbmt_alias_ok({8'b0, o_resp.ppn, 12'h000}));
             p_ok_alias_real :
-            assert (riscv_pkg::pbmt_alias_real({8'b0, o_resp.ppn, 12'h000}) ==
-                    {8'b0, f_pte[53:10], 12'h000});
+            assert (riscv_pkg::pbmt_alias_real(
+                {8'b0, o_resp.ppn, 12'h000}
+            ) == {8'b0, f_pte[53:10], 12'h000});
           end else begin
             p_ok_ppn : assert (o_resp.ppn == f_pte[53:10]);
           end
@@ -690,8 +691,9 @@ module ptw #(
         end
         // An access fault comes from a refused PTE address (no PTE was read
         // for it) or from NC or IO over DDR without an alias.
-        if (o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS && f_pte_seen &&
-            ($past(state_q) == PTW_DECODE)) begin
+        if (o_resp.fault_kind == riscv_pkg::DFAULT_ACCESS && f_pte_seen && ($past(
+                state_q
+            ) == PTW_DECODE)) begin
           p_access_pbmt_reason :
           assert (!f_g_reserved && !f_g_invalid && f_g_leaf && !f_g_misaligned && !f_g_a0 &&
                   f_g_pbmt_no_alias);

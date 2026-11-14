@@ -1276,8 +1276,7 @@ module soc_top #(
   assign local_bram = 64'(local_addr) < 64'(MEM_SIZE_BYTES);
   // The alias window is outside the PMA map: it is never a register, BRAM or
   // device-quadrant store, only the DMA transfer of state 6.
-  assign local_device = riscv_pkg::pma_device_ok(riscv_pkg::XLEN'(local_addr)) &&
-      !local_pbmt_alias;
+  assign local_device = riscv_pkg::pma_device_ok(riscv_pkg::XLEN'(local_addr)) && !local_pbmt_alias;
   assign local_alias = (ENABLE_CACHED_TIER != 0) && local_pbmt_alias;
   assign local_instruction = local_prot[2];
   assign local_ok = !local_error &&
@@ -1297,8 +1296,7 @@ module soc_top #(
   assign data_memory_write_data = use_incoming_payload ? local_req_wdata[63:0] :
       (local_device && local_size <= 2) ?
       {2{local_addr[2] ? local_wdata[63:32] : local_wdata[31:0]}} : local_wdata;
-  wire local_register_store = local_fire && local_write && local_ok && !local_axil &&
-      !local_alias;
+  wire local_register_store = local_fire && local_write && local_ok && !local_axil && !local_alias;
   assign data_memory_byte_write_enable = fast_bram_fire && local_req_write ?
       local_req_wstrb[7:0] : local_register_store ? local_wstrb : '0;
   wire fast_bram_store = fast_bram_fire && local_req_write;
@@ -1785,8 +1783,9 @@ AxilPorts
     localparam int unsigned AliasLaneMsb = $clog2(DmaAxiDataBits / 8) - 1;
     logic alias_aw_q, alias_w_q, alias_ar_q;
     wire alias_start = local_fire && local_alias && local_ok;
-    wire [riscv_pkg::XLEN-1:0] alias_real_addr =
-        riscv_pkg::pbmt_alias_real(riscv_pkg::XLEN'(local_addr));
+    wire [riscv_pkg::XLEN-1:0] alias_real_addr = riscv_pkg::pbmt_alias_real(
+        riscv_pkg::XLEN'(local_addr)
+    );
     wire alias_wait = local_state_q == 6;
     always_ff @(posedge i_clk) begin
       if (soc_axi_rst || rst_core) begin

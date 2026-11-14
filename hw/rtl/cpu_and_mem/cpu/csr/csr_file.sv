@@ -639,8 +639,10 @@ module csr_file #(
 
   logic menvcfg_stce, menvcfg_fiom, senvcfg_fiom;
   logic menvcfg_cbze, senvcfg_cbze;
+  logic menvcfg_pbmte;
   logic [XLEN-1:0] menvcfg, senvcfg;  // Readback views of the stored fields
   assign menvcfg = (XLEN'(menvcfg_stce) << riscv_pkg::MenvcfgStceBit) |
+      (XLEN'(menvcfg_pbmte) << riscv_pkg::MenvcfgPbmteBit) |
       (XLEN'(menvcfg_cbze) << riscv_pkg::EnvcfgCbzeBit) |
       (XLEN'(menvcfg_fiom) << riscv_pkg::EnvcfgFiomBit);
   assign senvcfg = (XLEN'(senvcfg_cbze) << riscv_pkg::EnvcfgCbzeBit) |
@@ -1738,6 +1740,7 @@ module csr_file #(
       satp_ppn                   <= '0;
       menvcfg_stce               <= 1'b0;
       menvcfg_cbze               <= 1'b0;
+      menvcfg_pbmte              <= 1'b0;
       menvcfg_fiom               <= 1'b0;
       senvcfg_cbze               <= 1'b0;
       senvcfg_fiom               <= 1'b0;
@@ -1818,9 +1821,10 @@ module csr_file #(
         // menvcfg implements FIOM, CBZE and STCE, senvcfg FIOM and CBZE (the
         // rest stays WARL-0); stimecmp is the full 64-bit compare value.
         riscv_pkg::CsrMenvcfg: begin
-          menvcfg_stce <= menvcfg_new_value[riscv_pkg::MenvcfgStceBit];
-          menvcfg_cbze <= menvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
-          menvcfg_fiom <= menvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
+          menvcfg_stce  <= menvcfg_new_value[riscv_pkg::MenvcfgStceBit];
+          menvcfg_pbmte <= menvcfg_new_value[riscv_pkg::MenvcfgPbmteBit];
+          menvcfg_cbze  <= menvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
+          menvcfg_fiom  <= menvcfg_new_value[riscv_pkg::EnvcfgFiomBit];
         end
         riscv_pkg::CsrSenvcfg: begin
           senvcfg_cbze <= senvcfg_new_value[riscv_pkg::EnvcfgCbzeBit];
@@ -3297,6 +3301,7 @@ module csr_file #(
   logic [$bits(mcountinhibit_ir)-1:0] f_old_mcountinhibit_ir;
   logic [$bits(medeleg_q)-1:0] f_old_medeleg_q;
   logic [$bits(menvcfg_cbze)-1:0] f_old_menvcfg_cbze;
+  logic [$bits(menvcfg_pbmte)-1:0] f_old_menvcfg_pbmte;
   logic [$bits(menvcfg_fiom)-1:0] f_old_menvcfg_fiom;
   logic [$bits(menvcfg_stce)-1:0] f_old_menvcfg_stce;
   logic [$bits(mepc)-1:0] f_old_mepc;
@@ -3362,6 +3367,7 @@ module csr_file #(
     f_old_mcountinhibit_ir <= mcountinhibit_ir;
     f_old_medeleg_q <= medeleg_q;
     f_old_menvcfg_cbze <= menvcfg_cbze;
+    f_old_menvcfg_pbmte <= menvcfg_pbmte;
     f_old_menvcfg_fiom <= menvcfg_fiom;
     f_old_menvcfg_stce <= menvcfg_stce;
     f_old_mepc <= mepc;
@@ -3420,6 +3426,7 @@ module csr_file #(
       f_old_satp_ppn                   <= '0;
       f_old_menvcfg_stce               <= 1'b0;
       f_old_menvcfg_cbze               <= 1'b0;
+      f_old_menvcfg_pbmte              <= 1'b0;
       f_old_menvcfg_fiom               <= 1'b0;
       f_old_senvcfg_cbze               <= 1'b0;
       f_old_senvcfg_fiom               <= 1'b0;
@@ -3506,9 +3513,10 @@ module csr_file #(
         // menvcfg implements FIOM, CBZE and STCE, senvcfg FIOM and CBZE (the
         // rest stays WARL-0); stimecmp is the full 64-bit compare value.
         riscv_pkg::CsrMenvcfg: begin
-          f_old_menvcfg_stce <= csr_new_value[riscv_pkg::MenvcfgStceBit];
-          f_old_menvcfg_cbze <= csr_new_value[riscv_pkg::EnvcfgCbzeBit];
-          f_old_menvcfg_fiom <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
+          f_old_menvcfg_stce  <= csr_new_value[riscv_pkg::MenvcfgStceBit];
+          f_old_menvcfg_pbmte <= csr_new_value[riscv_pkg::MenvcfgPbmteBit];
+          f_old_menvcfg_cbze  <= csr_new_value[riscv_pkg::EnvcfgCbzeBit];
+          f_old_menvcfg_fiom  <= csr_new_value[riscv_pkg::EnvcfgFiomBit];
         end
         riscv_pkg::CsrSenvcfg: begin
           f_old_senvcfg_cbze <= csr_new_value[riscv_pkg::EnvcfgCbzeBit];
@@ -3631,6 +3639,7 @@ module csr_file #(
                f_old_hpm_uinh});
       assert (medeleg_q == f_old_medeleg_q);
       assert (menvcfg_cbze == f_old_menvcfg_cbze);
+      assert (menvcfg_pbmte == f_old_menvcfg_pbmte);
       assert (menvcfg_fiom == f_old_menvcfg_fiom);
       assert (menvcfg_stce == f_old_menvcfg_stce);
       assert (mepc == f_old_mepc);

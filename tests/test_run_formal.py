@@ -2539,7 +2539,10 @@ SBY_TASKS = [
     ),
     ("bmc_nopwc", "Bounded checking of the page-table walker without its walk cache"),
     ("bmc_replace", "Bounded checking through replacement in one-entry walk caches"),
-    ("bmc_wide", "Bounded walker checking with the 64 GiB DDR map and its Svpbmt alias gap"),
+    (
+        "bmc_wide",
+        "Bounded walker checking with the 64 GiB DDR map and its Svpbmt alias gap",
+    ),
     ("cover_wide", "Svpbmt alias and no-alias reachability with the 64 GiB DDR map"),
     ("bmc_xlen32", "Bounded checking with a local 32-bit datapath"),
     (
