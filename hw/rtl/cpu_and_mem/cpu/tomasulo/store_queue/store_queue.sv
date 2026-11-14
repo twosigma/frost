@@ -1179,7 +1179,8 @@ module store_queue #(
   // cursor, SC, pipeline and address checks have all been reduced.
   assign launch_without_store_ready = committed_uncached_launch ||
       (cached_launch_qualified && (!mem_write_addr_cached_for_plain_next || coherent_selected_sc));
-  // A Zicbom entry frees itself without a write (cmo_drain_fire).
+  // A Zicbom entry completes at the drain cursor without a write
+  // (cmo_drain_fire) and frees on the next cycle (cmo_free_q).
   assign complete_without_store_ready = committed_uncached_complete || cmo_drain_fire ||
       (cached_launch_qualified && (!mem_write_addr_cached_for_plain_next || coherent_selected_sc));
 `ifdef FROST_XILINX_PRIMS
@@ -1591,7 +1592,8 @@ module store_queue #(
       // blocks all further launches until completion.
       write_inflight_special <= write_inflight_special_next;
       sq_sent <= sq_sent_next;
-      // A Zicbom entry is sent as it frees (no write follows).
+      // A Zicbom entry is sent as it fires (no write follows) and frees on
+      // the next cycle.
       if (cmo_drain_fire) sq_sent[drain_idx_q] <= 1'b1;
 
       // -----------------------------------------------------------------
