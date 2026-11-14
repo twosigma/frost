@@ -470,7 +470,7 @@ module l2tlb #(
 
 `ifdef FORMAL
   // Reference: for one watched page and lookup ASID, shadow the entries the
-  // arrays may legitimately hold (one non-global entry filled under the lookup
+  // arrays may legitimately contain (one non-global entry filled under the lookup
   // ASID and one global entry for the 4 KiB page, and the same pair for each
   // superpage level whose region holds the page), kill them with the same
   // rules the privileged spec gives each flush form, and check every hit
