@@ -11,8 +11,10 @@ The remaining scalar and supervisor extensions are in progress. Sstvala's
 illegal-instruction values are implemented: `mtval` and `stval` hold the
 faulting instruction's bits. Its access-fault values remain: a failed bus
 response on a load, a store or a misaligned access reports zero in `mtval`
-or `stval`, where Sstvala requires the faulting address. Two larger pieces
-come before the second hart:
+or `stval`, where Sstvala requires the faulting address. `hpmcounter11`-`31`
+raise illegal-instruction in every privilege mode; making them read zero in
+M-mode, as the reference models do, would let the TestRIG comparison run with
+Zihpm enabled. Two larger pieces come before the second hart:
 
 - A vector unit. The profile requires V with Zvfhmin, Zvbb, and Zvkt; Zvbc,
   Zvfh and vector cryptography follow. The vector length
@@ -204,8 +206,8 @@ programs, the RISC-V architecture tests and riscv-tests, riscv-torture
 programs against Spike, TestRIG against the Sail model in four parallel CI
 jobs, and Debian on the X3. Every CI job that simulates the whole SoC draws
 its own DDR model latency, jitter, and completion order from a seed that a
-failing test's output names. CI merges the line coverage of those
-simulations, the toggle coverage of the unit benches, and the counts of
+failing test's output names. CI merges the line coverage of the
+simulations that contribute most to it, the toggle coverage of the unit benches, and the counts of
 cover points for microarchitectural corner cases, such as a DMA write to a
 line that an executed, unretired load has read, into one
 [report](tests/README.md#coverage) of what the tests reach. Local runs can
@@ -464,6 +466,13 @@ and targeted microbenchmarks give these items:
    selects while the hit path holds it, which starting misses from the hit
    path's tag result would avoid, and tags-only lookups would keep stores,
    look-ahead stores and prefetch hints out of the data banks.
+10. Compressed code. Linux and its user space are built with the C
+    extension. CoreMark's score uses a build without compressed instructions;
+    built with them (`COREMARK_COMPRESSED=1`) it takes about 10% more cycles
+    in simulation. How much of that comes from fetch and prediction on 16-bit
+    instructions and how much from different code generation has not been
+    separated. Measuring fetch coverage, packet formation and prediction on
+    compressed code, then improving them, is open.
 
 ## Core area
 

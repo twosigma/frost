@@ -52,6 +52,9 @@ module dispatch #(
     // for vector arithmetic legality; cpu_ooo holds vector arithmetic while
     // it is unknown
     input logic                      [8:0] i_vtype_spec = 9'd0,
+    // vec_lmul_legality's classes of slot 1's instruction bits, formed before
+    // the decoded queue; the default suits benches without vector arithmetic
+    input logic                      [3:0] i_vec_lmul_illegal = 4'd0,
     // Bundle-valid candidate, not yet qualified by flush. Dispatch applies
     // i_flush (below) as the only recovery qualification.
     input logic                            i_valid,
@@ -323,9 +326,11 @@ module dispatch #(
   always_comb begin
     mem_size_defaulted = 1'b0;
     case (op)
-      // cbo.zero takes the byte size, so its rs1 is never misaligned; the SQ
+      // cbo.zero and the Zicbom ops take the byte size, so rs1 never
+      // misaligns (cmo.adoc, norm:no_addr_misaligned_excep); the SQ
       // entry's zero-block flag widens the write to the whole block.
-      riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB, riscv_pkg::CBO_ZERO:
+      riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB, riscv_pkg::CBO_ZERO, riscv_pkg::CBO_CLEAN,
+      riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
       mem_size = riscv_pkg::MEM_SIZE_BYTE;
       riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH: mem_size = riscv_pkg::MEM_SIZE_HALF;
       riscv_pkg::LW, riscv_pkg::LWU, riscv_pkg::SW, riscv_pkg::FLW, riscv_pkg::FSW,
@@ -549,7 +554,8 @@ module dispatch #(
   always_comb begin
     mem_size_2_defaulted = 1'b0;
     case (op_2)
-      riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB, riscv_pkg::CBO_ZERO:
+      riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB, riscv_pkg::CBO_ZERO, riscv_pkg::CBO_CLEAN,
+      riscv_pkg::CBO_FLUSH, riscv_pkg::CBO_INVAL:
       mem_size_2 = riscv_pkg::MEM_SIZE_BYTE;
       riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH: mem_size_2 = riscv_pkg::MEM_SIZE_HALF;
       riscv_pkg::LW, riscv_pkg::LWU, riscv_pkg::SW, riscv_pkg::FLW, riscv_pkg::FSW,
@@ -884,6 +890,25 @@ module dispatch #(
     end
   end
 `endif
+`ifdef VEC_LMUL_LEGALITY_LOCAL_PROOF
+  // With i_vec_lmul_illegal the classes of slot 1's own instruction, the
+  // class select equals the whole legality function for every vtype,
+  // instruction and operation.
+  logic [3:0] f_vec_lmul_illegal;
+  logic f_vec_illegal_ref;
+  vec_lmul_legality u_f_vec_lmul_legality (
+      .i_insn(32'(i_from_id_to_ex.instruction)),
+      .o_illegal(f_vec_lmul_illegal)
+  );
+  assign f_vec_illegal_ref = (o_rob_alloc_req.is_varith && riscv_pkg::vector_arith_illegal(
+      i_vtype_spec, 32'(i_from_id_to_ex.instruction)
+  )) || ((op == riscv_pkg::VTOX) && i_vtype_spec[8]);
+  always_comb begin
+    assume (i_vec_lmul_illegal == f_vec_lmul_illegal);
+    p_vec_illegal_exact : assert (o_rob_alloc_req.vec_illegal == f_vec_illegal_ref);
+  end
+`endif
+
 `ifdef DISPATCH_ADMISSION_LOCAL_PROOF
   logic f_admit_common;
   logic f_admit_slot1;
@@ -1376,10 +1401,14 @@ module dispatch #(
     o_rob_alloc_req.is_vcfg = (op == riscv_pkg::VSETVLI) || (op == riscv_pkg::VSETIVLI) ||
         (op == riscv_pkg::VSETVL);
     o_rob_alloc_req.is_varith = (op == riscv_pkg::VARITH) || (op == riscv_pkg::VARITH_X);
-    // A vector-to-scalar op (VTOX) is illegal only under vill.
-    o_rob_alloc_req.vec_illegal = (o_rob_alloc_req.is_varith && riscv_pkg::vector_arith_illegal(
-                                   i_vtype_spec, 32'(i_from_id_to_ex.instruction))) ||
-        ((op == riscv_pkg::VTOX) && i_vtype_spec[8]);
+    // Vector arithmetic is illegal under vill or under its LMUL class's
+    // register-number rules (riscv_pkg::vector_arith_illegal, decided from the
+    // instruction bits ahead of the queue); a vector-to-scalar op (VTOX) only
+    // under vill. The vtype selects last.
+    o_rob_alloc_req.vec_illegal = ((o_rob_alloc_req.is_varith || (op == riscv_pkg::VTOX)) &&
+                                   i_vtype_spec[8]) ||
+        (o_rob_alloc_req.is_varith &&
+         i_vec_lmul_illegal[i_vtype_spec[2] ? 2'd0 : i_vtype_spec[1:0]]);
     // Sstvala: raw instruction bits, the illegal-instruction xtval.
     o_rob_alloc_req.insn_bits = i_from_id_to_ex.insn_bits;
 

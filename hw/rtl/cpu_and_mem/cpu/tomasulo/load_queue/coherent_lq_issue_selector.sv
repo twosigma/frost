@@ -145,7 +145,8 @@ module coherent_lq_issue_selector #(
       // retired vector memory instruction can still be accessing memory.
       wire head_ok = rob_head_match_q[index] && !blocked_by_amo_phys_q[index] &&
           (!(lq_is_lr[index] || lq_is_amo[index]) || 1'(drained));
-      (* keep = "true" *) wire [4:0] class_ready = {
+      (* keep = "true" *) wire [4:0] class_ready;
+      assign class_ready = {
         head_ok && addr_update_pre_match_q[index],
         head_ok && lq_addr_valid[index],
         stored_ok || update_ok,
@@ -183,8 +184,10 @@ module coherent_lq_issue_selector #(
         assign first[source][index] = eligible[source][index] && !(|earlier_group);
       end
     end
-    (* keep = "true" *) wire [DEPTH-1:0] stored_first = first[0];
-    (* keep = "true" *) wire [DEPTH-1:0] merged_first = first[2];
+    (* keep = "true" *) wire [DEPTH-1:0] stored_first;
+    assign stored_first = first[0];
+    (* keep = "true" *) wire [DEPTH-1:0] merged_first;
+    assign merged_first = first[2];
     // Replacement reads the staged load's age at the scan winner in kept
     // three-entry groups, or at the ROB-head entry, whose match is at most
     // one-hot. The groups and head flags leave the selector separately, so
@@ -203,8 +206,10 @@ module coherent_lq_issue_selector #(
           .o_older(stored_older[group_index])
       );
     end
-    (* keep = "true" *) wire head_stored_found = |head_stored;
-    (* keep = "true" *) wire head_found = |head_stored || |head_update;
+    (* keep = "true" *) wire head_stored_found;
+    assign head_stored_found = |head_stored;
+    (* keep = "true" *) wire head_found;
+    assign head_found = |head_stored || |head_update;
     assign o_merged_older[drained] = merged_older;
     assign o_stored_older[drained] = stored_older;
     assign o_head_found[drained] = head_found;
