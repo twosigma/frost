@@ -932,6 +932,12 @@ FORMAL_TARGETS = [
         tasks=("prove", "prove_depth2", "cover"),
     ),
     FormalTarget(
+        "id_stage_kill_equiv.sby",
+        "ID post-classifier kill masking equals in-classifier legality and fault "
+        "overrides across both slots and all stage outputs",
+        tasks=("id_kill_equiv",),
+    ),
+    FormalTarget(
         "vec_lmul_legality_equiv.sby",
         "Queued LMUL classes and vector-memory rejection equal the arithmetic, VTOX "
         "and VLOAD/VSTORE legality rules for every vtype, instruction and operation",
@@ -1540,7 +1546,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "immu_twin.sby",
         "Instruction MMU: primitive and portable forms are equivalent.",
-        tasks=("immu_twin",),
+        tasks=("immu_twin", "immu_twin_hold"),
     ),
     FormalTarget(
         "cached_tier_adapter_twin.sby",
@@ -2820,6 +2826,14 @@ SBY_TASKS = [
     (
         "immu_twin",
         "Instruction MMU primitive form equals its portable form.",
+    ),
+    (
+        "immu_twin_hold",
+        "Instruction MMU primitive form equals its portable form with four hold-polarity copies.",
+    ),
+    (
+        "id_kill_equiv",
+        "ID post-classifier kill masking equals in-classifier legality and fault overrides.",
     ),
     (
         "cached_tier_twin",
