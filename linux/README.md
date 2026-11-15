@@ -183,11 +183,14 @@ CBOs then ignore the top PMLEN address bits; instruction fetch and the kernel's
 own accesses are never masked. `riscv_hwprobe` reports `RISCV_HWPROBE_EXT_SUPM`
 and `/proc/cpuinfo` lists `ssnpm`.
 
-Svnapot: the DTB lists `svnapot`, so Linux maps 64 KiB hugetlb pages
-(`hugepages-64kB`) and contiguous ranges with NAPOT PTEs. FROST's walker
-translates each page of such a range on its own and its TLBs hold 4 KiB entries,
-so a NAPOT range costs the same TLB space as 16 pages but needs no TLB change;
-Linux flushes NAPOT ranges page by page, as the TLBs require.
+Svnapot: the DTB lists `svnapot`. With `CONFIG_RISCV_ISA_SVNAPOT` and
+hugetlb enabled, Linux offers 64 KiB hugetlb pages (`hugepages-64kB`). A
+workload must allocate and map such pages to use NAPOT PTEs; ordinary boot
+and the supplied Linux stress workload do not exercise them. The walker
+translates the requested 4 KiB page, so a resident 64 KiB range occupies
+sixteen TLB entries. Linux invalidates a changed range with an address fence
+for each 4 KiB page or a fence covering the address space. A single address
+fence removes that page's entry; ASID filters spare global entries.
 
 ## Counters and mcounteren
 

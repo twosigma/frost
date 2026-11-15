@@ -435,11 +435,23 @@ its own ASID, or a global entry under any ASID.
   first cycle; a page flush removes the superpage whose region holds the page.
   While a flush runs the arrays accept no request.
 
+Svnapot. A level-0 leaf with N (bit 63) set and PPN[3:0] = 1000 maps a
+64 KiB range. The walker replaces PPN[3:0] with VPN[3:0] and returns the
+requested 4 KiB page; both TLB levels store it as a level-0 entry. Every
+other encoding with N set is a page fault, including non-leaf pointers and
+superpage leaves. A range update requires fences covering all sixteen
+pages, or an address-space fence. One address fence removes the named
+page's entry with the usual ASID and global filters. The walker reads the
+requested PTE slot and does not compare the range's other PTEs. A clear A
+bit faults the walk; a clear D bit faults a store at the requesting MMU.
+The hardware does not update either bit.
+
 Svpbmt. The walker checks a leaf's PBMT field (PTE bits 62:61) against
 `menvcfg.PBMTE`, sampled when the walk starts: with PBMTE clear any nonzero PBMT is a
 page fault, and with it set PBMT 3 in a leaf and any nonzero PBMT in a non-leaf are
-page faults, as are bit 63 (no Svnapot) and bits 60:54. An NC or IO leaf over
-cached DDR answers the PPN of the uncached alias of DDR (riscv_pkg "Svpbmt":
+page faults, as are bits 60:54. An NC or IO leaf over
+cached DDR answers the PPN of the uncached alias of DDR after any Svnapot
+PPN substitution (riscv_pkg "Svpbmt":
 bit 30 for DDR up to 1 GiB, bit c for a 2^c-byte window of c >= 32, which
 leaves its top 2 GiB without an alias and makes an NC or IO leaf there an
 access fault). A 2 GiB DDR window has no alias in the current 32-bit physical

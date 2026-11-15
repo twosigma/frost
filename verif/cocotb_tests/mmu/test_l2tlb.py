@@ -670,3 +670,39 @@ async def random_requests_and_flushes_match_a_reference(dut: Any) -> None:
     dut._log.info("random run: %d hits (%d superpage), %d walks", hits, sp_hits, walks)
     assert hits > 100
     assert sp_hits > 20
+
+
+@cocotb.test()
+async def materialized_range_selective_fences(dut: Any) -> None:
+    """Page fences preserve neighboring pages and filter the superpage side array."""
+    b = Bench(dut)
+    await b.reset()
+    entries = [(1, 0x400 + i, clean(0x80000 + i)) for i in range(8)]
+    entries += [(2, 0x400 + i, clean(0x81000 + i)) for i in range(4)]
+    entries += [(1, 0x408, clean(0x82008, g=1))]
+    entries += [(1, 0x500 + i, clean(0x83000 + i)) for i in range(3)]
+    supers = [(3, 0x400, Entry(0x90000, level=1)), (1, 0x800, Entry(0x90400, level=1))]
+    for owner, vpn, entry in entries:
+        b.table[(None if entry.g else owner, vpn)] = entry
+    for owner, vpn, entry in supers:
+        b.supers[(owner, entry.level, vpn >> (9 * entry.level))] = entry
+    for vpn, asid in ((0x402, None), (0x402, 1), (0x408, 1), (0x500, None)):
+        await b.flush(flush_cmd())
+        for owner, page, _ in entries + supers:
+            b.set_asid(owner)
+            assert not await b.hits(page)
+        await b.flush(flush_cmd(vpn=vpn, asid=asid))
+        counts = []
+        for group in (entries, supers):
+            hits = 0
+            for owner, page, entry in group:
+                b.set_asid(owner)
+                hit = await b.hits(page)
+                covers = page >> (9 * entry.level) == vpn >> (9 * entry.level)
+                killed = covers and (asid is None or (asid == owner and not entry.g))
+                assert hit == (not killed), (vpn, asid, owner, page, entry, hit)
+                hits += hit
+            counts.append(hits)
+        dut._log.info(
+            "L2TLB survivors vpn=%#x asid=%s: base=%d/16 super=%d/2", vpn, asid, *counts
+        )

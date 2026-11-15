@@ -688,8 +688,8 @@ module ptw #(
           // reserved 3 and is zero while PBMTE was clear.
           p_ok_pbmt :
           assert (o_resp.pbmt == f_g_pbmt && o_resp.pbmt != 2'd3 && (f_pbmte || o_resp.pbmt == 0));
-          // The PPN is the PTE's, except NC or IO over DDR, which answers the
-          // alias: in the alias window, never cached DDR, naming the same bytes.
+          // The reference PPN includes NAPOT substitution. NC or IO over DDR
+          // answers its alias: uncached, in the alias window, naming the same bytes.
           if ((f_g_pbmt != 2'd0) && f_g_pbmt_ddr) begin
             p_ok_alias_ppn :
             assert (o_resp.ppn ==
