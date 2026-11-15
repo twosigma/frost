@@ -75,7 +75,8 @@ module instruction_type_decoder #(
   logic amo_width_valid;
   assign amo_width_valid = (i_instruction.funct3 == 3'b010) || (i_instruction.funct3 == 3'b011);
   assign o_is_lr = o_is_amo_instruction && amo_width_valid &&
-                   (i_instruction.funct7[6:2] == 5'b00010);
+                   (i_instruction.funct7[6:2] == 5'b00010) &&
+                   (i_instruction.source_reg_2 == 5'b0);
   assign o_is_sc = o_is_amo_instruction && amo_width_valid &&
                    (i_instruction.funct7[6:2] == 5'b00011);
 
