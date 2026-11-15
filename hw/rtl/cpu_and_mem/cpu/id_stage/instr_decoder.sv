@@ -374,12 +374,14 @@ module instr_decoder (
       riscv_pkg::OPC_CSR:
       unique case (i_instr.funct3)
         3'b000:  // PRIV - privileged system instructions
-        // SFENCE.VMA (funct7 0x09) and Svinval's SINVAL.VMA (funct7 0x0B,
-        // rd = x0) use rs1 and rs2 as their address and ASID filters.
-        if (i_instr.funct7 == 7'b0001001 ||
-            (i_instr.funct7 == 7'b0001011 && i_instr.dest_reg == 5'b0))
-          o_instr_op = riscv_pkg::SFENCE_VMA;
-        else if (i_instr.funct7 == 7'b0001011) o_illegal = 1'b1;
+        // SFENCE.VMA (funct7 0x09) and Svinval's SINVAL.VMA (funct7 0x0B) use
+        // rs1 and rs2 as their address and ASID filters; rd != x0 is reserved.
+        if (i_instr.funct7 == 7'b0001001 || i_instr.funct7 == 7'b0001011)
+          if (i_instr.dest_reg == 5'b0) o_instr_op = riscv_pkg::SFENCE_VMA;
+          else o_illegal = 1'b1;
+        else if (i_instr.source_reg_1 != 5'b0 || i_instr.dest_reg != 5'b0)
+          // Every remaining SYSTEM funct3=000 instruction has rs1 = rd = x0.
+          o_illegal = 1'b1;
         else
           unique case ({
             i_instr.funct7, i_instr.source_reg_2
@@ -399,18 +401,12 @@ module instr_decoder (
             // Svinval SFENCE.W.INVAL (0x18000073) and SFENCE.INVAL.IR
             // (0x18100073), rs1 = rd = 0. SINVAL.VMA performs the full SFENCE
             // invalidation, so these retire as FENCE; id_stage rejects U-mode.
-            12'b0001100_00000, 12'b0001100_00001:
-            if (i_instr.source_reg_1 == 5'b0 && i_instr.dest_reg == 5'b0)
-              o_instr_op = riscv_pkg::FENCE;
-            else o_illegal = 1'b1;
+            12'b0001100_00000, 12'b0001100_00001: o_instr_op = riscv_pkg::FENCE;
             // Zawrs WRS.NTO (0x00D00073) and WRS.STO (0x01D00073), rs1 = rd = 0.
             // FROST never stalls (the stall is optional), so both retire as
             // the no-operand PAUSE hint. id_stage makes WRS.NTO illegal below
             // M while mstatus.TW is set.
-            12'b0000000_01101, 12'b0000000_11101:
-            if (i_instr.source_reg_1 == 5'b0 && i_instr.dest_reg == 5'b0)
-              o_instr_op = riscv_pkg::PAUSE;
-            else o_illegal = 1'b1;
+            12'b0000000_01101, 12'b0000000_11101: o_instr_op = riscv_pkg::PAUSE;
             default: o_illegal = 1'b1;
           endcase
         riscv_pkg::CSR_RW: o_instr_op = riscv_pkg::CSRRW;  // Atomic read/write

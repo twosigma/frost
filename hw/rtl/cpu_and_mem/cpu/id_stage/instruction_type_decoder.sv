@@ -78,10 +78,13 @@ module instruction_type_decoder #(
   assign o_is_sc = o_is_amo_instruction && amo_width_valid &&
                    (i_instruction.funct7[6:2] == 5'b00011);
 
-  // Privileged instructions all use opcode=SYSTEM (1110011) with funct3=000
+  // Privileged control instructions use opcode=SYSTEM (1110011), funct3=000,
+  // and rs1 = rd = x0 (reserved non-zero fields must not raise xRET/WFI flags).
   logic is_priv_instruction;
   assign is_priv_instruction = (i_instruction.opcode == riscv_pkg::OPC_CSR) &&
-                               (i_instruction.funct3 == 3'b000);
+                               (i_instruction.funct3 == 3'b000) &&
+                               (i_instruction.source_reg_1 == 5'b0) &&
+                               (i_instruction.dest_reg == 5'b0);
   // MRET: funct7=0011000, rs2=00010
   assign o_is_mret = is_priv_instruction &&
                      (i_instruction.funct7 == 7'b0011000) &&

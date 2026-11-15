@@ -496,23 +496,28 @@ module instr_operand_classifier_equiv (
     // Only FMA operations read FP source 3. Dispatch sends them to FP_RS
     // through slot 1, so slot 2 never needs that source.
     p_fp_rs3_only_fp_rs : assert (!uses_fp_rs3_direct || (rs_type_direct == riscv_pkg::RS_FP));
-    // Svinval encodings under native SYSTEM funct3=000 with no front-end fault.
+    // Svinval and SYSTEM funct3=000 encodings with no front-end fault.
     if (!i_inject_nop && !i_pd_illegal && !i_fetch_fault &&
         (i_instr.opcode == riscv_pkg::OPC_CSR) && (i_instr.funct3 == 3'b000)) begin
-      if (i_instr.funct7 == 7'b0001011) begin
+      if (i_instr.funct7 == 7'b0001001 || i_instr.funct7 == 7'b0001011) begin
         if (i_instr.dest_reg == 5'b0) begin
-          p_sinval_vma_legal :
+          p_sfence_sinval_vma_legal :
           assert (!decoder_illegal &&
                   (instruction_operation == riscv_pkg::SFENCE_VMA) &&
                   (rs_type_direct == riscv_pkg::RS_MEM) &&
                   is_fence_i_direct && is_sfence_vma_direct && !is_fence_direct &&
                   uses_int_rs1_direct && uses_int_rs2_direct && !has_int_dest_direct);
         end else begin
-          p_sinval_vma_bad_rd :
+          p_sfence_sinval_vma_bad_rd :
           assert (decoder_illegal &&
                   (rs_type_direct == riscv_pkg::RS_INT) &&
                   !is_fence_i_direct && !is_sfence_vma_direct && !is_fence_direct);
         end
+      end else if (i_instr.source_reg_1 != 5'b0 || i_instr.dest_reg != 5'b0) begin
+        p_system_priv_reserved_reg_fields :
+        assert (decoder_illegal &&
+                (rs_type_direct == riscv_pkg::RS_INT) &&
+                !is_fence_direct && !is_fence_i_direct && !is_sfence_vma_direct);
       end
       if (i_instr.funct7 == 7'b0001100) begin
         if ((i_instr.source_reg_2[4:1] == 4'b0) &&
