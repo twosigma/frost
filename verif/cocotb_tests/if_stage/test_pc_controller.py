@@ -1016,6 +1016,62 @@ async def test_walk_past_even_owner_never_lands_inside_predecessor(dut: Any) -> 
 
 
 @cocotb.test()
+async def test_walk_past_can_capture_the_next_prediction(dut: Any) -> None:
+    """Stale cleanup cannot discard a following prediction accepted without holdoff."""
+    await _setup_test(dut)
+    await _clear_reset_holdoff(dut)
+    await _start_word_stream_at(dut, BASE_PC)
+    _clear_inputs(dut)
+    for name in (
+        "i_pc_fetch_advance_sel",
+        "i_pc_fetch_advance_sel_one",
+        "i_pc_fetch_advance_sel_two",
+        "i_pc_reg_advance_sel",
+        "i_pc_reg_advance_sel_one",
+        "i_pc_reg_advance_sel_two",
+        "i_pc_reg_advance_sel_nop",
+    ):
+        getattr(dut, name).value = PC_ADV_PLUS2
+    await _advance_cycle(dut)
+    owner = BASE_PC + 6
+    _drive_slot1_prediction(dut, target=owner + 4)
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=owner + 4, pc_reg=owner - 2)
+
+    # The released predecessor is native and steps over the overlapping entry.
+    _clear_inputs(dut)
+    dut.i_prediction_holdoff.value = 1
+    dut.i_sel_prediction_r.value = 1
+    dut.i_predicted_target_r.value = owner + 4
+    await _advance_cycle(dut)
+    _clear_inputs(dut)
+    await _settle()
+    next_owner = int(dut.o_pc.value)
+    assert int(dut.o_pc_reg.value) == owner + 2
+    assert dut.pending_prediction_valid.value
+    assert dut.pc_reg_after_pending.value
+    assert not dut.o_any_holdoff_safe.value
+    assert not dut.o_pending_prediction_holdoff.value
+
+    # A compressed output precedes the next lookup, so it is not a slot-2 alias.
+    dut.i_is_compressed.value = 1
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS2
+    dut.i_prediction_requires_pc_reg_handoff.value = 1
+    _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
+    await _advance_cycle(dut)
+    dut._log.info(
+        "walk-past replacement: lookup=%#x valid=%d saved_pc=%#x target=%#x",
+        next_owner, int(dut.pending_prediction_valid.value),
+        int(dut.pending_prediction_pc.value), int(dut.pending_prediction_target.value),
+    )
+    assert dut.pending_prediction_valid.value
+    assert int(dut.pending_prediction_pc.value) == next_owner
+    assert int(dut.pending_prediction_target.value) == HALFWORD_PRED_TARGET
+    _assert_pending_predecessor_relation(dut)
+
+
+@cocotb.test()
 async def test_prediction_holdoff_predecessor_release_advances_pc_reg(
     dut: Any,
 ) -> None:
