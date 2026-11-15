@@ -2368,8 +2368,8 @@ module reservation_station #(
             .i_write_data({payload_wr_data_2, payload_wr_data}),
             .o_read_data(reference_payload)
         );
-        // A random-start simulation begins with arbitrary RAM contents and
-        // registers, so the checks start after local reset.
+        // The local guard requires a sampled reset. System simulations also
+        // wait for the testbench's driven reset interval.
         logic second_payload_reset_seen_q = 1'b0;
         always_ff @(posedge i_clk) if (!i_rst_n) second_payload_reset_seen_q <= 1'b1;
         always @(posedge i_clk) begin

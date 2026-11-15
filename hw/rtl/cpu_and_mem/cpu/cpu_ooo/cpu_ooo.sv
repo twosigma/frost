@@ -4596,11 +4596,10 @@ module cpu_ooo #(
   // fails here, whatever the front end did to reach it: a stale prediction,
   // a lost redirect, or a fetch that skipped or repeated code.
   //
-  // Every check in this block waits for the first reset: a random-start
-  // simulation begins with arbitrary registers, the registered resets
-  // included, so i_rst can be low before any reset while the state these
-  // checks read is arbitrary. The next-PC check then arms at the first
-  // retirement; WFI seeding does not move it.
+  // These checks require local reset history. System assertions arm after
+  // the testbench's driven reset reaches the active clock domains. The
+  // next-PC check then arms at the first retirement; WFI seeding does not
+  // move it.
   logic next_pc_reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (i_rst) next_pc_reset_seen_q <= 1'b1;
   logic next_pc_check_armed_q;
