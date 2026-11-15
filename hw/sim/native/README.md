@@ -4,17 +4,18 @@
 [`hw/rtl/frost.f`](../../rtl/frost.f) into a standalone C++ Verilator executable
 (`frost-native`) with no Python or VPI layer in the simulation loop.
 
-`frost-native` instantiates `frost` with the same parameters as the program
-benches in [`tests/Makefile`](../../../tests/Makefile): the two-wide
-out-of-order RV64GCB processor, instruction and data MMUs, L0 load-queue cache,
-coherent L1 instruction and data caches, shared L2 coherence home, 256 KiB of
-on-chip BRAM, behavioral cached DDR4, UART, CLINT timer, APLIC and IMSIC
-interrupt controllers, memory error unit, and 10 Gigabit Ethernet subsystem.
-[`main.cpp`](main.cpp) drives the clocks and reset sequence identically to
-`prepare_program_start` in
+`frost-native` instantiates `frost` with the default parameters of
+[`tests/Makefile`](../../../tests/Makefile): the two-wide out-of-order RV64GCB
+processor, instruction and data MMUs, L0 load-queue cache, coherent L1
+instruction and data caches, shared L2 coherence home, 256 KiB of on-chip BRAM,
+behavioral AXI memory model, UART, CLINT timer, APLIC and IMSIC interrupt
+controllers, memory error unit, and 10 Gigabit Ethernet subsystem.
+[`main.cpp`](main.cpp) initializes the idle ports and reset synchronizers to
+match `prepare_program_start` in
 [`verif/cocotb_tests/test_real_program.py`](../../../verif/cocotb_tests/test_real_program.py),
-loads the compiled `sw.mem`, `sw64.mem`, and `sw_ddr.mem` images, and writes
-UART bytes to standard output as the CPU produces them.
+loads the compiled `sw.mem`, `sw64.mem`, and `sw_ddr.mem` images at time zero
+through the RTL `$readmemh` blocks, drives the clocks and cold-reset sequence,
+and writes UART bytes to standard output as the CPU produces them.
 
 [`frost_native.vlt`](frost_native.vlt) exposes only the six internal signals
 that [`main.cpp`](main.cpp) accesses: the CPU UART write strobe and byte, three
@@ -23,15 +24,53 @@ descriptor. Keeping the rest of the hierarchy internal lets Verilator inline
 and partition combinational and sequential logic across C++ translation units
 without VPI signal tables.
 
-Because the RTL source list, module parameters, program images, and clock and
-reset edges match the cocotb program bench, simulation is cycle-exact with
-[`tests/test_run_cocotb.py`](../../../tests/test_run_cocotb.py): UART output
-bytes, total simulated cycles, and benchmark tick counts match across both
-memory configurations (`bram` and `ddr`). On on-chip BRAM, `hello_world`
-finishes in 11,792 cycles and 1-iteration `coremark` finishes in 333,130 cycles
-(223,556 CoreMark ticks). On cached DDR, `hello_world` finishes in 12,821
-cycles and 1-iteration `coremark` finishes in 410,310 cycles (285,889 CoreMark
-ticks).
+`frost-native` matched the cocotb bench cycle for cycle on `hello_world` and
+CoreMark in both tiers (unseeded behavioral AXI memory model). Current recorded
+cycle counts, CoreMark tick counts, and UART digests live in
+[`exactness_baseline.json`](exactness_baseline.json), which `--update-baseline`
+regenerates from unseeded cocotb runs; CI checks BRAM and DDR `hello_world` and
+BRAM CoreMark against that file alongside a live cocotb BRAM `hello_world` run.
+
+Remaining build and runtime differences from [`tests/Makefile`](../../../tests/Makefile)
+and [`tests/test_run_cocotb.py`](../../../tests/test_run_cocotb.py) for the
+`frost` top level:
+
+- `hw/sim/native/Makefile` builds a C++ executable (`--MMD`, `-o frost-native`,
+  `main.cpp`) with selective signal visibility in
+  [`frost_native.vlt`](frost_native.vlt), whereas cocotb's `Makefile.verilator`
+  builds `--vpi --public-flat-rw -o Vtop` with `verilator.cpp` and
+  `-lcocotbvpi_verilator`.
+- `hw/sim/native/Makefile` passes `-O3` to Verilator, whereas `tests/Makefile`
+  leaves Verilator at its default HDL optimization level.
+- `hw/sim/native/Makefile` passes `--threads $(THREADS)` (and
+  `-Wno-UNOPTTHREADS` when `THREADS` is not `1`), whereas `tests/Makefile` runs
+  single-threaded without `--threads`.
+- When `ASSERTIONS=1` (the default), `hw/sim/native/Makefile` passes
+  `--assert +define+FROST_SIM_ASSERTIONS` (`tests/Makefile` itself does not add
+  `--assert` unless `tests/test_run_cocotb.py` appends `--assert` via
+  `FROST_VERILATOR_EXTRA_ARGS`, and `FROST_SIM_ASSERTIONS` is not defined in
+  `tests/Makefile` or referenced in `hw/rtl`), and `main.cpp` holds runtime
+  assertions off until 18 reset edges have elapsed.
+- When `SAVABLE=1`, `hw/sim/native/Makefile` passes `--savable`, which
+  `tests/Makefile` does not use.
+- `hw/sim/native/Makefile` passes `-CFLAGS` (`-march=native`, or
+  `-march=x86-64` when `PORTABLE=1`, `-std=c++17 -Wall -Wextra`,
+  `-DFROST_COMPILED_THREADS`, and assertion/savable defines), compiles
+  `Vtop.mk` with `OPT_FAST=-O3`, `OPT_SLOW=-O0`, and `OPT_GLOBAL=-O2`, and
+  links `libstdc++`, `libgcc`, and `libatomic` statically when
+  `STATIC_RUNTIME=1`.
+- One `frost-native` elaboration uses the `tests/Makefile` default parameters
+  across applications, whereas the `hello_world` entry in
+  `tests/test_run_cocotb.py` passes `-GCLK_FREQ_HZ=3686400` to check serial TX
+  pin timing.
+- `frost-native` loads `sw.mem`, `sw64.mem`, and `sw_ddr.mem` at time zero via
+  the RTL `$readmemh` `initial` blocks and steps `i_power_on_rst` across rising
+  edges `0..7` in C++, whereas cocotb steps through `ReadWrite` and 8 reset
+  edges and loads memory after cold reset through `sim_load_image` and a Python
+  instruction-memory predecode loader.
+- `frost-native` fixes the behavioral AXI memory model latency at
+  `DDR_MODEL_LATENCY=80` (matching unseeded local cocotb runs), whereas CI
+  cocotb jobs draw per-job memory timing from `FROST_DDR_MODEL_SEED`.
 
 ## Running Applications
 
@@ -63,12 +102,13 @@ To run another bare-metal application, pass its name from
 under `hw/sim/native/sim_build`, separate from `tests/sim_build`.
 
 For `hello_world`, the runner stops 10,000 drain cycles after the UART prints
-`Hello, world!`, matching the cocotb bench. For other applications, the runner
+`Hello, world!`, matching the cocotb bench, and reports both the stop-marker
+cycle and the drain window in the summary. For other applications, the runner
 stops as soon as the UART prints `<<PASS>>`, exits nonzero if the UART prints
-`<<FAIL>>`, and stops with a nonzero status if `--max-cycles` is reached first
-(default 5,000,000 cycles; `0` disables the cycle limit). Applications with a
-custom UART completion string can be run through `make -C hw/sim/native` inside
-the `frost` image:
+`<<FAIL>>`, an HDL assertion fails, or HDL executes `$finish`, and stops with a
+nonzero status if `--max-cycles` is reached first (default 5,000,000 cycles; `0`
+disables the cycle limit). Applications with a custom UART completion string can
+be run through `make -C hw/sim/native` inside the `frost` image:
 
 ```bash
 ./scripts/frost.py run make -C hw/sim/native run \
@@ -80,19 +120,20 @@ the `frost` image:
 | --- | --- | --- |
 | `APP` | `hello_world` | Application name passed to `sw/apps/compile_app.py` |
 | `MEM_CONFIG` / `--mem-config` | `bram` | Memory tier (`bram` or `ddr`) |
-| `THREADS` / `--threads` | `1` | Verilator partition and worker thread count |
+| `THREADS` / `--threads` | `1` (or compiled partition count when invoking `frost-native` directly) | Verilator partition and worker thread count |
 | `MAX_CYCLES` / `--max-cycles` | `5000000` | Cycle limit (`0` runs without a cycle limit) |
-| `STOP_MARKER` | `<<PASS>>` (`Hello, world!` for `hello_world`) | UART substring that marks completion; empty string runs until `MAX_CYCLES` |
+| `STOP_MARKER` | `<<PASS>>` (`Hello, world!` for `hello_world`) | UART substring that marks completion; empty string runs until `MAX_CYCLES` (HDL `$finish` still exits nonzero) |
 | `DRAIN_CYCLES` | `0` (`10000` for `hello_world`) | Extra cycles simulated after `STOP_MARKER` appears |
 | `ASSERTIONS` | `1` | Compile SystemVerilog assertions (`1` or `0`) |
 | `SAVABLE` | `0` | Compile Verilator `--savable` checkpoint support (`1` or `0`) |
 | `PORTABLE` | `0` | Use baseline `-march=x86-64` (`1`) instead of `-march=native` (`0`) |
+| `STATIC_RUNTIME` | `0` | Link `libstdc++`, `libgcc`, and `libatomic` statically (`1` or `0`) |
 | `EXTRA_RUN_ARGS` | empty | Extra flags forwarded to `frost-native` (`--uart-out`, `--summary-json`, `--save`, `--restore`, `--retire-trace`, `--no-assert`) |
 
 Verilator embeds the thread partition count into each generated model
 (`Vtop::threads()`), so `Makefile` keys each build directory by thread count,
-assertion mode, savable mode, and target architecture
-(`sim_build/model_t<THREADS>_a<ASSERTIONS>_s<SAVABLE>_<host|x86_64>`).
+assertion mode, savable mode, target architecture, and runtime linkage, and
+records the Verilator version and compiler flags in `.build-config`.
 
 ## What the Numbers Mean
 
@@ -101,74 +142,80 @@ At the end of a run, `frost-native` writes a summary block to standard error
 
 ```text
 --- FROST RTL simulation summary ---
-Simulated cycles : 333,130
-CoreMark ticks   : 223,556
-Wall time        : 45.369 s
-Simulation speed : 7,343 cycles/s (threads: 4)
+Simulated cycles : <cycles>
+CoreMark ticks   : <ticks>
+Wall time        : <seconds> s
+Simulation speed : <rate> cycles/s (threads: <N>)
 ```
+
+For runs with a post-marker drain such as `hello_world`, `Simulated cycles`
+breaks out the active cycles before the stop marker and the drain window
+(`<total> (<active> to stop marker + 10,000 drain)`). Current baseline cycle
+and tick counts for `hello_world` and `coremark` in both memory tiers are
+stored in [`exactness_baseline.json`](exactness_baseline.json).
 
 | Summary field | Meaning |
 | --- | --- |
-| `Simulated cycles` | Total rising edges of `i_clk` from time zero, including the 20-cycle cold reset sequence before `i_rst_n` releases (when resuming from a checkpoint, the summary also prints how many cycles advanced after restore) |
-| `CoreMark ticks` | Value of `Total 64-bit ticks` printed by CoreMark, read from the CPU `mcycle` CSR around the timed CoreMark loop without C startup or UART report printing |
+| `Simulated cycles` | Total rising edges of `i_clk` from time zero, including the 20-cycle cold reset sequence before `i_rst_n` releases (plus any post-marker drain cycles, and advanced cycles when resuming from a checkpoint) |
+| `CoreMark ticks` | Value of `Total 64-bit ticks` printed by CoreMark, read from the simulated CPU's `mcycle` CSR around the timed CoreMark loop without C startup or UART report printing |
 | `Wall time` | Host elapsed time spent in the simulation loop, excluding software and Verilator compilation |
 | `Simulation speed` | Simulated clock cycles per host second (`Simulated cycles` divided by `Wall time`, or advanced cycles divided by `Wall time` after `--restore`) |
 
 On every simulated clock cycle, host software evaluates the combinational and
-sequential logic of the out-of-order core, MMUs, caches, coherence home,
-memories, and peripherals. That software evaluation runs at thousands of
-simulated cycles per second on an x86-64 CPU, depending on host processor,
-thread count, assertion mode, and cache or DDR activity. Physical FPGA hardware
-clocks every flip-flop and SRAM in parallel, so hardware executes the same
-RTL many thousands of times faster than software simulation: 333,130 cycles is
-tens of seconds in Verilator and well under a millisecond on hardware.
+sequential logic of the SoC in C++, depending on host processor, thread count,
+and memory-tier activity; RTL simulation is far slower than hardware.
 
 Bare-metal CoreMark prints `Baremetal Coremark 1 iterations, assuming 20000 Hz
 FPGA clock` because simulation builds compile CoreMark with `ITERATIONS=1` and
-a nominal 20 kHz constant to satisfy CoreMark's minimum-runtime check in a
-single iteration. `CoreMark ticks` is the hardware cycle count of that
-iteration.
+a nominal 20 kHz constant to satisfy CoreMark's minimum-time check in a single
+iteration. The printed `Total time`, `Iterations/Sec`, and `CoreMark 1.0` score
+lines are not meaningful at simulation speed; `CoreMark ticks` (`Total ticks`)
+is the simulated CPU's cycle count for that iteration.
 
 ## Standalone Demo Image
 
-[`demo/Dockerfile`](../../../demo/Dockerfile) packages precompiled
+[`demo/Dockerfile`](../../../demo/Dockerfile) packages checked, portable
 `frost-native` binaries (`1`, `4`, and `8` threads) and prebuilt `hello_world`
 and `coremark` images (`bram` and `ddr`) into a small `ubuntu:26.04` container
 with no compiler, Python runtime, or repository checkout inside the runtime
 stage.
 
-With the `frost` toolchain image built locally (`docker build -t frost .`),
-build and run the standalone demo image from the repository root:
+Building `frost-demo:local` requires the local `frost` development image
+(`docker build -t frost .`) and an initialized CoreMark submodule:
 
 ```bash
+git submodule update --init --recursive sw/apps/coremark/coremark
 docker build -f demo/Dockerfile -t frost-demo:local .
-docker run --rm frost-demo:local
+docker run --rm -it frost-demo:local
 ```
 
 By default, [`demo/run_demo.sh`](../../../demo/run_demo.sh) selects 4 simulator
-threads when at least 4 host CPUs are visible (`1` otherwise), runs
-`hello_world` on the RTL, and then runs 1-iteration CRC-checked `coremark`,
-printing live UART output and the simulation summary for each run. Options
+threads when at least 4 effective CPUs are available after CPU affinity and
+cgroup `--cpus` limits (`1` otherwise), runs `hello_world` on the RTL, explains
+the single-iteration CoreMark output, and runs CRC-checked `coremark`. Options
 select the thread partition, memory tier, or workload:
 
 ```bash
-docker run --rm frost-demo:local --threads 8
-docker run --rm frost-demo:local --threads 1 --app hello_world
-docker run --rm frost-demo:local --mem-config ddr --app coremark
+docker run --rm -it frost-demo:local --threads 8
+docker run --rm -it frost-demo:local --threads 1 --app hello_world
+docker run --rm -it frost-demo:local --mem-config ddr --app coremark
 docker run --rm frost-demo:local --help
 ```
 
-The demo binaries are compiled with `PORTABLE=1` (`-O3 -march=x86-64`) and link
-`libstdc++`, `libgcc`, and `libatomic` statically so they run on baseline
-64-bit x86 Linux hosts without host-specific AVX/ISA requirements.
+The demo binaries are compiled with `ASSERTIONS=1`, `PORTABLE=1`
+(`-march=x86-64` across all C++ files, with `-O3` on hot model files and
+`main.cpp`, `-O0` on cold/initializer files, and `-O2` on the Verilator
+runtime), and `STATIC_RUNTIME=1` so RTL checks stay enabled and `libstdc++`,
+`libgcc`, and `libatomic` are linked statically for baseline 64-bit x86 Linux
+hosts.
 
 ## Assertions, Retirement Trace, and Checkpoints
 
 | Mechanism | Behavior |
 | --- | --- |
-| Assertions (`ASSERTIONS=1`) | Default for `hw/sim/native/Makefile`, `./scripts/frost.py native`, and `tests/test_native_sim.py`. Verilator compiles immediate and concurrent SystemVerilog assertions (`--assert +define+FROST_SIM_ASSERTIONS`). `main.cpp` disables assertions (`VerilatedContext::assertOn(false)`) before model construction and time-zero evaluation so uninitialized state during cold reset cannot trip assertions, then enables them (`assertOn(true)`) after 18 reset edges, right before `i_rst_n` releases on cycle 20. Pass `--no-assert` to keep runtime assertions disabled in a checked build. `demo/Dockerfile` compiles with `ASSERTIONS=0` because the demo container runs fixed `hello_world` and `coremark` images verified by `tests/test_native_sim.py`, avoiding per-cycle assertion overhead and reducing binary size. |
-| Retirement trace | Outside synthesis, `reorder_buffer.sv` opens `retire_trace.log` in an `initial` block and writes one line per retired instruction whenever `retire_trace_fd` is nonzero. `main.cpp` constructs the model inside a private temporary staging directory, closes `retire_trace_fd` and sets it to `0` before cycle 0, and removes the temporary directory. No `retire_trace.log` is written unless `--retire-trace <path>` is passed. |
-| Checkpoints (`SAVABLE=1`) | Building with `SAVABLE=1` enables `--save <path>`, `--save-at <cycle>`, and `--restore <path>`. A checkpoint stores the cycle count, simulation time, stop-marker state, accumulated UART bytes, and the serialized `Vtop` model (including BRAM and behavioral DDR contents). `--restore <path>` resumes simulation from that cycle without needing `.mem` files on disk. |
+| Assertions (`ASSERTIONS=1`) | Default for `hw/sim/native/Makefile`, `./scripts/frost.py native`, `demo/Dockerfile`, and `tests/test_native_sim.py`. Verilator compiles immediate and concurrent SystemVerilog assertions (`--assert +define+FROST_SIM_ASSERTIONS`). `main.cpp` disables assertions (`VerilatedContext::assertOn(false)`) before model construction and time-zero evaluation so uninitialized state during cold reset cannot trip assertions, then enables them (`assertOn(true)`) after 18 reset edges, right before `i_rst_n` releases on cycle 20. Pass `--no-assert` or `+verilator+noassert` to keep runtime assertions disabled in a checked build. |
+| Retirement trace | Outside synthesis, `reorder_buffer.sv` opens `retire_trace.log` in an `initial` block and calls `$fwrite(retire_trace_fd, ...)` on each retired instruction. `main.cpp` constructs the model inside a private temporary staging directory, closes `retire_trace_fd` and sets it to `0` before cycle 0 (for descriptor `0`, Verilator discards `$fwrite` output without writing a file), and removes the temporary directory. No `retire_trace.log` is written unless `--retire-trace <path>` is passed; when combined with `--restore`, the trace file is opened after checkpoint deserialization. |
+| Checkpoints (`SAVABLE=1`) | Building with `SAVABLE=1` enables `--save <path>`, `--save-at <cycle>`, and `--restore <path>`. A checkpoint stores the cycle count, simulation time, stop-marker state, accumulated UART bytes, and the serialized `Vtop` model (including BRAM and behavioral AXI memory contents). `--restore <path>` resumes simulation from that cycle without needing `.mem` files on disk. If `--save-at <cycle>` is not reached before simulation stops, `frost-native` exits nonzero. |
 
 Example checkpoint save and restore run inside the `frost` image:
 
@@ -183,23 +230,41 @@ Example checkpoint save and restore run inside the `frost` image:
     --restore /tmp/coremark_150k.ckpt --threads 4 --stop "<<PASS>>"
 ```
 
-## Verification and Portability
+## Verification, Baseline Regeneration, and Portability
 
 [`tests/test_native_sim.py`](../../../tests/test_native_sim.py) checks that
-`hw/sim/native/Makefile` uses the same `frost` top-level parameters as
-`tests/Makefile`, checks the baseline records in
-[`exactness_baseline.json`](exactness_baseline.json), builds the checked native
-model, and verifies that `hello_world` and `coremark` in both `bram` and `ddr`
-match the cocotb flow in UART byte count, UART SHA-256 digest, simulated cycle
-count, and CoreMark ticks, as well as checkpoint save/restore equivalence. In
-CI, the `test-native` job in
-[`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml) builds the
-checked model once and runs `python3 tests/test_native_sim.py --ci`
-(`hello_world` on BRAM and DDR, plus `coremark` on BRAM).
+`hw/sim/native/Makefile` matches `tests/Makefile`'s `frost` top-level
+parameters and differs from `tests/Makefile`'s Verilator flags only by the
+documented native runner options, checks the baseline records in
+[`exactness_baseline.json`](exactness_baseline.json), exercises RTL assertion,
+HDL `$finish`, and split-marker failure paths, builds the checked native model,
+and verifies that `hello_world` and `coremark` in both `bram` and `ddr` match
+the recorded cocotb values in UART byte count, UART SHA-256 digest, simulated
+cycle count, and CoreMark ticks, as well as checkpoint save/restore
+equivalence.
+
+In CI, the `test-native` job in
+[`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml) runs one live
+unseeded cocotb BRAM `hello_world` simulation against
+`exactness_baseline.json`, builds the checked 4-thread portable static binary
+(`ASSERTIONS=1 SAVABLE=0 PORTABLE=1 STATIC_RUNTIME=1`, or 1 thread when fewer
+than 4 CPUs are available), checks `readelf -d`, and runs BRAM and DDR
+`hello_world`, BRAM `coremark`, and `demo/run_demo.sh` (`--app hello_world`).
+CI does not build `demo/Dockerfile` or the runtime image itself, the 1- and
+8-thread demo binaries, DDR `coremark`, or `SAVABLE=1` checkpoints; `--all`
+(and the `slow` pytest target) covers DDR `coremark` and checkpoints locally.
+
+When an intentional RTL or software change alters cycle counts, tick counts, or
+UART output, regenerate `exactness_baseline.json` from unseeded cocotb runs
+with:
+
+```bash
+./scripts/frost.py run python3 tests/test_native_sim.py --update-baseline
+```
 
 Portability scope:
 
-- Tested on x86-64 Linux inside Docker (`frost` toolchain container and
+- Tested on x86-64 Linux inside Docker (`frost` development container and
   `frost-demo:local` runtime container on Ubuntu 26.04).
 - Not tested natively outside Docker, on `linux/arm64` hosts, on macOS (Docker
   Desktop Linux VMs or Apple Silicon emulation), or on Windows / WSL2.

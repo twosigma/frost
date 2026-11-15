@@ -26,12 +26,36 @@ THREADS ?= 1
 ASSERTIONS ?= 1
 SAVABLE ?= 0
 PORTABLE ?= 0
-FROST_RANDOM_START ?= 0
-FROST_RANDOM_START_VERILATOR_SEED ?= 1
+STATIC_RUNTIME ?= 0
 MAX_CYCLES ?=
 EXTRA_RUN_ARGS ?=
 
-NUMBER_OF_CPU_CORES ?= $(shell nproc)
+NUMBER_OF_CPU_CORES ?= $(shell \
+	cpus=$$(nproc 2>/dev/null || echo 1); \
+	case "$$cpus" in ''|*[!0-9]*|0) cpus=1 ;; esac; \
+	if [ -r /sys/fs/cgroup/cpu.max ]; then \
+		read -r quota period _rest < /sys/fs/cgroup/cpu.max || true; \
+		case "$${quota:-}:$${period:-}" in \
+			''|:*|*:|*[!0-9]*:*|*:*[!0-9]*) ;; \
+			*) if [ "$$quota" -gt 0 ] && [ "$$period" -gt 0 ]; then \
+				cg=$$(( quota / period )); \
+				[ "$$cg" -lt 1 ] && cg=1; \
+				[ "$$cg" -lt "$$cpus" ] && cpus="$$cg"; \
+			fi ;; \
+		esac; \
+	elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ] && [ -r /sys/fs/cgroup/cpu/cpu.cfs_period_us ]; then \
+		read -r quota _rest < /sys/fs/cgroup/cpu/cpu.cfs_quota_us || true; \
+		read -r period _rest < /sys/fs/cgroup/cpu/cpu.cfs_period_us || true; \
+		case "$${quota:-}:$${period:-}" in \
+			''|:*|*:|*[!0-9]*:*|*:*[!0-9]*) ;; \
+			*) if [ "$$quota" -gt 0 ] && [ "$$period" -gt 0 ]; then \
+				cg=$$(( quota / period )); \
+				[ "$$cg" -lt 1 ] && cg=1; \
+				[ "$$cg" -lt "$$cpus" ] && cpus="$$cg"; \
+			fi ;; \
+		esac; \
+	fi; \
+	echo "$$cpus")
 
 # Keep toplevel parameters aligned with tests/Makefile (TOPLEVEL=frost).
 SIM_MEM_SIZE_BYTES ?= 262144
@@ -49,9 +73,15 @@ $(error MEM_CONFIG must be bram or ddr (got '$(MEM_CONFIG)'))
 endif
 endif
 
+ifneq ($(STATIC_RUNTIME),0)
+ifneq ($(STATIC_RUNTIME),1)
+$(error STATIC_RUNTIME must be 0 or 1 (got '$(STATIC_RUNTIME)'))
+endif
+endif
+
 ARCH_TAG := $(if $(filter 1,$(PORTABLE)),x86_64,host)
-RAND_TAG := $(if $(filter 1,$(FROST_RANDOM_START)),_r1,)
-MODEL_TAG := t$(THREADS)_a$(ASSERTIONS)_s$(SAVABLE)_$(ARCH_TAG)$(RAND_TAG)
+STATIC_TAG := $(if $(filter 1,$(STATIC_RUNTIME)),_static,)
+MODEL_TAG := t$(THREADS)_a$(ASSERTIONS)_s$(SAVABLE)_$(ARCH_TAG)$(STATIC_TAG)
 
 SIM_BUILD ?= $(ROOT)/hw/sim/native/sim_build
 MODEL_DIR := $(SIM_BUILD)/model_$(MODEL_TAG)
@@ -60,8 +90,10 @@ CONFIG_STAMP := $(MODEL_DIR)/.build-config
 APP_STAGE_DIR := $(SIM_BUILD)/apps/$(APP)_$(MEM_CONFIG)
 
 CXX_ARCH_FLAG := $(if $(filter 1,$(PORTABLE)),-march=x86-64,-march=native)
-CXX_OPT_FAST := -O3 $(CXX_ARCH_FLAG)
-CXX_OPT_SLOW := -O2 $(CXX_ARCH_FLAG)
+CXX_OPT_FAST ?= -O3
+CXX_OPT_SLOW ?= -O0
+CXX_OPT_GLOBAL ?= -O2
+VERILATOR_VERSION := $(shell verilator --version 2>/dev/null || echo unknown)
 
 NATIVE_DEFINES :=
 VERILATOR_FLAGS := \
@@ -73,19 +105,12 @@ VERILATOR_FLAGS := \
 	$(ROOT)/hw/sim/native/frost_native.vlt \
 	-f $(ROOT)/hw/rtl/frost.f \
 	--timescale 1ns/1ps \
-	-j $(NUMBER_OF_CPU_CORES) \
 	-Wno-UNOPTFLAT -Wno-MODDUP \
 	-O3 \
 	--threads $(THREADS)
 
 ifneq ($(THREADS),1)
 VERILATOR_FLAGS += -Wno-UNOPTTHREADS
-endif
-
-ifeq ($(FROST_RANDOM_START),1)
-VERILATOR_FLAGS += --x-assign unique --x-initial unique --x-initial-edge +define+FROST_RANDOM_START
-else
-VERILATOR_FLAGS += --x-assign fast --x-initial fast
 endif
 
 ifeq ($(ASSERTIONS),1)
@@ -116,14 +141,21 @@ VERILATOR_FLAGS += $(FROST_VERILATOR_EXTRA_ARGS)
 endif
 
 NATIVE_LDFLAGS ?=
-ifneq ($(strip $(NATIVE_LDFLAGS)),)
-VERILATOR_FLAGS += -LDFLAGS "$(NATIVE_LDFLAGS)"
+STATIC_RUNTIME_LDFLAGS :=
+ifeq ($(STATIC_RUNTIME),1)
+STATIC_RUNTIME_LDFLAGS := -static-libstdc++ -static-libgcc -Wl,-Bstatic -latomic -Wl,-Bdynamic -Wl,--as-needed
+endif
+EFFECTIVE_LDFLAGS := $(strip $(STATIC_RUNTIME_LDFLAGS) $(NATIVE_LDFLAGS))
+ifneq ($(EFFECTIVE_LDFLAGS),)
+VERILATOR_FLAGS += -LDFLAGS "$(EFFECTIVE_LDFLAGS)"
 endif
 
-NATIVE_CFLAGS := $(CXX_OPT_FAST) -std=c++17 -Wall -Wextra $(NATIVE_DEFINES)
+# Keep optimization level flags out of -CFLAGS so Verilator's OPT_SLOW (-O0)
+# applies to generated cold/initializer translation units instead of -O3.
+NATIVE_CFLAGS := $(CXX_ARCH_FLAG) -std=c++17 -Wall -Wextra -DFROST_COMPILED_THREADS=$(THREADS) $(NATIVE_DEFINES)
 VERILATOR_FLAGS += -CFLAGS "$(NATIVE_CFLAGS)"
 
-EFFECTIVE_MODEL_CONFIG := $(VERILATOR_FLAGS)|OPT_FAST=$(CXX_OPT_FAST)|OPT_SLOW=$(CXX_OPT_SLOW)
+EFFECTIVE_MODEL_CONFIG := $(VERILATOR_FLAGS)|VERILATOR=$(VERILATOR_VERSION)|OPT_FAST=$(CXX_OPT_FAST)|OPT_SLOW=$(CXX_OPT_SLOW)|OPT_GLOBAL=$(CXX_OPT_GLOBAL)
 shell_quote = '$(subst ','"'"',$(1))'
 
 ifeq ($(APP),hello_world)
@@ -142,10 +174,6 @@ RUN_ARGS := \
 
 ifneq ($(strip $(MAX_CYCLES)),)
 RUN_ARGS += --max-cycles "$(MAX_CYCLES)"
-endif
-
-ifeq ($(FROST_RANDOM_START),1)
-RUN_ARGS += +verilator+rand+reset+2 +verilator+seed+$(FROST_RANDOM_START_VERILATOR_SEED)
 endif
 
 ifneq ($(strip $(EXTRA_RUN_ARGS)),)
@@ -175,12 +203,13 @@ $(CONFIG_STAMP): FORCE
 
 $(MODEL_DIR)/Vtop.mk: $(ROOT)/hw/sim/native/frost_native.vlt $(ROOT)/hw/rtl/frost.f $(CONFIG_STAMP)
 	@mkdir -p "$(MODEL_DIR)"
-	verilator $(VERILATOR_FLAGS) "$(ROOT)/hw/sim/native/main.cpp"
+	verilator -j "$(NUMBER_OF_CPU_CORES)" $(VERILATOR_FLAGS) "$(ROOT)/hw/sim/native/main.cpp"
 
 $(MODEL_BIN): $(MODEL_DIR)/Vtop.mk $(ROOT)/hw/sim/native/main.cpp
 	$(MAKE) -C "$(MODEL_DIR)" -f Vtop.mk -j"$(NUMBER_OF_CPU_CORES)" \
 		OPT_FAST="$(CXX_OPT_FAST)" \
-		OPT_SLOW="$(CXX_OPT_SLOW)"
+		OPT_SLOW="$(CXX_OPT_SLOW)" \
+		OPT_GLOBAL="$(CXX_OPT_GLOBAL)"
 
 stage-app:
 	@set -euo pipefail; \

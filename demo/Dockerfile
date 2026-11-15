@@ -13,8 +13,8 @@
 #    limitations under the License.
 
 # Standalone runtime image for running FROST RTL on hello_world and CoreMark.
-# Compiles portable baseline x86-64 Verilator models (-march=x86-64) and
-# copies only the compiled binaries and memory images into ubuntu:26.04.
+# Compiles checked, portable baseline x86-64 Verilator models (-march=x86-64)
+# and copies only the compiled binaries and memory images into ubuntu:26.04.
 
 ARG BUILD_IMAGE=frost:latest
 FROM ${BUILD_IMAGE} AS build
@@ -36,17 +36,16 @@ RUN set -eux; \
     make -C /src/hw/sim/native stage-app APP=hello_world MEM_CONFIG=ddr; \
     make -C /src/hw/sim/native stage-app APP=coremark MEM_CONFIG=bram; \
     make -C /src/hw/sim/native stage-app APP=coremark MEM_CONFIG=ddr; \
-    static_libs="-static-libstdc++ -static-libgcc -Wl,-Bstatic -latomic -Wl,-Bdynamic -Wl,--as-needed"; \
     for t in 1 4 8; do \
         make -C /src/hw/sim/native build \
             THREADS="$t" \
-            ASSERTIONS=0 \
+            ASSERTIONS=1 \
             SAVABLE=0 \
             PORTABLE=1 \
-            NUMBER_OF_CPU_CORES="${BUILD_JOBS}" \
-            NATIVE_LDFLAGS="$static_libs"; \
+            STATIC_RUNTIME=1 \
+            NUMBER_OF_CPU_CORES="${BUILD_JOBS}"; \
         install -D -m 0755 \
-            "/src/hw/sim/native/sim_build/model_t${t}_a0_s0_x86_64/frost-native" \
+            "/src/hw/sim/native/sim_build/model_t${t}_a1_s0_x86_64_static/frost-native" \
             "/out/opt/frost-demo/bin/frost-native-t${t}"; \
         strip --strip-unneeded "/out/opt/frost-demo/bin/frost-native-t${t}"; \
         ! readelf -d "/out/opt/frost-demo/bin/frost-native-t${t}" | grep -E 'lib(stdc\+\+|gcc_s|atomic)'; \

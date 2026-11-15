@@ -21,6 +21,7 @@
 #include "verilated_save.h"
 #endif
 
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -42,6 +43,15 @@ namespace fs = std::filesystem;
 
 namespace
 {
+
+#ifndef FROST_COMPILED_THREADS
+#define FROST_COMPILED_THREADS 1
+#endif
+
+constexpr uint64_t kCompiledThreads = FROST_COMPILED_THREADS;
+constexpr uint64_t kMaxThreads = 256;
+static_assert(kCompiledThreads >= 1 && kCompiledThreads <= kMaxThreads,
+              "FROST_COMPILED_THREADS must be between 1 and 256");
 
 volatile std::sig_atomic_t g_interrupted = 0;
 
@@ -90,8 +100,9 @@ std::optional<uint64_t> parse_coremark_ticks(const std::string &uart_text)
             continue;
         }
         char *end = nullptr;
+        errno = 0;
         unsigned long long parsed = std::strtoull(uart_text.c_str() + idx, &end, 10);
-        if (end != uart_text.c_str() + idx) {
+        if (errno == 0 && end != uart_text.c_str() + idx) {
             return static_cast<uint64_t>(parsed);
         }
     }
@@ -119,7 +130,7 @@ void print_usage(const char *prog)
         << "Usage: " << prog << " [options] [+verilator+...]\n\n"
         << "Options:\n"
         << "  --mem-dir <dir>       Directory holding sw.mem, sw64.mem, sw_ddr.mem (default: .)\n"
-        << "  --threads <N>         Simulation thread count (default: 1)\n"
+        << "  --threads <N>         Simulation thread count (default: " << kCompiledThreads << ")\n"
         << "  --max-cycles <N>      Maximum simulated cycles, 0 for unlimited (default: 5000000)\n"
         << "  --stop <text>         Stop after UART emits <text> (default: <<PASS>>, empty "
            "disables)\n"
@@ -213,6 +224,68 @@ bool setup_image_staging(const fs::path &mem_dir,
     return true;
 }
 
+bool write_run_outputs(const fs::path &uart_out_path,
+                       const fs::path &summary_json_path,
+                       const std::string &uart_output,
+                       uint64_t cycles,
+                       uint64_t start_cycle,
+                       bool marker_seen,
+                       uint64_t marker_cycle,
+                       uint64_t drain_cycles,
+                       double wall_seconds,
+                       uint64_t threads_u64,
+                       bool passed,
+                       bool failed)
+{
+    if (!uart_out_path.empty()) {
+        std::ofstream uart_out(uart_out_path, std::ios::binary);
+        if (!uart_out) {
+            std::cerr << "Error: cannot write --uart-out path " << uart_out_path << "\n";
+            return false;
+        }
+        uart_out.write(uart_output.data(), static_cast<std::streamsize>(uart_output.size()));
+    }
+
+    if (!summary_json_path.empty()) {
+        std::ofstream json_out(summary_json_path);
+        if (!json_out) {
+            std::cerr << "Error: cannot write --summary-json path " << summary_json_path << "\n";
+            return false;
+        }
+        const uint64_t advanced_cycles = cycles - start_cycle;
+        const double cycles_per_second =
+            wall_seconds > 0.0 ? static_cast<double>(advanced_cycles) / wall_seconds : 0.0;
+        const std::optional<uint64_t> coremark_ticks = parse_coremark_ticks(uart_output);
+        json_out << "{\n"
+                 << "  \"cycles\": " << cycles << ",\n"
+                 << "  \"advanced_cycles\": " << advanced_cycles << ",\n"
+                 << "  \"marker_cycle\": ";
+        if (marker_seen) {
+            json_out << (marker_cycle + 1);
+        } else {
+            json_out << "null";
+        }
+        json_out << ",\n"
+                 << "  \"drain_cycles\": " << drain_cycles << ",\n"
+                 << "  \"uart_bytes\": " << uart_output.size() << ",\n"
+                 << "  \"coremark_ticks\": ";
+        if (coremark_ticks.has_value()) {
+            json_out << *coremark_ticks;
+        } else {
+            json_out << "null";
+        }
+        json_out << ",\n"
+                 << std::fixed << std::setprecision(6) << "  \"wall_seconds\": " << wall_seconds
+                 << ",\n"
+                 << "  \"cycles_per_second\": " << cycles_per_second << ",\n"
+                 << "  \"threads\": " << threads_u64 << ",\n"
+                 << "  \"passed\": " << (passed ? "true" : "false") << ",\n"
+                 << "  \"failed\": " << (failed ? "true" : "false") << "\n"
+                 << "}\n";
+    }
+    return true;
+}
+
 #ifdef FROST_NATIVE_SAVABLE
 bool write_checkpoint(const fs::path &save_path,
                       uint64_t cycles,
@@ -249,7 +322,7 @@ int main(int argc, char **argv)
 
     fs::path mem_dir = ".";
     bool mem_dir_explicit = false;
-    uint64_t threads_u64 = 1;
+    uint64_t threads_u64 = kCompiledThreads;
     uint64_t max_cycles = 5000000;
     std::string stop_marker = "<<PASS>>";
     uint64_t drain_cycles = 0;
@@ -283,8 +356,15 @@ int main(int argc, char **argv)
             mem_dir = require_value("--mem-dir");
             mem_dir_explicit = true;
         } else if (arg == "--threads") {
-            if (!parse_u64(require_value("--threads"), &threads_u64) || threads_u64 == 0) {
-                std::cerr << "Error: --threads must be a positive integer\n";
+            if (!parse_u64(require_value("--threads"), &threads_u64) || threads_u64 == 0 ||
+                threads_u64 > kMaxThreads) {
+                std::cerr << "Error: --threads must be between 1 and " << kMaxThreads << "\n";
+                return 2;
+            }
+            if (threads_u64 < kCompiledThreads) {
+                std::cerr << "Error: --threads (" << threads_u64
+                          << ") cannot be less than compiled model partition count ("
+                          << kCompiledThreads << ")\n";
                 return 2;
             }
         } else if (arg == "--max-cycles") {
@@ -321,6 +401,9 @@ int main(int argc, char **argv)
         } else if (arg == "--restore") {
             restore_path = require_value("--restore");
         } else if (!arg.empty() && arg[0] == '+') {
+            if (arg == "+verilator+noassert") {
+                arm_assertions_after_reset = false;
+            }
             verilator_args.push_back(argv[i]);
         } else {
             std::cerr << "Error: unrecognized argument '" << arg << "'\n";
@@ -350,6 +433,7 @@ int main(int argc, char **argv)
     }
 
     auto ctx = std::make_unique<VerilatedContext>();
+    ctx->fatalOnError(false);
     ctx->threads(static_cast<unsigned>(threads_u64));
     const char *numa_env = std::getenv("VERILATOR_NUMA_STRATEGY");
     if (!numa_assign && (numa_env == nullptr || std::strcmp(numa_env, "default") != 0)) {
@@ -362,6 +446,11 @@ int main(int argc, char **argv)
     // reset, then enable them once reset has propagated through every domain.
     ctx->assertOn(false);
 #endif
+
+    uint64_t cycles = 0;
+    bool marker_seen = false;
+    uint64_t marker_cycle = 0;
+    std::string uart_output;
 
     auto top = std::make_unique<Vtop>(ctx.get());
     auto *root = top->rootp;
@@ -419,19 +508,6 @@ int main(int argc, char **argv)
         staging.temp_dir.clear();
     }
 
-    if (!retire_trace_path.empty()) {
-        retire_fd = VL_FOPEN_NN(retire_trace_path.string(), "w");
-        if (retire_fd == 0) {
-            std::cerr << "Error: cannot open --retire-trace path " << retire_trace_path << "\n";
-            return 2;
-        }
-    }
-
-    uint64_t cycles = 0;
-    bool marker_seen = false;
-    uint64_t marker_cycle = 0;
-    std::string uart_output;
-
 #ifdef FROST_NATIVE_SAVABLE
     if (!restore_path.empty()) {
         std::error_code ec;
@@ -446,18 +522,22 @@ int main(int argc, char **argv)
         in >> cycles >> simtime >> seen_flag >> marker_cycle >> uart_output >> *top;
         in.close();
         marker_seen = (seen_flag != 0);
-        if (stop_marker.empty() || uart_output.find(stop_marker) == std::string::npos) {
+        if (stop_marker.empty()) {
             marker_seen = false;
             marker_cycle = 0;
-        } else if (!marker_seen) {
-            marker_seen = true;
-            marker_cycle = cycles;
+        } else {
+            const size_t pos = uart_output.find(stop_marker);
+            if (pos == std::string::npos) {
+                marker_seen = false;
+                marker_cycle = 0;
+            } else if (!marker_seen) {
+                marker_seen = true;
+                marker_cycle = cycles > 0 ? cycles - 1 : 0;
+            }
         }
         ctx->time(simtime);
-        // Never carry an open file descriptor value across a saved image.
-        if (retire_trace_path.empty()) {
-            retire_fd = 0;
-        }
+        // Never carry a serialized file descriptor integer across a restore.
+        retire_fd = 0;
 #ifdef FROST_NATIVE_ASSERTIONS
         if (cycles >= 18 && arm_assertions_after_reset) {
             ctx->assertOn(true);
@@ -466,15 +546,25 @@ int main(int argc, char **argv)
     }
 #endif
 
+    // Open --retire-trace after any checkpoint restore so VerilatedRestore
+    // cannot overwrite retire_fd or leak an earlier descriptor.
+    if (!retire_trace_path.empty()) {
+        retire_fd = VL_FOPEN_NN(retire_trace_path.string(), "w");
+        if (retire_fd == 0) {
+            std::cerr << "Error: cannot open --retire-trace path " << retire_trace_path << "\n";
+            return 2;
+        }
+    }
+
     const uint64_t start_cycle = cycles;
-    size_t fail_search_offset = uart_output.size();
-    bool passed = marker_seen && cycles >= marker_cycle + drain_cycles + 1;
-    bool failed = false;
+    size_t fail_search_offset = uart_output.size() > 8 ? uart_output.size() - 8 : 0;
+    bool failed = ctx->gotError() || (uart_output.find("<<FAIL>>") != std::string::npos);
+    bool passed = !failed && marker_seen && cycles >= marker_cycle + drain_cycles + 1;
     bool saved_at_target = false;
 
     const auto sim_start = SteadyClock::now();
 
-    while (!passed && (max_cycles == 0 || cycles < max_cycles) && !ctx->gotFinish() &&
+    while (!failed && !passed && (max_cycles == 0 || cycles < max_cycles) && !ctx->gotFinish() &&
            !g_interrupted) {
         const uint64_t n = cycles;
 
@@ -484,8 +574,10 @@ int main(int argc, char **argv)
             uart_output.push_back(ch);
             std::fwrite(&ch, 1, 1, stdout);
             std::fflush(stdout);
-            if (!stop_marker.empty() && !marker_seen &&
-                uart_output.find(stop_marker) != std::string::npos) {
+            if (!stop_marker.empty() && !marker_seen && uart_output.size() >= stop_marker.size() &&
+                uart_output.compare(uart_output.size() - stop_marker.size(),
+                                    stop_marker.size(),
+                                    stop_marker) == 0) {
                 marker_seen = true;
                 marker_cycle = n;
             }
@@ -493,6 +585,13 @@ int main(int argc, char **argv)
 
         top->i_clk = 1;
         top->eval();
+        if (ctx->gotError()) {
+            failed = true;
+            break;
+        }
+        if (ctx->gotFinish()) {
+            break;
+        }
 
         bool edge_changed = false;
         if ((n & 1U) == 1U) {
@@ -513,6 +612,13 @@ int main(int argc, char **argv)
         }
         if (edge_changed) {
             top->eval();
+            if (ctx->gotError()) {
+                failed = true;
+                break;
+            }
+            if (ctx->gotFinish()) {
+                break;
+            }
         }
 
 #ifdef FROST_NATIVE_ASSERTIONS
@@ -524,6 +630,13 @@ int main(int argc, char **argv)
         ctx->time(1501 + n * 3000);
         top->i_clk = 0;
         top->eval();
+        if (ctx->gotError()) {
+            failed = true;
+            break;
+        }
+        if (ctx->gotFinish()) {
+            break;
+        }
 
         ++cycles;
 
@@ -556,8 +669,15 @@ int main(int argc, char **argv)
         }
     }
 
+    if (!failed && !g_interrupted && ctx->gotFinish()) {
+        failed = true;
+        std::cerr << "Error: simulation terminated early via HDL $finish at cycle "
+                  << format_with_commas(cycles) << "\n";
+    }
+
+    bool missed_save_target = false;
 #ifdef FROST_NATIVE_SAVABLE
-    if (!save_path.empty() && save_at_cycle == 0 && !saved_at_target) {
+    if (!save_path.empty() && save_at_cycle == 0 && !saved_at_target && !failed && !g_interrupted) {
         if (!write_checkpoint(save_path,
                               cycles,
                               ctx->time(),
@@ -567,6 +687,9 @@ int main(int argc, char **argv)
                               top.get())) {
             return 2;
         }
+    } else if (!save_path.empty() && save_at_cycle != 0 && !saved_at_target && !failed &&
+               !g_interrupted) {
+        missed_save_target = true;
     }
 #else
     (void) saved_at_target;
@@ -578,39 +701,22 @@ int main(int argc, char **argv)
         wall_seconds > 0.0 ? static_cast<double>(advanced_cycles) / wall_seconds : 0.0;
     const std::optional<uint64_t> coremark_ticks = parse_coremark_ticks(uart_output);
 
-    if (!uart_out_path.empty()) {
-        std::ofstream uart_out(uart_out_path, std::ios::binary);
-        if (!uart_out) {
-            std::cerr << "Error: cannot write --uart-out path " << uart_out_path << "\n";
-            return 2;
-        }
-        uart_out.write(uart_output.data(), static_cast<std::streamsize>(uart_output.size()));
-    }
+    const bool summary_passed = passed && !missed_save_target;
+    const bool summary_failed = failed || missed_save_target;
 
-    if (!summary_json_path.empty()) {
-        std::ofstream json_out(summary_json_path);
-        if (!json_out) {
-            std::cerr << "Error: cannot write --summary-json path " << summary_json_path << "\n";
-            return 2;
-        }
-        json_out << "{\n"
-                 << "  \"cycles\": " << cycles << ",\n"
-                 << "  \"advanced_cycles\": " << advanced_cycles << ",\n"
-                 << "  \"uart_bytes\": " << uart_output.size() << ",\n"
-                 << "  \"coremark_ticks\": ";
-        if (coremark_ticks.has_value()) {
-            json_out << *coremark_ticks;
-        } else {
-            json_out << "null";
-        }
-        json_out << ",\n"
-                 << std::fixed << std::setprecision(6) << "  \"wall_seconds\": " << wall_seconds
-                 << ",\n"
-                 << "  \"cycles_per_second\": " << cycles_per_second << ",\n"
-                 << "  \"threads\": " << threads_u64 << ",\n"
-                 << "  \"passed\": " << (passed ? "true" : "false") << ",\n"
-                 << "  \"failed\": " << (failed ? "true" : "false") << "\n"
-                 << "}\n";
+    if (!write_run_outputs(uart_out_path,
+                           summary_json_path,
+                           uart_output,
+                           cycles,
+                           start_cycle,
+                           marker_seen,
+                           marker_cycle,
+                           drain_cycles,
+                           wall_seconds,
+                           threads_u64,
+                           summary_passed,
+                           summary_failed)) {
+        return 2;
     }
 
     if (!quiet_summary) {
@@ -621,8 +727,15 @@ int main(int argc, char **argv)
         rate_text << format_with_commas(static_cast<uint64_t>(cycles_per_second + 0.5));
         std::cerr << "--- FROST RTL simulation summary ---\n";
         std::cerr << "Simulated cycles : " << format_with_commas(cycles);
-        if (start_cycle != 0) {
+        if (start_cycle != 0 && passed && drain_cycles > 0) {
+            std::cerr << " (" << format_with_commas(advanced_cycles) << " advanced; "
+                      << format_with_commas(marker_cycle + 1) << " to stop marker + "
+                      << format_with_commas(drain_cycles) << " drain)";
+        } else if (start_cycle != 0) {
             std::cerr << " (" << format_with_commas(advanced_cycles) << " advanced)";
+        } else if (passed && drain_cycles > 0) {
+            std::cerr << " (" << format_with_commas(marker_cycle + 1) << " to stop marker + "
+                      << format_with_commas(drain_cycles) << " drain)";
         }
         std::cerr << "\n";
         if (coremark_ticks.has_value()) {
@@ -645,6 +758,12 @@ int main(int argc, char **argv)
         return 128 + static_cast<int>(g_interrupted);
     }
     if (failed) {
+        return 1;
+    }
+    if (missed_save_target) {
+        std::cerr << "Error: --save-at cycle " << format_with_commas(save_at_cycle)
+                  << " was not reached before simulation stopped at cycle "
+                  << format_with_commas(cycles) << "\n";
         return 1;
     }
     const bool stopped_for_checkpoint =

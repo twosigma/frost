@@ -1592,14 +1592,15 @@ jobs:
             pytest tests \
               -m "not cocotb and not synthesis and not formal and not slow" -v
 
-  # Build the checked native C++ Verilator model once and verify cycle-exact
-  # agreement on hello_world and BRAM CoreMark.
+  # Compare one live cocotb BRAM hello_world run against exactness_baseline.json,
+  # build the checked 4-thread portable static native binary once, and verify
+  # BRAM and DDR hello_world, BRAM CoreMark, and demo/run_demo.sh.
   test-native:
     name: Native Simulator (hello_world and BRAM CoreMark)
     runs-on: ubuntu-26.04
     needs: [build-docker, gate]
     if: ${{ needs.gate.outputs.full == 'true' }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -1619,7 +1620,7 @@ jobs:
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
 
-      - name: Build native model once and verify hello_world and BRAM CoreMark
+      - name: Compare live cocotb hello_world and check native simulator
         env:
           FROST_SKIP_SUBMODULE_INIT: "1"
         run: |
