@@ -200,10 +200,24 @@ module nic_top #(
   end
 `ifndef SYNTHESIS
   bit reset_seen_q = 1'b0;
+`ifdef FROST_SIM_ASSERTIONS
+  // The startup control requires a named plusarg and a separate bench write.
+  bit sim_assertion_probe = 1'b0;
+  string sim_assertion_control;
+  initial begin
+    if (!$value$plusargs("frost_startup_assertion_control=%s", sim_assertion_control))
+      sim_assertion_control = "";
+  end
+`endif
   always_ff @(posedge i_clk) begin
     if (rst_q) reset_seen_q <= 1'b1;
     if (reset_seen_q && !$isunknown({rst_q, soft_rst, nic_rst_q})) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert ((nic_rst_q == (rst_q || soft_rst)) &&
+          !(sim_assertion_probe && sim_assertion_control == "nic_reset"))
+`else
       assert (nic_rst_q == (rst_q || soft_rst))
+`endif
       else $error("nic_rst_q is not the registered reset OR the RESET pulse");
     end
   end

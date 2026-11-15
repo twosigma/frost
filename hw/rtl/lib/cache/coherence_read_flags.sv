@@ -31,11 +31,15 @@ module coherence_read_flags (
     input logic [2:0] i_hit_id,
     input logic i_fill_valid,
     input logic [2:0] i_fill_id,
+    // Further slots a grant or lookup answers beside its own read. They hold
+    // valid, unready reads, so no allocation or response meets them.
+    input logic [7:0] i_answer_mask,
     input logic i_miss_valid,
     // A hit-path answer completes its slot as a hit does.
     input logic i_path_valid,
     input logic [2:0] i_path_id,
-    // Slots a failure, hit, fill or hit-path answer completes this cycle.
+    // Slots a failure, hit, fill, hit-path answer or further answer completes
+    // this cycle.
     output logic [7:0] o_complete,
     output logic [7:0] o_valid,
     output logic [7:0] o_miss,
@@ -50,7 +54,7 @@ module coherence_read_flags (
   assign hit_mask = i_hit_valid ? 8'h01 << i_hit_id : '0;
   assign fill_mask = i_fill_valid ? 8'h01 << i_fill_id : '0;
   assign path_mask = i_path_valid ? 8'h01 << i_path_id : '0;
-  assign complete_mask = failure_mask | hit_mask | fill_mask | path_mask;
+  assign complete_mask = failure_mask | hit_mask | fill_mask | path_mask | i_answer_mask;
   assign o_complete = complete_mask;
   assign ready_preserved = i_ready & ~response_mask;
   assign error_preserved = i_error & ~failure_mask;
@@ -96,6 +100,7 @@ module coherence_read_flags (
     if (i_hit_valid) reference_ready[i_hit_id] = 1'b1;
     if (i_fill_valid) reference_ready[i_fill_id] = 1'b1;
     if (i_path_valid) reference_ready[i_path_id] = 1'b1;
+    for (int slot = 0; slot < 8; slot++) if (i_answer_mask[slot]) reference_ready[slot] = 1'b1;
     if (i_miss_valid) reference_miss[i_hit_id] = 1'b1;
     p_read_flags_exact :
     assert ({o_valid, o_miss, o_ready, o_error} ==

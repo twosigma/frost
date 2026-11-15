@@ -225,17 +225,19 @@ module id_stage #(
   );
 
   // F/D instruction classes, decoded directly from the fields.
-  logic is_fp_load_direct;  // FLW/FLD
-  logic is_fp_store_direct;  // FSW/FSD
+  logic is_fp_load_direct;  // FLH/FLW/FLD
+  logic is_fp_store_direct;  // FSH/FSW/FSD
   logic is_fp_compute_direct;  // All F arithmetic/compare/convert ops
   logic is_fp_fma_direct;  // FMA instructions (separate opcode)
   logic is_fp_instruction_direct;
 
   assign is_fp_load_direct = (instruction.opcode == riscv_pkg::OPC_LOAD_FP) &&
-                             ((instruction.funct3 == 3'b010) ||
+                             ((instruction.funct3 == 3'b001) ||
+                              (instruction.funct3 == 3'b010) ||
                               (instruction.funct3 == 3'b011));
   assign is_fp_store_direct = (instruction.opcode == riscv_pkg::OPC_STORE_FP) &&
-                              ((instruction.funct3 == 3'b010) ||
+                              ((instruction.funct3 == 3'b001) ||
+                               (instruction.funct3 == 3'b010) ||
                                (instruction.funct3 == 3'b011));
   assign is_fp_compute_direct = instruction.opcode == riscv_pkg::OPC_OP_FP;
   assign is_fp_fma_direct = (instruction.opcode == riscv_pkg::OPC_FMADD) |
@@ -744,10 +746,12 @@ module id_stage #(
   logic is_fp_instruction_direct_2;
 
   assign is_fp_load_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_LOAD_FP) &&
-                               ((instruction_2.funct3 == 3'b010) ||
+                               ((instruction_2.funct3 == 3'b001) ||
+                                (instruction_2.funct3 == 3'b010) ||
                                 (instruction_2.funct3 == 3'b011));
   assign is_fp_store_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_STORE_FP) &&
-                                ((instruction_2.funct3 == 3'b010) ||
+                                ((instruction_2.funct3 == 3'b001) ||
+                                 (instruction_2.funct3 == 3'b010) ||
                                  (instruction_2.funct3 == 3'b011));
   assign is_fp_compute_direct_2 = instruction_2.opcode == riscv_pkg::OPC_OP_FP;
   assign is_fp_fma_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_FMADD) |

@@ -105,3 +105,8 @@
 - Added page-pool RX fragments, tunable copying of short frames, and conditional DMA synchronization to the Linux NIC driver
 - Implemented registered receive packet lengths, compact transmit FIFOs with per-frame metadata, mailbox transfers for NIC configuration and pause events, and a bare-metal NIC throughput benchmark.
 - Added nine-bit ASIDs with global pages, the four selective forms of SFENCE.VMA, and a 512-entry second-level TLB in block RAM with a 32-entry superpage side array, with a directed test, a unit bench and formal checks
+- Implemented Zfhmin and Zfa floating-point extensions, with architecture-test references, FP engine checks and TestRIG differential coverage
+- Limited the fanout of the L1D's phase and selection registers, registered the L2's zero-fill image clear, and matched DMA ingress grants and releases by queue identity
+- Implemented Zcb, Zcmop, Zimop, and Zihintntl, with decoder, formal, architecture-test and TestRIG coverage and ISA advertisement.
+- Implemented grant responses for attached L1D loads and same-sector load merging beside the read-hit pipeline, with formal checks and directed tests
+- Kept L1D stream prefetches off sectors held by pending store records and waiting `cbo.zero` twins, closing a stale-line install that lost the upper half of a zeroed block, with a cluster reproduction test and an invariant check

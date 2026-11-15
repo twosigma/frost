@@ -174,13 +174,14 @@ package ma_pkg;
     outcome = o;
   endfunction
 
-  // Register value of a load: sign or zero extension, and NaN boxing for FLW.
+  // Register value of a load: sign or zero extension, and NaN boxing for FLH/FLW.
   function automatic logic [63:0] load_value(input logic [63:0] raw,
                                              input riscv_pkg::mem_size_e size,
                                              input logic is_unsigned, input logic is_fp);
     unique case (size)
       riscv_pkg::MEM_SIZE_HALF:
-      load_value = is_unsigned ? {48'b0, raw[15:0]} : {{48{raw[15]}}, raw[15:0]};
+      load_value = is_fp ? {48'hFFFF_FFFF_FFFF, raw[15:0]} :
+          is_unsigned ? {48'b0, raw[15:0]} : {{48{raw[15]}}, raw[15:0]};
       riscv_pkg::MEM_SIZE_WORD:
       load_value = is_fp ? {32'hFFFF_FFFF, raw[31:0]} :
           is_unsigned ? {32'b0, raw[31:0]} : {{32{raw[31]}}, raw[31:0]};

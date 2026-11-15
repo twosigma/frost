@@ -603,6 +603,9 @@ module frost #(
     if (uart_reset_seen_q && uart_tx_drop_check != 0 &&
         !(ASYNC_CPU_CLOCK ? async_soc_reset : reset_synchronized) &&
         uart_write_enable_from_cpu && !uart_fifo_input_ready)
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("frost: UART TX byte dropped: the transmit FIFO was full");
 `endif
 
