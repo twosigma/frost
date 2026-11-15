@@ -414,7 +414,11 @@ PutMs are excluded from the L2 access, hit and miss counts as well.
 L1D access and hit increments can be two or three when a scalar combines or
 the hit path answers a read during a tag lookup. Each accepted scalar
 contributes one access; combining contributes a hit without allocating another
-miss. The first scalar in a record contributes its lookup's hit or miss. A read
+miss. The first scalar in a record contributes its lookup's hit or miss, except
+that when a `cbo.zero` or a full-line store pair acquires a 64-byte block with
+`GetMZero`, the lower record's lookup counts the block miss and `TwinOp`
+installs the upper sector under it without a second lookup (scalars that
+combined into the upper record still count an access and a hit each). A read
 that the hit path answers contributes an access and a hit, and the controller's
 shadow lookup of it adds nothing. Hit-under-miss includes every source
 independently.

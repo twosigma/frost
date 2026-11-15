@@ -139,10 +139,14 @@ Snooping live load-queue entries is not enough, because an entry is freed as
 soon as its result is staged for the common data bus, before the load retires,
 so returned loads stay observable until they retire. A store acquires M before
 it writes. Probe data and acknowledgements must keep making progress when every
-queue is full. The L1D keeps four ordered store records, combines stores to one
-sector, and installs Modified-sector hits with masked writes. Waiting reads
-share array service with buffered store hits. Store acquisitions overlap on
-borrowed load endpoints, and each read slot holds one load. The home has eight
+queue is full. The store queue pipelines cached plain stores at one write per
+cycle with in-order completion and gathering hints. The L1D keeps four ordered
+store records, combines stores to one sector (including claimed writes at three
+and four records), acquires fully written 64-byte blocks with `GetMZero` so L2
+misses allocate without reading memory, and installs Modified-sector hits with
+masked writes. Waiting reads share array service with buffered store hits. Store
+acquisitions overlap on borrowed load endpoints, and each read slot holds one
+load. The home has eight
 fills and a stream prefetcher. Two instruction-refill slots can overlap;
 instruction and page-table readers capture data and errors at the grant and
 hold their identities through release. The probe for an instruction or
@@ -447,16 +451,18 @@ to 0.3. It depends much more than CoreMark on stores, address translation,
 branch prediction, and floating point. Measurements with sysbench, `perf`,
 and targeted microbenchmarks give these items:
 
-1. Stores. The L1D keeps four ordered store records. Stores to one sector
-   combine into one record, acquisitions overlap on borrowed load endpoints,
-   and only the oldest record installs. Stores to Modified sectors use masked
-   writes, and waiting reads share array service with buffered hits. The
-   store queue's drain and installation into the L1D should reach two cycles
-   per store or better. In simulation a sequential stream of 8-byte stores
-   takes about 50 cycles per 64 bytes at 30 or 200 cycles of DRAM latency.
-   Taking ownership of a fully written sector without fetching its data would
-   save a DRAM read per sector, but needs a home protocol that tracks written
-   sectors.
+1. Stores. The store queue overlaps cached plain writes at one store per cycle
+   and sends gathering and same-sector hints; the L1D keeps four ordered store
+   records, combines stores into the youngest record through four occupied
+   records when claimed, overlaps acquisitions on borrowed load endpoints, and
+   installs only from the head. Adjacent fully masked lower and upper records
+   acquire a 64-byte block with `GetMZero`, allocating on an L2 miss without
+   reading DRAM and installing both sectors before release; stores to Modified
+   sectors use masked writes, and waiting reads share array service with
+   buffered hits. In simulation (`store_fill_bench`, 64 KiB) a sequential
+   `sd` stream takes about 30 cycles per 64 bytes cold and 16.5 cycles
+   L2-resident. Taking ownership of a single 32-byte sector without fetching
+   its 64-byte home line would still need per-sector L2 validity tracking.
 2. Data translation. A last-page bypass sends eligible translated accesses
    directly to DMMU stage S2. Other translated accesses use S1 and S2.
    Reducing that path would improve cross-page translation latency.
