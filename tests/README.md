@@ -569,8 +569,9 @@ domain restarts, wire-side PAUSE validation during congestion, and cancellation 
 registered real programs in both memory tiers. See the
 [NIC verification table](../hw/rtl/peripherals/nic/README.md#verification) for the target list.
 `test_frost_net10g_driver.py` checks packaging and the descriptor ABI, and compiles selected
-driver helpers against C fixtures for DMA teardown, reconfiguration and GSO fallback. It does
-not replace executing the kernel driver.
+driver helpers against C fixtures for DMA teardown, reconfiguration, GSO fallback,
+RX fragment sizes, copybreak boundaries and sync ordering. It does not replace executing
+the kernel driver or checking the kernel's page-pool reference counting.
 
 ### Compliance and torture runners
 
