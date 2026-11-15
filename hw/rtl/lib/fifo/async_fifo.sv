@@ -231,6 +231,9 @@ module async_fifo #(
 
   always_ff @(posedge o_clk) begin
     if (read_reset_seen_q && !o_rst && rd_issued_q && (skid_count == 2'd2) && !pop)
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("async_fifo: read arrived with no skid room");
   end
 `endif

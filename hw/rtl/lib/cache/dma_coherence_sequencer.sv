@@ -430,26 +430,47 @@ module dma_coherence_sequencer #(
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin
       if (i_probe_ack_valid && !ack_hit)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "dma_coherence_sequencer: probe acknowledgement %0d for no pending probe",
             i_probe_ack_id
         );
       if (down_resp_valid_q && !resp_hit)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "dma_coherence_sequencer: downstream response id %0d for no waiting entry",
             down_resp_id_q
         );
       if (dma_req_fire && i_dma_req_write && (i_dma_req_wstrb == '0))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("dma_coherence_sequencer: DMA write with empty strobes");
       if (admit_active_q && (state_q[admit_slot_q] != E_ADMIT))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("dma_coherence_sequencer: admit presented for an entry not in E_ADMIT");
       if (inval_active_q && (state_q[inval_slot_q] != E_INVAL))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("dma_coherence_sequencer: inval presented for an entry not in E_INVAL");
       for (int k = 0; k < int'(NUM_LOCK); k++) begin
         if (dma_req_fire && entry_valid[k] && (id_q[k] == i_dma_req_id))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("dma_coherence_sequencer: DMA id %0d reused while in flight", i_dma_req_id);
         for (int j = 0; j < int'(NUM_LOCK); j++) begin
           if ((j != k) && entry_valid[k] && entry_valid[j] && (older_q[k][j] == older_q[j][k]))
+`ifdef FROST_SIM_ASSERTIONS
+            assert (1'b0) else
+`endif
             $error("dma_coherence_sequencer: entries %0d and %0d have no acceptance order", k, j);
         end
       end
