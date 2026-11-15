@@ -36,7 +36,6 @@ any of them rebuilds.
 
 ### Build options
 
-|  |  and refetch cost in a JIT-style write,  and call loop: patch size sweep, straight-line and one-line-per-hop layouts, and a small patch inside a hot unmodified region |
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `RISCV_PREFIX` | `riscv64-linux-` | Toolchain prefix |
@@ -286,6 +285,7 @@ can be debugged and where each one first stops.
 | `drain_trapframe_test/` | Trap-frame stores to DDR must survive the L1D evicting their line during a timer interrupt |
 | `ecc_scrub_test/` | In simulation, eight atomic no-op writes preserve a patterned line and cause exactly one DDR writeback after eviction; a clean read causes none |
 | `fencei_bench/` | `fence.i` and refetch cost for JIT-style code generation in cached DDR |
+| `fencei_jit_bench/` | `fence.i` and refetch cost in a JIT-style write, `fence.i` and call loop: patch size sweep, straight-line and one-line-per-hop layouts, and a small patch inside a hot unmodified region |
 | `fetch_lead_repro/` | A call into a cold cached line whose first bundle advances 6 bytes, followed by a 32-bit instruction split across fetch words |
 | `fetch_stall_repro/` | 32-bit instructions near cache-line boundaries, fetched cold from DDR; a PC+2 mis-step traps |
 | `fp_dyn_rm_test/` | F/D and Zfhmin/Zfa instructions with the dynamic rounding mode trap as illegal while `frm` holds a reserved value; static modes and a valid `frm` work |

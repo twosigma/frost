@@ -725,7 +725,7 @@ int main(void)
     cause = run_at_priv(&b_sfence_vma, PRIV_U);
     all_ok &= report("I sfence-illegal-in-U", cause, 2u);
 
-    /* FENCE.I completes in S and U, including when TVM is set. */
+    /* FENCE.I completes in S and U with TVM set. */
     csr_set(mstatus, 1ul << 20);
     cause = run_at_priv(&b_fence_i, PRIV_S);
     all_ok &= report("fence.i-completes-in-S", cause, 9u);

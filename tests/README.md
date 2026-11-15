@@ -360,6 +360,14 @@ application once, because its first run changes its image in DDR. Entries
 with `rerun_after_reset=False` run once in both tiers; a new entry keeps the
 two runs.
 
+`fencei_jit_bench` has its own regular-CI shard and runs once in the BRAM
+tier, with `SIM_FAST_MAINT=0` and an eleven-million-cycle budget (about twice
+its measured 5.38 million cycles). The driver runs in BRAM, but all generated
+code runs in cached DDR and exercises the L1I's one-cycle valid clear. Moving
+the driver to DDR adds no invalidation case, so the DDR tier skips it. The
+benchmark retains its full default sections and iteration count. The cycle
+budget ends a hung run before the CI job's six-hour limit.
+
 `vm_test` and its aperture configurations use a three-million-cycle
 budget. `ptw_recovery_test` uses twelve million cycles for its complete
 branch-delay and walker-discard matrix. Their SFENCE.VMA operations drain
@@ -396,7 +404,7 @@ of its memory and ALU loop.
 
 | Entries that run once | Reason |
 | --- | --- |
-| `coremark_pro_loops`, `coremark_pro_nnet`, `irq_take_latency`, `lq_stale_slot_probe` | Run time |
+| `coremark_pro_loops`, `coremark_pro_nnet`, `irq_take_latency`, `lq_stale_slot_probe`, `fencei_jit_bench` | Run time |
 | `opensbi_smoke`, `opensbi_smoke_no_misaligned_hw` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
 | `amo_irq_torture_sim`, `coremark`, `coremark_link1`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |
 
@@ -967,7 +975,7 @@ has a 20-minute timeout in both SBY and the runner.
 | `FROST_NIC_MAC_CLOCKS` | For the whole-SoC program and TestRIG benches, overrides the registry or runner default: `0` holds both NIC MAC clocks and their clock-OK inputs low with an access guard; `1` starts the clocks. The ISA, torture, and TestRIG runners default to `0` |
 | `MEMORY_LINK_STAGES` | Register stages between the hart and the cluster memory in `frost` builds (default 0). The `*_link1` registry entries run the memory-system programs with one stage |
 | `MISALIGNED_HW` | Builds `frost` with the misaligned-access engine, as the X3 has it: plain misaligned loads and stores to cached DDR are performed in hardware (default 1, and 0 when `ENABLE_CACHED_TIER=0`). The registry entries that disable the cached tier also set it to 0 |
-| `SIM_FAST_MAINT` | Clears coherent-array tags, coherence states and replacement bits in one simulation cycle and accelerates the L1I reset sweep (default 1). L1I invalidate-all clears valid flip-flops in one cycle in either mode. Data RAM is not cleared. Hardware uses 0. Coherent fences leave dirty L1D data available to home probes. The Physical address aperture (1 GiB / Bare access) CI job uses 0 with randomized start values to cover the real reset sweep |
+| `SIM_FAST_MAINT` | Clears coherent-array tags, coherence states and replacement bits in one simulation cycle and bulk-clears the L1I tag and replacement RAMs on reset and every invalidate-all (default 1). L1I invalidate-all clears valid flip-flops in one cycle in either mode. Data RAM is not cleared. Hardware uses 0. Coherent fences leave dirty L1D data available to home probes. The Physical address aperture (1 GiB / Bare access) CI job uses 0 with randomized start values to cover the real reset sweep |
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to
 `tests/results.xml`. A `test_run_cocotb.py` run passes only if the simulator
