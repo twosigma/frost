@@ -72,6 +72,7 @@ VALID_APPS = [
     "freertos_demo",
     "fpu_assembly_test",
     "fpu_test",
+    "full_line_test",
     "hello_world",
     "isa_test",
     "itlb_test",
@@ -100,6 +101,7 @@ VALID_APPS = [
     "spanning_test",
     "sprintf_test",
     "sscofpmf_test",
+    "store_fill_bench",
     "strings_test",
     "sum_toggle_test",
     "tick_torture",
@@ -208,6 +210,7 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "ddr_heap_test",
     "ddr_smc_test",
     "ddr_test",
+    "full_line_test",
     "l1i_set_test",
     "linux_irq_active_ddr_test",
     "linux_boot",
@@ -217,6 +220,7 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "opensbi_smoke",
     "pde_return_hazard",
     "ptw_coherence_test",
+    "store_fill_bench",
     "tick_torture",
 }
 
