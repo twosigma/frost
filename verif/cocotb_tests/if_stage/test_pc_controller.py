@@ -932,6 +932,89 @@ async def test_high_half_pending_retry_returns_fetch_to_halfword_target(
     await _exercise_high_half_pending_retry(dut, target=HALFWORD_PRED_TARGET)
 
 
+async def _capture_walk_past(dut: Any, *, odd: bool = True) -> int:
+    """Capture P while a compressed/native pair advances from P-4 to P+2."""
+    await _setup_test(dut)
+    await _clear_reset_holdoff(dut)
+    await _start_word_stream_at(dut, BASE_PC)
+    if odd:
+        _clear_inputs(dut)
+        for name in (
+            "i_pc_fetch_advance_sel",
+            "i_pc_fetch_advance_sel_one",
+            "i_pc_fetch_advance_sel_two",
+            "i_pc_reg_advance_sel",
+            "i_pc_reg_advance_sel_one",
+            "i_pc_reg_advance_sel_two",
+            "i_pc_reg_advance_sel_nop",
+        ):
+            getattr(dut, name).value = PC_ADV_PLUS2
+        await _advance_cycle(dut)
+    owner = BASE_PC + (6 if odd else 4)
+    _assert_pc(dut, pc=owner, pc_reg=owner - 4)
+    _clear_inputs(dut)
+    dut.i_is_compressed.value = 1
+    dut.i_slot2_valid.value = 1
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS6
+    dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS6
+    dut.i_prediction_requires_pc_reg_handoff.value = 1
+    _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=owner + 2)
+    assert dut.pending_prediction_valid.value
+    assert dut.pc_reg_after_pending.value
+    _clear_inputs(dut)
+    dut.i_prediction_holdoff.value = 1
+    dut.i_sel_prediction_r.value = 1
+    dut.i_predicted_target_r.value = HALFWORD_PRED_TARGET
+    await _settle()
+    return owner
+
+
+@cocotb.test()
+async def test_walk_past_stall_does_not_replay_registered_target(dut: Any) -> None:
+    """Walking past an overlapping prediction cannot unmask its stalled redirect."""
+    owner = await _capture_walk_past(dut)
+    dut.i_stall.value = 1
+    await _advance_cycle(dut)
+    dut._log.info(
+        "walk-past stalled: owner=%#x pc_reg=%#x valid=%d registered_select=%d",
+        owner,
+        int(dut.o_pc_reg.value),
+        int(dut.pending_prediction_valid.value),
+        int(dut.sel_prediction_r.value),
+    )
+    dut.i_stall.value = 0
+    await _advance_cycle(dut)
+    dut._log.info("walk-past release: pc_reg=%#x", int(dut.o_pc_reg.value))
+    assert int(dut.o_pc_reg.value) == owner + 2
+
+
+@cocotb.test()
+async def test_walk_past_without_stall_is_not_an_active_prediction(dut: Any) -> None:
+    """A held post-prediction packet cannot use the pending-owner exemption."""
+    owner = await _capture_walk_past(dut)
+    active = int(dut.o_pending_prediction_active.value)
+    held = int(dut.next_pc_reg.value) == owner + 2
+    dut._log.info(
+        "walk-past unstalled: active=%d holdoff=%d sel_nop=%d held=%d",
+        active,
+        int(dut.o_any_holdoff_safe.value),
+        int(dut.i_sel_nop_wcs0.value),
+        held,
+    )
+    assert not active
+
+
+@cocotb.test()
+async def test_walk_past_even_owner_never_lands_inside_predecessor(dut: Any) -> None:
+    """A word-aligned overlapping entry cannot move pc_reg into a native instruction."""
+    owner = await _capture_walk_past(dut, odd=False)
+    await _advance_cycle(dut)
+    dut._log.info("even walk-past: owner=%#x pc_reg=%#x", owner, int(dut.o_pc_reg.value))
+    assert int(dut.o_pc_reg.value) == owner + 2
+
+
 @cocotb.test()
 async def test_prediction_holdoff_predecessor_release_advances_pc_reg(
     dut: Any,
