@@ -67,7 +67,7 @@ module ma_engine #(
     input riscv_pkg::mem_size_e            i_size,
     input logic                            i_unsigned,
     input logic                            i_store,
-    // FP destination (FLW/FLD) or FP data source (FSW/FSD).
+    // FP destination (FLH/FLW/FLD) or FP data source (FSH/FSW/FSD).
     input logic                            i_fp,
     input logic                 [     4:0] i_rd,
     input logic                            i_rd_valid,

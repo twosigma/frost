@@ -305,8 +305,8 @@ def expected_load(env: Env, a: Access, parts: list[tuple[int, int]]) -> int:
             pa = parts[0][1] + ((byte_va - parts[0][0]) & MASK64)
         raw |= env.byte(pa) << (8 * k)
     bits = 8 * a.nbytes
-    if a.fp and a.nbytes == 4:
-        return (0xFFFF_FFFF << 32) | raw
+    if a.fp and a.nbytes < 8:
+        return (MASK64 ^ ((1 << bits) - 1)) | raw
     if a.nbytes == 8 or a.unsigned:
         return raw
     if raw >> (bits - 1):
@@ -552,7 +552,7 @@ async def random_accesses(dut: Any, seed: int, count: int, translate: bool) -> N
             va = misaligned_va(rng, base, nbytes)
             a = Access(va=va, nbytes=nbytes, store=store)
         a.unsigned = rng.random() < 0.5 and nbytes != 8
-        a.fp = nbytes >= 4 and rng.random() < 0.3
+        a.fp = rng.random() < 0.3
         a.unsigned = a.unsigned and not a.fp
         a.rd = rng.randrange(32)
         a.rd_valid = rng.random() < 0.9
@@ -594,6 +594,21 @@ async def random_accesses(dut: Any, seed: int, count: int, translate: bool) -> N
         assert seen.get(key, 0) >= 10, (key, seen)
     if translate:
         assert seen.get("upper fault", 0) >= 5, seen
+
+
+@cocotb.test()
+async def test_half_fp_transfers(dut: Any) -> None:
+    """FLH boxes every payload and FSH preserves bytes across sector and page splits."""
+    env = await setup(dut, seed=272)
+    for offset in (1, 7, 31, 63, 4095):
+        for payload in (0x0000, 0x3C00, 0x7C01, 0x8000, 0xFE55):
+            va = DDR_BASE + offset
+            env.regs[(1, 7)] = 0x1234_5678_9ABC_0000 | payload
+            for store in (True, False):
+                a = Access(va=va, nbytes=2, store=store, fp=True)
+                before = dict(env.mem)
+                result = await run_access(env, a)
+                check(env, a, before, result)
 
 
 @cocotb.test()

@@ -456,6 +456,9 @@ module frost_cluster_cache #(
 `ifndef SYNTHESIS
     always_ff @(posedge i_clk) begin
       if (reset_seen_q && !i_rst && dma_down_req_valid && dma_down_req_id[UP_ID_BITS-1])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "frost_cluster_cache: DMA id %0d has its top bit set beside the prefetcher",
             dma_down_req_id
@@ -658,6 +661,9 @@ module frost_cluster_cache #(
         $display("  arb_down{v=%0d rdy=%0d w=%0d id=%0d} down_resp{v=%0d id=%0d}",
                  arb_down_req_valid, arb_down_req_ready, arb_down_req_write, arb_down_req_id,
                  arb_down_resp_valid, arb_down_resp_id);
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cluster_cache: data L1 refused downstream for 2048 cycles");
       end
     end

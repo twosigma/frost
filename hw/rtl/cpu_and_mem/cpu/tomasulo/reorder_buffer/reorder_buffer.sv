@@ -2716,6 +2716,9 @@ module reorder_buffer #(
   always @(posedge i_clk) begin
     if (dbg_mask_seen_reset && i_rst_n && o_commit_comb.valid && head_is_branch) begin
       if ((head_value[XLEN-1:0] == (head_pc + 64'd2)) != head_is_compressed)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "reorder_buffer: stored is_compressed diverged from link view (pc=%h val=%h q=%b)",
             head_pc,
@@ -2738,6 +2741,9 @@ module reorder_buffer #(
       if (alloc_en && i_alloc_req.link_addr != expected_fallthrough(
               i_alloc_req.pc, i_alloc_req.is_compressed
           ))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "reorder_buffer: slot-1 link_addr %h is not the fall-through of pc %h (c=%b)",
             i_alloc_req.link_addr,
@@ -2747,6 +2753,9 @@ module reorder_buffer #(
       if (alloc_en_2 && i_alloc_req_2.link_addr != expected_fallthrough(
               i_alloc_req_2.pc, i_alloc_req_2.is_compressed
           ))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "reorder_buffer: slot-2 link_addr %h is not the fall-through of pc %h (c=%b)",
             i_alloc_req_2.link_addr,
@@ -2754,6 +2763,9 @@ module reorder_buffer #(
             i_alloc_req_2.is_compressed
         );
       if (head_valid && head_fallthrough_pc != expected_fallthrough(head_pc, head_is_compressed))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "reorder_buffer: head fall-through %h is not pc %h + 2/4 (c=%b)",
             head_fallthrough_pc,
@@ -2763,6 +2775,9 @@ module reorder_buffer #(
       if (head_next_valid && head_next_fallthrough_pc != expected_fallthrough(
               head_next_pc, head_next_is_compressed
           ))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "reorder_buffer: head+1 fall-through %h is not pc %h + 2/4 (c=%b)",
             head_next_fallthrough_pc,
@@ -3170,28 +3185,46 @@ module reorder_buffer #(
   always @(posedge i_clk) begin
     if (dbg_mask_seen_reset && i_rst_n) begin
       if (head_clear_mask != (ReorderBufferDepth'(1) << head_idx)) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("Reorder Buffer: head_clear_mask (0x%08x) != 1 << head_idx (%0d)", head_clear_mask,
                head_idx);
       end
       if (head_next_idx_q != head_idx + 1'b1) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("Reorder Buffer: head_next_idx_q (%0d) != head_idx + 1 (%0d)", head_next_idx_q,
                head_idx);
       end
       if (head_next_clear_mask != (ReorderBufferDepth'(1) << head_next_idx)) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("Reorder Buffer: head_next_clear_mask (0x%08x) != 1 << head_next_idx (%0d)",
                head_next_clear_mask, head_next_idx);
       end
       // Allocation-time privilege legality assumes the current mode has a
       // valid architectural encoding.
       if (!(i_priv inside {riscv_pkg::PrivM, riscv_pkg::PrivS, riscv_pkg::PrivU})) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("Reorder Buffer: unexpected privilege mode %0b", i_priv);
       end
       // The private CDB match-tag duplicates must track the shared tags.
       if (i_cdb_write.valid && (i_cdb_match_tag != i_cdb_write.tag)) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("Reorder Buffer: i_cdb_match_tag (%0d) != i_cdb_write.tag (%0d)", i_cdb_match_tag,
                i_cdb_write.tag);
       end
       if (i_cdb_write_2.valid && (i_cdb_match_tag_2 != i_cdb_write_2.tag)) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("Reorder Buffer: i_cdb_match_tag_2 (%0d) != i_cdb_write_2.tag (%0d)",
                i_cdb_match_tag_2, i_cdb_write_2.tag);
       end
@@ -3199,23 +3232,49 @@ module reorder_buffer #(
       // the head entry is live.
       if (head_valid) begin
         if (head_f_store_like != (head_is_store || head_is_fp_store || head_is_sc))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("Reorder Buffer: rob_f_store_like mismatch at head");
         if (head_f_is_branch != head_is_branch)
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("Reorder Buffer: rob_f_is_branch mismatch at head");
-        if (head_f_is_csr != head_is_csr) $error("Reorder Buffer: rob_f_is_csr mismatch at head");
+        if (head_f_is_csr != head_is_csr)
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
+          $error("Reorder Buffer: rob_f_is_csr mismatch at head");
         if (head_f_is_fence_i != head_is_fence_i)
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("Reorder Buffer: rob_f_is_fence_i mismatch at head");
-        if (head_f_is_wfi != head_is_wfi) $error("Reorder Buffer: rob_f_is_wfi mismatch at head");
+        if (head_f_is_wfi != head_is_wfi)
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
+          $error("Reorder Buffer: rob_f_is_wfi mismatch at head");
         if (head_f_is_mret != head_is_mret)
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("Reorder Buffer: rob_f_is_mret mismatch at head");
         if (head_f_perf_wait_int !=
             (!head_is_branch && !head_is_amo && !head_is_lr && !head_is_store &&
              !head_is_fp_store && !head_is_sc && (head_rs_type == riscv_pkg::RS_INT))) begin
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("Reorder Buffer: rob_f_perf_wait_int mismatch at head");
         end
         if (head_f_perf_wait_mem_load !=
             (!head_is_branch && !head_is_amo && !head_is_lr && !head_is_store &&
              !head_is_fp_store && !head_is_sc && (head_rs_type == riscv_pkg::RS_MEM))) begin
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("Reorder Buffer: rob_f_perf_wait_mem_load mismatch at head");
         end
       end
@@ -3253,6 +3312,9 @@ module reorder_buffer #(
   // Dispatch must not allocate when full.
   always @(posedge i_clk) begin
     if (dbg_mask_seen_reset && i_rst_n && i_alloc_req.alloc_valid && full) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("Reorder Buffer: Allocation attempted when full!");
     end
   end
@@ -3261,11 +3323,17 @@ module reorder_buffer #(
   always @(posedge i_clk) begin
     if (dbg_mask_seen_reset && i_rst_n &&
         i_alloc_req_2.alloc_valid && !i_alloc_req.alloc_valid) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("Reorder Buffer: Slot-2 alloc valid without slot-1!");
     end
   end
   always @(posedge i_clk) begin
     if (dbg_mask_seen_reset && i_rst_n && i_alloc_req_2.alloc_valid && full_for_2) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("Reorder Buffer: Slot-2 alloc attempted when full_for_2!");
     end
   end
@@ -3278,12 +3346,18 @@ module reorder_buffer #(
             {i_alloc_req.is_wfi, i_alloc_req.is_csr, i_alloc_req.is_fence,
                    i_alloc_req.is_fence_i, i_alloc_req.is_mret}
         )) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("Reorder Buffer: slot-1 allocation has conflicting serializer classes");
     end
     if (dbg_mask_seen_reset && i_rst_n && i_alloc_req_2.alloc_valid && !$onehot0(
             {i_alloc_req_2.is_wfi, i_alloc_req_2.is_csr, i_alloc_req_2.is_fence,
                    i_alloc_req_2.is_fence_i, i_alloc_req_2.is_mret}
         )) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("Reorder Buffer: slot-2 allocation has conflicting serializer classes");
     end
   end
@@ -3293,12 +3367,18 @@ module reorder_buffer #(
   always @(posedge i_clk) begin
     if (dbg_mask_seen_reset && i_rst_n &&
         i_alloc_req.alloc_valid && (i_flush_en || i_flush_all)) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("Reorder Buffer: Allocation attempted during flush!");
     end
   end
   always @(posedge i_clk) begin
     if (dbg_mask_seen_reset && i_rst_n &&
         i_alloc_req_2.alloc_valid && (i_flush_en || i_flush_all)) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("Reorder Buffer: Slot-2 alloc attempted during flush!");
     end
   end
@@ -3344,10 +3424,16 @@ module reorder_buffer #(
         for (int lane = 0; lane < 2; lane++) begin
           if (dbg_prev_alloc_valid_q[lane]) begin
             if (cdb_ram_wr_en && (i_cdb_write.tag == dbg_prev_alloc_idx_q[lane])) begin
+`ifdef FROST_SIM_ASSERTIONS
+              assert (1'b0) else
+`endif
               $error("Reorder Buffer: CDB lane0 wrote entry %0d in its staged-LVT drain window",
                      i_cdb_write.tag);
             end
             if (cdb_ram_wr_en_2 && (i_cdb_write_2.tag == dbg_prev_alloc_idx_q[lane])) begin
+`ifdef FROST_SIM_ASSERTIONS
+              assert (1'b0) else
+`endif
               $error("Reorder Buffer: CDB lane1 wrote entry %0d in its staged-LVT drain window",
                      i_cdb_write_2.tag);
             end
@@ -3363,6 +3449,9 @@ module reorder_buffer #(
   if (SharedLinkBank) begin : g_shared_link_bank_check
     always @(posedge i_clk) begin
       if (dbg_mask_seen_reset && i_rst_n && alloc_en_2 && i_alloc_req.is_branch) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("Reorder Buffer: slot-2 allocation at entry %0d behind a slot-1 branch", tail_idx_2);
       end
     end
@@ -3375,9 +3464,15 @@ module reorder_buffer #(
   always @(posedge i_clk) begin
     if (dbg_mask_seen_reset && i_rst_n) begin
       if (!$onehot0(i_result_held)) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("Reorder Buffer: i_result_held marks several entries (0x%08x)", i_result_held);
       end
       if (|(i_result_held & rob_valid & rob_done & ~(rob_f_is_branch & ~rob_exception))) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "Reorder Buffer: i_result_held marks a done entry other than a clean branch (0x%08x)",
             i_result_held);
@@ -3388,6 +3483,9 @@ module reorder_buffer #(
           (i_alloc_req_2.alloc_valid && i_alloc_req_2.is_branch &&
            (i_alloc_req_2.is_wfi || i_alloc_req_2.is_csr || i_alloc_req_2.is_fence ||
             i_alloc_req_2.is_fence_i || i_alloc_req_2.is_mret))) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("Reorder Buffer: branch allocation with a serializing class");
       end
     end
@@ -3463,24 +3561,46 @@ module reorder_buffer #(
   always @(posedge i_clk) begin
     if (dbg_mask_seen_reset && i_rst_n &&
         i_flush_after_head_commit && !(i_flush_en || i_flush_all)) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("Reorder Buffer: flush-after-head arrived without a recovery flush");
     end
     if (dbg_mask_seen_reset && i_rst_n && serial_state != riscv_pkg::SERIAL_IDLE) begin
       if (!head_ready) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("Reorder Buffer: serialization state %0d but head not ready", serial_state);
       end
       if (i_flush_after_head_commit) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("Reorder Buffer: flush-after-head overlapped serializer ownership");
       end
       if (i_cdb_write.valid && (i_cdb_write.tag == head_idx)) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("Reorder Buffer: CDB lane0 rewrote serializer-owned head %0d", head_idx);
       end
       if (i_cdb_write_2.valid && (i_cdb_write_2.tag == head_idx)) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("Reorder Buffer: CDB lane1 rewrote serializer-owned head %0d", head_idx);
       end
       if (serial_state == riscv_pkg::SERIAL_TRAP_WAIT) begin
-        if (!head_exception) $error("Reorder Buffer: trap-wait owner lost its exception");
+        if (!head_exception)
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
+          $error("Reorder Buffer: trap-wait owner lost its exception");
       end else if (head_exception) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("Reorder Buffer: non-trap serializer owner acquired an exception");
       end
     end
@@ -3488,9 +3608,15 @@ module reorder_buffer #(
         (head_f_is_csr || head_f_is_fence || head_f_is_fence_i ||
          head_f_is_wfi || head_f_is_mret)) begin
       if (i_cdb_write.valid && (i_cdb_write.tag == head_idx)) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("Reorder Buffer: CDB lane0 rewrote ready serializer head %0d", head_idx);
       end
       if (i_cdb_write_2.valid && (i_cdb_write_2.tag == head_idx)) begin
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("Reorder Buffer: CDB lane1 rewrote ready serializer head %0d", head_idx);
       end
     end

@@ -863,6 +863,9 @@ module axi_coherent_bridge #(
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin
       if (w_fire && (i_axi_wlast != w_last_q))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "axi_coherent_bridge: WLAST %0d on beat %0d of %0d",
             i_axi_wlast,
@@ -870,8 +873,14 @@ module axi_coherent_bridge #(
             32'(w_len_q) + 1
         );
       if (resp_write && !w_id_busy_q[resp_sub])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("axi_coherent_bridge: write response for free id %0d", resp_sub);
       if (resp_read && (!r_id_busy_q[resp_sub] || rbuf_valid_q[resp_sub]))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("axi_coherent_bridge: read response for id %0d not awaiting one", resp_sub);
     end
   end

@@ -351,24 +351,59 @@ module line_port_axi_bridge #(
   // Simulation-only protocol checks (Yosys cannot elaborate $error).
   int axi_error_check;
   initial if (!$value$plusargs("axi_error_check=%d", axi_error_check)) axi_error_check = 1;
+`ifdef FROST_SIM_ASSERTIONS
+  // Both the named plusarg and a post-reset bench write enable this control.
+  bit sim_assertion_probe = 1'b0;
+  string sim_assertion_control;
+  initial begin
+    if (!$value$plusargs("frost_startup_assertion_control=%s", sim_assertion_control))
+      sim_assertion_control = "";
+  end
+`endif
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && axi_reset_seen_q && !i_rst) begin
       if (req_fire && inflight_q[i_req_id])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("line_port_axi_bridge: request reuses in-flight id %0d", i_req_id);
       if (r_accept && r_known && b_accept && b_known &&
           (i_axi_rid[ID_BITS-1:0] == i_axi_bid[ID_BITS-1:0]))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("line_port_axi_bridge: R and B for the same id %0d", i_axi_rid);
       if (!RESP_ERRORS && axi_error_check != 0 && i_axi_bvalid && o_axi_bready &&
           i_axi_bresp != 2'b00)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("line_port_axi_bridge: write response error (bresp=%0d)", i_axi_bresp);
       if (!RESP_ERRORS && axi_error_check != 0 && i_axi_rvalid && o_axi_rready &&
           i_axi_rresp != 2'b00)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("line_port_axi_bridge: read response error (rresp=%0d)", i_axi_rresp);
+`ifdef FROST_SIM_ASSERTIONS
+      if ((i_axi_rvalid && o_axi_rready && !i_axi_rlast) ||
+          (sim_assertion_probe && sim_assertion_control == "bridge"))
+`else
       if (i_axi_rvalid && o_axi_rready && !i_axi_rlast)
+`endif
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("line_port_axi_bridge: multi-beat read response (expected single beat)");
       if (i_axi_rvalid && 32'(i_axi_rid) >= NumIds)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("line_port_axi_bridge: R id %0d outside the line id space", i_axi_rid);
       if (i_axi_bvalid && 32'(i_axi_bid) >= NumIds)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("line_port_axi_bridge: B id %0d outside the line id space", i_axi_bid);
     end
   end
@@ -391,6 +426,9 @@ module line_port_axi_bridge #(
         $display("  aw{v=%0d rdy=%0d} w{v=%0d rdy=%0d} inflight=%b stale=%b r{v=%0d} b{v=%0d}",
                  aw_valid_q, i_axi_awready, w_valid_q, i_axi_wready, inflight_q, stale_q,
                  i_axi_rvalid, i_axi_bvalid);
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("line_port_axi_bridge: request stalled for 1024 cycles");
       end
     end

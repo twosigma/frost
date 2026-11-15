@@ -141,19 +141,21 @@ module fp_shim #(
   assign eng_flags  = riscv_pkg::fp_flags_t'(f_eng_flags);
 `else
   fp_engine u_engine (
-      .i_clk   (i_clk),
-      .i_rst_n (i_rst_n),
-      .i_start (start),
-      .i_op    (i_rs_issue.op),
-      .i_rm    (i_rs_issue.rm),
-      .i_src1  (i_rs_issue.src1_value),
-      .i_src2  (i_rs_issue.src2_value),
-      .i_src3  (i_rs_issue.src3_value),
-      .i_kill  (kill),
-      .o_idle  (eng_idle),
-      .o_done  (eng_done),
-      .o_result(eng_result),
-      .o_flags (eng_flags)
+      .i_clk      (i_clk),
+      .i_rst_n    (i_rst_n),
+      .i_start    (start),
+      .i_op       (i_rs_issue.op),
+      .i_rm       (i_rs_issue.rm),
+      .i_src1     (i_rs_issue.src1_value),
+      .i_src2     (i_rs_issue.src2_value),
+      .i_src3     (i_rs_issue.src3_value),
+      // Zfa FLI's constant index (dispatch places the rs1 field in imm).
+      .i_fli_index(i_rs_issue.imm[4:0]),
+      .i_kill     (kill),
+      .o_idle     (eng_idle),
+      .o_done     (eng_done),
+      .o_result   (eng_result),
+      .o_flags    (eng_flags)
   );
 `endif
 
@@ -174,6 +176,9 @@ module fp_shim #(
   // loses it. This also forbids issue in a squashed start's decode cycle.
   always @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n && i_rs_issue.valid && !eng_idle) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("fp_shim: issue of tag %0d while the engine is busy", i_rs_issue.rob_tag);
     end
   end
