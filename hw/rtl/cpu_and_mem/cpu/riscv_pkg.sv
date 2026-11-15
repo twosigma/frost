@@ -1711,11 +1711,16 @@ package riscv_pkg;
   // The alias window: bit PbmtAliasBit set and the address without it inside
   // the covered DDR range (which also bounds every higher bit).
   function automatic logic pma_pbmt_alias_ok(input logic [XLEN-1:0] addr);
-    logic [XLEN-1:0] real_addr;
-    real_addr = addr;
-    real_addr[PbmtAliasBit] = 1'b0;
-    pma_pbmt_alias_ok = PbmtAliasEnabled && addr[PbmtAliasBit] &&
-        (real_addr >= XLEN'(DdrBase)) && (real_addr < XLEN'(PbmtAliasCoverLimit));
+    if (!PbmtAliasEnabled) pma_pbmt_alias_ok = 1'b0;
+    else if (DdrCapacityLog2Bytes <= 30) begin
+      // The whole alias is one aligned DDR-sized window.
+      pma_pbmt_alias_ok = (addr & ~XLEN'(DdrCapacityBytes - 1)) == XLEN'(DdrBase | PbmtAliasOffset);
+    end else begin
+      // Only the alias bit may be set above the covered range. At least one
+      // bit between the DDR base and that bit must be set to exclude the gap.
+      pma_pbmt_alias_ok = ((addr & ~XLEN'(PbmtAliasOffset - 1)) == XLEN'(PbmtAliasOffset)) &&
+          ((addr & XLEN'(PbmtAliasOffset - DdrBase)) != '0);
+    end
   endfunction
   // The DDR address an alias names.
   function automatic logic [XLEN-1:0] pbmt_alias_real(input logic [XLEN-1:0] addr);

@@ -998,6 +998,22 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover", "walk_select_prove", "walk_select_cover"),
     ),
     FormalTarget(
+        "ptw_pbmt_alias.sby",
+        "Svpbmt alias bit predicates equal the full-address range check for every address",
+        tasks=(
+            "bmc_small",
+            "bmc_1g",
+            "bmc_2g",
+            "bmc_4g",
+            "bmc_8g",
+            "bmc_16g",
+            "bmc_32g",
+            "bmc_64g",
+            "bmc_128g",
+            "bmc_external",
+        ),
+    ),
+    FormalTarget(
         "ptw.sby",
         "Page-table walk state matches reference PTE classification, including the "
         "Svpbmt reserved encodings, PBMTE and the uncached alias, and the walk "
@@ -2475,6 +2491,13 @@ SBY_TASKS = [
     ("bmc16", "Bounded local equivalence at depth 16"),
     ("bmc32", "Bounded local equivalence at depth 32"),
     ("bmc_1g", "Bounded physical-address check at a 1 GiB DDR capacity"),
+    ("bmc_small", "Svpbmt alias range equivalence at a 256 MiB DDR capacity"),
+    ("bmc_2g", "Svpbmt alias range equivalence at a 2 GiB DDR capacity"),
+    ("bmc_4g", "Svpbmt alias range equivalence at a 4 GiB DDR capacity"),
+    ("bmc_8g", "Svpbmt alias range equivalence at an 8 GiB DDR capacity"),
+    ("bmc_16g", "Svpbmt alias range equivalence at a 16 GiB DDR capacity"),
+    ("bmc_32g", "Svpbmt alias range equivalence at a 32 GiB DDR capacity"),
+    ("bmc_external", "Svpbmt alias is disabled outside the FROST physical map"),
     ("prove_full_width", "Unbounded proof with a bus as wide as a line"),
     (
         "prove_soc",
