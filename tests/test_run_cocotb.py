@@ -770,6 +770,62 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GL2_LINE_BYTES=32",),
         extra_env=(("COCOTB_MAX_CYCLES", "10000000"),),
     ),
+    # The VCU118's 32 KiB L1I (four ways of 256 sets): fence.i over the
+    # deeper flash-cleared valid bits and the instruction reader protocol.
+    "smc_fencei_test_l1i32": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="smc_fencei_test",
+        nic_mac_clocks=False,
+        description="Self-modifying DDR code across fence.i, with the VCU118's 32 KiB L1I",
+        verilator_extra_args=("-GL1I_CACHE_BYTES=32768",),
+        extra_env=(("COCOTB_MAX_CYCLES", "10000000"),),
+    ),
+    "ifread_test_l1i32": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_ifread_program",
+        hdl_toplevel_module="frost",
+        app_name="ifread_test",
+        nic_mac_clocks=False,
+        description="Instruction reader protocol with the VCU118's 32 KiB L1I",
+        verilator_extra_args=("-GL1I_CACHE_BYTES=32768",),
+    ),
+    # Every L1I set filled, hit, patched and cleared, PA[12] pairs, an
+    # over-subscribed upper set, and an Sv39 page crossing whose PA[12]
+    # differs from its VA[12]; the default L1I, the VCU118's 32 KiB L1I, and
+    # 32 KiB with the hardware reset sweep (256 sets) before the first fetch.
+    "l1i_set_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="l1i_set_test",
+        nic_mac_clocks=False,
+        description="L1I sets, PA[12] pairs and an Sv39 PA[12] != VA[12] page crossing",
+        extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
+    ),
+    "l1i_set_test_l1i32": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="l1i_set_test",
+        nic_mac_clocks=False,
+        description="L1I set coverage with the VCU118's 32 KiB L1I",
+        verilator_extra_args=("-GL1I_CACHE_BYTES=32768",),
+        extra_env=(("L1I_TEST_BYTES", "32768"), ("COCOTB_MAX_CYCLES", "4000000")),
+    ),
+    "l1i_set_test_l1i32_hw_sweep": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="l1i_set_test",
+        nic_mac_clocks=False,
+        description=(
+            "L1I set coverage with the 32 KiB L1I and the hardware reset sweep "
+            "(SIM_FAST_MAINT=0) before the first cached fetch"
+        ),
+        verilator_extra_args=("-GL1I_CACHE_BYTES=32768",),
+        extra_env=(
+            ("L1I_TEST_BYTES", "32768"),
+            ("SIM_FAST_MAINT", "0"),
+            ("COCOTB_MAX_CYCLES", "4000000"),
+        ),
+    ),
     "csr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -840,8 +896,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description=(
             "Misaligned loads and stores of every size and form across a doubleword, "
-            "sector, line and page in cached DDR, under timer interrupts, and the "
-            "exception low BRAM keeps"
+            "sector, line and page in cached DDR, under Sv39 through MPRV and in S and "
+            "U modes (with non-adjacent physical frames in S/U and lower/upper/both-page "
+            "faults), under timer interrupts, and the exception low BRAM keeps"
         ),
     ),
     "fs_off_test": CocotbRunConfig(
@@ -1303,7 +1360,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="asid_test",
         nic_mac_clocks=False,
         description=(
-            "satp.ASID, global pages and the SFENCE.VMA forms against live TLB entries"
+            "satp.ASID, global pages, SFENCE.VMA forms, and immediate Svvptc PTE-store retry"
         ),
     ),
     "imsic_csr_test": CocotbRunConfig(
@@ -2206,6 +2263,20 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=(str(RVFI_DII_HARNESS), "-GMaxInsns=16", "-GMaxEvents=32"),
     ),
     # Unit benches (no application), starting with the Tomasulo back end
+    **{
+        name: CocotbRunConfig(
+            python_test_module=(
+                "cocotb_tests.tomasulo.reorder_buffer.test_rob_link_value_ram"
+            ),
+            hdl_toplevel_module="rob_link_value_ram",
+            description="Shared-link reads across allocation, staged drain and CDB collisions",
+            verilator_extra_args=(f"-GONEHOT_READ={onehot}",),
+        )
+        for name, onehot in (
+            ("rob_link_value_ram", 0),
+            ("rob_link_value_ram_onehot", 1),
+        )
+    },
     "reorder_buffer": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.reorder_buffer.test_reorder_buffer",
         hdl_toplevel_module="reorder_buffer",
@@ -3092,7 +3163,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "coherent_stream_order": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_stream_order",
         hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
-        description="Speculative fills, same-address load replay and attached LR reservation suppression across a coherent cut",
+        description="Speculative fills, load replay, attached signed and unsigned extraction, vector holds, flush recovery and LR cuts",
         verilator_extra_args=("--assert", "-GDIRECT_CACHE_READS=1", "-GCACHE_MISSES=8"),
     ),
     "hitpath_probe_order": CocotbRunConfig(
@@ -3178,7 +3249,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         python_test_module="cocotb_tests.cache.test_coherence_l1d_stream",
         hdl_toplevel_module="coherence_l1d",
-        description="Speculative ownership, atomic admission, demand attachment and bounded grant deferral with 8 endpoints",
+        description="Speculative ownership, attached data and response fairness, store/probe races and grant deferral with 8 endpoints",
     ),
     "coherence_stream_dirty": CocotbRunConfig(
         verilator_extra_args=(
@@ -3251,6 +3322,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="coherence_cluster_test_harness",
         description="The cluster with three L1D request endpoints: loads in flight beside "
         "stores, probes and DMA",
+    ),
+    "coherence_stale_line_prefetch_l2": CocotbRunConfig(
+        verilator_extra_args=(
+            "--assert",
+            "-GL1D_MISSES=8",
+            "-GL1D_STREAM_PREFETCH=1",
+            "-GHOME_CACHE_BYTES=65536",
+        ),
+        python_test_module="cocotb_tests.cache.test_coherence_stale_line",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="cbo.zero twin beside an L1D stream, with a 64 KiB home",
+        include_in_pytest=False,
     ),
     "coherence_cbo_zero": CocotbRunConfig(
         verilator_extra_args=("--assert",),
@@ -3558,6 +3641,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost_cache_test_harness",
         description="L1/L2/DDR data integrity with fast fence.i maintenance",
         verilator_extra_args=("-GSIM_FAST_MAINT=1",),
+    ),
+    "frost_cache_l1i32": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="L1/L2/DDR data integrity and hardware sweep with a 32 KiB L1I",
+        verilator_extra_args=("-GL1I_CACHE_BYTES=32768",),
     ),
     # Same suites with the memory model completing transactions of different
     # ids out of issue order, which the tagged fabric must tolerate.
@@ -4840,8 +4929,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.if_stage.test_rvc_decompressor",
         hdl_toplevel_module="rvc_decompressor",
         description=(
-            "RV64C expansion, illegal flags, and source metadata match the predecode "
-            "model"
+            "RV64C/Zcb/Zcmop expansion and illegal flags match the specification "
+            "oracle and predecode mirror for every parcel"
         ),
     ),
     "c_ext_state": CocotbRunConfig(
@@ -4958,6 +5047,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="cpu_tb",
         description="Directed and random compressed-instruction checks in cpu_tb",
         include_in_pytest=False,
+    ),
+    "mops": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_mops",
+        hdl_toplevel_module="cpu_tb",
+        description="MOP and NTL state in M/S/U modes, dependent consumers, and reserved mtval",
     ),
 }
 

@@ -86,7 +86,10 @@ checkpoint in use after a commit-time recovery that empties the ROB.
 The `register_alias_table` cocotb target covers two-slot renaming and commit,
 checkpoint management, flushes, and x0. The `register_alias_table` formal
 target checks rename and commit-clear transitions, reset and flush behavior,
-and the x0 invariant.
+and the x0 invariant, and `rat_checkpoint_restore` proves active and
+checkpointed INT and FP lookups, slot-2 overlay saves, epoch-filtered
+restores, and checkpoint-pool allocation unbounded against a 32-entry ROB
+instruction-sequence oracle.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

@@ -21,6 +21,8 @@ from cocotb.triggers import Timer
 
 from cocotb_tests.cache.test_coherence_endpoints import pack
 from cocotb_tests.cache.test_coherence_home import unpack
+from cocotb_tests.cpu_structs import PTW_RESP_FIELDS
+from utils.packed_structs import assert_port_width, unpack_struct
 
 
 class Readers:
@@ -28,12 +30,13 @@ class Readers:
 
     def __init__(self, dut: Any) -> None:
         """Initialize independent protocol and reader tracking."""
+        assert_port_width(dut.o_translation, PTW_RESP_FIELDS)
         self.dut = dut
         self.cycle = 0
         self.demands: list[tuple[int, ...]] = []
         self.live: dict[int, dict[str, int]] = {}
         self.responses: list[tuple[int, int, int]] = []
-        self.walks: list[int] = []
+        self.walks: list[dict[str, int | bool]] = []
         self.if_ids: list[int] = []
         self.if_debt: set[int] = set()
         self.early: tuple[int, int] | None = None
@@ -125,7 +128,7 @@ class Readers:
             if s["resp_valid"]:
                 self.responses.append((s["resp_id"], s["resp_data"], s["resp_error"]))
             if s["walk_valid"]:
-                self.walks.append(s["translation"])
+                self.walks.append(unpack_struct(PTW_RESP_FIELDS, s["translation"]))
         self.dut.i_clk.value = 1
         await Timer(5, unit="ns")
         self.cycle += 1
@@ -299,8 +302,8 @@ async def walk_errors_discard_and_retry_with_release_held(dut: Any) -> None:
             if discarded:
                 assert not b.walks
             else:
-                assert len(b.walks) == 1 and b.walks[0] >> 79 == 3
-                assert (b.walks[0] >> 52) & ((1 << 27) - 1) == 7
+                assert len(b.walks) == 1 and b.walks[0]["fault_kind"] == 3
+                assert b.walks[0]["vpn"] == 7
             # The next walk's read takes the other slot while the failed
             # read's slot waits for U.
             before = len(b.demands)
@@ -310,8 +313,8 @@ async def walk_errors_discard_and_retry_with_release_held(dut: Any) -> None:
             assert retry != failed and failed in b.live
             await b.grant(retry, line((0x80000 << 10) | 0xCF))
             await b.wait(lambda s: bool(s["walk_ready"]))
-            assert b.walks[-1] >> 79 == 0
-            assert (b.walks[-1] >> 52) & ((1 << 27) - 1) == 11
+            assert b.walks[-1]["fault_kind"] == 0
+            assert b.walks[-1]["vpn"] == 11
             await b.release(failed)
             await b.release(retry)
 
@@ -340,8 +343,8 @@ async def walk_reads_leave_before_the_previous_release(dut: Any) -> None:
     assert b.demands[-1][1] == first
     await b.grant(first, line((0x80000 << 10) | 0xCF))
     await b.wait(lambda s: bool(s["walk_ready"]))
-    assert len(b.walks) == 1 and b.walks[0] >> 79 == 0
-    assert (b.walks[0] >> 52) & ((1 << 27) - 1) == 5
+    assert len(b.walks) == 1 and b.walks[0]["fault_kind"] == 0
+    assert b.walks[0]["vpn"] == 5
     await b.release(second)
     await b.release(first)
     assert not b.live
@@ -355,8 +358,8 @@ async def walk_reads_leave_before_the_previous_release(dut: Any) -> None:
     assert b.demands[-1][1] == 0x42 and 0x40 in b.live
     await b.grant(0x42, line((0x80000 << 10) | 0xCF), error=1)
     await b.wait(lambda s: bool(s["walk_ready"]))
-    assert len(b.walks) == 1 and b.walks[0] >> 79 == 3
-    assert (b.walks[0] >> 52) & ((1 << 27) - 1) == 9
+    assert len(b.walks) == 1 and b.walks[0]["fault_kind"] == 3
+    assert b.walks[0]["vpn"] == 9
     await b.release(0x42)
     await b.release(0x40)
     assert not b.live

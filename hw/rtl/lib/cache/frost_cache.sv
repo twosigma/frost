@@ -931,7 +931,9 @@ module frost_cache #(
   logic  [  UP_ID_BITS-1:0] w_id_q;
   logic                     w_maint_q;
   logic                     w_probe_q;
-  logic  [    MshrBits-1:0] w_mshr_q;
+  // Selects every MSHR's line payload in W: replicated so the wide merge and
+  // payload loads sit near a copy.
+  (* max_fanout = 64 *)logic  [    MshrBits-1:0] w_mshr_q;
   logic  [      WbBits-1:0] w_wb_q;
   // The way W acts on: the hit way, or an allocation's victim way.
   logic  [     WayBits-1:0] w_way_q;
@@ -1388,7 +1390,10 @@ module frost_cache #(
   logic                mshr_resp_any;
   logic [MshrBits-1:0] mshr_resp_sel;
   logic                mshr_resp_fire;
-  logic [NUM_MSHR-1:0] mshr_resp_onehot_q, mshr_in_resp_next;
+  // Selects the response line among the MSHR payloads: replicated so the
+  // wide response mux sits near a copy.
+  (* max_fanout = 64 *)logic [NUM_MSHR-1:0] mshr_resp_onehot_q;
+  logic [NUM_MSHR-1:0] mshr_in_resp_next;
   always_comb begin
     mshr_resp_any = |mshr_resp_onehot_q;
     mshr_resp_sel = '0;

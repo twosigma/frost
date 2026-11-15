@@ -29,6 +29,10 @@ module instr_operand_classifier_equiv (
   riscv_pkg::instr_t instruction;
   riscv_pkg::instr_op_e instruction_operation;
   logic decoder_illegal, is_illegal_instruction, is_fetch_fault;
+  logic spec_mop;
+  // Fixed bits from the Zimop MOP.R and MOP.RR encoding diagrams.
+  assign spec_mop = ((instruction & 32'hb3c0_707f) == 32'h81c0_4073) ||
+                   ((instruction & 32'hb200_707f) == 32'h8200_4073);
   assign instruction = i_inject_nop ? riscv_pkg::NOP : i_instr;
   assign is_illegal_instruction = decoder_illegal || i_pd_illegal;
   assign is_fetch_fault = i_fetch_fault;
@@ -102,7 +106,7 @@ module instr_operand_classifier_equiv (
       riscv_pkg::CSRRC, riscv_pkg::CSRRWI,
       riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
       riscv_pkg::ECALL, riscv_pkg::EBREAK, riscv_pkg::ILLEGAL,
-      riscv_pkg::PAUSE:
+      riscv_pkg::PAUSE, riscv_pkg::MOP:
       rs_type_pre = riscv_pkg::RS_INT;
 
       riscv_pkg::CLMUL, riscv_pkg::CLMULH, riscv_pkg::CLMULR,
@@ -336,6 +340,7 @@ module instr_operand_classifier_equiv (
       riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
       riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
       riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
+      riscv_pkg::MOP,
       riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D, riscv_pkg::FMV_X_H,
       riscv_pkg::FCVTMOD_W_D, riscv_pkg::FLEQ_S, riscv_pkg::FLTQ_S,
       riscv_pkg::FLEQ_D, riscv_pkg::FLTQ_D,
@@ -411,6 +416,7 @@ module instr_operand_classifier_equiv (
       op_for_pre_decode != riscv_pkg::SRET &&
       op_for_pre_decode != riscv_pkg::DRET &&
       op_for_pre_decode != riscv_pkg::PAUSE &&
+      op_for_pre_decode != riscv_pkg::MOP &&
       op_for_pre_decode != riscv_pkg::CSRRWI &&
       op_for_pre_decode != riscv_pkg::CSRRSI &&
       op_for_pre_decode != riscv_pkg::CSRRCI &&
@@ -505,6 +511,10 @@ module instr_operand_classifier_equiv (
       .o_needs_sq(needs_sq_direct)
   );
   always_comb begin
+    p_mop_encoding : assert ((instruction_operation == riscv_pkg::MOP) == spec_mop);
+    if (spec_mop) begin
+      p_mop_legal : assert (!decoder_illegal);
+    end
     p_has_int_dest : assert (has_int_dest_direct == has_int_dest_pre);
     p_has_fp_dest : assert (has_fp_dest_direct == has_fp_dest_pre);
     p_uses_int_rs1 : assert (uses_int_rs1_direct == uses_int_rs1_pre);

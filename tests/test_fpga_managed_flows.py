@@ -270,6 +270,35 @@ def test_loader_builds_with_board_l2_capacity(
     )
 
 
+@pytest.mark.parametrize("board,capacity", (("x3", 16 << 10), ("vcu118", 32 << 10)))
+@pytest.mark.parametrize("override", (None, "8192"))
+def test_loader_builds_with_board_l1i_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    board: str,
+    capacity: int,
+    override: str | None,
+) -> None:
+    """L1I geometry programs follow the selected board or an explicit override."""
+    monkeypatch.delenv("L1I_TEST_BYTES", raising=False)
+    if override is not None:
+        monkeypatch.setenv("L1I_TEST_BYTES", override)
+    environments = []
+
+    def run(command: list[str], **kwargs: Any) -> Any:
+        environments.append(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(loader.subprocess, "run", run)
+    for name in ("sw.mem", "sw.txt"):
+        (tmp_path / name).write_text("")
+    assert loader.compile_app_for_board("l1i_set_test", tmp_path, 1, 1, board=board)
+    assert len(environments) == 2
+    assert all(
+        env["L1I_TEST_BYTES"] == (override or str(capacity)) for env in environments
+    )
+
+
 def test_skip_build_loads_without_make(monkeypatch: pytest.MonkeyPatch) -> None:
     """Load the already selected files without replacing the debugger's ELF."""
     monkeypatch.setattr(
