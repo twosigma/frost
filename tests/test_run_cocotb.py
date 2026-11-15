@@ -777,7 +777,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ifread_test",
         nic_mac_clocks=False,
         description="Instruction reader protocol with the VCU118's 32 KiB L1I",
-        verilator_extra_args=("--assert", "-GL1I_CACHE_BYTES=32768"),
+        verilator_extra_args=("-GL1I_CACHE_BYTES=32768",),
     ),
     # Every L1I set filled, hit, patched and cleared, PA[12] pairs, an
     # over-subscribed upper set, and an Sv39 page crossing whose PA[12]
@@ -3599,6 +3599,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost_cache_test_harness",
         description="L1/L2/DDR data integrity with fast fence.i maintenance",
         verilator_extra_args=("-GSIM_FAST_MAINT=1",),
+    ),
+    "frost_cache_l1i32": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="L1/L2/DDR data integrity and hardware sweep with a 32 KiB L1I",
+        verilator_extra_args=("-GL1I_CACHE_BYTES=32768",),
     ),
     # Same suites with the memory model completing transactions of different
     # ids out of issue order, which the tagged fabric must tolerate.
