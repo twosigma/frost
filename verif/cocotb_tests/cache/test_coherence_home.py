@@ -235,6 +235,11 @@ class Home:
                         write,
                     )
                 )
+            accepted_read = (
+                self.get("o_mem_req_valid")
+                and self.get("i_mem_req_ready")
+                and not self.get("o_mem_req_write")
+            )
             grant = unpack(self.get("o_g"), (3, 9, 6, self.p, 256, 1))
             prefetch_grant = bool(self.get("o_g_valid")) and grant[1] >> 7 == 3
             held_ready = self.get("i_g_ready")
@@ -247,6 +252,8 @@ class Home:
                 await self.set(i_g_ready=held_ready)
             if not self.get("i_rst"):
                 self.write_fills += (self.get("o_write_perf_events") >> 7) & 1
+                refill = self.get("o_perf_events") >> (len(self.dut.o_perf_events) - 2)
+                assert refill.bit_count() == int(accepted_read)
             for observer in self.observers:
                 observer()
             if next_put is not None:
@@ -1076,6 +1083,35 @@ async def fatal_and_reset_with_held_results_and_dirty_victim(dut: Any) -> None:
 async def fatal_and_single_cycle_reset(dut: Any) -> None:
     """One reset cycle does the same."""
     await fatal_then_reset(dut, 1)
+
+
+@cocotb.test()
+async def refill_events_count_held_reads_after_fatal_stop(dut: Any) -> None:
+    """Count a buffered read once when accepted after service stops."""
+    for opcode in (0, PREFETCH):
+        b = Home(dut)
+        await b.reset()
+        counts = [0, 0]
+        width = len(dut.o_perf_events)
+
+        def sample() -> None:
+            events = b.get("o_perf_events")
+            counts[0] += (events >> (width - 1)) & 1
+            counts[1] += (events >> (width - 2)) & 1
+
+        b.observers.append(sample)
+        await b.set(i_mem_req_ready=0)
+        await b.submit(opcode, 0x80018000)
+        await b.wait("o_mem_req_valid")
+        await b.tick(5)
+        assert counts == [0, 0] and not b.transactions
+        await b.set(i_fatal_stop=1)
+        await b.tick(3)
+        assert not b.get("run") and b.get("o_mem_req_valid")
+        await b.set(i_mem_req_ready=1)
+        await b.tick(8)
+        assert b.reads_of(0x80018000) == 1
+        assert counts == ([0, 1] if opcode == PREFETCH else [1, 0])
 
 
 @cocotb.test()
