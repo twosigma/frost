@@ -131,6 +131,12 @@ IMSIC_M_BASE = 0x4800_0000
 IMSIC_S_BASE = 0x4810_0000
 IMSIC_FILE_SIZE = 0x1000
 IMSIC_NUM_IDS = 63
+# SYSRESET: a 32-bit store of SYSRESET_VALUE (the sifive_test reset code)
+# resets the core domain and restarts the boot ROM. OpenSBI serves SBI
+# system reset from it through syscon-reboot (soc_top.sv SysResetAddr).
+SYSRESET_BASE = 0x4002_F000
+SYSRESET_SIZE = 0x1000
+SYSRESET_VALUE = 0x7777
 # The DMA test engine's register window; no Linux driver binds to it, the
 # node only records the device and its APLIC source.
 DMA_ENGINE_BASE = 0x4002_0000
@@ -463,6 +469,18 @@ def gen_dts(
 \t\t\treg = <0x{DMA_ENGINE_BASE:08x} 0x{DMA_ENGINE_SIZE:x}>;
 \t\t\tinterrupt-parent = <&aplic_s>;
 \t\t\tinterrupts = <{DMA_ENGINE_APLIC_SOURCE} 4>;
+\t\t}};
+\t\tsysreset: syscon@{SYSRESET_BASE:x} {{
+\t\t\tcompatible = "frost,sysreset", "syscon";
+\t\t\treg = <0x{SYSRESET_BASE:08x} 0x{SYSRESET_SIZE:x}>;
+\t\t\treg-io-width = <4>;
+
+\t\t\treboot {{
+\t\t\t\tcompatible = "syscon-reboot";
+\t\t\t\tregmap = <&sysreset>;
+\t\t\t\toffset = <0x0>;
+\t\t\t\tvalue = <0x{SYSRESET_VALUE:x}>;
+\t\t\t}};
 \t\t}};
 \t\tmemory-controller@{MEMORY_ERROR_BASE:x} {{
 \t\t\tcompatible = "frost,memory-error";

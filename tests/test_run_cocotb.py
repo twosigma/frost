@@ -929,6 +929,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ),
         ),
     ),
+    "sysreset_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="sysreset_test",
+        nic_mac_clocks=False,
+        description=(
+            "SYSRESET register: a 32-bit store of 0x7777 resets the core and "
+            "restarts the program from the boot address; other writes do not"
+        ),
+    ),
     "vec_state_test_v512": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

@@ -181,6 +181,7 @@ MMIO registers:
 | `0x4001_BFF8`/`BFFC` | CLINT MTIME_LO/HI | SiFive CLINT alias of MTIME |
 | `0x4002_0000`–`0057` | DMA test engine | Legacy CTRL/ACK/SRC/DST/LEN/MODE/PATTERN/STATUS_ADDR/STATUS_VALUE/LINES plus versioned ABI_CTRL and SRC64/DST64/STATUS_ADDR64 (`dma_test_engine.sv`, `sw/lib/include/dma_engine.h`) |
 | `0x4002_1000`–`1038` | Memory error unit | CAPS/STATUS/IRQ_EN/CE_COUNT/UE_COUNT/AXI_RD_ERRS/AXI_WR_ERRS/CE_ADDR/UE_ADDR/AXI_ERR/ECC_POLLS (`memory_error_unit.sv`, `sw/lib/include/memory_error.h`) |
+| `0x4002_F000` | SYSRESET | A 32-bit (or 16-bit) store of `0x7777` resets the core domain like the debug module's `ndmreset`: the CPU restarts at the boot address (the boot ROM), BRAM and DDR keep their contents. OpenSBI serves SBI system reset from it through `syscon-reboot` (`soc_top.sv`, `linux/opensbi_frost_defconfig`) |
 | `0x4003_0000`–`0FFF` | NIC | 4 KiB window: control and status, station address, rings, link and PHY, 64-bit counters (`peripherals/nic/nic_pkg.sv`, `sw/lib/include/nic.h`) |
 
 The UART console runs at 115200 baud, 8N1. For Linux, the same UART also
