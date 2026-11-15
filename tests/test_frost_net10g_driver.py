@@ -328,6 +328,12 @@ def test_driver_exposes_every_hardware_counter_in_order() -> None:
     assert table is not None
     names = re.findall(r'"(\w+)"', table.group(1))
     assert names == [_snake(name.removeprefix("Cnt")) for name in ordered]
+    header = (REPO_ROOT / "sw/lib/include/nic.h").read_text()
+    assert int(_group(r"#define NIC_NUM_COUNTERS (\d+)u", header)) == len(ordered)
+    assert int(_group(r"#define NIC_NUM_BASE_COUNTERS (\d+)u", header)) == num_base
+    assert int(_group(r"#define NIC_COUNTERS_EXT (0x[0-9A-Fa-f]+)u", header), 16) == ext
+    for index, name in enumerate(names):
+        assert int(_group(rf"#define NIC_CNT_{name.upper()} (\d+)u", header)) == index
     ops = _ethtool_ops(source)
     for hook in (".get_sset_count", ".get_strings", ".get_ethtool_stats"):
         assert hook in ops
@@ -927,6 +933,83 @@ int main(void)
     assert(frost_set_tunable(&dev, &tuna, &saved) == -EOPNOTSUPP);
     assert(frost_get_tunable(&dev, &tuna, &got) == -EOPNOTSUPP);
     assert(dev.priv.rx_copybreak == saved);
+    return 0;
+}
+""",
+    )
+
+
+def test_counter_reads_cross_the_pause_gap_and_support_old_hardware(
+    tmp_path: Path,
+) -> None:
+    """Execute both read widths, absent extension registers and a carry between split reads."""
+    definitions = "\n".join(
+        f"#define {name} {_define(name)}"
+        for name in (
+            "NET10G_COUNTERS",
+            "NET10G_COUNTERS_EXT",
+            "FROST_NUM_BASE_COUNTERS",
+        )
+    )
+    _run_driver_function(
+        tmp_path,
+        definitions
+        + r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+#define __iomem
+#define u64 uint64_t
+#define u32 uint32_t
+struct frost_priv { void *base; bool wide_abi; };
+static uint64_t regs[64];
+static bool carry;
+static unsigned int reads;
+static u64 readq(const void *p)
+{
+    u64 value;
+    memcpy(&value, p, sizeof(value));
+    return value;
+}
+static u32 readl(const void *p)
+{
+    u32 value;
+    if (carry) {
+        static const u32 sequence[] = {0, 3, 1, 1, 3, 1};
+        assert(reads < 6);
+        return sequence[reads++];
+    }
+    memcpy(&value, p, sizeof(value));
+    return value;
+}
+""",
+        "frost_read_counter",
+        r"""
+int main(void)
+{
+    struct frost_priv priv = {.base = regs};
+    for (unsigned int index = 0; index < 36; ++index) {
+        unsigned int offset = index < 21 ? 0x80 + 8 * index : 0x140 + 8 * (index - 21);
+        regs[offset / 8] = 0x1234567800000000ULL + index;
+    }
+    regs[0x130 / 8] = 0xabcdef;
+    regs[0x138 / 8] = 0xfedcba;
+    for (unsigned int wide = 0; wide < 2; ++wide) {
+        priv.wide_abi = wide;
+        for (unsigned int index = 0; index < 36; ++index)
+            assert(frost_read_counter(&priv, index) == 0x1234567800000000ULL + index);
+    }
+    memset((char *)regs + 0x140, 0, 15 * 8);
+    for (unsigned int wide = 0; wide < 2; ++wide) {
+        priv.wide_abi = wide;
+        for (unsigned int index = 21; index < 36; ++index)
+            assert(frost_read_counter(&priv, index) == 0);
+    }
+    carry = true;
+    priv.wide_abi = false;
+    assert(frost_read_counter(&priv, 21) == 0x100000003ULL);
+    assert(reads == 6);
     return 0;
 }
 """,

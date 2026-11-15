@@ -20,7 +20,7 @@
  *
  * The NIC is the net10g MAC/PCS on the cache hierarchy's coherent DMA port:
  * a 4 KiB window of 32-bit registers at NIC_BASE (64-bit counters from
- * NIC_COUNTERS, read with one 64-bit load), an RX and a TX descriptor ring
+ * NIC_COUNTERS and NIC_COUNTERS_EXT, read with one 64-bit load), an RX and a TX descriptor ring
  * in cached DDR, and one APLIC interrupt. Descriptors are 16 bytes, two per
  * 32-byte line; software fills words 0 and 1, zeroes word 2, orders those
  * stores before the doorbell with "fence w, o" (memory writes before the
@@ -88,6 +88,8 @@
 #define NIC_RX_BASE64 0x070u
 #define NIC_TX_BASE64 0x078u
 #define NIC_COUNTERS 0x080u
+#define NIC_COUNTERS_EXT 0x140u
+#define NIC_NUM_BASE_COUNTERS 21u
 #define NIC_ABI_WIDE (1u << 0)
 #define NIC_ABI_WIDE_SUPPORTED (1u << 1)
 /* RX status writes carry the frame checksum (bytes 14 to the end): word 3 [15:0] in the legacy
@@ -146,7 +148,7 @@
 #define NIC_PHY_STATUS_MODULE_PRESENT (1u << 3)
 #define NIC_PHY_STATUS_LOS (1u << 4)
 
-/* Counter indices (64-bit each at NIC_COUNTERS + 8 * index). */
+/* Counter indices; nic_read_counter selects the base or extended register range. */
 #define NIC_CNT_RX_FRAMES 0u
 #define NIC_CNT_RX_BYTES 1u
 #define NIC_CNT_RX_FILTERED 2u
@@ -168,7 +170,22 @@
 #define NIC_CNT_RX_PAUSE_FRAMES 18u
 #define NIC_CNT_TX_PAUSE_FRAMES 19u
 #define NIC_CNT_TX_PAUSED_CYCLES 20u
-#define NIC_NUM_COUNTERS 21u
+#define NIC_CNT_RX_GMII_ER_PREAMBLE 21u
+#define NIC_CNT_RX_GMII_ER_CARRIER_EXT 22u
+#define NIC_CNT_RX_GMII_SHORT_IFG 23u
+#define NIC_CNT_RX_GMII_PREAMBLE_ER_ACCEPTED 24u
+#define NIC_CNT_RX_MAC_OVERFLOW_NO_DESC 25u
+#define NIC_CNT_PCS_SYNC_LOSS 26u
+#define NIC_CNT_PCS_RUDI_C 27u
+#define NIC_CNT_PCS_RUDI_INVALID 28u
+#define NIC_CNT_PCS_RXDISPERR 29u
+#define NIC_CNT_PCS_RXNOTINTABLE 30u
+#define NIC_CNT_PHY_RX_ERR_LAST 31u
+#define NIC_CNT_PHY_RX_ERR_SUM 32u
+#define NIC_CNT_PHY_FCS_LAST 33u
+#define NIC_CNT_PHY_FCS_SUM 34u
+#define NIC_CNT_PHY_POLLS 35u
+#define NIC_NUM_COUNTERS 36u
 
 #define NIC_APLIC_SOURCE 4u
 #define NIC_MAX_FRAME_BYTES 9216u
@@ -239,7 +256,10 @@ static inline void nic_write64(uint32_t offset, uint64_t value)
 /** A 64-bit counter, read atomically. */
 static inline uint64_t nic_read_counter(uint32_t index)
 {
-    return *(volatile uint64_t *) (NIC_BASE + NIC_COUNTERS + 8u * index);
+    uint32_t offset = index < NIC_NUM_BASE_COUNTERS
+                          ? NIC_COUNTERS + 8u * index
+                          : NIC_COUNTERS_EXT + 8u * (index - NIC_NUM_BASE_COUNTERS);
+    return *(volatile uint64_t *) (NIC_BASE + offset);
 }
 
 #endif /* NIC_H */

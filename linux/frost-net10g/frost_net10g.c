@@ -182,10 +182,7 @@
 /*
  * Each ring holds a power-of-two number of entries, so at most one fewer is posted (TAIL == HEAD is
  * empty). ethtool -G sets them from FROST_RING_MIN to FROST_RING_MAX (the NIC takes 4 to 65536).
- * The default RX depth absorbs bursts that arrive while the CPU is busy elsewhere; at 128 the NIC
- * dropped frames under load, and at 512 a slow-start burst on a 30 ms path starved the ring
- * (retransmits at 215-230 Mb/s on eth0; 4096 entries with the full RX FIFO ran at 260 Mb/s with
- * none). TX keeps 512.
+ * The RX default absorbs receive bursts while the CPU is busy elsewhere. TX uses 512 entries.
  */
 #define FROST_RX_RING_DEFAULT		4096
 #define FROST_TX_RING_DEFAULT		512
@@ -1920,5 +1917,5 @@ module_platform_driver(frost_driver);
 
 MODULE_DESCRIPTION("FROST net10g 10GBASE-R Ethernet driver");
 /* The DKMS package version: PACKAGE_VERSION in dkms.conf matches it */
-MODULE_VERSION("1.2");
+MODULE_VERSION("1.3");
 MODULE_LICENSE("Dual BSD/GPL");

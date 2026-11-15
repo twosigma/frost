@@ -47,7 +47,7 @@ Offloads, reported by `ethtool -k <interface>`:
 | Ring sizes | `ethtool -g`, `ethtool -G <interface> rx N tx N` | Power-of-two RX and TX rings from 64 to 4096 entries (default RX 4096, TX 512); other sizes round up, and a running interface is closed and reopened with the new rings |
 | Flow control | `ethtool -a`, `ethtool -A <interface> rx on tx on` | IEEE 802.3x pause on both ports: `rx on` makes the transmitter stop for the pause time of a received PAUSE frame, `tx on` sends high-water pause frames when the RX FIFO fills past three quarters of its limit (refreshed at half the pause time) and a release pause frame when it drains below a quarter. PAUSE frames are consumed by the MAC, counted (`rx_pause_frames`) and never reach the stack. Autoneg is off; absent on hardware without `ABI_CTRL` bit 5 |
 | RX FIFO size | `devlink dev param set platform/<dev> name rx_fifo_bytes value N cmode runtime` | The NIC's RX ingress FIFO occupancy limit in bytes (a multiple of 8, from 64 to the built depth, 64 KiB in the SoC; default the built depth). `devlink dev` lists the device name. A running interface is closed and reopened with the new limit, as for ring sizes. Absent on hardware without `RX_FIFO_LIMIT` |
-| Hardware statistics | `ethtool -S` | The NIC's 64-bit counters (frames, bytes, filtered, truncated, descriptor errors, aborts, MAC overflow, bad frame, bad FCS, PCS bad blocks, TX drops, and on the GMII port the preamble-stage discards and `rx_er` bursts, which read 0 elsewhere); the RESET at each open clears them |
+| Hardware statistics | `ethtool -S` | The NIC's 64-bit counters (frames, bytes, filtered, truncated, descriptor errors, aborts, MAC overflow, bad frame, bad FCS, PCS bad blocks, TX drops, descriptor-starved overflows, GMII preamble and error diagnostics, PCS status events, and PHY management samples); see the hardware reference for names and offsets. Unsupported counters read zero. The RESET at each open clears them |
 | Loopback | `loopback: off` | MAC or PMA loopback, changed only while the interface is down |
 
 Scatter-gather is offered only when `ABI_CTRL` bit 6 identifies hardware that accepts descriptor
@@ -60,6 +60,15 @@ The checksum features appear when `ABI_CTRL` bit 3 (checksum offload supported) 
 and the driver sets bit 2 at each open so the NIC reports the RX checksum. `ethtool -K
 <interface> rx off tx off sg off` turns each off for comparison; `rx` and `tx` take effect
 on the next packet without reopening.
+
+The driver has no module parameters. Use `ethtool -G` for ring sizes and the
+devlink runtime parameter for FIFO bytes. Hardware without the FIFO-depth
+register keeps its hardware limit; the driver omits that devlink parameter.
+
+The default RX descriptor ring occupies 64 KiB (4096 entries of 16 bytes), with
+4095 descriptors available for posting. At MTU 1500 with 4 KiB pages, its
+posted buffers occupy 8 MiB, plus descriptor and page-pool bookkeeping.
+The TX descriptor ring occupies 8 KiB at its default 512 entries.
 
 RX buffers come from a DMA-mapped page pool. At MTU 1500, two buffers share
 one page; smaller MTUs can fit more. Buffers too large to share use a whole
@@ -139,6 +148,9 @@ then, after that kernel's initramfs was made; run
 `update-initramfs -u -k <version>` again.
 
 ### Upgrading the package
+
+The loaded module version is available at `/sys/module/frost_net10g/version`;
+`modinfo -F version frost_net10g` reports the installed module's version.
 
 DKMS keeps each `PACKAGE_VERSION` as a separate package. To move to a new
 version, remove the old one, add and install the new one as above, and
