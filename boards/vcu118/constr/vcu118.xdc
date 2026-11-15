@@ -26,7 +26,7 @@ set_property IOSTANDARD DIFF_HSTL_I_12 [get_ports sysclk1_300_n]
 
 create_clock -period 3.333 -name sysclk1_300 [get_ports sysclk1_300_p]
 
-# Center the CPU clock distribution buffer in SLR2 to minimize clock skew
+# Keep the CPU clock distribution roots in SLR2.
 set_property USER_CLOCK_ROOT X2Y12 [get_nets -quiet {main_clock divided_clock_by_4}]
 
 # CPU Reset Pushbutton (SW5, active-high, Bank 73 in SLR2)
