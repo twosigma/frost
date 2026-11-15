@@ -2563,6 +2563,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Vector engine at VLEN 256: integer instructions against a model of their semantics",
         verilator_extra_args=("-GVLEN=256",),
     ),
+    "vec_vmt": CocotbRunConfig(
+        python_test_module="cocotb_tests.vector.test_vec_vmt",
+        hdl_toplevel_module="vec_vmt",
+        description=(
+            "Vector memory table allocation, retirement, flushes, completion and ranges "
+            "against a model of its lifecycle"
+        ),
+    ),
     "vec_hold_rows": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_hold_rows",
         hdl_toplevel_module="vec_hold_rows",
