@@ -25,8 +25,9 @@ translated line address, so its 8 KiB ways create no virtual aliases, and its
 256-deep banks occupy the same block RAMs as the 16 KiB default's 128-deep
 ones. The L2 uses four ways, 16,384 sets and 64-byte lines. The board top
 passes `L1I_CACHE_BYTES` and `L2_CACHE_BYTES` through the shared subsystem;
-their defaults remain 16 KiB and 2 MiB for other boards. The software loader sets `FROST_L2_CACHE_BYTES=4194304`
-for VCU118 applications so conflicting-set eviction uses the same geometry.
+their defaults remain 16 KiB and 2 MiB for other boards. The software loader sets
+`L1I_TEST_BYTES=32768` and `FROST_L2_CACHE_BYTES=4194304` for VCU118
+applications so cache-geometry and conflicting-set tests use the same geometry.
 
 ## Board integration
 
