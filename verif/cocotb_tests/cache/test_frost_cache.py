@@ -1240,29 +1240,63 @@ async def test_fence_sync_invalidates_stale_l1i(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fence_waits_for_inflight_instruction_fill(dut: Any) -> None:
-    """A held instruction fill drains before a fence publishes a patch."""
+    """L1I invalidation waits for a held fill, then the line misses again."""
     await _setup(dut)
     model = ReferenceModel(dut)
     full = (1 << LINE_BYTES) - 1
-    addr = FENCE2_BASE + 0x40000 + 13 * LINE_BYTES
+    hart_cache = dut.cache_hierarchy.hart_cache
+    addr = FENCE2_BASE + 0x40000 + 13 * l2_line_bytes(dut)
 
+    # Warm another L2 line without dirtying anything. The L1D writeback walk
+    # can finish while the held instruction fill below is still outstanding.
+    warm = addr - l2_line_bytes(dut)
+    assert await _port_transaction(
+        dut, "iup", write=False, addr=warm
+    ) == model.read_line(warm)
     await FallingEdge(dut.i_clk)
     dut.i_down_hold.value = 1
     await _fire_read(dut, "iup", addr)
-    wdata = _line_int(bytes([(0x91 + 5 * b) & 0xFF for b in range(LINE_BYTES)]))
-    model.write_line(addr, wdata, full)
-    await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
-
     fence = cocotb.start_soon(_fence_sync(dut))
+    for _ in range(SWEEP_TIMEOUT_CYCLES):
+        await FallingEdge(dut.i_clk)
+        if int(hart_cache.fence_state_q.value) == FENCE_L1I_REQ:
+            break
+    else:
+        raise AssertionError("the fence never reached its L1I request state")
     for _ in range(20):
         await FallingEdge(dut.i_clk)
-        assert not int(dut.o_fence_done.value), "fence passed a held instruction fill"
+        assert int(hart_cache.fence_state_q.value) == FENCE_L1I_REQ, (
+            "L1I invalidation passed an outstanding instruction fill"
+        )
+        assert not int(hart_cache.l1i_cache.o_maint_busy.value), (
+            "L1I maintenance started before its held fill drained"
+        )
+        assert _perf_field(dut, "l1i", "miss_outstanding") > 0
     dut.i_down_hold.value = 0
     await fence
 
+    # Only after the fence, publish different bytes through the D-side and
+    # its walker clean probe, without another L1I invalidation. A surviving
+    # pre-fence fill would return the old bytes instead of missing in L1I.
+    wdata = _line_int(bytes([(0x91 + 5 * b) & 0xFF for b in range(LINE_BYTES)]))
+    model.write_line(addr, wdata, full)
+    await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
+    assert await _port_transaction(
+        dut, "wup", write=False, addr=addr
+    ) == model.read_line(addr)
+    counts = _new_perf_counts()
+    stop = [False]
+    monitor = cocotb.start_soon(_monitor_perf_events(dut, counts, stop))
     for _ in range(2):
         got = await _port_transaction(dut, "iup", write=False, addr=addr)
         assert got == model.read_line(addr), "pre-fence fill survived invalidation"
+    await _settle(dut)
+    stop[0] = True
+    await monitor
+    assert counts["l1i"]["miss"] == 1, "the first post-fence instruction read must miss"
+    assert counts["l1i"]["hit"] == 1, (
+        "only the second post-fence instruction read may hit"
+    )
 
 
 @cocotb.test()

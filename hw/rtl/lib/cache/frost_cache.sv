@@ -466,6 +466,8 @@ module frost_cache #(
         proof_swept2_q <= proof_swept_q;
       end
       proof_inval_q <= (mstate_q == M_IDLE) && i_invalidate_all && pipeline_idle && !i_rst;
+      // Assignment checks: these restate reset/clear priority and the
+      // registered read equation; they are not an independent hit reference.
       if (proof_past_valid_q) begin
         if ($past(i_rst || (mstate_q == M_SWEEP))) assert (proof_valid_bits == '0);
         if ($past(i_rst)) begin
@@ -477,13 +479,9 @@ module frost_cache #(
     end
     always_comb begin
       if ((SIM_FAST_MAINT != 0) && proof_swept2_q) assert (valid_rd_q == tag_ram_valid);
+      // Assignment check: the invalidate entry chooses the last set.
       if ((SIM_FAST_MAINT == 0) && proof_inval_q && !i_rst)
         assert ((mstate_q == M_SWEEP) && (sweep_idx_q == {SetBits{1'b1}}));
-    end
-    // Reachability: an invalidate-all, and a valid line read after a sweep.
-    always_ff @(posedge i_clk) begin
-      cover (proof_inval_q);
-      cover (proof_swept2_q && tag_response_valid && (valid_rd_q != '0));
     end
 `endif
     /* verilator lint_off UNUSEDSIGNAL */
@@ -2232,6 +2230,60 @@ module frost_cache #(
       endcase
     end
   end
+
+`ifdef CACHE_FLASH_PROOF
+  // Independent event reference for one arbitrary line. Installation comes
+  // from a valid tag write; invalidation comes from acceptance of the
+  // invalidate-all request, not from valid_q, its read register, the RAM's
+  // valid bits or the sweep's clear assignment. Check the consumer's hit.
+  (* anyconst *) logic [SetBits-1:0] flash_watch_set;
+  (* anyconst *) logic [TagBits-1:0] flash_watch_tag;
+  logic flash_watch_installed_q = 1'b0;
+  logic flash_watch_hit_q = 1'b0;
+  logic flash_watch_invalidated_q = 1'b0;
+  logic flash_watch_blocked_q = 1'b0;
+  logic flash_watch_missed_q = 1'b0;
+  logic flash_watch_reinstalled_q = 1'b0;
+  wire flash_watch_install = (|tag_we) && tag_wdata[TagEntryBits-1] &&
+      (tag_waddr == flash_watch_set) && (tag_wdata[TagBits-1:0] == flash_watch_tag);
+  wire flash_watch_lookup = (t_set == flash_watch_set) && (t_tag == flash_watch_tag) &&
+      t_plain && !t_write_q;
+  wire flash_watch_read_hit = flash_watch_lookup && t_is_read_hit;
+  wire flash_watch_read_miss = flash_watch_lookup && t_is_alloc;
+  wire flash_inval_accept = (mstate_q == M_IDLE) && i_invalidate_all && pipeline_idle;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      flash_watch_installed_q <= 1'b0;
+      flash_watch_hit_q <= 1'b0;
+      flash_watch_invalidated_q <= 1'b0;
+      flash_watch_blocked_q <= 1'b0;
+      flash_watch_missed_q <= 1'b0;
+      flash_watch_reinstalled_q <= 1'b0;
+    end else begin
+      if (flash_watch_install) begin
+        flash_watch_installed_q <= 1'b1;
+        flash_watch_blocked_q <= 1'b0;
+        flash_watch_reinstalled_q <= flash_watch_blocked_q && flash_watch_missed_q;
+      end
+      if (flash_watch_installed_q && flash_watch_read_hit) flash_watch_hit_q <= 1'b1;
+      if (flash_inval_accept) begin
+        flash_watch_invalidated_q <= flash_watch_hit_q;
+        flash_watch_hit_q <= 1'b0;
+        flash_watch_blocked_q <= flash_watch_installed_q;
+        flash_watch_missed_q <= 1'b0;
+        flash_watch_reinstalled_q <= 1'b0;
+      end
+      if (flash_watch_blocked_q && flash_watch_read_miss) flash_watch_missed_q <= 1'b1;
+      if (flash_watch_blocked_q && flash_watch_lookup && decide)
+        p_flash_watch_no_stale_hit : assert (!hit);
+      // Each task's cover run must observe an installed line being hit,
+      // invalidated, missed, installed again and then hit again.
+      cover (flash_watch_hit_q && flash_inval_accept);
+      cover (flash_watch_invalidated_q && flash_watch_blocked_q && flash_watch_read_miss);
+      cover (flash_watch_invalidated_q && flash_watch_reinstalled_q && flash_watch_read_hit);
+    end
+  end
+`endif
 
   // ===========================================================================
   // Source-registered performance observers

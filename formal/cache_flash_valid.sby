@@ -5,7 +5,10 @@
 # flip-flops once a sweep has cleared both; on the hardware path an
 # invalidate-all sweep lasts one cycle. A 256-byte cache with 8-byte lines
 # (8 sets at four ways, 32 sets direct-mapped) with free inputs, from any
-# register state.
+# register state, with the L1I's two miss and two writeback slots.
+# An independent watched-line history checks the hit consumer after an
+# accepted invalidate-all. Covers witness installation, hit, invalidation,
+# miss, reinstallation and hit in fast, hardware and direct-mapped modes.
 # Reset and sweep clear every valid bit, reset clears the read register,
 # and other reads return the selected set's pre-write valid bits.
 [tasks]
@@ -13,13 +16,20 @@ bmc_fast
 bmc_fast_ways1
 bmc_hw
 cover_fast
+cover_fast_ways1
+cover_hw
 
 [options]
 bmc_fast: mode bmc
 bmc_fast_ways1: mode bmc
 bmc_hw: mode bmc
 cover_fast: mode cover
+cover_fast_ways1: mode cover
+cover_hw: mode cover
 depth 16
+cover_fast: depth 24
+cover_fast_ways1: depth 24
+cover_hw: depth 24
 
 [engines]
 smtbmc boolector
@@ -27,17 +37,19 @@ smtbmc boolector
 [script]
 read -sv cache_perf_pkg.sv sdp_block_ram.sv sdp_ram_byte_en.sv sdp_packed_tag_uram.sv
 read -formal -D SYNTHESIS -D CACHE_FLASH_PROOF -sv frost_cache.sv
-bmc_fast: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 4 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 1 frost_cache
-bmc_fast_ways1: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 1 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 1 frost_cache
-bmc_hw: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 4 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 0 frost_cache
-cover_fast: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 4 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 1 frost_cache
+bmc_fast: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 4 -set NUM_MSHR 2 -set NUM_WB 2 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 1 frost_cache
+bmc_fast_ways1: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 1 -set NUM_MSHR 2 -set NUM_WB 2 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 1 frost_cache
+bmc_hw: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 4 -set NUM_MSHR 2 -set NUM_WB 2 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 0 frost_cache
+cover_fast: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 4 -set NUM_MSHR 2 -set NUM_WB 2 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 1 frost_cache
+cover_fast_ways1: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 1 -set NUM_MSHR 2 -set NUM_WB 2 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 1 frost_cache
+cover_hw: chparam -set CACHE_SIZE_BYTES 256 -set LINE_BYTES 8 -set WAYS 4 -set NUM_MSHR 2 -set NUM_WB 2 -set FLASH_INVALIDATE 1 -set SIM_FAST_MAINT 0 frost_cache
 prep -top frost_cache -flatten
 memory_map
 opt
 select -assert-none t:$assume
-bmc_fast: select -assert-count 7 t:$check
-bmc_fast_ways1: select -assert-count 7 t:$check
-bmc_hw: select -assert-count 7 t:$check
+bmc_fast: select -assert-count 9 t:$check
+bmc_fast_ways1: select -assert-count 9 t:$check
+bmc_hw: select -assert-count 9 t:$check
 
 [files]
 ../hw/rtl/lib/cache/cache_perf_pkg.sv

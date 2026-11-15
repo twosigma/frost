@@ -776,9 +776,16 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "cache_flash_valid.sby",
-        "Flash-invalidate valid flip-flops reset and clear together, reads return the "
-        "pre-write bits, and an invalidate-all sweep lasts one cycle",
-        tasks=("bmc_fast", "bmc_fast_ways1", "bmc_hw", "cover_fast"),
+        "Flash-valid assignment checks and independent watched-line hit exclusion "
+        "after invalidation, with install/invalidate/refill covers in each mode",
+        tasks=(
+            "bmc_fast",
+            "bmc_fast_ways1",
+            "bmc_hw",
+            "cover_fast",
+            "cover_fast_ways1",
+            "cover_hw",
+        ),
     ),
     FormalTarget(
         "lq_alloc_mask.sby",
@@ -2408,6 +2415,8 @@ SBY_TASKS = [
     ),
     ("bmc_hw", "Bounded check of the hardware maintenance path"),
     ("cover_fast", "Reachability covers with the simulation bulk clear"),
+    ("cover_fast_ways1", "Watched-line covers for the direct-mapped flash cache"),
+    ("cover_hw", "Watched-line covers for the hardware flash-invalidate path"),
     ("bmc_free_bin", "Bounded shared-link memory equivalence with free binary reads"),
     ("bmc_free_oh", "Bounded shared-link memory equivalence with free one-hot reads"),
     (

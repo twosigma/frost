@@ -28,7 +28,7 @@ from cocotb_tests.debug.jtag_dtm import (
     addi,
     store,
 )
-from cocotb_tests.debug.test_debug import _reset
+from cocotb_tests.debug.test_debug import DDR_SCRATCH_ADDR, _reset
 from cocotb_tests.test_real_program import (
     CLK_PERIOD_NS,
     cpu_clock,
@@ -128,7 +128,7 @@ async def test_debug_fence_cached_patch(dut: Any) -> None:
     await dm.activate()
     await dm.halt()
 
-    patch = 0x80020000
+    patch = DDR_SCRATCH_ADDR
     await dm.write_mem(patch, 8, addi(5, 0, 1) | (addi(5, 5, 2) << 32))
     await dm.write_mem(patch + 8, 4, 0x00008067)
     await dm.write_gpr(dm.S0, patch)
