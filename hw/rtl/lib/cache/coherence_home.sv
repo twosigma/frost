@@ -366,6 +366,11 @@ module coherence_home #(
   logic [FILLS+NUM_WB-1:0][MemoryBits-1:0] memory_payload;
   logic memory_out_valid;
   logic [MemoryBits-1:0] memory_out;
+`ifdef HOME_CAPTURE_LOCAL_PROOF
+  logic f_capture_reset_seen_q = 1'b0;
+  logic [FILLS-1:0] f_capture_install, f_capture_invalidate;
+  logic [FILLS-1:0] f_capture_decode_install, f_capture_decode_invalidate;
+`endif
   logic perf_lookup, perf_maintenance;
   logic [FILLS-1:0] fill_write_q, filling, write_filling;
   localparam int unsigned MemorySources = FILLS + NUM_WB;
@@ -996,9 +1001,8 @@ module coherence_home #(
   assign fill_pre = decision_from_engine && !array_hit && array_available && fill_free_any &&
       state_allows_fill && prefetch_fill_ok;
   // The registered phase flags and the one-hot response token match their
-  // encodings outside reset. Every formal task but the local seat proof
-  // checks this, including those read with SYNTHESIS defined, which makes the
-  // checks inductive; simulation checks them once a reset has been seen.
+  // encodings outside reset. Composed formal tasks check this even with
+  // SYNTHESIS defined; simulation checks it once a reset has been seen.
 `ifdef HOME_SEAT_NEXT_LOCAL_PROOF
   // The seat proof checks only its own combinational equalities.
 `elsif FORMAL
@@ -1621,6 +1625,12 @@ module coherence_home #(
       end
     end
 `endif
+`ifdef HOME_CAPTURE_LOCAL_PROOF
+    assign f_capture_install[fill] = fill_install_q;
+    assign f_capture_invalidate[fill] = fill_invalidate_q;
+    assign f_capture_decode_install[fill] = fill_phase_q[fill] == FillInstall;
+    assign f_capture_decode_invalidate[fill] = fill_phase_q[fill] == FillInvalidate;
+`endif
     assign tag_valid[Client] = 1'b0;
     assign tag_payload[Client] = '0;
     assign read_valid[Client] = fill_phase_q[fill] == FillRecall && !fill_read_sent_q[fill];
@@ -1947,6 +1957,24 @@ module coherence_home #(
   always_ff @(posedge i_clk) begin
     if (!memory_out_valid) memory_out <= memory_payload[memory_pick];
   end
+`ifdef HOME_CAPTURE_LOCAL_PROOF
+  // The memory packet agrees with a register loaded only on admission.
+  // Reset may recur at any point; comparison starts after its first edge.
+  logic [MemoryBits-1:0] f_capture_memory_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_capture_reset_seen_q <= 1'b1;
+      f_capture_memory_q <= '0;
+    end else if (!memory_out_valid && run && memory_found)
+      f_capture_memory_q <= memory_payload[memory_pick];
+    if (f_capture_reset_seen_q && !i_rst && o_mem_req_valid)
+      p_capture_memory : assert (memory_out == f_capture_memory_q);
+    if (f_capture_reset_seen_q && !i_rst) begin
+      p_capture_install : assert (f_capture_install == f_capture_decode_install);
+      p_capture_invalidate : assert (f_capture_invalidate == f_capture_decode_invalidate);
+    end
+  end
+`endif
   for (genvar wb = 0; wb < NUM_WB; wb++) begin : gen_wb_capture
     for (genvar sector = 0; sector < LINE_BYTES / 32; sector++) begin : gen_sector
       wire take_array = run && wb_take_array[wb][sector];

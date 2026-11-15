@@ -226,7 +226,7 @@ module coherence_home_endpoint #(
 `else
   always @(posedge i_clk)
 `endif
-  if (sim_reset_seen_q) begin
+  if (sim_reset_seen_q && !i_rst && o_live) begin
     p_completion_key_exact : assert (completion_matches ==
         (completion_in.q == demand_q.q && completion_in.tid == 6'(TID) &&
          completion_in.addr == demand_q.addr));
@@ -318,5 +318,33 @@ module coherence_home_endpoint #(
     end
   end
 `endif
+`endif
+`ifdef HOME_CAPTURE_LOCAL_PROOF
+  // Each live phase reads the packet captured by its accepting handshake.
+  logic f_capture_reset_seen_q = 1'b0;
+  coh_d_t f_capture_demand_q;
+  logic [2:0] f_capture_opcode_q;
+  logic f_capture_error_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_capture_reset_seen_q <= 1'b1;
+      f_capture_demand_q <= '0;
+      f_capture_opcode_q <= '0;
+      f_capture_error_q <= 1'b0;
+    end else begin
+      if (phase_q == Idle && i_d_valid && o_d_ready) f_capture_demand_q <= demand_in;
+      if (phase_q == Work && i_result_valid && o_result_ready) begin
+        f_capture_opcode_q <= result_in.opcode;
+        f_capture_error_q <= result_in.error;
+      end
+    end
+    if (f_capture_reset_seen_q && !i_rst) begin
+      if (o_live) p_capture_demand : assert (demand_q == f_capture_demand_q);
+      if (phase_q == WaitC || phase_q == Cancel || phase_q == SendU) begin
+        p_capture_opcode : assert (grant_opcode_q == f_capture_opcode_q);
+        p_capture_error : assert (grant_error_q == f_capture_error_q);
+      end
+    end
+  end
 `endif
 endmodule

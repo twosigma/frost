@@ -591,4 +591,36 @@ module coherence_home_array #(
   end
 `endif
 `endif
+`ifdef HOME_CAPTURE_LOCAL_PROOF
+  // Response and read payloads agree with the reset-qualified captures
+  // whenever their valid signals permit a consumer to read them.
+  logic f_capture_reset_seen_q = 1'b0;
+  logic [WayBits-1:0] f_capture_way_q;
+  logic [ADDR_WIDTH-1:0] f_capture_addr_q;
+  logic [1:0] f_capture_state_q;
+  logic [8*LINE_BYTES-1:0] f_capture_data_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_capture_reset_seen_q <= 1'b1;
+      f_capture_way_q <= '0;
+      f_capture_addr_q <= '0;
+      f_capture_state_q <= '0;
+    end else begin
+      if (phase_q == Select) begin
+        f_capture_way_q <= selected;
+        f_capture_addr_q <= {tags_q[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
+        f_capture_state_q <= tags_q[selected][TagBits+:2];
+      end
+      if (read_valid_q[DATA_READ_LATENCY-1]) f_capture_data_q <= data_rdata;
+    end
+    if (f_capture_reset_seen_q && !i_rst) begin
+      if (o_resp_valid) begin
+        p_capture_way : assert (o_resp_way == f_capture_way_q);
+        p_capture_addr : assert (o_resp_addr == f_capture_addr_q);
+        p_capture_state : assert (o_resp_state == f_capture_state_q);
+      end
+      if (o_read_valid) p_capture_data : assert (o_read_data == f_capture_data_q);
+    end
+  end
+`endif
 endmodule

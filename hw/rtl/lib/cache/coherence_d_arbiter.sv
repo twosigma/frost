@@ -235,4 +235,15 @@ module coherence_d_arbiter #(
         else p_maint_owned_arb_empty : assert (pick_ports == '0);
     end
 `endif
+`ifdef HOME_CAPTURE_LOCAL_PROOF
+  // Compare the held packet with a register loaded only on selection.
+  logic f_capture_reset_seen_q = 1'b0;
+  logic [WIDTH-1:0] f_capture_payload_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) f_capture_reset_seen_q <= 1'b1;
+    if (!i_rst && !selected_q && found) f_capture_payload_q <= pick_payload;
+    if (f_capture_reset_seen_q && !i_rst && selected_q)
+      p_capture_payload : assert (payload_q == f_capture_payload_q);
+  end
+`endif
 endmodule
