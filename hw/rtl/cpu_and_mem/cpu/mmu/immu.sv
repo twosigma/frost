@@ -44,7 +44,10 @@
 module immu #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned NUM_ENTRIES = 16,
-    parameter int unsigned PA_VALID_COPIES = 1
+    parameter int unsigned PA_VALID_COPIES = 1,
+    // o_pa_valid_copy carries !o_pa_valid (the fetch hold), formed in the
+    // copy's own LUT, so a consumer of the hold needs no inverter after it.
+    parameter bit PA_COPY_HOLD = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -75,7 +78,8 @@ module immu #(
     output logic [riscv_pkg::PhysAddrBits-1:0] o_pa0,
     output logic [riscv_pkg::PhysAddrBits-1:0] o_pa1,
     output logic o_pa_valid,
-    // Copies of o_pa_valid for fanout to decoded-queue shadow selects.
+    // Copies of o_pa_valid (of !o_pa_valid with PA_COPY_HOLD) for fanout to
+    // decoded-queue shadow selects.
     output logic [PA_VALID_COPIES-1:0] o_pa_valid_copy,
     output logic o_fault0,
     output logic o_fault0_page,
@@ -927,10 +931,10 @@ module immu #(
     (* keep = "true", dont_touch = "true" *) logic pa_valid_copy;
 `ifdef FROST_XILINX_PRIMS
     // One LUT after the page compare and the crossing test:
-    // !I0 || (I1 && I2 && (!I3 || I4)).
+    // !I0 || (I1 && I2 && (!I3 || I4)), complemented for PA_COPY_HOLD.
     (* dont_touch = "true" *)
     LUT5 #(
-        .INIT(32'hD5D555D5)
+        .INIT(PA_COPY_HOLD ? 32'h2A2AAA2A : 32'hD5D555D5)
     ) u_pa_valid (
         .I0(i_active),
         .I1(visible_before_pc_compare),
@@ -940,7 +944,7 @@ module immu #(
         .O (pa_valid_copy)
     );
 `else
-    assign pa_valid_copy = !i_active || (visible_before_pc_compare && pc_match);
+    assign pa_valid_copy = PA_COPY_HOLD ^ (!i_active || (visible_before_pc_compare && pc_match));
 `endif
     assign o_pa_valid_copy[copy] = pa_valid_copy;
   end

@@ -316,6 +316,7 @@ can be debugged and where each one first stops.
 | `linux_irq_ddr_test/` | Linux-style timer interrupt path from `wfi` idle, with code, data, and stack in DDR |
 | `linux_irq_find_next_slot_test/` | Timer interrupts swept across a `_find_next_bit`-shaped loop whose saved-`ra` slot is poisoned |
 | `linux_irq_stack_slot_test/` | A timer interrupt inside a callee whose saved-`ra` stack slot was poisoned beforehand |
+| `l1i_set_test/` | Every L1I set filled, hit, patched and cleared: lines differing only in PA[12], 8 KiB-apart lines sharing a set, an over-subscribed upper set, and an Sv39 page crossing whose PA[12] differs from its VA[12]; `L1I_TEST_BYTES` (16384 or 32768) selects the residence and refill bounds |
 | `l2_capacity_chase/` | Dependent-load cycles over checked random cycles of 64-byte lines; `L2CC_SIZES_KIB` selects 1 to 16384 KiB working sets (default 1024, 3072, 4096, 5120). CI checks short rings with a 4 MiB L2 and DDR read counts below and above a reduced L2 capacity |
 | `lq_stale_slot_probe/` | Cached-load results must reach the right load across two partial flushes and ROB-tag reuse, with slow, reordered DDR responses; eviction aliases follow `FROST_L2_CACHE_BYTES` (2 MiB by default, 4 MiB on VCU118) |
 | `mem_divergence_probe/` | Cold versus warm reads of cached DDR (both dword halves, 64-bit reads, store forwarding) |

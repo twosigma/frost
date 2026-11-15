@@ -261,7 +261,13 @@ jobs:
               [fpu_assembly_test] or [isa_test] or [rv64_smoke] or [rv64_amo_test] or
               [spanning_test] or [ras_test] or [ras_stress_test] or [tomasulo_test] or
               [tomasulo_perf] or [jal_target_seam] or [fetch_lead_repro] or [fetch_stall_repro] or
-              [window_skip_repro]
+              [window_skip_repro] or [l1i_set_test]
+          - name: Real Programs (32 KiB L1I)
+            coverage: []
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [smc_fencei_test_l1i32] or [ifread_test_l1i32] or [l1i_set_test_l1i32] or
+              [l1i_set_test_l1i32_hw_sweep]
           - name: Real Programs (Load queue slots)
             coverage: []
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
@@ -357,7 +363,9 @@ jobs:
               or [ddr_bench_link1] or [ddr_atomic_test_link1] or [ddr_mlp_test_link1]
               or [coremark_link1] or [csr_test_link1] or [dma_torture_link1]
               or [ptw_coherence_test_link1] or [cached_store_burst_test_link1]
-              or [cbo_zero_test_link1] or [cbo_zero_pages_link1] or [full_line_test_link1])
+              or [cbo_zero_test_link1] or [cbo_zero_pages_link1] or [full_line_test_link1]
+              or [l1i_set_test] or [smc_fencei_test_l1i32] or [ifread_test_l1i32]
+              or [l1i_set_test_l1i32] or [l1i_set_test_l1i32_hw_sweep])
           - name: Real Programs (CoreMark-PRO / core)
             coverage: []
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"

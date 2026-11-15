@@ -1,0 +1,36 @@
+[tasks]
+prove
+prove_margin2
+cover
+
+[options]
+multiclock on
+prove: mode prove
+prove: depth 3
+prove_margin2: mode prove
+prove_margin2: depth 3
+cover: mode cover
+cover: depth 112
+
+[engines]
+smtbmc boolector
+
+[script]
+prove: read_slang --top dc_fifo_formal --single-unit -GALMOST_FULL_MARGIN=1 -GCOVER_MODE=0 cdc_reset_sync.sv cdc_reset_pair.sv sdp_block_ram_dc.sv dc_fifo.sv dc_fifo_formal.sv
+prove_margin2: read_slang --top dc_fifo_formal --single-unit -GALMOST_FULL_MARGIN=2 -GCOVER_MODE=0 cdc_reset_sync.sv cdc_reset_pair.sv sdp_block_ram_dc.sv dc_fifo.sv dc_fifo_formal.sv
+cover: read_slang --top dc_fifo_formal --single-unit -GALMOST_FULL_MARGIN=1 -GCOVER_MODE=1 cdc_reset_sync.sv cdc_reset_pair.sv sdp_block_ram_dc.sv dc_fifo.sv dc_fifo_formal.sv
+prep -top dc_fifo_formal -flatten
+dffunmap w:gclk %co
+formalff -clk2ff w:gclk %co
+~cover: chformal -cover -remove
+cover: chformal -assert -remove
+memory_map
+opt -full
+cover: opt_clean -purge
+
+[files]
+../hw/rtl/lib/cdc/cdc_reset_sync.sv
+../hw/rtl/lib/cdc/cdc_reset_pair.sv
+../hw/rtl/lib/ram/sdp_block_ram_dc.sv
+../hw/rtl/lib/fifo/dc_fifo.sv
+dc_fifo_formal.sv
