@@ -886,8 +886,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description=(
             "Misaligned loads and stores of every size and form across a doubleword, "
-            "sector, line and page in cached DDR, under timer interrupts, and the "
-            "exception low BRAM keeps"
+            "sector, line and page in cached DDR, under Sv39 through MPRV and in S and "
+            "U modes (with non-adjacent physical frames in S/U and lower/upper/both-page "
+            "faults), under timer interrupts, and the exception low BRAM keeps"
         ),
     ),
     "fs_off_test": CocotbRunConfig(
