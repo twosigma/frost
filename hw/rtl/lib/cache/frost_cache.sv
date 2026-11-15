@@ -2233,7 +2233,8 @@ module frost_cache #(
 
 `ifdef CACHE_FLASH_PROOF
   // Independent event reference for one arbitrary line. Installation comes
-  // from a valid tag write; invalidation comes from acceptance of the
+  // from a committed MSHR installation; tag-only updates do not count.
+  // Invalidation comes from acceptance of the
   // invalidate-all request, not from valid_q, its read register, the RAM's
   // valid bits or the sweep's clear assignment. Check the consumer's hit.
   (* anyconst *) logic [SetBits-1:0] flash_watch_set;
@@ -2244,8 +2245,9 @@ module frost_cache #(
   logic flash_watch_blocked_q = 1'b0;
   logic flash_watch_missed_q = 1'b0;
   logic flash_watch_reinstalled_q = 1'b0;
-  wire flash_watch_install = (|tag_we) && tag_wdata[TagEntryBits-1] &&
-      (tag_waddr == flash_watch_set) && (tag_wdata[TagBits-1:0] == flash_watch_tag);
+  wire flash_watch_install = (mstate_q == M_IDLE) && mshr_write_fire &&
+      (fw_set_q == flash_watch_set) &&
+      (mshr_line_q[fw_sel_q][LineAddrBits-1-:TagBits] == flash_watch_tag);
   wire flash_watch_lookup = (t_set == flash_watch_set) && (t_tag == flash_watch_tag) &&
       t_plain && !t_write_q;
   wire flash_watch_read_hit = flash_watch_lookup && t_is_read_hit;
