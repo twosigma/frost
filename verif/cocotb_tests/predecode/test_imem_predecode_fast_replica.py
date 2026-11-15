@@ -97,6 +97,8 @@ def _with_hi_size_allows_row(word: int, *, compressed: bool, allows: bool) -> in
     """Set the high parcel's size and AllowsSlot2AfterHi to the given values."""
     if not compressed:
         opcode = 0b011_0011 if allows else _GENERATOR.OPC_CSR
+        if not allows:
+            word &= ~(0x7 << 28)  # SYSTEM funct3=000 is serializing.
         return _with_hi_opcode(word, opcode)
 
     # C.ADDI (funct3=000) is non-control; C.J (funct3=101) is control.
@@ -122,6 +124,16 @@ def _expected_compressed_control(parcel: int) -> bool:
     )
 
 
+def _expected_native_serialize(parcel: int) -> bool:
+    """SYSTEM funct3=100 is pairable; other SYSTEM, MISC-MEM and AMO are not."""
+    opcode = parcel & 0x7F
+    funct3 = (parcel >> 12) & 0x7
+    return (opcode == _GENERATOR.OPC_CSR and funct3 != 0b100) or opcode in {
+        _GENERATOR.OPC_MISC_MEM,
+        _GENERATOR.OPC_AMO,
+    }
+
+
 def _expected_allows_slot2_after_hi(word: int) -> int:
     """Independently model the high-parcel AllowsSlot2AfterHi lane."""
     hi = (word >> 16) & 0xFFFF
@@ -135,11 +147,7 @@ def _expected_allows_slot2_after_hi(word: int) -> int:
         _GENERATOR.OPC_JAL,
         _GENERATOR.OPC_JALR,
     }
-    native_serialize = opcode in {
-        _GENERATOR.OPC_CSR,
-        _GENERATOR.OPC_MISC_MEM,
-        _GENERATOR.OPC_AMO,
-    }
+    native_serialize = _expected_native_serialize(hi)
     return int(not native_control and not native_serialize)
 
 
@@ -160,11 +168,7 @@ def _expected_slot2_start_valid_lo(word: int) -> int:
     lo = word & 0xFFFF
     opcode = lo & 0x7F
     compressed = (lo & 0x3) != 0b11
-    native_serialize = opcode in {
-        _GENERATOR.OPC_CSR,
-        _GENERATOR.OPC_MISC_MEM,
-        _GENERATOR.OPC_AMO,
-    }
+    native_serialize = _expected_native_serialize(lo)
     native_fp_compute = opcode in {
         _GENERATOR.OPC_OP_FP,
         _GENERATOR.OPC_FMADD,
