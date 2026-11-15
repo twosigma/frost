@@ -295,7 +295,7 @@ def _snake(name: str) -> str:
 
 
 def test_driver_exposes_every_hardware_counter_in_order() -> None:
-    """Ethtool -S lists each nic_pkg counter, read as 64 bits."""
+    """Keep the driver, firmware and documentation aligned with the hardware counter map."""
     pkg = (REPO_ROOT / "hw/rtl/peripherals/nic/nic_pkg.sv").read_text()
     indexed = {
         name: int(index)
@@ -334,6 +334,16 @@ def test_driver_exposes_every_hardware_counter_in_order() -> None:
     assert int(_group(r"#define NIC_COUNTERS_EXT (0x[0-9A-Fa-f]+)u", header), 16) == ext
     for index, name in enumerate(names):
         assert int(_group(rf"#define NIC_CNT_{name.upper()} (\d+)u", header)) == index
+    documentation = (REPO_ROOT / "hw/rtl/peripherals/nic/README.md").read_text()
+    documented = re.findall(
+        r"^\| (\d+) \| `(0x[0-9A-Fa-f]+)` \| `(\w+)` \|", documentation, re.M
+    )
+    assert [
+        (int(index), int(offset, 16), name) for index, offset, name in documented
+    ] == [
+        (index, ext + 8 * (index - num_base), names[index])
+        for index in range(num_base, len(names))
+    ]
     ops = _ethtool_ops(source)
     for hook in (".get_sset_count", ".get_strings", ".get_ethtool_stats"):
         assert hook in ops
