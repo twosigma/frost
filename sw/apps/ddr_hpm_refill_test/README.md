@@ -31,5 +31,6 @@ the event includes speculative and next-line allocation requests.
 
 For a random-start run, set `FROST_RANDOM_START_SEED=1` before the command.
 `FROST_DDR_MODEL_SEED` independently selects memory-response timing. Each
-registered run executes the program twice across reset, using separate data
-regions so both executions retain cold data windows.
+registered run executes the program twice across reset. Reset invalidates the
+cache tags, so both executions start with cold data windows even if the cached
+run counter has not reached backing memory before reset.

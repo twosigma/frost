@@ -40,8 +40,9 @@
  *      mip.LCOFIP and the scountovf bit, and keeps counting past the wrap.
  *
  * The program, its stack and its counter reads stay in low BRAM, so only
- * the bodies and the data regions use the cached tier. A run count in DDR,
- * which a reset keeps, gives each run its own untouched lines.
+ * the bodies and the data regions use the cached tier. A DDR run counter
+ * selects one of four data regions. Reset invalidates the cache tags, so
+ * cold-data checks do not depend on that cached write surviving reset.
  * CSRs are accessed by number.
  */
 
@@ -127,8 +128,9 @@ static const volatile uintptr_t body_addr[2] = {(uintptr_t) hpm_body_short,
 #define INSN_ADDI 0x00150513u /* addi a0, a0, 1 */
 #define INSN_RET 0x00008067u  /* jalr x0, 0(ra) */
 
-/* The run count: a DDR word a reset keeps, read and written through its address
- * (the medany code model cannot reach DDR symbols from low BRAM text). */
+/* The backing DDR word survives reset, but a dirty cached copy need not.
+ * Region rotation adds variety; reset supplies cold cache state either way.
+ * The medany code model cannot reach DDR symbols from low BRAM text. */
 #define RUN_COUNT (*(volatile unsigned long *) (CACHED_BASE + 0xF00000))
 static uintptr_t run_offset;
 
