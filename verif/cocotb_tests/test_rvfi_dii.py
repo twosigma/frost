@@ -27,6 +27,7 @@ it with the rvfi_dii entry of tests/test_run_cocotb.py, which defines
 FROST_RVFI_DII.
 """
 
+import json
 import os
 import socket
 from pathlib import Path
@@ -42,7 +43,9 @@ from cocotb_tests.test_real_program import (
     generate_divided_clock,
     hold_nic_without_mac_clocks,
     start_nic_mac_clocks,
+    wait_for_power_on_reset,
 )
+from testrig.mmu import trace_digest
 from testrig.preamble import reset_preamble
 from testrig.rvfi_dii import (
     CMD_END_OF_TRACE,
@@ -140,6 +143,7 @@ class FrostRvfiDii:
         harness.event_target.value = len(stream) + 1
         harness.hang_limit.value = HANG_CYCLES
         await ClockCycles(dut.i_clk, RESET_CYCLES)
+        await wait_for_power_on_reset(dut)
         dut.i_rst_n.value = 1
         await RisingEdge(harness.done)
         await RisingEdge(dut.i_clk)
@@ -236,6 +240,10 @@ async def test_rvfi_dii(dut: Any) -> None:
     connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     reader = PacketReader(connection)
     frost = FrostRvfiDii(dut)
+    records_log_path = os.environ.get("FROST_RVFI_DII_RECORDS_LOG")
+    records_log = (
+        Path(records_log_path).open("w", encoding="utf-8") if records_log_path else None
+    )
     trace_version = 1
     trace: list[int] = []
     traces_run = 0
@@ -256,6 +264,18 @@ async def test_rvfi_dii(dut: Any) -> None:
                 trace.append(packet.insn)
             elif packet.cmd == CMD_END_OF_TRACE:
                 records = await frost.run(trace) if trace else []
+                if trace and records_log is not None:
+                    json.dump(
+                        {
+                            "digest": trace_digest(trace),
+                            "records": [
+                                [r.mode, r.trap, r.rd_addr, r.rd_wdata] for r in records
+                            ],
+                        },
+                        records_log,
+                    )
+                    records_log.write("\n")
+                    records_log.flush()
                 records.append(RvfiRecord.halt_token())
                 encode = (
                     RvfiRecord.encode_v2 if trace_version == 2 else RvfiRecord.encode_v1
@@ -266,6 +286,8 @@ async def test_rvfi_dii(dut: Any) -> None:
             else:
                 raise ValueError(f"unknown RVFI-DII command {packet.cmd:#x}")
     finally:
+        if records_log is not None:
+            records_log.close()
         connection.close()
     cocotb.log.info(f"RVFI-DII: served {traces_run} traces")
     assert not frost.errors, f"harness errors: {sorted(set(frost.errors))}"

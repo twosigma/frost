@@ -785,7 +785,7 @@ module coherence_l1d #(
   logic prefetch_cancel, atomic_read_waiting, prefetch_busy;
   logic prefetch_conflict, hint_conflict, lookup_conflict, lookup_conflict_q;
   logic prefetch_accept, prefetch_acquire_ok, prefetch_ep_free;
-  logic [MISSES+5:0] hint_conflicts, lookup_conflicts;
+  logic [MISSES+10:0] hint_conflicts, lookup_conflicts;
   logic hint_in_window, lookup_in_window;
   logic [EpBits-1:0] prefetch_ep_index;
   // LR and AMO reads waiting for completion, registered from allocation and
@@ -924,6 +924,22 @@ module coherence_l1d #(
       probe_in.addr[ADDR_WIDTH-1:5] == hint_addr_q[ADDR_WIDTH-1:5];
   assign lookup_conflicts[MISSES+5] = i_p_valid &&
       probe_in.addr[ADDR_WIDTH-1:5] == lookup_addr_q[ADDR_WIDTH-1:5];
+  // Every store record's sector, and a cbo.zero twin that waits for its
+  // record. A GetMZero endpoint holds both sectors of its line but compares
+  // above only with its lower one, and a look-ahead pair's upper record (its
+  // twin) lies beyond the head and tail records: a prefetch GetS of that sector
+  // would be ordered after the GetMZero's U, and its GrantS would install the
+  // L2's image over the stores that hit the Modified sector meanwhile.
+  for (genvar slot = 0; slot < 4; slot++) begin : gen_prefetch_record_conflict
+    assign hint_conflicts[MISSES+6+slot] = store_valid[slot] &&
+        store_addr[slot][ADDR_WIDTH-1:5] == hint_addr_q[ADDR_WIDTH-1:5];
+    assign lookup_conflicts[MISSES+6+slot] = store_valid[slot] &&
+        store_addr[slot][ADDR_WIDTH-1:5] == lookup_addr_q[ADDR_WIDTH-1:5];
+  end
+  assign hint_conflicts[MISSES+10] = store_twin_pending &&
+      store_twin_addr[ADDR_WIDTH-1:5] == hint_addr_q[ADDR_WIDTH-1:5];
+  assign lookup_conflicts[MISSES+10] = store_twin_pending &&
+      store_twin_addr[ADDR_WIDTH-1:5] == lookup_addr_q[ADDR_WIDTH-1:5];
   assign hint_conflict = |hint_conflicts;
   assign lookup_conflict = |lookup_conflicts;
   assign prefetch_conflict = prefetch_busy ? lookup_conflict : hint_conflict;
@@ -981,7 +997,19 @@ module coherence_l1d #(
         tail_addr[ADDR_WIDTH-1:5] == prefetch_check_addr[ADDR_WIDTH-1:5];
     prefetch_conflict_ref |= i_p_valid && probe_in.addr[ADDR_WIDTH-1:5] ==
         prefetch_check_addr[ADDR_WIDTH-1:5];
+    for (int slot = 0; slot < 4; slot++)
+      prefetch_conflict_ref |= store_valid[slot] &&
+          store_addr[slot][ADDR_WIDTH-1:5] == prefetch_check_addr[ADDR_WIDTH-1:5];
+    prefetch_conflict_ref |= store_twin_pending &&
+        store_twin_addr[ADDR_WIDTH-1:5] == prefetch_check_addr[ADDR_WIDTH-1:5];
   end
+  // The records that hold the prefetch lookup's sector and are a twin or
+  // acquired.
+  logic [3:0] f_prefetch_record;
+  always_comb
+    for (int slot = 0; slot < 4; slot++)
+      f_prefetch_record[slot] = store_valid[slot] && (store_twin[slot] || store_acquired[slot]) &&
+          store_addr[slot][ADDR_WIDTH-1:5] == lookup_addr_q[ADDR_WIDTH-1:5];
   always_ff @(posedge i_clk)
     if (sim_reset_seen_q && !i_rst && active) begin
       p_prefetch_conflict_split : assert (prefetch_conflict == prefetch_conflict_ref);
@@ -996,6 +1024,11 @@ module coherence_l1d #(
       if (prefetch_busy && (phase_q == LookupWait || phase_q == Acquire) &&
           !lookup_conflict_q)
         p_prefetch_owner_conflict : assert (!(|lookup_conflicts[MISSES+2:0]));
+      // A prefetch never acquires a sector that a twin or an acquired record
+      // holds (a record that arrives after the lookup orders after the
+      // prefetch, which its own acquisition then waits for).
+      if (phase_q == Acquire && operation_q == PrefetchOp && acquire_ready)
+        p_prefetch_not_record : assert (f_prefetch_record == '0);
     end
 `endif
 
@@ -1522,6 +1555,12 @@ module coherence_l1d #(
   end
   assign selected_grant_store = ep_store[grant_ep_q];
 `ifndef SYNTHESIS
+  // A load, LR, atomic or prefetch grant never installs over a Modified
+  // sector: its data would replace bytes that only this L1D holds.
+  always_ff @(posedge i_clk)
+    if (sim_reset_seen_q && !i_rst && active && phase_q == LookupWait && array_valid &&
+        operation_q == GrantOp && !selected_grant_store && array_hit)
+      p_grant_keeps_modified : assert (array_state != coherence_pkg::Modified);
   always_ff @(posedge i_clk)
     if (sim_reset_seen_q && !i_rst) begin
       if (grant_valid) begin

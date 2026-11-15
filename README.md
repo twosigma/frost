@@ -102,6 +102,40 @@ WAVES=1 ./scripts/frost.py cocotb directed_traps
 ./scripts/frost.py shell
 ```
 
+## Try it without an FPGA
+
+A standalone C++ Verilator runner simulates the `frost` SystemVerilog RTL with
+live UART output and no Python in the clock loop. On every CI run, `test-native`
+compares live unseeded cocotb runs of BRAM and DDR `hello_world` and BRAM
+CoreMark with the native runner on cycles, CoreMark ticks, and UART bytes
+alongside each program's pass, CRC, and summary conditions; the full comparison
+mode (`tests/test_native_sim.py --all`) adds DDR CoreMark and checkpoint save
+and restore against live unseeded cocotb runs:
+
+```bash
+./scripts/frost.py native hello_world
+./scripts/frost.py native coremark --threads 4
+./scripts/frost.py native coremark --mem-config ddr --threads 4
+```
+
+With the `frost` development image built first (`docker build -t frost .`, see
+[Quick Start](#quick-start)) and the CoreMark submodule initialized,
+`demo/Dockerfile` packages baseline x86-64 simulator binaries (`1`, `4`, and `8`
+threads) and prebuilt `hello_world` and CoreMark images into a small standalone
+runtime container (`frost-demo:local`), which CI builds and runs in
+`test-demo-image`:
+
+```bash
+git submodule update --init --recursive sw/apps/coremark/coremark
+docker build -f demo/Dockerfile -t frost-demo:local .
+docker run --rm -it frost-demo:local
+```
+
+Every clock cycle evaluates the hardware model in software; RTL simulation is
+far slower than hardware. See [hw/sim/native/README.md](hw/sim/native/README.md)
+for what runs, how it compares with the cocotb flow, what the summary figures
+mean, and how to run other applications.
+
 ## Running on the FPGA
 
 FPGA builds and board tools run natively on a host with Vivado 2025.2 and the
@@ -226,7 +260,7 @@ part works.
 | Board | FPGA | Ethernet | Cache hierarchy → main memory |
 |---|---|---|---|
 | Alveo X3522PV | UltraScale+ (xcux35) | 10GBASE-R | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
-| VCU118 Evaluation Board | Virtex UltraScale+ (xcvu9p) | 1 Gb/s RJ-45 and 10GBASE-R on QSFP1 lane 0 | 128 KiB L1D + 16 KiB L1I → 4 MiB URAM L2 → 2 GiB DDR4 |
+| VCU118 Evaluation Board | Virtex UltraScale+ (xcvu9p) | 1 Gb/s RJ-45 and 10GBASE-R on QSFP1 lane 0 | 128 KiB L1D + 32 KiB L1I → 4 MiB URAM L2 → 2 GiB DDR4 |
 
 See the [board guide](boards/README.md) for pinouts, clocking, and adding a board.
 
@@ -304,6 +338,8 @@ For native builds outside the container, initialize the submodules first with
 | Directory | Contents |
 |-----------|----------|
 | [hw/rtl/](hw/rtl/README.md) | CPU, caches, peripherals, and reusable hardware blocks |
+| [hw/sim/native/](hw/sim/native/README.md) | Standalone C++ Verilator runner for the SoC RTL |
+| [demo/](demo/Dockerfile) | Runtime Docker image for running `hello_world` and CoreMark on the RTL |
 | [sw/](sw/README.md) | Bare-metal libraries, applications, and benchmarks |
 | [linux/](linux/README.md) | Linux boot images, firmware, and NIC driver |
 | [fpga/](fpga/README.md) | FPGA build, programming, and software-loading tools |

@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Keep the Zicboz configurations and NIC benchmark reachable from CI."""
+"""Keep the Zicboz, 32 KiB L1I, and NIC benchmark configurations reachable from CI."""
 
 import subprocess
 import sys
@@ -49,8 +49,14 @@ def test_zero_and_nic_programs_have_one_ci_shard() -> None:
     nodes = [line for line in result.stdout.splitlines() if line.startswith("tests/")]
     programs = {
         name
-        for name in TEST_REGISTRY
-        if name.startswith("cbo_zero_") or name == "nic_bench"
+        for name, config in TEST_REGISTRY.items()
+        if config.app_name is not None
+        and (
+            name.startswith("cbo_zero_")
+            or name == "nic_bench"
+            or name == "l1i_set_test"
+            or "_l1i32" in name
+        )
     }
     assert programs
     missing = [

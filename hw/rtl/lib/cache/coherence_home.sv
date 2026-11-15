@@ -371,6 +371,11 @@ module coherence_home #(
   logic [FILLS+NUM_WB-1:0][MemoryBits-1:0] memory_payload;
   logic memory_out_valid;
   logic [MemoryBits-1:0] memory_out;
+`ifdef HOME_CAPTURE_LOCAL_PROOF
+  logic f_capture_reset_seen_q = 1'b0;
+  logic [FILLS-1:0] f_capture_install, f_capture_invalidate;
+  logic [FILLS-1:0] f_capture_decode_install, f_capture_decode_invalidate;
+`endif
   logic perf_lookup, perf_maintenance;
   logic [FILLS-1:0] fill_write_q, filling, write_filling;
   localparam int unsigned MemorySources = FILLS + NUM_WB;
@@ -702,7 +707,10 @@ module coherence_home #(
   coherence_d_arbiter #(
       .WIDTH(UpdatePacketBits),
       .PORTS(Clients),
-      .HOLD_VALID(1)
+      .HOLD_VALID(1),
+      // The array reads the update packet only under i_update_valid, or in
+      // terms of o_update_ready, which matters only while it is set.
+      .IDLE_PAYLOAD_LOAD(1)
   ) update_arbiter (
       .i_clk,
       .i_rst,
@@ -998,9 +1006,8 @@ module coherence_home #(
   assign fill_pre = decision_from_engine && !array_hit && array_available && fill_free_any &&
       state_allows_fill && prefetch_fill_ok;
   // The registered phase flags and the one-hot response token match their
-  // encodings outside reset. Every formal task but the local seat proof
-  // checks this, including those read with SYNTHESIS defined, which makes the
-  // checks inductive; simulation checks them once a reset has been seen.
+  // encodings outside reset. Composed formal tasks check this even with
+  // SYNTHESIS defined; simulation checks it once a reset has been seen.
 `ifdef HOME_SEAT_NEXT_LOCAL_PROOF
   // The seat proof checks only its own combinational equalities.
 `elsif FORMAL
@@ -1582,14 +1589,43 @@ module coherence_home #(
     end
     assign fill_phase_updated = fill_phase_q[fill] == FillInvalidate ? FillInvalidateWait :
         FillInstallWait;
+    // Registered decodes of the two update phases, written beside the phase
+    // from the same next state: the update packet's address, state, mask
+    // and offer read one flop each instead of a phase compare. Neither the
+    // update write nor allocation enters either phase.
+    (* max_fanout = 32 *) logic fill_install_q, fill_invalidate_q;
     assign fill_update_armed = run && update_selected[Client] &&
-        (fill_phase_q[fill] == FillInvalidate || fill_phase_q[fill] == FillInstall);
+        (fill_invalidate_q || fill_install_q);
     always_ff @(posedge i_clk) begin
       if (i_rst) fill_phase_q[fill] <= FillFree;
       else if (update_request_ready && fill_update_armed) fill_phase_q[fill] <= fill_phase_updated;
       else if (allocate) fill_phase_q[fill] <= fill_phase_allocated;
       else fill_phase_q[fill] <= fill_phase_hold;
     end
+    always_ff @(posedge i_clk) begin
+      if (i_rst || (update_request_ready && fill_update_armed) || allocate) begin
+        fill_install_q    <= 1'b0;
+        fill_invalidate_q <= 1'b0;
+      end else begin
+        fill_install_q    <= fill_phase_hold == FillInstall;
+        fill_invalidate_q <= fill_phase_hold == FillInvalidate;
+      end
+    end
+`ifndef SYNTHESIS
+    always_ff @(posedge i_clk) begin
+      if (sim_reset_seen_q && !i_rst) begin
+        // The flags equal their phase decodes.
+        assert (fill_install_q == (fill_phase_q[fill] == FillInstall));
+        assert (fill_invalidate_q == (fill_phase_q[fill] == FillInvalidate));
+      end
+    end
+`endif
+`ifdef HOME_CAPTURE_LOCAL_PROOF
+    assign f_capture_install[fill] = fill_install_q;
+    assign f_capture_invalidate[fill] = fill_invalidate_q;
+    assign f_capture_decode_install[fill] = fill_phase_q[fill] == FillInstall;
+    assign f_capture_decode_invalidate[fill] = fill_phase_q[fill] == FillInvalidate;
+`endif
     assign tag_valid[Client] = 1'b0;
     assign tag_payload[Client] = '0;
     assign read_valid[Client] = fill_phase_q[fill] == FillRecall && !fill_read_sent_q[fill];
@@ -1603,18 +1639,19 @@ module coherence_home #(
     assign ack_valid[Client] = run && fill_phase_q[fill] == FillRecall &&
         recall_phase_q[fill] == RecallAck;
     assign ack_payload[Client] = fill_ack_q[fill];
-    assign update_valid[Client] = run &&
-        (fill_phase_q[fill] == FillInvalidate || fill_phase_q[fill] == FillInstall);
+    assign update_valid[Client] = run && (fill_invalidate_q || fill_install_q);
+    // The image is gated by the install flag, so the packet holds steady
+    // while the arbiter presents it (an invalidate's image may still load).
     assign update_payload[Client] = {
       TokenBits'(Client),
       fill_way_q[fill],
-      fill_phase_q[fill] == FillInvalidate ? fill_old_addr_q[fill] : fill_addr_q[fill],
+      fill_invalidate_q ? fill_old_addr_q[fill] : fill_addr_q[fill],
       1'b1,
-      fill_phase_q[fill] == FillInvalidate ? 2'(coherence_pkg::Invalid) :
+      fill_invalidate_q ? 2'(coherence_pkg::Invalid) :
           fill_zero_q[fill] ? 2'(coherence_pkg::Modified) : 2'(coherence_pkg::Shared),
-      fill_phase_q[fill] == FillInstall,
-      {LINE_BYTES{fill_phase_q[fill] == FillInstall}},
-      fill_phase_q[fill] == FillInstall ? fill_image_q[fill] : {(8 * LINE_BYTES) {1'b0}}
+      fill_install_q,
+      {LINE_BYTES{fill_install_q}},
+      fill_image_q[fill] & {(8 * LINE_BYTES) {fill_install_q}}
     };
     // A successful fill wakes its waiters once, on the first cycle after the
     // array accepts its install update. Seat admission is closed from then
@@ -1878,13 +1915,11 @@ module coherence_home #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       memory_out_valid <= 1'b0;
-      memory_out <= '0;
       memory_next_q <= '0;
     end else begin
       if (o_mem_req_valid && i_mem_req_ready) memory_out_valid <= 1'b0;
       if (!memory_out_valid && run && memory_found) begin
         memory_out_valid <= 1'b1;
-        memory_out <= memory_payload[memory_pick];
         if (memory_pick == MemorySelectBits'(MemorySources - 1)) memory_next_q <= '0;
         else memory_next_q <= memory_pick + 1'b1;
       end
@@ -1908,6 +1943,33 @@ module coherence_home #(
       end
     end
   end
+  // The request payload has no reset and loads on every cycle without a
+  // held request, so its enable is memory_out_valid alone rather than the
+  // sources' reduction; the last such load is the presenting edge's. Every
+  // reader takes it with o_mem_req_valid: the home's own sent and ready
+  // terms, and downstream the memory fabric, which captures a cache
+  // request only at its handshake.
+  always_ff @(posedge i_clk) begin
+    if (!memory_out_valid) memory_out <= memory_payload[memory_pick];
+  end
+`ifdef HOME_CAPTURE_LOCAL_PROOF
+  // The memory packet agrees with a register loaded only on admission.
+  // Reset may recur at any point; comparison starts after its first edge.
+  logic [MemoryBits-1:0] f_capture_memory_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_capture_reset_seen_q <= 1'b1;
+      f_capture_memory_q <= '0;
+    end else if (!memory_out_valid && run && memory_found)
+      f_capture_memory_q <= memory_payload[memory_pick];
+    if (f_capture_reset_seen_q && !i_rst && o_mem_req_valid)
+      p_capture_memory : assert (memory_out == f_capture_memory_q);
+    if (f_capture_reset_seen_q && !i_rst) begin
+      p_capture_install : assert (f_capture_install == f_capture_decode_install);
+      p_capture_invalidate : assert (f_capture_invalidate == f_capture_decode_invalidate);
+    end
+  end
+`endif
   for (genvar wb = 0; wb < NUM_WB; wb++) begin : gen_wb_capture
     for (genvar sector = 0; sector < LINE_BYTES / 32; sector++) begin : gen_sector
       wire take_array = run && wb_take_array[wb][sector];
@@ -1918,13 +1980,25 @@ module coherence_home #(
       // The reply wins simultaneous captures, including when array data is
       // present. The reset hold remains only at the flop.
 `ifdef FROST_XILINX_PRIMS
+      // One copy of the reply select per 64-bit slice, so each select net
+      // drives 64 of the sector's 256 reply_last LUTs.
+      wire [3:0] take_reply_slice;
+      for (genvar slice = 0; slice < 4; slice++) begin : gen_reply_select
+        (* DONT_TOUCH = "yes" *) LUT2 #(
+            .INIT(4'h8)
+        ) reply_select (
+            .I0(run),
+            .I1(wb_take_reply[wb][sector]),
+            .O (take_reply_slice[slice])
+        );
+      end
       for (genvar bit_idx = 0; bit_idx < 256; bit_idx++) begin : gen_bit
         (* DONT_TOUCH = "yes" *) LUT3 #(
             .INIT(8'hca)
         ) reply_last (
             .I0(array_or_held[bit_idx]),
             .I1(reply.data[bit_idx]),
-            .I2(take_reply),
+            .I2(take_reply_slice[bit_idx/64]),
             .O (captured[bit_idx])
         );
       end
