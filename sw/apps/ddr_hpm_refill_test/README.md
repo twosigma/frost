@@ -8,13 +8,14 @@ fetches from the driver would enter the data measurement windows.
 
 The program checks selectors 19, 20 and 21 on counters 3, 6 and 5:
 
-- Cold 8-line and 24-line instruction bodies have bounded allocation counts.
-  The entry line and its next-line partner can be requested before the opening
-  CSR sample. Return stubs are primed, and the closing sample follows execution
-  and event draining. The allowed windows are therefore 6–8 and 22–24.
-- Four alternating pairs check that the long body contributes 14–18 more
-  refills than the short body: their line-count difference is 16, and their
-  independent zero-to-two leading requests can differ by at most two. Each
+- Cold 8-line and 24-line instruction bodies contribute exactly 8 and 24
+  allocations. The L1I counter is sampled first. A BRAM delay follows the
+  opening CSR reads: 64 straight-line instructions exceed the decoded queue
+  and IF/PD/ID capacity while CSR dispatch is blocked, followed by a 32-iteration
+  loop. Fetch cannot reach the body's call before the opening sample, even if
+  the loop predicts exit, independently of L2 response latency. Return stubs
+  are primed, and the closing sample follows execution and event draining.
+- Four alternating pairs check a long-minus-short difference of 16. Each
   body has a separately measured warm second pass, whose count must be zero.
 - Both code pages are resident in L2 before measurement. L1D permission misses,
   L2 demand refills and L2 prefetch refills must remain zero in the instruction

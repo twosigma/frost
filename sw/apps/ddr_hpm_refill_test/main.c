@@ -22,9 +22,9 @@
  *   L  Cold L1I loops. Two straight-line bodies in cached DDR span 8 and 24
  *      32-byte lines, each in its own page and followed by eight stub lines
  *      that hold a ret. After fence.i the other body and both bodies' stubs
- *      run first. Allocation requests can precede the opening counter read,
- *      so cold windows have bounds, not an exact body-size count. Four
- *      alternating pairs check the long/short difference, a separate warm
+ *      run first. A BRAM fetch delay separates the opening counter reads
+ *      from the call, so all body allocations follow the L1I sample. Four
+ *      alternating pairs check 8/24 refills and their difference, a separate warm
  *      second pass refills nothing, and MINH stops the count in M. The code
  *      pages are already in L2; L1D misses and both L2 refill counters must
  *      stay zero in these instruction-only windows. The cache/home benches
@@ -79,17 +79,16 @@
 
 #define STUB_LINES 8ul
 
-/* Before the opening sample, a predicted entry can request the body's
- * leading line and the fetch provider's next-line partner. This fixture
- * primes the other body and all return stubs, but deliberately permits
- * those two leading allocations to precede the sample. The body itself
- * must finish before the closing sample; settle() drains its registered
- * events. A trailing next-line request can finish after the return or
- * closing sample, but targets an already primed stub, so adds no refill.
- * Thus a cold N-line body contributes [N - 2, N] and a warm pass zero.
- * These are allocation-window bounds, not expected counts inferred from
- * one run. Exact allocation/read accounting belongs in the cache benches. */
-#define LEADING_LINES 2ul
+/* The L1I opening sample precedes the other CSR reads and a BRAM fetch
+ * delay. Dispatch stops during a CSR access. The delay begins with 64
+ * straight-line instructions, more than the four two-instruction decoded
+ * bundles and the IF/PD/ID stages can hold, so fetch cannot reach the body's
+ * predicted call before the sample. This does not depend on L2 latency or
+ * the delay loop's branch prediction. The body completes before the closing
+ * sample and settle() drains its events. Trailing next-line requests target
+ * primed return stubs. The measured cold body therefore contributes exactly
+ * N lines, its warm pass zero, and the long-minus-short difference is 16.
+ * The cache benches separately check every allocation/read against its pulse. */
 
 /* Straight-line bodies, each at the start of its own 4 KiB page, without
  * compressed instructions: a body of N 32-byte lines holds 8N - 1 addi and a
@@ -147,20 +146,25 @@ static void expect_eq(const char *name, unsigned long got, unsigned long want)
     report(name, got, want, got == want);
 }
 
-static void expect_range(const char *name, unsigned long got, unsigned long low, unsigned long high)
-{
-    int pass = low <= got && got <= high;
-    uart_printf(
-        "%s %s got=%lu range=[%lu,%lu]\r\n", pass ? "[PASS]" : "[FAIL]", name, got, low, high);
-    ok &= pass;
-}
-
 /* Let late events reach the counters (two registered stages) and the
  * prefetches still in flight complete. */
 static void settle(int n)
 {
     for (volatile int i = 0; i < n; i++)
         ;
+}
+
+/* The straight-line prefix also absorbs fetch when the loop predicts exit. */
+__attribute__((always_inline)) static inline void fetch_delay(void)
+{
+    __asm__ volatile(".option push\n"
+                     ".option norvc\n"
+                     ".rept 64\n"
+                     "nop\n"
+                     ".endr\n"
+                     ".option pop\n" ::
+                         : "memory");
+    settle(32);
 }
 
 static void fence_i(void)
@@ -217,10 +221,11 @@ static void warm_code_pages(unsigned long *sum)
 
 static struct refill_counts measure_body(int which, unsigned long *sum)
 {
+    unsigned long l1i = csr_read_num(0xB03);
     unsigned long l1d = csr_read_num(0xB07);
     unsigned long demand = csr_read_num(0xB06);
     unsigned long prefetch = csr_read_num(0xB05);
-    unsigned long l1i = csr_read_num(0xB03);
+    fetch_delay();
     *sum += bodies[which].call(*sum);
     settle(64);
     struct refill_counts counts;
@@ -231,8 +236,7 @@ static struct refill_counts measure_body(int which, unsigned long *sum)
     return counts;
 }
 
-/* Prime wrong-path targets without executing the measured body. The
- * LEADING_LINES allowance covers an early request to its predicted entry. */
+/* Prime wrong-path targets without executing the measured body. */
 static struct refill_counts l1i_refills(int which, unsigned long *sum)
 {
     fence_i();
@@ -287,7 +291,7 @@ int main(void)
     expect_eq("selector-6", csr_read_num(0x326), SEL_L2_DEMAND);
     expect_eq("selector-5", csr_read_num(0x325), SEL_L2_PREFETCH);
 
-    /* L: bounded cold windows, a zero warm window, and distinct sources. */
+    /* L: guarded cold windows, a zero warm window, and distinct sources. */
     const volatile uint32_t *ws = (const volatile uint32_t *) BODY_SHORT;
     const volatile uint32_t *wl = (const volatile uint32_t *) BODY_LONG;
     expect_eq("L short-body-placed", ws[0] == INSN_ADDI && ws[8 * SHORT_LINES - 1] == INSN_RET, 1);
@@ -306,15 +310,9 @@ int main(void)
                     cold_long.l1i,
                     warm_short.l1i,
                     warm_long.l1i);
-        expect_range("L short-window", cold_short.l1i, SHORT_LINES - LEADING_LINES, SHORT_LINES);
-        expect_range("L long-window", cold_long.l1i, LONG_LINES - LEADING_LINES, LONG_LINES);
-        /* Each window can independently lose zero to LEADING_LINES early
-         * requests. Subtracting them gives a difference allowance of +/-
-         * LEADING_LINES, not twice that, around the body-size difference. */
-        expect_range("L long-minus-short",
-                     cold_long.l1i - cold_short.l1i,
-                     LONG_LINES - SHORT_LINES - LEADING_LINES,
-                     LONG_LINES - SHORT_LINES + LEADING_LINES);
+        expect_eq("L short-window", cold_short.l1i, SHORT_LINES);
+        expect_eq("L long-window", cold_long.l1i, LONG_LINES);
+        expect_eq("L long-minus-short", cold_long.l1i - cold_short.l1i, LONG_LINES - SHORT_LINES);
         expect_eq("L warm-short", warm_short.l1i, 0);
         expect_eq("L warm-long", warm_long.l1i, 0);
         expect_instruction_only(cold_short);
