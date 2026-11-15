@@ -207,6 +207,12 @@ module pc_controller #(
     // outlive its redirect: a refetched JAL could otherwise appear correctly
     // predicted and retire without recovering the lost redirect.
     output logic o_pending_prediction_redirect_kill,
+    // pc_reg is past the pending prediction's PC: a 32-bit instruction at
+    // PC - 2 overlaps an entry another instruction stream trained at PC. The
+    // prediction is inactive at once; IF squashes the packet of a held
+    // post-prediction cycle and the tracker ignores the saved metadata. From
+    // registers only.
+    output logic o_pending_prediction_walk_past,
     // Observation outputs for tests: the next fetch PC, and whether it is a
     // hold because no window arrived. o_pc_update_en is the fetch PC's load
     // enable, which if_stage uses to qualify its registered fetch-redirect
@@ -418,6 +424,7 @@ module pc_controller #(
   (* keep = "true" *)logic [XLEN-1:0] pending_prediction_prev_pc;
   (* keep = "true" *)logic [XLEN-1:0] pending_prediction_prev_native_pc;
   logic [XLEN-1:0] pending_prediction_target;
+  logic            pending_prediction_unflushed;
   logic            pending_prediction_effective;
   logic            pending_imm_pred_emit;
   logic            pim_base;  // pending, not ready, and pc_reg at the branch's predecessor
@@ -502,10 +509,15 @@ module pc_controller #(
        (pc_reg_next_misses_fetch_pc_for_prediction &&
         i_prediction_requires_pc_reg_handoff));
   // i_flush is redundant here: branch, trap, xRET, and FENCE-class inputs
-  // cover every recovery source.
-  assign pending_prediction_effective = pending_prediction_valid && !redirect_kill_pending_q &&
+  // cover every recovery source. Instruction streams can overlap: a 32-bit
+  // instruction at P - 2 steps pc_reg past an entry another stream trained at
+  // P. Such a walked-past prediction is inactive at once (no handoff, holdoff,
+  // land on P, or metadata), but its valid bit holds through a stall or
+  // fetch gap, masking the registered redirect the predictor keeps for it.
+  assign pending_prediction_unflushed = pending_prediction_valid && !redirect_kill_pending_q &&
                                         !i_fence_i_flush && !i_branch_taken &&
                                         !i_trap_taken && !i_mret_taken;
+  assign pending_prediction_effective = pending_prediction_unflushed && !pc_reg_after_pending;
   assign o_pending_prediction_active = pending_prediction_effective;
   assign o_pending_prediction_pc = pending_prediction_pc;
 
@@ -551,7 +563,7 @@ module pc_controller #(
       ((pending_prediction_allow_cross && pc_reg_before_pending && seq_reaches_pending) ||
        (pc_reg_at_pending &&
         (pending_prediction_allow_cross || pending_prediction_pc_ready_q || i_prediction_holdoff)));
-  assign stale_pending_prediction = pending_prediction_effective && pc_reg_after_pending;
+  assign stale_pending_prediction = pending_prediction_unflushed && pc_reg_after_pending;
   // A pending prediction must not skip the compressed instruction just before
   // the branch, at pc_reg (pending_prediction_pc == o_pc_reg + 2).
   // pending_imm_pred_emit releases the fetch holdoff and blocks the
@@ -790,21 +802,26 @@ module pc_controller #(
 
   // Handoff consumption must share pc_reg's !fetch_stall enable. Otherwise
   // it would lose the target while pc_reg holds, pairing target bytes with
-  // sequential PCs on release. The crossing case clears stale state only
-  // after pc_reg advances and needs no extra gate.
+  // sequential PCs on release. Clearing a walked-past entry shares it too:
+  // its valid bit masks the held registered redirect through a stall or
+  // fetch gap, including the release cycle. Only the capture reference below
+  // reads this.
   assign clear_pending_prediction_state =
       redirect_kill_pending_q || pending_prediction_target_handoff_applies ||
-      stale_pending_prediction;
+      (stale_pending_prediction && !fetch_stall);
 
   // Fires in the cycle of each event that kills the pending state, except the
   // target handoff, where the tracker itself attaches the metadata to the
   // branch being emitted. The redirect terms fire in the redirect cycle, one
   // cycle before redirect_kill_pending_q, because the tracker's pending-save
   // capture in that same cycle reads the prediction and fetch-holdoff values
-  // from before the kill.
+  // from before the kill. The walk-past term holds in every cycle pc_reg is
+  // past the pending PC, stalled or not.
+  assign o_pending_prediction_walk_past =
+      pending_prediction_valid && !redirect_kill_pending_q && pc_reg_after_pending;
   assign o_pending_prediction_redirect_kill =
       i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
-      i_pd_redirect || i_fence_i_flush || stale_pending_prediction;
+      i_pd_redirect || i_fence_i_flush || o_pending_prediction_walk_past;
 
 `ifndef SYNTHESIS
   // A ready handoff is consumed exactly when no higher-priority non-redirect
@@ -842,9 +859,13 @@ module pc_controller #(
 `endif
 
   // Compute next validity for both miss and prediction-use values, then
-  // select running or stalled state for timing. Stalls block capture and
-  // handoff, but redirects and stale-state clearing still apply.
-  // A prediction already emitted with its own packet never pends, so the
+  // select running or stalled state for timing. Stalls block capture,
+  // handoff, and the clearing of a walked-past entry; redirects clear state
+  // during stalls too. A prediction accepted while an entry is walked past
+  // replaces it on the same edge: validity, the payload capture below, and
+  // the relation registers all take the new lookup. Below the redirect
+  // terms, a walked-past entry is simply valid && pc_reg_after_pending, from
+  // registers. A prediction already emitted with its own packet never pends, so the
   // used values apply i_prediction_already_emitted, and the prediction-use
   // input selects directly. The slot-2 prediction, the latest input,
   // selects in the final mux beside the stall: it blocks capture.
@@ -855,7 +876,7 @@ module pc_controller #(
   logic pending_valid_next;
   assign pending_clear_without_handoff =
       i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
-      i_pd_redirect || i_fence_i_flush || redirect_kill_pending_q || stale_pending_prediction;
+      i_pd_redirect || i_fence_i_flush || redirect_kill_pending_q;
   assign pending_valid_when_stalled = !pending_clear_without_handoff && pending_prediction_valid;
   for (genvar miss = 0; miss < 2; miss++) begin : gen_pending_valid_by_miss
     for (genvar used = 0; used < 2; used++) begin : gen_used
@@ -864,7 +885,7 @@ module pc_controller #(
            ((miss != 0) && i_prediction_requires_pc_reg_handoff));
       assign pending_valid_by_miss[miss][used] =
           !(pending_clear_without_handoff || pending_prediction_target_handoff_ready) &&
-          (pending_prediction_valid || capture);
+          ((pending_prediction_valid && !pc_reg_after_pending) || capture);
     end
   end
   assign pending_valid_with_slot2 =
@@ -883,21 +904,26 @@ module pc_controller #(
   always_comb begin
     pending_valid_reference = pending_prediction_valid;
     if (i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
-        i_pd_redirect || i_fence_i_flush || clear_pending_prediction_state) begin
+        i_pd_redirect || i_fence_i_flush || redirect_kill_pending_q ||
+        pending_prediction_target_handoff_applies) begin
       pending_valid_reference = 1'b0;
     end else if (!fetch_stall && prediction_needs_pending) begin
       pending_valid_reference = 1'b1;
+    end else if (clear_pending_prediction_state) begin
+      pending_valid_reference = 1'b0;
     end
     assert (pending_valid_next == pending_valid_reference);
   end
 `endif
 
-  // Capture whenever fetch advances with no pending prediction, for timing.
-  // Integration permits prediction_needs_pending only with validity clear,
-  // so the payload is captured when validity sets. Payload needs no reset:
-  // only a set valid bit makes it meaningful.
+  // Capture whenever fetch advances with no pending prediction, or with one
+  // pc_reg has walked past, for timing. Integration permits
+  // prediction_needs_pending only then, so the payload is captured when
+  // validity sets, including when a new prediction replaces a walked-past
+  // entry. The enable reads registers and the stall only. Payload needs no
+  // reset: only a set valid bit makes it meaningful.
   always_ff @(posedge i_clk) begin
-    if (!fetch_stall && !pending_prediction_valid) begin
+    if (!fetch_stall && (!pending_prediction_valid || pc_reg_after_pending)) begin
       pending_prediction_pc                   <= o_pc;
       pending_prediction_prev_pc              <= o_pc - riscv_pkg::PcIncrementCompressed;
       pending_prediction_prev_native_pc       <= o_pc - riscv_pkg::PcIncrement32bit;
@@ -917,12 +943,15 @@ module pc_controller #(
   // The pending terms for the fetch-PC and pc_reg data (pending_mux_*)
   // ignore this cycle's redirects. The higher-priority redirect arms still
   // win, so their late qualifiers need not pass through the pending logic
-  // first.
+  // first. They exclude a walked-past entry, which must not land pc_reg back
+  // on its PC, inside the instruction that overlaps it; the registered
+  // relation is all they add.
   logic pending_mux_valid;
   logic pending_mux_cross, pending_mux_target, pending_mux_use;
   logic pending_mux_predecessor, pending_mux_release, pending_mux_emit;
   logic pending_mux_hold, pending_mux_consume_is_seq;
-  assign pending_mux_valid = pending_prediction_valid && !redirect_kill_pending_q;
+  assign pending_mux_valid = pending_prediction_valid && !redirect_kill_pending_q &&
+                             !pc_reg_after_pending;
   assign pending_mux_cross = pending_mux_valid && pending_prediction_allow_cross_pc_mux_q &&
       pc_reg_before_pending && seq_reaches_pending;
   assign pending_mux_target = pending_mux_valid && pc_reg_at_pending &&
@@ -1660,7 +1689,12 @@ module pc_controller #(
   logic seq_reaches_next, seq_reaches_hold;
   logic seq_reaches_advance_wcs0, seq_reaches_advance_wcs;
   logic seq_reaches_fetch_live;
-  assign pending_payload_capture = !fetch_stall && !pending_prediction_valid;
+  // An entry pc_reg has walked past is replaced whenever fetch advances, so
+  // its advancing relations are o_pc's, as when no entry is valid.
+  logic pending_rel_owner_on_advance;
+  assign pending_payload_capture =
+      !fetch_stall && (!pending_prediction_valid || pc_reg_after_pending);
+  assign pending_rel_owner_on_advance = pending_prediction_valid && !pc_reg_after_pending;
   assign fetch_advances = !fetch_stall && !i_window_cannot_serve;
 
   // pc_reg's land and sequential selects, repeated without keep so synthesis
@@ -1686,7 +1720,7 @@ module pc_controller #(
     rel_seq_pending_wcs0 = 1'b0;
     rel_seq_fetch_wcs0 = 1'b0;
     rel_nonseq_wcs0 = '0;
-    if (pending_prediction_valid) begin
+    if (pending_rel_owner_on_advance) begin
       if (rel_seq_candidate_wcs0) rel_seq_pending_wcs0 = 1'b1;
       else if (rel_lands_on_pending) rel_nonseq_wcs0 = 5'b10000;
       else rel_nonseq_wcs0 = pc_reg_rel_pending;
@@ -1706,24 +1740,31 @@ module pc_controller #(
   // than ternaries: in four-state simulation an unknown select falls to the
   // hold case, as an unknown register enable holds.
   always_comb begin
+    // A held relation keeps a valid entry's PC, including a walked-past one
+    // through a stall. Fetch does not advance without a stall only on a
+    // served-window resteer, where IF makes no slot-1 prediction, so a
+    // walked-past entry is cleared there and its relation is unused.
     if (pending_prediction_valid) begin
       rel_hold = pc_reg_rel_pending;
+      seq_reaches_hold = seq_reaches_pending_live;
+    end else begin
+      rel_hold = pc_reg_rel_fetch;
+      seq_reaches_hold = seq_reaches_fetch_live;
+    end
+    if (pending_rel_owner_on_advance) begin
       if (rel_seq_candidate_wcs0) rel_advance_wcs0_select = seq_next_pc_reg_rel_pending_wcs0;
       else if (rel_lands_on_pending) rel_advance_wcs0_select = 5'b10000;  // at only
       else rel_advance_wcs0_select = pc_reg_rel_pending;
       if (rel_seq_candidate_wcs) rel_advance_wcs = seq_next_pc_reg_rel_pending_nop;
       else if (rel_lands_on_pending) rel_advance_wcs = 5'b10000;
       else rel_advance_wcs = pc_reg_rel_pending;
-      seq_reaches_hold = seq_reaches_pending_live;
       seq_reaches_advance_wcs0 = !seq_next_pc_reg_rel_pending_wcs0.below;
       seq_reaches_advance_wcs = !seq_next_pc_reg_rel_pending_nop.below;
     end else begin
-      rel_hold = pc_reg_rel_fetch;
       if (rel_seq_candidate_wcs0) rel_advance_wcs0_select = seq_next_pc_reg_rel_fetch_wcs0;
       else rel_advance_wcs0_select = pc_reg_rel_fetch;
       if (rel_seq_candidate_wcs) rel_advance_wcs = seq_next_pc_reg_rel_fetch_nop;
       else rel_advance_wcs = pc_reg_rel_fetch;
-      seq_reaches_hold = seq_reaches_fetch_live;
       seq_reaches_advance_wcs0 = !seq_next_pc_reg_rel_fetch_wcs0.below;
       seq_reaches_advance_wcs = !seq_next_pc_reg_rel_fetch_nop.below;
     end
@@ -1946,41 +1987,41 @@ module pc_controller #(
   logic npc_consume_is_seq_ref;
 
   always_comb begin
-    pending_crossing_ref = pending_prediction_effective && pending_prediction_allow_cross &&
+    pending_crossing_ref = pending_prediction_unflushed && pending_prediction_allow_cross &&
                            pc_reg_before_pending && seq_reaches_pending;
-    pending_cross_handoff_ref = pending_prediction_effective &&
+    pending_cross_handoff_ref = pending_prediction_unflushed &&
                                 pending_prediction_allow_cross && pending_crossing_ref;
-    pending_target_handoff_ref = pending_prediction_effective &&
+    pending_target_handoff_ref = pending_prediction_unflushed &&
         (pending_prediction_allow_cross ?
              (pc_reg_at_pending && !pending_crossing_ref) :
              (pc_reg_at_pending &&
               (pending_prediction_pc_ready_q || i_prediction_holdoff)));
     pending_use_ref = pending_cross_handoff_ref || pending_target_handoff_ref;
-    pending_stale_ref = pending_prediction_effective && !pending_use_ref && pc_reg_after_pending;
-    pending_pim_base_ref = pending_prediction_effective && !pending_use_ref &&
+    pending_stale_ref = pending_prediction_unflushed && !pending_use_ref && pc_reg_after_pending;
+    pending_pim_base_ref = pending_prediction_unflushed && !pending_use_ref &&
                            !pending_stale_ref && pc_reg_at_pending_predecessor;
     pending_emit_ref = pending_pim_base_ref && pending_predecessor_needs_emit;
-    pending_hold_fetch_ref = pending_prediction_effective && !pending_use_ref &&
+    pending_hold_fetch_ref = pending_prediction_unflushed && !pending_use_ref &&
                              !pending_stale_ref && !pending_emit_ref;
-    pending_hold_consume_ref = pending_prediction_effective && pending_use_ref;
+    pending_hold_consume_ref = pending_prediction_unflushed && pending_use_ref;
 
-    pending_crossing_pc_mux_ref = pending_prediction_effective &&
+    pending_crossing_pc_mux_ref = pending_prediction_unflushed &&
                                   pending_prediction_allow_cross_pc_mux_q &&
                                   pc_reg_before_pending && seq_reaches_pending;
-    pending_cross_handoff_pc_mux_ref = pending_prediction_effective &&
+    pending_cross_handoff_pc_mux_ref = pending_prediction_unflushed &&
         pending_prediction_allow_cross_pc_mux_q && pending_crossing_pc_mux_ref;
-    pending_target_handoff_pc_mux_ref = pending_prediction_effective &&
+    pending_target_handoff_pc_mux_ref = pending_prediction_unflushed &&
         (pending_prediction_allow_cross_pc_mux_q ?
              (pc_reg_at_pending && !pending_crossing_pc_mux_ref) :
              (pc_reg_at_pending &&
               (pending_prediction_pc_ready_q || i_prediction_holdoff)));
     pending_use_pc_mux_ref = pending_cross_handoff_pc_mux_ref || pending_target_handoff_pc_mux_ref;
-    pending_stale_pc_mux_ref = pending_prediction_effective && !pending_use_pc_mux_ref &&
+    pending_stale_pc_mux_ref = pending_prediction_unflushed && !pending_use_pc_mux_ref &&
                                pc_reg_after_pending;
-    pending_hold_fetch_pc_mux_ref = pending_prediction_effective &&
+    pending_hold_fetch_pc_mux_ref = pending_prediction_unflushed &&
                                     !pending_use_pc_mux_ref &&
                                     !pending_stale_pc_mux_ref && !pending_emit_ref;
-    pending_hold_consume_pc_mux_ref = pending_prediction_effective && pending_use_pc_mux_ref;
+    pending_hold_consume_pc_mux_ref = pending_prediction_unflushed && pending_use_pc_mux_ref;
     npc_consume_is_seq_ref = !pending_cross_handoff_pc_mux_ref &&
                              pending_prediction_allow_cross_pc_mux_q &&
                              pending_target_handoff_pc_mux_ref &&
@@ -2258,6 +2299,22 @@ module pc_controller #(
     end
   end
 
+  always_comb begin
+    if (o_pending_prediction_walk_past) begin
+      p_walk_past_masks_pending_consumers :
+      assert (!o_pending_prediction_active && !pending_mux_valid &&
+              !pending_prediction_target_handoff && !pc_reg_land_on_pending_wcs0);
+      p_walk_past_masks_registered_redirect : assert (!sel_prediction_r);
+      if (fetch_stall && !pending_clear_without_handoff)
+        p_walk_past_stall_preserves_redirect_mask : assert (pending_valid_next);
+    end
+    if (!fetch_stall && stale_pending_prediction && prediction_needs_pending &&
+        !pending_clear_without_handoff && !pending_prediction_target_handoff_ready) begin
+      p_walk_past_replacement_captures_validity_and_payload :
+      assert (pending_valid_next && pending_payload_capture);
+    end
+  end
+
   // Next cycle's pc_reg, pending PC and tags, and sequential-PC register.
   logic [XLEN-1:0] f_pc_reg_next, f_pending_pc_next;
   logic [XLEN-1:0] f_pending_prev_pc_next, f_pending_prev_native_pc_next;
@@ -2323,6 +2380,12 @@ module pc_controller #(
         assert (o_fetch_lookup_is_lower_parcel && o_pc[XLEN-1:2] == o_pc_reg[XLEN-1:2]);
       end
 
+      cover_walk_past_odd : cover (o_pending_prediction_walk_past && pending_prediction_pc[1]);
+      cover_walk_past_even : cover (o_pending_prediction_walk_past && !pending_prediction_pc[1]);
+      cover_walk_past_stalled : cover (o_pending_prediction_walk_past && fetch_stall);
+      cover_walk_past_replacement :
+      cover (stale_pending_prediction && !fetch_stall && prediction_needs_pending &&
+             !pending_clear_without_handoff && pending_valid_next);
       cover_pending_predecessor_emit :
       cover (pending_prediction_effective && pending_predecessor_needs_emit);
       cover_pending_compressed_predecessor_tag :

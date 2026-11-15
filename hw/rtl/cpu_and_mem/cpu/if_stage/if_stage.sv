@@ -354,6 +354,7 @@ module if_stage #(
   logic pending_prediction_fetch_holdoff_wcs0;  // ... with WCS forced to 0
   logic pending_prediction_fetch_holdoff_wcs;  // ... with WCS forced to 1
   logic pending_prediction_target_holdoff;  // First target cycle still returns stale data
+  logic pending_prediction_walk_past;  // pc_reg is past a pending prediction's PC
   logic pending_prediction_redirect_kill;  // Pending prediction dies without its handoff
   logic pc_update_en;  // Fetch-PC load enable; qualifies the low-presenter retarget
   // Used only to classify fetch retargets as sequential or not.
@@ -963,6 +964,7 @@ module if_stage #(
       .o_pending_prediction_fetch_holdoff_wcs(pending_prediction_fetch_holdoff_wcs),
       .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
       .o_pending_prediction_redirect_kill(pending_prediction_redirect_kill),
+      .o_pending_prediction_walk_past(pending_prediction_walk_past),
       .o_next_pc(),
       .o_next_pc_holds(),
       .o_pc_update_en(pc_update_en),
@@ -1479,7 +1481,11 @@ module if_stage #(
   end
 `endif
 
-  // Every squash condition except the served-window guard.
+  // Every squash condition except the served-window guard. Once pc_reg has
+  // walked past a pending prediction's PC (an instruction overlapping it),
+  // that prediction no longer exempts the packet from the post-prediction
+  // holdoff: pc_reg holds in that cycle, so a real packet would be dispatched
+  // twice.
   logic sel_nop_existing;
   logic sel_nop_existing_wcs0;
   logic sel_nop_existing_wcs;
@@ -1490,7 +1496,7 @@ module if_stage #(
                    pending_prediction_fetch_holdoff ||
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
-                     prediction_already_emitted_q));
+                     prediction_already_emitted_q || pending_prediction_walk_past));
   // For W = WCS, squash W | E(W) equals W | E(0). Compute E(0) in
   // parallel with the coverage check.
   assign sel_nop_existing_wcs0 = i_pipeline_ctrl.flush ||
@@ -1500,7 +1506,7 @@ module if_stage #(
                    pending_prediction_fetch_holdoff_wcs0 ||
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
-                     prediction_already_emitted_q));
+                     prediction_already_emitted_q || pending_prediction_walk_past));
   // The resteer W & !E(W) uses E(1), also computed in parallel.
   assign sel_nop_existing_wcs = i_pipeline_ctrl.flush ||
                    flush_for_c_ext_safe || !fetch_progress ||
@@ -1509,7 +1515,7 @@ module if_stage #(
                    pending_prediction_fetch_holdoff_wcs ||
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
-                     prediction_already_emitted_q));
+                     prediction_already_emitted_q || pending_prediction_walk_past));
 
   // Resteer only when the packet would otherwise be consumed. Resteering
   // during a holdoff would fight the existing PC control. On release, it
@@ -1533,7 +1539,7 @@ module if_stage #(
                    pending_prediction_fetch_holdoff_wcs0 ||
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
-                     prediction_already_emitted_q));
+                     prediction_already_emitted_q || pending_prediction_walk_past));
   assign pc_control_sel_nop = sel_nop_existing_pc_control || window_cannot_serve_pc_reg;
 
 `ifndef SYNTHESIS
@@ -2488,6 +2494,7 @@ module if_stage #(
       // for it must die too (see o_pending_prediction_redirect_kill in
       // pc_controller).
       .i_pending_prediction_kill(pending_prediction_redirect_kill),
+      .i_pending_prediction_walk_past(pending_prediction_walk_past),
       .i_stall_registered(if_stage_stall_registered),
 
       // Registered prediction from branch_prediction_controller
@@ -2528,6 +2535,37 @@ module if_stage #(
     if (i_pipeline_ctrl.reset) bp_dir_taken_before_pending_valid_q <= 1'b0;
     else if (!pending_prediction_active)
       bp_dir_taken_before_pending_valid_q <= !if_stage_stall && fetch_progress;
+  end
+
+  // A real packet in the cycle after a slot-1 prediction moves pc_reg: on
+  // the branch's handoff, on its predecessor's release, or sequentially. If
+  // pc_reg held, the packet's bytes would be fetched and dispatched again.
+  // A branch may target itself, so a handoff to pc_reg is left out, as are
+  // redirect cycles. While pc_reg has walked past a pending prediction (an
+  // instruction overlapping the predicted PC), the controller holds pc_reg
+  // and the packet must be a bubble.
+  logic held_pc_check_q = 1'b0;
+  logic held_pc_sel_nop_q;
+  logic [XLEN-1:0] held_pc_reg_q;
+  always_ff @(posedge i_clk) begin
+    held_pc_check_q <= coverage_reset_seen_q && !i_pipeline_ctrl.reset && !if_stage_stall &&
+        fetch_progress && control_flow_holdoff && prediction_holdoff &&
+        !i_from_ex_comb.branch_taken && !i_pd_redirect && !i_trap_ctrl.trap_taken &&
+        !i_trap_ctrl.mret_taken && !i_fence_i_flush &&
+        !(pending_prediction_target_handoff &&
+          pc_controller_inst.pending_prediction_target == pc_reg) &&
+        !(sel_prediction_r && btb_predicted_target_r == pc_reg);
+    held_pc_sel_nop_q <= sel_nop_effective;
+    held_pc_reg_q <= pc_reg;
+    if (held_pc_check_q && !i_pipeline_ctrl.reset && pc_reg == held_pc_reg_q &&
+        !$isunknown(held_pc_sel_nop_q)) begin
+      p_held_post_prediction_pc_emits_no_real_packet : assert (held_pc_sel_nop_q);
+    end
+    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && control_flow_holdoff &&
+        prediction_holdoff && pending_prediction_walk_past && !if_stage_stall &&
+        fetch_progress) begin
+      p_held_walk_past_packet_is_not_real : assert (sel_nop_effective && !slot2_valid);
+    end
   end
 
   // pc_controller may consume a pending prediction only on a real packet at

@@ -788,6 +788,21 @@ one-wide, and its bimodal index is recomputed from that PC. A prediction made
 while the branch's own packet is already being emitted, which happens when
 variable latency closes the gap between the two PCs, never pends.
 
+Instruction streams can overlap: a 32-bit instruction at `P-2` contains the
+halfword at `P`, which another path through the same bytes can execute as an
+instruction and train into the BTB. A lookup at `P` can then hit while IF
+emits the 32-bit instruction, and `pc_reg` steps past `P` instead of stopping
+there. From that cycle the pending prediction is inactive: it hands nothing
+off, holds nothing back, never moves `pc_reg` back onto `P`, and its saved
+metadata attaches to no packet. Its valid bit stays set through stalls and
+fetch gaps, so the registered redirect the predictor still holds cannot move
+`pc_reg` to the old target, and clears on the next cycle in which fetch
+advances. In the cycle after the prediction, when IF would let the branch's
+own packet through while `pc_reg` holds, IF squashes the packet instead, and
+the served-window check then refetches the bytes after the 32-bit
+instruction. A prediction made in the cycle the entry clears replaces it, as
+if none had been pending.
+
 `pc_controller` registers how `pc_reg` relates to the saved PC one edge early,
 which keeps the wide compares out of the PC loop. For a slot-2 redirect,
 `branch_prediction_controller` relates the live BTB target and stack top.
