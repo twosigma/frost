@@ -76,8 +76,10 @@ module reservation_station #(
     // repair bypasses, as port 1 does. Requires HAS_SRC3=0. When disabled,
     // stage2 stores resident or repair values and masks for a later CDB mux.
     parameter bit CAPTURE_PRIMARY_EFFECTIVE_OPERANDS = 1'b0,
-    // INT only: duplicate stage2_rob_tag, with the same value and enable,
-    // for branch checkpoint and age compares, to reduce fanout.
+    // INT only: a second copy of the stage2 ROB tag for branch checkpoint and
+    // age compares, to reduce fanout. The copy loads only on issue_fire, while
+    // stage2_rob_tag also loads on idle i_fu_ready cycles, so the two are
+    // equal whenever stage2_valid is set.
     parameter bit BRANCH_PREDICATE_TAG_ANCHOR = 1'b0,
     parameter bit TRUST_DISPATCH_VALID = 1'b0,
     // Reserve entries when reporting dispatch capacity from the previous
@@ -104,6 +106,11 @@ module reservation_station #(
     // the divider or the vector-config unit holds one, or stage2 holds one.
     // Every issued one then finds its unit idle; multiplies can pass waiting
     // ones. Requires DUAL_ISSUE=0.
+    // This parameter also marks the station that feeds int_muldiv_shim, which
+    // decodes o_issue.op into its busy output without o_issue.valid. With it
+    // set, stage2_op keeps the issue_fire load (gen_stage2_op_issue_fire), so
+    // o_issue.op stays at the last issued op while stage 2 is empty. A
+    // station feeding that shim must set this parameter.
     parameter bit DIVIDE_ISSUE_GATE = 1'b0,
     // formal/reservation_station.sby uses free inputs and assumes dispatch
     // requirements. formal/tomasulo_wrapper.sby sets this to 0: its real
@@ -189,7 +196,8 @@ module reservation_station #(
     // predicates (BRANCH_PREDICATE_TAG_ANCHOR). Off, it aliases stage2_rob_tag.
     output logic                 [riscv_pkg::ReorderBufferTagWidth-1:0] o_branch_predicate_tag,
     // Stage2 holds a JALR (o_issue.is_jalr without the issue packet), for
-    // logic that feeds i_fu_ready.
+    // logic that feeds i_fu_ready. It loads only on issue_fire, so while
+    // stage 2 is empty it keeps the last issued packet's bit.
     output logic                                                        o_issue_is_jalr,
     // Stage2 holds a packet (o_issue.valid without i_fu_ready), for logic that
     // feeds i_fu_ready or that applies it last.
@@ -1772,8 +1780,10 @@ module reservation_station #(
       logic [ReorderBufferTagWidth-1:0] stage2_branch_predicate_tag;
 
       always_ff @(posedge i_clk) begin
-        // stage2_rob_tag is held by the enclosing reset branch, so include
-        // i_rst_n here to preserve its exact effective clock enable.
+        // Loads only on issue_fire outside reset. stage2_rob_tag loads on
+        // every i_fu_ready cycle; both take primary_issue_tag at each issue
+        // and neither changes while stage 2 holds a packet without
+        // i_fu_ready, so they agree whenever stage2_valid is set.
         if (i_rst_n && issue_fire) stage2_branch_predicate_tag <= primary_issue_tag;
       end
 
@@ -1781,8 +1791,8 @@ module reservation_station #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-      // The tags have identical input and enable behavior but no reset;
-      // compare only while stage2_valid is set.
+      // Neither tag has a reset, and stage2_rob_tag also loads on idle
+      // i_fu_ready cycles, so compare only while stage2_valid is set.
       always_ff @(posedge i_clk) begin
         if (reset_seen_q && i_rst_n && stage2_valid) begin
           assert (stage2_branch_predicate_tag == stage2_rob_tag)
@@ -1813,7 +1823,9 @@ module reservation_station #(
       logic [ReorderBufferTagWidth-1:0] stage2_branch_payload_tag;
 
       always_ff @(posedge i_clk) begin
-        // Use stage2_rob_tag's effective enable, including reset qualification.
+        // Loads only on issue_fire outside reset, so it equals
+        // stage2_rob_tag whenever stage2_valid is set (see the predicate tag
+        // copy above).
         if (i_rst_n && issue_fire) stage2_branch_payload_tag <= primary_issue_tag;
       end
 
@@ -3776,8 +3788,17 @@ module reservation_station #(
   // ===========================================================================
   // Stage 2 Pipeline Register: Sequential Logic
   // ===========================================================================
-  // Captures the issued instruction's data on issue_fire and holds it until
-  // consumed by the downstream FU (stage2_accept) or flushed.
+  // stage2_valid keeps the reset, flush, issue_fire and accept terms below:
+  // it sets on issue_fire and clears on reset, on a flush that covers the
+  // packet, and on stage2_accept without a refill. The payload registers
+  // after it load on every i_fu_ready cycle instead (see the comment there).
+  // These keep the issue_fire load, so they hold the last issued packet's
+  // value while stage 2 is empty:
+  //   - stage2_is_jalr, and stage2_op in the station built with
+  //     DIVIDE_ISSUE_GATE: their outputs are read without stage2_valid;
+  //   - stage2_is_sc and the branch tag copies (stage2_branch_predicate_tag,
+  //     stage2_branch_payload_tag): read only under stage2_valid, and left
+  //     on issue_fire.
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
