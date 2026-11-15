@@ -536,13 +536,25 @@ module cached_tier_adapter #(
     if (i_rst) launch_check_q <= 1'b0;
     if (reset_seen_q && !i_rst) begin
       if (i_read_req && rd_valid_q[i_read_id])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cached_tier_adapter: read request on slot %0d while it is pending", i_read_id);
       if (SPLIT_READ_REQ &&
           i_read_req !== (i_read_req_sel ? i_read_req_if_sel : i_read_req_if_clear))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cached_tier_adapter: split read request disagrees with i_read_req");
       if (i_read_req && write_fire)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cached_tier_adapter: read request in the cycle a store fires");
       if (i_read_req && !$onehot0(attach_match))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cached_tier_adapter: two open groups of one line: %b", attach_match);
       // The free-slot sampling above captures the launched address and join
       // group exactly.
@@ -551,34 +563,64 @@ module cached_tier_adapter #(
       launch_addr_q  <= i_req_addr;
       launch_group_q <= attach_any ? attach_match : READ_SLOTS'(1) << i_read_id;
       if (launch_check_q && rd_addr_q[launch_id_q] !== launch_addr_q)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cached_tier_adapter: slot %0d did not capture its launch address", launch_id_q);
       if (launch_check_q && rd_group_oh_q[launch_id_q] !== launch_group_q)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cached_tier_adapter: slot %0d did not capture its join group", launch_id_q);
       if (write_fire && pending_write_valid)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cached_tier_adapter: write request while a write is already pending");
       if (resp_is_write && !pending_write_sent)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cached_tier_adapter: write response with no write in flight");
       if (resp_is_read && !(grp_live_q[resp_group] && grp_sent_q[resp_group]))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cached_tier_adapter: read response for group %0d not in flight", resp_group);
       if (resp_is_read && !(|resp_member))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("cached_tier_adapter: read response for group %0d with no reads", resp_group);
       for (int g = 0; g < int'(READ_SLOTS); g++) begin
         // A live group's opening slot waits on it.
         if (grp_live_q[g] && !(rd_valid_q[g] && !rd_ready_q[g] && rd_group_oh_q[g][g]))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("cached_tier_adapter: live group %0d without its opening read", g);
       end
       for (int s = 0; s < int'(READ_SLOTS); s++) begin
         // A waiting read names exactly one group, and that group is live
         // unless its response arrived on the last edge.
         if (rd_valid_q[s] && !rd_ready_q[s] && !$onehot(rd_group_oh_q[s]))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("cached_tier_adapter: slot %0d waits on group set %b", s, rd_group_oh_q[s]);
         if (rd_valid_q[s] && !rd_ready_q[s] && !answered[s] && !(|(rd_group_oh_q[s] & grp_live_q)))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error(
               "cached_tier_adapter: slot %0d waits on group set %b, which is not live",
               s,
               rd_group_oh_q[s]
           );
         if (rd_ready_q[s] && !rd_valid_q[s])
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("cached_tier_adapter: slot %0d ready but not valid", s);
       end
     end

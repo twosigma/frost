@@ -5574,6 +5574,13 @@ class CocotbRunner:
             str((Path(cocotb.__file__).resolve().parent / "libs").resolve())
         )
         verilator_extra_args_marker.write_text(self._verilator_build_signature())
+        if (
+            self.hdl_toplevel_module == "frost"
+            and os.environ.get("FROST_STARTUP_SWEEP") == "1"
+        ):
+            from random_start_sweep import check_built_model
+
+            check_built_model(sim_build_dir / "Vtop", self.setup_environment())
 
     def _verilator_build_dir_writable(self, sim_build_dir: Path) -> bool:
         """Return True when the existing Verilator build dir can be rebuilt in place."""

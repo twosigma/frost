@@ -230,6 +230,9 @@ module mwp_dist_ram #(
             ) && i_write_enable[wp] && !$isunknown(
                 i_write_data[wp][DATA_WIDTH-1:NARROW_DATA_WIDTH]
             ) && (i_write_data[wp][DATA_WIDTH-1:NARROW_DATA_WIDTH] != '0)) begin
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("mwp_dist_ram: narrow write port %0d carries nonzero upper bits (0x%0h)", wp,
                  i_write_data[wp][DATA_WIDTH-1:NARROW_DATA_WIDTH]);
         end

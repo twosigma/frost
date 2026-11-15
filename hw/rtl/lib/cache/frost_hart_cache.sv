@@ -503,12 +503,18 @@ module frost_hart_cache #(
   // path, so a write here would be silently turned into a read.
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && !i_rst && i_wup_req_valid && i_wup_req_write)
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error(
           "frost_hart_cache: write on the walker port (addr=0x%0h, wstrb=0x%0h)",
           i_wup_req_addr,
           i_wup_req_wstrb
       );
     if (reset_seen_q && !i_rst && walk_probe_release_valid && walk_release_hold_q)
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("frost_hart_cache: walker probe release while one is still held");
   end
 `endif

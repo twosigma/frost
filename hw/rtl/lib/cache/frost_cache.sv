@@ -2531,39 +2531,78 @@ module frost_cache #(
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && !i_rst) begin
       if (up_req_fire && i_up_req_write && i_up_req_wstrb == '0)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: write request with empty strobes");
       if (up_req_fire && i_up_req_probe && (NUM_PROBE == 0))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: probe request on a cache without probe slots");
       if (up_req_fire && i_up_req_probe && i_up_req_write)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: probe request with write set");
       if (resp_is_wb && wb_probe_q[resp_wb_slot] && !probe_valid_q[wb_probe_slot_q[resp_wb_slot]])
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: probe writeback acknowledged for an unmanned probe slot");
       for (int k = 0; k < int'(ProbeSlots); k++) begin
         if ((NUM_PROBE > 0) && i_probe_release_valid && probe_valid_q[k] &&
             (probe_id_q[k] == i_probe_release_id) && probe_ack_q[k])
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("frost_cache: probe slot %0d released before its acknowledgement left", k);
       end
       if (resp_is_fill && (mshr_state_q[resp_fill_slot] != MS_SENT))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: fill response for MSHR %0d not in flight", resp_fill_slot);
       if (resp_is_wb && (wb_state_q[resp_wb_slot] != WB_SENT))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: writeback ack for slot %0d not in flight", resp_wb_slot);
       if (ack_push && ((ack_wr_q - ack_rd_q) == AckPtrBits'(AckDepth)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: acknowledgement queue overflow");
       if (w_valid_q && w_is_alloc && (mshr_state_q[w_mshr_q] != MS_FREE))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: allocation into busy MSHR %0d", w_mshr_q);
       if (w_allocs_wb && (wb_state_q[w_wb_q] != WB_FREE))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: victim into busy writeback slot %0d", w_wb_q);
       if (flush_read && (wb_state_q[flush_wb_q] != WB_FREE))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: flush writeback into busy slot %0d", flush_wb_q);
       if (w_valid_q && (w_op_q == W_MERGE) &&
           !((mshr_state_q[w_mshr_q] == MS_PEND) || (mshr_state_q[w_mshr_q] == MS_SENT) ||
             (mshr_state_q[w_mshr_q] == MS_MERGE)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: merge into MSHR %0d in state %0d", w_mshr_q, mshr_state_q[w_mshr_q]);
       // A W read of the data array never meets a same-edge write of its row
       // (see the data array): one W operation per cycle, and fills install
       // only into ways that neither hit nor are being taken. The L1s' banks
       // check their own reads.
       if (!ParallelWayRead && data_re && data_row_we && (data_raddr == data_waddr))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: data row 0x%0h read and written in the same cycle", data_raddr);
       p_tag_response_has_owner :
       assert (!tag_response_valid ||
@@ -2612,17 +2651,26 @@ module frost_cache #(
       for (int j = 0; j < int'(NUM_WB); j++) begin
         for (int k = j + 1; k < int'(NUM_WB); k++) begin
           if (wb_valid[j] && wb_valid[k] && (wb_line_q[j] == wb_line_q[k]))
+`ifdef FROST_SIM_ASSERTIONS
+            assert (1'b0) else
+`endif
             $error(
                 "frost_cache: writeback slots %0d and %0d both hold line 0x%0h", j, k, wb_line_q[j]
             );
         end
         if (wb_valid[j] && w_valid_q && (w_op_q == W_WRITE_HIT) && (wb_line_q[j] == w_line_q))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error(
               "frost_cache: write hit commits to line 0x%0h while writeback slot %0d holds it",
               w_line_q,
               j
           );
         if (wb_valid[j] && mshr_write_fire && (wb_line_q[j] == mshr_line_q[fw_sel_q]))
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error(
               "frost_cache: install of line 0x%0h while writeback slot %0d holds it",
               mshr_line_q[fw_sel_q],
@@ -2633,11 +2681,21 @@ module frost_cache #(
       // no writeback pending: a slot leaves WB_PEND only through the load
       // that clears both.
       if (wb_turn_q != (wb_lost_q == WbStarveBits'(WbStarveLimit)))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error(
             "frost_cache: writeback turn %0d disagrees with its count %0d", wb_turn_q, wb_lost_q
         );
-      if (wb_turn_q && !wb_req_any) $error("frost_cache: writeback turn owed with none pending");
+      if (wb_turn_q && !wb_req_any)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
+        $error("frost_cache: writeback turn owed with none pending");
       if (dq_load && dq_load_is_wb && (wb_state_q[wb_req_sel] != WB_PEND))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: writeback load picked slot %0d, which is not pending", wb_req_sel);
     end
   end
@@ -2657,6 +2715,9 @@ module frost_cache #(
         if (dq_load && !(dq_load_is_wb && (wb_req_sel == WbBits'(j)))) begin
           wb_pend_loads[j] <= wb_pend_loads[j] + 1;
           if (wb_pend_loads[j] == WbStarveTripLoads) begin
+`ifdef FROST_SIM_ASSERTIONS
+            assert (1'b0) else
+`endif
             $error("frost_cache: writeback slot %0d (line 0x%0h) starved: %0d loads, %0d cycles",
                    j, wb_line_q[j], wb_pend_loads[j] + 1, wb_pend_cycles[j] + 1);
           end
@@ -2675,6 +2736,9 @@ module frost_cache #(
       end else if (dq_load && !dq_load_is_wb && (fill_req_sel != MshrBits'(i))) begin
         fill_passed[i] <= fill_passed[i] + 1;
         if (fill_passed[i] + 1 == NUM_MSHR) begin
+`ifdef FROST_SIM_ASSERTIONS
+          assert (1'b0) else
+`endif
           $error("frost_cache: fill of MSHR %0d (line 0x%0h) passed over by %0d fill loads", i,
                  mshr_line_q[i], fill_passed[i] + 1);
         end
@@ -2738,6 +2802,9 @@ module frost_cache #(
             probe_line_q[k],
             probe_id_q[k]
         );
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("frost_cache: request stuck for %0d cycles (forward progress lost)",
                WedgeWatchdogCycles);
       end

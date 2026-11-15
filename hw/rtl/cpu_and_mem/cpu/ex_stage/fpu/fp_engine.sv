@@ -2446,6 +2446,9 @@ module fp_engine (
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
     if (reset_seen_q && i_rst_n && i_start && (state_q != ST_IDLE)) begin
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("fp_engine: start while busy (op %0d)", i_op);
     end
   end

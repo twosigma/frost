@@ -463,6 +463,8 @@ jobs:
           # (tests/README.md); a failing test's output names the draw, and a
           # rerun of the job repeats it.
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
+          FROST_STARTUP_SWEEP: ${{ matrix.shard.name != 'Unit Tests' && '1' || '0' }}
+          FROST_STARTUP_SEED_BASE: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           FROST_RANDOM_START_SEED: ${{ matrix.shard.name != 'Unit Tests' && format('{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) || '' }}
           # A shard's coverage field lists the memory tiers in which it
           # collects line coverage and the cover points, and the unit benches
@@ -592,6 +594,8 @@ jobs:
           SIM_FAST_MAINT: ${{ matrix.capacity_gib == 1 && matrix.shard.name == 'Bare access' && '0' || '1' }}
           FROST_COVERAGE: ${{ contains(matrix.shard.coverage, matrix.capacity_gib) && '1' || '0' }}
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
+          FROST_STARTUP_SWEEP: ${{ matrix.shard.name != 'Unit boundaries' && '1' || '0' }}
+          FROST_STARTUP_SEED_BASE: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           FROST_RANDOM_START_SEED: ${{ matrix.shard.name != 'Unit boundaries' && format('{0}-{1}-{2}', github.run_id, github.job, strategy.job-index) || '' }}
         run: |
           tests="$PA_TESTS"
@@ -606,7 +610,7 @@ jobs:
           # One clean, then the runner reuses the Verilator build for each
           # test whose build signature matches the previous one.
           ./scripts/frost.py --image frost-dev:latest run bash -c \
-            'cd tests && make clean && for test_name; do ./test_run_cocotb.py "$test_name" || exit 1; done' \
+            'cd tests && make clean && python3 random_start_sweep.py --plan "$@" && for test_name; do ./test_run_cocotb.py "$test_name" || exit 1; done' \
             _ $tests
 
       - name: Merge the job's coverage
@@ -963,6 +967,8 @@ jobs:
           - {shard: 4, coverage: 1}
     env:
       FROST_SKIP_SUBMODULE_INIT: "1"
+      FROST_STARTUP_SWEEP: "1"
+      FROST_STARTUP_SEED_BASE: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
       FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
       FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
       # Line coverage and the cover points (tests/README.md#coverage).
@@ -1001,6 +1007,15 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --atomics 200 --continue-on-fail
+
+      - name: Require startup assertion controls
+        if: ${{ always() && matrix.shard == 3 }}
+        run: |
+          status=0
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/random_start_sweep.py --require-controls || status=$?
+          cat tests/startup_sweep/control_summary.txt >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
       - name: Upload TestRIG counterexamples and logs
         if: always()

@@ -244,6 +244,9 @@ module debug_slice_writer #(
     div4_reset_seen_core_q <= {div4_reset_seen_core_q[0], div4_reset_seen_q};
     if (reset_seen_q && div4_reset_seen_core_q[1] && !i_rst && !i_rst_div4 &&
         ((req_count_q - done_count_core) > CountBits'(DEPTH + 5)))
+`ifdef FROST_SIM_ASSERTIONS
+      assert (1'b0) else
+`endif
       $error("debug_slice_writer: request/done counters diverged");
   end
 `endif
