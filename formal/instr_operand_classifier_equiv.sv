@@ -29,10 +29,14 @@ module instr_operand_classifier_equiv (
   riscv_pkg::instr_t instruction;
   riscv_pkg::instr_op_e instruction_operation;
   logic decoder_illegal, is_illegal_instruction, is_fetch_fault;
-  logic spec_mop;
+  logic spec_mop, spec_lr;
   // Fixed bits from the Zimop MOP.R and MOP.RR encoding diagrams.
   assign spec_mop = ((instruction & 32'hb3c0_707f) == 32'h81c0_4073) ||
                    ((instruction & 32'hb200_707f) == 32'h8200_4073);
+  assign spec_lr = (instruction.opcode == riscv_pkg::OPC_AMO) &&
+                   ((instruction.funct3 == 3'b010) || (instruction.funct3 == 3'b011)) &&
+                   (instruction.funct7[6:2] == 5'b00010) &&
+                   (instruction.source_reg_2 == 5'b0);
   assign instruction = i_inject_nop ? riscv_pkg::NOP : i_instr;
   assign is_illegal_instruction = decoder_illegal || i_pd_illegal;
   assign is_fetch_fault = i_fetch_fault;
@@ -479,6 +483,8 @@ module instr_operand_classifier_equiv (
     if (spec_mop) begin
       p_mop_legal : assert (!decoder_illegal);
     end
+    p_lr_encoding :
+    assert (((instruction_operation == riscv_pkg::LR) && !decoder_illegal) == spec_lr);
     p_has_int_dest : assert (has_int_dest_direct == has_int_dest_pre);
     p_has_fp_dest : assert (has_fp_dest_direct == has_fp_dest_pre);
     p_uses_int_rs1 : assert (uses_int_rs1_direct == uses_int_rs1_pre);

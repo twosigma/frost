@@ -1423,3 +1423,58 @@ async def test_flh_fsh_decode_as_load_store_fp(dut: Any) -> None:
                     assert pkt["uses_int_rs1"] is True and pkt["uses_fp_rs2"] is True
                     assert pkt["needs_sq"] is True and pkt["needs_lq"] is False
     dut.i_mstatus_fs_off.value = 0
+
+
+@cocotb.test()
+async def test_lr_nonzero_rs2_is_illegal(dut: Any) -> None:
+    """LR.W and LR.D require rs2 == 0; nonzero rs2 encodings are illegal."""
+    await _setup_test(dut)
+    lr_op = _INSTR_OPS["LR"]
+    opc_amo = 0b0101111
+
+    for funct3 in (0b010, 0b011):
+        for aqrl in (0b00, 0b01, 0b10, 0b11):
+            funct7 = (0b00010 << 2) | aqrl
+            for rs2 in (0, 1, 2, 16, 31):
+                word = _pack_r(
+                    funct7=funct7, rs2=rs2, rs1=2, funct3=funct3, rd=1, opcode=opc_amo
+                )
+                if funct3 == 0b010 and aqrl == 0 and rs2 == 1:
+                    assert word == 0x101120AF
+                for slot2 in (False, True):
+                    _drive_pd_packet(
+                        dut,
+                        {"program_counter": BASE_PC, "instruction": word},
+                        slot2=slot2,
+                    )
+                    _drive_pd_packet(
+                        dut, {"program_counter": BASE_PC + 4}, slot2=not slot2
+                    )
+                    await _advance_cycle(dut)
+                    pkt = _read_id_packet(dut, slot2=slot2)
+                    name = f"{word:#010x} rs2={rs2} slot2={slot2}"
+                    if rs2 == 0:
+                        assert pkt["is_illegal_instruction"] is False, name
+                        assert pkt["instruction_operation"] == lr_op, name
+                        assert pkt["is_lr"] is True, name
+                        assert pkt["is_amo_instruction"] is True, name
+                        assert pkt["rs_type"] == RS_MEM, name
+                        assert pkt["needs_lq"] is True and pkt["needs_sq"] is False, (
+                            name
+                        )
+                        assert pkt["has_int_dest"] is True, name
+                        assert (
+                            pkt["uses_int_rs1"] is True and pkt["uses_int_rs2"] is False
+                        ), name
+                    else:
+                        assert pkt["is_illegal_instruction"] is True, name
+                        assert pkt["is_lr"] is False, name
+                        assert pkt["rs_type"] == RS_INT, name
+                        assert pkt["needs_lq"] is False and pkt["needs_sq"] is False, (
+                            name
+                        )
+                        assert pkt["has_int_dest"] is False, name
+                        assert (
+                            pkt["uses_int_rs1"] is False
+                            and pkt["uses_int_rs2"] is False
+                        ), name

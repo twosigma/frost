@@ -416,7 +416,9 @@ module instr_decoder (
       riscv_pkg::OPC_AMO:
       if (i_instr.funct3 == 3'b010 || i_instr.funct3 == 3'b011)
         unique case (i_instr.funct7[6:2])  // funct5
-          5'b00010: o_instr_op = riscv_pkg::LR;
+          5'b00010:
+          if (i_instr.source_reg_2 == 5'b0) o_instr_op = riscv_pkg::LR;
+          else o_illegal = 1'b1;
           5'b00011: o_instr_op = riscv_pkg::SC;
           5'b00001: o_instr_op = riscv_pkg::AMOSWAP;
           5'b00000: o_instr_op = riscv_pkg::AMOADD;
@@ -427,7 +429,7 @@ module instr_decoder (
           5'b10100: o_instr_op = riscv_pkg::AMOMAX;
           5'b11000: o_instr_op = riscv_pkg::AMOMINU;
           5'b11100: o_instr_op = riscv_pkg::AMOMAXU;
-          default:  o_illegal = 1'b1;
+          default: o_illegal = 1'b1;
         endcase
       else o_illegal = 1'b1;
 
