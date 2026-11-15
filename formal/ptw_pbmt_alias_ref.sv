@@ -17,15 +17,13 @@
 module ptw_pbmt_alias_ref (
     input logic [riscv_pkg::XLEN-1:0] i_addr
 );
-  import riscv_pkg::*;
-
-  logic [XLEN-1:0] real_addr;
+  logic [riscv_pkg::XLEN-1:0] real_addr;
   logic expected;
   always_comb begin
     real_addr = i_addr;
-    real_addr[PbmtAliasBit] = 1'b0;
-    expected = PbmtAliasEnabled && i_addr[PbmtAliasBit] &&
-        (real_addr >= XLEN'(DdrBase)) && (real_addr < XLEN'(PbmtAliasCoverLimit));
-    p_alias_range_exact : assert (pma_pbmt_alias_ok(i_addr) == expected);
+    real_addr[riscv_pkg::PbmtAliasBit] = 1'b0;
+    expected = riscv_pkg::PbmtAliasEnabled && i_addr[riscv_pkg::PbmtAliasBit] &&
+        (real_addr >= riscv_pkg::DdrBase) && (real_addr < riscv_pkg::PbmtAliasCoverLimit);
+    p_alias_range_exact : assert (riscv_pkg::pma_pbmt_alias_ok(i_addr) == expected);
   end
 endmodule
