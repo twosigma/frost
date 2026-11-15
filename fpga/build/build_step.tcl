@@ -859,7 +859,28 @@ if {$step eq "synth"} {
     }
 
     generate_target all [get_ips]
-    synth_ip [get_ips]
+    # Project mode has no synth_ip (CRITICAL WARNING Vivado 12-5447). Each IP gets its out-of-context
+    # run instead (create_ip_run, launch_runs, wait_on_run); the run leaves the IP's synthesized
+    # checkpoint beside the IP, which synth_design links below.
+    set ip_synth_runs [list]
+    foreach ip_core [get_ips] {
+        set ip_core_name [get_property NAME $ip_core]
+        set ip_core_xci [get_files -all ${ip_core_name}.xci]
+        if {[llength [get_runs -quiet ${ip_core_name}_synth_1]] == 0} {
+            create_ip_run $ip_core_xci
+        }
+        lappend ip_synth_runs ${ip_core_name}_synth_1
+    }
+    if {[llength $ip_synth_runs]} {
+        launch_runs $ip_synth_runs -jobs $number_of_parallel_jobs
+        foreach ip_synth_run $ip_synth_runs {
+            wait_on_run $ip_synth_run
+            if {[get_property PROGRESS [get_runs $ip_synth_run]] ne "100%" ||
+                [get_property STATUS [get_runs $ip_synth_run]] ne "synth_design Complete!"} {
+                error "IP synthesis run $ip_synth_run did not complete: [get_property STATUS [get_runs $ip_synth_run]]"
+            }
+        }
+    }
 
     if {$board_has_ddr} {
         # The board BD script builds its memory controller, SmartConnect, and

@@ -1551,7 +1551,11 @@ def test_board_gty_generation_is_capability_gated() -> None:
     ):
         assert operation in guarded_body
     generate = tcl.index("generate_target all [get_ips]")
-    assert guard.end() < generate < tcl.index("synth_ip [get_ips]")
+    # The IP cores, GTY included, synthesize in their own project-mode runs after
+    # generation: create_ip_run per core, then one launch_runs for the set.
+    create_run = tcl.index("create_ip_run $ip_core_xci", generate)
+    launch = tcl.index("launch_runs $ip_synth_runs", create_run)
+    assert guard.end() < generate < create_run < launch
 
     gty = (REPO_ROOT / "fpga/build/x3_gty_ip.tcl").read_text()
     assert "proc create_x3_gty_ip {{rx_eq_mode LPM}}" in gty
