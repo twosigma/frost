@@ -125,8 +125,12 @@ module lq_issue_selector #(
   // Scan indices wrap at 2**IdxWidth, so DEPTH must be a power of two to
   // visit every entry exactly once.
   initial begin
+`ifdef FROST_SIM_ASSERTIONS
+    if (!((1 << IdxWidth) == DEPTH)) $error("lq_issue_selector: DEPTH must be a power of two");
+`else
     assert ((1 << IdxWidth) == DEPTH)
     else $error("lq_issue_selector: DEPTH must be a power of two");
+`endif
   end
 `endif
 `endif

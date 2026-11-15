@@ -718,8 +718,8 @@ module pd_stage #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // Sample-valid flags can arm before reset; all redirect checks also wait
-  // for pd_reset_seen_q so arbitrary startup packets are never checked.
+  // Redirect checks require pd_reset_seen_q as well as sample-valid flags.
+  // System assertions arm after the testbench's driven reset interval.
 `endif
   // Reference model of the candidate FFs: reset and flush clear them even
   // during a stall, a stall holds them, and every enabled edge captures the

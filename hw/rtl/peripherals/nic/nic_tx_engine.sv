@@ -548,10 +548,19 @@ module nic_tx_engine #(
     if (i_rst) reset_seen_q <= 1'b1;
     if (!i_sim_hold) begin
       if (reset_seen_q && !i_rst && data_resp && (outstanding_q == '0) && !rd_fire)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("nic_tx_engine: data response with nothing outstanding");
       if (reset_seen_q && !i_rst && data_resp && !rob_busy_q[resp_slot] && !(state_q == S_DRAIN))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("nic_tx_engine: data response for a free reorder slot %0d", resp_slot);
       if (reset_seen_q && !i_rst && status_resp && !dd_inflight_q)
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
         $error("nic_tx_engine: status response with no status write in flight");
     end
   end
