@@ -944,7 +944,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description=(
             "Svpbmt: PBMTE and reserved-encoding page faults, NC and IO pages over DDR "
-            "(4 KiB and 2 MiB) and low BRAM coherent with cacheable views, AMO/LR/SC/"
+            "(4 KiB, 2 MiB and 1 GiB), U-mode data accesses and low BRAM coherent "
+            "with cacheable views, AMO/LR/SC/"
             "cbo.zero/fetch access faults, the field kept in both TLB levels, and "
             "adjacent mixed-view accesses with and without the fence/flush sequence"
         ),
