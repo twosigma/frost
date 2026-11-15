@@ -72,7 +72,8 @@ in `frost_hart.sv`.
 - the registered write enables and addresses for the register-file bypass;
 - commit and trap glue: the commit hold while a trap or xRET waits, the
   interrupt shields that stop an interrupt from re-executing an AMO or device
-  read that has already started, the quiet window around
+  read that has already started, the hold that keeps a new device access from
+  starting while an interrupt take is armed, the quiet window around
   [translation-changing CSR writes](#csr-writes), and the interrupt resume PC
   (the PC an interrupt saves, which trap entry and xRET preset to their target
   because an interrupt can arrive before the first instruction there retires);
@@ -550,7 +551,11 @@ that depends on `vtype` (vill, register-group alignment, mask-destination
 overlap, a masked write of v0) is decided at allocation from the `vtype` in
 effect at that point, which a tracker beside the rename checkpoints keeps
 (vector arithmetic waits at dispatch while a register-form `vsetvl` leaves it
-unknown). When one retires, `vec_unit` queues it with its scalar and the
+unknown). The register-number rules depend on `vtype` only through LMUL, so
+`vector/vec_lmul_legality.sv` evaluates them from the instruction bits for
+each LMUL class (1 or fractional, 2, 4, 8) before the decoded queue, which
+carries the four results beside slot 1; dispatch selects the class of the
+tracked `vtype` and adds vill. When one retires, `vec_unit` queues it with its scalar and the
 architectural `vl`, `vtype` and `vstart`, and the engine executes it after
 commit; the CSR file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
 and `vfirst.m` execute at the ROB head once the unit is idle and return their

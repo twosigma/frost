@@ -182,7 +182,8 @@ module coherence_home_engine #(
     localparam int unsigned Bits = ADDR_WIDTH - 8 * chunk < 8 ? ADDR_WIDTH - 8 * chunk : 8;
     assign probe_addr_equal[chunk] = reply.addr[8*chunk+:Bits] == probe_q.addr[8*chunk+:Bits];
   end
-  (* keep = "true" *) wire probe_identity_matches = reply.tid == tid_q &&
+  (* keep = "true" *) wire probe_identity_matches;
+  assign probe_identity_matches = reply.tid == tid_q &&
       reply.epoch == probe_q.epoch && reply.hart == 0 &&
       (probe_q.opcode == coherence_pkg::CheckSC ? reply.opcode == coherence_pkg::CheckAck :
        reply.opcode == coherence_pkg::ProbeAck || reply.opcode == coherence_pkg::ProbeData);

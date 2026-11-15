@@ -5,7 +5,9 @@ eight entries (`riscv_pkg::SqDepth`) and two allocation ports. Stores write
 cached memory after commit, in program order. With `PRECISE_UNCACHED=1`
 (as in `cpu_top`), Device and strict uncached stores execute at the ROB head
 with the interrupt and debug shield armed, and retire only after the AXI B
-response. `CACHE_NORMAL_MEMORY=1` permits ordinary stores to the configured
+response. While an interrupt take is armed, cpu_ooo keeps that shield from
+rising for a new precise store other than an SC, so the store starts only
+after the take. `CACHE_NORMAL_MEMORY=1` permits ordinary stores to the configured
 Normal read-cache region to commit before draining as narrow write-through
 transactions. SC and debug-page stores remain precise. The SQ also answers
 the load queue's store-to-load forwarding checks.

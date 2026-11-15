@@ -1039,9 +1039,11 @@ module coherence_l1d #(
   assign array_request_addr = probe_launch ? probe_in.addr : lookup_addr_q;
   // Both candidate request addresses are compared with the atomic's set, so
   // a probe launch selects a finished comparison.
-  (* keep = "true" *) wire probe_atomic_set =
+  (* keep = "true" *) wire probe_atomic_set;
+  assign probe_atomic_set =
       probe_in.addr[5+:SetBits] == atomic_addr_q[5+:SetBits];
-  (* keep = "true" *) wire lookup_atomic_set =
+  (* keep = "true" *) wire lookup_atomic_set;
+  assign lookup_atomic_set =
       lookup_addr_q[5+:SetBits] == atomic_addr_q[5+:SetBits];
   assign probe_reply_eligible = probe_q.opcode != coherence_pkg::ProbeInvalidate ||
       cut_phase_q == CutDone;
@@ -1073,7 +1075,8 @@ module coherence_l1d #(
     else if (probe_reply_start) o_r_valid <= 1'b1;
     else if (o_r_valid && i_r_ready) o_r_valid <= 1'b0;
   end
-  (* keep = "true" *) wire invalidate_eligible = active &&
+  (* keep = "true" *) wire invalidate_eligible;
+  assign invalidate_eligible = active &&
       phase_q == Idle && !probe_valid_q && !o_r_valid && !local_turn_q &&
       probe_in.opcode == coherence_pkg::ProbeInvalidate;
   assign o_cut_hold = (i_p_valid && invalidate_eligible) ||
@@ -2426,9 +2429,11 @@ module coherence_l1d #(
   assign read_selected = rd_candidate && !(maint_eligible && maint_turn_q);
   // Prepare the priority above a read before its eligibility settles. The
   // credited read turn also selects the read address when it has no candidate.
-  (* keep = "true" *) wire lookup_read_turn =
+  (* keep = "true" *) wire lookup_read_turn;
+  assign lookup_read_turn =
       !probe_valid_q && !probe_priority && !twin_owed && grant_read_hold;
-  (* keep = "true" *) wire lookup_read_enable =
+  (* keep = "true" *) wire lookup_read_enable;
+  assign lookup_read_enable =
       !probe_valid_q && !probe_priority && !twin_owed && !grant_valid &&
       !(i_sc_valid && o_sc_ready) && !atomic_write_q && !atomic_sc_selected &&
       !store_head_ready && !look_ready && !(maint_eligible && maint_turn_q);

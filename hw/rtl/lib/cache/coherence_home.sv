@@ -1348,7 +1348,8 @@ module coherence_home #(
       localparam int unsigned Bits = ADDR_WIDTH - 8 * chunk < 8 ? ADDR_WIDTH - 8 * chunk : 8;
       assign probe_addr_equal[chunk] = reply.addr[8*chunk+:Bits] == probe.addr[8*chunk+:Bits];
     end
-    (* keep = "true" *) wire probe_identity_matches = reply.tid == FillTid + 6'(fill) &&
+    (* keep = "true" *) wire probe_identity_matches;
+    assign probe_identity_matches = reply.tid == FillTid + 6'(fill) &&
         reply.epoch == 0 && reply.hart == 0 &&
         (reply.opcode == coherence_pkg::ProbeAck || reply.opcode == coherence_pkg::ProbeData);
     wire probe_matches;
@@ -1391,7 +1392,8 @@ module coherence_home #(
     // one LUT, and each image bit's next state takes the clear in its last.
     // The image holds through reset, at the flop.
     (* keep = "true" *)
-    wire image_clear_ready = run && array_response &&
+    wire image_clear_ready;
+    assign image_clear_ready = run && array_response &&
         fill_free_index == FillBits'(fill) && zero_fill;
     wire image_take = i_mem_resp_valid && i_mem_resp_id == 5'(fill);
     wire image_clear;
@@ -2785,9 +2787,12 @@ module coherence_home_forward_turn_select #(
       assign above_later_groups[group_idx] = |(ready_above & later);
 `endif
     end
-    (* keep = "true" *)wire below_ready = |below_ready_groups;
-    (* keep = "true" *)wire below_later = |below_later_groups;
-    (* keep = "true" *)wire above_later = |above_later_groups;
+    (* keep = "true" *) wire below_ready;
+    assign below_ready = |below_ready_groups;
+    (* keep = "true" *) wire below_later;
+    assign below_later = |below_later_groups;
+    (* keep = "true" *) wire above_later;
+    assign above_later = |above_later_groups;
 `ifdef FROST_XILINX_PRIMS
     (* dont_touch = "true" *) LUT5 #(
         .INIT(32'h22270000)
